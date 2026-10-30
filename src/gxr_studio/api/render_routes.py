@@ -30,7 +30,7 @@ MAX_EDGE_LIMIT = 4096
 
 
 def _sidecar_unreadable() -> ApiError:
-    return ApiError(422, "sidecar_unreadable", "这张照片的编辑记录读写不了（照片本身没事）。检查一下图库文件夹的权限后再试。")
+    return ApiError(422, "sidecar_unreadable", "这张照片的编辑记录读写不了。请检查图库文件夹的权限后再试。")
 
 
 class EditRequest(BaseModel):
@@ -39,6 +39,9 @@ class EditRequest(BaseModel):
     recipe: dict[Any, Any] | None = None
     adjust: dict[Any, Any] | None = None
     curve: dict[Any, Any] | None = None
+    geometry: dict[Any, Any] | None = None
+    frame: dict[Any, Any] | None = None
+    stamp: dict[Any, Any] | None = None
     expected_rev: int | None = None
 
 
@@ -48,13 +51,18 @@ class RenderRequest(BaseModel):
     recipe: dict[Any, Any] | None = None
     adjust: dict[Any, Any] | None = None
     curve: dict[Any, Any] | None = None
+    geometry: dict[Any, Any] | None = None
+    crop: dict[Any, Any] | None = None
+    frame: dict[Any, Any] | None = None
+    stamp: dict[Any, Any] | None = None
 
 
 # ---- 小工具 -----------------------------------------------------------------
 
 
 def _edit_error(exc: EditError) -> ApiError:
-    return ApiError(422, exc.code, exc.message)
+    extra = {"detail": exc.detail} if exc.detail else None
+    return ApiError(422, exc.code, exc.message, extra)
 
 
 def _unavailable(c: Any, exc: RenderUnavailable) -> ApiError:
@@ -81,10 +89,14 @@ def _payload(c: Any, shot: dict[Any, Any], edit: EditState, side: dict[Any, Any]
 def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     svc = c.render
     if "dng" not in shot["files"]:
+        from ..finish.approx import ENABLED
+
+        approx = ENABLED and svc.available()
         return {
-            "available": False,
-            "reason": "no_raw",
-            "message": "这张照片没有 RAW，不能套配方（预览和导出都是相机 JPG）。",
+            "available": True,
+            "reason": None if approx else "no_raw",
+            "recipe": "approx" if approx else "none",
+            "message": "" if approx else "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。",
         }
     try:
         plan = svc.plan(shot, edit)
@@ -110,12 +122,17 @@ def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any
 def _merge(edit: EditState, body: RenderRequest | None) -> EditState:
     if body is None:
         return edit
+    from ..finish.spec import parse_frame, parse_geometry, parse_stamp
+
     given = body.model_fields_set
     try:
         return EditState(
             recipe=parse_recipe(body.recipe) if "recipe" in given else edit.recipe,
             adjust=parse_adjust(body.adjust) if "adjust" in given else edit.adjust,
             master=parse_curve(body.curve) if "curve" in given else edit.master,
+            geometry=parse_geometry(body.geometry) if "geometry" in given else edit.geometry,
+            frame=parse_frame(body.frame) if "frame" in given else edit.frame,
+            stamp=parse_stamp(body.stamp) if "stamp" in given else edit.stamp,
         )
     except EditError as exc:
         raise _edit_error(exc) from exc
@@ -134,37 +151,73 @@ def _render(
     exact: bool,
     apply_crop: bool,
     quality: int,
+    stage: str | None = None,
+    size: str | None = None,
 ) -> Response:
+    from ..finish.serve import SIZE_EDGE, render_stage
+
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
+    if stage not in (None, "final", "uncropped", "original"):
+        raise ApiError(422, "bad_stage", "请求无效。请刷新页面后重试。")
+    if size not in (None, "thumb", "preview", "full"):
+        raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": "尺寸只能是 thumb、preview 或 full"})
+    if max_edge is None and size in SIZE_EDGE:
+        max_edge = SIZE_EDGE[size]
     if max_edge is not None and not 64 <= max_edge <= MAX_EDGE_LIMIT:
-        raise ApiError(422, "bad_size", f"max_edge 要在 64 到 {MAX_EDGE_LIMIT} 之间")
+        raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": f"max_edge 要在 64 到 {MAX_EDGE_LIMIT} 之间"})
     if not 30 <= quality <= 100:
-        raise ApiError(422, "bad_quality", "quality 要在 30 到 100 之间")
+        raise ApiError(422, "bad_quality", "请求无效。请刷新页面后重试。", {"detail": "品质要在 30 到 100 之间。"})
     edit, side = _read_edit(c, shot)
     edit = _merge(edit, body)
+    if body is not None and "crop" in body.model_fields_set:
+        side = {**side, "crop": body.crop}
+    use_stage = stage or ("final" if "dng" not in shot["files"] else None)
+    if use_stage:
+        try:
+            jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality)
+        except RenderUnavailable as exc:
+            raise _unavailable(c, exc) from exc
+        except NoRaw as exc:
+            raise ApiError(409, "no_raw", str(exc) or "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。") from exc
+        except EditError as exc:
+            raise _edit_error(exc) from exc
+        except RawDecodeError as exc:
+            raise ApiError(422, "raw_unreadable", "这份 RAW 暂时读不出来。请换一张照片或重新导入后再试。") from exc
+        headers = {"Cache-Control": "private, no-cache", "X-GXR-Cache": labels.get("cache") or "miss"}
+        if use_stage == "uncropped" and labels.get("valid"):
+            headers["X-GXR-Valid-Rect"] = labels["valid"]
+        if use_stage == "final":
+            machine = labels.get("label") if labels.get("label") in {"prediction", "approx", "original"} else "original"
+            headers["X-GXR-Label"] = quote(str(machine))
+            headers["X-GXR-Calibrated"] = "1" if labels.get("calibrated") == "1" else "0"
+            if machine == "prediction":
+                headers["X-GXR-Prediction"] = "1"
+            elif machine == "approx":
+                headers["X-GXR-Look"] = "approx"
+        return Response(jpeg, media_type="image/jpeg", headers=headers)
     try:
         crop = _crop_of(side) if apply_crop else None
         out = c.render.render_preview(shot, edit, max_edge=max_edge, exact=exact, crop=crop, quality=quality)
     except RenderUnavailable as exc:
         raise _unavailable(c, exc) from exc
     except NoRaw as exc:
-        raise ApiError(409, "no_raw", "这张照片没有 RAW，只有相机 JPG，不能套配方。") from exc
+        raise ApiError(409, "no_raw", "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。") from exc
     except EditError as exc:
         raise _edit_error(exc) from exc
     except RawDecodeError as exc:
-        raise ApiError(422, "raw_unreadable", f"这份 RAW 暂时读不出来。（{exc}）") from exc
+        raise ApiError(422, "raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。", {"detail": str(exc)}) from exc
     except CropError as exc:
         raise ApiError(422, exc.code, exc.message) from exc
     except ValueError as exc:  # 例如色表行不对称：冻结模型不能预测这个条目
-        raise ApiError(422, "cannot_predict", f"这个配方的电脑预测算不出来：{exc}") from exc
+        raise ApiError(422, "cannot_predict", "无法生成电脑预测。请重试。", {"detail": str(exc)}) from exc
     etag = f'"{out.key}"'
     headers = {
         "ETag": etag,
         "Cache-Control": "private, no-cache",
         "X-GXR-Prediction": "1",
         "X-GXR-Calibrated": "1" if out.plan.calibrated else "0",
-        "X-GXR-Label": quote(out.plan.label),
+        "X-GXR-Label": "prediction",
         "X-GXR-Render-Key": out.key,
         "X-GXR-Cache": "hit" if out.cache_hit else "miss",
         "X-GXR-Timing": ";".join(f"{k}={v:.1f}" for k, v in out.ms.items()),
@@ -190,7 +243,7 @@ def list_recipes(request: Request) -> dict[Any, Any]:
     return {
         "status": status,
         "units": svc.catalog(),
-        "note": "旋钮范围与档位来自相机的 knobs v2 菜单表；颜色只是电脑预测，没有相机实测。",
+        "note": "",
     }
 
 
@@ -209,16 +262,16 @@ def get_edit(shot_id: str, request: Request) -> Any:
 def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    changes = {k: getattr(body, k) for k in ("recipe", "adjust", "curve") if k in body.model_fields_set}
+    changes = {k: getattr(body, k) for k in ("recipe", "adjust", "curve", "geometry", "frame", "stamp") if k in body.model_fields_set}
     warning = c.lib.sidecar_problem(shot)
     try:
         edit, side = render_edits.write(c.lib, shot, changes, c.render.menu, expected_rev=body.expected_rev)
     except EditError as exc:
         raise _edit_error(exc) from exc
     except RevisionConflict as exc:
-        raise ApiError(409, "rev_conflict", f"这张照片的编辑已经被改过（现在是第 {exc.current} 版），请刷新后再试") from exc
+        raise ApiError(409, "rev_conflict", "这张照片已在别处修改。请刷新后重试。", {"detail": f"现在是第 {exc.current} 版"}) from exc
     except sc.SidecarTooNew as exc:
-        raise ApiError(409, "sidecar_too_new", "这张照片的编辑文件来自更新的版本，只读") from exc
+        raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
     return _payload(c, shot, edit, side, warning)
@@ -230,9 +283,11 @@ def delete_edit(shot_id: str, request: Request) -> Any:
     shot = _shot_or_404(c, shot_id)
     warning = c.lib.sidecar_problem(shot)
     try:
-        edit, side = render_edits.write(c.lib, shot, {"recipe": None, "adjust": None, "curve": None}, c.render.menu)
+        edit, side = render_edits.write(
+            c.lib, shot, {"recipe": None, "adjust": None, "curve": None, "geometry": None, "frame": None, "stamp": None}, c.render.menu
+        )
     except sc.SidecarTooNew as exc:
-        raise ApiError(409, "sidecar_too_new", "这张照片的编辑文件来自更新的版本，只读") from exc
+        raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
     return _payload(c, shot, edit, side, warning)
@@ -249,9 +304,11 @@ def get_render(
     exact: bool = False,
     crop: bool = False,
     quality: int = 88,
+    stage: str | None = None,
+    size: str | None = None,
 ) -> Any:
-    """按 sidecar 里的编辑渲染（半分辨率，烘焙路径）。`max_edge` 再缩小（拖滑块时用）；`crop` 套上裁切与拉直。"""
-    return _render(request, shot_id, None, max_edge, exact, crop, quality)
+    """按 sidecar 里的编辑渲染。`stage=final` 是成片，`uncropped` 是裁剪页的整幅画面。"""
+    return _render(request, shot_id, None, max_edge, exact, crop, quality, stage, size)
 
 
 @router.post("/api/photos/{shot_id}/render", response_model=None)
@@ -263,6 +320,8 @@ def post_render(
     exact: bool = False,
     crop: bool = False,
     quality: int = 88,
+    stage: str | None = None,
+    size: str | None = None,
 ) -> Any:
-    """同上，但请求体里的 recipe/adjust/curve 盖过 sidecar（不落盘）：拖滑块的实时预览。"""
-    return _render(request, shot_id, body, max_edge, exact, crop, quality)
+    """请求体里出现的块盖过 sidecar，不落盘。拖动滑块时用这个。"""
+    return _render(request, shot_id, body, max_edge, exact, crop, quality, stage, size)

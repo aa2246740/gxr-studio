@@ -24,10 +24,14 @@ CURVE_MAX_POINTS = 16
 
 
 class EditError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, detail: str = "") -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.detail = detail
+
+
+INVALID_REQUEST = "请求无效。请刷新页面后重试。"
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,10 @@ class Adjust:
     contrast: int = 0
     highlight: int = 0
     shadow: int = 0
+    black_point: int = 0
+    saturation: int = 0
+    vibrance: int = 0
+    vignette: int = 0
 
     @property
     def is_identity(self) -> bool:
@@ -65,20 +73,28 @@ class Adjust:
         return self.contrast == 0 and self.highlight == 0 and self.shadow == 0
 
     def to_json(self) -> dict[Any, Any]:
-        return {
+        out: dict[Any, Any] = {
             "exposure_ev": self.exposure_ev,
             "wb": {"warm": self.warm, "tint": self.tint},
             "contrast": self.contrast,
             "highlight": self.highlight,
             "shadow": self.shadow,
         }
+        for key in ("black_point", "saturation", "vibrance", "vignette"):
+            value = getattr(self, key)
+            if value:
+                out[key] = value
+        return out
 
 
 @dataclass(frozen=True)
 class EditState:
     recipe: RecipeSel | None = None
     adjust: Adjust = field(default_factory=Adjust)
-    master: tuple[tuple[float, float], ...] | None = None  # 主曲线控制点（0..255）
+    master: tuple[tuple[float, float], ...] | None = None  # 曲线控制点（0..255）
+    geometry: Any = None
+    frame: Any = None
+    stamp: Any = None
 
     def to_json(self) -> dict[Any, Any]:
         return {
@@ -97,10 +113,10 @@ class EditState:
 
 def _int_in(value: Any, lo: int, hi: int, what: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value != int(value):
-        raise EditError("bad_adjust", f"{what}要是整数")
+        raise EditError("bad_adjust", INVALID_REQUEST, f"无法保存调整。请输入整数。{what}")
     number = int(value)
     if not lo <= number <= hi:
-        raise EditError("bad_adjust", f"{what}要在 {lo} 到 {hi} 之间")
+        raise EditError("bad_adjust", INVALID_REQUEST, f"无法保存调整。数值超出范围。{what} {lo} 到 {hi}")
     return number
 
 
@@ -108,23 +124,27 @@ def parse_adjust(raw: Any) -> Adjust:
     if raw is None:
         return Adjust()
     if not isinstance(raw, dict):
-        raise EditError("bad_adjust", "adjust 要是一个对象")
-    unknown = set(raw) - {"exposure_ev", "wb", "contrast", "highlight", "shadow"}
+        raise EditError("bad_adjust", "请求无效。请刷新页面后重试。", "adjust 要是一个对象")
+    unknown = set(raw) - {"exposure_ev", "wb", "contrast", "highlight", "shadow", "black_point", "saturation", "vibrance", "vignette"}
     if unknown:
-        raise EditError("bad_adjust", f"不认识的调整项：{sorted(unknown)[0]}")
+        raise EditError("bad_adjust", INVALID_REQUEST, "有无法识别的调整项。")
     ev = raw.get("exposure_ev", 0.0)
     if isinstance(ev, bool) or not isinstance(ev, (int, float)) or not math.isfinite(ev) or abs(ev) > EXPOSURE_RANGE:
-        raise EditError("bad_adjust", f"曝光要在 ±{EXPOSURE_RANGE:g} EV 之内")
+        raise EditError("bad_adjust", INVALID_REQUEST, f"曝光要在 ±{EXPOSURE_RANGE:g} 挡以内。")
     wb = raw.get("wb") or {}
     if not isinstance(wb, dict) or set(wb) - {"warm", "tint"}:
-        raise EditError("bad_adjust", "wb 只能有 warm 和 tint")
+        raise EditError("bad_adjust", "请求无效。请刷新页面后重试。", "白平衡只能有色温和色调")
     return Adjust(
         exposure_ev=round(float(ev), 4),
         warm=_int_in(wb.get("warm", 0), -SLIDER_RANGE, SLIDER_RANGE, "色温偏移"),
         tint=_int_in(wb.get("tint", 0), -SLIDER_RANGE, SLIDER_RANGE, "色调偏移"),
-        contrast=_int_in(raw.get("contrast", 0), -SLIDER_RANGE, SLIDER_RANGE, "画面对比"),
+        contrast=_int_in(raw.get("contrast", 0), -SLIDER_RANGE, SLIDER_RANGE, "对比度"),
         highlight=_int_in(raw.get("highlight", 0), -SLIDER_RANGE, SLIDER_RANGE, "高光"),
         shadow=_int_in(raw.get("shadow", 0), -SLIDER_RANGE, SLIDER_RANGE, "阴影"),
+        black_point=_int_in(raw.get("black_point", 0), -SLIDER_RANGE, SLIDER_RANGE, "黑点"),
+        saturation=_int_in(raw.get("saturation", 0), -SLIDER_RANGE, SLIDER_RANGE, "饱和度"),
+        vibrance=_int_in(raw.get("vibrance", 0), -SLIDER_RANGE, SLIDER_RANGE, "自然饱和度"),
+        vignette=_int_in(raw.get("vignette", 0), -SLIDER_RANGE, SLIDER_RANGE, "暗角"),
     )
 
 
@@ -133,12 +153,12 @@ def parse_curve(raw: Any) -> tuple[tuple[float, float], ...] | None:
     if raw is None:
         return None
     if not isinstance(raw, dict) or set(raw) - {"master"}:
-        raise EditError("bad_curve", "curve 只支持 master（主曲线）")
+        raise EditError("bad_curve", INVALID_REQUEST, "只支持一条曲线。")
     pts = raw.get("master")
     if pts is None:
         return None
     if not isinstance(pts, (list, tuple)) or not 2 <= len(pts) <= CURVE_MAX_POINTS:
-        raise EditError("bad_curve", f"主曲线要有 2 到 {CURVE_MAX_POINTS} 个点")
+        raise EditError("bad_curve", INVALID_REQUEST, f"曲线要有 2 到 {CURVE_MAX_POINTS} 个点。")
     out = []
     for p in pts:
         if (
@@ -146,10 +166,10 @@ def parse_curve(raw: Any) -> tuple[tuple[float, float], ...] | None:
             or len(p) != 2
             or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 255 for v in p)
         ):
-            raise EditError("bad_curve", "曲线的点要是 [输入, 输出]，都在 0 到 255 之间")
+            raise EditError("bad_curve", INVALID_REQUEST, "曲线点的格式不对。")
         out.append((round(float(p[0]), 4), round(float(p[1]), 4)))
     if any(b[0] <= a[0] for a, b in zip(out, out[1:])):
-        raise EditError("bad_curve", "曲线的输入要从小到大，不能重复")
+        raise EditError("bad_curve", INVALID_REQUEST, "曲线输入要从小到大。")
     if all(x == y for x, y in out):
         return None
     return tuple(out)
@@ -159,35 +179,60 @@ def parse_recipe(raw: Any) -> RecipeSel | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise EditError("bad_recipe", "recipe 要是一个对象")
+        raise EditError("bad_recipe", "请求无效。请刷新页面后重试。", "recipe 要是一个对象")
     if raw.get("kind", "builtin") != "builtin":
-        raise EditError("recipe_kind_unsupported", "这一版只支持相机内置配方（底子 + 旋钮）")
+        raise EditError("recipe_kind_unsupported", INVALID_REQUEST, "目前只支持内置配方。")
     unit, slot = raw.get("unit"), raw.get("slot")
     if unit not in UNITS:
-        raise EditError("bad_recipe", "单元要是 jlaunch / qlaunch / l08firm 之一")
+        raise EditError("bad_recipe", INVALID_REQUEST, "镜头单元无法识别。")
     if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 8:
-        raise EditError("bad_recipe", "槽位要是 1 到 8")
+        raise EditError("bad_recipe", INVALID_REQUEST, "槽位要在 1 到 8。")
     levels = raw.get("levels") or {}
     if not isinstance(levels, dict):
-        raise EditError("bad_recipe", "levels 要是 {旋钮名: 档位}")
+        raise EditError("bad_recipe", "请求无效。请刷新页面后重试。", "levels 格式不对")
     pairs = []
     for name in sorted(levels):
         if name not in KNOB_NAMES:
-            raise EditError("bad_recipe", f"不认识的旋钮：{name}")
+            raise EditError("bad_recipe", INVALID_REQUEST, f"旋钮无法使用。{name}")
         v = levels[name]
         if isinstance(v, bool) or not isinstance(v, int):
-            raise EditError("bad_recipe", f"旋钮 {name} 的档位要是整数")
+            raise EditError("bad_recipe", INVALID_REQUEST, f"档位要是整数。{name}")
         pairs.append((name, v))
     memory = raw.get("memory")
     if memory is not None and not isinstance(memory, dict):
-        raise EditError("bad_recipe", "memory 要是对象")
+        raise EditError("bad_recipe", "请求无效。请刷新页面后重试。", "memory 要是对象")
     return RecipeSel(unit, slot, tuple(pairs))
+
+
+def stored_border(side: dict[Any, Any]) -> dict[Any, Any] | None:
+    """边框样式在 `border`。旧 sidecar 把样式写进 `frame` 时，带 `style` 的那份也认。尺寸帧没有 style。"""
+    for key in ("border", "frame"):
+        raw = side.get(key)
+        if isinstance(raw, dict) and isinstance(raw.get("style"), str):
+            return raw
+    return None
 
 
 def parse_edit(side: dict[Any, Any]) -> EditState:
     """从 sidecar 读出编辑状态；其中任何一块有问题都当作 EditError（让调用方决定是报错还是忽略）。"""
+    from ..finish.spec import parse_frame, parse_geometry, parse_stamp
+
+    raw_geo = side.get("geometry")
+    geometry = parse_geometry(raw_geo) if raw_geo else None
+    angle = (side.get("crop") or {}).get("angle_deg")
+    if isinstance(angle, (int, float)) and not isinstance(angle, bool) and abs(float(angle)) > 1e-9:
+        from dataclasses import replace
+
+        if geometry is None:
+            geometry = parse_geometry({"straighten": float(angle)})
+        elif abs(geometry.straighten) < 1e-9:
+            geometry = replace(geometry, straighten=float(angle))
+    raw_border = stored_border(side)
     return EditState(
         recipe=parse_recipe(side.get("recipe")),
         adjust=parse_adjust(side.get("adjust")),
         master=parse_curve(side.get("curve")),
+        geometry=geometry,
+        frame=parse_frame(raw_border) if raw_border is not None else None,
+        stamp=parse_stamp(side["stamp"]) if "stamp" in side else None,
     )

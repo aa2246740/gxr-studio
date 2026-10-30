@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 
 from conftest import PORT
 from gxr_studio import audit, cli
-from gxr_studio.api import routes
 from gxr_studio.app import create_app
 from gxr_studio.camdata import store
 from gxr_studio.cards.discovery import CardReader, find_cards
@@ -63,7 +62,7 @@ def test_unreadable_jpg_is_listed_and_the_good_dng_is_imported(settings, card):
         p = import_all(c)["progress"]
         assert p["state"] == "done" and p["unreadable"] == ["DCIM/100RICOH/R0000104.JPG"]
         assert p["failed_shots"] == 1
-        assert "安全弹出" not in p["message"] and "先别格式化" in p["message"]
+        assert "安全弹出" not in p["message"] and "请勿格式化" in p["message"]
         shot = find(c, "R0000104")
         assert shot["has_raw"] and not shot["has_jpg"]  # 好的那个照常导入
         assert len(c.get("/api/photos").json()) == len(card.unique_shots)
@@ -81,15 +80,15 @@ def test_verify_mismatch_is_a_failure_not_a_green_banner(settings, card):
     with make_client(settings, import_options=ImportOptions(before_verify=corrupt, min_free_bytes=0)) as c:
         p = import_all(c)["progress"]
         assert p["verify_failed"] == ["DCIM/100RICOH/R0000102.JPG"] and p["failed_shots"] == 1
-        assert "安全弹出" not in p["message"] and "校验不一致" in p["message"]
+        assert "安全弹出" not in p["message"] and "请勿格式化" in p["message"]
 
 
 def test_clean_import_still_says_it_is_safe_to_eject(client, card):
     p = import_all(client)["progress"]
     assert p["failed_shots"] == 0 and not p["unreadable"] and not p["verify_failed"] and not p["scan_errors"]
-    assert "现在可以安全弹出卡了" in p["message"]
+    assert "现在可以推出存储卡了" in p["message"]
     p2 = import_all(client)["progress"]
-    assert p2["message"] == "这张卡上的照片都导入过了。"
+    assert p2["message"] == "这张存储卡上的照片都已导入"
 
 
 def test_import_js_uses_the_summary_rules_everywhere():
@@ -136,7 +135,7 @@ def test_crop_save_and_export_survive_a_broken_sidecar(client, settings, how):
     # 导出：按没有裁切、没有编辑处理，并带白话提示（_crop_for_export 的防护）
     r = client.post(f"/api/photos/{shot['shot_id']}/export", json={})
     assert r.status_code == 200, r.text
-    assert "没有裁切、没有编辑" in r.json()["warning"]
+    assert r.json()["warning"] == "无法读取编辑记录，已按原图显示"
     assert_plain(r.text, root)
 
     # 保存裁切：自动重建一份"没有编辑"的记录，坏的改名留着
@@ -193,19 +192,19 @@ def test_batch_export_with_a_broken_sidecar_and_plain_failures(client, monkeypat
     assert r.status_code == 202
     job = wait_job(client, r.json()["id"])
     (item,) = job["progress"]["results"]
-    assert "error" not in item and "编辑记录坏了" in item["warning"]
+    assert "error" not in item and item["warning"] == "无法读取编辑记录，已按原图显示"
     assert_plain(json.dumps(item, ensure_ascii=False))
 
     # P2-5：单张失败的提示是白话 + 错误代码，不带异常原文和路径
     def boom(*a, **k):
         raise RuntimeError("/secret/path/inside.jpg exploded")
 
-    monkeypatch.setattr(routes, "export_shot", boom)
+    monkeypatch.setattr("gxr_studio.finish.serve.export_finish", boom)
     other = find(client, "R0000101")["id"]
     job = wait_job(client, client.post("/api/export", json={"ids": [other]}).json()["id"])
     (bad,) = job["progress"]["results"]
     assert bad["error"] == "failed" and bad["code"] == "RuntimeError"
-    assert "错误代码：RuntimeError" in bad["message"] and "没导出成功" in bad["message"]
+    assert bad["message"] == "导出失败。请重试。" and "RuntimeError" not in bad["message"]
     assert "/secret" not in bad["message"] and "exploded" not in bad["message"]
 
 
@@ -319,14 +318,14 @@ def test_permission_denied_on_the_volumes_folder_is_reported(settings, volumes):
         assert c.get("/api/cards").json() == []
         st = c.get("/api/cards/status").json()
         assert st["access_denied"] is True and st["cards"] == 0
-        assert "可移除的卷" in st["message"] and "系统设置" in st["message"]
+        assert "存储卡的权限" in st["message"] and "系统设置" in st["message"]
 
 
 def test_permission_denied_on_one_card_is_reported(settings, volumes, card):
     reader = Denied(lambda p: p == card.root)
     with make_client(settings, reader=reader) as c:
         st = c.get("/api/cards/status").json()
-        assert st["access_denied"] is True and "可移除的卷" in st["message"]
+        assert st["access_denied"] is True and "存储卡的权限" in st["message"]
 
 
 def test_no_warning_when_a_card_is_readable_or_simply_absent(settings, volumes, card):
@@ -363,7 +362,7 @@ def test_status_offers_the_project_folder_and_the_ui_uses_it(client):
     assert (Path(project) / "research").is_dir()
     assert (Path(project) / "studio").is_dir()
     js = (WEB / "assets" / "camdata.js").read_text(encoding="utf-8")
-    assert "用工作室所在的项目文件夹" in js and "projectDir" in js and "state.camdata?.projectDir" in js
+    assert "项目文件夹" in js and "projectDir" in js and "state.camdata?.projectDir" in js
 
 
 # ---- P2-7：标签页角标 --------------------------------------------------------------------
@@ -374,7 +373,7 @@ def test_recipes_tab_has_no_coming_soon_badge_but_the_camera_tab_keeps_it():
     assert "即将推出" not in index, "「配方」页已经能用（导入调色文件→做成配方），页签上不能再挂「即将推出」"
     app = (WEB / "assets" / "app.js").read_text(encoding="utf-8")
     camera = app[app.index("function renderCamera") : app.index("function exportCurrent")]
-    assert "即将推出" in camera and "不会往卡上写任何东西" in camera  # 把配方写回相机确实还没做
+    assert "暂不支持写入存储卡" in camera
     recipes = (WEB / "assets" / "recipes.js").read_text(encoding="utf-8")
     import re
 
@@ -483,7 +482,8 @@ def test_two_cards_are_both_listed_and_the_ui_announces_it(settings, volumes, ca
         cards = c.get("/api/cards").json()
         assert [x["label"] for x in cards] == ["NO NAME", "SECOND"]
     js = (WEB / "assets" / "import.js").read_text(encoding="utf-8")
-    assert "multiCardNote(state.cards)" in js and "另外还插着" in js
+    summary = (WEB / "assets" / "import_summary.js").read_text(encoding="utf-8")
+    assert "multiCardNote(state.cards)" in js and "张存储卡" in summary
 
 
 # ---- P2-12：Content-Security-Policy ------------------------------------------------------

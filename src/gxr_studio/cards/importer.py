@@ -285,15 +285,14 @@ def run_import(
     except CardRemoved:
         progress.update(
             state="interrupted",
-            message=f"导入被打断了：已处理 {progress.done_shots} 张，剩下 "
-            f"{progress.total_shots - progress.done_shots} 张没有导入。插回卡可以继续。",
+            message="导入已中断。重新插入存储卡后可以继续。",
         )
     except Cancelled:
         progress.update(state="cancelled", message="导入已取消。")
     except NoSpace:
         progress.update(state="paused_no_space", message="电脑空间不够，导入已暂停。清理后可以继续。")
-    except BaseException as exc:
-        progress.update(state="failed", message=f"导入失败：{type(exc).__name__}: {exc}")
+    except BaseException:
+        progress.update(state="failed", message="导入失败。请重试。")
         raise
     finally:
         progress.update(current=None)
@@ -316,7 +315,7 @@ def run_import(
 
 
 def _run(lib: Any, card: Any, opts: Any, progress: Any, cancel: Any, reader: Any, shift: Any) -> None:
-    progress.update(state="scanning", message="正在读取卡上的文件列表…")
+    progress.update(state="scanning", message="正在读取存储卡上的文件列表")
     lib.clean_staging()
     scan_errors: list[str] = []
     shots = scan_card(card, reader, scan_errors)
@@ -350,15 +349,10 @@ def _run(lib: Any, card: Any, opts: Any, progress: Any, cancel: Any, reader: Any
 def _done_message(p: ImportProgress) -> str:
     if p.has_problems():
         bad = len(p.unreadable) + len(p.verify_failed) + len(p.scan_errors)
-        got = f"新增 {p.imported_shots} 张" + (f"、补全 {p.completed_shots} 张" if p.completed_shots else "")
-        lost = f"有 {p.failed_shots} 张没有完整导进来，" if p.failed_shots else ""
-        return (
-            f"导入没有全部完成：{got}。{lost}共 {bad} 个文件或文件夹没能读进来（读不出来或校验不一致），"
-            "卡上的文件没有改动。请先别格式化或清空这张卡：换个读卡器或重新插拔，再点「继续导入」。"
-        )
+        return f"有 {bad} 个文件未能导入。请勿格式化存储卡，重新插入后再试一次。"
     if p.imported_shots == 0 and not p.completed_shots:
-        return "这张卡上的照片都导入过了。"
-    return f"导入完成，共 {p.imported_shots + p.completed_shots} 张。现在可以安全弹出卡了。"
+        return "这张存储卡上的照片都已导入"
+    return f"已导入 {p.imported_shots + p.completed_shots} 张。现在可以推出存储卡了。"
 
 
 def _seen_rows(card: Card, files: list[CardFile], shas: dict[str, str]) -> list[tuple[Any, ...]]:

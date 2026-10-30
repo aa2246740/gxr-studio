@@ -2,7 +2,7 @@
 
 约定（与 ARCHITECTURE §4.4 一致）：
 - `rect = [x, y, w, h]`，归一化到"按方向转正后的画面"（宽 W、高 H 像素）；
-- `angle_deg` 为拉直角度，正值 = 画面顺时针转；范围 ±10°；
+- `angle_deg` 为拉直角度，正值 = 画面顺时针转；范围 ±45°；
 - 画面绕中心旋转后仍放在 W×H 的画布里，`rect` 定义在这块旋转后的画布上；
   框的四个角必须都落在原画面之内（不允许出现空白角）。
 """
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
-MAX_ANGLE = 10.0
+MAX_ANGLE = 45.0
 MIN_SIDE_PX = 16
 RATIO_TOLERANCE = 0.01  # 用户给的框与预设比例的相对偏差
 EDGE_TOLERANCE_PX = 1.0  # 角点超出原画面多少像素以内算在里面（界面取整造成的）
@@ -36,10 +36,11 @@ PRESETS: dict[str, tuple[int, int] | None] = {
 
 
 class CropError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, detail: str = "") -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ def round_half_up(v: float) -> int:
 def target_ratio(preset: str, width: int, height: int, flip: bool = False) -> Fraction | None:
     """框的 宽/高。竖拍的画面把预设转过来（XPan 在竖拍上是又高又窄的条）；flip 再转一次。"""
     if preset not in PRESETS:
-        raise CropError("unknown_preset", f"不认识的比例：{preset}")
+        raise CropError("unknown_preset", "无法裁剪。请重新选择比例。", preset)
     if preset == "free":
         return None
     if preset == "original":
@@ -94,9 +95,9 @@ def box_inside(box: tuple[float, float, float, float], width: int, height: int, 
 
 def _check_angle(angle_deg: float) -> float:
     if not isinstance(angle_deg, (int, float)) or not math.isfinite(angle_deg):
-        raise CropError("bad_angle", "拉直角度不是数字")
+        raise CropError("bad_angle", "无法裁剪。拉直角度无效。")
     if abs(angle_deg) > MAX_ANGLE + 1e-9:
-        raise CropError("bad_angle", f"拉直角度要在 ±{MAX_ANGLE:g}° 之内")
+        raise CropError("bad_angle", f"无法裁剪。拉直角度要在 ±{MAX_ANGLE:g}° 之内。")
     return float(angle_deg)
 
 
@@ -118,7 +119,7 @@ def default_crop(preset: str, width: int, height: int, angle_deg: float = 0.0, f
             break
         w_px -= 1
     else:
-        raise CropError("too_small", "这个角度和比例下裁不出像样的画面")
+        raise CropError("too_small", "裁剪框超出画面范围")
     rect = ((width - w_px) / 2 / width, (height - h_px) / 2 / height, w_px / width, h_px / height)
     return Crop(preset=preset, rect=rect, angle_deg=angle)
 
@@ -130,24 +131,24 @@ def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: 
     try:
         x, y, w, h = (float(v) for v in rect)
     except (TypeError, ValueError):
-        raise CropError("bad_rect", "裁切框要是 [x, y, w, h] 四个数") from None
+        raise CropError("bad_rect", "裁剪框超出画面范围") from None
     if not all(math.isfinite(v) for v in (x, y, w, h)):
-        raise CropError("bad_rect", "裁切框里有不是数字的值")
+        raise CropError("bad_rect", "裁剪框超出画面范围")
     eps = 1e-9
     if w <= 0 or h <= 0 or x < -eps or y < -eps or x + w > 1 + eps or y + h > 1 + eps:
-        raise CropError("bad_rect", "裁切框超出了画面")
+        raise CropError("bad_rect", "裁剪框超出画面范围")
     x0, y0, w_px, h_px = crop_box((x, y, w, h), width, height)
     if w_px < MIN_SIDE_PX or h_px < MIN_SIDE_PX:
-        raise CropError("too_small", f"裁切框太小（至少 {MIN_SIDE_PX} 像素）")
+        raise CropError("too_small", "裁剪框超出画面范围")
     if ratio is not None:
         got = w_px / h_px
         # 横竖两个方向都认（界面可以把预设转 90°）
         off = min(abs(got - float(r)) / float(r) for r in (ratio, 1 / ratio))
         if off > RATIO_TOLERANCE:
-            raise CropError("ratio_mismatch", f"裁切框的比例和「{preset}」对不上")
+            raise CropError("ratio_mismatch", "裁剪框超出画面范围")
     box = (x * width, y * height, w * width, h * height)
     if not box_inside(box, width, height, angle, EDGE_TOLERANCE_PX):
-        raise CropError("crop_outside_image", "拉直之后裁切框超出了画面，请缩小一点或挪一挪")
+        raise CropError("crop_outside_image", "裁剪框超出画面范围")
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 
 

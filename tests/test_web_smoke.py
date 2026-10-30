@@ -55,7 +55,7 @@ def test_page_is_served_with_the_app_shell(web_client):
     r = web_client.get("/")
     assert r.status_code == 200
     html = r.text
-    assert "GXR 电脑工作室" in html
+    assert "GXR Studio" in html
     assert '<script type="module" src="/assets/app.js">' in html
     assert '<link rel="stylesheet" href="/assets/app.css">' in html
     assert 'id="view"' in html and 'id="banner"' in html and 'id="card-status"' in html
@@ -119,7 +119,7 @@ def test_plug_in_import_gallery_crop_export(web_client, card, settings, volumes)
     p = done["progress"]
     assert p["state"] == "done", p
     assert p["imported_shots"] > 0
-    assert "可以安全弹出" in p["message"]
+    assert "可以推出存储卡" in p["message"]
     assert isinstance(p["unreadable"], list)
 
     # 3. 再插一次：没有新的，界面会显示"都导入过了"

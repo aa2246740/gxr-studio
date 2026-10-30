@@ -25,7 +25,7 @@ async function send(path, { method, body, signal, headers }) {
     return await fetch(path, opts);
   } catch (e) {
     if (e.name === 'AbortError') throw e;
-    throw new ApiError(0, 'offline', '连不上电脑工作室。请确认启动它的窗口还开着，然后刷新页面。');
+    throw new ApiError(0, 'offline', '无法连接到 GXR Studio。请确认启动窗口仍在运行，然后刷新页面。');
   }
 }
 
@@ -39,7 +39,7 @@ async function readJson(res) {
 }
 
 function errorFrom(res, data) {
-  return new ApiError(res.status, data?.error || `http_${res.status}`, data?.message || `出错了（${res.status}）`, data);
+  return new ApiError(res.status, data?.error || `http_${res.status}`, data?.message || '无法完成操作。请重试。', data);
 }
 
 export async function api(path, { method = 'GET', body, headers } = {}) {

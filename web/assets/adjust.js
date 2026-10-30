@@ -1,132 +1,99 @@
-// 大图「调整」标签（仅电脑）：曝光、色温、色调、对比、高光、阴影，以及可以拖动的主曲线（最多 16 个点）。
-// 这些只在电脑上生效，不会写进相机配方。
+// 大图「调整」标签（仅电脑）：曝光、对比度、高光、阴影、黑点、饱和度、自然饱和度、色温、色调、暗角，以及曲线。
+// 这些只在电脑上生效，不会写进相机配方。黑点、饱和度、自然饱和度、暗角要新版后端，旧版显示「暂不可用」。
+// 曲线拖动时，工作副本直接写进 ed.curve，预览请求用的就是拖动中的这条曲线（DIAG 原因 4）；松手才保存。
 
-import { h, toast } from './dom.js';
-import { CURVE_MAX, adjustBody, curveBody, persist, schedulePreview } from './preview.js';
+import { h } from './dom.js';
+import { CURVE_MAX, adjustBody, curveBody, persist, schedulePreview, beginChange, endChange } from './preview.js';
+import { slider, notReady } from './controls.js';
 
 const DIAG = [[0, 0], [255, 255]];
 const HIT = 14; // 点按在 14 个单位（曲线坐标 0–255）以内算点中了
+const NS = (() => { const t = document.createElement('template'); t.innerHTML = '<svg></svg>'; return t.content.firstElementChild.namespaceURI; })();
 
-const TONE_ROWS = [
-  ['contrast', '画面对比'],
-  ['highlight', '高光'],
-  ['shadow', '阴影'],
-];
+const fmtEv = (v) => `${v > 0 ? '+' : ''}${Number(v).toFixed(1)}`;
+const fmtSigned = (v) => (v > 0 ? `+${v}` : `${v}`);
+
+// 一个滑块：拖动中只改 ed.adj 并请求预览；松手保存（PUT /edit adjust）
+function adjRow(view, { key, label, min, max, step = 1, fmt = fmtSigned }) {
+  const ed = view.ed;
+  return slider({
+    label,
+    min,
+    max,
+    step,
+    value: ed.adj[key],
+    fmt,
+    dflt: 0,
+    onBegin: () => beginChange(view),
+    onInput: (v) => {
+      ed.adj[key] = v;
+      schedulePreview(view);
+    },
+    onCommit: (v) => {
+      ed.adj[key] = v;
+      persist(view, { adjust: adjustBody(ed) }).then(() => endChange(view));
+      schedulePreview(view, { full: true });
+    },
+  }).el;
+}
 
 export function adjustPanel(view) {
   const ed = view.ed;
-  const nodes = [
-    h('h2', {}, '调整（仅电脑）'),
-    h('p', { class: 'warn-text small' }, '⚠ 这里的调整只在电脑上生效，不会写进相机配方。'),
-    exposureRow(view),
-    h('div', { class: 'field' }, h('span', { class: 'small dim' }, '白平衡（电脑上的近似）'),
-      intRow(view, '色温', 'warm', ed.adj.warm),
-      intRow(view, '色调', 'tint', ed.adj.tint)),
-    h('div', { class: 'field' }, h('span', { class: 'small dim' }, '画面（电脑上的调子）'),
-      TONE_ROWS.map(([key, label]) => intRow(view, label, key, ed.adj[key]))),
-    h('div', { class: 'field' }, h('span', { class: 'small dim' }, '曲线（亮 ↔ 暗）：点空白处加点，拖动点来改，双击中间的点删掉。两端固定在左下和右上。'),
-      curveEditor(view)),
-    resetButton(view),
+  const v2 = ed.v2;
+  const rows = [
+    h('div', { class: 'pane-head' }, h('h2', {}, '调整')),
+    adjRow(view, { key: 'exposure_ev', label: '曝光', min: -5, max: 5, step: 0.1, fmt: fmtEv }),
+    adjRow(view, { key: 'contrast', label: '对比度', min: -100, max: 100 }),
+    adjRow(view, { key: 'highlight', label: '高光', min: -100, max: 100 }),
+    adjRow(view, { key: 'shadow', label: '阴影', min: -100, max: 100 }),
   ];
-  return h('div', { class: 'edit-panel' }, ...nodes);
-}
-
-function exposureRow(view) {
-  const ed = view.ed;
-  const out = h('output', {}, fmtEv(ed.adj.exposure_ev));
-  const input = h('input', {
-    type: 'range',
-    min: -5,
-    max: 5,
-    step: 0.1,
-    value: ed.adj.exposure_ev,
-    'aria-label': '曝光',
-    title: '双击归零',
-    oninput: (e) => {
-      ed.adj.exposure_ev = Math.round(Number(e.target.value) * 10) / 10;
-      out.textContent = fmtEv(ed.adj.exposure_ev);
-      schedulePreview(view);
-    },
-    onchange: () => saveAdjust(view),
-    ondblclick: () => {
-      ed.adj.exposure_ev = 0;
-      input.value = 0;
-      out.textContent = fmtEv(0);
-      saveAdjust(view);
-    },
-  });
-  return h('div', { class: 'knob-row' }, h('div', { class: 'knob-head' }, h('span', {}, '曝光（EV）'), h('span', { class: 'knob-tag' }, '仅电脑')), h('div', { class: 'field-row' }, input, out));
-}
-
-function intRow(view, label, key, value) {
-  const ed = view.ed;
-  const out = h('output', {}, fmtSigned(value));
-  const input = h('input', {
-    type: 'range',
-    min: -100,
-    max: 100,
-    step: 1,
-    value,
-    'aria-label': label,
-    title: '双击归零',
-    oninput: (e) => {
-      ed.adj[key] = Number(e.target.value);
-      out.textContent = fmtSigned(ed.adj[key]);
-      schedulePreview(view);
-    },
-    onchange: () => saveAdjust(view),
-    ondblclick: () => {
-      ed.adj[key] = 0;
-      input.value = 0;
-      out.textContent = fmtSigned(0);
-      saveAdjust(view);
-    },
-  });
-  return h('div', { class: 'knob-row' }, h('div', { class: 'knob-head' }, h('span', {}, label), h('span', { class: 'knob-tag' }, '仅电脑')), h('div', { class: 'field-row' }, input, out));
-}
-
-function saveAdjust(view) {
-  persist(view, { adjust: adjustBody(view.ed) });
-  schedulePreview(view, { final: true });
-}
-
-function fmtEv(v) {
-  return `${v > 0 ? '+' : ''}${v.toFixed(1)} EV`;
-}
-
-function fmtSigned(v) {
-  return v > 0 ? `+${v}` : `${v}`;
+  if (v2) rows.push(adjRow(view, { key: 'black_point', label: '黑点', min: -100, max: 100 }));
+  rows.push(adjRow(view, { key: 'warm', label: '色温', min: -100, max: 100 }));
+  rows.push(adjRow(view, { key: 'tint', label: '色调', min: -100, max: 100 }));
+  if (v2) {
+    rows.push(adjRow(view, { key: 'saturation', label: '饱和度', min: -100, max: 100 }));
+    rows.push(adjRow(view, { key: 'vibrance', label: '自然饱和度', min: -100, max: 100 }));
+    rows.push(adjRow(view, { key: 'vignette', label: '暗角', min: -100, max: 100 }));
+  } else {
+    rows.push(notReady('黑点、饱和度、自然饱和度、暗角'));
+  }
+  rows.push(h('div', { class: 'sec' }, '曲线'));
+  rows.push(curveEditor(view));
+  rows.push(h('div', { class: 'sticky-foot' }, resetButton(view)));
+  return h('div', { class: 'pane edit-panel' }, ...rows);
 }
 
 function isIdentity(points) {
   return points.every(([x, y]) => x === y);
 }
 
-// 曲线编辑：SVG 坐标 0–255，y 向上。ed.curve 为 null 表示恒等直线（没有曲线）。
+function svgEl(tag, attrs = {}) {
+  const n = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+  return n;
+}
+
+// 曲线编辑：SVG 坐标 0–255，y 向上。ed.curve 为 null 表示恒等直线。
+// 拖动时工作副本（working）同时写进 ed.curve，所以 schedulePreview 发出去的请求带的就是拖动中的曲线。
 function curveEditor(view) {
   const ed = view.ed;
-  // 用 innerHTML 生成 SVG，省得在代码里写命名空间地址（界面必须完全离线，见 test_web_smoke）
-  const holder = h('div', {});
-  holder.innerHTML = '<svg viewBox="0 0 255 255" class="curve" role="group" aria-label="主曲线"></svg>';
-  const svg = holder.firstChild;
+  const svg = svgEl('svg', { viewBox: '0 0 255 255', class: 'curve', role: 'group', 'aria-label': '曲线' });
   const count = h('span', { class: 'small dim' });
-
-  const points = () => (ed.curve ? ed.curve : DIAG).map((p) => [...p]);
-  let working = null; // 拖动期间的工作副本
+  const wrap = h('div', { class: 'curve-wrap' }, svg, count);
+  let working = null;
   let drag = null;
 
-  const pts = () => working || points();
+  const pts = () => working || (ed.curve ? ed.curve : DIAG).map((p) => [...p]);
 
   const draw = () => {
     const list = pts();
-    const line = list.map(([x, y]) => `${x},${255 - y}`).join(' ');
-    const dots = list.map(([x, y], i) => `<circle cx="${x}" cy="${255 - y}" r="6" class="curve-point" data-i="${i}"></circle>`).join('');
-    svg.innerHTML =
-      '<rect x="0" y="0" width="255" height="255" class="curve-bg"></rect>' +
-      '<line x1="0" y1="255" x2="255" y2="0" class="curve-diag"></line>' +
-      `<polyline points="${line}" class="curve-line"></polyline>` +
-      dots;
-    count.textContent = `${list.length} / ${CURVE_MAX} 个点`;
+    svg.replaceChildren(
+      svgEl('rect', { x: 0, y: 0, width: 255, height: 255, class: 'curve-bg' }),
+      svgEl('line', { x1: 0, y1: 255, x2: 255, y2: 0, class: 'curve-diag' }),
+      svgEl('polyline', { points: list.map(([x, y]) => `${x},${255 - y}`).join(' '), class: 'curve-line' }),
+      ...list.map(([x, y], i) => svgEl('circle', { cx: x, cy: 255 - y, r: 6, class: 'curve-point', 'data-i': i })),
+    );
+    count.textContent = `${list.length} / ${CURVE_MAX}`;
   };
 
   const toPoint = (e) => {
@@ -149,14 +116,9 @@ function curveEditor(view) {
     return best;
   };
 
-  const commit = (changed) => {
-    if (!changed) return;
-    const list = working || points();
-    working = null;
-    ed.curve = isIdentity(list) ? null : list;
-    persist(view, { curve: curveBody(view.ed) });
-    schedulePreview(view, { final: true });
-    draw();
+  // 把工作副本写进 ed.curve（拖动中的请求要用到）
+  const setLive = () => {
+    ed.curve = isIdentity(working) ? null : working.map((p) => [...p]);
   };
 
   svg.addEventListener('pointerdown', (e) => {
@@ -164,10 +126,11 @@ function curveEditor(view) {
     const p = toPoint(e);
     let i = nearest(p);
     let added = false;
-    working = points();
+    beginChange(view);
+    working = pts();
     if (i < 0) {
       if (working.length >= CURVE_MAX) {
-        toast(`最多 ${CURVE_MAX} 个点`, 'info');
+        endChange(view);
         working = null;
         return;
       }
@@ -175,6 +138,7 @@ function curveEditor(view) {
       if (i < 0) i = working.length;
       working.splice(i, 0, p);
       added = true;
+      setLive();
       draw();
     }
     drag = { i, added, moved: false };
@@ -193,6 +157,7 @@ function curveEditor(view) {
     const ny = Math.min(255, Math.max(0, y));
     if (nx !== working[i][0] || ny !== working[i][1]) drag.moved = true;
     working[i] = [nx, ny];
+    setLive();
     draw();
     schedulePreview(view);
   });
@@ -201,48 +166,47 @@ function curveEditor(view) {
     if (!drag) return;
     const changed = drag.moved || drag.added;
     drag = null;
-    commit(changed);
+    const list = working;
+    working = null;
+    if (!changed) {
+      endChange(view);
+      return;
+    }
+    ed.curve = isIdentity(list) ? null : list.map((p) => [...p]);
+    persist(view, { curve: curveBody(ed) }).then(() => endChange(view));
+    schedulePreview(view, { full: true });
+    draw();
   };
   svg.addEventListener('pointerup', end);
   svg.addEventListener('pointercancel', end);
 
   svg.addEventListener('dblclick', (e) => {
     const i = nearest(toPoint(e));
-    const list = points();
+    const list = (ed.curve ? ed.curve : DIAG).map((p) => [...p]);
     if (i <= 0 || i >= list.length - 1 || list.length <= 2) return;
+    beginChange(view);
     list.splice(i, 1);
-    working = list;
-    commit(true);
+    ed.curve = isIdentity(list) ? null : list;
+    persist(view, { curve: curveBody(ed) }).then(() => endChange(view));
+    schedulePreview(view, { full: true });
+    draw();
   });
 
   draw();
-  return h('div', { class: 'curve-wrap' }, svg, count);
+  return wrap;
 }
 
+// 重置：只清调整和曲线，不动配方（COPY 3.2）
 function resetButton(view) {
-  let armed = false;
-  let timer = null;
-  const btn = h('button', { class: 'btn', type: 'button', title: '清掉画面调子和曲线，配方不动' }, '全部归零');
+  const btn = h('button', { class: 'btn', type: 'button' }, '重置');
   btn.addEventListener('click', () => {
-    if (!armed) {
-      armed = true;
-      btn.textContent = '再点一次：全部归零';
-      btn.classList.add('danger');
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        armed = false;
-        btn.textContent = '全部归零';
-        btn.classList.remove('danger');
-      }, 4000);
-      return;
-    }
-    clearTimeout(timer);
     const ed = view.ed;
-    Object.assign(ed.adj, { exposure_ev: 0, warm: 0, tint: 0, contrast: 0, highlight: 0, shadow: 0 });
+    beginChange(view);
+    Object.assign(ed.adj, { exposure_ev: 0, warm: 0, tint: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, saturation: 0, vibrance: 0, vignette: 0 });
     ed.curve = null;
-    persist(view, { adjust: adjustBody(ed), curve: null });
-    schedulePreview(view, { final: true });
-    ed.redraw?.();
+    persist(view, { adjust: adjustBody(ed), curve: null }).then(() => endChange(view));
+    schedulePreview(view, { full: true });
+    view.redrawSide?.();
   });
   return btn;
 }

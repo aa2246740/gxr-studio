@@ -12,6 +12,11 @@ from __future__ import annotations
 
 import io
 import os
+import stat
+import subprocess  # nosec B404  只用来在 macOS 上执行 open -R，没有 shell
+import sys
+import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,10 +41,11 @@ RENDER_CAMERA_JPG = "camera-jpg"
 
 
 class ExportError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, detail: str = "") -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -51,19 +57,94 @@ class ExportOptions:
     @classmethod
     def from_tiers(cls, size: str | None = None, quality: str | None = None, fmt: str = "jpeg") -> "ExportOptions":
         if size is not None and size not in SIZE_TIERS:
-            raise ExportError("bad_size", f"不认识的尺寸档：{size}")
+            raise ExportError("bad_size", "请求无效。请刷新页面后重试。", f"尺寸：{size}")
         if quality is not None and quality not in QUALITY_TIERS:
-            raise ExportError("bad_quality", f"不认识的质量档：{quality}")
+            raise ExportError("bad_quality", "请求无效。请刷新页面后重试。", f"品质：{quality}")
         return cls(SIZE_TIERS[size] if size else None, QUALITY_TIERS[quality] if quality else 95, fmt)
 
     def validate(self) -> "ExportOptions":
         if self.fmt not in FORMATS:
-            raise ExportError("bad_format", "导出格式只能是 jpeg 或 png")
-        if not isinstance(self.quality, int) or not 1 <= self.quality <= 100:
-            raise ExportError("bad_quality", "质量要在 1 到 100 之间")
-        if self.long_edge is not None and (not isinstance(self.long_edge, int) or not 64 <= self.long_edge <= 30000):
-            raise ExportError("bad_size", "长边要在 64 到 30000 像素之间")
+            raise ExportError("bad_format", "请求无效。请刷新页面后重试。", "格式只能是 jpeg 或 png")
+        if isinstance(self.quality, bool) or not isinstance(self.quality, int) or not 1 <= self.quality <= 100:
+            raise ExportError("bad_quality", "请求无效。请刷新页面后重试。", "品质要在 1 到 100 之间。")
+        if self.long_edge is not None and (
+            isinstance(self.long_edge, bool) or not isinstance(self.long_edge, int) or not 64 <= self.long_edge <= 30000
+        ):
+            raise ExportError("bad_size", "请求无效。请刷新页面后重试。", "长边要在 64 到 30000 之间。")
         return self
+
+
+class RevealError(Exception):
+    def __init__(self, status: int, code: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.message = message
+
+
+class ExportLedger:
+    """这次进程里导出过的文件。显示时只认这里的记录，不接受调用方传来的路径。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._roots: dict[str, Path] = {}
+        self._paths: dict[str, list[Path]] = {}
+        self._ids: dict[str, list[tuple[int, int, int]]] = {}
+
+    def note(self, export_id: str, root: Path, path: Path) -> None:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise OSError("导出结果不能是符号链接")
+        ident = (info.st_ino, info.st_size, info.st_mtime_ns)
+        with self._lock:
+            self._roots.setdefault(export_id, root.resolve())
+            self._paths.setdefault(export_id, []).append(path)
+            self._ids.setdefault(export_id, []).append(ident)
+
+    def note_new(self, root: Path, path: Path) -> str:
+        export_id = uuid.uuid4().hex[:12]
+        self.note(export_id, root, path)
+        return export_id
+
+    def first(self, export_id: str) -> tuple[Path, Path, tuple[int, int, int]] | None:
+        with self._lock:
+            paths = self._paths.get(export_id)
+            root = self._roots.get(export_id)
+            idents = self._ids.get(export_id)
+            if not paths or root is None or not idents:
+                return None
+            return root, paths[0], idents[0]
+
+
+def _inside(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return path.is_file()
+
+
+def reveal_export(root: Path, path: Path, ident: tuple[int, int, int] | None = None) -> Path:
+    """在访达中显示这次导出的文件。拒绝符号链接和被换掉的文件。"""
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise RevealError(404, "export_file_missing", "找不到导出的文件。请重新导出后再试。") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise RevealError(404, "export_file_missing", "无法在访达中显示。导出的文件已被替换。")
+    current = (info.st_ino, info.st_size, info.st_mtime_ns)
+    if ident is not None and current != ident:
+        raise RevealError(404, "export_file_missing", "无法在访达中显示。导出的文件已被替换。")
+    shown = path.resolve()
+    if not _inside(root, shown) or shown != path.resolve():
+        raise RevealError(404, "export_file_missing", "找不到导出的文件。请重新导出后再试。")
+    if sys.platform != "darwin":
+        raise RevealError(501, "finder_unavailable", "无法在访达中显示。这个功能只在 macOS 上可用。")
+    try:
+        subprocess.run(["open", "-R", str(shown)], check=True, timeout=15)  # nosec B603 B607  固定命令，路径是这次导出记下的文件
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RevealError(422, "finder_failed", "无法在访达中显示。请重试。") from exc
+    return shown
 
 
 @dataclass
@@ -73,8 +154,11 @@ class ExportResult:
     height: int
     bytes: int
     render: str = RENDER_CAMERA_JPG  # camera-jpg | Renderer.id（例如 neutral-preview）
-    render_label: str = "相机 JPG"
+    render_label: str = "相机 JPG"  # 给人看的名字
     format: str = "jpeg"
+    render_kind: str = "original"  # prediction | approx | original
+    calibrated: bool | None = None
+    detail: str = ""
 
 
 def srgb_icc() -> bytes:
@@ -161,7 +245,8 @@ def _finish(
         out = Image.Exif()
         keep = base if full else {k: base[k] for k in (270, 271, 272, 306) if k in base}
         for k, v in keep.items():
-            out[k] = v
+            # ImageDescription 要能放下「电脑预测」「未校准」「近似」。Pillow 把 str 写成 ASCII，所以这里改用 UTF-8 字节。
+            out[k] = v.encode("utf-8") if k == 270 and isinstance(v, str) else v
         out[274] = 1
         out[305] = SOFTWARE
         osub = out.get_ifd(0x8769)
@@ -191,7 +276,32 @@ def _finish(
             return buf.getvalue(), im.size
         except Exception as exc:
             last = exc
-    raise ExportError("encode_failed", f"{pil_format} 编码失败：{last}")
+    raise ExportError("encode_failed", "无法导出。请重试。", str(last))
+
+
+def write_with_exif(data: bytes, source: Path, note: str, *, quality: int, fmt: str) -> bytes:
+    """把成片像素和源照片里能搬走的 EXIF 写在一起。先按方向转正，再写 Orientation=1。"""
+    with Image.open(io.BytesIO(data)) as raw:
+        im = ImageOps.exif_transpose(raw).convert("RGB")
+    base: dict[Any, Any] = {}
+    sub: dict[Any, Any] = {}
+    try:
+        with Image.open(source) as src:
+            exif = src.getexif()
+            for tag in (271, 272, 306):
+                text = _clean_text(exif.get(tag))
+                if text:
+                    base[tag] = text
+            sub = {k: v for k, v in exif.get_ifd(0x8769).items() if k not in _DROP_EXIF_TAGS}
+            if not _clean_text(sub.get(42036)):
+                lens = _clean_text(exif.get(50708))
+                if lens:
+                    sub[42036] = lens.removeprefix("RICOH ").strip()
+    except Exception:  # nosec B110  元数据读不出来不挡导出
+        pass
+    base[270] = note
+    payload, _size = _finish(im, base, sub, None, ExportOptions(None, quality, fmt))
+    return payload
 
 
 def check_destination(dest_dir: Path, forbidden: list[Path]) -> Path:
@@ -200,7 +310,7 @@ def check_destination(dest_dir: Path, forbidden: list[Path]) -> Path:
     for bad in forbidden:
         for cand in (Path(os.path.abspath(bad)), Path(os.path.realpath(bad))):
             if dest == cand or cand in dest.parents or cand in real.parents or real == cand:
-                raise ExportError("bad_destination", f"不能导出到这里：{bad}")
+                raise ExportError("bad_destination", "无法导出到这个位置。请换一个文件夹。", str(bad))
     return dest
 
 
@@ -214,7 +324,7 @@ def claim_path(dest_dir: Path, stem: str, ext: str = ".jpg", tag: str = "") -> t
         except FileExistsError:
             continue
         return path, fd
-    raise ExportError("too_many_names", "同名文件太多了")
+    raise ExportError("too_many_names", "无法导出。同名文件太多了。")
 
 
 def export_shot(
@@ -232,7 +342,7 @@ def export_shot(
     opts.validate()
     files = shot["files"]
     if "jpg" not in files and "dng" not in files:
-        raise ExportError("no_source", "这张照片没有可用的文件。")
+        raise ExportError("no_source", "无法导出。这张照片没有可用的文件。")
     dest = check_destination(dest_dir, [*forbidden, lib.root])
     if "jpg" in files and not (use_raw and "dng" in files):
         data, size = render(lib.abspath(files["jpg"]["relpath"]), crop, opts)
@@ -242,17 +352,17 @@ def export_shot(
             data, size = render_raw(lib.abspath(files["dng"]["relpath"]), crop, opts, renderer)
         except RawDecodeError as exc:
             if "jpg" in files:
-                raise ExportError("raw_unreadable", f"这份 RAW 暂时读不出来，不能套配方。（{exc}）") from exc
-            raise ExportError("no_jpg_source", f"这张只有 RAW，而且这份 RAW 暂时读不出来，需要配对的 JPG。（{exc}）") from exc
+                raise ExportError("raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。", str(exc)) from exc
+            raise ExportError("no_jpg_source", "无法读取 RAW 文件。这张照片没有相机 JPG。", str(exc)) from exc
         kind, label, tag = renderer.id, renderer.label, renderer.filename_tag
     try:
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise ExportError("dest_unwritable", f"存到这个文件夹不行，请换一个文件夹。（{exc.strerror}）") from exc
+        raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
     try:
         path, fd = claim_path(dest, shot["name"], FORMATS[opts.fmt][1], tag)
     except OSError as exc:
-        raise ExportError("dest_unwritable", f"存到这个文件夹不行，请换一个文件夹。（{exc.strerror}）") from exc
+        raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)

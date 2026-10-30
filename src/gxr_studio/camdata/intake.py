@@ -1,7 +1,7 @@
 """导入入口：把用户的 `GXRCE.DAT`（卡上或本地文件）和标定包放进应用数据目录。
 
 - 对卡**只读**：只经过 `CardReader`（`scandir` / `open_rb`），被发现的卡根目录登记进审计钩子，任何写入都会被拒绝；
-- 校验在写任何东西之前做完：魔数、代数（127/129/131/135 以外一律拒绝）、两层 CRC、钉子、`pack(parse(b)) == b`、
+- 校验在写任何东西之前做完：魔数、代数（127/129/131/135/137/138 以外一律拒绝）、两层 CRC、钉子、`pack(parse(b)) == b`、
   三个单元的原厂 04 CRC。任何一项不过，应用数据目录里原来的数据原封不动；
 - 标定包有两种来源：`calib-pack.json` 清单加文件（逐个核 SHA-256，先复制到临时目录再导入，核对和导入读的是同一份字节），
   或开发机上的研究目录（仓库根或 `research/`，只在开发阶段可用）。两种都要用包里的 stock 核对已导入相机数据的 04；
@@ -32,7 +32,7 @@ PACK_ISOS = calib.CALIBRATED_ISOS
 MAX_PACK_FILE_BYTES = 64 << 20
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
-HOW_TO_GET_DAT = "GXRCE.DAT 是装在相机配方程序里的那个文件，在卡的最外层（和 DCIM 文件夹并排）。"
+HOW_TO_GET_DAT = "相机配方文件在存储卡最外层，和 DCIM 并排。"
 
 
 class IntakeError(Exception):
@@ -108,7 +108,8 @@ def _read_limited(fh: Any) -> bytes:
             raise IntakeError(
                 422,
                 "dat_invalid",
-                f"这个文件比 GXRCE.DAT 大得多（超过 {MAX_DAT_BYTES // 1024} KB），不像是配方程序，没有导入。",
+                "无法导入相机配方文件。文件过大。",
+                {"detail": f"超过 {MAX_DAT_BYTES // 1024} KB"},
             )
     return b"".join(chunks)
 
@@ -118,28 +119,28 @@ def read_dat_from_card(reader: CardReader, scan: CardScan) -> bytes:
         with reader.open_rb(scan.dat_path) as fh:  # type: ignore[arg-type]
             return _read_limited(fh)
     except OSError as exc:
-        raise IntakeError(409, "card_read_failed", f"读不出卡「{scan.card.label}」上的 GXRCE.DAT（卡是不是被拔出了？）。") from exc
+        raise IntakeError(409, "card_read_failed", f"无法读取存储卡「{scan.card.label}」上的 GXRCE.DAT。请重新插入后重试。") from exc
 
 
 def read_dat_from_path(path: Path) -> tuple[bytes, str]:
     """本地文件；给的是文件夹就在里面找 GXRCE.DAT（比如直接选整张卡的根目录）。返回 (字节, 文件名)。"""
     path = Path(path).expanduser()
     if not path.is_absolute():
-        raise IntakeError(422, "bad_path", "请给完整路径（从 / 开始）。")
+        raise IntakeError(422, "bad_path", "无法导入。请填写完整路径。")
     try:
         if path.is_dir():
             found = next((p for p in sorted(path.iterdir()) if p.name.upper() == DAT_NAME and p.is_file()), None)
             if found is None:
-                raise IntakeError(404, "dat_not_found", f"这个文件夹最外层没有 GXRCE.DAT。{HOW_TO_GET_DAT}")
+                raise IntakeError(404, "dat_not_found", "无法导入相机配方文件。文件夹里没有 GXRCE.DAT。", {"detail": HOW_TO_GET_DAT})
             path = found
         elif not path.is_file():
-            raise IntakeError(404, "file_not_found", "找不到这个文件。")
+            raise IntakeError(404, "file_not_found", "找不到这个文件。请重新选择后再试。")
         with open(path, "rb") as fh:
             return _read_limited(fh), path.name
     except IntakeError:
         raise
     except OSError as exc:
-        raise IntakeError(422, "file_unreadable", f"这个文件读不出来：{exc.strerror or exc}") from exc
+        raise IntakeError(422, "file_unreadable", "无法读取这个文件。请检查权限后再试。", {"detail": exc.strerror or str(exc)}) from exc
 
 
 # ---- 校验与导入 -----------------------------------------------------------------
@@ -155,7 +156,7 @@ class DatInfo:
 def inspect_dat(raw: bytes) -> DatInfo:
     """写任何东西之前的全部校验。通过才返回；否则抛带中文说明的 IntakeError。"""
     if not raw:
-        raise IntakeError(422, "dat_invalid", "这个文件是空的，没有导入。")
+        raise IntakeError(422, "dat_invalid", "无法导入相机配方文件。文件是空的。")
     try:
         gen = datcodec.peek_generation(raw)
         dat = datcodec.parse(raw)
@@ -169,19 +170,19 @@ def inspect_dat(raw: bytes) -> DatInfo:
         raise IntakeError(
             422,
             "generation_unsupported",
-            f"这份 GXRCE.DAT 是第 {g} 代，电脑还不认识（目前支持 {'、'.join(str(x) for x in sorted(datcodec.PROFILES))}），"
-            "没有导入。读不懂的版本不会去猜。",
+            f"不支持第 {g} 代相机配方文件。请使用第 127 代或更新的版本。",
         ) from exc
     except datcodec.DatError as exc:
         if raw[:8] != b"GXRCE001":
-            raise IntakeError(422, "dat_invalid", f"这个文件不是 GXRCE.DAT（开头不对），没有导入。{HOW_TO_GET_DAT}") from exc
+            raise IntakeError(422, "dat_invalid", "无法导入相机配方文件。这不是 GXRCE.DAT。", {"detail": HOW_TO_GET_DAT}) from exc
         raise IntakeError(
             422,
             "dat_invalid",
-            f"这份 GXRCE.DAT 已经损坏或被改动过（{exc}），没有导入。请重新从卡上复制一份，或换一张卡。",
+            "无法导入相机配方文件。请从存储卡重新复制。",
+            {"detail": str(exc)},
         ) from exc
     except Exception as exc:  # noqa: BLE001  畸形输入可能触发任何解析错误，统一当作损坏
-        raise IntakeError(422, "dat_invalid", f"这份 GXRCE.DAT 读不懂（{type(exc).__name__}），没有导入。") from exc
+        raise IntakeError(422, "dat_invalid", "这份 GXRCE.DAT 读不懂，没有导入。请换一份相机配方文件后再试。") from exc
     return DatInfo(gen, len(raw), _sha(raw))
 
 
@@ -198,7 +199,7 @@ def install_dat(raw: bytes, home: Path, *, source_name: str, origin: dict[Any, A
     try:
         return store.import_from_dat(raw, home, source_name=source_name, origin=origin)
     except (store.CamdataError, datcodec.DatError, OSError) as exc:
-        raise IntakeError(500, "camdata_write_failed", f"相机数据没能存进应用数据目录：{exc}") from exc
+        raise IntakeError(500, "camdata_write_failed", "相机配方文件没能存进应用数据目录。请重试。") from exc
 
 
 def describe(home: Path) -> dict[Any, Any] | None:
@@ -272,8 +273,11 @@ def write_pack(dest: Path, sources: dict[Any, Any]) -> dict[Any, Any]:
     return manifest
 
 
-def _bad_pack(message: str) -> IntakeError:
-    return IntakeError(422, "calibration_pack_invalid", message)
+_PACK_MISMATCH = "校准数据与相机配方文件不匹配"
+
+
+def _bad_pack(detail: str) -> IntakeError:
+    return IntakeError(422, "calibration_pack_invalid", _PACK_MISMATCH, {"detail": detail})
 
 
 def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
@@ -281,14 +285,14 @@ def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
     try:
         pack = json.loads((folder / PACK_FILE).read_text())
     except (OSError, ValueError) as exc:
-        raise _bad_pack("标定包的清单（calib-pack.json）读不出来或不是有效的 JSON。") from exc
+        raise _bad_pack("校准数据的清单（calib-pack.json）读不出来或不是有效的 JSON。") from exc
     if not isinstance(pack, dict) or pack.get("schema") != PACK_SCHEMA:
-        raise _bad_pack("标定包的版本不认识（需要 gxr-studio/calib-pack/1）。")
+        raise _bad_pack("校准数据的版本不认识，没有导入。请重新选择后再试。")
     isos, files = pack.get("isos"), pack.get("files")
     if not isinstance(isos, dict) or sorted(isos) != sorted(str(i) for i in PACK_ISOS):
-        raise _bad_pack(f"标定包必须正好包含 ISO {' 和 '.join(str(i) for i in PACK_ISOS)} 两套。")
+        raise _bad_pack(f"校准数据必须正好包含 ISO {' 和 '.join(str(i) for i in PACK_ISOS)} 两套。请重新选择后再试。")
     if not isinstance(files, dict):
-        raise _bad_pack("标定包的清单里没有文件表。")
+        raise _bad_pack("校准数据的清单里没有文件表。请重新选择后再试。")
     wanted: dict[str, str] = {}
     sources = {}
     for iso_s, pair in isos.items():
@@ -296,7 +300,7 @@ def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
             raise _bad_pack(f"ISO {iso_s} 的条目要有 npz 和 ring 两项。")
         for name in (pair["npz"], pair["ring"]):
             if not isinstance(name, str) or not _NAME_RE.match(name):
-                raise _bad_pack("标定包里的文件名只能是普通文件名（不含路径）。")
+                raise _bad_pack("校准数据里的文件名只能是普通文件名。请重新选择后再试。")
             meta = files.get(name)
             if not isinstance(meta, dict) or not isinstance(meta.get("sha256"), str) or len(meta["sha256"]) != 64:
                 raise _bad_pack(f"清单里没有「{name}」的 SHA-256。")
@@ -306,9 +310,9 @@ def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
     for name, want in sorted(wanted.items()):
         src = folder / name
         if src.is_symlink() or not src.is_file():
-            raise _bad_pack(f"标定包缺少文件「{name}」。")
+            raise _bad_pack(f"校准数据缺少文件「{name}」。请重新选择后再试。")
         if src.stat().st_size > MAX_PACK_FILE_BYTES:
-            raise _bad_pack(f"文件「{name}」太大，不像标定包里的文件。")
+            raise _bad_pack(f"文件「{name}」太大，不像校准数据里的文件。请重新选择后再试。")
         data = src.read_bytes()
         if _sha(data) != want:
             raise _bad_pack(f"文件「{name}」的 SHA-256 和清单对不上，可能下载不完整或被改过，没有导入。")
@@ -332,13 +336,13 @@ def import_calibration_folder(home: Path, folder: Path) -> tuple[dict[Any, Any],
     """返回 (manifest, kind)；kind = pack | dev。要先导入相机数据（用它的原厂 04 核对包里的 stock）。"""
     folder = Path(folder).expanduser()
     if not folder.is_absolute():
-        raise IntakeError(422, "bad_path", "请给完整路径（从 / 开始）。")
+        raise IntakeError(422, "bad_path", "无法导入。请填写完整路径。")
     try:
         store.load_stock04(home, "jlaunch")
     except (OSError, store.CamdataError) as exc:
-        raise IntakeError(409, "camera_data_missing", "还没有导入相机数据。标定包要用相机数据里的原厂 04 核对，请先导入 GXRCE.DAT。") from exc
+        raise IntakeError(409, "camera_data_missing", "还没有导入相机配方文件。校准数据要用其中的原厂 04 核对，请先导入 GXRCE.DAT。") from exc
     if not folder.is_dir():
-        raise IntakeError(404, "folder_not_found", "找不到这个文件夹。")
+        raise IntakeError(404, "folder_not_found", "找不到这个文件夹。请重新选择后再试。")
     snap = Path(home) / "calib-intake.tmp"
     stale = calib.calib_dir(home).with_name(calib.calib_dir(home).name + ".new")
     try:
@@ -350,8 +354,8 @@ def import_calibration_folder(home: Path, folder: Path) -> tuple[dict[Any, Any],
             sources = _dev_sources(folder)  # type: ignore[assignment]
             if sources is None:
                 raise _bad_pack(
-                    "这个文件夹里没有 calib-pack.json（标定包的清单）。"
-                    "开发阶段也可以选仓库根目录或 research/ 目录；别的用户需要另外拿到标定包。"
+                    "这个文件夹里没有 calib-pack.json（校准数据的清单）。"
+                    "开发阶段也可以选仓库根目录或 research/ 目录；别的用户需要另外拿到校准数据。"
                 )
             kind, origin = "dev", {"kind": "dev", "folder": folder.name}
         try:
@@ -360,12 +364,13 @@ def import_calibration_folder(home: Path, folder: Path) -> tuple[dict[Any, Any],
             raise IntakeError(
                 422,
                 "calibration_stock_mismatch",
-                f"{exc}。这个标定包不是对应这份相机数据的，没有导入（原来的标定包保持不变）。",
+                _PACK_MISMATCH,
+                {"detail": str(exc)},
             ) from exc
         except calib.CalibError as exc:
-            raise _bad_pack(f"标定包内容不合格：{exc}，没有导入。") from exc
+            raise _bad_pack("校准数据不合格，没有导入。请重新选择后再试。") from exc
         except (OSError, ValueError, KeyError, EOFError) as exc:
-            raise _bad_pack(f"标定包里的文件读不出来（{type(exc).__name__}），没有导入。") from exc
+            raise _bad_pack("校准数据里的文件读不出来，没有导入。请重新选择后再试。") from exc
     finally:
         shutil.rmtree(snap, ignore_errors=True)
         shutil.rmtree(stale, ignore_errors=True)  # 失败时 import_calibration 留下的半成品

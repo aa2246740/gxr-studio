@@ -1,8 +1,8 @@
 // 导入结果怎么跟用户说：纯函数，不碰页面，方便单独测试（tests/test_import_summary.py 用 node 直接跑它）。
 // 铁律：只要有任何文件没读进来（读不出来、校验不一致、文件夹读不了），就绝不说"可以安全弹出卡"。
 
-export const EJECT_OK = '现在可以安全弹出卡了。';
-export const KEEP_CARD = '请先别格式化或清空这张卡：换个读卡器或重新插拔，再点「继续导入」。';
+export const EJECT_OK = '可以推出存储卡';
+export const KEEP_CARD = '请勿格式化存储卡';
 
 // 没读进来的文件/文件夹（相对卡根的路径；文件夹以 / 结尾）
 export function problemFiles(p) {
@@ -36,49 +36,48 @@ export function listProblems(p, max = 6) {
 export function summarizeImport(p) {
   const skipped = (p.seen_shots || 0) + (p.duplicate_shots || 0);
   const problems = hasProblems(p);
-  const detail = problems ? `没导进来的：${listProblems(p)}` : '';
+  const detail = problems ? `未导入：${listProblems(p)}` : '';
   switch (p.state) {
     case 'done': {
       if (problems) {
-        const got = `新增 ${p.imported_shots} 张` + (p.completed_shots ? `、补全 ${p.completed_shots} 张` : '');
-        const lost = p.failed_shots ? `有 ${p.failed_shots} 张没有完整导进来，` : '';
+        const got = `已导入 ${p.imported_shots} 张`;
+        const lost = p.failed_shots ? `${p.failed_shots} 张未完整导入，` : '';
         return {
           kind: 'bad',
-          text: `导入没有全部完成：${got}，跳过 ${skipped} 张（之前导入过或内容重复）。${lost}共 ${problemFiles(p).length} 个文件没读成功，卡上的文件没有改动。${KEEP_CARD}`,
+          text: `有 ${problemFiles(p).length} 个文件未能导入。请勿格式化存储卡，重新插入后再试一次。`,
           detail,
           retry: true,
         };
       }
-      const got = `新增 ${p.imported_shots} 张` + (p.completed_shots ? `、补全 ${p.completed_shots} 张` : '');
+      const got = `已导入 ${p.imported_shots} 张`;
       return {
         kind: 'ok',
-        text: `导入完成：${got}，跳过 ${skipped} 张（之前导入过或内容重复）。${EJECT_OK}`,
+        text: got,
         detail: '',
         retry: false,
         eject: true,
       };
     }
     case 'interrupted':
-      return { kind: 'bad', text: `导入被打断了：已导入 ${p.imported_shots} 张，剩下的没有导入。插回卡可以继续。`, detail, retry: true };
+      return { kind: 'bad', text: '导入已中断。重新插入存储卡后可以继续。', detail, retry: true };
     case 'paused_no_space':
-      return { kind: 'bad', text: '电脑空间不够，导入已暂停。清理后可以继续。', detail, retry: true };
+      return { kind: 'bad', text: '磁盘空间不足。请清理后重试。', detail, retry: true };
     case 'cancelled':
-      return { kind: '', text: `已取消导入。已导入的 ${p.imported_shots} 张照片保留着。`, detail, retry: true };
+      return { kind: '', text: `已取消，已导入的 ${p.imported_shots} 张已保留`, detail, retry: true };
     case 'failed':
-      return { kind: 'bad', text: `导入没有完成：${p.message || '出了一点问题'}`, detail, retry: true };
+      return { kind: 'bad', text: '导入失败。请重试。', detail, retry: true };
     default:
-      return { kind: '', text: p.message || '导入结束', detail: '', retry: false };
+      return { kind: '', text: p.message || '导入完成', detail: '', retry: false };
   }
 }
 
 // 状态栏里卡那一栏的文字（导入结束后）
 export function doneStatusText(p) {
-  return canEject(p) ? '卡：导入完成，可以安全弹出卡了（在访达里点弹出）' : '卡：有照片没导进来，先别格式化卡（看上面的提示）';
+  return canEject(p) ? '存储卡：可以推出' : '存储卡：有未导入的照片';
 }
 
-// 同时插着不止一张卡
+// 同时插着不止一张卡（COPY 3.10：名单不再放进括号）
 export function multiCardNote(cards) {
   if (!cards || cards.length < 2) return null;
-  const names = cards.map((c) => `「${c.label}」`).join('、');
-  return `现在插着 ${cards.length} 张卡（${names}）。工作室一次只处理第一张「${cards[0].label}」；处理完拔掉它，再处理下一张。`;
+  return `已插入 ${cards.length} 张存储卡，先导入「${cards[0].label}」`;
 }

@@ -165,10 +165,10 @@ def import_from_dat_file(path: Path, home: Path) -> dict[Any, Any]:
 def read_manifest(home: Path) -> dict[Any, Any]:
     p = camera_data_dir(home) / "manifest.json"
     if not p.is_file():
-        raise CamdataError("还没有导入相机数据")
+        raise CamdataError("还没有导入相机配方文件")
     m = cast(dict[str, Any], json.loads(p.read_text()))
     if m.get("schema") != SCHEMA:
-        raise CamdataError("相机数据版本不认识")
+        raise CamdataError("相机配方文件的版本不认识")
     return m
 
 
@@ -179,7 +179,7 @@ def verify(home: Path) -> dict[Any, Any]:
     for rel, meta in m["files"].items():
         p = root / rel
         if not p.is_file() or _sha(p.read_bytes()) != meta["sha256"]:
-            raise CamdataError(f"相机数据文件缺失或被改动：{rel}")
+            raise CamdataError(f"相机配方文件缺失或被改动：{rel}")
     for unit in UNITS:
         for slot in SLOTS:
             check_entry(load_entry(home, unit, slot))

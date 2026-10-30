@@ -99,9 +99,15 @@
       "CropRequest": {
         "properties": {
           "angle_deg": {
-            "default": 0.0,
-            "title": "Angle Deg",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Angle Deg"
           },
           "expected_rev": {
             "anyOf": [
@@ -118,6 +124,17 @@
             "default": false,
             "title": "Flip",
             "type": "boolean"
+          },
+          "orientation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orientation"
           },
           "preset": {
             "anyOf": [
@@ -186,6 +203,30 @@
             ],
             "title": "Expected Rev"
           },
+          "frame": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame"
+          },
+          "geometry": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geometry"
+          },
           "recipe": {
             "anyOf": [
               {
@@ -197,9 +238,129 @@
               }
             ],
             "title": "Recipe"
+          },
+          "stamp": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stamp"
           }
         },
         "title": "EditRequest",
+        "type": "object"
+      },
+      "ExportFile": {
+        "description": "单张导出的结果。render_label 是机器值，render_text 是给人看的字。",
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "calibrated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibrated"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "export_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Id"
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "prediction": {
+            "title": "Prediction",
+            "type": "boolean"
+          },
+          "render": {
+            "title": "Render",
+            "type": "string"
+          },
+          "render_label": {
+            "enum": [
+              "prediction",
+              "approx",
+              "original"
+            ],
+            "title": "Render Label",
+            "type": "string"
+          },
+          "render_text": {
+            "title": "Render Text",
+            "type": "string"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "width",
+          "height",
+          "bytes",
+          "format",
+          "render",
+          "render_label",
+          "render_text",
+          "prediction"
+        ],
+        "title": "ExportFile",
         "type": "object"
       },
       "ExportRequest": {
@@ -270,6 +431,36 @@
           }
         },
         "title": "ExportRequest",
+        "type": "object"
+      },
+      "FinishDefaults": {
+        "properties": {
+          "frame": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame"
+          },
+          "stamp": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stamp"
+          }
+        },
+        "title": "FinishDefaults",
         "type": "object"
       },
       "FitRequest": {
@@ -452,6 +643,18 @@
             ],
             "title": "Adjust"
           },
+          "crop": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
           "curve": {
             "anyOf": [
               {
@@ -464,6 +667,30 @@
             ],
             "title": "Curve"
           },
+          "frame": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame"
+          },
+          "geometry": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geometry"
+          },
           "recipe": {
             "anyOf": [
               {
@@ -475,6 +702,18 @@
               }
             ],
             "title": "Recipe"
+          },
+          "stamp": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stamp"
           }
         },
         "title": "RenderRequest",
@@ -855,6 +1094,56 @@
         "summary": "Get Dates"
       }
     },
+    "/api/defaults/finish": {
+      "get": {
+        "operationId": "get_finish_defaults_api_defaults_finish_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Finish Defaults"
+      },
+      "put": {
+        "operationId": "put_finish_defaults_api_defaults_finish_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishDefaults"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Finish Defaults"
+      }
+    },
     "/api/export": {
       "post": {
         "operationId": "export_batch_api_export_post",
@@ -889,6 +1178,60 @@
           }
         },
         "summary": "Export Batch"
+      }
+    },
+    "/api/exports/{export_id}/reveal": {
+      "post": {
+        "description": "在访达中显示这次导出的第一张。不接受路径参数，只打开本进程记下的文件。",
+        "operationId": "reveal_exported_api_exports__export_id__reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal Exported"
+      }
+    },
+    "/api/frames": {
+      "get": {
+        "operationId": "frames_api_frames_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Frames"
       }
     },
     "/api/health": {
@@ -1642,6 +1985,43 @@
         "summary": "Get Photo"
       }
     },
+    "/api/photos/{shot_id}/capabilities": {
+      "get": {
+        "operationId": "capabilities_api_photos__shot_id__capabilities_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capabilities"
+      }
+    },
     "/api/photos/{shot_id}/crop": {
       "delete": {
         "operationId": "delete_crop_api_photos__shot_id__crop_delete",
@@ -1904,7 +2284,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ExportFile"
+                }
               }
             },
             "description": "Successful Response"
@@ -1921,6 +2303,80 @@
           }
         },
         "summary": "Export Photo"
+      }
+    },
+    "/api/photos/{shot_id}/geometry/auto": {
+      "post": {
+        "operationId": "geometry_auto_api_photos__shot_id__geometry_auto_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Geometry Auto"
+      }
+    },
+    "/api/photos/{shot_id}/meta": {
+      "get": {
+        "operationId": "photo_meta_api_photos__shot_id__meta_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Photo Meta"
       }
     },
     "/api/photos/{shot_id}/preview": {
@@ -1962,7 +2418,7 @@
     },
     "/api/photos/{shot_id}/render": {
       "get": {
-        "description": "按 sidecar 里的编辑渲染（半分辨率，烘焙路径）。`max_edge` 再缩小（拖滑块时用）；`crop` 套上裁切与拉直。",
+        "description": "按 sidecar 里的编辑渲染。`stage=final` 是成片，`uncropped` 是裁剪页的整幅画面。",
         "operationId": "get_render_api_photos__shot_id__render_get",
         "parameters": [
           {
@@ -2019,6 +2475,38 @@
               "title": "Quality",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stage"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Size"
+            }
           }
         ],
         "responses": {
@@ -2044,7 +2532,7 @@
         "summary": "Get Render"
       },
       "post": {
-        "description": "同上，但请求体里的 recipe/adjust/curve 盖过 sidecar（不落盘）：拖滑块的实时预览。",
+        "description": "请求体里出现的块盖过 sidecar，不落盘。拖动滑块时用这个。",
         "operationId": "post_render_api_photos__shot_id__render_post",
         "parameters": [
           {
@@ -2100,6 +2588,38 @@
               "default": 88,
               "title": "Quality",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stage"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Size"
             }
           }
         ],

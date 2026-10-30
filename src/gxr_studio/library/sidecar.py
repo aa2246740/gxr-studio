@@ -1,6 +1,7 @@
 """sidecar：每张照片一个 `<主名>.gxrs.json`，只存"编辑意图"，不存像素（ARCHITECTURE §4.4）。
 
-M1 只写 `source/frame/crop/import` 四块；读到不认识的键（M2 以后的 recipe/adjust/curve）原样保留。
+M1 只写 `source/frame/crop/import` 四块；读到不认识的键（M2 以后的 recipe/adjust/curve，以及边框样式 `border`）原样保留。
+`frame` 只放尺寸。边框样式写在 `border`，不要写进 `frame`。
 写入：临时文件 → fsync → os.replace；rev 单调递增；读到比自己新的 schema 时拒绝改写。
 """
 

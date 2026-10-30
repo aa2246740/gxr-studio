@@ -66,12 +66,12 @@ class SecurityMiddleware:
             await send({"type": "http.response.body", "body": body})
 
         if not self._host_ok(headers.get("host", "")):
-            return await deny(403, "host_not_allowed", "不认识的 Host。")
+            return await deny(403, "host_not_allowed", "无法打开页面。请用启动时显示的链接。")
         origin = headers.get("origin")
         if origin is not None and origin not in self._origins():
-            return await deny(403, "origin_not_allowed", "来源不被允许。")
+            return await deny(403, "origin_not_allowed", "无法完成操作。请用启动时显示的链接。")
         if headers.get("sec-fetch-site") == "cross-site":
-            return await deny(403, "origin_not_allowed", "不接受跨站请求。")
+            return await deny(403, "origin_not_allowed", "无法完成操作。请从本页面重试。")
 
         # 令牌
         cookies = {}
@@ -104,9 +104,9 @@ class SecurityMiddleware:
 
         if method not in SAFE_METHODS and origin is None:
             if not self._token_ok(header_token):
-                return await deny(403, "origin_required", "写操作需要来自本页面（Origin）或头部令牌。")
+                return await deny(403, "origin_required", "无法完成操作。请用启动时显示的链接。")
         if not (self._token_ok(header_token) or self._token_ok(cookies.get(COOKIE))):
-            return await deny(401, "token_required", "请用启动时显示的链接打开本页面。")
+            return await deny(401, "token_required", "无法打开页面。请用启动时显示的链接。")
 
         async def send_wrapper(message: Any) -> None:
             if message["type"] == "http.response.start":

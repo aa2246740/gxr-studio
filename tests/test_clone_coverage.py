@@ -578,7 +578,7 @@ def test_intake_pack_scan_and_api(tmp_path: Path, settings):  # type: ignore[no-
         baked = client.get(f"/api/photos/{shot['shot_id']}/render", params={"max_edge": 64})
         assert baked.status_code == 200 and baked.headers["x-gxr-prediction"] == "1"
         assert client.get(f"/api/photos/{shot['shot_id']}/render", params={"max_edge": 8}).status_code == 422
-        assert client.get("/api/photos/jpgonly/render").status_code == 409
+        assert client.get("/api/photos/jpgonly/render").status_code == 200
         assert client.delete(f"/api/photos/{shot['shot_id']}/edit").status_code == 200
         cube_bytes = b"LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n"
         up = client.post("/api/lut/upload", content=cube_bytes, headers={"X-GXR-Filename": "SLog3.cube"})

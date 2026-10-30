@@ -74,7 +74,7 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 - 没有卡：把 `GXRCE.DAT`（或装着它的文件夹）拷到电脑上，`POST /api/camdata/import-file {"path": "/完整/路径"}`。
   界面里的「选择 GXRCE.DAT 文件…」走 `POST /api/camdata/import-upload`：浏览器拿不到本地路径，所以直接把选中文件的
   原始字节（`application/octet-stream`，文件名放在 `X-GXR-Filename` 头里，只用来显示）发过来，校验和 `import-file` 完全相同。
-- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135，其它代一律拒绝，不猜）、两层 CRC、钉子、
+- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138，其它代一律拒绝，不猜）、两层 CRC、钉子、
   重新封装后与原文件逐字节相同、三个单元的原厂 04。任何一项不过，返回带中文说明的 422
   （`generation_unsupported` / `dat_invalid`），应用数据目录里原来的数据原封不动。
   卡上没有这个文件是 404 `dat_not_found`，没有卡是 404 `no_card`。
@@ -153,6 +153,7 @@ tests/                     pytest；tests/perf/ 是性能基线
 | `GET /api/crop-presets` | 比例预设：original、3:2、4:3、1:1、4:5、16:9、16:10、1.91:1、2.35:1、xpan-65-24、free（社交媒体按钮复用这些比例，横竖由 `flip` 决定） |
 | `POST /api/photos/{id}/export` `{long_edge?, quality, format?, size?, quality_tier?, dest_dir?}` | 导出一张，`format` = jpeg｜png，`size` = large/medium/small/original（3000/2048/1600/原始），`quality_tier` = high/medium/low（95/85/70）；文件名 `原名_gxr.jpg`，重名加 `-2`、`-3`。只有 RAW 时导出"中性转换"（白平衡后的线性数据 → sRGB，不加配方），文件名 `原名_gxr_neutral.jpg`，返回里 `render` = neutral-preview、`render_label` = 中性转换；RAW 读不出来才返回 409 `no_jpg_source` |
 | `POST /api/export` `{ids｜date, long_edge?, quality, dest_dir?}` → 202 任务 | 批量导出；`ids` 里已经不存在的照片（例如补全另一半后 id 变了）不会让整批失败，而是在结果里记为 `photo_not_found`，其余照常导出 |
+| `POST /api/exports/{export_id}/reveal` | 在访达中显示这次导出的第一张。`export_id` 是单张导出返回的 `export_id`，或批量任务的 `id`。不接受路径参数。不是 macOS 时返回 501 |
 | `POST /api/library/rebuild?verify=` | 丢掉索引，按目录和 sidecar 重建；读不出来的 sidecar 先改名成 `<名>.gxrs.json.corrupt-<时间>` 留着再建新的（返回里 `corrupt_backups` 列出） |
 | `GET /api/camdata/status` | 相机数据/标定是否已导入、来源、三个单元是否齐全、插着的卡里哪张有 GXRCE.DAT、下一步 |
 | `POST /api/camdata/import-card` `{card_id?}` | 从插着的卡上**只读**取出 GXRCE.DAT 并导入（见上面"第一次使用"） |
@@ -166,7 +167,7 @@ LUT 导入（路线 1 旋钮拟合，数字一律是"电脑预测"；28mm / MOUN
 |---|---|
 | `GET /api/lut/spaces` | 可选的输入/输出色彩空间（sRGB / Rec.709 / Gamma 2.4 / F-Log / F-Log2 / L-Log / V-Log / S-Log3 / Apple Log / 线性） |
 | `POST /api/lut/upload`（请求体 = .cube 字节，`X-GXR-Filename` 放 URL 编码的文件名） | 校验并存进应用数据目录 `luts/`，返回 `cube_id`（SHA-256）、尺寸、按文件名猜的输入空间 |
-| `GET /api/lut/{cube_id}/preview?which=original｜lut&photo=&space=&output=` | 原图 / 加 LUT 后（有相机数据 + 照片：04 电脑模拟上套 LUT；否则中性转换/示意图） |
+| `GET /api/lut/{cube_id}/preview?which=original｜lut&photo=&space=&output=` | 原图 / 加 LUT 后（有相机数据 + 照片：04 电脑模拟上套 LUT；否则中性转换/示例照片） |
 | `POST /api/lut/fit` `{cube_id, space, output, profile?}` | 开始拟合（独立子进程，同时只跑一个），返回 `job_id` |
 | `GET /api/lut/fit/{job_id}` · `POST /api/lut/fit/{job_id}/cancel` | 进度 / 结果（`state` = running｜done｜cancelled｜error）；取消会结束子进程 |
 | `GET/POST /api/my-recipes` · `GET/PUT/DELETE /api/my-recipes/{id}` | 电脑端的"我的配方"（`my_recipes/<id>.json`）；`POST {job_id, candidate, name}` 从服务器上的结果里取，不信客户端给的档位 |

@@ -28,6 +28,24 @@ def reseal(blob: bytes) -> bytes:
     return bytes(b)
 
 
+# g138 还在复审，文件哈希会变，所以不钉。文件不在本机就跳过，字节不进仓库。
+_LATER_DATS = (
+    (137, t.REPO / "firmware/package_v38_g137/local/SD_ROOT/GXRCE.DAT"),
+    (138, t.REPO / "firmware/package_v38_g138/SD_ROOT/GXRCE.DAT"),
+)
+
+
+@pytest.mark.parametrize(("gen", "path"), _LATER_DATS, ids=("g137", "g138"))
+def test_g137_and_g138_round_trip_without_a_pinned_hash(gen, path):
+    if not path.is_file():
+        pytest.skip(f"g{gen} DAT 不在本机")
+    raw = path.read_bytes()
+    dat = dc.parse(raw)
+    assert dat.generation == gen
+    assert len(raw) <= dc.PROFILES[gen].max_file
+    assert dc.pack(dat) == raw
+
+
 @pytest.mark.parametrize("gen", GENS)
 def test_round_trip_is_byte_identical(gen):
     raw = need(gen)

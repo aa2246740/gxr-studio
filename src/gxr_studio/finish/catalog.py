@@ -1,0 +1,89 @@
+"""`/api/frames` 的名称。措辞按 COPY.md 第 3.4、3.5 节，不另起名字。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def frames_document() -> dict[str, Any]:
+    color = [
+        {"id": "white", "name": "白"},
+        {"id": "black", "name": "黑"},
+        {"id": "cream", "name": "米白"},
+    ]
+    weight = [
+        {"id": "thin", "name": "细"},
+        {"id": "medium", "name": "中"},
+        {"id": "thick", "name": "粗"},
+    ]
+    show = [
+        {"id": "show_logo", "name": "标志"},
+        {"id": "show_params", "name": "参数"},
+        {"id": "show_date", "name": "日期"},
+    ]
+    canvas = [
+        {"id": "1:1", "name": "1:1"},
+        {"id": "4:5", "name": "4:5"},
+        {"id": "3:2", "name": "3:2"},
+        {"id": "9:16", "name": "9:16"},
+    ]
+    styles = [
+        {"id": "none", "name": "无", "options": []},
+        {"id": "gallery", "name": "白边", "options": ["color", "weight"]},
+        {"id": "leica", "name": "徕卡水印", "options": ["color", "show_logo", "show_params", "show_date", "text"]},
+        {"id": "hasselblad", "name": "哈苏水印", "options": ["color", "show_params", "show_date", "text"]},
+        {"id": "film", "name": "胶片", "options": []},
+        {"id": "instant", "name": "拍立得", "options": ["text"]},
+        {"id": "canvas", "name": "画布", "options": ["color", "canvas_ratio"]},
+    ]
+    return {
+        "styles": styles,
+        "options": {"color": color, "weight": weight, "show": show, "canvas_ratio": canvas},
+        "defaults": {"frame": {"style": "none", "color": "white", "weight": "medium", "canvas_ratio": "4:5"}},
+        "stamp": {
+            "content": [
+                {"id": "date", "name": "日期"},
+                {"id": "text", "name": "文字"},
+                {"id": "date+text", "name": "日期和文字"},
+            ],
+            "formats": [
+                {"id": "'yy mm dd", "name": "'26 10 30"},
+                {"id": "yy mm dd", "name": "26 10 30"},
+                {"id": "yyyy.mm.dd", "name": "2026.10.30"},
+                {"id": "mm dd 'yy", "name": "10 30 '26"},
+            ],
+            "fonts": [
+                {"id": "seg7", "name": "数码管"},
+                {"id": "typewriter", "name": "打字机"},
+                {"id": "sans", "name": "无衬线"},
+            ],
+            "colors": [
+                {"id": "orange", "name": "橙", "hex": "#FF6A00"},
+                {"id": "red", "name": "红", "hex": "#DC2020"},
+                {"id": "yellow", "name": "黄", "hex": "#FFC428"},
+                {"id": "white", "name": "白", "hex": "#FFFFFF"},
+            ],
+            "sizes": [
+                {"id": "small", "name": "小"},
+                {"id": "medium", "name": "中"},
+                {"id": "large", "name": "大"},
+            ],
+            "corners": [
+                {"id": "tl", "name": "左上"},
+                {"id": "tr", "name": "右上"},
+                {"id": "bl", "name": "左下"},
+                {"id": "br", "name": "右下"},
+            ],
+            "text_max_length": 24,
+            "defaults": {
+                "enabled": False,
+                "content": "date",
+                "date_format": "'yy mm dd",
+                "font": "seg7",
+                "color": "orange",
+                "size": "medium",
+                "corner": "br",
+                "glow": True,
+            },
+        },
+    }

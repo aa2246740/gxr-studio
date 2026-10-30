@@ -11,11 +11,14 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from . import __version__, audit
 from .alerts import StudioNotifier, register_alert_service
 from .api.camdata_routes import router as camdata_router
 from .api.errors import ApiError
+from .api.finish_routes import router as finish_router
 from .api.lut_routes import router as lut_router
 from .api.ops_routes import router as ops_router
 from .api.render_routes import router as render_router
@@ -24,6 +27,7 @@ from .camdata import store as camdata_store
 from .cards.discovery import CardReader
 from .cards.importer import ImportOptions
 from .config import Settings
+from .export import ExportLedger
 from .jobs import JobRegistry
 from .library.sidecar import SidecarCorrupt
 from .library.store import SIDECAR_RESET_NOTE, Library
@@ -48,6 +52,16 @@ class Context:
     camdata_lock: threading.Lock = field(default_factory=threading.Lock)  # 相机数据/标定包同一时间只有一个在导入
     metrics: Metrics = field(default_factory=Metrics)
     alerts: StudioNotifier = field(default_factory=StudioNotifier)
+    exports: ExportLedger = field(default_factory=ExportLedger)
+
+
+class NoCacheStaticFiles(StaticFiles):
+    """前端资源跟着这次启动的页面走，不让浏览器按 URL 一直用旧的 app.js。"""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def create_app(
@@ -102,11 +116,12 @@ def create_app(
     app.include_router(router)
     app.include_router(ops_router)
     app.include_router(render_router)
+    app.include_router(finish_router)
     app.include_router(camdata_router)
     app.include_router(lut_router)
     web = settings.web_dir
     if web is not None and Path(web, "assets").is_dir():
-        app.mount("/assets", StaticFiles(directory=Path(web) / "assets"), name="assets")
+        app.mount("/assets", NoCacheStaticFiles(directory=Path(web) / "assets"), name="assets")
     app.add_middleware(ObserveMiddleware, metrics=metrics)
     app.add_middleware(SecurityMiddleware, settings=settings)
     return app

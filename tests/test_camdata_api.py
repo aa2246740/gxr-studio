@@ -160,7 +160,7 @@ def test_import_from_card_is_read_only_and_extracts_everything(client, volumes, 
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["imported"] is True and body["unchanged"] is False and body["generation"] == gen and body["sha256"] == sha(raw)
-    assert "RICOHDCX" in body["message"] and "标定包" in body["message"]
+    assert "RICOHDCX" in body["message"] and "校准数据" in body["message"]
     # 对卡：零写入、零改动、只以只读方式打开了 GXRCE.DAT 这一个文件
     assert rec.writes_under(volumes) == []
     assert snapshot(root) == before
@@ -217,13 +217,13 @@ def test_importing_the_same_dat_again_changes_nothing(client, volumes, settings)
 
 def test_no_card_inserted(client, volumes):
     r = client.post("/api/camdata/import-card")
-    assert r.status_code == 404 and r.json()["error"] == "no_card" and "没有找到插着的卡" in r.json()["message"]
+    assert r.status_code == 404 and r.json()["error"] == "no_card" and r.json()["message"] == "找不到存储卡。请重新插入后重试。"
 
 
 def test_card_without_the_dat_file(client, card, settings):
     r = client.post("/api/camdata/import-card")
     assert r.status_code == 404 and r.json()["error"] == "dat_not_found"
-    assert "NO NAME" in r.json()["message"] and "GXRCE.DAT" in r.json()["message"]
+    assert r.json()["message"] == "存储卡上没有相机配方文件（GXRCE.DAT）"
     assert not (settings.home_dir / "camera-data").exists()
 
 
@@ -301,7 +301,13 @@ def test_bad_dat_from_card_is_refused_and_old_data_is_kept(client, volumes, sett
     snap = snapshot(root)
     r = client.post("/api/camdata/import-card")
     assert r.status_code == 422 and r.json()["error"] == code, r.text
-    assert "没有导入" in r.json()["message"]
+    message = r.json()["message"]
+    if name == "generation_unsupported":
+        assert message == "不支持第 130 代相机配方文件。请使用第 127 代或更新的版本。"
+    elif name == "generation_zero":
+        assert message == "不支持第 0 代相机配方文件。请使用第 127 代或更新的版本。"
+    else:
+        assert "无法导入" in message
     assert tree(settings.home_dir) == before  # 旧数据原封不动，也没有 .new 残留
     assert snapshot(root) == snap  # 卡上也没动
     s = client.get("/api/camdata/status").json()["camera_data"]
@@ -312,15 +318,16 @@ def test_bad_dat_messages_are_specific(client, volumes):
     raw = dat()
     root = card_with_dat(volumes, "RICOHDCX", forge_generation(raw, 130))
     m = client.post("/api/camdata/import-card").json()["message"]
-    assert "第 130 代" in m and "127" in m and "135" in m
+    assert m == "不支持第 130 代相机配方文件。请使用第 127 代或更新的版本。"
     swap_dat(root, b"x" * 300)
     assert "不是 GXRCE.DAT" in client.post("/api/camdata/import-card").json()["message"]
     flipped = bytearray(raw)
     flipped[5000] ^= 0x10
     swap_dat(root, bytes(flipped))
-    assert "损坏或被改动" in client.post("/api/camdata/import-card").json()["message"]
+    flipped_body = client.post("/api/camdata/import-card").json()
+    assert "无法导入" in flipped_body["message"] and flipped_body.get("detail")
     swap_dat(root, raw + b"\0" * 100_000)
-    assert "比 GXRCE.DAT 大得多" in client.post("/api/camdata/import-card").json()["message"]
+    assert "文件过大" in client.post("/api/camdata/import-card").json()["message"]
 
 
 def test_a_dat_whose_04_is_not_the_factory_one_is_refused(monkeypatch):
@@ -332,7 +339,7 @@ def test_a_dat_whose_04_is_not_the_factory_one_is_refused(monkeypatch):
     monkeypatch.setattr(dc, "STOCK_ENTRY_CRC", (0, 0, 0))
     with pytest.raises(intake.IntakeError) as ei:
         intake.inspect_dat(raw)
-    assert ei.value.code == "dat_invalid" and "原厂 04" in ei.value.message
+    assert ei.value.code == "dat_invalid" and "原厂 04" in ei.value.extra.get("detail", "")
 
 
 # ---- 从本地文件导入 ----------------------------------------------------------------
@@ -479,7 +486,8 @@ def test_tampered_pack_file_is_refused_and_old_calibration_stays(client, with_ca
     f = bad / "ring_model_200.json"
     f.write_text(f.read_text().replace("0.99", "0.98", 1) + " ")
     r = client.post("/api/calibration/import", json={"path": str(bad)})
-    assert r.status_code == 422 and r.json()["error"] == "calibration_pack_invalid" and "SHA-256" in r.json()["message"]
+    assert r.status_code == 422 and r.json()["error"] == "calibration_pack_invalid"
+    assert r.json()["message"] == "校准数据与相机配方文件不匹配" and "SHA-256" in r.json()["detail"]
     assert tree(settings.home_dir / "calib") == before
     assert sorted(p.name for p in settings.home_dir.iterdir()) == ["calib", "camera-data"]
     assert client.get("/api/camdata/status").json()["ready"] is True
@@ -549,7 +557,8 @@ def test_malformed_packs(client, with_camdata, pack, tmp_path, settings):
         r = client.post("/api/calibration/import", json={"path": str(d)})
         assert (r.status_code, r.json()["error"]) == (422, "calibration_pack_invalid"), (name, r.text)
     assert sorted(p.name for p in settings.home_dir.iterdir()) == ["camera-data"]
-    assert "calib-pack.json" in client.post("/api/calibration/import", json={"path": str(plain)}).json()["message"]
+    missing = client.post("/api/calibration/import", json={"path": str(plain)}).json()
+    assert missing["message"] == "校准数据与相机配方文件不匹配" and "calib-pack.json" in missing["detail"]
     for body, status, code in (
         ({"path": "relative"}, 422, "bad_path"),
         ({"path": str(tmp_path / "nope")}, 404, "folder_not_found"),
@@ -566,7 +575,8 @@ def test_calibration_for_another_stock_04_is_flagged_after_camera_data_changes(c
     m["camera_stock_sha256"] = "0" * 64
     mp.write_text(json.dumps(m, indent=2))
     s = client.get("/api/camdata/status").json()
-    assert s["ready"] is False and s["calibration"]["state"] == "invalid" and "另一份" in s["calibration"]["message"]
+    assert s["ready"] is False and s["calibration"]["state"] == "invalid"
+    assert s["calibration"]["message"] == "校准数据与相机配方文件不匹配"
     assert s["next"] == "import_calibration"
     assert client.post("/api/calibration/import", json={"path": str(pack)}).json()["status"]["ready"] is True
 

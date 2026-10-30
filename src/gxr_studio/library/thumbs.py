@@ -105,8 +105,8 @@ def _render_from_dng_half(path: Path, shot: dict[Any, Any], size: int, render: A
     return Image.fromarray(np.ascontiguousarray(rgb), "RGB")
 
 
-NEUTRAL_LABEL = "中性转换（不是相机的颜色）"
-EMBEDDED_LABEL = "RAW 里内嵌的小预览（相机自己生成的，很小）"
+NEUTRAL_LABEL = "中性转换"
+EMBEDDED_LABEL = "内嵌预览"
 EMBEDDED_VARIANT = "emb"
 
 
@@ -127,8 +127,44 @@ def look_of(shot: dict[Any, Any], render: Any = None, lib: Library | None = None
     return {"kind": "neutral", "label": NEUTRAL_LABEL, "prediction": False}
 
 
+def _edited_cache(lib: Library, shot: dict[Any, Any], size: int, render: Any) -> Path | None:
+    """有编辑或默认装饰时缩略图走成片。缓存名带 sidecar 版本和默认装饰版本。"""
+    from ..finish.compose import has_visible_edit, resolved_frame, resolved_stamp
+    from ..finish.serve import defaults_token, load_defaults
+    from ..render.params import parse_edit
+
+    rev = int(shot.get("sidecar_rev") or 0)
+    token = defaults_token(render.home) if render is not None else "0"
+    if render is None:
+        return None
+    side, _problem = lib.read_sidecar_or_default(shot)
+    edit = parse_edit(side)
+    frame_default, stamp_default = load_defaults(render.home)
+    frame = resolved_frame(edit.frame, frame_default)
+    stamp = resolved_stamp(edit.stamp, stamp_default)
+    if not has_visible_edit(edit, side, frame, stamp):
+        return None
+    dest = cache_path(lib, shot["shot_id"], size, f"e{rev}d{token}")
+    if dest.exists():
+        return dest
+    try:
+        from ..finish.serve import edited_jpeg
+
+        data = edited_jpeg(render, lib, shot, size)
+    except Exception:
+        return None
+    if not data:
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    return dest
+
+
 def ensure(lib: Library, shot: dict[Any, Any], size: int, render: Any = None) -> Path | None:
     """返回缓存文件路径；原图读不出来返回 None。`render` 是 RenderService（没有就只能画中性转换）。"""
+    edited = _edited_cache(lib, shot, size, render)
+    if edited is not None:
+        return edited
     files = shot["files"]
     variant = "" if "jpg" in files else (render.thumb_variant(shot) if render is not None else "n")
     dest = cache_path(lib, shot["shot_id"], size, variant)

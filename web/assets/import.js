@@ -2,7 +2,7 @@
 
 import { api } from './api.js';
 import { state, emit } from './state.js';
-import { h, toast } from './dom.js';
+import { h, toast, toastError } from './dom.js';
 import { doneStatusText, hasProblems, multiCardNote, summarizeImport } from './import_summary.js';
 
 // 本次会话里已经自动处理过的卡（卡拔掉后会移出，插回来可以再导入缺的部分）
@@ -10,6 +10,12 @@ const handled = new Set();
 
 export function cardPresent() {
   return !!state.card;
+}
+
+// 空状态里的「导入照片」按钮：有卡就导入第一张
+export function importNow() {
+  if (cardPresent()) startImport();
+  else toast('找不到存储卡。请重新插入后重试。', 'error');
 }
 
 export function isImporting() {
@@ -41,7 +47,7 @@ export async function refreshCards() {
         startImport(card);
       } else {
         handled.add(card.id);
-        state.cardMsg = '这张卡上的照片都导入过了。';
+        state.cardMsg = '这张存储卡上的照片都已导入';
       }
     }
   }
@@ -68,7 +74,7 @@ async function loadSummary(card) {
     state.cardSummary = await api(`/api/cards/${card.id}/summary`);
   } catch (e) {
     state.cardSummary = null;
-    toast(e.message, 'error');
+    toastError(e, '无法完成操作。请重试。');
   }
 }
 
@@ -84,7 +90,7 @@ export async function startImport(card = state.card) {
       await loadLatestJob();
       return;
     }
-    toast(e.message, 'error');
+    toastError(e, '无法完成操作。请重试。');
     return;
   }
   renderBanner();
@@ -136,7 +142,7 @@ export async function tickImport() {
 export function cancelImport() {
   const job = state.job;
   if (!job || !job.running) return;
-  api(`/api/jobs/${job.id}/cancel`, { method: 'POST' }).catch((e) => toast(e.message, 'error'));
+  api(`/api/jobs/${job.id}/cancel`, { method: 'POST' }).catch((e) => toastError(e, '无法完成操作。请重试。'));
 }
 
 export function dismissBanner() {
@@ -166,14 +172,14 @@ export function renderBanner() {
   if (job && job.running) {
     const msg =
       p.state === 'scanning' || !p.total_shots
-        ? '发现相机卡，正在读取文件列表…'
-        : `发现相机卡 · 正在导入 ${p.done_shots}/${p.total_shots} 张`;
+        ? '正在读取…'
+        : `正在导入 ${p.done_shots}/${p.total_shots}`;
     slot.append(
       h(
         'div',
         { class: 'banner' },
-        h('div', { class: 'msg' }, msg, '  ', h('span', { class: 'dim' }, '只读复制，卡上的照片不会被改动。')),
-        h('button', { class: 'btn', type: 'button', onclick: cancelImport }, '取消导入'),
+        h('div', { class: 'msg' }, msg),
+        h('button', { class: 'btn', type: 'button', onclick: cancelImport }, '取消'),
       ),
     );
     return;
@@ -187,7 +193,7 @@ export function renderBanner() {
         { class: `banner ${r.kind}` },
         h('div', { class: 'msg' }, r.text, r.detail ? h('div', { class: 'small dim' }, r.detail) : null),
         r.action,
-        h('button', { class: 'btn ghost', type: 'button', onclick: dismissBanner, title: '关掉这条提示' }, '知道了'),
+        h('button', { class: 'btn ghost', type: 'button', onclick: dismissBanner, title: '关闭' }, '关闭'),
       ),
     );
     appendNotes(slot);
@@ -200,7 +206,7 @@ export function renderBanner() {
         'div',
         { class: 'banner ok' },
         h('div', { class: 'msg' }, state.cardMsg),
-        h('button', { class: 'btn ghost', type: 'button', onclick: dismissBanner }, '知道了'),
+        h('button', { class: 'btn ghost', type: 'button', onclick: dismissBanner }, '关闭'),
       ),
     );
     appendNotes(slot);
@@ -213,8 +219,8 @@ export function renderBanner() {
       h(
         'div',
         { class: 'banner' },
-        h('div', { class: 'msg' }, '发现相机卡。卡上的照片只读，导入时不会改动卡上的任何文件。'),
-        h('button', { class: 'btn', type: 'button', onclick: () => startImport() }, '开始导入'),
+        h('div', { class: 'msg' }, '已插入存储卡'),
+        h('button', { class: 'btn', type: 'button', onclick: () => startImport() }, '导入'),
       ),
     );
   }
@@ -234,36 +240,35 @@ function summarize(job) {
   const r = summarizeImport(job.progress);
   // 没有卡时不能继续，写明原因而不是放一个点了没反应的按钮
   const retry = state.card
-    ? h('button', { class: 'btn', type: 'button', onclick: () => startImport() }, '继续导入')
-    : h('span', { class: 'dim small' }, '插回卡后可以继续');
+    ? h('button', { class: 'btn', type: 'button', onclick: () => startImport() }, '导入')
+    : h('span', { class: 'dim small' }, '请重新插入存储卡');
   let action = h('span');
+  // 导入完成（可以推出）时提示条只留结果和 [关闭]；推出的说法只在状态栏里写（「存储卡：可以推出」）
   if (r.retry) action = retry;
-  else if (r.eject) action = h('span', { class: 'dim small' }, '在访达里弹出卡后再拔下来');
   return { ...r, action };
 }
 
 export function renderCardStatus() {
   const el = document.getElementById('card-status');
   if (state.offline) {
-    el.textContent = '连不上电脑工作室，请刷新页面';
+    el.textContent = '无法连接到 GXR Studio。请确认启动窗口仍在运行，然后刷新页面。';
     el.className = 'offline';
     return;
   }
   el.className = '';
   if (isImporting()) {
     const p = state.job.progress;
-    el.textContent = `卡：正在导入 ${p.done_shots}/${p.total_shots}，先别拔卡`;
+    el.textContent = `正在导入 ${p.done_shots}/${p.total_shots}`;
     return;
   }
   if (!state.card) {
-    el.textContent = state.cardAccess ? '卡：电脑不让工作室读外接存储卡（看上面的提示）' : '卡：未插入';
+    el.textContent = state.cardAccess ? '需要访问存储卡的权限。请在「系统设置 › 隐私与安全性 › 文件与文件夹」中允许。' : '存储卡：未插入';
     return;
   }
   const job = state.job;
-  const more = state.cards.length > 1 ? `，另外还插着 ${state.cards.length - 1} 张卡（一次只处理一张）` : '';
   if (job && job.progress.state === 'done' && job.id !== state.dismissedJobId) {
-    el.textContent = doneStatusText(job.progress) + more;
+    el.textContent = doneStatusText(job.progress);
   } else {
-    el.textContent = `卡：已插入（${state.card.label}）${more}`;
+    el.textContent = '存储卡：已插入';
   }
 }

@@ -2,7 +2,7 @@
 
 import { api } from './api.js';
 import { state, emit, on } from './state.js';
-import { h, toast, modalOpen, closeTopModal, isTyping } from './dom.js';
+import { h, toast, modalOpen, closeTopModal, isTyping, toastError } from './dom.js';
 import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, isImporting, cardPresent } from './import.js';
 import { renderGallery, openFocused } from './gallery.js';
 import { renderViewer, viewerKeys, leaveViewer, openViewerTab, refreshViewerPhoto } from './viewer.js';
@@ -50,15 +50,14 @@ async function route() {
 }
 
 function renderCamera(view) {
-  const card = cardPresent() ? `已插入（${state.card.label}）` : '未插入';
+  const card = cardPresent() ? '已插入' : '未插入';
   view.replaceChildren(
     h(
       'section',
       { class: 'empty', style: { maxWidth: '520px' } },
       h('h2', {}, '相机'),
       h('p', {}, `存储卡：${card}`),
-      h('p', { class: 'small dim' }, '把配方写回相机的功能还没做好。这一版不会往卡上写任何东西，卡上的照片只读。'),
-      h('p', {}, h('span', { class: 'soon' }, '即将推出'), ' ', h('span', { class: 'small dim' }, '还没在相机上实测。')),
+      h('p', { class: 'small dim' }, '暂不支持写入存储卡'),
     ),
   );
 }
@@ -70,7 +69,7 @@ function exportCurrent() {
   }
   const ids = [...state.selection];
   if (!ids.length) {
-    toast('先在图库里勾选要导出的照片，或打开一张大图。', 'info');
+    toast('先选择照片', 'info');
     return;
   }
   openExportDialog({ ids, label: `选中的 ${ids.length} 张` });
@@ -122,7 +121,7 @@ async function boot() {
   try {
     state.settings = await api('/api/settings');
   } catch (e) {
-    toast(e.message, 'error');
+    toastError(e, '无法完成操作。请重试。');
   }
   await loadLatestJob();
   await refreshCards();

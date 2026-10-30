@@ -42,9 +42,10 @@ PREVIEW_STEP = 0.75  # 预览用的色度增益网格间距（实测 p99 ΔE00 �
 EXPORT_STEP = 0.5  # 导出用更细的网格
 ISO_SPLIT = 566  # 200 和 1600 的几何中点：低于它用 ISO 200 的模型，否则用 ISO 1600 的
 CALIBRATED_ISOS = calib.CALIBRATED_ISOS
-CAMERA_HINT = "请先插入装有配方程序（GXRCE.DAT）的存储卡，或导入官方固件包，导入相机数据之后才能套配方。"
-UNCALIBRATED_LABEL = "电脑预测（跨单元/跨 ISO，未标定）"
+CAMERA_HINT = "存储卡上没有相机配方文件（GXRCE.DAT）。请重新插入后重试。"
+UNCALIBRATED_LABEL = "电脑预测 未校准"
 CALIBRATED_LABEL = "电脑预测"
+MODEL_NOTE = "使用 A12 50mm 的颜色模型"
 
 
 class RenderUnavailable(Exception):
@@ -171,6 +172,7 @@ class RenderService:
         self._proxies: ByteLRU[np.ndarray] = ByteLRU(proxy_bytes)
         self._bakes: ByteLRU[chain.ChromaBake] = ByteLRU(64 << 20)
         self._results: ByteLRU[tuple[bytes, int, int]] = ByteLRU(result_bytes)
+        self._approx: dict[tuple[Any, ...], np.ndarray] = {}
         self.stats = {"decodes": 0, "bakes": 0, "renders": 0, "result_hits": 0}
 
     # ---- 状态 -------------------------------------------------------------
@@ -187,15 +189,16 @@ class RenderService:
             self._calib_manifest_sha, self._calib_error = None, None
             self._models.clear()
             self._bakes.clear()
+            self._approx.clear()
             if token[0] is None:
-                self._camera_error = ("missing", "还没有导入相机数据")
+                self._camera_error = ("missing", "还没有导入相机配方文件")
             else:
                 try:
                     self._camera = CameraData(self.home)
-                except (CamdataError, OSError, ValueError, KeyError) as exc:
-                    self._camera_error = ("invalid", f"相机数据读不出来或被改动：{exc}")
+                except (CamdataError, OSError, ValueError, KeyError):
+                    self._camera_error = ("invalid", "相机配方文件读不出来或被改动。请重新导入后再试。")
             if token[1] is None:
-                self._calib_error = "缺少电脑预测用的标定包"
+                self._calib_error = "缺少校准数据"
             else:
                 try:
                     cal = calib.calib_dir(self.home) / "manifest.json"
@@ -204,10 +207,10 @@ class RenderService:
                     calib.model_for(self.home, 200)  # 校验标定文件的 SHA-256 并确认能建模
                     want = json.loads(cal_bytes).get("camera_stock_sha256")
                     if want and self._camera is not None and want != calib.stock_fingerprint(self._camera.stock[0]):
-                        self._calib_error = "标定包是对另一份相机数据的原厂 04 核对过的，现在的相机数据不同，请重新导入标定包"
+                        self._calib_error = "校准数据与相机配方文件不匹配"
                         self._calib_manifest_sha = None
-                except Exception as exc:  # noqa: BLE001  标定包任何问题都归为不可用
-                    self._calib_error = f"标定包读不出来或被改动：{exc}"
+                except Exception:  # noqa: BLE001  校准数据任何问题都归为不可用
+                    self._calib_error = "校准数据读不出来或被改动。请重新导入后再试。"
                     self._calib_manifest_sha = None
 
     def available(self) -> bool:
@@ -263,10 +266,11 @@ class RenderService:
     def _require(self) -> CameraData:
         self._refresh()
         if self._camera is None:
-            state, msg = self._camera_error  # type: ignore[misc]
-            raise RenderUnavailable("camera_data_missing" if state == "missing" else "camera_data_invalid", f"{msg}。{CAMERA_HINT}", state)
+            state, _msg = self._camera_error  # type: ignore[misc]
+            text = "无法生成电脑预测。请先导入相机配方文件。" if state == "missing" else "无法读取相机配方文件。请重新导入后再试。"
+            raise RenderUnavailable("camera_data_missing" if state == "missing" else "camera_data_invalid", text, state)
         if self._calib_error is not None:
-            raise RenderUnavailable("calibration_missing", f"{self._calib_error}，暂时不能做电脑预测。", "calibration")
+            raise RenderUnavailable("calibration_missing", "无法生成电脑预测。请先导入校准数据。", "calibration")
         return self._camera
 
     def engine_pin(self) -> str:
@@ -298,15 +302,8 @@ class RenderService:
         res = cam.resolve(sel)
         iso = shot.get("iso")
         model_iso = 1600 if iso and iso >= ISO_SPLIT else 200
-        reasons = []
-        if photo_unit is None:
-            reasons.append("认不出这张照片的镜头单元，按 50mm 的模型迁移")
-        elif photo_unit != "jlaunch":
-            reasons.append("28mm / MOUNT 没有单独标定，沿用 A12-50 的模型迁移")
-        if photo_unit is not None and sel.unit != photo_unit:
-            reasons.append(f"配方来自 {sel.unit}，与这张照片的镜头单元不一致")
-        if iso not in CALIBRATED_ISOS:
-            reasons.append(f"ISO {iso if iso else '未知'} 没有单独标定，用 ISO {model_iso} 的模型")
+        crossed = photo_unit != "jlaunch" or iso not in CALIBRATED_ISOS or (photo_unit is not None and sel.unit != photo_unit)
+        reasons = [MODEL_NOTE] if crossed else []
         return Plan(
             sel.unit,
             sel.slot,
@@ -359,7 +356,23 @@ class RenderService:
         self.stats["bakes"] += 1
         return bk
 
-    def render_key(self, shot: dict[Any, Any], edit: EditState, plan: Plan, *, max_edge: Any, exact: bool, crop: Any) -> str:
+    def approx_lut(self, unit: str, slot: int, iso: int) -> np.ndarray:
+        from ..finish.approx import lut_for_entries
+        from .params import RecipeSel
+
+        model_iso = 200 if int(iso) < ISO_SPLIT else 1600
+        key = (unit, int(slot), model_iso, self.engine_pin())
+        hit = self._approx.get(key)
+        if hit is not None:
+            return hit
+        cam = self._require()
+        stock = cam.resolve(RecipeSel(unit, 4)).entry
+        recipe = cam.resolve(RecipeSel(unit, int(slot))).entry
+        lut = lut_for_entries(self.model(model_iso), stock, recipe)
+        self._approx[key] = lut
+        return lut
+
+    def render_key(self, shot: dict[Any, Any], edit: EditState, plan: Plan, *, max_edge: Any, exact: bool, crop: Any, quality: int = 88) -> str:
         parts = {
             "source": shot["files"]["dng"]["sha256"],
             "orientation": shot.get("orientation") or 1,
@@ -372,6 +385,7 @@ class RenderService:
             "exact": exact,
             "step": PREVIEW_STEP,
             "crop": crop.to_json() if crop else None,
+            "quality": quality,
         }
         return hashlib.sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -389,7 +403,7 @@ class RenderService:
         if "dng" not in shot["files"]:
             raise NoRaw()
         plan = self.plan(shot, edit)
-        key = self.render_key(shot, edit, plan, max_edge=max_edge, exact=exact, crop=crop)
+        key = self.render_key(shot, edit, plan, max_edge=max_edge, exact=exact, crop=crop, quality=quality)
         hit = self._results.get((key, quality))
         if hit is not None:
             self.stats["result_hits"] += 1
@@ -443,17 +457,16 @@ class RenderService:
             def display(codes: np.ndarray) -> np.ndarray:
                 return chain.chroma_u8(codes, bk, gains, table)
 
-        tag = "_电脑预测" if plan.calibrated else "_电脑预测未标定"
         desc = (
             f"GXR Studio computer prediction (not camera-measured): {plan.unit} recipe {plan.slot:02d}"
             f"{' (stock 04 simulation)' if plan.defaulted else ''}, ISO model {plan.model_iso}"
             f"{'' if plan.calibrated else ', NOT calibrated for this lens unit/ISO'}"
-            f"{', exact chain' if precise else ''}"
+            f"{', exact chain' if precise else ''}. {plan.label}"
         )
         return Renderer(
             id="recipe-prediction" if plan.calibrated else "recipe-prediction-uncalibrated",
             label=plan.label,
-            filename_tag=tag,
+            filename_tag="",
             calibrated=plan.calibrated,
             display=display,
             description=desc,
@@ -479,7 +492,7 @@ class RenderService:
         except (RenderUnavailable, ValueError):
             label = None
         else:
-            label = "电脑预测（原厂标准）" if plan.calibrated else "电脑预测（原厂标准；跨单元/跨 ISO，未标定）"
+            label = CALIBRATED_LABEL if plan.calibrated else UNCALIBRATED_LABEL
         with self._lock:
             if len(self._look_labels) > 256:
                 self._look_labels.clear()

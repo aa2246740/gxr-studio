@@ -11,6 +11,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 import numpy as np
 import pytest
@@ -275,7 +276,7 @@ def test_explain_names_the_biggest_differences():
     notes = fit.explain(pred, ideal, group)
     assert any(n.startswith("暗部") and "偏绿" in n for n in notes), notes
     assert any(n.startswith("高光") and "偏亮" in n for n in notes), notes
-    assert fit.explain(ideal, ideal, group) == ["整体已经很接近，没有明显的偏差"]
+    assert fit.explain(ideal, ideal, group) == []
     chroma = np.stack([np.full(400, 50.0), rng.normal(0, 25, 400), rng.normal(0, 25, 400)], axis=1)
     flat = chroma * np.array([1, 0.6, 0.6])
     assert "整体饱和度偏低" in fit.explain(flat, chroma, np.full(400, 2, np.int8))
@@ -420,7 +421,7 @@ def test_upload_describes_the_cube_and_guesses_the_space(client):
 def test_upload_rejects_non_cube_with_plain_message(client, body, code):
     r = upload(client, body)
     assert r.status_code == 422 and r.json()["error"] == code
-    assert "看不懂" in r.json()["message"] and ".cube" in r.json()["message"]
+    assert "LUT" in r.json()["message"] and ".cube" in r.json()["message"]
 
 
 def test_preview_without_camera_data_uses_the_chart(client):
@@ -429,11 +430,13 @@ def test_preview_without_camera_data_uses_the_chart(client):
     b = client.get(f"/api/lut/{cid}/preview", params={"which": "lut"})
     assert a.status_code == 200 and b.status_code == 200 and a.content != b.content
     assert b.headers["x-gxr-preview-mode"] == "chart" and b.headers["x-gxr-prediction"] == "1"
+    assert unquote(b.headers["x-gxr-label"]) == "示例照片"
     assert client.get(f"/api/lut/{cid}/preview", params={"which": "nope"}).status_code == 422
     assert client.get(f"/api/lut/{'0' * 64}/preview").status_code == 404
-    # Log 输入没有场景光时用"示意"并明说
+    # 没有场景光时仍标成示例照片，并用 X-GXR-Nominal-Scene 标明不是实测场景
     c = client.get(f"/api/lut/{cid}/preview", params={"which": "lut", "space": "llog"})
     assert c.status_code == 200 and c.headers["x-gxr-nominal-scene"] == "1"
+    assert unquote(c.headers["x-gxr-label"]) == "示例照片"
 
 
 def test_28mm_and_mount_are_refused_with_a_reason(data_client):
@@ -441,7 +444,68 @@ def test_28mm_and_mount_are_refused_with_a_reason(data_client):
     for unit in ("qlaunch", "l08firm"):
         r = data_client.post("/api/lut/fit", json={"cube_id": cid, "unit": unit})
         assert r.status_code == 422 and r.json()["error"] == "unit_not_calibrated"
-        assert "没有单独标定" in r.json()["message"]
+        assert "没有单独的校准数据" in r.json()["message"]
+
+
+def _plant_fit(settings, cube_id, space, guessed, job_id):
+    job_dir = settings.home_dir / "lut_jobs" / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "job.json").write_text(
+        json.dumps(
+            {
+                "cube_id": cube_id,
+                "input_space": space,
+                "output_space": "srgb",
+                "profile": "quick",
+                "space_guessed": guessed,
+                "photos": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (job_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "state": "done",
+                "result": {
+                    "formula": "median",
+                    "candidates": [
+                        {
+                            "unit": "jlaunch",
+                            "slot": 4,
+                            "levels": {},
+                            "similarity": 90,
+                            "label": "接近",
+                            "holdout": {},
+                            "baseline04_holdout": {},
+                            "differences": [],
+                            "entry_sha256": "ab" * 32,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_saved_recipe_reports_a_filename_guess(data_client, settings):
+    guessed = upload(data_client, cube_bytes(warm, 17, "warm film"), "Leica_L-Log_warm.cube")
+    assert guessed.status_code == 200, guessed.text
+    plain = upload(data_client, cube_bytes(warm, 17, "plain"), "mystery.cube")
+    assert plain.status_code == 200, plain.text
+    _plant_fit(settings, guessed.json()["cube_id"], "llog", False, "a11a11a11a11")
+    _plant_fit(settings, plain.json()["cube_id"], "srgb", False, "b22b22b22b22")
+    _plant_fit(settings, plain.json()["cube_id"], "srgb", True, "c33c33c33c33")
+    from_name = data_client.post("/api/my-recipes", json={"job_id": "a11a11a11a11", "candidate": 0, "name": "文件名猜的"})
+    assert from_name.status_code == 200, from_name.text
+    assert from_name.json()["source"]["input_space_guessed"] is True
+    chosen = data_client.post("/api/my-recipes", json={"job_id": "b22b22b22b22", "candidate": 0, "name": "自己选的"})
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["source"]["input_space_guessed"] is False
+    unknown = data_client.post("/api/my-recipes", json={"job_id": "c33c33c33c33", "candidate": 0, "name": "不确定"})
+    assert unknown.status_code == 200, unknown.text
+    assert unknown.json()["source"]["input_space_guessed"] is True
 
 
 def test_fit_needs_camera_data(client):
@@ -464,7 +528,7 @@ def test_full_flow_fit_save_apply_and_manage_recipes(data_client, camhome):
     st = wait(c, job)
     assert st["state"] == "done", st.get("error")
     res = st["result"]
-    assert res["prediction"] is True and res["label"] == "电脑预测" and "相机实拍通常会低一些" in res["caution"]
+    assert res["prediction"] is True and res["label"] == "电脑预测" and res["caution"] == ""
     assert len(res["candidates"]) == 2 and res["best"] == res["candidates"][0]
     sims = [x["similarity"] for x in res["candidates"]]
     assert sims == sorted(sims, reverse=True)

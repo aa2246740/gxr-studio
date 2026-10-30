@@ -59,12 +59,12 @@ def test_m2_modules_are_served_and_carry_the_user_facing_wording(web_client):
     # 没有相机数据时的引导（大白话，见任务说明）
     assert "从卡导入" in everything
     assert "选择 GXRCE.DAT 文件" in everything
-    # 预览一律标"电脑预测"；全部归零两步确认；存为我的配方是占位
+    # 预览一律标"电脑预测"；重置一键完成（COPY 术语表）；存储为我的配方在配方页里是置灰的占位
     assert "电脑预测" in everything
-    assert "再点一次：全部归零" in everything
-    assert "存为我的配方（即将推出）" in everything
-    # 调整全部标"仅电脑"
-    assert "仅电脑" in (ASSETS / "adjust.js").read_text(encoding="utf-8")
+    assert "'重置'" in (ASSETS / "adjust.js").read_text(encoding="utf-8")
+    assert "存储为我的配方" in everything
+    # 写不进旧版相机配方文件的旋钮标"仅电脑"（COPY 3.10：调整面板标题旁不再标）
+    assert "'仅电脑'" in (ASSETS / "recipes.js").read_text(encoding="utf-8")
     # 导出不再拦截只有 RAW 的照片
     assert "暂时不能导出" not in (ASSETS / "export.js").read_text(encoding="utf-8")
 
@@ -190,7 +190,7 @@ def test_preview_without_camera_data_is_a_clear_409_not_an_image(web_client, imp
     assert r.status_code == 409
     body = r.json()
     assert body["error"] == "camera_data_missing"
-    assert "GXRCE.DAT" in body["message"]
+    assert body["message"] == "无法生成电脑预测。请先导入相机配方文件。"
     assert body["status"]["ready"] is False and body["status"]["hint"]
 
 

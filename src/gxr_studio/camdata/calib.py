@@ -92,7 +92,7 @@ def import_calibration(home: Path, sources: dict[Any, Any], *, origin: dict[Any,
     for iso, (npz_path, ring_path) in sorted(sources.items()):
         with np.load(npz_path, allow_pickle=False) as z:
             if not np.array_equal(z["stock"], stock):
-                raise StockMismatch(f"ISO {iso} 的标定 stock 与卡上 jlaunch 的 04 色表行不一致")
+                raise StockMismatch(f"ISO {iso} 的校准数据和存储卡上原厂 04 的色表行不一致")
             d0, d1 = z["d0"].astype(float), z["d1"].astype(float)
             s_eff = ((z["stock"][:, 0] + d0) - 1j * (z["stock"][:, 1] + d1)) / 32
             if not np.array_equal(s_eff, z["S_eff"]):
@@ -123,7 +123,7 @@ def model_for(home: Path, iso: int = 200) -> tuple[Any, ...]:
     m = json.loads((d / "manifest.json").read_text())
     for name, meta in m["files"].items():
         if _sha_file(d / name) != meta["sha256"]:
-            raise CalibError(f"标定文件被改动：{name}")
+            raise CalibError("校准数据被改动")
     model_iso = 1600 if int(iso) == 1600 else 200
     with np.load(d / f"ctx_{model_iso}.npz", allow_pickle=False) as z:
         d0, d1 = z["d0"].copy(), z["d1"].copy()

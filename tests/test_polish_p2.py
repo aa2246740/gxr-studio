@@ -131,7 +131,7 @@ def test_batch_export_skips_vanished_ids_and_says_so(client, tmp_path):
     bad = [x for x in job["results"] if "error" in x]
     assert len(ok) == 1 and ok[0]["id"] == good and Path(ok[0]["path"]).is_file()
     assert [(x["id"], x["error"]) for x in bad] == [("0123456789abcdef", "photo_not_found")]
-    assert "已经不在图库里" in bad[0]["message"] and "重新选" in bad[0]["message"]
+    assert "找不到这张照片" in bad[0]["message"] and "重新选" in bad[0]["message"]
     assert_plain(json.dumps(bad[0], ensure_ascii=False))
 
 
@@ -148,7 +148,8 @@ def test_frontend_refreshes_the_selection_and_names_unexported_photos():
     assert "pruneSelection" in gallery and "state.selection.delete" in gallery
     assert gallery.index("await pruneSelection()") < gallery.index("loadAll();", gallery.index("library-changed"))
     export = (WEB / "assets/export.js").read_text(encoding="utf-8")
-    assert "followBatch(job, result, photos)" in export and "没有导出${names.length" in export
+    assert "followBatch(job, result, photos)" in export and "导出失败。请重试。" in export
+    assert "errorBody" in export
 
 
 # ---- P2-4：服务没了，拟合子进程跟着走 ----------------------------------------------------
@@ -352,7 +353,7 @@ def test_completion_interrupted_after_the_move_is_resumed_not_duplicated(volumes
     assert len(rows) == 1 and set(rows[0]["files"]) == {"dng", "jpg"} and lib.count() == total
     assert sc.read(side_path)["crop"] == crop_before, "裁切不能丢"
     assert rows[0]["crop"] and rows[0]["crop"]["preset"] == "1:1"
-    assert p.state == "done" and p.completed_shots == 1 and "可以安全弹出" in p.message
+    assert p.state == "done" and p.completed_shots == 1 and "可以推出存储卡" in p.message
     assert not list(side_path.parent.glob("R0000104*.corrupt-*"))
 
 

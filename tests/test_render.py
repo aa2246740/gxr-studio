@@ -376,9 +376,9 @@ def test_service_caches_and_labels(lib, camhome):
     assert max(e.width, e.height) == 400 and svc.stats["decodes"] == 1 and e.key != a.key
     assert (a.width, a.height) == (2144, 1424), "预览是半分辨率"
     # 标签：非 200/1600 的 ISO、28mm 都标"未标定"
-    assert svc.plan(fake_shot(lib, rel, sha, iso=400), e0).label == "电脑预测（跨单元/跨 ISO，未标定）"
+    assert svc.plan(fake_shot(lib, rel, sha, iso=400), e0).label == "电脑预测 未校准"
     p28 = svc.plan(fake_shot(lib, rel, sha, iso=1600, lens="GR LENS A12 28mm F2.5"), EditState(RecipeSel("qlaunch", 2)))
-    assert not p28.calibrated and p28.model_iso == 1600 and any("28mm" in r for r in p28.reasons)
+    assert not p28.calibrated and p28.model_iso == 1600 and p28.reasons == ("使用 A12 50mm 的颜色模型",)
     assert svc.plan(fake_shot(lib, rel, sha, iso=1600), e0).calibrated
     # 配方与镜头单元不一致也要说
     assert not svc.plan(fake_shot(lib, rel, sha, iso=200), EditState(RecipeSel("qlaunch", 1))).calibrated
@@ -454,7 +454,7 @@ def test_api_without_camera_data_gives_clear_status(client, real_card):
     p = photos["R8051144"]
     r = client.get(f"/api/photos/{p['id']}/render")
     assert r.status_code == 409 and r.json()["error"] == "camera_data_missing"
-    assert "插入" in r.json()["message"] and r.json()["status"]["hint"]
+    assert r.json()["message"] == "无法生成电脑预测。请先导入相机配方文件。" and r.json()["status"]["hint"]
     # 编辑仍能存取（档位按菜单表校验），只是没法预览
     put = client.put(f"/api/photos/{p['id']}/edit", json={"adjust": {"exposure_ev": 0.3}})
     assert put.status_code == 200 and put.json()["render"]["available"] is False
@@ -531,7 +531,7 @@ def test_api_render_preview_cache_headers_and_live_override(data_client, real_ca
     im = Image.open(io.BytesIO(r.content))
     assert im.size == (2144, 1424) and im.info.get("icc_profile")
     assert r.headers["X-GXR-Prediction"] == "1" and r.headers["X-GXR-Calibrated"] == "0"  # 样本 ISO 400
-    assert "%E7%94%B5%E8%84%91%E9%A2%84%E6%B5%8B" in r.headers["X-GXR-Label"] and r.headers["X-GXR-Cache"] == "miss"
+    assert unquote(r.headers["X-GXR-Label"]) == "prediction" and r.headers["X-GXR-Cache"] == "miss"
     again = c.get(f"/api/photos/{p['id']}/render")
     assert again.headers["X-GXR-Cache"] == "hit" and again.content == r.content
     assert c.get(f"/api/photos/{p['id']}/render", headers={"If-None-Match": r.headers["ETag"]}).status_code == 304
@@ -562,9 +562,18 @@ def test_api_render_requires_raw_and_recipes_listing(data_client, real_card):
     # 只有 JPG 的照片没有 RAW：不能套配方
     jpg_only = [p for p in c.get("/api/photos").json() if not p["has_raw"]]
     assert jpg_only, "假卡里有只有 JPG 的照片"
-    r = c.get(f"/api/photos/{jpg_only[0]['id']}/render")
-    assert r.status_code == 409 and r.json()["error"] == "no_raw"
-    assert c.get(f"/api/photos/{jpg_only[0]['id']}/edit").json()["render"]["reason"] == "no_raw"
+    # 合同修订：只有 JPEG 时，不点配方也能出图；点了内置配方则是近似，或明确拒绝。
+    plain = c.get(f"/api/photos/{jpg_only[0]['id']}/render")
+    assert plain.status_code == 200 and plain.content[:2] == b"\xff\xd8"
+    cap = c.get(f"/api/photos/{jpg_only[0]['id']}/capabilities").json()
+    assert cap["raw"] is False and cap["recipe"] in {"approx", "none"}
+    if cap["recipe"] == "none":
+        assert cap["reason"] == "配方需要 RAW 文件"
+    asked = c.post(f"/api/photos/{jpg_only[0]['id']}/render", json={"recipe": {"unit": "jlaunch", "slot": 8}})
+    if cap["recipe"] == "none":
+        assert asked.status_code == 409 and asked.json()["error"] == "no_raw"
+    else:
+        assert asked.status_code == 200 and asked.headers.get("X-GXR-Look") == "approx"
 
 
 @needs_sample
@@ -579,10 +588,14 @@ def test_api_export_prediction_names_labels_and_sources(data_client, real_card):
     c.put(f"/api/photos/{p['id']}/crop", json={"preset": "xpan-65-24"})
     out = c.post(f"/api/photos/{p['id']}/export", json={"size": "small"}).json()
     assert out["prediction"] is True and out["render"] == "recipe-prediction-uncalibrated" and out["calibrated"] is False
-    assert "电脑预测" in Path(out["path"]).name and "未标定" in Path(out["path"]).name and out["render_label"].startswith("电脑预测")
+    name = Path(out["path"]).name
+    assert name.startswith("R8051146_gxr") and name.endswith(".jpg")
+    assert "电脑预测" not in name and "未校准" not in name and "近似" not in name
+    assert out["render_label"] == "prediction" and out["render_text"].startswith("电脑预测")
     assert (out["width"], out["height"]) == (1600, round(1600 * 1583 / 4288))
     ex = Image.open(out["path"]).getexif()
-    assert "computer prediction" in ex[270] and "NOT calibrated" in ex[270] and ex[274] == 1
+    desc = ex[270].encode("latin-1").decode("utf-8")
+    assert "computer prediction" in desc and "NOT calibrated" in desc and "未校准" in desc and ex[274] == 1
     assert Image.open(out["path"]).info.get("icc_profile")
     # 明确要相机 JPG / 中性转换
     assert c.post(f"/api/photos/{p['id']}/export", json={"size": "small", "source": "camera-jpg"}).json()["render"] == "camera-jpg"
@@ -650,7 +663,7 @@ def test_dng_only_picture_is_labelled_as_a_computer_prediction(data_client, real
     p, jpg = photos["R8051145"], photos["R8051144"]
     assert p["preview_kind"] == "dng-preview"
     look = p["preview_look"]
-    assert look["kind"] == "stock04-prediction" and look["prediction"] is True and look["label"].startswith("电脑预测（原厂标准")
+    assert look["kind"] == "stock04-prediction" and look["prediction"] is True and look["label"] in {"电脑预测", "电脑预测 未校准"}
     for url in (p["thumb_url"], p["preview_url"]):
         r = c.get(url)
         assert r.status_code == 200 and r.headers["X-GXR-Prediction"] == "1" and r.headers["X-GXR-Look"] == "stock04-prediction"
@@ -663,7 +676,7 @@ def test_dng_only_picture_is_labelled_as_a_computer_prediction(data_client, real
     shutil.rmtree(settings.home_dir / "camera-data")
     n = find(c, "R8051145")
     assert n["preview_look"]["kind"] == "neutral" and n["preview_look"]["prediction"] is False
-    assert "不是相机的颜色" in n["preview_look"]["label"] and n["thumb_url"] != p["thumb_url"]
+    assert n["preview_look"]["label"] == "中性转换" and n["thumb_url"] != p["thumb_url"]
     r = c.get(n["thumb_url"])
     assert r.headers["X-GXR-Look"] == "neutral" and "X-GXR-Prediction" not in r.headers
 
@@ -688,11 +701,11 @@ def test_precise_export_uses_the_exact_chain_and_matches_baked_closely(lib, camh
     svc = RenderService(camhome, lib)
     edit = EditState(RecipeSel("jlaunch", 6, (("contrast", 2),)), parse_adjust({"exposure_ev": 0.4}), None)
     exact_r, baked_r = svc.renderer(shot, edit, precise=True), svc.renderer(shot, edit)
-    assert exact_r.calibrated and exact_r.filename_tag == "_电脑预测" and "exact chain" in exact_r.description
+    assert exact_r.calibrated and exact_r.filename_tag == "" and "exact chain" in exact_r.description
     dng = open_dng(path)
     a, b = render_full(dng, exact_r), render_full(dng, baked_r)
     ref = chain.exact_u8(svc.model(200), svc.plan(shot, edit).entry, demosaic_full(dng), tones.channel_gains(edit.adjust), None)
     assert np.array_equal(a, ref) and np.abs(a.astype(int) - b.astype(int)).max() <= 2
     res = export_shot(lib, shot, None, tmp_path / "o", ExportOptions(None, 90), [], exact_r, True)
-    assert res.path.name == "R0000301_gxr_电脑预测.jpg" and res.render == "recipe-prediction"
+    assert res.path.name == "R0000301_gxr.jpg" and res.render == "recipe-prediction"
     assert "computer prediction" in Image.open(res.path).getexif()[270]

@@ -169,8 +169,11 @@ def read_dng_meta(path: Path) -> PhotoMeta:
         return PhotoMeta(error=f"{type(exc).__name__}: {exc}")
 
 
-def dng_preview_image(path: Path) -> Image.Image | None:
-    """DNG 里内嵌的最大一张 JPEG 预览（GXR：640×480）；没有就退回 IFD0 的小缩略图。"""
+def dng_preview_image(path: Path, *, embedded_only: bool = False) -> Image.Image | None:
+    """DNG 里内嵌的最大一张 JPEG 预览（GXR：640×480）；没有就退回 IFD0 的小缩略图。
+
+    `embedded_only` 为真时，没有 JPEG 子图就返回空，不把主图像素当成预览。
+    """
     try:
         with Image.open(path) as im:
             best: bytes | None = None
@@ -197,6 +200,8 @@ def dng_preview_image(path: Path) -> Image.Image | None:
                     return pv.convert("RGB")
                 except Exception:
                     pass  # nosec B110  内嵌预览解不开就继续走主图
+            if embedded_only:
+                return None
             im.load()
             return im.convert("RGB")
     except Exception:

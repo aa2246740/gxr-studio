@@ -33,8 +33,7 @@ def test_readme_starts_with_three_steps():
 
 def test_settings_has_a_plainly_labelled_dev_calibration_entry():
     camdata = (ASSETS / "camdata.js").read_text(encoding="utf-8")
-    assert "导入颜色标定（开发用）" in camdata
-    assert "目前只在开发这个工具的电脑上能用" in camdata
+    assert "导入校准数据" in camdata
     assert "/api/calibration/import" in camdata
     onboarding = (ASSETS / "onboarding.js").read_text(encoding="utf-8")
     assert "calibrationImportForm" in onboarding and "cameraImportControls" in onboarding
@@ -51,7 +50,6 @@ def test_frontend_uses_the_endpoints_the_backend_really_has():
 def test_crop_and_edit_share_one_revision():
     """裁切和配方/调整写同一份 sidecar：前端两边的版本号必须一起更新（否则先调色再裁切会被 409）。"""
     preview = (ASSETS / "preview.js").read_text(encoding="utf-8")
-    crop = (ASSETS / "crop.js").read_text(encoding="utf-8")
     assert "export function syncRev" in preview
     assert preview.count("syncRev(view,") >= 3
-    assert "syncRev(view, c.rev)" in crop
+    assert "expected_rev: view.crop.rev" in preview and "function saveCrop" in preview

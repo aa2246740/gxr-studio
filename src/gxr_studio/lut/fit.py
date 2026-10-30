@@ -341,7 +341,7 @@ class Fitter:
         ranked = []
         for i, slot in enumerate(SLOTS):
             span = (0.2 * i / len(SLOTS), 0.2 * (i + 1) / len(SLOTS))
-            self.prog.phase = "比较底子"
+            self.prog.phase = "比较内置配方"
             start = self.grid_starts(slot, cfg["starts"])[0]
             levels, value = self.descend(
                 slot,
@@ -351,7 +351,7 @@ class Fitter:
                 coarse=True,
                 max_sweeps=cfg["rank_sweeps"],
                 span=span,
-                label=f"比较底子 {slot:02d}",
+                label=f"比较内置配方 {slot:02d}",
             )
             ranked.append((value, slot))
             if self.prog.best is None or value < self.prog.best["loss"]:
@@ -439,7 +439,7 @@ class Fitter:
             "schema": "gxr-studio/lut-fit/1",
             "prediction": True,
             "label": "电脑预测",
-            "caution": "这是电脑按一组标准色块比较得出的数字，相机实拍通常会低一些，以相机实测为准。",
+            "caution": "",
             "formula": FORMULA,
             "thresholds": {"close": LABEL_CLOSE, "rough": LABEL_ROUGH},
             "best": cands[0],
@@ -503,10 +503,10 @@ def explain(pred_lab: np.ndarray, ideal_lab: np.ndarray, group: np.ndarray, limi
         if m.sum() >= 15:
             med = float(np.median(de[m]))
             if med > max(3.0, 1.6 * overall):
-                notes.append((med, f"{name}色最不像（相差约 {med:.1f}）：相机没有对应的旋钮，只能近似"))
+                notes.append((med, f"{name}色偏差较大"))
     notes.sort(key=lambda n: -n[0])
     out = [t for _, t in notes[:limit]]
-    return out or ["整体已经很接近，没有明显的偏差"]
+    return out
 
 
 # ---- 入口 --------------------------------------------------------------------------

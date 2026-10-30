@@ -19,6 +19,7 @@ jobs:
           HEAD: ${{ github.event.workflow_run.head_sha }}
         run: |
           gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
             --title "CI failed ${HEAD}" \
             --label "type/bug,priority/p1,area/tooling" \
             --body "CI failed. Run: ${RUN_URL}"

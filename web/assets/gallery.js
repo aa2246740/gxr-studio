@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { state, on } from './state.js';
 import { h, fmtDate, fmtTime } from './dom.js';
 import { openExportDialog } from './export.js';
-import { cardPresent } from './import.js';
+import { cardPresent, importNow } from './import.js';
 import { showHint } from './onboarding.js';
 import { isPrediction, rawOnlyBadgeText } from './look_notes.js';
 
@@ -13,7 +13,7 @@ let root = null;
 let focusId = null;
 
 export function pairTag(p) {
-  if (p.has_raw && p.has_jpg) return h('span', { class: 'badge pair tag' }, 'DNG+JPG');
+  if (p.has_raw && p.has_jpg) return h('span', { class: 'badge pair tag' }, 'RAW+JPEG');
   if (p.has_jpg) return h('span', { class: 'badge tag gray' }, '只有 JPG');
   // 只有 RAW 的照片没有相机 JPG 可看，缩略图是电脑画的：如实标出来
   const look = p.preview_look || {};
@@ -31,7 +31,6 @@ export async function renderGallery(container) {
       h('div', { class: 'selbar', id: 'selbar' }),
     ),
   );
-  showHint('gallery', '点一张照片就能看大图；左上角的小方框用来多选。');
   await loadAll();
 }
 
@@ -97,7 +96,7 @@ function renderGrid() {
     'div',
     { class: 'day-head' },
     h('h2', {}, state.galleryDate ? fmtDate(state.galleryDate) : '全部照片'),
-    h('span', { class: 'dim small' }, `${state.photos.length} 张。点照片看大图，左上角勾选可多选。`),
+    h('span', { class: 'dim small' }, `${state.photos.length} 张`),
   );
   const grid = h(
     'div',
@@ -129,9 +128,7 @@ function thumb(p) {
       class: `thumb${selected ? ' selected' : ''}${focusId === p.id ? ' focus' : ''}`,
       tabindex: 0,
       role: 'button',
-      title: `${p.name} · ${fmtTime(p.captured_at)}${p.date_source === 'mtime' ? '（日期是按文件时间估计的）' : ''}${
-        p.preview_look && p.preview_look.label ? ` · 缩略图：${p.preview_look.label}` : ''
-      }`,
+      title: `${p.name} · ${fmtTime(p.captured_at)}${p.date_source === 'mtime' ? '（使用文件修改日期）' : ''}`,
       onclick: () => {
         focusId = p.id;
         location.hash = `#/photo/${p.id}`;
@@ -150,33 +147,14 @@ function thumb(p) {
   return el;
 }
 
+// 空状态（COPY 1.6）：一行字 + 一个按钮
 function emptyState() {
-  if (cardPresent()) {
-    return h(
-      'div',
-      { class: 'empty' },
-      h('h2', {}, '这张卡上还没有可导入的新照片'),
-      h('p', { class: 'dim' }, '如果刚插卡，请稍等一下；卡上的照片都导入过了也会显示在这里。'),
-    );
-  }
+  const empty = !cardPresent();
   return h(
     'div',
     { class: 'empty' },
     h('h2', {}, '还没有照片'),
-    h('p', {}, '插上相机的存储卡，照片会自动读进来，按拍摄日期排好。'),
-    h('p', { class: 'dim small' }, '卡上的文件不会被改动。'),
-    h(
-      'details',
-      {},
-      h('summary', {}, '我怎么插卡？'),
-      h(
-        'ol',
-        {},
-        h('li', {}, '取出相机的存储卡（先关机）。'),
-        h('li', {}, '插进电脑的读卡器。'),
-        h('li', {}, '等它自动开始，不用点任何按钮。'),
-      ),
-    ),
+    h('button', { class: 'btn primary', type: 'button', 'aria-disabled': empty ? 'true' : null, onclick: () => importNow() }, '导入照片'),
   );
 }
 
@@ -197,9 +175,9 @@ function renderSelBar() {
         type: 'button',
         onclick: () => openExportDialog({ ids: [...state.selection], label: `选中的 ${n} 张` }),
       },
-      '导出选中的',
+      '导出',
     ),
-    h('button', { class: 'btn ghost', type: 'button', onclick: clearSelection }, '取消选择'),
+    h('button', { class: 'btn ghost', type: 'button', onclick: clearSelection }, '取消'),
   );
 }
 

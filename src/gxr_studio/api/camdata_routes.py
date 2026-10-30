@@ -55,7 +55,7 @@ def _status(c: Any) -> dict[Any, Any]:
     if rs["camera_data"]["state"] != "ready":
         nxt, why = "import_camera_data", rs["camera_data"]["message"]
     elif rs["calibration"]["state"] == "missing":
-        nxt, why = "import_calibration", "还没有导入标定包，颜色预测暂时不能用。"
+        nxt, why = "import_calibration", "请先导入校准数据"
     elif rs["calibration"]["state"] != "ready":
         nxt, why = "import_calibration", rs["calibration"]["message"]
     else:
@@ -99,14 +99,14 @@ def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any]) -> dict[Any,
     except intake.IntakeError as exc:
         raise _api(exc) from exc
     status = _status(c)
-    where = f"卡「{origin['label']}」" if origin.get("kind") == "card" else "你选的文件"
+    where = f"存储卡「{origin['label']}」" if origin.get("kind") == "card" else "你选的文件"
     msg = (
-        f"相机数据已经是最新的（{where}，第 {info.generation} 代），没有改动。"
+        f"相机配方文件已经是最新的（{where}，第 {info.generation} 代），没有改动"
         if unchanged
-        else f"已从{where}导入相机数据：第 {info.generation} 代，3 个单元 × 8 个配方（含原厂 04）。"
+        else f"已从{where}导入相机配方文件：第 {info.generation} 代，3 个单元 × 8 个内置配方。"
     )
     if status["next"] == "import_calibration":
-        msg += " 还需要导入标定包才能做电脑预测。"
+        msg += " 还需要导入校准数据才能使用配方。"
     return {
         "imported": not unchanged,
         "unchanged": unchanged,
@@ -130,14 +130,14 @@ def import_from_card(request: Request, body: ImportCardRequest | None = None) ->
     if body and body.card_id:
         pick = next((s for s in scans if s.card.key == body.card_id), None)
         if pick is None:
-            raise ApiError(404, "card_not_found", "找不到这张卡（是不是已经拔出了？）")
+            raise ApiError(404, "card_not_found", "找不到存储卡。请重新插入后重试。")
     else:
         with_dat = [s for s in scans if s.has_dat]
         if len(with_dat) > 1:
             raise ApiError(
                 409,
                 "multiple_cards",
-                "插着不止一张带 GXRCE.DAT 的卡，请选一张。",
+                "插着不止一张带 GXRCE.DAT 的存储卡。请选一张。",
                 {"cards": [{"id": s.card.key, "label": s.card.label} for s in with_dat]},
             )
         if not with_dat:
@@ -145,17 +145,16 @@ def import_from_card(request: Request, body: ImportCardRequest | None = None) ->
                 raise ApiError(
                     404,
                     "no_card",
-                    "没有找到插着的卡。请把装有配方程序的卡插进读卡器，或者用「选择本地文件」导入 GXRCE.DAT。",
+                    "找不到存储卡。请重新插入后重试。",
                 )
-            labels = "、".join(f"「{s.card.label}」" for s in scans)
             raise ApiError(
                 404,
                 "dat_not_found",
-                f"卡{labels}上没有 GXRCE.DAT。{intake.HOW_TO_GET_DAT}如果这张卡不是装过配方程序的那张，换一张；或者用「选择本地文件」导入。",
+                "存储卡上没有相机配方文件（GXRCE.DAT）",
             )
         pick = with_dat[0]
     if not pick.has_dat:
-        raise ApiError(404, "dat_not_found", f"卡「{pick.card.label}」上没有 GXRCE.DAT。{intake.HOW_TO_GET_DAT}")
+        raise ApiError(404, "dat_not_found", "存储卡上没有相机配方文件（GXRCE.DAT）")
     try:
         raw = intake.read_dat_from_card(c.reader, pick)
     except intake.IntakeError as exc:
@@ -185,7 +184,8 @@ async def import_from_upload(request: Request) -> Any:
             raise ApiError(
                 422,
                 "dat_invalid",
-                f"这个文件比 GXRCE.DAT 大得多（超过 {intake.MAX_DAT_BYTES // 1024} KB），不像是配方程序，没有导入。",
+                "无法导入相机配方文件。文件过大。",
+                {"detail": f"超过 {intake.MAX_DAT_BYTES // 1024} KB"},
             )
         chunks.append(chunk)
     name = Path(request.headers.get("x-gxr-filename") or intake.DAT_NAME).name or intake.DAT_NAME
@@ -203,7 +203,7 @@ def import_calibration(body: PathRequest, request: Request) -> dict[Any, Any]:
     except intake.IntakeError as exc:
         raise _api(exc) from exc
     status = _status(c)
-    msg = "已导入标定包" + ("（开发机研究目录）" if kind == "dev" else "") + "，ISO 200 / 1600 两套。"
+    msg = "已导入校准数据" + ("（开发机研究目录）" if kind == "dev" else "") + "，ISO 200 和 ISO 1600 两套。"
     return {
         "imported": True,
         "kind": kind,

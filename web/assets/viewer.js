@@ -1,33 +1,49 @@
-// 大图：左右键切换，右侧四个标签（裁切、配方、调整、导出）。配方和调整的预览是电脑预测（见 preview.js）。
+// 大图：照片条、画面区（成片 / 裁剪中 / 原图）、右侧六个标签、底栏。
+// 默认标签是「配方」（不是裁剪）。大图始终显示 stage=final 的成片；只有「裁剪」标签才切到 stage=uncropped（DIAG 原因 1）。
 
 import { api } from './api.js';
 import { state } from './state.js';
-import { h, toast, fmtTime, fmtDate } from './dom.js';
+import { h, toast, fmtClock, fmtDate, toastError } from './dom.js';
 import { pairTag } from './gallery.js';
-import { applyCrop, attachDrag, attachGuides, cropPanel, cycleGuide, cycleSpiral, fitStage, loadCrop, resetCrop, undoCrop, saveCrop } from './crop.js';
 import { exportForm } from './export.js';
-import { showHint } from './onboarding.js';
 import { recipePanel } from './recipes.js';
 import { adjustPanel } from './adjust.js';
-import { EDIT_TABS, defaultNote, disposeEdit, ensureEdit, reloadEdit, renderNote, schedulePreview, syncImage } from './preview.js';
+import { cropSection, cycleGuide, cycleSpiral, closeMenus } from './crop.js';
+import { correctSection, correctActions, nudgeStraighten, rotate90 } from './correct.js';
+import { framePanel } from './frame_panel.js';
+import { stampPanel } from './stamp_panel.js';
+import { paintStage, stageMode } from './stage.js';
+import {
+  ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, syncUndo, beginChange, endChange,
+  persist, flushEdits, reloadEdit, stageLabels, refreshCaps, resetCropRemote, adjustBody,
+} from './preview.js';
+import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
+
+const zeroAdj = () => ({
+  exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0,
+  warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0,
+});
 
 const TABS = [
-  ['crop', '裁切', 'C'],
-  ['recipes', '配方', 'R'],
+  ['recipe', '配方', 'R'],
   ['adjust', '调整', 'A'],
+  ['crop', '裁剪', 'C'],
+  ['frame', '边框', 'F'],
+  ['stamp', '时间戳', 'T'],
   ['export', '导出', 'E'],
 ];
 
 let view = null;
 let resizeObs = null;
-let nudgeTimer = null;
+
+// ---- 键盘 -------------------------------------------------------------------
 
 export function viewerKeys() {
   if (!view) return null;
   return {
     down(e) {
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        if (isRangeFocused()) return false;
+        if (isSliderFocus()) return false;
         step(e.key === 'ArrowLeft' ? -1 : 1);
         return true;
       }
@@ -36,17 +52,20 @@ export function viewerKeys() {
         return true;
       }
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        if (view.tab !== 'crop' || isRangeFocused()) return false;
-        nudge(e.key === 'ArrowUp' ? 0.5 : -0.5);
+        if (view.tab !== 'crop' || isSliderFocus()) return false;
+        nudgeStraighten(view, e.key === 'ArrowUp' ? 0.5 : -0.5);
         return true;
       }
-      // 裁切里的构图辅助线：G 换线，O 换螺旋方向（和 C/R/A/E 不冲突）
       if (view.tab === 'crop' && (e.key === 'g' || e.key === 'G')) {
         cycleGuide(view);
         return true;
       }
       if (view.tab === 'crop' && (e.key === 'o' || e.key === 'O')) {
         cycleSpiral(view);
+        return true;
+      }
+      if (view.tab === 'crop' && e.key === '[') {
+        rotate90(view);
         return true;
       }
       const tab = TABS.find((t) => t[2].toLowerCase() === e.key.toLowerCase());
@@ -65,63 +84,153 @@ export function viewerKeys() {
     },
     undo() {
       if (!view) return false;
-      undoCrop(view);
+      undoChange(view);
       return true;
     },
   };
 }
 
-function isRangeFocused() {
+function isSliderFocus() {
   const a = document.activeElement;
-  return !!a && a.tagName === 'INPUT' && a.type === 'range';
+  return !!a && ((a.tagName === 'INPUT' && a.type === 'range') || a.classList.contains('ruler'));
 }
 
 function setShowOriginal(on) {
   if (!view || view.showOriginal === on) return;
   view.showOriginal = on;
-  applyCrop(view);
-  syncImage(view);
-  renderNote(view);
+  paintStage(view);
+  paintStatus(view);
 }
 
-// 切换标签：配方、调整需要先读这张照片的编辑状态，读完再画预览
-function setTab(tab) {
-  if (!view) return;
+// ---- 标签 -------------------------------------------------------------------
+
+// 进入「裁剪」：画面切到未裁切的整张（stage=uncropped）；离开：回到成片（stage=final）
+export function setTab(tab) {
+  if (!view || view.tab === tab) return;
+  if (tab === 'crop') view.lastTab = view.tab;
   view.tab = tab;
-  state.viewerTab = tab;
-  const v = view;
-  if (EDIT_TABS.includes(tab)) {
-    ensureEdit(v).then(
-      () => {
-        if (view !== v || v.tab !== tab) return;
-        v.ed.redraw = () => {
-          if (view === v) renderSide();
-        };
-        schedulePreview(v, { final: true });
-        renderSide();
-      },
-      (e) => {
-        if (view !== v) return;
-        v.edError = e;
-        renderSide();
-      },
-    );
-  }
+  state.viewerTab = tab === 'crop' ? 'recipe' : tab;
+  view.stage = tab === 'crop' ? 'uncropped' : 'final';
+  if (view.ed) schedulePreview(view, { full: true });
   renderSide();
-  applyCrop(view);
-  syncImage(view);
-  renderNote(view);
+  paintStage(view);
+  paintStatus(view);
 }
 
-// 方向键上下：拉直 0.5 度，停一下再保存
-function nudge(delta) {
-  const next = Math.max(-10, Math.min(10, Math.round((view.angle + delta) * 10) / 10));
-  view.angle = next;
-  applyCrop(view);
-  clearTimeout(nudgeTimer);
-  nudgeTimer = setTimeout(() => {
-    if (view) saveCrop(view, { preset: view.crop.preset, rect: null, angle_deg: view.angle });
-  }, 350);
+function renderTabs() {
+  view.sideTabs.replaceChildren(...TABS.map(([id, label, key]) => h('button', {
+    type: 'button', role: 'tab', 'aria-selected': String(view.tab === id), title: `${label}（${key}）`,
+    onclick: () => setTab(id),
+  }, label)));
+}
+
+function renderSide() {
+  if (!view) return;
+  renderTabs();
+  view.sideBody.replaceChildren(panelFor(view.tab));
+}
+
+function panelFor(tab) {
+  if (!view.ed) return h('p', { class: 'dim small' }, view.edError ? (view.edError.message || '无法读取编辑记录。请重试。') : '正在读取…');
+  switch (tab) {
+    case 'recipe': return recipePanel(view);
+    case 'adjust': return adjustPanel(view);
+    case 'crop': return cropPanelWrap();
+    case 'frame': return framePanel(view);
+    case 'stamp': return stampPanel(view);
+    case 'export': return exportForm({
+      ids: [view.photo.id], label: '这一张', photos: [view.photo],
+      beforeSubmit: () => flushEdits(view),
+    });
+    default: return h('p', {}, '');
+  }
+}
+
+function cropPanelWrap() {
+  return h('div', { class: 'pane' },
+    h('h2', {}, '裁剪'),
+    view.canvas ? cropSection(view) : h('p', { class: 'dim small' }, '正在生成预览…'),
+    correctSection(view),
+    h('div', { class: 'sticky-foot' }, ...correctActions(view), h('button', { type: 'button', class: 'primary end', onclick: finishCrop }, '完成')),
+  );
+}
+
+function finishCrop() {
+  setTab(view.lastTab && view.lastTab !== 'crop' ? view.lastTab : 'recipe');
+}
+
+// ---- 状态行与底栏 ----------------------------------------------------------------
+
+function paintStatus(v) {
+  if (!view || v !== view) return;
+  const el = view.statusEl;
+  const ed = view.ed;
+  if (!ed) {
+    el.replaceChildren(h('span', { class: 'dim' }, '正在读取…'));
+    return;
+  }
+  const mode = stageMode(view);
+  const text = mode === 'orig' ? '原图' : mode === 'uncropped' ? '裁剪' : '成片';
+  const right = ed.busy ? '正在生成预览…' : ed.error ? '无法生成预览。请重试。' : '';
+  const chips = stageLabels(view).map((l) => h('span', { class: `chip ${l.kind}`, title: l.title || null }, l.text));
+  el.replaceChildren(...chips, h('span', { class: 'dim' }, text), h('span', { class: 'right' }, right));
+}
+
+function renderPhotoBar() {
+  const p = view.photo;
+  // 空的子元素不能直接交给 replaceChildren（会变成文字 null）
+  view.photoBar.replaceChildren(...[
+    h('button', { type: 'button', class: 'ghost', onclick: () => { location.hash = '#/photos'; } }, '‹ 照片'),
+    h('strong', {}, p.name),
+    h('span', { class: 'dim small' }, `${fmtDate(p.date)} ${fmtClock(p.captured_at)}`),
+    pairTag(p),
+    p.date_source === 'mtime' ? h('span', { class: 'badge', title: '使用文件修改日期' }, '使用文件修改日期') : null,
+    h('span', { class: 'dim small count' }, `${state.photos.findIndex((x) => x.id === p.id) + 1} / ${state.photos.length}`),
+  ].filter(Boolean));
+}
+
+// 撤销：没有可以撤销的内容时按钮置灰，不弹提示（COPY 3.10）
+function undoButton() {
+  const btn = h('button', { type: 'button', onclick: () => undoChange(view) }, '撤销');
+  view.undoBtn = btn;
+  syncUndo(view);
+  return btn;
+}
+
+function renderBottom() {
+  const pos = state.photos.findIndex((p) => p.id === view.photo.id);
+  view.bottom.replaceChildren(
+    undoButton(),
+    h('button', { type: 'button', onclick: resetAll, title: '整张回到原图' }, '复原'),
+    h('span', { class: 'spacer' }),
+    h('button', { type: 'button', 'aria-disabled': pos <= 0 ? 'true' : null, onclick: () => step(-1) }, '上一张'),
+    h('button', { type: 'button', 'aria-disabled': pos < 0 || pos >= state.photos.length - 1 ? 'true' : null, onclick: () => step(1) }, '下一张'),
+  );
+}
+
+// 复原：配方、调整、曲线、几何、边框、时间戳、裁剪全部回到原图。能用撤销找回来。
+async function resetAll() {
+  const ed = view.ed;
+  if (!ed) return;
+  beginChange(view);
+  ed.recipe = null;
+  ed.adj = zeroAdj();
+  ed.curve = null;
+  const changes = { recipe: null, adjust: adjustBody(ed), curve: null };
+  if (ed.v2) {
+    // 复原明确关掉装饰（PRD 第 11 节第 6 条）：不写 null，否则后端会按「继承默认值」处理
+    Object.assign(changes, { geometry: { ...DEFAULT_GEOMETRY }, frame: { style: 'none' }, stamp: { enabled: false } });
+  }
+  ed.geometry = ed.v2 ? { ...DEFAULT_GEOMETRY } : ed.geometry;
+  ed.frame = normalizeFrame({ style: 'none' });
+  ed.frameFrom = 'photo';
+  ed.stamp = normalizeStamp({ enabled: false });
+  ed.stampFrom = 'photo';
+  await persist(view, changes);
+  await resetCropRemote(view);
+  endChange(view);
+  schedulePreview(view, { full: true });
+  renderSide();
 }
 
 function step(d) {
@@ -137,141 +246,83 @@ async function ensurePhotos(id) {
   state.photos = await api(`/api/photos${q}`).catch(() => []);
 }
 
+function initialTab() {
+  const t = state.viewerTab;
+  return TABS.some(([id]) => id === t) && t !== 'crop' ? t : 'recipe';
+}
+
+// ---- 打开、关闭 ---------------------------------------------------------------
+
 export async function renderViewer(root, id) {
   let photo;
   try {
     photo = await api(`/api/photos/${id}`);
   } catch (e) {
-    root.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, '找不到这张照片'), h('p', { class: 'dim' }, e.message), h('a', { href: '#/photos' }, '回到图库')));
+    root.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, '找不到这张照片'), h('p', { class: 'dim' }, e.message), h('a', { href: '#/photos' }, '回到照片')));
     return;
   }
   await ensurePhotos(id);
   teardown();
 
-  const tab = state.viewerTab || 'crop';
-  const stage = h('div', { class: 'stage', dataset: { active: 'false' } });
-  const img = h('img', {
-    class: 'photo',
-    src: photo.preview_url,
-    dataset: { src: photo.preview_url },
-    alt: photo.name,
-    onerror: () => toast('这张照片读不出图像', 'error'),
-  });
-  const box = h('div', { class: 'crop-box', title: '拖动可以挪位置' });
-  stage.append(img, box);
-  const note = h('div', { class: 'stage-note dim small' }, defaultNote(photo));
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, note);
-  const side = h('aside', { class: 'side' });
+  const tab = initialTab();
+  const stageArea = h('div', { class: 'stage-area' });
+  const statusEl = h('div', { class: 'status' });
+  const sideTabs = h('div', { class: 'side-tabs', role: 'tablist' });
   const sideBody = h('div', { class: 'side-body', role: 'tabpanel' });
-  const tabBar = h(
-    'div',
-    { class: 'side-tabs', role: 'tablist' },
-    TABS.map(([id2, label, key]) =>
-      h(
-        'button',
-        {
-          type: 'button',
-          role: 'tab',
-          dataset: { tab: id2 },
-          'aria-selected': String(tab === id2),
-          title: `${label}（${key}）`,
-          onclick: () => setTab(id2),
-        },
-        label,
-      ),
-    ),
-  );
-  side.append(tabBar, sideBody);
-
-  const pos = state.photos.findIndex((p) => p.id === id);
-  const caption = h(
-    'div',
-    { class: 'viewer-top' },
-    h('a', { href: '#/photos', class: 'btn ghost', title: '回到图库（Esc）' }, '‹ 返回图库'),
-    h('strong', {}, photo.name),
-    h('span', { class: 'dim' }, `${fmtTime(photo.captured_at)} · ${fmtDate(photo.date)}`),
-    pairTag(photo),
-    photo.date_source === 'mtime' ? h('span', { class: 'badge', title: '照片里没有拍摄时间，日期是按文件的修改时间估计的' }, '日期是估计的') : null,
-    h('span', { class: 'dim small', style: { marginLeft: 'auto' } }, pos >= 0 ? `${pos + 1} / ${state.photos.length}` : ''),
-  );
-
-  const bottom = h(
-    'div',
-    { class: 'viewer-bottom' },
-    h('button', { class: 'btn', type: 'button', title: '撤销上一步（⌘Z）', onclick: () => undoCrop(view) }, '↶ 撤销'),
-    h('button', { class: 'btn', type: 'button', title: '清掉这张的裁切，原图不变', onclick: () => resetCrop(view) }, '还原原图'),
-    h('span', { class: 'spacer' }),
-    h('button', { class: 'btn', type: 'button', disabled: pos <= 0, onclick: () => step(-1) }, '‹ 上一张'),
-    h('button', { class: 'btn', type: 'button', disabled: pos < 0 || pos >= state.photos.length - 1, onclick: () => step(1) }, '下一张 ›'),
-  );
-
-  const body = h('div', { class: 'viewer-body' }, stageWrap, side);
-  root.replaceChildren(h('section', { class: 'viewer' }, caption, body, bottom));
+  const photoBar = h('div', { class: 'photobar' });
+  const bottom = h('div', { class: 'bottombar' });
+  root.replaceChildren(h(
+    'section',
+    { class: 'viewer' },
+    photoBar,
+    h('div', { class: 'viewer-body' },
+      h('div', { class: 'stagecol' }, stageArea, statusEl),
+      h('aside', { class: 'side' }, sideTabs, sideBody)),
+    bottom,
+  ));
 
   view = {
-    photo,
-    stage,
-    stageWrap,
-    img,
-    box,
-    noteEl: note,
-    tab,
-    sideBody,
-    tabBar,
-    history: [],
-    angle: 0,
-    zoom: 100,
-    showOriginal: false,
-    panelEl: null,
-    ed: null,
-    edPromise: null,
-    edError: null,
+    photo, tab, lastTab: 'recipe', stage: tab === 'crop' ? 'uncropped' : 'final', showOriginal: false,
+    stageArea, statusEl, sideTabs, sideBody, photoBar, bottom,
+    undo: [], pending: null, saveQ: null, ed: null, edPromise: null,
+    crop: null, canvas: null, zoom: 100, presetItem: null, presetPortrait: false,
+    box: null, pixelsEl: null, rulerEl: null, refreshAngle: null, onRectDrag: null, mode: null, edError: null,
   };
-  attachDrag(view);
-  attachGuides(view);
+  const v = view;
+  v.onChange = () => {
+    if (view !== v) return;
+    paintStage(v);
+    paintStatus(v);
+  };
+  v.redrawSide = () => {
+    if (view === v) renderSide();
+  };
 
-  try {
-    await loadCrop(view);
-  } catch (e) {
-    toast(e.message, 'error');
-    view.crop = { preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, active: false, frame: { width: photo.width || 1, height: photo.height || 1 }, rev: 0, pixels: null };
-    view.rect = { x: 0, y: 0, w: 1, h: 1 };
+  // 两个请求都等完再画（Promise.all 会在第一个失败时就返回，另一个回来后界面不会重画，留下「正在读取」）
+  const [cropRes, edRes] = await Promise.allSettled([loadCrop(v), ensureEdit(v)]);
+  if (view !== v) return;
+  if (cropRes.status === 'rejected') {
+    toastError(cropRes.reason, '无法读取裁剪。请重试。');
+    v.crop = { preset: 'original', rect: { x: 0, y: 0, w: 1, h: 1 }, angle_deg: 0, active: false, frame: { width: photo.width || 1, height: photo.height || 1 }, rev: 0 };
   }
-  fitStage(view);
-  applyCrop(view);
-  setTab(tab);
+  if (edRes.status === 'rejected') {
+    v.edError = edRes.reason;
+    toastError(edRes.reason, '无法读取编辑记录。请重试。');
+  }
+  // 编辑记录坏了：按原图显示，并说明（COPY 3.9）
+  if ((v.crop && v.crop.warning) || (v.ed && v.ed.warning)) toast('无法读取编辑记录，已按原图显示', 'info');
+
+  renderPhotoBar();
+  renderBottom();
+  renderSide();
+  paintStage(v);
+  paintStatus(v);
+  schedulePreview(v, { full: true });
 
   resizeObs = new ResizeObserver(() => {
-    if (view) {
-      fitStage(view);
-      applyCrop(view);
-    }
+    if (view === v) paintStage(v);
   });
-  resizeObs.observe(stageWrap);
-  showHint('viewer', '左右键换照片；C 裁切、R 配方、A 调整、E 导出。');
-}
-
-function renderSide() {
-  if (!view) return;
-  for (const btn of view.tabBar.querySelectorAll('button')) {
-    btn.setAttribute('aria-selected', String(btn.dataset.tab === view.tab));
-  }
-  view.sideBody.replaceChildren();
-  if (view.tab === 'crop') {
-    view.sideBody.append(cropPanel(view));
-  } else if (view.tab === 'recipes') {
-    view.sideBody.append(editBody(recipePanel));
-  } else if (view.tab === 'adjust') {
-    view.sideBody.append(editBody(adjustPanel));
-  } else if (view.tab === 'export') {
-    view.sideBody.append(exportForm({ ids: [view.photo.id], label: '这一张', photos: [view.photo] }));
-  }
-}
-
-function editBody(panel) {
-  if (view.edError) return h('p', { class: 'result bad small' }, view.edError.message);
-  if (!view.ed) return h('p', { class: 'dim small' }, '正在读取这张照片的配方…');
-  return panel(view);
+  resizeObs.observe(stageArea);
 }
 
 function teardown() {
@@ -279,7 +330,7 @@ function teardown() {
     resizeObs.disconnect();
     resizeObs = null;
   }
-  clearTimeout(nudgeTimer);
+  closeMenus();
   if (view) disposeEdit(view);
   view = null;
 }
@@ -289,7 +340,7 @@ export function leaveViewer() {
   teardown();
 }
 
-// 相机数据或标定换了：这张照片的图片地址（没有 JPG 的带新的 ?v=）和编辑状态（能不能出图）都要重新读
+// 相机数据或配方文件换了：照片的画面和能力都要重读
 export async function refreshViewerPhoto() {
   const v = view;
   if (!v) return;
@@ -297,12 +348,13 @@ export async function refreshViewerPhoto() {
     const photo = await api(`/api/photos/${v.photo.id}`);
     if (view !== v) return;
     v.photo = photo;
-    syncImage(v);
-    renderNote(v);   // 相机数据变了，只有 RAW 的照片的画面说明（预测/中性）跟着变
   } catch {
     // 照片读不到不影响其它刷新
   }
-  if (view === v && v.ed) await reloadEdit(v);
+  if (view !== v) return;
+  await refreshCaps(v);
+  if (v.ed) await reloadEdit(v);
+  paintStatus(v);
 }
 
 // ⌘E 在大图里：直接切到导出标签

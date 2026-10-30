@@ -92,7 +92,7 @@ class Menu:
                 {
                     **info,
                     "recipes": recipes,
-                    "calibration_note": None if info["calibrated"] else "未单独标定：沿用 A12-50 的模型迁移，颜色只是电脑预测",
+                    "calibration_note": None if info["calibrated"] else "未校准",
                 }
             )
         return units
@@ -105,13 +105,13 @@ class Menu:
         given = sel.levels_dict()
         for name, value in given.items():
             if name not in names and value != NEUTRAL.get(name, 0):
-                raise EditError("knob_not_available", f"配方 {slot:02d} 没有「{name}」这个旋钮")
+                raise EditError("knob_not_available", "无法保存配方。有一个旋钮无法使用。", f"{slot:02d} {name}")
         levels = [given.get(n, it["default_level"]) for n, it in zip(names, items)]
         try:
             return names, levels, menu.request(self.menu, u, slot, levels)
         except ValueError as exc:
             bad = next((n for n, lv, it in zip(names, levels, items) if all(p["level"] != lv for p in it["points"])), None)
-            raise EditError("level_not_allowed", f"旋钮「{bad}」的这个档位在配方 {slot:02d} 里不能用（超出范围或超过到顶标记）") from exc
+            raise EditError("level_not_allowed", "无法保存配方。这个档位不能用。", f"{bad} {slot:02d}") from exc
 
 
 class CameraData(Menu):

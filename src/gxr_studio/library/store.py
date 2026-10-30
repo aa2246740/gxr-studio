@@ -30,7 +30,7 @@ SCHEMA_VERSION = 1
 UNKNOWN_DATE_DIR = "未知日期"
 BACKUP_DIR = "相机备份"
 MEDIA_EXT = {".dng": "dng", ".jpg": "jpg"}
-SIDECAR_RESET_NOTE = "这张照片的编辑记录坏了或不见了，已经当作没有编辑处理；照片本身没事。再保存一次编辑就会重新建好。"
+SIDECAR_RESET_NOTE = "无法读取编辑记录，已按原图显示"
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _SCHEMA = """

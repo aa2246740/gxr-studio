@@ -51,7 +51,7 @@ def progress(**kw) -> str:
 @needs_node
 def test_clean_import_may_say_eject():
     r = run_js(f"[S.summarizeImport({progress()}), S.canEject({progress()})]")
-    assert r[1] is True and r[0]["kind"] == "ok" and "可以安全弹出卡了" in r[0]["text"]
+    assert r[1] is True and r[0]["kind"] == "ok" and r[0]["text"] == "已导入 14 张"
 
 
 @needs_node
@@ -71,8 +71,8 @@ def test_any_problem_means_no_eject_and_a_red_banner(kw):
     assert can_eject is False
     assert summary["kind"] == "bad" and summary["retry"] is True
     assert "安全弹出" not in summary["text"] and "安全弹出" not in status
-    assert "先别格式化" in summary["text"] and "先别格式化" in status
-    assert summary["detail"].startswith("没导进来的：")
+    assert "请勿格式化" in summary["text"] and status == "存储卡：有未导入的照片"
+    assert summary["detail"].startswith("未导入：")
 
 
 @needs_node
@@ -85,7 +85,7 @@ def test_problem_banner_names_the_files_and_counts_photos():
     )
     (s,) = [run_js(f"S.summarizeImport({p})")]
     assert "R0000104.JPG" in s["detail"] and "R0000102.DNG" in s["detail"] and "文件夹 101RICOH" in s["detail"]
-    assert "有 2 张没有完整导进来" in s["text"] and "共 3 个文件" in s["text"]
+    assert s["text"] == "有 3 个文件未能导入。请勿格式化存储卡，重新插入后再试一次。"
 
 
 @needs_node
@@ -108,7 +108,7 @@ def test_several_cards_are_announced():
     one = run_js("S.multiCardNote([{label:'A'}])")
     two = run_js("S.multiCardNote([{label:'A'},{label:'B'}])")
     assert one is None
-    assert "2 张卡" in two and "「A」" in two and "「B」" in two and "一次只处理第一张" in two
+    assert two == "已插入 2 张存储卡，先导入「A」"
 
 
 @needs_node
@@ -124,12 +124,9 @@ def test_raw_only_pictures_are_never_called_the_photo_itself():
         "{note: L.lookNoteText(v), orig: L.originalNoteText(v), badge: L.rawOnlyBadgeText(v)}]))"
     )
     pred, neutral, jpg = out["stock04-prediction"], out["neutral"], out["jpg"]
-    assert "不是预测" in jpg["note"] and "照片本身" in jpg["note"]
-    assert "电脑预测（原厂标准）" in pred["note"] and "照片本身" not in pred["note"] and "不是相机拍出的 JPG" in pred["note"]
-    assert "电脑预测" in pred["orig"] and "照片本身" not in pred["orig"] and "电脑预测" in pred["badge"]
-    assert "中性转换" in neutral["note"] and "照片本身" not in neutral["note"] and "不是相机的颜色" in neutral["note"]
-    assert "不是相机的颜色" in neutral["orig"] and "照片本身" not in neutral["orig"] and "中性" in neutral["badge"]
+    assert jpg["note"] == "相机 JPG" and "电脑预测" not in jpg["note"]
+    assert pred["note"] == "电脑预测" and pred["badge"] == "电脑预测" and pred["orig"] == "原图"
+    assert neutral["note"] == "中性转换" and neutral["badge"] == "RAW" and neutral["orig"] == "原图"
     emb = out["embedded"]
-    assert "内嵌的小预览" in emb["note"] and "不是配方预测" in emb["note"] and "照片本身" not in emb["note"]
-    assert "内嵌" in emb["orig"] and "照片本身" not in emb["orig"] and "预测" not in emb["badge"]
-    assert jpg["badge"] == "只有 DNG"
+    assert emb["note"] == "内嵌预览" and emb["badge"] == "RAW" and emb["orig"] == "原图"
+    assert jpg["badge"] == "RAW"

@@ -121,7 +121,7 @@ def test_crop_api(client, card):
     bad = client.put(f"/api/photos/{p['id']}/crop", json={"preset": "xpan-65-24", "rect": [0, 0, 1, 1]})
     assert bad.status_code == 422 and bad.json()["error"] == "ratio_mismatch"
     assert (
-        client.put(f"/api/photos/{p['id']}/crop", json={"preset": "free", "rect": [0, 0, 1, 1], "angle_deg": 12}).json()["error"] == "bad_angle"
+        client.put(f"/api/photos/{p['id']}/crop", json={"preset": "free", "rect": [0, 0, 1, 1], "angle_deg": 50}).json()["error"] == "bad_angle"
     )
     # 还原
     gone = client.delete(f"/api/photos/{p['id']}/crop").json()
@@ -167,8 +167,17 @@ def test_export_errors(client, card, settings, volumes):
     in_lib = client.post(f"/api/photos/{p['id']}/export", json={"dest_dir": str(settings.library_dir / "2026")})
     assert in_lib.status_code == 422 and in_lib.json()["error"] == "bad_destination"
     assert client.post(f"/api/photos/{p['id']}/export", json={"dest_dir": "relative/dir"}).status_code == 422
-    assert client.post(f"/api/photos/{p['id']}/export", json={"quality": 0}).json()["error"] == "bad_quality"
-    assert client.post(f"/api/photos/{p['id']}/export", json={"long_edge": 5}).json()["error"] == "bad_size"
+    refused = "请求无效。请刷新页面后重试。"
+    for body, detail in (
+        ({"quality": 0}, "1"),
+        ({"quality": 101}, "100"),
+        ({"long_edge": 63}, "64"),
+        ({"long_edge": 30001}, "30000"),
+    ):
+        bad = client.post(f"/api/photos/{p['id']}/export", json=body)
+        assert bad.status_code == 422 and bad.json()["message"] == refused and detail in bad.json()["detail"], bad.text
+    preview = client.get(f"/api/photos/{p['id']}/render", params={"stage": "final", "size": "preview", "quality": 29})
+    assert preview.status_code == 422 and preview.json()["message"] == refused and "30" in preview.json()["detail"]
     unwritable = client.post(f"/api/photos/{p['id']}/export", json={"dest_dir": "/proc/definitely/not/here"})
     assert unwritable.status_code == 422 and unwritable.json()["error"] == "dest_unwritable"
 

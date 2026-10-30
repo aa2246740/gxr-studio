@@ -6,7 +6,7 @@ import shutil
 import threading
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
@@ -18,11 +18,10 @@ from .. import crop as cropmod
 from ..cards import importer
 from ..cards.discovery import Card, find_cards
 from ..crop import Crop, CropError
-from ..export import ExportError, ExportOptions, export_shot
+from ..export import ExportError, ExportOptions, RevealError, reveal_export
 from ..flags import flag_enabled
 from ..library import edits, thumbs
 from ..library import sidecar as sc
-from ..raw import NEUTRAL
 from ..render import edits as render_edits
 from ..render.params import EditError, EditState
 from ..render.service import RenderUnavailable
@@ -30,11 +29,9 @@ from .errors import ApiError
 
 router = APIRouter()
 TEMP_HOME = Path(__file__).with_name("temp_home.html")
-EXPORT_SIDECAR_NOTE = "这张照片的编辑记录坏了或不见了，导出时按没有裁切、没有编辑处理；照片本身没事。"
-DENIED_NOTE = (
-    "电脑不让工作室读取外接的存储卡。请打开「系统设置 → 隐私与安全性 → 文件和文件夹」，"
-    "给运行工作室的「终端」打开「可移除的卷」（或在「完全磁盘访问权限」里打开终端），然后把卡拔出来再插一次。"
-)
+_UNSET_DEFAULTS = "0"  # nosec B105  默认装饰还没保存过时的版本号，不是口令
+EXPORT_SIDECAR_NOTE = "无法读取编辑记录，已按原图显示"
+DENIED_NOTE = "需要访问存储卡的权限。请在“系统设置 › 隐私与安全性 › 文件与文件夹”中允许。"
 
 
 def ctx(request: Request) -> Any:
@@ -53,8 +50,9 @@ class ImportRequest(BaseModel):
 class CropRequest(BaseModel):
     preset: str | None = None
     rect: list[float] | None = None
-    angle_deg: float = 0.0
+    angle_deg: float | None = None  # 不传就保持 sidecar 里的角度，不归零
     flip: bool = False
+    orientation: str | None = None
     expected_rev: int | None = None
 
 
@@ -69,6 +67,25 @@ class ExportRequest(BaseModel):
     # recipe = 一定从 RAW 渲染；camera-jpg = 一定用相机 JPG；neutral = RAW 中性转换（没有配方）
     source: str = "auto"
     precise: bool = False  # recipe 时用逐像素精确链（很慢），默认用烘焙表
+
+
+class ExportFile(BaseModel):
+    """单张导出的结果。render_label 是机器值，render_text 是给人看的字。"""
+
+    id: str
+    path: str
+    width: int
+    height: int
+    bytes: int
+    format: str
+    render: str
+    render_label: Literal["prediction", "approx", "original"]
+    render_text: str
+    prediction: bool
+    calibrated: bool | None = None
+    export_id: str | None = None
+    detail: str | None = None
+    warning: str | None = None
 
 
 class BatchExportRequest(ExportRequest):
@@ -86,14 +103,14 @@ def _cards(c: Any) -> list[Card]:
 def _card_or_404(c: Any, card_id: str) -> Card:
     card = next((x for x in _cards(c) if x.key == card_id), None)
     if card is None:
-        raise ApiError(404, "card_not_found", "找不到这张卡（是不是已经拔出了？）")
+        raise ApiError(404, "card_not_found", "找不到存储卡。请重新插入后重试。")
     return card
 
 
 def _shot_or_404(c: Any, shot_id: str) -> dict[Any, Any]:
     shot = cast(dict[str, Any] | None, c.lib.get_shot(shot_id))
     if shot is None:
-        raise ApiError(404, "photo_not_found", "找不到这张照片")
+        raise ApiError(404, "photo_not_found", "找不到这张照片。请刷新页面后重试。")
     return shot
 
 
@@ -102,7 +119,20 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
     链接变了浏览器缓存的旧图才不会被继续用（图片响应是 immutable 缓存）。
     `preview_look` 说明默认画面是什么（相机 JPG / 原厂 04 电脑模拟=电脑预测 / 中性转换），界面据此标注。"""
     sid = shot["shot_id"]
-    vq = f"?v={data_version}" if data_version and "jpg" not in shot["files"] else ""
+    rev = int(shot.get("sidecar_rev") or 0)
+    token = _UNSET_DEFAULTS
+    if render is not None:
+        from ..finish.serve import defaults_token
+
+        token = defaults_token(render.home)
+    if data_version and "jpg" not in shot["files"]:
+        vq = f"?v={data_version}" + (f"&r={rev}" if rev else "")
+    elif rev:
+        vq = f"?v={rev}"
+    else:
+        vq = ""
+    if token != _UNSET_DEFAULTS:
+        vq = f"{vq}&d={token}" if vq else f"?d={token}"
     return {
         "id": sid,
         "name": shot["name"],
@@ -127,7 +157,8 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
 
 
 def _crop_error(exc: CropError) -> ApiError:
-    return ApiError(422, exc.code, exc.message)
+    extra = {"detail": exc.detail} if exc.detail else None
+    return ApiError(422, exc.code, exc.message, extra)
 
 
 def _crop_for_export(c: Any, shot: dict[Any, Any]) -> Crop | None:
@@ -148,29 +179,34 @@ def _export_source(c: Any, shot: dict[Any, Any], req: ExportRequest) -> tuple[st
     except (sc.SidecarCorrupt, EditError):
         edit = EditState()  # 编辑读不出来不挡导出；退回没有编辑
     if req.source not in ("auto", "recipe", "camera-jpg", "neutral"):
-        raise ApiError(422, "bad_source", "画面来源只能是 auto / recipe / camera-jpg / neutral")
+        raise ApiError(422, "bad_source", "请求无效。请刷新页面后重试。", {"detail": "画面来源无法识别。"})
+    # auto 交给成片流水线：选了配方用 RAW，否则有相机 JPG 就用相机 JPG，只有 RAW 再用 04 标准。
     want = req.source
-    if want == "auto":
-        edited = edit.recipe is not None or not edit.adjust.is_identity or edit.master is not None
-        if "dng" in files and (edited or "jpg" not in files) and c.render.available():
-            want = "recipe"
-        elif "jpg" in files:
-            want = "camera-jpg"
-        else:
-            want = "neutral"
-    if want == "recipe" and "dng" not in files:
-        raise ApiError(409, "no_raw", "这张照片没有 RAW，只有相机 JPG，不能套配方。")
+    if want == "recipe" and "dng" not in files and edit.recipe is None:
+        raise ApiError(409, "no_raw", "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。")
     if want == "camera-jpg" and "jpg" not in files:
-        raise ApiError(409, "no_jpg", "这张照片没有配对的相机 JPG。")
+        raise ApiError(409, "no_jpg", "无法导出相机 JPG。这张照片没有相机 JPG。")
     if want == "neutral" and "dng" not in files:
-        raise ApiError(409, "no_raw", "这张照片没有 RAW，不能出中性转换。")
+        raise ApiError(409, "no_raw", "无法导出中性转换。这张照片没有 RAW 文件。")
     return want, edit
+
+
+def _needs_finish_export(edit: EditState) -> bool:
+    """边框、时间戳、透视、畸变、旋转、翻转和四项新调整走成片，不再走旧的裁剪导出。"""
+    geom = edit.geometry
+    if geom is not None and (geom.expands() or geom.rotate90 or geom.flip):
+        return True
+    if edit.frame is not None and edit.frame.style != "none":
+        return True
+    if edit.stamp is not None and edit.stamp.enabled:
+        return True
+    return any(getattr(edit.adjust, name) for name in ("black_point", "saturation", "vibrance", "vignette"))
 
 
 def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, Any]:
     dest = Path(req.dest_dir).expanduser() if req.dest_dir else c.settings.export_dir
     if not dest.is_absolute():
-        raise ApiError(422, "bad_destination", "导出文件夹要写完整路径")
+        raise ApiError(422, "bad_destination", "无法导出。请填写导出到的完整路径。")
     want, edit = _export_source(c, shot, req)
     warning = EXPORT_SIDECAR_NOTE if c.lib.sidecar_problem(shot) else None
     try:
@@ -182,12 +218,27 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
                 tiers.quality if req.quality_tier is not None else req.quality,
                 req.format,
             )
-        renderer, use_raw = NEUTRAL, want == "neutral"
-        if want == "recipe":
-            renderer, use_raw = c.render.renderer(shot, edit, precise=req.precise), True
-        res = export_shot(c.lib, shot, _crop_for_export(c, shot), dest, opts, _forbidden_roots(c), renderer, use_raw)
+        if want == "recipe" and "dng" not in shot["files"] and edit.recipe is None:
+            raise ApiError(409, "no_raw", "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。")
+        from ..finish.serve import export_finish
+
+        side, _problem = c.lib.read_sidecar_or_default(shot)
+        res = export_finish(
+            c.render,
+            c.lib,
+            shot,
+            edit,
+            side,
+            dest,
+            _forbidden_roots(c),
+            quality=opts.quality,
+            long_edge=opts.long_edge,
+            fmt=opts.fmt,
+            base=want,
+        )
     except ExportError as exc:
-        raise ApiError(409 if exc.code in ("no_jpg_source", "raw_unreadable") else 422, exc.code, exc.message) from exc
+        extra = {"detail": exc.detail} if exc.detail else None
+        raise ApiError(409 if exc.code in ("no_jpg_source", "raw_unreadable") else 422, exc.code, exc.message, extra) from exc
     except RenderUnavailable as exc:
         raise ApiError(409, exc.code, exc.message, {"status": c.render.status()}) from exc
     except EditError as exc:
@@ -200,11 +251,19 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
         "bytes": res.bytes,
         "format": res.format,
         "render": res.render,
-        "render_label": res.render_label,
-        "prediction": want == "recipe",
-        "calibrated": renderer.calibrated if want == "recipe" else None,
+        "render_label": res.render_kind,
+        "render_text": res.render_label,
+        "prediction": res.render_kind == "prediction",
+        "calibrated": res.calibrated,
+        **({"detail": res.detail} if res.detail else {}),
         **({"warning": warning} if warning else {}),
     }
+
+
+def _remember_export(c: Any, export_id: str, item: dict[Any, Any]) -> dict[Any, Any]:
+    path = Path(item["path"])
+    c.exports.note(export_id, path.parent, path)
+    return {**item, "export_id": export_id}
 
 
 # ---- 页面与基础 -------------------------------------------------------------
@@ -281,7 +340,7 @@ def start_import(body: ImportRequest, request: Request) -> Any:
     card = _card_or_404(c, body.card_id)
     with c.import_lock:
         if c.jobs.active("import"):
-            raise ApiError(409, "import_running", "已经有一个导入在进行了")
+            raise ApiError(409, "import_running", "无法开始导入。已经有一个导入在进行。")
         base = c.import_options or importer.ImportOptions(min_free_bytes=c.settings.min_free_bytes)
         opts = replace(
             base,
@@ -307,7 +366,7 @@ def list_jobs(request: Request) -> list[Any]:
 def get_job(job_id: str, request: Request) -> Any:
     job = ctx(request).jobs.get(job_id)
     if job is None:
-        raise ApiError(404, "job_not_found", "没有这个任务")
+        raise ApiError(404, "job_not_found", "找不到这个任务。请刷新页面后重试。")
     return job.to_dict()
 
 
@@ -315,7 +374,7 @@ def get_job(job_id: str, request: Request) -> Any:
 def cancel_job(job_id: str, request: Request) -> Any:
     job = ctx(request).jobs.get(job_id)
     if job is None:
-        raise ApiError(404, "job_not_found", "没有这个任务")
+        raise ApiError(404, "job_not_found", "找不到这个任务。请刷新页面后重试。")
     job.cancel.set()
     return job.to_dict()
 
@@ -358,8 +417,10 @@ def _image(request: Request, shot_id: str, size: int) -> Response:
         except FileNotFoundError:
             continue
     if path is None or data is None:
-        raise ApiError(404, "no_image", "这张照片读不出图像")
-    headers = {"Cache-Control": "private, max-age=31536000, immutable"}
+        raise ApiError(404, "no_image", "无法读取这张照片。文件可能已损坏。")
+    tail = path.stem.rsplit("-", 1)[-1]
+    mutable = tail.startswith("e") and any(ch.isdigit() for ch in tail)
+    headers = {"Cache-Control": "private, no-cache" if mutable else "private, max-age=31536000, immutable"}
     if path.stem.endswith("-" + thumbs.EMBEDDED_VARIANT):
         headers.update({"X-GXR-Look": "embedded", "X-GXR-Label": quote(thumbs.EMBEDDED_LABEL)})
     else:
@@ -385,9 +446,9 @@ def photo_preview(shot_id: str, request: Request) -> Any:
 def rebuild_index(request: Request, verify: bool = False) -> dict[Any, Any]:
     c = ctx(request)
     if not flag_enabled(c.settings, "library_rebuild"):
-        raise ApiError(403, "feature_disabled", "重建索引已关闭")
+        raise ApiError(403, "feature_disabled", "无法重建索引。这个功能已关闭。")
     if c.jobs.active("import"):
-        raise ApiError(409, "import_running", "导入进行中，稍后再重建索引")
+        raise ApiError(409, "import_running", "无法重建索引。请等导入完成后再试。")
     rep = c.lib.rebuild(verify=verify)
     return {
         "shots": rep.shots,
@@ -418,22 +479,42 @@ def _put_crop(request: Request, shot_id: str, body: CropRequest | None, reset: b
     shot = _shot_or_404(c, shot_id)
     warning = c.lib.sidecar_problem(shot)
     try:
+        flip = body.flip if body else False
+        angle = body.angle_deg if body is not None and "angle_deg" in body.model_fields_set else None
+        if body and body.orientation in ("landscape", "portrait"):
+            frame = c.lib.read_sidecar_or_default(shot)[0].get("frame") or {}
+            fw, fh = frame.get("width"), frame.get("height")
+            size_ok = (
+                "style" not in frame
+                and isinstance(fw, int)
+                and not isinstance(fw, bool)
+                and isinstance(fh, int)
+                and not isinstance(fh, bool)
+                and fw > 0
+                and fh > 0
+            )
+            if size_ok and isinstance(fw, int) and isinstance(fh, int) and not isinstance(fw, bool) and not isinstance(fh, bool):
+                wide = fw >= fh
+            else:
+                sw, sh = shot.get("width"), shot.get("height")
+                wide = isinstance(sw, int) and not isinstance(sw, bool) and isinstance(sh, int) and not isinstance(sh, bool) and sw >= sh
+            flip = (body.orientation == "landscape") != wide
         out = edits.write_crop(
             c.lib,
             shot,
             preset=body.preset if body else None,
             rect=body.rect if body else None,
-            angle_deg=body.angle_deg if body else 0.0,
-            flip=body.flip if body else False,
+            angle_deg=angle,
+            flip=flip,
             reset=reset,
             expected_rev=body.expected_rev if body else None,
         )
     except CropError as exc:
         raise _crop_error(exc) from exc
     except edits.RevisionConflict as exc:
-        raise ApiError(409, "rev_conflict", f"这张照片的编辑已经被改过（现在是第 {exc.current} 版），请刷新后再试") from exc
+        raise ApiError(409, "rev_conflict", "这张照片已在别处修改。请刷新后重试。", {"detail": f"现在是第 {exc.current} 版"}) from exc
     except sc.SidecarTooNew as exc:
-        raise ApiError(409, "sidecar_too_new", "这张照片的编辑文件来自更新的版本，只读") from exc
+        raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc
     return {**out, "warning": warning} if warning else out
 
 
@@ -455,10 +536,13 @@ def crop_presets() -> list[Any]:
 # ---- 导出 -------------------------------------------------------------------
 
 
-@router.post("/api/photos/{shot_id}/export", response_model=None)
+@router.post("/api/photos/{shot_id}/export", response_model=ExportFile)
 def export_photo(shot_id: str, body: ExportRequest, request: Request) -> Any:
     c = ctx(request)
-    return _export_one(c, _shot_or_404(c, shot_id), body)
+    item = _export_one(c, _shot_or_404(c, shot_id), body)
+    path = Path(item["path"])
+    item["export_id"] = c.exports.note_new(path.parent, path)
+    return item
 
 
 @router.post("/api/export", status_code=202, response_model=None)
@@ -476,7 +560,7 @@ def export_batch(body: BatchExportRequest, request: Request) -> Any:
     elif body.date:
         shots = c.lib.list_shots(body.date, limit=100000)
     else:
-        raise ApiError(422, "nothing_to_export", "要给 ids 或 date")
+        raise ApiError(422, "nothing_to_export", "请求无效。请刷新页面后重试。", {"detail": "要给出照片或日期"})
 
     class Progress:
         def __init__(self) -> None:
@@ -485,7 +569,7 @@ def export_batch(body: BatchExportRequest, request: Request) -> Any:
                 {
                     "id": i,
                     "error": "photo_not_found",
-                    "message": "这张照片已经不在图库里了（可能刚补全了另一半、id 变了，或被删掉），没有导出；请刷新后重新选一下",
+                    "message": "找不到这张照片。请刷新后重新选择。",
                 }
                 for i in missing
             ]
@@ -503,15 +587,17 @@ def export_batch(body: BatchExportRequest, request: Request) -> Any:
                 progress.state = "cancelled"
                 return
             try:
-                item = _export_one(c, shot, body)
+                item = _remember_export(c, job.id, _export_one(c, shot, body))
             except ApiError as exc:
                 item = {"id": shot["shot_id"], "error": exc.code, "message": exc.message}
+                if exc.extra.get("detail"):
+                    item["detail"] = exc.extra["detail"]
             except Exception as exc:  # 一张坏了不要拖垮整批；提示用白话，异常原文（可能带路径）不给界面
                 item = {
                     "id": shot["shot_id"],
                     "error": "failed",
                     "code": type(exc).__name__,
-                    "message": f"这张没导出成功，其余的不受影响（错误代码：{type(exc).__name__}）。照片本身没有被改动。",
+                    "message": "导出失败。请重试。",
                 }
             with progress._lock:
                 progress.results.append(item)
@@ -519,3 +605,17 @@ def export_batch(body: BatchExportRequest, request: Request) -> Any:
         progress.state = "done"
 
     return c.jobs.start("export", progress, work).to_dict()
+
+
+@router.post("/api/exports/{export_id}/reveal", response_model=None)
+def reveal_exported(export_id: str, request: Request) -> dict[str, Any]:
+    """在访达中显示这次导出的第一张。不接受路径参数，只打开本进程记下的文件。"""
+    found = ctx(request).exports.first(export_id)
+    if found is None:
+        raise ApiError(404, "export_not_found", "找不到这次导出。请重新导出后再试。")
+    root, path, ident = found
+    try:
+        shown = reveal_export(root, path, ident)
+    except RevealError as exc:
+        raise ApiError(exc.status, exc.code, exc.message) from exc
+    return {"ok": True, "path": str(shown)}

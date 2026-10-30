@@ -145,13 +145,13 @@ def run(job_dir: Path) -> int:
     except SceneError as exc:
         _write(job_dir / "result.json", {"state": "error", "code": exc.code, "message": exc.message})
         return 1
-    except Exception as exc:  # noqa: BLE001  子进程里任何问题都要写成结果文件，父进程才能告诉用户
+    except Exception:  # noqa: BLE001  子进程里任何问题都要写成结果文件，父进程才能告诉用户
         _write(
             job_dir / "result.json",
             {
                 "state": "error",
                 "code": "fit_failed",
-                "message": f"拟合没有完成：{type(exc).__name__}: {exc}",
+                "message": "无法生成配方。请重试。",
                 "trace": traceback.format_exc()[-2000:],
             },
         )

@@ -1,6 +1,7 @@
 /* GXR 电脑工作室：暗色界面。配色沿用 research/studio_design/prototype.html。 */
 
-:root {
+/* 深色沿用原来的值；浅色按 DESIGN.md 13.2 新增（跟随系统，或 data-theme 强制）。 */
+:root, :root[data-theme=dark] {
   --bg: #121315;
   --panel: #1b1c1f;
   --panel2: #25272b;
@@ -8,9 +9,31 @@
   --text: #e8e8ea;
   --dim: #9a9ca3;
   --acc: #e8b04a;
+  --acc-ink: #e8b04a;
+  --on: #1d1606;
   --ok: #6cc487;
   --warn: #e0a13a;
   --bad: #e06a5a;
+  --card: #1f2024;
+  --stage: #0b0c0d;
+  --amber-bg: #2a2112;
+  --amber-line: #5a4520;
+  --grey-bg: #222326;
+  --grey-line: #3d4046;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme=dark]) {
+    --bg: #f3f3f5; --panel: #ffffff; --panel2: #ececef; --line: #d8dadf;
+    --text: #1c1d21; --dim: #5d616a; --acc: #b8861f; --acc-ink: #8a5d10; --on: #1d1606;
+    --ok: #237a45; --warn: #94600a; --bad: #b42f1f; --card: #fafafb; --stage: #d9dadd;
+    --amber-bg: #fbf3e2; --amber-line: #e6cf9a; --grey-bg: #f0f0f2; --grey-line: #c9ccd2;
+  }
+}
+:root[data-theme=light] {
+  --bg: #f3f3f5; --panel: #ffffff; --panel2: #ececef; --line: #d8dadf;
+  --text: #1c1d21; --dim: #5d616a; --acc: #b8861f; --acc-ink: #8a5d10; --on: #1d1606;
+  --ok: #237a45; --warn: #94600a; --bad: #b42f1f; --card: #fafafb; --stage: #d9dadd;
+  --amber-bg: #fbf3e2; --amber-line: #e6cf9a; --grey-bg: #f0f0f2; --grey-line: #c9ccd2;
 }
 
 * { box-sizing: border-box; }
@@ -171,7 +194,7 @@ input[type=range] { width: 100%; accent-color: var(--acc); }
 }
 .viewer-bottom .spacer { flex: 1; }
 .side {
-  width: 340px; flex: none; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column;
+  width: 380px; flex: none; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column;
 }
 .side-tabs { display: flex; border-bottom: 1px solid var(--line); }
 .side-tabs button {
@@ -293,5 +316,149 @@ table.keys td:first-child { white-space: nowrap; width: 150px; }
 .diffs { margin: 0; padding-left: 20px; }
 .ok-text { color: var(--ok); }
 .recipe-card { border-top: 1px solid var(--line); padding: 10px 0; }
+.confirm-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; }
+.confirm-row span { flex: 1; }
+/* 置灰（COPY 3.10：没有可以撤销的内容、配方不能用时，按钮置灰） */
+[aria-disabled="true"] { opacity: .45; cursor: default; }
+.dimmed-block [aria-disabled="true"] { opacity: 1; } /* 外层已经变淡，里面的按钮不再叠加 */
 .recipe-head { display: flex; align-items: center; gap: 4px; }
 .recipe-head .grow { flex: 1; }
+
+/* ---- v2：大图（照片条、画面区、状态行、底栏）---- */
+.viewer-body { display: flex; flex: 1; min-height: 0; }
+.stagecol { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.stage-area {
+  flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center;
+  background: var(--stage); overflow: hidden; padding: 24px;
+}
+.pv { position: relative; overflow: hidden; line-height: 0; }
+.pv-win { position: absolute; overflow: hidden; }
+.pv-cv { position: absolute; }
+/* 画面本身决定外层的尺寸（裁切框按百分比贴在它上面），所以不能是绝对定位 */
+.pv-img { display: block; max-width: none; user-select: none; pointer-events: none; }
+.pv-vig { position: absolute; inset: 0; pointer-events: none; }
+.fade-in { animation: fadein .15s ease-out; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+.stage-note { margin: 8px 0 0; font-size: 12px; color: var(--dim); }
+.stage-note.warn-text { color: var(--warn); }
+.status {
+  height: 34px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px; font-size: 12px;
+  border-top: 1px solid var(--line); background: var(--panel);
+}
+.status .right { margin-left: auto; color: var(--dim); }
+.chip { display: inline-block; font-size: 12px; border-radius: 999px; padding: 0 9px; border: 1px solid var(--line); white-space: nowrap; }
+.chip.ok { color: var(--ok); border-color: var(--ok); }
+.chip.warn { color: var(--warn); border-color: var(--warn); }
+.chip.grey { color: var(--dim); }
+.photobar {
+  display: flex; align-items: center; gap: 12px; padding: 0 14px; height: 42px; flex: none; font-size: 13px;
+  border-bottom: 1px solid var(--line);
+}
+.photobar .count { margin-left: auto; }
+.bottombar {
+  display: flex; align-items: center; gap: 8px; padding: 0 14px; height: 46px; flex: none;
+  border-top: 1px solid var(--line); background: var(--panel);
+}
+.bottombar .spacer { flex: 1; }
+.side-tabs button { min-width: 0; }
+
+/* ---- v2：侧栏控件 ---- */
+.pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pane-head h2 { margin: 0; }
+.row { margin: 10px 0 6px; }
+.row .lab { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; }
+.row output { min-width: 58px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+.ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); }
+.seg { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; align-items: center; }
+.seg-label { min-width: 40px; }
+.seg button { font-size: 13px; }
+.field-line { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; font-size: 13px; }
+.field-line select, .field-line input[type=date] { flex: 1; min-width: 0; }
+.toggle-line { display: block; margin: 6px 0; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 13px; }
+.sec { margin: 14px 0 4px; font-size: 13px; color: var(--dim); }
+.foot { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 6px; align-items: center; }
+.fine { font-size: 12px; color: var(--dim); margin: 4px 0; }
+.strong { font-weight: 600; }
+.notready { font-size: 13px; color: var(--dim); border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; margin: 10px 0; }
+.notice { border: 1px solid var(--amber-line); background: var(--amber-bg); border-radius: 10px; padding: 9px 12px; margin: 10px 0; font-size: 13px; }
+.notice.grey { border-color: var(--grey-line); background: var(--grey-bg); }
+.flash { animation: flash .45s ease-in-out; }
+@keyframes flash { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+.dimmed-block, .dimmed { opacity: .45; }
+.row-tags { margin: 6px 0; }
+.base-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 6px 0 4px; }
+.base-grid .btn { text-align: left; font-size: 12px; padding: 5px 8px; }
+.knob { margin: 6px 0; }
+.knob-tag-line { margin-bottom: 2px; }
+.tag { font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--amber-line); color: var(--acc-ink); }
+.tag.soft { color: var(--dim); border-color: var(--line); }
+.swrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 13px; }
+.sw { width: 24px; height: 24px; border-radius: 50%; border: 0; padding: 0; box-shadow: inset 0 0 0 1px rgba(127,127,127,.5); }
+.sw[aria-pressed=true] { outline: 2px solid var(--acc); outline-offset: 2px; }
+/* 两列：右栏只有 380px，三列会把第三列挤出面板。minmax(0, 1fr) 让卡片随面板收缩，不横向溢出 */
+.fcards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 8px 0; }
+.fcard {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 6px; text-align: center; cursor: pointer;
+  color: var(--text); font-size: 12px;
+}
+.fcard[aria-pressed=true] { border-color: var(--acc); box-shadow: inset 0 0 0 1px var(--acc); }
+/* 缩略图完整显示成片：4:3 的框，完整装入（contain），不裁掉底部的标志和参数（V2-16） */
+.fcard .thumb { aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 6px; background: var(--stage); }
+.fcard .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.fcard { min-width: 0; }
+.fcard .nm { margin-top: 4px; }
+/* 面板底部的按钮：内容滚动时它一直贴在面板底边，不会被截断（COPY 3.1 的那一行按钮） */
+.side-body .sticky-foot {
+  position: sticky; bottom: -14px; margin: 14px -14px -14px; padding: 10px 14px 14px; background: var(--panel);
+  border-top: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+}
+.sticky-foot .end { margin-left: auto; }
+/* 裁切的尺寸提示放在画面右下角，只写数字（COPY 3.1） */
+.crop-size {
+  position: absolute; right: 8px; bottom: 8px; padding: 1px 7px; border-radius: 4px; background: rgba(0, 0, 0, .5);
+  color: #fff; font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.export-list { margin: 6px 0; padding: 0; list-style: none; font-size: 13px; }
+.export-list li { padding: 2px 0; }
+.curve-wrap { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.curve { width: 220px; height: 220px; background: var(--stage); border: 1px solid var(--line); border-radius: 8px; touch-action: none; display: block; }
+.curve .curve-bg { fill: var(--card); }
+.curve .curve-diag { stroke: var(--dim); stroke-dasharray: 4 4; stroke-width: 1; }
+.curve .curve-line { fill: none; stroke: var(--acc); stroke-width: 2; }
+.curve .curve-point { fill: var(--acc); stroke: var(--on); stroke-width: 1.5; cursor: grab; }
+.notice-line { font-size: 12px; color: var(--warn); min-height: 0; margin: 4px 0; }
+.notice-line.bad { color: var(--bad); }
+
+/* ---- v2：裁剪（框、刻度盘、参考线）---- */
+.crop-box { position: absolute; border: 2px solid var(--acc); box-shadow: 0 0 0 9999px rgba(0,0,0,.55); cursor: move; touch-action: none; }
+.crop-box .guides { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; transition: opacity .25s; }
+.crop-box .guides line, .crop-box .guides path { stroke: #fff; stroke-opacity: .85; stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.crop-box[data-fade=true][data-moving=false] .guides { opacity: .35; }
+.crop-box .h { position: absolute; width: 14px; height: 14px; background: var(--acc); border: 2px solid #fff; border-radius: 3px; margin: -7px 0 0 -7px; }
+.crop-box .h.tl { left: 0; top: 0; cursor: nwse-resize; }
+.crop-box .h.tr { left: 100%; top: 0; margin-left: -7px; cursor: nesw-resize; }
+.crop-box .h.bl { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-box .h.br { left: 100%; top: 100%; margin-left: -7px; cursor: nwse-resize; }
+.ruler {
+  position: relative; height: 46px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  overflow: hidden; cursor: ew-resize; user-select: none; margin: 6px 0;
+}
+.ruler .tick { position: absolute; bottom: 0; width: 1px; height: 9px; background: var(--dim); }
+.ruler .tick.l { height: 16px; }
+.ruler .tick.n { height: 26px; background: var(--text); }
+.ruler .tnum { position: absolute; top: 4px; font-size: 11px; color: var(--dim); transform: translateX(-50%); }
+.ruler .pointer { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--acc); }
+.ruler.out { opacity: .6; }
+.menu {
+  position: fixed; z-index: 40; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.25); min-width: 230px; max-height: 60vh; overflow-y: auto;
+}
+.menu .mt { font-size: 12px; color: var(--dim); padding: 6px 8px 2px; }
+.menu .mi { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 5px 8px; border-radius: 6px; }
+.menu .mi:hover { background: var(--panel2); }
+.menu .mi[aria-selected=true] { color: var(--acc-ink); font-weight: 600; }
+.toast {
+  position: fixed; left: 50%; bottom: 62px; transform: translateX(-50%); z-index: 70; background: var(--panel2);
+  border: 1px solid var(--line); padding: 7px 16px; border-radius: 99px; font-size: 13px; pointer-events: none; max-width: 90vw;
+}

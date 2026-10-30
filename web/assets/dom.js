@@ -28,6 +28,19 @@ export function toast(message, kind = 'info') {
   setTimeout(() => el.remove(), kind === 'error' ? 6000 : 3200);
 }
 
+// 错误（COPY 3.13）：主句照常显示；后端给了 detail（异常原文、路径、内部键名）时，主句下面放一个默认收起的「详细信息」。
+export function errorBody(err, fallback) {
+  const text = (err && err.message) || fallback;
+  const detail = err && err.data && err.data.detail;
+  if (!detail) return text;
+  // 主句单独放在一个元素里，详细信息不和它混在一起
+  return h('div', {}, h('p', { class: 'err-main' }, text), h('details', { class: 'err-detail' }, h('summary', {}, '详细信息'), h('p', { class: 'small dim' }, String(detail))));
+}
+
+export function toastError(err, fallback) {
+  toast(errorBody(err, fallback), 'error');
+}
+
 const modalStack = [];
 
 export function modalOpen() {
@@ -48,7 +61,7 @@ export function openModal(title, body, { wide = false, onClose } = {}) {
     h(
       'div',
       { class: `modal${wide ? ' wide' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
-      h('div', { class: 'modal-head' }, h('h2', {}, title), h('button', { class: 'btn ghost', type: 'button', onclick: close, title: '关闭（Esc）' }, '✕')),
+      h('div', { class: 'modal-head' }, h('h2', {}, title), h('button', { class: 'btn ghost', type: 'button', onclick: close, title: '关闭' }, '✕')),
       h('div', { class: 'modal-body' }, body),
     ),
   );
@@ -79,6 +92,13 @@ export function fmtBytes(n) {
 }
 
 // "2026-10-30T09:13:00" -> "10-30 09:13"
+// 只要时:分（照片条上日期在前，时间在后：2026-10-23 17:41）
+export function fmtClock(iso) {
+  if (!iso) return '未知时间';
+  const m = /T(\d{2}:\d{2})/.exec(iso);
+  return m ? m[1] : iso;
+}
+
 export function fmtTime(iso) {
   if (!iso) return '未知时间';
   const m = /^\d{4}-(\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso);

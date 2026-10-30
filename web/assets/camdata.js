@@ -12,7 +12,7 @@ const NEW_KNOBS_FROM = 135;
 export function applyCamdataStatus(s) {
   const prev = state.camdata;
   if (!s) {
-    state.camdata = { ...(prev || {}), ready: false, state: 'unknown', message: '读不到相机数据的状态', generation: null };
+    state.camdata = { ...(prev || {}), ready: false, state: 'unknown', message: '无法读取相机配方文件。请重试。', generation: null };
     return state.camdata;
   }
   const cd = s.camera_data || {};
@@ -61,8 +61,8 @@ function cameraDataImported() {
 // 设置里的一行行摘要
 export function camdataSummary() {
   const c = state.camdata;
-  const camera = cameraDataImported() ? `已导入（第 ${c.generation} 代）` : '还没导入';
-  const calibration = c?.calibration === 'ready' ? '已导入' : c?.calibration === 'invalid' ? '需要重新导入' : '还没导入';
+  const camera = cameraDataImported() ? '已导入' : '未导入';
+  const calibration = c?.calibration === 'ready' ? '已导入' : c?.calibration === 'invalid' ? '需要重新导入' : '未导入';
   return { camera, calibration };
 }
 
@@ -78,11 +78,9 @@ export function camdataGuide({ onDone } = {}) {
   if (cameraDataImported()) return calibrationGuide();
   return h(
     'div',
-    { class: 'camdata-guide', role: 'region', 'aria-label': '相机数据还没导入' },
-    h('h3', {}, '还没有导入相机数据'),
-    h('p', { class: 'small' }, '电脑预测要用相机里的配方程序。'),
-    h('p', { class: 'small' }, '插入装有配方程序的存储卡，点「从卡导入」。'),
-    cameraImportControls({ onDone }),
+    { class: 'camdata-guide', role: 'region', 'aria-label': '未导入相机配方文件' },
+    h('h3', {}, state.cards && state.cards.length ? '存储卡上没有相机配方文件（GXRCE.DAT）' : '未导入相机配方文件'),
+            cameraImportControls({ onDone }),
   );
 }
 
@@ -94,8 +92,8 @@ export function cameraImportControls({ onDone } = {}) {
     for (const b of box.querySelectorAll('button')) b.disabled = on;
   };
   const finish = async (r) => {
-    toast('相机数据已导入', 'ok');
-    msg.textContent = r?.message || '相机数据已导入。';
+    toast('已导入相机配方文件', 'ok');
+    msg.textContent = r?.message || '已导入相机配方文件';
     choices.replaceChildren();
     await loadCamdata();
     if (onDone) onDone();
@@ -104,7 +102,7 @@ export function cameraImportControls({ onDone } = {}) {
     type: 'file',
     accept: '.DAT,.dat',
     hidden: true,
-    'aria-label': '选择 GXRCE.DAT 文件',
+    'aria-label': '选择相机配方文件',
     onchange: async (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
@@ -124,13 +122,13 @@ export function cameraImportControls({ onDone } = {}) {
   const importCard = async (cardId) => {
     busy(true);
     choices.replaceChildren();
-    msg.textContent = '正在从卡读取…';
+    msg.textContent = '正在读取存储卡…';
     try {
       await finish(await api('/api/camdata/import-card', { method: 'POST', body: cardId ? { card_id: cardId } : {} }));
     } catch (err) {
       msg.textContent = err.message;
       if (err.code === 'multiple_cards' && err.data?.cards) {
-        choices.replaceChildren(...err.data.cards.map((c) => h('button', { class: 'btn', type: 'button', onclick: () => importCard(c.id) }, `用卡「${c.label}」`)));
+        choices.replaceChildren(...err.data.cards.map((c) => h('button', { class: 'btn', type: 'button', onclick: () => importCard(c.id) }, `从「${c.label}」导入`)));
       }
     } finally {
       busy(false);
@@ -139,9 +137,8 @@ export function cameraImportControls({ onDone } = {}) {
   const box = h(
     'div',
     { class: 'camdata-import' },
-    h('div', { class: 'guide-actions' }, h('button', { class: 'btn primary', type: 'button', onclick: () => importCard() }, '从卡导入')),
-    h('p', { class: 'small dim' }, '或者选择一个 GXRCE.DAT 文件：'),
-    h('div', { class: 'guide-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => fileInput.click() }, '选择 GXRCE.DAT 文件…'), fileInput),
+    h('div', { class: 'guide-actions' }, h('button', { class: 'btn primary', type: 'button', onclick: () => importCard() }, '从存储卡导入配方')),
+        h('div', { class: 'guide-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => fileInput.click() }, '选择文件…'), fileInput),
     choices,
     msg,
   );
@@ -153,45 +150,40 @@ function calibrationGuide() {
   const invalid = c.calibration === 'invalid';
   return h(
     'div',
-    { class: 'camdata-guide', role: 'region', 'aria-label': '颜色标定还没导入' },
-    h('h3', {}, invalid ? '颜色标定需要重新导入' : '相机数据已导入，还差颜色标定'),
-    h('p', { class: 'small' }, invalid && c.calibrationMessage ? c.calibrationMessage : '颜色标定是电脑预测配方颜色用的数据。没有它，预览暂时只能看中性画面。'),
-    h('p', { class: 'small dim' }, '这一步目前只在开发这个工具的电脑上能用。'),
-    h('div', { class: 'guide-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => emit('open-settings') }, '去「设置」导入颜色标定（开发用）')),
+    { class: 'camdata-guide', role: 'region', 'aria-label': '未导入校准数据' },
+    h('h3', {}, invalid ? '校准数据与相机配方文件不匹配' : '未导入校准数据'),
+    invalid && c.calibrationMessage ? h('details', { class: 'small' }, h('summary', {}, '详细信息'), h('p', {}, c.calibrationMessage)) : null,
+        h('div', { class: 'guide-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => emit('open-settings') }, '导入校准数据')),
   );
 }
 
 // 「设置」里的入口：把开发机上的标定数据导进来。大白话说清楚"现在只有开发者能用"
 export function calibrationImportForm({ onDone } = {}) {
+  // 工作室就在项目文件夹里：输入框直接预填项目文件夹，不用手敲（COPY 3.10：标签「校准数据文件夹」）
   const input = h('input', {
     type: 'text',
-    placeholder: '/完整路径/到/项目文件夹',
-    'aria-label': '标定数据所在文件夹的完整路径',
-    value: state.camdata?.projectDir || '',   // 工作室就在项目文件夹里：直接预填，不用手敲
+    'aria-label': '校准数据文件夹',
+    value: state.camdata?.projectDir || '',
     style: { width: '100%' },
   });
-  const useProject = state.camdata?.projectDir
-    ? h('button', { class: 'btn', type: 'button', onclick: () => { input.value = state.camdata.projectDir; msg.textContent = ''; } },
-        '用工作室所在的项目文件夹')
-    : null;
   const msg = h('p', { class: 'small', role: 'status' });
-  const button = h('button', { class: 'btn', type: 'button', onclick: run }, '导入颜色标定（开发用）');
+  const button = h('button', { class: 'btn', type: 'button', onclick: run }, '导入校准数据');
   async function run() {
     const path = input.value.trim();
     if (!cameraDataImported()) {
-      msg.textContent = '请先导入相机数据（在大图的「配方」标签里点「从卡导入」），再来这里。';
+      msg.textContent = '请先导入相机配方文件';
       return;
     }
     if (!path) {
-      msg.textContent = '请先填写文件夹的完整路径。';
+      msg.textContent = '请输入完整路径';
       return;
     }
     button.disabled = true;
-    msg.textContent = '正在导入，请稍等…';
+    msg.textContent = '正在导入…';
     try {
       const r = await api('/api/calibration/import', { method: 'POST', body: { path } });
       msg.textContent = r.message;
-      toast('颜色标定已导入', 'ok');
+      toast('已导入校准数据', 'ok');
       await loadCamdata();
       if (onDone) onDone();
     } catch (err) {
@@ -203,12 +195,10 @@ export function calibrationImportForm({ onDone } = {}) {
   return h(
     'div',
     { class: 'field', dataset: { section: 'calibration' } },
-    h('strong', {}, '颜色标定（开发用）'),
-    h('p', { class: 'small' }, '这一步目前只在开发这个工具的电脑上能用：颜色标定数据还没有发给普通用户的办法。'),
-    h('p', { class: 'small dim' }, '如果你不是开发者，可以直接跳过：导入照片、裁切、导出都不受影响，只是配方的颜色预测暂时看不了。'),
-    h('p', { class: 'small dim' }, '开发者：填项目文件夹，或其中 research 文件夹的完整路径。'),
+    h('strong', {}, '校准数据'),
+    h('span', { class: 'small dim' }, '校准数据文件夹'),
     input,
-    h('div', { class: 'guide-actions' }, useProject, button),
+    h('div', { class: 'guide-actions' }, button),
     msg,
   );
 }

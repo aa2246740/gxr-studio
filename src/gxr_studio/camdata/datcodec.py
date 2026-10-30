@@ -4,7 +4,7 @@
 `ui_data.py`、`gate.c`），来源 SHA 见 `engine/PROVENANCE.json` 的 `datcodec_sources`。已有代码各认一个代数
 （`ui_data.parse_dat` 写死 127），这里把代数做成参数：
 
-- 支持 127 / 129 / 131 / 135。未登记的代数一律拒绝（`UnsupportedGeneration`），只读也不猜。
+- 支持 127 / 129 / 131 / 135 / 137 / 138。未登记的代数一律拒绝（`UnsupportedGeneration`），只读也不猜。
 - `parse()` 严格：任何没有建模的头部字节、区段尺寸、CRC、钉子（`PIN_CRC32`）对不上都抛 `DatError`。
 - `pack(parse(b)) == b` 逐字节成立（每一代都有往返测试）。解析结果里的引擎、重定位、`gxkv2r2` 块都原样保存，
   不重新编译、不改写。
@@ -77,6 +77,10 @@ PROFILES = {
     129: Profile(129, 98304, True),
     131: Profile(131, 98304, True),
     135: Profile(135, 98304, True),
+    # 137、138 和 135 同一套区段尺寸。配方映射、行池、kv2 相同。
+    # 变的是引擎长度，以及跟着引擎走的重定位、目录里的绝对地址、配方库头里的代数和它的 CRC。
+    137: Profile(137, 98304, True),
+    138: Profile(138, 98304, True),
 }
 
 
@@ -421,7 +425,7 @@ def _extension(configs: bytes, banks: Any, users: Any) -> bytes:
             for k, value in enumerate(levels):
                 lo, hi, default = struct.unpack_from("bbb", c, 15 + 3 * k)
                 if not lo <= value <= hi or (k + 1 not in visible and value != default):
-                    raise DatError(f"用户条目：{keys[k]}={value} 超出底子 {slot} 的有效范围")
+                    raise DatError(f"用户条目：{keys[k]}={value} 超出内置配方 {slot} 的有效范围")
         ordinals[slot - 1] += 1
         ordinal = ordinals[slot - 1]
         name = f"{groups[slot - 1]}{'*' if any(levels) else '-'}{ordinal:03d}"

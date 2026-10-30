@@ -1,8 +1,8 @@
-// 「配方」页：导入调色文件（.cube）→ 预览 → 做成相机配方 → 相似度和说明 → 存为我的配方；下面列出已存的"我的配方"。
+// 「配方」页：导入调色文件（.cube）→ 预览 → 做成相机配方 → 相似度和说明 → 存储为我的配方；下面列出已存的"我的配方"。
 // 流程见 research/studio_design/UX.md 3.9 / 流程 E。所有数字都是"电脑预测"。接口见 api/lut_routes.py。
 
 import { api, apiBlob, ApiError } from './api.js';
-import { h, toast, fmtBytes } from './dom.js';
+import { h, toast, fmtBytes, toastError, errorBody } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
 import { BASE_NAMES, KNOB_NAMES } from './preview.js';
 
@@ -34,7 +34,7 @@ let root = null;
 let timer = null;
 
 const LABELS = { 接近: 'ok', 大致: 'warn', 差别明显: 'bad' };
-const SIM_WORDS = { 接近: '看起来接近', 大致: '大致像', 差别明显: '差别明显，先看看效果' };
+const SIM_WORDS = { 接近: '接近', 大致: '大致', 差别明显: '差别明显' };
 
 export function renderLutPage(view) {
   root = h('div', { class: 'lut-page' });
@@ -51,7 +51,7 @@ async function load() {
     if (sp) flow.spaces = sp.spaces;
     flow.recipes = rec.recipes;
   } catch (e) {
-    flow.error = e.message;
+    flow.error = errorBody(e, '无法读取配方。请重试。');
   }
   redraw();
 }
@@ -64,7 +64,6 @@ function redraw() {
   if (!alive()) return;
   root.replaceChildren(
     h('h2', {}, '配方'),
-    h('p', { class: 'dim small' }, '8 个底子在大图的「配方」标签里选。这里可以把别人调好的色彩（.cube 调色文件）换算成相机配方，并管理你存下的配方。'),
     importSection(),
     recipesSection(),
   );
@@ -73,7 +72,7 @@ function redraw() {
 // ---------------------------------------------------------------- 导入
 
 function importSection() {
-  const sec = h('section', { class: 'lut-card' }, h('h3', {}, '导入调色文件（.cube）'));
+  const sec = h('section', { class: 'lut-card' }, h('h3', {}, '导入 LUT'));
   if (flow.error) sec.append(h('div', { class: 'result bad small' }, flow.error));
   if (!flow.cube) {
     sec.append(dropzone());
@@ -82,16 +81,16 @@ function importSection() {
   const c = flow.cube;
   const size = c.size_3d ? `${c.size_3d}×${c.size_3d}×${c.size_3d}` : `${c.size_1d} 点`;
   sec.append(
-    h('p', { class: 'small' }, `文件：${c.filename || '调色文件'} · ${c.kind} · ${size}`, c.title ? ` · “${c.title}”` : ''),
+    h('p', { class: 'small' }, `${c.filename || 'LUT'} · ${c.kind} · ${size}`, c.title ? ` · “${c.title}”` : ''),
     spaceFields(),
     previewBox(),
   );
   if (!flow.job || flow.job.state === 'cancelled' || flow.job.state === 'error') {
-    const go = h('button', { class: 'btn primary', type: 'button', disabled: !!flow.busy, onclick: startFit }, '做成相机配方');
+    const go = h('button', { class: 'btn primary', type: 'button', disabled: !!flow.busy, onclick: startFit }, '生成配方');
     sec.append(h('div', { class: 'modal-foot', style: { justifyContent: 'flex-start' } }, go,
-      h('button', { class: 'btn', type: 'button', onclick: resetFlow }, '换一个调色文件')));
-    if (flow.job?.state === 'error') sec.append(h('div', { class: 'result bad small' }, flow.job.error?.message || '这次没有做成。'));
-    if (flow.job?.state === 'cancelled') sec.append(h('p', { class: 'small dim' }, '已取消。'));
+      h('button', { class: 'btn', type: 'button', onclick: resetFlow }, '重新选择')));
+    if (flow.job?.state === 'error') sec.append(h('div', { class: 'result bad small' }, flow.job.error?.message || '无法生成配方。请重试。'));
+    if (flow.job?.state === 'cancelled') sec.append(h('p', { class: 'small dim' }, '已取消'));
     if (flow.errorCode === 'camera_data_missing' || flow.errorCode === 'camera_data_invalid') sec.append(guideFor());
   } else if (flow.job.state === 'running') {
     sec.append(progressBox());
@@ -108,7 +107,7 @@ function guideFor() {
 function dropzone() {
   const input = h('input', { type: 'file', accept: '.cube,text/plain', class: 'hidden', onchange: (e) => e.target.files[0] && takeFile(e.target.files[0]) });
   const zone = h('div', {
-    class: 'dropzone', tabindex: 0, role: 'button', 'aria-label': '选择 .cube 调色文件',
+    class: 'dropzone', tabindex: 0, role: 'button', 'aria-label': '选择 LUT',
     onclick: () => input.click(),
     onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), input.click()),
     ondragover: (e) => { e.preventDefault(); zone.classList.add('over'); },
@@ -120,16 +119,15 @@ function dropzone() {
       if (f) takeFile(f);
     },
   },
-  h('div', {}, '把 .cube 文件拖到这里，或点击选择。'),
-  h('div', { class: 'small dim' }, '它是一份色彩对照表（别人调好的颜色）。电脑会把它换算成相机能用的配方，结果是近似的。'),
-  input);
+  h('div', {}, '将 LUT 文件拖到这里，或点击选择'),
+    input);
   return zone;
 }
 
 async function takeFile(file) {
   flow.error = null;
   if (file.size > 64 * 1024 * 1024) {
-    flow.error = `这个文件有 ${fmtBytes(file.size)}，太大了，不像是常见的调色文件。`;
+    flow.error = '无法读取 LUT。文件过大。';
     redraw();
     return;
   }
@@ -138,12 +136,12 @@ async function takeFile(file) {
   try {
     const data = await api('/api/lut/upload', { method: 'POST', body: file, headers: { 'X-GXR-Filename': encodeURIComponent(file.name) } });
     Object.assign(flow, { cube: data, job: null, chosen: 0, saved: null, which: 'lut', space: data.input_space_guess || 'srgb',
-      guessed: !data.input_space_guess, output: 'srgb', outputGamut: '', name: '' });
+      guessed: !data.input_space_guess, fileGuess: !!data.input_space_guess, output: 'srgb', outputGamut: '', name: '' });
     flow.name = nextName();
     await loadPhotos();
     await refreshPreview();
   } catch (e) {
-    flow.error = e instanceof ApiError ? e.message : String(e);
+    flow.error = e instanceof ApiError ? errorBody(e, '无法读取 LUT。请重试。') : '无法读取 LUT。请重试。';
     flow.cube = null;
   } finally {
     flow.busy = null;
@@ -154,7 +152,7 @@ async function takeFile(file) {
 function nextName() {
   const used = new Set(flow.recipes.map((r) => r.name));
   for (let n = 1; ; n++) {
-    const name = `我的 LUT 配方 ${n}`;
+    const name = `我的配方 ${n}`;
     if (!used.has(name)) return name;
   }
 }
@@ -179,25 +177,25 @@ function spaceFields() {
   const sp = flow.spaces || [];
   const opt = (s) => h('option', { value: s.id, selected: s.id === flow.space }, s.label);
   const select = h('select', {
-    'aria-label': '这个调色文件是做什么用的',
-    onchange: (e) => { flow.space = e.target.value; flow.guessed = false; afterSpaceChange(); },
+    'aria-label': '输入色彩空间',
+    onchange: (e) => { flow.space = e.target.value; flow.guessed = false; flow.fileGuess = false; afterSpaceChange(); },
   },
-  h('optgroup', { label: '已经调好的画面' }, sp.filter((s) => s.kind === 'display').map(opt)),
-  h('optgroup', { label: '相机的 Log 视频（灰灰的）' }, sp.filter((s) => s.kind === 'log').map(opt)));
-  const dunno = h('button', { class: 'btn ghost small', type: 'button', onclick: () => { flow.space = 'srgb'; flow.guessed = true; afterSpaceChange(); } }, '我不知道');
-  const why = flow.cube.input_space_guess ? `已按文件名猜了一个（${flow.cube.guess_reason}），不对请改。` : (flow.cube.guess_note || '');
+  h('optgroup', { label: '画面' }, sp.filter((s) => s.kind === 'display').map(opt)),
+  h('optgroup', { label: 'Log' }, sp.filter((s) => s.kind === 'log').map(opt)));
+  const dunno = h('button', { class: 'btn ghost small', type: 'button', onclick: () => { flow.space = 'srgb'; flow.guessed = true; flow.fileGuess = false; afterSpaceChange(); } }, '不确定');
+  // 输入色彩空间是推测的：小标签「推测」，按文件名判断的理由放进它的提示气泡（COPY 3.10）
+  const guessed = flow.guessed || flow.fileGuess;
+  const why = flow.fileGuess ? `按文件名判断：${flow.cube.guess_reason}` : null;
   const adv = h('details', { class: 'small' },
-    h('summary', {}, '高级：输出色彩空间'),
+    h('summary', {}, '输出色彩空间'),
     h('div', { class: 'field-row' },
       h('select', { 'aria-label': '输出色彩空间', onchange: (e) => { flow.output = e.target.value; afterSpaceChange(); } },
         sp.filter((s) => s.kind === 'display').map((s) => h('option', { value: s.id, selected: s.id === flow.output }, s.label))),
       h('select', { 'aria-label': '输出色域', onchange: (e) => { flow.outputGamut = e.target.value; afterSpaceChange(); } },
-        [['', '色域：按色彩空间默认'], ['rec709', 'Rec.709 / sRGB 色域'], ['rec2020', 'Rec.2020 色域']].map(([v, t]) => h('option', { value: v, selected: v === flow.outputGamut }, t)))));
+        [['', '默认'], ['rec709', 'Rec.709'], ['rec2020', 'Rec.2020']].map(([v, t]) => h('option', { value: v, selected: v === flow.outputGamut }, t)))));
   return h('div', { class: 'field' },
-    h('span', {}, '这个调色文件是做什么用的？'),
-    h('div', { class: 'field-row' }, select, dunno),
-    why ? h('span', { class: 'small dim' }, why) : null,
-    flow.guessed ? h('span', { class: 'small warn-text' }, '输入空间是猜的：选错了，颜色会不对。') : null,
+    h('span', {}, '输入色彩空间'),
+    h('div', { class: 'field-row' }, select, guessed ? h('span', { class: 'tag', title: why || null }, '推测') : null, dunno),
     adv);
 }
 
@@ -217,21 +215,21 @@ async function afterSpaceChange() {
 
 function previewBox() {
   const photoSel = h('select', {
-    'aria-label': '用哪张照片看效果',
+    'aria-label': '预览照片',
     onchange: async (e) => { flow.photoId = e.target.value; await refreshPreview(); redraw(); },
-  }, h('option', { value: '' }, '示意图（没有选照片）'),
+  }, h('option', { value: '' }, '示例照片'),
   (flow.photos || []).map((p) => h('option', { value: p.id, selected: p.id === flow.photoId }, `${p.name} · ISO ${p.iso ?? '?'}`)));
   const done = flow.job?.state === 'done';
-  const tabs = [['original', flow.photoId ? '原图' : '原图（示意）'], ['lut', '加 LUT 后']];
-  if (done && flow.photoId) tabs.push(['recipe', '我们的配方预测']);
+  const tabs = [['original', '原图'], ['lut', '加 LUT 后']];
+  if (done && flow.photoId) tabs.push(['recipe', '电脑预测']);
   return h('div', { class: 'lut-preview' },
-    h('div', { class: 'field-row' }, h('span', { class: 'small dim' }, '用这张照片看效果'), photoSel),
+    h('div', { class: 'field-row' }, h('span', { class: 'small dim' }, '预览照片'), photoSel),
     h('div', { class: 'seg' }, tabs.map(([k, t]) => h('button', {
       class: 'btn', type: 'button', 'aria-pressed': String(flow.which === k),
       onclick: async () => { flow.which = k; await refreshPreview(); redraw(); },
     }, t))),
     flow.previewUrl ? h('img', { class: 'lut-img', src: flow.previewUrl, alt: '预览' }) : h('div', { class: 'lut-img empty-img small dim' }, flow.busy || '预览生成中…'),
-    h('p', { class: 'small dim' }, `${flow.previewLabel ? flow.previewLabel + ' · ' : ''}电脑预测。`, flow.previewNote));
+    h('p', { class: 'small dim' }, `${flow.previewLabel ? flow.previewLabel + ' · ' : ''}电脑预测`, flow.previewNote));
 }
 
 async function refreshPreview() {
@@ -242,7 +240,7 @@ async function refreshPreview() {
     if (flow.which === 'recipe' && flow.photoId && flow.job?.state === 'done') {
       const c = flow.job.result.candidates[flow.chosen];
       res = await apiBlob(`/api/photos/${flow.photoId}/render?max_edge=640`, { method: 'POST', body: { recipe: { kind: 'builtin', unit: c.unit, slot: c.slot, levels: c.levels } } });
-      flow.previewLabel = '配方预测（我们算的）';
+      flow.previewLabel = '电脑预测';
       flow.previewNote = '';
     } else {
       const q = spaceQuery();
@@ -250,8 +248,8 @@ async function refreshPreview() {
       if (flow.photoId) q.set('photo', flow.photoId);
       res = await apiBlob(`/api/lut/${flow.cube.cube_id}/preview?${q}`, { method: 'GET' });
       const label = decodeURIComponent(res.headers.get('X-GXR-Label') || '');
-      flow.previewLabel = flow.which === 'original' ? label : `LUT 理想效果（套在${label}上）`;
-      flow.previewNote = res.headers.get('X-GXR-Nominal-Scene') === '1' ? ' 没有 RAW 照片可用，Log 的换算只是示意。' : '';
+      flow.previewLabel = flow.which === 'original' ? label : `LUT（${label}）`;
+      flow.previewNote = res.headers.get('X-GXR-Nominal-Scene') === '1' ? ' 示例' : '';
     }
     if (n !== flow.nonce) return;
     if (flow.previewUrl) URL.revokeObjectURL(flow.previewUrl);
@@ -278,7 +276,7 @@ async function startFit() {
     flow.job = { job_id: r.job_id, state: 'running', progress: null };
     startPolling();
   } catch (e) {
-    flow.error = e.message;
+    flow.error = errorBody(e, '无法生成配方。请重试。');
     flow.errorCode = e.code || null;
     if (e.code === 'fit_busy') toast(e.message, 'info');
   } finally {
@@ -323,7 +321,6 @@ function progressBox() {
   flow.ui = { text, bar, detail };
   updateProgress();
   return h('div', { class: 'result' }, text, h('div', { class: 'progress' }, bar), detail,
-    h('div', { class: 'small dim' }, '电脑在后台算，可以去做别的；通常不到一分钟。'),
     h('div', { class: 'modal-foot', style: { justifyContent: 'flex-start' } },
       h('button', { class: 'btn', type: 'button', onclick: cancelFit }, '取消')));
 }
@@ -333,7 +330,7 @@ function updateProgress() {
   const pct = p ? Math.round(p.fraction * 100) : 0;
   const ui = flow.ui;
   if (!ui) return;
-  ui.text.textContent = `正在比较 8 个底子，找最接近的旋钮… ${pct}%`;
+  ui.text.textContent = `正在生成配方… ${pct}%`;
   ui.bar.style.width = `${pct}%`;
   ui.detail.textContent = p ? `${p.phase}${p.message ? ' · ' + p.message : ''} · 已试 ${p.evaluations} 种组合 · ${p.elapsed ?? 0} 秒` : '准备中…';
 }
@@ -342,7 +339,7 @@ async function cancelFit() {
   try {
     flow.job = await api(`/api/lut/fit/${flow.job.job_id}/cancel`, { method: 'POST' });
   } catch (e) {
-    toast(e.message, 'error');
+    toastError(e, '无法完成操作。请重试。');
   }
   stopPolling();
   redraw();
@@ -356,12 +353,12 @@ function simText(c) {
 
 function describeLevels(c) {
   const parts = [];
-  if (c.amount !== null && c.amount !== 100) parts.push(`整体强度 ${c.amount}%`);
+  if (c.amount !== null && c.amount !== 100) parts.push(`强度 ${c.amount}%`);
   for (const [k, v] of Object.entries(c.levels)) {
     if (k === 'amount' || v === 0) continue;
     parts.push(`${KNOB_NAMES[k] || k} ${v > 0 ? '+' : ''}${v}`);
   }
-  return parts.length ? parts.join('，') : '不微调，直接用底子';
+  return parts.length ? parts.join('，') : '无调整';
 }
 
 function resultBox() {
@@ -373,28 +370,25 @@ function resultBox() {
     class: 'btn', type: 'button', 'aria-pressed': String(i === flow.chosen),
     onclick: async () => { flow.chosen = i; flow.saved = null; if (flow.which === 'recipe') await refreshPreview(); redraw(); },
   }, `${x.number} ${BASE_NAMES[x.slot - 1]} ${simText(x)}`)));
-  const nameInput = h('input', { type: 'text', value: flow.name, maxlength: 40, 'aria-label': '配方名字', oninput: (e) => { flow.name = e.target.value; } });
-  const save = h('button', { class: 'btn primary', type: 'button', disabled: !!flow.busy, onclick: saveRecipe }, '存为我的配方');
+  const nameInput = h('input', { type: 'text', value: flow.name, maxlength: 40, 'aria-label': '名称', oninput: (e) => { flow.name = e.target.value; } });
+  const save = h('button', { class: 'btn primary', type: 'button', disabled: !!flow.busy, onclick: saveRecipe }, '存储为我的配方');
   return h('div', { class: 'result lut-result' },
-    h('div', { class: 'small dim' }, '最接近的底子'),
+    h('div', { class: 'small dim' }, '最接近的内置配方'),
     picks,
     h('div', { class: 'sim-line' },
-      h('span', { class: 'small dim' }, '电脑预测相似度'),
+      h('span', { class: 'small dim' }, '相似度'),
       h('b', { class: `sim ${tone}` }, simText(c)),
+      h('span', { class: 'tag' }, '电脑预测'),
       h('div', { class: 'sim-bar' }, h('i', { class: tone, style: { width: `${bar}%` } })),
-      h('span', { class: `sim-tag ${tone}` }, c.label ? SIM_WORDS[c.label] : '这个调色文件和原厂 04 几乎一样，比不出相似度')),
-    h('p', { class: 'small dim' }, res.caution),
-    h('div', { class: 'small' }, '配方内容：', `${c.number} ${BASE_NAMES[c.slot - 1]}（${describeLevels(c)}）`),
-    h('div', { class: 'small dim' }, `留出色块的差别（ΔE00，越小越像）：中位 ${c.holdout.median.toFixed(2)}，p90 ${c.holdout.p90.toFixed(2)}；原厂 04 与它的中位差 ${c.baseline04_holdout.median.toFixed(2)}。`),
-    flow.guessed ? h('div', { class: 'small warn-text' }, '输入空间是猜的，相似度只供参考。') : null,
-    h('div', { class: 'small dim' }, '与原 LUT 的差别'),
+      h('span', { class: `sim-tag ${tone}` }, c.label ? SIM_WORDS[c.label] : '接近 04 标准')),
+    h('div', { class: 'small' }, '内置配方：', `${c.number} ${BASE_NAMES[c.slot - 1]}（${describeLevels(c)}）`),
+    h('div', { class: 'small dim' }, `色差 ${c.holdout.median.toFixed(2)}`),
+    h('div', { class: 'small dim' }, '差异'),
     h('ul', { class: 'diffs' }, c.differences.map((t) => h('li', {}, t))),
-    h('details', { class: 'small dim' }, h('summary', {}, '这个数字是怎么算的'),
-      h('p', {}, res.formula), h('p', {}, `用了 ${res.samples.total} 个色块（灰阶、肤色、常见色块`, res.samples.photos.length ? `，以及 ${res.samples.photos.length} 张你的照片` : '', `），其中 ${res.samples.holdout} 个只用来验收。${res.seconds} 秒，试了 ${res.evaluations} 种组合。`)),
-    h('div', { class: 'field' }, h('span', { class: 'small dim' }, '配方名字'), nameInput),
+    h('div', { class: 'field' }, h('span', { class: 'small dim' }, '名称'), nameInput),
     h('div', { class: 'modal-foot', style: { justifyContent: 'flex-start' } }, save,
-      h('button', { class: 'btn', type: 'button', onclick: resetFlow }, '换一个调色文件')),
-    flow.saved ? h('div', { class: 'small ok-text' }, `已存为「${flow.saved.name}」。它现在只存在电脑里；写回相机卡的功能还没做好。`) : null);
+      h('button', { class: 'btn', type: 'button', onclick: resetFlow }, '重新选择')),
+    flow.saved ? h('div', { class: 'small ok-text' }, `已存储为「${flow.saved.name}」`) : null);
 }
 
 async function saveRecipe() {
@@ -403,10 +397,10 @@ async function saveRecipe() {
   try {
     flow.saved = await api('/api/my-recipes', { method: 'POST', body: { job_id: flow.job.job_id, candidate: flow.chosen, name: flow.name } });
     flow.recipes = (await api('/api/my-recipes')).recipes;
-    toast('已存为我的配方', 'ok');
+    toast(`已存储为「${flow.saved.name}」`, 'ok');
     flow.name = nextName();
   } catch (e) {
-    toast(e.message, 'error');
+    toastError(e, '无法完成操作。请重试。');
   } finally {
     flow.busy = null;
     redraw();
@@ -418,10 +412,9 @@ async function saveRecipe() {
 function recipesSection() {
   const sec = h('section', { class: 'lut-card' }, h('h3', {}, '我的配方'));
   if (!flow.recipes.length) {
-    sec.append(h('p', { class: 'small dim' }, '还没有。导入一个调色文件，或在大图的「配方」标签里调好以后，存在这里。'));
+    sec.append(h('p', { class: 'small dim' }, '还没有我的配方'));
     return sec;
   }
-  sec.append(h('p', { class: 'small dim' }, '这些配方只存在电脑里，数字都是电脑预测。写回相机卡的功能还没做好（相机里的“我的配方”目前只认旧的 4 个旋钮）。'));
   for (const r of flow.recipes) sec.append(recipeCard(r));
   return sec;
 }
@@ -429,35 +422,43 @@ function recipesSection() {
 function recipeCard(r) {
   const c = { amount: r.recipe.levels.amount ?? null, levels: r.recipe.levels };
   const sim = r.fit.similarity === null ? 'N/A' : `${Math.round(r.fit.similarity)}%`;
-  let armed = false;
-  const del = h('button', { class: 'btn ghost small', type: 'button' }, '删除');
-  del.addEventListener('click', async () => {
-    if (!armed) {
-      armed = true;
-      del.textContent = '再点一次：删除';
-      del.classList.add('danger');
-      setTimeout(() => { armed = false; del.textContent = '删除'; del.classList.remove('danger'); }, 4000);
-      return;
-    }
-    try {
-      await api(`/api/my-recipes/${r.id}`, { method: 'DELETE' });
-      flow.recipes = flow.recipes.filter((x) => x.id !== r.id);
-      redraw();
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  });
-  const rename = h('button', { class: 'btn ghost small', type: 'button', onclick: () => editName(r) }, '改名');
-  return h('div', { class: 'recipe-card' },
-    h('div', { class: 'recipe-head' }, h('b', {}, r.name), h('span', { class: 'small dim' }, ` · 相机短名 ${r.camera_short_name}`), h('span', { class: 'grow' }), rename, del),
+  const card = h('div', { class: 'recipe-card' });
+  const del = h('button', { class: 'btn ghost small', type: 'button', onclick: () => askRemove(card, r) }, '删除');
+  const rename = h('button', { class: 'btn ghost small', type: 'button', onclick: () => editName(r) }, '重命名');
+  card.append(
+    h('div', { class: 'recipe-head' }, h('b', {}, r.name), h('span', { class: 'small dim' }, ` · ${r.camera_short_name}`), h('span', { class: 'grow' }), rename, del),
     h('div', { class: 'small' }, `${String(r.recipe.slot).padStart(2, '0')} ${BASE_NAMES[r.recipe.slot - 1]}（${describeLevels(c)}）`),
-    h('div', { class: 'small dim' }, `来自调色文件${r.source.title ? `“${r.source.title}”` : ''} · 电脑预测相似度 ${sim}${r.source.input_space_guessed ? ' · 输入空间是猜的' : ''}`));
+    h('div', { class: 'small dim' }, `来自 LUT${r.source.title ? `「${r.source.title}」` : ''} · 相似度 ${sim}`,
+      r.source.input_space_guessed ? h('span', { class: 'tag' }, '推测') : null),
+  );
+  return card;
+}
+
+// 删除确认（COPY 3.10）：标题「删除「名称」？」，按钮 [取消] [删除]
+function askRemove(card, r) {
+  if (card.querySelector('.confirm-row')) return;
+  const row = h('div', { class: 'confirm-row' },
+    h('span', {}, `删除「${r.name}」？`),
+    h('button', { class: 'btn ghost small', type: 'button', onclick: () => row.remove() }, '取消'),
+    h('button', { class: 'btn danger small', type: 'button', onclick: () => removeRecipe(r) }, '删除'),
+  );
+  card.append(row);
+}
+
+async function removeRecipe(r) {
+  try {
+    await api(`/api/my-recipes/${r.id}`, { method: 'DELETE' });
+    flow.recipes = flow.recipes.filter((x) => x.id !== r.id);
+    redraw();
+  } catch (e) {
+    toastError(e, '无法完成操作。请重试。');
+  }
 }
 
 function editName(r) {
-  const next = window.prompt('新名字', r.name);
+  const next = window.prompt('名称', r.name);
   if (next === null) return;
   api(`/api/my-recipes/${r.id}`, { method: 'PUT', body: { name: next } })
     .then((doc) => { flow.recipes = flow.recipes.map((x) => (x.id === doc.id ? doc : x)); redraw(); })
-    .catch((e) => toast(e.message, 'error'));
+    .catch((e) => toastError(e, '无法完成操作。请重试。'));
 }

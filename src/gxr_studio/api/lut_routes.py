@@ -74,7 +74,7 @@ def lut_spaces() -> dict[Any, Any]:
         "spaces": spaces_listing(),
         "default_input": None,
         "default_output": "srgb",
-        "note": "不知道调色文件是给哪种画面做的？可以先选 sRGB 试，结果会标“输入空间是猜的”。",
+        "note": "",
     }
 
 
@@ -84,7 +84,7 @@ async def lut_upload(request: Request) -> Any:
     async for chunk in request.stream():
         total += len(chunk)
         if total > cubemod.MAX_BYTES:
-            raise ApiError(422, "cube_too_big", "这个文件太大了（超过 64 MB），不像是常见的调色文件。")
+            raise ApiError(422, "cube_too_big", "无法读取 LUT。文件过大。", {"detail": "超过 64 MB"})
         chunks.append(chunk)
     name = Path(unquote(request.headers.get("x-gxr-filename") or "")).name
     try:
@@ -109,7 +109,7 @@ def lut_preview(
 ) -> Any:
     c = ctx(request)
     if not 64 <= max_edge <= 1600:
-        raise ApiError(422, "bad_size", "max_edge 要在 64 到 1600 之间")
+        raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": "max_edge 要在 64 到 1600 之间"})
     shot = _shot_or_404(c, photo) if photo else None
     spec = SpaceArgs(
         space=space,
@@ -123,7 +123,7 @@ def lut_preview(
         jpeg, info = c.lut.preview(cube_id, which, spec, shot, max_edge)
     except LutError as exc:
         raise _api(exc) from exc
-    label = {"04-simulation": "04 电脑模拟", "neutral": "中性转换", "camera-jpg": "相机 JPG", "chart": "示意图"}[info["mode"]]
+    label = {"04-simulation": "04 电脑模拟", "neutral": "中性转换", "camera-jpg": "相机 JPG", "chart": "示例照片"}[info["mode"]]
     return Response(
         jpeg,
         media_type="image/jpeg",

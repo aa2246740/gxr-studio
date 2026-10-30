@@ -95,10 +95,10 @@ def guess_space(name: str, title: str = "") -> tuple[str | None, str | None]:
 
 def clean_name(name: Any) -> str:
     if not isinstance(name, str):
-        raise LutError(422, "bad_name", "名字要是文字")
+        raise LutError(422, "bad_name", "无法保存。名字无效。")
     name = re.sub(r"\s+", " ", name).strip()
     if not 1 <= len(name) <= NAME_MAX or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
-        raise LutError(422, "bad_name", f"名字要 1 到 {NAME_MAX} 个字，不能有控制字符")
+        raise LutError(422, "bad_name", "无法保存。名字长度不合适。", {"detail": f"1 到 {NAME_MAX} 个字"})
     return cast(str, name)  # 上面已经确认是 str；mypy 不把这次赋值从 Any 收窄
 
 
@@ -139,25 +139,28 @@ class LutService:
     # ---- 调色文件 -------------------------------------------------------------
     def add_cube(self, raw: bytes, filename: str = "") -> dict[Any, Any]:
         if len(raw) > cubemod.MAX_BYTES:
-            raise LutError(422, "cube_too_big", "这个文件太大了（超过 64 MB），不像是常见的调色文件。")
+            raise LutError(422, "cube_too_big", "无法读取 LUT。文件过大。", {"detail": "超过 64 MB"})
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
-            raise LutError(422, "cube_unreadable", "这个文件看不懂。请选 .cube 格式的调色文件。") from exc
+            raise LutError(422, "cube_unreadable", "无法读取 LUT。请改用 .cube 文件。") from exc
         digest = hashlib.sha256(raw).hexdigest()
         try:
             cube = Cube.parse(text, digest)
         except (ValueError, IndexError) as exc:
-            raise LutError(422, "cube_unreadable", "这个文件看不懂。请选 .cube 格式的调色文件。", {"detail": str(exc)}) from exc
+            raise LutError(422, "cube_unreadable", "无法读取 LUT。请改用 .cube 文件。", {"detail": str(exc)}) from exc
         if cube.table3 is None and cube.table1 is None:
-            raise LutError(422, "cube_unsupported", "这种调色文件暂时不支持。试试 3D 的 .cube。")
+            raise LutError(422, "cube_unsupported", "无法读取 LUT。请改用 3D 的 .cube 文件。")
         self.luts_dir.mkdir(parents=True, exist_ok=True)
         path = self.luts_dir / f"{digest}.cube"
         if not path.exists():
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_bytes(raw)
             os.replace(tmp, path)
-        guess, why = guess_space(Path(filename).name, cube.title)
+        stored_name = Path(filename).name
+        if stored_name:
+            (self.luts_dir / f"{digest}.filename").write_text(stored_name + "\n", encoding="utf-8")
+        guess, why = guess_space(stored_name, cube.title)
         return {
             "cube_id": digest,
             **self._describe(cube),
@@ -182,7 +185,7 @@ class LutService:
 
     def cube(self, cube_id: str) -> Cube:
         if not re.fullmatch(r"[0-9a-f]{64}", cube_id or ""):
-            raise LutError(404, "cube_not_found", "找不到这个调色文件，请重新拖进来。")
+            raise LutError(404, "cube_not_found", "找不到这个 LUT。请重新拖进来。")
         with self._lock:
             hit = self._cubes.get(cube_id)
             if hit is not None:
@@ -190,10 +193,10 @@ class LutService:
                 return hit
         path = self.luts_dir / f"{cube_id}.cube"
         if not path.is_file():
-            raise LutError(404, "cube_not_found", "找不到这个调色文件，请重新拖进来。")
+            raise LutError(404, "cube_not_found", "找不到这个 LUT。请重新拖进来。")
         cube = Cube.read(path)
         if cube.source_sha256 != cube_id:
-            raise LutError(409, "cube_changed", "这个调色文件被改动过，请重新拖进来。")
+            raise LutError(409, "cube_changed", "这个 LUT 已改变。请重新拖进来。")
         with self._lock:
             self._cubes[cube_id] = cube
             while len(self._cubes) > 4:
@@ -212,20 +215,20 @@ class LutService:
         output_range: str = "full",
     ) -> Target:
         if space not in SPACES:
-            raise LutError(422, "bad_space", f"不认识的输入色彩空间：{space}")
+            raise LutError(422, "bad_space", "请求无效。请刷新页面后重试。", {"detail": f"输入色彩空间：{space}"})
         if output not in SPACES:
-            raise LutError(422, "bad_space", f"不认识的输出色彩空间：{output}")
+            raise LutError(422, "bad_space", "请求无效。请刷新页面后重试。", {"detail": f"输出色彩空间：{output}"})
         for g in (input_gamut, output_gamut):
             if g is not None and g not in ("rec709", "rec2020", "vgamut", "sgamut3", "sgamut3cine"):
-                raise LutError(422, "bad_gamut", f"不认识的色域：{g}")
+                raise LutError(422, "bad_gamut", "请求无效。请刷新页面后重试。", {"detail": f"色域：{g}"})
         for r in (input_range, output_range):
             if r not in ("full", "legal"):
-                raise LutError(422, "bad_range", "范围只能是 full 或 legal")
+                raise LutError(422, "bad_range", "请求无效。请刷新页面后重试。", {"detail": "范围只能是 full 或 legal"})
         return Target(cube, space, output, input_gamut, output_gamut, input_range, output_range)
 
     # ---- 预览 -----------------------------------------------------------------
     def _chart(self, w: int = 480, h: int = 320) -> np.ndarray:
-        """没有照片时的示意图：上面一条灰阶，下面是色相 × 明度的色块（sRGB 显示域，0..255）。"""
+        """没有照片时的示例照片：上面一条灰阶，下面是色相 × 明度的色块（sRGB 显示域，0..255）。"""
         img = np.zeros((h, w, 3))
         gh = h // 5
         img[:gh] = np.linspace(0, 255, w)[None, :, None]
@@ -247,7 +250,7 @@ class LutService:
             try:
                 codes = self.render.proxy_codes(shot, max_edge)
             except Exception as exc:  # noqa: BLE001
-                raise LutError(422, "raw_unreadable", f"这张照片读不出来。（{exc}）") from exc
+                raise LutError(422, "raw_unreadable", "无法读取这张照片。文件可能已损坏。", {"detail": str(exc)}) from exc
             colour = self._colour_of(dng_rec)
             xyz = None if colour is None else colour.xyz(codes.reshape(-1, 3)).reshape(codes.shape)
             try:
@@ -267,7 +270,7 @@ class LutService:
             im = ImageOps.exif_transpose(im).convert("RGB")  # type: ignore[assignment]
             im.thumbnail((max_edge, max_edge))
             return np.asarray(im, float), None, "camera-jpg"
-        raise LutError(422, "no_image", "这张照片没有可用的图像文件。")
+        raise LutError(422, "no_image", "无法读取这张照片。没有可用的图像文件。")
 
     def _colour_of(self, dng_rec: dict[Any, Any]) -> Any:
         sha = dng_rec["sha256"]
@@ -286,7 +289,7 @@ class LutService:
     ) -> tuple[bytes, dict[Any, Any]]:
         """which = original | lut。original 是"04 电脑模拟"（没有相机数据时是中性转换），lut 是套上 LUT 后的理想效果。"""
         if which not in ("original", "lut"):
-            raise LutError(422, "bad_which", "which 只能是 original 或 lut")
+            raise LutError(422, "bad_which", "请求无效。请刷新页面后重试。", {"detail": "which 只能是 original 或 lut"})
         cube = self.cube(cube_id)
         target = self.target(cube, **spec)
         base, xyz, mode = self._photo_base(shot, max_edge)
@@ -302,7 +305,7 @@ class LutService:
             try:
                 out = target.render(flat, None if xyz is None else xyz.reshape(-1, 3)).reshape(base.shape)
             except ValueError as exc:
-                raise LutError(422, "lut_failed", f"这个调色文件套不上去：{exc}") from exc
+                raise LutError(422, "lut_failed", "无法套用 LUT。请重试。", {"detail": str(exc)}) from exc
         else:
             out = base
         rgb = np.floor(np.clip(out, 0, 255) + 0.5).astype(np.uint8)
@@ -316,7 +319,7 @@ class LutService:
         if ids is not None:
             shots = [self.lib.get_shot(i) for i in ids]
             if any(s is None for s in shots):
-                raise LutError(404, "photo_not_found", "找不到选中的照片")
+                raise LutError(404, "photo_not_found", "找不到这张照片。请刷新页面后重试。")
             shots = [s for s in shots if "dng" in s["files"]]
         else:
             shots = [s for s in self.lib.list_shots(limit=2000) if "dng" in s["files"]]
@@ -350,19 +353,20 @@ class LutService:
             raise LutError(
                 422,
                 "unit_not_calibrated",
-                "28mm 和 MOUNT 还没有单独标定过颜色模型，电脑算出来的相似度没有依据，所以暂时不能导入调色文件。50mm 可以。",
+                "28mm 和 MOUNT 还没有单独的校准数据，暂时不能导入 LUT。50mm 可以。",
             )
         if profile not in ("normal", "quick"):
-            raise LutError(422, "bad_profile", "profile 只能是 normal 或 quick")
+            raise LutError(422, "bad_profile", "请求无效。请刷新页面后重试。", {"detail": "profile 只能是 normal 或 quick"})
         cube = self.cube(cube_id)
         self.target(cube, **spec)  # 先校验色彩空间参数
+        guessed = guessed or self._filename_guess_matches(cube_id, spec["space"], cube)
         if not self.render.available():
             st = self.render.status()
-            raise LutError(409, "camera_data_missing", st["hint"] or "请先导入相机数据和标定包。", {"status": st})
+            raise LutError(409, "camera_data_missing", st["hint"] or "请先导入相机配方文件", {"status": st})
         with self._lock:
             busy = next((j for j, p in self._procs.items() if p.poll() is None), None)
             if busy is not None:
-                raise LutError(409, "fit_busy", "已经有一个拟合在进行了，请等它做完，或者先取消它。", {"job_id": busy})
+                raise LutError(409, "fit_busy", "无法生成配方。已经有一个在进行。", {"job_id": busy})
             photos = self.pick_photos(photo_ids)
             job_id = uuid.uuid4().hex[:12]
             job_dir = self.jobs_dir / job_id
@@ -409,7 +413,7 @@ class LutService:
 
     def _job_dir(self, job_id: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", job_id or "") or not (self.jobs_dir / job_id / "job.json").is_file():
-            raise LutError(404, "fit_not_found", "找不到这次拟合。")
+            raise LutError(404, "fit_not_found", "找不到这次生成。请刷新页面后重试。")
         return self.jobs_dir / job_id
 
     def _read(self, path: Path) -> Any:
@@ -431,9 +435,9 @@ class LutService:
         elif proc is not None and proc.poll() is None:
             state = "running"
         elif proc is not None:
-            state, result = "error", {"code": "worker_died", "message": "拟合程序意外停了，没有结果。可以再试一次。"}
+            state, result = "error", {"code": "worker_died", "message": "无法生成配方。请重试。"}
         else:
-            state, result = "error", {"code": "interrupted", "message": "这次拟合在程序关闭时中断了，请重新开始。"}
+            state, result = "error", {"code": "interrupted", "message": "无法生成配方。请重新开始。"}
         out = {
             "job_id": job_id,
             "state": state,
@@ -484,19 +488,31 @@ class LutService:
                 shutil.rmtree(p, ignore_errors=True)
 
     # ---- 我的配方 -----------------------------------------------------------------
+    def _stored_filename(self, cube_id: str) -> str:
+        path = self.luts_dir / f"{cube_id}.filename"
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8").strip()
+
+    def _filename_guess_matches(self, cube_id: str, space: str, cube: Cube | None = None) -> bool:
+        """选中的输入空间就是按文件名或标题猜出来的那一个。"""
+        loaded = cube if cube is not None else self.cube(cube_id)
+        guess, _why = guess_space(self._stored_filename(cube_id), loaded.title or "")
+        return guess is not None and guess == space
+
     def _recipe_path(self, rid: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", rid or ""):
-            raise LutError(404, "recipe_not_found", "找不到这个配方。")
+            raise LutError(404, "recipe_not_found", "找不到这个配方。请刷新页面后重试。")
         return self.recipes_dir / f"{rid}.json"
 
     def save_recipe(self, job_id: str, candidate: int, name: str) -> dict[Any, Any]:
         name = clean_name(name)
         st = self.status(job_id)
         if st["state"] != "done":
-            raise LutError(409, "fit_not_done", "这次拟合还没有结果，不能存。")
+            raise LutError(409, "fit_not_done", "无法保存配方。请等生成完成后再试。")
         cands = st["result"]["candidates"]
         if not isinstance(candidate, int) or isinstance(candidate, bool) or not 0 <= candidate < len(cands):
-            raise LutError(422, "bad_candidate", "没有这个候选")
+            raise LutError(422, "bad_candidate", "请求无效。请刷新页面后重试。", {"detail": "没有这个候选"})
         c = cands[candidate]
         sel = RecipeSel(c["unit"], c["slot"], tuple(sorted(c["levels"].items())))
         try:  # 再核对一遍：每个档位都必须是菜单里合法的
@@ -518,7 +534,8 @@ class LutService:
                 "title": st["result"].get("cube", {}).get("title"),
                 "input_space": st["input"]["input_space"],
                 "output_space": st["input"]["output_space"],
-                "input_space_guessed": bool(st["input"]["space_guessed"]),
+                "input_space_guessed": bool(st["input"]["space_guessed"])
+                or self._filename_guess_matches(st["cube_id"], st["input"]["input_space"]),
                 "fit_job": job_id,
             },
             "fit": {
@@ -534,7 +551,7 @@ class LutService:
             },
             "camera_write": {
                 "status": "not_supported_yet",
-                "note": "这一版只存在电脑里；写回相机卡在后续版本里做（相机的“我的配方”目前只支持 4 个旋钮的旧格式）。",
+                "note": "暂不支持写入存储卡",
             },
         }
         _write_json(self._recipe_path(rid), doc)
@@ -555,7 +572,7 @@ class LutService:
         p = self._recipe_path(rid)
         doc = self._read(p) if p.is_file() else None
         if not isinstance(doc, dict):
-            raise LutError(404, "recipe_not_found", "找不到这个配方。")
+            raise LutError(404, "recipe_not_found", "找不到这个配方。请刷新页面后重试。")
         return doc
 
     def rename_recipe(self, rid: str, name: str) -> dict[Any, Any]:

@@ -204,7 +204,8 @@ def test_api_raw_only_exports_instead_of_409(client, card, settings):
     r = client.post(f"/api/photos/{p['id']}/export", json={"long_edge": 64, "quality": 80})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["render"] == "neutral-preview" and body["render_label"] == "中性转换" and body["format"] == "jpeg"
+    assert body["render"] == "neutral-preview" and body["render_label"] == "original"
+    assert body["render_text"] == "中性转换" and body["format"] == "jpeg"
     assert body["path"].endswith("R0000109_gxr_neutral.jpg") and (body["width"], body["height"]) == (64, 43)
     png = client.post(f"/api/photos/{p['id']}/export", json={"format": "png", "size": "original"}).json()
     assert png["format"] == "png" and (png["width"], png["height"]) == (96, 64)

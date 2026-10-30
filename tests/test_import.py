@@ -188,7 +188,7 @@ def test_second_import_copies_nothing_and_reads_no_card_content(volumes, card, l
     with audit.AuditRecorder(watch=(str(card.root),), record_reads=True) as rec:
         p = run_import(lib, c, ImportOptions(**OPTS))
     assert (p.copied_files, p.imported_shots, p.seen_shots) == (0, 0, len(card.shots))
-    assert p.message.startswith("这张卡上的照片都导入过了")
+    assert p.message == "这张存储卡上的照片都已导入"
     opened = [r for r in rec.reads_under(card.root) if os.path.isfile(r)]
     assert opened == [], "命中 seen 的文件不能被打开读取"
 
@@ -252,7 +252,7 @@ def test_unplug_midway_then_resume(volumes, card, lib):
     c = one_card(volumes)
     reader = UnpluggedReader(c.root, after_files=9)
     p = run_import(lib, c, ImportOptions(**OPTS), reader=reader)
-    assert p.state == "interrupted" and "插回卡可以继续" in p.message
+    assert p.state == "interrupted" and "重新插入存储卡后可以继续" in p.message
     assert 0 < lib.count() < len(card.unique_shots)
     assert_library_consistent(lib, card)
     done_before = lib.count()
@@ -278,7 +278,7 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     assert p.failed_shots == 1
     assert lib.count() == len(card.unique_shots)
     assert sorted(f.name for f in lib.root.rglob("R0000104*")) == ["R0000104.DNG", "R0000104.gxrs.json"]
-    assert "安全弹出" not in p.message and "先别格式化" in p.message
+    assert "安全弹出" not in p.message and "请勿格式化" in p.message
     assert_library_consistent(lib, card)
     # 好了以后再来一次：把 JPG 并进同一张照片，不会多出一张同名的
     p2 = run_import(lib, c, ImportOptions(**OPTS))
@@ -289,7 +289,7 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     assert set(shot["files"]) == {"dng", "jpg"} and shot["has_raw"] and shot["has_jpg"]
     side = json.loads(lib.sidecar_path_for(shot).read_text())
     assert side["source"]["jpg"] == "R0000104.JPG" and side["source"]["jpg_sha256"] == shot["files"]["jpg"]["sha256"]
-    assert "安全弹出" in p2.message
+    assert "推出存储卡" in p2.message
     assert_library_consistent(lib, card)
     p3 = run_import(lib, c, ImportOptions(**OPTS))  # 再来一次：什么都不新增
     assert p3.completed_shots == 0 and p3.imported_shots == 0 and lib.count() == len(card.unique_shots)
@@ -345,7 +345,7 @@ def test_unreadable_folder_is_reported_not_silent(volumes, card, lib):
 
     p = run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     assert p.state == "done" and p.scan_errors == ["DCIM/100RICOH/"]
-    assert "安全弹出" not in p.message and "先别格式化" in p.message
+    assert "安全弹出" not in p.message and "请勿格式化" in p.message
     assert p.has_problems()
 
 
@@ -362,7 +362,7 @@ def test_verify_failure_is_not_committed(volumes, card, lib):
     # 校验不一致的这个文件不进图库（也不登记 seen）；同一对里好的 JPG 照常导入
     assert not list(lib.root.rglob("R0000105*.DNG"))
     assert [f.name for f in lib.root.rglob("R0000105*.JPG")] == ["R0000105.JPG"]
-    assert p.failed_shots == 1 and "安全弹出" not in p.message and "先别格式化" in p.message
+    assert p.failed_shots == 1 and "安全弹出" not in p.message and "请勿格式化" in p.message
     assert lib.count() == len(card.unique_shots)
     assert_library_consistent(lib, card)
     p2 = run_import(lib, c, ImportOptions(**OPTS))  # 读卡器好了以后重试：DNG 补进同一张
