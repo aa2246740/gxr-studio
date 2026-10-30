@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict
 from ..library.store import Library
@@ -17,13 +19,13 @@ _UNSET = object()
 SCOPE = {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop"]}
 
 
-def read(lib: Library, shot: dict) -> tuple[EditState, dict]:
+def read(lib: Library, shot: dict[Any, Any]) -> tuple[EditState, dict[Any, Any]]:
     with lib.lock:
         side, _ = lib.read_sidecar_or_default(shot)  # 编辑记录坏了/不见了就当没有编辑
     return parse_edit(side), side
 
 
-def describe(side: dict, edit: EditState) -> dict:
+def describe(side: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     recipe = side.get("recipe")
     return {
         "rev": int(side.get("rev", 0)),
@@ -35,7 +37,7 @@ def describe(side: dict, edit: EditState) -> dict:
     }
 
 
-def _memory(raw) -> dict:
+def _memory(raw: Any) -> dict[Any, Any]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -53,7 +55,9 @@ def _memory(raw) -> dict:
     return out
 
 
-def write(lib: Library, shot: dict, changes: dict, menu: Menu, *, expected_rev: int | None = None) -> tuple[EditState, dict]:
+def write(
+    lib: Library, shot: dict[Any, Any], changes: dict[Any, Any], menu: Menu, *, expected_rev: int | None = None
+) -> tuple[EditState, dict[Any, Any]]:
     """`changes` 里出现的键才会被改：值为 None 表示还原（删掉这一块）。"""
     path = lib.sidecar_path_for(shot)
     with lib.lock:

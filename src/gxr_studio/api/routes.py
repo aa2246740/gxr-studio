@@ -6,6 +6,7 @@ import shutil
 import threading
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
@@ -36,7 +37,7 @@ DENIED_NOTE = (
 )
 
 
-def ctx(request: Request):
+def ctx(request: Request) -> Any:
     return request.app.state.ctx
 
 
@@ -78,25 +79,25 @@ class BatchExportRequest(ExportRequest):
 # ---- 小工具 -----------------------------------------------------------------
 
 
-def _cards(c) -> list[Card]:
+def _cards(c: Any) -> list[Card]:
     return find_cards(c.settings.volumes_roots, c.reader)
 
 
-def _card_or_404(c, card_id: str) -> Card:
+def _card_or_404(c: Any, card_id: str) -> Card:
     card = next((x for x in _cards(c) if x.key == card_id), None)
     if card is None:
         raise ApiError(404, "card_not_found", "找不到这张卡（是不是已经拔出了？）")
     return card
 
 
-def _shot_or_404(c, shot_id: str) -> dict:
-    shot = c.lib.get_shot(shot_id)
+def _shot_or_404(c: Any, shot_id: str) -> dict[Any, Any]:
+    shot = cast(dict[str, Any] | None, c.lib.get_shot(shot_id))
     if shot is None:
         raise ApiError(404, "photo_not_found", "找不到这张照片")
     return shot
 
 
-def photo_json(shot: dict, data_version: str | None = None, render=None, lib=None) -> dict:
+def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: Any = None, lib: Any = None) -> dict[Any, Any]:
     """`data_version`（相机数据 + 标定包的版本）只加在没有 JPG 的照片的图片链接上：它们的缩略图随相机数据重画，
     链接变了浏览器缓存的旧图才不会被继续用（图片响应是 immutable 缓存）。
     `preview_look` 说明默认画面是什么（相机 JPG / 原厂 04 电脑模拟=电脑预测 / 中性转换），界面据此标注。"""
@@ -129,17 +130,17 @@ def _crop_error(exc: CropError) -> ApiError:
     return ApiError(422, exc.code, exc.message)
 
 
-def _crop_for_export(c, shot: dict) -> Crop | None:
+def _crop_for_export(c: Any, shot: dict[Any, Any]) -> Crop | None:
     side, _ = c.lib.read_sidecar_or_default(shot)  # 编辑记录坏了/不见了：按没有裁切导出
     raw = side.get("crop")
     return Crop(raw["preset"], tuple(raw["rect"]), float(raw.get("angle_deg", 0.0))) if raw else None
 
 
-def _forbidden_roots(c) -> list[Path]:
+def _forbidden_roots(c: Any) -> list[Path]:
     return [card.root for card in _cards(c)]
 
 
-def _export_source(c, shot: dict, req: ExportRequest) -> tuple[str, EditState]:
+def _export_source(c: Any, shot: dict[Any, Any], req: ExportRequest) -> tuple[str, EditState]:
     """决定这张照片从哪里出图：'recipe' | 'camera-jpg' | 'neutral'，以及它的编辑状态。"""
     files = shot["files"]
     try:
@@ -166,7 +167,7 @@ def _export_source(c, shot: dict, req: ExportRequest) -> tuple[str, EditState]:
     return want, edit
 
 
-def _export_one(c, shot: dict, req: ExportRequest) -> dict:
+def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, Any]:
     dest = Path(req.dest_dir).expanduser() if req.dest_dir else c.settings.export_dir
     if not dest.is_absolute():
         raise ApiError(422, "bad_destination", "导出文件夹要写完整路径")
@@ -210,20 +211,20 @@ def _export_one(c, shot: dict, req: ExportRequest) -> dict:
 
 
 @router.get("/", response_class=HTMLResponse)
-def home(request: Request):
+def home(request: Request) -> Any:
     web = ctx(request).settings.web_dir
     if web is not None and Path(web, "index.html").is_file():
         return HTMLResponse(Path(web, "index.html").read_text(encoding="utf-8"))
     return HTMLResponse(TEMP_HOME.read_text(encoding="utf-8"))
 
 
-@router.get("/api/health")
-def health():
+@router.get("/api/health", response_model=None)
+def health() -> dict[Any, Any]:
     return {"ok": True, "version": __version__}
 
 
-@router.get("/api/settings")
-def get_settings(request: Request):
+@router.get("/api/settings", response_model=None)
+def get_settings(request: Request) -> dict[Any, Any]:
     c = ctx(request)
     s = c.settings
     return {
@@ -237,8 +238,8 @@ def get_settings(request: Request):
     }
 
 
-@router.get("/api/audit")
-def get_audit(request: Request):
+@router.get("/api/audit", response_model=None)
+def get_audit(request: Request) -> dict[Any, Any]:
     rec = ctx(request).recorder
     return {
         "write_count": len(rec.writes),
@@ -249,13 +250,13 @@ def get_audit(request: Request):
 # ---- 卡与导入 ---------------------------------------------------------------
 
 
-@router.get("/api/cards")
-def list_cards(request: Request):
+@router.get("/api/cards", response_model=None)
+def list_cards(request: Request) -> list[Any]:
     return [{"id": card.key, "label": card.label} for card in _cards(ctx(request))]
 
 
-@router.get("/api/cards/status")
-def cards_status(request: Request):
+@router.get("/api/cards/status", response_model=None)
+def cards_status(request: Request) -> dict[Any, Any]:
     """卡没找到时用：是不是因为系统不让读（macOS 没给「可移除的卷」权限）。"""
     c = ctx(request)
     denied: list[str] = []
@@ -267,15 +268,15 @@ def cards_status(request: Request):
     }
 
 
-@router.get("/api/cards/{card_id}/summary")
-def card_summary(card_id: str, request: Request):
+@router.get("/api/cards/{card_id}/summary", response_model=None)
+def card_summary(card_id: str, request: Request) -> dict[Any, Any]:
     c = ctx(request)
     card = _card_or_404(c, card_id)
     return {"id": card.key, "label": card.label, **importer.card_summary(c.lib, card, c.reader)}
 
 
-@router.post("/api/import", status_code=202)
-def start_import(body: ImportRequest, request: Request):
+@router.post("/api/import", status_code=202, response_model=None)
+def start_import(body: ImportRequest, request: Request) -> Any:
     c = ctx(request)
     card = _card_or_404(c, body.card_id)
     with c.import_lock:
@@ -290,28 +291,28 @@ def start_import(body: ImportRequest, request: Request):
         )
         progress = importer.ImportProgress()
 
-        def work(job):
+        def work(job: Any) -> None:
             importer.run_import(c.lib, card, opts, progress, job.cancel, c.reader)
 
         job = c.jobs.start("import", progress, work)
     return job.to_dict()
 
 
-@router.get("/api/jobs")
-def list_jobs(request: Request):
+@router.get("/api/jobs", response_model=None)
+def list_jobs(request: Request) -> list[Any]:
     return [j.to_dict() for j in ctx(request).jobs.all()]
 
 
-@router.get("/api/jobs/{job_id}")
-def get_job(job_id: str, request: Request):
+@router.get("/api/jobs/{job_id}", response_model=None)
+def get_job(job_id: str, request: Request) -> Any:
     job = ctx(request).jobs.get(job_id)
     if job is None:
         raise ApiError(404, "job_not_found", "没有这个任务")
     return job.to_dict()
 
 
-@router.post("/api/jobs/{job_id}/cancel")
-def cancel_job(job_id: str, request: Request):
+@router.post("/api/jobs/{job_id}/cancel", response_model=None)
+def cancel_job(job_id: str, request: Request) -> Any:
     job = ctx(request).jobs.get(job_id)
     if job is None:
         raise ApiError(404, "job_not_found", "没有这个任务")
@@ -322,21 +323,21 @@ def cancel_job(job_id: str, request: Request):
 # ---- 图库 -------------------------------------------------------------------
 
 
-@router.get("/api/dates")
-def get_dates(request: Request):
+@router.get("/api/dates", response_model=None)
+def get_dates(request: Request) -> Any:
     return ctx(request).lib.dates()
 
 
-@router.get("/api/photos")
-def list_photos(request: Request, date: str | None = None, limit: int = 500, offset: int = 0):
+@router.get("/api/photos", response_model=None)
+def list_photos(request: Request, date: str | None = None, limit: int = 500, offset: int = 0) -> list[Any]:
     c = ctx(request)
     limit = max(1, min(limit, 5000))
     version = c.render.data_version()
     return [photo_json(s, version, c.render, c.lib) for s in c.lib.list_shots(date, limit, max(0, offset))]
 
 
-@router.get("/api/photos/{shot_id}")
-def get_photo(shot_id: str, request: Request):
+@router.get("/api/photos/{shot_id}", response_model=None)
+def get_photo(shot_id: str, request: Request) -> Any:
     c = ctx(request)
     return photo_json(_shot_or_404(c, shot_id), c.render.data_version(), c.render, c.lib)
 
@@ -370,18 +371,18 @@ def _image(request: Request, shot_id: str, size: int) -> Response:
     return Response(data, media_type="image/jpeg", headers=headers)
 
 
-@router.get("/api/photos/{shot_id}/thumb")
-def photo_thumb(shot_id: str, request: Request):
+@router.get("/api/photos/{shot_id}/thumb", response_model=None)
+def photo_thumb(shot_id: str, request: Request) -> Any:
     return _image(request, shot_id, thumbs.THUMB_SIZE)
 
 
-@router.get("/api/photos/{shot_id}/preview")
-def photo_preview(shot_id: str, request: Request):
+@router.get("/api/photos/{shot_id}/preview", response_model=None)
+def photo_preview(shot_id: str, request: Request) -> Any:
     return _image(request, shot_id, thumbs.PREVIEW_SIZE)
 
 
-@router.post("/api/library/rebuild")
-def rebuild_index(request: Request, verify: bool = False):
+@router.post("/api/library/rebuild", response_model=None)
+def rebuild_index(request: Request, verify: bool = False) -> dict[Any, Any]:
     c = ctx(request)
     if not flag_enabled(c.settings, "library_rebuild"):
         raise ApiError(403, "feature_disabled", "重建索引已关闭")
@@ -402,8 +403,8 @@ def rebuild_index(request: Request, verify: bool = False):
 # ---- 裁切 -------------------------------------------------------------------
 
 
-@router.get("/api/photos/{shot_id}/crop")
-def get_crop(shot_id: str, request: Request):
+@router.get("/api/photos/{shot_id}/crop", response_model=None)
+def get_crop(shot_id: str, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     try:
@@ -412,7 +413,7 @@ def get_crop(shot_id: str, request: Request):
         raise _crop_error(exc) from exc
 
 
-def _put_crop(request: Request, shot_id: str, body: CropRequest | None, reset: bool = False) -> dict:
+def _put_crop(request: Request, shot_id: str, body: CropRequest | None, reset: bool = False) -> dict[Any, Any]:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     warning = c.lib.sidecar_problem(shot)
@@ -436,37 +437,37 @@ def _put_crop(request: Request, shot_id: str, body: CropRequest | None, reset: b
     return {**out, "warning": warning} if warning else out
 
 
-@router.put("/api/photos/{shot_id}/crop")
-def put_crop(shot_id: str, body: CropRequest, request: Request):
+@router.put("/api/photos/{shot_id}/crop", response_model=None)
+def put_crop(shot_id: str, body: CropRequest, request: Request) -> Any:
     return _put_crop(request, shot_id, body)
 
 
-@router.delete("/api/photos/{shot_id}/crop")
-def delete_crop(shot_id: str, request: Request):
+@router.delete("/api/photos/{shot_id}/crop", response_model=None)
+def delete_crop(shot_id: str, request: Request) -> Any:
     return _put_crop(request, shot_id, None, reset=True)
 
 
-@router.get("/api/crop-presets")
-def crop_presets():
+@router.get("/api/crop-presets", response_model=None)
+def crop_presets() -> list[Any]:
     return [{"id": k, "ratio": list(v) if v else None} for k, v in cropmod.PRESETS.items()]
 
 
 # ---- 导出 -------------------------------------------------------------------
 
 
-@router.post("/api/photos/{shot_id}/export")
-def export_photo(shot_id: str, body: ExportRequest, request: Request):
+@router.post("/api/photos/{shot_id}/export", response_model=None)
+def export_photo(shot_id: str, body: ExportRequest, request: Request) -> Any:
     c = ctx(request)
     return _export_one(c, _shot_or_404(c, shot_id), body)
 
 
-@router.post("/api/export", status_code=202)
-def export_batch(body: BatchExportRequest, request: Request):
+@router.post("/api/export", status_code=202, response_model=None)
+def export_batch(body: BatchExportRequest, request: Request) -> Any:
     c = ctx(request)
     missing: list[str] = []  # 勾选之后照片 id 变了/被删了：这几张记为没导出，其余照常导
     if body.ids is not None:
         shots = []
-        for i in dict.fromkeys(body.ids):
+        for i in dict[Any, Any].fromkeys(body.ids):
             shot = c.lib.get_shot(i)
             if shot is None:
                 missing.append(i)
@@ -478,9 +479,9 @@ def export_batch(body: BatchExportRequest, request: Request):
         raise ApiError(422, "nothing_to_export", "要给 ids 或 date")
 
     class Progress:
-        def __init__(self):
+        def __init__(self) -> None:
             self.state, self.total, self.done = "running", len(shots) + len(missing), len(missing)
-            self.results: list[dict] = [
+            self.results: list[dict[Any, Any]] = [
                 {
                     "id": i,
                     "error": "photo_not_found",
@@ -490,13 +491,13 @@ def export_batch(body: BatchExportRequest, request: Request):
             ]
             self._lock = threading.Lock()
 
-        def to_dict(self):
+        def to_dict(self) -> dict[Any, Any] | None:
             with self._lock:
                 return {"state": self.state, "total": self.total, "done": self.done, "results": list(self.results)}
 
     progress = Progress()
 
-    def work(job):
+    def work(job: Any) -> None:
         for shot in shots:
             if job.cancel.is_set():
                 progress.state = "cancelled"

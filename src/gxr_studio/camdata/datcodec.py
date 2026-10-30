@@ -17,6 +17,7 @@ import hashlib
 import struct
 import zlib
 from dataclasses import dataclass
+from typing import Any, cast
 
 NAMES = ("jlaunch", "qlaunch", "l08firm")
 KINDS = (0, 1, 2, 3, 0, 1, 1, 1, 0, 1)
@@ -79,25 +80,26 @@ PROFILES = {
 }
 
 
-def crc(b) -> int:
+def crc(b: Any) -> int:
     return zlib.crc32(b) & 0xFFFFFFFF
 
 
-def u16(b, at):
-    return struct.unpack_from(">H", b, at)[0]
+def u16(b: bytes | bytearray, at: int) -> int:
+    # typeshed 把 unpack_from 标成 tuple[Any, ...]，这里的格式串固定是一个整数。
+    return cast(int, struct.unpack_from(">H", b, at)[0])
 
 
-def u32(b, at):
-    return struct.unpack_from(">I", b, at)[0]
+def u32(b: bytes | bytearray, at: int) -> int:
+    return cast(int, struct.unpack_from(">I", b, at)[0])
 
 
-def _zero_crc(b, at):
+def _zero_crc(b: Any, at: Any) -> Any:
     q = bytearray(b)
     q[at : at + 4] = bytes(4)
     return crc(q)
 
 
-def _align4(n):
+def _align4(n: int) -> int:
     return (n + 3) & ~3
 
 
@@ -109,10 +111,10 @@ def identity(record: bytes) -> bytes:
 class Module:
     name: str
     map: bytes  # 152 B
-    records: list  # 16 × 64 B
-    entries: dict  # 描述符所有者槽位 → 552 B 深层条目
-    refs: list  # 16 个槽位各自指向的所有者槽位
-    ranges: list  # 16 × 8 × (lo, hi, default)
+    records: list[Any]  # 16 × 64 B
+    entries: dict[Any, Any]  # 描述符所有者槽位 → 552 B 深层条目
+    refs: list[Any]  # 16 个槽位各自指向的所有者槽位
+    ranges: list[Any]  # 16 × 8 × (lo, hi, default)
     pin: bytes  # 32 B，前 4 字节 = crc_pin
     crc_pin: int
 
@@ -126,17 +128,17 @@ class Dat:
     resident_id: bytes
     abi_id: bytes
     engine: bytes
-    relocations: list  # [(patch, target)]
-    modules: list
-    ids: tuple  # 8 个参数 ID
+    relocations: list[Any]  # [(patch, target)]
+    modules: list[Any]
+    ids: tuple[Any, ...]  # 8 个参数 ID
     ext_config: bytes  # GXUI 配置表 24×48 B
-    users: list  # [{'base': int, 'levels': [11 ints]}]
+    users: list[Any]  # [{'base': int, 'levels': [11 ints]}]
     kv2_block: bytes | None
 
     def entry_of(self, unit: int, slot: int) -> bytes:
         """槽位 1..16 的 552 B 深层条目（别名槽位解引用到所有者）。"""
         m = self.modules[unit]
-        return m.entries[m.refs[slot - 1]]
+        return cast(bytes, m.entries[m.refs[slot - 1]])
 
 
 # --------------------------------------------------------------------------- 解析
@@ -363,7 +365,7 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
 # --------------------------------------------------------------------------- 封装
 
 
-def _metadata(modules, ids):
+def _metadata(modules: Any, ids: Any) -> bytes:
     n = len(ids)
     stride = _align4(3 * n + 4)
     out = bytearray(32 + 4 * n + 48 * stride)
@@ -390,11 +392,11 @@ def _metadata(modules, ids):
     return bytes(out)
 
 
-def _owners(m: Module):
+def _owners(m: Module) -> list[int]:
     return [4] + sorted(s for s in m.entries if s != 4)
 
 
-def _extension(configs: bytes, banks, users) -> bytes:
+def _extension(configs: bytes, banks: Any, users: Any) -> bytes:
     if len(configs) != 24 * CONFIG_BYTES or len(users) > USER_CAPACITY:
         raise DatError("GXUI 配置尺寸或用户条目数不合格")
     out = bytearray(EXT_BYTES)
@@ -432,7 +434,7 @@ def _extension(configs: bytes, banks, users) -> bytes:
     return bytes(out)
 
 
-def _bank_blob(records, build):
+def _bank_blob(records: Any, build: Any) -> bytes:
     out = bytearray(32)
     struct.pack_into(">8sHHHHII", out, 0, b"GXRRV201", 2, 32, 64, 16, build, 1024)
     body = b"".join(records)
@@ -448,8 +450,8 @@ def pack(dat: Dat) -> bytes:
     modules = dat.modules
     if len(modules) != 3 or tuple(m.name for m in modules) != NAMES:
         raise DatError("模块顺序必须是 jlaunch, qlaunch, l08firm")
-    buckets: list[list] = [[] for _ in range(4)]
-    indexes: list[dict] = [{} for _ in range(4)]
+    buckets: list[list[Any]] = [[] for _ in range(4)]
+    indexes: list[dict[Any, Any]] = [{} for _ in range(4)]
     tables = []
     for m in modules:
         owners = _owners(m)
@@ -542,7 +544,7 @@ def pack(dat: Dat) -> bytes:
     return bytes(b)
 
 
-def replace_users(dat: Dat, users: list) -> Dat:
+def replace_users(dat: Dat, users: list[Any]) -> Dat:
     """返回换了用户条目的新 Dat（原对象不动）；条目按 GXUI 规则校验，只改 GXUI 区。"""
     from dataclasses import replace
 

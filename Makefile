@@ -32,7 +32,8 @@ check: lint type security
 	uv run --frozen lint-imports
 	uv run --frozen deptry src
 	uv run --frozen vulture src/gxr_studio
-	uv run --frozen pylint --disable=all --enable=duplicate-code src/gxr_studio
+	# .pyi 是锁定源码的类型存根。pylint 会把它和同名 .py 各算一遍，重复代码检查就会失败。
+	uv run --frozen pylint --disable=all --enable=duplicate-code --ignore-patterns='.*\.pyi' src/gxr_studio
 	$(MAKE) test
 
 profile:

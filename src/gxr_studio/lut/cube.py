@@ -1,10 +1,13 @@
 """Bounded .cube reader: RGB-fast ordering, per-channel domains, 1D shaper + 3D."""
 
+from __future__ import annotations
+
 import hashlib
 import math
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
@@ -15,17 +18,17 @@ MAX_3D = 129
 
 @dataclass
 class Cube:
-    table1: object
-    table3: object
+    table1: np.ndarray | None
+    table3: np.ndarray | None
     domain_min: np.ndarray
     domain_max: np.ndarray
-    range1: tuple = (0.0, 1.0)
-    range3: tuple = (0.0, 1.0)
+    range1: tuple[Any, ...] = (0.0, 1.0)
+    range3: tuple[Any, ...] = (0.0, 1.0)
     title: str = ""
     source_sha256: str = ""
 
     @classmethod
-    def read(cls, path):
+    def read(cls, path: str | Path) -> Cube:
         p = Path(path)
         if not p.is_file() or p.stat().st_size > MAX_BYTES:
             raise ValueError("cube 文件不存在或超过 64 MiB")
@@ -33,10 +36,11 @@ class Cube:
         return cls.parse(raw.decode("utf-8-sig"), hashlib.sha256(raw).hexdigest())
 
     @classmethod
-    def parse(cls, text, digest=""):
+    def parse(cls, text: str, digest: str = "") -> Cube:
         if len(text.encode("utf-8")) > MAX_BYTES:
             raise ValueError("cube 超过 64 MiB")
-        headers, data = {}, []
+        headers: dict[str, Any] = {}
+        data: list[list[float]] = []
         counts = {"LUT_1D_SIZE": (2, MAX_1D), "LUT_3D_SIZE": (2, MAX_3D)}
         known = {*counts, "DOMAIN_MIN", "DOMAIN_MAX", "TITLE", "LUT_1D_INPUT_RANGE", "LUT_3D_INPUT_RANGE"}
         for no, line in enumerate(text.splitlines(), 1):
@@ -102,7 +106,7 @@ class Cube:
             digest,
         )
 
-    def apply(self, rgb, return_info=False):
+    def apply(self, rgb: Any, return_info: bool = False) -> Any:
         x = np.asarray(rgb, float)
         if x.shape[-1:] != (3,) or not np.isfinite(x).all():
             raise ValueError("LUT 输入必须为有限 RGB")
@@ -122,8 +126,11 @@ class Cube:
         y = x.reshape(shape)
         return (y, {"input_clipped_share": float(clipped.mean())}) if return_info else y
 
-    def tetrahedral(self, x):
-        n = len(self.table3)
+    def tetrahedral(self, x: np.ndarray) -> np.ndarray:
+        table3 = self.table3
+        if table3 is None:
+            raise ValueError("LUT 没有 3D 表")
+        n = len(table3)
         pos = x * (n - 1)
         base = np.minimum(pos.astype(int), n - 2)
         f = pos - base
@@ -131,9 +138,9 @@ class Cube:
         idx = np.arange(len(x))
         b = base.copy()
 
-        def at(coords):
+        def at(coords: Any) -> Any:
             # .cube writes R fastest, then G, then B.
-            return self.table3[coords[:, 2], coords[:, 1], coords[:, 0]]
+            return table3[coords[:, 2], coords[:, 1], coords[:, 0]]
 
         v0 = at(b)
         b[idx, order[:, 0]] += 1
@@ -143,9 +150,9 @@ class Cube:
         b[idx, order[:, 2]] += 1
         v3 = at(b)
         u = np.take_along_axis(f, order, axis=1)
-        return v0 + u[:, 0, None] * (v1 - v0) + u[:, 1, None] * (v2 - v1) + u[:, 2, None] * (v3 - v2)
+        return cast(np.ndarray, v0 + u[:, 0, None] * (v1 - v0) + u[:, 1, None] * (v2 - v1) + u[:, 2, None] * (v3 - v2))
 
-    def description(self):
+    def description(self) -> dict[Any, Any]:
         return {
             "title": self.title,
             "sha256": self.source_sha256,
@@ -160,7 +167,7 @@ class Cube:
         }
 
 
-def write_cube(path, fun, size=33, title="synthetic"):
+def write_cube(path: Any, fun: Any, size: int = 33, title: str = "synthetic") -> None:
     """Test fixture writer."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)

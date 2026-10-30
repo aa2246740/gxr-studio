@@ -7,14 +7,17 @@ import time
 import uuid
 from typing import Any, Callable
 
+from .observe import request_id as current_request_id
+
 
 class Job:
-    def __init__(self, kind: str, progress: Any):
+    def __init__(self, kind: str, progress: Any) -> None:
         self.id = uuid.uuid4().hex[:12]
         self.kind = kind
         self.progress = progress  # 有 to_dict() 的对象，或普通 dict
         self.cancel = threading.Event()
         self.error: str | None = None
+        self.request_id = current_request_id.get()
         self.started = time.time()
         self.thread: threading.Thread | None = None
 
@@ -22,7 +25,7 @@ class Job:
     def running(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[Any, Any]:
         prog = self.progress.to_dict() if hasattr(self.progress, "to_dict") else dict(self.progress)
         return {"id": self.id, "kind": self.kind, "running": self.running, "error": self.error, "progress": prog}
 

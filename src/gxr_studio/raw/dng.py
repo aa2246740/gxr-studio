@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import struct
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
@@ -30,7 +31,7 @@ class RawDecodeError(Exception):
 class Dng:
     """Read-only DNG: raw CFA plane and the tags the render chain needs."""
 
-    def __init__(self, source: bytes | Path | str, name: str | None = None):
+    def __init__(self, source: bytes | Path | str, name: str | None = None) -> None:
         if isinstance(source, (bytes, bytearray)):
             self.path = Path(name or "<bytes>")
             self.data = bytes(source)
@@ -43,7 +44,7 @@ class Dng:
         root = T.ifd(T.root)
         subs = [T.ifd(o) for o in root.get(330, {}).get("value", [])]
 
-        def val(d, tag, default=None):
+        def val(d: Any, tag: Any, default: Any = None) -> Any:
             return d[tag]["value"] if tag in d else default
 
         raw = None
@@ -74,19 +75,19 @@ class Dng:
             raise NotImplementedError(f"CFA colours {plane} / pattern {pat}")
         if val(raw, 50711, [1])[0] != 1:
             raise NotImplementedError("non-rectangular CFALayout")
-        self.lin_table = np.asarray(val(raw, 50712), float) if 50712 in raw else None
+        self.lin_table = np.asarray(val(raw, 50712), dtype=np.float64) if 50712 in raw else None
         aa = val(raw, 50829, [0, 0, self.height, self.width])
         self.active = tuple(int(round(v)) for v in aa)  # top, left, bottom, right
         aw, ah = self.active[3] - self.active[1], self.active[2] - self.active[0]
         bdim = [int(v) for v in val(raw, 50713, [1, 1])]
-        bl = np.asarray(val(raw, 50714, [0.0]), float)
+        bl = np.asarray(val(raw, 50714, [0.0]), dtype=np.float64)
         if bl.size == 1:
             bl = np.full(bdim[0] * bdim[1], bl[0])
         if bl.size != bdim[0] * bdim[1]:
             raise NotImplementedError(f"BlackLevel count {bl.size} for repeat {bdim}")
         self.black_pattern = bl.reshape(bdim)
-        self.black_dh = np.asarray(val(raw, 50715), float) if 50715 in raw else None
-        self.black_dv = np.asarray(val(raw, 50716), float) if 50716 in raw else None
+        self.black_dh = np.asarray(val(raw, 50715), dtype=np.float64) if 50715 in raw else None
+        self.black_dv = np.asarray(val(raw, 50716), dtype=np.float64) if 50716 in raw else None
         if self.black_dh is not None and self.black_dh.size != aw:
             raise ValueError("BlackLevelDeltaH length")
         if self.black_dv is not None and self.black_dv.size != ah:
@@ -100,9 +101,9 @@ class Dng:
         self.crop_origin = (int(round(co[0])), int(round(co[1])))  # x, y relative to the ActiveArea
         self.crop_size = (int(round(cs[0])), int(round(cs[1])))  # w, h
         self.orientation = int(val(root, 274, [1])[0])
-        self.as_shot_neutral = np.asarray(val(root, 50728), float) if 50728 in root else None
-        self.as_shot_white_xy = np.asarray(val(root, 50729), float) if 50729 in root else None
-        self.analog_balance = np.asarray(val(root, 50727, [1.0, 1.0, 1.0]), float)
+        self.as_shot_neutral = np.asarray(val(root, 50728), dtype=np.float64) if 50728 in root else None
+        self.as_shot_white_xy = np.asarray(val(root, 50729), dtype=np.float64) if 50729 in root else None
+        self.analog_balance = np.asarray(val(root, 50727, [1.0, 1.0, 1.0]), dtype=np.float64)
         self.baseline_exposure = float(val(root, 50730, [0.0])[0])
         self.exif = {}
         if 34665 in root:
@@ -179,7 +180,7 @@ class Dng:
         """丢掉解出来的原始平面（文件字节还在）；大批量处理时用。"""
         self._mosaic = None
 
-    def crop_window(self):
+    def crop_window(self) -> tuple[Any, ...]:
         """(y0, x0, h, w) of the default crop in raw-plane coordinates."""
         return (
             self.active[0] + self.crop_origin[1],
@@ -188,16 +189,16 @@ class Dng:
             self.crop_size[0],
         )
 
-    def crop_mosaic(self):
+    def crop_mosaic(self) -> Any:
         y0, x0, h, w = self.crop_window()
         return self.mosaic()[y0 : y0 + h, x0 : x0 + w]
 
-    def cfa_at(self, ys, xs):
+    def cfa_at(self, ys: Any, xs: Any) -> Any:
         """CFA colour (0 R, 1 G, 2 B) at raw-plane coordinates; pattern origin = ActiveArea origin."""
         r, c = self.cfa.shape
         return self.cfa[(np.asarray(ys) - self.active[0]) % r, (np.asarray(xs) - self.active[1]) % c]
 
-    def black_at(self, ys, xs):
+    def black_at(self, ys: Any, xs: Any) -> Any:
         ry, rx = np.asarray(ys) - self.active[0], np.asarray(xs) - self.active[1]
         bp = self.black_pattern
         b = bp[ry % bp.shape[0], rx % bp.shape[1]].astype(float)
@@ -207,32 +208,32 @@ class Dng:
             b = b + self.black_dv[ry]
         return b
 
-    def linearize(self, v):
+    def linearize(self, v: Any) -> Any:
         v = np.asarray(v)
         if self.lin_table is None:
             return v.astype(float)
         return self.lin_table[np.minimum(v.astype(np.int64), len(self.lin_table) - 1)]
 
-    def normalised_at(self, ys, xs):
+    def normalised_at(self, ys: Any, xs: Any) -> Any:
         """(linearized value - black) / (white - black) at raw-plane coordinates (DNG chapter 5)."""
         black = self.black_at(ys, xs)
         return (self.linearize(self.mosaic()[ys, xs]) - black) / (self.white - black)
 
-    def normalised_block(self, y0: int, y1: int, x0: int, x1: int, dtype=np.float64) -> np.ndarray:
+    def normalised_block(self, y0: int, y1: int, x0: int, x1: int, dtype: Any = np.float64) -> np.ndarray:
         """`normalised_at` over the raw-plane rectangle [y0, y1) x [x0, x1), computed in float64."""
         ys = np.arange(y0, y1)[:, None]
         xs = np.arange(x0, x1)[None, :]
         black = self.black_at(ys, xs)
         v = self.linearize(self.mosaic()[y0:y1, x0:x1])
-        return ((v - black) / (self.white - black)).astype(dtype, copy=False)
+        return cast(np.ndarray, ((v - black) / (self.white - black)).astype(dtype, copy=False))
 
-    def crop_cfa_phase(self):
+    def crop_cfa_phase(self) -> Any:
         """2x2 colour codes of the crop's first quad (row-major), e.g. [[1, 2], [0, 1]] = G/B/R/G."""
         y0, x0, _, _ = self.crop_window()
         yy, xx = np.meshgrid(np.arange(y0, y0 + 2), np.arange(x0, x0 + 2), indexing="ij")
         return self.cfa_at(yy, xx)
 
-    def summary(self):
+    def summary(self) -> dict[Any, Any]:
         return {
             "file": self.path.name,
             "sha256": self.sha256,

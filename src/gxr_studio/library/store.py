@@ -21,6 +21,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 from .. import meta as metamod
 from . import sidecar as sc
@@ -91,7 +92,7 @@ class ShotRecord:
     added_at: str
     files: list[FileRecord] = field(default_factory=list)
     sidecar_rev: int = 0
-    crop: dict | None = None
+    crop: dict[Any, Any] | None = None
 
     @property
     def has_raw(self) -> bool:
@@ -114,7 +115,7 @@ class RebuildReport:
 
 
 class Library:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.studio = self.root / ".studio"
         self.thumbs_dir = self.studio / "thumbs"
@@ -189,12 +190,12 @@ class Library:
             rows = self.db.execute("SELECT shot_id, relpath FROM files WHERE sha256=?", (sha,)).fetchall()
         for r in rows:
             if self.abspath(r["relpath"]).exists():
-                return r["shot_id"]
+                return cast(str, r["shot_id"])
         return None
 
     def file_by_relpath(self, relpath: str) -> sqlite3.Row | None:
         with self.lock:
-            return self.db.execute("SELECT * FROM files WHERE relpath=?", (relpath,)).fetchone()
+            return cast(sqlite3.Row | None, self.db.execute("SELECT * FROM files WHERE relpath=?", (relpath,)).fetchone())
 
     def seen_hit(self, card_key: str, relpath: str, size: int, mtime_ns: int) -> bool:
         with self.lock:
@@ -210,13 +211,13 @@ class Library:
                 "SELECT sha256 FROM seen WHERE card_key=? AND relpath=? AND size=? AND mtime_ns=?",
                 (card_key, relpath, size, mtime_ns),
             ).fetchone()
-        return row["sha256"] if row else None
+        return cast(str, row["sha256"]) if row else None
 
     def count(self) -> int:
         with self.lock:
-            return self.db.execute("SELECT COUNT(*) FROM shots").fetchone()[0]
+            return int(self.db.execute("SELECT COUNT(*) FROM shots").fetchone()[0])
 
-    def dates(self) -> list[dict]:
+    def dates(self) -> list[dict[Any, Any]]:
         with self.lock:
             rows = self.db.execute(
                 """WITH grouped AS (
@@ -243,12 +244,12 @@ class Library:
             for r in rows
         ]
 
-    def _rows_to_shots(self, rows: list[sqlite3.Row]) -> list[dict]:
+    def _rows_to_shots(self, rows: list[sqlite3.Row]) -> list[dict[Any, Any]]:
         if not rows:
             return []
         ids = [r["shot_id"] for r in rows]
         marks = ",".join("?" * len(ids))
-        files_by: dict[str, dict] = {shot_id: {} for shot_id in ids}
+        files_by: dict[str, dict[Any, Any]] = {shot_id: {} for shot_id in ids}
         for f in self.db.execute(
             f"SELECT shot_id, kind, relpath, sha256, size FROM files WHERE shot_id IN ({marks})",  # nosec B608  marks 只是问号占位，值在参数里
             ids,
@@ -276,7 +277,7 @@ class Library:
             out.append(d)
         return out
 
-    def list_shots(self, date: str | None = None, limit: int = 500, offset: int = 0) -> list[dict]:
+    def list_shots(self, date: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[Any, Any]]:
         sql = "SELECT * FROM shots"
         args: list[object] = []
         if date == "unknown":
@@ -289,13 +290,13 @@ class Library:
         with self.lock:
             return self._rows_to_shots(self.db.execute(sql, args).fetchall())
 
-    def get_shot(self, shot_id: str) -> dict | None:
+    def get_shot(self, shot_id: str) -> dict[Any, Any] | None:
         with self.lock:
             rows = self.db.execute("SELECT * FROM shots WHERE shot_id=?", (shot_id,)).fetchall()
             return self._rows_to_shots(rows)[0] if rows else None
 
     # ---- 写索引 -----------------------------------------------------------
-    def commit_shot(self, rec: ShotRecord, seen_rows: list[tuple] | tuple = ()) -> None:
+    def commit_shot(self, rec: ShotRecord, seen_rows: list[tuple[Any, ...]] | tuple[Any, ...] = ()) -> None:
         """一个事务：shots + files + edits + seen。"""
         with self.lock:
             db = self.db
@@ -311,7 +312,7 @@ class Library:
                 db.execute("ROLLBACK")
                 raise
 
-    def replace_shot(self, old_shot_id: str, rec: ShotRecord, seen_rows: list[tuple] | tuple = ()) -> None:
+    def replace_shot(self, old_shot_id: str, rec: ShotRecord, seen_rows: list[tuple[Any, ...]] | tuple[Any, ...] = ()) -> None:
         """一个事务：用 `rec` 换掉旧的那张（另一半补上之后照片的 id 会变）。"""
         with self.lock:
             db = self.db
@@ -367,23 +368,23 @@ class Library:
             ),
         )
 
-    def add_seen(self, rows: list[tuple]) -> None:
+    def add_seen(self, rows: list[tuple[Any, ...]]) -> None:
         with self.lock:
             self.db.executemany("INSERT OR REPLACE INTO seen(card_key, relpath, size, mtime_ns, sha256) VALUES(?,?,?,?,?)", rows)
 
-    def set_edit_cache(self, shot_id: str, rev: int, crop: dict | None) -> None:
+    def set_edit_cache(self, shot_id: str, rev: int, crop: dict[Any, Any] | None) -> None:
         with self.lock:
             self.db.execute(
                 "INSERT OR REPLACE INTO edits(shot_id,sidecar_rev,updated_at,crop_json) VALUES(?,?,?,?)",
                 (shot_id, rev, datetime.now().isoformat(timespec="seconds"), json.dumps(crop) if crop else None),
             )
 
-    def sidecar_path_for(self, shot: dict) -> Path:
+    def sidecar_path_for(self, shot: dict[Any, Any]) -> Path:
         first = next(iter(shot["files"].values()))
         return sc.sidecar_path(self.abspath(first["relpath"]))
 
     # ---- sidecar 坏了/没了：退回"没有编辑" ------------------------------------
-    def sidecar_problem(self, shot: dict) -> str | None:
+    def sidecar_problem(self, shot: dict[Any, Any]) -> str | None:
         """这张照片的编辑记录读不出来（损坏或被删）就返回一句白话，否则 None。不写任何东西。"""
         try:
             sc.read(self.sidecar_path_for(shot))
@@ -391,7 +392,7 @@ class Library:
             return SIDECAR_RESET_NOTE
         return None
 
-    def fresh_sidecar(self, shot: dict) -> dict:
+    def fresh_sidecar(self, shot: dict[Any, Any]) -> dict[Any, Any]:
         """按索引里的信息重新造一份"没有编辑"的 sidecar（只在内存里）。"""
         files = shot["files"]
         dng, jpg = files.get("dng"), files.get("jpg")
@@ -413,7 +414,7 @@ class Library:
             },
         )
 
-    def read_sidecar_or_default(self, shot: dict) -> tuple[dict, str | None]:
+    def read_sidecar_or_default(self, shot: dict[Any, Any]) -> tuple[dict[Any, Any], str | None]:
         """读用：sidecar 读不出来就给"没有编辑"的默认内容和一句白话，不改磁盘。"""
         with self.lock:
             try:
@@ -421,7 +422,7 @@ class Library:
             except sc.SidecarCorrupt:
                 return self.fresh_sidecar(shot), SIDECAR_RESET_NOTE
 
-    def read_sidecar_for_write(self, shot: dict) -> dict:
+    def read_sidecar_for_write(self, shot: dict[Any, Any]) -> dict[Any, Any]:
         """写用：读不出来就把坏的改名留着（`.corrupt-<时间>`），重新建一份"没有编辑"的再往下写。"""
         path = self.sidecar_path_for(shot)
         with self.lock:
@@ -433,7 +434,7 @@ class Library:
                 return sc.write_atomic(path, self.fresh_sidecar(shot), bump=False, tmp_dir=self.tmp_dir)
 
     # ---- 日志 -------------------------------------------------------------
-    def log(self, entry: dict) -> None:
+    def log(self, entry: dict[Any, Any]) -> None:
         entry = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), **entry}
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
         with self.lock, open(self.log_path, "a", encoding="utf-8") as fh:
@@ -441,7 +442,7 @@ class Library:
             fh.flush()
             os.fsync(fh.fileno())
 
-    def read_log(self) -> list[dict]:
+    def read_log(self) -> list[dict[Any, Any]]:
         if not self.log_path.exists():
             return []
         out = []
@@ -497,7 +498,7 @@ class Library:
     def _rebuild_group(self, rel_dir: str, media: dict[str, Path], verify: bool, report: RebuildReport) -> None:
         any_path = next(iter(media.values()))
         sc_path = sc.sidecar_path(any_path)
-        side: dict | None = None
+        side: dict[Any, Any] | None = None
         if sc_path.exists():
             try:
                 side = sc.read(sc_path)

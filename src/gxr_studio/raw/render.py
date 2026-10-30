@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 
@@ -26,7 +27,7 @@ from .dng import Dng
 def srgb_encode(linear: np.ndarray) -> np.ndarray:
     """IEC 61966-2-1 的 sRGB 传递函数，输入输出都是 0..1。"""
     a = np.clip(linear, 0.0, 1.0).astype(np.float32, copy=False)
-    return np.where(a <= 0.0031308, a * 12.92, 1.055 * np.power(a, 1 / 2.4, dtype=np.float32) - 0.055)
+    return cast(np.ndarray, np.where(a <= 0.0031308, a * 12.92, 1.055 * np.power(a, 1 / 2.4, dtype=np.float32) - 0.055))
 
 
 def _neutral_display(codes: np.ndarray) -> np.ndarray:

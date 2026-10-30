@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
@@ -35,18 +36,18 @@ def _sidecar_unreadable() -> ApiError:
 class EditRequest(BaseModel):
     """出现在请求体里的块才会被改；值为 null = 还原这一块。"""
 
-    recipe: dict | None = None
-    adjust: dict | None = None
-    curve: dict | None = None
+    recipe: dict[Any, Any] | None = None
+    adjust: dict[Any, Any] | None = None
+    curve: dict[Any, Any] | None = None
     expected_rev: int | None = None
 
 
 class RenderRequest(BaseModel):
     """不落盘的实时预览：出现的块盖过 sidecar 里的，没出现的用 sidecar 的。"""
 
-    recipe: dict | None = None
-    adjust: dict | None = None
-    curve: dict | None = None
+    recipe: dict[Any, Any] | None = None
+    adjust: dict[Any, Any] | None = None
+    curve: dict[Any, Any] | None = None
 
 
 # ---- 小工具 -----------------------------------------------------------------
@@ -56,11 +57,11 @@ def _edit_error(exc: EditError) -> ApiError:
     return ApiError(422, exc.code, exc.message)
 
 
-def _unavailable(c, exc: RenderUnavailable) -> ApiError:
+def _unavailable(c: Any, exc: RenderUnavailable) -> ApiError:
     return ApiError(409, exc.code, exc.message, {"status": c.render.status()})
 
 
-def _read_edit(c, shot: dict):
+def _read_edit(c: Any, shot: dict[Any, Any]) -> tuple[EditState, dict[Any, Any]]:
     try:
         return render_edits.read(c.lib, shot)
     except sc.SidecarCorrupt as exc:
@@ -69,7 +70,7 @@ def _read_edit(c, shot: dict):
         raise _edit_error(exc) from exc
 
 
-def _payload(c, shot: dict, edit: EditState, side: dict, warning: str | None = None) -> dict:
+def _payload(c: Any, shot: dict[Any, Any], edit: EditState, side: dict[Any, Any], warning: str | None = None) -> dict[Any, Any]:
     out = render_edits.describe(side, edit)
     out["render"] = _render_info(c, shot, edit)
     if warning:
@@ -77,7 +78,7 @@ def _payload(c, shot: dict, edit: EditState, side: dict, warning: str | None = N
     return out
 
 
-def _render_info(c, shot: dict, edit: EditState) -> dict:
+def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     svc = c.render
     if "dng" not in shot["files"]:
         return {
@@ -120,7 +121,7 @@ def _merge(edit: EditState, body: RenderRequest | None) -> EditState:
         raise _edit_error(exc) from exc
 
 
-def _crop_of(side: dict) -> Crop | None:
+def _crop_of(side: dict[Any, Any]) -> Crop | None:
     raw = side.get("crop")
     return Crop(raw["preset"], tuple(raw["rect"]), float(raw.get("angle_deg", 0.0))) if raw else None
 
@@ -176,13 +177,13 @@ def _render(
 # ---- 状态与配方列表 ------------------------------------------------------------
 
 
-@router.get("/api/render/status")
-def render_status(request: Request):
+@router.get("/api/render/status", response_model=None)
+def render_status(request: Request) -> Any:
     return ctx(request).render.status()
 
 
-@router.get("/api/recipes")
-def list_recipes(request: Request):
+@router.get("/api/recipes", response_model=None)
+def list_recipes(request: Request) -> dict[Any, Any]:
     """3 个单元 × 8 个底子，以及每个底子有哪些旋钮、每个旋钮能取哪些档位（含到顶标记）。没导入相机数据也能列。"""
     svc = ctx(request).render
     status = svc.status()
@@ -196,16 +197,16 @@ def list_recipes(request: Request):
 # ---- sidecar 里的编辑 -----------------------------------------------------------
 
 
-@router.get("/api/photos/{shot_id}/edit")
-def get_edit(shot_id: str, request: Request):
+@router.get("/api/photos/{shot_id}/edit", response_model=None)
+def get_edit(shot_id: str, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     edit, side = _read_edit(c, shot)
     return _payload(c, shot, edit, side, c.lib.sidecar_problem(shot))
 
 
-@router.put("/api/photos/{shot_id}/edit")
-def put_edit(shot_id: str, body: EditRequest, request: Request):
+@router.put("/api/photos/{shot_id}/edit", response_model=None)
+def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     changes = {k: getattr(body, k) for k in ("recipe", "adjust", "curve") if k in body.model_fields_set}
@@ -223,8 +224,8 @@ def put_edit(shot_id: str, body: EditRequest, request: Request):
     return _payload(c, shot, edit, side, warning)
 
 
-@router.delete("/api/photos/{shot_id}/edit")
-def delete_edit(shot_id: str, request: Request):
+@router.delete("/api/photos/{shot_id}/edit", response_model=None)
+def delete_edit(shot_id: str, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     warning = c.lib.sidecar_problem(shot)
@@ -240,7 +241,7 @@ def delete_edit(shot_id: str, request: Request):
 # ---- 预览图 ---------------------------------------------------------------------
 
 
-@router.get("/api/photos/{shot_id}/render")
+@router.get("/api/photos/{shot_id}/render", response_model=None)
 def get_render(
     shot_id: str,
     request: Request,
@@ -248,12 +249,12 @@ def get_render(
     exact: bool = False,
     crop: bool = False,
     quality: int = 88,
-):
+) -> Any:
     """按 sidecar 里的编辑渲染（半分辨率，烘焙路径）。`max_edge` 再缩小（拖滑块时用）；`crop` 套上裁切与拉直。"""
     return _render(request, shot_id, None, max_edge, exact, crop, quality)
 
 
-@router.post("/api/photos/{shot_id}/render")
+@router.post("/api/photos/{shot_id}/render", response_model=None)
 def post_render(
     shot_id: str,
     body: RenderRequest,
@@ -262,6 +263,6 @@ def post_render(
     exact: bool = False,
     crop: bool = False,
     quality: int = 88,
-):
+) -> Any:
     """同上，但请求体里的 recipe/adjust/curve 盖过 sidecar（不落盘）：拖滑块的实时预览。"""
     return _render(request, shot_id, body, max_edge, exact, crop, quality)

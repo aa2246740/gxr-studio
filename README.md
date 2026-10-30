@@ -45,6 +45,9 @@ uv run gxr-studio           # 启动，自动打开浏览器；加 --no-browser 
   macOS `~/Library/Application Support/GXR Studio/`。可以用环境变量改：
   `GXR_STUDIO_LIBRARY`、`GXR_STUDIO_EXPORT`、`GXR_STUDIO_HOME`、`GXR_STUDIO_VOLUMES`（存放"卡"的卷根目录，
   多个用 `:` 分隔，默认 macOS 是 `/Volumes`）、`GXR_STUDIO_TOKEN`。
+- 错误追踪默认关闭。只有设置了 `GXR_STUDIO_SENTRY_DSN` 才会把失败任务报到 Sentry，并且会先打码路径和令牌。
+  可选 `GXR_STUDIO_SENTRY_ENVIRONMENT`（默认 `local`）和 `GXR_STUDIO_SENTRY_RELEASE`（默认 `gxr-studio@版本`）。
+  不设置 DSN 时不会联网。说明在 `docs/observability.md`。
 
 ### 不插真卡也能试：造一张假卡
 

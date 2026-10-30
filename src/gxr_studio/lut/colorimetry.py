@@ -6,6 +6,7 @@ Verbatim AST segments only (see research/studio_lut_s8a/tools/extract_lut.py).
 """
 
 import math
+from typing import Any
 
 import numpy as np
 
@@ -85,19 +86,19 @@ ROBERTSON = np.array(
 TINT_SCALE = -3000.0
 
 
-def xy_to_xyz(xy):
+def xy_to_xyz(xy: Any) -> Any:
     x, y = float(xy[0]), float(xy[1])
     return np.array([x / y, 1.0, (1.0 - x - y) / y])
 
 
-def xyz_to_xy(xyz):
+def xyz_to_xy(xyz: Any) -> Any:
     s = float(np.sum(xyz))
     if s <= 0:
         return D50_XY.copy()
     return np.array([xyz[0] / s, xyz[1] / s])
 
 
-def bradford(src_xy, dst_xy):
+def bradford(src_xy: Any, dst_xy: Any) -> Any:
     """Linear Bradford, as DNG SDK MapWhiteMatrix (cone ratios pinned to [0.1, 10])."""
     w1 = np.maximum(BRADFORD @ xy_to_xyz(src_xy), 0.0)
     w2 = np.maximum(BRADFORD @ xy_to_xyz(dst_xy), 0.0)
@@ -105,7 +106,7 @@ def bradford(src_xy, dst_xy):
     return np.linalg.inv(BRADFORD) @ np.diag(a) @ BRADFORD
 
 
-def xy_to_cct(xy):
+def xy_to_cct(xy: Any) -> tuple[float, float]:
     """Correlated colour temperature and tint, Robertson's method (DNG SDK dng_temperature)."""
     x, y = float(xy[0]), float(xy[1])
     den = 1.5 - x + 6.0 * y
@@ -133,7 +134,7 @@ def xy_to_cct(xy):
     raise AssertionError("unreachable")
 
 
-def white_from_neutral(col, neutral):
+def white_from_neutral(col: Any, neutral: Any) -> tuple[Any, ...]:
     n = np.asarray(neutral, float)
     n = n / n.max()
     xy, k, ok = col.neutral_to_xy(n)
@@ -143,7 +144,7 @@ def white_from_neutral(col, neutral):
 class _OneMatrix:
     """只露出第 k 套标定的 DNG 视图，给 DngColour(matrix='cm1'/'cm2') 用。"""
 
-    def __init__(self, dng, k):
+    def __init__(self, dng: Any, k: Any) -> None:
         self.color_matrix = [dng.color_matrix[k], None]
         self.camera_calibration = [dng.camera_calibration[k], None]
         self.forward_matrix = [dng.forward_matrix[k], None]
@@ -158,7 +159,7 @@ class DngColour:
     (sensitivity analysis: two independent Ricoh calibrations bracket the matrix uncertainty).
     """
 
-    def __init__(self, dng, matrix="interp"):
+    def __init__(self, dng: Any, matrix: str = "interp") -> None:
         if all(m is None for m in dng.color_matrix):
             raise ValueError("no ColorMatrix")
         if matrix in ("cm1", "cm2"):
@@ -171,7 +172,7 @@ class DngColour:
         self.matrix_mode = matrix
         pcs = xy_to_xyz(D50_XY)
 
-        def norm(m):
+        def norm(m: Any) -> Any:
             # dng_camera_profile NormalizeColorMatrix: largest camera coordinate of the PCS white = 1
             mx = float(np.max(m @ pcs))
             return m / mx if mx > 0 and (mx < 0.99 or mx > 1.01) else m.copy()
@@ -198,7 +199,7 @@ class DngColour:
         self.ab = np.diag(dng.analog_balance)
         self.illuminant = list(dng.illuminant)
 
-    def weight(self, xy):
+    def weight(self, xy: Any) -> tuple[Any, ...]:
         """Weight g of the lower-temperature calibration at white xy, and the CCT/tint."""
         temp, tint = xy_to_cct(xy)
         if self.single or temp <= self.T[0]:
@@ -209,13 +210,13 @@ class DngColour:
             g = (1.0 / temp - 1.0 / self.T[1]) / (1.0 / self.T[0] - 1.0 / self.T[1])
         return g, temp, tint
 
-    def xyz_to_camera(self, xy):
+    def xyz_to_camera(self, xy: Any) -> Any:
         g, _, _ = self.weight(xy)
         cm = g * self.cm[0] + (1 - g) * self.cm[1]
         cc = g * self.cc[0] + (1 - g) * self.cc[1]
         return self.ab @ cc @ cm
 
-    def neutral_to_xy(self, neutral, max_pass=30):
+    def neutral_to_xy(self, neutral: Any, max_pass: int = 30) -> tuple[Any, ...]:
         """DNG SDK NeutralToXY: iterate the interpolated matrix from D50 to a fixed point."""
         n = np.asarray(neutral, float)
         last = D50_XY.copy()
@@ -228,7 +229,7 @@ class DngColour:
             last = nxt
         return last, max_pass, False
 
-    def camera_to_pcs(self, white_xy):
+    def camera_to_pcs(self, white_xy: Any) -> Any:
         """CameraToPCS (camera -> XYZ adapted to D50) for this white (SDK dng_color_spec::SetWhiteXY)."""
         m = self.xyz_to_camera(white_xy)
         g, _, _ = self.weight(white_xy)
@@ -246,11 +247,11 @@ class DngColour:
         p2c = p2c / float(np.max(p2c @ xy_to_xyz(D50_XY)))
         return np.linalg.inv(p2c)
 
-    def camera_to_xyz(self, white_xy, out_white_xy=D65_XY):
+    def camera_to_xyz(self, white_xy: Any, out_white_xy: Any = D65_XY) -> Any:
         """Camera (normalised raw) -> XYZ chromatically adapted to out_white_xy (Bradford from D50)."""
         return bradford(D50_XY, out_white_xy) @ self.camera_to_pcs(white_xy)
 
-    def white_info(self, white_xy, neutral=None, n_iter=None, converged=None):
+    def white_info(self, white_xy: Any, neutral: Any = None, n_iter: Any = None, converged: Any = None) -> dict[Any, Any]:
         g, temp, tint = self.weight(white_xy)
         return {
             "white_xy": [float(white_xy[0]), float(white_xy[1])],

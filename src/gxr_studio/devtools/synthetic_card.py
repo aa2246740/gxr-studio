@@ -24,6 +24,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageDraw
 
@@ -165,7 +166,9 @@ def make_card(
             card.shots.append(SyntheticShot("100RICOH", dng.stem, ("dng", "jpg"), m.taken, "real", real=True))
             real_stems.append(dng.stem)
 
-    def add(directory, stem, kinds, taken, mode="ok", orientation=1, note="", dup_of=None):
+    def add(
+        directory: Any, stem: Any, kinds: Any, taken: Any, mode: str = "ok", orientation: int = 1, note: str = "", dup_of: Any = None
+    ) -> Any:
         shot = SyntheticShot(directory, stem, tuple(kinds), taken, mode, orientation, False, dup_of, note)
         folder = root / "DCIM" / directory
         seed = _seed(directory + stem)
@@ -218,9 +221,9 @@ def make_card(
     return card
 
 
-def tree_snapshot(root: Path) -> dict[str, tuple]:
+def tree_snapshot(root: Path) -> dict[str, tuple[Any, ...]]:
     """整棵目录的 内容哈希 + 大小 + mtime_ns（目录只记 mtime_ns）。用来证明"导入前后卡一字未动"。"""
-    snap: dict[str, tuple] = {}
+    snap: dict[str, tuple[Any, ...]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
         d = Path(dirpath)

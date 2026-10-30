@@ -11,6 +11,7 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 SCHEMA = "gxr-studio/edit/1"
 SUFFIX = ".gxrs.json"
@@ -37,8 +38,8 @@ def new_sidecar(
     orientation: int,
     width: int | None,
     height: int | None,
-    imported: dict,
-) -> dict:
+    imported: dict[Any, Any],
+) -> dict[Any, Any]:
     return {
         "schema": SCHEMA,
         "rev": 0,
@@ -50,11 +51,11 @@ def new_sidecar(
     }
 
 
-def _is_num(v) -> bool:
+def _is_num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def _shape_problem(data: dict) -> str | None:
+def _shape_problem(data: dict[Any, Any]) -> str | None:
     """手改出来的文件：JSON 对、schema 也对，但 rev/frame/crop 的类型不对。返回第一处问题，没有就 None。
     比本程序新的 schema 不查（字段含义可能变了，只读、不改写）。"""
     rev = data.get("rev", 0)
@@ -80,7 +81,7 @@ def _shape_problem(data: dict) -> str | None:
     return None
 
 
-def read(path: Path) -> dict:
+def read(path: Path) -> dict[Any, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -113,12 +114,12 @@ def _schema_version(schema: str) -> int:
         return 0
 
 
-def check_writable(data: dict) -> None:
+def check_writable(data: dict[Any, Any]) -> None:
     if not str(data.get("schema", "")).startswith("gxr-studio/edit/") or _schema_version(data["schema"]) > _schema_version(SCHEMA):
         raise SidecarTooNew(data.get("schema"))
 
 
-def write_atomic(path: Path, data: dict, *, bump: bool = True, tmp_dir: Path | None = None) -> dict:
+def write_atomic(path: Path, data: dict[Any, Any], *, bump: bool = True, tmp_dir: Path | None = None) -> dict[Any, Any]:
     """写入并返回写入后的内容；bump 为真时 rev+1。临时文件放 tmp_dir（须与 path 同一个文件系统）。"""
     check_writable(data)
     out = dict(data)

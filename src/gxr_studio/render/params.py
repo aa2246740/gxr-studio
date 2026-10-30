@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 UNITS = ("jlaunch", "qlaunch", "l08firm")
 KNOB_NAMES = ("amount", "contrast", "highlight", "shadow", "fade", "saturation", "warmth", "tint", "split", "filter")
@@ -23,7 +24,7 @@ CURVE_MAX_POINTS = 16
 
 
 class EditError(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -42,7 +43,7 @@ class RecipeSel:
     def levels_dict(self) -> dict[str, int]:
         return dict(self.levels)
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[Any, Any]:
         return {"kind": "builtin", "unit": self.unit, "slot": self.slot, "levels": dict(self.levels)}
 
 
@@ -63,7 +64,7 @@ class Adjust:
     def tone_is_identity(self) -> bool:
         return self.contrast == 0 and self.highlight == 0 and self.shadow == 0
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[Any, Any]:
         return {
             "exposure_ev": self.exposure_ev,
             "wb": {"warm": self.warm, "tint": self.tint},
@@ -79,7 +80,7 @@ class EditState:
     adjust: Adjust = field(default_factory=Adjust)
     master: tuple[tuple[float, float], ...] | None = None  # 主曲线控制点（0..255）
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[Any, Any]:
         return {
             "recipe": self.recipe.to_json() if self.recipe else None,
             "adjust": self.adjust.to_json(),
@@ -94,16 +95,16 @@ class EditState:
         return hashlib.sha256(self.canonical().encode()).hexdigest()
 
 
-def _int_in(value, lo: int, hi: int, what: str) -> int:
+def _int_in(value: Any, lo: int, hi: int, what: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value != int(value):
         raise EditError("bad_adjust", f"{what}要是整数")
-    value = int(value)
-    if not lo <= value <= hi:
+    number = int(value)
+    if not lo <= number <= hi:
         raise EditError("bad_adjust", f"{what}要在 {lo} 到 {hi} 之间")
-    return value
+    return number
 
 
-def parse_adjust(raw) -> Adjust:
+def parse_adjust(raw: Any) -> Adjust:
     if raw is None:
         return Adjust()
     if not isinstance(raw, dict):
@@ -127,7 +128,7 @@ def parse_adjust(raw) -> Adjust:
     )
 
 
-def parse_curve(raw) -> tuple[tuple[float, float], ...] | None:
+def parse_curve(raw: Any) -> tuple[tuple[float, float], ...] | None:
     """返回主曲线控制点；缺省、空、或恰好是恒等直线 → None。"""
     if raw is None:
         return None
@@ -154,7 +155,7 @@ def parse_curve(raw) -> tuple[tuple[float, float], ...] | None:
     return tuple(out)
 
 
-def parse_recipe(raw) -> RecipeSel | None:
+def parse_recipe(raw: Any) -> RecipeSel | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -183,7 +184,7 @@ def parse_recipe(raw) -> RecipeSel | None:
     return RecipeSel(unit, slot, tuple(pairs))
 
 
-def parse_edit(side: dict) -> EditState:
+def parse_edit(side: dict[Any, Any]) -> EditState:
     """从 sidecar 读出编辑状态；其中任何一块有问题都当作 EditError（让调用方决定是报错还是忽略）。"""
     return EditState(
         recipe=parse_recipe(side.get("recipe")),

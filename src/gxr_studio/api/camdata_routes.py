@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -43,7 +44,7 @@ def _project_dir() -> str | None:
     return str(root) if (root / "research").is_dir() else None
 
 
-def _status(c) -> dict:
+def _status(c: Any) -> dict[Any, Any]:
     home = c.settings.home_dir
     rs = c.render.status()
     cam, cal = intake.describe(home), intake.describe_calibration(home)
@@ -84,7 +85,7 @@ def _status(c) -> dict:
     }
 
 
-def _install(c, raw: bytes, name: str, origin: dict) -> dict:
+def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any]) -> dict[Any, Any]:
     """校验（不过就原样保留旧数据）→ 与已导入的相同就不动 → 否则在渲染锁里替换并让缓存失效。"""
     try:
         info = intake.inspect_dat(raw)
@@ -117,13 +118,13 @@ def _install(c, raw: bytes, name: str, origin: dict) -> dict:
     }
 
 
-@router.get("/api/camdata/status")
-def camdata_status(request: Request):
+@router.get("/api/camdata/status", response_model=None)
+def camdata_status(request: Request) -> Any:
     return _status(ctx(request))
 
 
-@router.post("/api/camdata/import-card")
-def import_from_card(request: Request, body: ImportCardRequest | None = None):
+@router.post("/api/camdata/import-card", response_model=None)
+def import_from_card(request: Request, body: ImportCardRequest | None = None) -> Any:
     c = ctx(request)
     scans = intake.scan_cards_for_dat(c.settings.volumes_roots, c.reader)
     if body and body.card_id:
@@ -162,8 +163,8 @@ def import_from_card(request: Request, body: ImportCardRequest | None = None):
     return _install(c, raw, pick.dat_path.name, {"kind": "card", "label": pick.card.label})  # type: ignore[union-attr]
 
 
-@router.post("/api/camdata/import-file")
-def import_from_file(body: PathRequest, request: Request):
+@router.post("/api/camdata/import-file", response_model=None)
+def import_from_file(body: PathRequest, request: Request) -> Any:
     c = ctx(request)
     try:
         raw, name = intake.read_dat_from_path(Path(body.path))
@@ -172,8 +173,8 @@ def import_from_file(body: PathRequest, request: Request):
     return _install(c, raw, name, {"kind": "file"})
 
 
-@router.post("/api/camdata/import-upload")
-async def import_from_upload(request: Request):
+@router.post("/api/camdata/import-upload", response_model=None)
+async def import_from_upload(request: Request) -> Any:
     """浏览器的文件选择器拿不到本地路径：界面把选中的 GXRCE.DAT 的原始字节直接 POST 过来（文件名放在
     `X-GXR-Filename`，只用来显示）。校验、替换和 `import-file` 完全相同；超过上限边读边拒绝。"""
     c = ctx(request)
@@ -191,8 +192,8 @@ async def import_from_upload(request: Request):
     return await run_in_threadpool(_install, c, b"".join(chunks), name, {"kind": "file"})
 
 
-@router.post("/api/calibration/import")
-def import_calibration(body: PathRequest, request: Request):
+@router.post("/api/calibration/import", response_model=None)
+def import_calibration(body: PathRequest, request: Request) -> dict[Any, Any]:
     c = ctx(request)
     home = c.settings.home_dir
     try:

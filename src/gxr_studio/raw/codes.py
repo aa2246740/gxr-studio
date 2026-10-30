@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 
 from .dng import Dng, RawDecodeError
@@ -32,7 +34,7 @@ def crop_shape(dng: Dng) -> tuple[int, int]:
     return dng.crop_size[1], dng.crop_size[0]
 
 
-def half_res_codes(dng: Dng, dtype=np.float32) -> np.ndarray:
+def half_res_codes(dng: Dng, dtype: Any = np.float32) -> np.ndarray:
     """半分辨率白平衡码值 (h//2, w//2, 3)，未转正（方向见 `orient_array`）。"""
     wb_gains(dng)  # 只为校验 AsShotNeutral；下面保持研究代码的算式顺序 均值 / neutral × 4095
     y0, x0, h, w = dng.crop_window()
@@ -57,14 +59,14 @@ def half_res_codes(dng: Dng, dtype=np.float32) -> np.ndarray:
     return out
 
 
-def wb_mosaic_block(dng: Dng, y0: int, y1: int, dtype=np.float32) -> np.ndarray:
+def wb_mosaic_block(dng: Dng, y0: int, y1: int, dtype: Any = np.float32) -> np.ndarray:
     """裁切窗口里第 [y0, y1) 行（裁切坐标）的白平衡后马赛克：每个位置乘它自己颜色的 4095/AsShotNeutral。"""
     gains = wb_gains(dng)
     cy0, cx0, h, w = dng.crop_window()
     norm = dng.normalised_block(cy0 + y0, cy0 + y1, cx0, cx0 + w)
     yy = np.arange(cy0 + y0, cy0 + y1)[:, None]
     xx = np.arange(cx0, cx0 + w)[None, :]
-    return (norm * gains[dng.cfa_at(yy, xx)]).astype(dtype, copy=False)
+    return cast(np.ndarray, (norm * gains[dng.cfa_at(yy, xx)]).astype(dtype, copy=False))
 
 
 def orient_array(a: np.ndarray, orientation: int) -> np.ndarray:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from ..camdata import store
 from ..engine import knobs, menu
@@ -31,23 +32,24 @@ NEUTRAL = {"amount": 100}  # 不在菜单里的旋钮，只有取这个"中性�
 class Resolved:
     entry: bytes
     entry_sha256: str
-    levels: dict  # 这个配方菜单里每个旋钮的实际档位（没给的取默认）
-    stats: dict
+    levels: dict[Any, Any]  # 这个配方菜单里每个旋钮的实际档位（没给的取默认）
+    stats: dict[Any, Any]
 
 
 class Menu:
     """旋钮菜单表（final.json）。不含任何理光字节，所以没导入相机数据时也能列出配方和旋钮。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.menu = menu.load()
         self.table_sha256 = hashlib.sha256(menu.TABLE_PATH.read_bytes()).hexdigest()
         self._recipes = {(r["unit"], r["slot"]): r for r in self.menu["recipes"]}
 
-    def _items(self, unit: int, slot: int) -> list[dict]:
+    def _items(self, unit: int, slot: int) -> list[dict[Any, Any]]:
         r = self._recipes[(unit, slot)]
-        return self.menu["items"][r["first_item"] : r["first_item"] + r["item_count"]]
+        # menu.load() 是 JSON，条目列表的元素类型存根里是 Any。
+        return cast(list[dict[str, Any]], self.menu["items"][r["first_item"] : r["first_item"] + r["item_count"]])
 
-    def controls(self, unit: int, slot: int) -> list[dict]:
+    def controls(self, unit: int, slot: int) -> list[dict[Any, Any]]:
         out = []
         for it in self._items(unit, slot):
             c = self.menu["controls"][it["control"]]
@@ -69,7 +71,7 @@ class Menu:
     def entry_sha256(self, unit: int, slot: int) -> str | None:
         return None
 
-    def listing(self) -> list[dict]:
+    def listing(self) -> list[dict[Any, Any]]:
         units = []
         for u, info in enumerate(UNIT_INFO):
             recipes = []
@@ -95,7 +97,7 @@ class Menu:
             )
         return units
 
-    def request_for(self, sel: RecipeSel):
+    def request_for(self, sel: RecipeSel) -> tuple[list[str], list[int], knobs.Request]:
         """档位 → (菜单旋钮名, 实际档位列表, knobs.Request)。档位不合法就抛 EditError，不钳位。"""
         u, slot = sel.unit_index, sel.slot
         items = self._items(u, slot)
@@ -115,7 +117,7 @@ class Menu:
 class CameraData(Menu):
     """已导入的相机数据 + 旋钮菜单表。构造时逐文件核对 SHA-256 和条目 CRC。"""
 
-    def __init__(self, home: Path):
+    def __init__(self, home: Path) -> None:
         super().__init__()
         self.home = Path(home)
         self.manifest = store.verify(self.home)  # 缺失/被改动 → CamdataError

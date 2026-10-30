@@ -21,6 +21,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 
 from . import datcodec
 
@@ -41,7 +42,7 @@ def camera_data_dir(home: Path) -> Path:
     return Path(home) / "camera-data"
 
 
-def entries_from_dat(raw: bytes):
+def entries_from_dat(raw: bytes) -> tuple[Any, ...]:
     """解析 DAT，返回 (dat, {(unit, slot): 552 B})，unit 0..2，slot 1..8。"""
     dat = datcodec.parse(raw)
     out = {}
@@ -54,7 +55,7 @@ def entries_from_dat(raw: bytes):
     return dat, out
 
 
-def import_from_dat(raw: bytes, home: Path, *, source_name: str = "GXRCE.DAT", origin: dict | None = None) -> dict:
+def import_from_dat(raw: bytes, home: Path, *, source_name: str = "GXRCE.DAT", origin: dict[Any, Any] | None = None) -> dict[Any, Any]:
     """从 DAT 字节提取三个单元 × 8 个配方（含原厂 04）到 `home/camera-data/`，返回 manifest。
 
     `origin`（可选）记下来源：{"kind": "card", "label": 卷标} 或 {"kind": "file"}，写进 manifest 的 source.origin。
@@ -113,7 +114,7 @@ def _atomic_exchange(a: Path, b: Path) -> bool:
         fn.restype = ctypes.c_int
     except (OSError, AttributeError):
         return False
-    return fn(os.fsencode(a), os.fsencode(b), 2) == 0
+    return bool(fn(os.fsencode(a), os.fsencode(b), 2) == 0)
 
 
 def swap_in(new: Path, root: Path) -> None:
@@ -156,22 +157,22 @@ def recover_interrupted_swaps(home: Path) -> list[str]:
     return done
 
 
-def import_from_dat_file(path: Path, home: Path) -> dict:
+def import_from_dat_file(path: Path, home: Path) -> dict[Any, Any]:
     path = Path(path)
     return import_from_dat(path.read_bytes(), home, source_name=path.name)
 
 
-def read_manifest(home: Path) -> dict:
+def read_manifest(home: Path) -> dict[Any, Any]:
     p = camera_data_dir(home) / "manifest.json"
     if not p.is_file():
         raise CamdataError("还没有导入相机数据")
-    m = json.loads(p.read_text())
+    m = cast(dict[str, Any], json.loads(p.read_text()))
     if m.get("schema") != SCHEMA:
         raise CamdataError("相机数据版本不认识")
     return m
 
 
-def verify(home: Path) -> dict:
+def verify(home: Path) -> dict[Any, Any]:
     """逐文件核对 SHA-256，并核对每个条目自带的 CRC。有任何不一致就抛 CamdataError。"""
     m = read_manifest(home)
     root = camera_data_dir(home)

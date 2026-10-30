@@ -10,7 +10,7 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from .. import audit
 
@@ -48,7 +48,7 @@ class CardShot:
     key: str  # 小写的 目录/主名
     directory: str
     stem: str
-    files: dict[str, CardFile] = field(default_factory=dict)
+    files: dict[str, CardFile] = field(default_factory=dict[Any, Any])
 
     @property
     def size(self) -> int:
@@ -58,10 +58,10 @@ class CardShot:
 class CardReader:
     """唯一允许碰卡文件的入口，只提供读。测试里可以继承它来模拟拔卡、读错。"""
 
-    def scandir(self, path: Path):
+    def scandir(self, path: Path) -> Any:
         return os.scandir(path)
 
-    def open_rb(self, path: Path):
+    def open_rb(self, path: Path) -> Any:
         return open(path, "rb", buffering=0)
 
     def exists(self, path: Path) -> bool:

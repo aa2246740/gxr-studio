@@ -16,6 +16,7 @@ dependencies = [
     "h11==0.16.0",
     "click==8.3.1",
     "typing-extensions==4.15.0",
+    "sentry-sdk==2.72.0",
 ]
 
 [dependency-groups]
@@ -77,9 +78,12 @@ max-complexity = 25
 python_version = "3.12"
 mypy_path = "src"
 packages = ["gxr_studio"]
+strict = true
 ignore_missing_imports = true
 warn_unused_ignores = true
 pretty = true
+# engine/ 与 lut/spaces.py 被 PROVENANCE 和测试按字节锁定，注解在同目录的 .pyi 里。
+# 不在这里放宽：存根让调用方仍然按 strict 检查。
 
 [tool.importlinter]
 root_packages = ["gxr_studio"]

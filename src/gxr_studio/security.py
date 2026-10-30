@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hmac
 import json
+from typing import Any
 from urllib.parse import parse_qs
 
 from .config import Settings
@@ -21,7 +22,7 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 class SecurityMiddleware:
-    def __init__(self, app, settings: Settings):
+    def __init__(self, app: Any, settings: Settings) -> None:
         self.app = app
         self.settings = settings
 
@@ -41,13 +42,13 @@ class SecurityMiddleware:
             return False
         return hmac.compare_digest(candidate.encode(), self.settings.token.encode())
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> Any:
         if scope["type"] not in ("http", "websocket"):
             return await self.app(scope, receive, send)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         method = scope.get("method", "GET")
 
-        async def deny(status: int, code: str, message: str):
+        async def deny(status: int, code: str, message: str) -> Any:
             if scope["type"] == "websocket":
                 return await send({"type": "websocket.close", "code": 1008})
             body = json.dumps({"error": code, "message": message}, ensure_ascii=False).encode()
@@ -107,7 +108,7 @@ class SecurityMiddleware:
         if not (self._token_ok(header_token) or self._token_ok(cookies.get(COOKIE))):
             return await deny(401, "token_required", "请用启动时显示的链接打开本页面。")
 
-        async def send_wrapper(message):
+        async def send_wrapper(message: Any) -> None:
             if message["type"] == "http.response.start":
                 extra = [
                     (b"x-content-type-options", b"nosniff"),

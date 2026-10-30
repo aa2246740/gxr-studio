@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import Any
 
 MAX_ANGLE = 10.0
 MIN_SIDE_PX = 16
@@ -35,7 +36,7 @@ PRESETS: dict[str, tuple[int, int] | None] = {
 
 
 class CropError(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -47,7 +48,7 @@ class Crop:
     rect: tuple[float, float, float, float]
     angle_deg: float = 0.0
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[Any, Any]:
         return {"preset": self.preset, "rect": list(self.rect), "angle_deg": self.angle_deg}
 
 
@@ -122,7 +123,7 @@ def default_crop(preset: str, width: int, height: int, angle_deg: float = 0.0, f
     return Crop(preset=preset, rect=rect, angle_deg=angle)
 
 
-def validate_crop(preset: str, rect, angle_deg: float, width: int, height: int) -> Crop:
+def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int) -> Crop:
     """校验用户给的框；不合格就抛 CropError，不悄悄修正。"""
     angle = _check_angle(angle_deg)
     ratio = target_ratio(preset, width, height)
@@ -150,7 +151,7 @@ def validate_crop(preset: str, rect, angle_deg: float, width: int, height: int) 
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 
 
-def affine_coeffs(box: tuple[int, int, int, int], width: int, height: int, angle_deg: float):
+def affine_coeffs(box: tuple[int, int, int, int], width: int, height: int, angle_deg: float) -> tuple[Any, ...]:
     """Pillow `Image.transform(AFFINE)` 的系数：输出像素 (x, y) -> 原图坐标。"""
     x0, y0 = box[0], box[1]
     th = math.radians(angle_deg)

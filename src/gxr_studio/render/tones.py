@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 
@@ -35,7 +37,7 @@ def channel_gains(adjust: Adjust) -> np.ndarray | None:
 
 
 def _smoothstep(t: np.ndarray) -> np.ndarray:
-    return t * t * (3.0 - 2.0 * t)
+    return cast(np.ndarray, t * t * (3.0 - 2.0 * t))  # numpy 算术在存根里是 Any
 
 
 def tone_function(t: np.ndarray, adjust: Adjust) -> np.ndarray:
@@ -48,7 +50,7 @@ def tone_function(t: np.ndarray, adjust: Adjust) -> np.ndarray:
         y = y + adjust.highlight / 100.0 * SHADOW_HIGHLIGHT_AMOUNT * 6.75 * y * y * (1.0 - y)
     if adjust.shadow:
         y = y + adjust.shadow / 100.0 * SHADOW_HIGHLIGHT_AMOUNT * 6.75 * y * (1.0 - y) ** 2
-    return np.clip(y, 0.0, 1.0)
+    return cast(np.ndarray, np.clip(y, 0.0, 1.0))
 
 
 def display_table(adjust: Adjust, master: tuple[tuple[float, float], ...] | None) -> np.ndarray | None:
@@ -71,4 +73,4 @@ def apply_table(values: np.ndarray, table: np.ndarray) -> np.ndarray:
     i = np.minimum(pos.astype(np.int32), TABLE_SIZE - 2)
     f = pos - i
     lo = table[i]
-    return lo + (table[i + 1] - lo) * f
+    return cast(np.ndarray, lo + (table[i + 1] - lo) * f)

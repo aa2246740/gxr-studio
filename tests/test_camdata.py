@@ -217,21 +217,25 @@ def test_no_ricoh_rows_in_repo_source_or_tests():
     needles = ricoh_row_needles()
     if not needles:
         pytest.skip("没有夹具 DAT")
-    roots = [
-        t.REPO / "studio/src",
-        t.REPO / "studio/tests",
-        t.REPO / "studio/web",
+    roots = [t.STUDIO / "src", t.STUDIO / "tests", t.STUDIO / "web"]
+    for extra in (
         t.REPO / "research/studio_engine_e0",
         t.REPO / "research/studio_design",
         t.REPO / "research/studio_m1",
-    ]
+    ):
+        if extra.is_dir():
+            roots.append(extra)
     scanned, hits = find_rows(roots, needles)
     assert scanned > 30 and hits == []
 
 
 def test_no_dat_or_entry_files_outside_ignored_dirs():
     bad = []
-    for root in (t.REPO / "studio", t.REPO / "research/studio_engine_e0"):
+    roots = [t.STUDIO]
+    research_e0 = t.REPO / "research/studio_engine_e0"
+    if research_e0.is_dir():
+        roots.append(research_e0)
+    for root in roots:
         for dirpath, dirs, files in os.walk(root):
             dirs[:] = [d for d in dirs if d not in {"local", "__pycache__", ".venv"}]
             bad += [str(Path(dirpath) / n) for n in files if n.lower().endswith((".dat", ".entry", ".bin"))]

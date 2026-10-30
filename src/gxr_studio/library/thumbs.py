@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -59,7 +60,7 @@ def purge_variants(lib: Library) -> int:
     return removed
 
 
-def preview_kind(shot: dict) -> str:
+def preview_kind(shot: dict[Any, Any]) -> str:
     return "jpg" if "jpg" in shot["files"] else "dng-preview"
 
 
@@ -85,7 +86,7 @@ def _render_from_dng(path: Path, size: int, orientation: int) -> Image.Image | N
     return im
 
 
-def _render_from_dng_half(path: Path, shot: dict, size: int, render) -> Image.Image | None:
+def _render_from_dng_half(path: Path, shot: dict[Any, Any], size: int, render: Any) -> Image.Image | None:
     """半分辨率路径：2×2 合并的白平衡码值 → 缩到 `size` → 原厂 04 电脑模拟（没有相机数据就中性转换）。"""
     from ..render.service import shrink_codes
 
@@ -109,7 +110,7 @@ EMBEDDED_LABEL = "RAW 里内嵌的小预览（相机自己生成的，很小）"
 EMBEDDED_VARIANT = "emb"
 
 
-def look_of(shot: dict, render=None, lib: Library | None = None) -> dict:
+def look_of(shot: dict[Any, Any], render: Any = None, lib: Library | None = None) -> dict[Any, Any]:
     """没有任何编辑时，这张照片的缩略图/大图画的是什么，界面据此标注：
     - camera-jpg：配对的相机 JPG，就是相机拍出来的样子；
     - stock04-prediction：只有 RAW，已导入相机数据——该单元原厂 04 的**电脑模拟**，是预测，不是相机 JPG；
@@ -126,7 +127,7 @@ def look_of(shot: dict, render=None, lib: Library | None = None) -> dict:
     return {"kind": "neutral", "label": NEUTRAL_LABEL, "prediction": False}
 
 
-def ensure(lib: Library, shot: dict, size: int, render=None) -> Path | None:
+def ensure(lib: Library, shot: dict[Any, Any], size: int, render: Any = None) -> Path | None:
     """返回缓存文件路径；原图读不出来返回 None。`render` 是 RenderService（没有就只能画中性转换）。"""
     files = shot["files"]
     variant = "" if "jpg" in files else (render.thumb_variant(shot) if render is not None else "n")

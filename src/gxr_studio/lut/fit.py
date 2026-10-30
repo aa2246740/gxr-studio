@@ -21,7 +21,7 @@ from __future__ import annotations
 import itertools
 import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable, cast
 
 import numpy as np
 
@@ -76,7 +76,7 @@ def label_for(similarity: float | None) -> str | None:
     return "接近" if similarity >= LABEL_CLOSE else "大致" if similarity >= LABEL_ROUGH else "差别明显"
 
 
-def stats_of(de: np.ndarray) -> dict:
+def stats_of(de: np.ndarray) -> dict[Any, Any]:
     return {
         "median": float(np.median(de)),
         "p90": float(np.percentile(de, 90)),
@@ -97,9 +97,9 @@ class Progress:
     fraction: float = 0.0
     message: str = ""
     evaluations: int = 0
-    best: dict | None = None
+    best: dict[Any, Any] | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[Any, Any]:
         return {
             "phase": self.phase,
             "fraction": round(self.fraction, 4),
@@ -112,8 +112,8 @@ class Progress:
 class Fitter:
     def __init__(
         self,
-        cam,
-        model,
+        cam: Any,
+        model: Any,
         samples: Samples,
         stock_rgb: np.ndarray,
         ideal_rgb: np.ndarray,
@@ -121,7 +121,7 @@ class Fitter:
         profile: str = "normal",
         progress: Callable[[Progress], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
-    ):
+    ) -> None:
         self.cam, self.model, self.samples = cam, model, samples
         self.cfg = PROFILES[profile]
         self.profile = profile
@@ -137,27 +137,27 @@ class Fitter:
         neutral = self.train[samples.group[self.train] == 0]
         self.neutral = neutral if len(neutral) >= 20 else self.coarse  # 灰阶不受饱和度/色温旋钮影响，先用它定色调
         self.neutral_small = self.neutral[::4] if len(self.neutral) >= 80 else self.neutral
-        self._grid: dict = {}
+        self._grid: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         self.stock04 = cam.stock[0]
-        self._cache: dict = {}
+        self._cache: dict[tuple[Any, ...], float] = {}
         self._last_emit = 0.0
 
     # ---- 基础 -------------------------------------------------------------
-    def controls(self, slot: int) -> list[dict]:
+    def controls(self, slot: int) -> list[dict[Any, Any]]:
         by_name = {c["name"]: c for c in self.cam.controls(0, slot)}
         return [by_name[n] for n in CONTROL_ORDER if n in by_name]
 
-    def defaults(self, slot: int) -> dict:
+    def defaults(self, slot: int) -> dict[Any, Any]:
         return {c["name"]: c["default"] for c in self.controls(slot)}
 
-    def entry_of(self, slot: int, levels: dict) -> bytes:
-        return self.cam.resolve(RecipeSel(UNIT, slot, tuple(sorted(levels.items())))).entry
+    def entry_of(self, slot: int, levels: dict[Any, Any]) -> bytes:
+        return cast(bytes, self.cam.resolve(RecipeSel(UNIT, slot, tuple(sorted(levels.items())))).entry)
 
-    def pred_lab(self, slot: int, levels: dict, idx: np.ndarray) -> np.ndarray:
+    def pred_lab(self, slot: int, levels: dict[Any, Any], idx: np.ndarray) -> np.ndarray:
         entry = self.entry_of(slot, levels)
         return colour.lab_from_codes(self.model.predict(entry, self.samples.x[idx]))
 
-    def loss(self, slot: int, levels: dict, idx: np.ndarray, tag: str) -> float:
+    def loss(self, slot: int, levels: dict[Any, Any], idx: np.ndarray, tag: str) -> float:
         key = (slot, tuple(sorted(levels.items())), tag)
         hit = self._cache.get(key)
         if hit is not None:
@@ -181,10 +181,10 @@ class Fitter:
             self._progress_cb(self.prog)
 
     # ---- 局部搜索的积木 --------------------------------------------------------
-    def _ctrl(self, slot: int, names) -> list[dict]:
+    def _ctrl(self, slot: int, names: Any) -> list[dict[Any, Any]]:
         return [c for c in self.controls(slot) if names is None or c["name"] in names]
 
-    def _tick(self, span, frac: float, text: str) -> None:
+    def _tick(self, span: Any, frac: float, text: str) -> None:
         self.prog.fraction = span[0] + (span[1] - span[0]) * min(1.0, frac)
         self.prog.message = text
         self.emit()
@@ -192,16 +192,16 @@ class Fitter:
     def descend(
         self,
         slot: int,
-        levels: dict,
+        levels: dict[Any, Any],
         idx: np.ndarray,
         tag: str,
         *,
-        names=None,
+        names: Any = None,
         coarse: bool = False,
         max_sweeps: int = 4,
-        span=(0.0, 0.0),
+        span: tuple[Any, ...] = (0.0, 0.0),
         label: str = "",
-    ) -> tuple[dict, float]:
+    ) -> tuple[dict[Any, Any], float]:
         """坐标下降：每次只动一个旋钮，试它所有合法档位（coarse 时每 3 档取 1 档）；严格更好才换。"""
         ctrl = self._ctrl(slot, names)
         best = self.loss(slot, levels, idx, tag)
@@ -238,7 +238,17 @@ class Fitter:
         (-2, -1),
     )
 
-    def pairs(self, slot: int, levels: dict, idx: np.ndarray, tag: str, *, names=None, span=(0.0, 0.0), label: str = "") -> tuple[dict, float]:
+    def pairs(
+        self,
+        slot: int,
+        levels: dict[Any, Any],
+        idx: np.ndarray,
+        tag: str,
+        *,
+        names: Any = None,
+        span: tuple[Any, ...] = (0.0, 0.0),
+        label: str = "",
+    ) -> tuple[dict[Any, Any], float]:
         """成对搜索：两个旋钮一起动 1~2 档（按各自合法档位的次序，到顶标记处走不过去）；对比 / 高光 / 阴影三个一起动 ±1
         （三者合成同一条色调曲线，沿"山谷"走要一起变）。严格更好才换。"""
         ctrl = self._ctrl(slot, names)
@@ -280,11 +290,13 @@ class Fitter:
                 levels = pick
         return levels, best
 
-    def local(self, slot: int, levels: dict, idx: np.ndarray, tag: str, *, names=None, rounds: int, span, label: str):
+    def local(
+        self, slot: int, levels: dict[Any, Any], idx: np.ndarray, tag: str, *, names: Any = None, rounds: int, span: Any, label: str
+    ) -> tuple[Any, ...]:
         """单旋钮 → 成对 → 单旋钮 …，交替到没有改进（最多 rounds 轮）。"""
         n = 2 * rounds + 1
 
-        def seg(k):
+        def seg(k: Any) -> tuple[Any, ...]:
             return (span[0] + (span[1] - span[0]) * k / n, span[0] + (span[1] - span[0]) * (k + 1) / n)
 
         levels, best = self.descend(slot, levels, idx, tag, names=names, max_sweeps=self.cfg["sweeps"], span=seg(0), label=label)
@@ -296,31 +308,33 @@ class Fitter:
                 break
         return levels, best
 
-    def grid_starts(self, slot: int, keep: int) -> list[dict]:
+    def grid_starts(self, slot: int, keep: int) -> list[dict[Any, Any]]:
         """Amount × 色调三旋钮（对比/高光/阴影，每 4 档取 1 档）的粗网格：损失函数沿"山谷"有脊，Amount 和色调又互相补偿，
         坐标下降从默认值出发会卡在半路，所以先全局扫一遍，取最好的几个点当起点。
         只用灰阶评分：饱和度、色温这些旋钮不改变灰阶，不会和色调搅在一起。"""
         key = (slot, keep)
-        if key in self._grid:
-            return self._grid[key]
+        cached = self._grid.get(key)
+        if cached is not None:
+            return cached
         ctrl = self.controls(slot)
         base = self.defaults(slot)
         tone = [c for c in ctrl if c["name"] in ("contrast", "highlight", "shadow")]
         amounts = [None]
         if ctrl[0]["name"] == "amount":
             amounts = ctrl[0]["levels"] if len(ctrl[0]["levels"]) <= 9 else ctrl[0]["levels"][::2]
-        scored: list[tuple] = []
+        scored: list[tuple[Any, ...]] = []
         for amount in amounts:
             b = base if amount is None else {**base, "amount": amount}
             for combo in itertools.product(*[c["levels"][::4] for c in tone]):
                 trial = {**b, **{c["name"]: lv for c, lv in zip(tone, combo)}}
                 scored.append((self.loss(slot, trial, self.neutral, "n"), len(scored), trial))
         scored.sort(key=lambda r: r[:2])
-        self._grid[key] = [r[2] for r in scored[:keep]]
-        return self._grid[key]
+        picked = cast(list[dict[str, Any]], [r[2] for r in scored[:keep]])
+        self._grid[key] = picked
+        return picked
 
     # ---- 总流程 -------------------------------------------------------------
-    def run(self) -> dict:
+    def run(self) -> dict[Any, Any]:
         t0 = time.perf_counter()
         cfg = self.cfg
         # A. 给 8 个底子排序：网格上最好的起点 + 粗档位坐标下降
@@ -393,7 +407,7 @@ class Fitter:
         return self.result(cands, time.perf_counter() - t0)
 
     # ---- 结果 ---------------------------------------------------------------
-    def describe(self, slot: int, levels: dict) -> dict:
+    def describe(self, slot: int, levels: dict[Any, Any]) -> dict[Any, Any]:
         allx = np.arange(len(self.samples))
         lab = self.pred_lab(slot, levels, allx)
         de = colour.delta_e00(lab, self.ideal_lab)
@@ -420,7 +434,7 @@ class Fitter:
             "entry_sha256": hashlib.sha256(entry).hexdigest(),
         }
 
-    def result(self, cands: list[dict], seconds: float) -> dict:
+    def result(self, cands: list[dict[Any, Any]], seconds: float) -> dict[Any, Any]:
         return {
             "schema": "gxr-studio/lut-fit/1",
             "prediction": True,
@@ -498,5 +512,5 @@ def explain(pred_lab: np.ndarray, ideal_lab: np.ndarray, group: np.ndarray, limi
 # ---- 入口 --------------------------------------------------------------------------
 
 
-def fit_lut(cam, model, samples: Samples, stock_rgb: np.ndarray, ideal_rgb: np.ndarray, **kw) -> dict:
+def fit_lut(cam: Any, model: Any, samples: Samples, stock_rgb: np.ndarray, ideal_rgb: np.ndarray, **kw: Any) -> dict[Any, Any]:
     return Fitter(cam, model, samples, stock_rgb, ideal_rgb, **kw).run()

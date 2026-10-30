@@ -12,7 +12,8 @@ import random
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+STUDIO = Path(__file__).resolve().parents[1]
+REPO = STUDIO.parent
 RESEARCH = REPO / "research"
 GOLDEN = Path(__file__).parent / "golden"
 

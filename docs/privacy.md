@@ -8,4 +8,6 @@
 
 令牌只活在启动命令、cookie 和请求头里。日志要经过 `observe.redact`，不保留 Bearer、`token=` 查询和 GitHub 令牌形状。
 
+可选的 Sentry（`GXR_STUDIO_SENTRY_DSN`）默认关闭。打开之后也只送打过码的失败任务事件：家目录、卷、卡路径和文件名换成占位符，不送照片、DNG、DAT 或令牌。详见 `docs/observability.md`。
+
 这是给你自己用的本地工具，没有面向别人的数据采集，所以没有同意横幅或远程删除接口。

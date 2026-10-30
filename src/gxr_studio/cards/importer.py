@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .. import meta as metamod
 from ..config import MiB
@@ -101,17 +101,17 @@ class ImportProgress:
     current: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
-    def update(self, **kw) -> None:
+    def update(self, **kw: Any) -> None:
         with self._lock:
             for k, v in kw.items():
                 setattr(self, k, v)
 
-    def add(self, **kw) -> None:
+    def add(self, **kw: Any) -> None:
         with self._lock:
             for k, v in kw.items():
                 setattr(self, k, getattr(self, k) + v)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[Any, Any]:
         with self._lock:
             d = {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
             d["unreadable"] = list(self.unreadable)
@@ -315,7 +315,7 @@ def run_import(
     return progress
 
 
-def _run(lib, card, opts, progress, cancel, reader, shift) -> None:
+def _run(lib: Any, card: Any, opts: Any, progress: Any, cancel: Any, reader: Any, shift: Any) -> None:
     progress.update(state="scanning", message="正在读取卡上的文件列表…")
     lib.clean_staging()
     scan_errors: list[str] = []
@@ -361,11 +361,13 @@ def _done_message(p: ImportProgress) -> str:
     return f"导入完成，共 {p.imported_shots + p.completed_shots} 张。现在可以安全弹出卡了。"
 
 
-def _seen_rows(card: Card, files: list[CardFile], shas: dict[str, str]) -> list[tuple]:
+def _seen_rows(card: Card, files: list[CardFile], shas: dict[str, str]) -> list[tuple[Any, ...]]:
     return [(card.key, f.relpath, f.size, f.mtime_ns, shas[f.relpath]) for f in files if f.relpath in shas]
 
 
-def _complete_existing(lib, card, shot, cfiles, todo, fresh, dups, staged, all_shas, opts, progress) -> bool:
+def _complete_existing(
+    lib: Any, card: Any, shot: Any, cfiles: Any, todo: Any, fresh: Any, dups: Any, staged: Any, all_shas: Any, opts: Any, progress: Any
+) -> bool:
     """这次只新读到一对里的一半，另一半以前就导入过（上次那一半读不出来）：把新来的这半并进已有的那张照片，
     而不是另起一张同名的（两张会共用同一个 sidecar）。并进去了返回 True。"""
     todo_paths = {f.relpath for f in todo}
@@ -458,7 +460,7 @@ def _complete_existing(lib, card, shot, cfiles, todo, fresh, dups, staged, all_s
     return True
 
 
-def _import_shot(lib, card, shot: CardShot, opts, progress, cancel, reader, shift) -> None:
+def _import_shot(lib: Any, card: Any, shot: CardShot, opts: Any, progress: Any, cancel: Any, reader: Any, shift: Any) -> None:
     cfiles = list(shot.files.values())
     if opts.force_verify:
         todo = cfiles
@@ -625,7 +627,7 @@ def _import_shot(lib, card, shot: CardShot, opts, progress, cancel, reader, shif
     progress.add(imported_shots=1)
 
 
-def _log_shot(status, card, shot, staged, opts, rec, records, info) -> dict:
+def _log_shot(status: Any, card: Any, shot: Any, staged: Any, opts: Any, rec: Any, records: Any, info: Any) -> dict[Any, Any]:
     dest = {r.kind: r.relpath for r in records} if records else {}
     return {
         "type": "shot",
@@ -651,7 +653,7 @@ def _log_shot(status, card, shot, staged, opts, rec, records, info) -> dict:
     }
 
 
-def card_summary(lib: Library, card: Card, reader: CardReader | None = None) -> dict:
+def card_summary(lib: Library, card: Card, reader: CardReader | None = None) -> dict[Any, Any]:
     """轻量统计（只列目录、查 seen，不读文件内容）。"""
     shots = scan_card(card, reader)
     new = [s for s in shots if any(not lib.seen_hit(card.key, f.relpath, f.size, f.mtime_ns) for f in s.files.values())]

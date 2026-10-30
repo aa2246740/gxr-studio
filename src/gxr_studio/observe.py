@@ -10,6 +10,7 @@ import logging
 import re
 import uuid
 from contextvars import ContextVar
+from typing import Any
 
 request_id: ContextVar[str] = ContextVar("request_id", default="")
 
@@ -93,18 +94,18 @@ class Metrics:
 class ObserveMiddleware:
     """内层中间件：过了访问控制的请求才会计数，并带上 X-Request-ID。"""
 
-    def __init__(self, app, metrics: Metrics):
+    def __init__(self, app: Any, metrics: Metrics) -> None:
         self.app = app
         self.metrics = metrics
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> Any:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         rid = uuid.uuid4().hex[:16]
         token = request_id.set(rid)
         status = {"code": 500}
 
-        async def send_wrapper(message):
+        async def send_wrapper(message: Any) -> None:
             if message["type"] == "http.response.start":
                 status["code"] = message["status"]
                 headers = [*message["headers"], (b"x-request-id", rid.encode())]

@@ -18,7 +18,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 from .. import audit
 from ..cards.discovery import Card, CardReader
@@ -36,7 +36,7 @@ HOW_TO_GET_DAT = "GXRCE.DAT 是装在相机配方程序里的那个文件，在�
 
 
 class IntakeError(Exception):
-    def __init__(self, status: int, code: str, message: str, extra: dict | None = None):
+    def __init__(self, status: int, code: str, message: str, extra: dict[Any, Any] | None = None) -> None:
         super().__init__(message)
         self.status, self.code, self.message, self.extra = status, code, message, extra or {}
 
@@ -96,7 +96,7 @@ def scan_cards_for_dat(volumes_roots: Iterable[Path], reader: CardReader | None 
     return out
 
 
-def _read_limited(fh) -> bytes:
+def _read_limited(fh: Any) -> bytes:
     chunks, total = [], 0
     while True:
         chunk = fh.read(1 << 16)
@@ -188,12 +188,12 @@ def inspect_dat(raw: bytes) -> DatInfo:
 def existing_source_sha(home: Path) -> str | None:
     """已导入且完好的相机数据的来源 SHA-256；没有或有问题返回 None。"""
     try:
-        return store.verify(home)["source"]["sha256"]
+        return cast(str, store.verify(home)["source"]["sha256"])
     except (store.CamdataError, OSError, ValueError, KeyError):
         return None
 
 
-def install_dat(raw: bytes, home: Path, *, source_name: str, origin: dict) -> dict:
+def install_dat(raw: bytes, home: Path, *, source_name: str, origin: dict[Any, Any]) -> dict[Any, Any]:
     """（已经 `inspect_dat` 通过的）DAT 提取到 `home/camera-data/`，返回 manifest。写入先落临时目录、读回比对再整体替换。"""
     try:
         return store.import_from_dat(raw, home, source_name=source_name, origin=origin)
@@ -201,7 +201,7 @@ def install_dat(raw: bytes, home: Path, *, source_name: str, origin: dict) -> di
         raise IntakeError(500, "camdata_write_failed", f"相机数据没能存进应用数据目录：{exc}") from exc
 
 
-def describe(home: Path) -> dict | None:
+def describe(home: Path) -> dict[Any, Any] | None:
     """已导入相机数据的概况（不重新校验）；没有返回 None。三个单元各自是否齐全按清单里的文件算。"""
     try:
         m = store.read_manifest(home)
@@ -238,7 +238,7 @@ def describe(home: Path) -> dict | None:
     }
 
 
-def describe_calibration(home: Path) -> dict | None:
+def describe_calibration(home: Path) -> dict[Any, Any] | None:
     p = calib.calib_dir(home) / "manifest.json"
     try:
         m = json.loads(p.read_text())
@@ -254,7 +254,7 @@ def describe_calibration(home: Path) -> dict | None:
 # ---- 标定包 ---------------------------------------------------------------------
 
 
-def write_pack(dest: Path, sources: dict) -> dict:
+def write_pack(dest: Path, sources: dict[Any, Any]) -> dict[Any, Any]:
     """把 {iso: (npz, ring_json)} 整理成标定包文件夹（calib-pack.json + 文件）。给开发机和测试用；返回清单。"""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -276,7 +276,7 @@ def _bad_pack(message: str) -> IntakeError:
     return IntakeError(422, "calibration_pack_invalid", message)
 
 
-def _snapshot_pack(folder: Path, snap: Path) -> dict:
+def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
     """校验 calib-pack.json，逐个文件复制到 `snap` 并边复制边核 SHA-256。返回 {iso: (npz, ring)}（指向 snap）。"""
     try:
         pack = json.loads((folder / PACK_FILE).read_text())
@@ -319,7 +319,7 @@ def _snapshot_pack(folder: Path, snap: Path) -> dict:
     return sources
 
 
-def _dev_sources(folder: Path) -> dict | None:
+def _dev_sources(folder: Path) -> dict[Any, Any] | None:
     """开发机：folder 是仓库根（里面有 research/）或 research/ 本身。找全两套文件才算。"""
     for root in (folder, folder.parent):
         src = calib.dev_sources(root)
@@ -328,7 +328,7 @@ def _dev_sources(folder: Path) -> dict | None:
     return None
 
 
-def import_calibration_folder(home: Path, folder: Path) -> tuple[dict, str]:
+def import_calibration_folder(home: Path, folder: Path) -> tuple[dict[Any, Any], str]:
     """返回 (manifest, kind)；kind = pack | dev。要先导入相机数据（用它的原厂 04 核对包里的 stock）。"""
     folder = Path(folder).expanduser()
     if not folder.is_absolute():

@@ -22,6 +22,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -49,7 +50,7 @@ CALIBRATED_LABEL = "电脑预测"
 class RenderUnavailable(Exception):
     """不能渲染：相机数据/标定包缺失或不合格。`state` 给界面做分支。"""
 
-    def __init__(self, code: str, message: str, state: str):
+    def __init__(self, code: str, message: str, state: str) -> None:
         super().__init__(message)
         self.code, self.message, self.state = code, message, state
 
@@ -58,21 +59,21 @@ class NoRaw(Exception):
     """这张照片没有 RAW，没法套配方。"""
 
 
-class ByteLRU:
-    def __init__(self, limit_bytes: int):
+class ByteLRU[T]:
+    def __init__(self, limit_bytes: int) -> None:
         self.limit = limit_bytes
-        self._d: OrderedDict = OrderedDict()
+        self._d: OrderedDict[Any, tuple[T, int]] = OrderedDict()
         self._size = 0
         self._lock = threading.Lock()
 
-    def get(self, key):
+    def get(self, key: Any) -> T | None:
         with self._lock:
             hit = self._d.get(key)
             if hit is not None:
                 self._d.move_to_end(key)
             return None if hit is None else hit[0]
 
-    def put(self, key, value, nbytes: int) -> None:
+    def put(self, key: Any, value: T, nbytes: int) -> None:
         with self._lock:
             old = self._d.pop(key, None)
             if old is not None:
@@ -97,7 +98,7 @@ class Plan:
     unit: str
     slot: int
     defaulted: bool  # 没选配方，用的是该单元的原厂 04（电脑模拟）
-    levels: dict
+    levels: dict[Any, Any]
     entry: bytes
     entry_sha256: str
     model_iso: int
@@ -114,7 +115,7 @@ class RenderOut:
     key: str
     cache_hit: bool
     plan: Plan
-    ms: dict = field(default_factory=dict)
+    ms: dict[Any, Any] = field(default_factory=dict[Any, Any])
 
 
 def shrink_codes(codes: np.ndarray, max_edge: int | None) -> np.ndarray:
@@ -137,7 +138,7 @@ def _encode_jpeg(rgb: np.ndarray, quality: int = 88) -> bytes:
     return buf.getvalue()
 
 
-def _stat_token(path: Path):
+def _stat_token(path: Path) -> tuple[int, int] | None:
     try:
         st = path.stat()
     except OSError:
@@ -149,12 +150,12 @@ class RenderService:
     def __init__(
         self,
         home: Path,
-        library,
+        library: Any,
         *,
         proxy_bytes: int = 640 << 20,
         result_bytes: int = 96 << 20,
         max_concurrent: int = 2,
-    ):
+    ) -> None:
         self.home = Path(home)
         self.lib = library
         self.menu = Menu()
@@ -165,11 +166,11 @@ class RenderService:
         self._camera_error: tuple[str, str] | None = None
         self._calib_manifest_sha: str | None = None
         self._calib_error: str | None = None
-        self._models: dict = {}
-        self._look_labels: dict = {}
-        self._proxies = ByteLRU(proxy_bytes)
-        self._bakes = ByteLRU(64 << 20)
-        self._results = ByteLRU(result_bytes)
+        self._models: dict[Any, Any] = {}
+        self._look_labels: dict[tuple[Any, Any, Any], str | None] = {}
+        self._proxies: ByteLRU[np.ndarray] = ByteLRU(proxy_bytes)
+        self._bakes: ByteLRU[chain.ChromaBake] = ByteLRU(64 << 20)
+        self._results: ByteLRU[tuple[bytes, int, int]] = ByteLRU(result_bytes)
         self.stats = {"decodes": 0, "bakes": 0, "renders": 0, "result_hits": 0}
 
     # ---- 状态 -------------------------------------------------------------
@@ -222,7 +223,7 @@ class RenderService:
             self._bakes.clear()
             self._results.clear()
 
-    def replace_data(self, action):
+    def replace_data(self, action: Any) -> Any:
         """在渲染服务的锁里执行 `action`（换掉应用数据目录里的相机数据/标定包），然后让所有缓存失效。
 
         持锁期间 `_refresh` 进不来，所以不会看到换到一半（旧目录已移走、新目录还没就位）的状态。
@@ -239,7 +240,7 @@ class RenderService:
         cam = self._camera.manifest_sha256[:8] if self._camera else "none"
         return f"{cam}-{(self._calib_manifest_sha or 'none')[:6]}"
 
-    def status(self) -> dict:
+    def status(self) -> dict[Any, Any]:
         self._refresh()
         cam = self._camera
         cam_state = "ready" if cam else self._camera_error[0]  # type: ignore[index]
@@ -272,7 +273,7 @@ class RenderService:
         cam = self._camera
         return f"{ENGINE}:{cam.table_sha256[:12]}:{cam.manifest_sha256[:12]}:{(self._calib_manifest_sha or '')[:12]}"  # type: ignore[union-attr]
 
-    def model(self, model_iso: int):
+    def model(self, model_iso: int) -> Any:
         self._require()
         with self._lock:
             m = self._models.get(model_iso)
@@ -280,16 +281,16 @@ class RenderService:
                 m = self._models[model_iso] = calib.model_for(self.home, model_iso)[0]
             return m
 
-    def catalog(self) -> list[dict]:
+    def catalog(self) -> list[dict[Any, Any]]:
         """配方列表：相机数据已导入时带条目 SHA-256，没导入也能列（菜单表不含理光字节）。"""
         self._refresh()
         return (self._camera or self.menu).listing()
 
-    def photo_unit(self, shot: dict) -> str | None:
+    def photo_unit(self, shot: dict[Any, Any]) -> str | None:
         return unit_of_lens(shot.get("lens"))
 
     # ---- 计划 -------------------------------------------------------------
-    def plan(self, shot: dict, edit: EditState) -> Plan:
+    def plan(self, shot: dict[Any, Any], edit: EditState) -> Plan:
         cam = self._require()
         photo_unit = self.photo_unit(shot)
         defaulted = edit.recipe is None
@@ -320,7 +321,7 @@ class RenderService:
         )
 
     # ---- 缓存件 -----------------------------------------------------------
-    def _proxy(self, shot: dict, max_edge: int | None) -> np.ndarray:
+    def _proxy(self, shot: dict[Any, Any], max_edge: int | None) -> np.ndarray:
         """半分辨率、已转正的白平衡码值图（可再缩小）；按 (DNG SHA-256, max_edge) 缓存。"""
         sha = shot["files"]["dng"]["sha256"]
         key = (sha, max_edge)
@@ -344,7 +345,7 @@ class RenderService:
                 self._proxies.put(key, small, small.nbytes)
             return small
 
-    def proxy_codes(self, shot: dict, max_edge: int | None) -> np.ndarray:
+    def proxy_codes(self, shot: dict[Any, Any], max_edge: int | None) -> np.ndarray:
         """半分辨率、已转正的白平衡码值图（给 LUT 导入的预览和抽样用）。"""
         return self._proxy(shot, max_edge)
 
@@ -358,7 +359,7 @@ class RenderService:
         self.stats["bakes"] += 1
         return bk
 
-    def render_key(self, shot: dict, edit: EditState, plan: Plan, *, max_edge, exact: bool, crop) -> str:
+    def render_key(self, shot: dict[Any, Any], edit: EditState, plan: Plan, *, max_edge: Any, exact: bool, crop: Any) -> str:
         parts = {
             "source": shot["files"]["dng"]["sha256"],
             "orientation": shot.get("orientation") or 1,
@@ -377,7 +378,7 @@ class RenderService:
     # ---- 预览 -------------------------------------------------------------
     def render_preview(
         self,
-        shot: dict,
+        shot: dict[Any, Any],
         edit: EditState,
         *,
         max_edge: int | None = None,
@@ -426,7 +427,7 @@ class RenderService:
         return RenderOut(jpeg, w, h, key, False, plan, ms)
 
     # ---- 导出 -------------------------------------------------------------
-    def renderer(self, shot: dict, edit: EditState, *, precise: bool = False) -> Renderer:
+    def renderer(self, shot: dict[Any, Any], edit: EditState, *, precise: bool = False) -> Renderer:
         """给 `export.export_shot` 用的渲染器：条带逐块调用 `display`。导出文件名和 EXIF 都写明"电脑预测"。"""
         plan = self.plan(shot, edit)
         gains = channel_gains(edit.adjust)
@@ -459,14 +460,14 @@ class RenderService:
         )
 
     # ---- 缩略图 / 默认外观 --------------------------------------------------
-    def thumb_variant(self, shot: dict) -> str:
+    def thumb_variant(self, shot: dict[Any, Any]) -> str:
         """DNG-only 缩略图缓存的变体名：相机数据变了（或单元不同）就是另一张图。"""
         if not self.available():
             return "n"
         unit = self.photo_unit(shot) or "jlaunch"
         return f"r{unit[0]}{self._camera.manifest_sha256[:8]}{(self._calib_manifest_sha or '')[:4]}"  # type: ignore[union-attr]
 
-    def default_look_label(self, shot: dict) -> str | None:
+    def default_look_label(self, shot: dict[Any, Any]) -> str | None:
         """`default_look` 画出来的图该怎么标：不可用（调用方退回中性转换）返回 None。永远是"电脑预测"，不是相机 JPG。"""
         self._refresh()
         key = (self.photo_unit(shot), shot.get("iso"), self._state_token)
@@ -485,7 +486,7 @@ class RenderService:
             self._look_labels[key] = label
         return label
 
-    def default_look(self, shot: dict, codes: np.ndarray) -> np.ndarray | None:
+    def default_look(self, shot: dict[Any, Any], codes: np.ndarray) -> np.ndarray | None:
         """没有任何编辑时 DNG 的样子：该单元的原厂 04 电脑模拟。不可用时返回 None（调用方退回中性转换）。"""
         try:
             plan = self.plan(shot, EditState())

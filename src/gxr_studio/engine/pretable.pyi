@@ -1,0 +1,33 @@
+"""类型存根。pretable.py 与研究代码逐段锁定，注解只放在这里。"""
+
+from typing import Any
+
+import numpy as np
+from numpy.typing import NDArray
+
+class PreTable:
+    model: dict[str, Any]
+    S: NDArray[np.complex128]
+    k: float
+    mix: str
+    nodes: NDArray[np.float64]
+    sm: Any
+    s0: float
+    kappa: float
+    kernel: str
+    gain: NDArray[np.float64]
+    grid: NDArray[np.float64]
+    last_ambiguity_count: int
+    last_inverse_residual: float
+    min_dhout_dhin: float
+    monotone: bool
+    def __init__(self, model: dict[str, Any], stock: Any) -> None: ...
+    def kernel_weights(self, h: Any, cmag: Any = ...) -> NDArray[np.float64]: ...
+    def S_of(self, h: Any, cmag: Any = ...) -> NDArray[np.complex128]: ...
+    def stock_out_hue(self, c_in: Any, cmag: Any = ...) -> NDArray[np.float64]: ...
+    def z(self, Zrow: Any, h: Any, cmag: Any = ..., Wg: Any = ...) -> NDArray[np.complex128]: ...
+    def forward_stock(self, c_in: Any) -> tuple[NDArray[np.complex128], NDArray[np.float64]]: ...
+    def forward(self, c_in: Any, Zrow: Any = ...) -> tuple[NDArray[np.complex128], NDArray[np.complex128], NDArray[np.float64]]: ...
+    def _radius(self, h: Any, rout: Any) -> NDArray[np.float64]: ...
+    def inverse_stock(self, c_out: Any, cmag: Any = ..., h_hint: Any = ...) -> tuple[NDArray[np.complex128], NDArray[np.float64]]: ...
+    def describe(self) -> dict[str, Any]: ...

@@ -21,6 +21,7 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 from PIL import Image
@@ -74,12 +75,12 @@ GUESS = (
 
 
 class LutError(Exception):
-    def __init__(self, status: int, code: str, message: str, extra: dict | None = None):
+    def __init__(self, status: int, code: str, message: str, extra: dict[Any, Any] | None = None) -> None:
         super().__init__(message)
         self.status, self.code, self.message, self.extra = status, code, message, extra or {}
 
 
-def spaces_listing() -> list[dict]:
+def spaces_listing() -> list[dict[Any, Any]]:
     assert set(SPACE_LABELS) == set(SPACES), "界面的色彩空间清单和 spaces.py 不一致"  # nosec B101  两份清单必须一起改
     return [{"id": k, "label": SPACE_LABELS[k][0], "kind": SPACE_LABELS[k][1], "gamut": GAMUT[k]} for k in SPACES]
 
@@ -92,16 +93,16 @@ def guess_space(name: str, title: str = "") -> tuple[str | None, str | None]:
     return None, None
 
 
-def clean_name(name) -> str:
+def clean_name(name: Any) -> str:
     if not isinstance(name, str):
         raise LutError(422, "bad_name", "名字要是文字")
     name = re.sub(r"\s+", " ", name).strip()
     if not 1 <= len(name) <= NAME_MAX or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
         raise LutError(422, "bad_name", f"名字要 1 到 {NAME_MAX} 个字，不能有控制字符")
-    return name
+    return cast(str, name)  # 上面已经确认是 str；mypy 不把这次赋值从 Any 收窄
 
 
-def _write_json(path: Path, doc: dict) -> None:
+def _write_json(path: Path, doc: dict[Any, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -112,15 +113,15 @@ def _write_json(path: Path, doc: dict) -> None:
 
 
 class LutService:
-    def __init__(self, home: Path, library, render):
+    def __init__(self, home: Path, library: Any, render: Any) -> None:
         self.home = Path(home)
         self.lib = library
         self.render = render
         self._lock = threading.RLock()
-        self._procs: dict[str, subprocess.Popen] = {}
+        self._procs: dict[str, subprocess.Popen[Any]] = {}
         self._cancelled: set[str] = set()
-        self._cubes: OrderedDict = OrderedDict()
-        self._colours: dict = {}
+        self._cubes: OrderedDict[str, Cube] = OrderedDict()
+        self._colours: dict[Any, Any] = {}
 
     # ---- 目录 ---------------------------------------------------------------
     @property
@@ -136,7 +137,7 @@ class LutService:
         return self.home / "my_recipes"
 
     # ---- 调色文件 -------------------------------------------------------------
-    def add_cube(self, raw: bytes, filename: str = "") -> dict:
+    def add_cube(self, raw: bytes, filename: str = "") -> dict[Any, Any]:
         if len(raw) > cubemod.MAX_BYTES:
             raise LutError(422, "cube_too_big", "这个文件太大了（超过 64 MB），不像是常见的调色文件。")
         try:
@@ -168,13 +169,13 @@ class LutService:
             else "文件里没有写它是给哪种画面做的，需要你来选；不知道的话可以选 sRGB 试试，结果会标“输入空间是猜的”。",
         }
 
-    def _describe(self, cube: Cube) -> dict:
+    def _describe(self, cube: Cube) -> dict[Any, Any]:
         kinds = [k for k, t in (("1D", cube.table1), ("3D", cube.table3)) if t is not None]
         return {
             "title": cube.title or None,
             "kind": "+".join(kinds),
-            "size_1d": 0 if cube.table1 is None else len(cube.table1),  # type: ignore[arg-type]
-            "size_3d": 0 if cube.table3 is None else len(cube.table3),  # type: ignore[arg-type]
+            "size_1d": 0 if cube.table1 is None else len(cube.table1),
+            "size_3d": 0 if cube.table3 is None else len(cube.table3),
             "domain_min": [round(float(v), 6) for v in cube.domain_min],
             "domain_max": [round(float(v), 6) for v in cube.domain_max],
         }
@@ -205,8 +206,8 @@ class LutService:
         space: str,
         output: str = "srgb",
         *,
-        input_gamut=None,
-        output_gamut=None,
+        input_gamut: Any = None,
+        output_gamut: Any = None,
         input_range: str = "full",
         output_range: str = "full",
     ) -> Target:
@@ -237,7 +238,7 @@ class LutService:
         img[gh:] = 255 * val[..., None] * (0.3 + 0.7 * rgb)
         return img
 
-    def _photo_base(self, shot: dict | None, max_edge: int):
+    def _photo_base(self, shot: dict[Any, Any] | None, max_edge: int) -> tuple[Any, Any, str]:
         """(基准 sRGB 0..255 的 (h,w,3) 浮点, 场景 XYZ 或 None, 模式说明)。"""
         if shot is None:
             return self._chart(), None, "chart"
@@ -268,7 +269,7 @@ class LutService:
             return np.asarray(im, float), None, "camera-jpg"
         raise LutError(422, "no_image", "这张照片没有可用的图像文件。")
 
-    def _colour_of(self, dng_rec: dict):
+    def _colour_of(self, dng_rec: dict[Any, Any]) -> Any:
         sha = dng_rec["sha256"]
         if sha not in self._colours:
             dng = open_dng(self.lib.abspath(dng_rec["relpath"]))
@@ -280,14 +281,16 @@ class LutService:
                 dng.release()
         return self._colours[sha]
 
-    def preview(self, cube_id: str, which: str, spec: dict, shot: dict | None, max_edge: int = 640) -> tuple[bytes, dict]:
+    def preview(
+        self, cube_id: str, which: str, spec: dict[Any, Any], shot: dict[Any, Any] | None, max_edge: int = 640
+    ) -> tuple[bytes, dict[Any, Any]]:
         """which = original | lut。original 是"04 电脑模拟"（没有相机数据时是中性转换），lut 是套上 LUT 后的理想效果。"""
         if which not in ("original", "lut"):
             raise LutError(422, "bad_which", "which 只能是 original 或 lut")
         cube = self.cube(cube_id)
         target = self.target(cube, **spec)
         base, xyz, mode = self._photo_base(shot, max_edge)
-        info = {"mode": mode}
+        info: dict[str, Any] = {"mode": mode}
         if which == "lut":
             flat = base.reshape(-1, 3)
             if xyz is None and spec["space"] not in DISPLAY:
@@ -308,7 +311,7 @@ class LutService:
         return buf.getvalue(), info
 
     # ---- 拟合任务 ---------------------------------------------------------------
-    def pick_photos(self, ids: list[str] | None = None, limit: int = 8) -> list[dict]:
+    def pick_photos(self, ids: list[str] | None = None, limit: int = 8) -> list[dict[Any, Any]]:
         """图库里的 DNG 照片候选：优先 ISO 200，其次 1600，再按拍摄时间新的在前。子进程从前面开始取读得出来的 3 张，最后一张只验收。"""
         if ids is not None:
             shots = [self.lib.get_shot(i) for i in ids]
@@ -336,13 +339,13 @@ class LutService:
     def start_fit(
         self,
         cube_id: str,
-        spec: dict,
+        spec: dict[Any, Any],
         *,
         unit: str = "jlaunch",
         photo_ids: list[str] | None = None,
         profile: str = "normal",
         guessed: bool = False,
-    ) -> dict:
+    ) -> dict[Any, Any]:
         if unit != "jlaunch":
             raise LutError(
                 422,
@@ -409,13 +412,13 @@ class LutService:
             raise LutError(404, "fit_not_found", "找不到这次拟合。")
         return self.jobs_dir / job_id
 
-    def _read(self, path: Path):
+    def _read(self, path: Path) -> Any:
         try:
             return json.loads(path.read_text())
         except (OSError, ValueError):
             return None
 
-    def status(self, job_id: str, *, with_result: bool = True) -> dict:
+    def status(self, job_id: str, *, with_result: bool = True) -> dict[Any, Any]:
         d = self._job_dir(job_id)
         job = self._read(d / "job.json")
         proc = self._procs.get(job_id)
@@ -445,7 +448,7 @@ class LutService:
             out["result"] = result["result"]
         return out
 
-    def cancel(self, job_id: str) -> dict:
+    def cancel(self, job_id: str) -> dict[Any, Any]:
         d = self._job_dir(job_id)
         proc = self._procs.get(job_id)
         if proc is not None and proc.poll() is None:
@@ -486,7 +489,7 @@ class LutService:
             raise LutError(404, "recipe_not_found", "找不到这个配方。")
         return self.recipes_dir / f"{rid}.json"
 
-    def save_recipe(self, job_id: str, candidate: int, name: str) -> dict:
+    def save_recipe(self, job_id: str, candidate: int, name: str) -> dict[Any, Any]:
         name = clean_name(name)
         st = self.status(job_id)
         if st["state"] != "done":
@@ -537,7 +540,7 @@ class LutService:
         _write_json(self._recipe_path(rid), doc)
         return doc
 
-    def list_recipes(self) -> list[dict]:
+    def list_recipes(self) -> list[dict[Any, Any]]:
         if not self.recipes_dir.is_dir():
             return []
         out = []
@@ -548,14 +551,14 @@ class LutService:
         out.sort(key=lambda d: (d["created"], d["id"]))
         return out
 
-    def get_recipe(self, rid: str) -> dict:
+    def get_recipe(self, rid: str) -> dict[Any, Any]:
         p = self._recipe_path(rid)
         doc = self._read(p) if p.is_file() else None
         if not isinstance(doc, dict):
             raise LutError(404, "recipe_not_found", "找不到这个配方。")
         return doc
 
-    def rename_recipe(self, rid: str, name: str) -> dict:
+    def rename_recipe(self, rid: str, name: str) -> dict[Any, Any]:
         doc = self.get_recipe(rid)
         doc["name"] = clean_name(name)
         _write_json(self._recipe_path(rid), doc)

@@ -8,22 +8,23 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from typing import Callable
+from typing import Any, Callable
 
 from .jobs import Job, JobRegistry
 from .observe import log, redact
+from .tracking import report_job_failure
 
 
 class StudioNotifier:
     def __init__(self, limit: int = 100) -> None:
-        self._sent: deque[dict] = deque(maxlen=limit)
+        self._sent: deque[dict[Any, Any]] = deque(maxlen=limit)
 
-    def deliver(self, alert: dict) -> None:
+    def deliver(self, alert: dict[Any, Any]) -> None:
         item = {key: redact(value) if isinstance(value, str) else value for key, value in alert.items()}
         self._sent.append(item)
         log.event(logging.ERROR, "alert", notifier="StudioNotifier", **item)
 
-    def recent(self) -> list[dict]:
+    def recent(self) -> list[dict[Any, Any]]:
         return list(self._sent)
 
 
@@ -37,6 +38,7 @@ def on_job_failed(job: Job, notifier: StudioNotifier) -> None:
             "error": job.error or "",
         }
     )
+    report_job_failure(job)
 
 
 def register_alert_service(registry: JobRegistry, notifier: StudioNotifier) -> None:

@@ -20,7 +20,7 @@ from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import store
 from gxr_studio.engine import knobs, menu
 
-ENGINE = t.REPO / "studio/src/gxr_studio/engine"
+ENGINE = t.STUDIO / "src/gxr_studio/engine"
 
 
 @pytest.fixture(scope="module")
@@ -163,8 +163,11 @@ def test_engine_files_match_their_recorded_sources():
     for rel, sha in prov["engine_file_sha256"].items():
         assert hashlib.sha256((ENGINE / rel).read_bytes()).hexdigest() == sha, rel
     # 没有被记录的文件混进来
+    # .pyi 是 strict 用的类型存根，不参与和来源逐字节对上的那份清单。
     on_disk = {
-        str(p.relative_to(ENGINE)) for p in ENGINE.rglob("*") if p.is_file() and p.name != "PROVENANCE.json" and "__pycache__" not in p.parts
+        str(p.relative_to(ENGINE))
+        for p in ENGINE.rglob("*")
+        if p.is_file() and p.suffix != ".pyi" and p.name != "PROVENANCE.json" and "__pycache__" not in p.parts
     }
     assert on_disk == set(prov["engine_file_sha256"])
 
@@ -233,6 +236,6 @@ def test_engine_does_not_import_research_or_firmware_code():
     import re
 
     bad = re.compile(r"^\s*(from|import)\s+(research|firmware|support|closed_loop|model_adapter)\b", re.M)
-    for p in list((t.REPO / "studio/src/gxr_studio/engine").glob("*.py")) + list((t.REPO / "studio/src/gxr_studio/camdata").glob("*.py")):
+    for p in list((t.STUDIO / "src/gxr_studio/engine").glob("*.py")) + list((t.STUDIO / "src/gxr_studio/camdata").glob("*.py")):
         assert not bad.search(p.read_text()), p.name
         assert "/Volumes/" not in p.read_text(), p.name

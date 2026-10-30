@@ -44,6 +44,9 @@ def _isolated_env(tmp_path, monkeypatch):
         "GXR_STUDIO_EXPORT",
         "GXR_STUDIO_VOLUMES",
         "GXR_STUDIO_TOKEN",
+        "GXR_STUDIO_SENTRY_DSN",
+        "GXR_STUDIO_SENTRY_ENVIRONMENT",
+        "GXR_STUDIO_SENTRY_RELEASE",
     ):
         monkeypatch.delenv(name, raising=False)
     yield

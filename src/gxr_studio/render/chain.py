@@ -22,11 +22,13 @@ import copy
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Any, cast
 
 import numpy as np
 from scipy.spatial import ConvexHull
 
 from ..engine import knobs as k
+from ..engine.model import Model
 from .tones import apply_table
 
 DEFAULT_GRID = 33
@@ -45,7 +47,7 @@ def pool() -> ThreadPoolExecutor:
     return _pool
 
 
-def _post_model(model):
+def _post_model(model: Any) -> Any:
     """`Model` 的浅拷贝，`pre` 原样通过：`predict` 剩下的就是矩阵 + 色表 + YCC 的后半段（逐字取自 E0）。"""
     shim = getattr(model, "_gxr_post", None)
     if shim is None:
@@ -55,7 +57,7 @@ def _post_model(model):
     return shim
 
 
-def _map_chunks(fn, n: int, chunk: int, workers: int) -> list:
+def _map_chunks(fn: Any, n: int, chunk: int, workers: int) -> list[Any]:
     spans = [(a, min(n, a + chunk)) for a in range(0, n, chunk)]
     if workers <= 1 or len(spans) == 1:
         return [fn(a, b) for a, b in spans]
@@ -64,14 +66,14 @@ def _map_chunks(fn, n: int, chunk: int, workers: int) -> list:
 
 def quantize(rgb: np.ndarray) -> np.ndarray:
     """与 `Model.predict(quantize=True)` 同一个取整：clip 之后 floor(x + .5)。"""
-    return np.floor(np.clip(rgb, 0, 255) + 0.5).astype(np.uint8)
+    return cast(np.ndarray, np.floor(np.clip(rgb, 0, 255) + 0.5).astype(np.uint8))
 
 
 # ---------------------------------------------------------------- 精确链
 
 
 def exact_float(
-    model,
+    model: Any,
     entry: bytes,
     codes: np.ndarray,
     gains: np.ndarray | None,
@@ -83,7 +85,7 @@ def exact_float(
     x = codes.reshape(-1, 3)
     out = np.empty((len(x), 3), np.float32 if table is not None else np.float64)
 
-    def run(a: int, b: int):
+    def run(a: int, b: int) -> None:
         xi = x[a:b] if gains is None else x[a:b].astype(np.float64) * gains
         rgb = model.predict(entry, xi)
         out[a:b] = apply_table(rgb, table) if table is not None else rgb
@@ -92,7 +94,7 @@ def exact_float(
     return out
 
 
-def exact_u8(model, entry: bytes, codes: np.ndarray, gains, table, *, workers: int = WORKERS) -> np.ndarray:
+def exact_u8(model: Any, entry: bytes, codes: np.ndarray, gains: Any, table: Any, *, workers: int = WORKERS) -> np.ndarray:
     return quantize(exact_float(model, entry, codes, gains, table, workers=workers)).reshape(codes.shape)
 
 
@@ -113,21 +115,21 @@ class Bake:
         return np.ascontiguousarray(apply_table(flat, table) if table is not None else flat, np.float32)
 
 
-def bake_model(model, entry: bytes, grid: int = DEFAULT_GRID, *, workers: int = WORKERS) -> Bake:
+def bake_model(model: Any, entry: bytes, grid: int = DEFAULT_GRID, *, workers: int = WORKERS) -> Bake:
     pre = model.pre(entry, np.repeat(np.arange(CODE_MAX + 1, dtype=np.float64)[:, None], 3, axis=1))
     axis = np.linspace(0.0, 255.0, grid)
     nodes = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), axis=-1).reshape(-1, 3)
     post = _post_model(model)
     lut = np.empty((len(nodes), 3), np.float32)
 
-    def run(a: int, b: int):
+    def run(a: int, b: int) -> None:
         lut[a:b] = post.predict(entry, nodes[a:b])
 
     _map_chunks(run, len(nodes), 4096, workers)
     return Bake(pre.astype(np.float32), lut.reshape(grid, grid, grid, 3), grid)
 
 
-def _lookup_chunk(x: np.ndarray, gains32, pre_flat: np.ndarray, lut: np.ndarray, grid: int) -> np.ndarray:
+def _lookup_chunk(x: np.ndarray, gains32: Any, pre_flat: np.ndarray, lut: np.ndarray, grid: int) -> np.ndarray:
     """(n, 3) float32 码值 → (n, 3) float32 0..255（未量化）。"""
     if gains32 is not None:
         x = x * gains32
@@ -157,7 +159,7 @@ def _lookup_chunk(x: np.ndarray, gains32, pre_flat: np.ndarray, lut: np.ndarray,
     v1 = np.take(lut, base + off1, axis=0)
     v2 = np.take(lut, base + off2, axis=0)
     v3 = np.take(lut, base + (s0 + s1 + 1), axis=0)
-    return v0 + (v1 - v0) * f1 + (v2 - v1) * f2 + (v3 - v2) * f3
+    return cast(np.ndarray, v0 + (v1 - v0) * f1 + (v2 - v1) * f2 + (v3 - v2) * f3)
 
 
 def apply_baked_float(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.ndarray | None, *, workers: int = WORKERS) -> np.ndarray:
@@ -167,7 +169,7 @@ def apply_baked_float(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains
     g32 = None if gains is None else gains.astype(np.float32)
     out = np.empty((len(x), 3), np.float32)
 
-    def run(a: int, b: int):
+    def run(a: int, b: int) -> None:
         out[a:b] = _lookup_chunk(x[a:b], g32, pre_flat, lut_flat, bake.grid)
 
     _map_chunks(run, len(x), CHUNK, workers)
@@ -181,7 +183,7 @@ def apply_baked(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.n
     g32 = None if gains is None else gains.astype(np.float32)
     out = np.empty((len(x), 3), np.uint8)
 
-    def run(a: int, b: int):
+    def run(a: int, b: int) -> None:
         out[a:b] = quantize(_lookup_chunk(x[a:b], g32, pre_flat, lut_flat, bake.grid))
 
     _map_chunks(run, len(x), CHUNK, workers)
@@ -203,7 +205,7 @@ class ChromaBake:
     step: float
 
 
-def _sector_z(model, entry: bytes) -> np.ndarray:
+def _sector_z(model: Model, entry: bytes) -> np.ndarray:
     """与 `Model.predict` 里取系数、解码 Z 的几行逐字相同。"""
     b = entry
     coeff = np.array([[k.dec(z, 128) for z in b[i : i + 4]] for i in range(115, 211, 4)])
@@ -213,7 +215,7 @@ def _sector_z(model, entry: bytes) -> np.ndarray:
     return model.fs.Z_of_words(ab[:, 0], ab[:, 1], model.engine.ctx)
 
 
-def bake_chroma(model, entry: bytes, step: float = CHROMA_STEP, *, workers: int = WORKERS) -> ChromaBake:
+def bake_chroma(model: Any, entry: bytes, step: float = CHROMA_STEP, *, workers: int = WORKERS) -> ChromaBake:
     pre = model.pre(entry, np.repeat(np.arange(CODE_MAX + 1, dtype=np.float64)[:, None], 3, axis=1))
     row = model.mm.MatrixRow.from_bytes(entry[216:244])
     m = row.effective(100.0)
@@ -239,7 +241,7 @@ def bake_chroma(model, entry: bytes, step: float = CHROMA_STEP, *, workers: int 
         todo = np.flatnonzero(near)
         out = np.ones(len(c), complex)
 
-        def run(a: int, b: int):
+        def run(a: int, b: int) -> None:
             sel = todo[a:b]
             out[sel] = table.forward(probe[sel], z)[0] / probe[sel]
 
@@ -256,7 +258,7 @@ def bake_chroma(model, entry: bytes, step: float = CHROMA_STEP, *, workers: int 
     )
 
 
-def _chroma_chunk(x: np.ndarray, g32, pre_flat: np.ndarray, bk: ChromaBake, table) -> np.ndarray:
+def _chroma_chunk(x: np.ndarray, g32: Any, pre_flat: np.ndarray, bk: ChromaBake, table: Any) -> np.ndarray:
     """(n, 3) float32 码值 → (n, 3) float32 0..255（未量化）。"""
     if g32 is not None:
         x = x * g32
@@ -298,7 +300,7 @@ def chroma_float(
     g32 = None if gains is None else gains.astype(np.float32)
     out = np.empty((len(x), 3), np.float32)
 
-    def run(a: int, b: int):
+    def run(a: int, b: int) -> None:
         out[a:b] = _chroma_chunk(x[a:b], g32, pre_flat, bk, table)
 
     _map_chunks(run, len(x), CHUNK, workers)
@@ -312,7 +314,7 @@ def chroma_u8(codes: np.ndarray, bk: ChromaBake, gains: np.ndarray | None, table
     g32 = None if gains is None else gains.astype(np.float32)
     out = np.empty((len(x), 3), np.uint8)
 
-    def run(a: int, b: int):
+    def run(a: int, b: int) -> None:
         out[a:b] = quantize(_chroma_chunk(x[a:b], g32, pre_flat, bk, table))
 
     _map_chunks(run, len(x), CHUNK, workers)

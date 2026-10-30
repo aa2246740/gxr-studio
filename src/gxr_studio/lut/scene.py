@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import numpy as np
 
@@ -29,7 +30,7 @@ GROUP_WEIGHT = (1.5, 2.0, 1.0, 1.0)
 
 
 class SceneError(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code, self.message = code, message
 
@@ -46,20 +47,20 @@ class SceneColour:
         white = self.neutral @ self.matrix.T
         scale = 0.18 / ((u - f) * white[1])
         raw = (np.asarray(codes, float) / CODE_MAX - f) * self.neutral
-        return raw @ self.matrix.T * scale
+        return cast(np.ndarray, raw @ self.matrix.T * scale)
 
 
-def scene_colour(dng) -> SceneColour:
+def scene_colour(dng: Any) -> SceneColour:
     """从 `raw.Dng` 读色彩矩阵标签并算出相机→XYZ；缺标签时抛 SceneError。"""
     if dng.as_shot_neutral is None or np.any(np.asarray(dng.as_shot_neutral) <= 0):
         raise SceneError("no_neutral", "这张 RAW 没有白平衡信息，不能用来换算 Log 调色文件")
     t = Tiff(dng.data)
     root = t.ifd(t.root)
 
-    def val(tag, default=None):
+    def val(tag: Any, default: Any = None) -> Any:
         return root[tag]["value"] if tag in root else default
 
-    def mat(tag):
+    def mat(tag: Any) -> Any:
         v = val(tag)
         return None if v is None else np.asarray(v, float).reshape(3, 3)
 
@@ -86,12 +87,12 @@ class Samples:
     weight: np.ndarray  # (n,)
     group: np.ndarray  # (n,) 0 灰阶 1 肤色 2 常见色块 3 照片
     holdout: np.ndarray  # (n,) bool：只验收、不参与搜索
-    photos: list = field(default_factory=list)  # 抽样用到的照片说明
+    photos: list[Any] = field(default_factory=list)  # 抽样用到的照片说明
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.x)
 
-    def counts(self) -> dict:
+    def counts(self) -> dict[Any, Any]:
         return {
             "total": len(self),
             "train": int((~self.holdout).sum()),
@@ -100,7 +101,7 @@ class Samples:
         }
 
 
-def _hue_cloud(model, stock04: bytes, n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+def _hue_cloud(model: Any, stock04: bytes, n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
     """一团确定性的随机码值（对数均匀）和它们在 04 下的 Lab，用来挑肤色、天空、植物这些"常见色"。"""
     rng = np.random.default_rng(seed)
     # 每个像素的三通道不要差得太离谱：让它们围绕一个亮度做对数偏移
@@ -110,7 +111,7 @@ def _hue_cloud(model, stock04: bytes, n: int, seed: int) -> tuple[np.ndarray, np
     return x, lab
 
 
-def _pick(x, lab, lo_h, hi_h, c_lo, c_hi, l_lo, l_hi, count, rng):
+def _pick(x: Any, lab: Any, lo_h: Any, hi_h: Any, c_lo: Any, c_hi: Any, l_lo: Any, l_hi: Any, count: Any, rng: Any) -> Any:
     h = np.degrees(np.arctan2(lab[:, 2], lab[:, 1])) % 360
     c = np.hypot(lab[:, 1], lab[:, 2])
     ok = np.flatnonzero((h >= lo_h) & (h <= hi_h) & (c >= c_lo) & (c <= c_hi) & (lab[:, 0] >= l_lo) & (lab[:, 0] <= l_hi))
@@ -119,7 +120,7 @@ def _pick(x, lab, lo_h, hi_h, c_lo, c_hi, l_lo, l_hi, count, rng):
     return x[np.sort(ok)]
 
 
-def synthetic_samples(model, stock04: bytes, seed: int = 20261030) -> Samples:
+def synthetic_samples(model: Any, stock04: bytes, seed: int = 20261030) -> Samples:
     """灰阶 + 肤色 + 常见色块（天空、植物、高彩度）+ 对数网格。"""
     syn = synthetic()  # 257 个灰阶 + 9³ 个网格（E0 冻结的确定性色样）
     ramp, grid = syn[:257], syn[257:]
@@ -149,10 +150,10 @@ def photo_samples(codes: np.ndarray, n: int = 400) -> np.ndarray:
     px = px[(px.max(axis=1) < CLIP_CODE) & (px.max(axis=1) > 8)]
     if len(px) > n:
         px = px[np.linspace(0, len(px) - 1, n).astype(int)]
-    return px
+    return cast(np.ndarray, px)
 
 
-def build_samples(model, stock04: bytes, input_space: str, photos: list[dict] | None = None, seed: int = 20261030) -> Samples:
+def build_samples(model: Any, stock04: bytes, input_space: str, photos: list[dict[Any, Any]] | None = None, seed: int = 20261030) -> Samples:
     """photos: [{"codes": (h,w,3), "colour": SceneColour|None, "label": str}]，最后一张只做验收（至少两张时）。"""
     s = synthetic_samples(model, stock04, seed)
     photos = photos or []
@@ -191,7 +192,7 @@ def build_samples(model, stock04: bytes, input_space: str, photos: list[dict] | 
     )
 
 
-def target_rgb(model, stock04: bytes, samples: Samples, target) -> tuple[np.ndarray, np.ndarray]:
+def target_rgb(model: Any, stock04: bytes, samples: Samples, target: Any) -> tuple[np.ndarray, np.ndarray]:
     """(04 的电脑模拟, LUT 的理想输出)，都是 (n, 3) 的 sRGB 0..255 浮点。target 要有 `render(stock_rgb, xyz)`。"""
     stock = model.predict(stock04, samples.x)
     ideal = target.render(stock, samples.xyz)

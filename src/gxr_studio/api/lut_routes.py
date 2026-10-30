@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request
@@ -37,7 +38,7 @@ class SpaceArgs(BaseModel):
     input_range: str = "full"
     output_range: str = "full"
 
-    def spec(self) -> dict:
+    def spec(self) -> dict[Any, Any]:
         return {k: getattr(self, k) for k in SpaceArgs.model_fields}
 
 
@@ -63,12 +64,12 @@ def _api(exc: LutError) -> ApiError:
     return ApiError(exc.status, exc.code, exc.message, exc.extra)
 
 
-def _svc(request: Request):
+def _svc(request: Request) -> Any:
     return ctx(request).lut
 
 
-@router.get("/api/lut/spaces")
-def lut_spaces():
+@router.get("/api/lut/spaces", response_model=None)
+def lut_spaces() -> dict[Any, Any]:
     return {
         "spaces": spaces_listing(),
         "default_input": None,
@@ -77,8 +78,8 @@ def lut_spaces():
     }
 
 
-@router.post("/api/lut/upload")
-async def lut_upload(request: Request):
+@router.post("/api/lut/upload", response_model=None)
+async def lut_upload(request: Request) -> Any:
     chunks, total = [], 0
     async for chunk in request.stream():
         total += len(chunk)
@@ -92,7 +93,7 @@ async def lut_upload(request: Request):
         raise _api(exc) from exc
 
 
-@router.get("/api/lut/{cube_id}/preview")
+@router.get("/api/lut/{cube_id}/preview", response_model=None)
 def lut_preview(
     cube_id: str,
     request: Request,
@@ -105,7 +106,7 @@ def lut_preview(
     output_gamut: str | None = None,
     input_range: str = "full",
     output_range: str = "full",
-):
+) -> Any:
     c = ctx(request)
     if not 64 <= max_edge <= 1600:
         raise ApiError(422, "bad_size", "max_edge 要在 64 到 1600 之间")
@@ -136,8 +137,8 @@ def lut_preview(
     )
 
 
-@router.post("/api/lut/fit")
-def lut_fit(body: FitRequest, request: Request):
+@router.post("/api/lut/fit", response_model=None)
+def lut_fit(body: FitRequest, request: Request) -> Any:
     svc = _svc(request)
     try:
         return svc.start_fit(
@@ -152,16 +153,16 @@ def lut_fit(body: FitRequest, request: Request):
         raise _api(exc) from exc
 
 
-@router.get("/api/lut/fit/{job_id}")
-def lut_fit_status(job_id: str, request: Request):
+@router.get("/api/lut/fit/{job_id}", response_model=None)
+def lut_fit_status(job_id: str, request: Request) -> Any:
     try:
         return _svc(request).status(job_id)
     except LutError as exc:
         raise _api(exc) from exc
 
 
-@router.post("/api/lut/fit/{job_id}/cancel")
-def lut_fit_cancel(job_id: str, request: Request):
+@router.post("/api/lut/fit/{job_id}/cancel", response_model=None)
+def lut_fit_cancel(job_id: str, request: Request) -> Any:
     try:
         return _svc(request).cancel(job_id)
     except LutError as exc:
@@ -171,37 +172,37 @@ def lut_fit_cancel(job_id: str, request: Request):
 # ---- 我的配方 ---------------------------------------------------------------
 
 
-@router.get("/api/my-recipes")
-def recipes_list(request: Request):
+@router.get("/api/my-recipes", response_model=None)
+def recipes_list(request: Request) -> dict[Any, Any]:
     return {"recipes": _svc(request).list_recipes()}
 
 
-@router.post("/api/my-recipes")
-def recipes_save(body: SaveRecipeRequest, request: Request):
+@router.post("/api/my-recipes", response_model=None)
+def recipes_save(body: SaveRecipeRequest, request: Request) -> Any:
     try:
         return _svc(request).save_recipe(body.job_id, body.candidate, body.name)
     except LutError as exc:
         raise _api(exc) from exc
 
 
-@router.get("/api/my-recipes/{rid}")
-def recipes_get(rid: str, request: Request):
+@router.get("/api/my-recipes/{rid}", response_model=None)
+def recipes_get(rid: str, request: Request) -> Any:
     try:
         return _svc(request).get_recipe(rid)
     except LutError as exc:
         raise _api(exc) from exc
 
 
-@router.put("/api/my-recipes/{rid}")
-def recipes_rename(rid: str, body: RenameRequest, request: Request):
+@router.put("/api/my-recipes/{rid}", response_model=None)
+def recipes_rename(rid: str, body: RenameRequest, request: Request) -> Any:
     try:
         return _svc(request).rename_recipe(rid, body.name)
     except LutError as exc:
         raise _api(exc) from exc
 
 
-@router.delete("/api/my-recipes/{rid}")
-def recipes_delete(rid: str, request: Request):
+@router.delete("/api/my-recipes/{rid}", response_model=None)
+def recipes_delete(rid: str, request: Request) -> dict[Any, Any]:
     try:
         _svc(request).delete_recipe(rid)
     except LutError as exc:

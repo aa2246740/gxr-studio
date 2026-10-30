@@ -14,6 +14,7 @@ import io
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageCms, ImageOps
 
@@ -35,7 +36,7 @@ RENDER_CAMERA_JPG = "camera-jpg"
 
 
 class ExportError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -96,7 +97,7 @@ def render(src: Path, crop: Crop | None, opts: ExportOptions) -> tuple[bytes, tu
     return _finish(im, base, sub, crop, opts)
 
 
-def _clean_text(value) -> str | None:
+def _clean_text(value: Any) -> str | None:
     if isinstance(value, bytes):
         value = value.decode("ascii", "ignore")
     text = str(value).replace("\x00", "").strip() if value is not None else ""
@@ -115,8 +116,8 @@ def render_raw(src: Path, crop: Crop | None, opts: ExportOptions, renderer: Rend
     finally:
         dng.release()
     im = Image.fromarray(pixels, "RGB")
-    base: dict = {}
-    sub: dict = {}
+    base: dict[Any, Any] = {}
+    sub: dict[Any, Any] = {}
     try:
         with Image.open(src) as im0:
             exif = im0.getexif()
@@ -147,7 +148,9 @@ def crop_image(im: Image.Image, crop: Crop) -> Image.Image:
     return im.transform((w, h), Image.Transform.AFFINE, coeffs, resample=Image.Resampling.BICUBIC)
 
 
-def _finish(im: Image.Image, base: dict, sub: dict, crop: Crop | None, opts: ExportOptions) -> tuple[bytes, tuple[int, int]]:
+def _finish(
+    im: Image.Image, base: dict[Any, Any], sub: dict[Any, Any], crop: Crop | None, opts: ExportOptions
+) -> tuple[bytes, tuple[int, int]]:
     if crop is not None:
         im = crop_image(im, crop)
     if opts.long_edge and max(im.size) > opts.long_edge:
@@ -216,7 +219,7 @@ def claim_path(dest_dir: Path, stem: str, ext: str = ".jpg", tag: str = "") -> t
 
 def export_shot(
     lib: Library,
-    shot: dict,
+    shot: dict[Any, Any],
     crop: Crop | None,
     dest_dir: Path,
     opts: ExportOptions,

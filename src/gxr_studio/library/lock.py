@@ -18,7 +18,7 @@ class LibraryBusy(Exception):
 
 
 class LibraryLock:
-    def __init__(self, library_dir: Path):
+    def __init__(self, library_dir: Path) -> None:
         self.path = Path(library_dir) / ".studio" / "studio.lock"
         self._fd: int | None = None
 
@@ -46,5 +46,5 @@ class LibraryLock:
     def __enter__(self) -> "LibraryLock":
         return self.acquire()
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.release()

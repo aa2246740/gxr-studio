@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .. import crop as cropmod
 from ..crop import Crop, CropError
 from . import sidecar as sc
@@ -9,12 +11,12 @@ from .store import Library
 
 
 class RevisionConflict(Exception):
-    def __init__(self, current: int):
+    def __init__(self, current: int) -> None:
         super().__init__(f"sidecar 已经是第 {current} 版")
         self.current = current
 
 
-def _frame(side: dict) -> tuple[int, int]:
+def _frame(side: dict[Any, Any]) -> tuple[int, int]:
     frame = side.get("frame") or {}
     w, h = frame.get("width"), frame.get("height")
     if not w or not h:
@@ -22,7 +24,7 @@ def _frame(side: dict) -> tuple[int, int]:
     return int(w), int(h)
 
 
-def describe(side: dict) -> dict:
+def describe(side: dict[Any, Any]) -> dict[Any, Any]:
     """sidecar -> API 里的裁切描述（没有裁切时给出"原样"）。"""
     w, h = _frame(side)
     raw = side.get("crop")
@@ -37,7 +39,7 @@ def describe(side: dict) -> dict:
     }
 
 
-def read_crop(lib: Library, shot: dict) -> dict:
+def read_crop(lib: Library, shot: dict[Any, Any]) -> dict[Any, Any]:
     with lib.lock:
         side, problem = lib.read_sidecar_or_default(shot)  # 编辑记录坏了就当没有裁切
         return {**describe(side), **({"warning": problem} if problem else {})}
@@ -45,15 +47,15 @@ def read_crop(lib: Library, shot: dict) -> dict:
 
 def write_crop(
     lib: Library,
-    shot: dict,
+    shot: dict[Any, Any],
     *,
     preset: str | None,
-    rect,
+    rect: Any,
     angle_deg: float,
     flip: bool = False,
     reset: bool = False,
     expected_rev: int | None = None,
-) -> dict:
+) -> dict[Any, Any]:
     path = lib.sidecar_path_for(shot)
     with lib.lock:
         side = lib.read_sidecar_for_write(shot)

@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 router = APIRouter()
 
 
-def _ctx(request: Request):
+def _ctx(request: Request) -> Any:
     return request.app.state.ctx
 
 
-@router.get("/api/metrics")
+@router.get("/api/metrics", response_model=None)
 def metrics(request: Request) -> Response:
     return Response(_ctx(request).metrics.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @router.get("/api/usage")
-def usage(request: Request) -> dict:
-    return _ctx(request).metrics.usage()
+def usage(request: Request) -> dict[Any, Any]:
+    return cast(dict[str, Any], _ctx(request).metrics.usage())
 
 
 @router.get("/api/alerts")
-def alerts(request: Request) -> dict:
+def alerts(request: Request) -> dict[Any, Any]:
     return {"alerts": _ctx(request).alerts.recent()}

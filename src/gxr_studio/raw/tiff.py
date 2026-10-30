@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import struct
+from typing import Any
 
 
 class Tiff:
@@ -28,7 +29,7 @@ class Tiff:
         12: ("d", 8),
     }
 
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes) -> None:
         self.data = data
         if len(data) < 8 or data[:2] not in (b"II", b"MM"):
             raise ValueError("不是 TIFF/DNG 文件")
@@ -37,14 +38,14 @@ class Tiff:
             raise ValueError("不是经典 TIFF（魔数不是 42）")
         self.root = struct.unpack_from(self.endian + "I", data, 4)[0]
 
-    def ifd(self, offset: int, endian: str | None = None) -> dict[int, dict]:
+    def ifd(self, offset: int, endian: str | None = None) -> dict[int, dict[Any, Any]]:
         e = endian or self.endian
         if not 0 <= offset <= len(self.data) - 2:
             raise ValueError("IFD 偏移越界")
         count = struct.unpack_from(e + "H", self.data, offset)[0]
         if offset + 2 + 12 * count + 4 > len(self.data):
             raise ValueError("IFD 超出文件")
-        result: dict[int, dict] = {}
+        result: dict[int, dict[Any, Any]] = {}
         for i in range(count):
             p = offset + 2 + i * 12
             tag, typ, n = struct.unpack_from(e + "HHI", self.data, p)

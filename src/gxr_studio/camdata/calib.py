@@ -16,6 +16,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -37,7 +38,7 @@ def calib_dir(home: Path) -> Path:
     return Path(home) / "calib"
 
 
-def dev_sources(repo_root: Path) -> dict:
+def dev_sources(repo_root: Path) -> dict[Any, Any]:
     """研究目录里的标定文件位置（只在开发机上用于第一次导入）。"""
     r = Path(repo_root) / "research"
     return {
@@ -69,7 +70,7 @@ def stock_fingerprint(entry: bytes) -> str:
     return hashlib.sha256(entry[115:211]).hexdigest()
 
 
-def import_calibration(home: Path, sources: dict, *, origin: dict | None = None) -> dict:
+def import_calibration(home: Path, sources: dict[Any, Any], *, origin: dict[Any, Any] | None = None) -> dict[Any, Any]:
     """sources: {iso: (npz_path, ring_json_path)}。需要先导入相机数据（用来核对 stock）。"""
     stock04 = store.load_stock04(home, "jlaunch")
     stock = stock_words_of_entry(stock04)
@@ -78,7 +79,7 @@ def import_calibration(home: Path, sources: dict, *, origin: dict | None = None)
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    manifest: dict = {
+    manifest: dict[Any, Any] = {
         "schema": SCHEMA,
         "files": {},
         "sources": {},
@@ -114,7 +115,7 @@ def import_calibration(home: Path, sources: dict, *, origin: dict | None = None)
     return manifest
 
 
-def model_for(home: Path, iso: int = 200):
+def model_for(home: Path, iso: int = 200) -> tuple[Any, ...]:
     """返回 (Model, info)。info['calibrated'] = 该 ISO 是否有实拍标定。"""
     from ..engine.model import Model
 

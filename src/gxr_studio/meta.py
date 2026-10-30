@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, TiffImagePlugin
 
@@ -32,7 +33,7 @@ class PhotoMeta:
     error: str | None = None
 
 
-def parse_exif_datetime(value) -> datetime | None:
+def parse_exif_datetime(value: Any) -> datetime | None:
     """解析 EXIF 日期；空白、全零、乱码、不合理的年份一律当作没有。"""
     if value is None:
         return None
@@ -63,7 +64,7 @@ def unit_from_lens(lens: str | None) -> str | None:
     return f"{m.group(1)}mm" if m else None
 
 
-def _clean(value) -> str | None:
+def _clean(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, bytes):
@@ -72,7 +73,7 @@ def _clean(value) -> str | None:
     return text or None
 
 
-def _iso(value) -> int | None:
+def _iso(value: Any) -> int | None:
     if isinstance(value, (tuple, list)):
         value = value[0] if value else None
     try:
@@ -85,7 +86,7 @@ def _oriented(w: int, h: int, orientation: int) -> tuple[int, int]:
     return (h, w) if orientation in (5, 6, 7, 8) else (w, h)
 
 
-def _orientation(value) -> int:
+def _orientation(value: Any) -> int:
     try:
         v = int(value)
     except (TypeError, ValueError):
@@ -117,12 +118,13 @@ def read_jpeg_meta(path: Path) -> PhotoMeta:
         return PhotoMeta(error=f"{type(exc).__name__}: {exc}")
 
 
-def _load_subifd(im: Image.ImageFile.ImageFile, offset: int):
+def _load_subifd(im: Image.Image, offset: int) -> Any:
+    # Pillow 的 DNG 打开后带 tag_v2 / fp，公开类型 Image 上没有这两项。
     little = im.tag_v2._endian == "<"  # type: ignore[attr-defined]
     ifh = b"II*\x00\x08\x00\x00\x00" if little else b"MM\x00*\x00\x00\x00\x08"
     ifd = TiffImagePlugin.ImageFileDirectory_v2(ifh=ifh)
-    im.fp.seek(offset)  # type: ignore[union-attr]
-    ifd.load(im.fp)  # type: ignore[arg-type]
+    im.fp.seek(offset)  # type: ignore[attr-defined]
+    ifd.load(im.fp)  # type: ignore[attr-defined]
     return ifd
 
 

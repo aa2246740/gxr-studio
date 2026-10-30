@@ -19,22 +19,23 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 
-def _write(path: Path, doc: dict) -> None:
+def _write(path: Path, doc: dict[Any, Any]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(doc, ensure_ascii=False, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o)))
     os.replace(tmp, path)
 
 
-def load_photos(entries: list[dict], max_photos: int = 3) -> tuple[list[dict], list[dict]]:
+def load_photos(entries: list[dict[Any, Any]], max_photos: int = 3) -> tuple[list[dict[Any, Any]], list[dict[Any, Any]]]:
     """[{"dng": 路径, "label": 名字}, …] → (抽样用的照片, 跳过的照片)。读不出来的跳过，凑够 max_photos 张就停。"""
     from ..raw import RawDecodeError, half_res_codes, open_dng, orient_array
     from ..render.service import shrink_codes
     from .scene import SceneError, scene_colour
 
-    photos: list[dict] = []
-    skipped: list[dict] = []
+    photos: list[dict[Any, Any]] = []
+    skipped: list[dict[Any, Any]] = []
     for p in entries:
         if len(photos) >= max_photos:
             break
@@ -59,11 +60,13 @@ PARENT_POLL_SECONDS = 1.0
 PARENT_GRACE_SECONDS = 5.0  # 父进程没了之后，给拟合这么久自己干净地停下；还没停就直接退出
 
 
-def watch_parent(stop: dict, parent_pid: int, poll: float = PARENT_POLL_SECONDS, grace: float = PARENT_GRACE_SECONDS) -> threading.Thread:
+def watch_parent(
+    stop: dict[Any, Any], parent_pid: int, poll: float = PARENT_POLL_SECONDS, grace: float = PARENT_GRACE_SECONDS
+) -> threading.Thread:
     """服务被强杀或终端被关（SIGKILL / SIGHUP）时，子进程不会收到任何信号，只会被系统过继给 1 号进程。
     这里每秒看一眼父进程还在不在：不在了就按"取消"处理，宽限期后仍没停就直接退出（没有人会来读结果了）。"""
 
-    def loop():
+    def loop() -> None:
         while os.getppid() == parent_pid:
             time.sleep(poll)
         stop["flag"] = True
@@ -79,7 +82,7 @@ def run(job_dir: Path) -> int:
     spec = json.loads((job_dir / "job.json").read_text())
     stop = {"flag": False}
 
-    def on_term(*_):
+    def on_term(*_: object) -> None:
         stop["flag"] = True
 
     signal.signal(signal.SIGTERM, on_term)
@@ -92,7 +95,7 @@ def run(job_dir: Path) -> int:
 
     started = time.time()
 
-    def progress(p) -> None:
+    def progress(p: Any) -> None:
         _write(job_dir / "progress.json", {**p.to_dict(), "elapsed": round(time.time() - started, 1)})
 
     # 重的 import 放在这里，让信号处理先装好

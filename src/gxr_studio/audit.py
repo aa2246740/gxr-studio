@@ -16,6 +16,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field
+from typing import Any
 
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 
@@ -65,16 +66,16 @@ class AuditRecorder:
             _recorders.append(self)
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         with _lock:
             if self in _recorders:
                 _recorders.remove(self)
 
-    def writes_under(self, root: str | os.PathLike) -> list[WriteEvent]:
+    def writes_under(self, root: str | os.PathLike[Any]) -> list[WriteEvent]:
         prefixes = _prefixes(root)
         return [w for w in self.writes if _under(w.path, prefixes)]
 
-    def reads_under(self, root: str | os.PathLike) -> list[str]:
+    def reads_under(self, root: str | os.PathLike[Any]) -> list[str]:
         prefixes = _prefixes(root)
         return [p for p in self.reads if _under(p, prefixes)]
 
@@ -92,7 +93,7 @@ _network_forbidden = False
 _network_log: list[str] = []
 
 
-def _prefixes(root: str | os.PathLike) -> tuple[str, ...]:
+def _prefixes(root: str | os.PathLike[Any]) -> tuple[str, ...]:
     p = os.path.abspath(os.fspath(root))
     out = {p}
     try:
@@ -109,7 +110,7 @@ def _under(path: str, prefixes: tuple[str, ...]) -> bool:
     return False
 
 
-def _norm(value) -> str | None:
+def _norm(value: Any) -> str | None:
     if isinstance(value, int) or value is None:
         return None
     try:
@@ -118,13 +119,13 @@ def _norm(value) -> str | None:
         return None
 
 
-def _is_write_open(mode, flags) -> bool:
+def _is_write_open(mode: Any, flags: Any) -> bool:
     if isinstance(mode, str) and any(c in mode for c in "wax+"):
         return True
     return isinstance(flags, int) and bool(flags & _WRITE_FLAGS)
 
 
-def _hook(event: str, args: tuple) -> None:
+def _hook(event: str, args: tuple[Any, ...]) -> None:
     if event == "open":
         if not (_recorders or _protected or _forbidden_reads or _volume_guard):
             return
@@ -209,7 +210,7 @@ def install() -> None:
             _installed = True
 
 
-def protect(root: str | os.PathLike) -> None:
+def protect(root: str | os.PathLike[Any]) -> None:
     """把目录登记为只读：之后任何写入都会被记录并拒绝。"""
     install()
     with _lock:
@@ -218,14 +219,14 @@ def protect(root: str | os.PathLike) -> None:
                 _protected.append(p)
 
 
-def unprotect(root: str | os.PathLike) -> None:
+def unprotect(root: str | os.PathLike[Any]) -> None:
     with _lock:
         for p in _prefixes(root):
             if p in _protected:
                 _protected.remove(p)
 
 
-def forbid_reads(*roots: str | os.PathLike) -> None:
+def forbid_reads(*roots: str | os.PathLike[Any]) -> None:
     install()
     with _lock:
         for r in roots:

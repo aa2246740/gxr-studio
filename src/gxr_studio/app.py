@@ -6,6 +6,7 @@ import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -30,6 +31,7 @@ from .lut.service import LutService
 from .observe import Metrics, ObserveMiddleware
 from .render.service import RenderService
 from .security import SecurityMiddleware
+from .tracking import init_error_tracking, shutdown_error_tracking
 
 
 @dataclass
@@ -55,6 +57,7 @@ def create_app(
     import_options: ImportOptions | None = None,
 ) -> FastAPI:
     camdata_store.recover_interrupted_swaps(settings.home_dir)  # 上次换相机数据/标定包到一半被打断：先恢复
+    init_error_tracking()
     lib = Library(settings.library_dir).open()
     recorder = audit.AuditRecorder(limit=5000)
     recorder.__enter__()  # 应用存活期间一直记录写入
@@ -77,8 +80,9 @@ def create_app(
     )
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> Any:
         yield
+        shutdown_error_tracking()
         ctx.lut.close()
         recorder.__exit__(None, None, None)
         lib.close()
@@ -87,11 +91,11 @@ def create_app(
     app.state.ctx = ctx
 
     @app.exception_handler(ApiError)
-    async def _api_error(_, exc: ApiError):
+    async def _api_error(_: Any, exc: ApiError) -> Any:
         return JSONResponse({"error": exc.code, "message": exc.message, **exc.extra}, status_code=exc.status)
 
     @app.exception_handler(SidecarCorrupt)
-    async def _sidecar_corrupt(_, exc: SidecarCorrupt):
+    async def _sidecar_corrupt(_: Any, exc: SidecarCorrupt) -> Any:
         # 兜底：编辑记录读不出来时不给 500，也不把路径和解析错误交给界面
         return JSONResponse({"error": "sidecar_corrupt", "message": SIDECAR_RESET_NOTE}, status_code=422)
 

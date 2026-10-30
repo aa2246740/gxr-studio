@@ -7,6 +7,7 @@ import secrets
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 MiB = 1024 * 1024
 
@@ -61,7 +62,7 @@ class Settings:
             web_dir=Path(__file__).resolve().parents[2] / "web",
         )
 
-    def with_(self, **changes) -> "Settings":
+    def with_(self, **changes: Any) -> "Settings":
         from dataclasses import replace
 
         return replace(self, **changes)
