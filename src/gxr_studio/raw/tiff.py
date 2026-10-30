@@ -13,9 +13,20 @@ import struct
 class Tiff:
     """Read-only classic TIFF reader."""
 
-    TYPES = {1: ("B", 1), 2: (None, 1), 3: ("H", 2), 4: ("I", 4), 5: ("II", 8),
-             6: ("b", 1), 7: (None, 1), 8: ("h", 2), 9: ("i", 4), 10: ("ii", 8),
-             11: ("f", 4), 12: ("d", 8)}
+    TYPES = {
+        1: ("B", 1),
+        2: (None, 1),
+        3: ("H", 2),
+        4: ("I", 4),
+        5: ("II", 8),
+        6: ("b", 1),
+        7: (None, 1),
+        8: ("h", 2),
+        9: ("i", 4),
+        10: ("ii", 8),
+        11: ("f", 4),
+        12: ("d", 8),
+    }
 
     def __init__(self, data: bytes):
         self.data = data
@@ -44,7 +55,8 @@ class Tiff:
             o = p + 8 if length <= 4 else struct.unpack_from(e + "I", self.data, p + 8)[0]
             if o + length > len(self.data):
                 raise ValueError(f"标签 {tag} 的数据超出文件")
-            raw = self.data[o:o + length]
+            raw = self.data[o : o + length]
+            value: object
             if typ == 2:
                 value = raw.rstrip(b"\0 ").decode("ascii", errors="replace")
             elif fmt is None:

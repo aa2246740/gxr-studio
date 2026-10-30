@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import hashlib
 import json
 import os
 import random
@@ -33,9 +32,7 @@ def one_card(volumes):
 
 
 def library_media(lib: Library):
-    return sorted(
-        p for p in lib.root.rglob("*") if p.is_file() and p.suffix.lower() in (".dng", ".jpg") and ".studio" not in p.parts
-    )
+    return sorted(p for p in lib.root.rglob("*") if p.is_file() and p.suffix.lower() in (".dng", ".jpg") and ".studio" not in p.parts)
 
 
 def card_hashes(card) -> dict[str, set[str]]:
@@ -294,7 +291,7 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     assert side["source"]["jpg"] == "R0000104.JPG" and side["source"]["jpg_sha256"] == shot["files"]["jpg"]["sha256"]
     assert "安全弹出" in p2.message
     assert_library_consistent(lib, card)
-    p3 = run_import(lib, c, ImportOptions(**OPTS))   # 再来一次：什么都不新增
+    p3 = run_import(lib, c, ImportOptions(**OPTS))  # 再来一次：什么都不新增
     assert p3.completed_shots == 0 and p3.imported_shots == 0 and lib.count() == len(card.unique_shots)
 
 
@@ -368,7 +365,7 @@ def test_verify_failure_is_not_committed(volumes, card, lib):
     assert p.failed_shots == 1 and "安全弹出" not in p.message and "先别格式化" in p.message
     assert lib.count() == len(card.unique_shots)
     assert_library_consistent(lib, card)
-    p2 = run_import(lib, c, ImportOptions(**OPTS))   # 读卡器好了以后重试：DNG 补进同一张
+    p2 = run_import(lib, c, ImportOptions(**OPTS))  # 读卡器好了以后重试：DNG 补进同一张
     assert p2.completed_shots == 1 and not p2.verify_failed and lib.count() == len(card.unique_shots)
 
 

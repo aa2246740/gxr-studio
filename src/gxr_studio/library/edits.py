@@ -26,11 +26,7 @@ def describe(side: dict) -> dict:
     """sidecar -> API 里的裁切描述（没有裁切时给出"原样"）。"""
     w, h = _frame(side)
     raw = side.get("crop")
-    crop = (
-        Crop(raw["preset"], tuple(raw["rect"]), float(raw.get("angle_deg", 0.0)))
-        if raw
-        else Crop("original", (0.0, 0.0, 1.0, 1.0), 0.0)
-    )
+    crop = Crop(raw["preset"], tuple(raw["rect"]), float(raw.get("angle_deg", 0.0))) if raw else Crop("original", (0.0, 0.0, 1.0, 1.0), 0.0)
     x0, y0, bw, bh = cropmod.crop_box(crop.rect, w, h)
     return {
         **crop.to_json(),
@@ -43,7 +39,7 @@ def describe(side: dict) -> dict:
 
 def read_crop(lib: Library, shot: dict) -> dict:
     with lib.lock:
-        side, problem = lib.read_sidecar_or_default(shot)   # 编辑记录坏了就当没有裁切
+        side, problem = lib.read_sidecar_or_default(shot)  # 编辑记录坏了就当没有裁切
         return {**describe(side), **({"warning": problem} if problem else {})}
 
 

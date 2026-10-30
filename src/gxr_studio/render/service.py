@@ -37,9 +37,9 @@ from .recipes import CameraData, Menu, unit_of_lens
 from .tones import channel_gains, display_table
 
 ENGINE = "gxr_render/1"
-PREVIEW_STEP = 0.75          # 预览用的色度增益网格间距（实测 p99 ΔE00 ≤ 0.3，见报告）
-EXPORT_STEP = 0.5            # 导出用更细的网格
-ISO_SPLIT = 566              # 200 和 1600 的几何中点：低于它用 ISO 200 的模型，否则用 ISO 1600 的
+PREVIEW_STEP = 0.75  # 预览用的色度增益网格间距（实测 p99 ΔE00 ≤ 0.3，见报告）
+EXPORT_STEP = 0.5  # 导出用更细的网格
+ISO_SPLIT = 566  # 200 和 1600 的几何中点：低于它用 ISO 200 的模型，否则用 ISO 1600 的
 CALIBRATED_ISOS = calib.CALIBRATED_ISOS
 CAMERA_HINT = "请先插入装有配方程序（GXRCE.DAT）的存储卡，或导入官方固件包，导入相机数据之后才能套配方。"
 UNCALIBRATED_LABEL = "电脑预测（跨单元/跨 ISO，未标定）"
@@ -96,7 +96,7 @@ class ByteLRU:
 class Plan:
     unit: str
     slot: int
-    defaulted: bool                 # 没选配方，用的是该单元的原厂 04（电脑模拟）
+    defaulted: bool  # 没选配方，用的是该单元的原厂 04（电脑模拟）
     levels: dict
     entry: bytes
     entry_sha256: str
@@ -133,8 +133,7 @@ def shrink_codes(codes: np.ndarray, max_edge: int | None) -> np.ndarray:
 
 def _encode_jpeg(rgb: np.ndarray, quality: int = 88) -> bytes:
     buf = io.BytesIO()
-    Image.fromarray(rgb, "RGB").save(buf, "JPEG", quality=quality, subsampling=0 if quality >= 90 else 2,
-                                      icc_profile=srgb_icc())
+    Image.fromarray(rgb, "RGB").save(buf, "JPEG", quality=quality, subsampling=0 if quality >= 90 else 2, icc_profile=srgb_icc())
     return buf.getvalue()
 
 
@@ -147,8 +146,15 @@ def _stat_token(path: Path):
 
 
 class RenderService:
-    def __init__(self, home: Path, library, *, proxy_bytes: int = 640 << 20, result_bytes: int = 96 << 20,
-                 max_concurrent: int = 2):
+    def __init__(
+        self,
+        home: Path,
+        library,
+        *,
+        proxy_bytes: int = 640 << 20,
+        result_bytes: int = 96 << 20,
+        max_concurrent: int = 2,
+    ):
         self.home = Path(home)
         self.lib = library
         self.menu = Menu()
@@ -168,12 +174,14 @@ class RenderService:
 
     # ---- 状态 -------------------------------------------------------------
     def _refresh(self) -> None:
-        token = (_stat_token(store.camera_data_dir(self.home) / "manifest.json"),
-                 _stat_token(calib.calib_dir(self.home) / "manifest.json"))
+        token = (
+            _stat_token(store.camera_data_dir(self.home) / "manifest.json"),
+            _stat_token(calib.calib_dir(self.home) / "manifest.json"),
+        )
         with self._lock:
             if token == self._state_token:
                 return
-            self._state_token = token
+            self._state_token = token  # type: ignore[assignment]
             self._camera, self._camera_error = None, None
             self._calib_manifest_sha, self._calib_error = None, None
             self._models.clear()
@@ -192,7 +200,7 @@ class RenderService:
                     cal = calib.calib_dir(self.home) / "manifest.json"
                     cal_bytes = cal.read_bytes()
                     self._calib_manifest_sha = hashlib.sha256(cal_bytes).hexdigest()
-                    calib.model_for(self.home, 200)       # 校验标定文件的 SHA-256 并确认能建模
+                    calib.model_for(self.home, 200)  # 校验标定文件的 SHA-256 并确认能建模
                     want = json.loads(cal_bytes).get("camera_stock_sha256")
                     if want and self._camera is not None and want != calib.stock_fingerprint(self._camera.stock[0]):
                         self._calib_error = "标定包是对另一份相机数据的原厂 04 核对过的，现在的相机数据不同，请重新导入标定包"
@@ -234,14 +242,14 @@ class RenderService:
     def status(self) -> dict:
         self._refresh()
         cam = self._camera
-        cam_state = "ready" if cam else self._camera_error[0]
+        cam_state = "ready" if cam else self._camera_error[0]  # type: ignore[index]
         cal_state = "ready" if self._calib_error is None else ("missing" if "缺少" in self._calib_error else "invalid")
         ready = cam is not None and self._calib_error is None
         return {
             "ready": ready,
             "camera_data": {
                 "state": cam_state,
-                "message": None if cam else self._camera_error[1],
+                "message": None if cam else self._camera_error[1],  # type: ignore[index]
                 "generation": cam.manifest["generation"] if cam else None,
                 "source_sha256": cam.manifest["source"]["sha256"] if cam else None,
                 "imported_at": cam.manifest["imported_at"] if cam else None,
@@ -254,16 +262,15 @@ class RenderService:
     def _require(self) -> CameraData:
         self._refresh()
         if self._camera is None:
-            state, msg = self._camera_error
-            raise RenderUnavailable("camera_data_missing" if state == "missing" else "camera_data_invalid",
-                                    f"{msg}。{CAMERA_HINT}", state)
+            state, msg = self._camera_error  # type: ignore[misc]
+            raise RenderUnavailable("camera_data_missing" if state == "missing" else "camera_data_invalid", f"{msg}。{CAMERA_HINT}", state)
         if self._calib_error is not None:
             raise RenderUnavailable("calibration_missing", f"{self._calib_error}，暂时不能做电脑预测。", "calibration")
         return self._camera
 
     def engine_pin(self) -> str:
         cam = self._camera
-        return f"{ENGINE}:{cam.table_sha256[:12]}:{cam.manifest_sha256[:12]}:{(self._calib_manifest_sha or '')[:12]}"
+        return f"{ENGINE}:{cam.table_sha256[:12]}:{cam.manifest_sha256[:12]}:{(self._calib_manifest_sha or '')[:12]}"  # type: ignore[union-attr]
 
     def model(self, model_iso: int):
         self._require()
@@ -299,8 +306,18 @@ class RenderService:
             reasons.append(f"配方来自 {sel.unit}，与这张照片的镜头单元不一致")
         if iso not in CALIBRATED_ISOS:
             reasons.append(f"ISO {iso if iso else '未知'} 没有单独标定，用 ISO {model_iso} 的模型")
-        return Plan(sel.unit, sel.slot, defaulted, res.levels, res.entry, res.entry_sha256, model_iso,
-                    not reasons, tuple(reasons), CALIBRATED_LABEL if not reasons else UNCALIBRATED_LABEL)
+        return Plan(
+            sel.unit,
+            sel.slot,
+            defaulted,
+            res.levels,
+            res.entry,
+            res.entry_sha256,
+            model_iso,
+            not reasons,
+            tuple(reasons),
+            CALIBRATED_LABEL if not reasons else UNCALIBRATED_LABEL,
+        )
 
     # ---- 缓存件 -----------------------------------------------------------
     def _proxy(self, shot: dict, max_edge: int | None) -> np.ndarray:
@@ -343,17 +360,31 @@ class RenderService:
 
     def render_key(self, shot: dict, edit: EditState, plan: Plan, *, max_edge, exact: bool, crop) -> str:
         parts = {
-            "source": shot["files"]["dng"]["sha256"], "orientation": shot.get("orientation") or 1,
-            "adjust": edit.adjust.to_json(), "recipe_entry": plan.entry_sha256, "model_iso": plan.model_iso,
-            "curve": [list(p) for p in edit.master] if edit.master else None, "engine": self.engine_pin(),
-            "width": max_edge, "exact": exact, "step": PREVIEW_STEP,
+            "source": shot["files"]["dng"]["sha256"],
+            "orientation": shot.get("orientation") or 1,
+            "adjust": edit.adjust.to_json(),
+            "recipe_entry": plan.entry_sha256,
+            "model_iso": plan.model_iso,
+            "curve": [list(p) for p in edit.master] if edit.master else None,
+            "engine": self.engine_pin(),
+            "width": max_edge,
+            "exact": exact,
+            "step": PREVIEW_STEP,
             "crop": crop.to_json() if crop else None,
         }
         return hashlib.sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     # ---- 预览 -------------------------------------------------------------
-    def render_preview(self, shot: dict, edit: EditState, *, max_edge: int | None = None, exact: bool = False,
-                       crop: cropmod.Crop | None = None, quality: int = 88) -> RenderOut:
+    def render_preview(
+        self,
+        shot: dict,
+        edit: EditState,
+        *,
+        max_edge: int | None = None,
+        exact: bool = False,
+        crop: cropmod.Crop | None = None,
+        quality: int = 88,
+    ) -> RenderOut:
         if "dng" not in shot["files"]:
             raise NoRaw()
         plan = self.plan(shot, edit)
@@ -412,13 +443,20 @@ class RenderService:
                 return chain.chroma_u8(codes, bk, gains, table)
 
         tag = "_电脑预测" if plan.calibrated else "_电脑预测未标定"
-        desc = (f"GXR Studio computer prediction (not camera-measured): {plan.unit} recipe {plan.slot:02d}"
-                f"{' (stock 04 simulation)' if plan.defaulted else ''}, ISO model {plan.model_iso}"
-                f"{'' if plan.calibrated else ', NOT calibrated for this lens unit/ISO'}"
-                f"{', exact chain' if precise else ''}")
+        desc = (
+            f"GXR Studio computer prediction (not camera-measured): {plan.unit} recipe {plan.slot:02d}"
+            f"{' (stock 04 simulation)' if plan.defaulted else ''}, ISO model {plan.model_iso}"
+            f"{'' if plan.calibrated else ', NOT calibrated for this lens unit/ISO'}"
+            f"{', exact chain' if precise else ''}"
+        )
         return Renderer(
             id="recipe-prediction" if plan.calibrated else "recipe-prediction-uncalibrated",
-            label=plan.label, filename_tag=tag, calibrated=plan.calibrated, display=display, description=desc)
+            label=plan.label,
+            filename_tag=tag,
+            calibrated=plan.calibrated,
+            display=display,
+            description=desc,
+        )
 
     # ---- 缩略图 / 默认外观 --------------------------------------------------
     def thumb_variant(self, shot: dict) -> str:
@@ -426,7 +464,7 @@ class RenderService:
         if not self.available():
             return "n"
         unit = self.photo_unit(shot) or "jlaunch"
-        return f"r{unit[0]}{self._camera.manifest_sha256[:8]}{(self._calib_manifest_sha or '')[:4]}"
+        return f"r{unit[0]}{self._camera.manifest_sha256[:8]}{(self._calib_manifest_sha or '')[:4]}"  # type: ignore[union-attr]
 
     def default_look_label(self, shot: dict) -> str | None:
         """`default_look` 画出来的图该怎么标：不可用（调用方退回中性转换）返回 None。永远是"电脑预测"，不是相机 JPG。"""
@@ -454,4 +492,3 @@ class RenderService:
         except (RenderUnavailable, ValueError):
             return None
         return chain.chroma_u8(codes, self._bake(plan, PREVIEW_STEP), None, None)
-

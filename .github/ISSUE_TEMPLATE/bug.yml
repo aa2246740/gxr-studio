@@ -1,0 +1,30 @@
+name: 缺陷
+description: 工作室的行为和说明不一致
+title: "[bug] "
+labels: ["type/bug", "priority/p2"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: 区域
+      options:
+        - area/import
+        - area/library
+        - area/render
+        - area/web
+        - area/tooling
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 你做了哪一步，屏幕或终端上的原话是什么。不要贴令牌。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你以为会怎样
+    validations:
+      required: true

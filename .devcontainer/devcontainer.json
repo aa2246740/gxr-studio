@@ -1,0 +1,11 @@
+{
+  "name": "GXR Studio",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "postCreateCommand": "uv python install 3.14 && uv sync --frozen && git config core.hooksPath .githooks",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff"]
+    }
+  },
+  "forwardPorts": [8765]
+}

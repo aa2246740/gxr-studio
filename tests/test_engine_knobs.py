@@ -16,7 +16,8 @@ import zlib
 import pytest
 
 import e0_support as t
-from gxr_studio.camdata import datcodec as dc, store
+from gxr_studio.camdata import datcodec as dc
+from gxr_studio.camdata import store
 from gxr_studio.engine import knobs, menu
 
 ENGINE = t.REPO / "studio/src/gxr_studio/engine"
@@ -44,11 +45,14 @@ def test_case_set_covers_everything(data, cases):
     assert len(cases) >= 2000
     assert len(data["recipes"]) == 24 and len(data["items"]) == 201
     single = [c for c in cases if c["id"].startswith("s/")]
-    assert len(single) == sum(len(i["points"]) for i in data["items"]) == 3430      # 全部单旋钮状态
+    assert len(single) == sum(len(i["points"]) for i in data["items"]) == 3430  # 全部单旋钮状态
     assert {(c["unit"], c["slot"]) for c in cases} == {(u, s) for u in range(3) for s in range(1, 9)}
-    controls = {data["controls"][data["items"][i]["control"]]["name"]
-                for r in data["recipes"] for i in range(r["first_item"], r["first_item"] + r["item_count"])}
-    assert controls == {c["name"] for c in data["controls"]}                       # 10 个旋钮全部出现
+    controls = {
+        data["controls"][data["items"][i]["control"]]["name"]
+        for r in data["recipes"]
+        for i in range(r["first_item"], r["first_item"] + r["item_count"])
+    }
+    assert controls == {c["name"] for c in data["controls"]}  # 10 个旋钮全部出现
     raw = [c for c in cases if c["kind"] == "raw"]
     assert {c["wb_method"] for c in raw} == {0, 1} and {c["tone_method"] for c in raw} == {0, 1}
 
@@ -89,10 +93,10 @@ def test_studio_engine_matches_the_research_code_byte_for_byte(dat, data, cases)
         stock, base = dat.entry_of(c["unit"], 4), dat.entry_of(c["unit"], c["slot"])
         ours = t.run_case(knobs, menu, data, c, stock, base)
         theirs = t.run_case(r_knobs, r_menu, r_data, c, stock, base)
-        assert ours == theirs, c["id"]                                        # 条目、统计、错误信息全部相同
+        assert ours == theirs, c["id"]  # 条目、统计、错误信息全部相同
         if ours[0] == "ok":
             assert len(ours[1]) == 552
-            store.check_entry(ours[1])                                        # 每个输出的 9 处 CRC 自洽
+            store.check_entry(ours[1])  # 每个输出的 9 处 CRC 自洽
             compared += 1
     assert compared >= 2000
 
@@ -109,13 +113,13 @@ def test_menu_requests_equal_the_research_menu(data, cases):
 
 def test_menu_refuses_instead_of_clamping(data):
     r = data["recipes"][0]
-    items = data["items"][r["first_item"]:r["first_item"] + r["item_count"]]
+    items = data["items"][r["first_item"] : r["first_item"] + r["item_count"]]
     levels = [i["default_level"] for i in items]
     for bad in (levels[:-1], levels + [0]):
         with pytest.raises(ValueError):
             menu.request(data, 0, 1, bad)
     worse = list(levels)
-    worse[1] = 10 ** 6
+    worse[1] = 10**6
     with pytest.raises(ValueError):
         menu.request(data, 0, 1, worse)
     worse[1] = 1.0
@@ -146,20 +150,22 @@ def test_apply_never_returns_a_broken_entry(dat, data, cases):
         e = out[1]
         assert len(e) == 552
         for off, size, crc_off in dc.CRC_FIELDS:
-            assert struct.unpack_from(">I", e, crc_off)[0] == zlib.crc32(e[off:off + size]) & 0xFFFFFFFF
+            assert struct.unpack_from(">I", e, crc_off)[0] == zlib.crc32(e[off : off + size]) & 0xFFFFFFFF
         for at in (82, 346, 518):
-            assert list(e[at:at + 33]) == sorted(e[at:at + 33]), (c["id"], at)
+            assert list(e[at : at + 33]) == sorted(e[at : at + 33]), (c["id"], at)
 
 
 # ---------------------------------------------------------------------------------- 抽取是逐字的
+
 
 def test_engine_files_match_their_recorded_sources():
     prov = json.loads((ENGINE / "PROVENANCE.json").read_text())
     for rel, sha in prov["engine_file_sha256"].items():
         assert hashlib.sha256((ENGINE / rel).read_bytes()).hexdigest() == sha, rel
     # 没有被记录的文件混进来
-    on_disk = {str(p.relative_to(ENGINE)) for p in ENGINE.rglob("*") if p.is_file() and p.name != "PROVENANCE.json"
-               and "__pycache__" not in p.parts}
+    on_disk = {
+        str(p.relative_to(ENGINE)) for p in ENGINE.rglob("*") if p.is_file() and p.name != "PROVENANCE.json" and "__pycache__" not in p.parts
+    }
     assert on_disk == set(prov["engine_file_sha256"])
 
 
@@ -227,7 +233,6 @@ def test_engine_does_not_import_research_or_firmware_code():
     import re
 
     bad = re.compile(r"^\s*(from|import)\s+(research|firmware|support|closed_loop|model_adapter)\b", re.M)
-    for p in list((t.REPO / "studio/src/gxr_studio/engine").glob("*.py")) + list(
-            (t.REPO / "studio/src/gxr_studio/camdata").glob("*.py")):
+    for p in list((t.REPO / "studio/src/gxr_studio/engine").glob("*.py")) + list((t.REPO / "studio/src/gxr_studio/camdata").glob("*.py")):
         assert not bad.search(p.read_text()), p.name
         assert "/Volumes/" not in p.read_text(), p.name

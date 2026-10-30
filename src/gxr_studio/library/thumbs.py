@@ -50,7 +50,7 @@ def purge_variants(lib: Library) -> int:
     for size in (THUMB_SIZE, PREVIEW_SIZE):
         for p in lib.thumbs_dir.glob(f"*/*-{size}-*.jpg"):
             if p.stem.endswith("-" + EMBEDDED_VARIANT):
-                continue    # 内嵌小预览与相机数据无关，留着（照片列表靠它认出"读不出来的 RAW"）
+                continue  # 内嵌小预览与相机数据无关，留着（照片列表靠它认出"读不出来的 RAW"）
             try:
                 p.unlink()
                 removed += 1
@@ -142,8 +142,8 @@ def ensure(lib: Library, shot: dict, size: int, render=None) -> Path | None:
             img = _render_from_jpg(lib.abspath(files["jpg"]["relpath"]), size)
         else:
             path = lib.abspath(files["dng"]["relpath"])
-            img = _render_from_dng_half(path, shot, size, render)
-            if img is None:     # 半分辨率读不出来：退回内嵌小预览，单独存成 emb 变体，响应里不当作电脑预测
+            img = _render_from_dng_half(path, shot, size, render)  # type: ignore[assignment]
+            if img is None:  # 半分辨率读不出来：退回内嵌小预览，单独存成 emb 变体，响应里不当作电脑预测
                 img = _render_from_dng(path, size, shot.get("orientation") or 1)
                 dest = cache_path(lib, shot["shot_id"], size, EMBEDDED_VARIANT)
     except Exception:

@@ -24,14 +24,14 @@ UNIT_INFO = (
 )
 # GXUI 条目名里每个槽位的组名（datcodec._extension）
 SLOT_SHORT = ("GRP", "GRN", "HCB", "STD", "FCC", "FCN", "LCH", "LVI")
-NEUTRAL = {"amount": 100}   # 不在菜单里的旋钮，只有取这个"中性值"才算没动
+NEUTRAL = {"amount": 100}  # 不在菜单里的旋钮，只有取这个"中性值"才算没动
 
 
 @dataclass(frozen=True)
 class Resolved:
     entry: bytes
     entry_sha256: str
-    levels: dict            # 这个配方菜单里每个旋钮的实际档位（没给的取默认）
+    levels: dict  # 这个配方菜单里每个旋钮的实际档位（没给的取默认）
     stats: dict
 
 
@@ -45,19 +45,25 @@ class Menu:
 
     def _items(self, unit: int, slot: int) -> list[dict]:
         r = self._recipes[(unit, slot)]
-        return self.menu["items"][r["first_item"]:r["first_item"] + r["item_count"]]
+        return self.menu["items"][r["first_item"] : r["first_item"] + r["item_count"]]
 
     def controls(self, unit: int, slot: int) -> list[dict]:
         out = []
         for it in self._items(unit, slot):
             c = self.menu["controls"][it["control"]]
-            out.append({
-                "name": c["name"], "label": c["label"],
-                "min": it["min_level"], "max": it["max_level"], "default": it["default_level"],
-                "cap_lower": bool(it["cap_lower"]), "cap_upper": bool(it["cap_upper"]),
-                "amount_step": it["amount_step"] or None,
-                "levels": [p["level"] for p in it["points"]],
-            })
+            out.append(
+                {
+                    "name": c["name"],
+                    "label": c["label"],
+                    "min": it["min_level"],
+                    "max": it["max_level"],
+                    "default": it["default_level"],
+                    "cap_lower": bool(it["cap_lower"]),
+                    "cap_upper": bool(it["cap_upper"]),
+                    "amount_step": it["amount_step"] or None,
+                    "levels": [p["level"] for p in it["points"]],
+                }
+            )
         return out
 
     def entry_sha256(self, unit: int, slot: int) -> str | None:
@@ -69,17 +75,25 @@ class Menu:
             recipes = []
             for slot in store.SLOTS:
                 controls = self.controls(u, slot)
-                recipes.append({
-                    "slot": slot, "number": f"{slot:02d}", "short": SLOT_SHORT[slot - 1],
-                    "is_stock": slot == 4, "has_amount": any(c["name"] == "amount" for c in controls),
-                    "entry_sha256": self.entry_sha256(u, slot),
-                    "controls": controls,
-                })
-            units.append({**info, "recipes": recipes,
-                          "calibration_note": None if info["calibrated"]
-                          else "未单独标定：沿用 A12-50 的模型迁移，颜色只是电脑预测"})
+                recipes.append(
+                    {
+                        "slot": slot,
+                        "number": f"{slot:02d}",
+                        "short": SLOT_SHORT[slot - 1],
+                        "is_stock": slot == 4,
+                        "has_amount": any(c["name"] == "amount" for c in controls),
+                        "entry_sha256": self.entry_sha256(u, slot),
+                        "controls": controls,
+                    }
+                )
+            units.append(
+                {
+                    **info,
+                    "recipes": recipes,
+                    "calibration_note": None if info["calibrated"] else "未单独标定：沿用 A12-50 的模型迁移，颜色只是电脑预测",
+                }
+            )
         return units
-
 
     def request_for(self, sel: RecipeSel):
         """档位 → (菜单旋钮名, 实际档位列表, knobs.Request)。档位不合法就抛 EditError，不钳位。"""
@@ -94,10 +108,8 @@ class Menu:
         try:
             return names, levels, menu.request(self.menu, u, slot, levels)
         except ValueError as exc:
-            bad = next((n for n, lv, it in zip(names, levels, items)
-                        if all(p["level"] != lv for p in it["points"])), None)
-            raise EditError("level_not_allowed",
-                            f"旋钮「{bad}」的这个档位在配方 {slot:02d} 里不能用（超出范围或超过到顶标记）") from exc
+            bad = next((n for n, lv, it in zip(names, levels, items) if all(p["level"] != lv for p in it["points"])), None)
+            raise EditError("level_not_allowed", f"旋钮「{bad}」的这个档位在配方 {slot:02d} 里不能用（超出范围或超过到顶标记）") from exc
 
 
 class CameraData(Menu):
@@ -106,9 +118,8 @@ class CameraData(Menu):
     def __init__(self, home: Path):
         super().__init__()
         self.home = Path(home)
-        self.manifest = store.verify(self.home)             # 缺失/被改动 → CamdataError
-        self.manifest_sha256 = hashlib.sha256(
-            (store.camera_data_dir(self.home) / "manifest.json").read_bytes()).hexdigest()
+        self.manifest = store.verify(self.home)  # 缺失/被改动 → CamdataError
+        self.manifest_sha256 = hashlib.sha256((store.camera_data_dir(self.home) / "manifest.json").read_bytes()).hexdigest()
         self.stock = [store.load_stock04(self.home, u) for u in range(3)]
         self.entries = {(u, s): store.load_entry(self.home, u, s) for u in range(3) for s in store.SLOTS}
 
@@ -140,4 +151,3 @@ def unit_of_lens(lens: str | None, model: str | None = None) -> str | None:
     if "28mm" in text:
         return "qlaunch"
     return None
-

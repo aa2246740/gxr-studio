@@ -35,12 +35,12 @@ def _neutral_display(codes: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Renderer:
-    id: str                 # 写进 API 返回和 EXIF
-    label: str              # 给人看的名字
-    filename_tag: str       # 加在 `_gxr` 之后的文件名标记，"" = 不加
-    calibrated: bool        # 是否经过相机配方/标定（中性转换 = False）
+    id: str  # 写进 API 返回和 EXIF
+    label: str  # 给人看的名字
+    filename_tag: str  # 加在 `_gxr` 之后的文件名标记，"" = 不加
+    calibrated: bool  # 是否经过相机配方/标定（中性转换 = False）
     display: Callable[[np.ndarray], np.ndarray]
-    description: str = ""   # 写进导出文件 EXIF ImageDescription 的话（只能是 ASCII）；空 = 用默认说明
+    description: str = ""  # 写进导出文件 EXIF ImageDescription 的话（只能是 ASCII）；空 = 用默认说明
 
 
 NEUTRAL = Renderer(
@@ -57,7 +57,7 @@ def render_full(dng: Dng, renderer: Renderer = NEUTRAL) -> np.ndarray:
     h, w = crop_shape(dng)
     out = np.empty((h, w, 3), np.uint8)
     for y0, strip in demosaic_strips(dng):
-        out[y0:y0 + strip.shape[0]] = renderer.display(strip)
+        out[y0 : y0 + strip.shape[0]] = renderer.display(strip)
     return np.ascontiguousarray(orient_array(out, dng.orientation))
 
 

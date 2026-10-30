@@ -14,7 +14,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404  只用来拉起本包的拟合子进程
 import sys
 import threading
 import time
@@ -42,15 +42,35 @@ SPACE_LABELS = {
     "srgb": ("普通照片 / 网页颜色（sRGB）", "display"),
     "rec709": ("视频显示（Rec.709）", "display"),
     "gamma24": ("视频显示（Gamma 2.4）", "display"),
-    "flog": ("富士 F-Log", "log"), "flog2": ("富士 F-Log2", "log"),
-    "llog": ("徕卡 L-Log", "log"), "llog709": ("徕卡 L-Log（Rec.709 色域）", "log"),
-    "vlog": ("松下 V-Log", "log"), "slog3": ("索尼 S-Log3", "log"), "slog3-sgamut3": ("索尼 S-Log3 / S-Gamut3", "log"),
-    "applelog": ("苹果 Log", "log"), "linear": ("线性光（高级）", "log"),
+    "flog": ("富士 F-Log", "log"),
+    "flog2": ("富士 F-Log2", "log"),
+    "llog": ("徕卡 L-Log", "log"),
+    "llog709": ("徕卡 L-Log（Rec.709 色域）", "log"),
+    "vlog": ("松下 V-Log", "log"),
+    "slog3": ("索尼 S-Log3", "log"),
+    "slog3-sgamut3": ("索尼 S-Log3 / S-Gamut3", "log"),
+    "applelog": ("苹果 Log", "log"),
+    "linear": ("线性光（高级）", "log"),
 }
 # 文件名/标题里的关键词 → 输入空间（先长后短）
-GUESS = (("f-log2", "flog2"), ("flog2", "flog2"), ("f-log", "flog"), ("flog", "flog"), ("l-log", "llog"), ("llog", "llog"),
-         ("v-log", "vlog"), ("vlog", "vlog"), ("s-log3", "slog3"), ("slog3", "slog3"), ("apple log", "applelog"),
-         ("applelog", "applelog"), ("srgb", "srgb"), ("rec709", "rec709"), ("rec.709", "rec709"), ("709", "rec709"))
+GUESS = (
+    ("f-log2", "flog2"),
+    ("flog2", "flog2"),
+    ("f-log", "flog"),
+    ("flog", "flog"),
+    ("l-log", "llog"),
+    ("llog", "llog"),
+    ("v-log", "vlog"),
+    ("vlog", "vlog"),
+    ("s-log3", "slog3"),
+    ("slog3", "slog3"),
+    ("apple log", "applelog"),
+    ("applelog", "applelog"),
+    ("srgb", "srgb"),
+    ("rec709", "rec709"),
+    ("rec.709", "rec709"),
+    ("709", "rec709"),
+)
 
 
 class LutError(Exception):
@@ -60,7 +80,7 @@ class LutError(Exception):
 
 
 def spaces_listing() -> list[dict]:
-    assert set(SPACE_LABELS) == set(SPACES), "界面的色彩空间清单和 spaces.py 不一致"
+    assert set(SPACE_LABELS) == set(SPACES), "界面的色彩空间清单和 spaces.py 不一致"  # nosec B101  两份清单必须一起改
     return [{"id": k, "label": SPACE_LABELS[k][0], "kind": SPACE_LABELS[k][1], "gamut": GAMUT[k]} for k in SPACES]
 
 
@@ -137,17 +157,27 @@ class LutService:
             tmp.write_bytes(raw)
             os.replace(tmp, path)
         guess, why = guess_space(Path(filename).name, cube.title)
-        return {"cube_id": digest, **self._describe(cube), "filename": Path(filename).name or None,
-                "input_space_guess": guess, "guess_reason": why,
-                "guess_note": None if guess else "文件里没有写它是给哪种画面做的，需要你来选；不知道的话可以选 sRGB 试试，结果会标“输入空间是猜的”。"}
+        return {
+            "cube_id": digest,
+            **self._describe(cube),
+            "filename": Path(filename).name or None,
+            "input_space_guess": guess,
+            "guess_reason": why,
+            "guess_note": None
+            if guess
+            else "文件里没有写它是给哪种画面做的，需要你来选；不知道的话可以选 sRGB 试试，结果会标“输入空间是猜的”。",
+        }
 
     def _describe(self, cube: Cube) -> dict:
         kinds = [k for k, t in (("1D", cube.table1), ("3D", cube.table3)) if t is not None]
-        return {"title": cube.title or None, "kind": "+".join(kinds),
-                "size_1d": 0 if cube.table1 is None else len(cube.table1),
-                "size_3d": 0 if cube.table3 is None else len(cube.table3),
-                "domain_min": [round(float(v), 6) for v in cube.domain_min],
-                "domain_max": [round(float(v), 6) for v in cube.domain_max]}
+        return {
+            "title": cube.title or None,
+            "kind": "+".join(kinds),
+            "size_1d": 0 if cube.table1 is None else len(cube.table1),  # type: ignore[arg-type]
+            "size_3d": 0 if cube.table3 is None else len(cube.table3),  # type: ignore[arg-type]
+            "domain_min": [round(float(v), 6) for v in cube.domain_min],
+            "domain_max": [round(float(v), 6) for v in cube.domain_max],
+        }
 
     def cube(self, cube_id: str) -> Cube:
         if not re.fullmatch(r"[0-9a-f]{64}", cube_id or ""):
@@ -169,8 +199,17 @@ class LutService:
                 self._cubes.popitem(last=False)
         return cube
 
-    def target(self, cube: Cube, space: str, output: str = "srgb", *, input_gamut=None, output_gamut=None,
-               input_range: str = "full", output_range: str = "full") -> Target:
+    def target(
+        self,
+        cube: Cube,
+        space: str,
+        output: str = "srgb",
+        *,
+        input_gamut=None,
+        output_gamut=None,
+        input_range: str = "full",
+        output_range: str = "full",
+    ) -> Target:
         if space not in SPACES:
             raise LutError(422, "bad_space", f"不认识的输入色彩空间：{space}")
         if output not in SPACES:
@@ -217,12 +256,14 @@ class LutService:
             except RenderUnavailable:
                 pass
             from ..raw.render import NEUTRAL
+
             return NEUTRAL.display(codes).astype(float), xyz, "neutral"
         if "jpg" in shot["files"]:
             im = Image.open(self.lib.abspath(shot["files"]["jpg"]["relpath"]))
             im.draft("RGB", (max_edge * 2, max_edge * 2))
             from PIL import ImageOps
-            im = ImageOps.exif_transpose(im).convert("RGB")
+
+            im = ImageOps.exif_transpose(im).convert("RGB")  # type: ignore[assignment]
             im.thumbnail((max_edge, max_edge))
             return np.asarray(im, float), None, "camera-jpg"
         raise LutError(422, "no_image", "这张照片没有可用的图像文件。")
@@ -252,7 +293,8 @@ class LutService:
             if xyz is None and spec["space"] not in DISPLAY:
                 # 没有场景 XYZ：把显示画面当成线性的 Rec.709 场景光（示意，不是真的 Log 换算）
                 from ..engine.colour import M709, srgb_to_linear
-                xyz = (srgb_to_linear(flat / 255.0) @ M709.T)
+
+                xyz = srgb_to_linear(flat / 255.0) @ M709.T
                 info["nominal_scene"] = True
             try:
                 out = target.render(flat, None if xyz is None else xyz.reshape(-1, 3)).reshape(base.shape)
@@ -275,25 +317,42 @@ class LutService:
             shots = [s for s in shots if "dng" in s["files"]]
         else:
             shots = [s for s in self.lib.list_shots(limit=2000) if "dng" in s["files"]]
-            shots.sort(key=lambda s: (s["captured_at"] or "", s["name"]), reverse=True)            # 新的在前
-            shots.sort(key=lambda s: 0 if s["iso"] == 200 else 1 if s["iso"] == 1600 else 2)       # 稳定排序：ISO 优先
+            shots.sort(key=lambda s: (s["captured_at"] or "", s["name"]), reverse=True)  # 新的在前
+            shots.sort(key=lambda s: 0 if s["iso"] == 200 else 1 if s["iso"] == 1600 else 2)  # 稳定排序：ISO 优先
         out = []
         for s in shots[:limit]:
             f = s["files"]["dng"]
-            out.append({"dng": str(self.lib.abspath(f["relpath"])), "sha256": f["sha256"], "label": s["name"], "iso": s["iso"],
-                        "shot_id": s["shot_id"]})
+            out.append(
+                {
+                    "dng": str(self.lib.abspath(f["relpath"])),
+                    "sha256": f["sha256"],
+                    "label": s["name"],
+                    "iso": s["iso"],
+                    "shot_id": s["shot_id"],
+                }
+            )
         return out
 
-    def start_fit(self, cube_id: str, spec: dict, *, unit: str = "jlaunch", photo_ids: list[str] | None = None,
-                  profile: str = "normal", guessed: bool = False) -> dict:
+    def start_fit(
+        self,
+        cube_id: str,
+        spec: dict,
+        *,
+        unit: str = "jlaunch",
+        photo_ids: list[str] | None = None,
+        profile: str = "normal",
+        guessed: bool = False,
+    ) -> dict:
         if unit != "jlaunch":
-            raise LutError(422, "unit_not_calibrated",
-                           "28mm 和 MOUNT 还没有单独标定过颜色模型，电脑算出来的相似度没有依据，所以暂时不能导入调色文件。"
-                           "50mm 可以。")
+            raise LutError(
+                422,
+                "unit_not_calibrated",
+                "28mm 和 MOUNT 还没有单独标定过颜色模型，电脑算出来的相似度没有依据，所以暂时不能导入调色文件。50mm 可以。",
+            )
         if profile not in ("normal", "quick"):
             raise LutError(422, "bad_profile", "profile 只能是 normal 或 quick")
         cube = self.cube(cube_id)
-        self.target(cube, **spec)                       # 先校验色彩空间参数
+        self.target(cube, **spec)  # 先校验色彩空间参数
         if not self.render.available():
             st = self.render.status()
             raise LutError(409, "camera_data_missing", st["hint"] or "请先导入相机数据和标定包。", {"status": st})
@@ -305,18 +364,41 @@ class LutService:
             job_id = uuid.uuid4().hex[:12]
             job_dir = self.jobs_dir / job_id
             job_dir.mkdir(parents=True)
-            job = {"home": str(self.home), "cube": str(self.luts_dir / f"{cube_id}.cube"), "cube_id": cube_id,
-                   "input_space": spec["space"], "output_space": spec["output"], "input_gamut": spec.get("input_gamut"),
-                   "output_gamut": spec.get("output_gamut"), "input_range": spec.get("input_range", "full"),
-                   "output_range": spec.get("output_range", "full"), "photos": photos, "max_photos": 3, "profile": profile,
-                   "space_guessed": guessed, "unit": unit, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+            job = {
+                "home": str(self.home),
+                "cube": str(self.luts_dir / f"{cube_id}.cube"),
+                "cube_id": cube_id,
+                "input_space": spec["space"],
+                "output_space": spec["output"],
+                "input_gamut": spec.get("input_gamut"),
+                "output_gamut": spec.get("output_gamut"),
+                "input_range": spec.get("input_range", "full"),
+                "output_range": spec.get("output_range", "full"),
+                "photos": photos,
+                "max_photos": 3,
+                "profile": profile,
+                "space_guessed": guessed,
+                "unit": unit,
+                "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
             _write_json(job_dir / "job.json", job)
-            env = {**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "VECLIB_MAXIMUM_THREADS": "1",
-                   "PYTHONDONTWRITEBYTECODE": "1",
-                   "GXR_STUDIO_PARENT_PID": str(os.getpid())}      # 子进程据此发现服务没了（SIGKILL / SIGHUP）
+            env = {
+                **os.environ,
+                "OPENBLAS_NUM_THREADS": "1",
+                "OMP_NUM_THREADS": "1",
+                "VECLIB_MAXIMUM_THREADS": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "GXR_STUDIO_PARENT_PID": str(os.getpid()),
+            }  # 子进程据此发现服务没了（SIGKILL / SIGHUP）
             log = open(job_dir / "log.txt", "wb")
-            proc = subprocess.Popen([sys.executable, "-m", "gxr_studio.lut.worker", str(job_dir)], stdout=log, stderr=log,
-                                    stdin=subprocess.DEVNULL, env=env, start_new_session=True)
+            proc = subprocess.Popen(  # nosec B603  参数是解释器和本包模块，没有 shell
+                [sys.executable, "-m", "gxr_studio.lut.worker", str(job_dir)],
+                stdout=log,
+                stderr=log,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+            )
             log.close()
             self._procs[job_id] = proc
             self._prune()
@@ -349,9 +431,14 @@ class LutService:
             state, result = "error", {"code": "worker_died", "message": "拟合程序意外停了，没有结果。可以再试一次。"}
         else:
             state, result = "error", {"code": "interrupted", "message": "这次拟合在程序关闭时中断了，请重新开始。"}
-        out = {"job_id": job_id, "state": state, "progress": progress,
-               "input": {k: job[k] for k in ("input_space", "output_space", "profile", "space_guessed")},
-               "cube_id": job["cube_id"], "photos": [{"label": p["label"], "iso": p["iso"]} for p in job["photos"]]}
+        out = {
+            "job_id": job_id,
+            "state": state,
+            "progress": progress,
+            "input": {k: job[k] for k in ("input_space", "output_space", "profile", "space_guessed")},
+            "cube_id": job["cube_id"],
+            "photos": [{"label": p["label"], "iso": p["iso"]} for p in job["photos"]],
+        }
         if state == "error":
             out["error"] = {"code": result.get("code"), "message": result.get("message")}
         if state == "done" and with_result:
@@ -409,25 +496,43 @@ class LutService:
             raise LutError(422, "bad_candidate", "没有这个候选")
         c = cands[candidate]
         sel = RecipeSel(c["unit"], c["slot"], tuple(sorted(c["levels"].items())))
-        try:                                                # 再核对一遍：每个档位都必须是菜单里合法的
+        try:  # 再核对一遍：每个档位都必须是菜单里合法的
             self.render.menu.request_for(sel)
         except EditError as exc:
             raise LutError(422, exc.code, exc.message) from exc
         rid = uuid.uuid4().hex[:12]
         existing = len(self.list_recipes())
         doc = {
-            "schema": SCHEMA_RECIPE, "id": rid, "name": name,
+            "schema": SCHEMA_RECIPE,
+            "id": rid,
+            "name": name,
             "camera_short_name": f"U{existing + 1:02d}-{c['slot']}{c['entry_sha256'][:3].upper()}",
             "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "recipe": {"kind": "builtin", "unit": c["unit"], "slot": c["slot"], "levels": dict(c["levels"])},
-            "source": {"kind": "lut", "cube_sha256": st["cube_id"], "title": st["result"].get("cube", {}).get("title"),
-                       "input_space": st["input"]["input_space"], "output_space": st["input"]["output_space"],
-                       "input_space_guessed": bool(st["input"]["space_guessed"]), "fit_job": job_id},
-            "fit": {"prediction": True, "label": "电脑预测", "similarity": c["similarity"], "similarity_label": c["label"],
-                    "holdout": c["holdout"], "baseline04_holdout": c["baseline04_holdout"], "differences": c["differences"],
-                    "entry_sha256": c["entry_sha256"], "formula": st["result"]["formula"]},
-            "camera_write": {"status": "not_supported_yet",
-                             "note": "这一版只存在电脑里；写回相机卡在后续版本里做（相机的“我的配方”目前只支持 4 个旋钮的旧格式）。"},
+            "source": {
+                "kind": "lut",
+                "cube_sha256": st["cube_id"],
+                "title": st["result"].get("cube", {}).get("title"),
+                "input_space": st["input"]["input_space"],
+                "output_space": st["input"]["output_space"],
+                "input_space_guessed": bool(st["input"]["space_guessed"]),
+                "fit_job": job_id,
+            },
+            "fit": {
+                "prediction": True,
+                "label": "电脑预测",
+                "similarity": c["similarity"],
+                "similarity_label": c["label"],
+                "holdout": c["holdout"],
+                "baseline04_holdout": c["baseline04_holdout"],
+                "differences": c["differences"],
+                "entry_sha256": c["entry_sha256"],
+                "formula": st["result"]["formula"],
+            },
+            "camera_write": {
+                "status": "not_supported_yet",
+                "note": "这一版只存在电脑里；写回相机卡在后续版本里做（相机的“我的配方”目前只支持 4 个旋钮的旧格式）。",
+            },
         }
         _write_json(self._recipe_path(rid), doc)
         return doc

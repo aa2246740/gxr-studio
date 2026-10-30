@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - name: Time the locked install
+        run: python -c "import subprocess, time; started=time.perf_counter(); subprocess.check_call(['uv','sync','--frozen']); print(f'uv_sync_seconds {time.perf_counter()-started:.3f}')"
+      - name: Lint, types, security, coverage
+        run: make check
+      - name: DAST-style endpoint checks
+        run: make dast
+      - name: Coverage and timing artifacts
+        if: always()
+        run: mkdir -p artifacts && cp -f .coverage artifacts/coverage.sqlite || true
+
+  security-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - run: uv sync --frozen
+      - name: Write a readable Bandit report
+        run: uv run --frozen bandit -r src/gxr_studio -f txt -o bandit-report.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.txt

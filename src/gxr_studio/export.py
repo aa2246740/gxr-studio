@@ -60,9 +60,7 @@ class ExportOptions:
             raise ExportError("bad_format", "导出格式只能是 jpeg 或 png")
         if not isinstance(self.quality, int) or not 1 <= self.quality <= 100:
             raise ExportError("bad_quality", "质量要在 1 到 100 之间")
-        if self.long_edge is not None and (
-            not isinstance(self.long_edge, int) or not 64 <= self.long_edge <= 30000
-        ):
+        if self.long_edge is not None and (not isinstance(self.long_edge, int) or not 64 <= self.long_edge <= 30000):
             raise ExportError("bad_size", "长边要在 64 到 30000 像素之间")
         return self
 
@@ -105,9 +103,7 @@ def _clean_text(value) -> str | None:
     return text or None
 
 
-def render_raw(
-    src: Path, crop: Crop | None, opts: ExportOptions, renderer: Renderer = NEUTRAL
-) -> tuple[bytes, tuple[int, int]]:
+def render_raw(src: Path, crop: Crop | None, opts: ExportOptions, renderer: Renderer = NEUTRAL) -> tuple[bytes, tuple[int, int]]:
     """只有 RAW：全分辨率渲染（条带式去马赛克 → 渲染器），再走与 JPG 相同的裁切/拉直/缩放/编码。
 
     EXIF 取自 DNG：厂商、型号、DateTime、EXIF 子目录（去掉 MakerNote）、镜头名；
@@ -133,10 +129,9 @@ def render_raw(
                 lens = _clean_text(exif.get(50708))  # UniqueCameraModel：GXR 的镜头单元名
                 if lens:
                     sub[42036] = lens.removeprefix("RICOH ").strip()
-    except Exception:  # 元数据读不出来不挡导出
+    except Exception:  # nosec B110  元数据读不出来不挡导出
         pass
-    base[270] = renderer.description or (
-        f"GXR Studio {renderer.id}: white-balanced linear sensor data to sRGB, no recipe applied")
+    base[270] = renderer.description or (f"GXR Studio {renderer.id}: white-balanced linear sensor data to sRGB, no recipe applied")
     return _finish(im, base, sub, crop, opts)
 
 
@@ -152,16 +147,12 @@ def crop_image(im: Image.Image, crop: Crop) -> Image.Image:
     return im.transform((w, h), Image.Transform.AFFINE, coeffs, resample=Image.Resampling.BICUBIC)
 
 
-def _finish(
-    im: Image.Image, base: dict, sub: dict, crop: Crop | None, opts: ExportOptions
-) -> tuple[bytes, tuple[int, int]]:
+def _finish(im: Image.Image, base: dict, sub: dict, crop: Crop | None, opts: ExportOptions) -> tuple[bytes, tuple[int, int]]:
     if crop is not None:
         im = crop_image(im, crop)
     if opts.long_edge and max(im.size) > opts.long_edge:
         scale = opts.long_edge / max(im.size)
-        im = im.resize(
-            (max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.Resampling.LANCZOS
-        )
+        im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.Resampling.LANCZOS)
 
     def build_exif(full: bool) -> Image.Exif:
         out = Image.Exif()
@@ -249,9 +240,7 @@ def export_shot(
         except RawDecodeError as exc:
             if "jpg" in files:
                 raise ExportError("raw_unreadable", f"这份 RAW 暂时读不出来，不能套配方。（{exc}）") from exc
-            raise ExportError(
-                "no_jpg_source", f"这张只有 RAW，而且这份 RAW 暂时读不出来，需要配对的 JPG。（{exc}）"
-            ) from exc
+            raise ExportError("no_jpg_source", f"这张只有 RAW，而且这份 RAW 暂时读不出来，需要配对的 JPG。（{exc}）") from exc
         kind, label, tag = renderer.id, renderer.label, renderer.filename_tag
     try:
         dest.mkdir(parents=True, exist_ok=True)
@@ -272,6 +261,4 @@ def export_shot(
         except OSError:
             pass
         raise
-    return ExportResult(
-        path=path, width=size[0], height=size[1], bytes=len(data), render=kind, render_label=label, format=opts.fmt
-    )
+    return ExportResult(path=path, width=size[0], height=size[1], bytes=len(data), render=kind, render_label=label, format=opts.fmt)

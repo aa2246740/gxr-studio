@@ -1,0 +1,24 @@
+name: 功能
+description: 希望工作室多做一件事
+title: "[feature] "
+labels: ["type/feature", "priority/p3"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: 区域
+      options:
+        - area/import
+        - area/library
+        - area/render
+        - area/web
+        - area/tooling
+    validations:
+      required: true
+  - type: textarea
+    id: job
+    attributes:
+      label: 要完成的事
+      description: 用完之后你能做什么，现在为什么做不到。
+    validations:
+      required: true

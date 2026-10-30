@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import hmac
 import json
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
 from .config import Settings
 
 COOKIE = "gxr_token"
 # 页面只加载自己的脚本/样式；图片还要放行 blob:（预览图是 fetch 之后用 object URL 显示的）和 data:
-CSP = ("default-src 'self'; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; "
-       "form-action 'self'; frame-ancestors 'none'")
+CSP = "default-src 'self'; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
@@ -38,7 +37,9 @@ class SecurityMiddleware:
         return name in self.settings.allowed_hostnames and int(port) == self.settings.port
 
     def _token_ok(self, candidate: str | None) -> bool:
-        return bool(candidate) and hmac.compare_digest(candidate.encode(), self.settings.token.encode())
+        if not candidate:
+            return False
+        return hmac.compare_digest(candidate.encode(), self.settings.token.encode())
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
@@ -50,9 +51,17 @@ class SecurityMiddleware:
             if scope["type"] == "websocket":
                 return await send({"type": "websocket.close", "code": 1008})
             body = json.dumps({"error": code, "message": message}, ensure_ascii=False).encode()
-            await send({"type": "http.response.start", "status": status, "headers": [
-                (b"content-type", b"application/json; charset=utf-8"),
-                (b"content-length", str(len(body)).encode()), (b"cache-control", b"no-store")]})
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": status,
+                    "headers": [
+                        (b"content-type", b"application/json; charset=utf-8"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"cache-control", b"no-store"),
+                    ],
+                }
+            )
             await send({"type": "http.response.body", "body": body})
 
         if not self._host_ok(headers.get("host", "")):
@@ -75,10 +84,21 @@ class SecurityMiddleware:
         if scope["type"] == "http" and scope["path"] == "/" and method == "GET":
             query = parse_qs(scope.get("query_string", b"").decode())
             if self._token_ok((query.get("token") or [None])[0]):
-                await send({"type": "http.response.start", "status": 303, "headers": [
-                    (b"location", b"/"),
-                    (b"set-cookie", f"{COOKIE}={self.settings.token}; HttpOnly; SameSite=Strict; Path=/".encode()),
-                    (b"cache-control", b"no-store"), (b"content-length", b"0")]})
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 303,
+                        "headers": [
+                            (b"location", b"/"),
+                            (
+                                b"set-cookie",
+                                f"{COOKIE}={self.settings.token}; HttpOnly; SameSite=Strict; Path=/".encode(),
+                            ),
+                            (b"cache-control", b"no-store"),
+                            (b"content-length", b"0"),
+                        ],
+                    }
+                )
                 return await send({"type": "http.response.body", "body": b""})
 
         if method not in SAFE_METHODS and origin is None:
@@ -89,8 +109,11 @@ class SecurityMiddleware:
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                extra = [(b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"no-referrer"),
-                         (b"content-security-policy", CSP.encode())]
+                extra = [
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"content-security-policy", CSP.encode()),
+                ]
                 has_cache = any(k.lower() == b"cache-control" for k, _ in message["headers"])
                 if scope["path"].startswith("/api/") and not has_cache:
                     extra.append((b"cache-control", b"no-store"))

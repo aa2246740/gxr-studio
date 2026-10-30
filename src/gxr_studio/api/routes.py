@@ -18,6 +18,7 @@ from ..cards import importer
 from ..cards.discovery import Card, find_cards
 from ..crop import Crop, CropError
 from ..export import ExportError, ExportOptions, export_shot
+from ..flags import flag_enabled
 from ..library import edits, thumbs
 from ..library import sidecar as sc
 from ..raw import NEUTRAL
@@ -129,7 +130,7 @@ def _crop_error(exc: CropError) -> ApiError:
 
 
 def _crop_for_export(c, shot: dict) -> Crop | None:
-    side, _ = c.lib.read_sidecar_or_default(shot)   # 编辑记录坏了/不见了：按没有裁切导出
+    side, _ = c.lib.read_sidecar_or_default(shot)  # 编辑记录坏了/不见了：按没有裁切导出
     raw = side.get("crop")
     return Crop(raw["preset"], tuple(raw["rect"]), float(raw.get("angle_deg", 0.0))) if raw else None
 
@@ -239,7 +240,10 @@ def get_settings(request: Request):
 @router.get("/api/audit")
 def get_audit(request: Request):
     rec = ctx(request).recorder
-    return {"write_count": len(rec.writes), "recent": [{"op": w.op, "path": w.path, "blocked": w.blocked} for w in rec.writes[-100:]]}
+    return {
+        "write_count": len(rec.writes),
+        "recent": [{"op": w.op, "path": w.path, "blocked": w.blocked} for w in rec.writes[-100:]],
+    }
 
 
 # ---- 卡与导入 ---------------------------------------------------------------
@@ -256,8 +260,11 @@ def cards_status(request: Request):
     c = ctx(request)
     denied: list[str] = []
     cards = find_cards(c.settings.volumes_roots, c.reader, denied)
-    return {"cards": len(cards), "access_denied": bool(denied) and not cards,
-            "message": DENIED_NOTE if denied and not cards else None}
+    return {
+        "cards": len(cards),
+        "access_denied": bool(denied) and not cards,
+        "message": DENIED_NOTE if denied and not cards else None,
+    }
 
 
 @router.get("/api/cards/{card_id}/summary")
@@ -355,7 +362,7 @@ def _image(request: Request, shot_id: str, size: int) -> Response:
     if path.stem.endswith("-" + thumbs.EMBEDDED_VARIANT):
         headers.update({"X-GXR-Look": "embedded", "X-GXR-Label": quote(thumbs.EMBEDDED_LABEL)})
     else:
-        look = thumbs.look_of(shot, c.render)       # 这张图不是内嵌的，所以不传 lib
+        look = thumbs.look_of(shot, c.render)  # 这张图不是内嵌的，所以不传 lib
         if look["kind"] != "camera-jpg":
             headers.update({"X-GXR-Look": look["kind"], "X-GXR-Label": quote(look["label"])})
         if look["prediction"]:
@@ -376,12 +383,20 @@ def photo_preview(shot_id: str, request: Request):
 @router.post("/api/library/rebuild")
 def rebuild_index(request: Request, verify: bool = False):
     c = ctx(request)
+    if not flag_enabled(c.settings, "library_rebuild"):
+        raise ApiError(403, "feature_disabled", "重建索引已关闭")
     if c.jobs.active("import"):
         raise ApiError(409, "import_running", "导入进行中，稍后再重建索引")
     rep = c.lib.rebuild(verify=verify)
-    return {"shots": rep.shots, "duplicates": rep.duplicates, "hashed": rep.hashed,
-            "mismatches": rep.mismatches, "seen_restored": rep.seen_restored,
-            "sidecars_created": rep.sidecars_created, "corrupt_backups": rep.corrupt_backups}
+    return {
+        "shots": rep.shots,
+        "duplicates": rep.duplicates,
+        "hashed": rep.hashed,
+        "mismatches": rep.mismatches,
+        "seen_restored": rep.seen_restored,
+        "sidecars_created": rep.sidecars_created,
+        "corrupt_backups": rep.corrupt_backups,
+    }
 
 
 # ---- 裁切 -------------------------------------------------------------------
@@ -448,7 +463,7 @@ def export_photo(shot_id: str, body: ExportRequest, request: Request):
 @router.post("/api/export", status_code=202)
 def export_batch(body: BatchExportRequest, request: Request):
     c = ctx(request)
-    missing: list[str] = []     # 勾选之后照片 id 变了/被删了：这几张记为没导出，其余照常导
+    missing: list[str] = []  # 勾选之后照片 id 变了/被删了：这几张记为没导出，其余照常导
     if body.ids is not None:
         shots = []
         for i in dict.fromkeys(body.ids):
@@ -466,8 +481,11 @@ def export_batch(body: BatchExportRequest, request: Request):
         def __init__(self):
             self.state, self.total, self.done = "running", len(shots) + len(missing), len(missing)
             self.results: list[dict] = [
-                {"id": i, "error": "photo_not_found",
-                 "message": "这张照片已经不在图库里了（可能刚补全了另一半、id 变了，或被删掉），没有导出；请刷新后重新选一下"}
+                {
+                    "id": i,
+                    "error": "photo_not_found",
+                    "message": "这张照片已经不在图库里了（可能刚补全了另一半、id 变了，或被删掉），没有导出；请刷新后重新选一下",
+                }
                 for i in missing
             ]
             self._lock = threading.Lock()
@@ -488,8 +506,12 @@ def export_batch(body: BatchExportRequest, request: Request):
             except ApiError as exc:
                 item = {"id": shot["shot_id"], "error": exc.code, "message": exc.message}
             except Exception as exc:  # 一张坏了不要拖垮整批；提示用白话，异常原文（可能带路径）不给界面
-                item = {"id": shot["shot_id"], "error": "failed", "code": type(exc).__name__,
-                        "message": f"这张没导出成功，其余的不受影响（错误代码：{type(exc).__name__}）。照片本身没有被改动。"}
+                item = {
+                    "id": shot["shot_id"],
+                    "error": "failed",
+                    "code": type(exc).__name__,
+                    "message": f"这张没导出成功，其余的不受影响（错误代码：{type(exc).__name__}）。照片本身没有被改动。",
+                }
             with progress._lock:
                 progress.results.append(item)
                 progress.done += 1

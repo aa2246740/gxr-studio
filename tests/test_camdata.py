@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 import e0_support as t
-from gxr_studio.camdata import calib, datcodec as dc, store
+from gxr_studio.camdata import calib, store
+from gxr_studio.camdata import datcodec as dc
 
 GENS = (127, 129, 131, 135)
 
@@ -26,7 +26,7 @@ def need(gen):
 
 @pytest.fixture
 def home(tmp_path):
-    h = tmp_path / "appdata"      # conftest 已经在 tmp_path 下建了 home/，这里另用一个干净目录
+    h = tmp_path / "appdata"  # conftest 已经在 tmp_path 下建了 home/，这里另用一个干净目录
     h.mkdir()
     return h
 
@@ -91,12 +91,13 @@ def test_reimport_replaces_and_a_bad_dat_leaves_the_old_data(home):
     assert {n: (home / "camera-data" / n).read_bytes() for n in tree(home / "camera-data")} == before
     store.import_from_dat(need(135), home)
     assert store.read_manifest(home)["generation"] == 135
-    assert sorted(p.name for p in home.iterdir()) == ["camera-data"]      # 没有 .new / .old 残留
+    assert sorted(p.name for p in home.iterdir()) == ["camera-data"]  # 没有 .new / .old 残留
     store.verify(home)
 
 
 def test_unregistered_generation_is_not_imported(home):
-    import struct, zlib
+    import struct
+    import zlib
 
     b = bytearray(need(127))
     struct.pack_into(">I", b, 28, 130)
@@ -109,6 +110,7 @@ def test_unregistered_generation_is_not_imported(home):
 
 
 # ----------------------------------------------------------------------------- 标定包
+
 
 @pytest.fixture(scope="module")
 def sources():
@@ -124,7 +126,7 @@ def test_calibration_pack_has_no_stock_and_rebuilds_s_eff_bit_for_bit(home, sour
     assert sorted(m["files"]) == ["ctx_1600.npz", "ctx_200.npz", "ring_model_1600.json", "ring_model_200.json"]
     for iso in (200, 1600):
         with np.load(home / "calib" / f"ctx_{iso}.npz", allow_pickle=False) as z:
-            assert sorted(z.files) == ["d0", "d1"]          # 没有 stock，也没有 S_eff
+            assert sorted(z.files) == ["d0", "d1"]  # 没有 stock，也没有 S_eff
         with np.load(sources[iso][0], allow_pickle=False) as z:
             model, info = calib.model_for(home, iso)
             assert info == {"iso": iso, "calibrated": True, "model_iso": iso}
@@ -164,6 +166,7 @@ def test_calibration_tampering_is_detected(home, sources):
 
 # ----------------------------------------------------------------------------- 理光字节不进仓库
 
+
 def ricoh_row_needles():
     needles = {}
     for gen in GENS:
@@ -175,8 +178,8 @@ def ricoh_row_needles():
             for slot in range(1, 9):
                 e = dat.entry_of(unit, slot)
                 for off, size in zip(dc.OFFSETS, dc.ROW_BYTES):
-                    row = bytes(e[off:off + size])
-                    if len(set(row)) > 3:           # 全 0 / 全相同的行没有区分度
+                    row = bytes(e[off : off + size])
+                    if len(set(row)) > 3:  # 全 0 / 全相同的行没有区分度
                         needles[row] = f"{gen}/{unit}/{slot}@{off}"
     return needles
 
@@ -214,8 +217,14 @@ def test_no_ricoh_rows_in_repo_source_or_tests():
     needles = ricoh_row_needles()
     if not needles:
         pytest.skip("没有夹具 DAT")
-    roots = [t.REPO / "studio/src", t.REPO / "studio/tests", t.REPO / "studio/web", t.REPO / "research/studio_engine_e0",
-             t.REPO / "research/studio_design", t.REPO / "research/studio_m1"]
+    roots = [
+        t.REPO / "studio/src",
+        t.REPO / "studio/tests",
+        t.REPO / "studio/web",
+        t.REPO / "research/studio_engine_e0",
+        t.REPO / "research/studio_design",
+        t.REPO / "research/studio_m1",
+    ]
     scanned, hits = find_rows(roots, needles)
     assert scanned > 30 and hits == []
 

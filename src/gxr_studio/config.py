@@ -56,9 +56,7 @@ class Settings:
             library_dir=Path(os.environ.get("GXR_STUDIO_LIBRARY") or pics / "GXR Studio"),
             home_dir=default_home(),
             export_dir=Path(os.environ.get("GXR_STUDIO_EXPORT") or pics / "GXR 导出"),
-            volumes_roots=tuple(Path(p) for p in volumes.split(os.pathsep) if p)
-            if volumes is not None
-            else default_volumes_roots(),
+            volumes_roots=tuple(Path(p) for p in volumes.split(os.pathsep) if p) if volumes is not None else default_volumes_roots(),
             token=os.environ.get("GXR_STUDIO_TOKEN") or secrets.token_urlsafe(32),
             web_dir=Path(__file__).resolve().parents[2] / "web",
         )

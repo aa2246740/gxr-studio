@@ -22,6 +22,15 @@ dependencies = [
 dev = [
     "pytest==9.1.1",
     "httpx==0.28.1",
+    "ruff==0.17.3",
+    "mypy==2.4.1",
+    "pytest-cov==7.1.0",
+    "deptry==0.25.1",
+    "vulture==2.16",
+    "import-linter==2.15",
+    "bandit==1.9.4",
+    "pylint==4.1.3",
+    "pytest-rerunfailures==16.7",
 ]
 
 [project.scripts]
@@ -36,4 +45,97 @@ packages = ["src/gxr_studio"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
 addopts = "-ra -p no:cacheprovider"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 144
+src = ["src", "tests", "scripts"]
+extend-exclude = [
+    "src/gxr_studio/engine",
+    "src/gxr_studio/lut/spaces.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "C90"]
+# N818 会要求改掉 NoSpace、CardRemoved 这些已经在调用和测试里用着的异常名。
+ignore = ["N818"]
+
+[tool.ruff.lint.per-file-ignores]
+# 这些文件里的大写变量是色度公式和矩阵的记号（L、C、T），不是常量。
+"src/gxr_studio/engine/*.py" = ["N802", "N803", "N806"]
+"src/gxr_studio/lut/colorimetry.py" = ["N806"]
+"src/gxr_studio/lut/fit.py" = ["N806"]
+"src/gxr_studio/raw/dng.py" = ["N806"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["gxr_studio"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+pretty = true
+
+[tool.importlinter]
+root_packages = ["gxr_studio"]
+
+[[tool.importlinter.contracts]]
+name = "Runtime packages do not import devtools"
+type = "forbidden"
+source_modules = [
+    "gxr_studio.api",
+    "gxr_studio.app",
+    "gxr_studio.cli",
+    "gxr_studio.library",
+    "gxr_studio.raw",
+    "gxr_studio.engine",
+    "gxr_studio.camdata",
+    "gxr_studio.cards",
+    "gxr_studio.render",
+    "gxr_studio.lut",
+]
+forbidden_modules = ["gxr_studio.devtools"]
+
+[[tool.importlinter.contracts]]
+name = "Image and metadata code does not import the HTTP layer"
+type = "forbidden"
+source_modules = [
+    "gxr_studio.raw",
+    "gxr_studio.engine",
+    "gxr_studio.crop",
+    "gxr_studio.meta",
+]
+forbidden_modules = ["gxr_studio.api", "gxr_studio.app", "gxr_studio.cli"]
+
+[tool.vulture]
+min_confidence = 80
+paths = ["src/gxr_studio"]
+ignore_names = ["ctx", "model_config", "Wg"]
+
+[tool.pylint.main]
+ignore-paths = ["tests"]
+
+[tool.pylint.similarities]
+min-similarity-lines = 16
+ignore-comments = true
+ignore-docstrings = true
+ignore-imports = true
+
+[tool.coverage.run]
+source = ["gxr_studio"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = false
+
+[tool.deptry.package_module_name_map]
+Pillow = "PIL"
+
+[tool.deptry.per_rule_ignores]
+# 这些是 FastAPI / uvicorn / pydantic 实际会加载的库。写在直接依赖里是为了把版本钉死，源码不写 import 名字。
+DEP002 = ["pydantic-core", "anyio", "h11", "click", "typing-extensions"]

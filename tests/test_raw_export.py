@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from conftest import PORT
 from gxr_studio.app import create_app
 from gxr_studio.crop import Crop, default_crop
 from gxr_studio.export import (
@@ -23,8 +24,6 @@ from gxr_studio.export import (
 )
 from gxr_studio.library.store import sha256_file
 from gxr_studio.raw import NEUTRAL, Renderer, open_dng, render_full
-
-from conftest import PORT
 from raw_support import bayer_scene, build_dng
 from test_api import find, import_all
 
@@ -97,8 +96,11 @@ def test_size_and_quality_tiers(lib, raw_only):
     q_hi = export_shot(lib, shot, None, out, ExportOptions(None, 95), [])
     q_lo = export_shot(lib, shot, None, out, ExportOptions(None, 30), [])
     assert q_lo.bytes < q_hi.bytes
-    for bad, code in ((ExportOptions(None, 0), "bad_quality"), (ExportOptions(5, 90), "bad_size"),
-                      (ExportOptions(None, 90, "gif"), "bad_format")):
+    for bad, code in (
+        (ExportOptions(None, 0), "bad_quality"),
+        (ExportOptions(5, 90), "bad_size"),
+        (ExportOptions(None, 90, "gif"), "bad_format"),
+    ):
         with pytest.raises(ExportError) as e:
             bad.validate()
         assert e.value.code == code
@@ -191,7 +193,10 @@ def wait_job(client, job):
 
 
 def test_api_raw_only_exports_instead_of_409(client, card, settings):
-    for stem, hour in (("R0000109", 10), ("R0000110", 11)):  # 假卡里只有 DNG 的两张：换成真的带 CFA 的 DNG（内容要不同，否则会被去重）
+    for stem, hour in (
+        ("R0000109", 10),
+        ("R0000110", 11),
+    ):  # 假卡里只有 DNG 的两张：换成真的带 CFA 的 DNG（内容要不同，否则会被去重）
         (card.root / "DCIM" / "100RICOH" / f"{stem}.DNG").write_bytes(scene_dng(when=f"2026:10:19 {hour}:00:00"))
     import_all(client)
     p = find(client, "R0000109", "2026-10-19")
@@ -236,8 +241,14 @@ def test_real_raw_only_xpan_export_jpeg_and_png(lib, tmp_path):
     im = Image.open(res.path)
     assert im.size == (4288, 1583) and im.info.get("icc_profile")
     assert im.getexif().get_ifd(0x8769)[34855] == 400
-    png = export_shot(lib, shot, default_crop("3:2", 4288, 2848, angle_deg=3.0), tmp_path / "o",
-                      ExportOptions.from_tiers("medium", fmt="png"), [])
+    png = export_shot(
+        lib,
+        shot,
+        default_crop("3:2", 4288, 2848, angle_deg=3.0),
+        tmp_path / "o",
+        ExportOptions.from_tiers("medium", fmt="png"),
+        [],
+    )
     assert max(png.width, png.height) == 2048 and Image.open(png.path).format == "PNG"
     # 粗检：中性转换不黑不白，且比相机 JPG 暗（相机 JPG 烤进了色调曲线，中性转换没有；实测约 114 对 162）
     cam = Image.open(SAMPLE_DIR / "R8051144.JPG").convert("L").resize((200, 133))

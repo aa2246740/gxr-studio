@@ -10,8 +10,15 @@ import struct
 import numpy as np
 
 # TIFF 类型 -> (代码, 单个字节数)
-_T = {"BYTE": (1, 1), "ASCII": (2, 1), "SHORT": (3, 2), "LONG": (4, 4), "RATIONAL": (5, 8), "UNDEFINED": (7, 1),
-      "SRATIONAL": (10, 8)}
+_T = {
+    "BYTE": (1, 1),
+    "ASCII": (2, 1),
+    "SHORT": (3, 2),
+    "LONG": (4, 4),
+    "RATIONAL": (5, 8),
+    "UNDEFINED": (7, 1),
+    "SRATIONAL": (10, 8),
+}
 
 
 def _pack_values(kind: str, values) -> bytes:
@@ -68,7 +75,7 @@ class _Buf:
                 extra += payload
             rows += struct.pack(">HHI", tag, code, count) + field
         rows += b"\0\0\0\0"
-        self.b[off:off + size] = rows
+        self.b[off : off + size] = rows
         self.b += extra
         return off
 
@@ -118,13 +125,24 @@ def build_dng(
     active = active or (0, 0, h, w)
     crop_size = crop_size or (active[3] - active[1] - crop_origin[0], active[2] - active[0] - crop_origin[1])
     raw = [
-        (254, "LONG", [0]), (256, "LONG", [w]), (257, "LONG", [h]), (258, "SHORT", [bps]),
-        (259, "SHORT", [compression]), (262, "SHORT", [32803]), (273, "LONG", [strip]), (277, "SHORT", [1]),
-        (278, "LONG", [h]), (279, "LONG", [strip_len]), (33421, "SHORT", [2, 2]),
+        (254, "LONG", [0]),
+        (256, "LONG", [w]),
+        (257, "LONG", [h]),
+        (258, "SHORT", [bps]),
+        (259, "SHORT", [compression]),
+        (262, "SHORT", [32803]),
+        (273, "LONG", [strip]),
+        (277, "SHORT", [1]),
+        (278, "LONG", [h]),
+        (279, "LONG", [strip_len]),
+        (33421, "SHORT", [2, 2]),
         (33422, "BYTE", [v for row in cfa for v in row]),
-        (50713, "SHORT", list(black_repeat)), (50714, "SHORT", list(black)),
+        (50713, "SHORT", list(black_repeat)),
+        (50714, "SHORT", list(black)),
         (50717, "LONG", [white if white is not None else (1 << bps) - 1]),
-        (50719, "LONG", list(crop_origin)), (50720, "LONG", list(crop_size)), (50829, "LONG", list(active)),
+        (50719, "LONG", list(crop_origin)),
+        (50720, "LONG", list(crop_size)),
+        (50829, "LONG", list(active)),
     ]
     if black_delta_h is not None:
         raw.append((50715, "RATIONAL", list(black_delta_h)))
@@ -133,16 +151,34 @@ def build_dng(
     if linearization is not None:
         raw.append((50712, "SHORT", list(linearization)))
     sub = buf.ifd(raw)
-    exif = buf.ifd([
-        (33434, "RATIONAL", [0.01]), (33437, "RATIONAL", [2.5]), (34855, "SHORT", [iso]),
-        (36867, "ASCII", when), (36868, "ASCII", when), (37500, "UNDEFINED", b"Ricoh\0\0\0" + bytes(range(40))),
-    ])
+    exif = buf.ifd(
+        [
+            (33434, "RATIONAL", [0.01]),
+            (33437, "RATIONAL", [2.5]),
+            (34855, "SHORT", [iso]),
+            (36867, "ASCII", when),
+            (36868, "ASCII", when),
+            (37500, "UNDEFINED", b"Ricoh\0\0\0" + bytes(range(40))),
+        ]
+    )
     thumb = buf.blob(bytes(8 * 8 * 3))
     ifd0 = [
-        (256, "SHORT", [8]), (257, "SHORT", [8]), (258, "SHORT", [8, 8, 8]), (259, "SHORT", [1]),
-        (262, "SHORT", [2]), (271, "ASCII", "RICOH"), (272, "ASCII", "GXR A12"), (273, "LONG", [thumb]),
-        (274, "SHORT", [orientation]), (277, "SHORT", [3]), (278, "SHORT", [8]), (279, "LONG", [192]),
-        (306, "ASCII", when), (330, "LONG", [sub]), (34665, "LONG", [exif]), (50708, "ASCII", lens),
+        (256, "SHORT", [8]),
+        (257, "SHORT", [8]),
+        (258, "SHORT", [8, 8, 8]),
+        (259, "SHORT", [1]),
+        (262, "SHORT", [2]),
+        (271, "ASCII", "RICOH"),
+        (272, "ASCII", "GXR A12"),
+        (273, "LONG", [thumb]),
+        (274, "SHORT", [orientation]),
+        (277, "SHORT", [3]),
+        (278, "SHORT", [8]),
+        (279, "LONG", [192]),
+        (306, "ASCII", when),
+        (330, "LONG", [sub]),
+        (34665, "LONG", [exif]),
+        (50708, "ASCII", lens),
         (50730, "SRATIONAL", [0.3]),
     ]
     if with_neutral:
@@ -152,8 +188,7 @@ def build_dng(
     return bytes(buf.b)
 
 
-def bayer_scene(h: int, w: int, rgb_linear, *, cfa=((0, 1), (1, 2)), white: int = 4095, black: int = 0,
-                origin=(0, 0)) -> np.ndarray:
+def bayer_scene(h: int, w: int, rgb_linear, *, cfa=((0, 1), (1, 2)), white: int = 4095, black: int = 0, origin=(0, 0)) -> np.ndarray:
     """给定每个像素的 (h, w, 3) 线性 RGB（0..1），按 CFA 取样成马赛克 uint16。"""
     yy, xx = np.indices((h, w))
     c = np.array(cfa)[(yy + origin[1]) % 2, (xx + origin[0]) % 2]

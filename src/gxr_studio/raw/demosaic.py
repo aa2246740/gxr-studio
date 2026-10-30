@@ -22,11 +22,13 @@ from .dng import Dng, RawDecodeError
 PAD = 2
 
 _K_G = np.array([[0, 0, -1, 0, 0], [0, 0, 2, 0, 0], [-1, 2, 4, 2, -1], [0, 0, 2, 0, 0], [0, 0, -1, 0, 0]], np.float32) / 8
-_K_H = np.array([[0, 0, .5, 0, 0], [0, -1, 0, -1, 0], [-1, 4, 5, 4, -1], [0, -1, 0, -1, 0], [0, 0, .5, 0, 0]],
-                np.float32) / 8   # 在 G 位置补"左右邻居那种颜色"
-_K_V = _K_H.T.copy()              # 在 G 位置补"上下邻居那种颜色"
-_K_X = np.array([[0, 0, -1.5, 0, 0], [0, 2, 0, 2, 0], [-1.5, 0, 6, 0, -1.5], [0, 2, 0, 2, 0], [0, 0, -1.5, 0, 0]],
-                np.float32) / 8   # 在 R 位置补 B、在 B 位置补 R
+_K_H = (
+    np.array([[0, 0, 0.5, 0, 0], [0, -1, 0, -1, 0], [-1, 4, 5, 4, -1], [0, -1, 0, -1, 0], [0, 0, 0.5, 0, 0]], np.float32) / 8
+)  # 在 G 位置补"左右邻居那种颜色"
+_K_V = _K_H.T.copy()  # 在 G 位置补"上下邻居那种颜色"
+_K_X = (
+    np.array([[0, 0, -1.5, 0, 0], [0, 2, 0, 2, 0], [-1.5, 0, 6, 0, -1.5], [0, 2, 0, 2, 0], [0, 0, -1.5, 0, 0]], np.float32) / 8
+)  # 在 R 位置补 B、在 B 位置补 R
 
 
 def demosaic_block(padded: np.ndarray, phase: np.ndarray) -> np.ndarray:
@@ -38,13 +40,13 @@ def demosaic_block(padded: np.ndarray, phase: np.ndarray) -> np.ndarray:
     h, w = ph - 2 * PAD, pw - 2 * PAD
     tile = np.tile(np.asarray(phase), (h // 2 + 1, w // 2 + 1))[:h, :w]
     right = np.tile(np.asarray(phase)[:, ::-1], (h // 2 + 1, w // 2 + 1))[:h, :w]  # 每个位置右邻的颜色
-    m = padded[PAD:PAD + h, PAD:PAD + w]
-    g_rb = correlate(padded, _K_G, mode="constant")[PAD:PAD + h, PAD:PAD + w]
-    k_h = correlate(padded, _K_H, mode="constant")[PAD:PAD + h, PAD:PAD + w]
-    k_v = correlate(padded, _K_V, mode="constant")[PAD:PAD + h, PAD:PAD + w]
-    k_x = correlate(padded, _K_X, mode="constant")[PAD:PAD + h, PAD:PAD + w]
+    m = padded[PAD : PAD + h, PAD : PAD + w]
+    g_rb = correlate(padded, _K_G, mode="constant")[PAD : PAD + h, PAD : PAD + w]
+    k_h = correlate(padded, _K_H, mode="constant")[PAD : PAD + h, PAD : PAD + w]
+    k_v = correlate(padded, _K_V, mode="constant")[PAD : PAD + h, PAD : PAD + w]
+    k_x = correlate(padded, _K_X, mode="constant")[PAD : PAD + h, PAD : PAD + w]
     is_r, is_g, is_b = tile == 0, tile == 1, tile == 2
-    rg = is_g & (right == 0)   # 左右邻居是 R 的绿点
+    rg = is_g & (right == 0)  # 左右邻居是 R 的绿点
     out = np.empty((h, w, 3), np.float32)
     out[..., 0] = np.where(is_r, m, np.where(is_b, k_x, np.where(rg, k_h, k_v)))
     out[..., 1] = np.where(is_g, m, g_rb)
@@ -69,7 +71,7 @@ def demosaic_strips(dng: Dng, rows: int = STRIP_ROWS) -> Iterator[tuple[int, np.
         lo, hi = max(0, y0 - PAD), min(h, y1 + PAD)
         block = wb_mosaic_block(dng, lo, hi)
         padded = _reflect_pad(block, PAD - (y0 - lo), PAD - (hi - y1))
-        yield y0, demosaic_block(padded, phase)   # y0 是偶数，条带起点的相位等于整幅的相位
+        yield y0, demosaic_block(padded, phase)  # y0 是偶数，条带起点的相位等于整幅的相位
 
 
 def demosaic_full(dng: Dng) -> np.ndarray:
@@ -77,5 +79,5 @@ def demosaic_full(dng: Dng) -> np.ndarray:
     h, w = crop_shape(dng)
     out = np.empty((h, w, 3), np.float32)
     for y0, strip in demosaic_strips(dng):
-        out[y0:y0 + strip.shape[0]] = strip
+        out[y0 : y0 + strip.shape[0]] = strip
     return out

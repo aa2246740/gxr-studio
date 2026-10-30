@@ -19,7 +19,7 @@ SCOPE = {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop"]}
 
 def read(lib: Library, shot: dict) -> tuple[EditState, dict]:
     with lib.lock:
-        side, _ = lib.read_sidecar_or_default(shot)   # 编辑记录坏了/不见了就当没有编辑
+        side, _ = lib.read_sidecar_or_default(shot)  # 编辑记录坏了/不见了就当没有编辑
     return parse_edit(side), side
 
 
@@ -42,10 +42,13 @@ def _memory(raw) -> dict:
         raise EditError("bad_recipe", "memory 要是对象")
     out = {}
     for key, levels in raw.items():
-        if not isinstance(key, str) or "/" not in key or not isinstance(levels, dict) or any(
-            not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, int) for k, v in levels.items()
+        if (
+            not isinstance(key, str)
+            or "/" not in key
+            or not isinstance(levels, dict)
+            or any(not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, int) for k, v in levels.items())
         ):
-            raise EditError("bad_recipe", "memory 要是 {\"单元/槽位\": {旋钮: 档位}}")
+            raise EditError("bad_recipe", 'memory 要是 {"单元/槽位": {旋钮: 档位}}')
         out[key] = dict(levels)
     return out
 
@@ -68,7 +71,7 @@ def write(lib: Library, shot: dict, changes: dict, menu: Menu, *, expected_rev: 
                 photo_unit = unit_of_lens(shot.get("lens"))
                 if photo_unit is not None and sel.unit != photo_unit:
                     raise EditError("unit_mismatch", f"这张照片是 {photo_unit} 单元拍的，只能用同一个单元的配方")
-                menu.request_for(sel)          # 档位不合法（含到顶标记）就拒绝，不钳位
+                menu.request_for(sel)  # 档位不合法（含到顶标记）就拒绝，不钳位
                 memory = _memory(raw.get("memory")) if "memory" in raw else (side.get("recipe") or {}).get("memory") or {}
                 new["recipe"] = {**sel.to_json(), **({"memory": memory} if memory else {})}
         if "adjust" in changes:

@@ -19,9 +19,9 @@ def test_command_file_is_double_clickable():
     assert text.startswith("#!/bin/bash\n")
     assert os.access(COMMAND, os.X_OK), "双击要能执行：chmod +x"
     assert subprocess.run(["bash", "-n", str(COMMAND)], capture_output=True).returncode == 0
-    assert text.index("uv sync --frozen") < text.index("uv run --frozen gxr-studio")       # 先装依赖，再启动
-    assert 'cd "$(dirname "$0")"' in text                                   # 从任意位置双击都在 studio/ 里干活
-    assert '"$@"' in text                                                   # 终端里可以加 --no-browser 等参数
+    assert text.index("uv sync --frozen") < text.index("uv run --frozen gxr-studio")  # 先装依赖，再启动
+    assert 'cd "$(dirname "$0")"' in text  # 从任意位置双击都在 studio/ 里干活
+    assert '"$@"' in text  # 终端里可以加 --no-browser 等参数
 
 
 def test_readme_starts_with_three_steps():

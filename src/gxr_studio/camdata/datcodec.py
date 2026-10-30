@@ -24,8 +24,17 @@ OFFSETS = (20, 82, 115, 216, 284, 346, 379, 412, 456, 518)
 ROW_BYTES = (62, 33, 96, 56, 62, 33, 33, 33, 62, 33)
 POOL_LENGTHS = (62, 33, 96, 56)
 POOL_LIMITS = (144, 240, 48, 48)
-CRC_FIELDS = ((20, 62, 8), (82, 33, 12), (115, 96, 16), (216, 56, 212), (284, 62, 272),
-              (346, 33, 276), (379, 66, 280), (456, 62, 448), (518, 33, 452))
+CRC_FIELDS = (
+    (20, 62, 8),
+    (82, 33, 12),
+    (115, 96, 16),
+    (216, 56, 212),
+    (284, 62, 272),
+    (346, 33, 276),
+    (379, 66, 280),
+    (456, 62, 448),
+    (518, 33, 452),
+)
 PIN_CRC32 = (0xF09FE7B4, 0xFB3FBCB2, 0x95F3DCA9)
 STOCK_ENTRY_CRC = (0x0D2B0EA9, 0x341DDBEE, 0x4686301B)  # pack_v1.MODULES[*].stock_crc，对 entry[:448]
 ILAUNCH3_SHA256 = "da1980e9d6f3996ede4953b8311cf0ce2abeb4bb300b6ee60a38f38e29a3cdf7"
@@ -84,7 +93,7 @@ def u32(b, at):
 
 def _zero_crc(b, at):
     q = bytearray(b)
-    q[at:at + 4] = bytes(4)
+    q[at : at + 4] = bytes(4)
     return crc(q)
 
 
@@ -99,12 +108,12 @@ def identity(record: bytes) -> bytes:
 @dataclass
 class Module:
     name: str
-    map: bytes                # 152 B
-    records: list             # 16 × 64 B
-    entries: dict             # 描述符所有者槽位 → 552 B 深层条目
-    refs: list                # 16 个槽位各自指向的所有者槽位
-    ranges: list              # 16 × 8 × (lo, hi, default)
-    pin: bytes                # 32 B，前 4 字节 = crc_pin
+    map: bytes  # 152 B
+    records: list  # 16 × 64 B
+    entries: dict  # 描述符所有者槽位 → 552 B 深层条目
+    refs: list  # 16 个槽位各自指向的所有者槽位
+    ranges: list  # 16 × 8 × (lo, hi, default)
+    pin: bytes  # 32 B，前 4 字节 = crc_pin
     crc_pin: int
 
 
@@ -117,11 +126,11 @@ class Dat:
     resident_id: bytes
     abi_id: bytes
     engine: bytes
-    relocations: list         # [(patch, target)]
+    relocations: list  # [(patch, target)]
     modules: list
-    ids: tuple                # 8 个参数 ID
-    ext_config: bytes         # GXUI 配置表 24×48 B
-    users: list               # [{'base': int, 'levels': [11 ints]}]
+    ids: tuple  # 8 个参数 ID
+    ext_config: bytes  # GXUI 配置表 24×48 B
+    users: list  # [{'base': int, 'levels': [11 ints]}]
     kv2_block: bytes | None
 
     def entry_of(self, unit: int, slot: int) -> bytes:
@@ -132,13 +141,14 @@ class Dat:
 
 # --------------------------------------------------------------------------- 解析
 
+
 def peek_generation(raw: bytes) -> int:
     if len(raw) < HEADER or raw[:8] != b"GXRCE001":
         raise DatError("不是 GXRCE.DAT")
     return u32(raw, 28)
 
 
-def parse(raw: bytes) -> Dat:
+def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开会把已经对过的字节路径拆散
     g = peek_generation(raw)
     prof = PROFILES.get(g)
     if prof is None:
@@ -173,20 +183,25 @@ def parse(raw: bytes) -> Dat:
     relocations, previous = [], 0
     for i in range(nreloc):
         patch, target = struct.unpack_from(">II", raw, sections[1][0] + 8 * i)
-        if (patch <= previous or patch % 4 or not 256 <= patch <= 256 + engine_len - 4
-                or not 256 <= target < len(raw) + bss or u32(raw, patch) != target):
+        if (
+            patch <= previous
+            or patch % 4
+            or not 256 <= patch <= 256 + engine_len - 4
+            or not 256 <= target < len(raw) + bss
+            or u32(raw, patch) != target
+        ):
             raise DatError("重定位或映像绑定不合格")
         relocations.append((patch, target))
         previous = patch
 
     meta_at, meta_len = sections[6]
-    tail = raw[meta_at:meta_at + meta_len]
+    tail = raw[meta_at : meta_at + meta_len]
     want_tail = LEGACY_BYTES + EXT_BYTES + (KV2_BLOCK_BYTES if prof.kv2_block else 0)
     if len(tail) != want_tail:
         raise DatError("区段 7 长度不合格")
     legacy = tail[:LEGACY_BYTES]
-    ext = tail[LEGACY_BYTES:LEGACY_BYTES + EXT_BYTES]
-    kv2 = tail[LEGACY_BYTES + EXT_BYTES:] if prof.kv2_block else None
+    ext = tail[LEGACY_BYTES : LEGACY_BYTES + EXT_BYTES]
+    kv2 = tail[LEGACY_BYTES + EXT_BYTES :] if prof.kv2_block else None
     if kv2 is not None and hashlib.sha256(kv2).hexdigest() != KV2_BLOCK_SHA256:
         raise DatError("gxkv2r2 块与已登记的不同")
     if legacy[:32] != struct.pack(">4s6H4I", b"GXTM", 2, 32, 8, 3, 16, 28, 32, 64, 1344, 0):
@@ -194,23 +209,31 @@ def parse(raw: bytes) -> Dat:
     ids = tuple(u32(legacy, 32 + 4 * i) for i in range(8))
     if ids != (1, 2, 3, 4, 5, 6, 0, 0):
         raise DatError("参数 ID 不合格")
-    if (ext[:8] != GXUI_MAGIC or u16(ext, 8) != 1 or u16(ext, 10) != 64 or u32(ext, 12) != EXT_BYTES
-            or u32(ext, 16) != _zero_crc(ext, 16) or u16(ext, 24) > USER_CAPACITY
-            or ext[20:24] != struct.pack(">HH", 24, CONFIG_BYTES)
-            or ext[26:32] != struct.pack(">HHH", USER_ENTRY_BYTES, 11, USER_CAPACITY)
-            or u32(ext, 32) != 64 or u32(ext, 36) != USER_OFFSET or any(ext[52:64])):
+    if (
+        ext[:8] != GXUI_MAGIC
+        or u16(ext, 8) != 1
+        or u16(ext, 10) != 64
+        or u32(ext, 12) != EXT_BYTES
+        or u32(ext, 16) != _zero_crc(ext, 16)
+        or u16(ext, 24) > USER_CAPACITY
+        or ext[20:24] != struct.pack(">HH", 24, CONFIG_BYTES)
+        or ext[26:32] != struct.pack(">HHH", USER_ENTRY_BYTES, 11, USER_CAPACITY)
+        or u32(ext, 32) != 64
+        or u32(ext, 36) != USER_OFFSET
+        or any(ext[52:64])
+    ):
         raise DatError("GXUI 头不合格")
 
     # 行池
     shared, pool_bytes = sections[5]
-    if raw[shared:shared + 4] != b"GXDP" or u32(raw, shared + 8) != pool_bytes:
+    if raw[shared : shared + 4] != b"GXDP" or u32(raw, shared + 8) != pool_bytes:
         raise DatError("行池头不合格")
     pools = []
     for k in range(4):
         count, size, offset, checksum = struct.unpack_from(">HHII", raw, shared + 16 + 12 * k)
         if not 1 <= count <= POOL_LIMITS[k] or size != POOL_LENGTHS[k] or offset + count * size > pool_bytes:
             raise DatError("行池边界不合格")
-        body = raw[shared + offset:shared + offset + count * size]
+        body = raw[shared + offset : shared + offset + count * size]
         if crc(body) != checksum:
             raise DatError("行池 CRC 对不上")
         pools.append((count, size, shared + offset))
@@ -219,33 +242,37 @@ def parse(raw: bytes) -> Dat:
     modules = []
     for mi, name in enumerate(NAMES):
         d = directory + 64 * mi
-        if raw[d:d + 8] != name.encode() + bytes(8 - len(name)) or u16(raw, d + 8) != 0x151 or u16(raw, d + 10) != 0:
+        if raw[d : d + 8] != name.encode() + bytes(8 - len(name)) or u16(raw, d + 8) != 0x151 or u16(raw, d + 10) != 0:
             raise DatError("目录项名字或版本不合格")
-        map_at, bank_at, table, meta_ranges = (u32(raw, d + 12), u32(raw, d + 16),
-                                               u32(raw, d + 20), u32(raw, d + 24))
+        map_at, bank_at, table, meta_ranges = (u32(raw, d + 12), u32(raw, d + 16), u32(raw, d + 20), u32(raw, d + 24))
         count = raw[d + 30]
         if map_at != sections[3][0] + 152 * mi or bank_at != sections[4][0] + 1056 * mi:
             raise DatError("映射或配方库地址不合格")
-        header = raw[bank_at:bank_at + 32]
-        bank = raw[bank_at + 32:bank_at + 32 + 1024]
-        if (header[:8] != b"GXRRV201" or u32(header, 16) != prof.generation or u32(header, 20) != 1024
-                or u32(header, 24) != crc(bank) or u32(header, 28) != crc(header[:28])
-                or header[8:16] != b"\0\2\0 \0@\0\x10"):
+        header = raw[bank_at : bank_at + 32]
+        bank = raw[bank_at + 32 : bank_at + 32 + 1024]
+        if (
+            header[:8] != b"GXRRV201"
+            or u32(header, 16) != prof.generation
+            or u32(header, 20) != 1024
+            or u32(header, 24) != crc(bank)
+            or u32(header, 28) != crc(header[:28])
+            or header[8:16] != b"\0\2\0 \0@\0\x10"
+        ):
             raise DatError("配方库头、CRC 或代数不合格")
         if meta_ranges != meta_at + 64 + 16 * 28 * mi:
             raise DatError("范围目录不合格")
         if not 1 <= count <= 16 or not shared <= table <= shared + pool_bytes - 16 - 20 * count:
             raise DatError("描述符表边界不合格")
-        if raw[table:table + 6] != b"GXDT\x06" + bytes([count]) or u32(raw, table + 12) != crc(raw[table + 16:table + 16 + 20 * count]):
+        if raw[table : table + 6] != b"GXDT\x06" + bytes([count]) or u32(raw, table + 12) != crc(raw[table + 16 : table + 16 + 20 * count]):
             raise DatError("描述符表 CRC 不合格")
         if u16(raw, d + 28) != 16 + 20 * count or raw[d + 31] != 0:
             raise DatError("描述符表长度不合格")
-        records = [bank[64 * i:64 * (i + 1)] for i in range(16)]
+        records = [bank[64 * i : 64 * (i + 1)] for i in range(16)]
         for slot, rec in enumerate(records, 1):
             if rec[0] != slot or u32(rec, 60) != crc(rec[:60]):
                 raise DatError("配方记录 CRC 不合格")
         entries, owners = {}, []
-        descriptors = [raw[table + 16 + 20 * i:table + 36 + 20 * i] for i in range(count)]
+        descriptors = [raw[table + 16 + 20 * i : table + 36 + 20 * i] for i in range(count)]
         for desc in descriptors:
             slot = desc[0]
             if not 1 <= slot <= 16 or slot in entries:
@@ -262,9 +289,9 @@ def parse(raw: bytes) -> Dat:
                 if index >= pools[kind][0]:
                     raise DatError("描述符行索引越界")
                 at = pools[kind][2] + index * size
-                e[off:off + size] = raw[at:at + size]
+                e[off : off + size] = raw[at : at + size]
             for off, size, crc_off in CRC_FIELDS:
-                struct.pack_into(">I", e, crc_off, crc(e[off:off + size]))
+                struct.pack_into(">I", e, crc_off, crc(e[off : off + size]))
             entries[slot] = bytes(e)
             owners.append(slot)
         stock = descriptors[0]
@@ -273,19 +300,19 @@ def parse(raw: bytes) -> Dat:
         stock_entry = entries[4]
         if crc(stock_entry[:448]) != STOCK_ENTRY_CRC[mi]:
             raise DatError("原厂 04 条目 CRC 与已登记的不同")
-        mapping = raw[map_at:map_at + 152]
-        raw_stock = b"".join(stock_entry[o:o + s] for o, s in zip(OFFSETS, ROW_BYTES)) + stock_entry[445:447]
+        mapping = raw[map_at : map_at + 152]
+        raw_stock = b"".join(stock_entry[o : o + s] for o, s in zip(OFFSETS, ROW_BYTES)) + stock_entry[445:447]
         pin = crc(mapping + raw_stock)
         if pin != PIN_CRC32[mi] or u32(raw, d + 32) != pin:
             raise DatError("map128 ∥ stock 钉子对不上")
         refs, ranges = [], []
         for i in range(16):
-            row = raw[meta_ranges + 28 * i:meta_ranges + 28 * (i + 1)]
+            row = raw[meta_ranges + 28 * i : meta_ranges + 28 * (i + 1)]
             if row[24] >= len(owners):
                 raise DatError("范围表引用越界")
             refs.append(owners[row[24]])
-            ranges.append([struct.unpack("bbb", row[3 * j:3 * j + 3]) for j in range(8)])
-        modules.append(Module(name, mapping, records, entries, refs, ranges, raw[d + 32:d + 64], pin))
+            ranges.append([struct.unpack("bbb", row[3 * j : 3 * j + 3]) for j in range(8)])
+        modules.append(Module(name, mapping, records, entries, refs, ranges, raw[d + 32 : d + 64], pin))
 
     # GXUI：配置表与范围表的绑定、用户条目
     banks = [b"".join(m.records) for m in modules]
@@ -293,10 +320,10 @@ def parse(raw: bytes) -> Dat:
         raise DatError("GXUI 与配方库的绑定不合格")
     for mi in range(3):
         for slot in range(1, 9):
-            c = ext[64 + (mi * 8 + slot - 1) * CONFIG_BYTES:][:CONFIG_BYTES]
-            order = list(c[4:4 + c[2]])
+            c = ext[64 + (mi * 8 + slot - 1) * CONFIG_BYTES :][:CONFIG_BYTES]
+            order = list(c[4 : 4 + c[2]])
             expected = [1, 2, 3] if slot == 3 else [1, 2, 3, 4]
-            if c[:2] != bytes((mi, slot)) or c[3] or sorted(order) != expected or any(c[4 + c[2]:15]):
+            if c[:2] != bytes((mi, slot)) or c[3] or sorted(order) != expected or any(c[4 + c[2] : 15]):
                 raise DatError("GXUI 项目顺序不合格")
             for k in range(11):
                 domain = struct.unpack_from("bbb", c, 15 + 3 * k)
@@ -312,8 +339,21 @@ def parse(raw: bytes) -> Dat:
     for i in range(u16(ext, 24)):
         at = USER_OFFSET + i * USER_ENTRY_BYTES
         users.append({"base": ext[at], "levels": list(struct.unpack_from("11b", ext, at + 10))})
-    dat = Dat(g, flags, entry, bss, raw[80:112], raw[212:228], raw[engine_at:engine_at + engine_len],
-              relocations, modules, ids, bytes(ext[64:USER_OFFSET]), users, kv2)
+    dat = Dat(
+        g,
+        flags,
+        entry,
+        bss,
+        raw[80:112],
+        raw[212:228],
+        raw[engine_at : engine_at + engine_len],
+        relocations,
+        modules,
+        ids,
+        bytes(ext[64:USER_OFFSET]),
+        users,
+        kv2,
+    )
     # 最后一道门：用同一套规则重新封装，必须逐字节相同；否则说明还有没建模的字节。
     if pack(dat) != raw:
         raise DatError("重新封装与原文件不同（存在未建模的字节）")
@@ -321,6 +361,7 @@ def parse(raw: bytes) -> Dat:
 
 
 # --------------------------------------------------------------------------- 封装
+
 
 def _metadata(modules, ids):
     n = len(ids)
@@ -358,8 +399,7 @@ def _extension(configs: bytes, banks, users) -> bytes:
         raise DatError("GXUI 配置尺寸或用户条目数不合格")
     out = bytearray(EXT_BYTES)
     out[:8] = GXUI_MAGIC
-    struct.pack_into(">HHIIHHHHHH", out, 8, 1, 64, EXT_BYTES, 0, 24, CONFIG_BYTES, len(users),
-                     USER_ENTRY_BYTES, 11, USER_CAPACITY)
+    struct.pack_into(">HHIIHHHHHH", out, 8, 1, 64, EXT_BYTES, 0, 24, CONFIG_BYTES, len(users), USER_ENTRY_BYTES, 11, USER_CAPACITY)
     struct.pack_into(">II", out, 32, 64, USER_OFFSET)
     for i, bank in enumerate(banks):
         struct.pack_into(">I", out, 40 + 4 * i, crc(bank))
@@ -374,8 +414,8 @@ def _extension(configs: bytes, banks, users) -> bytes:
         if any(not isinstance(v, int) or isinstance(v, bool) for v in levels):
             raise DatError("用户条目：levels 必须是整数")
         for mi in range(3):
-            c = configs[(mi * 8 + slot - 1) * CONFIG_BYTES:][:CONFIG_BYTES]
-            visible = set(c[4:4 + c[2]])
+            c = configs[(mi * 8 + slot - 1) * CONFIG_BYTES :][:CONFIG_BYTES]
+            visible = set(c[4 : 4 + c[2]])
             for k, value in enumerate(levels):
                 lo, hi, default = struct.unpack_from("bbb", c, 15 + 3 * k)
                 if not lo <= value <= hi or (k + 1 not in visible and value != default):
@@ -385,7 +425,7 @@ def _extension(configs: bytes, banks, users) -> bytes:
         name = f"{groups[slot - 1]}{'*' if any(levels) else '-'}{ordinal:03d}"
         at = USER_OFFSET + i * USER_ENTRY_BYTES
         out[at] = slot
-        out[at + 2:at + 10] = name.encode("ascii") + b"\0"
+        out[at + 2 : at + 10] = name.encode("ascii") + b"\0"
         struct.pack_into("11b", out, at + 10, *levels)
         struct.pack_into(">H", out, at + 22, ordinal)
     struct.pack_into(">I", out, 16, _zero_crc(out, 16))
@@ -408,8 +448,8 @@ def pack(dat: Dat) -> bytes:
     modules = dat.modules
     if len(modules) != 3 or tuple(m.name for m in modules) != NAMES:
         raise DatError("模块顺序必须是 jlaunch, qlaunch, l08firm")
-    buckets = [[] for _ in range(4)]
-    indexes = [{} for _ in range(4)]
+    buckets: list[list] = [[] for _ in range(4)]
+    indexes: list[dict] = [{} for _ in range(4)]
     tables = []
     for m in modules:
         owners = _owners(m)
@@ -422,7 +462,7 @@ def pack(dat: Dat) -> bytes:
                 raise DatError("条目长度、所有者或身份对不上")
             refs = []
             for kind, off, size in zip(KINDS, OFFSETS, ROW_BYTES):
-                row = bytes(e[off:off + size])
+                row = bytes(e[off : off + size])
                 if row not in indexes[kind]:
                     indexes[kind][row] = len(buckets[kind])
                     buckets[kind].append(row)
@@ -444,8 +484,15 @@ def pack(dat: Dat) -> bytes:
             raise DatError("这一代需要 gxkv2r2 块")
         tweaks += dat.kv2_block
     reloc = b"".join(struct.pack(">II", *r) for r in dat.relocations)
-    parts = [bytes(dat.engine), reloc, bytes(192), b"".join(m.map for m in modules),
-             b"".join(_bank_blob(m.records, dat.generation) for m in modules), bytes(shared), tweaks]
+    parts = [
+        bytes(dat.engine),
+        reloc,
+        bytes(192),
+        b"".join(m.map for m in modules),
+        b"".join(_bank_blob(m.records, dat.generation) for m in modules),
+        bytes(shared),
+        tweaks,
+    ]
     starts, cursor = [], HEADER
     for p in parts:
         starts.append(cursor)
@@ -456,10 +503,22 @@ def pack(dat: Dat) -> bytes:
     next_table = starts[5] + 64
     stride = u16(tweaks, 14)
     for i, m in enumerate(modules):
-        struct.pack_into(">8sHHIIIIHBB32s", d, 64 * i, m.name.encode() + b"\0", 0x151, 0,
-                         starts[3] + 152 * i, starts[4] + 1056 * i, next_table,
-                         starts[6] + u32(tweaks, 20) + 16 * stride * i,
-                         len(tables[i]), len(m.entries), 0, m.pin)
+        struct.pack_into(
+            ">8sHHIIIIHBB32s",
+            d,
+            64 * i,
+            m.name.encode() + b"\0",
+            0x151,
+            0,
+            starts[3] + 152 * i,
+            starts[4] + 1056 * i,
+            next_table,
+            starts[6] + u32(tweaks, 20) + 16 * stride * i,
+            len(tables[i]),
+            len(m.entries),
+            0,
+            m.pin,
+        )
         next_table += len(tables[i])
     parts[2] = bytes(d)
     h = bytearray(HEADER)
@@ -486,6 +545,7 @@ def pack(dat: Dat) -> bytes:
 def replace_users(dat: Dat, users: list) -> Dat:
     """返回换了用户条目的新 Dat（原对象不动）；条目按 GXUI 规则校验，只改 GXUI 区。"""
     from dataclasses import replace
+
     new = replace(dat, users=[{"base": u["base"], "levels": list(u["levels"])} for u in users])
     _extension(new.ext_config, [b"".join(m.records) for m in new.modules], new.users)  # 先校验
     return new

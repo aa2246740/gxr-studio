@@ -76,7 +76,7 @@ class SyntheticCard:
 
 
 def _pattern(seed: int, size: tuple[int, int]) -> Image.Image:
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # nosec B311  假卡的图案，不是密钥
     w, h = size
     img = Image.new("RGB", size, tuple(rng.randrange(40, 200) for _ in range(3)))
     d = ImageDraw.Draw(img)
@@ -178,32 +178,29 @@ def make_card(
         card.shots.append(shot)
         return shot
 
-    D = datetime
     # 2) 合成：DNG+JPG 一对
-    add("100RICOH", "R0000101", ("dng", "jpg"), D(2026, 10, 16, 9, 30, 0))
-    add("100RICOH", "R0000102", ("dng", "jpg"), D(2026, 10, 17, 10, 15, 30))
-    add("100RICOH", "R0000103", ("dng", "jpg"), D(2026, 10, 17, 23, 59, 59))
-    add("100RICOH", "R0000104", ("dng", "jpg"), D(2026, 10, 18, 0, 0, 1))
-    add("100RICOH", "R0000105", ("dng", "jpg"), D(2026, 10, 18, 14, 0, 0), orientation=6, note="竖拍，方向 6")
+    add("100RICOH", "R0000101", ("dng", "jpg"), datetime(2026, 10, 16, 9, 30, 0))
+    add("100RICOH", "R0000102", ("dng", "jpg"), datetime(2026, 10, 17, 10, 15, 30))
+    add("100RICOH", "R0000103", ("dng", "jpg"), datetime(2026, 10, 17, 23, 59, 59))
+    add("100RICOH", "R0000104", ("dng", "jpg"), datetime(2026, 10, 18, 0, 0, 1))
+    add("100RICOH", "R0000105", ("dng", "jpg"), datetime(2026, 10, 18, 14, 0, 0), orientation=6, note="竖拍，方向 6")
     # 3) 只有 JPG / 只有 DNG
-    add("100RICOH", "R0000106", ("jpg",), D(2026, 10, 18, 15, 0, 0))
-    add("100RICOH", "R0000107", ("jpg",), D(2026, 10, 19, 8, 0, 0))
-    add("100RICOH", "R0000108", ("jpg",), D(2026, 10, 19, 9, 0, 0))
-    add("100RICOH", "R0000109", ("dng",), D(2026, 10, 19, 10, 0, 0))
-    add("100RICOH", "R0000110", ("dng",), D(2026, 10, 19, 11, 0, 0))
-    add("101RICOH", "R0000111", ("dng",), D(2026, 10, 19, 12, 0, 0), note="另一个子目录")
+    add("100RICOH", "R0000106", ("jpg",), datetime(2026, 10, 18, 15, 0, 0))
+    add("100RICOH", "R0000107", ("jpg",), datetime(2026, 10, 19, 8, 0, 0))
+    add("100RICOH", "R0000108", ("jpg",), datetime(2026, 10, 19, 9, 0, 0))
+    add("100RICOH", "R0000109", ("dng",), datetime(2026, 10, 19, 10, 0, 0))
+    add("100RICOH", "R0000110", ("dng",), datetime(2026, 10, 19, 11, 0, 0))
+    add("101RICOH", "R0000111", ("dng",), datetime(2026, 10, 19, 12, 0, 0), note="另一个子目录")
     # 4) 日期有问题
     add("100RICOH", "R0000112", ("jpg",), None, mode="garbled", note="EXIF 日期乱码")
     add("100RICOH", "R0000113", ("dng", "jpg"), None, mode="garbled", note="EXIF 日期乱码（一对）")
     add("100RICOH", "R0000114", ("jpg",), None, mode="none", note="完全没有 EXIF")
     # 5) 同名不同内容：101RICOH 里的 R0000101 与 100RICOH 的同名，拍摄日期也相同
-    add("101RICOH", "R0000101", ("jpg",), D(2026, 10, 16, 9, 30, 0), note="同名不同内容")
+    add("101RICOH", "R0000101", ("jpg",), datetime(2026, 10, 16, 9, 30, 0), note="同名不同内容")
     # 6) 不同名同内容：R0000199.JPG 是 R0000106.JPG 的逐字节副本
     twin = d100 / "R0000199.JPG"
     shutil.copy2(d100 / "R0000106.JPG", twin)
-    card.shots.append(
-        SyntheticShot("100RICOH", "R0000199", ("jpg",), D(2026, 10, 18, 15, 0, 0), "ok", duplicate_of="R0000106")
-    )
+    card.shots.append(SyntheticShot("100RICOH", "R0000199", ("jpg",), datetime(2026, 10, 18, 15, 0, 0), "ok", duplicate_of="R0000106"))
 
     # 7) 垃圾
     junk = [

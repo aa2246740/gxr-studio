@@ -118,25 +118,25 @@ def read_jpeg_meta(path: Path) -> PhotoMeta:
 
 
 def _load_subifd(im: Image.ImageFile.ImageFile, offset: int):
-    little = im.tag_v2._endian == "<"
-    ifh = (b"II*\x00\x08\x00\x00\x00" if little else b"MM\x00*\x00\x00\x00\x08")
+    little = im.tag_v2._endian == "<"  # type: ignore[attr-defined]
+    ifh = b"II*\x00\x08\x00\x00\x00" if little else b"MM\x00*\x00\x00\x00\x08"
     ifd = TiffImagePlugin.ImageFileDirectory_v2(ifh=ifh)
-    im.fp.seek(offset)
-    ifd.load(im.fp)
+    im.fp.seek(offset)  # type: ignore[union-attr]
+    ifd.load(im.fp)  # type: ignore[arg-type]
     return ifd
 
 
 def read_dng_meta(path: Path) -> PhotoMeta:
     try:
         with Image.open(path) as im:
-            tags = im.tag_v2
+            tags = im.tag_v2  # type: ignore[attr-defined]
             orientation = _orientation(tags.get(274, 1))
             width, height = im.width, im.height
             for off in tags.get(330, ()) or ():
                 try:
                     ifd = _load_subifd(im, int(off))
                 except Exception:
-                    continue
+                    continue  # nosec B112  这个子 IFD 读不出来就看下一个
                 if ifd.get(254, 0) == 0 and ifd.get(256) and ifd.get(257):
                     crop = ifd.get(50720)
                     if crop and len(crop) == 2:
@@ -173,19 +173,19 @@ def dng_preview_image(path: Path) -> Image.Image | None:
         with Image.open(path) as im:
             best: bytes | None = None
             best_area = 0
-            for off in im.tag_v2.get(330, ()) or ():
+            for off in im.tag_v2.get(330, ()) or ():  # type: ignore[attr-defined]
                 try:
                     ifd = _load_subifd(im, int(off))
                 except Exception:
-                    continue
+                    continue  # nosec B112  预览 IFD 读不出来就看下一个
                 if ifd.get(259) != 7 or not ifd.get(273) or not ifd.get(279):
                     continue
                 start, count = int(ifd[273][0]), int(ifd[279][0])
                 area = int(ifd.get(256, 0)) * int(ifd.get(257, 0))
                 if count <= 0 or count > 32 * 1024 * 1024 or area <= best_area:
                     continue
-                im.fp.seek(start)
-                data = im.fp.read(count)
+                im.fp.seek(start)  # type: ignore[union-attr]
+                data = im.fp.read(count)  # type: ignore[union-attr]
                 if len(data) == count:
                     best, best_area = data, area
             if best is not None:
@@ -194,7 +194,7 @@ def dng_preview_image(path: Path) -> Image.Image | None:
                     pv.load()
                     return pv.convert("RGB")
                 except Exception:
-                    pass
+                    pass  # nosec B110  内嵌预览解不开就继续走主图
             im.load()
             return im.convert("RGB")
     except Exception:

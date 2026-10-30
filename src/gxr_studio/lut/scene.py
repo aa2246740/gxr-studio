@@ -23,7 +23,7 @@ from .spaces import DISPLAY
 
 # 固定的中灰锚（50mm 的测光标定；research/um_measurement/REPORT.md，lut_convert/camera.py 的 anchor）。
 ANCHOR = {"u_m": 0.10250885, "f": -0.0022470695785486096}
-CLIP_CODE = 4000                  # 照片抽样时丢掉任一通道接近满码的像素
+CLIP_CODE = 4000  # 照片抽样时丢掉任一通道接近满码的像素
 GROUP_NAMES = ("灰阶", "肤色", "常见色块", "照片")
 GROUP_WEIGHT = (1.5, 2.0, 1.0, 1.0)
 
@@ -37,13 +37,14 @@ class SceneError(ValueError):
 @dataclass(frozen=True)
 class SceneColour:
     """一个 DNG 的色彩：AsShotNeutral + 相机→XYZ(D65) 矩阵。`xyz` 与 lut_convert 的 `Camera.xyz` 逐式相同。"""
+
     neutral: np.ndarray
     matrix: np.ndarray
 
     def xyz(self, codes: np.ndarray) -> np.ndarray:
         u, f = ANCHOR["u_m"], ANCHOR["f"]
         white = self.neutral @ self.matrix.T
-        scale = .18 / ((u - f) * white[1])
+        scale = 0.18 / ((u - f) * white[1])
         raw = (np.asarray(codes, float) / CODE_MAX - f) * self.neutral
         return raw @ self.matrix.T * scale
 
@@ -63,11 +64,14 @@ def scene_colour(dng) -> SceneColour:
         return None if v is None else np.asarray(v, float).reshape(3, 3)
 
     from types import SimpleNamespace
+
     tags = SimpleNamespace(
-        color_matrix=[mat(50721), mat(50722)], camera_calibration=[mat(50723), mat(50724)],
+        color_matrix=[mat(50721), mat(50722)],
+        camera_calibration=[mat(50723), mat(50724)],
         forward_matrix=[mat(50964), mat(50965)],
         illuminant=[int(val(50778, [0])[0]), int(val(50779, [0])[0])],
-        analog_balance=np.asarray(val(50727, [1.0, 1.0, 1.0]), float))
+        analog_balance=np.asarray(val(50727, [1.0, 1.0, 1.0]), float),
+    )
     if all(m is None for m in tags.color_matrix):
         raise SceneError("no_matrix", "这张 RAW 没有色彩矩阵，不能用来换算 Log 调色文件")
     col = colorimetry.DngColour(tags)
@@ -77,19 +81,23 @@ def scene_colour(dng) -> SceneColour:
 
 @dataclass
 class Samples:
-    x: np.ndarray                    # (n, 3) 码值
-    xyz: np.ndarray | None           # (n, 3) 场景 XYZ；没有时为 None
-    weight: np.ndarray               # (n,)
-    group: np.ndarray                # (n,) 0 灰阶 1 肤色 2 常见色块 3 照片
-    holdout: np.ndarray              # (n,) bool：只验收、不参与搜索
-    photos: list = field(default_factory=list)   # 抽样用到的照片说明
+    x: np.ndarray  # (n, 3) 码值
+    xyz: np.ndarray | None  # (n, 3) 场景 XYZ；没有时为 None
+    weight: np.ndarray  # (n,)
+    group: np.ndarray  # (n,) 0 灰阶 1 肤色 2 常见色块 3 照片
+    holdout: np.ndarray  # (n,) bool：只验收、不参与搜索
+    photos: list = field(default_factory=list)  # 抽样用到的照片说明
 
     def __len__(self):
         return len(self.x)
 
     def counts(self) -> dict:
-        return {"total": len(self), "train": int((~self.holdout).sum()), "holdout": int(self.holdout.sum()),
-                "groups": {GROUP_NAMES[g]: int((self.group == g).sum()) for g in range(4)}}
+        return {
+            "total": len(self),
+            "train": int((~self.holdout).sum()),
+            "holdout": int(self.holdout.sum()),
+            "groups": {GROUP_NAMES[g]: int((self.group == g).sum()) for g in range(4)},
+        }
 
 
 def _hue_cloud(model, stock04: bytes, n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -113,7 +121,7 @@ def _pick(x, lab, lo_h, hi_h, c_lo, c_hi, l_lo, l_hi, count, rng):
 
 def synthetic_samples(model, stock04: bytes, seed: int = 20261030) -> Samples:
     """灰阶 + 肤色 + 常见色块（天空、植物、高彩度）+ 对数网格。"""
-    syn = synthetic()                                  # 257 个灰阶 + 9³ 个网格（E0 冻结的确定性色样）
+    syn = synthetic()  # 257 个灰阶 + 9³ 个网格（E0 冻结的确定性色样）
     ramp, grid = syn[:257], syn[257:]
     cx, clab = _hue_cloud(model, stock04, 24000, seed)
     rng = np.random.default_rng(seed + 1)
@@ -128,7 +136,7 @@ def synthetic_samples(model, stock04: bytes, seed: int = 20261030) -> Samples:
     holdout = np.zeros(len(x), bool)
     start = 0
     for p, _ in parts:
-        holdout[start + 3:start + len(p):4] = True
+        holdout[start + 3 : start + len(p) : 4] = True
         start += len(p)
     return Samples(x, None, np.array([GROUP_WEIGHT[g] for g in group]), group, holdout)
 
@@ -137,7 +145,7 @@ def photo_samples(codes: np.ndarray, n: int = 400) -> np.ndarray:
     """(h, w, 3) 码值图 → 均匀网格抽出约 n 个有效像素（丢掉接近满码的）。"""
     h, w = codes.shape[:2]
     step = max(1, int(np.sqrt(h * w / (n * 1.25))))
-    px = codes[step // 2::step, step // 2::step].reshape(-1, 3).astype(np.float64)
+    px = codes[step // 2 :: step, step // 2 :: step].reshape(-1, 3).astype(np.float64)
     px = px[(px.max(axis=1) < CLIP_CODE) & (px.max(axis=1) > 8)]
     if len(px) > n:
         px = px[np.linspace(0, len(px) - 1, n).astype(int)]
@@ -151,10 +159,13 @@ def build_samples(model, stock04: bytes, input_space: str, photos: list[dict] | 
     ref = next((p["colour"] for p in photos if p.get("colour") is not None), None)
     need_xyz = input_space not in DISPLAY
     if need_xyz and ref is None:
-        raise SceneError("needs_photo", "这个调色文件是 Log 格式，换算需要图库里至少一张 50mm 的 RAW 照片（用它的色彩矩阵）。"
-                         "请先导入照片，或者换一个 sRGB / Rec.709 格式的调色文件。")
+        raise SceneError(
+            "needs_photo",
+            "这个调色文件是 Log 格式，换算需要图库里至少一张 50mm 的 RAW 照片（用它的色彩矩阵）。"
+            "请先导入照片，或者换一个 sRGB / Rec.709 格式的调色文件。",
+        )
     xs, groups, hold, labels = [s.x], [s.group], [s.holdout], []
-    xyz = [ref.xyz(s.x)] if need_xyz else []
+    xyz = [ref.xyz(s.x)] if need_xyz else []  # type: ignore[union-attr]
     for i, p in enumerate(photos):
         px = photo_samples(p["codes"])
         if not len(px):
@@ -166,12 +177,18 @@ def build_samples(model, stock04: bytes, input_space: str, photos: list[dict] | 
         hold.append(h)
         if need_xyz:
             c = p.get("colour") or ref
-            xyz.append(c.xyz(px))
+            xyz.append(c.xyz(px))  # type: ignore[union-attr]
         labels.append({"label": p.get("label"), "samples": int(len(px)), "holdout_only": bool(last_only)})
     x = np.vstack(xs)
     group = np.concatenate(groups)
-    return Samples(x, np.vstack(xyz) if need_xyz else None, np.array([GROUP_WEIGHT[g] for g in group]), group,
-                   np.concatenate(hold), labels)
+    return Samples(
+        x,
+        np.vstack(xyz) if need_xyz else None,
+        np.array([GROUP_WEIGHT[g] for g in group]),
+        group,
+        np.concatenate(hold),
+        labels,
+    )
 
 
 def target_rgb(model, stock04: bytes, samples: Samples, target) -> tuple[np.ndarray, np.ndarray]:

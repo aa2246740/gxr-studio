@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,13 +21,12 @@ from conftest import PORT
 from gxr_studio import audit, cli
 from gxr_studio.api import routes
 from gxr_studio.app import create_app
-from gxr_studio.camdata import calib, store
+from gxr_studio.camdata import store
 from gxr_studio.cards.discovery import CardReader, find_cards
 from gxr_studio.cards.importer import ImportOptions
-from gxr_studio.config import Settings
 from gxr_studio.devtools import synthetic_card as sy
 from gxr_studio.library.lock import BUSY_EXIT_CODE, LibraryBusy, LibraryLock
-from gxr_studio.library.store import SIDECAR_RESET_NOTE, Library
+from gxr_studio.library.store import SIDECAR_RESET_NOTE
 from test_api import find, import_all
 
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -67,7 +65,7 @@ def test_unreadable_jpg_is_listed_and_the_good_dng_is_imported(settings, card):
         assert p["failed_shots"] == 1
         assert "安全弹出" not in p["message"] and "先别格式化" in p["message"]
         shot = find(c, "R0000104")
-        assert shot["has_raw"] and not shot["has_jpg"]       # 好的那个照常导入
+        assert shot["has_raw"] and not shot["has_jpg"]  # 好的那个照常导入
         assert len(c.get("/api/photos").json()) == len(card.unique_shots)
 
 
@@ -181,7 +179,10 @@ def test_export_with_a_broken_sidecar_ignores_the_old_crop(client):
     assert cropped["height"] < shot["height"]
     path.write_text("{ not json")
     plain = client.post(f"/api/photos/{sid}/export", json={"source": "camera-jpg"})
-    assert plain.status_code == 200 and (plain.json()["width"], plain.json()["height"]) == (shot["width"], shot["height"])
+    assert plain.status_code == 200 and (plain.json()["width"], plain.json()["height"]) == (
+        shot["width"],
+        shot["height"],
+    )
 
 
 def test_batch_export_with_a_broken_sidecar_and_plain_failures(client, monkeypatch):
@@ -261,14 +262,16 @@ def test_second_lock_on_the_same_library_is_refused(tmp_path):
     a = LibraryLock(tmp_path / "lib").acquire()
     with pytest.raises(LibraryBusy):
         LibraryLock(tmp_path / "lib").acquire()
-    LibraryLock(tmp_path / "other").acquire().release()      # 别的图库不受影响
+    LibraryLock(tmp_path / "other").acquire().release()  # 别的图库不受影响
     a.release()
-    LibraryLock(tmp_path / "lib").acquire().release()         # 放掉以后可以再拿
+    LibraryLock(tmp_path / "lib").acquire().release()  # 放掉以后可以再拿
 
 
 def test_lock_dies_with_the_process(tmp_path):
-    code = ("import sys,time\nfrom pathlib import Path\nfrom gxr_studio.library.lock import LibraryLock\n"
-            "LibraryLock(Path(sys.argv[1])).acquire()\nprint('locked', flush=True)\ntime.sleep(60)\n")
+    code = (
+        "import sys,time\nfrom pathlib import Path\nfrom gxr_studio.library.lock import LibraryLock\n"
+        "LibraryLock(Path(sys.argv[1])).acquire()\nprint('locked', flush=True)\ntime.sleep(60)\n"
+    )
     p = subprocess.Popen([sys.executable, "-I", "-c", code, str(tmp_path / "lib")], stdout=subprocess.PIPE, text=True)
     try:
         assert p.stdout.readline().strip() == "locked"
@@ -277,7 +280,7 @@ def test_lock_dies_with_the_process(tmp_path):
     finally:
         p.kill()
         p.wait()
-    LibraryLock(tmp_path / "lib").acquire().release()          # 被杀掉的进程不会留下"锁死"
+    LibraryLock(tmp_path / "lib").acquire().release()  # 被杀掉的进程不会留下"锁死"
 
 
 def test_second_studio_says_so_in_plain_words(monkeypatch, tmp_path, capsys):
@@ -294,7 +297,7 @@ def test_second_studio_says_so_in_plain_words(monkeypatch, tmp_path, capsys):
     assert "工作室已经开着了" in out and "第一个" in out
     assert started == [], "第二个实例不能去碰图库"
     command = (Path(__file__).resolve().parents[1] / "GXR Studio.command").read_text(encoding="utf-8")
-    assert '-ne 75' in command and BUSY_EXIT_CODE == 75
+    assert "-ne 75" in command and BUSY_EXIT_CODE == 75
 
 
 # ---- P2-4：系统不让读外接卡 --------------------------------------------------------------
@@ -329,7 +332,7 @@ def test_permission_denied_on_one_card_is_reported(settings, volumes, card):
 def test_no_warning_when_a_card_is_readable_or_simply_absent(settings, volumes, card):
     with make_client(settings) as c:
         assert c.get("/api/cards/status").json() == {"cards": 1, "access_denied": False, "message": None}
-    audit.unprotect(card.root)    # 发现过的卡会被登记保护（写入即拒绝）；这里是测试自己"拔卡"
+    audit.unprotect(card.root)  # 发现过的卡会被登记保护（写入即拒绝）；这里是测试自己"拔卡"
     shutil.rmtree(card.root)
     with make_client(settings) as c:
         assert c.get("/api/cards/status").json() == {"cards": 0, "access_denied": False, "message": None}
@@ -339,7 +342,7 @@ def test_find_cards_collects_denied_volumes_only_when_asked(volumes, card):
     denied: list[str] = []
     find_cards([volumes], Denied(lambda p: p == card.root), denied)
     assert denied == ["NO NAME"]
-    assert find_cards([volumes], Denied(lambda p: p == card.root)) == []   # 老调用方式不变
+    assert find_cards([volumes], Denied(lambda p: p == card.root)) == []  # 老调用方式不变
 
 
 def test_readme_explains_the_removable_volumes_permission():
@@ -367,8 +370,8 @@ def test_recipes_tab_has_no_coming_soon_badge_but_the_camera_tab_keeps_it():
     index = (WEB / "index.html").read_text(encoding="utf-8")
     assert "即将推出" not in index, "「配方」页已经能用（导入调色文件→做成配方），页签上不能再挂「即将推出」"
     app = (WEB / "assets" / "app.js").read_text(encoding="utf-8")
-    camera = app[app.index("function renderCamera"): app.index("function exportCurrent")]
-    assert "即将推出" in camera and "不会往卡上写任何东西" in camera      # 把配方写回相机确实还没做
+    camera = app[app.index("function renderCamera") : app.index("function exportCurrent")]
+    assert "即将推出" in camera and "不会往卡上写任何东西" in camera  # 把配方写回相机确实还没做
     recipes = (WEB / "assets" / "recipes.js").read_text(encoding="utf-8")
     import re
 
@@ -439,7 +442,7 @@ def test_interrupted_fallback_swap_is_recovered_at_startup(tmp_path, monkeypatch
 
 def test_recovery_removes_a_stale_old_and_ignores_clean_homes(tmp_path):
     home = tmp_path / "home"
-    assert store.recover_interrupted_swaps(home) == []             # 目录都不存在
+    assert store.recover_interrupted_swaps(home) == []  # 目录都不存在
     make_dir(home / "calib", "new")
     make_dir(home / "calib.old", "stale")
     assert store.recover_interrupted_swaps(home) == ["calib: removed stale .old"]
@@ -459,7 +462,10 @@ def test_starting_the_app_recovers_an_interrupted_swap(settings):
 
 def test_import_paths_use_the_atomic_swap():
     base = Path(store.__file__).parent
-    store_src, calib_src = (base / "store.py").read_text(encoding="utf-8"), (base / "calib.py").read_text(encoding="utf-8")
+    store_src, calib_src = (
+        (base / "store.py").read_text(encoding="utf-8"),
+        (base / "calib.py").read_text(encoding="utf-8"),
+    )
     assert "swap_in(tmp, root)" in store_src and "swap_in(tmp, out)" in calib_src
     assert store_src.count("os.replace(root, old)") == 1, "两步换法只留在 swap_in 的退路里"
     assert "os.replace(" not in calib_src and ".old" not in calib_src
@@ -486,7 +492,7 @@ def test_csp_header_on_pages_assets_and_api(client):
         csp = r.headers["content-security-policy"]
         assert csp.startswith("default-src 'self'"), (url, csp)
         assert "unsafe-inline" not in csp and "unsafe-eval" not in csp and "http" not in csp
-        assert "img-src 'self' blob: data:" in csp      # 预览图是 object URL
+        assert "img-src 'self' blob: data:" in csp  # 预览图是 object URL
 
 
 def test_frontend_is_compatible_with_the_csp():

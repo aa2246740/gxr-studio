@@ -1,0 +1,9 @@
+#!/bin/sh
+# 提交前的短检查。全量 pytest 在 make check / CI，不放在这里（大约要几分钟）。
+set -e
+cd "$(git rev-parse --show-toplevel)"
+uv run --frozen ruff check src tests scripts
+uv run --frozen ruff format --check src tests scripts
+uv run --frozen python scripts/scan_secrets.py
+uv run --frozen python scripts/large_files.py
+uv run --frozen python scripts/dead_flags.py

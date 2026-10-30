@@ -30,8 +30,18 @@ def run_js(expr: str):
     return json.loads(out.stdout)
 
 
-BASE = dict(state="done", imported_shots=14, seen_shots=0, duplicate_shots=1, failed_shots=0, completed_shots=0,
-            unreadable=[], verify_failed=[], scan_errors=[], message="")
+BASE = dict(
+    state="done",
+    imported_shots=14,
+    seen_shots=0,
+    duplicate_shots=1,
+    failed_shots=0,
+    completed_shots=0,
+    unreadable=[],
+    verify_failed=[],
+    scan_errors=[],
+    message="",
+)
 
 
 def progress(**kw) -> str:
@@ -67,8 +77,12 @@ def test_any_problem_means_no_eject_and_a_red_banner(kw):
 
 @needs_node
 def test_problem_banner_names_the_files_and_counts_photos():
-    p = progress(unreadable=["DCIM/100RICOH/R0000104.JPG"], verify_failed=["DCIM/100RICOH/R0000102.DNG"],
-                 scan_errors=["DCIM/101RICOH/"], failed_shots=2)
+    p = progress(
+        unreadable=["DCIM/100RICOH/R0000104.JPG"],
+        verify_failed=["DCIM/100RICOH/R0000102.DNG"],
+        scan_errors=["DCIM/101RICOH/"],
+        failed_shots=2,
+    )
     (s,) = [run_js(f"S.summarizeImport({p})")]
     assert "R0000104.JPG" in s["detail"] and "R0000102.DNG" in s["detail"] and "文件夹 101RICOH" in s["detail"]
     assert "有 2 张没有完整导进来" in s["text"] and "共 3 个文件" in s["text"]
@@ -99,12 +113,16 @@ def test_several_cards_are_announced():
 
 @needs_node
 def test_raw_only_pictures_are_never_called_the_photo_itself():
-    look = {"stock04-prediction": {"kind": "stock04-prediction", "label": "电脑预测（原厂标准）", "prediction": True},
-            "neutral": {"kind": "neutral", "label": "中性转换", "prediction": False},
-            "embedded": {"kind": "embedded", "label": "RAW 内嵌的小预览", "prediction": False},
-            "jpg": {"kind": "camera-jpg", "label": None, "prediction": False}}
-    out = run_js(f"Object.fromEntries(Object.entries({json.dumps(look)}).map(([k,v]) => [k, "
-                 "{note: L.lookNoteText(v), orig: L.originalNoteText(v), badge: L.rawOnlyBadgeText(v)}]))")
+    look = {
+        "stock04-prediction": {"kind": "stock04-prediction", "label": "电脑预测（原厂标准）", "prediction": True},
+        "neutral": {"kind": "neutral", "label": "中性转换", "prediction": False},
+        "embedded": {"kind": "embedded", "label": "RAW 内嵌的小预览", "prediction": False},
+        "jpg": {"kind": "camera-jpg", "label": None, "prediction": False},
+    }
+    out = run_js(
+        f"Object.fromEntries(Object.entries({json.dumps(look)}).map(([k,v]) => [k, "
+        "{note: L.lookNoteText(v), orig: L.originalNoteText(v), badge: L.rawOnlyBadgeText(v)}]))"
+    )
     pred, neutral, jpg = out["stock04-prediction"], out["neutral"], out["jpg"]
     assert "不是预测" in jpg["note"] and "照片本身" in jpg["note"]
     assert "电脑预测（原厂标准）" in pred["note"] and "照片本身" not in pred["note"] and "不是相机拍出的 JPG" in pred["note"]

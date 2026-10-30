@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -39,7 +38,13 @@ def _isolated_env(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    for name in ("GXR_STUDIO_HOME", "GXR_STUDIO_LIBRARY", "GXR_STUDIO_EXPORT", "GXR_STUDIO_VOLUMES", "GXR_STUDIO_TOKEN"):
+    for name in (
+        "GXR_STUDIO_HOME",
+        "GXR_STUDIO_LIBRARY",
+        "GXR_STUDIO_EXPORT",
+        "GXR_STUDIO_VOLUMES",
+        "GXR_STUDIO_TOKEN",
+    ):
         monkeypatch.delenv(name, raising=False)
     yield
     assert audit.network_attempts() == [], "测试期间出现了联网尝试"

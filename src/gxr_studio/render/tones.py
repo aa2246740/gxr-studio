@@ -16,11 +16,11 @@ from scipy.interpolate import PchipInterpolator
 
 from .params import Adjust
 
-WARM_EV = 0.35            # 色温 ±100 对应 R/B 增益 2^±0.35
-TINT_EV = 0.25            # 色调 ±100 对应 R、B 同升/同降 2^±0.25
-TABLE_STEP = 4            # 调子表每 1 个显示码值取 4 个点
+WARM_EV = 0.35  # 色温 ±100 对应 R/B 增益 2^±0.35
+TINT_EV = 0.25  # 色调 ±100 对应 R、B 同升/同降 2^±0.25
+TABLE_STEP = 4  # 调子表每 1 个显示码值取 4 个点
 TABLE_SIZE = 255 * TABLE_STEP + 1
-SHADOW_HIGHLIGHT_AMOUNT = 0.13   # 高光/阴影 ±100 在峰值处最多挪 13% 满幅度（再大就会把曲线折回来）
+SHADOW_HIGHLIGHT_AMOUNT = 0.13  # 高光/阴影 ±100 在峰值处最多挪 13% 满幅度（再大就会把曲线折回来）
 
 
 def channel_gains(adjust: Adjust) -> np.ndarray | None:

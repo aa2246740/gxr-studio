@@ -41,9 +41,14 @@ def dev_sources(repo_root: Path) -> dict:
     """研究目录里的标定文件位置（只在开发机上用于第一次导入）。"""
     r = Path(repo_root) / "research"
     return {
-        200: (r / "color_fit_v2/06_classic_neg/round4/local/cache/data_200.npz", r / "hue_ring/local/ring_model_v2.json"),
-        1600: (r / "color_fit_v2/06_classic_neg/round4/local/cache/data_1600.npz",
-               r / "hue_ring/local/ring_model_v2_iso1600.json"),
+        200: (
+            r / "color_fit_v2/06_classic_neg/round4/local/cache/data_200.npz",
+            r / "hue_ring/local/ring_model_v2.json",
+        ),
+        1600: (
+            r / "color_fit_v2/06_classic_neg/round4/local/cache/data_1600.npz",
+            r / "hue_ring/local/ring_model_v2_iso1600.json",
+        ),
     }
 
 
@@ -56,7 +61,7 @@ def stock_words_of_entry(entry: bytes) -> np.ndarray:
     from ..engine import colour
 
     row = entry[115:211]
-    return np.array([colour.decode_word(row[4 * s:4 * s + 4]) for s in range(24)], dtype=np.int64)
+    return np.array([colour.decode_word(row[4 * s : 4 * s + 4]) for s in range(24)], dtype=np.int64)
 
 
 def stock_fingerprint(entry: bytes) -> str:
@@ -73,10 +78,14 @@ def import_calibration(home: Path, sources: dict, *, origin: dict | None = None)
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    manifest = {"schema": SCHEMA, "files": {}, "sources": {},
-                "note": "d0/d1 为固件参数派生（理光派生，仅本地）；ring_model 为我们的拟合；stock 不存，运行时取自 04",
-                "camera_stock_sha256": stock_fingerprint(stock04),
-                "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    manifest: dict = {
+        "schema": SCHEMA,
+        "files": {},
+        "sources": {},
+        "note": "d0/d1 为固件参数派生（理光派生，仅本地）；ring_model 为我们的拟合；stock 不存，运行时取自 04",
+        "camera_stock_sha256": stock_fingerprint(stock04),
+        "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
     if origin:
         manifest["origin"] = origin
     for iso, (npz_path, ring_path) in sorted(sources.items()):
@@ -92,8 +101,12 @@ def import_calibration(home: Path, sources: dict, *, origin: dict | None = None)
             raise CalibError("需要 gxr-sector-model/2")
         np.savez(tmp / f"ctx_{iso}.npz", d0=d0, d1=d1)
         shutil.copyfile(ring_path, tmp / f"ring_model_{iso}.json")
-        manifest["sources"][str(iso)] = {"ctx": Path(npz_path).name, "ctx_source_sha256": _sha_file(npz_path),
-                                         "ring": Path(ring_path).name, "ring_source_sha256": _sha_file(ring_path)}
+        manifest["sources"][str(iso)] = {
+            "ctx": Path(npz_path).name,
+            "ctx_source_sha256": _sha_file(npz_path),
+            "ring": Path(ring_path).name,
+            "ring_source_sha256": _sha_file(ring_path),
+        }
     for p in sorted(tmp.iterdir()):
         manifest["files"][p.name] = {"size": p.stat().st_size, "sha256": _sha_file(p)}
     (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

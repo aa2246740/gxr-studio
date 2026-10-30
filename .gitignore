@@ -2,3 +2,30 @@
 /.venv/
 __pycache__/
 *.pyc
+
+# 密钥和本机环境。example 可以进仓库。
+.env
+.env.*
+!.env.example
+
+# 系统、编辑器、构建产物
+.DS_Store
+.idea/
+.vscode/
+dist/
+build/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 图库、导出、应用数据、测试临时目录。理光原始文件不要进这个仓库。
+/library/
+/exports/
+/tmp/
+*.dng
+*.DNG
+*.gpr
+GXRCE.DAT

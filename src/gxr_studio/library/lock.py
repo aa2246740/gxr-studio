@@ -10,7 +10,7 @@ import fcntl
 import os
 from pathlib import Path
 
-BUSY_EXIT_CODE = 75   # EX_TEMPFAIL：给 `GXR Studio.command` 看，不再多打一句"工作室已停止"
+BUSY_EXIT_CODE = 75  # EX_TEMPFAIL：给 `GXR Studio.command` 看，不再多打一句"工作室已停止"
 
 
 class LibraryBusy(Exception):

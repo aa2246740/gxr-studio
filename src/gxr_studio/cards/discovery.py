@@ -68,9 +68,7 @@ class CardReader:
         return os.path.isdir(path)
 
 
-def find_cards(
-    volumes_roots: Iterable[Path], reader: CardReader | None = None, denied: list[str] | None = None
-) -> list[Card]:
+def find_cards(volumes_roots: Iterable[Path], reader: CardReader | None = None, denied: list[str] | None = None) -> list[Card]:
     """`denied` 不为空时，把"系统不让读"（PermissionError，macOS 没给「可移除的卷」权限）的卷名记在里面。"""
     reader = reader or CardReader()
     cards: list[Card] = []

@@ -4,40 +4,82 @@ Source: research/color_table_fit/dng_scene.py
 Source SHA-256: f0e8dd88baed2f6894b2427de7d7342ce37b2105716b2c47111d49ecfda5f59d
 Verbatim AST segments only (see research/studio_lut_s8a/tools/extract_lut.py).
 """
+
 import math
 
 import numpy as np
 
-
 # CIE / DNG SDK constants
-D50_XY = np.array([0.3457, 0.3585])          # DNG PCS white (SDK D50_xy_coord)
+D50_XY = np.array([0.3457, 0.3585])  # DNG PCS white (SDK D50_xy_coord)
 
 
-D65_XY = np.array([0.3127, 0.3290])          # sRGB / BT.709 / F-Gamut white
+D65_XY = np.array([0.3127, 0.3290])  # sRGB / BT.709 / F-Gamut white
 
 
 BRADFORD = np.array([[0.8951, 0.2664, -0.1614], [-0.7502, 1.7135, 0.0367], [0.0389, -0.0685, 1.0296]])
 
 
 # DNG SDK dng_camera_profile::IlluminantToTemperature (EXIF LightSource codes)
-ILLUMINANT_K = {1: 5500.0, 2: 4150.0, 3: 2850.0, 4: 5500.0, 9: 5500.0, 10: 6500.0, 11: 7500.0,
-                12: 6400.0, 13: 5050.0, 14: 4150.0, 15: 3525.0, 16: 2925.0, 17: 2850.0, 18: 5500.0,
-                19: 6500.0, 20: 5500.0, 21: 6500.0, 22: 7500.0, 23: 5000.0, 24: 3200.0}
+ILLUMINANT_K = {
+    1: 5500.0,
+    2: 4150.0,
+    3: 2850.0,
+    4: 5500.0,
+    9: 5500.0,
+    10: 6500.0,
+    11: 7500.0,
+    12: 6400.0,
+    13: 5050.0,
+    14: 4150.0,
+    15: 3525.0,
+    16: 2925.0,
+    17: 2850.0,
+    18: 5500.0,
+    19: 6500.0,
+    20: 5500.0,
+    21: 6500.0,
+    22: 7500.0,
+    23: 5000.0,
+    24: 3200.0,
+}
 
 
 # Robertson (1968) isotemperature lines: mired, u, v, slope (CIE 1960 uv); 325-mired u is the corrected 0.24792.
-ROBERTSON = np.array([
-    [0, 0.18006, 0.26352, -0.24341], [10, 0.18066, 0.26589, -0.25479], [20, 0.18133, 0.26846, -0.26876],
-    [30, 0.18208, 0.27119, -0.28539], [40, 0.18293, 0.27407, -0.30470], [50, 0.18388, 0.27709, -0.32675],
-    [60, 0.18494, 0.28021, -0.35156], [70, 0.18611, 0.28342, -0.37915], [80, 0.18740, 0.28668, -0.40955],
-    [90, 0.18880, 0.28997, -0.44278], [100, 0.19032, 0.29326, -0.47888], [125, 0.19462, 0.30141, -0.58204],
-    [150, 0.19962, 0.30921, -0.70471], [175, 0.20525, 0.31647, -0.84901], [200, 0.21142, 0.32312, -1.0182],
-    [225, 0.21807, 0.32909, -1.2168], [250, 0.22511, 0.33439, -1.4512], [275, 0.23247, 0.33904, -1.7298],
-    [300, 0.24010, 0.34308, -2.0637], [325, 0.24792, 0.34655, -2.4681], [350, 0.25591, 0.34951, -2.9641],
-    [375, 0.26400, 0.35200, -3.5814], [400, 0.27218, 0.35407, -4.3633], [425, 0.28039, 0.35577, -5.3762],
-    [450, 0.28863, 0.35714, -6.7262], [475, 0.29685, 0.35823, -8.5955], [500, 0.30505, 0.35907, -11.324],
-    [525, 0.31320, 0.35968, -15.628], [550, 0.32129, 0.36011, -23.325], [575, 0.32931, 0.36038, -40.770],
-    [600, 0.33724, 0.36051, -116.45]])
+ROBERTSON = np.array(
+    [
+        [0, 0.18006, 0.26352, -0.24341],
+        [10, 0.18066, 0.26589, -0.25479],
+        [20, 0.18133, 0.26846, -0.26876],
+        [30, 0.18208, 0.27119, -0.28539],
+        [40, 0.18293, 0.27407, -0.30470],
+        [50, 0.18388, 0.27709, -0.32675],
+        [60, 0.18494, 0.28021, -0.35156],
+        [70, 0.18611, 0.28342, -0.37915],
+        [80, 0.18740, 0.28668, -0.40955],
+        [90, 0.18880, 0.28997, -0.44278],
+        [100, 0.19032, 0.29326, -0.47888],
+        [125, 0.19462, 0.30141, -0.58204],
+        [150, 0.19962, 0.30921, -0.70471],
+        [175, 0.20525, 0.31647, -0.84901],
+        [200, 0.21142, 0.32312, -1.0182],
+        [225, 0.21807, 0.32909, -1.2168],
+        [250, 0.22511, 0.33439, -1.4512],
+        [275, 0.23247, 0.33904, -1.7298],
+        [300, 0.24010, 0.34308, -2.0637],
+        [325, 0.24792, 0.34655, -2.4681],
+        [350, 0.25591, 0.34951, -2.9641],
+        [375, 0.26400, 0.35200, -3.5814],
+        [400, 0.27218, 0.35407, -4.3633],
+        [425, 0.28039, 0.35577, -5.3762],
+        [450, 0.28863, 0.35714, -6.7262],
+        [475, 0.29685, 0.35823, -8.5955],
+        [500, 0.30505, 0.35907, -11.324],
+        [525, 0.31320, 0.35968, -15.628],
+        [550, 0.32129, 0.36011, -23.325],
+        [575, 0.32931, 0.36038, -40.770],
+        [600, 0.33724, 0.36051, -116.45],
+    ]
+)
 
 
 TINT_SCALE = -3000.0
@@ -98,6 +140,17 @@ def white_from_neutral(col, neutral):
     return xy, col.white_info(xy, n, k, ok)
 
 
+class _OneMatrix:
+    """只露出第 k 套标定的 DNG 视图，给 DngColour(matrix='cm1'/'cm2') 用。"""
+
+    def __init__(self, dng, k):
+        self.color_matrix = [dng.color_matrix[k], None]
+        self.camera_calibration = [dng.camera_calibration[k], None]
+        self.forward_matrix = [dng.forward_matrix[k], None]
+        self.illuminant = [dng.illuminant[k], 0]
+        self.analog_balance = dng.analog_balance
+
+
 class DngColour:
     """Camera <-> XYZ per DNG 1.7 chapter 6 (DNG SDK dng_color_spec semantics).
 
@@ -122,6 +175,7 @@ class DngColour:
             # dng_camera_profile NormalizeColorMatrix: largest camera coordinate of the PCS white = 1
             mx = float(np.max(m @ pcs))
             return m / mx if mx > 0 and (mx < 0.99 or mx > 1.01) else m.copy()
+
         self.normalised_scale = [None if m is None else float(np.max(m @ pcs)) for m in dng.color_matrix]
         cm = [None if m is None else norm(m) for m in dng.color_matrix]
         cc = [m if m is not None else np.eye(3) for m in dng.camera_calibration]
@@ -198,7 +252,14 @@ class DngColour:
 
     def white_info(self, white_xy, neutral=None, n_iter=None, converged=None):
         g, temp, tint = self.weight(white_xy)
-        return {"white_xy": [float(white_xy[0]), float(white_xy[1])], "cct_K": temp, "tint": tint,
-                "weight_cm_low_T": g, "calibration_K": self.T, "illuminants": self.illuminant,
-                "neutral": None if neutral is None else [float(v) for v in neutral],
-                "iterations": n_iter, "converged": converged}
+        return {
+            "white_xy": [float(white_xy[0]), float(white_xy[1])],
+            "cct_K": temp,
+            "tint": tint,
+            "weight_cm_low_T": g,
+            "calibration_K": self.T,
+            "illuminants": self.illuminant,
+            "neutral": None if neutral is None else [float(v) for v in neutral],
+            "iterations": n_iter,
+            "converged": converged,
+        }

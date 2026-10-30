@@ -12,9 +12,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from gxr_studio.app import create_app
-
 from conftest import PORT
+from gxr_studio.app import create_app
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 ASSETS = WEB / "assets"
@@ -83,7 +82,7 @@ def test_recipe_catalog_has_three_units_of_eight_bases(web_client):
         assert [x["slot"] for x in unit["recipes"]] == list(range(1, 9))
 
     unit = units[0]
-    bw = unit["recipes"][2]   # 03 高反差黑白
+    bw = unit["recipes"][2]  # 03 高反差黑白
     stock = unit["recipes"][3]  # 04 标准
     assert bw["has_amount"] is False and stock["has_amount"] is False
     assert {c["name"] for c in bw["controls"]} == {"contrast", "highlight", "shadow", "fade", "filter"}
@@ -114,9 +113,16 @@ def test_edit_roundtrip_without_camera_data_keeps_scopes_and_says_why(web_client
     # 改配方：旋钮档位和 memory 都能保存
     put = web_client.put(
         f"/api/photos/{pair['id']}/edit",
-        json={"recipe": {"kind": "builtin", "unit": "jlaunch", "slot": 5, "levels": {"contrast": 2, "saturation": -1},
-                         "memory": {"jlaunch/5": {"contrast": 2}}},
-              "expected_rev": body["rev"]},
+        json={
+            "recipe": {
+                "kind": "builtin",
+                "unit": "jlaunch",
+                "slot": 5,
+                "levels": {"contrast": 2, "saturation": -1},
+                "memory": {"jlaunch/5": {"contrast": 2}},
+            },
+            "expected_rev": body["rev"],
+        },
     )
     assert put.status_code == 200, put.text
     saved = put.json()
@@ -127,8 +133,17 @@ def test_edit_roundtrip_without_camera_data_keeps_scopes_and_says_why(web_client
     # 调整、曲线：只在电脑上生效，保存后仍在 computer_only 那一块里
     put = web_client.put(
         f"/api/photos/{pair['id']}/edit",
-        json={"adjust": {"exposure_ev": 0.5, "wb": {"warm": 10, "tint": -5}, "contrast": 20, "highlight": 0, "shadow": -10},
-              "curve": {"master": [[0, 0], [128, 140], [255, 255]]}, "expected_rev": saved["rev"]},
+        json={
+            "adjust": {
+                "exposure_ev": 0.5,
+                "wb": {"warm": 10, "tint": -5},
+                "contrast": 20,
+                "highlight": 0,
+                "shadow": -10,
+            },
+            "curve": {"master": [[0, 0], [128, 140], [255, 255]]},
+            "expected_rev": saved["rev"],
+        },
     )
     assert put.status_code == 200, put.text
     assert put.json()["curve"]["master"][1] == [128, 140]

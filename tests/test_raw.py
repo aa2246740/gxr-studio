@@ -14,8 +14,8 @@ import pytest
 
 from gxr_studio.raw import (
     NEUTRAL,
-    Renderer,
     RawDecodeError,
+    Renderer,
     demosaic_full,
     demosaic_strips,
     half_res_codes,
@@ -44,8 +44,19 @@ def rng_mosaic(h, w, hi=4095, seed=1):
 @pytest.mark.parametrize("bps", [16, 12])
 def test_synthetic_structure_and_pixels_roundtrip(bps):
     m = rng_mosaic(20, 32, (1 << bps) - 1)
-    d = open_dng(build_dng(m, bps=bps, black=(64,), white=(1 << bps) - 1, crop_origin=(2, 1), crop_size=(24, 16),
-                           active=(0, 0, 20, 32), neutral=(0.645161, 1.0, 0.574712), orientation=1))
+    d = open_dng(
+        build_dng(
+            m,
+            bps=bps,
+            black=(64,),
+            white=(1 << bps) - 1,
+            crop_origin=(2, 1),
+            crop_size=(24, 16),
+            active=(0, 0, 20, 32),
+            neutral=(0.645161, 1.0, 0.574712),
+            orientation=1,
+        )
+    )
     assert d.endian == "big" and d.bps == bps and (d.width, d.height) == (32, 20)
     assert d.cfa.tolist() == [[0, 1], [1, 2]]
     assert d.crop_window() == (1, 2, 16, 24) and d.crop_size == (24, 16)
@@ -61,8 +72,17 @@ def test_black_level_pattern_deltas_and_linearization_match_pointwise_reader():
     m = rng_mosaic(h, w, 4000, seed=3)
     dh = list(range(w))
     dv = [2 * i for i in range(h)]
-    d = open_dng(build_dng(m, black=(10, 20, 30, 40), black_repeat=(2, 2), black_delta_h=dh, black_delta_v=dv,
-                           white=4095, active=(0, 0, h, w)))
+    d = open_dng(
+        build_dng(
+            m,
+            black=(10, 20, 30, 40),
+            black_repeat=(2, 2),
+            black_delta_h=dh,
+            black_delta_v=dv,
+            white=4095,
+            active=(0, 0, h, w),
+        )
+    )
     ys, xs = np.indices((h, w))
     ref = d.normalised_at(ys, xs)  # 来源里的逐点读取
     assert np.array_equal(d.normalised_block(0, h, 0, w), ref)
@@ -116,9 +136,17 @@ def research_half(d, hw=None):
 def test_half_res_equals_research_arithmetic(origin):
     h, w = 40, 52
     m = rng_mosaic(h, w, 4095, seed=7)
-    d = open_dng(build_dng(m, black=(16,), white=4000, crop_origin=origin, active=(0, 0, h, w),
-                           crop_size=(w - origin[0], h - origin[1]),
-                           neutral=(0.645161, 1.0, 0.574712)))
+    d = open_dng(
+        build_dng(
+            m,
+            black=(16,),
+            white=4000,
+            crop_origin=origin,
+            active=(0, 0, h, w),
+            crop_size=(w - origin[0], h - origin[1]),
+            neutral=(0.645161, 1.0, 0.574712),
+        )
+    )
     got = half_res_codes(d, np.float64)
     want = research_half(d)
     assert got.shape == want.shape == (d.crop_size[1] // 2, d.crop_size[0] // 2, 3)
@@ -147,8 +175,7 @@ def test_demosaic_flat_field_is_exact_including_borders(origin):
     scene = np.empty((h, w, 3))
     scene[...] = (0.3 * neutral[0], 0.3 * neutral[1], 0.3 * neutral[2])
     m = bayer_scene(h, w, scene, white=4095)
-    d = open_dng(build_dng(m, neutral=neutral, white=4095, crop_origin=origin, active=(0, 0, h, w),
-                           crop_size=(w - 2, h - 2)))
+    d = open_dng(build_dng(m, neutral=neutral, white=4095, crop_origin=origin, active=(0, 0, h, w), crop_size=(w - 2, h - 2)))
     rgb = demosaic_full(d)
     assert rgb.shape == (h - 2, w - 2, 3)
     assert np.allclose(rgb, 0.3 * 4095, atol=0.8)
@@ -170,8 +197,17 @@ def test_demosaic_reconstructs_smooth_ramp_in_interior():
 def test_strip_demosaic_is_bit_identical_to_full(origin):
     h, w = 50, 46
     m = rng_mosaic(h, w, 4095, seed=11)
-    d = open_dng(build_dng(m, black=(30,), white=4095, crop_origin=origin, active=(0, 0, h, w),
-                           crop_size=(w - 2, h - 2), neutral=(0.645161, 1.0, 0.574712)))
+    d = open_dng(
+        build_dng(
+            m,
+            black=(30,),
+            white=4095,
+            crop_origin=origin,
+            active=(0, 0, h, w),
+            crop_size=(w - 2, h - 2),
+            neutral=(0.645161, 1.0, 0.574712),
+        )
+    )
     full = demosaic_full(d)
     for rows in (4, 6, 16, 256):
         out = np.concatenate([s for _, s in demosaic_strips(d, rows)], axis=0)
@@ -280,8 +316,20 @@ def test_real_sample_matches_research_reader_and_half_res_arithmetic(sample):
     sys.modules["research_dng_scene"] = mod
     spec.loader.exec_module(mod)
     r = mod.Dng(SAMPLE)
-    for field in ("width", "height", "bps", "white", "orientation", "active", "crop_origin", "crop_size",
-                  "default_scale", "endian", "baseline_exposure", "sha256"):
+    for field in (
+        "width",
+        "height",
+        "bps",
+        "white",
+        "orientation",
+        "active",
+        "crop_origin",
+        "crop_size",
+        "default_scale",
+        "endian",
+        "baseline_exposure",
+        "sha256",
+    ):
         assert getattr(sample, field) == getattr(r, field), field
     assert np.array_equal(sample.cfa, r.cfa) and np.array_equal(sample.as_shot_neutral, r.as_shot_neutral)
     assert np.array_equal(sample.black_pattern, r.black_pattern) and sample.crop_window() == r.crop_window()

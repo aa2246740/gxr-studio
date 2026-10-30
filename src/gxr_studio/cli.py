@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> None:
 
     settings = Settings.from_env()
     try:
-        lock = LibraryLock(settings.library_dir).acquire()   # 进程结束时系统自动放锁
+        lock = LibraryLock(settings.library_dir).acquire()  # 进程结束时系统自动放锁
     except LibraryBusy:
         print("工作室已经开着了：请回到第一个打开的窗口（或浏览器页面）继续用。", flush=True)
         print("如果确认没有开着，请先关掉所有“GXR Studio”的终端窗口再试。", flush=True)

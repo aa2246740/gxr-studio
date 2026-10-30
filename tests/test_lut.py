@@ -23,7 +23,6 @@ from conftest import PORT
 from gxr_studio.app import create_app
 from gxr_studio.camdata import calib, store
 from gxr_studio.engine import colour
-from gxr_studio.lut import cube as cubemod
 from gxr_studio.lut import fit, scene, spaces
 from gxr_studio.lut.cube import Cube, write_cube
 from gxr_studio.render.params import RecipeSel
@@ -138,28 +137,33 @@ def test_cube_red_is_fastest_axis(tmp_path):
 
 def test_cube_1d_domain_and_shaper_plus_3d(tmp_path):
     p = tmp_path / "one.cube"
-    p.write_text('TITLE "gamma"\nLUT_1D_SIZE 5\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n' + "\n".join(f"{v} {v} {v}" for v in (0, .1, .4, .8, 1)) + "\n")
+    p.write_text(
+        'TITLE "gamma"\nLUT_1D_SIZE 5\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n' + "\n".join(f"{v} {v} {v}" for v in (0, 0.1, 0.4, 0.8, 1)) + "\n"
+    )
     c = Cube.read(p)
     assert c.table1 is not None and c.table3 is None and c.title == "gamma"
-    assert np.allclose(c.apply(np.array([[1.0, 1.0, 1.0]])), 0.4)           # 域 0..2 的正中
+    assert np.allclose(c.apply(np.array([[1.0, 1.0, 1.0]])), 0.4)  # 域 0..2 的正中
     both = tmp_path / "both.cube"
     lines = [f"{v} {v} {v}" for v in np.linspace(0, 1, 4)]
     cube3 = [f"{r} {g} {b}" for b in (0, 1) for g in (0, 1) for r in (0, 1)]
     both.write_text("LUT_1D_SIZE 4\nLUT_3D_SIZE 2\n" + "\n".join(lines + cube3) + "\n")
     c2 = Cube.read(both)
     assert c2.table1 is not None and c2.table3 is not None
-    assert np.allclose(c2.apply(np.array([[.3, .6, .9]])), [[.3, .6, .9]], atol=1e-9)
+    assert np.allclose(c2.apply(np.array([[0.3, 0.6, 0.9]])), [[0.3, 0.6, 0.9]], atol=1e-9)
 
 
-@pytest.mark.parametrize("text", [
-    "hello\n",
-    "LUT_3D_SIZE 2\n0 0 0\n",                                         # 行数不对
-    "LUT_3D_SIZE 1\n0 0 0\n",                                         # 尺寸太小
-    "LUT_3D_SIZE 2\nLUT_3D_SIZE 2\n" + "0 0 0\n" * 8,                 # 重复头
-    "LUT_3D_SIZE 2\n" + "0 0 nan\n" * 8,                              # 非有限数
-    "LUT_3D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n" + "0 0 0\n" * 8,
-    "LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nLUT_3D_INPUT_RANGE 0 1\n" + "0 0 0\n" * 8,   # 两种范围写法同时出现
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "hello\n",
+        "LUT_3D_SIZE 2\n0 0 0\n",  # 行数不对
+        "LUT_3D_SIZE 1\n0 0 0\n",  # 尺寸太小
+        "LUT_3D_SIZE 2\nLUT_3D_SIZE 2\n" + "0 0 0\n" * 8,  # 重复头
+        "LUT_3D_SIZE 2\n" + "0 0 nan\n" * 8,  # 非有限数
+        "LUT_3D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n" + "0 0 0\n" * 8,
+        "LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nLUT_3D_INPUT_RANGE 0 1\n" + "0 0 0\n" * 8,  # 两种范围写法同时出现
+    ],
+)
 def test_bad_cubes_are_refused(text):
     with pytest.raises(ValueError):
         Cube.parse(text)
@@ -224,6 +228,7 @@ def test_scene_colour_matches_research_dng_colour():
     spec = importlib.util.spec_from_file_location("research_dng_scene", src)
     mod = importlib.util.module_from_spec(spec)
     import sys
+
     sys.modules["research_dng_scene"] = mod
     spec.loader.exec_module(mod)
     path = SAMPLE_DIR / "R8051144.DNG"
@@ -237,7 +242,7 @@ def test_scene_colour_matches_research_dng_colour():
     x = np.array([[1200.0, 1500.0, 900.0]])
     u, f = scene.ANCHOR["u_m"], scene.ANCHOR["f"]
     wh = ref.as_shot_neutral @ want.T
-    ref_xyz = ((x / 4095 - f) * ref.as_shot_neutral) @ want.T * (.18 / ((u - f) * wh[1]))
+    ref_xyz = ((x / 4095 - f) * ref.as_shot_neutral) @ want.T * (0.18 / ((u - f) * wh[1]))
     assert np.allclose(got.xyz(x), ref_xyz)
 
 
@@ -246,26 +251,33 @@ def test_scene_colour_matches_research_dng_colour():
 
 def test_similarity_formula_labels_and_na():
     assert fit.similarity_of(2.0, 0.2) == pytest.approx(90.0)
-    assert fit.similarity_of(2.0, 3.0) == pytest.approx(-50.0)             # 比 04 更远：负数，不钳位
+    assert fit.similarity_of(2.0, 3.0) == pytest.approx(-50.0)  # 比 04 更远：负数，不钳位
     assert fit.similarity_of(0.24, 0.0) is None and fit.similarity_of(0.25, 0.0) == 100.0
-    assert [fit.label_for(v) for v in (95.0, 90.0, 89.99, 80.0, 79.9, -3.0, None)] == \
-        ["接近", "接近", "大致", "大致", "差别明显", "差别明显", None]
+    assert [fit.label_for(v) for v in (95.0, 90.0, 89.99, 80.0, 79.9, -3.0, None)] == [
+        "接近",
+        "接近",
+        "大致",
+        "大致",
+        "差别明显",
+        "差别明显",
+        None,
+    ]
 
 
 def test_explain_names_the_biggest_differences():
     rng = np.random.default_rng(3)
-    L = np.linspace(5, 95, 400)
+    L = np.linspace(5, 95, 400)  # noqa: N806  这里的 L 是 Lab 的明度轴
     ideal = np.stack([L, rng.normal(0, 1, 400), rng.normal(0, 1, 400)], axis=1)
     group = np.zeros(400, np.int8)
     pred = ideal.copy()
-    pred[L < 35, 1] -= 6.0                                  # 暗部偏绿
-    pred[L >= 70, 0] += 4.0                                 # 高光偏亮
+    pred[L < 35, 1] -= 6.0  # 暗部偏绿
+    pred[L >= 70, 0] += 4.0  # 高光偏亮
     notes = fit.explain(pred, ideal, group)
     assert any(n.startswith("暗部") and "偏绿" in n for n in notes), notes
     assert any(n.startswith("高光") and "偏亮" in n for n in notes), notes
     assert fit.explain(ideal, ideal, group) == ["整体已经很接近，没有明显的偏差"]
     chroma = np.stack([np.full(400, 50.0), rng.normal(0, 25, 400), rng.normal(0, 25, 400)], axis=1)
-    flat = chroma * np.array([1, .6, .6])
+    flat = chroma * np.array([1, 0.6, 0.6])
     assert "整体饱和度偏低" in fit.explain(flat, chroma, np.full(400, 2, np.int8))
 
 
@@ -397,11 +409,14 @@ def test_upload_describes_the_cube_and_guesses_the_space(client):
     assert next(s for s in spaces_ if s["id"] == "flog")["kind"] == "log"
 
 
-@pytest.mark.parametrize("body,code", [
-    (b"this is not a cube file", "cube_unreadable"),
-    (b"LUT_3D_SIZE 2\n0 0 0\n", "cube_unreadable"),
-    (b"\xff\xfe\x00\x01", "cube_unreadable"),
-])
+@pytest.mark.parametrize(
+    "body,code",
+    [
+        (b"this is not a cube file", "cube_unreadable"),
+        (b"LUT_3D_SIZE 2\n0 0 0\n", "cube_unreadable"),
+        (b"\xff\xfe\x00\x01", "cube_unreadable"),
+    ],
+)
 def test_upload_rejects_non_cube_with_plain_message(client, body, code):
     r = upload(client, body)
     assert r.status_code == 422 and r.json()["error"] == code
@@ -444,7 +459,7 @@ def test_full_flow_fit_save_apply_and_manage_recipes(data_client, camhome):
     assert r.status_code == 200, r.text
     job = r.json()["job_id"]
     busy = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "quick"})
-    if busy.status_code == 409:                                   # 同时只跑一个
+    if busy.status_code == 409:  # 同时只跑一个
         assert busy.json()["error"] == "fit_busy" and busy.json()["job_id"] == job
     st = wait(c, job)
     assert st["state"] == "done", st.get("error")
@@ -477,6 +492,7 @@ def test_full_flow_fit_save_apply_and_manage_recipes(data_client, camhome):
     assert c.post("/api/my-recipes", json={"job_id": "0123456789ab", "candidate": 0, "name": "x"}).status_code == 404
     # 存下来的配方是内置配方的形状：直接就能当某张照片的配方去预览（走原有的渲染链）
     from gxr_studio.render.params import parse_recipe
+
     sel = parse_recipe(doc["recipe"])
     assert sel.slot == best["slot"] and dict(sel.levels) == best["levels"]
     assert c.delete(f"/api/my-recipes/{doc['id']}").status_code == 200
@@ -529,4 +545,6 @@ def test_fit_and_preview_with_library_photos(data_client, real_card):
     assert job["photos"], "应当有图库里的 DNG 照片可抽样"
     st = wait(c, job["job_id"])
     assert st["state"] == "done", st.get("error")
-    assert st["result"]["samples"]["groups"]["照片"] > 0 and any(p["holdout_only"] for p in st["result"]["samples"]["photos"]) == (len(st["result"]["samples"]["photos"]) >= 2)
+    assert st["result"]["samples"]["groups"]["照片"] > 0 and any(p["holdout_only"] for p in st["result"]["samples"]["photos"]) == (
+        len(st["result"]["samples"]["photos"]) >= 2
+    )

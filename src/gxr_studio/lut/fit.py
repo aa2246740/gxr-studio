@@ -30,24 +30,39 @@ from ..render.params import EditError, RecipeSel
 from ..render.recipes import SLOT_SHORT
 from .scene import GROUP_NAMES, Samples
 
-UNIT = "jlaunch"                   # 拟合只对 50mm 做（28mm / MOUNT 没有标定模型）
+UNIT = "jlaunch"  # 拟合只对 50mm 做（28mm / MOUNT 没有标定模型）
 SLOTS = tuple(range(1, 9))
 TONE = ("amount", "contrast", "highlight", "shadow", "fade")
 CONTROL_ORDER = ("amount", "contrast", "highlight", "shadow", "fade", "saturation", "warmth", "tint", "split", "filter")
 MIN_DENOMINATOR = 0.25
 LABEL_CLOSE, LABEL_ROUGH = 90.0, 80.0
-FORMULA = ("相似度 = 1 − median(候选→目标 ΔE00) / median(04→目标 ΔE00)，在留出样本上算；"
-           "分母中位数 < 0.25 时显示 N/A")
+FORMULA = "相似度 = 1 − median(候选→目标 ΔE00) / median(04→目标 ΔE00)，在留出样本上算；分母中位数 < 0.25 时显示 N/A"
 HUE_NAMES = ("红橙", "橙黄", "黄绿", "绿", "青", "蓝", "紫", "洋红")
 HUE_EDGES = (10, 50, 85, 125, 175, 225, 285, 335)
 
 PROFILES = {
     # top_bases：精修几个底子；coarse_n：排序阶段的样本数；sweeps：精修最多几轮
     # starts：灰阶网格上取几个起点；full_starts：色调解出来的几个候选放开全部旋钮精修
-    "normal": {"top_bases": 3, "coarse_n": 320, "mid_n": 520, "rank_sweeps": 2, "sweeps": 3, "rounds": 3,
-               "starts": 6, "full_starts": 2},
-    "quick": {"top_bases": 2, "coarse_n": 160, "mid_n": 280, "rank_sweeps": 1, "sweeps": 2, "rounds": 2,
-              "starts": 3, "full_starts": 1},
+    "normal": {
+        "top_bases": 3,
+        "coarse_n": 320,
+        "mid_n": 520,
+        "rank_sweeps": 2,
+        "sweeps": 3,
+        "rounds": 3,
+        "starts": 6,
+        "full_starts": 2,
+    },
+    "quick": {
+        "top_bases": 2,
+        "coarse_n": 160,
+        "mid_n": 280,
+        "rank_sweeps": 1,
+        "sweeps": 2,
+        "rounds": 2,
+        "starts": 3,
+        "full_starts": 1,
+    },
 }
 
 
@@ -62,8 +77,12 @@ def label_for(similarity: float | None) -> str | None:
 
 
 def stats_of(de: np.ndarray) -> dict:
-    return {"median": float(np.median(de)), "p90": float(np.percentile(de, 90)), "mean": float(np.mean(de)),
-            "n": int(len(de))}
+    return {
+        "median": float(np.median(de)),
+        "p90": float(np.percentile(de, 90)),
+        "mean": float(np.mean(de)),
+        "n": int(len(de)),
+    }
 
 
 def similarity_of(base_median: float, cand_median: float) -> float | None:
@@ -81,14 +100,28 @@ class Progress:
     best: dict | None = None
 
     def to_dict(self) -> dict:
-        return {"phase": self.phase, "fraction": round(self.fraction, 4), "message": self.message,
-                "evaluations": self.evaluations, "best": self.best}
+        return {
+            "phase": self.phase,
+            "fraction": round(self.fraction, 4),
+            "message": self.message,
+            "evaluations": self.evaluations,
+            "best": self.best,
+        }
 
 
 class Fitter:
-    def __init__(self, cam, model, samples: Samples, stock_rgb: np.ndarray, ideal_rgb: np.ndarray, *,
-                 profile: str = "normal", progress: Callable[[Progress], None] | None = None,
-                 cancelled: Callable[[], bool] | None = None):
+    def __init__(
+        self,
+        cam,
+        model,
+        samples: Samples,
+        stock_rgb: np.ndarray,
+        ideal_rgb: np.ndarray,
+        *,
+        profile: str = "normal",
+        progress: Callable[[Progress], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ):
         self.cam, self.model, self.samples = cam, model, samples
         self.cfg = PROFILES[profile]
         self.profile = profile
@@ -102,7 +135,7 @@ class Fitter:
         self.coarse = self.train[np.linspace(0, len(self.train) - 1, min(self.cfg["coarse_n"], len(self.train))).astype(int)]
         self.mid = self.train[np.linspace(0, len(self.train) - 1, min(self.cfg["mid_n"], len(self.train))).astype(int)]
         neutral = self.train[samples.group[self.train] == 0]
-        self.neutral = neutral if len(neutral) >= 20 else self.coarse      # 灰阶不受饱和度/色温旋钮影响，先用它定色调
+        self.neutral = neutral if len(neutral) >= 20 else self.coarse  # 灰阶不受饱和度/色温旋钮影响，先用它定色调
         self.neutral_small = self.neutral[::4] if len(self.neutral) >= 80 else self.neutral
         self._grid: dict = {}
         self.stock04 = cam.stock[0]
@@ -136,7 +169,7 @@ class Fitter:
             w = self.samples.weight[idx]
             value = float(0.5 * np.average(de, weights=w) + 0.5 * np.median(de))
         except (EditError, ValueError):
-            value = float("inf")             # 这个组合算不出来（例如色表行不对称）：当作最差
+            value = float("inf")  # 这个组合算不出来（例如色表行不对称）：当作最差
         self._cache[key] = value
         self.prog.evaluations += 1
         return value
@@ -156,8 +189,19 @@ class Fitter:
         self.prog.message = text
         self.emit()
 
-    def descend(self, slot: int, levels: dict, idx: np.ndarray, tag: str, *, names=None, coarse: bool = False,
-                max_sweeps: int = 4, span=(0.0, 0.0), label: str = "") -> tuple[dict, float]:
+    def descend(
+        self,
+        slot: int,
+        levels: dict,
+        idx: np.ndarray,
+        tag: str,
+        *,
+        names=None,
+        coarse: bool = False,
+        max_sweeps: int = 4,
+        span=(0.0, 0.0),
+        label: str = "",
+    ) -> tuple[dict, float]:
         """坐标下降：每次只动一个旋钮，试它所有合法档位（coarse 时每 3 档取 1 档）；严格更好才换。"""
         ctrl = self._ctrl(slot, names)
         best = self.loss(slot, levels, idx, tag)
@@ -179,10 +223,22 @@ class Fitter:
                 break
         return levels, best
 
-    PAIR_STEPS = ((1, 1), (1, -1), (-1, 1), (-1, -1), (1, 2), (2, 1), (1, -2), (2, -1), (-1, 2), (-2, 1), (-1, -2), (-2, -1))
+    PAIR_STEPS = (
+        (1, 1),
+        (1, -1),
+        (-1, 1),
+        (-1, -1),
+        (1, 2),
+        (2, 1),
+        (1, -2),
+        (2, -1),
+        (-1, 2),
+        (-2, 1),
+        (-1, -2),
+        (-2, -1),
+    )
 
-    def pairs(self, slot: int, levels: dict, idx: np.ndarray, tag: str, *, names=None, span=(0.0, 0.0),
-              label: str = "") -> tuple[dict, float]:
+    def pairs(self, slot: int, levels: dict, idx: np.ndarray, tag: str, *, names=None, span=(0.0, 0.0), label: str = "") -> tuple[dict, float]:
         """成对搜索：两个旋钮一起动 1~2 档（按各自合法档位的次序，到顶标记处走不过去）；对比 / 高光 / 阴影三个一起动 ±1
         （三者合成同一条色调曲线，沿"山谷"走要一起变）。严格更好才换。"""
         ctrl = self._ctrl(slot, names)
@@ -227,7 +283,10 @@ class Fitter:
     def local(self, slot: int, levels: dict, idx: np.ndarray, tag: str, *, names=None, rounds: int, span, label: str):
         """单旋钮 → 成对 → 单旋钮 …，交替到没有改进（最多 rounds 轮）。"""
         n = 2 * rounds + 1
-        seg = lambda k: (span[0] + (span[1] - span[0]) * k / n, span[0] + (span[1] - span[0]) * (k + 1) / n)
+
+        def seg(k):
+            return (span[0] + (span[1] - span[0]) * k / n, span[0] + (span[1] - span[0]) * (k + 1) / n)
+
         levels, best = self.descend(slot, levels, idx, tag, names=names, max_sweeps=self.cfg["sweeps"], span=seg(0), label=label)
         for r in range(rounds):
             before = dict(levels)
@@ -250,7 +309,7 @@ class Fitter:
         amounts = [None]
         if ctrl[0]["name"] == "amount":
             amounts = ctrl[0]["levels"] if len(ctrl[0]["levels"]) <= 9 else ctrl[0]["levels"][::2]
-        scored = []
+        scored: list[tuple] = []
         for amount in amounts:
             b = base if amount is None else {**base, "amount": amount}
             for combo in itertools.product(*[c["levels"][::4] for c in tone]):
@@ -270,8 +329,16 @@ class Fitter:
             span = (0.2 * i / len(SLOTS), 0.2 * (i + 1) / len(SLOTS))
             self.prog.phase = "比较底子"
             start = self.grid_starts(slot, cfg["starts"])[0]
-            levels, value = self.descend(slot, start, self.coarse, "c", coarse=True, max_sweeps=cfg["rank_sweeps"],
-                                         span=span, label=f"比较底子 {slot:02d}")
+            levels, value = self.descend(
+                slot,
+                start,
+                self.coarse,
+                "c",
+                coarse=True,
+                max_sweeps=cfg["rank_sweeps"],
+                span=span,
+                label=f"比较底子 {slot:02d}",
+            )
             ranked.append((value, slot))
             if self.prog.best is None or value < self.prog.best["loss"]:
                 self.prog.best = {"slot": slot, "loss": round(value, 3)}
@@ -286,8 +353,18 @@ class Fitter:
             solved = []
             for n, start in enumerate(self.grid_starts(slot, cfg["starts"])):
                 a, b = lo + (hi - lo) * 0.3 * n / cfg["starts"], lo + (hi - lo) * 0.3 * (n + 1) / cfg["starts"]
-                solved.append(self.local(slot, start, self.neutral_small, "s", names=tone_names, rounds=cfg["rounds"],
-                                         span=(a, b), label=f"精修 {slot:02d} 色调"))
+                solved.append(
+                    self.local(
+                        slot,
+                        start,
+                        self.neutral_small,
+                        "s",
+                        names=tone_names,
+                        rounds=cfg["rounds"],
+                        span=(a, b),
+                        label=f"精修 {slot:02d} 色调",
+                    )
+                )
             solved.sort(key=lambda r: r[1])
             picks, seen = [], set()
             for lv, _ in solved:
@@ -295,7 +372,7 @@ class Fitter:
                 if key not in seen:
                     seen.add(key)
                     picks.append(lv)
-            picks = picks[:cfg["full_starts"]]
+            picks = picks[: cfg["full_starts"]]
             best = None
             for n, start in enumerate(picks):
                 a = lo + (hi - lo) * (0.3 + 0.7 * n / len(picks))
@@ -303,6 +380,8 @@ class Fitter:
                 got = self.local(slot, start, self.mid, "m", rounds=cfg["rounds"], span=(a, b), label=f"精修 {slot:02d}")
                 if best is None or got[1] < best[1]:
                     best = got
+            if best is None:
+                raise RuntimeError(f"slot {slot} produced no candidate")
             levels = best[0]
             finalists.append((self.loss(slot, levels, self.train, "t"), slot, levels))
             self.prog.best = {"slot": slot, "loss": round(min(f[0] for f in finalists), 3)}
@@ -323,30 +402,43 @@ class Fitter:
         sim = similarity_of(float(np.median(base_hold)), float(np.median(hold)))
         entry = self.entry_of(slot, levels)
         import hashlib
+
         return {
-            "unit": UNIT, "slot": slot, "number": f"{slot:02d}", "short": SLOT_SHORT[slot - 1],
+            "unit": UNIT,
+            "slot": slot,
+            "number": f"{slot:02d}",
+            "short": SLOT_SHORT[slot - 1],
             "levels": {k: int(v) for k, v in levels.items()},
             "amount": int(levels["amount"]) if "amount" in levels else None,
-            "similarity": sim, "label": label_for(sim),
-            "holdout": stats_of(hold), "train": stats_of(train), "baseline04_holdout": stats_of(base_hold),
-            "per_group": {GROUP_NAMES[g]: stats_of(de[self.samples.group == g])
-                          for g in range(4) if (self.samples.group == g).any()},
+            "similarity": sim,
+            "label": label_for(sim),
+            "holdout": stats_of(hold),
+            "train": stats_of(train),
+            "baseline04_holdout": stats_of(base_hold),
+            "per_group": {GROUP_NAMES[g]: stats_of(de[self.samples.group == g]) for g in range(4) if (self.samples.group == g).any()},
             "differences": explain(lab, self.ideal_lab, self.samples.group),
             "entry_sha256": hashlib.sha256(entry).hexdigest(),
         }
 
     def result(self, cands: list[dict], seconds: float) -> dict:
         return {
-            "schema": "gxr-studio/lut-fit/1", "prediction": True, "label": "电脑预测",
+            "schema": "gxr-studio/lut-fit/1",
+            "prediction": True,
+            "label": "电脑预测",
             "caution": "这是电脑按一组标准色块比较得出的数字，相机实拍通常会低一些，以相机实测为准。",
-            "formula": FORMULA, "thresholds": {"close": LABEL_CLOSE, "rough": LABEL_ROUGH},
-            "best": cands[0], "candidates": cands, "profile": self.profile,
+            "formula": FORMULA,
+            "thresholds": {"close": LABEL_CLOSE, "rough": LABEL_ROUGH},
+            "best": cands[0],
+            "candidates": cands,
+            "profile": self.profile,
             "samples": {**self.samples.counts(), "photos": self.samples.photos},
-            "evaluations": self.prog.evaluations, "seconds": round(seconds, 2),
+            "evaluations": self.prog.evaluations,
+            "seconds": round(seconds, 2),
         }
 
 
 # ---- "差别在哪" --------------------------------------------------------------------
+
 
 def _cast(da: float, db: float, floor: float = 2.0) -> str | None:
     """候选相对目标的色偏（Lab a/b 的中位差）→ 一个词。"""
@@ -404,6 +496,7 @@ def explain(pred_lab: np.ndarray, ideal_lab: np.ndarray, group: np.ndarray, limi
 
 
 # ---- 入口 --------------------------------------------------------------------------
+
 
 def fit_lut(cam, model, samples: Samples, stock_rgb: np.ndarray, ideal_rgb: np.ndarray, **kw) -> dict:
     return Fitter(cam, model, samples, stock_rgb, ideal_rgb, **kw).run()

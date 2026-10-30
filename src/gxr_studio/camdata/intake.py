@@ -105,14 +105,17 @@ def _read_limited(fh) -> bytes:
         chunks.append(chunk)
         total += len(chunk)
         if total > MAX_DAT_BYTES:
-            raise IntakeError(422, "dat_invalid", f"这个文件比 GXRCE.DAT 大得多（超过 {MAX_DAT_BYTES // 1024} KB），"
-                              "不像是配方程序，没有导入。")
+            raise IntakeError(
+                422,
+                "dat_invalid",
+                f"这个文件比 GXRCE.DAT 大得多（超过 {MAX_DAT_BYTES // 1024} KB），不像是配方程序，没有导入。",
+            )
     return b"".join(chunks)
 
 
 def read_dat_from_card(reader: CardReader, scan: CardScan) -> bytes:
     try:
-        with reader.open_rb(scan.dat_path) as fh:
+        with reader.open_rb(scan.dat_path) as fh:  # type: ignore[arg-type]
             return _read_limited(fh)
     except OSError as exc:
         raise IntakeError(409, "card_read_failed", f"读不出卡「{scan.card.label}」上的 GXRCE.DAT（卡是不是被拔出了？）。") from exc
@@ -164,14 +167,19 @@ def inspect_dat(raw: bytes) -> DatInfo:
     except datcodec.UnsupportedGeneration as exc:
         g = datcodec.peek_generation(raw)
         raise IntakeError(
-            422, "generation_unsupported",
+            422,
+            "generation_unsupported",
             f"这份 GXRCE.DAT 是第 {g} 代，电脑还不认识（目前支持 {'、'.join(str(x) for x in sorted(datcodec.PROFILES))}），"
-            "没有导入。读不懂的版本不会去猜。") from exc
+            "没有导入。读不懂的版本不会去猜。",
+        ) from exc
     except datcodec.DatError as exc:
         if raw[:8] != b"GXRCE001":
             raise IntakeError(422, "dat_invalid", f"这个文件不是 GXRCE.DAT（开头不对），没有导入。{HOW_TO_GET_DAT}") from exc
-        raise IntakeError(422, "dat_invalid", f"这份 GXRCE.DAT 已经损坏或被改动过（{exc}），没有导入。"
-                          "请重新从卡上复制一份，或换一张卡。") from exc
+        raise IntakeError(
+            422,
+            "dat_invalid",
+            f"这份 GXRCE.DAT 已经损坏或被改动过（{exc}），没有导入。请重新从卡上复制一份，或换一张卡。",
+        ) from exc
     except Exception as exc:  # noqa: BLE001  畸形输入可能触发任何解析错误，统一当作损坏
         raise IntakeError(422, "dat_invalid", f"这份 GXRCE.DAT 读不懂（{type(exc).__name__}），没有导入。") from exc
     return DatInfo(gen, len(raw), _sha(raw))
@@ -206,13 +214,28 @@ def describe(home: Path) -> dict | None:
     for info in UNIT_INFO:
         have = [s for s in store.SLOTS if f"units/{info['id']}/recipes/{s:02d}.entry" in files]
         stock = f"units/{info['id']}/stock04.entry" in files
-        units.append({"id": info["id"], "label": info["label"], "slots": have, "stock04": stock,
-                      "complete": stock and len(have) == len(store.SLOTS)})
+        units.append(
+            {
+                "id": info["id"],
+                "label": info["label"],
+                "slots": have,
+                "stock04": stock,
+                "complete": stock and len(have) == len(store.SLOTS),
+            }
+        )
     src = m.get("source", {})
-    return {"generation": m.get("generation"), "imported_at": m.get("imported_at"),
-            "source": {"name": src.get("name"), "size": src.get("size"), "sha256": src.get("sha256"),
-                       "origin": src.get("origin")},
-            "units": units, "all_units_complete": all(u["complete"] for u in units)}
+    return {
+        "generation": m.get("generation"),
+        "imported_at": m.get("imported_at"),
+        "source": {
+            "name": src.get("name"),
+            "size": src.get("size"),
+            "sha256": src.get("sha256"),
+            "origin": src.get("origin"),
+        },
+        "units": units,
+        "all_units_complete": all(u["complete"] for u in units),
+    }
 
 
 def describe_calibration(home: Path) -> dict | None:
@@ -221,8 +244,11 @@ def describe_calibration(home: Path) -> dict | None:
         m = json.loads(p.read_text())
     except (OSError, ValueError):
         return None
-    return {"imported_at": m.get("imported_at"), "origin": m.get("origin"),
-            "isos": sorted(int(i) for i in m.get("sources", {}))}
+    return {
+        "imported_at": m.get("imported_at"),
+        "origin": m.get("origin"),
+        "isos": sorted(int(i) for i in m.get("sources", {})),
+    }
 
 
 # ---- 标定包 ---------------------------------------------------------------------
@@ -310,8 +336,7 @@ def import_calibration_folder(home: Path, folder: Path) -> tuple[dict, str]:
     try:
         store.load_stock04(home, "jlaunch")
     except (OSError, store.CamdataError) as exc:
-        raise IntakeError(409, "camera_data_missing",
-                          "还没有导入相机数据。标定包要用相机数据里的原厂 04 核对，请先导入 GXRCE.DAT。") from exc
+        raise IntakeError(409, "camera_data_missing", "还没有导入相机数据。标定包要用相机数据里的原厂 04 核对，请先导入 GXRCE.DAT。") from exc
     if not folder.is_dir():
         raise IntakeError(404, "folder_not_found", "找不到这个文件夹。")
     snap = Path(home) / "calib-intake.tmp"
@@ -322,20 +347,25 @@ def import_calibration_folder(home: Path, folder: Path) -> tuple[dict, str]:
         if (folder / PACK_FILE).is_file():
             sources, kind, origin = _snapshot_pack(folder, snap), "pack", {"kind": "pack", "folder": folder.name}
         else:
-            sources = _dev_sources(folder)
+            sources = _dev_sources(folder)  # type: ignore[assignment]
             if sources is None:
-                raise _bad_pack("这个文件夹里没有 calib-pack.json（标定包的清单）。"
-                                "开发阶段也可以选仓库根目录或 research/ 目录；别的用户需要另外拿到标定包。")
+                raise _bad_pack(
+                    "这个文件夹里没有 calib-pack.json（标定包的清单）。"
+                    "开发阶段也可以选仓库根目录或 research/ 目录；别的用户需要另外拿到标定包。"
+                )
             kind, origin = "dev", {"kind": "dev", "folder": folder.name}
         try:
             return calib.import_calibration(home, sources, origin=origin), kind
         except calib.StockMismatch as exc:
-            raise IntakeError(422, "calibration_stock_mismatch",
-                              f"{exc}。这个标定包不是对应这份相机数据的，没有导入（原来的标定包保持不变）。") from exc
+            raise IntakeError(
+                422,
+                "calibration_stock_mismatch",
+                f"{exc}。这个标定包不是对应这份相机数据的，没有导入（原来的标定包保持不变）。",
+            ) from exc
         except calib.CalibError as exc:
             raise _bad_pack(f"标定包内容不合格：{exc}，没有导入。") from exc
         except (OSError, ValueError, KeyError, EOFError) as exc:
             raise _bad_pack(f"标定包里的文件读不出来（{type(exc).__name__}），没有导入。") from exc
     finally:
         shutil.rmtree(snap, ignore_errors=True)
-        shutil.rmtree(stale, ignore_errors=True)   # 失败时 import_calibration 留下的半成品
+        shutil.rmtree(stale, ignore_errors=True)  # 失败时 import_calibration 留下的半成品

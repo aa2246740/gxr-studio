@@ -114,9 +114,7 @@ def _schema_version(schema: str) -> int:
 
 
 def check_writable(data: dict) -> None:
-    if not str(data.get("schema", "")).startswith("gxr-studio/edit/") or _schema_version(
-        data["schema"]
-    ) > _schema_version(SCHEMA):
+    if not str(data.get("schema", "")).startswith("gxr-studio/edit/") or _schema_version(data["schema"]) > _schema_version(SCHEMA):
         raise SidecarTooNew(data.get("schema"))
 
 

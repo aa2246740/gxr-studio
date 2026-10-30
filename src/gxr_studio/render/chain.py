@@ -31,8 +31,8 @@ from .tones import apply_table
 
 DEFAULT_GRID = 33
 CODE_MAX = 4095
-CHUNK = 1 << 16                      # 烘焙套用时每块的像素数
-EXACT_CHUNK = 1 << 15                # 精确链每块的像素数（predict 的中间数组很大）
+CHUNK = 1 << 16  # 烘焙套用时每块的像素数
+EXACT_CHUNK = 1 << 15  # 精确链每块的像素数（predict 的中间数组很大）
 WORKERS = max(1, min(4, os.cpu_count() or 1))
 
 _pool: ThreadPoolExecutor | None = None
@@ -69,8 +69,16 @@ def quantize(rgb: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------- 精确链
 
-def exact_float(model, entry: bytes, codes: np.ndarray, gains: np.ndarray | None, table: np.ndarray | None,
-                *, workers: int = WORKERS) -> np.ndarray:
+
+def exact_float(
+    model,
+    entry: bytes,
+    codes: np.ndarray,
+    gains: np.ndarray | None,
+    table: np.ndarray | None,
+    *,
+    workers: int = WORKERS,
+) -> np.ndarray:
     """(…, 3) 码值 → (n, 3) 0..255 浮点（未量化）。"""
     x = codes.reshape(-1, 3)
     out = np.empty((len(x), 3), np.float32 if table is not None else np.float64)
@@ -90,11 +98,13 @@ def exact_u8(model, entry: bytes, codes: np.ndarray, gains, table, *, workers: i
 
 # ---------------------------------------------------------------- 烘焙
 
+
 @dataclass(frozen=True)
 class Bake:
     """一个配方条目在一个模型上的烘焙结果（不含显示域调子表，所以可以在多种调子下复用）。"""
-    pre: np.ndarray        # (4096, 3) float32：每通道一维曲线在整数码值上的输出（0..255）
-    lut: np.ndarray        # (G, G, G, 3) float32：曲线输出域三个数 → 模型输出 RGB（0..255，已夹紧），索引 [r][g][b]
+
+    pre: np.ndarray  # (4096, 3) float32：每通道一维曲线在整数码值上的输出（0..255）
+    lut: np.ndarray  # (G, G, G, 3) float32：曲线输出域三个数 → 模型输出 RGB（0..255，已夹紧），索引 [r][g][b]
     grid: int
 
     def folded(self, table: np.ndarray | None) -> np.ndarray:
@@ -126,7 +136,7 @@ def _lookup_chunk(x: np.ndarray, gains32, pre_flat: np.ndarray, lut: np.ndarray,
     f = x - i
     idx = i * 3 + np.arange(3, dtype=np.int32)
     v0 = np.take(pre_flat, idx)
-    p = v0 + (np.take(pre_flat, idx + 3) - v0) * f                       # 一维曲线输出，0..255
+    p = v0 + (np.take(pre_flat, idx + 3) - v0) * f  # 一维曲线输出，0..255
     q = p * np.float32((grid - 1) / 255.0)
     cell = np.minimum(q.astype(np.int32), grid - 2)
     fr = q - cell
@@ -135,7 +145,7 @@ def _lookup_chunk(x: np.ndarray, gains32, pre_flat: np.ndarray, lut: np.ndarray,
     # 四面体：把小数部分从大到小排，沿着对角线逐轴累加
     a1 = np.argmax(fr, axis=1)
     a3 = np.argmin(fr, axis=1)
-    a3 = np.where(a1 == a3, 2, a3)       # 三个小数全相等时 argmax 和 argmin 都是 0
+    a3 = np.where(a1 == a3, 2, a3)  # 三个小数全相等时 argmax 和 argmin 都是 0
     a2 = 3 - a1 - a3
     strides = np.array((s0, s1, 1), np.int32)
     off1 = strides[a1]
@@ -150,8 +160,7 @@ def _lookup_chunk(x: np.ndarray, gains32, pre_flat: np.ndarray, lut: np.ndarray,
     return v0 + (v1 - v0) * f1 + (v2 - v1) * f2 + (v3 - v2) * f3
 
 
-def apply_baked_float(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.ndarray | None,
-                      *, workers: int = WORKERS) -> np.ndarray:
+def apply_baked_float(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.ndarray | None, *, workers: int = WORKERS) -> np.ndarray:
     """(…, 3) 码值 → (n, 3) float32，0..255 未量化。"""
     x = np.ascontiguousarray(codes.reshape(-1, 3), np.float32)
     pre_flat = np.ascontiguousarray(bake.pre).reshape(-1)
@@ -165,8 +174,7 @@ def apply_baked_float(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains
     return out
 
 
-def apply_baked(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.ndarray | None,
-                *, workers: int = WORKERS) -> np.ndarray:
+def apply_baked(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.ndarray | None, *, workers: int = WORKERS) -> np.ndarray:
     """(…, 3) 码值 → uint8，形状与输入相同。"""
     x = np.ascontiguousarray(codes.reshape(-1, 3), np.float32)
     pre_flat = np.ascontiguousarray(bake.pre).reshape(-1)
@@ -182,25 +190,25 @@ def apply_baked(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.n
 
 # ---------------------------------------------------------------- 烘焙（线上用）：矩阵 + (Cb, Cr) 复数增益网格
 
-CHROMA_STEP = 2.0            # 增益网格的间距（Cb、Cr 码值）
+CHROMA_STEP = 2.0  # 增益网格的间距（Cb、Cr 码值）
 
 
 @dataclass(frozen=True)
 class ChromaBake:
-    pre: np.ndarray        # (4096, 3) float32：一维曲线（同 Bake.pre）
-    matrix: np.ndarray     # (3, 3) float32：有效矩阵（Q10 系数 / 1024），行 = Y、Cb、Cr
-    offset: np.ndarray     # (3,) float32：输出偏移（Y 的偏移、Cb/Cr 已减去 128 的中心）
-    gain: np.ndarray       # (ny, nx, 2) float32：G(c) 的实部、虚部；索引 [Cr 格][Cb 格]
-    origin: tuple[float, float]   # 网格第 0 格的 (Cb, Cr)
+    pre: np.ndarray  # (4096, 3) float32：一维曲线（同 Bake.pre）
+    matrix: np.ndarray  # (3, 3) float32：有效矩阵（Q10 系数 / 1024），行 = Y、Cb、Cr
+    offset: np.ndarray  # (3,) float32：输出偏移（Y 的偏移、Cb/Cr 已减去 128 的中心）
+    gain: np.ndarray  # (ny, nx, 2) float32：G(c) 的实部、虚部；索引 [Cr 格][Cb 格]
+    origin: tuple[float, float]  # 网格第 0 格的 (Cb, Cr)
     step: float
 
 
 def _sector_z(model, entry: bytes) -> np.ndarray:
     """与 `Model.predict` 里取系数、解码 Z 的几行逐字相同。"""
     b = entry
-    coeff = np.array([[k.dec(z, 128) for z in b[i:i + 4]] for i in range(115, 211, 4)])
+    coeff = np.array([[k.dec(z, 128) for z in b[i : i + 4]] for i in range(115, 211, 4)])
     if np.any(coeff[:, 0] != coeff[:, 3]) or np.any(coeff[:, 1] != -coeff[:, 2]):
-        raise ValueError('frozen symmetric sector model cannot predict asymmetric rows')
+        raise ValueError("frozen symmetric sector model cannot predict asymmetric rows")
     ab = coeff[:, :2]
     return model.fs.Z_of_words(ab[:, 0], ab[:, 1], model.engine.ctx)
 
@@ -218,14 +226,16 @@ def bake_chroma(model, entry: bytes, step: float = CHROMA_STEP, *, workers: int 
     cr = lo[1] + step * np.arange(ny)
     c = (cb[None, :] + 1j * cr[:, None]).reshape(-1)
     gain = np.ones(len(c), complex)
-    if entry[0] != 3:              # 03 黑白：predict 里色度直接过（conditional），增益恒为 1
+    if entry[0] != 3:  # 03 黑白：predict 里色度直接过（conditional），增益恒为 1
         z = _sector_z(model, entry)
         table = model.engine.table
-        probe = np.where(np.abs(c) < 1e-9, 1e-3 + 0j, c)     # 灰轴上的格点：用无穷小色度的增益
+        probe = np.where(np.abs(c) < 1e-9, 1e-3 + 0j, c)  # 灰轴上的格点：用无穷小色度的增益
         # 只算套用时会用到的格点：8 个立方体角投影出的凸多边形，外扩两格（双线性要用到相邻格）
         hull = ConvexHull(corners[:, 1:])
-        near = np.all(hull.equations[:, :2] @ np.column_stack([c.real, c.imag]).T + hull.equations[:, 2:3]
-                      <= 2.0 * step * np.sqrt(2.0), axis=0)
+        near = np.all(
+            hull.equations[:, :2] @ np.column_stack([c.real, c.imag]).T + hull.equations[:, 2:3] <= 2.0 * step * np.sqrt(2.0),
+            axis=0,
+        )
         todo = np.flatnonzero(near)
         out = np.ones(len(c), complex)
 
@@ -236,8 +246,14 @@ def bake_chroma(model, entry: bytes, step: float = CHROMA_STEP, *, workers: int 
         _map_chunks(run, len(todo), 4096, workers)
         gain = out
     g = np.stack([gain.real, gain.imag], axis=-1).reshape(ny, nx, 2).astype(np.float32)
-    return ChromaBake(pre.astype(np.float32), m.astype(np.float32), off.astype(np.float32), g,
-                      (float(lo[0]), float(lo[1])), float(step))
+    return ChromaBake(
+        pre.astype(np.float32),
+        m.astype(np.float32),
+        off.astype(np.float32),
+        g,
+        (float(lo[0]), float(lo[1])),
+        float(step),
+    )
 
 
 def _chroma_chunk(x: np.ndarray, g32, pre_flat: np.ndarray, bk: ChromaBake, table) -> np.ndarray:
@@ -260,8 +276,9 @@ def _chroma_chunk(x: np.ndarray, g32, pre_flat: np.ndarray, bk: ChromaBake, tabl
     fv = (v - iv)[:, None]
     flat = bk.gain.reshape(-1, 2)
     at = iv * nx + iu
-    gg = ((np.take(flat, at, axis=0) * (1 - fu) + np.take(flat, at + 1, axis=0) * fu) * (1 - fv)
-          + (np.take(flat, at + nx, axis=0) * (1 - fu) + np.take(flat, at + nx + 1, axis=0) * fu) * fv)
+    gg = (np.take(flat, at, axis=0) * (1 - fu) + np.take(flat, at + 1, axis=0) * fu) * (1 - fv) + (
+        np.take(flat, at + nx, axis=0) * (1 - fu) + np.take(flat, at + nx + 1, axis=0) * fu
+    ) * fv
     cbo = cb * gg[:, 0] - cr * gg[:, 1]
     cro = cb * gg[:, 1] + cr * gg[:, 0]
     out = np.empty((len(x), 3), np.float32)
@@ -272,8 +289,9 @@ def _chroma_chunk(x: np.ndarray, g32, pre_flat: np.ndarray, bk: ChromaBake, tabl
     return apply_table(out, table) if table is not None else out
 
 
-def chroma_float(codes: np.ndarray, bk: ChromaBake, gains: np.ndarray | None, table: np.ndarray | None,
-                 *, workers: int = WORKERS) -> np.ndarray:
+def chroma_float(
+    codes: np.ndarray, bk: ChromaBake, gains: np.ndarray | None, table: np.ndarray | None, *, workers: int = WORKERS
+) -> np.ndarray:
     """(…, 3) 码值 → (n, 3) float32，0..255 未量化。"""
     x = np.ascontiguousarray(codes.reshape(-1, 3), np.float32)
     pre_flat = np.ascontiguousarray(bk.pre).reshape(-1)
@@ -287,8 +305,7 @@ def chroma_float(codes: np.ndarray, bk: ChromaBake, gains: np.ndarray | None, ta
     return out
 
 
-def chroma_u8(codes: np.ndarray, bk: ChromaBake, gains: np.ndarray | None, table: np.ndarray | None,
-              *, workers: int = WORKERS) -> np.ndarray:
+def chroma_u8(codes: np.ndarray, bk: ChromaBake, gains: np.ndarray | None, table: np.ndarray | None, *, workers: int = WORKERS) -> np.ndarray:
     """(…, 3) 码值 → uint8，形状与输入相同。每块直接量化，避免整幅 float32 的中间结果。"""
     x = np.ascontiguousarray(codes.reshape(-1, 3), np.float32)
     pre_flat = np.ascontiguousarray(bk.pre).reshape(-1)

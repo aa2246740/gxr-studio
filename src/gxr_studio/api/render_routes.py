@@ -80,7 +80,11 @@ def _payload(c, shot: dict, edit: EditState, side: dict, warning: str | None = N
 def _render_info(c, shot: dict, edit: EditState) -> dict:
     svc = c.render
     if "dng" not in shot["files"]:
-        return {"available": False, "reason": "no_raw", "message": "这张照片没有 RAW，不能套配方（预览和导出都是相机 JPG）。"}
+        return {
+            "available": False,
+            "reason": "no_raw",
+            "message": "这张照片没有 RAW，不能套配方（预览和导出都是相机 JPG）。",
+        }
     try:
         plan = svc.plan(shot, edit)
     except RenderUnavailable as exc:
@@ -88,9 +92,17 @@ def _render_info(c, shot: dict, edit: EditState) -> dict:
     except EditError as exc:
         return {"available": False, "reason": exc.code, "message": exc.message}
     return {
-        "available": True, "prediction": True, "label": plan.label, "calibrated": plan.calibrated,
-        "reasons": list(plan.reasons), "unit": plan.unit, "slot": plan.slot, "defaulted": plan.defaulted,
-        "effective_levels": plan.levels, "entry_sha256": plan.entry_sha256, "model_iso": plan.model_iso,
+        "available": True,
+        "prediction": True,
+        "label": plan.label,
+        "calibrated": plan.calibrated,
+        "reasons": list(plan.reasons),
+        "unit": plan.unit,
+        "slot": plan.slot,
+        "defaulted": plan.defaulted,
+        "effective_levels": plan.levels,
+        "entry_sha256": plan.entry_sha256,
+        "model_iso": plan.model_iso,
     }
 
 
@@ -113,8 +125,15 @@ def _crop_of(side: dict) -> Crop | None:
     return Crop(raw["preset"], tuple(raw["rect"]), float(raw.get("angle_deg", 0.0))) if raw else None
 
 
-def _render(request: Request, shot_id: str, body: RenderRequest | None, max_edge: int | None, exact: bool,
-            apply_crop: bool, quality: int) -> Response:
+def _render(
+    request: Request,
+    shot_id: str,
+    body: RenderRequest | None,
+    max_edge: int | None,
+    exact: bool,
+    apply_crop: bool,
+    quality: int,
+) -> Response:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     if max_edge is not None and not 64 <= max_edge <= MAX_EDGE_LIMIT:
@@ -136,7 +155,7 @@ def _render(request: Request, shot_id: str, body: RenderRequest | None, max_edge
         raise ApiError(422, "raw_unreadable", f"这份 RAW 暂时读不出来。（{exc}）") from exc
     except CropError as exc:
         raise ApiError(422, exc.code, exc.message) from exc
-    except ValueError as exc:   # 例如色表行不对称：冻结模型不能预测这个条目
+    except ValueError as exc:  # 例如色表行不对称：冻结模型不能预测这个条目
         raise ApiError(422, "cannot_predict", f"这个配方的电脑预测算不出来：{exc}") from exc
     etag = f'"{out.key}"'
     headers = {
@@ -167,8 +186,11 @@ def list_recipes(request: Request):
     """3 个单元 × 8 个底子，以及每个底子有哪些旋钮、每个旋钮能取哪些档位（含到顶标记）。没导入相机数据也能列。"""
     svc = ctx(request).render
     status = svc.status()
-    return {"status": status, "units": svc.catalog(),
-            "note": "旋钮范围与档位来自相机的 knobs v2 菜单表；颜色只是电脑预测，没有相机实测。"}
+    return {
+        "status": status,
+        "units": svc.catalog(),
+        "note": "旋钮范围与档位来自相机的 knobs v2 菜单表；颜色只是电脑预测，没有相机实测。",
+    }
 
 
 # ---- sidecar 里的编辑 -----------------------------------------------------------
@@ -219,14 +241,27 @@ def delete_edit(shot_id: str, request: Request):
 
 
 @router.get("/api/photos/{shot_id}/render")
-def get_render(shot_id: str, request: Request, max_edge: int | None = None, exact: bool = False,
-               crop: bool = False, quality: int = 88):
+def get_render(
+    shot_id: str,
+    request: Request,
+    max_edge: int | None = None,
+    exact: bool = False,
+    crop: bool = False,
+    quality: int = 88,
+):
     """按 sidecar 里的编辑渲染（半分辨率，烘焙路径）。`max_edge` 再缩小（拖滑块时用）；`crop` 套上裁切与拉直。"""
     return _render(request, shot_id, None, max_edge, exact, crop, quality)
 
 
 @router.post("/api/photos/{shot_id}/render")
-def post_render(shot_id: str, body: RenderRequest, request: Request, max_edge: int | None = None,
-                exact: bool = False, crop: bool = False, quality: int = 88):
+def post_render(
+    shot_id: str,
+    body: RenderRequest,
+    request: Request,
+    max_edge: int | None = None,
+    exact: bool = False,
+    crop: bool = False,
+    quality: int = 88,
+):
     """同上，但请求体里的 recipe/adjust/curve 盖过 sidecar（不落盘）：拖滑块的实时预览。"""
     return _render(request, shot_id, body, max_edge, exact, crop, quality)

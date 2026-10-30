@@ -1,0 +1,13 @@
+# 功能开关
+
+登记表在 `src/gxr_studio/flags.py`。默认值就是现在的行为。要临时关掉，在应用数据目录写 `flags.json`，例如 `{"library_rebuild": false}`。文件不在时全部走默认。
+
+现在的开关：
+
+| 名字 | 默认 | 作用 |
+| --- | --- | --- |
+| `library_rebuild` | 开 | `POST /api/library/rebuild`。关掉返回 403 `feature_disabled`。 |
+
+## 清理
+
+`scripts/dead_flags.py` 要求每个开关都能在 `src/` 里找到引用，代码里的 `flag_enabled(..., "名字")` 也必须先登记。`added` 超过 180 天的开关会被判失败：要么删掉调用让行为固定下来，要么在仍需要它时更新说明和日期。CI 和 `make check` 会跑这个脚本。

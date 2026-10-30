@@ -12,19 +12,22 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, audit
+from .alerts import StudioNotifier, register_alert_service
 from .api.camdata_routes import router as camdata_router
 from .api.errors import ApiError
 from .api.lut_routes import router as lut_router
+from .api.ops_routes import router as ops_router
 from .api.render_routes import router as render_router
 from .api.routes import router
+from .camdata import store as camdata_store
 from .cards.discovery import CardReader
 from .cards.importer import ImportOptions
 from .config import Settings
 from .jobs import JobRegistry
-from .camdata import store as camdata_store
 from .library.sidecar import SidecarCorrupt
 from .library.store import SIDECAR_RESET_NOTE, Library
 from .lut.service import LutService
+from .observe import Metrics, ObserveMiddleware
 from .render.service import RenderService
 from .security import SecurityMiddleware
 
@@ -40,7 +43,9 @@ class Context:
     reader: CardReader = field(default_factory=CardReader)
     import_options: ImportOptions | None = None  # 测试可以注入（空间、钩子）
     import_lock: threading.Lock = field(default_factory=threading.Lock)
-    camdata_lock: threading.Lock = field(default_factory=threading.Lock)   # 相机数据/标定包同一时间只有一个在导入
+    camdata_lock: threading.Lock = field(default_factory=threading.Lock)  # 相机数据/标定包同一时间只有一个在导入
+    metrics: Metrics = field(default_factory=Metrics)
+    alerts: StudioNotifier = field(default_factory=StudioNotifier)
 
 
 def create_app(
@@ -49,13 +54,27 @@ def create_app(
     reader: CardReader | None = None,
     import_options: ImportOptions | None = None,
 ) -> FastAPI:
-    camdata_store.recover_interrupted_swaps(settings.home_dir)   # 上次换相机数据/标定包到一半被打断：先恢复
+    camdata_store.recover_interrupted_swaps(settings.home_dir)  # 上次换相机数据/标定包到一半被打断：先恢复
     lib = Library(settings.library_dir).open()
     recorder = audit.AuditRecorder(limit=5000)
     recorder.__enter__()  # 应用存活期间一直记录写入
     render = RenderService(settings.home_dir, lib)
-    ctx = Context(settings, lib, JobRegistry(), recorder, render, LutService(settings.home_dir, lib, render),
-                  reader or CardReader(), import_options)
+    jobs = JobRegistry()
+    metrics = Metrics()
+    alerts = StudioNotifier()
+    register_alert_service(jobs, alerts)
+    ctx = Context(
+        settings,
+        lib,
+        jobs,
+        recorder,
+        render,
+        LutService(settings.home_dir, lib, render),
+        reader or CardReader(),
+        import_options,
+        metrics=metrics,
+        alerts=alerts,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -77,11 +96,13 @@ def create_app(
         return JSONResponse({"error": "sidecar_corrupt", "message": SIDECAR_RESET_NOTE}, status_code=422)
 
     app.include_router(router)
+    app.include_router(ops_router)
     app.include_router(render_router)
     app.include_router(camdata_router)
     app.include_router(lut_router)
     web = settings.web_dir
     if web is not None and Path(web, "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=Path(web) / "assets"), name="assets")
+    app.add_middleware(ObserveMiddleware, metrics=metrics)
     app.add_middleware(SecurityMiddleware, settings=settings)
     return app

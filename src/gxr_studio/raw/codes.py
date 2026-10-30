@@ -50,7 +50,10 @@ def half_res_codes(dng: Dng, dtype=np.float32) -> np.ndarray:
         for c in range(3):
             sites = [(i, j) for i in range(2) for j in range(2) if phase[i, j] == c]
             mean = sum(quad[:, i, :, j] for i, j in sites) / len(sites)
-            out[r0:r1, :, c] = mean / dng.as_shot_neutral[c] * CODE_MAX
+            neutral = dng.as_shot_neutral
+            if neutral is None:
+                raise RawDecodeError("没有 AsShotNeutral，不能做半分辨率")
+            out[r0:r1, :, c] = mean / neutral[c] * CODE_MAX
     return out
 
 

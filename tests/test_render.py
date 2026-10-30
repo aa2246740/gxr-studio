@@ -25,7 +25,15 @@ from gxr_studio.camdata import calib, store
 from gxr_studio.engine import colour, knobs, menu
 from gxr_studio.library import thumbs
 from gxr_studio.render import chain, tones
-from gxr_studio.render.params import EditError, EditState, RecipeSel, parse_adjust, parse_curve, parse_edit, parse_recipe
+from gxr_studio.render.params import (
+    EditError,
+    EditState,
+    RecipeSel,
+    parse_adjust,
+    parse_curve,
+    parse_edit,
+    parse_recipe,
+)
 from gxr_studio.render.recipes import CameraData, Menu, unit_of_lens
 from gxr_studio.render.service import RenderService, RenderUnavailable, shrink_codes
 from test_api import find, import_all
@@ -112,8 +120,12 @@ def test_param_validation_and_canonical_form():
             parse_curve(bad)
     r = parse_recipe({"unit": "jlaunch", "slot": 5, "levels": {"contrast": 2}})
     assert r == RecipeSel("jlaunch", 5, (("contrast", 2),))
-    for bad in ({"unit": "x", "slot": 1}, {"unit": "jlaunch", "slot": 9}, {"unit": "jlaunch", "slot": 1, "levels": {"bogus": 1}},
-                {"unit": "jlaunch", "slot": 1, "kind": "user"}):
+    for bad in (
+        {"unit": "x", "slot": 1},
+        {"unit": "jlaunch", "slot": 9},
+        {"unit": "jlaunch", "slot": 1, "levels": {"bogus": 1}},
+        {"unit": "jlaunch", "slot": 1, "kind": "user"},
+    ):
         with pytest.raises(EditError):
             parse_recipe(bad)
     s1 = EditState(parse_recipe({"unit": "jlaunch", "slot": 1}), a, None)
@@ -180,15 +192,16 @@ def test_resolve_matches_knobs_core_and_rejects_bad_levels(cam):
             assert cam.resolve(RecipeSel(unit, slot)).entry == base, "默认档位 = 底子本身"
     sel = RecipeSel("jlaunch", 1, (("amount", 75), ("contrast", 3), ("saturation", -2)))
     res = cam.resolve(sel)
-    levels = [75 if n == "amount" else 3 if n == "contrast" else -2 if n == "saturation" else 0
-              for n in res.levels]
+    levels = [75 if n == "amount" else 3 if n == "contrast" else -2 if n == "saturation" else 0 for n in res.levels]
     ref, _ = knobs.apply(cam.stock[0], cam.entries[(0, 1)], menu.request(data, 0, 1, levels))
     assert res.entry == ref and res.entry != cam.entries[(0, 1)] and len(res.entry) == 552
     assert res.levels["amount"] == 75 and res.levels["contrast"] == 3
-    for bad, code in ((RecipeSel("jlaunch", 1, (("saturation", 7),)), "level_not_allowed"),   # 到顶标记：只到 +6
-                      (RecipeSel("jlaunch", 3, (("saturation", 1),)), "knob_not_available"),  # 03 黑白没有饱和
-                      (RecipeSel("jlaunch", 4, (("amount", 50),)), "knob_not_available"),     # 04 没有 Amount
-                      (RecipeSel("jlaunch", 1, (("contrast", 10),)), "level_not_allowed")):
+    for bad, code in (
+        (RecipeSel("jlaunch", 1, (("saturation", 7),)), "level_not_allowed"),  # 到顶标记：只到 +6
+        (RecipeSel("jlaunch", 3, (("saturation", 1),)), "knob_not_available"),  # 03 黑白没有饱和
+        (RecipeSel("jlaunch", 4, (("amount", 50),)), "knob_not_available"),  # 04 没有 Amount
+        (RecipeSel("jlaunch", 1, (("contrast", 10),)), "level_not_allowed"),
+    ):
         with pytest.raises(EditError) as e:
             cam.resolve(bad)
         assert e.value.code == code
@@ -223,7 +236,7 @@ def test_exact_chain_reproduces_e0_golden_frames(cam, model200):
     for f in golden[::12]:
         unit, slot = names.index(f["unit"]), f["slot"]
         r = next(r for r in data["recipes"] if r["unit"] == unit and r["slot"] == slot)
-        items = data["items"][r["first_item"]:r["first_item"] + r["item_count"]]
+        items = data["items"][r["first_item"] : r["first_item"] + r["item_count"]]
         lv = {data["controls"][i["control"]]["name"]: i["default_level"] for i in items}
         lv[f["param"]] = f["level"]
         res = cam.resolve(RecipeSel(f["unit"], slot, tuple(lv.items())))
@@ -243,8 +256,10 @@ def test_exposure_is_input_gain_with_clamp(cam, model200, scene_codes):
     assert np.array_equal(got, ref)
     # 超过 4095 的高光夹紧：+3 EV 后与"输入全是 4095"一样
     bright = np.full((4, 3), 4000.0)
-    assert np.array_equal(chain.exact_u8(model200, e, bright, tones.channel_gains(parse_adjust({"exposure_ev": 3.0})), None),
-                          model200.predict(e, np.full((4, 3), 4095.0), quantize=True))
+    assert np.array_equal(
+        chain.exact_u8(model200, e, bright, tones.channel_gains(parse_adjust({"exposure_ev": 3.0})), None),
+        model200.predict(e, np.full((4, 3), 4095.0), quantize=True),
+    )
 
 
 def test_identity_curve_and_tone_are_byte_identical_to_no_curve(cam, model200, scene_codes):
@@ -296,8 +311,10 @@ def test_chroma_bake_with_gains_table_and_precision_grid(cam, model200, scene_co
     fine = chain.chroma_float(x, chain.bake_chroma(model200, e, 0.5), g, tab)
     assert np.percentile(_de(ref, coarse), 99) <= 0.3
     assert np.percentile(_de(ref, fine), 99) <= np.percentile(_de(ref, coarse), 99)
-    assert np.array_equal(chain.chroma_u8(x, chain.bake_chroma(model200, e, 0.75), g, tab),
-                          chain.quantize(chain.chroma_float(x, chain.bake_chroma(model200, e, 0.75), g, tab)))
+    assert np.array_equal(
+        chain.chroma_u8(x, chain.bake_chroma(model200, e, 0.75), g, tab),
+        chain.quantize(chain.chroma_float(x, chain.bake_chroma(model200, e, 0.75), g, tab)),
+    )
 
 
 def test_neutral_axis_stays_neutral_through_the_bake(cam, model200):
@@ -323,8 +340,14 @@ def test_lut3d_comparison_path_runs_and_is_worse_than_chroma(cam, model200, scen
 
 
 def fake_shot(lib, rel, sha, iso=200, lens="GR LENS A12 50mm F2.5 MACRO"):
-    return {"shot_id": "x", "name": Path(rel).stem, "iso": iso, "lens": lens, "orientation": 1,
-            "files": {"dng": {"relpath": rel, "sha256": sha}}}
+    return {
+        "shot_id": "x",
+        "name": Path(rel).stem,
+        "iso": iso,
+        "lens": lens,
+        "orientation": 1,
+        "files": {"dng": {"relpath": rel, "sha256": sha}},
+    }
 
 
 @needs_sample
@@ -447,8 +470,11 @@ def test_api_edit_roundtrip_and_validation(data_client, real_card):
     base = c.get(f"/api/photos/{p['id']}/edit").json()
     assert base["rev"] == 0 and base["recipe"] is None and base["render"]["defaulted"] and base["render"]["slot"] == 4
     assert base["scope"]["computer_only"] == ["adjust", "curve", "crop"]
-    body = {"recipe": {"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {"amount": 75, "contrast": 3}},
-            "adjust": {"exposure_ev": 0.5, "wb": {"warm": 10}}, "curve": {"master": [[0, 0], [128, 120], [255, 255]]}}
+    body = {
+        "recipe": {"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {"amount": 75, "contrast": 3}},
+        "adjust": {"exposure_ev": 0.5, "wb": {"warm": 10}},
+        "curve": {"master": [[0, 0], [128, 120], [255, 255]]},
+    }
     r = c.put(f"/api/photos/{p['id']}/edit", json={**body, "expected_rev": 0})
     assert r.status_code == 200, r.text
     got = r.json()
@@ -465,10 +491,13 @@ def test_api_edit_roundtrip_and_validation(data_client, real_card):
     side = json.loads(next((Path(c.get("/api/settings").json()["library_dir"])).rglob("R8051144.gxrs.json")).read_text())
     assert side["recipe"]["slot"] == 1 and side["crop"]["preset"] == "xpan-65-24" and side["adjust"]["contrast"] == 10
     # 校验：不合法的档位、没有的旋钮、单元不一致
-    for bad, code in (({"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"saturation": 7}}}, "level_not_allowed"),
-                      ({"recipe": {"unit": "jlaunch", "slot": 3, "levels": {"saturation": 1}}}, "knob_not_available"),
-                      ({"recipe": {"unit": "qlaunch", "slot": 1}}, "unit_mismatch"),
-                      ({"adjust": {"exposure_ev": 99}}, "bad_adjust"), ({"curve": {"master": [[5, 5]]}}, "bad_curve")):
+    for bad, code in (
+        ({"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"saturation": 7}}}, "level_not_allowed"),
+        ({"recipe": {"unit": "jlaunch", "slot": 3, "levels": {"saturation": 1}}}, "knob_not_available"),
+        ({"recipe": {"unit": "qlaunch", "slot": 1}}, "unit_mismatch"),
+        ({"adjust": {"exposure_ev": 99}}, "bad_adjust"),
+        ({"curve": {"master": [[5, 5]]}}, "bad_curve"),
+    ):
         r = c.put(f"/api/photos/{p['id']}/edit", json=bad)
         assert r.status_code == 422 and r.json()["error"] == code, (bad, r.text)
     assert c.get(f"/api/photos/{p['id']}/edit").json()["rev"] == 3, "被拒绝的写入不能改动 sidecar"
@@ -592,7 +621,7 @@ def test_dng_only_thumbnail_and_preview_use_half_resolution(data_client, real_ca
     assert max(th.size) == 256 and abs(th.width / th.height - 3 / 2) < 0.02, "不再是 DNG 里 160×120 的 4:3 小图"
     assert max(pv.size) == 1600 and pv.size[0] > 1000
     cached = sorted(x.name for x in (Path(settings.library_dir) / ".studio/thumbs").rglob("*.jpg"))
-    assert any("-256-r" in n for n in cached), cached   # 带相机数据的 04 模拟变体
+    assert any("-256-r" in n for n in cached), cached  # 带相机数据的 04 模拟变体
     # 相机数据变了（这里：删掉）→ 缩略图变体换了，退回中性转换
     shutil.rmtree(settings.home_dir / "camera-data")
     th2 = Image.open(io.BytesIO(c.get(p["thumb_url"]).content))
@@ -648,16 +677,21 @@ def test_precise_export_uses_the_exact_chain_and_matches_baked_closely(lib, camh
     path = lib.root / rel
     path.parent.mkdir(parents=True)
     path.write_bytes(scene_dng(w=96, h=64))
-    shot = {"shot_id": "s301", "name": "R0000301", "iso": 200, "lens": "GR LENS A12 50mm F2.5 MACRO", "orientation": 1,
-            "files": {"dng": {"relpath": rel, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}}
+    shot = {
+        "shot_id": "s301",
+        "name": "R0000301",
+        "iso": 200,
+        "lens": "GR LENS A12 50mm F2.5 MACRO",
+        "orientation": 1,
+        "files": {"dng": {"relpath": rel, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}},
+    }
     svc = RenderService(camhome, lib)
     edit = EditState(RecipeSel("jlaunch", 6, (("contrast", 2),)), parse_adjust({"exposure_ev": 0.4}), None)
     exact_r, baked_r = svc.renderer(shot, edit, precise=True), svc.renderer(shot, edit)
     assert exact_r.calibrated and exact_r.filename_tag == "_电脑预测" and "exact chain" in exact_r.description
     dng = open_dng(path)
     a, b = render_full(dng, exact_r), render_full(dng, baked_r)
-    ref = chain.exact_u8(svc.model(200), svc.plan(shot, edit).entry, demosaic_full(dng),
-                         tones.channel_gains(edit.adjust), None)
+    ref = chain.exact_u8(svc.model(200), svc.plan(shot, edit).entry, demosaic_full(dng), tones.channel_gains(edit.adjust), None)
     assert np.array_equal(a, ref) and np.abs(a.astype(int) - b.astype(int)).max() <= 2
     res = export_shot(lib, shot, None, tmp_path / "o", ExportOptions(None, 90), [], exact_r, True)
     assert res.path.name == "R0000301_gxr_电脑预测.jpg" and res.render == "recipe-prediction"

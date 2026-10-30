@@ -33,7 +33,8 @@ def load_photos(entries: list[dict], max_photos: int = 3) -> tuple[list[dict], l
     from ..render.service import shrink_codes
     from .scene import SceneError, scene_colour
 
-    photos, skipped = [], []
+    photos: list[dict] = []
+    skipped: list[dict] = []
     for p in entries:
         if len(photos) >= max_photos:
             break
@@ -47,7 +48,7 @@ def load_photos(entries: list[dict], max_photos: int = 3) -> tuple[list[dict], l
                     colour = None
             finally:
                 dng.release()
-        except RawDecodeError as exc:                 # 读不出来的照片跳过，不让整个拟合失败
+        except RawDecodeError as exc:  # 读不出来的照片跳过，不让整个拟合失败
             skipped.append({"label": p.get("label"), "reason": str(exc)})
             continue
         photos.append({"codes": codes, "colour": colour, "label": p.get("label")})
@@ -55,12 +56,13 @@ def load_photos(entries: list[dict], max_photos: int = 3) -> tuple[list[dict], l
 
 
 PARENT_POLL_SECONDS = 1.0
-PARENT_GRACE_SECONDS = 5.0      # 父进程没了之后，给拟合这么久自己干净地停下；还没停就直接退出
+PARENT_GRACE_SECONDS = 5.0  # 父进程没了之后，给拟合这么久自己干净地停下；还没停就直接退出
 
 
 def watch_parent(stop: dict, parent_pid: int, poll: float = PARENT_POLL_SECONDS, grace: float = PARENT_GRACE_SECONDS) -> threading.Thread:
     """服务被强杀或终端被关（SIGKILL / SIGHUP）时，子进程不会收到任何信号，只会被系统过继给 1 号进程。
     这里每秒看一眼父进程还在不在：不在了就按"取消"处理，宽限期后仍没停就直接退出（没有人会来读结果了）。"""
+
     def loop():
         while os.getppid() == parent_pid:
             time.sleep(poll)
@@ -105,14 +107,29 @@ def run(job_dir: Path) -> int:
         home = Path(spec["home"])
         cube = Cube.read(spec["cube"])
         cam = CameraData(home)
-        model = calib.model_for(home, 200)[0]          # 拟合固定用 ISO 200 的标定
+        model = calib.model_for(home, 200)[0]  # 拟合固定用 ISO 200 的标定
         photos, skipped = load_photos(spec.get("photos", []), spec.get("max_photos", 3))
         samples = build_samples(model, cam.stock[0], spec["input_space"], photos)
-        target = Target(cube, spec["input_space"], spec["output_space"], spec.get("input_gamut"), spec.get("output_gamut"),
-                        spec.get("input_range", "full"), spec.get("output_range", "full"))
+        target = Target(
+            cube,
+            spec["input_space"],
+            spec["output_space"],
+            spec.get("input_gamut"),
+            spec.get("output_gamut"),
+            spec.get("input_range", "full"),
+            spec.get("output_range", "full"),
+        )
         stock, ideal = target_rgb(model, cam.stock[0], samples, target)
-        fitter = Fitter(cam, model, samples, stock, ideal, profile=spec.get("profile", "normal"),
-                        progress=progress, cancelled=cancelled)
+        fitter = Fitter(
+            cam,
+            model,
+            samples,
+            stock,
+            ideal,
+            profile=spec.get("profile", "normal"),
+            progress=progress,
+            cancelled=cancelled,
+        )
         result = fitter.run()
         result["samples"]["skipped_photos"] = skipped
         result["target"] = target.description()
@@ -126,9 +143,15 @@ def run(job_dir: Path) -> int:
         _write(job_dir / "result.json", {"state": "error", "code": exc.code, "message": exc.message})
         return 1
     except Exception as exc:  # noqa: BLE001  子进程里任何问题都要写成结果文件，父进程才能告诉用户
-        _write(job_dir / "result.json", {"state": "error", "code": "fit_failed",
-                                         "message": f"拟合没有完成：{type(exc).__name__}: {exc}",
-                                         "trace": traceback.format_exc()[-2000:]})
+        _write(
+            job_dir / "result.json",
+            {
+                "state": "error",
+                "code": "fit_failed",
+                "message": f"拟合没有完成：{type(exc).__name__}: {exc}",
+                "trace": traceback.format_exc()[-2000:],
+            },
+        )
         return 1
 
 

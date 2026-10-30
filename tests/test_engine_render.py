@@ -18,7 +18,8 @@ import numpy as np
 import pytest
 
 import e0_support as t
-from gxr_studio.camdata import calib, datcodec as dc, store
+from gxr_studio.camdata import calib, store
+from gxr_studio.camdata import datcodec as dc
 from gxr_studio.engine import knobs, menu
 
 TOOLS = t.RESEARCH / "studio_engine_e0/tools"
@@ -76,7 +77,7 @@ def test_render_matches_the_original_preview_frames(home, models, inputs, data):
     for f in frames:
         unit, slot = names.index(f["unit"]), f["slot"]
         r = next(r for r in data["recipes"] if r["unit"] == unit and r["slot"] == slot)
-        items = data["items"][r["first_item"]:r["first_item"] + r["item_count"]]
+        items = data["items"][r["first_item"] : r["first_item"] + r["item_count"]]
         levels = [i["default_level"] for i in items]
         idx = next(i for i, it in enumerate(items) if data["controls"][it["control"]]["name"] == f["param"])
         levels[idx] = f["level"]
@@ -101,8 +102,12 @@ def reference_cases(home, data):
                 cases.append({"id": f"b/{u}/{s}/{scene}", "scene": scene, "unit": u, "slot": s, "request": None, "iso": 200})
             for n, c in enumerate(knob_states[(u, s)]):
                 req = menu.request(data, u, s, c["levels"])
-                r = {"amount": req.amount, "doses": list(req.doses), "wb_method": req.wb_method,
-                     "tone_method": req.tone_method}
+                r = {
+                    "amount": req.amount,
+                    "doses": list(req.doses),
+                    "wb_method": req.wb_method,
+                    "tone_method": req.tone_method,
+                }
                 scene = t.SCENES[(u + s + n) % 4]
                 cases.append({"id": f"k/{u}/{s}/{n}", "scene": scene, "unit": u, "slot": s, "request": r, "iso": 200})
                 cases.append({"id": f"i/{u}/{s}/{n}", "scene": scene, "unit": u, "slot": s, "request": r, "iso": 1600})
@@ -114,8 +119,13 @@ def run_reference(python, entries, cases, tmp_path):
     out = tmp_path / "ref.npz"
     spec.write_text(json.dumps({"entries": entries, "cases": cases}))
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)}
-    cp = subprocess.run([python, "-B", str(TOOLS / "ref_render.py"), str(spec), str(out), "--repo", str(t.REPO)],
-                        capture_output=True, text=True, timeout=900, env=env)
+    cp = subprocess.run(
+        [python, "-B", str(TOOLS / "ref_render.py"), str(spec), str(out), "--repo", str(t.REPO)],
+        capture_output=True,
+        text=True,
+        timeout=900,
+        env=env,
+    )
     assert cp.returncode == 0, cp.stderr[-2000:]
     return np.load(out, allow_pickle=False), cp.stdout.strip()
 
@@ -138,8 +148,9 @@ def test_render_equals_the_research_model_pixel_for_pixel(home, models, inputs, 
     for c in cases:
         stock, base = store.load_stock04(home, c["unit"]), store.load_entry(home, c["unit"], c["slot"])
         r = c["request"]
-        entry = base if r is None else knobs.apply(stock, base, knobs.Request(
-            r["amount"], tuple(r["doses"]), r["wb_method"], r["tone_method"]))[0]
+        entry = (
+            base if r is None else knobs.apply(stock, base, knobs.Request(r["amount"], tuple(r["doses"]), r["wb_method"], r["tone_method"]))[0]
+        )
         assert bytes(ref["entry_" + c["id"]]) == entry, c["id"]
         rgb = models[c["iso"]].predict(entry, inputs[c["scene"]], quantize=True)
         theirs = ref["rgb_" + c["id"]]
@@ -163,11 +174,17 @@ def test_unclipped_float_output_is_also_identical(home, models, inputs, data, tm
         "spec = json.load(open(sys.argv[1]))\n"
         "x = np.load(root + '/research/knobs_v2_r2/local/' + spec['scene'] + '_input.npz')['x']\n"
         "out = {k: m.predict(bytes.fromhex(v), x) for k, v in spec['entries'].items()}\n"
-        "np.savez(sys.argv[2], **out)\n")
+        "np.savez(sys.argv[2], **out)\n"
+    )
     picks = {f"{u}_{s}": store.load_entry(home, u, s).hex() for u, s in ((0, 1), (0, 3), (1, 6), (2, 8), (2, 4))}
     (tmp_path / "f.json").write_text(json.dumps({"scene": "redblue", "entries": picks}))
-    cp = subprocess.run([sys.executable, "-B", str(script), str(tmp_path / "f.json"), str(tmp_path / "f.npz")],
-                        capture_output=True, text=True, timeout=600, env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)})
+    cp = subprocess.run(
+        [sys.executable, "-B", str(script), str(tmp_path / "f.json"), str(tmp_path / "f.npz")],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)},
+    )
     assert cp.returncode == 0, cp.stderr[-2000:]
     ref = np.load(tmp_path / "f.npz")
     for k, hexed in picks.items():
@@ -183,7 +200,18 @@ def test_masks_and_chart_helpers_run_and_are_deterministic(home, models, data):
     chart = engine_model.recipe_chart(m, base)
     assert chart.shape[1] == 3 and len(chart) == 257 + 729
     assert np.array_equal(chart, engine_model.recipe_chart(m, base))
-    for param in ("contrast", "highlight", "shadow", "fade", "saturation", "warmth", "tint", "filter", "tone", "amount"):
+    for param in (
+        "contrast",
+        "highlight",
+        "shadow",
+        "fade",
+        "saturation",
+        "warmth",
+        "tint",
+        "filter",
+        "tone",
+        "amount",
+    ):
         regions = engine_model.masks(m, base, chart, param, chart=True)
         assert all(r.shape == (len(chart),) for r in regions)
     assert len(engine_model.masks(m, base, chart, "split", chart=True)) == 2

@@ -63,32 +63,55 @@ def knob_cases(data: dict) -> list[dict]:
     """确定性用例：所有单旋钮状态 + 随机多旋钮菜单状态 + 随机原始剂量（含 wb/tone 方法）。"""
     out = []
     for r in data["recipes"]:
-        items = data["items"][r["first_item"]:r["first_item"] + r["item_count"]]
+        items = data["items"][r["first_item"] : r["first_item"] + r["item_count"]]
         defaults = [it["default_level"] for it in items]
         for i, it in enumerate(items):
             for p in it["points"]:
                 levels = list(defaults)
                 levels[i] = p["level"]
-                out.append({"id": f"s/{r['unit']}/{r['slot']}/{i}/{p['level']}", "kind": "menu",
-                            "unit": r["unit"], "slot": r["slot"], "levels": levels})
+                out.append(
+                    {
+                        "id": f"s/{r['unit']}/{r['slot']}/{i}/{p['level']}",
+                        "kind": "menu",
+                        "unit": r["unit"],
+                        "slot": r["slot"],
+                        "levels": levels,
+                    }
+                )
     rnd = random.Random(20261030)
     for r in data["recipes"]:
-        items = data["items"][r["first_item"]:r["first_item"] + r["item_count"]]
+        items = data["items"][r["first_item"] : r["first_item"] + r["item_count"]]
         for n in range(30):
             levels = [rnd.choice(it["points"])["level"] for it in items]
-            out.append({"id": f"m/{r['unit']}/{r['slot']}/{n}", "kind": "menu",
-                        "unit": r["unit"], "slot": r["slot"], "levels": levels})
+            out.append(
+                {
+                    "id": f"m/{r['unit']}/{r['slot']}/{n}",
+                    "kind": "menu",
+                    "unit": r["unit"],
+                    "slot": r["slot"],
+                    "levels": levels,
+                }
+            )
     limits = (16384, 16384, 16384, 4096, 16384, 4096, 4096, 4096, 4096, 4096)  # knobs.MAX_DOSES
     for r in data["recipes"]:
         for n in range(20):
             doses = [rnd.randint(-m, m) for m in limits]
             doses[3] = abs(doses[3])
-            for j in range(10):          # 一部分维度归零，让单旋钮/少旋钮组合也被覆盖
+            for j in range(10):  # 一部分维度归零，让单旋钮/少旋钮组合也被覆盖
                 if rnd.random() < 0.5:
                     doses[j] = 0
-            out.append({"id": f"r/{r['unit']}/{r['slot']}/{n}", "kind": "raw", "unit": r["unit"], "slot": r["slot"],
-                        "amount": rnd.randint(0, 150), "doses": doses,
-                        "wb_method": rnd.randint(0, 1), "tone_method": rnd.randint(0, 1)})
+            out.append(
+                {
+                    "id": f"r/{r['unit']}/{r['slot']}/{n}",
+                    "kind": "raw",
+                    "unit": r["unit"],
+                    "slot": r["slot"],
+                    "amount": rnd.randint(0, 150),
+                    "doses": doses,
+                    "wb_method": rnd.randint(0, 1),
+                    "tone_method": rnd.randint(0, 1),
+                }
+            )
     return out
 
 

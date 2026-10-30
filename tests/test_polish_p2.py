@@ -16,7 +16,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import PORT
-from gxr_studio.api import routes
 from gxr_studio.app import create_app
 from gxr_studio.cards.discovery import CardReader, find_cards
 from gxr_studio.cards.importer import ImportOptions, run_import
@@ -48,7 +47,7 @@ def test_thumb_survives_the_cache_file_vanishing_between_ensure_and_send(client,
 
     def racy(lib, shot, size, render=None):
         path = real_ensure(lib, shot, size, render)
-        if not calls:                       # 第一次：返回路径之后文件马上被删（相当于 purge_variants 正好跑到这里）
+        if not calls:  # 第一次：返回路径之后文件马上被删（相当于 purge_variants 正好跑到这里）
             path.unlink()
         calls.append(path)
         return path
@@ -82,7 +81,7 @@ def test_thumb_stress_while_camera_data_is_purged_never_500(settings, volumes):
         pytest.skip("captures/a12-50 样本不在本机")
     card = sy.make_card(volumes, "C", samples=None)
     for i, dng in enumerate(sorted(sy.DEFAULT_SAMPLES.glob("*.DNG"))[:2]):
-        shutil.copy2(dng, card.root / "DCIM/100RICOH" / f"R000090{i}.DNG")    # 只有 DNG 的真实照片
+        shutil.copy2(dng, card.root / "DCIM/100RICOH" / f"R000090{i}.DNG")  # 只有 DNG 的真实照片
     app = create_app(settings)
     stop = threading.Event()
     counts = {"ok": 0, "500": 0, "other": 0}
@@ -96,7 +95,7 @@ def test_thumb_stress_while_camera_data_is_purged_never_500(settings, volumes):
         lib = c0.app.state.ctx.lib
 
         def getter():
-            c = TestClient(app, base_url=base, headers=headers, raise_server_exceptions=False)   # 不带 with：不重复启停图库
+            c = TestClient(app, base_url=base, headers=headers, raise_server_exceptions=False)  # 不带 with：不重复启停图库
             while not stop.is_set():
                 for i in ids:
                     code = c.get(f"/api/photos/{i}/thumb").status_code
@@ -170,8 +169,8 @@ def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
     child_pid = None
     try:
         child_pid = int(parent.stdout.readline())
-        os.kill(child_pid, 0)                         # 子进程在跑
-        parent.kill()                                 # SIGKILL：父进程没有机会清理任何东西
+        os.kill(child_pid, 0)  # 子进程在跑
+        parent.kill()  # SIGKILL：父进程没有机会清理任何东西
         parent.wait()
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -197,7 +196,7 @@ def test_worker_sets_the_stop_flag_when_the_parent_goes_away(monkeypatch):
     stop = {"flag": False}
     exits = []
     monkeypatch.setattr(worker.os, "_exit", lambda code: exits.append(code))
-    monkeypatch.setattr(worker.os, "getppid", lambda: 1)           # 已经被过继给 1 号进程
+    monkeypatch.setattr(worker.os, "getppid", lambda: 1)  # 已经被过继给 1 号进程
     worker.watch_parent(stop, 4242, 0.01, 0.01).join(2)
     assert stop["flag"] is True and exits == [0]
 
@@ -210,13 +209,24 @@ def test_fit_worker_is_told_who_its_parent_is(monkeypatch, tmp_path):
 
 def test_studio_shuts_down_cleanly_on_sighup(tmp_path):
     """直接关终端窗口 = SIGHUP：服务要走正常退出（拟合子进程的清理才会执行），而不是被默认动作立刻带走。"""
-    env = {**os.environ, "GXR_STUDIO_LIBRARY": str(tmp_path / "lib"), "GXR_STUDIO_EXPORT": str(tmp_path / "exp"),
-           "GXR_STUDIO_HOME": str(tmp_path / "home"), "GXR_STUDIO_VOLUMES": str(tmp_path / "emptyvols"),
-           "GXR_STUDIO_TOKEN": "tok-" + "h" * 40, "HOME": str(tmp_path / "h")}
+    env = {
+        **os.environ,
+        "GXR_STUDIO_LIBRARY": str(tmp_path / "lib"),
+        "GXR_STUDIO_EXPORT": str(tmp_path / "exp"),
+        "GXR_STUDIO_HOME": str(tmp_path / "home"),
+        "GXR_STUDIO_VOLUMES": str(tmp_path / "emptyvols"),
+        "GXR_STUDIO_TOKEN": "tok-" + "h" * 40,
+        "HOME": str(tmp_path / "h"),
+    }
     (tmp_path / "emptyvols").mkdir()
     (tmp_path / "h").mkdir()
-    p = subprocess.Popen([sys.executable, "-m", "gxr_studio.cli", "--no-browser"], env=env, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True)
+    p = subprocess.Popen(
+        [sys.executable, "-m", "gxr_studio.cli", "--no-browser"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
     try:
         assert "GXR 工作室已启动" in p.stdout.readline()
         p.stdout.readline()
@@ -292,7 +302,7 @@ def test_our_own_sidecars_pass_the_shape_check(client):
 def test_one_name_for_the_neutral_look():
     from gxr_studio.raw import NEUTRAL
 
-    assert NEUTRAL.label == "中性转换" and NEUTRAL.id == "neutral-preview"      # id/文件名标记是接口，不改
+    assert NEUTRAL.label == "中性转换" and NEUTRAL.id == "neutral-preview"  # id/文件名标记是接口，不改
     studio = Path(__file__).resolve().parents[1]
     offenders = []
     for root in (studio / "src", studio / "web", studio / "README.md"):
@@ -330,7 +340,7 @@ def test_completion_interrupted_after_the_move_is_resumed_not_duplicated(volumes
     def killed(self, *a, **k):
         raise RuntimeError("killed here")
 
-    with monkeypatch.context() as m:               # JPG 已经换到位，登记之前被打断
+    with monkeypatch.context() as m:  # JPG 已经换到位，登记之前被打断
         m.setattr(Library, "replace_shot", killed)
         with pytest.raises(RuntimeError):
             run_import(lib, c, ImportOptions(**OPTS))

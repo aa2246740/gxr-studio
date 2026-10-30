@@ -15,9 +15,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from gxr_studio.app import create_app
-
 from conftest import PORT
+from gxr_studio.app import create_app
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 ASSETS = WEB / "assets"

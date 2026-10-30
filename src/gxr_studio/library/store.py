@@ -124,6 +124,7 @@ class Library:
         self.index_path = self.studio / "index.sqlite"
         self.lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
+        self.query_log: list[str] | None = None
 
     # ---- 生命周期 ---------------------------------------------------------
     def open(self) -> "Library":
@@ -157,8 +158,15 @@ class Library:
 
     @property
     def db(self) -> sqlite3.Connection:
-        assert self._db is not None, "Library.open() 还没调用"
+        assert self._db is not None, "Library.open() 还没调用"  # nosec B101  打开图库之前没有连接，这是编程错误不是请求校验
         return self._db
+
+    def trace_queries(self) -> list[str]:
+        """测试用：之后每条 SQL 追加进返回的列表。用来抓住按张查询。"""
+        log: list[str] = []
+        self.query_log = log
+        self.db.set_trace_callback(log.append)
+        return log
 
     def clean_staging(self) -> int:
         """删掉上次中断留下的 .part。只在没有导入在跑时调用。"""
@@ -211,41 +219,66 @@ class Library:
     def dates(self) -> list[dict]:
         with self.lock:
             rows = self.db.execute(
-                """SELECT COALESCE(date,'unknown') AS d, COUNT(*) AS n, SUM(has_raw) AS raws,
-                          SUM(has_jpg) AS jpgs, MIN(shot_id) AS any_id
-                   FROM shots GROUP BY d ORDER BY (d='unknown'), d DESC"""
+                """WITH grouped AS (
+                     SELECT COALESCE(date,'unknown') AS d, COUNT(*) AS n, SUM(has_raw) AS raws,
+                            SUM(has_jpg) AS jpgs, MIN(shot_id) AS any_id
+                     FROM shots GROUP BY d)
+                   SELECT g.d AS d, g.n AS n, g.raws AS raws, g.jpgs AS jpgs, g.any_id AS any_id,
+                          COALESCE(
+                            (SELECT s.shot_id FROM shots s
+                             WHERE COALESCE(s.date,'unknown')=g.d
+                             ORDER BY s.captured_at, s.name LIMIT 1),
+                            g.any_id) AS cover_id
+                   FROM grouped g
+                   ORDER BY (g.d='unknown'), g.d DESC"""
             ).fetchall()
-            out = []
-            for r in rows:
-                cover = self.db.execute(
-                    "SELECT shot_id FROM shots WHERE COALESCE(date,'unknown')=? ORDER BY captured_at, name LIMIT 1",
-                    (r["d"],),
-                ).fetchone()
-                out.append(
-                    {
-                        "date": r["d"],
-                        "count": r["n"],
-                        "raw_count": r["raws"],
-                        "jpg_count": r["jpgs"],
-                        "cover_id": cover[0] if cover else r["any_id"],
-                    }
-                )
-        return out
+        return [
+            {
+                "date": r["d"],
+                "count": r["n"],
+                "raw_count": r["raws"],
+                "jpg_count": r["jpgs"],
+                "cover_id": r["cover_id"],
+            }
+            for r in rows
+        ]
 
     def _rows_to_shots(self, rows: list[sqlite3.Row]) -> list[dict]:
+        if not rows:
+            return []
+        ids = [r["shot_id"] for r in rows]
+        marks = ",".join("?" * len(ids))
+        files_by: dict[str, dict] = {shot_id: {} for shot_id in ids}
+        for f in self.db.execute(
+            f"SELECT shot_id, kind, relpath, sha256, size FROM files WHERE shot_id IN ({marks})",  # nosec B608  marks 只是问号占位，值在参数里
+            ids,
+        ):
+            files_by[f["shot_id"]][f["kind"]] = {
+                "kind": f["kind"],
+                "relpath": f["relpath"],
+                "sha256": f["sha256"],
+                "size": f["size"],
+            }
+        edits = {
+            e["shot_id"]: e
+            for e in self.db.execute(
+                f"SELECT shot_id, sidecar_rev, crop_json FROM edits WHERE shot_id IN ({marks})",  # nosec B608  同上，只拼接占位符个数
+                ids,
+            )
+        }
         out = []
         for r in rows:
             d = dict(r)
-            files = self.db.execute("SELECT kind, relpath, sha256, size FROM files WHERE shot_id=?", (r["shot_id"],)).fetchall()
-            d["files"] = {f["kind"]: dict(f) for f in files}
-            edit = self.db.execute("SELECT sidecar_rev, crop_json FROM edits WHERE shot_id=?", (r["shot_id"],)).fetchone()
+            d["files"] = files_by.get(r["shot_id"], {})
+            edit = edits.get(r["shot_id"])
             d["sidecar_rev"] = edit["sidecar_rev"] if edit else 0
             d["crop"] = json.loads(edit["crop_json"]) if edit and edit["crop_json"] else None
             out.append(d)
         return out
 
     def list_shots(self, date: str | None = None, limit: int = 500, offset: int = 0) -> list[dict]:
-        sql, args = "SELECT * FROM shots", []
+        sql = "SELECT * FROM shots"
+        args: list[object] = []
         if date == "unknown":
             sql += " WHERE date IS NULL"
         elif date:
@@ -262,7 +295,7 @@ class Library:
             return self._rows_to_shots(rows)[0] if rows else None
 
     # ---- 写索引 -----------------------------------------------------------
-    def commit_shot(self, rec: ShotRecord, seen_rows: list[tuple] = ()) -> None:
+    def commit_shot(self, rec: ShotRecord, seen_rows: list[tuple] | tuple = ()) -> None:
         """一个事务：shots + files + edits + seen。"""
         with self.lock:
             db = self.db
@@ -278,14 +311,14 @@ class Library:
                 db.execute("ROLLBACK")
                 raise
 
-    def replace_shot(self, old_shot_id: str, rec: ShotRecord, seen_rows: list[tuple] = ()) -> None:
+    def replace_shot(self, old_shot_id: str, rec: ShotRecord, seen_rows: list[tuple] | tuple = ()) -> None:
         """一个事务：用 `rec` 换掉旧的那张（另一半补上之后照片的 id 会变）。"""
         with self.lock:
             db = self.db
             db.execute("BEGIN")
             try:
                 for table in ("shots", "files", "edits"):
-                    db.execute(f"DELETE FROM {table} WHERE shot_id=?", (old_shot_id,))
+                    db.execute(f"DELETE FROM {table} WHERE shot_id=?", (old_shot_id,))  # nosec B608  table 来自上面的固定元组
                 self._insert_shot(rec)
                 db.executemany(
                     "INSERT OR REPLACE INTO seen(card_key, relpath, size, mtime_ns, sha256) VALUES(?,?,?,?,?)",
@@ -301,8 +334,23 @@ class Library:
         db.execute(
             """INSERT OR REPLACE INTO shots(shot_id,name,folder,date,date_source,captured_at,unit,lens,iso,
                  orientation,width,height,has_raw,has_jpg,added_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (rec.shot_id, rec.name, rec.folder, rec.date, rec.date_source, rec.captured_at, rec.unit, rec.lens,
-             rec.iso, rec.orientation, rec.width, rec.height, int(rec.has_raw), int(rec.has_jpg), rec.added_at),
+            (
+                rec.shot_id,
+                rec.name,
+                rec.folder,
+                rec.date,
+                rec.date_source,
+                rec.captured_at,
+                rec.unit,
+                rec.lens,
+                rec.iso,
+                rec.orientation,
+                rec.width,
+                rec.height,
+                int(rec.has_raw),
+                int(rec.has_jpg),
+                rec.added_at,
+            ),
         )
         db.execute("DELETE FROM files WHERE shot_id=?", (rec.shot_id,))
         db.executemany(
@@ -311,15 +359,17 @@ class Library:
         )
         db.execute(
             "INSERT OR REPLACE INTO edits(shot_id,sidecar_rev,updated_at,crop_json) VALUES(?,?,?,?)",
-            (rec.shot_id, rec.sidecar_rev, datetime.now().isoformat(timespec="seconds"),
-             json.dumps(rec.crop) if rec.crop else None),
+            (
+                rec.shot_id,
+                rec.sidecar_rev,
+                datetime.now().isoformat(timespec="seconds"),
+                json.dumps(rec.crop) if rec.crop else None,
+            ),
         )
 
     def add_seen(self, rows: list[tuple]) -> None:
         with self.lock:
-            self.db.executemany(
-                "INSERT OR REPLACE INTO seen(card_key, relpath, size, mtime_ns, sha256) VALUES(?,?,?,?,?)", rows
-            )
+            self.db.executemany("INSERT OR REPLACE INTO seen(card_key, relpath, size, mtime_ns, sha256) VALUES(?,?,?,?,?)", rows)
 
     def set_edit_cache(self, shot_id: str, rev: int, crop: dict | None) -> None:
         with self.lock:
@@ -354,8 +404,11 @@ class Library:
             width=shot.get("width"),
             height=shot.get("height"),
             imported={
-                "shot_id": shot["shot_id"], "date": shot.get("date"), "date_source": "reset",
-                "captured_at": shot.get("captured_at"), "added_at": shot.get("added_at"),
+                "shot_id": shot["shot_id"],
+                "date": shot.get("date"),
+                "date_source": "reset",
+                "captured_at": shot.get("captured_at"),
+                "added_at": shot.get("added_at"),
                 "sizes": {k: v["size"] for k, v in files.items()},
             },
         )
@@ -425,9 +478,9 @@ class Library:
             self.db.execute("BEGIN")
             try:
                 for table in ("shots", "files", "edits", "seen"):
-                    self.db.execute(f"DELETE FROM {table}")
-                for (rel_dir, _), media in sorted(groups.items()):
-                    self._rebuild_group(rel_dir, media, verify, report)
+                    self.db.execute(f"DELETE FROM {table}")  # nosec B608  table 来自上面的固定元组
+                for (folder, _), media in sorted(groups.items()):
+                    self._rebuild_group(folder, media, verify, report)
                 self.db.execute("COMMIT")
             except BaseException:
                 self.db.execute("ROLLBACK")
@@ -450,7 +503,7 @@ class Library:
                 side = sc.read(sc_path)
             except sc.SidecarCorrupt:
                 side = None
-                kept = sc.backup_corrupt(sc_path)   # 下面会写一份新的：先把坏的留着，别悄悄覆盖
+                kept = sc.backup_corrupt(sc_path)  # 下面会写一份新的：先把坏的留着，别悄悄覆盖
                 report.corrupt_backups.append(kept.relative_to(self.root).as_posix())
         known = (side or {}).get("source", {})
         files: list[FileRecord] = []
@@ -490,13 +543,22 @@ class Library:
         if side is None:
             taken = pm.taken or pm_dng.taken
             date = folder_date or (taken.date().isoformat() if taken else None)
-            imp = {"date": date, "date_source": "rebuild",
-                   "captured_at": taken.isoformat() if taken else None,
-                   "added_at": datetime.now().isoformat(timespec="seconds"), "shot_id": shot_id}
+            imp = {
+                "date": date,
+                "date_source": "rebuild",
+                "captured_at": taken.isoformat() if taken else None,
+                "added_at": datetime.now().isoformat(timespec="seconds"),
+                "shot_id": shot_id,
+            }
             side = sc.new_sidecar(
-                dng=dng.name if dng else None, jpg=jpg.name if jpg else None,
-                dng_sha256=dng_sha, jpg_sha256=jpg_sha, orientation=pm.orientation,
-                width=pm.width or pm_dng.width, height=pm.height or pm_dng.height, imported=imp,
+                dng=dng.name if dng else None,
+                jpg=jpg.name if jpg else None,
+                dng_sha256=dng_sha,
+                jpg_sha256=jpg_sha,
+                orientation=pm.orientation,
+                width=pm.width or pm_dng.width,
+                height=pm.height or pm_dng.height,
+                imported=imp,
             )
             sc.write_atomic(sc_path, side, bump=False, tmp_dir=self.tmp_dir)
             report.sidecars_created += 1

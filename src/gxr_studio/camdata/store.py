@@ -71,8 +71,11 @@ def import_from_dat(raw: bytes, home: Path, *, source_name: str = "GXRCE.DAT", o
         "source": {"name": source_name, "size": len(raw), "sha256": _sha(raw)},
         "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "checks": {
-            "dat_crc": "ok", "generation_registered": dat.generation, "pin_crc32": "ok",
-            "stock04_crc": "ok", "round_trip_identical": True,
+            "dat_crc": "ok",
+            "generation_registered": dat.generation,
+            "pin_crc32": "ok",
+            "stock04_crc": "ok",
+            "round_trip_identical": True,
         },
         "files": {rel: {"size": len(b), "sha256": _sha(b)} for rel, b in sorted(files.items())},
     }
@@ -125,7 +128,7 @@ def swap_in(new: Path, root: Path) -> None:
         os.replace(new, root)
         return
     if _atomic_exchange(new, root):
-        shutil.rmtree(new, ignore_errors=True)       # 对调之后 new 这个名字下是旧的那份
+        shutil.rmtree(new, ignore_errors=True)  # 对调之后 new 这个名字下是旧的那份
         return
     old = root.with_name(root.name + ".old")
     if old.exists():
@@ -188,7 +191,7 @@ def check_entry(e: bytes) -> None:
     if len(e) != datcodec.ENTRY_BYTES:
         raise CamdataError("条目长度不是 552")
     for off, size, crc_off in datcodec.CRC_FIELDS:
-        if int.from_bytes(e[crc_off:crc_off + 4], "big") != zlib.crc32(e[off:off + size]) & 0xFFFFFFFF:
+        if int.from_bytes(e[crc_off : crc_off + 4], "big") != zlib.crc32(e[off : off + size]) & 0xFFFFFFFF:
             raise CamdataError(f"条目 CRC 对不上（偏移 {crc_off}）")
 
 

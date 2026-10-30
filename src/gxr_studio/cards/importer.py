@@ -94,8 +94,8 @@ class ImportProgress:
     unreadable: list[str] = field(default_factory=list)
     verify_failed: list[str] = field(default_factory=list)
     scan_errors: list[str] = field(default_factory=list)  # 列目录时读不了的文件夹/文件
-    failed_shots: int = 0      # 有文件没导进来的照片张数（一对里坏一个也算一张）
-    completed_shots: int = 0   # 之前只导进来一半、这次把另一半补上的张数
+    failed_shots: int = 0  # 有文件没导进来的照片张数（一对里坏一个也算一张）
+    completed_shots: int = 0  # 之前只导进来一半、这次把另一半补上的张数
     needed_bytes: int = 0
     free_bytes: int = 0
     current: str | None = None
@@ -223,9 +223,7 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def decide_date(
-    taken: datetime | None, mtime_ns: int, shift: timedelta, policy: str
-) -> tuple[str | None, str | None, str]:
+def decide_date(taken: datetime | None, mtime_ns: int, shift: timedelta, policy: str) -> tuple[str | None, str | None, str]:
     """-> (日期 YYYY-MM-DD 或 None, 拍摄时间 ISO 或 None, 来源 exif|mtime|none)"""
     if taken is not None:
         dt = taken + shift
@@ -237,9 +235,7 @@ def decide_date(
     return None, None, "none"
 
 
-def _resolve_destination(
-    lib: Library, folder: str, stem: str, items: list[Staged], main_sha: str
-) -> tuple[str, dict[str, bool]]:
+def _resolve_destination(lib: Library, folder: str, stem: str, items: list[Staged], main_sha: str) -> tuple[str, dict[str, bool]]:
     """-> (最终主名, {kind: 目标位置上已经是同内容文件})。冲突时整对一起加 _<sha8>。"""
     conflict, same = _conflicts(lib, folder, stem, items)
     if not conflict:
@@ -356,8 +352,10 @@ def _done_message(p: ImportProgress) -> str:
         bad = len(p.unreadable) + len(p.verify_failed) + len(p.scan_errors)
         got = f"新增 {p.imported_shots} 张" + (f"、补全 {p.completed_shots} 张" if p.completed_shots else "")
         lost = f"有 {p.failed_shots} 张没有完整导进来，" if p.failed_shots else ""
-        return (f"导入没有全部完成：{got}。{lost}共 {bad} 个文件或文件夹没能读进来（读不出来或校验不一致），"
-                "卡上的文件没有改动。请先别格式化或清空这张卡：换个读卡器或重新插拔，再点「继续导入」。")
+        return (
+            f"导入没有全部完成：{got}。{lost}共 {bad} 个文件或文件夹没能读进来（读不出来或校验不一致），"
+            "卡上的文件没有改动。请先别格式化或清空这张卡：换个读卡器或重新插拔，再点「继续导入」。"
+        )
     if p.imported_shots == 0 and not p.completed_shots:
         return "这张卡上的照片都导入过了。"
     return f"导入完成，共 {p.imported_shots + p.completed_shots} 张。现在可以安全弹出卡了。"
@@ -398,8 +396,7 @@ def _complete_existing(lib, card, shot, cfiles, todo, fresh, dups, staged, all_s
         return False
 
     records = [
-        FileRecord(k, v["relpath"], v["sha256"], v["size"], lib.abspath(v["relpath"]).stat().st_mtime_ns)
-        for k, v in existing["files"].items()
+        FileRecord(k, v["relpath"], v["sha256"], v["size"], lib.abspath(v["relpath"]).stat().st_mtime_ns) for k, v in existing["files"].items()
     ]
     for s in fresh:
         rel = targets[s.card_file.kind]
@@ -423,25 +420,38 @@ def _complete_existing(lib, card, shot, cfiles, todo, fresh, dups, staged, all_s
         source[f"{r.kind}_sha256"] = r.sha256
     imported = dict(side.get("import", {}))
     imported.update(shot_id=shot_id, sizes={r.kind: r.size for r in records})
-    out = sc.write_atomic(
-        lib.sidecar_path_for(existing), {**side, "source": source, "import": imported}, tmp_dir=lib.tmp_dir
-    )
+    out = sc.write_atomic(lib.sidecar_path_for(existing), {**side, "source": source, "import": imported}, tmp_dir=lib.tmp_dir)
     rec = ShotRecord(
-        shot_id=shot_id, name=stem, folder=folder, date=existing["date"], date_source=existing["date_source"],
-        captured_at=existing["captured_at"], unit=existing["unit"], lens=existing["lens"], iso=existing["iso"],
-        orientation=existing["orientation"], width=existing["width"], height=existing["height"],
-        added_at=existing["added_at"], files=records, sidecar_rev=int(out.get("rev", 0)), crop=out.get("crop"),
+        shot_id=shot_id,
+        name=stem,
+        folder=folder,
+        date=existing["date"],
+        date_source=existing["date_source"],
+        captured_at=existing["captured_at"],
+        unit=existing["unit"],
+        lens=existing["lens"],
+        iso=existing["iso"],
+        orientation=existing["orientation"],
+        width=existing["width"],
+        height=existing["height"],
+        added_at=existing["added_at"],
+        files=records,
+        sidecar_rev=int(out.get("rev", 0)),
+        crop=out.get("crop"),
     )
     if opts.make_thumbs:
         try:
             thumbs.ensure(
                 lib,
-                {"shot_id": shot_id, "orientation": rec.orientation,
-                 "files": {r.kind: {"relpath": r.relpath} for r in records}},
+                {
+                    "shot_id": shot_id,
+                    "orientation": rec.orientation,
+                    "files": {r.kind: {"relpath": r.relpath} for r in records},
+                },
                 thumbs.THUMB_SIZE,
             )
         except Exception:
-            pass
+            pass  # nosec B110  补全失败留给这次导入的结果，不在这里吞掉照片
     lib.replace_shot(existing["shot_id"], rec, _seen_rows(card, cfiles, all_shas))
     lib.log(_log_shot("completed", card, shot, staged, opts, rec, records, imported))
     progress.add(completed_shots=1)
@@ -556,9 +566,9 @@ def _import_shot(lib, card, shot: CardShot, opts, progress, cancel, reader, shif
         try:
             old = sc.read(sc_path)
             src = old.get("source", {})
-            if src.get("dng_sha256") == (dng_rec.sha256 if dng_rec else None) and src.get(
-                "jpg_sha256"
-            ) == (jpg_rec.sha256 if jpg_rec else None):
+            if src.get("dng_sha256") == (dng_rec.sha256 if dng_rec else None) and src.get("jpg_sha256") == (
+                jpg_rec.sha256 if jpg_rec else None
+            ):
                 side = old
         except sc.SidecarCorrupt:
             pass
@@ -600,12 +610,15 @@ def _import_shot(lib, card, shot: CardShot, opts, progress, cancel, reader, shif
         try:
             thumbs.ensure(
                 lib,
-                {"shot_id": shot_id, "orientation": rec.orientation,
-                 "files": {r.kind: {"relpath": r.relpath} for r in records}},
+                {
+                    "shot_id": shot_id,
+                    "orientation": rec.orientation,
+                    "files": {r.kind: {"relpath": r.relpath} for r in records},
+                },
                 thumbs.THUMB_SIZE,
             )
         except Exception:
-            pass  # 缩略图是缓存，之后按需再生成
+            pass  # nosec B110  缩略图是缓存，之后按需再生成
     seen = _seen_rows(card, cfiles, all_shas)
     lib.commit_shot(rec, seen)
     lib.log(_log_shot("imported", card, shot, staged, opts, rec, records, imported_info))
@@ -647,6 +660,5 @@ def card_summary(lib: Library, card: Card, reader: CardReader | None = None) -> 
         "new_shots": len(new),
         "dng_files": sum("dng" in s.files for s in shots),
         "jpg_files": sum("jpg" in s.files for s in shots),
-        "new_bytes": sum(f.size for s in new for f in s.files.values()
-                         if not lib.seen_hit(card.key, f.relpath, f.size, f.mtime_ns)),
+        "new_bytes": sum(f.size for s in new for f in s.files.values() if not lib.seen_hit(card.key, f.relpath, f.size, f.mtime_ns)),
     }

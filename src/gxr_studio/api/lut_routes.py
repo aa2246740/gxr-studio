@@ -69,8 +69,12 @@ def _svc(request: Request):
 
 @router.get("/api/lut/spaces")
 def lut_spaces():
-    return {"spaces": spaces_listing(), "default_input": None, "default_output": "srgb",
-            "note": "不知道调色文件是给哪种画面做的？可以先选 sRGB 试，结果会标“输入空间是猜的”。"}
+    return {
+        "spaces": spaces_listing(),
+        "default_input": None,
+        "default_output": "srgb",
+        "note": "不知道调色文件是给哪种画面做的？可以先选 sRGB 试，结果会标“输入空间是猜的”。",
+    }
 
 
 @router.post("/api/lut/upload")
@@ -89,31 +93,61 @@ async def lut_upload(request: Request):
 
 
 @router.get("/api/lut/{cube_id}/preview")
-def lut_preview(cube_id: str, request: Request, which: str = "lut", photo: str | None = None, max_edge: int = 640,
-                space: str = "srgb", output: str = "srgb", input_gamut: str | None = None, output_gamut: str | None = None,
-                input_range: str = "full", output_range: str = "full"):
+def lut_preview(
+    cube_id: str,
+    request: Request,
+    which: str = "lut",
+    photo: str | None = None,
+    max_edge: int = 640,
+    space: str = "srgb",
+    output: str = "srgb",
+    input_gamut: str | None = None,
+    output_gamut: str | None = None,
+    input_range: str = "full",
+    output_range: str = "full",
+):
     c = ctx(request)
     if not 64 <= max_edge <= 1600:
         raise ApiError(422, "bad_size", "max_edge 要在 64 到 1600 之间")
     shot = _shot_or_404(c, photo) if photo else None
-    spec = SpaceArgs(space=space, output=output, input_gamut=input_gamut, output_gamut=output_gamut,
-                     input_range=input_range, output_range=output_range).spec()
+    spec = SpaceArgs(
+        space=space,
+        output=output,
+        input_gamut=input_gamut,
+        output_gamut=output_gamut,
+        input_range=input_range,
+        output_range=output_range,
+    ).spec()
     try:
         jpeg, info = c.lut.preview(cube_id, which, spec, shot, max_edge)
     except LutError as exc:
         raise _api(exc) from exc
     label = {"04-simulation": "04 电脑模拟", "neutral": "中性转换", "camera-jpg": "相机 JPG", "chart": "示意图"}[info["mode"]]
-    return Response(jpeg, media_type="image/jpeg", headers={
-        "Cache-Control": "private, no-store", "X-GXR-Prediction": "1", "X-GXR-Preview-Mode": info["mode"],
-        "X-GXR-Label": quote(label), "X-GXR-Nominal-Scene": "1" if info.get("nominal_scene") else "0"})
+    return Response(
+        jpeg,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-GXR-Prediction": "1",
+            "X-GXR-Preview-Mode": info["mode"],
+            "X-GXR-Label": quote(label),
+            "X-GXR-Nominal-Scene": "1" if info.get("nominal_scene") else "0",
+        },
+    )
 
 
 @router.post("/api/lut/fit")
 def lut_fit(body: FitRequest, request: Request):
     svc = _svc(request)
     try:
-        return svc.start_fit(body.cube_id, body.spec(), unit=body.unit, photo_ids=body.photo_ids,
-                             profile=body.profile, guessed=body.space_guessed)
+        return svc.start_fit(
+            body.cube_id,
+            body.spec(),
+            unit=body.unit,
+            photo_ids=body.photo_ids,
+            profile=body.profile,
+            guessed=body.space_guessed,
+        )
     except LutError as exc:
         raise _api(exc) from exc
 

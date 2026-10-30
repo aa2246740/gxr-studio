@@ -11,9 +11,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from gxr_studio.app import create_app
-
 from conftest import PORT
+from gxr_studio.app import create_app
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 CROP_JS = WEB / "assets" / "crop.js"
@@ -106,7 +105,18 @@ def test_default_is_no_auto_xpan_suggestion():
 def test_guide_and_preset_tables_are_wired():
     """前端的比例表和辅助线表存在，G / O 快捷键接到裁切标签上。"""
     src = CROP_JS.read_text(encoding="utf-8")
-    for needle in ("PRESET_GROUPS", "GUIDES", "'thirds'", "'golden'", "'spiral'", "'diagonal'", "'cross'", "'grid'", "cycleSpiral", "cycleGuide"):
+    for needle in (
+        "PRESET_GROUPS",
+        "GUIDES",
+        "'thirds'",
+        "'golden'",
+        "'spiral'",
+        "'diagonal'",
+        "'cross'",
+        "'grid'",
+        "cycleSpiral",
+        "cycleGuide",
+    ):
         assert needle in src, needle
     viewer = (WEB / "assets" / "viewer.js").read_text(encoding="utf-8")
     assert "cycleGuide(view)" in viewer and "cycleSpiral(view)" in viewer

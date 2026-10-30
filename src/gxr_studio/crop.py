@@ -76,9 +76,7 @@ def crop_box(rect: tuple[float, float, float, float], width: int, height: int) -
     return x0, y0, w_px, h_px
 
 
-def box_inside(
-    box: tuple[float, float, float, float], width: int, height: int, angle_deg: float, tol: float = 1e-6
-) -> bool:
+def box_inside(box: tuple[float, float, float, float], width: int, height: int, angle_deg: float, tol: float = 1e-6) -> bool:
     """框的四个角（在旋转后的画布上）按反方向转回去，是否都在原画面内。"""
     x0, y0, w, h = box
     th = math.radians(angle_deg)
@@ -101,9 +99,7 @@ def _check_angle(angle_deg: float) -> float:
     return float(angle_deg)
 
 
-def default_crop(
-    preset: str, width: int, height: int, angle_deg: float = 0.0, flip: bool = False
-) -> Crop:
+def default_crop(preset: str, width: int, height: int, angle_deg: float = 0.0, flip: bool = False) -> Crop:
     """某个预设在当前角度下、居中的最大框。XPan 在 4288×2848 上得到 4288×1583。"""
     angle = _check_angle(angle_deg)
     ratio = target_ratio(preset, width, height, flip)
@@ -126,9 +122,7 @@ def default_crop(
     return Crop(preset=preset, rect=rect, angle_deg=angle)
 
 
-def validate_crop(
-    preset: str, rect, angle_deg: float, width: int, height: int
-) -> Crop:
+def validate_crop(preset: str, rect, angle_deg: float, width: int, height: int) -> Crop:
     """校验用户给的框；不合格就抛 CropError，不悄悄修正。"""
     angle = _check_angle(angle_deg)
     ratio = target_ratio(preset, width, height)

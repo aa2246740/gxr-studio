@@ -31,6 +31,11 @@ class JobRegistry:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._alert: Callable[[Job], None] | None = None
+
+    def set_alert_handler(self, handler: Callable[[Job], None] | None) -> None:
+        """运行中的进程登记失败告警。传 None 表示卸掉。"""
+        self._alert = handler
 
     def active(self, kind: str) -> Job | None:
         with self._lock:
@@ -44,6 +49,9 @@ class JobRegistry:
                 fn(job)
             except BaseException as exc:  # 记下来，别让线程静悄悄地死掉
                 job.error = f"{type(exc).__name__}: {exc}"
+                handler = self._alert
+                if handler is not None:
+                    handler(job)
 
         job.thread = threading.Thread(target=runner, name=f"job-{kind}-{job.id}", daemon=True)
         with self._lock:

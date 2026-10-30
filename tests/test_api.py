@@ -12,11 +12,10 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from conftest import PORT
 from gxr_studio import audit
 from gxr_studio.app import create_app
 from gxr_studio.library.store import sha256_file
-
-from conftest import PORT
 
 
 @pytest.fixture
@@ -121,7 +120,9 @@ def test_crop_api(client, card):
     assert client.put(f"/api/photos/{p['id']}/crop", json={"preset": "1:1", "expected_rev": 1}).status_code == 409
     bad = client.put(f"/api/photos/{p['id']}/crop", json={"preset": "xpan-65-24", "rect": [0, 0, 1, 1]})
     assert bad.status_code == 422 and bad.json()["error"] == "ratio_mismatch"
-    assert client.put(f"/api/photos/{p['id']}/crop", json={"preset": "free", "rect": [0, 0, 1, 1], "angle_deg": 12}).json()["error"] == "bad_angle"
+    assert (
+        client.put(f"/api/photos/{p['id']}/crop", json={"preset": "free", "rect": [0, 0, 1, 1], "angle_deg": 12}).json()["error"] == "bad_angle"
+    )
     # 还原
     gone = client.delete(f"/api/photos/{p['id']}/crop").json()
     assert gone["active"] is False

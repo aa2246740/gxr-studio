@@ -45,6 +45,7 @@ class Dng:
 
         def val(d, tag, default=None):
             return d[tag]["value"] if tag in d else default
+
         raw = None
         for d in [root] + subs:
             if val(d, 262, [None])[0] == 32803 and val(d, 254, [0])[0] == 0:
@@ -75,7 +76,7 @@ class Dng:
             raise NotImplementedError("non-rectangular CFALayout")
         self.lin_table = np.asarray(val(raw, 50712), float) if 50712 in raw else None
         aa = val(raw, 50829, [0, 0, self.height, self.width])
-        self.active = tuple(int(round(v)) for v in aa)          # top, left, bottom, right
+        self.active = tuple(int(round(v)) for v in aa)  # top, left, bottom, right
         aw, ah = self.active[3] - self.active[1], self.active[2] - self.active[0]
         bdim = [int(v) for v in val(raw, 50713, [1, 1])]
         bl = np.asarray(val(raw, 50714, [0.0]), float)
@@ -96,8 +97,8 @@ class Dng:
         cs = [float(v) for v in val(raw, 50720, [aw, ah])]
         if any(abs(v - round(v)) > 1e-9 for v in co + cs):
             raise NotImplementedError(f"fractional default crop {co} {cs}")
-        self.crop_origin = (int(round(co[0])), int(round(co[1])))   # x, y relative to the ActiveArea
-        self.crop_size = (int(round(cs[0])), int(round(cs[1])))     # w, h
+        self.crop_origin = (int(round(co[0])), int(round(co[1])))  # x, y relative to the ActiveArea
+        self.crop_size = (int(round(cs[0])), int(round(cs[1])))  # w, h
         self.orientation = int(val(root, 274, [1])[0])
         self.as_shot_neutral = np.asarray(val(root, 50728), float) if 50728 in root else None
         self.as_shot_white_xy = np.asarray(val(root, 50729), float) if 50729 in root else None
@@ -107,22 +108,30 @@ class Dng:
         if 34665 in root:
             try:
                 ex = T.ifd(root[34665]["value"][0])
-                for tag, name in ((34855, "iso"), (33434, "t"), (33437, "f"), (36867, "when"), (41987, "wb_exif"),
-                                  (37383, "metering"), (34850, "program"), (37380, "bias_ev")):
+                for tag, name in (
+                    (34855, "iso"),
+                    (33434, "t"),
+                    (33437, "f"),
+                    (36867, "when"),
+                    (41987, "wb_exif"),
+                    (37383, "metering"),
+                    (34850, "program"),
+                    (37380, "bias_ev"),
+                ):
                     if tag in ex:
                         v = ex[tag]["value"]
                         self.exif[name] = v[0] if isinstance(v, list) and len(v) == 1 else v
             except Exception as e:  # noqa: BLE001
                 self.exif["error"] = str(e)
         self._check_window()
-        self._mosaic = None
+        self._mosaic: np.ndarray | None = None
 
     def _check_window(self) -> None:
-        a, l, b, r = self.active
-        if not (0 <= a < b <= self.height and 0 <= l < r <= self.width):
+        top, left, bottom, right = self.active
+        if not (0 <= top < bottom <= self.height and 0 <= left < right <= self.width):
             raise ValueError(f"ActiveArea {self.active} outside the {self.width}x{self.height} raw plane")
         y0, x0, h, w = self.crop_window()
-        if h <= 0 or w <= 0 or y0 + h > b or x0 + w > r:
+        if h <= 0 or w <= 0 or y0 + h > bottom or x0 + w > right:
             raise ValueError(f"DefaultCrop outside the ActiveArea: {(y0, x0, h, w)}")
         if self.cfa.shape != (2, 2):
             raise NotImplementedError(f"CFA repeat {self.cfa.shape}")
@@ -135,32 +144,34 @@ class Dng:
                 self._mosaic = self._decode_mosaic()
             except (ValueError, IndexError) as exc:
                 raise RawDecodeError(f"RAW 数据读不全（{exc}）") from exc
-        return self._mosaic
+        mosaic = self._mosaic
+        if mosaic is None:
+            raise RawDecodeError("RAW 数据读不全")
+        return mosaic
 
     def _decode_mosaic(self) -> np.ndarray:
         offs, cnts = self._strips
-        buf = np.concatenate([np.frombuffer(self.data, np.uint8, count=int(n), offset=int(o))
-                              for o, n in zip(offs, cnts)])
+        buf = np.concatenate([np.frombuffer(self.data, np.uint8, count=int(n), offset=int(o)) for o, n in zip(offs, cnts)])
         h, w, b = self.height, self.width, self.bps
         row = (w * b + 7) // 8
         if buf.size < row * h:
             raise ValueError("raw strips shorter than the image")
-        rows = buf[:row * h].reshape(h, row)
+        rows = buf[: row * h].reshape(h, row)
         if b == 16:
             m = rows.reshape(-1).view(">u2" if self.endian == "big" else "<u2").reshape(h, w).astype(np.uint16)
         elif b == 8:
             m = rows[:, :w].astype(np.uint16)
         elif b == 12:
             n2 = w // 2
-            a = rows[:, :3 * n2].reshape(h, n2, 3).astype(np.uint16)
+            a = rows[:, : 3 * n2].reshape(h, n2, 3).astype(np.uint16)
             m = np.empty((h, w), np.uint16)
-            m[:, 0:2 * n2:2] = (a[..., 0] << 4) | (a[..., 1] >> 4)
-            m[:, 1:2 * n2:2] = ((a[..., 1] & 15) << 8) | a[..., 2]
+            m[:, 0 : 2 * n2 : 2] = (a[..., 0] << 4) | (a[..., 1] >> 4)
+            m[:, 1 : 2 * n2 : 2] = ((a[..., 1] & 15) << 8) | a[..., 2]
             if w % 2:
-                t = rows[:, 3 * n2:3 * n2 + 2].astype(np.uint16)
+                t = rows[:, 3 * n2 : 3 * n2 + 2].astype(np.uint16)
                 m[:, -1] = (t[:, 0] << 4) | (t[:, 1] >> 4)
         else:
-            bits = np.unpackbits(rows, axis=1)[:, :w * b].reshape(h, w, b)
+            bits = np.unpackbits(rows, axis=1)[:, : w * b].reshape(h, w, b)
             m = (bits.astype(np.uint32) << np.arange(b - 1, -1, -1, dtype=np.uint32)).sum(-1).astype(np.uint16)
         return m
 
@@ -170,12 +181,16 @@ class Dng:
 
     def crop_window(self):
         """(y0, x0, h, w) of the default crop in raw-plane coordinates."""
-        return (self.active[0] + self.crop_origin[1], self.active[1] + self.crop_origin[0],
-                self.crop_size[1], self.crop_size[0])
+        return (
+            self.active[0] + self.crop_origin[1],
+            self.active[1] + self.crop_origin[0],
+            self.crop_size[1],
+            self.crop_size[0],
+        )
 
     def crop_mosaic(self):
         y0, x0, h, w = self.crop_window()
-        return self.mosaic()[y0:y0 + h, x0:x0 + w]
+        return self.mosaic()[y0 : y0 + h, x0 : x0 + w]
 
     def cfa_at(self, ys, xs):
         """CFA colour (0 R, 1 G, 2 B) at raw-plane coordinates; pattern origin = ActiveArea origin."""
@@ -218,19 +233,30 @@ class Dng:
         return self.cfa_at(yy, xx)
 
     def summary(self):
-        return {"file": self.path.name, "sha256": self.sha256, "endian": self.endian,
-                "raw_size_wh": [self.width, self.height], "bits": self.bps, "cfa_pattern": self.cfa.tolist(),
-                "crop_cfa_phase": self.crop_cfa_phase().tolist(), "active_area_tlbr": list(self.active),
-                "default_crop_origin_xy": list(self.crop_origin), "default_crop_size_wh": list(self.crop_size),
-                "default_scale": list(self.default_scale), "orientation": self.orientation,
-                "linearization_table": None if self.lin_table is None else int(self.lin_table.size),
-                "black_level_pattern": self.black_pattern.tolist(),
-                "black_delta_h": self.black_dh is not None, "black_delta_v": self.black_dv is not None,
-                "white_level": self.white, "as_shot_neutral": None if self.as_shot_neutral is None
-                else self.as_shot_neutral.tolist(),
-                "as_shot_white_xy": None if self.as_shot_white_xy is None else self.as_shot_white_xy.tolist(),
-                "analog_balance": self.analog_balance.tolist(), "baseline_exposure_ev": self.baseline_exposure,
-                "exif": self.exif}
+        return {
+            "file": self.path.name,
+            "sha256": self.sha256,
+            "endian": self.endian,
+            "raw_size_wh": [self.width, self.height],
+            "bits": self.bps,
+            "cfa_pattern": self.cfa.tolist(),
+            "crop_cfa_phase": self.crop_cfa_phase().tolist(),
+            "active_area_tlbr": list(self.active),
+            "default_crop_origin_xy": list(self.crop_origin),
+            "default_crop_size_wh": list(self.crop_size),
+            "default_scale": list(self.default_scale),
+            "orientation": self.orientation,
+            "linearization_table": None if self.lin_table is None else int(self.lin_table.size),
+            "black_level_pattern": self.black_pattern.tolist(),
+            "black_delta_h": self.black_dh is not None,
+            "black_delta_v": self.black_dv is not None,
+            "white_level": self.white,
+            "as_shot_neutral": None if self.as_shot_neutral is None else self.as_shot_neutral.tolist(),
+            "as_shot_white_xy": None if self.as_shot_white_xy is None else self.as_shot_white_xy.tolist(),
+            "analog_balance": self.analog_balance.tolist(),
+            "baseline_exposure_ev": self.baseline_exposure,
+            "exif": self.exif,
+        }
 
 
 def open_dng(source: bytes | Path | str, name: str | None = None) -> Dng:

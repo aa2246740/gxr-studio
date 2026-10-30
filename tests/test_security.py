@@ -8,10 +8,9 @@ import socket
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import PORT
 from gxr_studio import audit, cli
 from gxr_studio.app import create_app
-
-from conftest import PORT
 
 
 @pytest.fixture
@@ -48,7 +47,10 @@ def test_bearer_header_works(app, settings):
         assert c.get("/api/health", headers={"Authorization": f"Bearer {settings.token}"}).status_code == 200
 
 
-@pytest.mark.parametrize("host", ["evil.example.com", "127.0.0.1", "127.0.0.1:9999", "localhost:1", "0.0.0.0:8765", "127.0.0.1.evil.com:8765"])
+@pytest.mark.parametrize(
+    "host",
+    ["evil.example.com", "127.0.0.1", "127.0.0.1:9999", "localhost:1", "0.0.0.0:8765", "127.0.0.1.evil.com:8765"],
+)
 def test_bad_host_is_403(app, settings, host):
     with mk(app, host=host, headers={"X-GXR-Token": settings.token}) as c:
         r = c.get("/api/health")

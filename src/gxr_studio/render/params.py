@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 UNITS = ("jlaunch", "qlaunch", "l08firm")
 KNOB_NAMES = ("amount", "contrast", "highlight", "shadow", "fade", "saturation", "warmth", "tint", "split", "filter")
 
-EXPOSURE_RANGE = 5.0         # ±EV
-SLIDER_RANGE = 100           # 色温/色调/画面对比/高光/阴影：-100..+100
+EXPOSURE_RANGE = 5.0  # ±EV
+SLIDER_RANGE = 100  # 色温/色调/画面对比/高光/阴影：-100..+100
 CURVE_MAX_POINTS = 16
 
 
@@ -31,9 +31,9 @@ class EditError(ValueError):
 
 @dataclass(frozen=True)
 class RecipeSel:
-    unit: str                                  # jlaunch | qlaunch | l08firm
-    slot: int                                  # 1..8
-    levels: tuple[tuple[str, int], ...] = ()   # 用户给出的旋钮档位；没给的取菜单默认值
+    unit: str  # jlaunch | qlaunch | l08firm
+    slot: int  # 1..8
+    levels: tuple[tuple[str, int], ...] = ()  # 用户给出的旋钮档位；没给的取菜单默认值
 
     @property
     def unit_index(self) -> int:
@@ -64,15 +64,20 @@ class Adjust:
         return self.contrast == 0 and self.highlight == 0 and self.shadow == 0
 
     def to_json(self) -> dict:
-        return {"exposure_ev": self.exposure_ev, "wb": {"warm": self.warm, "tint": self.tint},
-                "contrast": self.contrast, "highlight": self.highlight, "shadow": self.shadow}
+        return {
+            "exposure_ev": self.exposure_ev,
+            "wb": {"warm": self.warm, "tint": self.tint},
+            "contrast": self.contrast,
+            "highlight": self.highlight,
+            "shadow": self.shadow,
+        }
 
 
 @dataclass(frozen=True)
 class EditState:
     recipe: RecipeSel | None = None
     adjust: Adjust = field(default_factory=Adjust)
-    master: tuple[tuple[float, float], ...] | None = None   # 主曲线控制点（0..255）
+    master: tuple[tuple[float, float], ...] | None = None  # 主曲线控制点（0..255）
 
     def to_json(self) -> dict:
         return {
@@ -135,8 +140,10 @@ def parse_curve(raw) -> tuple[tuple[float, float], ...] | None:
         raise EditError("bad_curve", f"主曲线要有 2 到 {CURVE_MAX_POINTS} 个点")
     out = []
     for p in pts:
-        if not isinstance(p, (list, tuple)) or len(p) != 2 or any(
-            isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 255 for v in p
+        if (
+            not isinstance(p, (list, tuple))
+            or len(p) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 255 for v in p)
         ):
             raise EditError("bad_curve", "曲线的点要是 [输入, 输出]，都在 0 到 255 之间")
         out.append((round(float(p[0]), 4), round(float(p[1]), 4)))

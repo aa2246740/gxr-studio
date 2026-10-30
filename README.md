@@ -33,6 +33,8 @@ uv sync --frozen            # 按 uv.lock 装依赖（Python 3.12–3.14，默�
 uv run gxr-studio           # 启动，自动打开浏览器；加 --no-browser 只打印链接
 ```
 
+开发时也可以 `make setup`（装依赖并挂上检查钩子）然后 `make dev`。命令、命名和不能碰的目录写在 `AGENTS.md`。
+
 - 只监听 `127.0.0.1`，端口随机；启动时打印 `http://127.0.0.1:<端口>/?token=…`，必须用这个链接打开
   （令牌会换成 HttpOnly cookie）。服务还校验 `Host` 和 `Origin`，所有响应带
   `Content-Security-Policy: default-src 'self'; img-src 'self' blob: data:; …`（页面不加载任何外部资源，也没有内联脚本/样式；

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import struct
 import zlib
 
@@ -80,9 +79,15 @@ def test_entries_match_the_research_parser_on_the_g123_dat(tmp_path):
         f"sys.path.insert(0, {str(t.KNOBS_SRC)!r})\n"
         "import support\n"
         "mods = support.parse()\n"
-        "print(json.dumps([{str(s): e.hex() for s, e in m['entries'].items()} for m in mods]))\n")
-    cp = subprocess.run([sys.executable, "-B", str(script)], capture_output=True, text=True, timeout=120,
-                        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+        "print(json.dumps([{str(s): e.hex() for s, e in m['entries'].items()} for m in mods]))\n"
+    )
+    cp = subprocess.run(
+        [sys.executable, "-B", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
     assert cp.returncode == 0, cp.stderr[-1500:]
     theirs = json.loads(cp.stdout)
     ours = dc.parse(need(127))
@@ -103,10 +108,13 @@ def test_gxui_matches_the_research_ui_data_on_g127():
     meta, ext, banks, users = ui.parse_dat(raw)
     dat = dc.parse(raw)
     assert dat.users == users == []
-    assert dat.ext_config == ext[64:dc.USER_OFFSET]
+    assert dat.ext_config == ext[64 : dc.USER_OFFSET]
     # g127 的菜单只露出前四项（Cont/High/Shad/Satu），后面的项必须是默认 0
-    users = [{"base": 1, "levels": [1, -1, 2, 0] + [0] * 7}, {"base": 5, "levels": [0] * 11},
-             {"base": 8, "levels": [2, 2, -2, 3] + [0] * 7}]
+    users = [
+        {"base": 1, "levels": [1, -1, 2, 0] + [0] * 7},
+        {"base": 5, "levels": [0] * 11},
+        {"base": 8, "levels": [2, 2, -2, 3] + [0] * 7},
+    ]
     want = ui.replace_users(raw, users)
     got = dc.pack(dc.replace_users(dat, users))
     assert got == want
@@ -203,7 +211,7 @@ def test_pack_rejects_overfull_and_bad_entries():
         dc.pack(bad)
     bad = copy.deepcopy(dat)
     e = bytearray(bad.modules[0].entries[2])
-    e[0] = 3   # 所有者槽位对不上
+    e[0] = 3  # 所有者槽位对不上
     bad.modules[0].entries[2] = bytes(e)
     with pytest.raises(dc.DatError):
         dc.pack(bad)
@@ -216,7 +224,7 @@ def test_an_edited_entry_survives_pack_and_parse(gen):
 
     dat = dc.parse(need(gen))
     e = bytearray(dat.modules[0].entries[7])
-    e[82 + 10] = min(255, e[82 + 10] + 1)                 # B5 曲线里的一个节点
+    e[82 + 10] = min(255, e[82 + 10] + 1)  # B5 曲线里的一个节点
     struct.pack_into(">I", e, 12, zlib.crc32(e[82:115]) & 0xFFFFFFFF)
     edited = copy.deepcopy(dat)
     edited.modules[0].entries[7] = bytes(e)

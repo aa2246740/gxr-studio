@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import platform
-import random
 import shutil
 import statistics
 import sys
@@ -36,7 +35,9 @@ def build_card(volumes: Path) -> Path:
     d.mkdir(parents=True)
     rng = np.random.default_rng(1)
     base = datetime(2026, 7, 1, 9, 0, 0)
-    pool = [Image.fromarray(rng.integers(0, 255, (SIZE[1] // 8, SIZE[0] // 8, 3), dtype=np.uint8)).resize(SIZE, Image.BICUBIC) for _ in range(8)]
+    pool = [
+        Image.fromarray(rng.integers(0, 255, (SIZE[1] // 8, SIZE[0] // 8, 3), dtype=np.uint8)).resize(SIZE, Image.BICUBIC) for _ in range(8)
+    ]
     for i in range(N):
         taken = base + timedelta(days=i // 10, minutes=i % 10)
         img = pool[i % 8].copy()
@@ -51,13 +52,24 @@ def main() -> None:
         audit.forbid_network(True)
         volumes = build_card(tmp / "volumes")
         settings = Settings(
-            library_dir=tmp / "library", home_dir=tmp / "home", export_dir=tmp / "exports",
-            volumes_roots=(volumes,), token="perf", port=8765, min_free_bytes=0,
+            library_dir=tmp / "library",
+            home_dir=tmp / "home",
+            export_dir=tmp / "exports",
+            volumes_roots=(volumes,),
+            token="perf",
+            port=8765,
+            min_free_bytes=0,
         )
         app = create_app(settings)
         res: dict = {
-            "photos": N, "jpg_size_px": SIZE, "note": "合成 JPG（噪声图），导入含缩略图生成；单次实测，不是基准承诺",
-            "machine": {"platform": platform.platform(), "python": sys.version.split()[0], "processor": platform.processor()},
+            "photos": N,
+            "jpg_size_px": SIZE,
+            "note": "合成 JPG（噪声图），导入含缩略图生成；单次实测，不是基准承诺",
+            "machine": {
+                "platform": platform.platform(),
+                "python": sys.version.split()[0],
+                "processor": platform.processor(),
+            },
         }
         with TestClient(app, base_url="http://127.0.0.1:8765", headers={"X-GXR-Token": "perf"}) as c:
             card_id = c.get("/api/cards").json()[0]["id"]

@@ -91,8 +91,10 @@ def swap_dat(root: Path, data: bytes) -> None:
 
 
 def snapshot(root: Path) -> dict:
-    return {str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns, sha(p.read_bytes()) if p.is_file() else None)
-            for p in sorted(root.rglob("*"))}
+    return {
+        str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns, sha(p.read_bytes()) if p.is_file() else None)
+        for p in sorted(root.rglob("*"))
+    }
 
 
 def forge_generation(raw: bytes, gen: int) -> bytes:
@@ -133,9 +135,13 @@ def test_status_lists_which_inserted_cards_have_the_dat(client, volumes):
 def test_endpoints_need_the_token(settings):
     app = create_app(settings)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        for method, url in (("get", "/api/camdata/status"), ("post", "/api/camdata/import-card"),
-                            ("post", "/api/camdata/import-file"), ("post", "/api/camdata/import-upload"),
-                            ("post", "/api/calibration/import")):
+        for method, url in (
+            ("get", "/api/camdata/status"),
+            ("post", "/api/camdata/import-card"),
+            ("post", "/api/camdata/import-file"),
+            ("post", "/api/camdata/import-upload"),
+            ("post", "/api/calibration/import"),
+        ):
             assert getattr(c, method)(url).status_code in (401, 403), url
 
 
@@ -167,15 +173,19 @@ def test_import_from_card_is_read_only_and_extracts_everything(client, volumes, 
     assert cam["state"] == "ready" and cam["imported"] and cam["all_units_complete"] and cam["generation"] == gen
     assert [u["id"] for u in cam["units"]] == ["jlaunch", "qlaunch", "l08firm"]
     assert all(u["slots"] == list(range(1, 9)) and u["stock04"] for u in cam["units"])
-    assert cam["source"] == {"name": "GXRCE.DAT", "size": len(raw), "sha256": sha(raw),
-                             "origin": {"kind": "card", "label": "RICOHDCX"}}
+    assert cam["source"] == {
+        "name": "GXRCE.DAT",
+        "size": len(raw),
+        "sha256": sha(raw),
+        "origin": {"kind": "card", "label": "RICOHDCX"},
+    }
     assert body["status"]["next"] == "import_calibration" and body["status"]["calibration"]["state"] == "missing"
     # 配方列表现在带条目 SHA-256
     recipes = client.get("/api/recipes").json()
     assert recipes["units"][0]["recipes"][0]["entry_sha256"]
     # 应用自己的审计钩子：这次请求的写入只落在应用数据目录/图库，没有一条在卡上
     audit_after = client.get("/api/audit").json()
-    new = audit_after["recent"][-(audit_after["write_count"] - audit_before["write_count"]):]
+    new = audit_after["recent"][-(audit_after["write_count"] - audit_before["write_count"]) :]
     assert new and not [w for w in new if str(volumes) in w["path"] or str(volumes.resolve()) in w["path"]]
     assert any(str(settings.home_dir) in w["path"] for w in new)
 
@@ -183,7 +193,7 @@ def test_import_from_card_is_read_only_and_extracts_everything(client, volumes, 
 def test_import_from_a_card_without_dcim_and_with_lowercase_name(client, volumes, settings):
     raw = dat()
     card_with_dat(volumes, "FLASHCARD", raw, dcim=False, name="gxrce.dat")
-    assert client.get("/api/cards").json() == []                 # 不是照片卡，图库导入不列它
+    assert client.get("/api/cards").json() == []  # 不是照片卡，图库导入不列它
     r = client.post("/api/camdata/import-card")
     assert r.status_code == 200 and r.json()["status"]["camera_data"]["source"]["name"] == "gxrce.dat"
     assert store.load_template(settings.home_dir) == raw
@@ -196,13 +206,13 @@ def test_importing_the_same_dat_again_changes_nothing(client, volumes, settings)
     first = tree(settings.home_dir / "camera-data")
     manifest = store.read_manifest(settings.home_dir)
     svc = client.app.state.ctx.render
-    svc._results.put(("k", 88), (b"x", 1, 1), 1)                  # 假装有渲染结果缓存
+    svc._results.put(("k", 88), (b"x", 1, 1), 1)  # 假装有渲染结果缓存
     r = client.post("/api/camdata/import-card").json()
     assert r["imported"] is False and r["unchanged"] is True and "没有改动" in r["message"]
     assert r["invalidated"] == {"render_cache": False, "thumbnails_removed": 0}
     assert tree(settings.home_dir / "camera-data") == first
     assert store.read_manifest(settings.home_dir)["imported_at"] == manifest["imported_at"]
-    assert len(svc._results) == 1                                 # 没动就不清缓存
+    assert len(svc._results) == 1  # 没动就不清缓存
 
 
 def test_no_card_inserted(client, volumes):
@@ -269,8 +279,19 @@ def bad_variants():
     }
 
 
-@pytest.mark.parametrize("name", ["generation_unsupported", "generation_zero", "bit_flip", "truncated", "header_only",
-                                  "not_a_dat", "empty", "too_big"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "generation_unsupported",
+        "generation_zero",
+        "bit_flip",
+        "truncated",
+        "header_only",
+        "not_a_dat",
+        "empty",
+        "too_big",
+    ],
+)
 def test_bad_dat_from_card_is_refused_and_old_data_is_kept(client, volumes, settings, name):
     code, bad = bad_variants()[name]
     root = card_with_dat(volumes, "RICOHDCX", dat(127))
@@ -281,8 +302,8 @@ def test_bad_dat_from_card_is_refused_and_old_data_is_kept(client, volumes, sett
     r = client.post("/api/camdata/import-card")
     assert r.status_code == 422 and r.json()["error"] == code, r.text
     assert "没有导入" in r.json()["message"]
-    assert tree(settings.home_dir) == before                     # 旧数据原封不动，也没有 .new 残留
-    assert snapshot(root) == snap                                # 卡上也没动
+    assert tree(settings.home_dir) == before  # 旧数据原封不动，也没有 .new 残留
+    assert snapshot(root) == snap  # 卡上也没动
     s = client.get("/api/camdata/status").json()["camera_data"]
     assert s["source"]["sha256"] == sha(dat(127)) and s["generation"] == 127
 
@@ -319,15 +340,19 @@ def test_a_dat_whose_04_is_not_the_factory_one_is_refused(monkeypatch):
 
 def test_import_from_a_local_file(client, tmp_path, settings):
     raw = dat(131)
-    p = tmp_path / "downloads" / "my copy.dat"          # 名字不一定叫 GXRCE.DAT
+    p = tmp_path / "downloads" / "my copy.dat"  # 名字不一定叫 GXRCE.DAT
     p.parent.mkdir()
     p.write_bytes(raw)
     r = client.post("/api/camdata/import-file", json={"path": str(p)})
     assert r.status_code == 200, r.text
     b = r.json()
     assert b["generation"] == 131 and b["status"]["camera_data"]["source"] == {
-        "name": "my copy.dat", "size": len(raw), "sha256": sha(raw), "origin": {"kind": "file"}}
-    assert str(p.parent) not in json.dumps(b)                                      # 不把本地路径写进记录
+        "name": "my copy.dat",
+        "size": len(raw),
+        "sha256": sha(raw),
+        "origin": {"kind": "file"},
+    }
+    assert str(p.parent) not in json.dumps(b)  # 不把本地路径写进记录
     assert str(p.parent) not in (settings.home_dir / "camera-data/manifest.json").read_text()
     assert store.load_template(settings.home_dir) == raw
 
@@ -335,13 +360,20 @@ def test_import_from_a_local_file(client, tmp_path, settings):
 def test_import_upload_takes_the_raw_bytes_the_browser_picked(client, settings):
     """界面的文件选择器给不出路径：原始字节直接 POST，文件名只用来显示（不带目录）。"""
     raw = dat(131)
-    r = client.post("/api/camdata/import-upload", content=raw,
-                    headers={"Content-Type": "application/octet-stream", "X-GXR-Filename": "/Users/someone/Downloads/my copy.dat"})
+    r = client.post(
+        "/api/camdata/import-upload",
+        content=raw,
+        headers={"Content-Type": "application/octet-stream", "X-GXR-Filename": "/Users/someone/Downloads/my copy.dat"},
+    )
     assert r.status_code == 200, r.text
     b = r.json()
     assert b["generation"] == 131 and b["imported"] is True
-    assert b["status"]["camera_data"]["source"] == {"name": "my copy.dat", "size": len(raw), "sha256": sha(raw),
-                                                    "origin": {"kind": "file"}}
+    assert b["status"]["camera_data"]["source"] == {
+        "name": "my copy.dat",
+        "size": len(raw),
+        "sha256": sha(raw),
+        "origin": {"kind": "file"},
+    }
     assert "/Users/someone" not in (settings.home_dir / "camera-data/manifest.json").read_text()
     assert store.load_template(settings.home_dir) == raw
     again = client.post("/api/camdata/import-upload", content=raw, headers={"Content-Type": "application/octet-stream"})
@@ -352,7 +384,11 @@ def test_import_upload_refuses_bad_bytes_and_keeps_old_data(client, settings):
     raw = dat(127)
     assert client.post("/api/camdata/import-upload", content=raw).status_code == 200
     kept = store.load_template(settings.home_dir)
-    for body, code in ((b"", "dat_invalid"), (b"hello" * 10, "dat_invalid"), (b"\0" * (intake.MAX_DAT_BYTES + 1), "dat_invalid")):
+    for body, code in (
+        (b"", "dat_invalid"),
+        (b"hello" * 10, "dat_invalid"),
+        (b"\0" * (intake.MAX_DAT_BYTES + 1), "dat_invalid"),
+    ):
         r = client.post("/api/camdata/import-upload", content=body)
         assert (r.status_code, r.json()["error"]) == (422, code), r.text
     assert store.load_template(settings.home_dir) == kept == raw
@@ -420,7 +456,7 @@ def test_import_calibration_pack_makes_the_renderer_ready(client, with_camdata, 
     assert b["status"]["data_version"] != before
     assert client.get("/api/render/status").json()["ready"] is True
     home = settings.home_dir
-    assert sorted(p.name for p in home.iterdir()) == ["calib", "camera-data"]     # 没有临时目录残留
+    assert sorted(p.name for p in home.iterdir()) == ["calib", "camera-data"]  # 没有临时目录残留
     m = json.loads((home / "calib/manifest.json").read_text())
     assert m["camera_stock_sha256"] == calib.stock_fingerprint(store.load_stock04(home, "jlaunch"))
     with np.load(home / "calib/ctx_200.npz", allow_pickle=False) as z:
@@ -457,7 +493,7 @@ def test_pack_with_a_different_stock_is_refused(client, with_camdata, dev_source
     forged = tmp_path / "data_200.npz"
     np.savez(forged, **arrays)
     folder = tmp_path / "forged-pack"
-    intake.write_pack(folder, {200: (forged, dev_sources[200][1]), 1600: dev_sources[1600]})   # 清单 SHA 是对的，内容是错的
+    intake.write_pack(folder, {200: (forged, dev_sources[200][1]), 1600: dev_sources[1600]})  # 清单 SHA 是对的，内容是错的
     r = client.post("/api/calibration/import", json={"path": str(folder)})
     assert r.status_code == 422 and r.json()["error"] == "calibration_stock_mismatch", r.text
     assert sorted(p.name for p in settings.home_dir.iterdir()) == ["camera-data"]
@@ -491,8 +527,17 @@ def test_malformed_packs(client, with_camdata, pack, tmp_path, settings):
     def wrong_size(m, d):
         m["files"]["data_200.npz"]["size"] += 1
 
-    cases = {n: variant(n, f) for n, f in (("drop_1600", drop_1600), ("traversal", traversal), ("schema", schema),
-                                           ("no_hash", no_hash), ("missing_file", missing_file), ("wrong_size", wrong_size))}
+    cases = {
+        n: variant(n, f)
+        for n, f in (
+            ("drop_1600", drop_1600),
+            ("traversal", traversal),
+            ("schema", schema),
+            ("no_hash", no_hash),
+            ("missing_file", missing_file),
+            ("wrong_size", wrong_size),
+        )
+    }
     bad_json = tmp_path / "bad_json"
     shutil.copytree(pack, bad_json)
     (bad_json / "calib-pack.json").write_text("{not json")
@@ -505,7 +550,10 @@ def test_malformed_packs(client, with_camdata, pack, tmp_path, settings):
         assert (r.status_code, r.json()["error"]) == (422, "calibration_pack_invalid"), (name, r.text)
     assert sorted(p.name for p in settings.home_dir.iterdir()) == ["camera-data"]
     assert "calib-pack.json" in client.post("/api/calibration/import", json={"path": str(plain)}).json()["message"]
-    for body, status, code in (({"path": "relative"}, 422, "bad_path"), ({"path": str(tmp_path / "nope")}, 404, "folder_not_found")):
+    for body, status, code in (
+        ({"path": "relative"}, 422, "bad_path"),
+        ({"path": str(tmp_path / "nope")}, 404, "folder_not_found"),
+    ):
         r = client.post("/api/calibration/import", json=body)
         assert (r.status_code, r.json()["error"]) == (status, code)
 
