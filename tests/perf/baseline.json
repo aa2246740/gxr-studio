@@ -1,0 +1,37 @@
+{
+  "photos": 1000,
+  "jpg_size_px": [
+    1600,
+    1067
+  ],
+  "note": "合成 JPG（噪声图），导入含缩略图生成；单次实测，不是基准承诺",
+  "machine": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.7",
+    "processor": "arm"
+  },
+  "import_seconds": 8.4,
+  "import_state": "done",
+  "import_seconds_per_photo": 0.0084,
+  "dates": 100,
+  "api_dates": {
+    "p50_ms": 6.34,
+    "max_ms": 6.87
+  },
+  "api_photos_first_page_60": {
+    "p50_ms": 2.88,
+    "max_ms": 4.1
+  },
+  "api_photos_all_1000": {
+    "p50_ms": 40.77,
+    "max_ms": 41.89
+  },
+  "thumb_warm_first_screen_60": {
+    "p50_ms": 47.34,
+    "max_ms": 102.83
+  },
+  "thumb_cold_first_screen_60_ms": 421.2,
+  "preview_cold_1600_ms": 15.7,
+  "rebuild_index_seconds": 1.11,
+  "rebuild_shots": 1000
+}

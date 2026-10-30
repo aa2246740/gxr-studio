@@ -1,0 +1,5110 @@
+{
+"schema": "gxr-studio/golden-render/1",
+"origin": "research/knobs_v2_r2/local/preview_frames.json (CPython 3.9.6, numpy 1.26.4, 2026-10-28), every 10th of 5664 frames",
+"source_sha256": "483a85d2f3325b864df5f36a5b10349c4791f17498eb9c4b4e7225a5143b376a",
+"frames": [
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "amount",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "98fa333be0880916999ba2a6ac38033fe90c0a9b25a92285a1d970fe6aeb8fa6",
+"display_RGB_sha256": "acb451570cc190786677bbfddcfddef1a931308ebb8cd84d861df6e141bdc16a"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "amount",
+"level": 75,
+"scene": "neutral",
+"entry_sha256": "a01d0d89d8f11de6fb597a19df1e39c65f5689bb0cf2085b5f349ec24e0a0974",
+"display_RGB_sha256": "1780d41be000a9720ac15f0c27759bf926ea2afaccc0afc1c15f2fccff9ce615"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "amount",
+"level": 150,
+"scene": "apple",
+"entry_sha256": "818f4bf0b6678bbf95931b27392b386d2b53e67e7dd2558611030fbf5c6be048",
+"display_RGB_sha256": "6b4bc0533af2312b8410ad464fe57c504d9c9fbadcb6a645b2178447894c1991"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "75b2c9b3aa30f2983b240f60580da24b3d87296acc3144201d2cdbb687b090fe",
+"display_RGB_sha256": "b902fae356b7569c67e20f1e886712a98d20a7249c83ef6f3ce84457eb328917"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "66f5385a268d674a8355e4dcc9c645f76c55679cf55a14a9b0abbef446bd9e5a",
+"display_RGB_sha256": "6bd524de046dd3c1ee2141a9a129fcaa3a7cab45538e1a9d42701dfdfb572f30"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "7302abfa53ae2a9e571de80394e18b091b32e7d07eb954ae8da5eeddf068f7cc",
+"display_RGB_sha256": "5ef85a7e1fc5e4df79a29c0e21db1f8a71b6c0239599c5ead48dc6af69c110ac"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "highlight",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "74e27809b9961adfbe1f6977fd6a3232c54871587cc91a5ec1a1a782ec43244f",
+"display_RGB_sha256": "d2d8d6d9b203a14d497a2526150f5aa7eaa9a70bdfa8a47e9eddc2a92ae53d20"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "d7467f61754935cdedf641e054831863a0fe06a438937ffa91725ad5dc2d0095",
+"display_RGB_sha256": "6b9c208557fd016bc28752eee744611964817fe0e8842b2c9afeedef6567e0a4"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "highlight",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "81a1cf3ccf14ddecf6ab8283f1f74137910b247d6882128e48d934e4ba8ab05c"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "shadow",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "5110012f1bc3236069142d8b5eba8dc3bf3227c1ce3516ad52dc1bf93861828c",
+"display_RGB_sha256": "c9f048edc5698166e1ef5ba45aa17d37cbc42432a301c76256e56daa3a840dff"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "shadow",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "d9b797652e36b3fe29da43ede70232af58d7a263867f8f3c227c6f522856dc35",
+"display_RGB_sha256": "2aefc9b89c466fc3419de49f89b0ec30c29f792555cd27f116abe9b55ca81ca8"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "shadow",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "70bb31268c6e1a9203532474e35959ba6cc507bd43aeb825fe4f70bd77f5757b",
+"display_RGB_sha256": "f5fa0e3435ed1f9c50f80e01a5da98162f2eee8b15f2e4013b1b69d57ae946dc"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "fade",
+"level": 2,
+"scene": "neutral",
+"entry_sha256": "c69a267d2cb6b9e7785d5325c1e7eb820b73450e2c2790345db9ed254b7f0626",
+"display_RGB_sha256": "7beb46211df9f4350e41444570ef9eff8ba0847ec085480bf010f95eb2152559"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "fade",
+"level": 6,
+"scene": "apple",
+"entry_sha256": "03279f82d9609a2f7dee2ea0a796f554a2497d3e8dbac5b5943acb89167b295f",
+"display_RGB_sha256": "dc62b07269cc454159ec515464a3733f8f1253556a60cac6f344d369bf35001b"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "saturation",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "05b798c85e6eeeb6ced6f8543860999790d7fe16f55b041af0addfea296d032c",
+"display_RGB_sha256": "aa7f122e01703e4f0b3703fcd010d984cdd51359c70a657eff9de52bf653db88"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "saturation",
+"level": -4,
+"scene": "neutral",
+"entry_sha256": "15936d5f587aad5ee10a0c685c627d3619b9ccd9ff49bc35a5d412e99b2c13b3",
+"display_RGB_sha256": "d5350f58f95410c538264fc6fdaab16950404a499a8ec8ff82012712b5621e3e"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "saturation",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "96fb8b5c80b63da25cc49e92af0184970419eb2f92eefa34848465c4e74dbe93"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "saturation",
+"level": 3,
+"scene": "redblue",
+"entry_sha256": "fc41238aec4687631bba90423bb5bf0fa4bf5cd93c0d384e241e11dc35957761",
+"display_RGB_sha256": "3de22d4e4d0197f6f1f6f141b3039c895cdd8eed4705462480c94ba0a94934e1"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "warmth",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "d8478521fb327d322b1816f54133d98cba30883f10a78c5c71b7770a70bf5f92",
+"display_RGB_sha256": "7d520feaf3a668f81479a2673621ba539311f53ce14bad56b628c11181119498"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "warmth",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "511aa8ddd190b8d7f2f576bd6bd0133083694dac6f6487c1d64438f7a20c1efc",
+"display_RGB_sha256": "b81c572fd49b9f55b387949e80bd9b9d76f529c6a992e6f24676481d91cf623d"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "tint",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "2bdea7b5bcd8a5318434ccc34824bab3e72b4c9b160311503bfaf936c4ca5f95",
+"display_RGB_sha256": "c9c65b0c30913edf83f5fe4748dcd5729a3f36c4173459f6ccf8fd1e3d150b2f"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "tint",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "81b433781d6e5a88f081c21e29d07acc2229baeb15c475d1b3f4bfc0cb457ba3"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "tint",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "26727dc7e78c0f359b1c9d8393a8c2e9259542509b1d27e818fe0c9c443611ef",
+"display_RGB_sha256": "4c23a7a87131d9834fc96e291df9980ae6ac2deee7ed22db242e765dfa10816b"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "split",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "3586804e39b1618aff5a49cf8568e12127d845f68943840811a3835de9979d94",
+"display_RGB_sha256": "d213e2809e9f0890615896b719e3d4a7096dadc87c9500b1bf0bcef569793fdc"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "split",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "f713ee734c7f81486600f1c6ec04e280a90accfd2dbb95656526686fcbec3661",
+"display_RGB_sha256": "f439806b62756f62d581cea0dba77f56fc9797d942a7e24c1d2eab2593ade13d"
+},
+{
+"unit": "jlaunch",
+"slot": 1,
+"param": "split",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "a780167ce20c0595bdd646734b459f4ab40448426e50fa7b42e752c5d297190a",
+"display_RGB_sha256": "07eefaa6699107e2fd9e2ffb272d046c22374bbcceed3a83754923cc3c2d54de"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "amount",
+"level": 100,
+"scene": "desk",
+"entry_sha256": "912ef3e964fbc0d8c93fac0551cba614308ea4cfafbdd856ecfd4549bacde6f9",
+"display_RGB_sha256": "ea2a90c9e06e47ce275d25fa445cc2c8fdd404584a4ef7f1b62bca334558b078"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "amount",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "98fa333be0880916999ba2a6ac38033fe90c0a9b25a92285a1d970fe6aeb8fa6",
+"display_RGB_sha256": "d3d19cef9bc91f43d84bb154e36815c2130c8f2a2fc74bc85ba6cdd5404f92d3"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "amount",
+"level": 75,
+"scene": "redblue",
+"entry_sha256": "06feab610c7595fca1f34e595866d2524b050166efa680ff35e315207d34f095",
+"display_RGB_sha256": "f3812d312110930bbe9f1cbc861c1123a3ae2b99c89e21d00ac2e60d5beaae29"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "contrast",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "11d7ab15bd17bd246af4422f26ea816dd86ac67f2a4bf45922e06e237ef492cf",
+"display_RGB_sha256": "e93b4537d435ec3e2b3e9b67acf863560d7781efbcd2c828a4197f86a4ae9bc4"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "contrast",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "fb9d79549fc7f691632ec1b402e15f9f2ea3ba7338f53232cdbfe7c80929addf",
+"display_RGB_sha256": "7528c23e786cdeb1965bba6410167e4c8782b00602adcac1e68a3c68222d0208"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "contrast",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "25e9fb9ac295cc2f2e272f2301ce00a2b183b4516d5be3dedb4a4f4288230ca2",
+"display_RGB_sha256": "ef378070863fc7b6390afec60a101a1538fd22327b8245602db10fd7fd0fbaa8"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "highlight",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "9b321debed7804210b56dda78e4c393ef1f571579a847a7f1814403c7ace8c96",
+"display_RGB_sha256": "e3164b37e425dd3ecc0abc90d734afcfc9a3d1a1956c304cacc1639c75b83ee5"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "highlight",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "0a02177b0c0f8f690eda814bc4cf34299b9ac3a07e23d31539d202dcf42ad107",
+"display_RGB_sha256": "b59de6dce426412d7eecd35e6b6f15414a2aac4f722b7c2b3f4d0a3acd5088ce"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "shadow",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "1e99aaa7793fa59a837de17fc99c81cc8d8b6b4eb3f0ecfde250939929abdf39",
+"display_RGB_sha256": "634536ffe44ef6a5c48b00efff80f538e772bad023b9f336a4812d76fa6275a2"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "shadow",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "912ef3e964fbc0d8c93fac0551cba614308ea4cfafbdd856ecfd4549bacde6f9",
+"display_RGB_sha256": "a91ba8b1e930a076a6e2814c9b7f0cbd456c3e38bf8caa688f4225b86f656774"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "shadow",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "fe9581fb70e491bf102abb23737e81fd742d932ed1bf227515fc412a4f21311c",
+"display_RGB_sha256": "d25217e85259f5f2d4c993cddbf62769f704e7931ad0526fc2992ced70543117"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "fade",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "5df97fbd1d67a6fd497e7b721906c723ef9b42d31b55de556aa562f6a87e914a",
+"display_RGB_sha256": "b7a67890bed7e2b432edc05d871c5829597af22e1e2035f579af24b65e477e43"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "fade",
+"level": 8,
+"scene": "neutral",
+"entry_sha256": "2b36cd42a4cd6d2961846979718f2ec938db544750c5b998118adf7d0da86425",
+"display_RGB_sha256": "333873027c45e9b626bd85ccf89e55ca32cf3ae5b1f5f7b0b111befb3ea4efc4"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "fade",
+"level": 2,
+"scene": "redblue",
+"entry_sha256": "c50e6fa98a56b4946c31ab9712af25993f3ddb366c7a25c405a25f97f1203522",
+"display_RGB_sha256": "2310165e7e1866b3ae3cbbefa534a1d06d6ad5656d5759800549730ed62e18f4"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "saturation",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "7b37b85c753590719c48c238c8e196605bbae67149d09d32a71f2cb0f3e3f97a",
+"display_RGB_sha256": "2b2acc470d389bd149b514a2fa412a1c3d2fd39547dcc9d3be12810f0836b0a4"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "saturation",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "cc22a8766d2d92af6cef91b9852bc003ba4b70a6a0d998018a1972d4141be537",
+"display_RGB_sha256": "d30d01e507029867befa426a9187645d3ecccef86d8e1ac2e7eeac38625abc04"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "saturation",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "912ef3e964fbc0d8c93fac0551cba614308ea4cfafbdd856ecfd4549bacde6f9",
+"display_RGB_sha256": "3a02e4e9dc99d2c562e8e04c9a53bb2dc3db3c425a0520b18eda03b2d7bc2516"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "warmth",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "ef4682462586ea8754bf20d4339990aa6618cdc08e0fa8a5117a180e98aa969a",
+"display_RGB_sha256": "2b8116ee47f59a91f827475cffb4855ba29d47ba2b7363736cd2504c5ed0a1c9"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "warmth",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "4a9b7ea85c3c29f4049ff0e1a5f1f8a0cd591ceccf53d70cdce6a9fa16f37688",
+"display_RGB_sha256": "254a803c239675597b40a3fcc7638cea3d03e1cde25b42c6927689fb38342902"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "warmth",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "0b2e268f3d94c0816628fcc89655df6d47eeccbb7877070ee6d4a0b763725e0d",
+"display_RGB_sha256": "9ee24b22fb32f998440cde4247ff4fb1c5321aeb77b0ee2a5706033d1def7bbe"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "tint",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "49852c2bc9f05d522767277c94aba948bd714e4ea43408dbb20ea3df2a408048",
+"display_RGB_sha256": "78887167af02c3a5b18bd279b4f5b0e3db116f0df587eecb43b92319ba9f4083"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "tint",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "fab4db2d9f8268eebc5da58cc80c50524732a549f4cf37463f1196968fe409fb",
+"display_RGB_sha256": "d9cb27c90823d3f605e241f35862e76471c37a95970debd4a2732aad9f57eaf8"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "split",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "5e6bc5e4202198b1b8e5fe6c88e181e97f63c45a61a23955d106401d056960d1",
+"display_RGB_sha256": "c9300426a4cba3af9ca53a5bf4314eb42dbdf3fa1b886a1a8265b1a06d4df785"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "split",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "912ef3e964fbc0d8c93fac0551cba614308ea4cfafbdd856ecfd4549bacde6f9",
+"display_RGB_sha256": "a91ba8b1e930a076a6e2814c9b7f0cbd456c3e38bf8caa688f4225b86f656774"
+},
+{
+"unit": "jlaunch",
+"slot": 2,
+"param": "split",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "c04930f0e052210ab6f9ff2acec94daeb11d05ac1ec88692fa61217eefc3634f",
+"display_RGB_sha256": "36bd8ce811f217b9577668b8fdd8e4e1be52fe43a58b05fdeb3033923c252326"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "3c754698328daeb25ae5bbb1ba5e1dff4ec0b725ca95c027a60490ef2433b92f",
+"display_RGB_sha256": "491953dd839e36b85a52cc94773202abdd65b88a70d5d66e72cf750ae9ba1070"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "1f95aee320a852963afe8636383c23cce5ab625d1807d28a3f99927edf2103d2",
+"display_RGB_sha256": "f4226c8e0571e5f490adf5eb85edfbac3f5a703857d896885d3d9d3e80535d8d"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "09c6a520cdbf224d2670a58dc85a00b7d4671eaf0ae2282e7b6a6e37ccab57a6",
+"display_RGB_sha256": "697d5c34b101be006e5c2d8d0d928cf0fcb971f075917f899e8d93318fe6d6e6"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "highlight",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "76643d1fcd1748e99b55c476ade06b0493f4b834a3e673e0c29fc9bfccfb9ca8",
+"display_RGB_sha256": "983b5b66c23a82816461f6fd11675a58759240a0b76776035a5a2c44300b4485"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "highlight",
+"level": 5,
+"scene": "neutral",
+"entry_sha256": "8e8037c50c504d61c1c92091cb28f46fff8a38b45cd4c8bd03ff88f28a695819",
+"display_RGB_sha256": "9996fe2cf4d728ae4ba51506fd4d766455fb24ab6e4c1c792a2a0953140cab06"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "highlight",
+"level": -9,
+"scene": "redblue",
+"entry_sha256": "1babfa2488c68e2e32511ee6395c1141d117a0591c6b9feb0aecccd00dbcfeae",
+"display_RGB_sha256": "cc3af01f672e927f5873410206ff923aababbb49614eb257297af8b51ccc9646"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "shadow",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "1cdc889a3838998a6981013855890d28880449120915df3188c6c92d86e6a9dd",
+"display_RGB_sha256": "a3f5c43f962521874f5715407876302e5cb2e7e61a49e5ea7bed53b9021dafa6"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "shadow",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "a1f5fa0a0e6a68e5555c098051739839b0d1111dd03f4bbbf9c70792f4e92116",
+"display_RGB_sha256": "bf79e80951e14f07bab00b1c6f3c61aca96ee6114de9ac9e2fc2883cf0d4094e"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "shadow",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "f10bc5d74943ed6fa5fcab1cf94456c4f44db2608010bbc55cca4ea348a64556",
+"display_RGB_sha256": "14eb69658578fb367871fc816d568578218eb7d1c4aaaeec9e2bc4ba639cae38"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "fade",
+"level": 6,
+"scene": "desk",
+"entry_sha256": "5ca9cc5f881d487fac1f5aa0062758d588c919b90e9b69ca8d2df6b5b4e77a5b",
+"display_RGB_sha256": "f4df04dec4738af10dc848f902049c26cad2d06664c834367005a1fb323ec511"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "fade",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "76643d1fcd1748e99b55c476ade06b0493f4b834a3e673e0c29fc9bfccfb9ca8",
+"display_RGB_sha256": "73b05aaaf7f897c057633b5566fadbad81792cce3aa0166592d846c8b2ef34f8"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "fade",
+"level": 4,
+"scene": "redblue",
+"entry_sha256": "882b2827edcafd06b2705ebb504ffdd72dfa5cbdb58804cc6759587ced4c587d",
+"display_RGB_sha256": "2dbef436a130ec832b42fca13601c6241b53ab4afbf34e1a3434c248d07a3ef0"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "filter",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "087a1dc8d1666639df554edff15bbc1e7988237716b906407eaad49677d1efc7",
+"display_RGB_sha256": "25b8d710b7cd491579ef6ca0f4ff824ff58a4ba33196277e46ea14ba878f816f"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "filter",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "e3f1dc05a31ae6caa613066a2ce9133c16583ca12d4a461470341250ba45570c",
+"display_RGB_sha256": "29b3503114e4985a03ad2d6d6e1be1fa76b153af0a99d00d3e569e40618dc4ff"
+},
+{
+"unit": "jlaunch",
+"slot": 3,
+"param": "filter",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "e7f3cad4078960e03d02db9562828604d11a58df151df599f8353632f5079a10",
+"display_RGB_sha256": "b00509b4bcb712b3ca40ec797d771fa25263fad8a1bd03d935b57d5755c09844"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "contrast",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "b1b85650046b9f14ea2cffa8f27bcda3cbe6bdf98a9a95cb4f1ac83c7e0a47ef",
+"display_RGB_sha256": "38d5d7e8c238bb848bd690fce61584bc6c1c86dc55e585b293a71a022fd59282"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "contrast",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "fe6daf3f3c66b1c5c1ae7c4037ebd902c337e1e71d9d4b75b1ac021ff286833d",
+"display_RGB_sha256": "4d14b838f091096b1db9a21d7c3a2bb6feb6b953f27fd93de5dbaf17940213ce"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "highlight",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "c24b07829f350c33424c9b66c37b5b088a47484e8399d2c88f3b1e9bba7233a5",
+"display_RGB_sha256": "0f91b1bbbf19435b345d0b1d52a79b27ca755115d948e2ff70c0fc4f83af719a"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "highlight",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "98fa333be0880916999ba2a6ac38033fe90c0a9b25a92285a1d970fe6aeb8fa6",
+"display_RGB_sha256": "1e992286a76d2c96066388f5c6e6d63682b62f070c38b0beb41fbe0f319cd737"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "highlight",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "a295ab2f381bc0a4006297ef9b4c06c744574c5ae50630187b1601f3a59ae5ba",
+"display_RGB_sha256": "b9071fd79ebae30c8177433c5893765f3bcc2666c326b96f06f8507290a7803e"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "shadow",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "948c50483db9e7863c23a95c4416efcc2d09ad15e855c221a62b044b0e3c8c6e",
+"display_RGB_sha256": "452460b084a99435e40f192c68f1c2005198fcf4f3644d6ac490e8d35c14ee9f"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "shadow",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "1298b898deb1f37c986daa8a24896049dec5b6a219b6c765d67f5e2ad7a3d27a",
+"display_RGB_sha256": "bd620d8d9b995542bb17a4e7211532a31723c32c4c53970309970e1dcedbb7d0"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "shadow",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "49c33f28a903e24b895f638e6fc8cb36f3961e8e3009ad8640b45a7aec0b4d13",
+"display_RGB_sha256": "35c24cc81fbb3a1dbfb1c424da07a1cead167c914fd08cb90bacca4c2805c60c"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "fade",
+"level": 6,
+"scene": "desk",
+"entry_sha256": "945b0233427c2fdc24fe4cb513ab89a4c34f047d54d75310c850ba6a4c2bd6af",
+"display_RGB_sha256": "abf4cdec416966d48568b3c05b0fe1007d0731edc735bc85917f83e94137f619"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "fade",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "98fa333be0880916999ba2a6ac38033fe90c0a9b25a92285a1d970fe6aeb8fa6",
+"display_RGB_sha256": "d3d19cef9bc91f43d84bb154e36815c2130c8f2a2fc74bc85ba6cdd5404f92d3"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "fade",
+"level": 4,
+"scene": "redblue",
+"entry_sha256": "307641c34333aeb71f8a98912bbf65c7af8668227bb6918cd2093a17cf3b89b4",
+"display_RGB_sha256": "01b08d4f3e5b1e8e42d52f8359728b63e0696f5fd099fbdbe837e335c9ca2668"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "saturation",
+"level": 5,
+"scene": "desk",
+"entry_sha256": "6e7d889cc5c6dd62d35e9a56095e7bce115ce709853655033b583dabc17fe149",
+"display_RGB_sha256": "c79d09fe834b7912e755d16eec72aa4f361b9f9268a52be05942e6e640d75b8d"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "saturation",
+"level": -4,
+"scene": "apple",
+"entry_sha256": "31309a50660caf0300939e259e8f971afcb72dc317651eb74bce132cded7f30e",
+"display_RGB_sha256": "c890862bb56ead5eb6a4c656049c7806bc0d942e36d771e70ed68c3489122f17"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "saturation",
+"level": 3,
+"scene": "redblue",
+"entry_sha256": "5e13ee9c9ff5e5b339c956e6a818aa1a4826e3bfb64637b1d9f87a0f4b487abb",
+"display_RGB_sha256": "dca064db68642ebc706d43d9ba5965e395af44d116a3a4007666e071a6e7b274"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "warmth",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "ad9d3c08d486b00a221306c699024cd18b052379d0daa299c91405af548325e6",
+"display_RGB_sha256": "da69ae3f84c1c563aa9fcdd7099b80ae766fba43f6acab542b563400f62567bc"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "warmth",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "0a915f812fdfbff3e7ffbafe5fe94acfbec4900e600b6110ba40841c8e5bd0ef",
+"display_RGB_sha256": "347e4162b1ede0359efaae7d95ee98ecb5a883a64b43c8dbaad0e3d15431c1bb"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "tint",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "b810ccec199dc33cf02d8babd568df2329d460d849e926669ce63b02e4cbeaa5",
+"display_RGB_sha256": "1c558005aac6b4981ae4ec508808a9286a9a97ac7aacb3291de0d42590ead495"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "tint",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "98fa333be0880916999ba2a6ac38033fe90c0a9b25a92285a1d970fe6aeb8fa6",
+"display_RGB_sha256": "1e992286a76d2c96066388f5c6e6d63682b62f070c38b0beb41fbe0f319cd737"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "tint",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "e5abe201f3c2fec455c121a80a56c5bbf353f77243442af2e9f6e89602d6c96c",
+"display_RGB_sha256": "5971aa8f56571eb3d5bade70488be923723c539d604c9815bd25ee2878212ba9"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "split",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "174fba1079f0524cbac736cd4a274b800ae804c5de336b7538113830fb81b37e",
+"display_RGB_sha256": "24c84df253b73b848918d9f3620d8643bb2bb43a579f1c37b644141c345993c8"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "split",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "14c66c86f3e109e5b110418701570552e27340b2c701d671392896a3e7719f62",
+"display_RGB_sha256": "53bd69be6fff680fa50c7178c8e7770e740da6ee0f82b30036a6ff0ccd1534d0"
+},
+{
+"unit": "jlaunch",
+"slot": 4,
+"param": "split",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "4d99b9828365c2666f91e2cacc9f1f5fe8f16570b091df813a82f969e81b063f",
+"display_RGB_sha256": "cc51f1a7270a7ff289865e7304a7619a3ddbcaab77ad23664be4425b28f6ef30"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "amount",
+"level": 100,
+"scene": "desk",
+"entry_sha256": "a815eef4b3d2596f8bee3e45f39e7a1b56a09aaa219710639ef9305b2d04d852",
+"display_RGB_sha256": "2f61b2b656546d114e8920a2abb6b0e13a57fa9225ed87f38a7e14a6d1ce766a"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "amount",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "98fa333be0880916999ba2a6ac38033fe90c0a9b25a92285a1d970fe6aeb8fa6",
+"display_RGB_sha256": "d3d19cef9bc91f43d84bb154e36815c2130c8f2a2fc74bc85ba6cdd5404f92d3"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "amount",
+"level": 80,
+"scene": "redblue",
+"entry_sha256": "a24ac23ee9526c0cc1b2476ca6358aa45f8aac9eef9a1d880e39982dae15fdf0",
+"display_RGB_sha256": "259add36c92547acb739b80b27934bdb777aa321bc698685ead51ce9618c94e7"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "contrast",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "9e1dbb552bba3084fedb6611320a63ccdb7f9a21a294ef221155ecd14d45045c",
+"display_RGB_sha256": "9c9c9ea2b0a9ae248c98c9b555a271595e3bf348ef197768c117acfb7750c5ba"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "contrast",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "181f57fbf0f65503fcfd3364c329bbb3186d3ef86b07645e411bfbe103120a8c",
+"display_RGB_sha256": "6202dd61b0891755dc60ec4a05a394091fb9829e7fc8bb6424fe9728d109376c"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "contrast",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "2e077f1dc46f0e4ea18b6949b38cad1248574bbecede6a9b14ecd727c7b3809e",
+"display_RGB_sha256": "5a5e7509620c146e08dd5f13f5bfcc373fdae3f0484e2a0bff5cad0db8fd714a"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "highlight",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "ada3e00f10e11e3b849e7240f8b685ee621dbd925271e547683b5fe82e418ea0",
+"display_RGB_sha256": "5086049f55b1ae530500eccc5503d7f5ae34a22412073e17e236147e589b5492"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "highlight",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "fade786c0a792831f9566e81c2e569ee42fa8ca685e56ccaabbeda44863497be",
+"display_RGB_sha256": "d74579c3e3f65f6f7ab8b735d756b04e72018464d636313b99ecaa60d3a46275"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "shadow",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "f9ef25bec37d7b5c6a5e050a1a21c963fc0330af26bc370a2d75f07fa21ab81b",
+"display_RGB_sha256": "3984bcf99fa2233ca275f6d0aa57e43523568a7aba307c580a4a5257ff3c8dca"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "shadow",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "a815eef4b3d2596f8bee3e45f39e7a1b56a09aaa219710639ef9305b2d04d852",
+"display_RGB_sha256": "f84645621fe7b55473efe7c5b8b95dd277ac1a9561706578397d538f69a5c191"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "shadow",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "ff8e7cff7ce7bb2ecb60cc49a75fa160a0946e095b0ee36608f8e75f69487c90",
+"display_RGB_sha256": "d7f0789256790e0f155956fb5b9627f318f8776c79f4d7f7bc51375bb2d171f8"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "fade",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "ee4d07a20e9059b5f885fa5bd078bcfa9627b24a737168b2058197c17f3fd788",
+"display_RGB_sha256": "86623791de506076f312530adc8a9b023332cef12b597732d05b85a466af2ba7"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "fade",
+"level": 8,
+"scene": "neutral",
+"entry_sha256": "9b26325fa2d2e64d0afbd5f17331cd11f8f12ec858c828a79af2ca98c05da502",
+"display_RGB_sha256": "7a8b44c18ce7f153db43e583573bac18cc3b74769d8ebc6e31169899f492a252"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "fade",
+"level": 2,
+"scene": "redblue",
+"entry_sha256": "d2f48b819fee88fdc9ef3883ce1597c8d270b5aa6629545bdcb058af446b9bb1",
+"display_RGB_sha256": "87ee209728fae798d9ef053ad2488451445bebbffed9c1f6288812ee63674210"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "saturation",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "a572c768bb140a408f0fbc95e8d2368c9e0fc409e33129e4d1a218fab48f8c0c",
+"display_RGB_sha256": "9d4c91fa9cecda38f8c96da13f6a7bf21cee1c7f4be78f169d578c40a1f30229"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "saturation",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "044eb4072086a324d37163556f20f640175f4b177a4e5718bfd5a21e188aae77",
+"display_RGB_sha256": "d7d0d877ecd76c5e1713e7aae4c3be05cf9578c07b76148859f1bcb86ad2d6eb"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "saturation",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "a815eef4b3d2596f8bee3e45f39e7a1b56a09aaa219710639ef9305b2d04d852",
+"display_RGB_sha256": "42a05cae47016fa908b29526d726264c9f9214697f86bb1fc45b988f02d2674d"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "warmth",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "591c4d441198b8c1d52dd0a6de19d374de5d6ea2b9e25f087b069686db3f20d9",
+"display_RGB_sha256": "f97d40a4a0d45076b75be02b5aa49b1fdfe3874d6d4111065999eb0c0de575c1"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "warmth",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "d6431a631bcdb5c74d65e4d762978588cf0dbd5b453a47b97064bf1fb5f6efde",
+"display_RGB_sha256": "62b839992737b2bf29f745921e49ebd4820d66e10ff111572bc14bbbff1ff568"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "warmth",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "d17edd4b0fec8dea886d1d7e932fe2d4bce3aad6f947aa93896dd5ee2ea5f3f8",
+"display_RGB_sha256": "04f3ca9e9b1dea3e4a7e49772109f3c7b35c0cecc8b9ccc624d81750cf36d301"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "tint",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "75f84de9e1d0ba267b46353b365f5e50575e94c7b88ea6e6e61833ddc6071a9a",
+"display_RGB_sha256": "d703ed803b94e5ba537759d5b868a5e804e922bd7512da2213c513cda7080a56"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "tint",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "b6bad2315b8612558a911f50d65c7c0ee8338b2fd3a41d540f3825ac70ce8553",
+"display_RGB_sha256": "36093727092ce74445af4cf398801bd4273b9021a277992c77410acd27b036b3"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "split",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "c4b06ebf2f631d6ecdc6a10f4d9b38fbad7eabb28b623fc4072ba4124495eb1e",
+"display_RGB_sha256": "15871e9534f49d0d724cb5fd8a2ff1c6de271a1564bc44214d8d5cb1266231a7"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "split",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "a815eef4b3d2596f8bee3e45f39e7a1b56a09aaa219710639ef9305b2d04d852",
+"display_RGB_sha256": "f84645621fe7b55473efe7c5b8b95dd277ac1a9561706578397d538f69a5c191"
+},
+{
+"unit": "jlaunch",
+"slot": 5,
+"param": "split",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "79c79e99499e8973695b68a61776817be078f9e55694a4524229ed58a506e8a0",
+"display_RGB_sha256": "b9db9ca246db4ed811f4f91c8adfbe753140df6303174fb5e8ae57e043943551"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "amount",
+"level": 50,
+"scene": "desk",
+"entry_sha256": "e93b50adb6d20f87b5884f05b4440ca97eecbcb89b75afb59ebcd7357f773143",
+"display_RGB_sha256": "3bddcff3243ecd9281d1575d5c9566321644ff7b5571e0d49058dc77609b2527"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "amount",
+"level": 120,
+"scene": "neutral",
+"entry_sha256": "bb685e2ce91df79aec7c6ae0924231ac4c6a8bd633cb860be758c7b4a01adcd0",
+"display_RGB_sha256": "388186b15fce92cb774907a02670c53d36e20ebd7bf76eb8bf2d862000aa698e"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "amount",
+"level": 20,
+"scene": "redblue",
+"entry_sha256": "15c668eea5e81122000d0765b988cd27232d649bc40b4b56ee8bb0422c47be56",
+"display_RGB_sha256": "5118d9da2c23f589aa230b4fc9b975968320f039591bcd37c22ae72d94fe9a5e"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "contrast",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "a0c67815ef21c24cb21446606029b9f2793664b221cceebc01b80a4f65829362",
+"display_RGB_sha256": "9bc9051d453c742c8429687f02ce5d1ee87a12eeedbede10e8c5291003820471"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "contrast",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "06192f820a7e31c19b747524231d546a53b14ec3be81552825c63fedba00e822",
+"display_RGB_sha256": "5d0e40065dd3401556dd3cf090167857ff469dec1213c6782492347086bdc2c4"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "contrast",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "cf6528031e0dbfa22f684cdf68c74eb22d9a8ab47bd366af1d10f0e2274210bc",
+"display_RGB_sha256": "4ddc520a4465864f34076b0ee3d5d9a6b546c1364180bd12b404f0f4f97c37ba"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "highlight",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "10f4e33b7a3245db51af06a1bbe142110f77f03586a820c60e69341ca9b21464",
+"display_RGB_sha256": "6346ab9b326c9868b9c557882927303d00af6cd4129f46756149aab9259c3fd4"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "highlight",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "b75ab5033b5b1af9f8fe245fbe45ba37b37ccec24f8679ff7c5b4b15b742a970",
+"display_RGB_sha256": "04308072a86da79b539670f4766ecb4d5f233ef797dbc12bc1c809178199c258"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "highlight",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "b32b0b137fe09f580b05fb17e07af3bcf3e3504b04df5afcbf66b1a4fbe32a1e",
+"display_RGB_sha256": "275487409d38d72999a1a5ad3581dc7c92df7993de004ff8ca45b6a37b9815f1"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "shadow",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "9698fddfe52530999e8b4a4b82c18f97c842e4a4b51dac2d4966c5d6360bf9eb",
+"display_RGB_sha256": "0768a0bd89c1886f114689987567a4e2c1ad9d3c7d34b4a08be74bff4b746ede"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "shadow",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "d079dc7f420e22925e58bb5b2df3093f6b0d60ac43bce9e9de93d9f37fff8f24",
+"display_RGB_sha256": "3dd05ae1802828e3f69f0544a12989918668507f42585b42209dd594986f1f84"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "fade",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "cf6528031e0dbfa22f684cdf68c74eb22d9a8ab47bd366af1d10f0e2274210bc",
+"display_RGB_sha256": "73988a13819690bd3d3bbad6faad9dd27c2d901807c5c98087fbc02e393f9db0"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "fade",
+"level": 4,
+"scene": "neutral",
+"entry_sha256": "41ce848b8769797668539bc86c88c4553a75c4f05590a9ba977db1194de871f5",
+"display_RGB_sha256": "05750ce722329db922a2069386c1b734f307864e5e008d2dbd8626f06c0940d0"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "fade",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "6b397bb5221beb738fab4d3f45cdedf3b8e65c023dff5685390b8e95714356c3",
+"display_RGB_sha256": "af091a00d33312e11b555f9f11928e9bc6b3b10b27742cbfe5b9cf3cee1786b7"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "saturation",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "01d7e4752a2e53561120777aa8d1d7ff2025a8377be5c014b80cfd407d633949",
+"display_RGB_sha256": "ae449d3d35556f73c1f0db838146f9702780759f2c59221155ff945e3af41588"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "saturation",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "519346da1016f71c3d31d1d4d4db42e91335c2b599391d8994d24f58adb88167",
+"display_RGB_sha256": "9750f99cc87241d800bd5d91952f71dcec3cfece29ff93006cb8393b7a60fe15"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "saturation",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "7e0375e1aef11c91e0a9cf185606a2b68982f925f3eaadcd65c5015cf78750de",
+"display_RGB_sha256": "13f9a59697c96828c928ded1df65f8e5721ef3991376e8a8fa99ed28de537db9"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "warmth",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "f481e1b962d59edecd175f8e01c7cb2abdf5351c244fc427af477ebdd1cc6364",
+"display_RGB_sha256": "c69014b66f505e02da1b61b8a66a66735039cb5e5ce5f7a1b5824c491d3e98de"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "warmth",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "b7dc1cc455766110b5c36066489c20d8df4bd62d94b16478f19834a9a3e585ab",
+"display_RGB_sha256": "020b66894fc832d0d8c72709d54f3b6e2a4336935e083cf2203e13773499a6de"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "warmth",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "cf6528031e0dbfa22f684cdf68c74eb22d9a8ab47bd366af1d10f0e2274210bc",
+"display_RGB_sha256": "4ddc520a4465864f34076b0ee3d5d9a6b546c1364180bd12b404f0f4f97c37ba"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "tint",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "c49d0855f0d00ccd2e5c950b702da46855bd887f698d6252d8001c6350f4aa6e",
+"display_RGB_sha256": "557753302e1ad693b2c9b8e07b952786f91c9c3459238b9b47a77d5b50fbfda5"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "tint",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "43b86661316e7143902b5c03caffc84f2de9cae1a1c4a105d70f630767c46165",
+"display_RGB_sha256": "fd280044ec4cdbe8fecd676f663defa84c98c70e549ed3883cba3fc176334ea5"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "tint",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "e7b3fdd524ebc54f9aeb4078045926b674452a08abe7163ec4ebcc673ebda97f",
+"display_RGB_sha256": "b0ae713f789cf516920c407e5a6555c9e3ce46755fc711bc0fd1bf2046f0ede9"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "split",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "9e55ff6122d2cd859f0ac7cc8e49792560e87204f601dbcd8e059cbdc66308f7",
+"display_RGB_sha256": "17f1ea54dab365ee628126819c94d9b27fd03cfa7acd9d364e98403f6e43a086"
+},
+{
+"unit": "jlaunch",
+"slot": 6,
+"param": "split",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "ffcb746cdda5dfe8149b36a91ec3c25892d0a02345d3374f80ed7b31313d0eff",
+"display_RGB_sha256": "a77654bfdeedbf94eccfd395c9ab22920f40d383a1af774a490c9f6baf29f5ab"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "amount",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "98fa333be0880916999ba2a6ac38033fe90c0a9b25a92285a1d970fe6aeb8fa6",
+"display_RGB_sha256": "acb451570cc190786677bbfddcfddef1a931308ebb8cd84d861df6e141bdc16a"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "amount",
+"level": 80,
+"scene": "neutral",
+"entry_sha256": "b1ca8d44ab48cd08f3971f6584cae7068b6d32ca65b21cb6c022f46e753a766c",
+"display_RGB_sha256": "f90225eb038423474375f73f2b7df06a15fb98021676ab1d31875f9de9caeddc"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "amount",
+"level": 150,
+"scene": "apple",
+"entry_sha256": "c2dedda9ad860bc29c369bbc6a4092903c677138d42324267ee98e457f53059b",
+"display_RGB_sha256": "e0e2ec3dfb7b0f0f87fd8e528c5a05b6e54e0fc60c21dfc09c086792ad9dce14"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "99fe44ea7ffdd82ef0002f42be7c9b3d698671dfe5ba91ef7237c041ece931a4",
+"display_RGB_sha256": "f50d754c8707c09702b4261f44c369f689dd6d81616d3e63b845ab4f25d1178b"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "3c4d9276fe0a8f4bdaf153b3e3e07879a249e6d7d68c169185a2e7e3d11781a1",
+"display_RGB_sha256": "eb8ecc8dab2dcbbd40a8f9676501090980a149f92d4ec536608e9123252544a0"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "b850f765d950d7315995326ced0f7ab462ce4c3aaf60d473bb2c87bc3197c2a7",
+"display_RGB_sha256": "4fc5972278e90f154b32820c85687f12a171ba94557abb00804c4c8f791fde22"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "highlight",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "15f29b5d8ccf45210c8602ef96745ef51df30c5221b46955ddfe627c04d4882d",
+"display_RGB_sha256": "d9ba59296f1506c0c18b97957721803254c789bb09a90cf2bcf2958a62e52c26"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "91aab9e523c22c174b6b670733be41ce296ce8f062bb726e2b2ff97128454e98",
+"display_RGB_sha256": "e3b6b5b699ebe634cf2f7c91fe2ead71c9d2561628e066292092f230ea4d6296"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "highlight",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "0096351acb82f4628cb3b7a3c5fa0070a200f7cb086ed7d1a1e719f8e57ba86e"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "shadow",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "1eeb4ab57785aca44d5656f5979c70657fe29d0450e0d61b4138cd5cc2106a0e",
+"display_RGB_sha256": "6300087775d4ca26082ef8683a0e79e73f18a3eee18e72e6745325c6f8954562"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "shadow",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "96556cae6ed2fc858d20f79e9e84f1e67acac7b7a940a8c3860382d9880941f7",
+"display_RGB_sha256": "cee7596522f2ee4e40a37db2845ebf0dd7a06bcdc338477c69da5fcb016bd720"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "shadow",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "11fa46fb9e3d2312f6656286166f6176ab72b0b9d172d5738a5a1841cc8e3ec7",
+"display_RGB_sha256": "2a124afd44f7bcdbc8a29d1fe58a268559b6d325da9dc35af45b2e6764469f29"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "fade",
+"level": 2,
+"scene": "neutral",
+"entry_sha256": "d65ebdcb341afc6a1d12250bd9bf73da6c0ec2134338b3c7c34c12bbfb6301a6",
+"display_RGB_sha256": "31250d4ec5c3fd5c6845994ff61d759264cf489dc6d72542e6eada3f9e1d7f61"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "fade",
+"level": 6,
+"scene": "apple",
+"entry_sha256": "c53768c738a62a7cff2adc79b07d2d28e5bddc1ae3fe5d3f746c131f912f7984",
+"display_RGB_sha256": "5452c3431ec545cd5be5c55de5556e0859ddba8d6efd10c04cf727185131378d"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "saturation",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "ba5a777d1cd8b9e4421f60c684da527b3546ee1f7cbf33261c161c17928b6d3e",
+"display_RGB_sha256": "a0d50b4cfb41924c7c0899bd53670f0e6c0472a0297021d8a1044b65cb82c529"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "saturation",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "ac54e0628bae2cd3c68d500c47e63e3cd9bb660dcb086a0c677a8403af9ba554"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "saturation",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "74636f2882c8bd534292317f283663ce2c8d77d085318928df862e74c1d8c051",
+"display_RGB_sha256": "fb1b0f30809825fa313bd2366f736d21f121d416ec47c5368af2ccb2e8bdee40"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "warmth",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "bf5d387c6b60f4ebb4f9c450b7526501b1432e44cd86505abec578c747f03a09",
+"display_RGB_sha256": "ce2ba848d57e15d5b49bc66d4dc16b54e006b5d61995dbbbdc6f1d850a521356"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "warmth",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "6e4aafe2529566df6de08be13b3d71d5dd4402dab48e2eb96d08fa42e2cec594",
+"display_RGB_sha256": "7d4a2e31411a848c8c3105faa40387b70febf38f1e86e22704a8e5466bd2c2fa"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "warmth",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "7f0111473311d93f94a42cfd4cdb7c5eb74c2944cfb043a31467868331dc7816",
+"display_RGB_sha256": "686d7134be634bbc8e1edb013433c943da1b167fe30300ea6596b81a9b3bec16"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "tint",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "45210be0a8ce092e40128d41306e87bebaadff26528bf3edba3551e95b2a1906",
+"display_RGB_sha256": "c00756a5b556eddc851eb11a4acadee62a873471f0e61ed4b3681ce61d82c6f9"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "tint",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "4a7067ff6f9758f756af957b59c6879d877df6226040963e87e21660e1f79c27",
+"display_RGB_sha256": "9a51558f98f183cbef028d3e71e133ca7e96f9a780f83a1a198afc3f20be2863"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "tint",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "0096351acb82f4628cb3b7a3c5fa0070a200f7cb086ed7d1a1e719f8e57ba86e"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "split",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "81cb10dd26f0e4fda730e475ca611dddac6e293db6bd12be14f1945ac56f7580",
+"display_RGB_sha256": "b1f788051d33ee40a584bdc8580a5141d18efebcf2ffc878c1e7c7741677626c"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "split",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "956216ecf8dd60f0cd07caa7141a0287e5348481cf2b73bc459149702c819c9c",
+"display_RGB_sha256": "8155deb4ff4c27ed8bd170a7b7316e0a76d993f99fcd277a258093f9cc927d4d"
+},
+{
+"unit": "jlaunch",
+"slot": 7,
+"param": "split",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "66b3da406ebb71b3a35a333cdf6f81854ec59a2a0d2b65cbd042bcca36271e61",
+"display_RGB_sha256": "88f499e9a1181febd7cb5be39e4bcd92a2b0feabb28cde27904517492286b634"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "amount",
+"level": 25,
+"scene": "neutral",
+"entry_sha256": "879f42d0b90f3979798a0e91580dd8a963659feb6b6105d654c883cd04884618",
+"display_RGB_sha256": "e346123bcd19c10cf7c8dfd0da062dcf52cbd768759e5ff2596e0a7ec42245ba"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "amount",
+"level": 100,
+"scene": "apple",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "c07a29b1ecbb6c2f9de581bb6ea87d40640c23ceb34c34c99fbcefd009dc8279"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "contrast",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "1ef168c211cf87b5a8df0e9df8083452deec7f390b95aed4e7d37b5c266bb1ca",
+"display_RGB_sha256": "946e39af9ec98164d85c1d2bb87db586bda5fa930f0fe6df0ce55c213fff5c81"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "contrast",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "7d249d3efc9ccb201e2317e7f8fb25628e56401a678068fb8bdc010ca976ce3b"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "contrast",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "c64c945fbfb915b1615767c2fb10d2bc91aafc1e600a02cda299aa87074c9a2e",
+"display_RGB_sha256": "b056d4ec91e04283453e2ef83d3b2302f716760a092c3bcb426c22413ac331dd"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "highlight",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "cea7fe3eb932427e885d80c374474da56d15dbe835771c42857f3346bc3e37c4",
+"display_RGB_sha256": "be0bec234c1be765107400962944865619bd1694592f8f95649505450d2e4f80"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "highlight",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "468b11687c43806ca7848f31d812d21cb841cf8bfdce06218238cbd30660b68f",
+"display_RGB_sha256": "23a92747e7c65dd5d32ce524ac68451c8baec870b56bcdb1ca10e29a28a225dc"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "highlight",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "fd3b8c80a7580bdee2a3f06f74f13bae70241b72e6b52d3ad9eadf5005731bcd",
+"display_RGB_sha256": "610be9ed1f19f2add28d4da1cb6e232344a6d33eab11ae85f63e6f6405164b68"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "shadow",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "99af03bac049e121120fdb155762e5a4c14a11dec531df7923915fec115d6efa",
+"display_RGB_sha256": "c74d1d391c915cb9e3f918bf975ad144f1dff3eb99afd1bed00f1ac96b2ed287"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "shadow",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "d2df0f02b4078f2de1f1726ba1d26312688fe88997d02ff522373fad49f64c77",
+"display_RGB_sha256": "b20b737ddbe69d12477cc759da810d625098ae4988c036e1637ff3cc3b4af851"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "shadow",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "9d7c4cac44f9cf1828e3bf897615043e4da2f90b7af22a07cb8ae4f60a8333dd"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "fade",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "6c6b1e071ff8883fa095b904b31b6b79c3da5590a507315ceb99c3baefb2c535",
+"display_RGB_sha256": "128fb3c4d74bf1b97a9ab1cd19126dedfbd98945f483a9442560a2b9f3b59e4c"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "fade",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "a77849b6b3159019cb53b7496d1e0acf5fe5fc505de82be864e1490a2522f3ac",
+"display_RGB_sha256": "4c8ab6ae112539e3cc2153d33986a95f11930a207167e90946da572c8466675e"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "fade",
+"level": 8,
+"scene": "redblue",
+"entry_sha256": "8b403825859b90dccf6cbbc55214b5275174ffd7b2ecd4a09fc41d98f1de0df5",
+"display_RGB_sha256": "fe6a680e5bc265610beef9a121e2c24ff2fdd855796c25036e294baa3e72cb1a"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "saturation",
+"level": -9,
+"scene": "neutral",
+"entry_sha256": "96d7c7dbc493e3669de4be6b5542e003cade2c9f0386023cadfd63de76837067",
+"display_RGB_sha256": "be9163dc6418b121408363a2dd2817aa6613ae77f56c44364d02c9515536e051"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "saturation",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "824cce80a850e82851a9d1b207578639a19ec7e5b97ea189d52297eac01a8818",
+"display_RGB_sha256": "3b0f5dbbe535ec71964af12738e95d2ce988e36cf8da22d535658b6227cef690"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "saturation",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "9d7c4cac44f9cf1828e3bf897615043e4da2f90b7af22a07cb8ae4f60a8333dd"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "warmth",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "78b4bcf4d335f9c308c66b1c24691a0ed267b402a3a7412d1306321d4e3b2726",
+"display_RGB_sha256": "2501a3daa5089a3e6fac6c5106ce64055ad08711825e7c954c261db316fec0ee"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "warmth",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "04a69de231cfe9e9822494e81193092f405ae7e2d68faaf24e63e6091c65c04d",
+"display_RGB_sha256": "bb71b9d47640ab99ad3d45c72a74f8b5b3193ebb80ba1fa2d93b36c9f0d163f1"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "warmth",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "daf20959f29561583f8e967471152f85efd75bf66c631187184098d9ab74cf24",
+"display_RGB_sha256": "e68cfc2a5b3c8a04f2e9db438a6c3e5f422683305f2ad450f805a29572f6ac2f"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "tint",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "74ff5754918b8e0146f86cb4366c90a97e0170e1a108f8f27c25dad58cb3da23",
+"display_RGB_sha256": "d3df559ef1a4afa399cdf6301255aed6978c99a248aa82a4d9afe140dae7c3c6"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "tint",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "4648bbbab0945e882211e6674e1d6ff7a192e3af308094c42e27f167d6fcdb78",
+"display_RGB_sha256": "9a655c023fa4056349c42c27c38fc76fbcc19a36adc839e8145e7c69a3e828c7"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "split",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "45e9f1510487295a3fda3a7a0ca7ed94a3ae0e6b860eb1e53965722ef7ddedc3",
+"display_RGB_sha256": "da2e451ab9ebe79d42f35ff809ceab18cb5e21ac0e9568c90bd1fe0bd537745a"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "split",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "7d249d3efc9ccb201e2317e7f8fb25628e56401a678068fb8bdc010ca976ce3b"
+},
+{
+"unit": "jlaunch",
+"slot": 8,
+"param": "split",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "ada09a9c0b5197510d0e091dc2b0a4e79c8d49294499ab2f20fb30d81bf5292b",
+"display_RGB_sha256": "51886612760191cd17f8cf83d52bd6a22f7196979009bde6ce8163a79d674848"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "amount",
+"level": 50,
+"scene": "desk",
+"entry_sha256": "566473da577b3383ab436bddeb74fd2d95d03a67e125d964ea9af9069a7c2bb8",
+"display_RGB_sha256": "23282106cab7b77531fecb5a2ce9ec50764e632214309afa674fb82f49309176"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "amount",
+"level": 125,
+"scene": "neutral",
+"entry_sha256": "43fa486b5ae349e35714bbd203933ee7d479b1637be867eb297ce3355bc4443b",
+"display_RGB_sha256": "a270ec3393b17bc1b629a84baaa59f5c906bb845360ec277bb30a70271354a35"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "amount",
+"level": 25,
+"scene": "redblue",
+"entry_sha256": "08e16e539dc53d9c3f177e418620a31353f30dab05f0b51be48f28b81d84b9e0",
+"display_RGB_sha256": "9e7d95748ebc71447b434b83975b676ab863798eaca2e66296ebd6ae2b9013f4"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "contrast",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "15370a5d04f2ca5df22d3cfba94e8937fbf831febe08998c8c464b7efc546384",
+"display_RGB_sha256": "5b24324bbb3afbe2841a97b25c02234a645ad7076f1c61be44bbdf25e0a549f2"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "contrast",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "0148671100c57054c1b9448bfd344ae643fb1760884587278828eb997ec83a6c",
+"display_RGB_sha256": "61d39c902750b7513e5ad81196bd8ca680e7a3e359339ecd63b0a39e1f6bcb3b"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "contrast",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "81a1cf3ccf14ddecf6ab8283f1f74137910b247d6882128e48d934e4ba8ab05c"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "highlight",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "a68cdf6fcdb570a217494526d94092a1bbfbbb4782a8f5d9df0febd0205755e5",
+"display_RGB_sha256": "dfd8a341988b7a658a5abce5695e6bd33e9dc8e40765dad1e683c5378d4d050a"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "highlight",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "155aee2ea24e0219d01bafa6c17ef617b3490582deceb496ac4226a761200655",
+"display_RGB_sha256": "722ff2b42f74cd87143d8fed19b05894ae46a323033caa2bb1fd20578b53e1e4"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "highlight",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "066427537204ffd303162c385acd495199822f88b7f2139856b989687fdce23a",
+"display_RGB_sha256": "eff550a8e75680900a55dfea21097c5ec34295399b1ffe3c586abf186f578e56"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "shadow",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "43cf6beaf72d9bc3f44723c52fa3c5de23da52a995745756532aa3de5ebeef77",
+"display_RGB_sha256": "8aea6f8ff294428873a57142b071657076056f258a9210dd56e9355f5e9f7ff3"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "shadow",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "52e7ed00c57fe9304cbb8bca9d8b48c3f59f0461beca8e789ad04e4d45497546",
+"display_RGB_sha256": "28e6e9fc0456c42af2767d7e90f4aed5356ef10eb653c7cf4d1e6b1841fb0cf9"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "fade",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "be161e2fc1a5be1421c0e080220066c4bae1b479a165f90512e3d7971f5a966e"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "fade",
+"level": 4,
+"scene": "neutral",
+"entry_sha256": "b0811efec34b3daf8a5017bd6a536a48ea1d214610b18a8ec1257299b2a50aaa",
+"display_RGB_sha256": "b503a1a0fbdce43f6fff032ed7942ffd2d9d8bcf773796c71428ad51de70c1f4"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "fade",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "67c06a308d32ff9716cc9989171bae8a9a086b5ccf42d79d7127b5a397785f7f",
+"display_RGB_sha256": "d5ed9e5b89ce16b37bfbd7d8fbcb9dbc45d9b4cbd2300d91e74a2712b6c68302"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "saturation",
+"level": -4,
+"scene": "desk",
+"entry_sha256": "15936d5f587aad5ee10a0c685c627d3619b9ccd9ff49bc35a5d412e99b2c13b3",
+"display_RGB_sha256": "cbb125e2d996d2577a20001c148a192e2730d28cc26b5e546d2b02786fdb87b1"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "saturation",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "81b433781d6e5a88f081c21e29d07acc2229baeb15c475d1b3f4bfc0cb457ba3"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "saturation",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "fc41238aec4687631bba90423bb5bf0fa4bf5cd93c0d384e241e11dc35957761",
+"display_RGB_sha256": "dc0fb54881d2ea7ae5f7967ed2b6da37a36092ed108199a337bfe1734785f033"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "warmth",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "b518b9215cc052c17f7da37022b6b2431e4996d4d15d76e00018a616b167b4e9",
+"display_RGB_sha256": "1f457305a19810dcc29bc0150575c7b70dde3e18c359164a3b8cef572d824547"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "warmth",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "81b433781d6e5a88f081c21e29d07acc2229baeb15c475d1b3f4bfc0cb457ba3"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "warmth",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "a6e08385b5cfa81fc2651219765a1a808b282ae9f2a5dd3740c107e2fac877c9",
+"display_RGB_sha256": "d86a1e4a0bdaa5fd35d6717d782ad938687a9fdaf15adcb9430935ae09c7c504"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "tint",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "05e2667dfb71c27e224d5ad59deb5fc1b8985bf0a46eebb3c52d52f660cdb7e6",
+"display_RGB_sha256": "6320f02b42808f5d533680c02a7a8dd48428aa6b9be84fa903a51b75496f9e87"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "tint",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "1cdedb73ca79f72b83d482984a68f6fdb8167f61f65158eb6927573d595420ae",
+"display_RGB_sha256": "4c9daf2c6538bb5666606d77d2bc7f29a5a173933a0966366c2553d6cf858f61"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "tint",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "201d4bc7d9cb52aa0447dadefd0edb6a068afc5c611b5dff578186fcdb3015d5",
+"display_RGB_sha256": "a82862dd0b35d63e783c9e1f573a40764a018522833d05d33cdd27e9eb5083f9"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "split",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "9da28ef5995d04778deb14e5cea5231cc23355446ffb0466411269c85eb4d9f5",
+"display_RGB_sha256": "ceb557adf4cde6c8c9546dc7b6d454ff005df0cac040e13053dc6b90dee68520"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "split",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "eaf9b176eda8b623ccdc6db5c8e49b6be0fb7e06b7b1deea4fe8106d0e626670",
+"display_RGB_sha256": "f0783f02be822a2496d7f0e7ed523eced3b8dfe69d1e7b36101bf1b641a28696"
+},
+{
+"unit": "qlaunch",
+"slot": 1,
+"param": "split",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "23129086cf9ff8a1dfb94f97f096123544c89b2eeaaf066390384429f92787d4",
+"display_RGB_sha256": "81a1cf3ccf14ddecf6ab8283f1f74137910b247d6882128e48d934e4ba8ab05c"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "amount",
+"level": 150,
+"scene": "desk",
+"entry_sha256": "f508ae0964f14df279c18ab1bd7b674ebf902e4a0cc47e9ba1738f1d98ca1466",
+"display_RGB_sha256": "a8b9583652961b12d95d9d53dc270bd2cf7954d1ddf826dbd2be7ece1982b631"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "amount",
+"level": 50,
+"scene": "apple",
+"entry_sha256": "6abd87e13c8f042f81ed006cc0f760bbd0cf9d84945b3b59648f53efeca9ae75",
+"display_RGB_sha256": "d2f122cd05f35870556900130b45f33e5ff0fe6c0778c3ffe4ca38161ccf3db5"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "amount",
+"level": 125,
+"scene": "redblue",
+"entry_sha256": "3930c757ececbed7019951a664851b9702e244c651a258bbb2fafdd6ca947532",
+"display_RGB_sha256": "c62636037779b1436da116bd94dd7686aa8e920cc105eab960159c8c5024bb7e"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "contrast",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "97787d72485860b91e32157d6d14b434ad8e8dc3cdf0fb5ad998b23c649b2ab7",
+"display_RGB_sha256": "cbd7ab22a8c894b824cc4aad359db3ab2c1ac05b73e46eef4ab0e2012cc698ef"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "contrast",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "b8e717a3e74b825e6bf94d7e2a6ca6a72443c7065e28fc4ce4887323a86eeffc",
+"display_RGB_sha256": "20d162002703c8ab04d8056deb3726008cb732e27fb568a227faec6db638e132"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "highlight",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "a79341bb53bb5b78a3b17671dbbe993a5a2bd7eecb6d6feb9833bc6d486ea009",
+"display_RGB_sha256": "2337d569fceca94f781e8f40581c3fead48e9a3536c7651b945ff19ca4caca65"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "highlight",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "912ef3e964fbc0d8c93fac0551cba614308ea4cfafbdd856ecfd4549bacde6f9",
+"display_RGB_sha256": "a91ba8b1e930a076a6e2814c9b7f0cbd456c3e38bf8caa688f4225b86f656774"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "highlight",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "65e8752d26b8d6ed067a189290d3680be4c94bd3bdb055962a94579af11e4812",
+"display_RGB_sha256": "4070bb013d834e46b0c5272cfedb2462df078608c9f3dd708206b992d1588c2b"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "shadow",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "8d01aac6cc8b84190705526bf8ce1fb8b469256947591bbdcecc4323cf3b5d54",
+"display_RGB_sha256": "0d3461c09f503bf68824635face8e8134484f4b55b30468dfe593ef02d1b214e"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "shadow",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "edd9a7b76d6bfcce2fced63f3078355557e4d7081ca647a26ba3e04d89eb0774",
+"display_RGB_sha256": "441b570b9ddecaeb3eb6291513f681133c9f389da86381d1c51a82a2edd0b061"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "shadow",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "793e786f7c952431271e19ff8051a371a3a651a052d2814c750955d87fc58ead",
+"display_RGB_sha256": "cea0e8bf8ba9f0992fb4322296d2f597265128e0182fb1e847346b8d8641b63c"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "fade",
+"level": 6,
+"scene": "desk",
+"entry_sha256": "770a4889cc8799211fba068058c48f6eaaaa30afaf0dd27657200f48b1f2a741",
+"display_RGB_sha256": "d44cffc249ea12610f47f58bf05ff15246b152c7a4dc06aa5c3c107be6b2cd53"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "fade",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "912ef3e964fbc0d8c93fac0551cba614308ea4cfafbdd856ecfd4549bacde6f9",
+"display_RGB_sha256": "62dd6c45b72460545b4bbad0689accfa303c8c9c0fb42cd27b74cd47c9561642"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "fade",
+"level": 4,
+"scene": "redblue",
+"entry_sha256": "48ad272606f2804454dc4d8868b8f4f0608f8f77603f0bef375a9a488c460c8b",
+"display_RGB_sha256": "3d9b98ac7b2f9bc133e717e3a97870717dc3564c6e56768f334c9c900a7aaf8d"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "saturation",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "46c5a8825bed3edf5189d290ce6be45d2b0bbb77babc4e22900e3225b9a78462",
+"display_RGB_sha256": "7b2a723b99981ee091f7471bd2580b6d35f61108b230d853ede134b474330559"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "saturation",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "2c64534d5850a229a0bd04fb8978ea3c15af945193a57600b6f61149fc85f220",
+"display_RGB_sha256": "fee00c1a28d0cd9e20399e58cd4ca2c252184764a57bb82c6392013e4c87fa6a"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "saturation",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "ea68bffd1a65ac291a248cb236b1afbb792ff84e9e1acafe5c7deedd585ea02a",
+"display_RGB_sha256": "cd08284ac702ea04212729ea6a075765d132b80591eee3b25689f6bebead4499"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "warmth",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "d2f30a76d1ee660bb98c28fea18876b494224cc7e6e3cd77dcc0b00740bd485c",
+"display_RGB_sha256": "7d9a60b5343ad6e9425a1fc0f830c50c0ee94b3cfa2536573409465c58c1ad8d"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "warmth",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "6ec6c4c314ea89f2c4e448e67d23d78e9c5df81345680b03540e83a41bee7da2",
+"display_RGB_sha256": "c2698abe5911c494388830f5baad86a8cc012438abc611a46f953655f44a9917"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "tint",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "099147c24d7a61d61789506b446ada289cedc73273cf22db0f389caef440a3c4",
+"display_RGB_sha256": "0890feba4e3aa8fd9c1c9fbde0290da8a7e0dcec1af07774c0d36288e1d7be42"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "tint",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "912ef3e964fbc0d8c93fac0551cba614308ea4cfafbdd856ecfd4549bacde6f9",
+"display_RGB_sha256": "a91ba8b1e930a076a6e2814c9b7f0cbd456c3e38bf8caa688f4225b86f656774"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "tint",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "f27a2726b0f9a72157f2796f50a99bc7c5a96516ad283e877cda2f5de0df9cbf",
+"display_RGB_sha256": "a8f5ecf81dc8cd74ab3c6a537f0905965eef6ac7712f7f6e60d9bb3c0f464cf5"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "split",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "9918894e89ea36f2c9dd205970f7a8eeb3eec4a3884f4b5dbd54d6423a7f2dc0",
+"display_RGB_sha256": "8953a076c8ee03e0e5265c8ef53cc9544955ea3d055854e4ae6ae0eb82b0fa11"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "split",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "df1eeaa7f88226953c817df3b3597a58e543f4e93f7923a18dcb12119bc10a63",
+"display_RGB_sha256": "002f001718c5ca5ff50889891762aaa977dfd8bc79a820777ec98443dae6e4cd"
+},
+{
+"unit": "qlaunch",
+"slot": 2,
+"param": "split",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "883f55ee1370c922e58e55b0df2e752b8478fa69956b7706f9c7e70cf9afad74",
+"display_RGB_sha256": "63ba58e3176dd5a659a948736b95cdd97c6277a996ab675ba71e961d1cf6ce14"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "contrast",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "b491e91b67e8154f61505c1feb8803d8cc39f471601f2c944573770645792d9b",
+"display_RGB_sha256": "874b9b16796a035d1d892d53fdf44959b4cae200f4770df4b9e439ecdc4fd98f"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "contrast",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "2b7746566d2e7d1afe4b9256679cc592c0f4f5cb9708656f402ade9bb9c42435",
+"display_RGB_sha256": "bd9ef735dee2d389940de3dc47033c04bcc97500459a681579fddee7b4e3c145"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "contrast",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "76643d1fcd1748e99b55c476ade06b0493f4b834a3e673e0c29fc9bfccfb9ca8",
+"display_RGB_sha256": "fcabeac807664cee88cc04bc652d0584bc91e5c8a39e809184d8911d7a1d01d8"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "highlight",
+"level": 5,
+"scene": "desk",
+"entry_sha256": "8e8037c50c504d61c1c92091cb28f46fff8a38b45cd4c8bd03ff88f28a695819",
+"display_RGB_sha256": "31cb8d6117639517237f6fa290546a9a64ce20842ef33e11509924bd75322f38"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "1babfa2488c68e2e32511ee6395c1141d117a0591c6b9feb0aecccd00dbcfeae",
+"display_RGB_sha256": "505ea5fee8efe30c9b7533ff69238ddef30e94ca367cfa6e0e42e81b604c158e"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "highlight",
+"level": -3,
+"scene": "redblue",
+"entry_sha256": "c5952aed88d2fa3d136f676ec313306f2e365ed5fc93e948a705ce415b768e7a",
+"display_RGB_sha256": "560da1bd36ee1541b8f8d20d590d122ffb33e62332a2bb0a96fef218db8dd32f"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "shadow",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "37212863d884b535afb75f2dfa4d80be66cd63f606c47c77c4393460618f845b",
+"display_RGB_sha256": "ba0f2a12cfb2f7bb34b219967487d76283e41d1cbfef079687377d412a849ea5"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "shadow",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "2b87aa473bdd4659d5f5d1206db7166a64f9ad564d0d648c052a97a45d9f0b6b",
+"display_RGB_sha256": "716af689569684cefe5765a79946b2f526661dada75f33c6136c0ae3c3b479ad"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "shadow",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "76643d1fcd1748e99b55c476ade06b0493f4b834a3e673e0c29fc9bfccfb9ca8",
+"display_RGB_sha256": "fcabeac807664cee88cc04bc652d0584bc91e5c8a39e809184d8911d7a1d01d8"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "fade",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "ea01f2c7e26d4374fa02825e1e09928de0a3684865c0fcf2f76a99150c44238f",
+"display_RGB_sha256": "46381fbbcd2a525b86e512259e377d62a48f2bb4ac16f9ab199920ec463282b3"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "fade",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "203addbc484bda8fca217c4f99eb512510bddf7dcdaa8451b16a0a3df0b8a872",
+"display_RGB_sha256": "549af6d37bd4ebc4c014f64c1f52ec3e2c9268d51b74acfe63aca1ec7831b0c5"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "fade",
+"level": 8,
+"scene": "redblue",
+"entry_sha256": "639d4a9ab5e112a6448c7c030cc8b7ecb2cc89391f197149ce93d47e2790a074",
+"display_RGB_sha256": "f22129cd92189b3f78d02c322d1213b26974ee97e4377d6bcbafc98f709f9f62"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "filter",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "27999706ac54996be2719d3edab91f3e68894b7e8ba6c37e99599fb11445d888",
+"display_RGB_sha256": "226152d2b0544f6dfd5d843dc778c68f191c584b72adb8942e674cfd034b778f"
+},
+{
+"unit": "qlaunch",
+"slot": 3,
+"param": "filter",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "6d8701ffa584c2925cb8d93c3b9e66649f1e0ab89f737e8ce44ee7b374a3c9a2",
+"display_RGB_sha256": "9130c8dccf7908761b18b27a25bac830cb2630e89e898f6b5404f35d4240a1db"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "contrast",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "063fb4c70f26fdcafaff91cf0818a9ae034289f257799934a731da6be2029977",
+"display_RGB_sha256": "f571bf009ec162c8547acd2438309f2a256d4a15aa89b31ed4a6788d84e3a63a"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "contrast",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "02706e7d9df6cb8b5ff5b904da4f9560766137180049c09f0df4e0454b609346",
+"display_RGB_sha256": "28b585b71e33dadaf8fb7d7ea7f04c0e55df13d900f97d742e8aacd9bfb0a1f0"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "contrast",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "b92a92c8536228dc64d4df0501258be3e7767ede45eefb01298931951b0a975b",
+"display_RGB_sha256": "8b8ab48786c5beae6af1c9f3ac375ae7a21cf6a18e8d5f5fa87e88796930f9e9"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "highlight",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "04c89de1dc407540fc729f90ad178391e7b6c036f32cc5ec43e23140ae8f67e0",
+"display_RGB_sha256": "5b7749dabd6dbbc4b77c388cf2ccf90924199f031602fd08115bb7bd1203c543"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "highlight",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "f5be4da23163c60c69e2cc629b03fda67d02a52b5eff818556b8426a7ffb02cb",
+"display_RGB_sha256": "e5578625709a52fceff15e8dcaf98de80b53b76ff5753c305e4e4c42f21368a3"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "highlight",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "f7462b5e6512d92eb52b09de6190fcfa7e92d3f4ad7e55a29341fa647e873adb",
+"display_RGB_sha256": "3379d047bbe931124c18d1f19ea16ba113484474647be763bb073d511210ac9e"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "shadow",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "3c6c50fddac301777b1360a7457b5a220baf4ed74dd95401ff09e9360caba622",
+"display_RGB_sha256": "c2c5398bbd61bae44b47e7d0a80e06ba9ea282fd8356e3dd005096aac82137c3"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "shadow",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "0f9a5805bb4444e47c8c39df269016d96eeafe528a98c9b820a20a531877c282",
+"display_RGB_sha256": "06b39e730b1dcd39726e95034622b77140e3427b71675d2fffcbdb6c0d9e940b"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "shadow",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "02706e7d9df6cb8b5ff5b904da4f9560766137180049c09f0df4e0454b609346",
+"display_RGB_sha256": "5e293ce288f7214a92fad8b3cd92d216de9222ad657e3ce2c16d856342dec40a"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "fade",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "8d1ff59322be75a341656f4bf841b88fee6ef4d300107c56712e1e5e472c19ca",
+"display_RGB_sha256": "f4e4d9e31e84f31e0db6a1bf359a7c1cced245d6c130cd208a83dcfbb0c9fa29"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "fade",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "77498b83d5394a6c2713bbe5360915d2363798270172a279fc434295134e336f",
+"display_RGB_sha256": "c7842e09c9ed810a7f6a0fd07eba19b70b4b0c831a10bf45c65bc776886bc809"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "fade",
+"level": 8,
+"scene": "redblue",
+"entry_sha256": "1f7edf30dc113e45a34dec3cdf2f63c938ad12d92777f44dac59d957302a53b1",
+"display_RGB_sha256": "479ecf79efac628f4c0bb2360e7377273f3131335a8dd59c709cc2432ad96fc5"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "saturation",
+"level": -9,
+"scene": "neutral",
+"entry_sha256": "d3cdba7ef840d67be7a3f177d1612da5625db0403a5396505127d37157cb4dd3",
+"display_RGB_sha256": "1117ad68e8be83a0bd000a00bb4f57112e141a26adea8bd631358ffe435d6253"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "saturation",
+"level": -4,
+"scene": "apple",
+"entry_sha256": "40d11c01c6b23a37d904474c20af2c32c5cf031be553c19532e765a4738b299b",
+"display_RGB_sha256": "f9bd896b04dd94f30c80a847d6de93b01230fb2cdf482daac74a8dbae959fb80"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "saturation",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "02706e7d9df6cb8b5ff5b904da4f9560766137180049c09f0df4e0454b609346",
+"display_RGB_sha256": "5e293ce288f7214a92fad8b3cd92d216de9222ad657e3ce2c16d856342dec40a"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "warmth",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "002d9723b1e88f9702b3b24d2107c01cd893c42ac22768bcdf4bff390d04bd06",
+"display_RGB_sha256": "60ff764043bafe48c807c1d975878f6bf2af823ac9901cef677b037c2cbdc565"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "warmth",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "80453b50d01852a78a6ae6fcfb7578e2559c463c288ca900bb1ff5e79f16897c",
+"display_RGB_sha256": "5c44732e7ad3fe9da76343fae18b970f344ddb3c1729cfb92063ec6d2c41101f"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "warmth",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "384c76c1fde61c23f549568f3b6cdc6c6719aca8dda977fe57ad2a3ced605f1e",
+"display_RGB_sha256": "b945e9e26fac1818b6100727c8c925a8e277ff640d3e98b2c73bdc815ae13575"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "tint",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "fc8d0ac20199225efbb1239694799dbc6cd217f7cb5837dad61f9edae2bce988",
+"display_RGB_sha256": "a064c080904439b733cca251528d962d8855b01abcbc2f170da256d0479276e8"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "tint",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "a02ae1ab8ab5c0ef58a413197e73ea8a0f18d401736c5b4318839dae26ba20e1",
+"display_RGB_sha256": "e693cc873b3ff43e567e3285a59996f6ad6d1a12c28a7e22f1189a2fe8967c97"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "split",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "021cb45979f962e2182d2e2b4f1816eca9c098acd564e4a92f357dfc73abacc9",
+"display_RGB_sha256": "c64d74d7f2d5d4cad37fbb20bf870d70a0e4865cb10abed4b5b5eb863dc143f7"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "split",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "02706e7d9df6cb8b5ff5b904da4f9560766137180049c09f0df4e0454b609346",
+"display_RGB_sha256": "28b585b71e33dadaf8fb7d7ea7f04c0e55df13d900f97d742e8aacd9bfb0a1f0"
+},
+{
+"unit": "qlaunch",
+"slot": 4,
+"param": "split",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "715d0afdf79d52d12888726348b778796d8b1c26c763a7959ed5d7ae30c01a1c",
+"display_RGB_sha256": "966344964a9a581d2dbfa9458dce066d7c9fae773e7503319892bc9352b194ce"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "amount",
+"level": 60,
+"scene": "desk",
+"entry_sha256": "f598f37c423ca5c6e9320f4ff2100425e034140b858ac303cdf35de51e14f24f",
+"display_RGB_sha256": "d3598b60a1b82297152f2ade46b4fd7d3a1fe84cffdfdca4061c4a458ad7bef2"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "amount",
+"level": 140,
+"scene": "neutral",
+"entry_sha256": "257433610f626035e30a0d6439425926bae6f61eeff4720cfd0b3bc1e06af2c4",
+"display_RGB_sha256": "4f7659bff6ae5d197cb1ff6a556ce58c220b196d1ee611758a90dd7b32169158"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "amount",
+"level": 20,
+"scene": "redblue",
+"entry_sha256": "0e5ede4020f786c2355f3af8996b65a9735af4235f0a2cc0d6a858d779beef9a",
+"display_RGB_sha256": "f19e1879f3bf7fc8ad7e89654d3475d65f8c1ba6d29a3f02122e755e1547323e"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "contrast",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "a2da425442ec714ddd9aaea9fddc516e3cbd40e6730a8f3634ebdfe54b6595cb",
+"display_RGB_sha256": "311a50e9902db4c771b35ac10d93a7da96debd423f5d873b355882025386a287"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "contrast",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "14a93ea72e2198a9a9e34a62e34f4953550db8ca36602416b1772cf52bec798d",
+"display_RGB_sha256": "85ea8152b6dd8b738ac090bae3edd9d6867569b24e6a9eca69eea07e4d0f4cbe"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "contrast",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "a815eef4b3d2596f8bee3e45f39e7a1b56a09aaa219710639ef9305b2d04d852",
+"display_RGB_sha256": "42a05cae47016fa908b29526d726264c9f9214697f86bb1fc45b988f02d2674d"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "highlight",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "89162addb6bdb83add5a2a6c6c1358ae658a4d6592c0d442ee15b8ae57d393de",
+"display_RGB_sha256": "af4506470846f3dc0d2620041c2b4b4e5f84e4928e9f1c5963a3d5deee4ff087"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "highlight",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "bbf3239699bff1e58cb398f858efe5b508161037814e3f23ffc6a1e1f0db0614",
+"display_RGB_sha256": "1267bb77ea447c0c3364e0070fe09711c743158b1854fb4e84a57ca274e2b86d"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "highlight",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "9fce1a265f3267ace88b8052a2f6da50c55567197a279e0b741764e6210d6885",
+"display_RGB_sha256": "a8ea4c17f5682b19ed6e9b2788be70c836c1f358842ebdc795593b30b1070252"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "shadow",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "849d47fdc9b43625fcd4b693415de394e2d4194c017f7475f4deb02637758d41",
+"display_RGB_sha256": "6c280fda567b3fad6ca07ef5591e278a302658fec3642466e21d7a079ff6c744"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "shadow",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "529248f30e3813f0bd5fee678c2aa1d2fd3d38f9f0aa7370ea313943db9f691c",
+"display_RGB_sha256": "5688bb176f15af689d94f3c41323d6331687ae014fb2114099501d10dd5e80d5"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "fade",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "a815eef4b3d2596f8bee3e45f39e7a1b56a09aaa219710639ef9305b2d04d852",
+"display_RGB_sha256": "2f61b2b656546d114e8920a2abb6b0e13a57fa9225ed87f38a7e14a6d1ce766a"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "fade",
+"level": 4,
+"scene": "neutral",
+"entry_sha256": "f2ee76905c1f7deb9d7542a3cc9482f3da8110b87021a7af9ea01daec2dc5e0a",
+"display_RGB_sha256": "380b68497fb4504cb47f227092ca6c4f9ba410a1b5c80c5ecbfd235bb9c2a319"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "fade",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "f85ed3d29437b5a2a108606e92626f74cc01e6017178fbcffe173b8cb88ead89",
+"display_RGB_sha256": "7349a93f8b3e42a73d55374edce4a9ce374364260d90ff2cb5229eb521f528d8"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "saturation",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "7d66fd419933c842b01b0147d32a87a76e4072b9316d12382b0a99516e8ec690",
+"display_RGB_sha256": "23b95c53e687307005b389d7437d42b56672a6556c73501734a6944338325864"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "saturation",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "b1c33b178188a97eab2f27de166597a91d99864b9fa4c6e0bb79580dcac2d4c6",
+"display_RGB_sha256": "64f0f2952bdde2a87ff75bcfaeca976bb8ea3218ddba2cb05f2c462a39e1ccd1"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "saturation",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "de17f160c7e4f126e2f0c5d844c4b8d21dacd1e14eb7d2d9aa9461f52dfe4655",
+"display_RGB_sha256": "920a885872c9621c9228924ff3a78da9189f350a6343a75af5b7026e9e915065"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "warmth",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "8a524cb2a54744b8826dc0cb2d027b6b6c643e8bad6b2b717097588ee184d139",
+"display_RGB_sha256": "164b7f1fc217ec7643adb04d61c88007dc5d5d898e15d2caf3c3fc215fed1d4e"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "warmth",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "40a4c84f6e9f764bb0a97626ceb6d66a1effa95bd5a82bb6d93f53c77221ab53",
+"display_RGB_sha256": "ffff6f0f50145b184ad403d925f419835a71888dbf0f3e6f6dbff542144e5b47"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "warmth",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "a815eef4b3d2596f8bee3e45f39e7a1b56a09aaa219710639ef9305b2d04d852",
+"display_RGB_sha256": "42a05cae47016fa908b29526d726264c9f9214697f86bb1fc45b988f02d2674d"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "tint",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "bbfde6ae314a1e1659d83fc6c2be17bf60f6a704014ffd5c11195c591250bd55",
+"display_RGB_sha256": "30783649ff82353346a46548e1bff9822c3188dfff8150c1c7b052b7cb0b3d26"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "tint",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "4eab06ed00cb64ac037ac5f407d932e3056d064956a1b7ec3fdb768d2d2b70fb",
+"display_RGB_sha256": "90bbbb5ef025cb468409aeb2716001a775b9ec3e03f8aa69981a030694821755"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "tint",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "e5e41e58712c772e18764b60cb2d740e040e430f0542ae0ba1185b79009b942b",
+"display_RGB_sha256": "ff286f8ff595c71b06960a2148866f0ac041c13c216cd42a86c4b49e2aec8aed"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "split",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "eaa9b5819e262bc3b4afe43ab6f617295cb44871a28608b4aa2bafcc50639dc6",
+"display_RGB_sha256": "1167fda408197cc800f3aa750ec5b0df61f185108c626108c88d1d796b1739ab"
+},
+{
+"unit": "qlaunch",
+"slot": 5,
+"param": "split",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "febaa74832a3d9e3c24678e3cf5c284b46a9bad60c904fcfa4474f6b1cecfacb",
+"display_RGB_sha256": "900a46306825a277e1c1d36dc374905ffd04c5b8b46398c4b6559971242eceb9"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "amount",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "02706e7d9df6cb8b5ff5b904da4f9560766137180049c09f0df4e0454b609346",
+"display_RGB_sha256": "ab8c9bcf01206968b9ca776b177ecd2c7861426d7063c098e1018f7b1a009dca"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "amount",
+"level": 80,
+"scene": "neutral",
+"entry_sha256": "a695077ed93b881892354392d2e8a1fff106f03b6d4ac3db41c4992cd9ce3ee6",
+"display_RGB_sha256": "b4d172827e3aefcd25636766e96af5d5cd9ea9cca4332e89fc5db85285500897"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "amount",
+"level": 150,
+"scene": "apple",
+"entry_sha256": "dbe1dcf68cfc9ab07cd11394f8891a96d8aa4ebdc417a19d65b6093c72e04769",
+"display_RGB_sha256": "94b04c75851b06949fa73cb2d23ded25baa1bd0e9fce10625d20ecacf0606a27"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "84202f98adaaf09c6147ea2eed3504afb0426a39592026d2f5ce2754fa273026",
+"display_RGB_sha256": "e570a038a87e00eecb4ee076e30262f4a47f722b08cd90c907df5f353c403d99"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "e23fb9cddca850ef5be11183beb41bd4d2a794224228376ee7b71bcc1390257d",
+"display_RGB_sha256": "fbdd47b93ea623dfa5cc1b57f8f6a93f9f45f41fb571ca52f24f061ec86edd04"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "82ab48c56e8fc176ff9a9475e84ad1550d3df47dbefbc47e001c0b0c5cda75e5",
+"display_RGB_sha256": "70140cf11b5dc49aab614a32cc9408a71894487a91b168574e276f3e063c7a2c"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "highlight",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "06dc2db0bb502ccd7fdabbffd5dfb8e1bd494077dccb5b7076963fa7f0f6b6a7",
+"display_RGB_sha256": "c0bcb3f6de54716f517dd49399b8b612567d2bb01315783e11b25bdcdcb6d12e"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "e2170d3eef12fcc4e0a22046ba6d2032539804ee336b28614ca2316edd391775",
+"display_RGB_sha256": "120a70cff1ff2a3ad678c33db05686488c93b17244485931ce86842ae44e313c"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "highlight",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "cf6528031e0dbfa22f684cdf68c74eb22d9a8ab47bd366af1d10f0e2274210bc",
+"display_RGB_sha256": "4ddc520a4465864f34076b0ee3d5d9a6b546c1364180bd12b404f0f4f97c37ba"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "shadow",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "ecf3ddaa5f9204e9201474b589e284230347b1db0d9adcf803b7d107b8a9aec4",
+"display_RGB_sha256": "8e3c882a474a3a724c7cbfd27f32c3a31c62307f7ab763e16b5728e564754b90"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "shadow",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "3ff14138cf0081352c54b09e9adc730e9b31b94107e2a10560dd42ff15310961",
+"display_RGB_sha256": "90b216f68cc9d2e66c4426d9da7171111f99039fe5c7a9d9da42a0ad683fe842"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "shadow",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "ac8dae5bda2caab365977d5782b325927326551818d1f5243316e60ae4b5bd51",
+"display_RGB_sha256": "95c09f77a732dd977d96311575f5dd7f87e0b0c9d426348e48bbaaffa6f99bd5"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "fade",
+"level": 2,
+"scene": "neutral",
+"entry_sha256": "70ff519649cde802bf0216cf33f3bc60d52bfac8cb7182a8c9b8239023ad8a36",
+"display_RGB_sha256": "7aff6da71415ca98ea85d1dc2824df565729f152bc7adcd5b9dc880af53ff627"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "fade",
+"level": 6,
+"scene": "apple",
+"entry_sha256": "46ff079a0b0b1bc38b7b7e67c5f8028c3f4ed866ce58775557743120c78a9063",
+"display_RGB_sha256": "9241eefb2cec62f4436bad2d0488e73643a96d89bfff3dae7aea2a79cbbce483"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "saturation",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "7b698385623de04c4208260fedc5ae646cc6300512845c6f3da6f5c9f3ed997a",
+"display_RGB_sha256": "683eff517977f74f444bd912fcd108c827b551c5488bce1ade1c483fe2fd92c3"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "saturation",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "cf6528031e0dbfa22f684cdf68c74eb22d9a8ab47bd366af1d10f0e2274210bc",
+"display_RGB_sha256": "63bb04e310df895bec702d92d1fabe3a269fdead5f9423e857d5d67ffb71840a"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "saturation",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "3cf4714a682e0967a82fad66dae700e9290925049b0a088bc40bc2b92f885275",
+"display_RGB_sha256": "d5a6f8c1d90774de9409de8141555e7496e0b835e0a60ae196d4cb8dbe54fe23"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "warmth",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "6ba2b67d4e29c31fd9044924d1f8b765ceb56da6003ca05b0ab84370ffa6a1b9",
+"display_RGB_sha256": "282dec001f15d783f63c21f001e670176edcce4504491835bb424df088c72906"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "warmth",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "7dcc6e78d90b794edb44e6489d8c9ee86a7326336736da31edd108f19f95280d",
+"display_RGB_sha256": "65a1ed9be9233f2c822973b633d9fca08168d02abb104a5869002b2f3c392815"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "warmth",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "678415cf83a14c1f74acfbd4ce8735d5e88b207b7b779d199ebe75f94df7d718",
+"display_RGB_sha256": "86ecd5652c17e6a94f7642c756666c46928c1feffc53f890a37da5f65becd309"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "tint",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "329ef6ecf2c53e70fd05bef295ae1b6d4a7308b0764125f1618e6d05501e6bd9",
+"display_RGB_sha256": "6f472a5ff7f035158312a541ebc3c8127063ce8a4b29da2666f09dbfc3c22cd9"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "tint",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "64582fa7bdf5a46edc2a9799b9688db738760d88bdb287b115ab19d016c5c86b",
+"display_RGB_sha256": "6aaac08a7c50fe23cb54a8653737112a05131fcc313a72a1c13a4de454d099ac"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "tint",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "cf6528031e0dbfa22f684cdf68c74eb22d9a8ab47bd366af1d10f0e2274210bc",
+"display_RGB_sha256": "4ddc520a4465864f34076b0ee3d5d9a6b546c1364180bd12b404f0f4f97c37ba"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "split",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "90e9f49a1d4f4669b3002e80436c267151e6a9b2d60f1c1857223e99495d900d",
+"display_RGB_sha256": "48b6d8e290ec7cece70266c7215ab72742bccb6f25e3323439cf5d4657cadc7e"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "split",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "0fb31544e473e7c6daf010120aca0a38f857259ac9572b14bb051971ef828893",
+"display_RGB_sha256": "a71ead1a514d8e462720c77571db190f55e3563c39a1be8b995bf80efe4f20a9"
+},
+{
+"unit": "qlaunch",
+"slot": 6,
+"param": "split",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "557df69df3779ad2491836808447ee8b0148d3d2c848196b4425e7f253a72b48",
+"display_RGB_sha256": "ae543d46472a2099c29eb83243f27a98ac4bd72dd2b873696d7d18272f5f7c7c"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "amount",
+"level": 20,
+"scene": "neutral",
+"entry_sha256": "60deee3522f690038be69abeaad551a9bb90468b322e16eaf30472973db3515d",
+"display_RGB_sha256": "e02a3aa343c0f2d151571a391d321c11854a79cb28721a5d1ea9fe39795ffb18"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "amount",
+"level": 100,
+"scene": "apple",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "cdd037a417f356c64595b8a272f8cc99a8969edde6686b548fd0d9c0a1973415"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "contrast",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "fbdce0d99c3be63e01764c0669334d0638b66bb5f338ce6923e43b636707d947",
+"display_RGB_sha256": "77c62ecf7e32851026c27713674fed6147bbab727ab9009aa664d6a8621b9a86"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "contrast",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "ac54e0628bae2cd3c68d500c47e63e3cd9bb660dcb086a0c677a8403af9ba554"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "contrast",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "51084adc2401e873eb24701a1deb65b996e371c8ea7005f598e5b323b9b3ba75",
+"display_RGB_sha256": "206702f9f2344ac34fd0e4d3ad7e26bd206996dc5cb700e8564a9bd553b51b3b"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "highlight",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "6af5188ed65bba8abb613a58ae045c75e4aba57a1233ab9b026fb221209eed8e",
+"display_RGB_sha256": "f77081e3a4188eb81d1831458d964c69d1454a02cb4fdfafda93f3c55851d823"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "highlight",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "0b6767102fce50b3b0b3b3772de858df3554c84f53a3b19309e40d1d26c8bb03",
+"display_RGB_sha256": "92759e6311a9937a014df4a4c4669ac6d4344788ef4f195c52bc045eb9adb50c"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "highlight",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "ef36bda15f112ed7d857d7b8a4552580e36ae3c8f69c93dfe78ab47635eb5d91",
+"display_RGB_sha256": "f5dbe12bcaf43f12d5e11cef3a0685eb1a16096ff183b90ea820da94ff88d932"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "shadow",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "de33c2deb1d49d75c1609ac5c60371bcc9525c6c79b17454dd81c1bc68c2ac00",
+"display_RGB_sha256": "7987fd5642f4bc96d74c5f077229050ec9735ed63177e61d9693a5198acc5491"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "shadow",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "bd7da9f54b1b8bf43139e6a7713d678a63f76394e97039b7e5e2a87804239174",
+"display_RGB_sha256": "4954bc141df252caba0b6bac4b63cce5ab9662076c787b38a518c1b17c9c4b40"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "shadow",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "0096351acb82f4628cb3b7a3c5fa0070a200f7cb086ed7d1a1e719f8e57ba86e"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "fade",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "cd076688cdccb940bdad28df76780b7c0a0f76eaef5309dd428304e1e4f76f81",
+"display_RGB_sha256": "cc9959953cd42270d286f909efe95d5ac38bbcf69328521ef53448e729414dcb"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "fade",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "4d0c361a9ad338d443a6832149ef10cd5a663283358a90edb462fb4bf6bd57cd",
+"display_RGB_sha256": "7a0fe8ebbc51f119b165e67973686954ebc122223d3c77e99273161743c72526"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "fade",
+"level": 8,
+"scene": "redblue",
+"entry_sha256": "11ab8ac3afeee72067d1256de9383880ad276cdefeb6571fb2711c1f39e114d4",
+"display_RGB_sha256": "afba99a16942591c490037e306ed9aa760c46234ea1b6ce891a544d9e9b9c79e"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "saturation",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "5c6a8cd582f3705ceda39e8c919200c8f73d2e7afe73f49d2859e883e2a38a08",
+"display_RGB_sha256": "5502a0fa4bb5cb9916548baa60b7a369ef7295b41bfa887e06319fcdd73e5778"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "saturation",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "b73b1d6d3a82ef0b506a1ff235fe55546ae8626f26f9834d1e762ff99a54f9ee",
+"display_RGB_sha256": "e241c64ac83e60f92fb61cb97ea176a1ac858ce219d64ebaa258a2fbcb7c7c61"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "warmth",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "dcc21d3a26e381ebab02968376957cf0d1c630d3732986f80b85e801f5574230",
+"display_RGB_sha256": "f803e648c3f4e590db092a56cdddbd3c21ef9276f90f60187f3084c85b14a7ed"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "warmth",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "ac54e0628bae2cd3c68d500c47e63e3cd9bb660dcb086a0c677a8403af9ba554"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "warmth",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "1bd4cd28591ba2843b7df2148a72bd67a698865720c3fd47d88ed9771aadec63",
+"display_RGB_sha256": "6d56837d162183567041dbc93234cb8ab5599697ede88f4778b3bad56b539ca9"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "tint",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "3f9c39b861e36535695ff8072311b66179262db1e35ff5ed085db10982b19769",
+"display_RGB_sha256": "aecb32167d19d8eaf5b65863fbda4927088688caa2a42186bfe33ce463e9edb8"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "tint",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "988303aa33b83a2b879c9a0e1bc1669ec3c626e4ffadcc0027b6186a913cd112",
+"display_RGB_sha256": "c5c5a31dba32a1afd6686ca5d5920b2b245ab4a48a87440f02e448cd28348e78"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "tint",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "2f4ad0fedaa3a593e959debbd76afb39c0291e841c8466abd7112c063bac7807",
+"display_RGB_sha256": "65c5203a23a0f87506079c0c04d8e936d97e5e7d203f0ec1febce4249d8ab663"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "split",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "6543b5cd2661bf22077cfade7c58574b0d4d70f81e789ed47bc6cadb174f71b7",
+"display_RGB_sha256": "bb00164356d760de17d1604ad804b47a3e44049e32168b53742f0654a6b6e6a0"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "split",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "5575155b46dc02ff4ae01b6a92dd100da2a8df30a4777ee9adcd0f2130c80606",
+"display_RGB_sha256": "91293f3960cb6e95248d5741e7f1d7290021c5b339dd9a9ca56854314336877a"
+},
+{
+"unit": "qlaunch",
+"slot": 7,
+"param": "split",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "c1935e3812205e80922627cfe94ce9d3fd82dfe8a58cfe03b463e3761468ea86",
+"display_RGB_sha256": "0096351acb82f4628cb3b7a3c5fa0070a200f7cb086ed7d1a1e719f8e57ba86e"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "amount",
+"level": 150,
+"scene": "desk",
+"entry_sha256": "becd576e11ddcdf83eddc77dfa1646e16690fd7ff7e29861a716a2980c5a453d",
+"display_RGB_sha256": "13e95d83dc3c51ffe769382ec7654b9b6a1d509a9aa87d2cc147ea90ad122246"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "amount",
+"level": 50,
+"scene": "apple",
+"entry_sha256": "8d3324e263c1af3fde2dd93fb2184e33f47cd26a27eea19937247576d6a5ae1a",
+"display_RGB_sha256": "b707d92b100e30eb839c0f56583978419f4ed14b2b05d21daa478481d57369cc"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "amount",
+"level": 125,
+"scene": "redblue",
+"entry_sha256": "2cab1e26af7a20c7d4f98f632e8965342fe6b651ad115559c02f8c939a17aaf2",
+"display_RGB_sha256": "14c5b03cdaab868d93a3bd4de73df5e7a22070b4e07b801c681ffa20e08f7ad3"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "contrast",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "406c85a78032053d266cd7a584fec9ec30791ae9a060e9b896ada347679aa1ff",
+"display_RGB_sha256": "3762466e185ca95b845e58fe51f2c26dd69ec83bad95aac35242c8c71c1e62a4"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "contrast",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "1855f89c5df985fde94bb53f9795e966038d739bb0e7ec7a0f842f652788ab42",
+"display_RGB_sha256": "6fb3c12e7cfdb36b2ca8baaa2325a9bb74c36380203e2626d73961fd6bdd8756"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "highlight",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "d63cf3d9547ff7a8090d8bd994b76502552d59e087ff36600daa6e8694a1912f",
+"display_RGB_sha256": "23173f3f9d49b92ec56aa45ae5b780617d4ea88ccd1cc98f33b67df16d18da4c"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "highlight",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "7d249d3efc9ccb201e2317e7f8fb25628e56401a678068fb8bdc010ca976ce3b"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "highlight",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "584411266edf6dad00a94a0ec05884fe55bce64ba324c9c1637ba2b762cf9efa",
+"display_RGB_sha256": "f084e2ac4ec3739a3e036bc57cb84d6272ae76ff428664f322b7a02f45d0dac8"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "shadow",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "72482a5bbd20596a49fd80436e7442c02ad8da80376d78a15c4b55a949068e80",
+"display_RGB_sha256": "ab6f674dbd1928444186c1f240b9d8940fcbaee06c72749c7a6e08c7e5a6487a"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "shadow",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "8536b1b2cbed9d90f149be68971754b7970447a668cf195600d96c46b059251d",
+"display_RGB_sha256": "489980e496248f3d7a3563b33bc2dbfca626199c2b09958aa43efc8a8282bac7"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "shadow",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "754d49928a66e20a1fc3c02fee5b30cfc69afc4aa00c04a8756c5159ea6c534d",
+"display_RGB_sha256": "79bd25576fe8854e1624f7c44d9c1db1b51296e558af130021703373b10381f0"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "fade",
+"level": 6,
+"scene": "desk",
+"entry_sha256": "f17e6b9b4e0124637aa3c5e89c5319c5298b3ab8f3d58ed665d25f68f16f499d",
+"display_RGB_sha256": "41f10bb7b559432ec3fe4230dac6f47d3ccbb1ba842cec0a7a4d560320ab8b4a"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "fade",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "c07a29b1ecbb6c2f9de581bb6ea87d40640c23ceb34c34c99fbcefd009dc8279"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "fade",
+"level": 4,
+"scene": "redblue",
+"entry_sha256": "7ce7dc2f3030b39e1314cc71cb5c26e0bb63a8c22a0193363689d7d2f8c1e995",
+"display_RGB_sha256": "7a88b4f899b11001eb5d91e6fcf76e4fe1fd28bcecdb6d60548db7d9d8899883"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "saturation",
+"level": 5,
+"scene": "desk",
+"entry_sha256": "a3c5db90915769b3dfb9cf0ee1a81133203231eb0fc308ff9cc624e4e0519723",
+"display_RGB_sha256": "d5e19d6bc5d36ab8b490e974636a3af2faf8cfbc4fea8cae94e550a5f0bb6ccc"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "saturation",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "96d7c7dbc493e3669de4be6b5542e003cade2c9f0386023cadfd63de76837067",
+"display_RGB_sha256": "9027fb2a3f38b67145c6ee3e5c29a9b3d2329666e475c970e31e08ec7a214d7e"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "saturation",
+"level": -3,
+"scene": "redblue",
+"entry_sha256": "824cce80a850e82851a9d1b207578639a19ec7e5b97ea189d52297eac01a8818",
+"display_RGB_sha256": "968cb9d578c086c84f151f45b122607ba3970bf9ebbe8b422c33dea0c8f980cd"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "warmth",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "aebfc55d54d91810a69eb223b5fdd994d88b54f9797bdddee93f285d68b22bc4",
+"display_RGB_sha256": "61348d005e278da9042dfb8d10ba6d5e499d8b1fdda46cfc403870375c405e3a"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "warmth",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "80d2aa795e356d3023551eb03b85ff58fe78e2bd137632f63fc08033dbaa7af0",
+"display_RGB_sha256": "3d95c9a81484179f4befaebe23b2802a0beb20deafddd3898673dff79415d7fd"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "warmth",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "cc4f6e17466ee48c23e4ec564465efdfc943616221e9e1b0eb0fc9fa900e92f9",
+"display_RGB_sha256": "9d7c4cac44f9cf1828e3bf897615043e4da2f90b7af22a07cb8ae4f60a8333dd"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "tint",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "c011fc1f288b34f98d8a72cdfadbc3322e24e2b5ecad250283b4eecaf9ab4813",
+"display_RGB_sha256": "03e94e68eef15c9adc89bbc8476ae888574e3dc9c2d6769e282fbcb8701c7391"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "tint",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "901dac3995b9e97b4302fe9fc7a09cc941760b461c19ca552839aa336f06265f",
+"display_RGB_sha256": "6275e7117d9a5fdb19081ee978248ea10d9909f75bddbcadbbf1bb512f63bbb9"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "tint",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "229e541c59b86a737120bf040b5c900880ed0461e0b04724fac83c7f1c9d76d2",
+"display_RGB_sha256": "b70ddce2c498a1f90d082af76aa5f23d9720f1216ce96491ecbb219da29c53fd"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "split",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "7ecdb56cd9012cddcafde3692a540a373dba73466fcecf3b0af924c31b0f56fe",
+"display_RGB_sha256": "1a8adfd3795354a2c8d430e39f966b9b2917cebe3f4bd5425eb5797b98633652"
+},
+{
+"unit": "qlaunch",
+"slot": 8,
+"param": "split",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "f680c69c04f5e86486093b1112e3f855f27d2e2b6dee6e9aa730b6dadbf61864",
+"display_RGB_sha256": "88f2fe4ecc033bca4a9c97488754a7ee88712b1cb32658853a8f9cbded9d2836"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "amount",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "7f9e5f8f371bb27e78840468021d7a3301c7bbeef1c6551cd9d04d3c6f427780",
+"display_RGB_sha256": "8db403bda69cf867a41ded887cd13bb3217a186f572fc4a38450fd2aa2e37b48"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "amount",
+"level": 80,
+"scene": "neutral",
+"entry_sha256": "abe1ce9732971e97ff24059394e61de975cca556c944a110b9ed364caca3fec5",
+"display_RGB_sha256": "3558c9a5704d6319470e304a30da547ca30c2587dc859a1eda8ab967b818d692"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "amount",
+"level": 150,
+"scene": "apple",
+"entry_sha256": "31424510fe5ea816eec538d4978040d361b3b51c29a347369b3220a65fa2744a",
+"display_RGB_sha256": "3baaabad022bc26eae0b0510328906c7bba5c9c6026e40b8a2ff687663f0d5b4"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "5a2a012dba77f7a5c559285f85ee58a97ca7640e00237662191115c91f3168cb",
+"display_RGB_sha256": "00b34bfe705df93d8cbbd35f5bed3a86f1c173cc11756ad147dc13a64ac00d29"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "7a2aa11c9556383424049c0863169ade435128b5002b25eab595333921589386",
+"display_RGB_sha256": "e15754c6dd22e2b28e9c57b89d224640bbd3df89ce5bb59a8f45e12e277cf5e8"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "7df877db8ab37e032cf4f0719e692559490107402a838c9a6f6c563e80dc7d40",
+"display_RGB_sha256": "452aa82f80f4061317df8c09b794b44cc38f1737e599156e4d6bedc977d9d2de"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "highlight",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "288602ff61212ccab958c6222444c80c88f381accec20ba91decf8b9202f2037",
+"display_RGB_sha256": "1764e4705f238a52a447e1d0122e8714bee19ef13fbef43c441cd0355a52141e"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "873a6e48314cfe5caa543d6fc50592cbc4b828ed3086aad6a86819078af062fc",
+"display_RGB_sha256": "b20b1b165a0de2d759bd67b69827cf6065839b30abfc7d38cb52f16bea8db716"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "highlight",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "0797072e6d15e0aa1fbdbcc14e9ad9454d4133647cd798ff6b1d4cc12cfc1105",
+"display_RGB_sha256": "b2f4c8cba6ee7cd7c47427984e22163f67f12ee99784d767ffbcdec2abd03e0d"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "shadow",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "d310b4c9b53ded56eceae294700c1b0a3ab05a12843697b0f79852a0ffe8527e",
+"display_RGB_sha256": "6a64403bd51e1a74692b414384e38f5c7a43b8e5f347b63aee50f4d129a3b190"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "shadow",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "d1e668f9f179816c1c79ae447eef68e56944ddb1984b68a6897670b1061ac71b",
+"display_RGB_sha256": "54e835a21c46c409b488756951873ca70b4bb00d4c701dce78e343532744cab2"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "shadow",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "d62e61719b969dafd91996515c513bcd061e351f494140f2ea981cc3e2a9b771",
+"display_RGB_sha256": "55e77cdae0db61986207b55719d7516cad200635fc7836d422f7562de107341c"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "fade",
+"level": 2,
+"scene": "neutral",
+"entry_sha256": "f607d17ad25a8969cdc86f86cb56a9e7452a3fcc1c501e084601615b3896b826",
+"display_RGB_sha256": "94008b44c4589172b45c4ec8a2c3f5d03e92a7c0c3112653427e2eae00a52714"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "fade",
+"level": 6,
+"scene": "apple",
+"entry_sha256": "4370f8d9a1920e6934be0c06e8f5582bbd2c85d1c333060031802361ca521a31",
+"display_RGB_sha256": "f1d11d5329483924cb5ff4fd4e8554d5dab3e7415e906cfc5ce18e0cf3ed11a3"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "saturation",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "5c8540ef73c22883b873a65b943a688ff8fa60c09bd3a6323c3c361467c68148",
+"display_RGB_sha256": "d8342eb96fbe2fba95df3965c3dd17378961194a8639a42e2eb37745883b9ead"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "saturation",
+"level": -3,
+"scene": "neutral",
+"entry_sha256": "b513a8ca39d086a3a34e878bbeb9b15dba489e996557eec7891877023b16b473",
+"display_RGB_sha256": "b1b4667b232db61b7258296989d2c6833d5bc4966e4d7db89f5be7e329969346"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "saturation",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "0797072e6d15e0aa1fbdbcc14e9ad9454d4133647cd798ff6b1d4cc12cfc1105",
+"display_RGB_sha256": "3f5a303c118348593385f977c5e2d6a212dfa2f31cbcf98cf8453d95ec0a49f2"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "saturation",
+"level": 5,
+"scene": "redblue",
+"entry_sha256": "4ae23844233b7409d3b1b31b348ec48766647085dac62b29411731aed4910262",
+"display_RGB_sha256": "e2a56b8efc05c030ed62900b8224e1c5d05349d90509448d70393de142a63797"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "warmth",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "edea5b402b4ee1152bb93b599a403986a3c47383ccdd694fad1e80b23625b0a1",
+"display_RGB_sha256": "e4db69d4616740dba20d0e1142a5a25eb6fdca56dd135327e4d20eaa7366b421"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "warmth",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "0b4d98cbd8f3a0b1037634c2a3b79344bc1ad53d28a6c3500326b391076628e8",
+"display_RGB_sha256": "0d6b68def48a3aa47459091272081f878a41d81a2645d79b10cd7258143f03b2"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "tint",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "f8d9b3aa329cbb123a9c2e1664fa515faf5cbea148fe8c53d53943bb285c5dbd",
+"display_RGB_sha256": "325da4eeccb9e37e98c3dd32fdc612971801addebc6eeb65906f51da86fac988"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "tint",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "0797072e6d15e0aa1fbdbcc14e9ad9454d4133647cd798ff6b1d4cc12cfc1105",
+"display_RGB_sha256": "1c5b6b351bb86c73434487c7915b8c52ef6d030e8bf026d570f794b293a04780"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "tint",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "ed826028330d99f19aab9fefd81050d2c0a3c6c05d8024eb4e345e50d3fa41ad",
+"display_RGB_sha256": "4f422d0bdfa6910a5be7157a7f6b528f0c04d53eb8fd9fb6c3fbd330a9336a36"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "split",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "165c89134c0ebd56cd509a9f3e35858ac2c2914456f7ec8b5621919b1be35cbd",
+"display_RGB_sha256": "9ba06bc455a4da66ca4d627250c85323a72d27736b7221261b78798f8d2e3270"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "split",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "3063922948ac3969ac424982bc1d678268df27ebc26a824b8ca7c6a6bb482dc9",
+"display_RGB_sha256": "c70062d37058ef4d2057771eae3516fa3e144b6ef1d3fdf89d14cd71dc43f8d6"
+},
+{
+"unit": "l08firm",
+"slot": 1,
+"param": "split",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "54cc77f8cf40865714da6340352cf13cc2626b662f423bdbf9620afd832c1bfd",
+"display_RGB_sha256": "a84a1c179dacedb39e02f4d0723862b910a497535a32d842b38d8cb856c63b86"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "amount",
+"level": 100,
+"scene": "desk",
+"entry_sha256": "9f04a7c54abba76c4e0927e6881c4523f66ea666018ae090d2d6728bf3f99ac6",
+"display_RGB_sha256": "e1751704790ecd3fbf7d8c2764dd79c9db751047b2ba01e7e923c2cbbee13f68"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "amount",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "7f9e5f8f371bb27e78840468021d7a3301c7bbeef1c6551cd9d04d3c6f427780",
+"display_RGB_sha256": "6303b13a8a8a57fdd30dcdf893733fe03c7d286fd1d0b1d57d10d18a349a34b7"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "amount",
+"level": 75,
+"scene": "redblue",
+"entry_sha256": "8fa8f7acdc167b8642e8c3fb87d20538666c24d30c7c05cbfe75527161ce4394",
+"display_RGB_sha256": "907b6b47ff1d8cdb7b300622775a4c168cea9e4a7f8ecff60acb7a787c264451"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "contrast",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "28a7657c62235bbce4d0e375b2e8a69bcf3bcdd1bb80a6cb2fad1c20d83ff627",
+"display_RGB_sha256": "4a7d48d6a9a48777b208369d86d3d4ac2cc40c788b364d9aec0cab92d15bdffb"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "contrast",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "72466c9f0a925cb6a2ee72c6360302ce75d296ab1f83f49a52db2a97c5d60a88",
+"display_RGB_sha256": "2fc06f3da650fdb999d8c4eabd90eb596de86a75d1374eceb53645089ea03928"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "contrast",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "5ad6bad9590271af99321ffab954fae397b0d89ec36fd565adf394ea641f8bdb",
+"display_RGB_sha256": "29c7382e9ad4b9217bcc7f4d5607d848f874fad0e52a95a659c5dc47d864f96b"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "highlight",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "7c72f198970bc6ad7206fb330e1f3f49657881ff8c2f1356989d21ec247d61a8",
+"display_RGB_sha256": "a6db2bd30b0ec5c6b5f9c8ba6a845737f74a0c327a49f3f52a8e0233970463e3"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "highlight",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "ca5fcc51ce74d96c8d5782cbcc414087cfcd2ff58fdacf7af523e9aaf218f9f7",
+"display_RGB_sha256": "f4441287844e605c9ba242c0fc85ce764e02b97bca4eaed8db82e4ae6fafa069"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "shadow",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "3fd23fba0c7e3fbb53fef68ae08abd4bae955625c48ce38c308328b6938c878f",
+"display_RGB_sha256": "f217532f8d5795b26e299c32370f8e967f75826ee73392f3648bc44e1540afed"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "shadow",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "9f04a7c54abba76c4e0927e6881c4523f66ea666018ae090d2d6728bf3f99ac6",
+"display_RGB_sha256": "08df2865bc2fd46a9434f3f1f04f0d6ecc10cbd8bf2315c5ef4852adb969215d"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "shadow",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "11db5636fdda287d70b686fce8734fedc57e8316986e09e8512c363481bb00a8",
+"display_RGB_sha256": "119dfb6e748de43866ddef32c7240ed090a63ba78914b2c641cce96cd4d99c9e"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "fade",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "6936eebf099f14652072c811593f65a22bdbd763c1f81af675a0f75741ae6905",
+"display_RGB_sha256": "caf4a110e3035eb28d381908c1220f09fd1b5422d9ff0388e5867b6b9bbed450"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "fade",
+"level": 8,
+"scene": "neutral",
+"entry_sha256": "05ed3a758e7fd0723ee594a3eedab39fd5f51a8b950cc153a61c951a8c95c7ac",
+"display_RGB_sha256": "041b4232f3b57edaa57edab88abe5e39a60ae72d24514b5e960a3e33a66135e4"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "fade",
+"level": 2,
+"scene": "redblue",
+"entry_sha256": "8d72d4cc284e865c1c088ec8a125f23318ab9182f42b9b56f0b23acdafe7fca7",
+"display_RGB_sha256": "af992d6f7018a8c69c6a2b9ad14f8d7f7de3229db5e271808c15db0a81e346c5"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "saturation",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "d2b811e5be966365a3373215cf3633aa1d922a82d082e264dfa6e1817654e5cf",
+"display_RGB_sha256": "203529b8042c5cc990fb6a165660bed32962f40dd0eb86915d536a70c26c52f8"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "saturation",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "0be18ad14612ecb568a30afd15e424d8795850a3ed60a3f8b244dfa598cad432",
+"display_RGB_sha256": "7cc7159327a9f41603e7110a3934d4c6c8fccf9ed3fa582e2765389054ae786d"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "saturation",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "9f04a7c54abba76c4e0927e6881c4523f66ea666018ae090d2d6728bf3f99ac6",
+"display_RGB_sha256": "03af1104c2f504b7057a63b82c3d7fed41d1212688507903cf002813d957ca1c"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "warmth",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "41179f816f4211a8c4b60ad6ab34b39888c9af118e4b8c49d15c5d50c9ea8f15",
+"display_RGB_sha256": "8fc5124d88e6f26a4181922c88d8e7cdb77dddd6b1a05f30167ab26b5a5cbfde"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "warmth",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "baeba03ced900fc3b47909c92f887902bb80b04d3640739b959452206b5f2da7",
+"display_RGB_sha256": "038ca8aeb6cbd3a80da34db88fd5e92c95e7483f12f8f067b21dcf1d826108cf"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "warmth",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "d4b65139def8a725e4a1602ba8e18162a515d17a2d4f3a426e3cfa20b804658e",
+"display_RGB_sha256": "925d6fd606cce39fa8bd42d8456a03ec710031c968a28a714cef0630a96801ea"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "tint",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "06018bd2792d6531de1313bd61ce264a83cac256f7d689c7b155de43b3d13f60",
+"display_RGB_sha256": "5d1b2a585d5d0e98c2079eace8fe90f0a603caeb8c8f670e7d66c07ab52a8804"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "tint",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "429940f9802ae47be2f8d771805a86d087e9f77e41603960264d0076a89634e9",
+"display_RGB_sha256": "6ca2241f59dbb37ad9c1e4776ea5e950b55d8d5e98450de898bb15ce3083556d"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "split",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "dc99a70cf847d136ed7ee58d94ef9b9bb688aa8832446aa8ad4de9b8419f121b",
+"display_RGB_sha256": "89131798c4ac3a6c3153dbb551a27057cf0eba3ef5c2bf60a16543e83f199a3c"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "split",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "9f04a7c54abba76c4e0927e6881c4523f66ea666018ae090d2d6728bf3f99ac6",
+"display_RGB_sha256": "08df2865bc2fd46a9434f3f1f04f0d6ecc10cbd8bf2315c5ef4852adb969215d"
+},
+{
+"unit": "l08firm",
+"slot": 2,
+"param": "split",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "84ef048f5e0b8e2d9ee40a2470cff5b65e41e52277b337f6b7ebc6d9bdbe2861",
+"display_RGB_sha256": "f8fb6b0448387d5d155a7a20aa2e01e8489d7ed207139c2b99a06f0555e47a0e"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "c6e25d715ea7377bafa8401b0137800c9210f8e899fd0b3cc7a0ef20c510aeb4",
+"display_RGB_sha256": "1bf583c0a947eb0988bf2636c92cf05d42c8ae9cdf04836e3bbcde3936fb6978"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "9db2360435e7aec779fc3f539357454ca15fa6cf6f2530c5e38247719b839559",
+"display_RGB_sha256": "175c2b0ed2402253b6577bad5e5cdfa5c37fc046991b96cadf789fdcf113f094"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "e0a34be710e4b029ef871fda66e07b22819401e3e48de13e12ed9e15497638a6",
+"display_RGB_sha256": "645ca7ee4f0456998908c91aa81aa2164225e8d657e2576818534ada2f5781e3"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "highlight",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "81eef54da362f5967b2a91cc7c305975fbfeaa69a4877dc630a944346d32a1bd",
+"display_RGB_sha256": "0658d210c8d74b5f32a3c5b6e0e044b7dda3ea07deef0ae8af7cbee6233f1010"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "f12f72cd1eaceafe8900836cb8d0609ab9ebab70d4c3e252b3509af584b0380d",
+"display_RGB_sha256": "13a12c0c1cc41a71e5f060d76d980b4949ea152edfc263ad3f151d451ca6a81f"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "highlight",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "4cdc2331df0d776161116d15571a55c6885de376c416437db5dd524b3ab12818",
+"display_RGB_sha256": "bbf48946a4bba18d395671f6e85e507ab55ed031b141758c95f24f69fbc46363"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "shadow",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "6bbf1d03047ff4bf8e53db1ef9760c57065510c4c3dd282e0f801d804646c265",
+"display_RGB_sha256": "0314a9ab2671222aec5e3b985ce87a5f1869c2fdb467f5c35a3fd1ea5930e1f0"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "shadow",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "a00a4bfe12c87e49fa801abb53ca26d6a5a17baea6f841bda917dd42e1c3ad23",
+"display_RGB_sha256": "e7e4b0a74b24d8b9701678a04b3a841f5c3a18c2b30fa48bdaa72126927e78e2"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "shadow",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "e4905da7ed01bbbec9e9fcd3be221a38faddbf61f677efed2eef901a44c986aa",
+"display_RGB_sha256": "0a61c86502ee76ee745e40c3a3f0329460190b12472120f7a64b59d85334d584"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "fade",
+"level": 2,
+"scene": "neutral",
+"entry_sha256": "90b2ba527dd083a6f92d44c7680a5502ea2850984471858065ea9923adf97b3c",
+"display_RGB_sha256": "ec73a5e037c5c3fcd61cf39a8f6b59f31cc12fd160addbc514c76abaf0e49c74"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "fade",
+"level": 6,
+"scene": "apple",
+"entry_sha256": "138b7d8f33fb101ce74dfe535231cb01a14210ba8dd00ca7ecf92fb388f033c9",
+"display_RGB_sha256": "a9896fa136845890fc9c6f95a11525d0f962c50b1bf55bbd819f0084d25fcf59"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "filter",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "6c58022ececce53aeaebc68bf8e13a2c1c093baaf3973698bc2164ffa50ef01d",
+"display_RGB_sha256": "1b019d76876a3f0f2b2818322e2cd1784130702d87eb78eafaf8e554852be638"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "filter",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "4cdc2331df0d776161116d15571a55c6885de376c416437db5dd524b3ab12818",
+"display_RGB_sha256": "1a83650ad7a0f1ad950820bcbbf5264807bd5f16f5e649b5508754aaef66d394"
+},
+{
+"unit": "l08firm",
+"slot": 3,
+"param": "filter",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "bfae3e84f9c83a1aa2a932570554c6afe179d963856d6d04bde410c4f20cff85",
+"display_RGB_sha256": "f1dba927a3ae296ab6c234989157e314b7dd77934d36cd50bc9457197c29184c"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "3772ef01dffa089dcf62d58c89ac437b6cddad83b578d30429a703a6af65db71",
+"display_RGB_sha256": "c7987b365b3894d82c7c143f1a55538747c28b91224100952567fb320c3d7b5e"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "7afe81071efb83f00b99464f6d0a9d8b605ecbba91a4fce90a41e743045d96c9",
+"display_RGB_sha256": "9cff2749871b2b8721c5a345204c858e717aa76c52605d551be93cd367e8e98e"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "832345131449e9aea966ae4ea395600d6f1d65f036531c80714d1dc286426efa",
+"display_RGB_sha256": "905963004edd3248944134dc8aee950fd134528200002df65e2237dd4152a162"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "highlight",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "e7c088d80530c4da66fd6b51cabcc79a4da6457dd31d162d43d0ad555208b102",
+"display_RGB_sha256": "ce5a61de25f85dcf644d8967a20203544ee75b98dae1da7bb774f4deed4c80e2"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "853c935992c938be4f783bc3c6feb42f337ca87d0505e98920f24d9a5d21f5fe",
+"display_RGB_sha256": "76dcb1829e5e0330caaeb9d1e294f7fc66c08a90f080beaf17ff4e6e1b4da883"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "highlight",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "7f9e5f8f371bb27e78840468021d7a3301c7bbeef1c6551cd9d04d3c6f427780",
+"display_RGB_sha256": "38db110257413c8cda5e868907cefc9ab1f259ae31b583c81aa866ea9d98fdd0"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "shadow",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "895cad62841b234e1260ff2a96f36d2984d83eb715117e0e890c39a7f7df7b1a",
+"display_RGB_sha256": "dbbefb86de0162e285cb884dae96296831ae563b0366edcacb3f54cfe6fd29ad"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "shadow",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "cc771b803e68c009bbe99590c07d5c0a1ae00c1412eb614e51fb059517825421",
+"display_RGB_sha256": "a292681cd2ff823a43b3e07f8a27cc2d914a96ec894310579b8b08af204b5221"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "shadow",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "17d77f5b720a00fb0330967a377911bd51e4aa78e949dcd16e029b966ede7db5",
+"display_RGB_sha256": "af22e2dc3420306b38ae60eced091a2d9210bb0e17c27e88135a6d8dd781b0d7"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "fade",
+"level": 2,
+"scene": "neutral",
+"entry_sha256": "a3cae4586276479d882c92de1b35e3449a7a38602a662349be8b1cf3ab3f6758",
+"display_RGB_sha256": "9a7f04eb5995e62999c103d4b9fb3f1774bd9f6261b7db4762bc0b3df9758fad"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "fade",
+"level": 6,
+"scene": "apple",
+"entry_sha256": "5b6a7881759b73bbf08c16e94ffc21d0fbd02c9ce89cdb08db249fe5f18658a8",
+"display_RGB_sha256": "c89535f280386473c0e8ed5e83b58ca5dc91a9d30f4fbee9e66b175bff5f2856"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "saturation",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "44a2976e195c9f098b158599cbede82a517c07f9854203967732c632940c5814",
+"display_RGB_sha256": "dc146bb0319887f3d8e0b544e33be5b44cf04ae5d7d89fda87d92771345b5213"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "saturation",
+"level": -4,
+"scene": "neutral",
+"entry_sha256": "0781efb1bf00f0e04f2b9b6a85b0a65ab3f31f952654c8261e8695fa48dc4999",
+"display_RGB_sha256": "01ff6413a57ab820f908226a67d6a9acc3312a1f7143ed4473c44c1cf1fad88a"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "saturation",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "7f9e5f8f371bb27e78840468021d7a3301c7bbeef1c6551cd9d04d3c6f427780",
+"display_RGB_sha256": "6303b13a8a8a57fdd30dcdf893733fe03c7d286fd1d0b1d57d10d18a349a34b7"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "saturation",
+"level": 3,
+"scene": "redblue",
+"entry_sha256": "a5bd94cd4beb46d27bbe7dd2795371f99db174cd1ddddff601f190452769d6f0",
+"display_RGB_sha256": "ab9206e162e85ca7bc936f7929266285b76ef2f8b4eb2de0b9b96105e8c04bd8"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "warmth",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "488fcf8c578545e7aaef9b9f38c37b2bef0466214c2f35d11e7bb0060f0fd707",
+"display_RGB_sha256": "1bcb3a71274f0ad34fed18056c82fe3aee84f26560d06eba2accfb2951a92502"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "warmth",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "96ed6fc28900352acc96569298bb49379da660214490aedc4ba6e67d2cf87bac",
+"display_RGB_sha256": "50971b672179fb2494a24e60e7dead91897dcb82c624a2d962ac6e46c5df607d"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "tint",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "3dfb3beff5bd3426b734ea052d58d681b5017508dd536fbf7958f49087b9195e",
+"display_RGB_sha256": "e4dbdaf3618b33081389ca2e11f7033f2f024ce8b355623a62a626916263df8d"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "tint",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "7f9e5f8f371bb27e78840468021d7a3301c7bbeef1c6551cd9d04d3c6f427780",
+"display_RGB_sha256": "0ffa6830a09ab804e6f411e1bd3e0773dc5ce1dd28f40289b91ef9e422e4c457"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "tint",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "ce6ff4b9d3b3add7870be0d76a4ff2d3b70498a79e044662719074a1e463dc40",
+"display_RGB_sha256": "4472e4c08db165985c4c4a7f39926d1b6378f77ffcfb86b7ada327389cd2573f"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "split",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "3067fcda31f649eb4648f82621460b9d6f1507ea257b247314b5cb6eef21fb61",
+"display_RGB_sha256": "0fb5197f8b70c4e2fba7fb2d451533007d33b72a7b56212cd467aadfb26ae463"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "split",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "8fcd29a7b8152b9532d1d177ffa34250b3e7dd80c577db3451c5eca07fc1f61e",
+"display_RGB_sha256": "29e45996426d0ba6e415103509344a3bfa9b1323230d012276fbc72127694d77"
+},
+{
+"unit": "l08firm",
+"slot": 4,
+"param": "split",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "c2e5562879387a580e71c38419fd768c7b095365aae29050fbd568a1d0d88b39",
+"display_RGB_sha256": "e2f0d82956a6e05fb8b83e4dfa7e652d1d25c68dff92ed32174cbbd0dc920e90"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "amount",
+"level": 100,
+"scene": "desk",
+"entry_sha256": "b2c2a6fa9427ab2e89d76ef8795eebb217482d78403d05df5fb549d67ac7a217",
+"display_RGB_sha256": "e8930f0b2757f2bca56c7b4fed889d92160e06e020d6a8b213f91edc527a545a"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "amount",
+"level": 0,
+"scene": "apple",
+"entry_sha256": "7f9e5f8f371bb27e78840468021d7a3301c7bbeef1c6551cd9d04d3c6f427780",
+"display_RGB_sha256": "6303b13a8a8a57fdd30dcdf893733fe03c7d286fd1d0b1d57d10d18a349a34b7"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "amount",
+"level": 80,
+"scene": "redblue",
+"entry_sha256": "37a675a8d7b67d0afbd36e7f849476b3dcabcb91ee8bc6a164ef5d7492a5b85d",
+"display_RGB_sha256": "f32009ea11c5db7e6f20a99704e47fcd1783e5c24c50a6c44d6cc7381b0538f0"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "contrast",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "c3cfd646f540a3ac5d131976719a31ea755ceda2bd0d6db68ffdc9aefaf79053",
+"display_RGB_sha256": "31d27e22fe8770628aa90d7e1565ea565ace1d580c959f3897b47bd7831feda1"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "contrast",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "a75b1a7cc07f65ee8a9d0cfdc6f24971c34e208992de3ab1612a6f1c1cc4e9db",
+"display_RGB_sha256": "192f61c6f5620216e2dd57b54960ce1d571b1c623d53958e0f5ae5a8921d3247"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "contrast",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "59945209806baa342ca2fd0c591d0e3bc01f2feda85ee8435d533c3a67a637ca",
+"display_RGB_sha256": "4be3b00cf9d495247cd728c01188950428ed97bf436e8960c1ead71ff9d8f182"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "highlight",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "b4aa830a289092c4fd2cacf03d46bcec56338bb3633497fb6bc92c7e55586559",
+"display_RGB_sha256": "275da9c20345a518775bd3afff7bfab27e77272ddba944974c47e1c0d0c738c3"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "highlight",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "2c7767acd82ed0367f783ac9a3444dd680bcd66cdea350e5fdf50a4cc857ef56",
+"display_RGB_sha256": "8c5311c2bd5290086e26965ab48c67a57c0ffd27792ccab8244ef8a9cc0ed89d"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "shadow",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "34f3954a7355c870548eecf8af51f53401a77ab17fd82d4a63cdd45c17baed25",
+"display_RGB_sha256": "b39ec1d32608e45af6b362f04af01d2511f47041be33f91f80e208ad1dd1e6e8"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "shadow",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "b2c2a6fa9427ab2e89d76ef8795eebb217482d78403d05df5fb549d67ac7a217",
+"display_RGB_sha256": "66a1ff0bcbf0f554f10324aea5880bf3a32e3c1dccb1c6cc3f165b45d568ecd2"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "shadow",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "a0a163296cb5e4f1c7df90f12192481603f0fbb1c23f87d6dacb9be68eeef820",
+"display_RGB_sha256": "19f1ca40c3fba86977f88acdd2504430ab0ea669b60dc6c59f314d96d14da15c"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "fade",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "b145d55410d201710216d3954651b8f434de32b15c7e4e9d5d6fedeaf3c32b67",
+"display_RGB_sha256": "1b056c8f934a44d2fcbaacfca89f783f2e295487694a5693c3a02cbae741aa4d"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "fade",
+"level": 8,
+"scene": "neutral",
+"entry_sha256": "99939efebd9b5fa9bf3fc87cac79c535297d3dafa5613212ad1ca977bc5b0377",
+"display_RGB_sha256": "d0a4098fca3791720de912ae549d5ad3d0e1de11e22ddad7fb7eeb10a5417cbc"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "fade",
+"level": 2,
+"scene": "redblue",
+"entry_sha256": "9a1e3f2383e2cacdd2cd0d5aab3d07f8c403ee9d6d10a63351b05d36cecb4b17",
+"display_RGB_sha256": "7360260ae86e77d30fef85b8932097ebf26c80d7869d83bc58361204983c9098"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "saturation",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "f43f585ea2c5f2b3e61c3ddd29b7fa2b073939ad648303d13363650a20fac3cd",
+"display_RGB_sha256": "c783292261d6e19fd138f49045f35d75434776069b33091142bec602b22e370e"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "saturation",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "bf54c54ad75aaea6b648331acfa1e538dcca044a45f2b87fcffdea6046b594d0",
+"display_RGB_sha256": "edd12248ecb30526ada4c7d0918c7fe14d20f8e60f72a654aab8ab83ba80333c"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "saturation",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "b2c2a6fa9427ab2e89d76ef8795eebb217482d78403d05df5fb549d67ac7a217",
+"display_RGB_sha256": "f2e0ab8c6b27edb07526ea90da88cd9752442c3c71692bdf2a65800f78b99926"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "warmth",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "0c3584107c1df0153b0443bf4e38c04ce9276370259669f7073c0345f7586075",
+"display_RGB_sha256": "51e1213b3379390afdb59b945b6d78262cb7d638f4546b444dcae8d211fc266c"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "warmth",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "b31b555769d4fe4ec20b95cf3be83b5e8af9a0f342e9e9aa007eef32f3ad1c13",
+"display_RGB_sha256": "087685eaa60772fa6c35cc2c80accf2f28832bd33033ddf5eaa81294d9ff8bb1"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "warmth",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "b7231b43b43469dd1daac852d6d0d996453f140dd487205e280becfd04499109",
+"display_RGB_sha256": "89c373ad001653112c9fe68ea00e155653d74c57b5736d5206585da70fa31532"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "tint",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "b606e48352a30829356639290e675b0e547c103dbed1894e9d7fdbec07ce4d52",
+"display_RGB_sha256": "2269dc013fa8d71135cd07deca1d405127d00dc13246cc5fb9e9b262f746126f"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "tint",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "0e675e9e1ca741147233d1606ebbe65d467f11cf899ebc6574f4a96665f6c527",
+"display_RGB_sha256": "63589b0964a93bd7320c1f665020369450385456232bda202256cc5d81749178"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "split",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "852ea6656993603ca95668592d10e015938e1fc8d478d23975663f3d53bffc65",
+"display_RGB_sha256": "7b07fbaf506416677c84a89e843991abbe165a8909fd3eab1f9c00c6fa4f0424"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "split",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "b2c2a6fa9427ab2e89d76ef8795eebb217482d78403d05df5fb549d67ac7a217",
+"display_RGB_sha256": "66a1ff0bcbf0f554f10324aea5880bf3a32e3c1dccb1c6cc3f165b45d568ecd2"
+},
+{
+"unit": "l08firm",
+"slot": 5,
+"param": "split",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "c22cb6864a30dc13c0b8998c86fe111c11834546fffd163aa0a708ecd14012ca",
+"display_RGB_sha256": "2a9eca5df176534d7625ef15f5615bb80ec475d0fda94976b9ac7b5a40522887"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "amount",
+"level": 50,
+"scene": "desk",
+"entry_sha256": "3da3eff65c7250efdc00ffb66a09424c47e1975c7e296e5079cb923b018f1e10",
+"display_RGB_sha256": "3a1ced554f509855bb76f61d7e4af7493154ef33fb9d35870ab50fcd5d92264a"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "amount",
+"level": 120,
+"scene": "neutral",
+"entry_sha256": "3de8716a615b17eb070303d870f2cd8ca31020bf422a8453092967d28067bf4a",
+"display_RGB_sha256": "d5f26f61b0c1b664762567e44e31ba0a4e872a2245082ba78454deb1c180c3ad"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "amount",
+"level": 20,
+"scene": "redblue",
+"entry_sha256": "efd370cf3affd8c65959091a7f832f0bc500a193625bb826168ea5f46fe6bd99",
+"display_RGB_sha256": "fa24f7c38870158606cc998a4f522839784b50275453a0d45bd4097c8eaf904b"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "contrast",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "a55a587eac7a11bbcf4d2d9d7f446effa47cf8a44d2bb696d4bd1a1f4253a102",
+"display_RGB_sha256": "49a077d2805d6c56f4936e1422e037ae64080c6b5342e5dccac7220a1f42c173"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "contrast",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "09fe2aebc7dd50379348fad78e6b343d09d3cd098c7faa3586ef5f4a942dac2b",
+"display_RGB_sha256": "196ea14bc9f117e46c5ecf8bc97bdd3443d7ff6bc26d2336e140e9e702d4117f"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "contrast",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "c6080d50b7b74552162d20859f48da8dd18ac62f7e9d3d09ed539c7bf50962a1",
+"display_RGB_sha256": "592a862662a49821bbf846072f39e7bfbc49da616ed0df0632d1e4ad8910a119"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "highlight",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "6bfdb25d03dfc024687fa8d46e6bf3b92917c18c34a6d8d6fea618a7fe22d4b6",
+"display_RGB_sha256": "8d4b7b6927dac00ef1065e37f25baf075c685f2ca89c2928acbc435fdac506b4"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "highlight",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "7297cc644e62c5a6b87ca290674371d7faad9605c935906cfe8646739ac98de5",
+"display_RGB_sha256": "20a3f0bc85d486e6bf6f4c1f795823b79ab150d66eef4db6930046c35973a100"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "highlight",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "af117646f0b22eaf1d624e91ada49febbd913a85b68c1388cb4a6b3108468429",
+"display_RGB_sha256": "a2a268d00fef4d8a14cc3a791da49462b24a865e0abc2931095d7cfacd2843a0"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "shadow",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "b7def5eb78a3a9d1a223c5800db1e15c998448acb83155f3674ac0436774a9dc",
+"display_RGB_sha256": "94626593fbe8ba770f84e448aa3d753a85bf613d9275611deeaa5725e16d6f38"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "shadow",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "01ca6a670c7a807af2c9cff32c775813d975996b749c00ab7da317937ec703b9",
+"display_RGB_sha256": "99015e2f9456a55fbd0cf6fc4643d68ef6f408ac98b52663da3e740d9e376586"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "fade",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "c6080d50b7b74552162d20859f48da8dd18ac62f7e9d3d09ed539c7bf50962a1",
+"display_RGB_sha256": "60e32f1bf1d63a9c4d28a4784b152d02f7feeddb08e166f23f911ba237bb99a9"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "fade",
+"level": 4,
+"scene": "neutral",
+"entry_sha256": "81360da31ec6065a5023f01403aac19640765296058620f4e199e28398afb6f6",
+"display_RGB_sha256": "529c510d6730c0a06b1a288bc87835a0326fee57aa40b3355a4759fa3a375df2"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "fade",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "63d2a4870a97ad07f8c6899203b9816da6638e9d9095b8a28664a5f9e8730cfc",
+"display_RGB_sha256": "b4439d06e7b68aba9cb0e43dcc5496d8b4c438c28fcf957f73efedd2f8fa60c1"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "saturation",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "5cf18cfc1806e9fbdaaf4c6c97793603ca18b937357c71ef6d5ed23bc2aef22f",
+"display_RGB_sha256": "c69ea25cd1546fd778e8a12503741c6575368b4015e32ee8c1b706de9c97d324"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "saturation",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "56d4678c70c801f0f252b25311d9242b23282eb575e6f26063ad890fbe300b15",
+"display_RGB_sha256": "8591eaa4dbaa1100dc7b7f173f9f0d37f1cf270c1a81d2475604573faea2407b"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "saturation",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "49035a42e67bc74249600de961b495e056b50da7e85e8dbad24c6093bcae292e",
+"display_RGB_sha256": "4b36a8a4fddf5c0134bab63a3de7ddb2db3e81856d33c294a69bb43ca5eb1a73"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "warmth",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "4a00d986e49d1bca7dbd242d22468765a4ad2562db07596a0b348e9e24726713",
+"display_RGB_sha256": "95b3ac214acaa0ce02e3059231fed4c47174e122adc346ba6211f75423374bac"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "warmth",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "37d42e221632ba3b05496a8db0009aef6750485c13f09006cb9e3b430b749fc6",
+"display_RGB_sha256": "41475bc503c9e379f86f065690ba8dd4e657c68dd386a3672563557d643da5f4"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "warmth",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "c6080d50b7b74552162d20859f48da8dd18ac62f7e9d3d09ed539c7bf50962a1",
+"display_RGB_sha256": "592a862662a49821bbf846072f39e7bfbc49da616ed0df0632d1e4ad8910a119"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "tint",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "5970410faac445b947df2bdd27b05355f9471dae2d167e34ae12c7ca9ad1b755",
+"display_RGB_sha256": "bbbfec81382eb24937867f556fa4a989ac7b74b70414a15b9017d833c80a8251"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "tint",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "0b0bdf5f9f73ebf24b52dd647e286ebb7db21e21aba9b138f7027f835e708f74",
+"display_RGB_sha256": "a35402d05cb629c648cbb26f258223c1889e07f46e73eaa00556b259a487d0d5"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "tint",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "c72e4d5c88df8f1d8ac39dd795d681687be559900fea07e6898c82fbe5d0a591",
+"display_RGB_sha256": "65285148ee13dcea58e4d69c69cc5ec399b95ce8212385dfbae418e4bb244c7a"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "split",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "44bae833c61440a73855f04b89acd5aae089e7460120c78a928b711c8a2234b3",
+"display_RGB_sha256": "98cb35dcfde602bfb78e04055da333f99d506fb3732f52edab75efeebaeb11f7"
+},
+{
+"unit": "l08firm",
+"slot": 6,
+"param": "split",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "151e254b4b6036d6546db85ac37a8aec9bc9beef93e57ac876d63ff0544fb28e",
+"display_RGB_sha256": "1f73b2874ab7c91f36cb691cf3784a4a02bd1d321fa979e089242ed851350875"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "amount",
+"level": 0,
+"scene": "desk",
+"entry_sha256": "7f9e5f8f371bb27e78840468021d7a3301c7bbeef1c6551cd9d04d3c6f427780",
+"display_RGB_sha256": "8db403bda69cf867a41ded887cd13bb3217a186f572fc4a38450fd2aa2e37b48"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "amount",
+"level": 80,
+"scene": "neutral",
+"entry_sha256": "bd82e71848a8fb46d88d2d04533146710ca7adb3551815e68de4ea9a7a1c573d",
+"display_RGB_sha256": "2f00aeadb94d06d81e844cddccf42f9b82faeb948a9e6e5b729636d7cd1853c9"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "amount",
+"level": 150,
+"scene": "apple",
+"entry_sha256": "18842e178dc909f7cf8553addff49632d05ca83063e84f8278c62ef0855e7467",
+"display_RGB_sha256": "5df8f4c0476281afd3427bc94fba11fa4ea43a8cfbbe7b1bfb9755d546833524"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "contrast",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "5f3f986fef0fe8cbb1275c337515ae22149fdd66081bc560713c1f082f33ac6e",
+"display_RGB_sha256": "0b2a5871b45314dbee0242e4529599931ba875ce5cdc0d66e1656522e00d6fd9"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "contrast",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "d3ff9bd314c4088f4574f7d0fae9860bc279440ae3db3b0501f4b7f629c71e9c",
+"display_RGB_sha256": "3a8b48c3e8e05371f336e2ae1c1febd5034917bbfd9bd380de8e6ff06a91c34e"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "contrast",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "b03c2a5df43026d9af02dabb0196b09c285b4093e760e13358f4adec023ef3c7",
+"display_RGB_sha256": "07a91dd6bc8ddfb3e1c430c6c0c0949874700e70089ab1822ee35dea318c5ae4"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "highlight",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "1c591cafc454f87bb5bf36e9d9caf815176fbc5097d5de5a4b091cdf7cdc45a2",
+"display_RGB_sha256": "da37da3b7ae1c4991a02dc3322aa61f0eb0b340eee0de5c7a1b4426a344f170e"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "highlight",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "eaf96e7e2dcca2fa6b6054090c27089c42f2f011e4b46de34c5433aa129ab3c4",
+"display_RGB_sha256": "625f3b2e9b8bb44bf19fc17d0a43a38da7742714b403a40b6b28fb0c3d30a686"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "highlight",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "48359e3d9931bea47dcfbaeb1713452b1c86f448d62113552290a790afce705a",
+"display_RGB_sha256": "325d71677ce535411992287e0772677a7a213e14589477b541166eef5414a528"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "shadow",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "c0afac886b2cf5e9adbdc3131a9750b52654d72d8f68facda82b08f7320aa1cf",
+"display_RGB_sha256": "6457cdc89d8a3d60a0009e29fcc6db5c0710d87131e0a279ad46917f7358d3d2"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "shadow",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "e822da31f4e7deb47ed1a25f95a9879ed01e822e32daf42778f00f09f4b0f625",
+"display_RGB_sha256": "ed6a60ecb915b85e0fc1470a09000769f90c8e41f1e4db2ae39cd7df78b5014a"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "shadow",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "99fa512df5d99ca1aeac3bddee88b95f10019c6b4de0e9c7d5f0739d6fc46e39",
+"display_RGB_sha256": "8b88b45c3abae6ac92add50a66d6ffd6d9ec18fbb7c841d452c2db1d140e0b56"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "fade",
+"level": 2,
+"scene": "neutral",
+"entry_sha256": "5f84d246a148196ce8b16dc974b85d68b693d5f5606402df431c77492450f127",
+"display_RGB_sha256": "31184588c58687a3873e9f1cfacc899ec12dc2475ae909eda769fbbdcb6c3180"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "fade",
+"level": 6,
+"scene": "apple",
+"entry_sha256": "84f12c2ed6ea3cefa1dc8d7238cf76b8a8e1cae90698e5318e7c618606031bb8",
+"display_RGB_sha256": "647f86fdbdf86cce2964fbb31eefb1724b1aae9ff11cdaac25430627c2afb364"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "saturation",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "11857a2b59abb80c4db107b1348c67f8e00218be9bf1beb1adebbe84b04e1856",
+"display_RGB_sha256": "eb70ec8ec3453bfd31c2a2563932eda32725582377824625d2718e48d70fe153"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "saturation",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "48359e3d9931bea47dcfbaeb1713452b1c86f448d62113552290a790afce705a",
+"display_RGB_sha256": "68a535d6f57347dec1535b5d93acb712ec1460ba474f8216a52d27902338516c"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "saturation",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "016dc706d84cff2c8d31dd2d5d4e4a3cb552f4180ec53a747f28a2830af254a9",
+"display_RGB_sha256": "b27424d1b8882f3020ce87032c498a3eb621388efceeac1b7a2c790d540c76d1"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "warmth",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "fa04b357816f622e95e3dda924057e9f1a6c7295704f897071ea87ba557c49fe",
+"display_RGB_sha256": "ec613aa066a59e20e1167b73c12b36a9e0ac2e9dbb0f6199426e21824bc10f1f"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "warmth",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "b097e147b9e1424ad17ef5c2de10283313d754165eb67f507b0009eda9fb4b7b",
+"display_RGB_sha256": "d3c01f331b3a1baea24cffc944b2d955282d81936abd3d3d653109edd18d4ec2"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "warmth",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "7086b97d19513700e1f889c6d19ae8a6fe716d9205ac1ee238e30cbf8895580d",
+"display_RGB_sha256": "532191de28fec4ec743b55b3a5069bedcee84574d258cda49b18b86a873c86af"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "tint",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "ff32a947fe09a104d7eb2d078ea825fa03aeb51504a95423b072ab2e398c06aa",
+"display_RGB_sha256": "8a1b5b5d1cabb76757d13b5fed82f98d93d8c214cd5c44b7a504a0570050dd4a"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "tint",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "33d65aeae3b6938ab084abae4eef064011cdd44394d50cf8329f93945a6b6223",
+"display_RGB_sha256": "ba5537b4955f69a81b4c43a5725efc34741c672a67b396729aa46d499ca9f950"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "tint",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "48359e3d9931bea47dcfbaeb1713452b1c86f448d62113552290a790afce705a",
+"display_RGB_sha256": "325d71677ce535411992287e0772677a7a213e14589477b541166eef5414a528"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "split",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "4201b854ab1feb83f1d827369f10da0b9253a44115f77748d72e537ad84f8244",
+"display_RGB_sha256": "bb1e30f61c559c31ee296cde6d2e2ed75852f6711f31f57899e9b80afc9a39ec"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "split",
+"level": -3,
+"scene": "apple",
+"entry_sha256": "557d79bebfd069f0ed6ab25da857b77d15382bdad66784873b2cfc1ed626fc34",
+"display_RGB_sha256": "f4ebfd2a1e5dd5eb1d7fd006dd3e739aae27658a0abaec7766e2711c47eba50c"
+},
+{
+"unit": "l08firm",
+"slot": 7,
+"param": "split",
+"level": 6,
+"scene": "redblue",
+"entry_sha256": "01025e375004c341ca93e1f66f6106a4f243c203cffb3af4b0a447e32ea925de",
+"display_RGB_sha256": "b60a6e38aadc8722a067fe7210195fa9d9d35d7d35dbcf0e105f0d7312dfa7b2"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "amount",
+"level": 20,
+"scene": "neutral",
+"entry_sha256": "2c95a475bc3585f1c24d47dd15595a246daec7990e6c84e60e64bba2340a4856",
+"display_RGB_sha256": "f07eac62d072bb71e9f269f917325cf9e5334225cd6449c7bdccfaea5c0bdf85"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "amount",
+"level": 100,
+"scene": "apple",
+"entry_sha256": "8c7f9f9bf200cea18343ddf093632a79aa61784f6e9b8c2094c515810e03ede8",
+"display_RGB_sha256": "b7ecd02de9205729a3b10b22ba13324be3ac6b0e7a6fe222615ddc918d9f0efb"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "contrast",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "a6e4fa950c8e0aed7783fd7ecdd1ab72fee95593059486bd7657f333a69acabc",
+"display_RGB_sha256": "57df635baf69cff5db8ebaf9aa23ee3d30190fc148bcf818746f851e2b13f099"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "contrast",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "8c7f9f9bf200cea18343ddf093632a79aa61784f6e9b8c2094c515810e03ede8",
+"display_RGB_sha256": "644bda55eb9723f4bb4ce3177e2f05903f5ae23361dde0ed6c87f56037a868d5"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "contrast",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "ef96ea6bf0662d16cc0f2c40cd5fa92a1e8639c678a8dc23af7d746f669c96a3",
+"display_RGB_sha256": "d5b2b868bc175f5b05c60f2b52f7c6f8398edef27402f916fba8f3a5024f3651"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "highlight",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "af99d9ce4b0bf8ede6ce060449f4ede8b66749a04e4e4d86a149e7aa77d13565",
+"display_RGB_sha256": "8987e5d595836a504752745d82a63dafdb0e80d48296ecd307917ae266e742bb"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "highlight",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "1f02a9660268e6cf3eca83e8cc16af71aeadb76caae7af140257cb091e456730",
+"display_RGB_sha256": "f9803830f18319698a9cea9052f2a09cb3171df796b95afbb3fa9738487cec63"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "highlight",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "0fd47db23c2d0955498ab42f765a5f49171376b036e1dcbefd5ac5ff365d1fda",
+"display_RGB_sha256": "f9523e74d361f42330750dc9686895cc4b70cd28dc31e7069012453668fe539b"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "shadow",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "2cf89d0ae2e64f8be9476880aa5ef50bab5d4d315c23bcb4704b9ea78fd8122d",
+"display_RGB_sha256": "1a2ecd3e39a77e8827ed0cd51b4ad9138fb1e9e7b3d01b67e772bf935f1b0cb3"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "shadow",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "c5f811582511b9be1dc7edcfd5f0790b5240e825ff0fcf5af8eafdc1183f3e24",
+"display_RGB_sha256": "e45236931863ed70ee6db8f0a73cbca79370bfc487fc658c67810b8dba77d0e0"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "shadow",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "8c7f9f9bf200cea18343ddf093632a79aa61784f6e9b8c2094c515810e03ede8",
+"display_RGB_sha256": "cf15a82b606e48961b3f02c9ea1311795aeefdf680cb0881ca13e8d40e36dfe6"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "fade",
+"level": 9,
+"scene": "desk",
+"entry_sha256": "e609c7954c7330cc7618d1e010f050856650cae26252dd6076b16948663b3a72",
+"display_RGB_sha256": "fffbcf1b23e98fa8ce3813b4e9e6e02c8db4d196242c733150727d6da81d8439"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "fade",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "19ac70d93226ed80635c98fba1ef88d29bce3b2becd367bc393eeec0e7a0437a",
+"display_RGB_sha256": "13494a9853c7bcf38907c304d9ec64605f4b6c247c28519e3a52e7b163ac8f2b"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "fade",
+"level": 8,
+"scene": "redblue",
+"entry_sha256": "8a14381cb3cab6e9614420f3985337277e623d59e0696422c011cfdc8aeb8e26",
+"display_RGB_sha256": "e5ca42fb3c513fa4f4fb377522c44291330cff1e6c27d5d089556a7b3a858574"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "saturation",
+"level": -6,
+"scene": "neutral",
+"entry_sha256": "ce3139c1fd63ea3bcb7ab520a991ab0cb516a42fd80f9054cfcac02f161cd487",
+"display_RGB_sha256": "daf5ca31fbc7e624a48a162a1f11bedf56f195aba1f838d647d79c13a39c6e8c"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "saturation",
+"level": 3,
+"scene": "apple",
+"entry_sha256": "a9d83ef862b78f18dc166de419a10080ef3bb02583e3ed4ac979de7f21ec754f",
+"display_RGB_sha256": "145ac5796b523c211c1fa42cfb0549ae2a3ca3dac7a76bf6deb9f8215571929e"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "warmth",
+"level": -9,
+"scene": "desk",
+"entry_sha256": "4581dbf0b840ed21b50d086e864e0da613e78fc28b702660b6c3efb040c68cca",
+"display_RGB_sha256": "8d08125d4c5e23c14b1061cda7ae51dd52497cf1cdf889288ce439c320cfe80e"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "warmth",
+"level": 0,
+"scene": "neutral",
+"entry_sha256": "8c7f9f9bf200cea18343ddf093632a79aa61784f6e9b8c2094c515810e03ede8",
+"display_RGB_sha256": "644bda55eb9723f4bb4ce3177e2f05903f5ae23361dde0ed6c87f56037a868d5"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "warmth",
+"level": 9,
+"scene": "apple",
+"entry_sha256": "2bdcf7c0d9d3cd51b579b297b231b77f3c12979098c4146293c45b6acc7b961d",
+"display_RGB_sha256": "c738537e082fde37f4f6dde5bc3f4183a92201a46ba1dd6916ebad95a1b7d28d"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "tint",
+"level": -3,
+"scene": "desk",
+"entry_sha256": "6c47bf67df449c1e68f0070344f95e5faec278f357d338336b950aa19cf2da07",
+"display_RGB_sha256": "7db0b6880e7c01adf2d716f659ca16b554e229ac445f91966e4db397552e91e6"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "tint",
+"level": 6,
+"scene": "neutral",
+"entry_sha256": "bf882687ea4f6da4876e8cbf178a3133bf3aefc8f19bc238d1c20205bc51cce6",
+"display_RGB_sha256": "f619c36608e5a2b10644f67668baa176bd4fb79b4d66d15c2a9b6f236a9ec98a"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "tint",
+"level": -6,
+"scene": "redblue",
+"entry_sha256": "1e9009ac3223ccbada92464be8911b5aa8496fa5a2d57a26c4461312828e3d69",
+"display_RGB_sha256": "8e5efd632fc8f977ac33ef1705a03f825f49c49a8a0471aa57ba45c053f9c74a"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "split",
+"level": 3,
+"scene": "desk",
+"entry_sha256": "3ac42f76c9edcb381710e25b396ea2c7b7af99f65d557c6a23d70c3621b4a4ce",
+"display_RGB_sha256": "7578189a90100355f7db2fd0b889f78f92ca68c9f620bf82f145514ce1d5680f"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "split",
+"level": -9,
+"scene": "apple",
+"entry_sha256": "f62c43aca8063949e1fe38dea820f0785c2a3017fe7d9165ada0f7246205310f",
+"display_RGB_sha256": "643a66c4199894e586bbcc1cdf00c1202d4581dd0ce368fc7637a89f0f11b152"
+},
+{
+"unit": "l08firm",
+"slot": 8,
+"param": "split",
+"level": 0,
+"scene": "redblue",
+"entry_sha256": "8c7f9f9bf200cea18343ddf093632a79aa61784f6e9b8c2094c515810e03ede8",
+"display_RGB_sha256": "cf15a82b606e48961b3f02c9ea1311795aeefdf680cb0881ca13e8d40e36dfe6"
+}
+]
+}

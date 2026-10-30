@@ -1,0 +1,82 @@
+{
+  "schema": "gxr-studio/engine-provenance/1",
+  "files": {
+    "knobs.py": {
+      "source": "research/knobs_v2_r2/src/knobs.py",
+      "source_sha256": "a06fc39ba72a64a545bc499d6689692e0f78c72affdc10f70a4768204cfaed76",
+      "kind": "byte-identical copy"
+    },
+    "data/final.json": {
+      "source": "research/knobs_v2_r2/tables/final.json",
+      "source_sha256": "2d2793784b7cd99e6db9cd43351180017d15a493562a928c34e6a2d338e787f2",
+      "kind": "byte-identical copy"
+    },
+    "menu.py": {
+      "source": "research/knobs_v2_r2/src/menu.py",
+      "source_sha256": "2f2a7d9f268bb7d8e8e4330decc51cd31e380979c1f004be165977f3827e77df",
+      "kind": "copy with 2 edited lines"
+    },
+    "matrix_model.py": {
+      "source": "research/color_table_fit/matrix_model.py",
+      "source_sha256": "9bfe63aaae0f3f4fd4ef0d785456052fb8c4fff91bf0c9156883800a97dc5564",
+      "kind": "verbatim subset: Q10 COEF_MAX CHROMA_MAX CENTRE ROW_BYTES decode_coef encode_coef MatrixRow Curve ycbcr rgb_from_ycc hue_deg"
+    },
+    "sector_model.py": {
+      "source": "research/hue_ring/sector_model.py",
+      "source_sha256": "d9d98478f2ef7eb86686dfaec53e10a42a55b2aa1d8292f090e6ac65e5bbf143",
+      "kind": "verbatim subset: SIGMA_ZERO hue_deg wrap180 effective _phi _ramp _step _SHIFTS weights"
+    },
+    "colour.py": {
+      "source": "research/color_table_fit/fit_sectors.py",
+      "source_sha256": "bb6170344ad22c7c490dafbb7f34644e933bfad2c750941f78c81675373988f8",
+      "kind": "verbatim subset: M709 D65 srgb_to_linear xyz_to_lab lab_from_codes de00_components delta_e00 decode_word encode_word Z_of_words"
+    },
+    "pretable.py": {
+      "source": "research/hue_ring/local/calibration_20261020/followup_v2/code/ring_model_v2.py",
+      "source_sha256": "c7a05f3e558378364ca7e8506a0335b8dd4895d395226c139ff8d0edc6291a37",
+      "kind": "verbatim class PreTable (equal to closed_loop/local/vendor/pretable.py)"
+    },
+    "model.py": {
+      "source": "research/knobs_v2_r2/src/model_adapter.py",
+      "source_sha256": "368e6c99523fdccfb7c608f3e257cff82946e69fb6d38658ff239a5177f4a0a0",
+      "kind": "verbatim Model.pre/predict/lab/de + synthetic/recipe_chart/masks, new constructor"
+    }
+  },
+  "edits": {
+    "menu.py": [
+      "import knobs as k -> from . import knobs as k",
+      "TABLE_PATH: parents[1]/'tables/final.json' -> parent/'data/final.json' (package resource)"
+    ],
+    "pretable.py": [
+      "module-global `sm` bound to engine/sector_model.py via relative import (the vendored copy bound it to analyze_ring.sm = hue_ring/sector_model.py, same SHA d9d98478…)"
+    ],
+    "model.py": [
+      "Model.__init__ replaced (no DEEPTBL0.DAT, no closed_loop Engine, no repo paths); ctx.S_eff derived as ((stock0+d0) - 1j*(stock1+d1))/32 (verified bit-equal to the npz S_eff)",
+      "Model.provenance(), Model.raw() dropped (repo paths / DNG reader belong to S6)"
+    ]
+  },
+  "datcodec_sources": {
+    "firmware/engine_v53_g135/candidate/containers/product/pack.py": "b6b5655e31826de90b7172e9c2baf980a748e1954e421f45dc3b054920cbbb0f",
+    "firmware/engine_v53_g135/candidate/containers/product/pack_v1.py": "f5afeb122ee3b6e7cfdd7aa6678c1a68eaccdd9cbcc966bc588ea538f655b175",
+    "firmware/engine_v53_g135/candidate/ui_data.py": "819bf457286a3f8f66f6121c6335d72fa651c3307091237ca992df262553b063",
+    "firmware/engine_v53_g135/candidate/build135.py": "386622cdfa63f8508dd0c9da79b475c68d1d9ce623b561956bfd6976ee757bd0",
+    "firmware/engine_v53_g135/candidate/containers/product/src/firmware/card_container_v2/gate.c": "27abb67b7cc76abd3054b346d19fe2f0604a412dbb9409c77fa7a979c4e661fb",
+    "firmware/engine_v51_g131/candidate/containers/product/pack.py": "13630e1e86e3f45ff4a24084d973ffa40fc8621b4e998061c52c27b6c691b929",
+    "firmware/engine_v51_g131/candidate/containers/product/src/firmware/card_container_v2/gate.c": "3b5707d121befa80d8aac15de29b4abb85eb5817beb6983b87042b9ffded544b",
+    "firmware/engine_v49_knobs/candidate/containers/product/pack.py": "80f87983055738deb069b1ee1376640b6eded4daf0e1fd2fca01878bff90e56b",
+    "firmware/engine_v49_knobs/candidate/containers/product/src/firmware/card_container_v2/gate.c": "0eaf40ddcf16316c0759cda1de223afc51763216f9631e01457f08d2bbe46290",
+    "firmware/engine_v48_own/candidate/containers/product/pack.py": "f3d584cf5a0aab8d9f68413068b449c1042cff79b6842dead848d8ae6a15bd60",
+    "firmware/engine_v48_own/candidate/containers/product/src/firmware/card_container_v2/gate.c": "8633fa2a899a0607fe4fd5a3c6b931a31635f65e664fef1084796bddc177fee3"
+  },
+  "engine_file_sha256": {
+    "__init__.py": "9e8d8b9b679729dd82ff0c7641501687305a0c76463822fed147a2ae38f5523f",
+    "colour.py": "2d7f6d3e51b940d9adf61b9838ffeafc3b721be2815507dfc923c35bd2891eec",
+    "data/final.json": "2d2793784b7cd99e6db9cd43351180017d15a493562a928c34e6a2d338e787f2",
+    "knobs.py": "a06fc39ba72a64a545bc499d6689692e0f78c72affdc10f70a4768204cfaed76",
+    "matrix_model.py": "223b952b6f656c2f7a7b76e960e0792bc10763856ff6be8a0b38c0ffb9d70884",
+    "menu.py": "58b55bf65a1184bd71f4f3d7f15a6fac6bddf8d0deeb023d5e0c64b6e244bbe0",
+    "model.py": "ba4292b5bc600aa17aee85b5bc0ed6dfb6df8f2323c0e284b955e05c397ebb99",
+    "pretable.py": "ed41e1270d918540fe8e58a78b4011dca04ca7d60c20d1b36c2ed70aa076e27b",
+    "sector_model.py": "bfa82866e299448ac4814be38bf4ce7a8d3b533b96f50d50ce0191854ae0de12"
+  }
+}

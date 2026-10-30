@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GXR 工作室（临时首页）</title>
+<style>
+  body { font: 14px/1.5 -apple-system, "PingFang SC", sans-serif; margin: 0; padding: 16px 24px; background: #fafaf8; color: #222; }
+  h1 { font-size: 18px; } h2 { font-size: 15px; margin: 24px 0 8px; }
+  .bar { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  figure { margin: 0; width: 160px; } figure img { width: 160px; height: 120px; object-fit: cover; background: #eee; border-radius: 4px; }
+  figcaption { font-size: 12px; color: #666; word-break: break-all; }
+  button { padding: 6px 12px; } .warn { color: #b00; }
+</style>
+</head>
+<body>
+<h1>GXR 工作室 <small>（临时首页：只列出照片，正式界面由前端任务提供）</small></h1>
+<div class="bar" id="cards">正在查找相机卡…</div>
+<div id="out"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || r.status);
+  return r.json();
+}
+async function refreshCards() {
+  const cards = await api('/api/cards');
+  const box = $('cards'); box.textContent = '';
+  if (!cards.length) { box.textContent = '没有发现相机卡。'; return; }
+  for (const c of cards) {
+    const s = await api(`/api/cards/${c.id}/summary`);
+    const b = document.createElement('button');
+    b.textContent = `导入「${c.label}」：${s.new_shots} 张新照片（共 ${s.shots} 张）`;
+    b.onclick = () => startImport(c.id, b);
+    box.append(b, ' ');
+  }
+}
+async function startImport(cardId, btn) {
+  let job = await api('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ card_id: cardId }) });
+  btn.disabled = true;
+  while (job.running) {
+    await new Promise((r) => setTimeout(r, 700));
+    job = await api('/api/jobs/' + job.id);
+    btn.textContent = `导入中 ${job.progress.done_shots}/${job.progress.total_shots}`;
+  }
+  btn.disabled = false; btn.textContent = job.progress.message || job.progress.state;
+  await refreshPhotos();
+}
+async function refreshPhotos() {
+  const out = $('out'); out.textContent = '';
+  for (const d of await api('/api/dates')) {
+    const h = document.createElement('h2'); h.textContent = `${d.date === 'unknown' ? '未知日期' : d.date}（${d.count} 张）`;
+    const g = document.createElement('div'); g.className = 'grid';
+    for (const p of await api('/api/photos?date=' + encodeURIComponent(d.date))) {
+      const f = document.createElement('figure');
+      f.innerHTML = `<img loading="lazy" src="${p.thumb_url}"><figcaption>${p.name}${p.has_raw ? ' · RAW' : ''}${p.has_jpg ? '' : ' · 无 JPG'}</figcaption>`;
+      g.append(f);
+    }
+    out.append(h, g);
+  }
+}
+refreshCards().catch((e) => { $('cards').textContent = '读取失败：' + e.message; $('cards').className = 'bar warn'; });
+refreshPhotos().catch(() => {});
+</script>
+</body>
+</html>

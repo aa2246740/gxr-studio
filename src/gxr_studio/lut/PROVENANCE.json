@@ -1,0 +1,26 @@
+{
+  "schema": "gxr-studio/lut-provenance/1",
+  "files": {
+    "cube.py": {
+      "source": "research/lut_convert/cube.py",
+      "source_sha256": "44c7c0e4d89e6d535930b35487409a3e900ad558bc544deb221d8a5bcc2a4bbf",
+      "kind": "copy with edits",
+      "edits": [
+        "guard import replaced by hashlib/pathlib",
+        "Cube.read: no guard.input_path/sha; sha256 of the bytes read",
+        "write_cube: no guard.output_path fence"
+      ]
+    },
+    "spaces.py": {
+      "source": "research/lut_convert/spaces.py",
+      "source_sha256": "5f60830babe53a1615f9bdcac30ee84172feceb51edaec6ec17c438fdb78e4ad",
+      "kind": "byte-identical copy"
+    },
+    "colorimetry.py": {
+      "source": "research/color_table_fit/dng_scene.py",
+      "source_sha256": "f0e8dd88baed2f6894b2427de7d7342ce37b2105716b2c47111d49ecfda5f59d",
+      "kind": "verbatim AST segments: D50_XY, D65_XY, BRADFORD, ILLUMINANT_K, ROBERTSON, TINT_SCALE, xy_to_xyz, xyz_to_xy, bradford, xy_to_cct, white_from_neutral, DngColour"
+    }
+  },
+  "generated_by": "research/studio_lut_s8a/tools/extract_lut.py"
+}

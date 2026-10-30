@@ -1,0 +1,214 @@
+// 相机数据（装有配方程序的 GXRCE.DAT）和颜色标定的状态，以及"还没导入"时的引导。
+// 状态读 /api/camdata/status；万一这个接口不可用，退回 /api/render/status（只有 ready 和两项状态）。
+// 导入走 /api/camdata/import-card、/api/camdata/import-upload（选中的文件的原始字节）、/api/calibration/import（开发用）。
+
+import { api } from './api.js';
+import { state, emit } from './state.js';
+import { h, toast } from './dom.js';
+
+// 第 135 代起的旋钮是新版（每项 ±9，Amount 0–150%）；更早的版本只认 ±5，Fade/Warm/Tint/Split/Filt 相机里没有
+const NEW_KNOBS_FROM = 135;
+
+export function applyCamdataStatus(s) {
+  const prev = state.camdata;
+  if (!s) {
+    state.camdata = { ...(prev || {}), ready: false, state: 'unknown', message: '读不到相机数据的状态', generation: null };
+    return state.camdata;
+  }
+  const cd = s.camera_data || {};
+  const cal = s.calibration || {};
+  const ready = typeof s.ready === 'boolean' ? s.ready : cd.state === 'ready' && (cal.state === undefined || cal.state === 'ready');
+  const dataVersion = s.data_version ?? prev?.dataVersion ?? null;
+  state.camdata = {
+    ready,
+    state: cd.state || s.state || (ready ? 'ready' : 'missing'),
+    message: cd.message || s.message || null,
+    generation: cd.generation ?? s.generation ?? null,
+    calibration: cal.state || (ready ? 'ready' : null),
+    calibrationMessage: cal.message || null,
+    next: s.next ?? null,
+    cards: s.cards || prev?.cards || [],
+    projectDir: s.project_dir ?? prev?.projectDir ?? null,
+    dataVersion,
+  };
+  // 数据换了：没有 JPG 的照片的图片地址带着新的 ?v=，图库和大图要重新取一次照片信息
+  if (prev?.dataVersion != null && dataVersion != null && prev.dataVersion !== dataVersion) emit('camdata-changed');
+  return state.camdata;
+}
+
+export async function loadCamdata() {
+  let s = null;
+  try {
+    s = await api('/api/camdata/status');
+  } catch {
+    try {
+      s = await api('/api/render/status');
+    } catch {
+      s = null;
+    }
+  }
+  return applyCamdataStatus(s);
+}
+
+export function camdataReady() {
+  return state.camdata?.ready === true;
+}
+
+function cameraDataImported() {
+  return state.camdata?.state === 'ready';
+}
+
+// 设置里的一行行摘要
+export function camdataSummary() {
+  const c = state.camdata;
+  const camera = cameraDataImported() ? `已导入（第 ${c.generation} 代）` : '还没导入';
+  const calibration = c?.calibration === 'ready' ? '已导入' : c?.calibration === 'invalid' ? '需要重新导入' : '还没导入';
+  return { camera, calibration };
+}
+
+// 第 135 代之前的相机版本不明（没导入）时按旧版处理：标签更保守，不会把"相机能做"说成确定的事
+export function isLegacyCamera() {
+  const gen = state.camdata?.generation;
+  return !(typeof gen === 'number' && gen >= NEW_KNOBS_FROM);
+}
+
+// 大白话引导。onDone 在导入成功后调用（让界面重新读取预览）。
+// 相机数据还没有 → 从卡导入 / 选文件；相机数据有了、颜色标定还没有 → 指到「设置」里的开发用入口
+export function camdataGuide({ onDone } = {}) {
+  if (cameraDataImported()) return calibrationGuide();
+  return h(
+    'div',
+    { class: 'camdata-guide', role: 'region', 'aria-label': '相机数据还没导入' },
+    h('h3', {}, '还没有导入相机数据'),
+    h('p', { class: 'small' }, '电脑预测要用相机里的配方程序。'),
+    h('p', { class: 'small' }, '插入装有配方程序的存储卡，点「从卡导入」。'),
+    cameraImportControls({ onDone }),
+  );
+}
+
+// 「从卡导入」和「选择 GXRCE.DAT 文件…」两个入口（引导里用，设置里也放一份：换了新版配方程序要重新导入）
+export function cameraImportControls({ onDone } = {}) {
+  const msg = h('p', { class: 'small', role: 'status' });
+  const choices = h('div', { class: 'guide-actions' });
+  const busy = (on) => {
+    for (const b of box.querySelectorAll('button')) b.disabled = on;
+  };
+  const finish = async (r) => {
+    toast('相机数据已导入', 'ok');
+    msg.textContent = r?.message || '相机数据已导入。';
+    choices.replaceChildren();
+    await loadCamdata();
+    if (onDone) onDone();
+  };
+  const fileInput = h('input', {
+    type: 'file',
+    accept: '.DAT,.dat',
+    hidden: true,
+    'aria-label': '选择 GXRCE.DAT 文件',
+    onchange: async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      busy(true);
+      msg.textContent = '正在导入…';
+      try {
+        // 浏览器拿不到本地路径，所以直接把文件的字节交给工作室（它只校验、提取，不改你的文件）
+        await finish(await api('/api/camdata/import-upload', { method: 'POST', body: file, headers: { 'X-GXR-Filename': file.name } }));
+      } catch (err) {
+        msg.textContent = err.message;
+      } finally {
+        e.target.value = '';
+        busy(false);
+      }
+    },
+  });
+  const importCard = async (cardId) => {
+    busy(true);
+    choices.replaceChildren();
+    msg.textContent = '正在从卡读取…';
+    try {
+      await finish(await api('/api/camdata/import-card', { method: 'POST', body: cardId ? { card_id: cardId } : {} }));
+    } catch (err) {
+      msg.textContent = err.message;
+      if (err.code === 'multiple_cards' && err.data?.cards) {
+        choices.replaceChildren(...err.data.cards.map((c) => h('button', { class: 'btn', type: 'button', onclick: () => importCard(c.id) }, `用卡「${c.label}」`)));
+      }
+    } finally {
+      busy(false);
+    }
+  };
+  const box = h(
+    'div',
+    { class: 'camdata-import' },
+    h('div', { class: 'guide-actions' }, h('button', { class: 'btn primary', type: 'button', onclick: () => importCard() }, '从卡导入')),
+    h('p', { class: 'small dim' }, '或者选择一个 GXRCE.DAT 文件：'),
+    h('div', { class: 'guide-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => fileInput.click() }, '选择 GXRCE.DAT 文件…'), fileInput),
+    choices,
+    msg,
+  );
+  return box;
+}
+
+function calibrationGuide() {
+  const c = state.camdata;
+  const invalid = c.calibration === 'invalid';
+  return h(
+    'div',
+    { class: 'camdata-guide', role: 'region', 'aria-label': '颜色标定还没导入' },
+    h('h3', {}, invalid ? '颜色标定需要重新导入' : '相机数据已导入，还差颜色标定'),
+    h('p', { class: 'small' }, invalid && c.calibrationMessage ? c.calibrationMessage : '颜色标定是电脑预测配方颜色用的数据。没有它，预览暂时只能看中性画面。'),
+    h('p', { class: 'small dim' }, '这一步目前只在开发这个工具的电脑上能用。'),
+    h('div', { class: 'guide-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => emit('open-settings') }, '去「设置」导入颜色标定（开发用）')),
+  );
+}
+
+// 「设置」里的入口：把开发机上的标定数据导进来。大白话说清楚"现在只有开发者能用"
+export function calibrationImportForm({ onDone } = {}) {
+  const input = h('input', {
+    type: 'text',
+    placeholder: '/完整路径/到/项目文件夹',
+    'aria-label': '标定数据所在文件夹的完整路径',
+    value: state.camdata?.projectDir || '',   // 工作室就在项目文件夹里：直接预填，不用手敲
+    style: { width: '100%' },
+  });
+  const useProject = state.camdata?.projectDir
+    ? h('button', { class: 'btn', type: 'button', onclick: () => { input.value = state.camdata.projectDir; msg.textContent = ''; } },
+        '用工作室所在的项目文件夹')
+    : null;
+  const msg = h('p', { class: 'small', role: 'status' });
+  const button = h('button', { class: 'btn', type: 'button', onclick: run }, '导入颜色标定（开发用）');
+  async function run() {
+    const path = input.value.trim();
+    if (!cameraDataImported()) {
+      msg.textContent = '请先导入相机数据（在大图的「配方」标签里点「从卡导入」），再来这里。';
+      return;
+    }
+    if (!path) {
+      msg.textContent = '请先填写文件夹的完整路径。';
+      return;
+    }
+    button.disabled = true;
+    msg.textContent = '正在导入，请稍等…';
+    try {
+      const r = await api('/api/calibration/import', { method: 'POST', body: { path } });
+      msg.textContent = r.message;
+      toast('颜色标定已导入', 'ok');
+      await loadCamdata();
+      if (onDone) onDone();
+    } catch (err) {
+      msg.textContent = err.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+  return h(
+    'div',
+    { class: 'field', dataset: { section: 'calibration' } },
+    h('strong', {}, '颜色标定（开发用）'),
+    h('p', { class: 'small' }, '这一步目前只在开发这个工具的电脑上能用：颜色标定数据还没有发给普通用户的办法。'),
+    h('p', { class: 'small dim' }, '如果你不是开发者，可以直接跳过：导入照片、裁切、导出都不受影响，只是配方的颜色预测暂时看不了。'),
+    h('p', { class: 'small dim' }, '开发者：填项目文件夹，或其中 research 文件夹的完整路径。'),
+    input,
+    h('div', { class: 'guide-actions' }, useProject, button),
+    msg,
+  );
+}

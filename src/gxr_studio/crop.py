@@ -1,0 +1,172 @@
+"""裁切几何。纯函数，不碰文件。
+
+约定（与 ARCHITECTURE §4.4 一致）：
+- `rect = [x, y, w, h]`，归一化到"按方向转正后的画面"（宽 W、高 H 像素）；
+- `angle_deg` 为拉直角度，正值 = 画面顺时针转；范围 ±10°；
+- 画面绕中心旋转后仍放在 W×H 的画布里，`rect` 定义在这块旋转后的画布上；
+  框的四个角必须都落在原画面之内（不允许出现空白角）。
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from fractions import Fraction
+
+MAX_ANGLE = 10.0
+MIN_SIDE_PX = 16
+RATIO_TOLERANCE = 0.01  # 用户给的框与预设比例的相对偏差
+EDGE_TOLERANCE_PX = 1.0  # 角点超出原画面多少像素以内算在里面（界面取整造成的）
+
+# 预设 -> (长边, 短边)；original / free 没有固定比例
+PRESETS: dict[str, tuple[int, int] | None] = {
+    "original": None,
+    "free": None,
+    "3:2": (3, 2),
+    "4:3": (4, 3),
+    "1:1": (1, 1),
+    "4:5": (5, 4),
+    "16:9": (16, 9),
+    "16:10": (16, 10),  # 电脑壁纸
+    "1.91:1": (191, 100),  # Instagram 横图 / 链接预览
+    "2.35:1": (235, 100),  # 微信公众号封面
+    "xpan-65-24": (65, 24),
+}
+
+
+class CropError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class Crop:
+    preset: str
+    rect: tuple[float, float, float, float]
+    angle_deg: float = 0.0
+
+    def to_json(self) -> dict:
+        return {"preset": self.preset, "rect": list(self.rect), "angle_deg": self.angle_deg}
+
+
+def round_half_up(v: float) -> int:
+    return int(math.floor(v + 0.5))
+
+
+def target_ratio(preset: str, width: int, height: int, flip: bool = False) -> Fraction | None:
+    """框的 宽/高。竖拍的画面把预设转过来（XPan 在竖拍上是又高又窄的条）；flip 再转一次。"""
+    if preset not in PRESETS:
+        raise CropError("unknown_preset", f"不认识的比例：{preset}")
+    if preset == "free":
+        return None
+    if preset == "original":
+        return Fraction(width, height)
+    long_side, short_side = PRESETS[preset]  # type: ignore[misc]
+    landscape = (width >= height) != flip
+    return Fraction(long_side, short_side) if landscape else Fraction(short_side, long_side)
+
+
+def crop_box(rect: tuple[float, float, float, float], width: int, height: int) -> tuple[int, int, int, int]:
+    """归一化矩形 -> 像素 (x0, y0, w, h)；统一用四舍五入（0.5 向上）。"""
+    x, y, w, h = rect
+    x0, y0 = round_half_up(x * width), round_half_up(y * height)
+    w_px, h_px = round_half_up(w * width), round_half_up(h * height)
+    return x0, y0, w_px, h_px
+
+
+def box_inside(
+    box: tuple[float, float, float, float], width: int, height: int, angle_deg: float, tol: float = 1e-6
+) -> bool:
+    """框的四个角（在旋转后的画布上）按反方向转回去，是否都在原画面内。"""
+    x0, y0, w, h = box
+    th = math.radians(angle_deg)
+    c, s = math.cos(th), math.sin(th)
+    cx, cy = width / 2, height / 2
+    for px, py in ((x0, y0), (x0 + w, y0), (x0, y0 + h), (x0 + w, y0 + h)):
+        dx, dy = px - cx, py - cy
+        sx = dx * c + dy * s
+        sy = -dx * s + dy * c
+        if abs(sx) > width / 2 + tol or abs(sy) > height / 2 + tol:
+            return False
+    return True
+
+
+def _check_angle(angle_deg: float) -> float:
+    if not isinstance(angle_deg, (int, float)) or not math.isfinite(angle_deg):
+        raise CropError("bad_angle", "拉直角度不是数字")
+    if abs(angle_deg) > MAX_ANGLE + 1e-9:
+        raise CropError("bad_angle", f"拉直角度要在 ±{MAX_ANGLE:g}° 之内")
+    return float(angle_deg)
+
+
+def default_crop(
+    preset: str, width: int, height: int, angle_deg: float = 0.0, flip: bool = False
+) -> Crop:
+    """某个预设在当前角度下、居中的最大框。XPan 在 4288×2848 上得到 4288×1583。"""
+    angle = _check_angle(angle_deg)
+    ratio = target_ratio(preset, width, height, flip)
+    if ratio is None:
+        ratio = Fraction(width, height)
+    th = math.radians(abs(angle))
+    c, s = math.cos(th), math.sin(th)
+    q = float(1 / ratio)  # 高 / 宽
+    w_max = min(width / (c + q * s), height / (s + q * c))
+    w_px = min(width, int(math.floor(w_max + 1e-9)))
+    while w_px >= MIN_SIDE_PX:
+        h_px = int(math.floor(w_px / ratio + Fraction(1, 2)))
+        h_px = min(h_px, height)
+        if box_inside(((width - w_px) / 2, (height - h_px) / 2, w_px, h_px), width, height, angle, 1e-6):
+            break
+        w_px -= 1
+    else:
+        raise CropError("too_small", "这个角度和比例下裁不出像样的画面")
+    rect = ((width - w_px) / 2 / width, (height - h_px) / 2 / height, w_px / width, h_px / height)
+    return Crop(preset=preset, rect=rect, angle_deg=angle)
+
+
+def validate_crop(
+    preset: str, rect, angle_deg: float, width: int, height: int
+) -> Crop:
+    """校验用户给的框；不合格就抛 CropError，不悄悄修正。"""
+    angle = _check_angle(angle_deg)
+    ratio = target_ratio(preset, width, height)
+    try:
+        x, y, w, h = (float(v) for v in rect)
+    except (TypeError, ValueError):
+        raise CropError("bad_rect", "裁切框要是 [x, y, w, h] 四个数") from None
+    if not all(math.isfinite(v) for v in (x, y, w, h)):
+        raise CropError("bad_rect", "裁切框里有不是数字的值")
+    eps = 1e-9
+    if w <= 0 or h <= 0 or x < -eps or y < -eps or x + w > 1 + eps or y + h > 1 + eps:
+        raise CropError("bad_rect", "裁切框超出了画面")
+    x0, y0, w_px, h_px = crop_box((x, y, w, h), width, height)
+    if w_px < MIN_SIDE_PX or h_px < MIN_SIDE_PX:
+        raise CropError("too_small", f"裁切框太小（至少 {MIN_SIDE_PX} 像素）")
+    if ratio is not None:
+        got = w_px / h_px
+        # 横竖两个方向都认（界面可以把预设转 90°）
+        off = min(abs(got - float(r)) / float(r) for r in (ratio, 1 / ratio))
+        if off > RATIO_TOLERANCE:
+            raise CropError("ratio_mismatch", f"裁切框的比例和「{preset}」对不上")
+    box = (x * width, y * height, w * width, h * height)
+    if not box_inside(box, width, height, angle, EDGE_TOLERANCE_PX):
+        raise CropError("crop_outside_image", "拉直之后裁切框超出了画面，请缩小一点或挪一挪")
+    return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
+
+
+def affine_coeffs(box: tuple[int, int, int, int], width: int, height: int, angle_deg: float):
+    """Pillow `Image.transform(AFFINE)` 的系数：输出像素 (x, y) -> 原图坐标。"""
+    x0, y0 = box[0], box[1]
+    th = math.radians(angle_deg)
+    c, s = math.cos(th), math.sin(th)
+    cx, cy = width / 2, height / 2
+    return (
+        c,
+        s,
+        cx + c * (x0 - cx) + s * (y0 - cy),
+        -s,
+        c,
+        cy - s * (x0 - cx) + c * (y0 - cy),
+    )
