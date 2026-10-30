@@ -19,7 +19,7 @@ jobs:
       - run: uv sync --frozen
       - run: uv build
       - run: uv run --frozen python scripts/release_notes.py
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body_path: CHANGELOG.md
           files: dist/*
