@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -12,14 +13,17 @@ from ..meta import read_dng_meta, read_jpeg_meta
 
 
 def _ratio(value: Any) -> float | None:
-    if value is None:
+    """EXIF 有理数 -> 正的有限值；0、负数、0/0（MOUNT 装手动镜头时 FNumber 就是 0）都是"未知"，返回 None。"""
+    # Pillow 的 IFDRational(0, 0) 在 float() 时会抛 ZeroDivisionError，先看分母
+    if value is None or getattr(value, "denominator", 1) == 0:
         return None
     try:
-        return float(value)
+        out = float(value)
     except (TypeError, ValueError):
-        if hasattr(value, "numerator"):
-            return float(value.numerator) / float(value.denominator)
-        return None
+        if not hasattr(value, "numerator"):
+            return None
+        out = float(value.numerator) / float(value.denominator)
+    return out if math.isfinite(out) and out > 0 else None
 
 
 def _exif(path: Any) -> dict[str, Any]:

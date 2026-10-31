@@ -9,6 +9,9 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
+from typing import Iterable
+
+from .location import check_library_location
 
 BUSY_EXIT_CODE = 75  # EX_TEMPFAIL：给 `GXR Studio.command` 看，不再多打一句"工作室已停止"
 
@@ -18,13 +21,17 @@ class LibraryBusy(Exception):
 
 
 class LibraryLock:
-    def __init__(self, library_dir: Path) -> None:
-        self.path = Path(library_dir) / ".studio" / "studio.lock"
+    def __init__(self, library_dir: Path, card_roots: Iterable[str | os.PathLike[str]] = ()) -> None:
+        self.library_dir = Path(library_dir)
+        self.card_roots = list(card_roots)
+        self.path = self.library_dir / ".studio" / "studio.lock"
         self._fd: int | None = None
 
     def acquire(self) -> "LibraryLock":
+        # 这是启动时第一次写图库：建 .studio、建锁文件之前先核对图库的真实位置（复审 A1a R3-P1-01）
+        check_library_location(self.library_dir, self.card_roots)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:

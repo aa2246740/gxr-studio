@@ -65,15 +65,20 @@ def test_cards_summary_and_import_flow(client, card):
     job = import_all(client)
     assert job["error"] is None and job["progress"]["state"] == "done"
     assert job["progress"]["imported_shots"] == len(card.unique_shots)
+    # 不读内容证明不了"已导入"（设计 §4.3，SEEN_TRUST_UUID 默认关）：摘要照样把每张都算作要核对的
     sm2 = client.get(f"/api/cards/{c['id']}/summary").json()
-    assert sm2["new_shots"] == 0
-    # 再导一次：什么都不复制
+    assert sm2["new_shots"] == len(card.shots) and sm2["verified"] is False
+    # 再导一次：读内容核对，什么都不复制
     job2 = import_all(client)
     assert job2["progress"]["copied_files"] == 0 and job2["progress"]["imported_shots"] == 0
+    assert job2["progress"]["coverage"]["covered"] == job2["progress"]["coverage"]["total"]
 
 
 def test_unknown_card_is_404_and_paths_are_not_accepted(client, card):
+    # card_id 是挂载会话号：格式不对 400（设计 §15），格式对但不存在 404
     r = client.post("/api/import", json={"card_id": "../../etc"})
+    assert r.status_code == 400 and r.json()["error"] == "bad_card_id"
+    r = client.post("/api/import", json={"card_id": "0" * 26})
     assert r.status_code == 404 and r.json()["error"] == "card_not_found"
 
 

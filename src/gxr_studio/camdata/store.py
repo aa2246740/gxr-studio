@@ -9,20 +9,20 @@
       dat-template/GXRCE.DAT        写回用的模板（用户卡上 DAT 的原样副本）
 
 理光字节只写到 `home`（应用数据目录，永远不进仓库、不随应用分发）。写入先写临时目录、读回比对，再整体替换。
+写临时目录之前和整体替换之前，都用 `privacy.check_private_dir` 核对目标不在任何 Git 工作区里（设计 §5.6）。
 """
 
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import json
 import os
 import shutil
-import sys
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Iterable, cast
 
+from .. import privacy
 from . import datcodec
 
 SCHEMA = "gxr-studio/camera-data/1"
@@ -38,8 +38,11 @@ def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+CAMERA_DATA = "camera-data"
+
+
 def camera_data_dir(home: Path) -> Path:
-    return Path(home) / "camera-data"
+    return Path(home) / CAMERA_DATA
 
 
 def entries_from_dat(raw: bytes) -> tuple[Any, ...]:
@@ -55,11 +58,20 @@ def entries_from_dat(raw: bytes) -> tuple[Any, ...]:
     return dat, out
 
 
-def import_from_dat(raw: bytes, home: Path, *, source_name: str = "GXRCE.DAT", origin: dict[Any, Any] | None = None) -> dict[Any, Any]:
+def import_from_dat(
+    raw: bytes,
+    home: Path,
+    *,
+    source_name: str = "GXRCE.DAT",
+    origin: dict[Any, Any] | None = None,
+    forbidden: Iterable[Path] = (),
+) -> dict[Any, Any]:
     """从 DAT 字节提取三个单元 × 8 个配方（含原厂 04）到 `home/camera-data/`，返回 manifest。
 
     `origin`（可选）记下来源：{"kind": "card", "label": 卷标} 或 {"kind": "file"}，写进 manifest 的 source.origin。
+    `forbidden`：卷根、卡根、图库等不许落盘的目录（`privacy.forbidden_for`）。所有写入都相对已核对的目录 fd。
     """
+    privacy.check_private_dir(home, "camera_data", forbidden)  # 解析之前先拒绝不合格的目录
     dat, entries = entries_from_dat(raw)
     files: dict[str, bytes] = {"dat-template/GXRCE.DAT": bytes(raw)}
     for (unit, slot), e in entries.items():
@@ -80,80 +92,69 @@ def import_from_dat(raw: bytes, home: Path, *, source_name: str = "GXRCE.DAT", o
         },
         "files": {rel: {"size": len(b), "sha256": _sha(b)} for rel, b in sorted(files.items())},
     }
-    root = camera_data_dir(home)
-    tmp = root.with_name(root.name + ".new")
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    for rel, b in files.items():
-        p = tmp / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "wb") as f:
-            f.write(b)
-            f.flush()
-            os.fsync(f.fileno())
     if origin:
         manifest["source"]["origin"] = origin
-    (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
-    # 读回比对后才替换
-    for rel, meta in manifest["files"].items():
-        if _sha((tmp / rel).read_bytes()) != meta["sha256"]:
-            shutil.rmtree(tmp)
-            raise CamdataError(f"读回比对失败：{rel}")
-    swap_in(tmp, root)
+    files["manifest.json"] = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()
+    write_tree(home, CAMERA_DATA, files, manifest["files"], "camera_data", forbidden)
     return manifest
 
 
-def _atomic_exchange(a: Path, b: Path) -> bool:
-    """macOS：一次系统调用把两个目录对调（renamex_np + RENAME_SWAP），任何时刻 b 这个名字下都有完整的一份。
-    不支持（不是 macOS、文件系统不认）返回 False。"""
-    if sys.platform != "darwin":
-        return False
-    try:
-        fn = ctypes.CDLL(None, use_errno=True).renamex_np
-        fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        fn.restype = ctypes.c_int
-    except (OSError, AttributeError):
-        return False
-    return bool(fn(os.fsencode(a), os.fsencode(b), 2) == 0)
+def write_tree(home: Path, name: str, files: dict[str, bytes], expect: dict[str, Any], purpose: str, forbidden: Iterable[Path] = ()) -> None:
+    """把 `files` 写成 `home/<name>.new/`，按 `expect` 读回比对，再整体换掉 `home/<name>`（相机数据、标定包共用）。
+    全程相对已核对的应用数据目录 fd；失败时删掉自己的 `.new`，原来的 `<name>` 不动。"""
+    tmp = name + ".new"
+    with privacy.PrivateDir(home, purpose, forbidden) as d:
+        d.remove(tmp)
+        try:
+            for rel, b in files.items():
+                d.write(f"{tmp}/{rel}", b)
+            for rel, meta in expect.items():  # 读回比对后才替换
+                if _sha(d.read(f"{tmp}/{rel}")) != meta["sha256"]:
+                    raise CamdataError(f"读回比对失败：{rel}")
+            d.swap_in(tmp, name)
+        except BaseException:
+            try:
+                d.remove(tmp)
+            except (OSError, privacy.PrivatePathError):
+                pass  # 目录已经不合格时不再碰它；残留的 .new 下次写入前会先删掉
+            raise
 
 
-def swap_in(new: Path, root: Path) -> None:
-    """用 `new` 整体换掉 `root`（相机数据、标定包共用）。
-
-    优先用原子对调：断电或被杀也只会是"旧的"或"新的"，不会出现没有 root 的状态。
-    不支持原子对调时退回"旧的改名 .old → 新的改名 root"，这两步之间被打断会留下 `.old`，
-    下次启动时 `recover_interrupted_swaps` 自动恢复。"""
+def swap_in(new: Path, root: Path, forbidden: Iterable[Path] = ()) -> None:
+    """用 `new` 整体换掉 `root`（两者同一个上级目录）。按已核对的上级目录 fd 进行，见 `privacy.PrivateDir.swap_in`：
+    优先原子对调；不支持时退回"旧的改名 .old → 新的改名 root"，两步之间被打断由 `recover_interrupted_swaps` 恢复。
+    上级目录不合格时删掉 `new`，不留半个输出。"""
     new, root = Path(new), Path(root)
-    if not root.exists():
-        root.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(new, root)
-        return
-    if _atomic_exchange(new, root):
-        shutil.rmtree(new, ignore_errors=True)  # 对调之后 new 这个名字下是旧的那份
-        return
-    old = root.with_name(root.name + ".old")
-    if old.exists():
-        shutil.rmtree(old)
-    os.replace(root, old)
-    os.replace(new, root)
-    shutil.rmtree(old, ignore_errors=True)
+    if new.parent != root.parent:
+        raise CamdataError("swap_in 只能在同一个目录里对调")
+    try:
+        with privacy.PrivateDir(root.parent, "swap", forbidden) as d:
+            d.swap_in(new.name, root.name)
+    except privacy.PrivatePathError:
+        shutil.rmtree(new, ignore_errors=True)
+        raise
 
 
-def recover_interrupted_swaps(home: Path) -> list[str]:
+def recover_interrupted_swaps(home: Path, forbidden: Iterable[Path] = ()) -> list[str]:
     """启动时调用。发现 `<目录>.old`：root 不在就把 .old 改回去（换到一半被打断），root 在就说明换完了，.old 是残渣，删掉。
-    返回做了什么（给日志/测试看）。"""
+    返回做了什么（给日志/测试看）。应用数据目录不存在或不合格时什么都不做（不建目录，不碰它）。"""
+    if not Path(home).is_dir():
+        return []
     done = []
-    for name in ("camera-data", "calib"):
-        root = Path(home) / name
-        old = root.with_name(name + ".old")
-        if not old.exists():
-            continue
-        if root.exists():
-            shutil.rmtree(old, ignore_errors=True)
-            done.append(f"{name}: removed stale .old")
-        else:
-            os.replace(old, root)
-            done.append(f"{name}: restored from .old")
+    try:
+        with privacy.PrivateDir(home, "recover", forbidden) as d:
+            for name in (CAMERA_DATA, "calib"):
+                old = name + ".old"
+                if not d.exists(old):
+                    continue
+                if d.exists(name):
+                    d.remove(old)
+                    done.append(f"{name}: removed stale .old")
+                else:
+                    os.rename(old, name, src_dir_fd=d.fd, dst_dir_fd=d.fd)
+                    done.append(f"{name}: restored from .old")
+    except privacy.PrivatePathError:
+        return done
     return done
 
 

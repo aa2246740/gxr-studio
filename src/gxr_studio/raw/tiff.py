@@ -1,12 +1,15 @@
 """极小的只读 TIFF 读取器（经典 TIFF，不含 BigTIFF）。
 
 来源：research/color_calibration/analyze_capture.py 的 `Tiff`（SHA-256 见 PROVENANCE.json）。
-与来源的唯一差别：`assert` 换成 `ValueError`（文件来自外部，不能指望 `python -O` 下断言还在）。
-取值口径不变：有理数读成 float，ASCII 去掉尾部空白/NUL，其余类型读成 list。
+与来源的差别：`assert` 换成 `ValueError`（文件来自外部，不能指望 `python -O` 下断言还在）；
+分母为 0 的有理数读成 NaN（"未知"），不再抛 ZeroDivisionError。MOUNT 单元装手动镜头时，
+相机把 LensInfo 写成 0/100, 0/100, 0/0, 0/0。
+其余取值口径不变：有理数读成 float，ASCII 去掉尾部空白/NUL，其余类型读成 list。
 """
 
 from __future__ import annotations
 
+import math
 import struct
 from typing import Any
 
@@ -64,7 +67,7 @@ class Tiff:
                 value = raw
             elif typ in (5, 10):
                 a = struct.unpack(e + fmt * n, raw)
-                value = [a[j] / a[j + 1] for j in range(0, len(a), 2)]
+                value = [a[j] / a[j + 1] if a[j + 1] else math.nan for j in range(0, len(a), 2)]
             else:
                 value = list(struct.unpack(e + fmt * n, raw))
             result[tag] = {"offset": o, "raw": raw, "value": value, "type": typ, "count": n}

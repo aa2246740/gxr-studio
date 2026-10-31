@@ -26,6 +26,7 @@ dast:
 
 check: lint type security
 	uv run --frozen python scripts/dead_flags.py
+	uv run --frozen python scripts/private_bytes.py --tracked --dist
 	uv run --frozen python scripts/check_agents_md.py
 	uv run --frozen python scripts/large_files.py
 	uv run --frozen python scripts/export_openapi.py --check

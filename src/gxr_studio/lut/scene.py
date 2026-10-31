@@ -45,14 +45,19 @@ class SceneColour:
     def xyz(self, codes: np.ndarray) -> np.ndarray:
         u, f = ANCHOR["u_m"], ANCHOR["f"]
         white = self.neutral @ self.matrix.T
-        scale = 0.18 / ((u - f) * white[1])
-        raw = (np.asarray(codes, float) / CODE_MAX - f) * self.neutral
-        return cast(np.ndarray, raw @ self.matrix.T * scale)
+        with np.errstate(all="ignore"):  # 结果下面整体核对
+            scale = 0.18 / ((u - f) * white[1])
+            raw = (np.asarray(codes, float) / CODE_MAX - f) * self.neutral
+            out = raw @ self.matrix.T * scale
+        if not np.all(np.isfinite(out)):
+            raise SceneError("bad_colour", "这张 RAW 的颜色换算出现无效值，不能用来换算 Log 调色文件")
+        return cast(np.ndarray, out)
 
 
 def scene_colour(dng: Any) -> SceneColour:
     """从 `raw.Dng` 读色彩矩阵标签并算出相机→XYZ；缺标签时抛 SceneError。"""
-    if dng.as_shot_neutral is None or np.any(np.asarray(dng.as_shot_neutral) <= 0):
+    neutral = None if dng.as_shot_neutral is None else np.asarray(dng.as_shot_neutral, float)
+    if neutral is None or not np.all(np.isfinite(neutral)) or np.any(neutral <= 0):
         raise SceneError("no_neutral", "这张 RAW 没有白平衡信息，不能用来换算 Log 调色文件")
     t = Tiff(dng.data)
     root = t.ifd(t.root)
@@ -61,8 +66,14 @@ def scene_colour(dng: Any) -> SceneColour:
         return root[tag]["value"] if tag in root else default
 
     def mat(tag: Any) -> Any:
+        """标签不存在是"没有"；存在但个数不对、或有分母为 0 的值（读成 NaN），是坏的，必须拒绝，不能悄悄当作没有。"""
         v = val(tag)
-        return None if v is None else np.asarray(v, float).reshape(3, 3)
+        if v is None:
+            return None
+        m = np.asarray(v, float)
+        if m.size != 9 or not np.all(np.isfinite(m)):
+            raise SceneError("bad_matrix", "这张 RAW 的色彩矩阵无效，不能用来换算 Log 调色文件")
+        return m.reshape(3, 3)
 
     from types import SimpleNamespace
 
@@ -75,9 +86,21 @@ def scene_colour(dng: Any) -> SceneColour:
     )
     if all(m is None for m in tags.color_matrix):
         raise SceneError("no_matrix", "这张 RAW 没有色彩矩阵，不能用来换算 Log 调色文件")
-    col = colorimetry.DngColour(tags)
-    white, _ = colorimetry.white_from_neutral(col, dng.as_shot_neutral)
-    return SceneColour(np.asarray(dng.as_shot_neutral, float), col.camera_to_xyz(white))
+    # 标签本身合格还不够（复审 A1a R2-P1-05）：换算出来的白点、矩阵、白点亮度也要逐项核对
+    bad = SceneError("bad_matrix", "这张 RAW 的色彩矩阵无效，不能用来换算 Log 调色文件")
+    try:
+        with np.errstate(all="ignore"):
+            col = colorimetry.DngColour(tags)
+            white, _ = colorimetry.white_from_neutral(col, neutral)
+            matrix = np.asarray(col.camera_to_xyz(white), float)
+            white_y = float((neutral @ matrix.T)[1])
+    except (np.linalg.LinAlgError, ZeroDivisionError, FloatingPointError, ValueError, IndexError) as exc:
+        raise bad from exc
+    if not (np.all(np.isfinite(white)) and np.all(np.isfinite(matrix)) and matrix.shape == (3, 3)):
+        raise bad
+    if not (np.isfinite(white_y) and white_y > 0):
+        raise bad
+    return SceneColour(neutral, matrix)
 
 
 @dataclass

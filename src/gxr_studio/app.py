@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from starlette.types import Scope
 
-from . import __version__, audit
+from . import __version__, audit, privacy
 from .alerts import StudioNotifier, register_alert_service
 from .api.camdata_routes import router as camdata_router
 from .api.errors import ApiError
@@ -26,9 +26,11 @@ from .api.routes import router
 from .camdata import store as camdata_store
 from .cards.discovery import CardReader
 from .cards.importer import ImportOptions
+from .cards.session import SessionRegistry
 from .config import Settings
 from .export import ExportLedger
 from .jobs import JobRegistry
+from .library.location import card_roots
 from .library.sidecar import SidecarCorrupt
 from .library.store import SIDECAR_RESET_NOTE, Library
 from .lut.service import LutService
@@ -53,6 +55,7 @@ class Context:
     metrics: Metrics = field(default_factory=Metrics)
     alerts: StudioNotifier = field(default_factory=StudioNotifier)
     exports: ExportLedger = field(default_factory=ExportLedger)
+    sessions: SessionRegistry = field(default_factory=SessionRegistry)  # 挂载会话：接口里的 card_id
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -69,10 +72,13 @@ def create_app(
     *,
     reader: CardReader | None = None,
     import_options: ImportOptions | None = None,
+    sessions: SessionRegistry | None = None,
 ) -> FastAPI:
-    camdata_store.recover_interrupted_swaps(settings.home_dir)  # 上次换相机数据/标定包到一半被打断：先恢复
+    # 上次换相机数据/标定包到一半被打断：先恢复（按已核对的目录 fd；目录不合格就不碰）
+    camdata_store.recover_interrupted_swaps(settings.home_dir, privacy.forbidden_for(settings))
     init_error_tracking()
-    lib = Library(settings.library_dir).open()
+    # 第一次写图库之前，先只读找出插着的卡；图库或 .studio 解析到卡上（或图库外面）就拒绝启动（复审 A1a R3-P1-01）
+    lib = Library(settings.library_dir, card_roots(settings.volumes_roots)).open()
     recorder = audit.AuditRecorder(limit=5000)
     recorder.__enter__()  # 应用存活期间一直记录写入
     render = RenderService(settings.home_dir, lib)
@@ -91,7 +97,9 @@ def create_app(
         import_options,
         metrics=metrics,
         alerts=alerts,
+        sessions=sessions or SessionRegistry(),
     )
+    privacy.startup_check(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:

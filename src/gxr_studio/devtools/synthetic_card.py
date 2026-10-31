@@ -216,7 +216,9 @@ def make_card(
     for rel in junk:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(b"junk " + rel.encode())
+        # `._xxx` 是 macOS 的 AppleDouble 文件：开头是它的魔数，这样才和真卡上看到的一样
+        head = b"\x00\x05\x16\x07\x00\x02\x00\x00" if Path(rel).name.startswith("._") else b""
+        p.write_bytes(head + b"junk " + rel.encode())
     card.junk = junk
     return card
 

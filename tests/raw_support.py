@@ -34,6 +34,9 @@ def _pack_values(kind: str, values) -> bytes:
         fmt = ">%dI" if kind == "RATIONAL" else ">%di"
         out = []
         for v in values:
+            if isinstance(v, tuple):  # (分子, 分母) 原样写入，可以造分母为 0 的值
+                out += list(v)
+                continue
             den = 1_000_000
             out += [int(round(v * den)), den]
         return struct.pack(fmt % len(out), *out)
@@ -117,7 +120,10 @@ def build_dng(
     when: str = "2026:10:16 18:51:53",
     lens: str = "RICOH GR LENS A12 50mm F2.5 MACRO",
     with_neutral: bool = True,
+    exif_entries=(),
+    root_extra=(),
 ) -> bytes:
+    """`exif_entries` / `root_extra`：[(tag, kind, values)]，同标签覆盖默认值。"""
     h, w = mosaic.shape
     buf = _Buf()
     strip = buf.blob(pack_mosaic(mosaic, bps))
@@ -151,16 +157,16 @@ def build_dng(
     if linearization is not None:
         raw.append((50712, "SHORT", list(linearization)))
     sub = buf.ifd(raw)
-    exif = buf.ifd(
-        [
-            (33434, "RATIONAL", [0.01]),
-            (33437, "RATIONAL", [2.5]),
-            (34855, "SHORT", [iso]),
-            (36867, "ASCII", when),
-            (36868, "ASCII", when),
-            (37500, "UNDEFINED", b"Ricoh\0\0\0" + bytes(range(40))),
-        ]
-    )
+    exif_rows = {
+        33434: (33434, "RATIONAL", [0.01]),
+        33437: (33437, "RATIONAL", [2.5]),
+        34855: (34855, "SHORT", [iso]),
+        36867: (36867, "ASCII", when),
+        36868: (36868, "ASCII", when),
+        37500: (37500, "UNDEFINED", b"Ricoh\0\0\0" + bytes(range(40))),
+    }
+    exif_rows.update({e[0]: e for e in exif_entries})
+    exif = buf.ifd(list(exif_rows.values()))
     thumb = buf.blob(bytes(8 * 8 * 3))
     ifd0 = [
         (256, "SHORT", [8]),
@@ -183,7 +189,8 @@ def build_dng(
     ]
     if with_neutral:
         ifd0.append((50728, "RATIONAL", list(neutral)))
-    root = buf.ifd(ifd0)
+    extra = {e[0]: e for e in root_extra}
+    root = buf.ifd([e for e in ifd0 if e[0] not in extra] + list(extra.values()))
     buf.b[4:8] = struct.pack(">I", root)
     return bytes(buf.b)
 

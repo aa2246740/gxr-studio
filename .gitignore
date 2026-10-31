@@ -29,3 +29,13 @@ htmlcov/
 *.DNG
 *.gpr
 GXRCE.DAT
+
+# 相机配方文件、效果文件、备份和电脑上的版本库（设计 §5.6）。忽略只是辅助：
+# 真正挡住它们的是 privacy.py 的路径守卫和 scripts/private_bytes.py 的按内容检查。
+camera/
+*.gxrkit
+GXRFX.BIN
+GXRFX.TMP
+GXRCE.*
+gxrce*.dat
+*.DAT

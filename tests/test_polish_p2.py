@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -156,17 +157,15 @@ def test_frontend_refreshes_the_selection_and_names_unexported_photos():
 
 
 def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
+    # 父进程用 /bin/sh（阻塞在 read 上），被 SIGKILL 掉之后子进程要自己退出。
+    # 同一时间只有 pytest 和这一个子 Python 进程（复审 A1a 的进程数规则：测试进程最多 2 个）。
     child_code = (
         "import os, time\nfrom gxr_studio.lut.worker import watch_parent\n"
         "stop = {'flag': False}\nwatch_parent(stop, os.getppid(), 0.1, 0.3)\n"
         "print(os.getpid(), flush=True)\ntime.sleep(120)\n"
     )
-    parent_code = (
-        "import subprocess, sys\n"
-        f"p = subprocess.Popen([sys.executable, '-c', {child_code!r}], stdout=subprocess.PIPE, text=True, start_new_session=True)\n"
-        "print(p.stdout.readline().strip(), flush=True)\nimport time; time.sleep(120)\n"
-    )
-    parent = subprocess.Popen([sys.executable, "-c", parent_code], stdout=subprocess.PIPE, text=True)
+    script = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"
+    parent = subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     child_pid = None
     try:
         child_pid = int(parent.stdout.readline())
@@ -353,7 +352,8 @@ def test_completion_interrupted_after_the_move_is_resumed_not_duplicated(volumes
     assert len(rows) == 1 and set(rows[0]["files"]) == {"dng", "jpg"} and lib.count() == total
     assert sc.read(side_path)["crop"] == crop_before, "裁切不能丢"
     assert rows[0]["crop"] and rows[0]["crop"]["preset"] == "1:1"
-    assert p.state == "done" and p.completed_shots == 1 and "可以推出存储卡" in p.message
+    # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不说"可以推出"
+    assert p.state == "done" and p.completed_shots == 1 and p.message == "已导入 1 张照片。存储卡上有 2 个文件不会被导入"
     assert not list(side_path.parent.glob("R0000104*.corrupt-*"))
 
 

@@ -18,10 +18,12 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from .. import privacy
 from ..camdata import intake
+from ..cards.session import MountSession, SessionError
 from ..library import thumbs
 from .errors import ApiError
-from .routes import ctx
+from .routes import _forbidden_roots, ctx
 
 router = APIRouter()
 
@@ -44,14 +46,38 @@ def _project_dir() -> str | None:
     return str(root) if (root / "research").is_dir() else None
 
 
+def _scan_sessions(c: Any) -> list[tuple[MountSession, intake.CardScan]]:
+    """插着的卡（有 DCIM 或卡根有 GXRCE.DAT），每张对应一个挂载会话；card_id 就是会话号。"""
+    scans = intake.scan_cards_for_dat(c.settings.volumes_roots, c.reader)
+    c.sessions.prune()
+    out = []
+    for scan in scans:
+        session = c.sessions.attach(scan.card)
+        if session is not None:
+            out.append((session, scan))
+    return out
+
+
+def _forbidden(c: Any) -> list[Path]:
+    """理光字节不许落盘的目录：卷根、当前卡根、图库（设计 §5.6）。写入函数拿着它在每次核对时用。"""
+    return privacy.forbidden_for(c.settings, _forbidden_roots(c))
+
+
+def _guard_home(c: Any) -> list[Path]:
+    """理光字节写进应用数据目录之前先核对一次（拒绝时一个字节都不写）；返回完整的禁止目录，交给写入函数再用。"""
+    forbidden = _forbidden(c)
+    try:
+        privacy.check_private_dir(c.settings.home_dir, "camera_data", forbidden)
+    except privacy.PrivatePathError as exc:
+        raise ApiError(422, exc.code, exc.message, {"detail": exc.detail}) from exc
+    return forbidden
+
+
 def _status(c: Any) -> dict[Any, Any]:
     home = c.settings.home_dir
     rs = c.render.status()
     cam, cal = intake.describe(home), intake.describe_calibration(home)
-    cards = [
-        {"id": s.card.key, "label": s.card.label, "has_dat": s.has_dat, "dat_size": s.dat_size}
-        for s in intake.scan_cards_for_dat(c.settings.volumes_roots, c.reader)
-    ]
+    cards = [{"id": sess.session_id, "label": s.card.label, "has_dat": s.has_dat, "dat_size": s.dat_size} for sess, s in _scan_sessions(c)]
     if rs["camera_data"]["state"] != "ready":
         nxt, why = "import_camera_data", rs["camera_data"]["message"]
     elif rs["calibration"]["state"] == "missing":
@@ -88,16 +114,19 @@ def _status(c: Any) -> dict[Any, Any]:
 def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any]) -> dict[Any, Any]:
     """校验（不过就原样保留旧数据）→ 与已导入的相同就不动 → 否则在渲染锁里替换并让缓存失效。"""
     try:
+        forbidden = _guard_home(c)  # 先核对目标目录，再看字节：拒绝时一个字节都不落盘
         info = intake.inspect_dat(raw)
         home = c.settings.home_dir
         with c.camdata_lock:
             unchanged = intake.existing_source_sha(home) == info.sha256
             removed = 0
             if not unchanged:
-                c.render.replace_data(lambda: intake.install_dat(raw, home, source_name=name, origin=origin))
+                c.render.replace_data(lambda: intake.install_dat(raw, home, source_name=name, origin=origin, forbidden=forbidden))
                 removed = thumbs.purge_variants(c.lib)
     except intake.IntakeError as exc:
         raise _api(exc) from exc
+    except privacy.PrivatePathError as exc:
+        raise ApiError(422, exc.code, exc.message, {"detail": exc.detail}) from exc
     status = _status(c)
     where = f"存储卡「{origin['label']}」" if origin.get("kind") == "card" else "你选的文件"
     msg = (
@@ -126,19 +155,24 @@ def camdata_status(request: Request) -> Any:
 @router.post("/api/camdata/import-card", response_model=None)
 def import_from_card(request: Request, body: ImportCardRequest | None = None) -> Any:
     c = ctx(request)
-    scans = intake.scan_cards_for_dat(c.settings.volumes_roots, c.reader)
-    if body and body.card_id:
-        pick = next((s for s in scans if s.card.key == body.card_id), None)
+    pairs = _scan_sessions(c)
+    scans = [s for _, s in pairs]
+    if body and body.card_id is not None:
+        try:
+            session = c.sessions.resolve(body.card_id)
+        except SessionError as exc:
+            raise ApiError(exc.status, exc.code, exc.message) from exc
+        pick = next((s for sess, s in pairs if sess.session_id == session.session_id), None)
         if pick is None:
             raise ApiError(404, "card_not_found", "找不到存储卡。请重新插入后重试。")
     else:
-        with_dat = [s for s in scans if s.has_dat]
+        with_dat = [(sess, s) for sess, s in pairs if s.has_dat]
         if len(with_dat) > 1:
             raise ApiError(
                 409,
                 "multiple_cards",
                 "插着不止一张带 GXRCE.DAT 的存储卡。请选一张。",
-                {"cards": [{"id": s.card.key, "label": s.card.label} for s in with_dat]},
+                {"cards": [{"id": sess.session_id, "label": s.card.label} for sess, s in with_dat]},
             )
         if not with_dat:
             if not scans:
@@ -152,7 +186,7 @@ def import_from_card(request: Request, body: ImportCardRequest | None = None) ->
                 "dat_not_found",
                 "存储卡上没有相机配方文件（GXRCE.DAT）",
             )
-        pick = with_dat[0]
+        pick = with_dat[0][1]
     if not pick.has_dat:
         raise ApiError(404, "dat_not_found", "存储卡上没有相机配方文件（GXRCE.DAT）")
     try:
@@ -196,12 +230,15 @@ async def import_from_upload(request: Request) -> Any:
 def import_calibration(body: PathRequest, request: Request) -> dict[Any, Any]:
     c = ctx(request)
     home = c.settings.home_dir
+    forbidden = _guard_home(c)
     try:
         with c.camdata_lock:
-            _, kind = c.render.replace_data(lambda: intake.import_calibration_folder(home, Path(body.path)))
+            _, kind = c.render.replace_data(lambda: intake.import_calibration_folder(home, Path(body.path), forbidden))
             removed = thumbs.purge_variants(c.lib)
     except intake.IntakeError as exc:
         raise _api(exc) from exc
+    except privacy.PrivatePathError as exc:
+        raise ApiError(422, exc.code, exc.message, {"detail": exc.detail}) from exc
     status = _status(c)
     msg = "已导入校准数据" + ("（开发机研究目录）" if kind == "dev" else "") + "，ISO 200 和 ISO 1600 两套。"
     return {

@@ -44,8 +44,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/gxr_studio"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/gxr_studio/assets" = "gxr_studio/assets"
+# assets/ 在包目录里，wheel 默认就带上；再写 force-include 会重复加入同一个文件，构建失败。
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

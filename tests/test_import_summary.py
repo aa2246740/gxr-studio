@@ -41,6 +41,7 @@ BASE = dict(
     verify_failed=[],
     scan_errors=[],
     message="",
+    coverage=dict(complete=True, dcim="present", total=15, covered=15, uncovered=[], not_importable=[], all_imported=True),
 )
 
 
@@ -51,7 +52,7 @@ def progress(**kw) -> str:
 @needs_node
 def test_clean_import_may_say_eject():
     r = run_js(f"[S.summarizeImport({progress()}), S.canEject({progress()})]")
-    assert r[1] is True and r[0]["kind"] == "ok" and r[0]["text"] == "已导入 14 张"
+    assert r[1] is True and r[0]["kind"] == "ok" and r[0]["text"] == "已导入 14 张照片"
 
 
 @needs_node
@@ -86,6 +87,55 @@ def test_problem_banner_names_the_files_and_counts_photos():
     (s,) = [run_js(f"S.summarizeImport({p})")]
     assert "R0000104.JPG" in s["detail"] and "R0000102.DNG" in s["detail"] and "文件夹 101RICOH" in s["detail"]
     assert s["text"] == "有 3 个文件未能导入。请勿格式化存储卡，重新插入后再试一次。"
+
+
+def coverage(**kw) -> dict:
+    return {**BASE["coverage"], **kw}
+
+
+@needs_node
+@pytest.mark.parametrize(
+    "cov",
+    [
+        None,  # 没有核对结果
+        dict(complete=False),  # 严格扫描不完整：照片数为 0 不代表没有照片
+        dict(dcim="link"),
+    ],
+)
+def test_unverifiable_card_is_never_called_all_imported(cov):
+    p = progress(imported_shots=0, coverage=None if cov is None else coverage(**cov))
+    summary, can_eject, status = run_js(f"[S.summarizeImport({p}), S.canEject({p}), S.doneStatusText({p})]")
+    assert can_eject is False and summary["kind"] == "bad" and summary["retry"] is True
+    assert summary["text"] == "无法核对存储卡上的照片，请勿格式化存储卡。"
+    assert "都已导入" not in summary["text"] and status == "存储卡：有未导入的照片"
+
+
+@needs_node
+def test_uncovered_files_are_problems():
+    p = progress(coverage=coverage(covered=14, uncovered=["DCIM/100RICOH/R0000105.JPG"]))
+    summary, can_eject = run_js(f"[S.summarizeImport({p}), S.canEject({p})]")
+    assert can_eject is False and summary["kind"] == "bad" and "R0000105.JPG" in summary["detail"]
+    assert summary["text"] == "有 1 个文件未能导入。请勿格式化存储卡，重新插入后再试一次。"
+
+
+@needs_node
+def test_not_importable_files_are_counted_not_called_all_imported():
+    extra = ["DCIM/100RICOH/R0000200.MOV", "DCIM/NOTE.TXT"]
+    p = progress(imported_shots=0, duplicate_shots=15, coverage=coverage(not_importable=extra))
+    summary, can_eject, status = run_js(f"[S.summarizeImport({p}), S.canEject({p}), S.doneStatusText({p})]")
+    assert summary["text"] == "存储卡上有 2 个文件不会被导入" and "R0000200.MOV" in summary["detail"]
+    assert can_eject is False and status == "存储卡：已插入"
+    p = progress(imported_shots=3, coverage=coverage(not_importable=extra))
+    assert run_js(f"S.summarizeImport({p})")["text"] == "已导入 3 张照片。存储卡上有 2 个文件不会被导入"
+
+
+@needs_node
+def test_all_imported_and_videos():
+    p = progress(imported_shots=0, duplicate_shots=15)
+    assert run_js(f"S.summarizeImport({p})")["text"] == "这张存储卡上的照片都已导入"
+    p = progress(imported_shots=2, imported_videos=1)
+    summary, can_eject = run_js(f"[S.summarizeImport({p}), S.canEject({p})]")
+    assert summary["text"] == "已导入 2 张照片和 1 个视频" and can_eject is True
 
 
 @needs_node
