@@ -187,7 +187,8 @@ def test_import_from_card_is_read_only_and_extracts_everything(client, volumes, 
     audit_after = client.get("/api/audit").json()
     new = audit_after["recent"][-(audit_after["write_count"] - audit_before["write_count"]) :]
     assert new and not [w for w in new if str(volumes) in w["path"] or str(volumes.resolve()) in w["path"]]
-    assert any(str(settings.home_dir) in w["path"] for w in new)
+    # 按目录 fd 写入：审计记的是目录 fd 的真实路径（macOS 的 /var 会解析成 /private/var）
+    assert any(str(settings.home_dir) in w["path"] or str(settings.home_dir.resolve()) in w["path"] for w in new)
 
 
 def test_import_from_a_card_without_dcim_and_with_lowercase_name(client, volumes, settings):
@@ -237,7 +238,8 @@ def test_two_cards_with_the_dat_need_a_choice(client, volumes, settings):
     assert set(ids) == {"CARD-A", "CARD-B"} and not (settings.home_dir / "camera-data").exists()
     ok = client.post("/api/camdata/import-card", json={"card_id": ids["CARD-B"]})
     assert ok.status_code == 200 and ok.json()["generation"] == 135
-    assert client.post("/api/camdata/import-card", json={"card_id": "../../etc"}).json()["error"] == "card_not_found"
+    assert client.post("/api/camdata/import-card", json={"card_id": "../../etc"}).json()["error"] == "bad_card_id"
+    assert client.post("/api/camdata/import-card", json={"card_id": "0" * 26}).json()["error"] == "card_not_found"
 
 
 def test_card_id_of_a_card_without_the_dat(client, volumes, card):

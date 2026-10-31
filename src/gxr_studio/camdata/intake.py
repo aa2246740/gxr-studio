@@ -194,10 +194,11 @@ def existing_source_sha(home: Path) -> str | None:
         return None
 
 
-def install_dat(raw: bytes, home: Path, *, source_name: str, origin: dict[Any, Any]) -> dict[Any, Any]:
-    """（已经 `inspect_dat` 通过的）DAT 提取到 `home/camera-data/`，返回 manifest。写入先落临时目录、读回比对再整体替换。"""
+def install_dat(raw: bytes, home: Path, *, source_name: str, origin: dict[Any, Any], forbidden: Iterable[Path] = ()) -> dict[Any, Any]:
+    """（已经 `inspect_dat` 通过的）DAT 提取到 `home/camera-data/`，返回 manifest。写入先落临时目录、读回比对再整体替换。
+    `forbidden` 是不许落盘的目录（卷根、卡根、图库），见 `privacy.forbidden_for`。"""
     try:
-        return store.import_from_dat(raw, home, source_name=source_name, origin=origin)
+        return store.import_from_dat(raw, home, source_name=source_name, origin=origin, forbidden=forbidden)
     except (store.CamdataError, datcodec.DatError, OSError) as exc:
         raise IntakeError(500, "camdata_write_failed", "相机配方文件没能存进应用数据目录。请重试。") from exc
 
@@ -280,8 +281,9 @@ def _bad_pack(detail: str) -> IntakeError:
     return IntakeError(422, "calibration_pack_invalid", _PACK_MISMATCH, {"detail": detail})
 
 
-def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
-    """校验 calib-pack.json，逐个文件复制到 `snap` 并边复制边核 SHA-256。返回 {iso: (npz, ring)}（指向 snap）。"""
+def _snapshot_pack(folder: Path) -> dict[Any, Any]:
+    """校验 calib-pack.json，逐个文件读进内存并核 SHA-256。返回 {iso: ((文件名, 字节), (文件名, 字节))}：
+    核对的和导入的是同一份字节，而且不在应用数据目录里落任何临时文件。"""
     try:
         pack = json.loads((folder / PACK_FILE).read_text())
     except (OSError, ValueError) as exc:
@@ -305,8 +307,8 @@ def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
             if not isinstance(meta, dict) or not isinstance(meta.get("sha256"), str) or len(meta["sha256"]) != 64:
                 raise _bad_pack(f"清单里没有「{name}」的 SHA-256。")
             wanted[name] = meta["sha256"].lower()
-        sources[int(iso_s)] = (snap / pair["npz"], snap / pair["ring"])
-    snap.mkdir(parents=True)
+        sources[int(iso_s)] = (pair["npz"], pair["ring"])
+    data_by_name: dict[str, bytes] = {}
     for name, want in sorted(wanted.items()):
         src = folder / name
         if src.is_symlink() or not src.is_file():
@@ -319,8 +321,8 @@ def _snapshot_pack(folder: Path, snap: Path) -> dict[Any, Any]:
         declared = files[name].get("size")
         if declared is not None and declared != len(data):
             raise _bad_pack(f"文件「{name}」的大小和清单对不上，没有导入。")
-        (snap / name).write_bytes(data)
-    return sources
+        data_by_name[name] = data
+    return {iso: ((npz, data_by_name[npz]), (ring, data_by_name[ring])) for iso, (npz, ring) in sources.items()}
 
 
 def _dev_sources(folder: Path) -> dict[Any, Any] | None:
@@ -332,7 +334,7 @@ def _dev_sources(folder: Path) -> dict[Any, Any] | None:
     return None
 
 
-def import_calibration_folder(home: Path, folder: Path) -> tuple[dict[Any, Any], str]:
+def import_calibration_folder(home: Path, folder: Path, forbidden: Iterable[Path] = ()) -> tuple[dict[Any, Any], str]:
     """返回 (manifest, kind)；kind = pack | dev。要先导入相机数据（用它的原厂 04 核对包里的 stock）。"""
     folder = Path(folder).expanduser()
     if not folder.is_absolute():
@@ -343,34 +345,26 @@ def import_calibration_folder(home: Path, folder: Path) -> tuple[dict[Any, Any],
         raise IntakeError(409, "camera_data_missing", "还没有导入相机配方文件。校准数据要用其中的原厂 04 核对，请先导入 GXRCE.DAT。") from exc
     if not folder.is_dir():
         raise IntakeError(404, "folder_not_found", "找不到这个文件夹。请重新选择后再试。")
-    snap = Path(home) / "calib-intake.tmp"
-    stale = calib.calib_dir(home).with_name(calib.calib_dir(home).name + ".new")
+    if (folder / PACK_FILE).is_file():
+        sources, kind, origin = _snapshot_pack(folder), "pack", {"kind": "pack", "folder": folder.name}
+    else:
+        sources = _dev_sources(folder)  # type: ignore[assignment]
+        if sources is None:
+            raise _bad_pack(
+                "这个文件夹里没有 calib-pack.json（校准数据的清单）。"
+                "开发阶段也可以选仓库根目录或 research/ 目录；别的用户需要另外拿到校准数据。"
+            )
+        kind, origin = "dev", {"kind": "dev", "folder": folder.name}
     try:
-        if snap.exists():
-            shutil.rmtree(snap)
-        if (folder / PACK_FILE).is_file():
-            sources, kind, origin = _snapshot_pack(folder, snap), "pack", {"kind": "pack", "folder": folder.name}
-        else:
-            sources = _dev_sources(folder)  # type: ignore[assignment]
-            if sources is None:
-                raise _bad_pack(
-                    "这个文件夹里没有 calib-pack.json（校准数据的清单）。"
-                    "开发阶段也可以选仓库根目录或 research/ 目录；别的用户需要另外拿到校准数据。"
-                )
-            kind, origin = "dev", {"kind": "dev", "folder": folder.name}
-        try:
-            return calib.import_calibration(home, sources, origin=origin), kind
-        except calib.StockMismatch as exc:
-            raise IntakeError(
-                422,
-                "calibration_stock_mismatch",
-                _PACK_MISMATCH,
-                {"detail": str(exc)},
-            ) from exc
-        except calib.CalibError as exc:
-            raise _bad_pack("校准数据不合格，没有导入。请重新选择后再试。") from exc
-        except (OSError, ValueError, KeyError, EOFError) as exc:
-            raise _bad_pack("校准数据里的文件读不出来，没有导入。请重新选择后再试。") from exc
-    finally:
-        shutil.rmtree(snap, ignore_errors=True)
-        shutil.rmtree(stale, ignore_errors=True)  # 失败时 import_calibration 留下的半成品
+        return calib.import_calibration(home, sources, origin=origin, forbidden=forbidden), kind
+    except calib.StockMismatch as exc:
+        raise IntakeError(
+            422,
+            "calibration_stock_mismatch",
+            _PACK_MISMATCH,
+            {"detail": str(exc)},
+        ) from exc
+    except calib.CalibError as exc:
+        raise _bad_pack("校准数据不合格，没有导入。请重新选择后再试。") from exc
+    except (OSError, ValueError, KeyError, EOFError) as exc:
+        raise _bad_pack("校准数据里的文件读不出来，没有导入。请重新选择后再试。") from exc

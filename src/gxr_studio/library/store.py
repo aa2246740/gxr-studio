@@ -2,11 +2,15 @@
 
 真相是文件和 sidecar：
 
-    <图库>/YYYY/YYYY-MM-DD/Rxxxxxxx.DNG|JPG|gxrs.json
+    <图库>/YYYY/YYYY-MM-DD/Rxxxxxxx.DNG|JPG|AVI|gxrs.json
     <图库>/未知日期/…                      （undated_policy = unknown_folder 时）
     <图库>/.studio/{index.sqlite, thumbs/, staging/, import-log.jsonl}
 
-`.studio` 里除了 `import-log.jsonl`（追加日志，同时是 seen 的备份）以外都能删。
+`.studio` 里除了 `import-log.jsonl`（追加日志，同时是 seen/seen2 的备份）以外都能删。
+
+- `seen`（旧表，按挂载目录名分区）：保留，只当"可能导入过"的提示，**不再用来跳过读取**；
+- `seen2`（按完整卷 UUID 分区）：只在实际读过内容、算出 SHA 以后写入；能不能拿它跳过，见 `cards/coverage.py`；
+- `videos`：原样复制进来的相机录像（不进照片网格，只用来证明"已导入"）。
 """
 
 from __future__ import annotations
@@ -17,19 +21,23 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Iterable, cast
 
+from .. import audit
 from .. import meta as metamod
 from . import sidecar as sc
+from .location import check_library_location
 
 SCHEMA_VERSION = 1
 UNKNOWN_DATE_DIR = "未知日期"
 BACKUP_DIR = "相机备份"
 MEDIA_EXT = {".dng": "dng", ".jpg": "jpg"}
+VIDEO_EXT = {".avi": "avi"}
 SIDECAR_RESET_NOTE = "无法读取编辑记录，已按原图显示"
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -48,10 +56,33 @@ CREATE INDEX IF NOT EXISTS files_rel ON files(relpath);
 CREATE TABLE IF NOT EXISTS seen(
   card_key TEXT NOT NULL, relpath TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
   sha256 TEXT NOT NULL, PRIMARY KEY(card_key, relpath));
+CREATE TABLE IF NOT EXISTS seen2(
+  volume_uuid TEXT NOT NULL, relpath TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+  sha256 TEXT NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY(volume_uuid, relpath));
+CREATE TABLE IF NOT EXISTS videos(
+  relpath TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, added_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS videos_sha ON videos(sha256);
+CREATE TABLE IF NOT EXISTS filecheck(
+  relpath TEXT PRIMARY KEY, ino INTEGER NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, ctime_ns INTEGER NOT NULL,
+  sha256 TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS edits(
   shot_id TEXT PRIMARY KEY, sidecar_rev INTEGER NOT NULL, updated_at TEXT, crop_json TEXT);
 CREATE INDEX IF NOT EXISTS shots_date ON shots(date, captured_at, name);
 """
+
+
+class LibraryPathRefused(Exception):
+    """要写的图库位置按真实路径解析后不在图库里（例如经过链接指到了存储卡）。不写，报这个文件没导入。"""
+
+
+def _file_key(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 def make_shot_id(dng_sha: str | None, jpg_sha: str | None) -> str:
@@ -110,13 +141,16 @@ class RebuildReport:
     hashed: int = 0
     mismatches: list[str] = field(default_factory=list)
     seen_restored: int = 0
+    videos: int = 0
     sidecars_created: int = 0
     corrupt_backups: list[str] = field(default_factory=list)  # 坏掉的 sidecar 改名留下的备份（相对图库）
 
 
 class Library:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, card_roots: Iterable[str | os.PathLike[str]] = ()) -> None:
+        """`card_roots`：启动时只读找到的卡根（`location.card_roots`）。图库根和图库自己的文件都不许解析到它们里面。"""
         self.root = Path(root)
+        self.card_roots = [Path(p) for p in card_roots]
         self.studio = self.root / ".studio"
         self.thumbs_dir = self.studio / "thumbs"
         self.staging_dir = self.studio / "staging"
@@ -129,6 +163,8 @@ class Library:
 
     # ---- 生命周期 ---------------------------------------------------------
     def open(self) -> "Library":
+        # 第一次写图库（建目录、清临时目录、打开索引）之前：核对图库和 .studio 的真实位置（复审 A1a R3-P1-01）
+        check_library_location(self.root, self.card_roots)
         self.studio.mkdir(parents=True, exist_ok=True)
         self.thumbs_dir.mkdir(exist_ok=True)
         self.staging_dir.mkdir(exist_ok=True)
@@ -184,14 +220,81 @@ class Library:
         return self.root / relpath
 
     # ---- 查询 -------------------------------------------------------------
-    def sha_present(self, sha: str) -> str | None:
-        """图库里已有这份内容（索引里有，磁盘上也在）就返回所属 shot_id。"""
+    def is_local(self, path: str | os.PathLike[str]) -> bool:
+        """`path` 顺着所有链接解析以后，真的在图库目录里面，而且不在任何登记了写保护的目录（发现到的卡根）里。
+        图库里的子目录被做成指向卡的链接时，这里是 False：那里的文件不是"电脑上的副本"，那里也不许写。"""
+        real = Path(os.path.realpath(path))
+        root = Path(os.path.realpath(self.root))
+        if real != root and root not in real.parents:
+            return False
+        for p in [*self.card_roots, *audit.protected_roots()]:
+            rp = Path(os.path.realpath(str(p)))
+            if real == rp or rp in real.parents:
+                return False
+        return True
+
+    def check_write(self, relpath: str) -> None:
+        """图库里的每一次写入（建目录、放文件、改名、改时间、编辑记录、修复）之前调用：按真实解析后的位置核对，
+        进了卡根或者跑出了图库目录就拒绝（复审 A1a R2-P1-01）。"""
+        if not self.is_local(self.abspath(relpath)):
+            raise LibraryPathRefused(relpath)
+
+    def current_sha(self, relpath: str) -> str | None:
+        """图库里这个文件现在的内容 SHA（不是索引里记的）。不是图库里的普通文件、读不了、或者一直在变，返回 None（未知）。
+
+        哈希前后各取一次状态 (inode, 长度, mtime, ctime)；不一样就重读重算，几次都稳定不下来就返回未知。缓存只记
+        "读字节的那一刻"对应的状态和 SHA（复审 A1a R2-P1-02），之后文件有任何改写、替换、截断、改时间都会让缓存失效。
+        顺着链接指到图库外面或卡上的文件不算图库副本（R2-P1-01）。"""
+        path = self.abspath(relpath)
+        if not self.is_local(path):
+            return None
+        for _ in range(3):
+            key = _file_key(path)
+            if key is None:
+                return None
+            with self.lock:
+                row = self.db.execute("SELECT ino, size, mtime_ns, ctime_ns, sha256 FROM filecheck WHERE relpath=?", (relpath,)).fetchone()
+            if row is not None and (row["ino"], row["size"], row["mtime_ns"], row["ctime_ns"]) == key:
+                return cast(str, row["sha256"])
+            try:
+                digest = sha256_file(path)
+            except OSError:
+                return None
+            if _file_key(path) == key:  # 读的过程中没变：这个 SHA 属于这个状态
+                self._remember(relpath, key, digest)
+                return digest
+        return None
+
+    def note_verified(self, relpath: str, sha: str) -> bool:
+        """刚由导入放到位的文件：读回实际字节核对它确实是 `sha`，并记下读的那一刻的状态。
+        不拿新的 lstat 给旧 SHA 签名：放到位之后被改过就返回 False（缓存里记的是实际内容）。"""
+        return self.current_sha(relpath) == sha
+
+    def _remember(self, relpath: str, key: tuple[int, int, int, int], sha: str) -> None:
         with self.lock:
-            rows = self.db.execute("SELECT shot_id, relpath FROM files WHERE sha256=?", (sha,)).fetchall()
-        for r in rows:
-            if self.abspath(r["relpath"]).exists():
+            self.db.execute(
+                "INSERT OR REPLACE INTO filecheck(relpath, ino, size, mtime_ns, ctime_ns, sha256) VALUES(?,?,?,?,?,?)", (relpath, *key, sha)
+            )
+
+    def _rows_for_sha(self, sha: str) -> list[sqlite3.Row]:
+        with self.lock:
+            return list(
+                self.db.execute(
+                    "SELECT relpath, shot_id FROM files WHERE sha256=? UNION ALL SELECT relpath, NULL AS shot_id FROM videos WHERE sha256=?",
+                    (sha, sha),
+                ).fetchall()
+            )
+
+    def sha_present(self, sha: str) -> str | None:
+        """图库里确实有这份内容（索引里有，磁盘上那个文件现在的内容也是它）就返回所属 shot_id。"""
+        for r in self._rows_for_sha(sha):
+            if r["shot_id"] is not None and self.current_sha(r["relpath"]) == sha:
                 return cast(str, r["shot_id"])
         return None
+
+    def damaged_paths(self, sha: str) -> list[str]:
+        """索引说这里存的是 `sha`，但磁盘上那个文件不在了、或者内容已经不是它（被替换、截断、改写）。"""
+        return [r["relpath"] for r in self._rows_for_sha(sha) if self.current_sha(r["relpath"]) != sha]
 
     def file_by_relpath(self, relpath: str) -> sqlite3.Row | None:
         with self.lock:
@@ -205,13 +308,63 @@ class Library:
             ).fetchone()
         return row is not None
 
-    def seen_sha(self, card_key: str, relpath: str, size: int, mtime_ns: int) -> str | None:
+    def seen2_sha(self, volume_uuid: str, relpath: str, size: int, mtime_ns: int) -> str | None:
         with self.lock:
             row = self.db.execute(
-                "SELECT sha256 FROM seen WHERE card_key=? AND relpath=? AND size=? AND mtime_ns=?",
-                (card_key, relpath, size, mtime_ns),
+                "SELECT sha256 FROM seen2 WHERE volume_uuid=? AND relpath=? AND size=? AND mtime_ns=?",
+                (volume_uuid, relpath, size, mtime_ns),
             ).fetchone()
         return cast(str, row["sha256"]) if row else None
+
+    def add_seen2(self, rows: list[tuple[Any, ...]]) -> None:
+        """(volume_uuid, relpath, size, mtime_ns, sha256)；只给实际读过内容的文件。"""
+        if not rows:
+            return
+        now = datetime.now().isoformat(timespec="seconds")
+        with self.lock:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO seen2(volume_uuid, relpath, size, mtime_ns, sha256, read_at) VALUES(?,?,?,?,?,?)",
+                [(*r[:5], now) for r in rows],
+            )
+
+    def sha_in_library(self, sha: str, size: int) -> bool:
+        """这份内容确实在图库里：索引（照片或视频）里有这个 SHA，对应的文件还在，而且它现在的内容哈希就是 `sha`。
+        只看长度不算（复审 A1a P1-03）：同长度的别的内容也能骗过长度检查。"""
+        for r in self._rows_for_sha(sha):
+            try:
+                if os.lstat(self.abspath(r["relpath"])).st_size != size:
+                    continue
+            except OSError:
+                continue
+            if self.current_sha(r["relpath"]) == sha:
+                return True
+        return False
+
+    def video_by_relpath(self, relpath: str) -> sqlite3.Row | None:
+        with self.lock:
+            return cast(sqlite3.Row | None, self.db.execute("SELECT * FROM videos WHERE relpath=?", (relpath,)).fetchone())
+
+    def commit_video(
+        self, relpath: str, sha: str, size: int, mtime_ns: int, seen_rows: list[tuple[Any, ...]], seen2_rows: list[tuple[Any, ...]]
+    ) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        with self.lock:
+            db = self.db
+            db.execute("BEGIN")
+            try:
+                db.execute(
+                    "INSERT OR REPLACE INTO videos(relpath, sha256, size, mtime_ns, added_at) VALUES(?,?,?,?,?)",
+                    (relpath, sha, size, mtime_ns, now),
+                )
+                self._insert_seen(seen_rows, seen2_rows)
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+
+    def video_count(self) -> int:
+        with self.lock:
+            return int(self.db.execute("SELECT COUNT(*) FROM videos").fetchone()[0])
 
     def count(self) -> int:
         with self.lock:
@@ -296,23 +449,28 @@ class Library:
             return self._rows_to_shots(rows)[0] if rows else None
 
     # ---- 写索引 -----------------------------------------------------------
-    def commit_shot(self, rec: ShotRecord, seen_rows: list[tuple[Any, ...]] | tuple[Any, ...] = ()) -> None:
-        """一个事务：shots + files + edits + seen。"""
+    def commit_shot(
+        self, rec: ShotRecord, seen_rows: list[tuple[Any, ...]] | tuple[Any, ...] = (), seen2_rows: list[tuple[Any, ...]] | tuple[Any, ...] = ()
+    ) -> None:
+        """一个事务：shots + files + edits + seen + seen2。"""
         with self.lock:
             db = self.db
             db.execute("BEGIN")
             try:
                 self._insert_shot(rec)
-                db.executemany(
-                    "INSERT OR REPLACE INTO seen(card_key, relpath, size, mtime_ns, sha256) VALUES(?,?,?,?,?)",
-                    list(seen_rows),
-                )
+                self._insert_seen(seen_rows, seen2_rows)
                 db.execute("COMMIT")
             except BaseException:
                 db.execute("ROLLBACK")
                 raise
 
-    def replace_shot(self, old_shot_id: str, rec: ShotRecord, seen_rows: list[tuple[Any, ...]] | tuple[Any, ...] = ()) -> None:
+    def replace_shot(
+        self,
+        old_shot_id: str,
+        rec: ShotRecord,
+        seen_rows: list[tuple[Any, ...]] | tuple[Any, ...] = (),
+        seen2_rows: list[tuple[Any, ...]] | tuple[Any, ...] = (),
+    ) -> None:
         """一个事务：用 `rec` 换掉旧的那张（另一半补上之后照片的 id 会变）。"""
         with self.lock:
             db = self.db
@@ -321,10 +479,7 @@ class Library:
                 for table in ("shots", "files", "edits"):
                     db.execute(f"DELETE FROM {table} WHERE shot_id=?", (old_shot_id,))  # nosec B608  table 来自上面的固定元组
                 self._insert_shot(rec)
-                db.executemany(
-                    "INSERT OR REPLACE INTO seen(card_key, relpath, size, mtime_ns, sha256) VALUES(?,?,?,?,?)",
-                    list(seen_rows),
-                )
+                self._insert_seen(seen_rows, seen2_rows)
                 db.execute("COMMIT")
             except BaseException:
                 db.execute("ROLLBACK")
@@ -366,6 +521,14 @@ class Library:
                 datetime.now().isoformat(timespec="seconds"),
                 json.dumps(rec.crop) if rec.crop else None,
             ),
+        )
+
+    def _insert_seen(self, seen_rows: list[tuple[Any, ...]] | tuple[Any, ...], seen2_rows: list[tuple[Any, ...]] | tuple[Any, ...]) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        self.db.executemany("INSERT OR REPLACE INTO seen(card_key, relpath, size, mtime_ns, sha256) VALUES(?,?,?,?,?)", list(seen_rows))
+        self.db.executemany(
+            "INSERT OR REPLACE INTO seen2(volume_uuid, relpath, size, mtime_ns, sha256, read_at) VALUES(?,?,?,?,?,?)",
+            [(*r[:5], now) for r in seen2_rows],
         )
 
     def add_seen(self, rows: list[tuple[Any, ...]]) -> None:
@@ -462,6 +625,7 @@ class Library:
         """
         report = RebuildReport()
         groups: dict[tuple[str, str], dict[str, Path]] = {}
+        videos: list[Path] = []
         for dirpath, dirnames, filenames in os.walk(self.root):
             rel_dir = Path(dirpath).relative_to(self.root)
             if rel_dir.parts[:1] in ((".studio",), (BACKUP_DIR,)):
@@ -471,28 +635,48 @@ class Library:
             for fn in filenames:
                 if fn.startswith("."):
                     continue
-                kind = MEDIA_EXT.get(os.path.splitext(fn)[1].lower())
+                ext = os.path.splitext(fn)[1].lower()
+                kind = MEDIA_EXT.get(ext)
                 if kind:
                     p = Path(dirpath) / fn
                     groups.setdefault((str(rel_dir), p.stem.lower()), {})[kind] = p
+                elif ext in VIDEO_EXT:
+                    videos.append(Path(dirpath) / fn)
         with self.lock:
             self.db.execute("BEGIN")
             try:
-                for table in ("shots", "files", "edits", "seen"):
+                for table in ("shots", "files", "edits", "seen", "seen2", "videos"):
                     self.db.execute(f"DELETE FROM {table}")  # nosec B608  table 来自上面的固定元组
                 for (folder, _), media in sorted(groups.items()):
                     self._rebuild_group(folder, media, verify, report)
+                for v in sorted(videos):
+                    st = v.stat()
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO videos(relpath, sha256, size, mtime_ns, added_at) VALUES(?,?,?,?,?)",
+                        (
+                            v.relative_to(self.root).as_posix(),
+                            sha256_file(v),
+                            st.st_size,
+                            st.st_mtime_ns,
+                            datetime.now().isoformat(timespec="seconds"),
+                        ),
+                    )
+                    report.hashed += 1
+                    report.videos += 1
                 self.db.execute("COMMIT")
             except BaseException:
                 self.db.execute("ROLLBACK")
                 raise
-            rows = []
+            rows, rows2 = [], []
             for e in self.read_log():
-                for f in e.get("files", []) if e.get("type") == "shot" else []:
+                for f in e.get("files", []) if e.get("type") in ("shot", "video") else []:
                     if f.get("card_key") and f.get("card_relpath"):
                         rows.append((f["card_key"], f["card_relpath"], f["card_size"], f["card_mtime_ns"], f["sha256"]))
+                    if f.get("volume_uuid") and f.get("card_relpath"):
+                        rows2.append((f["volume_uuid"], f["card_relpath"], f["card_size"], f["card_mtime_ns"], f["sha256"]))
             self.add_seen(rows)
-            report.seen_restored = len(rows)
+            self.add_seen2(rows2)
+            report.seen_restored = len(rows) + len(rows2)
         return report
 
     def _rebuild_group(self, rel_dir: str, media: dict[str, Path], verify: bool, report: RebuildReport) -> None:

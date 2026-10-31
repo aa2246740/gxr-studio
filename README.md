@@ -12,6 +12,17 @@
    - **第一次读卡时 macOS 会问**"“终端”想访问可移除的卷上的文件"：点**允许**。如果点了"不允许"，工作室会一直说读不到卡，
      并在页面上提示你：打开「系统设置 → 隐私与安全性 → 文件和文件夹」，给“终端”打开「可移除的卷」（或在「完全磁盘访问权限」里打开“终端”），再把卡拔出来插一次。
    - 导入结束只有在**一张都没漏**时才会说"可以安全弹出卡了"；有读不出来的文件会用红色提示列出文件名，并建议先别格式化卡，换个读卡器或重新插拔再点「继续导入」。
+   - 每次插卡都会读一遍卡上照片的内容来核对（160 张约 3 GB，大约 40 秒）：只有每个文件的内容都确实在图库里，才说"这张存储卡上的照片都已导入"。
+     只按文件名、大小认出来的不算——两张卡可能有同名同大小的照片。卡的 DCIM 里有工作室不会导入的其他文件时，会说"存储卡上有 N 个文件不会被导入"并列出名字。工作室从不说"可以格式化"。
+   - 相机视频（`.AVI`）原样复制进图库的日期文件夹，不解码，不在照片网格里显示。
+   - 在访达里看过卡时 macOS 留下的 `._*`（要真是 AppleDouble 格式）、`.DS_Store` 等系统文件不导入，也不影响"都已导入"。
+     能认出是照片或视频的文件不算系统文件，不管叫什么名字、放在哪个文件夹里（例如废纸篓里的照片会算作"不会被导入"）。
+   - 判断照片"已在图库里"看的是图库文件现在的内容：图库里的副本不在了、被替换或被截断，再导入会把卡上的原件放回原位置，
+     被改过的那个文件改名成 `<原名>.modified-<时间>` 留在旁边。
+   - 图库里的文件夹（或文件）如果是指到存储卡上的链接，工作室不往那里写，也不把卡上的文件当成电脑上的副本：
+     这些照片算"未能导入"，提示请勿格式化存储卡。
+   - 启动时，在第一次写图库之前就会核对：图库文件夹本身、或其中的 `.studio`（索引、锁、日志、缩略图等）在存储卡上，
+     或经过链接指到了图库以外的位置，工作室不会打开，启动窗口里会说明原因（退出码 78）。请把图库放在电脑上的普通文件夹里。
    - 同时插着几张卡时一次只处理第一张，页面会提示；处理完拔掉它再处理下一张。
 3. **点开一张照片**：「裁切」里选 XPan 65:24；「配方」「调整」里调颜色和曝光；「导出」存成 JPEG。
    想看配方的颜色预测，需要先导入相机数据（「配方」标签里点「从卡导入」，卡上要有 `GXRCE.DAT`），
@@ -143,10 +154,10 @@ tests/                     pytest；tests/perf/ 是性能基线
 | 方法 路径 | 作用 |
 |---|---|
 | `GET /api/health` `GET /api/settings` `GET /api/audit` | 基本信息；审计记录（最近的写入） |
-| `GET /api/cards` · `GET /api/cards/{id}/summary` | 发现的卡；这张卡上有几张、几张没导入过 |
+| `GET /api/cards` · `GET /api/cards/{id}/summary` | 发现的卡：`{id, label, uuid_state}`。`id` 是这次挂载的会话号（26 个字符，服务器随机生成；卡拔出、换卡、重新挂载、重启后作废），`uuid_state` = ok｜missing｜ambiguous；摘要只列目录不读内容，所以证明不了"已导入"：`new_shots` 是缺少可信证明的张数，`verified` 恒为 false |
 | `GET /api/cards/status` | 没找到卡时用：`access_denied` = 系统不让读（macOS 没给「可移除的卷」权限），`message` 是白话说明 |
-| `POST /api/import` `{card_id, shift_seconds?, force_verify?}` → 202 任务 | 开始导入（卡只能按 id 选，不接受路径） |
-| `GET /api/jobs` · `GET /api/jobs/{id}` · `POST /api/jobs/{id}/cancel` | 轮询进度（`progress.state`：scanning/running/done/paused_no_space/interrupted/cancelled/failed）。导入进度里 `unreadable` / `verify_failed` / `scan_errors` 是没读进来的文件（或文件夹），`failed_shots` 是受影响的照片张数，`completed_shots` 是之前只导进来一半、这次补全的张数；**这三个列表任何一个不空，`message` 就不会说"可以安全弹出"** |
+| `POST /api/import` `{card_id, shift_seconds?, force_verify?}` → 202 任务 | 开始导入（卡只能按会话号选，不接受路径；格式不对 400 `bad_card_id`，会话作废 404 `card_not_found`） |
+| `GET /api/jobs` · `GET /api/jobs/{id}` · `POST /api/jobs/{id}/cancel` | 轮询进度（`progress.state`：scanning/running/checking/done/paused_no_space/interrupted/cancelled/failed）。导入进度里 `unreadable` / `verify_failed` / `scan_errors` 是没读进来的文件（或文件夹），`write_refused` 是图库位置按真实路径不在图库里（例如链接到卡上）、所以没写的文件，`failed_shots` 是受影响的照片张数，`completed_shots` 是之前只导进来一半、这次补全的张数，`imported_videos` 是复制进来的视频；**这几个列表任何一个不空，`message` 就不会说"可以安全弹出"**。`coverage` 是结束时整张卡的照片核对：`{complete, dcim, total, covered, uncovered, not_importable, system_files, proof:{content, trusted_seen}, all_imported}`（`system_files` 是已忽略的 macOS 元数据），只有 `all_imported` 为真才说"都已导入" |
 | `GET /api/dates` · `GET /api/photos?date=YYYY-MM-DD｜unknown&limit&offset` · `GET /api/photos/{id}` | 日期列表、照片列表 |
 | `GET /api/photos/{id}/thumb` · `…/preview` | 256 / 1600 px 的 JPEG。只有 RAW 时画的不是相机 JPG（`preview_kind=dng-preview`）：已导入相机数据就是原厂 04 的**电脑模拟**，响应带 `X-GXR-Prediction: 1`、`X-GXR-Look: stock04-prediction` 和 `X-GXR-Label`（百分号编码的标签）；没有相机数据是中性转换（`X-GXR-Look: neutral`，不算预测）；半分辨率读不出来才退回 DNG 内嵌小预览（`X-GXR-Look: embedded`）。照片列表里的 `preview_look` = `{kind, label, prediction}` 给界面标注（图库角标、大图下面的说明） |
 | `GET/PUT/DELETE /api/photos/{id}/crop` | 裁切：`{preset, rect:[x,y,w,h], angle_deg, flip?, expected_rev?}`；不给 `rect` 就取该比例居中的最大框 |

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import struct
 from pathlib import Path
 from typing import Any, cast
@@ -75,7 +76,12 @@ class Dng:
             raise NotImplementedError(f"CFA colours {plane} / pattern {pat}")
         if val(raw, 50711, [1])[0] != 1:
             raise NotImplementedError("non-rectangular CFALayout")
-        self.lin_table = np.asarray(val(raw, 50712), dtype=np.float64) if 50712 in raw else None
+        self.lin_table = None
+        if 50712 in raw:
+            # DNG 规定 LinearizationTable 是 SHORT：别的类型（例如有理数，可能是 0/0 → NaN）一律拒绝
+            if raw[50712]["type"] != 3:
+                raise ValueError("LinearizationTable must be SHORT")
+            self.lin_table = np.asarray(val(raw, 50712), dtype=np.float64)
         aa = val(raw, 50829, [0, 0, self.height, self.width])
         self.active = tuple(int(round(v)) for v in aa)  # top, left, bottom, right
         aw, ah = self.active[3] - self.active[1], self.active[2] - self.active[0]
@@ -121,11 +127,38 @@ class Dng:
                 ):
                     if tag in ex:
                         v = ex[tag]["value"]
-                        self.exif[name] = v[0] if isinstance(v, list) and len(v) == 1 else v
+                        v = v[0] if isinstance(v, list) and len(v) == 1 else v
+                        # 分母为 0 的有理数（MOUNT 装手动镜头）是"未知"：存 None，不让 NaN 进 JSON
+                        self.exif[name] = None if isinstance(v, float) and not math.isfinite(v) else v
             except Exception as e:  # noqa: BLE001
                 self.exif["error"] = str(e)
+        self._check_finite()
+        self._check_levels()
         self._check_window()
         self._mosaic: np.ndarray | None = None
+
+    def _check_finite(self) -> None:
+        # 渲染要用的有理数标签不能是"未知"（分母为 0 读成 NaN），否则像素会悄悄变成 NaN
+        for name, v in (
+            ("BlackLevel", self.black_pattern),
+            ("BlackLevelDeltaH", self.black_dh),
+            ("BlackLevelDeltaV", self.black_dv),
+            ("WhiteLevel", self.white),
+            ("DefaultScale", self.default_scale),
+            ("LinearizationTable", self.lin_table),
+            ("AnalogBalance", self.analog_balance),
+            ("BaselineExposure", self.baseline_exposure),
+        ):
+            if v is not None and not np.all(np.isfinite(np.asarray(v, dtype=np.float64))):
+                raise ValueError(f"{name} has a zero denominator")
+
+    def _check_levels(self) -> None:
+        """白电平必须高于任何位置的黑电平（含逐行/逐列偏移），否则归一化时分母 ≤ 0，会算出 NaN 或无穷大。"""
+        black = float(np.max(self.black_pattern))
+        black += float(np.max(self.black_dh)) if self.black_dh is not None and self.black_dh.size else 0.0
+        black += float(np.max(self.black_dv)) if self.black_dv is not None and self.black_dv.size else 0.0
+        if not self.white > black:
+            raise ValueError(f"WhiteLevel {self.white} must be greater than BlackLevel {black}")
 
     def _check_window(self) -> None:
         top, left, bottom, right = self.active
@@ -225,7 +258,10 @@ class Dng:
         xs = np.arange(x0, x1)[None, :]
         black = self.black_at(ys, xs)
         v = self.linearize(self.mosaic()[y0:y1, x0:x1])
-        return cast(np.ndarray, ((v - black) / (self.white - black)).astype(dtype, copy=False))
+        with np.errstate(all="ignore"):  # 结果下面整体核对
+            out = ((v - black) / (self.white - black)).astype(dtype, copy=False)
+        require_finite(out, "归一化码值")
+        return cast(np.ndarray, out)
 
     def crop_cfa_phase(self) -> Any:
         """2x2 colour codes of the crop's first quad (row-major), e.g. [[1, 2], [0, 1]] = G/B/R/G."""
@@ -258,6 +294,12 @@ class Dng:
             "baseline_exposure_ev": self.baseline_exposure,
             "exif": self.exif,
         }
+
+
+def require_finite(a: Any, what: str) -> None:
+    """渲染路径上的计算结果必须全部是有限值：有 NaN 或无穷大就明确报错，不能悄悄变成错误的像素。"""
+    if not np.all(np.isfinite(a)):
+        raise RawDecodeError(f"这张 RAW 的{what}无效，不能显示")
 
 
 def open_dng(source: bytes | Path | str, name: str | None = None) -> Dng:

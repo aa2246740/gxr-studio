@@ -6,4 +6,5 @@ uv run --frozen ruff check src tests scripts
 uv run --frozen ruff format --check src tests scripts
 uv run --frozen python scripts/scan_secrets.py
 uv run --frozen python scripts/large_files.py
+uv run --frozen python scripts/private_bytes.py --staged
 uv run --frozen python scripts/dead_flags.py

@@ -4,12 +4,12 @@
     "tiff.py": {
       "source": "research/color_calibration/analyze_capture.py",
       "source_sha256": "9e20f581bf12393ce98cece541256f09de798d1f8b37cf8f15c9cf51d82b32b9",
-      "kind": "verbatim class Tiff with assert -> ValueError (and a bounds check on the IFD offset)"
+      "kind": "verbatim class Tiff with assert -> ValueError (and a bounds check on the IFD offset); rationals with a zero denominator read as NaN"
     },
     "dng.py": {
       "source": "research/color_table_fit/dng_scene.py",
       "source_sha256": "f0e8dd88baed2f6894b2427de7d7342ce37b2105716b2c47111d49ecfda5f59d",
-      "kind": "class Dng copied; Tiff loaded from tiff.py; colorimetry/ROI/selftest dropped; added normalised_block, _check_window, open_dng/RawDecodeError"
+      "kind": "class Dng copied; Tiff loaded from tiff.py; colorimetry/ROI/selftest dropped; added normalised_block, _check_window, _check_finite (render rationals and LinearizationTable must be finite; LinearizationTable must be SHORT), _check_levels (WhiteLevel above every black level), require_finite (normalised codes must be finite), open_dng/RawDecodeError"
     },
     "codes.py": {
       "source": "research/knobs_v2_r2/src/model_adapter.py (Model.raw) + research/lut_convert/camera.py (Camera.scene, orient)",

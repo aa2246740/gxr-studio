@@ -1,21 +1,37 @@
 // 导入结果怎么跟用户说：纯函数，不碰页面，方便单独测试（tests/test_import_summary.py 用 node 直接跑它）。
-// 铁律：只要有任何文件没读进来（读不出来、校验不一致、文件夹读不了），就绝不说"可以安全弹出卡"。
+// 铁律：只要有任何文件没读进来（读不出来、校验不一致、文件夹读不了），或者导入结束的核对证明不了全部已在图库，
+// 就绝不说"可以安全弹出卡"。永远不说"可以格式化"。
 
 export const EJECT_OK = '可以推出存储卡';
 export const KEEP_CARD = '请勿格式化存储卡';
 
-// 没读进来的文件/文件夹（相对卡根的路径；文件夹以 / 结尾）
+// 没读进来的文件/文件夹（相对卡根的路径；文件夹以 / 结尾）、图库位置不对没有写的文件，
+// 加上导入结束核对时证明不了已在图库的文件
 export function problemFiles(p) {
-  return [...(p.unreadable || []), ...(p.verify_failed || []), ...(p.scan_errors || [])];
+  const uncovered = (p.coverage && p.coverage.uncovered) || [];
+  const refused = p.write_refused || [];
+  return [...new Set([...(p.unreadable || []), ...(p.verify_failed || []), ...(p.scan_errors || []), ...refused, ...uncovered])];
+}
+
+// 导入结束时没能核对整张卡（扫描不完整、DCIM 不是真目录、没有核对结果）
+export function checkFailed(p) {
+  if (!p || p.state !== 'done') return false;
+  const c = p.coverage;
+  return !c || !c.complete || c.dcim !== 'present';
+}
+
+// 卡上有、但工作室不会导入的文件（DCIM 里的非照片文件等）
+export function notImportable(p) {
+  return (p && p.coverage && p.coverage.not_importable) || [];
 }
 
 export function hasProblems(p) {
-  return problemFiles(p).length > 0;
+  return problemFiles(p).length > 0 || checkFailed(p);
 }
 
-// 只有"导入完成"且一个问题都没有，才可以说安全弹出
+// 只有"导入完成"、核对通过、也没有不会被导入的文件，才可以说推出
 export function canEject(p) {
-  return !!p && p.state === 'done' && !hasProblems(p);
+  return !!p && p.state === 'done' && !hasProblems(p) && notImportable(p).length === 0;
 }
 
 function shortName(rel) {
@@ -26,10 +42,20 @@ function shortName(rel) {
 }
 
 // "A.JPG、B.DNG 等共 N 个"
-export function listProblems(p, max = 6) {
-  const files = problemFiles(p);
+function listFiles(files, max) {
   const shown = files.slice(0, max).map(shortName).join('、');
   return files.length > max ? `${shown} 等共 ${files.length} 个` : shown;
+}
+
+export function listProblems(p, max = 6) {
+  return listFiles(problemFiles(p), max);
+}
+
+function gotText(p) {
+  const photos = (p.imported_shots || 0) + (p.completed_shots || 0);
+  const videos = p.imported_videos || 0;
+  if (videos) return photos ? `已导入 ${photos} 张照片和 ${videos} 个视频` : `已导入 ${videos} 个视频`;
+  return photos ? `已导入 ${photos} 张照片` : '';
 }
 
 // -> { kind: 'ok' | 'bad' | '', text, detail, retry: bool }
@@ -40,19 +66,29 @@ export function summarizeImport(p) {
   switch (p.state) {
     case 'done': {
       if (problems) {
-        const got = `已导入 ${p.imported_shots} 张`;
-        const lost = p.failed_shots ? `${p.failed_shots} 张未完整导入，` : '';
+        const files = problemFiles(p);
         return {
           kind: 'bad',
-          text: `有 ${problemFiles(p).length} 个文件未能导入。请勿格式化存储卡，重新插入后再试一次。`,
+          text: files.length
+            ? `有 ${files.length} 个文件未能导入。请勿格式化存储卡，重新插入后再试一次。`
+            : '无法核对存储卡上的照片，请勿格式化存储卡。',
           detail,
           retry: true,
         };
       }
-      const got = `已导入 ${p.imported_shots} 张`;
+      const got = gotText(p);
+      const extra = notImportable(p);
+      if (extra.length) {
+        return {
+          kind: '',
+          text: `${got ? `${got}。` : ''}存储卡上有 ${extra.length} 个文件不会被导入`,
+          detail: `不会被导入：${listFiles(extra, 6)}`,
+          retry: false,
+        };
+      }
       return {
         kind: 'ok',
-        text: got,
+        text: got || '这张存储卡上的照片都已导入',
         detail: '',
         retry: false,
         eject: true,
@@ -73,7 +109,9 @@ export function summarizeImport(p) {
 
 // 状态栏里卡那一栏的文字（导入结束后）
 export function doneStatusText(p) {
-  return canEject(p) ? '存储卡：可以推出' : '存储卡：有未导入的照片';
+  if (canEject(p)) return '存储卡：可以推出';
+  // 状态行只用 COPY 5 的四种说法；不会被导入的文件由横幅说明
+  return !hasProblems(p) && notImportable(p).length ? '存储卡：已插入' : '存储卡：有未导入的照片';
 }
 
 // 同时插着不止一张卡（COPY 3.10：名单不再放进括号）

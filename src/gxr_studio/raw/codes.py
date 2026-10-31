@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from .dng import Dng, RawDecodeError
+from .dng import Dng, RawDecodeError, require_finite
 
 CODE_MAX = 4095.0
 STRIP_ROWS = 256
@@ -56,6 +56,7 @@ def half_res_codes(dng: Dng, dtype: Any = np.float32) -> np.ndarray:
             if neutral is None:
                 raise RawDecodeError("没有 AsShotNeutral，不能做半分辨率")
             out[r0:r1, :, c] = mean / neutral[c] * CODE_MAX
+    require_finite(out, "半分辨率码值")
     return out
 
 
@@ -66,7 +67,9 @@ def wb_mosaic_block(dng: Dng, y0: int, y1: int, dtype: Any = np.float32) -> np.n
     norm = dng.normalised_block(cy0 + y0, cy0 + y1, cx0, cx0 + w)
     yy = np.arange(cy0 + y0, cy0 + y1)[:, None]
     xx = np.arange(cx0, cx0 + w)[None, :]
-    return cast(np.ndarray, (norm * gains[dng.cfa_at(yy, xx)]).astype(dtype, copy=False))
+    out = (norm * gains[dng.cfa_at(yy, xx)]).astype(dtype, copy=False)
+    require_finite(out, "白平衡码值")
+    return cast(np.ndarray, out)
 
 
 def orient_array(a: np.ndarray, orientation: int) -> np.ndarray:

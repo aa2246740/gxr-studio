@@ -182,15 +182,22 @@ def test_bad_exif_dates_are_rejected():
 # ---- 验收 2：幂等 -----------------------------------------------------------
 
 
-def test_second_import_copies_nothing_and_reads_no_card_content(volumes, card, lib):
+def test_second_import_copies_nothing_but_reads_every_card_file(volumes, card, lib):
+    # 设计 §4.3（P1-01）：seen 不再用来跳过读取。第二遍每个文件都读内容核对，但一个都不复制。
     c = one_card(volumes)
     run_import(lib, c, ImportOptions(**OPTS))
     with audit.AuditRecorder(watch=(str(card.root),), record_reads=True) as rec:
         p = run_import(lib, c, ImportOptions(**OPTS))
-    assert (p.copied_files, p.imported_shots, p.seen_shots) == (0, 0, len(card.shots))
-    assert p.message == "这张存储卡上的照片都已导入"
-    opened = [r for r in rec.reads_under(card.root) if os.path.isfile(r)]
-    assert opened == [], "命中 seen 的文件不能被打开读取"
+    assert (p.copied_files, p.imported_shots, p.seen_shots) == (0, 0, 0)
+    assert p.duplicate_shots == len(card.shots)
+    opened = {r for r in rec.reads_under(card.root) if os.path.isfile(r)}
+    expected = {str(card.path(s, k)) for s in card.shots for k in s.kinds}
+    assert expected <= opened, "第二遍也要读每个照片文件的内容"
+    assert not list(lib.staging_dir.iterdir()), "核对过的文件不再复制到暂存区"
+    # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不能说"都已导入"
+    assert p.coverage["all_imported"] is False and p.coverage["not_importable"] == ["DCIM/100RICOH/Thumbs.db", "DCIM/NOTE.TXT"]
+    assert p.coverage["system_files"] == ["DCIM/100RICOH/._R0000101.JPG"]
+    assert p.message == "存储卡上有 2 个文件不会被导入"
 
 
 def test_force_verify_reads_everything_but_adds_nothing(volumes, card, lib):
@@ -205,13 +212,15 @@ def test_force_verify_reads_everything_but_adds_nothing(volumes, card, lib):
 
 
 def test_seen_survives_index_rebuild(volumes, card, lib):
+    # seen 只是"可能导入过"的提示：重建后照样恢复，但第二遍仍然读内容核对，不复制
     c = one_card(volumes)
     run_import(lib, c, ImportOptions(**OPTS))
     rep = lib.rebuild()
     assert rep.shots == len(card.unique_shots) and rep.seen_restored > 0
     with audit.AuditRecorder(watch=(str(card.root),), record_reads=True) as rec:
         p = run_import(lib, c, ImportOptions(**OPTS))
-    assert p.copied_files == 0 and not [r for r in rec.reads_under(card.root) if os.path.isfile(r)]
+    assert p.copied_files == 0 and [r for r in rec.reads_under(card.root) if os.path.isfile(r)]
+    assert p.coverage["covered"] == p.coverage["total"]
 
 
 # ---- 验收 3：中断可恢复 -----------------------------------------------------
@@ -289,7 +298,8 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     assert set(shot["files"]) == {"dng", "jpg"} and shot["has_raw"] and shot["has_jpg"]
     side = json.loads(lib.sidecar_path_for(shot).read_text())
     assert side["source"]["jpg"] == "R0000104.JPG" and side["source"]["jpg_sha256"] == shot["files"]["jpg"]["sha256"]
-    assert "推出存储卡" in p2.message
+    # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不说"可以推出"，也不说"都已导入"
+    assert p2.message == "已导入 1 张照片。存储卡上有 2 个文件不会被导入"
     assert_library_consistent(lib, card)
     p3 = run_import(lib, c, ImportOptions(**OPTS))  # 再来一次：什么都不新增
     assert p3.completed_shots == 0 and p3.imported_shots == 0 and lib.count() == len(card.unique_shots)

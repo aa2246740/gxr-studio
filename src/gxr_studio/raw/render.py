@@ -21,7 +21,7 @@ import numpy as np
 
 from .codes import CODE_MAX, crop_shape, half_res_codes, orient_array
 from .demosaic import demosaic_strips
-from .dng import Dng
+from .dng import Dng, require_finite
 
 
 def srgb_encode(linear: np.ndarray) -> np.ndarray:
@@ -58,11 +58,14 @@ def render_full(dng: Dng, renderer: Renderer = NEUTRAL) -> np.ndarray:
     h, w = crop_shape(dng)
     out = np.empty((h, w, 3), np.uint8)
     for y0, strip in demosaic_strips(dng):
+        require_finite(strip, "去马赛克结果")  # 交给渲染器之前：NaN 转 uint8 是未定义的值
         out[y0 : y0 + strip.shape[0]] = renderer.display(strip)
     return np.ascontiguousarray(orient_array(out, dng.orientation))
 
 
 def render_half(dng: Dng, renderer: Renderer = NEUTRAL) -> np.ndarray:
     """半分辨率快速路径（2×2 合并，不去马赛克）：uint8 (H/2, W/2, 3)，已转正。用于预览。"""
-    out = renderer.display(half_res_codes(dng))
+    codes = half_res_codes(dng)
+    require_finite(codes, "半分辨率码值")
+    out = renderer.display(codes)
     return np.ascontiguousarray(orient_array(out, dng.orientation))

@@ -5,8 +5,28 @@ import { state, emit } from './state.js';
 import { h, toast, toastError } from './dom.js';
 import { doneStatusText, hasProblems, multiCardNote, summarizeImport } from './import_summary.js';
 
-// 本次会话里已经自动处理过的卡（卡拔掉后会移出，插回来可以再导入缺的部分）
+// 本次会话里已经自动处理过的卡（卡拔掉后会移出，插回来可以再导入缺的部分）。键是挂载会话号（card_id）
 const handled = new Set();
+// 已经自动发起过导入的卡。发现新卡时如果别的卡还在导入，就先不记，等空闲了再判断一次（不只在 id 刚变时判断）
+const autoTried = new Set();
+
+// 这个导入任务是哪张卡的（任务和结果都带着来源挂载会话号）
+function jobCard(job) {
+  return job && job.progress ? job.progress.card_id || null : null;
+}
+
+// 导入结果只给它自己那张卡看：换了卡，旧卡的"都已导入""可以推出"不能出现在新卡上
+function jobIsForCurrentCard(job) {
+  return !state.card || jobCard(job) === state.card.id;
+}
+
+// 当前这张卡还没自动导入过、也没有别的导入在跑：现在发起
+function maybeAutoImport() {
+  const card = state.card;
+  if (!card || autoTried.has(card.id) || isImporting()) return;
+  autoTried.add(card.id);
+  startImport(card);
+}
 
 export function cardPresent() {
   return !!state.card;
@@ -38,18 +58,13 @@ export async function refreshCards() {
   state.card = card;
   if (!card) {
     handled.clear();
+    autoTried.clear();
     state.cardSummary = null;
     state.cardMsg = null;
-  } else if (!prevId || prevId !== card.id) {
-    await loadSummary(card);
-    if (!handled.has(card.id) && !isImporting()) {
-      if (state.cardSummary && state.cardSummary.new_shots > 0) {
-        startImport(card);
-      } else {
-        handled.add(card.id);
-        state.cardMsg = '这张存储卡上的照片都已导入';
-      }
-    }
+  } else {
+    if (!prevId || prevId !== card.id) await loadSummary(card);
+    // 只看文件名、大小证明不了"都已导入"：每张卡（每个挂载会话）都导入一次，导入会读内容核对，结束提示按核对结果说
+    maybeAutoImport();
   }
   renderBanner();
   renderCardStatus();
@@ -90,7 +105,11 @@ export async function startImport(card = state.card) {
       await loadLatestJob();
       return;
     }
+    // 任务没建起来：回到可以重试的状态，横幅里出现「导入」按钮（不自动连续重发）
+    handled.delete(card.id);
     toastError(e, '无法完成操作。请重试。');
+    renderBanner();
+    renderCardStatus();
     return;
   }
   renderBanner();
@@ -128,11 +147,14 @@ export async function tickImport() {
     emit('library-changed');
     if (state.card) await loadSummary(state.card);
     if (fresh.progress.state === 'done') {
-      // 完整导完后卡上的内容都已导入，下次插卡看到的是"都导入过了"；
-      // 有文件没读进来时不算处理完：关掉提示后仍会出现「开始导入」，可以重试
-      if (hasProblems(fresh.progress)) handled.delete(state.card?.id);
-      else handled.add(state.card?.id);
+      // 核对通过才算处理完；有文件没读进来、核对不了时不算：关掉提示后仍会出现「开始导入」，可以重试。
+      // 按任务自己的来源卡记，不按"现在插着的卡"记：导入期间换了卡，结果不能算到新卡头上
+      const done = jobCard(fresh);
+      if (hasProblems(fresh.progress)) handled.delete(done);
+      else if (done) handled.add(done);
     }
+    // 导入期间插上的另一张卡：现在空闲了，轮到它
+    maybeAutoImport();
     renderCardStatus();
   }
   renderBanner();
@@ -170,10 +192,9 @@ export function renderBanner() {
   const p = job ? job.progress : null;
 
   if (job && job.running) {
-    const msg =
-      p.state === 'scanning' || !p.total_shots
-        ? '正在读取…'
-        : `正在导入 ${p.done_shots}/${p.total_shots}`;
+    let msg = `正在导入 ${p.done_shots}/${p.total_shots}`;
+    if (p.state === 'scanning' || !p.total_shots) msg = '正在读取…';
+    else if (p.state === 'checking') msg = '正在核对存储卡上的照片…';
     slot.append(
       h(
         'div',
@@ -185,7 +206,7 @@ export function renderBanner() {
     return;
   }
 
-  if (job && p && job.id !== state.dismissedJobId) {
+  if (job && p && job.id !== state.dismissedJobId && jobIsForCurrentCard(job)) {
     const r = summarize(job);
     slot.append(
       h(
@@ -266,7 +287,7 @@ export function renderCardStatus() {
     return;
   }
   const job = state.job;
-  if (job && job.progress.state === 'done' && job.id !== state.dismissedJobId) {
+  if (job && job.progress.state === 'done' && job.id !== state.dismissedJobId && jobIsForCurrentCard(job)) {
     el.textContent = doneStatusText(job.progress);
   } else {
     el.textContent = '存储卡：已插入';

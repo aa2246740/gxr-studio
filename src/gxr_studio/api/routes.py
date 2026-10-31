@@ -15,8 +15,10 @@ from pydantic import BaseModel, Field
 
 from .. import __version__
 from .. import crop as cropmod
-from ..cards import importer
-from ..cards.discovery import Card, find_cards
+from ..cards import coverage, importer
+from ..cards.coverage import Identity
+from ..cards.discovery import find_cards
+from ..cards.session import MountSession, SessionError
 from ..crop import Crop, CropError
 from ..export import ExportError, ExportOptions, RevealError, reveal_export
 from ..flags import flag_enabled
@@ -96,15 +98,24 @@ class BatchExportRequest(ExportRequest):
 # ---- 小工具 -----------------------------------------------------------------
 
 
-def _cards(c: Any) -> list[Card]:
-    return find_cards(c.settings.volumes_roots, c.reader)
+def _cards(c: Any) -> list[MountSession]:
+    """发现到的卡，每张对应一个挂载会话。"""
+    return cast(list[MountSession], c.sessions.attach_all(find_cards(c.settings.volumes_roots, c.reader)))
 
 
-def _card_or_404(c: Any, card_id: str) -> Card:
-    card = next((x for x in _cards(c) if x.key == card_id), None)
-    if card is None:
-        raise ApiError(404, "card_not_found", "找不到存储卡。请重新插入后重试。")
-    return card
+def resolve_session(c: Any, card_id: str, *, write: bool = False) -> MountSession:
+    """所有带 card_id 的接口共用（设计 §4.1）：格式不对 400，作废 404，写入时身份歧义 409。"""
+    _cards(c)
+    try:
+        return cast(MountSession, c.sessions.resolve(card_id, write=write))
+    except SessionError as exc:
+        raise ApiError(exc.status, exc.code, exc.message) from exc
+
+
+def identity_of(session: MountSession) -> Identity:
+    """导入和照片核对用的卷身份：UUID 缺失或歧义时不关联任何历史；带上会话的完整指纹核验（复审 A1a P1-02）。"""
+    fp = session.fingerprint
+    return Identity(session.history_uuid, (fp.root_dev, fp.root_ino), verify=session.still_valid)
 
 
 def _shot_or_404(c: Any, shot_id: str) -> dict[Any, Any]:
@@ -168,7 +179,7 @@ def _crop_for_export(c: Any, shot: dict[Any, Any]) -> Crop | None:
 
 
 def _forbidden_roots(c: Any) -> list[Path]:
-    return [card.root for card in _cards(c)]
+    return [s.root for s in _cards(c)]
 
 
 def _export_source(c: Any, shot: dict[Any, Any], req: ExportRequest) -> tuple[str, EditState]:
@@ -311,7 +322,7 @@ def get_audit(request: Request) -> dict[Any, Any]:
 
 @router.get("/api/cards", response_model=None)
 def list_cards(request: Request) -> list[Any]:
-    return [{"id": card.key, "label": card.label} for card in _cards(ctx(request))]
+    return [s.public() for s in _cards(ctx(request))]
 
 
 @router.get("/api/cards/status", response_model=None)
@@ -330,14 +341,15 @@ def cards_status(request: Request) -> dict[Any, Any]:
 @router.get("/api/cards/{card_id}/summary", response_model=None)
 def card_summary(card_id: str, request: Request) -> dict[Any, Any]:
     c = ctx(request)
-    card = _card_or_404(c, card_id)
-    return {"id": card.key, "label": card.label, **importer.card_summary(c.lib, card, c.reader)}
+    session = resolve_session(c, card_id)
+    return {**session.public(), **coverage.card_summary(c.lib, session.card, c.reader, identity_of(session))}
 
 
 @router.post("/api/import", status_code=202, response_model=None)
 def start_import(body: ImportRequest, request: Request) -> Any:
     c = ctx(request)
-    card = _card_or_404(c, body.card_id)
+    session = resolve_session(c, body.card_id)
+    card, ident = session.card, identity_of(session)
     with c.import_lock:
         if c.jobs.active("import"):
             raise ApiError(409, "import_running", "无法开始导入。已经有一个导入在进行。")
@@ -348,10 +360,10 @@ def start_import(body: ImportRequest, request: Request) -> Any:
             force_verify=body.force_verify,
             undated_policy=c.settings.undated_policy,
         )
-        progress = importer.ImportProgress()
+        progress = importer.ImportProgress(card_id=session.session_id)
 
         def work(job: Any) -> None:
-            importer.run_import(c.lib, card, opts, progress, job.cancel, c.reader)
+            importer.run_import(c.lib, card, opts, progress, job.cancel, c.reader, ident)
 
         job = c.jobs.start("import", progress, work)
     return job.to_dict()

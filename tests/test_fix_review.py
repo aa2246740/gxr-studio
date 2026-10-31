@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import PORT
-from gxr_studio import audit, cli
+from gxr_studio import audit, cli, privacy
 from gxr_studio.app import create_app
 from gxr_studio.camdata import store
 from gxr_studio.cards.discovery import CardReader, find_cards
@@ -84,6 +84,9 @@ def test_verify_mismatch_is_a_failure_not_a_green_banner(settings, card):
 
 
 def test_clean_import_still_says_it_is_safe_to_eject(client, card):
+    for rel in card.junk:  # DCIM 里的非照片文件不会被导入，有它们就不能说"都已导入"（PH03 另测）
+        if rel.startswith("DCIM/"):
+            (card.root / rel).unlink()
     p = import_all(client)["progress"]
     assert p["failed_shots"] == 0 and not p["unreadable"] and not p["verify_failed"] and not p["scan_errors"]
     assert "现在可以推出存储卡了" in p["message"]
@@ -392,7 +395,7 @@ def make_dir(path: Path, text: str) -> Path:
 @pytest.mark.parametrize("atomic", [True, False])
 def test_swap_in_replaces_the_directory_and_leaves_nothing_behind(tmp_path, monkeypatch, atomic):
     if not atomic:
-        monkeypatch.setattr(store, "_atomic_exchange", lambda a, b: False)
+        monkeypatch.setattr(privacy, "_exchange_at", lambda fd, a, b: False)
     elif sys.platform != "darwin":
         pytest.skip("原子对调只在 macOS 上有")
     base = tmp_path / "base"
@@ -413,30 +416,34 @@ def test_atomic_exchange_never_exposes_a_missing_directory(tmp_path):
     if sys.platform != "darwin":
         pytest.skip("原子对调只在 macOS 上有")
     a, b = make_dir(tmp_path / "a", "A"), make_dir(tmp_path / "b", "B")
-    if not store._atomic_exchange(a, b):
-        pytest.skip("这个文件系统不支持 renamex_np")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if not privacy._exchange_at(fd, "a", "b"):
+            pytest.skip("这个文件系统不支持 renameatx_np")
+    finally:
+        os.close(fd)
     assert (a / "manifest.json").read_text() == "B" and (b / "manifest.json").read_text() == "A"
 
 
 def test_interrupted_fallback_swap_is_recovered_at_startup(tmp_path, monkeypatch):
     """退回的两步换法在两步之间被打断：留下 camera-data.old，下次启动自动改回去。"""
-    monkeypatch.setattr(store, "_atomic_exchange", lambda a, b: False)
+    monkeypatch.setattr(privacy, "_exchange_at", lambda fd, a, b: False)
     home = tmp_path / "home"
     root = make_dir(home / "camera-data", "old")
     new = make_dir(home / "camera-data.new", "new")
-    real_replace = os.replace
+    real_rename = os.rename
     calls = []
 
-    def killed(src, dst):
+    def killed(src, dst, **kw):
         calls.append((Path(src).name, Path(dst).name))
         if len(calls) == 2:
             raise KeyboardInterrupt("断电")
-        return real_replace(src, dst)
+        return real_rename(src, dst, **kw)
 
-    monkeypatch.setattr(store.os, "replace", killed)
+    monkeypatch.setattr(privacy.os, "rename", killed)
     with pytest.raises(KeyboardInterrupt):
         store.swap_in(new, root)
-    monkeypatch.setattr(store.os, "replace", real_replace)
+    monkeypatch.setattr(privacy.os, "rename", real_rename)
     assert not root.exists() and (home / "camera-data.old" / "manifest.json").read_text() == "old"
     assert store.recover_interrupted_swaps(home) == ["camera-data: restored from .old"]
     assert (root / "manifest.json").read_text() == "old" and not (home / "camera-data.old").exists()
@@ -463,14 +470,16 @@ def test_starting_the_app_recovers_an_interrupted_swap(settings):
 
 
 def test_import_paths_use_the_atomic_swap():
+    # 复审 A1a P1-05 以后：相机数据和标定都经 store.write_tree → PrivateDir.swap_in，按已核对的目录 fd 换目录
     base = Path(store.__file__).parent
     store_src, calib_src = (
         (base / "store.py").read_text(encoding="utf-8"),
         (base / "calib.py").read_text(encoding="utf-8"),
     )
-    assert "swap_in(tmp, root)" in store_src and "swap_in(tmp, out)" in calib_src
-    assert store_src.count("os.replace(root, old)") == 1, "两步换法只留在 swap_in 的退路里"
-    assert "os.replace(" not in calib_src and ".old" not in calib_src
+    privacy_src = Path(privacy.__file__).read_text(encoding="utf-8")
+    assert "d.swap_in(tmp, name)" in store_src and "store.write_tree(" in calib_src
+    assert "os.replace(" not in store_src and "os.replace(" not in calib_src and ".old" not in calib_src
+    assert privacy_src.count("os.rename(root, old, src_dir_fd=self.fd, dst_dir_fd=self.fd)") == 1, "两步换法只留在 swap_in 的退路里"
 
 
 # ---- P2-10：同时插着多张卡 ---------------------------------------------------------------

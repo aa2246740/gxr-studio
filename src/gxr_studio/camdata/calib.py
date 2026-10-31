@@ -12,11 +12,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
-import shutil
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -53,8 +53,17 @@ def dev_sources(repo_root: Path) -> dict[Any, Any]:
     }
 
 
-def _sha_file(p: Path) -> str:
-    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+def _sha(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+Source = Path | tuple[str, bytes]  # 文件路径，或已经核对过 SHA 的 (文件名, 字节)
+
+
+def _load(src: Source) -> tuple[str, bytes]:
+    if isinstance(src, tuple):
+        return src
+    return Path(src).name, Path(src).read_bytes()
 
 
 def stock_words_of_entry(entry: bytes) -> np.ndarray:
@@ -70,15 +79,14 @@ def stock_fingerprint(entry: bytes) -> str:
     return hashlib.sha256(entry[115:211]).hexdigest()
 
 
-def import_calibration(home: Path, sources: dict[Any, Any], *, origin: dict[Any, Any] | None = None) -> dict[Any, Any]:
-    """sources: {iso: (npz_path, ring_json_path)}。需要先导入相机数据（用来核对 stock）。"""
+def import_calibration(
+    home: Path, sources: dict[Any, Any], *, origin: dict[Any, Any] | None = None, forbidden: Iterable[Path] = ()
+) -> dict[Any, Any]:
+    """sources: {iso: (npz, ring_json)}，每项是路径或 (文件名, 字节)。需要先导入相机数据（用来核对 stock）。
+
+    先把来源全部读进内存并核对，再按已核对的应用数据目录 fd 一次写好 `calib.new/`、读回比对、整体换掉 `calib/`。"""
     stock04 = store.load_stock04(home, "jlaunch")
     stock = stock_words_of_entry(stock04)
-    out = calib_dir(home)
-    tmp = out.with_name(out.name + ".new")
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    tmp.mkdir(parents=True)
     manifest: dict[Any, Any] = {
         "schema": SCHEMA,
         "files": {},
@@ -89,29 +97,33 @@ def import_calibration(home: Path, sources: dict[Any, Any], *, origin: dict[Any,
     }
     if origin:
         manifest["origin"] = origin
-    for iso, (npz_path, ring_path) in sorted(sources.items()):
-        with np.load(npz_path, allow_pickle=False) as z:
+    files: dict[str, bytes] = {}
+    for iso, (npz_src, ring_src) in sorted(sources.items()):
+        npz_name, npz_bytes = _load(npz_src)
+        ring_name, ring_bytes = _load(ring_src)
+        with np.load(io.BytesIO(npz_bytes), allow_pickle=False) as z:
             if not np.array_equal(z["stock"], stock):
                 raise StockMismatch(f"ISO {iso} 的校准数据和存储卡上原厂 04 的色表行不一致")
             d0, d1 = z["d0"].astype(float), z["d1"].astype(float)
             s_eff = ((z["stock"][:, 0] + d0) - 1j * (z["stock"][:, 1] + d1)) / 32
             if not np.array_equal(s_eff, z["S_eff"]):
                 raise CalibError(f"ISO {iso}：S_eff 不能由 stock/d0/d1 逐位还原")
-        ring = json.loads(Path(ring_path).read_text())
+        ring = json.loads(ring_bytes)
         if ring.get("schema") != "gxr-sector-model/2":
             raise CalibError("需要 gxr-sector-model/2")
-        np.savez(tmp / f"ctx_{iso}.npz", d0=d0, d1=d1)
-        shutil.copyfile(ring_path, tmp / f"ring_model_{iso}.json")
+        ctx = io.BytesIO()
+        np.savez(ctx, d0=d0, d1=d1)
+        files[f"ctx_{iso}.npz"] = ctx.getvalue()
+        files[f"ring_model_{iso}.json"] = ring_bytes
         manifest["sources"][str(iso)] = {
-            "ctx": Path(npz_path).name,
-            "ctx_source_sha256": _sha_file(npz_path),
-            "ring": Path(ring_path).name,
-            "ring_source_sha256": _sha_file(ring_path),
+            "ctx": npz_name,
+            "ctx_source_sha256": _sha(npz_bytes),
+            "ring": ring_name,
+            "ring_source_sha256": _sha(ring_bytes),
         }
-    for p in sorted(tmp.iterdir()):
-        manifest["files"][p.name] = {"size": p.stat().st_size, "sha256": _sha_file(p)}
-    (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
-    store.swap_in(tmp, out)
+    manifest["files"] = {name: {"size": len(b), "sha256": _sha(b)} for name, b in sorted(files.items())}
+    files["manifest.json"] = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()
+    store.write_tree(home, calib_dir(home).name, files, manifest["files"], "calibration", forbidden)
     return manifest
 
 
@@ -122,7 +134,7 @@ def model_for(home: Path, iso: int = 200) -> tuple[Any, ...]:
     d = calib_dir(home)
     m = json.loads((d / "manifest.json").read_text())
     for name, meta in m["files"].items():
-        if _sha_file(d / name) != meta["sha256"]:
+        if _sha((d / name).read_bytes()) != meta["sha256"]:
             raise CalibError("校准数据被改动")
     model_iso = 1600 if int(iso) == 1600 else 200
     with np.load(d / f"ctx_{model_iso}.npz", allow_pickle=False) as z:
