@@ -21,7 +21,8 @@ def client(settings):
         yield c
 
 
-def _fake_open(monkeypatch):
+def _fake_open(monkeypatch, platform: str = "darwin"):
+    """挡住真正的 open -R，并钉住平台判断。文件身份检查在这两处之前。"""
     calls: list[list[str]] = []
 
     def run(args, **_kwargs):
@@ -29,6 +30,7 @@ def _fake_open(monkeypatch):
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr("gxr_studio.export.subprocess.run", run)
+    monkeypatch.setattr("gxr_studio.export.sys.platform", platform)
     return calls
 
 
@@ -67,6 +69,22 @@ def test_reveal_of_a_batch_uses_the_first_exported_file(client, card, monkeypatc
     assert calls == [["open", "-R", str(Path(paths[0]).resolve())]]
     assert Path(opened.json()["path"]) == Path(paths[0]).resolve()
     assert opened.json()["path"] != str(Path(paths[1]).resolve())
+
+
+def test_reveal_off_macos_returns_501_and_does_not_open(client, card, monkeypatch):
+    """不是 macOS 时返回现有的 501，并且不会去调用访达。"""
+    calls = _fake_open(monkeypatch, "linux")
+    import_all(client)
+    photo = find(client, "R0000102")
+    exported = client.post(f"/api/photos/{photo['id']}/export", json={"long_edge": 320, "quality": 80})
+    assert exported.status_code == 200, exported.text
+    refused = client.post(f"/api/exports/{exported.json()['export_id']}/reveal")
+    assert refused.status_code == 501, refused.text
+    assert refused.json() == {
+        "error": "finder_unavailable",
+        "message": "无法在访达中显示。这个功能只在 macOS 上可用。",
+    }
+    assert calls == []
 
 
 def test_reveal_requires_the_file_and_macos(client, card, monkeypatch):
