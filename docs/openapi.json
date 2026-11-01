@@ -829,6 +829,34 @@
         "title": "PathRequest",
         "type": "object"
       },
+      "PrefsUpdate": {
+        "properties": {
+          "export_hdr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Hdr"
+          },
+          "onboarding_dismissed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Onboarding Dismissed"
+          }
+        },
+        "title": "PrefsUpdate",
+        "type": "object"
+      },
       "RenameRequest": {
         "properties": {
           "name": {
@@ -3205,6 +3233,56 @@
           }
         },
         "summary": "Photo Thumb"
+      }
+    },
+    "/api/prefs": {
+      "get": {
+        "operationId": "get_prefs_api_prefs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Prefs"
+      },
+      "put": {
+        "operationId": "put_prefs_api_prefs_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrefsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Prefs"
       }
     },
     "/api/recipes": {

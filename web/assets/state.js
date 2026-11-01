@@ -2,6 +2,7 @@
 
 export const state = {
   settings: null,
+  prefs: null, // /api/prefs：onboarding_dismissed、export_hdr
   offline: false,
   cards: [], // /api/cards 的结果
   summaries: new Map(), // 卡 id -> 摘要（只读统计）

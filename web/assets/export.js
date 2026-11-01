@@ -14,8 +14,9 @@ const SIZES = [
   [4096, '长边 4096 像素'],
 ];
 
-// HDR（带增益图的 JPEG）要 RAW。选中的照片里一张 RAW 都没有时开关不可用（COPY 3.6 的"HDR"）。
+// HDR（带增益图的 JPEG）要 RAW。选中的照片里一张 RAW 都没有时开关不可用，也不改上次记住的选择。
 // 按日期导出时不知道当天有没有 RAW，开关照常可用，没有 RAW 的那几张照常导出、结果里说明。
+// 开关的勾选记在应用数据里，下次导出沿用；第一次默认关。
 export const HDR_NO_RAW = 'HDR 需要 RAW 文件';
 export function hdrAvailable(ids, photos, scope) {
   if (scope === 'date') return true;
@@ -50,7 +51,19 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   // 精确（API 的 precise）界面不提供，固定用默认的烘焙表（COPY 3.10）
   const precise = false;
   let dest = state.settings ? state.settings.export_dir : '';
+  let remembered = !!(state.prefs && state.prefs.export_hdr);
   let hdr = false;
+
+  function rememberHdr(on) {
+    remembered = on;
+    hdr = on;
+    const prefs = state.prefs || (state.prefs = {});
+    prefs.export_hdr = on;
+    api('/api/prefs', { method: 'PUT', body: { export_hdr: on } }).then(
+      (saved) => { state.prefs = saved; },
+      (error) => toastError(error, '无法保存修改。请重试。'),
+    );
+  }
 
   const scopeGroup = scopes.length > 1
     ? h(
@@ -111,9 +124,9 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   const hdrField = h('div', { class: 'field' });
   function hdrRow() {
     const ok = hdrAvailable(ids, photos, scope);
-    if (!ok) hdr = false;
+    hdr = ok && remembered;
     hdrField.replaceChildren(
-      toggle('HDR', hdr, (on) => { hdr = on; }, { disabled: !ok }),
+      toggle('HDR', hdr, (on) => { if (ok) rememberHdr(on); }, { disabled: !ok }),
       ok ? null : h('div', { class: 'small dim' }, HDR_NO_RAW),
     );
   }

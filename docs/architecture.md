@@ -13,6 +13,7 @@
 | HDR 版本（相机 JPG + 增益图） | `<图库>/.studio/hdr/<id 前两位>/<id>-v2.jpg`，做不了的记 `.json`；可以删掉，下次导入后重新生成 | `hdr.derived` |
 | 相机数据和标定 | 应用数据目录 | `camdata` |
 | LUT 库、原文件和 cube 导出 | 应用数据目录：`luts/library.json`、`luts/<SHA>.cube`、`luts/exports/<SHA>.cube` | `lut.library` |
+| 界面偏好（引导是否结束、导出 HDR） | 应用数据目录 `prefs.json` | `prefs` |
 | 导出的 JPEG/PNG | 导出目录 | `export` |
 | 存储卡 | 只读。测试禁止碰 `/Volumes` 里真实的卡 | `cards` |
 
