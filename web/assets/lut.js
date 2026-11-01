@@ -8,6 +8,8 @@ import { BASE_NAMES, KNOB_NAMES } from './preview.js';
 import { loadLutLibrary, librarySection, attributionFields } from './lut_library.js';
 import { selectedFiles, droppedFiles, importFiles } from './lut_files.js';
 
+export const RECIPE_APPLY_HINT = '相机关机再开后，按 ADJ 再按 OK 套用上次的配方';
+
 const flow = {
   cube: null,          // /api/lut/upload 的结果
   spaces: null,        // /api/lut/spaces
@@ -69,6 +71,7 @@ function redraw() {
   if (!alive()) return;
   root.replaceChildren(
     h('h2', {}, '配方'),
+    h('p', { class: 'hint', dataset: { role: 'recipe-hint' } }, RECIPE_APPLY_HINT),
     librarySection({ select: selectLut, onImport: resetFlow, selected: flow.cube?.cube_id, redraw: libraryChanged, busy: !!flow.busy }),
     importSection(),
     recipesSection(),

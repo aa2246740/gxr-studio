@@ -7,7 +7,7 @@ import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus
 import { renderGallery, openFocused } from './gallery.js';
 import { renderViewer, viewerKeys, leaveViewer, openViewerTab, refreshViewerPhoto } from './viewer.js';
 import { openExportDialog } from './export.js';
-import { maybeShowOnboarding, showHelp, showSettings, clearHints } from './onboarding.js';
+import { maybeShowOnboarding, showHelp, showHelpMenu, showSettings, clearHints } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
 import { renderLutPage } from './lut.js';
 
@@ -123,6 +123,11 @@ async function boot() {
   } catch (e) {
     toastError(e, '无法完成操作。请重试。');
   }
+  try {
+    state.prefs = await api('/api/prefs');
+  } catch (e) {
+    toastError(e, '无法完成操作。请重试。');
+  }
   await loadLatestJob();
   await refreshCards();
   await loadCamdata();
@@ -130,7 +135,7 @@ async function boot() {
   bindGlobalKeys();
   document.getElementById('btn-export-top').addEventListener('click', exportCurrent);
   document.getElementById('btn-settings').addEventListener('click', showSettings);
-  document.getElementById('btn-help').addEventListener('click', showHelp);
+  document.getElementById('btn-help').addEventListener('click', showHelpMenu);
   window.addEventListener('hashchange', route);
   on('open-settings', () => showSettings());
   on('camdata-changed', () => {

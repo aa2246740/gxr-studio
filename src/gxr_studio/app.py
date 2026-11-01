@@ -22,6 +22,7 @@ from .api.finish_routes import router as finish_router
 from .api.lut_library_routes import router as lut_library_router
 from .api.lut_routes import router as lut_router
 from .api.ops_routes import router as ops_router
+from .api.prefs_routes import router as prefs_router
 from .api.render_routes import router as render_router
 from .api.routes import router
 from .camdata import store as camdata_store
@@ -137,6 +138,7 @@ def create_app(
         return JSONResponse({"error": exc.code, "message": exc.message, "detail": exc.detail}, status_code=422)
 
     app.include_router(router)
+    app.include_router(prefs_router)
     app.include_router(ops_router)
     app.include_router(render_router)
     app.include_router(finish_router)

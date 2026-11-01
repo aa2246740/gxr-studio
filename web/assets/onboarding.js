@@ -1,17 +1,74 @@
-// 快捷键表和设置。COPY.md 3.8：快捷键集中放在 [?] 打开的表里，面板里不写；不做欢迎引导和标签提示（已去掉）。
-// showHint / maybeShowOnboarding / clearHints 保留为空函数，只为了让引用它们的旧代码仍然能加载。
+// 快捷键、设置、首次使用的四步引导。快捷键仍由 [?] 打开（COPY 3.8）。
 
 import { api } from './api.js';
 import { state, emit } from './state.js';
-import { h, openModal, toast, fmtBytes, toastError } from './dom.js';
+import { h, openModal, toast, fmtBytes, toastError, closeTopModal } from './dom.js';
 import { calibrationImportForm, camdataSummary, cameraImportControls, loadCamdata } from './camdata.js';
 
-export function maybeShowOnboarding() {}
+export const GUIDE_STEPS = [
+  ['插入存储卡', '自动导入照片'],
+  ['在图库里浏览、编辑', '裁剪、曝光、边框'],
+  ['用 LUT 库管理 LUT', '套用到照片'],
+  ['导出', '可选 HDR'],
+];
+
+export function maybeShowOnboarding() {
+  if (state.prefs && state.prefs.onboarding_dismissed === true) return;
+  showGuide();
+}
 
 export function showHint() {}
 
 export function clearHints() {
   document.getElementById('hints')?.replaceChildren();
+}
+
+function paintGuide(holder, step, onSkip) {
+  const [title, text] = GUIDE_STEPS[step];
+  const last = step === GUIDE_STEPS.length - 1;
+  holder.replaceChildren(
+    h('p', { class: 'small dim', dataset: { guide: 'count' } }, `${step + 1}/${GUIDE_STEPS.length}`),
+    h('p', { dataset: { guide: 'title' } }, title),
+    h('p', { class: 'small dim', dataset: { guide: 'text' } }, text),
+    h(
+      'div',
+      { class: 'modal-foot' },
+      h('button', { class: 'btn', type: 'button', style: { marginRight: 'auto' }, onclick: onSkip }, '跳过'),
+      step > 0 ? h('button', { class: 'btn', type: 'button', onclick: () => paintGuide(holder, step - 1, onSkip) }, '上一步') : null,
+      h('button', {
+        class: 'btn primary',
+        type: 'button',
+        onclick: () => (last ? onSkip() : paintGuide(holder, step + 1, onSkip)),
+      }, last ? '完成' : '下一步'),
+    ),
+  );
+}
+
+export function showGuide() {
+  const holder = h('div', {});
+  let close = null;
+  const dismiss = async () => {
+    try {
+      state.prefs = await api('/api/prefs', { method: 'PUT', body: { onboarding_dismissed: true } });
+      if (close) close();
+    } catch (e) {
+      toastError(e, '无法保存修改。请重试。');
+    }
+  };
+  paintGuide(holder, 0, dismiss);
+  close = openModal('引导', holder);
+}
+
+export function showHelpMenu() {
+  openModal(
+    '帮助',
+    h(
+      'div',
+      { class: 'modal-foot', style: { justifyContent: 'flex-start', marginTop: '0' } },
+      h('button', { class: 'btn', type: 'button', onclick: () => { closeTopModal(); showHelp(); } }, '快捷键'),
+      h('button', { class: 'btn', type: 'button', onclick: () => { closeTopModal(); showGuide(); } }, '引导'),
+    ),
+  );
 }
 
 export function showHelp() {
@@ -67,6 +124,12 @@ export async function showSettings() {
       cameraImportControls({ onDone: paintCamdata }),
     ),
     calibrationImportForm({ onDone: paintCamdata }),
+    h(
+      'div',
+      { class: 'field' },
+      h('span', { class: 'small dim' }, '引导'),
+      h('button', { class: 'btn', type: 'button', onclick: () => { closeTopModal(); showGuide(); } }, '打开'),
+    ),
     h(
       'div',
       { class: 'modal-foot' },
