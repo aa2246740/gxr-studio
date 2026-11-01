@@ -22,7 +22,6 @@ import fcntl
 import os
 import secrets
 import stat
-import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -33,6 +32,7 @@ from .observe import log
 MESSAGE = "无法导出到这个文件夹。请选择其他文件夹。"
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _F_GETPATH = getattr(fcntl, "F_GETPATH", None)
+_HOST_IS_DARWIN = os.uname().sysname == "Darwin"  # 真实宿主；不看运行中可能被改动的 sys.platform
 
 
 class PrivatePathError(Exception):
@@ -134,7 +134,7 @@ def _rmtree_at(dfd: int, name: str, check: Any = None) -> None:
 
 def _exchange_at(dfd: int, a: str, b: str) -> bool:
     """macOS：renameatx_np(RENAME_SWAP) 在同一个目录 fd 下一次对调两个名字。不支持返回 False。"""
-    if sys.platform != "darwin":
+    if not _HOST_IS_DARWIN:
         return False
     try:
         fn = ctypes.CDLL(None, use_errno=True).renameatx_np
@@ -333,7 +333,7 @@ def private_write(
 
 def _full_sync(fd: int) -> None:
     full = getattr(fcntl, "F_FULLFSYNC", None)
-    if full is not None and sys.platform == "darwin":
+    if full is not None and _HOST_IS_DARWIN:
         try:
             fcntl.fcntl(fd, full)
             return
