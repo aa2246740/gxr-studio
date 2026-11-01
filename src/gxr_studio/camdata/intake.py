@@ -1,7 +1,7 @@
 """导入入口：把用户的 `GXRCE.DAT`（卡上或本地文件）和标定包放进应用数据目录。
 
 - 对卡**只读**：只经过 `CardReader`（`scandir` / `open_rb`），被发现的卡根目录登记进审计钩子，任何写入都会被拒绝；
-- 校验在写任何东西之前做完：魔数、代数（127/129/131/135/137/138 以外一律拒绝）、两层 CRC、钉子、`pack(parse(b)) == b`、
+- 校验在写任何东西之前做完：魔数、已登记的代数、两层 CRC、钉子、`pack(parse(b)) == b`、
   三个单元的原厂 04 CRC。任何一项不过，应用数据目录里原来的数据原封不动；
 - 标定包有两种来源：`calib-pack.json` 清单加文件（逐个核 SHA-256，先复制到临时目录再导入，核对和导入读的是同一份字节），
   或开发机上的研究目录（仓库根或 `research/`，只在开发阶段可用）。两种都要用包里的 stock 核对已导入相机数据的 04；
@@ -170,7 +170,8 @@ def inspect_dat(raw: bytes) -> DatInfo:
         raise IntakeError(
             422,
             "generation_unsupported",
-            f"不支持第 {g} 代相机配方文件。请使用第 127 代或更新的版本。",
+            datcodec.unsupported_message(g),
+            {"detail": datcodec.unsupported_detail(g)},
         ) from exc
     except datcodec.DatError as exc:
         if raw[:8] != b"GXRCE001":

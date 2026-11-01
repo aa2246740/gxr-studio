@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .. import privacy
-from ..camdata import intake
+from ..camdata import datcodec, intake
 from ..cards.session import MountSession, SessionError
 from ..library import thumbs
 from .errors import ApiError
@@ -124,9 +124,12 @@ def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any]) -> dict[Any,
                 c.render.replace_data(lambda: intake.install_dat(raw, home, source_name=name, origin=origin, forbidden=forbidden))
                 removed = thumbs.purge_variants(c.lib)
     except intake.IntakeError as exc:
+        generation = datcodec.peek_generation(raw) if exc.code == "generation_unsupported" else None
+        c.render.note_import_generation(generation)
         raise _api(exc) from exc
     except privacy.PrivatePathError as exc:
         raise ApiError(422, exc.code, exc.message, {"detail": exc.detail}) from exc
+    c.render.note_import_generation(None)
     status = _status(c)
     where = f"存储卡「{origin['label']}」" if origin.get("kind") == "card" else "你选的文件"
     msg = (

@@ -4,7 +4,7 @@
 // 两套后端：ed.v2 为真（探测到 /api/frames）时带 stage/size 和几何、边框、时间戳；否则走旧接口（只认配方、调整、曲线、拉直）。
 
 import { api, apiBlob } from './api.js';
-import { state } from './state.js';
+import { state, on } from './state.js';
 import { toast, toastError } from './dom.js';
 import { applyCamdataStatus } from './camdata.js';
 import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
@@ -41,19 +41,33 @@ export function unitForPhoto(photo) {
 }
 
 let catalogPromise = null;
-export function loadCatalog() {
+let catalogVersion = 0;
+on('camdata-changed', () => {
+  state.catalog = null;
+  catalogPromise = null;
+  catalogVersion++;
+});
+export function loadCatalog({ refresh = false } = {}) {
+  if (refresh) {
+    state.catalog = null;
+    catalogPromise = null;
+    catalogVersion++;
+  }
   if (state.catalog) return Promise.resolve(state.catalog);
   if (!catalogPromise) {
+    const version = catalogVersion;
     catalogPromise = api('/api/recipes').then(
       (r) => {
+        if (version !== catalogVersion) return loadCatalog();
         state.catalog = r;
         return r;
       },
       (e) => {
+        if (version !== catalogVersion) return loadCatalog();
         catalogPromise = null;
         throw e;
       },
-    );
+    ).finally(() => { if (version === catalogVersion) catalogPromise = null; });
   }
   return catalogPromise;
 }
@@ -97,7 +111,7 @@ function applyEdit(ed, edit) {
   ed.rev = edit.rev;
   ed.memory = edit.memory || {};
   ed.lut = edit.lut || null;
-  ed.recipe = edit.recipe ? { unit: edit.recipe.unit, slot: edit.recipe.slot, levels: { ...(edit.recipe.levels || {}) } } : null;
+  ed.recipe = edit.recipe ? { ...edit.recipe, levels: { ...(edit.recipe.levels || {}) } } : null;
   const a = edit.adjust || {};
   ed.adj = {
     exposure_ev: a.exposure_ev ?? 0,
@@ -161,7 +175,9 @@ export async function reloadEdit(view) {
   const ed = view.ed;
   if (!ed) return;
   try {
-    applyEdit(ed, await fetchEdit(view));
+    const [edit, , caps] = await Promise.all([fetchEdit(view), loadCatalog({ refresh: true }), loadPhotoCaps(view.photo.id, { refresh: true })]);
+    applyEdit(ed, edit);
+    ed.caps = capsFrom(view.photo, caps);
     syncRev(view, ed.rev);
   } catch (e) {
     toastError(e, '无法完成操作。请重试。');
@@ -193,7 +209,13 @@ export function selection(view) {
 
 export function recipeInfo(view, sel = selection(view)) {
   const unit = state.catalog?.units.find((u) => u.id === sel.unit);
+  if (sel.kind === 'look') return unit?.looks?.find((r) => r.id === sel.id) || null;
+  if (sel.kind === 'camera_user') return unit?.users?.find((r) => r.id === sel.id) || null;
   return unit?.recipes.find((r) => r.slot === sel.slot) || null;
+}
+
+export function recipeKey(sel) {
+  return sel.kind && sel.kind !== 'builtin' ? `${sel.unit}/${sel.kind}/${sel.id}` : `${sel.unit}/${sel.slot}`;
 }
 
 // 旋钮的当前档位：没设过、或不在可选档位里，就取默认
@@ -217,7 +239,7 @@ export function ensureRecipe(view) {
   const ed = view.ed;
   if (!ed.recipe) {
     const sel = selection(view);
-    ed.recipe = { unit: sel.unit, slot: sel.slot, levels: {} };
+    ed.recipe = { ...sel, levels: {} };
   }
   return ed.recipe;
 }
@@ -226,7 +248,8 @@ export function recipeBody(view, { memory = false } = {}) {
   const ed = view.ed;
   if (!ed.recipe) return null;
   const body = {
-    kind: 'builtin',
+    kind: ed.recipe.kind || 'builtin',
+    ...(ed.recipe.id ? { id: ed.recipe.id } : {}),
     unit: ed.recipe.unit,
     slot: ed.recipe.slot,
     levels: cleanLevels(recipeInfo(view, ed.recipe), ed.recipe.levels),
@@ -585,7 +608,7 @@ export function disposeEdit(view) {
 
 // 给外部用：导入相机数据之后，这张照片的画面和能力都要重读
 export async function refreshCaps(view) {
-  const caps = await loadPhotoCaps(view.photo.id);
+  const caps = await loadPhotoCaps(view.photo.id, { refresh: true });
   if (view.ed) view.ed.caps = capsFrom(view.photo, caps);
 }
 

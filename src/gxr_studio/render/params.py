@@ -40,6 +40,8 @@ class RecipeSel:
     unit: str  # jlaunch | qlaunch | l08firm
     slot: int  # 1..8
     levels: tuple[tuple[str, int], ...] = ()  # 用户给出的旋钮档位；没给的取菜单默认值
+    kind: str = "builtin"  # builtin | look | camera_user
+    id: str | None = None  # 文件内条目的内容摘要，换文件后不会误选同一序号
 
     @property
     def unit_index(self) -> int:
@@ -49,7 +51,7 @@ class RecipeSel:
         return dict(self.levels)
 
     def to_json(self) -> dict[Any, Any]:
-        return {"kind": "builtin", "unit": self.unit, "slot": self.slot, "levels": dict(self.levels)}
+        return {"kind": self.kind, "unit": self.unit, "slot": self.slot, "levels": dict(self.levels), **({"id": self.id} if self.id else {})}
 
 
 @dataclass(frozen=True)
@@ -183,8 +185,12 @@ def parse_recipe(raw: Any) -> RecipeSel | None:
         return None
     if not isinstance(raw, dict):
         raise EditError("bad_recipe", "请求无效。请刷新页面后重试。", "recipe 要是一个对象")
-    if raw.get("kind", "builtin") != "builtin":
-        raise EditError("recipe_kind_unsupported", INVALID_REQUEST, "目前只支持内置配方。")
+    kind = raw.get("kind", "builtin")
+    if kind not in ("builtin", "look", "camera_user"):
+        raise EditError("recipe_kind_unsupported", INVALID_REQUEST, "配方类型无法识别。")
+    identity = raw.get("id") if kind != "builtin" else None
+    if kind != "builtin" and (not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity)):
+        raise EditError("bad_recipe", INVALID_REQUEST, "配方条目无法识别。")
     unit, slot = raw.get("unit"), raw.get("slot")
     if unit not in UNITS:
         raise EditError("bad_recipe", INVALID_REQUEST, "镜头单元无法识别。")
@@ -204,7 +210,7 @@ def parse_recipe(raw: Any) -> RecipeSel | None:
     memory = raw.get("memory")
     if memory is not None and not isinstance(memory, dict):
         raise EditError("bad_recipe", "请求无效。请刷新页面后重试。", "memory 要是对象")
-    return RecipeSel(unit, slot, tuple(pairs))
+    return RecipeSel(unit, slot, tuple(pairs), kind, identity)
 
 
 def stored_border(side: dict[Any, Any]) -> dict[Any, Any] | None:

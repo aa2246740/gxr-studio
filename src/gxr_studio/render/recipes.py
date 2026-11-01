@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
-from ..camdata import store
+from ..camdata import datcodec, knob_table, store
 from ..engine import knobs, menu
 from .params import EditError, RecipeSel
 
@@ -99,6 +100,8 @@ class Menu:
 
     def request_for(self, sel: RecipeSel) -> tuple[list[str], list[int], knobs.Request]:
         """档位 → (菜单旋钮名, 实际档位列表, knobs.Request)。档位不合法就抛 EditError，不钳位。"""
+        if sel.kind != "builtin":
+            raise EditError("recipe_not_found", "找不到这个配方。请重新选择。")
         u, slot = sel.unit_index, sel.slot
         items = self._items(u, slot)
         names = [self.menu["controls"][it["control"]]["name"] for it in items]
@@ -124,6 +127,58 @@ class CameraData(Menu):
         self.manifest_sha256 = hashlib.sha256((store.camera_data_dir(self.home) / "manifest.json").read_bytes()).hexdigest()
         self.stock = [store.load_stock04(self.home, u) for u in range(3)]
         self.entries = {(u, s): store.load_entry(self.home, u, s) for u in range(3) for s in store.SLOTS}
+        self._extras: dict[tuple[str, str, int], dict[str, Any]] = {}
+        self._groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
+        # 旧代数的规范化数据可独立使用。新代数须从原 DAT 读取控制表和文件内配方。
+        if self.manifest["generation"] in (127, 129, 131, 135, 137, 138) and "dat-template/GXRCE.DAT" not in self.manifest["files"]:
+            return
+        dat = datcodec.parse(store.load_template(self.home))
+        if dat.kv2_block is not None:
+            self.menu = knob_table.read(dat.kv2_block, self.menu)
+            self._recipes = {(r["unit"], r["slot"]): r for r in self.menu["recipes"]}
+            self.table_sha256 = hashlib.sha256(dat.kv2_block).hexdigest()
+        for unit in range(3):
+            for i, look in enumerate(dat.looks):
+                if look.unit_mask >> unit & 1:
+                    self._add_extra(unit, "look", i, look.name, look.base, look.entry, {})
+            for i, user in enumerate(dat.users):
+                defaults = dict(zip(("contrast", "highlight", "shadow", "saturation"), user["levels"][:4]))
+                self._add_extra(unit, "camera_user", i, dat.user_names[i], user["base"], self.entries[(unit, user["base"])], defaults)
+
+    def _add_extra(self, unit: int, kind: str, index: int, name: str, base: int, entry: bytes, defaults: dict[str, int]) -> None:
+        identity = hashlib.sha256(f"{kind}/{index}/{name}/".encode() + entry + json.dumps(defaults, sort_keys=True).encode()).hexdigest()
+        controls = [{**c, "default": defaults.get(c["name"], c["default"])} for c in self.controls(unit, base)]
+        info = {
+            "kind": kind,
+            "id": identity,
+            "name": name,
+            "slot": base,
+            "controls": controls,
+            "entry_sha256": hashlib.sha256(entry).hexdigest(),
+            "has_amount": any(c["name"] == "amount" for c in controls),
+        }
+        self._extras[(kind, identity, unit)] = {"info": info, "entry": entry, "defaults": defaults}
+        self._groups.setdefault((unit, kind), []).append(info)
+
+    def listing(self) -> list[dict[Any, Any]]:
+        units = super().listing()
+        for unit, info in enumerate(units):
+            info["looks"] = self._groups.get((unit, "look"), [])
+            info["users"] = self._groups.get((unit, "camera_user"), [])
+        return units
+
+    def _extra_for(self, sel: RecipeSel) -> dict[str, Any]:
+        item = self._extras.get((sel.kind, sel.id or "", sel.unit_index))
+        if item is None or item["info"]["slot"] != sel.slot:
+            raise EditError("recipe_not_found", "找不到这个配方。请重新选择。")
+        return item
+
+    def request_for(self, sel: RecipeSel) -> tuple[list[str], list[int], knobs.Request]:
+        if sel.kind == "builtin":
+            return super().request_for(sel)
+        extra = self._extra_for(sel)
+        given = {**extra["defaults"], **sel.levels_dict()}
+        return super().request_for(replace(sel, levels=tuple(given.items()), kind="builtin", id=None))
 
     def entry_sha256(self, unit: int, slot: int) -> str | None:
         return hashlib.sha256(self.entries[(unit, slot)]).hexdigest()
@@ -132,7 +187,8 @@ class CameraData(Menu):
     def resolve(self, sel: RecipeSel) -> Resolved:
         names, levels, req = self.request_for(sel)
         u, slot = sel.unit_index, sel.slot
-        entry, stats = knobs.apply(self.stock[u], self.entries[(u, slot)], req)
+        base = self.entries[(u, slot)] if sel.kind == "builtin" else self._extra_for(sel)["entry"]
+        entry, stats = knobs.apply(self.stock[u], base, req)
         return Resolved(entry, hashlib.sha256(entry).hexdigest(), dict(zip(names, levels)), stats)
 
     def default_selection(self, unit: str) -> RecipeSel:

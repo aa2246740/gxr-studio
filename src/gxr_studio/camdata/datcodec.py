@@ -4,7 +4,7 @@
 `ui_data.py`、`gate.c`），来源 SHA 见 `engine/PROVENANCE.json` 的 `datcodec_sources`。已有代码各认一个代数
 （`ui_data.parse_dat` 写死 127），这里把代数做成参数：
 
-- 支持 127 / 129 / 131 / 135 / 137 / 138。未登记的代数一律拒绝（`UnsupportedGeneration`），只读也不猜。
+- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153。未登记的代数一律拒绝。
 - `parse()` 严格：任何没有建模的头部字节、区段尺寸、CRC、钉子（`PIN_CRC32`）对不上都抛 `DatError`。
 - `pack(parse(b)) == b` 逐字节成立（每一代都有往返测试）。解析结果里的引擎、重定位、`gxkv2r2` 块都原样保存，
   不重新编译、不改写。
@@ -55,6 +55,8 @@ EXT_BYTES = USER_OFFSET + USER_CAPACITY * USER_ENTRY_BYTES
 LEGACY_IDS = (1, 3, 4, 2)
 KV2_BLOCK_BYTES = 17384
 KV2_BLOCK_SHA256 = "43405f6c5f63050505e958882dcd260f2a9e1f707d3b407860041787964992f9"
+KV3_BLOCK_BYTES = 7904
+KV3_BLOCK_SHA256 = "e91c8e0aa7b8dfefc4b662438acd3ca0a927a97099dc534c24f1dda32352e64c"
 
 
 class DatError(ValueError):
@@ -69,7 +71,16 @@ class UnsupportedGeneration(DatError):
 class Profile:
     generation: int
     max_file: int
-    kv2_block: bool  # 区段 7 末尾是否带 17384 B 的 gxkv2r2 块（原样搬运）
+    kv2_block: bool  # 区段 7 末尾带 kv2 点表；R2 为 17384 B，R3 为 7904 B
+    looks: bool = False  # GXDP v2 + GXFX，kv2 点表为 R3
+
+    @property
+    def knob_bytes(self) -> int:
+        return KV3_BLOCK_BYTES if self.looks else KV2_BLOCK_BYTES if self.kv2_block else 0
+
+    @property
+    def knob_sha256(self) -> str:
+        return KV3_BLOCK_SHA256 if self.looks else KV2_BLOCK_SHA256
 
 
 PROFILES = {
@@ -81,7 +92,21 @@ PROFILES = {
     # 变的是引擎长度，以及跟着引擎走的重定位、目录里的绝对地址、配方库头里的代数和它的 CRC。
     137: Profile(137, 98304, True),
     138: Profile(138, 98304, True),
+    150: Profile(150, 98304, True),
+    152: Profile(152, 98304, True, True),
+    153: Profile(153, 98304, True, True),
 }
+
+
+def unsupported_message(generation: int) -> str:
+    if generation > max(PROFILES):
+        return "这个相机配方文件需要更新版本的 GXR 工作室。"
+    return "不支持这个版本的相机配方文件。"
+
+
+def unsupported_detail(generation: int) -> str:
+    supported = "、".join(str(g) for g in PROFILES)
+    return f"第 {generation} 代。支持第 {supported} 代。"
 
 
 def crc(b: Any) -> int:
@@ -123,6 +148,14 @@ class Module:
     crc_pin: int
 
 
+@dataclass(frozen=True)
+class Look:
+    name: str
+    base: int
+    unit_mask: int
+    entry: bytes
+
+
 @dataclass
 class Dat:
     generation: int
@@ -138,6 +171,9 @@ class Dat:
     ext_config: bytes  # GXUI 配置表 24×48 B
     users: list[Any]  # [{'base': int, 'levels': [11 ints]}]
     kv2_block: bytes | None
+    effect_area: bytes = b""
+    looks: tuple[Look, ...] = ()
+    user_names: tuple[str, ...] = ()
 
     def entry_of(self, unit: int, slot: int) -> bytes:
         """槽位 1..16 的 552 B 深层条目（别名槽位解引用到所有者）。"""
@@ -202,14 +238,14 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
 
     meta_at, meta_len = sections[6]
     tail = raw[meta_at : meta_at + meta_len]
-    want_tail = LEGACY_BYTES + EXT_BYTES + (KV2_BLOCK_BYTES if prof.kv2_block else 0)
+    want_tail = LEGACY_BYTES + EXT_BYTES + prof.knob_bytes
     if len(tail) != want_tail:
         raise DatError("区段 7 长度不合格")
     legacy = tail[:LEGACY_BYTES]
     ext = tail[LEGACY_BYTES : LEGACY_BYTES + EXT_BYTES]
     kv2 = tail[LEGACY_BYTES + EXT_BYTES :] if prof.kv2_block else None
-    if kv2 is not None and hashlib.sha256(kv2).hexdigest() != KV2_BLOCK_SHA256:
-        raise DatError("gxkv2r2 块与已登记的不同")
+    if kv2 is not None and hashlib.sha256(kv2).hexdigest() != prof.knob_sha256:
+        raise DatError("kv2 点表与已登记的不同")
     if legacy[:32] != struct.pack(">4s6H4I", b"GXTM", 2, 32, 8, 3, 16, 28, 32, 64, 1344, 0):
         raise DatError("范围表布局不合格")
     ids = tuple(u32(legacy, 32 + 4 * i) for i in range(8))
@@ -232,12 +268,26 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
 
     # 行池
     shared, pool_bytes = sections[5]
-    if raw[shared : shared + 4] != b"GXDP" or u32(raw, shared + 8) != pool_bytes:
+    pool_header = 80 if prof.looks else 64
+    if raw[shared : shared + 8] != struct.pack(">4sHH", b"GXDP", 2 if prof.looks else 1, pool_header) or u32(raw, shared + 8) != pool_bytes:
         raise DatError("行池头不合格")
+    effect_area = b""
+    pool_end = pool_bytes
+    if prof.looks:
+        pool_end, effect_bytes = u32(raw, shared + 64), u32(raw, shared + 68)
+        if (
+            pool_end % 4
+            or pool_end < pool_header
+            or effect_bytes < 32
+            or pool_end + effect_bytes != pool_bytes
+            or any(raw[shared + 72 : shared + 80])
+        ):
+            raise DatError("效果区边界不合格")
+        effect_area = raw[shared + pool_end : shared + pool_bytes]
     pools = []
     for k in range(4):
         count, size, offset, checksum = struct.unpack_from(">HHII", raw, shared + 16 + 12 * k)
-        if not 1 <= count <= POOL_LIMITS[k] or size != POOL_LENGTHS[k] or offset + count * size > pool_bytes:
+        if not 1 <= count <= POOL_LIMITS[k] or size != POOL_LENGTHS[k] or offset < pool_header or offset + count * size > pool_end:
             raise DatError("行池边界不合格")
         body = raw[shared + offset : shared + offset + count * size]
         if crc(body) != checksum:
@@ -267,7 +317,7 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
             raise DatError("配方库头、CRC 或代数不合格")
         if meta_ranges != meta_at + 64 + 16 * 28 * mi:
             raise DatError("范围目录不合格")
-        if not 1 <= count <= 16 or not shared <= table <= shared + pool_bytes - 16 - 20 * count:
+        if not 1 <= count <= 16 or not shared + pool_header <= table <= shared + pool_end - 16 - 20 * count:
             raise DatError("描述符表边界不合格")
         if raw[table : table + 6] != b"GXDT\x06" + bytes([count]) or u32(raw, table + 12) != crc(raw[table + 16 : table + 16 + 20 * count]):
             raise DatError("描述符表 CRC 不合格")
@@ -359,11 +409,105 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
         bytes(ext[64:USER_OFFSET]),
         users,
         kv2,
+        effect_area=effect_area,
     )
+    if prof.looks:
+        dat.looks = _parse_looks(dat, raw, pools)
     # 最后一道门：用同一套规则重新封装，必须逐字节相同；否则说明还有没建模的字节。
     if pack(dat) != raw:
         raise DatError("重新封装与原文件不同（存在未建模的字节）")
+    dat.user_names = tuple(
+        ext[USER_OFFSET + i * USER_ENTRY_BYTES + 2 : USER_OFFSET + i * USER_ENTRY_BYTES + 10].split(b"\0")[0].decode("ascii")
+        for i in range(len(users))
+    )
     return dat
+
+
+def _valid_look_row(row: bytes, ordinal: int, flags: int) -> bool:
+    kind = KINDS[ordinal]
+    if kind == 0:
+        values = struct.unpack(">31H", row)
+        if not values[0] or any(a >= b for a, b in zip(values, values[1:])) or values[-1] > (4094 if ordinal in (0, 8) else 4095):
+            return False
+    elif kind == 1 and any(a > b for a, b in zip(row, row[1:])):
+        return False
+    elif kind == 3:
+        for i, value in enumerate(struct.unpack(">28H", row)):
+            j = i % 14
+            if value > 4095 or (j < 9 and value & 2047 > (2047 if j < 3 else 1279)):
+                return False
+            if (j in (10, 11) and not 120 <= value <= 136) or (j >= 9 and j not in (10, 11) and value):
+                return False
+    return not (ordinal in (6, 7) and flags & 2 and row[32] < 128)
+
+
+def _parse_looks(dat: Dat, raw: bytes, pools: list[tuple[int, int, int]]) -> tuple[Look, ...]:
+    area = dat.effect_area
+    capacity, count = u16(area, 8), u16(area, 10)
+    caps, used = area[16:20], area[20:24]
+    if (
+        area[:8] != b"GXFX\0\1\0 "
+        or area[12:16] != b"\0 \0\0"
+        or not count <= capacity <= 48
+        or any(n > c or c > 127 for n, c in zip(used, caps))
+        or len(area) != 32 + 32 * capacity + sum(_align4(c * size) for c, size in zip(caps, POOL_LENGTHS))
+        or u32(area, 28) != crc(area[:28])
+        or u32(area, 24) != crc(area[32:])
+        or any(area[32 + 32 * count : 32 + 32 * capacity])
+    ):
+        raise DatError("效果区头、尺寸或 CRC 不合格")
+    row_starts, cursor = [], 32 + 32 * capacity
+    for c, size in zip(caps, POOL_LENGTHS):
+        row_starts.append(cursor)
+        cursor += _align4(c * size)
+    seen: list[set[int]] = [set() for _ in POOL_LENGTHS]
+    out = []
+    for i in range(count):
+        record = area[32 + 32 * i : 64 + 32 * i]
+        base, flags, mask = record[0], record[1], record[18]
+        name = record[20:].split(b"\0")[0]
+        if (
+            base not in (1, 2, 3, 5, 6, 7, 8)
+            or not 1 <= mask <= 7
+            or record[19]
+            or u16(record, 2) != (0 if flags & 4 else 2)
+            or not name
+            or any(c < 32 or c > 126 or c in (42, 92) for c in name)
+            or record[20:] != name + bytes(12 - len(name))
+        ):
+            raise DatError("效果条目或名称不合格")
+        if any(dat.entry_of(unit, base)[:2] != bytes((base, flags)) for unit in range(3) if mask >> unit & 1):
+            raise DatError("效果与单元基底不一致")
+        entry = bytearray(ENTRY_BYTES)
+        entry[:2], entry[4:8], entry[445:447] = record[:2], record[4:8], record[2:4]
+        rows = []
+        for ordinal, (kind, off, size, index) in enumerate(zip(KINDS, OFFSETS, ROW_BYTES, record[8:18])):
+            if index & 128:
+                index &= 127
+                if index >= used[kind]:
+                    raise DatError("效果行索引越界")
+                at = row_starts[kind] + index * size
+                row = area[at : at + size]
+                seen[kind].add(index)
+            else:
+                if index >= pools[kind][0]:
+                    raise DatError("效果引用的内置行索引越界")
+                at = pools[kind][2] + index * size
+                row = raw[at : at + size]
+            if not _valid_look_row(row, ordinal, flags):
+                raise DatError("效果行数值不合格")
+            rows.append(row)
+            entry[off : off + size] = row
+        if u32(record, 4) != crc(record[:4] + bytes([mask]) + b"".join(rows)):
+            raise DatError("效果内容 CRC 对不上")
+        for off, size, crc_off in CRC_FIELDS:
+            struct.pack_into(">I", entry, crc_off, crc(entry[off : off + size]))
+        out.append(Look(name.decode("ascii"), base, mask, bytes(entry)))
+    for kind, (at, n, c, size) in enumerate(zip(row_starts, used, caps, POOL_LENGTHS)):
+        rows = [area[at + j * size : at + (j + 1) * size] for j in range(n)]
+        if seen[kind] != set(range(n)) or len(set(rows)) != n or any(area[at + n * size : at + _align4(c * size)]):
+            raise DatError("效果行引用、去重或填充不合格")
+    return tuple(out)
 
 
 # --------------------------------------------------------------------------- 封装
@@ -476,18 +620,22 @@ def pack(dat: Dat) -> bytes:
             descriptors.append(struct.pack(">BBHI10B2x", s, e[1], u16(e, 445), u32(e, 4), *refs))
         body = b"".join(descriptors)
         tables.append(struct.pack(">4sBBHHHI", b"GXDT", 6, len(owners), 0, 20, 0, crc(body)) + body)
-    shared = bytearray(64)
+    pool_header = 80 if prof.looks else 64
+    shared = bytearray(pool_header)
     shared += b"".join(tables)
     for kind, rows in enumerate(buckets):
         raw = b"".join(rows)
         struct.pack_into(">HHII", shared, 16 + 12 * kind, len(rows), POOL_LENGTHS[kind], len(shared), crc(raw))
         shared += raw + bytes(_align4(len(raw)) - len(raw))
-    struct.pack_into(">4sHHIHH", shared, 0, b"GXDP", 1, 64, len(shared), 16, 4)
+    if prof.looks:
+        struct.pack_into(">II", shared, 64, len(shared), len(dat.effect_area))
+        shared += dat.effect_area
+    struct.pack_into(">4sHHIHH", shared, 0, b"GXDP", 2 if prof.looks else 1, pool_header, len(shared), 16, 4)
     banks = [b"".join(m.records) for m in modules]
     tweaks = _metadata(modules, dat.ids) + _extension(dat.ext_config, banks, dat.users)
     if prof.kv2_block:
         if dat.kv2_block is None:
-            raise DatError("这一代需要 gxkv2r2 块")
+            raise DatError("这一代需要 kv2 点表")
         tweaks += dat.kv2_block
     reloc = b"".join(struct.pack(">II", *r) for r in dat.relocations)
     parts = [
@@ -506,7 +654,7 @@ def pack(dat: Dat) -> bytes:
     if cursor > prof.max_file or cursor + dat.bss > MAX_RAM:
         raise DatError(f"容量超限 {cursor}/{cursor + dat.bss}")
     d = bytearray(192)
-    next_table = starts[5] + 64
+    next_table = starts[5] + pool_header
     stride = u16(tweaks, 14)
     for i, m in enumerate(modules):
         struct.pack_into(

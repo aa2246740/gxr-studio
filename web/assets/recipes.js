@@ -1,8 +1,8 @@
-// 大图「配方」标签：内置配方（8 个，配方名沿用相机里的名字）、强度、旋钮（档位来自 /api/recipes）、重置。
+// 大图「配方」标签：8 个内置配方、文件内 Looks 和用户配方，档位来自 /api/recipes。
 // 三种状态（来自 /capabilities，旧版后端由 has_raw 推断）：
 //   full：有 RAW，全部可用。
 //   approx：只有 JPG，内置配方用近似（不带旋钮，旋钮置灰），画面标「近似」。
-//   none：只有 JPG，配方不能用：面板里写「配方需要 RAW 文件」，内置配方和旋钮整块变淡，按钮置灰。
+//   none：数据尚不可用，或照片没有 RAW，按实际原因显示提示，配方和旋钮置灰。
 
 import { h } from './dom.js';
 import { state } from './state.js';
@@ -16,6 +16,7 @@ import {
   persist,
   recipeBody,
   recipeInfo,
+  recipeKey,
   reloadEdit,
   schedulePreview,
   selection,
@@ -38,19 +39,20 @@ export function recipePanel(view) {
   const sel = selection(view);
   const unit = state.catalog?.units.find((u) => u.id === sel.unit);
   const info = recipeInfo(view, sel);
-  const usable = state3 === 'full' || state3 === 'approx';
-  const knobsOn = state3 === 'full';
+  const hasRaw = caps.raw ?? view.photo.has_raw;
+  const usable = camdataReady() && (state3 === 'full' || state3 === 'approx');
+  const knobsOn = usable && state3 === 'full';
 
   const nodes = [h('div', { class: 'pane-head' }, h('h2', {}, '配方'))];
   nodes.push(photoLutField(view, { beginChange, persist, endChange, schedulePreview }));
   nodes.push(h('div', { class: 'sec' }, '内置配方'));
-  if (!camdataReady()) nodes.push(camdataGuide({ onDone: () => reloadEdit(view) }));
+  if (hasRaw && !camdataReady()) nodes.push(camdataGuide({ onDone: () => reloadEdit(view) }));
 
   // COPY 3.3：近似只给一个小标签。只有 JPG 时面板里写一行「配方需要 RAW 文件」，下面一行小字，按钮置灰；点了只闪一下这一行
   let noticeEl = null;
   if (state3 === 'approx') {
     nodes.push(h('div', { class: 'row-tags' }, h('span', { class: 'chip warn' }, '近似')));
-  } else if (state3 === 'none') {
+  } else if (!hasRaw) {
     noticeEl = h('div', { class: 'notice grey' },
       h('div', { class: 'strong' }, '配方需要 RAW 文件'),
       h('div', { class: 'small dim' }, '拍摄时将画质设为 RAW+JPEG'),
@@ -70,28 +72,43 @@ export function recipePanel(view) {
     nodes.push(h('div', { class: 'row-tags' }, h('span', { class: 'chip warn', title: UNCALIBRATED_TITLE }, '未校准')));
   }
 
-  if (!unit || !info) {
+  if (!unit) {
     nodes.push(h('p', { class: 'small' }, '无法读取配方。请重试。'));
     return h('div', { class: 'edit-panel' }, ...nodes);
   }
+  if (!info) nodes.push(h('p', { class: 'small' }, '找不到这个配方。请重新选择。'));
 
 
   const baseButtons = unit.recipes.map((r) =>
     h('button', {
       class: 'btn base',
       type: 'button',
-      'aria-pressed': String(r.slot === sel.slot && !!ed.recipe),
+      'aria-pressed': String((!sel.kind || sel.kind === 'builtin') && r.slot === sel.slot && !!ed.recipe),
       'aria-disabled': usable ? null : 'true',
       onclick: () => {
         if (!usable) return flash();
-        switchBase(view, r.slot);
+        switchRecipe(view, { kind: 'builtin', slot: r.slot });
       },
     }, `${String(r.slot).padStart(2, '0')} ${BASE_NAMES[r.slot - 1]}`),
   );
   nodes.push(h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, baseButtons));
 
+  for (const [key, label] of [['looks', 'Looks'], ['users', '我的配方']]) {
+    const entries = unit[key] || [];
+    if (!entries.length) continue;
+    nodes.push(h('div', { class: 'sec' }, label));
+    nodes.push(h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, entries.map((r) =>
+      h('button', {
+        class: 'btn base', type: 'button',
+        'aria-pressed': String(sel.kind === r.kind && sel.id === r.id),
+        'aria-disabled': usable ? null : 'true',
+        onclick: () => usable ? switchRecipe(view, r) : flash(),
+      }, r.name),
+    )));
+  }
+
   // 强度和旋钮：配方不能用时整块变淡；点了（捕获阶段拦住）闪一下
-  const rest = h('div', { class: state3 === 'full' ? null : 'dimmed-block', title: state3 === 'approx' ? '近似效果只支持默认参数' : null });
+  const rest = h('div', { class: knobsOn ? null : 'dimmed-block', title: state3 === 'approx' ? '近似效果只支持默认参数' : null });
   if (!knobsOn) {
     rest.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
@@ -99,15 +116,16 @@ export function recipePanel(view) {
       flash();
     }, true);
   }
-  const amount = info.controls.find((c) => c.name === 'amount');
+  const controls = info?.controls || [];
+  const amount = controls.find((c) => c.name === 'amount');
   if (amount) rest.append(levelRow(view, amount, KNOB_NAMES.amount, knobsOn, { title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
-  for (const c of info.controls) {
+  for (const c of controls) {
     if (c.name === 'amount') continue;
     rest.append(levelRow(view, c, KNOB_NAMES[c.name] || c.label, knobsOn, { tag: tagFor(c), title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
   }
   nodes.push(rest);
   // 底部按钮固定在面板底边（COPY 3.3：[存储为我的配方] [写入存储卡]，[重置] 靠右）。不放进 rest 里：rest 的底边就是它的底边，固定不住
-  const reset = resetButton(view, usable);
+  const reset = resetButton(view, usable && !!info);
   reset.classList.add('end');
   nodes.push(h('div', { class: 'sticky-foot' },
     h('button', { class: 'btn', type: 'button', 'aria-disabled': 'true' }, '存储为我的配方'),
@@ -189,14 +207,14 @@ function sliderEl(view, { label, levels, control, index, enabled }) {
 }
 
 // 内置配方：换配方时记住原来的旋钮，取回这个配方上次的旋钮（每个配方各自记住）
-function switchBase(view, slot) {
+function switchRecipe(view, target) {
   const ed = view.ed;
   const sel = selection(view);
-  if (ed.recipe && sel.slot === slot) return;
+  const next = { unit: sel.unit, kind: target.kind, slot: target.slot, ...(target.id ? { id: target.id } : {}), levels: {} };
+  if (ed.recipe && recipeKey(sel) === recipeKey(next)) return;
   beginChange(view);
-  const memory = { ...ed.memory, [`${sel.unit}/${sel.slot}`]: cleanLevels(recipeInfo(view, sel), sel.levels) };
-  const next = { unit: sel.unit, slot, levels: {} };
-  next.levels = cleanLevels(recipeInfo(view, next), memory[`${sel.unit}/${slot}`] || {});
+  const memory = { ...ed.memory, [recipeKey(sel)]: cleanLevels(recipeInfo(view, sel), sel.levels) };
+  next.levels = cleanLevels(recipeInfo(view, next), memory[recipeKey(next)] || {});
   ed.memory = memory;
   ed.recipe = next;
   persist(view, { recipe: recipeBody(view, { memory: true }) }).then(() => endChange(view));

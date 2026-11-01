@@ -32,7 +32,10 @@ export function applyCamdataStatus(s) {
     dataVersion,
   };
   // 数据换了：没有 JPG 的照片的图片地址带着新的 ?v=，图库和大图要重新取一次照片信息
-  if (prev?.dataVersion != null && dataVersion != null && prev.dataVersion !== dataVersion) emit('camdata-changed');
+  if (prev?.dataVersion != null && dataVersion != null && prev.dataVersion !== dataVersion) {
+    state.catalog = null;
+    emit('camdata-changed');
+  }
   return state.camdata;
 }
 
@@ -76,10 +79,12 @@ export function isLegacyCamera() {
 // 相机数据还没有 → 从卡导入 / 选文件；相机数据有了、颜色标定还没有 → 指到「设置」里的开发用入口
 export function camdataGuide({ onDone } = {}) {
   if (cameraDataImported()) return calibrationGuide();
+  const problem = state.camdata?.state;
+  const message = ['unsupported', 'invalid', 'unknown'].includes(problem) ? state.camdata.message : '未导入相机配方文件';
   return h(
     'div',
     { class: 'camdata-guide', role: 'region', 'aria-label': '未导入相机配方文件' },
-    h('h3', {}, state.cards && state.cards.length ? '存储卡上没有相机配方文件（GXRCE.DAT）' : '未导入相机配方文件'),
+    h('h3', {}, message),
             cameraImportControls({ onDone }),
   );
 }
@@ -96,7 +101,7 @@ export function cameraImportControls({ onDone } = {}) {
     msg.textContent = r?.message || '已导入相机配方文件';
     choices.replaceChildren();
     await loadCamdata();
-    if (onDone) onDone();
+    if (onDone) await onDone();
   };
   const fileInput = h('input', {
     type: 'file',
@@ -113,6 +118,10 @@ export function cameraImportControls({ onDone } = {}) {
         await finish(await api('/api/camdata/import-upload', { method: 'POST', body: file, headers: { 'X-GXR-Filename': file.name } }));
       } catch (err) {
         msg.textContent = err.message;
+        if (err.code === 'generation_unsupported') {
+          await loadCamdata();
+          if (state.camdata?.state === 'unsupported' && onDone) await onDone();
+        }
       } finally {
         e.target.value = '';
         busy(false);
@@ -127,6 +136,10 @@ export function cameraImportControls({ onDone } = {}) {
       await finish(await api('/api/camdata/import-card', { method: 'POST', body: cardId ? { card_id: cardId } : {} }));
     } catch (err) {
       msg.textContent = err.message;
+      if (err.code === 'generation_unsupported') {
+        await loadCamdata();
+        if (state.camdata?.state === 'unsupported' && onDone) await onDone();
+      }
       if (err.code === 'multiple_cards' && err.data?.cards) {
         choices.replaceChildren(...err.data.cards.map((c) => h('button', { class: 'btn', type: 'button', onclick: () => importCard(c.id) }, `从「${c.label}」导入`)));
       }

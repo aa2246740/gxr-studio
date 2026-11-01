@@ -305,9 +305,11 @@ def test_bad_dat_from_card_is_refused_and_old_data_is_kept(client, volumes, sett
     assert r.status_code == 422 and r.json()["error"] == code, r.text
     message = r.json()["message"]
     if name == "generation_unsupported":
-        assert message == "不支持第 130 代相机配方文件。请使用第 127 代或更新的版本。"
+        assert message == "不支持这个版本的相机配方文件。"
+        assert r.json()["detail"] == "第 130 代。支持第 127、129、131、135、137、138、150、152、153 代。"
     elif name == "generation_zero":
-        assert message == "不支持第 0 代相机配方文件。请使用第 127 代或更新的版本。"
+        assert message == "不支持这个版本的相机配方文件。"
+        assert r.json()["detail"] == "第 0 代。支持第 127、129、131、135、137、138、150、152、153 代。"
     else:
         assert "无法导入" in message
     assert tree(settings.home_dir) == before  # 旧数据原封不动，也没有 .new 残留
@@ -320,7 +322,7 @@ def test_bad_dat_messages_are_specific(client, volumes):
     raw = dat()
     root = card_with_dat(volumes, "RICOHDCX", forge_generation(raw, 130))
     m = client.post("/api/camdata/import-card").json()["message"]
-    assert m == "不支持第 130 代相机配方文件。请使用第 127 代或更新的版本。"
+    assert m == "不支持这个版本的相机配方文件。"
     swap_dat(root, b"x" * 300)
     assert "不是 GXRCE.DAT" in client.post("/api/camdata/import-card").json()["message"]
     flipped = bytearray(raw)
@@ -330,6 +332,32 @@ def test_bad_dat_messages_are_specific(client, volumes):
     assert "无法导入" in flipped_body["message"] and flipped_body.get("detail")
     swap_dat(root, raw + b"\0" * 100_000)
     assert "文件过大" in client.post("/api/camdata/import-card").json()["message"]
+
+
+@pytest.mark.parametrize(
+    ("generation", "message"),
+    [
+        (126, "不支持这个版本的相机配方文件。"),
+        (139, "不支持这个版本的相机配方文件。"),
+        (151, "不支持这个版本的相机配方文件。"),
+        (154, "这个相机配方文件需要更新版本的 GXR 工作室。"),
+        (200, "这个相机配方文件需要更新版本的 GXR 工作室。"),
+    ],
+    ids=("g126", "g139", "g151", "g154", "g200"),
+)
+def test_unsupported_generation_copy_keeps_numbers_in_detail(client, generation, message):
+    response = client.post("/api/camdata/import-upload", content=forge_generation(dat(), generation))
+    assert response.status_code == 422
+    body = response.json()
+    assert body == {
+        "error": "generation_unsupported",
+        "message": message,
+        "detail": f"第 {generation} 代。支持第 127、129、131、135、137、138、150、152、153 代。",
+    }
+    assert not any(character.isdigit() for character in body["message"])
+    camera = client.get("/api/camdata/status").json()["camera_data"]
+    assert camera["message"] == message and camera["detail"] == body["detail"]
+    assert camera["generation"] is None and "supported_generations" not in camera
 
 
 def test_a_dat_whose_04_is_not_the_factory_one_is_refused(monkeypatch):
