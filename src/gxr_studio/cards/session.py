@@ -20,7 +20,6 @@ import re
 import secrets
 import stat
 import subprocess  # nosec B404  只用来以参数数组调用 /usr/sbin/diskutil，没有 shell
-import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,6 +33,11 @@ SESSION_ID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 UUID_RE = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 DISKUTIL = "/usr/sbin/diskutil"
 DISKUTIL_TIMEOUT = 5.0
+
+# 真实宿主是不是 macOS：决定 statfs 结构体按哪种布局读。只在导入模块时定一次，按内核报告的系统名，
+# 不看运行中可能被改动的 `sys.platform`——在 Linux 上按 macOS 布局去读 glibc 的结构体，会把空闲 inode 数当成 f_fsid，
+# 挂载指纹随写文件变化，导入被当成"换了卡"而中断（Linux CI 上 reveal 用例失败的根因）。
+HOST_IS_DARWIN = os.uname().sysname == "Darwin"
 
 UUID_OK = "ok"
 UUID_MISSING = "missing"
@@ -123,7 +127,7 @@ class VolumeProbe:
         self._statfs_fn: Any = None
 
     def statfs(self, path: str) -> StatFs:
-        if sys.platform == "darwin":
+        if HOST_IS_DARWIN:
             if self._statfs_fn is None:
                 self._statfs_fn = _darwin_statfs_fn()
             if self._statfs_fn is not None:

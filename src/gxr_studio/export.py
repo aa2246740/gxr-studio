@@ -124,6 +124,11 @@ def _inside(root: Path, path: Path) -> bool:
     return path.is_file()
 
 
+def _host_is_macos() -> bool:
+    """ "在访达中显示"只在 macOS 上可用。单独成一个函数，测试替换它来模拟别的系统，不用去改整个进程的 sys.platform。"""
+    return sys.platform == "darwin"
+
+
 def reveal_export(root: Path, path: Path, ident: tuple[int, int, int] | None = None) -> Path:
     """在访达中显示这次导出的文件。拒绝符号链接和被换掉的文件。"""
     try:
@@ -138,7 +143,7 @@ def reveal_export(root: Path, path: Path, ident: tuple[int, int, int] | None = N
     shown = path.resolve()
     if not _inside(root, shown) or shown != path.resolve():
         raise RevealError(404, "export_file_missing", "找不到导出的文件。请重新导出后再试。")
-    if sys.platform != "darwin":
+    if not _host_is_macos():
         raise RevealError(501, "finder_unavailable", "无法在访达中显示。这个功能只在 macOS 上可用。")
     try:
         subprocess.run(["open", "-R", str(shown)], check=True, timeout=15)  # nosec B603 B607  固定命令，路径是这次导出记下的文件

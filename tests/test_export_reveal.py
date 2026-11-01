@@ -22,7 +22,10 @@ def client(settings):
 
 
 def _fake_open(monkeypatch, platform: str = "darwin"):
-    """挡住真正的 open -R，并钉住平台判断。文件身份检查在这两处之前。"""
+    """挡住真正的 open -R，并钉住"在访达中显示"自己的平台判断。文件身份检查在这两处之前。
+
+    只替换 `export._host_is_macos`，不改整个进程的 `sys.platform`：那样会带偏别处按平台选的实现
+    （Linux CI 上会让挂载核对按 macOS 的结构体去读 statfs，导入被中断）。"""
     calls: list[list[str]] = []
 
     def run(args, **_kwargs):
@@ -30,7 +33,7 @@ def _fake_open(monkeypatch, platform: str = "darwin"):
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr("gxr_studio.export.subprocess.run", run)
-    monkeypatch.setattr("gxr_studio.export.sys.platform", platform)
+    monkeypatch.setattr("gxr_studio.export._host_is_macos", lambda: platform == "darwin")
     return calls
 
 
@@ -100,7 +103,7 @@ def test_reveal_requires_the_file_and_macos(client, card, monkeypatch):
     assert missing.status_code == 404 and missing.json()["error"] == "export_file_missing"
     assert calls == []
     again = client.post(f"/api/photos/{photo['id']}/export", json={}).json()
-    monkeypatch.setattr("gxr_studio.export.sys.platform", "linux")
+    monkeypatch.setattr("gxr_studio.export._host_is_macos", lambda: False)
     refused = client.post(f"/api/exports/{again['export_id']}/reveal")
     assert refused.status_code == 501 and refused.json()["error"] == "finder_unavailable"
     assert calls == []
