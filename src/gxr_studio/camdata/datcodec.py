@@ -249,7 +249,7 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
     for mi, name in enumerate(NAMES):
         d = directory + 64 * mi
         if raw[d : d + 8] != name.encode() + bytes(8 - len(name)) or u16(raw, d + 8) != 0x151 or u16(raw, d + 10) != 0:
-            raise DatError("目录项名字或版本不合格")
+            raise DatError("目录项名称或版本不合格")
         map_at, bank_at, table, meta_ranges = (u32(raw, d + 12), u32(raw, d + 16), u32(raw, d + 20), u32(raw, d + 24))
         count = raw[d + 30]
         if map_at != sections[3][0] + 152 * mi or bank_at != sections[4][0] + 1056 * mi:

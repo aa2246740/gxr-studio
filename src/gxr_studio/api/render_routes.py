@@ -16,9 +16,11 @@ from pydantic import BaseModel
 from ..crop import Crop, CropError
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict
+from ..lut.errors import LutError
+from ..lut.spaces import DISPLAY
 from ..raw.dng import RawDecodeError
 from ..render import edits as render_edits
-from ..render.params import EditError, EditState, parse_adjust, parse_curve, parse_recipe
+from ..render.params import EditError, EditState, parse_adjust, parse_curve, parse_lut, parse_recipe
 from ..render.service import NoRaw, RenderUnavailable
 from .errors import ApiError
 from .routes import _shot_or_404, ctx
@@ -37,6 +39,7 @@ class EditRequest(BaseModel):
     """出现在请求体里的块才会被改；值为 null = 还原这一块。"""
 
     recipe: dict[Any, Any] | None = None
+    lut: str | None = None
     adjust: dict[Any, Any] | None = None
     curve: dict[Any, Any] | None = None
     geometry: dict[Any, Any] | None = None
@@ -49,6 +52,7 @@ class RenderRequest(BaseModel):
     """不落盘的实时预览：出现的块盖过 sidecar 里的，没出现的用 sidecar 的。"""
 
     recipe: dict[Any, Any] | None = None
+    lut: str | None = None
     adjust: dict[Any, Any] | None = None
     curve: dict[Any, Any] | None = None
     geometry: dict[Any, Any] | None = None
@@ -133,6 +137,7 @@ def _merge(edit: EditState, body: RenderRequest | None) -> EditState:
             geometry=parse_geometry(body.geometry) if "geometry" in given else edit.geometry,
             frame=parse_frame(body.frame) if "frame" in given else edit.frame,
             stamp=parse_stamp(body.stamp) if "stamp" in given else edit.stamp,
+            lut=parse_lut(body.lut) if "lut" in given else edit.lut,
         )
     except EditError as exc:
         raise _edit_error(exc) from exc
@@ -172,7 +177,7 @@ def _render(
     edit = _merge(edit, body)
     if body is not None and "crop" in body.model_fields_set:
         side = {**side, "crop": body.crop}
-    use_stage = stage or ("final" if "dng" not in shot["files"] else None)
+    use_stage = stage or ("final" if "dng" not in shot["files"] or edit.lut is not None else None)
     if use_stage:
         try:
             jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality)
@@ -262,9 +267,16 @@ def get_edit(shot_id: str, request: Request) -> Any:
 def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    changes = {k: getattr(body, k) for k in ("recipe", "adjust", "curve", "geometry", "frame", "stamp") if k in body.model_fields_set}
+    changes = {k: getattr(body, k) for k in ("recipe", "lut", "adjust", "curve", "geometry", "frame", "stamp") if k in body.model_fields_set}
     warning = c.lib.sidecar_problem(shot)
     try:
+        if changes.get("lut") is not None:
+            try:
+                target, _item = c.render.luts.target(changes["lut"])
+            except LutError as exc:
+                raise ApiError(exc.status, exc.code, exc.message, exc.extra) from exc
+            if target.input_space not in DISPLAY and ("dng" not in shot["files"] or c.render.photo_unit(shot) != "jlaunch"):
+                raise EditError("lut_needs_raw", "这个 LUT 需要 A12 50mm 的 RAW 文件")
         edit, side = render_edits.write(c.lib, shot, changes, c.render.menu, expected_rev=body.expected_rev)
     except EditError as exc:
         raise _edit_error(exc) from exc
@@ -284,7 +296,10 @@ def delete_edit(shot_id: str, request: Request) -> Any:
     warning = c.lib.sidecar_problem(shot)
     try:
         edit, side = render_edits.write(
-            c.lib, shot, {"recipe": None, "adjust": None, "curve": None, "geometry": None, "frame": None, "stamp": None}, c.render.menu
+            c.lib,
+            shot,
+            {"recipe": None, "lut": None, "adjust": None, "curve": None, "geometry": None, "frame": None, "stamp": None},
+            c.render.menu,
         )
     except sc.SidecarTooNew as exc:
         raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc

@@ -75,6 +75,37 @@ export function closeTopModal() {
   if (top) top.close();
 }
 
+// 删除、替换等确认统一从这里打开。回车只取消，确认需点击或按空格。
+export function confirmAction(title, confirmLabel, action) {
+  const previous = document.activeElement;
+  let close;
+  let busy = false;
+  const cancel = h('button', { class: 'btn', type: 'button', onclick: () => close() }, '取消');
+  const confirm = h('button', { class: 'btn danger', type: 'button', onclick: async () => {
+    if (busy) return;
+    busy = true;
+    cancel.disabled = confirm.disabled = true;
+    try { await action(); close(); }
+    catch (error) {
+      toastError(error, '无法完成操作。请重试。');
+      busy = false;
+      cancel.disabled = confirm.disabled = false;
+      cancel.focus();
+    }
+  } }, confirmLabel);
+  const body = h('div', { onkeydown: (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!busy && document.activeElement === cancel) close();
+  } }, h('div', { class: 'modal-foot' }, cancel, confirm));
+  close = openModal(title, body, { onClose: () => {
+    if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+  } });
+  cancel.focus();
+  return close;
+}
+
 export function isTyping(target) {
   return !!target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
 }

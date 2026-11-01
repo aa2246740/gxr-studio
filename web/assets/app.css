@@ -84,7 +84,7 @@ p { margin: 6px 0; }
   outline: 2px solid var(--acc); outline-offset: 2px;
 }
 .reason { color: var(--warn); font-size: 12px; }
-input[type=text], select {
+input[type=text], select, textarea {
   font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 5px 8px; min-width: 0;
 }
@@ -323,6 +323,22 @@ table.keys td:first-child { white-space: nowrap; width: 150px; }
 .dimmed-block [aria-disabled="true"] { opacity: 1; } /* 外层已经变淡，里面的按钮不再叠加 */
 .recipe-head { display: flex; align-items: center; gap: 4px; }
 .recipe-head .grow { flex: 1; }
+
+/* LUT 库沿用配方页控件，长名称和署名换行。 */
+.lut-tools { flex-wrap: wrap; }
+.lut-tools select { max-width: 100%; }
+.lut-tools input[type=checkbox] { width: 24px; height: 24px; margin: 0 6px 0 0; vertical-align: middle; accent-color: var(--acc); }
+.lut-library-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.lut-library-name { flex: 1 1 180px; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.lut-library-name[aria-pressed=true] { border-color: var(--acc); }
+.lut-group-name { overflow-wrap: anywhere; max-width: 100%; }
+.lut-attribution { display: grid; gap: 10px; margin-top: 14px; }
+.lut-attribution textarea { width: 100%; resize: vertical; font: inherit; }
+.lut-attribution textarea:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.lut-attribution button { justify-self: start; }
+.lut-import-results, .lut-export-receipt { overflow-wrap: anywhere; }
+.lut-card .field-row { flex-wrap: wrap; }
+.lut-card .field-row select { max-width: 100%; }
 
 /* ---- v2：大图（照片条、画面区、状态行、底栏）---- */
 .viewer-body { display: flex; flex: 1; min-height: 0; }

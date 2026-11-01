@@ -39,3 +39,7 @@ GXRFX.TMP
 GXRCE.*
 gxrce*.dat
 *.DAT
+
+# 用户 LUT 只放在本机应用数据。测试在临时目录里生成。
+*.cube
+*.CUBE

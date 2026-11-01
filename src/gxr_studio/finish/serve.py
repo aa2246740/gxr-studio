@@ -188,6 +188,10 @@ def color_image(
     full: bool = False,
 ) -> tuple[np.ndarray, bool, dict[str, str]]:
     """选底图。配方用 RAW；没配方有 JPG 就用相机 JPG；只有 RAW 用 04 标准。"""
+    if edit.lut is not None:
+        from ..lut.photo import color_image as lut_image
+
+        return lut_image(render, lib, shot, edit, max_edge=max_edge, quality=quality, base=base, full=full)
     files = shot["files"]
     has_jpg = "jpg" in files
     has_dng = "dng" in files

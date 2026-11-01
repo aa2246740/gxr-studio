@@ -12,10 +12,17 @@
 | SQLite 索引 | `<图库>/.studio/index.sqlite`，可以删掉重建 | `library.store`，表结构在 `src/gxr_studio/library/schema.sql` |
 | HDR 版本（相机 JPG + 增益图） | `<图库>/.studio/hdr/<id 前两位>/<id>-v2.jpg`，做不了的记 `.json`；可以删掉，下次导入后重新生成 | `hdr.derived` |
 | 相机数据和标定 | 应用数据目录 | `camdata` |
+| LUT 库、原文件和 cube 导出 | 应用数据目录：`luts/library.json`、`luts/<SHA>.cube`、`luts/exports/<SHA>.cube` | `lut.library` |
 | 导出的 JPEG/PNG | 导出目录 | `export` |
 | 存储卡 | 只读。测试禁止碰 `/Volumes` 里真实的卡 | `cards` |
 
 渲染链是 `raw` 读 DNG，`engine` 拿拟合好的整数表，`render` 把裁切和配方套上去。`lut` 在已经有相机数据时做路线 1 的旋钮拟合。`devtools` 只给测试和假卡用，运行时代码不许 import 它（import-linter 会查）。
+
+LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write` 保存。关键词与 33 点灰轴检查组合出 known、guessed、unknown、conflict；未知或冲突时需选择输入空间。用户能改选现有全部 12 种空间，改选后版本递增，旧拟合不可再用；缩略图、预览的磁盘缓存键和图片 URL 同时带 LUT 身份与空间版本。旧版 SHA 命名的 cube 文件首次打开时登记到库。
+
+署名从整个 cube 的注释读取。内容和署名未改时，导出使用原始字节，TITLE 需要清理时只替换该行；署名改过时保留全部原注释，头部增加当前字段，末尾的 JSON 注释保留多行字段。旧库首次读取时补齐此前未采集的署名，保留用户已改过的字段。
+
+照片编辑只存 LUT 的 SHA，颜色空间从库读取。`lut.photo` 接在 `finish.serve.color_image`，预览和全尺寸导出共用。显示类 LUT 使用现有底图，Log 类使用 A12 50mm DNG 的场景 XYZ；全尺寸仍按 RAW 条带计算。照片调整在 LUT 之后执行。没有新增写卡路径；全部调节和机内 LUT 两档预测延期。
 
 HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`container` 按 ISO 21496-1 + Ultra HDR 封装，主图字节不动。导入结束后另起一个 `hdr` 任务生成图库里的 HDR 版本；导出勾选 HDR 时由 `finish.hdr_export` 让 RAW 亮度跟着成片的几何、日期戳和边框走，在导出的 JPEG 上重新算。
 

@@ -150,6 +150,12 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
         vq = ""
     if token != _UNSET_DEFAULTS:
         vq = f"{vq}&d={token}" if vq else f"?d={token}"
+    if render is not None and lib is not None:
+        side, _problem = lib.read_sidecar_or_default(shot)
+        lut_id = side.get("lut")
+        if isinstance(lut_id, str):
+            lut_token = render.luts.render_token(lut_id)
+            vq = f"{vq}&l={lut_token}" if vq else f"?l={lut_token}"
     return {
         "id": sid,
         "name": shot["name"],

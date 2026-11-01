@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,12 +96,14 @@ class EditState:
     geometry: Any = None
     frame: Any = None
     stamp: Any = None
+    lut: str | None = None
 
     def to_json(self) -> dict[Any, Any]:
         return {
             "recipe": self.recipe.to_json() if self.recipe else None,
             "adjust": self.adjust.to_json(),
             "curve": {"master": [list(p) for p in self.master]} if self.master else None,
+            **({"lut": self.lut} if self.lut is not None else {}),
         }
 
     def canonical(self) -> str:
@@ -235,4 +238,13 @@ def parse_edit(side: dict[Any, Any]) -> EditState:
         geometry=geometry,
         frame=parse_frame(raw_border) if raw_border is not None else None,
         stamp=parse_stamp(side["stamp"]) if "stamp" in side else None,
+        lut=parse_lut(side.get("lut")),
     )
+
+
+def parse_lut(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not re.fullmatch(r"[0-9a-f]{64}", raw):
+        raise EditError("bad_lut", INVALID_REQUEST)
+    return raw
