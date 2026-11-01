@@ -33,6 +33,35 @@ def run_node(tmp_path: Path, body: str) -> object:
     return json.loads(res.stdout)
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("previous-photo-after-import", {"before": "none", "current": "full", "revisited": "full", "requests": 2, "metaRequests": 1}),
+        ("data-change-pending-caps", {"resolved": "full", "cached": "full", "requests": 2}),
+        ("data-change-pending-catalog", {"resolved": 10, "cached": 10, "requests": 2}),
+        ("data-change-pending-caps-error", {"resolved": "full", "cached": "full", "requests": 2}),
+        ("data-change-pending-catalog-error", {"resolved": 10, "cached": 10, "requests": 2}),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_recipe_cache_after_data_change(tmp_path, scenario, expected):
+    """运行实际缓存模块，用延迟完成的请求检查旧视图拿到的结果。"""
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    for path in ASSETS.glob("*.js"):
+        shutil.copyfile(path, modules / path.name)
+    (modules / "package.json").write_text('{"type":"module"}\n')
+    (modules / "api.js").write_text(
+        "export class ApiError extends Error {}\n"
+        "export const api = (...args) => globalThis.cacheApi(...args);\n"
+        "export async function apiBlob() { throw new Error('本场景不读取图片'); }\n"
+    )
+    script = Path(__file__).parent / "support/recipe_cache.mjs"
+    result = subprocess.run(["node", str(script), str(modules), scenario], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == expected
+
+
 # ---- 裁切框的几何（geom.js） ------------------------------------------------------
 
 
@@ -278,7 +307,7 @@ def test_section_3_9_sentences_are_used_verbatim():
     assert "请勿格式化存储卡，重新插入后再试一次。" in texts["import_summary.js"]
     assert "导入失败。请重试。" in texts["import_summary.js"]
     assert "导出失败。请重试。" in texts["export.js"]
-    assert "存储卡上没有相机配方文件（GXRCE.DAT）" in texts["camdata.js"]
+    assert "未导入相机配方文件" in texts["camdata.js"]
     assert "校准数据与相机配方文件不匹配" in texts["camdata.js"]
 
 

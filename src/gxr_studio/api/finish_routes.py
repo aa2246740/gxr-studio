@@ -32,7 +32,15 @@ def _capabilities(c: Any, shot: dict[str, Any]) -> dict[str, Any]:
     if raw and c.render.available():
         return {"raw": True, "recipe": "full", "reason": ""}
     if raw:
-        return {"raw": True, "recipe": "none", "reason": "请先导入相机配方文件"}
+        status = c.render.status()
+        camera = status["camera_data"]
+        if camera["state"] != "ready":
+            reason = camera["message"]
+            code = {"unsupported": "generation_unsupported", "invalid": "camera_data_invalid"}.get(camera["state"], "camera_data_missing")
+        else:
+            reason = "请先导入校准数据" if status["calibration"]["state"] == "missing" else status["calibration"]["message"]
+            code = "calibration_missing"
+        return {"raw": True, "recipe": "none", "reason": reason, "reason_code": code}
     if ENABLED and c.render.available():
         return {"raw": False, "recipe": "approx", "reason": "近似"}
     return {"raw": False, "recipe": "none", "reason": "配方需要 RAW 文件"}

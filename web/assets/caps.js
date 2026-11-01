@@ -3,6 +3,7 @@
 // 探测只做一次，结果留在会话里。新接口不在时，对应的面板显示「还没准备好」，不写假选项。
 
 import { api, ApiError } from './api.js';
+import { state, on } from './state.js';
 
 const cache = new Map();
 
@@ -39,10 +40,21 @@ export async function saveDefaults(body) {
 
 // 每张照片各自的能力（能不能套配方）和拍摄信息。按照片缓存。
 const photoCache = new Map();
+let capabilityVersion = 0;
+on('camdata-changed', () => {
+  capabilityVersion++;
+  for (const key of photoCache.keys()) if (key.startsWith('caps:')) photoCache.delete(key);
+});
 
-export function loadPhotoCaps(id) {
-  const key = `caps:${id}`;
-  if (!photoCache.has(key)) photoCache.set(key, probe(`/api/photos/${id}/capabilities`, '配方'));
+export function loadPhotoCaps(id, { refresh = false } = {}) {
+  const version = state.camdata?.dataVersion;
+  const epoch = capabilityVersion;
+  const key = `caps:${id}:${version}`;
+  if (refresh) photoCache.delete(key);
+  if (!photoCache.has(key)) {
+    photoCache.set(key, probe(`/api/photos/${id}/capabilities`, '配方').then((result) =>
+      version === state.camdata?.dataVersion && epoch === capabilityVersion ? result : loadPhotoCaps(id)));
+  }
   return photoCache.get(key);
 }
 

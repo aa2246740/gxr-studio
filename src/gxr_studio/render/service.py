@@ -28,7 +28,7 @@ import numpy as np
 from PIL import Image
 
 from .. import crop as cropmod
-from ..camdata import calib, store
+from ..camdata import calib, datcodec, store
 from ..camdata.store import CamdataError
 from ..export import crop_image, srgb_icc
 from ..lut.library import LutLibrary
@@ -43,7 +43,6 @@ PREVIEW_STEP = 0.75  # 预览用的色度增益网格间距（实测 p99 ΔE00 �
 EXPORT_STEP = 0.5  # 导出用更细的网格
 ISO_SPLIT = 566  # 200 和 1600 的几何中点：低于它用 ISO 200 的模型，否则用 ISO 1600 的
 CALIBRATED_ISOS = calib.CALIBRATED_ISOS
-CAMERA_HINT = "存储卡上没有相机配方文件（GXRCE.DAT）。请重新插入后重试。"
 UNCALIBRATED_LABEL = "电脑预测 未校准"
 CALIBRATED_LABEL = "电脑预测"
 MODEL_NOTE = "使用 A12 50mm 的颜色模型"
@@ -168,6 +167,7 @@ class RenderService:
         self._state_token = None
         self._camera: CameraData | None = None
         self._camera_error: tuple[str, str] | None = None
+        self._import_generation: int | None = None
         self._calib_manifest_sha: str | None = None
         self._calib_error: str | None = None
         self._models: dict[Any, Any] = {}
@@ -246,29 +246,44 @@ class RenderService:
         cam = self._camera.manifest_sha256[:8] if self._camera else "none"
         return f"{cam}-{(self._calib_manifest_sha or 'none')[:6]}"
 
+    def note_import_generation(self, generation: int | None) -> None:
+        """仅记住本次会话中未能导入的代数，不保存文件，也不替换已导入的数据。"""
+        with self._lock:
+            self._refresh()
+            self._import_generation = generation if self._camera is None else None
+
     def status(self) -> dict[Any, Any]:
         self._refresh()
         cam = self._camera
         cam_state = "ready" if cam else self._camera_error[0]  # type: ignore[index]
         cal_state = "ready" if self._calib_error is None else ("missing" if "缺少" in self._calib_error else "invalid")
         ready = cam is not None and self._calib_error is None
+        unsupported = cam is None and self._import_generation is not None
+        camera_message = None if cam else self._camera_error[1]  # type: ignore[index]
+        detail = None
+        if unsupported:
+            camera_message = datcodec.unsupported_message(self._import_generation)  # type: ignore[arg-type]
+            detail = datcodec.unsupported_detail(self._import_generation)  # type: ignore[arg-type]
         return {
             "ready": ready,
             "camera_data": {
-                "state": cam_state,
-                "message": None if cam else self._camera_error[1],  # type: ignore[index]
+                "state": "unsupported" if unsupported else cam_state,
+                "message": camera_message,
                 "generation": cam.manifest["generation"] if cam else None,
+                "detail": detail,
                 "source_sha256": cam.manifest["source"]["sha256"] if cam else None,
                 "imported_at": cam.manifest["imported_at"] if cam else None,
             },
             "calibration": {"state": cal_state, "message": self._calib_error, "isos": list(CALIBRATED_ISOS)},
             "engine": self.engine_pin() if ready else None,
-            "hint": None if ready else CAMERA_HINT,
+            "hint": camera_message if cam is None else self._calib_error,
         }
 
     def _require(self) -> CameraData:
         self._refresh()
         if self._camera is None:
+            if self._import_generation is not None:
+                raise RenderUnavailable("generation_unsupported", datcodec.unsupported_message(self._import_generation), "unsupported")
             state, _msg = self._camera_error  # type: ignore[misc]
             text = "无法生成电脑预测。请先导入相机配方文件。" if state == "missing" else "无法读取相机配方文件。请重新导入后再试。"
             raise RenderUnavailable("camera_data_missing" if state == "missing" else "camera_data_invalid", text, state)
@@ -290,8 +305,11 @@ class RenderService:
 
     def catalog(self) -> list[dict[Any, Any]]:
         """配方列表：相机数据已导入时带条目 SHA-256，没导入也能列（菜单表不含理光字节）。"""
+        return self.recipe_menu().listing()
+
+    def recipe_menu(self) -> Menu:
         self._refresh()
-        return (self._camera or self.menu).listing()
+        return self._camera or self.menu
 
     def photo_unit(self, shot: dict[Any, Any]) -> str | None:
         return unit_of_lens(shot.get("lens"))

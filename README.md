@@ -85,12 +85,17 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 - 没有卡：把 `GXRCE.DAT`（或装着它的文件夹）拷到电脑上，`POST /api/camdata/import-file {"path": "/完整/路径"}`。
   界面里的「选择 GXRCE.DAT 文件…」走 `POST /api/camdata/import-upload`：浏览器拿不到本地路径，所以直接把选中文件的
   原始字节（`application/octet-stream`，文件名放在 `X-GXR-Filename` 头里，只用来显示）发过来，校验和 `import-file` 完全相同。
-- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138，其它代一律拒绝，不猜）、两层 CRC、钉子、
+- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153，其它代一律拒绝，不猜）、两层 CRC、钉子、
   重新封装后与原文件逐字节相同、三个单元的原厂 04。任何一项不过，返回带中文说明的 422
   （`generation_unsupported` / `dat_invalid`），应用数据目录里原来的数据原封不动。
+  文件版本比工作室当前支持的更新时，主提示为「这个相机配方文件需要更新版本的 GXR 工作室。」；
+  其它不支持的版本显示「不支持这个版本的相机配方文件。」。主提示不列代数，具体代数及支持列表只放在 API 的 `detail` 中供诊断。
   卡上没有这个文件是 404 `dat_not_found`，没有卡是 404 `no_card`。
 - 通过后提取 3 个单元（50mm / 28mm / MOUNT）× 8 个配方 + 原厂 04 到 `camera-data/`，写入后读回比对。
   内容和已导入的完全相同就什么都不做（`unchanged: true`）。
+- 152 / 153 的 Looks 从文件里的 GXFX 行池读取，档位和整数剂量从 kv2 R3 点表读取。配方页按顺序显示
+  8 个内置配方、文件里的 Looks、文件里的「我的配方」。150 沿用 GXDP v1 / kv2 R2，没有 Looks，内置配方和控制值与 152 相同。
+  文件内条目按内容摘要识别，默认值沿用文件；导入失败不会替换已导入的数据。
 
 **2. 标定包** —— 电脑预测用的校准数据（ISO 200 / 1600 两套），**必须在相机数据之后导入**，
 导入时用包里的 stock 核对相机数据里 50mm 的原厂 04，对不上就拒绝（422 `calibration_stock_mismatch`）。
@@ -112,6 +117,8 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 导入成功后：渲染结果和烘焙缓存清空；没有 JPG 的照片的缩略图/预览缓存删除重画，`/api/photos` 里这些照片的
 `thumb_url` / `preview_url` 带上 `?v=<data_version>`，浏览器缓存的旧图（`immutable`）因此不会再被用到。
 前端在 `data_version` 变化时（`camdata.js`）重新取照片列表，并刷新大图的图片地址和编辑状态。
+照片的配方能力按数据版本缓存；数据更新后清空能力和配方菜单的缓存及在途请求记录。
+旧请求完成时，原调用者会重新读取当前版本的数据，不会收到旧能力或旧菜单。拍摄信息缓存保留。
 
 ## 跑测试
 

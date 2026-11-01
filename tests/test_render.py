@@ -406,7 +406,7 @@ def test_default_params_preview_equals_exact_chain_within_bake_budget(lib, camho
 def test_unavailable_without_camera_data(lib, tmp_path):
     svc = RenderService(tmp_path / "empty-home", lib)
     st = svc.status()
-    assert not st["ready"] and st["camera_data"]["state"] == "missing" and "插入" in st["hint"]
+    assert not st["ready"] and st["camera_data"]["state"] == "missing" and st["hint"] == "还没有导入相机配方文件"
     assert svc.catalog()[0]["recipes"][0]["entry_sha256"] is None
     with pytest.raises(RenderUnavailable) as e:
         svc.plan({"files": {}}, EditState())
