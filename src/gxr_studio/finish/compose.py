@@ -13,6 +13,7 @@ from ..export import srgb_icc
 from ..render.params import EditState
 from .frame import apply_frame
 from .geometry import clamp_norm_rect, crop_valid, fit_preset_in_valid, header_value, needs_valid_crop, normalized_valid_rect, warp
+from .hdr_export import HdrTrack
 from .pixels import apply_base, apply_extra
 from .spec import FrameSpec, Geometry, StampSpec, factory_frame, factory_stamp
 from .stamp import apply_stamp
@@ -66,7 +67,10 @@ def finish_array(
     file_time: datetime | None,
     from_raw: bool,
     crop_preset: str | None = None,
+    track: HdrTrack | None = None,
 ) -> tuple[np.ndarray, str | None]:
+    """`track`（导出 HDR 时）：RAW 亮度层跟着做同样的几何、裁剪，日期戳和边框处记为不是照片（见 `hdr_export`）。"""
+    track = track or HdrTrack(None)
     if from_raw:
         rgb = apply_extra(rgb, edit.adjust)
     else:
@@ -77,6 +81,7 @@ def finish_array(
         valid = np.ones(rgb.shape[:2], dtype=bool)
     else:
         rgb, valid = warp(rgb, geom)
+        track.warp(geom)
     valid_header = header_value(normalized_valid_rect(valid))
     if stage == "uncropped" or stage == "original":
         return rgb, valid_header
@@ -85,14 +90,19 @@ def finish_array(
     if fitted is not None:
         x, y, bw, bh = fitted
         rgb = rgb[y : y + bh, x : x + bw]
+        track.box(x, y, bw, bh)
     elif needs_valid_crop(geom):
         if crop_rect is None or crop_rect == full:
             crop_rect = normalized_valid_rect(valid)
         else:
             crop_rect = clamp_norm_rect(valid, crop_rect)
         rgb = crop_valid(rgb, crop_rect)
+        track.crop(crop_rect)
     elif crop_rect is not None and crop_rect != full:
         rgb = crop_valid(rgb, crop_rect)
+        track.crop(crop_rect)
     rgb = apply_stamp(rgb, stamp, taken, file_time)
+    track.stamp(stamp, taken, file_time)
     rgb = apply_frame(rgb, frame, meta)
+    track.frame(frame, meta)
     return rgb, None

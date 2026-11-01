@@ -4,7 +4,7 @@
 
     <图库>/YYYY/YYYY-MM-DD/Rxxxxxxx.DNG|JPG|AVI|gxrs.json
     <图库>/未知日期/…                      （undated_policy = unknown_folder 时）
-    <图库>/.studio/{index.sqlite, thumbs/, staging/, import-log.jsonl}
+    <图库>/.studio/{index.sqlite, thumbs/, hdr/, staging/, import-log.jsonl}
 
 `.studio` 里除了 `import-log.jsonl`（追加日志，同时是 seen/seen2 的备份）以外都能删。
 

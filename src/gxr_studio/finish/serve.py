@@ -17,6 +17,8 @@ from ..render.params import EditError, EditState
 from ..render.service import NoRaw, RenderService, RenderUnavailable
 from .approx import ENABLED, apply_lut
 from .compose import encode_jpeg, finish_array, has_visible_edit, load_jpeg, resolved_frame, resolved_stamp
+from .hdr_export import HdrTrack
+from .hdr_export import finish as finish_hdr
 from .spec import factory_frame, factory_stamp
 
 SIZE_EDGE = {"thumb": 240, "preview": 1600, "full": None}
@@ -296,7 +298,9 @@ def render_stage(
     max_edge: int | None,
     quality: int,
     base: str = "auto",
+    track: HdrTrack | None = None,
 ) -> tuple[bytes, dict[str, str]]:
+    """`track`：导出 HDR 时跟着成片走的 RAW 亮度层（`hdr_export`），底图一定下来就开始。"""
     frame_default, stamp_default = load_defaults(render.home)
     bare = stage == "original"
     frame = factory_frame() if bare else resolved_frame(edit.frame, frame_default)
@@ -318,6 +322,8 @@ def render_stage(
             "cache": "miss",
             "key": "",
         }
+        if track is not None:
+            track.begin(load_jpeg(_source_path(lib, shot), None))
         if max_edge is None:
             return raw, labels
         return encode_jpeg(_fit(load_jpeg(_source_path(lib, shot), None), max_edge), quality), labels
@@ -334,6 +340,8 @@ def render_stage(
             "detail": labels.get("detail") or "",
         }
         return encode_jpeg(_fit(rgb, max_edge), quality), {**labels, "valid": ""}
+    if track is not None:
+        track.begin(rgb)
     meta, taken, file_time = _meta(shot, lib)
     crop_raw = side.get("crop") if isinstance(side.get("crop"), dict) else {}
     raw_rect = crop_raw.get("rect") if isinstance(crop_raw, dict) else None
@@ -353,6 +361,7 @@ def render_stage(
         file_time=file_time,
         from_raw=from_raw,
         crop_preset=preset if isinstance(preset, str) else None,
+        track=track,
     )
     labels["valid"] = header or ""
     labels.setdefault("label", labels.get("kind") or "original")
@@ -373,15 +382,26 @@ def export_finish(
     long_edge: int | None,
     fmt: str,
     base: str = "auto",
+    hdr: bool = False,
 ) -> Any:
-    """成片导出。长边按加上边框之后的最终尺寸计算。机器值与显示文字分开。"""
+    """成片导出。长边按加上边框之后的最终尺寸计算。机器值与显示文字分开。
+    `hdr`：在导出的 JPEG 上按成片重新算增益图（`hdr_export`）；做不了就照常导出，结果里写原因。"""
     import os
 
     from ..export import FORMATS, ExportError, ExportOptions, ExportResult, check_destination, claim_path, write_with_exif
 
     ExportOptions(long_edge, quality, fmt).validate()
+    files = shot["files"]
+    track = (
+        HdrTrack(
+            lib.abspath(files["dng"]["relpath"]) if "dng" in files else None,
+            jpeg=lib.abspath(files["jpg"]["relpath"]) if "jpg" in files else None,
+        )
+        if hdr
+        else None
+    )
     try:
-        data, labels = render_stage(render, lib, shot, edit, side, stage="final", max_edge=None, quality=quality, base=base)
+        data, labels = render_stage(render, lib, shot, edit, side, stage="final", max_edge=None, quality=quality, base=base, track=track)
     except RawDecodeError as exc:
         detail = f"没有全尺寸传感器数据，也没有更小的预览。{exc}"
         if "jpg" in shot["files"]:
@@ -407,8 +427,11 @@ def export_finish(
     except OSError as exc:
         raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
     owned = True
+    hdr_info: dict[str, Any] = {}
     try:
         payload = write_with_exif(data, _source_path(lib, shot), note, quality=quality, fmt=fmt)
+        if track is not None:
+            payload, hdr_info = finish_hdr(payload, track, fmt)
         with os.fdopen(fd, "wb") as fh:
             owned = False
             fh.write(payload)
@@ -432,6 +455,8 @@ def export_finish(
         render_kind=kind,
         calibrated=calibrated,
         detail=labels.get("detail") or "",
+        hdr=hdr_info.get("hdr") if track is not None else None,
+        hdr_reason=hdr_info.get("reason"),
     )
 
 

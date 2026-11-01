@@ -52,6 +52,8 @@ class Context:
     import_options: ImportOptions | None = None  # 测试可以注入（空间、钩子）
     import_lock: threading.Lock = field(default_factory=threading.Lock)
     camdata_lock: threading.Lock = field(default_factory=threading.Lock)  # 相机数据/标定包同一时间只有一个在导入
+    hdr_lock: threading.Lock = field(default_factory=threading.Lock)  # HDR 后台任务同一时间只有一个
+    hdr_stopping: bool = False  # 与启动共用 hdr_lock；关闭开始后不能再创建 HDR 任务
     metrics: Metrics = field(default_factory=Metrics)
     alerts: StudioNotifier = field(default_factory=StudioNotifier)
     exports: ExportLedger = field(default_factory=ExportLedger)
@@ -104,6 +106,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
         yield
+        with ctx.hdr_lock:
+            ctx.hdr_stopping = True
+            hdr_jobs = [job for job in jobs.all() if job.kind == "hdr"]
+            for job in hdr_jobs:
+                job.cancel.set()
+        for job in hdr_jobs:
+            if job.thread is not None:
+                job.thread.join()
         shutdown_error_tracking()
         ctx.lut.close()
         recorder.__exit__(None, None, None)
