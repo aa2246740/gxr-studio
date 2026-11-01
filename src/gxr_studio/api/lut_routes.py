@@ -23,8 +23,10 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from ..lut import cube as cubemod
+from ..lut.library import file_parts
 from ..lut.service import LutError, spaces_listing
 from .errors import ApiError
+from .lut_library_routes import call
 from .routes import _shot_or_404, ctx
 
 router = APIRouter()
@@ -80,17 +82,20 @@ def lut_spaces() -> dict[Any, Any]:
 
 @router.post("/api/lut/upload", response_model=None)
 async def lut_upload(request: Request) -> Any:
+    name = unquote(request.headers.get("x-gxr-filename") or "")
+    group = unquote(request.headers["x-gxr-group"]) if "x-gxr-group" in request.headers else None
+    filename, _folder, skip = file_parts(name)
+    if skip:
+        return {"skipped": True, "filename": filename}
+    if name and Path(filename).suffix.lower() != ".cube":
+        raise ApiError(422, "cube_unsupported", "不支持这种 LUT 格式")
     chunks, total = [], 0
     async for chunk in request.stream():
         total += len(chunk)
         if total > cubemod.MAX_BYTES:
             raise ApiError(422, "cube_too_big", "无法读取 LUT。文件过大。", {"detail": "超过 64 MB"})
         chunks.append(chunk)
-    name = Path(unquote(request.headers.get("x-gxr-filename") or "")).name
-    try:
-        return await run_in_threadpool(_svc(request).add_cube, b"".join(chunks), name)
-    except LutError as exc:
-        raise _api(exc) from exc
+    return await run_in_threadpool(call, _svc(request).add_cube, b"".join(chunks), name, group)
 
 
 @router.get("/api/lut/{cube_id}/preview", response_model=None)

@@ -15,11 +15,11 @@ from ..finish.spec import parse_frame, parse_geometry, parse_stamp
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict, heal_frame
 from ..library.store import Library
-from .params import EditError, EditState, parse_adjust, parse_curve, parse_edit, parse_recipe
+from .params import EditError, EditState, parse_adjust, parse_curve, parse_edit, parse_lut, parse_recipe
 from .recipes import Menu, unit_of_lens
 
 _UNSET = object()
-SCOPE = {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop"]}
+SCOPE = {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop", "lut"]}
 
 
 def read(lib: Library, shot: dict[Any, Any]) -> tuple[EditState, dict[Any, Any]]:
@@ -34,6 +34,7 @@ def describe(side: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     return {
         "rev": int(side.get("rev", 0)),
         "recipe": edit.recipe.to_json() if edit.recipe else None,
+        "lut": edit.lut,
         "memory": (recipe or {}).get("memory") or {},
         "adjust": edit.adjust.to_json(),
         "curve": {"master": [list(p) for p in edit.master]} if edit.master else None,
@@ -99,6 +100,12 @@ def write(
             new.pop("curve", None)
         else:
             new["curve"] = {"master": [list(p) for p in master]}
+    if "lut" in changes:
+        lut = parse_lut(changes["lut"])
+        if lut is None:
+            new.pop("lut", None)
+        else:
+            new["lut"] = lut
     if "geometry" in changes:
         raw_geo = changes["geometry"]
         if raw_geo is None:

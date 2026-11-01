@@ -2,24 +2,21 @@
 
 数据都放在应用数据目录（`home_dir`）里，不写图库、不写卡：
     luts/<sha256>.cube          用户拖进来的调色文件（原样字节）
-    lut_jobs/<job>/             一次拟合：job.json、progress.json、result.json、log.txt
+    lut_jobs/<job>/             一次拟合：job.json、progress.json、result.json
     my_recipes/<id>.json        "我的配方"：底子 + 旋钮档位 + 来源与相似度（电脑预测）。写回相机在后续任务里做
 """
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
 import re
-import shutil
 import subprocess  # nosec B404  只用来拉起本包的拟合子进程
 import sys
 import threading
 import time
 import uuid
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,8 +27,11 @@ from ..export import srgb_icc
 from ..raw import open_dng
 from ..render.params import EditError, RecipeSel
 from ..render.service import RenderUnavailable
-from . import cube as cubemod
 from .cube import Cube
+from .errors import LutError as LutError
+from .identify import guess_space
+from .library import LutLibrary
+from .metadata import FIELDS
 from .scene import SceneError, scene_colour
 from .spaces import DISPLAY, GAMUT, SPACES, Target
 
@@ -53,31 +53,6 @@ SPACE_LABELS = {
     "applelog": ("苹果 Log", "log"),
     "linear": ("线性光（高级）", "log"),
 }
-# 文件名/标题里的关键词 → 输入空间（先长后短）
-GUESS = (
-    ("f-log2", "flog2"),
-    ("flog2", "flog2"),
-    ("f-log", "flog"),
-    ("flog", "flog"),
-    ("l-log", "llog"),
-    ("llog", "llog"),
-    ("v-log", "vlog"),
-    ("vlog", "vlog"),
-    ("s-log3", "slog3"),
-    ("slog3", "slog3"),
-    ("apple log", "applelog"),
-    ("applelog", "applelog"),
-    ("srgb", "srgb"),
-    ("rec709", "rec709"),
-    ("rec.709", "rec709"),
-    ("709", "rec709"),
-)
-
-
-class LutError(Exception):
-    def __init__(self, status: int, code: str, message: str, extra: dict[Any, Any] | None = None) -> None:
-        super().__init__(message)
-        self.status, self.code, self.message, self.extra = status, code, message, extra or {}
 
 
 def spaces_listing() -> list[dict[Any, Any]]:
@@ -85,31 +60,15 @@ def spaces_listing() -> list[dict[Any, Any]]:
     return [{"id": k, "label": SPACE_LABELS[k][0], "kind": SPACE_LABELS[k][1], "gamut": GAMUT[k]} for k in SPACES]
 
 
-def guess_space(name: str, title: str = "") -> tuple[str | None, str | None]:
-    text = f"{name} {title}".lower()
-    for key, space in GUESS:
-        if key in text:
-            return space, f"文件名/标题里有“{key}”"
-    return None, None
-
-
 def clean_name(name: Any) -> str:
     if not isinstance(name, str):
-        raise LutError(422, "bad_name", "无法保存。名字无效。")
+        raise LutError(422, "bad_name", "无法保存。名称无效。")
     name = re.sub(r"\s+", " ", name).strip()
-    if not 1 <= len(name) <= NAME_MAX or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
-        raise LutError(422, "bad_name", "无法保存。名字长度不合适。", {"detail": f"1 到 {NAME_MAX} 个字"})
+    if not 1 <= len(name) <= NAME_MAX:
+        raise LutError(422, "bad_name", f"配方名称需为 1–{NAME_MAX} 个字符。")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise LutError(422, "bad_name", "无法保存。名称无效。")
     return cast(str, name)  # 上面已经确认是 str；mypy 不把这次赋值从 Any 收窄
-
-
-def _write_json(path: Path, doc: dict[Any, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(json.dumps(doc, ensure_ascii=False, indent=2, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o)))
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
 
 
 class LutService:
@@ -117,11 +76,22 @@ class LutService:
         self.home = Path(home)
         self.lib = library
         self.render = render
+        self.library: LutLibrary = render.luts
         self._lock = threading.RLock()
         self._procs: dict[str, subprocess.Popen[Any]] = {}
         self._cancelled: set[str] = set()
-        self._cubes: OrderedDict[str, Cube] = OrderedDict()
         self._colours: dict[Any, Any] = {}
+
+    def _write_file(self, relative: str, data: bytes) -> None:
+        try:
+            with self.library.private() as directory:
+                directory.replace_file(relative, data)
+        except OSError as exc:
+            raise LutError(422, "lut_io_error", "无法读写 LUT 库。请检查应用数据。", {"detail": str(exc)}) from exc
+
+    def _write_json(self, path: Path, doc: dict[Any, Any]) -> None:
+        data = json.dumps(doc, ensure_ascii=False, indent=2, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o)).encode()
+        self._write_file(path.relative_to(self.home).as_posix(), data)
 
     # ---- 目录 ---------------------------------------------------------------
     @property
@@ -137,40 +107,11 @@ class LutService:
         return self.home / "my_recipes"
 
     # ---- 调色文件 -------------------------------------------------------------
-    def add_cube(self, raw: bytes, filename: str = "") -> dict[Any, Any]:
-        if len(raw) > cubemod.MAX_BYTES:
-            raise LutError(422, "cube_too_big", "无法读取 LUT。文件过大。", {"detail": "超过 64 MB"})
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError as exc:
-            raise LutError(422, "cube_unreadable", "无法读取 LUT。请改用 .cube 文件。") from exc
-        digest = hashlib.sha256(raw).hexdigest()
-        try:
-            cube = Cube.parse(text, digest)
-        except (ValueError, IndexError) as exc:
-            raise LutError(422, "cube_unreadable", "无法读取 LUT。请改用 .cube 文件。", {"detail": str(exc)}) from exc
-        if cube.table3 is None and cube.table1 is None:
-            raise LutError(422, "cube_unsupported", "无法读取 LUT。请改用 3D 的 .cube 文件。")
-        self.luts_dir.mkdir(parents=True, exist_ok=True)
-        path = self.luts_dir / f"{digest}.cube"
-        if not path.exists():
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_bytes(raw)
-            os.replace(tmp, path)
-        stored_name = Path(filename).name
-        if stored_name:
-            (self.luts_dir / f"{digest}.filename").write_text(stored_name + "\n", encoding="utf-8")
-        guess, why = guess_space(stored_name, cube.title)
-        return {
-            "cube_id": digest,
-            **self._describe(cube),
-            "filename": Path(filename).name or None,
-            "input_space_guess": guess,
-            "guess_reason": why,
-            "guess_note": None
-            if guess
-            else "文件里没有写它是给哪种画面做的，需要你来选；不知道的话可以选 sRGB 试试，结果会标“输入空间是猜的”。",
-        }
+    def add_cube(self, raw: bytes, filename: str = "", group: str | None = None) -> dict[Any, Any]:
+        item = self.library.add(raw, filename or "LUT.cube", group)
+        if item.get("skipped"):
+            return item
+        return {**self._describe(self.library.load(item["cube_id"])), **item}
 
     def _describe(self, cube: Cube) -> dict[Any, Any]:
         kinds = [k for k, t in (("1D", cube.table1), ("3D", cube.table3)) if t is not None]
@@ -184,24 +125,7 @@ class LutService:
         }
 
     def cube(self, cube_id: str) -> Cube:
-        if not re.fullmatch(r"[0-9a-f]{64}", cube_id or ""):
-            raise LutError(404, "cube_not_found", "找不到这个 LUT。请重新拖进来。")
-        with self._lock:
-            hit = self._cubes.get(cube_id)
-            if hit is not None:
-                self._cubes.move_to_end(cube_id)
-                return hit
-        path = self.luts_dir / f"{cube_id}.cube"
-        if not path.is_file():
-            raise LutError(404, "cube_not_found", "找不到这个 LUT。请重新拖进来。")
-        cube = Cube.read(path)
-        if cube.source_sha256 != cube_id:
-            raise LutError(409, "cube_changed", "这个 LUT 已改变。请重新拖进来。")
-        with self._lock:
-            self._cubes[cube_id] = cube
-            while len(self._cubes) > 4:
-                self._cubes.popitem(last=False)
-        return cube
+        return self.library.load(cube_id)
 
     def target(
         self,
@@ -370,11 +294,11 @@ class LutService:
             photos = self.pick_photos(photo_ids)
             job_id = uuid.uuid4().hex[:12]
             job_dir = self.jobs_dir / job_id
-            job_dir.mkdir(parents=True)
             job = {
                 "home": str(self.home),
                 "cube": str(self.luts_dir / f"{cube_id}.cube"),
                 "cube_id": cube_id,
+                "lut_version": self.library.get(cube_id)["version"],
                 "input_space": spec["space"],
                 "output_space": spec["output"],
                 "input_gamut": spec.get("input_gamut"),
@@ -388,7 +312,7 @@ class LutService:
                 "unit": unit,
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             }
-            _write_json(job_dir / "job.json", job)
+            self._write_json(job_dir / "job.json", job)
             env = {
                 **os.environ,
                 "OPENBLAS_NUM_THREADS": "1",
@@ -396,17 +320,17 @@ class LutService:
                 "VECLIB_MAXIMUM_THREADS": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "GXR_STUDIO_PARENT_PID": str(os.getpid()),
+                "GXR_STUDIO_LUT_FORBIDDEN": json.dumps([str(p) for p in self.library.forbidden]),
+                "GXR_STUDIO_LUT_HOME": str(self.home),
             }  # 子进程据此发现服务没了（SIGKILL / SIGHUP）
-            log = open(job_dir / "log.txt", "wb")
             proc = subprocess.Popen(  # nosec B603  参数是解释器和本包模块，没有 shell
                 [sys.executable, "-m", "gxr_studio.lut.worker", str(job_dir)],
-                stdout=log,
-                stderr=log,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
                 env=env,
                 start_new_session=True,
             )
-            log.close()
             self._procs[job_id] = proc
             self._prune()
         return {"job_id": job_id, "photos": [{k: p[k] for k in ("label", "iso")} for p in photos]}
@@ -428,8 +352,15 @@ class LutService:
         proc = self._procs.get(job_id)
         result = self._read(d / "result.json")
         progress = self._read(d / "progress.json")
+        try:
+            current_version = self.library.get(job["cube_id"])["version"]
+        except LutError:
+            current_version = None
+        stale = job.get("lut_version", 1) != current_version
         if job_id in self._cancelled:
             state = "cancelled"
+        elif stale:
+            state, result = "error", {"code": "lut_changed", "message": "LUT 已更改。请重新生成配方。"}
         elif result is not None:
             state = result["state"]
         elif proc is not None and proc.poll() is None:
@@ -456,7 +387,7 @@ class LutService:
         d = self._job_dir(job_id)
         proc = self._procs.get(job_id)
         if proc is not None and proc.poll() is None:
-            (d / "cancel").write_text("1")
+            self._write_file(f"lut_jobs/{job_id}/cancel", b"1")
             proc.terminate()
             try:
                 proc.wait(3)
@@ -464,9 +395,17 @@ class LutService:
                 proc.kill()
                 proc.wait(5)
             if not (d / "result.json").exists():
-                _write_json(d / "result.json", {"state": "cancelled"})
+                self._write_json(d / "result.json", {"state": "cancelled"})
             self._cancelled.add(job_id)
         return self.status(job_id, with_result=False)
+
+    def invalidate_cube(self, cube_id: str) -> None:
+        """空间改选或删除之后，停止仍在使用旧记录的拟合。"""
+        with self._lock:
+            for job_id, proc in list(self._procs.items()):
+                job = self._read(self.jobs_dir / job_id / "job.json")
+                if proc.poll() is None and job and job.get("cube_id") == cube_id:
+                    self.cancel(job_id)
 
     def close(self) -> None:
         """应用关闭时：还在跑的拟合一并结束，不留孤儿进程。"""
@@ -485,10 +424,15 @@ class LutService:
         dirs = sorted((p for p in self.jobs_dir.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime)
         for p in dirs[:-JOB_KEEP]:
             if p.name not in self._procs or self._procs[p.name].poll() is not None:
-                shutil.rmtree(p, ignore_errors=True)
+                with self.library.private() as directory:
+                    directory.remove(f"lut_jobs/{p.name}")
 
     # ---- 我的配方 -----------------------------------------------------------------
     def _stored_filename(self, cube_id: str) -> str:
+        try:
+            return str(self.library.get(cube_id)["filename"])
+        except LutError:
+            pass
         path = self.luts_dir / f"{cube_id}.filename"
         if not path.is_file():
             return ""
@@ -496,6 +440,9 @@ class LutService:
 
     def _filename_guess_matches(self, cube_id: str, space: str, cube: Cube | None = None) -> bool:
         """选中的输入空间就是按文件名或标题猜出来的那一个。"""
+        record = self.library.get(cube_id)
+        if record["input_space_manual"] and record["input_space"] == space:
+            return False
         loaded = cube if cube is not None else self.cube(cube_id)
         guess, _why = guess_space(self._stored_filename(cube_id), loaded.title or "")
         return guess is not None and guess == space
@@ -506,6 +453,10 @@ class LutService:
         return self.recipes_dir / f"{rid}.json"
 
     def save_recipe(self, job_id: str, candidate: int, name: str) -> dict[Any, Any]:
+        with self.library.lock:
+            return self._save_recipe(job_id, candidate, name)
+
+    def _save_recipe(self, job_id: str, candidate: int, name: str) -> dict[Any, Any]:
         name = clean_name(name)
         st = self.status(job_id)
         if st["state"] != "done":
@@ -521,6 +472,7 @@ class LutService:
             raise LutError(422, exc.code, exc.message) from exc
         rid = uuid.uuid4().hex[:12]
         existing = len(self.list_recipes())
+        source_lut = self.library.get(st["cube_id"])
         doc = {
             "schema": SCHEMA_RECIPE,
             "id": rid,
@@ -537,6 +489,7 @@ class LutService:
                 "input_space_guessed": bool(st["input"]["space_guessed"])
                 or self._filename_guess_matches(st["cube_id"], st["input"]["input_space"]),
                 "fit_job": job_id,
+                "attribution": {key: source_lut[key] for key in FIELDS},
             },
             "fit": {
                 "prediction": True,
@@ -554,7 +507,7 @@ class LutService:
                 "note": "暂不支持写入存储卡",
             },
         }
-        _write_json(self._recipe_path(rid), doc)
+        self._write_json(self._recipe_path(rid), doc)
         return doc
 
     def list_recipes(self) -> list[dict[Any, Any]]:
@@ -578,9 +531,10 @@ class LutService:
     def rename_recipe(self, rid: str, name: str) -> dict[Any, Any]:
         doc = self.get_recipe(rid)
         doc["name"] = clean_name(name)
-        _write_json(self._recipe_path(rid), doc)
+        self._write_json(self._recipe_path(rid), doc)
         return doc
 
     def delete_recipe(self, rid: str) -> None:
         self.get_recipe(rid)
-        self._recipe_path(rid).unlink()
+        with self.library.private() as directory:
+            directory.remove(f"my_recipes/{rid}.json")

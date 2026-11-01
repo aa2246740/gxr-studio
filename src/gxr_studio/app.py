@@ -19,6 +19,7 @@ from .alerts import StudioNotifier, register_alert_service
 from .api.camdata_routes import router as camdata_router
 from .api.errors import ApiError
 from .api.finish_routes import router as finish_router
+from .api.lut_library_routes import router as lut_library_router
 from .api.lut_routes import router as lut_router
 from .api.ops_routes import router as ops_router
 from .api.render_routes import router as render_router
@@ -83,7 +84,7 @@ def create_app(
     lib = Library(settings.library_dir, card_roots(settings.volumes_roots)).open()
     recorder = audit.AuditRecorder(limit=5000)
     recorder.__enter__()  # 应用存活期间一直记录写入
-    render = RenderService(settings.home_dir, lib)
+    render = RenderService(settings.home_dir, lib, forbidden=tuple(privacy.forbidden_for(settings)))
     jobs = JobRegistry()
     metrics = Metrics()
     alerts = StudioNotifier()
@@ -131,12 +132,17 @@ def create_app(
         # 兜底：编辑记录读不出来时不给 500，也不把路径和解析错误交给界面
         return JSONResponse({"error": "sidecar_corrupt", "message": SIDECAR_RESET_NOTE}, status_code=422)
 
+    @app.exception_handler(privacy.PrivatePathError)
+    async def _private_path_error(_: Any, exc: privacy.PrivatePathError) -> Any:
+        return JSONResponse({"error": exc.code, "message": exc.message, "detail": exc.detail}, status_code=422)
+
     app.include_router(router)
     app.include_router(ops_router)
     app.include_router(render_router)
     app.include_router(finish_router)
     app.include_router(camdata_router)
     app.include_router(lut_router)
+    app.include_router(lut_library_router)
     web = settings.web_dir
     if web is not None and Path(web, "assets").is_dir():
         app.mount("/assets", NoCacheStaticFiles(directory=Path(web) / "assets"), name="assets")

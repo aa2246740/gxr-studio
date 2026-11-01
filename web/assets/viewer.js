@@ -214,9 +214,10 @@ async function resetAll() {
   if (!ed) return;
   beginChange(view);
   ed.recipe = null;
+  ed.lut = null;
   ed.adj = zeroAdj();
   ed.curve = null;
-  const changes = { recipe: null, adjust: adjustBody(ed), curve: null };
+  const changes = { recipe: null, lut: null, adjust: adjustBody(ed), curve: null };
   if (ed.v2) {
     // 复原明确关掉装饰（PRD 第 11 节第 6 条）：不写 null，否则后端会按「继承默认值」处理
     Object.assign(changes, { geometry: { ...DEFAULT_GEOMETRY }, frame: { style: 'none' }, stamp: { enabled: false } });

@@ -96,6 +96,7 @@ function capsFrom(photo, probe) {
 function applyEdit(ed, edit) {
   ed.rev = edit.rev;
   ed.memory = edit.memory || {};
+  ed.lut = edit.lut || null;
   ed.recipe = edit.recipe ? { unit: edit.recipe.unit, slot: edit.recipe.slot, levels: { ...(edit.recipe.levels || {}) } } : null;
   const a = edit.adjust || {};
   ed.adj = {
@@ -309,6 +310,7 @@ function snapshot(view) {
   const c = view.crop;
   return JSON.stringify({
     recipe: ed.recipe,
+    lut: ed.lut,
     adj: ed.adj,
     curve: ed.curve,
     geometry: ed.v2 ? ed.geometry : null,
@@ -359,6 +361,7 @@ export function undoChange(view) {
     || (frameOwn && JSON.stringify(ed.frame) !== JSON.stringify(o.frame))
     || (stampOwn && JSON.stringify(ed.stamp) !== JSON.stringify(o.stamp));
   ed.recipe = o.recipe;
+  ed.lut = o.lut || null;
   ed.adj = o.adj;
   ed.curve = o.curve;
   if (ed.v2 && o.geometry) ed.geometry = o.geometry;
@@ -367,7 +370,7 @@ export function undoChange(view) {
   ed.frameFrom = fin.frameFrom;
   ed.stamp = fin.stamp;
   ed.stampFrom = fin.stampFrom;
-  const changes = { recipe: recipeBody(view, { memory: true }), adjust: adjustBody(ed), curve: curveBody(ed) };
+  const changes = { recipe: recipeBody(view, { memory: true }), lut: ed.lut, adjust: adjustBody(ed), curve: curveBody(ed) };
   if (ed.v2) {
     Object.assign(changes, { geometry: ed.geometry });
     if (finishChanged) Object.assign(changes, {
@@ -408,7 +411,7 @@ export function recipeForRender(view) {
 
 function draftBody(view, stage) {
   const ed = view.ed;
-  const body = { recipe: recipeForRender(view), adjust: adjustBody(ed), curve: curveBody(ed) };
+  const body = { recipe: recipeForRender(view), lut: ed.lut, adjust: adjustBody(ed), curve: curveBody(ed) };
   if (!ed.v2) return body;
   Object.assign(body, {
     geometry: ed.geometry,

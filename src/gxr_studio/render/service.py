@@ -31,6 +31,7 @@ from .. import crop as cropmod
 from ..camdata import calib, store
 from ..camdata.store import CamdataError
 from ..export import crop_image, srgb_icc
+from ..lut.library import LutLibrary
 from ..raw import Renderer, half_res_codes, open_dng, orient_array
 from . import chain
 from .params import EditState, RecipeSel
@@ -156,9 +157,11 @@ class RenderService:
         proxy_bytes: int = 640 << 20,
         result_bytes: int = 96 << 20,
         max_concurrent: int = 2,
+        forbidden: tuple[Path, ...] = (),
     ) -> None:
         self.home = Path(home)
         self.lib = library
+        self.luts = LutLibrary(self.home, (*forbidden, library.root))
         self.menu = Menu()
         self._lock = threading.RLock()
         self._gate = threading.BoundedSemaphore(max_concurrent)

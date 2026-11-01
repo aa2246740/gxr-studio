@@ -24,6 +24,7 @@ import {
   endChange,
 } from './preview.js';
 import { slider } from './controls.js';
+import { photoLutField } from './lut_library.js';
 import { UNCALIBRATED_TITLE } from './preview.js';
 
 const NEW_TONE_KNOBS = ['contrast', 'highlight', 'shadow', 'saturation'];
@@ -41,6 +42,8 @@ export function recipePanel(view) {
   const knobsOn = state3 === 'full';
 
   const nodes = [h('div', { class: 'pane-head' }, h('h2', {}, '配方'))];
+  nodes.push(photoLutField(view, { beginChange, persist, endChange, schedulePreview }));
+  nodes.push(h('div', { class: 'sec' }, '内置配方'));
   if (!camdataReady()) nodes.push(camdataGuide({ onDone: () => reloadEdit(view) }));
 
   // COPY 3.3：近似只给一个小标签。只有 JPG 时面板里写一行「配方需要 RAW 文件」，下面一行小字，按钮置灰；点了只闪一下这一行
@@ -85,7 +88,7 @@ export function recipePanel(view) {
       },
     }, `${String(r.slot).padStart(2, '0')} ${BASE_NAMES[r.slot - 1]}`),
   );
-  nodes.push(h('div', { class: 'sec' }, '内置配方'), h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, baseButtons));
+  nodes.push(h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, baseButtons));
 
   // 强度和旋钮：配方不能用时整块变淡；点了（捕获阶段拦住）闪一下
   const rest = h('div', { class: state3 === 'full' ? null : 'dimmed-block', title: state3 === 'approx' ? '近似效果只支持默认参数' : null });

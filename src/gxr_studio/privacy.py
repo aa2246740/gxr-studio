@@ -235,6 +235,12 @@ class PrivateDir:
         except FileNotFoundError:
             return False
 
+    def names(self, rel: str) -> list[str]:
+        """按实际目录句柄列名字，不跟随中间目录的链接。"""
+        with self._at(f"{rel}/.entries") as (dfd, _name):
+            self.check_fd(dfd)
+            return os.listdir(dfd)
+
     def read(self, rel: str) -> bytes:
         with self._at(rel) as (dfd, name):
             self.check_fd(dfd)
@@ -281,8 +287,8 @@ class PrivateDir:
         """原子替换一个文件：同目录写临时文件、fsync、改名、同步目录。失败不留临时文件。"""
         parts = _parts(rel)
         tmp = "/".join([*parts[:-1], f".{parts[-1]}.{secrets.token_hex(6)}.tmp"])
-        self.write(tmp, data)
         try:
+            self.write(tmp, data)
             self.verify()
             with self._at(rel) as (dfd, name):
                 self.check_fd(dfd)

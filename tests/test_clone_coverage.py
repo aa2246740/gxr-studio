@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+import threading
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -411,6 +412,12 @@ def test_lut_jobs_worker_and_recipes(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 def test_worker_result_files_and_parent_watch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    watchers_before = {thread.ident for thread in threading.enumerate() if thread.name == "parent-watch"}
+    real_watch_parent = worker.watch_parent
+    handlers = {}
+    # run() 的文件结果在当前进程核对；进程监测在下面单独启动并等待结束。
+    monkeypatch.setattr(worker, "watch_parent", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker.signal, "signal", lambda signum, handler: handlers.__setitem__(signum, handler))
     entry = _render_entry()
     home = tmp_path / "app"
     _install_camera(home, entry)
@@ -451,13 +458,15 @@ def test_worker_result_files_and_parent_watch(tmp_path: Path, monkeypatch: pytes
     assert worker.run(job4) == 0
     done = json.loads((job4 / "result.json").read_text())
     assert done["state"] == "done" and done["result"]["samples"]["skipped_photos"] == []
+    assert set(handlers) == {worker.signal.SIGTERM, worker.signal.SIGINT}
 
     monkeypatch.setattr(worker.time, "sleep", lambda _s: None)
     monkeypatch.setattr(worker.os, "_exit", lambda _code: None)
     stop: dict[str, object] = {"flag": False}
-    thread = worker.watch_parent(stop, parent_pid=-1, poll=0, grace=0)
+    thread = real_watch_parent(stop, parent_pid=-1, poll=0, grace=0)
     thread.join(2)
     assert stop["flag"] is True
+    assert {thread.ident for thread in threading.enumerate() if thread.name == "parent-watch"} == watchers_before
 
 
 def test_intake_pack_scan_and_api(tmp_path: Path, settings):  # type: ignore[no-untyped-def]

@@ -21,11 +21,14 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from ..privacy import PrivateDir
 
-def _write(path: Path, doc: dict[Any, Any]) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o)))
-    os.replace(tmp, path)
+
+def _write(path: Path, doc: dict[Any, Any], forbidden: tuple[Path, ...] = (), home: Path | None = None) -> None:
+    data = json.dumps(doc, ensure_ascii=False, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o)).encode()
+    root = home or path.parent
+    with PrivateDir(root, "LUT", forbidden) as directory:
+        directory.replace_file(path.relative_to(root).as_posix(), data)
 
 
 def load_photos(entries: list[dict[Any, Any]], max_photos: int = 3) -> tuple[list[dict[Any, Any]], list[dict[Any, Any]]]:
@@ -79,7 +82,10 @@ def watch_parent(
 
 
 def run(job_dir: Path) -> int:
-    spec = json.loads((job_dir / "job.json").read_text())
+    forbidden = tuple(Path(p) for p in json.loads(os.environ.get("GXR_STUDIO_LUT_FORBIDDEN", "[]")))
+    write_home = Path(os.environ.get("GXR_STUDIO_LUT_HOME", str(job_dir)))
+    with PrivateDir(write_home, "LUT", forbidden) as directory:
+        spec = json.loads(directory.read((job_dir / "job.json").relative_to(write_home).as_posix()))
     stop = {"flag": False}
 
     def on_term(*_: object) -> None:
@@ -95,8 +101,11 @@ def run(job_dir: Path) -> int:
 
     started = time.time()
 
+    def write_result(doc: dict[Any, Any]) -> None:
+        _write(job_dir / "result.json", doc, forbidden, write_home)
+
     def progress(p: Any) -> None:
-        _write(job_dir / "progress.json", {**p.to_dict(), "elapsed": round(time.time() - started, 1)})
+        _write(job_dir / "progress.json", {**p.to_dict(), "elapsed": round(time.time() - started, 1)}, forbidden, write_home)
 
     # 重的 import 放在这里，让信号处理先装好
     from ..camdata import calib
@@ -137,17 +146,16 @@ def run(job_dir: Path) -> int:
         result["samples"]["skipped_photos"] = skipped
         result["target"] = target.description()
         result["cube"] = cube.description()
-        _write(job_dir / "result.json", {"state": "done", "result": result})
+        write_result({"state": "done", "result": result})
         return 0
     except Cancelled:
-        _write(job_dir / "result.json", {"state": "cancelled"})
+        write_result({"state": "cancelled"})
         return 0
     except SceneError as exc:
-        _write(job_dir / "result.json", {"state": "error", "code": exc.code, "message": exc.message})
+        write_result({"state": "error", "code": exc.code, "message": exc.message})
         return 1
     except Exception:  # noqa: BLE001  子进程里任何问题都要写成结果文件，父进程才能告诉用户
-        _write(
-            job_dir / "result.json",
+        write_result(
             {
                 "state": "error",
                 "code": "fit_failed",

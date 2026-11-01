@@ -105,7 +105,7 @@ def test_edit_roundtrip_without_camera_data_keeps_scopes_and_says_why(web_client
     edit = web_client.get(f"/api/photos/{pair['id']}/edit")
     assert edit.status_code == 200
     body = edit.json()
-    assert body["scope"] == {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop"]}
+    assert body["scope"] == {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop", "lut"]}
     assert body["render"]["available"] is False
     assert body["render"]["reason"] == "camera_data_missing"
     assert body["render"]["message"]

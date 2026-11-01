@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .. import meta as metamod
+from ..privacy import PrivateDir, PrivatePathError
 from ..raw import NEUTRAL, half_res_codes, open_dng, orient_array
 from ..raw.dng import RawDecodeError
 from .store import Library
@@ -128,7 +129,7 @@ def look_of(shot: dict[Any, Any], render: Any = None, lib: Library | None = None
 
 
 def _edited_cache(lib: Library, shot: dict[Any, Any], size: int, render: Any) -> Path | None:
-    """有编辑或默认装饰时缩略图走成片。缓存名带 sidecar 版本和默认装饰版本。"""
+    """有编辑或默认装饰时缩略图走成片。缓存名带 sidecar、默认装饰和 LUT 空间版本。"""
     from ..finish.compose import has_visible_edit, resolved_frame, resolved_stamp
     from ..finish.serve import defaults_token, load_defaults
     from ..render.params import parse_edit
@@ -144,8 +145,13 @@ def _edited_cache(lib: Library, shot: dict[Any, Any], size: int, render: Any) ->
     stamp = resolved_stamp(edit.stamp, stamp_default)
     if not has_visible_edit(edit, side, frame, stamp):
         return None
-    dest = cache_path(lib, shot["shot_id"], size, f"e{rev}d{token}")
+    lut_token = f"l{render.luts.render_token(edit.lut)}" if edit.lut else ""
+    dest = cache_path(lib, shot["shot_id"], size, f"e{rev}d{token}{lut_token}")
+    if edit.lut and not lib.is_local(dest):
+        raise PrivatePathError("private_path_forbidden", "LUT 预览不在图库内")
     if dest.exists():
+        if edit.lut:
+            _private_lut_cache(lib, dest)
         return dest
     try:
         from ..finish.serve import edited_jpeg
@@ -155,9 +161,24 @@ def _edited_cache(lib: Library, shot: dict[Any, Any], size: int, render: Any) ->
         return None
     if not data:
         return None
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
+    if edit.lut:
+        _private_lut_cache(lib, dest, data)
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
     return dest
+
+
+def _private_lut_cache(lib: Library, dest: Path, data: bytes | None = None) -> None:
+    try:
+        with PrivateDir(lib.root, "LUT 预览", lib.card_roots) as directory:
+            relative = dest.relative_to(lib.root).as_posix()
+            if data is None:
+                directory.read(relative)
+            else:
+                directory.replace_file(relative, data)
+    except OSError as exc:
+        raise PrivatePathError("private_path_changed", str(exc)) from exc
 
 
 def ensure(lib: Library, shot: dict[Any, Any], size: int, render: Any = None) -> Path | None:

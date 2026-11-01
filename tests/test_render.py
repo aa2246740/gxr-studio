@@ -469,7 +469,7 @@ def test_api_edit_roundtrip_and_validation(data_client, real_card):
     p = sample_photos(c)["R8051144"]
     base = c.get(f"/api/photos/{p['id']}/edit").json()
     assert base["rev"] == 0 and base["recipe"] is None and base["render"]["defaulted"] and base["render"]["slot"] == 4
-    assert base["scope"]["computer_only"] == ["adjust", "curve", "crop"]
+    assert base["scope"]["computer_only"] == ["adjust", "curve", "crop", "lut"]
     body = {
         "recipe": {"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {"amount": 75, "contrast": 3}},
         "adjust": {"exposure_ev": 0.5, "wb": {"warm": 10}},
