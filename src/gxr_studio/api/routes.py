@@ -22,6 +22,7 @@ from ..cards.session import MountSession, SessionError
 from ..crop import Crop, CropError
 from ..export import ExportError, ExportOptions, RevealError, reveal_export
 from ..flags import flag_enabled
+from ..hdr import derived as hdr_derived
 from ..library import edits, thumbs
 from ..library import sidecar as sc
 from ..render import edits as render_edits
@@ -33,6 +34,8 @@ router = APIRouter()
 TEMP_HOME = Path(__file__).with_name("temp_home.html")
 _UNSET_DEFAULTS = "0"  # nosec B105  默认装饰还没保存过时的版本号，不是口令
 EXPORT_SIDECAR_NOTE = "无法读取编辑记录，已按原图显示"
+HDR_UNSUPPORTED = "这张照片不支持 HDR"
+HDR_NOTES = {"no_raw": "HDR 需要 RAW 文件", "not_jpeg": "HDR 需要 JPEG 格式", "capture_mismatch": "RAW 与 JPG 不是同一次拍摄"}
 DENIED_NOTE = "需要访问存储卡的权限。请在“系统设置 › 隐私与安全性 › 文件与文件夹”中允许。"
 
 
@@ -69,6 +72,7 @@ class ExportRequest(BaseModel):
     # recipe = 一定从 RAW 渲染；camera-jpg = 一定用相机 JPG；neutral = RAW 中性转换（没有配方）
     source: str = "auto"
     precise: bool = False  # recipe 时用逐像素精确链（很慢），默认用烘焙表
+    hdr: bool = False  # 带增益图的 HDR JPEG（按成片重新算）；做不了的照片照常导出，结果里 hdr=false 并给出 hdr_note
 
 
 class ExportFile(BaseModel):
@@ -88,6 +92,8 @@ class ExportFile(BaseModel):
     export_id: str | None = None
     detail: str | None = None
     warning: str | None = None
+    hdr: bool | None = None  # 没要 HDR 时为空
+    hdr_note: str | None = None
 
 
 class BatchExportRequest(ExportRequest):
@@ -162,6 +168,7 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
         "preview_url": f"/api/photos/{sid}/preview{vq}",
         "preview_kind": thumbs.preview_kind(shot),
         "preview_look": thumbs.look_of(shot, render, lib),
+        "hdr": hdr_derived.status_of(lib, shot) if lib is not None else None,  # ready / unsupported / pending / none（没有 RAW 或 JPG）
         "crop": shot["crop"],
         "sidecar_rev": shot["sidecar_rev"],
     }
@@ -246,6 +253,7 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
             long_edge=opts.long_edge,
             fmt=opts.fmt,
             base=want,
+            hdr=req.hdr,
         )
     except ExportError as exc:
         extra = {"detail": exc.detail} if exc.detail else None
@@ -268,6 +276,8 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
         "calibrated": res.calibrated,
         **({"detail": res.detail} if res.detail else {}),
         **({"warning": warning} if warning else {}),
+        **({"hdr": res.hdr} if res.hdr is not None else {}),
+        **({"hdr_note": HDR_NOTES.get(res.hdr_reason or "", HDR_UNSUPPORTED)} if res.hdr is False else {}),
     }
 
 
@@ -363,10 +373,24 @@ def start_import(body: ImportRequest, request: Request) -> Any:
         progress = importer.ImportProgress(card_id=session.session_id)
 
         def work(job: Any) -> None:
-            importer.run_import(c.lib, card, opts, progress, job.cancel, c.reader, ident)
+            try:
+                importer.run_import(c.lib, card, opts, progress, job.cancel, c.reader, ident)
+            finally:
+                start_hdr_job(c)  # 导入的结果和"都已导入"的判断这时已经定了；HDR 另起一个任务
 
         job = c.jobs.start("import", progress, work)
     return job.to_dict()
+
+
+def start_hdr_job(c: Any) -> None:
+    """导入结束后在后台给还没做过的 RAW+JPG 照片生成 HDR 版本。正在跑的那一轮做完会再看一次有没有新的。"""
+    if not flag_enabled(c.settings, "hdr_on_import"):
+        return
+    with c.hdr_lock:
+        if c.hdr_stopping or c.jobs.active("hdr"):
+            return
+        progress = hdr_derived.HdrProgress()
+        c.jobs.start("hdr", progress, lambda job: hdr_derived.run_pending(c.lib, progress, job.cancel))
 
 
 @router.get("/api/jobs", response_model=None)

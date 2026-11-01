@@ -30,6 +30,7 @@ STUDIO_PATHS = (
     ".studio/index.sqlite-shm",
     ".studio/import-log.jsonl",
     ".studio/thumbs",
+    ".studio/hdr",
     ".studio/staging",
     ".studio/tmp",
 )

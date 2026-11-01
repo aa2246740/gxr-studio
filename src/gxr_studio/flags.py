@@ -28,6 +28,12 @@ FLAGS: dict[str, Flag] = {
         description="允许 POST /api/library/rebuild。默认打开，和没有这个开关时一样。",
         added="2026-10-30",
     ),
+    "hdr_on_import": Flag(
+        name="hdr_on_import",
+        default=True,
+        description="导入结束后在后台给 RAW+JPG 的照片生成 HDR 版本。关掉就不生成，导出时的 HDR 不受影响。",
+        added="2026-11-01",
+    ),
 }
 
 

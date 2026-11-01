@@ -30,6 +30,11 @@
             "title": "Format",
             "type": "string"
           },
+          "hdr": {
+            "default": false,
+            "title": "Hdr",
+            "type": "boolean"
+          },
           "ids": {
             "anyOf": [
               {
@@ -299,6 +304,28 @@
             "title": "Format",
             "type": "string"
           },
+          "hdr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hdr"
+          },
+          "hdr_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hdr Note"
+          },
           "height": {
             "title": "Height",
             "type": "integer"
@@ -380,6 +407,11 @@
             "default": "jpeg",
             "title": "Format",
             "type": "string"
+          },
+          "hdr": {
+            "default": false,
+            "title": "Hdr",
+            "type": "boolean"
           },
           "long_edge": {
             "anyOf": [

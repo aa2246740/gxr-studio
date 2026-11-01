@@ -205,12 +205,47 @@ def test_batch_export_by_date(client, card, settings):
     assert len(list(settings.export_dir.glob("*_gxr.jpg"))) == 2
 
 
-def test_rebuild_endpoint(client, card, settings):
-    import_all(client)
-    before = client.get("/api/photos", params={"limit": 1000}).json()
-    r = client.post("/api/library/rebuild").json()
-    assert r["shots"] == len(card.unique_shots) and r["seen_restored"] > 0 and r["hashed"] == 0
-    assert client.get("/api/photos", params={"limit": 1000}).json() == before
+@pytest.mark.parametrize("finish_hdr_during_rebuild", [False, True])
+def test_rebuild_endpoint(client, card, settings, monkeypatch, finish_hdr_during_rebuild):
+    import threading
+
+    from gxr_studio.hdr import derived
+
+    release = threading.Event()
+    original_generate = derived.generate
+    original_rebuild = client.app.state.ctx.lib.rebuild
+
+    def held(*args, **kwargs):
+        assert release.wait(timeout=10)
+        return original_generate(*args, **kwargs)
+
+    def rebuild(**kwargs):
+        result = original_rebuild(**kwargs)
+        release.set()
+        for job in client.app.state.ctx.jobs.all():
+            if job.kind == "hdr":
+                job.thread.join(timeout=10)
+                assert not job.running
+        return result
+
+    if finish_hdr_during_rebuild:
+        monkeypatch.setattr(derived, "generate", held)
+        monkeypatch.setattr(client.app.state.ctx.lib, "rebuild", rebuild)
+    try:
+        import_all(client)
+        before = client.get("/api/photos", params={"limit": 1000}).json()
+        r = client.post("/api/library/rebuild").json()
+        assert r["shots"] == len(card.unique_shots) and r["seen_restored"] > 0 and r["hashed"] == 0
+        after = client.get("/api/photos", params={"limit": 1000}).json()
+        if finish_hdr_during_rebuild:
+            assert "pending" in {p["hdr"] for p in before} and "pending" not in {p["hdr"] for p in after}
+
+        def stable(photos):
+            return [{key: value for key, value in photo.items() if key != "hdr"} for photo in photos]
+
+        assert stable(after) == stable(before)
+    finally:
+        release.set()
 
 
 def test_audit_shows_no_card_writes_and_no_network(client, card):

@@ -7,6 +7,7 @@
 | 名字 | 默认 | 作用 |
 | --- | --- | --- |
 | `library_rebuild` | 开 | `POST /api/library/rebuild`。关掉返回 403 `feature_disabled`。 |
+| `hdr_on_import` | 开 | 导入结束后在后台给 RAW+JPG 的照片生成 HDR 版本（`.studio/hdr/`）。关掉就不生成；导出时的 HDR 不受影响。 |
 
 ## 清理
 

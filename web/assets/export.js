@@ -6,12 +6,24 @@ import { api } from './api.js';
 import { state } from './state.js';
 import { h, openModal, fmtBytes, toast, toastError, errorBody } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
+import { toggle } from './controls.js';
 
 const SIZES = [
   [null, '原始尺寸'],
   [2048, '长边 2048 像素'],
   [4096, '长边 4096 像素'],
 ];
+
+// HDR（带增益图的 JPEG）要 RAW。选中的照片里一张 RAW 都没有时开关不可用（COPY 3.6 的"HDR"）。
+// 按日期导出时不知道当天有没有 RAW，开关照常可用，没有 RAW 的那几张照常导出、结果里说明。
+export const HDR_NO_RAW = 'HDR 需要 RAW 文件';
+export function hdrAvailable(ids, photos, scope) {
+  if (scope === 'date') return true;
+  return (ids || []).some((id) => {
+    const p = photos.find((q) => q.id === id);
+    return !p || p.has_raw;
+  });
+}
 
 // 导出响应里的 render_label 可能是代码（prediction / approx / original），也可能是中文。代码转成 COPY 的写法。
 const LABEL_TEXT = { prediction: '电脑预测', approx: '近似', original: '原图' };
@@ -38,6 +50,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   // 精确（API 的 precise）界面不提供，固定用默认的烘焙表（COPY 3.10）
   const precise = false;
   let dest = state.settings ? state.settings.export_dir : '';
+  let hdr = false;
 
   const scopeGroup = scopes.length > 1
     ? h(
@@ -95,6 +108,16 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     },
   });
 
+  const hdrField = h('div', { class: 'field' });
+  function hdrRow() {
+    const ok = hdrAvailable(ids, photos, scope);
+    if (!ok) hdr = false;
+    hdrField.replaceChildren(
+      toggle('HDR', hdr, (on) => { hdr = on; }, { disabled: !ok }),
+      ok ? null : h('div', { class: 'small dim' }, HDR_NO_RAW),
+    );
+  }
+
   const button = h('button', { class: 'btn primary', type: 'button', onclick: submit }, '导出');
   const cancelBtn = onCancel ? h('button', { class: 'btn', type: 'button', onclick: onCancel }, '取消') : null;
   const result = h('div', {});
@@ -107,6 +130,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     h('div', { class: 'field' }, h('span', { class: 'small dim' }, '格式'), h('span', {}, 'JPEG')),
     h('div', { class: 'field' }, h('span', { class: 'small dim' }, '尺寸'), h('div', { class: 'seg' }, sizeBtns)),
     h('div', { class: 'field' }, h('span', { class: 'small dim' }, '品质'), h('div', { class: 'field-row' }, qRange, qOut)),
+    hdrField,
     h('div', { class: 'field' }, h('span', { class: 'small dim' }, '导出到'), destInput),
     h('div', { class: 'field' }, h('span', { class: 'small dim' }, '文件名'), h('span', {}, '原名_gxr.jpg')),
     guide,
@@ -115,6 +139,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   );
 
   function refresh() {
+    hdrRow();
     guide.replaceChildren(...(camdataReady() ? [] : [camdataGuide({ onDone: refresh })]));
   }
   refresh();
@@ -127,7 +152,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     button.disabled = true;
     try {
       if (beforeSubmit) await beforeSubmit();
-      const opts = { long_edge: longEdge, quality, dest_dir: dest.trim(), source: 'auto', precise };
+      const opts = { long_edge: longEdge, quality, dest_dir: dest.trim(), source: 'auto', precise, hdr };
       if (scope === 'ids' && ids.length === 1) {
         result.replaceChildren(h('p', { class: 'small dim' }, '正在导出…'));
         const r = await api(`/api/photos/${ids[0]}/export`, { method: 'POST', body: opts });
@@ -141,6 +166,8 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
               h('br'), revealButton(r.export_id),
               r.warning ? h('br') : null,
               r.warning ? h('span', { class: 'small warn-text' }, r.warning) : null,
+              r.hdr === false ? h('br') : null,
+              r.hdr === false ? h('span', { class: 'small dim' }, r.hdr_note) : null,
             ),
           ),
         );
@@ -158,6 +185,11 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   }
 
   return body;
+}
+
+// 批量导出里没做成 HDR 的张数（没有 RAW、对不齐…），照常导出了 SDR
+export function hdrSummary(n) {
+  return `${n} 张未生成 HDR`;
 }
 
 function resultBox(kind, content) {
@@ -199,6 +231,8 @@ async function followBatch(job, out, photos = []) {
   const parts = [`已导出 ${ok.length} 张`];
   const warned = ok.filter((r) => r.warning).length;
   if (warned) parts.push('无法读取编辑记录，已按原图显示');
+  const noHdr = ok.filter((r) => r.hdr === false).length;
+  if (noHdr) parts.push(hdrSummary(noHdr));
   if (p.state === 'cancelled') parts.push(`已取消，已导出的 ${ok.length} 张已保留`);
   // 每一张失败的原因都留着（R2-06）：后端的主句原样显示，有 detail 的进详细信息
   const reasons = bad.map((r) => {

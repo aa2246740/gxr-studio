@@ -104,6 +104,7 @@ source_modules = [
     "gxr_studio.cards",
     "gxr_studio.render",
     "gxr_studio.lut",
+    "gxr_studio.hdr",
 ]
 forbidden_modules = ["gxr_studio.devtools"]
 
@@ -115,6 +116,7 @@ source_modules = [
     "gxr_studio.engine",
     "gxr_studio.crop",
     "gxr_studio.meta",
+    "gxr_studio.hdr",
 ]
 forbidden_modules = ["gxr_studio.api", "gxr_studio.app", "gxr_studio.cli"]
 

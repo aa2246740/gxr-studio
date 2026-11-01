@@ -57,18 +57,21 @@ def _sample(image: np.ndarray, sx: np.ndarray, sy: np.ndarray) -> tuple[np.ndarr
     return out, valid
 
 
+def _straighten_coords(width: int, height: int, angle: float) -> tuple[np.ndarray, np.ndarray]:
+    """与 crop.affine_coeffs 同一套顺时针旋转，画布尺寸不变：输出像素在原图里的取样位置。"""
+    th = math.radians(angle)
+    c, s = math.cos(th), math.sin(th)
+    yy, xx = np.mgrid[0:height, 0:width]
+    cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+    dx, dy = xx - cx, yy - cy
+    return c * dx + s * dy + cx, -s * dx + c * dy + cy
+
+
 def _warp_straighten(image: np.ndarray, angle: float) -> tuple[np.ndarray, np.ndarray]:
-    """与 crop.affine_coeffs 同一套顺时针旋转，画布尺寸不变。"""
     h, w = image.shape[:2]
     if abs(angle) < 1e-9:
         return image, np.ones((h, w), dtype=bool)
-    th = math.radians(angle)
-    c, s = math.cos(th), math.sin(th)
-    yy, xx = np.mgrid[0:h, 0:w]
-    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    dx, dy = xx - cx, yy - cy
-    sx = c * dx + s * dy + cx
-    sy = -s * dx + c * dy + cy
+    sx, sy = _straighten_coords(w, h, angle)
     return _sample(image, sx, sy)
 
 
@@ -159,12 +162,7 @@ def warp_valid(width: int, height: int, geom: Geometry) -> np.ndarray:
     elif abs(geom.straighten) < 1e-9:
         valid = np.ones((height, width), dtype=bool)
     else:
-        th = math.radians(geom.straighten)
-        c, s = math.cos(th), math.sin(th)
-        yy, xx = np.mgrid[0:height, 0:width]
-        cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
-        dx, dy = xx - cx, yy - cy
-        valid = _coverage(width, height, c * dx + s * dy + cx, -s * dx + c * dy + cy)
+        valid = _coverage(width, height, *_straighten_coords(width, height, geom.straighten))
     return _rot_flip_mask(valid, geom)
 
 
@@ -175,6 +173,27 @@ def warp(image: np.ndarray, geom: Geometry) -> tuple[np.ndarray, np.ndarray]:
     else:
         rgb, valid = _warp_straighten(image, geom.straighten)
     return _rot_flip(rgb, valid, geom)
+
+
+def warp_float(layer: np.ndarray, geom: Geometry) -> np.ndarray:
+    """和 `warp` 同样的几何变换，用在浮点数据层上（例如导出 HDR 时的 RAW 亮度）：双线性取样，画面外是 NaN。"""
+    h, w = layer.shape[:2]
+    if geom.expands():
+        sx, sy = _expanded_coords(w, h, geom)
+    elif abs(geom.straighten) >= 1e-9:
+        sx, sy = _straighten_coords(w, h, geom.straighten)
+    else:
+        return _rot_flip_mask(layer, geom)
+    valid = _coverage(w, h, sx, sy)
+    x0 = np.clip(np.floor(sx).astype(np.int32), 0, w - 1)
+    y0 = np.clip(np.floor(sy).astype(np.int32), 0, h - 1)
+    x1, y1 = np.clip(x0 + 1, 0, w - 1), np.clip(y0 + 1, 0, h - 1)
+    tx = (sx - np.floor(sx)).astype(np.float32)[..., None]
+    ty = (sy - np.floor(sy)).astype(np.float32)[..., None]
+    src = layer.reshape(h, w, -1).astype(np.float32, copy=False)
+    out = (src[y0, x0] * (1 - tx) + src[y0, x1] * tx) * (1 - ty) + (src[y1, x0] * (1 - tx) + src[y1, x1] * tx) * ty
+    out[~valid] = np.nan
+    return _rot_flip_mask(out.reshape(*out.shape[:2], *layer.shape[2:]), geom)
 
 
 def max_area_rect(valid: np.ndarray) -> tuple[int, int, int, int]:
