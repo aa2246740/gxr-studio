@@ -1,4 +1,4 @@
-"""150/152/153 只读导入、文件内配方、完整整数行和面板状态。"""
+"""150/152/153/154/155 只读导入、文件内配方、完整整数行和面板状态。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from conftest import PORT
-from g152_support import LOOK_NAMES, PACKAGES, ROOT, UNITS, CameraReference, need_dat
+from g152_support import ALL_PACKAGES, LOOK_NAMES, ROOT, UNITS, CameraReference, need_dat
 from gxr_studio.app import create_app
 from gxr_studio.camdata import calib, knob_table, store
 from gxr_studio.camdata import datcodec as dc
@@ -52,7 +52,7 @@ def references(tmp_path_factory):
     return get
 
 
-@pytest.mark.parametrize(("gen", "test"), PACKAGES)
+@pytest.mark.parametrize(("gen", "test"), ALL_PACKAGES)
 def test_new_packages_parse_and_round_trip(gen, test):
     raw = need_dat(gen, test)
     dat = dc.parse(raw)
@@ -66,7 +66,7 @@ def test_new_packages_parse_and_round_trip(gen, test):
             store.check_entry(dat.entry_of(unit, slot))
 
 
-@pytest.mark.parametrize("gen", (150, 152, 153))
+@pytest.mark.parametrize("gen", (150, 152, 153, 154, 155))
 def test_new_generations_require_the_dat_template(tmp_path, gen):
     home = tmp_path / "app-home"
     store.import_from_dat(need_dat(gen), home)
@@ -79,7 +79,7 @@ def test_new_generations_require_the_dat_template(tmp_path, gen):
         CameraData(home)
 
 
-@pytest.mark.parametrize(("gen", "test"), PACKAGES)
+@pytest.mark.parametrize(("gen", "test"), ALL_PACKAGES)
 @pytest.mark.parametrize("damage", ("header_crc", "body_crc", "empty", "short_magic", "short_header", "short_body", "last_byte"))
 def test_new_packages_refuse_crc_damage_and_truncation(gen, test, damage):
     raw = need_dat(gen, test)
@@ -94,7 +94,7 @@ def test_new_packages_refuse_crc_damage_and_truncation(gen, test, damage):
         dc.parse(broken)
 
 
-@pytest.mark.parametrize("generation", (0, 126, 139, 149, 151, 154, 999))
+@pytest.mark.parametrize("generation", (0, 126, 139, 149, 151, 156, 999))
 def test_unknown_generation_stays_rejected_without_local_data(generation):
     raw = bytearray(256)
     raw[:8] = b"GXRCE001"
@@ -120,7 +120,7 @@ def test_r3_points_and_ranges_equal_the_existing_menu(gen, cameras):
     assert cameras(gen).menu == menu.load()
 
 
-@pytest.mark.parametrize(("gen", "test"), [(g, t) for g in (152, 153) for t in (False, True)])
+@pytest.mark.parametrize(("gen", "test"), [(g, t) for g in (152, 153, 154, 155) for t in (False, True)])
 @pytest.mark.parametrize("unit", range(3), ids=UNITS)
 @pytest.mark.parametrize("index", range(10), ids=LOOK_NAMES)
 def test_every_look_default_has_the_camera_552_bytes(gen, test, unit, index, cameras, references):
@@ -141,7 +141,7 @@ def test_every_look_default_has_the_camera_552_bytes(gen, test, unit, index, cam
                 cam.resolve(replace(sel, levels=((c["name"], invalid),)))
 
 
-@pytest.mark.parametrize("gen", (152, 153))
+@pytest.mark.parametrize("gen", (152, 153, 154, 155))
 @pytest.mark.parametrize("unit", range(3), ids=UNITS)
 @pytest.mark.parametrize("index", range(10), ids=LOOK_NAMES)
 def test_every_look_control_point_has_the_camera_552_bytes(gen, unit, index, cameras, references):
@@ -154,7 +154,7 @@ def test_every_look_control_point_has_the_camera_552_bytes(gen, unit, index, cam
             assert cam.resolve(replace(sel, levels=tuple(levels.items()))).entry == references(gen).resolve(raw, unit, index, levels)
 
 
-@pytest.mark.parametrize("gen", (152, 153))
+@pytest.mark.parametrize("gen", (152, 153, 154, 155))
 @pytest.mark.parametrize("unit", range(3), ids=UNITS)
 def test_file_user_entries_keep_names_defaults_and_camera_rows(gen, unit, cameras, references):
     raw, cam = need_dat(gen, True), cameras(gen, True)
@@ -247,11 +247,11 @@ def test_panel_api_gives_the_true_reason(client, card, settings, state):
         install_calibration(settings)
     if state == "unsupported":
         changed = bytearray(need_dat(152))
-        struct.pack_into(">I", changed, 28, 154)
+        struct.pack_into(">I", changed, 28, 156)
         response = client.post("/api/camdata/import-upload", content=reseal(bytes(changed)))
         assert response.status_code == 422
         assert response.json()["message"] == "这个相机配方文件需要更新版本的 GXR 工作室。"
-        assert response.json()["detail"] == "第 154 代。支持第 127、129、131、135、137、138、150、152、153 代。"
+        assert response.json()["detail"] == "第 156 代。支持第 127、129、131、135、137、138、150、152、153、154、155 代。"
         assert "supported_generations" not in response.json()
         camera = client.get("/api/camdata/status").json()["camera_data"]
         assert camera["state"] == "unsupported" and camera["generation"] is None
@@ -259,7 +259,7 @@ def test_panel_api_gives_the_true_reason(client, card, settings, state):
     caps = client.get(f"/api/photos/{photo['id']}/capabilities").json()
     expected = {
         "missing": "还没有导入相机配方文件",
-        "unsupported": dc.unsupported_message(154),
+        "unsupported": dc.unsupported_message(156),
         "no_raw": "配方需要 RAW 文件",
         "ready": "",
         "calibration_missing": "请先导入校准数据",
@@ -269,7 +269,7 @@ def test_panel_api_gives_the_true_reason(client, card, settings, state):
     assert caps["recipe"] == ("full" if state == "ready" else "none")
 
 
-@pytest.mark.parametrize(("gen", "test"), PACKAGES)
+@pytest.mark.parametrize(("gen", "test"), ALL_PACKAGES)
 def test_import_api_lists_file_entries_in_order(client, gen, test):
     raw = need_dat(gen, test)
     assert client.post("/api/camdata/import-upload", content=raw).status_code == 200

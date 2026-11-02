@@ -8,12 +8,15 @@ from typing import Any
 from .datcodec import u16, u32
 
 
-def read(block: bytes, menu: dict[str, Any]) -> dict[str, Any]:
+def read(block: bytes, menu: dict[str, Any], *, mount_knobs_from_50mm: bool = False) -> dict[str, Any]:
     compact = block[:8] == b"GXKV2R3\0"
     recipes = []
     for i in range(u16(block, 22)):
         at = u32(block, 36) + 16 * i
         recipes.append({"unit": block[at], "slot": block[at + 1], "first_item": u16(block, at + 4), "item_count": block[at + 2]})
+    if mount_knobs_from_50mm:
+        source = {r["slot"]: r for r in recipes if r["unit"] == 0}
+        recipes = [{**source[r["slot"]], "unit": 2} if r["unit"] == 2 and r["slot"] != 4 else r for r in recipes]
     items = []
     for i in range(u16(block, 24)):
         at = u32(block, 40) + 16 * i

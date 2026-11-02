@@ -13,6 +13,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGES = [(gen, test) for gen in (150, 152, 153) for test in (False, True)]
+ALL_PACKAGES = PACKAGES + [(gen, test) for gen in (154, 155) for test in (False, True)]
+ENGINE_VERSIONS = {152: 60, 153: 62, 154: 63, 155: 64}
 UNITS = ("jlaunch", "qlaunch", "l08firm")
 LOOK_NAMES = (
     "M9 STD",
@@ -30,7 +32,10 @@ CONTROL_NAMES = ("amount", "contrast", "highlight", "shadow", "fade", "saturatio
 
 
 def dat_path(gen: int, test: bool = False) -> Path:
-    package = ROOT / f"firmware/package_v{39 if gen == 153 else 38}_g{gen}{'_test' if test else ''}"
+    version = 310 if gen == 155 else 39 if gen in (153, 154) else 38
+    package = ROOT / f"firmware/package_v{version}_g{gen}{'_test' if test else ''}"
+    if gen == 155:
+        return package / "GXRCE.DAT"
     direct = package / "SD_ROOT/GXRCE.DAT"
     return direct if direct.is_file() else package / "local/SD_ROOT/GXRCE.DAT"
 
@@ -44,7 +49,7 @@ def need_dat(gen: int, test: bool = False) -> bytes:
 
 class CameraReference:
     def __init__(self, gen: int, folder: Path) -> None:
-        product = ROOT / f"firmware/engine_v{62 if gen == 153 else 60}_g{gen}/candidate/containers/product"
+        product = ROOT / f"firmware/engine_v{ENGINE_VERSIONS[gen]}_g{gen}/candidate/containers/product"
         compiler = shutil.which("clang")
         crc_source = product.parent.parent / "engine_services/crc.c"
         if not product.is_dir() or not crc_source.is_file() or compiler is None:
@@ -66,7 +71,19 @@ class CameraReference:
         assert result.returncode == 0, result.stderr
         self.lib = ctypes.CDLL(str(target))
         self.lib.studio_resolve.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        self.lib.studio_builtin.argtypes = self.lib.studio_resolve.argtypes
         self.lib.studio_user.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
+        self.lib.studio_validate.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
+
+    def validate(self, raw: bytes, unit: int) -> bool:
+        return self.lib.studio_validate(ctypes.create_string_buffer(raw), len(raw), unit) == 0
+
+    def builtin(self, raw: bytes, unit: int, slot: int, levels: dict[str, int]) -> bytes:
+        values = (ctypes.c_int16 * 10)(*(levels.get(n, 100 if n == "amount" else 0) for n in CONTROL_NAMES))
+        out = ctypes.create_string_buffer(552)
+        result = self.lib.studio_builtin(ctypes.create_string_buffer(raw), len(raw), unit, slot, values, out)
+        assert result == 0, (unit, slot, levels, result)
+        return out.raw
 
     def resolve(self, raw: bytes, unit: int, index: int, levels: dict[str, int]) -> bytes:
         values = (ctypes.c_int16 * 10)(*(levels.get(n, 100 if n == "amount" else 0) for n in CONTROL_NAMES))

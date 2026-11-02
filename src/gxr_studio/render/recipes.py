@@ -134,7 +134,7 @@ class CameraData(Menu):
             return
         dat = datcodec.parse(store.load_template(self.home))
         if dat.kv2_block is not None:
-            self.menu = knob_table.read(dat.kv2_block, self.menu)
+            self.menu = knob_table.read(dat.kv2_block, self.menu, mount_knobs_from_50mm=datcodec.PROFILES[dat.generation].mount_knobs_from_50mm)
             self._recipes = {(r["unit"], r["slot"]): r for r in self.menu["recipes"]}
             self.table_sha256 = hashlib.sha256(dat.kv2_block).hexdigest()
         for unit in range(3):

@@ -306,10 +306,10 @@ def test_bad_dat_from_card_is_refused_and_old_data_is_kept(client, volumes, sett
     message = r.json()["message"]
     if name == "generation_unsupported":
         assert message == "不支持这个版本的相机配方文件。"
-        assert r.json()["detail"] == "第 130 代。支持第 127、129、131、135、137、138、150、152、153 代。"
+        assert r.json()["detail"] == "第 130 代。支持第 127、129、131、135、137、138、150、152、153、154、155 代。"
     elif name == "generation_zero":
         assert message == "不支持这个版本的相机配方文件。"
-        assert r.json()["detail"] == "第 0 代。支持第 127、129、131、135、137、138、150、152、153 代。"
+        assert r.json()["detail"] == "第 0 代。支持第 127、129、131、135、137、138、150、152、153、154、155 代。"
     else:
         assert "无法导入" in message
     assert tree(settings.home_dir) == before  # 旧数据原封不动，也没有 .new 残留
@@ -340,10 +340,10 @@ def test_bad_dat_messages_are_specific(client, volumes):
         (126, "不支持这个版本的相机配方文件。"),
         (139, "不支持这个版本的相机配方文件。"),
         (151, "不支持这个版本的相机配方文件。"),
-        (154, "这个相机配方文件需要更新版本的 GXR 工作室。"),
+        (156, "这个相机配方文件需要更新版本的 GXR 工作室。"),
         (200, "这个相机配方文件需要更新版本的 GXR 工作室。"),
     ],
-    ids=("g126", "g139", "g151", "g154", "g200"),
+    ids=("g126", "g139", "g151", "g156", "g200"),
 )
 def test_unsupported_generation_copy_keeps_numbers_in_detail(client, generation, message):
     response = client.post("/api/camdata/import-upload", content=forge_generation(dat(), generation))
@@ -352,7 +352,7 @@ def test_unsupported_generation_copy_keeps_numbers_in_detail(client, generation,
     assert body == {
         "error": "generation_unsupported",
         "message": message,
-        "detail": f"第 {generation} 代。支持第 127、129、131、135、137、138、150、152、153 代。",
+        "detail": f"第 {generation} 代。支持第 127、129、131、135、137、138、150、152、153、154、155 代。",
     }
     assert not any(character.isdigit() for character in body["message"])
     camera = client.get("/api/camdata/status").json()["camera_data"]
