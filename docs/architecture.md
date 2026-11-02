@@ -34,3 +34,48 @@ HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`
 关闭应用时，先在 `hdr_lock` 内停止接受新 HDR 任务并发出取消信号，再等现有 HDR 线程退出，最后关闭图库。整轮枚举出错会把 HDR 进度设为 `failed`，由任务表调用 `on_job_failed`；逐张失败仍独立计数。
 
 后台导入和拟合走 `jobs`。任务抛错时 `register_alert_service` 调用 `on_job_failed`，由 `StudioNotifier` 记一条打过码的告警。
+
+## 显卡预览（功能开关 `gpu_preview`）
+
+大图可以在浏览器的 WebGPU 里实时计算，不再每动一下就请求服务器出图。
+
+### 引擎和数据
+
+- 引擎在 `frontend/`（TypeScript + WGSL），构建产物 `web/assets/gpu/engine.js` 提交进仓库。
+- `web/assets/gpu_stage.js` 决定这一张、这组参数走显卡还是服务器，分支与 `finish.serve.color_image` 一一对应。
+- 显卡要的数据由 `gpu/` 准备，经 `api/gpu_routes.py` 的只读接口下发，不写文件：
+  - DNG 原字节和 RAW 布局；
+  - 相机 JPG 原文件，浏览器按 EXIF 方向解码，实测与 PIL 逐字节相同；
+  - 预览网格的配方烘焙表，与 `render_preview` 共用缓存；
+  - LUT 的 3D 表；
+  - 成片裁切框，与 `finish_array` 裁出的位置相同。
+
+### 着色器
+
+着色器按 Python 逐项对应：
+
+| 着色器 | 对应的 Python | 做什么 |
+| --- | --- | --- |
+| `bin.wgsl` | `half_res_codes` + `orient_array` | RAW 合并、转正 |
+| `common.wgsl` | `chain._chroma_chunk`、`tones`、`lut.spaces.Target.render`、`finish.pixels` | 颜色链 |
+| `geo.wgsl` | `finish.geometry` 的 `_straighten_coords`、`_sample`、`_rot_flip` | 拉直、旋转、翻转、裁切 |
+
+每个 Python 落成 uint8 的地方，着色器都照样取整。
+
+`tests/test_gpu_parity.py` 用合成数据在无头 Chrome 的 SwiftShader 上逐像素对拍，门槛是 ≤1 码值的像素 ≥ 99.99%、平均 ΔE2000 ≤ 0.01。
+
+### 回到服务器出图的情况
+
+以下情况仍由服务器出图，前端不画近似结果：
+
+- 原图（按住空格）；
+- 透视、畸变；
+- 成片里有边框或时间戳（裁剪页的未裁切画面照常走显卡）；
+- 只有 JPG 却选了配方（近似）；
+- 带一维表的 LUT，或输出是 Log 的 LUT；
+- RAW 写法特殊：压缩、线性化表、逐行黑电平等；
+- 浏览器没有 WebGPU，或显卡设备丢失。
+
+### 预热
+
+第一次请求某张照片的显卡信息时，后台把它所在单元、所在 ISO 模型的 8 个内置配方先烘焙好（`RenderService.warm_preview_bakes`）。浏览器同时预取左右相邻照片的源图和配方表。

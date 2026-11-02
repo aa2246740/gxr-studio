@@ -1,4 +1,4 @@
-.PHONY: setup dev check lint type security test dast profile openapi notes
+.PHONY: setup dev check lint type security test dast profile openapi notes web
 
 setup:
 	uv sync --frozen
@@ -30,6 +30,7 @@ check: lint type security
 	uv run --frozen python scripts/check_agents_md.py
 	uv run --frozen python scripts/large_files.py
 	uv run --frozen python scripts/export_openapi.py --check
+	uv run --frozen python scripts/check_frontend.py
 	uv run --frozen lint-imports
 	uv run --frozen deptry src
 	uv run --frozen vulture src/gxr_studio
@@ -45,3 +46,8 @@ openapi:
 
 notes:
 	uv run --frozen python scripts/release_notes.py
+
+# 显卡预览引擎（frontend/，TypeScript + WGSL）→ web/assets/gpu/。产物要提交；只有改了 frontend/ 才需要。
+web:
+	pnpm -C frontend install --frozen-lockfile
+	pnpm -C frontend run build

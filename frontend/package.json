@@ -1,0 +1,21 @@
+{
+  "name": "gxr-studio-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GXR Studio 的 WebGPU 预览引擎（TypeScript + WGSL），构建到 ../web/assets/gpu/",
+  "type": "module",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@webgpu/types": "0.1.74",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

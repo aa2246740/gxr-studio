@@ -8,6 +8,7 @@ import { h } from './dom.js';
 import { beginChange, endChange, saveCrop, validRect, originalUrl, originalFallbackUrl, renderProblem, geometryOf } from './preview.js';
 import { cropBody, guidesSvg, guideFade, lockRatio, orientationNow, rectArray, pixelsText } from './crop.js';
 import { fitInto, moveRect, resizeRect } from './geom.js';
+import { gpuCanvas } from './gpu_stage.js';
 
 const pct = (v) => `${(v * 100).toFixed(4)}%`;
 
@@ -28,6 +29,13 @@ export function paintStage(view) {
   const ed = view.ed;
   const maxW = Math.max(120, area.clientWidth - 48);
   const maxH = Math.max(120, area.clientHeight - 64);
+  // 显卡预览接手了这个画面（gpu_stage.js）：画布只建一次，这里只调尺寸和叠加的裁切框
+  const cv = ed && view.gpuActive && view.gpuActive === mode ? gpuCanvas(view, maxW, maxH) : null;
+  area.classList.toggle('gpu', !!cv);
+  if (cv) {
+    paintGpu(view, area, cv, mode);
+    return;
+  }
   const children = [];
 
   let src = null;
@@ -80,6 +88,31 @@ export function paintStage(view) {
     if (problem) children.push(note(problem, 'warn-text'));
   }
   area.replaceChildren(...children);
+}
+
+function paintGpu(view, area, cv, mode) {
+  let pv = cv.parentElement;
+  if (!pv || pv.parentElement !== area || area.childElementCount !== 1) {
+    pv = h('div', { class: 'pv' });
+    pv.append(cv);
+    area.replaceChildren(pv);
+    view.box = null;
+  }
+  if (mode !== 'uncropped') {
+    for (const n of pv.querySelectorAll('.crop-box, .crop-size')) n.remove();
+    view.box = null;
+    return;
+  }
+  // 裁剪页：尺寸和服务器出图时 <img> 的 naturalWidth/Height 一样，用全尺寸（已转正、已按 90° 旋转）
+  const prev = view.canvas;
+  const next = view.gpuFull;
+  view.canvas = next;
+  if (!view.box || !pv.contains(view.box)) pv.append(cropBox(view, pv));
+  const old = pv.querySelector('.crop-size');
+  const text = view.crop && (view.crop.frame || view.canvas) ? h('div', { class: 'crop-size' }, pixelsText(view)) : null;
+  if (old && text) old.replaceWith(text);
+  else if (text) pv.append(text);
+  if (!prev || prev.w !== next.w || prev.h !== next.h) view.redrawSide?.();
 }
 
 // ---- 裁切框 -------------------------------------------------------------------

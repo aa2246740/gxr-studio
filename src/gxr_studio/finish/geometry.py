@@ -436,12 +436,16 @@ def fitted_crop(
     return clamp_norm_rect(valid, rect)
 
 
-def crop_valid(rgb: np.ndarray, rect: tuple[float, float, float, float]) -> np.ndarray:
-    height, width = rgb.shape[:2]
+def crop_box(width: int, height: int, rect: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    """归一化矩形 → 像素框 (x, y, w, h)，取整与 `crop_valid` 相同（显卡预览按它取样）。"""
     x = min(max(0, int(round(rect[0] * width))), width - 1)
     y = min(max(0, int(round(rect[1] * height))), height - 1)
     rw = max(1, int(round(rect[2] * width)))
     rh = max(1, int(round(rect[3] * height)))
-    rw = min(rw, width - x)
-    rh = min(rh, height - y)
+    return x, y, min(rw, width - x), min(rh, height - y)
+
+
+def crop_valid(rgb: np.ndarray, rect: tuple[float, float, float, float]) -> np.ndarray:
+    height, width = rgb.shape[:2]
+    x, y, rw, rh = crop_box(width, height, rect)
     return rgb[y : y + rh, x : x + rw]

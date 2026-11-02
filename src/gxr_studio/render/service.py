@@ -176,6 +176,7 @@ class RenderService:
         self._bakes: ByteLRU[chain.ChromaBake] = ByteLRU(64 << 20)
         self._results: ByteLRU[tuple[bytes, int, int]] = ByteLRU(result_bytes)
         self._approx: dict[tuple[Any, ...], np.ndarray] = {}
+        self._warmed: set[tuple[Any, ...]] = set()
         self.stats = {"decodes": 0, "bakes": 0, "renders": 0, "result_hits": 0}
 
     # ---- 状态 -------------------------------------------------------------
@@ -228,6 +229,7 @@ class RenderService:
             self._look_labels.clear()
             self._bakes.clear()
             self._results.clear()
+            self._warmed.clear()
 
     def replace_data(self, action: Any) -> Any:
         """在渲染服务的锁里执行 `action`（换掉应用数据目录里的相机数据/标定包），然后让所有缓存失效。
@@ -376,6 +378,35 @@ class RenderService:
         self._bakes.put(key, bk, bk.gain.nbytes + bk.pre.nbytes)
         self.stats["bakes"] += 1
         return bk
+
+    def preview_bake(self, plan: Plan) -> chain.ChromaBake:
+        """预览网格（PREVIEW_STEP）的烘焙表，和 `render_preview` 用的是同一份缓存。给显卡预览下发。"""
+        return self._bake(plan, PREVIEW_STEP)
+
+    def warm_preview_bakes(self, shot: dict[Any, Any]) -> threading.Thread | None:
+        """后台把这张照片所在单元、所在 ISO 模型的 8 个内置配方（默认档位）先烘焙好。
+
+        第一次烘焙一个条目要 0.1–0.4 秒；先做掉，换到同单元的照片时显卡预览不用等。每个组合只做一次。"""
+        if "dng" not in shot["files"] or not self.available():
+            return None
+        unit = self.photo_unit(shot) or "jlaunch"
+        iso = shot.get("iso")
+        key = (unit, 1600 if iso and iso >= ISO_SPLIT else 200, self._state_token)
+        with self._lock:
+            if key in self._warmed:
+                return None
+            self._warmed.add(key)
+
+        def run() -> None:
+            for slot in range(1, 9):
+                try:
+                    self._bake(self.plan(shot, EditState(recipe=RecipeSel(unit, slot))), PREVIEW_STEP)
+                except Exception:  # noqa: BLE001  预热失败不影响前台：真用到时再算一次，错误在那时报
+                    return
+
+        thread = threading.Thread(target=run, name="gxr-bake-warm", daemon=True)
+        thread.start()
+        return thread
 
     def approx_lut(self, unit: str, slot: int, iso: int) -> np.ndarray:
         from ..finish.approx import lut_for_entries
