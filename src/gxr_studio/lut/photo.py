@@ -37,8 +37,8 @@ def color_image(
                     with_dng.release()
             rgb = _apply(target, rgb)
         else:
-            if "dng" not in shot["files"] or render.photo_unit(shot) != "jlaunch":
-                raise EditError("lut_needs_raw", "这个 LUT 需要 A12 50mm 的 RAW 文件")
+            if "dng" not in shot["files"]:
+                raise EditError("lut_needs_raw", "这个 LUT 需要 RAW 文件")
             dng = open_dng(lib.abspath(shot["files"]["dng"]["relpath"]))
             try:
                 colour = scene_colour(dng)

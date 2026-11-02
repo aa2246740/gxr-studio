@@ -16,6 +16,27 @@ MAX_1D = 65536
 MAX_3D = 129
 
 
+def comment_start(line: str) -> int:
+    """Find a cube comment without treating a quoted TITLE's # as a comment."""
+    if not line.lstrip().startswith("TITLE"):
+        return line.find("#")
+    quote = ""
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return index
+    return -1
+
+
 @dataclass
 class Cube:
     table1: np.ndarray | None
@@ -26,6 +47,7 @@ class Cube:
     range3: tuple[Any, ...] = (0.0, 1.0)
     title: str = ""
     source_sha256: str = ""
+    comments: tuple[str, ...] = ()
 
     @classmethod
     def read(cls, path: str | Path) -> Cube:
@@ -41,9 +63,13 @@ class Cube:
             raise ValueError("cube 超过 64 MiB")
         headers: dict[str, Any] = {}
         data: list[list[float]] = []
+        comments = []
         counts = {"LUT_1D_SIZE": (2, MAX_1D), "LUT_3D_SIZE": (2, MAX_3D)}
         known = {*counts, "DOMAIN_MIN", "DOMAIN_MAX", "TITLE", "LUT_1D_INPUT_RANGE", "LUT_3D_INPUT_RANGE"}
         for no, line in enumerate(text.splitlines(), 1):
+            start = comment_start(line)
+            if start >= 0:
+                comments.append(line[start + 1 :].strip())
             words = shlex.split(line, comments=True, posix=True) if line.lstrip().startswith("TITLE") else line.split("#", 1)[0].split()
             if not words:
                 continue
@@ -104,6 +130,7 @@ class Cube:
             r3,
             headers.get("TITLE", ""),
             digest,
+            tuple(comments),
         )
 
     def apply(self, rgb: Any, return_info: bool = False) -> Any:
