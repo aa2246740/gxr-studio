@@ -25,6 +25,32 @@ static int view_of(const uint8_t *raw, size_t length, unsigned unit, Gxr2View *v
     return 0;
 }
 
+int studio_validate(const uint8_t *raw, size_t length, unsigned unit)
+{
+    Gxr2View view;
+    return view_of(raw, length, unit, &view);
+}
+
+int studio_builtin(const uint8_t *raw, size_t length, unsigned unit, unsigned slot,
+                   const int16_t levels[10], uint8_t out[552])
+{
+    Gxr2View view;
+    KvDataView data;
+    KvRequest request;
+    KvWork work;
+    KvStats stats;
+    UvLevels values;
+    uint8_t stock[552], base[552];
+    unsigned i;
+    int result = view_of(raw, length, unit, &view);
+    if (result) return result;
+    if (gxr2_expand(&view, unit, slot, base) || gxr2_expand(&view, unit, 4, stock)) return -5;
+    if (kv_data_open(raw + view.sections[6].offset + 3392, KV_DATA_BYTES, &data)) return -6;
+    for (i = 0; i < 10; ++i) values.v[i] = levels[i];
+    if (kv_data_request(&data, unit, slot, &values, &request)) return -7;
+    return kv_apply_work(stock, base, &request, out, &stats, &work);
+}
+
 int studio_resolve(const uint8_t *raw, size_t length, unsigned unit, unsigned index,
                    const int16_t levels[10], uint8_t out[552])
 {

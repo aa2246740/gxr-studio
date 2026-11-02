@@ -4,7 +4,7 @@
 `ui_data.py`、`gate.c`），来源 SHA 见 `engine/PROVENANCE.json` 的 `datcodec_sources`。已有代码各认一个代数
 （`ui_data.parse_dat` 写死 127），这里把代数做成参数：
 
-- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153。未登记的代数一律拒绝。
+- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155。未登记的代数一律拒绝。
 - `parse()` 严格：任何没有建模的头部字节、区段尺寸、CRC、钉子（`PIN_CRC32`）对不上都抛 `DatError`。
 - `pack(parse(b)) == b` 逐字节成立（每一代都有往返测试）。解析结果里的引擎、重定位、`gxkv2r2` 块都原样保存，
   不重新编译、不改写。
@@ -73,6 +73,9 @@ class Profile:
     max_file: int
     kv2_block: bool  # 区段 7 末尾带 kv2 点表；R2 为 17384 B，R3 为 7904 B
     looks: bool = False  # GXDP v2 + GXFX，kv2 点表为 R3
+    max_engine: int = 65536
+    flat_list: bool = False  # 平铺列表的 Looks 与用户条目合计至多 40 个
+    mount_knobs_from_50mm: bool = False
 
     @property
     def knob_bytes(self) -> int:
@@ -95,6 +98,8 @@ PROFILES = {
     150: Profile(150, 98304, True),
     152: Profile(152, 98304, True, True),
     153: Profile(153, 98304, True, True),
+    154: Profile(154, 98304, True, True, flat_list=True, mount_knobs_from_50mm=True),
+    155: Profile(155, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
 }
 
 
@@ -217,7 +222,7 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
         raise DatError("固定区段尺寸不合格")
     engine_at, engine_len = sections[0]
     entry = u32(raw, 112)
-    if not 16 <= engine_len <= 65536 or not 256 <= entry <= 256 + engine_len - 4 or entry % 4:
+    if not 16 <= engine_len <= prof.max_engine or not 256 <= entry <= 256 + engine_len - 4 or entry % 4:
         raise DatError("引擎入口越界")
     nreloc = u16(raw, 120)
     if nreloc > 256 or sections[1][1] != 8 * nreloc:
@@ -591,10 +596,16 @@ def _bank_blob(records: Any, build: Any) -> bytes:
     return bytes(out) + body
 
 
+def _check_list_capacity(dat: Dat, prof: Profile) -> None:
+    if prof.flat_list and any(len(dat.users) + sum(look.unit_mask >> unit & 1 for look in dat.looks) > 40 for unit in range(3)):
+        raise DatError("Looks 与用户条目总数超限")
+
+
 def pack(dat: Dat) -> bytes:
     prof = PROFILES.get(dat.generation)
     if prof is None:
         raise UnsupportedGeneration(f"代数 {dat.generation} 未登记")
+    _check_list_capacity(dat, prof)
     modules = dat.modules
     if len(modules) != 3 or tuple(m.name for m in modules) != NAMES:
         raise DatError("模块顺序必须是 jlaunch, qlaunch, l08firm")
@@ -702,4 +713,5 @@ def replace_users(dat: Dat, users: list[Any]) -> Dat:
 
     new = replace(dat, users=[{"base": u["base"], "levels": list(u["levels"])} for u in users])
     _extension(new.ext_config, [b"".join(m.records) for m in new.modules], new.users)  # 先校验
+    _check_list_capacity(new, PROFILES[new.generation])
     return new
