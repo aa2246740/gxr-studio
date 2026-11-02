@@ -226,7 +226,7 @@ function spaceFields() {
   // 输入色彩空间是推测的：小标签「推测」，按文件名判断的理由放进它的提示气泡（COPY 3.10）
   const guessed = flow.guessed || flow.fileGuess;
   const evidence = flow.cube.space_evidence || {};
-  const why = flow.cube.input_space_state === 'conflict' ? `${flow.cube.guess_reason || ''}；内容：${evidence.content === 'display' ? '显示类' : 'Log 类'}` : flow.cube.guess_reason;
+  const why = flow.cube.input_space_state === 'conflict' && evidence.content ? `${flow.cube.guess_reason || ''}；内容：${evidence.content === 'display' ? '显示类' : 'Log 类'}` : flow.cube.guess_reason;
   const adv = h('details', { class: 'small' },
     h('summary', {}, '输出色彩空间'),
     h('div', { class: 'field-row' },

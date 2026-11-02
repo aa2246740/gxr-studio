@@ -29,7 +29,6 @@ from ..render.params import EditError, RecipeSel
 from ..render.service import RenderUnavailable
 from .cube import Cube
 from .errors import LutError as LutError
-from .identify import guess_space
 from .library import LutLibrary
 from .metadata import FIELDS
 from .scene import SceneError, scene_colour
@@ -283,7 +282,7 @@ class LutService:
             raise LutError(422, "bad_profile", "请求无效。请刷新页面后重试。", {"detail": "profile 只能是 normal 或 quick"})
         cube = self.cube(cube_id)
         self.target(cube, **spec)  # 先校验色彩空间参数
-        guessed = guessed or self._filename_guess_matches(cube_id, spec["space"], cube)
+        guessed = guessed or self._filename_guess_matches(cube_id, spec["space"])
         if not self.render.available():
             st = self.render.status()
             raise LutError(409, "camera_data_missing", st["hint"] or "请先导入相机配方文件", {"status": st})
@@ -428,24 +427,10 @@ class LutService:
                     directory.remove(f"lut_jobs/{p.name}")
 
     # ---- 我的配方 -----------------------------------------------------------------
-    def _stored_filename(self, cube_id: str) -> str:
-        try:
-            return str(self.library.get(cube_id)["filename"])
-        except LutError:
-            pass
-        path = self.luts_dir / f"{cube_id}.filename"
-        if not path.is_file():
-            return ""
-        return path.read_text(encoding="utf-8").strip()
-
-    def _filename_guess_matches(self, cube_id: str, space: str, cube: Cube | None = None) -> bool:
-        """选中的输入空间就是按文件名或标题猜出来的那一个。"""
+    def _filename_guess_matches(self, cube_id: str, space: str) -> bool:
+        """配方沿用库的自动识别结果，包括文件内声明；手选不标推测。"""
         record = self.library.get(cube_id)
-        if record["input_space_manual"] and record["input_space"] == space:
-            return False
-        loaded = cube if cube is not None else self.cube(cube_id)
-        guess, _why = guess_space(self._stored_filename(cube_id), loaded.title or "")
-        return guess is not None and guess == space
+        return bool(not record["input_space_manual"] and record["input_space"] == space and record["input_space_state"] in ("known", "guessed"))
 
     def _recipe_path(self, rid: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", rid or ""):

@@ -19,11 +19,15 @@
 
 渲染链是 `raw` 读 DNG，`engine` 拿拟合好的整数表，`render` 把裁切和配方套上去。`lut` 在已经有相机数据时做路线 1 的旋钮拟合。`devtools` 只给测试和假卡用，运行时代码不许 import 它（import-linter 会查）。
 
-LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write` 保存。关键词与 33 点灰轴检查组合出 known、guessed、unknown、conflict；未知或冲突时需选择输入空间。用户能改选现有全部 12 种空间，改选后版本递增，旧拟合不可再用；缩略图、预览的磁盘缓存键和图片 URL 同时带 LUT 身份与空间版本。旧版 SHA 命名的 cube 文件首次打开时登记到库。
+LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write` 保存。输入空间先读文件内的明确声明（`LUMIXPHOTOSTYLE`、注释里的 input 字段），再读 TITLE、文件名中的输入域，最后才读目标风格名。TITLE、文件名先一起检查明确的 input 标记，再检查转换源域和其他关键词，同级标记冲突时保留 conflict。文件内声明不受风格名或灰轴形状覆盖。只自动选择现有受支持空间，F-Log2C 的独立色域尚未支持，保留 unknown。无声明、无输入域关键词的创意 LUT 保留 unknown，不凭灰轴选 sRGB。33 点灰轴仅用于核对关键词猜测，known、guessed、unknown、conflict 四态沿用；未知或冲突时需选择输入空间。
+
+输出先读注释中的 output 字段，再读 TITLE、文件名及其他注释的显示传递函数。Rec709 / BT.709 选 `rec709`，sRGB 选 `srgb`，BT1886 / Gamma 2.4 选 `gamma24`（零黑位假设）；原色名不当作传递函数，Rec709 与 BT1886 同时出现时采用 Gamma 2.4。没有明确输出或声明冲突时保持原有 sRGB 默认，用户仍可手选现有输出控件。
+
+自动识别版本记在条目的 `identification_version`（当前为 2），与渲染用的空间 `version` 分开。首次读旧库时重新识别未手选过的条目；`input_space_manual=true` 的整个空间配置保持原样，包括只改过输出、色域或范围的条目。自动条目的输入或输出空间变了，空间版本只递增一次，清空 fit、recipe、camera_lut；仅依据或状态更新不升空间版本。迁移原子写入，重复打开不再改写。原始 cube、名称、分组、收藏和署名保持不动。缩略图、预览的磁盘缓存键和图片 URL 同时带 LUT 身份与空间版本，旧拟合的版本检查会拒绝迁移前的结果。用户改选空间继续沿用相同的失效规则。旧版 SHA 命名的 cube 文件首次打开时登记到库。
 
 署名从整个 cube 的注释读取。内容和署名未改时，导出使用原始字节，TITLE 需要清理时只替换该行；署名改过时保留全部原注释，头部增加当前字段，末尾的 JSON 注释保留多行字段。旧库首次读取时补齐此前未采集的署名，保留用户已改过的字段。
 
-照片编辑只存 LUT 的 SHA，颜色空间从库读取。`lut.photo` 接在 `finish.serve.color_image`，预览和全尺寸导出共用。显示类 LUT 使用现有底图，Log 类使用 A12 50mm DNG 的场景 XYZ；全尺寸仍按 RAW 条带计算。照片调整在 LUT 之后执行。没有新增写卡路径；全部调节和机内 LUT 两档预测延期。
+照片编辑只存 LUT 的 SHA，颜色空间从库读取。`lut.photo` 接在 `finish.serve.color_image`，预览和全尺寸导出共用。显示类 LUT 使用现有底图，Log 类使用 DNG 的场景 XYZ，支持 A12 50mm、28mm、MOUNT；仍需可用的白平衡和色彩矩阵。各单元使用自身 DNG 矩阵，曝光采用既有固定中灰锚（50mm 测光标定），不按 LUT 自动曝光；MOUNT 与 28mm 的绝对曝光、测色尚无独立标定，输出均标为电脑预测。全尺寸仍按 RAW 条带计算。照片调整在 LUT 之后执行。没有新增写卡路径；全部调节和机内 LUT 两档预测延期。
 
 HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`container` 按 ISO 21496-1 + Ultra HDR 封装，主图字节不动。导入结束后另起一个 `hdr` 任务生成图库里的 HDR 版本；导出勾选 HDR 时由 `finish.hdr_export` 让 RAW 亮度跟着成片的几何、日期戳和边框走，在导出的 JPEG 上重新算。
 
