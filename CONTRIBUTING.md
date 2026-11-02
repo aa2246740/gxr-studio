@@ -9,3 +9,7 @@ Python 用 snake_case，类用 PascalCase。页面脚本用 camelCase。测试�
 依赖更新要等发布满 7 天，并且锁进 `uv.lock`。不要把 `.env`、图库、DNG 或 `GXRCE.DAT` 加进来。
 
 问题用 `.github/ISSUE_TEMPLATE/` 里的缺陷或功能模板，并带上优先级、类型和区域标签。标签表在 `.github/labels.yml`。
+
+## 许可与贡献
+
+本项目使用 PolyForm Noncommercial 1.0.0（见 `LICENSE`）。提交贡献即表示你有权提交这些内容，并同意版权人 aa2246740 按本许可发布它们，也可以把它们纳入另行签订的商业授权。
