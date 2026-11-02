@@ -50,7 +50,8 @@ def client(settings):
 
 
 def upload(client, data=None, name="sample.cube"):
-    return client.post("/api/lut/upload", content=cube_bytes() if data is None else data, headers={"X-GXR-Filename": quote(name, safe="")})
+    raw = cube_bytes(comments="# Input: sRGB\n") if data is None else data
+    return client.post("/api/lut/upload", content=raw, headers={"X-GXR-Filename": quote(name, safe="")})
 
 
 def test_multiple_imports_folder_group_and_duplicate_keep_user_data(library):
@@ -106,14 +107,14 @@ def test_filenames_title_are_data_and_export_title_is_clean(library, tmp_path):
     "name,fun,expected_state,expected_space,expected_content",
     [
         ("srgb.cube", lambda x: x, "known", "srgb", "display"),
-        ("plain.cube", lambda x: x, "guessed", "srgb", "display"),
+        ("plain.cube", lambda x: x, "unknown", None, "display"),
         ("vlog.cube", lambda x: x, "conflict", None, "display"),
         ("plain.cube", lambda x: np.clip(x * 1.6, 0, 1), "unknown", None, "log"),
         ("vlog.cube", lambda x: np.clip(x * 1.6, 0, 1), "known", "vlog", "log"),
         ("srgb.cube", lambda x: np.clip(x * 1.6, 0, 1), "conflict", None, "log"),
         ("vlog.cube", lambda x: 1 - x, "guessed", "vlog", None),
         ("plain.cube", lambda x: 1 - x, "unknown", None, None),
-        ("plain.cube", lambda x: x * x * (3 - 2 * x), "guessed", "srgb", "display"),
+        ("plain.cube", lambda x: x * x * (3 - 2 * x), "unknown", None, "display"),
         ("plain.cube", lambda x: 1 / (1 + np.exp(-14 * (x - 0.5))), "unknown", None, None),
         ("plain.cube", lambda x: np.clip(x + [0.2, 0, -0.2], 0, 1), "unknown", None, None),
         ("plain.cube", lambda x: 0.5 + 0.5 * np.sin(x * 7), "unknown", None, None),
@@ -657,11 +658,11 @@ def test_unknown_lut_space_rejects_application_and_draft_is_not_saved(client, vo
     [
         ("RICOH GR LENS A12 50mm F2.5 MACRO", True, True, True),
         ("RICOH GR LENS A12 50mm F2.5 MACRO", False, True, False),
-        ("RICOH LENS A12 28mm", True, True, False),
-        ("GXR MOUNT", True, True, False),
+        ("RICOH LENS A12 28mm", True, True, True),
+        ("GXR MOUNT", True, True, True),
     ],
 )
-def test_log_lut_uses_scene_xyz_and_requires_50mm_raw(client, volumes, lens, raw, matrix, accepted):
+def test_log_lut_uses_scene_xyz_and_requires_raw(client, volumes, lens, raw, matrix, accepted):
     _photo_files(volumes, raw=raw, matrix=matrix, lens=lens)
     photo = _get_photo(client)
     item = upload(client).json()

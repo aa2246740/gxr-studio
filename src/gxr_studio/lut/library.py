@@ -15,7 +15,7 @@ from typing import Any, cast
 from ..privacy import PrivateDir
 from .cube import MAX_BYTES, Cube
 from .errors import LutError
-from .identify import identify
+from .identify import IDENTIFICATION_VERSION, identify
 from .metadata import FIELDS, export_cube, read_header
 from .spaces import SPACES, Target
 
@@ -90,6 +90,7 @@ class LutLibrary:
         if not isinstance(pending, list) or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in pending):
             raise LutError(422, "lut_library_unreadable", "无法读取 LUT 库。请检查应用数据。")
         upgraded = self._upgrade_attribution(directory, doc)
+        upgraded = self._upgrade_identification(directory, doc) or upgraded
         if pending:
             for cube_id in pending:
                 self._finish_deleted(directory, cube_id)
@@ -113,6 +114,26 @@ class LutLibrary:
             item["attribution_version"] = 2
             changed = True
         return changed
+
+    def _upgrade_identification(self, directory: PrivateDir, doc: dict[str, Any]) -> bool:
+        changed = False
+        for cube_id, item in doc["items"].items():
+            # Any manual colour setting froze the whole space specification in
+            # previous versions, including output-only and gamut/range edits.
+            if item.get("input_space_manual") or item.get("identification_version") == IDENTIFICATION_VERSION:
+                continue
+            raw = self._raw(directory, cube_id)
+            result = identify(Cube.parse(raw.decode("utf-8-sig"), cube_id), item["filename"])
+            if any(item[key] != result[key] for key in ("input_space", "output_space")):
+                self._invalidate_space(item)
+            item.update(result)
+            changed = True
+        return changed
+
+    @staticmethod
+    def _invalidate_space(item: dict[str, Any]) -> None:
+        item["fit"] = item["recipe"] = item["camera_lut"] = None
+        item["version"] += 1
 
     def _legacy(self, directory: PrivateDir) -> dict[str, Any]:
         """旧版仅保存 SHA.cube 和 SHA.filename，首次打开时登记，保留原文件。"""
@@ -303,8 +324,7 @@ class LutLibrary:
                 item[key] = label(value) if key == "name" else value
             if {"input_space", "output_space", "input_gamut", "output_gamut", "input_range", "output_range"} & changes.keys():
                 item["input_space_manual"] = True
-                item["fit"] = item["recipe"] = item["camera_lut"] = None
-                item["version"] += 1
+                self._invalidate_space(item)
             self._save(directory, doc)
             return item
 

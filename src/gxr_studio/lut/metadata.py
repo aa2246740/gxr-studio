@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from .cube import Cube
+from .cube import Cube, comment_start
 
 FIELDS = {"source": "Source", "author": "Author", "license": "License"}
 KEYS = {
@@ -29,26 +29,6 @@ KEYS = {
 }
 
 
-def _comment_start(line: str) -> int:
-    if not line.lstrip().startswith("TITLE"):
-        return line.find("#")
-    quote = ""
-    escaped = False
-    for index, char in enumerate(line):
-        if escaped:
-            escaped = False
-        elif char == "\\" and quote != "'":
-            escaped = True
-        elif quote:
-            if char == quote:
-                quote = ""
-        elif char in "\"'":
-            quote = char
-        elif char == "#":
-            return index
-    return -1
-
-
 def _comments(text: str, header_only: bool) -> Iterator[str]:
     for line in text.splitlines():
         stripped = line.lstrip()
@@ -57,7 +37,7 @@ def _comments(text: str, header_only: bool) -> Iterator[str]:
                 continue
             if not stripped.startswith("#"):
                 break
-        start = _comment_start(line)
+        start = comment_start(line)
         if start >= 0:
             yield line[start + 1 :].lstrip()
 
@@ -114,7 +94,7 @@ def _original_export(title: str, record: dict[str, Any], raw: bytes) -> bytes:
                 continue
             body = line.rstrip("\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029")
             ending = line[len(body) :]
-            start = _comment_start(body)
+            start = comment_start(body)
             comment = ""
             if start >= 0:
                 before = body[:start]

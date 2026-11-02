@@ -275,8 +275,8 @@ def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
                 target, _item = c.render.luts.target(changes["lut"])
             except LutError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.extra) from exc
-            if target.input_space not in DISPLAY and ("dng" not in shot["files"] or c.render.photo_unit(shot) != "jlaunch"):
-                raise EditError("lut_needs_raw", "这个 LUT 需要 A12 50mm 的 RAW 文件")
+            if target.input_space not in DISPLAY and "dng" not in shot["files"]:
+                raise EditError("lut_needs_raw", "这个 LUT 需要 RAW 文件")
         edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev)
     except EditError as exc:
         raise _edit_error(exc) from exc
