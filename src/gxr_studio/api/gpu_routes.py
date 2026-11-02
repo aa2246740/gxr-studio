@@ -201,8 +201,7 @@ def gpu_bake(shot_id: str, request: Request, recipe: str | None = None) -> Respo
 def _lut_table(c: Any, cube_id: str) -> tuple[bytes, dict[str, Any]]:
     """只读：LUT 库按 persist=False 读，不写盘。表按 (cube_id, 版本) 缓存，同一张同时只算一次。"""
     try:
-        token = c.render.luts.render_token(cube_id, persist=False)
-        target, _item = c.render.luts.target(cube_id, persist=False)
+        target, _item, token = c.render.luts.target_and_token(cube_id, persist=False)
     except LutError as exc:
         raise ApiError(exc.status, exc.code, exc.message) from exc
     key = (cube_id, token)

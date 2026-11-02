@@ -45,6 +45,8 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # 上一轮 windows-latest 挂了 2 小时没有结束：限时，并在单个测试超过 5 分钟时打印所有线程的调用栈
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -58,26 +60,7 @@ jobs:
       - name: Full test suite
         env:
           GXR_REQUIRE_GPU_TEST: "1"
-        run: uv run --frozen pytest -q --durations=20
-
-  # Linux 上把 Windows 那条按路径的实现（没有 dir_fd）整套再跑一遍
-  path-io:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          python-version: "3.14"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: uv sync --frozen
-      - name: Full test suite with path-based IO
-        env:
-          GXR_FORCE_PATH_IO: "1"
-          GXR_REQUIRE_GPU_TEST: "1"
-        run: uv run --frozen pytest -q --durations=20
+        run: uv run --frozen pytest -q --durations=20 -o faulthandler_timeout=300
 
   security-report:
     runs-on: ubuntu-latest

@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import PORT
-from gxr_studio import audit, cli, privacy
+from gxr_studio import audit, cli, osplat, privacy
 from gxr_studio.app import create_app
 from gxr_studio.camdata import store
 from gxr_studio.cards.discovery import CardReader, find_cards
@@ -431,19 +431,19 @@ def test_interrupted_fallback_swap_is_recovered_at_startup(tmp_path, monkeypatch
     home = tmp_path / "home"
     root = make_dir(home / "camera-data", "old")
     new = make_dir(home / "camera-data.new", "new")
-    real_rename = os.rename
+    real_rename = osplat.rename_at
     calls = []
 
-    def killed(src, dst, **kw):
-        calls.append((Path(src).name, Path(dst).name))
+    def killed(dfd, src, dst):  # 平台原语：两个平台都经过它
+        calls.append((src, dst))
         if len(calls) == 2:
             raise KeyboardInterrupt("断电")
-        return real_rename(src, dst, **kw)
+        return real_rename(dfd, src, dst)
 
-    monkeypatch.setattr(privacy.os, "rename", killed)
+    monkeypatch.setattr(osplat, "rename_at", killed)
     with pytest.raises(KeyboardInterrupt):
         store.swap_in(new, root)
-    monkeypatch.setattr(privacy.os, "rename", real_rename)
+    monkeypatch.setattr(osplat, "rename_at", real_rename)
     assert not root.exists() and (home / "camera-data.old" / "manifest.json").read_text() == "old"
     assert store.recover_interrupted_swaps(home) == ["camera-data: restored from .old"]
     assert (root / "manifest.json").read_text() == "old" and not (home / "camera-data.old").exists()
@@ -479,7 +479,7 @@ def test_import_paths_use_the_atomic_swap():
     privacy_src = Path(privacy.__file__).read_text(encoding="utf-8")
     assert "d.swap_in(tmp, name)" in store_src and "store.write_tree(" in calib_src
     assert "os.replace(" not in store_src and "os.replace(" not in calib_src and ".old" not in calib_src
-    assert privacy_src.count("os.rename(root, old, src_dir_fd=self.fd, dst_dir_fd=self.fd)") == 1, "两步换法只留在 swap_in 的退路里"
+    assert privacy_src.count("osplat.rename_at(self.fd, root, old)") == 1, "两步换法只留在 swap_in 的退路里"
 
 
 # ---- P2-10：同时插着多张卡 ---------------------------------------------------------------

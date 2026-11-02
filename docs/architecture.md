@@ -113,7 +113,16 @@ Windows 逐级 lstat 拒绝链接和重解析点，打开后核对 (st_dev, st_i
 POSIX（macOS、Linux）和 Windows 的差别都收在 `osplat`：文件锁（`flock` / `msvcrt.locking`，进程退出系统自动放锁）、fd → 真实路径
 （`F_GETPATH` / `/proc/self/fd` / `GetFinalPathNameByHandleW`）、完整落盘（`F_FULLFSYNC` / `fsync`）、拟合子进程看父进程还在不在
 （POSIX 看 `getppid` 有没有变；Windows 不过继，改为拿住父进程句柄看它结束没有）。
-没有 `dir_fd` 的平台上 `PrivateDir`、`CardReader` 换成按路径的实现（`_PathPrivateDir`、`PathCardReader`）：逐级 lstat 拒绝链接和重解析点，
-打开后核对 fd 的真实位置；父目录在操作途中被移走按"目录变了"报错。按路径的实现只剩一个窗口：中间一级在 lstat 和排他创建之间被换成目录联接时，
-别处可能留下一个 0 字节文件——写第一个字节之前就会被拦下并清空。
-`GXR_FORCE_PATH_IO=1` 让 POSIX 也走按路径的实现，CI 的 `path-io` 任务用它把整套测试再跑一遍；`make type` 同时按 win32 平台做类型检查。
+
+**按目录句柄的文件操作**：`PrivateDir`、读卡的 `CardReader` 和照片文件的 `library.media` 只通过 `osplat` 的原语碰文件系统
+（`open_dir`、`open_dir_at`、`open_file_at`、`lstat_at`、`listdir_fd`、`mkdir_at`、`unlink_at`、`rmdir_at`、`rename_at`），
+两个平台走同一套上层代码，句柄一律是整数 fd（Windows 上目录句柄也包成 CRT fd）：
+
+- POSIX：`dir_fd` + `O_DIRECTORY|O_NOFOLLOW`，文件 `O_NOFOLLOW`；
+- Windows：`NtCreateFile` 以父目录句柄为根相对打开，带 `FILE_OPEN_REPARSE_POINT`，打开后看属性，重解析点一律当链接拒绝
+  （云盘占位文件也会被拒绝，宁可退回服务器出图）；删除（`FileDispositionInformation(Ex)`）和改名（`FileRenameInformation(Ex)`，
+  目标以父目录句柄为根）都按已经打开的句柄做；列目录按句柄（`GetFileInformationByHandleEx`）。这些调用不经过 `os.*`，
+  原语里自己发出同名的审计事件，`audit` 的保护规则照常生效。
+
+没有"按路径核对、再按路径操作"的实现，也就没有那段空隙。`make type` 同时按 win32 平台做类型检查；
+`tests/test_platform_io.py` 的竞态测试在 CI 的 windows-latest 上跑的是 Windows 原语。

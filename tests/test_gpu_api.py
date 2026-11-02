@@ -499,9 +499,8 @@ def test_open_media_refuses_paths_outside_the_library(tmp_path):
         open_media(lib, "a")
 
 
-@pytest.mark.parametrize("use_dir_fd", [True, False])
-def test_open_media_refuses_a_file_replaced_between_check_and_open(tmp_path, monkeypatch, use_dir_fd):
-    """核对之后、打开之前把文件换成链接：按目录 fd 打开时最后一级 O_NOFOLLOW 直接失败；按路径打开时身份核对失败。"""
+def test_open_media_refuses_a_file_replaced_by_a_link_at_open(tmp_path, monkeypatch):
+    """核对之后、打开之前把文件换成链接：最后一级不跟随链接（POSIX 的 O_NOFOLLOW，Windows 拒绝重解析点），打开本身失败。"""
     from gxr_studio.library import media
 
     root = tmp_path / "lib"
@@ -511,22 +510,109 @@ def test_open_media_refuses_a_file_replaced_between_check_and_open(tmp_path, mon
     outside = tmp_path / "outside.dng"
     outside.write_bytes(b"outside")
     lib = SimpleNamespace(root=root, is_local=lambda _p: True)
-    real_open, swapped = os.open, []
+    from gxr_studio import osplat
+
+    real_open, swapped = osplat.open_file_at, []
     watched = os.fspath(target.resolve())
 
-    def opening(path, flags, *args, dir_fd=None, **kw):
-        name = os.fspath(path)
-        if not swapped and (name == watched or (dir_fd is not None and name == "x.dng")):
+    def opening(dir_fd, name, **kw):  # 平台原语：两个平台都经过它
+        if not swapped and name == "x.dng":
             swapped.append(1)
             os.rename(watched, watched + ".old")
             os.symlink(os.fspath(outside), watched)
-        return real_open(path, flags, *args, dir_fd=dir_fd, **kw) if dir_fd is not None else real_open(path, flags, *args, **kw)
+        return real_open(dir_fd, name, **kw)
 
-    monkeypatch.setattr(media.os, "open", opening)
+    monkeypatch.setattr(osplat, "open_file_at", opening)
     with pytest.raises(media.MediaRefused):
-        media.open_media(lib, "a/x.dng", use_dir_fd=use_dir_fd)
+        media.open_media(lib, "a/x.dng")
     monkeypatch.undo()
     assert swapped
+
+
+def test_lut_delete_reimport_and_space_change_get_a_new_table(client):
+    """复审 r2 P1-02：删除、重新导入相同字节、改输入空间。版本号会从头再数，出图标识不能复用，表必须是新的。"""
+    from gxr_studio.lut.photo import _apply
+    from test_lut_library import upload
+
+    v = np.linspace(0, 1, 17)
+    nodes = np.clip(np.array([[r, g, b] for b in v for g in v for r in v]) * [0.86, 0.97, 1.05], 0, 1)
+    cube = ("LUT_3D_SIZE 17\n" + "\n".join(" ".join(f"{c:.17g}" for c in row) for row in nodes) + "\n").encode()
+    samples = np.array([[[64, 128, 192], [123, 45, 67], [219, 181, 3], [0, 255, 17]]], np.uint8)
+    rows = []
+    for space in ("srgb", "rec709", "srgb"):
+        cid = upload(client, cube, name="r2.cube").json()["cube_id"]
+        assert client.patch(f"/api/luts/{cid}", json={"input_space": space, "output_space": "srgb"}).status_code == 200
+        r = client.get(f"/api/luts/{cid}/table")
+        assert r.status_code == 200, r.text
+        target, _item = client.app.state.ctx.render.luts.target(cid, persist=False)
+        table = np.frombuffer(r.content, np.uint8).reshape(256, 256, 256, 4)
+        np.testing.assert_array_equal(table[samples[..., 2], samples[..., 1], samples[..., 0], :3], _apply(target, samples))
+        rows.append((json.loads(unquote(r.headers["x-gxr-lut"]))["key"], r.headers["etag"], client.app.state.ctx.render.luts.render_token(cid)))
+        assert client.delete(f"/api/luts/{cid}").status_code == 200
+    assert rows[0][0] != rows[1][0] and rows[0][1] != rows[1][1] and rows[0][2] != rows[1][2]  # 换了空间：标识、ETag 都变
+    assert rows[0] == rows[2]  # 同样的内容 + 同样的规范：同一张表（标识按内容和规范算，不按版本号）
+
+
+def test_render_token_follows_the_colour_spec_not_the_record_version(client):
+    from test_lut_library import cube_bytes, upload
+
+    luts = client.app.state.ctx.render.luts
+    cid = upload(client, cube_bytes()).json()["cube_id"]
+    assert client.patch(f"/api/luts/{cid}", json={"input_space": "srgb"}).status_code == 200
+    first = luts.render_token(cid)
+    assert client.patch(f"/api/luts/{cid}", json={"output_range": "legal"}).status_code == 200
+    assert luts.render_token(cid) != first
+    assert client.patch(f"/api/luts/{cid}", json={"output_range": "full"}).status_code == 200
+    assert luts.render_token(cid) == first  # 版本号已经加了两次，规范回到原样，标识也回到原样
+    target, item, token = luts.target_and_token(cid)
+    assert token == luts.render_token(cid) and item["output_range"] == "full"
+    assert client.delete(f"/api/luts/{cid}").status_code == 200
+    assert luts.render_token(cid) != first  # 删除以后是单独的标识
+
+
+def _open_fds() -> int:
+    n = 0
+    for fd in range(4096):
+        try:
+            os.fstat(fd)
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
+def test_huge_range_numbers_do_not_crash_or_leak(client, volumes, settings):
+    """复审 r2 P2-01：5,000 位的 Range 起点原来让 int() 抛错，12 次请求 12 个 500、泄漏 12 个 fd。"""
+    _flag(settings)
+    folder = _card(volumes)
+    photo = _photo(client)
+    url = f"/api/photos/{photo['id']}/raw"
+    client.get(url)  # 先暖一次（线程池等）
+    before = _open_fds()
+    for header in ("bytes=" + "9" * 5000 + "-", "bytes=0-" + "9" * 5000, "bytes=-" + "9" * 5000, "bytes=" + "9" * 21 + "-"):
+        for _ in range(3):
+            r = client.get(url, headers={"Range": header})
+            assert r.status_code == 200 and r.content == (folder / "R0000001.DNG").read_bytes()  # 看不懂的 Range：发整个文件
+    big = client.get(url, headers={"Range": "bytes=" + "9" * 20 + "-"})
+    assert big.status_code == 416
+    assert _open_fds() <= before
+
+
+def test_fd_is_closed_when_the_response_cannot_be_built(tmp_path, monkeypatch):
+    from gxr_studio.library import media
+
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"abc")
+    fd = os.open(path, os.O_RDONLY)
+
+    def broken(*_a):
+        raise ValueError("broken")
+
+    monkeypatch.setattr(media, "parse_range", broken)
+    with pytest.raises(ValueError):
+        media.FdResponse(fd, media_type="application/octet-stream", headers={}, range_header="bytes=0-1")
+    with pytest.raises(OSError):
+        os.fstat(fd)  # 已经关了
 
 
 def test_raw_bytes_support_ranges_and_large_files(client, volumes, settings):

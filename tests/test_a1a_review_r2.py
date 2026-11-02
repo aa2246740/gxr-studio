@@ -197,35 +197,10 @@ def test_r2_note_verified_reads_actual_bytes(volumes, lib):
 # ---- R2-P1-03：私有目录的子目录句柄换向 --------------------------------------------------------------
 
 
-def _move_away(old, target_factory, moved):
-    target = target_factory()
-    audit_was = [r for r in audit.protected_roots()]
-    for r in audit_was:
-        audit.unprotect(r)
-    try:
-        old.rename(target / "moved")
-    finally:
-        for r in audit_was:
-            audit.protect(r)
-    moved.append(str(old))
-
-
 def _moving_at(monkeypatch, target_factory, when):
-    """在拿到父目录之后、真正操作之前，把那个子目录整个移走。按 fd 的实现替换 `_at` 这个接缝（父目录 fd 交出之后）；
-    按路径的实现（Windows）替换 `_path`（路径逐级核对完、交出之后）。两种实现要守的是同一件事。"""
-    moved = []
-    if osplat.USE_PATH_IO:
-        resolve = privacy._PathPrivateDir._path
-
-        def path_of(directory, rel, create=False):
-            out = resolve(directory, rel, create)
-            if when(rel, create) and not moved:
-                _move_away(out.parent, target_factory, moved)
-            return out
-
-        monkeypatch.setattr(privacy._PathPrivateDir, "_path", path_of)
-        return moved
+    """在 `_at` 交出父目录 fd 之后、真正操作之前，把那个子目录整个移走（只替换 `_at` 这个接缝）。"""
     actual = privacy.PrivateDir._at
+    moved = []
 
     from contextlib import contextmanager
 
@@ -233,7 +208,17 @@ def _moving_at(monkeypatch, target_factory, when):
     def at(directory, rel, create=False):
         with actual(directory, rel, create) as (dfd, name):
             if when(rel, create) and not moved:
-                _move_away(Path(privacy.fd_path(dfd)), target_factory, moved)
+                old = Path(privacy.fd_path(dfd))
+                target = target_factory()
+                audit_was = [r for r in audit.protected_roots()]
+                for r in audit_was:
+                    audit.unprotect(r)
+                try:
+                    old.rename(target / "moved")
+                finally:
+                    for r in audit_was:
+                        audit.protect(r)
+                moved.append(str(old))
             yield dfd, name
 
     monkeypatch.setattr(privacy.PrivateDir, "_at", at)
@@ -286,25 +271,12 @@ def test_r2_mkdir_checks_the_intermediate_fd(tmp_path, volumes, monkeypatch, des
         (target / ".git").mkdir(parents=True)
     audit.protect(card.root)
     before = tree_snapshot(target)
-    real_open, real_lstat = os.open, os.lstat
+    real_open = osplat.open_dir_at
     moved = []
 
-    watched, away = os.fspath(home / "a" / "b"), os.fspath(target / "moved")  # 钩子里不碰 pathlib（它自己也调 lstat）
-
-    def lstating(path, *args, **kw):  # 按路径的实现（Windows）：a/b 逐级核对完之后被移走
-        st = real_lstat(path, *args, **kw)
-        if not moved and os.fspath(path) == watched:
-            moved.append(1)
-            audit.unprotect(card.root)
-            try:
-                os.rename(watched, away)
-            finally:
-                audit.protect(card.root)
-        return st
-
-    def opening(path, flags, *args, dir_fd=None, **kw):
-        fd = real_open(path, flags, *args, dir_fd=dir_fd, **kw)
-        if path == "b" and dir_fd is not None and not moved:
+    def opening(dir_fd, path):  # 平台原语：两个平台都经过它
+        fd = real_open(dir_fd, path)
+        if path == "b" and not moved:
             audit.unprotect(card.root)
             try:
                 Path(privacy.fd_path(fd)).rename(target / "moved")
@@ -314,10 +286,7 @@ def test_r2_mkdir_checks_the_intermediate_fd(tmp_path, volumes, monkeypatch, des
         return fd
 
     d = privacy.PrivateDir(home, "test", [volumes])
-    if osplat.USE_PATH_IO:
-        monkeypatch.setattr(privacy.os, "lstat", lstating)
-    else:
-        monkeypatch.setattr(privacy.os, "open", opening)
+    monkeypatch.setattr(osplat, "open_dir_at", opening)
     try:
         with pytest.raises(privacy.PrivatePathError):
             d.write("a/b/c/new.bin", fake_dat(1))

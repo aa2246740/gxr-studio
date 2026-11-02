@@ -2,14 +2,14 @@
 
 打开规则：
 - `relpath` 必须是图库根下面的相对路径，不能有空段、`.`、`..`，也不能是绝对路径；
-- 图库根按 realpath 确定，并核对它不在卡根或受保护目录里（`Library.is_local`）；
-- POSIX：从图库根开始逐级 `O_DIRECTORY|O_NOFOLLOW` 打开目录，最后一级 `O_NOFOLLOW` 打开文件。任何一级是链接都失败，
-  核对和打开是同一次操作，没有"核对完被换掉再按路径打开"的空隙；
-- Windows（没有 dir_fd）：逐级 lstat，遇到链接或重解析点就拒绝；打开以后再用 fstat 的 (st_dev, st_ino) 与 lstat 结果比对，
-  并核对 fd 的真实位置（GetFinalPathNameByHandleW）就是这个路径，中间被换掉就拒绝；
-- 打开的必须是普通文件。
+- 图库根取 realpath 以后，从文件系统根开始逐级不跟随链接地打开（`osplat.open_dir`：根目录本身和它的每一级祖先都算在内），
+  任何一级在这之间被换成链接都失败；
+- 位置核对作用在已经打开的根目录句柄上：句柄的真实位置必须就是那个 realpath，而且在图库允许的位置（不在卡上、
+  不在受保护目录里，`Library.is_local`）。核对和之后的读取用的是同一个句柄，没有"按路径检查、再按路径打开"的空隙；
+- 再相对这个句柄逐级不跟随链接地打开子目录和文件（`osplat.open_dir_at` / `open_file_at`）；打开的必须是普通文件。
+两个平台同一套实现：POSIX 是 `dir_fd` + `O_NOFOLLOW`，Windows 是以父目录句柄为根的相对打开 + 拒绝重解析点。
 
-发送时只用这个 fd：支持单段 Range（206 / 416），按块读，结束后关闭。
+发送时只用这个 fd：支持单段 Range（206 / 416），数字最多 20 位，按块读，结束或构造失败时关闭。
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import errno
 import os
 import re
 import stat
-import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -29,10 +28,8 @@ from starlette.types import Receive, Scope, Send
 from .. import osplat
 
 CHUNK = 1 << 20
-_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-_NONBLOCK = getattr(os, "O_NONBLOCK", 0)  # 打开时不被 FIFO 之类卡住；打开后再核对是不是普通文件
-_RANGE = re.compile(r"bytes=(\d*)-(\d*)$")
+RANGE_DIGITS = 20  # 远超任何文件大小；更长的数字不转换（复审 r2 P2-01：5,000 位数字让 int() 抛错）
+_RANGE = re.compile(r"bytes=(\d{0,%d})-(\d{0,%d})$" % (RANGE_DIGITS, RANGE_DIGITS))
 
 
 class MediaRefused(Exception):
@@ -48,63 +45,48 @@ def _parts(relpath: str) -> list[str]:
     return list(pure.parts)
 
 
-def _open_posix(root: Path, parts: list[str]) -> int:
-    fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        for part in parts[:-1]:
-            nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
-            os.close(fd)
-            fd = nfd
-        return os.open(parts[-1], _FILE_FLAGS | _NONBLOCK, dir_fd=fd)
-    finally:
-        os.close(fd)
+def _same_place(fd: int, root: Path) -> Path | None:
+    now = osplat.fd_path(fd)
+    if now is None:
+        return None
+    real = Path(os.path.realpath(now))
+    return real if os.path.normcase(str(real)) == os.path.normcase(str(root)) else None
 
 
-def _open_by_path(root: Path, parts: list[str]) -> int:
-    """没有 dir_fd 的平台（Windows）：逐级 lstat 拒绝链接/重解析点，打开后核对身份没变。"""
-    path = root
-    for part in parts:
-        path = path / part
-        if osplat.is_link(os.lstat(path)):
-            raise MediaRefused("link")
-    before = os.lstat(path)
-    fd = os.open(path, _FILE_FLAGS)
-    try:
-        after = os.fstat(fd)
-        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
-            raise MediaRefused("replaced")
-        # 中间某一级在 lstat 和打开之间被换成链接/目录联接：打开会跟着走，这里按 fd 的真实位置拦下
-        now = osplat.fd_path(fd)
-        if now is None or os.path.normcase(os.path.realpath(now)) != os.path.normcase(str(path)):
-            raise MediaRefused("replaced")
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
-
-
-def open_media(lib: Any, relpath: str, *, use_dir_fd: bool | None = None) -> int:
+def open_media(lib: Any, relpath: str) -> int:
     """返回只读 fd（调用方负责关闭）。不合规时抛 MediaRefused；文件不存在等抛 OSError。"""
     parts = _parts(relpath)
     root = Path(os.path.realpath(lib.root))
-    if not lib.is_local(root):
-        raise MediaRefused("outside")
-    posix = (os.open in os.supports_dir_fd and sys.platform != "win32") if use_dir_fd is None else use_dir_fd
     try:
-        fd = _open_posix(root, parts) if posix else _open_by_path(root, parts)
+        dfd = osplat.open_dir(root)  # 根目录和它的每一级祖先都不跟随链接
     except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR):  # 路径里某一级是链接（O_NOFOLLOW）
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
             raise MediaRefused("link") from exc
         raise
+    fd = -1
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
+        here = _same_place(dfd, root)
+        if here is None or not lib.is_local(here):  # 核对的是已经打开的这个根目录
+            raise MediaRefused("outside")
+        for part in parts[:-1]:
+            nfd = osplat.open_dir_at(dfd, part)
+            os.close(dfd)
+            dfd = nfd
+        fd = osplat.open_file_at(dfd, parts[-1])
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise MediaRefused("not_a_file")
-        if posix and hasattr(os, "set_blocking"):
-            os.set_blocking(fd, True)
-    except BaseException:
-        os.close(fd)
+    except OSError as exc:
+        if fd >= 0:
+            os.close(fd)
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.EISDIR):  # 路径里某一级是链接，或不是普通文件
+            raise MediaRefused("link" if exc.errno != errno.EISDIR else "not_a_file") from exc
         raise
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        raise
+    finally:
+        os.close(dfd)
     return fd
 
 
@@ -142,11 +124,18 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None | str:
 
 
 class FdResponse(Response):
-    """按已打开的 fd 发送文件内容（拥有并最终关闭这个 fd）。"""
+    """按已打开的 fd 发送文件内容。拥有这个 fd：构造失败时立刻关闭，否则发送结束（或中途出错）时关闭。"""
 
     def __init__(self, fd: int, *, media_type: str, headers: dict[str, str], range_header: str | None) -> None:
         self.fd = fd
-        size = os.fstat(fd).st_size
+        try:
+            self._prepare(media_type, headers, range_header)
+        except BaseException:
+            os.close(fd)  # 构造失败时 __call__ 不会运行：fd 在这里还掉（复审 r2 P2-01）
+            raise
+
+    def _prepare(self, media_type: str, headers: dict[str, str], range_header: str | None) -> None:
+        size = os.fstat(self.fd).st_size
         span = parse_range(range_header, size)
         out = {**headers, "Accept-Ranges": "bytes"}
         if span == "unsatisfiable":

@@ -48,6 +48,23 @@ def file_parts(filename: str) -> tuple[str, str | None, bool]:
     return name, group, skip
 
 
+# 决定 LUT 出图结果的字段和缺省值（与 `LutLibrary.target` 一致）
+_RENDER_SPEC = (
+    ("input_space", None),
+    ("output_space", None),
+    ("input_gamut", None),
+    ("output_gamut", None),
+    ("input_range", "full"),
+    ("output_range", "full"),
+)
+
+
+def _token(cube_id: str, item: dict[str, Any]) -> str:
+    spec = {key: item.get(key, default) for key, default in _RENDER_SPEC}
+    doc = json.dumps({"cube": cube_id, "spec": spec}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(doc.encode()).hexdigest()[:16]
+
+
 class LutLibrary:
     def __init__(self, home: Path, forbidden: Iterable[Path] = ()) -> None:
         self.home = Path(home)
@@ -184,14 +201,16 @@ class LutLibrary:
             return self._item(self._read(directory, persist=persist), cube_id)
 
     def render_token(self, cube_id: str, *, persist: bool = True) -> str:
-        """照片缓存同时绑定 LUT 身份与空间版本；删除也得到新版本。"""
+        """照片缓存、显卡 LUT 表和图片 URL 共用的出图标识：cube 内容（cube_id 就是它的 SHA-256）加完整的色彩规范
+        （`target()` 用到的全部空间字段）的哈希。同一个规范一定得到同一张表；规范一变标识就变。
+        不用记录里的 version：删除后重新导入，version 会从头再数，旧标识会被复用（复审 r2 P1-02）。删除得到单独的标识。"""
         try:
-            version = self.get(cube_id, persist=persist)["version"]
+            item = self.get(cube_id, persist=persist)
         except LutError as exc:
             if exc.code != "cube_not_found":
                 raise
-            version = "deleted"
-        return hashlib.sha256(f"{cube_id}:{version}".encode()).hexdigest()[:16]
+            return hashlib.sha256(f"{cube_id}:deleted".encode()).hexdigest()[:16]
+        return _token(cube_id, item)
 
     def add(self, raw: bytes, filename: str, group: str | None = None) -> dict[str, Any]:
         name, folder, skip = file_parts(filename)
@@ -395,20 +414,29 @@ class LutLibrary:
         return result
 
     def target(self, cube_id: str, *, persist: bool = True) -> tuple[Target, dict[str, Any]]:
+        target, item, _token_value = self.target_and_token(cube_id, persist=persist)
+        return target, item
+
+    def target_and_token(self, cube_id: str, *, persist: bool = True) -> tuple[Target, dict[str, Any], str]:
+        """出图目标和它的标识来自同一次读取（同一个快照）：表和标识不会对不上。"""
         with self.lock:
             item = self.get(cube_id, persist=persist)
             space = item["input_space"]
             if space is None:
                 raise LutError(422, "lut_space_required", "请选择输入色彩空间")
-            return Target(
-                self.load(cube_id, persist=persist),
-                space,
-                item["output_space"],
-                item.get("input_gamut"),
-                item.get("output_gamut"),
-                item.get("input_range", "full"),
-                item.get("output_range", "full"),
-            ), item
+            return (
+                Target(
+                    self.load(cube_id, persist=persist),
+                    space,
+                    item["output_space"],
+                    item.get("input_gamut"),
+                    item.get("output_gamut"),
+                    item.get("input_range", "full"),
+                    item.get("output_range", "full"),
+                ),
+                item,
+                _token(cube_id, item),
+            )
 
     def export(self, cube_id: str) -> dict[str, Any]:
         with self.lock, self.private() as directory:

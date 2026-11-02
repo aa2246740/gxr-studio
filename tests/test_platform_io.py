@@ -1,28 +1,52 @@
-"""平台层（复审 P1-04）：Windows 那条按路径的实现，在任何系统上都直接跑（不靠 GXR_FORCE_PATH_IO）。
+"""平台层和按目录句柄的边界（复审 r1 P1-04，复审 r2 P1-01 / R2-P1-01 / R2-P1-02）。
 
-- 中间一级目录在核对之后被换成链接（Windows 上是目录联接）：写不进去、读不出来、照片打不开；
-- 两个进程同时整体替换同一个文件：最后是其中一份完整内容，不留临时文件；
-- 平台层的锁、fd → 真实路径、落盘。
+私有目录、读卡、照片文件在两个平台上是同一套代码，只有 `osplat` 里的原语不同（POSIX：dir_fd + O_NOFOLLOW；
+Windows：以父目录句柄为根的 NtCreateFile + 拒绝重解析点、按句柄删除/改名/列目录）。这里的竞态在 macOS/Linux 上跑 POSIX 原语，
+在 CI 的 windows-latest 上跑 Windows 原语（`os.symlink` 在 runner 上可用），断言相同：
+
+- 删除时父目录被换成链接：外部文件不会被删（复审 r2 `path_delete_race.py`）；
+- 严格扫描列目录前目录被换成链接：不会读到、列出外部文件（复审 r2 `card_reader_retarget.py`）；
+- 打开照片时图库根或它的上级被换成链接：拒绝，不返回外部字节（复审 r2 `media_root_race.py`）；
+- 写入、读取时父目录被换成链接：写不到外面、读不到外面；
+- 两个进程同时整体替换同一个文件、锁冲突、fd → 真实路径。
 """
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from gxr_studio import osplat, privacy
+from gxr_studio.cards.discovery import CardReader, scan_card_strict
 from gxr_studio.library import media
 
 
-def _swap_for_link(folder: str, elsewhere: str) -> None:
-    """把 `folder` 换成指向 `elsewhere` 的目录链接（原目录挪到旁边）。"""
-    os.rename(folder, folder + ".real")
+def _swap_for_link(folder: str, elsewhere: str, saved: str) -> None:
+    """把 `folder` 挪到 `saved`，原位置放一个指向 `elsewhere` 的目录链接。"""
+    os.rename(folder, saved)
     os.symlink(elsewhere, folder, target_is_directory=True)
+
+
+def _hooked(monkeypatch, primitive, names, action):
+    """第一次调用平台原语 `osplat.<primitive>(dfd, name, …)` 且 `name in names` 时，先做 `action()` 再真正执行。
+    挂在原语上而不是 `os.*` 上：Windows 的原语不经过 `os.open` / `os.unlink`，两个平台都要触发。"""
+    real, fired = getattr(osplat, primitive), []
+
+    def hooked(dfd, name, *args, **kw):
+        if not fired and name in names:
+            fired.append(1)
+            action()
+        return real(dfd, name, *args, **kw)
+
+    monkeypatch.setattr(osplat, primitive, hooked)
+    return fired
 
 
 @pytest.fixture
@@ -34,89 +58,194 @@ def home_and_elsewhere(tmp_path):
     return home, elsewhere
 
 
-def test_path_write_refuses_a_folder_swapped_for_a_link_before_the_open(home_and_elsewhere, monkeypatch):
+# ---- 私有目录 ------------------------------------------------------------------------------
+
+
+def test_delete_after_the_parent_became_a_link_never_touches_the_outside(home_and_elsewhere, monkeypatch):
+    """复审 r2 R2-P1-01：真正删除的那一刻把 a/b 换成指向外面的链接。删除绑定的是已经打开的父目录句柄。"""
     home, elsewhere = home_and_elsewhere
-    d = privacy._PathPrivateDir(home, "test")
-    target, folder, away = os.fspath(home / "a/b/new.bin"), os.fspath(home / "a/b"), os.fspath(elsewhere)
-    real_open, swapped = os.open, []
-
-    def opening(path, flags, *args, **kw):
-        if not swapped and os.fspath(path) == target and flags & os.O_CREAT:
-            swapped.append(1)
-            _swap_for_link(folder, away)
-        return real_open(path, flags, *args, **kw)
-
-    monkeypatch.setattr(privacy.os, "open", opening)
-    with pytest.raises(privacy.PrivatePathError):
-        d.write("a/b/new.bin", b"private bytes")
-    monkeypatch.undo()
-    assert swapped
-    # 打开跟着链接在别处建了文件，但核对在写第一个字节之前就拦下了：那里最多是 0 字节
-    leaked = elsewhere / "new.bin"
-    assert not leaked.exists() or leaked.read_bytes() == b""
+    (home / "a/b/victim.txt").write_bytes(b"OWN DATA")
+    (elsewhere / "victim.txt").write_bytes(b"UNRELATED USER DATA")
+    folder, saved, away = os.fspath(home / "a/b"), os.fspath(home / "a/b.saved"), os.fspath(elsewhere)
+    fired = _hooked(monkeypatch, "unlink_at", ("victim.txt",), lambda: _swap_for_link(folder, away, saved))
+    d = privacy.PrivateDir(home, "test")
+    try:
+        try:
+            d.remove("a/b/victim.txt")
+        except (OSError, privacy.PrivatePathError):
+            pass  # 拒绝也可以；不可以的是删到外面去
+    finally:
+        d.close()
+        monkeypatch.undo()
+    assert fired
+    assert (elsewhere / "victim.txt").read_bytes() == b"UNRELATED USER DATA"
 
 
-def test_path_read_refuses_a_folder_swapped_for_a_link_after_the_check(home_and_elsewhere, monkeypatch):
+def test_delete_when_the_parent_is_already_a_link_is_refused(home_and_elsewhere):
+    home, elsewhere = home_and_elsewhere
+    (elsewhere / "victim.txt").write_bytes(b"UNRELATED USER DATA")
+    _swap_for_link(os.fspath(home / "a/b"), os.fspath(elsewhere), os.fspath(home / "a/b.saved"))
+    with privacy.PrivateDir(home, "test") as d:
+        with pytest.raises(OSError):
+            d.remove("a/b/victim.txt")
+    assert (elsewhere / "victim.txt").read_bytes() == b"UNRELATED USER DATA"
+
+
+def test_rmtree_deletes_links_themselves_not_their_targets(home_and_elsewhere):
+    home, elsewhere = home_and_elsewhere
+    (elsewhere / "keep.txt").write_bytes(b"KEEP")
+    (home / "a/b/own.txt").write_bytes(b"own")
+    os.symlink(os.fspath(elsewhere), os.fspath(home / "a/b/link"), target_is_directory=True)
+    with privacy.PrivateDir(home, "test") as d:
+        d.remove("a")
+    assert not (home / "a").exists() and (elsewhere / "keep.txt").read_bytes() == b"KEEP"
+
+
+def test_write_and_read_stay_inside_when_the_parent_becomes_a_link(home_and_elsewhere, monkeypatch):
     home, elsewhere = home_and_elsewhere
     (home / "a/b/old.bin").write_bytes(b"own")
     (elsewhere / "old.bin").write_bytes(b"somebody else's")
-    d = privacy._PathPrivateDir(home, "test")
-    target, folder, away = os.fspath(home / "a/b/old.bin"), os.fspath(home / "a/b"), os.fspath(elsewhere)
-    real_lstat, swapped = os.lstat, []
-
-    def lstating(path, *args, **kw):  # 逐级核对之后、读之前的那次 lstat：先换掉中间一级
-        if not swapped and os.fspath(path) == target:
-            swapped.append(1)
-            _swap_for_link(folder, away)
-        return real_lstat(path, *args, **kw)
-
-    monkeypatch.setattr(privacy.os, "lstat", lstating)
-    with pytest.raises(privacy.PrivatePathError):
-        d.read("a/b/old.bin")
-    monkeypatch.undo()
-    assert swapped
-
-
-def test_path_moved_parent_reports_a_changed_directory(home_and_elsewhere):
-    home, elsewhere = home_and_elsewhere
-    (home / "a/b/old.bin").write_bytes(b"own")
-    d = privacy._PathPrivateDir(home, "test")
-    assert d.read("a/b/old.bin") == b"own"
-    with pytest.raises(FileNotFoundError):  # 文件本来就没有：照常报找不到
-        d.read("a/b/missing.bin")
-    with pytest.raises(FileNotFoundError):
-        d.read("a/nope/missing.bin")
+    folder, saved, away = os.fspath(home / "a/b"), os.fspath(home / "a/b.saved"), os.fspath(elsewhere)
+    fired = _hooked(monkeypatch, "open_file_at", ("old.bin", "new.bin"), lambda: _swap_for_link(folder, away, saved))
+    d = privacy.PrivateDir(home, "test")
+    try:
+        got = d.read("a/b/old.bin")  # 句柄是换之前打开的 a/b：读到的是自己的文件
+        assert got == b"own" and fired
+        fired.clear()
+        os.unlink(folder)
+        os.rename(saved, folder)
+        try:
+            d.write("a/b/new.bin", b"private bytes")
+        except (OSError, privacy.PrivatePathError):
+            pass
+    finally:
+        d.close()
+        monkeypatch.undo()
+    assert fired
+    assert not (elsewhere / "new.bin").exists()  # 写不到外面去
 
 
-def test_media_by_path_refuses_a_folder_swapped_for_a_link(tmp_path, monkeypatch):
+# ---- 读卡的严格扫描 ----------------------------------------------------------------------------
+
+
+def test_strict_scan_lists_the_directory_it_opened(tmp_path):
+    """复审 r2 R2-P1-02：严格扫描拿到 DCIM/100RICOH 的句柄之后，目录被换成指向外面的链接。之后的列目录、
+    看属性、读开头都绑定这个句柄：不读外部字节，不把外部文件当照片。"""
+    root = tmp_path / "synthetic-card"
+    folder = root / "DCIM" / "100RICOH"
+    folder.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (folder / "OWN.JPG").write_bytes(b"\xff\xd8\xff OWN SYNTHETIC BYTES")
+    (outside / "OUTSIDE.JPG").write_bytes(b"\xff\xd8\xff OUTSIDE SYNTHETIC BYTES")
+    (folder / ".DS_Store").write_bytes(b"OWN SYNTHETIC METADATA")
+    (outside / ".DS_Store").write_bytes(b"OUTSIDE SYNTHETIC METADATA")
+    saved = os.fspath(folder.with_name("100RICOH.saved"))
+
+    class Replacing(CardReader):
+        def __init__(self):
+            self.watched, self.swapped, self.reads = None, False, []
+
+        def open_dir(self, name, dir_fd=None):
+            fd = super().open_dir(name, dir_fd)
+            if str(name) == "100RICOH":
+                self.watched = fd
+            return fd
+
+        def listdir_fd(self, fd):
+            if fd == self.watched and not self.swapped:
+                _swap_for_link(os.fspath(folder), os.fspath(outside), saved)
+                self.swapped = True
+            return super().listdir_fd(fd)
+
+        def read_head(self, name, dir_fd, *args, **kwargs):
+            data = super().read_head(name, dir_fd, *args, **kwargs)
+            self.reads.append(data)
+            return data
+
+    reader = Replacing()
+    st = root.stat()
+    result = scan_card_strict(root, reader, expect=(st.st_dev, st.st_ino))
+    assert reader.swapped
+    assert not any(b"OUTSIDE" in r for r in reader.reads)
+    names = [dataclasses.asdict(e)["relpath"] for e in result.photos["jpg"]]
+    assert names == ["DCIM/100RICOH/OWN.JPG"], names
+
+
+def test_card_file_open_refuses_a_linked_folder(tmp_path):
+    root = tmp_path / "card"
+    (root / "DCIM").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "X.JPG").write_bytes(b"outside")
+    os.symlink(os.fspath(outside), os.fspath(root / "DCIM" / "100RICOH"), target_is_directory=True)
+    target = root / "DCIM" / "100RICOH" / "X.JPG"
+    # 上级按真实位置解析（卡上的普通目录），最后一级不跟随：文件本身是链接时拒绝
+    os.symlink(os.fspath(outside / "X.JPG"), os.fspath(root / "DCIM" / "LINK.JPG"))
+    with pytest.raises(OSError):
+        CardReader().open_rb(root / "DCIM" / "LINK.JPG")
+    assert target.exists()
+
+
+# ---- 照片文件 ------------------------------------------------------------------------------
+
+
+def _library(tmp_path):
     root = tmp_path / "library"
     (root / "2026" / "11").mkdir(parents=True)
-    (root / "2026/11/R0001.DNG").write_bytes(b"own")
-    elsewhere = tmp_path / "card"
-    elsewhere.mkdir()
-    (elsewhere / "R0001.DNG").write_bytes(b"card bytes")
-    lib = SimpleNamespace(root=root, is_local=lambda _p: True)
-    fd = media.open_media(lib, "2026/11/R0001.DNG", use_dir_fd=False)
+    (root / "2026/11/R0001.DNG").write_bytes(b"LIBRARY BYTES")
+    outside = tmp_path / "outside"
+    (outside / "2026" / "11").mkdir(parents=True)
+    (outside / "2026/11/R0001.DNG").write_bytes(b"SYNTHETIC OUTSIDE BYTES")
+    real = Path(os.path.realpath(root))
+    lib = SimpleNamespace(root=root, is_local=lambda p: Path(os.path.realpath(p)) == real)
+    return root, outside, lib
+
+
+@pytest.mark.parametrize("which", ["root", "parent_of_root"])
+def test_media_refuses_when_the_library_root_or_an_ancestor_becomes_a_link(tmp_path, monkeypatch, which):
+    """复审 r2 P1-01：路径核对之后、真正打开之前，把图库根（或它的上级）换成指向外面的链接。"""
+    if which == "root":
+        root, outside, lib = _library(tmp_path)
+        victim, elsewhere = root, outside
+    else:
+        nest = tmp_path / "nest"
+        root, outside, lib = _library(nest)
+        victim, elsewhere = nest, tmp_path / "outside-nest"
+        os.rename(os.fspath(nest), os.fspath(elsewhere))
+        os.makedirs(os.fspath(nest / "library" / "2026" / "11"))
+        (nest / "library/2026/11/R0001.DNG").write_bytes(b"LIBRARY BYTES")
+        (elsewhere / "library/2026/11/R0001.DNG").write_bytes(b"SYNTHETIC OUTSIDE BYTES")
+    name, saved = victim.name, os.fspath(victim) + ".saved"
+    fired = _hooked(monkeypatch, "open_dir_at", (name,), lambda: _swap_for_link(os.fspath(victim), os.fspath(elsewhere), saved))
+    with pytest.raises(media.MediaRefused):
+        fd = media.open_media(lib, "2026/11/R0001.DNG")
+        os.close(fd)
+    monkeypatch.undo()
+    assert fired
+
+
+def test_media_reads_through_the_handle_it_checked(tmp_path, monkeypatch):
+    """根目录句柄打开、核对之后再被换掉：之后的读取仍然绑定这个句柄，读到的是图库里的字节。"""
+    root, outside, lib = _library(tmp_path)
+    saved = os.fspath(root) + ".saved"
+    fired = _hooked(monkeypatch, "open_dir_at", ("2026",), lambda: _swap_for_link(os.fspath(root), os.fspath(outside), saved))
+    fd = media.open_media(lib, "2026/11/R0001.DNG")
     try:
-        assert media.read_all(fd) == b"own"
+        assert media.read_all(fd) == b"LIBRARY BYTES"
     finally:
         os.close(fd)
-    real_root = os.path.realpath(root)
-    target, folder, away = os.path.join(real_root, "2026", "11", "R0001.DNG"), os.path.join(real_root, "2026", "11"), os.fspath(elsewhere)
-    real_lstat, seen = os.lstat, []
+        monkeypatch.undo()
+    assert fired
 
-    def lstating(path, *args, **kw):  # 第二次 lstat 最后一级（逐级核对之后、打开之前）：先换掉中间一级
-        if os.fspath(path) == target:
-            seen.append(1)
-            if len(seen) == 2:
-                _swap_for_link(folder, away)
-        return real_lstat(path, *args, **kw)
 
-    monkeypatch.setattr(media.os, "lstat", lstating)
+def test_media_refuses_a_library_root_outside_the_allowed_place(tmp_path):
+    root, _outside, _lib = _library(tmp_path)
     with pytest.raises(media.MediaRefused):
-        media.open_media(lib, "2026/11/R0001.DNG", use_dir_fd=False)
-    monkeypatch.undo()
-    assert len(seen) >= 2
+        media.open_media(SimpleNamespace(root=root, is_local=lambda _p: False), "2026/11/R0001.DNG")
+
+
+# ---- 并发、锁、fd ------------------------------------------------------------------------------
 
 
 WRITER = textwrap.dedent(
@@ -142,7 +271,7 @@ def test_two_processes_replacing_the_same_file_leave_one_whole_copy(tmp_path):
         for _ in range(rounds):
             try:
                 d.replace_file("shared.json", b"A" * 4096)
-            except PermissionError as exc:  # Windows：对方正在替换的那一刻目标被占用，os.replace 报拒绝访问
+            except PermissionError as exc:  # Windows：对方正在替换的那一刻目标被占用
                 errors.append(exc)
     out, _ = child.communicate(timeout=120)
     assert child.returncode == 0 and out.strip() == "done"
@@ -168,15 +297,46 @@ def test_lock_conflicts_between_two_handles_and_releases(tmp_path):
         os.close(b)
 
 
-def test_fd_path_and_full_fsync(tmp_path):
-    path = tmp_path / "f.bin"
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | osplat.binary_flag(), 0o600)
+def test_handle_primitives(tmp_path):
+    """原语本身：逐级打开、不跟随链接、列目录、排他新建、改名替换、删除；名字里不能带分隔符。"""
+    (tmp_path / "d").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    os.symlink(os.fspath(tmp_path / "elsewhere"), os.fspath(tmp_path / "d" / "link"), target_is_directory=True)
+    dfd = osplat.open_dir(os.path.realpath(tmp_path / "d"))
     try:
+        assert os.path.normcase(os.path.realpath(osplat.fd_path(dfd))) == os.path.normcase(os.path.realpath(tmp_path / "d"))
+        with pytest.raises(OSError):
+            osplat.open_dir_at(dfd, "link")  # 链接不跟随
+        assert osplat.is_link(osplat.lstat_at(dfd, "link"))
+        osplat.mkdir_at(dfd, "sub")
+        assert osplat.is_real_dir(osplat.lstat_at(dfd, "sub"))
+        fd = osplat.open_file_at(dfd, "f.bin", create=True)
         os.write(fd, b"x")
         osplat.full_fsync(fd)
-        now = osplat.fd_path(fd)
-        assert now is not None
-        assert os.path.normcase(os.path.realpath(now)) == os.path.normcase(os.path.realpath(path))
-    finally:
         os.close(fd)
+        with pytest.raises(FileExistsError):
+            osplat.open_file_at(dfd, "f.bin", create=True)
+        fd = osplat.open_file_at(dfd, "g.bin", create=True)
+        os.write(fd, b"y")
+        os.close(fd)
+        osplat.rename_at(dfd, "g.bin", "f.bin")  # 目标已存在：替换
+        fd = osplat.open_file_at(dfd, "f.bin")
+        assert os.read(fd, 8) == b"y"
+        os.close(fd)
+        with pytest.raises(OSError):
+            osplat.open_file_at(dfd, "sub")  # 是目录
+        assert sorted(osplat.listdir_fd(dfd)) == ["f.bin", "link", "sub"]
+        osplat.unlink_at(dfd, "link")  # 删的是链接本身
+        osplat.unlink_at(dfd, "f.bin")
+        osplat.rmdir_at(dfd, "sub")
+        assert osplat.listdir_fd(dfd) == []
+        for bad in ("", ".", "..", "a/b", "a\\b"):
+            with pytest.raises(OSError):
+                osplat.open_file_at(dfd, bad)
+    finally:
+        os.close(dfd)
+    assert (tmp_path / "elsewhere").is_dir()
+    os.symlink(os.fspath(tmp_path / "elsewhere"), os.fspath(tmp_path / "via"), target_is_directory=True)
+    with pytest.raises(OSError):  # 路径里有链接：从根开始逐级打开时失败
+        osplat.open_dir(Path(os.path.realpath(tmp_path)) / "via")
     assert osplat.describe()["windows"] is (sys.platform == "win32")
