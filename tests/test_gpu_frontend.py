@@ -73,10 +73,9 @@ def test_display_table_and_gains_match_python(tmp_path):
 
 
 def _decide(tmp_path: Path, rows: list[dict[str, object]]) -> list[object]:
-    for name in ("gpu_stage.js",):
+    for name in ("gpu_stage.js", "state.js"):
         shutil.copyfile(ASSETS / name, tmp_path / name)
     (tmp_path / "api.js").write_text("export const api = async () => { throw new Error('不读接口'); };\n")
-    (tmp_path / "state.js").write_text("export const state = { photos: [] };\n")
     return run_node(
         tmp_path,
         "import { decide } from './gpu_stage.js';\n"
@@ -115,7 +114,18 @@ REC = {"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {}}
         ("显示类 LUT、没配方、有 JPG → JPG 底图", {**ED, "lut": "x"}, RAW, "final", None, "srgb", {"base": "jpg", "lut": "x"}),
         ("显示类 LUT + 配方 → RAW 底图", {**ED, "lut": "x"}, RAW, "final", REC, "srgb", {"base": "raw", "recipe": REC, "lut": "x"}),
         ("Log LUT + 50mm RAW", {**ED, "lut": "x"}, RAW, "final", None, "log", {"base": "raw", "lut": "x"}),
-        ("Log LUT + MOUNT → 服务器（lut_needs_raw）", {**ED, "lut": "x"}, {**RAW, "unit": "l08firm"}, "final", None, "log", None),
+        # lut/photo.py 的 Log 分支只要有 DNG（任何单元）和场景色彩：MOUNT 的 RAW 也走显卡
+        ("Log LUT + MOUNT RAW → 显卡", {**ED, "lut": "x"}, {**RAW, "unit": "l08firm"}, "final", None, "log", {"base": "raw", "lut": "x"}),
+        (
+            "Log LUT + 只有 JPG → 服务器（lut_needs_raw）",
+            {**ED, "lut": "x"},
+            {**RAW, "raw": None, "raw_reason": "no_raw"},
+            "final",
+            None,
+            "log",
+            None,
+        ),
+        ("Log LUT + RAW 没有场景色彩 → 服务器", {**ED, "lut": "x"}, {**RAW, "scene": None}, "final", None, "log", None),
         ("LUT 描述还没到 → 服务器", {**ED, "lut": "x"}, RAW, "final", None, None, None),
         ("旧后端（没有 v2）→ 服务器", {**ED, "v2": False}, RAW, "final", REC, None, None),
     ],
@@ -130,3 +140,56 @@ def test_engine_bundle_is_self_contained():
     text = (ASSETS / "gpu" / "engine.js").read_text(encoding="utf-8")
     assert re.search(r"^\s*import\s", text, re.M) is None
     assert "http://" not in text and "https://" not in text
+
+
+FAKE_GPU = """
+const made = [];
+const res = (kind, desc) => { const r = { kind, desc, destroyed: false, destroy() { this.destroyed = true; } }; made.push(r); return r; };
+globalThis.GPUBufferUsage = { UNIFORM: 1, COPY_DST: 2, STORAGE: 4, MAP_READ: 8, COPY_SRC: 16 };
+globalThis.GPUTextureUsage = { TEXTURE_BINDING: 1, STORAGE_BINDING: 2, COPY_DST: 4, RENDER_ATTACHMENT: 8, COPY_SRC: 16 };
+const pipe = () => ({ getBindGroupLayout: () => ({}) });
+const device = {
+  lost: new Promise(() => {}),
+  createShaderModule: () => ({ getCompilationInfo: async () => ({ messages: [] }) }),
+  createRenderPipeline: pipe, createComputePipeline: pipe, createSampler: () => ({}), createBindGroup: () => ({}),
+  createBuffer: (d) => res('buffer', d), createTexture: (d) => res('texture', d),
+  queue: { writeBuffer() {}, writeTexture() {}, submit() {} },
+  destroy() {},
+};
+const adapter = {
+  limits: { maxStorageBufferBindingSize: 1 << 30, maxBufferSize: 1 << 30 },
+  info: { vendor: 'fake', architecture: 'fake', description: '' },
+  requestDevice: async () => device,
+};
+const gpu = { requestAdapter: async () => adapter, getPreferredCanvasFormat: () => 'bgra8unorm' };
+Object.defineProperty(globalThis, 'navigator', { value: { gpu }, configurable: true });
+"""
+
+
+def test_engine_replaces_and_frees_resources_with_the_same_key(tmp_path):
+    """复审 P2-02：同一个键再上传烘焙表 / LUT 表，旧的显卡资源先销毁；超出上限按最久没用的先销毁。"""
+    out = run_node(
+        tmp_path,
+        FAKE_GPU + "import { Engine } from './engine.js';\n"
+        "const e = await Engine.create();\n"
+        "const live = (kind) => made.filter((r) => r.kind === kind && !r.destroyed);\n"
+        "const base = { buffer: live('buffer').length, texture: live('texture').length };\n"
+        "const meta = { nx: 2, ny: 2, origin: [0, 0], step: 1 };\n"
+        "e.addBake('K', meta, new ArrayBuffer(64)); const first = made[made.length - 1];\n"
+        "e.addBake('K', meta, new ArrayBuffer(64));\n"
+        "const sameBake = { firstDestroyed: first.destroyed, bakes: e.stats().bakes, extra: live('buffer').length - base.buffer };\n"
+        "for (let i = 0; i < 30; i++) e.addBake('B' + i, meta, new ArrayBuffer(64));\n"
+        "const bakeCap = { bakes: e.stats().bakes, extra: live('buffer').length - base.buffer };\n"
+        "const lut8 = { n: 256, display: true, table8: true };\n"
+        "e.addLut('L', lut8, new ArrayBuffer(16)); const lutFirst = made[made.length - 1];\n"
+        "e.addLut('L', lut8, new ArrayBuffer(16)); const lutSecond = made[made.length - 1];\n"
+        "const sameLut = { firstDestroyed: lutFirst.destroyed, format: lutSecond.desc.format, luts: e.stats().luts };\n"
+        "for (const k of ['M', 'N', 'O']) e.addLut(k, { n: 17, display: false, table8: false }, new ArrayBuffer(16));\n"
+        "const lutCap = { luts: e.stats().luts, oldestDestroyed: lutSecond.destroyed, extra: live('texture').length - base.texture,\n"
+        "  floatFormat: made[made.length - 1].desc.format };\n"
+        "console.log(JSON.stringify({ sameBake, bakeCap, sameLut, lutCap }));\n",
+    )
+    assert out["sameBake"] == {"firstDestroyed": True, "bakes": 1, "extra": 1}
+    assert out["bakeCap"] == {"bakes": 24, "extra": 24}
+    assert out["sameLut"] == {"firstDestroyed": True, "format": "rgba8unorm", "luts": 1}
+    assert out["lutCap"] == {"luts": 3, "oldestDestroyed": True, "extra": 3, "floatFormat": "rgba32float"}

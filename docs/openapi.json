@@ -101,52 +101,6 @@
         "title": "BatchExportRequest",
         "type": "object"
       },
-      "BoxRequest": {
-        "properties": {
-          "crop": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Crop"
-          },
-          "geometry": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Geometry"
-          },
-          "height": {
-            "maximum": 20000.0,
-            "minimum": 1.0,
-            "title": "Height",
-            "type": "integer"
-          },
-          "width": {
-            "maximum": 20000.0,
-            "minimum": 1.0,
-            "title": "Width",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "width",
-          "height"
-        ],
-        "title": "BoxRequest",
-        "type": "object"
-      },
       "CropRequest": {
         "properties": {
           "angle_deg": {
@@ -3112,7 +3066,51 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BoxRequest"
+                "additionalProperties": false,
+                "properties": {
+                  "crop": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Crop"
+                  },
+                  "geometry": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Geometry"
+                  },
+                  "height": {
+                    "maximum": 20000,
+                    "minimum": 1,
+                    "title": "Height",
+                    "type": "integer"
+                  },
+                  "width": {
+                    "maximum": 20000,
+                    "minimum": 1,
+                    "title": "Width",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "width",
+                  "height"
+                ],
+                "title": "BoxRequest",
+                "type": "object"
               }
             }
           },

@@ -58,9 +58,10 @@ class LutLibrary:
     def private(self) -> PrivateDir:
         return PrivateDir(self.home, "LUT", self.forbidden)
 
-    def _read(self, directory: PrivateDir) -> dict[str, Any]:
+    def _read(self, directory: PrivateDir, *, persist: bool = True) -> dict[str, Any]:
+        """persist=False：旧格式的升级只在内存里做，不写盘（显卡预览的只读接口用）。正常启动时 `migrate()` 已写好。"""
         if not directory.exists("luts/library.json"):
-            return self._legacy(directory)
+            return self._legacy(directory, persist=persist)
         try:
             doc: dict[str, Any] = json.loads(directory.read("luts/library.json"))
             if doc["schema"] != SCHEMA or not isinstance(doc["items"], dict) or not isinstance(doc["groups"], list):
@@ -91,6 +92,8 @@ class LutLibrary:
             raise LutError(422, "lut_library_unreadable", "无法读取 LUT 库。请检查应用数据。")
         upgraded = self._upgrade_attribution(directory, doc)
         upgraded = self._upgrade_identification(directory, doc) or upgraded
+        if not persist:
+            return doc
         if pending:
             for cube_id in pending:
                 self._finish_deleted(directory, cube_id)
@@ -135,7 +138,7 @@ class LutLibrary:
         item["fit"] = item["recipe"] = item["camera_lut"] = None
         item["version"] += 1
 
-    def _legacy(self, directory: PrivateDir) -> dict[str, Any]:
+    def _legacy(self, directory: PrivateDir, *, persist: bool = True) -> dict[str, Any]:
         """旧版仅保存 SHA.cube 和 SHA.filename，首次打开时登记，保留原文件。"""
         doc: dict[str, Any] = {"schema": SCHEMA, "revision": 0, "groups": [], "items": {}}
         if directory.exists("luts"):
@@ -149,9 +152,14 @@ class LutLibrary:
                 if record["cube_id"] != name.removesuffix(".cube"):
                     raise LutError(409, "cube_changed", "这个 LUT 已改变。请重新导入。")
                 doc["items"][record["cube_id"]] = record
-        if doc["items"]:
+        if doc["items"] and persist:
             self._save(directory, doc)
         return doc
+
+    def migrate(self) -> None:
+        """启动时做一次：旧版登记、署名和识别的升级、未完成的删除都写好，之后的读取不再写盘。"""
+        with self.lock, self.private() as directory:
+            self._read(directory)
 
     def _save(self, directory: PrivateDir, doc: dict[str, Any]) -> None:
         doc["revision"] += 1
@@ -171,14 +179,14 @@ class LutLibrary:
             doc = self._read(directory)
             return {"luts": list(doc["items"].values()), "groups": doc["groups"], "revision": doc["revision"]}
 
-    def get(self, cube_id: str) -> dict[str, Any]:
+    def get(self, cube_id: str, *, persist: bool = True) -> dict[str, Any]:
         with self.lock, self.private() as directory:
-            return self._item(self._read(directory), cube_id)
+            return self._item(self._read(directory, persist=persist), cube_id)
 
-    def render_token(self, cube_id: str) -> str:
+    def render_token(self, cube_id: str, *, persist: bool = True) -> str:
         """照片缓存同时绑定 LUT 身份与空间版本；删除也得到新版本。"""
         try:
-            version = self.get(cube_id)["version"]
+            version = self.get(cube_id, persist=persist)["version"]
         except LutError as exc:
             if exc.code != "cube_not_found":
                 raise
@@ -245,9 +253,9 @@ class LutLibrary:
             "size_3d": 0 if cube.table3 is None else len(cube.table3),
         }
 
-    def load(self, cube_id: str) -> Cube:
+    def load(self, cube_id: str, *, persist: bool = True) -> Cube:
         with self.lock, self.private() as directory:
-            self._item(self._read(directory), cube_id)
+            self._item(self._read(directory, persist=persist), cube_id)
             raw = self._raw(directory, cube_id)
             cached = self._cubes.get(cube_id)
             if cached is None:
@@ -386,14 +394,14 @@ class LutLibrary:
                     result.append((relative, recipe))
         return result
 
-    def target(self, cube_id: str) -> tuple[Target, dict[str, Any]]:
+    def target(self, cube_id: str, *, persist: bool = True) -> tuple[Target, dict[str, Any]]:
         with self.lock:
-            item = self.get(cube_id)
+            item = self.get(cube_id, persist=persist)
             space = item["input_space"]
             if space is None:
                 raise LutError(422, "lut_space_required", "请选择输入色彩空间")
             return Target(
-                self.load(cube_id),
+                self.load(cube_id, persist=persist),
                 space,
                 item["output_space"],
                 item.get("input_gamut"),

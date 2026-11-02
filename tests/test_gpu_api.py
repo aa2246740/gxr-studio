@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from types import SimpleNamespace
 from urllib.parse import quote, unquote
 
@@ -163,22 +164,39 @@ def _cube(*, shaper: bool = False, size: int = 3) -> Cube:
     return Cube.parse(f"{head}{rows}\n")
 
 
-def test_lut_bytes_for_display_and_log_spaces():
-    data, meta, reason = lut_bytes(Target(_cube(), "srgb", "srgb"))
+def test_display_lut_table_is_the_production_function_on_every_input():
+    """复审 P1-03：显示类 LUT 的表 = 全部 256³ 个 8 位输入逐个过 `lut.photo._apply`（一维表、任何输出空间都包括在内）。"""
+    from gxr_studio.lut.photo import _apply
+
+    v = np.linspace(0, 1, 17)
+    nodes = np.clip(np.array([[r, g, b] for b in v for g in v for r in v]) * [0.86, 0.97, 1.05], 0, 1)  # 复审的反例 LUT
+    shaped = "LUT_1D_SIZE 3\nLUT_3D_SIZE 17\n0 0 0\n0.6 0.55 0.5\n1 1 1\n"
+    cube = Cube.parse(shaped + "\n".join(" ".join(f"{c:.17g}" for c in row) for row in nodes) + "\n")
+    target = Target(cube, "srgb", "vlog")
+    data, meta, reason = lut_bytes(target)
+    assert reason is None and meta == {"n": 256, "display": True, "table8": True} and data is not None
+    table = np.frombuffer(data, np.uint8).reshape(256, 256, 256, 4)  # [b][g][r]，R 最快
+    assert (table[..., 3] == 255).all()
+    rng = np.random.default_rng(7)
+    rgb = np.concatenate([rng.integers(0, 256, (20000, 3)), [[0, 0, 0], [255, 255, 255], [128, 64, 32], [255, 0, 0]]]).astype(np.uint8)
+    want = _apply(target, rgb[None])[0]
+    np.testing.assert_array_equal(table[rgb[:, 2], rgb[:, 1], rgb[:, 0], :3], want)
+
+
+def test_log_lut_bytes_carry_the_space_parameters():
+    data, meta, reason = lut_bytes(Target(_cube(), "llog", "gamma24"))
     assert reason is None and data is not None and meta is not None
-    assert meta["n"] == 3 and meta["display"] is True and meta["input_space_id"] == 0
-    np.testing.assert_allclose(meta["display_to_input"], np.eye(3), atol=1e-12)
+    assert meta["n"] == 3 and meta["display"] is False and meta["table8"] is False and meta["input_space_id"] == 3
+    assert "display_to_input" not in meta
     arr = np.frombuffer(data, "<f4").reshape(3, 3, 3, 4)
     assert arr[0, 0, 2, 0] == 1.0 and arr[2, 0, 0, 2] == 1.0  # [b][g][r]，R 最快
-    _d, log_meta, _r = lut_bytes(Target(_cube(), "llog", "gamma24"))
-    assert log_meta is not None and log_meta["display"] is False and log_meta["input_space_id"] == 3
 
 
 @pytest.mark.parametrize(
     ("target", "reason"),
     [
-        (lambda: Target(_cube(shaper=True), "srgb", "srgb"), "lut_1d_shaper"),
-        (lambda: Target(_cube(), "srgb", "vlog"), "lut_output_space"),
+        (lambda: Target(_cube(shaper=True), "llog", "srgb"), "lut_1d_shaper"),
+        (lambda: Target(_cube(), "llog", "vlog"), "lut_output_space"),
     ],
 )
 def test_lut_bytes_refuses_what_the_shader_cannot_decode(target, reason):
@@ -245,10 +263,18 @@ def test_gpu_info_raw_and_camera_jpg(client, volumes, settings):
     assert client.get(f"/api/photos/{photo['id']}/gpu").json() == info  # 布局按 SHA 缓存
 
 
-def test_gpu_info_off_by_default(client, volumes):
+def test_gpu_info_off_by_default(client, volumes, monkeypatch):
+    """复审 P2-04：开关关着时不解析 DNG、不预热烘焙表，只回 enabled=false；设置里带着开关状态，前端据此不发请求。"""
+    from gxr_studio.api import gpu_routes
+
     _card(volumes)
     photo = _photo(client)
-    assert client.get(f"/api/photos/{photo['id']}/gpu").json()["enabled"] is False
+    touched = []
+    monkeypatch.setattr(gpu_routes, "open_media", lambda *a, **k: touched.append("open") or 1 / 0)
+    monkeypatch.setattr(client.app.state.ctx.render, "warm_preview_bakes", lambda *a: touched.append("warm"))
+    assert client.get(f"/api/photos/{photo['id']}/gpu").json() == {"enabled": False}
+    assert touched == []
+    assert client.get("/api/settings").json()["gpu_preview"] is False
 
 
 def test_jpg_only_and_raw_only_photos(client, volumes, settings):
@@ -328,11 +354,38 @@ def test_lut_table_endpoint(client):
     r = client.get(f"/api/luts/{cid}/table")
     assert r.status_code == 200, r.text
     meta = json.loads(unquote(r.headers["x-gxr-lut"]))
-    assert meta["n"] == 17 and meta["display"] is True and len(r.content) == 17**3 * 16
+    assert meta["n"] == 256 and meta["display"] is True and meta["table8"] is True and len(r.content) == 256**3 * 4
     assert client.get(f"/api/luts/{cid}/table", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
+    # 改了输出空间：版本变了，表和 ETag 都换；显示类 LUT 的精确表任何输出空间都能给
     assert client.patch(f"/api/luts/{cid}", json={"output_space": "vlog"}).status_code == 200
-    assert client.get(f"/api/luts/{cid}/table").json()["error"] == "lut_gpu_unsupported"
+    again = client.get(f"/api/luts/{cid}/table")
+    assert again.status_code == 200 and again.headers["etag"] != r.headers["etag"]
+    # Log 类输入 + 着色器没有解码的输出空间：422，前端退回服务器
+    assert client.patch(f"/api/luts/{cid}", json={"input_space": "llog"}).status_code == 200
+    refused = client.get(f"/api/luts/{cid}/table")
+    assert refused.status_code == 422 and refused.json()["error"] == "lut_gpu_unsupported"
     assert client.get(f"/api/luts/{'0' * 64}/table").status_code == 404
+
+
+def test_lut_table_does_not_write_and_old_records_upgrade_at_startup(settings):
+    """复审 P2-05：GET /table 不写盘；旧格式的 LUT 记录在启动时升级。"""
+    from test_lut_library import cube_bytes, upload
+
+    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as c:
+        cid = upload(c, cube_bytes(comments="# Input: sRGB\n")).json()["cube_id"]
+        index = c.app.state.ctx.render.luts.home / "luts" / "library.json"
+    doc = json.loads(index.read_text())
+    doc["items"][cid].pop("attribution_version", None)  # 旧格式
+    index.write_text(json.dumps(doc))
+    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as c:
+        upgraded = index.read_bytes()
+        assert json.loads(upgraded)["items"][cid]["attribution_version"] == 2  # 启动时升级
+        doc = json.loads(upgraded)
+        doc["items"][cid].pop("attribution_version", None)
+        index.write_text(json.dumps(doc))  # 运行中又出现旧记录（例如手改）
+        before = (index.read_bytes(), index.stat().st_mtime_ns, sorted(p.name for p in index.parent.iterdir()))
+        assert c.get(f"/api/luts/{cid}/table").status_code == 200
+        assert (index.read_bytes(), index.stat().st_mtime_ns, sorted(p.name for p in index.parent.iterdir())) == before
 
 
 def test_box_endpoint(client, volumes):
@@ -340,16 +393,166 @@ def test_box_endpoint(client, volumes):
     photo = _photo(client)
     url = f"/api/photos/{photo['id']}/gpu/box"
     r = client.post(
-        url, json={"width": 130, "height": 90, "geometry": {"straighten": 4.5}, "crop": {"preset": "free", "rect": [0.2, 0.2, 0.7, 0.7]}}
+        url, json={"width": 120, "height": 80, "geometry": {"straighten": 4.5}, "crop": {"preset": "free", "rect": [0.2, 0.2, 0.7, 0.7]}}
     )
     assert r.status_code == 200, r.text
-    box, _ = final_box(130, 90, Geometry(straighten=4.5), (0.2, 0.2, 0.7, 0.7), "free")
+    box, _ = final_box(120, 80, Geometry(straighten=4.5), (0.2, 0.2, 0.7, 0.7), "free")
     assert r.json()["box"] == list(box)
-    plain = client.post(url, json={"width": 130, "height": 90}).json()
-    assert plain["box"] == [0, 0, 130, 90] and plain["valid"] == [0, 0, 1, 1]
-    assert client.post(url, json={"width": 130, "height": 90, "geometry": {"vertical": 10}}).status_code == 422
-    assert client.post(url, json={"width": 130, "height": 90, "geometry": {"straighten": "x"}}).status_code == 422
-    assert client.post(url, json={"width": 0, "height": 90}).status_code == 422
+    plain = client.post(url, json={"width": 120, "height": 80}).json()
+    assert plain["box"] == [0, 0, 120, 80] and plain["valid"] == [0, 0, 1, 1]
+    assert client.post(url, json={"width": 120, "height": 80, "geometry": {"vertical": 10}}).status_code == 422
+
+
+BAD_BOXES = [
+    '{"width": 0, "height": 80}',
+    '{"width": -5, "height": 80}',
+    '{"width": "120", "height": 80}',
+    '{"width": 120.5, "height": 80}',
+    '{"width": true, "height": 80}',
+    '{"width": 100000, "height": 80}',
+    '{"width": 120, "height": 81}',  # 超过这张照片的像素数
+    '{"width": 120, "height": 80, "geometry": {"straighten": "x"}}',
+    '{"width": 120, "height": 80, "geometry": {"straighten": NaN}}',
+    '{"width": 120, "height": 80, "geometry": {"straighten": Infinity}}',
+    '{"width": 120, "height": 80, "geometry": {"nonsense": 1}}',
+    '{"width": 120, "height": 80, "crop": {"rect": [NaN, 0, 1, 1]}}',
+    '{"width": 120, "height": 80, "crop": {"rect": [0, 0, 1e309, 1]}}',
+    '{"width": 120, "height": 80, "crop": {"rect": [0.5, 0, 0.8, 1]}}',
+    '{"width": 120, "height": 80, "crop": {"rect": [0, 0, 0, 1]}}',
+    '{"width": 120, "height": 80, "crop": {"rect": [0, 0, 1]}}',
+    '{"width": 120, "height": 80, "crop": {"rect": ["0", 0, 1, 1]}}',
+    '{"width": 120, "height": 80, "crop": {"rect": [true, 0, 1, 1]}}',
+    '{"width": 120, "height": 80, "crop": {"preset": "16:10:2"}}',
+    '{"width": 120, "height": 80, "crop": {"preset": 3}}',
+    '{"width": 120, "height": 80, "crop": {"extra": 1}}',
+    '{"width": 120, "height": 80, "crop": "free"}',
+    '{"width": 120, "height": 80, "geometry": [1, 2]}',
+]
+
+
+@pytest.mark.parametrize("body", BAD_BOXES)
+def test_box_rejects_bad_input_with_a_json_422(client, volumes, body):
+    """复审 P2-01：非有限数、类型错、越界、超出照片像素 → 422 JSON，不会 500。"""
+    _card(volumes)
+    photo = _photo(client)
+    r = client.post(f"/api/photos/{photo['id']}/gpu/box", content=body, headers={"Content-Type": "application/json"})
+    assert r.status_code == 422, (body, r.status_code, r.text)
+    assert r.headers["content-type"].startswith("application/json") and "error" in r.json()
+
+
+# ---- 照片文件：只读、拒绝链接和图库外、按已打开的 fd 发送（复审 P1-01）--------------------
+
+
+def _replace_with_link(path, target, *, directory=False):
+    path.rename(path.with_name(path.name + ".moved"))
+    path.symlink_to(target, target_is_directory=directory)
+
+
+@pytest.mark.parametrize("kind", ["raw", "camera-jpg"])
+def test_photo_file_that_became_a_link_is_refused(client, volumes, settings, tmp_path, kind):
+    _flag(settings)
+    _card(volumes)
+    photo = _photo(client)
+    shot = client.app.state.ctx.lib.get_shot(photo["id"])
+    path = client.app.state.ctx.lib.abspath(shot["files"]["dng" if kind == "raw" else "jpg"]["relpath"])
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"not a library file")
+    _replace_with_link(path, outside)
+    r = client.get(f"/api/photos/{photo['id']}/{kind}")
+    assert r.status_code == 409 and r.json()["error"] == "photo_file_unavailable"
+    assert b"not a library file" not in r.content
+
+
+def test_photo_folder_that_became_a_link_is_refused_for_bytes_and_layout(client, volumes, settings, tmp_path):
+    from gxr_studio.api import gpu_routes
+
+    _flag(settings)
+    folder = _card(volumes)
+    photo = _photo(client)
+    shot = client.app.state.ctx.lib.get_shot(photo["id"])
+    path = client.app.state.ctx.lib.abspath(shot["files"]["dng"]["relpath"])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for f in folder.iterdir():  # 同名文件放在图库外面
+        (elsewhere / f.name).write_bytes(f.read_bytes())
+    gpu_routes._layouts.clear()
+    _replace_with_link(path.parent, elsewhere, directory=True)
+    assert client.get(f"/api/photos/{photo['id']}/raw").status_code == 409
+    assert client.get(f"/api/photos/{photo['id']}/camera-jpg").status_code == 409
+    info = client.get(f"/api/photos/{photo['id']}/gpu").json()
+    assert info["raw"] is None and info["raw_reason"] == "refused:link"  # RAW 布局也不跟着链接去读
+
+
+def test_open_media_refuses_paths_outside_the_library(tmp_path):
+    from gxr_studio.library.media import MediaRefused, open_media
+
+    root = tmp_path / "lib"
+    (root / "a").mkdir(parents=True)
+    (root / "a" / "x.jpg").write_bytes(b"x")
+    lib = SimpleNamespace(root=root, is_local=lambda _p: True)
+    for rel in ("../outside", "/etc/passwd", "a/../a/x.jpg", "a//x.jpg", "a\\x.jpg", "", "a/./x.jpg"):
+        with pytest.raises(MediaRefused):
+            open_media(lib, rel)
+    with pytest.raises(MediaRefused):  # 图库根在卡上或受保护目录里
+        open_media(SimpleNamespace(root=root, is_local=lambda _p: False), "a/x.jpg")
+    with pytest.raises(MediaRefused):  # 不是普通文件
+        open_media(lib, "a")
+
+
+@pytest.mark.parametrize("use_dir_fd", [True, False])
+def test_open_media_refuses_a_file_replaced_between_check_and_open(tmp_path, monkeypatch, use_dir_fd):
+    """核对之后、打开之前把文件换成链接：按目录 fd 打开时最后一级 O_NOFOLLOW 直接失败；按路径打开时身份核对失败。"""
+    from gxr_studio.library import media
+
+    root = tmp_path / "lib"
+    (root / "a").mkdir(parents=True)
+    target = root / "a" / "x.dng"
+    target.write_bytes(b"own")
+    outside = tmp_path / "outside.dng"
+    outside.write_bytes(b"outside")
+    lib = SimpleNamespace(root=root, is_local=lambda _p: True)
+    real_open, swapped = os.open, []
+    watched = os.fspath(target.resolve())
+
+    def opening(path, flags, *args, dir_fd=None, **kw):
+        name = os.fspath(path)
+        if not swapped and (name == watched or (dir_fd is not None and name == "x.dng")):
+            swapped.append(1)
+            os.rename(watched, watched + ".old")
+            os.symlink(os.fspath(outside), watched)
+        return real_open(path, flags, *args, dir_fd=dir_fd, **kw) if dir_fd is not None else real_open(path, flags, *args, **kw)
+
+    monkeypatch.setattr(media.os, "open", opening)
+    with pytest.raises(media.MediaRefused):
+        media.open_media(lib, "a/x.dng", use_dir_fd=use_dir_fd)
+    monkeypatch.undo()
+    assert swapped
+
+
+def test_raw_bytes_support_ranges_and_large_files(client, volumes, settings):
+    _flag(settings)
+    folder = _card(volumes)
+    photo = _photo(client)
+    shot = client.app.state.ctx.lib.get_shot(photo["id"])
+    path = client.app.state.ctx.lib.abspath(shot["files"]["dng"]["relpath"])
+    big = bytes(range(256)) * (5 * 4096 + 7)  # 约 5 MB：跨好几个 1 MB 的块
+    path.write_bytes(big)
+    url = f"/api/photos/{photo['id']}/raw"
+    full = client.get(url)
+    assert full.status_code == 200 and full.content == big and full.headers["accept-ranges"] == "bytes"
+    assert int(full.headers["content-length"]) == len(big)
+    part = client.get(url, headers={"Range": "bytes=1048570-2097160"})
+    assert part.status_code == 206 and part.content == big[1048570:2097161]
+    assert part.headers["content-range"] == f"bytes 1048570-2097160/{len(big)}"
+    tail = client.get(url, headers={"Range": "bytes=-10"})
+    assert tail.status_code == 206 and tail.content == big[-10:]
+    open_end = client.get(url, headers={"Range": f"bytes={len(big) - 3}-"})
+    assert open_end.status_code == 206 and open_end.content == big[-3:]
+    bad = client.get(url, headers={"Range": f"bytes={len(big)}-"})
+    assert bad.status_code == 416 and bad.headers["content-range"] == f"bytes */{len(big)}"
+    assert client.get(url, headers={"Range": "bytes=-0"}).status_code == 416
+    assert client.get(url, headers={"Range": "items=0-3"}).content == big  # 看不懂的 Range：发整个文件
+    assert (folder / "R0000001.DNG").read_bytes() != big  # 改的是图库里的副本，卡上的文件没动
 
 
 def test_warm_preview_bakes_runs_once_per_unit_and_iso(client, volumes, monkeypatch):

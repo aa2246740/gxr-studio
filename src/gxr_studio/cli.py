@@ -52,7 +52,8 @@ def main(argv: list[str] | None = None) -> None:
         webbrowser.open(url)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     # 直接关掉终端窗口会发 SIGHUP：按正常退出处理，这样拟合子进程等清理才会执行（默认动作是立刻死掉，什么都不清理）
-    signal.signal(signal.SIGHUP, lambda *_: setattr(server, "should_exit", True))
+    if hasattr(signal, "SIGHUP"):  # Windows 没有 SIGHUP；关掉控制台窗口时 uvicorn 自己处理 CTRL_CLOSE
+        signal.signal(signal.SIGHUP, lambda *_: setattr(server, "should_exit", True))
     try:
         server.run(sockets=[sock])
     finally:

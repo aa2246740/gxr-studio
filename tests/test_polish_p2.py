@@ -156,37 +156,58 @@ def test_frontend_refreshes_the_selection_and_names_unexported_photos():
 # ---- P2-4：服务没了，拟合子进程跟着走 ----------------------------------------------------
 
 
+def _alive(pid: int) -> bool:
+    """进程还在不在。Windows 上不能用 os.kill(pid, 0)（那是 TerminateProcess），改查退出码。"""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        try:
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
-    # 父进程用 /bin/sh（阻塞在 read 上），被 SIGKILL 掉之后子进程要自己退出。
+    # 父进程阻塞在读标准输入上（POSIX 用 /bin/sh，Windows 用一个 Python），被强杀之后子进程要自己退出。
     # 同一时间只有 pytest 和这一个子 Python 进程（复审 A1a 的进程数规则：测试进程最多 2 个）。
     child_code = (
         "import os, time\nfrom gxr_studio.lut.worker import watch_parent\n"
         "stop = {'flag': False}\nwatch_parent(stop, os.getppid(), 0.1, 0.3)\n"
         "print(os.getpid(), flush=True)\ntime.sleep(120)\n"
     )
-    script = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"
-    parent = subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    if sys.platform == "win32":
+        launcher = "import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', sys.argv[1]])\nsys.stdin.read()\n"
+        command = [sys.executable, "-c", launcher, child_code]
+    else:
+        command = ["/bin/sh", "-c", f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"]
+    parent = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     child_pid = None
     try:
         child_pid = int(parent.stdout.readline())
-        os.kill(child_pid, 0)  # 子进程在跑
-        parent.kill()  # SIGKILL：父进程没有机会清理任何东西
+        assert _alive(child_pid)  # 子进程在跑
+        parent.kill()  # SIGKILL / TerminateProcess：父进程没有机会清理任何东西
         parent.wait()
         deadline = time.time() + 15
-        while time.time() < deadline:
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
-                break
+        while time.time() < deadline and _alive(child_pid):
             time.sleep(0.1)
-        else:
+        if _alive(child_pid):
             pytest.fail("父进程被杀之后子进程还在")
     finally:
         parent.kill()
-        if child_pid:
+        if child_pid and _alive(child_pid):
             try:
-                os.kill(child_pid, signal.SIGKILL)
-            except ProcessLookupError:
+                os.kill(child_pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+            except OSError:
                 pass
 
 
@@ -195,9 +216,11 @@ def test_worker_sets_the_stop_flag_when_the_parent_goes_away(monkeypatch):
 
     stop = {"flag": False}
     exits = []
+    # 一个已经结束的进程当"父进程"（Windows 按句柄看它结束了没有）；POSIX 上 getppid 变成 1 = 已经被过继
+    ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True)
     monkeypatch.setattr(worker.os, "_exit", lambda code: exits.append(code))
-    monkeypatch.setattr(worker.os, "getppid", lambda: 1)  # 已经被过继给 1 号进程
-    worker.watch_parent(stop, 4242, 0.01, 0.01).join(2)
+    monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+    worker.watch_parent(stop, int(ended.stdout), 0.01, 0.01).join(2)
     assert stop["flag"] is True and exits == [0]
 
 
@@ -207,6 +230,7 @@ def test_fit_worker_is_told_who_its_parent_is(monkeypatch, tmp_path):
     assert "GXR_STUDIO_PARENT_PID" in (SRC / "gxr_studio/lut/worker.py").read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="Windows 没有 SIGHUP（关控制台窗口不是信号）")
 def test_studio_shuts_down_cleanly_on_sighup(tmp_path):
     """直接关终端窗口 = SIGHUP：服务要走正常退出（拟合子进程的清理才会执行），而不是被默认动作立刻带走。"""
     env = {

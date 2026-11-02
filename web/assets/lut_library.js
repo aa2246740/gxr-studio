@@ -1,5 +1,6 @@
 // 持久化 LUT 库与照片编辑共用列表，所有名称都用文本节点显示。
 import { api } from './api.js';
+import { emit } from './state.js';
 import { h, toast, toastError, openModal, confirmAction } from './dom.js';
 
 let library = { luts: [], groups: [] };
@@ -49,6 +50,7 @@ export function librarySection({ select, onImport, selected, redraw, busy = fals
 async function change(id, body, redraw) {
   try {
     const result = await api(`/api/luts/${id}`, { method: 'PATCH', body });
+    emit('luts-changed'); // 显卡预览的 LUT 表作废（gpu_stage.js）
     await loadLutLibrary();
     redraw(result);
   } catch (e) { toastError(e, '无法完成操作。请重试。'); }
@@ -94,6 +96,7 @@ function renameLut(lut, redraw) {
 function removeLut(lut, redraw) {
   confirmAction(`删除「${lut.name}」？`, '删除', async () => {
     await api(`/api/luts/${lut.cube_id}`, { method: 'DELETE' });
+    emit('luts-changed');
     drafts.delete(lut.cube_id);
     await loadLutLibrary();
     redraw({ deleted: lut.cube_id });

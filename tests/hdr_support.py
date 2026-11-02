@@ -27,6 +27,7 @@ import pytest
 from PIL import Image
 from scipy import ndimage
 
+from gxr_studio import osplat
 from raw_support import bayer_scene, build_dng
 
 NS = {
@@ -39,7 +40,7 @@ NS = {
 XMP_SIG = b"http://ns.adobe.com/xap/1.0/\x00"
 ISO_SIG = b"urn:iso:std:iso:ts:21496:-1\x00"
 SWIFT = Path(__file__).parent / "support" / "check_imageio.swift"
-ON_MACOS = os.uname().sysname == "Darwin"  # 真实宿主，与 privacy 的判断一致
+ON_MACOS = osplat.HOST_IS_DARWIN  # 真实宿主，与 privacy 的判断一致
 HAS_IMAGEIO = ON_MACOS and shutil.which("swiftc") is not None
 needs_imageio = pytest.mark.skipif(not HAS_IMAGEIO, reason="只在 macOS 上运行（系统 ImageIO）")
 EXPOSURE = 4.0  # 合成的"相机 JPG"比 RAW 亮 2 档：RAW 在 JPG 发白的地方还有余量

@@ -37,8 +37,9 @@ jobs:
         if: always()
         run: mkdir -p artifacts && cp -f .coverage artifacts/coverage.sqlite || true
 
-  # Windows 和 macOS 上同样用 Chrome 的软件适配器跑显卡一致性（Windows 上 WebGPU 走 D3D12 的路径要在实机确认，见 IMPL 报告）
-  gpu-parity:
+  # Windows 和 macOS：完整测试套件（复审 P1-04：应用要能在 Windows 上跑）。显卡一致性同样用 Chrome 的软件适配器，
+  # 找不到适配器就失败（GXR_REQUIRE_GPU_TEST=1）。Windows 上 WebGPU 走 D3D12 的硬件路径要在实机确认，见 FIX_R1 报告。
+  tests:
     strategy:
       fail-fast: false
       matrix:
@@ -50,11 +51,33 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: uv sync --frozen
-      - name: WebGPU parity on the software adapter
+      - name: Full test suite
         env:
           GXR_REQUIRE_GPU_TEST: "1"
-        run: uv run --frozen pytest -q tests/test_gpu_parity.py tests/test_gpu_frontend.py
+        run: uv run --frozen pytest -q --durations=20
+
+  # Linux 上把 Windows 那条按路径的实现（没有 dir_fd）整套再跑一遍
+  path-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: uv sync --frozen
+      - name: Full test suite with path-based IO
+        env:
+          GXR_FORCE_PATH_IO: "1"
+          GXR_REQUIRE_GPU_TEST: "1"
+        run: uv run --frozen pytest -q --durations=20
 
   security-report:
     runs-on: ubuntu-latest

@@ -18,7 +18,8 @@ struct P {
 @group(0) @binding(0) var<uniform> p: P;
 @group(0) @binding(1) var<storage, read> rec: array<f32>;   // pre(4096×3) | matrix(9) | offset(3) | gain(ny×nx×2)
 @group(0) @binding(2) var<storage, read> tone: array<f32>;  // render/tones.py display_table（1021 点）
-@group(0) @binding(3) var lut3: texture_3d<f32>;             // .cube 3D 表，x=R、y=G、z=B
+@group(0) @binding(3) var lut3: texture_3d<f32>;             // Log 类 LUT：.cube 3D 表，x=R、y=G、z=B
+@group(0) @binding(4) var lut8: texture_3d<f32>;             // 显示类 LUT：256³ 精确表（服务器用 lut.photo._apply 逐个算好），rgba8unorm
 
 const MAT_AT: u32 = 12288u;
 const OFF_AT: u32 = 12297u;
@@ -186,15 +187,16 @@ fn colorChain(codes: vec3f, jpg: vec3f, pix: vec2f) -> vec3f {
     if (p.flags.z > 0.5) { u = applyBase(u); }
   } else {
     var base: vec3f;
-    var lin_in: vec3f;
+    var looked: vec3f;
     if (mode == 2u) {
       base = q8(enc3(clamp(codes / 4095.0, vec3f(0.0), vec3f(1.0)), 0u) * 255.0);
-      lin_in = mat3x(codes, p.inM0, p.inM1, p.inM2);          // 码值 → 场景 XYZ → LUT 输入色域
+      looked = lutRender(mat3x(codes, p.inM0, p.inM1, p.inM2));  // 码值 → 场景 XYZ → LUT 输入色域
     } else {
+      // 显示类：底图是 8 位，查精确表（与 _apply 逐像素相同，包括取整平局）
       base = select(recipeChain(codes, vec3f(1.0), false), jpg, mode == 4u);
-      lin_in = mat3x(srgbToLin(base), p.inM0, p.inM1, p.inM2);
+      looked = floor(textureLoad(lut8, vec3i(base), 0).xyz * 255.0 + 0.5);
     }
-    u = q8(mix(base, lutRender(lin_in), p.flags.w));
+    u = q8(mix(base, looked, p.flags.w));
     if (p.flags.z > 0.5) { u = applyBase(u); }
   }
   return applyExtra(u, pix, p.dims.xy);

@@ -3,7 +3,9 @@
 数据全部是合成的：合成 DNG（12/16 位、奇数裁切相位、2×2 黑电平、方向 1/6/8）、合成配方烘焙表、合成 .cube、
 合成相机色彩矩阵、带 EXIF 方向的合成 JPG。不用机主的照片，也不用理光数据。
 参考值来自生产代码：`chain.chroma_u8`、`finish.compose.finish_array`、`lut.photo._apply`、`raw.half_res_codes`、`load_jpeg`。
-门槛：≤1 码值的像素 ≥ 99.99%，平均 ΔE2000 ≤ 0.01（连续几步 uint8 取整会把极少数 float32 取整翻转放大，见 IMPL 报告）。
+门槛见 `gpu_gate.py`（复审 r1 第 1–4 条）：≤1 码值 ≥ 99.99%、平均 ΔE2000 ≤ 0.01，有效区边缘带外最大差 ≤ 4，
+>2 码值的像素只能在冻结位置上并由前向量化复算解释（这里的合成用例冻结列表都是空的），带内 ≤ ceil(N×10⁻⁶)。
+复审的两个全合成反例（`clip(rgb × [0.86, 0.97, 1.05])` 的 17³ LUT 配 RAW 和 4:4:4 渐变 JPG）也在这里。
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from gpu_gate import evaluate, valid_mask
 from gpu_support import run_engine
 from gxr_studio.engine.colour import delta_e00, lab_from_codes
 from gxr_studio.finish.compose import finish_array, load_jpeg
@@ -105,6 +108,22 @@ def _jpg(orientation: int) -> bytes:
     return buf.getvalue()
 
 
+def _counter_cube() -> Cube:
+    """复审 r1 的合成反例：节点 = clip([r, g, b] × [0.86, 0.97, 1.05], 0, 1)，17³。"""
+    v = np.linspace(0, 1, 17)
+    nodes = np.clip(np.array([[r, g, b] for b in v for g in v for r in v]) * [0.86, 0.97, 1.05], 0, 1)
+    text = 'TITLE "synthetic quantization challenge"\nLUT_3D_SIZE 17\n' + "\n".join(" ".join(f"{c:.17g}" for c in row) for row in nodes)
+    return Cube.parse(text + "\n")
+
+
+def _gradient_jpg() -> bytes:
+    """复审 r1 的合成反例：256×256 渐变，质量 100、4:4:4，没有方向标记。"""
+    yy, xx = np.mgrid[0:256, 0:256]
+    buf = io.BytesIO()
+    Image.fromarray(np.stack([xx, yy, (xx + yy) // 2], axis=-1).astype(np.uint8)).save(buf, "JPEG", quality=100, subsampling=0)
+    return buf.getvalue()
+
+
 def _stats(gpu: np.ndarray, ref: np.ndarray) -> dict[str, float]:
     assert gpu.shape == ref.shape, (gpu.shape, ref.shape)
     a, b = gpu.reshape(-1, 3), ref.reshape(-1, 3)
@@ -148,7 +167,12 @@ def parity(tmp_path_factory):
     bake = _bake()
     bake_data, bake_meta = bake_bytes(bake)
     cube = _cube()
-    targets = {"display": Target(cube, "srgb", "srgb"), "rec709": Target(cube, "rec709", "gamma24"), "log": Target(cube, "llog", "gamma24")}
+    targets = {
+        "display": Target(cube, "srgb", "srgb"),
+        "rec709": Target(cube, "rec709", "gamma24"),
+        "log": Target(cube, "llog", "gamma24"),
+        "counter": Target(_counter_cube(), "srgb", "srgb"),
+    }
     lut_files, lut_meta = {}, {}
     for k, t in targets.items():
         data, meta, reason = lut_bytes(t)
@@ -157,7 +181,7 @@ def parity(tmp_path_factory):
         lut_meta[k] = meta
     colour = SceneColour(np.array([0.55, 1.0, 0.62]), np.array([[0.6, 0.3, 0.1], [0.25, 0.7, 0.05], [0.02, 0.1, 0.9]]))
     scene = affine_of(colour)
-    jpgs = {6: _jpg(6), 1: _jpg(1)}
+    jpgs = {6: _jpg(6), 1: _jpg(1), 0: _gradient_jpg()}
     files = {f"/{k}.dng": v for k, v in dngs.items()} | {"/bake.bin": bake_data} | lut_files | {f"/o{k}.jpg": v for k, v in jpgs.items()}
     codes, layouts = {}, {}
     for k, data in dngs.items():
@@ -171,7 +195,7 @@ def parity(tmp_path_factory):
         (tmp / f"o{k}.jpg").write_bytes(data)
         jpg_rgb[k] = load_jpeg(tmp / f"o{k}.jpg", None)
 
-    cases, refs = [], {}
+    cases, refs, masks, display = [], {}, {}, {}
 
     def add(cid, *, src, look_adjust, curve=None, lut=None, geometry=None, crop=None, stage="final"):
         adjust = parse_adjust(look_adjust)
@@ -202,6 +226,8 @@ def parity(tmp_path_factory):
             rect = tuple(crop["rect"]) if crop else None
             box = list(final_box(layer[0], layer[1], geom, rect, crop.get("preset") if crop else None)[0])
         g = {"straighten": geom.straighten, "rotate90": geom.rotate90, "flip": geom.flip, "box": box}
+        masks[cid] = valid_mask(layer[0], layer[1], geom, tuple(box) if box else None)
+        display[cid] = lut is not None and lut != "log"
         cases.append(
             {
                 "id": cid,
@@ -230,8 +256,20 @@ def parity(tmp_path_factory):
     )
     add("raw_free_crop", src="b", look_adjust={"exposure_ev": 0.2}, crop={"preset": "free", "rect": [0.1, 0.08, 0.75, 0.8]})
     add("raw_uncropped_straighten", src="c", look_adjust={"highlight": -20}, geometry={"straighten": -6.0}, stage="uncropped")
+    # 复审 r1 的两个全合成反例（原来按旧门槛失败：99.961% / 99.959%）
+    add("counter_raw_lut_adjust", src="a", look_adjust={"exposure_ev": 0.3, "contrast": 20, "saturation": -20}, lut="counter")
+    add("counter_jpg_lut_highlight", src="jpg0", look_adjust={"highlight": -30}, lut="counter")
+    # 显示类 LUT + 拉直 + 旋转翻转 + 裁切：边缘带随几何变换
+    add(
+        "raw_display_lut_geometry",
+        src="b",
+        look_adjust={"contrast": 15},
+        lut="display",
+        geometry={"straighten": -3.5, "rotate90": 3, "flip": True},
+        crop={"preset": "free", "rect": [0.0, 0.0, 1.0, 1.0]},
+    )
     out, summary = run_engine(tmp, files, cases)
-    return out, refs, summary
+    return out, refs, summary, masks, display
 
 
 CASES = [
@@ -245,18 +283,22 @@ CASES = [
     "raw_geometry_ratio",
     "raw_free_crop",
     "raw_uncropped_straighten",
+    "counter_raw_lut_adjust",
+    "counter_jpg_lut_highlight",
+    "raw_display_lut_geometry",
 ]
+FROZEN: dict[str, dict[tuple[int, int], int]] = {}  # 合成用例没有需要冻结的 >2 码值像素
 
 
 @pytest.mark.parametrize("cid", CASES)
 def test_gpu_matches_python(parity, cid):
-    out, refs, summary = parity
+    out, refs, summary, masks, display = parity
     assert cid in out, f"页面没有交回 {cid}：{json.dumps(summary)[:300]}"
-    s = _stats(out[cid], refs[cid])
-    print(cid, json.dumps(s))  # pytest -s 时打印，报告里引用
-    assert s["within_1"] >= 0.9999 and s["mean"] <= 0.01, s
+    r = evaluate(out[cid], refs[cid], mask=masks[cid], frozen=FROZEN.get(cid), display_lut=display[cid])
+    print(cid, json.dumps({k: v for k, v in r.items() if k != "over_2_out_band"}))  # pytest -s 时打印，报告里引用
+    assert r["pass"], r
 
 
 def test_gpu_parity_ran_on_a_real_adapter(parity):
-    _out, _refs, summary = parity
+    _out, _refs, summary, _masks, _display = parity
     assert summary.get("info", {}).get("vendor"), summary

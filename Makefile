@@ -13,6 +13,8 @@ lint:
 
 type:
 	uv run --frozen mypy
+	# Windows 那几段（osplat 的 msvcrt / ctypes 分支）只有按 win32 平台检查才看得到
+	uv run --frozen mypy --platform win32
 
 security:
 	uv run --frozen python scripts/scan_secrets.py

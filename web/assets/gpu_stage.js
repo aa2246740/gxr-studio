@@ -1,22 +1,46 @@
 // 大图的 WebGPU 实时预览（功能开关 gpu_preview，见 docs/feature-flags.md）。
 // 引擎在 /assets/gpu/engine.js（frontend/ 构建，已提交）。数据只上传一次，拖滑块只改参数，不再请求服务器出图。
 // 显卡做不了、或这张照片不支持的情况一律退回原来的服务器出图（preview.js 的 runPreview），不显示不对的画面：
-//   原图（按住空格）、透视/畸变、成片里有边框或时间戳、只有 JPG 却选了配方（近似）、LUT 带一维表、
+//   原图（按住空格）、透视/畸变、成片里有边框或时间戳、只有 JPG 却选了配方（近似）、
 //   RAW 写法特殊（压缩、线性化表、逐行黑电平等），以及浏览器没有 WebGPU。
+//
+// 版本：相机数据（camdata-changed）或 LUT（luts-changed）一变，代数加一，照片信息、配方表、LUT 表的记忆全部作废；
+// 每个异步加载完成时先核对代数，旧代的成功和失败都不再写回（不会把旧表装进引擎，也不会把新数据标成失败）。
 
 import { api } from './api.js';
-import { state } from './state.js';
+import { state, on } from './state.js';
 
 let enginePromise = null;
 let engine = null;
-let disabled = false; // 开关关着、浏览器没有 WebGPU、或设备丢失：本次会话都走服务器
+let disabled = false; // 浏览器没有 WebGPU 或设备丢失：本次会话都走服务器
 let canvas = null; // 唯一的画布，跨照片复用（不重建 WebGPU 上下文）
+let generation = 0; // 数据代数
 const infos = new Map(); // 照片 id → Promise<info>
 const pending = new Map(); // 资源键 → Promise
 const failed = new Set(); // 加载失败的资源键：这张照片这一组参数退回服务器
 const boxes = new Map(); // 裁切框请求键 → { box, valid }
+const prefetched = new Set(); // 已经预取过的 照片:rev:代数
 const PREFETCH = 1; // 左右各预取几张
-let lastRerun = null; // 设备丢失时让当前照片回到服务器出图
+let lastRerun = null; // 设备丢失、数据换代时让当前照片重新走一遍
+let lastPrefetch = null;
+
+function bumpGeneration() {
+  generation += 1;
+  infos.clear();
+  bakeMeta.clear();
+  lutMeta.clear();
+  failed.clear();
+  prefetched.clear();
+  lastPrefetch = null;
+  lastRerun?.();
+}
+on('camdata-changed', bumpGeneration);
+on('luts-changed', bumpGeneration);
+
+// 开关在 /api/settings 里（启动时读）；关着就不请求 /gpu，也不建 WebGPU 设备
+function flagOn() {
+  return !!(state.settings && state.settings.gpu_preview === true);
+}
 
 function loadEngine() {
   if (!enginePromise) {
@@ -42,13 +66,14 @@ function loadEngine() {
 }
 
 function photoInfo(id) {
-  if (!infos.has(id)) {
-    infos.set(id, api(`/api/photos/${id}/gpu`).catch((e) => {
-      infos.delete(id);
+  const key = `${id}@${generation}`;
+  if (!infos.has(key)) {
+    infos.set(key, api(`/api/photos/${id}/gpu`).catch((e) => {
+      infos.delete(key);
       throw e;
     }));
   }
-  return infos.get(id);
+  return infos.get(key);
 }
 
 async function binary(url) {
@@ -57,14 +82,18 @@ async function binary(url) {
   return { data: await res.arrayBuffer(), headers: res.headers };
 }
 
+// 同一个键同时只加载一次。fn(current)：current() 为假说明已经换代，结果不能写回。
 function once(key, fn) {
-  if (!pending.has(key)) {
-    pending.set(key, fn().catch((e) => {
-      failed.add(key);
+  const gen = generation;
+  const current = () => gen === generation && !!engine;
+  const tagged = `${key}@${gen}`;
+  if (!pending.has(tagged)) {
+    pending.set(tagged, fn(current).catch((e) => {
+      if (current()) failed.add(key);
       throw e;
-    }).finally(() => pending.delete(key)));
+    }).finally(() => pending.delete(tagged)));
   }
-  return pending.get(key);
+  return pending.get(tagged);
 }
 
 // ---- 这张照片、这一组参数该用哪条路 ------------------------------------------------
@@ -84,8 +113,8 @@ export function decide(ed, info, stage, recipe, lutSpace) {
   if (ed.lut) {
     if (!lutSpace) return null;
     if (!DISPLAY_SPACES.includes(lutSpace)) {
-      // Log 类：只有 50mm 的 RAW（lut/photo.py 的 lut_needs_raw）
-      return raw && info.unit === 'jlaunch' && info.scene ? { base: 'raw', recipe: undefined, lut: ed.lut } : null;
+      // Log 类：任何单元的 RAW 都行，要有场景色彩（lut/photo.py：没有 DNG 是 lut_needs_raw）
+      return raw && info.scene ? { base: 'raw', recipe: undefined, lut: ed.lut } : null;
     }
     if (recipe) return raw ? { base: 'raw', recipe, lut: ed.lut } : null;
     if (jpg) return { base: 'jpg', lut: ed.lut };
@@ -106,23 +135,25 @@ function sourceKey(id, info, base) {
 function ensureSource(id, info, base) {
   const key = sourceKey(id, info, base);
   if (engine.hasSource(key)) return null;
-  return once(key, async () => {
+  return once(key, async (current) => {
     if (base === 'raw') {
       const { data } = await binary(info.raw.url);
-      await engine.addRaw(key, info.raw, data, info.scene);
+      if (current()) await engine.addRaw(key, info.raw, data, info.scene);
     } else {
       // 浏览器按 EXIF 方向解码（不做色彩转换）：实测与服务器 PIL 的 load_jpeg 逐字节相同
       const res = await fetch(info.jpg.url, { credentials: 'same-origin' });
       if (!res.ok) throw new Error(`http_${res.status}`);
       const bitmap = await createImageBitmap(await res.blob(), { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-      engine.addJpg(key, bitmap);
+      if (current()) engine.addJpg(key, bitmap);
       bitmap.close();
     }
   });
 }
 
+// 链接里带相机数据版本：换了相机数据就是另一份表
 function bakeUrl(id, recipe) {
-  return `/api/photos/${id}/bake${recipe ? `?recipe=${encodeURIComponent(JSON.stringify(recipe))}` : ''}`;
+  const dv = encodeURIComponent(String(state.camdata?.dataVersion ?? ''));
+  return `/api/photos/${id}/bake?dv=${dv}${recipe ? `&recipe=${encodeURIComponent(JSON.stringify(recipe))}` : ''}`;
 }
 
 const bakeMeta = new Map(); // 请求链接 → 描述（键、标签、是否已标定）
@@ -131,23 +162,25 @@ function ensureBake(id, recipe) {
   const url = bakeUrl(id, recipe);
   const meta = bakeMeta.get(url);
   if (meta && engine.hasBake(meta.key)) return null;
-  return once(url, async () => {
+  return once(url, async (current) => {
     const { data, headers } = await binary(url);
+    if (!current()) return;
     const m = JSON.parse(decodeURIComponent(headers.get('X-GXR-Bake') || '{}'));
-    engine.addBake(m.key, m, data);
+    if (!engine.hasBake(m.key)) engine.addBake(m.key, m, data);
     bakeMeta.set(url, m);
   });
 }
 
-const lutMeta = new Map(); // cube id → 描述
+const lutMeta = new Map(); // cube id → 描述（键里带 LUT 的版本）
 
 function ensureLut(cubeId) {
   const meta = lutMeta.get(cubeId);
   if (meta && engine.hasLut(meta.key)) return null;
-  return once(`lut:${cubeId}`, async () => {
+  return once(`lut:${cubeId}`, async (current) => {
     const { data, headers } = await binary(`/api/luts/${cubeId}/table`);
+    if (!current()) return;
     const m = JSON.parse(decodeURIComponent(headers.get('X-GXR-Lut') || '{}'));
-    engine.addLut(m.key, m, data);
+    if (!engine.hasLut(m.key)) engine.addLut(m.key, m, data);
     lutMeta.set(cubeId, m);
   });
 }
@@ -165,8 +198,9 @@ function boxKey(id, w, h, geometry, crop) {
 function ensureBox(id, w, h, geometry, crop) {
   const key = boxKey(id, w, h, geometry, crop);
   if (boxes.has(key)) return null;
-  return once(`box:${key}`, async () => {
+  return once(`box:${key}`, async (current) => {
     const r = await api(`/api/photos/${id}/gpu/box`, { method: 'POST', body: { width: w, height: h, geometry, crop } });
+    if (!current()) return;
     boxes.set(key, r);
     if (boxes.size > 64) boxes.delete(boxes.keys().next().value);
   });
@@ -177,20 +211,21 @@ function ensureBox(id, w, h, geometry, crop) {
 // 返回 'gpu'（显卡接手，画面稍后出来）、'server'（走原来的服务器出图）或 'wait'（还在判断，稍后会再调一次 rerun）。
 // ctx：{ stage, recipe, adjust, curve, geometry, crop, geometryKey }，由 preview.js 按当前草稿算好。
 export function route(view, ctx, rerun) {
-  if (disabled) return 'server';
+  if (disabled || !flagOn()) return 'server';
   lastRerun = rerun;
   const id = view.photo.id;
-  // 先看开关（照片信息里带着），开关关着就不建 WebGPU 设备
+  const gen = generation;
   const info = view.gpuInfo;
-  if (!info || view.gpuInfoId !== id) {
+  if (!info || view.gpuInfoId !== `${id}@${gen}`) {
     photoInfo(id).then((i) => {
+      if (gen !== generation) return; // 已换代：新的一轮会自己再取
       view.gpuInfo = i;
-      view.gpuInfoId = id;
-      if (!i.enabled) disabled = true;
+      view.gpuInfoId = `${id}@${gen}`;
       rerun();
     }, () => {
+      if (gen !== generation) return;
       view.gpuInfo = { enabled: false };
-      view.gpuInfoId = id;
+      view.gpuInfoId = `${id}@${gen}`;
       rerun();
     });
     return 'wait';
@@ -201,12 +236,13 @@ export function route(view, ctx, rerun) {
     return 'wait';
   }
   const ed = view.ed;
-  const lutSpace = ed.lut ? (lutMeta.get(ed.lut)?.display ? 'srgb' : lutMeta.has(ed.lut) ? 'log' : null) : null;
+  // LUT 表第一次要在服务器上算几秒：这期间照常用服务器出图，表到了再切到显卡
   if (ed.lut && !lutMeta.has(ed.lut)) {
-    if (failed.has(`lut:${ed.lut}`)) return 'server';
-    ensureLut(ed.lut)?.then(rerun, rerun);
-    return 'wait';
+    if (!failed.has(`lut:${ed.lut}`)) ensureLut(ed.lut)?.then(rerun, rerun);
+    view.gpuActive = null;
+    return 'server';
   }
+  const lutSpace = ed.lut ? (lutMeta.get(ed.lut).table8 ? 'srgb' : 'log') : null;
   const plan = decide(ed, info, ctx.stage, ctx.recipe, lutSpace);
   if (!plan) return 'server';
   const loads = [];
@@ -220,7 +256,7 @@ export function route(view, ctx, rerun) {
   if (plan.lut) loads.push(ensureLut(plan.lut));
   const live = loads.filter(Boolean);
   if (live.length) {
-    Promise.all(live).then(() => rerun(), () => rerun());
+    Promise.all(live).then(() => { if (gen === generation) rerun(); }, () => { if (gen === generation) rerun(); });
     // 同一张照片只是换了配方表或 LUT：先留着上一帧，数据到了再画；换了照片才清掉
     if (!(view.gpuActive && engine.currentKey() === sKey)) view.gpuActive = null;
     return 'wait';
@@ -286,13 +322,20 @@ function full(info, base, layer, g) {
 }
 
 // 左右相邻的照片先把源图传上显卡，换照片时只需换绑定
+// 每张照片在每一代只预取一次（不在每次滑块输入时重发请求）；相邻照片的 rev 变了才重取它的配方表
 function prefetch(view) {
+  const here = `${view.photo.id}@${generation}`;
+  if (lastPrefetch === here) return;
+  lastPrefetch = here;
   const list = state.photos || [];
   const at = list.findIndex((p) => p.id === view.photo.id);
   if (at < 0) return;
   for (let d = -PREFETCH; d <= PREFETCH; d++) {
     const p = list[at + d];
     if (!d || !p) continue;
+    const tag = `${p.id}:${p.sidecar_rev || 0}@${generation}`;
+    if (prefetched.has(tag)) continue;
+    prefetched.add(tag);
     photoInfo(p.id).then((info) => {
       if (!engine || !info.enabled) return;
       // 编辑过（有配方或 LUT）的照片多半用 RAW；没编辑过、有相机 JPG 的用 JPG

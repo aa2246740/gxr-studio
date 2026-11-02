@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -45,8 +46,39 @@ def _gamut(space: str, override: str | None) -> np.ndarray:
     return np.asarray(spaces.matrix(override or spaces.GAMUT[space]), np.float64)
 
 
+DISPLAY_TABLE_THREADS = 2  # 按要求最多两个并行计算
+
+
+def display_lut_u8(target: Any) -> bytes:
+    """显示类 LUT 的精确表：全部 256³ 个 8 位输入逐个交给生产函数 `lut.photo._apply`，结果按 RGBA 存。
+
+    显示类 LUT 的输入是 8 位底图，所以这张表与 Python 对整张图套 LUT 逐像素相同（取整平局也一样），
+    显卡只做查表。布局：x = R（最快）、y = G、z = B。第一次算约 4 秒，结果由调用方缓存。"""
+    from ..lut.photo import _apply  # 延迟导入：lut.photo 依赖渲染服务
+
+    ramp = np.arange(256, dtype=np.uint8)
+
+    def block(b0: int) -> np.ndarray:
+        grid = np.empty((32, 256, 256, 3), np.uint8)
+        grid[..., 0] = ramp[None, None, :]
+        grid[..., 1] = ramp[None, :, None]
+        grid[..., 2] = np.arange(b0, b0 + 32, dtype=np.uint8)[:, None, None]
+        out = np.empty((32, 256, 256, 4), np.uint8)
+        out[..., :3] = _apply(target, grid.reshape(-1, 256, 3)).reshape(32, 256, 256, 3)
+        out[..., 3] = 255
+        return out
+
+    with ThreadPoolExecutor(DISPLAY_TABLE_THREADS, thread_name_prefix="gxr-lut-table") as pool:
+        return b"".join(part.tobytes() for part in pool.map(block, range(0, 256, 32)))
+
+
 def lut_bytes(target: Any) -> tuple[bytes | None, dict[str, Any] | None, str | None]:
-    """返回 (字节, 描述, None)，或 (None, None, 原因)。原因只给前端决定退回服务器预览。"""
+    """返回 (字节, 描述, None)，或 (None, None, 原因)。原因只给前端决定退回服务器预览。
+
+    显示类输入（sRGB / Rec.709 / Gamma 2.4）：8 位精确表（`display_lut_u8`），任何一维表、输出空间、色域都支持。
+    Log 类输入：码值是浮点，没法穷举，下发 3D 表和空间参数，由着色器计算。"""
+    if target.input_space in spaces.DISPLAY:
+        return display_lut_u8(target), {"n": 256, "display": True, "table8": True}, None
     cube = target.cube
     if cube.table1 is not None:
         return None, None, "lut_1d_shaper"
@@ -68,7 +100,8 @@ def lut_bytes(target: Any) -> tuple[bytes | None, dict[str, Any] | None, str | N
     inv_in = np.linalg.inv(m_in)
     meta = {
         "n": n,
-        "display": target.input_space in spaces.DISPLAY,
+        "display": False,
+        "table8": False,
         "input_space_id": SPACE_IDS[target.input_space],
         "output_space_id": SPACE_IDS[target.output_space],
         "input_legal": target.input_range == "legal",
@@ -76,7 +109,6 @@ def lut_bytes(target: Any) -> tuple[bytes | None, dict[str, Any] | None, str | N
         "domain_min": [float(v) for v in np.asarray(cube.domain_min, np.float64).reshape(-1)[:3]],
         "domain_max": [float(v) for v in np.asarray(cube.domain_max, np.float64).reshape(-1)[:3]],
         "range3": [float(cube.range3[0]), float(cube.range3[1])],
-        "display_to_input": (inv_in @ m709).tolist(),
         "xyz_to_input": inv_in.tolist(),
         "out_to_srgb": (np.linalg.inv(m709) @ m_out).tolist(),
     }

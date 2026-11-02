@@ -36,6 +36,8 @@ export interface BakeMeta {
 export interface LutMeta {
   n: number;
   display: boolean;
+  /** 显示类：256³ 精确 8 位表（RGBA）。Log 类：float32 3D 表 + 空间参数。 */
+  table8?: boolean;
   input_space_id: number;
   output_space_id: number;
   input_legal: boolean;
@@ -43,7 +45,6 @@ export interface LutMeta {
   domain_min: [number, number, number];
   domain_max: [number, number, number];
   range3: [number, number];
-  display_to_input: Mat3;
   xyz_to_input: Mat3;
   out_to_srgb: Mat3;
 }
@@ -122,6 +123,7 @@ export class Engine {
   private readonly presentUniform: GPUBuffer;
   private readonly toneBuf: GPUBuffer;
   private readonly dummyLut: GPUTexture;
+  private readonly dummyLut8: GPUTexture;
   private readonly dummy2d: GPUTexture;
   private readonly sampler: GPUSampler;
   private colorTex: GPUTexture | null = null;
@@ -187,6 +189,7 @@ export class Engine {
     this.presentUniform = ub(2 * 16);
     this.toneBuf = device.createBuffer({ size: TABLE_SIZE * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.dummyLut = device.createTexture({ size: [2, 2, 2], dimension: '3d', format: 'rgba32float', usage: GPUTextureUsage.TEXTURE_BINDING });
+    this.dummyLut8 = device.createTexture({ size: [1, 1, 1], dimension: '3d', format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
     this.dummy2d = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
   }
@@ -288,7 +291,13 @@ export class Engine {
     }
   }
 
+  /** 同一个键再加一次：先销毁旧缓冲（键里带着数据版本，内容相同的不会重复上传）。 */
   addBake(key: string, meta: BakeMeta, data: ArrayBuffer): void {
+    const old = this.bakes.get(key);
+    if (old) {
+      old.buf.destroy();
+      this.bakes.delete(key);
+    }
     const buf = this.device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.device.queue.writeBuffer(buf, 0, data);
     this.bakes.set(key, { meta, buf });
@@ -296,11 +305,22 @@ export class Engine {
   }
 
   addLut(key: string, meta: LutMeta, data: ArrayBuffer): void {
+    const old = this.luts.get(key);
+    if (old) {
+      old.tex.destroy();
+      this.luts.delete(key);
+    }
     const n = meta.n;
-    const tex = this.device.createTexture({ size: [n, n, n], dimension: '3d', format: 'rgba32float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-    this.device.queue.writeTexture({ texture: tex }, data, { bytesPerRow: n * 16, rowsPerImage: n }, [n, n, n]);
+    const exact = !!meta.table8;
+    const tex = this.device.createTexture({
+      size: [n, n, n],
+      dimension: '3d',
+      format: exact ? 'rgba8unorm' : 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture({ texture: tex }, data, { bytesPerRow: n * (exact ? 4 : 16), rowsPerImage: n }, [n, n, n]);
     this.luts.set(key, { meta, tex });
-    this.trim(this.luts, 8, (l) => l.tex.destroy());
+    this.trim(this.luts, 3, (l) => l.tex.destroy()); // 精确表每张 64 MB
   }
 
   private trim<T>(map: Map<string, T>, max: number, drop: (v: T) => void): void {
@@ -409,15 +429,15 @@ export class Engine {
       u.set([bake.meta.origin[0], bake.meta.origin[1], 1 / bake.meta.step, bake.meta.nx], 16);
       u.set([bake.meta.ny, 0, 0, 0], 20);
     }
-    if (lut) {
+    if (lut && !lut.meta.table8) {
       const m = lut.meta;
       u.set([m.input_space_id, m.output_space_id, m.n, m.input_legal ? 1 : 0], 24);
       u.set([...m.domain_min, 0], 28);
       u.set([...m.domain_max, 0], 32);
       u.set([m.range3[0], m.range3[1], m.output_legal ? 1 : 0, 0], 36);
-      let M = m.display_to_input;
+      let M: Mat3 = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
       let off = [0, 0, 0];
-      if (!m.display && src.scene) {
+      if (src.scene) {
         M = mul3(m.xyz_to_input, src.scene.A);
         const b = src.scene.b;
         off = m.xyz_to_input.map((r) => r[0] * b[0] + r[1] * b[1] + r[2] * b[2]);
@@ -459,7 +479,8 @@ export class Engine {
         { binding: 0, resource: { buffer: this.uniform } },
         { binding: 1, resource: { buffer: recBuf } },
         { binding: 2, resource: { buffer: this.toneBuf } },
-        { binding: 3, resource: (lut ? lut.tex : this.dummyLut).createView({ dimension: '3d' }) },
+        { binding: 3, resource: (lut && !lut.meta.table8 ? lut.tex : this.dummyLut).createView({ dimension: '3d' }) },
+        { binding: 4, resource: (lut && lut.meta.table8 ? lut.tex : this.dummyLut8).createView({ dimension: '3d' }) },
       ],
     });
     const rawView = src.kind === 'raw' ? src.tex.createView() : this.dummyRawView();

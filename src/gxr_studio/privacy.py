@@ -18,21 +18,22 @@
 from __future__ import annotations
 
 import ctypes
-import fcntl
+import errno
+import functools
 import os
 import secrets
+import shutil
 import stat
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, TypeVar, cast
 
-from . import audit
+from . import audit, osplat
 from .observe import log
 
 MESSAGE = "无法导出到这个文件夹。请选择其他文件夹。"
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-_F_GETPATH = getattr(fcntl, "F_GETPATH", None)
-_HOST_IS_DARWIN = os.uname().sysname == "Darwin"  # 真实宿主；不看运行中可能被改动的 sys.platform
+_HOST_IS_DARWIN = osplat.HOST_IS_DARWIN  # 真实宿主；不看运行中可能被改动的 sys.platform
 
 
 class PrivatePathError(Exception):
@@ -80,17 +81,8 @@ def check_private_dir(path: str | os.PathLike[Any], purpose: str, forbidden: Ite
 
 
 def fd_path(fd: int) -> str | None:
-    """目录 fd 现在的真实路径（macOS 用 F_GETPATH，Linux 读 /proc/self/fd）。拿不到返回 None。"""
-    if _F_GETPATH is not None:
-        try:
-            raw = fcntl.fcntl(fd, _F_GETPATH, b"\0" * 1024)
-        except OSError:
-            return None
-        return os.fsdecode(raw.split(b"\0", 1)[0])
-    try:
-        return os.readlink(f"/proc/self/fd/{fd}")
-    except OSError:
-        return None
+    """目录 fd 现在的真实路径（见 `osplat.fd_path`）。拿不到返回 None。"""
+    return osplat.fd_path(fd)
 
 
 def _open_dir_nofollow(real: Path) -> int:
@@ -152,12 +144,34 @@ def _parts(rel: str) -> list[str]:
     return parts
 
 
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _routed(fn: _F) -> _F:
+    """公开方法先看子类有没有 `_path_<名字>` 的按路径实现（Windows）。测试里给 `PrivateDir.<名字>` 打补丁，两种实现都生效。"""
+    name = fn.__name__
+
+    @functools.wraps(fn)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        alt = getattr(type(self), f"_path_{name}", None)
+        if alt is not None:
+            return alt(self, *args, **kwargs)
+        return fn(self, *args, **kwargs)
+
+    return cast(_F, wrapper)
+
+
 class PrivateDir:
-    """已经核对过的私有目录能力（设计 §5.6）。
+    """已经核对过的私有目录能力（设计 §5.6）。没有目录 fd 的平台（Windows）上构造出来的是 `_PathPrivateDir`，接口相同。
 
     打开时：`check_private_dir` 核对，再按 realpath 从根逐级 O_DIRECTORY|O_NOFOLLOW 打开（核对之后被换成链接就打不开）。
     之后的所有读写都相对持有的目录 fd；每次改动之前 `verify()`：fd 的真实路径必须还是核对过的那个，而且仍然合格。
     """
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> "PrivateDir":
+        if cls is PrivateDir and osplat.USE_PATH_IO:
+            return super().__new__(_PathPrivateDir)
+        return super().__new__(cls)
 
     def __init__(self, path: str | os.PathLike[Any], purpose: str, forbidden: Iterable[str | os.PathLike[Any]] = ()) -> None:
         self.purpose = purpose
@@ -184,12 +198,14 @@ class PrivateDir:
             os.close(self.fd)
             self.fd = -1
 
+    @_routed
     def verify(self) -> None:
         now = fd_path(self.fd)
         if now is None or _real(now) != self.real:
             raise PrivatePathError("private_path_changed", f"{self.purpose}: 目录在检查之后变了（{now}）")
         check_private_dir(now, self.purpose, self.forbidden)
 
+    @_routed
     def check_fd(self, fd: int) -> None:
         """核对实际要用的那个目录 fd（不只是最外层）：它现在的真实位置必须还在核对过的目录里面，而且仍然合格
         （不在任何 Git 工作区、卡根或其他禁止目录下）。子目录在打开之后被整个移走，也在这里拦下。"""
@@ -227,6 +243,7 @@ class PrivateDir:
             for o in reversed(opened):
                 os.close(o)
 
+    @_routed
     def exists(self, rel: str) -> bool:
         try:
             with self._at(rel) as (dfd, name):
@@ -235,12 +252,14 @@ class PrivateDir:
         except FileNotFoundError:
             return False
 
+    @_routed
     def names(self, rel: str) -> list[str]:
         """按实际目录句柄列名字，不跟随中间目录的链接。"""
         with self._at(f"{rel}/.entries") as (dfd, _name):
             self.check_fd(dfd)
             return os.listdir(dfd)
 
+    @_routed
     def read(self, rel: str) -> bytes:
         with self._at(rel) as (dfd, name):
             self.check_fd(dfd)
@@ -248,6 +267,7 @@ class PrivateDir:
             with os.fdopen(fd, "rb") as fh:
                 return fh.read()
 
+    @_routed
     def write(self, rel: str, data: bytes) -> None:
         """排他创建一个新文件（已存在就失败，不覆盖），写完 fsync。"""
         self.verify()
@@ -283,6 +303,7 @@ class PrivateDir:
             left = f"没能清空写进去的字节（{err.strerror}），文件：{where}"
         return PrivatePathError("private_path_changed", f"{exc.detail}；{left}（不再对已移走的目录做删除等操作）")
 
+    @_routed
     def replace_file(self, rel: str, data: bytes) -> None:
         """原子替换一个文件：同目录写临时文件、fsync、改名、同步目录。失败不留临时文件。"""
         parts = _parts(rel)
@@ -298,6 +319,7 @@ class PrivateDir:
             self.remove(tmp)
             raise
 
+    @_routed
     def remove(self, rel: str) -> None:
         """删掉一项（目录整棵删）；不存在就什么都不做。"""
         self.verify()
@@ -307,6 +329,17 @@ class PrivateDir:
         except FileNotFoundError:
             pass
 
+    @_routed
+    def rename(self, old: str, new: str) -> None:
+        """本目录这一层里改名（两个名字都不带 /）。"""
+        _parts(old), _parts(new)
+        if "/" in old or "/" in new:
+            raise PrivatePathError("private_name_invalid", f"只能在这一层改名：{old} → {new}")
+        self.verify()
+        self.check_fd(self.fd)
+        os.rename(old, new, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+
+    @_routed
     def swap_in(self, new: str, root: str) -> None:
         """用 `new` 整体换掉 `root`（两者都在本目录这一层）。优先原子对调；不支持时退回 root→root.old、new→root，
         两步之间被打断由 `store.recover_interrupted_swaps` 恢复。"""
@@ -326,6 +359,235 @@ class PrivateDir:
         _full_sync(self.fd)
 
 
+def _chain_has_link(path: Path) -> Path | None:
+    """从盘符/根开始逐级 lstat：返回第一级是链接或重解析点的路径，没有就返回 None。"""
+    cur = Path(path.anchor)
+    for part in path.parts[1:]:
+        cur = cur / part
+        try:
+            if osplat.is_link(os.lstat(cur)):
+                return cur
+        except FileNotFoundError:
+            return None
+    return None
+
+
+class _PathPrivateDir(PrivateDir):
+    """没有目录 fd 的平台（Windows，或测试里 GXR_FORCE_PATH_IO=1）：按路径做与 `PrivateDir` 相同的事。
+
+    - 打开时与每次改动之前：realpath 必须还是核对过的那个，路径上任何一级都不能是链接或重解析点，目录仍然合格；
+    - 读：先 lstat 拒绝链接，打开后用 fstat 的 (st_dev, st_ino) 核对没被换掉；
+    - 写：排他创建（O_EXCL），写完落盘；整体替换用同目录临时文件 + `os.replace`；
+    - Windows 上目录不能单独落盘，也没有原子对调，`swap_in` 走 root→root.old、new→root 两步（中断由
+      `store.recover_interrupted_swaps` 恢复，与 POSIX 不支持对调时相同）。
+    """
+
+    def __init__(self, path: str | os.PathLike[Any], purpose: str, forbidden: Iterable[str | os.PathLike[Any]] = ()) -> None:
+        self.purpose = purpose
+        self.forbidden = [Path(f) for f in forbidden]
+        self.real = check_private_dir(path, purpose, self.forbidden)
+        self.fd = -1
+        try:
+            self._ensure(self.real)
+        except OSError as exc:
+            raise PrivatePathError("private_path_changed", f"{purpose}: 无法按不跟随链接的方式打开 {self.real}（{exc.strerror}）") from exc
+        self.verify()
+
+    def _ensure(self, real: Path) -> None:
+        cur = Path(real.anchor)
+        for part in real.parts[1:]:
+            cur = cur / part
+            try:
+                st = os.lstat(cur)
+            except FileNotFoundError:
+                os.mkdir(cur, 0o700)
+                continue
+            if osplat.is_link(st) or not stat.S_ISDIR(st.st_mode):
+                raise PrivatePathError("private_path_changed", f"{self.purpose}: {cur} 是链接或不是目录")
+
+    def close(self) -> None:
+        self.fd = -1
+
+    def _path_verify(self) -> None:
+        try:
+            st = os.lstat(self.real)
+        except OSError:
+            st = None
+        if st is None or not stat.S_ISDIR(st.st_mode) or _real(self.real) != self.real or _chain_has_link(self.real) is not None:
+            raise PrivatePathError("private_path_changed", f"{self.purpose}: 目录在检查之后变了（{self.real}）")
+        check_private_dir(self.real, self.purpose, self.forbidden)
+
+    def _path_check_fd(self, fd: int) -> None:
+        self.verify()
+
+    def _path(self, rel: str, create: bool = False) -> Path:
+        parts = _parts(rel)
+        cur = self.real
+        for part in parts[:-1]:
+            cur = cur / part
+            try:
+                st = os.lstat(cur)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                self.verify()
+                try:
+                    os.mkdir(cur, 0o700)
+                except FileNotFoundError as exc:
+                    raise self._parent_gone(cur, exc) from exc
+                continue
+            # 与 POSIX 的 O_DIRECTORY|O_NOFOLLOW 打开失败相同：链接是 ELOOP，不是目录是 ENOTDIR
+            if osplat.is_link(st):
+                raise OSError(errno.ELOOP, "路径里有链接", str(cur))
+            if not stat.S_ISDIR(st.st_mode):
+                raise NotADirectoryError(errno.ENOTDIR, "不是目录", str(cur))
+        return cur / parts[-1]
+
+    def _parent_gone(self, path: Path, exc: OSError) -> OSError | PrivatePathError:
+        """按路径操作报"找不到"时：父目录在核对之后被移走了（不是文件本来就没有），就按"目录变了"报，
+        与按 fd 的实现拿着已移走目录的 fd 时一样。"""
+        try:
+            st = os.lstat(path.parent)
+            if stat.S_ISDIR(st.st_mode) and not osplat.is_link(st):
+                return exc
+        except OSError:
+            pass
+        return PrivatePathError("private_path_changed", f"{self.purpose}: {path.parent} 在检查之后被移走了")
+
+    def _opened_here(self, path: Path, fd: int) -> None:
+        """打开以后核对：系统报告的这个文件的真实位置就是我们核对过的路径。中间某一级在 lstat 和打开之间被换成
+        链接或目录联接，打开会跟着走到别处；这里按 fd 的真实位置拦下（Windows 用 GetFinalPathNameByHandleW）。"""
+        now = osplat.fd_path(fd)
+        if now is None or os.path.normcase(str(_real(Path(now)))) != os.path.normcase(str(path)):
+            raise PrivatePathError("private_path_changed", f"{self.purpose}: {path} 打开后实际在 {now}")
+
+    def _path_exists(self, rel: str) -> bool:
+        try:
+            os.lstat(self._path(rel))
+            return True
+        except FileNotFoundError:
+            return False
+
+    def _path_names(self, rel: str) -> list[str]:
+        folder = self._path(f"{rel}/.entries").parent
+        self.verify()
+        if osplat.is_link(os.lstat(folder)):
+            raise OSError(errno.ELOOP, "路径里有链接", str(folder))
+        return os.listdir(folder)
+
+    def _path_read(self, rel: str) -> bytes:
+        path = self._path(rel)
+        self.verify()
+        try:
+            before = os.lstat(path)
+            if osplat.is_link(before):
+                raise OSError(errno.ELOOP, "是链接", str(path))
+            fd = os.open(path, os.O_RDONLY | osplat.binary_flag())
+        except FileNotFoundError as exc:
+            raise self._parent_gone(path, exc) from exc
+        with os.fdopen(fd, "rb") as fh:
+            after = os.fstat(fh.fileno())
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+                raise PrivatePathError("private_path_changed", f"{self.purpose}: {path} 在读之前被换掉了")
+            self._opened_here(path, fh.fileno())
+            return fh.read()
+
+    def _path_write(self, rel: str, data: bytes) -> None:
+        self.verify()
+        path = self._path(rel, create=True)
+        self.verify()
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | osplat.binary_flag(), 0o600)
+        except FileNotFoundError as exc:
+            raise self._parent_gone(path, exc) from exc
+        try:
+            try:
+                view = memoryview(data)
+                while view:
+                    self._still_here(path, fd)  # 每次写之前、写之后都核对：目录还在原处，这个路径还是我们打开的文件
+                    n = os.write(fd, view)
+                    if n <= 0:
+                        raise OSError("write returned 0")
+                    view = view[n:]
+                    self._still_here(path, fd)
+                _full_sync(fd)
+                self._still_here(path, fd)
+            except PrivatePathError as exc:
+                raise self._moved_while_writing(fd, exc) from exc
+        finally:
+            os.close(fd)
+
+    def _still_here(self, path: Path, fd: int) -> None:
+        """按 fd 的实现核对父目录 fd；按路径时核对这个路径现在指向的仍是我们打开的文件（中间哪一级被移走都会变），
+        而且这个文件的真实位置就是这个路径（中间一级被换成链接、目录联接也会变）。"""
+        self.verify()
+        self._opened_here(path, fd)
+        try:
+            st = os.lstat(path)
+        except OSError:
+            st = None
+        now = os.fstat(fd)
+        if st is None or (st.st_dev, st.st_ino) != (now.st_dev, now.st_ino):
+            raise PrivatePathError("private_path_changed", f"{self.purpose}: {path} 所在的目录在写的过程中被移走了")
+
+    def _path_replace_file(self, rel: str, data: bytes) -> None:
+        parts = _parts(rel)
+        tmp = "/".join([*parts[:-1], f".{parts[-1]}.{secrets.token_hex(6)}.tmp"])
+        try:
+            self.write(tmp, data)
+            self.verify()
+            target = self._path(rel)
+            try:
+                os.replace(self._path(tmp), target)
+            except FileNotFoundError as exc:
+                raise self._parent_gone(target, exc) from exc
+        except BaseException:
+            self.remove(tmp)
+            raise
+
+    def _path_remove(self, rel: str) -> None:
+        self.verify()
+        try:
+            path = self._path(rel)
+        except FileNotFoundError:
+            return
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError as exc:
+            gone = self._parent_gone(path, exc)
+            if isinstance(gone, PrivatePathError):
+                raise gone from exc
+            return
+        if osplat.is_link(st):
+            # 链接本身删掉，不跟随（Windows 的目录联接要用 rmdir）
+            if stat.S_ISDIR(st.st_mode):
+                os.rmdir(path)
+            else:
+                os.unlink(path)
+        elif stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+
+    def _path_rename(self, old: str, new: str) -> None:
+        if "/" in old or "/" in new:
+            raise PrivatePathError("private_name_invalid", f"只能在这一层改名：{old} → {new}")
+        self.verify()
+        os.rename(self._path(old), self._path(new))
+
+    def _path_swap_in(self, new: str, root: str) -> None:
+        _parts(new), _parts(root)
+        self.verify()
+        if not self.exists(root):
+            os.rename(self._path(new), self._path(root))
+            return
+        old = root + ".old"
+        self.remove(old)
+        os.rename(self._path(root), self._path(old))
+        os.rename(self._path(new), self._path(root))
+        self.remove(old)
+
+
 def private_write(
     directory: str | os.PathLike[Any], name: str, data: bytes, purpose: str, forbidden: Iterable[str | os.PathLike[Any]] = ()
 ) -> Path:
@@ -338,14 +600,7 @@ def private_write(
 
 
 def _full_sync(fd: int) -> None:
-    full = getattr(fcntl, "F_FULLFSYNC", None)
-    if full is not None and _HOST_IS_DARWIN:
-        try:
-            fcntl.fcntl(fd, full)
-            return
-        except OSError:
-            pass
-    os.fsync(fd)
+    osplat.full_fsync(fd)
 
 
 def startup_check(settings: Any) -> dict[str, str | None]:

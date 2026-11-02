@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextvars
 import errno
-import fcntl
 import os
 import sys
 import threading
@@ -59,7 +58,6 @@ _DIR_FD_ARGS: dict[str, dict[int, int]] = {
 # `open` 事件不带 dir_fd：按目录 fd 读写的代码（privacy.PrivateDir）在这段时间里把那个目录的真实路径放在这里
 # 放目录 fd（整数）时在事件发生的那一刻再解析真实位置：目录在这之间被移走，记录的也是它真正所在的地方
 _relative_base: contextvars.ContextVar[str | int | None] = contextvars.ContextVar("gxr_audit_relative_base", default=None)
-_F_GETPATH = getattr(fcntl, "F_GETPATH", None)
 
 
 @dataclass(frozen=True)
@@ -130,15 +128,9 @@ def _under(path: str, prefixes: tuple[str, ...]) -> bool:
 
 
 def _fd_dir(fd: int) -> str | None:
-    if _F_GETPATH is not None:
-        try:
-            return os.fsdecode(fcntl.fcntl(fd, _F_GETPATH, b"\0" * 1024).split(b"\0", 1)[0])
-        except OSError:
-            return None
-    try:
-        return os.readlink(f"/proc/self/fd/{fd}")
-    except OSError:
-        return None
+    from .osplat import fd_path  # 延迟导入：审计钩子要尽早装上，平台层不依赖它
+
+    return fd_path(fd)
 
 
 @contextmanager

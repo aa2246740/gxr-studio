@@ -51,8 +51,27 @@ HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`
   - DNG 原字节和 RAW 布局；
   - 相机 JPG 原文件，浏览器按 EXIF 方向解码，实测与 PIL 逐字节相同；
   - 预览网格的配方烘焙表，与 `render_preview` 共用缓存；
-  - LUT 的 3D 表；
-  - 成片裁切框，与 `finish_array` 裁出的位置相同。
+  - LUT 表：显示类输入（sRGB / Rec.709 / Gamma 2.4）是 8 位精确表——全部 256³ 个输入逐个交给生产函数
+    `lut.photo._apply` 算出来（RGBA，64 MB，两个线程约 4 秒，按 LUT 版本缓存两张），着色器只查表，与 Python 逐像素相同，
+    一维表和任何输出空间都包括在内；Log 类输入下发 3D 表和空间参数，由着色器计算；
+  - 成片裁切框，与 `finish_array` 裁出的位置相同。请求严格校验（有限数、类型、范围、尺寸不超过这张照片），不合格回 422。
+- 开关关着时 `/gpu` 只回 `{"enabled": false}`，不解析 DNG、不预热；`/api/settings` 带着开关状态，前端据此不发任何显卡请求。
+- LUT 库的旧格式升级在启动时做（`app._migrate_luts`）；只读接口按 `persist=False` 读库，不写盘。
+
+### 照片文件的打开（`library.media`）
+
+`/raw`、`/camera-jpg` 和 RAW 布局解析共用 `open_media`：路径必须是图库根下面的相对路径；图库根按 realpath 确定，并核对不在卡上或受保护目录里。
+POSIX 从图库根逐级 `O_DIRECTORY|O_NOFOLLOW` 打开，最后一级 `O_NOFOLLOW`，任何一级是链接都失败，核对和打开是同一次操作；
+Windows 逐级 lstat 拒绝链接和重解析点，打开后核对 (st_dev, st_ino) 和 fd 的真实位置（`GetFinalPathNameByHandleW`）。
+之后只用这个 fd：`FdResponse` 按块发送，支持单段 Range（206 / 416），RAW 布局从同一个 fd 读字节，不按路径重开。
+
+### 版本和失效（`web/assets/gpu_stage.js`）
+
+- 烘焙表的地址和键带相机数据版本（`dv=`）；LUT 表的键带 LUT 的 render token（空间版本）。
+- `camdata-changed`、`luts-changed`（LUT 库改了空间、删了 LUT）让前端换代：旧代的请求不管成功还是失败，回来以后都丢掉，
+  不装进引擎，也不把新代标成失败；新代重新取表。
+- LUT 表还在算（第一次几秒）或取表失败（422 等）时这一帧回到服务器出图，沿用服务器原来的错误提示。
+- 引擎里同一个键再上传烘焙表或 LUT 表，先销毁旧的显卡资源；烘焙表最多留 24 张，LUT 表最多 3 张（精确表每张 64 MB）。
 
 ### 着色器
 
@@ -66,7 +85,10 @@ HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`
 
 每个 Python 落成 uint8 的地方，着色器都照样取整。
 
-`tests/test_gpu_parity.py` 用合成数据在无头 Chrome 的 SwiftShader 上逐像素对拍，门槛是 ≤1 码值的像素 ≥ 99.99%、平均 ΔE2000 ≤ 0.01。
+`tests/test_gpu_parity.py` 用合成数据在无头 Chrome 的 SwiftShader 上逐像素对拍（含复审给的两个全合成 LUT 反例）。门槛在 `tests/gpu_gate.py`：
+每个用例 ≤1 码值的像素 ≥ 99.99%、平均 ΔE2000 ≤ 0.01（未舍入计数）；在 CPU 有效区蒙版上取边界内外各一像素的边缘带（随拉直、旋转、翻转、裁切变换），
+带外最大差 ≤ 4，>2 码值的像素只能出现在冻结的位置上、并由前向量化复算（第一段 uint8 偏 1 码值后走生产 `finish_array`）逐字节重现；
+带内 >2 码值的像素 ≤ ceil(N×10⁻⁶)。显示类 LUT 的用例不允许冻结豁免。
 
 ### 回到服务器出图的情况
 
@@ -76,10 +98,22 @@ HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`
 - 透视、畸变；
 - 成片里有边框或时间戳（裁剪页的未裁切画面照常走显卡）；
 - 只有 JPG 却选了配方（近似）；
-- 带一维表的 LUT，或输出是 Log 的 LUT；
+- Log 类输入的 LUT 带一维表，或输出空间着色器不会编码（如 V-Log）；Log 类 LUT 没有 DNG（`lut_needs_raw`）或没有场景色彩；
+- LUT 表还没到（第一次计算期间）或取表失败；
 - RAW 写法特殊：压缩、线性化表、逐行黑电平等；
 - 浏览器没有 WebGPU，或显卡设备丢失。
 
 ### 预热
 
-第一次请求某张照片的显卡信息时，后台把它所在单元、所在 ISO 模型的 8 个内置配方先烘焙好（`RenderService.warm_preview_bakes`）。浏览器同时预取左右相邻照片的源图和配方表。
+第一次请求某张照片的显卡信息时，后台把它所在单元、所在 ISO 模型的 8 个内置配方先烘焙好（`RenderService.warm_preview_bakes`）。浏览器同时预取左右相邻照片的源图和配方表；
+预取按照片和它的编辑版本（`sidecar_rev`）去重，拖滑块不会重复预取。
+
+## 平台层（`osplat`）
+
+POSIX（macOS、Linux）和 Windows 的差别都收在 `osplat`：文件锁（`flock` / `msvcrt.locking`，进程退出系统自动放锁）、fd → 真实路径
+（`F_GETPATH` / `/proc/self/fd` / `GetFinalPathNameByHandleW`）、完整落盘（`F_FULLFSYNC` / `fsync`）、拟合子进程看父进程还在不在
+（POSIX 看 `getppid` 有没有变；Windows 不过继，改为拿住父进程句柄看它结束没有）。
+没有 `dir_fd` 的平台上 `PrivateDir`、`CardReader` 换成按路径的实现（`_PathPrivateDir`、`PathCardReader`）：逐级 lstat 拒绝链接和重解析点，
+打开后核对 fd 的真实位置；父目录在操作途中被移走按"目录变了"报错。按路径的实现只剩一个窗口：中间一级在 lstat 和排他创建之间被换成目录联接时，
+别处可能留下一个 0 字节文件——写第一个字节之前就会被拦下并清空。
+`GXR_FORCE_PATH_IO=1` 让 POSIX 也走按路径的实现，CI 的 `path-io` 任务用它把整套测试再跑一遍；`make type` 同时按 win32 平台做类型检查。
