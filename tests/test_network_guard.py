@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
+import subprocess
+import sys
+from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -51,3 +56,41 @@ def test_cleared_records_do_not_carry_over():
                 client.connect(("127.0.0.1", port))
         attempts = audit.network_attempts(clear=True)
         assert len(attempts) == 1 and str(port) in attempts[0]
+
+
+def test_a_rejected_connection_does_not_mark_the_next_test(tmp_path):
+    (tmp_path / "conftest.py").write_text((Path(__file__).parent / "conftest.py").read_text(), encoding="utf-8")
+    script = tmp_path / "test_records.py"
+    script.write_text(
+        "import socket, pytest\n"
+        "from gxr_studio import audit\n"
+        "def test_first():\n"
+        "    with socket.socket() as client:\n"
+        "        with pytest.raises(PermissionError):\n"
+        "            client.connect(('127.0.0.1', 18766))\n"
+        "def test_second():\n"
+        "    assert audit.network_attempts() == []\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "results.xml"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--confcutdir=" + str(tmp_path),
+            "--basetemp=" + str(tmp_path / "child-tmp"),
+            "--junitxml=" + str(report),
+            str(script),
+        ],
+        env={**os.environ, "PYTEST_ADDOPTS": "--force-reruns 0"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    cases = {case.attrib["name"]: case for case in ElementTree.parse(report).iter("testcase")}
+    assert set(cases) == {"test_first", "test_second"}
+    assert cases["test_first"].find("error") is not None
+    assert cases["test_second"].find("error") is None and cases["test_second"].find("failure") is None

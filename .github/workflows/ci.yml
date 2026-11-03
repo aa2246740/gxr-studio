@@ -18,48 +18,19 @@ jobs:
           python-version: "3.14"
       - run: uv sync --frozen
       - name: Handle operations
-        id: handles
-        continue-on-error: true
         run: uv run --frozen python -u scripts/windows_probe.py io
       - name: Event loop
-        id: loop
-        continue-on-error: true
         run: uv run --frozen python -u scripts/windows_probe.py loop
-      - name: Exact LUT table without file operations
-        id: lut
-        continue-on-error: true
-        run: uv run --frozen python -u scripts/windows_probe.py lut
       - name: Two independent matrix workers
-        continue-on-error: true
         run: uv run --frozen python -u scripts/windows_probe.py matmul
       - name: Two independent inverse workers
-        continue-on-error: true
         run: uv run --frozen python -u scripts/windows_probe.py inverse
-      - name: Matrix workers with one BLAS thread each
-        continue-on-error: true
-        env:
-          OPENBLAS_NUM_THREADS: "1"
-        run: uv run --frozen python -u scripts/windows_probe.py matmul
-      - name: Exact LUT with one BLAS thread per worker
-        continue-on-error: true
-        env:
-          OPENBLAS_NUM_THREADS: "1"
+      - name: Exact LUT table without file operations
         run: uv run --frozen python -u scripts/windows_probe.py lut
-      - name: Matrix workers with current NumPy runtime
-        continue-on-error: true
-        run: uv run --frozen --with numpy==2.5.4 python -u scripts/windows_probe.py matmul
-      - name: Exact LUT with current NumPy runtime
-        continue-on-error: true
-        run: uv run --frozen --with numpy==2.5.4 python -u scripts/windows_probe.py lut
-      - name: First target test failure
-        if: steps.handles.outcome == 'success' && steps.loop.outcome == 'success'
+      - name: First handle or boundary test failure
         run: uv run --frozen pytest -x -vv tests/test_windows_io.py tests/test_network_guard.py tests/test_card_read_boundaries.py tests/test_platform_io.py -o faulthandler_timeout=120
       - name: First GPU test failure
-        if: steps.lut.outcome == 'success'
         run: uv run --frozen pytest -x -vv tests/test_gpu_api.py -o faulthandler_timeout=120
-      - name: Require every runtime entry
-        if: always() && (steps.handles.outcome != 'success' || steps.loop.outcome != 'success' || steps.lut.outcome != 'success')
-        run: exit 1
 
   check:
     runs-on: ubuntu-latest
@@ -84,6 +55,7 @@ jobs:
         run: pnpm -C frontend install --frozen-lockfile
       - name: Lint, types, security, coverage
         env:
+          PYTEST_ADDOPTS: "--force-reruns 0"
           GXR_REQUIRE_FRONTEND: "1"
           GXR_REQUIRE_GPU_TEST: "1"
         run: make check
@@ -115,6 +87,7 @@ jobs:
       - run: uv sync --frozen
       - name: Full test suite
         env:
+          PYTEST_ADDOPTS: "--force-reruns 0"
           GXR_REQUIRE_GPU_TEST: "1"
         run: uv run --frozen pytest -q --durations=20 -o faulthandler_timeout=300
 

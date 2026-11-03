@@ -65,13 +65,13 @@ def test_delete_fallback_keeps_the_same_open_object(tmp_path, monkeypatch, direc
     def setting(handle, cls, data):
         calls.append((handle, cls))
         if cls == osplat._FileDispositionInformationEx:
-            root.rename(saved)
-            root.symlink_to(outside, target_is_directory=True)
             return -1073741821  # STATUS_INVALID_INFO_CLASS
         return real_set(handle, cls, data)
 
     monkeypatch.setattr(osplat, "_set_info", setting)
     try:
+        root.rename(saved)
+        root.symlink_to(outside, target_is_directory=True)
         (osplat.rmdir_at if directory else osplat.unlink_at)(dfd, "entry")
     finally:
         os.close(dfd)

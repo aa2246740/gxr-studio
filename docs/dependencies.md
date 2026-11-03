@@ -12,6 +12,11 @@
 
 加开发依赖也要锁版本，并在提交说明里写为什么需要它。
 
+Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3 轮子自带 OpenBLAS 0.3.31.dev，
+两个线程并发执行 65536×3 的矩阵乘法会停住，独立于文件句柄代码和 LUT 表分配。
+2.5.4 轮子的 OpenBLAS 0.3.34.106.0 通过同一双线程入口，完整 256³ RGBA 表的 SHA-256 也与旧版本的计算结果相同。
+2.5.4 在 2026-10-10 发布，已超过 7 天。`scripts/windows_probe.py matmul` 和 `lut` 可重跑这两项检查。
+
 ## 前端构建（`frontend/`）
 
 显卡预览引擎用 TypeScript + WGSL 写，Vite 打成一个不依赖外部包的 ES 模块 `web/assets/gpu/engine.js`。**产物提交进仓库**，所以双击「GXR Studio.command」、`make dev` 和 `uv run gxr-studio` 都不需要 Node。只有改 `frontend/` 的人需要 Node 22+ 和 pnpm（`packageManager` 钉在 `pnpm@10.33.2`），用 `make web` 重新构建后提交；`make check`（`scripts/check_frontend.py`）会重新构建到临时目录并逐字节核对，CI 里还要求核对必须跑（`GXR_REQUIRE_FRONTEND=1`）。
