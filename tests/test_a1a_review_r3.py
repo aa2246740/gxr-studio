@@ -282,17 +282,22 @@ def _move_on_write_call(monkeypatch, src: Path, dest: Path, which: int = 1, shor
     """第 `which` 次 os.write 调用时把 `src` 目录移到 `dest`（真实的改名，在真正写字节之前）。`short` 让第一次只写这么多字节。"""
     actual = os.write
     calls = []
+    move_errors = []
 
     def writing(fd, content):
         calls.append(len(content))
         if len(calls) == which:
-            src.rename(dest)
+            try:
+                src.rename(dest)
+            except PermissionError as exc:
+                move_errors.append(exc)
+                raise
         if short is not None and len(calls) == 1:
             return actual(fd, bytes(content)[:short])
         return actual(fd, content)
 
     monkeypatch.setattr(os, "write", writing)
-    return calls
+    return calls, move_errors
 
 
 @pytest.mark.parametrize("case", ["first_write", "after_short_write", "replace_file"])
@@ -306,19 +311,31 @@ def test_r3_write_leaves_no_private_bytes_after_directory_moves(tmp_path, monkey
         (root / "sub").mkdir()
         if case == "replace_file":
             d.write("sub/kept.bin", b"old")
-        _move_on_write_call(
+        calls, move_errors = _move_on_write_call(
             monkeypatch,
             root / "sub",
             target / "moved",
             which=2 if case == "after_short_write" else 1,
             short=10 if case == "after_short_write" else None,
         )
-        with pytest.raises(privacy.PrivatePathError) as e:
+        with pytest.raises((privacy.PrivatePathError, PermissionError)) as e:
             if case == "replace_file":
                 d.replace_file("sub/kept.bin", data)
             else:
                 d.write("sub/sample.bin", data)
         monkeypatch.undo()
+        if move_errors:
+            assert os.name == "nt" and e.value is move_errors[0] and e.value.winerror == 5
+            assert len(calls) == (2 if case == "after_short_write" else 1)
+            assert not (target / "moved").exists() and (root / "sub").is_dir()
+            created = [p for p in (root / "sub").iterdir() if p.name != "kept.bin"]
+            if case == "replace_file":
+                assert (root / "sub/kept.bin").read_bytes() == b"old"
+                assert created == []
+            else:
+                expected = data[:10] if case == "after_short_write" else b""
+                assert len(created) == 1 and created[0].read_bytes() == expected
+            return
     leftovers = [p for p in (target / "moved").iterdir() if p.name != "kept.bin"]
     assert leftovers and all(p.read_bytes() == b"" for p in leftovers), [(p.name, p.stat().st_size) for p in leftovers]
     assert "0 字节" in e.value.detail and str(leftovers[0].name) in e.value.detail

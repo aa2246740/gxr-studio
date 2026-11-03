@@ -28,7 +28,7 @@ jobs:
       - name: Exact LUT table without file operations
         run: uv run --frozen python -u scripts/windows_probe.py lut
       - name: First handle or boundary test failure
-        run: uv run --frozen pytest -x -vv tests/test_windows_io.py tests/test_network_guard.py tests/test_card_read_boundaries.py tests/test_platform_io.py tests/test_a1a_privacy.py tests/test_a1a_review_r2.py tests/test_fix_review.py -o faulthandler_timeout=120
+        run: uv run --frozen pytest -x -vv tests/test_windows_io.py tests/test_network_guard.py tests/test_card_read_boundaries.py tests/test_platform_io.py tests/test_a1a_privacy.py tests/test_a1a_review_r2.py tests/test_a1a_review_r3.py tests/test_fix_review.py -o faulthandler_timeout=120
       - name: First GPU test failure
         run: uv run --frozen pytest -x -vv tests/test_gpu_api.py -o faulthandler_timeout=120
       - name: Additional failure details
