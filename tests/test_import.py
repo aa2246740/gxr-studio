@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -435,7 +436,7 @@ def test_cancel(volumes, card, lib):
 
 DRIVER = textwrap.dedent(
     """
-    import sys
+    import os, sys
     from pathlib import Path
     from gxr_studio.library.store import Library
     from gxr_studio.cards.discovery import find_cards
@@ -446,7 +447,7 @@ DRIVER = textwrap.dedent(
     stage = sys.argv[3]
     def pause(where):
         if where == stage and lib.count() > 0:
-            print('ready:' + where, flush=True)
+            print('ready:' + where + ':' + str(os.getpid()), flush=True)
             sys.stdin.buffer.read(1)
     run_import(lib, card, ImportOptions(min_free_bytes=0,
                before_verify=lambda *a: pause('verify'), after_shot=lambda *a: pause('committed')))
@@ -458,6 +459,7 @@ def test_kill_the_process_20_times(volumes, card, tmp_path):
     """每轮：新图库 → 子进程导入中途 SIGKILL（隔 4 轮再杀一次）→ 检查无残缺 → 插回继续 → 总数和哈希全对。"""
     src = card_hashes(card)
     (c,) = find_cards([volumes])
+    terminated_pids = []
 
     def kill_once(library: Path, stage: str) -> bool:
         proc = subprocess.Popen(
@@ -471,11 +473,18 @@ def test_kill_the_process_20_times(volumes, card, tmp_path):
 
         reader = threading.Thread(target=read_marker, daemon=True)
         reader.start()
+        actual_pid = None
         try:
             assert ready.wait(60), "子进程没有到达指定导入阶段"
-            assert [line.rstrip(b"\r\n") for line in lines] == [f"ready:{stage}".encode()], lines
+            marker = lines[0].decode("ascii").strip().split(":")
+            assert marker[:2] == ["ready", stage] and len(marker) == 3, lines
+            actual_pid = int(marker[2])
+            if sys.platform != "win32":
+                assert actual_pid == proc.pid
             assert proc.poll() is None
         finally:
+            if actual_pid is not None and sys.platform == "win32":
+                os.kill(actual_pid, signal.SIGTERM)
             if proc.poll() is None:
                 proc.kill()
             proc.wait(timeout=10)
@@ -483,6 +492,7 @@ def test_kill_the_process_20_times(volumes, card, tmp_path):
             proc.stdin.close()
             proc.stdout.close()
         assert not reader.is_alive()
+        terminated_pids.append(actual_pid)
         return True
 
     def no_partial_files(library: Path, tag: str):
@@ -513,7 +523,8 @@ def test_kill_the_process_20_times(volumes, card, tmp_path):
                 assert [(s["shot_id"], s["folder"], s["name"]) for s in lib.list_shots(limit=1000)] == before
         finally:
             lib.close()
-    assert killed >= 20, f"只有 {killed} 次真的杀到了运行中的进程"
+    assert killed == len(terminated_pids) == 25, f"只有 {killed} 次终止了运行中的进程"
+    print(json.dumps({"terminated_worker_pids": terminated_pids, "rounds": 20}))
     assert any(0 < n < len(card.unique_shots) for n in partial_counts), "至少要有几次是在导到一半时被杀"
 
 

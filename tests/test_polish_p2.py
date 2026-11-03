@@ -187,23 +187,31 @@ def _alive(pid: int) -> bool:
 def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
     # 父进程阻塞在读标准输入上（POSIX 用 /bin/sh，Windows 用一个 Python），被强杀之后子进程要自己退出。
     pid_path = tmp_path / "worker.pid"
+    parent_pid_path = tmp_path / "parent.pid"
+    process_path = tmp_path / "worker-processes.json"
     error_path = tmp_path / "worker.stderr"
     child_code = (
-        "import os, time\nfrom pathlib import Path\n"
+        "import json, os, time\nfrom pathlib import Path\n"
         f"Path({str(pid_path)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
         "from gxr_studio.lut.worker import watch_parent\n"
-        "stop = {'flag': False}\nwatch_parent(stop, os.getppid(), 0.1, 0.3)\n"
+        "parent_pid = int(os.environ['GXR_STUDIO_PARENT_PID'])\n"
+        f"process_path = Path({str(process_path)!r})\n"
+        "process_path.write_text(json.dumps({'worker': os.getpid(), 'reported_parent': os.getppid(), "
+        "'expected_parent': parent_pid}), encoding='utf-8')\n"
+        "stop = {'flag': False}\nwatch_parent(stop, parent_pid, 0.1, 0.3)\n"
         "print(os.getpid(), flush=True)\ntime.sleep(120)\n"
     )
     if sys.platform == "win32":
         launcher = (
-            "import subprocess, sys\n"
-            "subprocess.Popen([sys.executable, '-c', sys.argv[1]], stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr)\n"
+            "import os, subprocess, sys\nfrom pathlib import Path\n"
+            f"Path({str(parent_pid_path)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+            "env = {**os.environ, 'GXR_STUDIO_PARENT_PID': str(os.getpid())}\n"
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1]], stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr, env=env)\n"
             "sys.stdin.read()\n"
         )
         command = [sys.executable, "-c", launcher, child_code]
     else:
-        command = ["/bin/sh", "-c", f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"]
+        command = ["/bin/sh", "-c", f"GXR_STUDIO_PARENT_PID=$$ {shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"]
     with error_path.open("wb") as errors:
         parent = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8")
     ready, lines = threading.Event(), []
@@ -215,12 +223,21 @@ def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
     reader = threading.Thread(target=read_pid, daemon=True)
     reader.start()
     child_pid = None
+    actual_parent = None
     try:
         assert ready.wait(30), error_path.read_text(encoding="utf-8", errors="replace")
         assert lines and lines[0].strip().isdigit(), (lines, error_path.read_text(encoding="utf-8", errors="replace"))
         child_pid = int(lines[0])
+        actual_parent = int(parent_pid_path.read_text(encoding="ascii")) if sys.platform == "win32" else parent.pid
+        processes = json.loads(process_path.read_text(encoding="utf-8"))
+        assert processes["worker"] == child_pid and processes["expected_parent"] == actual_parent
+        print(json.dumps({"launcher": parent.pid, "parent": actual_parent, **processes}))
         assert _alive(child_pid)  # 子进程在跑
-        parent.kill()  # SIGKILL / TerminateProcess：父进程没有机会清理任何东西
+        assert _alive(actual_parent)
+        if sys.platform == "win32":
+            os.kill(actual_parent, signal.SIGTERM)  # TerminateProcess：实际父进程没有机会清理。
+        else:
+            parent.kill()
         parent.wait(timeout=5)
         deadline = time.time() + 15
         while time.time() < deadline and _alive(child_pid):
@@ -228,6 +245,10 @@ def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
         if _alive(child_pid):
             pytest.fail("父进程被杀之后子进程还在")
     finally:
+        if sys.platform == "win32" and parent_pid_path.exists():
+            actual_parent = int(parent_pid_path.read_text(encoding="ascii"))
+            if _alive(actual_parent):
+                os.kill(actual_parent, signal.SIGTERM)
         if parent.poll() is None:
             parent.kill()
         parent.wait(timeout=5)
