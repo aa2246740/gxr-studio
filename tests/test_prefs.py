@@ -29,6 +29,42 @@ def test_missing_directory_stays_missing_until_a_choice_is_saved(settings):
     assert not missing.exists()
 
 
+def _owner_sid(path):
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    pointer = ctypes.c_void_p
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(pointer),
+        pointer,
+        pointer,
+        pointer,
+        ctypes.POINTER(pointer),
+    ]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(wintypes.LPWSTR)]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [pointer]
+    kernel.LocalFree.restype = pointer
+    owner, descriptor, text = pointer(), pointer(), wintypes.LPWSTR()
+    error = advapi.GetNamedSecurityInfoW(str(path), 1, 1, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor))
+    if error:
+        raise ctypes.WinError(error)
+    try:
+        if not advapi.ConvertSidToStringSidW(owner, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(ctypes.cast(text, pointer))
+        kernel.LocalFree(descriptor)
+
+
 def _assert_owner_permissions(path, tmp_path):
     if os.name != "nt":
         assert path.stat().st_mode & 0o777 == 0o600
@@ -40,10 +76,12 @@ def _assert_owner_permissions(path, tmp_path):
     sid = match.group()
     acl_path = tmp_path / "prefs-acl.txt"
     subprocess.run(["icacls.exe", str(path), "/save", str(acl_path), "/q"], capture_output=True, check=True, timeout=10)
-    sddl = acl_path.read_text(encoding="utf-16")
+    sddl = acl_path.read_text(encoding="utf-16-le").lstrip("\ufeff")
     aces = [item.split(";") for item in re.findall(r"\(([^()]+)\)", sddl)]
-    assert aces and all(len(ace) == 6 and ace[0] == "A" and ace[-1] in {sid, "SY", "BA"} for ace in aces), sddl
-    assert sid in {ace[-1] for ace in aces}, sddl
+    owner = _owner_sid(path)
+    assert owner in {sid, "S-1-5-32-544"}, owner
+    assert aces and all(len(ace) == 6 and ace[0] == "A" and ace[-1] in {sid, "SY", "BA", "OW"} for ace in aces), sddl
+    assert {sid, "OW"} & {ace[-1] for ace in aces}, sddl
 
 
 def test_prefs_default_off_then_remember_each_choice(client, settings, tmp_path):
