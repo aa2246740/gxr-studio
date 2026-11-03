@@ -267,6 +267,7 @@ def test_r3_every_segment_and_trailing_byte_is_checked(tmp_path, name):
         ("tar", _archive("tar")),
         ("zip_two_members", _zip_with()),
     ],
+    ids=lambda value: value if isinstance(value, str) else "content",
 )
 def test_r3_clean_archives_still_pass(tmp_path, name, data):
     """对照：干净的归档、归档后接干净段，不报任何命中（也不报 R0）。"""
