@@ -89,7 +89,7 @@ jobs:
         env:
           PYTEST_ADDOPTS: "--force-reruns 0"
           GXR_REQUIRE_GPU_TEST: "1"
-        run: uv run --frozen pytest -q --durations=20 -o faulthandler_timeout=300
+        run: uv run --frozen pytest -x -vv --durations=20 -o faulthandler_timeout=300
 
   security-report:
     runs-on: ubuntu-latest
