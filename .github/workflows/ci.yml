@@ -3,8 +3,39 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
+  windows-probes:
+    if: startsWith(github.ref, 'refs/heads/ci/') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - run: uv sync --frozen
+      - name: Handle operations
+        id: handles
+        continue-on-error: true
+        run: uv run --frozen python -u scripts/windows_probe.py io
+      - name: Event loop
+        id: loop
+        continue-on-error: true
+        run: uv run --frozen python -u scripts/windows_probe.py loop
+      - name: Exact LUT table without file operations
+        id: lut
+        continue-on-error: true
+        run: uv run --frozen python -u scripts/windows_probe.py lut
+      - name: First target test failure
+        if: steps.handles.outcome == 'success' && steps.loop.outcome == 'success' && steps.lut.outcome == 'success'
+        run: uv run --frozen pytest -x -vv tests/test_platform_io.py tests/test_gpu_api.py -o faulthandler_timeout=120
+      - name: Require every runtime entry
+        if: always() && (steps.handles.outcome != 'success' || steps.loop.outcome != 'success' || steps.lut.outcome != 'success')
+        run: exit 1
+
   check:
     runs-on: ubuntu-latest
     steps:
