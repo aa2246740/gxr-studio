@@ -74,6 +74,8 @@ class CardShot:
 
 
 def _open_root(path: Path) -> int:
+    if path == path.parent:
+        return osplat.open_dir(path)
     parent = osplat.open_dir(os.path.realpath(path.parent))
     try:
         return osplat.open_dir_at(parent, path.name)

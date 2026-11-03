@@ -6,12 +6,30 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from gxr_studio import osplat
+from gxr_studio.cards.discovery import CardReader
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows native handle checks")
+
+
+def test_card_reader_opens_files_relative_to_a_drive_root(tmp_path):
+    root = Path(tmp_path.anchor)
+    reader = CardReader()
+    fd = reader.open_dir(root)
+    try:
+        actual, expected = os.fstat(fd), root.stat()
+        assert (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino)
+    finally:
+        os.close(fd)
+    content = bytes(range(256)) + b"\r\n\x1a\x00"
+    path = tmp_path / "drive-root.bin"
+    path.write_bytes(content)
+    with reader.open_rb(path, root=root, expect=(expected.st_dev, expected.st_ino)) as source:
+        assert source.read() == content
 
 
 @pytest.mark.parametrize("fallback", [False, True])
