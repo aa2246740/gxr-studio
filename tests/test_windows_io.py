@@ -82,13 +82,17 @@ def test_delete_fallback_keeps_the_same_open_object(tmp_path, monkeypatch, direc
 
 
 def test_directory_records_span_multiple_buffers_and_restart(tmp_path):
+    root = tmp_path / "records"
+    root.mkdir()
     names = [f"entry_{i:04d}_长文件名_\U0001f4f7_" + "x" * 70 for i in range(700)]
     for name in names:
-        (tmp_path / name).touch()
-    dfd = osplat.open_dir(tmp_path)
+        (root / name).touch()
+    dfd = osplat.open_dir(root)
     try:
-        assert sorted(osplat.listdir_fd(dfd)) == names
-        assert sorted(osplat.listdir_fd(dfd)) == names
+        for _ in range(2):
+            actual = osplat.listdir_fd(dfd)
+            assert len(actual) == len(names)
+            assert set(actual) == set(names)
     finally:
         os.close(dfd)
 

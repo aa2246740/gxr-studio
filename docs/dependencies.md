@@ -14,8 +14,9 @@
 
 Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3 轮子自带 OpenBLAS 0.3.31.dev，
 两个线程并发执行 65536×3 的矩阵乘法会停住，独立于文件句柄代码和 LUT 表分配。
-2.5.4 轮子的 OpenBLAS 0.3.34.106.0 通过同一双线程入口，完整 256³ RGBA 表的 SHA-256 也与旧版本的计算结果相同。
-2.5.4 在 2026-10-10 发布，已超过 7 天。`scripts/windows_probe.py matmul` 和 `lut` 可重跑这两项检查。
+2.5.4 轮子的 OpenBLAS 0.3.34.106.0 通过同一双线程入口，完整 256³ RGBA 表的 SHA-256 也与 2.4.3 设置
+`OPENBLAS_NUM_THREADS=1` 的对照结果相同。[2.5.4](https://github.com/numpy/numpy/releases/tag/v2.5.4)
+在 2026-10-10 发布，已超过 7 天。`scripts/windows_probe.py matmul` 和 `lut` 可重跑这两项检查。
 
 ## 前端构建（`frontend/`）
 

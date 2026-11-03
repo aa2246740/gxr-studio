@@ -58,7 +58,11 @@ def main() -> None:
                 array = np.full((65536, 3), 0.5 + worker * 0.1)
                 for _ in range(256):
                     value = array @ matrix.T if args.case == "matmul" else np.linalg.inv(matrix)
-                    assert np.isfinite(value).all()
+                    if args.case == "matmul":
+                        expected = ((0.475, 0.5, 0.545), (0.57, 0.6, 0.654))[worker]
+                        np.testing.assert_allclose(value, np.broadcast_to(expected, array.shape), rtol=1e-14, atol=1e-14)
+                    else:
+                        np.testing.assert_allclose(value @ matrix, np.eye(3), rtol=1e-14, atol=1e-14)
                 return worker
 
             with ThreadPoolExecutor(2) as pool:

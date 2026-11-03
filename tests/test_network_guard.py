@@ -87,6 +87,8 @@ def test_a_rejected_connection_does_not_mark_the_next_test(tmp_path):
         env={**os.environ, "PYTEST_ADDOPTS": "--force-reruns 0"},
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     assert result.returncode == 1, result.stdout + result.stderr
