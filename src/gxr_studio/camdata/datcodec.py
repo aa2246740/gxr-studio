@@ -6,6 +6,7 @@
 
 - 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156。未登记的代数一律拒绝。
 - 156 沿用 g155c 配方库：外层代数必须为 156，三个 bank 头必须为 155；其它已登记代数的 bank 必须等于外层代数。
+- 156 还必须匹配已登记的引擎 SHA、入口、BSS、重定位和链接数据末端；GXUI 用户条目不按整个 DAT SHA 锁定。
 - `parse()` 严格：任何没有建模的头部字节、区段尺寸、CRC、钉子（`PIN_CRC32`）对不上都抛 `DatError`。
 - `pack(parse(b)) == b` 逐字节成立（每一代都有往返测试）。解析结果里的引擎、重定位、`gxkv2r2` 块都原样保存，
   不重新编译、不改写。
@@ -191,6 +192,50 @@ class Dat:
         """槽位 1..16 的 552 B 深层条目（别名槽位解引用到所有者）。"""
         m = self.modules[unit]
         return cast(bytes, m.entries[m.refs[slot - 1]])
+
+
+@dataclass(frozen=True)
+class EngineDescription:
+    engine_sha256: str
+    entry: int
+    bss_bytes: int
+    relocations: tuple[tuple[int, int], ...]
+    linked_data_end: int  # ELF .bss 的起点，必须等于 DAT 长度
+
+
+# firmware/engine_v68_g156/candidate/local/{boot-off,boot-on}/engine.elf：
+# .engine 逐字节匹配真实 DAT；入口、.bss 与 reloc.bin 同时核对，不以整个 DAT SHA 限制用户修改。
+G156_ENGINES = (
+    EngineDescription(
+        engine_sha256="e406f24535118960ec63a835c918659c87a53be0b279e8687d0f836cae17d654",
+        entry=61984,
+        bss_bytes=9284,
+        relocations=((65840, 56136),),
+        linked_data_end=88684,
+    ),
+    EngineDescription(
+        engine_sha256="688427df58d334a375b125f1b5574ac6f0854962f5123859e47e5030c0052bf0",
+        entry=64892,
+        bss_bytes=9296,
+        relocations=((68748, 59044),),
+        linked_data_end=90532,
+    ),
+)
+
+
+def _check_engine_binding(dat: Dat, data_end: int) -> None:
+    """parse/pack 共用引擎与链接布局检查；inspect_dat 通过 parse 使用同一规则。"""
+    if dat.generation != 156:
+        return
+    description = EngineDescription(
+        hashlib.sha256(dat.engine).hexdigest(),
+        dat.entry,
+        dat.bss,
+        tuple((patch, target) for patch, target in dat.relocations),
+        data_end,
+    )
+    if description not in G156_ENGINES:
+        raise DatError("156 引擎或链接布局未登记")
 
 
 # --------------------------------------------------------------------------- 解析
@@ -423,6 +468,7 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
         kv2,
         effect_area=effect_area,
     )
+    _check_engine_binding(dat, len(raw))
     if prof.looks:
         dat.looks = _parse_looks(dat, raw, pools)
     # 最后一道门：用同一套规则重新封装，必须逐字节相同；否则说明还有没建模的字节。
@@ -671,6 +717,7 @@ def pack(dat: Dat) -> bytes:
         cursor += len(p)
     if cursor > prof.max_file or cursor + dat.bss > MAX_RAM:
         raise DatError(f"容量超限 {cursor}/{cursor + dat.bss}")
+    _check_engine_binding(dat, cursor)
     d = bytearray(192)
     next_table = starts[5] + pool_header
     stride = u16(tweaks, 14)

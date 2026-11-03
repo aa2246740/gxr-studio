@@ -98,6 +98,9 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
   154 / 155 / 156 按相机规则让 MOUNT 的非 04 配方使用 50mm 的旋钮记录，并校验每个单元的 Looks 与用户条目合计不超过 40。
   155 按文件头和 GXFX 头读取较长代码区与缩小的效果行容量；工作室不读取相机内的开机记忆。
   156 沿用 g155c 的配方库，外层代数为 156，三个 bank 头代数仍为 155；解析和封装都严格使用这组对应关系。
+  还须匹配已登记的 g156 引擎 SHA、入口、BSS 大小和完整重定位表，且 ELF 链接数据末端必须等于 DAT 长度。
+  三个导入入口通过 `inspect_dat()` 使用同一检查；只改外层代数、或把 g156 引擎放进旧数据布局都会被拒绝。
+  工作室不锁定整个 DAT SHA，合法的用户条目修改仍可封装和导入。
   其它已登记代数仍要求 bank 头代数等于外层代数。
   文件内条目按内容摘要识别，默认值沿用文件；导入失败不会替换已导入的数据。
 
@@ -135,6 +138,7 @@ uv run python tests/perf/measure_m1.py         # 1000 张合成照片的后端�
 
 真实 DAT 测试现场读取上层项目的 `firmware/package_v310_g156{,_test}/GXRCE.DAT` 和
 `firmware/package_v310_g155c{,_test}/GXRCE.DAT`，缺少文件时跳过；DAT 字节不进仓库。
+基础往返测试只依赖这些 DAT；与父解析器的对照另作测试，缺少父解析器时只跳过对照。
 在独立 worktree 中，可指定原项目路径复跑这些测试：
 
 ```bash

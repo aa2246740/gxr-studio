@@ -7,12 +7,14 @@ import hashlib
 import shutil
 import struct
 import sys
+from dataclasses import replace
 
 import pytest
 
 import e0_support as t
 from gxr_studio.camdata import datcodec as dc
-from gxr_studio.camdata import store
+from gxr_studio.camdata import intake, store
+from test_camdata_api import tree
 from test_datcodec import reseal
 from test_g152 import client as client
 
@@ -36,15 +38,95 @@ def test_parent_helpers_load_without_writing_bytecode(tmp_path, monkeypatch):
     assert list(parent.iterdir()) == [path]
 
 
-@pytest.fixture(params=PACKAGES, ids=[p[0] for p in PACKAGES])
-def package(request):
-    name, generation, digest = request.param
+def need_package(name):
+    _name, generation, digest = next(p for p in PACKAGES if p[0] == name)
     path = t.REPO / f"firmware/package_v310_{name}/GXRCE.DAT"
     if not path.is_file():
         pytest.skip(f"{name} DAT is absent from the parent repository")
     raw = path.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == digest, f"{name} fixture changed"
-    return name, generation, raw
+    return generation, raw
+
+
+@pytest.fixture(params=PACKAGES, ids=[p[0] for p in PACKAGES])
+def package(request):
+    name = request.param[0]
+    return name, *need_package(name)
+
+
+@pytest.fixture(params=(False, True), ids=("release", "test"))
+def engine_pair(request):
+    suffix = "_test" if request.param else ""
+    return need_package("g155c" + suffix)[1], need_package("g156" + suffix)[1]
+
+
+@pytest.fixture(params=("outer_header_only", "engine_in_old_layout"))
+def mismatched_engine(engine_pair, request):
+    old_raw, new_raw = engine_pair
+    old, new = dc.parse(old_raw), dc.parse(new_raw)
+    invalid = replace(old, generation=156)
+    if request.param == "engine_in_old_layout":
+        invalid = replace(invalid, engine=new.engine, entry=new.entry, bss=new.bss, relocations=new.relocations)
+    # Build the untrusted input under the older profile, then change only its outer header.
+    # This still constructs the counterexample after pack() starts rejecting g156 mismatches.
+    changed = bytearray(dc.pack(replace(invalid, generation=155)))
+    struct.pack_into(">I", changed, 28, 156)
+    raw = reseal(bytes(changed))
+    if request.param == "outer_header_only":
+        assert [i for i, (a, b) in enumerate(zip(old_raw, raw)) if a != b] == [20, 21, 22, 23, 31]
+    else:
+        assert invalid.engine == new.engine and invalid.relocations == new.relocations
+        assert invalid.entry == new.entry and invalid.bss == new.bss
+        assert len(raw) == len(old_raw) != len(new_raw)
+    return invalid, raw, new_raw
+
+
+def test_parse_rejects_g156_engine_mismatches(mismatched_engine):
+    _invalid, raw, _valid = mismatched_engine
+    with pytest.raises(dc.DatError, match="156 引擎或链接布局未登记"):
+        dc.parse(raw)
+
+
+def test_pack_rejects_g156_engine_mismatches(mismatched_engine):
+    invalid, _raw, _valid = mismatched_engine
+    with pytest.raises(dc.DatError, match="156 引擎或链接布局未登记"):
+        dc.pack(invalid)
+
+
+def test_inspect_rejects_g156_engine_mismatches(mismatched_engine):
+    _invalid, raw, _valid = mismatched_engine
+    with pytest.raises(intake.IntakeError) as rejection:
+        intake.inspect_dat(raw)
+    assert rejection.value.code == "dat_invalid"
+
+
+def test_install_rejects_g156_engine_mismatches_and_keeps_old_data(mismatched_engine, client, settings):
+    _invalid, raw, valid = mismatched_engine
+    assert client.post("/api/camdata/import-upload", content=valid).status_code == 200
+    before = tree(settings.home_dir)
+    response = client.post("/api/camdata/import-upload", content=raw)
+    assert response.status_code == 422 and response.json()["error"] == "dat_invalid"
+    assert tree(settings.home_dir) == before
+    assert store.load_template(settings.home_dir) == valid
+
+
+@pytest.mark.parametrize("damage", ("engine", "entry", "bss", "relocations", "data_end"))
+def test_pack_binds_all_g156_engine_metadata(engine_pair, damage):
+    _old_raw, raw = engine_pair
+    dat = dc.parse(raw)
+    if damage == "engine":
+        changed = replace(dat, engine=dat.engine[:-1] + bytes([dat.engine[-1] ^ 1]))
+    elif damage == "entry":
+        changed = replace(dat, entry=dat.entry + 4)
+    elif damage == "bss":
+        changed = replace(dat, bss=dat.bss + 4)
+    elif damage == "relocations":
+        patch, target = dat.relocations[0]
+        changed = replace(dat, relocations=[(patch, target + 4), *dat.relocations[1:]])
+    else:
+        changed = replace(dat, effect_area=dat.effect_area + bytes(4))
+    with pytest.raises(dc.DatError, match="156 引擎或链接布局未登记"):
+        dc.pack(changed)
 
 
 def bank_offsets(raw):
@@ -85,7 +167,7 @@ def camera_gate(tmp_path_factory, parent_format):
     return validate
 
 
-def test_real_dat_round_trip_preserves_banks_pins_and_records(package, parent_format):
+def test_real_dat_round_trip_preserves_banks_pins_and_records(package):
     _name, generation, raw = package
     dat = dc.parse(raw)
     assert dat.generation == generation
@@ -98,6 +180,12 @@ def test_real_dat_round_trip_preserves_banks_pins_and_records(package, parent_fo
         assert module.pin == raw[directory + 64 * unit + 32 : directory + 64 * unit + 64]
         assert module.crc_pin == dc.PIN_CRC32[unit]
         assert dc.crc(dat.entry_of(unit, 4)[:448]) == dc.STOCK_ENTRY_CRC[unit]
+
+
+def test_real_dat_entries_match_parent_reader(package, parent_format):
+    _name, _generation, raw = package
+    dat = dc.parse(raw)
+    for unit, module in enumerate(dat.modules):
         for slot in module.entries:
             assert dat.entry_of(unit, slot) == parent_format.expand(raw, unit, slot)
     for index, look in enumerate(dat.looks):
@@ -116,12 +204,13 @@ def test_each_bank_requires_generation155_even_with_valid_crcs(package, unit, wr
         dc.parse(reseal(bytes(changed)))
 
 
-def test_user_edit_keeps_banks_and_native_records(package):
+@pytest.mark.parametrize("count", (0, 1, 30))
+def test_user_edit_keeps_banks_and_native_records(package, count):
     _name, generation, raw = package
     dat = dc.parse(raw)
-    users = [{"base": 5, "levels": [1] + [0] * 10}]
+    users = [{"base": 5, "levels": [1] + [0] * 10} for _ in range(count)]
     changed = dc.pack(dc.replace_users(dat, users))
-    assert changed != raw
+    assert (changed == raw) is (users == dat.users)
     assert dc.u32(changed, 28) == generation
     for bank in bank_offsets(raw):
         assert dc.u32(changed, bank + 16) == 155
