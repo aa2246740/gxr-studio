@@ -116,7 +116,7 @@ def _read_limited(fh: Any) -> bytes:
 
 def read_dat_from_card(reader: CardReader, scan: CardScan) -> bytes:
     try:
-        with reader.open_rb(scan.dat_path) as fh:  # type: ignore[arg-type]
+        with reader.open_rb(scan.dat_path, root=scan.card.root) as fh:  # type: ignore[arg-type]
             return _read_limited(fh)
     except OSError as exc:
         raise IntakeError(409, "card_read_failed", f"无法读取存储卡「{scan.card.label}」上的 GXRCE.DAT。请重新插入后重试。") from exc

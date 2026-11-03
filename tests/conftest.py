@@ -49,8 +49,9 @@ def _isolated_env(tmp_path, monkeypatch):
         "GXR_STUDIO_SENTRY_RELEASE",
     ):
         monkeypatch.delenv(name, raising=False)
+    audit.network_attempts(clear=True)
     yield
-    assert audit.network_attempts() == [], "测试期间出现了联网尝试"
+    assert audit.network_attempts(clear=True) == [], "测试期间出现了联网尝试"
 
 
 @pytest.fixture

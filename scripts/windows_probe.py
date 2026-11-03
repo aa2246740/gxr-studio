@@ -10,12 +10,13 @@ import json
 import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("case", choices=("io", "loop", "lut"))
+    parser.add_argument("case", choices=("io", "loop", "lut", "matmul", "inverse"))
     args = parser.parse_args()
     print(json.dumps({"case": args.case, "python": sys.version, "platform": sys.platform}), flush=True)
     faulthandler.dump_traceback_later(120, exit=True)
@@ -46,6 +47,22 @@ def main() -> None:
             finally:
                 print(json.dumps({"network_attempts": audit.network_attempts()}), flush=True)
                 audit.forbid_network(False)
+        elif args.case in ("matmul", "inverse"):
+            import numpy as np
+
+            np.show_config()
+            print(json.dumps({"blas_threads": os.environ.get("OPENBLAS_NUM_THREADS")}), flush=True)
+            matrix = np.array([[0.41, 0.36, 0.18], [0.21, 0.72, 0.07], [0.02, 0.12, 0.95]])
+
+            def calculate(worker: int) -> int:
+                array = np.full((65536, 3), 0.5 + worker * 0.1)
+                for _ in range(256):
+                    value = array @ matrix.T if args.case == "matmul" else np.linalg.inv(matrix)
+                    assert np.isfinite(value).all()
+                return worker
+
+            with ThreadPoolExecutor(2) as pool:
+                assert list(pool.map(calculate, range(2))) == [0, 1]
         else:
             import numpy as np
 

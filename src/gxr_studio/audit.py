@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextvars
 import errno
 import os
+import socket
 import sys
 import threading
 from contextlib import contextmanager
@@ -165,6 +166,28 @@ def _is_write_open(mode: Any, flags: Any) -> bool:
     return isinstance(flags, int) and bool(flags & _WRITE_FLAGS)
 
 
+def _event_loop_socketpair(args: tuple[Any, ...]) -> bool:
+    """仅识别 CPython 事件循环自唤醒通道中的那一次 socketpair 连接。"""
+    from asyncio import proactor_events, selector_events
+
+    caller = sys._getframe(2)
+    owner = caller.f_back
+    fallback = getattr(socket, "_fallback_socketpair", socket.socketpair)
+    if caller.f_code is not getattr(fallback, "__code__", None) or owner is None:
+        return False
+    if owner.f_code not in (
+        getattr(selector_events.BaseSelectorEventLoop, "_make_self_pipe").__code__,
+        getattr(proactor_events.BaseProactorEventLoop, "_make_self_pipe").__code__,
+    ):
+        return False
+    listener = caller.f_locals.get("lsock")
+    client = caller.f_locals.get("csock")
+    if len(args) != 2 or args[0] is not client or not isinstance(listener, socket.socket):
+        return False
+    address = args[1]
+    return isinstance(address, tuple) and len(address) == 2 and address[0] in ("127.0.0.1", "::1") and listener.getsockname()[:2] == address
+
+
 def _hook(event: str, args: tuple[Any, ...]) -> None:
     if event == "open":
         if not (_recorders or _protected or _forbidden_reads or _volume_guard):
@@ -195,7 +218,7 @@ def _hook(event: str, args: tuple[Any, ...]) -> None:
         if event == "socket.connect":
             addr = args[1] if len(args) > 1 else None
             # 本机 unix socket 不算联网
-            if isinstance(addr, (str, bytes)):
+            if isinstance(addr, (str, bytes)) or _event_loop_socketpair(args):
                 return
         _network_log.append(f"{event} {target}")
         raise PermissionError(errno.EPERM, f"offline: {event} {target}")
@@ -310,5 +333,9 @@ def forbid_network(on: bool = True) -> None:
     _network_forbidden = on
 
 
-def network_attempts() -> list[str]:
-    return list(_network_log)
+def network_attempts(*, clear: bool = False) -> list[str]:
+    with _lock:
+        result = list(_network_log)
+        if clear:
+            _network_log.clear()
+        return result

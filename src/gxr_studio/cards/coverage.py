@@ -113,13 +113,20 @@ def trusted_sha(lib: Library, ident: Identity, relpath: str, size: int, mtime_ns
 
 
 def hash_card_file(
-    reader: CardReader, path: Path, size: int, chunk: int = 1 << 20, cancel: threading.Event | None = None
+    reader: CardReader,
+    path: Path,
+    size: int,
+    chunk: int = 1 << 20,
+    cancel: threading.Event | None = None,
+    *,
+    root: Path,
+    expect: tuple[int, int] | None = None,
 ) -> tuple[str, FileState | None]:
     """只读算 SHA-256，返回 (SHA, 读的那个文件的状态)。读出的长度和目录里的不一样、或者读的过程中文件状态变了，
     就当读错。"""
     digest = hashlib.sha256()
     total = 0
-    with reader.open_rb(path) as fh:
+    with reader.open_rb(path, root=root, expect=expect) as fh:
         before = file_state(fh)
         while True:
             if cancel is not None and cancel.is_set():
@@ -167,7 +174,7 @@ def photo_coverage(
         else:
             kind = "content"
             try:
-                sha, _ = hash_card_file(reader, root / rel, size, chunk)
+                sha, _ = hash_card_file(reader, root / rel, size, chunk, root=root, expect=ident.expect)
             except OSError as exc:
                 cov.complete = False
                 cov.errors.append(f"{rel}: {exc}")

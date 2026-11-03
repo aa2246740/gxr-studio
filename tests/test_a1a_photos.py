@@ -41,9 +41,9 @@ class CountingReader(CardReader):
     def __init__(self):
         self.opened: list[str] = []
 
-    def open_rb(self, path):
+    def open_rb(self, path, **kwargs):
         self.opened.append(Path(path).name)
-        return super().open_rb(path)
+        return super().open_rb(path, **kwargs)
 
 
 class FailingReader(CountingReader):
@@ -326,10 +326,10 @@ def test_unreadable_video_is_a_problem(volumes, lib):
     make_fake_card(volumes, pairs=1, jpg_only=0, videos=1)
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).suffix == ".AVI":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     p = run_import(lib, one(volumes), ImportOptions(**OPTS), reader=Bad())
     assert p.unreadable == ["DCIM/100RICOH/R0010002.AVI"] and "请勿格式化" in p.message
@@ -445,4 +445,4 @@ def test_card_reader_does_not_follow_a_final_symlink(volumes, tmp_path):
     link = card.root / "DCIM" / "100RICOH" / "R0010001.AVI"
     link.symlink_to(secret)
     with pytest.raises(OSError):
-        CardReader().open_rb(link)
+        CardReader().open_rb(link, root=link.parent)

@@ -348,10 +348,10 @@ def test_completion_interrupted_after_the_move_is_resumed_not_duplicated(volumes
     c = find_cards([volumes])[0]
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]
@@ -386,10 +386,10 @@ def test_completion_does_not_adopt_a_different_file_in_the_way(volumes, card, li
     c = find_cards([volumes])[0]
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]

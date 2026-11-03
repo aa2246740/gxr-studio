@@ -73,6 +73,14 @@ class CardShot:
         return sum(f.size for f in self.files.values())
 
 
+def _open_root(path: Path) -> int:
+    parent = osplat.open_dir(os.path.realpath(path.parent))
+    try:
+        return osplat.open_dir_at(parent, path.name)
+    finally:
+        os.close(parent)
+
+
 class CardReader:
     """唯一允许碰卡文件的入口，只提供读。测试里可以继承它来模拟拔卡、读错。
     严格扫描的目录句柄、按句柄列目录、不跟随链接的打开都来自 `osplat`，两个平台同一套实现：
@@ -81,15 +89,34 @@ class CardReader:
     def scandir(self, path: Path) -> Any:
         return os.scandir(path)
 
-    def open_rb(self, path: Path) -> Any:
-        """只读打开：上级目录按真实位置逐级不跟随链接打开，最后一级是链接时拒绝，不会顺着链接读到卡外面去。"""
-        p = Path(path)
-        dfd = osplat.open_dir(os.path.realpath(p.parent))
+    def open_rb(self, path: Path, *, root: Path, expect: tuple[int, int] | None = None) -> Any:
+        """从核对过身份的卡根句柄逐级只读打开，卡根以下任何一级是链接都拒绝。"""
         try:
-            fd = osplat.open_file_at(dfd, p.name)
+            parts = Path(path).relative_to(root).parts
+        except ValueError as exc:
+            raise OSError(errno.EINVAL, "文件不在卡根下", str(path)) from exc
+        if not parts or any(part in (".", "..") for part in parts):
+            raise OSError(errno.EINVAL, "卡内相对路径不合法", str(path))
+        if expect is None:
+            st = root.lstat()
+            expect = (st.st_dev, st.st_ino)
+        dfd = _open_root(root)
+        try:
+            st = os.fstat(dfd)
+            if (st.st_dev, st.st_ino) != expect:
+                raise OSError(errno.ESTALE, "卡根已改变", str(root))
+            for part in parts[:-1]:
+                child = osplat.open_dir_at(dfd, part)
+                os.close(dfd)
+                dfd = child
+            fd = osplat.open_file_at(dfd, parts[-1])
         finally:
             os.close(dfd)
-        return os.fdopen(fd, "rb", buffering=0)
+        try:
+            return os.fdopen(fd, "rb", buffering=0)
+        except BaseException:
+            os.close(fd)
+            raise
 
     def exists(self, path: Path) -> bool:
         return os.path.isdir(path)
@@ -98,12 +125,7 @@ class CardReader:
     def open_dir(self, name: str | Path, dir_fd: int | None = None) -> int:
         if dir_fd is not None:
             return osplat.open_dir_at(dir_fd, str(name))
-        p = Path(name)  # 卡根：上级按真实位置打开，卡根这一级不跟随链接
-        parent = osplat.open_dir(os.path.realpath(p.parent))
-        try:
-            return osplat.open_dir_at(parent, p.name)
-        finally:
-            os.close(parent)
+        return _open_root(Path(name))
 
     def fstat(self, fd: int) -> os.stat_result:
         return os.fstat(fd)

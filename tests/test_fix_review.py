@@ -53,10 +53,10 @@ def sidecar_of(client, name):
 
 def test_unreadable_jpg_is_listed_and_the_good_dng_is_imported(settings, card):
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     with make_client(settings, reader=Bad()) as c:
         p = import_all(c)["progress"]

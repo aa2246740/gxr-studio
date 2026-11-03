@@ -232,14 +232,14 @@ class UnpluggedReader(CardReader):
     def __init__(self, card_root: Path, after_files: int):
         self.card_root, self.after, self.count, self.gone = card_root, after_files, 0, False
 
-    def open_rb(self, path):
+    def open_rb(self, path, **kwargs):
         if self.gone:
             raise FileNotFoundError(errno.ENOENT, "card gone")
         self.count += 1
         if self.count > self.after:
             self.gone = True
             raise OSError(errno.ENODEV, "device not configured")
-        return super().open_rb(path)
+        return super().open_rb(path, **kwargs)
 
     def scandir(self, path):
         if self.gone and Path(path) == self.card_root:
@@ -276,10 +276,10 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     c = one_card(volumes)
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     p = run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     assert p.state == "done" and p.unreadable == ["DCIM/100RICOH/R0000104.JPG"]
@@ -309,10 +309,10 @@ def test_unreadable_dng_still_imports_the_jpg(volumes, card, lib):
     c = one_card(volumes)
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.DNG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     p = run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     assert p.unreadable == ["DCIM/100RICOH/R0000104.DNG"] and p.failed_shots == 1
@@ -330,10 +330,10 @@ def test_completing_a_pair_keeps_the_edits(volumes, card, lib):
     c = one_card(volumes)
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]

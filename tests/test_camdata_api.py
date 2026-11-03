@@ -63,9 +63,9 @@ class AuditedReader(CardReader):
     def __init__(self):
         self.opened: list[str] = []
 
-    def open_rb(self, path):
+    def open_rb(self, path, **kwargs):
         self.opened.append(str(path))
-        return super().open_rb(path)
+        return super().open_rb(path, **kwargs)
 
 
 @pytest.fixture
@@ -251,7 +251,7 @@ def test_card_id_of_a_card_without_the_dat(client, volumes, card):
 
 def test_card_read_error_imports_nothing(settings, volumes):
     class Flaky(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             raise OSError(5, "Input/output error")
 
     card_with_dat(volumes, "RICOHDCX", dat())
