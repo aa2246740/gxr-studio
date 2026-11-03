@@ -177,10 +177,12 @@ def test_display_lut_table_is_the_production_function_on_every_input():
     assert reason is None and meta == {"n": 256, "display": True, "table8": True} and data is not None
     table = np.frombuffer(data, np.uint8).reshape(256, 256, 256, 4)  # [b][g][r]，R 最快
     assert (table[..., 3] == 255).all()
-    rng = np.random.default_rng(7)
-    rgb = np.concatenate([rng.integers(0, 256, (20000, 3)), [[0, 0, 0], [255, 255, 255], [128, 64, 32], [255, 0, 0]]]).astype(np.uint8)
-    want = _apply(target, rgb[None])[0]
-    np.testing.assert_array_equal(table[rgb[:, 2], rgb[:, 1], rgb[:, 0], :3], want)
+    rgb = np.empty((256, 256, 3), np.uint8)
+    rgb[..., 0] = np.arange(256, dtype=np.uint8)[None, :]
+    rgb[..., 1] = np.arange(256, dtype=np.uint8)[:, None]
+    for blue in range(256):
+        rgb[..., 2] = blue
+        np.testing.assert_array_equal(table[blue, ..., :3], _apply(target, rgb), err_msg=f"blue={blue}")
 
 
 def test_log_lut_bytes_carry_the_space_parameters():

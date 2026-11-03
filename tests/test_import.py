@@ -5,12 +5,10 @@ from __future__ import annotations
 import errno
 import json
 import os
-import random
 import subprocess
 import sys
 import textwrap
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -433,11 +431,11 @@ def test_cancel(volumes, card, lib):
     assert p.state == "cancelled" and lib.count() == 1
 
 
-# ---- 验收 3：随机杀进程 20 次 ------------------------------------------------
+# ---- 验收 3：在明确的导入阶段终止进程 20 轮 ----------------------------------
 
 DRIVER = textwrap.dedent(
     """
-    import sys, time
+    import sys
     from pathlib import Path
     from gxr_studio.library.store import Library
     from gxr_studio.cards.discovery import find_cards
@@ -445,26 +443,47 @@ DRIVER = textwrap.dedent(
     volumes, library = Path(sys.argv[1]), Path(sys.argv[2])
     lib = Library(library).open()
     (card,) = find_cards([volumes])
-    slow = lambda *a: time.sleep(0.06)
-    run_import(lib, card, ImportOptions(min_free_bytes=0, before_verify=slow, after_shot=slow))
+    stage = sys.argv[3]
+    def pause(where):
+        if where == stage and lib.count() > 0:
+            print('ready:' + where, flush=True)
+            sys.stdin.buffer.read(1)
+    run_import(lib, card, ImportOptions(min_free_bytes=0,
+               before_verify=lambda *a: pause('verify'), after_shot=lambda *a: pause('committed')))
     """
 )
 
 
 def test_kill_the_process_20_times(volumes, card, tmp_path):
     """每轮：新图库 → 子进程导入中途 SIGKILL（隔 4 轮再杀一次）→ 检查无残缺 → 插回继续 → 总数和哈希全对。"""
-    rng = random.Random(20261030)
     src = card_hashes(card)
     (c,) = find_cards([volumes])
 
-    def kill_once(library: Path) -> bool:
-        proc = subprocess.Popen([sys.executable, "-I", "-c", DRIVER, str(volumes), str(library)])
-        time.sleep(rng.uniform(0.45, 1.6))
-        alive = proc.poll() is None
-        if alive:
-            proc.kill()
-        proc.wait()
-        return alive
+    def kill_once(library: Path, stage: str) -> bool:
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-c", DRIVER, str(volumes), str(library), stage], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        )
+        ready, lines = threading.Event(), []
+
+        def read_marker():
+            lines.append(proc.stdout.readline())
+            ready.set()
+
+        reader = threading.Thread(target=read_marker, daemon=True)
+        reader.start()
+        try:
+            assert ready.wait(60), "子进程没有到达指定导入阶段"
+            assert [line.rstrip(b"\r\n") for line in lines] == [f"ready:{stage}".encode()], lines
+            assert proc.poll() is None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)
+            reader.join(timeout=10)
+            proc.stdin.close()
+            proc.stdout.close()
+        assert not reader.is_alive()
+        return True
 
     def no_partial_files(library: Path, tag: str):
         for p in library.rglob("*"):
@@ -475,9 +494,9 @@ def test_kill_the_process_20_times(volumes, card, tmp_path):
     partial_counts = []
     for i in range(20):
         library = tmp_path / f"kill-lib-{i}"
-        killed += kill_once(library)
+        killed += kill_once(library, "verify" if i % 2 else "committed")
         if i % 4 == 0:
-            killed += kill_once(library)
+            killed += kill_once(library, "verify")
         no_partial_files(library, f"第 {i} 轮")
         lib = Library(library).open()
         assert not [p for p in library.rglob("*.tmp") if p.is_file()], "重开图库后不能留下临时文件"

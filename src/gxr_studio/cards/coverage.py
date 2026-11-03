@@ -157,7 +157,14 @@ def photo_coverage(
 ) -> Coverage:
     """核对一张卡：严格扫描 + 每个照片/录像文件找证明。`proofs` 是这次导入时已经读过内容的文件。"""
     reader = reader or CardReader()
-    scan = scan or scan_card_strict(root, reader, ident.expect)
+    expect = ident.expect
+    if expect is None:
+        try:
+            st = root.lstat()
+            expect = (st.st_dev, st.st_ino)
+        except OSError as exc:
+            return Coverage(complete=False, dcim="absent", errors=[f".: {exc}"])
+    scan = scan or scan_card_strict(root, reader, expect)
     cov = Coverage(complete=scan.complete, dcim=scan.dcim, errors=list(scan.errors))
     cov.not_importable = [e.relpath for e in scan.other_files]
     cov.system_files = [e.relpath for e in scan.system_files]
@@ -174,7 +181,7 @@ def photo_coverage(
         else:
             kind = "content"
             try:
-                sha, _ = hash_card_file(reader, root / rel, size, chunk, root=root, expect=ident.expect)
+                sha, _ = hash_card_file(reader, root / rel, size, chunk, root=root, expect=expect)
             except OSError as exc:
                 cov.complete = False
                 cov.errors.append(f"{rel}: {exc}")

@@ -8,9 +8,9 @@ import threading
 import pytest
 
 from gxr_studio import audit
-from gxr_studio.cards.coverage import hash_card_file
+from gxr_studio.cards.coverage import Identity, hash_card_file, photo_coverage
 from gxr_studio.cards.discovery import Card, CardFile, CardReader, scan_card
-from gxr_studio.cards.importer import CardReadError, ImportOptions, stage_file
+from gxr_studio.cards.importer import CardReadError, ImportOptions, run_import, stage_file
 
 
 def _read(operation, reader, card, cf, lib, expect=None):
@@ -88,6 +88,33 @@ def test_rooted_binary_reads_preserve_every_byte(tmp_path, lib):
         assert _read("hash", CardReader(), Card(root, "synthetic"), cf, lib)[0] == hashlib.sha256(content).hexdigest()
     finally:
         staged.path.unlink()
+
+
+@pytest.mark.parametrize("operation", ["import", "coverage"])
+def test_scan_and_content_reads_use_the_same_root_identity(tmp_path, lib, operation):
+    root = tmp_path / "synthetic-card"
+    path = root / "DCIM/100RICOH/R0000001.JPG"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"original")
+    changed = []
+
+    class ChangingReader(CardReader):
+        def open_rb(self, path, **kwargs):
+            if not changed:
+                root.rename(root.with_name("original-card"))
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"replaced")
+                changed.append(True)
+            return super().open_rb(path, **kwargs)
+
+    if operation == "import":
+        result = run_import(lib, Card(root, "synthetic"), ImportOptions(min_free_bytes=0, make_thumbs=False), reader=ChangingReader())
+        assert result.copied_files == 0 and result.unreadable == ["DCIM/100RICOH/R0000001.JPG"]
+    else:
+        coverage = photo_coverage(lib, root, Identity(), ChangingReader())
+        assert coverage.complete is False and coverage.covered == 0 and coverage.errors
+    assert changed == [True]
+    assert lib.list_shots() == []
 
 
 @pytest.mark.parametrize("relative", ["../outside.JPG", "DCIM/../../outside.JPG"])

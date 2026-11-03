@@ -45,9 +45,18 @@ jobs:
         env:
           OPENBLAS_NUM_THREADS: "1"
         run: uv run --frozen python -u scripts/windows_probe.py lut
+      - name: Matrix workers with current NumPy runtime
+        continue-on-error: true
+        run: uv run --frozen --with numpy==2.5.4 python -u scripts/windows_probe.py matmul
+      - name: Exact LUT with current NumPy runtime
+        continue-on-error: true
+        run: uv run --frozen --with numpy==2.5.4 python -u scripts/windows_probe.py lut
       - name: First target test failure
-        if: steps.handles.outcome == 'success' && steps.loop.outcome == 'success' && steps.lut.outcome == 'success'
-        run: uv run --frozen pytest -x -vv tests/test_windows_io.py tests/test_network_guard.py tests/test_card_read_boundaries.py tests/test_platform_io.py tests/test_gpu_api.py -o faulthandler_timeout=120
+        if: steps.handles.outcome == 'success' && steps.loop.outcome == 'success'
+        run: uv run --frozen pytest -x -vv tests/test_windows_io.py tests/test_network_guard.py tests/test_card_read_boundaries.py tests/test_platform_io.py -o faulthandler_timeout=120
+      - name: First GPU test failure
+        if: steps.lut.outcome == 'success'
+        run: uv run --frozen pytest -x -vv tests/test_gpu_api.py -o faulthandler_timeout=120
       - name: Require every runtime entry
         if: always() && (steps.handles.outcome != 'success' || steps.loop.outcome != 'success' || steps.lut.outcome != 'success')
         run: exit 1

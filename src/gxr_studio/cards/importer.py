@@ -25,7 +25,7 @@ import os
 import shutil
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -367,6 +367,12 @@ def run_import(
     run = _Run(ident or Identity())
     layout_ok = True
     try:
+        if run.ident.expect is None:
+            try:
+                st = card.root.lstat()
+            except OSError as exc:
+                raise CardRemoved() from exc
+            run.ident = replace(run.ident, expect=(st.st_dev, st.st_ino))
         _run(lib, card, opts, progress, cancel, reader, shift, run)
     except CardRemoved:
         progress.update(

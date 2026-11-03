@@ -180,11 +180,12 @@ def test_card_file_open_refuses_a_linked_folder(tmp_path):
     (outside / "X.JPG").write_bytes(b"outside")
     os.symlink(os.fspath(outside), os.fspath(root / "DCIM" / "100RICOH"), target_is_directory=True)
     target = root / "DCIM" / "100RICOH" / "X.JPG"
-    # 上级按真实位置解析（卡上的普通目录），最后一级不跟随：文件本身是链接时拒绝
+    # 父目录和文件末级的链接都必须在实际读取时拒绝。
     os.symlink(os.fspath(outside / "X.JPG"), os.fspath(root / "DCIM" / "LINK.JPG"))
     with pytest.raises(OSError):
         CardReader().open_rb(root / "DCIM" / "LINK.JPG", root=root)
-    assert target.exists()
+    with pytest.raises(OSError):
+        CardReader().open_rb(target, root=root)
 
 
 # ---- 照片文件 ------------------------------------------------------------------------------
