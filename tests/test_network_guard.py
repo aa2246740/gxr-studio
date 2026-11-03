@@ -59,7 +59,7 @@ def test_cleared_records_do_not_carry_over():
 
 
 def test_a_rejected_connection_does_not_mark_the_next_test(tmp_path):
-    (tmp_path / "conftest.py").write_text((Path(__file__).parent / "conftest.py").read_text(), encoding="utf-8")
+    (tmp_path / "conftest.py").write_text((Path(__file__).parent / "conftest.py").read_text(encoding="utf-8"), encoding="utf-8")
     script = tmp_path / "test_records.py"
     script.write_text(
         "import socket, pytest\n"
