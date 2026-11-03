@@ -160,8 +160,15 @@ def _alive(pid: int) -> bool:
     """进程还在不在。Windows 上不能用 os.kill(pid, 0)（那是 TerminateProcess），改查退出码。"""
     if sys.platform == "win32":
         import ctypes
+        from ctypes import wintypes
 
         kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
         handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
             return False
@@ -179,36 +186,62 @@ def _alive(pid: int) -> bool:
 
 def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
     # 父进程阻塞在读标准输入上（POSIX 用 /bin/sh，Windows 用一个 Python），被强杀之后子进程要自己退出。
-    # 同一时间只有 pytest 和这一个子 Python 进程（复审 A1a 的进程数规则：测试进程最多 2 个）。
+    pid_path = tmp_path / "worker.pid"
+    error_path = tmp_path / "worker.stderr"
     child_code = (
-        "import os, time\nfrom gxr_studio.lut.worker import watch_parent\n"
+        "import os, time\nfrom pathlib import Path\n"
+        f"Path({str(pid_path)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+        "from gxr_studio.lut.worker import watch_parent\n"
         "stop = {'flag': False}\nwatch_parent(stop, os.getppid(), 0.1, 0.3)\n"
         "print(os.getpid(), flush=True)\ntime.sleep(120)\n"
     )
     if sys.platform == "win32":
-        launcher = "import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', sys.argv[1]])\nsys.stdin.read()\n"
+        launcher = (
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1]], stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr)\n"
+            "sys.stdin.read()\n"
+        )
         command = [sys.executable, "-c", launcher, child_code]
     else:
         command = ["/bin/sh", "-c", f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"]
-    parent = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    with error_path.open("wb") as errors:
+        parent = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8")
+    ready, lines = threading.Event(), []
+
+    def read_pid():
+        lines.append(parent.stdout.readline())
+        ready.set()
+
+    reader = threading.Thread(target=read_pid, daemon=True)
+    reader.start()
     child_pid = None
     try:
-        child_pid = int(parent.stdout.readline())
+        assert ready.wait(30), error_path.read_text(encoding="utf-8", errors="replace")
+        assert lines and lines[0].strip().isdigit(), (lines, error_path.read_text(encoding="utf-8", errors="replace"))
+        child_pid = int(lines[0])
         assert _alive(child_pid)  # 子进程在跑
         parent.kill()  # SIGKILL / TerminateProcess：父进程没有机会清理任何东西
-        parent.wait()
+        parent.wait(timeout=5)
         deadline = time.time() + 15
         while time.time() < deadline and _alive(child_pid):
             time.sleep(0.1)
         if _alive(child_pid):
             pytest.fail("父进程被杀之后子进程还在")
     finally:
-        parent.kill()
+        if parent.poll() is None:
+            parent.kill()
+        parent.wait(timeout=5)
+        if child_pid is None and pid_path.exists():
+            child_pid = int(pid_path.read_text(encoding="ascii"))
         if child_pid and _alive(child_pid):
             try:
                 os.kill(child_pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             except OSError:
                 pass
+        reader.join(timeout=5)
+        assert not reader.is_alive(), "子进程的标准输出没有关闭"
+        parent.stdin.close()
+        parent.stdout.close()
 
 
 def test_worker_sets_the_stop_flag_when_the_parent_goes_away(monkeypatch):
