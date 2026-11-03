@@ -324,7 +324,7 @@ def forbid_volumes(base: str = "/Volumes", allow: tuple[str, ...] = ("Workspace"
     """测试用：禁止读写 `/Volumes` 下除 allow 以外的任何卷（用户的真实存储卡在这里），连列目录都不行。"""
     global _volume_guard
     install()
-    _volume_guard = (base, tuple(allow))
+    _volume_guard = (os.path.abspath(base), tuple(allow))
 
 
 def forbid_network(on: bool = True) -> None:

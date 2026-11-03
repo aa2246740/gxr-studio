@@ -38,6 +38,15 @@ def _isolated_env(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    if sys.platform == "win32":
+        for name, value in {
+            "USERPROFILE": str(home),
+            "HOMEDRIVE": home.drive,
+            "HOMEPATH": str(home)[len(home.drive) :],
+            "APPDATA": str(home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(home / "AppData" / "Local"),
+        }.items():
+            monkeypatch.setenv(name, value)
     for name in (
         "GXR_STUDIO_HOME",
         "GXR_STUDIO_LIBRARY",

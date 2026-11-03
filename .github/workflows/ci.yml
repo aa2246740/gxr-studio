@@ -21,6 +21,8 @@ jobs:
         run: uv run --frozen python -u scripts/windows_probe.py io
       - name: Event loop
         run: uv run --frozen python -u scripts/windows_probe.py loop
+      - name: Preference permissions and settings boundaries
+        run: uv run --frozen pytest -x -vv tests/test_prefs.py tests/test_security.py -o faulthandler_timeout=120
       - name: Worker lifecycle
         run: uv run --frozen pytest -x -vvs tests/test_polish_p2.py::test_worker_exits_by_itself_when_the_parent_is_killed tests/test_polish_p2.py::test_worker_sets_the_stop_flag_when_the_parent_goes_away tests/test_import.py::test_kill_the_process_20_times -o faulthandler_timeout=180
       - name: Software WebGPU adapter

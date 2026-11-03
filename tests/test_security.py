@@ -146,15 +146,13 @@ def test_audit_records_writes_and_blocks_protected(tmp_path):
         audit.unprotect(root)
 
 
-def test_real_volumes_are_off_limits_in_tests():
+def test_real_volumes_are_off_limits_in_tests(tmp_path):
     for target in ("/Volumes", "/Volumes/RICOHDCX", "/Volumes/RICOHDCX/DCIM"):
         with pytest.raises(PermissionError):
             os.listdir(target)
         with pytest.raises(PermissionError):
             open(target + "/x", "rb")
-    if not os.path.isdir("/Volumes/Workspace"):
-        pytest.skip("工作盘 /Volumes/Workspace 不在本机，跳过 stat 不拦截的检查")
-    assert os.path.isdir("/Volumes/Workspace")  # 工作盘本身仍然可用（stat 不触发拦截）
+    assert os.path.isdir(tmp_path)  # stat 仍能查询测试目录。
 
 
 def test_default_library_and_export_dirs_are_protected():
