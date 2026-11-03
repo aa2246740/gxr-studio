@@ -420,7 +420,7 @@ def _display(p: Path) -> str:
     try:
         return p.resolve().relative_to(ROOT).as_posix()
     except ValueError:
-        return str(p)
+        return p.as_posix()
 
 
 def _git(*args: str) -> list[Path]:

@@ -134,7 +134,14 @@ if sys.platform == "win32":  # pragma: no cover - 只在 Windows 上执行（CI 
 
     def _nt_error(status: int, name: str) -> OSError:
         code = _RtlNtStatusToDosError(status)
-        return OSError(None, ctypes.FormatError(code).strip(), name, code)
+        native = status & 0xFFFFFFFF
+        message = f"{ctypes.FormatError(code).strip()} (NTSTATUS 0x{native:08x})"
+        # Win32 把目录类型错误也转换成 ERROR_ACCESS_DENIED；保留 NT 的类型区别。
+        if native == 0xC00000BA:  # STATUS_FILE_IS_A_DIRECTORY
+            return IsADirectoryError(errno.EISDIR, message, name)
+        if native == 0xC0000103:  # STATUS_NOT_A_DIRECTORY
+            return NotADirectoryError(errno.ENOTDIR, message, name)
+        return OSError(None, message, name, code)
 
     def _handle(fd: int) -> int:
         return int(msvcrt.get_osfhandle(fd))

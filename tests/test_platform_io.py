@@ -324,8 +324,10 @@ def test_handle_primitives(tmp_path):
         fd = osplat.open_file_at(dfd, "f.bin")
         assert os.read(fd, 8) == b"y"
         os.close(fd)
-        with pytest.raises(OSError):
+        with pytest.raises(IsADirectoryError):
             osplat.open_file_at(dfd, "sub")  # 是目录
+        with pytest.raises(NotADirectoryError):
+            osplat.open_dir_at(dfd, "f.bin")
         assert sorted(osplat.listdir_fd(dfd)) == ["f.bin", "link", "sub"]
         osplat.unlink_at(dfd, "link")  # 删的是链接本身
         osplat.unlink_at(dfd, "f.bin")
