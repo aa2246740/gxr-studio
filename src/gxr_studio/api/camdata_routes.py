@@ -189,11 +189,12 @@ def import_from_card(request: Request, body: ImportCardRequest | None = None) ->
                 "dat_not_found",
                 "存储卡上没有相机配方文件（GXRCE.DAT）",
             )
-        pick = with_dat[0][1]
+        session, pick = with_dat[0]
     if not pick.has_dat:
         raise ApiError(404, "dat_not_found", "存储卡上没有相机配方文件（GXRCE.DAT）")
     try:
-        raw = intake.read_dat_from_card(c.reader, pick)
+        fingerprint = session.fingerprint
+        raw = intake.read_dat_from_card(c.reader, pick, expect=(fingerprint.root_dev, fingerprint.root_ino))
     except intake.IntakeError as exc:
         raise _api(exc) from exc
     return _install(c, raw, pick.dat_path.name, {"kind": "card", "label": pick.card.label})  # type: ignore[union-attr]

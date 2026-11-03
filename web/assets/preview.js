@@ -11,6 +11,7 @@ import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
 import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from './caps.js';
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
+import { route as gpuRoute } from './gpu_stage.js';
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
@@ -467,12 +468,41 @@ export function decodeLabel(raw) {
 }
 
 // 拖动时防抖地请求小图，松手后 full 请求清晰版。旧图保留，直到新图到了。
+// 显卡预览（gpu_stage.js）接手时不发请求：参数直接交给引擎，下一帧就画出来。
 export function schedulePreview(view, { full = false, stage = null } = {}) {
   const ed = view.ed;
   if (!ed) return;
   if (stage) view.stage = stage;
   clearTimeout(ed.timer);
+  const way = gpuRoute(view, gpuContext(view), () => {
+    if (view.ed === ed) schedulePreview(view, { full });
+  });
+  if (way !== 'server') {
+    ed.seq += 1; // 还在路上的服务器预览作废
+    ed.ctl?.abort();
+    if (way === 'gpu') {
+      ed.busy = false;
+      view.onChange?.();
+    }
+    return;
+  }
+  view.gpuActive = null;
   ed.timer = setTimeout(() => runPreview(view, full), full ? 0 : DEBOUNCE_MS);
+}
+
+// 显卡预览要的当前草稿（和 draftBody 发给服务器的是同一份）
+function gpuContext(view) {
+  const ed = view.ed;
+  const stage = view.stage === 'uncropped' ? 'uncropped' : 'final';
+  return {
+    stage,
+    recipe: recipeForRender(view),
+    adjust: adjustBody(ed),
+    curve: ed.curve,
+    geometry: ed.v2 ? ed.geometry : null,
+    crop: stage === 'final' ? cropDraft(view) || null : null,
+    geometryKey: geometryKey(ed),
+  };
 }
 
 async function runPreview(view, full) {

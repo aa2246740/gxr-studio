@@ -21,6 +21,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from .. import osplat
 from ..privacy import PrivateDir
 
 
@@ -66,11 +67,13 @@ PARENT_GRACE_SECONDS = 5.0  # 父进程没了之后，给拟合这么久自己�
 def watch_parent(
     stop: dict[Any, Any], parent_pid: int, poll: float = PARENT_POLL_SECONDS, grace: float = PARENT_GRACE_SECONDS
 ) -> threading.Thread:
-    """服务被强杀或终端被关（SIGKILL / SIGHUP）时，子进程不会收到任何信号，只会被系统过继给 1 号进程。
-    这里每秒看一眼父进程还在不在：不在了就按"取消"处理，宽限期后仍没停就直接退出（没有人会来读结果了）。"""
+    """服务被强杀或终端被关（SIGKILL / SIGHUP）时，子进程不会收到任何信号（POSIX 上只会被过继给 1 号进程）。
+    这里每秒看一眼父进程还在不在（怎么看由 `osplat.parent_alive` 按平台决定）：
+    不在了就按"取消"处理，宽限期后仍没停就直接退出（没有人会来读结果了）。"""
 
     def loop() -> None:
-        while os.getppid() == parent_pid:
+        alive = osplat.parent_alive(parent_pid)
+        while alive():
             time.sleep(poll)
         stop["flag"] = True
         time.sleep(grace)

@@ -38,3 +38,91 @@ HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`
 关闭应用时，先在 `hdr_lock` 内停止接受新 HDR 任务并发出取消信号，再等现有 HDR 线程退出，最后关闭图库。整轮枚举出错会把 HDR 进度设为 `failed`，由任务表调用 `on_job_failed`；逐张失败仍独立计数。
 
 后台导入和拟合走 `jobs`。任务抛错时 `register_alert_service` 调用 `on_job_failed`，由 `StudioNotifier` 记一条打过码的告警。
+
+## 显卡预览（功能开关 `gpu_preview`）
+
+大图可以在浏览器的 WebGPU 里实时计算，不再每动一下就请求服务器出图。
+
+### 引擎和数据
+
+- 引擎在 `frontend/`（TypeScript + WGSL），构建产物 `web/assets/gpu/engine.js` 提交进仓库。
+- `web/assets/gpu_stage.js` 决定这一张、这组参数走显卡还是服务器，分支与 `finish.serve.color_image` 一一对应。
+- 显卡要的数据由 `gpu/` 准备，经 `api/gpu_routes.py` 的只读接口下发，不写文件：
+  - DNG 原字节和 RAW 布局；
+  - 相机 JPG 原文件，浏览器按 EXIF 方向解码，实测与 PIL 逐字节相同；
+  - 预览网格的配方烘焙表，与 `render_preview` 共用缓存；
+  - LUT 表：显示类输入（sRGB / Rec.709 / Gamma 2.4）是 8 位精确表——全部 256³ 个输入逐个交给生产函数
+    `lut.photo._apply` 算出来（RGBA，64 MB，两个线程约 4 秒，按 LUT 版本缓存两张），着色器只查表，与 Python 逐像素相同，
+    一维表和任何输出空间都包括在内；Log 类输入下发 3D 表和空间参数，由着色器计算；
+  - 成片裁切框，与 `finish_array` 裁出的位置相同。请求严格校验（有限数、类型、范围、尺寸不超过这张照片），不合格回 422。
+- 开关关着时 `/gpu` 只回 `{"enabled": false}`，不解析 DNG、不预热；`/api/settings` 带着开关状态，前端据此不发任何显卡请求。
+- LUT 库的旧格式升级在启动时做（`app._migrate_luts`）；只读接口按 `persist=False` 读库，不写盘。
+
+### 照片文件的打开（`library.media`）
+
+`/raw`、`/camera-jpg` 和 RAW 布局解析共用 `open_media`：路径必须是图库根下面的相对路径；图库根按 realpath 确定，并核对不在卡上或受保护目录里。
+POSIX 从图库根逐级 `O_DIRECTORY|O_NOFOLLOW` 打开，最后一级 `O_NOFOLLOW`，任何一级是链接都失败，核对和打开是同一次操作；
+Windows 逐级 lstat 拒绝链接和重解析点，打开后核对 (st_dev, st_ino) 和 fd 的真实位置（`GetFinalPathNameByHandleW`）。
+之后只用这个 fd：`FdResponse` 按块发送，支持单段 Range（206 / 416），RAW 布局从同一个 fd 读字节，不按路径重开。
+
+### 版本和失效（`web/assets/gpu_stage.js`）
+
+- 烘焙表的地址和键带相机数据版本（`dv=`）；LUT 表的键带 LUT 的 render token（空间版本）。
+- `camdata-changed`、`luts-changed`（LUT 库改了空间、删了 LUT）让前端换代：旧代的请求不管成功还是失败，回来以后都丢掉，
+  不装进引擎，也不把新代标成失败；新代重新取表。
+- LUT 表还在算（第一次几秒）或取表失败（422 等）时这一帧回到服务器出图，沿用服务器原来的错误提示。
+- 引擎里同一个键再上传烘焙表或 LUT 表，先销毁旧的显卡资源；烘焙表最多留 24 张，LUT 表最多 3 张（精确表每张 64 MB）。
+
+### 着色器
+
+着色器按 Python 逐项对应：
+
+| 着色器 | 对应的 Python | 做什么 |
+| --- | --- | --- |
+| `bin.wgsl` | `half_res_codes` + `orient_array` | RAW 合并、转正 |
+| `common.wgsl` | `chain._chroma_chunk`、`tones`、`lut.spaces.Target.render`、`finish.pixels` | 颜色链 |
+| `geo.wgsl` | `finish.geometry` 的 `_straighten_coords`、`_sample`、`_rot_flip` | 拉直、旋转、翻转、裁切 |
+
+每个 Python 落成 uint8 的地方，着色器都照样取整。
+
+`tests/test_gpu_parity.py` 用合成数据在无头 Chrome 的 SwiftShader 上逐像素对拍（含复审给的两个全合成 LUT 反例）。门槛在 `tests/gpu_gate.py`：
+每个用例 ≤1 码值的像素 ≥ 99.99%、平均 ΔE2000 ≤ 0.01（未舍入计数）；在 CPU 有效区蒙版上取边界内外各一像素的边缘带（随拉直、旋转、翻转、裁切变换），
+带外最大差 ≤ 4，>2 码值的像素只能出现在冻结的位置上、并由前向量化复算（第一段 uint8 偏 1 码值后走生产 `finish_array`）逐字节重现；
+带内 >2 码值的像素 ≤ ceil(N×10⁻⁶)。显示类 LUT 的用例不允许冻结豁免。
+
+### 回到服务器出图的情况
+
+以下情况仍由服务器出图，前端不画近似结果：
+
+- 原图（按住空格）；
+- 透视、畸变；
+- 成片里有边框或时间戳（裁剪页的未裁切画面照常走显卡）；
+- 只有 JPG 却选了配方（近似）；
+- Log 类输入的 LUT 带一维表，或输出空间着色器不会编码（如 V-Log）；Log 类 LUT 没有 DNG（`lut_needs_raw`）或没有场景色彩；
+- LUT 表还没到（第一次计算期间）或取表失败；
+- RAW 写法特殊：压缩、线性化表、逐行黑电平等；
+- 浏览器没有 WebGPU，或显卡设备丢失。
+
+### 预热
+
+第一次请求某张照片的显卡信息时，后台把它所在单元、所在 ISO 模型的 8 个内置配方先烘焙好（`RenderService.warm_preview_bakes`）。浏览器同时预取左右相邻照片的源图和配方表；
+预取按照片和它的编辑版本（`sidecar_rev`）去重，拖滑块不会重复预取。
+
+## 平台层（`osplat`）
+
+POSIX（macOS、Linux）和 Windows 的差别都收在 `osplat`：文件锁（`flock` / `msvcrt.locking`，进程退出系统自动放锁）、fd → 真实路径
+（`F_GETPATH` / `/proc/self/fd` / `GetFinalPathNameByHandleW`）、完整落盘（`F_FULLFSYNC` / `fsync`）、拟合子进程看父进程还在不在
+（POSIX 看 `getppid` 有没有变；Windows 不过继，改为拿住父进程句柄看它结束没有）。
+
+**按目录句柄的文件操作**：`PrivateDir`、读卡的 `CardReader` 和照片文件的 `library.media` 只通过 `osplat` 的原语碰文件系统
+（`open_dir`、`open_dir_at`、`open_file_at`、`lstat_at`、`listdir_fd`、`mkdir_at`、`unlink_at`、`rmdir_at`、`rename_at`），
+两个平台走同一套上层代码，句柄一律是整数 fd（Windows 上目录句柄也包成 CRT fd）：
+
+- POSIX：`dir_fd` + `O_DIRECTORY|O_NOFOLLOW`，文件 `O_NOFOLLOW`；
+- Windows：`NtCreateFile` 以父目录句柄为根相对打开，带 `FILE_OPEN_REPARSE_POINT`，打开后看属性，重解析点一律当链接拒绝
+  （云盘占位文件也会被拒绝，宁可退回服务器出图）；删除（`FileDispositionInformation(Ex)`）和改名（`FileRenameInformation(Ex)`，
+  目标以父目录句柄为根）都按已经打开的句柄做；列目录按句柄（`GetFileInformationByHandleEx`）。这些调用不经过 `os.*`，
+  原语里自己发出同名的审计事件，`audit` 的保护规则照常生效。
+
+没有"按路径核对、再按路径操作"的实现，也就没有那段空隙。`make type` 同时按 win32 平台做类型检查；
+`tests/test_platform_io.py` 的竞态测试在 CI 的 windows-latest 上跑的是 Windows 原语。

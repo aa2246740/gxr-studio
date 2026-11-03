@@ -55,8 +55,10 @@ class CameraReference:
         if not product.is_dir() or not crc_source.is_file() or compiler is None:
             pytest.skip(f"g{gen} 的相机 C 源码或 clang 不在本机")
         folder.mkdir(parents=True, exist_ok=True)
-        crc = crc_source.read_text()
-        (folder / "crc.c").write_text('#include "fx_pool.h"\n' + crc[crc.index("uint32_t gxr2_crc_add") : crc.index("uint32_t rv_crc_update")])
+        crc = crc_source.read_text(encoding="utf-8")
+        (folder / "crc.c").write_text(
+            '#include "fx_pool.h"\n' + crc[crc.index("uint32_t gxr2_crc_add") : crc.index("uint32_t rv_crc_update")], encoding="utf-8"
+        )
         core = product / "src/firmware/card_container_v2"
         sources = [core / n for n in ("gate.c", "semantic.c", "common.c")]
         sources += [product / n for n in ("fx_pool.c", "ui_v2_data.c", "memory.c", "kv2/kv_data.c", "kv2/kv_ui.c", "kv2/kv_math.c")]

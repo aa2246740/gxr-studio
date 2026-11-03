@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, cast
 
-from .. import audit
+from .. import audit, osplat
 from .. import meta as metamod
 from . import sidecar as sc
 from .location import check_library_location
@@ -77,10 +77,10 @@ class LibraryPathRefused(Exception):
 
 def _file_key(path: Path) -> tuple[int, int, int, int] | None:
     try:
-        st = os.lstat(path)
+        st = osplat.lstat(path)
     except OSError:
         return None
-    if not stat.S_ISREG(st.st_mode):
+    if not stat.S_ISREG(st.st_mode) or osplat.is_link(st):
         return None
     return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 

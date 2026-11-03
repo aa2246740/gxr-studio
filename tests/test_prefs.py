@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,7 +29,62 @@ def test_missing_directory_stays_missing_until_a_choice_is_saved(settings):
     assert not missing.exists()
 
 
-def test_prefs_default_off_then_remember_each_choice(client, settings):
+def _owner_sid(path):
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    pointer = ctypes.c_void_p
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(pointer),
+        pointer,
+        pointer,
+        pointer,
+        ctypes.POINTER(pointer),
+    ]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(wintypes.LPWSTR)]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [pointer]
+    kernel.LocalFree.restype = pointer
+    owner, descriptor, text = pointer(), pointer(), wintypes.LPWSTR()
+    error = advapi.GetNamedSecurityInfoW(str(path), 1, 1, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor))
+    if error:
+        raise ctypes.WinError(error)
+    try:
+        if not advapi.ConvertSidToStringSidW(owner, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(ctypes.cast(text, pointer))
+        kernel.LocalFree(descriptor)
+
+
+def _assert_owner_permissions(path, tmp_path):
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+        return
+    identity = subprocess.run(["whoami.exe", "/user", "/fo", "csv", "/nh"], capture_output=True, check=True, timeout=10).stdout
+    text = identity.decode("utf-16-le") if b"\x00" in identity else identity.decode("utf-8", errors="replace")
+    match = re.search(r"S-1-5-\d+(?:-\d+)+", text)
+    assert match is not None, text
+    sid = match.group()
+    acl_path = tmp_path / "prefs-acl.txt"
+    subprocess.run(["icacls.exe", str(path), "/save", str(acl_path), "/q"], capture_output=True, check=True, timeout=10)
+    sddl = acl_path.read_text(encoding="utf-16-le").lstrip("\ufeff")
+    aces = [item.split(";") for item in re.findall(r"\(([^()]+)\)", sddl)]
+    owner = _owner_sid(path)
+    assert owner in {sid, "S-1-5-32-544"}, owner
+    assert aces and all(len(ace) == 6 and ace[0] == "A" and ace[-1] in {sid, "SY", "BA", "OW"} for ace in aces), sddl
+    assert {sid, "OW"} & {ace[-1] for ace in aces}, sddl
+
+
+def test_prefs_default_off_then_remember_each_choice(client, settings, tmp_path):
     assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False}
     assert not (settings.home_dir / "prefs.json").exists()
 
@@ -36,7 +94,7 @@ def test_prefs_default_off_then_remember_each_choice(client, settings):
     saved = json.loads((settings.home_dir / "prefs.json").read_text(encoding="utf-8"))
     assert saved["schema"] == "gxr-studio/prefs/1"
     assert saved["onboarding_dismissed"] is True and saved["export_hdr"] is False
-    assert (settings.home_dir / "prefs.json").stat().st_mode & 0o777 == 0o600
+    _assert_owner_permissions(settings.home_dir / "prefs.json", tmp_path)
     assert not any(".tmp" in path.name for path in settings.home_dir.iterdir())
 
     turned_on = client.put("/api/prefs", json={"export_hdr": True})

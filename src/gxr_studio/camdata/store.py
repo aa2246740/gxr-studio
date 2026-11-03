@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import time
 from pathlib import Path
@@ -151,7 +150,7 @@ def recover_interrupted_swaps(home: Path, forbidden: Iterable[Path] = ()) -> lis
                     d.remove(old)
                     done.append(f"{name}: removed stale .old")
                 else:
-                    os.rename(old, name, src_dir_fd=d.fd, dst_dir_fd=d.fd)
+                    d.rename(old, name)
                     done.append(f"{name}: restored from .old")
     except privacy.PrivatePathError:
         return done
@@ -167,7 +166,7 @@ def read_manifest(home: Path) -> dict[Any, Any]:
     p = camera_data_dir(home) / "manifest.json"
     if not p.is_file():
         raise CamdataError("还没有导入相机配方文件")
-    m = cast(dict[str, Any], json.loads(p.read_text()))
+    m = cast(dict[str, Any], json.loads(p.read_text(encoding="utf-8")))
     if m.get("schema") != SCHEMA:
         raise CamdataError("相机配方文件的版本不认识")
     return m

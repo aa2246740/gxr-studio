@@ -69,7 +69,7 @@ def entry_for(home, data, unit, slot, levels=None):
 
 
 def test_render_matches_the_original_preview_frames(home, models, inputs, data):
-    golden = json.loads((t.GOLDEN / "render_frames.json").read_text())["frames"]
+    golden = json.loads((t.GOLDEN / "render_frames.json").read_text(encoding="utf-8"))["frames"]
     step = 1 if os.environ.get("GXR_E0_FULL") else 3
     frames = golden[::step]
     names = dc.NAMES
@@ -117,7 +117,7 @@ def reference_cases(home, data):
 def run_reference(python, entries, cases, tmp_path):
     spec = tmp_path / "cases.json"
     out = tmp_path / "ref.npz"
-    spec.write_text(json.dumps({"entries": entries, "cases": cases}))
+    spec.write_text(json.dumps({"entries": entries, "cases": cases}), encoding="utf-8")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)}
     cp = subprocess.run(
         [python, "-B", str(TOOLS / "ref_render.py"), str(spec), str(out), "--repo", str(t.REPO)],
@@ -174,10 +174,11 @@ def test_unclipped_float_output_is_also_identical(home, models, inputs, data, tm
         "spec = json.load(open(sys.argv[1]))\n"
         "x = np.load(root + '/research/knobs_v2_r2/local/' + spec['scene'] + '_input.npz')['x']\n"
         "out = {k: m.predict(bytes.fromhex(v), x) for k, v in spec['entries'].items()}\n"
-        "np.savez(sys.argv[2], **out)\n"
+        "np.savez(sys.argv[2], **out)\n",
+        encoding="utf-8",
     )
     picks = {f"{u}_{s}": store.load_entry(home, u, s).hex() for u, s in ((0, 1), (0, 3), (1, 6), (2, 8), (2, 4))}
-    (tmp_path / "f.json").write_text(json.dumps({"scene": "redblue", "entries": picks}))
+    (tmp_path / "f.json").write_text(json.dumps({"scene": "redblue", "entries": picks}), encoding="utf-8")
     cp = subprocess.run(
         [sys.executable, "-B", str(script), str(tmp_path / "f.json"), str(tmp_path / "f.npz")],
         capture_output=True,

@@ -67,9 +67,9 @@ class CountingReader(CardReader):
     def __init__(self):
         self.opened: list[str] = []
 
-    def open_rb(self, path):
+    def open_rb(self, path, **kwargs):
         self.opened.append(Path(path).name)
-        return super().open_rb(path)
+        return super().open_rb(path, **kwargs)
 
 
 # ---- ID01 -------------------------------------------------------------------

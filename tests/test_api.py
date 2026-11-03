@@ -160,7 +160,7 @@ def test_export_flow_and_source_untouched(client, card, settings):
     assert after == before, "导出不能改动原文件"
 
 
-def test_export_errors(client, card, settings, volumes):
+def test_export_errors(client, card, settings, volumes, tmp_path):
     import_all(client)
     p = find(client, "R0000102")
     raw_only = find(client, "R0000109", "2026-10-19")
@@ -183,8 +183,11 @@ def test_export_errors(client, card, settings, volumes):
         assert bad.status_code == 422 and bad.json()["message"] == refused and detail in bad.json()["detail"], bad.text
     preview = client.get(f"/api/photos/{p['id']}/render", params={"stage": "final", "size": "preview", "quality": 29})
     assert preview.status_code == 422 and preview.json()["message"] == refused and "30" in preview.json()["detail"]
-    unwritable = client.post(f"/api/photos/{p['id']}/export", json={"dest_dir": "/proc/definitely/not/here"})
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_bytes(b"keep")
+    unwritable = client.post(f"/api/photos/{p['id']}/export", json={"dest_dir": str(blocked / "out")})
     assert unwritable.status_code == 422 and unwritable.json()["error"] == "dest_unwritable"
+    assert blocked.read_bytes() == b"keep"
 
 
 def test_batch_export_by_date(client, card, settings):

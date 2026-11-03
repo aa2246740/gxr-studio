@@ -25,7 +25,7 @@ import os
 import shutil
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -200,10 +200,12 @@ def card_present(card: Card, reader: CardReader) -> bool:
         return False
 
 
-def probe_file(reader: CardReader, card: Card, cf: CardFile, opts: ImportOptions, cancel: threading.Event) -> tuple[str, FileState | None]:
+def probe_file(
+    reader: CardReader, card: Card, cf: CardFile, opts: ImportOptions, cancel: threading.Event, expect: tuple[int, int] | None = None
+) -> tuple[str, FileState | None]:
     """只读算哈希，不复制。给"以前见过"的文件用：图库里确实有这份内容就不用再写一遍。"""
     try:
-        return coverage.hash_card_file(reader, cf.path, cf.size, opts.chunk, cancel)
+        return coverage.hash_card_file(reader, cf.path, cf.size, opts.chunk, cancel, root=card.root, expect=expect)
     except InterruptedError as exc:
         raise Cancelled() from exc
     except OSError as exc:
@@ -226,13 +228,15 @@ def stage_file(
     lib: Library,
     opts: ImportOptions,
     cancel: threading.Event,
+    *,
+    expect: tuple[int, int] | None = None,
 ) -> Staged:
     part = lib.staging_dir / f"{uuid.uuid4().hex}.part"
     digest = hashlib.sha256()
     total = 0
     try:
         try:
-            src = reader.open_rb(cf.path)
+            src = reader.open_rb(cf.path, root=card.root, expect=expect)
         except OSError as exc:
             if not card_present(card, reader):
                 raise CardRemoved() from exc
@@ -363,6 +367,12 @@ def run_import(
     run = _Run(ident or Identity())
     layout_ok = True
     try:
+        if run.ident.expect is None:
+            try:
+                st = card.root.lstat()
+            except OSError as exc:
+                raise CardRemoved() from exc
+            run.ident = replace(run.ident, expect=(st.st_dev, st.st_ino))
         _run(lib, card, opts, progress, cancel, reader, shift, run)
     except CardRemoved:
         progress.update(
@@ -504,12 +514,12 @@ def _read_files(
     for cf in todo:
         try:
             if _hinted(lib, card, cf, run):
-                sha, state = probe_file(reader, card, cf, opts, cancel)
+                sha, state = probe_file(reader, card, cf, opts, cancel, run.ident.expect)
                 run.prove(cf, sha, state)
                 if lib.sha_in_library(sha, cf.size):
                     known[cf.relpath] = sha
                     continue
-            s = stage_file(reader, card, cf, lib, opts, cancel)
+            s = stage_file(reader, card, cf, lib, opts, cancel, expect=run.ident.expect)
             run.prove(cf, s.sha256, s.state)
             staged.append(s)
         except CardReadError:

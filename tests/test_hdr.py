@@ -362,7 +362,7 @@ def test_import_makes_hdr_versions_without_touching_originals(client, hdr_card, 
     for kind in ("jpg", "dng"):
         assert sha256_file(lib.abspath(shot["files"][kind]["relpath"])) == shot["files"][kind]["sha256"]
     assert hs.check_file(lib.abspath(shot["files"]["jpg"]["relpath"]).read_bytes(), made.read_bytes())["ok"]
-    reason = json.loads(derived.status_path(lib, other["id"]).read_text())
+    reason = json.loads(derived.status_path(lib, other["id"]).read_text(encoding="utf-8"))
     assert reason == {"status": "unsupported", "reason": "not_aligned", "version": derived.VERSION}
     assert {p.name: sha256_file(p) for p in folder.iterdir()} == card_before
     # 重建索引不会把派生文件当成照片
@@ -387,7 +387,7 @@ def test_hdr_failure_is_logged_and_does_not_touch_the_import(client, hdr_card, m
 
 def test_flag_turns_import_hdr_off(client, hdr_card, settings):
     settings.home_dir.mkdir(parents=True, exist_ok=True)
-    (settings.home_dir / "flags.json").write_text(json.dumps({"hdr_on_import": False}))
+    (settings.home_dir / "flags.json").write_text(json.dumps({"hdr_on_import": False}), encoding="utf-8")
     _job, hdr_job = _import(client)
     assert hdr_job is None
 

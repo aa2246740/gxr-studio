@@ -34,6 +34,12 @@ FLAGS: dict[str, Flag] = {
         description="导入结束后在后台给 RAW+JPG 的照片生成 HDR 版本。关掉就不生成，导出时的 HDR 不受影响。",
         added="2026-11-01",
     ),
+    "gpu_preview": Flag(
+        name="gpu_preview",
+        default=False,
+        description="大图用浏览器的 WebGPU 实时预览（拖滑块不再请求服务器出图）。没有 WebGPU 或这张照片不支持时，仍用服务器出图。",
+        added="2026-11-02",
+    ),
 }
 
 

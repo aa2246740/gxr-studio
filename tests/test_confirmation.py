@@ -14,7 +14,7 @@ def test_confirmation_defaults_to_cancel_and_enter_never_confirms(tmp_path):
     module = tmp_path / "dom.mjs"
     module.write_bytes((root / "web/assets/dom.js").read_bytes())
     script = root / "tests/support/confirmation_dom.mjs"
-    result = subprocess.run(["node", str(script), module.as_uri()], capture_output=True, text=True, timeout=10)
+    result = subprocess.run(["node", str(script), module.as_uri()], capture_output=True, text=True, timeout=10, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
         "default_focus": "取消",

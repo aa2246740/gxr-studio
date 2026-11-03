@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .. import audit
+from .. import audit, osplat
 
 KINDS = {".dng": "dng", ".jpg": "jpg"}
 # GXR 的录像：固件字符串里有 ".AVI" 和 RIFF 的 "avih"（research/color_injection/jlaunch3-strings.txt）。
@@ -32,7 +32,6 @@ MAC_SYSTEM_FILES = frozenset({".DS_Store", ".metadata_never_index", ".localized"
 # 名字像系统文件还不够（复审 A1a P1-04）：`._*` 必须真是 AppleDouble/AppleSingle；能认出是照片或视频的内容一律不算
 APPLEDOUBLE_MAGIC = (b"\x00\x05\x16\x07", b"\x00\x05\x16\x00")
 HEAD_BYTES = 16
-_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 @dataclass(frozen=True)
@@ -74,36 +73,74 @@ class CardShot:
         return sum(f.size for f in self.files.values())
 
 
+def _open_root(path: Path) -> int:
+    if path == path.parent:
+        return osplat.open_dir(path)
+    parent = osplat.open_dir(os.path.realpath(path.parent))
+    try:
+        return osplat.open_dir_at(parent, path.name)
+    finally:
+        os.close(parent)
+
+
 class CardReader:
-    """唯一允许碰卡文件的入口，只提供读。测试里可以继承它来模拟拔卡、读错。"""
+    """唯一允许碰卡文件的入口，只提供读。测试里可以继承它来模拟拔卡、读错。
+    严格扫描的目录句柄、按句柄列目录、不跟随链接的打开都来自 `osplat`，两个平台同一套实现：
+    句柄打开以后，之后的列目录、看属性、读开头都绑定这个句柄，中间目录被换掉也不会读到别处。"""
 
     def scandir(self, path: Path) -> Any:
         return os.scandir(path)
 
-    def open_rb(self, path: Path) -> Any:
-        """只读打开；最后一级是链接时拒绝（O_NOFOLLOW），不会顺着链接读到卡外面去。"""
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        return os.fdopen(fd, "rb", buffering=0)
+    def open_rb(self, path: Path, *, root: Path, expect: tuple[int, int] | None = None) -> Any:
+        """从核对过身份的卡根句柄逐级只读打开，卡根以下任何一级是链接都拒绝。"""
+        try:
+            parts = Path(path).relative_to(root).parts
+        except ValueError as exc:
+            raise OSError(errno.EINVAL, "文件不在卡根下", str(path)) from exc
+        if not parts or any(part in (".", "..") for part in parts):
+            raise OSError(errno.EINVAL, "卡内相对路径不合法", str(path))
+        if expect is None:
+            st = root.lstat()
+            expect = (st.st_dev, st.st_ino)
+        dfd = _open_root(root)
+        try:
+            st = os.fstat(dfd)
+            if (st.st_dev, st.st_ino) != expect:
+                raise OSError(errno.ESTALE, "卡根已改变", str(root))
+            for part in parts[:-1]:
+                child = osplat.open_dir_at(dfd, part)
+                os.close(dfd)
+                dfd = child
+            fd = osplat.open_file_at(dfd, parts[-1])
+        finally:
+            os.close(dfd)
+        try:
+            return os.fdopen(fd, "rb", buffering=0)
+        except BaseException:
+            os.close(fd)
+            raise
 
     def exists(self, path: Path) -> bool:
         return os.path.isdir(path)
 
-    # 严格扫描用：按目录 fd 往下走，不跟随链接
+    # 严格扫描用：按目录句柄往下走，不跟随链接
     def open_dir(self, name: str | Path, dir_fd: int | None = None) -> int:
-        return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
+        if dir_fd is not None:
+            return osplat.open_dir_at(dir_fd, str(name))
+        return _open_root(Path(name))
 
     def fstat(self, fd: int) -> os.stat_result:
-        return os.fstat(fd)
+        return osplat.fstat(fd)
 
     def listdir_fd(self, fd: int) -> list[str]:
-        return os.listdir(fd)
+        return osplat.listdir_fd(fd)
 
     def stat_at(self, name: str, dir_fd: int) -> os.stat_result:
-        return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        return osplat.lstat_at(dir_fd, name)
 
     def read_head(self, name: str, dir_fd: int, n: int = HEAD_BYTES) -> bytes:
         """只读、不跟随链接地读文件开头几个字节（判断它到底是不是系统文件）。"""
-        fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+        fd = osplat.open_file_at(dir_fd, name)
         try:
             return os.read(fd, n)
         finally:
@@ -253,11 +290,12 @@ class StrictScan:
         return sorted(self.photos["dng"] + self.photos["jpg"] + self.videos, key=lambda e: e.relpath)
 
 
-def _entry_type(mode: int) -> str:
+def _entry_type(st: os.stat_result) -> str:
+    mode = st.st_mode
+    if osplat.is_link(st):  # 先看链接：Windows 的目录联接 st_mode 也是目录
+        return "link"
     if stat.S_ISDIR(mode):
         return "dir"
-    if stat.S_ISLNK(mode):
-        return "link"
     if stat.S_ISREG(mode):
         return "file"
     return "other"
@@ -337,12 +375,12 @@ def scan_card_strict(root: Path, reader: CardReader | None = None, expect: tuple
                 dcim_names.append((name, est))
             elif name in ROOT_SYSTEM_ITEMS:
                 continue
-            out.root_entries.append(StrictEntry(name, _entry_type(est.st_mode), est.st_size, est.st_mtime_ns))
+            out.root_entries.append(StrictEntry(name, _entry_type(est), est.st_size, est.st_mtime_ns))
         if len(dcim_names) > 1:
             out.fail("DCIM", "duplicate_dcim")
         if dcim_names:
             name, est = dcim_names[0]
-            kind = _entry_type(est.st_mode)
+            kind = _entry_type(est)
             out.dcim = {"dir": "present", "link": "link"}.get(kind, "not_dir")
             out.root_entries.append(StrictEntry(name, kind, est.st_size, est.st_mtime_ns))
             if out.dcim == "present":
@@ -378,7 +416,7 @@ def _walk_strict(reader: CardReader, parent_fd: int, name: str, rel: str, expect
             except OSError as exc:
                 out.fail(crel, exc)
                 continue
-            kind = _entry_type(est.st_mode)
+            kind = _entry_type(est)
             entry = StrictEntry(crel, kind, est.st_size, est.st_mtime_ns, est.st_ino, est.st_ctime_ns)
             out.entries.append(entry)
             if kind == "dir":

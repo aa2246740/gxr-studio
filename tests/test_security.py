@@ -129,8 +129,8 @@ def test_audit_records_writes_and_blocks_protected(tmp_path):
     root = tmp_path / "watched"
     root.mkdir()
     with audit.AuditRecorder(watch=(str(root),), record_reads=True) as rec:
-        (root / "a.txt").write_text("x")
-        (root / "a.txt").read_text()
+        (root / "a.txt").write_text("x", encoding="utf-8")
+        (root / "a.txt").read_text(encoding="utf-8")
         os.rename(root / "a.txt", root / "b.txt")
         os.remove(root / "b.txt")
     ops = [(w.op, os.path.basename(w.path)) for w in rec.writes]
@@ -140,21 +140,19 @@ def test_audit_records_writes_and_blocks_protected(tmp_path):
     try:
         with audit.AuditRecorder(watch=(str(root),)) as rec2:
             with pytest.raises(PermissionError):
-                (root / "c.txt").write_text("x")
+                (root / "c.txt").write_text("x", encoding="utf-8")
         assert rec2.writes and rec2.writes[0].blocked and not (root / "c.txt").exists()
     finally:
         audit.unprotect(root)
 
 
-def test_real_volumes_are_off_limits_in_tests():
+def test_real_volumes_are_off_limits_in_tests(tmp_path):
     for target in ("/Volumes", "/Volumes/RICOHDCX", "/Volumes/RICOHDCX/DCIM"):
         with pytest.raises(PermissionError):
             os.listdir(target)
         with pytest.raises(PermissionError):
             open(target + "/x", "rb")
-    if not os.path.isdir("/Volumes/Workspace"):
-        pytest.skip("工作盘 /Volumes/Workspace 不在本机，跳过 stat 不拦截的检查")
-    assert os.path.isdir("/Volumes/Workspace")  # 工作盘本身仍然可用（stat 不触发拦截）
+    assert os.path.isdir(tmp_path)  # stat 仍能查询测试目录。
 
 
 def test_default_library_and_export_dirs_are_protected():

@@ -132,14 +132,14 @@ def model_for(home: Path, iso: int = 200) -> tuple[Any, ...]:
     from ..engine.model import Model
 
     d = calib_dir(home)
-    m = json.loads((d / "manifest.json").read_text())
+    m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
     for name, meta in m["files"].items():
         if _sha((d / name).read_bytes()) != meta["sha256"]:
             raise CalibError("校准数据被改动")
     model_iso = 1600 if int(iso) == 1600 else 200
     with np.load(d / f"ctx_{model_iso}.npz", allow_pickle=False) as z:
         d0, d1 = z["d0"].copy(), z["d1"].copy()
-    ring = json.loads((d / f"ring_model_{model_iso}.json").read_text())
+    ring = json.loads((d / f"ring_model_{model_iso}.json").read_text(encoding="utf-8"))
     stock = stock_words_of_entry(store.load_stock04(home, "jlaunch"))
     model = Model(stock, d0, d1, ring)
     return model, {"iso": int(iso), "calibrated": int(iso) in CALIBRATED_ISOS, "model_iso": model_iso}

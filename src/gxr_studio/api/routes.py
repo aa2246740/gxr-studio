@@ -321,6 +321,8 @@ def get_settings(request: Request) -> dict[Any, Any]:
         "min_free_bytes": s.min_free_bytes,
         "free_bytes": shutil.disk_usage(c.lib.root).free,
         "photo_count": c.lib.count(),
+        # 前端据此决定要不要走显卡预览；关着就不请求 /gpu
+        "gpu_preview": flag_enabled(c.settings, "gpu_preview"),
     }
 
 

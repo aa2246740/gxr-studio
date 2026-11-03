@@ -352,6 +352,9 @@ table.keys td:first-child { white-space: nowrap; width: 150px; }
 .pv-cv { position: absolute; }
 /* 画面本身决定外层的尺寸（裁切框按百分比贴在它上面），所以不能是绝对定位 */
 .pv-img { display: block; max-width: none; user-select: none; pointer-events: none; }
+/* 显卡预览的画布（gpu_stage.js）。底色和画布外的空白用设计系统的舞台灰（research/studio_ui_r1/tokens.css 的 --stage-dark） */
+.stage-area.gpu { background: var(--ds-stage, #2a2a2a); }
+.pv-gpu { display: block; user-select: none; pointer-events: none; }
 .pv-vig { position: absolute; inset: 0; pointer-events: none; }
 .fade-in { animation: fadein .15s ease-out; }
 @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import contextvars
 import errno
-import fcntl
 import os
+import socket
 import sys
 import threading
 from contextlib import contextmanager
@@ -59,7 +59,6 @@ _DIR_FD_ARGS: dict[str, dict[int, int]] = {
 # `open` 事件不带 dir_fd：按目录 fd 读写的代码（privacy.PrivateDir）在这段时间里把那个目录的真实路径放在这里
 # 放目录 fd（整数）时在事件发生的那一刻再解析真实位置：目录在这之间被移走，记录的也是它真正所在的地方
 _relative_base: contextvars.ContextVar[str | int | None] = contextvars.ContextVar("gxr_audit_relative_base", default=None)
-_F_GETPATH = getattr(fcntl, "F_GETPATH", None)
 
 
 @dataclass(frozen=True)
@@ -130,15 +129,9 @@ def _under(path: str, prefixes: tuple[str, ...]) -> bool:
 
 
 def _fd_dir(fd: int) -> str | None:
-    if _F_GETPATH is not None:
-        try:
-            return os.fsdecode(fcntl.fcntl(fd, _F_GETPATH, b"\0" * 1024).split(b"\0", 1)[0])
-        except OSError:
-            return None
-    try:
-        return os.readlink(f"/proc/self/fd/{fd}")
-    except OSError:
-        return None
+    from .osplat import fd_path  # 延迟导入：审计钩子要尽早装上，平台层不依赖它
+
+    return fd_path(fd)
 
 
 @contextmanager
@@ -173,6 +166,28 @@ def _is_write_open(mode: Any, flags: Any) -> bool:
     return isinstance(flags, int) and bool(flags & _WRITE_FLAGS)
 
 
+def _event_loop_socketpair(args: tuple[Any, ...]) -> bool:
+    """仅识别 CPython 事件循环自唤醒通道中的那一次 socketpair 连接。"""
+    from asyncio import proactor_events, selector_events
+
+    caller = sys._getframe(2)
+    owner = caller.f_back
+    fallback = getattr(socket, "_fallback_socketpair", socket.socketpair)
+    if caller.f_code is not getattr(fallback, "__code__", None) or owner is None:
+        return False
+    if owner.f_code not in (
+        getattr(selector_events.BaseSelectorEventLoop, "_make_self_pipe").__code__,
+        getattr(proactor_events.BaseProactorEventLoop, "_make_self_pipe").__code__,
+    ):
+        return False
+    listener = caller.f_locals.get("lsock")
+    client = caller.f_locals.get("csock")
+    if len(args) != 2 or args[0] is not client or not isinstance(listener, socket.socket):
+        return False
+    address = args[1]
+    return isinstance(address, tuple) and len(address) == 2 and address[0] in ("127.0.0.1", "::1") and listener.getsockname()[:2] == address
+
+
 def _hook(event: str, args: tuple[Any, ...]) -> None:
     if event == "open":
         if not (_recorders or _protected or _forbidden_reads or _volume_guard):
@@ -203,7 +218,7 @@ def _hook(event: str, args: tuple[Any, ...]) -> None:
         if event == "socket.connect":
             addr = args[1] if len(args) > 1 else None
             # 本机 unix socket 不算联网
-            if isinstance(addr, (str, bytes)):
+            if isinstance(addr, (str, bytes)) or _event_loop_socketpair(args):
                 return
         _network_log.append(f"{event} {target}")
         raise PermissionError(errno.EPERM, f"offline: {event} {target}")
@@ -309,7 +324,7 @@ def forbid_volumes(base: str = "/Volumes", allow: tuple[str, ...] = ("Workspace"
     """测试用：禁止读写 `/Volumes` 下除 allow 以外的任何卷（用户的真实存储卡在这里），连列目录都不行。"""
     global _volume_guard
     install()
-    _volume_guard = (base, tuple(allow))
+    _volume_guard = (os.path.abspath(base), tuple(allow))
 
 
 def forbid_network(on: bool = True) -> None:
@@ -318,5 +333,9 @@ def forbid_network(on: bool = True) -> None:
     _network_forbidden = on
 
 
-def network_attempts() -> list[str]:
-    return list(_network_log)
+def network_attempts(*, clear: bool = False) -> list[str]:
+    with _lock:
+        result = list(_network_log)
+        if clear:
+            _network_log.clear()
+        return result

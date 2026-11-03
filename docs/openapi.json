@@ -2243,6 +2243,43 @@
         "summary": "Export Lut"
       }
     },
+    "/api/luts/{cube_id}/table": {
+      "get": {
+        "operationId": "gpu_lut_table_api_luts__cube_id__table_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cube_id",
+            "required": true,
+            "schema": {
+              "title": "Cube Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gpu Lut Table"
+      }
+    },
     "/api/metrics": {
       "get": {
         "operationId": "metrics_api_metrics_get",
@@ -2525,6 +2562,96 @@
           }
         },
         "summary": "Get Photo"
+      }
+    },
+    "/api/photos/{shot_id}/bake": {
+      "get": {
+        "operationId": "gpu_bake_api_photos__shot_id__bake_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "recipe",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Recipe"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gpu Bake"
+      }
+    },
+    "/api/photos/{shot_id}/camera-jpg": {
+      "get": {
+        "operationId": "gpu_camera_jpg_api_photos__shot_id__camera_jpg_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gpu Camera Jpg"
       }
     },
     "/api/photos/{shot_id}/capabilities": {
@@ -2884,6 +3011,134 @@
         "summary": "Geometry Auto"
       }
     },
+    "/api/photos/{shot_id}/gpu": {
+      "get": {
+        "operationId": "gpu_info_api_photos__shot_id__gpu_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gpu Info"
+      }
+    },
+    "/api/photos/{shot_id}/gpu/box": {
+      "post": {
+        "operationId": "gpu_box_api_photos__shot_id__gpu_box_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "crop": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Crop"
+                  },
+                  "geometry": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Geometry"
+                  },
+                  "height": {
+                    "maximum": 20000,
+                    "minimum": 1,
+                    "title": "Height",
+                    "type": "integer"
+                  },
+                  "width": {
+                    "maximum": 20000,
+                    "minimum": 1,
+                    "title": "Width",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "width",
+                  "height"
+                ],
+                "title": "BoxRequest",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gpu Box"
+      }
+    },
     "/api/photos/{shot_id}/meta": {
       "get": {
         "operationId": "photo_meta_api_photos__shot_id__meta_get",
@@ -2956,6 +3211,43 @@
           }
         },
         "summary": "Photo Preview"
+      }
+    },
+    "/api/photos/{shot_id}/raw": {
+      "get": {
+        "operationId": "gpu_raw_api_photos__shot_id__raw_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gpu Raw"
       }
     },
     "/api/photos/{shot_id}/render": {

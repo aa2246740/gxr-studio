@@ -48,6 +48,23 @@ def file_parts(filename: str) -> tuple[str, str | None, bool]:
     return name, group, skip
 
 
+# 决定 LUT 出图结果的字段和缺省值（与 `LutLibrary.target` 一致）
+_RENDER_SPEC = (
+    ("input_space", None),
+    ("output_space", None),
+    ("input_gamut", None),
+    ("output_gamut", None),
+    ("input_range", "full"),
+    ("output_range", "full"),
+)
+
+
+def _token(cube_id: str, item: dict[str, Any]) -> str:
+    spec = {key: item.get(key, default) for key, default in _RENDER_SPEC}
+    doc = json.dumps({"cube": cube_id, "spec": spec}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(doc.encode()).hexdigest()[:16]
+
+
 class LutLibrary:
     def __init__(self, home: Path, forbidden: Iterable[Path] = ()) -> None:
         self.home = Path(home)
@@ -58,9 +75,10 @@ class LutLibrary:
     def private(self) -> PrivateDir:
         return PrivateDir(self.home, "LUT", self.forbidden)
 
-    def _read(self, directory: PrivateDir) -> dict[str, Any]:
+    def _read(self, directory: PrivateDir, *, persist: bool = True) -> dict[str, Any]:
+        """persist=False：旧格式的升级只在内存里做，不写盘（显卡预览的只读接口用）。正常启动时 `migrate()` 已写好。"""
         if not directory.exists("luts/library.json"):
-            return self._legacy(directory)
+            return self._legacy(directory, persist=persist)
         try:
             doc: dict[str, Any] = json.loads(directory.read("luts/library.json"))
             if doc["schema"] != SCHEMA or not isinstance(doc["items"], dict) or not isinstance(doc["groups"], list):
@@ -91,6 +109,8 @@ class LutLibrary:
             raise LutError(422, "lut_library_unreadable", "无法读取 LUT 库。请检查应用数据。")
         upgraded = self._upgrade_attribution(directory, doc)
         upgraded = self._upgrade_identification(directory, doc) or upgraded
+        if not persist:
+            return doc
         if pending:
             for cube_id in pending:
                 self._finish_deleted(directory, cube_id)
@@ -135,7 +155,7 @@ class LutLibrary:
         item["fit"] = item["recipe"] = item["camera_lut"] = None
         item["version"] += 1
 
-    def _legacy(self, directory: PrivateDir) -> dict[str, Any]:
+    def _legacy(self, directory: PrivateDir, *, persist: bool = True) -> dict[str, Any]:
         """旧版仅保存 SHA.cube 和 SHA.filename，首次打开时登记，保留原文件。"""
         doc: dict[str, Any] = {"schema": SCHEMA, "revision": 0, "groups": [], "items": {}}
         if directory.exists("luts"):
@@ -149,9 +169,14 @@ class LutLibrary:
                 if record["cube_id"] != name.removesuffix(".cube"):
                     raise LutError(409, "cube_changed", "这个 LUT 已改变。请重新导入。")
                 doc["items"][record["cube_id"]] = record
-        if doc["items"]:
+        if doc["items"] and persist:
             self._save(directory, doc)
         return doc
+
+    def migrate(self) -> None:
+        """启动时做一次：旧版登记、署名和识别的升级、未完成的删除都写好，之后的读取不再写盘。"""
+        with self.lock, self.private() as directory:
+            self._read(directory)
 
     def _save(self, directory: PrivateDir, doc: dict[str, Any]) -> None:
         doc["revision"] += 1
@@ -171,19 +196,21 @@ class LutLibrary:
             doc = self._read(directory)
             return {"luts": list(doc["items"].values()), "groups": doc["groups"], "revision": doc["revision"]}
 
-    def get(self, cube_id: str) -> dict[str, Any]:
+    def get(self, cube_id: str, *, persist: bool = True) -> dict[str, Any]:
         with self.lock, self.private() as directory:
-            return self._item(self._read(directory), cube_id)
+            return self._item(self._read(directory, persist=persist), cube_id)
 
-    def render_token(self, cube_id: str) -> str:
-        """照片缓存同时绑定 LUT 身份与空间版本；删除也得到新版本。"""
+    def render_token(self, cube_id: str, *, persist: bool = True) -> str:
+        """照片缓存、显卡 LUT 表和图片 URL 共用的出图标识：cube 内容（cube_id 就是它的 SHA-256）加完整的色彩规范
+        （`target()` 用到的全部空间字段）的哈希。同一个规范一定得到同一张表；规范一变标识就变。
+        不用记录里的 version：删除后重新导入，version 会从头再数，旧标识会被复用（复审 r2 P1-02）。删除得到单独的标识。"""
         try:
-            version = self.get(cube_id)["version"]
+            item = self.get(cube_id, persist=persist)
         except LutError as exc:
             if exc.code != "cube_not_found":
                 raise
-            version = "deleted"
-        return hashlib.sha256(f"{cube_id}:{version}".encode()).hexdigest()[:16]
+            return hashlib.sha256(f"{cube_id}:deleted".encode()).hexdigest()[:16]
+        return _token(cube_id, item)
 
     def add(self, raw: bytes, filename: str, group: str | None = None) -> dict[str, Any]:
         name, folder, skip = file_parts(filename)
@@ -245,9 +272,9 @@ class LutLibrary:
             "size_3d": 0 if cube.table3 is None else len(cube.table3),
         }
 
-    def load(self, cube_id: str) -> Cube:
+    def load(self, cube_id: str, *, persist: bool = True) -> Cube:
         with self.lock, self.private() as directory:
-            self._item(self._read(directory), cube_id)
+            self._item(self._read(directory, persist=persist), cube_id)
             raw = self._raw(directory, cube_id)
             cached = self._cubes.get(cube_id)
             if cached is None:
@@ -386,21 +413,30 @@ class LutLibrary:
                     result.append((relative, recipe))
         return result
 
-    def target(self, cube_id: str) -> tuple[Target, dict[str, Any]]:
+    def target(self, cube_id: str, *, persist: bool = True) -> tuple[Target, dict[str, Any]]:
+        target, item, _token_value = self.target_and_token(cube_id, persist=persist)
+        return target, item
+
+    def target_and_token(self, cube_id: str, *, persist: bool = True) -> tuple[Target, dict[str, Any], str]:
+        """出图目标和它的标识来自同一次读取（同一个快照）：表和标识不会对不上。"""
         with self.lock:
-            item = self.get(cube_id)
+            item = self.get(cube_id, persist=persist)
             space = item["input_space"]
             if space is None:
                 raise LutError(422, "lut_space_required", "请选择输入色彩空间")
-            return Target(
-                self.load(cube_id),
-                space,
-                item["output_space"],
-                item.get("input_gamut"),
-                item.get("output_gamut"),
-                item.get("input_range", "full"),
-                item.get("output_range", "full"),
-            ), item
+            return (
+                Target(
+                    self.load(cube_id, persist=persist),
+                    space,
+                    item["output_space"],
+                    item.get("input_gamut"),
+                    item.get("output_gamut"),
+                    item.get("input_range", "full"),
+                    item.get("output_range", "full"),
+                ),
+                item,
+                _token(cube_id, item),
+            )
 
     def export(self, cube_id: str) -> dict[str, Any]:
         with self.lock, self.private() as directory:

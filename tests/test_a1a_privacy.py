@@ -42,7 +42,7 @@ def fake_repo(base: Path, as_file: bool = False) -> Path:
     repo = base / "repo"
     repo.mkdir(parents=True)
     if as_file:
-        (repo / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")  # git worktree 的 .git 是文件
+        (repo / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n", encoding="utf-8")  # git worktree 的 .git 是文件
     else:
         (repo / ".git").mkdir()
     return repo
@@ -241,14 +241,14 @@ def test_repository_and_distribution_guard_covers_renames(tmp_path, monkeypatch)
     plain = tmp_path / "plain.bin"
     plain.write_bytes(b"\x01\x02" * 100)
     assert pb.scan_paths([plain]) == []
-    assert pb.scan_paths([plain], frozenset({hashlib.sha256(plain.read_bytes()).hexdigest()})) == [(str(plain), "R4 registered-sha")]
+    assert pb.scan_paths([plain], frozenset({hashlib.sha256(plain.read_bytes()).hexdigest()})) == [(plain.as_posix(), "R4 registered-sha")]
 
 
 def test_checker_allows_source_literals_and_does_not_echo_content(tmp_path, capsys):
     """源码里的短字面量（datcodec.py 本来就有 b"GXRCE001"）不算；命中时只打印路径和规则编号。"""
     pb = load_checker()
     src = tmp_path / "codec.py"
-    src.write_text('MAGIC = b"GXRCE001"\nOTHER = b"GXRRV201"\nUI = b"GXUI124\\0"\n')
+    src.write_text('MAGIC = b"GXRCE001"\nOTHER = b"GXRRV201"\nUI = b"GXUI124\\0"\n', encoding="utf-8")
     assert pb.scan_paths([src]) == []
     bad = tmp_path / "x.bin"
     bad.write_bytes(fake_dat(1))

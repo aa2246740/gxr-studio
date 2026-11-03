@@ -8,8 +8,9 @@
    经符号链接进入的也一样；
 2. 不能在任何卷根（`GXR_STUDIO_VOLUMES`）、任何当前卡根（含 DCIM）或图库目录之下；登记了写保护的目录
    （发现到的卡根，`audit.protect`）不管调用方传没传，一律算在内；
-3. 写的时候（`PrivateDir`）按 O_DIRECTORY|O_NOFOLLOW 逐级打开目标目录，之后的创建、读回、删除、改名、整体替换
-   全部相对这个目录 fd 进行；每次改动之前再核对 fd 的真实路径：检查之后有人把目录换成链接，也写不进去；
+3. 写的时候（`PrivateDir`）逐级不跟随链接地打开目标目录（`osplat.open_dir_at`：POSIX 的 O_DIRECTORY|O_NOFOLLOW，
+   Windows 以父目录句柄为根的相对打开 + 拒绝重解析点），之后的创建、读回、删除、改名、整体替换全部相对这个目录句柄进行，
+   删除和改名按句柄做；每次改动之前再核对句柄的真实路径：检查之后有人把目录换成链接，也写不进去；
 4. 拒绝时不写半个文件，报"无法导出到这个文件夹。请选择其他文件夹。"，`detail` 写原因。
 
 忽略规则和提交前检查（`scripts/private_bytes.py`）只是辅助，这里才是防线。
@@ -18,21 +19,17 @@
 from __future__ import annotations
 
 import ctypes
-import fcntl
 import os
 import secrets
-import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from . import audit
+from . import audit, osplat
 from .observe import log
 
 MESSAGE = "无法导出到这个文件夹。请选择其他文件夹。"
-_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-_F_GETPATH = getattr(fcntl, "F_GETPATH", None)
-_HOST_IS_DARWIN = os.uname().sysname == "Darwin"  # 真实宿主；不看运行中可能被改动的 sys.platform
+_HOST_IS_DARWIN = osplat.HOST_IS_DARWIN  # 真实宿主；不看运行中可能被改动的 sys.platform
 
 
 class PrivatePathError(Exception):
@@ -80,29 +77,20 @@ def check_private_dir(path: str | os.PathLike[Any], purpose: str, forbidden: Ite
 
 
 def fd_path(fd: int) -> str | None:
-    """目录 fd 现在的真实路径（macOS 用 F_GETPATH，Linux 读 /proc/self/fd）。拿不到返回 None。"""
-    if _F_GETPATH is not None:
-        try:
-            raw = fcntl.fcntl(fd, _F_GETPATH, b"\0" * 1024)
-        except OSError:
-            return None
-        return os.fsdecode(raw.split(b"\0", 1)[0])
-    try:
-        return os.readlink(f"/proc/self/fd/{fd}")
-    except OSError:
-        return None
+    """目录 fd 现在的真实路径（见 `osplat.fd_path`）。拿不到返回 None。"""
+    return osplat.fd_path(fd)
 
 
 def _open_dir_nofollow(real: Path) -> int:
-    """从根开始逐级 O_DIRECTORY|O_NOFOLLOW 打开（不存在就排他创建那一级）。任何一级是链接都失败。"""
-    fd = os.open("/", _DIR_FLAGS)
+    """从根开始逐级不跟随链接打开（不存在就排他创建那一级）。任何一级是链接都失败。"""
+    fd = osplat.open_dir(real.anchor)
     try:
         for part in real.parts[1:]:
             try:
-                nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
+                nfd = osplat.open_dir_at(fd, part)
             except FileNotFoundError:
-                os.mkdir(part, 0o700, dir_fd=fd)
-                nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
+                osplat.mkdir_at(fd, part)
+                nfd = osplat.open_dir_at(fd, part)
             os.close(fd)
             fd = nfd
     except BaseException:
@@ -116,20 +104,20 @@ def _rmtree_at(dfd: int, name: str, check: Any = None) -> None:
     `check(fd)` 在每次删除之前核对实际使用的父目录 fd 还在允许的位置（被移走就停下）。"""
     if check is not None:
         check(dfd)
-    st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
-    if not stat.S_ISDIR(st.st_mode):
-        os.unlink(name, dir_fd=dfd)
+    st = osplat.lstat_at(dfd, name)
+    if not osplat.is_real_dir(st):  # 文件和链接（包括 Windows 的目录联接）：删它本身，按句柄，不跟随
+        osplat.unlink_at(dfd, name)
         return
     with audit.relative_to(dfd):
-        fd = os.open(name, _DIR_FLAGS, dir_fd=dfd)
+        fd = osplat.open_dir_at(dfd, name)
     try:
-        for child in os.listdir(fd):
+        for child in osplat.listdir_fd(fd):
             _rmtree_at(fd, child, check)
     finally:
         os.close(fd)
     if check is not None:
         check(dfd)
-    os.rmdir(name, dir_fd=dfd)
+    osplat.rmdir_at(dfd, name)
 
 
 def _exchange_at(dfd: int, a: str, b: str) -> bool:
@@ -153,7 +141,8 @@ def _parts(rel: str) -> list[str]:
 
 
 class PrivateDir:
-    """已经核对过的私有目录能力（设计 §5.6）。
+    """已经核对过的私有目录能力（设计 §5.6）。两个平台同一套实现：目录句柄和逐级不跟随链接的打开都来自 `osplat`
+    （POSIX 是 `dir_fd` + `O_NOFOLLOW`，Windows 是以父目录句柄为根的 `NtCreateFile` + 拒绝重解析点，删除和改名按句柄）。
 
     打开时：`check_private_dir` 核对，再按 realpath 从根逐级 O_DIRECTORY|O_NOFOLLOW 打开（核对之后被换成链接就打不开）。
     之后的所有读写都相对持有的目录 fd；每次改动之前 `verify()`：fd 的真实路径必须还是核对过的那个，而且仍然合格。
@@ -211,13 +200,13 @@ class PrivateDir:
             for part in parts[:-1]:
                 with audit.relative_to(fd):
                     try:
-                        nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
+                        nfd = osplat.open_dir_at(fd, part)
                     except FileNotFoundError:
                         if not create:
                             raise
                         self.check_fd(fd)  # 建目录之前：这一级父目录还在原处
-                        os.mkdir(part, 0o700, dir_fd=fd)
-                        nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
+                        osplat.mkdir_at(fd, part)
+                        nfd = osplat.open_dir_at(fd, part)
                 opened.append(nfd)
                 fd = nfd
             # 审计钩子的 open 事件不带 dir_fd：把 fd 本身交给它，事件发生时再解析真实目录（不用早先存下的路径字符串）
@@ -230,7 +219,7 @@ class PrivateDir:
     def exists(self, rel: str) -> bool:
         try:
             with self._at(rel) as (dfd, name):
-                os.stat(name, dir_fd=dfd, follow_symlinks=False)
+                osplat.lstat_at(dfd, name)
             return True
         except FileNotFoundError:
             return False
@@ -239,12 +228,12 @@ class PrivateDir:
         """按实际目录句柄列名字，不跟随中间目录的链接。"""
         with self._at(f"{rel}/.entries") as (dfd, _name):
             self.check_fd(dfd)
-            return os.listdir(dfd)
+            return osplat.listdir_fd(dfd)
 
     def read(self, rel: str) -> bytes:
         with self._at(rel) as (dfd, name):
             self.check_fd(dfd)
-            fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dfd)
+            fd = osplat.open_file_at(dfd, name)
             with os.fdopen(fd, "rb") as fh:
                 return fh.read()
 
@@ -253,7 +242,7 @@ class PrivateDir:
         self.verify()
         with self._at(rel, create=True) as (dfd, name):
             self.check_fd(dfd)  # 创建之前核对最终要用的父目录 fd
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=dfd)
+            fd = osplat.open_file_at(dfd, name, create=True)
             try:
                 try:
                     view = memoryview(data)
@@ -292,8 +281,8 @@ class PrivateDir:
             self.verify()
             with self._at(rel) as (dfd, name):
                 self.check_fd(dfd)
-                os.rename(tmp.rsplit("/", 1)[-1], name, src_dir_fd=dfd, dst_dir_fd=dfd)
-                _full_sync(dfd)
+                osplat.rename_at(dfd, tmp.rsplit("/", 1)[-1], name)
+                osplat.sync_dir(dfd)
         except BaseException:
             self.remove(tmp)
             raise
@@ -307,6 +296,15 @@ class PrivateDir:
         except FileNotFoundError:
             pass
 
+    def rename(self, old: str, new: str) -> None:
+        """本目录这一层里改名（两个名字都不带 /）。"""
+        _parts(old), _parts(new)
+        if "/" in old or "/" in new:
+            raise PrivatePathError("private_name_invalid", f"只能在这一层改名：{old} → {new}")
+        self.verify()
+        self.check_fd(self.fd)
+        osplat.rename_at(self.fd, old, new)
+
     def swap_in(self, new: str, root: str) -> None:
         """用 `new` 整体换掉 `root`（两者都在本目录这一层）。优先原子对调；不支持时退回 root→root.old、new→root，
         两步之间被打断由 `store.recover_interrupted_swaps` 恢复。"""
@@ -314,16 +312,16 @@ class PrivateDir:
         self.verify()
         self.check_fd(self.fd)
         if not self.exists(root):
-            os.rename(new, root, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+            osplat.rename_at(self.fd, new, root)
         elif _exchange_at(self.fd, new, root):
             self.remove(new)  # 对调之后 new 这个名字下是旧的那份
         else:
             old = root + ".old"
             self.remove(old)
-            os.rename(root, old, src_dir_fd=self.fd, dst_dir_fd=self.fd)
-            os.rename(new, root, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+            osplat.rename_at(self.fd, root, old)
+            osplat.rename_at(self.fd, new, root)
             self.remove(old)
-        _full_sync(self.fd)
+        osplat.sync_dir(self.fd)
 
 
 def private_write(
@@ -338,14 +336,7 @@ def private_write(
 
 
 def _full_sync(fd: int) -> None:
-    full = getattr(fcntl, "F_FULLFSYNC", None)
-    if full is not None and _HOST_IS_DARWIN:
-        try:
-            fcntl.fcntl(fd, full)
-            return
-        except OSError:
-            pass
-    os.fsync(fd)
+    osplat.full_fsync(fd)
 
 
 def startup_check(settings: Any) -> dict[str, str | None]:

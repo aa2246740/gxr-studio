@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gxr_studio import audit, privacy
+from gxr_studio import audit, osplat, privacy
 from gxr_studio.cards.coverage import Identity, photo_coverage
 from gxr_studio.cards.discovery import find_cards
 from gxr_studio.cards.importer import DONE_ALL, LAYOUT_REFUSED, ImportOptions, run_import
@@ -271,12 +271,12 @@ def test_r2_mkdir_checks_the_intermediate_fd(tmp_path, volumes, monkeypatch, des
         (target / ".git").mkdir(parents=True)
     audit.protect(card.root)
     before = tree_snapshot(target)
-    real_open = os.open
+    real_open = osplat.open_dir_at
     moved = []
 
-    def opening(path, flags, *args, dir_fd=None, **kw):
-        fd = real_open(path, flags, *args, dir_fd=dir_fd, **kw)
-        if path == "b" and dir_fd is not None and not moved:
+    def opening(dir_fd, path):  # 平台原语：两个平台都经过它
+        fd = real_open(dir_fd, path)
+        if path == "b" and not moved:
             audit.unprotect(card.root)
             try:
                 Path(privacy.fd_path(fd)).rename(target / "moved")
@@ -286,7 +286,7 @@ def test_r2_mkdir_checks_the_intermediate_fd(tmp_path, volumes, monkeypatch, des
         return fd
 
     d = privacy.PrivateDir(home, "test", [volumes])
-    monkeypatch.setattr(privacy.os, "open", opening)
+    monkeypatch.setattr(osplat, "open_dir_at", opening)
     try:
         with pytest.raises(privacy.PrivatePathError):
             d.write("a/b/c/new.bin", fake_dat(1))
@@ -301,11 +301,11 @@ def test_r2_audit_context_keeps_the_fd(tmp_path):
     """审计的相对路径上下文保留 fd：目录在打开之后被移走，记录的是它事件发生时真正所在的位置。"""
     a = tmp_path / "a"
     a.mkdir()
-    fd = os.open(a, os.O_RDONLY | os.O_DIRECTORY)
+    fd = osplat.open_dir(a)
     try:
         a.rename(tmp_path / "b")
         with audit.AuditRecorder() as rec, audit.relative_to(fd):
-            os.close(os.open("x.txt", os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=fd))
+            os.close(osplat.open_file_at(fd, "x.txt", create=True))
         assert [w.path for w in rec.writes if w.path.endswith("x.txt")] == [os.path.realpath(tmp_path / "b" / "x.txt")]
     finally:
         os.close(fd)
@@ -490,15 +490,16 @@ def test_r2_first_import_request_failure_can_be_retried(tmp_path):
     d.mkdir()
     for name in ("import.js", "import_summary.js"):
         shutil.copy(ASSETS / name, d / name)
-    (d / "package.json").write_text('{"type":"module"}\n')
-    (d / "api.js").write_text("export const api = (...a) => globalThis.reviewApi(...a);\n")
-    (d / "state.js").write_text("export const state = globalThis.reviewState; export const emit = () => {};\n")
+    (d / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    (d / "api.js").write_text("export const api = (...a) => globalThis.reviewApi(...a);\n", encoding="utf-8")
+    (d / "state.js").write_text("export const state = globalThis.reviewState; export const emit = () => {};\n", encoding="utf-8")
     (d / "dom.js").write_text(
         "export const h = (tag, attrs, ...children) => ({tag, attrs, children});\n"
-        "export const toast = () => {};\nexport const toastError = () => {};\n"
+        "export const toast = () => {};\nexport const toastError = () => {};\n",
+        encoding="utf-8",
     )
-    (d / "scenario.mjs").write_text(REQUEST_ERROR)
-    out = subprocess.run([node, str(d / "scenario.mjs"), str(d)], capture_output=True, text=True, timeout=60)
+    (d / "scenario.mjs").write_text(REQUEST_ERROR, encoding="utf-8")
+    out = subprocess.run([node, str(d / "scenario.mjs"), str(d)], capture_output=True, text=True, timeout=60, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     r = json.loads(out.stdout)
     assert r["before"] == 1, "失败之后不自动连续重发"
@@ -521,8 +522,8 @@ def test_r2_refused_library_writes_show_as_not_imported(tmp_path):
     if node is None:
         pytest.skip("没有 node")
     script = tmp_path / "s.mjs"
-    script.write_text(WRITE_REFUSED_SUMMARY)
-    out = subprocess.run([node, str(script), str(ASSETS / "import_summary.js")], capture_output=True, text=True, timeout=60)
+    script.write_text(WRITE_REFUSED_SUMMARY, encoding="utf-8")
+    out = subprocess.run([node, str(script), str(ASSETS / "import_summary.js")], capture_output=True, text=True, timeout=60, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     r = json.loads(out.stdout)
     assert r["eject"] is False and r["status"] == "存储卡：有未导入的照片"

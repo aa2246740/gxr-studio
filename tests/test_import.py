@@ -5,12 +5,11 @@ from __future__ import annotations
 import errno
 import json
 import os
-import random
+import signal
 import subprocess
 import sys
 import textwrap
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -97,7 +96,7 @@ def test_pair_key_is_case_insensitive(volumes, tmp_path):
 
 def test_no_dcim_no_card(volumes):
     (volumes / "USBSTICK").mkdir()
-    (volumes / "USBSTICK" / "readme.txt").write_text("x")
+    (volumes / "USBSTICK" / "readme.txt").write_text("x", encoding="utf-8")
     assert find_cards([volumes]) == []
 
 
@@ -232,14 +231,14 @@ class UnpluggedReader(CardReader):
     def __init__(self, card_root: Path, after_files: int):
         self.card_root, self.after, self.count, self.gone = card_root, after_files, 0, False
 
-    def open_rb(self, path):
+    def open_rb(self, path, **kwargs):
         if self.gone:
             raise FileNotFoundError(errno.ENOENT, "card gone")
         self.count += 1
         if self.count > self.after:
             self.gone = True
             raise OSError(errno.ENODEV, "device not configured")
-        return super().open_rb(path)
+        return super().open_rb(path, **kwargs)
 
     def scandir(self, path):
         if self.gone and Path(path) == self.card_root:
@@ -276,10 +275,10 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     c = one_card(volumes)
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     p = run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     assert p.state == "done" and p.unreadable == ["DCIM/100RICOH/R0000104.JPG"]
@@ -296,7 +295,7 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     assert sorted(f.name for f in lib.root.rglob("R0000104*")) == ["R0000104.DNG", "R0000104.JPG", "R0000104.gxrs.json"]
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]
     assert set(shot["files"]) == {"dng", "jpg"} and shot["has_raw"] and shot["has_jpg"]
-    side = json.loads(lib.sidecar_path_for(shot).read_text())
+    side = json.loads(lib.sidecar_path_for(shot).read_text(encoding="utf-8"))
     assert side["source"]["jpg"] == "R0000104.JPG" and side["source"]["jpg_sha256"] == shot["files"]["jpg"]["sha256"]
     # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不说"可以推出"，也不说"都已导入"
     assert p2.message == "已导入 1 张照片。存储卡上有 2 个文件不会被导入"
@@ -309,10 +308,10 @@ def test_unreadable_dng_still_imports_the_jpg(volumes, card, lib):
     c = one_card(volumes)
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.DNG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     p = run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     assert p.unreadable == ["DCIM/100RICOH/R0000104.DNG"] and p.failed_shots == 1
@@ -330,10 +329,10 @@ def test_completing_a_pair_keeps_the_edits(volumes, card, lib):
     c = one_card(volumes)
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]
@@ -433,11 +432,11 @@ def test_cancel(volumes, card, lib):
     assert p.state == "cancelled" and lib.count() == 1
 
 
-# ---- 验收 3：随机杀进程 20 次 ------------------------------------------------
+# ---- 验收 3：在明确的导入阶段终止进程 20 轮 ----------------------------------
 
 DRIVER = textwrap.dedent(
     """
-    import sys, time
+    import os, sys
     from pathlib import Path
     from gxr_studio.library.store import Library
     from gxr_studio.cards.discovery import find_cards
@@ -445,26 +444,56 @@ DRIVER = textwrap.dedent(
     volumes, library = Path(sys.argv[1]), Path(sys.argv[2])
     lib = Library(library).open()
     (card,) = find_cards([volumes])
-    slow = lambda *a: time.sleep(0.06)
-    run_import(lib, card, ImportOptions(min_free_bytes=0, before_verify=slow, after_shot=slow))
+    stage = sys.argv[3]
+    def pause(where):
+        if where == stage and lib.count() > 0:
+            print('ready:' + where + ':' + str(os.getpid()), flush=True)
+            sys.stdin.buffer.read(1)
+    run_import(lib, card, ImportOptions(min_free_bytes=0,
+               before_verify=lambda *a: pause('verify'), after_shot=lambda *a: pause('committed')))
     """
 )
 
 
 def test_kill_the_process_20_times(volumes, card, tmp_path):
     """每轮：新图库 → 子进程导入中途 SIGKILL（隔 4 轮再杀一次）→ 检查无残缺 → 插回继续 → 总数和哈希全对。"""
-    rng = random.Random(20261030)
     src = card_hashes(card)
     (c,) = find_cards([volumes])
+    terminated_pids = []
 
-    def kill_once(library: Path) -> bool:
-        proc = subprocess.Popen([sys.executable, "-I", "-c", DRIVER, str(volumes), str(library)])
-        time.sleep(rng.uniform(0.45, 1.6))
-        alive = proc.poll() is None
-        if alive:
-            proc.kill()
-        proc.wait()
-        return alive
+    def kill_once(library: Path, stage: str) -> bool:
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-c", DRIVER, str(volumes), str(library), stage], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        )
+        ready, lines = threading.Event(), []
+
+        def read_marker():
+            lines.append(proc.stdout.readline())
+            ready.set()
+
+        reader = threading.Thread(target=read_marker, daemon=True)
+        reader.start()
+        actual_pid = None
+        try:
+            assert ready.wait(60), "子进程没有到达指定导入阶段"
+            marker = lines[0].decode("ascii").strip().split(":")
+            assert marker[:2] == ["ready", stage] and len(marker) == 3, lines
+            actual_pid = int(marker[2])
+            if sys.platform != "win32":
+                assert actual_pid == proc.pid
+            assert proc.poll() is None
+        finally:
+            if actual_pid is not None and sys.platform == "win32":
+                os.kill(actual_pid, signal.SIGTERM)
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)
+            reader.join(timeout=10)
+            proc.stdin.close()
+            proc.stdout.close()
+        assert not reader.is_alive()
+        terminated_pids.append(actual_pid)
+        return True
 
     def no_partial_files(library: Path, tag: str):
         for p in library.rglob("*"):
@@ -475,9 +504,9 @@ def test_kill_the_process_20_times(volumes, card, tmp_path):
     partial_counts = []
     for i in range(20):
         library = tmp_path / f"kill-lib-{i}"
-        killed += kill_once(library)
+        killed += kill_once(library, "verify" if i % 2 else "committed")
         if i % 4 == 0:
-            killed += kill_once(library)
+            killed += kill_once(library, "verify")
         no_partial_files(library, f"第 {i} 轮")
         lib = Library(library).open()
         assert not [p for p in library.rglob("*.tmp") if p.is_file()], "重开图库后不能留下临时文件"
@@ -494,7 +523,8 @@ def test_kill_the_process_20_times(volumes, card, tmp_path):
                 assert [(s["shot_id"], s["folder"], s["name"]) for s in lib.list_shots(limit=1000)] == before
         finally:
             lib.close()
-    assert killed >= 20, f"只有 {killed} 次真的杀到了运行中的进程"
+    assert killed == len(terminated_pids) == 25, f"只有 {killed} 次终止了运行中的进程"
+    print(json.dumps({"terminated_worker_pids": terminated_pids, "rounds": 20}))
     assert any(0 < n < len(card.unique_shots) for n in partial_counts), "至少要有几次是在导到一半时被杀"
 
 

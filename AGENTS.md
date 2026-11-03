@@ -1,6 +1,6 @@
 # 给改 GXR 电脑工作室的 agent
 
-这是一个本地网页工具：FastAPI 提供接口，`web/` 是不打包的 ES 模块。图库、导出和应用数据都在仓库外面。样本 DNG 在上层 `../captures/a12-50`，测试自己去读，不要把它们复制进来。
+这是一个本地网页工具：FastAPI 提供接口，`web/` 是不打包的 ES 模块。大图的显卡预览引擎在 `frontend/`（TypeScript + WGSL，Vite + pnpm），构建产物 `web/assets/gpu/engine.js` 提交进仓库；改了 `frontend/` 要跑 `make web` 再提交，`make check` 会核对两者一致。图库、导出和应用数据都在仓库外面。样本 DNG 在上层 `../captures/a12-50`，测试自己去读，不要把它们复制进来。
 
 不要读 `/Volumes/RICOHDCX`，不要写 `~/Pictures/GXR Studio`、`~/Pictures/GXR 导出` 或 `~/Library/Application Support/GXR Studio`。测试已经把这些路径保护起来了。
 
@@ -20,6 +20,7 @@ make dast
 make profile
 make openapi
 make notes
+make web
 ```
 
 `make setup` 按 `uv.lock` 安装，并把 git 钩子指到 `.githooks/`。钩子跑 ruff、秘密扫描、大文件和死开关，不跑全量测试。全量检查是 `make check`。

@@ -28,7 +28,7 @@ def run_node(tmp_path: Path, body: str) -> object:
         f"const out = (() => {{\n{body}\n}})();\nconsole.log(JSON.stringify(out));\n",
         encoding="utf-8",
     )
-    res = subprocess.run(["node", str(script)], capture_output=True, text=True, cwd=tmp_path)
+    res = subprocess.run(["node", str(script)], capture_output=True, text=True, cwd=tmp_path, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     return json.loads(res.stdout)
 
@@ -50,14 +50,15 @@ def test_recipe_cache_after_data_change(tmp_path, scenario, expected):
     modules.mkdir()
     for path in ASSETS.glob("*.js"):
         shutil.copyfile(path, modules / path.name)
-    (modules / "package.json").write_text('{"type":"module"}\n')
+    (modules / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     (modules / "api.js").write_text(
         "export class ApiError extends Error {}\n"
         "export const api = (...args) => globalThis.cacheApi(...args);\n"
-        "export async function apiBlob() { throw new Error('本场景不读取图片'); }\n"
+        "export async function apiBlob() { throw new Error('本场景不读取图片'); }\n",
+        encoding="utf-8",
     )
     script = Path(__file__).parent / "support/recipe_cache.mjs"
-    result = subprocess.run(["node", str(script), str(modules), scenario], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(["node", str(script), str(modules), scenario], capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == expected
 

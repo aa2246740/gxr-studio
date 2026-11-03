@@ -6,7 +6,8 @@ license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.15"
 dependencies = [
-    "numpy==2.4.3",
+    "numpy==2.4.3; sys_platform != 'win32'",
+    "numpy==2.5.4; sys_platform == 'win32'",
     "scipy==1.17.1",
     "pillow==12.2.0",
     "fastapi==0.135.1",
@@ -107,6 +108,7 @@ source_modules = [
     "gxr_studio.render",
     "gxr_studio.lut",
     "gxr_studio.hdr",
+    "gxr_studio.gpu",
 ]
 forbidden_modules = ["gxr_studio.devtools"]
 
@@ -119,6 +121,7 @@ source_modules = [
     "gxr_studio.crop",
     "gxr_studio.meta",
     "gxr_studio.hdr",
+    "gxr_studio.gpu",
 ]
 forbidden_modules = ["gxr_studio.api", "gxr_studio.app", "gxr_studio.cli"]
 

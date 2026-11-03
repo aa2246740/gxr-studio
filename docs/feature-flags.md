@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | `library_rebuild` | 开 | `POST /api/library/rebuild`。关掉返回 403 `feature_disabled`。 |
 | `hdr_on_import` | 开 | 导入结束后在后台给 RAW+JPG 的照片生成 HDR 版本（`.studio/hdr/`）。关掉就不生成；导出时的 HDR 不受影响。 |
+| `gpu_preview` | 关（复审时再定） | 大图改用浏览器的 WebGPU 实时预览：拖滑块、换照片不再请求服务器出图（`web/assets/gpu_stage.js`）。浏览器没有 WebGPU、照片或编辑项显卡做不了时，自动回到服务器出图。关着时前端不发任何显卡请求，服务器也不解析 DNG（`/api/settings` 里带着开关状态）。打开：`{"gpu_preview": true}`。 |
 
 ## 清理
 

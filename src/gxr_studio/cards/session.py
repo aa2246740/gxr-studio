@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .. import osplat
 from . import discovery
 
 CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -37,7 +38,7 @@ DISKUTIL_TIMEOUT = 5.0
 # 真实宿主是不是 macOS：决定 statfs 结构体按哪种布局读。只在导入模块时定一次，按内核报告的系统名，
 # 不看运行中可能被改动的 `sys.platform`——在 Linux 上按 macOS 布局去读 glibc 的结构体，会把空闲 inode 数当成 f_fsid，
 # 挂载指纹随写文件变化，导入被当成"换了卡"而中断（Linux CI 上 reveal 用例失败的根因）。
-HOST_IS_DARWIN = os.uname().sysname == "Darwin"
+HOST_IS_DARWIN = osplat.HOST_IS_DARWIN
 
 UUID_OK = "ok"
 UUID_MISSING = "missing"
@@ -141,8 +142,11 @@ class VolumeProbe:
                     os.fsdecode(buf.f_mntonname),
                     os.fsdecode(buf.f_mntfromname),
                 )
-        st = os.statvfs(path)
-        fsid = int(getattr(st, "f_fsid", 0))
+        if not hasattr(os, "statvfs"):  # Windows：卷序列号就是 st_dev，挂载点是盘符根
+            st = os.stat(path)
+            return StatFs((int(st.st_dev) & 0xFFFFFFFF, int(st.st_dev) >> 32), "", os.path.splitdrive(os.path.abspath(path))[0] + os.sep, "")
+        stv = os.statvfs(path)
+        fsid = int(getattr(stv, "f_fsid", 0))
         return StatFs((fsid & 0xFFFFFFFF, fsid >> 32), "", "", "")
 
     def fingerprint(self, path: str) -> Fingerprint | None:

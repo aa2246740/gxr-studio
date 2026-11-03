@@ -2,6 +2,7 @@
 // 流程见 research/studio_design/UX.md 3.9 / 流程 E。所有数字都是"电脑预测"。接口见 api/lut_routes.py。
 
 import { api, apiBlob, ApiError } from './api.js';
+import { emit } from './state.js';
 import { h, toast, fmtBytes, toastError, errorBody, confirmAction } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
 import { BASE_NAMES, KNOB_NAMES } from './preview.js';
@@ -257,6 +258,7 @@ async function afterSpaceChange() {
       input_space: flow.space, output_space: flow.output, output_gamut: flow.outputGamut || null,
     } });
     if (flow.cube?.cube_id === cubeId) flow.cube = { ...flow.cube, ...updated };
+    emit('luts-changed'); // 显卡预览的 LUT 表作废（gpu_stage.js）
     await loadLutLibrary();
   } catch (e) { flow.error = errorBody(e, '无法保存修改。请重试。'); redraw(); return; }
   finally { flow.spaceSaving = false; redraw(); }

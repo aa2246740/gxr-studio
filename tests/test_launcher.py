@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -18,7 +19,14 @@ def test_command_file_is_double_clickable():
     text = COMMAND.read_text(encoding="utf-8")
     assert text.startswith("#!/bin/bash\n")
     assert os.access(COMMAND, os.X_OK), "双击要能执行：chmod +x"
-    assert subprocess.run(["bash", "-n", str(COMMAND)], capture_output=True).returncode == 0
+    bash = "bash"
+    if os.name == "nt":
+        git = shutil.which("git")
+        assert git is not None, "Windows 的启动脚本语法检查需要 Git for Windows"
+        bash = str(Path(git).resolve().parents[1] / "bin" / "bash.exe")
+        assert Path(bash).is_file(), bash
+    checked = subprocess.run([bash, "-n", COMMAND.as_posix()], capture_output=True, timeout=30)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
     assert text.index("uv sync --frozen") < text.index("uv run --frozen gxr-studio")  # 先装依赖，再启动
     assert 'cd "$(dirname "$0")"' in text  # 从任意位置双击都在 studio/ 里干活
     assert '"$@"' in text  # 终端里可以加 --no-browser 等参数

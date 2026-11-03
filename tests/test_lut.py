@@ -105,7 +105,7 @@ def cube_from_recipe(model, stock04, entry, path, size=33, seed=7):
 
 
 def test_provenance_matches_sources_and_files():
-    prov = json.loads((LUT_PKG / "PROVENANCE.json").read_text())
+    prov = json.loads((LUT_PKG / "PROVENANCE.json").read_text(encoding="utf-8"))
     for name in ("cube.py", "spaces.py", "colorimetry.py"):
         assert (LUT_PKG / name).is_file()
         assert len(prov["files"][name]["source_sha256"]) == 64
@@ -130,7 +130,7 @@ def test_cube_red_is_fastest_axis(tmp_path):
     # 2×2×2：第 2 行（R 轴前进一格）的值应当是 R=1,G=0,B=0 的节点
     rows = ["0 0 0", "1 0 0", "0 1 0", "1 1 0", "0 0 1", "1 0 1", "0 1 1", "1 1 1"]
     rows[1] = "0.9 0.9 0.9"
-    p.write_text("LUT_3D_SIZE 2\n" + "\n".join(rows) + "\n")
+    p.write_text("LUT_3D_SIZE 2\n" + "\n".join(rows) + "\n", encoding="utf-8")
     c = Cube.read(p)
     assert np.allclose(c.apply(np.array([[1.0, 0.0, 0.0]])), [[0.9, 0.9, 0.9]])
     assert np.allclose(c.apply(np.array([[0.0, 1.0, 0.0]])), [[0.0, 1.0, 0.0]])
@@ -139,7 +139,8 @@ def test_cube_red_is_fastest_axis(tmp_path):
 def test_cube_1d_domain_and_shaper_plus_3d(tmp_path):
     p = tmp_path / "one.cube"
     p.write_text(
-        'TITLE "gamma"\nLUT_1D_SIZE 5\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n' + "\n".join(f"{v} {v} {v}" for v in (0, 0.1, 0.4, 0.8, 1)) + "\n"
+        'TITLE "gamma"\nLUT_1D_SIZE 5\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n' + "\n".join(f"{v} {v} {v}" for v in (0, 0.1, 0.4, 0.8, 1)) + "\n",
+        encoding="utf-8",
     )
     c = Cube.read(p)
     assert c.table1 is not None and c.table3 is None and c.title == "gamma"
@@ -147,7 +148,7 @@ def test_cube_1d_domain_and_shaper_plus_3d(tmp_path):
     both = tmp_path / "both.cube"
     lines = [f"{v} {v} {v}" for v in np.linspace(0, 1, 4)]
     cube3 = [f"{r} {g} {b}" for b in (0, 1) for g in (0, 1) for r in (0, 1)]
-    both.write_text("LUT_1D_SIZE 4\nLUT_3D_SIZE 2\n" + "\n".join(lines + cube3) + "\n")
+    both.write_text("LUT_1D_SIZE 4\nLUT_3D_SIZE 2\n" + "\n".join(lines + cube3) + "\n", encoding="utf-8")
     c2 = Cube.read(both)
     assert c2.table1 is not None and c2.table3 is not None
     assert np.allclose(c2.apply(np.array([[0.3, 0.6, 0.9]])), [[0.3, 0.6, 0.9]], atol=1e-9)
@@ -538,7 +539,7 @@ def test_full_flow_fit_save_apply_and_manage_recipes(data_client, camhome):
     assert best["label"] == fit.label_for(best["similarity"])
     assert res["formula"] == fit.FORMULA and res["thresholds"] == {"close": 90.0, "rough": 80.0}
     job_dir = Path(c.app.state.ctx.settings.home_dir) / "lut_jobs" / job
-    on_disk = json.loads((job_dir / "result.json").read_text())
+    on_disk = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
     assert on_disk["result"]["best"]["similarity"] == best["similarity"]
     # 暖色 LUT：差别说明不为空
     assert best["differences"]

@@ -156,38 +156,113 @@ def test_frontend_refreshes_the_selection_and_names_unexported_photos():
 # ---- P2-4：服务没了，拟合子进程跟着走 ----------------------------------------------------
 
 
+def _alive(pid: int) -> bool:
+    """进程还在不在。Windows 上不能用 os.kill(pid, 0)（那是 TerminateProcess），改查退出码。"""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        try:
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
-    # 父进程用 /bin/sh（阻塞在 read 上），被 SIGKILL 掉之后子进程要自己退出。
-    # 同一时间只有 pytest 和这一个子 Python 进程（复审 A1a 的进程数规则：测试进程最多 2 个）。
+    # 父进程阻塞在读标准输入上（POSIX 用 /bin/sh，Windows 用一个 Python），被强杀之后子进程要自己退出。
+    pid_path = tmp_path / "worker.pid"
+    parent_pid_path = tmp_path / "parent.pid"
+    process_path = tmp_path / "worker-processes.json"
+    error_path = tmp_path / "worker.stderr"
     child_code = (
-        "import os, time\nfrom gxr_studio.lut.worker import watch_parent\n"
-        "stop = {'flag': False}\nwatch_parent(stop, os.getppid(), 0.1, 0.3)\n"
+        "import json, os, time\nfrom pathlib import Path\n"
+        f"Path({str(pid_path)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+        "from gxr_studio.lut.worker import watch_parent\n"
+        "parent_pid = int(os.environ['GXR_STUDIO_PARENT_PID'])\n"
+        f"process_path = Path({str(process_path)!r})\n"
+        "process_path.write_text(json.dumps({'worker': os.getpid(), 'reported_parent': os.getppid(), "
+        "'expected_parent': parent_pid}), encoding='utf-8')\n"
+        "stop = {'flag': False}\nwatch_parent(stop, parent_pid, 0.1, 0.3)\n"
         "print(os.getpid(), flush=True)\ntime.sleep(120)\n"
     )
-    script = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"
-    parent = subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    if sys.platform == "win32":
+        launcher = (
+            "import os, subprocess, sys\nfrom pathlib import Path\n"
+            f"Path({str(parent_pid_path)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+            "env = {**os.environ, 'GXR_STUDIO_PARENT_PID': str(os.getpid())}\n"
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1]], stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr, env=env)\n"
+            "sys.stdin.read()\n"
+        )
+        command = [sys.executable, "-c", launcher, child_code]
+    else:
+        command = ["/bin/sh", "-c", f"GXR_STUDIO_PARENT_PID=$$ {shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & read _"]
+    with error_path.open("wb") as errors:
+        parent = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8")
+    ready, lines = threading.Event(), []
+
+    def read_pid():
+        lines.append(parent.stdout.readline())
+        ready.set()
+
+    reader = threading.Thread(target=read_pid, daemon=True)
+    reader.start()
     child_pid = None
+    actual_parent = None
     try:
-        child_pid = int(parent.stdout.readline())
-        os.kill(child_pid, 0)  # 子进程在跑
-        parent.kill()  # SIGKILL：父进程没有机会清理任何东西
-        parent.wait()
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.1)
+        assert ready.wait(30), error_path.read_text(encoding="utf-8", errors="replace")
+        assert lines and lines[0].strip().isdigit(), (lines, error_path.read_text(encoding="utf-8", errors="replace"))
+        child_pid = int(lines[0])
+        actual_parent = int(parent_pid_path.read_text(encoding="ascii")) if sys.platform == "win32" else parent.pid
+        processes = json.loads(process_path.read_text(encoding="utf-8"))
+        assert processes["worker"] == child_pid and processes["expected_parent"] == actual_parent
+        print(json.dumps({"launcher": parent.pid, "parent": actual_parent, **processes}))
+        assert _alive(child_pid)  # 子进程在跑
+        assert _alive(actual_parent)
+        if sys.platform == "win32":
+            os.kill(actual_parent, signal.SIGTERM)  # TerminateProcess：实际父进程没有机会清理。
         else:
+            parent.kill()
+        parent.wait(timeout=5)
+        deadline = time.time() + 15
+        while time.time() < deadline and _alive(child_pid):
+            time.sleep(0.1)
+        if _alive(child_pid):
             pytest.fail("父进程被杀之后子进程还在")
     finally:
-        parent.kill()
-        if child_pid:
+        if sys.platform == "win32" and parent_pid_path.exists():
+            actual_parent = int(parent_pid_path.read_text(encoding="ascii"))
+            if _alive(actual_parent):
+                os.kill(actual_parent, signal.SIGTERM)
+        if parent.poll() is None:
+            parent.kill()
+        parent.wait(timeout=5)
+        if child_pid is None and pid_path.exists():
+            child_pid = int(pid_path.read_text(encoding="ascii"))
+        if child_pid and _alive(child_pid):
             try:
-                os.kill(child_pid, signal.SIGKILL)
-            except ProcessLookupError:
+                os.kill(child_pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+            except OSError:
                 pass
+        reader.join(timeout=5)
+        assert not reader.is_alive(), "子进程的标准输出没有关闭"
+        parent.stdin.close()
+        parent.stdout.close()
 
 
 def test_worker_sets_the_stop_flag_when_the_parent_goes_away(monkeypatch):
@@ -195,9 +270,11 @@ def test_worker_sets_the_stop_flag_when_the_parent_goes_away(monkeypatch):
 
     stop = {"flag": False}
     exits = []
+    # 一个已经结束的进程当"父进程"（Windows 按句柄看它结束了没有）；POSIX 上 getppid 变成 1 = 已经被过继
+    ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True)
     monkeypatch.setattr(worker.os, "_exit", lambda code: exits.append(code))
-    monkeypatch.setattr(worker.os, "getppid", lambda: 1)  # 已经被过继给 1 号进程
-    worker.watch_parent(stop, 4242, 0.01, 0.01).join(2)
+    monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+    worker.watch_parent(stop, int(ended.stdout), 0.01, 0.01).join(2)
     assert stop["flag"] is True and exits == [0]
 
 
@@ -207,6 +284,7 @@ def test_fit_worker_is_told_who_its_parent_is(monkeypatch, tmp_path):
     assert "GXR_STUDIO_PARENT_PID" in (SRC / "gxr_studio/lut/worker.py").read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="Windows 没有 SIGHUP（关控制台窗口不是信号）")
 def test_studio_shuts_down_cleanly_on_sighup(tmp_path):
     """直接关终端窗口 = SIGHUP：服务要走正常退出（拟合子进程的清理才会执行），而不是被默认动作立刻带走。"""
     env = {
@@ -258,8 +336,8 @@ def test_wrongly_typed_sidecar_is_treated_as_corrupt_not_500(client, name):
     import_all(client)
     path, shot = sidecar_of(client, "R0000102")
     sid = shot["shot_id"]
-    good = json.loads(path.read_text())
-    path.write_text(json.dumps({**good, **BAD_SHAPES[name]}))
+    good = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**good, **BAD_SHAPES[name]}), encoding="utf-8")
     media = {k: client.app.state.ctx.lib.abspath(v["relpath"]).read_bytes() for k, v in shot["files"].items()}
     for method, url, kw in (
         ("GET", f"/api/photos/{sid}/crop", {}),
@@ -281,8 +359,8 @@ def test_wrongly_typed_sidecar_is_treated_as_corrupt_not_500(client, name):
 def test_sidecar_from_a_newer_schema_is_still_left_alone(client):
     import_all(client)
     path, shot = sidecar_of(client, "R0000102")
-    good = json.loads(path.read_text())
-    path.write_text(json.dumps({**good, "schema": "gxr-studio/edit/99", "crop": "future-format"}))
+    good = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**good, "schema": "gxr-studio/edit/99", "crop": "future-format"}), encoding="utf-8")
     before = path.read_bytes()
     assert client.put(f"/api/photos/{shot['shot_id']}/crop", json={"preset": "1:1"}).status_code == 409
     assert path.read_bytes() == before and not list(path.parent.glob("*.corrupt-*"))
@@ -324,10 +402,10 @@ def test_completion_interrupted_after_the_move_is_resumed_not_duplicated(volumes
     c = find_cards([volumes])[0]
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]
@@ -362,10 +440,10 @@ def test_completion_does_not_adopt_a_different_file_in_the_way(volumes, card, li
     c = find_cards([volumes])[0]
 
     class Bad(CardReader):
-        def open_rb(self, path):
+        def open_rb(self, path, **kwargs):
             if Path(path).name == "R0000104.JPG":
                 raise OSError(errno.EIO, "I/O error")
-            return super().open_rb(path)
+            return super().open_rb(path, **kwargs)
 
     run_import(lib, c, ImportOptions(**OPTS), reader=Bad())
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]

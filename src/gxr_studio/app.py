@@ -19,6 +19,7 @@ from .alerts import StudioNotifier, register_alert_service
 from .api.camdata_routes import router as camdata_router
 from .api.errors import ApiError
 from .api.finish_routes import router as finish_router
+from .api.gpu_routes import router as gpu_router
 from .api.lut_library_routes import router as lut_library_router
 from .api.lut_routes import router as lut_router
 from .api.ops_routes import router as ops_router
@@ -35,8 +36,9 @@ from .jobs import JobRegistry
 from .library.location import card_roots
 from .library.sidecar import SidecarCorrupt
 from .library.store import SIDECAR_RESET_NOTE, Library
+from .lut.errors import LutError
 from .lut.service import LutService
-from .observe import Metrics, ObserveMiddleware
+from .observe import Metrics, ObserveMiddleware, log
 from .render.service import RenderService
 from .security import SecurityMiddleware
 from .tracking import init_error_tracking, shutdown_error_tracking
@@ -69,6 +71,16 @@ class NoCacheStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "no-cache"
         return response
+
+
+def _migrate_luts(settings: Settings, render: RenderService) -> None:
+    """旧 LUT 库的升级在启动时写好，之后的读取（含显卡预览的 /table）不再写盘。没有 LUT 库就什么都不建。"""
+    if not (settings.home_dir / "luts").is_dir():
+        return
+    try:
+        render.luts.migrate()
+    except (LutError, OSError) as exc:
+        log.event(30, "lut_migrate_failed", error=type(exc).__name__)
 
 
 def create_app(
@@ -107,6 +119,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
+        _migrate_luts(settings, render)
         yield
         with ctx.hdr_lock:
             ctx.hdr_stopping = True
@@ -145,6 +158,7 @@ def create_app(
     app.include_router(camdata_router)
     app.include_router(lut_router)
     app.include_router(lut_library_router)
+    app.include_router(gpu_router)
     web = settings.web_dir
     if web is not None and Path(web, "assets").is_dir():
         app.mount("/assets", NoCacheStaticFiles(directory=Path(web) / "assets"), name="assets")
