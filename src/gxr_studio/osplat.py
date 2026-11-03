@@ -69,6 +69,15 @@ if sys.platform == "win32":  # pragma: no cover - 只在 Windows 上执行（CI 
     class _IoStatusBlock(ctypes.Structure):
         _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
 
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("CreationTime", ctypes.c_longlong),
+            ("LastAccessTime", ctypes.c_longlong),
+            ("LastWriteTime", ctypes.c_longlong),
+            ("ChangeTime", ctypes.c_longlong),
+            ("FileAttributes", wintypes.DWORD),
+        ]
+
     _NtCreateFile = _ntdll.NtCreateFile
     _NtCreateFile.restype = ctypes.c_long
     _NtCreateFile.argtypes = [
@@ -145,6 +154,17 @@ if sys.platform == "win32":  # pragma: no cover - 只在 Windows 上执行（CI 
 
     def _handle(fd: int) -> int:
         return int(msvcrt.get_osfhandle(fd))
+
+    def fstat(fd: int) -> os.stat_result:
+        """内容核对的 ctime 取 NT ChangeTime，避免把 Windows 创建时间当作修改标识。"""
+        st = os.fstat(fd)
+        info = _FileBasicInfo()
+        if not _GetInfoEx(_handle(fd), 0, ctypes.byref(info), ctypes.sizeof(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        ns = (info.ChangeTime - 116444736000000000) * 100
+        fields = {name: getattr(st, name) for name in dir(st) if name.startswith("st_")}
+        fields.update(st_ctime=ns / 1_000_000_000, st_ctime_ns=ns)
+        return os.stat_result(tuple(st[:9]) + (ns // 1_000_000_000,), fields)
 
     def _units(text: str) -> int:
         return len(text.encode("utf-16-le")) // 2
@@ -256,7 +276,7 @@ if sys.platform == "win32":  # pragma: no cover - 只在 Windows 上执行（CI 
         h = _nt_open(dfd, name, _FILE_READ_ATTRIBUTES, _FILE_OPEN, 0)
         fd = _to_fd(h, True)
         try:
-            return os.fstat(fd)
+            return fstat(fd)
         finally:
             os.close(fd)
 
@@ -399,6 +419,9 @@ else:
     _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
     _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
+    def fstat(fd: int) -> os.stat_result:
+        return os.fstat(fd)
+
     def open_dir(path: str | os.PathLike[str]) -> int:
         """绝对路径的目录：从 `/` 开始逐级 O_DIRECTORY|O_NOFOLLOW 打开，任何一级是链接都失败（ELOOP/ENOTDIR）。"""
         pure = PurePath(os.path.abspath(os.fspath(path)))
@@ -483,6 +506,18 @@ else:
 
     def parent_alive(parent_pid: int) -> Callable[[], bool]:
         return lambda: os.getppid() == parent_pid
+
+
+def lstat(path: str | os.PathLike[str]) -> os.stat_result:
+    """内容核对用的状态：Windows 同样提供修改时间含义的 ctime。"""
+    if not WINDOWS:
+        return os.lstat(path)
+    p = PurePath(os.path.abspath(os.fspath(path)))
+    parent = open_dir(os.path.realpath(p.parent))
+    try:
+        return lstat_at(parent, p.name)
+    finally:
+        os.close(parent)
 
 
 def is_link(st: os.stat_result) -> bool:

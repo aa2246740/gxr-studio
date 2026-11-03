@@ -49,10 +49,10 @@ def run(tmp_path: Path, scenario: str) -> dict[str, object]:
     (folder / "gpu").mkdir(parents=True)
     for name in ("gpu_stage.js", "state.js"):
         shutil.copyfile(ASSETS / name, folder / name)
-    (folder / "package.json").write_text('{"type":"module"}\n')
-    (folder / "api.js").write_text("export const api = (...args) => globalThis.apiStub(...args);\n")
-    (folder / "gpu" / "engine.js").write_text(ENGINE_STUB)
-    res = subprocess.run(["node", str(SCRIPT), str(folder), scenario], capture_output=True, text=True, timeout=60)
+    (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    (folder / "api.js").write_text("export const api = (...args) => globalThis.apiStub(...args);\n", encoding="utf-8")
+    (folder / "gpu" / "engine.js").write_text(ENGINE_STUB, encoding="utf-8")
+    res = subprocess.run(["node", str(SCRIPT), str(folder), scenario], capture_output=True, text=True, timeout=60, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     return json.loads(res.stdout)  # type: ignore[no-any-return]
 

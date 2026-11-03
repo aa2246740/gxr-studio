@@ -144,6 +144,6 @@ def _run_scene(tmp_path: Path) -> dict:
         ),
         encoding="utf-8",
     )
-    out = subprocess.run([node, str(SCENE), str(folder)], capture_output=True, text=True, timeout=30)
+    out = subprocess.run([node, str(SCENE), str(folder)], capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)

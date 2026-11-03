@@ -124,7 +124,7 @@ def test_sidecar_roundtrip_is_exact_to_1e9(volumes, card, lib):
         y = base.rect[1] + (base.rect[3] - h) * rng.random()
         out = edits.write_crop(lib, shot, preset="free", rect=[x, y, w, h], angle_deg=angle)
         # 重新开一遍：从磁盘上的 sidecar 读
-        raw = json.loads(lib.sidecar_path_for(shot).read_text())
+        raw = json.loads(lib.sidecar_path_for(shot).read_text(encoding="utf-8"))
         for got, want in zip(raw["crop"]["rect"], [x, y, w, h]):
             assert abs(got - want) < 1e-9
         assert abs(raw["crop"]["angle_deg"] - angle) < 1e-9
@@ -147,7 +147,7 @@ def test_sidecar_keeps_unknown_keys_and_refuses_newer_schema(volumes, card, lib)
     after = sc.read(path)
     assert after["recipe"] == {"kind": "builtin", "slot": 5} and after["crop"]["preset"] == "1:1" and after["rev"] == 1
     after["schema"] = "gxr-studio/edit/9"
-    path.write_text(json.dumps(after))
+    path.write_text(json.dumps(after), encoding="utf-8")
     with pytest.raises(sc.SidecarTooNew):
         edits.write_crop(lib, shot, preset="free", rect=[0, 0, 1, 1], angle_deg=0.0)
 

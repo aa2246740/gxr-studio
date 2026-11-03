@@ -129,8 +129,8 @@ def test_audit_records_writes_and_blocks_protected(tmp_path):
     root = tmp_path / "watched"
     root.mkdir()
     with audit.AuditRecorder(watch=(str(root),), record_reads=True) as rec:
-        (root / "a.txt").write_text("x")
-        (root / "a.txt").read_text()
+        (root / "a.txt").write_text("x", encoding="utf-8")
+        (root / "a.txt").read_text(encoding="utf-8")
         os.rename(root / "a.txt", root / "b.txt")
         os.remove(root / "b.txt")
     ops = [(w.op, os.path.basename(w.path)) for w in rec.writes]
@@ -140,7 +140,7 @@ def test_audit_records_writes_and_blocks_protected(tmp_path):
     try:
         with audit.AuditRecorder(watch=(str(root),)) as rec2:
             with pytest.raises(PermissionError):
-                (root / "c.txt").write_text("x")
+                (root / "c.txt").write_text("x", encoding="utf-8")
         assert rec2.writes and rec2.writes[0].blocked and not (root / "c.txt").exists()
     finally:
         audit.unprotect(root)

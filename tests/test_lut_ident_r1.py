@@ -128,7 +128,7 @@ def test_output_conflicts_retain_the_existing_default_for_manual_selection():
 def legacy_record(library, raw, name, *, manual=False, space="flog2", output="srgb"):
     item = library.add(raw, name)
     path = library.home / "luts/library.json"
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     record = doc["items"][item["cube_id"]]
     record.pop("identification_version", None)
     record.pop("output_space_state", None)
@@ -141,7 +141,7 @@ def legacy_record(library, raw, name, *, manual=False, space="flog2", output="sr
         recipe={"old": "recipe"},
         camera_lut={"old": "camera-lut"},
     )
-    path.write_text(json.dumps(doc, ensure_ascii=False))
+    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
     return item["cube_id"], record
 
 
@@ -180,9 +180,9 @@ def test_output_only_manual_selection_freezes_automatic_migration(library):
     updated = library.patch(item["cube_id"], {"output_space": "gamma24"})
     assert updated["input_space_manual"]
     path = library.home / "luts/library.json"
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     doc["items"][item["cube_id"]].pop("identification_version")
-    path.write_text(json.dumps(doc))
+    path.write_text(json.dumps(doc), encoding="utf-8")
     assert LutLibrary(library.home).get(item["cube_id"])["output_space"] == "gamma24"
 
 
@@ -222,9 +222,9 @@ def test_migrated_space_rejects_old_fit_status_and_recipe_save(client, settings)
     job_id = "b6" * 6
     _plant_fit(settings, cid, "srgb", False, job_id)
     path = settings.home_dir / "lut_jobs" / job_id / "job.json"
-    job = json.loads(path.read_text())
+    job = json.loads(path.read_text(encoding="utf-8"))
     job["lut_version"] = 7
-    path.write_text(json.dumps(job))
+    path.write_text(json.dumps(job), encoding="utf-8")
     status = client.get(f"/api/lut/fit/{job_id}")
     assert status.status_code == 200
     assert status.json()["state"] == "error" and status.json()["error"]["code"] == "lut_changed"
@@ -239,16 +239,16 @@ def test_migration_replaces_warm_disk_cache_and_image_url(client, volumes, key):
     item = upload(client, raw).json()
     library = client.app.state.ctx.render.luts
     path = library.home / "luts/library.json"
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     doc["items"][item["cube_id"]]["output_space"] = "srgb"
-    path.write_text(json.dumps(doc))
+    path.write_text(json.dumps(doc), encoding="utf-8")
     assert client.put(f"/api/photos/{photo['id']}/edit", json={"lut": item["cube_id"]}).status_code == 200
     before = client.get(f"/api/photos/{photo['id']}").json()[key]
     original = client.get(before)
     assert original.status_code == 200
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     doc["items"][item["cube_id"]].pop("identification_version")
-    path.write_text(json.dumps(doc))
+    path.write_text(json.dumps(doc), encoding="utf-8")
     after = client.get(f"/api/photos/{photo['id']}").json()[key]
     replaced = client.get(after)
     assert replaced.status_code == 200

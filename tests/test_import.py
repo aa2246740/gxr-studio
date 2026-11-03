@@ -95,7 +95,7 @@ def test_pair_key_is_case_insensitive(volumes, tmp_path):
 
 def test_no_dcim_no_card(volumes):
     (volumes / "USBSTICK").mkdir()
-    (volumes / "USBSTICK" / "readme.txt").write_text("x")
+    (volumes / "USBSTICK" / "readme.txt").write_text("x", encoding="utf-8")
     assert find_cards([volumes]) == []
 
 
@@ -294,7 +294,7 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     assert sorted(f.name for f in lib.root.rglob("R0000104*")) == ["R0000104.DNG", "R0000104.JPG", "R0000104.gxrs.json"]
     (shot,) = [s for s in lib.list_shots(limit=1000) if s["name"] == "R0000104"]
     assert set(shot["files"]) == {"dng", "jpg"} and shot["has_raw"] and shot["has_jpg"]
-    side = json.loads(lib.sidecar_path_for(shot).read_text())
+    side = json.loads(lib.sidecar_path_for(shot).read_text(encoding="utf-8"))
     assert side["source"]["jpg"] == "R0000104.JPG" and side["source"]["jpg_sha256"] == shot["files"]["jpg"]["sha256"]
     # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不说"可以推出"，也不说"都已导入"
     assert p2.message == "已导入 1 张照片。存储卡上有 2 个文件不会被导入"

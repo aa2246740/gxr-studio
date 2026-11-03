@@ -390,7 +390,7 @@ def test_import_from_a_local_file(client, tmp_path, settings):
         "origin": {"kind": "file"},
     }
     assert str(p.parent) not in json.dumps(b)  # 不把本地路径写进记录
-    assert str(p.parent) not in (settings.home_dir / "camera-data/manifest.json").read_text()
+    assert str(p.parent) not in (settings.home_dir / "camera-data/manifest.json").read_text(encoding="utf-8")
     assert store.load_template(settings.home_dir) == raw
 
 
@@ -411,7 +411,7 @@ def test_import_upload_takes_the_raw_bytes_the_browser_picked(client, settings):
         "sha256": sha(raw),
         "origin": {"kind": "file"},
     }
-    assert "/Users/someone" not in (settings.home_dir / "camera-data/manifest.json").read_text()
+    assert "/Users/someone" not in (settings.home_dir / "camera-data/manifest.json").read_text(encoding="utf-8")
     assert store.load_template(settings.home_dir) == raw
     again = client.post("/api/camdata/import-upload", content=raw, headers={"Content-Type": "application/octet-stream"})
     assert again.status_code == 200 and again.json()["unchanged"] is True
@@ -494,7 +494,7 @@ def test_import_calibration_pack_makes_the_renderer_ready(client, with_camdata, 
     assert client.get("/api/render/status").json()["ready"] is True
     home = settings.home_dir
     assert sorted(p.name for p in home.iterdir()) == ["calib", "camera-data"]  # 没有临时目录残留
-    m = json.loads((home / "calib/manifest.json").read_text())
+    m = json.loads((home / "calib/manifest.json").read_text(encoding="utf-8"))
     assert m["camera_stock_sha256"] == calib.stock_fingerprint(store.load_stock04(home, "jlaunch"))
     with np.load(home / "calib/ctx_200.npz", allow_pickle=False) as z:
         assert sorted(z.files) == ["d0", "d1"]
@@ -514,7 +514,7 @@ def test_tampered_pack_file_is_refused_and_old_calibration_stays(client, with_ca
     bad = tmp_path / "bad-pack"
     shutil.copytree(pack, bad)
     f = bad / "ring_model_200.json"
-    f.write_text(f.read_text().replace("0.99", "0.98", 1) + " ")
+    f.write_text(f.read_text(encoding="utf-8").replace("0.99", "0.98", 1) + " ", encoding="utf-8")
     r = client.post("/api/calibration/import", json={"path": str(bad)})
     assert r.status_code == 422 and r.json()["error"] == "calibration_pack_invalid"
     assert r.json()["message"] == "校准数据与相机配方文件不匹配" and "SHA-256" in r.json()["detail"]
@@ -542,9 +542,9 @@ def test_malformed_packs(client, with_camdata, pack, tmp_path, settings):
     def variant(name, edit):
         d = tmp_path / name
         shutil.copytree(pack, d)
-        m = json.loads((d / "calib-pack.json").read_text())
+        m = json.loads((d / "calib-pack.json").read_text(encoding="utf-8"))
         edit(m, d)
-        (d / "calib-pack.json").write_text(json.dumps(m))
+        (d / "calib-pack.json").write_text(json.dumps(m), encoding="utf-8")
         return d
 
     def drop_1600(m, d):
@@ -578,7 +578,7 @@ def test_malformed_packs(client, with_camdata, pack, tmp_path, settings):
     }
     bad_json = tmp_path / "bad_json"
     shutil.copytree(pack, bad_json)
-    (bad_json / "calib-pack.json").write_text("{not json")
+    (bad_json / "calib-pack.json").write_text("{not json", encoding="utf-8")
     cases["bad_json"] = bad_json
     plain = tmp_path / "plain-folder"
     plain.mkdir()
@@ -601,9 +601,9 @@ def test_calibration_for_another_stock_04_is_flagged_after_camera_data_changes(c
     """相机数据的原厂 04 换了而标定包是对旧的核对的：状态里标出来，不静默继续预测。"""
     assert client.post("/api/calibration/import", json={"path": str(pack)}).status_code == 200
     mp = settings.home_dir / "calib/manifest.json"
-    m = json.loads(mp.read_text())
+    m = json.loads(mp.read_text(encoding="utf-8"))
     m["camera_stock_sha256"] = "0" * 64
-    mp.write_text(json.dumps(m, indent=2))
+    mp.write_text(json.dumps(m, indent=2), encoding="utf-8")
     s = client.get("/api/camdata/status").json()
     assert s["ready"] is False and s["calibration"]["state"] == "invalid"
     assert s["calibration"]["message"] == "校准数据与相机配方文件不匹配"

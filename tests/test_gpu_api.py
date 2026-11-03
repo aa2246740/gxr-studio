@@ -44,7 +44,7 @@ def client(settings):
 
 def _flag(settings, on: bool = True) -> None:
     settings.home_dir.mkdir(parents=True, exist_ok=True)
-    (settings.home_dir / "flags.json").write_text(json.dumps({"gpu_preview": on}))
+    (settings.home_dir / "flags.json").write_text(json.dumps({"gpu_preview": on}), encoding="utf-8")
 
 
 def _card(volumes, *, raw=True, jpg=True, **dng):
@@ -376,15 +376,15 @@ def test_lut_table_does_not_write_and_old_records_upgrade_at_startup(settings):
     with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as c:
         cid = upload(c, cube_bytes(comments="# Input: sRGB\n")).json()["cube_id"]
         index = c.app.state.ctx.render.luts.home / "luts" / "library.json"
-    doc = json.loads(index.read_text())
+    doc = json.loads(index.read_text(encoding="utf-8"))
     doc["items"][cid].pop("attribution_version", None)  # 旧格式
-    index.write_text(json.dumps(doc))
+    index.write_text(json.dumps(doc), encoding="utf-8")
     with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as c:
         upgraded = index.read_bytes()
         assert json.loads(upgraded)["items"][cid]["attribution_version"] == 2  # 启动时升级
         doc = json.loads(upgraded)
         doc["items"][cid].pop("attribution_version", None)
-        index.write_text(json.dumps(doc))  # 运行中又出现旧记录（例如手改）
+        index.write_text(json.dumps(doc), encoding="utf-8")  # 运行中又出现旧记录（例如手改）
         before = (index.read_bytes(), index.stat().st_mtime_ns, sorted(p.name for p in index.parent.iterdir()))
         assert c.get(f"/api/luts/{cid}/table").status_code == 200
         assert (index.read_bytes(), index.stat().st_mtime_ns, sorted(p.name for p in index.parent.iterdir())) == before

@@ -94,7 +94,7 @@ def test_javascript_parses(tmp_path):
     for f in JS_FILES:
         target = tmp_path / (f.stem + ".mjs")
         target.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
-        res = subprocess.run(["node", "--check", str(target)], capture_output=True, text=True)
+        res = subprocess.run(["node", "--check", str(target)], capture_output=True, text=True, encoding="utf-8")
         assert res.returncode == 0, f"{f.name}: {res.stderr}"
 
 

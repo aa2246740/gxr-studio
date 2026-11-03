@@ -128,7 +128,7 @@ class CardReader:
         return _open_root(Path(name))
 
     def fstat(self, fd: int) -> os.stat_result:
-        return os.fstat(fd)
+        return osplat.fstat(fd)
 
     def listdir_fd(self, fd: int) -> list[str]:
         return osplat.listdir_fd(fd)

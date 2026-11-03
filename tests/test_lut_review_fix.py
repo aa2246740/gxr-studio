@@ -106,11 +106,11 @@ def test_existing_library_recovers_missed_attribution_without_replacing_edits(li
     raw = review_bytes("trailer")
     item = library.add(raw, "example.cube")
     path = library.home / "luts/library.json"
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     record = doc["items"][item["cube_id"]]
     record.pop("attribution_version", None)
     record.update(source="", author="用户作者" if edited else "", license="", comments=[])
-    path.write_text(json.dumps(doc))
+    path.write_text(json.dumps(doc), encoding="utf-8")
     reopened = LutLibrary(library.home)
     recovered = reopened.get(item["cube_id"])
     expected = {**ATTRIBUTION, **({"author": "用户作者"} if edited else {})}

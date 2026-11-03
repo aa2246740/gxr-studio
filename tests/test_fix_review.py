@@ -106,11 +106,11 @@ def test_import_js_uses_the_summary_rules_everywhere():
 
 def break_sidecar(path: Path, how: str):
     if how == "corrupt":
-        path.write_text("{ not json")
+        path.write_text("{ not json", encoding="utf-8")
     elif how == "deleted":
         path.unlink()
     elif how == "not-a-sidecar":
-        path.write_text('{"hello": 1}')
+        path.write_text('{"hello": 1}', encoding="utf-8")
 
 
 def assert_plain(text: str, *secrets: str):
@@ -146,11 +146,11 @@ def test_crop_save_and_export_survive_a_broken_sidecar(client, settings, how):
     assert r.status_code == 200, r.text
     assert r.json()["active"] and r.json()["warning"] == SIDECAR_RESET_NOTE
     assert_plain(r.text, root)
-    assert json.loads(path.read_text())["crop"]["preset"] == "3:2"
+    assert json.loads(path.read_text(encoding="utf-8"))["crop"]["preset"] == "3:2"
     backups = list(path.parent.glob(path.name + ".corrupt-*"))
     assert len(backups) == (0 if how == "deleted" else 1)
     if how == "corrupt":
-        assert backups[0].read_text() == "{ not json"
+        assert backups[0].read_text(encoding="utf-8") == "{ not json"
     # 修好以后不再有提示
     r = client.put(f"/api/photos/{shot['shot_id']}/crop", json={"preset": "1:1"})
     assert r.status_code == 200 and "warning" not in r.json()
@@ -179,7 +179,7 @@ def test_export_with_a_broken_sidecar_ignores_the_old_crop(client):
     assert client.put(f"/api/photos/{sid}/crop", json={"preset": "xpan-65-24"}).status_code == 200
     cropped = client.post(f"/api/photos/{sid}/export", json={"source": "camera-jpg"}).json()
     assert cropped["height"] < shot["height"]
-    path.write_text("{ not json")
+    path.write_text("{ not json", encoding="utf-8")
     plain = client.post(f"/api/photos/{sid}/export", json={"source": "camera-jpg"})
     assert plain.status_code == 200 and (plain.json()["width"], plain.json()["height"]) == (
         shot["width"],
@@ -190,7 +190,7 @@ def test_export_with_a_broken_sidecar_ignores_the_old_crop(client):
 def test_batch_export_with_a_broken_sidecar_and_plain_failures(client, monkeypatch):
     import_all(client)
     path, shot = sidecar_of(client, "R0000102")
-    path.write_text("{ not json")
+    path.write_text("{ not json", encoding="utf-8")
     r = client.post("/api/export", json={"ids": [shot["shot_id"]]})
     assert r.status_code == 202
     job = wait_job(client, r.json()["id"])
@@ -226,7 +226,7 @@ def test_unreadable_sidecar_that_cannot_be_reset_is_a_plain_422_not_a_500(client
 
     import_all(client)
     path, shot = sidecar_of(client, "R0000102")
-    path.write_text("{ not json")
+    path.write_text("{ not json", encoding="utf-8")
 
     def fail(*a, **k):
         raise sc.SidecarCorrupt(f"{path}: Expecting property name")
@@ -243,14 +243,14 @@ def test_unreadable_sidecar_that_cannot_be_reset_is_a_plain_422_not_a_500(client
 def test_rebuild_keeps_a_copy_of_a_corrupt_sidecar(client):
     import_all(client)
     path, shot = sidecar_of(client, "R0000102")
-    path.write_text("{ not json")
+    path.write_text("{ not json", encoding="utf-8")
     r = client.post("/api/library/rebuild")
     assert r.status_code == 200
     (kept,) = r.json()["corrupt_backups"]
     assert kept.endswith(".gxrs.json") is False and ".corrupt-" in kept
     lib = client.app.state.ctx.lib
-    assert lib.abspath(kept).read_text() == "{ not json"
-    assert json.loads(path.read_text())["schema"] == "gxr-studio/edit/1"
+    assert lib.abspath(kept).read_text(encoding="utf-8") == "{ not json"
+    assert json.loads(path.read_text(encoding="utf-8"))["schema"] == "gxr-studio/edit/1"
     assert r.json()["sidecars_created"] == 1
     # 再 rebuild 不会把备份当照片，也不会再备份
     r2 = client.post("/api/library/rebuild")
@@ -388,7 +388,7 @@ def test_recipes_tab_has_no_coming_soon_badge_but_the_camera_tab_keeps_it():
 
 def make_dir(path: Path, text: str) -> Path:
     path.mkdir(parents=True)
-    (path / "manifest.json").write_text(text)
+    (path / "manifest.json").write_text(text, encoding="utf-8")
     return path
 
 
@@ -402,14 +402,14 @@ def test_swap_in_replaces_the_directory_and_leaves_nothing_behind(tmp_path, monk
     root = make_dir(base / "camera-data", "old")
     new = make_dir(base / "camera-data.new", "new")
     store.swap_in(new, root)
-    assert (root / "manifest.json").read_text() == "new"
+    assert (root / "manifest.json").read_text(encoding="utf-8") == "new"
     assert sorted(p.name for p in base.iterdir()) == ["camera-data"]
 
 
 def test_swap_in_works_when_there_is_nothing_to_replace(tmp_path):
     new = make_dir(tmp_path / "home" / "calib.new", "new")
     store.swap_in(new, tmp_path / "home" / "calib")
-    assert (tmp_path / "home" / "calib" / "manifest.json").read_text() == "new"
+    assert (tmp_path / "home" / "calib" / "manifest.json").read_text(encoding="utf-8") == "new"
 
 
 def test_atomic_exchange_never_exposes_a_missing_directory(tmp_path):
@@ -422,7 +422,7 @@ def test_atomic_exchange_never_exposes_a_missing_directory(tmp_path):
             pytest.skip("这个文件系统不支持 renameatx_np")
     finally:
         os.close(fd)
-    assert (a / "manifest.json").read_text() == "B" and (b / "manifest.json").read_text() == "A"
+    assert (a / "manifest.json").read_text(encoding="utf-8") == "B" and (b / "manifest.json").read_text(encoding="utf-8") == "A"
 
 
 def test_interrupted_fallback_swap_is_recovered_at_startup(tmp_path, monkeypatch):
@@ -444,9 +444,9 @@ def test_interrupted_fallback_swap_is_recovered_at_startup(tmp_path, monkeypatch
     with pytest.raises(KeyboardInterrupt):
         store.swap_in(new, root)
     monkeypatch.setattr(osplat, "rename_at", real_rename)
-    assert not root.exists() and (home / "camera-data.old" / "manifest.json").read_text() == "old"
+    assert not root.exists() and (home / "camera-data.old" / "manifest.json").read_text(encoding="utf-8") == "old"
     assert store.recover_interrupted_swaps(home) == ["camera-data: restored from .old"]
-    assert (root / "manifest.json").read_text() == "old" and not (home / "camera-data.old").exists()
+    assert (root / "manifest.json").read_text(encoding="utf-8") == "old" and not (home / "camera-data.old").exists()
 
 
 def test_recovery_removes_a_stale_old_and_ignores_clean_homes(tmp_path):
@@ -455,7 +455,7 @@ def test_recovery_removes_a_stale_old_and_ignores_clean_homes(tmp_path):
     make_dir(home / "calib", "new")
     make_dir(home / "calib.old", "stale")
     assert store.recover_interrupted_swaps(home) == ["calib: removed stale .old"]
-    assert (home / "calib" / "manifest.json").read_text() == "new" and not (home / "calib.old").exists()
+    assert (home / "calib" / "manifest.json").read_text(encoding="utf-8") == "new" and not (home / "calib.old").exists()
     assert store.recover_interrupted_swaps(home) == []
 
 
@@ -464,8 +464,8 @@ def test_starting_the_app_recovers_an_interrupted_swap(settings):
     make_dir(settings.home_dir / "calib.old", "me-too")
     with make_client(settings):
         pass
-    assert (settings.home_dir / "camera-data" / "manifest.json").read_text() == "restore-me"
-    assert (settings.home_dir / "calib" / "manifest.json").read_text() == "me-too"
+    assert (settings.home_dir / "camera-data" / "manifest.json").read_text(encoding="utf-8") == "restore-me"
+    assert (settings.home_dir / "calib" / "manifest.json").read_text(encoding="utf-8") == "me-too"
     assert not list(settings.home_dir.glob("*.old"))
 
 

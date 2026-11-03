@@ -97,7 +97,8 @@ def test_entries_match_the_research_parser_on_the_g123_dat(tmp_path):
         f"sys.path.insert(0, {str(t.KNOBS_SRC)!r})\n"
         "import support\n"
         "mods = support.parse()\n"
-        "print(json.dumps([{str(s): e.hex() for s, e in m['entries'].items()} for m in mods]))\n"
+        "print(json.dumps([{str(s): e.hex() for s, e in m['entries'].items()} for m in mods]))\n",
+        encoding="utf-8",
     )
     cp = subprocess.run(
         [sys.executable, "-B", str(script)],

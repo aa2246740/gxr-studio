@@ -222,7 +222,7 @@ def test_exact_chain_with_default_params_equals_e0_predict(cam, model200, scene_
 
 
 def test_exact_chain_reproduces_e0_golden_frames(cam, model200):
-    golden = json.loads((t.GOLDEN / "render_frames.json").read_text())["frames"]
+    golden = json.loads((t.GOLDEN / "render_frames.json").read_text(encoding="utf-8"))["frames"]
     data = menu.load()
     inputs = {}
     for scene in t.SCENES:
@@ -488,7 +488,7 @@ def test_api_edit_roundtrip_and_validation(data_client, real_card):
     assert r2["recipe"]["slot"] == 1 and r2["curve"] and r2["adjust"]["exposure_ev"] == 0 and r2["rev"] == 2
     # 裁切写入不丢编辑，编辑写入不丢裁切
     c.put(f"/api/photos/{p['id']}/crop", json={"preset": "xpan-65-24"})
-    side = json.loads(next((Path(c.get("/api/settings").json()["library_dir"])).rglob("R8051144.gxrs.json")).read_text())
+    side = json.loads(next((Path(c.get("/api/settings").json()["library_dir"])).rglob("R8051144.gxrs.json")).read_text(encoding="utf-8"))
     assert side["recipe"]["slot"] == 1 and side["crop"]["preset"] == "xpan-65-24" and side["adjust"]["contrast"] == 10
     # 校验：不合法的档位、没有的旋钮、单元不一致
     for bad, code in (

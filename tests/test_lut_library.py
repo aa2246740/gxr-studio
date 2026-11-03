@@ -95,7 +95,7 @@ def test_filenames_title_are_data_and_export_title_is_clean(library, tmp_path):
     assert item["cube_id"] == hashlib.sha256(raw).hexdigest()
     assert (library.home / "luts" / f"{item['cube_id']}.cube").read_bytes() == raw
     exported = library.export(item["cube_id"])
-    text = Path(exported["path"]).read_text()
+    text = Path(exported["path"]).read_text(encoding="utf-8")
     title = next(line for line in text.splitlines() if line.startswith("TITLE"))
     assert title.count('"') == 2 and "#" not in title and "'" not in title
     parsed = Cube.read(exported["path"])
@@ -165,10 +165,10 @@ def test_delete_preserves_generated_recipe_and_marks_source(library):
     folder = library.home / "my_recipes"
     folder.mkdir()
     recipe = {"name": "保留", "source": {"kind": "lut", "cube_sha256": item["cube_id"]}, "recipe": {"slot": 4}}
-    (folder / "example.json").write_text(json.dumps(recipe))
+    (folder / "example.json").write_text(json.dumps(recipe), encoding="utf-8")
     library.delete(item["cube_id"])
     assert library.listing()["luts"] == [] and not (library.home / "luts" / item["file"]).exists()
-    saved = json.loads((folder / "example.json").read_text())
+    saved = json.loads((folder / "example.json").read_text(encoding="utf-8"))
     assert saved["recipe"] == {"slot": 4} and saved["source"]["lut_deleted"] is True
     assert saved["name"] == "保留"
     assert saved["source"]["attribution"] == {"source": "", "author": "Synthetic Author", "license": "CC BY-SA 4.0"}
@@ -178,7 +178,7 @@ def test_interrupted_delete_finishes_from_durable_record(library, monkeypatch):
     item = library.add(cube_bytes(), "sample.cube")
     (library.home / "my_recipes").mkdir()
     recipe_path = library.home / "my_recipes/generated.json"
-    recipe_path.write_text(json.dumps({"source": {"cube_sha256": item["cube_id"]}, "recipe": {"slot": 4}}))
+    recipe_path.write_text(json.dumps({"source": {"cube_sha256": item["cube_id"]}, "recipe": {"slot": 4}}), encoding="utf-8")
     replace_file = PrivateDir.replace_file
 
     def stop(self, name, data):
@@ -189,13 +189,13 @@ def test_interrupted_delete_finishes_from_durable_record(library, monkeypatch):
     monkeypatch.setattr(PrivateDir, "replace_file", stop)
     with pytest.raises(OSError):
         library.delete(item["cube_id"])
-    persisted = json.loads((library.home / "luts/library.json").read_text())
+    persisted = json.loads((library.home / "luts/library.json").read_text(encoding="utf-8"))
     assert item["cube_id"] not in persisted["items"] and persisted["pending_deletes"] == [item["cube_id"]]
     monkeypatch.setattr(PrivateDir, "replace_file", replace_file)
     assert LutLibrary(library.home).listing()["luts"] == []
-    assert json.loads(recipe_path.read_text())["source"]["lut_deleted"] is True
+    assert json.loads(recipe_path.read_text(encoding="utf-8"))["source"]["lut_deleted"] is True
     assert not (library.home / "luts" / item["file"]).exists()
-    assert json.loads((library.home / "luts/library.json").read_text())["pending_deletes"] == []
+    assert json.loads((library.home / "luts/library.json").read_text(encoding="utf-8"))["pending_deletes"] == []
 
 
 @pytest.mark.parametrize(
@@ -247,7 +247,7 @@ def test_multiline_attribution_roundtrip_and_no_extra_cube_directives(library):
     fields = {"source": "local\nTITLE x", "author": '作者 " #\nDOMAIN_MAX 9 9 9\u2028LUT_3D_SIZE 3', "license": " CC BY-SA 4.0\n\n保留 "}
     library.patch(item["cube_id"], fields)
     exported = library.export(item["cube_id"])
-    text = Path(exported["path"]).read_text()
+    text = Path(exported["path"]).read_text(encoding="utf-8")
     assert read_header(text)[0] == fields
     assert np.array_equal(Cube.parse(text).table3, Cube.parse(cube_bytes().decode()).table3)
     assert sum(line.startswith("TITLE ") for line in text.splitlines()) == 1
@@ -319,7 +319,7 @@ def test_private_locations_reject_links_into_protected_directory(library, tmp_pa
     protected.mkdir()
     target = protected / "entry" if location.endswith(".json") else protected
     if location.endswith(".json"):
-        target.write_text("untouched")
+        target.write_text("untouched", encoding="utf-8")
     path = library.home / location
     if path.is_dir():
         path.rename(path.with_name(path.name + "-saved"))
@@ -391,7 +391,7 @@ def test_legacy_sha_files_are_registered_on_first_open(library):
     directory = library.home / "luts"
     directory.mkdir(parents=True)
     (directory / f"{digest}.cube").write_bytes(raw)
-    (directory / f"{digest}.filename").write_text("old_srgb.cube\n")
+    (directory / f"{digest}.filename").write_text("old_srgb.cube\n", encoding="utf-8")
     listing = library.listing()
     assert len(listing["luts"]) == 1
     assert listing["luts"][0]["filename"] == "old_srgb.cube"
@@ -468,7 +468,7 @@ def test_generated_recipe_keeps_attribution_after_lut_deletion(client, settings)
     recipe = response.json()
     assert recipe["source"]["attribution"] == fields
     assert client.delete(f"/api/luts/{cid}").status_code == 200
-    persisted = json.loads((settings.home_dir / "my_recipes" / f"{recipe['id']}.json").read_text())
+    persisted = json.loads((settings.home_dir / "my_recipes" / f"{recipe['id']}.json").read_text(encoding="utf-8"))
     assert persisted["source"]["attribution"] == fields and persisted["source"]["lut_deleted"] is True
 
 
@@ -761,7 +761,7 @@ console.log(JSON.stringify({paths:files.map(f=>f.path),results}));
 """,
         encoding="utf-8",
     )
-    out = subprocess.run(["node", str(script)], capture_output=True, text=True, check=True, timeout=15)
+    out = subprocess.run(["node", str(script)], capture_output=True, text=True, check=True, timeout=15, encoding="utf-8")
     data = json.loads(out.stdout)
     assert data["paths"] == ["Folder/one.cube", "Folder/two.cube", "Folder/bad.3dl"]
     assert [row["status"] for row in data["results"]] == ["imported", "duplicate", "error"]

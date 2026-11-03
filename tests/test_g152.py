@@ -74,7 +74,7 @@ def test_new_generations_require_the_dat_template(tmp_path, gen):
     manifest = store.read_manifest(home)
     manifest["files"].pop("dat-template/GXRCE.DAT")
     (root / "dat-template/GXRCE.DAT").unlink()
-    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         CameraData(home)
 

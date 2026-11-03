@@ -23,10 +23,10 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没�
 
 
 def run_node(tmp_path: Path, script: str) -> object:
-    (tmp_path / "package.json").write_text('{"type":"module"}\n')
+    (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     shutil.copyfile(ASSETS / "gpu" / "engine.js", tmp_path / "engine.js")
     (tmp_path / "check.mjs").write_text(script, encoding="utf-8")
-    res = subprocess.run(["node", str(tmp_path / "check.mjs")], capture_output=True, text=True, cwd=tmp_path, timeout=60)
+    res = subprocess.run(["node", str(tmp_path / "check.mjs")], capture_output=True, text=True, cwd=tmp_path, timeout=60, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     return json.loads(res.stdout)
 
@@ -75,7 +75,7 @@ def test_display_table_and_gains_match_python(tmp_path):
 def _decide(tmp_path: Path, rows: list[dict[str, object]]) -> list[object]:
     for name in ("gpu_stage.js", "state.js"):
         shutil.copyfile(ASSETS / name, tmp_path / name)
-    (tmp_path / "api.js").write_text("export const api = async () => { throw new Error('不读接口'); };\n")
+    (tmp_path / "api.js").write_text("export const api = async () => { throw new Error('不读接口'); };\n", encoding="utf-8")
     return run_node(
         tmp_path,
         "import { decide } from './gpu_stage.js';\n"

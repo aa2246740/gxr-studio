@@ -299,7 +299,7 @@ def test_r3_write_leaves_no_private_bytes_after_directory_moves(tmp_path, monkey
     root = tmp_path / "app-data"
     target = tmp_path / "repository"
     target.mkdir()
-    (target / ".git").write_text("marker\n")
+    (target / ".git").write_text("marker\n", encoding="utf-8")
     data = b"private sample\n" * 40
     with privacy.PrivateDir(root, "test") as d:
         (root / "sub").mkdir()

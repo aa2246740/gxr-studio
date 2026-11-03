@@ -282,8 +282,8 @@ def test_wrongly_typed_sidecar_is_treated_as_corrupt_not_500(client, name):
     import_all(client)
     path, shot = sidecar_of(client, "R0000102")
     sid = shot["shot_id"]
-    good = json.loads(path.read_text())
-    path.write_text(json.dumps({**good, **BAD_SHAPES[name]}))
+    good = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**good, **BAD_SHAPES[name]}), encoding="utf-8")
     media = {k: client.app.state.ctx.lib.abspath(v["relpath"]).read_bytes() for k, v in shot["files"].items()}
     for method, url, kw in (
         ("GET", f"/api/photos/{sid}/crop", {}),
@@ -305,8 +305,8 @@ def test_wrongly_typed_sidecar_is_treated_as_corrupt_not_500(client, name):
 def test_sidecar_from_a_newer_schema_is_still_left_alone(client):
     import_all(client)
     path, shot = sidecar_of(client, "R0000102")
-    good = json.loads(path.read_text())
-    path.write_text(json.dumps({**good, "schema": "gxr-studio/edit/99", "crop": "future-format"}))
+    good = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**good, "schema": "gxr-studio/edit/99", "crop": "future-format"}), encoding="utf-8")
     before = path.read_bytes()
     assert client.put(f"/api/photos/{shot['shot_id']}/crop", json={"preset": "1:1"}).status_code == 409
     assert path.read_bytes() == before and not list(path.parent.glob("*.corrupt-*"))

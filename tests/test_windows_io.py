@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -132,3 +133,25 @@ def test_real_directory_junction_is_refused_and_removed_as_a_link(tmp_path):
     finally:
         os.close(dfd)
     assert (outside / "keep").read_bytes() == b"keep"
+
+
+def test_change_time_tracks_writes_when_mtime_is_restored(tmp_path):
+    import ctypes
+
+    assert ctypes.sizeof(osplat._FileBasicInfo) == 40
+    assert osplat._FileBasicInfo.ChangeTime.offset == 24
+    path = tmp_path / "changing.bin"
+    path.write_bytes(b"old data")
+    original = path.stat()
+    before = osplat.lstat(path)
+    assert abs(before.st_ctime_ns - time.time_ns()) < 10_000_000_000
+    for index in range(50):
+        path.write_bytes(bytes([index]) * 8)
+        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+        after = osplat.lstat(path)
+        if after.st_ctime_ns != before.st_ctime_ns:
+            break
+    assert after.st_ctime_ns > before.st_ctime_ns
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert after.st_ino == before.st_ino and after.st_dev == before.st_dev
+    assert after.st_birthtime_ns == before.st_birthtime_ns

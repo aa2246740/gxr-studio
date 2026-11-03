@@ -111,7 +111,7 @@ def main() -> None:
             rep = c.post("/api/library/rebuild").json()
             res["rebuild_index_seconds"] = round(time.perf_counter() - t0, 2)
             res["rebuild_shots"] = rep["shots"]
-        OUT.write_text(json.dumps(res, ensure_ascii=False, indent=2) + "\n")
+        OUT.write_text(json.dumps(res, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(res, ensure_ascii=False, indent=2))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

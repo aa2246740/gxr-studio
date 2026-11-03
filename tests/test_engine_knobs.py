@@ -58,7 +58,7 @@ def test_case_set_covers_everything(data, cases):
 
 
 def test_studio_engine_matches_the_golden_list(dat, data, cases):
-    golden = json.loads((t.GOLDEN / "knobs_cases.json").read_text())
+    golden = json.loads((t.GOLDEN / "knobs_cases.json").read_text(encoding="utf-8"))
     assert golden["dat_sha256"] == t.FIXTURE_SHA256[127] and golden["cases"] == len(cases)
     bad = []
     for c in cases:
@@ -70,7 +70,7 @@ def test_studio_engine_matches_the_golden_list(dat, data, cases):
 
 def test_the_golden_list_notices_a_one_step_change(dat, data, cases, monkeypatch):
     """反向检查：把指数表里若干项各改 1，黄金清单必须报出不一致（否则这套测试没有牙）。"""
-    golden = json.loads((t.GOLDEN / "knobs_cases.json").read_text())
+    golden = json.loads((t.GOLDEN / "knobs_cases.json").read_text(encoding="utf-8"))
     table = list(knobs.EXP_Q12)
     for j in range(10, 250, 3):
         table[j] += 1
@@ -159,7 +159,7 @@ def test_apply_never_returns_a_broken_entry(dat, data, cases):
 
 
 def test_engine_files_match_their_recorded_sources():
-    prov = json.loads((ENGINE / "PROVENANCE.json").read_text())
+    prov = json.loads((ENGINE / "PROVENANCE.json").read_text(encoding="utf-8"))
     for rel, sha in prov["engine_file_sha256"].items():
         assert hashlib.sha256((ENGINE / rel).read_bytes()).hexdigest() == sha, rel
     # 没有被记录的文件混进来
@@ -173,7 +173,7 @@ def test_engine_files_match_their_recorded_sources():
 
 
 def test_copies_equal_the_research_sources():
-    prov = json.loads((ENGINE / "PROVENANCE.json").read_text())
+    prov = json.loads((ENGINE / "PROVENANCE.json").read_text(encoding="utf-8"))
     for rel, meta in prov["files"].items():
         src = t.REPO / meta["source"]
         if not src.is_file():
@@ -187,11 +187,11 @@ def test_ast_segments_equal_the_originals():
     """逐字子集：每个被复制的函数/类/常量，AST 与原件一致（缩进、注释以外不可能不同）。"""
     import ast
 
-    prov = json.loads((ENGINE / "PROVENANCE.json").read_text())
+    prov = json.loads((ENGINE / "PROVENANCE.json").read_text(encoding="utf-8"))
 
     def nodes(path):
         out = {}
-        for n in ast.parse(path.read_text()).body:
+        for n in ast.parse(path.read_text(encoding="utf-8")).body:
             name = getattr(n, "name", None)
             if name is None and isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name):
                 name = n.targets[0].id
@@ -213,11 +213,11 @@ def test_ast_segments_equal_the_originals():
     # model.py：类 Model 里搬来的方法 + 三个顶层函数
     meta = prov["files"]["model.py"]
     src = t.REPO / meta["source"]
-    original_tree = ast.parse(src.read_text())
+    original_tree = ast.parse(src.read_text(encoding="utf-8"))
     original = {n.name: ast.dump(n) for n in original_tree.body if isinstance(n, ast.FunctionDef)}
     cls = next(n for n in original_tree.body if isinstance(n, ast.ClassDef) and n.name == "Model")
     original_methods = {n.name: ast.dump(n) for n in cls.body if isinstance(n, ast.FunctionDef)}
-    ours_tree = ast.parse((ENGINE / "model.py").read_text())
+    ours_tree = ast.parse((ENGINE / "model.py").read_text(encoding="utf-8"))
     ours_cls = next(n for n in ours_tree.body if isinstance(n, ast.ClassDef) and n.name == "Model")
     moved = [n.name for n in ours_cls.body if isinstance(n, ast.FunctionDef) and n.name != "__init__"]
     assert moved == ["pre", "predict", "lab", "de"]
@@ -237,5 +237,5 @@ def test_engine_does_not_import_research_or_firmware_code():
 
     bad = re.compile(r"^\s*(from|import)\s+(research|firmware|support|closed_loop|model_adapter)\b", re.M)
     for p in list((t.STUDIO / "src/gxr_studio/engine").glob("*.py")) + list((t.STUDIO / "src/gxr_studio/camdata").glob("*.py")):
-        assert not bad.search(p.read_text()), p.name
-        assert "/Volumes/" not in p.read_text(), p.name
+        assert not bad.search(p.read_text(encoding="utf-8")), p.name
+        assert "/Volumes/" not in p.read_text(encoding="utf-8"), p.name

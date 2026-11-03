@@ -18,12 +18,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .. import osplat
 from ..library.store import Library
 from .discovery import Card, CardFile, CardReader, StrictEntry, StrictScan, scan_card, scan_card_strict
 
@@ -49,7 +49,7 @@ FileState = tuple[int, int, int, int]  # (inode, 长度, mtime_ns, ctime_ns)：�
 def file_state(fh: Any) -> FileState | None:
     """已打开文件的状态（fstat）。拿不到（测试替身没有 fileno）返回 None，这时读到的内容不当作证明。"""
     try:
-        st = os.fstat(fh.fileno())
+        st = osplat.fstat(fh.fileno())
     except (AttributeError, OSError, ValueError):
         return None
     return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)

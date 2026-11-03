@@ -25,7 +25,7 @@ def run_js(expr: str):
         f"import * as L from {json.dumps((ASSETS / 'look_notes.js').as_uri())};\n"
         f"console.log(JSON.stringify({expr}));\n"
     )
-    out = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True, text=True, timeout=60)
+    out = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True, text=True, timeout=60, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

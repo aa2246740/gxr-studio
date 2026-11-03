@@ -214,7 +214,7 @@ def test_import_and_export_decline_unmatched_pair(client, volumes, case):
     assert not jobs[0].running and jobs[0].error is None
     (photo,) = client.get("/api/photos").json()
     assert photo["hdr"] == "unsupported"
-    reason = json.loads(derived.status_path(ctx.lib, photo["id"]).read_text())
+    reason = json.loads(derived.status_path(ctx.lib, photo["id"]).read_text(encoding="utf-8"))
     assert reason["reason"] == ("not_aligned" if case == "motion" else "capture_mismatch")
     if case == "capture":
         assert reason["detail"] == "RAW 与 JPG 不是同一次拍摄"

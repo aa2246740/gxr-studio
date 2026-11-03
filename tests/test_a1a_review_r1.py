@@ -117,15 +117,16 @@ def _run_frontend(tmp_path: Path) -> dict:
     d.mkdir()
     for name in ("import.js", "import_summary.js"):
         shutil.copy(ASSETS / name, d / name)
-    (d / "package.json").write_text('{"type":"module"}\n')
-    (d / "api.js").write_text("export const api = (...a) => globalThis.reviewApi(...a);\n")
-    (d / "state.js").write_text("export const state = globalThis.reviewState; export const emit = () => {};\n")
+    (d / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    (d / "api.js").write_text("export const api = (...a) => globalThis.reviewApi(...a);\n", encoding="utf-8")
+    (d / "state.js").write_text("export const state = globalThis.reviewState; export const emit = () => {};\n", encoding="utf-8")
     (d / "dom.js").write_text(
         "export const h = (tag, attrs, ...children) => ({tag, attrs, children});\n"
-        "export const toast = () => {};\nexport const toastError = (e) => { throw e; };\n"
+        "export const toast = () => {};\nexport const toastError = (e) => { throw e; };\n",
+        encoding="utf-8",
     )
-    (d / "scenario.mjs").write_text(FRONTEND_SCENARIO)
-    out = subprocess.run([node, str(d / "scenario.mjs"), str(d)], capture_output=True, text=True, timeout=60)
+    (d / "scenario.mjs").write_text(FRONTEND_SCENARIO, encoding="utf-8")
+    out = subprocess.run([node, str(d / "scenario.mjs"), str(d)], capture_output=True, text=True, timeout=60, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -290,12 +291,12 @@ def _calib_pack(folder: Path, entry: bytes) -> None:
         np.savez(bio, stock=stock, d0=d0, d1=d1, S_eff=((stock[:, 0] + d0) - 1j * (stock[:, 1] + d1)) / 32)
         npz, ring = f"ctx_{iso}.npz", f"ring_{iso}.json"
         (folder / npz).write_bytes(bio.getvalue())
-        (folder / ring).write_text(json.dumps({"schema": "gxr-sector-model/2"}))
+        (folder / ring).write_text(json.dumps({"schema": "gxr-sector-model/2"}), encoding="utf-8")
         isos[str(iso)] = {"npz": npz, "ring": ring}
         for name in (npz, ring):
             data = (folder / name).read_bytes()
             files[name] = {"sha256": sha(data), "size": len(data)}
-    (folder / "calib-pack.json").write_text(json.dumps({"schema": "gxr-studio/calib-pack/1", "isos": isos, "files": files}))
+    (folder / "calib-pack.json").write_text(json.dumps({"schema": "gxr-studio/calib-pack/1", "isos": isos, "files": files}), encoding="utf-8")
 
 
 def _card_files(root: Path) -> dict:
@@ -394,7 +395,7 @@ def test_r1_p1_06_staged_blob_is_checked_not_the_worktree(tmp_path, monkeypatch,
     if worktree == "safe_copy":
         monkeypatch.setattr(pb, "ROOT", tmp_path)
         (tmp_path / "tests/fixtures").mkdir(parents=True)
-        (tmp_path / name).write_text("plain text\n")
+        (tmp_path / name).write_text("plain text\n", encoding="utf-8")
     fake = FakeGit({name: fake_dat(6, n=4096)})
     fake.install(monkeypatch, pb)
     assert pb.main(["--staged"]) == 1

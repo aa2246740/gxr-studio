@@ -428,7 +428,7 @@ def test_worker_result_files_and_parent_watch(tmp_path: Path, monkeypatch: pytes
     spec = {"home": str(home), "cube": str(tmp_path / "nope.cube"), "input_space": "srgb", "output_space": "srgb"}
     (job / "job.json").write_text(json.dumps(spec), encoding="utf-8")
     assert worker.run(job) == 1
-    assert json.loads((job / "result.json").read_text())["state"] == "error"
+    assert json.loads((job / "result.json").read_text(encoding="utf-8"))["state"] == "error"
 
     def boom(*_a: object, **_k: object) -> object:
         raise SceneError("needs_photo", "需要照片")
@@ -441,22 +441,22 @@ def test_worker_result_files_and_parent_watch(tmp_path: Path, monkeypatch: pytes
         encoding="utf-8",
     )
     assert worker.run(job2) == 1
-    assert json.loads((job2 / "result.json").read_text())["code"] == "needs_photo"
+    assert json.loads((job2 / "result.json").read_text(encoding="utf-8"))["code"] == "needs_photo"
     monkeypatch.setattr("gxr_studio.lut.scene.build_samples", lambda *a, **k: (_ for _ in ()).throw(Cancelled()))
     job3 = tmp_path / "job-cancel"
     job3.mkdir()
-    (job3 / "job.json").write_text((job2 / "job.json").read_text(), encoding="utf-8")
+    (job3 / "job.json").write_text((job2 / "job.json").read_text(encoding="utf-8"), encoding="utf-8")
     assert worker.run(job3) == 0
-    assert json.loads((job3 / "result.json").read_text())["state"] == "cancelled"
+    assert json.loads((job3 / "result.json").read_text(encoding="utf-8"))["state"] == "cancelled"
     tiny = Samples(np.zeros((4, 3)), None, np.ones(4), np.zeros(4, np.int8), np.array([False, False, False, True]), [])
     monkeypatch.setattr("gxr_studio.lut.scene.build_samples", lambda *a, **k: tiny)
     monkeypatch.setattr("gxr_studio.lut.scene.target_rgb", lambda *a, **k: (np.zeros((4, 3)), np.ones((4, 3))))
     monkeypatch.setattr("gxr_studio.lut.fit.Fitter.run", lambda self: {"samples": {"n": 1}})
     job4 = tmp_path / "job-done"
     job4.mkdir()
-    (job4 / "job.json").write_text((job2 / "job.json").read_text(), encoding="utf-8")
+    (job4 / "job.json").write_text((job2 / "job.json").read_text(encoding="utf-8"), encoding="utf-8")
     assert worker.run(job4) == 0
-    done = json.loads((job4 / "result.json").read_text())
+    done = json.loads((job4 / "result.json").read_text(encoding="utf-8"))
     assert done["state"] == "done" and done["result"]["samples"]["skipped_photos"] == []
     assert set(handlers) == {worker.signal.SIGTERM, worker.signal.SIGINT}
 

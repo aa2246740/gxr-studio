@@ -159,7 +159,7 @@ def test_calibration_tampering_is_detected(home, sources):
     store.import_from_dat(need(127), home)
     calib.import_calibration(home, sources)
     ring = home / "calib/ring_model_200.json"
-    ring.write_text(ring.read_text().replace("0.99", "0.98", 1))
+    ring.write_text(ring.read_text(encoding="utf-8").replace("0.99", "0.98", 1), encoding="utf-8")
     with pytest.raises(calib.CalibError):
         calib.model_for(home, 200)
 
@@ -206,8 +206,8 @@ def test_row_scanner_finds_planted_rows(tmp_path):
         pytest.skip("没有夹具 DAT")
     row = next(iter(needles))
     (tmp_path / "a.bin").write_bytes(b"xx" + row + b"yy")
-    (tmp_path / "b.txt").write_text("data = '" + row.hex().upper() + "'\n")
-    (tmp_path / "c.txt").write_text("nothing here\n")
+    (tmp_path / "b.txt").write_text("data = '" + row.hex().upper() + "'\n", encoding="utf-8")
+    (tmp_path / "c.txt").write_text("nothing here\n", encoding="utf-8")
     scanned, hits = find_rows([tmp_path], needles)
     assert scanned == 3 and len(hits) >= 2
 
@@ -247,7 +247,7 @@ def test_golden_lists_hold_digests_only():
         p = t.GOLDEN / name
         if not p.is_file():
             pytest.skip("黄金清单不在")
-        text = p.read_text()
+        text = p.read_text(encoding="utf-8")
         data = json.loads(text)
         blob = json.dumps(data)
         # 单个字符串最长 64 个十六进制（SHA-256），没有 552 B（1104 个十六进制字符）的条目
