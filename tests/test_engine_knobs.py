@@ -165,7 +165,7 @@ def test_engine_files_match_their_recorded_sources():
     # 没有被记录的文件混进来
     # .pyi 是 strict 用的类型存根，不参与和来源逐字节对上的那份清单。
     on_disk = {
-        str(p.relative_to(ENGINE))
+        p.relative_to(ENGINE).as_posix()
         for p in ENGINE.rglob("*")
         if p.is_file() and p.suffix != ".pyi" and p.name != "PROVENANCE.json" and "__pycache__" not in p.parts
     }
