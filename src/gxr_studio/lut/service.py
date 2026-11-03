@@ -341,7 +341,7 @@ class LutService:
 
     def _read(self, path: Path) -> Any:
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
 

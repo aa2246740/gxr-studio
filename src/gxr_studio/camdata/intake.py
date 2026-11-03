@@ -244,7 +244,7 @@ def describe(home: Path) -> dict[Any, Any] | None:
 def describe_calibration(home: Path) -> dict[Any, Any] | None:
     p = calib.calib_dir(home) / "manifest.json"
     try:
-        m = json.loads(p.read_text())
+        m = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return {
@@ -271,7 +271,7 @@ def write_pack(dest: Path, sources: dict[Any, Any]) -> dict[Any, Any]:
             b = (dest / name).read_bytes()
             files[name] = {"size": len(b), "sha256": _sha(b)}
     manifest = {"schema": PACK_SCHEMA, "isos": isos, "files": files}
-    (dest / PACK_FILE).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    (dest / PACK_FILE).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return manifest
 
 
@@ -286,7 +286,7 @@ def _snapshot_pack(folder: Path) -> dict[Any, Any]:
     """校验 calib-pack.json，逐个文件读进内存并核 SHA-256。返回 {iso: ((文件名, 字节), (文件名, 字节))}：
     核对的和导入的是同一份字节，而且不在应用数据目录里落任何临时文件。"""
     try:
-        pack = json.loads((folder / PACK_FILE).read_text())
+        pack = json.loads((folder / PACK_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise _bad_pack("校准数据的清单（calib-pack.json）读不出来或不是有效的 JSON。") from exc
     if not isinstance(pack, dict) or pack.get("schema") != PACK_SCHEMA:

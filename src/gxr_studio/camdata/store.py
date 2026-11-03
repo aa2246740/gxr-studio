@@ -166,7 +166,7 @@ def read_manifest(home: Path) -> dict[Any, Any]:
     p = camera_data_dir(home) / "manifest.json"
     if not p.is_file():
         raise CamdataError("还没有导入相机配方文件")
-    m = cast(dict[str, Any], json.loads(p.read_text()))
+    m = cast(dict[str, Any], json.loads(p.read_text(encoding="utf-8")))
     if m.get("schema") != SCHEMA:
         raise CamdataError("相机配方文件的版本不认识")
     return m

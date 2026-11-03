@@ -21,6 +21,8 @@ jobs:
         run: uv run --frozen python -u scripts/windows_probe.py io
       - name: Event loop
         run: uv run --frozen python -u scripts/windows_probe.py loop
+      - name: Software WebGPU adapter
+        run: uv run --frozen python -u scripts/windows_probe.py gpu
       - name: Two independent matrix workers
         run: uv run --frozen python -u scripts/windows_probe.py matmul
       - name: Two independent inverse workers
@@ -31,6 +33,12 @@ jobs:
         run: uv run --frozen pytest -x -vv tests/test_windows_io.py tests/test_network_guard.py tests/test_card_read_boundaries.py tests/test_platform_io.py tests/test_a1a_privacy.py tests/test_a1a_review_r2.py tests/test_a1a_review_r3.py tests/test_fix_review.py -o faulthandler_timeout=120
       - name: First GPU test failure
         run: uv run --frozen pytest -x -vv tests/test_gpu_api.py -o faulthandler_timeout=120
+      - name: Source bytes and synthetic calibration
+        run: uv run --frozen pytest -x -vv tests/test_clone_coverage.py tests/test_engine_knobs.py -o faulthandler_timeout=120
+      - name: GPU colour comparison
+        env:
+          GXR_REQUIRE_GPU_TEST: "1"
+        run: uv run --frozen pytest -x -vvs tests/test_gpu_parity.py -o faulthandler_timeout=120
       - name: Additional failure details
         if: failure()
         run: uv run --frozen pytest -vv --maxfail=10 tests/test_a1a_privacy.py tests/test_a1a_review_r2.py tests/test_fix_review.py tests/test_gpu_api.py -o faulthandler_timeout=120

@@ -16,7 +16,7 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("case", choices=("io", "loop", "lut", "matmul", "inverse"))
+    parser.add_argument("case", choices=("io", "loop", "lut", "matmul", "inverse", "gpu"))
     args = parser.parse_args()
     print(json.dumps({"case": args.case, "python": sys.version, "platform": sys.platform}), flush=True)
     faulthandler.dump_traceback_later(120, exit=True)
@@ -47,6 +47,15 @@ def main() -> None:
             finally:
                 print(json.dumps({"network_attempts": audit.network_attempts()}), flush=True)
                 audit.forbid_network(False)
+        elif args.case == "gpu":
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+            os.environ["GXR_REQUIRE_GPU_TEST"] = "1"
+            from gpu_support import run_engine
+
+            with tempfile.TemporaryDirectory() as temporary:
+                images, summary = run_engine(Path(temporary), {}, [], timeout=30)
+                assert not images and "swiftshader" in json.dumps(summary).lower(), summary
+                print(json.dumps(summary), flush=True)
         elif args.case in ("matmul", "inverse"):
             import numpy as np
 

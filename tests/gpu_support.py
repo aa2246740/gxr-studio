@@ -132,8 +132,10 @@ def run_engine(
     ]
     if sys.platform.startswith("linux") and os.environ.get("CI"):
         args += ["--no-sandbox", "--disable-dev-shm-usage"]
-    with _Server(files) as srv:
-        proc = subprocess.Popen([*args, srv.url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
+    if sys.platform == "win32":
+        args += ["--enable-features=Vulkan", "--use-angle=swiftshader", "--use-vulkan=swiftshader", "--disable-vulkan-surface"]
+    with _Server(files) as srv, (tmp_path / "chrome.log").open("wb") as stderr:
+        proc = subprocess.Popen([*args, srv.url], stdout=subprocess.DEVNULL, stderr=stderr)  # noqa: S603
         try:
             finished = srv.done.wait(timeout)
         finally:
@@ -143,11 +145,13 @@ def run_engine(
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=10)
+        detail = (tmp_path / "chrome.log").read_text(encoding="utf-8", errors="replace")[-6000:]
         if not finished:
-            pytest.fail("显卡一致性页面超时没有结束")
+            pytest.fail(f"显卡一致性页面超时没有结束\n{detail}")
         if "error" in srv.summary:
             if os.environ.get("GXR_REQUIRE_GPU_TEST") != "1" and "no WebGPU adapter" in srv.summary["error"]:
                 pytest.skip("这台机器的 Chrome 拿不到 WebGPU 软件适配器")
-            pytest.fail(f"页面出错：{srv.summary['error']}")
+            pytest.fail(f"页面出错：{srv.summary['error']}\n{detail}")
+        print(json.dumps(srv.summary))
         out = {k: np.frombuffer(b, np.uint8).reshape(h, w, 4)[..., :3].copy() for k, (w, h, b) in srv.results.items()}
         return out, srv.summary
