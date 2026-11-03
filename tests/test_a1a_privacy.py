@@ -241,7 +241,7 @@ def test_repository_and_distribution_guard_covers_renames(tmp_path, monkeypatch)
     plain = tmp_path / "plain.bin"
     plain.write_bytes(b"\x01\x02" * 100)
     assert pb.scan_paths([plain]) == []
-    assert pb.scan_paths([plain], frozenset({hashlib.sha256(plain.read_bytes()).hexdigest()})) == [(str(plain), "R4 registered-sha")]
+    assert pb.scan_paths([plain], frozenset({hashlib.sha256(plain.read_bytes()).hexdigest()})) == [(plain.as_posix(), "R4 registered-sha")]
 
 
 def test_checker_allows_source_literals_and_does_not_echo_content(tmp_path, capsys):
