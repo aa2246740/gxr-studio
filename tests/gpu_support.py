@@ -133,7 +133,16 @@ def run_engine(
     if sys.platform.startswith("linux") and os.environ.get("CI"):
         args += ["--no-sandbox", "--disable-dev-shm-usage"]
     if sys.platform == "win32":
-        args += ["--enable-features=Vulkan", "--use-angle=swiftshader", "--use-vulkan=swiftshader", "--disable-vulkan-surface"]
+        args += [
+            "--enable-features=Vulkan",
+            "--use-angle=swiftshader",
+            "--use-vulkan=swiftshader",
+            "--disable-vulkan-surface",
+            "--disable-gpu-sandbox",
+            "--enable-dawn-features=allow_unsafe_apis",
+            "--enable-logging",
+            f"--log-file={tmp_path / 'chrome-internal.log'}",
+        ]
     with _Server(files) as srv, (tmp_path / "chrome.log").open("wb") as stderr:
         proc = subprocess.Popen([*args, srv.url], stdout=subprocess.DEVNULL, stderr=stderr)  # noqa: S603
         try:
@@ -146,6 +155,9 @@ def run_engine(
                 proc.kill()
                 proc.wait(timeout=10)
         detail = (tmp_path / "chrome.log").read_text(encoding="utf-8", errors="replace")[-6000:]
+        internal = tmp_path / "chrome-internal.log"
+        if internal.is_file():
+            detail += internal.read_text(encoding="utf-8", errors="replace")[-10000:]
         if not finished:
             pytest.fail(f"显卡一致性页面超时没有结束\n{detail}")
         if "error" in srv.summary:

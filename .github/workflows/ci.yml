@@ -22,6 +22,7 @@ jobs:
       - name: Event loop
         run: uv run --frozen python -u scripts/windows_probe.py loop
       - name: Software WebGPU adapter
+        id: webgpu
         run: uv run --frozen python -u scripts/windows_probe.py gpu
       - name: Two independent matrix workers
         run: uv run --frozen python -u scripts/windows_probe.py matmul
@@ -40,7 +41,7 @@ jobs:
           GXR_REQUIRE_GPU_TEST: "1"
         run: uv run --frozen pytest -x -vvs tests/test_gpu_parity.py -o faulthandler_timeout=120
       - name: Additional failure details
-        if: failure()
+        if: failure() && steps.webgpu.conclusion != 'failure'
         run: uv run --frozen pytest -vv --maxfail=10 tests/test_a1a_privacy.py tests/test_a1a_review_r2.py tests/test_fix_review.py tests/test_gpu_api.py -o faulthandler_timeout=120
 
   check:

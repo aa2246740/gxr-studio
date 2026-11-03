@@ -50,8 +50,12 @@ def main() -> None:
         elif args.case == "gpu":
             sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
             os.environ["GXR_REQUIRE_GPU_TEST"] = "1"
-            from gpu_support import run_engine
+            from gpu_support import require_chrome, run_engine
 
+            chrome = Path(require_chrome())
+            if sys.platform == "win32":
+                files = {str(p.relative_to(chrome.parent)): p.stat().st_size for p in chrome.parent.glob("*/vk_swiftshader.dll")}
+                print(json.dumps({"chrome": str(chrome), "software_runtime_files": files}), flush=True)
             with tempfile.TemporaryDirectory() as temporary:
                 images, summary = run_engine(Path(temporary), {}, [], timeout=30)
                 assert not images and "swiftshader" in json.dumps(summary).lower(), summary
