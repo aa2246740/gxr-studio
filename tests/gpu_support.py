@@ -133,13 +133,10 @@ def run_engine(
     if sys.platform.startswith("linux") and os.environ.get("CI"):
         args += ["--no-sandbox", "--disable-dev-shm-usage"]
     if sys.platform == "win32":
+        # Windows 的 WebGPU 初始化先向 ANGLE 取 D3D11 设备；ANGLE 用 WARP，WebGPU 仍选 SwiftShader。
         args += [
-            "--enable-features=Vulkan",
-            "--use-angle=swiftshader",
-            "--use-vulkan=swiftshader",
-            "--disable-vulkan-surface",
-            "--disable-gpu-sandbox",
-            "--enable-dawn-features=allow_unsafe_apis",
+            "--use-gl=angle",
+            "--use-angle=d3d11-warp",
             "--enable-logging",
             f"--log-file={tmp_path / 'chrome-internal.log'}",
         ]
