@@ -572,32 +572,37 @@ def test_render_token_follows_the_colour_spec_not_the_record_version(client):
     assert luts.render_token(cid) != first  # 删除以后是单独的标识
 
 
-def _open_fds() -> int:
-    n = 0
-    for fd in range(4096):
-        try:
-            os.fstat(fd)
-            n += 1
-        except OSError:
-            pass
-    return n
-
-
-def test_huge_range_numbers_do_not_crash_or_leak(client, volumes, settings):
+def test_huge_range_numbers_do_not_crash_or_leak(client, volumes, settings, monkeypatch):
     """复审 r2 P2-01：5,000 位的 Range 起点原来让 int() 抛错，12 次请求 12 个 500、泄漏 12 个 fd。"""
     _flag(settings)
     folder = _card(volumes)
     photo = _photo(client)
     url = f"/api/photos/{photo['id']}/raw"
     client.get(url)  # 先暖一次（线程池等）
-    before = _open_fds()
+    from gxr_studio.api import gpu_routes
+
+    actual_open, opened = gpu_routes.open_media, []
+
+    def opening(*args, **kwargs):
+        fd = actual_open(*args, **kwargs)
+        st = os.fstat(fd)
+        opened.append((fd, st.st_dev, st.st_ino))
+        return fd
+
+    monkeypatch.setattr(gpu_routes, "open_media", opening)
     for header in ("bytes=" + "9" * 5000 + "-", "bytes=0-" + "9" * 5000, "bytes=-" + "9" * 5000, "bytes=" + "9" * 21 + "-"):
         for _ in range(3):
             r = client.get(url, headers={"Range": header})
             assert r.status_code == 200 and r.content == (folder / "R0000001.DNG").read_bytes()  # 看不懂的 Range：发整个文件
     big = client.get(url, headers={"Range": "bytes=" + "9" * 20 + "-"})
     assert big.status_code == 416
-    assert _open_fds() <= before
+    assert len(opened) == 13
+    for fd, dev, ino in opened:
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            continue
+        assert (st.st_dev, st.st_ino) != (dev, ino), "响应结束后照片 fd 仍然打开"
 
 
 def test_fd_is_closed_when_the_response_cannot_be_built(tmp_path, monkeypatch):

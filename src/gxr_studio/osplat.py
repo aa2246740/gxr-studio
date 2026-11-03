@@ -162,7 +162,8 @@ if sys.platform == "win32":  # pragma: no cover - 只在 Windows 上执行（CI 
         if not _GetInfoEx(_handle(fd), 0, ctypes.byref(info), ctypes.sizeof(info)):
             raise ctypes.WinError(ctypes.get_last_error())
         ns = (info.ChangeTime - 116444736000000000) * 100
-        fields = {name: getattr(st, name) for name in dir(st) if name.startswith("st_")}
+        base = {"st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size"}
+        fields = {name: getattr(st, name) for name in dir(st) if name.startswith("st_") and name not in base}
         fields.update(st_ctime=ns / 1_000_000_000, st_ctime_ns=ns)
         return os.stat_result(tuple(st[:9]) + (ns // 1_000_000_000,), fields)
 
