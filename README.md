@@ -85,7 +85,7 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 - 没有卡：把 `GXRCE.DAT`（或装着它的文件夹）拷到电脑上，`POST /api/camdata/import-file {"path": "/完整/路径"}`。
   界面里的「选择 GXRCE.DAT 文件…」走 `POST /api/camdata/import-upload`：浏览器拿不到本地路径，所以直接把选中文件的
   原始字节（`application/octet-stream`，文件名放在 `X-GXR-Filename` 头里，只用来显示）发过来，校验和 `import-file` 完全相同。
-- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155，其它代一律拒绝，不猜）、两层 CRC、钉子、
+- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156，其它代一律拒绝，不猜）、两层 CRC、钉子、
   重新封装后与原文件逐字节相同、三个单元的原厂 04。任何一项不过，返回带中文说明的 422
   （`generation_unsupported` / `dat_invalid`），应用数据目录里原来的数据原封不动。
   文件版本比工作室当前支持的更新时，主提示为「这个相机配方文件需要更新版本的 GXR 工作室。」；
@@ -93,10 +93,12 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
   卡上没有这个文件是 404 `dat_not_found`，没有卡是 404 `no_card`。
 - 通过后提取 3 个单元（50mm / 28mm / MOUNT）× 8 个配方 + 原厂 04 到 `camera-data/`，写入后读回比对。
   内容和已导入的完全相同就什么都不做（`unchanged: true`）。
-- 152 / 153 / 154 / 155 的 Looks 从文件里的 GXFX 行池读取，档位和整数剂量从 kv2 R3 点表读取。配方页按顺序显示
+- 152 / 153 / 154 / 155 / 156 的 Looks 从文件里的 GXFX 行池读取，档位和整数剂量从 kv2 R3 点表读取。配方页按顺序显示
   8 个内置配方、文件里的 Looks、文件里的「我的配方」。150 沿用 GXDP v1 / kv2 R2，没有 Looks，内置配方和控制值与 152 相同。
-  154 / 155 按相机规则让 MOUNT 的非 04 配方使用 50mm 的旋钮记录，并校验每个单元的 Looks 与用户条目合计不超过 40。
+  154 / 155 / 156 按相机规则让 MOUNT 的非 04 配方使用 50mm 的旋钮记录，并校验每个单元的 Looks 与用户条目合计不超过 40。
   155 按文件头和 GXFX 头读取较长代码区与缩小的效果行容量；工作室不读取相机内的开机记忆。
+  156 沿用 g155c 的配方库，外层代数为 156，三个 bank 头代数仍为 155；解析和封装都严格使用这组对应关系。
+  其它已登记代数仍要求 bank 头代数等于外层代数。
   文件内条目按内容摘要识别，默认值沿用文件；导入失败不会替换已导入的数据。
 
 **2. 标定包** —— 电脑预测用的校准数据（ISO 200 / 1600 两套），**必须在相机数据之后导入**，
@@ -130,6 +132,17 @@ uv run pytest                    # 全部用例（约 5–6 分钟）；只跑�
 uv run pytest tests/test_import.py -k kill     # 只跑"随机杀进程 20 次"
 uv run python tests/perf/measure_m1.py         # 1000 张合成照片的后端数字（约 15 秒），写入 tests/perf/baseline.json
 ```
+
+真实 DAT 测试现场读取上层项目的 `firmware/package_v310_g156{,_test}/GXRCE.DAT` 和
+`firmware/package_v310_g155c{,_test}/GXRCE.DAT`，缺少文件时跳过；DAT 字节不进仓库。
+在独立 worktree 中，可指定原项目路径复跑这些测试：
+
+```bash
+GXR_STUDIO_TEST_PARENT=/path/to/projectricoh uv run --frozen pytest -q tests/test_g156.py
+```
+
+其中 C gate 测试调用上层的 `research/v39_g153/format_checks.py`，编译原 g156 C 源码并校验导入模板和用户条目修改结果。
+它只向 pytest 临时目录写编译产物；缺少源码或 macOS clang 时跳过。
 
 **测试绝不会碰真实的卡。** `tests/conftest.py` 在整个测试进程里：
 

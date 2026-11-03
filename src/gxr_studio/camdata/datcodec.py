@@ -4,7 +4,8 @@
 `ui_data.py`、`gate.c`），来源 SHA 见 `engine/PROVENANCE.json` 的 `datcodec_sources`。已有代码各认一个代数
 （`ui_data.parse_dat` 写死 127），这里把代数做成参数：
 
-- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155。未登记的代数一律拒绝。
+- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156。未登记的代数一律拒绝。
+- 156 沿用 g155c 配方库：外层代数必须为 156，三个 bank 头必须为 155；其它已登记代数的 bank 必须等于外层代数。
 - `parse()` 严格：任何没有建模的头部字节、区段尺寸、CRC、钉子（`PIN_CRC32`）对不上都抛 `DatError`。
 - `pack(parse(b)) == b` 逐字节成立（每一代都有往返测试）。解析结果里的引擎、重定位、`gxkv2r2` 块都原样保存，
   不重新编译、不改写。
@@ -78,6 +79,11 @@ class Profile:
     mount_knobs_from_50mm: bool = False
 
     @property
+    def bank_generation(self) -> int:
+        """g156 保留 g155c 的 bank 头；其它代数仍要求内外相等。解析与封装共用此规则。"""
+        return 155 if self.generation == 156 else self.generation
+
+    @property
     def knob_bytes(self) -> int:
         return KV3_BLOCK_BYTES if self.looks else KV2_BLOCK_BYTES if self.kv2_block else 0
 
@@ -100,6 +106,7 @@ PROFILES = {
     153: Profile(153, 98304, True, True),
     154: Profile(154, 98304, True, True, flat_list=True, mount_knobs_from_50mm=True),
     155: Profile(155, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
+    156: Profile(156, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
 }
 
 
@@ -313,7 +320,7 @@ def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开
         bank = raw[bank_at + 32 : bank_at + 32 + 1024]
         if (
             header[:8] != b"GXRRV201"
-            or u32(header, 16) != prof.generation
+            or u32(header, 16) != prof.bank_generation
             or u32(header, 20) != 1024
             or u32(header, 24) != crc(bank)
             or u32(header, 28) != crc(header[:28])
@@ -654,7 +661,7 @@ def pack(dat: Dat) -> bytes:
         reloc,
         bytes(192),
         b"".join(m.map for m in modules),
-        b"".join(_bank_blob(m.records, dat.generation) for m in modules),
+        b"".join(_bank_blob(m.records, prof.bank_generation) for m in modules),
         bytes(shared),
         tweaks,
     ]

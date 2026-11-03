@@ -141,7 +141,7 @@ def test_failed_upload_keeps_new_generation_data(client, settings, gen, test):
     catalog = client.get("/api/recipes").json()
     version = client.get("/api/camdata/status").json()["data_version"]
     changed = bytearray(raw)
-    struct.pack_into(">I", changed, 28, 156)
+    struct.pack_into(">I", changed, 28, 157)
     for broken, code in ((raw[:-1], "dat_invalid"), (reseal(bytes(changed)), "generation_unsupported")):
         response = client.post("/api/camdata/import-upload", content=broken)
         assert response.status_code == 422 and response.json()["error"] == code

@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import random
 import sys
 from pathlib import Path
 
 STUDIO = Path(__file__).resolve().parents[1]
-REPO = STUDIO.parent
+REPO = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", STUDIO.parent)).resolve()
 RESEARCH = REPO / "research"
 GOLDEN = Path(__file__).parent / "golden"
 
@@ -36,16 +37,19 @@ SCENE_DIR = RESEARCH / "knobs_v2_r2/local"
 
 
 def load_by_path(name: str, path: Path, alias: dict | None = None):
-    """按文件路径加载研究模块，用私有名字；`alias` 临时占住它 import 的同伴模块名（例如 knobs）。"""
+    """只读加载研究模块，不写字节码；`alias` 临时占住它 import 的同伴模块名（例如 knobs）。"""
     saved = {}
     for key, mod in (alias or {}).items():
         saved[key] = sys.modules.get(key)
         sys.modules[key] = mod
+    previous_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     try:
         spec = importlib.util.spec_from_file_location(name, path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
     finally:
+        sys.dont_write_bytecode = previous_bytecode
         for key, old in saved.items():
             if old is None:
                 sys.modules.pop(key, None)
