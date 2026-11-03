@@ -514,7 +514,12 @@ def test_intake_pack_scan_and_api(tmp_path: Path, settings):  # type: ignore[no-
         with pytest.raises(intake.IntakeError):
             intake.read_dat_from_path(Path("relative.dat"))
         with pytest.raises(intake.IntakeError):
-            intake.read_dat_from_card(CardReader(), scans[0].__class__(Card(card, "NO NAME"), True, card / "missing.dat", 1))
+            st = card.stat()
+            intake.read_dat_from_card(
+                CardReader(),
+                scans[0].__class__(Card(card, "NO NAME"), True, card / "missing.dat", 1),
+                expect=(st.st_dev, st.st_ino),
+            )
     finally:
         audit.unprotect(card)
     lib = Library(settings.library_dir).open()
