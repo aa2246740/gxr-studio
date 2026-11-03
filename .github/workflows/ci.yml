@@ -35,7 +35,7 @@ jobs:
       - name: First GPU test failure
         run: uv run --frozen pytest -x -vv tests/test_gpu_api.py -o faulthandler_timeout=120
       - name: Source bytes and synthetic calibration
-        run: uv run --frozen pytest -x -vv tests/test_clone_coverage.py tests/test_engine_knobs.py -o faulthandler_timeout=120
+        run: uv run --frozen pytest -x -vv tests/test_clone_coverage.py tests/test_engine_knobs.py tests/test_launcher.py -o faulthandler_timeout=120
       - name: GPU colour comparison
         env:
           GXR_REQUIRE_GPU_TEST: "1"
