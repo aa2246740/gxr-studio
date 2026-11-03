@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+from e0_support import REPO as ROOT
+
 PACKAGES = [(gen, test) for gen in (150, 152, 153) for test in (False, True)]
 ALL_PACKAGES = PACKAGES + [(gen, test) for gen in (154, 155) for test in (False, True)]
 ENGINE_VERSIONS = {152: 60, 153: 62, 154: 63, 155: 64}

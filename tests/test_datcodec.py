@@ -58,6 +58,20 @@ def test_round_trip_is_byte_identical(gen):
 
 
 @pytest.mark.parametrize("gen", GENS)
+@pytest.mark.parametrize("bank_generation", (0, 155, 156))
+def test_older_generations_still_require_matching_bank_generation(gen, bank_generation):
+    raw = need(gen)
+    directory = dc.u32(raw, 156)
+    for unit in range(3):
+        changed = bytearray(raw)
+        bank = dc.u32(raw, directory + 64 * unit + 16)
+        struct.pack_into(">I", changed, bank + 16, bank_generation)
+        struct.pack_into(">I", changed, bank + 28, dc.crc(changed[bank : bank + 28]))
+        with pytest.raises(dc.DatError, match="配方库头、CRC 或代数不合格"):
+            dc.parse(reseal(bytes(changed)))
+
+
+@pytest.mark.parametrize("gen", GENS)
 def test_every_unit_has_eight_entries_with_valid_crcs(gen):
     from gxr_studio.camdata import store
 

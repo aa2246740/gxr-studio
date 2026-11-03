@@ -94,7 +94,7 @@ def test_new_packages_refuse_crc_damage_and_truncation(gen, test, damage):
         dc.parse(broken)
 
 
-@pytest.mark.parametrize("generation", (0, 126, 139, 149, 151, 156, 999))
+@pytest.mark.parametrize("generation", (0, 126, 139, 149, 151, 157, 999))
 def test_unknown_generation_stays_rejected_without_local_data(generation):
     raw = bytearray(256)
     raw[:8] = b"GXRCE001"
@@ -247,11 +247,11 @@ def test_panel_api_gives_the_true_reason(client, card, settings, state):
         install_calibration(settings)
     if state == "unsupported":
         changed = bytearray(need_dat(152))
-        struct.pack_into(">I", changed, 28, 156)
+        struct.pack_into(">I", changed, 28, 157)
         response = client.post("/api/camdata/import-upload", content=reseal(bytes(changed)))
         assert response.status_code == 422
         assert response.json()["message"] == "这个相机配方文件需要更新版本的 GXR 工作室。"
-        assert response.json()["detail"] == "第 156 代。支持第 127、129、131、135、137、138、150、152、153、154、155 代。"
+        assert response.json()["detail"] == "第 157 代。支持第 127、129、131、135、137、138、150、152、153、154、155、156 代。"
         assert "supported_generations" not in response.json()
         camera = client.get("/api/camdata/status").json()["camera_data"]
         assert camera["state"] == "unsupported" and camera["generation"] is None
@@ -259,7 +259,7 @@ def test_panel_api_gives_the_true_reason(client, card, settings, state):
     caps = client.get(f"/api/photos/{photo['id']}/capabilities").json()
     expected = {
         "missing": "还没有导入相机配方文件",
-        "unsupported": dc.unsupported_message(156),
+        "unsupported": dc.unsupported_message(157),
         "no_raw": "配方需要 RAW 文件",
         "ready": "",
         "calibration_missing": "请先导入校准数据",
