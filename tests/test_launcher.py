@@ -60,4 +60,8 @@ def test_crop_and_edit_share_one_revision():
     preview = (ASSETS / "preview.js").read_text(encoding="utf-8")
     assert "export function syncRev" in preview
     assert preview.count("syncRev(view,") >= 3
-    assert "expected_rev: view.crop.rev" in preview and "function saveCrop" in preview
+    # 保存队列（saves.js，R04）：编辑和裁剪都用这张照片记录上的同一个 rev
+    saves = (ASSETS / "saves.js").read_text(encoding="utf-8")
+    assert "function saveCrop" in preview and "writeSave(" in preview
+    assert "expected_rev: rec.rev" in saves and "rec.rev = r.rev" in saves
+    assert "edit: (id) => `/api/photos/${id}/edit`, crop: (id) => `/api/photos/${id}/crop`" in saves

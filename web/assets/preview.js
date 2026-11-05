@@ -20,7 +20,16 @@ const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
 const DEBOUNCE_MS = 120;
 
 // 8 个底子的名字（与 UX.md 3.6 一致；28mm / MOUNT 的底子名字沿用同一套）
-export const BASE_NAMES = ['GR 正片', 'GR 负片', '高反差黑白', '标准', '富士 CC', '富士 CN', '徕卡 Chrome', '徕卡 Vivid'];
+// 配方位置的默认名（/api/recipes 没给名字时用）。5–8 号在相机里是用户可以改的位置，不写别家的名字（U7）。
+export const BASE_NAMES = ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原厂标准', '空位 5', '空位 6', '空位 7', '空位 8'];
+// 配方名：/api/recipes 给了名字就用它，没给按位置号取默认名
+export function slotName(unitId, slot) {
+  const unit = state.catalog && state.catalog.units ? state.catalog.units.find((u) => u.id === unitId) : null;
+  const base = unit && unit.recipes ? unit.recipes.find((b) => b.slot === slot) : null;
+  const name = (base && base.name) || BASE_NAMES[slot - 1] || `空位 ${slot}`;
+  return `${String(slot).padStart(2, '0')} ${name}`;
+}
+
 export const KNOB_NAMES = {
   amount: '强度',
   contrast: '对比度',
@@ -370,6 +379,8 @@ export function endChange(view) {
   view.undo = view.undo || [];
   view.undo.push(before);
   if (view.undo.length > 100) view.undo.shift();
+  // 新的改动之后，原来可以重做的就作废了
+  view.redo = [];
   syncUndo(view);
 }
 
@@ -386,8 +397,24 @@ export function syncUndo(view) {
 
 export function undoChange(view) {
   const s = view.undo && view.undo.pop();
-  if (!s) return false;
+  if (!s || !view.ed) return false;
+  view.redo = view.redo || [];
+  view.redo.push(snapshot(view));
   syncUndo(view);
+  return restoreSnapshot(view, s);
+}
+
+// 重做（⇧⌘Z / Ctrl+Y）：把撤销掉的那一步放回来
+export function redoChange(view) {
+  const s = view.redo && view.redo.pop();
+  if (!s || !view.ed) return false;
+  view.undo = view.undo || [];
+  view.undo.push(snapshot(view));
+  syncUndo(view);
+  return restoreSnapshot(view, s);
+}
+
+function restoreSnapshot(view, s) {
   const o = JSON.parse(s);
   const ed = view.ed;
   // 装饰回到撤销前的状态：原来继承默认的，写 null（后端按当前默认值算）；明确设置的，写原来的内容（R2-09）。
@@ -558,6 +585,31 @@ async function runPreview(view, full) {
   }
 }
 
+// 左右对比（Y）的左半边：同样的裁剪、拉直、边框，但没有配方、LUT、调整和曲线。
+// 只在几何或裁剪变了时重新请求一次（按指纹缓存），拖滑块不会重复请求。
+export function beforeUrl(view, onReady) {
+  const ed = view.ed;
+  if (!ed) return null;
+  const body = draftBody(view, 'final');
+  const zero = { ...ed, adj: Object.fromEntries(Object.keys(ed.adj).map((k) => [k, 0])) };
+  Object.assign(body, { recipe: null, lut: null, adjust: adjustBody(zero), curve: null });
+  const key = JSON.stringify([body.geometry || null, body.crop || null, body.frame || null, body.stamp || null]);
+  const hit = ed.before;
+  if (hit && hit.key === key) return hit.url;
+  if (hit && hit.loading === key) return hit.url || null;
+  const prev = hit ? hit.url : null;
+  ed.before = { key: hit ? hit.key : null, url: prev, loading: key };
+  apiBlob(`/api/photos/${view.photo.id}/render${renderQuery(ed, 'final', false)}`, { body }).then(({ blob }) => {
+    if (view.ed !== ed) return;
+    if (prev) URL.revokeObjectURL(prev);
+    ed.before = { key, url: URL.createObjectURL(blob), loading: null };
+    onReady?.();
+  }, () => {
+    if (view.ed === ed) ed.before = { key: null, url: prev, loading: null };
+  });
+  return prev;
+}
+
 // 几何参数的指纹：有效画面要和它对得上才能用
 function geometryKey(ed) {
   return JSON.stringify(ed.v2 ? ed.geometry : null);
@@ -647,6 +699,8 @@ export function disposeEdit(view) {
     if (ed.urls[k]) URL.revokeObjectURL(ed.urls[k]);
     ed.urls[k] = null;
   }
+  if (ed.before && ed.before.url) URL.revokeObjectURL(ed.before.url);
+  ed.before = null;
   view.ed = null;
   view.edPromise = null;
 }

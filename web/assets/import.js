@@ -2,7 +2,7 @@
 
 import { api } from './api.js';
 import { state, emit } from './state.js';
-import { h, toast, toastError } from './dom.js';
+import { h, toast, toastError, setFraction, platform } from './dom.js';
 import { doneStatusText, hasProblems, multiCardNote, summarizeImport } from './import_summary.js';
 
 // 本次会话里已经自动处理过的卡（卡拔掉后会移出，插回来可以再导入缺的部分）。键是挂载会话号（card_id）
@@ -184,7 +184,59 @@ function setOnline() {
   state.offline = false;
 }
 
-// 横幅：导入中 > 导入结束汇总 > 发现卡 > 无
+// ---- 顶栏的存储卡状态（.cardchip）和它的弹出面板（#card-pop 里的 #banner） -------------------------
+// 原来页面顶上的横幅和底部状态栏合并成这一个：平时只是一枚小标签，需要处理时（发现新卡、导入有问题）自动展开面板。
+
+let attention = null; // 上次自动展开面板时的原因，同一件事只自动展开一次
+
+function popEl() {
+  return document.getElementById('card-pop');
+}
+
+export function setCardPopover(open) {
+  const pop = popEl();
+  const chip = document.getElementById('card-chip');
+  if (!pop) return;
+  // 面板的右边和存储卡标签对齐
+  if (open && chip?.getBoundingClientRect && pop.style) {
+    const r = chip.getBoundingClientRect();
+    pop.style.right = `${Math.max(12, Math.round(globalThis.innerWidth - r.right))}px`;
+  }
+  pop.hidden = !open;
+  chip?.setAttribute?.('aria-expanded', String(!!open));
+}
+
+function cardPopoverOpen() {
+  const pop = popEl();
+  return !!pop && pop.hidden === false;
+}
+
+// 顶栏的存储卡按钮：点一下开 / 关；点面板外面或按 Esc 关（app.js 启动时调用一次）
+export function bindCardChip() {
+  const chip = document.getElementById('card-chip');
+  if (!chip || !chip.addEventListener) return;
+  chip.addEventListener('click', () => setCardPopover(!cardPopoverOpen()));
+  document.addEventListener('pointerdown', (e) => {
+    if (!cardPopoverOpen()) return;
+    const pop = popEl();
+    if (pop.contains(e.target) || chip.contains(e.target)) return;
+    setCardPopover(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !cardPopoverOpen()) return;
+    e.stopPropagation();
+    setCardPopover(false);
+    chip.focus();
+  }, true);
+}
+
+function autoOpen(reason) {
+  if (!reason || reason === attention) return;
+  attention = reason;
+  setCardPopover(true);
+}
+
+// 面板内容：导入中 > 导入结束汇总 > 发现卡 > 无
 export function renderBanner() {
   const slot = document.getElementById('banner');
   slot.replaceChildren();
@@ -193,14 +245,15 @@ export function renderBanner() {
 
   if (job && job.running) {
     let msg = `正在导入 ${p.done_shots}/${p.total_shots}`;
-    if (p.state === 'scanning' || !p.total_shots) msg = '正在读取…';
+    if (p.state === 'scanning' || !p.total_shots) msg = '正在读取存储卡…';
     else if (p.state === 'checking') msg = '正在核对存储卡上的照片…';
     slot.append(
       h(
         'div',
         { class: 'banner' },
-        h('div', { class: 'msg' }, msg),
-        h('button', { class: 'btn', type: 'button', onclick: cancelImport }, '取消'),
+        h('div', { class: 'msg' }, msg, h('div', { class: `progress${p.total_shots && p.state !== 'checking' ? '' : ' indet'}` }, bar),
+          h('div', { class: 'small dim' }, '只读复制，卡上的文件不会被改动。')),
+        h('div', { class: 'acts' }, h('button', { class: 'btn sm', type: 'button', onclick: cancelImport }, '取消导入')),
       ),
     );
     return;
@@ -213,11 +266,11 @@ export function renderBanner() {
         'div',
         { class: `banner ${r.kind}` },
         h('div', { class: 'msg' }, r.text, r.detail ? h('div', { class: 'small dim' }, r.detail) : null),
-        r.action,
-        h('button', { class: 'btn ghost', type: 'button', onclick: dismissBanner, title: '关闭' }, '关闭'),
+        h('div', { class: 'acts' }, r.action, h('button', { class: 'btn sm ghost', type: 'button', onclick: dismissBanner, title: '关闭' }, '关闭')),
       ),
     );
     appendNotes(slot);
+    if (r.kind === 'bad') autoOpen(`bad:${job.id}`);
     return;
   }
 
@@ -227,23 +280,24 @@ export function renderBanner() {
         'div',
         { class: 'banner ok' },
         h('div', { class: 'msg' }, state.cardMsg),
-        h('button', { class: 'btn ghost', type: 'button', onclick: dismissBanner }, '关闭'),
+        h('div', { class: 'acts' }, h('button', { class: 'btn sm ghost', type: 'button', onclick: dismissBanner }, '关闭')),
       ),
     );
     appendNotes(slot);
     return;
   }
 
-  // 这张卡已经处理过（导入过或正在处理）就不再提示"发现相机卡"，状态栏里还能看到
+  // 这张卡已经处理过（导入过或正在处理）就不再提示"发现相机卡"，顶栏里还能看到
   if (state.card && !isImporting() && !handled.has(state.card.id)) {
     slot.append(
       h(
         'div',
         { class: 'banner' },
-        h('div', { class: 'msg' }, '已插入存储卡'),
-        h('button', { class: 'btn', type: 'button', onclick: () => startImport() }, '导入'),
+        h('div', { class: 'msg' }, '已插入存储卡', h('div', { class: 'small dim' }, `「${state.card.label}」`)),
+        h('div', { class: 'acts' }, h('button', { class: 'btn sm primary', type: 'button', onclick: () => startImport() }, '导入')),
       ),
     );
+    autoOpen(`card:${state.card.id}`);
   }
   appendNotes(slot);
 }
@@ -254,6 +308,7 @@ function appendNotes(slot) {
   if (multi) slot.append(h('div', { class: 'banner', dataset: { note: 'multi-card' } }, h('div', { class: 'msg' }, multi)));
   if (!state.card && state.cardAccess) {
     slot.append(h('div', { class: 'banner bad', dataset: { note: 'card-access' } }, h('div', { class: 'msg' }, state.cardAccess)));
+    autoOpen('access');
   }
 }
 
@@ -261,29 +316,58 @@ function summarize(job) {
   const r = summarizeImport(job.progress);
   // 没有卡时不能继续，写明原因而不是放一个点了没反应的按钮
   const retry = state.card
-    ? h('button', { class: 'btn', type: 'button', onclick: () => startImport() }, '导入')
+    ? h('button', { class: 'btn sm primary', type: 'button', onclick: () => startImport() }, '导入')
     : h('span', { class: 'dim small' }, '请重新插入存储卡');
-  let action = h('span');
-  // 导入完成（可以推出）时提示条只留结果和 [关闭]；推出的说法只在状态栏里写（「存储卡：可以推出」）
+  let action = null;
+  // 导入完成（可以推出）时只留结果和 [关闭]；推出的说法只在顶栏的存储卡标签里写（「存储卡：可以推出」）
   if (r.retry) action = retry;
   return { ...r, action };
+}
+
+// 顶栏标签：文字 + 状态（className）+ 导入进度环（--p）
+function paintChip(kind, pct = null) {
+  const chip = document.getElementById('card-chip');
+  if (!chip) return;
+  chip.className = `cardchip${kind ? ` ${kind}` : ''}`;
+  const ico = document.getElementById('card-icon');
+  if (!ico) return;
+  // 导入中：进度环（不知道总数时转圈）；有卡：小圆点；没有卡：空心卡片
+  if (kind === 'importing') {
+    let ring = ico.firstChild && ico.firstChild.classList?.contains('ring') ? ico.firstChild : null;
+    if (!ring) {
+      ring = h('span', { class: 'ring' });
+      ico.replaceChildren(ring);
+    }
+    ring.classList?.toggle('indet', pct === null);
+    ring.style?.setProperty?.('--p', String(pct ?? 0));
+    return;
+  }
+  const want = kind === 'ok' ? 'dot' : kind === 'bad' || kind === 'offline' ? 'dot bad' : 'glyph';
+  if (ico.firstChild && ico.firstChild.className === want) return;
+  ico.replaceChildren(h('span', { class: want }));
 }
 
 export function renderCardStatus() {
   const el = document.getElementById('card-status');
   if (state.offline) {
-    el.textContent = '无法连接到 GXR Studio。请确认启动窗口仍在运行，然后刷新页面。';
+    el.textContent = '无法连接到 GXR Studio';
     el.className = 'offline';
+    paintChip('offline');
+    document.getElementById('card-chip')?.setAttribute?.('title', '请确认启动窗口仍在运行，然后刷新页面。');
     return;
   }
   el.className = '';
+  document.getElementById('card-chip')?.setAttribute?.('title', '存储卡与导入');
   if (isImporting()) {
     const p = state.job.progress;
-    el.textContent = `正在导入 ${p.done_shots}/${p.total_shots}`;
+    const known = p.total_shots && p.state !== 'scanning' && p.state !== 'checking';
+    el.textContent = known ? `正在导入 ${p.done_shots}/${p.total_shots}` : '正在读取存储卡…';
+    paintChip('importing', known ? Math.round((p.done_shots / p.total_shots) * 100) : null);
     return;
   }
   if (!state.card) {
-    el.textContent = state.cardAccess ? '需要访问存储卡的权限。请在「系统设置 › 隐私与安全性 › 文件与文件夹」中允许。' : '存储卡：未插入';
+    el.textContent = state.cardAccess ? '需要访问存储卡的权限' : '存储卡：未插入';
+    paintChip(state.cardAccess ? 'bad' : 'empty');
     return;
   }
   const job = state.job;
@@ -291,5 +375,6 @@ export function renderCardStatus() {
     el.textContent = doneStatusText(job.progress);
   } else {
     el.textContent = '存储卡：已插入';
+    paintChip('ok');
   }
 }

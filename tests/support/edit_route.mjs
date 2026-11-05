@@ -80,6 +80,12 @@ state.photos = Object.values(PHOTOS);
 state.camdata = { ready: true, state: 'ready', dataVersion: 'v1' };
 
 const root = document.getElementById('view');
+// 顶栏：大图打开时照片名写在这里（#tb-edit），和真页面一样放在 #view 外面
+const titlebar = Object.assign(document.createElement('header'), { id: 'titlebar' });
+const tbEdit = Object.assign(document.createElement('div'), { id: 'tb-edit' });
+titlebar.append(tbEdit);
+document.body.append(titlebar);
+const pageText = () => tbEdit.textContent + root.textContent;
 const find = (n, test) => (test(n) ? n : n.children.map((c) => find(c, test)).find(Boolean));
 const buttonByText = (text, under = document.body) => find(under, (n) => n.tagName === 'BUTTON' && n.textContent.trim() === text);
 const puts = (id) => requests.filter((r) => r.method === 'PUT' && r.url.startsWith(`/api/photos/${id}/`));
@@ -132,8 +138,8 @@ if (scenario === 'reset-then-switch') {
   out.shownAfter = shown();
   out.putsB = puts(PHOTOS.B.id).map((r) => r.url);
   out.putsA = puts(PHOTOS.A.id).map((r) => ({ url: r.url, rev: r.body.expected_rev, angle: r.body.angle_deg ?? null, rect: r.body.rect ?? null }));
-  out.pageHasB = root.textContent.includes(PHOTOS.B.name);
-  out.pageHasA = root.textContent.includes(PHOTOS.A.name);
+  out.pageHasB = pageText().includes(PHOTOS.B.name);
+  out.pageHasA = pageText().includes(PHOTOS.A.name);
 } else if (scenario === 'reset-then-leave') {
   // R03 的另一种：复原等待中回到图库（不应访问空的 view，也不应写别的照片）
   await go(`#/photo/${PHOTOS.A.id}`);
@@ -146,7 +152,7 @@ if (scenario === 'reset-then-switch') {
   await tick(10);
   out.putsA = puts(PHOTOS.A.id).map((r) => r.url);
   out.putsB = puts(PHOTOS.B.id).map((r) => r.url);
-  out.page = root.textContent;
+  out.page = pageText();
 } else if (scenario === 'queued-save-survives-switch') {
   // R04：连改两项（第一笔在路上、第二笔排队）后立刻切到 B；第二笔必须照样写进 A
   await go(`#/photo/${PHOTOS.A.id}`);
@@ -205,7 +211,9 @@ if (scenario === 'reset-then-switch') {
   await tick(10);
   out.exportPostsAfterRetry = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).length;
 } else if (scenario === 'stale-route-reversed') {
-  // R11：打开 A（照片请求慢）后马上打开 B；B 先回来，A 后回来
+  // R11：打开 A（照片请求慢）后马上打开 B；B 先回来，A 后回来。
+  // 照片列表先清空：图库里没有这张照片的信息时才会去读 /api/photos/<id>（直接打开链接、刷新页面）
+  state.photos = [];
   holds.add(`GET /api/photos/${PHOTOS.A.id}`);
   const a = go(`#/photo/${PHOTOS.A.id}`);
   await tick();
@@ -216,12 +224,13 @@ if (scenario === 'reset-then-switch') {
   out.aStillCurrent = await a;
   await tick(10);
   out.shownAfter = shown();
-  out.pageHasB = root.textContent.includes(PHOTOS.B.name);
-  out.pageHasA = root.textContent.includes(PHOTOS.A.name);
+  out.pageHasB = pageText().includes(PHOTOS.B.name);
+  out.pageHasA = pageText().includes(PHOTOS.A.name);
   out.keysFor = router.keys() ? shown() : null;
   out.aEditReads = requests.filter((r) => r.url === `/api/photos/${PHOTOS.A.id}/edit`).length;
 } else if (scenario === 'stale-route-back-to-gallery') {
   // R11：打开 A 后马上回图库，A 的响应才到
+  state.photos = [];
   holds.add(`GET /api/photos/${PHOTOS.A.id}`);
   const a = go(`#/photo/${PHOTOS.A.id}`);
   await tick();
@@ -229,7 +238,7 @@ if (scenario === 'reset-then-switch') {
   g.release(`GET /api/photos/${PHOTOS.A.id}`);
   out.aStillCurrent = await a;
   await tick(10);
-  out.page = root.textContent;
+  out.page = pageText();
   out.shown = shown();
   out.keys = router.keys();
   out.aEditReads = requests.filter((r) => r.url === `/api/photos/${PHOTOS.A.id}/edit`).length;

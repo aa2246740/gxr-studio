@@ -214,11 +214,12 @@ def test_frame_body_never_sends_a_frame_number_switch(tmp_path):
 # ---- COPY.md 的硬规则（只读源文件） -------------------------------------------------
 
 
-# 大图标签：配方 / 调整 / 裁剪 / 边框 / 时间戳 / 导出（COPY.md 第 1 节和 3 节）
+# 大图标签：配方 / 调整 / 裁剪 / 边框 / 时间戳 / 信息（COPY.md 第 1 节和 3 节；ORCH_DECISIONS：导出改成对话框 ⌘E，加「信息」I）
 def test_viewer_tabs_use_the_copy_names_in_order():
     viewer = (ASSETS / "viewer.js").read_text(encoding="utf-8")
-    labels = re.findall(r"\['(?:recipe|adjust|crop|frame|stamp|export)', '([^']+)', '[A-Z]'\]", viewer)
-    assert labels == ["配方", "调整", "裁剪", "边框", "时间戳", "导出"]
+    tabs = re.findall(r"\['(recipe|adjust|crop|frame|stamp|info|export)', '([^']+)', '([A-Z])', '[a-z0-9-]+'\]", viewer)
+    assert [t[1] for t in tabs] == ["配方", "调整", "裁剪", "边框", "时间戳", "信息"]
+    assert [t[2] for t in tabs] == ["R", "A", "C", "F", "T", "I"]
 
 
 # 这些说法在 COPY.md 里被明确禁止，不能出现在界面文字里（注释不算）
@@ -455,8 +456,9 @@ def test_bottom_buttons_are_sticky_in_frame_adjust_and_recipe_panels():
         assert "class: 'foot'" not in text
     # 配方：固定行是直接挂在面板下面的（不能放在会滚动的 rest 里面，否则固定不住）
     assert "nodes.push(h('div', { class: 'sticky-foot' }" in recipes
-    assert recipes.index("'存储为我的配方'") < recipes.index("'写入存储卡'")
-    assert "    reset,\n  ));" in recipes  # [重置] 放在最后，靠右
+    # U8：点了没反应的「存储为我的配方」「写入存储卡」删掉了，固定行里只有 [重置]（靠右）
+    assert "'存储为我的配方'" not in recipes and "'写入存储卡'" not in recipes
+    assert "nodes.push(h('div', { class: 'sticky-foot' }, reset));" in recipes
 
 
 def test_original_compare_uses_the_render_endpoint_and_falls_back_to_the_old_preview():
@@ -529,7 +531,10 @@ def test_export_errors_keep_the_backend_sentence_and_each_reason():
 def test_undo_remembers_whether_the_decoration_was_inherited():
     """R2-09：撤销回到原来的「继承默认」或「明确设置」；继承的写 null，不把默认值固化成照片设置。"""
     preview = (ASSETS / "preview.js").read_text(encoding="utf-8")
-    undo = _function_body(preview, "export function undoChange(view)")
+    # 撤销和重做共用 restoreSnapshot（重做 ⇧⌘Z 也要按原来的继承关系写回去）
+    assert "return restoreSnapshot(view, s);" in _function_body(preview, "export function undoChange(view)")
+    assert "return restoreSnapshot(view, s);" in _function_body(preview, "export function redoChange(view)")
+    undo = _function_body(preview, "function restoreSnapshot(view, s)")
     assert "frameOwn ? o.frame : null" in undo and "stampOwn ? o.stamp : null" in undo
     assert "frameFrom: ed.frameFrom" in preview and "stampFrom: ed.stampFrom" in preview
     assert "ed.frameFrom = 'photo'" in (ASSETS / "frame_panel.js").read_text(encoding="utf-8")

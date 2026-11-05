@@ -3,7 +3,7 @@
 
 import { api, apiBlob, ApiError } from './api.js';
 import { emit } from './state.js';
-import { h, toast, fmtBytes, toastError, errorBody, confirmAction } from './dom.js';
+import { h, toast, fmtBytes, toastError, errorBody, confirmAction, setFraction } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
 import { BASE_NAMES, KNOB_NAMES } from './preview.js';
 import { loadLutLibrary, librarySection, attributionFields } from './lut_library.js';
@@ -398,7 +398,7 @@ function updateProgress() {
   const ui = flow.ui;
   if (!ui) return;
   ui.text.textContent = `正在生成配方… ${pct}%`;
-  ui.bar.style.width = `${pct}%`;
+  setFraction(ui.bar, pct / 100);
   ui.detail.textContent = p ? `${p.phase}${p.message ? ' · ' + p.message : ''} · 已试 ${p.evaluations} 种组合 · ${p.elapsed ?? 0} 秒` : '准备中…';
 }
 

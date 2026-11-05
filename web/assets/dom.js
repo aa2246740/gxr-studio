@@ -104,6 +104,16 @@ export function errorBody(err, fallback) {
   return h('div', {}, h('p', { class: 'err-main' }, text), h('details', { class: 'err-detail' }, h('summary', {}, '详细信息'), h('p', { class: 'small dim' }, String(detail))));
 }
 
+// 进度条（.progress > i）：用 transform 缩放（--f，0–1），不改宽度，动起来不触发重排
+export function setFraction(bar, f) {
+  const v = Math.max(0, Math.min(1, Number(f) || 0));
+  if (bar && bar.style) {
+    if (typeof bar.style.setProperty === 'function') bar.style.setProperty('--f', String(v));
+    else bar.style['--f'] = String(v);
+  }
+  return bar;
+}
+
 export function toastError(err, fallback, opts = {}) {
   return toast(errorBody(err, fallback), 'error', opts);
 }

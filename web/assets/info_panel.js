@@ -1,0 +1,83 @@
+// 「信息」标签（I）：拍摄配方、电脑编辑、拍摄信息。只读。
+// 拍摄配方要来自真实字段：后端现在还没有「这张是用哪个配方拍的」，所以如实写「未知」，不编一个。
+
+import { h } from './dom.js';
+import { loadMeta } from './caps.js';
+import { slotName, KNOB_NAMES } from './preview.js';
+import { fmtSigned } from './controls.js';
+
+function kv(rows) {
+  return h('dl', { class: 'kv' }, ...rows.filter(Boolean).flatMap(([k, v, cls = '']) => [h('dt', {}, k), h('dd', { class: cls }, v)]));
+}
+
+function section(title, ...body) {
+  return h('section', { class: 'section' }, h('h3', { class: 'section-head' }, title), h('div', { class: 'section-body' }, ...body));
+}
+
+const ADJ_NAMES = {
+  exposure_ev: '曝光', contrast: '对比度', highlight: '高光', shadow: '阴影', black_point: '黑点',
+  warm: '色温', tint: '色调', saturation: '饱和度', vibrance: '自然饱和度', vignette: '暗角',
+};
+
+export function adjustSummary(adj) {
+  const parts = Object.entries(adj || {})
+    .filter(([, v]) => Number(v) !== 0)
+    .map(([k, v]) => `${ADJ_NAMES[k] || k} ${k === 'exposure_ev' ? fmtSigned(Number(v).toFixed(1)) : fmtSigned(Number(v))}`);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function recipeText(ed) {
+  const r = ed && ed.recipe;
+  if (!r) return null;
+  const knobs = Object.entries(r.levels || {}).filter(([, v]) => Number(v) !== 0 && v !== 100)
+    .map(([k, v]) => `${KNOB_NAMES[k] || k} ${fmtSigned(Number(v))}`);
+  return [slotName(r.unit, r.slot), ...knobs].join(' · ');
+}
+
+function editSection(view) {
+  const ed = view.ed;
+  if (!ed) return section('电脑编辑', h('div', { class: 'skel line' }), h('div', { class: 'skel line' }));
+  const crop = view.crop && view.crop.rect && (view.crop.rect.w < 0.999 || view.crop.rect.h < 0.999) ? (view.crop.preset === 'original' ? '自由' : view.crop.preset) : null;
+  const adj = adjustSummary(ed.adj);
+  const rows = [
+    ['配方', recipeText(ed) || '无', recipeText(ed) ? '' : 'dim'],
+    ['LUT', ed.lut ? (ed.lutName || '已选择') : '无', ed.lut ? '' : 'dim'],
+    ['调整', [adj, ed.curve ? '曲线' : null].filter(Boolean).join(' · ') || '无', adj || ed.curve ? '' : 'dim'],
+    ['裁剪', crop || '原始', crop ? '' : 'dim'],
+    ['边框', ed.frame && ed.frame.style !== 'none' ? '有' : '无', ed.frame && ed.frame.style !== 'none' ? '' : 'dim'],
+    ['时间戳', ed.stamp && ed.stamp.enabled ? '开' : '关', ed.stamp && ed.stamp.enabled ? '' : 'dim'],
+  ];
+  return section('电脑编辑', kv(rows));
+}
+
+function shotSection(photo, meta) {
+  const files = [photo.has_raw ? 'RAW' : null, photo.has_jpg ? 'JPG' : null].filter(Boolean).join(' + ');
+  const exposure = meta ? [meta.shutter, meta.aperture, meta.iso ? `ISO ${meta.iso}` : null].filter(Boolean).join(' · ') : '';
+  const when = (meta && meta.captured_at) || photo.captured_at;
+  const rows = [
+    ['镜头', (meta && meta.lens) || photo.lens || '未知'],
+    ['曝光', exposure || (photo.iso ? `ISO ${photo.iso}` : '未知'), 'num'],
+    ['拍摄时间', when ? when.replace('T', ' ') : '未知', 'num'],
+    meta && meta.date_note ? ['', meta.date_note, 'dim small'] : null,
+    ['文件', `${photo.name}（${files}）`],
+    photo.width && photo.height ? ['尺寸', `${photo.width} × ${photo.height}`, 'num'] : null,
+  ];
+  return section('拍摄信息', kv(rows));
+}
+
+export function infoPanel(view) {
+  const photo = view.photo;
+  const shot = h('div', {}, shotSection(photo, null));
+  loadMeta(photo.id).then((res) => {
+    if (res.state === 'ok' && shot.isConnected !== false) shot.replaceChildren(shotSection(photo, res.data));
+  });
+  const recipe = section('拍摄配方',
+    h('div', { class: 'big-line' }, h('span', { class: 'big dim' }, '未知')),
+    h('p', { class: 'small dim' }, '这张照片里还读不出拍摄时用的配方和机内微调。'));
+  const el = h('div', { class: 'pane info-pane' }, recipe, editSection(view), shot);
+  el.dataset.ready = '1';
+  el.sync = () => {
+    el.replaceChildren(recipe, editSection(view), shot);
+  };
+  return el;
+}

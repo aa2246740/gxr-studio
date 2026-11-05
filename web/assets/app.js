@@ -2,21 +2,18 @@
 
 import { api } from './api.js';
 import { state, emit, on } from './state.js';
-import { h, toast, modalOpen, closeTopModal, isTyping, toastError } from './dom.js';
-import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, isImporting, cardPresent } from './import.js';
+import { h, toast, modalOpen, closeTopModal, isTyping, toastError, modKey, fmtDate } from './dom.js';
+import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, isImporting, bindCardChip, cardPresent } from './import.js';
 import { renderGallery, openFocused } from './gallery.js';
-import { renderViewer, viewerKeys, leaveViewer, openViewerTab, refreshViewerPhoto } from './viewer.js';
+import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto } from './viewer.js';
 import { openExportDialog } from './export.js';
-import { maybeShowOnboarding, showHelp, showHelpMenu, showSettings, clearHints } from './onboarding.js';
+import { showHelp, showSettings } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
 import { renderLutPage } from './lut.js';
 import { createRouter } from './router.js';
 
 const router = createRouter({
-  before: (r) => {
-    clearHints();
-    setTabs(r.name === 'viewer' ? 'photos' : r.name);
-  },
+  before: (r) => setTabs(r.name === 'viewer' ? 'photos' : r.name, r.name),
   pages: {
     photos: { enter: async (r, isCurrent) => { await renderGallery(viewRoot(), isCurrent); return null; } },
     viewer: {
@@ -30,10 +27,15 @@ const router = createRouter({
 const route = () => router.route();
 const viewRoot = () => document.getElementById('view');
 
-function setTabs(name) {
+// 顶栏：当前页面的标签带 aria-current；进入大图时顶栏换成编辑模式（viewer.js 往 #tb-edit 里放东西）
+function setTabs(name, page) {
   for (const a of document.querySelectorAll('#tabs a')) {
-    a.classList.toggle('on', a.dataset.tab === name);
+    const on = a.dataset.tab === name;
+    a.classList.toggle('on', on);
+    if (on) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
   }
+  document.getElementById('titlebar')?.setAttribute('data-mode', page === 'viewer' ? 'viewer' : 'library');
 }
 
 function renderCamera(view) {
@@ -51,7 +53,7 @@ function renderCamera(view) {
 
 function exportCurrent() {
   if (router.current() === 'viewer') {
-    openViewerTab('export');
+    exportCurrentPhoto();
     return;
   }
   const ids = [...state.selection];
@@ -65,19 +67,22 @@ function exportCurrent() {
 function bindGlobalKeys() {
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
-    if (mod && (e.key === 'z' || e.key === 'Z') && !isTyping(e.target)) {
+    // 撤销：⌘Z；重做：⇧⌘Z / Ctrl+Y（视图里自己判断能不能做）
+    if (mod && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y') && !isTyping(e.target)) {
       const keys = router.keys();
-      if (keys && keys.undo && keys.undo()) e.preventDefault();
+      const redo = e.key === 'y' || e.key === 'Y' || e.shiftKey;
+      const fn = keys && (redo ? keys.redo : keys.undo);
+      if (fn && fn()) e.preventDefault();
       return;
     }
     if (mod && (e.key === 'e' || e.key === 'E')) {
       e.preventDefault();
-      exportCurrent();
+      if (!modalOpen()) exportCurrent();
       return;
     }
     if (mod && e.key === ',') {
       e.preventDefault();
-      showSettings();
+      if (!modalOpen()) showSettings();
       return;
     }
     if (e.key === 'Escape') {
@@ -85,13 +90,12 @@ function bindGlobalKeys() {
       else if (router.current() === 'viewer') location.hash = '#/photos';
       return;
     }
-    if (isTyping(e.target) || mod) return;
+    if (mod) return;
     if (e.key === '?') {
       e.preventDefault();
       showHelp();
       return;
     }
-    if (modalOpen()) return;
     const keys = router.keys();
     if (keys && keys.down(e)) {
       e.preventDefault();
@@ -123,19 +127,24 @@ async function boot() {
   await loadCamdata();
   setInterval(() => loadCamdata(), 15000);
   bindGlobalKeys();
+  bindCardChip();
   document.getElementById('btn-export-top').addEventListener('click', exportCurrent);
-  document.getElementById('btn-settings').addEventListener('click', showSettings);
-  document.getElementById('btn-help').addEventListener('click', showHelpMenu);
+  document.getElementById('btn-settings').addEventListener('click', () => showSettings());
+  document.getElementById('btn-help').addEventListener('click', showHelp);
   window.addEventListener('hashchange', route);
   on('open-settings', () => showSettings());
   on('camdata-changed', () => {
     emit('library-changed'); // 图库重新取照片列表（没有 JPG 的缩略图地址变了）
     refreshViewerPhoto();
   });
-  await route();
+  // 页面先出来，存储卡和相机数据的状态随后补上（不再等它们才画图库）
+  const first = route();
+  await loadLatestJob();
+  await refreshCards();
   renderBanner();
   renderCardStatus();
-  maybeShowOnboarding();
+  loadCamdata();
+  await first;
 
   setInterval(() => refreshCards(), 3000);
   setInterval(() => tickImport(), 800);
