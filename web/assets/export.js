@@ -153,7 +153,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     // 没导入也能导出，只是不套相机配方：写明白，免得和下面的「已导出」看起来矛盾
     guide.replaceChildren(...(camdataReady() ? [] : [
       camdataGuide({ onDone: refresh }),
-      h('p', { class: 'small dim' }, '没套用配方的照片照样能导出；套用了配方的照片要先导入相机配方文件。'),
+      h('p', { class: 'small dim' }, '未导入相机配方文件时，导出不会带上相机配方效果：有相机 JPG 的照片导出相机 JPG；只有 RAW、又套用了配方的照片可能导不出。'),
     ]));
   }
   refresh();

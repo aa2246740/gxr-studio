@@ -569,7 +569,14 @@ def test_frame_preset_cards_load_as_skeletons_not_ellipses():
 
 
 def test_export_camdata_note_does_not_promise_recipe_photos_export():
-    """AA02：没导入配方时，套用了配方的照片导出会被拒绝（后端保留配方）：说明不能说「都能导出」。"""
+    """AA02/AB01：没导入相机配方文件时，后端保留配方但出不了配方效果。
+
+    RAW+JPG 退回相机 JPG（serve.color_image 捕获 RenderUnavailable），只有 RAW 又套了配方的照片返回 409。
+    说明不能说「都能导出」，也不能说「套了配方就要先导入」。
+    """
     js = (ASSETS / "export.js").read_text(encoding="utf-8")
     assert "不导入也可以导出" not in js
-    assert "套用了配方的照片要先导入相机配方文件" in js
+    assert "套用了配方的照片要先导入相机配方文件" not in js
+    assert "导出不会带上相机配方效果" in js
+    assert "有相机 JPG 的照片导出相机 JPG" in js
+    assert "只有 RAW、又套用了配方的照片可能导不出" in js
