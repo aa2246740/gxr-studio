@@ -341,3 +341,31 @@ def test_closed_export_offers_retry_save_in_the_toast(tmp_path):
     assert out["hasRetrySave"] is True
     assert out["statusB"] == "saved" and "修改已保存" in out["toastAfter"]
     assert out["posts"] == 0
+
+
+def test_retry_landing_mid_gesture_does_not_rebuild_the_panel(tmp_path):
+    """W01：重试写进去时正在拖曲线：面板不重建（拖着的控件和松手时的保存还在）；这一步结束后再刷新，曲线和曝光都写进去。"""
+    out = run(tmp_path, "retry-during-gesture")
+    assert out["tab"] == "adjust" and out["hadPane"] is True
+    assert out["retry"] is True
+    assert out["sameDuringGesture"] is True and out["exposureDuringGesture"] == 1
+    assert out["rebuiltAfter"] is True
+    assert out["serverCurve"] == {"master": [[0, 0], [133, 148], [255, 255]]}
+    assert out["serverExposure"] == 1 and out["status"] == "saved"
+
+
+def test_undoing_another_field_after_retry_keeps_the_recovered_value(tmp_path):
+    """W02：重试补写的曝光装进来以后撤销曲线：只撤曲线，曝光不回到切回来时读到的旧值；重做放回曲线。"""
+    out = run(tmp_path, "retry-undo-cross-field")
+    assert out["retry"] is True
+    assert out["beforeUndo"] == {"view": 1, "server": 1}
+    assert out["afterUndo"]["view"] == 1 and out["afterUndo"]["server"] == 1
+    assert out["afterUndo"]["curve"] is None and out["afterUndo"]["viewCurve"] is None
+    assert out["afterRedo"] == {"view": 1, "server": 1, "curve": {"master": [[0, 0], [128, 110], [255, 255]]}}
+
+
+def test_undo_after_retry_still_reverts_your_own_change(tmp_path):
+    """W02：曝光是你自己改的（写失败、重试成功），撤销照样回到原来的值。"""
+    out = run(tmp_path, "retry-undo-own-history")
+    assert out["retry"] is True
+    assert out["afterUndo"] == {"view": 0, "server": 0}

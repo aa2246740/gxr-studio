@@ -483,8 +483,14 @@ on('save-retried', (e) => {
   const v = view;
   if (!v || !e.detail || e.detail.id !== v.photo.id || !v.ed) return;
   if (!applyRetried(v, e.detail)) return;
+  // 正在拖曲线、滑块（beginChange 之后、endChange 之前）：不重建面板，不然拖着的控件和它松手时的保存都没了；
+  // 这一步结束时 endChange 再刷新（W01）
+  if (v.pending) {
+    v.panesStale = true;
+    paintTabMods(v);
+    return;
+  }
   refreshPanes();
-  v.redrawSide?.();
 });
 
 function renderPanelFoot(v) {

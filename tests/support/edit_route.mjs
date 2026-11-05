@@ -803,6 +803,92 @@ if (scenario === 'reset-then-switch') {
   out.statusB = preview.saveStatus(PHOTOS.B.id);
   out.toastAfter = root.textContent;
   out.posts = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).length;
+} else if (scenario === 'retry-during-gesture') {
+  // W01：重开 A 后重试；补写编辑写进去时你正在拖曲线（beginChange 之后）：面板不能被重建（拖着的控件和松手时的保存还要用）；
+  // 松手、曲线写进去、这一步结束后面板再刷新，面板和服务器上的曝光都是 1
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  let v = viewer.currentView();
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  v = viewer.currentView();
+  viewer.openViewerTab('adjust');
+  await tick();
+  const pane = () => v.panes[v.tab].el.firstChild;
+  out.tab = v.tab;
+  const before = pane();
+  out.hadPane = !!before;
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  preview.beginChange(v); // 按下曲线
+  const curve = [[0, 0], [133, 148], [255, 255]];
+  v.ed.curve = curve.map((q) => [...q]);
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  await tick(5);
+  out.sameDuringGesture = pane() === before;
+  out.exposureDuringGesture = v.ed.adj.exposure_ev;
+  await preview.persist(v, { curve: preview.curveBody(v.ed) }).then(() => preview.endChange(v)); // 松手
+  await tick(5);
+  out.rebuiltAfter = pane() !== before;
+  out.serverCurve = stored[PHOTOS.A.id].curve;
+  out.serverExposure = stored[PHOTOS.A.id].adjust.exposure_ev;
+  out.status = preview.saveStatus(PHOTOS.A.id);
+} else if (scenario === 'retry-undo-cross-field') {
+  // W02：重开 A（曝光显示成旧的 0）后重试，重试排着时改了曲线；重试写进曝光 1 以后撤销曲线：
+  // 只撤掉曲线，曝光仍是 1；重做把曲线放回来
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  let v = viewer.currentView();
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  v = viewer.currentView();
+  holds.add(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  preview.beginChange(v);
+  const curve = [[0, 0], [128, 110], [255, 255]];
+  v.ed.curve = curve.map((q) => [...q]);
+  const curveSave = preview.persist(v, { curve: preview.curveBody(v.ed) }).then(() => preview.endChange(v));
+  g.release(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  await curveSave;
+  await tick(5);
+  out.beforeUndo = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev };
+  preview.undoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterUndo = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev, curve: stored[PHOTOS.A.id].curve, viewCurve: v.ed.curve };
+  preview.redoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterRedo = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev, curve: stored[PHOTOS.A.id].curve };
+} else if (scenario === 'retry-undo-own-history') {
+  // W02 的另一面：没有切走，曝光 0→1 是你自己改的（写失败后重试成功）：撤销照样回到 0
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  preview.beginChange(v);
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) }).then(() => preview.endChange(v));
+  out.retry = await preview.retrySaves(PHOTOS.A.id);
+  await tick(5);
+  preview.undoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterUndo = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev };
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

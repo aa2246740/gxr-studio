@@ -14,6 +14,7 @@ import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from 
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
+import { cropShape, fixHistory } from './retry_history.js';
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
@@ -214,7 +215,8 @@ export async function reloadEdit(view, { refreshCatalog = true } = {}) {
   schedulePreview(view, { full: true });
 }
 
-// 编辑记录的顶层字段 → ed 上对应的属性（重试只采用补写进去、界面之后又没改过的字段）
+// 编辑记录的顶层字段 → ed 上对应的属性（重试只采用补写进去、界面之后又没改过的字段）。
+// 撤销记录（snapshot）里的键和 ed 上的属性同名，adj 也一样
 const EDIT_FIELD_PROPS = {
   recipe: ['recipe', 'memory'],
   lut: ['lut'],
@@ -231,13 +233,22 @@ const EDIT_FIELD_PROPS = {
 export function applyRetried(view, { kind, response, fields = [], rev = null } = {}) {
   if (!live(view) || !view.ed || !response || !fields.length) return false;
   if (kind === 'crop') {
+    const stale = cropShape(view.crop);
     setCrop(view, response);
+    fixHistory(view, { crop: [stale, cropShape(view.crop)] });
   } else {
     // 换算要用到这张照片的 v2 与默认边框，和 view.ed 保持一致
     const fresh = { v2: view.ed.v2, defaults: view.ed.defaults };
     applyEdit(fresh, response);
-    for (const f of fields) for (const prop of EDIT_FIELD_PROPS[f] || []) view.ed[prop] = fresh[prop];
+    const swaps = {};
+    for (const f of fields) {
+      for (const prop of EDIT_FIELD_PROPS[f] || []) {
+        swaps[prop] = [view.ed[prop], fresh[prop]];
+        view.ed[prop] = fresh[prop];
+      }
+    }
     view.ed.render = fresh.render;
+    fixHistory(view, swaps);
   }
   if (rev !== null && rev !== undefined) syncRev(view, rev);
   schedulePreview(view, { full: true });
@@ -412,6 +423,11 @@ export function beginChange(view) {
 export function endChange(view) {
   const before = view.pending;
   view.pending = null;
+  // 拖动途中重试写进了内容：面板等这一步结束才刷新（W01）
+  if (view.panesStale) {
+    view.panesStale = false;
+    view.redrawSide?.();
+  }
   if (!before || !view.ed || before === snapshot(view)) return;
   view.undo = view.undo || [];
   view.undo.push(before);
