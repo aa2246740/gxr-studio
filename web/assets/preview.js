@@ -14,7 +14,7 @@ import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from 
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
-import { cropShape, fixHistory } from './retry_history.js';
+import { cropShape, HISTORY_GROUPS, ownedGroups, snapshot, withOwned } from './undo_entries.js';
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
@@ -216,7 +216,7 @@ export async function reloadEdit(view, { refreshCatalog = true } = {}) {
 }
 
 // 编辑记录的顶层字段 → ed 上对应的属性（重试只采用补写进去、界面之后又没改过的字段）。
-// 撤销记录（snapshot）里的键和 ed 上的属性同名，adj 也一样
+// 撤销快照（snapshot）里的键和 ed 上的属性同名（memory 不在快照里）
 const EDIT_FIELD_PROPS = {
   recipe: ['recipe', 'memory'],
   lut: ['lut'],
@@ -230,26 +230,27 @@ const EDIT_FIELD_PROPS = {
 // 重试保存写成功一类：把写入接口的回应（服务器上现在的内容）装进正在显示的视图（F03 / N02）。
 // 只装 fields 里的字段：界面之后又改过的字段保留界面上的值（V01）。
 // 同步完成，不再发请求，所以不会读失败、也不会晚到盖掉之后的草稿。
+// 撤销记录不用改：每一步只记它自己改了哪些字段，撤销只还原那些字段（Y01）。
+// 正在进行的一步（pending）是「这一步开始前」的样子，补写进来的不是这一步做的，所以也装进去。
 export function applyRetried(view, { kind, response, fields = [], rev = null } = {}) {
   if (!live(view) || !view.ed || !response || !fields.length) return false;
+  const before = view.pending ? JSON.parse(view.pending) : null;
   if (kind === 'crop') {
-    const stale = cropShape(view.crop);
     setCrop(view, response);
-    fixHistory(view, { crop: [stale, cropShape(view.crop)] });
+    if (before) before.crop = cropShape(view.crop);
   } else {
     // 换算要用到这张照片的 v2 与默认边框，和 view.ed 保持一致
     const fresh = { v2: view.ed.v2, defaults: view.ed.defaults };
     applyEdit(fresh, response);
     for (const f of fields) {
-      const group = {};
       for (const prop of EDIT_FIELD_PROPS[f] || []) {
-        group[prop] = [view.ed[prop], fresh[prop]];
         view.ed[prop] = fresh[prop];
+        if (before && prop in before) before[prop] = view.ed.v2 || prop !== 'geometry' ? fresh[prop] : null;
       }
-      fixHistory(view, group);
     }
     view.ed.render = fresh.render;
   }
+  if (before) view.pending = JSON.stringify(before);
   if (rev !== null && rev !== undefined) syncRev(view, rev);
   schedulePreview(view, { full: true });
   return true;
@@ -397,24 +398,8 @@ export function resetCropRemote(view) {
   return saveCrop(view, body);
 }
 
-// ---- 撤销：每次改动前记下整套状态（最多 100 步），撤销时把旧状态写回去 ------------
-
-function snapshot(view) {
-  const ed = view.ed;
-  const c = view.crop;
-  return JSON.stringify({
-    recipe: ed.recipe,
-    lut: ed.lut,
-    adj: ed.adj,
-    curve: ed.curve,
-    geometry: ed.v2 ? ed.geometry : null,
-    frame: ed.frame,
-    stamp: ed.stamp,
-    frameFrom: ed.frameFrom,
-    stampFrom: ed.stampFrom,
-    crop: c ? { preset: c.preset, rect: c.rect, angle_deg: c.angle_deg, orientation: c.orientation } : null,
-  });
-}
+// ---- 撤销：每次改动前记下整套状态（最多 100 步），撤销时只把这一步改过的组写回去 ---
+// 快照与「改了哪些组」在 undo_entries.js
 
 export function beginChange(view) {
   if (view.ed && !view.pending) view.pending = snapshot(view);
@@ -428,9 +413,11 @@ export function endChange(view) {
     view.panesStale = false;
     view.redrawSide?.();
   }
-  if (!before || !view.ed || before === snapshot(view)) return;
+  const after = view.ed ? snapshot(view) : null;
+  if (!before || !after || before === after) return;
+  // 每一步只记自己改了的组（owned），撤销 / 重做只还原这些，不会顺带把别的字段写回旧值（Y01）
   view.undo = view.undo || [];
-  view.undo.push(before);
+  view.undo.push(JSON.stringify({ ...JSON.parse(before), owned: ownedGroups(before, after) }));
   if (view.undo.length > 100) view.undo.shift();
   // 新的改动之后，原来可以重做的就作废了
   view.redo = [];
@@ -452,7 +439,7 @@ export function undoChange(view) {
   const s = view.undo && view.undo.pop();
   if (!s || !view.ed) return false;
   view.redo = view.redo || [];
-  view.redo.push(snapshot(view));
+  view.redo.push(withOwned(snapshot(view), s));
   syncUndo(view);
   return restoreSnapshot(view, s);
 }
@@ -462,7 +449,7 @@ export function redoChange(view) {
   const s = view.redo && view.redo.pop();
   if (!s || !view.ed) return false;
   view.undo = view.undo || [];
-  view.undo.push(snapshot(view));
+  view.undo.push(withOwned(snapshot(view), s));
   syncUndo(view);
   return restoreSnapshot(view, s);
 }
@@ -470,33 +457,42 @@ export function redoChange(view) {
 function restoreSnapshot(view, s) {
   const o = JSON.parse(s);
   const ed = view.ed;
+  const own = new Set(o.owned || Object.keys(HISTORY_GROUPS));
+  // 只还原这一步改过的组；没改过的保持现在的样子（Y01）
   // 装饰回到撤销前的状态：原来继承默认的，写 null（后端按当前默认值算）；明确设置的，写原来的内容（R2-09）。
   // 只有真的变了才写回去，不然撤销会把 frame 键写进编辑记录。
-  const frameOwn = o.frameFrom === 'photo';
-  const stampOwn = o.stampFrom === 'photo';
-  const finishChanged = ed.frameFrom !== o.frameFrom || ed.stampFrom !== o.stampFrom
-    || (frameOwn && JSON.stringify(ed.frame) !== JSON.stringify(o.frame))
-    || (stampOwn && JSON.stringify(ed.stamp) !== JSON.stringify(o.stamp));
-  ed.recipe = o.recipe;
-  ed.lut = o.lut || null;
-  ed.adj = o.adj;
-  ed.curve = o.curve;
-  if (ed.v2 && o.geometry) ed.geometry = o.geometry;
-  const fin = resolveFinish({ frame: frameOwn ? o.frame : null, stamp: stampOwn ? o.stamp : null }, ed.defaults);
-  ed.frame = fin.frame;
-  ed.frameFrom = fin.frameFrom;
-  ed.stamp = fin.stamp;
-  ed.stampFrom = fin.stampFrom;
-  const changes = { recipe: recipeBody(view, { memory: true }), lut: ed.lut, adjust: adjustBody(ed), curve: curveBody(ed) };
-  if (ed.v2) {
-    Object.assign(changes, { geometry: ed.geometry });
-    if (finishChanged) Object.assign(changes, {
+  const tf = own.has('frame') ? o : ed;
+  const ts = own.has('stamp') ? o : ed;
+  const frameOwn = tf.frameFrom === 'photo';
+  const stampOwn = ts.stampFrom === 'photo';
+  const finishChanged = ed.frameFrom !== tf.frameFrom || ed.stampFrom !== ts.stampFrom
+    || (frameOwn && JSON.stringify(ed.frame) !== JSON.stringify(tf.frame))
+    || (stampOwn && JSON.stringify(ed.stamp) !== JSON.stringify(ts.stamp));
+  const changes = {};
+  if (own.has('recipe')) {
+    ed.recipe = o.recipe;
+    changes.recipe = recipeBody(view, { memory: true });
+  }
+  if (own.has('lut')) changes.lut = ed.lut = o.lut || null;
+  if (own.has('adjust')) {
+    ed.adj = o.adj;
+    changes.adjust = adjustBody(ed);
+  }
+  if (own.has('curve')) {
+    ed.curve = o.curve;
+    changes.curve = curveBody(ed);
+  }
+  if (ed.v2 && own.has('geometry') && o.geometry) changes.geometry = ed.geometry = o.geometry;
+  if (finishChanged) {
+    const fin = resolveFinish({ frame: frameOwn ? tf.frame : null, stamp: stampOwn ? ts.stamp : null }, ed.defaults);
+    Object.assign(ed, { frame: fin.frame, frameFrom: fin.frameFrom, stamp: fin.stamp, stampFrom: fin.stampFrom });
+    if (ed.v2) Object.assign(changes, {
       frame: frameOwn ? frameBody(ed.frame, styleOptions(ed, ed.frame.style)) : null,
       stamp: stampOwn ? ed.stamp : null,
     });
   }
-  persist(view, changes);
-  if (o.crop && view.crop) {
+  if (Object.keys(changes).length) persist(view, changes);
+  if (own.has('crop') && o.crop && view.crop) {
     const cur = view.crop;
     const same = JSON.stringify(cur.rect) === JSON.stringify(o.crop.rect) && cur.preset === o.crop.preset;
     if (!same) saveCrop(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: geometryOf(view).straighten || 0, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });

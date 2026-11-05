@@ -963,6 +963,105 @@ if (scenario === 'reset-then-switch') {
     await tick(5);
     out.undos.push({ view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev });
   }
+} else if (scenario === 'refresh-mixed-history' || scenario === 'refresh-owned-history') {
+  // Y01：曝光的步骤（mixed：0→2→0 写进去、→1 失败；owned：只有 0→1 失败）之后原地刷新（换相机数据时的 refreshViewerPhoto），
+  // 读回服务器上的旧值，失败的写入和撤销记录都还在。mixed 再改一笔曲线；然后重试补写曝光 1。
+  // mixed：撤销曲线只撤曲线，曝光仍是 1。owned：撤销曝光回到你原来的 0
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  const step = async (patch, body) => {
+    preview.beginChange(v);
+    patch();
+    await preview.persist(v, body()).then(() => preview.endChange(v));
+  };
+  const exposure = (ev) => step(() => { v.ed.adj.exposure_ev = ev; }, () => ({ adjust: preview.adjustBody(v.ed) }));
+  const mixed = scenario === 'refresh-mixed-history';
+  if (mixed) {
+    await exposure(2);
+    await exposure(0);
+  }
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await exposure(1);
+  failures.delete(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  await viewer.refreshViewerPhoto();
+  await tick(5);
+  out.afterRefresh = v.ed.adj.exposure_ev;
+  const curve = [[0, 0], [133, 148], [255, 255]];
+  if (mixed) await step(() => { v.ed.curve = curve.map((q) => [...q]); }, () => ({ curve: preview.curveBody(v.ed) }));
+  out.retry = await preview.retrySaves(PHOTOS.A.id);
+  await tick(5);
+  out.afterRetry = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev };
+  preview.undoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterUndo = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev, curve: stored[PHOTOS.A.id].curve ?? null };
+  preview.redoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterRedo = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev, curve: stored[PHOTOS.A.id].curve ?? null };
+} else if (scenario === 'drag-back-to-start') {
+  // Y02：重开 A（显示旧的 0）后重试；补写回来之前在真的曝光滑块上拖到 5，补写回来后又拖回 0 松手：
+  // 浏览器不发 change，但拖动过，松手时的 0 照样保存（松手时的值算数）
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  let v = viewer.currentView();
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  v = viewer.currentView();
+  viewer.openViewerTab('adjust');
+  await tick();
+  let input = null;
+  const walk = (n) => { if (!input && n.tagName === 'INPUT' && n.getAttribute && n.getAttribute('aria-label') === '曝光') input = n; (n.children || []).forEach(walk); };
+  walk(v.panes.adjust.el);
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  const start = input.value;
+  input.dispatchEvent(new Event('pointerdown'));
+  input.value = '5';
+  input.dispatchEvent(new Event('input'));
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  await tick(5);
+  out.serverMid = stored[PHOTOS.A.id].adjust.exposure_ev;
+  input.value = start; // 拖回起点：值和按下时完全一样，浏览器不发 change
+  input.dispatchEvent(new Event('input'));
+  input.dispatchEvent(new Event('pointerup'));
+  input.dispatchEvent(new Event('blur')); // 之后离开也不会再存一次
+  await preview.flushEdits(v);
+  await tick(5);
+  out.final = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev, pending: !!v.pending, status: preview.saveStatus(PHOTOS.A.id) };
+  out.edits = requests.filter((r) => r.method === 'PUT' && r.url === `/api/photos/${PHOTOS.A.id}/edit`).length;
+} else if (scenario === 'ruler-blur') {
+  // Y02：在拉直刻度上按住右方向键，焦点离开（keyup 发到了别处）：照样保存，这一步结束
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  const { correctSection } = await import(file('correct.js'));
+  const section = correctSection(v);
+  document.body.append(section);
+  out.v2 = !!v.ed.v2;
+  let ruler = null;
+  const walk = (n) => { if (!ruler && n.getAttribute && n.getAttribute('aria-label') === '拉直') ruler = n; (n.children || []).forEach(walk); };
+  walk(section);
+  out.found = !!ruler;
+  const key = (type, k) => { const e = new Event(type); e.key = k; e.repeat = false; e.preventDefault = () => {}; ruler.dispatchEvent(e); };
+  key('keydown', 'ArrowRight');
+  ruler.dispatchEvent(new Event('blur'));
+  await preview.flushEdits(v);
+  await tick(5);
+  ruler.dispatchEvent(new Event('blur')); // 再离开一次不会再存
+  await preview.flushEdits(v);
+  await tick(5);
+  out.pending = !!v.pending;
+  out.straighten = (stored[PHOTOS.A.id].geometry || {}).straighten ?? null;
+  out.geometryWrites = requests.filter((r) => r.method === 'PUT' && r.url === `/api/photos/${PHOTOS.A.id}/edit` && r.body && r.body.geometry).length;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

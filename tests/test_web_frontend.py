@@ -535,8 +535,10 @@ def test_undo_remembers_whether_the_decoration_was_inherited():
     assert "return restoreSnapshot(view, s);" in _function_body(preview, "export function undoChange(view)")
     assert "return restoreSnapshot(view, s);" in _function_body(preview, "export function redoChange(view)")
     undo = _function_body(preview, "function restoreSnapshot(view, s)")
-    assert "frameOwn ? o.frame : null" in undo and "stampOwn ? o.stamp : null" in undo
-    assert "frameFrom: ed.frameFrom" in preview and "stampFrom: ed.stampFrom" in preview
+    # 这一步改过装饰才按快照还原（tf / ts 是快照或现在的样子）
+    assert "frameOwn ? tf.frame : null" in undo and "stampOwn ? ts.stamp : null" in undo
+    entries = (ASSETS / "undo_entries.js").read_text(encoding="utf-8")
+    assert "frameFrom: ed.frameFrom" in entries and "stampFrom: ed.stampFrom" in entries
     assert "ed.frameFrom = 'photo'" in (ASSETS / "frame_panel.js").read_text(encoding="utf-8")
     assert "ed.stampFrom = 'photo'" in (ASSETS / "stamp_panel.js").read_text(encoding="utf-8")
     assert "ed.frameFrom = 'photo'" in (ASSETS / "viewer.js").read_text(encoding="utf-8")

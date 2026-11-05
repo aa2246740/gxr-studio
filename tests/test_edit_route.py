@@ -390,3 +390,36 @@ def test_retry_keeps_history_the_user_made_even_when_values_match(tmp_path):
     assert out["retry"] is True
     assert out["undoBefore"] == out["undoAfterRetry"] == [0, 2, 0]
     assert out["undos"] == [{"view": 1, "server": 1}, {"view": 0, "server": 0}]
+
+
+def test_undoing_a_curve_after_an_in_place_refresh_keeps_the_retried_exposure(tmp_path):
+    """Y01：曝光改过几次、最后一笔失败，原地刷新后又改曲线；重试补写曝光 1 后撤销曲线：只撤曲线，曝光仍是 1。"""
+    out = run(tmp_path, "refresh-mixed-history")
+    assert out["afterRefresh"] == 0
+    assert out["retry"] is True and out["afterRetry"] == {"view": 1, "server": 1}
+    assert out["afterUndo"] == {"view": 1, "server": 1, "curve": None}
+    assert out["afterRedo"] == {"view": 1, "server": 1, "curve": {"master": [[0, 0], [133, 148], [255, 255]]}}
+
+
+def test_undo_after_an_in_place_refresh_still_reverts_your_own_exposure(tmp_path):
+    """Y01：曝光 0→1 失败，原地刷新、重试补写 1 后撤销：回到你原来的 0，重做回到 1。"""
+    out = run(tmp_path, "refresh-owned-history")
+    assert out["retry"] is True and out["afterRetry"] == {"view": 1, "server": 1}
+    assert out["afterUndo"]["view"] == 0 and out["afterUndo"]["server"] == 0
+    assert out["afterRedo"]["view"] == 1 and out["afterRedo"]["server"] == 1
+
+
+def test_dragging_back_to_the_start_still_saves_the_release(tmp_path):
+    """Y02：重试回来的时候正在拖同一个滑块，最后拖回起点松手（浏览器不发 change）：松手时的值照样保存，只存一次。"""
+    out = run(tmp_path, "drag-back-to-start", real=("adjust.js",))
+    assert out["retry"] is True and out["serverMid"] == 1
+    assert out["final"] == {"view": 0, "server": 0, "pending": False, "status": "saved"}
+    assert out["edits"] == 3, "失败的一笔、重试一笔、松手一笔"
+
+
+def test_ruler_key_held_when_focus_leaves_is_saved_once(tmp_path):
+    """Y02：拉直刻度按着方向键时焦点离开：照样保存，这一步结束；再离开一次不会再存。"""
+    out = run(tmp_path, "ruler-blur", real=("correct.js",))
+    assert out["found"] is True and out["v2"] is True
+    assert out["pending"] is False
+    assert out["straighten"] == 0.1 and out["geometryWrites"] == 1

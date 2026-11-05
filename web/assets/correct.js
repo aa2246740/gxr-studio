@@ -184,6 +184,7 @@ function ruler(view) {
   });
 
   let drag = null;
+  let keyHeld = false;
   box.addEventListener('pointerdown', (e) => {
     box.setPointerCapture(e.pointerId);
     beginChange(view);
@@ -213,10 +214,18 @@ function ruler(view) {
     const step = e.key === 'ArrowLeft' || e.key === 'ArrowRight' ? 0.1 : 0.5;
     const sign = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1;
     if (!e.repeat) beginChange(view);
+    keyHeld = true;
     setStraightLive(view, straightOf(view) + sign * step);
     paintRuler(box, straightOf(view));
   });
-  box.addEventListener('keyup', () => commitStraight(view));
+  const keyDone = () => {
+    if (!keyHeld) return;
+    keyHeld = false;
+    commitStraight(view);
+  };
+  box.addEventListener('keyup', keyDone);
+  // 按着方向键时焦点离开（keyup 发到了别处）：照样保存，这一步也就结束了（Y02）
+  box.addEventListener('blur', keyDone);
   return box;
 }
 

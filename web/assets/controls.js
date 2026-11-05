@@ -13,7 +13,8 @@ export function fillRange(min, max, value, dflt = 0) {
   return { lo: `${Math.min(a, b)}%`, hi: `${Math.max(a, b)}%`, at: b };
 }
 
-// onCancel：按下（或按键）又松开、值没变——不会有 change，也就没有 onCommit；这一步在这里结束（X01）
+// onCancel：按下（或按键）又松开、中间没拖动也没改值——不会有 change，也就没有 onCommit；这一步在这里结束（X01）。
+// 拖动过（哪怕拖回了原处，浏览器也不发 change）就在松手时保存：松手时的值算数（Y02）
 export function slider({ label, min, max, step, value, fmt = String, ends = null, dflt = 0, disabled = false, onBegin, onInput, onCommit, onCancel, onDblReset }) {
   const out = h('output', {}, fmt(value));
   const input = h('input', { type: 'range', min, max, step, value, 'aria-label': label, title: disabled ? '' : '双击重置' });
@@ -23,9 +24,13 @@ export function slider({ label, min, max, step, value, fmt = String, ends = null
     input.setAttribute('aria-disabled', 'true');
   }
   let touched = false;
+  let moved = false;
   let startValue = null;
   const begin = () => {
-    if (!touched) startValue = input.value;
+    if (!touched) {
+      startValue = input.value;
+      moved = false;
+    }
     touched = true;
     if (onBegin) onBegin();
   };
@@ -34,9 +39,13 @@ export function slider({ label, min, max, step, value, fmt = String, ends = null
     el.classList.add('dragging');
     begin();
   });
-  // 值没变就结束这一步；变了的等 change / keyup 去保存
+  // 拖动过或值变了：保存（之后的 change / keyup 看到 touched 已清掉，不会再存一次）；都没有：结束这一步
   const settle = () => {
-    if (!touched || input.value !== startValue) return;
+    if (!touched) return;
+    if (moved || input.value !== startValue) {
+      finish();
+      return;
+    }
     touched = false;
     if (onCancel) onCancel();
   };
@@ -46,16 +55,14 @@ export function slider({ label, min, max, step, value, fmt = String, ends = null
   };
   input.addEventListener('pointerup', endDrag);
   input.addEventListener('pointercancel', endDrag);
-  input.addEventListener('blur', () => {
-    endDrag();
-    finish(); // 改了值、还没等到 keyup 就离开（例如按住方向键时点了别处）：照样保存
-  });
+  input.addEventListener('blur', endDrag); // 改了值、还没等到 keyup 就离开（例如按住方向键时点了别处）：照样保存
   input.addEventListener('keydown', () => {
     if (disabled || touched) return;
     begin();
   });
   // 拖动反馈不等任何东西：数字、气泡、轨道同一帧更新（画面由 onInput 自己决定怎么跟）
   input.addEventListener('input', () => {
+    moved = true;
     const v = Number(input.value);
     paint(v);
     if (onInput) onInput(v);
