@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { state, emit, on } from './state.js';
 import { h, toast, modalOpen, closeTopModal, isTyping, toastError, modKey, fmtDate } from './dom.js';
 import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, bindCardChip, cardPresent } from './import.js';
-import { renderGallery, openFocused } from './gallery.js';
+import { renderGallery, openFocused, galleryKeys, exportSelection } from './gallery.js';
 import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto } from './viewer.js';
 import { openExportDialog } from './export.js';
 import { showHelp, showSettings } from './onboarding.js';
@@ -57,12 +57,12 @@ function exportCurrent() {
     exportCurrentPhoto();
     return;
   }
-  const ids = [...state.selection];
-  if (!ids.length) {
-    toast('先选择照片', 'info');
+  if (router.current() === 'photos' && exportSelection()) return;
+  if (router.current() === 'photos' && state.galleryDate) {
+    openExportDialog({ ids: [], date: state.galleryDate, dayLabel: `${fmtDate(state.galleryDate)} 的全部`, photos: state.photos });
     return;
   }
-  openExportDialog({ ids, label: `选中的 ${ids.length} 张` });
+  toast(`先在图库里选择要导出的照片：点照片左上角的圈，或按住 ⇧ 连续选择、${modKey()}A 全选。`, 'info');
 }
 
 function bindGlobalKeys() {
@@ -88,7 +88,14 @@ function bindGlobalKeys() {
     }
     if (e.key === 'Escape') {
       if (modalOpen()) closeTopModal();
-      else if (router.current() === 'viewer') location.hash = '#/photos';
+      else if (router.current() === 'photos' && galleryKeys(e)) e.preventDefault();
+      else if (router.current() === 'viewer' && !isTyping(e.target)) location.hash = '#/photos';
+      return;
+    }
+    if (isTyping(e.target)) return;
+    if (modalOpen()) return;
+    if (router.current() === 'photos' && galleryKeys(e)) {
+      e.preventDefault();
       return;
     }
     if (mod) return;
