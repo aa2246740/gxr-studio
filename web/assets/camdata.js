@@ -177,7 +177,7 @@ export function calibrationImportForm({ onDone } = {}) {
     type: 'text',
     'aria-label': '校准数据文件夹',
     value: state.camdata?.projectDir || '',
-    style: { width: '100%' },
+    class: 'wide-input',
   });
   const msg = h('p', { class: 'small', role: 'status' });
   const button = h('button', { class: 'btn', type: 'button', onclick: run }, '导入校准数据');

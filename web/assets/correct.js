@@ -2,7 +2,7 @@
 // 新版后端（v2）才有的项，旧版显示「还没准备好」。拉直两版都能用：旧版写 /crop 的 angle_deg（只认 ±10°，超出时后端的原因会显示出来）。
 // 拖动时只改画面（不保存），松手再保存（DIAG 原因 4 同样的做法：拖动中的值就是请求里发出去的值）。
 
-import { h, toast, toastError } from './dom.js';
+import { h, button, toast, toastError } from './dom.js';
 import { beginChange, endChange, saveCrop, persist, schedulePreview, validRect, resetCropRemote, geometryOf } from './preview.js';
 import { cropBody, orientationNow, rectArray } from './crop.js';
 import { slider, notReady } from './controls.js';
@@ -253,11 +253,11 @@ export function correctSection(view) {
 
 // 面板底部固定的一行按钮（COPY 3.1：[自动] [向左旋转] [水平翻转] [重置]）。旧版只有重置。
 export function correctActions(view) {
-  if (!view.ed.v2) return [h('button', { type: 'button', onclick: () => resetCorrections(view) }, '重置')];
+  if (!view.ed.v2) return [button('重置', { ico: 'rotate-ccw', onclick: () => resetCorrections(view) })];
   return [
-    h('button', { type: 'button', onclick: () => autoCorrect(view), title: '自动' }, '自动'),
-    h('button', { type: 'button', onclick: () => rotate90(view), title: '向左旋转（[）' }, '向左旋转'),
-    h('button', { type: 'button', 'aria-pressed': String(!!view.ed.geometry.flip), onclick: () => flipHorizontal(view), title: '水平翻转' }, '水平翻转'),
-    h('button', { type: 'button', onclick: () => resetCorrections(view) }, '重置'),
+    button('自动', { ico: 'wand-sparkles', title: '自动', onclick: () => autoCorrect(view) }),
+    button('向左旋转', { ico: 'rotate-ccw-square', title: '向左旋转（[）', onclick: () => rotate90(view) }),
+    button('水平翻转', { ico: 'flip-horizontal-2', title: '水平翻转', pressed: !!view.ed.geometry.flip, onclick: () => flipHorizontal(view) }),
+    button('重置', { ico: 'rotate-ccw', onclick: () => resetCorrections(view) }),
   ];
 }

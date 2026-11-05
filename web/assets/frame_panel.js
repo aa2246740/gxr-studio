@@ -103,8 +103,8 @@ export function framePanel(view) {
   if (cur.style !== 'none') {
     if (opts.includes('color')) {
       // 颜色只用色块（不再加文字按钮）；鼠标停在色块上看颜色名，选中的色块有外圈
-      rows.push(h('div', { class: 'seg' }, h('span', { class: 'small dim seg-label' }, '颜色'),
-        ...['white', 'black', 'cream'].map((c) => swatch(COLOR_HEX[c], cur.color === c, () => setFrame(view, { color: c }), COLOR_NAMES[c]))));
+      rows.push(h('div', { class: 'seg-row' }, h('span', { class: 'seg-label' }, '颜色'), h('div', { class: 'swrow' },
+        ...['white', 'black', 'cream'].map((c) => swatch(COLOR_HEX[c], cur.color === c, () => setFrame(view, { color: c }), COLOR_NAMES[c])))));
     }
     if (opts.includes('weight')) {
       rows.push(seg(['thin', 'medium', 'thick'].map((w) => [w, WEIGHT_NAMES[w]]), cur.weight, (w) => setFrame(view, { weight: w }), { label: '宽度' }));
@@ -129,7 +129,7 @@ export function framePanel(view) {
   }
 
   // 底部按钮固定在面板底边（和裁切页一样）
-  rows.push(h('div', { class: 'sticky-foot' }, h('button', { type: 'button', class: 'primary', onclick: () => setDefaults(view) }, '设为默认')));
+  rows.push(h('div', { class: 'sticky-foot' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => setDefaults(view) }, '设为默认')));
   return h('div', { class: 'pane' }, ...rows);
 }
 

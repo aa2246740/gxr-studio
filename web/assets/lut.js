@@ -100,7 +100,7 @@ function importSection() {
   );
   if (!flow.job || flow.job.state === 'cancelled' || flow.job.state === 'error') {
     const go = h('button', { class: 'btn primary', type: 'button', disabled: !!flow.busy || flow.spaceSaving || !flow.space, onclick: startFit }, '生成配方');
-    sec.append(h('div', { class: 'modal-foot', style: { justifyContent: 'flex-start' } }, go,
+    sec.append(h('div', { class: 'modal-foot start' }, go,
       h('button', { class: 'btn', type: 'button', onclick: resetFlow }, '重新选择')));
     if (flow.job?.state === 'error') sec.append(h('div', { class: 'result bad small' }, flow.job.error?.message || '无法生成配方。请重试。'));
     if (flow.job?.state === 'cancelled') sec.append(h('p', { class: 'small dim' }, '已取消'));
@@ -281,8 +281,8 @@ function previewBox() {
   if (done && flow.photoId) tabs.push(['recipe', '电脑预测']);
   return h('div', { class: 'lut-preview' },
     h('div', { class: 'field-row' }, h('span', { class: 'small dim' }, '预览照片'), photoSel),
-    h('div', { class: 'seg' }, tabs.map(([k, t]) => h('button', {
-      class: 'btn', type: 'button', 'aria-pressed': String(flow.which === k),
+    h('div', { class: 'seg', role: 'group', 'aria-label': '预览' }, tabs.map(([k, t]) => h('button', {
+      type: 'button', 'aria-pressed': String(flow.which === k),
       onclick: async () => { flow.which = k; await refreshPreview(); redraw(); },
     }, t))),
     flow.previewUrl ? h('img', { class: 'lut-img', src: flow.previewUrl, alt: '预览' }) : h('div', { class: 'lut-img empty-img small dim' }, flow.busy || (!flow.space ? '请选择输入色彩空间' : '预览生成中…')),
@@ -388,7 +388,7 @@ function progressBox() {
   flow.ui = { text, bar, detail };
   updateProgress();
   return h('div', { class: 'result' }, text, h('div', { class: 'progress' }, bar), detail,
-    h('div', { class: 'modal-foot', style: { justifyContent: 'flex-start' } },
+    h('div', { class: 'modal-foot start' },
       h('button', { class: 'btn', type: 'button', onclick: cancelFit }, '取消')));
 }
 
@@ -433,8 +433,8 @@ function resultBox() {
   const c = res.candidates[flow.chosen];
   const tone = LABELS[c.label] || 'warn';
   const bar = Math.max(0, Math.min(100, c.similarity ?? 0));
-  const picks = h('div', { class: 'seg' }, res.candidates.map((x, i) => h('button', {
-    class: 'btn', type: 'button', 'aria-pressed': String(i === flow.chosen),
+  const picks = h('div', { class: 'seg', role: 'group', 'aria-label': '最接近的内置配方' }, res.candidates.map((x, i) => h('button', {
+    type: 'button', 'aria-pressed': String(i === flow.chosen),
     onclick: async () => { flow.chosen = i; flow.saved = null; if (flow.which === 'recipe') await refreshPreview(); redraw(); },
   }, `${x.number} ${BASE_NAMES[x.slot - 1]} ${simText(x)}`)));
   const nameInput = h('input', { type: 'text', value: flow.name, maxlength: 40, 'aria-label': '名称', oninput: (e) => { flow.name = e.target.value; } });
@@ -453,7 +453,7 @@ function resultBox() {
     h('div', { class: 'small dim' }, '差异'),
     h('ul', { class: 'diffs' }, c.differences.map((t) => h('li', {}, t))),
     h('div', { class: 'field' }, h('span', { class: 'small dim' }, '名称'), nameInput),
-    h('div', { class: 'modal-foot', style: { justifyContent: 'flex-start' } }, save,
+    h('div', { class: 'modal-foot start' }, save,
       h('button', { class: 'btn', type: 'button', onclick: resetFlow }, '重新选择')),
     flow.saved ? h('div', { class: 'small ok-text' }, `已存储为「${flow.saved.name}」`) : null);
 }

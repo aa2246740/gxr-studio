@@ -115,7 +115,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   const destInput = h('input', {
     type: 'text',
     value: dest,
-    style: { width: '100%' },
+    class: 'wide-input',
     'aria-label': '导出到',
     oninput: (e) => {
       dest = e.target.value;
@@ -126,10 +126,10 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   function hdrRow() {
     const ok = hdrAvailable(ids, photos, scope);
     hdr = ok && remembered;
-    hdrField.replaceChildren(
-      toggle('HDR', hdr, (on) => { if (ok) rememberHdr(on); }, { disabled: !ok }),
-      ok ? null : h('div', { class: 'small dim' }, HDR_NO_RAW),
-    );
+    // 不能把 null 交给 replaceChildren：它会变成页面上的文字「null」（U3）
+    const nodes = [toggle('HDR', hdr, (on) => { if (ok) rememberHdr(on); }, { disabled: !ok })];
+    if (!ok) nodes.push(h('div', { class: 'small dim' }, HDR_NO_RAW));
+    hdrField.replaceChildren(...nodes);
   }
 
   const button = h('button', { class: 'btn primary', type: 'button', onclick: submit }, '导出');

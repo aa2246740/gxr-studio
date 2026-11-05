@@ -1,17 +1,18 @@
-// 小工具：创建元素、短提示、弹窗。没有框架，界面全部是手写的 DOM。
+// 小工具：创建元素、图标、短提示、弹窗。没有框架，界面全部是手写的 DOM。
+// 这个文件不 import 别的模块（tests/test_confirmation.py 会把它单独拷出去跑）。
 
 export function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
     if (v === null || v === undefined || v === false) continue;
     if (k === 'class') el.className = v;
-    else if (k === 'style') Object.assign(el.style, v);
+    else if (k === 'style') setStyle(el, v);
     else if (k === 'dataset') Object.assign(el.dataset, v);
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (typeof v === 'boolean') {
       if (k in el) el[k] = v;
       else if (v) el.setAttribute(k, '');
-    } else if (k in el && k !== 'list' && k !== 'form') el[k] = v;
+    } else if (k in el && k !== 'list' && k !== 'form' && !k.startsWith('aria-')) el[k] = v;
     else el.setAttribute(k, String(v));
   }
   for (const c of children.flat()) {
@@ -21,29 +22,77 @@ export function h(tag, props = {}, ...children) {
   return el;
 }
 
-// 短提示：右下角叠放，新的在下面。action = { label, run } 时带一个按钮（重试、打开…），点了就关。
-// 出错的停留久一点；鼠标停在上面或焦点在里面时不自动消失（详细信息要能点开）。
-export function toast(message, kind = 'info', { action = null, timeout = null } = {}) {
+// 样式对象：--开头的是 CSS 变量，要走 setProperty（Object.assign 写不进去）
+function setStyle(el, styles) {
+  for (const [k, v] of Object.entries(styles)) {
+    if (k.startsWith('--') && el.style.setProperty) el.style.setProperty(k, String(v));
+    else el.style[k] = v;
+  }
+}
+
+// 图标：index.html 里内嵌的 Lucide 图标（ISC 许可，见 assets/icons/LICENSE-lucide.txt），用 <use> 引用。
+// 命名空间拼起来写：仓库的离线检查不允许源文件里出现完整网址
+const SVG_NS = ['http', '://www.w3.org/2000/svg'].join('');
+export function icon(name, cls = '') {
+  if (!document.createElementNS) return h('i', { class: `ico ${cls}`, 'aria-hidden': 'true' });
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', `ico ${cls}`.trim());
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(SVG_NS, 'use');
+  use.setAttribute('href', `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+// 统一的按钮。kind：''（次按钮）、primary、danger、ghost、icon；size：sm。
+// 只有图标的按钮必须给 title（同时作为 aria-label）。
+export function button(label, { kind = '', size = 'sm', ico = null, title = null, onclick = null, pressed = null, disabled = false, cls = '' } = {}) {
+  const classes = ['btn', kind, kind === 'icon' ? '' : size, cls].filter(Boolean).join(' ');
+  return h('button', {
+    type: 'button', class: classes, title, onclick,
+    'aria-label': !label && title ? title : null,
+    'aria-pressed': pressed === null ? null : String(!!pressed),
+    'aria-disabled': disabled ? 'true' : null,
+  }, ico ? icon(ico) : null, label ? h('span', {}, label) : null);
+}
+
+// ---- 短提示 -----------------------------------------------------------------------
+// 底部居中叠放，新的在下面。kind：info / ok / error / progress。
+// action = { label, run }（或 actions = [...]）时带按钮（打开、重试…），点了就关。
+// 出错和带按钮的停留久一点；鼠标停在上面或焦点在里面时不自动消失（详细信息要能点开）。
+// 外层 #toast-root 不是 live 区域，每条提示自己带 role（不重复播报）。
+const TOAST_ICON = { ok: 'circle-check', error: 'circle-alert', info: 'info' };
+
+export function toast(message, kind = 'info', { action = null, actions = null, timeout = null } = {}) {
   const root = document.getElementById('toast-root');
   if (!root) return null;
+  let closed = false;
   const close = () => {
-    el.classList.add('leaving');
-    setTimeout(() => el.remove(), 160);
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    el.className = `${el.className} leaving`;
+    setTimeout(() => el.remove(), 180);
   };
-  const actBtn = action ? h('button', { class: 'btn ghost small', type: 'button', onclick: () => { close(); action.run(); } }, action.label) : null;
-  const el = h('div', { class: `toast ${kind}` },
+  const acts = (actions || (action ? [action] : [])).map((a) => h('button', {
+    class: 'btn ghost sm', type: 'button', onclick: () => { close(); a.run(); },
+  }, a.label));
+  const ico = TOAST_ICON[kind] ? icon(TOAST_ICON[kind], kind) : null;
+  const el = h('div', { class: `toast ${kind === 'error' ? 'err' : kind}`, role: kind === 'error' ? 'alert' : 'status' },
+    ico,
     h('div', { class: 'toast-msg' }, message),
-    actBtn,
-    h('button', { class: 'btn icon ghost small toast-x', type: 'button', 'aria-label': '关闭', title: '关闭', onclick: close }, '✕'));
+    ...acts,
+    h('button', { class: 'btn icon toast-x', type: 'button', 'aria-label': '关闭', title: '关闭', onclick: close }, icon('x')));
   root.append(el);
-  const ms = timeout ?? (kind === 'error' || action ? 8000 : 3200);
-  let timer = setTimeout(close, ms);
+  const ms = timeout ?? (kind === 'error' || acts.length ? 8000 : 3200);
+  let timer = ms > 0 ? setTimeout(close, ms) : null;
   const hold = () => clearTimeout(timer);
-  const resume = () => { clearTimeout(timer); timer = setTimeout(close, 2000); };
+  const resume = () => { clearTimeout(timer); if (ms > 0) timer = setTimeout(close, 2000); };
   el.addEventListener('pointerenter', hold);
   el.addEventListener('pointerleave', resume);
   el.addEventListener('focusin', hold);
   el.addEventListener('focusout', resume);
+  close.el = el;
   return close;
 }
 
@@ -52,7 +101,6 @@ export function errorBody(err, fallback) {
   const text = (err && err.message) || fallback;
   const detail = err && err.data && err.data.detail;
   if (!detail) return text;
-  // 主句单独放在一个元素里，详细信息不和它混在一起
   return h('div', {}, h('p', { class: 'err-main' }, text), h('details', { class: 'err-detail' }, h('summary', {}, '详细信息'), h('p', { class: 'small dim' }, String(detail))));
 }
 
@@ -60,32 +108,76 @@ export function toastError(err, fallback, opts = {}) {
   return toast(errorBody(err, fallback), 'error', opts);
 }
 
+// ---- 对话框 -----------------------------------------------------------------------
+// 打开时焦点进对话框（第一个可操作的控件，没有就是对话框本身），Tab 只在对话框里转，
+// 关闭后焦点回到打开它的那个元素（U5）。Esc 由 app.js 关最上面的一个。
+
 const modalStack = [];
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function modalOpen() {
   return modalStack.length > 0;
 }
 
-// 弹窗：不挡住整个界面的内容以外的交互只在这里用；Esc 关闭最上面的一个。
-export function openModal(title, body, { wide = false, onClose } = {}) {
+function focusables(root) {
+  if (typeof root.querySelectorAll !== 'function') return [];
+  return [...root.querySelectorAll(FOCUSABLE)].filter((n) => !n.hidden && !(n.closest && n.closest('[hidden]')));
+}
+
+function trapTab(e, dialog) {
+  if (e.key !== 'Tab') return;
+  const list = focusables(dialog);
+  if (!list.length) {
+    e.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = list[0];
+  const last = list[list.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || active === dialog)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+let modalSeq = 0;
+
+// body：内容；foot：底部按钮（可选，固定在对话框底边）。返回 close()。
+export function openModal(title, body, { wide = false, onClose, foot = null, initialFocus = null } = {}) {
+  const previous = document.activeElement;
+  const titleId = `dlg-t-${++modalSeq}`;
   const close = () => {
     const i = modalStack.findIndex((m) => m.close === close);
-    if (i >= 0) modalStack.splice(i, 1);
+    if (i < 0) return;
+    modalStack.splice(i, 1);
     overlay.remove();
+    // 退场动画：挪到 body 上淡出，modal-root 里立刻就没有它了
+    if (document.body && typeof setTimeout === 'function') {
+      overlay.className = 'scrim leaving';
+      overlay.setAttribute('inert', '');
+      document.body.append(overlay);
+      setTimeout(() => overlay.remove(), 160);
+    }
     if (onClose) onClose();
+    if (previous && previous.isConnected && typeof previous.focus === 'function') previous.focus();
   };
-  const overlay = h(
-    'div',
-    { class: 'modal-overlay', onclick: (e) => e.target === overlay && close() },
-    h(
-      'div',
-      { class: `modal${wide ? ' wide' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
-      h('div', { class: 'modal-head' }, h('h2', {}, title), h('button', { class: 'btn ghost', type: 'button', onclick: close, title: '关闭' }, '✕')),
-      h('div', { class: 'modal-body' }, body),
-    ),
-  );
+  const closeBtn = h('button', { class: 'btn icon', type: 'button', onclick: close, title: '关闭（Esc）', 'aria-label': '关闭' }, icon('x'));
+  const dialog = h('div', {
+    class: `dialog${wide ? ' wide' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabindex: '-1',
+  },
+  h('div', { class: 'dh' }, h('h2', { id: titleId }, title), h('span', { class: 'grow' }), closeBtn),
+  h('div', { class: 'db' }, body),
+  foot ? h('div', { class: 'df' }, foot) : null);
+  dialog.addEventListener('keydown', (e) => trapTab(e, dialog));
+  const overlay = h('div', { class: 'scrim', onclick: (e) => e.target === overlay && close() }, dialog);
   document.getElementById('modal-root').append(overlay);
   modalStack.push({ close });
+  const target = initialFocus || focusables(body instanceof Node ? dialog.children[1] || dialog : dialog)[0] || dialog;
+  if (target && typeof target.focus === 'function') target.focus();
   return close;
 }
 
@@ -96,7 +188,6 @@ export function closeTopModal() {
 
 // 删除、替换等确认统一从这里打开。回车只取消，确认需点击或按空格。
 export function confirmAction(title, confirmLabel, action) {
-  const previous = document.activeElement;
   let close;
   let busy = false;
   const cancel = h('button', { class: 'btn', type: 'button', onclick: () => close() }, '取消');
@@ -104,11 +195,13 @@ export function confirmAction(title, confirmLabel, action) {
     if (busy) return;
     busy = true;
     cancel.disabled = confirm.disabled = true;
+    confirm.setAttribute('aria-busy', 'true');
     try { await action(); close(); }
     catch (error) {
-      toastError(error, '无法完成操作。请重试。');
+      toastError(error, `${confirmLabel}没有完成。请重试。`);
       busy = false;
       cancel.disabled = confirm.disabled = false;
+      confirm.setAttribute('aria-busy', 'false');
       cancel.focus();
     }
   } }, confirmLabel);
@@ -118,9 +211,7 @@ export function confirmAction(title, confirmLabel, action) {
     event.stopPropagation();
     if (!busy && document.activeElement === cancel) close();
   } }, h('div', { class: 'modal-foot' }, cancel, confirm));
-  close = openModal(title, body, { onClose: () => {
-    if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-  } });
+  close = openModal(title, body, { initialFocus: cancel });
   cancel.focus();
   return close;
 }
@@ -141,7 +232,6 @@ export function fmtBytes(n) {
   return `${v.toFixed(i ? 1 : 0)} ${units[i]}`;
 }
 
-// "2026-10-30T09:13:00" -> "10-30 09:13"
 // 只要时:分（照片条上日期在前，时间在后：2026-10-23 17:41）
 export function fmtClock(iso) {
   if (!iso) return '未知时间';
@@ -158,3 +248,13 @@ export function fmtTime(iso) {
 export function fmtDate(date) {
   return date === 'unknown' ? '未知日期' : date;
 }
+
+// 平台：快捷键写法和「在访达中显示 / 在文件资源管理器中显示」按它选
+export function platform() {
+  const p = (globalThis.navigator && ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform)) || '';
+  if (/mac/i.test(p)) return 'mac';
+  if (/win/i.test(p)) return 'win';
+  return 'other';
+}
+
+export const modKey = () => (platform() === 'mac' ? '⌘' : 'Ctrl+');

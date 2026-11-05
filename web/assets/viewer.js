@@ -3,7 +3,7 @@
 
 import { api } from './api.js';
 import { state, on } from './state.js';
-import { h, toast, fmtClock, fmtDate, toastError } from './dom.js';
+import { h, button, toast, fmtClock, fmtDate, toastError } from './dom.js';
 import { pairTag } from './gallery.js';
 import { exportForm } from './export.js';
 import { recipePanel } from './recipes.js';
@@ -152,7 +152,7 @@ function cropPanelWrap() {
     h('h2', {}, '裁剪'),
     view.canvas ? cropSection(view) : h('p', { class: 'dim small' }, '正在生成预览…'),
     correctSection(view),
-    h('div', { class: 'sticky-foot' }, ...correctActions(view), h('button', { type: 'button', class: 'primary end', onclick: finishCrop }, '完成')),
+    h('div', { class: 'sticky-foot' }, ...correctActions(view), h('button', { type: 'button', class: 'btn sm primary end', onclick: finishCrop }, '完成')),
   );
 }
 
@@ -181,7 +181,7 @@ function renderPhotoBar() {
   const p = view.photo;
   // 空的子元素不能直接交给 replaceChildren（会变成文字 null）
   view.photoBar.replaceChildren(...[
-    h('button', { type: 'button', class: 'ghost', onclick: () => { location.hash = '#/photos'; } }, '‹ 照片'),
+    button('照片', { kind: 'ghost', ico: 'chevron-left', title: '回到图库（Esc）', onclick: () => { location.hash = '#/photos'; } }),
     h('strong', {}, p.name),
     h('span', { class: 'dim small' }, `${fmtDate(p.date)} ${fmtClock(p.captured_at)}`),
     pairTag(p),
@@ -192,7 +192,7 @@ function renderPhotoBar() {
 
 // 撤销：没有可以撤销的内容时按钮置灰，不弹提示（COPY 3.10）
 function undoButton() {
-  const btn = h('button', { type: 'button', onclick: () => undoChange(view) }, '撤销');
+  const btn = button('', { kind: 'icon', ico: 'undo-2', title: '撤销（⌘Z）', onclick: () => undoChange(view) });
   view.undoBtn = btn;
   syncUndo(view);
   return btn;
@@ -225,11 +225,11 @@ function renderBottom() {
   paintSaveState(view);
   view.bottom.replaceChildren(
     undoButton(),
-    h('button', { type: 'button', onclick: resetAll, title: '整张回到原图' }, '复原'),
+    button('复原', { kind: 'ghost', ico: 'rotate-ccw', title: '整张回到原图', onclick: resetAll }),
     view.saveEl,
     h('span', { class: 'spacer' }),
-    h('button', { type: 'button', 'aria-disabled': pos <= 0 ? 'true' : null, onclick: () => step(-1) }, '上一张'),
-    h('button', { type: 'button', 'aria-disabled': pos < 0 || pos >= state.photos.length - 1 ? 'true' : null, onclick: () => step(1) }, '下一张'),
+    button('', { kind: 'icon', ico: 'chevron-left', title: '上一张（←）', disabled: pos <= 0, onclick: () => step(-1) }),
+    button('', { kind: 'icon', ico: 'chevron-right', title: '下一张（→）', disabled: pos < 0 || pos >= state.photos.length - 1, onclick: () => step(1) }),
   );
 }
 

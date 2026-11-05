@@ -66,7 +66,7 @@ export function stampPanel(view) {
     body.push(h('div', { class: 'field-line' },
       h('span', { class: 'small dim' }, '指定日期'),
       dateInput,
-      st.date_override ? h('button', { type: 'button', onclick: () => update(view, { date_override: null }) }, '重置') : null,
+      st.date_override ? h('button', { type: 'button', class: 'btn sm ghost', onclick: () => update(view, { date_override: null }) }, '重置') : null,
     ));
     if (view.photo.date_source === 'mtime') body.push(h('p', { class: 'fine' }, '使用文件修改日期'));
   }
@@ -77,8 +77,8 @@ export function stampPanel(view) {
   }
 
   body.push(seg(Object.keys(FONT_NAMES).map((k) => [k, FONT_NAMES[k]]), st.font, (f) => update(view, { font: f }), { label: '字体' }));
-  body.push(h('div', { class: 'swrow' }, h('span', { class: 'small dim' }, '颜色'),
-    ...Object.keys(COLOR_NAMES).map((c) => swatch(COLOR_HEX[c], st.color === c, () => update(view, { color: c }), COLOR_NAMES[c]))));
+  body.push(h('div', { class: 'seg-row' }, h('span', { class: 'seg-label' }, '颜色'), h('div', { class: 'swrow' },
+    ...Object.keys(COLOR_NAMES).map((c) => swatch(COLOR_HEX[c], st.color === c, () => update(view, { color: c }), COLOR_NAMES[c])))));
   body.push(seg(Object.keys(SIZE_NAMES).map((k) => [k, SIZE_NAMES[k]]), st.size, (s) => update(view, { size: s }), { label: '大小' }));
   body.push(seg(Object.keys(CORNER_NAMES).map((k) => [k, CORNER_NAMES[k]]), st.corner, (c) => update(view, { corner: c }), { label: '位置' }));
   body.push(toggle('发光', !!st.glow, (on) => update(view, { glow: on })));
