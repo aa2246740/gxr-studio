@@ -549,3 +549,20 @@ def test_export_file_names_carry_no_labels():
     for path in ASSETS.glob("*.js"):
         text = path.read_text(encoding="utf-8")
         assert "_电脑预测" not in text and "_近似" not in text, path.name
+
+
+def test_segmented_choices_and_zoom_are_not_squeezed_into_ellipses():
+    """B3：分段按钮按字数分宽度（「日期和文字」不被截断）；视图工具栏的「适合 / 100%」不被挤成「10…」。"""
+    css = (ASSETS / "app.css").read_text(encoding="utf-8")
+    seg_button = css[css.index(".seg button {") : css.index("}", css.index(".seg button {"))]
+    assert "flex: 1 1 auto" in seg_button and "flex: 1 1 0" not in seg_button
+    assert ".viewbar .seg button { min-width: 44px; flex: none; }" in css
+    assert ".viewbar .seg { flex: none; }" in css
+
+
+def test_frame_preset_cards_load_as_skeletons_not_ellipses():
+    """边框卡片还在渲染时是骨架底色（不放「…」），出来后去掉骨架；渲染失败写「没有预览」。"""
+    js = (ASSETS / "frame_panel.js").read_text(encoding="utf-8")
+    assert "h('div', { class: 'thumb skel', 'aria-busy': 'true' })" in js
+    assert "'…'" not in js and "'没有预览'" in js
+    assert js.count("done();") == 2

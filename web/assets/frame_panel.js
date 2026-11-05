@@ -49,8 +49,14 @@ function loadThumb(view, style, holder) {
   const base = style.defaults ? { ...DEFAULT_FRAME, ...style.defaults } : { ...DEFAULT_FRAME };
   const body = { frame: frameBody({ ...base, style: style.id }, style.options) };
   const key = `${view.photo.id}|${ed.rev}|${JSON.stringify(body)}`;
+  // 还在渲染时卡片是一块轻轻呼吸的底色（不放「…」）；出来了淡入
+  const done = () => {
+    holder.classList.remove('skel');
+    holder.removeAttribute('aria-busy');
+  };
   const show = (url) => {
     if (!holder.isConnected) return;
+    done();
     holder.replaceChildren(h('img', { src: url, alt: '', draggable: 'false' }));
   };
   if (THUMB_CACHE.has(key)) {
@@ -64,7 +70,9 @@ function loadThumb(view, style, holder) {
       THUMB_CACHE.set(key, url);
       show(url);
     } catch {
-      if (holder.isConnected) holder.replaceChildren(h('span', { class: 'dim small' }, '—'));
+      if (!holder.isConnected) return;
+      done();
+      holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
     }
   });
   pump();
@@ -89,7 +97,7 @@ export function framePanel(view) {
   const opts = styleOptions(ed, cur.style);
 
   const cards = h('div', { class: 'fcards' }, ...styles.map((s) => {
-    const thumb = h('div', { class: 'thumb' }, h('span', { class: 'dim small' }, '…'));
+    const thumb = h('div', { class: 'thumb skel', 'aria-busy': 'true' });
     loadThumb(view, s, thumb);
     return h('button', {
       type: 'button', class: `fcard${s.id === 'none' ? ' none' : ''}`, 'aria-pressed': String(cur.style === s.id),

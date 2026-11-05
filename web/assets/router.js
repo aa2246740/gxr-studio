@@ -22,9 +22,11 @@ export function createRouter({ pages, before = () => {}, getHash = () => locatio
     const g = ++gen;
     const isCurrent = () => g === gen;
     const r = parseHash(getHash());
+    // 换到别的页面才清掉快捷键。大图里换照片时留着上一张的：新的一张还在加载时连按方向键不会被吃掉（B1）。
+    // 页面自己决定加载中哪些键还能用（大图只放行方向键）
+    if (current !== r.name) keys = null;
     if (current && current !== r.name) pages[current]?.leave?.();
     current = r.name;
-    keys = null;
     before(r);
     const k = await pages[r.name].enter(r, isCurrent);
     if (isCurrent()) keys = k || null;

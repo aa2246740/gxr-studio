@@ -1132,6 +1132,66 @@ if (scenario === 'reset-then-switch') {
   await preview.flushEdits(v);
   await tick(5);
   out.afterRedo = { angle: v.crop.angle_deg, bodies: crops().slice(m).map((b) => ({ angle_deg: b.angle_deg, rect: b.rect, preset: b.preset })) };
+} else if (scenario === 'arrow-burst') {
+  // B1：在 A 上按 →（去 B，B 的编辑记录被压住、还在加载），紧接着按 ←：要回到 A，不能被吃掉
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const key = (k) => { const keys = router.keys(); return keys ? keys.down({ key: k, preventDefault() {} }) : null; };
+  holds.add(`GET /api/photos/${PHOTOS.B.id}/edit`);
+  out.right = key('ArrowRight');
+  out.hashAfterRight = location.hash;
+  const loading = router.route();
+  await tick();
+  out.shownWhileLoading = shown(); // 图库里有这张的信息：页面马上换成 B，编辑记录还在读
+  out.keysWhileLoading = !!router.keys();
+  out.left = key('ArrowLeft');
+  out.hashAfterLeft = location.hash;
+  const back = router.route();
+  g.release(`GET /api/photos/${PHOTOS.B.id}/edit`);
+  await loading;
+  await back;
+  await tick(5);
+  out.final = { hash: location.hash, shown: shown() };
+} else if (scenario === 'toolbar-redo') {
+  // B2：顶栏有重做按钮：没东西可重做时置灰；撤销后可用，点了把那一步放回来；新的改动后又置灰
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  const redoBtn = find(tbEdit, (n) => n.tagName === 'BUTTON' && String(n.getAttribute('title') || '').startsWith('重做'));
+  const undoBtn = find(tbEdit, (n) => n.tagName === 'BUTTON' && String(n.getAttribute('title') || '').startsWith('撤销'));
+  const off = (b) => b.getAttribute('aria-disabled') === 'true';
+  out.found = !!redoBtn && !!undoBtn;
+  out.initial = { undo: off(undoBtn), redo: off(redoBtn) };
+  preview.beginChange(v);
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) }).then(() => preview.endChange(v));
+  out.afterEdit = { undo: off(undoBtn), redo: off(redoBtn) };
+  undoBtn.click();
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterUndo = { undo: off(undoBtn), redo: off(redoBtn), value: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev };
+  redoBtn.click();
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterRedo = { undo: off(undoBtn), redo: off(redoBtn), value: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev };
+  undoBtn.click();
+  await preview.flushEdits(v);
+  preview.beginChange(v);
+  v.ed.adj.exposure_ev = 2;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) }).then(() => preview.endChange(v));
+  out.afterNewEdit = { redo: off(redoBtn) };
+} else if (scenario === 'export-close-label') {
+  // 导出开始以后，对话框左边的按钮叫「关闭」（关掉不会停下导出），开始之前叫「取消」
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const form = await openExport();
+  const foot = find(form, (n) => n.classList && n.classList.contains('modal-foot'));
+  const left = () => foot.children[0].textContent.trim();
+  out.before = left();
+  buttonByText('导出', form).click();
+  await tick(10);
+  out.after = left();
+  out.exported = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).length;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

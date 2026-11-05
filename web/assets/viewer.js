@@ -57,6 +57,15 @@ function setPref(key, value) {
 
 // ---- 键盘 -------------------------------------------------------------------
 
+// 地址栏要去的照片（换照片时，新的一张加载完之前它和屏幕上的不是同一张）
+function targetId() {
+  const m = /^#\/photo\/([^/?]+)/.exec(location.hash);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+// 下一张还在加载：屏幕上还是上一张，除了方向键，别的键都不作用在它上面
+const switching = () => !view || targetId() !== view.photo.id;
+
 export function viewerKeys() {
   if (!view) return null;
   return {
@@ -66,6 +75,7 @@ export function viewerKeys() {
         step(e.key === 'ArrowLeft' ? -1 : 1);
         return true;
       }
+      if (switching()) return false;
       if (e.key === ' ' && !e.repeat) {
         if (isButtonFocus()) return false;
         setShowOriginal(true);
@@ -114,12 +124,12 @@ export function viewerKeys() {
       return false;
     },
     undo() {
-      if (!view) return false;
+      if (switching()) return false;
       undoChange(view);
       return true;
     },
     redo() {
-      if (!view) return false;
+      if (switching()) return false;
       redoChange(view);
       return true;
     },
@@ -365,12 +375,15 @@ function renderTitlebar(v) {
   if (!slot) return;
   const p = v.photo;
   const undo = button('', { kind: 'icon', ico: 'undo-2', title: `撤销（${modKey()}Z）`, onclick: () => undoChange(v) });
+  const redo = button('', { kind: 'icon', ico: 'redo-2', title: `重做（${modKey() === '⌘' ? '⇧⌘Z' : 'Ctrl+Shift+Z'}）`, onclick: () => redoChange(v) });
   v.undoBtn = undo;
+  v.redoBtn = redo; // 只用鼠标也能重做（B2）
   syncUndo(v);
   slot.replaceChildren(...[
     button('照片', { kind: 'ghost', ico: 'chevron-left', title: '回到图库（Esc）', onclick: () => { location.hash = '#/photos'; } }),
     h('span', { class: 'sep-v' }),
     undo,
+    redo,
     h('div', { class: 'tb-title' },
       h('span', { class: 'name' }, p.name),
       h('span', { class: 'meta' }, `${fmtDate(p.date)} ${fmtClock(p.captured_at)}`),
@@ -550,10 +563,12 @@ async function resetAll() {
   refreshPanes();
 }
 
+// 从要去的那张算起：上一张还在加载时连按方向键，不会每次都从屏幕上那张重算、把后面的按键吃掉（B1）
 function step(d) {
   if (!view) return;
   const list = state.photos;
-  const i = list.findIndex((p) => p.id === view.photo.id);
+  let i = list.findIndex((p) => p.id === (targetId() || view.photo.id));
+  if (i < 0) i = list.findIndex((p) => p.id === view.photo.id);
   const next = list[i + d];
   if (next) location.hash = `#/photo/${next.id}`;
 }

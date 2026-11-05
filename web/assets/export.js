@@ -150,7 +150,11 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
 
   function refresh() {
     hdrRow();
-    guide.replaceChildren(...(camdataReady() ? [] : [camdataGuide({ onDone: refresh })]));
+    // 没导入也能导出，只是不套相机配方：写明白，免得和下面的「已导出」看起来矛盾
+    guide.replaceChildren(...(camdataReady() ? [] : [
+      camdataGuide({ onDone: refresh }),
+      h('p', { class: 'small dim' }, '不导入也可以导出，只是不会套用相机配方。'),
+    ]));
   }
   refresh();
 
@@ -193,6 +197,8 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     running = sub;
     lock(true);
     result.replaceChildren();
+    // 开始以后关掉对话框不会停下导出（单张做完会提示，多张进度在顶栏），按钮叫「关闭」而不是「取消」
+    if (cancelBtn) cancelBtn.textContent = '关闭';
     try {
       // 按这次真正要导出的范围等保存（F02）：这一天的全部要等这一天所有改过的照片，不只是打开对话框时的那几张
       if (beforeSubmit) await beforeSubmit({ scope: sub.scope, ids: sub.ids, date: sub.date });

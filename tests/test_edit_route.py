@@ -453,3 +453,29 @@ def test_legacy_angle_only_undo_and_redo_write_the_angle(tmp_path):
     assert out["afterUndo"]["bodies"] == [{"angle_deg": 0, "rect": [0.1, 0.2, 0.5, 0.4], "preset": "free"}]
     assert out["afterRedo"]["angle"] == 5
     assert out["afterRedo"]["bodies"] == [{"angle_deg": 5, "rect": [0.1, 0.2, 0.5, 0.4], "preset": "free"}]
+
+
+def test_arrow_keys_pressed_while_the_next_photo_loads_are_not_dropped(tmp_path):
+    """B1：→ 去 B、B 的编辑记录还在读时按 ←：快捷键还在，从 B 算起回到 A，不被吃掉。"""
+    out = run(tmp_path, "arrow-burst")
+    assert out["right"] is True and out["hashAfterRight"] == "#/photo/b0"
+    assert out["shownWhileLoading"] == "b0" and out["keysWhileLoading"] is True
+    assert out["left"] is True and out["hashAfterLeft"] == "#/photo/a0"
+    assert out["final"] == {"hash": "#/photo/a0", "shown": "a0"}
+
+
+def test_toolbar_redo_button(tmp_path):
+    """B2：顶栏的重做按钮：没东西可重做时置灰，撤销后可用，点了放回那一步，新的改动后又置灰。"""
+    out = run(tmp_path, "toolbar-redo")
+    assert out["found"] is True
+    assert out["initial"] == {"undo": True, "redo": True}
+    assert out["afterEdit"] == {"undo": False, "redo": True}
+    assert out["afterUndo"] == {"undo": True, "redo": False, "value": 0, "server": 0}
+    assert out["afterRedo"] == {"undo": False, "redo": True, "value": 1, "server": 1}
+    assert out["afterNewEdit"] == {"redo": True}
+
+
+def test_export_dialog_says_close_once_the_export_has_started(tmp_path):
+    """导出开始以后，对话框的「取消」改叫「关闭」：关掉对话框不会停下导出，叫「取消」会误导。"""
+    out = run(tmp_path, "export-close-label")
+    assert out == {"before": "取消", "after": "关闭", "exported": 1}

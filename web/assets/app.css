@@ -93,7 +93,7 @@ kbd, .kbd {
 .seg { display: inline-flex; flex-wrap: nowrap; padding: 0; gap: 0; background: var(--surface-control); border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line-subtle); max-width: 100%; }
 .seg.block, .pane .seg, .edit-panel .seg, .panel-body .seg { display: flex; width: 100%; }
 .seg button {
-  flex: 1 1 0; min-width: 0; height: 28px; padding: 0 8px; border: 2px solid transparent; background-clip: padding-box; border-radius: 7px;
+  flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 8px; /* 按字数分宽度：「日期和文字」不会和「日期」一样窄而被截断（B3） */ border: 2px solid transparent; background-clip: padding-box; border-radius: 7px;
   background: transparent; color: var(--text-2); font: var(--fw-medium) var(--fs-small)/1 var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: background-color var(--dur-base) var(--ease-standard), color var(--dur-fast);
 }
@@ -414,7 +414,8 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 @keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 .viewbar { display: flex; align-items: center; gap: 4px; padding: 0 10px; border-top: 1px solid var(--line-subtle); background: var(--surface-app); min-width: 0; overflow: hidden; }
 .viewbar .info { color: var(--text-2); font-size: var(--fs-small); padding: 0 6px; white-space: nowrap; }
-.viewbar .seg button { min-width: 44px; }
+.viewbar .seg button { min-width: 44px; flex: none; } /* 「100%」不被挤成「10…」（B3） */
+.viewbar .seg { flex: none; }
 .viewbar .save-state { margin-left: 6px; }
 .swatch { width: 28px; height: 28px; padding: 0; border: 0; background: transparent; border-radius: 50%; display: inline-grid; place-items: center; }
 .swatch i { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25); }
@@ -506,7 +507,7 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .fcards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 8px; margin: 8px 0; }
 .fcard { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text-2); font-size: var(--fs-small); text-align: center; }
 .fcard .thumb { aspect-ratio: 4 / 3; position: relative; border-radius: var(--r-md); background: var(--gray-800); display: grid; place-items: center; overflow: hidden; transition: box-shadow var(--dur-fast); }
-.fcard .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.fcard .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; animation: fadein var(--dur-base) var(--ease-standard); }
 .fcard:hover .thumb { box-shadow: 0 0 0 1px var(--line-strong); }
 .fcard[aria-pressed="true"] .thumb { box-shadow: 0 0 0 2px var(--accent-text); }
 .fcard[aria-pressed="true"] .nm { color: var(--text-1); font-weight: var(--fw-medium); }

@@ -428,11 +428,15 @@ export function undoAvailable(view) {
   return !!(view.undo && view.undo.length);
 }
 
-// 撤销按钮：没有可以撤销的内容时置灰（COPY 3.10）
+// 撤销 / 重做按钮：没有可以撤销（重做）的内容时置灰（COPY 3.10）
 export function syncUndo(view) {
-  if (!view.undoBtn) return;
-  if (undoAvailable(view)) view.undoBtn.removeAttribute('aria-disabled');
-  else view.undoBtn.setAttribute('aria-disabled', 'true');
+  const set = (btn, ok) => {
+    if (!btn) return;
+    if (ok) btn.removeAttribute('aria-disabled');
+    else btn.setAttribute('aria-disabled', 'true');
+  };
+  set(view.undoBtn, undoAvailable(view));
+  set(view.redoBtn, !!(view.redo && view.redo.length));
 }
 
 export function undoChange(view) {
