@@ -325,6 +325,7 @@ export function cropSection(view) {
     fmt: (v) => `${v}%`,
     dflt: 100,
     onBegin: () => beginChange(view),
+    onCancel: () => endChange(view),
     onInput: (v) => {
       view.zoom = v;
       const next = previewZoom(view, v);

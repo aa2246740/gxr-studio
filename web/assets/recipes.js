@@ -190,6 +190,7 @@ function sliderEl(view, { label, levels, control, index, enabled }) {
     dflt: defaultIndex,
     disabled: !enabled,
     onBegin: () => beginChange(view),
+    onCancel: () => endChange(view),
     onInput: (i) => {
       setLevelAt(i);
       schedulePreview(view);

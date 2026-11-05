@@ -105,6 +105,7 @@ function geomSlider(view, key, label, ends) {
     ends,
     dflt: 0,
     onBegin: () => beginChange(view),
+    onCancel: () => endChange(view),
     onInput: (v) => {
       view.ed.geometry = { ...view.ed.geometry, [key]: v };
       schedulePreview(view, { stage: 'uncropped' });

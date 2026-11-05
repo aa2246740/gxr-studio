@@ -484,7 +484,7 @@ on('save-retried', (e) => {
   if (!v || !e.detail || e.detail.id !== v.photo.id || !v.ed) return;
   if (!applyRetried(v, e.detail)) return;
   // 正在拖曲线、滑块（beginChange 之后、endChange 之前）：不重建面板，不然拖着的控件和它松手时的保存都没了；
-  // 这一步结束时 endChange 再刷新（W01）
+  // 这一步结束时 endChange 再刷新（W01）。每个开始都有结束：保存后 endChange，没改值的按下由滑块的 onCancel 结束（X01）
   if (v.pending) {
     v.panesStale = true;
     paintTabMods(v);

@@ -13,7 +13,8 @@ export function fillRange(min, max, value, dflt = 0) {
   return { lo: `${Math.min(a, b)}%`, hi: `${Math.max(a, b)}%`, at: b };
 }
 
-export function slider({ label, min, max, step, value, fmt = String, ends = null, dflt = 0, disabled = false, onBegin, onInput, onCommit, onDblReset }) {
+// onCancel：按下（或按键）又松开、值没变——不会有 change，也就没有 onCommit；这一步在这里结束（X01）
+export function slider({ label, min, max, step, value, fmt = String, ends = null, dflt = 0, disabled = false, onBegin, onInput, onCommit, onCancel, onDblReset }) {
   const out = h('output', {}, fmt(value));
   const input = h('input', { type: 'range', min, max, step, value, 'aria-label': label, title: disabled ? '' : '双击重置' });
   const bubble = h('span', { class: 'bubble', 'aria-hidden': 'true' }, fmt(value));
@@ -22,20 +23,36 @@ export function slider({ label, min, max, step, value, fmt = String, ends = null
     input.setAttribute('aria-disabled', 'true');
   }
   let touched = false;
+  let startValue = null;
+  const begin = () => {
+    if (!touched) startValue = input.value;
+    touched = true;
+    if (onBegin) onBegin();
+  };
   input.addEventListener('pointerdown', () => {
     if (disabled) return;
-    touched = true;
     el.classList.add('dragging');
-    if (onBegin) onBegin();
+    begin();
   });
-  const endDrag = () => el.classList.remove('dragging');
+  // 值没变就结束这一步；变了的等 change / keyup 去保存
+  const settle = () => {
+    if (!touched || input.value !== startValue) return;
+    touched = false;
+    if (onCancel) onCancel();
+  };
+  const endDrag = () => {
+    el.classList.remove('dragging');
+    settle();
+  };
   input.addEventListener('pointerup', endDrag);
   input.addEventListener('pointercancel', endDrag);
-  input.addEventListener('blur', endDrag);
+  input.addEventListener('blur', () => {
+    endDrag();
+    finish(); // 改了值、还没等到 keyup 就离开（例如按住方向键时点了别处）：照样保存
+  });
   input.addEventListener('keydown', () => {
     if (disabled || touched) return;
-    if (onBegin) onBegin();
-    touched = true;
+    begin();
   });
   // 拖动反馈不等任何东西：数字、气泡、轨道同一帧更新（画面由 onInput 自己决定怎么跟）
   input.addEventListener('input', () => {

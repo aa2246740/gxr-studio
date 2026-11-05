@@ -165,8 +165,18 @@ export function installDom() {
     activeElement: body,
     hidden: false,
     visibilityState: 'visible',
-    createElement: (tag) => new TestNode(tag),
-    createElementNS: (_ns, tag) => new TestNode(tag),
+    createElement: (tag) => {
+      const n = new TestNode(tag);
+      // <template>：adjust.js 用它取 SVG 的命名空间，只需要 content.firstElementChild.namespaceURI
+      if (n.tagName === 'TEMPLATE') {
+        n.content = new TestNode('#fragment');
+        const svg = new TestNode('svg');
+        svg.namespaceURI = 'http://www.w3.org/2000/svg';
+        n.content.append(svg);
+      }
+      return n;
+    },
+    createElementNS: (ns, tag) => Object.assign(new TestNode(tag), { namespaceURI: ns }),
     createTextNode: (t) => new TestNode('', t),
     createDocumentFragment: () => new TestNode('#fragment'),
     getElementById: (id) => body.querySelector(`#${id}`),

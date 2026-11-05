@@ -889,6 +889,80 @@ if (scenario === 'reset-then-switch') {
   await preview.flushEdits(v);
   await tick(5);
   out.afterUndo = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev };
+} else if (scenario === 'no-op-slider') {
+  // X01：重开 A（曝光显示成旧的 0）后点重试；补写还没回来时在真的调整面板上按下又松开曝光滑块、值没变
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  let v = viewer.currentView();
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  v = viewer.currentView();
+  viewer.openViewerTab('adjust');
+  await tick();
+  const exposureInput = () => {
+    let found = null;
+    const walk = (n) => { if (!found && n.tagName === 'INPUT' && n.getAttribute && n.getAttribute('aria-label') === '曝光') found = n; (n.children || []).forEach(walk); };
+    walk(v.panes.adjust.el);
+    return found;
+  };
+  const input = exposureInput();
+  out.sliderFound = !!input;
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  input.dispatchEvent(new Event('pointerdown'));
+  input.dispatchEvent(new Event('pointerup'));
+  out.pendingAfterRelease = !!v.pending;
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  await preview.flushEdits(v);
+  await tick(5);
+  out.pending = !!v.pending;
+  out.panesStale = !!v.panesStale;
+  out.sliderValue = String(exposureInput().value);
+  out.modelExposure = v.ed.adj.exposure_ev;
+  out.undoLength = v.undo.length;
+  out.status = preview.saveStatus(PHOTOS.A.id);
+} else if (scenario === 'retry-owned-history') {
+  // X02：A 的曝光 0→2→0 都写进去，→1 写失败；点重试、补写回来之前又开始拖曝光到 0（没松手）。
+  // 曝光是在这里改过的字段：撤销记录 [0, 2, 0] 不能被改；松手写 0 后撤销两次是 1、0
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  const step = async (ev) => {
+    preview.beginChange(v);
+    v.ed.adj.exposure_ev = ev;
+    await preview.persist(v, { adjust: preview.adjustBody(v.ed) }).then(() => preview.endChange(v));
+  };
+  const undoExposures = () => v.undo.map((s) => JSON.parse(s).adj.exposure_ev);
+  await step(2);
+  await step(0);
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await step(1);
+  out.undoBefore = undoExposures();
+  holds.add(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  preview.beginChange(v);
+  v.ed.adj.exposure_ev = 0;
+  g.release(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  await tick(5);
+  out.undoAfterRetry = undoExposures();
+  v.ed.adj.exposure_ev = 0; // 松手时滑块的值
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) }).then(() => preview.endChange(v));
+  out.undos = [];
+  for (let i = 0; i < 2; i += 1) {
+    preview.undoChange(v);
+    await preview.flushEdits(v);
+    await tick(5);
+    out.undos.push({ view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev });
+  }
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

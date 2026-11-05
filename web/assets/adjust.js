@@ -25,6 +25,7 @@ function adjRow(view, { key, label, min, max, step = 1, fmt = fmtSigned }) {
     fmt,
     dflt: 0,
     onBegin: () => beginChange(view),
+    onCancel: () => endChange(view),
     onInput: (v) => {
       ed.adj[key] = v;
       schedulePreview(view);

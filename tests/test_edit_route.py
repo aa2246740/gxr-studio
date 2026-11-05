@@ -37,12 +37,13 @@ def _stub(source: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(tmp_path: Path, scenario: str) -> dict:
+def run(tmp_path: Path, scenario: str, real: tuple[str, ...] = ()) -> dict:
     folder = tmp_path / "modules"
     folder.mkdir()
     for src in ASSETS.glob("*.js"):
         text = src.read_text(encoding="utf-8")
-        (folder / src.name).write_text(_stub(text) if src.name in STUBBED else text, encoding="utf-8")
+        stub = src.name in STUBBED and src.name not in real
+        (folder / src.name).write_text(_stub(text) if stub else text, encoding="utf-8")
     (folder / "gpu").mkdir()
     engine = "export class Engine { static async create() { throw new Error('no gpu'); } }\n"
     (folder / "gpu" / "engine.js").write_text(engine, encoding="utf-8")
@@ -369,3 +370,23 @@ def test_undo_after_retry_still_reverts_your_own_change(tmp_path):
     out = run(tmp_path, "retry-undo-own-history")
     assert out["retry"] is True
     assert out["afterUndo"] == {"view": 0, "server": 0}
+
+
+def test_slider_press_without_change_ends_the_step_and_the_retry_refreshes_the_panel(tmp_path):
+    """X01：在真的调整面板上按下又松开曝光滑块、值没变：这一步结束（不留 pending）；重试写进的曝光 1 显示在滑块上。"""
+    out = run(tmp_path, "no-op-slider", real=("adjust.js",))
+    assert out["sliderFound"] is True
+    assert out["pendingAfterRelease"] is False
+    assert out["retry"] is True
+    assert out["pending"] is False and out["panesStale"] is False
+    assert out["sliderValue"] == "1" and out["modelExposure"] == 1
+    assert out["undoLength"] == 0
+    assert out["status"] == "saved"
+
+
+def test_retry_keeps_history_the_user_made_even_when_values_match(tmp_path):
+    """X02：曝光在这里改过（2、0、1 失败），重试时又拖到 0 没松手：撤销记录不动；松手后撤销两次依次回到 1、0。"""
+    out = run(tmp_path, "retry-owned-history")
+    assert out["retry"] is True
+    assert out["undoBefore"] == out["undoAfterRetry"] == [0, 2, 0]
+    assert out["undos"] == [{"view": 1, "server": 1}, {"view": 0, "server": 0}]

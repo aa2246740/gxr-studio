@@ -240,15 +240,15 @@ export function applyRetried(view, { kind, response, fields = [], rev = null } =
     // 换算要用到这张照片的 v2 与默认边框，和 view.ed 保持一致
     const fresh = { v2: view.ed.v2, defaults: view.ed.defaults };
     applyEdit(fresh, response);
-    const swaps = {};
     for (const f of fields) {
+      const group = {};
       for (const prop of EDIT_FIELD_PROPS[f] || []) {
-        swaps[prop] = [view.ed[prop], fresh[prop]];
+        group[prop] = [view.ed[prop], fresh[prop]];
         view.ed[prop] = fresh[prop];
       }
+      fixHistory(view, group);
     }
     view.ed.render = fresh.render;
-    fixHistory(view, swaps);
   }
   if (rev !== null && rev !== undefined) syncRev(view, rev);
   schedulePreview(view, { full: true });
