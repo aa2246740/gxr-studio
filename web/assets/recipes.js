@@ -8,7 +8,6 @@ import { h } from './dom.js';
 import { state } from './state.js';
 import { camdataGuide, camdataReady, isLegacyCamera } from './camdata.js';
 import {
-  BASE_NAMES,
   KNOB_NAMES,
   cleanLevels,
   effective,
@@ -18,6 +17,7 @@ import {
   recipeInfo,
   recipeKey,
   reloadEdit,
+  slotName,
   schedulePreview,
   selection,
   unitForPhoto,
@@ -89,7 +89,7 @@ export function recipePanel(view) {
         if (!usable) return flash();
         switchRecipe(view, { kind: 'builtin', slot: r.slot });
       },
-    }, `${String(r.slot).padStart(2, '0')} ${BASE_NAMES[r.slot - 1]}`),
+    }, slotName(sel.unit, r.slot)),
   );
   nodes.push(h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, baseButtons));
 
@@ -124,14 +124,11 @@ export function recipePanel(view) {
     rest.append(levelRow(view, c, KNOB_NAMES[c.name] || c.label, knobsOn, { tag: tagFor(c), title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
   }
   nodes.push(rest);
-  // 底部按钮固定在面板底边（COPY 3.3：[存储为我的配方] [写入存储卡]，[重置] 靠右）。不放进 rest 里：rest 的底边就是它的底边，固定不住
+  // 底部只留 [重置] 靠右，固定在面板底边。原来的「存储为我的配方」「写入存储卡」点了没有反应，删掉（U8）；
+  // 我的配方在「配方」页从 LUT 生成，存储卡不写。
   const reset = resetButton(view, usable && !!info);
   reset.classList.add('end');
-  nodes.push(h('div', { class: 'sticky-foot' },
-    h('button', { class: 'btn', type: 'button', 'aria-disabled': 'true' }, '存储为我的配方'),
-    h('button', { class: 'btn', type: 'button', 'aria-disabled': 'true', title: '暂不支持写入存储卡' }, '写入存储卡'),
-    reset,
-  ));
+  nodes.push(h('div', { class: 'sticky-foot' }, reset));
 
   view.flashRecipe = flash;
   return h('div', { class: 'edit-panel' }, ...nodes);

@@ -2,14 +2,15 @@
 
 import { api } from './api.js';
 import { state, emit, on } from './state.js';
-import { h, toast, modalOpen, closeTopModal, isTyping, toastError, modKey, fmtDate } from './dom.js';
-import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, bindCardChip, cardPresent } from './import.js';
+import { toast, modalOpen, closeTopModal, isTyping, toastError, modKey, fmtDate } from './dom.js';
+import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, bindCardChip } from './import.js';
 import { renderGallery, openFocused, galleryKeys, exportSelection } from './gallery.js';
 import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto } from './viewer.js';
 import { openExportDialog } from './export.js';
 import { showHelp, showSettings } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
 import { renderLutPage } from './lut.js';
+import { renderCamera } from './camera_page.js';
 import { createRouter } from './router.js';
 import { every } from './poll.js';
 
@@ -22,7 +23,7 @@ const router = createRouter({
       leave: () => leaveViewer(),
     },
     recipes: { enter: async () => { renderLutPage(viewRoot()); return null; } },
-    camera: { enter: async () => { renderCamera(viewRoot()); return null; } },
+    camera: { enter: async (r, isCurrent) => { renderCamera(viewRoot(), isCurrent); return null; } },
   },
 });
 const route = () => router.route();
@@ -39,19 +40,7 @@ function setTabs(name, page) {
   document.getElementById('titlebar')?.setAttribute('data-mode', page === 'viewer' ? 'viewer' : 'library');
 }
 
-function renderCamera(view) {
-  const card = cardPresent() ? '已插入' : '未插入';
-  view.replaceChildren(
-    h(
-      'section',
-      { class: 'empty', style: { maxWidth: '520px' } },
-      h('h2', {}, '相机'),
-      h('p', {}, `存储卡：${card}`),
-      h('p', { class: 'small dim' }, '暂不支持写入存储卡'),
-    ),
-  );
-}
-
+// ⌘E：大图里导出这一张；图库里导出选中的；没选的话，在按日期筛选时导出这一天，否则说明怎么选
 function exportCurrent() {
   if (router.current() === 'viewer') {
     exportCurrentPhoto();

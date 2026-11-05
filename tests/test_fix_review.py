@@ -374,9 +374,9 @@ def test_status_offers_the_project_folder_and_the_ui_uses_it(client):
 def test_recipes_tab_has_no_coming_soon_badge_but_the_camera_tab_keeps_it():
     index = (WEB / "index.html").read_text(encoding="utf-8")
     assert "即将推出" not in index, "「配方」页已经能用（导入调色文件→做成配方），页签上不能再挂「即将推出」"
-    app = (WEB / "assets" / "app.js").read_text(encoding="utf-8")
-    camera = app[app.index("function renderCamera") : app.index("function exportCurrent")]
+    camera = (WEB / "assets" / "camera_page.js").read_text(encoding="utf-8")
     assert "暂不支持写入存储卡" in camera
+    assert "import { renderCamera } from './camera_page.js'" in (WEB / "assets" / "app.js").read_text(encoding="utf-8")
     recipes = (WEB / "assets" / "recipes.js").read_text(encoding="utf-8")
     import re
 

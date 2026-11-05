@@ -5,9 +5,10 @@ import { api, apiBlob, ApiError } from './api.js';
 import { emit } from './state.js';
 import { h, toast, fmtBytes, toastError, errorBody, confirmAction, setFraction } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
-import { BASE_NAMES, KNOB_NAMES } from './preview.js';
+import { KNOB_NAMES, slotName } from './preview.js';
 import { loadLutLibrary, librarySection, attributionFields } from './lut_library.js';
 import { selectedFiles, droppedFiles, importFiles } from './lut_files.js';
+import { every } from './poll.js';
 
 export const RECIPE_APPLY_HINT = '相机关机再开后，按 ADJ 再按 OK 套用上次的配方';
 
@@ -122,8 +123,8 @@ function dropzone() {
   const folder = h('input', { type: 'file', webkitdirectory: true, multiple: true, class: 'hidden', 'aria-label': '导入文件夹', onchange: (e) => takeFiles(selectedFiles(e.target.files)) });
   const zone = h('div', {
     class: 'dropzone', tabindex: 0, role: 'button', 'aria-label': '选择 LUT',
-    onclick: () => input.click(),
-    onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), input.click()),
+    onclick: () => !flow.busy && input.click(),
+    onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), !flow.busy && input.click()),
     ondragover: (e) => { e.preventDefault(); zone.classList.add('over'); },
     ondragleave: () => zone.classList.remove('over'),
     ondrop: async (e) => {
@@ -155,7 +156,9 @@ async function takeFiles(files) {
     flow.error = e instanceof ApiError ? errorBody(e, '无法读取 LUT。请重试。') : '无法读取 LUT。请重试。';
     flow.cube = null;
   } finally {
+    show.cancel();
     flow.busy = null;
+    flow.importUi = null;
     redraw();
   }
 }
@@ -223,7 +226,7 @@ function spaceFields() {
   h('option', { value: '', selected: !flow.space, disabled: true }, '请选择输入色彩空间'),
   h('optgroup', { label: '画面' }, sp.filter((s) => s.kind === 'display').map(opt)),
   h('optgroup', { label: 'Log' }, sp.filter((s) => s.kind === 'log').map(opt)));
-  const dunno = h('button', { class: 'btn ghost small', type: 'button', disabled: flow.spaceSaving, onclick: () => { flow.space = 'srgb'; flow.guessed = true; flow.fileGuess = false; afterSpaceChange(); } }, '不确定');
+  const dunno = h('button', { class: 'btn ghost sm', type: 'button', disabled: flow.spaceSaving, onclick: () => { flow.space = 'srgb'; flow.guessed = true; flow.fileGuess = false; afterSpaceChange(); } }, '不确定');
   // 输入色彩空间是推测的：小标签「推测」，按文件名判断的理由放进它的提示气泡（COPY 3.10）
   const guessed = flow.guessed || flow.fileGuess;
   const evidence = flow.cube.space_evidence || {};
@@ -352,13 +355,14 @@ async function startFit() {
   }
 }
 
+// 拟合进度每 700ms 读一次：一次只有一个请求在路上，页面在后台时暂停，回来马上补一次（poll.js）
 function startPolling() {
   stopPolling();
-  timer = setInterval(poll, 700);
+  timer = every(700, poll);
 }
 
 function stopPolling() {
-  if (timer) clearInterval(timer);
+  if (timer) timer.stop();
   timer = null;
 }
 
@@ -436,7 +440,7 @@ function resultBox() {
   const picks = h('div', { class: 'seg', role: 'group', 'aria-label': '最接近的内置配方' }, res.candidates.map((x, i) => h('button', {
     type: 'button', 'aria-pressed': String(i === flow.chosen),
     onclick: async () => { flow.chosen = i; flow.saved = null; if (flow.which === 'recipe') await refreshPreview(); redraw(); },
-  }, `${x.number} ${BASE_NAMES[x.slot - 1]} ${simText(x)}`)));
+  }, `${slotName(x.unit, x.slot)} ${simText(x)}`)));
   const nameInput = h('input', { type: 'text', value: flow.name, maxlength: 40, 'aria-label': '名称', oninput: (e) => { flow.name = e.target.value; } });
   const save = h('button', { class: 'btn primary', type: 'button', disabled: !!flow.busy, onclick: saveRecipe }, '存储为我的配方');
   return h('div', { class: 'result lut-result' },
@@ -448,7 +452,7 @@ function resultBox() {
       h('span', { class: 'tag' }, '电脑预测'),
       h('div', { class: 'sim-bar' }, h('i', { class: tone, style: { width: `${bar}%` } })),
       h('span', { class: `sim-tag ${tone}` }, c.label ? SIM_WORDS[c.label] : '接近 04 标准')),
-    h('div', { class: 'small' }, '内置配方：', `${c.number} ${BASE_NAMES[c.slot - 1]}（${describeLevels(c)}）`),
+    h('div', { class: 'small' }, '内置配方：', `${slotName(c.unit, c.slot)}（${describeLevels(c)}）`),
     h('div', { class: 'small dim' }, `色差 ${c.holdout.median.toFixed(2)}`),
     h('div', { class: 'small dim' }, '差异'),
     h('ul', { class: 'diffs' }, c.differences.map((t) => h('li', {}, t))),
@@ -490,11 +494,11 @@ function recipeCard(r) {
   const c = { amount: r.recipe.levels.amount ?? null, levels: r.recipe.levels };
   const sim = r.fit.similarity === null ? 'N/A' : `${Math.round(r.fit.similarity)}%`;
   const card = h('div', { class: 'recipe-card' });
-  const del = h('button', { class: 'btn ghost small', type: 'button', onclick: () => askRemove(r) }, '删除');
-  const rename = h('button', { class: 'btn ghost small', type: 'button', onclick: () => editName(r) }, '重命名');
+  const del = h('button', { class: 'btn ghost sm', type: 'button', onclick: () => askRemove(r) }, '删除');
+  const rename = h('button', { class: 'btn ghost sm', type: 'button', onclick: () => editName(r) }, '重命名');
   card.append(
     h('div', { class: 'recipe-head' }, h('b', {}, r.name), h('span', { class: 'small dim' }, ` · ${r.camera_short_name}`), h('span', { class: 'grow' }), rename, del),
-    h('div', { class: 'small' }, `${String(r.recipe.slot).padStart(2, '0')} ${BASE_NAMES[r.recipe.slot - 1]}（${describeLevels(c)}）`),
+    h('div', { class: 'small' }, `${slotName(r.recipe.unit, r.recipe.slot)}（${describeLevels(c)}）`),
     h('div', { class: 'small dim' }, `来自 LUT${r.source.title ? `「${r.source.title}」` : ''} · 相似度 ${sim}`,
       r.source.input_space_guessed ? h('span', { class: 'tag' }, '推测') : null),
   );
