@@ -9,6 +9,7 @@ import { openExportDialog } from './export.js';
 import { cardPresent, importNow } from './import.js';
 import { isPrediction, rawOnlyBadgeText } from './look_notes.js';
 import { fetchAllPhotos } from './photos.js';
+import { delayed } from './busy.js';
 
 const ALL = null;
 const SIZE_KEY = 'gxr-studio.thumb-size';
@@ -164,16 +165,63 @@ function renderLibbar() {
 
 // 第一页没到之前：150ms 内什么都不画，超过就放骨架格子（加载态分档，见 busy.js）
 async function loadPhotos() {
-  const q = state.galleryDate ? `?date=${state.galleryDate}&limit=5000` : '?limit=5000';
-  const photos = await api(`/api/photos${q}`).catch(() => []);
-  if (!galleryCurrent()) return;
+  const seq = ++loadSeq;
+  const isCurrent = () => seq === loadSeq && galleryCurrent();
+  const wrap = document.getElementById('grid-wrap');
+  renderLibbar();
+  const skeleton = delayed(() => {
+    if (!isCurrent() || !wrap) return;
+    wrap.setAttribute('aria-busy', 'true');
+    wrap.replaceChildren(h('div', { class: 'cells' }, Array.from({ length: 12 }, () => h('div', { class: 'cell ph skel', 'aria-hidden': 'true' }))));
+  });
+  let first = true;
+  let shown = 0;
+  let photos;
+  try {
+    photos = await fetchAllPhotos(state.galleryDate, {
+      isCurrent,
+      onPage: (sofar) => {
+        if (!isCurrent()) return;
+        skeleton.cancel();
+        state.photos = sofar;
+        if (first) {
+          first = false;
+          renderGrid();
+        } else {
+          appendCells(sofar.slice(shown));
+        }
+        shown = sofar.length;
+        updateCount();
+      },
+    });
+  } catch (e) {
+    skeleton.cancel();
+    if (!isCurrent() || !wrap) return;
+    wrap.setAttribute('aria-busy', 'false');
+    wrap.replaceChildren(h('div', { class: 'empty' },
+      h('h2', {}, '无法读取照片列表'),
+      h('p', {}, e.message || '请重试。'),
+      h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: () => loadPhotos() }, '重试'))));
+    return;
+  }
+  skeleton.cancel();
+  if (!photos || !isCurrent()) return;
   state.photos = photos;
-  renderGrid();
+  if (first) renderGrid();
+  else if (photos.length > shown) appendCells(photos.slice(shown));
+  wrap?.setAttribute('aria-busy', 'false');
+  updateCount();
+}
+
+function updateCount() {
+  const el = document.getElementById('lib-count');
+  if (el) el.textContent = `${state.photos.length} 张`;
 }
 
 function renderGrid() {
   const wrap = document.getElementById('grid-wrap');
   if (!wrap) return;
+  wrap.setAttribute('aria-busy', 'false');
   if (!state.photos.length) {
     wrap.replaceChildren(state.galleryDate ? h('div', { class: 'empty' }, h('h2', {}, '这一天没有照片')) : emptyLibrary());
     renderSelBar();

@@ -10,6 +10,7 @@ import { camdataGuide, camdataReady } from './camdata.js';
 import { toggle } from './controls.js';
 import { flushPhotos } from './saves.js';
 import { trackJob } from './jobs.js';
+import { delayed, busyButton, SHOW_AFTER_MS, DETAIL_AFTER_MS } from './busy.js';
 
 export const SIZES = [
   ['original', '原始尺寸'],
@@ -153,7 +154,20 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   }
   refresh();
 
+  let busy = false;
+  let spin = null;
+  // 点了马上锁住（防连点）；150ms 以后才转圈，免得快的时候一闪
+  function lock(on) {
+    busy = on;
+    button.disabled = on;
+    spin?.cancel();
+    spin = null;
+    if (on) spin = delayed(() => button.setAttribute('aria-busy', 'true'), SHOW_AFTER_MS);
+    else button.setAttribute('aria-busy', 'false');
+  }
+
   async function submit() {
+    if (busy) return;
     if (!dest.trim()) {
       destInput.setAttribute('aria-invalid', 'true');
       result.replaceChildren(resultBox('bad', '请填写导出位置（文件夹的完整路径）。'));
@@ -164,28 +178,22 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       result.replaceChildren(resultBox('bad', '没有选中照片。请先在图库里选择要导出的照片。'));
       return;
     }
-    button.disabled = true;
+    lock(true);
+    result.replaceChildren();
     try {
       if (beforeSubmit) await beforeSubmit();
       const opts = { size, quality_tier: qualityTier, dest_dir: dest.trim(), source: 'auto', precise, hdr };
       if (scope === 'ids' && ids.length === 1) {
-        result.replaceChildren(h('p', { class: 'small dim' }, '正在导出…'));
-        const r = await api(`/api/photos/${ids[0]}/export`, { method: 'POST', body: opts });
-        result.replaceChildren(
-          resultBox(
-            'ok',
-            h('div', {},
-              '已导出 1 张',
-              h('br'), h('code', {}, r.path), h('br'),
-              h('span', { class: 'dim small' }, `${r.width} × ${r.height} · ${fmtBytes(r.bytes)}`),
-              h('br'), revealButton(r.export_id),
-              r.warning ? h('br') : null,
-              r.warning ? h('span', { class: 'small warn-text' }, r.warning) : null,
-              r.hdr === false ? h('br') : null,
-              r.hdr === false ? h('span', { class: 'small dim' }, r.hdr_note) : null,
-            ),
-          ),
-        );
+        // 单张超过 1 秒（大尺寸、HDR）：写出在做什么，不让人以为卡住了
+        const slow = delayed(() => result.replaceChildren(h('div', { class: 'progress indet' }, h('i')),
+          h('span', { class: 'small' }, hdr ? '正在导出，生成 HDR 版本要多等几秒…' : '正在导出…')), DETAIL_AFTER_MS);
+        let r;
+        try {
+          r = await api(`/api/photos/${ids[0]}/export`, { method: 'POST', body: opts });
+        } finally {
+          slow.cancel();
+        }
+        result.replaceChildren(resultBox('ok', singleResult(r)));
       } else {
         const body = scope === 'date' ? { ...opts, date } : { ...opts, ids };
         const job = await api('/api/export', { method: 'POST', body });
@@ -206,12 +214,22 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
         result.replaceChildren(resultBox('bad', errorBody(e, '导出失败。请重试。')));
       }
     } finally {
-      button.disabled = false;
-      result.scrollIntoView({ block: 'nearest' });
+      lock(false);
+      if (result.scrollIntoView) result.scrollIntoView({ block: 'nearest' });
     }
   }
 
   return body;
+}
+
+function singleResult(r) {
+  return h('div', {},
+    h('p', { class: 'res-main' }, '已导出 1 张'),
+    h('p', { class: 'small num path' }, r.path),
+    h('p', { class: 'small dim num' }, `${r.width} × ${r.height} · ${fmtBytes(r.bytes)}`),
+    r.warning ? h('p', { class: 'small warn-text' }, r.warning) : null,
+    r.hdr === false ? h('p', { class: 'small dim' }, r.hdr_note) : null,
+    h('div', { class: 'res-acts' }, revealButton(r.export_id) || copyPathButton(r.path)));
 }
 
 // 批量导出里没做成 HDR 的张数（没有 RAW、对不齐…），照常导出了 SDR
@@ -226,17 +244,23 @@ function resultBox(kind, content) {
 // 在访达中显示（COPY 3.6、3.12）：打开这次导出的第一张。POST /api/exports/{export_id}/reveal，请求体为空。
 // export_id：单张导出是响应里的 export_id，批量导出是任务的 id。只有 macOS 有这个按钮（其它系统返回 null）。
 function revealButton(exportId) {
-  return h('button', {
-    class: 'btn small',
+  if (!revealLabel() || !exportId) return null;
+  const btn = h('button', {
+    class: 'btn sm',
     type: 'button',
-    onclick: async () => {
-      try {
-        await api(`/api/exports/${exportId}/reveal`, { method: 'POST' });
-      } catch (e) {
-        toastError(e, '无法在访达中显示。请重试。');
-      }
-    },
-  }, '在访达中显示');
+    onclick: () => busyButton(btn, () => api(`/api/exports/${exportId}/reveal`, { method: 'POST' }), {
+      onError: (e) => { toastError(e, '无法在访达中显示。文件可能已被移动。'); return false; },
+    }),
+  }, h('span', {}, '在访达中显示'));
+  return btn;
+}
+
+function copyPathButton(path) {
+  if (!path || !(globalThis.navigator && navigator.clipboard)) return null;
+  return h('button', {
+    class: 'btn sm', type: 'button',
+    onclick: () => navigator.clipboard.writeText(path).then(() => toast('已复制路径', 'ok'), (e) => toastError(e, '无法复制路径。')),
+  }, '复制路径');
 }
 
 // 批量导出：进度交给顶栏（jobs.js）。对话框还开着就在里面显示结果，关掉了就用提示条（带「在访达中显示」）。

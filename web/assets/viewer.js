@@ -21,6 +21,7 @@ import {
   saveStatus, retrySaves, discardFailed,
 } from './preview.js';
 import { fetchAllPhotos } from './photos.js';
+import { delayed, SHOW_AFTER_MS } from './busy.js';
 import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
 
 const zeroAdj = () => ({
@@ -298,8 +299,7 @@ async function retryEdit(v) {
 
 function cropPanelWrap() {
   return h('div', { class: 'pane' },
-    h('h2', {}, '裁剪'),
-    view.canvas ? cropSection(view) : h('p', { class: 'dim small' }, '正在生成预览…'),
+    view.canvas ? cropSection(view) : h('div', { 'aria-busy': 'true' }, h('div', { class: 'skel line' }), h('div', { class: 'skel line' })),
     correctSection(view),
     h('div', { class: 'sticky-foot' }, ...correctActions(view), h('button', { type: 'button', class: 'btn sm primary end', onclick: finishCrop }, '完成')),
   );
@@ -331,6 +331,19 @@ function paintTabMods(v) {
 }
 
 // ---- 画面上的小标签（电脑预测 / 未校准 / 近似 / 原图）。普通结果不写「成片」 -------------
+
+// 服务器出图时画面顶上一条细进度条（不挡画面、不挡操作）；150ms 内出完就不显示（busy.js 的分档）
+function paintProgress(v) {
+  // 编辑记录还在读、或服务器在出图
+  const busy = v.ed ? !!v.ed.busy : !v.edError;
+  if (busy) {
+    if (!v.progTimer) v.progTimer = delayed(() => v.progressEl.classList.add('on'), SHOW_AFTER_MS);
+    return;
+  }
+  v.progTimer?.cancel();
+  v.progTimer = null;
+  v.progressEl.classList.remove('on');
+}
 
 function paintLabels(v) {
   if (!view || v !== view || !v.labelsEl) return;
@@ -566,17 +579,31 @@ function buildLayout(root, photo) {
 // isCurrent：路由层给的「我还是当前路由吗」（R11）。每次 await 回来、改页面或装快捷键之前都先问一次，
 // 过时的照片响应不能把页面换回旧照片。
 export async function renderViewer(root, id, isCurrent = () => true) {
-  let photo;
+  // 从别的页面进来、照片信息 150ms 内还没到：先放画面骨架（从图库进来时原来的页面留着，不闪）
+  const skel = root.querySelector && !root.querySelector('.editor') ? delayed(() => {
+    if (isCurrent() && !view) root.replaceChildren(editorSkeleton());
+  }, SHOW_AFTER_MS) : null;
+  // 照片列表（胶片条、上一张/下一张要用）和这张照片同时去读，不排队
+  const listP = ensurePhotos(id, isCurrent);
+  // 图库里已经有这张照片的信息：直接用它搭页面，缩略图当占位，和切路由在同一帧出来；
+  // 最新的照片信息在后台再读一次（refreshPhoto）
+  const cached = state.photos.find((p) => p.id === id) || null;
+  let photo = cached;
   try {
     if (!photo) photo = await api(`/api/photos/${id}`);
   } catch (e) {
+    skel?.cancel();
     if (!isCurrent()) return;
     teardown();
     root.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, '找不到这张照片'), h('p', { class: 'dim' }, e.message), h('div', { class: 'acts' }, h('a', { class: 'btn', href: '#/photos' }, '回到照片'))));
     return;
   }
-  if (!isCurrent()) return;
-  await ensurePhotos(id, isCurrent);
+  if (!isCurrent()) {
+    skel?.cancel();
+    return;
+  }
+  if (!cached) await listP;
+  skel?.cancel();
   if (!isCurrent()) return;
   teardown();
 
@@ -597,6 +624,7 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   v.stageCol.dataset.bg = bg;
   v.onChange = () => {
     if (view !== v) return;
+    paintProgress(v);
     paintStage(v);
     paintLabels(v);
     paintTabMods(v);
@@ -612,6 +640,9 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   if (collapsed) setCollapsed(true);
   showTab();
   paintStage(v);
+  paintProgress(v);
+
+  if (cached) refreshPhoto(v);
 
   // 两个请求都等完再画（Promise.all 会在第一个失败时就返回，另一个回来后界面不会重画，留下骨架）
   const [cropRes, edRes] = await Promise.allSettled([loadCrop(v), ensureEdit(v)]);
@@ -628,6 +659,8 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   paintStage(v);
   paintLabels(v);
   schedulePreview(v, { full: true });
+  // 编辑记录读不出来：进度条收起（读到了就交给出图的 onChange，中间不闪一下）
+  if (!v.ed) paintProgress(v);
 
   resizeObs = new ResizeObserver(() => {
     if (view === v) paintStage(v);
@@ -641,7 +674,10 @@ function teardown() {
     resizeObs = null;
   }
   closeMenus();
-  if (view) disposeEdit(view);
+  if (view) {
+    view.progTimer?.cancel();
+    disposeEdit(view);
+  }
   view = null;
 }
 
@@ -657,6 +693,18 @@ export function leaveViewer() {
 }
 
 // 相机数据或配方文件换了：照片的画面和能力都要重读
+// 用图库里的照片信息打开时：后台再读一次这张照片，名字、拍摄时间等有变化就更新顶栏
+async function refreshPhoto(v) {
+  try {
+    const photo = await api(`/api/photos/${v.photo.id}`);
+    if (view !== v) return;
+    v.photo = photo;
+    renderTitlebar(v);
+  } catch {
+    // 读不到不影响已经打开的页面
+  }
+}
+
 export async function refreshViewerPhoto() {
   const v = view;
   if (!v) return;

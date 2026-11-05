@@ -45,8 +45,27 @@ export function paintStage(view) {
   if (mode === 'orig') src = originalUrl(view);
   else if (ed) src = ed.urls[mode];
 
-  if (!ed && mode !== 'orig') children.push(note('正在读取…'));
-  else if (!src) children.push(note('正在生成预览…'));
+  // 同一张图、同一种模式：只调尺寸（窗口变了、面板收起），不重建 <img>，画面不闪
+  const cur = childWith(area, 'pv');
+  const curImg = cur && cur.querySelector('.pv-img');
+  if (src && curImg && cur.dataset.mode === mode && cur.dataset.src === src && cur.dataset.natural === String(natural) && mode !== 'uncropped') {
+    if (!natural) Object.assign(curImg.style, { maxWidth: `${maxW}px`, maxHeight: `${maxH}px` });
+    paintSplit(view, cur, mode);
+    paintProblem(view, area, mode);
+    return;
+  }
+
+  if (!src) {
+    // 还没有出图：先放图库里已经加载过的缩略图（浏览器有缓存，和切路由同一帧出来），等大图好了再换
+    if (mode !== 'orig' && view.photo.thumb_url) {
+      if (!(cur && cur.dataset.placeholder === '1')) area.replaceChildren(placeholder(view, maxW, maxH));
+      else sizePlaceholder(cur, maxW, maxH);
+    } else if (!cur) {
+      area.replaceChildren(note(!ed && mode !== 'orig' ? '正在读取…' : '正在生成预览…'));
+    }
+    paintProblem(view, area, mode);
+    return;
+  }
 
   const pv = h('div', { class: 'pv' });
   pv.dataset.mode = mode;
@@ -80,27 +99,42 @@ export function paintStage(view) {
       img.src = originalFallbackUrl(view);
       return;
     }
-    img.addEventListener('load', () => {
-      if (mode !== 'uncropped') return;
-      const prev = view.canvas;
-      const next = { w: img.naturalWidth, h: img.naturalHeight };
-      view.canvas = next;
-      if (!view.box || !pv.contains(view.box)) pv.append(cropBox(view, pv));
-      if (!prev || prev.w !== next.w || prev.h !== next.h) view.redrawSide?.();
-    });
-    img.addEventListener('error', () => {
-      // 原图的新接口还没有（404）：退回原来的预览图，只退一次
-      if (mode === 'orig' && img.dataset.fallback !== '1') {
-        img.dataset.fallback = '1';
-        img.src = originalFallbackUrl(view);
-        return;
+    if (area.contains(pv) || !area.querySelector('.pv')) area.replaceChildren(note('无法读取这张照片。请重试。', 'warn-text'));
+  });
+  img.src = src;
+  pv.append(img);
+  // 裁切的尺寸放在画面右下角，只写数字（COPY 3.1）
+  if (mode === 'uncropped' && view.crop && (view.crop.frame || view.canvas)) pv.append(h('div', { class: 'crop-size' }, pixelsText(view)));
+  paintSplit(view, pv, mode);
+
+  // 换图：旧画面留着，新图解码好了再换上（交叉淡入，不经过空白）；模式变了（进出裁剪、原图）直接换
+  const swap = () => {
+    if (view.stageArea !== area) return;
+    const keep = childWith(area, 'pv');
+    const fade = !!keep && keep !== pv;
+    area.replaceChildren(pv);
+    if (fade) {
+      const under = keep.querySelector('.pv-img');
+      const sameShape = under && under.naturalWidth && img.naturalWidth
+        && Math.abs(under.naturalWidth / under.naturalHeight - img.naturalWidth / img.naturalHeight) < 0.01;
+      if (sameShape && keep.dataset.mode === mode) {
+        // 旧图垫在下面，新图淡入（下面一直有画面，不会像整张蒙了一层灰）；淡入结束后拿掉旧图
+        const ghost = under.cloneNode();
+        ghost.className = 'pv-under';
+        ghost.removeAttribute('style');
+        pv.prepend(ghost);
+        img.classList.add('xfade');
+        img.addEventListener('animationend', () => ghost.remove(), { once: true });
+        setTimeout(() => ghost.remove(), 600);
       }
-      area.replaceChildren(note('无法读取这张照片。请重试。', 'warn-text'));
-    });
-    pv.append(img);
-    // 裁切的尺寸放在画面右下角，只写数字（COPY 3.1）
-    if (mode === 'uncropped' && view.crop && (view.crop.frame || view.canvas)) pv.append(h('div', { class: 'crop-size' }, pixelsText(view)));
-    children.push(pv);
+    }
+    paintProblem(view, area, mode);
+  };
+  const seq = (view.paintSeq = (view.paintSeq || 0) + 1);
+  if (cur && typeof img.decode === 'function') {
+    img.decode().then(() => { if (view.paintSeq === seq) swap(); }, () => { if (view.paintSeq === seq) swap(); });
+  } else {
+    swap();
   }
 }
 

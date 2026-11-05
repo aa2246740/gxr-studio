@@ -66,6 +66,12 @@ export class TestNode extends EventTarget {
     if (i < 0) this.children.push(n); else this.children.splice(i, 0, n);
     return c;
   }
+  get nextElementSibling() {
+    const p = this.parentNode;
+    if (!p) return null;
+    const sib = p.children.slice(p.children.indexOf(this) + 1);
+    return sib.find((n) => n.nodeType === 1) || null;
+  }
   before(...ns) { if (!this.parentNode) return; for (const n of ns) this.parentNode.insertBefore(n, this); }
   after(...ns) {
     const p = this.parentNode;

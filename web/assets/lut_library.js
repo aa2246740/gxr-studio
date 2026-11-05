@@ -2,6 +2,7 @@
 import { api } from './api.js';
 import { emit } from './state.js';
 import { h, toast, toastError, openModal, confirmAction } from './dom.js';
+import { busyButton, optimistic } from './busy.js';
 
 let library = { luts: [], groups: [] };
 let loaded = false;
@@ -27,7 +28,7 @@ export function librarySection({ select, onImport, selected, redraw, busy = fals
       h('button', { class: 'btn', type: 'button', onclick: () => newGroup(redraw) }, '新建分组'),
       filter && filter !== 'ungrouped' ? h('button', { class: 'btn', type: 'button', onclick: () => renameGroup(redraw) }, '重命名') : null,
       filter && filter !== 'ungrouped' ? h('button', { class: 'btn', type: 'button', onclick: () => removeGroup(redraw) }, '删除分组') : null,
-      filter ? h('button', { class: 'btn', type: 'button', onclick: () => exportGroup() }, '导出分组') : null));
+      filter ? h('button', { class: 'btn', type: 'button', onclick: (e) => busyButton(e.currentTarget, exportGroup, { busyText: '正在导出…' }) }, h('span', {}, '导出分组')) : null));
   const rows = library.luts.filter((l) => (!starred || l.starred) && (!filter || l.group === (filter === 'ungrouped' ? null : filter)));
   if (!rows.length) section.append(h('p', { class: 'small dim' }, !loaded ? '正在读取…' : library.luts.length ? '没有符合条件的 LUT' : '还没有 LUT'));
   for (const lut of rows) {
@@ -36,11 +37,10 @@ export function librarySection({ select, onImport, selected, redraw, busy = fals
       h('button', { class: 'btn lut-library-name', type: 'button', 'aria-pressed': String(selected === lut.cube_id), onclick: () => select(lut) }, lut.name),
       h('span', { class: 'small dim lut-group-name' }, group),
       lut.technical ? h('span', { class: 'tag' }, '转换 LUT') : null,
-      h('button', { class: 'btn small', type: 'button', 'aria-label': lut.starred ? '取消标星' : '标星', 'aria-pressed': String(lut.starred),
-        onclick: () => change(lut.cube_id, { starred: !lut.starred }, redraw) }, lut.starred ? '已标星' : '标星'),
-      h('button', { class: 'btn small', type: 'button', onclick: () => renameLut(lut, redraw) }, '重命名'),
-      h('button', { class: 'btn small', type: 'button', onclick: () => exportLut(lut) }, '导出'),
-      h('button', { class: 'btn small', type: 'button', onclick: () => removeLut(lut, redraw) }, '删除'));
+      starButton(lut, redraw),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => renameLut(lut, redraw) }, '重命名'),
+      h('button', { class: 'btn sm', type: 'button', onclick: (e) => busyButton(e.currentTarget, () => exportLut(lut)) }, h('span', {}, '导出')),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => removeLut(lut, redraw) }, '删除'));
     section.append(row);
   }
   if (busy) for (const control of section.querySelectorAll('button,input,select')) control.disabled = true;
@@ -115,7 +115,35 @@ async function exportLut(lut) {
 
 async function exportGroup() {
   try { exportReceipt((await api('/api/lut-groups/export', { method: 'POST', body: { group: filter === 'ungrouped' ? null : filter } })).exports); }
-  catch (e) { toastError(e, '无法完成操作。请重试。'); }
+  catch (e) { toastError(e, '没有导出这一组 LUT。请重试。'); }
+}
+
+// 标星：点了立刻变（乐观更新），后台再存；没存上就变回去并提示
+function starButton(lut, redraw) {
+  const btn = h('button', { class: 'btn sm', type: 'button' });
+  const paint = (on) => {
+    btn.setAttribute('aria-pressed', String(on));
+    btn.setAttribute('aria-label', on ? '取消标星' : '标星');
+    btn.textContent = on ? '已标星' : '标星';
+  };
+  paint(!!lut.starred);
+  btn.addEventListener('click', () => {
+    if (btn.dataset.busy === '1') return;
+    const was = !!lut.starred;
+    btn.dataset.busy = '1';
+    optimistic({
+      apply: () => { lut.starred = !was; paint(!was); },
+      commit: async () => {
+        await api(`/api/luts/${lut.cube_id}`, { method: 'PATCH', body: { starred: !was } });
+        emit('luts-changed');
+        await loadLutLibrary();
+        if (starred) redraw();       // 只看已标星时，取消标星的这一行要拿掉
+      },
+      rollback: () => { lut.starred = was; paint(was); },
+      onError: (e) => toastError(e, '没有存下标星。请重试。'),
+    }).finally(() => { btn.dataset.busy = ''; });
+  });
+  return btn;
 }
 
 export function attributionFields(lut, onSaved) {

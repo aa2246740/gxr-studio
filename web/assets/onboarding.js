@@ -1,106 +1,68 @@
-// 快捷键、设置、首次使用的四步引导。快捷键仍由 [?] 打开（COPY 3.8）。
+// 快捷键表（?、顶栏键盘按钮）和设置（⌘,）。
+// 原来的四步引导对话框删掉了：它一打开页面就弹，挡住还没导入的空图库（U9）。
+// 第一次使用的说明改放在图库的空状态里（gallery.js 的 emptyLibrary），没有照片时才出现，导入后自然消失。
 
 import { api } from './api.js';
 import { state, emit } from './state.js';
-import { h, openModal, toast, fmtBytes, toastError, closeTopModal } from './dom.js';
+import { h, openModal, toast, fmtBytes, platform, errorBody } from './dom.js';
 import { calibrationImportForm, camdataSummary, cameraImportControls, loadCamdata } from './camdata.js';
+import { toggle } from './controls.js';
+import { gpuPreference, setGpuPreference } from './gpu_pref.js';
+import { busyButton, delayed } from './busy.js';
 
-export const GUIDE_STEPS = [
-  ['插入存储卡', '自动导入照片'],
-  ['在图库里浏览、编辑', '裁剪、曝光、边框'],
-  ['用 LUT 库管理 LUT', '套用到照片'],
-  ['导出', '可选 HDR'],
-];
+export { gpuPreference };
 
-export function maybeShowOnboarding() {
-  if (state.prefs && state.prefs.onboarding_dismissed === true) return;
-  showGuide();
-}
-
-export function showHint() {}
-
-export function clearHints() {
-  document.getElementById('hints')?.replaceChildren();
-}
-
-function paintGuide(holder, step, onSkip) {
-  const [title, text] = GUIDE_STEPS[step];
-  const last = step === GUIDE_STEPS.length - 1;
-  holder.replaceChildren(
-    h('p', { class: 'small dim', dataset: { guide: 'count' } }, `${step + 1}/${GUIDE_STEPS.length}`),
-    h('p', { dataset: { guide: 'title' } }, title),
-    h('p', { class: 'small dim', dataset: { guide: 'text' } }, text),
-    h(
-      'div',
-      { class: 'modal-foot' },
-      h('button', { class: 'btn', type: 'button', style: { marginRight: 'auto' }, onclick: onSkip }, '跳过'),
-      step > 0 ? h('button', { class: 'btn', type: 'button', onclick: () => paintGuide(holder, step - 1, onSkip) }, '上一步') : null,
-      h('button', {
-        class: 'btn primary',
-        type: 'button',
-        onclick: () => (last ? onSkip() : paintGuide(holder, step + 1, onSkip)),
-      }, last ? '完成' : '下一步'),
-    ),
-  );
-}
-
-export function showGuide() {
-  const holder = h('div', {});
-  let close = null;
-  const dismiss = async () => {
-    try {
-      state.prefs = await api('/api/prefs', { method: 'PUT', body: { onboarding_dismissed: true } });
-      if (close) close();
-    } catch (e) {
-      toastError(e, '无法保存修改。请重试。');
-    }
-  };
-  paintGuide(holder, 0, dismiss);
-  close = openModal('引导', holder);
-}
-
-export function showHelpMenu() {
-  openModal(
-    '帮助',
-    h(
-      'div',
-      { class: 'modal-foot', style: { justifyContent: 'flex-start', marginTop: '0' } },
-      h('button', { class: 'btn', type: 'button', onclick: () => { closeTopModal(); showHelp(); } }, '快捷键'),
-      h('button', { class: 'btn', type: 'button', onclick: () => { closeTopModal(); showGuide(); } }, '引导'),
-    ),
-  );
+// 快捷键（按平台写法）：Mac 用 ⌘ ⇧，Windows 用 Ctrl+ Shift+。浏览器自己占用的组合键不用。
+export function shortcutGroups(p = platform()) {
+  const mod = p === 'mac' ? '⌘' : 'Ctrl+';
+  const shift = p === 'mac' ? '⇧' : 'Shift+';
+  return [
+    ['全局', [
+      [`${mod}E`, '导出'],
+      [`${mod},`, '设置'],
+      ['?', '快捷键'],
+      ['Esc', '关闭对话框 / 回到图库'],
+    ]],
+    ['图库', [
+      ['← → ↑ ↓', '移动焦点'],
+      ['Enter', '打开照片'],
+      ['空格', '选择 / 取消选择'],
+      [`${shift}点击`, '连续选择'],
+      [`${mod}A`, '全选'],
+    ]],
+    ['编辑', [
+      ['R / A / C / F / T / I', '配方 / 调整 / 裁剪 / 边框 / 时间戳 / 信息'],
+      ['← / →', '上一张 / 下一张'],
+      ['按住空格', '临时查看原图'],
+      ['\\', '原图 / 编辑后'],
+      ['Y', '左右对比'],
+      ['Z', '适合 / 100%'],
+      [`${mod}Z`, '撤销'],
+      [p === 'mac' ? '⇧⌘Z' : 'Ctrl+Y', '重做'],
+      ['双击滑块', '重置这一项'],
+    ]],
+    ['裁剪', [
+      ['↑ / ↓', '拉直（每次 0.5°）'],
+      ['O', '换参考线'],
+      [`${shift}O`, '螺旋方向'],
+      ['[', '向左旋转'],
+    ]],
+  ];
 }
 
 export function showHelp() {
-  const rows = [
-    ['R / A / C / F / T / E', '配方 / 调整 / 裁剪 / 边框 / 时间戳 / 导出'],
-    ['← / →', '上一张 / 下一张'],
-    ['按住空格', '查看原图'],
-    ['↑ / ↓', '拉直（每次 0.5°）'],
-    ['G / O', '参考线 / 螺旋方向'],
-    ['[', '向左旋转'],
-    ['双击滑块', '重置'],
-    ['⌘ Z', '撤销'],
-    ['⌘ E', '导出'],
-    ['⌘ ,', '设置'],
-    ['Enter / Esc', '打开 / 关闭'],
-    ['?', '快捷键'],
-  ];
-  const body = h('div', {}, h('table', { class: 'keys' }, rows.map(([k, v]) => h('tr', {}, h('td', {}, h('kbd', {}, k)), h('td', {}, v)))));
-  openModal('快捷键', body);
+  const groups = shortcutGroups();
+  const body = h('div', { class: 'keys-grid' }, groups.map(([title, rows]) => h('section', {},
+    h('h3', { class: 'keys-group' }, title),
+    h('table', { class: 'keys' }, rows.map(([k, v]) => h('tr', {}, h('td', {}, h('kbd', {}, k)), h('td', {}, v)))))));
+  openModal('快捷键', body, { wide: true });
 }
 
-export async function showSettings() {
-  let s;
-  try {
-    s = await api('/api/settings');
-  } catch (e) {
-    toastError(e, '无法完成操作。请重试。');
-    return;
-  }
-  state.settings = s;
-  const undated = s.undated_policy === 'unknown_folder' ? '未知日期' : '使用文件修改日期';
-  await loadCamdata();
+// 顶栏的键盘按钮直接打开快捷键表（原来多一层「帮助」菜单，里面只有快捷键和引导）
+export const showHelpMenu = showHelp;
+
+function settingsBody(s) {
+  const undated = s.undated_policy === 'unknown_folder' ? '放进「未知日期」' : '使用文件修改日期';
   const cameraLine = h('span', {});
   const calibrationLine = h('span', {});
   const paintCamdata = () => {
@@ -109,44 +71,69 @@ export async function showSettings() {
     calibrationLine.textContent = sum.calibration;
   };
   paintCamdata();
-  const body = h(
+  // 重建索引要把图库整个读一遍：点了锁住，150ms 后按钮里写「正在重建…」，失败时按钮旁边给「重试」
+  const rebuild = h('button', {
+    class: 'btn',
+    type: 'button',
+    onclick: () => busyButton(rebuild, async () => {
+      await api('/api/library/rebuild', { method: 'POST' });
+      toast('已重建索引', 'ok');
+      emit('library-changed');
+    }, { busyText: '正在重建…' }),
+  }, h('span', {}, '重建索引'));
+  const gpuAvailable = s.gpu_preview === true;
+  const gpuRow = toggle('显卡实时预览', gpuAvailable && gpuPreference(), (on) => {
+    setGpuPreference(on);
+    toast(on ? '已打开显卡实时预览' : '已关闭显卡实时预览，改用服务器出图', 'info');
+  }, { disabled: !gpuAvailable });
+  loadCamdata().then(paintCamdata, () => {});
+  return h(
     'div',
-    {},
-    h('p', {}, h('span', { class: 'dim' }, '照片库：'), h('code', {}, s.library_dir)),
-    h('p', {}, h('span', { class: 'dim' }, '导出到：'), h('code', {}, s.export_dir)),
-    h('p', {}, `${s.photo_count} 张照片 · 可用空间 ${fmtBytes(s.free_bytes)}`),
-    h('p', { class: 'small' }, undated),
-    h('p', { dataset: { section: 'camdata-status' } }, h('span', { class: 'dim' }, '相机配方文件：'), cameraLine, h('span', { class: 'dim' }, '　校准数据：'), calibrationLine),
-    h(
-      'div',
-      { class: 'field', dataset: { section: 'camdata-import' } },
-      h('strong', {}, '相机配方文件'),
-      cameraImportControls({ onDone: paintCamdata }),
-    ),
-    calibrationImportForm({ onDone: paintCamdata }),
-    h(
-      'div',
-      { class: 'field' },
-      h('span', { class: 'small dim' }, '引导'),
-      h('button', { class: 'btn', type: 'button', onclick: () => { closeTopModal(); showGuide(); } }, '打开'),
-    ),
-    h(
-      'div',
-      { class: 'modal-foot' },
-      h('button', {
-        class: 'btn',
-        type: 'button',
-        onclick: async () => {
-          try {
-            await api('/api/library/rebuild', { method: 'POST' });
-            toast('已重建索引', 'ok');
-            emit('library-changed');
-          } catch (e) {
-            toastError(e, '无法完成操作。请重试。');
-          }
-        },
-      }, '重建索引'),
-    ),
+    { class: 'settings' },
+    h('section', { class: 'section' }, h('h3', { class: 'section-head' }, '照片库'),
+      h('dl', { class: 'kv' },
+        h('dt', {}, '位置'), h('dd', { class: 'num path' }, s.library_dir),
+        h('dt', {}, '导出到'), h('dd', { class: 'num path' }, s.export_dir),
+        h('dt', {}, '照片'), h('dd', { class: 'num' }, `${s.photo_count} 张 · 可用空间 ${fmtBytes(s.free_bytes)}`),
+        h('dt', {}, '没有拍摄时间'), h('dd', {}, undated)),
+      h('div', { class: 'field-line' }, rebuild, h('span', { class: 'small dim' }, '照片显示不对时用：按照片库里的文件重新建立列表。'))),
+    h('section', { class: 'section' }, h('h3', { class: 'section-head' }, '预览'),
+      gpuRow,
+      h('p', { class: 'small dim' }, gpuAvailable ? '拖滑块时由显卡直接出图。画面不对时可以关掉，改由电脑端出图。' : '这台电脑的 GXR Studio 没有打开显卡预览。')),
+    h('section', { class: 'section', dataset: { section: 'camdata-status' } }, h('h3', { class: 'section-head' }, '相机配方文件与校准数据'),
+      h('dl', { class: 'kv' }, h('dt', {}, '相机配方文件'), h('dd', {}, cameraLine), h('dt', {}, '校准数据'), h('dd', {}, calibrationLine)),
+      h('div', { class: 'field', dataset: { section: 'camdata-import' } }, cameraImportControls({ onDone: paintCamdata })),
+      calibrationImportForm({ onDone: paintCamdata })),
   );
-  openModal('设置', body, { wide: true });
+}
+
+// 设置：先打开对话框（骨架占位），数据到了再填，不再等请求回来才有反应
+export function showSettings() {
+  const holder = h('div', {});
+  openModal('设置', holder, { wide: true });
+  return loadSettings(holder);
+}
+
+// 启动时已经读过设置：先用手上的这份马上画出来，后台再读一次，有变化才重画（不出骨架、不闪）。
+// 没有现成的才等接口；150ms 内回来不显示骨架。
+async function loadSettings(holder) {
+  const cached = state.settings;
+  if (cached) holder.replaceChildren(settingsBody(cached));
+  holder.setAttribute('aria-busy', 'true');
+  const skel = cached ? null : delayed(() => holder.replaceChildren(h('div', { class: 'skel line' }), h('div', { class: 'skel line' }), h('div', { class: 'skel line' })));
+  try {
+    const s = await api('/api/settings');
+    state.settings = s;
+    if (!cached || JSON.stringify(s) !== JSON.stringify(cached)) holder.replaceChildren(settingsBody(s));
+  } catch (e) {
+    if (!cached) {
+      holder.replaceChildren(
+        h('p', { class: 'bad-text' }, errorBody(e, '无法读取设置。')),
+        h('button', { class: 'btn', type: 'button', onclick: () => loadSettings(holder) }, '重试'),
+      );
+    }
+  } finally {
+    skel?.cancel();
+    holder.setAttribute('aria-busy', 'false');
+  }
 }

@@ -7,6 +7,7 @@ import { state } from './state.js';
 import { cardPresent, importNow, isImporting } from './import.js';
 import { loadCatalog, slotName } from './preview.js';
 import { camdataGuide, camdataSummary, loadCamdata } from './camdata.js';
+import { delayed } from './busy.js';
 
 function cardSection() {
   const present = cardPresent();
@@ -50,6 +51,7 @@ export function renderCamera(root, isCurrent = () => true) {
         sum,
         units)));
   root.replaceChildren(page);
+  const skel = delayed(() => units.replaceChildren(...Array.from({ length: 3 }, () => h('div', { class: 'card-sec unit skel', 'aria-hidden': 'true' }))));
   const paintSummary = () => {
     const s = camdataSummary();
     sum.replaceChildren(h('dl', { class: 'kv' }, h('dt', {}, '相机配方文件'), h('dd', {}, s.camera), h('dt', {}, '校准数据'), h('dd', {}, s.calibration)));
@@ -57,10 +59,12 @@ export function renderCamera(root, isCurrent = () => true) {
   };
   loadCamdata().then(() => isCurrent() && paintSummary(), () => {});
   loadCatalog().then((cat) => {
+    skel.cancel();
     if (!isCurrent()) return;
     units.setAttribute('aria-busy', 'false');
     units.replaceChildren(...(cat.units || []).map(unitCard));
   }, (e) => {
+    skel.cancel();
     if (!isCurrent()) return;
     units.setAttribute('aria-busy', 'false');
     units.replaceChildren(h('p', { class: 'bad-text' }, e.message || '无法读取配方列表。'),

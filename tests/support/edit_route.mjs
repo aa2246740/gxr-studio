@@ -242,6 +242,23 @@ if (scenario === 'reset-then-switch') {
   out.shown = shown();
   out.keys = router.keys();
   out.aEditReads = requests.filter((r) => r.url === `/api/photos/${PHOTOS.A.id}/edit`).length;
+} else if (scenario === 'cached-open-stale-refresh') {
+  // 从图库打开（照片信息已经在列表里）：页面立刻搭好，后台再读一次照片信息。
+  // A 的这次后台读取比切到 B 还慢：回来以后不能把顶栏和页面换回 A
+  holds.add(`GET /api/photos/${PHOTOS.A.id}`);
+  const a = go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  out.shownFirst = shown();
+  out.pageHadA = pageText().includes(PHOTOS.A.name);
+  await a;
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  g.release(`GET /api/photos/${PHOTOS.A.id}`, { ...PHOTOS.A, name: 'RENAMED.DNG' });
+  await tick(10);
+  out.shownAfter = shown();
+  out.pageHasB = pageText().includes(PHOTOS.B.name);
+  out.pageHasStale = pageText().includes('RENAMED.DNG') || pageText().includes(PHOTOS.A.name);
+  out.keysFor = router.keys() ? shown() : null;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

@@ -1,6 +1,8 @@
 // 访问本机接口的唯一入口。错误统一成 ApiError（code 是后端的错误代码，message 已经是大白话；
 // data 是后端返回的完整内容，例如 409 时的 status，界面用它说明"为什么不能预览"）。
 
+import { devDelay } from './busy.js';
+
 export class ApiError extends Error {
   constructor(status, code, message, data = null) {
     super(message);
@@ -21,6 +23,9 @@ async function send(path, { method, body, signal, headers }) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
+  // 开发时模拟慢网络：localStorage gxr-studio.dev-delay = 毫秒数（默认没有，正常使用不受影响）
+  const wait = devDelay();
+  if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
   try {
     return await fetch(path, opts);
   } catch (e) {

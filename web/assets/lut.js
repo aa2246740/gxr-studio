@@ -9,6 +9,7 @@ import { KNOB_NAMES, slotName } from './preview.js';
 import { loadLutLibrary, librarySection, attributionFields } from './lut_library.js';
 import { selectedFiles, droppedFiles, importFiles } from './lut_files.js';
 import { every } from './poll.js';
+import { delayed, SHOW_AFTER_MS } from './busy.js';
 
 export const RECIPE_APPLY_HINT = '相机关机再开后，按 ADJ 再按 OK 套用上次的配方';
 
@@ -137,18 +138,43 @@ function dropzone() {
   },
   h('div', {}, '将 LUT 文件拖到这里，或点击选择'),
     input);
+  if (flow.busy) {
+    // 导入中：区域锁住；150ms 后才显示进度（文件夹显示 n/N），快的时候不闪
+    zone.setAttribute('aria-disabled', 'true');
+    const text = h('span', { class: 'small' }, flow.busy);
+    const bar = h('i', {});
+    setFraction(bar, flow.importFrac || 0);
+    const row = h('div', { class: 'lut-import-progress', role: 'status', hidden: true }, h('div', { class: 'progress' }, bar), text);
+    flow.importUi = { row, text, bar };
+    if (flow.importShown) row.hidden = false;
+    zone.append(row);
+  }
   return h('div', {}, zone, folder, h('button', { class: 'btn', type: 'button', disabled: !!flow.busy, onclick: () => folder.click() }, '导入文件夹'));
 }
 
 async function takeFiles(files) {
   if (flow.busy) return;
   flow.error = null;
-  flow.busy = '正在读取…';
+  flow.busy = files.length > 1 ? `正在导入 0/${files.length}…` : '正在读取…';
+  flow.importFrac = 0;
+  flow.importShown = false;
+  const show = delayed(() => {
+    flow.importShown = true;
+    if (flow.importUi) flow.importUi.row.hidden = false;
+  }, SHOW_AFTER_MS);
   redraw();
   try {
     flow.imports = await importFiles(files, (file, path) => {
       if (file.size > 64 * 1024 * 1024) throw new Error('无法读取 LUT。文件过大。');
       return api('/api/lut/upload', { method: 'POST', body: file, headers: { 'X-GXR-Filename': encodeURIComponent(path) } });
+    }, (done, total) => {
+      if (total < 2) return;
+      flow.busy = `正在导入 ${done}/${total}…`;
+      flow.importFrac = done / total;
+      if (flow.importUi) {
+        flow.importUi.text.textContent = flow.busy;
+        setFraction(flow.importUi.bar, flow.importFrac);
+      }
     });
     await loadLutLibrary();
     const first = flow.imports.find((r) => r.lut && !r.lut.skipped);

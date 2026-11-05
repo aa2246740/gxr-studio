@@ -247,6 +247,9 @@ export function renderBanner() {
     let msg = `正在导入 ${p.done_shots}/${p.total_shots}`;
     if (p.state === 'scanning' || !p.total_shots) msg = '正在读取存储卡…';
     else if (p.state === 'checking') msg = '正在核对存储卡上的照片…';
+    const pct = p.total_shots ? Math.round((p.done_shots / p.total_shots) * 100) : 0;
+    const bar = h('i', {});
+    setFraction(bar, pct / 100);
     slot.append(
       h(
         'div',

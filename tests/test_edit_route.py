@@ -138,3 +138,12 @@ def test_r11_slow_photo_response_after_returning_to_gallery(tmp_path):
     assert out["page"] == "GALLERY"
     assert out["shown"] is None and out["keys"] is None
     assert out["aStillCurrent"] is False and out["aEditReads"] == 0
+
+
+def test_r11_opening_from_the_gallery_is_immediate_and_a_late_refresh_is_ignored(tmp_path):
+    """从图库打开：照片信息已经在列表里，页面立刻出来（不等 /api/photos/<id>）；
+    后台那次刷新晚于切到 B 才回来时，页面和快捷键都留在 B。"""
+    out = run(tmp_path, "cached-open-stale-refresh")
+    assert out["shownFirst"] == "a0" and out["pageHadA"]
+    assert out["shownAfter"] == "b0" and out["pageHasB"] and not out["pageHasStale"]
+    assert out["keysFor"] == "b0"
