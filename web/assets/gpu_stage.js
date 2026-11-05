@@ -9,6 +9,7 @@
 
 import { api } from './api.js';
 import { state, on } from './state.js';
+import { gpuPreference } from './gpu_pref.js';
 
 let enginePromise = null;
 let engine = null;
@@ -36,10 +37,13 @@ function bumpGeneration() {
 }
 on('camdata-changed', bumpGeneration);
 on('luts-changed', bumpGeneration);
+// 设置里换了本机的显卡预览选择：当前照片马上按新选择重画
+on('gpu-pref-changed', bumpGeneration);
 
 // 开关在 /api/settings 里（启动时读）；关着就不请求 /gpu，也不建 WebGPU 设备
+// 服务器开关开着，并且这台电脑没有在「设置 → 预览」里关掉
 function flagOn() {
-  return !!(state.settings && state.settings.gpu_preview === true);
+  return !!(state.settings && state.settings.gpu_preview === true) && gpuPreference();
 }
 
 function loadEngine() {
@@ -354,7 +358,8 @@ function prefetch(view) {
 }
 
 // 大图区里的画布：唯一一个，按成片的宽高比放进可用区域
-export function gpuCanvas(view, maxW, maxH) {
+// natural：100% 显示（一个画面像素对一个屏幕像素），放不下由画面区滚动
+export function gpuCanvas(view, maxW, maxH, { natural = false } = {}) {
   if (!engine) return null;
   if (!canvas) {
     canvas = document.createElement('canvas');
@@ -362,7 +367,7 @@ export function gpuCanvas(view, maxW, maxH) {
   }
   const size = engine.finalSize();
   if (!size) return null;
-  const scale = Math.min(maxW / size.w, maxH / size.h);
+  const scale = natural ? 1 / (globalThis.devicePixelRatio || 1) : Math.min(maxW / size.w, maxH / size.h);
   canvas.style.width = `${Math.max(1, Math.floor(size.w * scale))}px`;
   canvas.style.height = `${Math.max(1, Math.floor(size.h * scale))}px`;
   canvas.setAttribute('aria-label', view.photo.name);

@@ -73,7 +73,7 @@ def test_display_table_and_gains_match_python(tmp_path):
 
 
 def _decide(tmp_path: Path, rows: list[dict[str, object]]) -> list[object]:
-    for name in ("gpu_stage.js", "state.js"):
+    for name in ("gpu_stage.js", "gpu_pref.js", "state.js"):
         shutil.copyfile(ASSETS / name, tmp_path / name)
     (tmp_path / "api.js").write_text("export const api = async () => { throw new Error('不读接口'); };\n", encoding="utf-8")
     return run_node(

@@ -3,7 +3,7 @@
 import { api } from './api.js';
 import { state, emit, on } from './state.js';
 import { h, toast, modalOpen, closeTopModal, isTyping, toastError, modKey, fmtDate } from './dom.js';
-import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, isImporting, bindCardChip, cardPresent } from './import.js';
+import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, bindCardChip, cardPresent } from './import.js';
 import { renderGallery, openFocused } from './gallery.js';
 import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto } from './viewer.js';
 import { openExportDialog } from './export.js';
@@ -11,6 +11,7 @@ import { showHelp, showSettings } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
 import { renderLutPage } from './lut.js';
 import { createRouter } from './router.js';
+import { every } from './poll.js';
 
 const router = createRouter({
   before: (r) => setTabs(r.name === 'viewer' ? 'photos' : r.name, r.name),
@@ -112,20 +113,10 @@ function bindGlobalKeys() {
 }
 
 async function boot() {
-  try {
-    state.settings = await api('/api/settings');
-  } catch (e) {
-    toastError(e, '无法完成操作。请重试。');
-  }
-  try {
-    state.prefs = await api('/api/prefs');
-  } catch (e) {
-    toastError(e, '无法完成操作。请重试。');
-  }
-  await loadLatestJob();
-  await refreshCards();
-  await loadCamdata();
-  setInterval(() => loadCamdata(), 15000);
+  const [settings, prefs] = await Promise.allSettled([api('/api/settings'), api('/api/prefs')]);
+  if (settings.status === 'fulfilled') state.settings = settings.value;
+  else toastError(settings.reason, '无法读取设置。请刷新页面。');
+  if (prefs.status === 'fulfilled') state.prefs = prefs.value;
   bindGlobalKeys();
   bindCardChip();
   document.getElementById('btn-export-top').addEventListener('click', exportCurrent);
@@ -146,14 +137,10 @@ async function boot() {
   loadCamdata();
   await first;
 
-  setInterval(() => refreshCards(), 3000);
-  setInterval(() => tickImport(), 800);
-  // 状态栏和横幅每秒看一次（导入中进度会变）
-  setInterval(() => {
-    if (!isImporting()) return;
-    renderBanner();
-    renderCardStatus();
-  }, 1000);
+  // 定时刷新：页面在后台时停，回来时立刻补一次；上一个请求没回来不发下一个（U15）
+  every(15000, () => loadCamdata());
+  every(3000, () => refreshCards());
+  every(800, () => tickImport()); // 只在导入中才发请求；横幅和顶栏标签由 tickImport 刷新
 }
 
 boot();
