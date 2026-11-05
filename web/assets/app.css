@@ -82,6 +82,10 @@ kbd, .kbd {
   border: 2px solid var(--text-2); border-right-color: transparent; animation: spin 0.8s linear infinite;
 }
 .btn.primary[aria-busy="true"]::after { border-color: var(--text-on-accent); border-right-color: transparent; }
+/* 超过 1 秒：按钮里写出在做什么（busyText），转圈挪到文字前面 */
+.btn[aria-busy="true"][data-phase="text"] { color: var(--text-2) !important; gap: 8px; }
+.btn[aria-busy="true"][data-phase="text"] > * { visibility: visible; }
+.btn[aria-busy="true"][data-phase="text"]::after { position: static; margin: 0; order: -1; flex: none; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 

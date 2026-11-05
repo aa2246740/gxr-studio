@@ -39,6 +39,8 @@ function unitCard(unit) {
 }
 
 export function renderCamera(root, isCurrent = () => true) {
+  // 导入相机配方文件是异步的，完成时用户可能已经去了别的页面：那时不能把相机页画回共享的 root（F05）
+  if (!isCurrent()) return;
   const units = h('div', { class: 'units', 'aria-busy': 'true' });
   const sum = h('div', {});
   const page = h('div', { class: 'page camera-page' },
@@ -55,7 +57,7 @@ export function renderCamera(root, isCurrent = () => true) {
   const paintSummary = () => {
     const s = camdataSummary();
     sum.replaceChildren(h('dl', { class: 'kv' }, h('dt', {}, '相机配方文件'), h('dd', {}, s.camera), h('dt', {}, '校准数据'), h('dd', {}, s.calibration)));
-    if (s.camera !== '已导入') sum.append(camdataGuide({ onDone: () => renderCamera(root, isCurrent) }));
+    if (s.camera !== '已导入') sum.append(camdataGuide({ onDone: () => { if (isCurrent()) renderCamera(root, isCurrent); } }));
   };
   loadCamdata().then(() => isCurrent() && paintSummary(), () => {});
   loadCatalog().then((cat) => {
@@ -68,6 +70,6 @@ export function renderCamera(root, isCurrent = () => true) {
     if (!isCurrent()) return;
     units.setAttribute('aria-busy', 'false');
     units.replaceChildren(h('p', { class: 'bad-text' }, e.message || '无法读取配方列表。'),
-      h('button', { class: 'btn sm', type: 'button', onclick: () => renderCamera(root, isCurrent) }, '重试'));
+      h('button', { class: 'btn sm', type: 'button', onclick: () => { if (isCurrent()) renderCamera(root, isCurrent); } }, '重试'));
   });
 }

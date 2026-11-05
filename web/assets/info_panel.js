@@ -3,7 +3,7 @@
 
 import { h } from './dom.js';
 import { loadMeta } from './caps.js';
-import { slotName, KNOB_NAMES } from './preview.js';
+import { slotName, recipeInfo, KNOB_NAMES } from './preview.js';
 import { fmtSigned } from './controls.js';
 
 function kv(rows) {
@@ -26,12 +26,21 @@ export function adjustSummary(adj) {
   return parts.length ? parts.join(' · ') : null;
 }
 
-function recipeText(ed) {
-  const r = ed && ed.recipe;
+// 配方的名字：Looks 和相机里的自定义配方用它们自己的名字（slot 只是它们的原厂底子，不能拿来当名字）
+export function recipeName(view, r) {
+  if (r.kind && r.kind !== 'builtin') {
+    const info = recipeInfo(view, r);
+    return (info && info.name) || (r.kind === 'look' ? 'Look' : '相机里的配方');
+  }
+  return slotName(r.unit, r.slot);
+}
+
+function recipeText(view) {
+  const r = view.ed && view.ed.recipe;
   if (!r) return null;
   const knobs = Object.entries(r.levels || {}).filter(([, v]) => Number(v) !== 0 && v !== 100)
     .map(([k, v]) => `${KNOB_NAMES[k] || k} ${fmtSigned(Number(v))}`);
-  return [slotName(r.unit, r.slot), ...knobs].join(' · ');
+  return [recipeName(view, r), ...knobs].join(' · ');
 }
 
 function editSection(view) {
@@ -40,7 +49,7 @@ function editSection(view) {
   const crop = view.crop && view.crop.rect && (view.crop.rect.w < 0.999 || view.crop.rect.h < 0.999) ? (view.crop.preset === 'original' ? '自由' : view.crop.preset) : null;
   const adj = adjustSummary(ed.adj);
   const rows = [
-    ['配方', recipeText(ed) || '无', recipeText(ed) ? '' : 'dim'],
+    ['配方', recipeText(view) || '无', recipeText(view) ? '' : 'dim'],
     ['LUT', ed.lut ? (ed.lutName || '已选择') : '无', ed.lut ? '' : 'dim'],
     ['调整', [adj, ed.curve ? '曲线' : null].filter(Boolean).join(' · ') || '无', adj || ed.curve ? '' : 'dim'],
     ['裁剪', crop || '原始', crop ? '' : 'dim'],

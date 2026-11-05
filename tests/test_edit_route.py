@@ -147,3 +147,112 @@ def test_r11_opening_from_the_gallery_is_immediate_and_a_late_refresh_is_ignored
     assert out["shownFirst"] == "a0" and out["pageHadA"]
     assert out["shownAfter"] == "b0" and out["pageHasB"] and not out["pageHasStale"]
     assert out["keysFor"] == "b0"
+
+
+# ---- PR #30 独立评审（F01–F11）的回归 ---------------------------------------------------
+
+
+def test_retry_is_one_queued_write_and_newer_edits_win(tmp_path):
+    """F01：重试的 GET 还没回来时排进新修改、再 flush：flush 等重试和新修改都写完才放行；新修改最后写，服务器上是新值。"""
+    out = run(tmp_path, "retry-overlap")
+    assert out["saved"] is False
+    assert out["statusWhileRetrying"] == "saving" and out["flushedEarly"] is False
+    assert out["retry"] is True and out["newer"] is True
+    assert out["putValues"] == [1, 1, 2]  # 失败的一笔、重试补写、新修改
+    assert out["trace"] == ["flush@3"]
+    assert out["status"] == "saved" and out["server"] == 2
+
+
+def test_retry_does_not_replay_a_value_a_newer_save_replaced(tmp_path):
+    """F01：失败后同一项又改并写成功：失败记录随之清掉，重试什么都不写，不拿旧值盖回去。"""
+    out = run(tmp_path, "newer-edit-supersedes-failed")
+    assert out["newer"] is True and out["statusAfterNewer"] == "saved"
+    assert out["retry"] is True
+    assert out["putValues"] == [1, 2]
+    assert out["server"] == 2
+
+
+def test_retry_after_reopening_shows_what_was_written(tmp_path):
+    """F03：切走再回来后点底栏「重试」：写进去以后面板显示写进去的值，rev 跟服务器一致，下一笔照常写进去。"""
+    out = run(tmp_path, "retry-after-reopen")
+    assert out["reopenedExposure"] == 0 and out["statusReopened"] == "failed"
+    assert out["status"] == "saved"
+    assert out["viewExposure"] == 1
+    assert out["viewRev"] == out["serverRev"]
+    assert out["nextOk"] is True
+
+
+def test_reload_does_not_roll_back_a_newer_save(tmp_path):
+    """F04：重读编辑记录途中写进去一笔新修改：重读完 rev 和内容都是新的，下一笔不会 409。"""
+    out = run(tmp_path, "reload-race")
+    assert out["saved"] is True
+    assert out["viewRev"] == out["serverRev"] == 2
+    assert out["viewExposure"] == 2
+    assert out["nextOk"] is True and out["conflicts"] == 0
+
+
+def test_whole_day_export_waits_for_every_edited_photo_of_that_day(tmp_path):
+    """F02：B 的修改没写进去时，从大图换成「这一天的全部」或在图库导出这一天，都不发导出请求；只导出 A 这一张照常。"""
+    out = run(tmp_path, "date-export-barrier")
+    assert out["dayPostsFromViewer"] == 0 and "有修改没有保存" in out["dayFormText"]
+    assert out["singlePosts"] == 1
+    assert out["dayPostsFromGallery"] == 0 and "有修改没有保存" in out["galleryFormText"]
+
+
+def test_reset_locks_its_button_until_both_writes_finish(tmp_path):
+    """F09：复原点了马上锁住，连点不会多排写入；写完解锁。"""
+    out = run(tmp_path, "reset-double-click")
+    assert out["lockedAtOnce"] is True
+    assert out["puts"] == ["edit", "crop"]
+    assert out["unlocked"] is True
+
+
+def test_reset_partial_failure_keeps_the_draft_and_retries_only_the_failed_part(tmp_path):
+    """F09：复原时编辑没写进去、裁剪写进去了：底栏标成没保存；重试只补写编辑。"""
+    out = run(tmp_path, "reset-partial-failure")
+    assert out["status"] == "failed" and "有修改没有保存" in out["saveLine"]
+    assert out["retry"] is True and out["statusAfter"] == "saved"
+    assert out["retryPuts"] == ["edit"]
+
+
+def test_before_image_keeps_only_the_latest_response(tmp_path):
+    """F08：对比图两次请求乱序回来：缓存留最新几何的那张，晚到的旧结果不装、不建地址、不重画。"""
+    out = run(tmp_path, "before-out-of-order")
+    assert out["requests"] == 2
+    assert '"straighten":5' in out["key"]
+    assert out["urlsCreated"] == 1 and out["repaints"] == 1
+
+
+def test_viewer_finishes_a_partial_photo_list(tmp_path):
+    """F07：图库只取了第一页就打开照片：大图把列表取完，胶片条和序号用完整的列表。"""
+    out = run(tmp_path, "partial-list")
+    assert out["listLen"] == 2 and out["complete"] is True
+    assert out["title"] == "1 / 2"
+    assert out["prevDisabled"] == "true" and out["nextEnabled"] is True
+
+
+def test_info_panel_names_looks_and_camera_recipes_by_their_own_name(tmp_path):
+    """F11：Looks 和相机里的自定义配方写自己的名字；找不到时写类别，不冒用原厂底子的名字。"""
+    out = run(tmp_path, "info-names")
+    assert out["look"] == "NIGHT" and out["user"] == "MY BW"
+    assert out["missingLook"] == "Look"
+    assert "原厂标准" in out["builtin"]
+
+
+def test_camera_import_finishing_after_navigation_does_not_redraw_the_camera_page(tmp_path):
+    """F05：相机配方导入完成时已经回到图库：页面留在图库（相机数据照常更新）；没离开时照常重画相机页。"""
+    out = run(tmp_path, "camera-import-after-leave")
+    assert out["page"] == "GALLERY" and out["camdataReady"] is True
+    assert out["stayedPage"] is True and out["importedShown"] is True
+
+
+def test_export_dialog_keeps_focus_while_busy(tmp_path):
+    """F06：导出途中按钮用 aria-disabled 锁住（不 disabled，焦点不丢）；焦点被丢到 body 时 Tab 带回对话框；对话框开着时背后 inert。"""
+    out = run(tmp_path, "modal-focus-guard")
+    assert out["appInertOpen"] is True
+    assert out["submitDisabled"] is False and out["submitAriaDisabled"] == "true"
+    assert out["focusOnSubmit"] is True
+    assert out["exportPosts"] == 1
+    assert out["focusBackInDialog"] is True and out["tabPrevented"] is True
+    assert out["unlocked"] is True
+    assert out["appInertClosed"] is False

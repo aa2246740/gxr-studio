@@ -17,11 +17,11 @@ import { infoPanel } from './info_panel.js';
 import { paintStage } from './stage.js';
 import {
   ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, redoChange, syncUndo, beginChange, endChange,
-  persist, flushEdits, reloadEdit, stageLabels, refreshCaps, resetCropRemote, adjustBody,
+  persist, reloadEdit, stageLabels, refreshCaps, resetCropRemote, adjustBody,
   saveStatus, retrySaves, discardFailed,
 } from './preview.js';
 import { fetchAllPhotos } from './photos.js';
-import { delayed, SHOW_AFTER_MS } from './busy.js';
+import { delayed, busyButton, SHOW_AFTER_MS } from './busy.js';
 import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
 
 const zeroAdj = () => ({
@@ -477,13 +477,27 @@ on('save-status', (e) => {
   if (view && e.detail && e.detail.id === view.photo.id) paintSaveState(view);
 });
 
+// 重试保存成功（可能是切走又切回来以后才点的重试）：界面按服务器上现在的内容重读，
+// 不然面板还显示旧值，下一次调整会把刚补写进去的内容又盖回去（F03）
+on('save-retried', (e) => {
+  const v = view;
+  if (!v || !e.detail || e.detail.id !== v.photo.id || !v.ed) return;
+  reloadEdit(v, { refreshCatalog: false }).then(() => loadCrop(v).catch(() => {})).then(() => {
+    if (view !== v) return;
+    refreshPanes();
+    v.redrawSide?.();
+  });
+});
+
 function renderPanelFoot(v) {
+  // 点了马上锁住，两笔写入（编辑、裁剪）排完之前再点没有反应（F09）
+  const resetBtn = button('复原', { kind: 'ghost', ico: 'rotate-ccw', title: '整张回到原图（可以撤销）', onclick: () => busyButton(resetBtn, resetAll) });
   v.saveEl = h('span', { class: 'save-state', role: 'status' });
   paintSaveState(v);
   v.panelFoot.replaceChildren(
     v.saveEl,
     h('span', { class: 'grow' }),
-    button('复原', { kind: 'ghost', ico: 'rotate-ccw', title: '整张回到原图（可以撤销）', onclick: resetAll }),
+    resetBtn,
   );
 }
 
@@ -509,15 +523,24 @@ async function resetAll() {
   ed.frameFrom = 'photo';
   ed.stamp = normalizeStamp({ enabled: false });
   ed.stampFrom = 'photo';
-  // 乐观更新：面板和画面立刻回到原图，保存在后台排队；失败时底栏给「重试 / 放弃修改」
+  // 乐观更新：面板和画面立刻回到原图，保存在后台排队。
+  // 和其它修改一样，保存失败时界面保留复原后的样子（不自动改回去），底栏标成「有修改没有保存」，
+  // 给「重试 / 放弃修改」；放弃就按服务器上的内容重读。只写进去一半（比如裁剪成功、编辑失败）也一样：
+  // 重试只补写没写进去的那部分。
   if (view === v) {
     refreshPanes();
     schedulePreview(v, { full: true });
   }
   const saved = persist(v, changes);
   const cropSaved = resetCropRemote(v);
-  await Promise.all([saved, cropSaved]);
+  const results = await Promise.all([saved, cropSaved]);
   if (view !== v || v.ed !== ed) return;
+  if (!results.every(Boolean)) {
+    // 没写进去的那部分已经记在保存记录里，底栏会显示；撤销记录照常留着
+    endChange(v);
+    refreshPanes();
+    return;
+  }
   endChange(v);
   schedulePreview(v, { full: true });
   refreshPanes();
@@ -531,10 +554,20 @@ function step(d) {
   if (next) location.hash = `#/photo/${next.id}`;
 }
 
+// 胶片条和上一张/下一张要完整的列表。图库只取了第一页就被打开（照片多于 500 张）时，
+// state.photosComplete 是 false：照片已经在列表里也要接着取完，取完后补画胶片条和顶栏的序号（F07）
 async function ensurePhotos(id, isCurrent) {
-  if (state.photos.some((p) => p.id === id)) return;
-  const all = await fetchAllPhotos(state.galleryDate, { isCurrent }).catch(() => []);
-  if (all && isCurrent()) state.photos = all;
+  const have = state.photos.some((p) => p.id === id);
+  if (have && state.photosComplete !== false) return;
+  const date = state.galleryDate;
+  const all = await fetchAllPhotos(date, { isCurrent }).catch(() => null);
+  if (!all || !isCurrent() || state.galleryDate !== date) return;
+  state.photos = all;
+  state.photosComplete = true;
+  if (view && view.photo.id === id) {
+    renderFilmstrip(view);
+    syncViewbar();
+  }
 }
 
 function initialTab() {
@@ -555,7 +588,7 @@ function buildLayout(root, photo) {
   const labelsEl = h('div', { class: 'stage-labels', 'aria-live': 'polite' });
   const progressEl = h('div', { class: 'stage-progress', 'aria-hidden': 'true' });
   const viewbar = h('div', { class: 'viewbar', role: 'toolbar', 'aria-label': '视图' });
-  const film = h('div', { class: 'filmstrip', role: 'list', 'aria-label': '胶片条' });
+  const film = h('div', { class: 'filmstrip', role: 'group', 'aria-label': '胶片条' });
   const stageCol = h('div', { class: 'stagecol' }, h('div', { class: 'stage-shell' }, stageArea, labelsEl, progressEl), viewbar, film);
   const tabBtns = {};
   const panes = {};
@@ -726,8 +759,9 @@ export function openViewerTab(tab) {
   if (!view) return;
   if (tab === 'export') {
     const v = view;
+    // 导出前等哪些照片的保存由导出对话框按选的范围决定（这一张 / 这一天的全部，F02）
     openExportDialog({
-      ids: [v.photo.id], label: '这一张', photos: [v.photo], beforeSubmit: () => flushEdits(v),
+      ids: [v.photo.id], label: '这一张', photos: [v.photo],
       date: v.photo.date || null, dayLabel: v.photo.date ? `${fmtDate(v.photo.date)} 的全部` : null,
     });
     return;

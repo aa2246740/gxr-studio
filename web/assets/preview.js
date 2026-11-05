@@ -5,7 +5,7 @@
 
 import { api, apiBlob } from './api.js';
 import { state, on } from './state.js';
-import { saveRecord, writeSave, clearFailed, flushPhotos } from './saves.js';
+import { saveRecord, writeSave, clearFailed, flushPhotos, readFresh } from './saves.js';
 export { flushPhotos, saveStatus, retrySaves, SaveError } from './saves.js';
 import { toast, toastError } from './dom.js';
 import { applyCamdataStatus } from './camdata.js';
@@ -87,7 +87,10 @@ export function loadCatalog({ refresh = false } = {}) {
 // ---- 保存：裁切和编辑共用一个 rev（保存队列在 saves.js，按照片 id 存，不挂在 ed 上） ----------
 
 export function syncRev(view, rev) {
-  saveRecord(view.photo.id).rev = rev;
+  const rec = saveRecord(view.photo.id);
+  rec.rev = rev;
+  // 记下拍摄日期：「这一天的全部」导出前据此找出要等的照片（F02）
+  if (view.photo.date) rec.date = view.photo.date;
   if (view.ed) view.ed.rev = rev;
   if (view.crop) view.crop.rev = rev;
 }
@@ -155,11 +158,11 @@ export async function ensureEdit(view) {
   if (!view.edPromise) {
     view.edPromise = (async () => {
       const id = view.photo.id;
-      // 这张照片还有没写完的保存（刚切走又切回来）：等它们写完再读，读到的才是最新的 rev 和内容
-      await saveRecord(id).tail;
-      const [edit, , frames, defaults, caps, meta] = await Promise.all([
+      // 这张照片还有没写完的保存（刚切走又切回来）：等它们写完再读，读的过程中又有写入就重读（F04）
+      const [edit, , frames, defaults, caps, meta] = await readFresh(id, () => Promise.all([
         fetchEdit(view), loadCatalog(), loadFrames(), loadDefaults(), loadPhotoCaps(id), loadMeta(id),
-      ]);
+      ]));
+      if (view.disposed) throw new Error('这张照片已经关闭。');
       const ed = {
         v2: frames.state === 'ok',
         frames: frames.state === 'ok' ? frames.data : null,
@@ -187,28 +190,32 @@ export async function ensureEdit(view) {
   return view.edPromise;
 }
 
-// 从接口重新读一次（导入相机数据后、保存冲突后用）
-export async function reloadEdit(view) {
+// 从接口重新读一次（导入相机数据后、重试保存成功后、放弃修改后用）。
+// 读到的必须比本地新：读的过程中有新的写入就重读（readFresh）；视图已经关了或换了编辑对象就什么都不改，
+// 免得旧的内容和旧的 rev 盖掉刚写进去的（F04）。
+export async function reloadEdit(view, { refreshCatalog = true } = {}) {
   const ed = view.ed;
   if (!ed) return;
+  let edit;
+  let caps;
   try {
-    await saveRecord(view.photo.id).tail;
-    const [edit, , caps] = await Promise.all([fetchEdit(view), loadCatalog({ refresh: true }), loadPhotoCaps(view.photo.id, { refresh: true })]);
-    applyEdit(ed, edit);
-    ed.caps = capsFrom(view.photo, caps);
-    syncRev(view, ed.rev);
+    [edit, , caps] = await readFresh(view.photo.id, () => Promise.all([
+      fetchEdit(view), loadCatalog({ refresh: refreshCatalog }), loadPhotoCaps(view.photo.id, { refresh: refreshCatalog }),
+    ]));
   } catch (e) {
-    toastError(e, '无法重新读取这张照片的编辑记录。');
+    if (live(view) && view.ed === ed) toastError(e, '无法重新读取这张照片的编辑记录。');
     return;
   }
-  if (view.ed !== ed) return;
+  if (!live(view) || view.ed !== ed) return;
+  applyEdit(ed, edit);
+  ed.caps = capsFrom(view.photo, caps);
+  syncRev(view, ed.rev);
   view.redrawSide?.();
   schedulePreview(view, { full: true });
 }
 
 export async function loadCrop(view) {
-  await saveRecord(view.photo.id).tail;
-  const c = await api(`/api/photos/${view.photo.id}/crop`);
+  const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`));
   if (live(view)) setCrop(view, c);
 }
 
@@ -597,17 +604,21 @@ export function beforeUrl(view, onReady) {
   const hit = ed.before;
   if (hit && hit.key === key) return hit.url;
   if (hit && hit.loading === key) return hit.url || null;
-  const prev = hit ? hit.url : null;
-  ed.before = { key: hit ? hit.key : null, url: prev, loading: key };
+  // 每次请求带一个代号：几何参数连着改时会有几次请求同时在路上，只认最后一次的结果；
+  // 晚到的旧结果直接丢掉，不装进缓存、也不重画（F08）。换掉的地址按缓存里当时真正的那个释放。
+  const shown = hit ? hit.url : null;
+  const ticket = (ed.beforeSeq = (ed.beforeSeq || 0) + 1);
+  ed.before = { key: hit ? hit.key : null, url: shown, loading: key };
   apiBlob(`/api/photos/${view.photo.id}/render${renderQuery(ed, 'final', false)}`, { body }).then(({ blob }) => {
-    if (view.ed !== ed) return;
-    if (prev) URL.revokeObjectURL(prev);
+    if (view.ed !== ed || ed.beforeSeq !== ticket) return;
+    const old = ed.before && ed.before.url;
+    if (old) URL.revokeObjectURL(old);
     ed.before = { key, url: URL.createObjectURL(blob), loading: null };
     onReady?.();
   }, () => {
-    if (view.ed === ed) ed.before = { key: null, url: prev, loading: null };
+    if (view.ed === ed && ed.beforeSeq === ticket) ed.before = { key: null, url: ed.before && ed.before.url, loading: null };
   });
-  return prev;
+  return shown;
 }
 
 // 几何参数的指纹：有效画面要和它对得上才能用

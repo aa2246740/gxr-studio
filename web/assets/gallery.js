@@ -183,10 +183,12 @@ async function loadPhotos({ quiet = false } = {}) {
   try {
     photos = await fetchAllPhotos(state.galleryDate, {
       isCurrent,
-      onPage: (sofar) => {
+      onPage: (sofar, done) => {
         if (quiet || !isCurrent()) return;
         skeleton.cancel();
         state.photos = sofar;
+        // 还没取完：大图据此自己把剩下的页取完，不把这一页当成全部（F07）
+        state.photosComplete = done;
         if (first) {
           first = false;
           renderGrid();
@@ -210,6 +212,7 @@ async function loadPhotos({ quiet = false } = {}) {
   skeleton.cancel();
   if (!photos || !isCurrent()) return;
   state.photos = photos;
+  state.photosComplete = true;
   if (quiet) {
     if (!sameIds(before, photos)) renderGrid();
     updateCount();

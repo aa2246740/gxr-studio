@@ -54,19 +54,20 @@ def run(tmp_path: Path, scenario: str) -> dict:
 
 
 def test_feedback_tiers_stay_quiet_under_150ms(tmp_path):
-    """150ms 以内结束的操作什么都不显示；到 150ms 才出现原地反馈。档位是 150ms / 1s / 5s。"""
+    """150ms 以内结束的操作什么都不显示；到 150ms 才出现原地反馈，1s 起写出阶段文字。"""
     out = run(tmp_path, "thresholds")
-    assert out["tiers"] == [150, 1000, 5000]
+    assert out["tiers"] == [150, 1000]
     assert out["fastShown"] == 0 and out["fastFired"] is False
     assert out["before150"] == 0 and out["at150"] == 1 and out["slowFired"] is True
 
 
 def test_busy_button_locks_at_once_spins_late_and_offers_retry(tmp_path):
-    """点了马上锁住（再点不重发），150ms 后才转圈并换成「正在…」；结束恢复原文字；失败在旁边写原因并给「重试」。"""
+    """点了马上锁住（再点不重发），150ms 后只转圈，1 秒还没完才换成看得见的「正在…」；结束恢复原文字；失败在旁边写原因并给「重试」。"""
     out = run(tmp_path, "button-lock")
     assert out["lockedAtOnce"] is True and out["spinAtOnce"] is None
     assert out["secondResult"] is True and out["callsWhileLocked"] == 1
-    assert out["spinAfter150"] == "true" and out["textWhileBusy"] == "正在重建…"
+    assert out["spinAfter150"] == "true" and out["textAfter150"] == "重建索引" and out["phaseAfter150"] is None
+    assert out["textWhileBusy"] == "正在重建…" and out["phaseAfter1s"] == "text"
     assert out["result"] == "ok" and out["unlocked"] is True and out["textAfter"] == "重建索引"
     assert out["failedResult"] is True
     assert out["inlineError"].startswith("图库读不了") and out["inlineError"].endswith("重试")

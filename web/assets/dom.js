@@ -157,6 +157,33 @@ function trapTab(e, dialog) {
 
 let modalSeq = 0;
 
+// 对话框开着时背后的页面不可操作（inert），焦点也不会跑到背后去（F06）：
+// 对话框里的按钮被禁用、内容被替换时浏览器会把焦点丢到 body 上，对话框自己的 Tab 处理收不到按键，
+// 所以在 document 上再兜一层：焦点不在最上面的对话框里时，Tab 把它带回对话框。
+const BACKGROUND_IDS = ['app', 'card-pop'];
+
+function setBackgroundInert(on) {
+  for (const id of BACKGROUND_IDS) {
+    const el = document.getElementById(id);
+    if (el && el.toggleAttribute) el.toggleAttribute('inert', on);
+  }
+}
+
+let guardInstalled = false;
+function installFocusGuard() {
+  if (guardInstalled || typeof document.addEventListener !== 'function') return;
+  guardInstalled = true;
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab' || !modalStack.length) return;
+    const top = modalStack[modalStack.length - 1].dialog;
+    if (!top || top.contains(document.activeElement)) return;
+    e.preventDefault();
+    const list = focusables(top);
+    const target = e.shiftKey ? list[list.length - 1] : list[0];
+    (target || top).focus();
+  }, true);
+}
+
 // body：内容；foot：底部按钮（可选，固定在对话框底边）。返回 close()。
 export function openModal(title, body, { wide = false, onClose, foot = null, initialFocus = null } = {}) {
   const previous = document.activeElement;
@@ -165,6 +192,7 @@ export function openModal(title, body, { wide = false, onClose, foot = null, ini
     const i = modalStack.findIndex((m) => m.close === close);
     if (i < 0) return;
     modalStack.splice(i, 1);
+    if (!modalStack.length) setBackgroundInert(false);
     overlay.remove();
     // 退场动画：挪到 body 上淡出，modal-root 里立刻就没有它了
     if (document.body && typeof setTimeout === 'function') {
@@ -186,7 +214,9 @@ export function openModal(title, body, { wide = false, onClose, foot = null, ini
   dialog.addEventListener('keydown', (e) => trapTab(e, dialog));
   const overlay = h('div', { class: 'scrim', onclick: (e) => e.target === overlay && close() }, dialog);
   document.getElementById('modal-root').append(overlay);
-  modalStack.push({ close });
+  modalStack.push({ close, dialog });
+  setBackgroundInert(true);
+  installFocusGuard();
   const target = initialFocus || focusables(body instanceof Node ? dialog.children[1] || dialog : dialog)[0] || dialog;
   if (target && typeof target.focus === 'function') target.focus();
   return close;

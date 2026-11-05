@@ -8,7 +8,7 @@ import { state } from './state.js';
 import { h, openModal, fmtBytes, toast, toastError, errorBody, platform, setFraction } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
 import { toggle } from './controls.js';
-import { flushPhotos } from './saves.js';
+import { flushPhotos, flushDate } from './saves.js';
 import { trackJob } from './jobs.js';
 import { delayed, busyButton, SHOW_AFTER_MS, DETAIL_AFTER_MS } from './busy.js';
 
@@ -157,9 +157,11 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   let busy = false;
   let spin = null;
   // 点了马上锁住（防连点）；150ms 以后才转圈，免得快的时候一闪
+  // 用 aria-disabled 而不是 disabled：禁用正拿着焦点的按钮，浏览器会把焦点丢到对话框外面（F06）
   function lock(on) {
     busy = on;
-    button.disabled = on;
+    if (on) button.setAttribute('aria-disabled', 'true');
+    else button.removeAttribute('aria-disabled');
     spin?.cancel();
     spin = null;
     if (on) spin = delayed(() => button.setAttribute('aria-busy', 'true'), SHOW_AFTER_MS);
@@ -181,7 +183,8 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     lock(true);
     result.replaceChildren();
     try {
-      if (beforeSubmit) await beforeSubmit();
+      // 按这次真正要导出的范围等保存（F02）：这一天的全部要等这一天所有改过的照片，不只是打开对话框时的那几张
+      if (beforeSubmit) await beforeSubmit({ scope, ids: scope === 'ids' ? ids : [], date: scope === 'date' ? date : null });
       const opts = { size, quality_tier: qualityTier, dest_dir: dest.trim(), source: 'auto', precise, hdr };
       if (scope === 'ids' && ids.length === 1) {
         // 单张超过 1 秒（大尺寸、HDR）：写出在做什么，不让人以为卡住了
@@ -194,6 +197,8 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
           slow.cancel();
         }
         result.replaceChildren(resultBox('ok', singleResult(r)));
+        // 单张导出不能中途取消；对话框已经关了就用提示告诉结果（F10）
+        if (!result.isConnected) singleToast(r);
       } else {
         const body = scope === 'date' ? { ...opts, date } : { ...opts, ids };
         const job = await api('/api/export', { method: 'POST', body });
@@ -213,13 +218,29 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       } else {
         result.replaceChildren(resultBox('bad', errorBody(e, '导出失败。请重试。')));
       }
+      if (!result.isConnected) toastError(e, e && e.retrySave ? '有修改没有保存，导出已停止。' : '导出失败。请重试。');
     } finally {
       lock(false);
       if (result.scrollIntoView) result.scrollIntoView({ block: 'nearest' });
     }
   }
 
+  // 对话框在单张导出途中被关掉：告诉用户它会照常做完（openExportDialog 的 onClose 调用）
+  body.closedWhileBusy = () => {
+    if (busy && scope === 'ids' && ids && ids.length === 1) toast('导出会照常做完，完成后会提示你。', 'info');
+  };
   return body;
+}
+
+function singleToast(r) {
+  const btn = revealButton(r.export_id);
+  const actions = btn ? [{ label: revealLabel(), run: () => btn.click() }]
+    : (r.path && globalThis.navigator && navigator.clipboard ? [{ label: '复制路径', run: () => copyPath(r.path) }] : []);
+  toast(`已导出 1 张：${r.path}`, 'ok', { actions });
+}
+
+function copyPath(path) {
+  return navigator.clipboard.writeText(path).then(() => toast('已复制路径', 'ok'), (e) => toastError(e, '无法复制路径。'));
 }
 
 function singleResult(r) {
@@ -259,7 +280,7 @@ function copyPathButton(path) {
   if (!path || !(globalThis.navigator && navigator.clipboard)) return null;
   return h('button', {
     class: 'btn sm', type: 'button',
-    onclick: () => navigator.clipboard.writeText(path).then(() => toast('已复制路径', 'ok'), (e) => toastError(e, '无法复制路径。')),
+    onclick: () => copyPath(path),
   }, '复制路径');
 }
 
@@ -303,6 +324,11 @@ async function followBatch(job, out, photos = []) {
   }
 }
 
+// 导出前的保存关卡：选中的照片 → 等这几张；这一天的全部 → 等这一天所有这次改过的照片
+export function barrierFor({ scope, ids, date }) {
+  return scope === 'date' ? flushDate(date) : flushPhotos(ids || []);
+}
+
 // 导出对话框：图库的「导出」、大图的 ⌘E 都从这里打开
 export function openExportDialog({ ids, label, date = null, dayLabel = null, photos = null, beforeSubmit = null }) {
   const known = photos || state.photos.slice();
@@ -310,9 +336,9 @@ export function openExportDialog({ ids, label, date = null, dayLabel = null, pho
   // 选中的照片里有刚才在大图里改过、还没写完（或没写进去）的：先等它们，失败就停
   const form = exportForm({
     ids, label, photos: known, date, dayLabel,
-    beforeSubmit: beforeSubmit || (() => flushPhotos(ids || [])),
+    beforeSubmit: beforeSubmit || barrierFor,
     onCancel: () => close && close(),
   });
-  close = openModal('导出', form, { wide: false });
+  close = openModal('导出', form, { wide: false, onClose: () => form.closedWhileBusy?.() });
   return close;
 }

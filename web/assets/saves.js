@@ -14,7 +14,8 @@ const URLS = { edit: (id) => `/api/photos/${id}/edit`, crop: (id) => `/api/photo
 export function saveRecord(id) {
   let r = records.get(id);
   if (!r) {
-    r = { id, rev: null, tail: Promise.resolve(), pending: 0, failed: null, savedAt: 0 };
+    // gen：每排进一笔写入加一。读编辑记录的一方据此判断读到的是不是已经过时（F04）
+    r = { id, date: null, rev: null, tail: Promise.resolve(), pending: 0, gen: 0, failed: null, savedAt: 0, retrying: null };
     records.set(id, r);
   }
   return r;
@@ -38,6 +39,7 @@ function announce(r) {
 // 队列本身在失败后照常接受下一笔（下一笔不会因为前一笔失败而被跳过）。
 export function enqueue(rec, job) {
   rec.pending += 1;
+  rec.gen += 1;
   announce(rec);
   const run = rec.tail.then(async () => {
     try {
@@ -116,27 +118,64 @@ export async function flushPhotos(ids) {
   }
 }
 
-// 重试没写进去的修改：先读服务端现在的 rev（失败可能是 409），再把记下的内容写回去
-export async function retrySaves(id) {
+// 「这一天的全部」导出前调用（F02）：这一天里所有这次改过的照片都要写完。
+// 不知道是哪天拍的记录也算进来（宁可多等一张，也不拿旧编辑出图）。
+export async function flushDate(date) {
+  const ids = [...records.values()].filter((r) => !r.date || !date || r.date === date).map((r) => r.id);
+  await flushPhotos(ids);
+}
+
+// 读这张照片的编辑记录（或裁剪），读到的必须是最新的：先等排着的写入，读的过程中又有写入就重读（F04）。
+// read() 返回读到的内容；一直被新的写入打断（连续 5 次）就放弃并抛出，调用方保持现状。
+export async function readFresh(id, read) {
+  const rec = saveRecord(id);
+  for (let i = 0; i < 5; i += 1) {
+    await rec.tail;
+    const gen = rec.gen;
+    const out = await read();
+    if (rec.gen === gen && !rec.pending) return out;
+  }
+  throw new Error('这张照片正在保存，稍后再读。');
+}
+
+// 重试没写进去的修改（F01）：整个重试是保存队列里的一笔——先读服务端现在的 rev（失败可能是 409），
+// 再把还没写进去的内容写回去。导出前的 flush 会等到这一笔做完。
+// 失败记录一直保留到重试写成功；重试排队期间又写成功的新修改，会把同名的旧内容从失败记录里去掉，
+// 所以重试只补写还没被新修改盖掉的部分，不会拿旧值覆盖新值。
+// 成功后发 save-retried 事件，正在显示这张照片的视图据此重读（F03：界面要显示服务器上的内容）。
+export function retrySaves(id) {
   const rec = records.get(id);
-  if (!rec || !rec.failed) return true;
-  const { edit, crop } = rec.failed;
-  rec.failed = null;
-  const fresh = await enqueue(rec, async () => {
+  if (!rec || !rec.failed) return Promise.resolve(true);
+  if (rec.retrying) return rec.retrying;
+  const put = async (kind, body) => {
+    const r = await api(URLS[kind](id), { method: 'PUT', body: { ...body, expected_rev: rec.rev } });
+    rec.rev = r.rev;
+    clearSucceeded(rec, kind, body);
+  };
+  const job = async () => {
+    if (!rec.failed) return;
     try {
       rec.rev = (await api(URLS.edit(id))).rev;
+      // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
+      if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
+      if (rec.failed && rec.failed.crop) await put('crop', { ...rec.failed.crop });
     } catch (e) {
-      if (edit) recordFailure(rec, 'edit', edit, e);
-      if (crop) recordFailure(rec, 'crop', crop, e);
-      toastError(e, '无法保存修改。');
+      if (rec.failed) rec.failed.error = e;
       throw e;
     }
+  };
+  rec.retrying = enqueue(rec, job).then((ok) => {
+    rec.retrying = null;
+    if (ok && !rec.failed) {
+      toast('修改已保存', 'info');
+      emit('save-retried', { id });
+    } else {
+      toastError(rec.failed && rec.failed.error, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(id) } });
+    }
+    announce(rec);
+    return ok && !rec.failed;
   });
-  if (!fresh) return false;
-  const all = await Promise.all([edit && writeSave(rec, 'edit', edit), crop && writeSave(rec, 'crop', crop)].filter(Boolean));
-  const done = all.every(Boolean);
-  if (done) toast('修改已保存', 'info');
-  return done;
+  return rec.retrying;
 }
 
 // 放弃没写进去的修改（调用方随后按服务端的内容重读）

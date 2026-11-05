@@ -28,7 +28,7 @@ const out = {};
 
 if (scenario === 'thresholds') {
   const busy = await import(file('busy.js'));
-  out.tiers = [busy.SHOW_AFTER_MS, busy.DETAIL_AFTER_MS, busy.BACKGROUND_AFTER_MS];
+  out.tiers = [busy.SHOW_AFTER_MS, busy.DETAIL_AFTER_MS];
   // 快操作：149ms 内结束 → 什么都不显示
   let c = fakeClock();
   let shown = 0;
@@ -66,10 +66,14 @@ if (scenario === 'thresholds') {
   out.callsWhileLocked = calls;
   await new Promise((r) => setTimeout(r, 170));
   out.spinAfter150 = btn.getAttribute('aria-busy');
+  out.textAfter150 = btn.textContent;
+  out.phaseAfter150 = btn.dataset.phase || null;
+  await new Promise((r) => setTimeout(r, 900));
   out.textWhileBusy = btn.textContent;
+  out.phaseAfter1s = btn.dataset.phase || null;
   release('ok');
   out.result = await first;
-  out.unlocked = btn.getAttribute('aria-disabled') === null && btn.getAttribute('aria-busy') === null && btn.dataset.busy === '';
+  out.unlocked = btn.getAttribute('aria-disabled') === null && btn.getAttribute('aria-busy') === null && btn.dataset.busy === '' && !btn.dataset.phase;
   out.textAfter = btn.textContent;
   // 失败：按钮旁边写原因并给「重试」，重试再跑一次 task
   let fail = true;

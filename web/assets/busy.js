@@ -2,12 +2,12 @@
 //   < 150ms：什么都不显示，免得一闪而过；
 //   150ms–1s：原地的轻反馈（按钮里转圈并锁住、细进度条、骨架）；
 //   > 1s：写出进度（n/N、百分比）或阶段文字；
-//   > 5s 或后台任务：可以取消，进度留在顶栏（jobs.js），结束后用带操作的提示告诉结果。
+//   后台任务（批量导出、导入）：可以取消，进度留在顶栏（jobs.js），结束后用带操作的提示告诉结果。
+//   单张导出、重建索引这类一次请求做完的操作不能中途取消：对话框关掉也照常做完，完成或失败时用提示告诉结果。
 // 这里只放和 DOM 无关或只碰一个元素的小工具，方便用 node 单独测（tests/test_busy.py）。
 
 export const SHOW_AFTER_MS = 150;
 export const DETAIL_AFTER_MS = 1000;
-export const BACKGROUND_AFTER_MS = 5000;
 
 // 延迟执行：ms 之内 cancel() 了就什么都不做。返回 { cancel, fired }。
 export function delayed(fn, ms = SHOW_AFTER_MS, { setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
@@ -45,10 +45,12 @@ export async function busyButton(btn, task, { onError = null, busyText = null } 
   btn.setAttribute('aria-disabled', 'true');
   const label = btn.querySelector ? btn.querySelector('span') : null;
   const before = label ? label.textContent : null;
-  const spin = delayed(() => {
-    btn.setAttribute('aria-busy', 'true');
-    if (busyText && label) label.textContent = busyText;
-  });
+  // 150ms：只转圈；1 秒还没完、给了 busyText：写出阶段文字（「正在重建…」）
+  const spin = delayed(() => btn.setAttribute('aria-busy', 'true'));
+  const phase = busyText && label ? delayed(() => {
+    label.textContent = busyText;
+    btn.dataset.phase = 'text';
+  }, DETAIL_AFTER_MS) : null;
   clearInlineError(btn);
   try {
     return await task();
@@ -57,6 +59,8 @@ export async function busyButton(btn, task, { onError = null, busyText = null } 
     return undefined;
   } finally {
     spin.cancel();
+    phase?.cancel();
+    delete btn.dataset.phase;
     btn.dataset.busy = '';
     btn.removeAttribute('aria-busy');
     btn.removeAttribute('aria-disabled');

@@ -114,7 +114,11 @@ export class TestNode extends EventTarget {
   getBoundingClientRect() { return { x: 0, y: 0, left: 0, top: 0, width: 800, height: 600, right: 800, bottom: 600 }; }
   getContext() { return null; }
   decode() { return Promise.resolve(); }
+  // 冒泡是把同一个事件依次交给父节点；e.target 要一直是最初的那个节点（浏览器就是这样），
+  // 不然遮罩「点在自己身上才关」的判断会把对话框里的每一次点击都当成点了遮罩
   dispatchEvent(event) {
+    if (!event.__origin) event.__origin = this;
+    else Object.defineProperty(event, 'target', { value: event.__origin, configurable: true });
     const r = super.dispatchEvent(event);
     if (event.bubbles && !event.cancelBubble && this.parentNode) this.parentNode.dispatchEvent(event);
     return r;
@@ -185,7 +189,9 @@ export function installDom() {
   globalThis.IntersectionObserver = class { constructor(cb) { this.cb = cb; } observe() {} unobserve() {} disconnect() {} };
   globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' });
   globalThis.localStorage = (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })();
-  if (!globalThis.navigator) Object.defineProperty(globalThis, 'navigator', { value: { platform: 'MacIntel', userAgent: 'node' }, configurable: true, writable: true });
+  // Node 21+ 自带 navigator，platform 是真实系统（Linux/Windows CI 上不是 Mac）；场景按 Mac 写，这里固定下来，
+  // 要测别的系统的用词时由场景自己传 'win'
+  Object.defineProperty(globalThis, 'navigator', { value: { platform: 'MacIntel', userAgent: 'node' }, configurable: true, writable: true });
   URL.createObjectURL = () => `blob:${Math.random().toString(36).slice(2)}`;
   URL.revokeObjectURL = () => {};
   for (const id of ['view', 'modal-root', 'toast-root']) {

@@ -22,7 +22,10 @@ const PHOTOS = {
 };
 const byId = (id) => Object.values(PHOTOS).find((p) => p.id === id);
 const key = (id) => Object.keys(PHOTOS).find((k) => PHOTOS[k].id === id);
-const editOf = (id) => ({ rev: revs[key(id)], recipe: null, lut: null, adjust: {}, curve: null, geometry: {}, frame: null, stamp: null, memory: {} });
+// 写进去的编辑字段留在这里，再读编辑记录时原样带回来（重开照片要看到写进去的内容）
+const stored = {};
+const editOf = (id) => ({ rev: revs[key(id)], recipe: null, lut: null, adjust: {}, curve: null, geometry: {}, frame: null, stamp: null, memory: {}, ...(stored[id] || {}) });
+let camStatus = { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
 const cropOf = (id) => ({ preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, orientation: 'landscape', frame: { width: 3000, height: 2000 }, rev: revs[key(id)] });
 
 class StubError extends Error {
@@ -45,10 +48,20 @@ async function answer(method, url, body) {
     const k = key(m[1]);
     if (body.expected_rev !== revs[k]) throw new StubError(409, '这张照片刚被别处改过。');
     revs[k] += 1;
+    if (m[2] === 'edit') {
+      const { expected_rev: _rev, ...fields } = body;
+      stored[m[1]] = { ...(stored[m[1]] || {}), ...fields };
+    }
     return m[2] === 'edit' ? { ...editOf(m[1]), rev: revs[k] } : { ...cropOf(m[1]), ...body, rect: body.rect || [0, 0, 1, 1], rev: revs[k] };
   }
   if (method === 'POST' && (m = /^\/api\/photos\/(\w+)\/export$/.exec(url))) return { path: '/tmp/x_gxr.jpg', width: 10, height: 10, bytes: 100, export_id: 'e1' };
   if (method === 'PUT' && url === '/api/prefs') return body;
+  if (method === 'POST' && url === '/api/export') return { id: 'j1', state: 'done', progress: { done: 1, total: 1, results: [] } };
+  if (method === 'GET' && url === '/api/camdata/status') return camStatus;
+  if (method === 'POST' && url === '/api/camdata/import-card') {
+    camStatus = { ready: true, camera_data: { state: 'ready' }, calibration: { state: 'ready' } };
+    return { message: '已导入相机配方文件' };
+  }
   throw new Error(`没有替身：${method} ${url}`);
 }
 
@@ -67,8 +80,19 @@ globalThis.apiStub = async (url, opts = {}) => {
   }
   return answer(method, url, opts.body);
 };
-// 预览图：永远不回来也没关系（AbortController 会取消）；这里直接给一张空图
-globalThis.apiBlobStub = async () => ({ blob: {}, headers: { get: () => null } });
+// 预览图：永远不回来也没关系（AbortController 会取消）；这里直接给一张空图。
+// blobManual 打开时，/render 请求排进 blobQueue，由脚本决定先后放行（对比图的乱序场景）
+let blobManual = false;
+const blobQueue = [];
+globalThis.apiBlobStub = (url, opts = {}) => {
+  if (blobManual && url.includes('/render')) {
+    return new Promise((resolve) => blobQueue.push({ body: opts.body, resolve: () => resolve({ blob: { body: opts.body }, headers: { get: () => null } }) }));
+  }
+  return Promise.resolve({ blob: {}, headers: { get: () => null } });
+};
+let urlCount = 0;
+const createUrl = URL.createObjectURL;
+URL.createObjectURL = (b) => { urlCount += 1; return createUrl(b); };
 
 const { state } = await import(file('state.js'));
 const viewer = await import(file('viewer.js'));
@@ -259,6 +283,245 @@ if (scenario === 'reset-then-switch') {
   out.pageHasB = pageText().includes(PHOTOS.B.name);
   out.pageHasStale = pageText().includes('RENAMED.DNG') || pageText().includes(PHOTOS.A.name);
   out.keysFor = router.keys() ? shown() : null;
+} else if (scenario === 'retry-overlap') {
+  // F01：重试是保存队列里的一笔。重试的 GET 还没回来时，排进一笔更新的修改、再点导出（flush）：
+  // flush 要等重试和新修改都写完；新修改最后写，服务器上留下的是新值
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  out.saved = await preview.persist(v, { adjust: { exposure_ev: 1 } });
+  holds.add(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  const newer = preview.persist(v, { adjust: { exposure_ev: 2 } });
+  const trace = [];
+  const flush = preview.flushEdits(v).then(() => trace.push(`flush@${puts(PHOTOS.A.id).length}`), (e) => trace.push(`flush:${e.code}`));
+  await tick();
+  out.statusWhileRetrying = preview.saveStatus(PHOTOS.A.id);
+  out.flushedEarly = trace.length > 0;
+  g.release(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  out.newer = await newer;
+  await flush;
+  await tick(5);
+  out.putValues = puts(PHOTOS.A.id).map((r) => r.body.adjust.exposure_ev);
+  out.trace = trace;
+  out.status = preview.saveStatus(PHOTOS.A.id);
+  out.server = stored[PHOTOS.A.id].adjust.exposure_ev;
+} else if (scenario === 'newer-edit-supersedes-failed') {
+  // F01：失败之后、点重试之前又改了同一项并写成功：重试不能拿旧值盖回去
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await preview.persist(v, { adjust: { exposure_ev: 1 } });
+  out.newer = await preview.persist(v, { adjust: { exposure_ev: 2 } });
+  out.statusAfterNewer = preview.saveStatus(PHOTOS.A.id);
+  out.retry = await preview.retrySaves(PHOTOS.A.id);
+  out.putValues = puts(PHOTOS.A.id).map((r) => r.body.adjust.exposure_ev);
+  out.server = stored[PHOTOS.A.id].adjust.exposure_ev;
+} else if (scenario === 'retry-after-reopen') {
+  // F03：A 上的修改没写进去；切到 B 再回 A（面板读的是服务器上的旧值），点底栏的「重试」：
+  // 写进去以后，面板要显示写进去的值，rev 和服务器一致，下一笔不会 409
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await preview.persist(viewer.currentView(), { adjust: { exposure_ev: 1 } });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  out.reopenedExposure = v.ed.adj.exposure_ev;
+  out.statusReopened = preview.saveStatus(PHOTOS.A.id);
+  const line = find(document.body, (n) => n.classList && n.classList.contains('save-state'));
+  buttonByText('重试', line).click();
+  await tick(15);
+  out.status = preview.saveStatus(PHOTOS.A.id);
+  out.viewExposure = viewer.currentView().ed.adj.exposure_ev;
+  out.viewRev = viewer.currentView().ed.rev;
+  out.serverRev = revs.A;
+  out.nextOk = await preview.persist(viewer.currentView(), { adjust: { exposure_ev: 1, contrast: 5 } });
+} else if (scenario === 'reload-race') {
+  // F04：重读编辑记录的请求还没全部回来时写进去一笔新修改；重读不能把 rev 和内容退回旧的
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  holds.add('GET /api/recipes');
+  const reload = preview.reloadEdit(v);
+  await tick();
+  out.saved = await preview.persist(v, { adjust: { exposure_ev: 2 } });
+  g.release('GET /api/recipes', { units: [] });
+  await reload;
+  await tick(5);
+  out.viewRev = v.ed.rev;
+  out.serverRev = revs.A;
+  out.viewExposure = v.ed.adj.exposure_ev;
+  out.nextOk = await preview.persist(v, { adjust: { exposure_ev: 3 } });
+  out.conflicts = requests.filter((r) => r.method === 'PUT').length - 2;
+} else if (scenario === 'date-export-barrier') {
+  // F02：「这一天的全部」导出前要等这一天所有改过的照片。B 的修改没写进去：
+  // 从大图（A）把范围换成这一天的全部、或者在图库里导出这一天，都不能发出导出请求；只导出 A 这一张可以
+  const { openExportDialog } = await import(file('export.js'));
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.B.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await preview.persist(viewer.currentView(), { adjust: { exposure_ev: 1 } });
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  let form = await openExport();
+  find(form, (n) => n.tagName === 'BUTTON' && n.textContent.endsWith('的全部')).click();
+  buttonByText('导出', form).click();
+  await tick(10);
+  out.dayPostsFromViewer = requests.filter((r) => r.method === 'POST' && r.url === '/api/export').length;
+  out.dayFormText = form.textContent;
+  find(form, (n) => n.tagName === 'BUTTON' && n.textContent === '这一张').click();
+  buttonByText('导出', form).click();
+  await tick(10);
+  out.singlePosts = requests.filter((r) => r.method === 'POST' && r.url === `/api/photos/${PHOTOS.A.id}/export`).length;
+  const { closeTopModal } = await import(file('dom.js'));
+  closeTopModal();
+  await new Promise((r) => setTimeout(r, 200)); // 关掉的对话框淡出 160ms 后才移走
+  await go('#/photos');
+  await tick();
+  openExportDialog({ ids: [], date: PHOTOS.A.date, dayLabel: '这一天的全部', photos: state.photos });
+  await tick();
+  const submits = [];
+  const walk = (n) => { if (n.tagName === 'BUTTON' && n.textContent.trim() === '导出' && n.parentNode.classList.contains('modal-foot')) submits.push(n); n.children.forEach(walk); };
+  walk(document.body);
+  form = submits[submits.length - 1].parentNode.parentNode;
+  submits[submits.length - 1].click();
+  await tick(10);
+  out.dayPostsFromGallery = requests.filter((r) => r.method === 'POST' && r.url === '/api/export').length;
+  out.galleryFormText = form.textContent;
+} else if (scenario === 'reset-double-click') {
+  // F09：「复原」点了马上锁住；两笔写入（编辑、裁剪）还在路上时再点没有反应
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const reset = buttonByText('复原');
+  reset.click();
+  await tick();
+  out.lockedAtOnce = reset.getAttribute('aria-disabled') === 'true';
+  reset.click();
+  reset.click();
+  await tick();
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  await tick(15);
+  out.puts = puts(PHOTOS.A.id).map((r) => r.url.split('/').pop());
+  out.unlocked = reset.getAttribute('aria-disabled') === null;
+} else if (scenario === 'reset-partial-failure') {
+  // F09：复原时编辑写失败、裁剪写成功：界面保留复原后的样子，底栏标成没保存，重试只补写编辑
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  buttonByText('复原').click();
+  await tick(15);
+  out.status = preview.saveStatus(PHOTOS.A.id);
+  out.saveLine = (find(document.body, (n) => n.classList && n.classList.contains('save-state')) || { textContent: '' }).textContent;
+  const before = puts(PHOTOS.A.id).length;
+  out.retry = await preview.retrySaves(PHOTOS.A.id);
+  out.retryPuts = puts(PHOTOS.A.id).slice(before).map((r) => r.url.split('/').pop());
+  out.statusAfter = preview.saveStatus(PHOTOS.A.id);
+} else if (scenario === 'before-out-of-order') {
+  // F08：对比图连着请求两次（拉直 0°、5°），5° 的先回来、0° 的后回来：缓存留 5° 的，旧结果不装、不多建地址
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  blobManual = true;
+  const start = urlCount;
+  let repaints = 0;
+  v.ed.geometry = { ...v.ed.geometry, straighten: 0 };
+  preview.beforeUrl(v, () => repaints++);
+  v.ed.geometry = { ...v.ed.geometry, straighten: 5 };
+  preview.beforeUrl(v, () => repaints++);
+  out.requests = blobQueue.length;
+  blobQueue[1].resolve();
+  await tick();
+  blobQueue[0].resolve();
+  await tick();
+  out.key = v.ed.before.key;
+  out.urlsCreated = urlCount - start;
+  out.repaints = repaints;
+} else if (scenario === 'partial-list') {
+  // F07：图库只取了第一页就打开照片（照片多于一页）：大图要自己把列表取完，胶片条和序号用完整的列表
+  state.photos = [PHOTOS.A];
+  state.photosComplete = false;
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(10);
+  out.listLen = state.photos.length;
+  out.complete = state.photosComplete;
+  const counter = find(root, (n) => n.classList && n.classList.contains('info') && n.classList.contains('num'));
+  out.title = counter ? counter.textContent : '';
+  out.prevDisabled = viewer.currentView().vb.prev.getAttribute('aria-disabled');
+  out.nextEnabled = viewer.currentView().vb.next.getAttribute('aria-disabled') === null;
+} else if (scenario === 'info-names') {
+  // F11：信息面板里 Looks 和相机里的自定义配方写它们自己的名字，不写原厂底子的名字
+  const { recipeName } = await import(file('info_panel.js'));
+  state.catalog = { units: [{ id: 'jlaunch', recipes: [{ slot: 4, name: '原厂标准' }], looks: [{ id: 'night', name: 'NIGHT', slot: 4 }], users: [{ id: 'u1', name: 'MY BW', slot: 4 }] }] };
+  const fake = { photo: PHOTOS.A, ed: { recipe: null } };
+  out.look = recipeName(fake, { kind: 'look', id: 'night', unit: 'jlaunch', slot: 4 });
+  out.user = recipeName(fake, { kind: 'camera_user', id: 'u1', unit: 'jlaunch', slot: 4 });
+  out.missingLook = recipeName(fake, { kind: 'look', id: 'gone', unit: 'jlaunch', slot: 4 });
+  out.builtin = recipeName(fake, { unit: 'jlaunch', slot: 4 });
+} else if (scenario === 'camera-import-after-leave') {
+  // F05：在相机页点「从存储卡导入配方」，导入还没完成就回到图库；完成后不能把相机页画回来
+  const { renderCamera } = await import(file('camera_page.js'));
+  let current = true;
+  holds.add('POST /api/camdata/import-card');
+  renderCamera(root, () => current);
+  await tick(5);
+  buttonByText('从存储卡导入配方', root).click();
+  await tick();
+  current = false;
+  root.replaceChildren(Object.assign(document.createElement('div'), { id: 'gallery-stub', text: 'GALLERY' }));
+  g.release('POST /api/camdata/import-card');
+  await tick(15);
+  out.page = root.textContent;
+  out.camdataReady = state.camdata && state.camdata.ready;
+  // 还没离开的时候，导入完成照常重画相机页
+  current = true;
+  camStatus = { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
+  state.camdata = { ready: false, state: 'missing' };
+  renderCamera(root, () => current);
+  await tick(5);
+  buttonByText('从存储卡导入配方', root).click();
+  await tick(15);
+  out.stayedPage = root.textContent.includes('配方位置一览');
+  out.importedShown = root.textContent.includes('已导入');
+} else if (scenario === 'modal-focus-guard') {
+  // F06：导出途中按钮锁住时焦点不能跑出对话框；焦点被丢到 body 上时，Tab 把它带回对话框；背后的页面 inert
+  const app = Object.assign(document.createElement('div'), { id: 'app' });
+  document.body.append(app);
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  holds.add(`POST /api/photos/${PHOTOS.A.id}/export`);
+  const form = await openExport();
+  out.appInertOpen = app.hasAttribute('inert');
+  const submit = buttonByText('导出', form);
+  submit.focus();
+  submit.click();
+  await tick();
+  out.submitDisabled = submit.hasAttribute('disabled');
+  out.submitAriaDisabled = submit.getAttribute('aria-disabled');
+  out.focusOnSubmit = document.activeElement === submit;
+  submit.click(); // 锁住时再点：不重发
+  await tick();
+  out.exportPosts = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).length;
+  document.activeElement = document.body; // 浏览器把焦点丢到 body 上
+  const ev = new Event('keydown', { cancelable: true });
+  ev.key = 'Tab';
+  ev.shiftKey = false;
+  document.dispatchEvent(ev);
+  const dialog = find(document.body, (n) => n.getAttribute && n.getAttribute('role') === 'dialog');
+  out.focusBackInDialog = dialog.contains(document.activeElement);
+  out.tabPrevented = ev.defaultPrevented;
+  g.release(`POST /api/photos/${PHOTOS.A.id}/export`);
+  await tick(5);
+  out.unlocked = submit.getAttribute('aria-disabled') === null;
+  const { closeTopModal } = await import(file('dom.js'));
+  closeTopModal();
+  out.appInertClosed = app.hasAttribute('inert');
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }
