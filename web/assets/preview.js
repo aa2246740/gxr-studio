@@ -461,13 +461,13 @@ function restoreSnapshot(view, s) {
   // 只还原这一步改过的组；没改过的保持现在的样子（Y01）
   // 装饰回到撤销前的状态：原来继承默认的，写 null（后端按当前默认值算）；明确设置的，写原来的内容（R2-09）。
   // 只有真的变了才写回去，不然撤销会把 frame 键写进编辑记录。
+  // 边框、印记分开判断、分开写：只撤边框时不带 stamp 键，不然会把另一组没写进去、等着重试的修改冲掉（Z01）
   const tf = own.has('frame') ? o : ed;
   const ts = own.has('stamp') ? o : ed;
   const frameOwn = tf.frameFrom === 'photo';
   const stampOwn = ts.stampFrom === 'photo';
-  const finishChanged = ed.frameFrom !== tf.frameFrom || ed.stampFrom !== ts.stampFrom
-    || (frameOwn && JSON.stringify(ed.frame) !== JSON.stringify(tf.frame))
-    || (stampOwn && JSON.stringify(ed.stamp) !== JSON.stringify(ts.stamp));
+  const frameChanged = own.has('frame') && (ed.frameFrom !== tf.frameFrom || (frameOwn && JSON.stringify(ed.frame) !== JSON.stringify(tf.frame)));
+  const stampChanged = own.has('stamp') && (ed.stampFrom !== ts.stampFrom || (stampOwn && JSON.stringify(ed.stamp) !== JSON.stringify(ts.stamp)));
   const changes = {};
   if (own.has('recipe')) {
     ed.recipe = o.recipe;
@@ -483,19 +483,25 @@ function restoreSnapshot(view, s) {
     changes.curve = curveBody(ed);
   }
   if (ed.v2 && own.has('geometry') && o.geometry) changes.geometry = ed.geometry = o.geometry;
-  if (finishChanged) {
+  if (frameChanged || stampChanged) {
     const fin = resolveFinish({ frame: frameOwn ? tf.frame : null, stamp: stampOwn ? ts.stamp : null }, ed.defaults);
-    Object.assign(ed, { frame: fin.frame, frameFrom: fin.frameFrom, stamp: fin.stamp, stampFrom: fin.stampFrom });
-    if (ed.v2) Object.assign(changes, {
-      frame: frameOwn ? frameBody(ed.frame, styleOptions(ed, ed.frame.style)) : null,
-      stamp: stampOwn ? ed.stamp : null,
-    });
+    if (frameChanged) {
+      Object.assign(ed, { frame: fin.frame, frameFrom: fin.frameFrom });
+      if (ed.v2) changes.frame = frameOwn ? frameBody(ed.frame, styleOptions(ed, ed.frame.style)) : null;
+    }
+    if (stampChanged) {
+      Object.assign(ed, { stamp: fin.stamp, stampFrom: fin.stampFrom });
+      if (ed.v2) changes.stamp = stampOwn ? ed.stamp : null;
+    }
   }
   if (Object.keys(changes).length) persist(view, changes);
   if (own.has('crop') && o.crop && view.crop) {
     const cur = view.crop;
-    const same = JSON.stringify(cur.rect) === JSON.stringify(o.crop.rect) && cur.preset === o.crop.preset;
-    if (!same) saveCrop(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: geometryOf(view).straighten || 0, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });
+    // 旧版的拉直角度存在裁剪里：只改了角度的一步也要还原（Z02）；新版的角度在 geometry 里，用（可能刚还原的）几何
+    const angle = ed.v2 ? geometryOf(view).straighten || 0 : o.crop.angle_deg || 0;
+    const same = JSON.stringify(cur.rect) === JSON.stringify(o.crop.rect) && cur.preset === o.crop.preset
+      && (ed.v2 ? cur.orientation === o.crop.orientation : (cur.angle_deg || 0) === angle);
+    if (!same) saveCrop(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: angle, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });
   }
   schedulePreview(view, { full: true });
   view.redrawSide?.();

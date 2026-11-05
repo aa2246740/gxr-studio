@@ -1062,6 +1062,76 @@ if (scenario === 'reset-then-switch') {
   out.pending = !!v.pending;
   out.straighten = (stored[PHOTOS.A.id].geometry || {}).straighten ?? null;
   out.geometryWrites = requests.filter((r) => r.method === 'PUT' && r.url === `/api/photos/${PHOTOS.A.id}/edit` && r.body && r.body.geometry).length;
+} else if (scenario === 'decoration-undo-other-group' || scenario === 'decoration-undo-during-retry') {
+  // Z01：打开印记的那一笔失败，原地刷新后选白边并保存，然后只撤销边框。
+  // 撤销只写 frame（不带 stamp 键），印记那笔失败的修改还在，重试能补写回来。
+  // during-retry：重试先发出去、补写被压住时撤销边框，补写回来后不能被撤销冲掉
+  const id = PHOTOS.A.id;
+  const edits = () => requests.filter((r) => r.method === 'PUT' && r.url === `/api/photos/${id}/edit`);
+  await go(`#/photo/${id}`);
+  await tick();
+  const v = viewer.currentView();
+  const step = async (patch, body) => {
+    preview.beginChange(v);
+    patch();
+    await preview.persist(v, body()).then(() => preview.endChange(v));
+  };
+  failures.set(`PUT /api/photos/${id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await step(() => { v.ed.stamp = { ...v.ed.stamp, enabled: true }; v.ed.stampFrom = 'photo'; }, () => ({ stamp: v.ed.stamp }));
+  await viewer.refreshViewerPhoto();
+  await tick(5);
+  out.stampAfterRefresh = !!(v.ed.stamp && v.ed.stamp.enabled);
+  await step(() => { v.ed.frame = { ...v.ed.frame, style: 'white' }; v.ed.frameFrom = 'photo'; }, () => ({ frame: { style: 'white' } }));
+  out.frameSaved = stored[id].frame;
+  let retry = null;
+  if (scenario === 'decoration-undo-during-retry') {
+    holds.add(`PUT /api/photos/${id}/edit`);
+    retry = preview.retrySaves(id);
+    await tick();
+  }
+  const before = edits().length;
+  preview.undoChange(v);
+  if (retry) {
+    await tick();
+    g.release(`PUT /api/photos/${id}/edit`);
+  }
+  await preview.flushEdits(v).catch(() => {}); // 印记还没补写时会报「有修改没有保存」，这是对的
+  await tick(5);
+  out.undoKeys = edits().slice(before).map((r) => Object.keys(r.body).filter((k) => k !== 'expected_rev').sort());
+  out.statusAfterUndo = preview.saveStatus(id);
+  out.retry = retry ? await retry : await preview.retrySaves(id);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.final = { frame: stored[id].frame ?? null, stamp: !!(stored[id].stamp && stored[id].stamp.enabled), status: preview.saveStatus(id) };
+} else if (scenario === 'legacy-angle-undo') {
+  // Z02：旧接口（没有 /api/frames）的拉直角度存在裁剪里。只拉直 5° 的一步，撤销回到 0°、重做回到 5°，都要写回去
+  failures.set('GET /api/frames', new StubError(404, 'Not Found'));
+  const id = PHOTOS.A.id;
+  await go(`#/photo/${id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  out.v2 = !!v.ed.v2;
+  const crops = () => requests.filter((r) => r.method === 'PUT' && r.url === `/api/photos/${id}/crop`).map((r) => r.body);
+  v.canvas = { w: 3000, h: 2000 };
+  v.crop.rect = { x: 0.1, y: 0.2, w: 0.5, h: 0.4 };
+  v.crop.preset = 'free';
+  const { nudgeStraighten } = await import(file('correct.js'));
+  out.before = v.crop.angle_deg;
+  nudgeStraighten(v, 5);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterAction = v.crop.angle_deg;
+  out.actionBodies = crops().map((b) => ({ angle_deg: b.angle_deg, rect: b.rect, preset: b.preset }));
+  const n = crops().length;
+  preview.undoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterUndo = { angle: v.crop.angle_deg, bodies: crops().slice(n).map((b) => ({ angle_deg: b.angle_deg, rect: b.rect, preset: b.preset })) };
+  const m = crops().length;
+  preview.redoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  out.afterRedo = { angle: v.crop.angle_deg, bodies: crops().slice(m).map((b) => ({ angle_deg: b.angle_deg, rect: b.rect, preset: b.preset })) };
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

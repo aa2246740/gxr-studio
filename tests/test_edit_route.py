@@ -423,3 +423,33 @@ def test_ruler_key_held_when_focus_leaves_is_saved_once(tmp_path):
     assert out["found"] is True and out["v2"] is True
     assert out["pending"] is False
     assert out["straighten"] == 0.1 and out["geometryWrites"] == 1
+
+
+def test_undoing_the_frame_keeps_the_failed_stamp_for_retry(tmp_path):
+    """Z01：印记那笔失败、原地刷新后改边框又撤销：撤销只写 frame，印记的失败还在，重试补写回来。"""
+    out = run(tmp_path, "decoration-undo-other-group")
+    assert out["stampAfterRefresh"] is False and out["frameSaved"] == {"style": "white"}
+    assert out["undoKeys"] == [["frame"]]
+    assert out["statusAfterUndo"] == "failed"
+    assert out["retry"] is True
+    assert out["final"] == {"frame": None, "stamp": True, "status": "saved"}
+
+
+def test_undoing_the_frame_during_a_stamp_retry_does_not_overwrite_it(tmp_path):
+    """Z01：印记的重试已经发出、还没回来时撤销边框：补写回来的印记不会被撤销冲掉。"""
+    out = run(tmp_path, "decoration-undo-during-retry")
+    assert out["retry"] is True
+    # 重试那笔在撤销之前就发出去了（被压住）；撤销只写 frame，不带 stamp 键
+    assert out["undoKeys"] == [["frame"]]
+    assert out["final"] == {"frame": None, "stamp": True, "status": "saved"}
+
+
+def test_legacy_angle_only_undo_and_redo_write_the_angle(tmp_path):
+    """Z02：旧接口只拉直了 5° 的一步：撤销写回 0°，重做写回 5°，框不动。"""
+    out = run(tmp_path, "legacy-angle-undo", real=("correct.js", "crop.js"))
+    assert out["v2"] is False
+    assert out["afterAction"] == 5
+    assert out["afterUndo"]["angle"] == 0
+    assert out["afterUndo"]["bodies"] == [{"angle_deg": 0, "rect": [0.1, 0.2, 0.5, 0.4], "preset": "free"}]
+    assert out["afterRedo"]["angle"] == 5
+    assert out["afterRedo"]["bodies"] == [{"angle_deg": 5, "rect": [0.1, 0.2, 0.5, 0.4], "preset": "free"}]
