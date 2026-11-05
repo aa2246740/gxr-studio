@@ -53,7 +53,7 @@ async function change(id, body, redraw) {
     emit('luts-changed'); // 显卡预览的 LUT 表作废（gpu_stage.js）
     await loadLutLibrary();
     redraw(result);
-  } catch (e) { toastError(e, '无法完成操作。请重试。'); }
+  } catch (e) { toastError(e, '没有改好这个 LUT。请重试。'); }
 }
 
 async function newGroup(redraw) {
@@ -64,7 +64,7 @@ async function newGroup(redraw) {
     filter = group.id;
     await loadLutLibrary();
     redraw();
-  } catch (e) { toastError(e, '无法完成操作。请重试。'); }
+  } catch (e) { toastError(e, '没有建好分组。请重试。'); }
 }
 
 async function renameGroup(redraw) {
@@ -75,7 +75,7 @@ async function renameGroup(redraw) {
     await api(`/api/lut-groups/${group.id}`, { method: 'PATCH', body: { name } });
     await loadLutLibrary();
     redraw();
-  } catch (e) { toastError(e, '无法完成操作。请重试。'); }
+  } catch (e) { toastError(e, '没有改好分组名称。请重试。'); }
 }
 
 function removeGroup(redraw) {
@@ -110,7 +110,7 @@ function exportReceipt(exports) {
 
 async function exportLut(lut) {
   try { exportReceipt([await api(`/api/luts/${lut.cube_id}/export`, { method: 'POST' })]); }
-  catch (e) { toastError(e, '无法完成操作。请重试。'); }
+  catch (e) { toastError(e, '没有导出这个 LUT。请重试。'); }
 }
 
 async function exportGroup() {

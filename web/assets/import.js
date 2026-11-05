@@ -3,7 +3,7 @@
 import { api } from './api.js';
 import { state, emit } from './state.js';
 import { h, toast, toastError, setFraction, platform } from './dom.js';
-import { doneStatusText, hasProblems, multiCardNote, summarizeImport } from './import_summary.js';
+import { doneStatusText, ejectWords, hasProblems, multiCardNote, summarizeImport } from './import_summary.js';
 
 // 本次会话里已经自动处理过的卡（卡拔掉后会移出，插回来可以再导入缺的部分）。键是挂载会话号（card_id）
 const handled = new Set();
@@ -89,7 +89,7 @@ async function loadSummary(card) {
     state.cardSummary = await api(`/api/cards/${card.id}/summary`);
   } catch (e) {
     state.cardSummary = null;
-    toastError(e, '无法完成操作。请重试。');
+    toastError(e, '无法读取存储卡上的照片列表。请重试。');
   }
 }
 
@@ -107,7 +107,7 @@ export async function startImport(card = state.card) {
     }
     // 任务没建起来：回到可以重试的状态，横幅里出现「导入」按钮（不自动连续重发）
     handled.delete(card.id);
-    toastError(e, '无法完成操作。请重试。');
+    toastError(e, '导入没有开始。请重试。');
     renderBanner();
     renderCardStatus();
     return;
@@ -164,7 +164,7 @@ export async function tickImport() {
 export function cancelImport() {
   const job = state.job;
   if (!job || !job.running) return;
-  api(`/api/jobs/${job.id}/cancel`, { method: 'POST' }).catch((e) => toastError(e, '无法完成操作。请重试。'));
+  api(`/api/jobs/${job.id}/cancel`, { method: 'POST' }).catch((e) => toastError(e, '没有取消成功。请重试。'));
 }
 
 export function dismissBanner() {
@@ -313,7 +313,8 @@ function appendNotes(slot) {
 }
 
 function summarize(job) {
-  const r = summarizeImport(job.progress);
+  const s = summarizeImport(job.progress);
+  const r = { ...s, text: ejectWords(s.text, platform()) };
   // 没有卡时不能继续，写明原因而不是放一个点了没反应的按钮
   const retry = state.card
     ? h('button', { class: 'btn sm primary', type: 'button', onclick: () => startImport() }, '导入')
@@ -372,7 +373,8 @@ export function renderCardStatus() {
   }
   const job = state.job;
   if (job && job.progress.state === 'done' && job.id !== state.dismissedJobId && jobIsForCurrentCard(job)) {
-    el.textContent = doneStatusText(job.progress);
+    el.textContent = ejectWords(doneStatusText(job.progress), platform());
+    paintChip(hasProblems(job.progress) ? 'bad' : 'ok');
   } else {
     el.textContent = '存储卡：已插入';
     paintChip('ok');

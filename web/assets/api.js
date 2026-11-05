@@ -38,8 +38,11 @@ async function readJson(res) {
   }
 }
 
+// 后端没给说明时只有一句通用的话；generic 标记让界面换成这个操作自己的说法（dom.js 的 errorBody）
 function errorFrom(res, data) {
-  return new ApiError(res.status, data?.error || `http_${res.status}`, data?.message || '无法完成操作。请重试。', data);
+  const err = new ApiError(res.status, data?.error || `http_${res.status}`, data?.message || '无法完成操作。请重试。', data);
+  err.generic = !data?.message;
+  return err;
 }
 
 export async function api(path, { method = 'GET', body, headers } = {}) {

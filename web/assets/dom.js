@@ -97,8 +97,9 @@ export function toast(message, kind = 'info', { action = null, actions = null, t
 }
 
 // 错误（COPY 3.13）：主句照常显示；后端给了 detail（异常原文、路径、内部键名）时，主句下面放一个默认收起的「详细信息」。
+// 后端给了说明就用后端的；只有一句通用的话（err.generic）时用调用方写的、这个操作自己的说法
 export function errorBody(err, fallback) {
-  const text = (err && err.message) || fallback;
+  const text = (err && !err.generic && err.message) || fallback || (err && err.message) || '没有完成。请重试。';
   const detail = err && err.data && err.data.detail;
   if (!detail) return text;
   return h('div', {}, h('p', { class: 'err-main' }, text), h('details', { class: 'err-detail' }, h('summary', {}, '详细信息'), h('p', { class: 'small dim' }, String(detail))));

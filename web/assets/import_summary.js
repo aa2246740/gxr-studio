@@ -107,6 +107,12 @@ export function summarizeImport(p) {
   }
 }
 
+// 「推出」是 macOS 的说法；Windows 上叫「弹出」（ORCH_DECISIONS：Windows 用「可以弹出」）。
+// 后端的结果句子和这里的文字都写「推出」，显示前按系统换掉。
+export function ejectWords(text, os) {
+  return os === 'win' && typeof text === 'string' ? text.replaceAll('推出', '弹出') : text;
+}
+
 // 状态栏里卡那一栏的文字（导入结束后）
 export function doneStatusText(p) {
   if (canEject(p)) return '存储卡：可以推出';

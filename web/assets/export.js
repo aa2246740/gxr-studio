@@ -97,7 +97,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     prefs.export_hdr = on;
     api('/api/prefs', { method: 'PUT', body: { export_hdr: on } }).then(
       (saved) => { state.prefs = saved; },
-      (error) => toastError(error, '无法保存修改。请重试。'),
+      (error) => toastError(error, '没有记住 HDR 的选择，下次导出要重新打开。'),
     );
   }
 
@@ -155,7 +155,13 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
 
   async function submit() {
     if (!dest.trim()) {
-      result.replaceChildren(resultBox('bad', '导出失败。请重试。'));
+      destInput.setAttribute('aria-invalid', 'true');
+      result.replaceChildren(resultBox('bad', '请填写导出位置（文件夹的完整路径）。'));
+      destInput.focus();
+      return;
+    }
+    if (scope === 'ids' && !(ids && ids.length)) {
+      result.replaceChildren(resultBox('bad', '没有选中照片。请先在图库里选择要导出的照片。'));
       return;
     }
     button.disabled = true;

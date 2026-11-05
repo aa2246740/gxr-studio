@@ -620,10 +620,7 @@ export async function renderViewer(root, id, isCurrent = () => true) {
     toastError(cropRes.reason, '无法读取裁剪。请重试。');
     v.crop = { preset: 'original', rect: { x: 0, y: 0, w: 1, h: 1 }, angle_deg: 0, active: false, frame: { width: photo.width || 1, height: photo.height || 1 }, rev: 0 };
   }
-  if (edRes.status === 'rejected') {
-    v.edError = edRes.reason;
-    toastError(edRes.reason, '无法读取编辑记录。请重试。');
-  }
+  if (edRes.status === 'rejected') v.edError = edRes.reason;
   // 编辑记录坏了：按原图显示，并说明（COPY 3.9）
   if ((v.crop && v.crop.warning) || (v.ed && v.ed.warning)) toast('无法读取编辑记录，已按原图显示', 'info');
 

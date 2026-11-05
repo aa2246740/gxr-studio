@@ -1,6 +1,6 @@
 # GXR 电脑工作室
 
-给理光 GXR 配套的本地网页工具：插卡导入照片、按日期整理、裁成 XPan 等比例、套配方看"电脑预测"、导出 JPEG。
+给理光 GXR 配套的本地网页工具：插卡导入照片、按日期整理、裁成 XPan 等比例、套配方看"电脑预测"、导出 JPG。
 所有东西都在你自己的电脑上，不联网，不往相机的卡上写任何东西。
 
 ## 三步开始用（macOS）
@@ -24,7 +24,8 @@
    - 启动时，在第一次写图库之前就会核对：图库文件夹本身、或其中的 `.studio`（索引、锁、日志、缩略图等）在存储卡上，
      或经过链接指到了图库以外的位置，工作室不会打开，启动窗口里会说明原因（退出码 78）。请把图库放在电脑上的普通文件夹里。
    - 同时插着几张卡时一次只处理第一张，页面会提示；处理完拔掉它再处理下一张。
-3. **点开一张照片**：「裁切」里选 XPan 65:24；「配方」「调整」里调颜色和曝光；「导出」存成 JPEG。
+3. **点开一张照片**：「裁剪」里选 XPan 65:24；「配方」「调整」里调颜色和曝光；按 ⌘E（Windows 上 Ctrl+E）导出成 JPG。
+   尺寸四档：原始、大（长边 3000 像素）、中（2048）、小（1600）；品质三档：高、中、低（JPG 质量 95 / 85 / 70）。
    想看配方的颜色预测，需要先导入相机数据（「配方」标签里点「从卡导入」，卡上要有 `GXRCE.DAT`），
    再导入颜色标定——后者目前只有开发机能做（见下面"第一次使用"），其它功能不受影响。
 
@@ -189,7 +190,7 @@ tests/                     pytest；tests/perf/ 是性能基线
 | `GET/PUT/DELETE /api/photos/{id}/crop` | 裁切：`{preset, rect:[x,y,w,h], angle_deg, flip?, expected_rev?}`；不给 `rect` 就取该比例居中的最大框 |
 | `GET /api/crop-presets` | 比例预设：original、3:2、4:3、1:1、4:5、16:9、16:10、1.91:1、2.35:1、xpan-65-24、free（社交媒体按钮复用这些比例，横竖由 `flip` 决定） |
 | `POST /api/photos/{id}/export` `{long_edge?, quality, format?, size?, quality_tier?, dest_dir?}` | 导出一张，`format` = jpeg｜png，`size` = large/medium/small/original（3000/2048/1600/原始），`quality_tier` = high/medium/low（95/85/70）；文件名 `原名_gxr.jpg`，重名加 `-2`、`-3`。只有 RAW 时导出"中性转换"（白平衡后的线性数据 → sRGB，不加配方），文件名 `原名_gxr_neutral.jpg`，返回里 `render` = neutral-preview、`render_label` = 中性转换；RAW 读不出来才返回 409 `no_jpg_source` |
-| `POST /api/export` `{ids｜date, long_edge?, quality, dest_dir?}` → 202 任务 | 批量导出；`ids` 里已经不存在的照片（例如补全另一半后 id 变了）不会让整批失败，而是在结果里记为 `photo_not_found`，其余照常导出 |
+| `POST /api/export` `{ids｜date, long_edge?, quality, size?, quality_tier?, dest_dir?, hdr?}` → 202 任务 | 批量导出，尺寸档和质量档同单张导出；`ids` 里已经不存在的照片（例如补全另一半后 id 变了）不会让整批失败，而是在结果里记为 `photo_not_found`，其余照常导出 |
 | `POST /api/exports/{export_id}/reveal` | 在访达中显示这次导出的第一张。`export_id` 是单张导出返回的 `export_id`，或批量任务的 `id`。不接受路径参数。不是 macOS 时返回 501 |
 | `POST /api/library/rebuild?verify=` | 丢掉索引，按目录和 sidecar 重建；读不出来的 sidecar 先改名成 `<名>.gxrs.json.corrupt-<时间>` 留着再建新的（返回里 `corrupt_backups` 列出） |
 | `GET /api/camdata/status` | 相机数据/标定是否已导入、来源、三个单元是否齐全、插着的卡里哪张有 GXRCE.DAT、下一步 |

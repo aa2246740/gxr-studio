@@ -73,7 +73,8 @@ function redraw() {
   if (!alive()) return;
   root.replaceChildren(
     h('h2', {}, '配方'),
-    h('p', { class: 'hint', dataset: { role: 'recipe-hint' } }, RECIPE_APPLY_HINT),
+    // 第一行单独看不懂（U17）：前面写明这是相机上的操作
+    h('p', { class: 'hint' }, h('span', { class: 'dim' }, '在相机上：'), h('span', { dataset: { role: 'recipe-hint' } }, RECIPE_APPLY_HINT)),
     librarySection({ select: selectLut, onImport: resetFlow, selected: flow.cube?.cube_id, redraw: libraryChanged, busy: !!flow.busy }),
     importSection(),
     recipesSection(),
@@ -83,7 +84,7 @@ function redraw() {
 // ---------------------------------------------------------------- 导入
 
 function importSection() {
-  const sec = h('section', { class: 'lut-card' }, h('h3', {}, '导入 LUT'));
+  const sec = h('section', { class: 'lut-card' }, h('h3', {}, '用 LUT 生成配方'));
   if (flow.error) sec.append(h('div', { class: 'result bad small' }, flow.error));
   if (flow.imports.length) sec.append(h('ul', { class: 'small lut-import-results', role: 'status' }, flow.imports.map((r) => h('li', {},
     `${r.path} · ${r.status === 'error' ? r.message : r.status === 'duplicate' ? '已在 LUT 库中' : r.status === 'skipped' ? '已跳过' : '已导入'}`))));
@@ -166,7 +167,7 @@ async function takeFiles(files) {
 async function selectLut(data) {
   if (flow.job?.state === 'running') {
     try { await api(`/api/lut/fit/${flow.job.job_id}/cancel`, { method: 'POST' }); }
-    catch (error) { flow.error = errorBody(error, '无法完成操作。请重试。'); redraw(); return; }
+    catch (error) { flow.error = errorBody(error, '没有停下正在生成的配方。请重试。'); redraw(); return; }
   }
   stopPolling();
   Object.assign(flow, { cube: data, job: null, chosen: 0, saved: null, which: 'lut', space: data.input_space || '',
@@ -196,7 +197,7 @@ function nextName() {
 async function resetFlow() {
   if (flow.job?.state === 'running') {
     try { await api(`/api/lut/fit/${flow.job.job_id}/cancel`, { method: 'POST' }); }
-    catch (error) { flow.error = errorBody(error, '无法完成操作。请重试。'); redraw(); return; }
+    catch (error) { flow.error = errorBody(error, '没有停下正在生成的配方。请重试。'); redraw(); return; }
   }
   stopPolling();
   flow.nonce++;
@@ -410,7 +411,7 @@ async function cancelFit() {
   try {
     flow.job = await api(`/api/lut/fit/${flow.job.job_id}/cancel`, { method: 'POST' });
   } catch (e) {
-    toastError(e, '无法完成操作。请重试。');
+    toastError(e, '没有取消成功。请重试。');
   }
   stopPolling();
   redraw();
@@ -471,7 +472,7 @@ async function saveRecipe() {
     toast(`已存储为「${flow.saved.name}」`, 'ok');
     flow.name = nextName();
   } catch (e) {
-    toastError(e, '无法完成操作。请重试。');
+    toastError(e, '没有存下这个配方。请重试。');
   } finally {
     flow.busy = null;
     redraw();
@@ -521,5 +522,5 @@ function editName(r) {
   if (next === null) return;
   api(`/api/my-recipes/${r.id}`, { method: 'PUT', body: { name: next } })
     .then((doc) => { flow.recipes = flow.recipes.map((x) => (x.id === doc.id ? doc : x)); redraw(); })
-    .catch((e) => toastError(e, '无法完成操作。请重试。'));
+    .catch((e) => toastError(e, '没有改好名称。请重试。'));
 }
