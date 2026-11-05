@@ -43,6 +43,7 @@ export class TestNode extends EventTarget {
   get firstChild() { return this.children[0] || null; }
   get lastChild() { return this.children[this.children.length - 1] || null; }
   get firstElementChild() { return this.children.find((c) => c.nodeType === 1) || null; }
+  get lastElementChild() { return this.children.findLast((c) => c.nodeType === 1) || null; }
   get childElementCount() { return this.children.filter((c) => c.nodeType === 1).length; }
   get parentElement() { return this.parentNode; }
   get isConnected() { return this === document.body || this === document.documentElement || !!(this.parentNode && this.parentNode.isConnected); }

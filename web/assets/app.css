@@ -592,6 +592,8 @@ table.keys h4, .keys-group { margin: 14px 0 6px; font: var(--fw-semibold) var(--
 /* 骨架：内容来之前先占位（只淡入淡出，不动尺寸） */
 .skel { background: var(--gray-850); border-radius: var(--r-sm); animation: pulse 1.4s ease-in-out infinite; }
 .skel.line { height: 12px; margin: 8px 0; }
+/* 面板骨架：编辑记录 150ms 内就到的话什么都不显示（和 busy.js 的 SHOW_AFTER_MS 一致），慢了才淡入 */
+.pane[aria-busy="true"], .skel-group[aria-busy="true"] { --delay-show: 150ms; animation: fadein var(--dur-base) var(--ease-standard) var(--delay-show) both; }
 @keyframes pulse { 50% { opacity: .55; } }
 
 /* ================= 配方页（LUT、相机配方文件） ================= */

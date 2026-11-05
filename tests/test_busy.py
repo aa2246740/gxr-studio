@@ -103,6 +103,15 @@ def test_gallery_shift_range_and_toggle_selection(tmp_path):
     assert out["inputUntouched"] == ["a"]
 
 
+def test_gallery_background_refresh_keeps_the_grid(tmp_path):
+    """导入完成或重建索引后的后台刷新：已经有照片时不再闪骨架；列表没变不重画，变了一次换上。"""
+    out = run(tmp_path, "gallery-quiet-refresh")
+    assert out["before"] == 2
+    assert out["skelAfterQuiet"] == 0 and out["sameNode"] is True
+    assert out["skelAfterChange"] == 0 and out["after"] == 3
+    assert out["same"] is True and out["diffBadge"] is False
+
+
 def test_redo_puts_back_what_undo_took_and_a_new_change_clears_it(tmp_path):
     """⇧⌘Z / Ctrl+Y 重做：撤销掉的一步能放回来；没有可重做的时候不动；新的改动让重做作废。"""
     out = run(tmp_path, "redo")

@@ -156,6 +156,33 @@ if (scenario === 'thresholds') {
   const orig = new Set(['a']);
   g.toggleSelect(orig, 'c');
   out.inputUntouched = list(orig);
+} else if (scenario === 'gallery-quiet-refresh') {
+  // 后台刷新（library-changed）：网格已有照片时不放骨架；列表没变不重画；变了一次换上
+  const { state, emit } = await import(file('state.js'));
+  const g = await import(file('gallery.js'));
+  const photo = (id) => ({ id, name: id, date: '2026-10-01', captured_at: null, thumb_url: `/t/${id}`, has_raw: true, has_jpg: true });
+  let list = [photo('a'), photo('b')];
+  globalThis.apiStub = async (url) => (url.startsWith('/api/dates') ? [{ date: '2026-10-01', count: list.length }] : list);
+  state.selection = new Set();
+  const root = document.createElement('div');
+  document.body.append(root);
+  await g.renderGallery(root);
+  await tick(5);
+  const firstCell = root.querySelector('[role="option"]');
+  out.before = root.querySelectorAll('[role="option"]').length;
+  emit('library-changed');
+  await new Promise((r) => setTimeout(r, 400)); // 过了 150ms 的骨架门槛
+  await tick(5);
+  out.skelAfterQuiet = root.querySelectorAll('.skel').length;
+  out.sameNode = root.querySelector('[role="option"]') === firstCell;
+  list = [photo('a'), photo('b'), photo('c')];
+  emit('library-changed');
+  await new Promise((r) => setTimeout(r, 400));
+  await tick(5);
+  out.skelAfterChange = root.querySelectorAll('.skel').length;
+  out.after = root.querySelectorAll('[role="option"]').length;
+  out.same = g.sameIds([photo('a')], [photo('a')]);
+  out.diffBadge = g.sameIds([photo('a')], [{ ...photo('a'), hdr: 'ready' }]);
 } else if (scenario === 'redo') {
   globalThis.apiStub = async (url, opts = {}) => ({ rev: 1, ...(opts.body || {}) });
   const p = await import(file('preview.js'));

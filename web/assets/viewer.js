@@ -299,7 +299,7 @@ async function retryEdit(v) {
 
 function cropPanelWrap() {
   return h('div', { class: 'pane' },
-    view.canvas ? cropSection(view) : h('div', { 'aria-busy': 'true' }, h('div', { class: 'skel line' }), h('div', { class: 'skel line' })),
+    view.canvas ? cropSection(view) : h('div', { class: 'skel-group', 'aria-busy': 'true' }, h('div', { class: 'skel line' }), h('div', { class: 'skel line' })),
     correctSection(view),
     h('div', { class: 'sticky-foot' }, ...correctActions(view), h('button', { type: 'button', class: 'btn sm primary end', onclick: finishCrop }, '完成')),
   );

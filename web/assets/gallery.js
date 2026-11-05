@@ -85,9 +85,10 @@ export async function renderGallery(container, isCurrent = () => true) {
   await loadAll();
 }
 
+// 后台刷新（导入完成、重建索引后）：网格已经有照片时不放骨架，读完整列表再一次换上；列表没变就什么都不动，缩略图不闪
 on('library-changed', async () => {
   await pruneSelection();
-  if (root && galleryCurrent()) loadAll();
+  if (root && galleryCurrent()) loadAll({ quiet: true });
 });
 
 // 补全另一半后照片的 id 会变：勾选集里留着旧 id 的话，批量导出会拿到不存在的照片，所以先把已经不在图库里的去掉
@@ -99,8 +100,8 @@ async function pruneSelection() {
   for (const id of [...state.selection]) if (!alive.has(id)) state.selection.delete(id);
 }
 
-async function loadAll() {
-  await Promise.all([loadDates(), loadPhotos()]);
+async function loadAll(opts = {}) {
+  await Promise.all([loadDates(), loadPhotos(opts)]);
 }
 
 function sideItem(label, count, date, numeric = false) {
@@ -164,13 +165,15 @@ function renderLibbar() {
 }
 
 // 第一页没到之前：150ms 内什么都不画，超过就放骨架格子（加载态分档，见 busy.js）
-async function loadPhotos() {
+async function loadPhotos({ quiet = false } = {}) {
   const seq = ++loadSeq;
   const isCurrent = () => seq === loadSeq && galleryCurrent();
   const wrap = document.getElementById('grid-wrap');
-  renderLibbar();
+  const before = state.photos;
+  quiet = quiet && !!wrap && !!wrap.querySelector('[role="option"]');
+  if (!quiet) renderLibbar();
   const skeleton = delayed(() => {
-    if (!isCurrent() || !wrap) return;
+    if (quiet || !isCurrent() || !wrap) return;
     wrap.setAttribute('aria-busy', 'true');
     wrap.replaceChildren(h('div', { class: 'cells' }, Array.from({ length: 12 }, () => h('div', { class: 'cell ph skel', 'aria-hidden': 'true' }))));
   });
@@ -181,7 +184,7 @@ async function loadPhotos() {
     photos = await fetchAllPhotos(state.galleryDate, {
       isCurrent,
       onPage: (sofar) => {
-        if (!isCurrent()) return;
+        if (quiet || !isCurrent()) return;
         skeleton.cancel();
         state.photos = sofar;
         if (first) {
@@ -196,7 +199,7 @@ async function loadPhotos() {
     });
   } catch (e) {
     skeleton.cancel();
-    if (!isCurrent() || !wrap) return;
+    if (quiet || !isCurrent() || !wrap) return; // 后台刷新失败：留着现在的网格，下次再刷
     wrap.setAttribute('aria-busy', 'false');
     wrap.replaceChildren(h('div', { class: 'empty' },
       h('h2', {}, '无法读取照片列表'),
@@ -207,10 +210,22 @@ async function loadPhotos() {
   skeleton.cancel();
   if (!photos || !isCurrent()) return;
   state.photos = photos;
+  if (quiet) {
+    if (!sameIds(before, photos)) renderGrid();
+    updateCount();
+    return;
+  }
   if (first) renderGrid();
   else if (photos.length > shown) appendCells(photos.slice(shown));
   wrap?.setAttribute('aria-busy', 'false');
   updateCount();
+}
+
+export function sameIds(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  // 整条比：角标（编辑过、HDR、只有 RAW）跟着字段变，变了要重画
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i] && JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false;
+  return true;
 }
 
 function updateCount() {
