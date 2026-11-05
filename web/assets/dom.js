@@ -21,11 +21,30 @@ export function h(tag, props = {}, ...children) {
   return el;
 }
 
-export function toast(message, kind = 'info') {
+// 短提示：右下角叠放，新的在下面。action = { label, run } 时带一个按钮（重试、打开…），点了就关。
+// 出错的停留久一点；鼠标停在上面或焦点在里面时不自动消失（详细信息要能点开）。
+export function toast(message, kind = 'info', { action = null, timeout = null } = {}) {
   const root = document.getElementById('toast-root');
-  const el = h('div', { class: `toast ${kind}`, role: 'status' }, message);
+  if (!root) return null;
+  const close = () => {
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 160);
+  };
+  const actBtn = action ? h('button', { class: 'btn ghost small', type: 'button', onclick: () => { close(); action.run(); } }, action.label) : null;
+  const el = h('div', { class: `toast ${kind}` },
+    h('div', { class: 'toast-msg' }, message),
+    actBtn,
+    h('button', { class: 'btn icon ghost small toast-x', type: 'button', 'aria-label': '关闭', title: '关闭', onclick: close }, '✕'));
   root.append(el);
-  setTimeout(() => el.remove(), kind === 'error' ? 6000 : 3200);
+  const ms = timeout ?? (kind === 'error' || action ? 8000 : 3200);
+  let timer = setTimeout(close, ms);
+  const hold = () => clearTimeout(timer);
+  const resume = () => { clearTimeout(timer); timer = setTimeout(close, 2000); };
+  el.addEventListener('pointerenter', hold);
+  el.addEventListener('pointerleave', resume);
+  el.addEventListener('focusin', hold);
+  el.addEventListener('focusout', resume);
+  return close;
 }
 
 // 错误（COPY 3.13）：主句照常显示；后端给了 detail（异常原文、路径、内部键名）时，主句下面放一个默认收起的「详细信息」。
@@ -37,8 +56,8 @@ export function errorBody(err, fallback) {
   return h('div', {}, h('p', { class: 'err-main' }, text), h('details', { class: 'err-detail' }, h('summary', {}, '详细信息'), h('p', { class: 'small dim' }, String(detail))));
 }
 
-export function toastError(err, fallback) {
-  toast(errorBody(err, fallback), 'error');
+export function toastError(err, fallback, opts = {}) {
+  return toast(errorBody(err, fallback), 'error', opts);
 }
 
 const modalStack = [];

@@ -7,6 +7,7 @@ import { state } from './state.js';
 import { h, openModal, fmtBytes, toast, toastError, errorBody } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
 import { toggle } from './controls.js';
+import { flushPhotos } from './saves.js';
 
 const SIZES = [
   [null, '原始尺寸'],
@@ -190,7 +191,18 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
         await followBatch(job, result, photos);
       }
     } catch (e) {
-      result.replaceChildren(resultBox('bad', errorBody(e, '导出失败。请重试。')));
+      // 有修改没写进去（R05）：导出停止，不拿服务器上的旧编辑出图；给「重试保存」，保存成功后可以再导出
+      if (e && e.retrySave) {
+        const retry = h('button', { class: 'btn small', type: 'button', onclick: async () => {
+          retry.disabled = true;
+          const ok = await e.retrySave();
+          retry.disabled = false;
+          if (ok) result.replaceChildren(resultBox('ok', '修改已保存，可以导出了。'));
+        } }, '重试保存');
+        result.replaceChildren(resultBox('bad', h('div', {}, errorBody(e, '有修改没有保存。'), h('p', { class: 'small' }, '导出已停止，没有生成文件。'), retry)));
+      } else {
+        result.replaceChildren(resultBox('bad', errorBody(e, '导出失败。请重试。')));
+      }
     } finally {
       button.disabled = false;
       result.scrollIntoView({ block: 'nearest' });
@@ -265,6 +277,7 @@ async function followBatch(job, out, photos = []) {
 export function openExportDialog({ ids, label, date = null, dayLabel = null }) {
   const photos = state.photos.slice();
   let close = null;
-  const form = exportForm({ ids, label, photos, date, dayLabel, onCancel: () => close && close() });
+  // 选中的照片里有刚才在大图里改过、还没写完（或没写进去）的：先等它们，失败就停
+  const form = exportForm({ ids, label, photos, date, dayLabel, beforeSubmit: () => flushPhotos(ids || []), onCancel: () => close && close() });
   close = openModal('导出', form, { wide: true });
 }

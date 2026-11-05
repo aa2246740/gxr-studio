@@ -122,6 +122,7 @@ def _run_scene(tmp_path: Path) -> dict:
         encoding="utf-8",
     )
     (folder / "preview.js").write_text("export const BASE_NAMES = [];\nexport const KNOB_NAMES = {};\n", encoding="utf-8")
+    shutil.copy(ASSETS / "saves.js", folder / "saves.js")
     (folder / "lut_library.js").write_text(
         "\n".join(
             [

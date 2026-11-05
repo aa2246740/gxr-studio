@@ -263,6 +263,8 @@ table.keys td:first-child { white-space: nowrap; width: 150px; }
 .edit-panel h2 { margin: 0 0 6px; font-size: 16px; }
 .edit-panel p { margin: 6px 0; }
 .warn-text { color: var(--warn); }
+.bad-text { color: var(--bad); }
+.save-state { display: inline-flex; gap: 6px; align-items: center; }
 .pred-chip {
   display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid #2f5a40;
   color: var(--ok); font-size: 12px; margin-right: 6px;

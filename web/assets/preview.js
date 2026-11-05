@@ -5,6 +5,8 @@
 
 import { api, apiBlob } from './api.js';
 import { state, on } from './state.js';
+import { saveRecord, writeSave, clearFailed, flushPhotos } from './saves.js';
+export { flushPhotos, saveStatus, retrySaves, SaveError } from './saves.js';
 import { toast, toastError } from './dom.js';
 import { applyCamdataStatus } from './camdata.js';
 import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
@@ -73,28 +75,31 @@ export function loadCatalog({ refresh = false } = {}) {
   return catalogPromise;
 }
 
-// ---- 版本号：裁切和编辑共用一个 rev -------------------------------------------
+// ---- 保存：裁切和编辑共用一个 rev（保存队列在 saves.js，按照片 id 存，不挂在 ed 上） ----------
 
 export function syncRev(view, rev) {
+  saveRecord(view.photo.id).rev = rev;
   if (view.ed) view.ed.rev = rev;
   if (view.crop) view.crop.rev = rev;
 }
 
-// 写入排队：同一张照片一次只写一个，写完再写下一个。出错时提示、重读，不抛出去。
-function enqueue(view, fn) {
-  view.saveQ = (view.saveQ || Promise.resolve()).then(async () => {
-    try {
-      await fn();
-    } catch (e) {
-      toastError(e, '无法保存修改。请重试。');
-    }
-  });
-  return view.saveQ;
+// 导出前调用：等这张照片还没写完的保存；有没写进去的就拒绝（R05）
+export function flushEdits(view) {
+  return flushPhotos([view.photo.id]);
 }
 
-// 导出前调用：等还没写完的草稿都保存好，导出的才是最新的
-export function flushEdits(view) {
-  return view.saveQ || Promise.resolve();
+// 视图还在显示这张照片吗（关掉之后只更新保存记录，不碰界面）
+function live(view) {
+  return !view.disposed;
+}
+
+// 放弃没写进去的修改：按服务端现在的内容重读
+export async function discardFailed(view) {
+  clearFailed(view.photo.id);
+  await reloadEdit(view);
+  await loadCrop(view).catch(() => {});
+  view.redrawSide?.();
+  view.onChange?.();
 }
 
 // ---- 读取 --------------------------------------------------------------------
@@ -141,6 +146,8 @@ export async function ensureEdit(view) {
   if (!view.edPromise) {
     view.edPromise = (async () => {
       const id = view.photo.id;
+      // 这张照片还有没写完的保存（刚切走又切回来）：等它们写完再读，读到的才是最新的 rev 和内容
+      await saveRecord(id).tail;
       const [edit, , frames, defaults, caps, meta] = await Promise.all([
         fetchEdit(view), loadCatalog(), loadFrames(), loadDefaults(), loadPhotoCaps(id), loadMeta(id),
       ]);
@@ -176,20 +183,24 @@ export async function reloadEdit(view) {
   const ed = view.ed;
   if (!ed) return;
   try {
+    await saveRecord(view.photo.id).tail;
     const [edit, , caps] = await Promise.all([fetchEdit(view), loadCatalog({ refresh: true }), loadPhotoCaps(view.photo.id, { refresh: true })]);
     applyEdit(ed, edit);
     ed.caps = capsFrom(view.photo, caps);
     syncRev(view, ed.rev);
   } catch (e) {
-    toastError(e, '无法完成操作。请重试。');
+    toastError(e, '无法重新读取这张照片的编辑记录。');
     return;
   }
+  if (view.ed !== ed) return;
   view.redrawSide?.();
   schedulePreview(view, { full: true });
 }
 
 export async function loadCrop(view) {
-  setCrop(view, await api(`/api/photos/${view.photo.id}/crop`));
+  await saveRecord(view.photo.id).tail;
+  const c = await api(`/api/photos/${view.photo.id}/crop`);
+  if (live(view)) setCrop(view, c);
 }
 
 // 接口的 rect 是数组，这里转成 {x, y, w, h}（写回时再转回数组，见 cropDraft / saveCrop 的调用方）
@@ -286,37 +297,39 @@ export function styleOptions(ed, styleId) {
 // ---- 保存 --------------------------------------------------------------------
 
 // 写 /edit。changes 只带要改的键（后端只认带上来的键）。
+// 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
 export function persist(view, changes) {
-  return enqueue(view, async () => {
-    const ed = view.ed;
-    try {
-      const r = await api(`/api/photos/${view.photo.id}/edit`, { method: 'PUT', body: { ...changes, expected_rev: ed.rev } });
+  return writeSave(saveRecord(view.photo.id), 'edit', changes, {
+    onOk: (r) => {
+      if (!live(view)) return;
       syncRev(view, r.rev);
-      ed.render = r.render || ed.render;
+      if (view.ed) view.ed.render = r.render || view.ed.render;
       if (r.warning) toast(r.warning, 'info');
-    } catch (e) {
-      toastError(e, '无法完成操作。请重试。');
-      await reloadEdit(view);
-    }
-    view.onChange?.();
+      view.onChange?.();
+    },
+    onFail: () => {
+      if (live(view)) view.onChange?.();
+    },
   });
 }
 
 // 写 /crop：preset、rect、orientation（v2）或 flip（旧版的横竖），以及旧版的 angle_deg
 export function saveCrop(view, body) {
-  return enqueue(view, async () => {
-    try {
-      const c = await api(`/api/photos/${view.photo.id}/crop`, { method: 'PUT', body: { ...body, expected_rev: view.crop.rev } });
+  return writeSave(saveRecord(view.photo.id), 'crop', body, {
+    onOk: (c) => {
+      if (!live(view)) return;
       setCrop(view, c);
       if (c.warning) toast(c.warning, 'info');
-    } catch (e) {
-      // 拉直超出旧版后端的范围等错误：把后端的中文原因显示出来，再把界面拉回到已保存的值
-      toastError(e, '无法完成操作。请重试。');
+      view.redrawSide?.();
+      view.onChange?.();
+    },
+    // 拉直超出旧版后端的范围等错误：把后端的中文原因显示出来；界面先保留你的框，标成未保存
+    onFail: (e) => {
+      if (!live(view)) return;
       view.lastCropError = e.message;
-      await loadCrop(view).catch(() => {});
-    }
-    view.redrawSide?.();
-    view.onChange?.();
+      view.redrawSide?.();
+      view.onChange?.();
+    },
   });
 }
 
@@ -623,7 +636,9 @@ export function defaultNote(photo) {
   return { text: lookNoteText(look), prediction: isPrediction(look) };
 }
 
+// 关掉大图：只停预览、放掉图片。已经排队的保存不受影响（它们绑定的是保存记录，不是 ed）。
 export function disposeEdit(view) {
+  view.disposed = true;
   const ed = view.ed;
   if (!ed) return;
   clearTimeout(ed.timer);

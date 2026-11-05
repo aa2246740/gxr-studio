@@ -48,7 +48,8 @@ export async function commitStraight(view) {
 
 // 几何变了（拉直、透视、畸变、旋转、翻转）：框如果超出新的有效画面，收进来并保存
 async function afterGeometry(view) {
-  if (!view.canvas || !view.crop) return;
+  // 等保存时照片已经关掉：不再根据旧界面的框补写（写入已经绑定在这张照片上，前面那笔照常完成）
+  if (view.disposed || !view.canvas || !view.crop) return;
   const fitted = fitInto(view.crop.rect, validRect(view, view.canvas));
   if (fitted.changed) view.crop.rect = fitted.rect;
   // 框和服务端一样就不用写；拖动中已经收进去的框（没写回）也要写

@@ -10,42 +10,29 @@ import { openExportDialog } from './export.js';
 import { maybeShowOnboarding, showHelp, showHelpMenu, showSettings, clearHints } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
 import { renderLutPage } from './lut.js';
+import { createRouter } from './router.js';
 
-let current = null; // 'photos' | 'viewer' | 'recipes' | 'camera'
-let keys = null;
-
-function parse() {
-  const hash = location.hash || '#/photos';
-  const m = /^#\/photo\/([0-9a-f]+)$/.exec(hash);
-  if (m) return { name: 'viewer', id: m[1] };
-  if (hash === '#/recipes') return { name: 'recipes' };
-  if (hash === '#/camera') return { name: 'camera' };
-  return { name: 'photos' };
-}
+const router = createRouter({
+  before: (r) => {
+    clearHints();
+    setTabs(r.name === 'viewer' ? 'photos' : r.name);
+  },
+  pages: {
+    photos: { enter: async (r, isCurrent) => { await renderGallery(viewRoot(), isCurrent); return null; } },
+    viewer: {
+      enter: async (r, isCurrent) => { await renderViewer(viewRoot(), r.id, isCurrent); return isCurrent() ? viewerKeys() : null; },
+      leave: () => leaveViewer(),
+    },
+    recipes: { enter: async () => { renderLutPage(viewRoot()); return null; } },
+    camera: { enter: async () => { renderCamera(viewRoot()); return null; } },
+  },
+});
+const route = () => router.route();
+const viewRoot = () => document.getElementById('view');
 
 function setTabs(name) {
   for (const a of document.querySelectorAll('#tabs a')) {
     a.classList.toggle('on', a.dataset.tab === name);
-  }
-}
-
-async function route() {
-  const r = parse();
-  const view = document.getElementById('view');
-  if (current === 'viewer' && r.name !== 'viewer') leaveViewer();
-  clearHints();
-  current = r.name;
-  keys = null;
-  setTabs(r.name === 'viewer' ? 'photos' : r.name);
-  if (r.name === 'photos') {
-    await renderGallery(view);
-  } else if (r.name === 'viewer') {
-    await renderViewer(view, r.id);
-    keys = viewerKeys();
-  } else if (r.name === 'recipes') {
-    renderLutPage(view);
-  } else {
-    renderCamera(view);
   }
 }
 
@@ -63,7 +50,7 @@ function renderCamera(view) {
 }
 
 function exportCurrent() {
-  if (current === 'viewer') {
+  if (router.current() === 'viewer') {
     openViewerTab('export');
     return;
   }
@@ -79,6 +66,7 @@ function bindGlobalKeys() {
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && (e.key === 'z' || e.key === 'Z') && !isTyping(e.target)) {
+      const keys = router.keys();
       if (keys && keys.undo && keys.undo()) e.preventDefault();
       return;
     }
@@ -94,7 +82,7 @@ function bindGlobalKeys() {
     }
     if (e.key === 'Escape') {
       if (modalOpen()) closeTopModal();
-      else if (current === 'viewer') location.hash = '#/photos';
+      else if (router.current() === 'viewer') location.hash = '#/photos';
       return;
     }
     if (isTyping(e.target) || mod) return;
@@ -104,15 +92,17 @@ function bindGlobalKeys() {
       return;
     }
     if (modalOpen()) return;
+    const keys = router.keys();
     if (keys && keys.down(e)) {
       e.preventDefault();
       return;
     }
-    if (e.key === 'Enter' && current === 'photos' && e.target === document.body) {
+    if (e.key === 'Enter' && router.current() === 'photos' && e.target === document.body) {
       openFocused();
     }
   });
   document.addEventListener('keyup', (e) => {
+    const keys = router.keys();
     if (keys && keys.up) keys.up(e);
   });
 }

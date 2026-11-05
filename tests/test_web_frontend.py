@@ -366,18 +366,12 @@ def _function_body(source: str, header: str) -> str:
     return source[start : source.index("\n}\n", start)]
 
 
-def test_restore_resets_edit_then_crop_and_each_reset_touches_only_its_panel():
-    """复原：先清编辑（几何在里面），再把裁剪写回整张、0°；各面板的「重置」只清自己那一面板。"""
-    viewer = (ASSETS / "viewer.js").read_text(encoding="utf-8")
-    preview = (ASSETS / "preview.js").read_text(encoding="utf-8")
+def test_each_panel_reset_touches_only_its_panel():
+    """各面板的「重置」只清自己那一面板。
+    「复原」的顺序和目标（先清编辑、再把裁剪写回整张 0°，切图后不写别的照片）由 test_edit_route.py 真正执行来测。"""
     correct = (ASSETS / "correct.js").read_text(encoding="utf-8")
     adjust = (ASSETS / "adjust.js").read_text(encoding="utf-8")
     recipes = (ASSETS / "recipes.js").read_text(encoding="utf-8")
-
-    restore = _function_body(viewer, "async function resetAll()")
-    assert restore.index("persist(view, changes)") < restore.index("resetCropRemote(view)")
-    # PUT /crop 不带角度时保持原角度，所以裁剪的还原要明写 0
-    assert "angle_deg: 0" in _function_body(preview, "export function resetCropRemote(view)")
 
     # 调整的重置：只清调整和曲线
     adj_reset = _function_body(adjust, "function resetButton(view)")

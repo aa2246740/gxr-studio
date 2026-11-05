@@ -20,7 +20,10 @@ export function pairTag(p) {
   return h('span', { class: `badge tag ${isPrediction(look) ? 'pred' : 'gray'}`, title: look.label || null }, rawOnlyBadgeText(look));
 }
 
-export async function renderGallery(container) {
+// isCurrent：路由层给的「图库还是当前页面吗」（R11）。过时的列表不写进 state.photos，也不改页面。
+let galleryCurrent = () => true;
+export async function renderGallery(container, isCurrent = () => true) {
+  galleryCurrent = isCurrent;
   root = container;
   root.replaceChildren(
     h('aside', { class: 'dates', id: 'dates' }),
@@ -36,7 +39,7 @@ export async function renderGallery(container) {
 
 on('library-changed', async () => {
   await pruneSelection();
-  if (root) loadAll();
+  if (root && galleryCurrent()) loadAll();
 });
 
 // 补全另一半后照片的 id 会变：勾选集里留着旧 id 的话，批量导出会拿到不存在的照片，所以先把已经不在图库里的去掉
@@ -54,7 +57,9 @@ async function loadAll() {
 }
 
 async function loadDates() {
-  state.dates = await api('/api/dates').catch(() => []);
+  const dates = await api('/api/dates').catch(() => []);
+  if (!galleryCurrent()) return;
+  state.dates = dates;
   const total = state.dates.reduce((n, d) => n + d.count, 0);
   const aside = document.getElementById('dates');
   if (!aside) return;
@@ -80,7 +85,9 @@ async function loadDates() {
 
 async function loadPhotos() {
   const q = state.galleryDate ? `?date=${state.galleryDate}&limit=5000` : '?limit=5000';
-  state.photos = await api(`/api/photos${q}`).catch(() => []);
+  const photos = await api(`/api/photos${q}`).catch(() => []);
+  if (!galleryCurrent()) return;
+  state.photos = photos;
   renderGrid();
 }
 

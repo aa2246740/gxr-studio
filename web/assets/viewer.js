@@ -2,7 +2,7 @@
 // 默认标签是「配方」（不是裁剪）。大图始终显示 stage=final 的成片；只有「裁剪」标签才切到 stage=uncropped（DIAG 原因 1）。
 
 import { api } from './api.js';
-import { state } from './state.js';
+import { state, on } from './state.js';
 import { h, toast, fmtClock, fmtDate, toastError } from './dom.js';
 import { pairTag } from './gallery.js';
 import { exportForm } from './export.js';
@@ -16,6 +16,7 @@ import { paintStage, stageMode } from './stage.js';
 import {
   ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, syncUndo, beginChange, endChange,
   persist, flushEdits, reloadEdit, stageLabels, refreshCaps, resetCropRemote, adjustBody,
+  saveStatus, retrySaves, discardFailed,
 } from './preview.js';
 import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
 
@@ -140,7 +141,7 @@ function panelFor(tab) {
     case 'stamp': return stampPanel(view);
     case 'export': return exportForm({
       ids: [view.photo.id], label: '这一张', photos: [view.photo],
-      beforeSubmit: () => flushEdits(view),
+      beforeSubmit: ((v) => () => flushEdits(v))(view),
     });
     default: return h('p', {}, '');
   }
@@ -197,11 +198,35 @@ function undoButton() {
   return btn;
 }
 
+// 保存状态（安静显示，不弹提示）：正在保存… / 已保存 / 未保存 · 重试 · 放弃修改（R05）
+function paintSaveState(v) {
+  if (!v.saveEl) return;
+  const st = saveStatus(v.photo.id);
+  const el = v.saveEl;
+  el.dataset.state = st;
+  if (st === 'saving') el.replaceChildren('正在保存…');
+  else if (st === 'saved') el.replaceChildren('已保存');
+  else if (st === 'failed') {
+    el.replaceChildren(
+      h('span', { class: 'bad-text' }, '有修改没有保存'),
+      h('button', { type: 'button', class: 'btn ghost small', onclick: () => retrySaves(v.photo.id) }, '重试'),
+      h('button', { type: 'button', class: 'btn ghost small', onclick: () => discardFailed(v) }, '放弃修改'),
+    );
+  } else el.replaceChildren();
+}
+
+on('save-status', (e) => {
+  if (view && e.detail && e.detail.id === view.photo.id) paintSaveState(view);
+});
+
 function renderBottom() {
   const pos = state.photos.findIndex((p) => p.id === view.photo.id);
+  view.saveEl = h('span', { class: 'save-state small dim', 'aria-live': 'polite' });
+  paintSaveState(view);
   view.bottom.replaceChildren(
     undoButton(),
     h('button', { type: 'button', onclick: resetAll, title: '整张回到原图' }, '复原'),
+    view.saveEl,
     h('span', { class: 'spacer' }),
     h('button', { type: 'button', 'aria-disabled': pos <= 0 ? 'true' : null, onclick: () => step(-1) }, '上一张'),
     h('button', { type: 'button', 'aria-disabled': pos < 0 || pos >= state.photos.length - 1 ? 'true' : null, onclick: () => step(1) }, '下一张'),
@@ -209,10 +234,13 @@ function renderBottom() {
 }
 
 // 复原：配方、调整、曲线、几何、边框、时间戳、裁剪全部回到原图。能用撤销找回来。
+// 开始时就把照片视图绑定成局部变量（R03）：两笔写入都在等待之前排进这张照片的保存队列；
+// 等待返回后，只有它还是当前视图才更新界面。中途切到别的照片，不会对那张照片写任何东西。
 async function resetAll() {
-  const ed = view.ed;
+  const v = view;
+  const ed = v && v.ed;
   if (!ed) return;
-  beginChange(view);
+  beginChange(v);
   ed.recipe = null;
   ed.lut = null;
   ed.adj = zeroAdj();
@@ -227,10 +255,12 @@ async function resetAll() {
   ed.frameFrom = 'photo';
   ed.stamp = normalizeStamp({ enabled: false });
   ed.stampFrom = 'photo';
-  await persist(view, changes);
-  await resetCropRemote(view);
-  endChange(view);
-  schedulePreview(view, { full: true });
+  const saved = persist(v, changes);
+  const cropSaved = resetCropRemote(v);
+  await Promise.all([saved, cropSaved]);
+  if (view !== v || v.ed !== ed) return;
+  endChange(v);
+  schedulePreview(v, { full: true });
   renderSide();
 }
 
@@ -254,15 +284,20 @@ function initialTab() {
 
 // ---- 打开、关闭 ---------------------------------------------------------------
 
-export async function renderViewer(root, id) {
+// isCurrent：路由层给的「我还是当前路由吗」（R11）。每次 await 回来、改页面或装快捷键之前都先问一次，
+// 过时的照片响应不能把页面换回旧照片。
+export async function renderViewer(root, id, isCurrent = () => true) {
   let photo;
   try {
     photo = await api(`/api/photos/${id}`);
   } catch (e) {
+    if (!isCurrent()) return;
     root.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, '找不到这张照片'), h('p', { class: 'dim' }, e.message), h('a', { href: '#/photos' }, '回到照片')));
     return;
   }
+  if (!isCurrent()) return;
   await ensurePhotos(id);
+  if (!isCurrent()) return;
   teardown();
 
   const tab = initialTab();
@@ -334,6 +369,11 @@ function teardown() {
   closeMenus();
   if (view) disposeEdit(view);
   view = null;
+}
+
+// 当前打开的照片视图（没有打开就是 null）。面板拿到的 view 和这里是同一个对象。
+export function currentView() {
+  return view;
 }
 
 // 离开大图（路由切换时调用）：停掉观察器和定时器，选中的照片不动
