@@ -15,6 +15,7 @@ const requests = []; // { method, url, body, at }
 const g = gate();
 const holds = new Set(); // 'METHOD url' → 这一类请求先挂起，等脚本放行
 const failures = new Map(); // 'METHOD url' → 要抛的错误（只抛一次）
+const failIf = []; // (method, url, body) → 要抛的错误或 null；抛过一次就移走（按请求内容挑哪一笔失败）
 const revs = { A: 1, B: 7 };
 const PHOTOS = {
   A: { id: 'a0', name: 'R0010001.DNG', date: '2026-10-01', captured_at: '2026-10-01T10:00:00', has_raw: true, has_jpg: true, width: 3000, height: 2000, lens: '50mm' },
@@ -58,6 +59,8 @@ async function answer(method, url, body) {
   if (method === 'PUT' && url === '/api/prefs') return body;
   if (method === 'POST' && url === '/api/export') return { id: 'j1', state: 'done', progress: { done: 1, total: 1, results: [] } };
   if (method === 'GET' && url === '/api/camdata/status') return camStatus;
+  if (method === 'GET' && url === '/api/settings') return { ...state.settings, library_dir: '/tmp/lib', photo_count: 2, free_bytes: 1e9, undated_policy: 'mtime' };
+  if (method === 'POST' && url === '/api/library/rebuild') return { ok: true };
   if (method === 'POST' && url === '/api/camdata/import-card') {
     camStatus = { ready: true, camera_data: { state: 'ready' }, calibration: { state: 'ready' } };
     return { message: '已导入相机配方文件' };
@@ -72,6 +75,13 @@ globalThis.apiStub = async (url, opts = {}) => {
   if (holds.has(k)) {
     holds.delete(k);
     await g.hold(k);
+  }
+  for (let i = 0; i < failIf.length; i += 1) {
+    const e = failIf[i](method, url, opts.body);
+    if (e) {
+      failIf.splice(i, 1);
+      throw e;
+    }
   }
   if (failures.has(k)) {
     const e = failures.get(k);
@@ -522,6 +532,152 @@ if (scenario === 'reset-then-switch') {
   const { closeTopModal } = await import(file('dom.js'));
   closeTopModal();
   out.appInertClosed = app.hasAttribute('inert');
+} else if (scenario === 'scope-change-during-barrier') {
+  // N01：B 的修改没写进去。在 A 上导出「这一张」，等 A 的保存时把范围换成「这一天的全部」：
+  // 这一次导出的还是点导出时选的那一张；不能在只等了 A 的情况下发出整天的导出
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.B.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await preview.persist(viewer.currentView(), { adjust: { exposure_ev: 1 } });
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const saving = preview.persist(viewer.currentView(), { adjust: { exposure_ev: 0.5 } });
+  const form = await openExport();
+  buttonByText('导出', form).click();
+  await tick();
+  find(form, (n) => n.tagName === 'BUTTON' && n.textContent.endsWith('的全部')).click();
+  await tick();
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  await saving;
+  await tick(10);
+  out.failedB = preview.saveStatus(PHOTOS.B.id);
+  out.posts = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).map((r) => ({ url: r.url, date: (r.body && r.body.date) || null }));
+} else if (scenario === 'retry-no-reread') {
+  // N02：重开 A 后点「重试」，写进去以后面板直接用写入的回应更新，不再读一次（再读一次可能失败，
+  // 失败时面板还是旧值、rev 却是新的，下一次调整会把补写进去的值盖掉）
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await preview.persist(viewer.currentView(), { adjust: { exposure_ev: 1 } });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  out.reopenedExposure = viewer.currentView().ed.adj.exposure_ev;
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  // 补写已经在路上；之后再读编辑记录都会失败
+  const readsBefore = requests.filter((r) => r.method === 'GET' && r.url === `/api/photos/${PHOTOS.A.id}/edit`).length;
+  failures.set(`GET /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '读不到编辑记录。'));
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  await tick(10);
+  out.readsAfterRetry = requests.filter((r) => r.method === 'GET' && r.url === `/api/photos/${PHOTOS.A.id}/edit`).length - readsBefore;
+  failures.delete(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  const v = viewer.currentView();
+  out.viewExposure = v.ed.adj.exposure_ev;
+  out.status = preview.saveStatus(PHOTOS.A.id);
+  v.ed.adj.contrast = 5;
+  out.next = await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  out.serverExposure = stored[PHOTOS.A.id].adjust.exposure_ev;
+  out.serverContrast = stored[PHOTOS.A.id].adjust.contrast;
+} else if (scenario === 'retry-keeps-newer-draft') {
+  // N02：重试还在路上时又把曝光改成 2，这一笔写失败：重试完成后面板保留 2（不拿服务器上的 1 盖掉），
+  // 底栏标成没保存；之后再调对比度，写进去的曝光是 2
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  holds.add(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  v.ed.adj.exposure_ev = 2;
+  failIf.push((method, url, body) => (method === 'PUT' && body && body.adjust && body.adjust.exposure_ev === 2 ? new StubError(500, '磁盘已满，无法写入编辑记录。') : null));
+  const newer = preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  g.release(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  out.newer = await newer;
+  await tick(10);
+  out.viewExposure = v.ed.adj.exposure_ev;
+  out.status = preview.saveStatus(PHOTOS.A.id);
+  v.ed.adj.contrast = 5;
+  out.next = await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  out.serverExposure = stored[PHOTOS.A.id].adjust.exposure_ev;
+  out.statusAfter = preview.saveStatus(PHOTOS.A.id);
+} else if (scenario === 'before-cache-return') {
+  // N03：对比图 0° 已经缓存；改到 5°（请求挂着）又改回 0°：直接用缓存，晚到的 5° 不能把它换掉
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  blobManual = true;
+  v.ed.geometry = { ...v.ed.geometry, straighten: 0 };
+  preview.beforeUrl(v, () => {});
+  blobQueue[0].resolve();
+  await tick();
+  const cached = v.ed.before.url;
+  v.ed.geometry = { ...v.ed.geometry, straighten: 5 };
+  preview.beforeUrl(v, () => {});
+  v.ed.geometry = { ...v.ed.geometry, straighten: 0 };
+  out.returnedCached = preview.beforeUrl(v, () => {}) === cached;
+  blobQueue[1].resolve();
+  await tick();
+  out.requests = blobQueue.length;
+  out.keptCached = v.ed.before.url === cached;
+  out.keyIs0 = JSON.parse(v.ed.before.key)[0].straighten === 0;
+} else if (scenario === 'single-close-fast-result') {
+  // N04：单张导出途中关掉对话框，结果在 160ms 退场动画期间就回来了：照样用提示告诉结果（成功、失败各一次）
+  const { closeTopModal } = await import(file('dom.js'));
+  const toasts = () => document.getElementById('toast-root').textContent;
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  holds.add(`POST /api/photos/${PHOTOS.A.id}/export`);
+  let form = await openExport();
+  buttonByText('导出', form).click();
+  await tick();
+  closeTopModal();
+  g.release(`POST /api/photos/${PHOTOS.A.id}/export`);
+  await tick(5);
+  await new Promise((r) => setTimeout(r, 200));
+  out.okToast = toasts();
+  document.getElementById('toast-root').replaceChildren();
+  holds.add(`POST /api/photos/${PHOTOS.A.id}/export`);
+  failures.set(`POST /api/photos/${PHOTOS.A.id}/export`, new StubError(500, '导出目录不能写。'));
+  form = await openExport();
+  buttonByText('导出', form).click();
+  await tick();
+  closeTopModal();
+  g.release(`POST /api/photos/${PHOTOS.A.id}/export`);
+  await tick(5);
+  await new Promise((r) => setTimeout(r, 200));
+  out.failToast = toasts();
+} else if (scenario === 'settings-rebuild-closed-failure') {
+  // N04：设置里点「重建索引」后关掉设置，重建失败：错误用带「重试」的提示告诉用户，不写进看不见的对话框；
+  // 从提示里重试会再发一次重建
+  const { showSettings } = await import(file('onboarding.js'));
+  const { closeTopModal } = await import(file('dom.js'));
+  state.settings = { ...state.settings, library_dir: '/tmp/lib', photo_count: 2, free_bytes: 1e9, undated_policy: 'mtime' };
+  await showSettings();
+  await tick(5);
+  holds.add('POST /api/library/rebuild');
+  failures.set('POST /api/library/rebuild', new StubError(500, '照片库读不出来。'));
+  const dialog = find(document.body, (n) => n.getAttribute && n.getAttribute('role') === 'dialog');
+  find(dialog, (n) => n.tagName === 'BUTTON' && n.textContent.trim() === '重建索引').click();
+  await tick();
+  closeTopModal();
+  g.release('POST /api/library/rebuild');
+  await tick(5);
+  const root = document.getElementById('toast-root');
+  out.toast = root.textContent;
+  const again = buttonByText('重试', root);
+  out.hasRetry = !!again;
+  again.click();
+  await tick(5);
+  out.rebuildPosts = requests.filter((r) => r.method === 'POST' && r.url === '/api/library/rebuild').length;
+  out.toastAfter = root.textContent;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

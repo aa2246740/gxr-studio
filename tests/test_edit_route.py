@@ -256,3 +256,52 @@ def test_export_dialog_keeps_focus_while_busy(tmp_path):
     assert out["focusBackInDialog"] is True and out["tabPrevented"] is True
     assert out["unlocked"] is True
     assert out["appInertClosed"] is False
+
+
+def test_changing_scope_while_waiting_for_saves_exports_what_was_submitted(tmp_path):
+    """N01：等保存的过程中切到「这一天的全部」，这一次导出的仍是点导出时选的那一张；B 没保存，不能发出整天的导出。"""
+    out = run(tmp_path, "scope-change-during-barrier")
+    assert out["failedB"] == "failed"
+    assert out["posts"] == [{"url": "/api/photos/a0/export", "date": None}]
+
+
+def test_retry_updates_the_panel_from_the_write_without_reading_again(tmp_path):
+    """N02：重试写进去以后，面板直接用写入的回应；不另读，读失败也不会留下旧值配新 rev。"""
+    out = run(tmp_path, "retry-no-reread")
+    assert out["reopenedExposure"] == 0
+    assert out["retry"] is True and out["readsAfterRetry"] == 0
+    assert out["viewExposure"] == 1 and out["status"] == "saved"
+    assert out["next"] is True
+    assert out["serverExposure"] == 1 and out["serverContrast"] == 5
+
+
+def test_retry_does_not_overwrite_a_newer_failed_draft(tmp_path):
+    """N02：重试途中又改了曝光且这笔写失败：面板保留新值、标成没保存；之后的调整写进去的是新值。"""
+    out = run(tmp_path, "retry-keeps-newer-draft")
+    assert out["retry"] is True and out["newer"] is False
+    assert out["viewExposure"] == 2 and out["status"] == "failed"
+    assert out["next"] is True and out["serverExposure"] == 2
+    assert out["statusAfter"] == "saved"
+
+
+def test_returning_to_a_cached_comparison_drops_the_request_in_flight(tmp_path):
+    """N03：改回已经缓存的几何时，还在路上的别的几何的对比图作废，晚到也不换掉缓存。"""
+    out = run(tmp_path, "before-cache-return")
+    assert out["requests"] == 2
+    assert out["returnedCached"] is True and out["keptCached"] is True and out["keyIs0"] is True
+
+
+def test_single_export_result_reaches_a_toast_even_during_the_close_animation(tmp_path):
+    """N04：关掉对话框后 160ms 退场期间回来的结果（成功和失败）也用提示告诉用户。"""
+    out = run(tmp_path, "single-close-fast-result")
+    assert "已导出 1 张" in out["okToast"]
+    assert "导出目录不能写" in out["failToast"]
+
+
+def test_rebuild_failure_after_closing_settings_is_a_toast_with_retry(tmp_path):
+    """N04：关掉设置后重建失败，用带「重试」的提示告诉用户；从提示重试会再发一次。"""
+    out = run(tmp_path, "settings-rebuild-closed-failure")
+    assert "照片库读不出来" in out["toast"]
+    assert out["hasRetry"] is True
+    assert out["rebuildPosts"] == 2
+    assert "已重建索引" in out["toastAfter"]

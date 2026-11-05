@@ -17,7 +17,7 @@ import { infoPanel } from './info_panel.js';
 import { paintStage } from './stage.js';
 import {
   ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, redoChange, syncUndo, beginChange, endChange,
-  persist, reloadEdit, stageLabels, refreshCaps, resetCropRemote, adjustBody,
+  persist, reloadEdit, applyRetried, stageLabels, refreshCaps, resetCropRemote, adjustBody,
   saveStatus, retrySaves, discardFailed,
 } from './preview.js';
 import { fetchAllPhotos } from './photos.js';
@@ -477,16 +477,14 @@ on('save-status', (e) => {
   if (view && e.detail && e.detail.id === view.photo.id) paintSaveState(view);
 });
 
-// 重试保存成功（可能是切走又切回来以后才点的重试）：界面按服务器上现在的内容重读，
-// 不然面板还显示旧值，下一次调整会把刚补写进去的内容又盖回去（F03）
+// 重试保存成功（可能是切走又切回来以后才点的重试）：面板换成刚补写进去的内容，
+// 不然面板还显示旧值，下一次调整会把它又盖回去（F03）。用写入的回应，不另读（N02）
 on('save-retried', (e) => {
   const v = view;
   if (!v || !e.detail || e.detail.id !== v.photo.id || !v.ed) return;
-  reloadEdit(v, { refreshCatalog: false }).then(() => loadCrop(v).catch(() => {})).then(() => {
-    if (view !== v) return;
-    refreshPanes();
-    v.redrawSide?.();
-  });
+  if (!applyRetried(v, e.detail)) return;
+  refreshPanes();
+  v.redrawSide?.();
 });
 
 function renderPanelFoot(v) {

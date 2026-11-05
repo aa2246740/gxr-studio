@@ -192,6 +192,7 @@ export function openModal(title, body, { wide = false, onClose, foot = null, ini
     const i = modalStack.findIndex((m) => m.close === close);
     if (i < 0) return;
     modalStack.splice(i, 1);
+    overlay.dataset.closed = '1';
     if (!modalStack.length) setBackgroundInert(false);
     overlay.remove();
     // 退场动画：挪到 body 上淡出，modal-root 里立刻就没有它了
@@ -220,6 +221,12 @@ export function openModal(title, body, { wide = false, onClose, foot = null, ini
   const target = initialFocus || focusables(body instanceof Node ? dialog.children[1] || dialog : dialog)[0] || dialog;
   if (target && typeof target.focus === 'function') target.focus();
   return close;
+}
+
+// 节点是不是已经不在用户眼前：不在页面上，或者在已经关掉、正在退场的对话框里（N04）
+export function outOfView(node) {
+  if (!node || !node.isConnected) return true;
+  return Boolean(node.closest && node.closest('[data-closed]'));
 }
 
 export function closeTopModal() {

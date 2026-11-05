@@ -214,6 +214,18 @@ export async function reloadEdit(view, { refreshCatalog = true } = {}) {
   schedulePreview(view, { full: true });
 }
 
+// 重试保存成功：把写入接口的回应（服务器上现在的内容）装进正在显示的视图（F03 / N02）。
+// edit / crop 为 null 的那一类不动：要么这次没补写它，要么界面上已经有更新的修改排着。
+// 同步完成，不再发请求，所以不会读失败、也不会晚到盖掉之后的草稿。
+export function applyRetried(view, { edit = null, crop = null, rev = null } = {}) {
+  if (!live(view) || !view.ed) return false;
+  if (edit) applyEdit(view.ed, edit);
+  if (crop) setCrop(view, crop);
+  if (rev !== null && rev !== undefined) syncRev(view, rev);
+  if (edit || crop) schedulePreview(view, { full: true });
+  return Boolean(edit || crop);
+}
+
 export async function loadCrop(view) {
   const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`));
   if (live(view)) setCrop(view, c);
@@ -602,7 +614,14 @@ export function beforeUrl(view, onReady) {
   Object.assign(body, { recipe: null, lut: null, adjust: adjustBody(zero), curve: null });
   const key = JSON.stringify([body.geometry || null, body.crop || null, body.frame || null, body.stamp || null]);
   const hit = ed.before;
-  if (hit && hit.key === key) return hit.url;
+  if (hit && hit.key === key) {
+    // 又回到了缓存里的几何：还在路上的别的几何的请求作废，晚到了也不能把这张换掉（N03）
+    if (hit.loading) {
+      ed.beforeSeq = (ed.beforeSeq || 0) + 1;
+      ed.before = { key: hit.key, url: hit.url, loading: null };
+    }
+    return hit.url;
+  }
   if (hit && hit.loading === key) return hit.url || null;
   // 每次请求带一个代号：几何参数连着改时会有几次请求同时在路上，只认最后一次的结果；
   // 晚到的旧结果直接丢掉，不装进缓存、也不重画（F08）。换掉的地址按缓存里当时真正的那个释放。

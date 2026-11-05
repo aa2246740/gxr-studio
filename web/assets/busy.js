@@ -6,6 +6,8 @@
 //   单张导出、重建索引这类一次请求做完的操作不能中途取消：对话框关掉也照常做完，完成或失败时用提示告诉结果。
 // 这里只放和 DOM 无关或只碰一个元素的小工具，方便用 node 单独测（tests/test_busy.py）。
 
+import { outOfView, toastError } from './dom.js';
+
 export const SHOW_AFTER_MS = 150;
 export const DETAIL_AFTER_MS = 1000;
 
@@ -38,6 +40,7 @@ export function devDelay() {
 
 // 异步按钮：点了以后锁住（防连点），超过 150ms 才显示转圈；结束后恢复。
 // 失败时在按钮旁边写原因并给「重试」（onError 返回 false 时不写，由调用方自己处理）。
+// 按钮所在的对话框已经关了（或正在退场）：旁边的字没人看得见，改用带「重试」的提示（N04）。
 // 返回 task 的结果；锁住期间再点直接返回 undefined，不会重复发请求。
 export async function busyButton(btn, task, { onError = null, busyText = null } = {}) {
   if (!btn || btn.dataset.busy === '1') return undefined;
@@ -55,7 +58,10 @@ export async function busyButton(btn, task, { onError = null, busyText = null } 
   try {
     return await task();
   } catch (e) {
-    if (!onError || onError(e) !== false) showInlineError(btn, e, () => busyButton(btn, task, { onError, busyText }));
+    if (!onError || onError(e) !== false) {
+      if (outOfView(btn)) toastError(e, '没有完成。请重试。', { action: { label: '重试', run: () => retryDetached(task) } });
+      else showInlineError(btn, e, () => busyButton(btn, task, { onError, busyText }));
+    }
     return undefined;
   } finally {
     spin.cancel();
@@ -66,6 +72,13 @@ export async function busyButton(btn, task, { onError = null, busyText = null } 
     btn.removeAttribute('aria-disabled');
     if (label && before !== null) label.textContent = before;
   }
+}
+
+// 对话框关了以后从提示里重试：没有按钮可锁，失败就再给一个提示
+function retryDetached(task) {
+  return Promise.resolve().then(task).catch((e) => {
+    toastError(e, '没有完成。请重试。', { action: { label: '重试', run: () => retryDetached(task) } });
+  });
 }
 
 function clearInlineError(btn) {

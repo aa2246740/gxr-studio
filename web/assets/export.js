@@ -156,6 +156,9 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
 
   let busy = false;
   let spin = null;
+  // 对话框关掉以后（含 160ms 退场动画期间）结果改用提示告诉用户：看的是对话框有没有关，不看节点还在不在页面上（N04）
+  let closed = false;
+  let running = null;
   // 点了马上锁住（防连点）；150ms 以后才转圈，免得快的时候一闪
   // 用 aria-disabled 而不是 disabled：禁用正拿着焦点的按钮，浏览器会把焦点丢到对话框外面（F06）
   function lock(on) {
@@ -180,27 +183,35 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       result.replaceChildren(resultBox('bad', '没有选中照片。请先在图库里选择要导出的照片。'));
       return;
     }
+    // 点导出这一刻把范围和选项定下来：等保存的过程中再切范围也不影响这一次，等的和导的是同一批（N01）
+    const sub = {
+      scope,
+      ids: scope === 'ids' ? [...ids] : [],
+      date: scope === 'date' ? date : null,
+      opts: { size, quality_tier: qualityTier, dest_dir: dest.trim(), source: 'auto', precise, hdr },
+    };
+    running = sub;
     lock(true);
     result.replaceChildren();
     try {
       // 按这次真正要导出的范围等保存（F02）：这一天的全部要等这一天所有改过的照片，不只是打开对话框时的那几张
-      if (beforeSubmit) await beforeSubmit({ scope, ids: scope === 'ids' ? ids : [], date: scope === 'date' ? date : null });
-      const opts = { size, quality_tier: qualityTier, dest_dir: dest.trim(), source: 'auto', precise, hdr };
-      if (scope === 'ids' && ids.length === 1) {
+      if (beforeSubmit) await beforeSubmit({ scope: sub.scope, ids: sub.ids, date: sub.date });
+      const { opts } = sub;
+      if (sub.scope === 'ids' && sub.ids.length === 1) {
         // 单张超过 1 秒（大尺寸、HDR）：写出在做什么，不让人以为卡住了
         const slow = delayed(() => result.replaceChildren(h('div', { class: 'progress indet' }, h('i')),
-          h('span', { class: 'small' }, hdr ? '正在导出，生成 HDR 版本要多等几秒…' : '正在导出…')), DETAIL_AFTER_MS);
+          h('span', { class: 'small' }, opts.hdr ? '正在导出，生成 HDR 版本要多等几秒…' : '正在导出…')), DETAIL_AFTER_MS);
         let r;
         try {
-          r = await api(`/api/photos/${ids[0]}/export`, { method: 'POST', body: opts });
+          r = await api(`/api/photos/${sub.ids[0]}/export`, { method: 'POST', body: opts });
         } finally {
           slow.cancel();
         }
         result.replaceChildren(resultBox('ok', singleResult(r)));
         // 单张导出不能中途取消；对话框已经关了就用提示告诉结果（F10）
-        if (!result.isConnected) singleToast(r);
+        if (closed) singleToast(r);
       } else {
-        const body = scope === 'date' ? { ...opts, date } : { ...opts, ids };
+        const body = sub.scope === 'date' ? { ...opts, date: sub.date } : { ...opts, ids: sub.ids };
         const job = await api('/api/export', { method: 'POST', body });
         if (onStarted) onStarted(job);
         await followBatch(job, result, photos);
@@ -218,16 +229,18 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       } else {
         result.replaceChildren(resultBox('bad', errorBody(e, '导出失败。请重试。')));
       }
-      if (!result.isConnected) toastError(e, e && e.retrySave ? '有修改没有保存，导出已停止。' : '导出失败。请重试。');
+      if (closed) toastError(e, e && e.retrySave ? '有修改没有保存，导出已停止。' : '导出失败。请重试。');
     } finally {
+      running = null;
       lock(false);
-      if (result.scrollIntoView) result.scrollIntoView({ block: 'nearest' });
+      if (!closed && result.scrollIntoView) result.scrollIntoView({ block: 'nearest' });
     }
   }
 
   // 对话框在单张导出途中被关掉：告诉用户它会照常做完（openExportDialog 的 onClose 调用）
   body.closedWhileBusy = () => {
-    if (busy && scope === 'ids' && ids && ids.length === 1) toast('导出会照常做完，完成后会提示你。', 'info');
+    closed = true;
+    if (busy && running && running.scope === 'ids' && running.ids.length === 1) toast('导出会照常做完，完成后会提示你。', 'info');
   };
   return body;
 }

@@ -15,7 +15,8 @@ export function saveRecord(id) {
   let r = records.get(id);
   if (!r) {
     // gen：每排进一笔写入加一。读编辑记录的一方据此判断读到的是不是已经过时（F04）
-    r = { id, date: null, rev: null, tail: Promise.resolve(), pending: 0, gen: 0, failed: null, savedAt: 0, retrying: null };
+    // kindGen：编辑、裁剪各自排进过几笔。重试写完时据此判断界面上有没有更新的修改（N02）
+    r = { id, date: null, rev: null, tail: Promise.resolve(), pending: 0, gen: 0, kindGen: { edit: 0, crop: 0 }, failed: null, savedAt: 0, retrying: null };
     records.set(id, r);
   }
   return r;
@@ -82,6 +83,7 @@ function clearSucceeded(rec, kind, body) {
 // onOk(响应) / onFail(错误) 由调用方决定要不要更新界面（视图可能已经关了）。
 export function writeSave(rec, kind, changes, { onOk = null, onFail = null } = {}) {
   const body = { ...changes };
+  rec.kindGen[kind] += 1;
   return enqueue(rec, async () => {
     try {
       const r = await api(URLS[kind](rec.id), { method: 'PUT', body: { ...body, expected_rev: rec.rev } });
@@ -142,15 +144,20 @@ export async function readFresh(id, read) {
 // 再把还没写进去的内容写回去。导出前的 flush 会等到这一笔做完。
 // 失败记录一直保留到重试写成功；重试排队期间又写成功的新修改，会把同名的旧内容从失败记录里去掉，
 // 所以重试只补写还没被新修改盖掉的部分，不会拿旧值覆盖新值。
-// 成功后发 save-retried 事件，正在显示这张照片的视图据此重读（F03：界面要显示服务器上的内容）。
+// 成功后发 save-retried 事件，带上写入接口的回应（就是服务器上现在的编辑记录 / 裁剪），
+// 正在显示这张照片的视图直接用它更新，不再另外去读（F03；N02：另读一次可能失败，也可能盖掉更新的草稿）。
+// 重试排队以后界面又排进了同一类的新写入，那一类就不交给视图：新写入来自界面上现在的样子，以它为准。
 export function retrySaves(id) {
   const rec = records.get(id);
   if (!rec || !rec.failed) return Promise.resolve(true);
   if (rec.retrying) return rec.retrying;
+  const since = { ...rec.kindGen };
+  const written = { edit: null, crop: null };
   const put = async (kind, body) => {
     const r = await api(URLS[kind](id), { method: 'PUT', body: { ...body, expected_rev: rec.rev } });
     rec.rev = r.rev;
     clearSucceeded(rec, kind, body);
+    written[kind] = r;
   };
   const job = async () => {
     if (!rec.failed) return;
@@ -168,7 +175,8 @@ export function retrySaves(id) {
     rec.retrying = null;
     if (ok && !rec.failed) {
       toast('修改已保存', 'info');
-      emit('save-retried', { id });
+      const fresh = (kind) => (rec.kindGen[kind] === since[kind] ? written[kind] : null);
+      emit('save-retried', { id, edit: fresh('edit'), crop: fresh('crop'), rev: rec.rev });
     } else {
       toastError(rec.failed && rec.failed.error, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(id) } });
     }
