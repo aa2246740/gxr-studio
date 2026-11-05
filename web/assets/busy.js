@@ -59,7 +59,8 @@ export async function busyButton(btn, task, { onError = null, busyText = null } 
     return await task();
   } catch (e) {
     if (!onError || onError(e) !== false) {
-      if (outOfView(btn)) toastError(e, '没有完成。请重试。', { action: { label: '重试', run: () => retryDetached(task) } });
+      // 从提示重试仍走 busyButton：同一个按钮的锁挡住重复执行，onError、busyText 照旧带上（V03）
+      if (outOfView(btn)) toastError(e, '没有完成。请重试。', { action: { label: '重试', run: () => busyButton(btn, task, { onError, busyText }) } });
       else showInlineError(btn, e, () => busyButton(btn, task, { onError, busyText }));
     }
     return undefined;
@@ -72,13 +73,6 @@ export async function busyButton(btn, task, { onError = null, busyText = null } 
     btn.removeAttribute('aria-disabled');
     if (label && before !== null) label.textContent = before;
   }
-}
-
-// 对话框关了以后从提示里重试：没有按钮可锁，失败就再给一个提示
-function retryDetached(task) {
-  return Promise.resolve().then(task).catch((e) => {
-    toastError(e, '没有完成。请重试。', { action: { label: '重试', run: () => retryDetached(task) } });
-  });
 }
 
 function clearInlineError(btn) {

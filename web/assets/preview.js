@@ -214,16 +214,34 @@ export async function reloadEdit(view, { refreshCatalog = true } = {}) {
   schedulePreview(view, { full: true });
 }
 
-// 重试保存成功：把写入接口的回应（服务器上现在的内容）装进正在显示的视图（F03 / N02）。
-// edit / crop 为 null 的那一类不动：要么这次没补写它，要么界面上已经有更新的修改排着。
+// 编辑记录的顶层字段 → ed 上对应的属性（重试只采用补写进去、界面之后又没改过的字段）
+const EDIT_FIELD_PROPS = {
+  recipe: ['recipe', 'memory'],
+  lut: ['lut'],
+  adjust: ['adj'],
+  curve: ['curve'],
+  geometry: ['geometry'],
+  frame: ['frame', 'frameFrom'],
+  stamp: ['stamp', 'stampFrom'],
+};
+
+// 重试保存写成功一类：把写入接口的回应（服务器上现在的内容）装进正在显示的视图（F03 / N02）。
+// 只装 fields 里的字段：界面之后又改过的字段保留界面上的值（V01）。
 // 同步完成，不再发请求，所以不会读失败、也不会晚到盖掉之后的草稿。
-export function applyRetried(view, { edit = null, crop = null, rev = null } = {}) {
-  if (!live(view) || !view.ed) return false;
-  if (edit) applyEdit(view.ed, edit);
-  if (crop) setCrop(view, crop);
+export function applyRetried(view, { kind, response, fields = [], rev = null } = {}) {
+  if (!live(view) || !view.ed || !response || !fields.length) return false;
+  if (kind === 'crop') {
+    setCrop(view, response);
+  } else {
+    // 换算要用到这张照片的 v2 与默认边框，和 view.ed 保持一致
+    const fresh = { v2: view.ed.v2, defaults: view.ed.defaults };
+    applyEdit(fresh, response);
+    for (const f of fields) for (const prop of EDIT_FIELD_PROPS[f] || []) view.ed[prop] = fresh[prop];
+    view.ed.render = fresh.render;
+  }
   if (rev !== null && rev !== undefined) syncRev(view, rev);
-  if (edit || crop) schedulePreview(view, { full: true });
-  return Boolean(edit || crop);
+  schedulePreview(view, { full: true });
+  return true;
 }
 
 export async function loadCrop(view) {

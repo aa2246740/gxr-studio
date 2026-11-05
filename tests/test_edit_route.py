@@ -303,5 +303,41 @@ def test_rebuild_failure_after_closing_settings_is_a_toast_with_retry(tmp_path):
     out = run(tmp_path, "settings-rebuild-closed-failure")
     assert "照片库读不出来" in out["toast"]
     assert out["hasRetry"] is True
+    assert out["postsBeforeRelease"] == 2, "连点提示里的重试只能再发一次"
     assert out["rebuildPosts"] == 2
-    assert "已重建索引" in out["toastAfter"]
+    assert out["doneToasts"] == 1
+
+
+def test_retry_keeps_the_saved_exposure_when_only_the_curve_changed_meanwhile(tmp_path):
+    """V01：重试排着时只改了曲线：曲线以界面为准，补写进去的曝光照样显示，之后的调整不会把它写回 0。"""
+    out = run(tmp_path, "retry-other-field")
+    assert out["reopenedExposure"] == 0
+    assert out["retry"] is True and out["newer"] is True
+    assert out["viewExposure"] == 1 and out["viewCurve"] == [[0, 0], [128, 110], [255, 255]]
+    assert out["status"] == "saved" and out["next"] is True
+    assert out["serverExposure"] == 1 and out["serverCurve"] == {"master": [[0, 0], [128, 110], [255, 255]]}
+
+
+def test_partial_retry_shows_the_edit_that_was_written(tmp_path):
+    """V02：重试时编辑写进去、裁剪又失败：编辑马上显示；第二次重试补上裁剪；之后的调整保留曝光 1。"""
+    out = run(tmp_path, "retry-partial-two-kinds")
+    assert out["reopenedExposure"] == 0
+    assert out["firstRetry"] is False
+    assert out["afterPartial"] == {"view": 1, "server": 1, "status": "failed"}
+    assert out["secondRetry"] is True and out["after"]["view"] == 1 and out["after"]["status"] == "saved"
+    assert out["next"] is True and out["serverAfterNext"] == 1
+
+
+def test_batch_result_reaches_a_toast_during_the_close_animation(tmp_path):
+    """V04：批量导出的结果在对话框退场的 160ms 里回来，也用提示告诉用户。"""
+    out = run(tmp_path, "batch-close-fast")
+    assert "已导出 2 张" in out["toast"]
+
+
+def test_closed_export_offers_retry_save_in_the_toast(tmp_path):
+    """V05：关掉对话框后保存关卡才查到没写进去的修改：提示里有「重试保存」，点了补写；不导出。"""
+    out = run(tmp_path, "closed-save-retry")
+    assert "有修改没有保存" in out["toast"]
+    assert out["hasRetrySave"] is True
+    assert out["statusB"] == "saved" and "修改已保存" in out["toastAfter"]
+    assert out["posts"] == 0

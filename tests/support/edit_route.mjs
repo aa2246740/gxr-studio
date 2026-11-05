@@ -57,7 +57,10 @@ async function answer(method, url, body) {
   }
   if (method === 'POST' && (m = /^\/api\/photos\/(\w+)\/export$/.exec(url))) return { path: '/tmp/x_gxr.jpg', width: 10, height: 10, bytes: 100, export_id: 'e1' };
   if (method === 'PUT' && url === '/api/prefs') return body;
-  if (method === 'POST' && url === '/api/export') return { id: 'j1', state: 'done', progress: { done: 1, total: 1, results: [] } };
+  if (method === 'POST' && url === '/api/export') {
+    const ids = (body && body.ids) || [];
+    return { id: 'j1', state: 'done', progress: { done: ids.length, total: ids.length, results: ids.map((id) => ({ id, path: `/tmp/${id}_gxr.jpg` })) } };
+  }
   if (method === 'GET' && url === '/api/camdata/status') return camStatus;
   if (method === 'GET' && url === '/api/settings') return { ...state.settings, library_dir: '/tmp/lib', photo_count: 2, free_bytes: 1e9, undated_policy: 'mtime' };
   if (method === 'POST' && url === '/api/library/rebuild') return { ok: true };
@@ -674,10 +677,132 @@ if (scenario === 'reset-then-switch') {
   out.toast = root.textContent;
   const again = buttonByText('重试', root);
   out.hasRetry = !!again;
+  // 连点两下提示里的「重试」，第一下的重建还没回来（V03）：只重试一次
+  holds.add('POST /api/library/rebuild');
   again.click();
+  again.click();
+  await tick(5);
+  out.postsBeforeRelease = requests.filter((r) => r.method === 'POST' && r.url === '/api/library/rebuild').length;
+  g.release('POST /api/library/rebuild');
   await tick(5);
   out.rebuildPosts = requests.filter((r) => r.method === 'POST' && r.url === '/api/library/rebuild').length;
   out.toastAfter = root.textContent;
+  out.doneToasts = root.textContent.split('已重建索引').length - 1;
+} else if (scenario === 'retry-other-field') {
+  // V01：重开 A 后重试（曝光 1），重试排着时又只改了曲线：曲线以界面为准，补写进去的曝光照样显示；
+  // 之后再调对比度，服务器上的曝光仍是 1
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  let v = viewer.currentView();
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  v = viewer.currentView();
+  out.reopenedExposure = v.ed.adj.exposure_ev;
+  holds.add(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  const retry = preview.retrySaves(PHOTOS.A.id);
+  await tick();
+  const curve = [[0, 0], [128, 110], [255, 255]];
+  v.ed.curve = curve.map((q) => [...q]);
+  const newer = preview.persist(v, { curve: { master: curve } });
+  g.release(`GET /api/photos/${PHOTOS.A.id}/edit`);
+  out.retry = await retry;
+  out.newer = await newer;
+  await tick(10);
+  out.viewExposure = v.ed.adj.exposure_ev;
+  out.viewCurve = v.ed.curve;
+  out.status = preview.saveStatus(PHOTOS.A.id);
+  v.ed.adj.contrast = 5;
+  out.next = await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  out.serverExposure = stored[PHOTOS.A.id].adjust.exposure_ev;
+  out.serverCurve = stored[PHOTOS.A.id].curve;
+} else if (scenario === 'retry-partial-two-kinds') {
+  // V02：编辑和裁剪都没写进去；重开 A 后第一次重试编辑成功、裁剪又失败：写进去的编辑马上显示；
+  // 第二次重试补上裁剪；之后再调对比度，服务器上的曝光仍是 1
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  let v = viewer.currentView();
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  v.ed.adj.exposure_ev = 1;
+  await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/crop`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await preview.saveCrop(v, { preset: 'free', rect: [0.1, 0.1, 0.8, 0.8] });
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  v = viewer.currentView();
+  out.reopenedExposure = v.ed.adj.exposure_ev;
+  failures.set(`PUT /api/photos/${PHOTOS.A.id}/crop`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  out.firstRetry = await preview.retrySaves(PHOTOS.A.id);
+  await tick(5);
+  out.afterPartial = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev, status: preview.saveStatus(PHOTOS.A.id) };
+  out.secondRetry = await preview.retrySaves(PHOTOS.A.id);
+  await tick(5);
+  out.after = { view: v.ed.adj.exposure_ev, status: preview.saveStatus(PHOTOS.A.id), rect: v.crop.rect };
+  v.ed.adj.contrast = 5;
+  out.next = await preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  out.serverAfterNext = stored[PHOTOS.A.id].adjust.exposure_ev;
+} else if (scenario === 'batch-close-fast') {
+  // V04：批量导出途中关掉对话框，结果在 160ms 退场期间回来：照样用提示告诉结果
+  const { openExportDialog } = await import(file('export.js'));
+  const { closeTopModal } = await import(file('dom.js'));
+  await go('#/photos');
+  await tick();
+  holds.add('POST /api/export');
+  openExportDialog({ ids: [PHOTOS.A.id, PHOTOS.B.id], label: '选中的 2 张', photos: state.photos });
+  await tick();
+  const submits = [];
+  const walk = (n) => { if (n.tagName === 'BUTTON' && n.textContent.trim() === '导出' && n.parentNode.classList.contains('modal-foot')) submits.push(n); n.children.forEach(walk); };
+  walk(document.body);
+  submits[submits.length - 1].click();
+  await tick();
+  closeTopModal();
+  g.release('POST /api/export');
+  await tick(5);
+  await new Promise((r) => setTimeout(r, 200));
+  out.toast = document.getElementById('toast-root').textContent;
+} else if (scenario === 'closed-save-retry') {
+  // V05：B 的修改没写进去（当时的提示已经消失）；导出 A、B 时 A 还在保存，关掉对话框后关卡才查到 B：
+  // 提示里要有「重试保存」，点了会补写 B；不发出导出请求
+  const { openExportDialog } = await import(file('export.js'));
+  const { closeTopModal } = await import(file('dom.js'));
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  failures.set(`PUT /api/photos/${PHOTOS.B.id}/edit`, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await preview.persist(viewer.currentView(), { adjust: { exposure_ev: 1 } });
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const saving = preview.persist(viewer.currentView(), { adjust: { exposure_ev: 0.5 } });
+  await go('#/photos');
+  await tick();
+  const root = document.getElementById('toast-root');
+  root.replaceChildren(); // 之前的提示已经消失
+  openExportDialog({ ids: [PHOTOS.A.id, PHOTOS.B.id], label: '选中的 2 张', photos: state.photos });
+  await tick();
+  const submits = [];
+  const walk = (n) => { if (n.tagName === 'BUTTON' && n.textContent.trim() === '导出' && n.parentNode.classList.contains('modal-foot')) submits.push(n); n.children.forEach(walk); };
+  walk(document.body);
+  submits[submits.length - 1].click();
+  await tick();
+  closeTopModal();
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  await saving;
+  await tick(5);
+  await new Promise((r) => setTimeout(r, 200));
+  out.toast = root.textContent;
+  const retry = buttonByText('重试保存', root);
+  out.hasRetrySave = !!retry;
+  if (retry) retry.click();
+  await tick(10);
+  out.statusB = preview.saveStatus(PHOTOS.B.id);
+  out.toastAfter = root.textContent;
+  out.posts = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).length;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

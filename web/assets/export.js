@@ -5,7 +5,7 @@
 
 import { api } from './api.js';
 import { state } from './state.js';
-import { h, openModal, fmtBytes, toast, toastError, errorBody, platform, setFraction } from './dom.js';
+import { h, openModal, fmtBytes, toast, toastError, errorBody, platform, setFraction, outOfView } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
 import { toggle } from './controls.js';
 import { flushPhotos, flushDate } from './saves.js';
@@ -229,7 +229,11 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       } else {
         result.replaceChildren(resultBox('bad', errorBody(e, '导出失败。请重试。')));
       }
-      if (closed) toastError(e, e && e.retrySave ? '有修改没有保存，导出已停止。' : '导出失败。请重试。');
+      // 对话框关了：「重试保存」跟着提示走，不留在看不见的表单里（V05）；重试的结果由 retrySaves 自己提示
+      if (closed) {
+        if (e && e.retrySave) toastError(e, '有修改没有保存，导出已停止。', { action: { label: '重试保存', run: () => e.retrySave() } });
+        else toastError(e, '导出失败。请重试。');
+      }
     } finally {
       running = null;
       lock(false);
@@ -330,7 +334,8 @@ async function followBatch(job, out, photos = []) {
     bad.length ? h('ul', { class: 'export-list' }, reasons) : null,
     ok.length ? h('div', { class: 'res-acts' }, revealButton(job.id)) : null,
   )));
-  if (!out.isConnected) {
+  // 对话框关了（含退场动画那 160ms）就用提示：看是不是还在用户眼前，不看节点还在不在页面上（V04）
+  if (outOfView(out)) {
     const btn = ok.length ? revealButton(job.id) : null;
     const actions = btn ? [{ label: revealLabel(), run: () => btn.click() }] : [];
     toast(parts.join('，'), bad.length ? 'error' : 'ok', { actions });

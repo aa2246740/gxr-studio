@@ -58,7 +58,7 @@ export function button(label, { kind = '', size = 'sm', ico = null, title = null
 
 // ---- 短提示 -----------------------------------------------------------------------
 // 底部居中叠放，新的在下面。kind：info / ok / error / progress。
-// action = { label, run }（或 actions = [...]）时带按钮（打开、重试…），点了就关。
+// action = { label, run }（或 actions = [...]）时带按钮（打开、重试…），点了就关；每条提示的按钮只生效一次（连点不会重试两遍）。
 // 出错和带按钮的停留久一点；鼠标停在上面或焦点在里面时不自动消失（详细信息要能点开）。
 // 外层 #toast-root 不是 live 区域，每条提示自己带 role（不重复播报）。
 const TOAST_ICON = { ok: 'circle-check', error: 'circle-alert', info: 'info' };
@@ -75,7 +75,7 @@ export function toast(message, kind = 'info', { action = null, actions = null, t
     setTimeout(() => el.remove(), 180);
   };
   const acts = (actions || (action ? [action] : [])).map((a) => h('button', {
-    class: 'btn ghost sm', type: 'button', onclick: () => { close(); a.run(); },
+    class: 'btn ghost sm', type: 'button', onclick: () => { if (closed) return; close(); a.run(); },
   }, a.label));
   const ico = TOAST_ICON[kind] ? icon(TOAST_ICON[kind], kind) : null;
   const el = h('div', { class: `toast ${kind === 'error' ? 'err' : kind}`, role: kind === 'error' ? 'alert' : 'status' },
