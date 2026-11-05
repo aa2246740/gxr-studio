@@ -59,8 +59,10 @@ function loadThumb(view, style, holder) {
     done();
     holder.replaceChildren(h('img', { src: url, alt: '', draggable: 'false' }));
   };
+  // 缓存里有：卡片还没挂到页面上（面板正在搭），直接填进去，不看 isConnected，否则会一直停在骨架（AA01）
   if (THUMB_CACHE.has(key)) {
-    show(THUMB_CACHE.get(key));
+    done();
+    holder.replaceChildren(h('img', { src: THUMB_CACHE.get(key), alt: '', draggable: 'false' }));
     return;
   }
   queue.push(async () => {

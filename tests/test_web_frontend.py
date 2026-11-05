@@ -565,4 +565,11 @@ def test_frame_preset_cards_load_as_skeletons_not_ellipses():
     js = (ASSETS / "frame_panel.js").read_text(encoding="utf-8")
     assert "h('div', { class: 'thumb skel', 'aria-busy': 'true' })" in js
     assert "'…'" not in js and "'没有预览'" in js
-    assert js.count("done();") == 2
+    assert js.count("done();") == 3
+
+
+def test_export_camdata_note_does_not_promise_recipe_photos_export():
+    """AA02：没导入配方时，套用了配方的照片导出会被拒绝（后端保留配方）：说明不能说「都能导出」。"""
+    js = (ASSETS / "export.js").read_text(encoding="utf-8")
+    assert "不导入也可以导出" not in js
+    assert "套用了配方的照片要先导入相机配方文件" in js

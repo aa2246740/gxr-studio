@@ -458,6 +458,10 @@ def test_legacy_angle_only_undo_and_redo_write_the_angle(tmp_path):
 def test_arrow_keys_pressed_while_the_next_photo_loads_are_not_dropped(tmp_path):
     """B1：→ 去 B、B 的编辑记录还在读时按 ←：快捷键还在，从 B 算起回到 A，不被吃掉。"""
     out = run(tmp_path, "arrow-burst")
+    # hashchange 还没处理（屏幕上还是 A，地址栏已经是 B）：← 从 B 算回 A；撤销、空格不作用在 A 上
+    assert out["preRight"] is True and out["preHash"] == "#/photo/b0" and out["preShown"] == "a0"
+    assert out["preUndo"] is False and out["preSpace"] is False
+    assert out["preLeft"] is True and out["preHashAfterLeft"] == "#/photo/a0"
     assert out["right"] is True and out["hashAfterRight"] == "#/photo/b0"
     assert out["shownWhileLoading"] == "b0" and out["keysWhileLoading"] is True
     assert out["left"] is True and out["hashAfterLeft"] == "#/photo/a0"
@@ -479,3 +483,12 @@ def test_export_dialog_says_close_once_the_export_has_started(tmp_path):
     """导出开始以后，对话框的「取消」改叫「关闭」：关掉对话框不会停下导出，叫「取消」会误导。"""
     out = run(tmp_path, "export-close-label")
     assert out == {"before": "取消", "after": "关闭", "exported": 1}
+
+
+def test_rebuilt_frame_panel_shows_cached_thumbnails(tmp_path):
+    """AA01：同一版本再搭一次边框面板，缓存里的缩略图直接填进卡片：没有骨架、不忙、不再请求。"""
+    out = run(tmp_path, "frame-thumb-cache", real=("frame_panel.js",))
+    ready = [{"skel": False, "busy": None, "img": True}] * 2
+    assert out["first"] == ready
+    assert out["second"] == ready
+    assert out["extraRenders"] == 0

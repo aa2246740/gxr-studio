@@ -97,7 +97,9 @@ globalThis.apiStub = async (url, opts = {}) => {
 // blobManual 打开时，/render 请求排进 blobQueue，由脚本决定先后放行（对比图的乱序场景）
 let blobManual = false;
 const blobQueue = [];
+const blobCalls = [];
 globalThis.apiBlobStub = (url, opts = {}) => {
+  blobCalls.push(url);
   if (blobManual && url.includes('/render')) {
     return new Promise((resolve) => blobQueue.push({ body: opts.body, resolve: () => resolve({ blob: { body: opts.body }, headers: { get: () => null } }) }));
   }
@@ -1137,6 +1139,16 @@ if (scenario === 'reset-then-switch') {
   await go(`#/photo/${PHOTOS.A.id}`);
   await tick();
   const key = (k) => { const keys = router.keys(); return keys ? keys.down({ key: k, preventDefault() {} }) : null; };
+  // 真浏览器里 hashchange 是异步的：→ 改了地址栏、页面还是 A 时又来一个键。← 要从 B 算回 A；撤销不能作用在 A 上
+  out.preRight = key('ArrowRight');
+  out.preHash = location.hash;
+  out.preShown = shown();
+  out.preUndo = router.keys().undo();
+  out.preSpace = key(' ');
+  out.preLeft = key('ArrowLeft');
+  out.preHashAfterLeft = location.hash;
+  await router.route();
+  await tick();
   holds.add(`GET /api/photos/${PHOTOS.B.id}/edit`);
   out.right = key('ArrowRight');
   out.hashAfterRight = location.hash;
@@ -1161,6 +1173,10 @@ if (scenario === 'reset-then-switch') {
   const undoBtn = find(tbEdit, (n) => n.tagName === 'BUTTON' && String(n.getAttribute('title') || '').startsWith('撤销'));
   const off = (b) => b.getAttribute('aria-disabled') === 'true';
   out.found = !!redoBtn && !!undoBtn;
+  if (!out.found) {
+    console.log(JSON.stringify(out));
+    process.exit(0);
+  }
   out.initial = { undo: off(undoBtn), redo: off(redoBtn) };
   preview.beginChange(v);
   v.ed.adj.exposure_ev = 1;
@@ -1192,6 +1208,33 @@ if (scenario === 'reset-then-switch') {
   await tick(10);
   out.after = left();
   out.exported = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).length;
+} else if (scenario === 'frame-thumb-cache') {
+  // AA01：同一张照片、同一版本再搭一次边框面板，缩略图从缓存里出：卡片要有图、没有骨架，也不再发请求
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  const { framePanel } = await import(file('frame_panel.js'));
+  v.ed.v2 = true;
+  v.ed.frames = { styles: [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }] };
+  const renders = () => blobCalls.filter((u) => u.includes('/render') && u.includes('size=thumb')).length;
+  const thumbs = (pane) => {
+    const list = [];
+    const walk = (n) => { if (n.classList && n.classList.contains('thumb')) list.push(n); n.children.forEach(walk); };
+    walk(pane);
+    return list.map((t) => ({ skel: t.classList.contains('skel'), busy: t.getAttribute('aria-busy'), img: !!t.children.find((c) => c.tagName === 'IMG') }));
+  };
+  const host = document.createElement('div');
+  document.body.append(host);
+  const first = framePanel(v);
+  host.replaceChildren(first);
+  await tick(10);
+  out.first = thumbs(first);
+  const before = renders();
+  const second = framePanel(v);
+  host.replaceChildren(second);
+  await tick(10);
+  out.second = thumbs(second);
+  out.extraRenders = renders() - before;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }
