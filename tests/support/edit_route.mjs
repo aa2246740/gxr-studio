@@ -1356,9 +1356,11 @@ if (scenario === 'reset-then-switch') {
   await tick();
   const v1 = viewer.currentView();
   setup(v1);
+  const rev1 = v1.ed.rev; // 离开照片以后旧视图的 ed 会清空，先记下版本
   blobCardsOnly = true;
   host.replaceChildren(framePanel(v1));
-  await tick(5);
+  const settle = () => new Promise((r) => setTimeout(r, 300)); // 大图忙时卡片让路 120 ms 再试
+  await settle();
   out.inFlight = { requests: renders().length, held: blobQueue.length };
   await go(`#/photo/${PHOTOS.B.id}`);
   await tick();
@@ -1366,12 +1368,13 @@ if (scenario === 'reset-then-switch') {
   await tick();
   const v2 = viewer.currentView();
   setup(v2);
-  out.views = { oldDisposed: !!v1.disposed, newView: v2 !== v1, sameRev: v2.ed.rev === v1.ed.rev };
+  out.views = { oldDisposed: !!v1.disposed, newView: v2 !== v1, sameRev: v2.ed.rev === rev1 };
   const pane = framePanel(v2);
   host.replaceChildren(pane);
-  for (let i = 0; i < 4; i += 1) {
+  for (let i = 0; i < 5; i += 1) {
     while (blobQueue.length) blobQueue.shift().resolve();
     await tick(10);
+    await settle();
   }
   const thumbs = [];
   const walk = (n) => { if (n.classList && n.classList.contains('thumb')) thumbs.push(n); n.children.forEach(walk); };
