@@ -6,8 +6,10 @@ import ctypes
 import hashlib
 import shutil
 import struct
+import subprocess
 import sys
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +62,26 @@ def engine_pair(request):
     return need_package("g155c" + suffix)[1], need_package("g156" + suffix)[1]
 
 
+def graft_engine(layout, engine):
+    """Construct untrusted bytes without passing through pack()'s engine binding."""
+    old_size = dc.u32(layout, 136)
+    delta = len(engine.engine) - old_size
+    changed = bytearray(layout[:256] + engine.engine + layout[256 + old_size :])
+    struct.pack_into(">I", changed, 16, len(changed))
+    struct.pack_into(">II", changed, 112, engine.entry, engine.bss)
+    struct.pack_into(">I", changed, 136, len(engine.engine))
+    assert dc.u16(layout, 120) == len(engine.relocations) == 1
+    for i in range(1, 7):
+        at = 132 + 12 * i
+        struct.pack_into(">I", changed, at, dc.u32(layout, at) + delta)
+    struct.pack_into(">II", changed, dc.u32(changed, 144), *engine.relocations[0])
+    for unit in range(3):
+        directory = dc.u32(changed, 156) + 64 * unit
+        for field in (12, 16, 20, 24):
+            struct.pack_into(">I", changed, directory + field, dc.u32(changed, directory + field) + delta)
+    return reseal(bytes(changed))
+
+
 @pytest.fixture(params=("outer_header_only", "engine_in_old_layout"))
 def mismatched_engine(engine_pair, request):
     old_raw, new_raw = engine_pair
@@ -67,9 +89,8 @@ def mismatched_engine(engine_pair, request):
     invalid = replace(old, generation=156)
     if request.param == "engine_in_old_layout":
         invalid = replace(invalid, engine=new.engine, entry=new.entry, bss=new.bss, relocations=new.relocations)
-    # Build the untrusted input under the older profile, then change only its outer header.
-    # This still constructs the counterexample after pack() starts rejecting g156 mismatches.
-    changed = bytearray(dc.pack(replace(invalid, generation=155)))
+    # The engine registry now also rejects registered engines disguised as older generations.
+    changed = bytearray(old_raw if request.param == "outer_header_only" else graft_engine(old_raw, new))
     struct.pack_into(">I", changed, 28, 156)
     raw = reseal(bytes(changed))
     if request.param == "outer_header_only":
@@ -159,6 +180,7 @@ def camera_gate(tmp_path_factory, parent_format):
     formatter.PRODUCT = product
     formatter.TMP = output / "format"
     formatter.HERE = output
+    formatter.subprocess = SimpleNamespace(run=lambda command, **kwargs: subprocess.run([*command, "-DRV_HOST"], **kwargs))
     library = formatter.library()
 
     def validate(raw, unit):

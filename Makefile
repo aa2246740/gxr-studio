@@ -21,10 +21,10 @@ security:
 	uv run --frozen bandit -q -r src/gxr_studio -c pyproject.toml
 
 test:
-	uv run --frozen pytest -q --durations=20 --reruns 1 --cov=gxr_studio --cov-report=term-missing --cov-fail-under=85
+	uv run --frozen python -I -m pytest -q --durations=20 --reruns 1 --cov=gxr_studio --cov-report=term-missing --cov-fail-under=85
 
 dast:
-	uv run --frozen pytest -q tests/test_security.py tests/test_ops.py
+	uv run --frozen python -I -m pytest -q tests/test_security.py tests/test_ops.py
 
 check: lint type security
 	uv run --frozen python scripts/dead_flags.py
