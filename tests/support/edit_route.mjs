@@ -53,7 +53,8 @@ async function answer(method, url, body) {
       const { expected_rev: _rev, ...fields } = body;
       stored[m[1]] = { ...(stored[m[1]] || {}), ...fields };
     }
-    return m[2] === 'edit' ? { ...editOf(m[1]), rev: revs[k] } : { ...cropOf(m[1]), ...body, rect: body.rect || [0, 0, 1, 1], rev: revs[k] };
+    // rect 为 null：像真后端一样自己算框（cropAnswer 由场景按比例给出）
+    return m[2] === 'edit' ? { ...editOf(m[1]), rev: revs[k] } : { ...cropOf(m[1]), ...body, rect: body.rect || globalThis.cropAnswer?.[body.preset] || [0, 0, 1, 1], rev: revs[k] };
   }
   if (method === 'POST' && (m = /^\/api\/photos\/(\w+)\/export$/.exec(url))) return { path: '/tmp/x_gxr.jpg', width: 10, height: 10, bytes: 100, export_id: 'e1' };
   if (method === 'PUT' && url === '/api/prefs') return body;
@@ -96,11 +97,12 @@ globalThis.apiStub = async (url, opts = {}) => {
 // 预览图：永远不回来也没关系（AbortController 会取消）；这里直接给一张空图。
 // blobManual 打开时，/render 请求排进 blobQueue，由脚本决定先后放行（对比图的乱序场景）
 let blobManual = false;
+let blobCardsOnly = false; // 只挂边框卡片的请求（size=card），大图照常给空图
 const blobQueue = [];
 const blobCalls = [];
 globalThis.apiBlobStub = (url, opts = {}) => {
   blobCalls.push(url);
-  if (blobManual && url.includes('/render')) {
+  if ((blobManual || (blobCardsOnly && url.includes('size=card'))) && url.includes('/render')) {
     return new Promise((resolve) => blobQueue.push({ body: opts.body, resolve: () => resolve({ blob: { body: opts.body }, headers: { get: () => null } }) }));
   }
   return Promise.resolve({ blob: {}, headers: { get: () => null } });
@@ -1216,7 +1218,7 @@ if (scenario === 'reset-then-switch') {
   const { framePanel } = await import(file('frame_panel.js'));
   v.ed.v2 = true;
   v.ed.frames = { styles: [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }] };
-  const renders = () => blobCalls.filter((u) => u.includes('/render') && u.includes('size=thumb')).length;
+  const renders = () => blobCalls.filter((u) => u.includes('/render') && u.includes('size=card')).length;
   const thumbs = (pane) => {
     const list = [];
     const walk = (n) => { if (n.classList && n.classList.contains('thumb')) list.push(n); n.children.forEach(walk); };
@@ -1235,6 +1237,193 @@ if (scenario === 'reset-then-switch') {
   await tick(10);
   out.second = thumbs(second);
   out.extraRenders = renders() - before;
+} else if (scenario === 'crop-click-local-first') {
+  // 点比例：框先在本地算好、马上变；后端慢（保存挂着）也一样。回应回来换成后端算的准框；连点时过时的回应不盖掉新的框。
+  // 保存失败：框留着、标成未保存，重试补上。撤销只还原裁切这一组。
+  const id = PHOTOS.A.id;
+  await go(`#/photo/${id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  const cropMod = await import(file('crop.js'));
+  v.canvas = { w: 3000, h: 2000 };
+  let drawn = 0;
+  let side = 0;
+  v.onRectDrag = () => { drawn += 1; };
+  v.redrawSide = () => { side += 1; };
+  globalThis.cropAnswer = {
+    '1:1': [500 / 3000, 0, 2000 / 3000, 1],
+    '16:9': [0, 156 / 2000, 1, 1688 / 2000],
+    '4:5': [700 / 3000, 0, 1600 / 3000, 1],
+    'xpan-65-24': [0, 446 / 2000, 1, 1108 / 2000],
+  };
+  const key = `PUT /api/photos/${id}/crop`;
+  const snap = () => ({ rect: { ...v.crop.rect }, preset: v.crop.preset, orientation: v.crop.orientation });
+  const cropPuts = () => requests.filter((r) => r.method === 'PUT' && r.url === `/api/photos/${id}/crop`).map((r) => r.body);
+
+  // 1) 保存挂着：点完马上就是新框
+  holds.add(key);
+  const first = cropMod.applyPreset(v, { id: '1:1', label: '1:1' });
+  out.right = snap();
+  out.redraws = { box: drawn, side };
+  await tick(3);
+  out.heldBody = cropPuts().map((b) => ({ preset: b.preset, rect: b.rect, orientation: b.orientation }));
+  out.stillLocal = snap();
+  g.release(key);
+  await first;
+  await tick(3);
+  out.afterServer = snap();
+
+  // 2) 连点两下：第一笔的回应晚到，不能把第二笔的框换回去
+  holds.add(key);
+  const second = cropMod.applyPreset(v, { id: '16:9', label: '16:9' });
+  const third = cropMod.applyPreset(v, { id: '4:5', label: '4:5', orient: 'portrait' });
+  out.double = snap();
+  await tick(3);
+  holds.add(key); // 保存是一笔一笔排队的：第二笔在第一笔写完以后才发出，也让它挂着
+  g.release(key);
+  await tick(5);
+  out.afterStale = snap();
+  g.release(key);
+  await Promise.all([second, third]);
+  await tick(3);
+  out.afterBoth = snap();
+
+  // 3) 撤销：只写回裁切，不碰编辑；还原到这一步之前的框
+  const before = requests.length;
+  preview.undoChange(v);
+  await preview.flushEdits(v);
+  await tick(5);
+  const after = requests.slice(before).filter((r) => r.method === 'PUT');
+  out.undo = { urls: after.map((r) => r.url.split('/').pop()), body: after.map((r) => ({ preset: r.body.preset, rect: r.body.rect }))[0], now: snap() };
+
+  // 4) 保存失败：框留着，标成未保存；重试补上，框换成后端算的
+  failures.set(key, new StubError(500, '磁盘已满，无法写入编辑记录。'));
+  await cropMod.applyPreset(v, { id: 'xpan-65-24', label: 'XPan 65:24' });
+  await tick(3);
+  out.failed = { status: preview.saveStatus(id), ...snap() };
+  out.retry = await preview.retrySaves(id);
+  await tick(5);
+  out.retried = { status: preview.saveStatus(id), ...snap() };
+} else if (scenario === 'frame-cards-yield') {
+  // 边框卡片是次要的：请求用 size=card；面板重搭时同一张不重复请求；这张照片有保存在路上时先让路
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v = viewer.currentView();
+  const { framePanel } = await import(file('frame_panel.js'));
+  v.ed.v2 = true;
+  v.ed.frames = { styles: [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }, { id: 'film', options: [] }] };
+  const renders = () => blobCalls.filter((u) => u.includes('/render') && /size=(card|thumb)/.test(u));
+  const host = document.createElement('div');
+  document.body.append(host);
+  // 保存还没写完：卡片先不请求
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const saving = preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  await tick(2);
+  out.statusWhileSaving = preview.saveStatus(PHOTOS.A.id);
+  blobManual = true;
+  // 面板搭了两次（任何一次重画都会这样），都在保存还没写完的时候：同一张图只请求一次
+  const first = framePanel(v);
+  host.replaceChildren(first);
+  const second = framePanel(v);
+  host.replaceChildren(second);
+  await tick(10);
+  out.requestsWhileSaving = renders().length;
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  await saving;
+  await new Promise((r) => setTimeout(r, 250));
+  out.afterSave = { requests: renders().length, queued: blobQueue.length };
+  while (blobQueue.length) blobQueue.shift().resolve();
+  await tick(10);
+  while (blobQueue.length) blobQueue.shift().resolve();
+  await tick(10);
+  const imgs = (pane) => {
+    let n = 0;
+    const walk = (x) => { if (x.tagName === 'IMG') n += 1; x.children.forEach(walk); };
+    walk(pane);
+    return n;
+  };
+  out.final = { requests: renders().length, firstImgs: imgs(first), secondImgs: imgs(second), urls: [...new Set(renders().map((u) => u.split('?')[1]))] };
+} else if (scenario === 'frame-cards-switch-back') {
+  // PR #39 复审 P2（Sol 的复现顺序）：打开 A 的边框卡片，前两个请求挂着、第三个排队；切到 B，在请求返回之前回到 A。
+  // 旧视图关了，新视图等的是同一批卡片：三张都要出图，不能被旧视图的取消一起拒掉（停在骨架或「没有预览」）
+  const styles = [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }, { id: 'film', options: [] }];
+  const setup = (v) => { v.ed.v2 = true; v.ed.frames = { styles }; };
+  const { framePanel } = await import(file('frame_panel.js'));
+  const renders = () => blobCalls.filter((u) => u.includes('/render') && u.includes('size=card'));
+  const host = document.createElement('div');
+  document.body.append(host);
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v1 = viewer.currentView();
+  setup(v1);
+  const rev1 = v1.ed.rev; // 离开照片以后旧视图的 ed 会清空，先记下版本
+  blobCardsOnly = true;
+  host.replaceChildren(framePanel(v1));
+  const settle = () => new Promise((r) => setTimeout(r, 300)); // 大图忙时卡片让路 120 ms 再试
+  await settle();
+  out.inFlight = { requests: renders().length, held: blobQueue.length };
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v2 = viewer.currentView();
+  setup(v2);
+  out.views = { oldDisposed: !!v1.disposed, newView: v2 !== v1, sameRev: v2.ed.rev === rev1 };
+  const pane = framePanel(v2);
+  host.replaceChildren(pane);
+  for (let i = 0; i < 5; i += 1) {
+    while (blobQueue.length) blobQueue.shift().resolve();
+    await tick(10);
+    await settle();
+  }
+  const thumbs = [];
+  const walk = (n) => { if (n.classList && n.classList.contains('thumb')) thumbs.push(n); n.children.forEach(walk); };
+  walk(pane);
+  out.final = {
+    requests: renders().length,
+    imgs: thumbs.filter((t) => t.children.some((c) => c.tagName === 'IMG')).length,
+    noPreview: thumbs.filter((t) => t.textContent.includes('没有预览')).length,
+    skel: thumbs.filter((t) => t.classList.contains('skel')).length,
+  };
+} else if (scenario === 'crop-zoom-matches-click') {
+  // PR #39 复审（Grok 第二轮）：拉直、转 90° 以后，大小滑块的 100% 正好是点比例时画的那一框；
+  // 拖动时收框（fitCrop）不把它收小。预览画布比原图小，几何按全尺寸算。
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  const cropMod = await import(file('crop.js'));
+  v.ed.v2 = true;
+  v.crop.frame = { width: 4288, height: 2848 };
+  const cases = [
+    [{ straighten: 4 }, { id: '1:1', label: '1:1' }, false],
+    [{ straighten: 4 }, { id: '4:5', label: '4:5', orient: 'portrait' }, true],
+    [{ rotate90: 1, straighten: -7.5 }, { id: '16:9', label: '16:9' }, false],
+    [{ rotate90: 2, flip: true, straighten: 15 }, { id: 'xpan-65-24', label: 'XPan' }, true],
+    [{ straighten: 10 }, { id: 'free', label: '自由' }, false],
+    [{}, { id: '3:2', label: '3:2' }, true],
+  ];
+  const off = (a, b) => Math.max(...['x', 'y', 'w', 'h'].map((k) => Math.abs(a[k] - b[k])));
+  out.cases = [];
+  for (const [geo, item, portrait] of cases) {
+    v.ed.geometry = { straighten: 0, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false, ...geo };
+    const full = cropMod.fullCanvas(v);
+    v.canvas = { w: Math.round(full.w / 4), h: Math.round(full.h / 4) };
+    const click = cropMod.presetRect(v, item, portrait);
+    v.crop.rect = { ...click };
+    v.crop.preset = item.id;
+    v.presetItem = item;
+    const zoom100 = cropMod.previewZoom(v, 100);
+    const zoom60 = cropMod.previewZoom(v, 60);
+    const nudged = cropMod.fitCrop(v, { ...click, x: click.x + 0.01, y: click.y + 0.01 }).rect;
+    out.cases.push({
+      geo,
+      preset: item.id,
+      zoom100Off: off(zoom100, click),
+      clickKept: cropMod.fitCrop(v, click).changed === false,
+      zoom60: { ratio: zoom60.w / click.w, centerOff: Math.abs(zoom60.x + zoom60.w / 2 - (click.x + click.w / 2)) + Math.abs(zoom60.y + zoom60.h / 2 - (click.y + click.h / 2)) },
+      nudgedSizeOff: Math.abs(nudged.w - click.w) + Math.abs(nudged.h - click.h),
+    });
+  }
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

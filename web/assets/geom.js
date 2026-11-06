@@ -68,6 +68,113 @@ export function maxRectFor(valid, canvas, ratio) {
   return { x: valid.x + (valid.w - w) / 2, y: valid.y + (valid.h - h) / 2, w, h };
 }
 
+// 横向的最简整数比（和后端 crop.PRESETS 约分以后一样）：1.91:1 → [191, 100]，16:10 → [8, 5]。原比例、自由返回 null。
+export function landscapePair(id) {
+  if (id === 'xpan-65-24') return [65, 24];
+  const m = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(id || '');
+  if (!m) return null;
+  let a = Math.round(Number(m[1]) * 100);
+  let b = Math.round(Number(m[2]) * 100);
+  const gcd = (x, y) => (y ? gcd(y, x % y) : x);
+  const g = gcd(a, b);
+  [a, b] = [a / g, b / g];
+  return a >= b ? [a, b] : [b, a];
+}
+
+// 点比例时后端写下的框（crop.default_crop，再经 geometry.fitted_crop），在前端照算一遍，不等后端：
+// 拉直 angleDeg 度以后，画布中心、整个落在原画面里的最大框（比例 ratio = 宽 / 高，像素；null 用画布本身的比例）。
+// canvas 要用全尺寸（几何变换之后的原图像素），不能用预览图：拉直过的固定比例，后端取 pair 的整数倍
+// （pair 是横向的最简整数比，比如 1.91:1 是 [191, 100]），整数倍的台阶按全尺寸算。
+// 只适用于没有透视、畸变的画面（那时有效区只有后端知道）。和后端差的只是取整，通常 1–2 个像素。
+export function centeredMaxRect(canvas, ratio, angleDeg = 0, pair = null) {
+  const W = canvas.w;
+  const H = canvas.h;
+  const a = ratio == null ? W / H : ratio;
+  const t = (Math.abs(angleDeg) * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  const q = 1 / a; // 高 / 宽
+  let w = Math.min(W, W / (c + q * s), H / (s + q * c));
+  let h = Math.min(H, w / a);
+  if (pair && Math.abs(angleDeg) > 1e-9) {
+    const [n, d] = a >= 1 ? pair : [pair[1], pair[0]];
+    const k = Math.min(Math.floor(Math.floor(w + 1e-9) / n), Math.floor(Math.floor(h + 0.5) / d));
+    if (k >= 1) {
+      w = k * n;
+      h = k * d;
+    }
+  }
+  return { x: (W - w) / 2 / W, y: (H - h) / 2 / H, w: w / W, h: h / H };
+}
+
+// 框在拉直以后的原画面里吗：在画布内，四个角按拉直的反方向转回去也都在原画面内。
+// 和后端校验框的 crop.box_inside 是同一个判断（后端还多给 1 像素的余量）。canvas 用全尺寸。
+export function insideStraightened(r, canvas, angleDeg) {
+  if (r.x < -EPS || r.y < -EPS || r.x + r.w > 1 + EPS || r.y + r.h > 1 + EPS) return false;
+  const W = canvas.w;
+  const H = canvas.h;
+  const t = (angleDeg * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  const tol = 1e-6;
+  const x0 = r.x * W - W / 2;
+  const y0 = r.y * H - H / 2;
+  const x1 = x0 + r.w * W;
+  const y1 = y0 + r.h * H;
+  for (const [dx, dy] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+    if (Math.abs(dx * c + dy * s) > W / 2 + tol || Math.abs(-dx * s + dy * c) > H / 2 + tol) return false;
+  }
+  return true;
+}
+
+// 在成片画布上看，画面倾斜的角度：成片先拉直、再转 90°、最后左右翻转（后端 finish.geometry.warp），
+// 转 90° 不改倾斜的方向，左右翻转把它反过来。收框（fitStraightened）和后端校验（validate_crop 的 mirrored）都按它。
+export function cropTilt(geometry) {
+  const g = geometry || {};
+  return (g.straighten || 0) * (g.flip ? -1 : 1);
+}
+
+// 收进拉直以后的原画面（和 fitInto 一样的手感）：先往画布中心挪，挪不进去再以中心为准等比缩小。changed 表示动过。
+// 没有透视、畸变时用它：这时后端允许的范围就是这个，比有效矩形（validRect）大。
+export function fitStraightened(rect, canvas, angleDeg) {
+  if (insideStraightened(rect, canvas, angleDeg)) return { rect: { ...rect }, changed: false };
+  const cx0 = rect.x + rect.w / 2;
+  const cy0 = rect.y + rect.h / 2;
+  // 宽高按同一个比例缩：比画布还大的框（角拉出了画面）也保持比例，不把宽、高各自截到 1
+  const cap = Math.min(1, 1 / rect.w, 1 / rect.h);
+  const at = (t, k) => {
+    const cx = cx0 + (0.5 - cx0) * t;
+    const cy = cy0 + (0.5 - cy0) * t;
+    const kk = Math.min(k, cap);
+    const w = rect.w * kk;
+    const h = rect.h * kk;
+    return { x: cx - w / 2, y: cy - h / 2, w, h };
+  };
+  const ok = (r) => insideStraightened(r, canvas, angleDeg);
+  let lo;
+  let hi;
+  if (ok(at(1, 1))) {
+    // 挪得进去：挪最少
+    lo = 0;
+    hi = 1;
+    for (let i = 0; i < 40; i += 1) {
+      const mid = (lo + hi) / 2;
+      if (ok(at(mid, 1))) hi = mid;
+      else lo = mid;
+    }
+    return { rect: at(hi, 1), changed: true };
+  }
+  // 挪到中心也放不下：在中心缩小，缩最少
+  lo = 0;
+  hi = 1;
+  for (let i = 0; i < 40; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (ok(at(1, mid))) lo = mid;
+    else hi = mid;
+  }
+  return { rect: at(1, lo), changed: true };
+}
+
 // 当前框占最大框的百分比（框的大小滑块）。以框的中心为准缩放，再收进有效画面。
 export function zoomRect(current, maxRect, percent, valid) {
   const cx = current.x + current.w / 2;

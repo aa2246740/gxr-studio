@@ -54,22 +54,23 @@ def load_jpeg(path: Any, max_edge: int | None) -> np.ndarray:
     return np.asarray(rgb)
 
 
-def finish_array(
+def finish_unframed(
     rgb: np.ndarray,
     edit: EditState,
     *,
     stage: str,
-    frame: FrameSpec,
     stamp: StampSpec,
     crop_rect: tuple[float, float, float, float] | None,
-    meta: dict[str, str],
     taken: datetime | None,
     file_time: datetime | None,
     from_raw: bool,
     crop_preset: str | None = None,
     track: HdrTrack | None = None,
 ) -> tuple[np.ndarray, str | None]:
-    """`track`（导出 HDR 时）：RAW 亮度层跟着做同样的几何、裁剪，日期戳和边框处记为不是照片（见 `hdr_export`）。"""
+    """成片的前半段：调整、几何、裁剪、日期戳，不含边框。未裁切和原图在这里就结束，返回有效画面的头值。
+
+    边框样式卡片（`serve.render_card`）把这一段只做一次，再对每种样式只做 `apply_frame`；
+    导出和预览走 `finish_array`，顺序和字节都不变。"""
     track = track or HdrTrack(None)
     if from_raw:
         rgb = apply_extra(rgb, edit.adjust)
@@ -103,6 +104,40 @@ def finish_array(
         track.crop(crop_rect)
     rgb = apply_stamp(rgb, stamp, taken, file_time)
     track.stamp(stamp, taken, file_time)
+    return rgb, None
+
+
+def finish_array(
+    rgb: np.ndarray,
+    edit: EditState,
+    *,
+    stage: str,
+    frame: FrameSpec,
+    stamp: StampSpec,
+    crop_rect: tuple[float, float, float, float] | None,
+    meta: dict[str, str],
+    taken: datetime | None,
+    file_time: datetime | None,
+    from_raw: bool,
+    crop_preset: str | None = None,
+    track: HdrTrack | None = None,
+) -> tuple[np.ndarray, str | None]:
+    """`track`（导出 HDR 时）：RAW 亮度层跟着做同样的几何、裁剪，日期戳和边框处记为不是照片（见 `hdr_export`）。"""
+    track = track or HdrTrack(None)
+    rgb, header = finish_unframed(
+        rgb,
+        edit,
+        stage=stage,
+        stamp=stamp,
+        crop_rect=crop_rect,
+        taken=taken,
+        file_time=file_time,
+        from_raw=from_raw,
+        crop_preset=crop_preset,
+        track=track,
+    )
+    if stage == "uncropped" or stage == "original":
+        return rgb, header
     rgb = apply_frame(rgb, frame, meta)
     track.frame(frame, meta)
     return rgb, None

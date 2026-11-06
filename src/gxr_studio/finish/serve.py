@@ -21,7 +21,7 @@ from .hdr_export import HdrTrack
 from .hdr_export import finish as finish_hdr
 from .spec import factory_frame, factory_stamp
 
-SIZE_EDGE = {"thumb": 240, "preview": 1600, "full": None}
+SIZE_EDGE = {"thumb": 240, "card": 240, "preview": 1600, "full": None}
 NO_RAW = "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。"
 APPROX_LABEL = "近似"
 

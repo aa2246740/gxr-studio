@@ -350,13 +350,20 @@ def fit_preset_in_valid(
     preset: str | None,
     rect: tuple[float, float, float, float],
 ) -> tuple[int, int, int, int] | None:
-    """固定比例才取整数框。自由、原比例沿用原来的收框。"""
+    """固定比例才取整数框。自由、原比例沿用原来的收框。
+
+    横竖跟着传进来的框，不跟画布：界面可以把预设转 90°（横图上的 4:5 竖框），拉直以后写回、预览和导出
+    都还是竖框。框是整张画布（没有裁切）时就是画布的方向，和原来一样。
+    """
     if preset not in PRESETS or PRESETS[preset] is None:
         return None
     height, width = valid.shape
     ratio = target_ratio(preset, width, height)
     if ratio is None:
         return None
+    _x, _y, rw, rh = rect
+    if (rw * width >= rh * height) != (ratio >= 1):
+        ratio = 1 / ratio
     return fit_ratio_in_valid(valid, rect, ratio.numerator, ratio.denominator)
 
 

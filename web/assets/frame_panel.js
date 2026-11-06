@@ -3,7 +3,8 @@
 
 import { h, toast, toastError } from './dom.js';
 import { apiBlob } from './api.js';
-import { persist, schedulePreview, beginChange, endChange, styleOptions } from './preview.js';
+import { on } from './state.js';
+import { persist, schedulePreview, beginChange, endChange, styleOptions, saveStatus } from './preview.js';
 import { saveDefaults } from './caps.js';
 import { normalizeFrame, frameBody, defaultsPayload, DEFAULT_FRAME, clipText, TEXT_MAX } from './finish.js';
 import { seg, toggle, swatch, notReady } from './controls.js';
@@ -23,18 +24,88 @@ const WEIGHT_NAMES = { thin: '细', medium: '中', thick: '粗' };
 const CANVAS = ['1:1', '4:5', '3:2', '9:16'];
 
 const THUMB_CACHE = new Map();
+const THUMB_KEEP = 96; // 缓存的卡片图上限；超出的最旧一张释放
+const flights = new Map(); // 缩略图键 → { promise, views }：面板重搭、换走又换回来时同一张不重复请求，等它的视图都记下
 const queue = [];
 let running = 0;
+let waiting = null;
+
+// 卡片图是次要的：这张照片有保存在路上、或大图正在出图时先让路，空下来再请求
+function busy(view) {
+  return saveStatus(view.photo.id) === 'saving' || !!(view.ed && view.ed.busy);
+}
+
+// 还在等这张图的视图（换照片会关掉旧的视图；换回来的新视图会接着等同一张）
+function alive(entry) {
+  for (const v of entry.views) if (!v.disposed) return v;
+  return null;
+}
 
 function pump() {
+  clearTimeout(waiting);
+  waiting = null;
   while (running < 2 && queue.length) {
+    const view = alive(queue[0].entry);
+    // 等它的视图全关了才放弃：只关了旧的、新视图还在等时照常请求，不把新面板的卡片一起拒掉（PR #39 复审）
+    if (!view) {
+      queue.shift().skip();
+      continue;
+    }
+    if (busy(view)) {
+      waiting = setTimeout(pump, 120);
+      return;
+    }
     const job = queue.shift();
     running += 1;
-    job().finally(() => {
+    job.run().finally(() => {
       running -= 1;
       pump();
     });
   }
+}
+
+on('save-status', () => {
+  if (queue.length) pump(); // 保存写完了：让路的卡片接着请求
+});
+
+function remember(key, url) {
+  THUMB_CACHE.set(key, url);
+  while (THUMB_CACHE.size > THUMB_KEEP) {
+    const oldest = THUMB_CACHE.keys().next().value;
+    URL.revokeObjectURL(THUMB_CACHE.get(oldest));
+    THUMB_CACHE.delete(oldest);
+  }
+}
+
+function fetchThumb(view, body, key) {
+  const known = flights.get(key);
+  if (known) {
+    known.views.add(view);
+    return known.promise;
+  }
+  const photoId = view.photo.id; // 键里就有照片 id：等这张图的视图都是同一张照片
+  const entry = { views: new Set([view]), promise: null };
+  entry.promise = new Promise((resolve, reject) => {
+    queue.push({
+      entry,
+      skip: () => reject(new Error('closed')),
+      run: async () => {
+        try {
+          const { blob } = await apiBlob(`/api/photos/${photoId}/render?stage=final&size=card`, { body });
+          const url = URL.createObjectURL(blob);
+          remember(key, url);
+          resolve(url);
+        } catch (e) {
+          reject(e);
+        }
+      },
+    });
+  }).finally(() => {
+    if (flights.get(key) === entry) flights.delete(key);
+  });
+  flights.set(key, entry);
+  pump();
+  return entry.promise;
 }
 
 function styleList(ed) {
@@ -54,8 +125,8 @@ function loadThumb(view, style, holder) {
     holder.classList.remove('skel');
     holder.removeAttribute('aria-busy');
   };
+  // 不看 isConnected：面板还在搭（卡片还没挂上页面）时图就到了，也要填进去，不然一直停在骨架（AA01，PR #39 复审）
   const show = (url) => {
-    if (!holder.isConnected) return;
     done();
     holder.replaceChildren(h('img', { src: url, alt: '', draggable: 'false' }));
   };
@@ -65,19 +136,10 @@ function loadThumb(view, style, holder) {
     holder.replaceChildren(h('img', { src: THUMB_CACHE.get(key), alt: '', draggable: 'false' }));
     return;
   }
-  queue.push(async () => {
-    try {
-      const { blob } = await apiBlob(`/api/photos/${view.photo.id}/render?stage=final&size=thumb`, { body });
-      const url = URL.createObjectURL(blob);
-      THUMB_CACHE.set(key, url);
-      show(url);
-    } catch {
-      if (!holder.isConnected) return;
-      done();
-      holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
-    }
+  fetchThumb(view, body, key).then(show, () => {
+    done();
+    holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
   });
-  pump();
 }
 
 function setFrame(view, patch) {

@@ -6,9 +6,9 @@
 // 画面是后端渲染好的图（POST /render 的返回）或显卡预览的画布，前端不再自己画边框或时间戳。
 
 import { h } from './dom.js';
-import { beginChange, endChange, saveCrop, validRect, originalUrl, originalFallbackUrl, renderProblem, geometryOf, beforeUrl } from './preview.js';
-import { cropBody, guidesSvg, guideFade, lockRatio, orientationNow, rectArray, pixelsText } from './crop.js';
-import { fitInto, moveRect, resizeRect } from './geom.js';
+import { beginChange, endChange, saveCrop, originalUrl, originalFallbackUrl, renderProblem, geometryOf, beforeUrl } from './preview.js';
+import { cropBody, guidesSvg, guideFade, lockRatio, orientationNow, rectArray, pixelsText, fitCrop } from './crop.js';
+import { moveRect, resizeRect } from './geom.js';
 import { gpuCanvas } from './gpu_stage.js';
 
 const pct = (v) => `${(v * 100).toFixed(4)}%`;
@@ -48,8 +48,14 @@ export function paintStage(view) {
   // 同一张图、同一种模式：只调尺寸（窗口变了、面板收起），不重建 <img>，画面不闪
   const cur = childWith(area, 'pv');
   const curImg = cur && cur.querySelector('.pv-img');
-  if (src && curImg && cur.dataset.mode === mode && cur.dataset.src === src && cur.dataset.natural === String(natural) && mode !== 'uncropped') {
+  // 裁切页也一样：图没换、框已经在页面上，就只更新框（点比例、换参考线都不用重建整张图）
+  const cropBoxKept = mode !== 'uncropped' || (!!view.box && cur && cur.contains(view.box));
+  if (src && curImg && cur.dataset.mode === mode && cur.dataset.src === src && cur.dataset.natural === String(natural) && cropBoxKept) {
     if (!natural) Object.assign(curImg.style, { maxWidth: `${maxW}px`, maxHeight: `${maxH}px` });
+    if (mode === 'uncropped') {
+      if (ed && !ed.v2) curImg.style.transform = geometryOf(view).straighten ? `rotate(${geometryOf(view).straighten}deg)` : '';
+      paintBox(view);
+    }
     paintSplit(view, cur, mode);
     paintProblem(view, area, mode);
     return;
@@ -210,6 +216,7 @@ function paintGpu(view, area, cv, mode) {
   const next = view.gpuFull;
   view.canvas = next;
   if (!view.box || !pv.contains(view.box)) pv.append(cropBox(view, pv));
+  else paintBox(view); // 框已经在：按现在的框（比如后端回来的准框、撤销还原的框）重画
   const old = pv.querySelector('.crop-size');
   const text = view.crop && (view.crop.frame || view.canvas) ? h('div', { class: 'crop-size' }, pixelsText(view)) : null;
   if (old && text) old.replaceWith(text);
@@ -246,6 +253,9 @@ export function paintBox(view) {
   box.dataset.fade = String(guideFade());
   const old = box.querySelector('svg.guides');
   if (old) old.replaceWith(guidesSvg(r, view.canvas));
+  // 画面右下角的「W × H」跟着框走
+  const size = box.parentElement && box.parentElement.querySelector('.crop-size');
+  if (size) size.textContent = pixelsText(view);
 }
 
 // 拖动框：移动，或拖角缩放（比例锁定时保持比例）。拖的时候只改框，松手才保存。
@@ -268,10 +278,10 @@ function onDown(e, view, box, pv) {
       const p = { x: (ev.clientX - rect.left) / rect.width, y: (ev.clientY - rect.top) / rect.height };
       next = resizeRect(r0, corner, p, view.canvas, lock);
     }
-    // 越界就收回来（先挪，挪不进去再缩小）
-    view.crop.rect = fitInto(next, validRect(view, view.canvas)).rect;
-    paintBox(view);
-    view.onRectDrag?.();
+    // 越界就收回来（先挪，挪不进去再缩小），范围和后端一样（fitCrop）
+    view.crop.rect = fitCrop(view, next).rect;
+    if (view.onRectDrag) view.onRectDrag();
+    else paintBox(view);
   };
   const up = () => {
     box.removeEventListener('pointermove', move);

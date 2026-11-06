@@ -125,6 +125,73 @@ def test_max_rect_keeps_the_ratio_and_stays_centred(tmp_path):
     assert out["x"] == pytest.approx((1 - out["w"]) / 2)
 
 
+def test_inside_straightened_is_the_server_check(tmp_path):
+    """前端收框的判断和后端校验框的 crop.box_inside 一样（在画布内，四角按拉直反转回去也在原画面内）。"""
+    import random
+
+    from gxr_studio.crop import box_inside
+
+    rng = random.Random(3)
+    cases = []
+    for _ in range(400):
+        w_px, h_px = rng.choice([(4288, 2848), (2848, 4288), (3000, 3000)])
+        angle = rng.uniform(-15, 15)
+        w, h = rng.uniform(0.2, 1.0), rng.uniform(0.2, 1.0)
+        x, y = rng.uniform(-0.05, 1.05 - w), rng.uniform(-0.05, 1.05 - h)
+        cases.append([w_px, h_px, angle, x, y, w, h])
+    body = "([W, H, a, x, y, w, h]) => G.insideStraightened({x, y, w, h}, {w: W, h: H}, a)"
+    got = run_node(tmp_path, f"return {json.dumps(cases)}.map({body});")
+    assert isinstance(got, list)
+    for case, inside in zip(cases, got, strict=True):
+        w_px, h_px, angle, x, y, w, h = case
+        on_canvas = x >= -1e-9 and y >= -1e-9 and x + w <= 1 + 1e-9 and y + h <= 1 + 1e-9
+        assert inside == (on_canvas and box_inside((x * w_px, y * h_px, w * w_px, h * h_px), w_px, h_px, angle, 1e-6)), case
+    assert 50 < sum(got) < 350  # 两种结果都有足够多
+
+
+def test_fit_straightened_moves_first_then_shrinks(tmp_path):
+    out = run_node(
+        tmp_path,
+        "const c = {w: 4288, h: 2848};"
+        "const best = G.centeredMaxRect(c, 1, 4);"
+        "const moved = G.fitStraightened({...best, x: best.x + 0.05}, c, 4);"
+        "const whole = G.fitStraightened({x: 0, y: 0, w: 1, h: 1}, c, 4);"
+        "const small = G.fitStraightened({x: 0.4, y: 0.4, w: 0.1, h: 0.1}, c, 4);"
+        "return {best, moved, whole, small, canvasBox: G.centeredMaxRect(c, null, 4),"
+        " ok: [moved.rect, whole.rect].map((r) => G.insideStraightened(r, c, 4))};",
+    )
+    assert isinstance(out, dict)
+    assert out["small"]["changed"] is False
+    assert out["ok"] == [True, True]
+    # 最大的 1:1 只能放在中心：挪回中心，大小不变
+    assert out["moved"]["changed"] is True
+    assert out["moved"]["rect"]["w"] == pytest.approx(out["best"]["w"])
+    assert out["moved"]["rect"]["x"] == pytest.approx(out["best"]["x"], abs=1e-6)
+    # 整张画布挪不进去：在中心等比缩小到拉直以后最大的同比例框
+    for k in ("x", "y", "w", "h"):
+        assert out["whole"]["rect"][k] == pytest.approx(out["canvasBox"][k], abs=1e-6)
+
+
+def test_fit_straightened_keeps_the_ratio_of_a_box_bigger_than_the_canvas(tmp_path):
+    """PR #39 复审（Grok 第三轮）：角拉出画面、框比画布还宽时，宽高按同一个比例缩（原来各自截到 1，16:9 变成 1.65）。"""
+    out = run_node(
+        tmp_path,
+        "const c = {w: 4288, h: 2848};"
+        "const wide = {x: 0, y: 0.1, w: 1.08, h: 1.08 * 4288 / 16 * 9 / 2848};"
+        "return [0, 4, -8].map((a) => { const f = G.fitStraightened(wide, c, a); "
+        "return {ratio: (f.rect.w * c.w) / (f.rect.h * c.h), ok: G.insideStraightened(f.rect, c, a), w: f.rect.w}; });",
+    )
+    assert isinstance(out, list)
+    for case in out:
+        assert case["ratio"] == pytest.approx(16 / 9, rel=1e-9) and case["ok"] is True and case["w"] <= 1 + 1e-12, case
+
+
+def test_crop_tilt_turns_around_when_the_picture_is_mirrored(tmp_path):
+    geos = "[{straighten: 8}, {straighten: 8, flip: true}, {straighten: 8, rotate90: 1}, null]"
+    out = run_node(tmp_path, f"return {geos}.map((g) => G.cropTilt(g));")
+    assert out == [8, -8, 8, 0]
+
+
 def test_resize_with_ratio_lock_keeps_the_pixel_ratio(tmp_path):
     out = run_node(
         tmp_path,
@@ -395,7 +462,10 @@ def test_pixel_size_text_is_counted_on_the_original_frame():
     """裁切的「W × H 像素」按原图（sidecar 的 frame 宽高）算，不按预览图。"""
     crop = (ASSETS / "crop.js").read_text(encoding="utf-8")
     body = _function_body(crop, "export function pixelsText(view)")
-    assert "view.crop.frame" in body and "canvasAfterRotation" in body
+    assert "fullCanvas(view)" in body
+    # 全尺寸画布：sidecar 的 frame 宽高，按 90° 旋转交换（点比例、收框也用它）
+    full = _function_body(crop, "export function fullCanvas(view)")
+    assert "view.crop.frame" in full and "canvasAfterRotation" in full
 
 
 def test_frame_cards_use_two_columns_and_colours_are_swatches_only():

@@ -124,8 +124,12 @@ def default_crop(preset: str, width: int, height: int, angle_deg: float = 0.0, f
     return Crop(preset=preset, rect=rect, angle_deg=angle)
 
 
-def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int) -> Crop:
-    """校验用户给的框；不合格就抛 CropError，不悄悄修正。"""
+def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int, *, mirrored: bool = False) -> Crop:
+    """校验用户给的框；不合格就抛 CropError，不悄悄修正。
+
+    mirrored：画面左右翻转过。成片先拉直、再转 90°、最后翻转（finish.geometry.warp），翻转把倾斜的方向反过来，
+    所以按反过来的角度看框在不在原画面里，和成片真正的有效区一致（PR #39 复审）。存下来的角度不变。
+    """
     angle = _check_angle(angle_deg)
     ratio = target_ratio(preset, width, height)
     try:
@@ -147,7 +151,7 @@ def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: 
         if off > RATIO_TOLERANCE:
             raise CropError("ratio_mismatch", "裁剪框超出画面范围")
     box = (x * width, y * height, w * width, h * height)
-    if not box_inside(box, width, height, angle, EDGE_TOLERANCE_PX):
+    if not box_inside(box, width, height, -angle if mirrored else angle, EDGE_TOLERANCE_PX):
         raise CropError("crop_outside_image", "裁剪框超出画面范围")
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 

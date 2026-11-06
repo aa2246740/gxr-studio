@@ -5,7 +5,7 @@
 import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
-import { maxRectFor, zoomRect, pixelSize, canvasAfterRotation } from './geom.js';
+import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, canvasAfterRotation, cropTilt } from './geom.js';
 
 // 比例分组。id 是后端 crop.py 的 PRESETS 的键；同一个 id 可以出现在两组里（例如 4:3 既是常用，也是小红书的竖图 3:4）。
 // orient：默认方向（'landscape' / 'portrait'）；没写就跟着照片的方向。
@@ -78,16 +78,19 @@ function setPrefs(patch) {
   }
 }
 
+// 参考线换了：显卡预览的画面不会因为 onChange 重建裁切框，所以要明说重画框里的线（onRectDrag）
 export function cycleGuide(view) {
   const ids = GUIDES.map(([id]) => id);
   const i = ids.indexOf(guidePrefs().guide);
   setPrefs({ guide: ids[(i + 1) % ids.length] });
   view.onChange?.();
+  view.onRectDrag?.();
 }
 
 export function cycleSpiral(view) {
   setPrefs({ spiral: (guidePrefs().spiral + 1) % 4 });
   view.onChange?.();
+  view.onRectDrag?.();
 }
 
 // ---- 比例 ----------------------------------------------------------------------
@@ -151,35 +154,95 @@ export function cropBody(view, base, orientation) {
   return { ...base, flip, angle_deg };
 }
 
-// 选一个比例：让后端算出居中的最大框（rect 为 null）
+// 全尺寸的未裁切画布（原图像素，按 90° 旋转交换宽高）。不知道原图尺寸时退回预览画布。
+export function fullCanvas(view) {
+  const f = view.crop && view.crop.frame;
+  const g = geometryOf(view) || {};
+  if (f && f.width && f.height) return canvasAfterRotation({ w: f.width, h: f.height }, g.rotate90 || 0);
+  return view.canvas || null;
+}
+
+// 框收进这张照片能裁的范围，和后端校验、点比例时写下的框用同一个范围（PR #39 复审）：
+// 没有透视、畸变时是拉直以后的原画面（geom.fitStraightened，即后端的 crop.box_inside；翻转过的照片倾斜方向反过来，见 geom.cropTilt）；
+// 有透视、畸变时只知道有效矩形，用它（保守一些，后端会再按有效区收）。返回 { rect, changed }。
+export function fitCrop(view, rect) {
+  const g = geometryOf(view) || {};
+  const full = fullCanvas(view);
+  if (g.vertical || g.horizontal || g.distortion || !full) return fitInto(rect, validRect(view, view.canvas));
+  return fitStraightened(rect, full, cropTilt(g));
+}
+
+// 点比例 / 横竖：框先在本地算好、马上画出来，再后台保存；后端回来的框由 saveCrop 的 onOk 换上。
+// 不等后端：机器忙的时候，点一下也要立刻看到变化。横竖指几何变换之后的画布（转过 90° 的横图是竖的），和后端一致。
+// 没有透视、畸变时和后端写下的是同一个几何（geom.centeredMaxRect），只差取整；
+// 有透视、畸变时有效区只有后端知道，先画有效画面里的最大框，后端回来再换成准框（方向相同，大小可能小一点）。
+export function presetRect(view, item, portrait) {
+  const g = geometryOf(view) || {};
+  const full = fullCanvas(view);
+  if (!full || !full.w || !full.h) return null;
+  const L = landscapeRatio(item.id);
+  const ratio = L == null ? null : orientable(item) && portrait ? 1 / L : L;
+  if (g.vertical || g.horizontal || g.distortion) {
+    const canvas = view.canvas || full;
+    return maxRectFor(validRect(view, canvas), canvas, ratio);
+  }
+  return centeredMaxRect(full, ratio, g.straighten || 0, landscapePair(item.id));
+}
+
+function showNow(view, item, orientation) {
+  const rect = presetRect(view, item, orientation === 'portrait');
+  if (!rect) return;
+  view.crop.preset = item.id;
+  view.crop.rect = rect;
+  if (view.ed && view.ed.v2) view.crop.orientation = orientation;
+  view.onRectDrag?.(); // 画面上的框和尺寸读数
+  view.redrawSide?.(); // 面板里的比例名、横竖、缩放
+}
+
+// 选一个比例（保存时 rect 为 null，让后端算出居中的最大框）
 export async function applyPreset(view, item) {
   beginChange(view);
   view.presetItem = item;
   view.zoom = 100;
-  const portrait = orientable(item) && item.orient === 'portrait';
-  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, portrait ? 'portrait' : 'landscape'));
+  const orientation = orientable(item) && item.orient === 'portrait' ? 'portrait' : 'landscape';
+  showNow(view, item, orientation);
+  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, orientation));
   endChange(view);
 }
 
-// 横竖切换：同一个比例，换成另一个方向（后端算新的居中框）
+// 横竖切换：同一个比例，换成另一个方向
 export async function toggleOrientation(view) {
   const item = presetFor(view);
   if (!orientable(item)) return;
-  const portrait = !isPortrait(view, view.canvas);
+  const orientation = isPortrait(view, view.canvas) ? 'landscape' : 'portrait';
   beginChange(view);
   view.presetItem = item;
   view.zoom = 100;
-  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, portrait ? 'portrait' : 'landscape'));
+  showNow(view, item, orientation);
+  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, orientation));
   endChange(view);
 }
 
-// 框的大小：以「最大框」为 100%，以框的中心为准缩放，再收进有效画面
+// 框的大小：以「最大框」为 100%，以框的中心为准缩放，再收进能裁的范围。
+// 最大框就是点这个比例时画的那一框（presetRect），收框也和拖动、后端一样（fitCrop）：拉直以后拖到 100% 不会变小（PR #39 复审）。
+// 有透视、畸变时仍按有效矩形（那时只知道它）。
 export function previewZoom(view, pct) {
   const canvas = view.canvas;
   if (!canvas) return null;
-  const valid = validRect(view, canvas);
-  const max = maxRectFor(valid, canvas, ratioForMax(view, canvas));
-  return zoomRect(view.crop.rect, max, pct, valid);
+  const g = geometryOf(view) || {};
+  if (g.vertical || g.horizontal || g.distortion) {
+    const valid = validRect(view, canvas);
+    const max = maxRectFor(valid, canvas, ratioForMax(view, canvas));
+    return zoomRect(view.crop.rect, max, pct, valid);
+  }
+  const max = presetRect(view, presetFor(view), isPortrait(view, canvas));
+  if (!max) return null;
+  const r = view.crop.rect;
+  const w = (max.w * pct) / 100;
+  const h = (max.h * pct) / 100;
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  return fitCrop(view, { x: cx - w / 2, y: cy - h / 2, w, h }).rect;
 }
 
 export async function applyZoom(view, pct) {
@@ -201,10 +264,7 @@ export function rectArray(r) {
 
 // 「裁出 4288 × 2848 像素」这一行：按原图的像素算，不按预览图（预览图比原图小，直接用会少一半）
 export function pixelsText(view) {
-  const f = view.crop.frame;
-  const full = f && f.width && f.height
-    ? canvasAfterRotation({ w: f.width, h: f.height }, geometryOf(view).rotate90 || 0)
-    : view.canvas || { w: 1, h: 1 };
+  const full = fullCanvas(view) || { w: 1, h: 1 };
   const px = pixelSize(view.crop.rect, full);
   return `${px.w} × ${px.h}`;
 }
@@ -361,6 +421,7 @@ function openGuideMenu(view, anchor) {
   openMenu(anchor, groups, (id) => {
     setPrefs({ guide: id });
     view.onChange?.();
+    view.onRectDrag?.();
     view.redrawSide?.();
   });
 }
