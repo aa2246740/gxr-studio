@@ -265,9 +265,11 @@ def test_gpu_info_raw_and_camera_jpg(client, volumes, settings):
     assert client.get(f"/api/photos/{photo['id']}/gpu").json() == info  # 布局按 SHA 缓存
 
 
-def test_gpu_info_off_by_default(client, volumes, monkeypatch):
+def test_gpu_info_off_by_flag(client, volumes, settings, monkeypatch):
     """复审 P2-04：开关关着时不解析 DNG、不预热烘焙表，只回 enabled=false；设置里带着开关状态，前端据此不发请求。"""
     from gxr_studio.api import gpu_routes
+
+    _flag(settings, on=False)
 
     _card(volumes)
     photo = _photo(client)
@@ -277,6 +279,11 @@ def test_gpu_info_off_by_default(client, volumes, monkeypatch):
     assert client.get(f"/api/photos/{photo['id']}/gpu").json() == {"enabled": False}
     assert touched == []
     assert client.get("/api/settings").json()["gpu_preview"] is False
+
+
+def test_gpu_preview_is_on_by_default(client):
+    """U10：三组显卡测试都通过后，gpu_preview 默认开（没有 flags.json 时）。"""
+    assert client.get("/api/settings").json()["gpu_preview"] is True
 
 
 def test_jpg_only_and_raw_only_photos(client, volumes, settings):

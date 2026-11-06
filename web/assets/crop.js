@@ -2,7 +2,7 @@
 // 框的拖动在 stage.js；拉直、透视、旋转翻转在 correct.js。
 // 坐标约定（PRD 第 10 节第 10 条）：rect 归一化到「stage=uncropped 返回的那张图」。
 
-import { h } from './dom.js';
+import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
 import { maxRectFor, zoomRect, pixelSize, canvasAfterRotation } from './geom.js';
@@ -300,11 +300,12 @@ export function cropSection(view) {
   const canvas = view.canvas;
   const portrait = canvas ? isPortrait(view, canvas) : !frameLandscape(view);
   const canOrient = orientable(item);
-  const ratioBtn = h('button', { type: 'button', 'aria-haspopup': 'listbox', onclick: (e) => openPresetMenu(view, e.currentTarget) }, `${item.label || item.id} ▾`);
+  const ratioBtn = h('button', { type: 'button', class: 'select', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': '比例', onclick: (e) => openPresetMenu(view, e.currentTarget) }, h('span', {}, item.label || item.id), icon('chevron-down', 'sm'));
   const orientBtn = h(
     'button',
     {
       type: 'button',
+      class: 'btn sm',
       'aria-pressed': String(portrait),
       'aria-disabled': canOrient ? null : 'true',
       title: canOrient ? '横向 / 纵向' : null,
@@ -324,6 +325,7 @@ export function cropSection(view) {
     fmt: (v) => `${v}%`,
     dflt: 100,
     onBegin: () => beginChange(view),
+    onCancel: () => endChange(view),
     onInput: (v) => {
       view.zoom = v;
       const next = previewZoom(view, v);
@@ -341,15 +343,15 @@ export function cropSection(view) {
   // 参考线：和比例一样是下拉框「三等分 ▾」（COPY 3.1）。拖动时参考线完整显示，松手后变淡（stage.js 的 data-fade）
   const g = guidePrefs();
   const guideLabel = (GUIDES.find(([id]) => id === g.guide) || GUIDES[1])[1];
-  const guideBtn = h('button', { type: 'button', 'aria-haspopup': 'listbox', onclick: (e) => openGuideMenu(view, e.currentTarget) }, `${guideLabel} ▾`);
+  const guideBtn = h('button', { type: 'button', class: 'select', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': '参考线', onclick: (e) => openGuideMenu(view, e.currentTarget) }, h('span', {}, guideLabel), icon('chevron-down', 'sm'));
 
   // 尺寸不在面板里写：画面右下角的 W × H 由 stage.js 画（COPY 3.1）
   return h(
     'div',
     { class: 'crop-section' },
-    h('div', { class: 'seg' }, h('span', { class: 'small dim seg-label' }, '比例'), ratioBtn, orientBtn),
+    h('div', { class: 'field-line' }, h('span', { class: 'seg-label' }, '比例'), ratioBtn, orientBtn),
     zoomRow.el,
-    h('div', { class: 'seg' }, h('span', { class: 'small dim seg-label' }, '参考线'), guideBtn),
+    h('div', { class: 'field-line' }, h('span', { class: 'seg-label' }, '参考线'), guideBtn),
   );
 }
 
@@ -377,18 +379,24 @@ function openPresetMenu(view, anchor) {
 }
 
 let menuEl = null;
+let menuAnchor = null;
 export function closeMenus() {
   if (menuEl) menuEl.remove();
+  if (menuAnchor) {
+    menuAnchor.setAttribute('aria-expanded', 'false');
+    if (menuAnchor.isConnected && menuEl && menuEl.contains(document.activeElement)) menuAnchor.focus();
+  }
   menuEl = null;
+  menuAnchor = null;
 }
 
-// 弹出菜单：点选项或点别处就关
+// 弹出菜单：点选项或点别处就关；↑↓ 移动、回车选、Esc 关并回到按钮
 export function openMenu(anchor, groups, onPick) {
   closeMenus();
   const r = anchor.getBoundingClientRect();
   const m = h('div', { class: 'menu', role: 'listbox', style: { left: `${Math.min(r.left, window.innerWidth - 250)}px`, top: `${r.bottom + 6}px` } });
   for (const g of groups) {
-    if (g.title) m.append(h('div', { class: 'mt' }, g.title));
+    if (g.title) m.append(h('div', { class: 'mt', role: 'presentation' }, g.title));
     for (const it of g.items) {
       m.append(h('button', {
         type: 'button', class: 'mi', role: 'option', 'aria-selected': String(!!it.on),
@@ -396,13 +404,32 @@ export function openMenu(anchor, groups, onPick) {
           closeMenus();
           onPick(it.id);
         },
-      }, it.label));
+      }, h('span', { class: 'chk' }, it.on ? icon('check', 'sm') : null), h('span', {}, it.label)));
     }
   }
+  m.addEventListener('keydown', (e) => {
+    const items = [...m.querySelectorAll('.mi')];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = items.length;
+      items[(i + (e.key === 'ArrowDown' ? 1 : -1) + n) % n]?.focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenus();
+    } else if (e.key === 'Tab') {
+      closeMenus();
+    }
+  });
   document.body.append(m);
   menuEl = m;
+  menuAnchor = anchor;
+  anchor.setAttribute('aria-expanded', 'true');
+  const sel = m.querySelector('.mi[aria-selected="true"]') || m.querySelector('.mi');
+  if (sel && typeof sel.focus === 'function') sel.focus();
 }
 
 document.addEventListener('pointerdown', (e) => {
-  if (menuEl && !menuEl.contains(e.target)) closeMenus();
+  if (menuEl && !menuEl.contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenus();
 });

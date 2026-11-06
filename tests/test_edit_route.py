@@ -1,0 +1,494 @@
+"""编辑保存与路由的正确性（R03、R04、R05、R11；R16 要求真正执行模块）。
+
+真正的 viewer.js、preview.js、router.js、export.js、dom.js 在 node 里跑，接口用替身，
+哪个请求什么时候返回由脚本控制（tests/support/edit_route.mjs）。断言落在实际发出的请求和页面状态上。
+和这些行为无关的面板（配方、调整、裁剪、边框、时间戳、画面）换成只返回空节点的替身。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ASSETS = Path(__file__).resolve().parents[1] / "web" / "assets"
+SUPPORT = Path(__file__).parent / "support"
+
+pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node，跳过前端状态测试")
+
+# 只是被 viewer.js 引进来、和保存与路由无关的模块：按真文件导出的名字生成空实现
+STUBBED = ("recipes.js", "adjust.js", "crop.js", "correct.js", "frame_panel.js", "stamp_panel.js", "stage.js", "gallery.js", "lut_library.js")
+EXPORT_RE = re.compile(r"^export\s+(?:async\s+)?(function\*?|const|let|class)\s+(\w+)", re.M)
+
+
+def _stub(source: str) -> str:
+    lines = []
+    for kind, name in EXPORT_RE.findall(source):
+        if kind.startswith("function"):
+            lines.append(f"export function {name}() {{ return document.createElement('div'); }}")
+        elif kind == "class":
+            lines.append(f"export class {name} {{}}")
+        else:
+            lines.append(f"export const {name} = {{}};")
+    return "\n".join(lines) + "\n"
+
+
+def run(tmp_path: Path, scenario: str, real: tuple[str, ...] = ()) -> dict:
+    folder = tmp_path / "modules"
+    folder.mkdir()
+    for src in ASSETS.glob("*.js"):
+        text = src.read_text(encoding="utf-8")
+        stub = src.name in STUBBED and src.name not in real
+        (folder / src.name).write_text(_stub(text) if stub else text, encoding="utf-8")
+    (folder / "gpu").mkdir()
+    engine = "export class Engine { static async create() { throw new Error('no gpu'); } }\n"
+    (folder / "gpu" / "engine.js").write_text(engine, encoding="utf-8")
+    (folder / "api.js").write_text(
+        "export class ApiError extends Error {\n"
+        "  constructor(status, code, message, data = null) {\n"
+        "    super(message); this.status = status; this.code = code; this.data = data;\n"
+        "  }\n"
+        "}\n"
+        "export const api = (...a) => globalThis.apiStub(...a);\n"
+        "export const apiBlob = (...a) => globalThis.apiBlobStub(...a);\n",
+        encoding="utf-8",
+    )
+    (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    shutil.copy(SUPPORT / "mini_dom.mjs", tmp_path / "mini_dom.mjs")
+    shutil.copy(SUPPORT / "edit_route.mjs", tmp_path / "edit_route.mjs")
+    res = subprocess.run(
+        ["node", str(tmp_path / "edit_route.mjs"), str(folder), scenario],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        encoding="utf-8",
+    )
+    assert res.returncode == 0, res.stderr
+    return json.loads(res.stdout.strip().splitlines()[-1])  # type: ignore[no-any-return]
+
+
+def test_r03_reset_on_a_then_switch_to_b_never_writes_b(tmp_path):
+    """R03：A 上点「复原」，A 的编辑保存在 B 打开之后才返回：B 没有任何写请求；A 的裁剪写回整张、0°，用的是 A 的 rev。"""
+    out = run(tmp_path, "reset-then-switch")
+    assert out["hadReset"]
+    assert out["shownBeforeRelease"] == "b0" and out["shownAfter"] == "b0"
+    assert out["putsB"] == []
+    assert [p["url"] for p in out["putsA"]] == ["/api/photos/a0/edit", "/api/photos/a0/crop"]
+    edit, crop = out["putsA"]
+    assert edit["rev"] == 1 and crop["rev"] == 2  # 裁剪接在 A 的编辑之后，用 A 的新 rev
+    assert crop["angle"] == 0 and crop["rect"] == [0, 0, 1, 1]
+    assert out["pageHasB"] and not out["pageHasA"]
+
+
+def test_r03_reset_then_back_to_gallery_finishes_on_a_only(tmp_path):
+    """R03：复原等待中回到图库：A 的两笔照常写完，没有别的写入，页面停在图库。"""
+    out = run(tmp_path, "reset-then-leave")
+    assert out["putsA"] == ["/api/photos/a0/edit", "/api/photos/a0/crop"]
+    assert out["putsB"] == []
+    assert out["page"] == "GALLERY"
+
+
+def test_r04_queued_save_is_written_after_switching_photos(tmp_path):
+    """R04：第一笔在路上、第二笔排队时切到 B：第二笔照样写进 A（rev 接第一笔）；切回 A 时读编辑要等写完。"""
+    out = run(tmp_path, "queued-save-survives-switch")
+    assert out["results"] == [True, True]
+    assert out["putsA"] == [
+        {"url": "/api/photos/a0/edit", "keys": ["adjust", "expected_rev"], "rev": 1},
+        {"url": "/api/photos/a0/edit", "keys": ["curve", "expected_rev"], "rev": 2},
+    ]
+    assert out["putsB"] == 0
+    assert out["statusWhileSaving"] == "saving" and out["statusAfter"] == "saved"
+    # 切回 A 时，在 A 的写入放行之前不读编辑记录（否则读到旧的 rev，之后的保存会 409）
+    assert out["editReadsBeforeRelease"] == 1
+    assert out["editReadsAfter"] == 2
+    assert out["reopenedRev"] == out["serverRev"] == 3
+
+
+def test_r05_failed_save_stops_export_and_offers_retry(tmp_path):
+    """R05：保存失败后 flushEdits() 拒绝；点导出不发导出请求，表单里有「重试保存」；重试成功后才导出。"""
+    out = run(tmp_path, "failed-save-blocks-export")
+    assert out["saved"] is False and out["status"] == "failed"
+    assert "有修改没有保存" in out["saveLine"] and "重试" in out["saveLine"]  # 大图里也有重试入口
+    assert out["flush"] == "unsaved" and "磁盘已满" in out["flushMessage"]
+    assert out["exportPostsAfterFailure"] == 0
+    assert "有修改没有保存" in out["formText"] and "导出已停止" in out["formText"]
+    assert out["hasRetry"]
+    assert out["statusAfterRetry"] == "saved"
+    # 第一次失败的 PUT，再加上重试的那一次：重试带着原来的修改和服务端现在的 rev
+    assert out["retryPut"][-1] == {"keys": ["adjust", "expected_rev"], "rev": 1}
+    assert out["exportPostsAfterRetry"] == 1
+
+
+def test_r11_slow_photo_response_does_not_replace_the_newer_route(tmp_path):
+    """R11：A 的照片请求比 B 晚回来：页面和快捷键都留在 B，A 的编辑记录不再去读。"""
+    out = run(tmp_path, "stale-route-reversed")
+    assert out["shownBefore"] == "b0" and out["shownAfter"] == "b0"
+    assert out["aStillCurrent"] is False
+    assert out["pageHasB"] and not out["pageHasA"]
+    assert out["keysFor"] == "b0"
+    assert out["aEditReads"] == 0
+
+
+def test_r11_slow_photo_response_after_returning_to_gallery(tmp_path):
+    """R11：打开 A 马上回图库，A 的响应才到：页面停在图库，没有装上大图的快捷键。"""
+    out = run(tmp_path, "stale-route-back-to-gallery")
+    assert out["page"] == "GALLERY"
+    assert out["shown"] is None and out["keys"] is None
+    assert out["aStillCurrent"] is False and out["aEditReads"] == 0
+
+
+def test_r11_opening_from_the_gallery_is_immediate_and_a_late_refresh_is_ignored(tmp_path):
+    """从图库打开：照片信息已经在列表里，页面立刻出来（不等 /api/photos/<id>）；
+    后台那次刷新晚于切到 B 才回来时，页面和快捷键都留在 B。"""
+    out = run(tmp_path, "cached-open-stale-refresh")
+    assert out["shownFirst"] == "a0" and out["pageHadA"]
+    assert out["shownAfter"] == "b0" and out["pageHasB"] and not out["pageHasStale"]
+    assert out["keysFor"] == "b0"
+
+
+# ---- PR #30 独立评审（F01–F11）的回归 ---------------------------------------------------
+
+
+def test_retry_is_one_queued_write_and_newer_edits_win(tmp_path):
+    """F01：重试的 GET 还没回来时排进新修改、再 flush：flush 等重试和新修改都写完才放行；新修改最后写，服务器上是新值。"""
+    out = run(tmp_path, "retry-overlap")
+    assert out["saved"] is False
+    assert out["statusWhileRetrying"] == "saving" and out["flushedEarly"] is False
+    assert out["retry"] is True and out["newer"] is True
+    assert out["putValues"] == [1, 1, 2]  # 失败的一笔、重试补写、新修改
+    assert out["trace"] == ["flush@3"]
+    assert out["status"] == "saved" and out["server"] == 2
+
+
+def test_retry_does_not_replay_a_value_a_newer_save_replaced(tmp_path):
+    """F01：失败后同一项又改并写成功：失败记录随之清掉，重试什么都不写，不拿旧值盖回去。"""
+    out = run(tmp_path, "newer-edit-supersedes-failed")
+    assert out["newer"] is True and out["statusAfterNewer"] == "saved"
+    assert out["retry"] is True
+    assert out["putValues"] == [1, 2]
+    assert out["server"] == 2
+
+
+def test_retry_after_reopening_shows_what_was_written(tmp_path):
+    """F03：切走再回来后点底栏「重试」：写进去以后面板显示写进去的值，rev 跟服务器一致，下一笔照常写进去。"""
+    out = run(tmp_path, "retry-after-reopen")
+    assert out["reopenedExposure"] == 0 and out["statusReopened"] == "failed"
+    assert out["status"] == "saved"
+    assert out["viewExposure"] == 1
+    assert out["viewRev"] == out["serverRev"]
+    assert out["nextOk"] is True
+
+
+def test_reload_does_not_roll_back_a_newer_save(tmp_path):
+    """F04：重读编辑记录途中写进去一笔新修改：重读完 rev 和内容都是新的，下一笔不会 409。"""
+    out = run(tmp_path, "reload-race")
+    assert out["saved"] is True
+    assert out["viewRev"] == out["serverRev"] == 2
+    assert out["viewExposure"] == 2
+    assert out["nextOk"] is True and out["conflicts"] == 0
+
+
+def test_whole_day_export_waits_for_every_edited_photo_of_that_day(tmp_path):
+    """F02：B 的修改没写进去时，从大图换成「这一天的全部」或在图库导出这一天，都不发导出请求；只导出 A 这一张照常。"""
+    out = run(tmp_path, "date-export-barrier")
+    assert out["dayPostsFromViewer"] == 0 and "有修改没有保存" in out["dayFormText"]
+    assert out["singlePosts"] == 1
+    assert out["dayPostsFromGallery"] == 0 and "有修改没有保存" in out["galleryFormText"]
+
+
+def test_reset_locks_its_button_until_both_writes_finish(tmp_path):
+    """F09：复原点了马上锁住，连点不会多排写入；写完解锁。"""
+    out = run(tmp_path, "reset-double-click")
+    assert out["lockedAtOnce"] is True
+    assert out["puts"] == ["edit", "crop"]
+    assert out["unlocked"] is True
+
+
+def test_reset_partial_failure_keeps_the_draft_and_retries_only_the_failed_part(tmp_path):
+    """F09：复原时编辑没写进去、裁剪写进去了：底栏标成没保存；重试只补写编辑。"""
+    out = run(tmp_path, "reset-partial-failure")
+    assert out["status"] == "failed" and "有修改没有保存" in out["saveLine"]
+    assert out["retry"] is True and out["statusAfter"] == "saved"
+    assert out["retryPuts"] == ["edit"]
+
+
+def test_before_image_keeps_only_the_latest_response(tmp_path):
+    """F08：对比图两次请求乱序回来：缓存留最新几何的那张，晚到的旧结果不装、不建地址、不重画。"""
+    out = run(tmp_path, "before-out-of-order")
+    assert out["requests"] == 2
+    assert '"straighten":5' in out["key"]
+    assert out["urlsCreated"] == 1 and out["repaints"] == 1
+
+
+def test_viewer_finishes_a_partial_photo_list(tmp_path):
+    """F07：图库只取了第一页就打开照片：大图把列表取完，胶片条和序号用完整的列表。"""
+    out = run(tmp_path, "partial-list")
+    assert out["listLen"] == 2 and out["complete"] is True
+    assert out["title"] == "1 / 2"
+    assert out["prevDisabled"] == "true" and out["nextEnabled"] is True
+
+
+def test_info_panel_names_looks_and_camera_recipes_by_their_own_name(tmp_path):
+    """F11：Looks 和相机里的自定义配方写自己的名字；找不到时写类别，不冒用原厂底子的名字。"""
+    out = run(tmp_path, "info-names")
+    assert out["look"] == "NIGHT" and out["user"] == "MY BW"
+    assert out["missingLook"] == "Look"
+    assert "原厂标准" in out["builtin"]
+
+
+def test_camera_import_finishing_after_navigation_does_not_redraw_the_camera_page(tmp_path):
+    """F05：相机配方导入完成时已经回到图库：页面留在图库（相机数据照常更新）；没离开时照常重画相机页。"""
+    out = run(tmp_path, "camera-import-after-leave")
+    assert out["page"] == "GALLERY" and out["camdataReady"] is True
+    assert out["stayedPage"] is True and out["importedShown"] is True
+
+
+def test_export_dialog_keeps_focus_while_busy(tmp_path):
+    """F06：导出途中按钮用 aria-disabled 锁住（不 disabled，焦点不丢）；焦点被丢到 body 时 Tab 带回对话框；对话框开着时背后 inert。"""
+    out = run(tmp_path, "modal-focus-guard")
+    assert out["appInertOpen"] is True
+    assert out["submitDisabled"] is False and out["submitAriaDisabled"] == "true"
+    assert out["focusOnSubmit"] is True
+    assert out["exportPosts"] == 1
+    assert out["focusBackInDialog"] is True and out["tabPrevented"] is True
+    assert out["unlocked"] is True
+    assert out["appInertClosed"] is False
+
+
+def test_changing_scope_while_waiting_for_saves_exports_what_was_submitted(tmp_path):
+    """N01：等保存的过程中切到「这一天的全部」，这一次导出的仍是点导出时选的那一张；B 没保存，不能发出整天的导出。"""
+    out = run(tmp_path, "scope-change-during-barrier")
+    assert out["failedB"] == "failed"
+    assert out["posts"] == [{"url": "/api/photos/a0/export", "date": None}]
+
+
+def test_retry_updates_the_panel_from_the_write_without_reading_again(tmp_path):
+    """N02：重试写进去以后，面板直接用写入的回应；不另读，读失败也不会留下旧值配新 rev。"""
+    out = run(tmp_path, "retry-no-reread")
+    assert out["reopenedExposure"] == 0
+    assert out["retry"] is True and out["readsAfterRetry"] == 0
+    assert out["viewExposure"] == 1 and out["status"] == "saved"
+    assert out["next"] is True
+    assert out["serverExposure"] == 1 and out["serverContrast"] == 5
+
+
+def test_retry_does_not_overwrite_a_newer_failed_draft(tmp_path):
+    """N02：重试途中又改了曝光且这笔写失败：面板保留新值、标成没保存；之后的调整写进去的是新值。"""
+    out = run(tmp_path, "retry-keeps-newer-draft")
+    assert out["retry"] is True and out["newer"] is False
+    assert out["viewExposure"] == 2 and out["status"] == "failed"
+    assert out["next"] is True and out["serverExposure"] == 2
+    assert out["statusAfter"] == "saved"
+
+
+def test_returning_to_a_cached_comparison_drops_the_request_in_flight(tmp_path):
+    """N03：改回已经缓存的几何时，还在路上的别的几何的对比图作废，晚到也不换掉缓存。"""
+    out = run(tmp_path, "before-cache-return")
+    assert out["requests"] == 2
+    assert out["returnedCached"] is True and out["keptCached"] is True and out["keyIs0"] is True
+
+
+def test_single_export_result_reaches_a_toast_even_during_the_close_animation(tmp_path):
+    """N04：关掉对话框后 160ms 退场期间回来的结果（成功和失败）也用提示告诉用户。"""
+    out = run(tmp_path, "single-close-fast-result")
+    assert "已导出 1 张" in out["okToast"]
+    assert "导出目录不能写" in out["failToast"]
+
+
+def test_rebuild_failure_after_closing_settings_is_a_toast_with_retry(tmp_path):
+    """N04：关掉设置后重建失败，用带「重试」的提示告诉用户；从提示重试会再发一次。"""
+    out = run(tmp_path, "settings-rebuild-closed-failure")
+    assert "照片库读不出来" in out["toast"]
+    assert out["hasRetry"] is True
+    assert out["postsBeforeRelease"] == 2, "连点提示里的重试只能再发一次"
+    assert out["rebuildPosts"] == 2
+    assert out["doneToasts"] == 1
+
+
+def test_retry_keeps_the_saved_exposure_when_only_the_curve_changed_meanwhile(tmp_path):
+    """V01：重试排着时只改了曲线：曲线以界面为准，补写进去的曝光照样显示，之后的调整不会把它写回 0。"""
+    out = run(tmp_path, "retry-other-field")
+    assert out["reopenedExposure"] == 0
+    assert out["retry"] is True and out["newer"] is True
+    assert out["viewExposure"] == 1 and out["viewCurve"] == [[0, 0], [128, 110], [255, 255]]
+    assert out["status"] == "saved" and out["next"] is True
+    assert out["serverExposure"] == 1 and out["serverCurve"] == {"master": [[0, 0], [128, 110], [255, 255]]}
+
+
+def test_partial_retry_shows_the_edit_that_was_written(tmp_path):
+    """V02：重试时编辑写进去、裁剪又失败：编辑马上显示；第二次重试补上裁剪；之后的调整保留曝光 1。"""
+    out = run(tmp_path, "retry-partial-two-kinds")
+    assert out["reopenedExposure"] == 0
+    assert out["firstRetry"] is False
+    assert out["afterPartial"] == {"view": 1, "server": 1, "status": "failed"}
+    assert out["secondRetry"] is True and out["after"]["view"] == 1 and out["after"]["status"] == "saved"
+    assert out["next"] is True and out["serverAfterNext"] == 1
+
+
+def test_batch_result_reaches_a_toast_during_the_close_animation(tmp_path):
+    """V04：批量导出的结果在对话框退场的 160ms 里回来，也用提示告诉用户。"""
+    out = run(tmp_path, "batch-close-fast")
+    assert "已导出 2 张" in out["toast"]
+
+
+def test_closed_export_offers_retry_save_in_the_toast(tmp_path):
+    """V05：关掉对话框后保存关卡才查到没写进去的修改：提示里有「重试保存」，点了补写；不导出。"""
+    out = run(tmp_path, "closed-save-retry")
+    assert "有修改没有保存" in out["toast"]
+    assert out["hasRetrySave"] is True
+    assert out["statusB"] == "saved" and "修改已保存" in out["toastAfter"]
+    assert out["posts"] == 0
+
+
+def test_retry_landing_mid_gesture_does_not_rebuild_the_panel(tmp_path):
+    """W01：重试写进去时正在拖曲线：面板不重建（拖着的控件和松手时的保存还在）；这一步结束后再刷新，曲线和曝光都写进去。"""
+    out = run(tmp_path, "retry-during-gesture")
+    assert out["tab"] == "adjust" and out["hadPane"] is True
+    assert out["retry"] is True
+    assert out["sameDuringGesture"] is True and out["exposureDuringGesture"] == 1
+    assert out["rebuiltAfter"] is True
+    assert out["serverCurve"] == {"master": [[0, 0], [133, 148], [255, 255]]}
+    assert out["serverExposure"] == 1 and out["status"] == "saved"
+
+
+def test_undoing_another_field_after_retry_keeps_the_recovered_value(tmp_path):
+    """W02：重试补写的曝光装进来以后撤销曲线：只撤曲线，曝光不回到切回来时读到的旧值；重做放回曲线。"""
+    out = run(tmp_path, "retry-undo-cross-field")
+    assert out["retry"] is True
+    assert out["beforeUndo"] == {"view": 1, "server": 1}
+    assert out["afterUndo"]["view"] == 1 and out["afterUndo"]["server"] == 1
+    assert out["afterUndo"]["curve"] is None and out["afterUndo"]["viewCurve"] is None
+    assert out["afterRedo"] == {"view": 1, "server": 1, "curve": {"master": [[0, 0], [128, 110], [255, 255]]}}
+
+
+def test_undo_after_retry_still_reverts_your_own_change(tmp_path):
+    """W02：曝光是你自己改的（写失败、重试成功），撤销照样回到原来的值。"""
+    out = run(tmp_path, "retry-undo-own-history")
+    assert out["retry"] is True
+    assert out["afterUndo"] == {"view": 0, "server": 0}
+
+
+def test_slider_press_without_change_ends_the_step_and_the_retry_refreshes_the_panel(tmp_path):
+    """X01：在真的调整面板上按下又松开曝光滑块、值没变：这一步结束（不留 pending）；重试写进的曝光 1 显示在滑块上。"""
+    out = run(tmp_path, "no-op-slider", real=("adjust.js",))
+    assert out["sliderFound"] is True
+    assert out["pendingAfterRelease"] is False
+    assert out["retry"] is True
+    assert out["pending"] is False and out["panesStale"] is False
+    assert out["sliderValue"] == "1" and out["modelExposure"] == 1
+    assert out["undoLength"] == 0
+    assert out["status"] == "saved"
+
+
+def test_retry_keeps_history_the_user_made_even_when_values_match(tmp_path):
+    """X02：曝光在这里改过（2、0、1 失败），重试时又拖到 0 没松手：撤销记录不动；松手后撤销两次依次回到 1、0。"""
+    out = run(tmp_path, "retry-owned-history")
+    assert out["retry"] is True
+    assert out["undoBefore"] == out["undoAfterRetry"] == [0, 2, 0]
+    assert out["undos"] == [{"view": 1, "server": 1}, {"view": 0, "server": 0}]
+
+
+def test_undoing_a_curve_after_an_in_place_refresh_keeps_the_retried_exposure(tmp_path):
+    """Y01：曝光改过几次、最后一笔失败，原地刷新后又改曲线；重试补写曝光 1 后撤销曲线：只撤曲线，曝光仍是 1。"""
+    out = run(tmp_path, "refresh-mixed-history")
+    assert out["afterRefresh"] == 0
+    assert out["retry"] is True and out["afterRetry"] == {"view": 1, "server": 1}
+    assert out["afterUndo"] == {"view": 1, "server": 1, "curve": None}
+    assert out["afterRedo"] == {"view": 1, "server": 1, "curve": {"master": [[0, 0], [133, 148], [255, 255]]}}
+
+
+def test_undo_after_an_in_place_refresh_still_reverts_your_own_exposure(tmp_path):
+    """Y01：曝光 0→1 失败，原地刷新、重试补写 1 后撤销：回到你原来的 0，重做回到 1。"""
+    out = run(tmp_path, "refresh-owned-history")
+    assert out["retry"] is True and out["afterRetry"] == {"view": 1, "server": 1}
+    assert out["afterUndo"]["view"] == 0 and out["afterUndo"]["server"] == 0
+    assert out["afterRedo"]["view"] == 1 and out["afterRedo"]["server"] == 1
+
+
+def test_dragging_back_to_the_start_still_saves_the_release(tmp_path):
+    """Y02：重试回来的时候正在拖同一个滑块，最后拖回起点松手（浏览器不发 change）：松手时的值照样保存，只存一次。"""
+    out = run(tmp_path, "drag-back-to-start", real=("adjust.js",))
+    assert out["retry"] is True and out["serverMid"] == 1
+    assert out["final"] == {"view": 0, "server": 0, "pending": False, "status": "saved"}
+    assert out["edits"] == 3, "失败的一笔、重试一笔、松手一笔"
+
+
+def test_ruler_key_held_when_focus_leaves_is_saved_once(tmp_path):
+    """Y02：拉直刻度按着方向键时焦点离开：照样保存，这一步结束；再离开一次不会再存。"""
+    out = run(tmp_path, "ruler-blur", real=("correct.js",))
+    assert out["found"] is True and out["v2"] is True
+    assert out["pending"] is False
+    assert out["straighten"] == 0.1 and out["geometryWrites"] == 1
+
+
+def test_undoing_the_frame_keeps_the_failed_stamp_for_retry(tmp_path):
+    """Z01：印记那笔失败、原地刷新后改边框又撤销：撤销只写 frame，印记的失败还在，重试补写回来。"""
+    out = run(tmp_path, "decoration-undo-other-group")
+    assert out["stampAfterRefresh"] is False and out["frameSaved"] == {"style": "white"}
+    assert out["undoKeys"] == [["frame"]]
+    assert out["statusAfterUndo"] == "failed"
+    assert out["retry"] is True
+    assert out["final"] == {"frame": None, "stamp": True, "status": "saved"}
+
+
+def test_undoing_the_frame_during_a_stamp_retry_does_not_overwrite_it(tmp_path):
+    """Z01：印记的重试已经发出、还没回来时撤销边框：补写回来的印记不会被撤销冲掉。"""
+    out = run(tmp_path, "decoration-undo-during-retry")
+    assert out["retry"] is True
+    # 重试那笔在撤销之前就发出去了（被压住）；撤销只写 frame，不带 stamp 键
+    assert out["undoKeys"] == [["frame"]]
+    assert out["final"] == {"frame": None, "stamp": True, "status": "saved"}
+
+
+def test_legacy_angle_only_undo_and_redo_write_the_angle(tmp_path):
+    """Z02：旧接口只拉直了 5° 的一步：撤销写回 0°，重做写回 5°，框不动。"""
+    out = run(tmp_path, "legacy-angle-undo", real=("correct.js", "crop.js"))
+    assert out["v2"] is False
+    assert out["afterAction"] == 5
+    assert out["afterUndo"]["angle"] == 0
+    assert out["afterUndo"]["bodies"] == [{"angle_deg": 0, "rect": [0.1, 0.2, 0.5, 0.4], "preset": "free"}]
+    assert out["afterRedo"]["angle"] == 5
+    assert out["afterRedo"]["bodies"] == [{"angle_deg": 5, "rect": [0.1, 0.2, 0.5, 0.4], "preset": "free"}]
+
+
+def test_arrow_keys_pressed_while_the_next_photo_loads_are_not_dropped(tmp_path):
+    """B1：→ 去 B、B 的编辑记录还在读时按 ←：快捷键还在，从 B 算起回到 A，不被吃掉。"""
+    out = run(tmp_path, "arrow-burst")
+    # hashchange 还没处理（屏幕上还是 A，地址栏已经是 B）：← 从 B 算回 A；撤销、空格不作用在 A 上
+    assert out["preRight"] is True and out["preHash"] == "#/photo/b0" and out["preShown"] == "a0"
+    assert out["preUndo"] is False and out["preSpace"] is False
+    assert out["preLeft"] is True and out["preHashAfterLeft"] == "#/photo/a0"
+    assert out["right"] is True and out["hashAfterRight"] == "#/photo/b0"
+    assert out["shownWhileLoading"] == "b0" and out["keysWhileLoading"] is True
+    assert out["left"] is True and out["hashAfterLeft"] == "#/photo/a0"
+    assert out["final"] == {"hash": "#/photo/a0", "shown": "a0"}
+
+
+def test_toolbar_redo_button(tmp_path):
+    """B2：顶栏的重做按钮：没东西可重做时置灰，撤销后可用，点了放回那一步，新的改动后又置灰。"""
+    out = run(tmp_path, "toolbar-redo")
+    assert out["found"] is True
+    assert out["initial"] == {"undo": True, "redo": True}
+    assert out["afterEdit"] == {"undo": False, "redo": True}
+    assert out["afterUndo"] == {"undo": True, "redo": False, "value": 0, "server": 0}
+    assert out["afterRedo"] == {"undo": False, "redo": True, "value": 1, "server": 1}
+    assert out["afterNewEdit"] == {"redo": True}
+
+
+def test_export_dialog_says_close_once_the_export_has_started(tmp_path):
+    """导出开始以后，对话框的「取消」改叫「关闭」：关掉对话框不会停下导出，叫「取消」会误导。"""
+    out = run(tmp_path, "export-close-label")
+    assert out == {"before": "取消", "after": "关闭", "exported": 1}
+
+
+def test_rebuilt_frame_panel_shows_cached_thumbnails(tmp_path):
+    """AA01：同一版本再搭一次边框面板，缓存里的缩略图直接填进卡片：没有骨架、不忙、不再请求。"""
+    out = run(tmp_path, "frame-thumb-cache", real=("frame_panel.js",))
+    ready = [{"skel": False, "busy": None, "img": True}] * 2
+    assert out["first"] == ready
+    assert out["second"] == ready
+    assert out["extraRenders"] == 0

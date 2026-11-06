@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `library_rebuild` | 开 | `POST /api/library/rebuild`。关掉返回 403 `feature_disabled`。 |
 | `hdr_on_import` | 开 | 导入结束后在后台给 RAW+JPG 的照片生成 HDR 版本（`.studio/hdr/`）。关掉就不生成；导出时的 HDR 不受影响。 |
-| `gpu_preview` | 关（复审时再定） | 大图改用浏览器的 WebGPU 实时预览：拖滑块、换照片不再请求服务器出图（`web/assets/gpu_stage.js`）。浏览器没有 WebGPU、照片或编辑项显卡做不了时，自动回到服务器出图。关着时前端不发任何显卡请求，服务器也不解析 DNG（`/api/settings` 里带着开关状态）。打开：`{"gpu_preview": true}`。 |
+| `gpu_preview` | 开（2026-11-05 起；`test_gpu_parity.py`、`test_gpu_frontend.py`、`test_gpu_state.py` 都通过后打开） | 大图改用浏览器的 WebGPU 实时预览：拖滑块、换照片不再请求服务器出图（`web/assets/gpu_stage.js`）。浏览器没有 WebGPU、照片或编辑项显卡做不了时，自动回到服务器出图。「设置 → 预览」可以只在这台电脑的浏览器上关掉（存在浏览器的 localStorage 里，键 `gxr-studio.gpu-preview`）。服务器开关关着时前端不发任何显卡请求，服务器也不解析 DNG（`/api/settings` 里带着开关状态）。关掉：`{"gpu_preview": false}`。 |
 
 ## 清理
 

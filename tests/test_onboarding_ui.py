@@ -1,4 +1,4 @@
-"""首次引导、配方页提示、导出 HDR 开关。界面行为在 Node 里跑，不依赖 macOS。"""
+"""快捷键表、设置、配方页提示、导出 HDR 开关。界面行为在 Node 里跑，不依赖 macOS。"""
 
 from __future__ import annotations
 
@@ -13,26 +13,25 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "web" / "assets"
 SCENE = Path(__file__).resolve().parent / "support" / "ui_scene.mjs"
 HINT = "相机关机再开后，按 ADJ 再按 OK 套用上次的配方"
-STEPS = [
-    ["插入存储卡", "自动导入照片", "1/4"],
-    ["在图库里浏览、编辑", "裁剪、曝光、边框", "2/4"],
-    ["用 LUT 库管理 LUT", "套用到照片", "3/4"],
-    ["导出", "可选 HDR", "4/4"],
-]
 
 
-def test_guide_copy_is_on_the_page_and_help_opens_it():
+def test_guide_dialog_is_gone_and_help_opens_the_shortcut_table():
+    """U9：打开页面就弹的四步引导删掉了，第一次使用的说明放在图库的空状态里；顶栏键盘按钮直接打开快捷键表。"""
     onboarding = (ASSETS / "onboarding.js").read_text(encoding="utf-8")
     app = (ASSETS / "app.js").read_text(encoding="utf-8")
+    gallery = (ASSETS / "gallery.js").read_text(encoding="utf-8")
     html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     lut = (ASSETS / "lut.js").read_text(encoding="utf-8")
     export = (ASSETS / "export.js").read_text(encoding="utf-8")
-    for title, text, _count in STEPS:
-        assert f"['{title}', '{text}']" in onboarding
+    for gone in ("maybeShowOnboarding", "showGuide", "GUIDE_STEPS", "onboarding_dismissed"):
+        assert gone not in app, gone
+        assert gone not in gallery, gone
     assert "裁切" not in onboarding
-    assert "getElementById('btn-help').addEventListener('click', showHelpMenu)" in app
+    assert "getElementById('btn-help').addEventListener('click', showHelp)" in app
     assert "if (e.key === '?')" in app and "showHelp();" in app
-    assert 'title="帮助">帮助</button>' in html
+    assert 'id="btn-help"' in html and 'title="快捷键（?）"' in html
+    # 空图库里的说明：导入、编辑、导出三步
+    assert "function emptyLibrary()" in gallery and "只读复制，卡上的文件不会被改动。" in gallery
     assert HINT in lut
     assert "dataset: { role: 'recipe-hint' }" in lut
     assert "rememberHdr" in export and "export_hdr" in export
@@ -40,19 +39,22 @@ def test_guide_copy_is_on_the_page_and_help_opens_it():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
-def test_guide_shows_once_then_reopens_from_help_and_settings(tmp_path):
+def test_help_and_settings_open_without_a_guide(tmp_path):
     report = _run_scene(tmp_path)
-    assert report["seen"] == STEPS
-    assert report["back"] == "用 LUT 库管理 LUT"
-    assert report["last"] == "导出"
-    assert report["afterFinishOpen"] == 0
-    assert report["hiddenAfterFinish"] == 0
-    assert report["finished"] == [{"onboarding_dismissed": True}]
-    assert report["afterSkipOpen"] == 0
-    assert report["hiddenAfterSkip"] == 0
-    assert report["skipped"] == [{"onboarding_dismissed": True}]
-    assert report["helpTitle"] == "插入存储卡"
-    assert report["settingsTitle"] == "插入存储卡"
+    assert report["guideExports"] == []
+    assert report["helpTitle"] == "快捷键"
+    assert report["groups"] == ["全局", "图库", "编辑", "裁剪"]
+    # 浏览器保留的组合键不用（HANDOFF）：⌘W/⌘T/⌘N/⌘R/⌘L/⌘Q 都不在表里
+    for reserved in ("⌘W", "⌘T", "⌘N", "⌘R", "⌘L", "⌘Q"):
+        assert reserved not in report["keys"]
+    assert "⌘E" in report["keys"] and "\\" in report["keys"] and "Y" in report["keys"] and "Z" in report["keys"]
+    assert report["afterHelpClose"] == 0
+    # Windows 上写 Ctrl+，重做是 Ctrl+Y
+    assert "Ctrl+E" in report["winKeys"] and "Ctrl+Y" in report["winKeys"]
+    assert not any("⌘" in k for k in report["winKeys"])
+    assert report["settingsTitle"] == "设置"
+    assert "引导" not in report["settingsText"]
+    assert report["prefsWrites"] == 0
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
@@ -73,7 +75,7 @@ def _run_scene(tmp_path: Path) -> dict:
     assert node is not None
     folder = tmp_path / "web"
     folder.mkdir()
-    for name in ("dom.js", "controls.js", "onboarding.js", "export.js", "lut.js"):
+    for name in ("dom.js", "controls.js", "onboarding.js", "export.js", "lut.js", "saves.js", "jobs.js", "busy.js", "gpu_pref.js", "poll.js"):
         shutil.copy(ASSETS / name, folder / name)
     (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     (folder / "api.js").write_text(
@@ -121,7 +123,10 @@ def _run_scene(tmp_path: Path) -> dict:
         ),
         encoding="utf-8",
     )
-    (folder / "preview.js").write_text("export const BASE_NAMES = [];\nexport const KNOB_NAMES = {};\n", encoding="utf-8")
+    (folder / "preview.js").write_text(
+        "export const BASE_NAMES = [];\nexport const KNOB_NAMES = {};\nexport function slotName(_u, s) { return String(s); }\n",
+        encoding="utf-8",
+    )
     (folder / "lut_library.js").write_text(
         "\n".join(
             [

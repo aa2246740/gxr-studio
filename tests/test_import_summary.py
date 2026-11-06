@@ -180,3 +180,17 @@ def test_raw_only_pictures_are_never_called_the_photo_itself():
     emb = out["embedded"]
     assert emb["note"] == "内嵌预览" and emb["badge"] == "RAW" and emb["orig"] == "原图"
     assert jpg["badge"] == "RAW"
+
+
+@needs_node
+def test_windows_says_eject_with_its_own_word():
+    """ORCH_DECISIONS：Windows 上写「可以弹出」，macOS 和其他系统保持「可以推出」。"""
+    msg = "已导入 3 张照片。现在可以推出存储卡了。"
+    r = run_js(
+        f"[S.ejectWords({json.dumps(msg)}, 'win'), S.ejectWords({json.dumps(msg)}, 'mac'),"
+        f" S.ejectWords(S.doneStatusText({progress()}), 'win'), S.ejectWords(null, 'win')]"
+    )
+    assert r[0] == "已导入 3 张照片。现在可以弹出存储卡了。" and "推出" not in r[0]
+    assert r[1] == msg
+    assert r[2] == "存储卡：可以弹出"
+    assert r[3] is None

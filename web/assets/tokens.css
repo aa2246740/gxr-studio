@@ -1,0 +1,166 @@
+/*
+ * GXR Studio 设计令牌 · r1（2026-11-02）
+ * 只有深色。灰阶全部 R=G=B，不带色偏，避免影响看颜色。
+ * 用法：组件只引用语义令牌（--surface-*、--text-*、--accent* …），不直接写色值。
+ * 对比度数据见 SELF_REVIEW.md §3（tools/contrast.py 计算）。
+ */
+:root {
+  color-scheme: dark;
+
+  /* ---------- 1. 中性灰阶（原始值，组件不要直接用） ---------- */
+  --gray-1000: #000000;
+  --gray-950: #111111;
+  --gray-925: #161616;
+  --gray-900: #1b1b1b;
+  --gray-875: #202020;
+  --gray-850: #242424;
+  --gray-800: #2b2b2b;
+  --gray-750: #333333;
+  --gray-700: #3c3c3c;
+  --gray-650: #474747;
+  --gray-600: #555555;
+  --gray-500: #6e6e6e;
+  --gray-400: #999999;
+  --gray-300: #b3b3b3;
+  --gray-200: #d0d0d0;
+  --gray-100: #ececec;
+  --gray-0: #ffffff;
+
+  /* ---------- 2. 表面 ---------- */
+  --surface-titlebar: var(--gray-950);   /* 顶栏 */
+  --surface-app: var(--gray-925);        /* 窗口底色、胶片条 */
+  --surface-panel: var(--gray-900);      /* 右侧面板、左侧栏 */
+  --surface-raised: var(--gray-850);     /* 卡片、输入框、折叠面板标题悬停 */
+  --surface-control: var(--gray-800);    /* 次按钮、分段控件底槽 */
+  --surface-hover: var(--gray-750);      /* 悬停 */
+  --surface-pressed: var(--gray-700);    /* 按下 */
+  --surface-selected: #424242;           /* 分段控件选中块 */
+  --surface-overlay: #262626;            /* 对话框、弹出菜单、提示条 */
+  --scrim: rgba(0, 0, 0, 0.56);          /* 对话框后面的遮罩 */
+  --scrollbar-thumb: #4a4a4a;            /* 滚动条（Windows 常显，macOS 滚动时显示） */
+  --scrollbar-thumb-hover: #5e5e5e;
+  --scrollbar-size: 10px;
+
+  /* ---------- 3. 画面背景（照片周围，可在「背景」菜单切换） ---------- */
+  --stage-dark: #2a2a2a;                 /* 默认：深中性灰 */
+  --stage-mid: #767676;                  /* 18% 灰（L* ≈ 50，sRGB 118） */
+  --stage-black: #000000;
+  --stage: var(--stage-dark);
+
+  /* ---------- 4. 线 ---------- */
+  --line-subtle: rgba(255, 255, 255, 0.06);   /* 区块分隔 */
+  --line: rgba(255, 255, 255, 0.10);          /* 卡片、输入框描边 */
+  --line-strong: rgba(255, 255, 255, 0.18);   /* 悬停描边 */
+  --hairline: 1px;
+
+  /* ---------- 5. 文字 ---------- */
+  --text-1: #ececec;        /* 正文、标签、数值 */
+  --text-2: #b3b3b3;        /* 次要：单位、说明行、未改动的数值 */
+  --text-3: #999999;        /* 弱：分组标题、计数。只放在 ≤ #2b2b2b 的底上 */
+  --text-disabled: #6e6e6e; /* 禁用（WCAG 豁免，仍保持可辨认） */
+  --text-on-accent: #ffffff;
+  --text-on-danger: #ffffff;
+
+  /* ---------- 6. 强调色（唯一的彩色交互色） ---------- */
+  --accent: #2a64cc;            /* 主按钮、开关打开、滑块填充、选中描边 */
+  --accent-hover: #2f6fde;
+  --accent-pressed: #2457b8;
+  --accent-text: #6aa6ff;       /* 强调色当文字/图标用（深底上） */
+  --accent-weak: rgba(74, 140, 255, 0.16);   /* 选中行、按下的图标按钮底 */
+  --focus-ring: #6aa6ff;
+
+  /* ---------- 7. 状态色 ---------- */
+  --shot-rec-bg: rgba(0, 0, 0, 0.66);           /* 拍摄配方角标（相机记录）：实底 */
+  --shot-inf-line: rgba(255, 255, 255, 0.72);    /* 拍摄配方角标（推断）：虚线描边 + ≈ */
+  --warn-text: #e8b04a;                       /* 「电脑预测」「近似」「未校准」「推测」小标签 */
+  --warn-bg: rgba(232, 176, 74, 0.14);
+  --warn-line: rgba(232, 176, 74, 0.32);
+  --danger: #c4302a;                          /* 危险按钮底 */
+  --danger-hover: #cc3a31;
+  --danger-pressed: #a92822;
+  --danger-text: #ff7a70;                     /* 出错文字、图标 */
+  --danger-bg: rgba(255, 122, 112, 0.12);
+  --ok-text: #5cc882;                         /* 只用于小图标（如导入完成的对勾），不用整条色块 */
+
+  /* ---------- 8. 字体 ---------- */
+  /* 跨平台：macOS 用系统字体 + 苹方；Windows 用 Segoe UI + 微软雅黑。都是系统自带，不用授权字体 */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --font-num: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif; /* 配合 tabular-nums */
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+
+  --fs-caption: 11px;  --lh-caption: 14px;   /* 角标、小标签、刻度 */
+  --fs-small: 12px;    --lh-small: 16px;     /* 次要文字、分组标题、提示气泡 */
+  --fs-body: 13px;     --lh-body: 18px;      /* 默认：控件标签、按钮、正文 */
+  --fs-title: 15px;    --lh-title: 20px;     /* 面板标题、对话框小标题 */
+  --fs-headline: 20px; --lh-headline: 26px;  /* 对话框标题、空状态 */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* ---------- 9. 间距（4px 网格） ---------- */
+  --sp-0: 2px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-12: 48px;
+
+  /* ---------- 10. 尺寸 ---------- */
+  --hit-min: 28px;            /* 所有可点元素的最小高度/宽度 */
+  --h-control: 28px;          /* 小按钮、分段控件、下拉、输入框、滑块行 */
+  --h-button: 32px;           /* 默认按钮、对话框按钮 */
+  --h-titlebar: 48px;
+  --h-toolbar: 40px;          /* 画面下方的视图工具栏、图库工具栏 */
+  --h-tooltabs: 56px;         /* 右侧面板顶部的工具标签 */
+  --h-panel-foot: 56px;
+  --h-filmstrip: 92px;
+  --w-panel: 340px;           /* 右侧面板 */
+  --w-sidebar: 232px;         /* 图库左侧日期栏 */
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+
+  /* ---------- 11. 圆角 ---------- */
+  --r-xs: 3px;    /* 角标 */
+  --r-sm: 5px;    /* 分段控件内块、小标签 */
+  --r-md: 6px;    /* 按钮、输入框、下拉 */
+  --r-lg: 8px;    /* 卡片、缩略图、提示条 */
+  --r-xl: 12px;   /* 对话框、弹出面板 */
+  --r-pill: 999px;
+
+  /* ---------- 12. 阴影（只给浮在上面的东西用） ---------- */
+  --shadow-handle: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(0, 0, 0, 0.4);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-toast: 0 6px 20px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+  /* ---------- 13. 动效 ---------- */
+  --dur-instant: 0ms;     /* 拖动中的画面、滑块数值：不加过渡，直接跟手 */
+  --dur-press: 60ms;      /* 按下反馈 */
+  --dur-fast: 100ms;      /* 悬停、焦点 */
+  --dur-base: 160ms;      /* 折叠面板、分段切换、标签切换 */
+  --dur-slow: 220ms;      /* 对话框、弹出面板进出 */
+  --dur-toast: 3200ms;    /* 提示条停留 */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 1, 1);
+
+  /* ---------- 14. 层级 ---------- */
+  --z-stage-overlay: 10;
+  --z-toolbar: 20;
+  --z-popover: 100;
+  --z-dialog: 200;
+  --z-toast: 300;
+  --z-tooltip: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-press: 0ms;
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}

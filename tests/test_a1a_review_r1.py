@@ -122,7 +122,8 @@ def _run_frontend(tmp_path: Path) -> dict:
     (d / "state.js").write_text("export const state = globalThis.reviewState; export const emit = () => {};\n", encoding="utf-8")
     (d / "dom.js").write_text(
         "export const h = (tag, attrs, ...children) => ({tag, attrs, children});\n"
-        "export const toast = () => {};\nexport const toastError = (e) => { throw e; };\n",
+        "export const toast = () => {};\nexport const toastError = (e) => { throw e; };\n"
+        "export const setFraction = (bar) => bar;\nexport const platform = () => 'mac';\n",
         encoding="utf-8",
     )
     (d / "scenario.mjs").write_text(FRONTEND_SCENARIO, encoding="utf-8")

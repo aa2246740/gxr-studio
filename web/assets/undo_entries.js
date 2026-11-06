@@ -1,0 +1,42 @@
+// 撤销记录：每一步开始前的整套状态（快照），加上这一步改了哪几组（owned）。
+// 撤销 / 重做只还原 owned 里的组（preview.js 的 restoreSnapshot），其它字段保持现在的样子：
+// 重试补写进来的值不会被撤销别的字段顺带写回旧值（W02、Y01），你自己改过的步骤也原样保留（X02）。
+
+export function cropShape(c) {
+  return c ? { preset: c.preset, rect: c.rect, angle_deg: c.angle_deg, orientation: c.orientation } : null;
+}
+
+// 撤销的单位：一步改了哪几组（frame 和 frameFrom、stamp 和 stampFrom 各算一组）
+export const HISTORY_GROUPS = {
+  recipe: ['recipe'], lut: ['lut'], adjust: ['adj'], curve: ['curve'], geometry: ['geometry'],
+  frame: ['frame', 'frameFrom'], stamp: ['stamp', 'stampFrom'], crop: ['crop'],
+};
+
+export function ownedGroups(before, after) {
+  const a = JSON.parse(before);
+  const b = JSON.parse(after);
+  return Object.keys(HISTORY_GROUPS).filter((g) => HISTORY_GROUPS[g].some((k) => JSON.stringify(a[k] ?? null) !== JSON.stringify(b[k] ?? null)));
+}
+
+export function snapshot(view) {
+  const ed = view.ed;
+  const c = view.crop;
+  return JSON.stringify({
+    recipe: ed.recipe,
+    lut: ed.lut,
+    adj: ed.adj,
+    curve: ed.curve,
+    geometry: ed.v2 ? ed.geometry : null,
+    frame: ed.frame,
+    stamp: ed.stamp,
+    frameFrom: ed.frameFrom,
+    stampFrom: ed.stampFrom,
+    crop: cropShape(c),
+  });
+}
+
+// 撤销时存进重做（或反过来）的那一份：现在的样子，管的还是同一组字段
+export function withOwned(current, entry) {
+  const owned = JSON.parse(entry).owned;
+  return owned ? JSON.stringify({ ...JSON.parse(current), owned }) : current;
+}

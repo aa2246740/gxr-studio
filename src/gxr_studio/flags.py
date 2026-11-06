@@ -36,9 +36,12 @@ FLAGS: dict[str, Flag] = {
     ),
     "gpu_preview": Flag(
         name="gpu_preview",
-        default=False,
-        description="大图用浏览器的 WebGPU 实时预览（拖滑块不再请求服务器出图）。没有 WebGPU 或这张照片不支持时，仍用服务器出图。",
-        added="2026-11-02",
+        default=True,
+        description=(
+            "大图用浏览器的 WebGPU 实时预览（拖滑块不再请求服务器出图）。默认开；"
+            "设置里可以只在这台电脑的浏览器上关掉。没有 WebGPU 或这张照片不支持时，仍用服务器出图。"
+        ),
+        added="2026-11-05",
     ),
 }
 

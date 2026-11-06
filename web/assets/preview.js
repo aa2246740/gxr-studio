@@ -5,6 +5,8 @@
 
 import { api, apiBlob } from './api.js';
 import { state, on } from './state.js';
+import { saveRecord, writeSave, clearFailed, flushPhotos, readFresh } from './saves.js';
+export { flushPhotos, saveStatus, retrySaves, SaveError } from './saves.js';
 import { toast, toastError } from './dom.js';
 import { applyCamdataStatus } from './camdata.js';
 import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
@@ -12,13 +14,23 @@ import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from 
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
+import { cropShape, HISTORY_GROUPS, ownedGroups, snapshot, withOwned } from './undo_entries.js';
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
 const DEBOUNCE_MS = 120;
 
 // 8 个底子的名字（与 UX.md 3.6 一致；28mm / MOUNT 的底子名字沿用同一套）
-export const BASE_NAMES = ['GR 正片', 'GR 负片', '高反差黑白', '标准', '富士 CC', '富士 CN', '徕卡 Chrome', '徕卡 Vivid'];
+// 配方位置的默认名（/api/recipes 没给名字时用）。5–8 号在相机里是用户可以改的位置，不写别家的名字（U7）。
+export const BASE_NAMES = ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原厂标准', '空位 5', '空位 6', '空位 7', '空位 8'];
+// 配方名：/api/recipes 给了名字就用它，没给按位置号取默认名
+export function slotName(unitId, slot) {
+  const unit = state.catalog && state.catalog.units ? state.catalog.units.find((u) => u.id === unitId) : null;
+  const base = unit && unit.recipes ? unit.recipes.find((b) => b.slot === slot) : null;
+  const name = (base && base.name) || BASE_NAMES[slot - 1] || `空位 ${slot}`;
+  return `${String(slot).padStart(2, '0')} ${name}`;
+}
+
 export const KNOB_NAMES = {
   amount: '强度',
   contrast: '对比度',
@@ -73,28 +85,34 @@ export function loadCatalog({ refresh = false } = {}) {
   return catalogPromise;
 }
 
-// ---- 版本号：裁切和编辑共用一个 rev -------------------------------------------
+// ---- 保存：裁切和编辑共用一个 rev（保存队列在 saves.js，按照片 id 存，不挂在 ed 上） ----------
 
 export function syncRev(view, rev) {
+  const rec = saveRecord(view.photo.id);
+  rec.rev = rev;
+  // 记下拍摄日期：「这一天的全部」导出前据此找出要等的照片（F02）
+  if (view.photo.date) rec.date = view.photo.date;
   if (view.ed) view.ed.rev = rev;
   if (view.crop) view.crop.rev = rev;
 }
 
-// 写入排队：同一张照片一次只写一个，写完再写下一个。出错时提示、重读，不抛出去。
-function enqueue(view, fn) {
-  view.saveQ = (view.saveQ || Promise.resolve()).then(async () => {
-    try {
-      await fn();
-    } catch (e) {
-      toastError(e, '无法保存修改。请重试。');
-    }
-  });
-  return view.saveQ;
+// 导出前调用：等这张照片还没写完的保存；有没写进去的就拒绝（R05）
+export function flushEdits(view) {
+  return flushPhotos([view.photo.id]);
 }
 
-// 导出前调用：等还没写完的草稿都保存好，导出的才是最新的
-export function flushEdits(view) {
-  return view.saveQ || Promise.resolve();
+// 视图还在显示这张照片吗（关掉之后只更新保存记录，不碰界面）
+function live(view) {
+  return !view.disposed;
+}
+
+// 放弃没写进去的修改：按服务端现在的内容重读
+export async function discardFailed(view) {
+  clearFailed(view.photo.id);
+  await reloadEdit(view);
+  await loadCrop(view).catch(() => {});
+  view.redrawSide?.();
+  view.onChange?.();
 }
 
 // ---- 读取 --------------------------------------------------------------------
@@ -141,9 +159,11 @@ export async function ensureEdit(view) {
   if (!view.edPromise) {
     view.edPromise = (async () => {
       const id = view.photo.id;
-      const [edit, , frames, defaults, caps, meta] = await Promise.all([
+      // 这张照片还有没写完的保存（刚切走又切回来）：等它们写完再读，读的过程中又有写入就重读（F04）
+      const [edit, , frames, defaults, caps, meta] = await readFresh(id, () => Promise.all([
         fetchEdit(view), loadCatalog(), loadFrames(), loadDefaults(), loadPhotoCaps(id), loadMeta(id),
-      ]);
+      ]));
+      if (view.disposed) throw new Error('这张照片已经关闭。');
       const ed = {
         v2: frames.state === 'ok',
         frames: frames.state === 'ok' ? frames.data : null,
@@ -171,25 +191,74 @@ export async function ensureEdit(view) {
   return view.edPromise;
 }
 
-// 从接口重新读一次（导入相机数据后、保存冲突后用）
-export async function reloadEdit(view) {
+// 从接口重新读一次（导入相机数据后、重试保存成功后、放弃修改后用）。
+// 读到的必须比本地新：读的过程中有新的写入就重读（readFresh）；视图已经关了或换了编辑对象就什么都不改，
+// 免得旧的内容和旧的 rev 盖掉刚写进去的（F04）。
+export async function reloadEdit(view, { refreshCatalog = true } = {}) {
   const ed = view.ed;
   if (!ed) return;
+  let edit;
+  let caps;
   try {
-    const [edit, , caps] = await Promise.all([fetchEdit(view), loadCatalog({ refresh: true }), loadPhotoCaps(view.photo.id, { refresh: true })]);
-    applyEdit(ed, edit);
-    ed.caps = capsFrom(view.photo, caps);
-    syncRev(view, ed.rev);
+    [edit, , caps] = await readFresh(view.photo.id, () => Promise.all([
+      fetchEdit(view), loadCatalog({ refresh: refreshCatalog }), loadPhotoCaps(view.photo.id, { refresh: refreshCatalog }),
+    ]));
   } catch (e) {
-    toastError(e, '无法完成操作。请重试。');
+    if (live(view) && view.ed === ed) toastError(e, '无法重新读取这张照片的编辑记录。');
     return;
   }
+  if (!live(view) || view.ed !== ed) return;
+  applyEdit(ed, edit);
+  ed.caps = capsFrom(view.photo, caps);
+  syncRev(view, ed.rev);
   view.redrawSide?.();
   schedulePreview(view, { full: true });
 }
 
+// 编辑记录的顶层字段 → ed 上对应的属性（重试只采用补写进去、界面之后又没改过的字段）。
+// 撤销快照（snapshot）里的键和 ed 上的属性同名（memory 不在快照里）
+const EDIT_FIELD_PROPS = {
+  recipe: ['recipe', 'memory'],
+  lut: ['lut'],
+  adjust: ['adj'],
+  curve: ['curve'],
+  geometry: ['geometry'],
+  frame: ['frame', 'frameFrom'],
+  stamp: ['stamp', 'stampFrom'],
+};
+
+// 重试保存写成功一类：把写入接口的回应（服务器上现在的内容）装进正在显示的视图（F03 / N02）。
+// 只装 fields 里的字段：界面之后又改过的字段保留界面上的值（V01）。
+// 同步完成，不再发请求，所以不会读失败、也不会晚到盖掉之后的草稿。
+// 撤销记录不用改：每一步只记它自己改了哪些字段，撤销只还原那些字段（Y01）。
+// 正在进行的一步（pending）是「这一步开始前」的样子，补写进来的不是这一步做的，所以也装进去。
+export function applyRetried(view, { kind, response, fields = [], rev = null } = {}) {
+  if (!live(view) || !view.ed || !response || !fields.length) return false;
+  const before = view.pending ? JSON.parse(view.pending) : null;
+  if (kind === 'crop') {
+    setCrop(view, response);
+    if (before) before.crop = cropShape(view.crop);
+  } else {
+    // 换算要用到这张照片的 v2 与默认边框，和 view.ed 保持一致
+    const fresh = { v2: view.ed.v2, defaults: view.ed.defaults };
+    applyEdit(fresh, response);
+    for (const f of fields) {
+      for (const prop of EDIT_FIELD_PROPS[f] || []) {
+        view.ed[prop] = fresh[prop];
+        if (before && prop in before) before[prop] = view.ed.v2 || prop !== 'geometry' ? fresh[prop] : null;
+      }
+    }
+    view.ed.render = fresh.render;
+  }
+  if (before) view.pending = JSON.stringify(before);
+  if (rev !== null && rev !== undefined) syncRev(view, rev);
+  schedulePreview(view, { full: true });
+  return true;
+}
+
 export async function loadCrop(view) {
-  setCrop(view, await api(`/api/photos/${view.photo.id}/crop`));
+  const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`));
+  if (live(view)) setCrop(view, c);
 }
 
 // 接口的 rect 是数组，这里转成 {x, y, w, h}（写回时再转回数组，见 cropDraft / saveCrop 的调用方）
@@ -286,37 +355,39 @@ export function styleOptions(ed, styleId) {
 // ---- 保存 --------------------------------------------------------------------
 
 // 写 /edit。changes 只带要改的键（后端只认带上来的键）。
+// 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
 export function persist(view, changes) {
-  return enqueue(view, async () => {
-    const ed = view.ed;
-    try {
-      const r = await api(`/api/photos/${view.photo.id}/edit`, { method: 'PUT', body: { ...changes, expected_rev: ed.rev } });
+  return writeSave(saveRecord(view.photo.id), 'edit', changes, {
+    onOk: (r) => {
+      if (!live(view)) return;
       syncRev(view, r.rev);
-      ed.render = r.render || ed.render;
+      if (view.ed) view.ed.render = r.render || view.ed.render;
       if (r.warning) toast(r.warning, 'info');
-    } catch (e) {
-      toastError(e, '无法完成操作。请重试。');
-      await reloadEdit(view);
-    }
-    view.onChange?.();
+      view.onChange?.();
+    },
+    onFail: () => {
+      if (live(view)) view.onChange?.();
+    },
   });
 }
 
 // 写 /crop：preset、rect、orientation（v2）或 flip（旧版的横竖），以及旧版的 angle_deg
 export function saveCrop(view, body) {
-  return enqueue(view, async () => {
-    try {
-      const c = await api(`/api/photos/${view.photo.id}/crop`, { method: 'PUT', body: { ...body, expected_rev: view.crop.rev } });
+  return writeSave(saveRecord(view.photo.id), 'crop', body, {
+    onOk: (c) => {
+      if (!live(view)) return;
       setCrop(view, c);
       if (c.warning) toast(c.warning, 'info');
-    } catch (e) {
-      // 拉直超出旧版后端的范围等错误：把后端的中文原因显示出来，再把界面拉回到已保存的值
-      toastError(e, '无法完成操作。请重试。');
+      view.redrawSide?.();
+      view.onChange?.();
+    },
+    // 拉直超出旧版后端的范围等错误：把后端的中文原因显示出来；界面先保留你的框，标成未保存
+    onFail: (e) => {
+      if (!live(view)) return;
       view.lastCropError = e.message;
-      await loadCrop(view).catch(() => {});
-    }
-    view.redrawSide?.();
-    view.onChange?.();
+      view.redrawSide?.();
+      view.onChange?.();
+    },
   });
 }
 
@@ -327,24 +398,8 @@ export function resetCropRemote(view) {
   return saveCrop(view, body);
 }
 
-// ---- 撤销：每次改动前记下整套状态（最多 100 步），撤销时把旧状态写回去 ------------
-
-function snapshot(view) {
-  const ed = view.ed;
-  const c = view.crop;
-  return JSON.stringify({
-    recipe: ed.recipe,
-    lut: ed.lut,
-    adj: ed.adj,
-    curve: ed.curve,
-    geometry: ed.v2 ? ed.geometry : null,
-    frame: ed.frame,
-    stamp: ed.stamp,
-    frameFrom: ed.frameFrom,
-    stampFrom: ed.stampFrom,
-    crop: c ? { preset: c.preset, rect: c.rect, angle_deg: c.angle_deg, orientation: c.orientation } : null,
-  });
-}
+// ---- 撤销：每次改动前记下整套状态（最多 100 步），撤销时只把这一步改过的组写回去 ---
+// 快照与「改了哪些组」在 undo_entries.js
 
 export function beginChange(view) {
   if (view.ed && !view.pending) view.pending = snapshot(view);
@@ -353,10 +408,19 @@ export function beginChange(view) {
 export function endChange(view) {
   const before = view.pending;
   view.pending = null;
-  if (!before || !view.ed || before === snapshot(view)) return;
+  // 拖动途中重试写进了内容：面板等这一步结束才刷新（W01）
+  if (view.panesStale) {
+    view.panesStale = false;
+    view.redrawSide?.();
+  }
+  const after = view.ed ? snapshot(view) : null;
+  if (!before || !after || before === after) return;
+  // 每一步只记自己改了的组（owned），撤销 / 重做只还原这些，不会顺带把别的字段写回旧值（Y01）
   view.undo = view.undo || [];
-  view.undo.push(before);
+  view.undo.push(JSON.stringify({ ...JSON.parse(before), owned: ownedGroups(before, after) }));
   if (view.undo.length > 100) view.undo.shift();
+  // 新的改动之后，原来可以重做的就作废了
+  view.redo = [];
   syncUndo(view);
 }
 
@@ -364,49 +428,84 @@ export function undoAvailable(view) {
   return !!(view.undo && view.undo.length);
 }
 
-// 撤销按钮：没有可以撤销的内容时置灰（COPY 3.10）
+// 撤销 / 重做按钮：没有可以撤销（重做）的内容时置灰（COPY 3.10）
 export function syncUndo(view) {
-  if (!view.undoBtn) return;
-  if (undoAvailable(view)) view.undoBtn.removeAttribute('aria-disabled');
-  else view.undoBtn.setAttribute('aria-disabled', 'true');
+  const set = (btn, ok) => {
+    if (!btn) return;
+    if (ok) btn.removeAttribute('aria-disabled');
+    else btn.setAttribute('aria-disabled', 'true');
+  };
+  set(view.undoBtn, undoAvailable(view));
+  set(view.redoBtn, !!(view.redo && view.redo.length));
 }
 
 export function undoChange(view) {
   const s = view.undo && view.undo.pop();
-  if (!s) return false;
+  if (!s || !view.ed) return false;
+  view.redo = view.redo || [];
+  view.redo.push(withOwned(snapshot(view), s));
   syncUndo(view);
+  return restoreSnapshot(view, s);
+}
+
+// 重做（⇧⌘Z / Ctrl+Y）：把撤销掉的那一步放回来
+export function redoChange(view) {
+  const s = view.redo && view.redo.pop();
+  if (!s || !view.ed) return false;
+  view.undo = view.undo || [];
+  view.undo.push(withOwned(snapshot(view), s));
+  syncUndo(view);
+  return restoreSnapshot(view, s);
+}
+
+function restoreSnapshot(view, s) {
   const o = JSON.parse(s);
   const ed = view.ed;
+  const own = new Set(o.owned || Object.keys(HISTORY_GROUPS));
+  // 只还原这一步改过的组；没改过的保持现在的样子（Y01）
   // 装饰回到撤销前的状态：原来继承默认的，写 null（后端按当前默认值算）；明确设置的，写原来的内容（R2-09）。
   // 只有真的变了才写回去，不然撤销会把 frame 键写进编辑记录。
-  const frameOwn = o.frameFrom === 'photo';
-  const stampOwn = o.stampFrom === 'photo';
-  const finishChanged = ed.frameFrom !== o.frameFrom || ed.stampFrom !== o.stampFrom
-    || (frameOwn && JSON.stringify(ed.frame) !== JSON.stringify(o.frame))
-    || (stampOwn && JSON.stringify(ed.stamp) !== JSON.stringify(o.stamp));
-  ed.recipe = o.recipe;
-  ed.lut = o.lut || null;
-  ed.adj = o.adj;
-  ed.curve = o.curve;
-  if (ed.v2 && o.geometry) ed.geometry = o.geometry;
-  const fin = resolveFinish({ frame: frameOwn ? o.frame : null, stamp: stampOwn ? o.stamp : null }, ed.defaults);
-  ed.frame = fin.frame;
-  ed.frameFrom = fin.frameFrom;
-  ed.stamp = fin.stamp;
-  ed.stampFrom = fin.stampFrom;
-  const changes = { recipe: recipeBody(view, { memory: true }), lut: ed.lut, adjust: adjustBody(ed), curve: curveBody(ed) };
-  if (ed.v2) {
-    Object.assign(changes, { geometry: ed.geometry });
-    if (finishChanged) Object.assign(changes, {
-      frame: frameOwn ? frameBody(ed.frame, styleOptions(ed, ed.frame.style)) : null,
-      stamp: stampOwn ? ed.stamp : null,
-    });
+  // 边框、印记分开判断、分开写：只撤边框时不带 stamp 键，不然会把另一组没写进去、等着重试的修改冲掉（Z01）
+  const tf = own.has('frame') ? o : ed;
+  const ts = own.has('stamp') ? o : ed;
+  const frameOwn = tf.frameFrom === 'photo';
+  const stampOwn = ts.stampFrom === 'photo';
+  const frameChanged = own.has('frame') && (ed.frameFrom !== tf.frameFrom || (frameOwn && JSON.stringify(ed.frame) !== JSON.stringify(tf.frame)));
+  const stampChanged = own.has('stamp') && (ed.stampFrom !== ts.stampFrom || (stampOwn && JSON.stringify(ed.stamp) !== JSON.stringify(ts.stamp)));
+  const changes = {};
+  if (own.has('recipe')) {
+    ed.recipe = o.recipe;
+    changes.recipe = recipeBody(view, { memory: true });
   }
-  persist(view, changes);
-  if (o.crop && view.crop) {
+  if (own.has('lut')) changes.lut = ed.lut = o.lut || null;
+  if (own.has('adjust')) {
+    ed.adj = o.adj;
+    changes.adjust = adjustBody(ed);
+  }
+  if (own.has('curve')) {
+    ed.curve = o.curve;
+    changes.curve = curveBody(ed);
+  }
+  if (ed.v2 && own.has('geometry') && o.geometry) changes.geometry = ed.geometry = o.geometry;
+  if (frameChanged || stampChanged) {
+    const fin = resolveFinish({ frame: frameOwn ? tf.frame : null, stamp: stampOwn ? ts.stamp : null }, ed.defaults);
+    if (frameChanged) {
+      Object.assign(ed, { frame: fin.frame, frameFrom: fin.frameFrom });
+      if (ed.v2) changes.frame = frameOwn ? frameBody(ed.frame, styleOptions(ed, ed.frame.style)) : null;
+    }
+    if (stampChanged) {
+      Object.assign(ed, { stamp: fin.stamp, stampFrom: fin.stampFrom });
+      if (ed.v2) changes.stamp = stampOwn ? ed.stamp : null;
+    }
+  }
+  if (Object.keys(changes).length) persist(view, changes);
+  if (own.has('crop') && o.crop && view.crop) {
     const cur = view.crop;
-    const same = JSON.stringify(cur.rect) === JSON.stringify(o.crop.rect) && cur.preset === o.crop.preset;
-    if (!same) saveCrop(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: geometryOf(view).straighten || 0, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });
+    // 旧版的拉直角度存在裁剪里：只改了角度的一步也要还原（Z02）；新版的角度在 geometry 里，用（可能刚还原的）几何
+    const angle = ed.v2 ? geometryOf(view).straighten || 0 : o.crop.angle_deg || 0;
+    const same = JSON.stringify(cur.rect) === JSON.stringify(o.crop.rect) && cur.preset === o.crop.preset
+      && (ed.v2 ? cur.orientation === o.crop.orientation : (cur.angle_deg || 0) === angle);
+    if (!same) saveCrop(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: angle, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });
   }
   schedulePreview(view, { full: true });
   view.redrawSide?.();
@@ -545,6 +644,42 @@ async function runPreview(view, full) {
   }
 }
 
+// 左右对比（Y）的左半边：同样的裁剪、拉直、边框，但没有配方、LUT、调整和曲线。
+// 只在几何或裁剪变了时重新请求一次（按指纹缓存），拖滑块不会重复请求。
+export function beforeUrl(view, onReady) {
+  const ed = view.ed;
+  if (!ed) return null;
+  const body = draftBody(view, 'final');
+  const zero = { ...ed, adj: Object.fromEntries(Object.keys(ed.adj).map((k) => [k, 0])) };
+  Object.assign(body, { recipe: null, lut: null, adjust: adjustBody(zero), curve: null });
+  const key = JSON.stringify([body.geometry || null, body.crop || null, body.frame || null, body.stamp || null]);
+  const hit = ed.before;
+  if (hit && hit.key === key) {
+    // 又回到了缓存里的几何：还在路上的别的几何的请求作废，晚到了也不能把这张换掉（N03）
+    if (hit.loading) {
+      ed.beforeSeq = (ed.beforeSeq || 0) + 1;
+      ed.before = { key: hit.key, url: hit.url, loading: null };
+    }
+    return hit.url;
+  }
+  if (hit && hit.loading === key) return hit.url || null;
+  // 每次请求带一个代号：几何参数连着改时会有几次请求同时在路上，只认最后一次的结果；
+  // 晚到的旧结果直接丢掉，不装进缓存、也不重画（F08）。换掉的地址按缓存里当时真正的那个释放。
+  const shown = hit ? hit.url : null;
+  const ticket = (ed.beforeSeq = (ed.beforeSeq || 0) + 1);
+  ed.before = { key: hit ? hit.key : null, url: shown, loading: key };
+  apiBlob(`/api/photos/${view.photo.id}/render${renderQuery(ed, 'final', false)}`, { body }).then(({ blob }) => {
+    if (view.ed !== ed || ed.beforeSeq !== ticket) return;
+    const old = ed.before && ed.before.url;
+    if (old) URL.revokeObjectURL(old);
+    ed.before = { key, url: URL.createObjectURL(blob), loading: null };
+    onReady?.();
+  }, () => {
+    if (view.ed === ed && ed.beforeSeq === ticket) ed.before = { key: null, url: ed.before && ed.before.url, loading: null };
+  });
+  return shown;
+}
+
 // 几何参数的指纹：有效画面要和它对得上才能用
 function geometryKey(ed) {
   return JSON.stringify(ed.v2 ? ed.geometry : null);
@@ -623,7 +758,9 @@ export function defaultNote(photo) {
   return { text: lookNoteText(look), prediction: isPrediction(look) };
 }
 
+// 关掉大图：只停预览、放掉图片。已经排队的保存不受影响（它们绑定的是保存记录，不是 ed）。
 export function disposeEdit(view) {
+  view.disposed = true;
   const ed = view.ed;
   if (!ed) return;
   clearTimeout(ed.timer);
@@ -632,6 +769,8 @@ export function disposeEdit(view) {
     if (ed.urls[k]) URL.revokeObjectURL(ed.urls[k]);
     ed.urls[k] = null;
   }
+  if (ed.before && ed.before.url) URL.revokeObjectURL(ed.before.url);
+  ed.before = null;
   view.ed = null;
   view.edPromise = null;
 }

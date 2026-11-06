@@ -2,7 +2,7 @@
 // 新版后端（v2）才有的项，旧版显示「还没准备好」。拉直两版都能用：旧版写 /crop 的 angle_deg（只认 ±10°，超出时后端的原因会显示出来）。
 // 拖动时只改画面（不保存），松手再保存（DIAG 原因 4 同样的做法：拖动中的值就是请求里发出去的值）。
 
-import { h, toast, toastError } from './dom.js';
+import { h, button, toast, toastError } from './dom.js';
 import { beginChange, endChange, saveCrop, persist, schedulePreview, validRect, resetCropRemote, geometryOf } from './preview.js';
 import { cropBody, orientationNow, rectArray } from './crop.js';
 import { slider, notReady } from './controls.js';
@@ -48,7 +48,8 @@ export async function commitStraight(view) {
 
 // 几何变了（拉直、透视、畸变、旋转、翻转）：框如果超出新的有效画面，收进来并保存
 async function afterGeometry(view) {
-  if (!view.canvas || !view.crop) return;
+  // 等保存时照片已经关掉：不再根据旧界面的框补写（写入已经绑定在这张照片上，前面那笔照常完成）
+  if (view.disposed || !view.canvas || !view.crop) return;
   const fitted = fitInto(view.crop.rect, validRect(view, view.canvas));
   if (fitted.changed) view.crop.rect = fitted.rect;
   // 框和服务端一样就不用写；拖动中已经收进去的框（没写回）也要写
@@ -104,6 +105,7 @@ function geomSlider(view, key, label, ends) {
     ends,
     dflt: 0,
     onBegin: () => beginChange(view),
+    onCancel: () => endChange(view),
     onInput: (v) => {
       view.ed.geometry = { ...view.ed.geometry, [key]: v };
       schedulePreview(view, { stage: 'uncropped' });
@@ -182,6 +184,7 @@ function ruler(view) {
   });
 
   let drag = null;
+  let keyHeld = false;
   box.addEventListener('pointerdown', (e) => {
     box.setPointerCapture(e.pointerId);
     beginChange(view);
@@ -211,10 +214,18 @@ function ruler(view) {
     const step = e.key === 'ArrowLeft' || e.key === 'ArrowRight' ? 0.1 : 0.5;
     const sign = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1;
     if (!e.repeat) beginChange(view);
+    keyHeld = true;
     setStraightLive(view, straightOf(view) + sign * step);
     paintRuler(box, straightOf(view));
   });
-  box.addEventListener('keyup', () => commitStraight(view));
+  const keyDone = () => {
+    if (!keyHeld) return;
+    keyHeld = false;
+    commitStraight(view);
+  };
+  box.addEventListener('keyup', keyDone);
+  // 按着方向键时焦点离开（keyup 发到了别处）：照样保存，这一步也就结束了（Y02）
+  box.addEventListener('blur', keyDone);
   return box;
 }
 
@@ -252,11 +263,11 @@ export function correctSection(view) {
 
 // 面板底部固定的一行按钮（COPY 3.1：[自动] [向左旋转] [水平翻转] [重置]）。旧版只有重置。
 export function correctActions(view) {
-  if (!view.ed.v2) return [h('button', { type: 'button', onclick: () => resetCorrections(view) }, '重置')];
+  if (!view.ed.v2) return [button('重置', { ico: 'rotate-ccw', onclick: () => resetCorrections(view) })];
   return [
-    h('button', { type: 'button', onclick: () => autoCorrect(view), title: '自动' }, '自动'),
-    h('button', { type: 'button', onclick: () => rotate90(view), title: '向左旋转（[）' }, '向左旋转'),
-    h('button', { type: 'button', 'aria-pressed': String(!!view.ed.geometry.flip), onclick: () => flipHorizontal(view), title: '水平翻转' }, '水平翻转'),
-    h('button', { type: 'button', onclick: () => resetCorrections(view) }, '重置'),
+    button('自动', { ico: 'wand-sparkles', title: '自动', onclick: () => autoCorrect(view) }),
+    button('向左旋转', { ico: 'rotate-ccw-square', title: '向左旋转（[）', onclick: () => rotate90(view) }),
+    button('水平翻转', { ico: 'flip-horizontal-2', title: '水平翻转', pressed: !!view.ed.geometry.flip, onclick: () => flipHorizontal(view) }),
+    button('重置', { ico: 'rotate-ccw', onclick: () => resetCorrections(view) }),
   ];
 }

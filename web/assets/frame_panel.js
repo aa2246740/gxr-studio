@@ -49,12 +49,20 @@ function loadThumb(view, style, holder) {
   const base = style.defaults ? { ...DEFAULT_FRAME, ...style.defaults } : { ...DEFAULT_FRAME };
   const body = { frame: frameBody({ ...base, style: style.id }, style.options) };
   const key = `${view.photo.id}|${ed.rev}|${JSON.stringify(body)}`;
+  // 还在渲染时卡片是一块轻轻呼吸的底色（不放「…」）；出来了淡入
+  const done = () => {
+    holder.classList.remove('skel');
+    holder.removeAttribute('aria-busy');
+  };
   const show = (url) => {
     if (!holder.isConnected) return;
+    done();
     holder.replaceChildren(h('img', { src: url, alt: '', draggable: 'false' }));
   };
+  // 缓存里有：卡片还没挂到页面上（面板正在搭），直接填进去，不看 isConnected，否则会一直停在骨架（AA01）
   if (THUMB_CACHE.has(key)) {
-    show(THUMB_CACHE.get(key));
+    done();
+    holder.replaceChildren(h('img', { src: THUMB_CACHE.get(key), alt: '', draggable: 'false' }));
     return;
   }
   queue.push(async () => {
@@ -64,7 +72,9 @@ function loadThumb(view, style, holder) {
       THUMB_CACHE.set(key, url);
       show(url);
     } catch {
-      if (holder.isConnected) holder.replaceChildren(h('span', { class: 'dim small' }, '—'));
+      if (!holder.isConnected) return;
+      done();
+      holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
     }
   });
   pump();
@@ -89,7 +99,7 @@ export function framePanel(view) {
   const opts = styleOptions(ed, cur.style);
 
   const cards = h('div', { class: 'fcards' }, ...styles.map((s) => {
-    const thumb = h('div', { class: 'thumb' }, h('span', { class: 'dim small' }, '…'));
+    const thumb = h('div', { class: 'thumb skel', 'aria-busy': 'true' });
     loadThumb(view, s, thumb);
     return h('button', {
       type: 'button', class: `fcard${s.id === 'none' ? ' none' : ''}`, 'aria-pressed': String(cur.style === s.id),
@@ -103,8 +113,8 @@ export function framePanel(view) {
   if (cur.style !== 'none') {
     if (opts.includes('color')) {
       // 颜色只用色块（不再加文字按钮）；鼠标停在色块上看颜色名，选中的色块有外圈
-      rows.push(h('div', { class: 'seg' }, h('span', { class: 'small dim seg-label' }, '颜色'),
-        ...['white', 'black', 'cream'].map((c) => swatch(COLOR_HEX[c], cur.color === c, () => setFrame(view, { color: c }), COLOR_NAMES[c]))));
+      rows.push(h('div', { class: 'seg-row' }, h('span', { class: 'seg-label' }, '颜色'), h('div', { class: 'swrow' },
+        ...['white', 'black', 'cream'].map((c) => swatch(COLOR_HEX[c], cur.color === c, () => setFrame(view, { color: c }), COLOR_NAMES[c])))));
     }
     if (opts.includes('weight')) {
       rows.push(seg(['thin', 'medium', 'thick'].map((w) => [w, WEIGHT_NAMES[w]]), cur.weight, (w) => setFrame(view, { weight: w }), { label: '宽度' }));
@@ -129,7 +139,7 @@ export function framePanel(view) {
   }
 
   // 底部按钮固定在面板底边（和裁切页一样）
-  rows.push(h('div', { class: 'sticky-foot' }, h('button', { type: 'button', class: 'primary', onclick: () => setDefaults(view) }, '设为默认')));
+  rows.push(h('div', { class: 'sticky-foot' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => setDefaults(view) }, '设为默认')));
   return h('div', { class: 'pane' }, ...rows);
 }
 

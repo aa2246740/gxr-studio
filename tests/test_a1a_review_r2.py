@@ -495,7 +495,8 @@ def test_r2_first_import_request_failure_can_be_retried(tmp_path):
     (d / "state.js").write_text("export const state = globalThis.reviewState; export const emit = () => {};\n", encoding="utf-8")
     (d / "dom.js").write_text(
         "export const h = (tag, attrs, ...children) => ({tag, attrs, children});\n"
-        "export const toast = () => {};\nexport const toastError = () => {};\n",
+        "export const toast = () => {};\nexport const toastError = () => {};\n"
+        "export const setFraction = (bar) => bar;\nexport const platform = () => 'mac';\n",
         encoding="utf-8",
     )
     (d / "scenario.mjs").write_text(REQUEST_ERROR, encoding="utf-8")

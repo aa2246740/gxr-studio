@@ -30,10 +30,12 @@ export async function droppedFiles(transfer) {
   return result;
 }
 
-export async function importFiles(files, upload) {
+// onProgress(done, total)：每传完一个回调一次（文件夹导入时界面显示 n/N）
+export async function importFiles(files, upload, onProgress = null) {
   const results = [];
-  for (const { file, path } of files) {
-    if (skippedPath(path)) continue;
+  const todo = files.filter(({ path }) => !skippedPath(path));
+  for (const { file, path } of todo) {
+    if (onProgress) onProgress(results.length, todo.length);
     try {
       const lut = await upload(file, path);
       results.push({ path, lut, status: lut.duplicate ? 'duplicate' : lut.skipped ? 'skipped' : 'imported' });
@@ -41,5 +43,6 @@ export async function importFiles(files, upload) {
       results.push({ path, status: 'error', message: error.message });
     }
   }
+  if (onProgress) onProgress(results.length, todo.length);
   return results;
 }

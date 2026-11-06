@@ -214,11 +214,12 @@ def test_frame_body_never_sends_a_frame_number_switch(tmp_path):
 # ---- COPY.md 的硬规则（只读源文件） -------------------------------------------------
 
 
-# 大图标签：配方 / 调整 / 裁剪 / 边框 / 时间戳 / 导出（COPY.md 第 1 节和 3 节）
+# 大图标签：配方 / 调整 / 裁剪 / 边框 / 时间戳 / 信息（COPY.md 第 1 节和 3 节；ORCH_DECISIONS：导出改成对话框 ⌘E，加「信息」I）
 def test_viewer_tabs_use_the_copy_names_in_order():
     viewer = (ASSETS / "viewer.js").read_text(encoding="utf-8")
-    labels = re.findall(r"\['(?:recipe|adjust|crop|frame|stamp|export)', '([^']+)', '[A-Z]'\]", viewer)
-    assert labels == ["配方", "调整", "裁剪", "边框", "时间戳", "导出"]
+    tabs = re.findall(r"\['(recipe|adjust|crop|frame|stamp|info|export)', '([^']+)', '([A-Z])', '[a-z0-9-]+'\]", viewer)
+    assert [t[1] for t in tabs] == ["配方", "调整", "裁剪", "边框", "时间戳", "信息"]
+    assert [t[2] for t in tabs] == ["R", "A", "C", "F", "T", "I"]
 
 
 # 这些说法在 COPY.md 里被明确禁止，不能出现在界面文字里（注释不算）
@@ -366,18 +367,12 @@ def _function_body(source: str, header: str) -> str:
     return source[start : source.index("\n}\n", start)]
 
 
-def test_restore_resets_edit_then_crop_and_each_reset_touches_only_its_panel():
-    """复原：先清编辑（几何在里面），再把裁剪写回整张、0°；各面板的「重置」只清自己那一面板。"""
-    viewer = (ASSETS / "viewer.js").read_text(encoding="utf-8")
-    preview = (ASSETS / "preview.js").read_text(encoding="utf-8")
+def test_each_panel_reset_touches_only_its_panel():
+    """各面板的「重置」只清自己那一面板。
+    「复原」的顺序和目标（先清编辑、再把裁剪写回整张 0°，切图后不写别的照片）由 test_edit_route.py 真正执行来测。"""
     correct = (ASSETS / "correct.js").read_text(encoding="utf-8")
     adjust = (ASSETS / "adjust.js").read_text(encoding="utf-8")
     recipes = (ASSETS / "recipes.js").read_text(encoding="utf-8")
-
-    restore = _function_body(viewer, "async function resetAll()")
-    assert restore.index("persist(view, changes)") < restore.index("resetCropRemote(view)")
-    # PUT /crop 不带角度时保持原角度，所以裁剪的还原要明写 0
-    assert "angle_deg: 0" in _function_body(preview, "export function resetCropRemote(view)")
 
     # 调整的重置：只清调整和曲线
     adj_reset = _function_body(adjust, "function resetButton(view)")
@@ -461,8 +456,9 @@ def test_bottom_buttons_are_sticky_in_frame_adjust_and_recipe_panels():
         assert "class: 'foot'" not in text
     # 配方：固定行是直接挂在面板下面的（不能放在会滚动的 rest 里面，否则固定不住）
     assert "nodes.push(h('div', { class: 'sticky-foot' }" in recipes
-    assert recipes.index("'存储为我的配方'") < recipes.index("'写入存储卡'")
-    assert "    reset,\n  ));" in recipes  # [重置] 放在最后，靠右
+    # U8：点了没反应的「存储为我的配方」「写入存储卡」删掉了，固定行里只有 [重置]（靠右）
+    assert "'存储为我的配方'" not in recipes and "'写入存储卡'" not in recipes
+    assert "nodes.push(h('div', { class: 'sticky-foot' }, reset));" in recipes
 
 
 def test_original_compare_uses_the_render_endpoint_and_falls_back_to_the_old_preview():
@@ -535,9 +531,14 @@ def test_export_errors_keep_the_backend_sentence_and_each_reason():
 def test_undo_remembers_whether_the_decoration_was_inherited():
     """R2-09：撤销回到原来的「继承默认」或「明确设置」；继承的写 null，不把默认值固化成照片设置。"""
     preview = (ASSETS / "preview.js").read_text(encoding="utf-8")
-    undo = _function_body(preview, "export function undoChange(view)")
-    assert "frameOwn ? o.frame : null" in undo and "stampOwn ? o.stamp : null" in undo
-    assert "frameFrom: ed.frameFrom" in preview and "stampFrom: ed.stampFrom" in preview
+    # 撤销和重做共用 restoreSnapshot（重做 ⇧⌘Z 也要按原来的继承关系写回去）
+    assert "return restoreSnapshot(view, s);" in _function_body(preview, "export function undoChange(view)")
+    assert "return restoreSnapshot(view, s);" in _function_body(preview, "export function redoChange(view)")
+    undo = _function_body(preview, "function restoreSnapshot(view, s)")
+    # 这一步改过装饰才按快照还原（tf / ts 是快照或现在的样子）
+    assert "frameOwn ? tf.frame : null" in undo and "stampOwn ? ts.stamp : null" in undo
+    entries = (ASSETS / "undo_entries.js").read_text(encoding="utf-8")
+    assert "frameFrom: ed.frameFrom" in entries and "stampFrom: ed.stampFrom" in entries
     assert "ed.frameFrom = 'photo'" in (ASSETS / "frame_panel.js").read_text(encoding="utf-8")
     assert "ed.stampFrom = 'photo'" in (ASSETS / "stamp_panel.js").read_text(encoding="utf-8")
     assert "ed.frameFrom = 'photo'" in (ASSETS / "viewer.js").read_text(encoding="utf-8")
@@ -548,3 +549,34 @@ def test_export_file_names_carry_no_labels():
     for path in ASSETS.glob("*.js"):
         text = path.read_text(encoding="utf-8")
         assert "_电脑预测" not in text and "_近似" not in text, path.name
+
+
+def test_segmented_choices_and_zoom_are_not_squeezed_into_ellipses():
+    """B3：分段按钮按字数分宽度（「日期和文字」不被截断）；视图工具栏的「适合 / 100%」不被挤成「10…」。"""
+    css = (ASSETS / "app.css").read_text(encoding="utf-8")
+    seg_button = css[css.index(".seg button {") : css.index("}", css.index(".seg button {"))]
+    assert "flex: 1 1 auto" in seg_button and "flex: 1 1 0" not in seg_button
+    assert ".viewbar .seg button { min-width: 44px; flex: none; }" in css
+    assert ".viewbar .seg { flex: none; }" in css
+
+
+def test_frame_preset_cards_load_as_skeletons_not_ellipses():
+    """边框卡片还在渲染时是骨架底色（不放「…」），出来后去掉骨架；渲染失败写「没有预览」。"""
+    js = (ASSETS / "frame_panel.js").read_text(encoding="utf-8")
+    assert "h('div', { class: 'thumb skel', 'aria-busy': 'true' })" in js
+    assert "'…'" not in js and "'没有预览'" in js
+    assert js.count("done();") == 3
+
+
+def test_export_camdata_note_does_not_promise_recipe_photos_export():
+    """AA02/AB01：没导入相机配方文件时，后端保留配方但出不了配方效果。
+
+    RAW+JPG 退回相机 JPG（serve.color_image 捕获 RenderUnavailable），只有 RAW 又套了配方的照片返回 409。
+    说明不能说「都能导出」，也不能说「套了配方就要先导入」。
+    """
+    js = (ASSETS / "export.js").read_text(encoding="utf-8")
+    assert "不导入也可以导出" not in js
+    assert "套用了配方的照片要先导入相机配方文件" not in js
+    assert "导出不会带上相机配方效果" in js
+    assert "有相机 JPG 的照片导出相机 JPG" in js
+    assert "只有 RAW、又套用了配方的照片可能导不出" in js
