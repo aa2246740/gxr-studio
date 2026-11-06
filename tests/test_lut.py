@@ -591,7 +591,8 @@ def test_progress_is_reported_while_running(data_client):
         return st["progress"] if st["progress"] and st["progress"]["evaluations"] > 0 else None
 
     try:
-        seen = wait_until(reported, f"拟合进度（任务 {job}）", timeout=240, interval=0.25)
+        # 原来是 240 次 × 0.25 秒，约 60 秒；进度要在这段时间里出现，不能放宽成 240 秒。
+        seen = wait_until(reported, f"拟合进度（任务 {job}）", timeout=60, interval=0.25)
     finally:
         c.post(f"/api/lut/fit/{job}/cancel")
     assert seen and 0 <= seen["fraction"] <= 1 and seen["phase"] and seen["evaluations"] > 0
