@@ -28,6 +28,7 @@ from gxr_studio.lut import fit, scene, spaces
 from gxr_studio.lut.cube import Cube, write_cube
 from gxr_studio.render.params import RecipeSel
 from gxr_studio.render.recipes import CameraData
+from support.waiting import wait_until
 from test_api import find, import_all
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -388,12 +389,11 @@ def upload(client, raw, name="warm.cube"):
 
 
 def wait(client, job_id, limit=240):
-    for _ in range(limit * 4):
+    def settled():
         st = client.get(f"/api/lut/fit/{job_id}").json()
-        if st["state"] != "running":
-            return st
-        time.sleep(0.25)
-    raise AssertionError("拟合超时")
+        return None if st["state"] == "running" else st
+
+    return wait_until(settled, f"拟合（任务 {job_id}）", timeout=limit, interval=0.25)
 
 
 def test_upload_describes_the_cube_and_guesses_the_space(client):
@@ -585,14 +585,16 @@ def test_progress_is_reported_while_running(data_client):
     c = data_client
     cid = upload(c, cube_bytes(warm, 17), "warm.cube").json()["cube_id"]
     job = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "normal"}).json()["job_id"]
-    seen = None
-    for _ in range(240):
+
+    def reported():
         st = c.get(f"/api/lut/fit/{job}").json()
-        if st["progress"] and st["progress"]["evaluations"] > 0:
-            seen = st["progress"]
-            break
-        time.sleep(0.25)
-    c.post(f"/api/lut/fit/{job}/cancel")
+        return st["progress"] if st["progress"] and st["progress"]["evaluations"] > 0 else None
+
+    try:
+        # 原来是 240 次 × 0.25 秒，约 60 秒；进度要在这段时间里出现，不能放宽成 240 秒。
+        seen = wait_until(reported, f"拟合进度（任务 {job}）", timeout=60, interval=0.25)
+    finally:
+        c.post(f"/api/lut/fit/{job}/cancel")
     assert seen and 0 <= seen["fraction"] <= 1 and seen["phase"] and seen["evaluations"] > 0
 
 

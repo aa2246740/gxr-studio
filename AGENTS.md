@@ -56,6 +56,8 @@ Python 模块、函数、变量用 snake_case，类用 PascalCase，常量用 UP
 
 ## 改代码时
 
+先只做 macOS。Windows 适配暂停（2026-11-06 机主决定）：不为 Windows 写新代码，也不追 Windows 专属的失败；已有的 Windows 代码不删。CI 的 push 和 PR 只跑 macOS 的完整测试，Windows 只在手动触发或 `ci/` 分支上跑。
+
 界面行为保持不变，除非这次任务就是改界面。`library_rebuild` 开关默认开着，关了才会拒绝重建索引。
 
 日志走 `gxr_studio.observe.log`，不要把令牌打出来。失败的后台任务要走到 `on_job_failed`。Sentry 只有 `GXR_STUDIO_SENTRY_DSN` 有值才初始化，默认不联网。

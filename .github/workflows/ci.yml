@@ -81,13 +81,14 @@ jobs:
         if: always()
         run: mkdir -p artifacts && cp -f .coverage artifacts/coverage.sqlite || true
 
-  # Windows 和 macOS：完整测试套件（复审 P1-04：应用要能在 Windows 上跑）。显卡一致性同样用 Chrome 的软件适配器，
-  # 找不到适配器就失败（GXR_REQUIRE_GPU_TEST=1）。Windows 上 WebGPU 走 D3D12 的硬件路径要在实机确认，见 FIX_R1 报告。
+  # macOS（和 Windows）：完整测试套件。显卡一致性同样用 Chrome 的软件适配器，找不到适配器就失败（GXR_REQUIRE_GPU_TEST=1）。
+  # Windows 适配暂停（2026-11-06 机主决定：先把 Mac 版做完再适配 Windows）。push 和 PR 只跑 macOS；
+  # 手动触发（workflow_dispatch）或推到 ci/ 开头的分支时，Windows 照旧一起跑。恢复适配时把下面的条件去掉即可。
   tests:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/ci/')) && fromJSON('["windows-latest", "macos-latest"]') || fromJSON('["macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     # 上一轮 windows-latest 挂了 2 小时没有结束：限时，并在单个测试超过 5 分钟时打印所有线程的调用栈
     timeout-minutes: 40

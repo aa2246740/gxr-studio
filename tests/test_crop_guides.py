@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -13,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from conftest import PORT
 from gxr_studio.app import create_app
+from support.waiting import wait_job
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 CROP_JS = WEB / "assets" / "crop.js"
@@ -41,13 +41,8 @@ def web_client(settings):
 def _import_all(client):
     card_id = client.get("/api/cards").json()[0]["id"]
     job = client.post("/api/import", json={"card_id": card_id}).json()
-    for _ in range(600):
-        j = client.get(f"/api/jobs/{job['id']}").json()
-        if not j["running"]:
-            assert j["progress"]["state"] == "done", j["progress"]
-            return
-        time.sleep(0.05)
-    raise AssertionError("导入超时")
+    j = wait_job(client, job["id"], "导入")
+    assert j["progress"]["state"] == "done", j["progress"]
 
 
 def test_social_presets_are_served_by_the_backend(web_client, card):
