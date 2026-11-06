@@ -147,7 +147,8 @@ def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
 def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
     out = drive(live, tmp_path, "gpu")
     if not out["gpu"]:
-        detail = json.dumps({k: out.get(k) for k in ("gpuWaitMs", "gpuDiag", "console")}, ensure_ascii=False)
+        keys = ("gpuWaitMs", "gpuDiag", "failedBeforeClicks", "consoleBeforeClicks", "gpuChromeLog")
+        detail = json.dumps({k: out.get(k) for k in keys}, ensure_ascii=False)
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
             pytest.fail(f"GXR_REQUIRE_GPU_TEST=1，但等了 120 秒大图还是没有走显卡预览：{detail}")
         pytest.skip(f"这台机器的 Chrome 没有走显卡预览：{detail}")

@@ -18,7 +18,7 @@ const chromeLog = openSync(chromeLogPath, 'w');
 const chrome = spawn(chromePath, [
   '--headless=new', `--user-data-dir=${profile}`, `--remote-debugging-port=${debugPort}`, '--no-first-run', '--no-default-browser-check',
   '--disable-extensions', '--disable-background-networking', '--use-mock-keychain', '--password-store=basic', '--window-size=1500,950',
-  ...extra, 'about:blank',
+  '--enable-logging=stderr', '--v=0', ...extra, 'about:blank',
 ], { stdio: ['ignore', chromeLog, chromeLog] });
 
 const started = Date.now();
@@ -33,6 +33,14 @@ const chromeTail = () => {
     return readFileSync(chromeLogPath, 'utf8').slice(-3000);
   } catch {
     return '';
+  }
+};
+// Chrome 日志里和显卡有关的行（GPU 进程崩溃、看门狗、设备丢失、Dawn 报错），留最后 30 行
+const gpuLogLines = () => {
+  try {
+    return readFileSync(chromeLogPath, 'utf8').split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context/i.test(l)).slice(-30).map((l) => l.slice(0, 300));
+  } catch {
+    return [];
   }
 };
 let finished = false;
@@ -123,6 +131,19 @@ try {
     } else if (msg.method === 'Log.entryAdded' && ['error', 'warning'].includes(msg.params.entry.level)) text = msg.params.entry.text;
     if (text) out.console = [...out.console.slice(-19), String(text).slice(0, 300)];
   });
+  // 失败的请求（状态 ≥ 400 或网络错误）带上链接，留最后 20 条；测试自己让它失败的保存（PUT .../crop 的 500）也会在里面
+  out.failedRequests = [];
+  const requestUrls = new Map();
+  listeners.push((msg) => {
+    if (msg.sessionId !== sessionId) return;
+    const p = msg.params;
+    let line = null;
+    if (msg.method === 'Network.requestWillBeSent') requestUrls.set(p.requestId, `${p.request.method} ${p.request.url}`);
+    else if (msg.method === 'Network.responseReceived' && p.response.status >= 400) line = `${p.response.status} ${requestUrls.get(p.requestId) || p.response.url}`;
+    else if (msg.method === 'Network.loadingFailed') line = `${p.errorText}${p.canceled ? ' (canceled)' : ''} ${requestUrls.get(p.requestId) || p.requestId}`;
+    if (line) out.failedRequests = [...out.failedRequests.slice(-19), line.replace(/token=[^&\s]+/, 'token=…').slice(0, 300)];
+  });
+  await call('Network.enable');
   await call('Runtime.enable');
   await call('Log.enable');
 
@@ -225,8 +246,30 @@ try {
         d.adapter = a ? { vendor: a.info?.vendor, architecture: a.info?.architecture, description: a.info?.description, fallback: a.info?.isFallbackAdapter } : null;
       } catch (e) { d.adapterError = String(e); }
       try { const m = await import('/assets/gpu/engine.js'); d.engine = (await m.Engine.create()) ? 'created' : 'null'; } catch (e) { d.engineError = String(e).slice(0, 300); }
+      // 页面自己的那台引擎（和页面同一个模块实例）：没建起来，还是建了又丢了（设备丢失后整个会话都走服务器）
+      try {
+        const st = await import('/assets/gpu_stage.js');
+        const e = st.gpuEngineForTests();
+        d.pageEngine = e ? { lost: !!e.lost, currentKey: typeof e.currentKey === 'function' ? e.currentKey() : null } : null;
+      } catch (e) { d.pageEngineError = String(e).slice(0, 300); }
+      // 照片的 JPG 源图：照页面的做法取回来、解码
+      try {
+        const g = await (await fetch('/api/photos/${photoId}/gpu')).json();
+        if (g.jpg) {
+          const res = await fetch(g.jpg.url, { credentials: 'same-origin' });
+          d.jpgStatus = res.status;
+          const bm = await createImageBitmap(await res.blob(), { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+          d.jpgBitmap = [bm.width, bm.height];
+          bm.close();
+        }
+        d.photoRaw = g.raw ? 'layout' : g.raw_reason;
+      } catch (e) { d.jpgError = String(e).slice(0, 300); }
+      d.stage = { classes: document.querySelector('.stage-area, .stage')?.className || null, img: !!document.querySelector('.pv-img'), canvas: !!document.querySelector('canvas') };
       return d;
     })()`, 60000).catch((e) => ({ diagError: String(e) }));
+    out.gpuChromeLog = gpuLogLines();
+    out.failedBeforeClicks = [...out.failedRequests];
+    out.consoleBeforeClicks = [...out.console];
   }
   out.boxAfterEnter = await evalIn(`(() => { ${helpers} return boxRect(); })()`);
 
