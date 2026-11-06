@@ -442,7 +442,10 @@ def test_pixel_size_text_is_counted_on_the_original_frame():
     """裁切的「W × H 像素」按原图（sidecar 的 frame 宽高）算，不按预览图。"""
     crop = (ASSETS / "crop.js").read_text(encoding="utf-8")
     body = _function_body(crop, "export function pixelsText(view)")
-    assert "view.crop.frame" in body and "canvasAfterRotation" in body
+    assert "fullCanvas(view)" in body
+    # 全尺寸画布：sidecar 的 frame 宽高，按 90° 旋转交换（点比例、收框也用它）
+    full = _function_body(crop, "export function fullCanvas(view)")
+    assert "view.crop.frame" in full and "canvasAfterRotation" in full
 
 
 def test_frame_cards_use_two_columns_and_colours_are_swatches_only():
