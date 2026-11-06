@@ -71,23 +71,35 @@ def live(settings, card, monkeypatch):
     sock.close()
 
 
+DEADLINE_S = 300  # 脚本自己的总时限：到点交出卡在哪一步；进程超时再多留 40 秒收尾
+
+
+def _text(data: str | bytes | None) -> str:
+    return data.decode("utf-8", "replace") if isinstance(data, bytes) else (data or "")
+
+
 def drive(live, tmp_path, mode: str) -> dict:
     chrome = require_chrome()
     flags = list(FLAGS)
     if sys.platform.startswith("linux") and os.environ.get("CI"):
         flags += ["--no-sandbox", "--disable-dev-shm-usage"]
-    env = {**os.environ, "CHROME_FLAGS": json.dumps(flags)}
-    res = subprocess.run(  # noqa: S603
-        ["node", str(DRIVER), chrome, str(live["port"]), live["token"], live["photo"], mode, str(tmp_path / f"chrome-{mode}")],  # noqa: S607
-        capture_output=True,
-        text=True,
-        timeout=240,
-        encoding="utf-8",
-        env=env,
-    )
+    env = {**os.environ, "CHROME_FLAGS": json.dumps(flags), "VIEWER_DEADLINE_MS": str(DEADLINE_S * 1000)}
+    try:
+        res = subprocess.run(  # noqa: S603
+            ["node", str(DRIVER), chrome, str(live["port"]), live["token"], live["photo"], mode, str(tmp_path / f"chrome-{mode}")],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=DEADLINE_S + 40,
+            encoding="utf-8",
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        log = tmp_path / f"chrome-{mode}.log"
+        chrome_log = log.read_text(encoding="utf-8", errors="replace")[-3000:] if log.is_file() else ""
+        pytest.fail(f"驱动脚本没有在时限内结束\n进度：\n{_text(exc.stderr)[-3000:]}\nChrome：\n{chrome_log}")
     assert res.stdout.strip(), res.stderr
     out = json.loads(res.stdout.strip().splitlines()[-1])
-    assert "error" not in out, out
+    assert "error" not in out, f"{json.dumps(out, ensure_ascii=False, indent=1)}\n进度：\n{res.stderr[-3000:]}"
     assert out["ready"] is True
     return out  # type: ignore[no-any-return]
 
@@ -135,7 +147,8 @@ def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
 def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
     out = drive(live, tmp_path, "gpu")
     if not out["gpu"]:
+        detail = json.dumps({k: out.get(k) for k in ("gpuWaitMs", "gpuDiag", "console")}, ensure_ascii=False)
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
-            pytest.fail("GXR_REQUIRE_GPU_TEST=1，但大图没有走显卡预览")
-        pytest.skip("这台机器的 Chrome 没有走显卡预览")
+            pytest.fail(f"GXR_REQUIRE_GPU_TEST=1，但等了 120 秒大图还是没有走显卡预览：{detail}")
+        pytest.skip(f"这台机器的 Chrome 没有走显卡预览：{detail}")
     check(out, live, cards_max_builds=1)
