@@ -527,9 +527,9 @@ def test_ratio_click_changes_the_box_before_the_save_returns(tmp_path):
 
 
 def test_frame_cards_still_arrive_after_switching_away_and_back(tmp_path):
-    """PR #39 复审 P2：卡片还在排队时换走再换回来，旧视图关了、新视图等同一批卡片，要照常出图。"""
+    """PR #39 复审 P2：两张卡片在路上、一张排队时换走再换回来；旧视图关了、新视图等同一批卡片，三张都要出图。"""
     out = run(tmp_path, "frame-cards-switch-back", real=("frame_panel.js",))
-    assert out["requestsWhileSaving"] == 0
+    assert out["inFlight"] == {"requests": 2, "held": 2}  # 一次最多两张，第三张排队
     assert out["views"] == {"oldDisposed": True, "newView": True, "sameRev": True}
     assert out["final"] == {"requests": 3, "imgs": 3, "noPreview": 0, "skel": 0}
 

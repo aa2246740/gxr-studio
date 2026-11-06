@@ -97,11 +97,12 @@ globalThis.apiStub = async (url, opts = {}) => {
 // 预览图：永远不回来也没关系（AbortController 会取消）；这里直接给一张空图。
 // blobManual 打开时，/render 请求排进 blobQueue，由脚本决定先后放行（对比图的乱序场景）
 let blobManual = false;
+let blobCardsOnly = false; // 只挂边框卡片的请求（size=card），大图照常给空图
 const blobQueue = [];
 const blobCalls = [];
 globalThis.apiBlobStub = (url, opts = {}) => {
   blobCalls.push(url);
-  if (blobManual && url.includes('/render')) {
+  if ((blobManual || (blobCardsOnly && url.includes('size=card'))) && url.includes('/render')) {
     return new Promise((resolve) => blobQueue.push({ body: opts.body, resolve: () => resolve({ blob: { body: opts.body }, headers: { get: () => null } }) }));
   }
   return Promise.resolve({ blob: {}, headers: { get: () => null } });
@@ -1343,9 +1344,8 @@ if (scenario === 'reset-then-switch') {
   };
   out.final = { requests: renders().length, firstImgs: imgs(first), secondImgs: imgs(second), urls: [...new Set(renders().map((u) => u.split('?')[1]))] };
 } else if (scenario === 'frame-cards-switch-back') {
-  // PR #39 复审 P2：A 的保存还在路上、卡片排队让路时换到 B 再回到 A。旧视图关了，新视图等的是同一批卡片：
-  // 要照常请求、出图，不能被旧视图的取消一起拒掉（停在骨架或「没有预览」）
-  const editKey = `PUT /api/photos/${PHOTOS.A.id}/edit`;
+  // PR #39 复审 P2（Sol 的复现顺序）：打开 A 的边框卡片，前两个请求挂着、第三个排队；切到 B，在请求返回之前回到 A。
+  // 旧视图关了，新视图等的是同一批卡片：三张都要出图，不能被旧视图的取消一起拒掉（停在骨架或「没有预览」）
   const styles = [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }, { id: 'film', options: [] }];
   const setup = (v) => { v.ed.v2 = true; v.ed.frames = { styles }; };
   const { framePanel } = await import(file('frame_panel.js'));
@@ -1356,13 +1356,10 @@ if (scenario === 'reset-then-switch') {
   await tick();
   const v1 = viewer.currentView();
   setup(v1);
-  holds.add(editKey);
-  const saving = preview.persist(v1, { adjust: preview.adjustBody(v1.ed) });
-  await tick(2);
-  blobManual = true;
+  blobCardsOnly = true;
   host.replaceChildren(framePanel(v1));
   await tick(5);
-  out.requestsWhileSaving = renders().length;
+  out.inFlight = { requests: renders().length, held: blobQueue.length };
   await go(`#/photo/${PHOTOS.B.id}`);
   await tick();
   await go(`#/photo/${PHOTOS.A.id}`);
@@ -1372,9 +1369,6 @@ if (scenario === 'reset-then-switch') {
   out.views = { oldDisposed: !!v1.disposed, newView: v2 !== v1, sameRev: v2.ed.rev === v1.ed.rev };
   const pane = framePanel(v2);
   host.replaceChildren(pane);
-  g.release(editKey);
-  await saving;
-  await new Promise((r) => setTimeout(r, 250));
   for (let i = 0; i < 4; i += 1) {
     while (blobQueue.length) blobQueue.shift().resolve();
     await tick(10);
