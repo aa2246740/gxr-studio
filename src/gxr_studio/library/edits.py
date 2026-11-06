@@ -178,7 +178,10 @@ def write_crop(
             side["geometry"]["straighten"] = 0.0
     else:
         preset = preset or "free"
-        crop = cropmod.validate_crop(preset, rect, angle_deg, w, h) if rect is not None else cropmod.default_crop(preset, w, h, angle_deg, flip)
+        if rect is not None:
+            crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=_geometry_of(side).flip)
+        else:
+            crop = cropmod.default_crop(preset, w, h, angle_deg, flip)
         geom = replace(_geometry_of(side), straighten=float(angle_deg))
         src_w, src_h = _source_frame(side)
         fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h)

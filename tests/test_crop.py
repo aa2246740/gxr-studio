@@ -76,6 +76,31 @@ def test_validation_rejects_bad_input():
         assert e.value.code == code, (preset, rect, angle)
 
 
+def test_mirrored_photos_check_the_box_against_the_tilt_turned_around():
+    """成片先拉直、最后左右翻转：翻转过的照片，倾斜方向反过来。贴到角上的框按反过来的角度在画面里，就要收下。"""
+    w_px, h_px, angle = 4288, 2848, 8.0
+    best = default_crop("16:9", w_px, h_px, angle).rect
+    bw, bh = best[2] * 0.6, best[3] * 0.6
+    found = []
+    for right in (0, 1):
+        for bottom in (0, 1):
+            # 从这个角往画布中心挪，第一个按 -8° 在画面里的位置
+            for step in range(400):
+                x = (1 - bw - step * 0.0005) if right else step * 0.0005
+                y = (1 - bh - step * 0.0005) if bottom else step * 0.0005
+                if cm.box_inside((x * w_px, y * h_px, bw * w_px, bh * h_px), w_px, h_px, -angle, 1e-6):
+                    break
+            box = (x * w_px, y * h_px, bw * w_px, bh * h_px)
+            if not cm.box_inside(box, w_px, h_px, angle, cm.EDGE_TOLERANCE_PX):
+                found.append([x, y, bw, bh])
+    # 拉直切掉的是两个对角：有两个角只有按反过来的角度才放得下
+    assert len(found) == 2
+    for rect in found:
+        assert validate_crop("16:9", rect, angle, w_px, h_px, mirrored=True).rect == tuple(rect)
+        with pytest.raises(CropError):
+            validate_crop("16:9", rect, angle, w_px, h_px)
+
+
 def test_dragging_xpan_up_and_down_stays_valid():
     base = default_crop("xpan-65-24", 4288, 2848)
     x, y, w, h = base.rect

@@ -127,17 +127,27 @@ export function insideStraightened(r, canvas, angleDeg) {
   return true;
 }
 
+// 在成片画布上看，画面倾斜的角度：成片先拉直、再转 90°、最后左右翻转（后端 finish.geometry.warp），
+// 转 90° 不改倾斜的方向，左右翻转把它反过来。收框（fitStraightened）和后端校验（validate_crop 的 mirrored）都按它。
+export function cropTilt(geometry) {
+  const g = geometry || {};
+  return (g.straighten || 0) * (g.flip ? -1 : 1);
+}
+
 // 收进拉直以后的原画面（和 fitInto 一样的手感）：先往画布中心挪，挪不进去再以中心为准等比缩小。changed 表示动过。
 // 没有透视、畸变时用它：这时后端允许的范围就是这个，比有效矩形（validRect）大。
 export function fitStraightened(rect, canvas, angleDeg) {
   if (insideStraightened(rect, canvas, angleDeg)) return { rect: { ...rect }, changed: false };
   const cx0 = rect.x + rect.w / 2;
   const cy0 = rect.y + rect.h / 2;
+  // 宽高按同一个比例缩：比画布还大的框（角拉出了画面）也保持比例，不把宽、高各自截到 1
+  const cap = Math.min(1, 1 / rect.w, 1 / rect.h);
   const at = (t, k) => {
     const cx = cx0 + (0.5 - cx0) * t;
     const cy = cy0 + (0.5 - cy0) * t;
-    const w = Math.min(1, rect.w * k);
-    const h = Math.min(1, rect.h * k);
+    const kk = Math.min(k, cap);
+    const w = rect.w * kk;
+    const h = rect.h * kk;
     return { x: cx - w / 2, y: cy - h / 2, w, h };
   };
   const ok = (r) => insideStraightened(r, canvas, angleDeg);

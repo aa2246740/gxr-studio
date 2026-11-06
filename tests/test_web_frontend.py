@@ -172,6 +172,26 @@ def test_fit_straightened_moves_first_then_shrinks(tmp_path):
         assert out["whole"]["rect"][k] == pytest.approx(out["canvasBox"][k], abs=1e-6)
 
 
+def test_fit_straightened_keeps_the_ratio_of_a_box_bigger_than_the_canvas(tmp_path):
+    """PR #39 复审（Grok 第三轮）：角拉出画面、框比画布还宽时，宽高按同一个比例缩（原来各自截到 1，16:9 变成 1.65）。"""
+    out = run_node(
+        tmp_path,
+        "const c = {w: 4288, h: 2848};"
+        "const wide = {x: 0, y: 0.1, w: 1.08, h: 1.08 * 4288 / 16 * 9 / 2848};"
+        "return [0, 4, -8].map((a) => { const f = G.fitStraightened(wide, c, a); "
+        "return {ratio: (f.rect.w * c.w) / (f.rect.h * c.h), ok: G.insideStraightened(f.rect, c, a), w: f.rect.w}; });",
+    )
+    assert isinstance(out, list)
+    for case in out:
+        assert case["ratio"] == pytest.approx(16 / 9, rel=1e-9) and case["ok"] is True and case["w"] <= 1 + 1e-12, case
+
+
+def test_crop_tilt_turns_around_when_the_picture_is_mirrored(tmp_path):
+    geos = "[{straighten: 8}, {straighten: 8, flip: true}, {straighten: 8, rotate90: 1}, null]"
+    out = run_node(tmp_path, f"return {geos}.map((g) => G.cropTilt(g));")
+    assert out == [8, -8, 8, 0]
+
+
 def test_resize_with_ratio_lock_keeps_the_pixel_ratio(tmp_path):
     out = run_node(
         tmp_path,

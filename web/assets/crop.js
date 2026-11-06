@@ -5,7 +5,7 @@
 import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
-import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, canvasAfterRotation } from './geom.js';
+import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, canvasAfterRotation, cropTilt } from './geom.js';
 
 // 比例分组。id 是后端 crop.py 的 PRESETS 的键；同一个 id 可以出现在两组里（例如 4:3 既是常用，也是小红书的竖图 3:4）。
 // orient：默认方向（'landscape' / 'portrait'）；没写就跟着照片的方向。
@@ -163,13 +163,13 @@ export function fullCanvas(view) {
 }
 
 // 框收进这张照片能裁的范围，和后端校验、点比例时写下的框用同一个范围（PR #39 复审）：
-// 没有透视、畸变时是拉直以后的原画面（geom.fitStraightened，即后端的 crop.box_inside）；
+// 没有透视、畸变时是拉直以后的原画面（geom.fitStraightened，即后端的 crop.box_inside；翻转过的照片倾斜方向反过来，见 geom.cropTilt）；
 // 有透视、畸变时只知道有效矩形，用它（保守一些，后端会再按有效区收）。返回 { rect, changed }。
 export function fitCrop(view, rect) {
   const g = geometryOf(view) || {};
   const full = fullCanvas(view);
   if (g.vertical || g.horizontal || g.distortion || !full) return fitInto(rect, validRect(view, view.canvas));
-  return fitStraightened(rect, full, g.straighten || 0);
+  return fitStraightened(rect, full, cropTilt(g));
 }
 
 // 点比例 / 横竖：框先在本地算好、马上画出来，再后台保存；后端回来的框由 saveCrop 的 onOk 换上。
