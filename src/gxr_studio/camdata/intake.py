@@ -154,7 +154,7 @@ class DatInfo:
 
 
 def inspect_dat(raw: bytes) -> DatInfo:
-    """写入前调用 codec 的完整校验（含 g156 引擎绑定）。不过则抛带中文说明的 IntakeError。"""
+    """写入前调用 codec 的完整校验（含 g156/g158 引擎绑定）。不过则抛带中文说明的 IntakeError。"""
     if not raw:
         raise IntakeError(422, "dat_invalid", "无法导入相机配方文件。文件是空的。")
     try:

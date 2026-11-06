@@ -115,7 +115,7 @@ def test_entries_match_the_research_parser_on_the_g123_dat(tmp_path):
         encoding="utf-8",
     )
     cp = subprocess.run(
-        [sys.executable, "-B", str(script)],
+        [sys.executable, "-I", "-B", str(script)],
         capture_output=True,
         text=True,
         timeout=120,

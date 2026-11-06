@@ -120,7 +120,7 @@ def run_reference(python, entries, cases, tmp_path):
     spec.write_text(json.dumps({"entries": entries, "cases": cases}), encoding="utf-8")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)}
     cp = subprocess.run(
-        [python, "-B", str(TOOLS / "ref_render.py"), str(spec), str(out), "--repo", str(t.REPO)],
+        [python, "-I", "-B", str(TOOLS / "ref_render.py"), str(spec), str(out), "--repo", str(t.REPO)],
         capture_output=True,
         text=True,
         timeout=900,
@@ -180,7 +180,7 @@ def test_unclipped_float_output_is_also_identical(home, models, inputs, data, tm
     picks = {f"{u}_{s}": store.load_entry(home, u, s).hex() for u, s in ((0, 1), (0, 3), (1, 6), (2, 8), (2, 4))}
     (tmp_path / "f.json").write_text(json.dumps({"scene": "redblue", "entries": picks}), encoding="utf-8")
     cp = subprocess.run(
-        [sys.executable, "-B", str(script), str(tmp_path / "f.json"), str(tmp_path / "f.npz")],
+        [sys.executable, "-I", "-B", str(script), str(tmp_path / "f.json"), str(tmp_path / "f.npz")],
         capture_output=True,
         text=True,
         timeout=600,

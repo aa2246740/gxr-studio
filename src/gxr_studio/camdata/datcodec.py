@@ -4,9 +4,10 @@
 `ui_data.py`、`gate.c`），来源 SHA 见 `engine/PROVENANCE.json` 的 `datcodec_sources`。已有代码各认一个代数
 （`ui_data.parse_dat` 写死 127），这里把代数做成参数：
 
-- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156。未登记的代数一律拒绝。
+- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156 / 158。未登记的代数一律拒绝。
 - 156 沿用 g155c 配方库：外层代数必须为 156，三个 bank 头必须为 155；其它已登记代数的 bank 必须等于外层代数。
-- 156 还必须匹配已登记的引擎 SHA、入口、BSS、重定位和链接数据末端；GXUI 用户条目不按整个 DAT SHA 锁定。
+- 156 / 158 还必须匹配各自登记的引擎 SHA、入口、BSS、重定位和链接数据末端，不能把它们移入旧代数；
+  GXUI 用户条目不按整个 DAT SHA 锁定。158 的三个 bank 头代数也必须为 158。
 - `parse()` 严格：任何没有建模的头部字节、区段尺寸、CRC、钉子（`PIN_CRC32`）对不上都抛 `DatError`。
 - `pack(parse(b)) == b` 逐字节成立（每一代都有往返测试）。解析结果里的引擎、重定位、`gxkv2r2` 块都原样保存，
   不重新编译、不改写。
@@ -108,6 +109,7 @@ PROFILES = {
     154: Profile(154, 98304, True, True, flat_list=True, mount_knobs_from_50mm=True),
     155: Profile(155, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
     156: Profile(156, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
+    158: Profile(158, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
 }
 
 
@@ -222,11 +224,30 @@ G156_ENGINES = (
     ),
 )
 
+# firmware/engine_v70_g158/candidate/local/model-boot-{off,on}/engine.elf：
+# 已核对真实 DAT 的 .engine、入口、.bss、reloc.bin；bank 代数恢复为内外一致的 158。
+G158_ENGINES = (
+    EngineDescription(
+        engine_sha256="86c9eb3a42d5d43f8c8fefa07b574f2ba723f750256d31472d762fbd0885528c",
+        entry=63832,
+        bss_bytes=4360,
+        relocations=((67484, 57984),),
+        linked_data_end=92484,
+    ),
+    EngineDescription(
+        engine_sha256="441531dc1900ae5c3cf2e62092c5c6dc88a1f326b7cb74f8506159245fd2b34e",
+        entry=66056,
+        bss_bytes=4360,
+        relocations=((69716, 60208),),
+        linked_data_end=94952,
+    ),
+)
+BOUND_ENGINES = {156: G156_ENGINES, 158: G158_ENGINES}
+
 
 def _check_engine_binding(dat: Dat, data_end: int) -> None:
     """parse/pack 共用引擎与链接布局检查；inspect_dat 通过 parse 使用同一规则。"""
-    if dat.generation != 156:
-        return
+    registered = BOUND_ENGINES.get(dat.generation)
     description = EngineDescription(
         hashlib.sha256(dat.engine).hexdigest(),
         dat.entry,
@@ -234,8 +255,13 @@ def _check_engine_binding(dat: Dat, data_end: int) -> None:
         tuple((patch, target) for patch, target in dat.relocations),
         data_end,
     )
-    if description not in G156_ENGINES:
-        raise DatError("156 引擎或链接布局未登记")
+    if registered is None:
+        # 已登记的引擎只能用于它自己的代数，旧 profile 也不能接收换标签的新引擎。
+        if not any(description.engine_sha256 == engine.engine_sha256 for engines in BOUND_ENGINES.values() for engine in engines):
+            return
+    elif description in registered:
+        return
+    raise DatError(f"{dat.generation} 引擎或链接布局未登记")
 
 
 # --------------------------------------------------------------------------- 解析

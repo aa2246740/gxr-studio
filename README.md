@@ -86,7 +86,7 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 - 没有卡：把 `GXRCE.DAT`（或装着它的文件夹）拷到电脑上，`POST /api/camdata/import-file {"path": "/完整/路径"}`。
   界面里的「选择 GXRCE.DAT 文件…」走 `POST /api/camdata/import-upload`：浏览器拿不到本地路径，所以直接把选中文件的
   原始字节（`application/octet-stream`，文件名放在 `X-GXR-Filename` 头里，只用来显示）发过来，校验和 `import-file` 完全相同。
-- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156，其它代一律拒绝，不猜）、两层 CRC、钉子、
+- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156 / 158，其它代一律拒绝，不猜）、两层 CRC、钉子、
   重新封装后与原文件逐字节相同、三个单元的原厂 04。任何一项不过，返回带中文说明的 422
   （`generation_unsupported` / `dat_invalid`），应用数据目录里原来的数据原封不动。
   文件版本比工作室当前支持的更新时，主提示为「这个相机配方文件需要更新版本的 GXR 工作室。」；
@@ -94,15 +94,20 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
   卡上没有这个文件是 404 `dat_not_found`，没有卡是 404 `no_card`。
 - 通过后提取 3 个单元（50mm / 28mm / MOUNT）× 8 个配方 + 原厂 04 到 `camera-data/`，写入后读回比对。
   内容和已导入的完全相同就什么都不做（`unchanged: true`）。
-- 152 / 153 / 154 / 155 / 156 的 Looks 从文件里的 GXFX 行池读取，档位和整数剂量从 kv2 R3 点表读取。配方页按顺序显示
+- 152 / 153 / 154 / 155 / 156 / 158 的 Looks 从文件里的 GXFX 行池读取，档位和整数剂量从 kv2 R3 点表读取。配方页按顺序显示
   8 个内置配方、文件里的 Looks、文件里的「我的配方」。150 沿用 GXDP v1 / kv2 R2，没有 Looks，内置配方和控制值与 152 相同。
-  154 / 155 / 156 按相机规则让 MOUNT 的非 04 配方使用 50mm 的旋钮记录，并校验每个单元的 Looks 与用户条目合计不超过 40。
+  154 / 155 / 156 / 158 按相机规则让 MOUNT 的非 04 配方使用 50mm 的旋钮记录，并校验每个单元的 Looks 与用户条目合计不超过 40。
   155 按文件头和 GXFX 头读取较长代码区与缩小的效果行容量；工作室不读取相机内的开机记忆。
   156 沿用 g155c 的配方库，外层代数为 156，三个 bank 头代数仍为 155；解析和封装都严格使用这组对应关系。
-  还须匹配已登记的 g156 引擎 SHA、入口、BSS 大小和完整重定位表，且 ELF 链接数据末端必须等于 DAT 长度。
-  三个导入入口通过 `inspect_dat()` 使用同一检查；只改外层代数、或把 g156 引擎放进旧数据布局都会被拒绝。
+  156 / 158 还须分别匹配已登记的引擎 SHA、入口、BSS 大小和完整重定位表，且 ELF 链接数据末端必须等于 DAT 长度。
+  三个导入入口通过 `inspect_dat()` 使用同一检查；把 g156 / g157 改成外层 158、把 g158 引擎放进旧数据布局，
+  或把已登记引擎改成旧代数，都会被拒绝。
   工作室不锁定整个 DAT SHA，合法的用户条目修改仍可封装和导入。
   其它已登记代数仍要求 bank 头代数等于外层代数。
+  158 的外层和三个 bank 头都为 158，支持较大的 GXFX 区；真实发布/测试包各有 29 / 30 条效果记录，每个单元显示 18 个 Looks，
+  因此最多再加 22 个用户条目。157、159、160、161 均未登记；没有移除任何旧代数。
+  每个 Look 的标志必须与它引用的基底槽位一致，旋钮也按该单元的基底槽位读取。Acros 引用 03，保留黑白 Filt；
+  引用 flags7 彩色基底的 Look 使用该基底的 Amt / Satu / Warm / Tint / Splt。158 两包没有这种彩色 Look，测试用内存构造的 Look 覆盖它。
   文件内条目按内容摘要识别，默认值沿用文件；导入失败不会替换已导入的数据。
 
 **2. 标定包** —— 电脑预测用的校准数据（ISO 200 / 1600 两套），**必须在相机数据之后导入**，
@@ -132,22 +137,24 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 
 ```bash
 cd studio
-uv run pytest                    # 全部用例（约 5–6 分钟）；只跑导入相机数据的：tests/test_camdata_api.py（40 个，约 5 秒）
-uv run pytest tests/test_import.py -k kill     # 只跑"随机杀进程 20 次"
+uv run python -I -m pytest                    # 全部用例（约 5–6 分钟）；只跑导入相机数据的：tests/test_camdata_api.py
+uv run python -I -m pytest tests/test_import.py -k kill     # 只跑"随机杀进程 20 次"
 uv run python tests/perf/measure_m1.py         # 1000 张合成照片的后端数字（约 15 秒），写入 tests/perf/baseline.json
 ```
 
 真实 DAT 测试现场读取上层项目的 `firmware/package_v310_g156{,_test}/GXRCE.DAT` 和
-`firmware/package_v310_g155c{,_test}/GXRCE.DAT`，缺少文件时跳过；DAT 字节不进仓库。
+`firmware/package_v310_g155c{,_test}/GXRCE.DAT`，以及
+`firmware/package_v310_g158{,_test}/local/SD_ROOT/GXRCE.DAT`，缺少文件时跳过；DAT 字节不进仓库。
 基础往返测试只依赖这些 DAT；与父解析器的对照另作测试，缺少父解析器时只跳过对照。
 在独立 worktree 中，可指定原项目路径复跑这些测试：
 
 ```bash
-GXR_STUDIO_TEST_PARENT=/path/to/projectricoh uv run --frozen pytest -q tests/test_g156.py
+GXR_STUDIO_TEST_PARENT=/path/to/projectricoh uv run --frozen python -I -m pytest -q tests/test_g156.py tests/test_g158.py
 ```
 
-其中 C gate 测试调用上层的 `research/v39_g153/format_checks.py`，编译原 g156 C 源码并校验导入模板和用户条目修改结果。
-它只向 pytest 临时目录写编译产物；缺少源码或 macOS clang 时跳过。
+g156 C gate 测试调用上层的 `research/v39_g153/format_checks.py`。g158 测试编译原 g158 C 源码，核对模板、0 / 1 / 22 个用户条目、
+每个 Look 的完整 552 B 和 Acros 的 Filt 档位；另外用父解析器核对 g157 到 g158 的完整配方记录未变。
+编译产物只写入 pytest 临时目录；缺少对应源码、解析器或编译器时只跳过相关对照。
 
 **测试绝不会碰真实的卡。** `tests/conftest.py` 在整个测试进程里：
 

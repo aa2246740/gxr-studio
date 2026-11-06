@@ -15,7 +15,7 @@ from e0_support import REPO as ROOT
 
 PACKAGES = [(gen, test) for gen in (150, 152, 153) for test in (False, True)]
 ALL_PACKAGES = PACKAGES + [(gen, test) for gen in (154, 155) for test in (False, True)]
-ENGINE_VERSIONS = {152: 60, 153: 62, 154: 63, 155: 64}
+ENGINE_VERSIONS = {152: 60, 153: 62, 154: 63, 155: 64, 158: 70}
 UNITS = ("jlaunch", "qlaunch", "l08firm")
 LOOK_NAMES = (
     "M9 STD",
@@ -66,7 +66,7 @@ class CameraReference:
         wrapper = Path(__file__).parent / "support/g152_reference.c"
         target = folder / ("reference.dylib" if sys.platform == "darwin" else "reference.so")
         mode = ["-dynamiclib"] if sys.platform == "darwin" else ["-shared", "-fPIC"]
-        command = [compiler, "-std=c11", "-O2", "-fno-builtin", *mode, f"-I{product}", str(wrapper), str(folder / "crc.c")]
+        command = [compiler, "-std=c11", "-O2", "-fno-builtin", "-DRV_HOST", *mode, f"-I{product}", str(wrapper), str(folder / "crc.c")]
         command += [str(p) for p in sources] + ["-o", str(target)]
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=120, env={**os.environ, "CLANG_MODULE_CACHE_PATH": str(folder / "clang")}
