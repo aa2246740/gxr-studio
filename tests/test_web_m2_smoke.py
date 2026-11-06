@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from conftest import PORT
 from gxr_studio.app import create_app
+from support.waiting import wait_job
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 ASSETS = WEB / "assets"
@@ -26,22 +26,12 @@ def web_client(settings):
         yield c
 
 
-def _wait_job(client, job_id, limit=600):
-    job = client.get(f"/api/jobs/{job_id}").json()
-    for _ in range(limit):
-        if not job["running"]:
-            return job
-        time.sleep(0.05)
-        job = client.get(f"/api/jobs/{job_id}").json()
-    raise AssertionError("任务超时")
-
-
 @pytest.fixture
 def imported(web_client, card):
     """插卡、导入，返回 (有 RAW 的照片, 只有 RAW 的照片)。"""
     card_id = web_client.get("/api/cards").json()[0]["id"]
     job = web_client.post("/api/import", json={"card_id": card_id})
-    assert _wait_job(web_client, job.json()["id"])["progress"]["state"] == "done"
+    assert wait_job(web_client, job.json()["id"])["progress"]["state"] == "done"
     photos = web_client.get("/api/photos", params={"limit": 5000}).json()
     pair = next(p for p in photos if p["has_raw"] and p["has_jpg"])
     raw_only = next(p for p in photos if p["has_raw"] and not p["has_jpg"])

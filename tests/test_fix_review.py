@@ -11,7 +11,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,7 @@ from gxr_studio.cards.importer import ImportOptions
 from gxr_studio.devtools import synthetic_card as sy
 from gxr_studio.library.lock import BUSY_EXIT_CODE, LibraryBusy, LibraryLock
 from gxr_studio.library.store import SIDECAR_RESET_NOTE
+from support.waiting import wait_job
 from test_api import find, import_all
 
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -209,15 +209,6 @@ def test_batch_export_with_a_broken_sidecar_and_plain_failures(client, monkeypat
     assert bad["error"] == "failed" and bad["code"] == "RuntimeError"
     assert bad["message"] == "导出失败。请重试。" and "RuntimeError" not in bad["message"]
     assert "/secret" not in bad["message"] and "exploded" not in bad["message"]
-
-
-def wait_job(client, job_id):
-    for _ in range(400):
-        j = client.get(f"/api/jobs/{job_id}").json()
-        if not j["running"]:
-            return j
-        time.sleep(0.05)
-    raise AssertionError("任务超时")
 
 
 def test_unreadable_sidecar_that_cannot_be_reset_is_a_plain_422_not_a_500(client, monkeypatch):

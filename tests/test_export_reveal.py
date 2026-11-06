@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from conftest import PORT
 from gxr_studio.app import create_app
 from gxr_studio.export import RevealError, reveal_export
+from support.waiting import wait_job
 from test_api import find, import_all
 
 
@@ -59,12 +60,7 @@ def test_reveal_of_a_batch_uses_the_first_exported_file(client, card, monkeypatc
     job = client.post("/api/export", json={"ids": [first["id"], second["id"]], "long_edge": 200, "quality": 70})
     assert job.status_code == 202, job.text
     job_id = job.json()["id"]
-    for _ in range(200):
-        current = client.get(f"/api/jobs/{job_id}").json()
-        if not current["running"]:
-            break
-    else:
-        raise AssertionError("导出超时")
+    current = wait_job(client, job_id, "导出")
     paths = [item["path"] for item in current["progress"]["results"] if item.get("path")]
     assert len(paths) == 2
     opened = client.post(f"/api/exports/{job_id}/reveal")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +15,7 @@ from conftest import PORT
 from gxr_studio import audit
 from gxr_studio.app import create_app
 from gxr_studio.library.store import sha256_file
+from support.waiting import wait_job
 
 
 @pytest.fixture
@@ -31,13 +31,7 @@ def import_all(client, card_label=None, **body):
     card = cards[0]
     r = client.post("/api/import", json={"card_id": card["id"], **body})
     assert r.status_code == 202, r.text
-    job = r.json()
-    for _ in range(600):
-        job = client.get(f"/api/jobs/{job['id']}").json()
-        if not job["running"]:
-            return job
-        time.sleep(0.05)
-    raise AssertionError("导入超时")
+    return wait_job(client, r.json()["id"], "导入")
 
 
 def find(client, name, date=None):
@@ -194,12 +188,7 @@ def test_batch_export_by_date(client, card, settings):
     import_all(client)
     r = client.post("/api/export", json={"date": "2026-10-19", "long_edge": 200, "quality": 70})
     assert r.status_code == 202
-    job = r.json()
-    for _ in range(300):
-        job = client.get(f"/api/jobs/{job['id']}").json()
-        if not job["running"]:
-            break
-        time.sleep(0.05)
+    job = wait_job(client, r.json()["id"], "批量导出")
     prog = job["progress"]
     assert prog["state"] == "done" and prog["done"] == prog["total"] == 5
     ok = [x for x in prog["results"] if "path" in x]
@@ -276,11 +265,8 @@ def test_import_rejects_second_concurrent_job(client, card, settings):
         assert second.status_code == 409 and second.json()["error"] == "import_running"
         c2.post(f"/api/jobs/{first.json()['id']}/cancel")
         gate.set()
-        for _ in range(200):
-            if not c2.get(f"/api/jobs/{first.json()['id']}").json()["running"]:
-                break
-            time.sleep(0.05)
-        assert c2.get(f"/api/jobs/{first.json()['id']}").json()["progress"]["state"] in ("cancelled", "done")
+        stopped = wait_job(c2, first.json()["id"], "取消后的导入")
+        assert stopped["progress"]["state"] in ("cancelled", "done")
 
 
 def test_real_sample_xpan_export(volumes, real_card, client):

@@ -24,8 +24,9 @@ from gxr_studio.devtools import synthetic_card as sy
 from gxr_studio.library import edits, thumbs
 from gxr_studio.library import sidecar as sc
 from gxr_studio.library.store import Library
+from support.waiting import wait_job, wait_until
 from test_api import find, import_all
-from test_fix_review import assert_plain, make_client, sidecar_of, wait_job
+from test_fix_review import assert_plain, make_client, sidecar_of
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -239,11 +240,10 @@ def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
         else:
             parent.kill()
         parent.wait(timeout=5)
-        deadline = time.time() + 15
-        while time.time() < deadline and _alive(child_pid):
-            time.sleep(0.1)
-        if _alive(child_pid):
-            pytest.fail("父进程被杀之后子进程还在")
+        try:
+            wait_until(lambda: not _alive(child_pid), "父进程被杀之后子进程退出", interval=0.1)
+        except AssertionError as exc:
+            pytest.fail(f"父进程被杀之后子进程还在（{exc}）")
     finally:
         if sys.platform == "win32" and parent_pid_path.exists():
             actual_parent = int(parent_pid_path.read_text(encoding="ascii"))

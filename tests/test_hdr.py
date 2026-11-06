@@ -9,7 +9,6 @@ from __future__ import annotations
 import io
 import json
 import threading
-import time
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +28,7 @@ from gxr_studio.library.store import LibraryPathRefused, sha256_file
 from gxr_studio.privacy import PrivatePathError
 from gxr_studio.raw import open_dng
 from support.fake_card import make_fake_card
+from support.waiting import wait_job
 
 CAPTURES = Path(__file__).resolve().parents[2] / "captures"
 STREET = CAPTURES / "street-g137-20261031"
@@ -306,19 +306,10 @@ def client(settings):
         yield c
 
 
-def _wait(client, job_id, limit=1200):
-    for _ in range(limit):
-        job = client.get(f"/api/jobs/{job_id}").json()
-        if not job["running"]:
-            return job
-        time.sleep(0.05)
-    raise AssertionError("任务超时")
-
-
 def _hdr_job(client):
     """导入任务结束之前就已经登记了 HDR 任务（或者决定不做），所以这里不用等它出现。"""
     jobs = [j for j in client.get("/api/jobs").json() if j["kind"] == "hdr"]
-    return _wait(client, jobs[0]["id"]) if jobs else None
+    return wait_job(client, jobs[0]["id"]) if jobs else None
 
 
 @pytest.fixture
@@ -518,7 +509,7 @@ def test_batch_export_with_hdr(client, hdr_card):
     _import(client)
     ids = [_photo(client, n)["id"] for n in ("HDR0001", "ONLYJPG")]
     job = client.post("/api/export", json={"ids": ids, "quality": 90, "hdr": True}).json()
-    results = {r["id"]: r for r in _wait(client, job["id"])["progress"]["results"]}
+    results = {r["id"]: r for r in wait_job(client, job["id"])["progress"]["results"]}
     assert results[ids[0]]["hdr"] is True
     assert results[ids[1]]["hdr"] is False and results[ids[1]]["hdr_note"] == "HDR 需要 RAW 文件"
 
