@@ -6,9 +6,9 @@
 // 画面是后端渲染好的图（POST /render 的返回）或显卡预览的画布，前端不再自己画边框或时间戳。
 
 import { h } from './dom.js';
-import { beginChange, endChange, saveCrop, validRect, originalUrl, originalFallbackUrl, renderProblem, geometryOf, beforeUrl } from './preview.js';
-import { cropBody, guidesSvg, guideFade, lockRatio, orientationNow, rectArray, pixelsText } from './crop.js';
-import { fitInto, moveRect, resizeRect } from './geom.js';
+import { beginChange, endChange, saveCrop, originalUrl, originalFallbackUrl, renderProblem, geometryOf, beforeUrl } from './preview.js';
+import { cropBody, guidesSvg, guideFade, lockRatio, orientationNow, rectArray, pixelsText, fitCrop } from './crop.js';
+import { moveRect, resizeRect } from './geom.js';
 import { gpuCanvas } from './gpu_stage.js';
 
 const pct = (v) => `${(v * 100).toFixed(4)}%`;
@@ -278,8 +278,8 @@ function onDown(e, view, box, pv) {
       const p = { x: (ev.clientX - rect.left) / rect.width, y: (ev.clientY - rect.top) / rect.height };
       next = resizeRect(r0, corner, p, view.canvas, lock);
     }
-    // 越界就收回来（先挪，挪不进去再缩小）
-    view.crop.rect = fitInto(next, validRect(view, view.canvas)).rect;
+    // 越界就收回来（先挪，挪不进去再缩小），范围和后端一样（fitCrop）
+    view.crop.rect = fitCrop(view, next).rect;
     if (view.onRectDrag) view.onRectDrag();
     else paintBox(view);
   };

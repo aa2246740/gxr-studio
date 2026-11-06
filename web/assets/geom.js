@@ -107,6 +107,64 @@ export function centeredMaxRect(canvas, ratio, angleDeg = 0, pair = null) {
   return { x: (W - w) / 2 / W, y: (H - h) / 2 / H, w: w / W, h: h / H };
 }
 
+// 框在拉直以后的原画面里吗：在画布内，四个角按拉直的反方向转回去也都在原画面内。
+// 和后端校验框的 crop.box_inside 是同一个判断（后端还多给 1 像素的余量）。canvas 用全尺寸。
+export function insideStraightened(r, canvas, angleDeg) {
+  if (r.x < -EPS || r.y < -EPS || r.x + r.w > 1 + EPS || r.y + r.h > 1 + EPS) return false;
+  const W = canvas.w;
+  const H = canvas.h;
+  const t = (angleDeg * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  const tol = 1e-6;
+  const x0 = r.x * W - W / 2;
+  const y0 = r.y * H - H / 2;
+  const x1 = x0 + r.w * W;
+  const y1 = y0 + r.h * H;
+  for (const [dx, dy] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+    if (Math.abs(dx * c + dy * s) > W / 2 + tol || Math.abs(-dx * s + dy * c) > H / 2 + tol) return false;
+  }
+  return true;
+}
+
+// 收进拉直以后的原画面（和 fitInto 一样的手感）：先往画布中心挪，挪不进去再以中心为准等比缩小。changed 表示动过。
+// 没有透视、畸变时用它：这时后端允许的范围就是这个，比有效矩形（validRect）大。
+export function fitStraightened(rect, canvas, angleDeg) {
+  if (insideStraightened(rect, canvas, angleDeg)) return { rect: { ...rect }, changed: false };
+  const cx0 = rect.x + rect.w / 2;
+  const cy0 = rect.y + rect.h / 2;
+  const at = (t, k) => {
+    const cx = cx0 + (0.5 - cx0) * t;
+    const cy = cy0 + (0.5 - cy0) * t;
+    const w = Math.min(1, rect.w * k);
+    const h = Math.min(1, rect.h * k);
+    return { x: cx - w / 2, y: cy - h / 2, w, h };
+  };
+  const ok = (r) => insideStraightened(r, canvas, angleDeg);
+  let lo;
+  let hi;
+  if (ok(at(1, 1))) {
+    // 挪得进去：挪最少
+    lo = 0;
+    hi = 1;
+    for (let i = 0; i < 40; i += 1) {
+      const mid = (lo + hi) / 2;
+      if (ok(at(mid, 1))) hi = mid;
+      else lo = mid;
+    }
+    return { rect: at(hi, 1), changed: true };
+  }
+  // 挪到中心也放不下：在中心缩小，缩最少
+  lo = 0;
+  hi = 1;
+  for (let i = 0; i < 40; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (ok(at(1, mid))) lo = mid;
+    else hi = mid;
+  }
+  return { rect: at(1, lo), changed: true };
+}
+
 // 当前框占最大框的百分比（框的大小滑块）。以框的中心为准缩放，再收进有效画面。
 export function zoomRect(current, maxRect, percent, valid) {
   const cx = current.x + current.w / 2;

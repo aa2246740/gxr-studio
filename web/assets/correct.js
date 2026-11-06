@@ -3,10 +3,10 @@
 // 拖动时只改画面（不保存），松手再保存（DIAG 原因 4 同样的做法：拖动中的值就是请求里发出去的值）。
 
 import { h, button, toast, toastError } from './dom.js';
-import { beginChange, endChange, saveCrop, persist, schedulePreview, validRect, resetCropRemote, geometryOf } from './preview.js';
-import { cropBody, orientationNow, rectArray } from './crop.js';
+import { beginChange, endChange, saveCrop, persist, schedulePreview, resetCropRemote, geometryOf } from './preview.js';
+import { cropBody, orientationNow, rectArray, fitCrop } from './crop.js';
 import { slider, notReady } from './controls.js';
-import { fitInto, rotateRect90, flipRect, fmtDeg, clamp } from './geom.js';
+import { rotateRect90, flipRect, fmtDeg, clamp } from './geom.js';
 import { DEFAULT_GEOMETRY } from './finish.js';
 import { api } from './api.js';
 
@@ -27,7 +27,7 @@ function setStraightValue(view, v) {
 function setStraightLive(view, v) {
   const value = clamp(Math.round(v * 10) / 10, ANGLE_MIN, ANGLE_MAX);
   setStraightValue(view, value);
-  if (view.canvas && view.crop) view.crop.rect = fitInto(view.crop.rect, validRect(view, view.canvas)).rect;
+  if (view.canvas && view.crop) view.crop.rect = fitCrop(view, view.crop.rect).rect;
   view.refreshAngle?.();
   view.onRectDrag?.();
   if (view.ed.v2) schedulePreview(view, { stage: 'uncropped' });
@@ -40,7 +40,7 @@ export async function commitStraight(view) {
     await persist(view, { geometry: view.ed.geometry });
     await afterGeometry(view);
   } else if (view.crop) {
-    const fitted = view.canvas ? fitInto(view.crop.rect, validRect(view, view.canvas)).rect : view.crop.rect;
+    const fitted = view.canvas ? fitCrop(view, view.crop.rect).rect : view.crop.rect;
     await saveCrop(view, cropBody(view, { preset: view.crop.preset, rect: rectArray(fitted) }, orientationNow(view)));
   }
   endChange(view);
@@ -50,7 +50,7 @@ export async function commitStraight(view) {
 async function afterGeometry(view) {
   // 等保存时照片已经关掉：不再根据旧界面的框补写（写入已经绑定在这张照片上，前面那笔照常完成）
   if (view.disposed || !view.canvas || !view.crop) return;
-  const fitted = fitInto(view.crop.rect, validRect(view, view.canvas));
+  const fitted = fitCrop(view, view.crop.rect);
   if (fitted.changed) view.crop.rect = fitted.rect;
   // 框和服务端一样就不用写；拖动中已经收进去的框（没写回）也要写
   if (JSON.stringify(view.crop.rect) === view.crop.savedKey) return;

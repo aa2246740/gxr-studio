@@ -526,6 +526,18 @@ def test_ratio_click_changes_the_box_before_the_save_returns(tmp_path):
     assert _near(out["retried"]["rect"], 0, 446 / 2000, 1, 1108 / 2000, third)
 
 
+def test_zoom_100_is_the_clicked_box_and_dragging_does_not_shrink_it(tmp_path):
+    """PR #39 复审（Grok 第二轮）：拉直以后滑块的 100% 原来按有效矩形算，比点比例时的框小（1:1、4° 小 109 像素），
+    拖一下就存成小框。现在 100% 就是点击框，60% 以框的中心缩放，拖出界只挪回来、不缩小。"""
+    out = run(tmp_path, "crop-zoom-matches-click", real=("crop.js",))
+    assert len(out["cases"]) == 6
+    for case in out["cases"]:
+        assert case["zoom100Off"] < 1e-9, case
+        assert case["clickKept"] is True, case
+        assert abs(case["zoom60"]["ratio"] - 0.6) < 1e-9 and case["zoom60"]["centerOff"] < 1e-9, case
+        assert case["nudgedSizeOff"] < 1e-9, case
+
+
 def test_frame_cards_still_arrive_after_switching_away_and_back(tmp_path):
     """PR #39 复审 P2：两张卡片在路上、一张排队时换走再换回来；旧视图关了、新视图等同一批卡片，三张都要出图。"""
     out = run(tmp_path, "frame-cards-switch-back", real=("frame_panel.js",))

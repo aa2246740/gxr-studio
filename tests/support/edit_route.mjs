@@ -1385,6 +1385,45 @@ if (scenario === 'reset-then-switch') {
     noPreview: thumbs.filter((t) => t.textContent.includes('没有预览')).length,
     skel: thumbs.filter((t) => t.classList.contains('skel')).length,
   };
+} else if (scenario === 'crop-zoom-matches-click') {
+  // PR #39 复审（Grok 第二轮）：拉直、转 90° 以后，大小滑块的 100% 正好是点比例时画的那一框；
+  // 拖动时收框（fitCrop）不把它收小。预览画布比原图小，几何按全尺寸算。
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  const cropMod = await import(file('crop.js'));
+  v.ed.v2 = true;
+  v.crop.frame = { width: 4288, height: 2848 };
+  const cases = [
+    [{ straighten: 4 }, { id: '1:1', label: '1:1' }, false],
+    [{ straighten: 4 }, { id: '4:5', label: '4:5', orient: 'portrait' }, true],
+    [{ rotate90: 1, straighten: -7.5 }, { id: '16:9', label: '16:9' }, false],
+    [{ rotate90: 2, flip: true, straighten: 15 }, { id: 'xpan-65-24', label: 'XPan' }, true],
+    [{ straighten: 10 }, { id: 'free', label: '自由' }, false],
+    [{}, { id: '3:2', label: '3:2' }, true],
+  ];
+  const off = (a, b) => Math.max(...['x', 'y', 'w', 'h'].map((k) => Math.abs(a[k] - b[k])));
+  out.cases = [];
+  for (const [geo, item, portrait] of cases) {
+    v.ed.geometry = { straighten: 0, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false, ...geo };
+    const full = cropMod.fullCanvas(v);
+    v.canvas = { w: Math.round(full.w / 4), h: Math.round(full.h / 4) };
+    const click = cropMod.presetRect(v, item, portrait);
+    v.crop.rect = { ...click };
+    v.crop.preset = item.id;
+    v.presetItem = item;
+    const zoom100 = cropMod.previewZoom(v, 100);
+    const zoom60 = cropMod.previewZoom(v, 60);
+    const nudged = cropMod.fitCrop(v, { ...click, x: click.x + 0.01, y: click.y + 0.01 }).rect;
+    out.cases.push({
+      geo,
+      preset: item.id,
+      zoom100Off: off(zoom100, click),
+      clickKept: cropMod.fitCrop(v, click).changed === false,
+      zoom60: { ratio: zoom60.w / click.w, centerOff: Math.abs(zoom60.x + zoom60.w / 2 - (click.x + click.w / 2)) + Math.abs(zoom60.y + zoom60.h / 2 - (click.y + click.h / 2)) },
+      nudgedSizeOff: Math.abs(nudged.w - click.w) + Math.abs(nudged.h - click.h),
+    });
+  }
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }
