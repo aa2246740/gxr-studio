@@ -5,7 +5,7 @@
 import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
-import { maxRectFor, zoomRect, pixelSize, canvasAfterRotation } from './geom.js';
+import { maxRectFor, zoomRect, pixelSize, canvasAfterRotation, centeredMaxRect, landscapePair } from './geom.js';
 
 // 比例分组。id 是后端 crop.py 的 PRESETS 的键；同一个 id 可以出现在两组里（例如 4:3 既是常用，也是小红书的竖图 3:4）。
 // orient：默认方向（'landscape' / 'portrait'）；没写就跟着照片的方向。
@@ -154,16 +154,22 @@ export function cropBody(view, base, orientation) {
   return { ...base, flip, angle_deg };
 }
 
-// 点比例 / 横竖：框先在本地算好、马上画出来（和后端 crop.default_crop 是同一个几何：有效画面里居中的最大框，
-// 只是不取整到像素），再后台保存。后端回来的框（取整到像素、必要时按透视收进有效画面）是准的，
-// saveCrop 的 onOk 会换成它。不等后端：机器忙的时候，点一下也要立刻看到变化。
+// 点比例 / 横竖：框先在本地算好、马上画出来，再后台保存；后端回来的框由 saveCrop 的 onOk 换上。
+// 不等后端：机器忙的时候，点一下也要立刻看到变化。横竖指几何变换之后的画布（转过 90° 的横图是竖的），和后端一致。
+// 没有透视、畸变时和后端写下的是同一个几何（geom.centeredMaxRect），只差取整；
+// 有透视、畸变时有效区只有后端知道，先画有效画面里的最大框，后端回来再换成准框（方向相同，大小可能小一点）。
 export function presetRect(view, item, portrait) {
   const f = view.crop.frame;
-  const canvas = view.canvas || (f && f.width && f.height ? { w: f.width, h: f.height } : null);
-  if (!canvas) return null;
+  const g = geometryOf(view) || {};
+  const full = f && f.width && f.height ? canvasAfterRotation({ w: f.width, h: f.height }, g.rotate90 || 0) : view.canvas;
+  if (!full || !full.w || !full.h) return null;
   const L = landscapeRatio(item.id);
   const ratio = L == null ? null : orientable(item) && portrait ? 1 / L : L;
-  return maxRectFor(validRect(view, canvas), canvas, ratio);
+  if (g.vertical || g.horizontal || g.distortion) {
+    const canvas = view.canvas || full;
+    return maxRectFor(validRect(view, canvas), canvas, ratio);
+  }
+  return centeredMaxRect(full, ratio, g.straighten || 0, landscapePair(item.id));
 }
 
 function showNow(view, item, orientation) {

@@ -150,9 +150,12 @@ def write_crop(
     rect: Any,
     angle_deg: float | None = None,
     flip: bool = False,
+    orientation: str | None = None,
     reset: bool = False,
     expected_rev: int | None = None,
 ) -> dict[Any, Any]:
+    """写裁切。orientation（landscape / portrait）指几何变换之后的画布上的横竖，和界面上的按钮一样：
+    转过 90° 的横图是竖的画布，在上面选「横向」就是横框。给了 orientation 就不看 flip（旧版界面才用 flip）。"""
     path = lib.sidecar_path_for(shot)
     with lib.lock:
         side = lib.read_sidecar_for_write(shot)
@@ -163,6 +166,8 @@ def write_crop(
         base_rev = int(side.get("rev", 0))
         side = copy.deepcopy(side)
     w, h = _frame(side)
+    if orientation in ("landscape", "portrait"):
+        flip = (orientation == "landscape") != (w >= h)
     if angle_deg is None:
         raw_crop = side.get("crop")
         stored = raw_crop.get("angle_deg", 0.0) if isinstance(raw_crop, dict) else 0.0

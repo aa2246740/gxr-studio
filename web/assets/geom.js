@@ -68,6 +68,45 @@ export function maxRectFor(valid, canvas, ratio) {
   return { x: valid.x + (valid.w - w) / 2, y: valid.y + (valid.h - h) / 2, w, h };
 }
 
+// 横向的最简整数比（和后端 crop.PRESETS 约分以后一样）：1.91:1 → [191, 100]，16:10 → [8, 5]。原比例、自由返回 null。
+export function landscapePair(id) {
+  if (id === 'xpan-65-24') return [65, 24];
+  const m = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(id || '');
+  if (!m) return null;
+  let a = Math.round(Number(m[1]) * 100);
+  let b = Math.round(Number(m[2]) * 100);
+  const gcd = (x, y) => (y ? gcd(y, x % y) : x);
+  const g = gcd(a, b);
+  [a, b] = [a / g, b / g];
+  return a >= b ? [a, b] : [b, a];
+}
+
+// 点比例时后端写下的框（crop.default_crop，再经 geometry.fitted_crop），在前端照算一遍，不等后端：
+// 拉直 angleDeg 度以后，画布中心、整个落在原画面里的最大框（比例 ratio = 宽 / 高，像素；null 用画布本身的比例）。
+// canvas 要用全尺寸（几何变换之后的原图像素），不能用预览图：拉直过的固定比例，后端取 pair 的整数倍
+// （pair 是横向的最简整数比，比如 1.91:1 是 [191, 100]），整数倍的台阶按全尺寸算。
+// 只适用于没有透视、畸变的画面（那时有效区只有后端知道）。和后端差的只是取整，通常 1–2 个像素。
+export function centeredMaxRect(canvas, ratio, angleDeg = 0, pair = null) {
+  const W = canvas.w;
+  const H = canvas.h;
+  const a = ratio == null ? W / H : ratio;
+  const t = (Math.abs(angleDeg) * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  const q = 1 / a; // 高 / 宽
+  let w = Math.min(W, W / (c + q * s), H / (s + q * c));
+  let h = Math.min(H, w / a);
+  if (pair && Math.abs(angleDeg) > 1e-9) {
+    const [n, d] = a >= 1 ? pair : [pair[1], pair[0]];
+    const k = Math.min(Math.floor(Math.floor(w + 1e-9) / n), Math.floor(Math.floor(h + 0.5) / d));
+    if (k >= 1) {
+      w = k * n;
+      h = k * d;
+    }
+  }
+  return { x: (W - w) / 2 / W, y: (H - h) / 2 / H, w: w / W, h: h / H };
+}
+
 // 当前框占最大框的百分比（框的大小滑块）。以框的中心为准缩放，再收进有效画面。
 export function zoomRect(current, maxRect, percent, valid) {
   const cx = current.x + current.w / 2;

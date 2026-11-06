@@ -525,24 +525,8 @@ def _put_crop(request: Request, shot_id: str, body: CropRequest | None, reset: b
     try:
         flip = body.flip if body else False
         angle = body.angle_deg if body is not None and "angle_deg" in body.model_fields_set else None
-        if body and body.orientation in ("landscape", "portrait"):
-            frame = c.lib.read_sidecar_or_default(shot)[0].get("frame") or {}
-            fw, fh = frame.get("width"), frame.get("height")
-            size_ok = (
-                "style" not in frame
-                and isinstance(fw, int)
-                and not isinstance(fw, bool)
-                and isinstance(fh, int)
-                and not isinstance(fh, bool)
-                and fw > 0
-                and fh > 0
-            )
-            if size_ok and isinstance(fw, int) and isinstance(fh, int) and not isinstance(fw, bool) and not isinstance(fh, bool):
-                wide = fw >= fh
-            else:
-                sw, sh = shot.get("width"), shot.get("height")
-                wide = isinstance(sw, int) and not isinstance(sw, bool) and isinstance(sh, int) and not isinstance(sh, bool) and sw >= sh
-            flip = (body.orientation == "landscape") != wide
+        # 横竖相对于几何变换之后的画布（转过 90° 以后横图是竖的），在 write_crop 里按那块画布换成 flip
+        orientation = body.orientation if body and body.orientation in ("landscape", "portrait") else None
         out = edits.write_crop(
             c.lib,
             shot,
@@ -550,6 +534,7 @@ def _put_crop(request: Request, shot_id: str, body: CropRequest | None, reset: b
             rect=body.rect if body else None,
             angle_deg=angle,
             flip=flip,
+            orientation=orientation,
             reset=reset,
             expected_rev=body.expected_rev if body else None,
         )
