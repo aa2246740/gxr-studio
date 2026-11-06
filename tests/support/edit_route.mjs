@@ -1342,6 +1342,52 @@ if (scenario === 'reset-then-switch') {
     return n;
   };
   out.final = { requests: renders().length, firstImgs: imgs(first), secondImgs: imgs(second), urls: [...new Set(renders().map((u) => u.split('?')[1]))] };
+} else if (scenario === 'frame-cards-switch-back') {
+  // PR #39 复审 P2：A 的保存还在路上、卡片排队让路时换到 B 再回到 A。旧视图关了，新视图等的是同一批卡片：
+  // 要照常请求、出图，不能被旧视图的取消一起拒掉（停在骨架或「没有预览」）
+  const editKey = `PUT /api/photos/${PHOTOS.A.id}/edit`;
+  const styles = [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }, { id: 'film', options: [] }];
+  const setup = (v) => { v.ed.v2 = true; v.ed.frames = { styles }; };
+  const { framePanel } = await import(file('frame_panel.js'));
+  const renders = () => blobCalls.filter((u) => u.includes('/render') && u.includes('size=card'));
+  const host = document.createElement('div');
+  document.body.append(host);
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v1 = viewer.currentView();
+  setup(v1);
+  holds.add(editKey);
+  const saving = preview.persist(v1, { adjust: preview.adjustBody(v1.ed) });
+  await tick(2);
+  blobManual = true;
+  host.replaceChildren(framePanel(v1));
+  await tick(5);
+  out.requestsWhileSaving = renders().length;
+  await go(`#/photo/${PHOTOS.B.id}`);
+  await tick();
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick();
+  const v2 = viewer.currentView();
+  setup(v2);
+  out.views = { oldDisposed: !!v1.disposed, newView: v2 !== v1, sameRev: v2.ed.rev === v1.ed.rev };
+  const pane = framePanel(v2);
+  host.replaceChildren(pane);
+  g.release(editKey);
+  await saving;
+  await new Promise((r) => setTimeout(r, 250));
+  for (let i = 0; i < 4; i += 1) {
+    while (blobQueue.length) blobQueue.shift().resolve();
+    await tick(10);
+  }
+  const thumbs = [];
+  const walk = (n) => { if (n.classList && n.classList.contains('thumb')) thumbs.push(n); n.children.forEach(walk); };
+  walk(pane);
+  out.final = {
+    requests: renders().length,
+    imgs: thumbs.filter((t) => t.children.some((c) => c.tagName === 'IMG')).length,
+    noPreview: thumbs.filter((t) => t.textContent.includes('没有预览')).length,
+    skel: thumbs.filter((t) => t.classList.contains('skel')).length,
+  };
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

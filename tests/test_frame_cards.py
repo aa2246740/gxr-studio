@@ -91,6 +91,33 @@ def test_card_layout_matches_the_real_frame_proportions(client):
         assert diff < 6, (style, diff)
 
 
+@pytest.mark.parametrize("rect", [[0.35, 0.35, 0.3, 0.3], [0.0, 0.3, 1.0, 0.37]], ids=["small-crop", "xpan-like-strip"])
+def test_cards_of_a_big_cropped_photo_keep_the_frame_proportions(client, monkeypatch, rect):
+    """PR #39 复审（Sol）：大照片裁得很小以后，卡片的边框不能比大图里粗。边框有固定的最小像素
+    （徕卡水印条至少 64 像素），底图先缩到 1200 再裁，就只剩三百多像素，64 像素的条显得特别粗。
+    这里用 4288×2848 的合成照片（按 max_edge 缩小，和相机 JPG 的读法一样），卡片要和 size=preview 缩小以后一样。"""
+    big = np.zeros((2848, 4288, 3), np.uint8)
+    big[..., 0] = np.linspace(0, 255, 4288, dtype=np.uint8)[None, :]
+    big[..., 1] = np.linspace(0, 255, 2848, dtype=np.uint8)[:, None]
+
+    def fake_color_image(render, shot, edit, *, max_edge, quality, lib, base="auto", full=False):
+        image = Image.fromarray(big)
+        if max_edge is not None and not full:
+            image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        return np.asarray(image), False, {"kind": "original", "label": "original", "text": "原图"}
+
+    monkeypatch.setattr(serve, "color_image", fake_color_image)
+    photo = find(client, "R0000102")
+    r = client.put(f"/api/photos/{photo['id']}/crop", json={"preset": "free", "rect": rect, "angle_deg": 0})
+    assert r.status_code == 200, r.text
+    for style in ("leica", "hasselblad", "instant", "gallery"):
+        card = Image.open(io.BytesIO(_card(client, photo["id"], style).content))
+        preview = Image.open(io.BytesIO(_card(client, photo["id"], style, size="preview").content))
+        scale = 240 / max(preview.size)
+        want = (round(preview.width * scale), round(preview.height * scale))
+        assert abs(card.width - want[0]) <= 1 and abs(card.height - want[1]) <= 1, (style, card.size, want, preview.size)
+
+
 def test_only_the_frame_style_is_not_in_the_cache_key(client, builds):
     photo = find(client, "R0000102")
     pid = photo["id"]

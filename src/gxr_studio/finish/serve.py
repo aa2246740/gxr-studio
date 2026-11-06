@@ -108,15 +108,12 @@ def _embedded_rgb(path: Path) -> np.ndarray | None:
     return np.asarray(image.convert("RGB"))
 
 
-def _raw_rgb(
-    render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, *, full: bool, proxy_edge: int | None = None
-) -> tuple[np.ndarray, dict[str, str]]:
-    """full 为真时按传感器全尺寸解码。没有全尺寸 CFA 时退回内嵌的最大预览，并在 detail 里写明。
-    `proxy_edge`：不全尺寸时先把半分辨率码值图缩到这个长边再出色（边框卡片只要小图）；默认不缩。"""
+def _raw_rgb(render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, *, full: bool) -> tuple[np.ndarray, dict[str, str]]:
+    """full 为真时按传感器全尺寸解码。没有全尺寸 CFA 时退回内嵌的最大预览，并在 detail 里写明。"""
     from ..raw import NEUTRAL, open_dng, render_full
 
     if not full:
-        out = render.render_preview(shot, edit, max_edge=proxy_edge, quality=95, crop=None)
+        out = render.render_preview(shot, edit, max_edge=None, quality=95, crop=None)
         kind = "prediction"
         return _decode(out.jpeg), {
             "kind": kind,
@@ -189,7 +186,6 @@ def color_image(
     lib: Library,
     base: str = "auto",
     full: bool = False,
-    proxy_edge: int | None = None,
 ) -> tuple[np.ndarray, bool, dict[str, str]]:
     """选底图。配方用 RAW；没配方有 JPG 就用相机 JPG；只有 RAW 用 04 标准。"""
     if edit.lut is not None:
@@ -263,7 +259,7 @@ def color_image(
         )
     raw_edit = edit if mode == "recipe" else EditState(adjust=edit.adjust, master=edit.master)
     try:
-        rgb, labels = _raw_rgb(render, lib, shot, raw_edit, full=full, proxy_edge=proxy_edge)
+        rgb, labels = _raw_rgb(render, lib, shot, raw_edit, full=full)
     except (NoRaw, RenderUnavailable, RawDecodeError) as exc:
         if not has_jpg:
             raise

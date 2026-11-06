@@ -526,6 +526,14 @@ def test_ratio_click_changes_the_box_before_the_save_returns(tmp_path):
     assert _near(out["retried"]["rect"], 0, 446 / 2000, 1, 1108 / 2000, third)
 
 
+def test_frame_cards_still_arrive_after_switching_away_and_back(tmp_path):
+    """PR #39 复审 P2：卡片还在排队时换走再换回来，旧视图关了、新视图等同一批卡片，要照常出图。"""
+    out = run(tmp_path, "frame-cards-switch-back", real=("frame_panel.js",))
+    assert out["requestsWhileSaving"] == 0
+    assert out["views"] == {"oldDisposed": True, "newView": True, "sameRev": True}
+    assert out["final"] == {"requests": 3, "imgs": 3, "noPreview": 0, "skel": 0}
+
+
 def test_frame_cards_ask_for_card_size_dedupe_and_yield_to_saves(tmp_path):
     """边框卡片：用 size=card；面板重搭时同一张图不重复请求；这张照片有保存在路上时先不请求，写完再请求。"""
     out = run(tmp_path, "frame-cards-yield", real=("frame_panel.js",))

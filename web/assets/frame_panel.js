@@ -25,7 +25,7 @@ const CANVAS = ['1:1', '4:5', '3:2', '9:16'];
 
 const THUMB_CACHE = new Map();
 const THUMB_KEEP = 96; // 缓存的卡片图上限；超出的最旧一张释放
-const flights = new Map(); // 缩略图键 → 正在请求的 Promise（面板重搭时同一张不重复请求）
+const flights = new Map(); // 缩略图键 → { promise, views }：面板重搭、换走又换回来时同一张不重复请求，等它的视图都记下
 const queue = [];
 let running = 0;
 let waiting = null;
@@ -35,15 +35,23 @@ function busy(view) {
   return saveStatus(view.photo.id) === 'saving' || !!(view.ed && view.ed.busy);
 }
 
+// 还在等这张图的视图（换照片会关掉旧的视图；换回来的新视图会接着等同一张）
+function alive(entry) {
+  for (const v of entry.views) if (!v.disposed) return v;
+  return null;
+}
+
 function pump() {
   clearTimeout(waiting);
   waiting = null;
   while (running < 2 && queue.length) {
-    if (queue[0].view.disposed) {
+    const view = alive(queue[0].entry);
+    // 等它的视图全关了才放弃：只关了旧的、新视图还在等时照常请求，不把新面板的卡片一起拒掉（PR #39 复审）
+    if (!view) {
       queue.shift().skip();
       continue;
     }
-    if (busy(queue[0].view)) {
+    if (busy(view)) {
       waiting = setTimeout(pump, 120);
       return;
     }
@@ -70,14 +78,20 @@ function remember(key, url) {
 }
 
 function fetchThumb(view, body, key) {
-  if (flights.has(key)) return flights.get(key);
-  const p = new Promise((resolve, reject) => {
+  const known = flights.get(key);
+  if (known) {
+    known.views.add(view);
+    return known.promise;
+  }
+  const photoId = view.photo.id; // 键里就有照片 id：等这张图的视图都是同一张照片
+  const entry = { views: new Set([view]), promise: null };
+  entry.promise = new Promise((resolve, reject) => {
     queue.push({
-      view,
+      entry,
       skip: () => reject(new Error('closed')),
       run: async () => {
         try {
-          const { blob } = await apiBlob(`/api/photos/${view.photo.id}/render?stage=final&size=card`, { body });
+          const { blob } = await apiBlob(`/api/photos/${photoId}/render?stage=final&size=card`, { body });
           const url = URL.createObjectURL(blob);
           remember(key, url);
           resolve(url);
@@ -86,10 +100,12 @@ function fetchThumb(view, body, key) {
         }
       },
     });
-  }).finally(() => flights.delete(key));
-  flights.set(key, p);
+  }).finally(() => {
+    if (flights.get(key) === entry) flights.delete(key);
+  });
+  flights.set(key, entry);
   pump();
-  return p;
+  return entry.promise;
 }
 
 function styleList(ed) {
@@ -109,8 +125,8 @@ function loadThumb(view, style, holder) {
     holder.classList.remove('skel');
     holder.removeAttribute('aria-busy');
   };
+  // 不看 isConnected：面板还在搭（卡片还没挂上页面）时图就到了，也要填进去，不然一直停在骨架（AA01，PR #39 复审）
   const show = (url) => {
-    if (!holder.isConnected) return;
     done();
     holder.replaceChildren(h('img', { src: url, alt: '', draggable: 'false' }));
   };
@@ -121,7 +137,6 @@ function loadThumb(view, style, holder) {
     return;
   }
   fetchThumb(view, body, key).then(show, () => {
-    if (!holder.isConnected) return;
     done();
     holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
   });

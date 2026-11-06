@@ -1,8 +1,9 @@
 """边框标签里样式卡片的缩略图（`size=card`）。只服务卡片预览，导出和大图不走这里。
 
 一张照片有六七种边框样式，卡片每种都要一张小图。逐张走完整成片管线，每张都要重新出色、转几何、
-盖日期戳、加边框，再缩小；这里把「边框之前」的部分只做一次（缩到 BASE_EDGE 长边，按照片和编辑缓存），
-每种样式只做 `apply_frame` 和缩小。边框的尺寸都是照片边长的比例，BASE_EDGE 以上与全尺寸成片的版式一致。
+盖日期戳、加边框，再缩小；这里把「边框之前」的部分只做一次（按照片和编辑缓存），每种样式只做 `apply_frame` 和缩小。
+底图和大图（size=preview）同样大小：边框有固定的最小像素（比如徕卡水印条至少 64 像素），底图缩小了、再一裁，
+边框就会比大图里显得粗（PR #39 复审，Sol）。同样大小出底图，卡片就是大图缩小，版式一样。
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ from .frame import apply_frame
 from .spec import StampSpec
 
 CARD_EDGE = 240  # 卡片图的长边（含边框）
-BASE_EDGE = 1200  # 边框之前的底图长边
-KEEP = 6  # 最多缓存几张照片的底图（每张约 3 MB）
+BASE_EDGE = serve.SIZE_EDGE["preview"]  # 边框之前的底图：和大图同一个尺寸（RAW 是半分辨率，JPG 是这个长边）
+KEEP = 6  # 最多缓存几张照片的底图（每张约 9 MB）
 TTL_SECONDS = 300.0  # 缓存键盖不到的变化（例如换了同名 LUT 的内容）最迟这么久后失效
 
 
@@ -72,7 +73,7 @@ def _key(render: RenderService, shot: dict[str, Any], edit: EditState, side: dic
 def _build(
     render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, side: dict[str, Any], stamp: StampSpec, quality: int
 ) -> CardBase:
-    rgb, from_raw, labels = serve.color_image(render, shot, edit, max_edge=BASE_EDGE, quality=quality, lib=lib, proxy_edge=BASE_EDGE)
+    rgb, from_raw, labels = serve.color_image(render, shot, edit, max_edge=BASE_EDGE, quality=quality, lib=lib)
     meta, taken, file_time = serve._meta(shot, lib)
     side_crop = side.get("crop")
     crop_raw: dict[str, Any] = side_crop if isinstance(side_crop, dict) else {}
