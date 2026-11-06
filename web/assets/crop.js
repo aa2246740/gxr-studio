@@ -78,16 +78,19 @@ function setPrefs(patch) {
   }
 }
 
+// 参考线换了：显卡预览的画面不会因为 onChange 重建裁切框，所以要明说重画框里的线（onRectDrag）
 export function cycleGuide(view) {
   const ids = GUIDES.map(([id]) => id);
   const i = ids.indexOf(guidePrefs().guide);
   setPrefs({ guide: ids[(i + 1) % ids.length] });
   view.onChange?.();
+  view.onRectDrag?.();
 }
 
 export function cycleSpiral(view) {
   setPrefs({ spiral: (guidePrefs().spiral + 1) % 4 });
   view.onChange?.();
+  view.onRectDrag?.();
 }
 
 // ---- 比例 ----------------------------------------------------------------------
@@ -151,25 +154,49 @@ export function cropBody(view, base, orientation) {
   return { ...base, flip, angle_deg };
 }
 
-// 选一个比例：让后端算出居中的最大框（rect 为 null）
+// 点比例 / 横竖：框先在本地算好、马上画出来（和后端 crop.default_crop 是同一个几何：有效画面里居中的最大框，
+// 只是不取整到像素），再后台保存。后端回来的框（取整到像素、必要时按透视收进有效画面）是准的，
+// saveCrop 的 onOk 会换成它。不等后端：机器忙的时候，点一下也要立刻看到变化。
+export function presetRect(view, item, portrait) {
+  const f = view.crop.frame;
+  const canvas = view.canvas || (f && f.width && f.height ? { w: f.width, h: f.height } : null);
+  if (!canvas) return null;
+  const L = landscapeRatio(item.id);
+  const ratio = L == null ? null : orientable(item) && portrait ? 1 / L : L;
+  return maxRectFor(validRect(view, canvas), canvas, ratio);
+}
+
+function showNow(view, item, orientation) {
+  const rect = presetRect(view, item, orientation === 'portrait');
+  if (!rect) return;
+  view.crop.preset = item.id;
+  view.crop.rect = rect;
+  if (view.ed && view.ed.v2) view.crop.orientation = orientation;
+  view.onRectDrag?.(); // 画面上的框和尺寸读数
+  view.redrawSide?.(); // 面板里的比例名、横竖、缩放
+}
+
+// 选一个比例（保存时 rect 为 null，让后端算出居中的最大框）
 export async function applyPreset(view, item) {
   beginChange(view);
   view.presetItem = item;
   view.zoom = 100;
-  const portrait = orientable(item) && item.orient === 'portrait';
-  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, portrait ? 'portrait' : 'landscape'));
+  const orientation = orientable(item) && item.orient === 'portrait' ? 'portrait' : 'landscape';
+  showNow(view, item, orientation);
+  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, orientation));
   endChange(view);
 }
 
-// 横竖切换：同一个比例，换成另一个方向（后端算新的居中框）
+// 横竖切换：同一个比例，换成另一个方向
 export async function toggleOrientation(view) {
   const item = presetFor(view);
   if (!orientable(item)) return;
-  const portrait = !isPortrait(view, view.canvas);
+  const orientation = isPortrait(view, view.canvas) ? 'landscape' : 'portrait';
   beginChange(view);
   view.presetItem = item;
   view.zoom = 100;
-  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, portrait ? 'portrait' : 'landscape'));
+  showNow(view, item, orientation);
+  await saveCrop(view, cropBody(view, { preset: item.id, rect: null }, orientation));
   endChange(view);
 }
 
@@ -361,6 +388,7 @@ function openGuideMenu(view, anchor) {
   openMenu(anchor, groups, (id) => {
     setPrefs({ guide: id });
     view.onChange?.();
+    view.onRectDrag?.();
     view.redrawSide?.();
   });
 }

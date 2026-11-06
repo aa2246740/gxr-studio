@@ -29,6 +29,8 @@ LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write`
 
 照片编辑只存 LUT 的 SHA，颜色空间从库读取。`lut.photo` 接在 `finish.serve.color_image`，预览和全尺寸导出共用。显示类 LUT 使用现有底图，Log 类使用 DNG 的场景 XYZ，支持 A12 50mm、28mm、MOUNT；仍需可用的白平衡和色彩矩阵。各单元使用自身 DNG 矩阵，曝光采用既有固定中灰锚（50mm 测光标定），不按 LUT 自动曝光；MOUNT 与 28mm 的绝对曝光、测色尚无独立标定，输出均标为电脑预测。全尺寸仍按 RAW 条带计算。照片调整在 LUT 之后执行。没有新增写卡路径；全部调节和机内 LUT 两档预测延期。
 
+边框标签的样式卡片请求 `render?stage=final&size=card`（`finish.cards`）：成片管线「边框之前」的部分（出色、几何、裁切、日期戳，缩到长边 1200）按照片和编辑只做一次、放进一个小缓存，每种样式只加自己的边框再缩到长边 240。`finish.compose.finish_unframed` 是 `finish_array` 的前半段，大图和导出走 `finish_array`，字节不变（`tests/test_frame_cards.py` 逐字节核对）。
+
 HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`container` 按 ISO 21496-1 + Ultra HDR 封装，主图字节不动。导入结束后另起一个 `hdr` 任务生成图库里的 HDR 版本；导出勾选 HDR 时由 `finish.hdr_export` 让 RAW 亮度跟着成片的几何、日期戳和边框走，在导出的 JPEG 上重新算。
 
 生成前，`hdr.capture` 核对原始文件中双方都有的拍摄时间、秒的小数部分、曝光时间、光圈、ISO、相机型号、镜头和图像唯一 ID。已知字段冲突就记为 `capture_mismatch`，原因 JSON 和导出提示均为“RAW 与 JPG 不是同一次拍摄”。缺失、空白或未知数值不表示相同，仍须通过图像检查；不以文件名、文件修改时间或当前日期补全。相机时钟一致地设在 2000 年也可以正常配对。

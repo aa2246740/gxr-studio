@@ -14,7 +14,7 @@ import { correctSection, correctActions, nudgeStraighten, rotate90 } from './cor
 import { framePanel } from './frame_panel.js';
 import { stampPanel } from './stamp_panel.js';
 import { infoPanel } from './info_panel.js';
-import { paintStage } from './stage.js';
+import { paintStage, paintBox } from './stage.js';
 import {
   ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, redoChange, syncUndo, beginChange, endChange,
   persist, reloadEdit, applyRetried, stageLabels, refreshCaps, resetCropRemote, adjustBody,
@@ -683,6 +683,9 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   };
   v.redrawSide = () => {
     if (view === v) refreshPanes();
+  };
+  v.onRectDrag = () => {
+    if (view === v) paintBox(v); // 框变了（点比例、拉直、换参考线）：不等出图，马上重画框和读数
   };
 
   renderTitlebar(v);

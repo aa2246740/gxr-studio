@@ -492,3 +492,46 @@ def test_rebuilt_frame_panel_shows_cached_thumbnails(tmp_path):
     assert out["first"] == ready
     assert out["second"] == ready
     assert out["extraRenders"] == 0
+
+
+def _near(rect, x, y, w, h, eps=1e-3):
+    return all(abs(rect[k] - v) < eps for k, v in {"x": x, "y": y, "w": w, "h": h}.items())
+
+
+def test_ratio_click_changes_the_box_before_the_save_returns(tmp_path):
+    """裁切里点比例：框马上变（本地算），保存在后台；回应回来换成后端的准框；连点时过时的回应不盖掉新框；
+    保存失败框留着、标成未保存，重试补上；撤销只写回裁切。"""
+    out = run(tmp_path, "crop-click-local-first", real=("crop.js",))
+    third = 1 / 3000
+    # 1) 保存还挂着，框已经是 1:1 的居中最大框，面板和画面都重画过
+    assert out["right"]["preset"] == "1:1" and out["right"]["orientation"] == "landscape"
+    assert _near(out["right"]["rect"], 1 / 6, 0, 2 / 3, 1)
+    assert out["redraws"] == {"box": 1, "side": 1}
+    assert out["heldBody"] == [{"preset": "1:1", "rect": None, "orientation": "landscape"}]
+    assert out["stillLocal"] == out["right"]
+    assert _near(out["afterServer"]["rect"], 500 / 3000, 0, 2000 / 3000, 1, third)
+    # 2) 连点：16:9 的回应晚到，不能把 4:5 的框换掉；最后换成 4:5 的准框
+    assert out["double"]["preset"] == "4:5" and out["double"]["orientation"] == "portrait"
+    assert out["afterStale"] == out["double"]
+    assert _near(out["afterBoth"]["rect"], 700 / 3000, 0, 1600 / 3000, 1, third)
+    # 3) 撤销：只有裁切的写入，回到 1:1
+    assert out["undo"]["urls"] == ["crop"]
+    assert out["undo"]["body"]["preset"] == "1:1"
+    assert out["undo"]["now"]["preset"] == "1:1"
+    # 4) 失败：框留着（XPan 的本地框），标成未保存；重试成功后换成后端的框
+    assert out["failed"]["status"] == "failed" and out["failed"]["preset"] == "xpan-65-24"
+    assert _near(out["failed"]["rect"], 0, 0.2231, 1, 0.5538, 2e-3)
+    assert out["retry"] is True
+    assert out["retried"]["status"] == "saved"
+    assert _near(out["retried"]["rect"], 0, 446 / 2000, 1, 1108 / 2000, third)
+
+
+def test_frame_cards_ask_for_card_size_dedupe_and_yield_to_saves(tmp_path):
+    """边框卡片：用 size=card；面板重搭时同一张图不重复请求；这张照片有保存在路上时先不请求，写完再请求。"""
+    out = run(tmp_path, "frame-cards-yield", real=("frame_panel.js",))
+    assert out["statusWhileSaving"] == "saving"
+    assert out["requestsWhileSaving"] == 0
+    assert out["afterSave"] == {"requests": 2, "queued": 2}
+    assert out["final"]["requests"] == 3
+    assert out["final"]["secondImgs"] == 3
+    assert out["final"]["urls"] == ["stage=final&size=card"]

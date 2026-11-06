@@ -373,9 +373,15 @@ export function persist(view, changes) {
 
 // 写 /crop：preset、rect、orientation（v2）或 flip（旧版的横竖），以及旧版的 angle_deg
 export function saveCrop(view, body) {
-  return writeSave(saveRecord(view.photo.id), 'crop', body, {
+  const rec = saveRecord(view.photo.id);
+  const write = writeSave(rec, 'crop', body, {
     onOk: (c) => {
       if (!live(view)) return;
+      // 后面又排了新的裁切写入（连着点比例）：这一笔的回应已经过时，只记 rev；框留给最后一笔的回应换成准的
+      if (rec.fieldGen.crop !== mine) {
+        syncRev(view, c.rev);
+        return;
+      }
       setCrop(view, c);
       if (c.warning) toast(c.warning, 'info');
       view.redrawSide?.();
@@ -389,6 +395,8 @@ export function saveCrop(view, body) {
       view.onChange?.();
     },
   });
+  const mine = rec.fieldGen.crop; // writeSave 排队时已经加了一，这就是这一笔的序号
+  return write;
 }
 
 // 裁剪还原：用 PUT 写回「原始、整张、0°」，不用 DELETE /crop（DELETE 会把照片的宽高从编辑记录里清掉，之后读裁剪会失败）。
