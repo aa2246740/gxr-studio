@@ -35,6 +35,14 @@ const chromeTail = () => {
     return '';
   }
 };
+// 整份 Chrome 日志（只用来查有没有某一种错误）
+chromeTail.full = () => {
+  try {
+    return readFileSync(chromeLogPath, 'utf8');
+  } catch {
+    return '';
+  }
+};
 // Chrome 日志里和显卡有关的行（GPU 进程崩溃、看门狗、设备丢失、Dawn 报错），留最后 30 行
 const gpuLogLines = () => {
   try {
@@ -268,6 +276,7 @@ try {
       return d;
     })()`, 60000).catch((e) => ({ diagError: String(e) }));
     out.gpuChromeLog = gpuLogLines();
+    out.gpuSharedImageError = /Unable to create shared image|SharedImageBackingFactory/.test(chromeTail.full());
     out.failedBeforeClicks = [...out.failedRequests];
     out.consoleBeforeClicks = [...out.console];
   }

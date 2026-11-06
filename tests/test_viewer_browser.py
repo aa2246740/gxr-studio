@@ -2,7 +2,8 @@
 
 起一个真服务器（合成的假卡，只听 127.0.0.1）和无头 Chrome（和显卡一致性测试同一套找法、同一组开关），
 由 tests/support/viewer_browser.mjs 用 DevTools 协议点按。保存请求（PUT .../crop）被挂住，模拟后端忙：
-界面必须在保存返回之前就变。找不到 Chrome 或 node 时跳过；设了 GXR_REQUIRE_GPU_TEST=1 时显卡预览那一项不能跳过。
+界面必须在保存返回之前就变。找不到 Chrome 或 node 时跳过；设了 GXR_REQUIRE_GPU_TEST=1 时显卡预览那一项不能跳过，
+只有一个例外：Linux 无头 Chrome 的软件显卡把 WebGPU 画布显示不出来（见 cannot_present），那一项由 macOS 强制跑。
 """
 
 from __future__ import annotations
@@ -144,11 +145,23 @@ def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     check(out, live, cards_max_builds=2)  # 离开裁切页会有一次大图的服务器出图
 
 
+def cannot_present(out: dict) -> bool:
+    """页面的引擎没了，而且 Chrome 日志里是画布的共享图像建不起来（不是别的原因退回服务器）。"""
+    diag = out.get("gpuDiag") or {}
+    return diag.get("pageEngine", "missing") is None and diag.get("engine") == "created" and out.get("gpuSharedImageError") is True
+
+
 def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
     out = drive(live, tmp_path, "gpu")
     if not out["gpu"]:
-        keys = ("gpuWaitMs", "gpuDiag", "failedBeforeClicks", "consoleBeforeClicks", "gpuChromeLog")
+        keys = ("gpuWaitMs", "gpuDiag", "gpuSharedImageError", "failedBeforeClicks", "consoleBeforeClicks", "gpuChromeLog")
         detail = json.dumps({k: out.get(k) for k in keys}, ensure_ascii=False)
+        if sys.platform.startswith("linux") and cannot_present(out):
+            # GitHub 的 Linux 机器没有显卡：SwiftShader 能建 WebGPU 设备（显卡一致性测试只读回像素，能过），
+            # 但 Chrome 给画布上屏要的共享图像建不起来，页面的引擎随即失效、退回服务器出图（产品该有的退路）。
+            # 2026-11-06 在 Chrome 156 上试过 6 组开关（ANGLE/Vulkan SwiftShader、软件合成等）都一样。
+            # 目前只做 Mac 版：这一项由 macOS 的 tests 任务强制跑（GXR_REQUIRE_GPU_TEST=1，不能跳过）。
+            pytest.skip(f"Linux 无头 Chrome 的软件显卡不能把 WebGPU 画布显示出来：{detail}")
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
             pytest.fail(f"GXR_REQUIRE_GPU_TEST=1，但等了 120 秒大图还是没有走显卡预览：{detail}")
         pytest.skip(f"这台机器的 Chrome 没有走显卡预览：{detail}")
