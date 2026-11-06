@@ -241,7 +241,8 @@ def test_worker_exits_by_itself_when_the_parent_is_killed(tmp_path):
             parent.kill()
         parent.wait(timeout=5)
         try:
-            wait_until(lambda: not _alive(child_pid), "父进程被杀之后子进程退出", interval=0.1)
+            # 期限必须远小于子进程自己的 sleep(120)：守护失效时子进程睡满也会退出，期限一长测试就会误过。
+            wait_until(lambda: not _alive(child_pid), "父进程被杀之后子进程退出", timeout=15, interval=0.1)
         except AssertionError as exc:
             pytest.fail(f"父进程被杀之后子进程还在（{exc}）")
     finally:
