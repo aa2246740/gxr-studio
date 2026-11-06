@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -33,6 +32,7 @@ from gxr_studio.cards.session import (
 )
 from gxr_studio.library.store import Library
 from support.fake_card import FakeProbe, make_fake_card, replace_card
+from support.waiting import wait_job
 
 UUID_A = "AAAAAAAA-1111-2222-3333-444444444444"
 UUID_B = "BBBBBBBB-1111-2222-3333-444444444444"
@@ -42,15 +42,6 @@ OPTS = dict(min_free_bytes=0, make_thumbs=False)
 def client_for(settings, probe, **kw):
     app = create_app(settings, sessions=SessionRegistry(probe), **kw)
     return TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token})
-
-
-def wait_job(client, job_id):
-    for _ in range(600):
-        job = client.get(f"/api/jobs/{job_id}").json()
-        if not job["running"]:
-            return job
-        time.sleep(0.02)
-    raise AssertionError("导入任务没有结束")
 
 
 def import_card(client, card_id):

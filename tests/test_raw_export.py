@@ -25,6 +25,7 @@ from gxr_studio.export import (
 from gxr_studio.library.store import sha256_file
 from gxr_studio.raw import NEUTRAL, Renderer, open_dng, render_full
 from raw_support import bayer_scene, build_dng
+from support.waiting import wait_job
 from test_api import find, import_all
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -183,15 +184,6 @@ def client(settings):
         yield c
 
 
-def wait_job(client, job):
-    for _ in range(600):
-        job = client.get(f"/api/jobs/{job['id']}").json()
-        if not job["running"]:
-            return job
-        time.sleep(0.05)
-    raise AssertionError("任务超时")
-
-
 def test_api_raw_only_exports_instead_of_409(client, card, settings):
     for stem, hour in (
         ("R0000109", 10),
@@ -214,7 +206,7 @@ def test_api_raw_only_exports_instead_of_409(client, card, settings):
     assert client.post(f"/api/photos/{p['id']}/export", json={"format": "gif"}).json()["error"] == "bad_format"
     assert client.post(f"/api/photos/{p['id']}/export", json={"size": "huge"}).json()["error"] == "bad_size"
     # 批量：两张换成真 DNG 的 + 两张有 JPG 的成功；第三张只有 DNG（假的、读不出来，在 101RICOH）仍是 no_jpg_source
-    job = wait_job(client, client.post("/api/export", json={"date": "2026-10-19", "long_edge": 200}).json())
+    job = wait_job(client, client.post("/api/export", json={"date": "2026-10-19", "long_edge": 200}).json()["id"])
     res = job["progress"]["results"]
     assert job["progress"]["state"] == "done"
     ok = [x for x in res if "path" in x]

@@ -9,7 +9,6 @@ import hashlib
 import re
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from conftest import PORT
 from gxr_studio.app import create_app
+from support.waiting import wait_job
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 ASSETS = WEB / "assets"
@@ -28,16 +28,6 @@ def web_client(settings):
     app = create_app(settings.with_(web_dir=WEB))
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as c:
         yield c
-
-
-def _wait_job(client, job_id, limit=600):
-    job = client.get(f"/api/jobs/{job_id}").json()
-    for _ in range(limit):
-        if not job["running"]:
-            return job
-        time.sleep(0.05)
-        job = client.get(f"/api/jobs/{job_id}").json()
-    raise AssertionError("任务超时")
 
 
 def _tree_snapshot(root: Path) -> dict:
@@ -115,7 +105,7 @@ def test_plug_in_import_gallery_crop_export(web_client, card, settings, volumes)
     # 2. 导入：轮询进度直到完成，汇总能算出新增、跳过、读不出来
     job = web_client.post("/api/import", json={"card_id": card_id})
     assert job.status_code == 202
-    done = _wait_job(web_client, job.json()["id"])
+    done = wait_job(web_client, job.json()["id"])
     p = done["progress"]
     assert p["state"] == "done", p
     assert p["imported_shots"] > 0
@@ -126,7 +116,7 @@ def test_plug_in_import_gallery_crop_export(web_client, card, settings, volumes)
     # 3. 再插一次：摘要不读内容，证明不了"都导入过了"；界面会再导入一次，读内容核对后一个都不复制
     again = web_client.get(f"/api/cards/{card_id}/summary").json()
     assert again["new_shots"] == again["shots"] and again["verified"] is False
-    p2 = _wait_job(web_client, web_client.post("/api/import", json={"card_id": card_id}).json()["id"])["progress"]
+    p2 = wait_job(web_client, web_client.post("/api/import", json={"card_id": card_id}).json()["id"])["progress"]
     assert p2["copied_files"] == 0 and p2["coverage"]["covered"] == p2["coverage"]["total"]
     assert p2["message"] == "存储卡上有 2 个文件不会被导入"
 
@@ -205,7 +195,7 @@ def test_plug_in_import_gallery_crop_export(web_client, card, settings, volumes)
     ids = [pair["id"], raw_only["id"]]
     batch = web_client.post("/api/export", json={"ids": ids, "quality": 85, "dest_dir": str(exp_dir)})
     assert batch.status_code == 202
-    bdone = _wait_job(web_client, batch.json()["id"])
+    bdone = wait_job(web_client, batch.json()["id"])
     results = bdone["progress"]["results"]
     assert bdone["progress"]["state"] == "done"
     assert len(results) == 2
