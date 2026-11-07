@@ -6,6 +6,7 @@
 // 里面的 step 是卡住的那一步，chromeLog 是 Chrome 自己的输出末尾。进度逐行写到 stderr。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
+import { walkRounds } from './frame_nav_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -194,7 +195,7 @@ try {
   await call('Page.navigate', { url: `${origin}/?token=${token}` });
   await sleep(1500);
   step('set preview preference');
-  await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${mode === 'gpu' ? 'on' : 'off'}'); true`);
+  await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${/gpu$/.test(mode) ? 'on' : 'off'}'); true`);
   if (mode === 'layout') {
     // 边框和时间戳的版面在真 Chrome 里算：字体表从服务器下载（和导出读的是同一份），版面只用表里的整数，交给 Python 的结果对
     step('load the font tables and lay out');
@@ -209,6 +210,12 @@ try {
       const stamps = data.stamps.map((c) => { const text = L.stampText(c.spec, c.when); return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m) }; });
       return { frames, stamps };
     })()`, 120000);
+    out.ready = true;
+    await finish(0);
+  }
+  if (mode.startsWith('nav-')) {
+    // 换照片、换边框、进出裁剪、100%：每一步之后大图还在不在（tests/support/frame_nav_walk.mjs）
+    out.nav = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu' });
     out.ready = true;
     await finish(0);
   }
