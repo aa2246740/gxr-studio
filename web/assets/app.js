@@ -51,7 +51,7 @@ function exportCurrent() {
     openExportDialog({ ids: [], date: state.galleryDate, dayLabel: `${fmtDate(state.galleryDate)} 的全部`, photos: state.photos });
     return;
   }
-  toast(`先在图库里选择要导出的照片：点照片左上角的圈，或按住 ⇧ 连续选择、${modKey()}A 全选。`, 'info');
+  toast(`先在图库里选择要导出的照片：点照片左上角的圈或按住 ${modKey()} 点击加选，按住 ⇧ 连续选择，${modKey()}A 全选。`, 'info');
 }
 
 function bindGlobalKeys() {
