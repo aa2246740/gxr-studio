@@ -24,7 +24,7 @@ import { fetchAllPhotos } from './photos.js';
 import { delayed, busyButton, SHOW_AFTER_MS } from './busy.js';
 import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
 import { createHistogram } from './histogram.js';
-
+import { editorCopyPaste } from './paste_edits.js';
 const zeroAdj = () => ({ exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 });
 
 // [id, 名称, 快捷键, 图标]。「导出」不再是标签，改成对话框（⌘E）；第六个是「信息」（I）
@@ -382,6 +382,7 @@ function renderTitlebar(v) {
     h('span', { class: 'sep-v' }),
     undo,
     redo,
+    ...editorCopyPaste(v),
     h('div', { class: 'tb-title' },
       h('span', { class: 'name' }, p.name),
       h('span', { class: 'meta' }, `${fmtDate(p.date)} ${fmtClock(p.captured_at)}`),

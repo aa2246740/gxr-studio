@@ -30,6 +30,7 @@ export function shortcutGroups(p = platform()) {
       [`${mod}点击`, '加选 / 取消一张'],
       [`${shift}点击`, '连续选择'],
       [`${mod}A`, '全选'],
+      [p === 'mac' ? '⇧⌘V' : 'Ctrl+Shift+V', '把复制的调整粘贴到选中的照片'],
     ]],
     ['编辑', [
       ['R / A / C / F / T / I', '配方 / 调整 / 裁剪 / 边框 / 时间戳 / 信息'],
@@ -42,6 +43,8 @@ export function shortcutGroups(p = platform()) {
       [`${mod}Z`, '撤销'],
       [p === 'mac' ? '⇧⌘Z' : 'Ctrl+Y', '重做'],
       ['双击滑块', '重置这一项'],
+      [p === 'mac' ? '⇧⌘C' : 'Ctrl+Shift+C', '复制调整（配方、调整等，可选）'],
+      [p === 'mac' ? '⇧⌘V' : 'Ctrl+Shift+V', '粘贴调整到这张（撤销一次即可还原）'],
     ]],
     ['裁剪', [
       ['↑ / ↓', '拉直（每次 0.5°）'],
