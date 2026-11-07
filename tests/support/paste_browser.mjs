@@ -150,6 +150,7 @@ try {
   const jpgOnly = byName.R0000106;
   const later = byName.R0000103;
   out.photoCount = photos.length;
+  out.platform = await evalIn(`import('/assets/dom.js').then((m) => m.platform())`); // 快捷键写法按这个，和应用自己的判断一致
   // 来源照片：配方 + 调整 + 曲线
   await api(`/api/photos/${source.id}/edit`, JSON.stringify({
     method: 'PUT',

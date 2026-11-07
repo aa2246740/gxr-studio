@@ -84,7 +84,8 @@ def test_copy_and_paste_in_a_real_browser(live, tmp_path):
     # 在输入框里打字时两个键都不触发（不复制、不粘贴、不弹提示）
     assert out["typing"] == {"newToasts": 0, "newPosts": 0, "clipFrom": "R0000101"}
     # 快捷键表里写了新键
-    assert "⇧⌘C" in out["helpText"] and "⇧⌘V" in out["helpText"]
+    copy_keys, paste_keys = ("⇧⌘C", "⇧⌘V") if out["platform"] == "mac" else ("Ctrl+Shift+C", "Ctrl+Shift+V")  # 和应用一样按平台写
+    assert copy_keys in out["helpText"] and paste_keys in out["helpText"]
     # 编辑器里 ⇧⌘V：一次请求，写进去了；撤销一次就全部回到粘贴之前
     assert out["editorPosts"] == 1 and out["editorToast"].startswith("已套用：配方 / 风格、调整")
     assert out["afterEditorPaste"] == {"contrast": 8, "slot": 2, "curve": True}
