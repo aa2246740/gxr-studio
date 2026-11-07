@@ -4,8 +4,6 @@
 
 import { h, button, toast, toastError } from './dom.js';
 import { beginChange, endChange, saveCrop, persist, schedulePreview, resetCropRemote, geometryOf, loadCrop } from './preview.js';
-import { saveRecord } from './saves.js';
-import { saveCropOrRefit } from './crop_save.js';
 import { cropBody, orientationNow, rectArray, fitCrop, resetCropLocal } from './crop.js';
 import { slider, notReady } from './controls.js';
 import { rotateRect90, flipRect, fmtDeg, clamp } from './geom.js';
@@ -75,30 +73,17 @@ export function nudgeStraighten(view, delta) {
   commitStraight(view);
 }
 
-// 旋转、翻转：界面上的几何和框已经改好。先写几何，再写转好的框（服务器不会替你转框），最后以服务器收好的为准。
-// 框、比例、横竖在点下去的这一刻记下来；等几何写完时：
-// - 又转了（再转一次、翻转）：后一次的框是在这一次的基础上转的，由它自己在两笔几何都写完以后写；这一次不写，
-//   否则先写的旧框会落在新的几何后面，比例对不上被拒，最后变成服务器自己编的居中框。
-// - 用户又排进了新的框（点比例等）：那一步自己会保存，这一次不能盖掉它。
+// 旋转、翻转：界面上的几何和框已经改好。几何和转好的框（服务器不会替你转框）在点下去的这一刻一起排进保存队列，
+// 之后再排进来的几何（再转一次、拖透视……）只会排在它们后面：框写的时候画布还是它定下来时的样子。
+// 转好的框是推出来的目标（fit）：不合格也不拒绝，服务器收成离它最近的合格框，位置保留。
+// 几何没写成功，后面的框就不写（saves.js 的 writeSave），留在失败记录里，重试跟在几何后面写。全部写完以后，以服务器收好的为准。
 async function saveTurned(view) {
-  const rec = saveRecord(view.photo.id);
-  const box = { preset: view.crop.preset, rect: { ...view.crop.rect }, orientation: orientationNow(view) };
-  const unchanged = JSON.stringify(box.rect) === view.crop.savedKey;
-  const crops = rec.fieldGen.crop || 0;
-  const turn = (view.turnGen = (view.turnGen || 0) + 1);
-  const ok = await persist(view, { geometry: view.ed.geometry });
-  if (view.disposed || !view.crop) return;
-  if (!ok) {
-    // 几何没写进去：这是最后一次转的话，把它的框记在失败记录里，「重试」先写几何、再写这个框。
-    // 不记的话重试只补几何，服务器上还是转之前的框，界面上却是转好的，导出用的是服务器的
-    if (view.turnGen === turn && !unchanged && (rec.fieldGen.crop || 0) === crops && rec.failed) {
-      rec.failed.crop = cropBody(view, { preset: box.preset, rect: rectArray(box.rect) }, box.orientation);
-    }
-    return;
-  }
-  if (view.turnGen !== turn) return;
-  if (!unchanged && (rec.fieldGen.crop || 0) === crops && !(await saveCropOrRefit(view, cropBody(view, { preset: box.preset, rect: rectArray(box.rect) }, box.orientation)))) return;
-  await syncCrop(view);
+  const body = cropBody(view, { preset: view.crop.preset, rect: rectArray(view.crop.rect) }, orientationNow(view));
+  const geometry = persist(view, { geometry: view.ed.geometry });
+  // 框一律写，不拿「和上次从服务器读到的一样」当理由跳过：前一次转的框可能还在队里没写完，服务器上现在的框不是那一个
+  const box = saveCrop(view, { ...body, fit: true });
+  const [ok, boxOk] = await Promise.all([geometry, box]);
+  if (ok && boxOk && !view.disposed && view.crop) await syncCrop(view);
 }
 
 // 旋转 90°（逆时针）：只有新版能做。框跟着画面转，画布和 frame 的宽高对调（不清空，面板不出骨架）。

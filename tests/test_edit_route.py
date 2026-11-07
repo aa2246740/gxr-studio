@@ -44,7 +44,8 @@ def _stub(source: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(tmp_path: Path, scenario: str, real: tuple[str, ...] = ()) -> dict:
+def prepare(tmp_path: Path, real: tuple[str, ...] = ()) -> Path:
+    """把前端模块拷到临时目录，和保存与路由无关的面板换成空实现；api.js 换成转给 globalThis 替身的薄壳。"""
     folder = tmp_path / "modules"
     folder.mkdir()
     for src in ASSETS.glob("*.js"):
@@ -68,6 +69,11 @@ def run(tmp_path: Path, scenario: str, real: tuple[str, ...] = ()) -> dict:
     )
     (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     shutil.copy(SUPPORT / "mini_dom.mjs", tmp_path / "mini_dom.mjs")
+    return folder
+
+
+def run(tmp_path: Path, scenario: str, real: tuple[str, ...] = ()) -> dict:
+    folder = prepare(tmp_path, real)
     shutil.copy(SUPPORT / "edit_route.mjs", tmp_path / "edit_route.mjs")
     res = subprocess.run(
         ["node", str(tmp_path / "edit_route.mjs"), str(folder), scenario],
@@ -218,11 +224,11 @@ def test_reset_locks_its_button_until_both_writes_finish(tmp_path):
 
 
 def test_reset_partial_failure_keeps_the_draft_and_retries_only_the_failed_part(tmp_path):
-    """F09：复原时编辑没写进去、裁剪写进去了：底栏标成没保存；重试只补写编辑。"""
+    """F09：复原时编辑没写进去：底栏标成没保存。裁剪是按复原后的几何定的，几何没写成功就不写，留在失败记录里；重试先写编辑、再写裁剪。"""
     out = run(tmp_path, "reset-partial-failure")
     assert out["status"] == "failed" and "有修改没有保存" in out["saveLine"]
     assert out["retry"] is True and out["statusAfter"] == "saved"
-    assert out["retryPuts"] == ["edit"]
+    assert out["retryPuts"] == ["edit", "crop"]
 
 
 def test_before_image_keeps_only_the_latest_response(tmp_path):
@@ -565,9 +571,9 @@ def test_rotate_after_auto_with_perspective_ends_saved_and_consistent(tmp_path):
     assert out["serverAfterRotate"]["frame"] == [2400, 3300]
     # 写入只有两笔：点比例（让服务器算框），和转完以后那一个框（没有被拒、没有重写）
     assert [p["rect"] is None for p in out["cropPuts"]] == [True, False]
-    # 框万一和服务器的画布对不上：被拒以后让服务器按比例重算，仍然保存成功
+    # 界面上的框万一落后于服务器的画布：转好的框是目标（fit），服务器收成离它最近的合格框，一笔写完，不用重算
     assert out["afterDrift"]["status"] in ("saved", "idle")
-    assert out["afterDrift"]["puts"][-1] is None and len(out["afterDrift"]["puts"]) == 2
+    assert len(out["afterDrift"]["puts"]) == 1 and out["afterDrift"]["puts"][0] is not None
 
 
 def test_auto_shows_busy_and_says_what_it_changed(tmp_path):
@@ -606,26 +612,22 @@ def test_undoing_auto_brings_back_the_old_box_with_the_slider(tmp_path, scenario
     assert out["redoStatus"] in ("saved", "idle")
 
 
-def test_rotate_retries_with_the_turned_box_unless_the_server_rejects_its_shape(tmp_path):
-    """评审 P1：转了以后写框失败。500 / 断网不是框的问题：照常提示、不重算，重试用的是转好的框。
-    形状被拒、重算又失败：重试用的还是转好的框，不是居中的最大框（rect: null）。"""
+def test_rotate_retries_with_the_turned_box_after_a_failed_crop_write(tmp_path):
+    """评审 P1：转了以后写框失败（500 / 断网）。照常提示，不重算、不换成居中的最大框，重试用的是转好的框。"""
     out = run(tmp_path, "rotate-save-fails", real=("crop.js", "correct.js"))
-    a, b = out["a"], out["b"]
+    a = out["a"]
     assert len(a["puts"]) == 1 and a["puts"][0] is not None, "500 以后不该再发 rect: null"
     assert a["status"] == "failed" and a["toast"] is True
     assert a["retried"] and a["retried"][0] is not None
     assert [round(x, 4) for x in a["retried"][0]] == a["localRect"]
     assert a["after"] in ("saved", "idle")
-    assert b["puts"] == [False, True], "形状被拒才重算一次"
-    assert b["status"] == "failed" and b["toast"] is True
-    assert b["retry"] and b["retry"][0] == b["flipped"], "重试要写用户翻好的框"
-    assert b["after"] in ("saved", "idle")
 
 
 def test_a_ratio_click_during_a_rotate_is_not_overwritten_by_the_turned_box(tmp_path):
     """评审 P2：转的几何还没写完时点了比例，比例的写入排在前面；转的那一笔不能再把落后的本地框排在后面盖掉它。"""
     out = run(tmp_path, "rotate-then-ratio-click", real=("crop.js", "correct.js"))
-    assert out["puts"] == [["edit"], ["crop", "1:1", None]]
+    # 队里的顺序就是操作的顺序：转的几何、转好的框、点比例的框（让服务器算）；最后一笔是点比例的，服务器和界面都以它为准
+    assert [p[:2] for p in out["puts"]] == [["edit"], ["crop", "4:3"], ["crop", "1:1"]] and out["puts"][2][2] is None
     assert out["server"]["preset"] == "1:1" and out["client"]["preset"] == "1:1"
     assert [round(x, 4) for x in out["client"]["rect"]] == out["server"]["rect"]
 
@@ -647,34 +649,61 @@ def test_undoing_a_turn_restores_the_frame_and_canvas_at_once(tmp_path):
     ],
 )
 def test_two_turns_while_the_geometry_write_is_pending_store_the_last_box(tmp_path, scenario, geometry, final_rect):
-    """评审 P1：几何的写入还挂着时又转了一次（或翻转）。先转的那一笔的框不能排在后一笔几何后面
-    （落在已经转过的画布上比例不对，被拒，最后变成服务器编的居中框）；后一次自己写它的框。"""
+    """评审 P1：几何的写入还挂着时又转了一次（或翻转）。每次转的几何和框在点下去的时候一起排队：
+    几何 1、框 1、几何 2、框 2。框写的时候画布还是它定下来时的样子，不会落在后一笔几何后面被拒、被服务器编成居中框。"""
     out = run(tmp_path, scenario, real=("crop.js", "correct.js"))
     assert out["screenBeforeRelease"] == final_rect
     assert out["geometry"] == geometry
     assert out["server"]["rect"] == final_rect
     assert out["client"]["rect"] == final_rect
-    crop_puts = [p for p in out["puts"] if p[0] == "crop"]
-    assert crop_puts == [["crop", final_rect]], out["puts"]
+    kinds = [p[0] for p in out["puts"]]
+    assert kinds == ["edit", "crop", "edit", "crop"], out["puts"]
+    assert out["puts"][3][1] == final_rect and all(p[1] is not None for p in out["puts"] if p[0] == "crop")
     assert out["status"] in ("saved", "idle") and out["toasts"] == []
 
 
-@pytest.mark.parametrize("scenario", ["failed-turn-retry", "lone-failed-turn", "lone-failed-turn-shape"])
+@pytest.mark.parametrize("scenario", ["failed-turn-retry", "lone-failed-turn"])
 def test_retry_after_a_failed_turn_writes_the_turned_box_too(tmp_path, scenario):
-    """评审 P1：转的几何没写进去（500）。重试原来只补几何，服务器上还是转之前的框，界面上却是转好的，导出用的是服务器的。
-    最后一次转的框记在失败记录里，重试先写几何、再写框；形状被拒时照样让服务器按比例重算。"""
+    """评审 P1：转的几何没写进去（500）。后面的框是按那次几何定的，几何没写成功就先不写，留在失败记录里；
+    重试先写几何、再写框，服务器和界面最后一致（原来重试只补几何，服务器上还是转之前的框，导出用的是服务器的）。"""
     out = run(tmp_path, scenario, real=("crop.js", "correct.js"))
     fail = out["afterFail"]
-    turned = [0.6, 0.3, 0.3, 0.6] if scenario == "failed-turn-retry" else [0.1, 0.6, 0.6, 0.3]
-    assert fail["cropPuts"] == 0 and fail["status"] == "failed" and fail["screen"] == turned
-    assert fail["serverRect"] == [0.1, 0.1, 0.3, 0.6]
+    twice = scenario == "failed-turn-retry"
+    turned = [0.6, 0.3, 0.3, 0.6] if twice else [0.1, 0.6, 0.6, 0.3]
+    assert fail["status"] == "failed" and fail["screen"] == turned
+    # 连转两次：第一次的几何和框都写进去了，第二次的几何失败、它的框没写；只转一次：几何失败、框没写
+    assert fail["cropPuts"] == (1 if twice else 0)
+    assert fail["serverRect"] == ([0.1, 0.6, 0.6, 0.3] if twice else [0.1, 0.1, 0.3, 0.6])
     retry = out["afterRetry"]
+    rotate = 2 if twice else 1
     assert out["retry"] is True and retry["status"] in ("saved", "idle")
-    rotate = 2 if scenario == "failed-turn-retry" else 1
     assert retry["serverRotate"] == rotate
-    assert retry["puts"][0] == ["edit", rotate], "先写几何"
-    if scenario == "lone-failed-turn-shape":
-        assert retry["puts"][1:] == [["crop", turned], ["crop", None]], "框的形状被拒：改让服务器重算"
-    else:
-        assert retry["puts"][1:] == [["crop", turned]]
-        assert retry["serverRect"] == turned and retry["screen"] == turned
+    assert retry["puts"] == [["edit", rotate], ["crop", turned]], "先写几何，再写框"
+    assert retry["serverRect"] == turned and retry["screen"] == turned
+
+
+def test_a_second_undo_during_the_reread_still_redoes_the_fitted_box(tmp_path):
+    """评审 P2：撤销落在重读还没回来的时候，又撤销了一步（把「自动」那一步埋到下面）。
+    重读回来以后，重做「自动」写的是服务器收小的框，不是重读开始之前的框（原来写旧框被拒，最后变成居中框）。"""
+    out = run(tmp_path, "undo-twice-while-reread", real=("crop.js", "correct.js"))
+    assert out["heldReread"] is True
+    assert out["crops"][-1] == [0.35, 0.2, 0.3, 0.55], out["crops"]
+    assert None not in out["crops"]
+    assert out["screen"] == {"rect": [0.35, 0.2, 0.3, 0.55], "frame": [3300, 2400], "vertical": 40}
+    assert out["server"] == {"rect": [0.35, 0.2, 0.3, 0.55], "frame": [3300, 2400]}
+    assert out["status"] in ("saved", "idle")
+
+
+@pytest.mark.parametrize("scenario", ["failed-turn-then-perspective", "failed-turn-then-perspective-queued"])
+def test_retry_after_a_failed_turn_and_a_later_perspective_keeps_the_box(tmp_path, scenario):
+    """评审 P1（第四轮）：转的几何没写进去，之后拖垂直写成功了（带着旋转），服务器已经按新几何收过框。
+    重试（或垂直的写入还排着时点重试）不能拿过时的框去被拒、被服务器编成居中框：转好的框是目标（fit），位置保留。"""
+    out = run(tmp_path, scenario, real=("crop.js", "correct.js"))
+    assert out["afterTurn"]["screen"] == [0.1, 0.6, 0.6, 0.3] and out["afterTurn"]["status"] == "failed"
+    after = out["after"]
+    assert out["retry"] is True and after["status"] in ("saved", "idle")
+    assert after["geometry"] == {"rotate90": 1, "vertical": 40}
+    assert after["screen"] == after["server"] == [0.1, 0.6, 0.6, 0.3], "转好的框的位置保留，不是居中的最大框"
+    assert after["frame"] == after["serverFrame"]
+    crop_puts = [p for p in after["puts"] if p[0] == "crop"]
+    assert crop_puts and all(p[1] is not None and p[2] is True for p in crop_puts), after["puts"]

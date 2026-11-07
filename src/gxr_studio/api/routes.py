@@ -58,6 +58,7 @@ class CropRequest(BaseModel):
     angle_deg: float | None = None  # 不传就保持 sidecar 里的角度，不归零
     flip: bool = False
     orientation: str | None = None
+    fit: bool = False  # true：rect 是目标，服务器收成离它最近的合格框（比例、有效区），不拒绝。撤销、重做、转 90° 之后的框用
     expected_rev: int | None = None
 
 
@@ -537,6 +538,7 @@ def _put_crop(request: Request, shot_id: str, body: CropRequest | None, reset: b
             orientation=orientation,
             reset=reset,
             expected_rev=body.expected_rev if body else None,
+            fit=bool(body and body.fit),
         )
     except CropError as exc:
         raise _crop_error(exc) from exc

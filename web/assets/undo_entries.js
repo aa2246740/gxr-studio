@@ -60,16 +60,20 @@ export function withOwned(current, entry) {
   return owned ? JSON.stringify({ ...JSON.parse(current), owned }) : current;
 }
 
-// 撤销落在「重读裁剪」还没回来的时候：重做记下的框是重读完成之前的（服务器写几何时收小之前的），
-// 重做写进去会被拒。重读因为撤销的写入被丢掉重读时，丢掉的那份正是收小的框：它还对得上最上面这条重做就换上去，
-// 重做写的就是收小的框。用户之后又改过框的话，重做记录已经清空，或者界面上的框和记录对不上，什么也不换。
-export function staleCropForRedo(view, stale) {
-  const top = view.redo && view.redo.length ? view.redo.length - 1 : -1;
-  if (top < 0 || !view.crop || !stale || !stale.rect) return;
-  const entry = JSON.parse(view.redo[top]);
-  if (!(entry.owned || []).includes('geometry') || !entry.crop) return;
-  if (JSON.stringify(entry.crop.rect) !== JSON.stringify(view.crop.rect)) return;
-  if (JSON.stringify(entry.crop.rect) === JSON.stringify(fromArray(stale.rect))) return;
-  entry.crop = { ...entry.crop, rect: fromArray(stale.rect), frame: stale.frame };
-  view.redo[top] = JSON.stringify(entry);
+// 撤销落在「重读裁剪」还没回来的时候：重做记下的框是重读开始之前的（服务器写几何时收小之前的），重做写进去会被拒。
+// 重读因为撤销的写入被丢掉重读时，丢掉的那份正是收小的框：把它换进「几何那一步」的重做记录
+// （不一定还在最上面，后面又撤销了几步也一样）。pre 是重读开始时界面上的框；记录里的框还等于它才换，
+// 用户之后改过的、别的步骤的记录都不动。
+export function staleCropForRedo(view, stale, pre) {
+  if (!view.redo || !stale || !stale.rect || !pre) return;
+  const fitted = JSON.stringify(fromArray(stale.rect));
+  for (let i = view.redo.length - 1; i >= 0; i -= 1) {
+    const entry = JSON.parse(view.redo[i]);
+    if (!(entry.owned || []).includes('geometry') || !entry.crop) continue;
+    const rect = JSON.stringify(entry.crop.rect);
+    if (rect !== pre || rect === fitted) continue;
+    entry.crop = { ...entry.crop, rect: fromArray(stale.rect), frame: stale.frame };
+    view.redo[i] = JSON.stringify(entry);
+    return;
+  }
 }

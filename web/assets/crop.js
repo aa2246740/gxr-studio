@@ -144,11 +144,12 @@ export function ratioForMax(view, canvas) {
   return lockRatio(view, canvas);
 }
 
-// 写 /crop 的请求体。v2 用 orientation；旧版用 flip（和照片本身的方向不同时为 true），并带上拉直角度（旧版拉直只在 /crop 里）。
+// 写 /crop 的请求体。v2 用 orientation，不带 angle_deg：后端不传就保持它自己存的拉直角度（和几何里的一致）。
+// 带上的话，这一笔是按排队时的角度写的——前面还有几何写入没写完（或失败了）时，会把后面更新的拉直角度写回旧值。
+// 旧版用 flip（和照片本身的方向不同时为 true），拉直只在 /crop 里，一定要带上当前的角度（不带的话旧版后端会把它冲回 0）。
 export function cropBody(view, base, orientation) {
-  // 一定要带上当前的拉直角度：后端 PUT /crop 的 angle_deg 默认是 0，不带的话会把刚拉的角度冲回 0
+  if (view.ed && view.ed.v2) return { ...base, orientation };
   const angle_deg = geometryOf(view).straighten || 0;
-  if (view.ed && view.ed.v2) return { ...base, orientation, angle_deg };
   const wantLandscape = orientation !== 'portrait';
   const flip = wantLandscape !== frameLandscape(view);
   return { ...base, flip, angle_deg };

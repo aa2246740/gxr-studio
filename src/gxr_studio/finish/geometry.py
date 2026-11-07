@@ -418,13 +418,15 @@ def fitted_crop(
     preset: str | None = None,
     width: int | None = None,
     height: int | None = None,
+    force: bool = False,
 ) -> tuple[float, float, float, float] | None:
     """做了拉直、透视或畸变时，返回应写回 sidecar 的归一化框。不需要收缩时返回空。
+    force：框是别处推出来的目标（撤销、转 90° 之后的框），没有拉直透视也要按预设比例和画布收一遍。
 
     width、height 是纠正前的画面。给出尺寸时按这次 warp 的真实像素取整数比例，
     写回的归一化框和成片用的是同一块画布。
     """
-    if not needs_valid_crop(geom):
+    if not force and not needs_valid_crop(geom):
         return None
     if width is not None and height is not None and width > 0 and height > 0:
         valid = warp_valid(width, height, geom)

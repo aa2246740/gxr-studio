@@ -10,7 +10,7 @@ import { openExportDialog } from './export.js';
 import { recipePanel } from './recipes.js';
 import { adjustPanel } from './adjust.js';
 import { cropSection, cycleGuide, cycleSpiral, closeMenus, fullCanvas, resetCropLocal } from './crop.js';
-import { correctSection, correctActions, nudgeStraighten, rotate90 } from './correct.js';
+import { correctSection, correctActions, nudgeStraighten, rotate90, syncCrop } from './correct.js';
 import { framePanel } from './frame_panel.js';
 import { stampPanel } from './stamp_panel.js';
 import { infoPanel } from './info_panel.js';
@@ -494,6 +494,7 @@ on('save-retried', (e) => {
   const v = view;
   if (!v || !e.detail || e.detail.id !== v.photo.id || !v.ed) return;
   if (!applyRetried(v, e.detail)) return;
+  if (e.detail.kind === 'edit' && e.detail.fields.includes('geometry')) syncCrop(v); // 重试补写了几何：服务器顺带收过框、换过画布，界面跟上
   // 正在拖曲线、滑块（beginChange 之后、endChange 之前）：不重建面板，不然拖着的控件和它松手时的保存都没了；
   // 这一步结束时 endChange 再刷新（W01）。每个开始都有结束：保存后 endChange，没改值的按下由滑块的 onCancel 结束（X01）
   if (v.pending) {
