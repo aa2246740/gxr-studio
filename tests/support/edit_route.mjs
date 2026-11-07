@@ -97,12 +97,11 @@ globalThis.apiStub = async (url, opts = {}) => {
 // 预览图：永远不回来也没关系（AbortController 会取消）；这里直接给一张空图。
 // blobManual 打开时，/render 请求排进 blobQueue，由脚本决定先后放行（对比图的乱序场景）
 let blobManual = false;
-let blobCardsOnly = false; // 只挂边框卡片的请求（size=card），大图照常给空图
 const blobQueue = [];
 const blobCalls = [];
 globalThis.apiBlobStub = (url, opts = {}) => {
   blobCalls.push(url);
-  if ((blobManual || (blobCardsOnly && url.includes('size=card'))) && url.includes('/render')) {
+  if (blobManual && url.includes('/render')) {
     return new Promise((resolve) => blobQueue.push({ body: opts.body, resolve: () => resolve({ blob: { body: opts.body }, headers: { get: () => null } }) }));
   }
   return Promise.resolve({ blob: {}, headers: { get: () => null } });
@@ -1210,33 +1209,6 @@ if (scenario === 'reset-then-switch') {
   await tick(10);
   out.after = left();
   out.exported = requests.filter((r) => r.method === 'POST' && r.url.endsWith('/export')).length;
-} else if (scenario === 'frame-thumb-cache') {
-  // AA01：同一张照片、同一版本再搭一次边框面板，缩略图从缓存里出：卡片要有图、没有骨架，也不再发请求
-  await go(`#/photo/${PHOTOS.A.id}`);
-  await tick();
-  const v = viewer.currentView();
-  const { framePanel } = await import(file('frame_panel.js'));
-  v.ed.v2 = true;
-  v.ed.frames = { styles: [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }] };
-  const renders = () => blobCalls.filter((u) => u.includes('/render') && u.includes('size=card')).length;
-  const thumbs = (pane) => {
-    const list = [];
-    const walk = (n) => { if (n.classList && n.classList.contains('thumb')) list.push(n); n.children.forEach(walk); };
-    walk(pane);
-    return list.map((t) => ({ skel: t.classList.contains('skel'), busy: t.getAttribute('aria-busy'), img: !!t.children.find((c) => c.tagName === 'IMG') }));
-  };
-  const host = document.createElement('div');
-  document.body.append(host);
-  const first = framePanel(v);
-  host.replaceChildren(first);
-  await tick(10);
-  out.first = thumbs(first);
-  const before = renders();
-  const second = framePanel(v);
-  host.replaceChildren(second);
-  await tick(10);
-  out.second = thumbs(second);
-  out.extraRenders = renders() - before;
 } else if (scenario === 'crop-click-local-first') {
   // 点比例：框先在本地算好、马上变；后端慢（保存挂着）也一样。回应回来换成后端算的准框；连点时过时的回应不盖掉新的框。
   // 保存失败：框留着、标成未保存，重试补上。撤销只还原裁切这一组。
@@ -1304,87 +1276,6 @@ if (scenario === 'reset-then-switch') {
   out.retry = await preview.retrySaves(id);
   await tick(5);
   out.retried = { status: preview.saveStatus(id), ...snap() };
-} else if (scenario === 'frame-cards-yield') {
-  // 边框卡片是次要的：请求用 size=card；面板重搭时同一张不重复请求；这张照片有保存在路上时先让路
-  await go(`#/photo/${PHOTOS.A.id}`);
-  await tick();
-  const v = viewer.currentView();
-  const { framePanel } = await import(file('frame_panel.js'));
-  v.ed.v2 = true;
-  v.ed.frames = { styles: [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }, { id: 'film', options: [] }] };
-  const renders = () => blobCalls.filter((u) => u.includes('/render') && /size=(card|thumb)/.test(u));
-  const host = document.createElement('div');
-  document.body.append(host);
-  // 保存还没写完：卡片先不请求
-  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
-  const saving = preview.persist(v, { adjust: preview.adjustBody(v.ed) });
-  await tick(2);
-  out.statusWhileSaving = preview.saveStatus(PHOTOS.A.id);
-  blobManual = true;
-  // 面板搭了两次（任何一次重画都会这样），都在保存还没写完的时候：同一张图只请求一次
-  const first = framePanel(v);
-  host.replaceChildren(first);
-  const second = framePanel(v);
-  host.replaceChildren(second);
-  await tick(10);
-  out.requestsWhileSaving = renders().length;
-  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
-  await saving;
-  await new Promise((r) => setTimeout(r, 250));
-  out.afterSave = { requests: renders().length, queued: blobQueue.length };
-  while (blobQueue.length) blobQueue.shift().resolve();
-  await tick(10);
-  while (blobQueue.length) blobQueue.shift().resolve();
-  await tick(10);
-  const imgs = (pane) => {
-    let n = 0;
-    const walk = (x) => { if (x.tagName === 'IMG') n += 1; x.children.forEach(walk); };
-    walk(pane);
-    return n;
-  };
-  out.final = { requests: renders().length, firstImgs: imgs(first), secondImgs: imgs(second), urls: [...new Set(renders().map((u) => u.split('?')[1]))] };
-} else if (scenario === 'frame-cards-switch-back') {
-  // PR #39 复审 P2（Sol 的复现顺序）：打开 A 的边框卡片，前两个请求挂着、第三个排队；切到 B，在请求返回之前回到 A。
-  // 旧视图关了，新视图等的是同一批卡片：三张都要出图，不能被旧视图的取消一起拒掉（停在骨架或「没有预览」）
-  const styles = [{ id: 'none', options: [] }, { id: 'gallery', options: ['color'] }, { id: 'film', options: [] }];
-  const setup = (v) => { v.ed.v2 = true; v.ed.frames = { styles }; };
-  const { framePanel } = await import(file('frame_panel.js'));
-  const renders = () => blobCalls.filter((u) => u.includes('/render') && u.includes('size=card'));
-  const host = document.createElement('div');
-  document.body.append(host);
-  await go(`#/photo/${PHOTOS.A.id}`);
-  await tick();
-  const v1 = viewer.currentView();
-  setup(v1);
-  const rev1 = v1.ed.rev; // 离开照片以后旧视图的 ed 会清空，先记下版本
-  blobCardsOnly = true;
-  host.replaceChildren(framePanel(v1));
-  const settle = () => new Promise((r) => setTimeout(r, 300)); // 大图忙时卡片让路 120 ms 再试
-  await settle();
-  out.inFlight = { requests: renders().length, held: blobQueue.length };
-  await go(`#/photo/${PHOTOS.B.id}`);
-  await tick();
-  await go(`#/photo/${PHOTOS.A.id}`);
-  await tick();
-  const v2 = viewer.currentView();
-  setup(v2);
-  out.views = { oldDisposed: !!v1.disposed, newView: v2 !== v1, sameRev: v2.ed.rev === rev1 };
-  const pane = framePanel(v2);
-  host.replaceChildren(pane);
-  for (let i = 0; i < 5; i += 1) {
-    while (blobQueue.length) blobQueue.shift().resolve();
-    await tick(10);
-    await settle();
-  }
-  const thumbs = [];
-  const walk = (n) => { if (n.classList && n.classList.contains('thumb')) thumbs.push(n); n.children.forEach(walk); };
-  walk(pane);
-  out.final = {
-    requests: renders().length,
-    imgs: thumbs.filter((t) => t.children.some((c) => c.tagName === 'IMG')).length,
-    noPreview: thumbs.filter((t) => t.textContent.includes('没有预览')).length,
-    skel: thumbs.filter((t) => t.classList.contains('skel')).length,
-  };
 } else if (scenario === 'crop-zoom-matches-click') {
   // PR #39 复审（Grok 第二轮）：拉直、转 90° 以后，大小滑块的 100% 正好是点比例时画的那一框；
   // 拖动时收框（fitCrop）不把它收小。预览画布比原图小，几何按全尺寸算。

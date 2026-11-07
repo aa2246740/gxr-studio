@@ -518,7 +518,7 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .fcards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 8px; margin: 8px 0; }
 .fcard { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text-2); font-size: var(--fs-small); text-align: center; }
 .fcard .thumb { aspect-ratio: 4 / 3; position: relative; border-radius: var(--r-md); background: var(--gray-800); display: grid; place-items: center; overflow: hidden; transition: box-shadow var(--dur-fast); }
-.fcard .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; animation: fadein var(--dur-base) var(--ease-standard); }
+.fcard .thumb img, .fcard .thumb canvas { width: 100%; height: 100%; object-fit: contain; display: block; animation: fadein var(--dur-base) var(--ease-standard); }
 .fcard:hover .thumb { box-shadow: 0 0 0 1px var(--line-strong); }
 .fcard[aria-pressed="true"] .thumb { box-shadow: 0 0 0 2px var(--accent-text); }
 .fcard[aria-pressed="true"] .nm { color: var(--text-1); font-weight: var(--fw-medium); }

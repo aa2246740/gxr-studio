@@ -1,13 +1,14 @@
-// 边框标签（新版后端）：样式卡片（缩略图由后端用当前照片渲染，POST render size=thumb）、选项、设为默认。
+// 边框标签（新版后端）：样式卡片（浏览器用一张小底图加版面画，见 finish_cards.js）、选项、设为默认。
+// 点样式、改选项，大图上的边框马上变（浏览器自己画，见 stage_finish.js），保存在后面写，不等服务器出图。
 // 旧版后端：显示「暂不可用」。样式名和选项名按 COPY.md 3.4 的固定写法，不用接口里的任意名字。
 
 import { h, toast, toastError } from './dom.js';
-import { apiBlob } from './api.js';
-import { on } from './state.js';
-import { persist, schedulePreview, beginChange, endChange, styleOptions, saveStatus } from './preview.js';
+import { persist, beginChange, endChange, styleOptions } from './preview.js';
 import { saveDefaults } from './caps.js';
-import { normalizeFrame, frameBody, defaultsPayload, DEFAULT_FRAME, clipText, TEXT_MAX } from './finish.js';
+import { normalizeFrame, frameBody, defaultsPayload, clipText, TEXT_MAX } from './finish.js';
 import { seg, toggle, swatch, notReady } from './controls.js';
+import { paintCards } from './finish_cards.js';
+import { liveText } from './live_text.js';
 
 export const FRAME_NAMES = {
   none: '无',
@@ -23,132 +24,29 @@ const COLOR_NAMES = { white: '白', black: '黑', cream: '米白' };
 const WEIGHT_NAMES = { thin: '细', medium: '中', thick: '粗' };
 const CANVAS = ['1:1', '4:5', '3:2', '9:16'];
 
-const THUMB_CACHE = new Map();
-const THUMB_KEEP = 96; // 缓存的卡片图上限；超出的最旧一张释放
-const flights = new Map(); // 缩略图键 → { promise, views }：面板重搭、换走又换回来时同一张不重复请求，等它的视图都记下
-const queue = [];
-let running = 0;
-let waiting = null;
-
-// 卡片图是次要的：这张照片有保存在路上、或大图正在出图时先让路，空下来再请求
-function busy(view) {
-  return saveStatus(view.photo.id) === 'saving' || !!(view.ed && view.ed.busy);
-}
-
-// 还在等这张图的视图（换照片会关掉旧的视图；换回来的新视图会接着等同一张）
-function alive(entry) {
-  for (const v of entry.views) if (!v.disposed) return v;
-  return null;
-}
-
-function pump() {
-  clearTimeout(waiting);
-  waiting = null;
-  while (running < 2 && queue.length) {
-    const view = alive(queue[0].entry);
-    // 等它的视图全关了才放弃：只关了旧的、新视图还在等时照常请求，不把新面板的卡片一起拒掉（PR #39 复审）
-    if (!view) {
-      queue.shift().skip();
-      continue;
-    }
-    if (busy(view)) {
-      waiting = setTimeout(pump, 120);
-      return;
-    }
-    const job = queue.shift();
-    running += 1;
-    job.run().finally(() => {
-      running -= 1;
-      pump();
-    });
-  }
-}
-
-on('save-status', () => {
-  if (queue.length) pump(); // 保存写完了：让路的卡片接着请求
-});
-
-function remember(key, url) {
-  THUMB_CACHE.set(key, url);
-  while (THUMB_CACHE.size > THUMB_KEEP) {
-    const oldest = THUMB_CACHE.keys().next().value;
-    URL.revokeObjectURL(THUMB_CACHE.get(oldest));
-    THUMB_CACHE.delete(oldest);
-  }
-}
-
-function fetchThumb(view, body, key) {
-  const known = flights.get(key);
-  if (known) {
-    known.views.add(view);
-    return known.promise;
-  }
-  const photoId = view.photo.id; // 键里就有照片 id：等这张图的视图都是同一张照片
-  const entry = { views: new Set([view]), promise: null };
-  entry.promise = new Promise((resolve, reject) => {
-    queue.push({
-      entry,
-      skip: () => reject(new Error('closed')),
-      run: async () => {
-        try {
-          const { blob } = await apiBlob(`/api/photos/${photoId}/render?stage=final&size=card`, { body });
-          const url = URL.createObjectURL(blob);
-          remember(key, url);
-          resolve(url);
-        } catch (e) {
-          reject(e);
-        }
-      },
-    });
-  }).finally(() => {
-    if (flights.get(key) === entry) flights.delete(key);
-  });
-  flights.set(key, entry);
-  pump();
-  return entry.promise;
-}
-
 function styleList(ed) {
   const list = ed.frames && ed.frames.styles;
   const arr = Array.isArray(list) ? list : Object.values(list || {});
   return arr.filter((s) => s && s.id).map((s) => ({ id: s.id, name: FRAME_NAMES[s.id] || s.name || s.id, options: s.options || [], defaults: s.defaults || null }));
 }
 
-// 一张卡片的缩略图：用当前照片、这个样式的边框，由后端渲染（不另外做假图）
-function loadThumb(view, style, holder) {
+// 改一项：界面和大图马上变，保存另外排队
+function change(view, patch) {
   const ed = view.ed;
-  const base = style.defaults ? { ...DEFAULT_FRAME, ...style.defaults } : { ...DEFAULT_FRAME };
-  const body = { frame: frameBody({ ...base, style: style.id }, style.options) };
-  const key = `${view.photo.id}|${ed.rev}|${JSON.stringify(body)}`;
-  // 还在渲染时卡片是一块轻轻呼吸的底色（不放「…」）；出来了淡入
-  const done = () => {
-    holder.classList.remove('skel');
-    holder.removeAttribute('aria-busy');
-  };
-  // 不看 isConnected：面板还在搭（卡片还没挂上页面）时图就到了，也要填进去，不然一直停在骨架（AA01，PR #39 复审）
-  const show = (url) => {
-    done();
-    holder.replaceChildren(h('img', { src: url, alt: '', draggable: 'false' }));
-  };
-  // 缓存里有：卡片还没挂到页面上（面板正在搭），直接填进去，不看 isConnected，否则会一直停在骨架（AA01）
-  if (THUMB_CACHE.has(key)) {
-    done();
-    holder.replaceChildren(h('img', { src: THUMB_CACHE.get(key), alt: '', draggable: 'false' }));
-    return;
-  }
-  fetchThumb(view, body, key).then(show, () => {
-    done();
-    holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
-  });
-}
-
-function setFrame(view, patch) {
-  const ed = view.ed;
+  if (!ed) return; // 面板上的计时器到点时，这张照片已经关了：改动早就在 ed 里，由 save 写下来
   beginChange(view);
   ed.frame = normalizeFrame({ ...ed.frame, ...patch });
   ed.frameFrom = 'photo'; // 改过就是照片自己的设置，不再继承默认值
+  view.onChange?.();
+}
+
+function save(view, ed) {
   persist(view, { frame: frameBody(ed.frame, styleOptions(ed, ed.frame.style)) }).then(() => endChange(view));
-  schedulePreview(view, { full: true });
+}
+
+function setFrame(view, patch) {
+  change(view, patch);
+  save(view, view.ed);
   view.redrawSide?.();
 }
 
@@ -160,9 +58,10 @@ export function framePanel(view) {
   const cur = ed.frame;
   const opts = styleOptions(ed, cur.style);
 
+  const items = [];
   const cards = h('div', { class: 'fcards' }, ...styles.map((s) => {
     const thumb = h('div', { class: 'thumb skel', 'aria-busy': 'true' });
-    loadThumb(view, s, thumb);
+    items.push({ style: s, holder: thumb });
     return h('button', {
       type: 'button', class: `fcard${s.id === 'none' ? ' none' : ''}`, 'aria-pressed': String(cur.style === s.id),
       onclick: () => {
@@ -170,6 +69,7 @@ export function framePanel(view) {
       },
     }, thumb, h('div', { class: 'nm' }, s.name));
   }));
+  paintCards(view, items);
 
   const rows = [h('div', { class: 'pane-head' }, h('h2', {}, '边框')), cards];
   if (cur.style !== 'none') {
@@ -192,7 +92,14 @@ export function framePanel(view) {
     }
     if (opts.includes('text')) {
       const input = h('input', { type: 'text', value: cur.text, maxlength: String(TEXT_MAX), 'aria-label': '文字' });
-      input.addEventListener('change', () => setFrame(view, { text: clipText(input.value.trim()) }));
+      // 边输入边变，停下来再保存。这个输入框不重搭面板（重搭会丢掉光标）
+      liveText(input, {
+        apply: () => change(view, { text: clipText(input.value) }),
+        save: () => {
+          change(view, { text: ed.frame.text.trim() }); // 前后的空格输入时留着，写下来时去掉
+          save(view, ed);
+        },
+      });
       rows.push(h('div', { class: 'sec' }, '文字'), input);
     }
     if (opts.includes('canvas_ratio')) {
