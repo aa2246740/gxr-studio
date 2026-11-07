@@ -11,6 +11,7 @@ import { walkRounds } from './frame_nav_walk.mjs';
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
 const deadlineMs = Number(process.env.VIEWER_DEADLINE_MS || 200000);
+const delayRenderMs = Number(process.env.VIEWER_DELAY_RENDER_MS || 0);
 const debugPort = 19500 + Math.floor(Math.random() * 400);
 const chromeLogPath = `${profile}.log`;
 const chromeLog = openSync(chromeLogPath, 'w');
@@ -45,9 +46,9 @@ chromeTail.full = () => {
   }
 };
 // Chrome 日志里和显卡有关的行（GPU 进程崩溃、看门狗、设备丢失、Dawn 报错），留最后 30 行
-const gpuLogLines = () => {
 // 画布上不了屏时 Chrome 日志里的错：共享图像建不起来（Unable to create shared image），或者取不到（ProduceMemory … non-existent mailbox）
 const PRESENT_ERRORS = /Unable to create shared image|SharedImageBackingFactory|SharedImageManager::ProduceMemory|non-existent mailbox/;
+const gpuLogLines = () => {
   try {
     return readFileSync(chromeLogPath, 'utf8').split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context|shared ?image|mailbox/i.test(l)).slice(-30).map((l) => l.slice(0, 300));
   } catch {
@@ -175,7 +176,11 @@ try {
     if (holding && p.request.method === 'PUT' && /\/crop$/.test(p.request.url)) held.push(p.requestId);
     else if (holdEdit && p.request.method === 'PUT' && /\/edit$/.test(p.request.url)) held.push(p.requestId);
     else if (fakeAuto && p.request.method === 'POST' && /\/geometry\/auto$/.test(p.request.url)) pausedAuto.push(p.requestId);
-    else await call('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
+    else {
+      // VIEWER_DELAY_RENDER_MS：舞台自己的出图（不是边框卡片 480 像素的小底图）慢这么久才回来，模拟忙的机器或慢的服务器
+      if (delayRenderMs && p.request.method === 'POST' && p.request.url.includes('/render?') && !p.request.url.includes('max_edge=480')) await sleep(delayRenderMs);
+      await call('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
+    }
   });
   const answerAuto = async (json) => {
     for (const requestId of pausedAuto.splice(0)) {
@@ -203,8 +208,24 @@ try {
     }
     return ids.length;
   };
-  await call('Fetch.enable', { patterns: ['*/crop', '*/edit', '*/geometry/auto'].map((urlPattern) => ({ urlPattern, requestStage: 'Request' })) });
+  await call('Fetch.enable', { patterns: ['*/crop', '*/edit', '*/geometry/auto', ...(delayRenderMs ? ['*/render*'] : [])].map((urlPattern) => ({ urlPattern, requestStage: 'Request' })) });
   await call('Page.enable');
+  // 每个新页面都装一个记录：照片出图（/render?…）什么时候「发出」、有几个还在路上、最近一次动静是什么时候。
+  // 数「回来」的（resource timing 只记完成的）会把前一步发出、这一步才回来的出图算到这一步头上，机器一慢就误报
+  await call('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      const real = window.fetch.bind(window);
+      const log = (window.__fetchLog = { renders: 0, inflight: 0, lastAt: 0 });
+      window.fetch = (...args) => {
+        const first = args[0];
+        const isRender = String((first && first.url) || first).includes('/render?');
+        if (isRender) { log.renders += 1; log.inflight += 1; log.lastAt = performance.now(); }
+        const p = real(...args);
+        if (isRender) { const done = () => { log.inflight -= 1; log.lastAt = performance.now(); }; p.then(done, done); }
+        return p;
+      };
+    })()`,
+  });
 
   // 第一次带令牌打开（换成 cookie），再选预览方式，然后进这张照片
   const origin = `http://127.0.0.1:${port}`;
@@ -510,6 +531,7 @@ try {
   // 离开裁切页时大图会重新出一次（服务器出图时）；卡片自己的底图请求带 max_edge=480，最多一张
   out.cards.cardRenders = renderCount(mark, /max_edge=480/);
   out.cards.stageRenders = renderCount(mark, /^(?!.*max_edge=480)/);
+  out.cards.renderUrls = requestLog.slice(mark).filter((r) => /\/render\b/.test(r)).map((r) => r.replace(/^POST http:\/\/[^/]+/, '').replace(/token=[^&\s]+/, 'token=…'));
 
   // 7) 加了边框和时间戳以后：显卡还在管，拖滑块不请求 /render，点样式、改选项当帧就画出来
   step('frame and stamp with the preview on');
@@ -518,7 +540,11 @@ try {
     const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
     const deco = () => { const pv = document.querySelector('.pv'); return { framed: pv.classList.contains('framed'), overlay: !!pv.querySelector('.pv-deco'), size: [pv.style.width, pv.style.height] }; };
     const card = (name) => [...document.querySelectorAll('.fcard')].find((x) => x.textContent.trim() === name);
-    const renders = () => performance.getEntriesByType('resource').filter((e) => /\\/render\\b/.test(e.name)).length;
+    // 前一步（离开裁剪页、画边框卡片）发出的出图可能还在路上，或者刚发出：等到安静下来（没有在路上的、最近 0.8 秒没有新的）再开始数，
+    // 数的是点下去之后「发出」的 /render，不是「回来」的：前一步留下的那一个晚到，不算在这些点击头上
+    const fetchLog = window.__fetchLog;
+    const quiet = await until(() => fetchLog.inflight === 0 && performance.now() - fetchLog.lastAt > 800, 30000);
+    const renders = () => fetchLog.renders;
     const renders0 = renders();
     // 每个「当帧画出来」的操作都记三样：点下（或输入）之后的下一帧，叠加层的画法（key）变了没有（服务器出图的话一帧里不可能变）；
     // 耗时多少；这一次操作前后各三帧里最长的一帧是多长（机器忙时帧本身就拖长，拿它当这一次的尺子）
@@ -616,9 +642,11 @@ try {
     const next = await settle((l) => !l.framed && !l.overlay);
     document.querySelector('button[aria-label^="上一张"]').click();
     const back = await settle(framed);
-    return { clicks, styleFramed, frame, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
+    return { quiet: !!quiet, clicks, styleFramed, frame, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
   })()`, 90000);
   out.live.requests = requestLog.slice(mark).filter((r) => !/^PUT /.test(r) && !/\/(edit|crop)$/.test(r)).slice(-8);
+  // 步骤 7 里发出的每一个 /render（带地址）：失败时看得出是哪一个
+  out.live.renderUrls = requestLog.slice(mark).filter((r) => /\/render\b/.test(r)).map((r) => r.replace(/token=[^&\s]+/, 'token=…'));
   step('done');
 } catch (e) {
   out.error = String(e && e.message ? e.message : e).slice(0, 800);
