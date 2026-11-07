@@ -426,24 +426,23 @@ def export_finish(
     except OSError as exc:
         raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
     ext = FORMATS[fmt][1]
+    hdr_info: dict[str, Any] = {}
+    payload = write_with_exif(data, _source_path(lib, shot), note, quality=quality, fmt=fmt)
+    if track is not None:
+        payload, hdr_info = finish_hdr(payload, track, fmt)
+    # 文件名在知道有没有做成 HDR 之后再占：做成的叫 `原名_gxr_hdr.jpg`，没做成的和普通导出一样
+    if hdr_info.get("hdr") is True:
+        tag += "_hdr"
     try:
         path, fd = claim_path(dest, str(shot["name"]), ext, tag)
     except OSError as exc:
         raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
-    owned = True
-    hdr_info: dict[str, Any] = {}
     try:
-        payload = write_with_exif(data, _source_path(lib, shot), note, quality=quality, fmt=fmt)
-        if track is not None:
-            payload, hdr_info = finish_hdr(payload, track, fmt)
         with os.fdopen(fd, "wb") as fh:
-            owned = False
             fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
     except BaseException:
-        if owned:
-            os.close(fd)
         path.unlink(missing_ok=True)
         raise
     with Image.open(path) as saved:
