@@ -75,7 +75,8 @@ def _run_scene(tmp_path: Path) -> dict:
     assert node is not None
     folder = tmp_path / "web"
     folder.mkdir()
-    for name in ("dom.js", "controls.js", "onboarding.js", "export.js", "lut.js", "saves.js", "jobs.js", "busy.js", "gpu_pref.js", "poll.js"):
+    names = ("dom.js", "controls.js", "onboarding.js", "export.js", "lut.js", "saves.js", "jobs.js", "busy.js", "gpu_pref.js", "poll.js")
+    for name in (*names, "my_recipes.js"):
         shutil.copy(ASSETS / name, folder / name)
     (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     (folder / "api.js").write_text(
