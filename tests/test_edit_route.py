@@ -707,3 +707,26 @@ def test_retry_after_a_failed_turn_and_a_later_perspective_keeps_the_box(tmp_pat
     assert after["frame"] == after["serverFrame"]
     crop_puts = [p for p in after["puts"] if p[0] == "crop"]
     assert crop_puts and all(p[1] is not None and p[2] is True for p in crop_puts), after["puts"]
+
+
+def test_retrying_a_rejected_drag_keeps_the_users_box(tmp_path):
+    """评审 P1（第五轮）：拖的框被服务器拒了（形状不对），重试时不能悄悄换成 fit 收小的框：
+    还是原来的写入、还是被拒，提示出来，界面上的框原样留着；服务器认了（条件变了）才写进去。"""
+    out = run(tmp_path, "retry-rejected-drag", real=("crop.js", "correct.js"))
+    mine = [0.2, 0.15, 0.3, 0.6]
+    assert out["first"]["puts"] == [["crop", mine, False]] and out["first"]["status"] == "failed" and out["first"]["screen"] == mine
+    assert out["retry"] is False
+    assert out["afterRetry"]["puts"] == [["crop", mine, False]], "重试发的还是原来的写入，没有 fit"
+    assert out["afterRetry"]["status"] == "failed" and out["afterRetry"]["screen"] == mine
+
+
+def test_retry_fits_a_box_only_right_after_writing_the_geometry_it_was_placed_against(tmp_path):
+    """评审 P1（第五轮）的另一面：拖的框没写进去（普通的写入），接着垂直的几何也没写进去。重试先写几何；
+    几何刚写进去，这个框是按旧几何摆的，被拒就当目标让服务器收成最近的合格框。"""
+    out = run(tmp_path, "retry-geometry-then-plain-box", real=("crop.js", "correct.js"))
+    assert out["skipped"]["status"] == "failed"
+    after = out["afterRetry"]
+    assert out["retry"] is True and after["status"] in ("saved", "idle")
+    mine = [0.2, 0.15, 0.3, 0.6]
+    assert after["puts"] == [["edit"], ["crop", mine, False], ["crop", mine, True]], after["puts"]
+    assert after["server"] == mine, "位置保留"

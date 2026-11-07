@@ -1,20 +1,19 @@
 // 裁剪 / 几何的随机交错测试（种子固定，可重现）。
-// 真正的 viewer.js、preview.js、correct.js、crop.js、saves.js、crop_save.js、undo_entries.js 在 node 里跑，
-// 接口换成一个照真服务器规则写的替身：
-//   - 写几何：存下几何；需要收框（拉直、透视、畸变）时把已存的框按预设比例收进新的有效画面，画布尺寸跟着变（旋转交换宽高）；
-//     只旋转、翻转时服务器不动框（和真服务器一样，框要界面自己转）。
-//   - 写框：先校验（范围、最小边、预设比例 1%、拉直后的有效区），不合格 422（ratio_mismatch / crop_outside_image / bad_rect / too_small）；
-//     rect 为 null 时服务器自己算居中的最大框；写框还会把 angle_deg 写成几何的拉直角度（真服务器的 write_crop 就是这样）。
-//   - 随机延迟；随机挂住（等放行）、500、rev_conflict（409，不写入）。
+// 真正的 viewer.js、preview.js、correct.js、crop.js、saves.js、undo_entries.js 在 node 里跑；
+// 服务器是真的：tests/test_edit_fuzz.py 起一个真服务器（真的路由、sidecar、收框、校验），这里的「替身」只做一件事——
+// 在请求前加随机延迟、挂住（等放行）、500、rev_conflict（409，不转发，服务器上什么也没变），其余原样转发给真服务器。
+// 写编辑、写框走测试专用的包装路由（tests/support/fit_checks.py）：先调用真正的处理函数，再用真代码检查写下去的框
+// （能不能通过 validate_crop、有没有落在有效区里、fit 有没有保留中心、有没有收得比必要的更小）。
 // 每条序列 6–10 步，从这些里抽：旋转、翻转、垂直 / 水平 / 畸变滑块、拉直、自动、点比例、挪框、撤销、重做、重试、等写完（settle）。
-// 同一串步骤再在「没有故障、每步等写完」的理想情形下跑一遍，两边写完以后必须一致。
-// 用法：node edit_fuzz.mjs <模块目录> <起始种子> <条数>。输出一行 JSON，断言在 Python 那边。
+// 同一串步骤再在「没有故障、每步等写完」的理想情形下跑一遍。
+// 用法：node edit_fuzz.mjs <模块目录> <起始种子> <条数> <端口> <令牌> <照片 id>。输出一行 JSON，断言在 Python 那边。
 import { pathToFileURL } from 'node:url';
 import { installDom, tick } from './mini_dom.mjs';
 
-const folder = process.argv[2];
-const seedStart = Number(process.argv[3] || 1);
-const count = Number(process.argv[4] || 200);
+const [folder, seedArg, countArg, portArg, token, realId] = process.argv.slice(2);
+const seedStart = Number(seedArg || 1);
+const count = Number(countArg || 100);
+const base = `http://127.0.0.1:${portArg}`;
 const file = (name) => pathToFileURL(`${folder}/${name}`).href;
 
 installDom();
@@ -31,204 +30,48 @@ function rng(seed) {
   };
 }
 const pick = (r, list) => list[Math.floor(r() * list.length)];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ---- 服务器规则（照 crop.py / finish.geometry 的做法，数值是简化的但规则一样）-------------------
-const BASE = { w: 3000, h: 2000 };
-const DEFAULT_GEOMETRY = { straighten: 0, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false };
-const PRESETS = { original: 'frame', free: null, '1:1': 1, '4:5': 1.25, '3:2': 1.5, '4:3': 4 / 3, '16:9': 16 / 9 };
-const expands = (g) => !!(g.vertical || g.horizontal || g.distortion);
-const needsFit = (g) => Math.abs(g.straighten) > 1e-9 || expands(g);
-
-function frameOf(g) {
-  let w = BASE.w;
-  let h = BASE.h;
-  if (expands(g)) {
-    w = Math.round(BASE.w * (1 + (Math.abs(g.vertical) + Math.abs(g.horizontal)) / 400));
-    h = Math.round(BASE.h * (1 + Math.abs(g.distortion) / 400 + Math.abs(g.vertical) / 800));
-  }
-  return g.rotate90 % 2 ? { width: h, height: w } : { width: w, height: h };
-}
-// 有效画面：拉直用 crop.py 的 box_inside（四个角转回去都在原画面里）；透视、畸变再给一块居中的、边长是画布 k 倍的区域
-const kPersp = (g) => 1 / (1 + (Math.abs(g.vertical) + Math.abs(g.horizontal) + Math.abs(g.distortion)) / 300);
-const r6 = (v) => Math.round(v * 1e6) / 1e6;
-
-function boxInside(x0, y0, w, h, width, height, angle, tol) {
-  const th = (angle * Math.PI) / 180;
-  const c = Math.cos(th);
-  const s = Math.sin(th);
-  const cx = width / 2;
-  const cy = height / 2;
-  for (const [px, py] of [[x0, y0], [x0 + w, y0], [x0, y0 + h], [x0 + w, y0 + h]]) {
-    const dx = px - cx;
-    const dy = py - cy;
-    const sx = dx * c + dy * s;
-    const sy = -dx * s + dy * c;
-    if (Math.abs(sx) > width / 2 + tol || Math.abs(sy) > height / 2 + tol) return false;
-  }
-  return true;
-}
-
-function ratioOf(preset, frame, orientation) {
-  const base = PRESETS[preset];
-  if (base === null) return null;
-  if (base === 'frame') return frame.width / frame.height;
-  return orientation === 'portrait' ? 1 / base : base;
-}
-
-// 把框收进有效画面（照 geometry.fit_preset_in_valid / clamp_norm_rect 的规则）：
-//   - 定比例的预设：取目标框里最大的、比例对的框（横竖跟着目标框），再缩进有效画面，中心尽量不动；
-//   - 自由、原始：已经在有效画面里就原样返回，不然保持宽高比缩进去。
-function fit(rect, preset, frame, g) {
-  const W = frame.width;
-  const H = frame.height;
-  const kP = kPersp(g);
-  const angle = g.flip ? -g.straighten : g.straighten;
-  const [x, y, w, h] = rect;
-  let pw = w * W;
-  let ph = h * H;
-  const cx = (x + w / 2) * W;
-  const cy = (y + h / 2) * H;
-  const okAt = (bw, bh) => {
-    const bx = Math.min(Math.max(cx - bw / 2, ((1 - kP) / 2) * W), ((1 + kP) / 2) * W - bw);
-    const by = Math.min(Math.max(cy - bh / 2, ((1 - kP) / 2) * H), ((1 + kP) / 2) * H - bh);
-    return bw <= kP * W + 1e-6 && bh <= kP * H + 1e-6 && boxInside(bx, by, bw, bh, W, H, angle, 1e-6);
-  };
-  const base = PRESETS[preset];
-  const fixed = typeof base === 'number';
-  if (fixed) {
-    const landscape = pw >= ph;
-    const r = landscape === base >= 1 ? base : 1 / base;
-    const bw = Math.min(pw, ph * r);
-    pw = bw;
-    ph = bw / r;
-  } else if (okAt(pw, ph) && x * W >= ((1 - kP) / 2) * W - 1e-6 && y * H >= ((1 - kP) / 2) * H - 1e-6 && (x + w) * W <= ((1 + kP) / 2) * W + 1e-6 && (y + h) * H <= ((1 + kP) / 2) * H + 1e-6 && boxInside(x * W, y * H, pw, ph, W, H, angle, 1e-6)) {
-    return rect.map(r6);
-  }
-  let lo = 0.02;
-  let hi = 1;
-  if (okAt(pw, ph)) lo = 1;
-  else for (let i = 0; i < 24; i += 1) {
-    const mid = (lo + hi) / 2;
-    if (okAt(pw * mid, ph * mid)) lo = mid;
-    else hi = mid;
-  }
-  pw *= lo;
-  ph *= lo;
-  const px = Math.min(Math.max(cx - pw / 2, ((1 - kP) / 2) * W), ((1 + kP) / 2) * W - pw);
-  const py = Math.min(Math.max(cy - ph / 2, ((1 - kP) / 2) * H), ((1 + kP) / 2) * H - ph);
-  return [r6(px / W), r6(py / H), r6(pw / W), r6(ph / H)];
-}
-
-function defaultBox(preset, orientation, frame, g) {
-  const r = ratioOf(preset, frame, orientation) ?? frame.width / frame.height;
-  const angle = g.flip ? -g.straighten : g.straighten;
-  let pw = frame.width;
-  let ph = pw / r;
-  if (ph > frame.height) {
-    ph = frame.height;
-    pw = ph * r;
-  }
-  let lo = 0.02;
-  let hi = 1;
-  const okAt = (bw, bh) => boxInside((frame.width - bw) / 2, (frame.height - bh) / 2, bw, bh, frame.width, frame.height, angle, 1e-6);
-  if (okAt(pw, ph)) lo = 1;
-  else for (let i = 0; i < 24; i += 1) {
-    const mid = (lo + hi) / 2;
-    if (okAt(pw * mid, ph * mid)) lo = mid;
-    else hi = mid;
-  }
-  pw = Math.floor(pw * lo);
-  ph = Math.floor(pw / r + 0.5);
-  return [(frame.width - pw) / 2 / frame.width, (frame.height - ph) / 2 / frame.height, pw / frame.width, ph / frame.height];
-}
-
-class ServerError extends Error {
-  constructor(status, code, message) {
-    super(message);
+// ---- 真服务器 ---------------------------------------------------------------
+class ApiErr extends Error {
+  constructor(status, code, message, data) {
+    super(message || '无法完成操作。请重试。');
     this.status = status;
     this.code = code;
-    this.data = { message };
+    this.data = data;
   }
 }
 
-function validate(preset, rect, frame, g) {
-  if (!(preset in PRESETS)) throw new ServerError(422, 'unknown_preset', '无法裁剪。请重新选择比例。');
-  const [x, y, w, h] = rect;
-  const eps = 1e-9;
-  if (!rect.every(Number.isFinite) || w <= 0 || h <= 0 || x < -eps || y < -eps || x + w > 1 + eps || y + h > 1 + eps) throw new ServerError(422, 'bad_rect', '裁剪框超出画面范围');
-  const wp = Math.round(w * frame.width);
-  const hp = Math.round(h * frame.height);
-  if (wp < 16 || hp < 16) throw new ServerError(422, 'too_small', '裁剪框超出画面范围');
-  const r = PRESETS[preset] === null ? null : ratioOf(preset, frame, 'landscape');
-  if (r !== null) {
-    const got = wp / hp;
-    if (Math.min(Math.abs(got - r) / r, Math.abs(got - 1 / r) / (1 / r)) > 0.01) throw new ServerError(422, 'ratio_mismatch', '裁剪框超出画面范围');
+async function direct(method, path, body) {
+  const res = await fetch(base + path, {
+    method,
+    headers: { 'X-GXR-Token': token, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
   }
-  const angle = g.flip ? -g.straighten : g.straighten;
-  if (!boxInside(Math.round(x * frame.width), Math.round(y * frame.height), wp, hp, frame.width, frame.height, angle, 1)) throw new ServerError(422, 'crop_outside_image', '裁剪框超出画面范围');
+  if (!res.ok) throw new ApiErr(res.status, data?.error || `http_${res.status}`, data?.message, data);
+  return data;
 }
 
-// ---- 照片（服务器上的状态）-------------------------------------------------------
-const photos = new Map(); // id → { rev, geometry, crop:{preset, rect, orientation}, puts:[] }
-const PHOTO_META = (id) => ({ id, name: `${id}.DNG`, date: '2026-10-01', captured_at: '2026-10-01T10:00:00', has_raw: true, has_jpg: true, width: BASE.w, height: BASE.h, lens: '50mm' });
-
-function newPhoto(id) {
-  photos.set(id, { rev: 1, geometry: { ...DEFAULT_GEOMETRY }, crop: { preset: 'original', rect: [0, 0, 1, 1], orientation: 'landscape' }, writes: 0, edits: 0, nullWrites: 0 });
-}
-
-function cropPayload(p) {
-  const frame = frameOf(p.geometry);
-  const bw = Math.round(p.crop.rect[2] * frame.width);
-  const bh = Math.round(p.crop.rect[3] * frame.height);
-  return { preset: p.crop.preset, rect: [...p.crop.rect], angle_deg: p.geometry.straighten, active: true, frame: { ...frame }, orientation: bw >= bh ? 'landscape' : 'portrait', rev: p.rev };
-}
-const editPayload = (p) => ({ rev: p.rev, recipe: null, lut: null, adjust: {}, curve: null, geometry: { ...p.geometry }, frame: null, stamp: null, memory: {}, render: { available: true } });
-
-function applyEdit(p, body) {
-  if (body.geometry) {
-    const g = { ...DEFAULT_GEOMETRY, ...body.geometry };
-    g.straighten = Math.max(-45, Math.min(45, Number(g.straighten) || 0));
-    p.geometry = g;
-    if (needsFit(g)) p.crop.rect = fit(p.crop.rect, p.crop.preset, frameOf(g), g);
-  }
-}
-
-function applyCrop(p, body) {
-  const g = { ...p.geometry, straighten: body.angle_deg ?? p.geometry.straighten };
-  const frame = frameOf(g);
-  const orientation = body.orientation || 'landscape';
-  let rect;
-  if (body.rect === null || body.rect === undefined) {
-    p.nullWrites += 1;
-    rect = defaultBox(body.preset, orientation, frame, g);
-  }
-  else if (body.fit) {
-    // 目标框：不合格也不拒绝，整理成有限、正尺寸、在画面里，下面收成离它最近的合格框
-    if (!(body.preset in PRESETS)) throw new ServerError(422, 'unknown_preset', '无法裁剪。请重新选择比例。');
-    let [x, y, w, h] = body.rect.map(Number);
-    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) throw new ServerError(422, 'bad_rect', '裁剪框超出画面范围');
-    w = Math.min(w, 1);
-    h = Math.min(h, 1);
-    x = Math.min(Math.max(x, 0), 1 - w);
-    y = Math.min(Math.max(y, 0), 1 - h);
-    rect = [x, y, w, h];
-  } else {
-    rect = body.rect.map(Number);
-    validate(body.preset, rect, frame, g);
-  }
-  if (needsFit(g) || (body.fit && body.rect)) rect = fit(rect, body.preset, frame, g);
-  p.geometry = g;
-  p.crop = { preset: body.preset, rect: rect.map(r6), orientation };
-}
-
-// ---- 故障与延迟 ---------------------------------------------------------------
+// ---- 故障与延迟（只在转发之前）--------------------------------------------------
 let faultRng = rng(1);
 let faultsOn = false;
+let latencyOnly = false; // 只加延迟、不出故障（串行的序列）
 let holdList = []; // 挂住的 PUT：{ resolve }
-let nth = 0;
+let inflight = 0; // 正在路上的请求（含挂住的）
+let trace = [];
+let faultCount = 0;
+let serverProblems = []; // 包装路由用真代码查出来的问题
+const T = (...a) => trace.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
 
 async function maybeFault(method) {
-  await tick(faultsOn ? Math.floor(faultRng() * 3) : 0);
+  await tick(faultsOn || latencyOnly ? Math.floor(faultRng() * 3) : 0);
   if (!faultsOn || method !== 'PUT') return;
   const roll = faultRng();
   if (roll < 0.1) {
@@ -238,11 +81,11 @@ async function maybeFault(method) {
   } else if (roll < 0.18) {
     faultCount += 1;
     T('  500 PUT');
-    throw new ServerError(500, 'disk_full', '磁盘已满，无法写入编辑记录。');
+    throw new ApiErr(500, 'disk_full', '磁盘已满，无法写入编辑记录。', null);
   } else if (roll < 0.24) {
     faultCount += 1;
     T('  409 PUT');
-    throw new ServerError(409, 'rev_conflict', '这张照片已在别处修改。请刷新后重试。');
+    throw new ApiErr(409, 'rev_conflict', '这张照片已在别处修改。请刷新后重试。', null);
   }
 }
 const releaseHolds = () => {
@@ -251,48 +94,43 @@ const releaseHolds = () => {
   for (const h of list) h.resolve();
 };
 
-let trace = [];
-let faultCount = 0;
-const T = (...a) => trace.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
 let autoAnswer = { straighten: 0, vertical: 0, confident: false, message: '未检测到明显的水平线' };
+let photoMeta = null;
 
 globalThis.apiStub = async (url, opts = {}) => {
   const method = opts.method || 'GET';
   let m;
-  if (method === 'GET' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
-    const p = photos.get(m[1]);
-    await maybeFault('GET');
-    T('  GET', m[2], m[2] === 'crop' ? cropPayload(p).rect : p.geometry);
-    return m[2] === 'edit' ? editPayload(p) : cropPayload(p);
+  inflight += 1;
+  try {
+    if (method === 'GET' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
+      await maybeFault('GET');
+      const r = await direct('GET', `/api/photos/${realId}/${m[2]}`);
+      T('  GET', m[2], m[2] === 'crop' ? r.rect : r.geometry);
+      return r;
+    }
+    if (method === 'PUT' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
+      await maybeFault('PUT');
+      const out = await direct('PUT', `/__test/photos/${realId}/${m[2]}`, opts.body);
+      for (const p of out.problems) serverProblems.push(`${m[2]} ${JSON.stringify(m[2] === 'crop' ? { preset: opts.body.preset, rect: opts.body.rect, fit: opts.body.fit } : opts.body.geometry)}: ${p}`);
+      T('  PUT', m[2], m[2] === 'edit' ? opts.body.geometry : { preset: opts.body.preset, rect: opts.body.rect, fit: !!opts.body.fit }, '→', m[2] === 'edit' ? out.resp.geometry : out.resp.rect);
+      return out.resp;
+    }
+    if (method === 'GET' && (m = /^\/api\/photos\/(\w+)$/.exec(url))) return { ...photoMeta, id: m[1] };
+    if (method === 'GET' && url.startsWith('/api/photos?')) return [photoMeta];
+    if (method === 'GET' && /\/capabilities$/.test(url)) return { raw: true, recipe: 'full', reason: '' };
+    if (method === 'GET' && /\/meta$/.test(url)) return {};
+    if (method === 'GET' && url === '/api/recipes') return { units: [] };
+    if (method === 'GET' && url === '/api/frames') return { styles: [] };
+    if (method === 'GET' && url === '/api/defaults/finish') return { frame: { style: 'none' }, stamp: { enabled: false } };
+    if (method === 'GET' && url === '/api/camdata/status') return { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
+    if (method === 'POST' && /\/geometry\/auto$/.test(url)) {
+      await maybeFault('GET');
+      return { ...autoAnswer };
+    }
+    throw new Error(`没有替身：${method} ${url}`);
+  } finally {
+    inflight -= 1;
   }
-  if (method === 'GET' && (m = /^\/api\/photos\/(\w+)$/.exec(url))) return PHOTO_META(m[1]);
-  if (method === 'GET' && url.startsWith('/api/photos?')) return [...photos.keys()].map(PHOTO_META);
-  if (method === 'GET' && /\/capabilities$/.test(url)) return { raw: true, recipe: 'full', reason: '' };
-  if (method === 'GET' && /\/meta$/.test(url)) return {};
-  if (method === 'GET' && url === '/api/recipes') return { units: [] };
-  if (method === 'GET' && url === '/api/frames') return { styles: [] };
-  if (method === 'GET' && url === '/api/defaults/finish') return { frame: { style: 'none' }, stamp: { enabled: false } };
-  if (method === 'GET' && url === '/api/camdata/status') return { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
-  if (method === 'POST' && /\/geometry\/auto$/.test(url)) {
-    await maybeFault('GET');
-    return { ...autoAnswer };
-  }
-  if (method === 'PUT' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
-    const p = photos.get(m[1]);
-    nth += 1;
-    await maybeFault('PUT');
-    const body = opts.body;
-    if (body.expected_rev !== p.rev) throw new ServerError(409, 'rev_conflict', '这张照片已在别处修改。请刷新后重试。');
-    const before = JSON.stringify([p.geometry, p.crop]);
-    if (m[2] === 'edit') applyEdit(p, body);
-    else applyCrop(p, body);
-    p.rev += 1;
-    p.writes += 1;
-    T('  PUT', m[2], body.geometry || { preset: body.preset, rect: body.rect, angle: body.angle_deg, o: body.orientation }, '→', { g: p.geometry, rect: p.crop.rect });
-    p.log = [...(p.log || []), `${m[2]}${JSON.stringify(body.geometry || body.rect)}${before === JSON.stringify([p.geometry, p.crop]) ? '=' : ''}`];
-    return m[2] === 'edit' ? editPayload(p) : cropPayload(p);
-  }
-  throw new Error(`没有替身：${method} ${url}`);
 };
 globalThis.apiBlobStub = () => Promise.resolve({ blob: {}, headers: { get: () => null } });
 
@@ -331,6 +169,15 @@ async function go(hash) {
 const toastText = () => document.getElementById('toast-root').children.map((t) => t.textContent);
 const near = (a, b, eps) => a.every((v, i) => Math.abs(v - b[i]) <= eps);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const centre = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
+// 同一个框的两种收法：重叠占小的那个的 60% 以上。收的先后不同（一个框用的是服务器收过的、一个用的是界面还没跟上的），
+// 框的大小和被有效区推开的距离会不同，中心可以差开；但不能是两块没什么关系的地方
+function boxesAgree(a, b) {
+  const w = Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]);
+  const h = Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]);
+  if (w <= 0 || h <= 0) return false;
+  return (w * h) / Math.min(a[2] * a[3], b[2] * b[3]) >= 0.6;
+}
 
 // ---- 一条序列 --------------------------------------------------------------
 const ITEMS = [
@@ -339,6 +186,8 @@ const ITEMS = [
   { id: '1:1', label: '1:1' },
   { id: '3:2', label: '3:2' },
   { id: '16:9', label: '16:9' },
+  { id: 'xpan-65-24', label: 'XPan 65:24' },
+  { id: '1.91:1', label: 'Instagram 1.91:1', orient: 'landscape' },
   { id: '4:3', label: '小红书 3:4', orient: 'portrait' },
   { id: '4:5', label: 'Instagram 4:5', orient: 'portrait' },
 ];
@@ -354,7 +203,7 @@ function makeSteps(seed) {
   while (steps.length < n) {
     const kind = pick(r, kinds);
     if (kind === 'slider') steps.push(['slider', pick(r, ['vertical', 'horizontal', 'distortion']), pick(r, [-60, -30, 0, 20, 40, 80])]);
-    else if (kind === 'straighten') steps.push(['straighten', pick(r, [-2, -0.5, 0.5, 2, 4])]);
+    else if (kind === 'straighten') steps.push(['straighten', pick(r, [-2, -0.5, 0.5, 2, 4, 6])]);
     else if (kind === 'auto') steps.push(['auto', pick(r, [0, 1.5, 4]), pick(r, [0, 8, 40])]);
     else if (kind === 'ratio') steps.push(['ratio', pick(r, ITEMS)]);
     else if (kind === 'nudge') steps.push(['nudge', (r() - 0.5) * 0.2, (r() - 0.5) * 0.2]);
@@ -369,16 +218,21 @@ const screenState = (v) => ({
   preset: v.crop.preset,
   frame: [v.crop.frame.width, v.crop.frame.height],
 });
-const serverState = (id) => {
-  const p = photos.get(id);
-  const f = frameOf(p.geometry);
-  return { geometry: { ...p.geometry }, rect: [...p.crop.rect], preset: p.crop.preset, frame: [f.width, f.height] };
-};
+async function serverState() {
+  const [edit, crop] = await Promise.all([direct('GET', `/api/photos/${realId}/edit`), direct('GET', `/api/photos/${realId}/crop`)]);
+  return { geometry: { straighten: 0, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false, ...(edit.geometry || {}) }, rect: crop.rect, preset: crop.preset, frame: [crop.frame.width, crop.frame.height] };
+}
 const stateText = (s) => `${JSON.stringify(s.geometry)} ${s.preset} [${s.rect.map((x) => +x.toFixed(4))}] ${s.frame}`;
 
 async function runSequence(seed, steps, { ideal }) {
+  // 每三条里有一条是「串行」的：只加延迟、不出故障，每一步等上一步全部写完才开始（和理想情形的操作顺序一样）
+  const serialMode = !ideal && seed % 3 === 0;
+  latencyOnly = serialMode;
   const id = `${ideal ? 'b' : 'a'}${seed.toString(16)}`; // 路由只认十六进制的 id
-  newPhoto(id);
+  // 照片回到没有任何编辑的样子（真服务器上的同一张照片，一次只跑一条序列）
+  await direct('DELETE', `/api/photos/${realId}/edit`);
+  await direct('DELETE', `/api/photos/${realId}/crop`);
+  serverProblems = [];
   faultsOn = false;
   faultRng = rng(seed * 104729 + 7);
   holdList = [];
@@ -397,35 +251,41 @@ async function runSequence(seed, steps, { ideal }) {
   const pending = [];
   const seen = [];
   const problems = [];
-  const updateCanvas = () => {
-    const f = frameOf(v.ed.geometry);
+  // 预览画布：界面显示的图是按界面当前（还没保存的）几何出的，宽高就是这套几何的画布；用真服务器的 output_size 算
+  const frames = new Map();
+  const updateCanvas = async () => {
+    const key = JSON.stringify(v.ed.geometry);
+    if (!frames.has(key)) frames.set(key, await direct('POST', '/__test/frame', { shot_id: realId, geometry: v.ed.geometry }));
+    const f = frames.get(key);
     v.canvas = { w: f.width, h: f.height };
   };
   const rec = saves.saveRecord(id);
-  const settle = async () => {
-    for (let i = 0; i < 30; i += 1) {
+  // 请求是真的 HTTP，要等真实的时间：按条件等（没有请求在路上、没有排着的写入、没有挂住的），不能数个空转的 tick
+  const quiet = async () => {
+    for (let i = 0; i < 4000; i += 1) {
       releaseHolds();
-      await tick(4);
-      if (rec.pending === 0 && !holdList.length) break;
+      if (inflight === 0 && rec.pending === 0 && !holdList.length) {
+        await tick(3);
+        if (inflight === 0 && rec.pending === 0 && !holdList.length) return;
+      }
+      await sleep(2);
     }
+    problems.push('等了 12 秒还有请求没完成');
+  };
+  const settle = async () => {
+    await quiet();
     await Promise.allSettled(pending.splice(0));
     // 重试到记录清空：前两次还带着故障，之后没有
     for (let i = 0; i < 6 && rec.failed; i += 1) {
-      faultsOn = !ideal && i < 2;
+      faultsOn = !ideal && !serialMode && i < 2;
       pending.push(preview.retrySaves(id));
-      for (let j = 0; j < 12; j += 1) {
-        releaseHolds();
-        await tick(3);
-      }
+      await quiet();
       await Promise.allSettled(pending.splice(0));
     }
     faultsOn = false;
-    for (let i = 0; i < 6; i += 1) {
-      releaseHolds();
-      await tick(3);
-    }
+    await quiet();
     await Promise.allSettled(pending.splice(0));
-    updateCanvas();
+    await updateCanvas();
   };
   // 用户看到的每一个状态：界面每重画一次（onChange / onRectDrag / redrawSide）就记一份
   for (const hook of ['onChange', 'onRectDrag', 'redrawSide']) {
@@ -435,23 +295,28 @@ async function runSequence(seed, steps, { ideal }) {
       return orig?.apply(v, a);
     };
   }
-  const note = () => {
-    updateCanvas();
+  const note = async () => {
+    await updateCanvas();
     seen.push(screenState(v));
   };
-  const check = (label) => {
+  // 见过的状态；或者见过的框因为放不进现在的几何、被服务器收小了（中心不动、只变小）——收的结果界面上也看得到，算数
+  const seenAt = (s) => seen.some((x) => same(x.geometry, s.geometry) && x.preset === s.preset
+    && (near(x.rect, s.rect, 0.02) || (near(centre(x.rect), centre(s.rect), 0.03) && s.rect[2] <= x.rect[2] + 0.02 && s.rect[3] <= x.rect[3] + 0.02)));
+  const check = async (label) => {
     const s = screenState(v);
-    const srv = serverState(id);
+    const srv = await serverState();
     const status = preview.saveStatus(id);
     if (rec.failed) problems.push(`${label}: 重试之后记录还没清空`);
     if (status === 'saving') problems.push(`${label}: 写完之后状态还是 saving`);
     if (!same(s.geometry, srv.geometry)) problems.push(`${label}: 几何不一致 屏幕 ${JSON.stringify(s.geometry)} 服务器 ${JSON.stringify(srv.geometry)}`);
     if (!near(s.rect, srv.rect, 2e-3) || s.preset !== srv.preset) problems.push(`${label}: 框不一致 屏幕 ${s.preset} [${s.rect.map((x) => +x.toFixed(4))}] 服务器 ${srv.preset} [${srv.rect.map((x) => +x.toFixed(4))}]`);
     if (!same(s.frame, srv.frame)) problems.push(`${label}: 画布不一致 屏幕 ${s.frame} 服务器 ${srv.frame}`);
+    // 写完以后服务器上存的框必须通得过严格校验（validate_crop）：服务器收出来的框（写几何、fit）自己也不能不合格
+    for (const p of (await direct('GET', `/__test/photos/${realId}/stored-check`)).problems) problems.push(`${label}: ${p}`);
     return s;
   };
   const act = async (step) => {
-    updateCanvas();
+    await updateCanvas();
     const [kind, a, b] = step;
     T('STEP', step, '屏幕', stateText(screenState(v)));
     if (kind === 'rotate') pending.push(correct.rotate90(v));
@@ -478,77 +343,105 @@ async function runSequence(seed, steps, { ideal }) {
     else if (kind === 'retry') pending.push(preview.retrySaves(id));
   };
 
-  note();
+  await note();
   trace = [];
   faultCount = 0;
-  faultsOn = !ideal;
+  faultsOn = !ideal && !serialMode;
+  // 串行：每一步开始时上一步已经全部写完、没有请求在路上，也没有出过故障。
+  // 这样的序列和理想情形的操作顺序完全一样，结果（包括框的大小）必须一样
+  const idle = async () => {
+    for (let i = 0; i < 4000 && (inflight > 0 || rec.pending > 0); i += 1) await sleep(2);
+    await tick(2);
+  };
   for (const step of steps) {
     if (step[0] === 'settle') {
       await settle();
-      if (!ideal) check(`settle@${steps.indexOf(step)}`);
-      note();
-      faultsOn = !ideal;
+      if (!ideal) await check(`settle@${steps.indexOf(step)}`);
+      await note();
+      faultsOn = !ideal && !serialMode;
       continue;
     }
     await act(step);
     if (ideal) await settle();
+    else if (serialMode) await idle();
     else await tick(Math.floor(faultRng() * 4));
-    note();
+    await note();
   }
   await settle();
-  const last = ideal ? screenState(v) : check('end');
-  note();
-  const final = serverState(id);
+  const last = ideal ? screenState(v) : await check('end');
+  await note();
+  const final = await serverState();
   const history = [];
-  // 写完之后撤销、重做：只能走到用户见过的状态
   if (!ideal) {
-    // 见过的状态；或者见过的框因为放不进现在的几何、被服务器收小了（中心不动、只变小）——收的结果界面上也看得到，算数
-    const centre = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
-    const seenAt = (s) => seen.some((x) => same(x.geometry, s.geometry) && x.preset === s.preset
-      && (near(x.rect, s.rect, 0.02) || (near(centre(x.rect), centre(s.rect), 0.03) && s.rect[2] <= x.rect[2] + 0.02 && s.rect[3] <= x.rect[3] + 0.02)));
+    // 最后停下来的状态是用户见过的，或者见过的框被服务器收小的结果
+    if (!seenAt(last)) problems.push(`写完之后停在了用户没见过的状态 ${stateText(last)}`);
+    // 写完之后撤销、重做：只能走到用户见过的状态
     for (const op of ['undo', 'redo', 'undo']) {
       const before = JSON.stringify(screenState(v));
       await act([op]);
       await settle();
-      const s = check(`${op}-after-settle`);
+      const s = await check(`${op}-after-settle`);
       history.push(`${op}→${stateText(s)}`);
       if (JSON.stringify(s) !== before && !seenAt(s)) problems.push(`${op}: 走到了用户没见过的状态 ${stateText(s)}`);
       seen.push(s);
     }
   }
   section.remove();
-  const nulls = photos.get(id).nullWrites;
+  // 服务器自己算的居中框只出现在点比例的时候（用写进去的次数数）
+  const writes = (await direct('GET', `/__test/photos/${realId}/stats`)).null_crop_writes;
   const clicks = steps.filter((st) => st[0] === 'ratio').length;
-  if (nulls > clicks) problems.push(`服务器自己算的居中框写了 ${nulls} 次，点比例只有 ${clicks} 次：别的地方不该让服务器编框`);
-  return { problems, final, last, log: photos.get(id).log || [], history, toasts: toastText().length, faults: faultCount, trace: trace.slice() };
+  if (writes > clicks) problems.push(`服务器自己算的居中框写了 ${writes} 次，点比例只有 ${clicks} 次：别的地方不该让服务器编框`);
+  for (const p of serverProblems) problems.push(`服务器上的框：${p}`);
+  return { problems, final, last, history, toasts: toastText().length, faults: faultCount, serial: serialMode && faultCount === 0, trace: trace.slice() };
 }
 
+photoMeta = await direct('GET', `/api/photos/${realId}`);
 const failures = [];
 let done = 0;
+let serialCompared = 0;
 for (let seed = seedStart; seed < seedStart + count; seed += 1) {
   const steps = makeSteps(seed);
   let real;
   let ideal;
   try {
-    ideal = await runSequence(seed, steps, { ideal: true });
-    document.getElementById('toast-root').replaceChildren();
+    // 含自动的、非串行的序列不和理想情形比（见下），也就不用跑理想情形
+    const needIdeal = seed % 3 === 0 || !steps.some((st) => st[0] === 'auto');
+    if (needIdeal) {
+      await direct('POST', `/__test/photos/${realId}/stats/reset`);
+      ideal = await runSequence(seed, steps, { ideal: true });
+      document.getElementById('toast-root').replaceChildren();
+    }
+    await direct('POST', `/__test/photos/${realId}/stats/reset`);
     real = await runSequence(seed, steps, { ideal: false });
   } catch (e) {
     failures.push({ seed, steps: steps.map((s) => JSON.stringify(s)), problems: [`脚本出错：${e && e.stack ? e.stack.split('\n').slice(0, 4).join(' | ') : e}`] });
     continue;
   }
-  const problems = [...real.problems];
-  // 和理想情形比：没有故障时，延迟、挂住再放行都不能改变结果；有故障时只允许「丢掉失败的那一笔并告诉用户」
-  const x = ideal.final;
+  const problems = [...real.problems, ...(ideal ? ideal.problems.map((p) => `理想情形：${p}`) : [])];
+  const x = ideal?.final;
   const y = real.final;
-  // 有写入被挂住或失败过：丢掉的中间一笔会少收一次框，界面接着操作用的也是还没跟上服务器收框的框，最后的框大小会不同，不比。
-  // 只有延迟的：几何、比例必须一样，框的中心必须在同一处（用户在服务器收框的结果回来之前就接着操作，框的大小因收的先后可以差一点，位置不能被换掉）
-  // 自动的结果要等分析回来才落到几何上，期间用户做的别的操作先写进去：顺序和理想情形不一样，框的收法不可交换，所以含自动的不比
-  if (!real.faults && !steps.some((st) => st[0] === 'auto') && (!same(x.geometry, y.geometry) || x.preset !== y.preset || !near([x.rect[0] + x.rect[2] / 2, x.rect[1] + x.rect[3] / 2], [y.rect[0] + y.rect[2] / 2, y.rect[1] + y.rect[3] / 2], 0.03))) {
-    problems.push(`DIVERGE 和理想情形不同：理想 ${stateText(x)} 实际 ${stateText(y)}`);
+  const hasAuto = steps.some((st) => st[0] === 'auto');
+  const hasUndo = steps.some((st) => st[0] === 'undo' || st[0] === 'redo');
+  if (real.serial && real.faults === 0) {
+    // 串行、没有故障：和理想情形的操作顺序完全一样，几何、比例、框（连大小）都必须一样（1 像素以内）
+    serialCompared += 1;
+    const px = 1.5 / photoMeta.width;
+    if (!same(x.geometry, y.geometry) || x.preset !== y.preset || !near(x.rect, y.rect, Math.max(px, 1.5 / photoMeta.height))) {
+      problems.push(`DIVERGE 串行的序列和理想情形不同：理想 ${stateText(x)} 实际 ${stateText(y)}`);
+    }
+  } else if (!hasAuto && !hasUndo && ideal) {
+    // 有重叠或有故障（不含自动）：本地的几何一步一步累加，和服务器写成什么样无关，最后的几何必须和理想情形一样；
+    // 框的中心必须在同一处（用户在服务器收框的结果回来之前接着操作，或者丢了中间一笔，框的大小可以因收的先后差一点，位置不能被换掉）
+    if (!same(x.geometry, y.geometry) || x.preset !== y.preset || !boxesAgree(x.rect, y.rect)) {
+      problems.push(`DIVERGE 有重叠或故障的序列和理想情形不同：理想 ${stateText(x)} 实际 ${stateText(y)}`);
+    }
   }
+  // 含撤销 / 重做的、有重叠或故障的也不比：同一个动作作用在界面当时的框上，框还没跟上服务器收的结果时「挪框」可能什么也没挪动、
+  // 就不记一步撤销（理想情形里框已经跟上，挪动了，记了一步），两边的撤销记录不一样长，撤销撤掉的步骤不同，几何本来就可以不同。
+  // 含自动的、有重叠或故障的不和理想情形比：自动的结果要等分析回来才落到几何上，期间用户做的别的操作先写进去，
+  // 最后写进去的才算数（例如自动之后又拖垂直，理想情形是拖的算数，真实情形里自动的结果晚到、反而盖掉它），几何本来就可以不同
   if (problems.length) failures.push({ seed, steps: steps.map((s) => JSON.stringify(s)), problems, history: real.history, trace: process.env.FUZZ_TRACE ? real.trace : undefined });
   done += 1;
 }
-console.log(JSON.stringify({ sequences: count, failures: failures.slice(0, Number(process.env.FUZZ_KEEP || 12)), failed: failures.length, done }));
+console.log(JSON.stringify({ sequences: count, failures: failures.slice(0, Number(process.env.FUZZ_KEEP || 12)), failed: failures.length, done, serialCompared }));
 process.exit(0);

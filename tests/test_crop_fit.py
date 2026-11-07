@@ -73,3 +73,76 @@ def test_a_box_outside_the_straightened_picture_is_pulled_in_when_fit_is_set(cli
 def test_fit_still_refuses_what_cannot_be_a_box(client, shot, body, error):
     res = put(client, shot, fit=True, **body)
     assert res.status_code == 422 and res.json()["error"] == error
+
+
+@pytest.mark.parametrize("preset", ["free", "4:3", "1:1", "xpan-65-24"])
+def test_a_tiny_target_is_grown_to_a_real_box(client, shot, preset):
+    """评审 P2：API 能给到比 16 像素还小的目标（界面的最小框拦着）。收出来的框短边不能小于 16 像素。"""
+    res = put(client, shot, preset=preset, rect=[0.4, 0.4, 0.004, 0.004], fit=True)
+    assert res.status_code == 200, res.text
+    px = res.json()["pixels"]
+    assert min(px["width"], px["height"]) >= 16, px
+
+
+def test_a_box_that_cannot_reach_the_minimum_is_too_small(client, shot, monkeypatch):
+    from gxr_studio.library import edits
+
+    monkeypatch.setattr(edits, "fitted_crop", lambda *a, **k: (0.5, 0.5, 0.003, 0.003))  # 有效区本身只剩一点点
+    res = put(client, shot, preset="free", rect=[0.4, 0.4, 0.2, 0.2], fit=True)
+    assert res.status_code == 422 and res.json()["error"] == "too_small"
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"straighten": 10},
+        {"straighten": 10, "rotate90": 1},
+        {"vertical": 40},
+        {"straighten": -7, "rotate90": 3, "flip": True, "distortion": 30},
+    ],
+)
+def test_original_keeps_the_canvas_ratio_after_a_geometry_write(client, shot, geometry):
+    """评审 P2：原始 + 拉直 / 透视，写几何时服务器收出来的是最大内接矩形，比例不是画布的，
+    下一次拖框（严格校验）就 ratio_mismatch。现在收出来的框保持画布的比例，原样再写一遍也过。"""
+    assert put(client, shot, preset="original", rect=[0, 0, 1, 1]).status_code == 200
+    assert client.put(f"/api/photos/{shot['id']}/edit", json={"geometry": geometry}).status_code == 200
+    stored = client.get(f"/api/photos/{shot['id']}/crop").json()
+    frame, px = stored["frame"], stored["pixels"]
+    assert abs((px["width"] / px["height"]) / (frame["width"] / frame["height"]) - 1) < 0.01, (frame, px)
+    again = put(client, shot, preset="original", rect=stored["rect"])
+    assert again.status_code == 200, again.text
+    # fit 的目标也一样：比例是画布的，位置保留
+    fitted = put(client, shot, preset="original", rect=[0.3, 0.3, 0.2, 0.5], fit=True)
+    assert fitted.status_code == 200, fitted.text
+    px = fitted.json()["pixels"]
+    ratio = frame["width"] / frame["height"]
+    assert min(abs(px["width"] / px["height"] - ratio) / ratio, abs(px["width"] / px["height"] - 1 / ratio) * ratio) < 0.01
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"straighten": 4, "vertical": 40},
+        {"straighten": -6, "distortion": 50, "flip": True},
+        {"straighten": 3, "horizontal": -60, "rotate90": 1},
+    ],
+)
+def test_a_stored_box_under_perspective_and_straighten_can_be_written_again(client, shot, geometry):
+    """透视 / 畸变拉开过的画布，加上拉直：服务器按有效蒙版收出来的框，原样再写一遍（严格校验）要通过；
+    以前 validate_crop 按拉直后的矩形检查四个角，对不上真正的有效区，同样的框被 crop_outside_image 拒掉。"""
+    assert put(client, shot, preset="free", rect=[0, 0, 1, 1]).status_code == 200
+    assert client.put(f"/api/photos/{shot['id']}/edit", json={"geometry": geometry}).status_code == 200
+    stored = client.get(f"/api/photos/{shot['id']}/crop").json()
+    again = put(client, shot, preset="free", rect=stored["rect"])
+    assert again.status_code == 200, again.text
+
+
+def test_a_geometry_write_that_changes_the_canvas_size_refits_the_box(client, shot):
+    """拉开 → 收回：画布尺寸变了，框是按旧画布的比例存的，不重收，退回没有透视时比例就不对了（存下来的框通不过 validate_crop）。"""
+    assert put(client, shot, preset="4:3", rect=None).status_code == 200
+    assert client.put(f"/api/photos/{shot['id']}/edit", json={"geometry": {"vertical": 40}}).status_code == 200
+    assert client.put(f"/api/photos/{shot['id']}/edit", json={"geometry": {"vertical": 0}}).status_code == 200
+    stored = client.get(f"/api/photos/{shot['id']}/crop").json()
+    px = stored["pixels"]
+    assert abs(px["width"] / px["height"] - 4 / 3) < 0.013, px
+    assert put(client, shot, preset="4:3", rect=stored["rect"]).status_code == 200

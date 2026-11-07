@@ -182,7 +182,10 @@ def write_crop(
         if rect is not None and fit:
             crop = cropmod.fit_target_crop(preset, rect, angle_deg, w, h)  # fit：rect 是目标，下面收成离它最近的合格框
         elif rect is not None:
-            crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=_geometry_of(side).flip)
+            geom_now = _geometry_of(side)
+            # 透视、畸变拉开过的画布：画布不是一块拉直后的矩形，`box_inside` 的角点检查对不上真正的有效区。
+            # 这时不在这里按角度拒，下面的收框（fitted_crop）按真正的有效蒙版把框收进去
+            crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=geom_now.flip, check_region=not geom_now.expands())
         else:
             crop = cropmod.default_crop(preset, w, h, angle_deg, flip)
         geom = replace(_geometry_of(side), straighten=float(angle_deg))
@@ -190,6 +193,8 @@ def write_crop(
         fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h, force=fit and rect is not None)
         if fixed is not None:
             crop = Crop(crop.preset, fixed, crop.angle_deg)
+        if fit and rect is not None:
+            cropmod.check_min_size(crop.rect, w, h)  # 有效区本身太小，收不出合格的框
         side["crop"] = crop.to_json()
         geo = dict(side.get("geometry") or {})
         geo["straighten"] = crop.angle_deg

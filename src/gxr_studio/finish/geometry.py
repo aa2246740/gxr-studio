@@ -376,12 +376,22 @@ def window_full(valid: np.ndarray, x: int, y: int, rw: int, rh: int) -> bool:
     return bool(valid[y : y + rh, x : x + rw].all())
 
 
-def clamp_norm_rect(valid: np.ndarray, rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-    """把归一化框收到有效区域内，保持宽高比，中心尽量不动。已经有效就原样返回。"""
+def clamp_norm_rect(
+    valid: np.ndarray, rect: tuple[float, float, float, float], aspect: float | None = None
+) -> tuple[float, float, float, float]:
+    """把归一化框收到有效区域内，保持宽高比，中心尽量不动。已经有效就原样返回。
+
+    aspect：要的宽高比（像素）。给了就先取目标框里最大的、比例对的框（中心不动），再收；不给就沿用目标框自己的比例。"""
     height, width = valid.shape
     x, y, rw, rh = rect
     px, py = int(round(x * width)), int(round(y * height))
     pw, ph = max(1, int(round(rw * width))), max(1, int(round(rh * height)))
+    if aspect is not None and abs(pw / ph - aspect) / aspect > 0.002:
+        cx0, cy0 = px + pw / 2.0, py + ph / 2.0
+        bw = min(float(pw), ph * aspect)
+        pw, ph = max(1, int(round(bw))), max(1, int(round(bw / aspect)))
+        px, py = int(round(cx0 - pw / 2.0)), int(round(cy0 - ph / 2.0))
+        rect = (px / width, py / height, pw / width, ph / height)
     if window_full(valid, px, py, pw, ph):
         return rect
     cx = px + pw / 2.0
@@ -440,6 +450,14 @@ def fitted_crop(
             x, y, bw, bh = box
             vh, vw = valid.shape
             return (x / vw, y / vh, bw / vw, bh / vh)
+    if preset == "original":
+        # 原始：框的比例就是画布的比例（validate_crop 也这么要求），横竖跟着目标框；
+        # 以前整张画布这一支取的是最大内接矩形，比例不对，下一次拖框就被拒（ratio_mismatch）
+        vh, vw = valid.shape
+        aspect = vw / vh
+        if (target[2] * vw >= target[3] * vh) != (aspect >= 1):
+            aspect = 1 / aspect
+        return clamp_norm_rect(valid, target, aspect)
     if rect is None or rect == full:
         return normalized_valid_rect(valid)
     return clamp_norm_rect(valid, rect)

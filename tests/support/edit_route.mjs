@@ -30,6 +30,7 @@ const editOf = (id) => ({ rev: revs[key(id)], recipe: null, lut: null, adjust: {
 let camStatus = { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
 // statefulCrop 打开时，替身像真后端一样记住写进去的框，几何写入时由场景的 onGeometry 收框、换画布（frame），cropCheck 可以拒绝框
 const crops = {};
+const crops_server = (id) => crops[id].rect;
 const cropOf = (id) => ({ preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, orientation: 'landscape', frame: { width: 3000, height: 2000 }, rev: revs[key(id)], ...(globalThis.statefulCrop ? crops[id] || {} : {}) });
 
 class StubError extends Error {
@@ -1675,6 +1676,66 @@ if (scenario === 'reset-then-switch') {
     status: preview.saveStatus(PHOTOS.A.id),
     sawNull: requests.some((r) => r.method === 'PUT' && r.url.endsWith('/crop') && r.body.rect === null && r.body.preset === '4:3' && requests.indexOf(r) > requests.length - 8),
   };
+} else if (scenario === 'retry-rejected-drag' || scenario === 'retry-geometry-then-plain-box') {
+  // 评审 P1（第五轮）：只重试一个框（拖的、缩放的）时，服务器说形状不对就是不对：照常提示，界面上的框原样留着，
+  // 不能悄悄换成收小的框（fit）。只有这次重试刚把这个框对着的几何写进去，才把框当目标让服务器收。
+  globalThis.statefulCrop = true;
+  globalThis.onGeometry = (geo) => ({ frame: (geo.rotate90 || 0) % 2 ? { width: 2000, height: 3000 } : { width: 3000, height: 2000 } });
+  const reject = { status: 422, code: 'crop_outside_image', message: '裁剪框超出画面范围' };
+  globalThis.cropCheck = (body) => (body.rect && !body.fit ? reject : null);
+  globalThis.cropAnswer = { '4:3': [0.1, 0.1, 0.3, 0.6] };
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const cropMod = await import(file('crop.js'));
+  const correct = await import(file('correct.js'));
+  const r4 = (r) => r.map((x) => +x.toFixed(4));
+  const screen = () => r4([v.crop.rect.x, v.crop.rect.y, v.crop.rect.w, v.crop.rect.h]);
+  globalThis.cropCheck = null;
+  await cropMod.applyPreset(v, { id: '4:3', label: '小红书 3:4', orient: 'portrait' });
+  globalThis.cropCheck = (body) => (body.rect && !body.fit ? reject : null);
+  const crops = () => requests.filter((r) => r.method === 'PUT' && r.url.endsWith('/crop')).map((r) => ['crop', r.body.rect && r.body.rect.map((x) => +x.toFixed(4)), !!r.body.fit]);
+  const drag = async () => {
+    // 界面认可、服务器不认的一次拖动：和 stage.js 的 saveRect 一样，不带 fit
+    preview.beginChange(v);
+    v.crop.rect = { x: 0.2, y: 0.15, w: 0.3, h: 0.6 };
+    await preview.saveCrop(v, cropMod.cropBody(v, { preset: v.crop.preset, rect: cropMod.rectArray(v.crop.rect) }, cropMod.orientationNow(v)));
+  };
+  if (scenario === 'retry-rejected-drag') {
+    const before = crops().length;
+    await drag();
+    out.first = { puts: crops().slice(before), status: preview.saveStatus(PHOTOS.A.id), screen: screen() };
+    const mark = crops().length;
+    out.retry = await preview.retrySaves(PHOTOS.A.id);
+    out.afterRetry = { puts: crops().slice(mark), status: preview.saveStatus(PHOTOS.A.id), screen: screen(), server: r4(crops_server(PHOTOS.A.id)) };
+  } else {
+    // 拖的框先因为 500 没写进去（普通的写入，没有 fit），接着垂直的几何也没写进去：失败记录里有几何，也有那个普通的框
+    globalThis.cropCheck = null;
+    failIf.push((method, url) => (method === 'PUT' && url.endsWith('/crop') ? new StubError(500, '磁盘已满，无法写入编辑记录。') : null));
+    await drag();
+    failIf.push((method, url, body) => (method === 'PUT' && url.endsWith('/edit') && body.geometry && body.geometry.vertical === 40 ? new StubError(500, '磁盘已满，无法写入编辑记录。') : null));
+    const section = correct.correctSection(v);
+    document.body.append(section);
+    let input = null;
+    const walk = (n) => { if (!input && n.tagName === 'INPUT' && n.getAttribute && n.getAttribute('aria-label') === '垂直') input = n; (n.children || []).forEach(walk); };
+    walk(section);
+    input.dispatchEvent(new Event('pointerdown'));
+    input.value = '40';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('pointerup'));
+    await preview.flushEdits(v).catch(() => {});
+    out.skipped = { status: preview.saveStatus(PHOTOS.A.id), failedEdit: !!preview.saveStatus && true };
+    // 重试时服务器认为这个框（按旧几何摆的）形状不对：几何刚写进去，当目标让服务器收
+    globalThis.cropCheck = (body) => (body.rect && !body.fit ? reject : null);
+    const mark = requests.length;
+    out.retry = await preview.retrySaves(PHOTOS.A.id);
+    out.afterRetry = {
+      puts: requests.slice(mark).filter((r) => r.method === 'PUT').map((r) => (r.url.endsWith('/crop') ? ['crop', r.body.rect && r.body.rect.map((x) => +x.toFixed(4)), !!r.body.fit] : ['edit'])),
+      status: preview.saveStatus(PHOTOS.A.id),
+      server: r4(crops_server(PHOTOS.A.id)),
+    };
+  }
 } else if (scenario === 'rotate-then-ratio-click') {
   // 评审 P2：转的几何还没写完时点了比例。比例的框（rect: null，让服务器算）排在前面，
   // 转的那一笔不能再把落后的本地框排在它后面盖掉服务器算的框。

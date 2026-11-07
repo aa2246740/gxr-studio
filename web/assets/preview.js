@@ -267,6 +267,7 @@ export async function loadCrop(view) {
 // 接口的 rect 是数组，这里转成 {x, y, w, h}（写回时再转回数组，见 cropDraft / saveCrop 的调用方）
 export function setCrop(view, c) {
   view.crop = { ...c, rect: fromArray(c.rect) };
+  view.boxStale = false;
   // 记下服务端现在的框：本地拖过、还没写回的框和它不一样，松手时要保存（见 correct.js 的 afterGeometry）
   view.crop.savedKey = JSON.stringify(view.crop.rect);
   syncRev(view, c.rev);
@@ -361,6 +362,7 @@ export function styleOptions(ed, styleId) {
 // 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
 export function persist(view, changes) {
   endChange(view); // 调用方在写之前已经改好了界面：这一下操作到此为止，撤销记一步，不等服务器回来
+  if ('geometry' in changes) view.boxStale = true; // 服务器会顺带收框，界面的框要等读回来才跟上（setCrop 清掉）；这期间的框写入当目标写（crop.js cropBody）
   return writeSave(saveRecord(view.photo.id), 'edit', changes, {
     onOk: (r) => {
       if (!live(view)) return;
@@ -520,8 +522,9 @@ function restoreSnapshot(view, s) {
       && (ed.v2 ? cur.orientation === o.crop.orientation : (cur.angle_deg || 0) === angle);
     restoreCropLocal(view, o.crop); // 框和画布宽高当场回去，不等保存的回应
     const body = { preset: o.crop.preset, rect: toArray(o.crop.rect), ...(ed.v2 ? { orientation: o.crop.orientation } : { angle_deg: angle }) };
-    if (own.has('geometry')) saveCrop(view, { ...body, fit: true }); // 几何的一步：服务器写几何时顺带收过框，不能凭界面上的框「没变」就不写；写的是目标框（fit），服务器收成离它最近的合格框
-    else if (!same) saveCrop(view, body);
+    // 撤销 / 重做的框是「用户见过的那个框」，现在的画布可能已经不是它当时的了（后面又拖过透视）：当目标写（fit），服务器收成离它最近的合格框。
+    // 几何的一步不能凭界面上的框「没变」就不写：服务器写几何时顺带收过框
+    if (own.has('geometry') || !same) saveCrop(view, ed.v2 ? { ...body, fit: true } : body);
   }
   schedulePreview(view, { full: true });
   view.redrawSide?.();

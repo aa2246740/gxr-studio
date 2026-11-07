@@ -187,15 +187,16 @@ export function retrySaves(id) {
     try {
       rec.rev = (await api(URLS.edit(id))).rev;
       // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
+      const wroteGeometry = !!(rec.failed && rec.failed.edit && rec.failed.edit.geometry);
       if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
       if (rec.failed && rec.failed.crop) {
         const box = { ...rec.failed.crop };
         try {
           await put('crop', box);
         } catch (e) {
-          // 框是失败那一刻按当时的几何定的，之后几何变过，现在的服务器说形状不对（重试永远过不去）：
-          // 同一个框当目标（fit），让服务器收成离它最近的合格框，位置保留。fit 的写入服务器不拒。
-          if (!SHAPE_REJECTED.has(e.code) || box.fit || box.rect === null) throw e;
+          // 只有「这次重试刚把这个框当初对着的几何写进去」才改成 fit：几何变了，框是按旧几何摆的，当目标让服务器收成最近的合格框。
+          // 只重试一个框（拖的、缩放的）时，被拒就是被拒：服务器的理由照常提示，界面上的框原样留着，不能悄悄换成收小的框。
+          if (!wroteGeometry || !SHAPE_REJECTED.has(e.code) || box.fit || box.rect === null) throw e;
           await put('crop', { ...box, fit: true });
         }
       }

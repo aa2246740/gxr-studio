@@ -137,16 +137,36 @@ def fit_target_crop(preset: str, rect: Any, angle_deg: float, width: int, height
         raise CropError("bad_rect", "裁剪框超出画面范围") from None
     if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0:
         raise CropError("bad_rect", "裁剪框超出画面范围")
-    w, h = min(w, 1.0), min(h, 1.0)
-    x, y = min(max(x, 0.0), 1.0 - w), min(max(y, 0.0), 1.0 - h)
+    # 太小的目标（API 能给到，界面的最小框拦着）：以中心为准放大到够收一个合格框——按预设比例收完短边也不能小于 MIN_SIDE_PX
+    ratio = target_ratio(preset, width, height)
+    # 定比例的预设收出来的是比例分子分母的整数倍：短边够 MIN_SIDE_PX 的最小一块，目标至少要这么大
+    need = float(MIN_SIDE_PX)
+    if ratio is not None:
+        small, big = sorted((ratio.numerator, ratio.denominator))
+        need = float(-(-MIN_SIDE_PX // small) * big)
+    cx, cy = x + w / 2, y + h / 2
+    w, h = min(max(w, need / width), 1.0), min(max(h, need / height), 1.0)
+    x, y = min(max(cx - w / 2, 0.0), 1.0 - w), min(max(cy - h / 2, 0.0), 1.0 - h)
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 
 
-def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int, *, mirrored: bool = False) -> Crop:
+def check_min_size(rect: tuple[float, float, float, float], width: int, height: int) -> None:
+    """收完的框，短边不能小于 MIN_SIDE_PX（和 validate_crop 一样）。"""
+    _x0, _y0, w_px, h_px = crop_box(rect, width, height)
+    if w_px < MIN_SIDE_PX or h_px < MIN_SIDE_PX:
+        raise CropError("too_small", "裁剪框超出画面范围")
+
+
+def validate_crop(
+    preset: str, rect: Any, angle_deg: float, width: int, height: int, *, mirrored: bool = False, check_region: bool = True
+) -> Crop:
     """校验用户给的框；不合格就抛 CropError，不悄悄修正。
 
     mirrored：画面左右翻转过。成片先拉直、再转 90°、最后翻转（finish.geometry.warp），翻转把倾斜的方向反过来，
     所以按反过来的角度看框在不在原画面里，和成片真正的有效区一致（PR #39 复审）。存下来的角度不变。
+
+    check_region：要不要按拉直角度检查四个角在不在原画面里。透视、畸变拉开过的画布不是一块拉直后的矩形，这个检查对不上真正的
+    有效区，调用方（write_crop）传 False，由后面的收框按真正的有效蒙版处理。
     """
     angle = _check_angle(angle_deg)
     ratio = target_ratio(preset, width, height)
@@ -169,7 +189,7 @@ def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: 
         if off > RATIO_TOLERANCE:
             raise CropError("ratio_mismatch", "裁剪框超出画面范围")
     box = (x * width, y * height, w * width, h * height)
-    if not box_inside(box, width, height, -angle if mirrored else angle, EDGE_TOLERANCE_PX):
+    if check_region and not box_inside(box, width, height, -angle if mirrored else angle, EDGE_TOLERANCE_PX):
         raise CropError("crop_outside_image", "裁剪框超出画面范围")
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 
