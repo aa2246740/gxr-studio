@@ -87,7 +87,8 @@ function fieldsOf(kind, body) {
 
 // 写一笔：kind 是 edit 或 crop；body 在这里复制一份（之后界面再改也不影响这一笔）。
 // onOk(响应) / onFail(错误) 由调用方决定要不要更新界面（视图可能已经关了）。
-export function writeSave(rec, kind, changes, { onOk = null, onFail = null } = {}) {
+// quiet：失败了先不弹提示（调用方马上换个办法再写一次；再失败那一次照常提示）。失败照样记在 record.failed。
+export function writeSave(rec, kind, changes, { onOk = null, onFail = null, quiet = false } = {}) {
   const body = { ...changes };
   for (const f of fieldsOf(kind, body)) rec.fieldGen[f] = (rec.fieldGen[f] || 0) + 1;
   return enqueue(rec, async () => {
@@ -98,7 +99,7 @@ export function writeSave(rec, kind, changes, { onOk = null, onFail = null } = {
       onOk?.(r);
     } catch (e) {
       recordFailure(rec, kind, body, e);
-      toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
+      if (!quiet) toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
       onFail?.(e);
       throw e;
     }

@@ -79,12 +79,14 @@ def _text(data: str | bytes | None) -> str:
     return data.decode("utf-8", "replace") if isinstance(data, bytes) else (data or "")
 
 
-def drive(live, tmp_path, mode: str) -> dict:
+def drive(live, tmp_path, mode: str, scenario: str | None = None) -> dict:
     chrome = require_chrome()
     flags = list(FLAGS)
     if sys.platform.startswith("linux") and os.environ.get("CI"):
         flags += ["--no-sandbox", "--disable-dev-shm-usage"]
     env = {**os.environ, "CHROME_FLAGS": json.dumps(flags), "VIEWER_DEADLINE_MS": str(DEADLINE_S * 1000)}
+    if scenario:
+        env["VIEWER_SCENARIO"] = scenario
     try:
         res = subprocess.run(  # noqa: S603
             ["node", str(DRIVER), chrome, str(live["port"]), live["token"], live["photo"], mode, str(tmp_path / f"chrome-{mode}")],  # noqa: S607
@@ -143,6 +145,28 @@ def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     out = drive(live, tmp_path, "server")
     assert out["gpu"] is False
     check(out, live, cards_max_builds=2)  # 离开裁切页会有一次大图的服务器出图
+
+
+def test_rotate_after_auto_and_one_press_undo_in_a_real_browser(live, tmp_path):
+    """2026-11-07 的两个问题，真服务器 + 真 Chrome：
+    1) 小红书 3:4 → 缩放 → 拉直 → 自动（带透视）→ 向左旋转：没有被拒的写入、底栏不是「有修改没有保存」、面板不是骨架，
+       画面上的框和服务器的一致；「自动」分析时按钮锁住、写「正在分析…」，结束有提示。
+    2) 调整页曲线上点一下，保存还挂着时按一次撤销，点就没了（原来要等保存回来才记一步，要按三次）。"""
+    out = drive(live, tmp_path, "server", "edit-fixes")
+    fx = out["fx"]
+    rot = fx["rotate"]
+    assert rot["skelRightAfter"] == 0 and rot["skel"] == 0, rot
+    assert "没有保存" not in rot["save"], rot
+    assert near(rot["box"], rot["server"]), rot
+    bad = [line for line in out["failedRequests"] if "/crop" in line or "/edit" in line]
+    assert not bad, bad
+    assert fx["curveBefore"] == "2 / 16" and fx["curveAfterClick"] == "3 / 16"
+    assert fx["heldWrites"] >= 1, "曲线的保存应该还挂着"
+    assert fx["curveAfterUndo"] == "2 / 16"
+    assert fx["autoDuring"] == {"text": "正在分析…", "busy": "true", "disabled": "true"}
+    assert out["autoPaused"] == 1, "分析中再点一下不该再发请求"
+    assert any("已自动拉直 +4.0°、垂直 +60（可以撤销）" in t for t in fx["autoAfter"]["toasts"]), fx["autoAfter"]
+    assert fx["autoAfter"]["restored"] is True
 
 
 def cannot_present(out: dict) -> bool:

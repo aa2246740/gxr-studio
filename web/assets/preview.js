@@ -357,6 +357,7 @@ export function styleOptions(ed, styleId) {
 // 写 /edit。changes 只带要改的键（后端只认带上来的键）。
 // 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
 export function persist(view, changes) {
+  endChange(view); // 调用方在写之前已经改好了界面：这一下操作到此为止，撤销记一步，不等服务器回来
   return writeSave(saveRecord(view.photo.id), 'edit', changes, {
     onOk: (r) => {
       if (!live(view)) return;
@@ -372,9 +373,11 @@ export function persist(view, changes) {
 }
 
 // 写 /crop：preset、rect、orientation（v2）或 flip（旧版的横竖），以及旧版的 angle_deg
-export function saveCrop(view, body) {
+export function saveCrop(view, body, { quiet = false } = {}) {
+  endChange(view); // 同 persist：框已经在界面上改好了，撤销这一步不等保存
   const rec = saveRecord(view.photo.id);
   const write = writeSave(rec, 'crop', body, {
+    quiet,
     onOk: (c) => {
       if (!live(view)) return;
       // 后面又排了新的裁切写入（连着点比例）：这一笔的回应已经过时，只记 rev；框留给最后一笔的回应换成准的

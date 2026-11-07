@@ -27,7 +27,9 @@ const key = (id) => Object.keys(PHOTOS).find((k) => PHOTOS[k].id === id);
 const stored = {};
 const editOf = (id) => ({ rev: revs[key(id)], recipe: null, lut: null, adjust: {}, curve: null, geometry: {}, frame: null, stamp: null, memory: {}, ...(stored[id] || {}) });
 let camStatus = { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
-const cropOf = (id) => ({ preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, orientation: 'landscape', frame: { width: 3000, height: 2000 }, rev: revs[key(id)] });
+// statefulCrop 打开时，替身像真后端一样记住写进去的框，几何写入时由场景的 onGeometry 收框、换画布（frame），cropCheck 可以拒绝框
+const crops = {};
+const cropOf = (id) => ({ preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, orientation: 'landscape', frame: { width: 3000, height: 2000 }, rev: revs[key(id)], ...(globalThis.statefulCrop ? crops[id] || {} : {}) });
 
 class StubError extends Error {
   constructor(status, message) { super(message); this.status = status; this.code = `http_${status}`; this.data = { message }; }
@@ -48,14 +50,23 @@ async function answer(method, url, body) {
   if (method === 'PUT' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
     const k = key(m[1]);
     if (body.expected_rev !== revs[k]) throw new StubError(409, '这张照片刚被别处改过。');
+    if (m[2] === 'crop' && globalThis.cropCheck) {
+      const bad = globalThis.cropCheck(body, cropOf(m[1]));
+      if (bad) throw new StubError(422, bad);
+    }
     revs[k] += 1;
     if (m[2] === 'edit') {
       const { expected_rev: _rev, ...fields } = body;
       stored[m[1]] = { ...(stored[m[1]] || {}), ...fields };
+      if (globalThis.statefulCrop && fields.geometry && globalThis.onGeometry) crops[m[1]] = { ...(crops[m[1]] || {}), ...globalThis.onGeometry(fields.geometry, cropOf(m[1])) };
     }
     // rect 为 null：像真后端一样自己算框（cropAnswer 由场景按比例给出）
-    return m[2] === 'edit' ? { ...editOf(m[1]), rev: revs[k] } : { ...cropOf(m[1]), ...body, rect: body.rect || globalThis.cropAnswer?.[body.preset] || [0, 0, 1, 1], rev: revs[k] };
+    if (m[2] === 'edit') return { ...editOf(m[1]), rev: revs[k] };
+    const written = { ...cropOf(m[1]), ...body, rect: body.rect || globalThis.cropAnswer?.[body.preset] || [0, 0, 1, 1], rev: revs[k] };
+    if (globalThis.statefulCrop) crops[m[1]] = { ...(crops[m[1]] || {}), preset: written.preset, rect: written.rect, orientation: written.orientation, angle_deg: written.angle_deg || 0 };
+    return written;
   }
+  if (method === 'POST' && /\/geometry\/auto$/.test(url)) return globalThis.autoAnswer || { straighten: 0, vertical: 0, confident: false, message: '未检测到明显的水平线' };
   if (method === 'POST' && (m = /^\/api\/photos\/(\w+)\/export$/.exec(url))) return { path: '/tmp/x_gxr.jpg', width: 10, height: 10, bytes: 100, export_id: 'e1' };
   if (method === 'PUT' && url === '/api/prefs') return body;
   if (method === 'POST' && url === '/api/export') {
@@ -1304,6 +1315,161 @@ if (scenario === 'reset-then-switch') {
   out.retry = await preview.retrySaves(id);
   await tick(5);
   out.retried = { status: preview.saveStatus(id), ...snap() };
+} else if (scenario === 'one-action-one-undo') {
+  // 一次操作就是一步撤销：记在操作结束的那一刻，不等服务器回来（保存慢的时候连按撤销，不会先撤掉别的步骤）。
+  // 每个动作都在「同步部分」就量一次撤销记录的长度，再等保存写完量第二次：两次都必须只多一条。
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  v.stage = 'final';
+  globalThis.cropAnswer = { '1:1': [500 / 3000, 0, 2000 / 3000, 1] };
+  const adjust = await import(file('adjust.js'));
+  const correct = await import(file('correct.js'));
+  const cropMod = await import(file('crop.js'));
+  const panel = adjust.adjustPanel(v);
+  document.body.append(panel);
+  const byLabel = (root, label, tag = 'INPUT') => {
+    let hit = null;
+    const walk = (n) => { if (!hit && n.tagName === tag && n.getAttribute && n.getAttribute('aria-label') === label) hit = n; (n.children || []).forEach(walk); };
+    walk(root);
+    return hit;
+  };
+  const input = byLabel(panel, '曝光');
+  const curve = panel.querySelector('svg');
+  const pointer = (type, extra) => Object.assign(new Event(type), { button: 0, pointerId: 1, clientX: 400, clientY: 150, preventDefault() {}, ...extra });
+  out.steps = {};
+  const step = async (name, act) => {
+    const before = v.undo.length;
+    const done = act();
+    const sync = v.undo.length - before;
+    await done;
+    await preview.flushEdits(v);
+    await tick(3);
+    out.steps[name] = { sync, final: v.undo.length - before, pending: !!v.pending };
+  };
+  await step('slider', async () => {
+    input.dispatchEvent(new Event('pointerdown'));
+    input.value = '1';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('pointerup'));
+  });
+  await step('slider-double-click-reset', async () => { input.dispatchEvent(new Event('dblclick')); });
+  await step('curve-click', async () => {
+    curve.dispatchEvent(pointer('pointerdown'));
+    curve.dispatchEvent(pointer('pointerup'));
+  });
+  await step('preset', () => cropMod.applyPreset(v, { id: '1:1', label: '1:1' }));
+  await step('rotate', () => correct.rotate90(v));
+  await step('flip', () => correct.flipHorizontal(v));
+  await step('reset-corrections', () => correct.resetCorrections(v));
+  // 连点撤销：保存还没写完，也要一步一步退回去
+  out.curveBefore = JSON.stringify(v.ed.curve);
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  curve.dispatchEvent(pointer('pointerdown', { clientX: 200, clientY: 400 }));
+  curve.dispatchEvent(pointer('pointerup', { clientX: 200, clientY: 400 }));
+  out.curveClicked = JSON.stringify(v.ed.curve);
+  await tick(2);
+  preview.undoChange(v); // 保存还挂着：这一次撤销撤的就是刚加的点
+  out.curveAfterUndo = JSON.stringify(v.ed.curve);
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  await preview.flushEdits(v);
+} else if (scenario === 'rotate-after-refit') {
+  // 复现 2026-11-07 的卡死：小红书 3:4 → 缩放 → 拉直 → 自动（带透视）→ 向左旋转。
+  // 服务器写透视时把框收进新的有效画面并换了画布；界面原来不跟，旋转时拿落后的框去写，被拒（422），面板留下骨架。
+  globalThis.statefulCrop = true;
+  globalThis.cropCheck = (body, now) => {
+    if (!body.rect) return null; // rect 为 null 时服务器自己算
+    const W = now.frame.width;
+    const H = now.frame.height;
+    const [, , w, h] = body.rect;
+    const got = (w * W) / (h * H);
+    const want = { '4:3': 4 / 3 }[body.preset];
+    return want && Math.min(Math.abs(got - want), Math.abs(got - 1 / want)) / want > 0.01 ? '裁剪框超出画面范围' : null;
+  };
+  globalThis.onGeometry = (geo, now) => {
+    const turned = (geo.rotate90 || 0) % 2 === 1;
+    const wide = geo.vertical ? { width: 3300, height: 2400 } : { width: 3000, height: 2000 };
+    const frame = turned ? { width: wide.height, height: wide.width } : wide;
+    if (!geo.vertical) return { frame };
+    // 服务器把框收进新画布：3:4 的 990 × 1320 像素；转过 90° 的话，框是这块的转置
+    return { frame, rect: turned ? [0.2, 0.35, 0.55, 0.3] : [0.35, 0.2, 0.3, 0.55] };
+  };
+  globalThis.autoAnswer = { straighten: 4, vertical: 8, confident: true, message: '' };
+  globalThis.cropAnswer = { '4:3': [0.25, 0, 0.5, 1] };
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const cropMod = await import(file('crop.js'));
+  const correct = await import(file('correct.js'));
+  const snap = () => ({ rect: [v.crop.rect.x, v.crop.rect.y, v.crop.rect.w, v.crop.rect.h].map((x) => +x.toFixed(4)), frame: [v.crop.frame.width, v.crop.frame.height] });
+  await cropMod.applyPreset(v, { id: '4:3', label: '小红书 3:4', orient: 'portrait' });
+  await correct.autoCorrect(v);
+  await tick(5);
+  out.afterAuto = snap();
+  out.serverAfterAuto = { rect: crops[PHOTOS.A.id].rect.map((x) => +x.toFixed(4)), frame: [crops[PHOTOS.A.id].frame.width, crops[PHOTOS.A.id].frame.height] };
+  const turning = correct.rotate90(v);
+  out.canvasWhileTurning = !!v.canvas; // 转的时候画布不清空，裁剪面板不会变成骨架
+  await turning;
+  await preview.flushEdits(v).catch(() => {});
+  await tick(5);
+  out.afterRotate = snap();
+  out.serverAfterRotate = { rect: crops[PHOTOS.A.id].rect.map((x) => +x.toFixed(4)), frame: [crops[PHOTOS.A.id].frame.width, crops[PHOTOS.A.id].frame.height] };
+  out.status = preview.saveStatus(PHOTOS.A.id);
+  out.cropPuts = requests.filter((r) => r.method === 'PUT' && r.url.endsWith('/crop')).map((r) => ({ rect: r.body.rect, preset: r.body.preset }));
+  // 框和画布万一对不上（落后于服务器）：被拒以后让服务器按比例重算，不留「有修改没有保存」
+  v.crop.rect = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 };
+  const before = requests.length;
+  await correct.flipHorizontal(v);
+  await tick(5);
+  out.afterDrift = { status: preview.saveStatus(PHOTOS.A.id), puts: requests.slice(before).filter((r) => r.method === 'PUT' && r.url.endsWith('/crop')).map((r) => r.body.rect), rect: snap().rect };
+} else if (scenario === 'auto-feedback') {
+  // 自动：点了按钮锁住、写「正在分析…」，结果出来以后用提示说清楚改了什么（可以撤销）；没把握时仍然是原来的提示
+  globalThis.statefulCrop = false;
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const correct = await import(file('correct.js'));
+  const bar = document.createElement('div');
+  document.body.append(bar);
+  bar.append(...correct.correctActions(v));
+  const auto = () => buttonByText('自动', bar) || buttonByText('正在分析…', bar);
+  const toasts = () => document.getElementById('toast-root').children.map((t) => t.textContent);
+  const autoKey = 'POST /api/photos/a0/geometry/auto';
+  const posts = () => requests.filter((r) => r.url.endsWith('/geometry/auto')).length;
+  out.before = { text: auto().textContent.trim(), busy: auto().getAttribute('aria-busy') };
+  globalThis.autoAnswer = { straighten: 4, vertical: 8, confident: true, message: '' };
+  holds.add(autoKey);
+  auto().click();
+  await tick(2);
+  const btn = auto();
+  out.during = { text: btn.textContent.trim(), busy: btn.getAttribute('aria-busy'), disabled: btn.getAttribute('aria-disabled') };
+  btn.click(); // 分析中再点：不发第二个请求
+  await tick(2);
+  out.postsWhileBusy = posts();
+  g.release(autoKey);
+  await tick(8);
+  out.after = { text: auto().textContent.trim(), busy: auto().getAttribute('aria-busy') };
+  out.doneToast = toasts();
+  out.geometry = { straighten: v.ed.geometry.straighten, vertical: v.ed.geometry.vertical };
+  out.undoSteps = v.undo.length;
+  // 没把握：保持原来的提示，不改几何
+  document.getElementById('toast-root').replaceChildren();
+  globalThis.autoAnswer = { straighten: v.ed.geometry.straighten, vertical: v.ed.geometry.vertical, confident: false, message: '未检测到明显的水平线' };
+  auto().click();
+  await tick(8);
+  out.unsureToast = toasts();
+  out.undoStepsAfterUnsure = v.undo.length;
+  // 回应和现在一样：不写空的保存、不记撤销，也要说一声
+  document.getElementById('toast-root').replaceChildren();
+  globalThis.autoAnswer = { ...v.ed.geometry, confident: true, message: '' };
+  const putsBefore = puts(PHOTOS.A.id).length;
+  auto().click();
+  await tick(8);
+  out.sameToast = toasts();
+  out.sameWrites = puts(PHOTOS.A.id).length - putsBefore;
 } else if (scenario === 'frame-cards-yield') {
   // 边框卡片是次要的：请求用 size=card；面板重搭时同一张不重复请求；这张照片有保存在路上时先让路
   await go(`#/photo/${PHOTOS.A.id}`);
@@ -1406,6 +1572,8 @@ if (scenario === 'reset-then-switch') {
   out.cases = [];
   for (const [geo, item, portrait] of cases) {
     v.ed.geometry = { straighten: 0, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false, ...geo };
+    // 接口的 frame 是几何变换之后的画布：转 90° 的要对调宽高
+    v.crop.frame = (geo.rotate90 || 0) % 2 ? { width: 2848, height: 4288 } : { width: 4288, height: 2848 };
     const full = cropMod.fullCanvas(v);
     v.canvas = { w: Math.round(full.w / 4), h: Math.round(full.h / 4) };
     const click = cropMod.presetRect(v, item, portrait);

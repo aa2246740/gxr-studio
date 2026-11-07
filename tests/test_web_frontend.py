@@ -463,9 +463,9 @@ def test_pixel_size_text_is_counted_on_the_original_frame():
     crop = (ASSETS / "crop.js").read_text(encoding="utf-8")
     body = _function_body(crop, "export function pixelsText(view)")
     assert "fullCanvas(view)" in body
-    # 全尺寸画布：sidecar 的 frame 宽高，按 90° 旋转交换（点比例、收框也用它）
+    # 全尺寸画布：接口给的 frame 宽高。它已经是旋转、透视之后的画布，不能再按 rotate90 转一次（点比例、收框也用它）
     full = _function_body(crop, "export function fullCanvas(view)")
-    assert "view.crop.frame" in full and "canvasAfterRotation" in full
+    assert "view.crop.frame" in full and "canvasAfterRotation" not in full
 
 
 def test_frame_cards_use_two_columns_and_colours_are_swatches_only():

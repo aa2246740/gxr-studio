@@ -514,10 +514,11 @@ def test_ratio_click_changes_the_box_before_the_save_returns(tmp_path):
     assert out["double"]["preset"] == "4:5" and out["double"]["orientation"] == "portrait"
     assert out["afterStale"] == out["double"]
     assert _near(out["afterBoth"]["rect"], 700 / 3000, 0, 1600 / 3000, 1, third)
-    # 3) 撤销：只有裁切的写入，回到 1:1
+    # 3) 撤销：只有裁切的写入
     assert out["undo"]["urls"] == ["crop"]
-    assert out["undo"]["body"]["preset"] == "1:1"
-    assert out["undo"]["now"]["preset"] == "1:1"
+    # 连点两下是两步：撤销先回到 16:9，不是一口气回到 1:1
+    assert out["undo"]["body"]["preset"] == "16:9"
+    assert out["undo"]["now"]["preset"] == "16:9"
     # 4) 失败：框留着（XPan 的本地框），标成未保存；重试成功后换成后端的框
     assert out["failed"]["status"] == "failed" and out["failed"]["preset"] == "xpan-65-24"
     assert _near(out["failed"]["rect"], 0, 0.2231, 1, 0.5538, 2e-3)
@@ -555,3 +556,48 @@ def test_frame_cards_ask_for_card_size_dedupe_and_yield_to_saves(tmp_path):
     assert out["final"]["requests"] == 3
     assert out["final"]["secondImgs"] == 3
     assert out["final"]["urls"] == ["stage=final&size=card"]
+
+
+def test_one_user_action_is_one_undo_step_before_the_server_answers(tmp_path):
+    """2026-11-07：曲线上点一下，要按三次 ⌘Z 点才消失——撤销记录原来要等保存回来才写，保存慢的时候前两次撤掉的是别的步骤。
+    现在每个操作在结束的那一刻就记一步（同步部分已经多一条），等保存写完也不会多出第二条。"""
+    out = run(tmp_path, "one-action-one-undo", real=("adjust.js", "crop.js", "correct.js"))
+    for name, got in out["steps"].items():
+        assert got == {"sync": 1, "final": 1, "pending": False}, (name, got)
+    assert set(out["steps"]) == {"slider", "slider-double-click-reset", "curve-click", "preset", "rotate", "flip", "reset-corrections"}
+    # 保存还挂着时按一次撤销：撤掉的就是刚点的那个点
+    assert out["curveClicked"] != out["curveBefore"]
+    assert out["curveAfterUndo"] == out["curveBefore"]
+
+
+def test_rotate_after_auto_with_perspective_ends_saved_and_consistent(tmp_path):
+    """2026-11-07：小红书 3:4 → 缩放 → 拉直 → 自动（带透视）→ 向左旋转，服务器 422，底栏「有修改没有保存」，面板成了骨架。
+    原因：服务器写透视时把框收进新画面并换了画布尺寸，界面的框和 frame 不跟；旋转又拿落后的框去写。"""
+    out = run(tmp_path, "rotate-after-refit", real=("crop.js", "correct.js"))
+    # 自动以后：界面的框和画布尺寸就是服务器收好的
+    assert out["afterAuto"] == {"rect": out["serverAfterAuto"]["rect"], "frame": out["serverAfterAuto"]["frame"]}
+    assert out["serverAfterAuto"]["frame"] == [3300, 2400]
+    # 转的时候画布不清空；转完保存成功，界面和服务器一致，没有被拒的写入
+    assert out["canvasWhileTurning"] is True
+    assert out["status"] in ("saved", "idle")
+    assert out["afterRotate"] == {"rect": out["serverAfterRotate"]["rect"], "frame": out["serverAfterRotate"]["frame"]}
+    assert out["serverAfterRotate"]["frame"] == [2400, 3300]
+    # 写入只有两笔：点比例（让服务器算框），和转完以后那一个框（没有被拒、没有重写）
+    assert [p["rect"] is None for p in out["cropPuts"]] == [True, False]
+    # 框万一和服务器的画布对不上：被拒以后让服务器按比例重算，仍然保存成功
+    assert out["afterDrift"]["status"] in ("saved", "idle")
+    assert out["afterDrift"]["puts"][-1] is None and len(out["afterDrift"]["puts"]) == 2
+
+
+def test_auto_shows_busy_and_says_what_it_changed(tmp_path):
+    """「自动」要一两秒：按钮锁住、转圈、写「正在分析…」；之后一条提示说清楚改了什么（可以撤销）；没把握时仍是原来的提示。"""
+    out = run(tmp_path, "auto-feedback", real=("crop.js", "correct.js"))
+    assert out["before"] == {"text": "自动", "busy": None}
+    assert out["during"] == {"text": "正在分析…", "busy": "true", "disabled": "true"}
+    assert out["postsWhileBusy"] == 1
+    assert out["after"] == {"text": "自动", "busy": None}
+    assert any("已自动拉直 +4.0°、垂直 +8（可以撤销）" in t for t in out["doneToast"]), out["doneToast"]
+    assert out["geometry"] == {"straighten": 4, "vertical": 8}
+    assert out["undoSteps"] == 1
+    assert any("未检测到明显的水平线" in t for t in out["unsureToast"]) and out["undoStepsAfterUnsure"] == 1
+    assert any("没有改动" in t for t in out["sameToast"]) and out["sameWrites"] == 0
