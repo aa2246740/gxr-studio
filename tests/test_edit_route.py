@@ -722,11 +722,46 @@ def test_retrying_a_rejected_drag_keeps_the_users_box(tmp_path):
 
 def test_retry_fits_a_box_only_right_after_writing_the_geometry_it_was_placed_against(tmp_path):
     """评审 P1（第五轮）的另一面：拖的框没写进去（普通的写入），接着垂直的几何也没写进去。重试先写几何；
-    几何刚写进去，这个框是按旧几何摆的，被拒就当目标让服务器收成最近的合格框。"""
+    几何刚写进去，这个框是按旧几何摆的，当目标（fit）写：服务器收得下就原样收，收不下才收成最近的合格框。"""
     out = run(tmp_path, "retry-geometry-then-plain-box", real=("crop.js", "correct.js"))
     assert out["skipped"]["status"] == "failed"
     after = out["afterRetry"]
     assert out["retry"] is True and after["status"] in ("saved", "idle")
     mine = [0.2, 0.15, 0.3, 0.6]
-    assert after["puts"] == [["edit"], ["crop", mine, False], ["crop", mine, True]], after["puts"]
+    assert after["puts"] == [["edit"], ["crop", mine, True]], after["puts"]  # 几何刚写进去：框直接当目标写，一笔写完
     assert after["server"] == mine, "位置保留"
+
+
+def test_a_failed_box_is_retried_as_a_target_after_a_later_geometry_write_succeeds(tmp_path):
+    """模糊测试 1405 / 1532：框的写入失败（500），之后几何写成功了，服务器按新几何收过框，界面因为有没保存的框没换成服务器的。
+    重试拿着按旧几何摆的框去写，永远被拒（crop_outside_image）。现在几何一写成功，没写进去的框就改成目标（fit），重试一笔写完。"""
+    out = run(tmp_path, "failed-box-then-geometry", real=("crop.js", "correct.js"))
+    mine = [0.2, 0.15, 0.3, 0.6]
+    assert out["failedBox"] == {"status": "failed", "screen": mine}
+    assert out["afterGeometry"]["status"] == "failed" and out["afterGeometry"]["screen"] == mine
+    after = out["afterRetry"]
+    assert out["retry"] is True and after["status"] in ("saved", "idle")
+    assert after["puts"] == [["crop", mine, True]], after["puts"]
+    assert after["server"] == mine and after["screen"] == mine
+
+
+def test_a_failed_reread_after_a_geometry_write_is_not_saved_and_retry_reads_again(tmp_path):
+    """评审 P2（第七轮）：几何写进去了，读回服务器收过的框失败。先隔一会儿再读（两次退避），还不行就记成失败：
+    状态是「有修改没有保存」而不是「已保存」，导出被拒，提示里有「重试」；重试就是再读一次，读到了才算完，界面的框换成服务器的。"""
+    out = run(tmp_path, "reread-fails-then-retry", real=("crop.js", "correct.js"))
+    stuck = out["stuck"]
+    assert stuck["gets"] >= 4, "第一次读加两次退避重读，一共三次失败，之后不再读"  # 进页面时的那一次也算
+    assert stuck["status"] == "failed" and stuck["stale"] is True
+    assert stuck["retryButton"] is True and out["exportBlocked"] is True
+    assert stuck["screen"] != stuck["server"], "这个场景里界面确实没跟上服务器"
+    after = out["afterRetry"]
+    assert out["retry"] is True and after["status"] in ("saved", "idle") and after["stale"] is False
+    assert after["gets"] >= 1 and after["puts"] == []
+    assert after["screen"] == after["server"] and after["frame"] == [3300, 2400]
+
+
+def test_a_box_write_carries_fit_only_while_the_server_box_has_not_been_read_back(tmp_path):
+    """评审 P1（第七轮）：fit 只在刚写过几何、服务器收过的框还没读回来（boxStale）的时候带；普通的拖动、缩放不带，让服务器照常校验。"""
+    out = run(tmp_path, "cropbody-fit-flag", real=("crop.js", "correct.js"))
+    assert out["plain"] is True and out["stale"] is True and out["nullRect"] is True
+    assert out["afterGeometry"] == {"boxStale": False, "fit": True}

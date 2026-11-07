@@ -87,8 +87,11 @@ function clearSucceeded(rec, kind, body) {
     for (const k of Object.keys(body)) delete f.edit[k];
     if (!Object.keys(f.edit).length) f.edit = null;
   }
+  // 没写进去的框是按更早的几何摆的，之后几何写成功了：这个框现在只是个目标，重试时让服务器收成最近的合格框
+  // （服务器收得下的话，fit 和普通写入的结果一模一样），不能拿旧几何的框去撞新的几何、一直被拒
+  if (kind === 'edit' && 'geometry' in body && f.crop && f.crop.rect !== null) f.crop = { ...f.crop, fit: true };
   if (kind === 'crop') f.crop = null;
-  if (!f.edit && !f.crop) rec.failed = null;
+  if (!f.edit && !f.crop && !f.stale) rec.failed = null;
 }
 
 // 一笔写入改到的字段：编辑按顶层键，裁剪整体算一个
@@ -205,7 +208,22 @@ export function retrySaves(id) {
       throw e;
     }
   };
-  rec.retrying = enqueue(rec, job).then((ok) => {
+  rec.retrying = enqueue(rec, job).then(async (written) => {
+    let ok = written;
+    // 服务器上的裁剪读不回来（界面上的框没跟上）：重试就是再读一次，读到了才算完。
+    // 读要等排着的写入（readFresh），所以放在这一笔写完以后，不能放在队列里的这一笔里面（会等自己）
+    if (ok && rec.failed && rec.failed.stale && rec.reread) {
+      try {
+        await rec.reread();
+        if (rec.failed) {
+          rec.failed.stale = false;
+          if (!rec.failed.edit && !rec.failed.crop) rec.failed = null;
+        }
+      } catch (e) {
+        if (rec.failed) rec.failed.error = e;
+        ok = false;
+      }
+    }
     rec.retrying = null;
     if (ok && !rec.failed) {
       toast('修改已保存', 'info');
@@ -216,6 +234,19 @@ export function retrySaves(id) {
     return ok && !rec.failed;
   });
   return rec.retrying;
+}
+
+// 几何写进去了，但服务器收过的框读不回来：界面上的框和服务器的不是一个，不能算「已保存」（导出也会拒绝）。
+// 记成失败，留一个再读一次的办法给「重试」。
+export function markStale(id, error, reread) {
+  const rec = saveRecord(id);
+  const f = rec.failed || { edit: null, crop: null, error: null };
+  f.stale = true;
+  f.error = error;
+  rec.failed = f;
+  rec.reread = reread;
+  toastError(error, '无法读取最新的裁剪框。', { action: { label: '重试', run: () => retrySaves(id) } });
+  announce(rec);
 }
 
 // 放弃没写进去的修改（调用方随后按服务端的内容重读）

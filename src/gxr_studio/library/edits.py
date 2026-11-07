@@ -179,22 +179,27 @@ def write_crop(
             side["geometry"]["straighten"] = 0.0
     else:
         preset = preset or "free"
-        if rect is not None and fit:
-            crop = cropmod.fit_target_crop(preset, rect, angle_deg, w, h)  # fit：rect 是目标，下面收成离它最近的合格框
-        elif rect is not None:
-            geom_now = _geometry_of(side)
-            # 透视、畸变拉开过的画布：画布不是一块拉直后的矩形，`box_inside` 的角点检查对不上真正的有效区。
-            # 这时不在这里按角度拒，下面的收框（fitted_crop）按真正的有效蒙版把框收进去
-            crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=geom_now.flip, check_region=not geom_now.expands())
-        else:
+        geom_now = _geometry_of(side)
+        forced = False
+        if rect is None:
             crop = cropmod.default_crop(preset, w, h, angle_deg, flip)
-        geom = replace(_geometry_of(side), straighten=float(angle_deg))
+        else:
+            try:
+                # 透视、畸变拉开过的画布：画布不是一块拉直后的矩形，`box_inside` 的角点检查对不上真正的有效区。
+                # 这时不在这里按角度拒，下面的收框（fitted_crop）按真正的有效蒙版把框收进去
+                crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=geom_now.flip, check_region=not geom_now.expands())
+            except CropError:
+                if not fit:
+                    raise
+                # fit：普通写入会被拒的框，才当目标收成离它最近的合格框；普通写入收得下的，结果和普通写入一模一样
+                crop = cropmod.fit_target_crop(preset, rect, angle_deg, w, h)
+                forced = True
+        geom = replace(geom_now, straighten=float(angle_deg))
         src_w, src_h = _source_frame(side)
-        fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h, force=fit and rect is not None)
+        fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h, force=forced)
         if fixed is not None:
             crop = Crop(crop.preset, fixed, crop.angle_deg)
-        if fit and rect is not None:
-            cropmod.check_min_size(crop.rect, w, h)  # 有效区本身太小，收不出合格的框
+        cropmod.check_final(crop.preset, crop.rect, w, h)  # 每条写入路径收完都查：太小、比例差太多的框不存（下一次写入就会被拒）
         side["crop"] = crop.to_json()
         geo = dict(side.get("geometry") or {})
         geo["straighten"] = crop.angle_deg

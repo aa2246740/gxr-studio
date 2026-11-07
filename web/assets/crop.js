@@ -5,7 +5,6 @@
 import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
-import { saveRecord } from './saves.js';
 import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, cropTilt } from './geom.js';
 
 // 比例分组。id 是后端 crop.py 的 PRESETS 的键；同一个 id 可以出现在两组里（例如 4:3 既是常用，也是小红书的竖图 3:4）。
@@ -150,10 +149,10 @@ export function ratioForMax(view, canvas) {
 // 旧版用 flip（和照片本身的方向不同时为 true），拉直只在 /crop 里，一定要带上当前的角度（不带的话旧版后端会把它冲回 0）。
 export function cropBody(view, base, orientation) {
   if (view.ed && view.ed.v2) {
-    // 还有写入没写完（或失败了没补上），或者刚写过几何、服务器收过的框还没读回来：这个框可能是按服务器还没到的画布摆的（刚拖过透视），严格校验会拒，
-    // 而界面的框又因为有没保存的框不会被服务器的框换掉，重试永远过不去。这时当目标写（fit），服务器收成离它最近的合格框
-    const rec = saveRecord(view.photo.id);
-    const unsettled = base.rect && (rec.pending > 0 || !!rec.failed || view.boxStale);
+    // 刚写过几何、服务器顺带收过的框还没读回来（boxStale）：这个框可能是按服务器还没到的画布摆的（刚拖过透视），严格校验会拒，
+    // 而界面的框又因为有没保存的框不会被服务器的框换掉，重试永远过不去。这时当目标写（fit），服务器收成离它最近的合格框。
+    // 别的保存（曝光、配方）还在路上不算：那和这个框没有关系，也不能让一次普通的拖动变成「最近的合格框」
+    const unsettled = base.rect && view.boxStale;
     return { ...base, orientation, ...(unsettled ? { fit: true } : {}) };
   }
   const angle_deg = geometryOf(view).straighten || 0;

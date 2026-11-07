@@ -8,6 +8,7 @@ import { cropBody, orientationNow, rectArray, fitCrop, resetCropLocal } from './
 import { slider, notReady } from './controls.js';
 import { rotateRect90, flipRect, fmtDeg, clamp } from './geom.js';
 import { DEFAULT_GEOMETRY } from './finish.js';
+import { markStale } from './saves.js';
 import { api } from './api.js';
 
 const ANGLE_MIN = -45;
@@ -48,14 +49,25 @@ export async function commitStraight(view) {
 // 界面上的框和画布尺寸跟服务器对齐。服务器写几何时已经把框收进新的有效画面，透视、畸变还会换画布尺寸；
 // 界面自己估的有效区只是近似，框的去留以服务器为准（否则下一步，比如转 90°，会拿落后的框去写，被服务器拒绝）。
 // 正在拖框（pending）时不动：松手时那一笔会带回准的框。
+const REREAD_BACKOFF_MS = [150, 400];
+
 export async function syncCrop(view) {
   if (view.disposed || !view.crop || view.pending) return;
-  try {
-    await loadCrop(view);
-  } catch {
-    return; // 读不到就保持现状，下一次保存还会再对一次
+  // 读不回来就隔一会儿再读，几次都不行：记成失败（底栏「有修改没有保存 重试」，导出会拒绝），不能让界面停在没跟上服务器的框上还显示「已保存」
+  let failure = null;
+  for (let attempt = 0; attempt <= REREAD_BACKOFF_MS.length; attempt += 1) {
+    try {
+      await loadCrop(view);
+      failure = null;
+      break;
+    } catch (e) {
+      failure = e;
+      if (attempt < REREAD_BACKOFF_MS.length) await new Promise((resolve) => setTimeout(resolve, REREAD_BACKOFF_MS[attempt]));
+      if (view.disposed) return;
+    }
   }
   if (view.disposed) return;
+  if (failure) markStale(view.photo.id, failure, () => loadCrop(view));
   view.onRectDrag?.();
   view.redrawSide?.();
   view.onChange?.();

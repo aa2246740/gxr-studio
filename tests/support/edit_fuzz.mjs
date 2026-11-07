@@ -7,6 +7,7 @@
 // 每条序列 6–10 步，从这些里抽：旋转、翻转、垂直 / 水平 / 畸变滑块、拉直、自动、点比例、挪框、缩放（框变小，原始也一样）、撤销、重做、重试、等写完（settle）。
 // 同一串步骤再在「没有故障、每步等写完」的理想情形下跑一遍。
 // 用法：node edit_fuzz.mjs <模块目录> <起始种子> <条数> <端口> <令牌> <照片 id>。输出一行 JSON，断言在 Python 那边。
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { installDom, tick } from './mini_dom.mjs';
 
@@ -30,7 +31,6 @@ function rng(seed) {
   };
 }
 const pick = (r, list) => list[Math.floor(r() * list.length)];
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---- 真服务器 ---------------------------------------------------------------
 class ApiErr extends Error {
@@ -43,12 +43,21 @@ class ApiErr extends Error {
 }
 
 async function direct(method, path, body) {
+  stats.direct += 1;
+  const t0 = Date.now();
   const res = await fetch(base + path, {
     method,
-    headers: { 'X-GXR-Token': token, 'Content-Type': 'application/json' },
+    // 每个请求一条新连接：复用的连接上，一次请求会偶尔卡 0.5–4 秒（本机 uvicorn + undici），整条序列慢十倍
+    headers: { 'X-GXR-Token': token, 'Content-Type': 'application/json', Connection: 'close' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
+  stats.directMs += Date.now() - t0;
+  const key = `${method} ${path.replace(realId, 'ID')}`;
+  stats.by[key] = stats.by[key] || [0, 0];
+  stats.by[key][0] += 1;
+  stats.by[key][1] += Date.now() - t0;
+  if (process.env.FUZZ_STATS === '2' && Date.now() - t0 > 100) console.error('slow', key, Date.now() - t0, 'at', Date.now() - startedAt);
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
@@ -59,40 +68,117 @@ async function direct(method, path, body) {
   return data;
 }
 
-// ---- 故障与延迟（只在转发之前）--------------------------------------------------
+// ---- 调度：谁先回来由种子决定，不由真实时间决定 ---------------------------------
+// 每个请求先登记（带一个种子抽出来的虚拟延迟，可能还带一个故障：挂住 / 500 / 409），不立刻发给服务器；
+// 调度器（pump）一次放行一个：按（虚拟到达时间，登记顺序）挑最小的，这时才真的去调用服务器，等它回来，再让界面的后续代码跑完。
+// 所以服务器看到的请求顺序、界面看到的回应顺序，只取决于种子和界面自己的行为，不取决于 HTTP 快慢或进程数。
+const startedAt = Date.now();
+const stats = { spin: 0, pumps: 0, direct: 0, directMs: 0, tickMs: 0, by: {} };
 let faultRng = rng(1);
 let faultsOn = false;
 let latencyOnly = false; // 只加延迟、不出故障（串行的序列）
-let holdList = []; // 挂住的 PUT：{ resolve }
-let inflight = 0; // 正在路上的请求（含挂住的）
+let queue = []; // 登记了、还没放行的请求：{ id, vt, held, fault, run, resolve, reject }
+let vnow = 0;
+let seq = 0;
 let trace = [];
 let faultCount = 0;
 let serverProblems = []; // 包装路由用真代码查出来的问题
 const T = (...a) => trace.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
 
-async function maybeFault(method) {
-  await tick(faultsOn || latencyOnly ? Math.floor(faultRng() * 3) : 0);
-  if (!faultsOn || method !== 'PUT') return;
-  const roll = faultRng();
-  if (roll < 0.1) {
-    faultCount += 1; // 挂住也算：界面在回应回来之前接着操作，用的是还没跟上服务器收框的框
-    T('  挂住 PUT');
-    await new Promise((resolve) => holdList.push({ resolve }));
-  } else if (roll < 0.18) {
+function submit(method, run) {
+  const latency = faultsOn || latencyOnly ? Math.floor(faultRng() * 3) : 0;
+  let fault = null;
+  if (faultsOn && method === 'PUT') {
+    const roll = faultRng();
+    fault = roll < 0.1 ? 'hold' : roll < 0.18 ? '500' : roll < 0.24 ? '409' : null;
+    if (fault) faultCount += 1; // 挂住也算：界面在回应回来之前接着操作，用的是还没跟上服务器收框的框
+    if (fault === 'hold') T('  挂住 PUT');
+  } else if (faultsOn && method === 'GET' && faultRng() < 0.05) {
+    // 重新读也会失败（界面要退避重读，还不行就标成「框和服务器不一致」，等用户点重试）
+    fault = '500';
     faultCount += 1;
-    T('  500 PUT');
+  }
+  return new Promise((resolve, reject) => {
+    seq += 1;
+    queue.push({ id: seq, method, vt: vnow + latency, held: fault === 'hold', fault, run, resolve, reject });
+  });
+}
+
+// 计时器（防抖、重读的退避、重画的延迟）也走调度器：延迟 20 毫秒以上的，按虚拟时间排进同一个队列，由 pump 放行，
+// 不看真实的时钟（否则「计时器先到还是回应先到」取决于机器忙不忙）。0 毫秒的（tick、动画帧）照旧用真的。
+const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+const realClearTimeout = globalThis.clearTimeout.bind(globalThis);
+globalThis.setTimeout = (fn, ms = 0, ...args) => {
+  // 只管界面模块自己设的计时器（调用栈里有模块目录）；fetch / undici 内部的计时器照旧用真的
+  if (!(ms >= 20) || !new Error().stack.includes(`${folder}/`)) return realSetTimeout(fn, ms, ...args);
+  seq += 1;
+  const entry = { id: seq, vt: vnow + ms, held: false, fault: null, virtualTimer: true, run: async () => fn(...args), resolve() {}, reject() {} };
+  queue.push(entry);
+  return entry;
+};
+globalThis.clearTimeout = (h) => {
+  if (h && h.virtualTimer) {
+    const i = queue.indexOf(h);
+    if (i >= 0) queue.splice(i, 1);
+  } else realClearTimeout(h);
+};
+
+async function execute(entry) {
+  if (entry.fault === '500') {
+    T('  500', entry.method);
     throw new ApiErr(500, 'disk_full', '磁盘已满，无法写入编辑记录。', null);
-  } else if (roll < 0.24) {
-    faultCount += 1;
-    T('  409 PUT');
+  }
+  if (entry.fault === '409') {
+    T('  409', entry.method);
     throw new ApiErr(409, 'rev_conflict', '这张照片已在别处修改。请刷新后重试。', null);
   }
+  return entry.run();
 }
+
+// 放行 n 个；返回有没有放行过
+async function pump(n = 1) {
+  let any = false;
+  for (let i = 0; i < n; i += 1) {
+    const ready = queue.filter((e) => !e.held).sort((a, b) => a.vt - b.vt || a.id - b.id)[0];
+    if (!ready) break;
+    queue.splice(queue.indexOf(ready), 1);
+    vnow = Math.max(vnow, ready.vt);
+    any = true;
+    stats.pumps += 1;
+    try {
+      ready.resolve(await execute(ready));
+    } catch (e) {
+      ready.reject(e);
+    }
+    const t1 = Date.now();
+    await tick(3); // 让界面的后续代码跑完（新的请求都在这几个 tick 里登记）
+    stats.tickMs += Date.now() - t1;
+  }
+  return any;
+}
+
 const releaseHolds = () => {
-  const list = holdList;
-  holdList = [];
-  for (const h of list) h.resolve();
+  for (const e of queue) {
+    if (e.held) {
+      e.held = false;
+      e.vt = vnow;
+    }
+  }
 };
+
+// 等一件事做完，期间按顺序放行请求（挂住的先放行：有人在等它）
+async function until(promise) {
+  let finished = false;
+  const guard = promise.then(() => { finished = true; }, () => { finished = true; });
+  for (let i = 0; i < 6000 && !finished; i += 1) {
+    await tick(2);
+    if (finished) break;
+    releaseHolds();
+    await pump(1);
+  }
+  await guard;
+  return promise;
+}
 
 let autoAnswer = { straighten: 0, vertical: 0, confident: false, message: '未检测到明显的水平线' };
 let photoMeta = null;
@@ -100,37 +186,31 @@ let photoMeta = null;
 globalThis.apiStub = async (url, opts = {}) => {
   const method = opts.method || 'GET';
   let m;
-  inflight += 1;
-  try {
-    if (method === 'GET' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
-      await maybeFault('GET');
+  if (method === 'GET' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
+    return submit('GET', async () => {
       const r = await direct('GET', `/api/photos/${realId}/${m[2]}`);
       T('  GET', m[2], m[2] === 'crop' ? r.rect : r.geometry);
       return r;
-    }
-    if (method === 'PUT' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
-      await maybeFault('PUT');
+    });
+  }
+  if (method === 'PUT' && (m = /^\/api\/photos\/(\w+)\/(edit|crop)$/.exec(url))) {
+    return submit('PUT', async () => {
       const out = await direct('PUT', `/__test/photos/${realId}/${m[2]}`, opts.body);
       for (const p of out.problems) serverProblems.push(`${m[2]} ${JSON.stringify(m[2] === 'crop' ? { preset: opts.body.preset, rect: opts.body.rect, fit: opts.body.fit } : opts.body.geometry)}: ${p}`);
       T('  PUT', m[2], m[2] === 'edit' ? opts.body.geometry : { preset: opts.body.preset, rect: opts.body.rect, fit: !!opts.body.fit }, '→', m[2] === 'edit' ? out.resp.geometry : out.resp.rect);
       return out.resp;
-    }
-    if (method === 'GET' && (m = /^\/api\/photos\/(\w+)$/.exec(url))) return { ...photoMeta, id: m[1] };
-    if (method === 'GET' && url.startsWith('/api/photos?')) return [photoMeta];
-    if (method === 'GET' && /\/capabilities$/.test(url)) return { raw: true, recipe: 'full', reason: '' };
-    if (method === 'GET' && /\/meta$/.test(url)) return {};
-    if (method === 'GET' && url === '/api/recipes') return { units: [] };
-    if (method === 'GET' && url === '/api/frames') return { styles: [] };
-    if (method === 'GET' && url === '/api/defaults/finish') return { frame: { style: 'none' }, stamp: { enabled: false } };
-    if (method === 'GET' && url === '/api/camdata/status') return { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
-    if (method === 'POST' && /\/geometry\/auto$/.test(url)) {
-      await maybeFault('GET');
-      return { ...autoAnswer };
-    }
-    throw new Error(`没有替身：${method} ${url}`);
-  } finally {
-    inflight -= 1;
+    });
   }
+  if (method === 'GET' && (m = /^\/api\/photos\/(\w+)$/.exec(url))) return { ...photoMeta, id: m[1] };
+  if (method === 'GET' && url.startsWith('/api/photos?')) return [photoMeta];
+  if (method === 'GET' && /\/capabilities$/.test(url)) return { raw: true, recipe: 'full', reason: '' };
+  if (method === 'GET' && /\/meta$/.test(url)) return {};
+  if (method === 'GET' && url === '/api/recipes') return { units: [] };
+  if (method === 'GET' && url === '/api/frames') return { styles: [] };
+  if (method === 'GET' && url === '/api/defaults/finish') return { frame: { style: 'none' }, stamp: { enabled: false } };
+  if (method === 'GET' && url === '/api/camdata/status') return { ready: false, camera_data: { state: 'missing' }, calibration: { state: 'missing' } };
+  if (method === 'POST' && /\/geometry\/auto$/.test(url)) return submit('GET', async () => ({ ...autoAnswer }));
+  throw new Error(`没有替身：${method} ${url}`);
 };
 globalThis.apiBlobStub = () => Promise.resolve({ blob: {}, headers: { get: () => null } });
 
@@ -244,8 +324,9 @@ async function runSequence(seed, steps, { ideal }) {
   serverProblems = [];
   faultsOn = false;
   faultRng = rng(seed * 104729 + 7);
-  holdList = [];
-  await go(`#/photo/${id}`);
+  queue = [];
+  vnow = 0;
+  await until(go(`#/photo/${id}`));
   await tick(6);
   const v = viewer.currentView();
   const section = correct.correctSection(v);
@@ -269,31 +350,31 @@ async function runSequence(seed, steps, { ideal }) {
     v.canvas = { w: f.width, h: f.height };
   };
   const rec = saves.saveRecord(id);
-  // 请求是真的 HTTP，要等真实的时间：按条件等（没有请求在路上、没有排着的写入、没有挂住的），不能数个空转的 tick
+  // 等到没有请求排着、没有写入在路上：按调度器的顺序一个一个放行，挂住的先放行
   const quiet = async () => {
-    for (let i = 0; i < 4000; i += 1) {
+    for (let i = 0; i < 6000; i += 1) {
       releaseHolds();
-      if (inflight === 0 && rec.pending === 0 && !holdList.length) {
+      if (queue.length === 0 && rec.pending === 0) {
         await tick(3);
-        if (inflight === 0 && rec.pending === 0 && !holdList.length) return;
+        if (queue.length === 0 && rec.pending === 0) return;
       }
-      await sleep(2);
+      if (!(await pump(1))) { stats.spin += 1; await tick(2); }
     }
-    problems.push('等了 12 秒还有请求没完成');
+    problems.push('放行了 6000 次还有请求没完成');
   };
   const settle = async () => {
     await quiet();
-    await Promise.allSettled(pending.splice(0));
+    await until(Promise.allSettled(pending.splice(0)));
     // 重试到记录清空：前两次还带着故障，之后没有
     for (let i = 0; i < 6 && rec.failed; i += 1) {
       faultsOn = !ideal && !serialMode && i < 2;
       pending.push(preview.retrySaves(id));
       await quiet();
-      await Promise.allSettled(pending.splice(0));
+      await until(Promise.allSettled(pending.splice(0)));
     }
     faultsOn = false;
     await quiet();
-    await Promise.allSettled(pending.splice(0));
+    await until(Promise.allSettled(pending.splice(0)));
     await updateCanvas();
   };
   // 用户看到的每一个状态：界面每重画一次（onChange / onRectDrag / redrawSide）就记一份
@@ -315,7 +396,7 @@ async function runSequence(seed, steps, { ideal }) {
     const s = screenState(v);
     const srv = await serverState();
     const status = preview.saveStatus(id);
-    if (rec.failed) problems.push(`${label}: 重试之后记录还没清空`);
+    if (rec.failed) problems.push(`${label}: 重试之后记录还没清空 ${JSON.stringify({ edit: rec.failed.edit, crop: rec.failed.crop, stale: !!rec.failed.stale, error: rec.failed.error && (rec.failed.error.code || String(rec.failed.error)) })}`);
     if (status === 'saving') problems.push(`${label}: 写完之后状态还是 saving`);
     if (!same(s.geometry, srv.geometry)) problems.push(`${label}: 几何不一致 屏幕 ${JSON.stringify(s.geometry)} 服务器 ${JSON.stringify(srv.geometry)}`);
     if (!near(s.rect, srv.rect, 2e-3) || s.preset !== srv.preset) problems.push(`${label}: 框不一致 屏幕 ${s.preset} [${s.rect.map((x) => +x.toFixed(4))}] 服务器 ${srv.preset} [${srv.rect.map((x) => +x.toFixed(4))}]`);
@@ -359,10 +440,7 @@ async function runSequence(seed, steps, { ideal }) {
   faultsOn = !ideal && !serialMode;
   // 串行：每一步开始时上一步已经全部写完、没有请求在路上，也没有出过故障。
   // 这样的序列和理想情形的操作顺序完全一样，结果（包括框的大小）必须一样
-  const idle = async () => {
-    for (let i = 0; i < 4000 && (inflight > 0 || rec.pending > 0); i += 1) await sleep(2);
-    await tick(2);
-  };
+  const idle = quiet;
   for (const step of steps) {
     if (step[0] === 'settle') {
       await settle();
@@ -374,7 +452,11 @@ async function runSequence(seed, steps, { ideal }) {
     await act(step);
     if (ideal) await settle();
     else if (serialMode) await idle();
-    else await tick(Math.floor(faultRng() * 4));
+    else {
+      await tick(3);
+      await pump(Math.floor(faultRng() * 4));
+      if (faultsOn && faultRng() < 0.3) releaseHolds();
+    }
     await note();
   }
   await settle();
@@ -409,6 +491,7 @@ photoMeta = await direct('GET', `/api/photos/${realId}`);
 const failures = [];
 let done = 0;
 let serialCompared = 0;
+const digests = {};
 for (let seed = seedStart; seed < seedStart + count; seed += 1) {
   const steps = makeSteps(seed);
   let real;
@@ -427,6 +510,7 @@ for (let seed = seedStart; seed < seedStart + count; seed += 1) {
     failures.push({ seed, steps: steps.map((s) => JSON.stringify(s)), problems: [`脚本出错：${e && e.stack ? e.stack.split('\n').slice(0, 4).join(' | ') : e}`] });
     continue;
   }
+  digests[seed] = createHash('sha1').update(JSON.stringify([ideal ? ideal.trace : null, real.trace])).digest('hex').slice(0, 16);
   const problems = [...real.problems, ...(ideal ? ideal.problems.map((p) => `理想情形：${p}`) : [])];
   const x = ideal?.final;
   const y = real.final;
@@ -454,5 +538,6 @@ for (let seed = seedStart; seed < seedStart + count; seed += 1) {
   if (problems.length) failures.push({ seed, steps: steps.map((s) => JSON.stringify(s)), problems, history: real.history, trace: process.env.FUZZ_TRACE || process.env.FUZZ_TRACE_ALL ? real.trace : undefined });
   done += 1;
 }
-console.log(JSON.stringify({ sequences: count, failures: failures.slice(0, Number(process.env.FUZZ_KEEP || 12)), failed: failures.length, done, serialCompared }));
+if (process.env.FUZZ_STATS) console.error(JSON.stringify(stats), Date.now() - startedAt);
+console.log(JSON.stringify({ sequences: count, failures: failures.slice(0, Number(process.env.FUZZ_KEEP || 12)), failed: failures.length, done, serialCompared, digests }));
 process.exit(0);

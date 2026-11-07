@@ -90,7 +90,7 @@ def _run(tmp_path: Path, folder: Path, server: dict, start: int, count: int, tra
         "PATH": os.environ.get("PATH", ""),
         "FUZZ_KEEP": "500",
         **({"FUZZ_TRACE": "1"} if trace else {}),
-        **{k: v for k, v in os.environ.items() if k == "FUZZ_TRACE_ALL"},
+        **{k: v for k, v in os.environ.items() if k in ("FUZZ_TRACE_ALL", "FUZZ_STATS")},
     }
     res = subprocess.run(  # noqa: S603
         [  # noqa: S607
@@ -110,29 +110,51 @@ def _run(tmp_path: Path, folder: Path, server: dict, start: int, count: int, tra
         encoding="utf-8",
         env=env,
     )
+    if os.environ.get("FUZZ_STATS"):
+        print("node 统计：", res.stderr.strip())
     assert res.stdout.strip(), f"node 没有输出（种子 {start}…{start + count - 1}）：{res.stderr[-1500:]}"
     return json.loads(res.stdout.strip().splitlines()[-1])  # type: ignore[no-any-return]
+
+
+def run_all(tmp_path: Path, server: dict, start: int, count: int, chunk: int, workers: int) -> list[dict]:
+    """每 chunk 条一个 node 进程，workers 个进程并行（各用一张照片，服务器那头是真的多线程）。"""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    folder = prepare(tmp_path, ("adjust.js", "crop.js", "correct.js"))
+    shutil.copy(SUPPORT / "edit_fuzz.mjs", tmp_path / "edit_fuzz.mjs")
+    chunks = [(first, min(chunk, start + count - first)) for first in range(start, start + count, chunk)]
+    free: Queue[str] = Queue()
+    for shot in server["photos"]:
+        free.put(shot)
+
+    def work(piece: tuple[int, int]) -> dict:
+        shot = free.get()  # 一张照片同一时间只给一个进程用
+        try:
+            return _run(tmp_path, folder, server, piece[0], piece[1], photo=shot)
+        finally:
+            free.put(shot)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(server["photos"])))) as pool:
+        return list(pool.map(work, chunks))
+
+
+def test_same_seeds_give_the_same_request_traces_whatever_the_process_count(tmp_path, server):
+    """谁先回来由种子决定，不由真实时间决定：同一段种子，1 个进程（每块 20 条）和 4 个进程（每块 10 条）跑，
+    每条序列的请求记录（发了什么、服务器回了什么、先后顺序）逐条一致。"""
+    count = min(COUNT, 40)
+    one = run_all(tmp_path / "one", server, START, count, 20, 1)
+    four = run_all(tmp_path / "four", server, START, count, 10, 4)
+    a = {k: v for out in one for k, v in out["digests"].items()}
+    b = {k: v for out in four for k, v in out["digests"].items()}
+    assert len(a) == count and a.keys() == b.keys()
+    different = sorted(k for k in a if a[k] != b[k])
+    assert not different, f"{len(different)} / {count} 条序列的请求记录因进程数不同而不同：种子 {different[:10]}"
 
 
 def test_random_crop_and_geometry_interleavings_end_consistent(tmp_path, server):
     folder = prepare(tmp_path, ("adjust.js", "crop.js", "correct.js"))
     shutil.copy(SUPPORT / "edit_fuzz.mjs", tmp_path / "edit_fuzz.mjs")
-    # 每 CHUNK 条一个 node 进程，几个进程并行（各用一张照片，服务器那头是真的多线程）
-    chunks = [(first, min(CHUNK, START + COUNT - first)) for first in range(START, START + COUNT, CHUNK)]
     photos = server["photos"]
-    free: Queue[str] = Queue()
-    for shot in photos:
-        free.put(shot)
-
-    def work(chunk: tuple[int, int]) -> dict:
-        shot = free.get()  # 一张照片同一时间只给一个进程用
-        try:
-            return _run(tmp_path, folder, server, chunk[0], chunk[1], photo=shot)
-        finally:
-            free.put(shot)
-
-    with ThreadPoolExecutor(max_workers=jobs(len(photos))) as pool:
-        outs = list(pool.map(work, chunks))
+    outs = run_all(tmp_path / "all", server, START, COUNT, CHUNK, jobs(len(photos)))
     failures: list[dict] = [f for out in outs for f in out["failures"]]
     total = sum(out["sequences"] for out in outs)
     compared = sum(out["serialCompared"] for out in outs)
@@ -148,5 +170,5 @@ def test_random_crop_and_geometry_interleavings_end_consistent(tmp_path, server)
             history = json.dumps(f.get("history"), ensure_ascii=False)
             lines += [f"seed {f['seed']}", "  步骤：" + " ".join(f["steps"]), *(f"  ! {p}" for p in f["problems"]), "  撤销重做：" + history]
         if traced:
-            lines += ["", f"seed {worst['seed']} 的请求记录："] + [f"  {t[:300]}" for t in (traced[0].get("trace") or [])[:120]]
+            lines += ["", f"seed {worst['seed']} 的请求记录："] + [f"  {t[:300]}" for t in (traced[0].get("trace") or [])[:600]]
         pytest.fail("\n".join(lines))

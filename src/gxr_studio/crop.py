@@ -159,6 +159,23 @@ def fit_target_crop(preset: str, rect: Any, angle_deg: float, width: int, height
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 
 
+def ratio_off(ratio: Fraction, w_px: int, h_px: int) -> float:
+    """框的像素比例和预设比例差多少（相对）。横竖两个方向都认（界面可以把预设转 90°）。validate_crop 用的就是它。"""
+    got = w_px / h_px
+    return min(abs(got - float(r)) / float(r) for r in (ratio, 1 / ratio))
+
+
+def check_final(preset: str, rect: tuple[float, float, float, float], width: int, height: int) -> None:
+    """收完、存下去之前的最后一道：短边不小于 MIN_SIDE_PX，比例在 RATIO_TOLERANCE 以内（和 validate_crop 同一套）。
+    不合格就报错，不存一个下一次写入就会被拒的框。"""
+    check_min_size(rect, width, height)
+    ratio = target_ratio(preset, width, height)
+    if ratio is not None:
+        _x0, _y0, w_px, h_px = crop_box(rect, width, height)
+        if ratio_off(ratio, w_px, h_px) > RATIO_TOLERANCE:
+            raise CropError("ratio_mismatch", "裁剪框超出画面范围")
+
+
 def check_min_size(rect: tuple[float, float, float, float], width: int, height: int) -> None:
     """收完的框，短边不能小于 MIN_SIDE_PX（和 validate_crop 一样）。"""
     _x0, _y0, w_px, h_px = crop_box(rect, width, height)
@@ -191,12 +208,8 @@ def validate_crop(
     x0, y0, w_px, h_px = crop_box((x, y, w, h), width, height)
     if w_px < MIN_SIDE_PX or h_px < MIN_SIDE_PX:
         raise CropError("too_small", "裁剪框超出画面范围")
-    if ratio is not None:
-        got = w_px / h_px
-        # 横竖两个方向都认（界面可以把预设转 90°）
-        off = min(abs(got - float(r)) / float(r) for r in (ratio, 1 / ratio))
-        if off > RATIO_TOLERANCE:
-            raise CropError("ratio_mismatch", "裁剪框超出画面范围")
+    if ratio is not None and ratio_off(ratio, w_px, h_px) > RATIO_TOLERANCE:
+        raise CropError("ratio_mismatch", "裁剪框超出画面范围")
     box = (x * width, y * height, w * width, h * height)
     if check_region and not box_inside(box, width, height, -angle if mirrored else angle, EDGE_TOLERANCE_PX):
         raise CropError("crop_outside_image", "裁剪框超出画面范围")
