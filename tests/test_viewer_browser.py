@@ -123,6 +123,7 @@ def check(out):
     assert out["cards"]["cardRenders"] <= 1, out["cards"]  # 舞台上没有现成的画面时才请求一张小图
     assert out["cards"]["stageRenders"] <= 1, out["cards"]  # 离开裁切页，服务器出图时大图重出一次；走显卡时一次也没有
     assert out["cards"]["ms"] < 2000, out["cards"]
+    assert out["cards"]["distinct"] > 8, out["cards"]  # 底图是真的照片，不是一张空白或纯黑
     # 时间戳文字边输入边变（当帧），保存等 400 ms，输入框不丢光标
     typed = out["live"]["typed"]
     assert typed["keyChanged"] is True and typed["typeMs"] < 100, typed

@@ -381,7 +381,13 @@ try {
     document.querySelector('#tab-frame').click();
     const n = await until(() => document.querySelectorAll('.fcard').length, 5000);
     await until(() => document.querySelectorAll('.fcard .thumb canvas').length >= n, 60000);
-    return { cards: n, canvases: document.querySelectorAll('.fcard .thumb canvas').length, ms: Math.round(performance.now() - t0) };
+    const ms = Math.round(performance.now() - t0);
+    // 第一张卡（无）是照片本身：不是空白（显卡画面当场复制，复制失败会得到一张黑的或空的）
+    const first = document.querySelector('.fcard .thumb canvas');
+    const data = first.getContext('2d').getImageData(0, 0, first.width, first.height).data;
+    const seen = new Set();
+    for (let i = 0; i < data.length; i += 4 * 97) seen.add((data[i] >> 3) + ',' + (data[i + 1] >> 3) + ',' + (data[i + 2] >> 3));
+    return { cards: n, canvases: document.querySelectorAll('.fcard .thumb canvas').length, ms, distinct: seen.size };
   })()`, 75000);
   // 离开裁切页时大图会重新出一次（服务器出图时）；卡片自己的底图请求带 max_edge=480，最多一张
   out.cards.cardRenders = renderCount(mark, /max_edge=480/);

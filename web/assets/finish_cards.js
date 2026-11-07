@@ -6,7 +6,7 @@ import { h } from './dom.js';
 import { apiBlob } from './api.js';
 import { state } from './state.js';
 import { draftBody } from './preview.js';
-import { gpuReadback } from './gpu_stage.js';
+import { gpuSnapshot } from './gpu_stage.js';
 import { DEFAULT_FRAME } from './finish.js';
 import { makeDeco } from './stage_finish.js';
 import { drawDecor } from './finish_draw.js';
@@ -34,16 +34,12 @@ function imageBase(view) {
   return { image: shrink(img, img.naturalWidth, img.naturalHeight), ew: Math.round(img.naturalWidth * k), eh: Math.round(img.naturalHeight * k) };
 }
 
-// 显卡正在画的成片读回来当底图（显卡画布本身读不出来：它只在画的那一帧里有内容）。不在显卡上返回 null。
-async function gpuBase(view) {
+// 显卡正在画的成片当底图：重画一帧，当场从显卡画布复制（画布就是显示的大小，不把整张成片读回 CPU）。不在显卡上返回 null。
+function gpuBase(view) {
   const size = view.gpuExport;
-  const shot = view.gpuActive === 'final' && size ? await gpuReadback() : null;
-  if (!shot || !shot.w || !shot.h) return null;
-  const full = document.createElement('canvas');
-  full.width = shot.w;
-  full.height = shot.h;
-  full.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(shot.data.buffer, shot.data.byteOffset, shot.data.byteLength), shot.w, shot.h), 0, 0);
-  return { image: shrink(full, shot.w, shot.h), ew: size.w, eh: size.h };
+  if (view.gpuActive !== 'final' || !size) return null;
+  const image = gpuSnapshot((cv) => (cv.width && cv.height ? shrink(cv, cv.width, cv.height) : null));
+  return image ? { image, ew: size.w, eh: size.h } : null;
 }
 
 async function requestBase(view) {
@@ -62,12 +58,12 @@ function baseFor(view) {
   const key = draftKey(view);
   const kept = view.cardBase;
   if (kept && kept.key === key) return kept.base ? Promise.resolve(kept.base) : kept.promise;
-  const now = imageBase(view);
+  const now = imageBase(view) || gpuBase(view);
   if (now) {
     view.cardBase = { key, base: now };
     return Promise.resolve(now);
   }
-  const promise = gpuBase(view).catch(() => null).then((base) => base || requestBase(view)).then((base) => {
+  const promise = requestBase(view).then((base) => {
     if (view.cardBase && view.cardBase.key === key) view.cardBase = { key, base };
     return base;
   });

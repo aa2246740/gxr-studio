@@ -384,7 +384,11 @@ export function gpuEngineForTests() {
   return engine;
 }
 
-// 成片（只有照片，不含边框）读回 CPU：{ w, h, data（RGBA） }。边框卡片用它缩成小底图（finish_cards.js）。显卡不在时返回 null。
-export async function gpuReadback() {
-  return engine ? engine.readback() : null;
+// 显卡画布现在的画面（成片，只有照片，不含边框）：重画一帧，在同一个任务里交给 use(canvas)——WebGPU 画布的内容只在提交的那个任务里有效。
+// 边框卡片用它缩成小底图（finish_cards.js）。画布就是显示的大小，比把整张成片读回 CPU 快得多（大图要一秒多）。
+// 显卡不在、或画布没挂在页面上时返回 null。
+export function gpuSnapshot(use) {
+  if (!engine || !canvas || !canvas.isConnected || !canvas.clientWidth) return null;
+  if (!engine.frame()) return null;
+  return use(canvas);
 }
