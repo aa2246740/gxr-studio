@@ -14,6 +14,8 @@ export default defineConfig({
     minify: true,
     sourcemap: false,
     reportCompressedSize: false,
+    // 库模式的 ES 产物默认保留换行和缩进（只改名字）；去掉空白，产物才不会随功能变长、撞上 800 行的文件上限（scripts/large_files.py）
+    rolldownOptions: { output: { minify: { compress: true, mangle: true, codegen: { removeWhitespace: true } } } },
     lib: {
       entry: fileURLToPath(new URL('src/index.ts', import.meta.url)),
       formats: ['es'],

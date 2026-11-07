@@ -5,6 +5,7 @@ import commonWgsl from './shaders/common.wgsl?raw';
 import geoWgsl from './shaders/geo.wgsl?raw';
 import binWgsl from './shaders/bin.wgsl?raw';
 import presentWgsl from './shaders/present.wgsl?raw';
+import histWgsl from './shaders/hist.wgsl?raw';
 import { type Adjust, type CurvePoints, channelGains, displayTable, TABLE_SIZE } from './tones';
 
 type Mat3 = [number[], number[], number[]];
@@ -96,6 +97,47 @@ export interface FrameInfo {
   submitted: number;
 }
 
+/** 溢出提示要不要盖在画面上（J、点三角）。 */
+export interface ClipOverlay {
+  shadow: boolean;
+  highlight: boolean;
+}
+
+/** 一次直方图的结果。bins 排列：红、绿、蓝、亮度各 256 档，后面是暗部压死、高光溢出的点数（共 1026 个）。 */
+export interface HistogramData {
+  counts: Uint32Array;
+  samples: number;
+  stride: number;
+  /** 取样的像素矩形 [x0, y0, x1, y1)（成片纹理的像素）。 */
+  rect: [number, number, number, number];
+  /** 数的时候成片纹理的内容版本（Engine.contentVersion）。 */
+  version: number;
+}
+
+/** 溢出判定（码值）：三个颜色都 ≤ shadowMax = 暗部压死，都 ≥ highlightMin = 高光溢出。与 web/assets/histogram_math.js 相同。 */
+export const CLIP = { shadowMax: 2, highlightMin: 253 } as const;
+/** 一次最多数多少个点（512 × 512）。与 histogram_math.js 的 MAX_SAMPLES 相同。 */
+export const HIST_MAX_SAMPLES = 262144;
+const HIST_SIZE = 1026;
+
+/** 横竖每隔 s 个像素取一个，取到的点不超过 maxSamples（与 histogram_math.js 的 sampleStride 相同）。 */
+export function sampleStride(width: number, height: number, maxSamples = HIST_MAX_SAMPLES): number {
+  let s = Math.max(1, Math.floor(Math.sqrt((width * height) / maxSamples)));
+  while (Math.ceil(width / s) * Math.ceil(height / s) > maxSamples) s += 1;
+  return s;
+}
+
+/** 归一化矩形 [x, y, w, h]（0–1）→ 像素矩形 [x0, y0, x1, y1)，至少一个像素（与 histogram_math.js 的 pixelRegion 相同）。 */
+export function pixelRegion(width: number, height: number, region: [number, number, number, number] | null): [number, number, number, number] {
+  if (!region) return [0, 0, width, height];
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+  const x0 = clamp(Math.round(region[0] * width), 0, width - 1);
+  const y0 = clamp(Math.round(region[1] * height), 0, height - 1);
+  const x1 = clamp(Math.round((region[0] + region[2]) * width), x0 + 1, width);
+  const y1 = clamp(Math.round((region[1] + region[3]) * height), y0 + 1, height);
+  return [x0, y0, x1, y1];
+}
+
 const UNIFORM_FLOATS = 18 * 4;
 const MAX_SOURCE_BYTES = 640 << 20;
 // 画布外的空白：设计系统的舞台灰 --stage-dark #2a2a2a
@@ -118,9 +160,13 @@ export class Engine {
   private readonly geoPipe: GPURenderPipeline;
   private readonly presentPipe: GPURenderPipeline;
   private readonly binPipe: GPUComputePipeline;
+  private readonly histPipe: GPUComputePipeline;
   private readonly uniform: GPUBuffer;
   private readonly geoUniform: GPUBuffer;
   private readonly presentUniform: GPUBuffer;
+  private readonly histUniform: GPUBuffer;
+  private readonly histTotal: GPUBuffer;
+  private readonly histStage: GPUBuffer;
   private readonly toneBuf: GPUBuffer;
   private readonly dummyLut: GPUTexture;
   private readonly dummyLut8: GPUTexture;
@@ -134,6 +180,9 @@ export class Engine {
   private dirtyColor = true;
   private dirtyGeo = true;
   private raf = 0;
+  private histBusy = false;
+  private clipOverlay: ClipOverlay = { shadow: false, highlight: false };
+  private version = 0;
   private lost = false;
   onFrame: ((f: FrameInfo) => void) | null = null;
   onLost: ((reason: string) => void) | null = null;
@@ -166,7 +215,8 @@ export class Engine {
     const geoMod = mod(geoWgsl);
     const presentMod = mod(presentWgsl);
     const binMod = mod(binWgsl);
-    this.modules = [colorMod, geoMod, presentMod, binMod];
+    const histMod = mod(histWgsl);
+    this.modules = [colorMod, geoMod, presentMod, binMod, histMod];
     this.colorPipe = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: colorMod, entryPoint: 'vs' },
@@ -183,10 +233,14 @@ export class Engine {
       fragment: { module: presentMod, entryPoint: 'fs', targets: [{ format: this.format }] },
     });
     this.binPipe = device.createComputePipeline({ layout: 'auto', compute: { module: binMod, entryPoint: 'main' } });
+    this.histPipe = device.createComputePipeline({ layout: 'auto', compute: { module: histMod, entryPoint: 'main' } });
     const ub = (size: number) => device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.uniform = ub(UNIFORM_FLOATS * 4);
     this.geoUniform = ub(4 * 16);
-    this.presentUniform = ub(2 * 16);
+    this.presentUniform = ub(3 * 16);
+    this.histUniform = ub(2 * 16);
+    this.histTotal = device.createBuffer({ size: HIST_SIZE * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    this.histStage = device.createBuffer({ size: HIST_SIZE * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
     this.toneBuf = device.createBuffer({ size: TABLE_SIZE * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.dummyLut = device.createTexture({ size: [2, 2, 2], dimension: '3d', format: 'rgba32float', usage: GPUTextureUsage.TEXTURE_BINDING });
     this.dummyLut8 = device.createTexture({ size: [1, 1, 1], dimension: '3d', format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
@@ -539,11 +593,21 @@ export class Engine {
       canvas.width = cw;
       canvas.height = ch;
     }
+    this.presentTo(enc, this.context!.getCurrentTexture().createView(), cw, ch, fw, fh);
+  }
+
+  /** 第三遍画到指定的目标（画布的当前纹理，或测试读回用的离屏纹理）。 */
+  private presentTo(enc: GPUCommandEncoder, target: GPUTextureView, cw: number, ch: number, fw: number, fh: number): void {
     const scale = Math.max(fw / cw, fh / ch);
     const ox = (cw - fw / scale) / 2;
     const oy = (ch - fh / scale) / 2;
-    this.device.queue.writeBuffer(this.presentUniform, 0, new Float32Array([scale, ox, oy, STAGE_GRAY, fw, fh, 0, 0]));
-    const pass = enc.beginRenderPass({ colorAttachments: [{ view: this.context!.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [STAGE_GRAY, STAGE_GRAY, STAGE_GRAY, 1] }] });
+    const o = this.clipOverlay;
+    this.device.queue.writeBuffer(this.presentUniform, 0, new Float32Array([
+      scale, ox, oy, STAGE_GRAY,
+      fw, fh, 0, 0,
+      CLIP.shadowMax + 0.5, CLIP.highlightMin - 0.5, o.shadow ? 1 : 0, o.highlight ? 1 : 0,
+    ]));
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: [STAGE_GRAY, STAGE_GRAY, STAGE_GRAY, 1] }] });
     pass.setPipeline(this.presentPipe);
     pass.setBindGroup(0, this.device.createBindGroup({
       layout: this.presentPipe.getBindGroupLayout(0),
@@ -570,6 +634,7 @@ export class Engine {
     if (this.dirtyGeo) {
       this.encodeGeo(enc, src, size.w, size.h);
       this.dirtyGeo = false;
+      this.version += 1;
     }
     this.encodePresent(enc, size.w, size.h);
     this.device.queue.submit([enc.finish()]);
@@ -605,6 +670,107 @@ export class Engine {
     buf.destroy();
     this.dirtyColor = true;
     return { w: size.w, h: size.h, data: out };
+  }
+
+  // ---- 直方图和溢出提示 ----
+
+  /** 成片纹理的内容版本：每次重画颜色或几何都加一。直方图据此知道要不要重数。 */
+  get contentVersion(): number {
+    return this.version;
+  }
+
+  /** 有一帧还没画出来（参数刚改、等下一次刷新）：这时成片纹理还是旧的。 */
+  get pending(): boolean {
+    return this.raf !== 0 || this.dirtyColor || this.dirtyGeo;
+  }
+
+  /** 溢出提示盖不盖在画面上。只重画最后一遍（显示），不重算颜色。 */
+  setClipOverlay(overlay: Partial<ClipOverlay>): void {
+    Object.assign(this.clipOverlay, overlay);
+    this.schedule();
+  }
+
+  /**
+   * 数成片纹理的直方图。region 是归一化矩形 [x, y, w, h]（裁剪页只数框里面的），null = 整幅。
+   * 异步读回：上一次还没读完就直接返回 null（跳过，不排队）；成片纹理还没有、设备丢了也返回 null。
+   * 只提交一个很小的计算通道，排在已经提交的画面之后，不会拖慢预览。
+   */
+  async histogram(region: [number, number, number, number] | null = null, maxSamples = HIST_MAX_SAMPLES): Promise<HistogramData | null> {
+    const tex = this.finalTex;
+    if (!tex || this.lost || this.histBusy) return null;
+    this.histBusy = true;
+    try {
+      const rect = pixelRegion(tex.width, tex.height, region);
+      const stride = sampleStride(rect[2] - rect[0], rect[3] - rect[1], maxSamples);
+      const nx = Math.ceil((rect[2] - rect[0]) / stride);
+      const ny = Math.ceil((rect[3] - rect[1]) / stride);
+      const version = this.version;
+      const d = this.device;
+      d.queue.writeBuffer(this.histUniform, 0, new Uint32Array([rect[0], rect[1], nx, ny, stride, CLIP.shadowMax, CLIP.highlightMin, 0]));
+      const enc = d.createCommandEncoder();
+      enc.clearBuffer(this.histTotal);
+      const pass = enc.beginComputePass();
+      pass.setPipeline(this.histPipe);
+      pass.setBindGroup(0, d.createBindGroup({
+        layout: this.histPipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.histUniform } },
+          { binding: 1, resource: tex.createView() },
+          { binding: 2, resource: { buffer: this.histTotal } },
+        ],
+      }));
+      pass.dispatchWorkgroups(8, 8);
+      pass.end();
+      enc.copyBufferToBuffer(this.histTotal, 0, this.histStage, 0, HIST_SIZE * 4);
+      d.queue.submit([enc.finish()]);
+      await this.histStage.mapAsync(GPUMapMode.READ);
+      const counts = new Uint32Array(this.histStage.getMappedRange().slice(0));
+      this.histStage.unmap();
+      return { counts, samples: nx * ny, stride, rect, version };
+    } catch (e) {
+      if (this.lost) return null;
+      throw e;
+    } finally {
+      this.histBusy = false;
+    }
+  }
+
+  /** 读回最后一遍（显示）的结果，画布大小 cw × ch（含溢出提示）。给测试对拍溢出提示用。 */
+  async readPresent(cw: number, ch: number): Promise<{ w: number; h: number; data: Uint8Array }> {
+    const src = this.current;
+    if (!src) throw new Error('没有照片');
+    const size = this.finalSize()!;
+    this.ensureTextures(src, size.w, size.h);
+    const d = this.device;
+    const enc = d.createCommandEncoder();
+    if (!this.encodeColor(enc, src)) throw new Error('配方表或 LUT 还没到');
+    this.encodeGeo(enc, src, size.w, size.h);
+    const target = d.createTexture({ size: [cw, ch], format: this.format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    this.presentTo(enc, target.createView(), cw, ch, size.w, size.h);
+    const bpr = Math.ceil((cw * 4) / 256) * 256;
+    const buf = d.createBuffer({ size: bpr * ch, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    enc.copyTextureToBuffer({ texture: target }, { buffer: buf, bytesPerRow: bpr }, [cw, ch]);
+    d.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const mapped = new Uint8Array(buf.getMappedRange());
+    const bgra = this.format.startsWith('bgra');
+    const out = new Uint8Array(cw * ch * 4);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        const i = y * bpr + x * 4;
+        const o = (y * cw + x) * 4;
+        out[o] = mapped[i + (bgra ? 2 : 0)];
+        out[o + 1] = mapped[i + 1];
+        out[o + 2] = mapped[i + (bgra ? 0 : 2)];
+        out[o + 3] = mapped[i + 3];
+      }
+    }
+    buf.unmap();
+    buf.destroy();
+    target.destroy();
+    this.dirtyColor = true;
+    this.schedule();
+    return { w: cw, h: ch, data: out };
   }
 
   /** 显卡吞吐：同一帧（颜色 + 几何）连续提交 n 次的平均毫秒。 */
