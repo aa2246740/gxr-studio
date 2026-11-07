@@ -1471,6 +1471,43 @@
         "summary": "Reveal Exported"
       }
     },
+    "/api/finish/assets/{name}": {
+      "get": {
+        "operationId": "finish_asset_api_finish_assets__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Asset"
+      }
+    },
     "/api/frames": {
       "get": {
         "operationId": "frames_api_frames_get",

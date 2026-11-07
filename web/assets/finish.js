@@ -27,6 +27,10 @@ export const DEFAULT_STAMP = {
   glow: true,
 };
 
+// 大图上的边框和时间戳由浏览器画（stage_finish.js）：发给服务器出图的草稿里一律是「没有」，服务器只出照片
+export const NO_FRAME = { style: 'none' };
+export const NO_STAMP = { enabled: false };
+
 export const DEFAULT_GEOMETRY = { straighten: 0, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false };
 
 export const TEXT_MAX = 24;

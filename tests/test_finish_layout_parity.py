@@ -3,7 +3,7 @@
 两边用同样的输入：每种样式 × 每个选项 × 横、竖、方、条幅几种大小的照片 × 几份拍摄信息。字的宽度由 Pillow 量好，
 记在表里交给 node（node 里没有字体）：JS 版问到表里没有的字就失败，说明两边的算式不一样了。
 矩形、线、标志的位置和字号逐个数字相同（浮点误差以内）；画出来的字符串逐字相同。
-真浏览器里用画布量字时和 Pillow 的差，在 tests/test_finish_overlay_browser.py 里查。
+真浏览器里用画布量字时和 Pillow 的差，在 tests/test_viewer_browser.py::test_browser_layout_matches_the_export_layout 里查。
 """
 
 from __future__ import annotations
