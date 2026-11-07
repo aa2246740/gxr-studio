@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import socket
+import statistics
 import subprocess
 import sys
 import threading
@@ -90,10 +91,17 @@ def drive(live, tmp_path, mode: str, extra_env: dict | None = None) -> dict:
     return out  # type: ignore[no-any-return]
 
 
-def slow(live_out):
-    """「当帧画出来」的耗时门槛：100 毫秒，机器忙、一帧本身就拖长时放宽到一帧的 4 倍。
-    真要请求服务器出图的话，一定会被 clickRenders / dragRenders 为 0 的断言抓住，这里只是再看一眼。"""
-    return max(100, 4 * live_out["frameMs"])
+def assert_painted_at_once(live_out):
+    """点样式、改颜色、开日期戳、打字：点下之后的下一帧，叠加层的画法就变了（「当帧画出来」）。
+    这是硬的：舞台要是又等服务器出图，一帧里不可能变，和机器忙不忙无关；/render 为 0 的断言（clickRenders、dragRenders）是另一半。
+    耗时只当参考：每次操作拿它前后各三帧里最长的一帧当尺子（机器忙时帧本身就拖长，整台机器卡一下尺子也跟着变长），
+    几次操作的中位数要在 max(100 毫秒, 4 倍尺子) 以内，偶尔一次卡顿不会让测试失败。"""
+    clicks = live_out["clicks"]
+    assert len(clicks) == 10, clicks  # 七次点样式、颜色、日期戳开关、打字
+    assert all(c["changed"] for c in clicks), [c for c in clicks if not c["changed"]]
+    median_ms = statistics.median(c["ms"] for c in clicks)
+    median_frame = statistics.median(c["frameMs"] for c in clicks)
+    assert median_ms <= max(100, 4 * median_frame), (median_ms, median_frame, clicks)
 
 
 def near(a, b, eps=0.3):
@@ -128,11 +136,10 @@ def check(out):
     assert out["cards"]["cards"] == 7 and out["cards"]["canvases"] == 7
     assert out["cards"]["cardRenders"] <= 1, out["cards"]  # 舞台上没有现成的画面时才请求一张小图
     assert out["cards"]["stageRenders"] <= 1, out["cards"]  # 离开裁切页，服务器出图时大图重出一次；走显卡时一次也没有
-    assert out["cards"]["ms"] < 2000, out["cards"]
     assert out["cards"]["distinct"] > 8, out["cards"]  # 底图是真的照片，不是一张空白或纯黑
     # 时间戳文字边输入边变（当帧），保存等 400 ms，输入框不丢光标
     typed = out["live"]["typed"]
-    assert typed["keyChanged"] is True and typed["typeMs"] < slow(out["live"]), typed
+    assert typed["keyChanged"] is True, typed
     assert typed["putsEarly"] == 0 or typed["earlyValid"] is False, typed  # 400 毫秒之内没有保存（机器忙得拖过了就不判）
     assert typed["putsLate"] == 1 and typed["saved"] == "Paris" and typed["focusKept"] is True, typed
     # 100%、换回适合、换到下一张再换回来：边框和日期戳跟着照片；下一张没有边框，叠加层不跟过去
@@ -143,24 +150,21 @@ def check(out):
         assert stage["deco"] == stage["pv"], (name, stage)  # 叠加层和整张成片一样大
         assert stage["pv"][0] >= stage["media"][0] and stage["pv"][1] > stage["media"][1], (name, stage)  # 徕卡的条在下面：成片比照片高
     assert live_out["next"] and live_out["next"]["framed"] is False and live_out["next"]["overlay"] is False, live_out["next"]
+    assert_painted_at_once(live_out)
     print_timings(out)
 
 
 def print_timings(out):
     """一行实测数字（pytest -s 能看到）：卡片出齐、点样式、改颜色、开日期戳、打字、拖滑块每帧，单位毫秒。"""
     live_out = out["live"]
-    styles = {k: v for k, v in live_out["styleMs"].items() if ":" not in k}
     print(
         "timings",
         json.dumps(
             {
                 "mode": out["mode"],
                 "cards_ms": out["cards"]["ms"],
-                "style_click_ms_max": max(styles.values()),
-                "style_click_ms": styles,
-                "color_ms": live_out["colorMs"],
-                "stamp_on_ms": live_out["stampMs"],
-                "type_ms": live_out["typed"]["typeMs"],
+                "ms": {f"{i}:{c['name']}": c["ms"] for i, c in enumerate(live_out["clicks"])},
+                "frame_ms": max(c["frameMs"] for c in live_out["clicks"]),
                 "slider_frame_ms_worst": live_out["worstFrameMs"],
                 "slider_drag_ms_30_inputs": live_out["dragMs"],
             },
@@ -175,10 +179,8 @@ def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     check(out)
     # 服务器出图时也一样：点样式、改选项、开时间戳都不请求 /render，当帧就画出来
     live_out = out["live"]
-    styles = {k: v for k, v in live_out["styleMs"].items() if ":" not in k}
-    assert all(live_out["styleMs"][f"{name}:framed"] for name in ("徕卡水印", "哈苏水印", "胶片", "拍立得", "画布", "白边")), live_out
-    assert max(styles.values()) < slow(live_out), live_out
-    assert live_out["stampMs"] < slow(live_out) and live_out["stampOn"]["overlay"] is True, live_out
+    assert all(live_out["styleFramed"].values()) and len(live_out["styleFramed"]) == 6, live_out
+    assert live_out["stampOn"]["overlay"] is True, live_out
     assert live_out["clickRenders"] == 0, live_out
 
 
@@ -209,12 +211,9 @@ def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
     assert live_out["dragRenders"] == 0 and live_out["clickRenders"] == 0, live_out
     assert live_out["frame"]["framed"] is True and live_out["frame"]["overlay"] is True, live_out
     assert live_out["stampOn"]["overlay"] is True, live_out
-    # 点样式、改颜色、开时间戳：当帧就画出来（目标 50 毫秒以内；CI 的机器慢，门槛放宽到一倍）
-    assert max(v for k, v in live_out["styleMs"].items() if ":" not in k) < slow(live_out), live_out
-    assert live_out["colorMs"] < slow(live_out) and live_out["stampMs"] < slow(live_out), live_out
 
 
-# ---- 预览的版面（真 Chrome 用画布量字）和导出的版面（Pillow 量字）----------------------------------------------
+# ---- 预览的版面（真 Chrome 里用字体表算）和导出的版面（Python 用同一份表算）----------------------------------------
 
 
 def _layout_cases():

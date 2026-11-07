@@ -399,28 +399,38 @@ try {
   out.live = await evalIn(`(async () => { ${helpers}
     const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
     const deco = () => { const pv = document.querySelector('.pv'); return { framed: pv.classList.contains('framed'), overlay: !!pv.querySelector('.pv-deco'), size: [pv.style.width, pv.style.height] }; };
-    const timed = async (fn) => { const t = performance.now(); fn(); await raf(); return Math.round(performance.now() - t); };
     const card = (name) => [...document.querySelectorAll('.fcard')].find((x) => x.textContent.trim() === name);
     const renders = () => performance.getEntriesByType('resource').filter((e) => /\\/render\\b/.test(e.name)).length;
     const renders0 = renders();
-    // 这台机器此刻一帧要多久（机器忙时每帧会拖长）：下面几个「当帧画出来」的耗时按它放宽门槛，见 test_viewer_browser.py
-    const gaps = [];
-    for (let last = performance.now(), i = 0; i < 9; i += 1) { await raf(); const now = performance.now(); gaps.push(now - last); last = now; }
-    const frameMs = Math.round(gaps.sort((a, b) => a - b)[4]);
-    const styleMs = {};
-    for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '画布', '白边']) {
-      styleMs[name] = await timed(() => card(name).click());
-      styleMs[name + ':framed'] = deco().framed;
+    // 每个「当帧画出来」的操作都记三样：点下（或输入）之后的下一帧，叠加层的画法（key）变了没有（服务器出图的话一帧里不可能变）；
+    // 耗时多少；这一次操作前后各三帧里最长的一帧是多长（机器忙时帧本身就拖长，拿它当这一次的尺子）
+    const key = () => document.querySelector('.pv .pv-deco')?.dataset.key;
+    const gaps = async (n) => { const out = []; for (let last = performance.now(), i = 0; i < n; i += 1) { await raf(); const now = performance.now(); out.push(now - last); last = now; } return out; };
+    const clicks = [];
+    const timed = async (name, fn) => {
+      const lead = await gaps(3);
+      const k0 = key();
+      const t = performance.now();
+      fn();
+      await raf();
+      const ms = Math.round(performance.now() - t);
+      const changed = key() !== k0;
+      const trail = await gaps(3);
+      clicks.push({ name, ms, changed, frameMs: Math.round(Math.max(...lead, ...trail)) });
+    };
+    const styleFramed = {};
+    for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '画布', '白边', '徕卡水印']) {
+      await timed(name, () => card(name).click());
+      styleFramed[name] = deco().framed;
     }
-    styleMs.leica = await timed(() => card('徕卡水印').click());
     await wait(200);
     const frame = deco();
     // 换一个选项（颜色）也一样
-    const colorMs = await timed(() => document.querySelector('.swrow button[title="黑"], .swrow button[aria-label="黑"]')?.click());
+    await timed('color', () => document.querySelector('.swrow button[title="黑"], .swrow button[aria-label="黑"]')?.click());
     // 时间戳
     document.querySelector('#tab-stamp').click();
     await wait(200);
-    const stampMs = await timed(() => document.querySelector('#tp-stamp input[role=switch]').click());
+    await timed('stamp', () => document.querySelector('#tp-stamp input[role=switch]').click());
     const stampOn = deco();
     await wait(500);
     const clickRenders = renders() - renders0; // 点样式、改颜色、开时间戳：没有一个 /render
@@ -432,24 +442,21 @@ try {
     await wait(300);
     const input = document.querySelector('#tp-stamp input[type=text]');
     input.focus();
-    const key = () => document.querySelector('.pv .pv-deco')?.dataset.key;
     const puts0 = edits.length;
-    const k0 = key();
-    const typeStart = performance.now();
-    input.value = 'Pa';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.value = 'Paris'; // 连着打：两下之间没有停顿，只会保存一次（机器再忙，中间也不会隔 400 毫秒）
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    const lastKey = performance.now();
-    await raf();
-    const typeMs = Math.round(performance.now() - typeStart);
-    const keyChanged = key() !== k0;
+    let lastKey = 0;
+    await timed('typing', () => {
+      input.value = 'Pa';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.value = 'Paris'; // 连着打：两下之间没有停顿，只会保存一次（机器再忙，中间也不会隔 400 毫秒）
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      lastKey = performance.now();
+    });
     await wait(100);
     const putsEarly = edits.length - puts0; // 还在 400 ms 之内：没有保存
     const earlyValid = performance.now() - lastKey < 350; // 机器忙得这一步拖过了 350 毫秒，这一项没有意义，不判
     await wait(900);
     const putsLate = edits.length - puts0;
-    const typed = { typeMs, keyChanged, putsEarly, earlyValid, putsLate, focusKept: document.activeElement === input, saved: (await (await fetch('/api/photos/${photoId}/edit')).json()).stamp.text };
+    const typed = { keyChanged: clicks[clicks.length - 1].changed, putsEarly, earlyValid, putsLate, focusKept: document.activeElement === input, saved: (await (await fetch('/api/photos/${photoId}/edit')).json()).stamp.text };
     // 拖一个调整滑块：几十次 input，中间没有 /render
     document.querySelector('#tab-adjust').click();
     await wait(300);
@@ -491,7 +498,7 @@ try {
     const next = await settle((l) => !l.framed && !l.overlay);
     document.querySelector('button[aria-label^="上一张"]').click();
     const back = await settle(framed);
-    return { frameMs, styleMs, colorMs, frame, stampMs, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
+    return { clicks, styleFramed, frame, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
   })()`, 90000);
   out.live.requests = requestLog.slice(mark).filter((r) => !/^PUT /.test(r) && !/\/(edit|crop)$/.test(r)).slice(-8);
   step('done');
