@@ -302,8 +302,6 @@ def gpu_box(shot_id: str, request: Request, raw: Any = Body(None)) -> dict[str, 
         geom = parse_geometry(body.geometry) if body.geometry else parse_geometry({})
     except EditError as exc:
         raise _edit_error(exc) from exc
-    if geom.expands():
-        raise ApiError(422, "gpu_geometry_unsupported", "透视和畸变还不能在显卡上预览。")
     rect, preset = _crop_of(body.crop)
     box, valid = final_box(body.width, body.height, geom, rect, preset)
     return {"box": list(box), "valid": [round(v, 6) for v in valid]}

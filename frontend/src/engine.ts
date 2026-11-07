@@ -7,6 +7,7 @@ import binWgsl from './shaders/bin.wgsl?raw';
 import presentWgsl from './shaders/present.wgsl?raw';
 import histWgsl from './shaders/hist.wgsl?raw';
 import { type Adjust, type CurvePoints, channelGains, displayTable, TABLE_SIZE } from './tones';
+import { canvasOf, lens, rotatedSize } from './warp';
 
 type Mat3 = [number[], number[], number[]];
 
@@ -67,6 +68,10 @@ export interface Geometry {
   straighten: number;
   rotate90: number;
   flip: boolean;
+  /** 垂直、水平、畸变的滑块值（−100..100）。任何一个不是 0，画布就按 finish/geometry.py 的 _expanded_bounds 扩大。 */
+  vertical: number;
+  horizontal: number;
+  distortion: number;
   /** 旋转后画布上的裁切框（颜色层像素）。null = 整幅。 */
   box: [number, number, number, number] | null;
 }
@@ -176,7 +181,7 @@ export class Engine {
   private finalTex: GPUTexture | null = null;
   private current: Source | null = null;
   private look: Look = { recipe: null, lut: null, lutStrength: 1, adjust: {}, curve: null };
-  private geometry: Geometry = { straighten: 0, rotate90: 0, flip: false, box: null };
+  private geometry: Geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
   private dirtyColor = true;
   private dirtyGeo = true;
   private raf = 0;
@@ -236,7 +241,7 @@ export class Engine {
     this.histPipe = device.createComputePipeline({ layout: 'auto', compute: { module: histMod, entryPoint: 'main' } });
     const ub = (size: number) => device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.uniform = ub(UNIFORM_FLOATS * 4);
-    this.geoUniform = ub(4 * 16);
+    this.geoUniform = ub(5 * 16);
     this.presentUniform = ub(3 * 16);
     this.histUniform = ub(2 * 16);
     this.histTotal = device.createBuffer({ size: HIST_SIZE * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
@@ -443,14 +448,18 @@ export class Engine {
     return this.current ? { w: this.current.w, h: this.current.h } : null;
   }
 
-  /** 成片尺寸（拉直、旋转、裁切之后）。 */
-  finalSize(): { w: number; h: number } | null {
+  /** 未裁切的画布尺寸（拉直、透视、畸变、旋转之后；颜色层像素）。 */
+  canvasSize(): { w: number; h: number } | null {
     const src = this.current;
     if (!src) return null;
+    return rotatedSize(canvasOf(this.geometry, src.w, src.h), ((this.geometry.rotate90 % 4) + 4) % 4);
+  }
+
+  /** 成片尺寸（拉直、透视、畸变、旋转、裁切之后）。 */
+  finalSize(): { w: number; h: number } | null {
     const box = this.geometry.box;
-    if (box) return { w: box[2], h: box[3] };
-    const turns = ((this.geometry.rotate90 % 4) + 4) % 4;
-    return turns % 2 ? { w: src.h, h: src.w } : { w: src.w, h: src.h };
+    if (box) return this.current ? { w: box[2], h: box[3] } : null;
+    return this.canvasSize();
   }
 
   private schedule(): void {
@@ -562,15 +571,17 @@ export class Engine {
     const g = this.geometry;
     const th = (g.straighten * Math.PI) / 180;
     const turns = ((g.rotate90 % 4) + 4) % 4;
-    const rw = turns % 2 ? src.h : src.w;
-    const rh = turns % 2 ? src.w : src.h;
+    const canvas = canvasOf(g, src.w, src.h);
+    const { w: rw, h: rh } = rotatedSize(canvas, turns);
     const box = g.box ?? [0, 0, rw, rh];
     const straight = Math.abs(g.straighten) < 1e-9;
+    const l = lens(g, src.w, src.h);
     this.device.queue.writeBuffer(this.geoUniform, 0, new Float32Array([
       src.w, src.h, rw, rh,
       straight ? 1 : Math.cos(th), straight ? 0 : Math.sin(th), turns, g.flip ? 1 : 0,
       box[0], box[1], box[2], box[3],
-      0, 0, 0, 0,
+      l.radial, l.sv, l.sh, l.halfDiag,
+      canvas.minx, canvas.miny, canvas.expanded ? 1 : 0, 0,
     ]));
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: this.finalTex!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
     pass.setPipeline(this.geoPipe);

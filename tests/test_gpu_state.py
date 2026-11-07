@@ -18,6 +18,9 @@ SCRIPT = Path(__file__).parent / "support" / "gpu_stage_state.mjs"
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node，跳过前端状态测试")
 
 ENGINE_STUB = """
+export const canvasOf = (g, w, h) => ({ minx: 0, miny: 0, w, h, expanded: true });
+export const rotatedSize = (c, turns) => (turns % 2 ? { w: c.h, h: c.w } : { w: c.w, h: c.h });
+export const validRect = () => [0, 0, 1, 1];
 export class Engine {
   static async create() { return new Engine(); }
   constructor() {
@@ -38,6 +41,7 @@ export class Engine {
   setGeometry(g) { this.log('setGeometry', { ...g }); }
   currentKey() { return this.current; }
   finalSize() { return { w: 100, h: 80 }; }
+  canvasSize() { return { w: 100, h: 80 }; }
   attach() {}
   redraw() {}
 }
@@ -47,7 +51,7 @@ export class Engine {
 def run(tmp_path: Path, scenario: str) -> dict[str, object]:
     folder = tmp_path / "modules"
     (folder / "gpu").mkdir(parents=True)
-    for name in ("gpu_stage.js", "gpu_pref.js", "state.js"):
+    for name in ("gpu_stage.js", "gpu_pref.js", "gpu_warp.js", "state.js"):
         shutil.copyfile(ASSETS / name, folder / name)
     (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     (folder / "api.js").write_text("export const api = (...args) => globalThis.apiStub(...args);\n", encoding="utf-8")
@@ -93,3 +97,12 @@ def test_prefetch_runs_once_per_photo_not_per_slider_input(tmp_path):
 def test_flag_off_makes_no_gpu_requests(tmp_path):
     out = run(tmp_path, "flag-off")
     assert out == {"way": "server", "gpuInfoRequests": 0, "engineCreated": False}
+
+
+def test_perspective_export_size_comes_from_the_full_size_crop_box(tmp_path):
+    out = run(tmp_path, "warp-export-size")
+    assert out["first"] == "gpu" and out["again"] == "gpu"
+    # 颜色层（100×80）上的框给显卡裁切；全尺寸（200×160）上的框给边框和时间戳算导出的像素，各请求一次
+    assert sorted(out["boxSizes"]) == [[100, 80], [200, 160]], out["boxSizes"]
+    assert out["export"] == {"w": 111, "h": 77}
+    assert out["fullBodyGeometry"]["vertical"] == 30 and out["fullBodyGeometry"]["rotate90"] == 1
