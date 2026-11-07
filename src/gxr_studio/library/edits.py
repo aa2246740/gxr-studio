@@ -153,6 +153,7 @@ def write_crop(
     orientation: str | None = None,
     reset: bool = False,
     expected_rev: int | None = None,
+    fit: bool = False,
 ) -> dict[Any, Any]:
     """写裁切。orientation（landscape / portrait）指几何变换之后的画布上的横竖，和界面上的按钮一样：
     转过 90° 的横图是竖的画布，在上面选「横向」就是横框。给了 orientation 就不看 flip（旧版界面才用 flip）。"""
@@ -178,15 +179,27 @@ def write_crop(
             side["geometry"]["straighten"] = 0.0
     else:
         preset = preset or "free"
-        if rect is not None:
-            crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=_geometry_of(side).flip)
-        else:
+        geom_now = _geometry_of(side)
+        forced = False
+        if rect is None:
             crop = cropmod.default_crop(preset, w, h, angle_deg, flip)
-        geom = replace(_geometry_of(side), straighten=float(angle_deg))
+        else:
+            try:
+                # 透视、畸变拉开过的画布：画布不是一块拉直后的矩形，`box_inside` 的角点检查对不上真正的有效区。
+                # 这时不在这里按角度拒，下面的收框（fitted_crop）按真正的有效蒙版把框收进去
+                crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=geom_now.flip, check_region=not geom_now.expands())
+            except CropError:
+                if not fit:
+                    raise
+                # fit：普通写入会被拒的框，才当目标收成离它最近的合格框；普通写入收得下的，结果和普通写入一模一样
+                crop = cropmod.fit_target_crop(preset, rect, angle_deg, w, h)
+                forced = True
+        geom = replace(geom_now, straighten=float(angle_deg))
         src_w, src_h = _source_frame(side)
-        fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h)
+        fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h, force=forced)
         if fixed is not None:
             crop = Crop(crop.preset, fixed, crop.angle_deg)
+        cropmod.check_final(crop.preset, crop.rect, w, h)  # 每条写入路径收完都查：太小、比例差太多的框不存（下一次写入就会被拒）
         side["crop"] = crop.to_json()
         geo = dict(side.get("geometry") or {})
         geo["straighten"] = crop.angle_deg

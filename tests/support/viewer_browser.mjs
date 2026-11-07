@@ -163,13 +163,28 @@ try {
 
   // 保存请求（PUT .../crop）：holding 时挂住，release('continue' | 'fail') 时放行或让它失败
   let holding = false;
+  let holdEdit = false; // 编辑页的场景：把 PUT .../edit 也挂住
+  let fakeAuto = null; // 编辑页的场景：POST .../geometry/auto 由这里挂住、再给固定的答案
   const held = [];
+  const pausedAuto = [];
   listeners.push(async (msg) => {
     if (msg.method !== 'Fetch.requestPaused' || msg.sessionId !== sessionId) return;
     const p = msg.params;
     if (holding && p.request.method === 'PUT' && /\/crop$/.test(p.request.url)) held.push(p.requestId);
+    else if (holdEdit && p.request.method === 'PUT' && /\/edit$/.test(p.request.url)) held.push(p.requestId);
+    else if (fakeAuto && p.request.method === 'POST' && /\/geometry\/auto$/.test(p.request.url)) pausedAuto.push(p.requestId);
     else await call('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
   });
+  const answerAuto = async (json) => {
+    for (const requestId of pausedAuto.splice(0)) {
+      await call('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: 200,
+        responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+        body: Buffer.from(JSON.stringify(json)).toString('base64'),
+      });
+    }
+  };
   const release = async (how) => {
     const ids = held.splice(0);
     for (const requestId of ids) {
@@ -186,7 +201,7 @@ try {
     }
     return ids.length;
   };
-  await call('Fetch.enable', { patterns: [{ urlPattern: '*/crop', requestStage: 'Request' }] });
+  await call('Fetch.enable', { patterns: ['*/crop', '*/edit', '*/geometry/auto'].map((urlPattern) => ({ urlPattern, requestStage: 'Request' })) });
   await call('Page.enable');
 
   // 第一次带令牌打开（换成 cookie），再选预览方式，然后进这张照片
@@ -310,6 +325,95 @@ try {
     out.consoleBeforeClicks = [...out.console];
   }
   out.boxAfterEnter = await evalIn(`(() => { ${helpers} return boxRect(); })()`);
+
+  if (process.env.VIEWER_SCENARIO === 'edit-fixes') {
+    // 2026-11-07 的两个编辑页问题，在真服务器和真 Chrome 里走一遍
+    // 1) 小红书 3:4 → 缩放 → 拉直 → 自动（带透视）→ 向左旋转：不能 422、不能留「有修改没有保存」、面板不能成骨架
+    // 2) 调整页曲线上点一下，保存还没回来时按一次撤销，点就消失
+    const fx = {};
+    out.fx = fx;
+    const fxHelpers = `${helpers}
+      const slide = async (label, value) => {
+        const input = document.querySelector('input[aria-label="' + label + '"]');
+        input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(value));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await wait(50);
+        input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const key = (k) => document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+      const saveText = () => document.querySelector('.save-state')?.innerText || '';
+      const quiet = async () => { await wait(300); await until(() => !/保存中/.test(saveText()), 10000); await wait(300); };
+      const toasts = () => [...document.querySelectorAll('.toast')].map((t) => t.textContent);
+    `;
+    step('edit-fixes: ratio, zoom, straighten');
+    await evalIn(`(async () => { ${fxHelpers}
+      await pickRatio('小红书 3:4');
+      await wait(600);
+      await slide('缩放', 71);
+      await wait(600);
+      const r = document.querySelector('.ruler');
+      r.focus();
+      for (let i = 0; i < 30; i += 1) r.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, repeat: i > 0 }));
+      r.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+      await quiet();
+      return true;
+    })()`, 60000);
+    step('edit-fixes: auto');
+    fakeAuto = true;
+    fx.autoDuring = await evalIn(`(async () => { ${fxHelpers}
+      const find = (t) => [...document.querySelectorAll('.sticky-foot button')].find((b) => b.textContent.trim() === t);
+      find('自动').click();
+      await wait(200);
+      const b = find('正在分析…');
+      const again = find('正在分析…');
+      if (again) again.click();
+      return { text: b ? b.textContent.trim() : null, busy: b ? b.getAttribute('aria-busy') : null, disabled: b ? b.getAttribute('aria-disabled') : null };
+    })()`);
+    await sleep(300);
+    out.autoPaused = pausedAuto.length; // 点了两下，只发出一个请求
+    await answerAuto({ straighten: 4.0, vertical: 60, confident: true, message: '' });
+    fakeAuto = null;
+    fx.autoAfter = await evalIn(`(async () => { ${fxHelpers}
+      await until(() => toasts().some((t) => t.includes('已自动')), 5000);
+      await quiet();
+      const b = [...document.querySelectorAll('.sticky-foot button')].find((x) => x.textContent.trim() === '自动');
+      return { toasts: toasts(), restored: !!b && b.getAttribute('aria-busy') === null && b.getAttribute('aria-disabled') === null };
+    })()`, 30000);
+    step('edit-fixes: rotate');
+    fx.rotate = await evalIn(`(async () => { ${fxHelpers}
+      key('[');
+      await wait(100);
+      const skelRightAfter = document.querySelectorAll('.panel .skel').length;
+      await quiet();
+      await wait(1500);
+      const s = await serverCrop();
+      return { skelRightAfter, skel: document.querySelectorAll('.panel .skel').length, save: saveText(), box: boxRect(), server: s.rect.map((v) => v * 100), frame: s.frame };
+    })()`, 60000);
+    step('edit-fixes: curve undo');
+    await evalIn(`(async () => { ${fxHelpers} document.querySelector('#tab-adjust').click(); await until(() => document.querySelector('svg.curve'), 5000); await wait(500); document.querySelector('svg.curve').scrollIntoView({ block: 'center' }); await wait(300); return true; })()`);
+    const curveBox = await evalIn(`(() => { const r = document.querySelector('svg.curve').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+    fx.curveBefore = await evalIn(`document.querySelector('.curve-wrap .small').textContent`);
+    holdEdit = true;
+    const x = curveBox[0] + curveBox[2] * 0.5;
+    const y = curveBox[1] + curveBox[3] * 0.3;
+    await call('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+    await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+    await sleep(200);
+    fx.curveAfterClick = await evalIn(`document.querySelector('.curve-wrap .small').textContent`);
+    fx.heldWrites = held.length; // 曲线的保存还挂着
+    fx.curveAfterUndo = await evalIn(`(async () => { ${fxHelpers}
+      document.querySelector('#tb-edit button[title^="撤销"]').click();
+      await wait(200);
+      return document.querySelector('.curve-wrap .small').textContent;
+    })()`);
+    holdEdit = false;
+    await release('continue');
+    await sleep(800);
+    step('done');
+    await finish(0);
+  }
 
   // 1) 保存挂着时点比例：框马上变；放行后换成后端算的准框
   step('ratio while the save is held');

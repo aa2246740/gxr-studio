@@ -72,9 +72,9 @@ def _hough(xs: np.ndarray, ys: np.ndarray, n_theta: int = 180, n_rho: int = 240)
     rho_max = float(np.hypot(xs.max() + 1, ys.max() + 1)) + 2
     step = (2 * rho_max) / n_rho
     rho_i = np.clip(((rho + rho_max) / step).astype(np.int32), 0, n_rho - 1)
-    acc = np.zeros((n_rho, n_theta), np.int32)
-    th_i = np.broadcast_to(np.arange(n_theta), rho_i.shape)
-    np.add.at(acc, (rho_i.ravel(), th_i.ravel()), 1)
+    # 每个点在每个角度上投一票。bincount 和 np.add.at 数出来的票数完全一样，但快得多
+    cells = rho_i * n_theta + np.arange(n_theta)
+    acc = np.bincount(cells.ravel(), minlength=n_rho * n_theta).astype(np.int32).reshape(n_rho, n_theta)
     return acc, theta
 
 
