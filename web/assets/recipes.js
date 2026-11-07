@@ -114,7 +114,11 @@ export function recipePanel(view) {
       nodes.push(h('div', { class: 'small dim sec-source' }, CAMERA_SOURCE), grid(unit.users.map((r) => pick(r, `${CAMERA_SOURCE}的配方`))));
     }
     if (mine.length) {
-      nodes.push(h('div', { class: 'small dim sec-source' }, '电脑上 · 用 LUT 生成'), grid(mine.map((r) => computerPick(view, r, usable, flash))));
+      // 电脑上的配方 = 底子加档位。只有 JPG（近似）时不带旋钮：预览会丢掉档位、导出会拒绝，所以只在完整配方时能点
+      const mineUsable = usable && state3 === 'full';
+      const note = state3 === 'approx' ? '近似效果只支持默认参数，电脑上的配方需要 RAW 文件' : null;
+      nodes.push(h('div', { class: 'small dim sec-source' }, '电脑上 · 用 LUT 生成'),
+        h('div', { class: mineUsable ? 'base-grid' : 'base-grid dimmed-block' }, mine.map((r) => computerPick(view, r, mineUsable, flash, note))));
     }
   }
 
@@ -153,9 +157,9 @@ function sameAsComputer(view, r) {
   return !!info && info.controls.every((c) => effective(c, sel.levels) === effective(c, r.recipe.levels));
 }
 
-function computerPick(view, r, usable, flash) {
+function computerPick(view, r, usable, flash, note = null) {
   return h('button', {
-    class: 'btn base', type: 'button', title: sourceText(r),
+    class: 'btn base', type: 'button', title: note ? `${sourceText(r)}（${note}）` : sourceText(r),
     'aria-pressed': String(sameAsComputer(view, r)),
     'aria-disabled': usable ? null : 'true',
     onclick: () => usable ? applyComputer(view, r) : flash(),
@@ -164,6 +168,7 @@ function computerPick(view, r, usable, flash) {
 
 function applyComputer(view, r) {
   const ed = view.ed;
+  if ((ed.caps || {}).recipe !== 'full') return;
   const sel = selection(view);
   const target = { unit: r.recipe.unit, kind: 'builtin', slot: r.recipe.slot };
   if (sameAsComputer(view, r)) return;

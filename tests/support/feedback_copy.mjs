@@ -83,6 +83,11 @@ if (scenario === 'summary') {
   out.textRawWithData = E.exportNameText({ single: raw, hdr: false, camdata: true });
   out.textMany = E.exportNameText({ single: null, hdr: false, camdata: true });
   out.textManyHdr = E.exportNameText({ single: null, hdr: true, camdata: true });
+  out.textPairReady = E.exportNameText({ single: { ...pair, hdr: 'ready' }, hdr: true, camdata: true });
+  out.textPairUnsupported = E.exportNameText({ single: { ...pair, hdr: 'unsupported' }, hdr: true, camdata: true });
+  out.textRawNoDataHdr = E.exportNameText({ single: raw, hdr: true, camdata: false });
+  out.textManyNoData = E.exportNameText({ single: null, hdr: false, camdata: false });
+  out.textManyNoDataHdr = E.exportNameText({ single: null, hdr: true, camdata: false });
   out.note = E.NAME_SUFFIX_NOTE;
   // 对话框里的「文件名」一行跟着 HDR 开关变
   const { state } = await import(file('state.js'));
@@ -166,7 +171,9 @@ if (scenario === 'summary') {
   root.replaceChildren(Object.assign(document.createElement('div'), { text: 'GALLERY' }));
   imp.renderCardStatus();
   out.leftPage = root.textContent;
-} else if (scenario === 'recipes-tab') {
+} else if (scenario === 'recipes-tab' || scenario === 'recipes-tab-approx') {
+  // -approx：只有 JPG 的照片（内置配方是近似、不带旋钮），电脑上的配方不能点
+  const approx = scenario === 'recipes-tab-approx';
   const calls = [];
   const info = (slot, name) => ({ slot, name, is_stock: slot === 4, controls: [{ name: 'amount', label: 'Amount', levels: [0, 50, 100], default: 100 }, { name: 'contrast', label: 'Contrast', levels: [-1, 0, 1], default: 0 }] });
   const unit = { id: 'jlaunch', recipes: [info(1, '01 标准'), info(2, '02 鲜艳'), info(4, '04 原厂')], looks: [{ kind: 'look', id: 'night', name: 'NIGHT', slot: 4, controls: [] }],
@@ -179,7 +186,7 @@ if (scenario === 'summary') {
     let data = {};
     if (url === '/api/luts') data = { luts: [], groups: [] };
     if (url === '/api/photos/p1/edit') data = { rev: 1, recipe: null, lut: null, adjust: {}, curve: null, geometry: {}, frame: null, stamp: null, memory: {} };
-    if (url === '/api/photos/p1/capabilities') data = { raw: true, recipe: 'full', reason: '' };
+    if (url === '/api/photos/p1/capabilities') data = approx ? { raw: false, recipe: 'approx', reason: '' } : { raw: true, recipe: 'full', reason: '' };
     if (url === '/api/photos/p1/meta') data = {};
     if (url === '/api/photos/p1/crop') data = { preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, orientation: 'landscape', frame: { width: 3000, height: 2000 }, rev: 1 };
     if (url === '/api/frames') data = { styles: [] };
@@ -194,7 +201,7 @@ if (scenario === 'summary') {
   const { recipePanel } = await import(file('recipes.js'));
   state.camdata = { ready: true, state: 'ready' };
   state.catalog = { units: [unit] };
-  const view = { photo: { id: 'p1', iso: 200, lens: 'A12 50mm', has_raw: true, has_jpg: true }, onChange() {}, redrawSide: () => { view.redraws = (view.redraws || 0) + 1; } };
+  const view = { photo: { id: 'p1', iso: 200, lens: 'A12 50mm', has_raw: !approx, has_jpg: true }, onChange() {}, redrawSide: () => { view.redraws = (view.redraws || 0) + 1; } };
   await preview.ensureEdit(view);
   const panel = () => recipePanel(view);
   let el = panel();
@@ -209,9 +216,11 @@ if (scenario === 'summary') {
   out.mineTitle = btn && btn.getAttribute('title');
   out.cameraTitle = buttonByText('FCC-001', el).getAttribute('title');
   out.pressedBefore = btn.getAttribute('aria-pressed');
+  out.disabled = btn.getAttribute('aria-disabled');
   btn.click();
   await tick(5);
-  out.applied = JSON.parse(JSON.stringify(view.ed.recipe));
+  out.applied = view.ed.recipe ? JSON.parse(JSON.stringify(view.ed.recipe)) : null;
+  out.puts = calls.filter((c) => c.method === 'PUT').length;
   out.pressedAfter = buttonByText('Kodak 风', panel()).getAttribute('aria-pressed');
 } else {
   throw new Error(`没有这个场景：${scenario}`);

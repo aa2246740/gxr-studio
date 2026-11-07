@@ -52,6 +52,30 @@ def test_photos_imported_is_weaker_than_all_imported_but_still_needs_proof():
     assert _cov(not_importable=[".Trashes/501/R0090003.JPG"]).photos_imported is False
     assert _cov(not_importable=["DCIM/100RICOH/R0000200.MOV"]).photos_imported is False
     assert coverage_mod.MEDIA_SUFFIXES >= {".jpg", ".dng", ".avi"}
+    # 没有后缀、后缀不认识：可能是改过名的照片，证明不了不是，就不说
+    assert _cov(not_importable=["DCIM/100RICOH/R0000300"]).photos_imported is False
+    assert _cov(not_importable=["DCIM/100RICOH/R0000300.XYZ"]).photos_imported is False
+    # 开头字节像照片（读过开头的文件，例如废纸篓里没有后缀的 JPEG）：不管叫什么都不放过
+    trash = "DCIM/.Trashes/501/IMG0001"
+    assert _cov(not_importable=[trash], media_like=[trash]).photos_imported is False
+    assert _cov(not_importable=["DCIM/NOTE.TXT"], media_like=["DCIM/NOTE.TXT"]).photos_imported is False
+    assert _cov(not_importable=["DCIM/NOTE.TXT"]).photos_imported is True
+
+
+def test_strict_scan_remembers_files_whose_bytes_look_like_photos(tmp_path):
+    # 名字像系统文件、开头却是 JPEG 的文件：扫描记下它，核对就不会说"照片都已导入"
+    from gxr_studio.cards.discovery import CardReader, scan_card_strict
+
+    root = tmp_path / "card"
+    (root / "DCIM" / "100RICOH").mkdir(parents=True)
+    (root / "DCIM" / ".Trashes" / "501").mkdir(parents=True)
+    (root / "DCIM" / ".Trashes" / "501" / "IMG0001").write_bytes(b"\xff\xd8\xff\xe0" + b"\0" * 60)
+    (root / "DCIM" / "Thumbs.db").write_bytes(b"\xd0\xcf\x11\xe0" + b"\0" * 60)
+    st = root.lstat()
+    scan = scan_card_strict(root, CardReader(), (st.st_dev, st.st_ino))
+    others = [e.relpath for e in scan.other_files]
+    assert "DCIM/.Trashes/501/IMG0001" in others
+    assert scan.media_like == ["DCIM/.Trashes/501/IMG0001"]
 
 
 def test_not_importable_message_only_claims_what_the_proof_supports():
@@ -147,7 +171,14 @@ def test_export_dialog_previews_the_real_file_name():
     assert out["plain"] == "R8051146_gxr.jpg" and out["hdr"] == "R8051146_gxr_hdr.jpg"
     assert out["neutral"] == "R8051145_gxr_neutral.jpg" and out["neutralHdr"] == "R8051145_gxr_neutral_hdr.jpg"
     assert out["jpgHdr"] == "R8051147_gxr.jpg"  # 只有 JPG 做不了 HDR：还是普通名字
-    assert out["textPair"] == "R8051146_gxr.jpg" and out["textPairHdr"] == "R8051146_gxr_hdr.jpg"
+    assert out["textPair"] == "R8051146_gxr.jpg"
+    # 图库还没试过这张能不能做成 HDR：写做成时的名字，括号里写做不成时的名字（例如 RAW 读不出来，后端会退回普通名字）
+    assert out["textPairHdr"] == "R8051146_gxr_hdr.jpg（做不成 HDR 时是 R8051146_gxr.jpg）"
+    assert out["textPairReady"] == "R8051146_gxr_hdr.jpg"  # 图库里已经做成过 HDR
+    assert out["textPairUnsupported"] == "R8051146_gxr.jpg"  # 图库已经知道这张做不成
+    assert out["textRawNoDataHdr"] == "R8051145_gxr_neutral_hdr.jpg（做不成 HDR 时是 R8051145_gxr_neutral.jpg）"
+    assert "原名_gxr_neutral.jpg" in out["textManyNoData"]
+    assert "原名_gxr_neutral_hdr.jpg" in out["textManyNoDataHdr"] and "原名_gxr_neutral.jpg" in out["textManyNoDataHdr"]
     assert out["textRawNoData"] == "R8051145_gxr_neutral.jpg"  # 没导入相机配方文件、只有 RAW：中性转换
     assert out["textRawWithData"] == "R8051145_gxr.jpg"
     assert out["textMany"] == "原名_gxr.jpg" and out["textManyHdr"].startswith("原名_gxr_hdr.jpg")
@@ -173,6 +204,17 @@ def test_editor_recipe_tab_lists_both_my_recipes_with_their_source():
     # 套用 = 换成它的底子和档位
     assert out["applied"]["kind"] == "builtin" and out["applied"]["slot"] == 2
     assert out["applied"]["levels"] == {"amount": 50, "contrast": 1}
+    assert out["disabled"] is None and out["puts"] == 1
+
+
+@needs_node
+def test_computer_recipe_is_not_applied_to_a_jpg_only_photo():
+    # 只有 JPG：内置配方是近似、不带旋钮。电脑上的配方（底子加档位）套上去，预览会丢掉档位，导出会报 approx_knobs
+    out = scene("recipes-tab-approx")
+    assert "Kodak 风" in out["text"]
+    assert out["disabled"] == "true"
+    assert "需要 RAW" in out["mineTitle"]
+    assert out["applied"] is None and out["puts"] == 0
 
 
 def test_recipes_page_says_where_the_recipes_live():

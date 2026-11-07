@@ -33,6 +33,9 @@ SEEN_TRUST_UUID = False
 MEDIA_SUFFIXES = frozenset(
     {".jpg", ".jpeg", ".dng", ".avi", ".mov", ".mp4", ".mpg", ".m4v", ".png", ".tif", ".tiff", ".heic", ".raw", ".cr2", ".nef", ".arw"}
 )
+# 明显不是照片或视频的后缀（Windows 缩略图库、说明文本、目录文件等）。不会被导入的文件只有这些时，才能说"照片都已导入"：
+# 没有后缀、后缀不认识的文件可能就是照片（比如改过名），证明不了它不是，就不说
+NON_MEDIA_SUFFIXES = frozenset({".db", ".txt", ".ini", ".xml", ".log", ".json", ".csv", ".md", ".htm", ".html", ".pdf", ".url", ".lnk", ".ctg"})
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,7 @@ class Coverage:
     uncovered: list[str] = field(default_factory=list)
     not_importable: list[str] = field(default_factory=list)
     system_files: list[str] = field(default_factory=list)  # 已忽略的 macOS 元数据，不挡"都已导入"
+    media_like: list[str] = field(default_factory=list)  # 不会被导入、但开头字节像照片或视频的文件（不管叫什么）
     proof_content: int = 0
     proof_trusted: int = 0
     errors: list[str] = field(default_factory=list)
@@ -95,9 +99,10 @@ class Coverage:
         """卡上每张照片、每个录像都证明已在图库里，剩下的只是明显不是照片或视频的文件（Thumbs.db、说明文本……）。
         `all_imported` 比它多一条"卡上没有不会被导入的文件"。名字像照片或视频、却没被收进来的文件（例如废纸篓里的 JPG）
         不能放过：那样就不能说"照片都已导入"。没有照片（total 为 0）也不算：空的证明不了什么。"""
-        looks_like_media = any(Path(rel).suffix.lower() in MEDIA_SUFFIXES for rel in self.not_importable)
+        sniffed = set(self.media_like)
+        maybe_media = any(_maybe_media(rel) or rel in sniffed for rel in self.not_importable)
         proven = self.complete and self.dcim == "present" and not self.uncovered and self.total > 0 and self.covered == self.total
-        return proven and not looks_like_media
+        return proven and not maybe_media
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +118,12 @@ class Coverage:
             "all_imported": self.all_imported,
             "photos_imported": self.photos_imported,
         }
+
+
+def _maybe_media(relpath: str) -> bool:
+    """这个不会被导入的文件可能是照片或视频吗：后缀像照片/视频，或者后缀不在明显不是照片的名单里（包括没有后缀）。"""
+    suffix = Path(relpath).suffix.lower()
+    return suffix in MEDIA_SUFFIXES or suffix not in NON_MEDIA_SUFFIXES
 
 
 def trusted_sha(lib: Library, ident: Identity, relpath: str, size: int, mtime_ns: int, *, trust: bool | None = None) -> str | None:
@@ -183,6 +194,7 @@ def photo_coverage(
     cov = Coverage(complete=scan.complete, dcim=scan.dcim, errors=list(scan.errors))
     cov.not_importable = [e.relpath for e in scan.other_files]
     cov.system_files = [e.relpath for e in scan.system_files]
+    cov.media_like = list(scan.media_like)
     proofs = proofs or {}
     backfill: list[tuple[Any, ...]] = []
     for entry in scan.importable:
