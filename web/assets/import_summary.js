@@ -58,6 +58,38 @@ function gotText(p) {
   return photos ? `已导入 ${photos} 张照片` : '';
 }
 
+// 导入进行中的一行字和进度（0–1；还不知道总数时是 null，显示成转圈）。顶栏面板和相机页共用。
+export function progressLine(p) {
+  if (p.state === 'scanning' || !p.total_shots) return { text: '正在读取存储卡…', fraction: null };
+  if (p.state === 'checking') return { text: '正在核对存储卡上的照片…', fraction: null };
+  return { text: `正在导入 ${p.done_shots}/${p.total_shots}`, fraction: p.done_shots / p.total_shots };
+}
+
+// 卡上有工作室不会导入的文件时怎么说（和 cards/messages.py 的 not_importable_message 同一句话）。
+// 「照片都已导入」只在后端核对证明了每张照片都在图库里（coverage.photos_imported）时才说；没有这个证明就只说个数。
+// 永远不说「可以格式化」，也不说「可以推出」。
+function notImportableText(got, extra, photosImported) {
+  if (photosImported) {
+    const note = `另有 ${extra} 个其他文件不会导入`;
+    return got ? `${got}，卡上的照片都已在图库里；${note}` : `照片都已导入；${note}`;
+  }
+  return `${got ? `${got}。` : ''}存储卡上有 ${extra} 个文件不会被导入`;
+}
+
+// 手动点「导入照片」后弹的提示：-> { kind: 'ok' | 'error' | 'info', text }
+// 没有新照片时明说「已在图库里」，不让人以为按钮没反应。
+export function importToast(p) {
+  const r = summarizeImport(p);
+  const kind = r.kind === 'bad' ? 'error' : r.kind === 'ok' ? 'ok' : 'info';
+  if (p.state !== 'done' || hasProblems(p)) return { kind, text: r.text };
+  const got = gotText(p);
+  if (got) return { kind, text: r.text };
+  const extra = notImportable(p);
+  if (!extra.length) return { kind, text: '这张存储卡上的照片都已在图库里，没有新的可导入' };
+  if (p.coverage.photos_imported === true) return { kind: 'info', text: `这张存储卡上的照片都已在图库里，没有新的可导入；另有 ${extra.length} 个其他文件不会导入` };
+  return { kind, text: r.text };
+}
+
 // -> { kind: 'ok' | 'bad' | '', text, detail, retry: bool }
 export function summarizeImport(p) {
   const skipped = (p.seen_shots || 0) + (p.duplicate_shots || 0);
@@ -81,7 +113,7 @@ export function summarizeImport(p) {
       if (extra.length) {
         return {
           kind: '',
-          text: `${got ? `${got}。` : ''}存储卡上有 ${extra.length} 个文件不会被导入`,
+          text: notImportableText(got, extra.length, p.coverage.photos_imported === true),
           detail: `不会被导入：${listFiles(extra, 6)}`,
           retry: false,
         };

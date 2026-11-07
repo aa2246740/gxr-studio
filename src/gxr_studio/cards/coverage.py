@@ -29,6 +29,11 @@ from .discovery import Card, CardFile, CardReader, StrictEntry, StrictScan, scan
 
 SEEN_TRUST_UUID = False
 
+# 名字像照片或视频的后缀：这样的文件没被收进来时，不能说"照片都已导入"
+MEDIA_SUFFIXES = frozenset(
+    {".jpg", ".jpeg", ".dng", ".avi", ".mov", ".mp4", ".mpg", ".m4v", ".png", ".tif", ".tiff", ".heic", ".raw", ".cr2", ".nef", ".arw"}
+)
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -85,6 +90,15 @@ class Coverage:
         """只有这时才能说"这张存储卡上的照片都已导入"。"""
         return self.complete and self.dcim == "present" and not self.uncovered and not self.not_importable
 
+    @property
+    def photos_imported(self) -> bool:
+        """卡上每张照片、每个录像都证明已在图库里，剩下的只是明显不是照片或视频的文件（Thumbs.db、说明文本……）。
+        `all_imported` 比它多一条"卡上没有不会被导入的文件"。名字像照片或视频、却没被收进来的文件（例如废纸篓里的 JPG）
+        不能放过：那样就不能说"照片都已导入"。没有照片（total 为 0）也不算：空的证明不了什么。"""
+        looks_like_media = any(Path(rel).suffix.lower() in MEDIA_SUFFIXES for rel in self.not_importable)
+        proven = self.complete and self.dcim == "present" and not self.uncovered and self.total > 0 and self.covered == self.total
+        return proven and not looks_like_media
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "complete": self.complete,
@@ -97,6 +111,7 @@ class Coverage:
             "proof": {"content": self.proof_content, "trusted_seen": self.proof_trusted},
             "errors": list(self.errors),
             "all_imported": self.all_imported,
+            "photos_imported": self.photos_imported,
         }
 
 
