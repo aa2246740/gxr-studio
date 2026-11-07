@@ -46,8 +46,10 @@ chromeTail.full = () => {
 };
 // Chrome 日志里和显卡有关的行（GPU 进程崩溃、看门狗、设备丢失、Dawn 报错），留最后 30 行
 const gpuLogLines = () => {
+// 画布上不了屏时 Chrome 日志里的错：共享图像建不起来（Unable to create shared image），或者取不到（ProduceMemory … non-existent mailbox）
+const PRESENT_ERRORS = /Unable to create shared image|SharedImageBackingFactory|SharedImageManager::ProduceMemory|non-existent mailbox/;
   try {
-    return readFileSync(chromeLogPath, 'utf8').split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context/i.test(l)).slice(-30).map((l) => l.slice(0, 300));
+    return readFileSync(chromeLogPath, 'utf8').split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context|shared ?image|mailbox/i.test(l)).slice(-30).map((l) => l.slice(0, 300));
   } catch {
     return [];
   }
@@ -248,7 +250,7 @@ try {
       return d;
     })()`, 60000).catch((e) => ({ diagError: String(e) }));
     out.gpuChromeLog = gpuLogLines();
-    out.gpuSharedImageError = /Unable to create shared image|SharedImageBackingFactory/.test(chromeTail.full());
+    out.gpuSharedImageError = PRESENT_ERRORS.test(chromeTail.full());
     out.failedBeforeClicks = [...out.failedRequests];
     out.consoleBeforeClicks = [...out.console];
   };
@@ -271,7 +273,7 @@ try {
   }
   if (mode.startsWith('nav-')) {
     // 换照片、换边框、进出裁剪、100%：每一步之后大图还在不在（tests/support/frame_nav_walk.mjs）
-    const walked = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu', collectGpuDiagnostics });
+    const walked = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu', collectGpuDiagnostics, presentErrors: () => PRESENT_ERRORS.test(chromeTail.full()) });
     out.nav = walked.steps;
     out.gpuWaitMs = walked.gpuWaitMs;
     out.ready = true;
