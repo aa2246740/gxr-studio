@@ -13,6 +13,7 @@ installDom();
 // ---- 接口替身 ------------------------------------------------------------------
 const requests = []; // { method, url, body, at }
 const g = gate();
+const staleHolds = new Set(); // 'METHOD url' → 先算好回应、再挂起，放行时交出的是过时的内容
 const holds = new Set(); // 'METHOD url' → 这一类请求先挂起，等脚本放行
 const failures = new Map(); // 'METHOD url' → 要抛的错误（只抛一次）
 const failIf = []; // (method, url, body) → 要抛的错误或 null；抛过一次就移走（按请求内容挑哪一笔失败）
@@ -52,7 +53,11 @@ async function answer(method, url, body) {
     if (body.expected_rev !== revs[k]) throw new StubError(409, '这张照片刚被别处改过。');
     if (m[2] === 'crop' && globalThis.cropCheck) {
       const bad = globalThis.cropCheck(body, cropOf(m[1]));
-      if (bad) throw new StubError(422, bad);
+      if (bad) {
+        const e = new StubError(bad.status || 422, bad.message || bad);
+        if (bad.code) e.code = bad.code;
+        throw e;
+      }
     }
     revs[k] += 1;
     if (m[2] === 'edit') {
@@ -87,6 +92,13 @@ globalThis.apiStub = async (url, opts = {}) => {
   const method = opts.method || 'GET';
   const k = `${method} ${url}`;
   requests.push({ method, url, body: opts.body ?? null });
+  if (staleHolds.has(k)) {
+    // 回应在放行之前就已经算好：放行时到的是过时的内容（服务器在这期间又写过了）
+    staleHolds.delete(k);
+    const early = await answer(method, url, opts.body);
+    await g.hold(k);
+    return early;
+  }
   if (holds.has(k)) {
     holds.delete(k);
     await g.hold(k);
@@ -1385,7 +1397,7 @@ if (scenario === 'reset-then-switch') {
     const [, , w, h] = body.rect;
     const got = (w * W) / (h * H);
     const want = { '4:3': 4 / 3 }[body.preset];
-    return want && Math.min(Math.abs(got - want), Math.abs(got - 1 / want)) / want > 0.01 ? '裁剪框超出画面范围' : null;
+    return want && Math.min(Math.abs(got - want), Math.abs(got - 1 / want)) / want > 0.01 ? { status: 422, code: 'ratio_mismatch', message: '裁剪框超出画面范围' } : null;
   };
   globalThis.onGeometry = (geo, now) => {
     const turned = (geo.rotate90 || 0) % 2 === 1;
@@ -1424,6 +1436,133 @@ if (scenario === 'reset-then-switch') {
   await correct.flipHorizontal(v);
   await tick(5);
   out.afterDrift = { status: preview.saveStatus(PHOTOS.A.id), puts: requests.slice(before).filter((r) => r.method === 'PUT' && r.url.endsWith('/crop')).map((r) => r.body.rect), rect: snap().rect };
+} else if (scenario === 'undo-auto-restores-box' || scenario === 'undo-auto-while-reread') {
+  // 评审 P1：自动（透视）以后服务器把框收小、换了画布。撤销这一步要把滑块和原来的框一起写回去；
+  // 撤销落在「重读裁剪」还没回来的时候，晚到的旧回应不能把收小的框又放回界面。
+  globalThis.statefulCrop = true;
+  globalThis.onGeometry = (geo) => {
+    const frame = geo.vertical ? { width: 3300, height: 2400 } : { width: 3000, height: 2000 };
+    return geo.vertical ? { frame, rect: [0.35, 0.2, 0.3, 0.55] } : { frame };
+  };
+  globalThis.cropCheck = (body, now) => {
+    if (!body.rect) return null;
+    const [, , w, h] = body.rect;
+    const got = (w * now.frame.width) / (h * now.frame.height);
+    return Math.abs(got - 0.75) / 0.75 > 0.01 ? { status: 422, code: 'ratio_mismatch', message: '裁剪框超出画面范围' } : null;
+  };
+  globalThis.autoAnswer = { straighten: 0, vertical: 40, confident: true, message: '' };
+  globalThis.cropAnswer = { '4:3': [0.35, 0.2, 0.3, 0.6] };
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const cropMod = await import(file('crop.js'));
+  const correct = await import(file('correct.js'));
+  const r4 = (r) => [r.x, r.y, r.w, r.h].map((x) => +x.toFixed(4));
+  await cropMod.applyPreset(v, { id: '4:3', label: '小红书 3:4', orient: 'portrait' });
+  out.start = r4(v.crop.rect);
+  const cropKey = `GET /api/photos/${PHOTOS.A.id}/crop`;
+  if (scenario === 'undo-auto-while-reread') staleHolds.add(cropKey);
+  const running = correct.autoCorrect(v);
+  await tick(8);
+  out.fitted = scenario === 'undo-auto-restores-box' ? r4(v.crop.rect) : crops[PHOTOS.A.id].rect;
+  preview.undoChange(v);
+  if (scenario === 'undo-auto-while-reread') {
+    out.heldReread = g.has(cropKey);
+    g.release(cropKey);
+  }
+  await running;
+  await preview.flushEdits(v);
+  await tick(8);
+  out.after = { rect: r4(v.crop.rect), frame: [v.crop.frame.width, v.crop.frame.height], vertical: v.ed.geometry.vertical };
+  out.server = { rect: crops[PHOTOS.A.id].rect.map((x) => +x.toFixed(4)), frame: [crops[PHOTOS.A.id].frame.width, crops[PHOTOS.A.id].frame.height] };
+  out.undoSteps = v.undo.length;
+} else if (scenario === 'rotate-save-fails') {
+  // 评审 P1：转了以后写框失败。只有框的形状被拒才让服务器重算；断网/500 这类不能悄悄换成居中的最大框，
+  // 重算也失败的话，「重试」用的还是用户转好的框。
+  globalThis.statefulCrop = true;
+  globalThis.onGeometry = (geo) => ({ frame: (geo.rotate90 || 0) % 2 ? { width: 2000, height: 3000 } : { width: 3000, height: 2000 } });
+  globalThis.cropAnswer = { '4:3': [0.35, 0.2, 0.3, 0.6], '1:1': [0, 0, 1, 1] };
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const cropMod = await import(file('crop.js'));
+  const correct = await import(file('correct.js'));
+  const cropBodies = () => requests.filter((r) => r.method === 'PUT' && r.url.endsWith('/crop')).map((r) => r.body.rect);
+  const toasts = () => document.getElementById('toast-root').children.map((t) => t.textContent);
+  await cropMod.applyPreset(v, { id: '4:3', label: '小红书 3:4', orient: 'portrait' });
+  const base = cropBodies().length;
+  // a) 500：不重算，提示出来，重试用转好的框
+  globalThis.cropCheck = () => ({ status: 500, message: '磁盘已满，无法写入编辑记录。' });
+  await correct.rotate90(v);
+  await tick(5);
+  const turned = [v.crop.rect.x, v.crop.rect.y, v.crop.rect.w, v.crop.rect.h];
+  out.a = { puts: cropBodies().slice(base), status: preview.saveStatus(PHOTOS.A.id), toast: toasts().some((t) => t.includes('磁盘已满')), localRect: turned.map((x) => +x.toFixed(4)) };
+  globalThis.cropCheck = null;
+  await preview.retrySaves(PHOTOS.A.id);
+  await tick(5);
+  out.a.retried = cropBodies().slice(base + 1);
+  out.a.after = preview.saveStatus(PHOTOS.A.id);
+  // b) 形状被拒、重算又失败（500）：提示出来，重试用的还是转好的框，不是 rect: null
+  document.getElementById('toast-root').replaceChildren();
+  const base2 = cropBodies().length;
+  globalThis.cropCheck = (body) => (body.rect ? { status: 422, code: 'ratio_mismatch', message: '裁剪框超出画面范围' } : { status: 500, message: '磁盘已满，无法写入编辑记录。' });
+  await correct.flipHorizontal(v);
+  await tick(5);
+  const flipped = [v.crop.rect.x, v.crop.rect.y, v.crop.rect.w, v.crop.rect.h];
+  out.b = { puts: cropBodies().slice(base2).map((r) => r === null), status: preview.saveStatus(PHOTOS.A.id), toast: toasts().some((t) => t.includes('磁盘已满')) };
+  globalThis.cropCheck = null;
+  await preview.retrySaves(PHOTOS.A.id);
+  await tick(5);
+  const retry = cropBodies().slice(base2 + 2);
+  out.b.retry = retry.map((r) => r && r.map((x) => +x.toFixed(4)));
+  out.b.flipped = flipped.map((x) => +x.toFixed(4));
+  out.b.after = preview.saveStatus(PHOTOS.A.id);
+} else if (scenario === 'rotate-then-ratio-click') {
+  // 评审 P2：转的几何还没写完时点了比例。比例的框（rect: null，让服务器算）排在前面，
+  // 转的那一笔不能再把落后的本地框排在它后面盖掉服务器算的框。
+  globalThis.statefulCrop = true;
+  globalThis.onGeometry = (geo) => ({ frame: (geo.rotate90 || 0) % 2 ? { width: 2000, height: 3000 } : { width: 3000, height: 2000 } });
+  globalThis.cropAnswer = { '4:3': [0.35, 0.2, 0.3, 0.6], '1:1': [0, 0.25, 1, 0.5] };
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const cropMod = await import(file('crop.js'));
+  const correct = await import(file('correct.js'));
+  await cropMod.applyPreset(v, { id: '4:3', label: '小红书 3:4', orient: 'portrait' });
+  const before = requests.length;
+  holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  const turning = correct.rotate90(v);
+  await tick(2);
+  const clicked = cropMod.applyPreset(v, { id: '1:1', label: '1:1' });
+  await tick(2);
+  g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+  await Promise.all([turning, clicked]);
+  await preview.flushEdits(v);
+  await tick(8);
+  out.puts = requests.slice(before).filter((r) => r.method === 'PUT').map((r) => (r.url.endsWith('/crop') ? ['crop', r.body.preset, r.body.rect] : ['edit']));
+  out.server = { preset: crops[PHOTOS.A.id].preset, rect: crops[PHOTOS.A.id].rect };
+  out.client = { preset: v.crop.preset, rect: [v.crop.rect.x, v.crop.rect.y, v.crop.rect.w, v.crop.rect.h] };
+} else if (scenario === 'undo-rotate-restores-frame') {
+  // 评审 P2：撤销转 90°，frame 和预览画布的宽高当场回到转之前，不等服务器回应
+  globalThis.statefulCrop = true;
+  globalThis.onGeometry = (geo) => ({ frame: (geo.rotate90 || 0) % 2 ? { width: 2000, height: 3000 } : { width: 3000, height: 2000 } });
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const cropMod = await import(file('crop.js'));
+  const correct = await import(file('correct.js'));
+  await cropMod.applyPreset(v, { id: '3:2', label: '3:2' });
+  await correct.rotate90(v);
+  await tick(5);
+  out.turned = { frame: [v.crop.frame.width, v.crop.frame.height], full: cropMod.fullCanvas(v), canvas: v.canvas };
+  preview.undoChange(v);
+  out.undone = { frame: [v.crop.frame.width, v.crop.frame.height], full: cropMod.fullCanvas(v), canvas: v.canvas, rotate90: v.ed.geometry.rotate90 };
+  await preview.flushEdits(v);
+  await tick(5);
 } else if (scenario === 'auto-feedback') {
   // 自动：点了按钮锁住、写「正在分析…」，结果出来以后用提示说清楚改了什么（可以撤销）；没把握时仍然是原来的提示
   globalThis.statefulCrop = false;

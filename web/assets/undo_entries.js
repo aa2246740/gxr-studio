@@ -3,7 +3,7 @@
 // 重试补写进来的值不会被撤销别的字段顺带写回旧值（W02、Y01），你自己改过的步骤也原样保留（X02）。
 
 export function cropShape(c) {
-  return c ? { preset: c.preset, rect: c.rect, angle_deg: c.angle_deg, orientation: c.orientation } : null;
+  return c ? { preset: c.preset, rect: c.rect, angle_deg: c.angle_deg, orientation: c.orientation, frame: c.frame } : null;
 }
 
 // 撤销的单位：一步改了哪几组（frame 和 frameFrom、stamp 和 stampFrom 各算一组）
@@ -15,7 +15,18 @@ export const HISTORY_GROUPS = {
 export function ownedGroups(before, after) {
   const a = JSON.parse(before);
   const b = JSON.parse(after);
-  return Object.keys(HISTORY_GROUPS).filter((g) => HISTORY_GROUPS[g].some((k) => JSON.stringify(a[k] ?? null) !== JSON.stringify(b[k] ?? null)));
+  const owned = Object.keys(HISTORY_GROUPS).filter((g) => HISTORY_GROUPS[g].some((k) => JSON.stringify(a[k] ?? null) !== JSON.stringify(b[k] ?? null)));
+  // 几何变了，服务器写几何时会顺带把框收进新画面（透视还换画布）：这一步也管框，撤销才会把原来的框写回去
+  if (owned.includes('geometry') && a.crop && !owned.includes('crop')) owned.push('crop');
+  return owned;
+}
+
+// 撤销转 90° 这类一步：画布的宽高（frame）跟着回到这一步之前；横竖变了，界面上的预览画布也对调
+export function restoreCropFrame(view, crop) {
+  const cur = view.crop;
+  if (!crop.frame || !cur || !cur.frame) return;
+  if (view.canvas && (crop.frame.width >= crop.frame.height) !== (cur.frame.width >= cur.frame.height)) view.canvas = { w: view.canvas.h, h: view.canvas.w };
+  cur.frame = crop.frame;
 }
 
 export function snapshot(view) {

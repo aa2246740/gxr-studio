@@ -610,3 +610,49 @@ def test_auto_shows_busy_and_says_what_it_changed(tmp_path):
     assert out["undoSteps"] == 1
     assert any("未检测到明显的水平线" in t for t in out["unsureToast"]) and out["undoStepsAfterUnsure"] == 1
     assert any("没有改动" in t for t in out["sameToast"]) and out["sameWrites"] == 0
+
+
+@pytest.mark.parametrize("scenario", ["undo-auto-restores-box", "undo-auto-while-reread"])
+def test_undoing_auto_brings_back_the_old_box_with_the_slider(tmp_path, scenario):
+    """评审 P1：自动（透视）以后服务器把框收小、换了画布。撤销只还原了垂直，框还是收小的。
+    几何的一步现在也管框；撤销落在「重读裁剪」的回应还没到的时候，晚到的旧回应也不能把收小的框放回来。"""
+    out = run(tmp_path, scenario, real=("crop.js", "correct.js"))
+    assert out["start"] == [0.35, 0.2, 0.3, 0.6]
+    assert out["fitted"] != out["start"], "服务器应该把框收小了，不然这个场景什么也没测"
+    assert out["after"] == {"rect": out["start"], "frame": [3000, 2000], "vertical": 0}
+    assert out["server"] == {"rect": out["start"], "frame": [3000, 2000]}
+    if scenario == "undo-auto-while-reread":
+        assert out["heldReread"] is True, "撤销时重读裁剪的请求应该还在路上"
+
+
+def test_rotate_retries_with_the_turned_box_unless_the_server_rejects_its_shape(tmp_path):
+    """评审 P1：转了以后写框失败。500 / 断网不是框的问题：照常提示、不重算，重试用的是转好的框。
+    形状被拒、重算又失败：重试用的还是转好的框，不是居中的最大框（rect: null）。"""
+    out = run(tmp_path, "rotate-save-fails", real=("crop.js", "correct.js"))
+    a, b = out["a"], out["b"]
+    assert len(a["puts"]) == 1 and a["puts"][0] is not None, "500 以后不该再发 rect: null"
+    assert a["status"] == "failed" and a["toast"] is True
+    assert a["retried"] and a["retried"][0] is not None
+    assert [round(x, 4) for x in a["retried"][0]] == a["localRect"]
+    assert a["after"] in ("saved", "idle")
+    assert b["puts"] == [False, True], "形状被拒才重算一次"
+    assert b["status"] == "failed" and b["toast"] is True
+    assert b["retry"] and b["retry"][0] == b["flipped"], "重试要写用户翻好的框"
+    assert b["after"] in ("saved", "idle")
+
+
+def test_a_ratio_click_during_a_rotate_is_not_overwritten_by_the_turned_box(tmp_path):
+    """评审 P2：转的几何还没写完时点了比例，比例的写入排在前面；转的那一笔不能再把落后的本地框排在后面盖掉它。"""
+    out = run(tmp_path, "rotate-then-ratio-click", real=("crop.js", "correct.js"))
+    assert out["puts"] == [["edit"], ["crop", "1:1", None]]
+    assert out["server"]["preset"] == "1:1" and out["client"]["preset"] == "1:1"
+    assert [round(x, 4) for x in out["client"]["rect"]] == out["server"]["rect"]
+
+
+def test_undoing_a_turn_restores_the_frame_and_canvas_at_once(tmp_path):
+    """评审 P2：转 90° 时 frame 和预览画布的宽高对调了，撤销快照里没有它们，撤销后读数还是转过的尺寸。"""
+    out = run(tmp_path, "undo-rotate-restores-frame", real=("crop.js", "correct.js"))
+    assert out["turned"]["frame"] == [2000, 3000] and out["turned"]["full"] == {"w": 2000, "h": 3000}
+    assert out["undone"]["frame"] == [3000, 2000]
+    assert out["undone"]["full"] == {"w": 3000, "h": 2000} and out["undone"]["canvas"] == {"w": 3000, "h": 2000}
+    assert out["undone"]["rotate90"] == 0
