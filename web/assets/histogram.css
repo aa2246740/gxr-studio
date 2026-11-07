@@ -1,0 +1,40 @@
+/* 直方图（histogram.js）：右侧面板顶部，所有标签下都在。收起后只剩一行标题和两个三角。 */
+.hist { background: var(--surface-panel); border-bottom: 1px solid var(--line-subtle); }
+.hist-head { display: flex; align-items: center; gap: 4px; height: 34px; padding: 0 var(--sp-2); }
+.hist-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 4px; height: var(--hit-min);
+  border: 0; background: transparent; color: var(--text-2); font: var(--fw-medium) var(--fs-small)/1 var(--font-ui); border-radius: var(--r-md);
+  transition: color var(--dur-fast), background-color var(--dur-fast);
+}
+.hist-toggle:hover { color: var(--text-1); background: rgba(255, 255, 255, 0.04); }
+.hist-toggle .ico { width: var(--icon-sm); height: var(--icon-sm); transition: transform var(--dur-base) var(--ease-standard); }
+.hist[data-collapsed="true"] .hist-toggle .ico { transform: rotate(-90deg); }
+
+/* 左边的三角 = 暗部，右边的三角 = 高光：没有明显溢出时是灰的，占比达到 0.5% 才亮起（蓝 / 红）；按下 = 正在照片上标出 */
+.hist-clip { flex: none; width: var(--hit-min); height: var(--hit-min); display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-md); background: transparent; }
+.hist-clip:hover { background: rgba(255, 255, 255, 0.06); }
+.hist-clip[aria-pressed="true"] { background: var(--accent-weak); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.hist-tri { width: 12px; height: 12px; background: var(--gray-500); transition: background-color var(--dur-fast); }
+.hist-clip[data-side="shadow"] .hist-tri { clip-path: polygon(0 0, 0 100%, 100% 100%); }
+.hist-clip[data-side="highlight"] .hist-tri { clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+.hist-clip[data-side="shadow"][data-lit="true"] .hist-tri { background: var(--clip-shadow); }
+.hist-clip[data-side="highlight"][data-lit="true"] .hist-tri { background: var(--clip-highlight); }
+
+/* 收起 / 展开：高度渐变，不跳 */
+.hist-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur-base) var(--ease-standard); }
+.hist-body > div { min-height: 0; overflow: hidden; padding: 0 var(--sp-4); }
+.hist[data-collapsed="true"] .hist-body { grid-template-rows: 0fr; }
+.hist-plot { display: block; width: 100%; height: 88px; margin-bottom: var(--sp-3); border-radius: var(--r-sm); background: var(--surface-app); box-shadow: inset 0 0 0 1px var(--line-subtle); }
+@media (max-height: 720px) { .hist-plot { height: 60px; margin-bottom: var(--sp-2); } }
+
+/* 照片上的溢出提示（服务器出图时；显卡出图时由着色器直接盖）和左下角的说明 */
+.clip-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.clip-legend {
+  position: absolute; left: 12px; bottom: 12px; z-index: var(--z-stage-overlay); display: flex; align-items: center; gap: 12px; height: 26px; padding: 0 12px;
+  border-radius: var(--r-sm); background: rgba(20, 20, 20, 0.78); color: var(--text-1); font-size: var(--fs-small); pointer-events: none;
+}
+.clip-legend[hidden] { display: none; }
+.clip-key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.clip-key .sw { width: 10px; height: 10px; border-radius: 2px; }
+.clip-key .sw.shadow { background: var(--clip-shadow); }
+.clip-key .sw.highlight { background: var(--clip-highlight); }

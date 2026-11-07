@@ -442,7 +442,7 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .fthumb .b { position: absolute; left: 4px; bottom: 4px; display: flex; gap: 3px; }
 
 /* 右侧面板：工具标签 | 内容 | 固定底栏 */
-.panel { display: grid; grid-template-rows: var(--h-tooltabs) minmax(0, 1fr) auto; min-height: 0; min-width: 0; background: var(--surface-panel); border-left: 1px solid var(--line-subtle); overflow: hidden; }
+.panel { display: grid; grid-template-rows: auto var(--h-tooltabs) minmax(0, 1fr) auto; min-height: 0; min-width: 0; background: var(--surface-panel); border-left: 1px solid var(--line-subtle); overflow: hidden; }
 .tooltabs { display: grid; grid-template-columns: repeat(6, 1fr); padding: 4px 8px 0; border-bottom: 1px solid var(--line-subtle); }
 .tooltabs button {
   position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0;

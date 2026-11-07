@@ -80,6 +80,9 @@
   --danger-pressed: #a92822;
   --danger-text: #ff7a70;                     /* 出错文字、图标 */
   --danger-bg: rgba(255, 122, 112, 0.12);
+  /* 溢出提示（J、直方图两侧的三角）：蓝 = 暗部死黑，红 = 高光死白。histogram_math.js 的 SHADOW_RGB / HIGHLIGHT_RGB 是同一组数 */
+  --clip-shadow: rgb(40, 110, 255);
+  --clip-highlight: rgb(255, 50, 40);
   --ok-text: #5cc882;                         /* 只用于小图标（如导入完成的对勾），不用整条色块 */
 
   /* ---------- 8. 字体 ---------- */

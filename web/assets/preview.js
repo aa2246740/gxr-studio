@@ -541,7 +541,7 @@ export function recipeForRender(view) {
   return body;
 }
 
-function draftBody(view, stage) {
+export function draftBody(view, stage) {
   const ed = view.ed;
   const body = { recipe: recipeForRender(view), lut: ed.lut, adjust: adjustBody(ed), curve: curveBody(ed) };
   if (!ed.v2) return body;
@@ -786,4 +786,4 @@ export async function refreshCaps(view) {
   if (view.ed) view.ed.caps = capsFrom(view.photo, caps);
 }
 
-export { loadMeta, loadFrames, draftBody };
+export { loadMeta, loadFrames };
