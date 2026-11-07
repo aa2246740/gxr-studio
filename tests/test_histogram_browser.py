@@ -143,17 +143,27 @@ def check(out: dict, mode: str) -> None:
     assert crop["region"] is not None and 0.2 < crop["area"] < 0.9, crop
     # 快捷键表里有 J
     assert out["help"] and out["help"][0][0] == "J" and "死" in out["help"][0][1], out["help"]
-    # 边框不算进直方图（只在服务器路径上测）：照片压暗后套白色粗边框，屏幕上有大片纯白（边框），
-    # 直方图里不该有死白，高光三角不该亮；带边框时不标位置，左下角说明原因
+    # 边框和时间戳不算进直方图（两条路径都测）：照片压暗后套白色粗边框，再叠一个大的白色文字戳。边框是浏览器画的底色，
+    # 屏幕上整张成片有大片纯白，文字戳在照片上也有一片白；直方图里不该有死白，高光三角不该亮；
+    # 溢出提示（服务器路径）只盖照片那一块，不盖边框，图例照常说明颜色
+    fr = out.get("frame")
+    assert fr, "没有拿到带边框那一步的结果"
+    print(f"[{mode}] 带白边框：成片上白色 {fr['white']:.1%}，直方图里死白 {fr['blownShare']:.2%}、死黑 {fr['crushedShare']:.1%}")
+    assert fr["source"] == mode and fr["white"] > 0.05, fr
+    # 文字戳真的画出来了，而且白得够多：要是数进去，死白会超过 0.5%，高光三角会亮
+    assert fr["stampWhite"] is not None and fr["stampWhite"] > 0.01, f"文字戳上的白只占照片的 {fr['stampWhite']}：{fr}"
+    assert fr["blownShare"] < 0.005 and fr["highlightWarn"] is False, fr
+    assert fr["crushedShare"] > 0.02, f"照片本身是压暗的，死黑应该数得出来：{fr}"
+    assert fr["cleanRenders"] == 0, f"不该再另外请求一张无边框的小图：{fr}"
+    assert fr["legend"] and "边框" not in fr["legend"] and "死" in fr["legend"], fr
     if mode == "server":
-        fr = out.get("frame")
-        assert fr, "没有拿到带边框那一步的结果"
-        print(f"[{mode}] 带白边框：屏幕上纯白 {fr['shownBrightShare']:.1%}，直方图里死白 {fr['blownShare']:.2%}、死黑 {fr['crushedShare']:.1%}")
-        assert fr["source"] == "server" and fr["shownBrightShare"] > 0.05, fr
-        assert fr["blownShare"] < 0.005 and fr["highlightWarn"] is False, fr
-        assert fr["crushedShare"] > 0.02, f"照片本身是压暗的，死黑应该数得出来：{fr}"
-        assert fr["overlayOk"] is False and fr["overlayCanvas"] is False, fr
-        assert fr["legend"] and "边框" in fr["legend"], fr
+        assert fr["photoBright"] is not None and fr["photoBright"] < 0.01, f"服务器图里不该有边框的白：{fr}"
+        ov = fr["overlay"]
+        assert ov, f"带边框时服务器路径也要标出位置：{fr}"
+        assert all(abs(a - b) <= 1 for a, b in zip(ov["overlay"], ov["photo"], strict=True)), ov  # 和照片一样大、一样的位置
+        assert ov["overlay"][2] < ov["stage"][2] - 20 and ov["overlay"][3] < ov["stage"][3] - 20, ov  # 没有盖到边框上
+    else:
+        assert fr["gpu"] is True and fr["overlay"] is None, fr
     # 页面里没有报错
     bad = [m for m in out["console"] if "Error" in m or "Uncaught" in m]
     assert not bad, out["console"]

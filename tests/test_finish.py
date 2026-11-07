@@ -120,16 +120,18 @@ def test_frame_date_uses_a_full_year() -> None:
 
 
 def test_seg7_uses_the_digit_wide_blank_between_groups() -> None:
-    from PIL import Image, ImageDraw
+    from datetime import datetime
 
-    from gxr_studio.finish.stamp import _draw_text, _font
+    from gxr_studio.finish.fonts import FontMetrics
+    from gxr_studio.finish.layout import advance
+    from gxr_studio.finish.stamp import apply_stamp
 
-    face = _font("seg7", 80)
-    probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
-    assert abs(probe.textlength("!", font=face) - probe.textlength("0", font=face)) < 1
-    canvas = Image.new("RGB", (900, 180), (255, 255, 255))
-    _draw_text(ImageDraw.Draw(canvas), (8, 30), "'26 10 23", face, (255, 80, 0), "seg7")
-    ink = (np.asarray(canvas)[:, :, 0] > 180) & (np.asarray(canvas)[:, :, 1] < 140)
+    metrics = FontMetrics()
+    assert abs(advance(metrics, "dseg", 80, "!") - advance(metrics, "dseg", 80, "0")) < 1
+    # 1500×1026 的白底照片，「大」号日期戳的字号正好是 80 像素
+    spec = StampSpec(enabled=True, font="seg7", size="large", color="orange", glow=False, corner="tl")
+    canvas = apply_stamp(np.full((1026, 1500, 3), 255, np.uint8), spec, datetime(2026, 10, 23, 17, 41), None)
+    ink = (canvas[:, :, 0] > 180) & (canvas[:, :, 1] < 140)
     cols = np.nonzero(ink.any(axis=0))[0]
     splits = np.nonzero(np.diff(cols) > 4)[0]
     starts = [int(cols[0]), *[int(cols[i + 1]) for i in splits]]
@@ -137,7 +139,7 @@ def test_seg7_uses_the_digit_wide_blank_between_groups() -> None:
     widths = [end - start for start, end in zip(starts, ends)]
     gaps = [starts[i + 1] - ends[i] for i in range(len(starts) - 1)]
     one = widths.index(min(widths))
-    cell = probe.textlength("0", font=face)
+    cell = advance(metrics, "dseg", 80, "0")
     assert gaps[one] < cell * 0.4
     before_one = gaps[one - 1]
     after_ten = gaps[one + 1]
@@ -150,13 +152,13 @@ def test_seg7_apostrophe_is_a_slanted_tick() -> None:
 
     from PIL import Image, ImageDraw
 
-    from gxr_studio.finish.stamp import _apostrophe, _font
+    from gxr_studio.finish.layout import tick_item
 
     spec = StampSpec(enabled=True, font="seg7", glow=False, size="small")
     text = format_stamp(spec, datetime(2026, 10, 23, 17, 41), None)
     assert text.startswith("'")
     canvas = Image.new("RGB", (80, 80), (255, 255, 255))
-    _apostrophe(ImageDraw.Draw(canvas), 8, 8, _font("seg7", 48).size, (255, 80, 0))
+    ImageDraw.Draw(canvas).polygon([tuple(p) for p in tick_item(8, 8, 48, (255, 80, 0))["pts"]], fill=(255, 80, 0))
     ink = (np.asarray(canvas)[:, :, 0] > 200) & (np.asarray(canvas)[:, :, 1] < 140)
     ys, xs = np.nonzero(ink)
     top = xs[ys <= np.percentile(ys, 30)].mean()
@@ -218,13 +220,15 @@ def _glyph_boxes(image: np.ndarray, spec: StampSpec):
     from gxr_studio.finish import stamp
 
     boxes = []
-    original = stamp._draw_text
+    original = stamp._paint
 
-    def observed(draw, xy, shown, face, fill, kind):
-        boxes.append(draw.textbbox(xy, shown, font=face))
-        return original(draw, xy, shown, face, fill, kind)
+    def observed(draw, layout, fonts, fill):
+        for op in layout.ops:
+            if op["k"] == "text":
+                boxes.append(draw.textbbox((op["x"], op["y"]), op["text"], font=fonts.face(op["font"], op["px"], op["cjk"])))
+        return original(draw, layout, fonts, fill)
 
-    with patch.object(stamp, "_draw_text", observed):
+    with patch.object(stamp, "_paint", observed):
         stamp.apply_stamp(image, spec, datetime(2026, 10, 31, 14, 5), None)
     return boxes
 

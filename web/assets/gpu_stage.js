@@ -1,8 +1,9 @@
 // 大图的 WebGPU 实时预览（功能开关 gpu_preview，见 docs/feature-flags.md）。
 // 引擎在 /assets/gpu/engine.js（frontend/ 构建，已提交）。数据只上传一次，拖滑块只改参数，不再请求服务器出图。
 // 显卡做不了、或这张照片不支持的情况一律退回原来的服务器出图（preview.js 的 runPreview），不显示不对的画面：
-//   原图（按住空格）、透视/畸变、成片里有边框或时间戳、只有 JPG 却选了配方（近似）、
+//   原图（按住空格）、透视/畸变、只有 JPG 却选了配方（近似）、
 //   RAW 写法特殊（压缩、线性化表、逐行黑电平等），以及浏览器没有 WebGPU。
+// 边框和时间戳不在其中：显卡只画照片，边框和日期戳由浏览器画在照片外面和上面（stage_finish.js），加边框不会让显卡退场。
 //
 // 版本：相机数据（camdata-changed）或 LUT（luts-changed）一变，代数加一，照片信息、配方表、LUT 表的记忆全部作废；
 // 每个异步加载完成时先核对代数，旧代的成功和失败都不再写回（不会把旧表装进引擎，也不会把新数据标成失败）。
@@ -110,7 +111,6 @@ export function decide(ed, info, stage, recipe, lutSpace) {
   if (stage !== 'final' && stage !== 'uncropped') return null;
   const g = ed.geometry || {};
   if (g.vertical || g.horizontal || g.distortion) return null;
-  if (stage === 'final' && ((ed.frame && ed.frame.style && ed.frame.style !== 'none') || (ed.stamp && ed.stamp.enabled))) return null;
   const raw = info.raw;
   const jpg = info.jpg;
   const hasDng = info.raw_reason !== 'no_raw';
@@ -296,6 +296,10 @@ export function route(view, ctx, rerun) {
   }
   view.gpuActive = ctx.stage;
   view.gpuFull = full(info, plan.base, layer, g);
+  // 导出时（已裁切）照片的像素：边框和时间戳的版面按它算（stage_finish.js），浏览器自己画，不请服务器
+  const shown = engine.finalSize();
+  const grow = plan.base === 'raw' ? info.raw.full[0] / info.raw.layer[0] : 1;
+  view.gpuExport = shown ? { w: Math.round(shown.w * grow), h: Math.round(shown.h * grow) } : null;
   ed.error = null;
   ed.busy = false;
   prefetch(view);
@@ -378,6 +382,15 @@ export function gpuCanvas(view, maxW, maxH, { natural = false } = {}) {
 
 export function gpuEngineForTests() {
   return engine;
+}
+
+// 显卡画布现在的画面（成片，只有照片，不含边框）：重画一帧，在同一个任务里交给 use(canvas)——WebGPU 画布的内容只在提交的那个任务里有效。
+// 边框卡片用它缩成小底图（finish_cards.js）。画布就是显示的大小，比把整张成片读回 CPU 快得多（大图要一秒多）。
+// 显卡不在、或画布没挂在页面上时返回 null。
+export function gpuSnapshot(use) {
+  if (!engine || !canvas || !canvas.isConnected || !canvas.clientWidth) return null;
+  if (!engine.frame()) return null;
+  return use(canvas);
 }
 
 // 直方图要在引擎的成片纹理上数（histogram.js）；引擎还没建好、或这台电脑走服务器出图时是 null

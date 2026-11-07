@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from ..finish.auto_lines import estimate
 from ..finish.catalog import frames_document
+from ..finish.fonts import ASSETS, FONT_FILES, font_table_json
 from ..finish.meta_text import meta_payload
 from ..finish.serve import load_defaults, render_stage, save_defaults
 from ..finish.spec import parse_frame, parse_stamp
@@ -18,6 +21,8 @@ from .render_routes import _edit_error
 from .routes import _shot_or_404, ctx
 
 router = APIRouter()
+FONT_DIR = ASSETS / "fonts"
+LOGO_DIR = ASSETS / "logo"
 
 
 class FinishDefaults(BaseModel):
@@ -55,6 +60,30 @@ def capabilities(shot_id: str, request: Request) -> dict[str, Any]:
 @router.get("/api/frames", response_model=None)
 def frames() -> dict[str, Any]:
     return frames_document()
+
+
+# 浏览器预览画边框用的字体和标志：和导出用的是同一批文件（只读，只有这几个名字）
+ASSET_TYPES = {".ttf": "font/ttf", ".png": "image/png"}
+ASSET_FILES: dict[str, Path] = {
+    **{name: FONT_DIR / name for name in FONT_FILES.values()},
+    "ricoh.png": LOGO_DIR / "ricoh.png",
+}
+
+
+# 每个字体的版面用表（步进宽度、字形外框、上沿高度）：和导出读的是同一份，从字体文件里读（finish/sfnt.py）
+TABLE_NAMES = {f"{font}.json": font for font in FONT_FILES}
+
+
+@router.get("/api/finish/assets/{name}", response_model=None)
+def finish_asset(name: str) -> Response:
+    headers = {"Cache-Control": "private, no-cache"}
+    table = TABLE_NAMES.get(name)
+    if table is not None:
+        return Response(font_table_json(table), media_type="application/json", headers=headers)
+    path = ASSET_FILES.get(name)
+    if path is None:
+        raise ApiError(404, "asset_not_found", "找不到这个文件。请刷新页面后重试。")
+    return FileResponse(path, media_type=ASSET_TYPES[path.suffix], headers=headers)
 
 
 @router.get("/api/photos/{shot_id}/meta", response_model=None)

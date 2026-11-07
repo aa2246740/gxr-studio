@@ -159,15 +159,14 @@ def _render(
     stage: str | None = None,
     size: str | None = None,
 ) -> Response:
-    from ..finish.cards import render_card
     from ..finish.serve import SIZE_EDGE, render_stage
 
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     if stage not in (None, "final", "uncropped", "original"):
         raise ApiError(422, "bad_stage", "请求无效。请刷新页面后重试。")
-    if size not in (None, "thumb", "card", "preview", "full"):
-        raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": "尺寸只能是 thumb、card、preview 或 full"})
+    if size not in (None, "thumb", "preview", "full"):
+        raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": "尺寸只能是 thumb、preview 或 full"})
     if max_edge is None and size in SIZE_EDGE:
         max_edge = SIZE_EDGE[size]
     if max_edge is not None and not 64 <= max_edge <= MAX_EDGE_LIMIT:
@@ -181,11 +180,7 @@ def _render(
     use_stage = stage or ("final" if "dng" not in shot["files"] or edit.lut is not None else None)
     if use_stage:
         try:
-            if size == "card" and use_stage == "final":
-                # 边框样式卡片：底图按照片和编辑缓存，这里只加这一种边框（finish/cards.py）
-                jpeg, labels = render_card(c.render, c.lib, shot, edit, side, quality=quality)
-            else:
-                jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality)
+            jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality)
         except RenderUnavailable as exc:
             raise _unavailable(c, exc) from exc
         except NoRaw as exc:
@@ -201,6 +196,8 @@ def _render(
             machine = labels.get("label") if labels.get("label") in {"prediction", "approx", "original"} else "original"
             headers["X-GXR-Label"] = quote(str(machine))
             headers["X-GXR-Calibrated"] = "1" if labels.get("calibrated") == "1" else "0"
+            if labels.get("scale"):
+                headers["X-GXR-Scale"] = labels["scale"]
             if machine == "prediction":
                 headers["X-GXR-Prediction"] = "1"
             elif machine == "approx":

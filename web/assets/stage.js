@@ -10,8 +10,31 @@ import { beginChange, endChange, saveCrop, originalUrl, originalFallbackUrl, ren
 import { cropBody, guidesSvg, guideFade, lockRatio, orientationNow, rectArray, pixelsText, fitCrop } from './crop.js';
 import { moveRect, resizeRect } from './geom.js';
 import { gpuCanvas } from './gpu_stage.js';
+import { fitPhoto, fitImage, applyDecor, clearDecor } from './stage_finish.js';
 
 const pct = (v) => `${(v * 100).toFixed(4)}%`;
+
+// 边框和时间戳（stage_finish.js）：显卡画布按「整张成片放得下」的大小放，再把边框和日期戳叠上去
+function decorGpu(view, pv, cv, fit) {
+  if (!fit) clearDecor(pv, cv);
+  else applyDecor(view, pv, cv, fit.deco, parseFloat(cv.style.width), parseFloat(cv.style.height));
+}
+
+// 服务器出的图是没有边框的照片：边框和日期戳同样叠上去。没有装饰时恢复成图自己的大小。
+function decorImage(view, pv, img, mode, maxW, maxH, natural) {
+  const fit = fitImage(view, mode, img, maxW, maxH, natural);
+  if (fit) {
+    Object.assign(img.style, { maxWidth: 'none', maxHeight: 'none', width: `${fit.cssW}px`, height: `${fit.cssH}px` });
+    applyDecor(view, pv, img, fit.deco, fit.cssW, fit.cssH);
+    return;
+  }
+  const was = pv.dataset.decor === '1';
+  clearDecor(pv, img);
+  if (!was) return;
+  img.style.removeProperty('height');
+  if (natural) img.style.width = `${Math.round(img.naturalWidth / (globalThis.devicePixelRatio || 1))}px`;
+  else Object.assign(img.style, { width: '', maxWidth: `${maxW}px`, maxHeight: `${maxH}px` });
+}
 
 export function stageMode(view) {
   if (view.showOriginal) return 'orig';
@@ -34,11 +57,14 @@ export function paintStage(view) {
   const natural = !!view.zoom100 && mode !== 'uncropped';
   area.classList.toggle('zoom100', natural);
   // 显卡预览接手了这个画面（gpu_stage.js）：画布只建一次，这里只调尺寸和叠加的裁剪框
-  const cv = ed && view.gpuActive && view.gpuActive === mode ? gpuCanvas(view, maxW, maxH, { natural }) : null;
+  const gpuMode = !!ed && !!view.gpuActive && view.gpuActive === mode;
+  const fit = gpuMode ? fitPhoto(view, mode, maxW, maxH) : null;
+  const cv = gpuMode ? gpuCanvas(view, fit ? fit.maxW : maxW, fit ? fit.maxH : maxH, { natural }) : null;
   area.classList.toggle('gpu', !!cv);
   if (cv) {
     paintGpu(view, area, cv, mode);
     paintSplit(view, area.firstChild, mode);
+    decorGpu(view, area.firstChild, cv, fit);
     return;
   }
   let src = null;
@@ -56,6 +82,7 @@ export function paintStage(view) {
       if (ed && !ed.v2) curImg.style.transform = geometryOf(view).straighten ? `rotate(${geometryOf(view).straighten}deg)` : '';
       paintBox(view);
     }
+    decorImage(view, cur, curImg, mode, maxW, maxH, natural);
     paintSplit(view, cur, mode);
     paintProblem(view, area, mode);
     return;
@@ -91,6 +118,7 @@ export function paintStage(view) {
   }
   img.addEventListener('load', () => {
     if (natural) img.style.width = `${Math.round(img.naturalWidth / (globalThis.devicePixelRatio || 1))}px`;
+    decorImage(view, pv, img, mode, maxW, maxH, natural);
     if (mode !== 'uncropped') return;
     const prev = view.canvas;
     const next = { w: img.naturalWidth, h: img.naturalHeight };
@@ -118,12 +146,14 @@ export function paintStage(view) {
     if (view.stageArea !== area) return;
     const keep = childWith(area, 'pv');
     const fade = !!keep && keep !== pv;
+    decorImage(view, pv, img, mode, maxW, maxH, natural);
     area.replaceChildren(pv);
     if (fade) {
       const under = keep.querySelector('.pv-img');
       const sameShape = under && under.naturalWidth && img.naturalWidth
         && Math.abs(under.naturalWidth / under.naturalHeight - img.naturalWidth / img.naturalHeight) < 0.01;
-      if (sameShape && keep.dataset.mode === mode) {
+      // 带边框的画面不做叠影淡入（叠影是整块铺满的，对不上边框里的照片位置）
+      if (sameShape && keep.dataset.mode === mode && !keep.dataset.decor && !pv.dataset.decor) {
         // 旧图垫在下面，新图淡入（下面一直有画面，不会像整张蒙了一层灰）；淡入结束后拿掉旧图
         const ghost = under.cloneNode();
         ghost.className = 'pv-under';

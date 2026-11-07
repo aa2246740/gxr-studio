@@ -2,14 +2,11 @@
 //   显卡路径：让引擎在成片纹理上数（compute 通道，异步读回），拿到的就是屏幕上这一帧的数据。
 //   服务器出图的退路：把服务器出的那张 JPEG 解码、降到长边 384 再数；溢出提示画在叠在照片上的 canvas 里。
 //   解码（createImageBitmap）在浏览器的解码线程里做，数 10 万个点不到一毫秒，不另开 worker。
-// 成片里的边框和时间戳不算：服务器图带着它们时，另要一张没有它们的小图来数（cleanBlob）。
-import { apiBlob } from './api.js';
+// 成片里的边框和时间戳不算：它们由浏览器画在照片外面和上面（stage_finish.js），服务器出的图和显卡的成片纹理里都只有照片，直接数就行。
 import { countRGBA, markClipping, pixelRegion, summarize } from './histogram_math.js';
-import { draftBody } from './preview.js';
 
 const SAMPLE_EDGE = 384; // 数直方图的小图长边
 const OVERLAY_EDGE = 800; // 溢出提示的小图长边
-const CLEAN_EDGE = 800; // 带边框时另要的无边框小图长边
 
 let sampleCanvas = null;
 let overlayScratch = null;
@@ -29,21 +26,10 @@ export async function gpuHistogram(engine, region) {
 
 // ---- 服务器图 ------------------------------------------------------------------
 
-export async function decodeBlob(blob) {
-  // 不做色彩转换：数的是服务器写进 JPEG 的码值，和导出的一致（显卡路径读相机 JPG 时也是这样）
-  return createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-}
-
 // 屏幕上那张 <img>（已经解码好）。不去 fetch 它的 blob: 链接——页面的内容安全策略不放行 blob: 的 fetch，只放行 <img>。
+// 不做色彩转换：数的是服务器写进 JPEG 的码值，和导出的一致（显卡路径读相机 JPG 时也是这样）。
 export function decodeImage(img) {
   return createImageBitmap(img, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-}
-
-// 带边框或时间戳的成片：另要一张没有它们的小图（同样的裁剪、拉直、颜色）。服务器上颜色结果有缓存，这一张很便宜。
-export async function cleanBlob(view, stage, signal) {
-  const body = { ...draftBody(view, stage), frame: { style: 'none' }, stamp: { enabled: false } };
-  const { blob } = await apiBlob(`/api/photos/${view.photo.id}/render?stage=${stage}&max_edge=${CLEAN_EDGE}`, { body, signal });
-  return blob;
 }
 
 // 数 bitmap 里 region 的部分（null = 整幅）

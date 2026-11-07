@@ -29,7 +29,9 @@ LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write`
 
 照片编辑只存 LUT 的 SHA，颜色空间从库读取。`lut.photo` 接在 `finish.serve.color_image`，预览和全尺寸导出共用。显示类 LUT 使用现有底图，Log 类使用 DNG 的场景 XYZ，支持 A12 50mm、28mm、MOUNT；仍需可用的白平衡和色彩矩阵。各单元使用自身 DNG 矩阵，曝光采用既有固定中灰锚（50mm 测光标定），不按 LUT 自动曝光；MOUNT 与 28mm 的绝对曝光、测色尚无独立标定，输出均标为电脑预测。全尺寸仍按 RAW 条带计算。照片调整在 LUT 之后执行。没有新增写卡路径；全部调节和机内 LUT 两档预测延期。
 
-边框标签的样式卡片请求 `render?stage=final&size=card`（`finish.cards`）：成片管线「边框之前」的部分（出色、几何、裁切、日期戳）按照片和编辑只做一次、放进一个小缓存，每种样式只加自己的边框再缩到长边 240。底图和大图（`size=preview`）同样大小，因为边框有固定的最小像素，底图小了边框会显得粗。`finish.compose.finish_unframed` 是 `finish_array` 的前半段，大图和导出走 `finish_array`，字节不变（`tests/test_frame_cards.py` 逐字节核对）。
+边框和时间戳在浏览器里画，大图不为它们请求服务器，显卡预览也不因它们退场。版面（边框的外形、条的高度、标志和文字的位置与字号、日期戳的位置、字号和发光半径）是纯函数：`finish/layout.py` 是导出用的那一份，`frame.py`、`stamp.py` 只按它画；`web/assets/finish_layout.js` 是同一套算式的 JS 版，`tests/test_finish_layout_parity.py` 用同样的输入逐项对照（矩形、线、标志、字号、每个字的列逐个数字相同，字符串逐字相同）。量字不用 Pillow 的排版引擎，也不用画布：Pillow 在装了 libraqm 的电脑上走 RAQM（小数步进、字距），没有的走 BASIC（按像素取整的步进，DSEG 这类没有字体指令的字还要被自动对齐器再改一遍），同一个字号量出来的宽度不一样，版面会随电脑变。版面用的是字体文件本身的整数（`finish/sfnt.py` 读出每个字符的步进宽度、字形外框、上沿高度，单位是字体单位）和整数算式：一行字的宽度 = 步进之和 × 字号 / upm，每个字画在 `floor(起点 + 前面各字的步进之和 × 字号 / upm + 0.5)` 那一列，没有字距。导出一个字一个字地画在这些列上（Pillow 一次只排一个字，所有字体对象还是明确指定 BASIC，中文回退字体也一样）；预览拿到的是同一份表（`/api/finish/assets/<字体>.json`，只读，和字体文件、标志一样只有固定几个名字），一个字一个字地画在同样的列上。`tests/test_finish_fonts.py` 核对表和 Pillow 逐字相符（五个字体的每个字形）、两种引擎下导出的字节相同、版面不碰 Pillow 的量字；`tests/test_viewer_browser.py::test_browser_layout_matches_the_export_layout` 在真 Chrome 里用服务器给的表算一遍，和 Python 的结果逐项相同。中文回退字体是系统字体，读不到表，按 1000 像素的字号量一次（Pillow 一次、画布一次），只能和系统字体一样准。文字放不下时：先缩字号，哈苏的参数行再放不下就从最后一项开始去掉，徕卡标志旁边的字放不下就不画，字都不会画到画布外面去。边框上的字符串来自 `/api/photos/{id}/meta` 的 `frame`，和导出是同一份。
+
+预览按导出时的像素算版面：照片的导出尺寸由显卡路径的颜色层换算（`view.gpuExport`），或由服务器出图的 `X-GXR-Scale`（导出的长边是响应里这张图的几倍）换算，边框的最小像素（徕卡水印条至少 64 像素等）因此和导出一致。服务器出图时草稿里的边框、时间戳一律是「没有」，只出照片；`web/assets/stage_finish.js` 把照片放进边框、在叠加的 canvas 上画字、线、标志和日期戳。边框标签的样式卡片同样在浏览器里画（`finish_cards.js`）：底图是舞台上正在显示的画面（显卡读回，或服务器出的图），都没有时才请求一张长边 480 的小图。`finish.compose.finish_unframed` 是 `finish_array` 的前半段；大图和导出走 `finish_array`，除了画布，各样式的导出字节和重构之前相同（`tests/test_finish_compose.py` 核对拆分，重构前后用 10080 种边框和日期戳输入逐字节对过，只有画布不同）。画布样式：四边留出和「白边 · 中」一样宽的边，再补到所选比例，照片居中（导出和预览都是）。
 
 HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`container` 按 ISO 21496-1 + Ultra HDR 封装，主图字节不动。导入结束后另起一个 `hdr` 任务生成图库里的 HDR 版本；导出勾选 HDR 时由 `finish.hdr_export` 让 RAW 亮度跟着成片的几何、日期戳和边框走，在导出的 JPEG 上重新算。
 
@@ -98,7 +100,6 @@ Windows 逐级 lstat 拒绝链接和重解析点，打开后核对 (st_dev, st_i
 
 - 原图（按住空格）；
 - 透视、畸变；
-- 成片里有边框或时间戳（裁剪页的未裁切画面照常走显卡）；
 - 只有 JPG 却选了配方（近似）；
 - Log 类输入的 LUT 带一维表，或输出空间着色器不会编码（如 V-Log）；Log 类 LUT 没有 DNG（`lut_needs_raw`）或没有场景色彩；
 - LUT 表还没到（第一次计算期间）或取表失败；

@@ -2,9 +2,10 @@
 // 选项的 id 和后端 /api/frames 的 stamp 对象对应；接口没有 stamp 时显示「暂不可用」，不写假选项。
 
 import { h } from './dom.js';
-import { beginChange, endChange, persist, schedulePreview } from './preview.js';
+import { beginChange, endChange, persist } from './preview.js';
 import { normalizeStamp, stampDateText, isDateString, clipText, TEXT_MAX } from './finish.js';
 import { seg, toggle, swatch, notReady } from './controls.js';
+import { liveText } from './live_text.js';
 
 const FONT_NAMES = { seg7: '数码管', typewriter: '打字机', sans: '无衬线' };
 const COLOR_NAMES = { orange: '橙', red: '红', yellow: '黄', white: '白' };
@@ -24,13 +25,23 @@ function isoDate(view) {
   return c && isDateString(String(c).slice(0, 10)) ? String(c).slice(0, 10) : '1970-01-01';
 }
 
-function update(view, patch) {
+// 改一项：界面和大图马上变（浏览器自己画时间戳，见 stage_finish.js），保存另外排队
+function change(view, patch) {
   const ed = view.ed;
+  if (!ed) return; // 输入框的计时器到点时这张照片已经关了：改动早就在 ed 里，由 save 写下来
   beginChange(view);
   ed.stamp = normalizeStamp({ ...ed.stamp, ...patch });
   ed.stampFrom = 'photo';
+  view.onChange?.();
+}
+
+function save(view, ed) {
   persist(view, { stamp: ed.stamp }).then(() => endChange(view));
-  schedulePreview(view, { full: true });
+}
+
+function update(view, patch) {
+  change(view, patch);
+  save(view, view.ed);
   view.redrawSide?.();
 }
 
@@ -71,8 +82,16 @@ export function stampPanel(view) {
     if (view.photo.date_source === 'mtime') body.push(h('p', { class: 'fine' }, '使用文件修改日期'));
   }
   if (hasText) {
-    const input = h('input', { type: 'text', value: st.text, maxlength: String(api.text_max_length || TEXT_MAX), 'aria-label': '文字' });
-    input.addEventListener('change', () => update(view, { text: clipText(input.value.trim(), api.text_max_length || TEXT_MAX) }));
+    const max = api.text_max_length || TEXT_MAX;
+    const input = h('input', { type: 'text', value: st.text, maxlength: String(max), 'aria-label': '文字' });
+    // 边输入边变，停下来 400 ms、按回车或离开输入框才保存。输入框不重搭面板（重搭会丢掉光标）
+    liveText(input, {
+      apply: () => change(view, { text: clipText(input.value, max) }),
+      save: () => {
+        change(view, { text: ed.stamp.text.trim() }); // 前后的空格输入时留着，写下来时去掉
+        save(view, ed);
+      },
+    });
     body.push(h('div', { class: 'sec' }, '文字'), input);
   }
 
