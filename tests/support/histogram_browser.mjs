@@ -368,16 +368,28 @@ try {
     document.querySelector('#tab-crop').click();
     await until(() => document.querySelector('.crop-box'), 30000);
     await wait(800);
+    const before = await hs();
     document.querySelector('button[aria-label="比例"]').click();
-    await wait(60);
-    [...document.querySelectorAll('.menu .mi')].find((b) => b.textContent.trim() === '1:1').click();
-    const s0 = await hs();
-    const s = await until(async () => { const s = await hs(); return s && s.region && s.updates > s0.updates ? s : null; }, 30000);
+    const item = await until(() => [...document.querySelectorAll('.menu .mi')].find((b) => b.textContent.trim() === '1:1'), 5000);
+    item.click();
+    const t0 = performance.now();
+    const seen = [];
+    const s = await until(async () => {
+      const s = await hs();
+      const k = s ? s.updates + ' ' + JSON.stringify(s.region) : 'null';
+      if (seen.length < 40 && (!seen.length || seen[seen.length - 1].k !== k)) seen.push({ k, t: Math.round(performance.now() - t0) });
+      const a = s && s.region ? s.region.w * s.region.h : 0;
+      return s && s.updates > before.updates && a > 0.2 && a < 0.9 ? s : null;
+    }, 30000);
     const r = s && s.region;
+    const img = document.querySelector('.pv-img');
+    // 没等到时留下线索：点比例前后直方图的更新次数和区域、画面上那张图
+    const diag = s ? null : { before: { updates: before.updates, region: before.region }, seen, last: await hs(),
+      img: img && { src: img.src.slice(-80), complete: img.complete, w: img.naturalWidth } };
     const mark = (await hs()).updates;
     document.querySelector('#tab-recipe').click();
     const back = await until(async () => { const b = await hs(); return b && b.region === null && b.updates > mark ? b : null; }, 30000) || await hs();
-    return { fullRegion: full.region, region: r, area: r ? r.w * r.h : null, backRegion: back.region };
+    return { fullRegion: full.region, region: r, area: r ? r.w * r.h : null, backRegion: back.region, diag };
   })()`, 120000);
 
   // 10) 快捷键表里有 J
