@@ -21,7 +21,7 @@ from .hdr_export import HdrTrack
 from .hdr_export import finish as finish_hdr
 from .spec import factory_frame, factory_stamp
 
-SIZE_EDGE = {"thumb": 240, "card": 240, "preview": 1600, "full": None}
+SIZE_EDGE = {"thumb": 240, "preview": 1600, "full": None}
 NO_RAW = "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。"
 APPROX_LABEL = "近似"
 
@@ -291,6 +291,20 @@ def _source_path(lib: Library, shot: dict[str, Any]) -> Path:
     return lib.abspath(files[kind]["relpath"])
 
 
+def full_edge(shot: dict[str, Any]) -> int:
+    return max(int(shot.get("width") or 0), int(shot.get("height") or 0))
+
+
+def _scale(shot: dict[str, Any], base_edge: int, made_edge: int | None = None, out_edge: int | None = None) -> str:
+    """`X-GXR-Scale`：导出时这张图的长边是响应里这张图的几倍。浏览器按它把预览的版面放大回导出时的像素。不知道就留空。
+
+    base_edge 是底图的长边（导出时是 full_edge）；底图裁切、加边框之后长边是 made_edge，缩小到响应里的 out_edge。"""
+    full = full_edge(shot)
+    if not (full and base_edge):
+        return ""
+    return f"{full / base_edge * (made_edge or 1) / (out_edge or made_edge or 1):.4f}"
+
+
 def render_stage(
     render: RenderService,
     lib: Library,
@@ -325,6 +339,7 @@ def render_stage(
             "calibrated": "0",
             "cache": "miss",
             "key": "",
+            "scale": _scale(shot, min(full_edge(shot), max_edge or full_edge(shot))),
         }
         if track is not None:
             track.begin(load_jpeg(_source_path(lib, shot), None))
@@ -344,6 +359,7 @@ def render_stage(
             "detail": labels.get("detail") or "",
         }
         return encode_jpeg(_fit(rgb, max_edge), quality), {**labels, "valid": ""}
+    base_edge = max(rgb.shape[:2])
     if track is not None:
         track.begin(rgb)
     meta, taken, file_time = _meta(shot, lib)
@@ -370,7 +386,9 @@ def render_stage(
     labels["valid"] = header or ""
     labels.setdefault("label", labels.get("kind") or "original")
     labels.setdefault("text", "原图")
-    return encode_jpeg(_fit(rgb, max_edge), quality), labels
+    fitted = _fit(rgb, max_edge)
+    labels["scale"] = _scale(shot, base_edge, max(rgb.shape[:2]), max(fitted.shape[:2]))
+    return encode_jpeg(fitted, quality), labels
 
 
 def export_finish(

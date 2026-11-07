@@ -560,7 +560,7 @@ def test_correction_releases_request_preview_size_not_full():
 def test_frame_thumbnails_show_the_whole_picture():
     """V2-16：边框样式缩略图完整显示成片（contain），覆盖图库的 cover，底部的标志和参数不被裁掉。"""
     css = (ASSETS / "app.css").read_text(encoding="utf-8")
-    assert ".fcard .thumb img { width: 100%; height: 100%; object-fit: contain;" in css
+    assert ".fcard .thumb img, .fcard .thumb canvas { width: 100%; height: 100%; object-fit: contain;" in css
     assert ".fcard .thumb { aspect-ratio: 4 / 3;" in css
 
 
@@ -634,9 +634,11 @@ def test_segmented_choices_and_zoom_are_not_squeezed_into_ellipses():
 def test_frame_preset_cards_load_as_skeletons_not_ellipses():
     """边框卡片还在渲染时是骨架底色（不放「…」），出来后去掉骨架；渲染失败写「没有预览」。"""
     js = (ASSETS / "frame_panel.js").read_text(encoding="utf-8")
+    cards = (ASSETS / "finish_cards.js").read_text(encoding="utf-8")
     assert "h('div', { class: 'thumb skel', 'aria-busy': 'true' })" in js
-    assert "'…'" not in js and "'没有预览'" in js
-    assert js.count("done();") == 3
+    assert "'…'" not in js and "'…'" not in cards and "'没有预览'" in cards
+    # 画出来和失败两条路都去掉骨架和 aria-busy
+    assert cards.count("classList.remove('skel')") == 2 and cards.count("removeAttribute('aria-busy')") == 2
 
 
 def test_export_camdata_note_does_not_promise_recipe_photos_export():

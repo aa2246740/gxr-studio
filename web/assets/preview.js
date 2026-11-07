@@ -12,7 +12,7 @@ import { applyCamdataStatus } from './camdata.js';
 import { uncalibratedReason } from './calibration_note.js';
 import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
 import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from './caps.js';
-import { resolveFinish, DEFAULT_GEOMETRY, frameBody } from './finish.js';
+import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
 import { saveCropOrRefit } from './crop_save.js';
@@ -552,11 +552,7 @@ export function draftBody(view, stage) {
   const ed = view.ed;
   const body = { recipe: recipeForRender(view), lut: ed.lut, adjust: adjustBody(ed), curve: curveBody(ed) };
   if (!ed.v2) return body;
-  Object.assign(body, {
-    geometry: ed.geometry,
-    frame: frameBody(ed.frame, styleOptions(ed, ed.frame.style)),
-    stamp: ed.stamp,
-  });
+  Object.assign(body, { geometry: ed.geometry, frame: NO_FRAME, stamp: NO_STAMP }); // 边框和时间戳在浏览器里画
   if (stage === 'final' && view.crop) body.crop = cropDraft(view);
   return body;
 }
@@ -645,6 +641,7 @@ async function runPreview(view, full) {
     }
     if (stage === 'final') {
       ed.label = decodeLabel(headers.get('X-GXR-Label'));
+      ed.scale = Number(headers.get('X-GXR-Scale')) || 1; // 导出的长边是这张图的几倍（边框版面用）
       const cal = headers.get('X-GXR-Calibrated');
       ed.calibrated = cal === null ? null : cal === '1';
     }

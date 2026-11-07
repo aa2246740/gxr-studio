@@ -494,15 +494,6 @@ def test_export_dialog_says_close_once_the_export_has_started(tmp_path):
     assert out == {"before": "取消", "after": "关闭", "exported": 1}
 
 
-def test_rebuilt_frame_panel_shows_cached_thumbnails(tmp_path):
-    """AA01：同一版本再搭一次边框面板，缓存里的缩略图直接填进卡片：没有骨架、不忙、不再请求。"""
-    out = run(tmp_path, "frame-thumb-cache", real=("frame_panel.js",))
-    ready = [{"skel": False, "busy": None, "img": True}] * 2
-    assert out["first"] == ready
-    assert out["second"] == ready
-    assert out["extraRenders"] == 0
-
-
 def _near(rect, x, y, w, h, eps=1e-3):
     return all(abs(rect[k] - v) < eps for k, v in {"x": x, "y": y, "w": w, "h": h}.items())
 
@@ -546,25 +537,6 @@ def test_zoom_100_is_the_clicked_box_and_dragging_does_not_shrink_it(tmp_path):
         assert case["clickKept"] is True, case
         assert abs(case["zoom60"]["ratio"] - 0.6) < 1e-9 and case["zoom60"]["centerOff"] < 1e-9, case
         assert case["nudgedSizeOff"] < 1e-9, case
-
-
-def test_frame_cards_still_arrive_after_switching_away_and_back(tmp_path):
-    """PR #39 复审 P2：两张卡片在路上、一张排队时换走再换回来；旧视图关了、新视图等同一批卡片，三张都要出图。"""
-    out = run(tmp_path, "frame-cards-switch-back", real=("frame_panel.js",))
-    assert out["inFlight"] == {"requests": 2, "held": 2}  # 一次最多两张，第三张排队
-    assert out["views"] == {"oldDisposed": True, "newView": True, "sameRev": True}
-    assert out["final"] == {"requests": 3, "imgs": 3, "noPreview": 0, "skel": 0}
-
-
-def test_frame_cards_ask_for_card_size_dedupe_and_yield_to_saves(tmp_path):
-    """边框卡片：用 size=card；面板重搭时同一张图不重复请求；这张照片有保存在路上时先不请求，写完再请求。"""
-    out = run(tmp_path, "frame-cards-yield", real=("frame_panel.js",))
-    assert out["statusWhileSaving"] == "saving"
-    assert out["requestsWhileSaving"] == 0
-    assert out["afterSave"] == {"requests": 2, "queued": 2}
-    assert out["final"]["requests"] == 3
-    assert out["final"]["secondImgs"] == 3
-    assert out["final"]["urls"] == ["stage=final&size=card"]
 
 
 def test_one_user_action_is_one_undo_step_before_the_server_answers(tmp_path):

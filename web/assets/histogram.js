@@ -9,7 +9,7 @@ import { h, icon, modalOpen } from './dom.js';
 import { gpuEngine } from './gpu_stage.js';
 import { percentText } from './histogram_math.js';
 import { drawHistogram } from './histogram_draw.js';
-import { bitmapHistogram, cleanBlob, clearOverlay, decodeBlob, decodeImage, gpuHistogram, paintOverlay } from './histogram_sources.js';
+import { bitmapHistogram, clearOverlay, decodeImage, gpuHistogram, paintOverlay } from './histogram_sources.js';
 
 const KEY = 'gxr-studio.histogram-collapsed';
 const TICK_MS = 50; // 定时器的间隔
@@ -78,7 +78,7 @@ export function createHistogram() {
 
   const st = {
     view: null, timer: 0, busy: false, startedAt: 0, hook: null, lastKey: null, retryAt: 0, hist: null, whole: true, region: null, updates: 0, lastMs: 0, applied: '',
-    bitmap: null, bitmapKey: null, overlayCanvas: null, overlayOk: true, legend: null, legendKey: '', observer: null, titles: {},
+    bitmap: null, bitmapKey: null, overlayCanvas: null, legend: null, legendKey: '', observer: null, titles: {},
   };
   const handle = { el, attach, toggleClip, state: () => snapshot() };
 
@@ -98,7 +98,6 @@ export function createHistogram() {
       lastMs: st.lastMs,
       clip: { ...clip },
       collapsed,
-      overlayOk: st.overlayOk,
       region: st.region,
       attached: !!st.view,
     };
@@ -132,14 +131,11 @@ export function createHistogram() {
     legend.hidden = sides.length === 0;
     if (!sides.length) return;
     const hist = st.hist;
-    const items = st.overlayOk
-      ? sides.map((s) => [s, st.whole && hist && !(s === 'shadow' ? hist.crushed : hist.blown) ? SIDES[s].none : SIDES[s].legend])
-      : [];
-    const key = JSON.stringify([st.overlayOk, items]);
+    const items = sides.map((s) => [s, st.whole && hist && !(s === 'shadow' ? hist.crushed : hist.blown) ? SIDES[s].none : SIDES[s].legend]);
+    const key = JSON.stringify(items);
     if (key === st.legendKey) return; // 内容没变就不动 DOM（每次更新都会走到这里）
     st.legendKey = key;
-    if (!st.overlayOk) legend.replaceChildren('边框打开时不能标出位置，直方图不受影响');
-    else legend.replaceChildren(...items.map(([s, text]) => h('span', { class: 'clip-key' }, h('i', { class: `sw ${s}`, 'aria-hidden': 'true' }), text)));
+    legend.replaceChildren(...items.map(([s, text]) => h('span', { class: 'clip-key' }, h('i', { class: `sw ${s}`, 'aria-hidden': 'true' }), text)));
   }
 
   function paintClip() {
@@ -167,7 +163,7 @@ export function createHistogram() {
   function mountOverlay() {
     const view = st.view;
     const pv = view && view.stageArea ? view.stageArea.querySelector('.pv') : null;
-    const want = (clip.shadow || clip.highlight) && !gpuShown() && st.overlayOk && pv && pv.querySelector('.pv-img') && !view.showOriginal;
+    const want = (clip.shadow || clip.highlight) && !gpuShown() && pv && pv.querySelector('.pv-img') && !view.showOriginal;
     if (!want) {
       st.overlayCanvas?.remove();
       return null;
@@ -241,19 +237,16 @@ export function createHistogram() {
     if (!ed || view.showOriginal || (mode !== 'final' && mode !== 'uncropped')) return null;
     const url = ed.urls && ed.urls[mode];
     if (!url) return null;
-    // 成片带边框或时间戳：它们不算进直方图，另要一张没有它们的小图（cleanBlob）
-    const frameOn = mode === 'final' && !!(ed.frame && ed.frame.style && ed.frame.style !== 'none');
-    const clean = frameOn || (mode === 'final' && !!(ed.stamp && ed.stamp.enabled));
-    // 否则数屏幕上这一张：<img> 还没换成最新的（解码中）就等下一轮
+    // 数屏幕上这一张。边框和时间戳是浏览器另外画的，不在这张图里（也不在显卡的成片纹理里），所以直方图不会数到它们。
+    // <img> 还没换成最新的（解码中）就等下一轮
     const img = view.stageArea.querySelector('.pv-img');
-    if (!clean && !(img && img.src === url && img.complete && img.naturalWidth > 0)) return null;
-    const bitmapKey = `${url}|${clean}`;
-    return { key: `srv|${bitmapKey}|${rk}`, region, run: () => serverRun(view, { img, url, mode, clean, frameOn, bitmapKey, region }) };
+    if (!(img && img.src === url && img.complete && img.naturalWidth > 0)) return null;
+    return { key: `srv|${url}|${rk}`, region, run: () => serverRun(view, { img, bitmapKey: url, region }) };
   }
 
   async function serverRun(view, p) {
     if (st.bitmapKey !== p.bitmapKey) {
-      const bitmap = p.clean ? await decodeBlob(await cleanBlob(view, p.mode)) : await decodeImage(p.img);
+      const bitmap = await decodeImage(p.img);
       if (st.view !== view) {
         bitmap.close();
         return null;
@@ -262,7 +255,6 @@ export function createHistogram() {
       st.bitmap = bitmap;
       st.bitmapKey = p.bitmapKey;
     }
-    st.overlayOk = !p.frameOn;
     const hist = bitmapHistogram(st.bitmap, p.region);
     refreshOverlay();
     return hist;
