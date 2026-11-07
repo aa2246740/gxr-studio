@@ -172,10 +172,11 @@ def test_export_dialog_previews_the_real_file_name():
     assert out["neutral"] == "R8051145_gxr_neutral.jpg" and out["neutralHdr"] == "R8051145_gxr_neutral_hdr.jpg"
     assert out["jpgHdr"] == "R8051147_gxr.jpg"  # 只有 JPG 做不了 HDR：还是普通名字
     assert out["textPair"] == "R8051146_gxr.jpg"
-    # 图库还没试过这张能不能做成 HDR：写做成时的名字，括号里写做不成时的名字（例如 RAW 读不出来，后端会退回普通名字）
-    assert out["textPairHdr"] == "R8051146_gxr_hdr.jpg（做不成 HDR 时是 R8051146_gxr.jpg）"
-    assert out["textPairReady"] == "R8051146_gxr_hdr.jpg"  # 图库里已经做成过 HDR
-    assert out["textPairUnsupported"] == "R8051146_gxr.jpg"  # 图库已经知道这张做不成
+    # 有 RAW：做不做得成 HDR 要导出时才知道，写做成时的名字，括号里写做不成时的名字。
+    # 图库里的 HDR 状态（ready / unsupported）说的是相机 JPG 那一版，套了配方的导出不看它，所以名字不跟它变
+    fallback = "R8051146_gxr_hdr.jpg（做不成 HDR 时是 R8051146_gxr.jpg）"
+    assert out["textPairHdr"] == fallback
+    assert out["textPairReady"] == fallback and out["textPairUnsupported"] == fallback
     assert out["textRawNoDataHdr"] == "R8051145_gxr_neutral_hdr.jpg（做不成 HDR 时是 R8051145_gxr_neutral.jpg）"
     assert "原名_gxr_neutral.jpg" in out["textManyNoData"]
     assert "原名_gxr_neutral_hdr.jpg" in out["textManyNoDataHdr"] and "原名_gxr_neutral.jpg" in out["textManyNoDataHdr"]

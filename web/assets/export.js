@@ -51,7 +51,8 @@ export function qualityWord(q) {
 // 导出后的文件名（只是给人看的预览，真正的名字由后端定，重名会加 -2、-3）：
 // 普通 原名_gxr.jpg；没有相机 JPG 又没导入相机配方文件、画的是中性转换：原名_gxr_neutral.jpg；
 // 做成了 HDR：后面再加 _hdr（原名_gxr_hdr.jpg、原名_gxr_neutral_hdr.jpg）。
-// HDR 只有 RAW 才做得成；只有 JPG、或图库已经知道这张做不成（hdr = unsupported）的照片仍是普通名字。
+// HDR 只有 RAW 才做得成，只有 JPG 的照片一定是普通名字。有 RAW 的照片做不做得成，要等导出时才知道
+// （图库里的 HDR 状态说的是相机 JPG 那一版，套了配方的导出不看它），所以不按它猜。
 export function exportName(photo, { hdr = false, neutral = false } = {}) {
   const stem = photo && photo.name ? photo.name.replace(/\.[^.]+$/, '') : '原名';
   const tag = `${neutral ? '_neutral' : ''}${hdr && hdrPossible(photo) ? '_hdr' : ''}`;
@@ -59,18 +60,18 @@ export function exportName(photo, { hdr = false, neutral = false } = {}) {
 }
 
 function hdrPossible(photo) {
-  return !photo || (photo.has_raw !== false && photo.hdr !== 'unsupported');
+  return !photo || photo.has_raw !== false;
 }
 
 export const NAME_SUFFIX_NOTE = '重名时自动加 -2、-3，不会盖掉已有的文件。';
 
-// 对话框里「文件名」一行。单张写具体的名字；开了 HDR、又说不准做不做得成时（图库还没试过这张），括号里写做不成时的名字。
+// 对话框里「文件名」一行。单张写具体的名字；开了 HDR、照片有 RAW 时，括号里写做不成 HDR 时的名字。
 // 多张写通用的写法：开了 HDR 时哪些带 _hdr；没导入相机配方文件时，只有 RAW 的照片是中性转换（_neutral）。
 export function exportNameText({ single, hdr, camdata }) {
   if (single) {
     const neutral = single.has_jpg === false && !camdata;
     const name = exportName(single, { hdr, neutral });
-    if (!hdr || !hdrPossible(single) || single.hdr === 'ready') return name;
+    if (!hdr || !hdrPossible(single)) return name;
     return `${name}（做不成 HDR 时是 ${exportName(single, { neutral })}）`;
   }
   if (!hdr) return camdata ? '原名_gxr.jpg' : '原名_gxr.jpg（只有 RAW 的照片是 原名_gxr_neutral.jpg）';
