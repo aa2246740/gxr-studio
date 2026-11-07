@@ -4,7 +4,8 @@
 // 如果舞台在等服务器，两帧里不可能变，和机器忙不忙无关）；松手以后，裁切框和服务器收好的框一样；回到成片页，画布是裁切后的形状。
 // 服务器出图（server）：行为不变，拖滑块照旧请求 /render。输出一行 JSON，断言在 Python 那边。
 import { spawn } from 'node:child_process';
-import { closeSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, openSync } from 'node:fs';
+import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -25,9 +26,8 @@ const step = (name) => {
   process.stderr.write(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${name}\n`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const chromeTail = () => {
-  try { return readFileSync(chromeLogPath, 'utf8').slice(-3000); } catch { return ''; }
-};
+const chromeLogFile = chromeLogReader(chromeLogPath);
+const chromeTail = () => chromeLogFile.tail(3000);
 let finished = false;
 let ws;
 async function finish(code) {
@@ -155,13 +155,11 @@ try {
   }
   out.gpu = await evalIn(`!!document.querySelector('.gpu')`);
   if (mode === 'gpu' && !out.gpu) {
-    out.gpuDiag = await evalIn(`(async () => {
-      const d = { navigatorGpu: !!navigator.gpu };
-      try { const st = await import('/assets/gpu_stage.js'); const e = st.gpuEngineForTests(); d.pageEngine = e ? { lost: !!e.lost } : null; } catch (e) { d.pageEngineError = String(e).slice(0, 300); }
-      try { d.engine = (await (await import('/assets/gpu/engine.js')).Engine.create()) ? 'created' : 'null'; } catch (e) { d.engineError = String(e).slice(0, 300); }
-      return d;
-    })()`, 60000).catch((e) => ({ diagError: String(e) }));
-    out.gpuSharedImageError = /Unable to create shared image|SharedImageBackingFactory/.test(chromeTail());
+    // 没走显卡：把判断用到的几样东西交出去（和 viewer_browser.mjs 同一组字段，Python 的 cannot_present 据此决定 Linux 上跳过）
+    out.gpuDiag = await evalIn(diagnosticsExpression(photoId), 60000).catch((e) => ({ diagError: String(e) }));
+    out.gpuChromeLog = chromeLogFile.gpuLines();
+    out.gpuSharedImageError = chromeLogFile.sharedImageError();
+    out.consoleBeforeClicks = [...out.console];
     out.ready = true;
     await finish(0);
   }

@@ -60,8 +60,11 @@ def near(a, b, eps=0.6):
 def test_dragging_perspective_and_distortion_never_waits_for_the_server(live, tmp_path):  # noqa: F811
     out = drive_warp(live, tmp_path, "gpu")
     if not out["gpu"]:
-        detail = json.dumps(out.get("gpuDiag"), ensure_ascii=False)
+        keys = ("gpuWaitMs", "gpuDiag", "gpuSharedImageError", "consoleBeforeClicks", "gpuChromeLog")
+        detail = json.dumps({k: out.get(k) for k in keys}, ensure_ascii=False)
         if sys.platform.startswith("linux") and cannot_present(out):
+            # 和 test_viewer_browser.py 一样：Linux 无头 Chrome 的软件显卡能建 WebGPU 设备，但画布显示不出来（共享图像建不起来），
+            # 页面的引擎随即失效、退回服务器出图。这一项由 macOS 的 tests 任务强制跑（GXR_REQUIRE_GPU_TEST=1，不能跳过）。
             pytest.skip(f"Linux 无头 Chrome 的软件显卡不能把 WebGPU 画布显示出来：{detail}")
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
             pytest.fail(f"GXR_REQUIRE_GPU_TEST=1，但等了 120 秒大图还是没有走显卡预览：{detail}")
