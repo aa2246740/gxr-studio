@@ -401,44 +401,61 @@ try {
     const rows = [...document.querySelectorAll('.keys tr')].map((tr) => [...tr.children].map((td) => td.textContent.trim()));
     return rows.filter((r) => r[0] === 'J');
   })()`);
-  // 11) 边框不算进直方图（服务器出图时：另要一张没有边框的小图来数；这一步只在服务器路径上测，显卡路径的边框由别的功能接手）。
-  //     先把照片压暗（曝光 −3、黑点 +100，和第 5 步的暗部一样），再套白色粗边框（255，会算成死白）：屏幕上这张图有大片纯白，
+  // 11) 边框不算进直方图（显卡和服务器出图两条路径都测）。边框由浏览器画在 .pv 的底色上（stage_finish.js），照片本身没有边框：
+  //     先把照片压暗（曝光 −3、黑点 +100，和第 5 步的暗部一样），再套白色粗边框（255，会算成死白）：屏幕上整张成片有大片纯白，
   //     直方图里不该有，也不该点亮高光三角。（"黑"边框是 12 不是 0，不会算成死黑，所以用白的才分得出来）
-  if (mode === 'server') {
-    step('the frame is not counted');
-    await evalIn(`(async () => {
-      const r = await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adjust: { exposure_ev: -3, black_point: 100 }, frame: { style: 'gallery', color: 'white', weight: 'thick' } }) });
-      if (!r.ok) throw new Error('PUT frame ' + r.status + ' ' + await r.text());
-      return true;
-    })()`);
-    await call('Page.reload', {});
-    await sleep(1500);
-    out.frame = await evalIn(`(async () => { ${helpers}
-      const s = await until(async () => { const s = await hs(); return s && s.updates >= 1 && s.source === 'server' ? s : null; }, 60000);
-      const img = await until(() => { const i = document.querySelector('.pv-img'); return i && i.src.startsWith('blob:') && i.complete && i.naturalWidth ? i : null; }, 30000);
-      await wait(800);
-      // 屏幕上这张图里纯白的点占多少（边框）
+  //     服务器路径：不再另要一张无边框的小图（max_edge=800 的 /render 一个也没有）；溢出提示只盖照片那一块，不盖边框。
+  step('the frame is not counted');
+  await evalIn(`(async () => {
+    const r = await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adjust: { exposure_ev: -3, black_point: 100 }, frame: { style: 'gallery', color: 'white', weight: 'thick' } }) });
+    if (!r.ok) throw new Error('PUT frame ' + r.status + ' ' + await r.text());
+    return true;
+  })()`);
+  await call('Page.reload', {});
+  await sleep(1500);
+  out.frame = await evalIn(`(async () => { ${helpers}
+    const s = await until(async () => { const s = await hs(); return s && s.updates >= 1 && s.source === '${mode}' ? s : null; }, 60000);
+    const photo = await until(() => { const i = document.querySelector('.pv.framed .pv-img, .pv.framed .pv-gpu'); return i && (i.tagName === 'CANVAS' || (i.src.startsWith('blob:') && i.complete && i.naturalWidth)) ? i : null; }, 30000);
+    await wait(800);
+    const pv = document.querySelector('.pv');
+    const box = (e) => { const b = e.getBoundingClientRect(); return [b.left, b.top, b.width, b.height].map((v) => Math.round(v * 10) / 10); };
+    const stage = box(pv);
+    const shown = box(photo);
+    // 屏幕上这张成片里白色的占比：边框是 .pv 的白色底色，照片自己是暗的
+    const white = getComputedStyle(pv).backgroundColor === 'rgb(255, 255, 255)' ? 1 - (shown[2] * shown[3]) / (stage[2] * stage[3]) : 0;
+    // 服务器图本身（<img>）里纯白的点占多少：照片是暗的，不该有（边框不在这张图里）
+    let photoBright = null;
+    if (photo.tagName === 'IMG') {
       const cv = document.createElement('canvas');
-      const k = 200 / Math.max(img.naturalWidth, img.naturalHeight);
-      cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+      const k = 200 / Math.max(photo.naturalWidth, photo.naturalHeight);
+      cv.width = Math.round(photo.naturalWidth * k); cv.height = Math.round(photo.naturalHeight * k);
       const ctx = cv.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      ctx.drawImage(photo, 0, 0, cv.width, cv.height);
       const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
       let bright = 0;
       for (let i = 0; i < d.length; i += 4) if (Math.min(d[i], d[i + 1], d[i + 2]) >= 253) bright += 1;
-      const now = await hs();
-      return { source: now.source, crushedShare: now.shadowShare, blownShare: now.highlightShare, highlightWarn: now.highlightWarn, mean: now.mean, shownBrightShare: bright / (cv.width * cv.height), overlayOk: now.overlayOk };
-    })()`, 120000);
-    if (out.frame) {
-      await evalIn(`document.activeElement && document.activeElement.blur && document.activeElement.blur(); true`);
-      await press('j', 'KeyJ', 74);
-      await sleep(800);
-      out.frame.legend = await evalIn(`(() => { const l = document.querySelector('.clip-legend'); return l && !l.hidden ? l.textContent : null; })()`);
-      out.frame.overlayCanvas = await evalIn(`!!document.querySelector('.clip-overlay')`);
-      await press('j', 'KeyJ', 74);
+      photoBright = bright / (cv.width * cv.height);
     }
-    await evalIn(`(async () => { await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame: { style: 'none' } }) }); return true; })()`);
+    const now = await hs();
+    const cleanRenders = performance.getEntriesByType('resource').filter((e) => e.name.includes('/render') && e.name.includes('max_edge=800')).length;
+    return { source: now.source, crushedShare: now.shadowShare, blownShare: now.highlightShare, highlightWarn: now.highlightWarn, mean: now.mean, stage, shown, white, photoBright, cleanRenders, gpu: !!document.querySelector('.gpu') };
+  })()`, 120000);
+  if (out.frame) {
+    await evalIn(`document.activeElement && document.activeElement.blur && document.activeElement.blur(); true`);
+    await press('j', 'KeyJ', 74);
+    await sleep(1000);
+    out.frame.legend = await evalIn(`(() => { const l = document.querySelector('.clip-legend'); return l && !l.hidden ? l.textContent : null; })()`);
+    // 服务器路径：溢出提示是照片上的一块 canvas，大小和位置要和照片一样（不是整张成片）；显卡路径由着色器直接盖，没有这块 canvas
+    out.frame.overlay = await evalIn(`(() => {
+      const o = document.querySelector('.clip-overlay');
+      const i = document.querySelector('.pv-img');
+      if (!o || !i) return null;
+      const box = (e) => { const b = e.getBoundingClientRect(); return [b.left, b.top, b.width, b.height].map((v) => Math.round(v * 10) / 10); };
+      return { overlay: box(o), photo: box(i), stage: box(document.querySelector('.pv')) };
+    })()`);
+    await press('j', 'KeyJ', 74);
   }
+  await evalIn(`(async () => { await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame: { style: 'none' } }) }); return true; })()`);
   step('done');
 } catch (e) {
   out.error = String(e && e.message ? e.message : e).slice(0, 800);
