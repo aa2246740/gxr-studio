@@ -1736,7 +1736,7 @@ if (scenario === 'reset-then-switch') {
       server: r4(crops_server(PHOTOS.A.id)),
     };
   }
-} else if (scenario === 'failed-box-then-geometry' || scenario === 'reread-fails-then-retry' || scenario === 'cropbody-fit-flag' || scenario === 'stale-cleared-by-later-sync' || scenario.startsWith('shape-rejected-then-geometry:')) {
+} else if (scenario === 'failed-box-then-geometry' || scenario === 'reread-fails-then-retry' || scenario === 'cropbody-fit-flag' || scenario === 'stale-cleared-by-later-sync' || scenario.startsWith('shape-rejected-then-geometry:') || scenario.startsWith('shape-rejected-transient-retry:')) {
   // 评审第七轮：
   // failed-box-then-geometry：框的写入失败（500），之后几何写成功了（服务器按新几何收过框）。重试时这个框是个目标，带 fit 一笔写完，
   //   不能拿按旧几何摆的框去撞新几何、一直被拒（模糊测试 1405 / 1532 找到的）。
@@ -1801,14 +1801,55 @@ if (scenario === 'reset-then-switch') {
     out.rejected = { status: preview.saveStatus(PHOTOS.A.id), screen: screen(), shape: !!(rec.failed && rec.failed.cropShape) };
     await dragSlider(40);
     out.afterGeometry = { status: preview.saveStatus(PHOTOS.A.id), screen: screen(), boxStale: !!v.boxStale, failedFit: !!(rec.failed && rec.failed.crop && rec.failed.crop.fit) };
+    document.getElementById('toast-root').replaceChildren();
     const mark = requests.length;
     out.retry = await preview.retrySaves(PHOTOS.A.id);
     await tick(6);
-    out.afterRetry = { puts: puts(mark), status: preview.saveStatus(PHOTOS.A.id), screen: screen(), server: r4(crops[PHOTOS.A.id].rect) };
+    out.afterRetry = {
+      puts: puts(mark),
+      status: preview.saveStatus(PHOTOS.A.id),
+      screen: screen(),
+      server: r4(crops[PHOTOS.A.id].rect),
+      toasts: document.getElementById('toast-root').children.map((t) => t.textContent),
+    };
     // 记录还在的时候又拖了一下：照常严格校验，不带 fit
     const mark2 = requests.length;
     await drag([0.25, 0.2, 0.3, 0.6]);
     out.laterDrag = { puts: puts(mark2), status: preview.saveStatus(PHOTOS.A.id) };
+  } else if (scenario.startsWith('shape-rejected-transient-retry:')) {
+    // 评审第九轮 P1：被服务器说「本身不对」的框，重试时碰上一次 500 / 409 / 断网。标记不能被清掉：
+    // 之后几何再写成功，也不能给这个框盖上 fit。下一次重试仍是原来的普通写入、仍然被拒，提示照常，服务器上的框不变。
+    const [, code, transient] = scenario.split(':');
+    const reject = { status: 422, code, message: '裁剪框超出画面范围' };
+    globalThis.cropCheck = (body) => (body.rect && !body.fit ? reject : null);
+    const mine = [0.2, 0.15, 0.3, 0.6];
+    preview.beginChange(v);
+    v.crop.rect = { x: mine[0], y: mine[1], w: mine[2], h: mine[3] };
+    await preview.saveCrop(v, cropMod.cropBody(v, { preset: v.crop.preset, rect: cropMod.rectArray(v.crop.rect) }, cropMod.orientationNow(v)));
+    await dragSlider(40);
+    const flaky = {
+      500: () => new StubError(500, '服务器暂时不可用。'),
+      409: () => Object.assign(new StubError(409, '编辑记录在别处改过了。'), { code: 'rev_conflict' }),
+      offline: () => Object.assign(new StubError(0, '无法连接到 GXR Studio。'), { code: 'offline' }),
+    }[transient];
+    failIf.push((method, url) => (method === 'PUT' && url.endsWith('/crop') ? flaky() : null));
+    out.transientRetry = await preview.retrySaves(PHOTOS.A.id);
+    await tick(6);
+    await dragSlider(30); // 几何又写成功一次：旧代码在这里给被拒的框盖上 fit
+    const saves = await import(file('saves.js'));
+    const rec = saves.saveRecord(PHOTOS.A.id);
+    document.getElementById('toast-root').replaceChildren();
+    const mark = requests.length;
+    out.retry = await preview.retrySaves(PHOTOS.A.id);
+    await tick(6);
+    out.afterRetry = {
+      puts: puts(mark),
+      status: preview.saveStatus(PHOTOS.A.id),
+      screen: screen(),
+      server: r4(crops[PHOTOS.A.id].rect),
+      toasts: document.getElementById('toast-root').children.map((t) => t.textContent),
+    };
+    out.shape = !!(rec.failed && rec.failed.cropShape);
   } else if (scenario === 'stale-cleared-by-later-sync') {
     // 评审第八轮 P2：读不回来记成了失败；之后又拖了一次滑块，这次读到了：界面的框已经是服务器的，不能还停在「有修改没有保存」
     const saves = await import(file('saves.js'));

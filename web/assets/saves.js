@@ -208,7 +208,8 @@ export function retrySaves(id) {
           // 只有「这次重试刚把这个框当初对着的几何写进去」才改成 fit：几何变了，框是按旧几何摆的，当目标让服务器收成最近的合格框。
           // 只重试一个框（拖的、缩放的）时，被拒就是被拒：服务器的理由照常提示，界面上的框原样留着，不能悄悄换成收小的框。
           if (wasRejected || !wroteGeometry || !SHAPE_REJECTED.has(e.code) || box.fit || box.rect === null) {
-            if (rec.failed) rec.failed.cropShape = SHAPE_REJECTED.has(e.code);
+            // 只会设上，不会清掉：记录里还是那个被拒的框，一次 500 / 409 / 断网不能让它变成「可以 fit」（第九轮评审）
+            if (rec.failed && SHAPE_REJECTED.has(e.code)) rec.failed.cropShape = true;
             throw e;
           }
           await put('crop', { ...box, fit: true });
