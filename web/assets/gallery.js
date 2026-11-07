@@ -246,6 +246,8 @@ function renderGrid() {
     return;
   }
   if (!focusId || !state.photos.some((p) => p.id === focusId)) focusId = state.photos[0].id;
+  // 选了某一天：顶上的标题已经写了这个日期，分组标题只留给读屏，不再重复一遍
+  wrap.classList.toggle('single-day', state.galleryDate !== ALL);
   wrap.replaceChildren();
   appendCells(state.photos);
   renderSelBar();
@@ -431,6 +433,7 @@ function onGridKey(e) {
 export function selectAll() {
   if (!state.photos.length) return;
   setSelection(new Set(order()));
+  dropTextSelection();
 }
 
 // 空图库（替代原来的四步引导，U9）：没有照片时说明怎么开始，有照片后不再出现
@@ -487,6 +490,12 @@ function renderSelBar() {
 export function clearSelection() {
   anchorId = null;
   setSelection(new Set());
+  dropTextSelection();
+}
+
+// 万一浏览器留下了文字选中（网格里本来禁止选字），按 Esc 一并清掉，整页不会一直是高亮的
+function dropTextSelection() {
+  globalThis.getSelection?.()?.removeAllRanges?.();
 }
 
 // Enter：打开最近点过的那张（没有就打开第一张）

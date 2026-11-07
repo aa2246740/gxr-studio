@@ -48,10 +48,35 @@ export function qualityWord(q) {
   return '低';
 }
 
-// 导出后的文件名（只是给人看的预览，真正的名字由后端定，重名会加 -2、-3）
-export function exportName(photo) {
-  if (!photo || !photo.name) return '原名_gxr.jpg';
-  return `${photo.name.replace(/\.[^.]+$/, '')}_gxr.jpg`;
+// 导出后的文件名（只是给人看的预览，真正的名字由后端定，重名会加 -2、-3）：
+// 普通 原名_gxr.jpg；没有相机 JPG 又没导入相机配方文件、画的是中性转换：原名_gxr_neutral.jpg；
+// 做成了 HDR：后面再加 _hdr（原名_gxr_hdr.jpg、原名_gxr_neutral_hdr.jpg）。
+// HDR 只有 RAW 才做得成，只有 JPG 的照片一定是普通名字。有 RAW 的照片做不做得成，要等导出时才知道
+// （图库里的 HDR 状态说的是相机 JPG 那一版，套了配方的导出不看它），所以不按它猜。
+export function exportName(photo, { hdr = false, neutral = false } = {}) {
+  const stem = photo && photo.name ? photo.name.replace(/\.[^.]+$/, '') : '原名';
+  const tag = `${neutral ? '_neutral' : ''}${hdr && hdrPossible(photo) ? '_hdr' : ''}`;
+  return `${stem}_gxr${tag}.jpg`;
+}
+
+function hdrPossible(photo) {
+  return !photo || photo.has_raw !== false;
+}
+
+export const NAME_SUFFIX_NOTE = '重名时自动加 -2、-3，不会盖掉已有的文件。';
+
+// 对话框里「文件名」一行。单张写具体的名字；开了 HDR、照片有 RAW 时，括号里写做不成 HDR 时的名字。
+// 多张写通用的写法：开了 HDR 时哪些带 _hdr；没导入相机配方文件时，只有 RAW 的照片是中性转换（_neutral）。
+export function exportNameText({ single, hdr, camdata }) {
+  if (single) {
+    const neutral = single.has_jpg === false && !camdata;
+    const name = exportName(single, { hdr, neutral });
+    if (!hdr || !hdrPossible(single)) return name;
+    return `${name}（做不成 HDR 时是 ${exportName(single, { neutral })}）`;
+  }
+  if (!hdr) return camdata ? '原名_gxr.jpg' : '原名_gxr.jpg（只有 RAW 的照片是 原名_gxr_neutral.jpg）';
+  const raw = camdata ? '' : '；只有 RAW 的照片是 原名_gxr_neutral_hdr.jpg，没做成 HDR 时是 原名_gxr_neutral.jpg';
+  return `原名_gxr_hdr.jpg（没做成 HDR 的照片是 原名_gxr.jpg${raw}）`;
 }
 
 // 「在访达中显示」只有 macOS 有（其它系统后端返回 501）：别的系统上不放这个按钮，改成「复制路径」（U14）
@@ -96,6 +121,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     hdr = on;
     const prefs = state.prefs || (state.prefs = {});
     prefs.export_hdr = on;
+    paintName();
     api('/api/prefs', { method: 'PUT', body: { export_hdr: on } }).then(
       (saved) => { state.prefs = saved; },
       (error) => toastError(error, '没有记住 HDR 的选择，下次导出要重新打开。'),
@@ -114,6 +140,10 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     },
   });
 
+  const nameText = h('span', { class: 'dim num' });
+  const single = ids && ids.length === 1 ? photos.find((p) => p.id === ids[0]) : null;
+  const paintName = () => { nameText.textContent = exportNameText({ single: scope === 'ids' ? single : null, hdr, camdata: camdataReady() }); };
+
   const hdrField = h('div', { class: 'ctl' });
   function hdrRow() {
     const ok = hdrAvailable(ids, photos, scope);
@@ -125,13 +155,13 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     sw.append(h('span', { class: 'small dim' }, ok ? '带增益图的 JPG，支持 HDR 的屏幕上高光更亮' : HDR_NO_RAW));
     const nodes = [sw];
     hdrField.replaceChildren(...nodes);
+    paintName();
   }
 
   const button = h('button', { class: 'btn primary', type: 'button', onclick: submit }, '导出');
   const cancelBtn = onCancel ? h('button', { class: 'btn', type: 'button', onclick: onCancel }, '取消') : null;
   const result = h('div', { class: 'export-result', role: 'status' });
   const guide = h('div', {});
-  const single = ids && ids.length === 1 ? photos.find((p) => p.id === ids[0]) : null;
 
   const body = h(
     'div',
@@ -142,7 +172,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     fieldRow('品质', segOf(QUALITIES, qualityTier, (v) => { qualityTier = v; }, '品质')),
     h('div', { class: 'row form' }, h('span', { class: 'lab' }, 'HDR'), hdrField),
     fieldRow('导出到', destInput),
-    fieldRow('文件名', h('span', { class: 'dim num' }, single ? exportName(single) : '原名_gxr.jpg')),
+    fieldRow('文件名', h('div', {}, nameText, h('div', { class: 'small dim' }, NAME_SUFFIX_NOTE))),
     guide,
     result,
     h('div', { class: 'modal-foot' }, cancelBtn, button),

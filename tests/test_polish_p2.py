@@ -432,7 +432,7 @@ def test_completion_interrupted_after_the_move_is_resumed_not_duplicated(volumes
     assert sc.read(side_path)["crop"] == crop_before, "裁切不能丢"
     assert rows[0]["crop"] and rows[0]["crop"]["preset"] == "1:1"
     # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不说"可以推出"
-    assert p.state == "done" and p.completed_shots == 1 and p.message == "已导入 1 张照片。存储卡上有 2 个文件不会被导入"
+    assert p.state == "done" and p.completed_shots == 1 and p.message == "已导入 1 张照片，卡上的照片都已在图库里；另有 2 个其他文件不会导入"
     assert not list(side_path.parent.glob("R0000104*.corrupt-*"))
 
 

@@ -9,6 +9,7 @@ import { KNOB_NAMES, slotName } from './preview.js';
 import { loadLutLibrary, librarySection, attributionFields } from './lut_library.js';
 import { selectedFiles, droppedFiles, importFiles } from './lut_files.js';
 import { every } from './poll.js';
+import { MY_RECIPES_CHANGED, sourceText } from './my_recipes.js';
 import { delayed, SHOW_AFTER_MS } from './busy.js';
 
 export const RECIPE_APPLY_HINT = '相机关机再开后，按 ADJ 再按 OK 套用上次的配方';
@@ -74,6 +75,7 @@ function redraw() {
   if (!alive()) return;
   root.replaceChildren(
     h('h2', {}, '配方'),
+    h('p', { class: 'small dim', dataset: { role: 'page-lead' } }, '这一页用 LUT 做配方，做好的存在这台电脑里（下面的「我的配方 · 电脑上」）。相机里自己存的配方不在这一页，在大图的「配方」标签里。'),
     // 第一行单独看不懂（U17）：前面写明这是相机上的操作
     h('p', { class: 'hint' }, h('span', { class: 'dim' }, '在相机上：'), h('span', { dataset: { role: 'recipe-hint' } }, RECIPE_APPLY_HINT)),
     librarySection({ select: selectLut, onImport: resetFlow, selected: flow.cube?.cube_id, redraw: libraryChanged, busy: !!flow.busy }),
@@ -495,6 +497,7 @@ async function saveRecipe() {
   try {
     flow.saved = await api('/api/my-recipes', { method: 'POST', body: { job_id: flow.job.job_id, candidate: flow.chosen, name: flow.name } });
     flow.recipes = (await api('/api/my-recipes')).recipes;
+    emit(MY_RECIPES_CHANGED);
     toast(`已存储为「${flow.saved.name}」`, 'ok');
     flow.name = nextName();
   } catch (e) {
@@ -508,9 +511,10 @@ async function saveRecipe() {
 // ---------------------------------------------------------------- 我的配方
 
 function recipesSection() {
-  const sec = h('section', { class: 'lut-card' }, h('h3', {}, '我的配方'));
+  const sec = h('section', { class: 'lut-card', dataset: { role: 'computer-recipes' } }, h('h3', {}, '我的配方 · 电脑上'),
+    h('p', { class: 'small dim' }, '由 LUT 生成，存在这台电脑里。在大图的「配方」标签里点一下就能套到照片上。'));
   if (!flow.recipes.length) {
-    sec.append(h('p', { class: 'small dim' }, '还没有我的配方'));
+    sec.append(h('p', { class: 'small dim' }, '电脑上还没有我的配方。用上面的 LUT 生成一个，存下来就会出现在这里。'));
     return sec;
   }
   for (const r of flow.recipes) sec.append(recipeCard(r));
@@ -526,7 +530,7 @@ function recipeCard(r) {
   card.append(
     h('div', { class: 'recipe-head' }, h('b', {}, r.name), h('span', { class: 'small dim' }, ` · ${r.camera_short_name}`), h('span', { class: 'grow' }), rename, del),
     h('div', { class: 'small' }, `${slotName(r.recipe.unit, r.recipe.slot)}（${describeLevels(c)}）`),
-    h('div', { class: 'small dim' }, `来自 LUT${r.source.title ? `「${r.source.title}」` : ''} · 相似度 ${sim}`,
+    h('div', { class: 'small dim' }, `${sourceText(r)} · 相似度 ${sim}`,
       r.source.input_space_guessed ? h('span', { class: 'tag' }, '推测') : null),
   );
   return card;
@@ -540,6 +544,7 @@ function askRemove(r) {
 async function removeRecipe(r) {
   await api(`/api/my-recipes/${r.id}`, { method: 'DELETE' });
   flow.recipes = flow.recipes.filter((x) => x.id !== r.id);
+  emit(MY_RECIPES_CHANGED);
   redraw();
 }
 
@@ -547,6 +552,6 @@ function editName(r) {
   const next = window.prompt('名称', r.name);
   if (next === null) return;
   api(`/api/my-recipes/${r.id}`, { method: 'PUT', body: { name: next } })
-    .then((doc) => { flow.recipes = flow.recipes.map((x) => (x.id === doc.id ? doc : x)); redraw(); })
+    .then((doc) => { flow.recipes = flow.recipes.map((x) => (x.id === doc.id ? doc : x)); emit(MY_RECIPES_CHANGED); redraw(); })
     .catch((e) => toastError(e, '没有改好名称。请重试。'));
 }

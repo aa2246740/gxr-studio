@@ -9,6 +9,7 @@ import { saveRecord, writeSave, clearFailed, flushPhotos, readFresh } from './sa
 export { flushPhotos, saveStatus, retrySaves, SaveError } from './saves.js';
 import { toast, toastError } from './dom.js';
 import { applyCamdataStatus } from './camdata.js';
+import { uncalibratedReason } from './calibration_note.js';
 import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
 import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from './caps.js';
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody } from './finish.js';
@@ -543,7 +544,7 @@ export function recipeForRender(view) {
   return body;
 }
 
-function draftBody(view, stage) {
+export function draftBody(view, stage) {
   const ed = view.ed;
   const body = { recipe: recipeForRender(view), lut: ed.lut, adjust: adjustBody(ed), curve: curveBody(ed) };
   if (!ed.v2) return body;
@@ -713,9 +714,8 @@ export function validRect(view, canvas) {
 }
 
 // 画面上的小标签（COPY 3.9）：返回数组，没有就是 []。
-// 电脑预测后面跟「未校准」（跨单元或跨 ISO，或认不出的单元），提示气泡写「使用 A12 50mm 的颜色模型」。
+// 电脑预测后面跟「未校准」（跨单元或跨 ISO，或认不出的单元），提示气泡写具体原因（calibration_note.js）。
 // 近似只在 JPG 上出现，标签是「近似」。
-export const UNCALIBRATED_TITLE = '使用 A12 50mm 的颜色模型';
 
 // 后端的 X-GXR-Label 是机器值：prediction（电脑预测）、approx（近似）、original（原图，不加小标签）。
 // 没有校准（X-GXR-Calibrated=0）的电脑预测再加「未校准」。界面上不出现英文机器值（R2-05）。
@@ -729,7 +729,7 @@ export function stageLabels(view) {
   if (!label || label === 'original') return [];
   if (label === 'prediction' || label.includes('电脑预测')) {
     const out = [{ text: '电脑预测', kind: 'ok' }];
-    if (ed.calibrated === false || label.includes('未校准')) out.push({ text: '未校准', kind: 'warn', title: UNCALIBRATED_TITLE });
+    if (ed.calibrated === false || label.includes('未校准')) out.push({ text: '未校准', kind: 'warn', title: uncalibratedReason(view, unitForPhoto(view.photo)) });
     return out;
   }
   if (label === 'approx') return [{ text: '近似', kind: 'warn' }];

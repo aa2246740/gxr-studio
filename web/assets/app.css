@@ -312,6 +312,9 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .sec-title { font-size: var(--fs-title); margin: 0 0 8px; }
 .card-sec { padding: 16px; margin-bottom: 16px; border-radius: var(--r-lg); background: var(--surface-panel); box-shadow: inset 0 0 0 1px var(--line-subtle); }
 .cam-row { display: flex; align-items: center; gap: 12px; }
+.cam-import { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 200px; }
+.cam-import .progress { align-self: stretch; margin: 2px 0; }
+.sec-source { margin: 2px 0 4px; }
 .units { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 12px; }
 .units .card-sec { margin: 0; background: var(--surface-raised); }
 .units .card-sec.skel { height: 300px; }
@@ -342,6 +345,11 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .grid { position: relative; overflow-y: auto; padding: 6px var(--sp-4) 96px; scrollbar-gutter: stable; outline: none; }
 .grid h3 { margin: 18px 4px 10px; display: flex; gap: 8px; align-items: baseline; }
 .grid h3 span { color: var(--text-3); font-weight: var(--fw-regular); font-size: var(--fs-small); }
+/* 选了某一天时，分组标题和顶上的标题是同一个日期：只留给读屏 */
+.grid.single-day .day > h3 { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* 图库里点选、⇧ 连选、⌘A 都不该留下文字选中的高亮；输入框照旧能选字 */
+.library { user-select: none; -webkit-user-select: none; }
+.library input, .library textarea, .library select { user-select: text; -webkit-user-select: text; }
 .cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--cell, 196px), 1fr)); gap: 4px; }
 .cell {
   position: relative; aspect-ratio: 3 / 2; border-radius: var(--r-xs); background: var(--gray-875); overflow: hidden; border: 0; padding: 0;
@@ -431,7 +439,7 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .fthumb .b { position: absolute; left: 4px; bottom: 4px; display: flex; gap: 3px; }
 
 /* 右侧面板：工具标签 | 内容 | 固定底栏 */
-.panel { display: grid; grid-template-rows: var(--h-tooltabs) minmax(0, 1fr) auto; min-height: 0; min-width: 0; background: var(--surface-panel); border-left: 1px solid var(--line-subtle); overflow: hidden; }
+.panel { display: grid; grid-template-rows: auto var(--h-tooltabs) minmax(0, 1fr) auto; min-height: 0; min-width: 0; background: var(--surface-panel); border-left: 1px solid var(--line-subtle); overflow: hidden; }
 .tooltabs { display: grid; grid-template-columns: repeat(6, 1fr); padding: 4px 8px 0; border-bottom: 1px solid var(--line-subtle); }
 .tooltabs button {
   position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0;
@@ -625,7 +633,9 @@ table.keys h4, .keys-group { margin: 14px 0 6px; font: var(--fw-semibold) var(--
 .sim-bar i.ok { background: var(--ok-text); } .sim-bar i.warn { background: var(--warn-text); } .sim-bar i.bad { background: var(--danger-text); }
 .diffs { margin: 0; padding-left: 20px; }
 .recipe-card { border-top: 1px solid var(--line-subtle); padding: 10px 0; }
-.lut-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lut-tools { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 12px; }
+.lut-tools label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.lut-card > .recipe-head { margin-bottom: 4px; }
 .lut-library-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--line-subtle); }
 .lut-library-name { flex: 1 1 180px; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; justify-content: flex-start; height: auto; min-height: var(--h-control); padding: 6px 10px; }
 .lut-group-name { overflow-wrap: anywhere; max-width: 100%; }
