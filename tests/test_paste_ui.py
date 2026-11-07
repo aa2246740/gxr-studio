@@ -91,3 +91,29 @@ def test_a_partly_applied_paste_names_what_was_skipped_and_a_conflict_changes_no
     assert out["partialToast"] == "已套用：调整；这张只有 JPG，没有套用配方"
     assert out["adj"] == 7 and out["recipe"] is None
     assert out["conflictToast"] == "这张照片已在别处修改，没有粘贴。" and out["undoUnchanged"]
+
+
+def test_undoing_a_recipe_paste_keeps_the_photos_own_recipe_memory(tmp_path):
+    out = run(tmp_path, "undo-keeps-the-recipe-memory")
+    own = {"jlaunch/5": {"contrast": 3}}
+    assert out["copiedMemory"] == {"jlaunch/2": {"amount": 60}}
+    assert out["memoryBefore"] == own
+    assert out["memoryPasted"] == out["copiedMemory"], "粘贴带来了来源的记忆"
+    assert out["memoryUndone"] == own and out["undoRecipe"]["memory"] == own, "撤销写回去的是这张自己的记忆"
+    assert out["recipeUndone"] == 5 and out["bodyNow"] == own
+
+
+def test_a_crop_that_fills_the_frame_still_counts_when_it_has_a_ratio(tmp_path):
+    out = run(tmp_path, "crop-that-fills-the-frame")
+    assert out["groups"] == ["recipe", "adjust", "crop"]
+    assert out["crop"] == {"preset": "3:2", "rect": [0, 0, 1, 1]} and "裁剪" in out["toast"]
+    assert out["original"] == {"copied": [], "empty": ["crop"]}, "「原图」整张是没设置"
+    assert out["shifted"] == ["crop"], "框没占满整张就算设置过"
+
+
+def test_a_paste_queued_behind_a_save_that_fails_is_not_sent(tmp_path):
+    out = run(tmp_path, "queued-paste-after-a-failed-save")
+    assert out["postsWhileHeld"] == 0 and out["saved"] is False
+    assert out["posts"] == 0, "前一笔失败了，粘贴不发出去"
+    assert "有修改没有保存" in out["toast"] and "重试" in out["toast"]
+    assert out["status"] == "failed" and out["failedKeys"] == ["adjust"], "失败的内容还留着给「重试」"

@@ -15,6 +15,9 @@ import {
 // 服务器写了哪些组 → 界面上对应的编辑字段（preview.js 的 applyRetried 认的名字）
 const EDIT_FIELDS = { recipe: ['recipe', 'lut'], adjust: ['adjust', 'curve'], geometry: ['geometry'], frame: ['frame'], stamp: ['stamp'] };
 
+// 这张照片有写不进去的修改（失败记录还在）：再粘贴一次，之后「重试」会把那份旧内容写回来盖掉粘贴
+const UNSAVED_TEXT = '这张照片有修改没有保存。先点「重试」或「放弃修改」，再粘贴。';
+
 const buttons = new Set(); // 顶栏上的粘贴按钮（可能不止一个视图留下过，断开的在刷新时清掉）
 
 function currentIsShowing(view) {
@@ -67,12 +70,17 @@ export async function pasteEdits(view) {
   const id = view.photo.id;
   const rec = saveRecord(id);
   if (saveStatus(id) === 'failed') {
-    toast('这张照片有修改没有保存。先点「重试」或「放弃修改」，再粘贴。', 'error');
+    toast(UNSAVED_TEXT, 'error');
     return true;
   }
   let item = null;
   let failure = null;
+  let refused = false;
   const written = await enqueue(rec, async () => {
+    if (rec.failed) { // 排在它前面的保存刚失败了：不粘贴
+      refused = true;
+      throw new Error(UNSAVED_TEXT);
+    }
     try {
       const res = await postPaste({ source: clip.source, groups: clip.groups, targets: [{ id, expected_rev: rec.rev }], batchId: newBatchId(), includeState: true });
       [item] = res.results;
@@ -83,7 +91,8 @@ export async function pasteEdits(view) {
     }
   });
   if (!written) {
-    toastError(failure, '无法粘贴。请重试。');
+    if (refused) toast(UNSAVED_TEXT, 'error');
+    else toastError(failure, '无法粘贴。请重试。');
     return true;
   }
   if (item.status === 'error') {

@@ -33,6 +33,7 @@ function defaultPaste(body) {
     const k = key(t.id);
     if (t.expected_rev !== revs[k]) return { id: t.id, status: 'error', applied: [], skipped: [], code: 'rev_conflict', message: '这张照片已在别处修改，没有粘贴。' };
     for (const f of ['recipe', 'lut', 'adjust', 'curve', 'geometry', 'frame', 'stamp']) if (f in body.source) stored[t.id] = { ...stored[t.id], [f]: body.source[f] };
+    if (body.source.recipe) stored[t.id] = { ...stored[t.id], memory: body.source.recipe.memory || {} }; // 真服务器把配方旁边的记忆存在配方里
     revs[k] += 1;
     return { id: t.id, status: 'applied', applied: body.groups, skipped: [], rev: revs[k], ...(body.include_state ? { edit: editOf(t.id), crop: cropOf(t.id) } : {}) };
   });
@@ -272,6 +273,74 @@ if (scenario === 'paste-skipped-and-conflict') {
   await tick();
   out.conflictToast = lastToast();
   out.undoUnchanged = v.undo.length === undoLen;
+}
+
+if (scenario === 'undo-keeps-the-recipe-memory') {
+  // B 有自己的配方和旋钮记忆。粘贴 A 的配方（带着 A 的记忆），撤销之后 B 的记忆原样，不留 A 的
+  stored.a0.memory = { 'jlaunch/2': { amount: 60 } };
+  stored.b0 = { recipe: { ...RECIPE, slot: 5 }, memory: { 'jlaunch/5': { contrast: 3 } } };
+  await go('#/photo/a0');
+  await tick();
+  edits.copyEdits(viewer.currentView());
+  out.copiedMemory = core.clipboard().source.recipe.memory;
+  await go('#/photo/b0');
+  await tick();
+  const v = viewer.currentView();
+  out.memoryBefore = v.ed.memory;
+  await edits.pasteEdits(v);
+  await tick();
+  out.memoryPasted = v.ed.memory;
+  preview.undoChange(v);
+  await tick();
+  out.memoryUndone = v.ed.memory;
+  const undoPut = puts('b0').at(-1).body;
+  out.undoRecipe = undoPut.recipe;
+  out.recipeUndone = v.ed.recipe.slot;
+  // 再改配方也不会带出 A 的档位：下一次写配方时带的是 B 自己的记忆
+  out.bodyNow = preview.recipeBody(v, { memory: true }).memory;
+}
+
+if (scenario === 'crop-that-fills-the-frame') {
+  // 3:2 的文件上选 3:2：框几乎占满，但比例预设要复制；「原图」整张才算没设置
+  stored.a0.cropBox = { preset: '3:2', rect: [0, 0, 1, 1] };
+  core.rememberGroups(['recipe', 'adjust', 'crop']);
+  await go('#/photo/a0');
+  await tick();
+  const v = viewer.currentView();
+  edits.copyEdits(v);
+  out.groups = core.clipboard().groups;
+  out.crop = core.clipboard().source.crop;
+  out.toast = lastToast();
+  v.crop = { ...v.crop, preset: 'original', rect: { x: 0, y: 0, w: 1, h: 1 } };
+  out.original = core.copyFromView(v, ['crop']);
+  v.crop = { ...v.crop, preset: 'original', rect: { x: 0.2, y: 0, w: 0.8, h: 1 } };
+  out.shifted = core.copyFromView(v, ['crop']).copied;
+}
+
+if (scenario === 'queued-paste-after-a-failed-save') {
+  // 当前这张有一笔保存挂着，粘贴排在它后面；那笔保存失败了：粘贴不发出去（不然「重试」会拿旧内容盖掉粘贴）
+  await go('#/photo/a0');
+  await tick();
+  edits.copyEdits(viewer.currentView());
+  await go('#/photo/b0');
+  await tick();
+  const v = viewer.currentView();
+  holds.add('PUT /api/photos/b0/edit');
+  v.ed.adj.contrast = 3;
+  const first = preview.persist(v, { adjust: preview.adjustBody(v.ed) });
+  await tick();
+  const pasting = edits.pasteEdits(v);
+  await tick();
+  out.postsWhileHeld = pastes().length;
+  g.fail('PUT /api/photos/b0/edit', new StubError(500, '磁盘已满'));
+  out.saved = await first;
+  await pasting;
+  await tick();
+  out.posts = pastes().length;
+  out.toast = lastToast();
+  out.status = saves.saveStatus('b0');
+  out.failedKeys = Object.keys(saves.saveRecord('b0').failed.edit);
+  out.undoLen = v.undo.length;
 }
 
 console.log(JSON.stringify(out));

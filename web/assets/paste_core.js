@@ -50,7 +50,8 @@ export function setClipboard(next) {
   emit('paste-clipboard', clip);
 }
 
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// 裁剪算「设置过」：比例不是「原图」，或者框没有占满整张。3:2 的机身文件上选 3:2，框几乎占满，但比例预设仍是要复制的内容
+const cropIsSet = (c) => c.preset !== 'original' || c.rect.w < 0.999 || c.rect.h < 0.999 || c.rect.x > 0.001 || c.rect.y > 0.001;
 
 // 这张照片在编辑器里现在的样子，按组装成服务器要的来源。没有设置过的组返回 null（不复制：粘贴一个空组会把目标的清掉）
 function groupSource(view, id) {
@@ -66,7 +67,7 @@ function groupSource(view, id) {
       return straighten || vertical || horizontal || distortion ? { geometry: { straighten, vertical, horizontal, distortion } } : null;
     }
     case 'crop':
-      return crop && crop.rect && (crop.rect.w < 0.999 || crop.rect.h < 0.999) ? { crop: { preset: crop.preset, rect: toArray(crop.rect) } } : null;
+      return crop && crop.rect && cropIsSet(crop) ? { crop: { preset: crop.preset, rect: toArray(crop.rect) } } : null;
     case 'frame':
       return ed.v2 && ed.frameFrom === 'photo' && ed.frame.style !== 'none' ? { frame: frameBody(ed.frame) } : null;
     case 'stamp':

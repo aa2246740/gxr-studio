@@ -10,7 +10,7 @@ export function cropShape(c) {
 
 // 撤销的单位：一步改了哪几组（frame 和 frameFrom、stamp 和 stampFrom 各算一组）
 export const HISTORY_GROUPS = {
-  recipe: ['recipe'], lut: ['lut'], adjust: ['adj'], curve: ['curve'], geometry: ['geometry'],
+  recipe: ['recipe', 'memory'], lut: ['lut'], adjust: ['adj'], curve: ['curve'], geometry: ['geometry'],
   frame: ['frame', 'frameFrom'], stamp: ['stamp', 'stampFrom'], crop: ['crop'],
 };
 
@@ -37,11 +37,27 @@ export function restoreCropLocal(view, crop) {
   if (crop.orientation) cur.orientation = crop.orientation;
 }
 
+export function undoAvailable(view) {
+  return !!(view.undo && view.undo.length);
+}
+
+// 撤销 / 重做按钮：没有可以撤销（重做）的内容时置灰（COPY 3.10）
+export function syncUndo(view) {
+  const set = (btn, ok) => {
+    if (!btn) return;
+    if (ok) btn.removeAttribute('aria-disabled');
+    else btn.setAttribute('aria-disabled', 'true');
+  };
+  set(view.undoBtn, undoAvailable(view));
+  set(view.redoBtn, !!(view.redo && view.redo.length));
+}
+
 export function snapshot(view) {
   const ed = view.ed;
   const c = view.crop;
   return JSON.stringify({
     recipe: ed.recipe,
+    memory: ed.memory,
     lut: ed.lut,
     adj: ed.adj,
     curve: ed.curve,
