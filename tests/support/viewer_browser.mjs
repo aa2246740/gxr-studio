@@ -142,11 +142,16 @@ try {
   // 失败的请求（状态 ≥ 400 或网络错误）带上链接，留最后 20 条；测试自己让它失败的保存（PUT .../crop 的 500）也会在里面
   out.failedRequests = [];
   const requestUrls = new Map();
+  const requestLog = []; // 每个发出的请求：数一段时间里有几个 /render
+  const renderCount = (from, only = /./) => requestLog.slice(from).filter((r) => /\/render\b/.test(r) && only.test(r)).length;
   listeners.push((msg) => {
     if (msg.sessionId !== sessionId) return;
     const p = msg.params;
     let line = null;
-    if (msg.method === 'Network.requestWillBeSent') requestUrls.set(p.requestId, `${p.request.method} ${p.request.url}`);
+    if (msg.method === 'Network.requestWillBeSent') {
+      requestUrls.set(p.requestId, `${p.request.method} ${p.request.url}`);
+      requestLog.push(`${p.request.method} ${p.request.url}`);
+    }
     else if (msg.method === 'Network.responseReceived' && p.response.status >= 400) line = `${p.response.status} ${requestUrls.get(p.requestId) || p.response.url}`;
     else if (msg.method === 'Network.loadingFailed') line = `${p.errorText}${p.canceled ? ' (canceled)' : ''} ${requestUrls.get(p.requestId) || p.requestId}`;
     if (line) out.failedRequests = [...out.failedRequests.slice(-19), line.replace(/token=[^&\s]+/, 'token=…').slice(0, 300)];
@@ -190,6 +195,24 @@ try {
   await sleep(1500);
   step('set preview preference');
   await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${mode === 'gpu' ? 'on' : 'off'}'); true`);
+  if (mode === 'layout') {
+    // 边框和时间戳的版面在真 Chrome 里用画布量字（同一批字体文件）算出来，交给 Python 和 Pillow 的结果对
+    step('load fonts and lay out');
+    const cases = readFileSync(process.env.LAYOUT_CASES, 'utf8');
+    out.layout = await evalIn(`(async () => {
+      const L = await import('/assets/finish_layout.js');
+      const F = await import('/assets/finish_fonts.js');
+      const data = ${cases};
+      await Promise.all(['atkinson', 'inter', 'courier', 'patrick', 'dseg'].map((id) => F.loadFont(id)));
+      const m = F.canvasMetrics();
+      const metric = data.table.map(([kind, font, px, text]) => (kind === 'a' ? m.advance(font, px, text, false) : m.bbox(font, px, text, false)));
+      const frames = data.frames.map((c) => L.frameLayout(c.w, c.h, c.spec, c.meta, m));
+      const stamps = data.stamps.map((c) => { const text = L.stampText(c.spec, c.when); return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m) }; });
+      return { metric, frames, stamps };
+    })()`, 120000);
+    out.ready = true;
+    await finish(0);
+  }
   step('open photo');
   await call('Page.navigate', { url: `${origin}/?open=1#/photo/${photoId}` });
 
@@ -350,15 +373,111 @@ try {
     return { changed: !!changed, box: boxRect(), server: s.rect.map((v) => v * 100), preset: s.preset };
   })()`);
 
-  // 6) 边框卡片：时间窗口交给 Python，对照服务器那边「选底图」跑了几次
+  // 6) 边框卡片：浏览器自己画，不请服务器给每种样式出图
   step('frame cards');
+  let mark = requestLog.length;
   out.cards = await evalIn(`(async () => { ${helpers}
-    const t0 = Date.now();
+    const t0 = performance.now();
     document.querySelector('#tab-frame').click();
     const n = await until(() => document.querySelectorAll('.fcard').length, 5000);
-    await until(() => document.querySelectorAll('.fcard .thumb img').length >= n, 60000);
-    return { cards: n, imgs: document.querySelectorAll('.fcard .thumb img').length, from: t0 / 1000, to: Date.now() / 1000 };
+    await until(() => document.querySelectorAll('.fcard .thumb canvas').length >= n, 60000);
+    return { cards: n, canvases: document.querySelectorAll('.fcard .thumb canvas').length, ms: Math.round(performance.now() - t0) };
   })()`, 75000);
+  // 离开裁切页时大图会重新出一次（服务器出图时）；卡片自己的底图请求带 max_edge=480，最多一张
+  out.cards.cardRenders = renderCount(mark, /max_edge=480/);
+  out.cards.stageRenders = renderCount(mark, /^(?!.*max_edge=480)/);
+
+  // 7) 加了边框和时间戳以后：显卡还在管，拖滑块不请求 /render，点样式、改选项当帧就画出来
+  step('frame and stamp with the preview on');
+  mark = requestLog.length;
+  out.live = await evalIn(`(async () => { ${helpers}
+    const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const deco = () => { const pv = document.querySelector('.pv'); return { framed: pv.classList.contains('framed'), overlay: !!pv.querySelector('.pv-deco'), size: [pv.style.width, pv.style.height] }; };
+    const timed = async (fn) => { const t = performance.now(); fn(); await raf(); return Math.round(performance.now() - t); };
+    const card = (name) => [...document.querySelectorAll('.fcard')].find((x) => x.textContent.trim() === name);
+    const renders = () => performance.getEntriesByType('resource').filter((e) => /\\/render\\b/.test(e.name)).length;
+    const renders0 = renders();
+    const styleMs = {};
+    for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '画布', '白边']) {
+      styleMs[name] = await timed(() => card(name).click());
+      styleMs[name + ':framed'] = deco().framed;
+    }
+    styleMs.leica = await timed(() => card('徕卡水印').click());
+    await wait(200);
+    const frame = deco();
+    // 换一个选项（颜色）也一样
+    const colorMs = await timed(() => document.querySelector('.swrow button[title="黑"], .swrow button[aria-label="黑"]')?.click());
+    // 时间戳
+    document.querySelector('#tab-stamp').click();
+    await wait(200);
+    const stampMs = await timed(() => document.querySelector('#tp-stamp input[role=switch]').click());
+    const stampOn = deco();
+    await wait(500);
+    const clickRenders = renders() - renders0; // 点样式、改颜色、开时间戳：没有一个 /render
+    // 时间戳的文字：边输入边变（当帧），保存等 400 ms；输入时光标不丢（面板没有重搭）
+    const edits = [];
+    const realFetch = window.fetch;
+    window.fetch = (...a) => { if ((a[1] && a[1].method) === 'PUT' && /\\/edit$/.test(String(a[0]))) edits.push(performance.now()); return realFetch(...a); };
+    [...document.querySelectorAll('#tp-stamp .seg button')].find((b) => b.textContent === '日期和文字').click();
+    await wait(300);
+    const input = document.querySelector('#tp-stamp input[type=text]');
+    input.focus();
+    const key = () => document.querySelector('.pv .pv-deco')?.dataset.key;
+    const puts0 = edits.length;
+    const k0 = key();
+    const typeMs = await timed(() => { input.value = 'Pa'; input.dispatchEvent(new Event('input', { bubbles: true })); });
+    const keyChanged = key() !== k0;
+    input.value = 'Paris';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(150);
+    const putsEarly = edits.length - puts0; // 还在 400 ms 之内：没有保存
+    await wait(900);
+    const putsLate = edits.length - puts0;
+    const typed = { typeMs, keyChanged, putsEarly, putsLate, focusKept: document.activeElement === input, saved: (await (await fetch('/api/photos/${photoId}/edit')).json()).stamp.text };
+    // 拖一个调整滑块：几十次 input，中间没有 /render
+    document.querySelector('#tab-adjust').click();
+    await wait(300);
+    const slider = document.querySelector('#tp-adjust input[type=range]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const before = performance.now();
+    slider.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const frames = [];
+    for (let i = 1; i <= 30; i += 1) {
+      setter.call(slider, String((i % 15) * 2 - 10));
+      const t = performance.now();
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      await raf();
+      frames.push(Math.round(performance.now() - t));
+    }
+    slider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    const dragMs = Math.round(performance.now() - before);
+    await wait(800);
+    const dragRenders = renders() - renders0; // 点样式、改选项、打字、拖滑块的整个过程：服务器出图一次也没有
+    const gpuNow = !!document.querySelector('.gpu');
+    // 100%：照片一个像素对一个屏幕像素，边框和日期戳跟着（叠加层和整张成片一样大，比照片大一圈）；换回适合
+    const rect = (e) => { const b = e.getBoundingClientRect(); return [Math.round(b.width), Math.round(b.height)]; };
+    const press = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === label).click();
+    const look = () => {
+      const pv = document.querySelector('.pv');
+      const media = pv && pv.querySelector('.pv-gpu, .pv-img');
+      const deco = pv && pv.querySelector('.pv-deco');
+      return pv && media ? { framed: pv.classList.contains('framed'), overlay: !!deco, pv: rect(pv), media: rect(media), deco: deco ? rect(deco) : null } : null;
+    };
+    const settle = async () => { await until(look, 10000); await wait(300); return look(); }; // 画面出来了再量（机器忙时慢一点）
+    press('100%');
+    const zoom100 = await settle();
+    press('适合');
+    const fit = await settle();
+    // 换照片：下一张没有边框（叠加层不跟过去），换回来边框和日期戳还在
+    document.querySelector('button[aria-label^="下一张"]').click();
+    await wait(300);
+    const next = await settle();
+    document.querySelector('button[aria-label^="上一张"]').click();
+    await wait(300);
+    const back = await settle();
+    return { styleMs, colorMs, frame, stampMs, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
+  })()`, 90000);
+  out.live.requests = requestLog.slice(mark).filter((r) => !/^PUT /.test(r) && !/\/(edit|crop)$/.test(r)).slice(-8);
   step('done');
 } catch (e) {
   out.error = String(e && e.message ? e.message : e).slice(0, 800);
