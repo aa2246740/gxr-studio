@@ -1452,12 +1452,14 @@ if (scenario === 'reset-then-switch') {
   out.server = { rect: crops[PHOTOS.A.id].rect.map((x) => +x.toFixed(4)), frame: [crops[PHOTOS.A.id].frame.width, crops[PHOTOS.A.id].frame.height] };
   out.undoSteps = v.undo.length;
   // 重做同样：当场回到收小的框和 3300 × 2400 的画布
+  const beforeRedo = requests.length;
   preview.redoChange(v);
   out.redoNow = { rect: r4(v.crop.rect), frame: [v.crop.frame.width, v.crop.frame.height], vertical: v.ed.geometry.vertical };
   await preview.flushEdits(v);
   await tick(8);
   out.redoAfter = { rect: r4(v.crop.rect), frame: [v.crop.frame.width, v.crop.frame.height] };
   out.redoStatus = preview.saveStatus(PHOTOS.A.id);
+  out.redoPuts = requests.slice(beforeRedo).filter((r) => r.method === 'PUT' && r.url.endsWith('/crop')).map((r) => r.body.rect && r.body.rect.map((x) => +x.toFixed(4)));
 } else if (scenario === 'rotate-save-fails') {
   // 评审 P1：转了以后写框失败。只有框的形状被拒才让服务器重算；断网/500 这类不能悄悄换成居中的最大框，
   // 重算也失败的话，「重试」用的还是用户转好的框。
@@ -1536,6 +1538,69 @@ if (scenario === 'reset-then-switch') {
   out.client = { rect: r4(v.crop.rect), frame: [v.crop.frame.width, v.crop.frame.height] };
   out.status = preview.saveStatus(PHOTOS.A.id);
   out.toasts = document.getElementById('toast-root').children.map((t) => t.textContent);
+} else if (scenario === 'failed-turn-retry' || scenario === 'lone-failed-turn' || scenario === 'lone-failed-turn-shape') {
+  // 评审 P1：转的几何没写进去（500）。重试只补几何的话，服务器上还是转之前的框，界面上却是转好的，导出用的是服务器的。
+  // 最后一次转的框要记在失败记录里，重试先写几何、再写框；框的形状被拒时照样让服务器按比例重算。
+  globalThis.statefulCrop = true;
+  globalThis.onGeometry = (geo) => ({ frame: (geo.rotate90 || 0) % 2 ? { width: 2000, height: 3000 } : { width: 3000, height: 2000 } });
+  const ratio = (body, now) => {
+    const got = (body.rect[2] * now.frame.width) / (body.rect[3] * now.frame.height);
+    return Math.min(Math.abs(got - 0.75), Math.abs(got - 4 / 3)) / 0.75 > 0.01;
+  };
+  globalThis.cropCheck = (body, now) => (body.rect && ratio(body, now) ? { status: 422, code: 'ratio_mismatch', message: '裁剪框超出画面范围' } : null);
+  globalThis.cropAnswer = { '4:3': [0.1, 0.1, 0.3, 0.6] };
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const v = viewer.currentView();
+  v.canvas = { w: 3000, h: 2000 };
+  const cropMod = await import(file('crop.js'));
+  const correct = await import(file('correct.js'));
+  const r4 = (r) => r.map((x) => +x.toFixed(4));
+  await cropMod.applyPreset(v, { id: '4:3', label: '小红书 3:4', orient: 'portrait' });
+  const before = requests.length;
+  const failTurn = scenario === 'failed-turn-retry' ? 2 : 1;
+  failIf.push((method, url, body) => (method === 'PUT' && url.endsWith('/edit') && body.geometry && body.geometry.rotate90 === failTurn ? new StubError(500, '磁盘已满，无法写入编辑记录。') : null));
+  if (scenario === 'failed-turn-retry') {
+    holds.add(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+    const first = correct.rotate90(v);
+    await tick(2);
+    const second = correct.rotate90(v);
+    await tick(2);
+    g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
+    await Promise.all([first, second]);
+  } else {
+    await correct.rotate90(v);
+  }
+  await preview.flushEdits(v).catch(() => {});
+  await tick(5);
+  out.afterFail = {
+    cropPuts: requests.slice(before).filter((r) => r.method === 'PUT' && r.url.endsWith('/crop')).length,
+    status: preview.saveStatus(PHOTOS.A.id),
+    serverRotate: ((stored[PHOTOS.A.id] || {}).geometry || {}).rotate90 || 0,
+    serverRect: r4(crops[PHOTOS.A.id].rect),
+    screen: r4([v.crop.rect.x, v.crop.rect.y, v.crop.rect.w, v.crop.rect.h]),
+  };
+  if (scenario === 'lone-failed-turn-shape') {
+    // 重试时框的形状被拒一次：改让服务器按比例重算
+    let rejected = false;
+    globalThis.cropCheck = (body, now) => {
+      if (body.rect && !rejected) {
+        rejected = true;
+        return { status: 422, code: 'ratio_mismatch', message: '裁剪框超出画面范围' };
+      }
+      return body.rect && ratio(body, now) ? { status: 422, code: 'ratio_mismatch', message: '裁剪框超出画面范围' } : null;
+    };
+  }
+  const mark = requests.length;
+  out.retry = await preview.retrySaves(PHOTOS.A.id);
+  await tick(8);
+  out.afterRetry = {
+    puts: requests.slice(mark).filter((r) => r.method === 'PUT').map((r) => (r.url.endsWith('/crop') ? ['crop', r.body.rect && r.body.rect.map((x) => +x.toFixed(4))] : ['edit', r.body.geometry.rotate90])),
+    status: preview.saveStatus(PHOTOS.A.id),
+    serverRotate: stored[PHOTOS.A.id].geometry.rotate90,
+    serverRect: r4(crops[PHOTOS.A.id].rect),
+    screen: r4([v.crop.rect.x, v.crop.rect.y, v.crop.rect.w, v.crop.rect.h]),
+  };
 } else if (scenario === 'rotate-then-ratio-click') {
   // 评审 P2：转的几何还没写完时点了比例。比例的框（rect: null，让服务器算）排在前面，
   // 转的那一笔不能再把落后的本地框排在它后面盖掉服务器算的框。

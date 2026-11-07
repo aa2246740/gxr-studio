@@ -6,11 +6,8 @@
 // 重算之前确认这一笔还是最新的：这期间用户又排进了新的框（点比例等），那一步更新，不能被覆盖。
 
 import { saveCrop, retrySaves } from './preview.js';
-import { saveRecord } from './saves.js';
+import { saveRecord, SHAPE_REJECTED } from './saves.js';
 import { toastError } from './dom.js';
-
-// 服务器说「这个框的形状不对」（比例不符、超出画面、太小）。别的失败（断网、500、版本冲突）不是框的问题。
-const SHAPE_REJECTED = new Set(['ratio_mismatch', 'crop_outside_image', 'bad_rect', 'too_small']);
 
 export function saveCropOrRefit(view, body) {
   const rec = saveRecord(view.photo.id);

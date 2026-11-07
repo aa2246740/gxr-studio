@@ -87,7 +87,16 @@ async function saveTurned(view) {
   const crops = rec.fieldGen.crop || 0;
   const turn = (view.turnGen = (view.turnGen || 0) + 1);
   const ok = await persist(view, { geometry: view.ed.geometry });
-  if (!ok || view.disposed || !view.crop || view.turnGen !== turn) return;
+  if (view.disposed || !view.crop) return;
+  if (!ok) {
+    // 几何没写进去：这是最后一次转的话，把它的框记在失败记录里，「重试」先写几何、再写这个框。
+    // 不记的话重试只补几何，服务器上还是转之前的框，界面上却是转好的，导出用的是服务器的
+    if (view.turnGen === turn && !unchanged && (rec.fieldGen.crop || 0) === crops && rec.failed) {
+      rec.failed.crop = cropBody(view, { preset: box.preset, rect: rectArray(box.rect) }, box.orientation);
+    }
+    return;
+  }
+  if (view.turnGen !== turn) return;
   if (!unchanged && (rec.fieldGen.crop || 0) === crops && !(await saveCropOrRefit(view, cropBody(view, { preset: box.preset, rect: rectArray(box.rect) }, box.orientation)))) return;
   await syncCrop(view);
 }

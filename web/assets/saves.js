@@ -8,6 +8,9 @@ import { api } from './api.js';
 import { emit } from './state.js';
 import { toast, toastError } from './dom.js';
 
+// 服务器说「这个框的形状不对」（比例不符、超出画面、太小）。别的失败（断网、500、版本冲突）不是框的问题。
+export const SHAPE_REJECTED = new Set(['ratio_mismatch', 'crop_outside_image', 'bad_rect', 'too_small']);
+
 const records = new Map();
 const URLS = { edit: (id) => `/api/photos/${id}/edit`, crop: (id) => `/api/photos/${id}/crop` };
 
@@ -141,13 +144,15 @@ export async function flushDate(date) {
 
 // 读这张照片的编辑记录（或裁剪），读到的必须是最新的：先等排着的写入，读的过程中又有写入就重读（F04）。
 // read() 返回读到的内容；一直被新的写入打断（连续 5 次）就放弃并抛出，调用方保持现状。
-export async function readFresh(id, read) {
+// onStale(out)：读到的是过时的（读的过程中又有写入）会被丢掉重读，丢掉之前交给调用方看一眼
+export async function readFresh(id, read, onStale = null) {
   const rec = saveRecord(id);
   for (let i = 0; i < 5; i += 1) {
     await rec.tail;
     const gen = rec.gen;
     const out = await read();
     if (rec.gen === gen && !rec.pending) return out;
+    onStale?.(out);
   }
   throw new Error('这张照片正在保存，稍后再读。');
 }
@@ -178,7 +183,16 @@ export function retrySaves(id) {
       rec.rev = (await api(URLS.edit(id))).rev;
       // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
       if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
-      if (rec.failed && rec.failed.crop) await put('crop', { ...rec.failed.crop });
+      if (rec.failed && rec.failed.crop) {
+        const box = { ...rec.failed.crop };
+        try {
+          await put('crop', box);
+        } catch (e) {
+          // 框的形状被拒（比如转了两次、画布和框对不上）：让服务器按比例重算；没有别的新框排进来才换
+          if (!SHAPE_REJECTED.has(e.code) || (rec.fieldGen.crop || 0) !== (since.crop || 0)) throw e;
+          await put('crop', { ...box, rect: null });
+        }
+      }
     } catch (e) {
       if (rec.failed) rec.failed.error = e;
       throw e;

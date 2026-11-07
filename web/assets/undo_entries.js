@@ -1,3 +1,5 @@
+import { fromArray } from './geom.js';
+
 // 撤销记录：每一步开始前的整套状态（快照），加上这一步改了哪几组（owned）。
 // 撤销 / 重做只还原 owned 里的组（preview.js 的 restoreSnapshot），其它字段保持现在的样子：
 // 重试补写进来的值不会被撤销别的字段顺带写回旧值（W02、Y01），你自己改过的步骤也原样保留（X02）。
@@ -56,4 +58,18 @@ export function snapshot(view) {
 export function withOwned(current, entry) {
   const owned = JSON.parse(entry).owned;
   return owned ? JSON.stringify({ ...JSON.parse(current), owned }) : current;
+}
+
+// 撤销落在「重读裁剪」还没回来的时候：重做记下的框是重读完成之前的（服务器写几何时收小之前的），
+// 重做写进去会被拒。重读因为撤销的写入被丢掉重读时，丢掉的那份正是收小的框：它还对得上最上面这条重做就换上去，
+// 重做写的就是收小的框。用户之后又改过框的话，重做记录已经清空，或者界面上的框和记录对不上，什么也不换。
+export function staleCropForRedo(view, stale) {
+  const top = view.redo && view.redo.length ? view.redo.length - 1 : -1;
+  if (top < 0 || !view.crop || !stale || !stale.rect) return;
+  const entry = JSON.parse(view.redo[top]);
+  if (!(entry.owned || []).includes('geometry') || !entry.crop) return;
+  if (JSON.stringify(entry.crop.rect) !== JSON.stringify(view.crop.rect)) return;
+  if (JSON.stringify(entry.crop.rect) === JSON.stringify(fromArray(stale.rect))) return;
+  entry.crop = { ...entry.crop, rect: fromArray(stale.rect), frame: stale.frame };
+  view.redo[top] = JSON.stringify(entry);
 }

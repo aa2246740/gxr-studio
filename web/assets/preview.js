@@ -16,7 +16,7 @@ import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from '
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
 import { saveCropOrRefit } from './crop_save.js';
-import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, withOwned } from './undo_entries.js';
+import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, withOwned } from './undo_entries.js';
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
@@ -259,7 +259,7 @@ export function applyRetried(view, { kind, response, fields = [], rev = null } =
 }
 
 export async function loadCrop(view) {
-  const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`));
+  const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`), (stale) => staleCropForRedo(view, stale));
   if (live(view)) setCrop(view, c);
 }
 

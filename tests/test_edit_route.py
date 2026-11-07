@@ -598,14 +598,12 @@ def test_undoing_auto_brings_back_the_old_box_with_the_slider(tmp_path, scenario
     # 保存的回应还没到时，界面上的框和画布就已经是撤销以后的样子，「W × H」读数没有错到回应回来
     assert out["undoNow"]["rect"] == out["start"] and out["undoNow"]["frame"] == [3000, 2000]
     assert out["undoNow"]["pixels"] == "900 × 1200"
-    # 重做：画布回到 3300 × 2400，不留「有修改没有保存」
-    assert out["redoAfter"]["frame"] == [3300, 2400]
+    # 重做：当场回到收小的框和 3300 × 2400 的画布，写进去的就是收小的框，不留「有修改没有保存」。
+    # 撤销落在重读还在路上的时候，重做记下的框原来是重读完成之前的：写进去被服务器拒绝，最后变成服务器编的居中框
+    assert out["redoNow"] == {"rect": [0.35, 0.2, 0.3, 0.55], "frame": [3300, 2400], "vertical": 40}
+    assert out["redoAfter"] == {"rect": [0.35, 0.2, 0.3, 0.55], "frame": [3300, 2400]}
+    assert out["redoPuts"] == [[0.35, 0.2, 0.3, 0.55]]
     assert out["redoStatus"] in ("saved", "idle")
-    if scenario == "undo-auto-restores-box":
-        # 当场回到收小的框和 3300 × 2400 的画布，不等保存的回应
-        assert out["redoNow"] == {"rect": [0.35, 0.2, 0.3, 0.55], "frame": [3300, 2400], "vertical": 40}
-        assert out["redoAfter"]["rect"] == [0.35, 0.2, 0.3, 0.55]
-    # 重读还在路上时撤销的话，重做记下的框是重读完成之前的：写进去被服务器拒绝，改让服务器按比例重算（替身的算法是固定的框）
 
 
 def test_rotate_retries_with_the_turned_box_unless_the_server_rejects_its_shape(tmp_path):
@@ -659,3 +657,24 @@ def test_two_turns_while_the_geometry_write_is_pending_store_the_last_box(tmp_pa
     crop_puts = [p for p in out["puts"] if p[0] == "crop"]
     assert crop_puts == [["crop", final_rect]], out["puts"]
     assert out["status"] in ("saved", "idle") and out["toasts"] == []
+
+
+@pytest.mark.parametrize("scenario", ["failed-turn-retry", "lone-failed-turn", "lone-failed-turn-shape"])
+def test_retry_after_a_failed_turn_writes_the_turned_box_too(tmp_path, scenario):
+    """评审 P1：转的几何没写进去（500）。重试原来只补几何，服务器上还是转之前的框，界面上却是转好的，导出用的是服务器的。
+    最后一次转的框记在失败记录里，重试先写几何、再写框；形状被拒时照样让服务器按比例重算。"""
+    out = run(tmp_path, scenario, real=("crop.js", "correct.js"))
+    fail = out["afterFail"]
+    turned = [0.6, 0.3, 0.3, 0.6] if scenario == "failed-turn-retry" else [0.1, 0.6, 0.6, 0.3]
+    assert fail["cropPuts"] == 0 and fail["status"] == "failed" and fail["screen"] == turned
+    assert fail["serverRect"] == [0.1, 0.1, 0.3, 0.6]
+    retry = out["afterRetry"]
+    assert out["retry"] is True and retry["status"] in ("saved", "idle")
+    rotate = 2 if scenario == "failed-turn-retry" else 1
+    assert retry["serverRotate"] == rotate
+    assert retry["puts"][0] == ["edit", rotate], "先写几何"
+    if scenario == "lone-failed-turn-shape":
+        assert retry["puts"][1:] == [["crop", turned], ["crop", None]], "框的形状被拒：改让服务器重算"
+    else:
+        assert retry["puts"][1:] == [["crop", turned]]
+        assert retry["serverRect"] == turned and retry["screen"] == turned
