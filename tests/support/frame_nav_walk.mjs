@@ -30,6 +30,45 @@ const ROUNDS = [
 
 // ---- 以下在页面里跑 ----------------------------------------------------------------------------------------
 
+// 显卡预览能不能接手：打开第一张照片，等显卡画布出来。限时 boundMs（软件显卡在慢机器上建管线、传源图要好几秒，和 gpu 模式一样给 120 秒）；
+// 明显退回服务器出图的不干等，马上交出去：浏览器没有 WebGPU、没有适配器，或者引擎建起来过、之后又没了并且这样持续了 2 秒
+// （Linux 无头 Chrome：软件显卡能建设备，给画布上屏用的共享图像建不起来，页面的引擎随即失效，之后都用服务器出图）。
+async function gpuTakesOver(arg) {
+  const t0 = performance.now();
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (fn, ms) => {
+    const t = performance.now();
+    while (performance.now() - t < ms) {
+      const v = fn();
+      if (v) return v;
+      await wait(25);
+    }
+    return null;
+  };
+  const stage = await import('/assets/gpu_stage.js');
+  const listed = await (await fetch('/api/photos')).json();
+  const first = (listed.photos || listed.items || listed)[0];
+  location.hash = `#/photo/${first.id}`;
+  const adapter = navigator.gpu ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }).catch(() => null) : null;
+  if (!adapter) return { verdict: 'no-adapter', waitMs: Math.round(performance.now() - t0) };
+  let sawEngine = false;
+  let goneSince = 0;
+  const verdict = await until(() => {
+    if (document.querySelector('.stage-area.gpu .pv')) return 'gpu';
+    const e = stage.gpuEngineForTests();
+    if (e && !e.lost) {
+      sawEngine = true;
+      goneSince = 0;
+      return null;
+    }
+    if (!sawEngine) return null;
+    goneSince = goneSince || performance.now();
+    return performance.now() - goneSince > 2000 ? 'engine-lost' : null;
+  }, arg.boundMs);
+  if (verdict === 'gpu') await wait(600);
+  return { verdict: verdict || 'timeout', waitMs: Math.round(performance.now() - t0) };
+}
+
 async function inPage(arg) {
   const { round, frames, stamp, wantGpu } = arg;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -43,6 +82,7 @@ async function inPage(arg) {
     return null;
   };
   const gpuStage = await import('/assets/gpu_stage.js');
+  let sawEngine = false;
   const listed = await (await fetch('/api/photos')).json();
   const photos = (listed.photos || listed.items || listed).slice(0, round.plan.length);
   // 这一轮每张照片的边框和时间戳
@@ -127,7 +167,12 @@ async function inPage(arg) {
     const media = pv && pv.querySelector('.pv-gpu, .pv-img');
     if (!location.hash.endsWith(id) || !pv || !media) return false;
     if (tab === 'crop') return !!pv.querySelector('.crop-box');
-    if (wantGpu && !area.classList.contains('gpu')) return false;
+    if (wantGpu && !area.classList.contains('gpu')) {
+      // 走到一半显卡引擎没了（建起来过，之后失效）：不干等，照现在的样子量，断言会说「没走显卡」，而不是整段超时
+      const e = gpuStage.gpuEngineForTests();
+      if (e && !e.lost) sawEngine = true;
+      return sawEngine && (!e || e.lost);
+    }
     if (!wantGpu && media.tagName === 'IMG' && !(media.complete && media.naturalWidth)) return false;
     const decorated = !!expect.frame || !!expect.stamp;
     if (pv.classList.contains('framed') !== !!expect.frame || !!pv.querySelector('.pv-deco') !== decorated) return false;
@@ -135,8 +180,8 @@ async function inPage(arg) {
     const texty = !!expect.stamp || ['leica', 'hasselblad', 'film', 'instant'].includes(expect.frame);
     return !texty || inkOf(pv.querySelector('.pv-deco')) > 0;
   };
-  const settle = async (label, id, expect, tab) => {
-    await until(ready(id, expect, tab), 20000);
+  const settle = async (label, id, expect, tab, boundMs = 20000) => {
+    await until(ready(id, expect, tab), boundMs);
     await wait(250);
     return snap(label, { ...expect, tab: tab || 'frame', id: id.slice(-16) });
   };
@@ -148,7 +193,8 @@ async function inPage(arg) {
     at = i;
     await until(() => document.querySelector('#tab-frame') && document.querySelector('.stage-area .pv'), 30000);
     click('#tab-frame');
-    steps.push(await settle(`open #${i}`, photos[i].id, round.plan[i]));
+    // 整页刚加载：显卡要重新建、重新传源图，第一步多等一会儿（之后的每一步都很快）
+    steps.push(await settle(`open #${i}`, photos[i].id, round.plan[i], undefined, wantGpu ? 120000 : 20000));
   };
   await open(0);
   for (const move of round.path.slice(1)) {
@@ -174,7 +220,21 @@ async function inPage(arg) {
 
 // ---- 以下在 node 里跑（viewer_browser.mjs 调）----------------------------------------------------------------
 
-export async function walkRounds({ call, evalIn, origin, step, wantGpu }) {
+export async function walkRounds({ call, evalIn, origin, step, wantGpu, collectGpuDiagnostics }) {
+  let gpuWaitMs = null;
+  if (wantGpu) {
+    // 先等一次显卡接手（有上限，明显退回服务器出图的马上交出去）；接不了手就只交出一步 gpu: false 和诊断，
+    // 由测试按平台决定是跳过还是失败，不在后面一步步等 20 秒、最后整段超时
+    step('wait for the WebGPU canvas');
+    await call('Page.navigate', { url: `${origin}/?open=1&round=gpu` });
+    await new Promise((r) => setTimeout(r, 1500));
+    const took = await evalIn(`(${gpuTakesOver.toString()})(${JSON.stringify({ boundMs: 120000 })})`, 130000);
+    gpuWaitMs = took.waitMs;
+    if (took.verdict !== 'gpu') {
+      await collectGpuDiagnostics();
+      return { steps: [{ label: 'WebGPU did not take over', gpu: false, verdict: took.verdict, waitMs: took.waitMs }], gpuWaitMs };
+    }
+  }
   const all = [];
   for (const [n, round] of ROUNDS.entries()) {
     step(`walk the photos, round ${n + 1}`);
@@ -182,7 +242,7 @@ export async function walkRounds({ call, evalIn, origin, step, wantGpu }) {
     await call('Page.navigate', { url: `${origin}/?open=1&round=${n}` });
     await new Promise((r) => setTimeout(r, 1500));
     const arg = { round, frames: FRAMES, stamp: STAMP, wantGpu };
-    all.push(...await evalIn(`(${inPage.toString()})(${JSON.stringify(arg)})`, 240000));
+    all.push(...await evalIn(`(${inPage.toString()})(${JSON.stringify(arg)})`, 270000));
   }
-  return all;
+  return { steps: all, gpuWaitMs };
 }

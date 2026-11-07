@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from test_viewer_browser import drive, live  # noqa: F401  （live 是 pytest 的 fixture）
+from test_viewer_browser import cannot_present, drive, live  # noqa: F401  （live 是 pytest 的 fixture）
 
 BG = {
     "gallery": "rgb(255, 255, 255)",
@@ -101,9 +101,26 @@ def test_the_stage_survives_navigation_with_the_server_preview(live, tmp_path): 
 def test_the_stage_survives_navigation_with_the_webgpu_preview(live, tmp_path):  # noqa: F811
     out = drive(live, tmp_path, "nav-gpu")
     if not out["nav"][0].get("gpu"):
-        if sys.platform.startswith("linux"):
-            pytest.skip("Linux 无头 Chrome 的软件显卡不能把 WebGPU 画布显示出来（这一项由 macOS 强制跑）")
+        # 显卡没接手：驱动脚本先等了一次（有上限，明显退回服务器出图的马上交出去），带着和 gpu 模式一样的诊断回来；
+        # 平台怎么处理和 test_viewer_browser.py 的显卡测试一样：真的回归不能被跳过藏起来
+        keys = ("gpuWaitMs", "gpuDiag", "gpuSharedImageError", "failedBeforeClicks", "consoleBeforeClicks", "gpuChromeLog")
+        detail = json.dumps({"verdict": out["nav"][0].get("verdict"), **{k: out.get(k) for k in keys}}, ensure_ascii=False)
+        if sys.platform.startswith("linux") and cannot_present(out):
+            # GitHub 的 Linux 机器没有显卡：软件显卡能建 WebGPU 设备，但 Chrome 给画布上屏要的共享图像建不起来，
+            # 页面的引擎随即失效、退回服务器出图（产品该有的退路）。这一项由 macOS 的 tests 任务强制跑（GXR_REQUIRE_GPU_TEST=1）。
+            pytest.skip(f"Linux 无头 Chrome 的软件显卡不能把 WebGPU 画布显示出来：{detail}")
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
-            pytest.fail("GXR_REQUIRE_GPU_TEST=1，但大图没有走显卡预览")
-        pytest.skip("这台机器的 Chrome 没有走显卡预览")
+            pytest.fail(f"GXR_REQUIRE_GPU_TEST=1，但大图没有走显卡预览：{detail}")
+        pytest.skip(f"这台机器的 Chrome 没有走显卡预览：{detail}")
     check_walk(out, gpu=True)
+
+
+def test_the_gpu_walk_reports_a_missing_gpu_instead_of_timing_out(live, tmp_path):  # noqa: F811
+    """显卡接不了手的机器（Linux 无头 Chrome 的软件显卡能建设备却不能上屏，页面退回服务器出图）上，
+    nav-gpu 模式原来在每一步等 20 秒，最后整段 evaluate 超时，轮不到测试去跳过。现在先等一次、马上交出「没走显卡」和诊断。
+    这里让页面没有 navigator.gpu，在任何机器上走一遍这条路：很快回来，诊断在。"""
+    out = drive(live, tmp_path, "nav-gpu", {"NAV_NO_WEBGPU": "1"})
+    assert len(out["nav"]) == 1 and out["nav"][0]["gpu"] is False, out["nav"]
+    assert out["nav"][0]["verdict"] == "no-adapter" and out["nav"][0]["waitMs"] < 30000, out["nav"]
+    assert out["gpuDiag"]["navigatorGpu"] is False and out["gpuSharedImageError"] is False, out["gpuDiag"]
+    assert not cannot_present(out)  # 页面没有 WebGPU 不等于「建得了设备、上不了屏」：Linux 跳过的条件不会被它满足

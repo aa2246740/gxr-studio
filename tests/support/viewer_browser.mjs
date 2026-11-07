@@ -209,8 +209,49 @@ try {
   step('open with token');
   await call('Page.navigate', { url: `${origin}/?token=${token}` });
   await sleep(1500);
+  // NAV_NO_WEBGPU=1：页面里没有 navigator.gpu（走一遍「显卡接不了手」的路，不管这台机器有没有显卡）
+  if (process.env.NAV_NO_WEBGPU) await call('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true })" });
   step('set preview preference');
   await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${/gpu$/.test(mode) ? 'on' : 'off'}'); true`);
+  // 没走显卡时把判断用到的几样东西都交出去（开关、本机选择、适配器、这张照片的 /gpu、引擎能不能建、Chrome 日志里有没有共享图像的错）：
+  // gpu 模式和 nav-gpu 模式共用
+  const collectGpuDiagnostics = async () => {
+    step('collect WebGPU diagnostics');
+    out.gpuDiag = await evalIn(`(async () => {
+      const d = { navigatorGpu: !!navigator.gpu, pref: localStorage.getItem('gxr-studio.gpu-preview') };
+      try { d.flag = (await (await fetch('/api/settings')).json()).gpu_preview; } catch (e) { d.settingsError = String(e); }
+      try { const g = await (await fetch('/api/photos/${photoId}/gpu')).json(); d.photo = { enabled: g.enabled, keys: Object.keys(g).slice(0, 24) }; } catch (e) { d.photoError = String(e); }
+      try {
+        const a = navigator.gpu ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) : null;
+        d.adapter = a ? { vendor: a.info?.vendor, architecture: a.info?.architecture, description: a.info?.description, fallback: a.info?.isFallbackAdapter } : null;
+      } catch (e) { d.adapterError = String(e); }
+      try { const m = await import('/assets/gpu/engine.js'); d.engine = (await m.Engine.create()) ? 'created' : 'null'; } catch (e) { d.engineError = String(e).slice(0, 300); }
+      // 页面自己的那台引擎（和页面同一个模块实例）：没建起来，还是建了又丢了（设备丢失后整个会话都走服务器）
+      try {
+        const st = await import('/assets/gpu_stage.js');
+        const e = st.gpuEngineForTests();
+        d.pageEngine = e ? { lost: !!e.lost, currentKey: typeof e.currentKey === 'function' ? e.currentKey() : null } : null;
+      } catch (e) { d.pageEngineError = String(e).slice(0, 300); }
+      // 照片的 JPG 源图：照页面的做法取回来、解码
+      try {
+        const g = await (await fetch('/api/photos/${photoId}/gpu')).json();
+        if (g.jpg) {
+          const res = await fetch(g.jpg.url, { credentials: 'same-origin' });
+          d.jpgStatus = res.status;
+          const bm = await createImageBitmap(await res.blob(), { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+          d.jpgBitmap = [bm.width, bm.height];
+          bm.close();
+        }
+        d.photoRaw = g.raw ? 'layout' : g.raw_reason;
+      } catch (e) { d.jpgError = String(e).slice(0, 300); }
+      d.stage = { classes: document.querySelector('.stage-area, .stage')?.className || null, img: !!document.querySelector('.pv-img'), canvas: !!document.querySelector('canvas') };
+      return d;
+    })()`, 60000).catch((e) => ({ diagError: String(e) }));
+    out.gpuChromeLog = gpuLogLines();
+    out.gpuSharedImageError = /Unable to create shared image|SharedImageBackingFactory/.test(chromeTail.full());
+    out.failedBeforeClicks = [...out.failedRequests];
+    out.consoleBeforeClicks = [...out.console];
+  };
   if (mode === 'layout') {
     // 边框和时间戳的版面在真 Chrome 里算：字体表从服务器下载（和导出读的是同一份），版面只用表里的整数，交给 Python 的结果对
     step('load the font tables and lay out');
@@ -230,7 +271,9 @@ try {
   }
   if (mode.startsWith('nav-')) {
     // 换照片、换边框、进出裁剪、100%：每一步之后大图还在不在（tests/support/frame_nav_walk.mjs）
-    out.nav = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu' });
+    const walked = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu', collectGpuDiagnostics });
+    out.nav = walked.steps;
+    out.gpuWaitMs = walked.gpuWaitMs;
     out.ready = true;
     await finish(0);
   }
@@ -286,44 +329,7 @@ try {
     })()`, 130000);
   }
   out.gpu = await evalIn(`!!document.querySelector('.gpu')`);
-  if (mode === 'gpu' && !out.gpu) {
-    // 没走显卡：把判断用到的几样东西都交出去（开关、本机选择、适配器、这张照片的 /gpu、引擎能不能建）
-    step('collect WebGPU diagnostics');
-    out.gpuDiag = await evalIn(`(async () => {
-      const d = { navigatorGpu: !!navigator.gpu, pref: localStorage.getItem('gxr-studio.gpu-preview') };
-      try { d.flag = (await (await fetch('/api/settings')).json()).gpu_preview; } catch (e) { d.settingsError = String(e); }
-      try { const g = await (await fetch('/api/photos/${photoId}/gpu')).json(); d.photo = { enabled: g.enabled, keys: Object.keys(g).slice(0, 24) }; } catch (e) { d.photoError = String(e); }
-      try {
-        const a = navigator.gpu ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) : null;
-        d.adapter = a ? { vendor: a.info?.vendor, architecture: a.info?.architecture, description: a.info?.description, fallback: a.info?.isFallbackAdapter } : null;
-      } catch (e) { d.adapterError = String(e); }
-      try { const m = await import('/assets/gpu/engine.js'); d.engine = (await m.Engine.create()) ? 'created' : 'null'; } catch (e) { d.engineError = String(e).slice(0, 300); }
-      // 页面自己的那台引擎（和页面同一个模块实例）：没建起来，还是建了又丢了（设备丢失后整个会话都走服务器）
-      try {
-        const st = await import('/assets/gpu_stage.js');
-        const e = st.gpuEngineForTests();
-        d.pageEngine = e ? { lost: !!e.lost, currentKey: typeof e.currentKey === 'function' ? e.currentKey() : null } : null;
-      } catch (e) { d.pageEngineError = String(e).slice(0, 300); }
-      // 照片的 JPG 源图：照页面的做法取回来、解码
-      try {
-        const g = await (await fetch('/api/photos/${photoId}/gpu')).json();
-        if (g.jpg) {
-          const res = await fetch(g.jpg.url, { credentials: 'same-origin' });
-          d.jpgStatus = res.status;
-          const bm = await createImageBitmap(await res.blob(), { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-          d.jpgBitmap = [bm.width, bm.height];
-          bm.close();
-        }
-        d.photoRaw = g.raw ? 'layout' : g.raw_reason;
-      } catch (e) { d.jpgError = String(e).slice(0, 300); }
-      d.stage = { classes: document.querySelector('.stage-area, .stage')?.className || null, img: !!document.querySelector('.pv-img'), canvas: !!document.querySelector('canvas') };
-      return d;
-    })()`, 60000).catch((e) => ({ diagError: String(e) }));
-    out.gpuChromeLog = gpuLogLines();
-    out.gpuSharedImageError = /Unable to create shared image|SharedImageBackingFactory/.test(chromeTail.full());
-    out.failedBeforeClicks = [...out.failedRequests];
-    out.consoleBeforeClicks = [...out.console];
-  }
+  if (mode === 'gpu' && !out.gpu) await collectGpuDiagnostics();
   out.boxAfterEnter = await evalIn(`(() => { ${helpers} return boxRect(); })()`);
 
   if (process.env.VIEWER_SCENARIO === 'edit-fixes') {
