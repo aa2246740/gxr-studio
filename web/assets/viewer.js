@@ -23,11 +23,9 @@ import {
 import { fetchAllPhotos } from './photos.js';
 import { delayed, busyButton, SHOW_AFTER_MS } from './busy.js';
 import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
+import { createHistogram } from './histogram.js';
 
-const zeroAdj = () => ({
-  exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0,
-  warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0,
-});
+const zeroAdj = () => ({ exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 });
 
 // [id, 名称, 快捷键, 图标]。「导出」不再是标签，改成对话框（⌘E）；第六个是「信息」（I）
 export const TABS = [
@@ -622,10 +620,11 @@ function buildLayout(root, photo) {
   }
   tablist.addEventListener('keydown', onTabKey);
   const panelFoot = h('div', { class: 'panel-foot' });
-  const panelEl = h('aside', { class: 'panel', 'aria-label': '编辑' }, tablist, body, panelFoot);
+  const histogram = createHistogram();
+  const panelEl = h('aside', { class: 'panel', 'aria-label': '编辑' }, histogram.el, tablist, body, panelFoot);
   const editor = h('section', { class: 'editor', 'aria-label': photo.name }, stageCol, panelEl);
   root.replaceChildren(editor);
-  return { stageArea, labelsEl, progressEl, viewbar, film, stageCol, tabBtns, panes, panelFoot, panelEl, editor };
+  return { stageArea, labelsEl, progressEl, viewbar, film, stageCol, tabBtns, panes, panelFoot, panelEl, editor, histogram };
 }
 
 // isCurrent：路由层给的「我还是当前路由吗」（R11）。每次 await 回来、改页面或装快捷键之前都先问一次，
@@ -674,6 +673,7 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   };
   const v = view;
   v.stageCol.dataset.bg = bg;
+  v.histogram.attach(v);
   v.onChange = () => {
     if (view !== v) return;
     paintProgress(v);

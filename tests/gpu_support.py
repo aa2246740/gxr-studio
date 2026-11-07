@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "web" / "assets" / "gpu" / "engine.js"
 HARNESS = Path(__file__).resolve().parent / "support" / "gpu_harness.mjs"
 PAGE = b'<!doctype html><meta charset="utf-8"><script type="module" src="/harness.mjs"></script>'
-TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".jpg": "image/jpeg"}
+TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".jpg": "image/jpeg", ".png": "image/png"}
 
 _CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -57,8 +57,8 @@ def require_chrome() -> str:
 
 
 class _Server:
-    def __init__(self, files: dict[str, bytes]) -> None:
-        self.files = {"/": PAGE, "/harness.mjs": HARNESS.read_bytes(), "/engine.js": ENGINE.read_bytes(), **files}
+    def __init__(self, files: dict[str, bytes], harness: Path = HARNESS) -> None:
+        self.files = {"/": PAGE, "/harness.mjs": harness.read_bytes(), "/engine.js": ENGINE.read_bytes(), **files}
         self.results: dict[str, tuple[int, int, bytes]] = {}
         self.done = threading.Event()
         self.summary: dict[str, Any] = {}
@@ -113,7 +113,7 @@ class _Server:
 
 
 def run_engine(
-    tmp_path: Path, files: dict[str, bytes], cases: list[dict[str, Any]], timeout: float = 180.0
+    tmp_path: Path, files: dict[str, bytes], cases: list[dict[str, Any]], timeout: float = 180.0, harness: Path = HARNESS
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     """跑一组用例，返回 {用例 id: (h, w, 3) uint8} 和页面的总结（适配器信息或错误）。"""
     chrome = require_chrome()
@@ -140,7 +140,7 @@ def run_engine(
             "--enable-logging",
             f"--log-file={tmp_path / 'chrome-internal.log'}",
         ]
-    with _Server(files) as srv, (tmp_path / "chrome.log").open("wb") as stderr:
+    with _Server(files, harness) as srv, (tmp_path / "chrome.log").open("wb") as stderr:
         proc = subprocess.Popen([*args, srv.url], stdout=subprocess.DEVNULL, stderr=stderr)  # noqa: S603
         try:
             finished = srv.done.wait(timeout)

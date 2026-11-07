@@ -1,7 +1,10 @@
 // 第三遍：成片纹理 → 画布。按显示比例缩放；缩小时 2×2 超采样，避免锯齿。只影响显示，不影响读回。
+// 溢出提示（J）：把暗部压死的点盖成蓝色、高光溢出的点盖成红色。判定与 histogram_math.js 的 isCrushed / isBlown 相同
+// （码值 ≤ clip.x 或 ≥ clip.y），颜色与 SHADOW_RGB / HIGHLIGHT_RGB 相同。
 struct V {
   map: vec4f,   // 画布像素 → 成片像素：缩放、偏移 x、偏移 y、背景灰度
   size: vec4f,  // 成片宽、高
+  clip: vec4f,  // 暗部上限 + 0.5、高光下限 − 0.5（码值）、盖暗部（1）、盖高光（1）
 };
 @group(0) @binding(0) var<uniform> v: V;
 @group(0) @binding(1) var finalTex: texture_2d<f32>;
@@ -27,5 +30,8 @@ struct V {
   } else {
     c = textureSampleLevel(finalTex, smp, q * inv, 0.0).xyz;
   }
+  let code = c * 255.0;
+  if (v.clip.z > 0.5 && max(code.x, max(code.y, code.z)) < v.clip.x) { return vec4f(40.0 / 255.0, 110.0 / 255.0, 1.0, 1.0); }
+  if (v.clip.w > 0.5 && min(code.x, min(code.y, code.z)) > v.clip.y) { return vec4f(1.0, 50.0 / 255.0, 40.0 / 255.0, 1.0); }
   return vec4f(c, 1.0);
 }

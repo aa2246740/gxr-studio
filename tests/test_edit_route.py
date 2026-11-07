@@ -23,6 +23,13 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没�
 # 只是被 viewer.js 引进来、和保存与路由无关的模块：按真文件导出的名字生成空实现
 STUBBED = ("recipes.js", "adjust.js", "crop.js", "correct.js", "frame_panel.js", "stamp_panel.js", "stage.js", "gallery.js", "lut_library.js")
 EXPORT_RE = re.compile(r"^export\s+(?:async\s+)?(function\*?|const|let|class)\s+(\w+)", re.M)
+# 直方图面板：viewer.js 要的是 { el, attach }，通用替身只给一个空 div。它要 MutationObserver 和定时器，这里的假页面没有也不需要；
+# 它自己的行为在 tests/test_histogram_browser.py 里用真浏览器测
+HISTOGRAM_STUB = (
+    "export function createHistogram() { return { el: document.createElement('div'), attach() {}, toggleClip() { return false; } }; }\n"
+    "export function histogramState() { return null; }\n"
+    "export function clipTitle() { return ''; }\n"
+)
 
 
 def _stub(source: str) -> str:
@@ -43,6 +50,8 @@ def run(tmp_path: Path, scenario: str, real: tuple[str, ...] = ()) -> dict:
     for src in ASSETS.glob("*.js"):
         text = src.read_text(encoding="utf-8")
         stub = src.name in STUBBED and src.name not in real
+        if src.name == "histogram.js" and src.name not in real:
+            text = HISTOGRAM_STUB
         (folder / src.name).write_text(_stub(text) if stub else text, encoding="utf-8")
     (folder / "gpu").mkdir()
     engine = "export class Engine { static async create() { throw new Error('no gpu'); } }\n"
