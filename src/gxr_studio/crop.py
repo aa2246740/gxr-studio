@@ -137,15 +137,24 @@ def fit_target_crop(preset: str, rect: Any, angle_deg: float, width: int, height
         raise CropError("bad_rect", "裁剪框超出画面范围") from None
     if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0:
         raise CropError("bad_rect", "裁剪框超出画面范围")
-    # 太小的目标（API 能给到，界面的最小框拦着）：以中心为准放大到够收一个合格框——按预设比例收完短边也不能小于 MIN_SIDE_PX
+    # 太小的目标（API 能给到，界面的最小框拦着）：以中心为准放大到够收一个合格框——按预设比例收完短边也不能小于 MIN_SIDE_PX。
+    # 横竖不变，只补不够的那一边：收框的横竖跟着目标框，把两边都放大到长边那么长，会把窄的目标变成方的、再变成反方向的大框
+    tw_px, th_px = w * width, h * height
+    long_side, short_side = float(MIN_SIDE_PX), float(MIN_SIDE_PX)
     ratio = target_ratio(preset, width, height)
-    # 定比例的预设收出来的是比例分子分母的整数倍：短边够 MIN_SIDE_PX 的最小一块，目标至少要这么大
-    need = float(MIN_SIDE_PX)
-    if ratio is not None:
+    if preset == "original":
+        # 原始不是整数倍：收的时候用浮点的画布比例（clamp_norm_rect 的 aspect）；分子分母是互质的大整数（例如 660×503），不能拿来算
+        aspect = width / height
+        long_side = float(math.ceil(MIN_SIDE_PX * max(aspect, 1 / aspect)) + 1)
+        short_side = float(MIN_SIDE_PX + 1)
+    elif ratio is not None:
+        # 定比例的预设收出来的是比例分子分母的整数倍：短边够 MIN_SIDE_PX 的最小一块
         small, big = sorted((ratio.numerator, ratio.denominator))
-        need = float(-(-MIN_SIDE_PX // small) * big)
+        k = -(-MIN_SIDE_PX // small)
+        long_side, short_side = float(k * big), float(k * small)
+    need_w, need_h = (long_side, short_side) if tw_px >= th_px else (short_side, long_side)
     cx, cy = x + w / 2, y + h / 2
-    w, h = min(max(w, need / width), 1.0), min(max(h, need / height), 1.0)
+    w, h = min(max(w, need_w / width), 1.0), min(max(h, need_h / height), 1.0)
     x, y = min(max(cx - w / 2, 0.0), 1.0 - w), min(max(cy - h / 2, 0.0), 1.0 - h)
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 

@@ -3,7 +3,7 @@
 前端（viewer / preview / correct / crop / saves / undo）在 node 里真跑；服务器是真的：这里起一个真服务器（真的路由、sidecar、
 收框、校验，合成的假卡里一张 640×480 的照片），node 这一头的「替身」只在请求前加随机延迟、挂住、500、rev_conflict，其余原样转发。
 写编辑、写框走 tests/support/fit_checks.py 的包装路由：先调用真正的处理函数，再用真代码检查写下去的框。
-每条序列 6–10 步，从旋转、翻转、垂直 / 水平 / 畸变滑块、拉直、自动、点比例、挪框、撤销、重做、重试、等写完里抽
+每条序列 6–10 步，从旋转、翻转、垂直 / 水平 / 畸变滑块、拉直、自动、点比例、挪框、缩放、撤销、重做、重试、等写完里抽
 （比例包括原始、自由、1:1、4:5、3:2、16:9、XPan 65:24、1.91:1、小红书 3:4；界面的比例菜单里没有 16:10、2.35:1，所以不抽）。
 
 每条序列等写完（重试到记录清空）以后必须：
@@ -15,6 +15,7 @@
 - 最后停下来的状态是用户见过的，或者见过的框被服务器收小的结果；写完以后撤销、重做，也只走到这样的状态。
 
 用法：想多跑一些（或换一段种子），设 `GXR_FUZZ_SEEDS=起始:条数`，例如 `GXR_FUZZ_SEEDS=1000:300`。
+进程数：`GXR_FUZZ_JOBS`（CI 设 4）；没设时机器负载 5 以上用 1 个，不然 4 个。
 """
 
 from __future__ import annotations
@@ -43,6 +44,17 @@ from test_edit_route import SUPPORT, prepare
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node，跳过前端随机测试")
 
 CHUNK = 20  # 一个 node 进程跑的条数：每条序列都开一张新照片，太多会撑大内存
+
+
+def jobs(available: int) -> int:
+    """同时跑几个 node 进程。GXR_FUZZ_JOBS 优先（CI 设成 4）；没设就看机器忙不忙：1 分钟负载 5 以上只跑 1 个，不然 4 个。
+    种子按块固定（块的起点和条数不随进程数变），所以进程数不影响结果。"""
+    wanted = os.environ.get("GXR_FUZZ_JOBS")
+    if wanted:
+        return max(1, min(int(wanted), available))
+    return 1 if os.getloadavg()[0] >= 5 else min(4, available)
+
+
 START, COUNT = (int(x) for x in os.environ.get("GXR_FUZZ_SEEDS", "1:200").split(":"))
 
 
@@ -74,7 +86,12 @@ def server(settings, card):
 
 
 def _run(tmp_path: Path, folder: Path, server: dict, start: int, count: int, trace: bool = False, photo: str | None = None) -> dict:
-    env = {"PATH": os.environ.get("PATH", ""), "FUZZ_KEEP": "500", **({"FUZZ_TRACE": "1"} if trace else {})}
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "FUZZ_KEEP": "500",
+        **({"FUZZ_TRACE": "1"} if trace else {}),
+        **{k: v for k, v in os.environ.items() if k == "FUZZ_TRACE_ALL"},
+    }
     res = subprocess.run(  # noqa: S603
         [  # noqa: S607
             "node",
@@ -114,7 +131,7 @@ def test_random_crop_and_geometry_interleavings_end_consistent(tmp_path, server)
         finally:
             free.put(shot)
 
-    with ThreadPoolExecutor(max_workers=len(photos)) as pool:
+    with ThreadPoolExecutor(max_workers=jobs(len(photos))) as pool:
         outs = list(pool.map(work, chunks))
     failures: list[dict] = [f for out in outs for f in out["failures"]]
     total = sum(out["sequences"] for out in outs)

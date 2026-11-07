@@ -4,7 +4,7 @@
 // 在请求前加随机延迟、挂住（等放行）、500、rev_conflict（409，不转发，服务器上什么也没变），其余原样转发给真服务器。
 // 写编辑、写框走测试专用的包装路由（tests/support/fit_checks.py）：先调用真正的处理函数，再用真代码检查写下去的框
 // （能不能通过 validate_crop、有没有落在有效区里、fit 有没有保留中心、有没有收得比必要的更小）。
-// 每条序列 6–10 步，从这些里抽：旋转、翻转、垂直 / 水平 / 畸变滑块、拉直、自动、点比例、挪框、撤销、重做、重试、等写完（settle）。
+// 每条序列 6–10 步，从这些里抽：旋转、翻转、垂直 / 水平 / 畸变滑块、拉直、自动、点比例、挪框、缩放（框变小，原始也一样）、撤销、重做、重试、等写完（settle）。
 // 同一串步骤再在「没有故障、每步等写完」的理想情形下跑一遍。
 // 用法：node edit_fuzz.mjs <模块目录> <起始种子> <条数> <端口> <令牌> <照片 id>。输出一行 JSON，断言在 Python 那边。
 import { pathToFileURL } from 'node:url';
@@ -194,12 +194,20 @@ const ITEMS = [
 
 function makeSteps(seed) {
   const r = rng(seed * 7919 + 13);
-  const n = 6 + Math.floor(r() * 5);
+  const n = (seed % 4 === 2 ? 8 : 6) + Math.floor(r() * 5);
   const steps = [];
   // 开头先摆一个有位置的框，后面的步骤才有「用户摆好的框」可以丢
-  steps.push(['ratio', pick(r, ITEMS.filter((i) => i.id !== 'original'))]);
-  steps.push(['nudge', (r() - 0.5) * 0.1, (r() - 0.5) * 0.1]);
-  const kinds = ['rotate', 'rotate', 'flip', 'slider', 'slider', 'straighten', 'auto', 'ratio', 'nudge', 'undo', 'undo', 'redo', 'retry', 'settle'];
+  if (seed % 4 === 2) {
+    // 原始 + 比例分子分母很大的画布（透视拉开后的尺寸多半互质）：缩小、挪开，再让后面的步骤（转、撤销、重做）用 fit 写这个框
+    steps.push(['slider', pick(r, ['vertical', 'horizontal', 'distortion']), pick(r, [20, 40, 80])]);
+    steps.push(['ratio', ITEMS[0]]);
+    steps.push(['zoom', pick(r, [40, 55, 70])]);
+    steps.push(['nudge', (r() - 0.5) * 0.4, (r() - 0.5) * 0.4]);
+  } else {
+    steps.push(['ratio', pick(r, ITEMS.filter((i) => i.id !== 'original'))]);
+    steps.push(['nudge', (r() - 0.5) * 0.1, (r() - 0.5) * 0.1]);
+  }
+  const kinds = ['rotate', 'rotate', 'flip', 'slider', 'slider', 'straighten', 'auto', 'ratio', 'ratio', 'nudge', 'zoom', 'zoom', 'undo', 'undo', 'redo', 'retry', 'settle'];
   while (steps.length < n) {
     const kind = pick(r, kinds);
     if (kind === 'slider') steps.push(['slider', pick(r, ['vertical', 'horizontal', 'distortion']), pick(r, [-60, -30, 0, 20, 40, 80])]);
@@ -207,6 +215,7 @@ function makeSteps(seed) {
     else if (kind === 'auto') steps.push(['auto', pick(r, [0, 1.5, 4]), pick(r, [0, 8, 40])]);
     else if (kind === 'ratio') steps.push(['ratio', pick(r, ITEMS)]);
     else if (kind === 'nudge') steps.push(['nudge', (r() - 0.5) * 0.2, (r() - 0.5) * 0.2]);
+    else if (kind === 'zoom') steps.push(['zoom', pick(r, [40, 55, 70, 85])]);
     else steps.push([kind]);
   }
   return steps;
@@ -338,7 +347,8 @@ async function runSequence(seed, steps, { ideal }) {
       v.crop.rect = cropMod.fitCrop(v, geom.moveRect(r0, a, b)).rect;
       v.onRectDrag?.();
       pending.push(preview.saveCrop(v, cropMod.cropBody(v, { preset: v.crop.preset, rect: cropMod.rectArray(v.crop.rect) }, cropMod.orientationNow(v))));
-    } else if (kind === 'undo') preview.undoChange(v);
+    } else if (kind === 'zoom') pending.push(cropMod.applyZoom(v, a));
+    else if (kind === 'undo') preview.undoChange(v);
     else if (kind === 'redo') preview.redoChange(v);
     else if (kind === 'retry') pending.push(preview.retrySaves(id));
   };
@@ -440,7 +450,8 @@ for (let seed = seedStart; seed < seedStart + count; seed += 1) {
   // 就不记一步撤销（理想情形里框已经跟上，挪动了，记了一步），两边的撤销记录不一样长，撤销撤掉的步骤不同，几何本来就可以不同。
   // 含自动的、有重叠或故障的不和理想情形比：自动的结果要等分析回来才落到几何上，期间用户做的别的操作先写进去，
   // 最后写进去的才算数（例如自动之后又拖垂直，理想情形是拖的算数，真实情形里自动的结果晚到、反而盖掉它），几何本来就可以不同
-  if (problems.length) failures.push({ seed, steps: steps.map((s) => JSON.stringify(s)), problems, history: real.history, trace: process.env.FUZZ_TRACE ? real.trace : undefined });
+  if (!problems.length && process.env.FUZZ_TRACE_ALL) problems.push('(只是要看请求记录)');
+  if (problems.length) failures.push({ seed, steps: steps.map((s) => JSON.stringify(s)), problems, history: real.history, trace: process.env.FUZZ_TRACE || process.env.FUZZ_TRACE_ALL ? real.trace : undefined });
   done += 1;
 }
 console.log(JSON.stringify({ sequences: count, failures: failures.slice(0, Number(process.env.FUZZ_KEEP || 12)), failed: failures.length, done, serialCompared }));

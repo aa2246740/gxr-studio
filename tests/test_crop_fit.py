@@ -146,3 +146,75 @@ def test_a_geometry_write_that_changes_the_canvas_size_refits_the_box(client, sh
     px = stored["pixels"]
     assert abs(px["width"] / px["height"] - 4 / 3) < 0.013, px
     assert put(client, shot, preset="4:3", rect=stored["rect"]).status_code == 200
+
+
+def _fit_original(width: int, height: int, geometry, target):
+    from gxr_studio.crop import crop_box, fit_target_crop
+    from gxr_studio.finish.geometry import fitted_crop, output_size
+
+    w, h = output_size(width, height, geometry)
+    grown = fit_target_crop("original", target, geometry.straighten, w, h)
+    rect = fitted_crop(geometry, grown.rect, preset="original", width=width, height=height, force=True)
+    assert rect is not None
+    return w, h, rect, crop_box(rect, w, h)
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "vertical"),
+    [(4288, 2848, 0), (4301, 2860, 0), (4301, 2861, 0), (640, 481, 0), (640, 480, 40), (640, 480, -60), (4288, 2848, 80)],
+)
+def test_original_target_keeps_its_place_and_size_on_any_canvas(width, height, vertical):
+    """评审（自己查出来的）P1：原始的比例是画布的宽高比，分子分母互质时是大整数。放大太小目标的规则用它算，
+    任何目标都被放大成整张画面（位置丢了）。透视、畸变的画布尺寸来自 output_size，多半就是互质的。"""
+    from gxr_studio.finish.spec import Geometry
+
+    geometry = Geometry(vertical=vertical)
+    target = [0.6, 0.6, 0.2, 0.2]
+    w, h, rect, (x, y, bw, bh) = _fit_original(width, height, geometry, target)
+    # 目标的比例不是画布的：收成目标里最大的、画布比例的框，中心不动，不比目标大
+    assert bw <= round(0.2 * w) + 1 and bh <= round(0.2 * h) + 1, (w, h, rect)
+    assert abs((x + bw / 2) - 0.7 * w) <= 2 and abs((y + bh / 2) - 0.7 * h) <= 2, (w, h, rect)
+    assert abs(bw / bh - w / h) / (w / h) < 0.01
+    # 已经是画布比例的目标：位置和大小都不变（1 像素以内）
+    keep = [0.55, 0.5, 0.2, 0.2]  # 归一化的宽高相等，像素上就是画布的比例
+    _w, _h, _rect, (kx, ky, kw, kh) = _fit_original(width, height, geometry, keep)
+    assert abs(kx - round(0.55 * w)) <= 1 and abs(ky - round(0.5 * h)) <= 1 and abs(kw - round(0.2 * w)) <= 2 and abs(kh - round(0.2 * h)) <= 2
+
+
+@pytest.mark.parametrize("size", [(4288, 2848), (4301, 2861), (640, 481), (660, 503)])
+def test_a_tiny_original_target_grows_around_its_centre(size):
+    from gxr_studio.finish.spec import Geometry
+
+    w, h, _rect, (x, y, bw, bh) = _fit_original(size[0], size[1], Geometry(), [0.4, 0.4, 0.004, 0.004])
+    assert min(bw, bh) >= 16, (bw, bh)
+    assert abs((x + bw / 2) - 0.402 * w) <= 3 and abs((y + bh / 2) - 0.402 * h) <= 3, "放大是以中心为准的，不是变成整张画面"
+    assert bw < 0.2 * w
+
+
+def test_original_on_a_perspective_canvas_keeps_the_target_through_the_api(client, shot):
+    assert put(client, shot, preset="original", rect=[0, 0, 1, 1]).status_code == 200
+    assert client.put(f"/api/photos/{shot['id']}/edit", json={"geometry": {"vertical": 40}}).status_code == 200
+    out = put(client, shot, preset="original", rect=[0.6, 0.6, 0.2, 0.2], fit=True)
+    assert out.status_code == 200, out.text
+    px, frame = out.json()["pixels"], out.json()["frame"]
+    assert abs(px["x"] + px["width"] / 2 - 0.7 * frame["width"]) <= 2 and px["width"] <= 0.2 * frame["width"] + 1
+
+
+@pytest.mark.parametrize("preset", ["original", "free", "1:1", "4:5", "3:2", "16:9", "16:10", "1.91:1", "2.35:1", "xpan-65-24"])
+@pytest.mark.parametrize("size", [(640, 480), (480, 640), (508, 649), (660, 503)])
+def test_a_normal_target_is_never_made_bigger(preset, size):
+    """评审（自己查出来的）：放大太小目标的规则只能补不够的那一边，横竖不变。
+    1.91:1 的分子是 191：竖画布上 100×191 的目标原来被放大成 191×191，收成了横的 191×100，比目标还大。"""
+    from gxr_studio.crop import crop_box, fit_target_crop
+    from gxr_studio.finish.geometry import fitted_crop
+    from gxr_studio.finish.spec import Geometry
+
+    width, height = size
+    for target in ([0.3, 0.2, 0.4, 0.6], [0.2, 0.3, 0.6, 0.4]):  # 竖的、横的（都比任何预设的最小框大）
+        grown = fit_target_crop(preset, target, 0.0, width, height)
+        assert grown.rect == pytest.approx(tuple(target)), (preset, size, grown.rect)
+        rect = fitted_crop(Geometry(), grown.rect, preset=preset, width=width, height=height, force=True)
+        assert rect is not None
+        x, y, bw, bh = crop_box(rect, width, height)
+        assert bw <= round(target[2] * width) + 1 and bh <= round(target[3] * height) + 1, (preset, size, target, (bw, bh))
+        assert (bw >= bh) == (target[2] * width >= target[3] * height) or preset in ("free", "1:1"), (preset, size, target, (bw, bh))

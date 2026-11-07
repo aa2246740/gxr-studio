@@ -1,7 +1,7 @@
 """随机交错测试（edit_fuzz.mjs）用的测试专用路由，装在真服务器上。
 
 写编辑、写框先调用真正的处理函数（路由、sidecar、收框、校验都是真的），再用真代码检查写下去的框：
-- `fit` 写进去的框：落在有效区里（`warp_valid` + `window_full`）；
+- `fit` 写进去的框：落在有效区里（`warp_valid` + `window_full`）；不比请求里的目标大（收只会缩小，太小的目标除外）；
   中心保留（目标中心处放同样大小的框如果放得下，结果的中心就必须在那里，差不超过 2 像素）；
   收得不比必要的更小（定比例的预设：下一档整数倍放不放得下；自由、原始：放大 2% 放不放得下）。
 - 写完以后（`stored-check`）存下来的框必须通得过严格校验 `validate_crop(..., mirrored=flip)`。
@@ -78,6 +78,8 @@ def fit_problems(side: dict[Any, Any], target: list[float], preset: str, result:
     if window_full(valid, hx, hy, bw, bh) and (abs(x - hx) > 2 or abs(y - hy) > 2):
         out.append(f"fit 把中心移开了：目标中心 ({cx:.0f},{cy:.0f}) 同样大小放得下，结果在 ({x + bw / 2:.0f},{y + bh / 2:.0f})")
     limit_w, limit_h = min(w, max(1, round(tw * w))), min(h, max(1, round(th * h)))
+    if bw > limit_w + 2 or bh > limit_h + 2:  # 收只会缩小：结果比请求里的目标还大，说明目标被放大过头了
+        out.append(f"fit 把框放大了：请求的目标是 {limit_w}×{limit_h}，结果是 {bw}×{bh}")
     base = cropmod.PRESETS.get(preset)
     if base is not None and preset != "original":
         ratio = cropmod.target_ratio(preset, w, h)
