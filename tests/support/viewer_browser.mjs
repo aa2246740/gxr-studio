@@ -403,6 +403,10 @@ try {
     const card = (name) => [...document.querySelectorAll('.fcard')].find((x) => x.textContent.trim() === name);
     const renders = () => performance.getEntriesByType('resource').filter((e) => /\\/render\\b/.test(e.name)).length;
     const renders0 = renders();
+    // 这台机器此刻一帧要多久（机器忙时每帧会拖长）：下面几个「当帧画出来」的耗时按它放宽门槛，见 test_viewer_browser.py
+    const gaps = [];
+    for (let last = performance.now(), i = 0; i < 9; i += 1) { await raf(); const now = performance.now(); gaps.push(now - last); last = now; }
+    const frameMs = Math.round(gaps.sort((a, b) => a - b)[4]);
     const styleMs = {};
     for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '画布', '白边']) {
       styleMs[name] = await timed(() => card(name).click());
@@ -431,15 +435,21 @@ try {
     const key = () => document.querySelector('.pv .pv-deco')?.dataset.key;
     const puts0 = edits.length;
     const k0 = key();
-    const typeMs = await timed(() => { input.value = 'Pa'; input.dispatchEvent(new Event('input', { bubbles: true })); });
-    const keyChanged = key() !== k0;
-    input.value = 'Paris';
+    const typeStart = performance.now();
+    input.value = 'Pa';
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    await wait(150);
+    input.value = 'Paris'; // 连着打：两下之间没有停顿，只会保存一次（机器再忙，中间也不会隔 400 毫秒）
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const lastKey = performance.now();
+    await raf();
+    const typeMs = Math.round(performance.now() - typeStart);
+    const keyChanged = key() !== k0;
+    await wait(100);
     const putsEarly = edits.length - puts0; // 还在 400 ms 之内：没有保存
+    const earlyValid = performance.now() - lastKey < 350; // 机器忙得这一步拖过了 350 毫秒，这一项没有意义，不判
     await wait(900);
     const putsLate = edits.length - puts0;
-    const typed = { typeMs, keyChanged, putsEarly, putsLate, focusKept: document.activeElement === input, saved: (await (await fetch('/api/photos/${photoId}/edit')).json()).stamp.text };
+    const typed = { typeMs, keyChanged, putsEarly, earlyValid, putsLate, focusKept: document.activeElement === input, saved: (await (await fetch('/api/photos/${photoId}/edit')).json()).stamp.text };
     // 拖一个调整滑块：几十次 input，中间没有 /render
     document.querySelector('#tab-adjust').click();
     await wait(300);
@@ -469,19 +479,19 @@ try {
       const deco = pv && pv.querySelector('.pv-deco');
       return pv && media ? { framed: pv.classList.contains('framed'), overlay: !!deco, pv: rect(pv), media: rect(media), deco: deco ? rect(deco) : null } : null;
     };
-    const settle = async () => { await until(look, 10000); await wait(300); return look(); }; // 画面出来了再量（机器忙时慢一点）
+    // 等画面成为想要的样子再量（机器忙时慢一点；等了 15 秒还不是，就量到什么交什么，由断言去报）
+    const settle = async (want) => { await until(() => { const l = look(); return l && want(l) ? l : null; }, 15000); await wait(200); return look(); };
+    const framed = (l) => l.framed && l.overlay;
     press('100%');
-    const zoom100 = await settle();
+    const zoom100 = await settle(framed);
     press('适合');
-    const fit = await settle();
+    const fit = await settle(framed);
     // 换照片：下一张没有边框（叠加层不跟过去），换回来边框和日期戳还在
     document.querySelector('button[aria-label^="下一张"]').click();
-    await wait(300);
-    const next = await settle();
+    const next = await settle((l) => !l.framed && !l.overlay);
     document.querySelector('button[aria-label^="上一张"]').click();
-    await wait(300);
-    const back = await settle();
-    return { styleMs, colorMs, frame, stampMs, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
+    const back = await settle(framed);
+    return { frameMs, styleMs, colorMs, frame, stampMs, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
   })()`, 90000);
   out.live.requests = requestLog.slice(mark).filter((r) => !/^PUT /.test(r) && !/\/(edit|crop)$/.test(r)).slice(-8);
   step('done');
