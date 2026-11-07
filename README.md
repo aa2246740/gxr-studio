@@ -15,7 +15,12 @@
      并在页面上提示你：打开「系统设置 → 隐私与安全性 → 文件和文件夹」，给“终端”打开「可移除的卷」（或在「完全磁盘访问权限」里打开“终端”），再把卡拔出来插一次。
    - 导入结束只有在**一张都没漏**时才会说"可以安全弹出卡了"；有读不出来的文件会用红色提示列出文件名，并建议先别格式化卡，换个读卡器或重新插拔再点「继续导入」。
    - 每次插卡都会读一遍卡上照片的内容来核对（160 张约 3 GB，大约 40 秒）：只有每个文件的内容都确实在图库里，才说"这张存储卡上的照片都已导入"。
-     只按文件名、大小认出来的不算——两张卡可能有同名同大小的照片。卡的 DCIM 里有工作室不会导入的其他文件时，会说"存储卡上有 N 个文件不会被导入"并列出名字。工作室从不说"可以格式化"。
+     只按文件名、大小认出来的不算——两张卡可能有同名同大小的照片。卡的 DCIM 里有工作室不会导入的其他文件（`Thumbs.db`、说明文本……）时：
+     核对证明每张照片、每个录像都已在图库里（`coverage.photos_imported`，要求核对完整、没有未证明的文件，且那些文件的名字也不像照片或视频），
+     就说"照片都已导入；另有 N 个其他文件不会导入"并列出名字；证明不了就只说"存储卡上有 N 个文件不会被导入"。
+     `all_imported` 比它更严：卡上还有不会被导入的文件时为假，所以带着这类文件的卡不会提示"可以推出"。工作室从不说"可以格式化"。
+   - 在「相机」页点「导入照片」会看到结果：有新照片就说导入了几张；一张新的都没有时说"这张存储卡上的照片都已在图库里，没有新的可导入"；
+     导入进行中，进度就显示在按钮的位置。
    - 相机视频（`.AVI`）原样复制进图库的日期文件夹，不解码，不在照片网格里显示。
    - 在访达里看过卡时 macOS 留下的 `._*`（要真是 AppleDouble 格式）、`.DS_Store` 等系统文件不导入，也不影响"都已导入"。
      能认出是照片或视频的文件不算系统文件，不管叫什么名字、放在哪个文件夹里（例如废纸篓里的照片会算作"不会被导入"）。
@@ -29,7 +34,7 @@
 3. **点开一张照片**：「裁剪」里选 XPan 65:24；「配方」「调整」里调颜色和曝光；按 ⌘E（Windows 上 Ctrl+E）导出成 JPG。
    尺寸四档：原始、大（长边 3000 像素）、中（2048）、小（1600）；品质三档：高、中、低（JPG 质量 95 / 85 / 70）。
    想看配方的颜色预测，需要先导入相机数据（「配方」标签里点「从卡导入」，卡上要有 `GXRCE.DAT`），
-   再导入颜色标定——后者目前只有开发机能做（见下面"第一次使用"），其它功能不受影响。
+   再导入「校准数据」（电脑预测用的颜色校准）——后者目前只有开发机能做（见下面"第一次使用"），其它功能不受影响。
 
 用完关掉那个黑色的终端窗口（或按 Control-C），工作室就停了。同一个图库只能开一个工作室：再双击一次会提示"工作室已经开着了"，回到第一个窗口继续用就行。
 
@@ -112,7 +117,7 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
   引用 flags7 彩色基底的 Look 使用该基底的 Amt / Satu / Warm / Tint / Splt。158 两包没有这种彩色 Look，测试用内存构造的 Look 覆盖它。
   文件内条目按内容摘要识别，默认值沿用文件；导入失败不会替换已导入的数据。
 
-**2. 标定包** —— 电脑预测用的校准数据（ISO 200 / 1600 两套），**必须在相机数据之后导入**，
+**2. 校准数据（标定包）** —— 电脑预测用的校准数据（ISO 200 / 1600 两套），**必须在相机数据之后导入**，
 导入时用包里的 stock 核对相机数据里 50mm 的原厂 04，对不上就拒绝（422 `calibration_stock_mismatch`）。
 
 - `POST /api/calibration/import {"path": "/完整/路径/文件夹"}`。文件夹里是 `calib-pack.json`（清单，列出每个文件的 SHA-256）
@@ -121,10 +126,11 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 - **目前的限制（开发阶段）：** 标定数据只在开发机的研究目录里有（`research/color_fit_v2/…`、`research/hue_ring/…`，
   理光派生的部分是本地文件，不在 git 里）。所以接口也接受**仓库根目录或 `research/` 目录**作为 `path`（返回里 `kind: "dev"`）。
   **别的用户以后需要另外拿到标定包——如何制作和分发它还没有决定**，现在没有给最终用户的标定办法。
-  界面入口：右上角「设置」→「颜色标定（开发用）」，路径框已经预填了工作室所在的项目文件夹（`GET /api/camdata/status` 的 `project_dir`，
-  也可以点「用工作室所在的项目文件夹」），点「导入颜色标定（开发用）」；
-  界面上写明了"这一步目前只在开发机上可用"。相机数据已导入、标定还缺时，「配方」「导出」里的引导也会指到这里。
-- 之后如果相机数据换成了原厂 04 不同的版本，状态里标定会变成 `invalid`（"请重新导入标定包"），不会悄悄继续预测。
+  界面入口：右上角「设置」→「相机配方文件与校准数据」里的「校准数据」一栏。「校准数据文件夹」输入框已经预填了工作室所在的项目文件夹
+  （`GET /api/camdata/status` 的 `project_dir`），点「导入校准数据」。要先导入相机配方文件，否则会提示「请先导入相机配方文件」。
+  相机配方文件已导入、校准数据还缺时，「配方」「导出」里的引导也会给一个「导入校准数据」按钮，打开这一栏。
+  界面上的名字一律叫「校准数据」；README 和接口文档里的"标定包""标定"说的是同一样东西。
+- 之后如果相机数据换成了原厂 04 不同的版本，状态里标定会变成 `invalid`（"请重新导入校准数据"），不会悄悄继续预测。
 
 `GET /api/camdata/status` 一次给全：是否可以出图（`ready`）、相机数据的来源（卡的卷标或"文件"、文件名、大小、SHA-256、代数、导入时间）、
 三个单元的 8 个槽位和原厂 04 是否齐全、标定状态、插着的卡里哪张有 `GXRCE.DAT`、下一步该做什么（`next`）和 `data_version`。
@@ -193,12 +199,12 @@ tests/                     pytest；tests/perf/ 是性能基线
 | `GET /api/cards` · `GET /api/cards/{id}/summary` | 发现的卡：`{id, label, uuid_state}`。`id` 是这次挂载的会话号（26 个字符，服务器随机生成；卡拔出、换卡、重新挂载、重启后作废），`uuid_state` = ok｜missing｜ambiguous；摘要只列目录不读内容，所以证明不了"已导入"：`new_shots` 是缺少可信证明的张数，`verified` 恒为 false |
 | `GET /api/cards/status` | 没找到卡时用：`access_denied` = 系统不让读（macOS 没给「可移除的卷」权限），`message` 是白话说明 |
 | `POST /api/import` `{card_id, shift_seconds?, force_verify?}` → 202 任务 | 开始导入（卡只能按会话号选，不接受路径；格式不对 400 `bad_card_id`，会话作废 404 `card_not_found`） |
-| `GET /api/jobs` · `GET /api/jobs/{id}` · `POST /api/jobs/{id}/cancel` | 轮询进度（`progress.state`：scanning/running/checking/done/paused_no_space/interrupted/cancelled/failed）。导入进度里 `unreadable` / `verify_failed` / `scan_errors` 是没读进来的文件（或文件夹），`write_refused` 是图库位置按真实路径不在图库里（例如链接到卡上）、所以没写的文件，`failed_shots` 是受影响的照片张数，`completed_shots` 是之前只导进来一半、这次补全的张数，`imported_videos` 是复制进来的视频；**这几个列表任何一个不空，`message` 就不会说"可以安全弹出"**。`coverage` 是结束时整张卡的照片核对：`{complete, dcim, total, covered, uncovered, not_importable, system_files, proof:{content, trusted_seen}, all_imported}`（`system_files` 是已忽略的 macOS 元数据），只有 `all_imported` 为真才说"都已导入" |
+| `GET /api/jobs` · `GET /api/jobs/{id}` · `POST /api/jobs/{id}/cancel` | 轮询进度（`progress.state`：scanning/running/checking/done/paused_no_space/interrupted/cancelled/failed）。导入进度里 `unreadable` / `verify_failed` / `scan_errors` 是没读进来的文件（或文件夹），`write_refused` 是图库位置按真实路径不在图库里（例如链接到卡上）、所以没写的文件，`failed_shots` 是受影响的照片张数，`completed_shots` 是之前只导进来一半、这次补全的张数，`imported_videos` 是复制进来的视频；**这几个列表任何一个不空，`message` 就不会说"可以安全弹出"**。`coverage` 是结束时整张卡的照片核对：`{complete, dcim, total, covered, uncovered, not_importable, system_files, proof:{content, trusted_seen}, all_imported, photos_imported}`（`system_files` 是已忽略的 macOS 元数据），只有 `all_imported` 为真才说"这张存储卡上的照片都已导入"并可以推出；`photos_imported` 只管照片和录像，卡上有别的文件时为真也可以说"照片都已导入" |
 | `GET /api/dates` · `GET /api/photos?date=YYYY-MM-DD｜unknown&limit&offset` · `GET /api/photos/{id}` | 日期列表、照片列表 |
 | `GET /api/photos/{id}/thumb` · `…/preview` | 256 / 1600 px 的 JPEG。只有 RAW 时画的不是相机 JPG（`preview_kind=dng-preview`）：已导入相机数据就是原厂 04 的**电脑模拟**，响应带 `X-GXR-Prediction: 1`、`X-GXR-Look: stock04-prediction` 和 `X-GXR-Label`（百分号编码的标签）；没有相机数据是中性转换（`X-GXR-Look: neutral`，不算预测）；半分辨率读不出来才退回 DNG 内嵌小预览（`X-GXR-Look: embedded`）。照片列表里的 `preview_look` = `{kind, label, prediction}` 给界面标注（图库角标、大图下面的说明） |
 | `GET/PUT/DELETE /api/photos/{id}/crop` | 裁切：`{preset, rect:[x,y,w,h], angle_deg, orientation?, flip?, expected_rev?}`；不给 `rect` 就取该比例居中的最大框。`orientation`（landscape / portrait）指旋转、拉直之后的画布上的横竖；旧版界面用 `flip` |
 | `GET /api/crop-presets` | 比例预设：original、3:2、4:3、1:1、4:5、16:9、16:10、1.91:1、2.35:1、xpan-65-24、free（社交媒体按钮复用这些比例，横竖由 `orientation` 决定） |
-| `POST /api/photos/{id}/export` `{long_edge?, quality, format?, size?, quality_tier?, dest_dir?}` | 导出一张，`format` = jpeg｜png，`size` = large/medium/small/original（3000/2048/1600/原始），`quality_tier` = high/medium/low（95/85/70）；文件名 `原名_gxr.jpg`，重名加 `-2`、`-3`。只有 RAW 时导出"中性转换"（白平衡后的线性数据 → sRGB，不加配方），文件名 `原名_gxr_neutral.jpg`，返回里 `render` = neutral-preview、`render_label` = 中性转换；RAW 读不出来才返回 409 `no_jpg_source` |
+| `POST /api/photos/{id}/export` `{long_edge?, quality, format?, size?, quality_tier?, dest_dir?}` | 导出一张，`format` = jpeg｜png，`size` = large/medium/small/original（3000/2048/1600/原始），`quality_tier` = high/medium/low（95/85/70）；文件名 `原名_gxr.jpg`，重名加 `-2`、`-3`；做成 HDR 的叫 `原名_gxr_hdr.jpg`（重名 `原名_gxr_hdr-2.jpg`），没做成 HDR 的照片仍是普通名字；只有 RAW 时导出"中性转换"（白平衡后的线性数据 → sRGB，不加配方），文件名 `原名_gxr_neutral.jpg`，返回里 `render` = neutral-preview、`render_label` = 中性转换；RAW 读不出来才返回 409 `no_jpg_source` |
 | `POST /api/export` `{ids｜date, long_edge?, quality, size?, quality_tier?, dest_dir?, hdr?}` → 202 任务 | 批量导出，尺寸档和质量档同单张导出；`ids` 里已经不存在的照片（例如补全另一半后 id 变了）不会让整批失败，而是在结果里记为 `photo_not_found`，其余照常导出 |
 | `POST /api/exports/{export_id}/reveal` | 在访达中显示这次导出的第一张。`export_id` 是单张导出返回的 `export_id`，或批量任务的 `id`。不接受路径参数。不是 macOS 时返回 501 |
 | `POST /api/library/rebuild?verify=` | 丢掉索引，按目录和 sidecar 重建；读不出来的 sidecar 先改名成 `<名>.gxrs.json.corrupt-<时间>` 留着再建新的（返回里 `corrupt_backups` 列出） |
