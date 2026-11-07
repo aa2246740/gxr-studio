@@ -47,7 +47,7 @@ export class Engine {
 def run(tmp_path: Path, scenario: str) -> dict[str, object]:
     folder = tmp_path / "modules"
     (folder / "gpu").mkdir(parents=True)
-    for name in ("gpu_stage.js", "gpu_pref.js", "state.js"):
+    for name in ("gpu_stage.js", "gpu_pref.js", "gpu_warp.js", "state.js"):
         shutil.copyfile(ASSETS / name, folder / name)
     (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     (folder / "api.js").write_text("export const api = (...args) => globalThis.apiStub(...args);\n", encoding="utf-8")

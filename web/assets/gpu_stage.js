@@ -299,7 +299,7 @@ export function route(view, ctx, rerun) {
   view.gpuFull = full(info, plan.base, layer, g);
   // 导出时（已裁切）照片的像素：边框和时间戳的版面按它算（stage_finish.js），浏览器自己画，不请服务器
   const grow = plan.base === 'raw' ? info.raw.full[0] / info.raw.layer[0] : 1;
-  view.gpuExport = exportSize(engine.finalSize(), grow, g, view.gpuFull, engine.canvasSize());
+  view.gpuExport = exportSize(engine.finalSize(), grow, g, view.gpuFull, expands(g) ? engine.canvasSize() : null);
   ed.error = null;
   ed.busy = false;
   prefetch(view);
