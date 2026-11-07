@@ -208,7 +208,9 @@ try {
     Object.assign(r, { label, key, target, afterRelease: saved });
     out.sliders.push(r);
   }
-  // 自动：答案用替身（不靠检测器）——拉直 3°、垂直 −25。按下以后两帧之内引擎的成片版本就变了，没有 /render，保存以后框和服务器一样
+  // 自动：答案用替身（不靠检测器）——拉直 3°、垂直 −25。答案落进引擎（setGeometry）以后两帧之内引擎画出新的一帧，没有 /render，
+  // 保存以后框和服务器一样。量的是「答案到引擎」之后，不是「按下」之后：答案要先读完响应体（机器忙时可能晚一两帧），
+  // 这一段不归预览管；而且测试自己的 rAF 回调排在引擎的前面，从按下数帧会少看一帧（在 CI 上因此失败过）。
   step('auto');
   const markAuto = requestLog.length;
   out.auto = await evalIn(`(async () => { ${helpers}
@@ -218,17 +220,25 @@ try {
       ? Promise.resolve(new Response(JSON.stringify({ straighten: 3, vertical: -25, confident: true, message: '' }), { headers: { 'Content-Type': 'application/json' } }))
       : realFetch(url, opts);
     const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '自动');
-    const version = eng ? eng.contentVersion : 0;
-    const size = eng ? JSON.stringify(eng.canvasSize()) : '';
-    const t = performance.now();
-    button.click();
-    let frames = 0;
-    while (frames < 2) {
-      await raf();
-      frames += 1;
-      if (eng && eng.contentVersion > version) break;
+    // 帧号（rAF 的计数）：按下、答案落进引擎（setGeometry）、引擎画出新的一帧，各发生在第几帧
+    let tick = 0;
+    let looping = true;
+    const loop = () => { tick += 1; if (looping) requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+    const mark = { click: null, geometry: null, frame: null };
+    if (eng) {
+      const setGeometry = eng.setGeometry.bind(eng);
+      eng.setGeometry = (g) => { if (g.vertical === -25 && mark.geometry === null) mark.geometry = tick; return setGeometry(g); };
+      const frame = eng.frame.bind(eng);
+      eng.frame = (...a) => { if (mark.geometry !== null && mark.frame === null) mark.frame = tick; return frame(...a); };
     }
-    const first = { frames, ms: Math.round(performance.now() - t), changed: eng ? eng.contentVersion > version : null, resized: eng ? JSON.stringify(eng.canvasSize()) !== size : null };
+    const version = eng ? eng.contentVersion : 0;
+    const t = performance.now();
+    mark.click = tick;
+    button.click();
+    for (let i = 0; i < 12 && !(eng && eng.contentVersion > version); i += 1) await raf();
+    const first = { ms: Math.round(performance.now() - t), changed: eng ? eng.contentVersion > version : null, ...mark };
+    looping = false;
     const ok = await until(async () => { const g = await serverGeometry(); return g.vertical === -25 && g.straighten === 3; }, 20000);
     await wait(1500);
     const s = await serverCrop();
@@ -247,11 +257,34 @@ try {
     await wait(1500);
     const s = await serverCrop();
     const cv = document.querySelector('.pv-gpu');
+    // 导出的照片有多大：自己去问 /gpu/box（全尺寸、服务器存的几何和框），不借用页面的算法
+    let exportBox = null;
+    if (cv) {
+      const info = await (await fetch('/api/photos/${photoId}/gpu')).json();
+      const layer = eng.layerSize();
+      const full = info.raw ? info.raw.full : [layer.w, layer.h];
+      const body = { width: full[0], height: full[1], geometry: await serverGeometry(), crop: { rect: s.rect, preset: s.preset } };
+      exportBox = (await (await fetch('/api/photos/${photoId}/gpu/box', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json()).box;
+    }
+    // 画布上屏的像素：四周一圈有多少是舞台灰（成片按另一个比例显示时，要是只改了 CSS 框、没有拉伸，会留下灰边）
+    let grayRing = null;
+    if (cv && eng) {
+      const px = await eng.readPresent(cv.width, cv.height);
+      let gray = 0;
+      let total = 0;
+      const at = (x, y) => { const i = (y * px.w + x) * 4; total += 1; if (px.data[i] === 42 && px.data[i + 1] === 42 && px.data[i + 2] === 42) gray += 1; };
+      for (let x = 0; x < px.w; x += 1) { at(x, 0); at(x, px.h - 1); }
+      for (let y = 0; y < px.h; y += 1) { at(0, y); at(px.w - 1, y); }
+      grayRing = gray / total;
+    }
     return {
       gpu: !!document.querySelector('.gpu'),
       canvasAspect: cv ? cv.clientWidth / cv.clientHeight : null,
+      canvasCss: cv ? [cv.clientWidth, cv.clientHeight] : null,
       engineSize: eng ? eng.finalSize() : null,
       engineCanvas: eng ? eng.canvasSize() : null,
+      exportBox,
+      grayRing,
       serverRect: s.rect,
     };
   })()`, 30000);

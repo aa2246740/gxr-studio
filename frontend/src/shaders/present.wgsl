@@ -2,8 +2,8 @@
 // 溢出提示（J）：把暗部压死的点盖成蓝色、高光溢出的点盖成红色。判定与 histogram_math.js 的 isCrushed / isBlown 相同
 // （码值 ≤ clip.x 或 ≥ clip.y），颜色与 SHADOW_RGB / HIGHLIGHT_RGB 相同。
 struct V {
-  map: vec4f,   // 画布像素 → 成片像素：缩放、偏移 x、偏移 y、背景灰度
-  size: vec4f,  // 成片宽、高
+  map: vec4f,   // 画布像素 → 成片像素：横向缩放、偏移 x、偏移 y、背景灰度
+  size: vec4f,  // 成片宽、高、纵向缩放（和横向相同，除非成片按另一个宽高比显示）
   clip: vec4f,  // 暗部上限 + 0.5、高光下限 − 0.5（码值）、盖暗部（1）、盖高光（1）
 };
 @group(0) @binding(0) var<uniform> v: V;
@@ -16,17 +16,18 @@ struct V {
 }
 
 @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  let s = v.map.x;
-  let q = (pos.xy - v.map.yz) * s;  // 成片像素坐标（左上角为 0）
+  let sc = vec2f(v.map.x, v.size.z);
+  let s = max(sc.x, sc.y);
+  let q = (pos.xy - v.map.yz) * sc;  // 成片像素坐标（左上角为 0）
   if (q.x < 0.0 || q.y < 0.0 || q.x > v.size.x || q.y > v.size.y) { return vec4f(vec3f(v.map.w), 1.0); }
   let inv = 1.0 / v.size.xy;
   var c: vec3f;
   if (s > 1.25) {
-    let d = s * 0.25;
-    c = (textureSampleLevel(finalTex, smp, (q + vec2f(-d, -d)) * inv, 0.0).xyz
-       + textureSampleLevel(finalTex, smp, (q + vec2f(d, -d)) * inv, 0.0).xyz
-       + textureSampleLevel(finalTex, smp, (q + vec2f(-d, d)) * inv, 0.0).xyz
-       + textureSampleLevel(finalTex, smp, (q + vec2f(d, d)) * inv, 0.0).xyz) * 0.25;
+    let d = sc * 0.25;
+    c = (textureSampleLevel(finalTex, smp, (q + vec2f(-d.x, -d.y)) * inv, 0.0).xyz
+       + textureSampleLevel(finalTex, smp, (q + vec2f(d.x, -d.y)) * inv, 0.0).xyz
+       + textureSampleLevel(finalTex, smp, (q + vec2f(-d.x, d.y)) * inv, 0.0).xyz
+       + textureSampleLevel(finalTex, smp, (q + d) * inv, 0.0).xyz) * 0.25;
   } else {
     c = textureSampleLevel(finalTex, smp, q * inv, 0.0).xyz;
   }

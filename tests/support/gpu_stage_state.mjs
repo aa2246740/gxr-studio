@@ -146,6 +146,28 @@ if (scenario === 'lut-patched-to-vlog') {
   out.export = view.gpuExport;
   out.boxSizes = calls.boxBodies.map((b) => [b.width, b.height]);
   out.fullBodyGeometry = calls.boxBodies.find((b) => b.width === 200)?.geometry || null;
+} else if (scenario === 'warp-canvas-aspect') {
+  // 精确的导出框（111×77）和成片纹理（100×80）比例不同：框到了以后，画布按导出的比例显示
+  globalThis.document = { createElement: () => ({ style: {}, dataset: {}, setAttribute() {}, className: '' }) };
+  routes.box = (b) => (b.width === 200 ? { box: [3, 4, 111, 77], valid: [0, 0, 1, 1] } : { box: [1, 1, 100, 80], valid: [0, 0, 1, 1] });
+  routes.bake = () => okBody(bakeHeader('K1'));
+  const view = makeView();
+  const ctx = { ...ctxFor(REC), geometry: { straighten: 0, vertical: 30, horizontal: -10, distortion: 20, rotate90: 1, flip: false } };
+  // 全尺寸的框第一次请求时先挂住，只放行颜色层的
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const real = routes.box;
+  routes.box = (b) => (b.width === 200 ? gate.then(() => real(b)) : real(b));
+  out.first = await settle(view, ctx, 8);
+  view.gpuActive = 'final';
+  const look = () => { const c = gs.gpuCanvas(view, 400, 300); return { aspect: view.gpuAspect, css: [parseFloat(c.style.width), parseFloat(c.style.height)] }; };
+  out.before = look();
+  release();
+  await flush();
+  out.again = await settle(view, ctx);
+  view.gpuActive = 'final';
+  out.after = look();
+  out.engineAspects = calls.engine.filter((c) => c[0] === 'setDisplayAspect').map((c) => c[1]);
 } else if (scenario === 'flag-off') {
   state.settings = { gpu_preview: false };
   const view = makeView();

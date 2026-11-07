@@ -301,6 +301,9 @@ export function route(view, ctx, rerun) {
   const grow = plan.base === 'raw' ? info.raw.full[0] / info.raw.layer[0] : 1;
   const exact = expands(g) && ctx.stage === 'final' ? fullBox(id, exportFrame(info, plan.base, layer), g, ctx.crop || null, rerun) : null;
   view.gpuExport = exportSize(engine.finalSize(), grow, g, exact, view.gpuFull, expands(g) ? engine.canvasSize() : null);
+  // 精确的导出框到了：成片按导出的宽高比显示（半分辨率的成片比例和导出差一点，边框里的洞是导出的比例）。框到之前仍是成片自己的比例。
+  view.gpuAspect = exact && view.gpuExport ? view.gpuExport.w / view.gpuExport.h : null;
+  engine.setDisplayAspect(view.gpuAspect);
   ed.error = null;
   ed.busy = false;
   prefetch(view);
@@ -388,9 +391,22 @@ export function gpuCanvas(view, maxW, maxH, { natural = false } = {}) {
   }
   const size = engine.finalSize();
   if (!size) return null;
-  const scale = natural ? 1 / (globalThis.devicePixelRatio || 1) : Math.min(maxW / size.w, maxH / size.h);
-  canvas.style.width = `${Math.max(1, Math.floor(size.w * scale))}px`;
-  canvas.style.height = `${Math.max(1, Math.floor(size.h * scale))}px`;
+  // 成片按导出的宽高比显示时（view.gpuAspect，见 route）：画布的 CSS 框也是这个比例，宽度不变、高度跟着，引擎把成片拉伸进去
+  const aspect = view.gpuActive === 'final' && view.gpuAspect ? view.gpuAspect : null;
+  let cssW;
+  let cssH;
+  if (aspect) {
+    cssW = natural ? size.w / (globalThis.devicePixelRatio || 1) : Math.min(maxW, maxH * aspect);
+    cssH = cssW / aspect;
+  } else {
+    const scale = natural ? 1 / (globalThis.devicePixelRatio || 1) : Math.min(maxW / size.w, maxH / size.h);
+    cssW = size.w * scale;
+    cssH = size.h * scale;
+  }
+  canvas.style.width = `${Math.max(1, Math.floor(cssW))}px`;
+  canvas.style.height = `${Math.max(1, Math.floor(cssH))}px`;
+  if (aspect) canvas.dataset.aspect = String(aspect);
+  else delete canvas.dataset.aspect;
   canvas.setAttribute('aria-label', view.photo.name);
   engine.attach(canvas);
   engine.redraw();

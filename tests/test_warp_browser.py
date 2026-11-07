@@ -91,13 +91,18 @@ def test_dragging_perspective_and_distortion_never_waits_for_the_server(live, tm
     # 自动（答案是替身，不靠检测器）：按下以后两帧之内成片变了、没有 /render；保存以后框和服务器一样
     auto = out["auto"]
     assert auto["gpu"] is True and auto["renders"] == 0, auto
-    assert auto["changed"] is True and auto["frames"] <= 2, auto
+    assert auto["changed"] is True and auto["geometry"] is not None and auto["frame"] is not None, auto
+    assert auto["frame"] - auto["geometry"] <= 2, auto  # 答案落进引擎以后，两帧之内画出新的一帧
     assert auto["savedGeometry"] is True and near(auto["box"], auto["server"]), auto
     # 成片页：显卡画布，形状是裁切后的形状（和引擎的成片尺寸一致，也和服务器的框占画布的比例一致），没有 /render
     final = out["final"]
     assert final["gpu"] is True and final["renders"] == 0, final
     shown = final["engineSize"]
-    assert abs(final["canvasAspect"] - shown["w"] / shown["h"]) < 0.02, final
+    # 画布的宽高比是导出的照片的宽高比（边框里的洞就是这个比例），不是半分辨率成片的比例；画布里没有留灰边（是拉伸进去的）
+    _bx, _by, bw, bh = final["exportBox"]
+    css_w, css_h = final["canvasCss"]
+    assert abs(css_w / css_h - bw / bh) <= 1.5 / min(css_w, css_h) + 1e-3, final  # CSS 框取整到整像素
+    assert final["grayRing"] is not None and final["grayRing"] < 0.05, final
     canvas = final["engineCanvas"]
     x, y, w, h = final["serverRect"]
     assert abs(shown["w"] - round(w * canvas["w"])) <= 2 and abs(shown["h"] - round(h * canvas["h"])) <= 2, final

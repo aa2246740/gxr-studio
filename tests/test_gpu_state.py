@@ -42,6 +42,7 @@ export class Engine {
   currentKey() { return this.current; }
   finalSize() { return { w: 100, h: 80 }; }
   canvasSize() { return { w: 100, h: 80 }; }
+  setDisplayAspect(a) { this.log('setDisplayAspect', a); }
   attach() {}
   redraw() {}
 }
@@ -106,3 +107,12 @@ def test_perspective_export_size_comes_from_the_full_size_crop_box(tmp_path):
     assert sorted(out["boxSizes"]) == [[100, 80], [200, 160]], out["boxSizes"]
     assert out["export"] == {"w": 111, "h": 77}
     assert out["fullBodyGeometry"]["vertical"] == 30 and out["fullBodyGeometry"]["rotate90"] == 1
+
+
+def test_the_canvas_takes_the_export_aspect_once_the_exact_box_is_in(tmp_path):
+    out = run(tmp_path, "warp-canvas-aspect")
+    # 精确的框到之前：成片自己的比例（100×80）；到了：导出的比例（111×77），画布的 CSS 框和引擎的显示比例都是它
+    assert out["before"]["aspect"] is None and abs(out["before"]["css"][0] / out["before"]["css"][1] - 100 / 80) < 0.05
+    assert abs(out["after"]["aspect"] - 111 / 77) < 1e-9
+    assert abs(out["after"]["css"][0] / out["after"]["css"][1] - 111 / 77) < 0.03
+    assert out["engineAspects"][-1] == out["after"]["aspect"] and out["engineAspects"][0] is None

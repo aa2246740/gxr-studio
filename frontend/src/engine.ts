@@ -187,6 +187,7 @@ export class Engine {
   private raf = 0;
   private histBusy = false;
   private clipOverlay: ClipOverlay = { shadow: false, highlight: false };
+  private displayAspect: number | null = null;
   private version = 0;
   private lost = false;
   onFrame: ((f: FrameInfo) => void) | null = null;
@@ -438,6 +439,14 @@ export class Engine {
     this.schedule();
   }
 
+  /** 成片显示的宽高比（宽 ÷ 高）。null = 成片纹理自己的比例。导出的照片和成片纹理比例略有不同时（透视 / 畸变），按导出的比例显示。 */
+  setDisplayAspect(aspect: number | null): void {
+    const next = aspect !== null && Number.isFinite(aspect) && aspect > 0 ? aspect : null;
+    if (next === this.displayAspect) return;
+    this.displayAspect = next;
+    this.schedule();
+  }
+
   /** 当前显示的源图键（测量和测试用）。 */
   currentKey(): string | null {
     return this.current ? this.current.key : null;
@@ -609,13 +618,24 @@ export class Engine {
 
   /** 第三遍画到指定的目标（画布的当前纹理，或测试读回用的离屏纹理）。 */
   private presentTo(enc: GPUCommandEncoder, target: GPUTextureView, cw: number, ch: number, fw: number, fh: number): void {
-    const scale = Math.max(fw / cw, fh / ch);
-    const ox = (cw - fw / scale) / 2;
-    const oy = (ch - fh / scale) / 2;
+    let sx = Math.max(fw / cw, fh / ch);
+    let sy = sx;
+    let ox = (cw - fw / sx) / 2;
+    let oy = (ch - fh / sy) / 2;
+    const aspect = this.displayAspect;
+    if (aspect !== null) {
+      // 成片要显示成另一个宽高比（透视 / 畸变：导出的照片比半分辨率的成片比例略有不同）：显示矩形取这个比例，成片纹理横竖各自拉伸进去
+      const dw = Math.min(cw, ch * aspect);
+      const dh = dw / aspect;
+      sx = fw / dw;
+      sy = fh / dh;
+      ox = (cw - dw) / 2;
+      oy = (ch - dh) / 2;
+    }
     const o = this.clipOverlay;
     this.device.queue.writeBuffer(this.presentUniform, 0, new Float32Array([
-      scale, ox, oy, STAGE_GRAY,
-      fw, fh, 0, 0,
+      sx, ox, oy, STAGE_GRAY,
+      fw, fh, sy, 0,
       CLIP.shadowMax + 0.5, CLIP.highlightMin - 0.5, o.shadow ? 1 : 0, o.highlight ? 1 : 0,
     ]));
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: [STAGE_GRAY, STAGE_GRAY, STAGE_GRAY, 1] }] });
