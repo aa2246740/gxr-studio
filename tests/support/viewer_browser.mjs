@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
 import { walkRounds } from './frame_nav_walk.mjs';
+import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -30,36 +31,13 @@ const step = (name) => {
   process.stderr.write(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${name}\n`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const chromeTail = () => {
-  try {
-    return readFileSync(chromeLogPath, 'utf8').slice(-3000);
-  } catch {
-    return '';
-  }
-};
-// 整份 Chrome 日志（只用来查有没有某一种错误）
-chromeTail.full = () => {
-  try {
-    return readFileSync(chromeLogPath, 'utf8');
-  } catch {
-    return '';
-  }
-};
-// Chrome 日志里和显卡有关的行（GPU 进程崩溃、看门狗、设备丢失、Dawn 报错），留最后 30 行
-// 画布上不了屏时 Chrome 日志里的错：共享图像建不起来（Unable to create shared image），或者取不到（ProduceMemory … non-existent mailbox）
-const PRESENT_ERRORS = /Unable to create shared image|SharedImageBackingFactory|SharedImageManager::ProduceMemory|non-existent mailbox/;
-const gpuLogLines = () => {
-  try {
-    return readFileSync(chromeLogPath, 'utf8').split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context|shared ?image|mailbox/i.test(l)).slice(-30).map((l) => l.slice(0, 300));
-  } catch {
-    return [];
-  }
-};
+// Chrome 日志（尾部、整份、和显卡有关的行、共享图像的错）：和 warp_browser.mjs 共用 gpu_diag.mjs
+const gpuLog = chromeLogReader(chromeLogPath);
 let finished = false;
 async function finish(code) {
   if (finished) return;
   finished = true;
-  if (code !== 0) out.chromeLog = chromeTail();
+  if (code !== 0) out.chromeLog = gpuLog.tail();
   console.log(JSON.stringify(out));
   try { ws.close(); } catch { /* 已经关了 */ }
   chrome.kill('SIGTERM');
@@ -240,21 +218,10 @@ try {
   // gpu 模式和 nav-gpu 模式共用
   const collectGpuDiagnostics = async () => {
     step('collect WebGPU diagnostics');
-    out.gpuDiag = await evalIn(`(async () => {
-      const d = { navigatorGpu: !!navigator.gpu, pref: localStorage.getItem('gxr-studio.gpu-preview') };
-      try { d.flag = (await (await fetch('/api/settings')).json()).gpu_preview; } catch (e) { d.settingsError = String(e); }
-      try { const g = await (await fetch('/api/photos/${photoId}/gpu')).json(); d.photo = { enabled: g.enabled, keys: Object.keys(g).slice(0, 24) }; } catch (e) { d.photoError = String(e); }
-      try {
-        const a = navigator.gpu ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) : null;
-        d.adapter = a ? { vendor: a.info?.vendor, architecture: a.info?.architecture, description: a.info?.description, fallback: a.info?.isFallbackAdapter } : null;
-      } catch (e) { d.adapterError = String(e); }
-      try { const m = await import('/assets/gpu/engine.js'); d.engine = (await m.Engine.create()) ? 'created' : 'null'; } catch (e) { d.engineError = String(e).slice(0, 300); }
-      // 页面自己的那台引擎（和页面同一个模块实例）：没建起来，还是建了又丢了（设备丢失后整个会话都走服务器）
-      try {
-        const st = await import('/assets/gpu_stage.js');
-        const e = st.gpuEngineForTests();
-        d.pageEngine = e ? { lost: !!e.lost, currentKey: typeof e.currentKey === 'function' ? e.currentKey() : null } : null;
-      } catch (e) { d.pageEngineError = String(e).slice(0, 300); }
+    out.gpuDiag = await evalIn(diagnosticsExpression(photoId), 60000).catch((e) => ({ diagError: String(e) }));
+    // 这张照片的 JPG 源图：照页面的做法取回来、解码（共用的诊断里没有这一项）
+    const jpg = await evalIn(`(async () => {
+      const d = {};
       // 照片的 JPG 源图：照页面的做法取回来、解码
       try {
         const g = await (await fetch('/api/photos/${photoId}/gpu')).json();
@@ -267,11 +234,11 @@ try {
         }
         d.photoRaw = g.raw ? 'layout' : g.raw_reason;
       } catch (e) { d.jpgError = String(e).slice(0, 300); }
-      d.stage = { classes: document.querySelector('.stage-area, .stage')?.className || null, img: !!document.querySelector('.pv-img'), canvas: !!document.querySelector('canvas') };
       return d;
-    })()`, 60000).catch((e) => ({ diagError: String(e) }));
-    out.gpuChromeLog = gpuLogLines();
-    out.gpuSharedImageError = PRESENT_ERRORS.test(chromeTail.full());
+    })()`, 30000).catch((e) => ({ jpgDiagError: String(e) }));
+    Object.assign(out.gpuDiag, jpg);
+    out.gpuChromeLog = gpuLog.gpuLines();
+    out.gpuSharedImageError = gpuLog.sharedImageError();
     out.failedBeforeClicks = [...out.failedRequests];
     out.consoleBeforeClicks = [...out.console];
   };
@@ -294,7 +261,7 @@ try {
   }
   if (mode.startsWith('nav-')) {
     // 换照片、换边框、进出裁剪、100%：每一步之后大图还在不在（tests/support/frame_nav_walk.mjs）
-    const walked = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu', collectGpuDiagnostics, presentErrors: () => PRESENT_ERRORS.test(chromeTail.full()) });
+    const walked = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu', collectGpuDiagnostics, presentErrors: () => gpuLog.sharedImageError() });
     out.nav = walked.steps;
     out.gpuWaitMs = walked.gpuWaitMs;
     out.ready = true;
