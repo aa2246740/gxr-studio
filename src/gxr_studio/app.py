@@ -23,6 +23,7 @@ from .api.gpu_routes import router as gpu_router
 from .api.lut_library_routes import router as lut_library_router
 from .api.lut_routes import router as lut_router
 from .api.ops_routes import router as ops_router
+from .api.paste_routes import router as paste_router
 from .api.prefs_routes import router as prefs_router
 from .api.render_routes import router as render_router
 from .api.routes import router
@@ -39,6 +40,7 @@ from .library.store import SIDECAR_RESET_NOTE, Library
 from .lut.errors import LutError
 from .lut.service import LutService
 from .observe import Metrics, ObserveMiddleware, log
+from .render.paste import PasteUndo
 from .render.service import RenderService
 from .security import SecurityMiddleware
 from .tracking import init_error_tracking, shutdown_error_tracking
@@ -62,6 +64,7 @@ class Context:
     alerts: StudioNotifier = field(default_factory=StudioNotifier)
     exports: ExportLedger = field(default_factory=ExportLedger)
     sessions: SessionRegistry = field(default_factory=SessionRegistry)  # 挂载会话：接口里的 card_id
+    paste_undo: PasteUndo = field(default_factory=PasteUndo)  # 最近几批「粘贴调整」粘贴之前的内容，供撤销
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -154,6 +157,7 @@ def create_app(
     app.include_router(prefs_router)
     app.include_router(ops_router)
     app.include_router(render_router)
+    app.include_router(paste_router)
     app.include_router(finish_router)
     app.include_router(camdata_router)
     app.include_router(lut_router)
