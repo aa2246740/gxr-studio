@@ -124,6 +124,24 @@ def default_crop(preset: str, width: int, height: int, angle_deg: float = 0.0, f
     return Crop(preset=preset, rect=rect, angle_deg=angle)
 
 
+def fit_target_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int) -> Crop:
+    """目标框：不合格也不拒绝，只整理成能交给收框的样子（有限、正尺寸、在画面里）。
+
+    撤销、重做和转 90° 之后的框是界面推出来的，落在新画布的有效区外是常事；这时要的是「离它最近的合格框」，
+    不是一个报错。预设和角度仍然照常检查，比例、有效区由调用方的收框（`fitted_crop`）来保证。"""
+    angle = _check_angle(angle_deg)
+    target_ratio(preset, width, height)  # 不认识的预设照样报错
+    try:
+        x, y, w, h = (float(v) for v in rect)
+    except (TypeError, ValueError):
+        raise CropError("bad_rect", "裁剪框超出画面范围") from None
+    if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0:
+        raise CropError("bad_rect", "裁剪框超出画面范围")
+    w, h = min(w, 1.0), min(h, 1.0)
+    x, y = min(max(x, 0.0), 1.0 - w), min(max(y, 0.0), 1.0 - h)
+    return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
+
+
 def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int, *, mirrored: bool = False) -> Crop:
     """校验用户给的框；不合格就抛 CropError，不悄悄修正。
 

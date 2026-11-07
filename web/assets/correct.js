@@ -3,8 +3,8 @@
 // 拖动时只改画面（不保存），松手再保存（DIAG 原因 4 同样的做法：拖动中的值就是请求里发出去的值）。
 
 import { h, button, toast, toastError } from './dom.js';
-import { beginChange, endChange, saveCrop, persist, schedulePreview, resetCropRemote, geometryOf } from './preview.js';
-import { cropBody, orientationNow, rectArray, fitCrop } from './crop.js';
+import { beginChange, endChange, saveCrop, persist, schedulePreview, resetCropRemote, geometryOf, loadCrop } from './preview.js';
+import { cropBody, orientationNow, rectArray, fitCrop, resetCropLocal } from './crop.js';
 import { slider, notReady } from './controls.js';
 import { rotateRect90, flipRect, fmtDeg, clamp } from './geom.js';
 import { DEFAULT_GEOMETRY } from './finish.js';
@@ -37,8 +37,7 @@ function setStraightLive(view, v) {
 // 松手：保存。v2：先写几何，再看框要不要收进新的有效画面；旧版：一次 /crop 写完（拉直超范围时后端报错，会显示出来）。
 export async function commitStraight(view) {
   if (view.ed.v2) {
-    await persist(view, { geometry: view.ed.geometry });
-    await afterGeometry(view);
+    if (await persist(view, { geometry: view.ed.geometry })) await afterGeometry(view);
   } else if (view.crop) {
     const fitted = view.canvas ? fitCrop(view, view.crop.rect).rect : view.crop.rect;
     await saveCrop(view, cropBody(view, { preset: view.crop.preset, rect: rectArray(fitted) }, orientationNow(view)));
@@ -46,15 +45,25 @@ export async function commitStraight(view) {
   endChange(view);
 }
 
-// 几何变了（拉直、透视、畸变、旋转、翻转）：框如果超出新的有效画面，收进来并保存
+// 界面上的框和画布尺寸跟服务器对齐。服务器写几何时已经把框收进新的有效画面，透视、畸变还会换画布尺寸；
+// 界面自己估的有效区只是近似，框的去留以服务器为准（否则下一步，比如转 90°，会拿落后的框去写，被服务器拒绝）。
+// 正在拖框（pending）时不动：松手时那一笔会带回准的框。
+export async function syncCrop(view) {
+  if (view.disposed || !view.crop || view.pending) return;
+  try {
+    await loadCrop(view);
+  } catch {
+    return; // 读不到就保持现状，下一次保存还会再对一次
+  }
+  if (view.disposed) return;
+  view.onRectDrag?.();
+  view.redrawSide?.();
+  view.onChange?.();
+}
+
+// 几何变了（拉直、透视、畸变）：写进去以后，框以服务器收好的为准
 async function afterGeometry(view) {
-  // 等保存时照片已经关掉：不再根据旧界面的框补写（写入已经绑定在这张照片上，前面那笔照常完成）
-  if (view.disposed || !view.canvas || !view.crop) return;
-  const fitted = fitCrop(view, view.crop.rect);
-  if (fitted.changed) view.crop.rect = fitted.rect;
-  // 框和服务端一样就不用写；拖动中已经收进去的框（没写回）也要写
-  if (JSON.stringify(view.crop.rect) === view.crop.savedKey) return;
-  await saveCrop(view, cropBody(view, { preset: view.crop.preset, rect: rectArray(view.crop.rect) }, orientationNow(view)));
+  await syncCrop(view);
 }
 
 // 键盘 ↑/↓：每次 0.5°（裁切中，不在滑块上时）
@@ -64,19 +73,34 @@ export function nudgeStraighten(view, delta) {
   commitStraight(view);
 }
 
-// 旋转 90°（逆时针）：只有新版能做。框跟着画面转。
+// 旋转、翻转：界面上的几何和框已经改好。几何和转好的框（服务器不会替你转框）在点下去的这一刻一起排进保存队列，
+// 之后再排进来的几何（再转一次、拖透视……）只会排在它们后面：框写的时候画布还是它定下来时的样子。
+// 转好的框是推出来的目标（fit）：不合格也不拒绝，服务器收成离它最近的合格框，位置保留。
+// 几何没写成功，后面的框就不写（saves.js 的 writeSave），留在失败记录里，重试跟在几何后面写。全部写完以后，以服务器收好的为准。
+async function saveTurned(view) {
+  const body = cropBody(view, { preset: view.crop.preset, rect: rectArray(view.crop.rect) }, orientationNow(view));
+  const geometry = persist(view, { geometry: view.ed.geometry });
+  // 框一律写，不拿「和上次从服务器读到的一样」当理由跳过：前一次转的框可能还在队里没写完，服务器上现在的框不是那一个
+  const box = saveCrop(view, { ...body, fit: true });
+  const [ok, boxOk] = await Promise.all([geometry, box]);
+  if (ok && boxOk && !view.disposed && view.crop) await syncCrop(view);
+}
+
+// 旋转 90°（逆时针）：只有新版能做。框跟着画面转，画布和 frame 的宽高对调（不清空，面板不出骨架）。
 export async function rotate90(view) {
   if (!view.ed || !view.ed.v2 || !view.crop) return;
   beginChange(view);
   const g = view.ed.geometry;
   view.ed.geometry = { ...g, rotate90: (g.rotate90 + 1) % 4 };
   view.crop.rect = rotateRect90(view.crop.rect);
-  view.canvas = null;
+  const f = view.crop.frame;
+  if (f) view.crop.frame = { ...f, width: f.height, height: f.width };
+  if (view.canvas) view.canvas = { w: view.canvas.h, h: view.canvas.w };
   // 松手后的纠正预览用 preview 尺寸（PRD 第 11 节；full 太慢，见 V2-15）
   schedulePreview(view, { stage: 'uncropped' });
   view.onChange?.();
-  await persist(view, { geometry: view.ed.geometry });
-  await afterGeometry(view);
+  view.redrawSide?.();
+  await saveTurned(view);
   endChange(view);
 }
 
@@ -88,8 +112,7 @@ export async function flipHorizontal(view) {
   view.crop.rect = flipRect(view.crop.rect);
   schedulePreview(view, { stage: 'uncropped' });
   view.onChange?.();
-  await persist(view, { geometry: view.ed.geometry });
-  await afterGeometry(view);
+  await saveTurned(view);
   endChange(view);
 }
 
@@ -112,32 +135,76 @@ function geomSlider(view, key, label, ends) {
     },
     onCommit: (v) => {
       view.ed.geometry = { ...view.ed.geometry, [key]: v };
-      persist(view, { geometry: view.ed.geometry }).then(() => afterGeometry(view)).then(() => endChange(view));
+      persist(view, { geometry: view.ed.geometry }).then((ok) => ok && afterGeometry(view)).then(() => endChange(view));
     },
   }).el;
 }
 
-// 自动：电脑找地平线和竖直线，给出建议值（没把握就不改）
+// 自动：电脑找地平线和竖直线，给出建议值（没把握就不改）。分析要一两秒：按钮锁住、转圈、写「正在分析…」，
+// 结束后用一条提示说清楚改了什么（可以撤销）。
+function paintAuto(view) {
+  const btn = view.autoBtn;
+  if (!btn) return;
+  const on = !!view.autoBusy;
+  const label = btn.querySelector('span');
+  if (label) label.textContent = on ? '正在分析…' : '自动';
+  if (on) {
+    btn.setAttribute('aria-busy', 'true');
+    btn.setAttribute('aria-disabled', 'true');
+    btn.dataset.phase = 'text';
+  } else {
+    btn.removeAttribute('aria-busy');
+    btn.removeAttribute('aria-disabled');
+    delete btn.dataset.phase;
+  }
+}
+
+function autoSummary(next, before) {
+  const parts = [];
+  if (next.straighten !== before.straighten) parts.push(`拉直 ${fmtDeg(next.straighten)}`);
+  if (next.vertical !== before.vertical) parts.push(`垂直 ${next.vertical > 0 ? '+' : ''}${next.vertical}`);
+  return parts.length ? `已自动${parts.join('、')}（可以撤销）` : '';
+}
+
 export async function autoCorrect(view) {
+  if (view.autoBusy) return;
+  view.autoBusy = true;
+  paintAuto(view);
   try {
     const r = await api(`/api/photos/${view.photo.id}/geometry/auto`, { method: 'POST' });
+    if (view.disposed || !view.ed) return;
     if (!r.confident) {
       toast(r.message || '未检测到明显的水平线', 'info');
       return;
     }
+    const before = view.ed.geometry;
+    const next = { straighten: r.straighten, vertical: r.vertical };
+    const text = autoSummary(next, before);
+    if (!text) {
+      toast('画面已经很正，没有改动', 'info');
+      return;
+    }
     beginChange(view);
-    view.ed.geometry = { ...view.ed.geometry, straighten: r.straighten, vertical: r.vertical };
-    await persist(view, { geometry: view.ed.geometry });
-    await afterGeometry(view);
+    view.ed.geometry = { ...before, ...next };
+    schedulePreview(view, { stage: 'uncropped' });
+    view.onChange?.();
+    if (await persist(view, { geometry: view.ed.geometry })) {
+      toast(text, 'info');
+      await afterGeometry(view);
+    }
     endChange(view);
   } catch (e) {
     toastError(e, '无法自动纠正这张照片。请重试。');
+  } finally {
+    view.autoBusy = false;
+    paintAuto(view);
   }
 }
 
 // 还原裁切和纠正：比例、拉直、透视、畸变、旋转、翻转、框都回到原图。不动配方、调整、边框、时间戳。
 export async function resetCorrections(view) {
   beginChange(view);
+  resetCropLocal(view); // 界面先整个回到原图，第一笔保存一排队，这一步就记进撤销了
   if (view.ed.v2) {
     view.ed.geometry = { ...DEFAULT_GEOMETRY };
     await persist(view, { geometry: view.ed.geometry });
@@ -261,11 +328,17 @@ export function correctSection(view) {
   return h('div', { class: 'correct-section' }, ...rows);
 }
 
+function autoButton(view) {
+  view.autoBtn = button('自动', { ico: 'wand-sparkles', title: '自动', onclick: () => autoCorrect(view) });
+  paintAuto(view); // 面板中途重画时，分析还在跑就仍然显示「正在分析…」
+  return view.autoBtn;
+}
+
 // 面板底部固定的一行按钮（COPY 3.1：[自动] [向左旋转] [水平翻转] [重置]）。旧版只有重置。
 export function correctActions(view) {
   if (!view.ed.v2) return [button('重置', { ico: 'rotate-ccw', onclick: () => resetCorrections(view) })];
   return [
-    button('自动', { ico: 'wand-sparkles', title: '自动', onclick: () => autoCorrect(view) }),
+    autoButton(view),
     button('向左旋转', { ico: 'rotate-ccw-square', title: '向左旋转（[）', onclick: () => rotate90(view) }),
     button('水平翻转', { ico: 'flip-horizontal-2', title: '水平翻转', pressed: !!view.ed.geometry.flip, onclick: () => flipHorizontal(view) }),
     button('重置', { ico: 'rotate-ccw', onclick: () => resetCorrections(view) }),

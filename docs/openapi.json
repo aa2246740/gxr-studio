@@ -125,6 +125,11 @@
             ],
             "title": "Expected Rev"
           },
+          "fit": {
+            "default": false,
+            "title": "Fit",
+            "type": "boolean"
+          },
           "flip": {
             "default": false,
             "title": "Flip",

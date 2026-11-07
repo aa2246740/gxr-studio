@@ -15,7 +15,7 @@ import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from 
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
-import { cropShape, HISTORY_GROUPS, ownedGroups, snapshot, withOwned } from './undo_entries.js';
+import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, withOwned } from './undo_entries.js';
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
@@ -258,8 +258,10 @@ export function applyRetried(view, { kind, response, fields = [], rev = null } =
 }
 
 export async function loadCrop(view) {
-  const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`));
-  if (live(view)) setCrop(view, c);
+  const pre = view.crop ? JSON.stringify(view.crop.rect) : null; // 开始读的时候界面上的框
+  const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`), (stale) => staleCropForRedo(view, stale, pre));
+  const unsaved = saveRecord(view.photo.id).failed; // 界面上有一个还没保存的框：不能拿服务器的旧框盖掉它
+  if (live(view) && !(unsaved && unsaved.crop)) setCrop(view, c);
 }
 
 // 接口的 rect 是数组，这里转成 {x, y, w, h}（写回时再转回数组，见 cropDraft / saveCrop 的调用方）
@@ -358,6 +360,7 @@ export function styleOptions(ed, styleId) {
 // 写 /edit。changes 只带要改的键（后端只认带上来的键）。
 // 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
 export function persist(view, changes) {
+  endChange(view); // 调用方在写之前已经改好了界面：这一下操作到此为止，撤销记一步，不等服务器回来
   return writeSave(saveRecord(view.photo.id), 'edit', changes, {
     onOk: (r) => {
       if (!live(view)) return;
@@ -374,6 +377,7 @@ export function persist(view, changes) {
 
 // 写 /crop：preset、rect、orientation（v2）或 flip（旧版的横竖），以及旧版的 angle_deg
 export function saveCrop(view, body) {
+  endChange(view); // 同 persist：框已经在界面上改好了，撤销这一步不等保存
   const rec = saveRecord(view.photo.id);
   const write = writeSave(rec, 'crop', body, {
     onOk: (c) => {
@@ -514,7 +518,10 @@ function restoreSnapshot(view, s) {
     const angle = ed.v2 ? geometryOf(view).straighten || 0 : o.crop.angle_deg || 0;
     const same = JSON.stringify(cur.rect) === JSON.stringify(o.crop.rect) && cur.preset === o.crop.preset
       && (ed.v2 ? cur.orientation === o.crop.orientation : (cur.angle_deg || 0) === angle);
-    if (!same) saveCrop(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: angle, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });
+    restoreCropLocal(view, o.crop); // 框和画布宽高当场回去，不等保存的回应
+    const body = { preset: o.crop.preset, rect: toArray(o.crop.rect), ...(ed.v2 ? { orientation: o.crop.orientation } : { angle_deg: angle }) };
+    if (own.has('geometry')) saveCrop(view, { ...body, fit: true }); // 几何的一步：服务器写几何时顺带收过框，不能凭界面上的框「没变」就不写；写的是目标框（fit），服务器收成离它最近的合格框
+    else if (!same) saveCrop(view, body);
   }
   schedulePreview(view, { full: true });
   view.redrawSide?.();

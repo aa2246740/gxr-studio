@@ -5,7 +5,7 @@
 import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
-import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, canvasAfterRotation, cropTilt } from './geom.js';
+import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, cropTilt } from './geom.js';
 
 // 比例分组。id 是后端 crop.py 的 PRESETS 的键；同一个 id 可以出现在两组里（例如 4:3 既是常用，也是小红书的竖图 3:4）。
 // orient：默认方向（'landscape' / 'portrait'）；没写就跟着照片的方向。
@@ -144,21 +144,23 @@ export function ratioForMax(view, canvas) {
   return lockRatio(view, canvas);
 }
 
-// 写 /crop 的请求体。v2 用 orientation；旧版用 flip（和照片本身的方向不同时为 true），并带上拉直角度（旧版拉直只在 /crop 里）。
+// 写 /crop 的请求体。v2 用 orientation，不带 angle_deg：后端不传就保持它自己存的拉直角度（和几何里的一致）。
+// 带上的话，这一笔是按排队时的角度写的——前面还有几何写入没写完（或失败了）时，会把后面更新的拉直角度写回旧值。
+// 旧版用 flip（和照片本身的方向不同时为 true），拉直只在 /crop 里，一定要带上当前的角度（不带的话旧版后端会把它冲回 0）。
 export function cropBody(view, base, orientation) {
-  // 一定要带上当前的拉直角度：后端 PUT /crop 的 angle_deg 默认是 0，不带的话会把刚拉的角度冲回 0
+  if (view.ed && view.ed.v2) return { ...base, orientation };
   const angle_deg = geometryOf(view).straighten || 0;
-  if (view.ed && view.ed.v2) return { ...base, orientation, angle_deg };
   const wantLandscape = orientation !== 'portrait';
   const flip = wantLandscape !== frameLandscape(view);
   return { ...base, flip, angle_deg };
 }
 
-// 全尺寸的未裁切画布（原图像素，按 90° 旋转交换宽高）。不知道原图尺寸时退回预览画布。
+// 全尺寸的未裁切画布（原图像素）。接口给的 frame 已经是几何变换（拉直、透视、畸变、旋转 90°）之后的画布，
+// 不能再按 rotate90 转一次（转过 90° 再点比例，框的比例和「W × H」读数会错）。本地转 90° 时 rotate90() 自己把 frame 的宽高对调。
+// 不知道原图尺寸时退回预览画布。
 export function fullCanvas(view) {
   const f = view.crop && view.crop.frame;
-  const g = geometryOf(view) || {};
-  if (f && f.width && f.height) return canvasAfterRotation({ w: f.width, h: f.height }, g.rotate90 || 0);
+  if (f && f.width && f.height) return { w: f.width, h: f.height };
   return view.canvas || null;
 }
 
@@ -170,6 +172,11 @@ export function fitCrop(view, rect) {
   const full = fullCanvas(view);
   if (g.vertical || g.horizontal || g.distortion || !full) return fitInto(rect, validRect(view, view.canvas));
   return fitStraightened(rect, full, cropTilt(g));
+}
+
+// 先在界面上回到原图（撤销要记得住框），再用 preview.js 的 resetCropRemote 排队保存
+export function resetCropLocal(view) {
+  if (view.crop) Object.assign(view.crop, { preset: 'original', rect: { x: 0, y: 0, w: 1, h: 1 }, angle_deg: 0, orientation: 'landscape' });
 }
 
 // 点比例 / 横竖：框先在本地算好、马上画出来，再后台保存；后端回来的框由 saveCrop 的 onOk 换上。
@@ -191,10 +198,11 @@ export function presetRect(view, item, portrait) {
 
 function showNow(view, item, orientation) {
   const rect = presetRect(view, item, orientation === 'portrait');
-  if (!rect) return;
+  // 算不出框（还不知道画布大小）也要把比例记下来，这一步才有可撤销的差别；框等后端回来再换
   view.crop.preset = item.id;
-  view.crop.rect = rect;
   if (view.ed && view.ed.v2) view.crop.orientation = orientation;
+  if (!rect) return;
+  view.crop.rect = rect;
   view.onRectDrag?.(); // 画面上的框和尺寸读数
   view.redrawSide?.(); // 面板里的比例名、横竖、缩放
 }
@@ -357,7 +365,7 @@ function spiralPath(k, ar) {
 
 export function cropSection(view) {
   const item = presetFor(view);
-  const canvas = view.canvas;
+  const canvas = view.canvas || fullCanvas(view); // 画面还没出来（刚转过 90° 等）时按接口给的画布，不留骨架
   const portrait = canvas ? isPortrait(view, canvas) : !frameLandscape(view);
   const canOrient = orientable(item);
   const ratioBtn = h('button', { type: 'button', class: 'select', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': '比例', onclick: (e) => openPresetMenu(view, e.currentTarget) }, h('span', {}, item.label || item.id), icon('chevron-down', 'sm'));

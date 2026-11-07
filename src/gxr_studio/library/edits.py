@@ -153,6 +153,7 @@ def write_crop(
     orientation: str | None = None,
     reset: bool = False,
     expected_rev: int | None = None,
+    fit: bool = False,
 ) -> dict[Any, Any]:
     """写裁切。orientation（landscape / portrait）指几何变换之后的画布上的横竖，和界面上的按钮一样：
     转过 90° 的横图是竖的画布，在上面选「横向」就是横框。给了 orientation 就不看 flip（旧版界面才用 flip）。"""
@@ -178,13 +179,15 @@ def write_crop(
             side["geometry"]["straighten"] = 0.0
     else:
         preset = preset or "free"
-        if rect is not None:
+        if rect is not None and fit:
+            crop = cropmod.fit_target_crop(preset, rect, angle_deg, w, h)  # fit：rect 是目标，下面收成离它最近的合格框
+        elif rect is not None:
             crop = cropmod.validate_crop(preset, rect, angle_deg, w, h, mirrored=_geometry_of(side).flip)
         else:
             crop = cropmod.default_crop(preset, w, h, angle_deg, flip)
         geom = replace(_geometry_of(side), straighten=float(angle_deg))
         src_w, src_h = _source_frame(side)
-        fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h)
+        fixed = fitted_crop(geom, crop.rect, preset=crop.preset, width=src_w, height=src_h, force=fit and rect is not None)
         if fixed is not None:
             crop = Crop(crop.preset, fixed, crop.angle_deg)
         side["crop"] = crop.to_json()

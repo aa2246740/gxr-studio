@@ -8,6 +8,17 @@ import { api } from './api.js';
 import { emit } from './state.js';
 import { toast, toastError } from './dom.js';
 
+// 排在前面的几何没写成功，后面的框就不写了（见 writeSave）
+export class Skipped extends Error {
+  constructor() {
+    super('前面的几何没有保存，这一笔先不写。');
+    this.code = 'skipped';
+  }
+}
+
+// 服务器说「这个框的形状不对」（比例不符、超出画面、太小）。别的失败（断网、500、版本冲突）不是框的问题。
+const SHAPE_REJECTED = new Set(['ratio_mismatch', 'crop_outside_image', 'bad_rect', 'too_small']);
+
 const records = new Map();
 const URLS = { edit: (id) => `/api/photos/${id}/edit`, crop: (id) => `/api/photos/${id}/crop` };
 
@@ -64,7 +75,7 @@ function recordFailure(rec, kind, body, error) {
   const f = rec.failed || { edit: null, crop: null, error: null };
   if (kind === 'edit') f.edit = { ...(f.edit || {}), ...body };
   else f.crop = body;
-  f.error = error;
+  if (!(error instanceof Skipped && f.error)) f.error = error; // 跳过的那一笔不盖掉真正的原因
   rec.failed = f;
 }
 
@@ -92,13 +103,16 @@ export function writeSave(rec, kind, changes, { onOk = null, onFail = null } = {
   for (const f of fieldsOf(kind, body)) rec.fieldGen[f] = (rec.fieldGen[f] || 0) + 1;
   return enqueue(rec, async () => {
     try {
+      // 框是按几何定的：排在前面的几何没写成功（还在失败记录里），这一笔写上去只会对着旧的几何算、被拒或被服务器编成居中框。
+      // 先不写，留在失败记录里，重试时跟在几何后面写
+      if (kind === 'crop' && rec.failed && rec.failed.edit && 'geometry' in rec.failed.edit) throw new Skipped();
       const r = await api(URLS[kind](rec.id), { method: 'PUT', body: { ...body, expected_rev: rec.rev } });
       rec.rev = r.rev;
       clearSucceeded(rec, kind, body);
       onOk?.(r);
     } catch (e) {
       recordFailure(rec, kind, body, e);
-      toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
+      if (!(e instanceof Skipped)) toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
       onFail?.(e);
       throw e;
     }
@@ -135,13 +149,15 @@ export async function flushDate(date) {
 
 // 读这张照片的编辑记录（或裁剪），读到的必须是最新的：先等排着的写入，读的过程中又有写入就重读（F04）。
 // read() 返回读到的内容；一直被新的写入打断（连续 5 次）就放弃并抛出，调用方保持现状。
-export async function readFresh(id, read) {
+// onStale(out)：读到的是过时的（读的过程中又有写入）会被丢掉重读，丢掉之前交给调用方看一眼
+export async function readFresh(id, read, onStale = null) {
   const rec = saveRecord(id);
   for (let i = 0; i < 5; i += 1) {
     await rec.tail;
     const gen = rec.gen;
     const out = await read();
     if (rec.gen === gen && !rec.pending) return out;
+    onStale?.(out);
   }
   throw new Error('这张照片正在保存，稍后再读。');
 }
@@ -172,7 +188,17 @@ export function retrySaves(id) {
       rec.rev = (await api(URLS.edit(id))).rev;
       // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
       if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
-      if (rec.failed && rec.failed.crop) await put('crop', { ...rec.failed.crop });
+      if (rec.failed && rec.failed.crop) {
+        const box = { ...rec.failed.crop };
+        try {
+          await put('crop', box);
+        } catch (e) {
+          // 框是失败那一刻按当时的几何定的，之后几何变过，现在的服务器说形状不对（重试永远过不去）：
+          // 同一个框当目标（fit），让服务器收成离它最近的合格框，位置保留。fit 的写入服务器不拒。
+          if (!SHAPE_REJECTED.has(e.code) || box.fit || box.rect === null) throw e;
+          await put('crop', { ...box, fit: true });
+        }
+      }
     } catch (e) {
       if (rec.failed) rec.failed.error = e;
       throw e;
