@@ -196,19 +196,18 @@ try {
   step('set preview preference');
   await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${mode === 'gpu' ? 'on' : 'off'}'); true`);
   if (mode === 'layout') {
-    // 边框和时间戳的版面在真 Chrome 里用画布量字（同一批字体文件）算出来，交给 Python 和 Pillow 的结果对
-    step('load fonts and lay out');
+    // 边框和时间戳的版面在真 Chrome 里算：字体表从服务器下载（和导出读的是同一份），版面只用表里的整数，交给 Python 的结果对
+    step('load the font tables and lay out');
     const cases = readFileSync(process.env.LAYOUT_CASES, 'utf8');
     out.layout = await evalIn(`(async () => {
       const L = await import('/assets/finish_layout.js');
       const F = await import('/assets/finish_fonts.js');
       const data = ${cases};
       await Promise.all(['atkinson', 'inter', 'courier', 'patrick', 'dseg'].map((id) => F.loadFont(id)));
-      const m = F.canvasMetrics();
-      const metric = data.table.map(([kind, font, px, text]) => (kind === 'a' ? m.advance(font, px, text, false) : m.bbox(font, px, text, false)));
+      const m = F.metrics;
       const frames = data.frames.map((c) => L.frameLayout(c.w, c.h, c.spec, c.meta, m));
       const stamps = data.stamps.map((c) => { const text = L.stampText(c.spec, c.when); return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m) }; });
-      return { metric, frames, stamps };
+      return { frames, stamps };
     })()`, 120000);
     out.ready = true;
     await finish(0);

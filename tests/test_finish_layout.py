@@ -1,22 +1,16 @@
-"""边框和时间戳的版面（finish/layout.py）：画布的边、版面落在画布里、导出照版面画，以及预览要用的字体常数。"""
+"""边框和时间戳的版面（finish/layout.py）：画布的边、版面落在画布里、导出照版面画。"""
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
-from pathlib import Path
-
 import numpy as np
 import pytest
-from PIL import Image, ImageFont
+from PIL import Image
 
-from gxr_studio.finish.fonts import ASSETS, FONT_FILES, PilFonts
+from gxr_studio.finish.fonts import ASSETS, FontMetrics
 from gxr_studio.finish.frame import apply_frame
-from gxr_studio.finish.layout import CANVAS, LOGO_SIZE, WEIGHT, frame_layout, stamp_layout
+from gxr_studio.finish.layout import CANVAS, LOGO_SIZE, WEIGHT, advance, frame_layout, stamp_layout
 from gxr_studio.finish.spec import FrameSpec, StampSpec
 
-WEB = Path(__file__).resolve().parents[1] / "web" / "assets"
 META = {
     "lens": "GR LENS A12 50mm F2.5 MACRO",
     "lens_short": "A12 50mm",
@@ -39,7 +33,7 @@ def test_logo_size_constant_matches_the_file() -> None:
 @pytest.mark.parametrize("color", ["white", "black", "cream"])
 def test_canvas_keeps_the_white_border_margin_on_all_four_sides(w: int, h: int, ratio: str, color: str) -> None:
     """画布：四边都留出和「白边 · 中」一样宽的边，再补到所选比例，照片居中。"""
-    layout = frame_layout(w, h, FrameSpec(style="canvas", color=color, canvas_ratio=ratio), META, PilFonts())
+    layout = frame_layout(w, h, FrameSpec(style="canvas", color=color, canvas_ratio=ratio), META, FontMetrics())
     assert layout is not None
     margin = max(8, round(max(w, h) * WEIGHT["medium"]))
     x, y = layout.photo
@@ -56,7 +50,7 @@ def test_canvas_keeps_the_white_border_margin_on_all_four_sides(w: int, h: int, 
 def test_canvas_with_a_crop_that_already_has_the_ratio_still_gets_a_border() -> None:
     """4:5 的照片放进画布 4:5：原来一点边也没有，现在四边都有。"""
     w, h = 2400, 3000
-    layout = frame_layout(w, h, FrameSpec(style="canvas", canvas_ratio="4:5"), {}, PilFonts())
+    layout = frame_layout(w, h, FrameSpec(style="canvas", canvas_ratio="4:5"), {}, FontMetrics())
     assert layout is not None
     margin = max(8, round(max(w, h) * WEIGHT["medium"]))
     x, y = layout.photo
@@ -67,7 +61,7 @@ def test_canvas_with_a_crop_that_already_has_the_ratio_still_gets_a_border() -> 
 def test_canvas_of_a_3_by_4_crop_in_4_by_5_has_no_bare_top_and_bottom() -> None:
     """3:4 的照片放进 4:5：原来只有左右两条细白边，上下没有；现在上下也有边，左右更宽。"""
     w, h = 2400, 3200
-    layout = frame_layout(w, h, FrameSpec(style="canvas", canvas_ratio="4:5"), {}, PilFonts())
+    layout = frame_layout(w, h, FrameSpec(style="canvas", canvas_ratio="4:5"), {}, FontMetrics())
     assert layout is not None
     margin = max(8, round(max(w, h) * WEIGHT["medium"]))
     x, y = layout.photo
@@ -80,7 +74,7 @@ def test_canvas_export_pixels_follow_the_layout() -> None:
     photo = rng.integers(0, 256, size=(90, 120, 3), dtype=np.uint8)
     spec = FrameSpec(style="canvas", color="cream", canvas_ratio="1:1")
     out = apply_frame(photo, spec, {})
-    layout = frame_layout(120, 90, spec, {}, PilFonts())
+    layout = frame_layout(120, 90, spec, {}, FontMetrics())
     assert layout is not None and out.shape[:2] == (layout.height, layout.width)
     x, y = layout.photo
     assert np.array_equal(out[y : y + 90, x : x + 120], photo)
@@ -90,71 +84,59 @@ def test_canvas_export_pixels_follow_the_layout() -> None:
 @pytest.mark.parametrize("style", ["gallery", "leica", "hasselblad", "film", "instant", "canvas"])
 @pytest.mark.parametrize(("w", "h"), SIZES)
 def test_layout_items_stay_inside_the_frame_canvas(style: str, w: int, h: int) -> None:
+    """每个尺寸、每种样式：照片和每一行字（整行的宽度）、标志都在画布里面。
+    一行参数比照片还宽时先缩字号，再放不下就去掉最后几项，不靠量字的结果碰运气。"""
     spec = FrameSpec(style=style, text="Hello", show_date=True)
-    layout = frame_layout(w, h, spec, META, PilFonts())
+    metrics = FontMetrics()
+    layout = frame_layout(w, h, spec, META, metrics)
     assert layout is not None
     x, y = layout.photo
     assert x >= 0 and y >= 0 and x + w <= layout.width and y + h <= layout.height
     for item in layout.items:
         if item["k"] == "text":
-            # 一行参数比照片还宽的小图，哈苏、徕卡的字会超出去（导出一直如此，不在这里改）；够大的图都在里面
-            assert 0 <= item["y"] <= layout.height and (w < 500 or -1 <= item["x"] <= layout.width), item
+            width = advance(metrics, item["font"], item["px"], item["text"], item["cjk"])
+            assert item["x"] >= 0 and item["x"] + width <= layout.width + 0.5, (item["text"], item["x"], width, layout.width)
+            assert 0 <= item["y"] and item["y"] + item["px"] <= layout.height + 1, item
         elif item["k"] == "logo":
             assert 0 <= item["x"] and item["x"] + item["w"] <= layout.width and item["y"] + item["h"] <= layout.height, item
 
 
+def test_hasselblad_500_square_keeps_its_long_line_inside() -> None:
+    """CI 上出过的情形：500 × 500 的哈苏，参数行比画布宽，字被画到左边外面（x = -4.5）。"""
+    metrics = FontMetrics()
+    layout = frame_layout(500, 500, FrameSpec(style="hasselblad", text="Hello", show_date=True), META, metrics)
+    assert layout is not None
+    lines = [item for item in layout.items if item["k"] == "text"]
+    assert len(lines) == 2
+    for item in lines:
+        assert item["x"] >= 0 and item["x"] + advance(metrics, item["font"], item["px"], item["text"], item["cjk"]) <= layout.width
+
+
 def test_style_none_has_no_layout() -> None:
-    assert frame_layout(100, 100, FrameSpec(style="none"), {}, PilFonts()) is None
+    assert frame_layout(100, 100, FrameSpec(style="none"), {}, FontMetrics()) is None
 
 
-def node_json(tmp_path: Path, body: str) -> object:
-    """把 finish_layout.js 复制进临时目录当模块跑，返回 body 里 return 的东西。"""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("本机没有 node，跳过前端纯函数测试")
-    (tmp_path / "finish_layout.js").write_text((WEB / "finish_layout.js").read_text(encoding="utf-8"), encoding="utf-8")
-    (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
-    script = tmp_path / "check.mjs"
-    script.write_text(
-        f"import * as L from './finish_layout.js';\nconst out = (() => {{\n{body}\n}})();\nconsole.log(JSON.stringify(out));\n",
-        encoding="utf-8",
-    )
-    res = subprocess.run([node, str(script)], capture_output=True, text=True, cwd=tmp_path, encoding="utf-8")
-    assert res.returncode == 0, res.stderr
-    return json.loads(res.stdout)
-
-
-def test_preview_ascent_matches_pillow(tmp_path: Path) -> None:
-    """画布按基线画字，预览用 hhea 的上沿高度推出 Pillow 的 'la' 锚点：和 Pillow 的 getmetrics 逐字号相同。"""
-    fonts = list(FONT_FILES)
-    got = node_json(
-        tmp_path, f"return Object.fromEntries({json.dumps(fonts)}.map((f) => [f, Array.from({{length: 700}}, (_, px) => L.ascentPx(f, px))]));"
-    )
-    assert isinstance(got, dict)
-    for font in fonts:
-        for px in range(8, 700):
-            face = ImageFont.truetype(str(ASSETS / "fonts" / FONT_FILES[font]), px)
-            assert face.getmetrics()[0] == got[font][px], (font, px)
-
-
-def test_dseg_tick_advance_matches_pillow(tmp_path: Path) -> None:
-    em = node_json(tmp_path, "return L.DSEG_TICK_EM;")
-    assert isinstance(em, float)
-    fonts = PilFonts()
-    for px in (12, 30, 47, 80, 101, 300):
-        assert abs(fonts.advance("dseg", px, "'", False) - em * px) < 0.1, px
+def test_every_glyph_has_a_column() -> None:
+    """版面给每个字一个整像素的列，和字符一一对应；导出和预览都画在这些列上。"""
+    metrics = FontMetrics()
+    layout = frame_layout(1600, 1066, FrameSpec(style="leica", text="Hello", show_date=True), META, metrics)
+    assert layout is not None
+    for item in layout.items:
+        if item["k"] == "text":
+            assert len(item["xs"]) == len(item["text"])
+            assert item["xs"] == sorted(item["xs"]) and all(isinstance(v, int) for v in item["xs"])
 
 
 def test_stamp_layout_text_box_sits_inside_the_photo() -> None:
-    fonts = PilFonts()
+    metrics = FontMetrics()
     for w, h in SIZES:
         for corner in ("tl", "tr", "bl", "br"):
             spec = StampSpec(enabled=True, corner=corner, size="large")
-            layout = stamp_layout(w, h, spec, "'26 10 23", fonts)
+            layout = stamp_layout(w, h, spec, "'26 10 23", metrics)
             assert layout is not None
             x, y, tw, th = layout.rect
             assert 0 <= x and 0 <= y and x + tw <= w and y + th <= h, (w, h, corner, layout.rect)
 
 
 def test_stamp_layout_of_no_text_is_none() -> None:
-    assert stamp_layout(100, 100, StampSpec(enabled=True), "", PilFonts()) is None
+    assert stamp_layout(100, 100, StampSpec(enabled=True), "", FontMetrics()) is None

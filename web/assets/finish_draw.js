@@ -10,11 +10,16 @@ const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 // 字体还没下载好时先不画这行字（等字体到了会再画一遍），免得闪一下后备字体
 const drawable = (item) => item.cjk || fontReady(item.font);
 
+// 一个字一个字地画在版面算好的列上（item.xs），和导出一样：字距、连字、画布自己的字距都影响不到位置。
+// 空格和控制字符不画（和 fonts.py 的 draw_run 一样）。
 function drawText(ctx, item, dx, dy, s) {
   if (!drawable(item)) return;
   ctx.font = fontCss(item.font, item.px * s, item.cjk);
   ctx.fillStyle = rgb(item.fill);
-  ctx.fillText(item.text, dx + item.x * s, dy + (item.y + ascentOf(item.font, item.px, item.cjk)) * s);
+  const baseline = dy + (item.y + ascentOf(item.font, item.px, item.cjk)) * s;
+  Array.from(item.text).forEach((ch, i) => {
+    if (ch !== ' ' && ch.codePointAt(0) >= 0x20) ctx.fillText(ch, dx + item.xs[i] * s, baseline);
+  });
 }
 
 function drawPoly(ctx, item, dx, dy, s) {
@@ -95,7 +100,7 @@ export function drawDecor(ctx, deco, s, { photo = null, onLogo = null } = {}) {
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(photo, px * s, py * s, deco.ew * s, deco.eh * s);
   }
-  ctx.fontKerning = 'normal';
+  ctx.fontKerning = 'none';
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
   if (frame) drawFrameItems(ctx, frame, s, onLogo);

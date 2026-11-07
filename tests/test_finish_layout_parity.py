@@ -1,9 +1,10 @@
 """预览的版面（web/assets/finish_layout.js）和导出的版面（finish/layout.py）逐项相同。
 
-两边用同样的输入：每种样式 × 每个选项 × 横、竖、方、条幅几种大小的照片 × 几份拍摄信息。字的宽度由 Pillow 量好，
-记在表里交给 node（node 里没有字体）：JS 版问到表里没有的字就失败，说明两边的算式不一样了。
-矩形、线、标志的位置和字号逐个数字相同（浮点误差以内）；画出来的字符串逐字相同。
-真浏览器里用画布量字时和 Pillow 的差，在 tests/test_viewer_browser.py::test_browser_layout_matches_the_export_layout 里查。
+两边用同样的输入：每种样式 × 每个选项 × 横、竖、方、条幅几种大小的照片 × 几份拍摄信息，再加每种日期戳字体、字号、位置。
+字体表（步进宽度、字形外框、上沿高度）从字体文件里读，Python 直接用，node 拿到的是和浏览器一样的那份 JSON（`font_table_json`）；
+中文要系统字体，node 里没有，Python 把量过的字记下来交给 node（只验证算式）。
+矩形、线、标志、字号、每个字的列逐个数字相同（浮点误差以内）；画出来的字符串逐字相同。
+真浏览器里的同一件事，在 tests/test_viewer_browser.py::test_browser_layout_matches_the_export_layout 里查。
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any
 import pytest
 
 from gxr_studio.finish import stamp as stamp_mod
-from gxr_studio.finish.fonts import PilFonts
+from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, table_dict
 from gxr_studio.finish.layout import frame_layout, stamp_layout
 from gxr_studio.finish.spec import FrameSpec, StampSpec
 from gxr_studio.finish.stamp import format_stamp
@@ -64,25 +65,24 @@ TEXTS = ["", "Hello", "A very long caption that goes on and on 1234", "上海"]
 WHENS = [datetime(2026, 10, 23, 17, 41), datetime(1999, 1, 2, 3, 4), datetime(2026, 12, 31, 23, 59)]
 
 
-class Recorder:
-    """Pillow 量字，并把每一次问答记下来。"""
+class Recorder(FontMetrics):
+    """FontMetrics，并把中文字体问过的东西记下来（node 里没有系统字体，只能照记下的答）。"""
 
     def __init__(self) -> None:
-        self.fonts = PilFonts()
-        self.table: dict[str, Any] = {}
+        super().__init__()
+        self.cjk_glyphs: dict[str, Any] = {}
+        self.cjk_ascents: dict[str, int] = {}
 
-    @staticmethod
-    def key(kind: str, font: str, px: int, cjk: bool, text: str) -> str:
-        return json.dumps([kind, font, px, cjk, text], ensure_ascii=False, separators=(",", ":"))
-
-    def advance(self, font: str, px: int, text: str, cjk: bool) -> float:
-        value = self.fonts.advance(font, px, text, cjk)
-        self.table[self.key("a", font, px, cjk, text)] = value
+    def glyph(self, font: str, ch: str, cjk: bool) -> Any:
+        value = super().glyph(font, ch, cjk)
+        if cjk:
+            self.cjk_glyphs[ch] = [value[0], list(value[1]) if value[1] else None]
         return value
 
-    def bbox(self, font: str, px: int, text: str, cjk: bool) -> tuple[int, int, int, int]:
-        value = self.fonts.bbox(font, px, text, cjk)
-        self.table[self.key("b", font, px, cjk, text)] = list(value)
+    def ascent(self, font: str, px: int, cjk: bool) -> int:
+        value = super().ascent(font, px, cjk)
+        if cjk:
+            self.cjk_ascents[str(px)] = value
         return value
 
 
@@ -146,15 +146,20 @@ def when_json(moment: datetime | None) -> dict[str, int] | None:
 
 JS = """
 import * as L from './finish_layout.js';
+import * as F from './finish_fonts.js';
 import { readFileSync } from 'node:fs';
 const data = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-const key = (kind, font, px, cjk, text) => JSON.stringify([kind, font, px, cjk, text]);
-const ask = (kind, font, px, text, cjk) => {
-  const k = key(kind, font, px, cjk, text);
-  if (!(k in data.table)) throw new Error('Python 没有问过这个：' + k);
-  return data.table[k];
+for (const [id, table] of Object.entries(data.tables)) F.useTable(id, table);
+const need = (map, key) => {
+  if (!(key in map)) throw new Error('Python 没有问过这个：' + key);
+  return map[key];
 };
-const m = { advance: (f, p, t, c) => ask('a', f, p, t, c), bbox: (f, p, t, c) => ask('b', f, p, t, c) };
+// 内置字体用 finish_fonts.js 的 metrics（和浏览器同一份代码）；中文字体用 Python 记下的答案
+const m = {
+  upm: (f, c) => (c ? 1000 : F.metrics.upm(f, false)),
+  glyph: (f, ch, c) => (c ? need(data.cjk.glyphs, ch) : F.metrics.glyph(f, ch, false)),
+  ascent: (f, px, c) => (c ? need(data.cjk.ascents, String(px)) : F.metrics.ascent(f, px, false)),
+};
 const frames = data.frames.map((c) => L.frameLayout(c.w, c.h, c.spec, c.meta, m));
 const stamps = data.stamps.map((c) => {
   const text = L.stampText(c.spec, c.when);
@@ -207,11 +212,16 @@ def test_preview_layout_equals_export_layout(tmp_path: Path) -> None:
                 stamp_cases.append({"w": w, "h": h, "spec": spec.to_json(), "when": when_json(moment)})
                 got_stamp = stamp_layout(w, h, spec, text, rec)
                 stamp_want.append({"text": text, "layout": None if got_stamp is None else got_stamp.to_json()})
-        (tmp_path / "finish_layout.js").write_text((WEB / "finish_layout.js").read_text(encoding="utf-8"), encoding="utf-8")
+        for name in ("finish_layout.js", "finish_fonts.js"):
+            (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
         (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
         (tmp_path / "check.mjs").write_text(JS, encoding="utf-8")
         data = tmp_path / "cases.json"
-        data.write_text(json.dumps({"table": rec.table, "frames": frame_cases, "stamps": stamp_cases}, ensure_ascii=False), encoding="utf-8")
+        tables = {font: table_dict(font) for font in FONT_FILES}
+        cjk = {"glyphs": rec.cjk_glyphs, "ascents": rec.cjk_ascents}
+        data.write_text(
+            json.dumps({"tables": tables, "cjk": cjk, "frames": frame_cases, "stamps": stamp_cases}, ensure_ascii=False), encoding="utf-8"
+        )
         res = subprocess.run([node, "check.mjs", str(data)], capture_output=True, text=True, cwd=tmp_path, encoding="utf-8")
         assert res.returncode == 0, res.stderr[-3000:]
         got_js = json.loads(res.stdout)

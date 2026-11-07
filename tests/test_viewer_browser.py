@@ -217,18 +217,17 @@ def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
 
 
 def _layout_cases():
-    """横、竖、方、条幅几种大小 × 每种样式和选项 × 每种日期戳字体。中文要系统字体，Pillow 和 Chrome 用的不一定是同一个，这里不带。"""
+    """横、竖、方、条幅几种大小 × 每种样式和选项 × 每种日期戳字体。中文要系统字体，Chrome 和 Pillow 用的不一定是同一个，这里不带。"""
     import itertools
     from datetime import datetime
 
-    from gxr_studio.finish.fonts import PilFonts
+    from gxr_studio.finish.fonts import FontMetrics
     from gxr_studio.finish.layout import frame_layout, stamp_layout
     from gxr_studio.finish.spec import FrameSpec, StampSpec
     from gxr_studio.finish.stamp import format_stamp
-    from test_finish_layout_parity import METAS, Recorder, when_json
+    from test_finish_layout_parity import METAS, when_json
 
-    rec = Recorder()
-    rec.fonts = PilFonts()
+    metrics = FontMetrics()
     sizes = [(640, 480), (480, 640), (1600, 1066), (4288, 2848), (2848, 4288), (900, 900), (4288, 1583)]
     frames, want_frames, stamps, want_stamps = [], [], [], []
     for w, h in sizes:
@@ -240,7 +239,7 @@ def _layout_cases():
             for spec in specs:
                 for meta in METAS[:2] if w < 2000 else METAS[:1]:
                     frames.append({"w": w, "h": h, "spec": spec.to_json(), "meta": meta})
-                    want_frames.append(frame_layout(w, h, spec, meta, rec).to_json())
+                    want_frames.append(frame_layout(w, h, spec, meta, metrics).to_json())
         moment = datetime(2026, 10, 23, 17, 41)
         for font, size, corner in itertools.product(("seg7", "typewriter", "sans"), ("small", "medium", "large"), ("tl", "br")):
             for content, text, fmt in (
@@ -253,116 +252,22 @@ def _layout_cases():
                     enabled=True, content=content, text=text, date_format=fmt, font=font, size=size, corner=corner, show_time=bool(text)
                 )
                 stamps.append({"w": w, "h": h, "spec": spec.to_json(), "when": when_json(moment)})
-                got = stamp_layout(w, h, spec, format_stamp(spec, moment, None), rec)
+                got = stamp_layout(w, h, spec, format_stamp(spec, moment, None), metrics)
                 want_stamps.append({"text": format_stamp(spec, moment, None), "layout": got.to_json() if got else None})
-    return frames, stamps, want_frames, want_stamps, rec
+    return frames, stamps, want_frames, want_stamps
 
 
 def test_browser_layout_matches_the_export_layout(live, tmp_path):
-    """预览用画布量字（同一批字体文件）算出的版面和导出用 Pillow 量字算出的版面：矩形 1 像素以内，字符串和字号相同。"""
-    frames, stamps, want_frames, want_stamps, rec = _layout_cases()
-    table = []
-    want_metric = []
-    for key, value in rec.table.items():
-        kind, font, px, cjk, text = json.loads(key)
-        if not cjk:
-            table.append([kind, font, px, text])
-            want_metric.append(value)
+    """真 Chrome 里用服务器给的字体表算出的版面，和导出（Python，同一份表）算出的版面逐项相同：
+    矩形、线、标志、字号、每个字的列、日期戳的外框，都是同样的数（不是「差不多」）；字符串逐字相同。"""
+    from test_finish_layout_parity import same
+
+    frames, stamps, want_frames, want_stamps = _layout_cases()
     cases = tmp_path / "layout-cases.json"
-    cases.write_text(json.dumps({"table": table, "frames": frames, "stamps": stamps}, ensure_ascii=False), encoding="utf-8")
+    cases.write_text(json.dumps({"frames": frames, "stamps": stamps}, ensure_ascii=False), encoding="utf-8")
     out = drive(live, tmp_path, "layout", {"LAYOUT_CASES": str(cases)})["layout"]
-    report = layout_report(out, table, want_metric, want_frames, want_stamps, stamps)
-    (tmp_path / "layout-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(json.dumps(report["summary"], ensure_ascii=False), json.dumps(report["where"], ensure_ascii=False))
-    assert report["failures"] == [], report["failures"][:6]
-
-
-def _widen(worst, key, value):
-    worst[key] = max(worst.get(key, 0), value)
-
-
-def _compare_metrics(worst, where, table, want_metric, got_metric):
-    for (kind, font, px, text), want, got in zip(table, want_metric, got_metric, strict=True):
-        if kind == "a":
-            _widen(worst, "advance", abs(want - got))
-            continue
-        gap = max(abs(a - b) for a, b in zip(want, got, strict=True))
-        if gap > worst["bbox"]:
-            worst["bbox"], where["bbox"] = gap, [font, px, text, want, got]
-
-
-def _compare_frame_item(worst, failures, label, want, got):
-    if want["k"] != got["k"]:
-        failures.append(f"{label}: kinds differ")
-    elif want["k"] == "text":
-        if (want["text"], want["font"], want["px"]) != (got["text"], got["font"], got["px"]):
-            failures.append(f"{label}: text {want['text']!r}/{want['px']}px vs {got['text']!r}/{got['px']}px")
-        _widen(worst, "text_x", abs(want["x"] - got["x"]))
-        _widen(worst, "text_y", abs(want["y"] - got["y"]))
-    elif want["k"] == "line":
-        for key in ("x1", "y1", "x2", "y2"):
-            _widen(worst, "rect", abs(want[key] - got[key]))
-        _widen(worst, "text_x", abs(want["x1"] - got["x1"]))
-    else:
-        for key in ("x", "y", "w", "h"):
-            _widen(worst, "rect", abs(want[key] - got[key]))
-
-
-def _compare_frames(worst, failures, want_frames, got_frames):
-    for i, (want, got) in enumerate(zip(want_frames, got_frames, strict=True)):
-        label = f"frame#{i}"
-        if got is None:
-            failures.append(f"{label}: no layout")
-            continue
-        for key in ("width", "height"):
-            _widen(worst, "rect", abs(want[key] - got[key]))
-        for a, b in zip(want["photo"], got["photo"], strict=True):
-            _widen(worst, "rect", abs(a - b))
-        if len(want["items"]) != len(got["items"]):
-            failures.append(f"{label}: {len(want['items'])} items vs {len(got['items'])}")
-            continue
-        for w_item, g_item in zip(want["items"], got["items"], strict=True):
-            _compare_frame_item(worst, failures, label, w_item, g_item)
-
-
-def _compare_stamps(worst, where, failures, want_stamps, got_stamps, stamps_in):
-    for i, (want, got) in enumerate(zip(want_stamps, got_stamps, strict=True)):
-        label = f"stamp#{i}"
-        if want["text"] != got["text"]:
-            failures.append(f"{label}: text {want['text']!r} vs {got['text']!r}")
-            continue
-        w_layout, g_layout = want["layout"], got["layout"]
-        if (w_layout is None) != (g_layout is None):
-            failures.append(f"{label}: layout presence")
-            continue
-        if w_layout is None:
-            continue
-        if (w_layout["px"], w_layout["font"], len(w_layout["ops"])) != (g_layout["px"], g_layout["font"], len(g_layout["ops"])):
-            failures.append(f"{label}: px {w_layout['px']} vs {g_layout['px']}, ops {len(w_layout['ops'])} vs {len(g_layout['ops'])}")
-        size = "full" if min(stamps_in[i]["w"], stamps_in[i]["h"]) >= 1000 else "small"
-        gap = max(abs(a - b) for a, b in zip(w_layout["rect"], g_layout["rect"], strict=True))
-        _widen(worst, f"stamp_rect:{w_layout['font']}:{size}", gap)
-        if gap > worst["stamp_rect"]:
-            worst["stamp_rect"], where["stamp_rect"] = (
-                gap,
-                [label, w_layout["font"], w_layout["px"], want["text"], w_layout["rect"], g_layout["rect"]],
-            )
-
-
-def layout_report(out, table, want_metric, want_frames, want_stamps, stamps_in):
-    """逐项对：返回最大偏差的汇总和超出门槛的清单。"""
-    worst = {"advance": 0.0, "bbox": 0, "rect": 0.0, "text_x": 0.0, "text_y": 0.0, "stamp_rect": 0.0}
-    failures: list[str] = []
-    where: dict[str, list] = {}
-    _compare_metrics(worst, where, table, want_metric, out["metric"])
-    _compare_frames(worst, failures, want_frames, out["frames"])
-    _compare_stamps(worst, where, failures, want_stamps, out["stamps"], stamps_in)
-    # 门槛：边框的矩形、线、标志、文字位置 1 像素以内；日期戳的外框，数码管字体 1 像素以内。
-    # 打字机、无衬线两种字体 2 像素：Pillow 的 FreeType 对字形做网格对齐，画布用原始轮廓，量出的字形上下沿最多差 2 像素。
-    for key in ("advance", "rect", "text_x", "text_y"):
-        if worst[key] > 1:
-            failures.append(f"{key} deviates by {worst[key]} px")
-    for key, value in worst.items():
-        if key.startswith("stamp_rect:") and value > (1 if ":dseg:" in key else 2):
-            failures.append(f"{key} deviates by {value} px")
-    return {"summary": worst, "where": where, "failures": failures}
+    assert len(out["frames"]) == len(want_frames) > 1000 and len(out["stamps"]) == len(want_stamps) > 400
+    for i, (case, want) in enumerate(zip(frames, want_frames, strict=True)):
+        same(want, out["frames"][i], f"frame {case['w']}x{case['h']} {case['spec']['style']} #{i}")
+    for i, (case, want) in enumerate(zip(stamps, want_stamps, strict=True)):
+        same(want, out["stamps"][i], f"stamp {case['w']}x{case['h']} #{i}")

@@ -1,6 +1,7 @@
 // 边框和时间戳的版面（纯函数）。src/gxr_studio/finish/layout.py 的 JS 版：算式逐行对应，导出和预览的版面因此相同。
 // tests/test_finish_layout_parity.py 用同样的输入逐项对照。改这里的算式，layout.py 要一起改。
-// 量字交给调用方（m.advance、m.bbox）：预览用画布的 measureText（finish_fonts.js），测试用 Pillow 量好的表。
+// 字的宽度、每个字的位置、墨迹框都由字体表里的整数（步进宽度、字形外框，src/gxr_studio/finish/sfnt.py 从字体文件读出，
+// /api/finish/assets/<字体>.json 给浏览器）和整数算式得出：不用画布量字，也不管 Pillow 的排版引擎。表由调用方给（m.upm、m.glyph、m.ascent）。
 // 数字一律是「导出时的像素」：照片是已裁切、已盖日期戳的整张，宽 w 高 h。
 
 export const WEIGHT = { thin: 0.02, medium: 0.04, thick: 0.07 };
@@ -30,24 +31,63 @@ export function needsCjk(text) {
   return false;
 }
 
-// 字体的上沿高度（hhea ascender / unitsPerEm）。Pillow 画字用 'la' 锚点：y 是上沿，基线在 y + ascentPx 处。
-// 画布按基线画字，所以预览要同样的数。tests/test_finish_layout.py 用 Pillow 核对这几个数。
-export const FONT_ASCENT = { atkinson: [950, 1000], inter: [1984, 2048], courier: [1600, 2048], patrick: [1042, 1000], dseg: [1000, 1000] };
-export const DSEG_TICK_EM = 0.364; // 数码管字体里「'」（缺字的方块）的宽度；撇号是单独画的，只占这么宽
-
-export function ascentPx(font, px) {
-  const [ascender, upm] = FONT_ASCENT[font];
-  return Math.ceil(Math.round((ascender * px * 64) / upm) / 64); // FreeType 先按 26.6 定点取整，再向上取整到像素
+// Pillow 画字用 'la' 锚点：y 是字体上沿，基线在 y + ascentPx 处；画布按基线画字，预览要同样的数。
+// FreeType 的办法：hhea ascender 先四舍五入到 1/64 像素，再向上取整到像素（tests/test_finish_fonts.py 对 Pillow 逐字号核对）。
+export function ascentPx(ascender, upm, px) {
+  return Math.ceil(Math.floor((2 * ascender * px * 64 + upm) / (2 * upm)) / 64);
 }
 
-function textItem(x, y, px, font, text, fill, cjk = false) {
-  return { k: 'text', x, y, px, font, text, fill: [...fill], cjk };
+// 每个字符前面的步进之和（字体单位），最后一项是整行的步进。逐个码点，和 Python 的 for ch in text 一样
+function pens(m, font, chars, cjk) {
+  const out = [0];
+  for (const ch of chars) out.push(out[out.length - 1] + m.glyph(font, ch, cjk)[0]);
+  return out;
+}
+
+// 整行的宽度（像素，小数）：步进之和 × 字号 / upm。没有字距，没有取整。
+export function advance(m, font, px, text, cjk = false) {
+  const p = pens(m, font, Array.from(text), cjk);
+  return (p[p.length - 1] * px) / m.upm(font, cjk);
+}
+
+// 每个字画在哪一列像素：起点 x 加上前面各字的步进，四舍五入到整像素。预览和导出都一个字一个字地画在这些位置上。
+export function glyphXs(m, font, px, text, x, cjk = false) {
+  const upm = m.upm(font, cjk);
+  return pens(m, font, Array.from(text), cjk)
+    .slice(0, -1)
+    .map((pen) => Math.floor(x + (pen * px) / upm + 0.5));
+}
+
+// 一行字的墨迹框 [左, 上, 右, 下]（整像素，起点是 'la' 锚点）。横向把整行的步进算进去（左边不大于 0，右边不小于步进）。
+export function inkBox(m, font, px, text, cjk = false) {
+  const upm = m.upm(font, cjk);
+  const asc = m.ascent(font, px, cjk);
+  const chars = Array.from(text);
+  const p = pens(m, font, chars, cjk);
+  let left = 0;
+  let right = (p[p.length - 1] * px) / upm;
+  let up = 0;
+  let down = 0;
+  chars.forEach((ch, i) => {
+    const box = m.glyph(font, ch, cjk)[1];
+    if (!box) return;
+    left = Math.min(left, ((p[i] + box[0]) * px) / upm);
+    right = Math.max(right, ((p[i] + box[2]) * px) / upm);
+    up = Math.max(up, (box[3] * px) / upm);
+    down = Math.max(down, (-box[1] * px) / upm);
+  });
+  return [Math.floor(left), Math.floor(asc - up), Math.ceil(right), Math.ceil(asc + down)];
+}
+
+// 一行字：x 是起点，xs 是每个字的整像素列（glyphXs），y 是整像素行（字体上沿所在的那一行）
+function textItem(m, x, y, px, font, text, fill, cjk = false) {
+  return { k: 'text', x, y: Math.floor(y + 0.5), px, font, text, fill: [...fill], cjk, xs: glyphXs(m, font, px, text, x, cjk) };
 }
 
 const facePx = (px) => Math.max(8, px); // 边框用的字体不会小于 8 像素
 
-function fit(m, text, font, px, maxW) {
-  while (px > 10 && m.advance(font, facePx(px), text, false) > maxW) px -= 1;
+function fit(m, text, font, px, maxW, floor = 10) {
+  while (px > floor && advance(m, font, facePx(px), text, false) > maxW) px -= 1;
   return facePx(px);
 }
 
@@ -80,21 +120,22 @@ function leica(w, h, spec, meta, m) {
     const lw = Math.max(1, pyRound((LOGO_SIZE[0] * lh) / LOGO_SIZE[1]));
     items.push({ k: 'logo', x: pad, y: h + idiv(bar - lh, 2), w: lw, h: lh });
     const gx = pad + lw + idiv(pad, 2);
-    items.push(textItem(gx, h + idiv(bar - trunc(bar * 0.34), 2) - 2, facePx(trunc(bar * 0.34)), 'atkinson', 'GXR', ink));
+    const gxrPx = facePx(trunc(bar * 0.34));
+    if (gx + advance(m, 'atkinson', gxrPx, 'GXR') <= w) items.push(textItem(m, gx, h + idiv(bar - trunc(bar * 0.34), 2) - 2, gxrPx, 'atkinson', 'GXR', ink));
   }
   const lines = leicaLines(spec, meta);
   if (lines.length) {
     const first = lines[0];
     const second = lines.slice(1).join('  ');
-    const px1 = fit(m, first, 'inter', trunc(bar * 0.26), idiv(w, 2));
-    const px2 = second ? fit(m, second, 'inter', trunc(bar * 0.22), idiv(w, 2)) : px1;
-    const w1 = m.advance('inter', px1, first, false);
-    const w2 = second ? m.advance('inter', px2, second, false) : 0;
+    const px1 = fit(m, first, 'inter', trunc(bar * 0.26), idiv(w, 2), 8);
+    const px2 = second ? fit(m, second, 'inter', trunc(bar * 0.22), idiv(w, 2), 8) : px1;
+    const w1 = advance(m, 'inter', px1, first);
+    const w2 = second ? advance(m, 'inter', px2, second) : 0;
     const right = w - pad;
     const rule = right - Math.max(w1, w2) - Math.max(8, idiv(bar, 8));
     items.push({ k: 'line', x1: rule, y1: h + pad, x2: rule, y2: h + bar - pad, w: Math.max(1, idiv(bar, 28)), fill: [...muted] });
-    items.push(textItem(right - w1, h + trunc(bar * 0.16), px1, 'inter', first, ink));
-    if (second) items.push(textItem(right - w2, h + trunc(bar * 0.52), px2, 'inter', second, muted));
+    items.push(textItem(m, Math.max(0, right - w1), h + trunc(bar * 0.16), px1, 'inter', first, ink));
+    if (second) items.push(textItem(m, Math.max(0, right - w2), h + trunc(bar * 0.52), px2, 'inter', second, muted));
   }
   return { width: w, height: h + bar, photo: [0, 0], bg: [...COLORS[spec.color]], items };
 }
@@ -112,13 +153,22 @@ function hasselblad(w, h, spec, meta, m) {
   const cx = idiv(outW, 2);
   const y0 = thin + h + trunc(bottom * 0.28);
   const name = 'RICOH GXR';
-  const items = [textItem(cx - m.advance('atkinson', titlePx, name, false) / 2, y0, titlePx, 'atkinson', name, ink)];
+  const items = [textItem(m, Math.max(0, cx - advance(m, 'atkinson', titlePx, name) / 2), y0, titlePx, 'atkinson', name, ink)];
   const bits = [];
   if (spec.show_params) bits.push(...[meta.lens, meta.aperture, meta.shutter, meta.iso].filter(Boolean));
   if (spec.show_date && meta.date) bits.push(meta.date);
   if (spec.text) bits.push(spec.text);
-  const line = bits.join('  ·  ');
-  if (line) items.push(textItem(cx - m.advance('inter', subPx, line, false) / 2, y0 + trunc(bottom * 0.28), subPx, 'inter', line, muted));
+  let line = bits.join('  ·  ');
+  const maxW = outW - 2 * thin;
+  // 一行参数比照片还宽时先缩字号（最小 8 像素）；还放不下就从最后一项开始去掉，直到放得下（至少留一项）
+  while (bits.length > 1 && advance(m, 'inter', fit(m, line, 'inter', subPx, maxW, 8), line) > maxW) {
+    bits.pop();
+    line = bits.join('  ·  ');
+  }
+  if (line) {
+    const fitted = fit(m, line, 'inter', subPx, maxW, 8);
+    items.push(textItem(m, Math.max(0, cx - advance(m, 'inter', fitted, line) / 2), y0 + trunc(bottom * 0.28), fitted, 'inter', line, muted));
+  }
   return { width: outW, height: outH, photo: [thin, thin], bg: [...COLORS[spec.color]], items };
 }
 
@@ -129,9 +179,9 @@ function film(w, h, meta, m) {
   const amber = [232, 164, 74];
   const px = facePx(Math.max(11, idiv(mg, 3)));
   const lens = meta.lens_short || 'A12 50mm';
-  const items = [textItem(mg, outH - mg + 6, px, 'courier', `RICOH GXR  ·  ${lens}`, amber)];
+  const items = [textItem(m, mg, outH - mg + 6, px, 'courier', `RICOH GXR  ·  ${lens}`, amber)];
   const number = meta.frame_no || '';
-  if (number) items.push(textItem(outW - mg - m.advance('courier', px, number, false), 6, px, 'courier', number, amber));
+  if (number) items.push(textItem(m, Math.max(0, outW - mg - advance(m, 'courier', px, number)), 6, px, 'courier', number, amber));
   return { width: outW, height: outH, photo: [mg, mg], bg: [8, 8, 8], items };
 }
 
@@ -146,9 +196,9 @@ function instant(w, h, spec, m) {
     const eff = (size) => (cjk ? Math.max(1, size) : facePx(size));
     let px = Math.max(22, idiv(bottom, 4));
     const maxW = Math.max(8, outW - 2 * side);
-    while (px > 10 && m.advance('patrick', eff(px), spec.text, cjk) > maxW) px = Math.max(10, trunc(px * 0.85));
-    const tw = m.advance('patrick', eff(px), spec.text, cjk);
-    items.push(textItem((outW - tw) / 2, side + h + (bottom - eff(px)) / 2, eff(px), 'patrick', spec.text, [40, 40, 40], cjk));
+    while (px > 10 && advance(m, 'patrick', eff(px), spec.text, cjk) > maxW) px = Math.max(10, trunc(px * 0.85));
+    const tw = advance(m, 'patrick', eff(px), spec.text, cjk);
+    items.push(textItem(m, Math.max(0, (outW - tw) / 2), side + h + (bottom - eff(px)) / 2, eff(px), 'patrick', spec.text, [40, 40, 40], cjk));
   }
   return { width: outW, height: outH, photo: [side, side], bg: [248, 246, 242], items };
 }
@@ -199,23 +249,23 @@ function tickItem(x, y, px, fill) {
 
 function stampOps(origin, text, px, font, cjk, ink, m) {
   let [x, y] = origin;
-  if (font !== 'dseg' || cjk) return [textItem(x, y, px, font, text, ink, cjk)];
+  if (font !== 'dseg' || cjk) return [textItem(m, x, y, px, font, text, ink, cjk)];
   const drawn = seg7Text(text);
   const ops = [];
   let start = 0;
   while (start < drawn.length) {
     const tick = drawn.indexOf("'", start);
     if (tick < 0) {
-      ops.push(textItem(x, y, px, font, drawn.slice(start), ink));
+      ops.push(textItem(m, x, y, px, font, drawn.slice(start), ink));
       break;
     }
     const chunk = drawn.slice(start, tick);
     if (chunk) {
-      ops.push(textItem(x, y, px, font, chunk, ink));
-      x += pyRound(m.advance(font, px, chunk, false));
+      ops.push(textItem(m, x, y, px, font, chunk, ink));
+      x += pyRound(advance(m, font, px, chunk));
     }
     ops.push(tickItem(x, y, px, ink));
-    x += pyRound(m.advance(font, px, "'", false));
+    x += pyRound(advance(m, font, px, "'"));
     start = tick + 1;
   }
   return ops;
@@ -228,14 +278,14 @@ export function stampLayout(w, h, spec, text, m) {
   const cjk = needsCjk(text);
   const shown = cjk || spec.font !== 'seg7' ? text : seg7Text(text);
   let px = Math.max(12, pyRound(Math.min(w, h) * STAMP_SIZE[spec.size]));
-  let box = m.bbox(font, Math.max(1, px), shown, cjk);
+  let box = inkBox(m, font, Math.max(1, px), shown, cjk);
   const mg = Math.max(1, pyRound(Math.min(w, h) * 0.035));
   const limitW = Math.max(1, w - 2 * mg);
   const limitH = Math.max(1, h - 2 * mg);
   while ((box[2] - box[0] > limitW || box[3] - box[1] > limitH) && px > 1) {
     const nxt = trunc(px * 0.85);
     px = nxt < px ? nxt : px - 1;
-    box = m.bbox(font, Math.max(1, px), shown, cjk);
+    box = inkBox(m, font, Math.max(1, px), shown, cjk);
   }
   const tw = box[2] - box[0];
   const th = box[3] - box[1];

@@ -122,11 +122,12 @@ def test_frame_date_uses_a_full_year() -> None:
 def test_seg7_uses_the_digit_wide_blank_between_groups() -> None:
     from datetime import datetime
 
-    from gxr_studio.finish.fonts import PilFonts
+    from gxr_studio.finish.fonts import FontMetrics
+    from gxr_studio.finish.layout import advance
     from gxr_studio.finish.stamp import apply_stamp
 
-    fonts = PilFonts()
-    assert abs(fonts.advance("dseg", 80, "!", False) - fonts.advance("dseg", 80, "0", False)) < 1
+    metrics = FontMetrics()
+    assert abs(advance(metrics, "dseg", 80, "!") - advance(metrics, "dseg", 80, "0")) < 1
     # 1500×1026 的白底照片，「大」号日期戳的字号正好是 80 像素
     spec = StampSpec(enabled=True, font="seg7", size="large", color="orange", glow=False, corner="tl")
     canvas = apply_stamp(np.full((1026, 1500, 3), 255, np.uint8), spec, datetime(2026, 10, 23, 17, 41), None)
@@ -138,7 +139,7 @@ def test_seg7_uses_the_digit_wide_blank_between_groups() -> None:
     widths = [end - start for start, end in zip(starts, ends)]
     gaps = [starts[i + 1] - ends[i] for i in range(len(starts) - 1)]
     one = widths.index(min(widths))
-    cell = fonts.advance("dseg", 80, "0", False)
+    cell = advance(metrics, "dseg", 80, "0")
     assert gaps[one] < cell * 0.4
     before_one = gaps[one - 1]
     after_ten = gaps[one + 1]

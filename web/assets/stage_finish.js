@@ -3,26 +3,25 @@
 // 版面（finish_layout.js）和导出同一套算式，数字是导出时的像素；这里只管换算成屏幕上的大小。
 
 import { frameLayout, stampLayout, stampText, momentOf, needsCjk } from './finish_layout.js';
-import { canvasMetrics, fontReady, fontsNeeded, loadFont } from './finish_fonts.js';
+import { fontReady, fontsNeeded, loadFont, metrics, tableReady } from './finish_fonts.js';
 import { drawDecor } from './finish_draw.js';
 
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
-let metrics = null;
 
 // 一组边框 + 时间戳设置（null = 不要）在导出时（已裁切）照片 ew×eh 像素上的版面。什么都不用画返回 null。
-// onFonts：用到的字体还没下载好时，下载完调用一次（那时再画一遍）。
+// onFonts：用到的字体（文件或版面表）还没下载好时，下载完调用一次（那时再画一遍）。版面要用字体表：表没到就先不画（返回 null）。
 export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts) {
   if (!frameSpec && !stampSpec) return null;
   const meta = (ed.meta && ed.meta.frame) || {};
   const when = momentOf(ed.meta && ed.meta.captured_at);
   const text = stampSpec ? stampText(stampSpec, when) : '';
   const needed = fontsNeeded(frameSpec, text ? stampSpec : null, needsCjk(text));
-  for (const id of needed) if (!fontReady(id)) loadFont(id).then(onFonts, () => {});
-  metrics = metrics || canvasMetrics();
+  for (const id of needed) if (!tableReady(id) || !fontReady(id)) loadFont(id).then(onFonts, () => {});
+  if (needed.some((id) => !tableReady(id))) return null;
   const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics) : null;
   const stamp = stampSpec ? stampLayout(ew, eh, stampSpec, text, metrics) : null;
   if (!frame && !stamp) return null;
-  const key = JSON.stringify([frameSpec, stampSpec, meta, when, ew, eh, needed.map(fontReady)]);
+  const key = JSON.stringify([frameSpec, stampSpec, meta, when, ew, eh, needed.map(readiness)]);
   return { key, frame, stamp, ew, eh, width: frame ? frame.width : ew, height: frame ? frame.height : eh };
 }
 
@@ -41,10 +40,11 @@ export function decorOf(view, ew, eh) {
   return deco;
 }
 
-// 用到的字体下载好了几个：下载完要重新算（量字的结果变了）
+// 字体（版面表、字体文件）下载好了几个：下载完要重新算
+const readiness = (id) => `${+tableReady(id)}${+fontReady(id)}`;
 function fontsState(frameSpec, stampSpec, ed) {
   const text = stampSpec ? stampText(stampSpec, momentOf(ed.meta && ed.meta.captured_at)) : '';
-  return fontsNeeded(frameSpec, text ? stampSpec : null, needsCjk(text)).map(fontReady).join();
+  return fontsNeeded(frameSpec, text ? stampSpec : null, needsCjk(text)).map(readiness).join();
 }
 
 // 显卡画布：整张成片（照片 + 边框）要放进 maxW×maxH，照片能用多大。没有装饰返回 null（照旧按 maxW、maxH 放）。

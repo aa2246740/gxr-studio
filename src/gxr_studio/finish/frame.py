@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .fonts import ASSETS, PilFonts
+from .fonts import ASSETS, FontMetrics, PilFonts, draw_run
 from .layout import FrameLayout, frame_layout
 from .spec import FrameSpec
 
@@ -15,7 +15,7 @@ def apply_frame(rgb: np.ndarray, spec: FrameSpec, meta: dict[str, str]) -> np.nd
         return rgb
     fonts = PilFonts()
     height, width = rgb.shape[:2]
-    layout = frame_layout(width, height, spec, meta, fonts)
+    layout = frame_layout(width, height, spec, meta, FontMetrics(fonts))
     if layout is None:
         return rgb
     return np.asarray(draw_frame(Image.fromarray(rgb, "RGB"), layout, fonts))
@@ -28,7 +28,7 @@ def draw_frame(image: Image.Image, layout: FrameLayout, fonts: PilFonts) -> Imag
     for item in layout.items:
         kind = item["k"]
         if kind == "text":
-            draw.text((item["x"], item["y"]), item["text"], font=fonts.face(item["font"], item["px"], item["cjk"]), fill=tuple(item["fill"]))
+            draw_run(draw, item, fonts, tuple(item["fill"]))
         elif kind == "line":
             draw.line([(item["x1"], item["y1"]), (item["x2"], item["y2"])], fill=tuple(item["fill"]), width=item["w"])
         else:

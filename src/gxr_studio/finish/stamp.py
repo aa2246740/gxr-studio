@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from .fonts import PilFonts
+from .fonts import FontMetrics, PilFonts, draw_run, open_face
 from .layout import GLOW_GAIN, StampLayout, stamp_layout
 from .spec import STAMP_TEXT_MAX, StampSpec
 
@@ -50,14 +50,14 @@ _CJK_FONTS = (
 def cjk_font(px: int) -> ImageFont.FreeTypeFont | None:
     for path in _CJK_FONTS:
         if path.is_file():
-            return ImageFont.truetype(str(path), max(1, px))
+            return open_face(str(path), px)  # 和内置字体一样明确用 BASIC
     return None
 
 
 def _paint(draw: ImageDraw.ImageDraw, layout: StampLayout, fonts: PilFonts, fill: tuple[int, int, int] | int) -> None:
     for op in layout.ops:
         if op["k"] == "text":
-            draw.text((op["x"], op["y"]), op["text"], font=fonts.face(op["font"], op["px"], op["cjk"]), fill=fill)
+            draw_run(draw, op, fonts, fill)
         else:
             draw.polygon([tuple(p) for p in op["pts"]], fill=fill)
 
@@ -70,7 +70,7 @@ def apply_stamp(rgb: np.ndarray, spec: StampSpec, taken: datetime | None, file_t
         return rgb
     image = Image.fromarray(rgb, "RGB")
     fonts = PilFonts()
-    layout = stamp_layout(image.width, image.height, spec, text, fonts)
+    layout = stamp_layout(image.width, image.height, spec, text, FontMetrics(fonts))
     if layout is None:
         return rgb
     ink = layout.ink
