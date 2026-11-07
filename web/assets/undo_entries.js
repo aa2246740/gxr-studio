@@ -21,12 +21,18 @@ export function ownedGroups(before, after) {
   return owned;
 }
 
-// 撤销转 90° 这类一步：画布的宽高（frame）跟着回到这一步之前；横竖变了，界面上的预览画布也对调
-export function restoreCropFrame(view, crop) {
+// 撤销 / 重做时界面上的框当场回到这一步记下的样子（框、比例、横竖、画布宽高），不等保存的回应：
+// 「W × H」读数用的是框和画布两样，只回一样会错到回应回来为止。横竖变了（转 90°），预览画布的宽高也对调。
+export function restoreCropLocal(view, crop) {
   const cur = view.crop;
-  if (!crop.frame || !cur || !cur.frame) return;
-  if (view.canvas && (crop.frame.width >= crop.frame.height) !== (cur.frame.width >= cur.frame.height)) view.canvas = { w: view.canvas.h, h: view.canvas.w };
-  cur.frame = crop.frame;
+  if (!crop || !cur) return;
+  if (crop.frame && cur.frame) {
+    if (view.canvas && (crop.frame.width >= crop.frame.height) !== (cur.frame.width >= cur.frame.height)) view.canvas = { w: view.canvas.h, h: view.canvas.w };
+    cur.frame = crop.frame;
+  }
+  cur.rect = { ...crop.rect };
+  cur.preset = crop.preset;
+  if (crop.orientation) cur.orientation = crop.orientation;
 }
 
 export function snapshot(view) {

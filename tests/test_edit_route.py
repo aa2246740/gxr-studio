@@ -623,6 +623,17 @@ def test_undoing_auto_brings_back_the_old_box_with_the_slider(tmp_path, scenario
     assert out["server"] == {"rect": out["start"], "frame": [3000, 2000]}
     if scenario == "undo-auto-while-reread":
         assert out["heldReread"] is True, "撤销时重读裁剪的请求应该还在路上"
+    # 保存的回应还没到时，界面上的框和画布就已经是撤销以后的样子，「W × H」读数没有错到回应回来
+    assert out["undoNow"]["rect"] == out["start"] and out["undoNow"]["frame"] == [3000, 2000]
+    assert out["undoNow"]["pixels"] == "900 × 1200"
+    # 重做：画布回到 3300 × 2400，不留「有修改没有保存」
+    assert out["redoAfter"]["frame"] == [3300, 2400]
+    assert out["redoStatus"] in ("saved", "idle")
+    if scenario == "undo-auto-restores-box":
+        # 当场回到收小的框和 3300 × 2400 的画布，不等保存的回应
+        assert out["redoNow"] == {"rect": [0.35, 0.2, 0.3, 0.55], "frame": [3300, 2400], "vertical": 40}
+        assert out["redoAfter"]["rect"] == [0.35, 0.2, 0.3, 0.55]
+    # 重读还在路上时撤销的话，重做记下的框是重读完成之前的：写进去被服务器拒绝，改让服务器按比例重算（替身的算法是固定的框）
 
 
 def test_rotate_retries_with_the_turned_box_unless_the_server_rejects_its_shape(tmp_path):
@@ -656,3 +667,23 @@ def test_undoing_a_turn_restores_the_frame_and_canvas_at_once(tmp_path):
     assert out["undone"]["frame"] == [3000, 2000]
     assert out["undone"]["full"] == {"w": 3000, "h": 2000} and out["undone"]["canvas"] == {"w": 3000, "h": 2000}
     assert out["undone"]["rotate90"] == 0
+
+
+@pytest.mark.parametrize(
+    ("scenario", "geometry", "final_rect"),
+    [
+        ("double-turn-held", {"rotate90": 2, "flip": False}, [0.6, 0.3, 0.3, 0.6]),
+        ("rotate-then-flip-held", {"rotate90": 1, "flip": True}, [0.3, 0.6, 0.6, 0.3]),
+    ],
+)
+def test_two_turns_while_the_geometry_write_is_pending_store_the_last_box(tmp_path, scenario, geometry, final_rect):
+    """评审 P1：几何的写入还挂着时又转了一次（或翻转）。先转的那一笔的框不能排在后一笔几何后面
+    （落在已经转过的画布上比例不对，被拒，最后变成服务器编的居中框）；后一次自己写它的框。"""
+    out = run(tmp_path, scenario, real=("crop.js", "correct.js"))
+    assert out["screenBeforeRelease"] == final_rect
+    assert out["geometry"] == geometry
+    assert out["server"]["rect"] == final_rect
+    assert out["client"]["rect"] == final_rect
+    crop_puts = [p for p in out["puts"] if p[0] == "crop"]
+    assert crop_puts == [["crop", final_rect]], out["puts"]
+    assert out["status"] in ("saved", "idle") and out["toasts"] == []

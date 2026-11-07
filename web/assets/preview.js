@@ -15,7 +15,8 @@ import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from 
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
-import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropFrame, snapshot, withOwned } from './undo_entries.js';
+import { saveCropOrRefit } from './crop_save.js';
+import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, withOwned } from './undo_entries.js';
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
@@ -518,9 +519,9 @@ function restoreSnapshot(view, s) {
     const angle = ed.v2 ? geometryOf(view).straighten || 0 : o.crop.angle_deg || 0;
     const same = JSON.stringify(cur.rect) === JSON.stringify(o.crop.rect) && cur.preset === o.crop.preset
       && (ed.v2 ? cur.orientation === o.crop.orientation : (cur.angle_deg || 0) === angle);
-    restoreCropFrame(view, o.crop); // 转 90° 的一步：画布宽高跟着回去
+    restoreCropLocal(view, o.crop); // 框和画布宽高当场回去，不等保存的回应
     // 几何的一步：服务器写几何时顺带收过框，不能凭界面上的框「没变」就不写
-    if (!same || own.has('geometry')) saveCrop(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: angle, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });
+    if (!same || own.has('geometry')) (own.has('geometry') ? saveCropOrRefit : saveCrop)(view, { preset: o.crop.preset, rect: toArray(o.crop.rect), angle_deg: angle, ...(ed.v2 ? { orientation: o.crop.orientation } : {}) });
   }
   schedulePreview(view, { full: true });
   view.redrawSide?.();

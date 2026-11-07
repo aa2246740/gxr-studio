@@ -122,7 +122,12 @@ export async function flushPhotos(ids) {
   for (const id of ids) {
     const rec = records.get(id);
     if (!rec) continue;
-    await rec.tail;
+    // settling：被拒的框正在换个办法再写一次（crop_save.js）。第一次的失败不算数，要等它写完
+    for (let tail = null; tail !== rec.tail || rec.settling;) {
+      tail = rec.tail;
+      await tail;
+      if (rec.settling) await rec.settling;
+    }
     if (rec.failed) throw new SaveError(rec);
   }
 }

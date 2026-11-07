@@ -3,8 +3,9 @@
 // 拖动时只改画面（不保存），松手再保存（DIAG 原因 4 同样的做法：拖动中的值就是请求里发出去的值）。
 
 import { h, button, toast, toastError } from './dom.js';
-import { beginChange, endChange, saveCrop, persist, schedulePreview, resetCropRemote, geometryOf, loadCrop, retrySaves } from './preview.js';
+import { beginChange, endChange, saveCrop, persist, schedulePreview, resetCropRemote, geometryOf, loadCrop } from './preview.js';
 import { saveRecord } from './saves.js';
+import { saveCropOrRefit } from './crop_save.js';
 import { cropBody, orientationNow, rectArray, fitCrop, resetCropLocal } from './crop.js';
 import { slider, notReady } from './controls.js';
 import { rotateRect90, flipRect, fmtDeg, clamp } from './geom.js';
@@ -74,44 +75,20 @@ export function nudgeStraighten(view, delta) {
   commitStraight(view);
 }
 
-// 服务器说「这个框的形状不对」（比例不符、超出画面、太小）：界面上的框落后于服务器的画布。别的失败（断网、500、版本冲突）不是框的问题。
-const SHAPE_REJECTED = new Set(['ratio_mismatch', 'crop_outside_image', 'bad_rect', 'too_small']);
-
-// 把转好的框写进去。
-// - 被拒的原因是框的形状（界面的框落后于服务器的画布）：让服务器按比例重新算一个居中的最大框（它还会收进有效画面），不留「有修改没有保存」。
-// - 别的原因（断网、500、冲突）：照常提示，重试用的还是用户转好的框，不能悄悄换成居中的最大框。
-// - 重算也失败：同样提示，重试用的也是转好的框。
-// 写之前确认这一笔还是最新的：这期间用户又点了比例等，后排进去的写入更新，不能被这一笔盖掉。
-async function saveBox(view, box) {
-  const rec = saveRecord(view.photo.id);
-  const body = cropBody(view, { preset: box.preset, rect: rectArray(box.rect) }, box.orientation);
-  const retry = { action: { label: '重试', run: () => retrySaves(view.photo.id) } };
-  view.lastCropFailure = null;
-  const first = saveCrop(view, body, { quiet: true });
-  const mine = rec.fieldGen.crop; // 排队时已经加了一：之后再变，就是用户又排进了新的框
-  if (await first) return true;
-  const failure = view.lastCropFailure;
-  if (!SHAPE_REJECTED.has(failure && failure.code)) {
-    toastError(failure, '无法保存修改。', retry);
-    return false;
-  }
-  if (rec.fieldGen.crop !== mine) return false;
-  if (await saveCrop(view, { ...body, rect: null }, { quiet: true })) return true;
-  if (rec.failed) rec.failed.crop = body;
-  toastError(view.lastCropFailure, '无法保存修改。', retry);
-  return false;
-}
-
 // 旋转、翻转：界面上的几何和框已经改好。先写几何，再写转好的框（服务器不会替你转框），最后以服务器收好的为准。
-// 框、比例、横竖在点下去的这一刻记下来；等几何写完时界面上的框可能已经被别的操作改过，那一步自己会保存。
+// 框、比例、横竖在点下去的这一刻记下来；等几何写完时：
+// - 又转了（再转一次、翻转）：后一次的框是在这一次的基础上转的，由它自己在两笔几何都写完以后写；这一次不写，
+//   否则先写的旧框会落在新的几何后面，比例对不上被拒，最后变成服务器自己编的居中框。
+// - 用户又排进了新的框（点比例等）：那一步自己会保存，这一次不能盖掉它。
 async function saveTurned(view) {
   const rec = saveRecord(view.photo.id);
   const box = { preset: view.crop.preset, rect: { ...view.crop.rect }, orientation: orientationNow(view) };
   const unchanged = JSON.stringify(box.rect) === view.crop.savedKey;
   const crops = rec.fieldGen.crop || 0;
+  const turn = (view.turnGen = (view.turnGen || 0) + 1);
   const ok = await persist(view, { geometry: view.ed.geometry });
-  if (!ok || view.disposed || !view.crop) return;
-  if (!unchanged && (rec.fieldGen.crop || 0) === crops && !(await saveBox(view, box))) return;
+  if (!ok || view.disposed || !view.crop || view.turnGen !== turn) return;
+  if (!unchanged && (rec.fieldGen.crop || 0) === crops && !(await saveCropOrRefit(view, cropBody(view, { preset: box.preset, rect: rectArray(box.rect) }, box.orientation)))) return;
   await syncCrop(view);
 }
 
