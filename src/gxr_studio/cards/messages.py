@@ -22,10 +22,19 @@ def done_message(p: Any, cov: Any = None) -> str:
         return f"存储卡上有 {len(cov.uncovered)} 个文件未导入。请勿格式化存储卡，重新插入后再试一次。"
     got = got_text(p)
     if cov.not_importable:
-        return (f"{got}。" if got else "") + f"存储卡上有 {len(cov.not_importable)} 个文件不会被导入"
+        return not_importable_message(got, len(cov.not_importable), cov.photos_imported)
     if not got:
         return DONE_ALL
     return f"{got}。现在可以推出存储卡了。"
+
+
+def not_importable_message(got: str, extra: int, photos_imported: bool) -> str:
+    """卡上有工作室不会导入的文件时怎么说。"照片都已导入"只在核对证明了每张照片都在图库里时才说；永远不说"可以格式化"。
+    前端 web/assets/import_summary.js 的 summarizeImport 写同一句话。"""
+    note = f"另有 {extra} 个其他文件不会导入"
+    if photos_imported:
+        return f"{got}，卡上的照片都已在图库里；{note}" if got else f"照片都已导入；{note}"
+    return f"{got}。存储卡上有 {extra} 个文件不会被导入" if got else f"存储卡上有 {extra} 个文件不会被导入"
 
 
 def got_text(p: Any) -> str:

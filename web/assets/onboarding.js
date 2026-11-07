@@ -27,6 +27,7 @@ export function shortcutGroups(p = platform()) {
       ['← → ↑ ↓', '移动焦点'],
       ['Enter', '打开照片'],
       ['空格', '选择 / 取消选择'],
+      [`${mod}点击`, '加选 / 取消一张'],
       [`${shift}点击`, '连续选择'],
       [`${mod}A`, '全选'],
     ]],
