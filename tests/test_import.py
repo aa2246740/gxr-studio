@@ -196,7 +196,7 @@ def test_second_import_copies_nothing_but_reads_every_card_file(volumes, card, l
     # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不能说"都已导入"
     assert p.coverage["all_imported"] is False and p.coverage["not_importable"] == ["DCIM/100RICOH/Thumbs.db", "DCIM/NOTE.TXT"]
     assert p.coverage["system_files"] == ["DCIM/100RICOH/._R0000101.JPG"]
-    assert p.message == "存储卡上有 2 个文件不会被导入"
+    assert p.message == "照片都已导入；另有 2 个其他文件不会导入" and p.coverage["photos_imported"] is True
 
 
 def test_force_verify_reads_everything_but_adds_nothing(volumes, card, lib):
@@ -298,7 +298,7 @@ def test_unreadable_file_is_skipped_not_fatal(volumes, card, lib):
     side = json.loads(lib.sidecar_path_for(shot).read_text(encoding="utf-8"))
     assert side["source"]["jpg"] == "R0000104.JPG" and side["source"]["jpg_sha256"] == shot["files"]["jpg"]["sha256"]
     # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入，所以不说"可以推出"，也不说"都已导入"
-    assert p2.message == "已导入 1 张照片。存储卡上有 2 个文件不会被导入"
+    assert p2.message == "已导入 1 张照片，卡上的照片都已在图库里；另有 2 个其他文件不会导入"
     assert_library_consistent(lib, card)
     p3 = run_import(lib, c, ImportOptions(**OPTS))  # 再来一次：什么都不新增
     assert p3.completed_shots == 0 and p3.imported_shots == 0 and lib.count() == len(card.unique_shots)

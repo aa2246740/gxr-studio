@@ -26,7 +26,8 @@ import {
 } from './preview.js';
 import { slider } from './controls.js';
 import { photoLutField } from './lut_library.js';
-import { UNCALIBRATED_TITLE } from './preview.js';
+import { uncalibratedReason } from './calibration_note.js';
+import { CAMERA_SOURCE, cachedMyRecipes, loadMyRecipes, sourceText } from './my_recipes.js';
 
 const NEW_TONE_KNOBS = ['contrast', 'highlight', 'shadow', 'saturation'];
 const COMPUTER_ONLY = ['fade', 'warmth', 'tint', 'split', 'filter'];
@@ -67,9 +68,9 @@ export function recipePanel(view) {
     noticeEl.classList.add('flash');
   };
 
-  // 跨单元或跨 ISO（或认不出的单元）：只显示「未校准」小标签，提示气泡写「使用 A12 50mm 的颜色模型」（COPY 3.9）
+  // 跨单元或跨 ISO（或认不出的单元）：只显示「未校准」小标签，提示气泡写这张照片具体为什么未校准（calibration_note.js）
   if (ed.calibrated === false || unitForPhoto(view.photo) !== 'jlaunch') {
-    nodes.push(h('div', { class: 'row-tags' }, h('span', { class: 'chip warn', title: UNCALIBRATED_TITLE }, '未校准')));
+    nodes.push(h('div', { class: 'row-tags' }, h('span', { class: 'chip warn', title: uncalibratedReason(view, unitForPhoto(view.photo)) }, '未校准')));
   }
 
   if (!unit) {
@@ -93,18 +94,32 @@ export function recipePanel(view) {
   );
   nodes.push(h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, baseButtons));
 
-  for (const [key, label] of [['looks', 'Looks'], ['users', '我的配方']]) {
-    const entries = unit[key] || [];
-    if (!entries.length) continue;
-    nodes.push(h('div', { class: 'sec' }, label));
-    nodes.push(h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, entries.map((r) =>
-      h('button', {
-        class: 'btn base', type: 'button',
-        'aria-pressed': String(sel.kind === r.kind && sel.id === r.id),
-        'aria-disabled': usable ? null : 'true',
-        onclick: () => usable ? switchRecipe(view, r) : flash(),
-      }, r.name),
-    )));
+  const grid = (buttons) => h('div', { class: usable ? 'base-grid' : 'base-grid dimmed-block' }, buttons);
+  const pick = (r, title) => h('button', {
+    class: 'btn base', type: 'button', title,
+    'aria-pressed': String(sel.kind === r.kind && sel.id === r.id),
+    'aria-disabled': usable ? null : 'true',
+    onclick: () => usable ? switchRecipe(view, r) : flash(),
+  }, r.name);
+  if ((unit.looks || []).length) {
+    nodes.push(h('div', { class: 'sec' }, 'Looks'), grid(unit.looks.map((r) => pick(r))));
+  }
+
+  // 「我的配方」有两个来源，分开写清楚：相机里（相机配方文件里的自定义配方）、电脑上（用 LUT 生成的，存在这台电脑里）
+  const mine = (cachedMyRecipes() || []).filter((r) => r.recipe.unit === sel.unit);
+  if (!cachedMyRecipes()) loadMyRecipes().then((list) => list.length && view.redrawSide?.());
+  if ((unit.users || []).length || mine.length) {
+    nodes.push(h('div', { class: 'sec' }, '我的配方'));
+    if ((unit.users || []).length) {
+      nodes.push(h('div', { class: 'small dim sec-source' }, CAMERA_SOURCE), grid(unit.users.map((r) => pick(r, `${CAMERA_SOURCE}的配方`))));
+    }
+    if (mine.length) {
+      // 电脑上的配方 = 底子加档位。只有 JPG（近似）时不带旋钮：预览会丢掉档位、导出会拒绝，所以只在完整配方时能点
+      const mineUsable = usable && state3 === 'full';
+      const note = state3 === 'approx' ? '近似效果只支持默认参数，电脑上的配方需要 RAW 文件' : null;
+      nodes.push(h('div', { class: 'small dim sec-source' }, '电脑上 · 用 LUT 生成'),
+        h('div', { class: mineUsable ? 'base-grid' : 'base-grid dimmed-block' }, mine.map((r) => computerPick(view, r, mineUsable, flash, note))));
+    }
   }
 
   // 强度和旋钮：配方不能用时整块变淡；点了（捕获阶段拦住）闪一下
@@ -132,6 +147,37 @@ export function recipePanel(view) {
 
   view.flashRecipe = flash;
   return h('div', { class: 'edit-panel' }, ...nodes);
+}
+
+// 电脑上的配方：套用 = 换成它的底子和档位。选中的判断看底子和每个旋钮的有效值是否一致
+function sameAsComputer(view, r) {
+  const sel = selection(view);
+  if (!view.ed.recipe || (sel.kind && sel.kind !== 'builtin') || sel.unit !== r.recipe.unit || sel.slot !== r.recipe.slot) return false;
+  const info = recipeInfo(view, { unit: r.recipe.unit, kind: 'builtin', slot: r.recipe.slot });
+  return !!info && info.controls.every((c) => effective(c, sel.levels) === effective(c, r.recipe.levels));
+}
+
+function computerPick(view, r, usable, flash, note = null) {
+  return h('button', {
+    class: 'btn base', type: 'button', title: note ? `${sourceText(r)}（${note}）` : sourceText(r),
+    'aria-pressed': String(sameAsComputer(view, r)),
+    'aria-disabled': usable ? null : 'true',
+    onclick: () => usable ? applyComputer(view, r) : flash(),
+  }, r.name);
+}
+
+function applyComputer(view, r) {
+  const ed = view.ed;
+  if ((ed.caps || {}).recipe !== 'full') return;
+  const sel = selection(view);
+  const target = { unit: r.recipe.unit, kind: 'builtin', slot: r.recipe.slot };
+  if (sameAsComputer(view, r)) return;
+  beginChange(view);
+  ed.memory = { ...ed.memory, [recipeKey(sel)]: cleanLevels(recipeInfo(view, sel), sel.levels) };
+  ed.recipe = { ...target, levels: cleanLevels(recipeInfo(view, target), r.recipe.levels) };
+  persist(view, { recipe: recipeBody(view, { memory: true }) }).then(() => endChange(view));
+  schedulePreview(view, { full: true });
+  view.redrawSide?.();
 }
 
 // 写不进旧版相机配方文件的旋钮打「仅电脑」（新版相机上不打标签，COPY 3.10）

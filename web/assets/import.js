@@ -3,12 +3,15 @@
 import { api } from './api.js';
 import { state, emit } from './state.js';
 import { h, toast, toastError, setFraction, platform } from './dom.js';
-import { doneStatusText, ejectWords, hasProblems, multiCardNote, summarizeImport } from './import_summary.js';
+import { doneStatusText, ejectWords, hasProblems, importToast, multiCardNote, summarizeImport } from './import_summary.js';
 
 // 本次会话里已经自动处理过的卡（卡拔掉后会移出，插回来可以再导入缺的部分）。键是挂载会话号（card_id）
 const handled = new Set();
 // 已经自动发起过导入的卡。发现新卡时如果别的卡还在导入，就先不记，等空闲了再判断一次（不只在 id 刚变时判断）
 const autoTried = new Set();
+
+// 用户自己按「导入照片」发起的任务：结束时弹一条提示，说清楚发生了什么（包括"没有新照片"）
+let manualJobId = null;
 
 // 这个导入任务是哪张卡的（任务和结果都带着来源挂载会话号）
 function jobCard(job) {
@@ -34,7 +37,7 @@ export function cardPresent() {
 
 // 空状态里的「导入照片」按钮：有卡就导入第一张
 export function importNow() {
-  if (cardPresent()) startImport();
+  if (cardPresent()) startImport(state.card, { manual: true });
   else toast('找不到存储卡。请重新插入后重试。', 'error');
 }
 
@@ -93,16 +96,19 @@ async function loadSummary(card) {
   }
 }
 
-export async function startImport(card = state.card) {
+export async function startImport(card = state.card, { manual = false } = {}) {
   if (!card) return;
   handled.add(card.id);
   try {
     state.job = await api('/api/import', { method: 'POST', body: { card_id: card.id } });
     state.dismissedJobId = null;
     state.cardMsg = null;
+    if (manual) manualJobId = state.job.id;
   } catch (e) {
     if (e.code === 'import_running') {
       await loadLatestJob();
+      if (manual && state.job?.running) manualJobId = state.job.id;
+      renderCardStatus();
       return;
     }
     // 任务没建起来：回到可以重试的状态，横幅里出现「导入」按钮（不自动连续重发）
@@ -155,6 +161,11 @@ export async function tickImport() {
     }
     // 导入期间插上的另一张卡：现在空闲了，轮到它
     maybeAutoImport();
+    if (manualJobId === fresh.id) {
+      manualJobId = null;
+      const t = importToast(fresh.progress);
+      toast(ejectWords(t.text, platform()), t.kind);
+    }
     renderCardStatus();
   }
   renderBanner();
@@ -351,7 +362,18 @@ function paintChip(kind, pct = null) {
   ico.replaceChildren(h('span', { class: want }));
 }
 
+// 其他页面（相机页）想跟着导入状态变：状态有变化才通知，一秒一次的轮询不会让按钮被反复重画
+let lastSignature = '';
+function announceImportState() {
+  const p = state.job?.progress;
+  const sig = [state.card?.id, state.job?.id, state.job?.running, p?.state, p?.done_shots, p?.total_shots, state.dismissedJobId === state.job?.id].join('|');
+  if (sig === lastSignature) return;
+  lastSignature = sig;
+  emit('import-state');
+}
+
 export function renderCardStatus() {
+  announceImportState();
   const el = document.getElementById('card-status');
   if (state.offline) {
     el.textContent = '无法连接到 GXR Studio';

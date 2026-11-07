@@ -277,6 +277,7 @@ class StrictScan:
     videos: list[StrictEntry] = field(default_factory=list)
     other_files: list[StrictEntry] = field(default_factory=list)  # DCIM 里导入不会收的文件、链接等
     system_files: list[StrictEntry] = field(default_factory=list)  # DCIM 里 macOS 留下的元数据（`is_system_file`）
+    media_like: list[str] = field(default_factory=list)  # 读过开头、像照片或视频的文件（名字像系统文件也不算系统文件）
     root_entries: list[StrictEntry] = field(default_factory=list)  # 卡根这一层除系统项以外的条目
 
     def fail(self, where: str, exc: BaseException | str) -> None:
@@ -445,4 +446,6 @@ def _is_system(reader: CardReader, dir_fd: int, name: str, rel: str, out: Strict
     except OSError as exc:
         out.fail(rel, exc)
         return False
+    if looks_like_media(head):
+        out.media_like.append(rel)
     return is_system_file(rel, head)

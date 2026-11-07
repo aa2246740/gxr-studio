@@ -533,3 +533,21 @@ def test_export_form_has_the_hdr_switch():
     assert "HDR_NO_RAW = 'HDR 需要 RAW 文件'" in js
     assert "precise, hdr }" in js
     assert "r.hdr === false" in js and "r.hdr_note" in js
+
+
+def test_hdr_export_is_named_gxr_hdr_and_only_when_it_was_made(client, hdr_card):
+    """HDR 导出叫「原名_gxr_hdr.jpg」，重名加 -2；没做成 HDR 的（只有 JPG、PNG、不支持）仍是普通名字。"""
+    _import(client)
+    photo = _photo(client, "HDR0001")
+    assert Path(_export(client, photo)["path"]).name == "HDR0001_gxr.jpg"
+    first = _export(client, photo, hdr=True)
+    assert first["hdr"] is True and Path(first["path"]).name == "HDR0001_gxr_hdr.jpg"
+    again = _export(client, photo, hdr=True)
+    assert Path(again["path"]).name == "HDR0001_gxr_hdr-2.jpg"
+    assert Path(_export(client, photo)["path"]).name == "HDR0001_gxr-2.jpg"  # 普通名字和 HDR 名字各数各的
+    only_jpg = _export(client, _photo(client, "ONLYJPG"), hdr=True)
+    assert only_jpg["hdr"] is False and Path(only_jpg["path"]).name == "ONLYJPG_gxr.jpg"
+    png = _export(client, _photo(client, "HDR0001"), hdr=True, format="png")
+    assert png["hdr"] is False and Path(png["path"]).name == "HDR0001_gxr.png"
+    other = _export(client, _photo(client, "HDR0002"), hdr=True)
+    assert other["hdr"] is False and Path(other["path"]).name == "HDR0002_gxr.jpg"

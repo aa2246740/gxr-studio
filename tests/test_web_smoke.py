@@ -110,7 +110,7 @@ def test_plug_in_import_gallery_crop_export(web_client, card, settings, volumes)
     assert p["state"] == "done", p
     assert p["imported_shots"] > 0
     # 假卡 DCIM 里的 ._R0000101.JPG 是 macOS 系统文件（忽略）；Thumbs.db、NOTE.TXT 不会被导入：不说"可以推出"，如实说个数
-    assert p["message"].endswith("存储卡上有 2 个文件不会被导入") and "可以推出" not in p["message"]
+    assert p["message"].endswith("另有 2 个其他文件不会导入") and "可以推出" not in p["message"]
     assert isinstance(p["unreadable"], list)
 
     # 3. 再插一次：摘要不读内容，证明不了"都导入过了"；界面会再导入一次，读内容核对后一个都不复制
@@ -118,7 +118,7 @@ def test_plug_in_import_gallery_crop_export(web_client, card, settings, volumes)
     assert again["new_shots"] == again["shots"] and again["verified"] is False
     p2 = wait_job(web_client, web_client.post("/api/import", json={"card_id": card_id}).json()["id"])["progress"]
     assert p2["copied_files"] == 0 and p2["coverage"]["covered"] == p2["coverage"]["total"]
-    assert p2["message"] == "存储卡上有 2 个文件不会被导入"
+    assert p2["message"] == "照片都已导入；另有 2 个其他文件不会导入"
 
     # 4. 图库：日期、照片、角标需要的三种情况都有
     dates = web_client.get("/api/dates").json()
