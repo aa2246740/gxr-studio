@@ -404,10 +404,12 @@ try {
   // 11) 边框不算进直方图（显卡和服务器出图两条路径都测）。边框由浏览器画在 .pv 的底色上（stage_finish.js），照片本身没有边框：
   //     先把照片压暗（曝光 −3、黑点 +100，和第 5 步的暗部一样），再套白色粗边框（255，会算成死白）：屏幕上整张成片有大片纯白，
   //     直方图里不该有，也不该点亮高光三角。（"黑"边框是 12 不是 0，不会算成死黑，所以用白的才分得出来）
+  //     时间戳同理：再加一个大的白色文字戳（不发光），叠在暗的照片上。它在叠加层上，不在服务器图或成片纹理里；
+  //     先量叠加层上的白色占照片多少（要超过 1%，数进去的话会点亮高光三角），再看直方图里一点也没有。
   //     服务器路径：不再另要一张无边框的小图（max_edge=800 的 /render 一个也没有）；溢出提示只盖照片那一块，不盖边框。
   step('the frame is not counted');
   await evalIn(`(async () => {
-    const r = await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adjust: { exposure_ev: -3, black_point: 100 }, frame: { style: 'gallery', color: 'white', weight: 'thick' } }) });
+    const r = await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adjust: { exposure_ev: -3, black_point: 100 }, frame: { style: 'gallery', color: 'white', weight: 'thick' }, stamp: { enabled: true, content: 'text', text: 'WWWWWWWWWWWWWWWW', font: 'sans', color: 'white', size: 'large', corner: 'br', glow: false } }) });
     if (!r.ok) throw new Error('PUT frame ' + r.status + ' ' + await r.text());
     return true;
   })()`);
@@ -436,9 +438,19 @@ try {
       for (let i = 0; i < d.length; i += 4) if (Math.min(d[i], d[i + 1], d[i + 2]) >= 253) bright += 1;
       photoBright = bright / (cv.width * cv.height);
     }
+    // 叠加层（边框上的字、日期戳）里的纯白占照片面积多少：边框底色是 CSS 背景，不在这块画布里
+    let stampWhite = null;
+    const deco = pv.querySelector('.pv-deco');
+    if (deco) {
+      const d = deco.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, deco.width, deco.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 200 && Math.min(d[i], d[i + 1], d[i + 2]) >= 250) n += 1;
+      const k = deco.width / stage[2];
+      stampWhite = n / (shown[2] * shown[3] * k * k);
+    }
     const now = await hs();
     const cleanRenders = performance.getEntriesByType('resource').filter((e) => e.name.includes('/render') && e.name.includes('max_edge=800')).length;
-    return { source: now.source, crushedShare: now.shadowShare, blownShare: now.highlightShare, highlightWarn: now.highlightWarn, mean: now.mean, stage, shown, white, photoBright, cleanRenders, gpu: !!document.querySelector('.gpu') };
+    return { source: now.source, crushedShare: now.shadowShare, blownShare: now.highlightShare, highlightWarn: now.highlightWarn, mean: now.mean, stage, shown, white, stampWhite, photoBright, cleanRenders, gpu: !!document.querySelector('.gpu') };
   })()`, 120000);
   if (out.frame) {
     await evalIn(`document.activeElement && document.activeElement.blur && document.activeElement.blur(); true`);
@@ -455,7 +467,7 @@ try {
     })()`);
     await press('j', 'KeyJ', 74);
   }
-  await evalIn(`(async () => { await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame: { style: 'none' } }) }); return true; })()`);
+  await evalIn(`(async () => { await fetch('/api/photos/${photoId}/edit', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame: { style: 'none' }, stamp: { enabled: false } }) }); return true; })()`);
   step('done');
 } catch (e) {
   out.error = String(e && e.message ? e.message : e).slice(0, 800);

@@ -143,12 +143,15 @@ def check(out: dict, mode: str) -> None:
     assert crop["region"] is not None and 0.2 < crop["area"] < 0.9, crop
     # 快捷键表里有 J
     assert out["help"] and out["help"][0][0] == "J" and "死" in out["help"][0][1], out["help"]
-    # 边框不算进直方图（两条路径都测）：照片压暗后套白色粗边框，边框是浏览器画的底色，屏幕上整张成片有大片纯白，
-    # 直方图里不该有死白，高光三角不该亮；溢出提示（服务器路径）只盖照片那一块，不盖边框，图例照常说明颜色
+    # 边框和时间戳不算进直方图（两条路径都测）：照片压暗后套白色粗边框，再叠一个大的白色文字戳。边框是浏览器画的底色，
+    # 屏幕上整张成片有大片纯白，文字戳在照片上也有一片白；直方图里不该有死白，高光三角不该亮；
+    # 溢出提示（服务器路径）只盖照片那一块，不盖边框，图例照常说明颜色
     fr = out.get("frame")
     assert fr, "没有拿到带边框那一步的结果"
     print(f"[{mode}] 带白边框：成片上白色 {fr['white']:.1%}，直方图里死白 {fr['blownShare']:.2%}、死黑 {fr['crushedShare']:.1%}")
     assert fr["source"] == mode and fr["white"] > 0.05, fr
+    # 文字戳真的画出来了，而且白得够多：要是数进去，死白会超过 0.5%，高光三角会亮
+    assert fr["stampWhite"] is not None and fr["stampWhite"] > 0.01, f"文字戳上的白只占照片的 {fr['stampWhite']}：{fr}"
     assert fr["blownShare"] < 0.005 and fr["highlightWarn"] is False, fr
     assert fr["crushedShare"] > 0.02, f"照片本身是压暗的，死黑应该数得出来：{fr}"
     assert fr["cleanRenders"] == 0, f"不该再另外请求一张无边框的小图：{fr}"
