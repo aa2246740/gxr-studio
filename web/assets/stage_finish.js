@@ -78,15 +78,19 @@ function overlay(pv) {
   return canvas;
 }
 
-// 去掉装饰：恢复成没有边框时的样子（照片自己的大小，没有叠加层）
+// 边框版面写在 .pv 和照片元素上的行内样式：去掉就恢复成没有边框时的样子
+const PV_STYLES = ['width', 'height', 'background', '--fx', '--fy', '--fw', '--fh'];
+const MEDIA_STYLES = ['position', 'left', 'top'];
+
+// 去掉装饰：恢复成没有边框时的样子（照片自己的大小，没有叠加层）。
+// 不看这个 .pv 有没有装饰的记号就直接去：显卡画布是整页唯一的一块，换照片时它被搬进一个新的 .pv，
+// 上一张边框留在它身上的 position/left/top 要在这里去掉；只看新 .pv 干不干净的话，画布留着绝对定位，.pv 缩成 0×0，画面一片空白。
 export function clearDecor(pv, media) {
   for (const c of [...pv.children]) if (c.classList && c.classList.contains('pv-deco')) c.remove();
-  if (!pv.classList.contains('framed') && !pv.dataset.decor) return;
-  pv.classList.remove('framed');
+  if (pv.classList.contains('framed')) pv.classList.remove('framed');
   delete pv.dataset.decor;
-  for (const p of ['width', 'height', 'background']) pv.style.removeProperty(p);
-  for (const p of ['--fx', '--fy', '--fw', '--fh']) pv.style.removeProperty(p);
-  if (media) for (const p of ['position', 'left', 'top']) media.style.removeProperty(p);
+  for (const p of PV_STYLES) pv.style.removeProperty(p);
+  if (media) for (const p of MEDIA_STYLES) media.style.removeProperty(p);
 }
 
 // 装饰画到 pv 上。media：照片元素（显卡画布或 <img>），cssW×cssH 是它在屏幕上的大小（CSS 像素）。
@@ -108,8 +112,8 @@ export function applyDecor(view, pv, media, deco, cssW, cssH) {
     Object.assign(media.style, { position: 'absolute', left: `${fx}px`, top: `${fy}px` });
   } else {
     pv.classList.remove('framed');
-    for (const p of ['width', 'height', 'background', '--fx', '--fy', '--fw', '--fh']) pv.style.removeProperty(p);
-    for (const p of ['position', 'left', 'top']) media.style.removeProperty(p);
+    for (const p of PV_STYLES) pv.style.removeProperty(p);
+    for (const p of MEDIA_STYLES) media.style.removeProperty(p);
   }
   const canvas = overlay(pv);
   const dpr = globalThis.devicePixelRatio || 1;
