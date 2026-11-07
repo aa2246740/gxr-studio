@@ -4,8 +4,8 @@
 起一个真服务器（合成的假卡，只听 127.0.0.1）和无头 Chrome（和显卡一致性测试同一套找法、同一组开关），
 由 tests/support/histogram_browser.mjs 用 DevTools 协议操作页面。找不到 Chrome 或 node 时跳过；设了 GXR_REQUIRE_GPU_TEST=1 时
 显卡预览那一项不能跳过，只有一个例外：Linux 无头 Chrome 的软件显卡把 WebGPU 画布显示不出来（见 test_viewer_browser.cannot_present）。
-最低更新速度（次/秒）用环境变量 GXR_HIST_MIN_HZ 调（默认显卡 4、服务器 1.5）：软件显卡很慢，门槛只用来抓"卡住了"，
-真正的速度在 PR 说明里（用真显卡量）。
+最低更新速度（次/秒）用环境变量 GXR_HIST_MIN_HZ 调（默认显卡 2、服务器 1.5）：CI 用软件显卡，比较慢（这台 Mac 上软件显卡 8.6、
+服务器 6.3，门槛留约 4 倍余量，CI 不重跑失败的测试），门槛只用来抓"卡住了"，真正的速度在 PR 说明里（用真显卡量）。
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def drive(live, tmp_path, mode: str) -> dict:
 
 def check(out: dict, mode: str) -> None:
     source = "gpu" if mode == "gpu" else "server"
-    min_hz = float(os.environ.get("GXR_HIST_MIN_HZ", "4" if mode == "gpu" else "1.5"))
+    min_hz = float(os.environ.get("GXR_HIST_MIN_HZ", "2" if mode == "gpu" else "1.5"))
     # 位置：面板最上面、工具标签之上，六个标签下都看得见
     pl = out["placement"]
     assert pl["first"] and pl["aboveTabs"], pl
