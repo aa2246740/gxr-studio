@@ -90,4 +90,6 @@ def meta_payload(lib: Library, shot: dict[str, Any]) -> dict[str, Any]:
         "shutter": info["shutter"] or None,
         "iso": int(info["iso"].split()[-1]) if info["iso"] else None,
         "date_note": "使用文件修改日期" if file_time and not taken else None,
+        # 边框上要画的字，和导出用的是同一份字符串（浏览器预览不另外拼）
+        "frame": info,
     }

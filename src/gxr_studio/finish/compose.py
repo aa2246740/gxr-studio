@@ -67,10 +67,7 @@ def finish_unframed(
     crop_preset: str | None = None,
     track: HdrTrack | None = None,
 ) -> tuple[np.ndarray, str | None]:
-    """成片的前半段：调整、几何、裁剪、日期戳，不含边框。未裁切和原图在这里就结束，返回有效画面的头值。
-
-    边框样式卡片（`serve.render_card`）把这一段只做一次，再对每种样式只做 `apply_frame`；
-    导出和预览走 `finish_array`，顺序和字节都不变。"""
+    """成片的前半段：调整、几何、裁剪、日期戳，不含边框。未裁切和原图在这里就结束，返回有效画面的头值。"""
     track = track or HdrTrack(None)
     if from_raw:
         rgb = apply_extra(rgb, edit.adjust)
