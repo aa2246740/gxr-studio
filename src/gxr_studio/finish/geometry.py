@@ -283,23 +283,35 @@ def _covered(sheet: np.ndarray, x: int, y: int, rw: int, rh: int) -> bool:
     return got == rw * rh
 
 
-def _nearest_window(sheet: np.ndarray, tw: int, th: int, cx: float, cy: float) -> tuple[int, int, int, int] | None:
-    """整窗都落在有效像素里、离 (cx, cy) 最近的 tw×th 窗口；一个都没有就返回空。
-    目标的中心落在有效区外时（拉直、透视之后常见）用：把同样大小的框挪到最近的合格位置，而不是放大成整块有效区。
-    画布很大时按步长抽样位置（最多约两百万个），只在这条回退路径上用。"""
+def _window_mask(sheet: np.ndarray, tw: int, th: int) -> np.ndarray | None:
+    """每个左上角位置上，tw×th 的窗口是不是整窗都落在有效像素里（整张格子，一个位置都不漏）。
+    积分图四个角相减，切片相减不用逐点取值，12 M 像素的画布也只要几十毫秒。放不下这个大小就返回空。"""
     height, width = sheet.shape[0] - 1, sheet.shape[1] - 1
     if tw < 1 or th < 1 or tw > width or th > height:
         return None
-    step = max(1, math.ceil(math.sqrt(max(1, (height - th + 1) * (width - tw + 1)) / 2_000_000)))
-    ys = np.arange(0, height - th + 1, step)[:, None]
-    xs = np.arange(0, width - tw + 1, step)[None, :]
-    got = sheet[ys + th, xs + tw] - sheet[ys, xs + tw] - sheet[ys + th, xs] + sheet[ys, xs]
-    ok = got == tw * th
-    if not ok.any():
+    got = sheet[th:, tw:] - sheet[: height - th + 1, tw:] - sheet[th:, : width - tw + 1] + sheet[: height - th + 1, : width - tw + 1]
+    return np.asarray(got == tw * th)
+
+
+def _has_window(sheet: np.ndarray, tw: int, th: int) -> bool:
+    ok = _window_mask(sheet, tw, th)
+    return ok is not None and bool(ok.any())
+
+
+def _nearest_window(sheet: np.ndarray, tw: int, th: int, cx: float, cy: float) -> tuple[int, int, int, int] | None:
+    """整窗都落在有效像素里、离 (cx, cy) 最近的 tw×th 窗口；一个都没有就返回空。
+    目标的中心落在有效区外时（拉直、透视之后常见）用：把同样大小的框挪到最近的合格位置，而不是放大成整块有效区。
+    位置一个不漏地找（不抽样）：16×16 的整窗只在 (1, 1) 一处也找得到。"""
+    ok = _window_mask(sheet, tw, th)
+    if ok is None:
         return None
-    dist = np.where(ok, (xs + tw / 2.0 - cx) ** 2 + (ys + th / 2.0 - cy) ** 2, np.inf)
-    iy, ix = np.unravel_index(int(np.argmin(dist)), dist.shape)
-    return int(xs[0, ix]), int(ys[iy, 0]), tw, th
+    flat = np.flatnonzero(ok)
+    if flat.size == 0:
+        return None
+    ys, xs = np.divmod(flat, ok.shape[1])
+    dist = (xs + tw / 2.0 - cx) ** 2 + (ys + th / 2.0 - cy) ** 2
+    best = int(np.argmin(dist))
+    return int(xs[best]), int(ys[best]), tw, th
 
 
 def _place_ratio(k: int, numer: int, denom: int, cx: float, cy: float, width: int, height: int) -> tuple[int, int, int, int] | None:
@@ -357,16 +369,15 @@ def fit_ratio_in_valid(
         return centred
     # 目标中心处放不下目标那么大的框（中心靠近或落在有效区外）：同样的比例、尽量大的整数倍，挪到最近的放得下的位置。
     # 比中心处放得下的大，就用挪过去的（中心处只剩一个很小的框，比挪一下再保住大小更糟）；不比它大就保持中心。不超过目标的大小
-    lo, hi, found = centred_k, max_k, None
+    lo, hi, found_k = centred_k, max_k, 0
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        window = _nearest_window(sheet, mid * numer, mid * denom, cx, cy)
-        if window is not None:
-            found, lo = window, mid
+        if _has_window(sheet, mid * numer, mid * denom):
+            found_k, lo = mid, mid
         else:
             hi = mid - 1
-    if found is not None:
-        return found
+    if found_k:
+        return _nearest_window(sheet, found_k * numer, found_k * denom, cx, cy)  # type: ignore[return-value]
     if centred is not None:
         return centred
     fx, fy, fw, fh = max_area_rect(valid)
@@ -446,8 +457,8 @@ def clamp_norm_rect(
     pw, ph = max(1, int(round(rw * width))), max(1, int(round(rh * height)))
     min_h = max(2, math.ceil(16 * max(1.0, 1 / aspect))) if aspect is not None else 2
     if (
-        aspect is not None and abs(pw / ph - aspect) / aspect > 0.009
-    ):  # 比例差在这以内就不动它（validate_crop 容许 1%）：存下来的框原样再写一遍不变
+        aspect is not None and abs(pw / ph - aspect) / aspect > RATIO_TOLERANCE
+    ):  # 比例差在 validate_crop 容许的 1% 以内就不动它（像素也不动）：存下来的框原样再写一遍不变。要改的才按 0.9% 取整
         cx0, cy0 = px + pw / 2.0, py + ph / 2.0
         bw = min(float(pw), ph * aspect)
         ph = max(min_h, int(round(bw / aspect)))
@@ -482,18 +493,20 @@ def clamp_norm_rect(
         # 比中心处缩出来的大就用挪过去的；不放大成整块有效区，也不超过目标
         sheet = _valid_integral(valid)
         lo2, hi2 = (best_scale if best is not None else 0.05), 1.0
+        found_size: tuple[int, int] | None = None
         for _ in range(14):
             mid = (lo2 + hi2) / 2.0
             th = max(min_h, int(round(ph * mid)))
             tw = max(2, int(round(th * aspect)))
             if min_h > 2:
                 tw, th = _snap_to_aspect(th, aspect, floor=min_h)
-            window = _nearest_window(sheet, tw, th, cx, cy)
-            if window is not None:
-                best = window
+            if _has_window(sheet, tw, th):
+                found_size = (tw, th)
                 lo2 = mid
             else:
                 hi2 = mid
+        if found_size is not None:
+            best = _nearest_window(sheet, found_size[0], found_size[1], cx, cy)
     if best is None:
         fx, fy, fw, fh = max_area_rect(valid)
         if fw < 1 or fh < 1:

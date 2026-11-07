@@ -74,7 +74,10 @@ export function enqueue(rec, job) {
 function recordFailure(rec, kind, body, error) {
   const f = rec.failed || { edit: null, crop: null, error: null };
   if (kind === 'edit') f.edit = { ...(f.edit || {}), ...body };
-  else f.crop = body;
+  else {
+    f.crop = body;
+    f.cropShape = SHAPE_REJECTED.has(error && error.code); // 服务器说这个框本身不对（形状、范围、太小）：之后几何写成功了也还是不对，不能改成 fit 蒙混过去
+  }
   if (!(error instanceof Skipped && f.error)) f.error = error; // 跳过的那一笔不盖掉真正的原因
   rec.failed = f;
 }
@@ -87,10 +90,14 @@ function clearSucceeded(rec, kind, body) {
     for (const k of Object.keys(body)) delete f.edit[k];
     if (!Object.keys(f.edit).length) f.edit = null;
   }
-  // 没写进去的框是按更早的几何摆的，之后几何写成功了：这个框现在只是个目标，重试时让服务器收成最近的合格框
+  // 没写进去的框是按更早的几何摆的，之后几何写成功了：这个框现在只是个目标，重试时让服务器收成最近的合格框。
+  // 只限没写进去的原因不是「框本身不对」的（500、409、断网、跳过）；被服务器说形状不对的框，重试照样被拒，提示照常出来
   // （服务器收得下的话，fit 和普通写入的结果一模一样），不能拿旧几何的框去撞新的几何、一直被拒
-  if (kind === 'edit' && 'geometry' in body && f.crop && f.crop.rect !== null) f.crop = { ...f.crop, fit: true };
-  if (kind === 'crop') f.crop = null;
+  if (kind === 'edit' && 'geometry' in body && f.crop && f.crop.rect !== null && !f.cropShape) f.crop = { ...f.crop, fit: true };
+  if (kind === 'crop') {
+    f.crop = null;
+    f.cropShape = false;
+  }
   if (!f.edit && !f.crop && !f.stale) rec.failed = null;
 }
 
@@ -191,6 +198,7 @@ export function retrySaves(id) {
       rec.rev = (await api(URLS.edit(id))).rev;
       // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
       const wroteGeometry = !!(rec.failed && rec.failed.edit && rec.failed.edit.geometry);
+      const wasRejected = !!(rec.failed && rec.failed.cropShape); // 这个框当初就是被服务器说「形状不对」才没写进去的
       if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
       if (rec.failed && rec.failed.crop) {
         const box = { ...rec.failed.crop };
@@ -199,7 +207,10 @@ export function retrySaves(id) {
         } catch (e) {
           // 只有「这次重试刚把这个框当初对着的几何写进去」才改成 fit：几何变了，框是按旧几何摆的，当目标让服务器收成最近的合格框。
           // 只重试一个框（拖的、缩放的）时，被拒就是被拒：服务器的理由照常提示，界面上的框原样留着，不能悄悄换成收小的框。
-          if (!wroteGeometry || !SHAPE_REJECTED.has(e.code) || box.fit || box.rect === null) throw e;
+          if (wasRejected || !wroteGeometry || !SHAPE_REJECTED.has(e.code) || box.fit || box.rect === null) {
+            if (rec.failed) rec.failed.cropShape = SHAPE_REJECTED.has(e.code);
+            throw e;
+          }
           await put('crop', { ...box, fit: true });
         }
       }
@@ -246,6 +257,15 @@ export function markStale(id, error, reread) {
   rec.failed = f;
   rec.reread = reread;
   toastError(error, '无法读取最新的裁剪框。', { action: { label: '重试', run: () => retrySaves(id) } });
+  announce(rec);
+}
+
+// 之后重读成功了（界面的框已经是服务器的）：不用再「重试」，记录里只剩这一条就清掉
+export function clearStale(id) {
+  const rec = records.get(id);
+  if (!rec || !rec.failed || !rec.failed.stale) return;
+  rec.failed.stale = false;
+  if (!rec.failed.edit && !rec.failed.crop) rec.failed = null;
   announce(rec);
 }
 

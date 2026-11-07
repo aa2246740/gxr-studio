@@ -11,10 +11,12 @@ import copy
 import itertools
 from typing import Any
 
+import numpy as np
 import pytest
 
 from gxr_studio import crop as cropmod
 from gxr_studio.crop import CropError
+from gxr_studio.finish import geometry as geometry_mod
 from gxr_studio.library import edits
 from gxr_studio.library import sidecar as sc
 from gxr_studio.render import edits as render_edits
@@ -127,3 +129,25 @@ def test_a_plain_drag_on_an_expanded_canvas_cannot_store_a_box_under_16_pixels(l
     _x, _y, bw, bh = cropmod.crop_box(tuple(crop["rect"]), w, h)  # type: ignore[arg-type]
     assert min(bw, bh) >= cropmod.MIN_SIDE_PX, f"存下了 {bw} × {bh} 的框"
     strict_ok(lib, photo)
+
+
+@pytest.mark.parametrize(("width", "height"), [(660, 503), (678, 484), (4288, 2848)])
+def test_a_legal_original_box_is_not_rewritten_even_when_it_is_off_by_more_than_0_9_percent(width, height):
+    """评审第八轮 P2：26×20 在 660×503 上差 0.924%，validate_crop 容许 1%，存下来的就是 26×20，收框（拉直、透视之后每次写都会过一遍）
+    不能把它改成 25×19。只有真的超出 1% 才取整改它。"""
+    valid = np.ones((height, width), bool)
+    aspect = width / height
+    seen = 0
+    for landscape in (True, False):
+        a = aspect if landscape else 1 / aspect
+        for short in range(16, 70):
+            bw, bh = (round(short * a), short) if landscape else (short, round(short / a))
+            off = abs(bw / bh - a) / a
+            if min(bw, bh) < cropmod.MIN_SIDE_PX or not 0.009 < off <= cropmod.RATIO_TOLERANCE:
+                continue
+            rect = (100 / width, 100 / height, bw / width, bh / height)
+            out = geometry_mod.clamp_norm_rect(valid, rect, a)
+            got = (round(out[2] * width), round(out[3] * height))
+            assert got == (bw, bh), f"{width}×{height} {'横' if landscape else '竖'}：{bw}×{bh}（差 {off:.5f}）被改成 {got[0]}×{got[1]}"
+            seen += 1
+    assert seen, "这块画布上没有差在 0.9%–1% 之间的小框，这个测试什么也没测"

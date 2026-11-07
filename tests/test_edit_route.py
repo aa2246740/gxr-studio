@@ -765,3 +765,27 @@ def test_a_box_write_carries_fit_only_while_the_server_box_has_not_been_read_bac
     out = run(tmp_path, "cropbody-fit-flag", real=("crop.js", "correct.js"))
     assert out["plain"] is True and out["stale"] is True and out["nullRect"] is True
     assert out["afterGeometry"] == {"boxStale": False, "fit": True}
+
+
+@pytest.mark.parametrize("code", ["ratio_mismatch", "crop_outside_image", "too_small", "bad_rect"])
+def test_a_box_the_server_called_wrong_stays_rejected_after_a_later_geometry_write(tmp_path, code):
+    """评审第八轮 P1：框被服务器说「本身不对」才没写进去，之后几何写成功了。不能把它改成 fit：重试仍是原来的普通写入、
+    仍然被拒，提示出来，界面上的框原样留着；记录还在时的下一次拖动也不带 fit（loadCrop 不再让这个记录把 boxStale 一直开着）。"""
+    out = run(tmp_path, f"shape-rejected-then-geometry:{code}", real=("crop.js", "correct.js"))
+    mine = [0.2, 0.15, 0.3, 0.6]
+    assert out["rejected"] == {"status": "failed", "screen": mine, "shape": True}
+    assert out["afterGeometry"] == {"status": "failed", "screen": mine, "boxStale": False, "failedFit": False}
+    after = out["afterRetry"]
+    assert out["retry"] is False and after["status"] == "failed" and after["screen"] == mine
+    assert after["puts"] == [["crop", mine, False]], "重试发的还是原来的普通写入"
+    assert out["laterDrag"]["puts"] == [["crop", [0.25, 0.2, 0.3, 0.6], False]], "之后的拖动不带 fit"
+
+
+def test_a_later_successful_reread_clears_the_failed_reread(tmp_path):
+    """评审第八轮 P2：读不回来记成失败；之后又改了一次，这次读到了，界面的框就是服务器的：状态回到已保存，导出不再被拒。"""
+    out = run(tmp_path, "stale-cleared-by-later-sync", real=("crop.js", "correct.js"))
+    assert out["stuck"] == {"status": "failed", "stale": True}
+    later = out["later"]
+    assert later["status"] in ("saved", "idle") and later["record"] is None
+    assert later["screen"] == later["server"]
+    assert later["exportBlocked"] is False and later["flushed"] is False

@@ -1736,7 +1736,7 @@ if (scenario === 'reset-then-switch') {
       server: r4(crops_server(PHOTOS.A.id)),
     };
   }
-} else if (scenario === 'failed-box-then-geometry' || scenario === 'reread-fails-then-retry' || scenario === 'cropbody-fit-flag') {
+} else if (scenario === 'failed-box-then-geometry' || scenario === 'reread-fails-then-retry' || scenario === 'cropbody-fit-flag' || scenario === 'stale-cleared-by-later-sync' || scenario.startsWith('shape-rejected-then-geometry:')) {
   // 评审第七轮：
   // failed-box-then-geometry：框的写入失败（500），之后几何写成功了（服务器按新几何收过框）。重试时这个框是个目标，带 fit 一笔写完，
   //   不能拿按旧几何摆的框去撞新几何、一直被拒（模糊测试 1405 / 1532 找到的）。
@@ -1783,6 +1783,51 @@ if (scenario === 'reset-then-switch') {
     out.nullRect = cropMod.cropBody(v, { preset: '4:3', rect: null }, 'portrait').fit === undefined;
     await dragSlider(40); // 几何写成功、读回收过的框以后，boxStale 清掉
     out.afterGeometry = { boxStale: !!v.boxStale, fit: body().fit === undefined };
+  } else if (scenario.startsWith('shape-rejected-then-geometry:')) {
+    // 评审第八轮 P1：框被服务器说「本身不对」（形状 / 范围 / 太小 / 坏框）。之后几何写成功了，也不能把它改成 fit 蒙混过去：
+    // 重试仍然是原来的普通写入、仍然被拒，提示出来，界面上的框原样留着；它之后的拖动也不带 fit。
+    const code = scenario.split(':')[1];
+    const reject = { status: 422, code, message: '裁剪框超出画面范围' };
+    globalThis.cropCheck = (body) => (body.rect && !body.fit ? reject : null);
+    const mine = [0.2, 0.15, 0.3, 0.6];
+    const drag = async (rect) => {
+      preview.beginChange(v);
+      v.crop.rect = { x: rect[0], y: rect[1], w: rect[2], h: rect[3] };
+      await preview.saveCrop(v, cropMod.cropBody(v, { preset: v.crop.preset, rect: cropMod.rectArray(v.crop.rect) }, cropMod.orientationNow(v)));
+    };
+    const saves = await import(file('saves.js'));
+    const rec = saves.saveRecord(PHOTOS.A.id);
+    await drag(mine);
+    out.rejected = { status: preview.saveStatus(PHOTOS.A.id), screen: screen(), shape: !!(rec.failed && rec.failed.cropShape) };
+    await dragSlider(40);
+    out.afterGeometry = { status: preview.saveStatus(PHOTOS.A.id), screen: screen(), boxStale: !!v.boxStale, failedFit: !!(rec.failed && rec.failed.crop && rec.failed.crop.fit) };
+    const mark = requests.length;
+    out.retry = await preview.retrySaves(PHOTOS.A.id);
+    await tick(6);
+    out.afterRetry = { puts: puts(mark), status: preview.saveStatus(PHOTOS.A.id), screen: screen(), server: r4(crops[PHOTOS.A.id].rect) };
+    // 记录还在的时候又拖了一下：照常严格校验，不带 fit
+    const mark2 = requests.length;
+    await drag([0.25, 0.2, 0.3, 0.6]);
+    out.laterDrag = { puts: puts(mark2), status: preview.saveStatus(PHOTOS.A.id) };
+  } else if (scenario === 'stale-cleared-by-later-sync') {
+    // 评审第八轮 P2：读不回来记成了失败；之后又拖了一次滑块，这次读到了：界面的框已经是服务器的，不能还停在「有修改没有保存」
+    const saves = await import(file('saves.js'));
+    const rec = saves.saveRecord(PHOTOS.A.id);
+    for (let i = 0; i < 3; i += 1) failIf.push((method, url) => (method === 'GET' && url.endsWith('/crop') ? new StubError(500, '服务器暂时不可用。') : null));
+    await dragSlider(40);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await tick(10);
+    out.stuck = { status: preview.saveStatus(PHOTOS.A.id), stale: !!(rec.failed && rec.failed.stale) };
+    await dragSlider(20);
+    await tick(8);
+    out.later = {
+      status: preview.saveStatus(PHOTOS.A.id),
+      record: rec.failed,
+      screen: screen(),
+      server: r4(crops[PHOTOS.A.id].rect),
+      exportBlocked: await preview.flushEdits(v).then(() => false, () => true),
+      flushed: await saves.flushPhotos([PHOTOS.A.id]).then(() => false, () => true),
+    };
   } else if (scenario === 'failed-box-then-geometry') {
     // 拖的框先因为 500 没写进去，接着垂直的几何写成功了（框没被服务器的框换掉：界面上有没保存的框）
     failIf.push((method, url) => (method === 'PUT' && url.endsWith('/crop') ? new StubError(500, '磁盘已满，无法写入编辑记录。') : null));

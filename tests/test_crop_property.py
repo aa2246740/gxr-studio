@@ -21,10 +21,12 @@ import os
 import random
 from typing import Any
 
+import numpy as np
 import pytest
 
 from gxr_studio import crop as cropmod
 from gxr_studio.crop import CropError
+from gxr_studio.finish import geometry as geometry_mod
 from gxr_studio.finish.geometry import max_area_rect, output_size, warp_valid, window_full
 from gxr_studio.finish.spec import parse_geometry
 from gxr_studio.library import edits
@@ -223,3 +225,156 @@ def test_random_writes_keep_the_stored_box_valid_and_fit_equals_plain_when_plain
     assert counts["plain_ok"] > CASES // 4 and counts["fit_only"] > CASES // 10, counts
     assert counts["fit_error"] < CASES // 20, f"fit 报 too_small 的太多：{counts}"
     assert not problems, f"{len(problems)} 处问题（{counts}）：\n" + "\n".join(problems[:12])
+
+
+# ---- 收得不比必要的更小：对着穷举的参照 ------------------------------------------------
+
+
+def all_windows(valid: np.ndarray, tw: int, th: int) -> np.ndarray:
+    """穷举：每个左上角位置上 tw×th 的窗口是不是整窗有效。用滑动窗口取 all，和被测代码的积分图是两套算法。"""
+    height, width = valid.shape
+    if tw > width or th > height:
+        return np.zeros((0, 0), bool)
+    return np.asarray(np.lib.stride_tricks.sliding_window_view(valid, (th, tw)).all(axis=(2, 3)))
+
+
+def brute_nearest(valid: np.ndarray, tw: int, th: int, cx: float, cy: float) -> tuple[float, tuple[int, int]] | None:
+    ok = all_windows(valid, tw, th)
+    ys, xs = np.nonzero(ok)
+    if ys.size == 0:
+        return None
+    dist = (xs + tw / 2.0 - cx) ** 2 + (ys + th / 2.0 - cy) ** 2
+    i = int(np.argmin(dist))
+    return float(dist[i]), (int(xs[i]), int(ys[i]))
+
+
+def small_mask(r: random.Random) -> np.ndarray:
+    sw, sh = r.randint(60, 120), r.randint(50, 100)
+    geom = parse_geometry(random_geometry(r))
+    return warp_valid(sw, sh, geom)
+
+
+def test_nearest_window_is_the_nearest_of_every_position_not_a_sample():
+    r = random.Random(SEED)
+    checked = 0
+    for _ in range(60):
+        valid = small_mask(r)
+        height, width = valid.shape
+        tw, th = r.randint(2, max(2, width // 2)), r.randint(2, max(2, height // 2))
+        cx, cy = r.uniform(-5, width + 5), r.uniform(-5, height + 5)
+        sheet = geometry_mod._valid_integral(valid)
+        got = geometry_mod._nearest_window(sheet, tw, th, cx, cy)
+        want = brute_nearest(valid, tw, th, cx, cy)
+        if want is None:
+            assert got is None
+            continue
+        assert got is not None
+        gx, gy, gw, gh = got
+        assert (gw, gh) == (tw, th) and valid[gy : gy + gh, gx : gx + gw].all()
+        assert abs(((gx + tw / 2.0 - cx) ** 2 + (gy + th / 2.0 - cy) ** 2) - want[0]) < 1e-6, (got, want)
+        checked += 1
+    assert checked > 20
+
+
+RATIOS = [(1, 1), (3, 2), (16, 9), (4, 5), (191, 100), (65, 24)]
+
+
+def test_a_fixed_ratio_box_is_the_largest_whole_multiple_that_fits_anywhere():
+    """fit_ratio_in_valid 给出的是目标大小以内、整窗落在有效像素里的最大整数倍（穷举每个位置核对），不是随便一个更小的。"""
+    r = random.Random(SEED + 1)
+    checked = 0
+    for _ in range(120):
+        valid = small_mask(r)
+        height, width = valid.shape
+        numer, denom = r.choice(RATIOS)
+        tw0, th0 = r.uniform(0.1, 1.0) * width, r.uniform(0.1, 1.0) * height
+        rect = (r.uniform(0, 1 - tw0 / width), r.uniform(0, 1 - th0 / height), tw0 / width, th0 / height)
+        limit_w, limit_h = min(width, max(1, round(rect[2] * width))), min(height, max(1, round(rect[3] * height)))
+        max_k = min(limit_w // numer, limit_h // denom)
+        best = next((k for k in range(max_k, 0, -1) if all_windows(valid, k * numer, k * denom).any()), 0)
+        if best == 0:
+            continue
+        x, y, bw, bh = geometry_mod.fit_ratio_in_valid(valid, rect, numer, denom)
+        assert (bw, bh) == (best * numer, best * denom), f"{valid.shape} {numer}:{denom} 目标 {rect}：最大是 {best} 倍，得到 {bw}×{bh}"
+        assert valid[y : y + bh, x : x + bw].all()
+        checked += 1
+    assert checked > 40
+
+
+def test_an_original_box_is_not_shrunk_more_than_needed():
+    """原始 / 自由的框（clamp_norm_rect）：整窗落在有效区里，高度不比穷举找到的最大的（同样比例、同样取整）小超过 2 像素。"""
+    r = random.Random(SEED + 2)
+    checked = 0
+    for _ in range(80):
+        valid = small_mask(r)
+        height, width = valid.shape
+        aspect = width / height
+        ph0 = r.randint(max(2, height // 4), height)
+        pw0 = max(1, round(ph0 * aspect))
+        pw0, ph0 = min(pw0, width), min(ph0, height)
+        rect = (r.randint(0, width - pw0) / width, r.randint(0, height - ph0) / height, pw0 / width, ph0 / height)
+        min_h = max(2, math.ceil(16 * max(1.0, 1 / aspect)))
+        best = 0
+        for th in range(ph0, min_h - 1, -1):
+            tw, th2 = geometry_mod._snap_to_aspect(th, aspect, floor=min_h)
+            if th2 <= ph0 and tw <= width and all_windows(valid, tw, th2).any():
+                best = th2
+                break
+        if not best:
+            continue
+        out = geometry_mod.clamp_norm_rect(valid, rect, aspect)
+        x, y, bw, bh = (round(out[0] * width), round(out[1] * height), round(out[2] * width), round(out[3] * height))
+        assert valid[y : y + bh, x : x + bw].all(), (valid.shape, rect, out)
+        assert bh >= best - 2, f"{valid.shape} 目标 {rect}：穷举找到高 {best}，得到 {bw}×{bh}"
+        checked += 1
+    assert checked > 25
+
+
+# ---- 大画布（真实照片是 4288×2848）-----------------------------------------------------
+
+
+@pytest.mark.parametrize(("width", "height"), [(2200, 1600), (4288, 2848)])
+def test_the_whole_lattice_is_searched_on_large_masks(width, height):
+    """以前按步长抽样位置，2200×1600 上步长是 2：只在 (1, 1) 有一个整窗有效的 16×16 就找不到。"""
+    only = np.zeros((height, width), bool)
+    only[1:17, 1:17] = True
+    sheet = geometry_mod._valid_integral(only)
+    assert geometry_mod._nearest_window(sheet, 16, 16, width / 2, height / 2) == (1, 1, 16, 16)
+    out = geometry_mod.clamp_norm_rect(only, (0.4, 0.4, 0.3, 0.3), 1.0)
+    assert [round(v * width) for v in (out[0], out[2])] == [1, 16] and [round(v * height) for v in (out[1], out[3])] == [1, 16]
+    # 目标中心在有效区外：同样比例的框挪到最近的整窗有效的位置，不放大
+    big = np.ones((height, width), bool)
+    big[: height // 2, : width // 2] = False
+    x, y, bw, bh = geometry_mod.fit_ratio_in_valid(big, (0.0, 0.0, 0.4, 0.4), 3, 2)
+    assert big[y : y + bh, x : x + bw].all() and bw * 2 == bh * 3 and bw <= 0.4 * width + 3
+    import time
+
+    started = time.perf_counter()
+    geometry_mod._nearest_window(geometry_mod._valid_integral(big), width // 2, height // 2, 10.0, 10.0)
+    assert time.perf_counter() - started < 3.0
+
+
+def test_large_canvas_writes_store_boxes_the_strict_check_accepts(lib, photo):
+    """2200×1600 的真实写入（拉直 + 透视，目标小到整张）：存下来的框通得过严格校验，原样再写不变。"""
+    r = random.Random(SEED + 3)
+    shot = photo
+    path = lib.sidecar_path_for(shot)
+    problems: list[str] = []
+    for case in range(4):
+        side = lib.read_sidecar_for_write(shot)
+        side["frame"] = {"width": 2200, "height": 1600}
+        side["crop"] = None
+        side.pop("geometry", None)
+        sc.write_atomic(path, side, tmp_dir=lib.tmp_dir)
+        geometry = {**random_geometry(r), "rotate90": 0, "straighten": r.choice([0.5, 4.0, -7.5]), "vertical": r.choice([0, 40, -60])}
+        render_edits.write(lib, shot, {"geometry": geometry}, None)  # type: ignore[arg-type]
+        _side, _geom, _sw, _sh, w, h = stored(lib, shot)
+        preset = r.choice(["original", "free", "3:2", "16:9"])
+        target = random_target(r)
+        try:
+            edits.write_crop(lib, shot, preset=preset, rect=target, angle_deg=float(geometry["straighten"]), fit=True)
+        except CropError as exc:
+            problems.append(f"case {case} {geometry} {preset} {target}: {exc.code}")
+            continue
+        problems += [f"case {case} {geometry} {preset} {target} ({w}×{h}): {p}" for p in stored_problems(lib, shot)]
+    assert not problems, "\n".join(problems)

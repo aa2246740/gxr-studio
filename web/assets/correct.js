@@ -8,7 +8,7 @@ import { cropBody, orientationNow, rectArray, fitCrop, resetCropLocal } from './
 import { slider, notReady } from './controls.js';
 import { rotateRect90, flipRect, fmtDeg, clamp } from './geom.js';
 import { DEFAULT_GEOMETRY } from './finish.js';
-import { markStale } from './saves.js';
+import { markStale, clearStale } from './saves.js';
 import { api } from './api.js';
 
 const ANGLE_MIN = -45;
@@ -68,6 +68,7 @@ export async function syncCrop(view) {
   }
   if (view.disposed) return;
   if (failure) markStale(view.photo.id, failure, () => loadCrop(view));
+  else clearStale(view.photo.id); // 这次读到了：界面的框已经是服务器的，之前读不回来的记录不用再等「重试」
   view.onRectDrag?.();
   view.redrawSide?.();
   view.onChange?.();

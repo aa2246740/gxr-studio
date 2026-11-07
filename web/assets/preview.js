@@ -261,7 +261,7 @@ export async function loadCrop(view) {
   const pre = view.crop ? JSON.stringify(view.crop.rect) : null; // 开始读的时候界面上的框
   const c = await readFresh(view.photo.id, () => api(`/api/photos/${view.photo.id}/crop`), (stale) => staleCropForRedo(view, stale, pre));
   const unsaved = saveRecord(view.photo.id).failed; // 界面上有一个还没保存的框：不能拿服务器的旧框盖掉它
-  if (live(view) && !(unsaved && unsaved.crop)) setCrop(view, c);
+  if (live(view)) { if (unsaved && unsaved.crop) view.boxStale = view.boxStale && !unsaved.cropShape; else setCrop(view, c); } // 被拒的框留着；它之后的拖动照常严格校验（不再带 fit）
 }
 
 // 接口的 rect 是数组，这里转成 {x, y, w, h}（写回时再转回数组，见 cropDraft / saveCrop 的调用方）
