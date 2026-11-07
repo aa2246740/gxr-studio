@@ -15,7 +15,7 @@ from ..finish.fonts import ASSETS, FONT_FILES, font_table_json
 from ..finish.meta_text import meta_payload
 from ..finish.serve import load_defaults, render_stage, save_defaults
 from ..finish.spec import parse_frame, parse_stamp
-from ..render.params import EditError, parse_edit
+from ..render.params import EditError, EditState, parse_edit
 from .errors import ApiError
 from .render_routes import _edit_error
 from .routes import _shot_or_404, ctx
@@ -117,13 +117,13 @@ def geometry_auto(shot_id: str, request: Request) -> dict[str, Any]:
     shot = _shot_or_404(c, shot_id)
     side, _problem = c.lib.read_sidecar_or_default(shot)
     edit = parse_edit(side)
-    from dataclasses import replace
-
     current_s = float(getattr(edit.geometry, "straighten", 0.0) or 0.0)
     current_v = int(round(float(getattr(edit.geometry, "vertical", 0.0) or 0.0)))
-    clean = replace(edit, geometry=None)
     try:
-        jpeg, _labels = render_stage(c.render, c.lib, shot, clean, side, stage="uncropped", max_edge=640, quality=80)
+        # 分析的是原片（stage=original：不带配方、调整、几何、边框和已有的裁剪）。
+        # 以前带着编辑记录渲染：照片一有任何编辑就从相机 JPG 改走 RAW 的电脑预测，第一次要两秒多，
+        # 结果还和没编辑时不一样（同一张照片点两次「自动」得到两个答案）。
+        jpeg, _labels = render_stage(c.render, c.lib, shot, EditState(), {}, stage="original", max_edge=640, quality=80)
     except Exception as exc:
         raise ApiError(422, "auto_failed", "无法分析这张照片。请手动调整拉直和垂直。") from exc
     import io

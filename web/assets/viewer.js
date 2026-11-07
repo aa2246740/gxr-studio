@@ -9,8 +9,8 @@ import { pairTag } from './gallery.js';
 import { openExportDialog } from './export.js';
 import { recipePanel } from './recipes.js';
 import { adjustPanel } from './adjust.js';
-import { cropSection, cycleGuide, cycleSpiral, closeMenus } from './crop.js';
-import { correctSection, correctActions, nudgeStraighten, rotate90 } from './correct.js';
+import { cropSection, cycleGuide, cycleSpiral, closeMenus, fullCanvas, resetCropLocal } from './crop.js';
+import { correctSection, correctActions, nudgeStraighten, rotate90, syncCrop } from './correct.js';
 import { framePanel } from './frame_panel.js';
 import { stampPanel } from './stamp_panel.js';
 import { infoPanel } from './info_panel.js';
@@ -307,7 +307,7 @@ async function retryEdit(v) {
 
 function cropPanelWrap() {
   return h('div', { class: 'pane' },
-    view.canvas ? cropSection(view) : h('div', { class: 'skel-group', 'aria-busy': 'true' }, h('div', { class: 'skel line' }), h('div', { class: 'skel line' })),
+    (view.canvas || fullCanvas(view)) ? cropSection(view) : h('div', { class: 'skel-group', 'aria-busy': 'true' }, h('div', { class: 'skel line' }), h('div', { class: 'skel line' })),
     correctSection(view),
     h('div', { class: 'sticky-foot' }, ...correctActions(view), h('button', { type: 'button', class: 'btn sm primary end', onclick: finishCrop }, '完成')),
   );
@@ -494,6 +494,7 @@ on('save-retried', (e) => {
   const v = view;
   if (!v || !e.detail || e.detail.id !== v.photo.id || !v.ed) return;
   if (!applyRetried(v, e.detail)) return;
+  if (e.detail.kind === 'edit' && e.detail.fields.includes('geometry')) syncCrop(v); // 重试补写了几何：服务器顺带收过框、换过画布，界面跟上
   // 正在拖曲线、滑块（beginChange 之后、endChange 之前）：不重建面板，不然拖着的控件和它松手时的保存都没了；
   // 这一步结束时 endChange 再刷新（W01）。每个开始都有结束：保存后 endChange，没改值的按下由滑块的 onCancel 结束（X01）
   if (v.pending) {
@@ -538,6 +539,7 @@ async function resetAll() {
   ed.frameFrom = 'photo';
   ed.stamp = normalizeStamp({ enabled: false });
   ed.stampFrom = 'photo';
+  resetCropLocal(v); // 框也先回到原图：第一笔保存一排队，这一步就记进撤销了
   // 乐观更新：面板和画面立刻回到原图，保存在后台排队。
   // 和其它修改一样，保存失败时界面保留复原后的样子（不自动改回去），底栏标成「有修改没有保存」，
   // 给「重试 / 放弃修改」；放弃就按服务器上的内容重读。只写进去一半（比如裁剪成功、编辑失败）也一样：

@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-from ..crop import PRESETS, target_ratio
+from ..crop import MIN_SIDE_PX, PRESETS, RATIO_TOLERANCE, ratio_off, target_ratio
 from .spec import Geometry
 
 FILL = (0x1B, 0x1C, 0x1F)
@@ -283,6 +283,37 @@ def _covered(sheet: np.ndarray, x: int, y: int, rw: int, rh: int) -> bool:
     return got == rw * rh
 
 
+def _window_mask(sheet: np.ndarray, tw: int, th: int) -> np.ndarray | None:
+    """每个左上角位置上，tw×th 的窗口是不是整窗都落在有效像素里（整张格子，一个位置都不漏）。
+    积分图四个角相减，切片相减不用逐点取值，12 M 像素的画布也只要几十毫秒。放不下这个大小就返回空。"""
+    height, width = sheet.shape[0] - 1, sheet.shape[1] - 1
+    if tw < 1 or th < 1 or tw > width or th > height:
+        return None
+    got = sheet[th:, tw:] - sheet[: height - th + 1, tw:] - sheet[th:, : width - tw + 1] + sheet[: height - th + 1, : width - tw + 1]
+    return np.asarray(got == tw * th)
+
+
+def _has_window(sheet: np.ndarray, tw: int, th: int) -> bool:
+    ok = _window_mask(sheet, tw, th)
+    return ok is not None and bool(ok.any())
+
+
+def _nearest_window(sheet: np.ndarray, tw: int, th: int, cx: float, cy: float) -> tuple[int, int, int, int] | None:
+    """整窗都落在有效像素里、离 (cx, cy) 最近的 tw×th 窗口；一个都没有就返回空。
+    目标的中心落在有效区外时（拉直、透视之后常见）用：把同样大小的框挪到最近的合格位置，而不是放大成整块有效区。
+    位置一个不漏地找（不抽样）：16×16 的整窗只在 (1, 1) 一处也找得到。"""
+    ok = _window_mask(sheet, tw, th)
+    if ok is None:
+        return None
+    flat = np.flatnonzero(ok)
+    if flat.size == 0:
+        return None
+    ys, xs = np.divmod(flat, ok.shape[1])
+    dist = (xs + tw / 2.0 - cx) ** 2 + (ys + th / 2.0 - cy) ** 2
+    best = int(np.argmin(dist))
+    return int(xs[best]), int(ys[best]), tw, th
+
+
 def _place_ratio(k: int, numer: int, denom: int, cx: float, cy: float, width: int, height: int) -> tuple[int, int, int, int] | None:
     tw, th = k * numer, k * denom
     if tw < 1 or th < 1 or tw > width or th > height:
@@ -327,10 +358,28 @@ def fit_ratio_in_valid(
     limit_h = min(height, max(1, int(round(rh * height))))
     max_k = min(limit_w // numer, limit_h // denom) if numer > 0 and denom > 0 else 0
     sheet = _valid_integral(valid)
+    centred: tuple[int, int, int, int] | None = None
+    centred_k = 0
     for k in range(max(0, max_k), 0, -1):
         box = _place_ratio(k, numer, denom, cx, cy, width, height)
         if box is not None and _covered(sheet, *box):
-            return box
+            centred, centred_k = box, k
+            break
+    if centred is not None and centred_k == max_k:
+        return centred
+    # 目标中心处放不下目标那么大的框（中心靠近或落在有效区外）：同样的比例、尽量大的整数倍，挪到最近的放得下的位置。
+    # 比中心处放得下的大，就用挪过去的（中心处只剩一个很小的框，比挪一下再保住大小更糟）；不比它大就保持中心。不超过目标的大小
+    lo, hi, found_k = centred_k, max_k, 0
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _has_window(sheet, mid * numer, mid * denom):
+            found_k, lo = mid, mid
+        else:
+            hi = mid - 1
+    if found_k:
+        return _nearest_window(sheet, found_k * numer, found_k * denom, cx, cy)  # type: ignore[return-value]
+    if centred is not None:
+        return centred
     fx, fy, fw, fh = max_area_rect(valid)
     fw = max(0, min(fw, width - fx))
     fh = max(0, min(fh, height - fy))
@@ -376,23 +425,59 @@ def window_full(valid: np.ndarray, x: int, y: int, rw: int, rh: int) -> bool:
     return bool(valid[y : y + rh, x : x + rw].all())
 
 
-def clamp_norm_rect(valid: np.ndarray, rect: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-    """把归一化框收到有效区域内，保持宽高比，中心尽量不动。已经有效就原样返回。"""
+def _snap_to_aspect(th: int, aspect: float, tolerance: float = 0.009, floor: int = 2) -> tuple[int, int]:
+    """整数像素的 (宽, 高)，宽高比和 aspect 差不到 tolerance。短边在 16 像素上下时，四舍五入一下比例就差出 1% 以上，
+    validate_crop 下一次就拒。先往小里找（不超过 th，不小于 floor），再往大里找；找不到就用四舍五入的。"""
+
+    def fits(t: int) -> tuple[int, int] | None:
+        w = int(round(t * aspect))
+        return (w, t) if w >= 1 and abs(w / t - aspect) / aspect <= tolerance else None
+
+    for t in range(th, max(floor, th - 40) - 1, -1):
+        hit = fits(t)
+        if hit:
+            return hit
+    for t in range(th + 1, th + 40):
+        hit = fits(t)
+        if hit:
+            return hit
+    return max(1, int(round(th * aspect))), th
+
+
+def clamp_norm_rect(
+    valid: np.ndarray, rect: tuple[float, float, float, float], aspect: float | None = None
+) -> tuple[float, float, float, float]:
+    """把归一化框收到有效区域内，保持宽高比，中心尽量不动。已经有效就原样返回。
+
+    aspect：要的宽高比（像素）。给了就先取目标框里最大的、比例对的框（中心不动），再收；整数像素的宽高也按 aspect 对齐
+    （差不到 0.9%）、短边不小于 16 像素；不给就沿用目标框自己的比例。"""
     height, width = valid.shape
     x, y, rw, rh = rect
     px, py = int(round(x * width)), int(round(y * height))
     pw, ph = max(1, int(round(rw * width))), max(1, int(round(rh * height)))
+    min_h = max(2, math.ceil(16 * max(1.0, 1 / aspect))) if aspect is not None else 2
+    if (
+        aspect is not None and abs(pw / ph - aspect) / aspect > RATIO_TOLERANCE
+    ):  # 比例差在 validate_crop 容许的 1% 以内就不动它（像素也不动）：存下来的框原样再写一遍不变。要改的才按 0.9% 取整
+        cx0, cy0 = px + pw / 2.0, py + ph / 2.0
+        bw = min(float(pw), ph * aspect)
+        ph = max(min_h, int(round(bw / aspect)))
+        pw, ph = _snap_to_aspect(ph, aspect, floor=min_h)
+        px, py = int(round(cx0 - pw / 2.0)), int(round(cy0 - ph / 2.0))
+        rect = (px / width, py / height, pw / width, ph / height)
     if window_full(valid, px, py, pw, ph):
         return rect
     cx = px + pw / 2.0
     cy = py + ph / 2.0
-    aspect = pw / ph
+    aspect = pw / ph if aspect is None else aspect
     lo, hi = 0.05, 1.0
     best: tuple[int, int, int, int] | None = None
     for _ in range(18):
         mid = (lo + hi) / 2.0
-        th = max(2, int(round(ph * mid)))
+        th = max(min_h, int(round(ph * mid)))
         tw = max(2, int(round(th * aspect)))
+        if min_h > 2:
+            tw, th = _snap_to_aspect(th, aspect, floor=min_h)
         tx = int(round(cx - tw / 2.0))
         ty = int(round(cy - th / 2.0))
         tx = min(max(0, tx), max(0, width - tw))
@@ -402,6 +487,26 @@ def clamp_norm_rect(valid: np.ndarray, rect: tuple[float, float, float, float]) 
             lo = mid
         else:
             hi = mid
+    best_scale = lo if best is not None else 0.0
+    if best is None or best_scale < 0.999:
+        # 中心处缩了很多才放得下（或怎么缩都放不下，中心在有效区外）：同样比例的框，挪到最近的放得下的位置，
+        # 比中心处缩出来的大就用挪过去的；不放大成整块有效区，也不超过目标
+        sheet = _valid_integral(valid)
+        lo2, hi2 = (best_scale if best is not None else 0.05), 1.0
+        found_size: tuple[int, int] | None = None
+        for _ in range(14):
+            mid = (lo2 + hi2) / 2.0
+            th = max(min_h, int(round(ph * mid)))
+            tw = max(2, int(round(th * aspect)))
+            if min_h > 2:
+                tw, th = _snap_to_aspect(th, aspect, floor=min_h)
+            if _has_window(sheet, tw, th):
+                found_size = (tw, th)
+                lo2 = mid
+            else:
+                hi2 = mid
+        if found_size is not None:
+            best = _nearest_window(sheet, found_size[0], found_size[1], cx, cy)
     if best is None:
         fx, fy, fw, fh = max_area_rect(valid)
         if fw < 1 or fh < 1:
@@ -418,29 +523,65 @@ def fitted_crop(
     preset: str | None = None,
     width: int | None = None,
     height: int | None = None,
+    force: bool = False,
 ) -> tuple[float, float, float, float] | None:
     """做了拉直、透视或畸变时，返回应写回 sidecar 的归一化框。不需要收缩时返回空。
+    force：框是别处推出来的目标（撤销、转 90° 之后的框），没有拉直透视也要按预设比例和画布收一遍。
 
     width、height 是纠正前的画面。给出尺寸时按这次 warp 的真实像素取整数比例，
     写回的归一化框和成片用的是同一块画布。
     """
-    if not needs_valid_crop(geom):
+    if not force and not needs_valid_crop(geom):
         return None
     if width is not None and height is not None and width > 0 and height > 0:
         valid = warp_valid(width, height, geom)
     else:
         valid = warp_valid(120, 90, geom)
     full = (0.0, 0.0, 1.0, 1.0)
-    target = full if rect is None else rect
+    result = _fit_in_valid(valid, preset, full if rect is None else rect, rect)
+    if rect is not None and rect != full and not _usable(valid, preset, result):
+        # 位置不动地收下来，框小得没法用了（短边不到 16 像素，或者比例差出了 RATIO_TOLERANCE）：
+        # 改取有效区里居中的最大框。只有收框收到不能用的时候才丢位置
+        again = _fit_in_valid(valid, preset, full, None)
+        if _usable(valid, preset, again):
+            return again
+    return result
+
+
+def _fit_in_valid(
+    valid: np.ndarray,
+    preset: str | None,
+    target: tuple[float, float, float, float],
+    rect: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float]:
+    full = (0.0, 0.0, 1.0, 1.0)
     if preset:
         box = fit_preset_in_valid(valid, preset, target)
         if box is not None:
             x, y, bw, bh = box
             vh, vw = valid.shape
             return (x / vw, y / vh, bw / vw, bh / vh)
+    if preset == "original":
+        # 原始：框的比例就是画布的比例（validate_crop 也这么要求），横竖跟着目标框；
+        # 以前整张画布这一支取的是最大内接矩形，比例不对，下一次拖框就被拒（ratio_mismatch）
+        vh, vw = valid.shape
+        aspect = vw / vh
+        if (target[2] * vw >= target[3] * vh) != (aspect >= 1):
+            aspect = 1 / aspect
+        return clamp_norm_rect(valid, target, aspect)
     if rect is None or rect == full:
         return normalized_valid_rect(valid)
     return clamp_norm_rect(valid, rect)
+
+
+def _usable(valid: np.ndarray, preset: str | None, rect: tuple[float, float, float, float]) -> bool:
+    """收出来的框能不能用：短边不小于 MIN_SIDE_PX，比例在 RATIO_TOLERANCE 以内（validate_crop 同一套）。"""
+    vh, vw = valid.shape
+    w_px, h_px = max(1, int(round(rect[2] * vw))), max(1, int(round(rect[3] * vh)))
+    if min(w_px, h_px) < MIN_SIDE_PX:
+        return False
+    ratio = target_ratio(preset, vw, vh) if preset in PRESETS else None
+    return ratio is None or ratio_off(ratio, w_px, h_px) <= RATIO_TOLERANCE
 
 
 def crop_box(width: int, height: int, rect: tuple[float, float, float, float]) -> tuple[int, int, int, int]:

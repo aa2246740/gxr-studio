@@ -10,8 +10,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from ..finish.geometry import fitted_crop
-from ..finish.spec import parse_frame, parse_geometry, parse_stamp
+from ..finish.geometry import fitted_crop, output_size
+from ..finish.spec import Geometry, parse_frame, parse_geometry, parse_stamp
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict, heal_frame
 from ..library.store import Library
@@ -108,40 +108,49 @@ def write(
             new["lut"] = lut
     if "geometry" in changes:
         raw_geo = changes["geometry"]
+        old_raw = side.get("geometry")
+        old_geom = parse_geometry(old_raw) if isinstance(old_raw, dict) else Geometry()
+        geom = parse_geometry(raw_geo) if raw_geo is not None else Geometry()
         if raw_geo is None:
             new.pop("geometry", None)
-            if isinstance(new.get("crop"), dict):
-                new["crop"]["angle_deg"] = 0.0
         else:
-            geom = parse_geometry(raw_geo)
             new["geometry"] = geom.to_json()
-            crop = new.get("crop") if isinstance(new.get("crop"), dict) else None
-            stored = None
-            if crop is not None and isinstance(crop.get("rect"), list) and len(crop["rect"]) == 4:
-                stored = (float(crop["rect"][0]), float(crop["rect"][1]), float(crop["rect"][2]), float(crop["rect"][3]))
-            preset_name = crop.get("preset") if isinstance(crop, dict) else None
-            raw_frame = new.get("frame")
-            frame = raw_frame if isinstance(raw_frame, dict) else {}
-            fw, fh = frame.get("width"), frame.get("height")
-            src_w = fw if isinstance(fw, int) and not isinstance(fw, bool) and fw > 0 else None
-            src_h = fh if isinstance(fh, int) and not isinstance(fh, bool) and fh > 0 else None
-            fixed = fitted_crop(
-                geom,
-                stored,
-                preset=preset_name if isinstance(preset_name, str) else None,
-                width=src_w,
-                height=src_h,
-            )
-            if fixed is not None:
-                new["crop"] = {
-                    "preset": (crop or {}).get("preset") or "free",
-                    "rect": [round(float(v), 6) for v in fixed],
-                    "angle_deg": geom.straighten,
-                }
-            elif isinstance(crop, dict):
-                crop["angle_deg"] = geom.straighten
-            elif abs(geom.straighten) > 1e-9:
-                new["crop"] = {"preset": "free", "rect": [0.0, 0.0, 1.0, 1.0], "angle_deg": geom.straighten}
+        crop = new.get("crop") if isinstance(new.get("crop"), dict) else None
+        stored = None
+        if crop is not None and isinstance(crop.get("rect"), list) and len(crop["rect"]) == 4:
+            stored = (float(crop["rect"][0]), float(crop["rect"][1]), float(crop["rect"][2]), float(crop["rect"][3]))
+        preset_name = crop.get("preset") if isinstance(crop, dict) else None
+        raw_frame = new.get("frame")
+        frame = raw_frame if isinstance(raw_frame, dict) else {}
+        fw, fh = frame.get("width"), frame.get("height")
+        src_w = fw if isinstance(fw, int) and not isinstance(fw, bool) and fw > 0 else None
+        src_h = fh if isinstance(fh, int) and not isinstance(fh, bool) and fh > 0 else None
+        # 画布尺寸变了（透视、畸变拉开或收回；不算转 90°，转的框由界面自己转）：框是按旧画布的比例存的，
+        # 不重收的话，退回没有透视时框的比例就不对了（存下来的框通不过 validate_crop）
+        resized = bool(
+            src_w
+            and src_h
+            and old_geom.rotate90 % 2 == geom.rotate90 % 2
+            and output_size(src_w, src_h, old_geom) != output_size(src_w, src_h, geom)
+        )
+        fixed = fitted_crop(
+            geom,
+            stored,
+            preset=preset_name if isinstance(preset_name, str) else None,
+            width=src_w,
+            height=src_h,
+            force=resized and stored is not None,
+        )
+        if fixed is not None:
+            new["crop"] = {
+                "preset": (crop or {}).get("preset") or "free",
+                "rect": [round(float(v), 6) for v in fixed],
+                "angle_deg": geom.straighten,
+            }
+        elif isinstance(crop, dict):
+            crop["angle_deg"] = geom.straighten
+        elif abs(geom.straighten) > 1e-9:
+            new["crop"] = {"preset": "free", "rect": [0.0, 0.0, 1.0, 1.0], "angle_deg": geom.straighten}
     if "frame" in changes:
         # 请求体的键仍叫 frame。sidecar 里尺寸占用了 frame，样式写到 border，不能整块盖掉。
         if changes["frame"] is None:

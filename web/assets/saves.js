@@ -8,6 +8,17 @@ import { api } from './api.js';
 import { emit } from './state.js';
 import { toast, toastError } from './dom.js';
 
+// 排在前面的几何没写成功，后面的框就不写了（见 writeSave）
+export class Skipped extends Error {
+  constructor() {
+    super('前面的几何没有保存，这一笔先不写。');
+    this.code = 'skipped';
+  }
+}
+
+// 服务器说「这个框的形状不对」（比例不符、超出画面、太小）。别的失败（断网、500、版本冲突）不是框的问题。
+const SHAPE_REJECTED = new Set(['ratio_mismatch', 'crop_outside_image', 'bad_rect', 'too_small']);
+
 const records = new Map();
 const URLS = { edit: (id) => `/api/photos/${id}/edit`, crop: (id) => `/api/photos/${id}/crop` };
 
@@ -63,8 +74,11 @@ export function enqueue(rec, job) {
 function recordFailure(rec, kind, body, error) {
   const f = rec.failed || { edit: null, crop: null, error: null };
   if (kind === 'edit') f.edit = { ...(f.edit || {}), ...body };
-  else f.crop = body;
-  f.error = error;
+  else {
+    f.crop = body;
+    f.cropShape = SHAPE_REJECTED.has(error && error.code); // 服务器说这个框本身不对（形状、范围、太小）：之后几何写成功了也还是不对，不能改成 fit 蒙混过去
+  }
+  if (!(error instanceof Skipped && f.error)) f.error = error; // 跳过的那一笔不盖掉真正的原因
   rec.failed = f;
 }
 
@@ -76,8 +90,15 @@ function clearSucceeded(rec, kind, body) {
     for (const k of Object.keys(body)) delete f.edit[k];
     if (!Object.keys(f.edit).length) f.edit = null;
   }
-  if (kind === 'crop') f.crop = null;
-  if (!f.edit && !f.crop) rec.failed = null;
+  // 没写进去的框是按更早的几何摆的，之后几何写成功了：这个框现在只是个目标，重试时让服务器收成最近的合格框。
+  // 只限没写进去的原因不是「框本身不对」的（500、409、断网、跳过）；被服务器说形状不对的框，重试照样被拒，提示照常出来
+  // （服务器收得下的话，fit 和普通写入的结果一模一样），不能拿旧几何的框去撞新的几何、一直被拒
+  if (kind === 'edit' && 'geometry' in body && f.crop && f.crop.rect !== null && !f.cropShape) f.crop = { ...f.crop, fit: true };
+  if (kind === 'crop') {
+    f.crop = null;
+    f.cropShape = false;
+  }
+  if (!f.edit && !f.crop && !f.stale) rec.failed = null;
 }
 
 // 一笔写入改到的字段：编辑按顶层键，裁剪整体算一个
@@ -92,13 +113,16 @@ export function writeSave(rec, kind, changes, { onOk = null, onFail = null } = {
   for (const f of fieldsOf(kind, body)) rec.fieldGen[f] = (rec.fieldGen[f] || 0) + 1;
   return enqueue(rec, async () => {
     try {
+      // 框是按几何定的：排在前面的几何没写成功（还在失败记录里），这一笔写上去只会对着旧的几何算、被拒或被服务器编成居中框。
+      // 先不写，留在失败记录里，重试时跟在几何后面写
+      if (kind === 'crop' && rec.failed && rec.failed.edit && 'geometry' in rec.failed.edit) throw new Skipped();
       const r = await api(URLS[kind](rec.id), { method: 'PUT', body: { ...body, expected_rev: rec.rev } });
       rec.rev = r.rev;
       clearSucceeded(rec, kind, body);
       onOk?.(r);
     } catch (e) {
       recordFailure(rec, kind, body, e);
-      toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
+      if (!(e instanceof Skipped)) toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
       onFail?.(e);
       throw e;
     }
@@ -135,13 +159,15 @@ export async function flushDate(date) {
 
 // 读这张照片的编辑记录（或裁剪），读到的必须是最新的：先等排着的写入，读的过程中又有写入就重读（F04）。
 // read() 返回读到的内容；一直被新的写入打断（连续 5 次）就放弃并抛出，调用方保持现状。
-export async function readFresh(id, read) {
+// onStale(out)：读到的是过时的（读的过程中又有写入）会被丢掉重读，丢掉之前交给调用方看一眼
+export async function readFresh(id, read, onStale = null) {
   const rec = saveRecord(id);
   for (let i = 0; i < 5; i += 1) {
     await rec.tail;
     const gen = rec.gen;
     const out = await read();
     if (rec.gen === gen && !rec.pending) return out;
+    onStale?.(out);
   }
   throw new Error('这张照片正在保存，稍后再读。');
 }
@@ -171,14 +197,45 @@ export function retrySaves(id) {
     try {
       rec.rev = (await api(URLS.edit(id))).rev;
       // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
+      const wroteGeometry = !!(rec.failed && rec.failed.edit && rec.failed.edit.geometry);
+      const wasRejected = !!(rec.failed && rec.failed.cropShape); // 这个框当初就是被服务器说「形状不对」才没写进去的
       if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
-      if (rec.failed && rec.failed.crop) await put('crop', { ...rec.failed.crop });
+      if (rec.failed && rec.failed.crop) {
+        const box = { ...rec.failed.crop };
+        try {
+          await put('crop', box);
+        } catch (e) {
+          // 只有「这次重试刚把这个框当初对着的几何写进去」才改成 fit：几何变了，框是按旧几何摆的，当目标让服务器收成最近的合格框。
+          // 只重试一个框（拖的、缩放的）时，被拒就是被拒：服务器的理由照常提示，界面上的框原样留着，不能悄悄换成收小的框。
+          if (wasRejected || !wroteGeometry || !SHAPE_REJECTED.has(e.code) || box.fit || box.rect === null) {
+            // 只会设上，不会清掉：记录里还是那个被拒的框，一次 500 / 409 / 断网不能让它变成「可以 fit」（第九轮评审）
+            if (rec.failed && SHAPE_REJECTED.has(e.code)) rec.failed.cropShape = true;
+            throw e;
+          }
+          await put('crop', { ...box, fit: true });
+        }
+      }
     } catch (e) {
       if (rec.failed) rec.failed.error = e;
       throw e;
     }
   };
-  rec.retrying = enqueue(rec, job).then((ok) => {
+  rec.retrying = enqueue(rec, job).then(async (written) => {
+    let ok = written;
+    // 服务器上的裁剪读不回来（界面上的框没跟上）：重试就是再读一次，读到了才算完。
+    // 读要等排着的写入（readFresh），所以放在这一笔写完以后，不能放在队列里的这一笔里面（会等自己）
+    if (ok && rec.failed && rec.failed.stale && rec.reread) {
+      try {
+        await rec.reread();
+        if (rec.failed) {
+          rec.failed.stale = false;
+          if (!rec.failed.edit && !rec.failed.crop) rec.failed = null;
+        }
+      } catch (e) {
+        if (rec.failed) rec.failed.error = e;
+        ok = false;
+      }
+    }
     rec.retrying = null;
     if (ok && !rec.failed) {
       toast('修改已保存', 'info');
@@ -189,6 +246,28 @@ export function retrySaves(id) {
     return ok && !rec.failed;
   });
   return rec.retrying;
+}
+
+// 几何写进去了，但服务器收过的框读不回来：界面上的框和服务器的不是一个，不能算「已保存」（导出也会拒绝）。
+// 记成失败，留一个再读一次的办法给「重试」。
+export function markStale(id, error, reread) {
+  const rec = saveRecord(id);
+  const f = rec.failed || { edit: null, crop: null, error: null };
+  f.stale = true;
+  f.error = error;
+  rec.failed = f;
+  rec.reread = reread;
+  toastError(error, '无法读取最新的裁剪框。', { action: { label: '重试', run: () => retrySaves(id) } });
+  announce(rec);
+}
+
+// 之后重读成功了（界面的框已经是服务器的）：不用再「重试」，记录里只剩这一条就清掉
+export function clearStale(id) {
+  const rec = records.get(id);
+  if (!rec || !rec.failed || !rec.failed.stale) return;
+  rec.failed.stale = false;
+  if (!rec.failed.edit && !rec.failed.crop) rec.failed = null;
+  announce(rec);
 }
 
 // 放弃没写进去的修改（调用方随后按服务端的内容重读）
