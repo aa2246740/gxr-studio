@@ -210,6 +210,34 @@ try {
     Object.assign(r, { label, key, target, afterRelease: saved });
     out.sliders.push(r);
   }
+  // 自动：答案用替身（不靠检测器）——拉直 3°、垂直 −25。按下以后两帧之内引擎的成片版本就变了，没有 /render，保存以后框和服务器一样
+  step('auto');
+  const markAuto = requestLog.length;
+  out.auto = await evalIn(`(async () => { ${helpers}
+    const eng = ${mode === 'gpu' ? `(await import('/assets/gpu_stage.js')).gpuEngineForTests()` : 'null'};
+    const realFetch = window.fetch;
+    window.fetch = (url, opts) => /\\/geometry\\/auto/.test(String(url))
+      ? Promise.resolve(new Response(JSON.stringify({ straighten: 3, vertical: -25, confident: true, message: '' }), { headers: { 'Content-Type': 'application/json' } }))
+      : realFetch(url, opts);
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '自动');
+    const version = eng ? eng.contentVersion : 0;
+    const size = eng ? JSON.stringify(eng.canvasSize()) : '';
+    const t = performance.now();
+    button.click();
+    let frames = 0;
+    while (frames < 2) {
+      await raf();
+      frames += 1;
+      if (eng && eng.contentVersion > version) break;
+    }
+    const first = { frames, ms: Math.round(performance.now() - t), changed: eng ? eng.contentVersion > version : null, resized: eng ? JSON.stringify(eng.canvasSize()) !== size : null };
+    const ok = await until(async () => { const g = await serverGeometry(); return g.vertical === -25 && g.straighten === 3; }, 20000);
+    await wait(1500);
+    const s = await serverCrop();
+    window.fetch = realFetch;
+    return { ...first, savedGeometry: !!ok, box: boxRect(), server: s.rect.map((v) => v * 100), gpu: !!document.querySelector('.gpu') };
+  })()`, 60000);
+  out.auto.renders = requestLog.slice(markAuto).filter((q) => /\/render\b/.test(q)).length;
   out.dragRendersTotal = requestLog.slice(mark).filter((q) => /\/render\b/.test(q)).length;
 
   // 回到成片页：画布是裁切后的形状；走显卡的话一个 /render 也没有

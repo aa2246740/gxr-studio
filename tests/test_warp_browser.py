@@ -85,6 +85,11 @@ def test_dragging_perspective_and_distortion_never_waits_for_the_server(live, tm
         assert after["savedGeometry"] is True and after["gpu"] is True, (name, after)
         assert near(after["box"], after["server"]), (name, after)
     assert out["dragRendersTotal"] == 0, out["dragRendersTotal"]
+    # 自动（答案是替身，不靠检测器）：按下以后两帧之内成片变了、没有 /render；保存以后框和服务器一样
+    auto = out["auto"]
+    assert auto["gpu"] is True and auto["renders"] == 0, auto
+    assert auto["changed"] is True and auto["frames"] <= 2, auto
+    assert auto["savedGeometry"] is True and near(auto["box"], auto["server"]), auto
     # 成片页：显卡画布，形状是裁切后的形状（和引擎的成片尺寸一致，也和服务器的框占画布的比例一致），没有 /render
     final = out["final"]
     assert final["gpu"] is True and final["renders"] == 0, final
@@ -99,6 +104,7 @@ def test_dragging_perspective_and_distortion_never_waits_for_the_server(live, tm
 def test_dragging_with_the_server_preview_is_unchanged(live, tmp_path):  # noqa: F811
     out = drive_warp(live, tmp_path, "server")
     assert out["gpu"] is False
+    assert out["auto"]["savedGeometry"] is True, out["auto"]
     for s in out["sliders"]:
         assert s["renders"] >= 1, (s["label"], s["requestsWhileDragging"])  # 服务器出图照旧
         assert s["afterRelease"]["savedGeometry"] is True, s

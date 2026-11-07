@@ -127,6 +127,7 @@ export async function autoCorrect(view) {
     }
     beginChange(view);
     view.ed.geometry = { ...view.ed.geometry, straighten: r.straighten, vertical: r.vertical };
+    schedulePreview(view, { stage: 'uncropped' }); // 和滑块的 onInput 一样：显卡预览当帧跟上，不等保存
     await persist(view, { geometry: view.ed.geometry });
     await afterGeometry(view);
     endChange(view);
