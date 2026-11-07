@@ -299,11 +299,26 @@ export function route(view, ctx, rerun) {
   view.gpuFull = full(info, plan.base, layer, g);
   // 导出时（已裁切）照片的像素：边框和时间戳的版面按它算（stage_finish.js），浏览器自己画，不请服务器
   const grow = plan.base === 'raw' ? info.raw.full[0] / info.raw.layer[0] : 1;
-  view.gpuExport = exportSize(engine.finalSize(), grow, g, view.gpuFull, expands(g) ? engine.canvasSize() : null);
+  const exact = expands(g) && ctx.stage === 'final' ? fullBox(id, exportFrame(info, plan.base, layer), g, ctx.crop || null, rerun) : null;
+  view.gpuExport = exportSize(engine.finalSize(), grow, g, exact, view.gpuFull, expands(g) ? engine.canvasSize() : null);
   ed.error = null;
   ed.busy = false;
   prefetch(view);
   return 'gpu';
+}
+
+// 导出时的画面（转正后、纠正之前）的像素：RAW 是全尺寸，相机 JPG 就是它自己
+function exportFrame(info, base, layer) {
+  return base === 'raw' ? { w: info.raw.full[0], h: info.raw.full[1] } : layer;
+}
+
+// 透视 / 畸变的成片在全尺寸上的裁切框，只给边框和时间戳的版面用（要和导出的照片同样大）。不挡画面：没到之前先用估计，到了再重画。
+function fullBox(id, size, g, crop, rerun) {
+  const key = boxKey(id, size.w, size.h, g, crop);
+  const hit = boxes.get(key);
+  if (hit) return hit;
+  if (!failed.has(`box:${key}`)) ensureBox(id, size.w, size.h, g, crop)?.then(rerun, rerun);
+  return null;
 }
 
 function boxFor(view, id, layer, ctx, rerun) {

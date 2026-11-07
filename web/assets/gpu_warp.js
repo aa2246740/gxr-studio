@@ -40,9 +40,14 @@ export function warpCanvas(api, g, fw, fh) {
   return api.rotatedSize(api.canvasOf(g, fw, fh), ((g.rotate90 % 4) + 4) % 4);
 }
 
-// 成片在导出时的像素：显卡上的成片（颜色层像素）按画布的全尺寸 / 颜色层之比放大。没有透视、畸变时用原来的整体倍数 grow。
-export function exportSize(shown, grow, g, fullSize, layerCanvas) {
+// 成片在导出时的像素（边框和时间戳的版面按它算）。
+// 没有透视、畸变：显卡上的成片按整体倍数 grow 放大。
+// 透视 / 畸变：全尺寸的裁切框（/gpu/box 在全尺寸画布上算，和导出同一个 final_box）到了就用它的宽高，一个像素不差；
+// 它到之前先按「成片 ÷ 颜色层画布 × 全尺寸画布」估一个（差几个像素，框到了就会换掉）。
+export function exportSize(shown, grow, g, exact, fullSize, layerCanvas) {
   if (!shown) return null;
-  if (!expands(g) || !fullSize || !layerCanvas) return { w: Math.round(shown.w * grow), h: Math.round(shown.h * grow) };
+  if (!expands(g)) return { w: Math.round(shown.w * grow), h: Math.round(shown.h * grow) };
+  if (exact && exact.box) return { w: exact.box[2], h: exact.box[3] };
+  if (!fullSize || !layerCanvas) return { w: Math.round(shown.w * grow), h: Math.round(shown.h * grow) };
   return { w: Math.round((shown.w * fullSize.w) / layerCanvas.w), h: Math.round((shown.h * fullSize.h) / layerCanvas.h) };
 }
