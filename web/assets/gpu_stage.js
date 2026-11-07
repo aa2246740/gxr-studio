@@ -379,3 +379,8 @@ export function gpuCanvas(view, maxW, maxH, { natural = false } = {}) {
 export function gpuEngineForTests() {
   return engine;
 }
+
+// 直方图要在引擎的成片纹理上数（histogram.js）；引擎还没建好、或这台电脑走服务器出图时是 null
+export function gpuEngine() {
+  return engine;
+}
