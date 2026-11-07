@@ -99,7 +99,16 @@ REC = {"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {}}
         ("RAW 写法不支持 + 配方 → 服务器", ED, {**RAW, "raw": None, "raw_reason": "linearization_table"}, "final", REC, None, None),
         ("开关关着 → 服务器", ED, {**RAW, "enabled": False}, "final", REC, None, None),
         ("原图 → 服务器", ED, RAW, "orig", REC, None, None),
-        ("透视 → 服务器", {**ED, "geometry": {"vertical": 10}}, RAW, "uncropped", REC, None, None),
+        ("透视 → 显卡", {**ED, "geometry": {"vertical": 10}}, RAW, "uncropped", REC, None, {"base": "raw", "recipe": REC, "lut": None}),
+        (
+            "畸变 + 水平，成片 → 显卡",
+            {**ED, "geometry": {"horizontal": -5, "distortion": 30}},
+            RAW,
+            "final",
+            REC,
+            None,
+            {"base": "raw", "recipe": REC, "lut": None},
+        ),
         # 边框和时间戳由浏览器画在照片外面和上面（stage_finish.js），显卡只画照片：有它们也不退场
         (
             "成片里有边框 → 显卡（边框由浏览器画）",

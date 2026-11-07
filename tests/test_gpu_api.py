@@ -219,6 +219,9 @@ def test_lut_bytes_refuses_what_the_shader_cannot_decode(target, reason):
         ({"straighten": -3.0, "rotate90": 3}, {"preset": "3:2", "rect": (0.0, 0.0, 1.0, 1.0)}),
         ({"straighten": 2.0}, {"preset": "free", "rect": (0.2, 0.2, 0.7, 0.7)}),
         ({"rotate90": 2}, {"preset": "4:5", "rect": (0.1, 0.1, 0.8, 0.8)}),
+        ({"vertical": 30}, None),
+        ({"horizontal": -25, "distortion": 40, "straighten": 2.0}, {"preset": "free", "rect": (0.1, 0.1, 0.6, 0.6)}),
+        ({"vertical": -20, "rotate90": 1, "flip": True}, {"preset": "3:2", "rect": (0.0, 0.0, 1.0, 1.0)}),
     ],
 )
 def test_final_box_matches_finish_array(geometry, crop):
@@ -409,7 +412,10 @@ def test_box_endpoint(client, volumes):
     assert r.json()["box"] == list(box)
     plain = client.post(url, json={"width": 120, "height": 80}).json()
     assert plain["box"] == [0, 0, 120, 80] and plain["valid"] == [0, 0, 1, 1]
-    assert client.post(url, json={"width": 120, "height": 80, "geometry": {"vertical": 10}}).status_code == 422
+    warped = client.post(url, json={"width": 120, "height": 80, "geometry": {"vertical": 10, "distortion": -20}})
+    assert warped.status_code == 200, warped.text
+    want, _ = final_box(120, 80, Geometry(vertical=10, distortion=-20), None, None)
+    assert warped.json()["box"] == list(want)
 
 
 BAD_BOXES = [
