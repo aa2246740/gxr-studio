@@ -74,6 +74,7 @@ jobs:
           PYTEST_ADDOPTS: "--force-reruns 0"
           GXR_REQUIRE_FRONTEND: "1"
           GXR_REQUIRE_GPU_TEST: "1"
+          GXR_FUZZ_JOBS: "4"
         run: make check
       - name: DAST-style endpoint checks
         run: make dast
@@ -106,6 +107,7 @@ jobs:
         env:
           PYTEST_ADDOPTS: "--force-reruns 0"
           GXR_REQUIRE_GPU_TEST: "1"
+          GXR_FUZZ_JOBS: "4"
         run: uv run --frozen pytest -vv --maxfail=10 --durations=20 -o faulthandler_timeout=300
 
   security-report:

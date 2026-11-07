@@ -124,11 +124,75 @@ def default_crop(preset: str, width: int, height: int, angle_deg: float = 0.0, f
     return Crop(preset=preset, rect=rect, angle_deg=angle)
 
 
-def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int, *, mirrored: bool = False) -> Crop:
+def fit_target_crop(preset: str, rect: Any, angle_deg: float, width: int, height: int) -> Crop:
+    """目标框：不合格也不拒绝，只整理成能交给收框的样子（有限、正尺寸、在画面里）。
+
+    撤销、重做和转 90° 之后的框是界面推出来的，落在新画布的有效区外是常事；这时要的是「离它最近的合格框」，
+    不是一个报错。预设和角度仍然照常检查，比例、有效区由调用方的收框（`fitted_crop`）来保证。"""
+    angle = _check_angle(angle_deg)
+    target_ratio(preset, width, height)  # 不认识的预设照样报错
+    try:
+        x, y, w, h = (float(v) for v in rect)
+    except (TypeError, ValueError):
+        raise CropError("bad_rect", "裁剪框超出画面范围") from None
+    if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0:
+        raise CropError("bad_rect", "裁剪框超出画面范围")
+    # 太小的目标（API 能给到，界面的最小框拦着）：以中心为准放大到够收一个合格框——按预设比例收完短边也不能小于 MIN_SIDE_PX。
+    # 横竖不变，只补不够的那一边：收框的横竖跟着目标框，把两边都放大到长边那么长，会把窄的目标变成方的、再变成反方向的大框
+    tw_px, th_px = w * width, h * height
+    long_side, short_side = float(MIN_SIDE_PX), float(MIN_SIDE_PX)
+    ratio = target_ratio(preset, width, height)
+    if preset == "original":
+        # 原始不是整数倍：收的时候用浮点的画布比例（clamp_norm_rect 的 aspect）；分子分母是互质的大整数（例如 660×503），不能拿来算
+        aspect = width / height
+        long_side = float(math.ceil(MIN_SIDE_PX * max(aspect, 1 / aspect)) + 1)
+        short_side = float(MIN_SIDE_PX + 1)
+    elif ratio is not None:
+        # 定比例的预设收出来的是比例分子分母的整数倍：短边够 MIN_SIDE_PX 的最小一块
+        small, big = sorted((ratio.numerator, ratio.denominator))
+        k = -(-MIN_SIDE_PX // small)
+        long_side, short_side = float(k * big), float(k * small)
+    need_w, need_h = (long_side, short_side) if tw_px >= th_px else (short_side, long_side)
+    cx, cy = x + w / 2, y + h / 2
+    w, h = min(max(w, need_w / width), 1.0), min(max(h, need_h / height), 1.0)
+    x, y = min(max(cx - w / 2, 0.0), 1.0 - w), min(max(cy - h / 2, 0.0), 1.0 - h)
+    return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
+
+
+def ratio_off(ratio: Fraction, w_px: int, h_px: int) -> float:
+    """框的像素比例和预设比例差多少（相对）。横竖两个方向都认（界面可以把预设转 90°）。validate_crop 用的就是它。"""
+    got = w_px / h_px
+    return min(abs(got - float(r)) / float(r) for r in (ratio, 1 / ratio))
+
+
+def check_final(preset: str, rect: tuple[float, float, float, float], width: int, height: int) -> None:
+    """收完、存下去之前的最后一道：短边不小于 MIN_SIDE_PX，比例在 RATIO_TOLERANCE 以内（和 validate_crop 同一套）。
+    不合格就报错，不存一个下一次写入就会被拒的框。"""
+    check_min_size(rect, width, height)
+    ratio = target_ratio(preset, width, height)
+    if ratio is not None:
+        _x0, _y0, w_px, h_px = crop_box(rect, width, height)
+        if ratio_off(ratio, w_px, h_px) > RATIO_TOLERANCE:
+            raise CropError("ratio_mismatch", "裁剪框超出画面范围")
+
+
+def check_min_size(rect: tuple[float, float, float, float], width: int, height: int) -> None:
+    """收完的框，短边不能小于 MIN_SIDE_PX（和 validate_crop 一样）。"""
+    _x0, _y0, w_px, h_px = crop_box(rect, width, height)
+    if w_px < MIN_SIDE_PX or h_px < MIN_SIDE_PX:
+        raise CropError("too_small", "裁剪框超出画面范围")
+
+
+def validate_crop(
+    preset: str, rect: Any, angle_deg: float, width: int, height: int, *, mirrored: bool = False, check_region: bool = True
+) -> Crop:
     """校验用户给的框；不合格就抛 CropError，不悄悄修正。
 
     mirrored：画面左右翻转过。成片先拉直、再转 90°、最后翻转（finish.geometry.warp），翻转把倾斜的方向反过来，
     所以按反过来的角度看框在不在原画面里，和成片真正的有效区一致（PR #39 复审）。存下来的角度不变。
+
+    check_region：要不要按拉直角度检查四个角在不在原画面里。透视、畸变拉开过的画布不是一块拉直后的矩形，这个检查对不上真正的
+    有效区，调用方（write_crop）传 False，由后面的收框按真正的有效蒙版处理。
     """
     angle = _check_angle(angle_deg)
     ratio = target_ratio(preset, width, height)
@@ -144,14 +208,10 @@ def validate_crop(preset: str, rect: Any, angle_deg: float, width: int, height: 
     x0, y0, w_px, h_px = crop_box((x, y, w, h), width, height)
     if w_px < MIN_SIDE_PX or h_px < MIN_SIDE_PX:
         raise CropError("too_small", "裁剪框超出画面范围")
-    if ratio is not None:
-        got = w_px / h_px
-        # 横竖两个方向都认（界面可以把预设转 90°）
-        off = min(abs(got - float(r)) / float(r) for r in (ratio, 1 / ratio))
-        if off > RATIO_TOLERANCE:
-            raise CropError("ratio_mismatch", "裁剪框超出画面范围")
+    if ratio is not None and ratio_off(ratio, w_px, h_px) > RATIO_TOLERANCE:
+        raise CropError("ratio_mismatch", "裁剪框超出画面范围")
     box = (x * width, y * height, w * width, h * height)
-    if not box_inside(box, width, height, -angle if mirrored else angle, EDGE_TOLERANCE_PX):
+    if check_region and not box_inside(box, width, height, -angle if mirrored else angle, EDGE_TOLERANCE_PX):
         raise CropError("crop_outside_image", "裁剪框超出画面范围")
     return Crop(preset=preset, rect=(x, y, w, h), angle_deg=angle)
 
