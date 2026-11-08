@@ -140,3 +140,88 @@ export async function walkLibrary({ call, evalIn, step }) {
   out.fullPersisted = await evalIn(`document.querySelector('#grid-wrap').classList.contains('show-full') && getComputedStyle(document.querySelector('#grid-wrap img')).objectFit==='contain'`);
   return out;
 }
+
+// 导入后的照片列表先到，日期汇总晚到：按钮和真正的导出对话框都要跟上完整列表。
+export async function walkLibraryRefresh({ call, evalIn, step }) {
+  const until = async expression => {
+    const end = Date.now() + 20000;
+    while (Date.now() < end) {
+      if (await evalIn(expression)) return;
+      await new Promise(r => setTimeout(r, 30));
+    }
+    throw new Error(`日期刷新等不到：${expression}`);
+  };
+  await until(`import('/assets/state.js').then(({state}) => state.photosComplete && !state.job?.running)`);
+  step('set up a day with two photos');
+  const out = await evalIn(`(async () => {
+    const { state } = await import('/assets/state.js');
+    const { renderGallery } = await import('/assets/gallery.js');
+    const realFetch = window.fetch.bind(window);
+    const photos = await (await realFetch('/api/photos')).json();
+    if (photos.length < 5) throw new Error('日期刷新夹具需要五张不同的照片');
+    const data = window.__dayRefresh = {
+      date: '2026-11-05', list: photos.slice(0, 2), next: photos.slice(0, 5), pending: [], hold: false,
+      restore: () => { window.fetch = realFetch; },
+    };
+    const response = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+    window.fetch = (input, options) => {
+      const url = new URL(input.url || input, location.href);
+      if (url.pathname === '/api/dates') {
+        const reply = () => response([{ date: data.date, count: data.list.length }]);
+        return data.hold ? new Promise(resolve => data.pending.push(() => resolve(reply()))) : Promise.resolve(reply());
+      }
+      if (url.pathname === '/api/photos' && url.searchParams.get('date') === data.date) {
+        const offset = Number(url.searchParams.get('offset') || 0);
+        return Promise.resolve(response(data.list.slice(offset, offset + 500).map(p => ({ ...p, date: data.date }))));
+      }
+      return realFetch(input, options);
+    };
+    state.galleryDate = data.date;
+    state.selection.clear();
+    await renderGallery(document.getElementById('view'));
+    return { initialHeader: document.getElementById('btn-export-top').textContent.trim(), folder: state.settings.export_dir };
+  })()`);
+  const snapshot = () => evalIn(`import('/assets/state.js').then(({state}) => ({
+    header: document.getElementById('btn-export-top').textContent.trim(),
+    gridCount: document.querySelectorAll('#grid-wrap [role="option"]').length,
+    datesCount: state.dates.find(d => d.date === state.galleryDate)?.count,
+    sidebarCount: document.querySelector('#dates .it[aria-pressed="true"] .n')?.textContent,
+    complete: state.photosComplete,
+  }))`);
+  const dialog = async () => {
+    await evalIn(`document.getElementById('btn-export-top').click(); true`);
+    await until(`!!document.querySelector('#modal-root [role="dialog"]')`);
+    const result = await evalIn(`(() => {
+      const scope = [...document.querySelectorAll('.export-form .row.form')].find(row => row.querySelector('.lab')?.textContent === '范围');
+      return { scope: scope?.querySelector('.ctl')?.textContent.trim() ?? null,
+        folder: document.querySelector('input[aria-label="导出到"]').value };
+    })()`);
+    await call('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });
+    await until(`!document.querySelector('#modal-root [role="dialog"]')`);
+    return result;
+  };
+  try {
+    step('refresh five photos while the dates response is held');
+    await evalIn(`import('/assets/state.js').then(({emit}) => {
+      window.__dayRefresh.hold = true;
+      window.__dayRefresh.list = window.__dayRefresh.next;
+      emit('library-changed');
+    })`);
+    await until(`import('/assets/state.js').then(({state}) => state.photosComplete && state.photos.length === 5 && window.__dayRefresh.pending.length > 0)`);
+    out.beforeDates = await snapshot();
+    out.beforeDates.dialog = await dialog();
+    step('release the late dates response');
+    await evalIn(`(() => {
+      const data = window.__dayRefresh;
+      data.hold = false;
+      data.pending.splice(0).forEach(resolve => resolve());
+    })()`);
+    await until(`document.querySelector('#dates .it[aria-pressed="true"] .n')?.textContent === '5'`);
+    out.afterDates = await snapshot();
+    out.afterDates.dialog = await dialog();
+    return out;
+  } finally {
+    await evalIn(`window.__dayRefresh.restore()`);
+  }
+}

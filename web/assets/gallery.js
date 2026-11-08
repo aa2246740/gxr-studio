@@ -172,6 +172,7 @@ async function loadDates() {
     (state.dates || []).length ? h('div', { class: 'grp' }, '日期') : null,
     ...(state.dates || []).map((d) => sideItem(d.date ? fmtDate(d.date) : '未知日期', d.count, d.date, true)),
   );
+  updateGalleryExport();
 }
 
 function renderLibbar() {
@@ -286,11 +287,17 @@ export function galleryExportLabel(date, count, selected) {
   return '导出';
 }
 
+export function galleryExportCount() {
+  if (state.galleryDate === ALL) return null;
+  const fromList = state.photosComplete ? state.photos.length : null;
+  const fromDates = (state.dates || []).find((d) => d.date === state.galleryDate)?.count;
+  return fromList ?? fromDates ?? null;
+}
+
 export function updateGalleryExport(active = true) {
   const btn = document.getElementById('btn-export-top');
   if (!btn) return;
-  const count = (state.dates || []).find((d) => d.date === state.galleryDate)?.count ?? (state.photosComplete ? state.photos.length : null);
-  const label = active ? galleryExportLabel(state.galleryDate, count, state.selection.size) : '导出';
+  const label = active ? galleryExportLabel(state.galleryDate, galleryExportCount(), state.selection.size) : '导出';
   const span = btn.querySelector('span');
   if (span) span.textContent = label;
   btn.title = `${label}（${modKey()}E）`;

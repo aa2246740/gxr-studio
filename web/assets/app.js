@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { state, emit, on } from './state.js';
 import { toast, modalOpen, closeTopModal, isTyping, toastError, modKey } from './dom.js';
 import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, bindCardChip } from './import.js';
-import { renderGallery, openFocused, galleryKeys, exportSelection, updateGalleryExport, galleryExportLabel } from './gallery.js';
+import { renderGallery, openFocused, galleryKeys, exportSelection, updateGalleryExport, galleryExportLabel, galleryExportCount } from './gallery.js';
 import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto, currentView } from './viewer.js';
 import { copyEdits, pasteEdits } from './paste_edits.js';
 import { pasteToSelection } from './paste_batch.js';
@@ -51,7 +51,7 @@ function exportCurrent() {
   }
   if (router.current() === 'photos' && exportSelection()) return;
   if (router.current() === 'photos' && state.galleryDate) {
-    const count = state.dates.find((d) => d.date === state.galleryDate)?.count ?? state.photos.length;
+    const count = galleryExportCount();
     openExportDialog({ ids: [], date: state.galleryDate, dayLabel: galleryExportLabel(state.galleryDate, count, 0).replace(/^导出 /, ''), photos: state.photos });
     return;
   }

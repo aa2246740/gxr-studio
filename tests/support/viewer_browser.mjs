@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
 import { walkRounds } from './frame_nav_walk.mjs';
 import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
-import { walkLibrary } from './library_walk.mjs';
+import { walkLibrary, walkLibraryRefresh } from './library_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -215,8 +215,8 @@ try {
   if (process.env.NAV_NO_WEBGPU) await call('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true })" });
   step('set preview preference');
   await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${/gpu$/.test(mode) ? 'on' : 'off'}'); true`);
-  if (mode === 'library') {
-    out.library = await walkLibrary({ call, evalIn, step });
+  if (mode === 'library' || mode === 'library-refresh') {
+    out.library = await (mode === 'library' ? walkLibrary : walkLibraryRefresh)({ call, evalIn, step });
     out.ready = true;
     await finish(0);
   }

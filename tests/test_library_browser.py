@@ -23,3 +23,16 @@ def test_library_selection_navigation_export_scope_and_cover_pixels(live, tmp_pa
     assert out["hdrChips"] == 0
     assert len(out["cover"]) == 2 and all(p["maxError"] <= 20 for p in out["cover"]), out["cover"]
     assert out["heightAfter"] == out["heightBefore"] and out["fullPersisted"] is True
+
+
+def test_day_export_count_uses_the_complete_list_before_a_late_dates_response(live, tmp_path):  # noqa: F811
+    out = drive(live, tmp_path, "library-refresh")["library"]
+    assert out["initialHeader"] == "导出 2026-11-05 的 2 张"
+    assert out["beforeDates"]["datesCount"] == 2
+    assert out["afterDates"]["datesCount"] == 5 and out["afterDates"]["sidebarCount"] == "5"
+    for moment in ("beforeDates", "afterDates"):
+        current = out[moment]
+        assert current["complete"] is True and current["gridCount"] == 5
+        assert current["header"] == "导出 2026-11-05 的 5 张", current
+        assert current["dialog"]["scope"] == "2026-11-05 的 5 张", current
+        assert current["dialog"]["folder"] == out["folder"]
