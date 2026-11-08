@@ -35,7 +35,7 @@ WEB = Path(__file__).resolve().parents[1] / "web"
 DRIVER = Path(__file__).parent / "support" / "look_cards_browser.mjs"
 DEADLINE_S = 290
 # 卡片和舞台的比对容差（0–255，三个通道逐像素的绝对差）：卡片是引擎在同一张源图上用同一条路径画的，
-# 只在「缩小」这一步和舞台不同（舞台的画布更大，这里把它缩到卡片的大小再比）。在真照片上量到的值见 PR 描述。
+# 只在「缩小」这一步和舞台不同（舞台的画布更大，这里把显示遍读回的像素缩到卡片大小再比）。视口固定 1440×900、2× 像素密度。
 TOLERANCE = {"meanAbs": 3.5, "p99": 32}
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node，跳过真浏览器测试")

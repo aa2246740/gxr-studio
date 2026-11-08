@@ -18,9 +18,9 @@ const SETTLE_MS = 120; // 参数、输入停下来这么久才开始画
 const POLL_MS = 200;
 const cache = new Lru(90); // 最近用过的 90 张小图（每张约 0.25 MB）
 
-on('camdata-changed', () => cache.clear());
-on('luts-changed', () => cache.clear());
-on('gpu-pref-changed', () => cache.clear()); // 换了画法：显卡画的和服务器画的不混用
+on('camdata-changed', clearLookCache);
+on('luts-changed', clearLookCache);
+on('gpu-pref-changed', clearLookCache); // 换了画法：显卡画的和服务器画的不混用
 
 const dpr = () => Math.min(2, globalThis.devicePixelRatio || 1);
 const now = () => (globalThis.performance ? performance.now() : Date.now());
@@ -28,10 +28,10 @@ const now = () => (globalThis.performance ? performance.now() : Date.now());
 // ---- 手有没有在动：拖滑块、拖框、滚面板、敲键盘时不画 ------------------------------------------
 let down = false;
 let lastInput = 0;
-let current = null; // 最新的一副卡片：手按下去时，它在路上的服务器请求要当场取消
+let current = null;
 if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-  const stamp = () => { lastInput = now(); };
-  document.addEventListener('pointerdown', () => { down = true; stamp(); current?.abort(); }, true);
+  const stamp = () => { lastInput = now(); current?.abort(); };
+  document.addEventListener('pointerdown', () => { down = true; stamp(); }, true);
   for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, () => { down = false; stamp(); }, true);
   for (const type of ['keydown', 'wheel', 'input']) document.addEventListener(type, stamp, true);
   if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('blur', () => { down = false; });
@@ -96,17 +96,25 @@ function failedHolder(holder) {
   holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
 }
 
-async function serverThumb(view, recipe, edge, signal) {
+async function serverThumb(view, recipe, edge, signal, still) {
+  signal.throwIfAborted();
   const body = { ...draftBody(view, 'final'), recipe };
   const { blob } = await apiBlob(`/api/photos/${view.photo.id}/render?stage=final&max_edge=${edge}`, { body, signal });
+  signal.throwIfAborted();
+  if (!still()) return null;
   const bitmap = await createImageBitmap(blob);
-  const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(bitmap, 0, 0);
-  bitmap.close?.();
-  return { w: canvas.width, h: canvas.height, image: ctx.getImageData(0, 0, canvas.width, canvas.height) };
+  try {
+    signal.throwIfAborted();
+    if (!still()) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
+    return { w: canvas.width, h: canvas.height, image: ctx.getImageData(0, 0, canvas.width, canvas.height) };
+  } finally {
+    bitmap.close?.();
+  }
 }
 
 const canDraw = () => typeof globalThis.ImageData === 'function' && typeof document.createElement('canvas').getContext === 'function';
@@ -119,7 +127,7 @@ class Deck {
     this.dead = false;
     this.timer = 0;
     this.busy = false;
-    this.ctl = null; // 在路上的服务器请求的取消开关
+    this.ctl = null; // 当前这次出图；任何输入都会永久取消这次尝试，松手后另起一次
     this.detached = 0;
     this.lastSig = null;
     this.t0 = now();
@@ -210,7 +218,7 @@ class Deck {
     this.abort();
   }
 
-  // 手按下去、面板换掉：在路上的服务器小图不再要了（服务器要留给滑块的预览）。被取消的卡片稍后重来，不算失败
+  // 输入、面板换掉：取消在途请求，GPU 的旧结果也不再接收。稍后重来，不算失败
   abort() {
     this.ctl?.abort();
   }
@@ -307,35 +315,34 @@ class Deck {
     const view = this.view;
     const ed = view.ed;
     // 这一张还该不该画：卡片没取消、照片没换、没有手在拖。每个 await 之后、花力气的一步之前都要再问
-    const still = () => !this.dead && !view.disposed && view.ed === ed && !down && !view.pending;
     const ctl = new AbortController();
+    const still = () => !ctl.signal.aborted && !this.dead && !view.disposed && view.ed === ed && !down && !view.pending && key === cardKey(sharedOf(view, this.edge).shared, card.item.render);
     this.ctl = ctl;
     try {
+      if (!still()) return true;
       const result = ed.v2 ? await lookThumb(view, ctx, card.item.render, this.edge, still) : null;
-      if (result === 'wait') return true;
+      if (result === 'wait' || !still()) return true;
       let img;
       if (result) {
         img = { w: result.w, h: result.h, image: new ImageData(new Uint8ClampedArray(result.data.buffer, result.data.byteOffset, result.data.byteLength), result.w, result.h) };
-        this.stats.gpu += 1;
       } else if (ed.v2) {
-        if (!still()) return true;
-        img = await serverThumb(view, card.item.render, this.edge, ctl.signal);
-        this.stats.server += 1;
+        img = await serverThumb(view, card.item.render, this.edge, ctl.signal, still);
       } else {
         card.failed = key; // 旧版后端没有小图接口
         return false;
       }
-      if (this.dead || view.disposed || view.ed !== ed) return false;
+      if (!img || !still()) return true;
+      this.stats[result ? 'gpu' : 'server'] += 1;
       cache.set(key, img);
       paint(card.holder, img);
       card.key = key;
       this.count();
     } catch (e) {
-      if (e && e.name === 'AbortError') return true; // 取消的不算失败，稍后重来
-      if (!this.dead && !view.disposed && view.ed === ed) {
-        card.failed = key;
-        if (!card.key) failedHolder(card.holder);
-      }
+      if (!still() || e?.name === 'AbortError') return true;
+      card.failed = key;
+      if (!card.key) failedHolder(card.holder);
+    } finally {
+      if (this.ctl === ctl) this.ctl = null;
     }
     return false;
   }
@@ -386,6 +393,5 @@ export function newDeck(view) {
 // 测试和测量用
 export function clearLookCache() {
   cache.clear();
+  current?.abort(); // 清缓存的同时作废在途结果，不能让旧结果重新填回缓存
 }
-
-export const lookCacheForTests = cache;

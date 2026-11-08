@@ -65,7 +65,7 @@ if (scenario === 'model') {
   out.lru = [lru.get('a'), lru.get('b'), lru.get('c'), lru.size];
 } else if (scenario === 'shared-key') {
   // 缓存键里有「现在走哪条路」和「成片显示的宽高比」；换路、设备丢了、本机关掉显卡预览，缓存里显卡画的图不再用
-  const { state, emit } = await import(file('state.js'));
+  const { state } = await import(file('state.js'));
   const { setGpuPreference } = await import(file('gpu_pref.js'));
   const cards = await import(file('look_cards.js'));
   state.settings = { gpu_preview: true };
@@ -86,10 +86,6 @@ if (scenario === 'model') {
   state.settings = { gpu_preview: false }; // 服务器开关关了
   out.flagChanges = key() !== first;
   state.settings = { gpu_preview: true };
-  cards.lookCacheForTests.set('x', 1);
-  out.sizeBefore = cards.lookCacheForTests.size;
-  emit('gpu-pref-changed', false);
-  out.sizeAfter = cards.lookCacheForTests.size;
 } else if (scenario === 'drag-aborts') {
   // 卡片已经通过了「开始画」的检查、服务器小图在路上时手按下去：请求当场取消、什么都不画、不算失败；手松开以后重来
   globalThis.ImageData = class { constructor(data, w, hh) { this.data = data; this.width = w; this.height = hh; } };

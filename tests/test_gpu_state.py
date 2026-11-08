@@ -45,7 +45,10 @@ export class Engine {
   setDisplayAspect(a) { this.log('setDisplayAspect', a); }
   attach() {}
   redraw() {}
-  async thumb(o) { this.log('thumb', o.source); return { w: 2, h: 2, data: new Uint8Array(16) }; }
+  async thumb(o) {
+    this.log('thumb', o.source);
+    return globalThis.thumbStub ? globalThis.thumbStub(o) : { w: 2, h: 2, data: new Uint8Array(16) };
+  }
 }
 """
 

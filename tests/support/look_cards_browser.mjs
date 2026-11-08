@@ -115,6 +115,7 @@ try {
   await call('Network.enable');
   await call('Runtime.enable');
   await call('Page.enable');
+  await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false });
 
   const origin = `http://127.0.0.1:${port}`;
   step('open with token');
@@ -221,8 +222,15 @@ try {
     let source = 'none';
     ${mode === 'gpu' ? `
     const st = await import('/assets/gpu_stage.js');
-    const snap = st.gpuSnapshot((cv) => { const copy = document.createElement('canvas'); copy.width = cv.width; copy.height = cv.height; copy.getContext('2d').drawImage(cv, 0, 0); return copy; });
-    if (snap) { shrink(snap, snap.width, snap.height); source = 'gpu'; }` : `
+    const engine = st.gpuEngine();
+    const cv = document.querySelector('.pv-gpu');
+    if (engine && cv && engine.frame()) {
+      // 等 GPU 读回显示遍的像素。无头 Chromium 里 drawImage(WebGPU canvas) 会拿到黑图。
+      const snap = await engine.readPresent(cv.width, cv.height);
+      const copy = document.createElement('canvas'); copy.width = snap.w; copy.height = snap.h;
+      copy.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(snap.data), snap.w, snap.h), 0, 0);
+      shrink(copy, snap.w, snap.h); source = 'gpu';
+    }` : `
     const img = document.querySelector('.pv-img');
     if (img && img.complete && img.naturalWidth) { shrink(img, img.naturalWidth, img.naturalHeight); source = 'img'; }`}
     if (source === 'none') return { source };

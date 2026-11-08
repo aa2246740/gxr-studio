@@ -435,8 +435,8 @@ export function gpuSnapshot(use) {
 // still()：这一张还该不该画（卡片没被取消、没有手在拖）。取表、取 RAW 之后、提交显卡之前都要再问一次：
 // 不该画时回 'wait'（不是 null：拖动期间不能掉到服务器出图上），等手松开再来。
 export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
-  if (disabled || !flagOn()) return null;
   if (!still()) return 'wait';
+  if (disabled || !flagOn()) return null;
   const ed = view.ed;
   const info = view.gpuInfo;
   const id = view.photo.id;
@@ -455,11 +455,11 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
     try {
       await Promise.all(loads);
     } catch {
-      return null;
+      return still() ? null : 'wait';
     }
   }
   const meta = bakeMeta.get(url);
-  if (gen !== generation || view.ed !== ed || view.disposed || !engine || !meta || !engine.hasBake(meta.key) || !engine.hasSource(sKey)) return 'wait';
+  if (gen !== generation || view.ed !== ed || view.disposed || !engine || disabled || !flagOn() || !meta || !engine.hasBake(meta.key) || !engine.hasSource(sKey)) return 'wait';
   if (!still()) return 'wait';
   const g = normalGeometry(ctx.geometry);
   const box = boxFor(view, id, engine.sourceSize(sKey), ctx, () => {});
@@ -473,7 +473,8 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
     aspect: view.gpuAspect || null,
     maxEdge: edge,
   });
-  return out && gen === generation && view.ed === ed ? out : out ? 'wait' : null;
+  if (!still() || gen !== generation || view.ed !== ed || view.disposed || disabled || !flagOn()) return 'wait';
+  return out;
 }
 
 // 卡片现在走哪条路（进缓存键）：显卡预览开着、这台电脑没关、照片支持、设备没丢就是 gpu，否则 server。

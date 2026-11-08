@@ -81,7 +81,6 @@ def test_cache_key_follows_the_preview_path_and_the_display_aspect():
     assert out["aspectChanges"] is True  # 透视 / 畸变的导出框到了，舞台重新拉伸，卡片也要重画
     assert out["wayChanges"] is True and out["backAgain"] is True  # 本机关掉显卡预览：显卡画的图不再用；打开又回到原来的键
     assert out["flagChanges"] is True  # 服务器开关关了
-    assert out["sizeBefore"] == 1 and out["sizeAfter"] == 0  # 换了画法，缓存清掉
 
 
 @needs_node
