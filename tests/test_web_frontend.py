@@ -370,8 +370,9 @@ def test_section_3_9_sentences_are_used_verbatim():
     """COPY.md 3.9 的固定文案：这些句子必须原样出现在前端代码里。"""
     names = ("preview.js", "recipes.js", "import_summary.js", "export.js", "camdata.js")
     texts = {name: (ASSETS / name).read_text(encoding="utf-8") for name in names}
-    # 「未校准」的提示气泡不再是一句固定的话，按具体原因写（calibration_note.js，tests/test_feedback_copy.py 测）
-    assert "uncalibratedReason" in texts["preview.js"] and "使用 A12 50mm 的颜色模型" not in texts["preview.js"]
+    # 「未校准」的提示气泡不再是一句固定的话，按具体原因写（calibration_note.js，tests/test_feedback_copy.py 测）；
+    # 它现在在配方标签里当前配方的下面，不在照片上（tests/test_look_cards.py）
+    assert "uncalibratedReason" in texts["recipes.js"] and "使用 A12 50mm 的颜色模型" not in texts["recipes.js"]
     assert "近似效果只支持默认参数" in texts["recipes.js"]
     assert "导入已中断。重新插入存储卡后可以继续。" in texts["import_summary.js"]
     assert "请勿格式化存储卡，重新插入后再试一次。" in texts["import_summary.js"]

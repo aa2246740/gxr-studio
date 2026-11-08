@@ -198,7 +198,7 @@ def test_editor_recipe_tab_lists_both_my_recipes_with_their_source():
     assert out["secs"].count("我的配方") == 1  # 总名字只出现一次
     assert out["sources"] == ["相机里", "电脑上 · 用 LUT 生成"]
     assert "FCC-001" in out["text"] and "Kodak 风" in out["text"]
-    assert out["hasOtherUnit"] is False  # 别的单元的配方不列在这张照片的配方标签里
+    assert out["hasOtherUnit"] is False  # 别的单元的配方不是能点的卡片（灰着列在「这张照片用不了的配方」里，见 test_look_cards.py）
     assert out["cameraTitle"] == "相机里的配方"
     assert out["mineTitle"] == "电脑上 · 来自 LUT「Portra 400」"
     assert out["pressedBefore"] == "false" and out["pressedAfter"] == "true"

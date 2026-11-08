@@ -9,7 +9,6 @@ import { saveRecord, writeSave, clearFailed, flushPhotos, readFresh } from './sa
 export { flushPhotos, saveStatus, retrySaves, SaveError } from './saves.js';
 import { toast, toastError } from './dom.js';
 import { applyCamdataStatus } from './camdata.js';
-import { uncalibratedReason } from './calibration_note.js';
 import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
 import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from './caps.js';
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from './finish.js';
@@ -594,8 +593,8 @@ export function schedulePreview(view, { full = false, stage = null } = {}) {
   ed.timer = setTimeout(() => runPreview(view, full), full ? 0 : DEBOUNCE_MS);
 }
 
-// 显卡预览要的当前草稿（和 draftBody 发给服务器的是同一份）
-function gpuContext(view) {
+// 显卡预览要的当前草稿（和 draftBody 发给服务器的是同一份）；配方卡片（look_cards.js）也用它
+export function gpuContext(view) {
   const ed = view.ed;
   const stage = view.stage === 'uncropped' ? 'uncropped' : 'final';
   return {
@@ -708,11 +707,11 @@ export function validRect(view, canvas) {
 }
 
 // 画面上的小标签（COPY 3.9）：返回数组，没有就是 []。
-// 电脑预测后面跟「未校准」（跨单元或跨 ISO，或认不出的单元），提示气泡写具体原因（calibration_note.js）。
+// 「未校准」（跨单元或跨 ISO，或认不出的单元）不在画面上：它在配方标签里当前配方的下面，提示气泡写具体原因（calibration_note.js）。
 // 近似只在 JPG 上出现，标签是「近似」。
 
 // 后端的 X-GXR-Label 是机器值：prediction（电脑预测）、approx（近似）、original（原图，不加小标签）。
-// 没有校准（X-GXR-Calibrated=0）的电脑预测再加「未校准」。界面上不出现英文机器值（R2-05）。
+// 没有校准（X-GXR-Calibrated=0）的电脑预测在配方标签里说，不在画面上。界面上不出现英文机器值（R2-05）。
 export const LABEL_WORDS = { prediction: '电脑预测', approx: '近似', 'camera-jpg': '相机 JPG', neutral: '中性转换', embedded: '内嵌预览' };
 
 export function stageLabels(view) {
@@ -722,9 +721,7 @@ export function stageLabels(view) {
   const label = ed.label;
   if (!label || label === 'original') return [];
   if (label === 'prediction' || label.includes('电脑预测')) {
-    const out = [{ text: '电脑预测', kind: 'ok' }];
-    if (ed.calibrated === false || label.includes('未校准')) out.push({ text: '未校准', kind: 'warn', title: uncalibratedReason(view, unitForPhoto(view.photo)) });
-    return out;
+    return [{ text: '电脑预测', kind: 'ok' }]; // 「未校准」不再盖在照片上，在配方标签里当前配方的下面（recipes.js）
   }
   if (label === 'approx') return [{ text: '近似', kind: 'warn' }];
   // 旧版后端直接给中文的时候照样显示

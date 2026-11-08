@@ -168,6 +168,28 @@ if (scenario === 'lut-patched-to-vlog') {
   view.gpuActive = 'final';
   out.after = look();
   out.engineAspects = calls.engine.filter((c) => c[0] === 'setDisplayAspect').map((c) => c[1]);
+} else if (scenario === 'thumb-gesture') {
+  // 配方卡片（look_cards.js）在等配方表时手按下去：表回来以后不能提交显卡（lookThumb 的 still() 在提交前再问一次）
+  routes.bake = (url) => (decodeURIComponent(url).includes('"slot":2') ? hold('rec2') : okBody(bakeHeader('K1')));
+  const view = makeView();
+  out.stage = await settle(view, ctxFor(REC));
+  const REC2 = { kind: 'builtin', unit: 'jlaunch', slot: 2, levels: {} };
+  let still = true;
+  const thumbs = () => calls.engine.filter((c) => c[0] === 'thumb').length;
+  const pending = gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => still);
+  for (let i = 0; i < 10 && !deferred.get('rec2')?.length; i++) await flush();
+  still = false; // 取表的时候，手按在滑块上
+  deferred.get('rec2').shift().resolve(okBody(bakeHeader('K2')));
+  out.duringGesture = await pending;
+  out.thumbsDuringGesture = thumbs();
+  const bakes = () => calls.fetch.filter((u) => u.includes('/bake')).length;
+  const before = bakes();
+  const REC3 = { kind: 'builtin', unit: 'jlaunch', slot: 3, levels: {} };
+  out.startedStill = await gs.lookThumb(view, ctxFor(REC3), REC3, 300, () => false); // 手按着时开始：连表都不取
+  out.bakeRequestsWhileDown = bakes() - before;
+  still = true; // 松手
+  out.afterRelease = await gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => still);
+  out.thumbsAfterRelease = thumbs();
 } else if (scenario === 'flag-off') {
   state.settings = { gpu_preview: false };
   const view = makeView();

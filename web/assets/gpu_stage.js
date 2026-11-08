@@ -426,6 +426,64 @@ export function gpuSnapshot(use) {
   return use(canvas);
 }
 
+// ---- 配方卡片（look_cards.js） ------------------------------------------------------
+// 用显卡按另一个配方画这张照片的一张小图（长边 edge 个像素），颜色、几何、调整和曲线取 ctx（和舞台同一份草稿，preview.js 的 gpuContext）。
+// 小图画在引擎自己的纹理里，不看也不动舞台现在显示什么。返回：
+//   { w, h, data }  画好了（RGBA 字节）
+//   'wait'          照片信息、引擎、RAW、配方表或裁切框还没到（缺的这里会去取，取到之前先回这个）：过一会儿再问
+//   null            显卡做不了这一张（没有显卡、只有 JPG、RAW 写法特殊……）：改用服务器出小图
+// still()：这一张还该不该画（卡片没被取消、没有手在拖）。取表、取 RAW 之后、提交显卡之前都要再问一次：
+// 不该画时回 'wait'（不是 null：拖动期间不能掉到服务器出图上），等手松开再来。
+export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
+  if (!still()) return 'wait';
+  if (disabled || !flagOn()) return null;
+  const ed = view.ed;
+  const info = view.gpuInfo;
+  const id = view.photo.id;
+  const gen = generation;
+  if (!ed || !info || view.gpuInfoId !== `${id}@${gen}`) return 'wait';
+  if (!info.enabled) return null;
+  if (!engine) return 'wait';
+  if (ed.lut && !lutMeta.has(ed.lut)) return failed.has(`lut:${ed.lut}`) ? null : 'wait';
+  const plan = decide(ed, info, 'final', recipe, ed.lut ? (lutMeta.get(ed.lut).table8 ? 'srgb' : 'log') : null);
+  if (!plan || plan.base !== 'raw' || plan.recipe === undefined) return null;
+  const sKey = sourceKey(id, info, 'raw');
+  const url = bakeUrl(id, plan.recipe);
+  if (failed.has(sKey) || failed.has(url)) return null;
+  const loads = [ensureSource(id, info, 'raw'), ensureBake(id, plan.recipe)].filter(Boolean);
+  if (loads.length) {
+    try {
+      await Promise.all(loads);
+    } catch {
+      return still() ? null : 'wait';
+    }
+  }
+  const meta = bakeMeta.get(url);
+  if (gen !== generation || view.ed !== ed || view.disposed || !engine || disabled || !flagOn() || !meta || !engine.hasBake(meta.key) || !engine.hasSource(sKey)) return 'wait';
+  if (!still()) return 'wait';
+  const g = normalGeometry(ctx.geometry);
+  const box = boxFor(view, id, engine.sourceSize(sKey), ctx, () => {});
+  if (box === 'wait') return 'wait';
+  if (box === 'server') return null;
+  if (!still()) return 'wait';
+  const out = await engine.thumb({
+    source: sKey,
+    look: { recipe: meta.key, lut: plan.lut ? lutMeta.get(plan.lut).key : null, lutStrength: 1, adjust: ctx.adjust, curve: ctx.curve },
+    geometry: { ...g, box: box.box },
+    aspect: view.gpuAspect || null,
+    maxEdge: edge,
+  });
+  if (!still() || gen !== generation || view.ed !== ed || view.disposed || disabled || !flagOn()) return 'wait';
+  return out;
+}
+
+// 卡片现在走哪条路（进缓存键）：显卡预览开着、这台电脑没关、照片支持、设备没丢就是 gpu，否则 server。
+// 这里只看「有没有这条路」；某一张卡片显卡画不了、改由服务器画，它的图在 gpu 这个键下，也是稳定的。
+export function thumbWay(view) {
+  if (disabled || !flagOn()) return 'server';
+  return view.gpuInfo && view.gpuInfo.enabled === false ? 'server' : 'gpu';
+}
+
 // 直方图要在引擎的成片纹理上数（histogram.js）；引擎还没建好、或这台电脑走服务器出图时是 null
 export function gpuEngine() {
   return engine;

@@ -45,6 +45,10 @@ export class Engine {
   setDisplayAspect(a) { this.log('setDisplayAspect', a); }
   attach() {}
   redraw() {}
+  async thumb(o) {
+    this.log('thumb', o.source);
+    return globalThis.thumbStub ? globalThis.thumbStub(o) : { w: 2, h: 2, data: new Uint8Array(16) };
+  }
 }
 """
 
@@ -116,3 +120,13 @@ def test_the_canvas_takes_the_export_aspect_once_the_exact_box_is_in(tmp_path):
     assert abs(out["after"]["aspect"] - 111 / 77) < 1e-9
     assert abs(out["after"]["css"][0] / out["after"]["css"][1] - 111 / 77) < 0.03
     assert out["engineAspects"][-1] == out["after"]["aspect"] and out["engineAspects"][0] is None
+
+
+def test_a_gesture_that_starts_while_a_card_waits_for_its_table_stops_the_gpu_thumb(tmp_path):
+    out = run(tmp_path, "thumb-gesture")
+    # 取表的时候手按下去了：表回来以后不提交显卡（返回 wait，不是 null：拖动期间不能掉到服务器出图上），也不重新取
+    assert out["stage"] == "gpu"
+    assert out["duringGesture"] == "wait" and out["thumbsDuringGesture"] == 0
+    assert out["startedStill"] == "wait" and out["bakeRequestsWhileDown"] == 0
+    # 手松开以后：画一次
+    assert out["afterRelease"]["w"] == 2 and out["thumbsAfterRelease"] == 1

@@ -6,7 +6,7 @@ export function parseHash(hash) {
   const h = hash || '#/photos';
   const m = /^#\/photo\/([0-9a-f]+)$/.exec(h);
   if (m) return { name: 'viewer', id: m[1] };
-  if (h === '#/recipes') return { name: 'recipes' };
+  if (h === '#/recipes' || h.startsWith('#/recipes?')) return { name: 'recipes' }; // 带 ?unit=… 时配方页预选这个镜头单元
   if (h === '#/camera') return { name: 'camera' };
   return { name: 'photos' };
 }
