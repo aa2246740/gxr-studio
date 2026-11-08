@@ -75,7 +75,19 @@ def _run_scene(tmp_path: Path) -> dict:
     assert node is not None
     folder = tmp_path / "web"
     folder.mkdir()
-    names = ("dom.js", "controls.js", "onboarding.js", "export.js", "lut.js", "saves.js", "jobs.js", "busy.js", "gpu_pref.js", "poll.js")
+    names = (
+        "dom.js",
+        "controls.js",
+        "onboarding.js",
+        "export.js",
+        "lut.js",
+        "lut_choices.js",
+        "saves.js",
+        "jobs.js",
+        "busy.js",
+        "gpu_pref.js",
+        "poll.js",
+    )
     for name in (*names, "my_recipes.js"):
         shutil.copy(ASSETS / name, folder / name)
     (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
@@ -97,6 +109,7 @@ def _run_scene(tmp_path: Path) -> dict:
                 "  };",
                 "  if (path === '/api/lut/spaces') return { spaces: [] };",
                 "  if (path === '/api/my-recipes') return { recipes: [] };",
+                "  if (path.startsWith('/api/photos?')) return [];",
                 "  if (path === '/api/library/rebuild') return {};",
                 "  throw new Error('unexpected ' + path);",
                 "}",

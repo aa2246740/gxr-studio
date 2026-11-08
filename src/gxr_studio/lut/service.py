@@ -31,6 +31,7 @@ from .cube import Cube
 from .errors import LutError as LutError
 from .library import LutLibrary
 from .metadata import FIELDS
+from .page import input_choice
 from .scene import SceneError, scene_colour
 from .spaces import DISPLAY, GAMUT, SPACES, Target
 
@@ -110,7 +111,7 @@ class LutService:
         item = self.library.add(raw, filename or "LUT.cube", group)
         if item.get("skipped"):
             return item
-        return {**self._describe(self.library.load(item["cube_id"])), **item}
+        return {**self._describe(self.library.load(item["cube_id"])), **item, **input_choice(item)}
 
     def _describe(self, cube: Cube) -> dict[Any, Any]:
         kinds = [k for k, t in (("1D", cube.table1), ("3D", cube.table3)) if t is not None]
@@ -276,7 +277,8 @@ class LutService:
             raise LutError(
                 422,
                 "unit_not_calibrated",
-                "28mm 和 MOUNT 还没有单独的校准数据，暂时不能导入 LUT。50mm 可以。",
+                "现在只能为 A12 50mm 生成配方。28mm 和 MOUNT 还没有单独的校准数据。生成的配方只用于 50mm 拍的照片。",
+                {"unit": unit},
             )
         if profile not in ("normal", "quick"):
             raise LutError(422, "bad_profile", "请求无效。请刷新页面后重试。", {"detail": "profile 只能是 normal 或 quick"})
@@ -323,7 +325,7 @@ class LutService:
                 "GXR_STUDIO_LUT_HOME": str(self.home),
             }  # 子进程据此发现服务没了（SIGKILL / SIGHUP）
             proc = subprocess.Popen(  # nosec B603  参数是解释器和本包模块，没有 shell
-                [sys.executable, "-m", "gxr_studio.lut.worker", str(job_dir)],
+                [sys.executable, "-I", "-m", "gxr_studio.lut.worker", str(job_dir)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
@@ -332,7 +334,7 @@ class LutService:
             )
             self._procs[job_id] = proc
             self._prune()
-        return {"job_id": job_id, "photos": [{k: p[k] for k in ("label", "iso")} for p in photos]}
+        return {"job_id": job_id, "unit": unit, "photos": [{k: p[k] for k in ("label", "iso")} for p in photos]}
 
     def _job_dir(self, job_id: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", job_id or "") or not (self.jobs_dir / job_id / "job.json").is_file():
@@ -370,6 +372,7 @@ class LutService:
             state, result = "error", {"code": "interrupted", "message": "无法生成配方。请重新开始。"}
         out = {
             "job_id": job_id,
+            "unit": job.get("unit", "jlaunch"),
             "state": state,
             "progress": progress,
             "input": {k: job[k] for k in ("input_space", "output_space", "profile", "space_guessed")},
@@ -428,9 +431,10 @@ class LutService:
 
     # ---- 我的配方 -----------------------------------------------------------------
     def _filename_guess_matches(self, cube_id: str, space: str) -> bool:
-        """配方沿用库的自动识别结果，包括文件内声明；手选不标推测。"""
+        """配方沿用页面的推测标记；文件声明和手选均不标推测。"""
         record = self.library.get(cube_id)
-        return bool(not record["input_space_manual"] and record["input_space"] == space and record["input_space_state"] in ("known", "guessed"))
+        choice = input_choice(record)
+        return bool(choice["default_input_source"] == "guessed" and choice["default_input_space"] == space)
 
     def _recipe_path(self, rid: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", rid or ""):
