@@ -265,7 +265,8 @@ export function confirmAction(title, confirmLabel, action) {
 }
 
 export function isTyping(target) {
-  return !!target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+  return !!target && (target.isContentEditable || ['TEXTAREA', 'SELECT'].includes(target.tagName)
+    || (target.tagName === 'INPUT' && target.type !== 'range'));
 }
 
 export function fmtBytes(n) {

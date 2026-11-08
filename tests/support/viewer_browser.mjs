@@ -10,6 +10,7 @@ import { walkRounds } from './frame_nav_walk.mjs';
 import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 import { walkLibrary, walkLibraryRefresh } from './library_walk.mjs';
 import { walkPanelLayout } from './panel_layout_walk.mjs';
+import { walkSliderKeys } from './slider_keys_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -313,6 +314,10 @@ try {
   // 进裁切页：框要出现（显卡预览时画面是画布，框也要有）
   if (mode === 'panel-frame') {
     out.panel = await walkPanelLayout({ call, evalIn }, 'frame', [1280, 1440]);
+    await finish(0);
+  }
+  if (mode === 'slider-keys') {
+    out.keys = await walkSliderKeys({ call, evalIn });
     await finish(0);
   }
   step('enter crop');
