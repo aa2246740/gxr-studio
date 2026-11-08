@@ -120,8 +120,8 @@ export function framePanel(view) {
     }
   }
 
-  // 底部按钮固定在面板底边（和裁切页一样）
-  rows.push(h('div', { class: 'sticky-foot' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => setDefaults(view) }, '设为默认')));
+  // 跟在样式和选项后面滚动，避免窄屏或矮窗口时盖住「画布」卡片。
+  rows.push(h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => setDefaults(view) }, '设为默认')));
   return h('div', { class: 'pane' }, ...rows);
 }
 
