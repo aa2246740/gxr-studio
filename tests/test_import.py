@@ -58,6 +58,31 @@ def test_card_is_never_written(volumes, card, lib):
     assert tree_snapshot(card.root) == before, "导入前后整棵卡目录（内容、大小、mtime）必须完全一致"
 
 
+def test_progress_distinguishes_checking_from_copying(volumes, card, lib, monkeypatch):
+    progress = importer.ImportProgress()
+    calls = []
+    stage, probe = importer.stage_file, importer.probe_file
+
+    def copy(*args, **kw):
+        calls.append(("copy", progress.phase))
+        return stage(*args, **kw)
+
+    def check(*args, **kw):
+        calls.append(("check", progress.phase))
+        return probe(*args, **kw)
+
+    monkeypatch.setattr(importer, "stage_file", copy)
+    monkeypatch.setattr(importer, "probe_file", check)
+    c = one_card(volumes)
+    run_import(lib, c, ImportOptions(**OPTS), progress=progress)
+    assert calls and set(calls) == {("copy", "copying")}
+    calls.clear()
+    progress = importer.ImportProgress()
+    run_import(lib, c, ImportOptions(**OPTS), progress=progress)
+    assert calls and set(calls) == {("check", "checking")}
+    assert progress.copied_files == 0 and progress.coverage["photos_imported"] is True
+
+
 def test_writes_to_card_are_blocked_and_recorded(volumes, card):
     one_card(volumes)  # 发现卡就会把它登记为只读
     with audit.AuditRecorder(watch=(str(card.root),)) as rec:

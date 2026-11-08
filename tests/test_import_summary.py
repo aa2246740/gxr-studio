@@ -57,6 +57,24 @@ def test_clean_import_may_say_eject():
 
 @needs_node
 @pytest.mark.parametrize(
+    ("phase", "text"),
+    [("checking", "正在检查 48/151"), ("copying", "正在导入 48/151")],
+)
+def test_progress_names_the_work_being_done(phase, text):
+    p = progress(state="running", phase=phase, done_shots=48, total_shots=151)
+    assert run_js(f"S.progressLine({p})") == {"text": text, "fraction": 48 / 151}
+
+
+@needs_node
+def test_finished_summary_distinguishes_new_completed_and_existing():
+    p = progress(imported_shots=2, completed_shots=1, imported_videos=1, seen_shots=4, duplicate_shots=6)
+    assert run_js(f"S.summarizeImport({p})")["detail"] == "新导入 2 张照片；补全 1 张照片；新导入 1 段视频；10 项已在图库"
+    p = progress(imported_shots=0, duplicate_shots=151)
+    assert run_js(f"S.summarizeImport({p})")["detail"] == "新导入 0 张照片；151 项已在图库"
+
+
+@needs_node
+@pytest.mark.parametrize(
     "kw",
     [
         dict(unreadable=["DCIM/100RICOH/R0000104.JPG"], failed_shots=1),

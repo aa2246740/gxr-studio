@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
 import { walkRounds } from './frame_nav_walk.mjs';
 import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
+import { walkLibrary, walkLibraryRefresh } from './library_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -214,6 +215,11 @@ try {
   if (process.env.NAV_NO_WEBGPU) await call('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true })" });
   step('set preview preference');
   await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${/gpu$/.test(mode) ? 'on' : 'off'}'); true`);
+  if (mode === 'library' || mode === 'library-refresh') {
+    out.library = await (mode === 'library' ? walkLibrary : walkLibraryRefresh)({ call, evalIn, step });
+    out.ready = true;
+    await finish(0);
+  }
   // 没走显卡时把判断用到的几样东西都交出去（开关、本机选择、适配器、这张照片的 /gpu、引擎能不能建、Chrome 日志里有没有共享图像的错）：
   // gpu 模式和 nav-gpu 模式共用
   const collectGpuDiagnostics = async () => {

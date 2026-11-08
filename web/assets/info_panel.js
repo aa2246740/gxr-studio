@@ -69,6 +69,7 @@ function shotSection(photo, meta) {
     ['拍摄时间', when ? when.replace('T', ' ') : '未知', 'num'],
     meta && meta.date_note ? ['', meta.date_note, 'dim small'] : null,
     ['文件', `${photo.name}（${files}）`],
+    photo.hdr === 'ready' ? ['HDR', '已生成，可在导出时选择'] : null,
     photo.width && photo.height ? ['尺寸', `${photo.width} × ${photo.height}`, 'num'] : null,
   ];
   return section('拍摄信息', kv(rows));

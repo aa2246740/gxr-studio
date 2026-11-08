@@ -116,6 +116,14 @@ def test_import_toast_says_what_happened_and_never_overclaims():
     assert checking == {"text": "正在核对存储卡上的照片…", "fraction": None}
 
 
+@needs_node
+def test_import_chip_and_banner_share_the_real_copying_or_checking_phase():
+    out = scene("import-phases")
+    assert out["checking"]["chip"] == "正在检查 48/151" and "正在检查 48/151" in out["checking"]["banner"]
+    assert out["copying"]["chip"] == "正在导入 48/151" and "正在导入 48/151" in out["copying"]["banner"]
+    assert out["events"] == 2
+
+
 # ---- 1. 相机页的「导入照片」 -------------------------------------------------------------------------
 
 
@@ -246,7 +254,7 @@ def test_gallery_selection_shortcuts_and_no_text_selection():
     onboarding = (ASSETS / "onboarding.js").read_text(encoding="utf-8")
     assert "`${mod}点击`" in onboarding and "加选 / 取消一张" in onboarding
     gallery = (ASSETS / "gallery.js").read_text(encoding="utf-8")
-    assert "e.metaKey || e.ctrlKey || state.selection.size" in gallery  # ⌘ / Ctrl 点击切换一张；点击仍然是打开
+    assert "tick || e.metaKey || e.ctrlKey" in gallery
     css = (ASSETS / "app.css").read_text(encoding="utf-8")
     assert ".library { user-select: none" in css
     assert ".library input, .library textarea, .library select { user-select: text" in css

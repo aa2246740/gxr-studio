@@ -100,6 +100,7 @@ class ImportOptions:
 @dataclass
 class ImportProgress:
     state: str = "idle"  # idle scanning running done paused_no_space interrupted cancelled failed
+    phase: str = "checking"  # running 时区分读内容核对和实际复制；不改变任务的生命周期
     message: str = ""
     total_shots: int = 0
     done_shots: int = 0
@@ -446,7 +447,7 @@ def _run(lib: Any, card: Any, opts: Any, progress: Any, cancel: Any, reader: Any
         if cancel.is_set():
             raise Cancelled()
         run.check()
-        progress.update(current=f"{shot.directory}/{shot.stem}")
+        progress.update(current=f"{shot.directory}/{shot.stem}", phase="checking")
         try:
             _import_shot(lib, card, shot, opts, progress, cancel, reader, shift, run)
         except LibraryPathRefused:
@@ -461,7 +462,7 @@ def _run(lib: Any, card: Any, opts: Any, progress: Any, cancel: Any, reader: Any
         if cancel.is_set():
             raise Cancelled()
         run.check()
-        progress.update(current=video.relpath)
+        progress.update(current=video.relpath, phase="checking")
         try:
             videos_mod.import_video(lib, card, video, opts, progress, cancel, reader, shift, run)
         except LibraryPathRefused:
@@ -513,12 +514,14 @@ def _read_files(
     failed = False
     for cf in todo:
         try:
+            progress.update(phase="checking")
             if _hinted(lib, card, cf, run):
                 sha, state = probe_file(reader, card, cf, opts, cancel, run.ident.expect)
                 run.prove(cf, sha, state)
                 if lib.sha_in_library(sha, cf.size):
                     known[cf.relpath] = sha
                     continue
+            progress.update(phase="copying")
             s = stage_file(reader, card, cf, lib, opts, cancel, expect=run.ident.expect)
             run.prove(cf, s.sha256, s.state)
             staged.append(s)

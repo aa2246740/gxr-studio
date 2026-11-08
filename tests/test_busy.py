@@ -104,6 +104,22 @@ def test_gallery_shift_range_and_toggle_selection(tmp_path):
     assert out["inputUntouched"] == ["a"]
 
 
+def test_gallery_opens_keeps_selection_and_recovers_after_a_date_change(tmp_path):
+    out = run(tmp_path, "gallery-behaviour")
+    assert out["initialLabel"] == "导出" and out["selectedLabel"] == "导出选中的 1 张"
+    assert out["tick"] == ["a"]
+    assert out["plain"] == {"hash": "#/photo/b", "selection": ["a"]}
+    assert out["back"] == {"selection": ["a"], "marked": "true"}
+    assert out["command"] == ["a", "b"] and out["shift"] == ["b", "c", "d"] and out["control"] == ["c", "d"]
+    assert out["filtered"]["selection"] == [] and "已清除 2 张选择" in out["filtered"]["toast"] and "恢复选择" in out["filtered"]["toast"]
+    assert out["filtered"]["label"] == "导出 2026-11-05 的 3 张"
+    assert out["restored"] == {"date": None, "selection": ["c", "d"]}
+    assert out["escape"] == [] and out["shiftWithoutAnchor"] == ["b", "c"]
+    assert out["hdrChips"] == 0 and out["edited"] == ["编辑过"] and "RAW" in out["raw"]
+    assert "未知日期" in out["undated"]["title"] and out["undated"]["label"] == "导出 未知日期 的 1 张"
+    assert out["fullPersisted"] is True
+
+
 def test_gallery_background_refresh_keeps_the_grid(tmp_path):
     """导入完成或重建索引后的后台刷新：已经有照片时不再闪骨架；列表没变不重画，变了一次换上。"""
     out = run(tmp_path, "gallery-quiet-refresh")

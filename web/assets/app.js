@@ -2,9 +2,9 @@
 
 import { api } from './api.js';
 import { state, emit, on } from './state.js';
-import { toast, modalOpen, closeTopModal, isTyping, toastError, modKey, fmtDate } from './dom.js';
+import { toast, modalOpen, closeTopModal, isTyping, toastError, modKey } from './dom.js';
 import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, bindCardChip } from './import.js';
-import { renderGallery, openFocused, galleryKeys, exportSelection } from './gallery.js';
+import { renderGallery, openFocused, galleryKeys, exportSelection, updateGalleryExport, galleryExportLabel, galleryExportCount } from './gallery.js';
 import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto, currentView } from './viewer.js';
 import { copyEdits, pasteEdits } from './paste_edits.js';
 import { pasteToSelection } from './paste_batch.js';
@@ -40,6 +40,7 @@ function setTabs(name, page) {
     else a.removeAttribute('aria-current');
   }
   document.getElementById('titlebar')?.setAttribute('data-mode', page === 'viewer' ? 'viewer' : 'library');
+  updateGalleryExport(page === 'photos');
 }
 
 // ⌘E：大图里导出这一张；图库里导出选中的；没选的话，在按日期筛选时导出这一天，否则说明怎么选
@@ -50,7 +51,8 @@ function exportCurrent() {
   }
   if (router.current() === 'photos' && exportSelection()) return;
   if (router.current() === 'photos' && state.galleryDate) {
-    openExportDialog({ ids: [], date: state.galleryDate, dayLabel: `${fmtDate(state.galleryDate)} 的全部`, photos: state.photos });
+    const count = galleryExportCount();
+    openExportDialog({ ids: [], date: state.galleryDate, dayLabel: galleryExportLabel(state.galleryDate, count, 0).replace(/^导出 /, ''), photos: state.photos });
     return;
   }
   toast(`先在图库里选择要导出的照片：点照片左上角的圈或按住 ${modKey()} 点击加选，按住 ⇧ 连续选择，${modKey()}A 全选。`, 'info');

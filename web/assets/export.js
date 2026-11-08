@@ -130,7 +130,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
 
   const scopeRow = scopes.length > 1
     ? fieldRow('范围', segOf(scopes.map((s) => [s.key, s.label]), scope, (v) => { scope = v; refresh(); }, '范围'))
-    : null;
+    : date ? fieldRow('范围', h('span', {}, scopes[0].label)) : null;
 
   const destInput = h('input', {
     type: 'text', value: dest, class: 'input wide-input', 'aria-label': '导出到', spellcheck: 'false',

@@ -28,7 +28,25 @@ function progress(extra = {}) {
     coverage: coverage(), message: '', ...extra };
 }
 
-if (scenario === 'summary') {
+if (scenario === 'import-phases') {
+  const { state, on } = await import(file('state.js'));
+  const I = await import(file('import.js'));
+  for (const id of ['banner', 'card-status', 'card-chip', 'card-icon']) {
+    const el=document.createElement('div'); el.id=id; document.body.append(el);
+  }
+  state.card = CARD;
+  state.job = { id:'phase-job', running:true, progress:progress({state:'running',phase:'checking',done_shots:48,total_shots:151}) };
+  let events=0;
+  on('import-state',()=>events++);
+  const paint=()=>{
+    I.renderBanner(); I.renderCardStatus();
+    return {banner:document.getElementById('banner').textContent,chip:document.getElementById('card-status').textContent};
+  };
+  out.checking=paint();
+  state.job.progress.phase='copying';
+  out.copying=paint();
+  out.events=events;
+} else if (scenario === 'summary') {
   const S = await import(file('import_summary.js'));
   const extras = { not_importable: ['DCIM/100RICOH/Thumbs.db', 'DCIM/NOTE.TXT'], all_imported: false };
   // 照片都证明已导入、卡上还有别的文件

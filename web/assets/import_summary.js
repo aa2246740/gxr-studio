@@ -62,7 +62,16 @@ function gotText(p) {
 export function progressLine(p) {
   if (p.state === 'scanning' || !p.total_shots) return { text: '正在读取存储卡…', fraction: null };
   if (p.state === 'checking') return { text: '正在核对存储卡上的照片…', fraction: null };
-  return { text: `正在导入 ${p.done_shots}/${p.total_shots}`, fraction: p.done_shots / p.total_shots };
+  const verb = p.phase === 'checking' ? '正在检查' : '正在导入';
+  return { text: `${verb} ${p.done_shots}/${p.total_shots}`, fraction: p.done_shots / p.total_shots };
+}
+
+function importCounts(p) {
+  const parts = [`新导入 ${p.imported_shots || 0} 张照片`];
+  if (p.completed_shots) parts.push(`补全 ${p.completed_shots} 张照片`);
+  if (p.imported_videos) parts.push(`新导入 ${p.imported_videos} 段视频`);
+  parts.push(`${(p.seen_shots || 0) + (p.duplicate_shots || 0)} 项已在图库`);
+  return parts.join('；');
 }
 
 // 卡上有工作室不会导入的文件时怎么说（和 cards/messages.py 的 not_importable_message 同一句话）。
@@ -92,7 +101,6 @@ export function importToast(p) {
 
 // -> { kind: 'ok' | 'bad' | '', text, detail, retry: bool }
 export function summarizeImport(p) {
-  const skipped = (p.seen_shots || 0) + (p.duplicate_shots || 0);
   const problems = hasProblems(p);
   const detail = problems ? `未导入：${listProblems(p)}` : '';
   switch (p.state) {
@@ -114,14 +122,14 @@ export function summarizeImport(p) {
         return {
           kind: '',
           text: notImportableText(got, extra.length, p.coverage.photos_imported === true),
-          detail: `不会被导入：${listFiles(extra, 6)}`,
+          detail: `${importCounts(p)}。不会被导入：${listFiles(extra, 6)}`,
           retry: false,
         };
       }
       return {
         kind: 'ok',
         text: got || '这张存储卡上的照片都已导入',
-        detail: '',
+        detail: importCounts(p),
         retry: false,
         eject: true,
       };

@@ -355,7 +355,8 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
   position: relative; aspect-ratio: 3 / 2; border-radius: var(--r-xs); background: var(--gray-875); overflow: hidden; border: 0; padding: 0;
   transition: background-color var(--dur-fast);
 }
-.cell img { width: 100%; height: 100%; object-fit: contain; display: block; opacity: 0; transition: opacity var(--dur-base) var(--ease-standard); }
+.cell img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity var(--dur-base) var(--ease-standard); }
+.grid.show-full .cell img { object-fit: contain; }
 .cell img.ready { opacity: 1; }
 .cell:hover { background: var(--gray-800); }
 .cell .b { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 4px; }

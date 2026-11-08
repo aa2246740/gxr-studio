@@ -160,6 +160,66 @@ if (scenario === 'thresholds') {
   const orig = new Set(['a']);
   g.toggleSelect(orig, 'c');
   out.inputUntouched = list(orig);
+} else if (scenario === 'gallery-behaviour') {
+  const { state } = await import(file('state.js'));
+  const g = await import(file('gallery.js'));
+  globalThis.CSS = { escape: s => s };
+  const photos = ['a', 'b', 'c', 'd', 'e'].map((id, i) => ({ id, name: id, date: i < 3 ? '2026-11-05' : i === 3 ? '2026-11-04' : null,
+    captured_at: null, thumb_url: `/t/${id}`, has_raw: true, has_jpg: id !== 'c', hdr: 'ready', sidecar_rev: i === 1 ? 2 : 0 }));
+  globalThis.apiStub = async url => {
+    if (url === '/api/dates') return [{ date: '2026-11-05', count: 3 }, { date: '2026-11-04', count: 1 }, { date: 'unknown', count: 1 }];
+    const date = new URL(url, 'http://localhost').searchParams.get('date');
+    return photos.filter(p => !date || (date === 'unknown' ? p.date === null : p.date === date));
+  };
+  const { h } = await import(file('dom.js'));
+  document.body.append(h('button', { id: 'btn-export-top' }, h('span', {}, '导出')));
+  const root = document.getElementById('view');
+  const selected = () => [...state.selection];
+  const label = () => document.getElementById('btn-export-top').textContent;
+  // mini_dom 的 dataset 不是属性，需要按它的 DOM 节点找照片。
+  const photoCell = id => root.querySelectorAll('[role="option"]').find(el => el.dataset.id === id);
+  const click = (el, mods = {}) => {
+    const event = new Event('click', { bubbles: true });
+    Object.assign(event, { metaKey: false, ctrlKey: false, shiftKey: false, ...mods });
+    el.dispatchEvent(event);
+  };
+  await g.renderGallery(root);
+  out.initialLabel = label();
+  out.hdrChips = root.querySelectorAll('.hdr').length;
+  out.edited = root.querySelectorAll('.e').map(el => el.getAttribute('title'));
+  out.raw = photoCell('c').textContent;
+  click(photoCell('a').querySelector('.ck'));
+  out.tick = selected();
+  out.selectedLabel = label();
+  click(photoCell('b'));
+  out.plain = { hash: location.hash, selection: selected() };
+  location.hash = '#/photos';
+  await g.renderGallery(root);
+  out.back = { selection: selected(), marked: photoCell('a').getAttribute('aria-selected') };
+  click(photoCell('b'), { metaKey: true });
+  out.command = selected();
+  click(photoCell('d'), { shiftKey: true });
+  out.shift = selected();
+  click(photoCell('b'), { ctrlKey: true });
+  out.control = selected();
+  const side = date => document.getElementById('dates').querySelectorAll('button').find(el => el.textContent.startsWith(date));
+  side('2026-11-05').click();
+  await tick(5);
+  out.filtered = { selection: selected(), label: label(), toast: document.getElementById('toast-root').textContent };
+  document.getElementById('toast-root').querySelectorAll('button').find(el => el.textContent === '恢复选择').click();
+  await tick(5);
+  out.restored = { date: state.galleryDate, selection: selected() };
+  g.galleryKeys({ key: 'Escape' });
+  out.escape = selected();
+  click(photoCell('c'), { shiftKey: true });
+  out.shiftWithoutAnchor = selected();
+  g.clearSelection();
+  side('未知日期').click();
+  await tick(5);
+  out.undated = { title: root.querySelector('.libbar').textContent, label: label() };
+  root.querySelectorAll('button').find(el => el.textContent === '完整显示').click();
+  await g.renderGallery(root);
+  out.fullPersisted = root.querySelector('.grid').classList.contains('show-full');
 } else if (scenario === 'gallery-quiet-refresh') {
   // 后台刷新（library-changed）：网格已有照片时不放骨架；列表没变不重画；变了一次换上
   const { state, emit } = await import(file('state.js'));

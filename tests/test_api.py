@@ -68,6 +68,30 @@ def test_cards_summary_and_import_flow(client, card):
     assert job2["progress"]["coverage"]["covered"] == job2["progress"]["coverage"]["total"]
 
 
+def test_photo_order_matches_dates_and_is_stable_across_pages(client, card):
+    import_all(client)
+    lib = client.app.state.ctx.lib
+    ids = [p["id"] for p in client.get("/api/photos").json()]
+    with lib.lock:
+        lib.db.execute("UPDATE shots SET date=NULL, captured_at=NULL")
+        for sid, date, captured in (
+            (ids[0], "2026-11-05", "2026-11-05T12:00:00"),
+            (ids[1], "2026-11-05", "2026-11-05T18:00:00"),
+            (ids[2], "2026-11-04", "2026-11-04T23:00:00"),
+            (ids[3], None, "2027-01-01T00:00:00"),
+        ):
+            lib.db.execute("UPDATE shots SET date=?, captured_at=? WHERE shot_id=?", (date, captured, sid))
+    photos = client.get("/api/photos").json()
+    assert [p["id"] for p in photos[:4]] == [ids[1], ids[0], ids[2], ids[3]]
+    assert all(p["date"] is None for p in photos[3:])
+    dates = client.get("/api/dates").json()
+    assert [d["date"] for d in dates] == ["2026-11-05", "2026-11-04", "unknown"]
+    assert dates[0]["cover_id"] == ids[1]
+    pages = [client.get("/api/photos", params={"limit": 2, "offset": offset}).json() for offset in range(0, len(photos), 2)]
+    assert [p["id"] for page in pages for p in page] == [p["id"] for p in photos]
+    assert [p["id"] for p in client.get("/api/photos", params={"date": "2026-11-05"}).json()] == [ids[1], ids[0]]
+
+
 def test_unknown_card_is_404_and_paths_are_not_accepted(client, card):
     # card_id 是挂载会话号：格式不对 400（设计 §15），格式对但不存在 404
     r = client.post("/api/import", json={"card_id": "../../etc"})
