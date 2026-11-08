@@ -208,16 +208,15 @@ try {
     Object.assign(r, { label, key, target, afterRelease: saved });
     out.sliders.push(r);
   }
-  // 自动：答案用替身（不靠检测器）——拉直 3°、垂直 −25。答案落进引擎（setGeometry）以后两帧之内引擎画出新的一帧，没有 /render，
-  // 保存以后框和服务器一样。量的是「答案到引擎」之后，不是「按下」之后：答案要先读完响应体（机器忙时可能晚一两帧），
-  // 这一段不归预览管；而且测试自己的 rAF 回调排在引擎的前面，从按下数帧会少看一帧（在 CI 上因此失败过）。
+  // 自动：替身直接交出检测答案（拉直 3°、垂直 −25），不引入 Response 流的调度。
+  // 点击到 setGeometry、setGeometry 到新帧各不超过两帧；没有 /render，保存后框和服务器一样。
   step('auto');
   const markAuto = requestLog.length;
   out.auto = await evalIn(`(async () => { ${helpers}
     const eng = ${mode === 'gpu' ? `(await import('/assets/gpu_stage.js')).gpuEngineForTests()` : 'null'};
     const realFetch = window.fetch;
     window.fetch = (url, opts) => /\\/geometry\\/auto/.test(String(url))
-      ? Promise.resolve(new Response(JSON.stringify({ straighten: 3, vertical: -25, confident: true, message: '' }), { headers: { 'Content-Type': 'application/json' } }))
+      ? Promise.resolve({ ok: true, status: 200, text: async () => JSON.stringify({ straighten: 3, vertical: -25, confident: true, message: '' }) })
       : realFetch(url, opts);
     const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '自动');
     // 帧号（rAF 的计数）：按下、答案落进引擎（setGeometry）、引擎画出新的一帧，各发生在第几帧

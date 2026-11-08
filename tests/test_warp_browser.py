@@ -57,6 +57,11 @@ def near(a, b, eps=0.6):
     return all(abs(x - y) < eps for x, y in zip(a, b, strict=True))
 
 
+def assert_auto_frames(auto):
+    assert 0 <= auto["geometry"] - auto["click"] <= 2, auto
+    assert 0 <= auto["frame"] - auto["geometry"] <= 2, auto
+
+
 def test_dragging_perspective_and_distortion_never_waits_for_the_server(live, tmp_path):  # noqa: F811
     out = drive_warp(live, tmp_path, "gpu")
     if not out["gpu"]:
@@ -88,11 +93,11 @@ def test_dragging_perspective_and_distortion_never_waits_for_the_server(live, tm
         assert after["savedGeometry"] is True and after["gpu"] is True, (name, after)
         assert near(after["box"], after["server"]), (name, after)
     assert out["dragRendersTotal"] == 0, out["dragRendersTotal"]
-    # 自动（答案是替身，不靠检测器）：按下以后两帧之内成片变了、没有 /render；保存以后框和服务器一样
+    # 自动（答案是替身，不靠检测器）：点击到答案写进引擎、答案到新帧各不超过两帧；没有 /render，保存后框和服务器一样
     auto = out["auto"]
     assert auto["gpu"] is True and auto["renders"] == 0, auto
     assert auto["changed"] is True and auto["geometry"] is not None and auto["frame"] is not None, auto
-    assert auto["frame"] - auto["geometry"] <= 2, auto  # 答案落进引擎以后，两帧之内画出新的一帧
+    assert_auto_frames(auto)
     assert auto["savedGeometry"] is True and near(auto["box"], auto["server"]), auto
     # 成片页：显卡画布，形状是裁切后的形状（和引擎的成片尺寸一致，也和服务器的框占画布的比例一致），没有 /render
     final = out["final"]
