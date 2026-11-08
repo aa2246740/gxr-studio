@@ -63,17 +63,18 @@ export function button(label, { kind = '', size = 'sm', ico = null, title = null
 // 外层 #toast-root 不是 live 区域，每条提示自己带 role（不重复播报）。
 const TOAST_ICON = { ok: 'circle-check', error: 'circle-alert', info: 'info' };
 
-export function toast(message, kind = 'info', { action = null, actions = null, timeout = null } = {}) {
+export function toast(message, kind = 'info', { action = null, actions = null, timeout = null, pending = false } = {}) {
   const root = document.getElementById('toast-root');
   if (!root) return null;
   let closed = false;
   const close = () => {
     if (closed) return;
     closed = true;
-    clearTimeout(timer);
+    stopTimer();
     el.className = `${el.className} leaving`;
     setTimeout(() => el.remove(), 180);
   };
+  let stopTimer = () => {};
   const acts = (actions || (action ? [action] : [])).map((a) => h('button', {
     class: 'btn ghost sm', type: 'button', onclick: () => { if (closed) return; close(); a.run(); },
   }, a.label));
@@ -84,16 +85,42 @@ export function toast(message, kind = 'info', { action = null, actions = null, t
     ...acts,
     h('button', { class: 'btn icon toast-x', type: 'button', 'aria-label': '关闭', title: '关闭', onclick: close }, icon('x')));
   root.append(el);
-  const ms = timeout ?? (kind === 'error' || acts.length ? 8000 : 3200);
-  let timer = ms > 0 ? setTimeout(close, ms) : null;
-  const hold = () => clearTimeout(timer);
-  const resume = () => { clearTimeout(timer); if (ms > 0) timer = setTimeout(close, 2000); };
-  el.addEventListener('pointerenter', hold);
-  el.addEventListener('pointerleave', resume);
-  el.addEventListener('focusin', hold);
-  el.addEventListener('focusout', resume);
+  const fallback = acts.length ? 15000 : kind === 'error' ? 8000 : 3200;
+  const requested = timeout ?? (kind === 'error' && acts.length ? 0 : fallback);
+  const ms = requested <= 0 && (pending || kind === 'error') ? 0 : Math.min(15000, requested > 0 ? requested : fallback);
+  stopTimer = toastTimer(el, close, ms);
   close.el = el;
   return close;
+}
+
+function toastTimer(el, close, ms) {
+  let timer = null;
+  let remaining = ms;
+  let deadline = 0;
+  let hovered = false;
+  let focused = false;
+  let stopped = false;
+  const pause = () => {
+    if (timer === null) return;
+    clearTimeout(timer);
+    timer = null;
+    remaining = Math.max(0, deadline - Date.now());
+  };
+  const resume = () => {
+    if (stopped || hovered || focused || ms <= 0 || timer !== null) return;
+    deadline = Date.now() + remaining;
+    timer = setTimeout(close, remaining);
+  };
+  el.addEventListener('pointerenter', () => { hovered = true; pause(); });
+  el.addEventListener('pointerleave', () => { hovered = false; resume(); });
+  el.addEventListener('focusin', () => { focused = true; pause(); });
+  el.addEventListener('focusout', (e) => {
+    if (el.contains(e.relatedTarget)) return;
+    focused = false;
+    resume();
+  });
+  resume();
+  return () => { stopped = true; clearTimeout(timer); };
 }
 
 // 错误（COPY 3.13）：主句照常显示；后端给了 detail（异常原文、路径、内部键名）时，主句下面放一个默认收起的「详细信息」。

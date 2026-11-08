@@ -21,7 +21,7 @@ export function pasteSelectionButton(n) {
 function progressToast() {
   const text = h('span', {}, '');
   const bar = h('div', { class: 'progress' }, h('i'));
-  const close = toast(h('div', {}, text, bar), 'info', { timeout: 0 });
+  const close = toast(h('div', {}, text, bar), 'info', { timeout: 0, pending: true });
   return {
     set(done, total) {
       text.textContent = `正在粘贴调整… ${done} / ${total}`;
