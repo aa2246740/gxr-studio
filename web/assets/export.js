@@ -11,6 +11,7 @@ import { toggle } from './controls.js';
 import { flushPhotos, flushDate } from './saves.js';
 import { trackJob } from './jobs.js';
 import { delayed, busyButton, SHOW_AFTER_MS, DETAIL_AFTER_MS } from './busy.js';
+import { exportSizePreview } from './output_size.js';
 
 export const SIZES = [
   ['original', '原始尺寸'],
@@ -162,13 +163,15 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   const cancelBtn = onCancel ? h('button', { class: 'btn', type: 'button', onclick: onCancel }, '取消') : null;
   const result = h('div', { class: 'export-result', role: 'status' });
   const guide = h('div', {});
+  const sizePreview = exportSizePreview({ ids, getScope: () => scope, getSize: () => size });
 
   const body = h(
     'div',
     { class: 'export-form' },
     scopeRow,
     fieldRow('格式', h('span', {}, 'JPG')),
-    fieldRow('尺寸', segOf(SIZES.map(([v, text, title]) => [v, text, title]), size, (v) => { size = v; }, '尺寸')),
+    fieldRow('尺寸', segOf(SIZES.map(([v, text, title]) => [v, text, title]), size, (v) => { size = v; sizePreview.paint(); }, '尺寸')),
+    fieldRow('成品', sizePreview.line),
     fieldRow('品质', segOf(QUALITIES, qualityTier, (v) => { qualityTier = v; }, '品质')),
     h('div', { class: 'row form' }, h('span', { class: 'lab' }, 'HDR'), hdrField),
     fieldRow('导出到', destInput),
@@ -180,6 +183,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
 
   function refresh() {
     hdrRow();
+    sizePreview.paint();
     // 没导入也能导出，只是不套相机配方：写明白，免得和下面的「已导出」看起来矛盾
     guide.replaceChildren(...(camdataReady() ? [] : [
       camdataGuide({ onDone: refresh }),

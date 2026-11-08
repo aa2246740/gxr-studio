@@ -10,6 +10,7 @@ import { gpuSnapshot } from './gpu_stage.js';
 import { DEFAULT_FRAME } from './finish.js';
 import { makeDeco } from './stage_finish.js';
 import { drawDecor } from './finish_draw.js';
+import { photoSize } from './output_photo_size.js';
 
 const BASE_EDGE = 480;
 const CARD_EDGE = 240; // 卡片图的长边（CSS 像素）；高分屏按两倍画
@@ -72,9 +73,9 @@ function baseFor(view) {
   return promise;
 }
 
-function cardSpec(style) {
+function cardSpec(style, frame) {
   const base = style.defaults ? { ...DEFAULT_FRAME, ...style.defaults } : { ...DEFAULT_FRAME };
-  return style.id === 'none' ? null : { ...base, style: style.id };
+  return style.id === 'none' ? null : { ...base, ...frame, style: style.id };
 }
 
 // 把一张卡片画进 holder（一个 .thumb）。同一个 holder 画第二次就换掉里面的 canvas。
@@ -82,7 +83,10 @@ function drawCard(view, style, holder, base) {
   const ed = view.ed;
   const stampSpec = ed.stamp && ed.stamp.enabled ? ed.stamp : null;
   const redo = () => { if (!view.disposed) drawCard(view, style, holder, base); };
-  const deco = makeDeco(ed, cardSpec(style), stampSpec, base.ew, base.eh, redo) || { frame: null, stamp: null, ew: base.ew, eh: base.eh, width: base.ew, height: base.eh };
+  const exact = photoSize(view);
+  if (!exact.value) exact.promise.then(redo, () => {});
+  const [ew, eh] = exact.value ? exact.value.photo : [base.ew, base.eh];
+  const deco = makeDeco(ed, cardSpec(style, ed.frame), stampSpec, ew, eh, redo, view.crop?.preset) || { frame: null, stamp: null, ew, eh, width: ew, height: eh };
   const scale = (CARD_EDGE * dpr()) / Math.max(deco.width, deco.height);
   const canvas = holder.querySelector('canvas') || h('canvas', { 'aria-hidden': 'true' });
   canvas.width = Math.max(1, Math.round(deco.width * scale));

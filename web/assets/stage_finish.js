@@ -5,12 +5,13 @@
 import { frameLayout, stampLayout, stampText, momentOf, needsCjk } from './finish_layout.js';
 import { fontReady, fontsNeeded, loadFont, metrics, tableReady } from './finish_fonts.js';
 import { drawDecor } from './finish_draw.js';
+import { photoSize } from './output_photo_size.js';
 
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 
 // 一组边框 + 时间戳设置（null = 不要）在导出时（已裁切）照片 ew×eh 像素上的版面。什么都不用画返回 null。
 // onFonts：用到的字体（文件或版面表）还没下载好时，下载完调用一次（那时再画一遍）。版面要用字体表：表没到就先不画（返回 null）。
-export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts) {
+export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts, cropPreset = null) {
   if (!frameSpec && !stampSpec) return null;
   const meta = (ed.meta && ed.meta.frame) || {};
   const when = momentOf(ed.meta && ed.meta.captured_at);
@@ -18,10 +19,10 @@ export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts) {
   const needed = fontsNeeded(frameSpec, text ? stampSpec : null, needsCjk(text));
   for (const id of needed) if (!tableReady(id) || !fontReady(id)) loadFont(id).then(onFonts, () => {});
   if (needed.some((id) => !tableReady(id))) return null;
-  const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics) : null;
+  const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics, cropPreset) : null;
   const stamp = stampSpec ? stampLayout(ew, eh, stampSpec, text, metrics) : null;
   if (!frame && !stamp) return null;
-  const key = JSON.stringify([frameSpec, stampSpec, meta, when, ew, eh, needed.map(readiness)]);
+  const key = JSON.stringify([frameSpec, stampSpec, meta, when, ew, eh, cropPreset, needed.map(readiness)]);
   return { key, frame, stamp, ew, eh, width: frame ? frame.width : ew, height: frame ? frame.height : eh };
 }
 
@@ -32,10 +33,17 @@ export function decorOf(view, ew, eh) {
   const frameSpec = ed.frame && ed.frame.style && ed.frame.style !== 'none' ? ed.frame : null;
   const stampSpec = ed.stamp && ed.stamp.enabled ? ed.stamp : null;
   if (!frameSpec && !stampSpec) return null;
+  const exact = photoSize(view);
+  if (exact.value) [ew, eh] = exact.value.photo;
+  else if (!exact.stageListening) {
+    exact.stageListening = true;
+    exact.promise.then(() => { if (!view.disposed) view.onChange?.(); }, () => {});
+  }
   const known = view.decor;
-  const mine = JSON.stringify([frameSpec, stampSpec, ed.meta, ew, eh]);
+  const preset = view.crop?.preset;
+  const mine = JSON.stringify([frameSpec, stampSpec, ed.meta, ew, eh, preset]);
   if (known && known.mine === mine && known.fonts === fontsState(frameSpec, stampSpec, ed)) return known.deco;
-  const deco = makeDeco(ed, frameSpec, stampSpec, ew, eh, () => { if (!view.disposed) view.onChange?.(); });
+  const deco = makeDeco(ed, frameSpec, stampSpec, ew, eh, () => { if (!view.disposed) view.onChange?.(); }, preset);
   view.decor = { mine, fonts: fontsState(frameSpec, stampSpec, ed), deco };
   return deco;
 }

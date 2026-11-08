@@ -10,12 +10,12 @@ from .layout import FrameLayout, frame_layout
 from .spec import FrameSpec
 
 
-def apply_frame(rgb: np.ndarray, spec: FrameSpec, meta: dict[str, str]) -> np.ndarray:
+def apply_frame(rgb: np.ndarray, spec: FrameSpec, meta: dict[str, str], crop_preset: str | None = None) -> np.ndarray:
     if spec.style == "none":
         return rgb
     fonts = PilFonts()
     height, width = rgb.shape[:2]
-    layout = frame_layout(width, height, spec, meta, FontMetrics(fonts))
+    layout = frame_layout(width, height, spec, meta, FontMetrics(fonts), crop_preset)
     if layout is None:
         return rgb
     return np.asarray(draw_frame(Image.fromarray(rgb, "RGB"), layout, fonts))

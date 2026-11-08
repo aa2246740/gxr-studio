@@ -44,7 +44,11 @@ def test_canvas_keeps_the_white_border_margin_on_all_four_sides(w: int, h: int, 
     assert abs(layout.width / layout.height - rw / rh) < 1.5 / min(layout.width, layout.height) + 1e-9
     # 照片加四边的边已经够大的那一边不再加宽：补边只补在比例不够的那个方向上
     inner_w, inner_h = w + 2 * margin, h + 2 * margin
-    assert layout.width == inner_w or layout.height == inner_h
+    if ratio in {"3:4", "2:3"}:
+        assert layout.width * rh == layout.height * rw
+        assert layout.width - inner_w < rw or layout.height - inner_h < rh
+    else:
+        assert layout.width == inner_w or layout.height == inner_h
 
 
 def test_canvas_with_a_crop_that_already_has_the_ratio_still_gets_a_border() -> None:

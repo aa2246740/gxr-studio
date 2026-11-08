@@ -19,6 +19,7 @@ from .approx import ENABLED, apply_lut
 from .compose import encode_jpeg, finish_array, has_visible_edit, load_jpeg, resolved_frame, resolved_stamp
 from .hdr_export import HdrTrack
 from .hdr_export import finish as finish_hdr
+from .layout import fit_size
 from .spec import factory_frame, factory_stamp
 
 SIZE_EDGE = {"thumb": 240, "preview": 1600, "full": None}
@@ -93,8 +94,7 @@ def _fit(rgb: np.ndarray, max_edge: int | None) -> np.ndarray:
     long_edge = max(height, width)
     if long_edge <= max_edge:
         return rgb
-    scale = max_edge / long_edge
-    resized = Image.fromarray(rgb, "RGB").resize((max(1, round(width * scale)), max(1, round(height * scale))), Image.Resampling.LANCZOS)
+    resized = Image.fromarray(rgb, "RGB").resize(fit_size(width, height, max_edge), Image.Resampling.LANCZOS)
     return np.asarray(resized)
 
 

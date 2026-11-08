@@ -94,7 +94,9 @@ if (scenario === 'summary') {
   state.settings = { export_dir: '/exp' };
   state.prefs = { export_hdr: false };
   state.camdata = { ready: true, state: 'ready' };
-  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ export_hdr: true }) });
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/output-size')
+    ? { sizes: { original: [1200, 800], large: [1200, 800], medium: [1200, 800], small: [1200, 800] } }
+    : { export_hdr: true }) });
   const form = E.exportForm({ ids: ['p1'], label: '这一张', photos: [{ id: 'p1', ...pair }] });
   const row = () => find(form, (n) => n.classList && n.classList.contains('row') && n.textContent.startsWith('文件名')).textContent;
   out.rowBefore = row();

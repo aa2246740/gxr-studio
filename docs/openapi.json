@@ -3399,6 +3399,60 @@
         "summary": "Photo Meta"
       }
     },
+    "/api/photos/{shot_id}/output-size": {
+      "post": {
+        "operationId": "photo_output_size_api_photos__shot_id__output_size_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shot_id",
+            "required": true,
+            "schema": {
+              "title": "Shot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RenderRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Photo Output Size"
+      }
+    },
     "/api/photos/{shot_id}/preview": {
       "get": {
         "operationId": "photo_preview_api_photos__shot_id__preview_get",

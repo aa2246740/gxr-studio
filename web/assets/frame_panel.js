@@ -9,6 +9,8 @@ import { normalizeFrame, frameBody, defaultsPayload, clipText, TEXT_MAX } from '
 import { seg, toggle, swatch, notReady } from './controls.js';
 import { paintCards } from './finish_cards.js';
 import { liveText } from './live_text.js';
+import { cropRatio } from './finish_layout.js';
+import { frameSizeLine, ratioText } from './output_size.js';
 
 export const FRAME_NAMES = {
   none: '无',
@@ -22,7 +24,7 @@ export const FRAME_NAMES = {
 const COLOR_HEX = { white: '#ffffff', black: '#111214', cream: '#f2ead8' };
 const COLOR_NAMES = { white: '白', black: '黑', cream: '米白' };
 const WEIGHT_NAMES = { thin: '细', medium: '中', thick: '粗' };
-const CANVAS = ['1:1', '4:5', '3:2', '9:16'];
+const CANVAS = ['1:1', '3:4', '2:3', '4:5', '3:2', '9:16'];
 
 function styleList(ed) {
   const list = ed.frames && ed.frames.styles;
@@ -71,8 +73,16 @@ export function framePanel(view) {
   }));
   paintCards(view, items);
 
-  const rows = [h('div', { class: 'pane-head' }, h('h2', {}, '边框')), cards];
+  const sizeLine = frameSizeLine(view);
+  const rows = [h('div', { class: 'pane-head' }, h('h2', {}, '边框'), sizeLine), cards];
   if (cur.style !== 'none') {
+    if (cur.style !== 'canvas') {
+      const c = view.crop;
+      const ratio = c ? cropRatio(c.preset, c.rect.w * c.frame.width, c.rect.h * c.frame.height) : null;
+      rows.push(seg([['crop', `跟裁剪${ratio ? ` ${ratioText(ratio)}` : ''}`], ['frame', '边框原样']],
+        cur.keep_ratio !== false ? 'crop' : 'frame', (value) => setFrame(view, { keep_ratio: value === 'crop' }), { label: '成品比例' }));
+      if (!ratio) rows.push(h('p', { class: 'small dim' }, '先在「裁剪」选择比例，成品会连边框一起保持比例。'));
+    }
     if (opts.includes('color')) {
       // 颜色只用色块（不再加文字按钮）；鼠标停在色块上看颜色名，选中的色块有外圈
       rows.push(h('div', { class: 'seg-row' }, h('span', { class: 'seg-label' }, '颜色'), h('div', { class: 'swrow' },
@@ -94,16 +104,19 @@ export function framePanel(view) {
       const input = h('input', { type: 'text', value: cur.text, maxlength: String(TEXT_MAX), 'aria-label': '文字' });
       // 边输入边变，停下来再保存。这个输入框不重搭面板（重搭会丢掉光标）
       liveText(input, {
-        apply: () => change(view, { text: clipText(input.value) }),
+        apply: () => { change(view, { text: clipText(input.value) }); sizeLine.update(); },
         save: () => {
           change(view, { text: ed.frame.text.trim() }); // 前后的空格输入时留着，写下来时去掉
+          sizeLine.update();
           save(view, ed);
         },
       });
       rows.push(h('div', { class: 'sec' }, '文字'), input);
     }
     if (opts.includes('canvas_ratio')) {
-      rows.push(seg(CANVAS.map((r) => [r, r]), cur.canvas_ratio, (r) => setFrame(view, { canvas_ratio: r }), { label: '画布比例' }));
+      const ratios = seg(CANVAS.map((r) => [r, r]), cur.canvas_ratio, (r) => setFrame(view, { canvas_ratio: r }), { label: '画布比例' });
+      ratios.style.gridTemplateColumns = '1fr'; // 六个比例用整行，窄面板里数字也不截断
+      rows.push(ratios);
     }
   }
 

@@ -278,7 +278,8 @@ def test_track_without_raw_or_with_unknown_frame_layout():
     import gxr_studio.finish.hdr_export as he
 
     real = he.apply_frame
-    he.apply_frame = lambda rgb, spec, meta: np.zeros((20, 20, 3), np.uint8)  # 不像任何边框：照片的位置认不出来
+    # 不像任何边框：照片的位置认不出来
+    he.apply_frame = lambda rgb, spec, meta, crop_preset=None: np.zeros((20, 20, 3), np.uint8)
     try:
         track.frame(parse_frame({"style": "gallery"}), {})
     finally:

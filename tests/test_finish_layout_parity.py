@@ -90,7 +90,7 @@ def frame_specs(style: str, wide: bool) -> list[FrameSpec]:
     if style == "canvas":
         return [
             FrameSpec(style=style, color=c, canvas_ratio=r)
-            for c, r in itertools.product(("white", "black", "cream"), ("1:1", "4:5", "3:2", "9:16"))
+            for c, r in itertools.product(("white", "black", "cream"), ("1:1", "3:4", "2:3", "4:5", "3:2", "9:16"))
         ]
     colors = ("white",) if wide else ("white", "black", "cream")
     weights = ("medium",) if wide else ("thin", "medium", "thick")
@@ -160,7 +160,7 @@ const m = {
   glyph: (f, ch, c) => (c ? need(data.cjk.glyphs, ch) : F.metrics.glyph(f, ch, false)),
   ascent: (f, px, c) => (c ? need(data.cjk.ascents, String(px)) : F.metrics.ascent(f, px, false)),
 };
-const frames = data.frames.map((c) => L.frameLayout(c.w, c.h, c.spec, c.meta, m));
+const frames = data.frames.map((c) => L.frameLayout(c.w, c.h, c.spec, c.meta, m, c.preset));
 const stamps = data.stamps.map((c) => {
   const text = L.stampText(c.spec, c.when);
   return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m) };
@@ -212,6 +212,27 @@ def test_preview_layout_equals_export_layout(tmp_path: Path) -> None:
                 stamp_cases.append({"w": w, "h": h, "spec": spec.to_json(), "when": when_json(moment)})
                 got_stamp = stamp_layout(w, h, spec, text, rec)
                 stamp_want.append({"text": text, "layout": None if got_stamp is None else got_stamp.to_json()})
+        for preset, w, h in (
+            ("4:3", 240, 320),
+            ("4:3", 2400, 3200),
+            ("4:5", 2400, 3000),
+            ("1:1", 500, 500),
+            ("16:9", 180, 320),
+            ("16:9", 1800, 3200),
+            ("xpan-65-24", 325, 120),
+            ("xpan-65-24", 3250, 1200),
+            ("xpan-65-24", 120, 325),
+            ("original", 900, 600),
+            ("free", 900, 600),
+            ("16:10", 800, 500),
+            ("1.91:1", 1910, 1000),
+            ("2.35:1", 2350, 1000),
+        ):
+            for style, keep in itertools.product(("none", "gallery", "leica", "hasselblad", "film", "instant", "canvas"), (True, False)):
+                spec = FrameSpec(style=style, keep_ratio=keep, text="Hello", show_date=True)
+                frame_cases.append({"w": w, "h": h, "spec": spec.to_json(), "meta": METAS[0], "preset": preset})
+                got = frame_layout(w, h, spec, METAS[0], rec, preset)
+                frame_want.append(None if got is None else got.to_json())
         for name in ("finish_layout.js", "finish_fonts.js"):
             (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
         (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")

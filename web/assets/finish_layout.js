@@ -5,7 +5,8 @@
 // 数字一律是「导出时的像素」：照片是已裁切、已盖日期戳的整张，宽 w 高 h。
 
 export const WEIGHT = { thin: 0.02, medium: 0.04, thick: 0.07 };
-export const CANVAS = { '1:1': [1, 1], '4:5': [4, 5], '3:2': [3, 2], '9:16': [9, 16] };
+export const CANVAS = { '1:1': [1, 1], '3:4': [3, 4], '2:3': [2, 3], '4:5': [4, 5], '3:2': [3, 2], '9:16': [9, 16] };
+const CROP_RATIOS = { '3:2': [3, 2], '4:3': [4, 3], '1:1': [1, 1], '4:5': [5, 4], '16:9': [16, 9], '16:10': [8, 5], '1.91:1': [191, 100], '2.35:1': [47, 20], 'xpan-65-24': [65, 24] };
 export const COLORS = { white: [255, 255, 255], black: [12, 12, 12], cream: [245, 236, 220] };
 export const STAMP_COLORS = { orange: [255, 106, 0], red: [220, 32, 32], yellow: [255, 196, 40], white: [255, 255, 255] };
 export const STAMP_SIZE = { small: 0.038, medium: 0.055, large: 0.078 };
@@ -209,6 +210,10 @@ function canvas(w, h, spec) {
   const innerW = w + 2 * mg;
   const innerH = h + 2 * mg;
   const [rw, rh] = CANVAS[spec.canvas_ratio];
+  if (spec.canvas_ratio === '3:4' || spec.canvas_ratio === '2:3') {
+    const [width, height] = ratioSize(innerW, innerH, rw, rh);
+    return { width, height, photo: [idiv(width - w, 2), idiv(height - h, 2)], bg: [...COLORS[spec.color]], items: [] };
+  }
   const target = rw / rh;
   let outW;
   let outH;
@@ -223,7 +228,7 @@ function canvas(w, h, spec) {
 }
 
 // 样式 none（或不认识的样式）返回 null。meta：{ lens, lens_short, aperture, shutter, iso, date, frame_no }
-export function frameLayout(w, h, spec, meta, m) {
+function baseFrame(w, h, spec, meta, m) {
   switch (spec.style) {
     case 'gallery': return gallery(w, h, spec);
     case 'leica': return leica(w, h, spec, meta || {}, m);
@@ -233,6 +238,53 @@ export function frameLayout(w, h, spec, meta, m) {
     case 'canvas': return canvas(w, h, spec);
     default: return null;
   }
+}
+
+export function cropRatio(preset, w, h) {
+  const ratio = CROP_RATIOS[preset];
+  return ratio ? (w >= h ? [...ratio] : [ratio[1], ratio[0]]) : null;
+}
+
+export function ratioSize(w, h, rw, rh) {
+  const multiple = Math.max(Math.ceil(w / rw), Math.ceil(h / rh));
+  return [multiple * rw, multiple * rh];
+}
+
+function contentSize(layout, m) {
+  let ex = 0;
+  let ey = 0;
+  for (const item of layout.items) {
+    let left, top, right, bottom;
+    if (item.k === 'text') {
+      const box = inkBox(m, item.font, item.px, item.text, item.cjk);
+      [left, top, right, bottom] = [item.x + box[0], item.y + box[1], item.x + box[2], item.y + box[3]];
+    } else if (item.k === 'line') {
+      const stroke = idiv(item.w + 1, 2);
+      [left, top, right, bottom] = [item.x1 - stroke, item.y1 - stroke, item.x2 + stroke, item.y2 + stroke];
+    } else {
+      [left, top, right, bottom] = [item.x, item.y, item.x + item.w, item.y + item.h];
+    }
+    ex = Math.max(ex, Math.ceil(-left), Math.ceil(right - layout.width));
+    ey = Math.max(ey, Math.ceil(-top), Math.ceil(bottom - layout.height));
+  }
+  return [layout.width + 2 * ex, layout.height + 2 * ey];
+}
+
+export function frameLayout(w, h, spec, meta, m, cropPreset = null) {
+  const layout = baseFrame(w, h, spec, meta, m);
+  const ratio = spec.keep_ratio !== false && spec.style !== 'canvas' ? cropRatio(cropPreset, w, h) : null;
+  if (!layout || !ratio) return layout;
+  const [width, height] = ratioSize(...contentSize(layout, m), ...ratio);
+  const dx = idiv(width - layout.width, 2);
+  const dy = idiv(height - layout.height, 2);
+  const items = layout.items.map((original) => {
+    const item = { ...original };
+    for (const key of ['x', 'x1', 'x2']) if (key in item) item[key] += dx;
+    for (const key of ['y', 'y1', 'y2']) if (key in item) item[key] += dy;
+    if (item.xs) item.xs = item.xs.map((x) => x + dx);
+    return item;
+  });
+  return { ...layout, width, height, photo: [layout.photo[0] + dx, layout.photo[1] + dy], items };
 }
 
 // ---- 时间戳 -------------------------------------------------------------------
