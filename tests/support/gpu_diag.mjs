@@ -5,7 +5,9 @@
 // Python 那边的 cannot_present()（tests/test_viewer_browser.py）据此决定 Linux 上跳过、macOS 强制跑。
 import { readFileSync } from 'node:fs';
 
-export const SHARED_IMAGE_ERROR = /Unable to create shared image|SharedImageBackingFactory/;
+// 画布上不了屏时 Chrome 日志里的错：共享图像建不起来（Unable to create shared image），或者取不到（ProduceMemory … non-existent mailbox，
+// 软件显卡上画布会短暂出现、引擎还活着、画面却一直出不来时是这一种）。两个驱动脚本都用它。
+export const SHARED_IMAGE_ERROR = /Unable to create shared image|SharedImageBackingFactory|SharedImageManager::ProduceMemory|non-existent mailbox/;
 
 // Chrome 的日志文件：尾部、整份、和显卡有关的行。整份日志只用来查有没有某一种错误（只看尾部会漏掉早先的报错）。
 export function chromeLogReader(path) {
@@ -19,7 +21,7 @@ export function chromeLogReader(path) {
   return {
     tail: (n = 3000) => read().slice(-n),
     full: read,
-    gpuLines: () => read().split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context/i.test(l)).slice(-30).map((l) => l.slice(0, 300)),
+    gpuLines: () => read().split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context|shared ?image|mailbox/i.test(l)).slice(-30).map((l) => l.slice(0, 300)),
     sharedImageError: () => SHARED_IMAGE_ERROR.test(read()),
   };
 }
