@@ -57,6 +57,9 @@ async function answer(method, url, body) {
     revs[k] += 1;
     if (m[2] === 'edit') {
       const { expected_rev: _rev, ...fields } = body;
+      // 和真服务器一样（render/edits.py 的 write）：配方里带了 memory 就换成它（空的就是清掉），不带就留着原来的
+      if (fields.recipe && 'memory' in fields.recipe) fields.memory = fields.recipe.memory;
+      else if (fields.recipe === null) fields.memory = {};
       stored[m[1]] = { ...stored[m[1]], ...fields };
       return { ...editOf(m[1]), rev: revs[k] };
     }
@@ -275,10 +278,10 @@ if (scenario === 'paste-skipped-and-conflict') {
   out.undoUnchanged = v.undo.length === undoLen;
 }
 
-if (scenario === 'undo-keeps-the-recipe-memory') {
-  // B 有自己的配方和旋钮记忆。粘贴 A 的配方（带着 A 的记忆），撤销之后 B 的记忆原样，不留 A 的
+if (scenario.startsWith('undo-keeps-the-recipe-memory')) {
+  // B 有自己的配方和旋钮记忆（:none 时没有记忆）。粘贴 A 的配方（带着 A 的记忆），撤销之后 B 的记忆原样，不留 A 的
   stored.a0.memory = { 'jlaunch/2': { amount: 60 } };
-  stored.b0 = { recipe: { ...RECIPE, slot: 5 }, memory: { 'jlaunch/5': { contrast: 3 } } };
+  stored.b0 = { recipe: { ...RECIPE, slot: 5 }, ...(scenario.endsWith(':none') ? {} : { memory: { 'jlaunch/5': { contrast: 3 } } }) };
   await go('#/photo/a0');
   await tick();
   edits.copyEdits(viewer.currentView());
@@ -297,7 +300,16 @@ if (scenario === 'undo-keeps-the-recipe-memory') {
   out.undoRecipe = undoPut.recipe;
   out.recipeUndone = v.ed.recipe.slot;
   // 再改配方也不会带出 A 的档位：下一次写配方时带的是 B 自己的记忆
-  out.bodyNow = preview.recipeBody(v, { memory: true }).memory;
+  out.bodyNow = preview.recipeBody(v, { memory: true }).memory ?? null;
+  // 离开再回来（重新读服务器）：存着的也是 B 自己的记忆
+  const reads = () => requests.filter((r) => r.method === 'GET' && r.url === '/api/photos/b0/edit').length;
+  const readsBefore = reads();
+  await go('#/photo/a0');
+  await tick();
+  await go('#/photo/b0');
+  await tick();
+  out.reread = reads() > readsBefore;
+  out.memoryReread = viewer.currentView().ed.memory;
 }
 
 if (scenario === 'crop-that-fills-the-frame') {

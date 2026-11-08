@@ -93,14 +93,16 @@ def test_a_partly_applied_paste_names_what_was_skipped_and_a_conflict_changes_no
     assert out["conflictToast"] == "这张照片已在别处修改，没有粘贴。" and out["undoUnchanged"]
 
 
-def test_undoing_a_recipe_paste_keeps_the_photos_own_recipe_memory(tmp_path):
-    out = run(tmp_path, "undo-keeps-the-recipe-memory")
-    own = {"jlaunch/5": {"contrast": 3}}
+@pytest.mark.parametrize("own", [{"jlaunch/5": {"contrast": 3}}, {}], ids=["own-memory", "no-memory"])
+def test_undoing_a_recipe_paste_keeps_the_photos_own_recipe_memory(tmp_path, own):
+    out = run(tmp_path, "undo-keeps-the-recipe-memory" + ("" if own else ":none"))
     assert out["copiedMemory"] == {"jlaunch/2": {"amount": 60}}
     assert out["memoryBefore"] == own
     assert out["memoryPasted"] == out["copiedMemory"], "粘贴带来了来源的记忆"
-    assert out["memoryUndone"] == own and out["undoRecipe"]["memory"] == own, "撤销写回去的是这张自己的记忆"
-    assert out["recipeUndone"] == 5 and out["bodyNow"] == own
+    # 没有记忆的照片也要写一个空的过去：不带 memory 键，服务器会留着粘贴进来的 A 的档位（第二次复查）
+    assert out["memoryUndone"] == own and out["undoRecipe"].get("memory") == own, "撤销写回去的是这张自己的记忆"
+    assert out["reread"] and out["memoryReread"] == own, "离开再回来，服务器上存的也是这张自己的记忆"
+    assert out["recipeUndone"] == 5 and out["bodyNow"] == (own or None)
 
 
 def test_a_crop_that_fills_the_frame_still_counts_when_it_has_a_ratio(tmp_path):

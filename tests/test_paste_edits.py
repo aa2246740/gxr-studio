@@ -280,6 +280,21 @@ def test_include_state_returns_what_the_editor_needs_to_show_the_result(client, 
     assert "edit" not in plain and "crop" not in plain
 
 
+def test_a_recipe_put_with_empty_memory_clears_the_memory_a_paste_brought(client, photos):
+    """编辑器里撤销配方粘贴走普通的 PUT：配方里带空的 memory 才清掉粘贴带来的旋钮档位；不带 memory 键是保留原来的。"""
+    source, target = photos["R0000101"], photos["R0000102"]
+    memory = {"jlaunch/2": {"amount": 60}}
+    put_edit(client, source, recipe={**RECIPE, "memory": memory})
+    put_edit(client, target, recipe={**RECIPE, "slot": 5})
+    assert state(client, target)["edit"]["memory"] == {}
+    ok(paste(client, ["recipe"], [target], source_id=source["id"]))
+    assert state(client, target)["edit"]["memory"] == memory
+    put_edit(client, target, recipe={**RECIPE, "slot": 5})
+    assert state(client, target)["edit"]["memory"] == memory, "不带 memory 键：保留"
+    put_edit(client, target, recipe={**RECIPE, "slot": 5, "memory": {}})
+    assert state(client, target)["edit"]["memory"] == {}, "带空的 memory：清掉"
+
+
 def snapshot_all(client, photos_):
     return {p["id"]: state(client, p) for p in photos_}
 

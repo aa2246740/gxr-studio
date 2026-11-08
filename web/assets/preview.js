@@ -218,7 +218,7 @@ export async function reloadEdit(view, { refreshCatalog = true } = {}) {
 }
 
 // 编辑记录的顶层字段 → ed 上对应的属性（重试只采用补写进去、界面之后又没改过的字段）。
-// 撤销快照（snapshot）里的键和 ed 上的属性同名（memory 不在快照里）
+// 撤销快照（undo_entries.js 的 snapshot）里的键和 ed 上的属性同名
 const EDIT_FIELD_PROPS = {
   recipe: ['recipe', 'memory'],
   lut: ['lut'],
@@ -477,7 +477,10 @@ function restoreSnapshot(view, s) {
   if (own.has('recipe')) {
     ed.recipe = o.recipe;
     if ('memory' in o) ed.memory = o.memory || {}; // 配方旁边记着的旋钮档位跟着这一步还原，不留粘贴进来的别张照片的
-    changes.recipe = recipeBody(view, { memory: true });
+    const body = recipeBody(view, { memory: true });
+    // 记忆是空的也要写过去：不带 memory 键，服务器会留着粘贴进来的档位（render/edits.py 的 write）
+    if (body && 'memory' in o) body.memory = ed.memory;
+    changes.recipe = body;
   }
   if (own.has('lut')) changes.lut = ed.lut = o.lut || null;
   if (own.has('adjust')) {
