@@ -276,6 +276,23 @@
         "title": "EditRequest",
         "type": "object"
       },
+      "ExportDestinationRequest": {
+        "properties": {
+          "dest_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dest Dir"
+          }
+        },
+        "title": "ExportDestinationRequest",
+        "type": "object"
+      },
       "ExportFile": {
         "description": "单张导出的结果。render_label 是机器值，render_text 是给人看的字。",
         "properties": {
@@ -1617,6 +1634,43 @@
           }
         },
         "summary": "Export Batch"
+      }
+    },
+    "/api/export/destination": {
+      "post": {
+        "description": "显式点击才弹出系统选择器；选定路径仍经导出的卡卷/图库检查，导出时再核对写入权限。",
+        "operationId": "pick_export_destination_api_export_destination_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportDestinationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pick Export Destination"
       }
     },
     "/api/exports/{export_id}/reveal": {

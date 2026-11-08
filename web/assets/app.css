@@ -482,6 +482,9 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .modal-foot { justify-content: flex-end; }
 .modal-foot.start { justify-content: flex-start; }
 .wide-input { width: 100%; }
+.export-destination { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; padding: 6px 0; }
+.export-destination p { margin: 0; }
+.export-destination-path, .export-result .path { overflow-wrap: anywhere; white-space: pre-wrap; max-width: 100%; }
 /* 面板底部按钮固定在面板底边，不随内容滚走 */
 .panel-body .sticky-foot {
   position: sticky; bottom: -12px; z-index: 1; margin: 12px calc(-1 * var(--sp-4)) -12px; padding: 10px var(--sp-4) 12px;
