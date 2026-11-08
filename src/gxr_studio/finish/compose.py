@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -11,12 +12,14 @@ from PIL import Image, ImageOps
 
 from ..export import srgb_icc
 from ..render.params import EditState
+from .fonts import FontMetrics
 from .frame import apply_frame
 from .geometry import clamp_norm_rect, crop_valid, fit_preset_in_valid, header_value, needs_valid_crop, normalized_valid_rect, warp
 from .hdr_export import HdrTrack
+from .layout import frame_layout, stamp_layout
 from .pixels import apply_base, apply_extra
 from .spec import FrameSpec, Geometry, StampSpec, factory_frame, factory_stamp
-from .stamp import apply_stamp
+from .stamp import apply_stamp, format_stamp
 
 
 def resolved_frame(edit_frame: FrameSpec | None, defaults: FrameSpec | None) -> FrameSpec:
@@ -121,11 +124,12 @@ def finish_array(
 ) -> tuple[np.ndarray, str | None]:
     """`track`（导出 HDR 时）：RAW 亮度层跟着做同样的几何、裁剪，日期戳和边框处记为不是照片（见 `hdr_export`）。"""
     track = track or HdrTrack(None)
+    border_stamp = stamp.enabled and stamp.placement == "border" and frame.style == "instant"
     rgb, header = finish_unframed(
         rgb,
         edit,
         stage=stage,
-        stamp=stamp,
+        stamp=replace(stamp, enabled=False) if border_stamp else stamp,
         crop_rect=crop_rect,
         taken=taken,
         file_time=file_time,
@@ -135,6 +139,13 @@ def finish_array(
     )
     if stage == "uncropped" or stage == "original":
         return rgb, header
+    if border_stamp:
+        h, w = rgb.shape[:2]
+        fonts = FontMetrics()
+        border = frame_layout(w, h, frame, meta, fonts, crop_preset)
+        mark = stamp_layout(w, h, stamp, format_stamp(stamp, taken, file_time), fonts, border)
     rgb = apply_frame(rgb, frame, meta, crop_preset)
     track.frame(frame, meta, crop_preset)
+    if border_stamp and mark is not None:
+        rgb = apply_stamp(rgb, stamp, taken, file_time, mark)
     return rgb, None

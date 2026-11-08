@@ -74,7 +74,11 @@ const lastLook = () => [...calls.engine].reverse().find((c) => c[0] === 'setLook
 const added = (kind) => calls.engine.filter((c) => c[0] === kind).map((c) => c[1]);
 
 const out = {};
-if (scenario === 'lut-patched-to-vlog') {
+if (scenario === 'camera-jpg-label') {
+  const view = makeView();
+  const way = await settle(view, ctxFor(null));
+  Object.assign(out, { way, label: view.ed.label });
+} else if (scenario === 'lut-patched-to-vlog') {
   let table = (url) => okBody(lutHeader('L-v1'), 64);
   routes.table = (url) => table(url);
   const view = makeView('L');

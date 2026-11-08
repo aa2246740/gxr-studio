@@ -22,13 +22,34 @@ const SHAPE_REJECTED = new Set(['ratio_mismatch', 'crop_outside_image', 'bad_rec
 const records = new Map();
 const URLS = { edit: (id) => `/api/photos/${id}/edit`, crop: (id) => `/api/photos/${id}/crop` };
 
+function notifyFailure(rec, fallback = '无法保存修改。') {
+  if (!rec.failed) return null;
+  const previous = rec.failureToast;
+  if (previous?.current() && previous.close.el.isConnected && !previous.close.el.classList.contains('leaving')) return previous.close;
+  previous?.close();
+  const failure = rec.failed;
+  const { crop, edit, stale, error } = failure;
+  const gen = rec.gen;
+  const current = () => rec.gen === gen && rec.failed === failure && failure.crop === crop
+    && failure.edit === edit && failure.stale === stale && failure.error === error;
+  const choose = (run) => () => { if (current()) return run(); };
+  const cropGen = rec.fieldGen.crop || 0;
+  const actions = failure.cropShape && crop ? [
+    { label: '收进画面', run: choose(() => retrySaves(rec.id, { fitCrop: crop, cropGen })) },
+    { label: '恢复已保存的框', run: choose(() => restoreSavedCrop(rec.id, crop, cropGen)) },
+  ] : [{ label: '重试', run: choose(() => retrySaves(rec.id)) }];
+  const close = toastError(error, fallback, { actions });
+  rec.failureToast = close ? { current, close } : null;
+  return close;
+}
+
 export function saveRecord(id) {
   let r = records.get(id);
   if (!r) {
     // gen：每排进一笔写入加一。读编辑记录的一方据此判断读到的是不是已经过时（F04）
     // fieldGen：每个字段（编辑的 recipe、adjust、curve…，裁剪整体记作 crop）排进过几笔写入。
     // 重试写完时据此判断界面上这个字段有没有更新的修改（N02、V01）
-    r = { id, date: null, rev: null, tail: Promise.resolve(), pending: 0, gen: 0, fieldGen: {}, failed: null, savedAt: 0, retrying: null };
+    r = { id, date: null, rev: null, tail: Promise.resolve(), pending: 0, gen: 0, fieldGen: {}, failed: null, savedAt: 0, retrying: null, failureToast: null };
     records.set(id, r);
   }
   return r;
@@ -44,6 +65,11 @@ export function saveStatus(id) {
 }
 
 function announce(r) {
+  if (r.failureToast && !r.failureToast.current()) {
+    r.failureToast.close();
+    r.failureToast = null;
+  }
+  if (r.failed && !r.pending && !r.failureToast) notifyFailure(r);
   emit('save-status', { id: r.id, status: saveStatus(r.id) });
 }
 
@@ -91,7 +117,7 @@ function clearSucceeded(rec, kind, body) {
     if (!Object.keys(f.edit).length) f.edit = null;
   }
   // 没写进去的框是按更早的几何摆的，之后几何写成功了：这个框现在只是个目标，重试时让服务器收成最近的合格框。
-  // 只限没写进去的原因不是「框本身不对」的（500、409、断网、跳过）；被服务器说形状不对的框，重试照样被拒，提示照常出来
+  // 只限没写进去的原因不是「框本身不对」的（500、409、断网、跳过）；被服务器说形状不对的框，普通重试只提供恢复选择
   // （服务器收得下的话，fit 和普通写入的结果一模一样），不能拿旧几何的框去撞新的几何、一直被拒
   if (kind === 'edit' && 'geometry' in body && f.crop && f.crop.rect !== null && !f.cropShape) f.crop = { ...f.crop, fit: true };
   if (kind === 'crop') {
@@ -122,7 +148,7 @@ export function writeSave(rec, kind, changes, { onOk = null, onFail = null } = {
       onOk?.(r);
     } catch (e) {
       recordFailure(rec, kind, body, e);
-      if (!(e instanceof Skipped)) toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
+      if (!(e instanceof Skipped)) notifyFailure(rec);
       onFail?.(e);
       throw e;
     }
@@ -180,9 +206,15 @@ export async function readFresh(id, read, onStale = null) {
 // 正在显示这张照片的视图直接用它更新，不再另外去读（F03；N02：另读一次可能失败，也可能盖掉更新的草稿）。
 // 不等整笔重试都成功：编辑写进去、裁剪又失败时，写进去的编辑也要交给视图（V02）。
 // 字段级判断（V01）：重试排队以后界面又写了某个字段，这个字段以界面为准，其余补写的字段照样采用。
-export function retrySaves(id) {
+export function retrySaves(id, { fitCrop = null, cropGen = null } = {}) {
   const rec = records.get(id);
   if (!rec || !rec.failed) return Promise.resolve(true);
+  const chosenCrop = () => rec.failed?.crop === fitCrop && (rec.fieldGen.crop || 0) === cropGen;
+  if (fitCrop && !chosenCrop()) return Promise.resolve(false);
+  if (!fitCrop && rec.failed.cropShape && rec.failed.crop) {
+    notifyFailure(rec)?.el.querySelector('button')?.focus();
+    return Promise.resolve(false);
+  }
   if (rec.retrying) return rec.retrying;
   const since = { ...rec.fieldGen };
   const put = async (kind, body) => {
@@ -194,14 +226,17 @@ export function retrySaves(id) {
   };
   const job = async () => {
     if (!rec.failed) return;
+    if (fitCrop && !chosenCrop()) return;
+    if (!fitCrop && rec.failed.cropShape && rec.failed.crop) return;
     try {
       rec.rev = (await api(URLS.edit(id))).rev;
+      if (fitCrop && !chosenCrop()) return;
       // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
       const wroteGeometry = !!(rec.failed && rec.failed.edit && rec.failed.edit.geometry);
       const wasRejected = !!(rec.failed && rec.failed.cropShape); // 这个框当初就是被服务器说「形状不对」才没写进去的
       if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
       if (rec.failed && rec.failed.crop) {
-        const box = { ...rec.failed.crop };
+        const box = { ...rec.failed.crop, ...(fitCrop ? { fit: true } : {}) };
         try {
           await put('crop', box);
         } catch (e) {
@@ -240,12 +275,41 @@ export function retrySaves(id) {
     if (ok && !rec.failed) {
       toast('修改已保存', 'info');
     } else {
-      toastError(rec.failed && rec.failed.error, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(id) } });
+      notifyFailure(rec);
     }
     announce(rec);
     return ok && !rec.failed;
   });
   return rec.retrying;
+}
+
+// 只丢掉这一笔被拒的裁剪，不动别的未保存编辑。旧提示不能作用在后来排队的新框上。
+function restoreSavedCrop(id, crop, cropGen) {
+  const rec = records.get(id);
+  const current = () => rec?.failed?.crop === crop && (rec.fieldGen.crop || 0) === cropGen;
+  if (!rec || !current()) return Promise.resolve(false);
+  let restored = false;
+  return enqueue(rec, async () => {
+    if (!current()) return;
+    try {
+      const response = await api(URLS.crop(id));
+      if (!current()) return;
+      rec.rev = response.rev;
+      rec.failed.crop = null;
+      rec.failed.cropShape = false;
+      rec.failed.stale = false;
+      if (!rec.failed.edit) rec.failed = null;
+      emit('save-retried', { id, kind: 'crop', response, fields: ['crop'], rev: rec.rev });
+      restored = true;
+    } catch (e) {
+      if (rec.failed) rec.failed.error = e;
+      notifyFailure(rec, '无法读取已保存的裁剪框。');
+      throw e;
+    }
+  }).then((ok) => {
+    if (restored) toast('已恢复保存的裁剪框', 'info');
+    return ok && restored;
+  });
 }
 
 // 几何写进去了，但服务器收过的框读不回来：界面上的框和服务器的不是一个，不能算「已保存」（导出也会拒绝）。
@@ -257,7 +321,7 @@ export function markStale(id, error, reread) {
   f.error = error;
   rec.failed = f;
   rec.reread = reread;
-  toastError(error, '无法读取最新的裁剪框。', { action: { label: '重试', run: () => retrySaves(id) } });
+  notifyFailure(rec, '无法读取最新的裁剪框。');
   announce(rec);
 }
 

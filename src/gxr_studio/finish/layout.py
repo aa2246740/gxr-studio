@@ -406,10 +406,12 @@ def _stamp_ops(origin: tuple[int, int], text: str, px: int, font: str, cjk: bool
     return ops
 
 
-def stamp_layout(w: int, h: int, spec: StampSpec, text: str, m: Metrics) -> StampLayout | None:
+def stamp_layout(w: int, h: int, spec: StampSpec, text: str, m: Metrics, frame: FrameLayout | None = None) -> StampLayout | None:
     """text 是 `stamp.format_stamp` 的结果（空串表示没有可画的内容）。w、h 是照片像素宽高。"""
     if not text:
         return None
+    if frame is not None:
+        return _border_stamp_layout(w, h, spec, text, m, frame)
     font = STAMP_FONT[spec.font]
     cjk = needs_cjk(text)
     shown = text if cjk or spec.font != "seg7" else seg7_text(text)
@@ -429,3 +431,33 @@ def stamp_layout(w: int, h: int, spec: StampSpec, text: str, m: Metrics) -> Stam
     ops = _stamp_ops((int(x - box[0]), int(y - box[1])), text, face_px, font, cjk, ink, m)
     glow = max(1.2, px * 0.16) if spec.glow and spec.font == "seg7" else None
     return StampLayout(face_px, font, (x, y, tw, th), ink, glow, tuple(ops))
+
+
+def _border_stamp_layout(w: int, h: int, spec: StampSpec, text: str, m: Metrics, frame: FrameLayout) -> StampLayout | None:
+    """拍立得底边：从照片和题字下方开始，发光也不能越过照片或画布边界。坐标属于整张成片。"""
+    base = stamp_layout(w, h, spec, text, m)
+    if base is None:
+        return None
+    top = frame.photo[1] + h
+    for item in frame.items:
+        if item["k"] == "text":
+            box = ink_box(m, item["font"], item["px"], item["text"], item["cjk"])
+            top = max(top, item["y"] + box[3] + 1)
+    margin = max(2, min(round(min(w, h) * 0.035), (frame.height - top) // 8))
+    cjk = needs_cjk(text)
+    shown = seg7_text(text) if spec.font == "seg7" and not cjk else text
+    px = base.px
+    while True:
+        box = ink_box(m, base.font, px, shown, cjk)
+        glow = max(1.2, px * 0.16) if base.glow is not None else None
+        pad = max(margin, math.ceil(3 * glow) + 2) if glow is not None else margin
+        tw, th = box[2] - box[0], box[3] - box[1]
+        if tw <= w - 2 * pad and th <= frame.height - top - 2 * pad:
+            break
+        if px == 1:
+            return None
+        px = max(1, int(px * 0.85))
+    x = frame.photo[0] + (pad if spec.corner[1] == "l" else w - pad - tw)
+    y = top + pad if spec.corner[0] == "t" else frame.height - pad - th
+    ops = _stamp_ops((x - box[0], y - box[1]), text, px, base.font, cjk, base.ink, m)
+    return StampLayout(px, base.font, (x, y, tw, th), base.ink, glow, tuple(ops))

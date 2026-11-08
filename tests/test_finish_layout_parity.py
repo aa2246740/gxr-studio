@@ -163,7 +163,8 @@ const m = {
 const frames = data.frames.map((c) => L.frameLayout(c.w, c.h, c.spec, c.meta, m, c.preset));
 const stamps = data.stamps.map((c) => {
   const text = L.stampText(c.spec, c.when);
-  return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m) };
+  const frame = c.frameSpec ? L.frameLayout(c.w, c.h, c.frameSpec, {}, m, c.preset) : null;
+  return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m, frame) };
 });
 console.log(JSON.stringify({ frames, stamps }));
 """
@@ -211,6 +212,18 @@ def test_preview_layout_equals_export_layout(tmp_path: Path) -> None:
                 text = format_stamp(spec, moment, None)
                 stamp_cases.append({"w": w, "h": h, "spec": spec.to_json(), "when": when_json(moment)})
                 got_stamp = stamp_layout(w, h, spec, text, rec)
+                stamp_want.append({"text": text, "layout": None if got_stamp is None else got_stamp.to_json()})
+            for caption, font, size, corner, glow in itertools.product(
+                ("", "Paris"), ("seg7", "typewriter", "sans"), ("small", "large"), ("tl", "tr", "bl", "br"), (False, True)
+            ):
+                border_spec = FrameSpec(style="instant", text=caption)
+                spec = StampSpec(enabled=True, placement="border", font=font, size=size, corner=corner, glow=glow)
+                text = format_stamp(spec, WHENS[0], None)
+                frame = frame_layout(w, h, border_spec, {}, rec, "4:3")
+                got_stamp = stamp_layout(w, h, spec, text, rec, frame)
+                stamp_cases.append(
+                    {"w": w, "h": h, "spec": spec.to_json(), "when": when_json(WHENS[0]), "frameSpec": border_spec.to_json(), "preset": "4:3"}
+                )
                 stamp_want.append({"text": text, "layout": None if got_stamp is None else got_stamp.to_json()})
         for preset, w, h in (
             ("4:3", 240, 320),

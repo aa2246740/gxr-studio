@@ -324,8 +324,9 @@ function stampOps(origin, text, px, font, cjk, ink, m) {
 }
 
 // text 是 stampText() 的结果（空串 = 没有可画的内容）。w、h：照片像素宽高。
-export function stampLayout(w, h, spec, text, m) {
+export function stampLayout(w, h, spec, text, m, frame = null) {
   if (!text) return null;
+  if (frame) return borderStampLayout(w, h, spec, text, m, frame);
   const font = STAMP_FONT[spec.font];
   const cjk = needsCjk(text);
   const shown = cjk || spec.font !== 'seg7' ? text : seg7Text(text);
@@ -348,6 +349,37 @@ export function stampLayout(w, h, spec, text, m) {
   const ops = stampOps([trunc(x - box[0]), trunc(y - box[1])], text, facepx, font, cjk, ink, m);
   const glow = spec.glow && spec.font === 'seg7' ? Math.max(1.2, px * 0.16) : null;
   return { px: facepx, font, rect: [x, y, tw, th], ink: [...ink], glow, ops };
+}
+
+// 拍立得底边，坐标属于整张成片。与 layout.py 的 _border_stamp_layout 逐项对应。
+function borderStampLayout(w, h, spec, text, m, frame) {
+  const base = stampLayout(w, h, spec, text, m);
+  if (!base) return null;
+  let top = frame.photo[1] + h;
+  for (const item of frame.items) {
+    if (item.k === 'text') {
+      const box = inkBox(m, item.font, item.px, item.text, item.cjk);
+      top = Math.max(top, item.y + box[3] + 1);
+    }
+  }
+  const margin = Math.max(2, Math.min(pyRound(Math.min(w, h) * 0.035), Math.floor((frame.height - top) / 8)));
+  const cjk = needsCjk(text);
+  const shown = spec.font === 'seg7' && !cjk ? seg7Text(text) : text;
+  let px = base.px;
+  let box; let glow; let pad; let tw; let th;
+  for (;;) {
+    box = inkBox(m, base.font, px, shown, cjk);
+    glow = base.glow !== null ? Math.max(1.2, px * 0.16) : null;
+    pad = glow !== null ? Math.max(margin, Math.ceil(3 * glow) + 2) : margin;
+    tw = box[2] - box[0]; th = box[3] - box[1];
+    if (tw <= w - 2 * pad && th <= frame.height - top - 2 * pad) break;
+    if (px === 1) return null;
+    px = Math.max(1, trunc(px * 0.85));
+  }
+  const x = frame.photo[0] + (spec.corner[1] === 'l' ? pad : w - pad - tw);
+  const y = spec.corner[0] === 't' ? top + pad : frame.height - pad - th;
+  const ops = stampOps([x - box[0], y - box[1]], text, px, base.font, cjk, base.ink, m);
+  return { px, font: base.font, rect: [x, y, tw, th], ink: [...base.ink], glow, ops };
 }
 
 // stamp.format_stamp 的 JS 版。when：{ year, month, day, hour, minute } 或 null（没有拍摄时间也没有文件时间）。

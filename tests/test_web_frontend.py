@@ -518,14 +518,9 @@ def test_reveal_posts_to_the_export_id_with_an_empty_body():
     assert "revealButton(r.export_id)" in export and "revealButton(job.id)" in export
 
 
-def test_bottom_buttons_are_sticky_in_frame_adjust_and_recipe_panels():
-    """边框、调整、配方的底部按钮固定在面板底边（和裁切页一样用 sticky-foot）；配方的顺序按 COPY 3.3。"""
-    frame = (ASSETS / "frame_panel.js").read_text(encoding="utf-8")
-    adjust = (ASSETS / "adjust.js").read_text(encoding="utf-8")
+def test_recipe_footer_keeps_the_copy_3_3_actions():
+    """配方的底部操作按 COPY 3.3；边框和调整的按钮位置由 test_panel_layout 真浏览器测试覆盖。"""
     recipes = (ASSETS / "recipes.js").read_text(encoding="utf-8")
-    for text in (frame, adjust, recipes):
-        assert "class: 'sticky-foot'" in text
-        assert "class: 'foot'" not in text
     # 配方：固定行是直接挂在面板下面的（不能放在会滚动的 rest 里面，否则固定不住）
     assert "nodes.push(h('div', { class: 'sticky-foot' }" in recipes
     # U8：点了没反应的「存储为我的配方」「写入存储卡」删掉了，固定行里只有 [重置]（靠右）

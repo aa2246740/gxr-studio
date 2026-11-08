@@ -711,12 +711,12 @@ def test_retry_after_a_failed_turn_and_a_later_perspective_keeps_the_box(tmp_pat
 
 def test_retrying_a_rejected_drag_keeps_the_users_box(tmp_path):
     """评审 P1（第五轮）：拖的框被服务器拒了（形状不对），重试时不能悄悄换成 fit 收小的框：
-    还是原来的写入、还是被拒，提示出来，界面上的框原样留着；服务器认了（条件变了）才写进去。"""
+    提供明确的恢复选择，界面上的框原样留着；没有用户选择就不再写。"""
     out = run(tmp_path, "retry-rejected-drag", real=("crop.js", "correct.js"))
     mine = [0.2, 0.15, 0.3, 0.6]
     assert out["first"]["puts"] == [["crop", mine, False]] and out["first"]["status"] == "failed" and out["first"]["screen"] == mine
     assert out["retry"] is False
-    assert out["afterRetry"]["puts"] == [["crop", mine, False]], "重试发的还是原来的写入，没有 fit"
+    assert out["afterRetry"]["puts"] == [], "已被拒的框只提供明确选择，不盲重发，也不自动 fit"
     assert out["afterRetry"]["status"] == "failed" and out["afterRetry"]["screen"] == mine
 
 
@@ -750,13 +750,13 @@ def test_a_failed_reread_after_a_geometry_write_is_not_saved_and_retry_reads_aga
     状态是「有修改没有保存」而不是「已保存」，导出被拒，提示里有「重试」；重试就是再读一次，读到了才算完，界面的框换成服务器的。"""
     out = run(tmp_path, "reread-fails-then-retry", real=("crop.js", "correct.js"))
     stuck = out["stuck"]
-    assert stuck["gets"] >= 4, "第一次读加两次退避重读，一共三次失败，之后不再读"  # 进页面时的那一次也算
+    assert stuck["gets"] == 4, "进页面一次、写入后一次、两次退避重读，之后不再读"
     assert stuck["status"] == "failed" and stuck["stale"] is True
     assert stuck["retryButton"] is True and out["exportBlocked"] is True
     assert stuck["screen"] != stuck["server"], "这个场景里界面确实没跟上服务器"
     after = out["afterRetry"]
     assert out["retry"] is True and after["status"] in ("saved", "idle") and after["stale"] is False
-    assert after["gets"] >= 1 and after["puts"] == []
+    assert after["gets"] == 1 and after["puts"] == []
     assert after["screen"] == after["server"] and after["frame"] == [3300, 2400]
 
 
