@@ -1888,14 +1888,23 @@ if (scenario === 'reset-then-switch') {
     const rec = saves.saveRecord(PHOTOS.A.id);
     const crop404 = (n) => { for (let i = 0; i < n; i += 1) failIf.push((method, url) => (method === 'GET' && url.endsWith('/crop') ? new StubError(500, '服务器暂时不可用。') : null)); };
     crop404(3); // 第一次读加两次退避重读，全部失败
+    // 卡住事件循环 650 ms：第一段退避会晚触发，不能在写入后固定 700 ms 就假定两段退避都结束。
+    setTimeout(() => { const until = performance.now() + 650; while (performance.now() < until) { /* 模拟繁忙的运行器 */ } }, 100);
     await dragSlider(40);
     await tick(10);
-    await new Promise((resolve) => setTimeout(resolve, 700)); // 退避 150 + 400 毫秒
+    const reads = () => requests.filter((r) => r.method === 'GET' && r.url.endsWith('/crop')).length;
+    const deadline = performance.now() + 10000;
+    while (reads() < 4 || !rec.failed?.stale) {
+      if (performance.now() > deadline) throw new Error(`两次退避重读没有结束：${reads()} 次读取`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    // 正向等到失败状态，再跨过最长一段退避，核对没有第三次重试。
+    await new Promise((resolve) => setTimeout(resolve, 450));
     await tick(10);
     out.stuck = {
       status: preview.saveStatus(PHOTOS.A.id),
       stale: !!(rec.failed && rec.failed.stale),
-      gets: requests.filter((r) => r.method === 'GET' && r.url.endsWith('/crop')).length,
+      gets: reads(),
       screen: screen(),
       server: r4(crops[PHOTOS.A.id].rect),
       retryButton: [...document.getElementById('toast-root').children].some((t) => t.textContent.includes('重试')),

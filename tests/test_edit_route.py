@@ -750,13 +750,13 @@ def test_a_failed_reread_after_a_geometry_write_is_not_saved_and_retry_reads_aga
     状态是「有修改没有保存」而不是「已保存」，导出被拒，提示里有「重试」；重试就是再读一次，读到了才算完，界面的框换成服务器的。"""
     out = run(tmp_path, "reread-fails-then-retry", real=("crop.js", "correct.js"))
     stuck = out["stuck"]
-    assert stuck["gets"] >= 4, "第一次读加两次退避重读，一共三次失败，之后不再读"  # 进页面时的那一次也算
+    assert stuck["gets"] == 4, "进页面一次、写入后一次、两次退避重读，之后不再读"
     assert stuck["status"] == "failed" and stuck["stale"] is True
     assert stuck["retryButton"] is True and out["exportBlocked"] is True
     assert stuck["screen"] != stuck["server"], "这个场景里界面确实没跟上服务器"
     after = out["afterRetry"]
     assert out["retry"] is True and after["status"] in ("saved", "idle") and after["stale"] is False
-    assert after["gets"] >= 1 and after["puts"] == []
+    assert after["gets"] == 1 and after["puts"] == []
     assert after["screen"] == after["server"] and after["frame"] == [3300, 2400]
 
 
