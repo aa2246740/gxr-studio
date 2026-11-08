@@ -22,6 +22,7 @@ def client(settings):
 
 @pytest.fixture
 def chooser(monkeypatch):
+    """模拟可用的 macOS 选择器，不依赖测试主机，也不启动真实进程。"""
     calls = []
     result = {"path": None, "error": None}
 
@@ -31,6 +32,7 @@ def chooser(monkeypatch):
             raise result["error"]
         return subprocess.CompletedProcess(args, 0, stdout=f"{result['path'] or ''}\n", stderr="")
 
+    monkeypatch.setattr("gxr_studio.folder_picker._host_is_macos", lambda: True)
     monkeypatch.setattr(subprocess, "run", run)
     return result, calls
 
@@ -74,9 +76,21 @@ def test_picker_failure_has_a_text_field_fallback(client, chooser, error):
 def test_picker_unavailable_keeps_the_text_field_option(client, chooser, monkeypatch):
     monkeypatch.setattr("gxr_studio.folder_picker._host_is_macos", lambda: False)
     response = client.post(PICKER, json={})
-    assert response.status_code == 501 and response.json()["error"] == "folder_picker_unavailable"
-    assert "粘贴" in response.json()["message"]
+    assert response.status_code == 501
+    assert response.json() == {
+        "error": "folder_picker_unavailable",
+        "message": "文件夹选择器只在 macOS 上可用。请粘贴文件夹的完整路径。",
+    }
     assert chooser[1] == []
+
+
+def test_stubbed_picker_works_on_a_non_macos_host(client, monkeypatch, request):
+    monkeypatch.setattr("gxr_studio.folder_picker._host_is_macos", lambda: False)
+    _result, calls = request.getfixturevalue("chooser")
+    response = client.post(PICKER, json={})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"cancelled": True, "path": None}
+    assert len(calls) == 1
 
 
 def test_picker_refuses_a_second_dialog(client, chooser):

@@ -25,6 +25,7 @@ export function exportDestination(fallback) {
   const choose = h('button', {
     class: 'btn sm', type: 'button',
     onclick: () => busyButton(choose, async () => {
+      status.replaceChildren();
       input.readOnly = true;
       try {
         const selected = await api('/api/export/destination', { method: 'POST', body: { dest_dir: input.value.trim() } });

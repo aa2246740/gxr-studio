@@ -11,9 +11,12 @@ from test_edit_route import SUPPORT, prepare
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
-def test_destination_picker_and_export_validation(tmp_path):
+@pytest.mark.parametrize(
+    "scenario", ["picker", "cancel-after-error", "batch-rejected", "batch-partial", "batch-cancelled-empty", "batch-cancelled-partial"]
+)
+def test_destination_picker_and_export_validation(tmp_path, scenario):
     folder = prepare(tmp_path)
     script = tmp_path / "export_destination.mjs"
     shutil.copy(SUPPORT / script.name, script)
-    result = subprocess.run(["node", str(script), str(folder)], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(["node", str(script), str(folder), scenario], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr

@@ -250,9 +250,9 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       } else {
         const body = sub.scope === 'date' ? { ...opts, date: sub.date } : { ...opts, ids: sub.ids };
         const job = await api('/api/export', { method: 'POST', body });
-        destination.remember(opts.dest_dir);
         if (onStarted) onStarted(job);
-        await followBatch(job, result, photos);
+        const exportedCount = await followBatch(job, result, photos);
+        if (exportedCount > 0) destination.remember(opts.dest_dir);
       }
     } catch (e) {
       // 有修改没写进去（R05）：导出停止，不拿服务器上的旧编辑出图；给「重试保存」，保存成功后可以再导出
@@ -339,7 +339,7 @@ function copyPathButton(path) {
   }, '复制路径');
 }
 
-// 批量导出：进度交给顶栏（jobs.js）。对话框还开着就在里面显示结果，关掉了就用提示条（带「在访达中显示」）。
+// 批量导出：进度交给顶栏（jobs.js）。关掉对话框后用提示条告诉结果。返回成功导出的张数。
 async function followBatch(job, out, photos = []) {
   const bar = h('i');
   const label = h('span', { class: 'small num' }, '正在准备导出…');
@@ -378,6 +378,7 @@ async function followBatch(job, out, photos = []) {
     const actions = btn ? [{ label: revealLabel(), run: () => btn.click() }] : [];
     toast(parts.join('，'), bad.length ? 'error' : 'ok', { actions });
   }
+  return ok.length;
 }
 
 // 导出前的保存关卡：选中的照片 → 等这几张；这一天的全部 → 等这一天所有这次改过的照片
