@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 from ..lut import cube as cubemod
 from ..lut.library import file_parts
 from ..lut.service import LutError, spaces_listing
+from ..render.recipes import UNIT_INFO
 from .errors import ApiError
 from .lut_library_routes import call
 from .routes import _shot_or_404, ctx
@@ -74,9 +75,10 @@ def _svc(request: Request) -> Any:
 def lut_spaces() -> dict[Any, Any]:
     return {
         "spaces": spaces_listing(),
-        "default_input": None,
+        "default_input": "srgb",
         "default_output": "srgb",
         "note": "",
+        "units": [{**unit, "fit_supported": unit["id"] == "jlaunch"} for unit in UNIT_INFO],
     }
 
 

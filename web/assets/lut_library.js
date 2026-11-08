@@ -159,14 +159,14 @@ export function attributionFields(lut, onSaved) {
       oninput: (e) => { draft[key] = e.target.value; drafts.set(lut.cube_id, draft); } });
     form.append(h('label', { class: 'field' }, h('span', {}, text), inputs[key]));
   }
-  const button = h('button', { class: 'btn', type: 'submit' }, '存储');
+  const button = h('button', { class: 'btn', type: 'submit' }, '保存 LUT 信息');
   form.append(button);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     button.disabled = true;
     await change(lut.cube_id, { group: group.value || null, ...Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value])) }, (item) => {
       drafts.delete(lut.cube_id);
-      toast('已存储', 'ok');
+      toast('LUT 信息已保存', 'ok');
       onSaved(item);
     });
     button.disabled = false;

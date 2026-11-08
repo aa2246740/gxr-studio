@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
 
 from ..lut.errors import LutError
+from ..lut.page import input_choice
 from ..privacy import PrivatePathError
 from .errors import ApiError
 from .routes import ctx
@@ -55,7 +56,8 @@ def call(action: Callable[..., Any], *args: Any) -> Any:
 
 @router.get("/api/luts", response_model=None)
 def list_luts(request: Request) -> Any:
-    return call(ctx(request).lut.library.listing)
+    listing = call(ctx(request).lut.library.listing)
+    return {**listing, "luts": [{**item, **input_choice(item)} for item in listing["luts"]]}
 
 
 @router.patch("/api/luts/{cube_id}", response_model=None)
@@ -66,7 +68,7 @@ def patch_lut(cube_id: str, body: LutPatch, request: Request) -> Any:
     if {"input_space", "output_space", "input_gamut", "output_gamut", "input_range", "output_range"} & changes.keys():
         call(c.lut.invalidate_cube, cube_id)
         c.render.invalidate()
-    return result
+    return {**result, **input_choice(result)}
 
 
 @router.delete("/api/luts/{cube_id}", response_model=None)
