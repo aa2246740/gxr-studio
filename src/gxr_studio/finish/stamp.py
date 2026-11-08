@@ -62,7 +62,9 @@ def _paint(draw: ImageDraw.ImageDraw, layout: StampLayout, fonts: PilFonts, fill
             draw.polygon([tuple(p) for p in op["pts"]], fill=fill)
 
 
-def apply_stamp(rgb: np.ndarray, spec: StampSpec, taken: datetime | None, file_time: datetime | None) -> np.ndarray:
+def apply_stamp(
+    rgb: np.ndarray, spec: StampSpec, taken: datetime | None, file_time: datetime | None, layout: StampLayout | None = None
+) -> np.ndarray:
     if not spec.enabled:
         return rgb
     text = format_stamp(spec, taken, file_time)
@@ -70,7 +72,7 @@ def apply_stamp(rgb: np.ndarray, spec: StampSpec, taken: datetime | None, file_t
         return rgb
     image = Image.fromarray(rgb, "RGB")
     fonts = PilFonts()
-    layout = stamp_layout(image.width, image.height, spec, text, FontMetrics(fonts))
+    layout = layout or stamp_layout(image.width, image.height, spec, text, FontMetrics(fonts))
     if layout is None:
         return rgb
     ink = layout.ink

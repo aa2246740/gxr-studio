@@ -60,6 +60,12 @@ export function stampPanel(view) {
     toggle('时间戳', !!st.enabled, (on) => update(view, { enabled: on })),
   ];
   const body = [];
+  if (ed.frame?.style === 'instant' && api.placements?.some((p) => p.id === 'border')) {
+    body.push(seg([['photo', '照片上'], ['border', '拍立得边框上']], st.placement || 'photo',
+      (placement) => update(view, { placement }), { label: '印记落点' }));
+  } else if (st.placement === 'border') {
+    body.push(h('p', { class: 'fine' }, '选择「拍立得」边框后，印记会放在底边上；其他样式放在照片上。'));
+  }
   body.push(seg(CONTENT.map(([id, label]) => [id, label]), st.content, (c) => update(view, { content: c }), { label: '内容' }));
 
   if (hasDate) {

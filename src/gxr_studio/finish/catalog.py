@@ -46,6 +46,7 @@ def frames_document() -> dict[str, Any]:
         "options": {"color": color, "weight": weight, "show": show, "canvas_ratio": canvas},
         "defaults": {"frame": {"style": "none", "color": "white", "weight": "medium", "canvas_ratio": "4:5"}},
         "stamp": {
+            "placements": [{"id": "photo", "name": "照片上"}, {"id": "border", "name": "拍立得边框上"}],
             "content": [
                 {"id": "date", "name": "日期"},
                 {"id": "text", "name": "文字"},

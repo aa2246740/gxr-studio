@@ -20,10 +20,11 @@ export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts, cropPreset =
   for (const id of needed) if (!tableReady(id) || !fontReady(id)) loadFont(id).then(onFonts, () => {});
   if (needed.some((id) => !tableReady(id))) return null;
   const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics, cropPreset) : null;
-  const stamp = stampSpec ? stampLayout(ew, eh, stampSpec, text, metrics) : null;
+  const borderStamp = stampSpec?.placement === 'border' && frameSpec?.style === 'instant';
+  const stamp = stampSpec ? stampLayout(ew, eh, stampSpec, text, metrics, borderStamp ? frame : null) : null;
   if (!frame && !stamp) return null;
   const key = JSON.stringify([frameSpec, stampSpec, meta, when, ew, eh, cropPreset, needed.map(readiness)]);
-  return { key, frame, stamp, ew, eh, width: frame ? frame.width : ew, height: frame ? frame.height : eh };
+  return { key, frame, stamp, stampOrigin: borderStamp ? [0, 0] : null, ew, eh, width: frame ? frame.width : ew, height: frame ? frame.height : eh };
 }
 
 // 这张照片现在要画的边框和时间戳（取自 view.ed）。ew、eh：导出时（已裁切）照片的像素宽高。

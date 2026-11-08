@@ -104,5 +104,8 @@ export function drawDecor(ctx, deco, s, { photo = null, onLogo = null } = {}) {
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
   if (frame) drawFrameItems(ctx, frame, s, onLogo);
-  if (stamp) drawStamp(ctx, stamp, px, py, s);
+  if (stamp) {
+    const [sx, sy] = deco.stampOrigin || [px, py];
+    drawStamp(ctx, stamp, sx, sy, s);
+  }
 }

@@ -26,6 +26,7 @@ export const DEFAULT_STAMP = {
   size: 'medium',
   corner: 'br',
   glow: true,
+  placement: 'photo',
 };
 
 // 大图上的边框和时间戳由浏览器画（stage_finish.js）：发给服务器出图的草稿里一律是「没有」，服务器只出照片

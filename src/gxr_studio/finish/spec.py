@@ -86,9 +86,10 @@ class StampSpec:
     size: str = "medium"
     corner: str = "br"
     glow: bool = True
+    placement: str = "photo"
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "enabled": self.enabled,
             "content": self.content,
             "date_format": self.date_format,
@@ -101,6 +102,9 @@ class StampSpec:
             "corner": self.corner,
             "glow": self.glow,
         }
+        if self.placement != "photo":
+            out["placement"] = self.placement
+        return out
 
 
 def _num(value: Any, lo: float, hi: float, what: str) -> float:
@@ -182,6 +186,9 @@ def parse_stamp(raw: Any) -> StampSpec | None:
         return None
     if not isinstance(raw, dict):
         raise EditError("bad_stamp", "时间戳设置格式不对。请重新打开后再试。")
+    placement = raw.get("placement", "photo")
+    if not isinstance(placement, str) or placement not in {"photo", "border"}:
+        raise EditError("bad_stamp", INVALID_REQUEST, "时间戳只能放在照片或拍立得边框上。")
     content = raw.get("content", "date")
     if content not in {"date", "text", "date+text"}:
         raise EditError("bad_stamp", INVALID_REQUEST, "时间戳内容只能是日期、文字，或日期和文字。")
@@ -226,6 +233,7 @@ def parse_stamp(raw: Any) -> StampSpec | None:
         size=size,
         corner=corner,
         glow=bool(raw.get("glow", True)),
+        placement=placement,
     )
 
 
