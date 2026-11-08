@@ -190,9 +190,12 @@ async function inPage(arg) {
     });
     return out;
   };
-  // 等画面成了想要的样子（照片 id 对、边框和日期戳的记号对、显卡路径时画布在）：限时，到点就量到什么交什么
-  const ready = (id, expect, tab) => () => {
+  // 等画面成了想要的样子（照片 id 对、边框和日期戳的记号对、显卡路径时画布在）：限时，到点就量到什么交什么。
+  // stale：点「下一张」之前的舞台。换照片时整个编辑区重建（viewer.js 打开照片时 buildLayout），新照片的数据到之前，
+  // 地址已经是新照片了，屏幕上还是上一张的舞台；不认它，不然会把上一张的边框和字当成这一张的量
+  const ready = (id, expect, tab, stale = null) => () => {
     const area = document.querySelector('.stage-area');
+    if (stale && area === stale) return false;
     const pv = area && area.querySelector('.pv');
     const media = pv && pv.querySelector('.pv-gpu, .pv-img');
     if (!location.hash.endsWith(id) || !pv || !media) return false;
@@ -218,12 +221,17 @@ async function inPage(arg) {
     const e = gpuStage.gpuEngineForTests();
     return !e ? 'none' : e.lost ? 'lost' : 'alive';
   };
-  const settle = async (label, id, expect, tab, boundMs = 20000) => {
+  const settle = async (label, id, expect, tab, boundMs = 20000, stale = null) => {
     const limit = Math.max(0, Math.min(boundMs, deadline - performance.now()));
-    const ok = await until(ready(id, expect, tab), limit);
+    const t0 = performance.now();
+    const isReady = ready(id, expect, tab, stale);
+    let ok = await until(isReady, limit);
     await wait(250);
+    // 停了 250 毫秒再看一次：又不是想要的样子了（比如又重画了一遍、字还没画上），就在剩下的时间里再等。
+    // 最后这次判断和下面的量之间没有别的任务插进来，量到的就是判断过的样子
+    if (ok && !isReady()) ok = await until(isReady, Math.max(0, limit - (performance.now() - t0)));
     const step = snap(label, { ...expect, tab: tab || 'frame', id: id.slice(-16) });
-    if (!ok) Object.assign(step, { timedOut: true, waitedMs: Math.round(limit), engine: engineState(), sawEngine });
+    if (!ok) Object.assign(step, { timedOut: true, waitedMs: Math.round(limit), engine: engineState(), sawEngine, staleStage: !!stale && document.querySelector('.stage-area') === stale });
     if (!ok) aborted = true;
     return step;
   };
@@ -256,10 +264,11 @@ async function inPage(arg) {
       steps.push(await settle(`#${at} back from crop`, photos[at].id, round.plan[at]));
       if (aborted) break;
     }
+    const stale = document.querySelector('.stage-area');
     click(to > at ? 'button[aria-label^="下一张"]' : 'button[aria-label^="上一张"]');
     const from = at;
     at = to;
-    steps.push(await settle(`#${from} → #${to}`, photos[to].id, round.plan[to]));
+    steps.push(await settle(`#${from} → #${to}`, photos[to].id, round.plan[to], undefined, 20000, stale));
   }
   return steps;
 }
