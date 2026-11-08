@@ -194,6 +194,8 @@ def _render(
             headers["X-GXR-Valid-Rect"] = labels["valid"]
         if use_stage == "final":
             machine = labels.get("label") if labels.get("label") in {"prediction", "approx", "original"} else "original"
+            if machine == "original" and labels.get("id") == "camera-jpg":
+                machine = "camera-jpg"
             headers["X-GXR-Label"] = quote(str(machine))
             headers["X-GXR-Calibrated"] = "1" if labels.get("calibrated") == "1" else "0"
             if labels.get("scale"):

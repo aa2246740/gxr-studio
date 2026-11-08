@@ -289,7 +289,7 @@ export function route(view, ctx, rerun) {
   }
   // 小标签（与服务器出图的 X-GXR-Label 相同的取值）
   if (plan.base === 'jpg' && !plan.lut) {
-    ed.label = 'original';
+    ed.label = 'camera-jpg';
     ed.calibrated = null;
   } else {
     ed.label = 'prediction';
