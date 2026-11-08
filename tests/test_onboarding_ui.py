@@ -91,6 +91,9 @@ def _run_scene(tmp_path: Path) -> dict:
     for name in (*names, "my_recipes.js"):
         shutil.copy(ASSETS / name, folder / name)
     (folder / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    (folder / "output_size.js").write_text(
+        "export function exportSizePreview() { return { line: document.createElement('span'), paint() {} }; }\n", encoding="utf-8"
+    )
     (folder / "api.js").write_text(
         "\n".join(
             [

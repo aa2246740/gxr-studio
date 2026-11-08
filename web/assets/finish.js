@@ -11,6 +11,7 @@ export const DEFAULT_FRAME = {
   show_frame_no: true,
   text: '',
   canvas_ratio: '4:5',
+  keep_ratio: true,
 };
 
 export const DEFAULT_STAMP = {
@@ -122,6 +123,7 @@ export function frameBody(frame) {
     show_date: frame.show_date,
     text: clipText(frame.text),
     canvas_ratio: frame.canvas_ratio,
+    keep_ratio: frame.keep_ratio,
   };
   return body;
 }

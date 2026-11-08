@@ -95,6 +95,26 @@ def test_pasting_every_group_equals_applying_the_same_values_by_hand(client, pho
     assert res["counts"] == {"applied": 1, "partial": 0, "skipped": 0, "error": 0}
 
 
+@pytest.mark.parametrize("keep", (True, False))
+def test_frame_ratio_choice_survives_paste_to_another_crop_and_batch_undo(client, photos, keep):
+    source, target = photos["R0000101"], photos["R0000102"]
+    put_crop(client, source, preset="4:3", orientation="portrait")
+    put_edit(client, source, frame={"style": "instant", "keep_ratio": keep})
+    put_crop(client, target, preset="1:1")
+    put_edit(client, target, frame={"style": "gallery", "keep_ratio": not keep})
+    before = state(client, target)
+    result = ok(paste(client, ["frame"], [target], source_id=source["id"]))
+    assert result["results"][0]["status"] == "applied"
+    after = state(client, target)
+    assert after["edit"]["frame"]["keep_ratio"] is keep
+    assert after["crop"] == before["crop"]
+    sizes = client.post(f"/api/photos/{target['id']}/output-size", json={}).json()
+    w, h = sizes["sizes"]["original"]
+    assert (w == h) is keep
+    assert client.post("/api/edits/paste/undo", json={"batch_id": result["batch_id"]}).status_code == 200
+    assert state(client, target) == before
+
+
 def test_an_inline_source_is_the_same_as_a_source_photo(client, photos):
     source, a, b = photos["R0000101"], photos["R0000102"], photos["R0000103"]
     dress(client, source)

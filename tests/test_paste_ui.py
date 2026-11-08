@@ -44,6 +44,11 @@ def test_copy_takes_recipe_and_adjust_by_default_and_says_so(tmp_path):
     assert "⇧⌘V" in out["pasteButtonTitle"] and "R0010001.DNG" in out["pasteButtonTitle"], "按钮的提示说明粘贴的是哪张的什么"
 
 
+def test_frame_ratio_choice_is_copied_pasted_undone_and_redone(tmp_path):
+    out = run(tmp_path, "frame-ratio-copy-paste-undo")
+    assert out == {"copied": True, "pasted": True, "crop": "1:1", "undone": False, "undoSaved": False, "redone": True, "redoSaved": True}
+
+
 def test_copy_options_are_remembered_and_empty_groups_are_not_copied(tmp_path):
     out = run(tmp_path, "copy-options")
     assert out["initial"] == ["recipe", "adjust"]

@@ -135,6 +135,6 @@ def finish_array(
     )
     if stage == "uncropped" or stage == "original":
         return rgb, header
-    rgb = apply_frame(rgb, frame, meta)
-    track.frame(frame, meta)
+    rgb = apply_frame(rgb, frame, meta, crop_preset)
+    track.frame(frame, meta, crop_preset)
     return rgb, None

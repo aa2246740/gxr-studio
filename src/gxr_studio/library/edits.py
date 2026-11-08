@@ -18,7 +18,7 @@ from ..meta import read_dng_meta, read_jpeg_meta
 from . import sidecar as sc
 from .store import Library
 
-_BORDER_KEYS = ("style", "color", "weight", "show_logo", "show_params", "show_date", "text", "canvas_ratio")
+_BORDER_KEYS = ("style", "color", "weight", "show_logo", "show_params", "show_date", "text", "canvas_ratio", "keep_ratio")
 
 
 class RevisionConflict(Exception):

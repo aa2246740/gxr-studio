@@ -57,6 +57,7 @@ class FrameSpec:
     show_date: bool = False
     text: str = ""
     canvas_ratio: str = "4:5"
+    keep_ratio: bool = True
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -68,6 +69,7 @@ class FrameSpec:
             "show_date": self.show_date,
             "text": self.text,
             "canvas_ratio": self.canvas_ratio,
+            "keep_ratio": self.keep_ratio,
         }
 
 
@@ -154,12 +156,12 @@ def parse_frame(raw: Any) -> FrameSpec | None:
     if weight not in {"thin", "medium", "thick"}:
         raise EditError("bad_frame", INVALID_REQUEST, "边框宽度只能是细、中或粗。")
     ratio = raw.get("canvas_ratio", "4:5")
-    if ratio not in {"1:1", "4:5", "3:2", "9:16"}:
+    if ratio not in {"1:1", "3:4", "2:3", "4:5", "3:2", "9:16"}:
         raise EditError("bad_frame", INVALID_REQUEST, "画布比例不在可选范围内。")
     text = raw.get("text", "")
     if not isinstance(text, str) or len(text) > STAMP_TEXT_MAX:
         raise EditError("bad_frame", INVALID_REQUEST, f"边框文字最多 {STAMP_TEXT_MAX} 个字。")
-    for key in ("show_logo", "show_params", "show_date"):
+    for key in ("show_logo", "show_params", "show_date", "keep_ratio"):
         if key in raw and not isinstance(raw[key], bool):
             raise EditError("bad_frame", INVALID_REQUEST, "边框的显示开关只能打开或关闭。")
     return FrameSpec(
@@ -171,6 +173,7 @@ def parse_frame(raw: Any) -> FrameSpec | None:
         show_date=bool(raw.get("show_date", False)),
         text=text,
         canvas_ratio=ratio,
+        keep_ratio=raw.get("keep_ratio", True),
     )
 
 

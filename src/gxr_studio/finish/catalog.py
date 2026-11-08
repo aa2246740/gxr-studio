@@ -23,11 +23,13 @@ def frames_document() -> dict[str, Any]:
     ]
     canvas = [
         {"id": "1:1", "name": "1:1"},
+        {"id": "3:4", "name": "3:4"},
+        {"id": "2:3", "name": "2:3"},
         {"id": "4:5", "name": "4:5"},
         {"id": "3:2", "name": "3:2"},
         {"id": "9:16", "name": "9:16"},
     ]
-    styles = [
+    styles: list[dict[str, Any]] = [
         {"id": "none", "name": "无", "options": []},
         {"id": "gallery", "name": "白边", "options": ["color", "weight"]},
         {"id": "leica", "name": "徕卡水印", "options": ["color", "show_logo", "show_params", "show_date", "text"]},
@@ -36,6 +38,9 @@ def frames_document() -> dict[str, Any]:
         {"id": "instant", "name": "拍立得", "options": ["text"]},
         {"id": "canvas", "name": "画布", "options": ["color", "canvas_ratio"]},
     ]
+    for style in styles:
+        if style["id"] not in {"none", "canvas"}:
+            style["options"].append("keep_ratio")
     return {
         "styles": styles,
         "options": {"color": color, "weight": weight, "show": show, "canvas_ratio": canvas},

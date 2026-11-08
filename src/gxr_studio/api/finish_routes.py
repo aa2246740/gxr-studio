@@ -14,10 +14,16 @@ from ..finish.catalog import frames_document
 from ..finish.fonts import ASSETS, FONT_FILES, font_table_json
 from ..finish.meta_text import meta_payload
 from ..finish.serve import load_defaults, render_stage, save_defaults
+from ..finish.sizes import output_sizes
 from ..finish.spec import parse_frame, parse_stamp
+from ..library.media import MediaRefused
+from ..lut.errors import LutError
+from ..raw.dng import RawDecodeError
 from ..render.params import EditError, EditState, parse_edit
+from ..render.service import RenderUnavailable
 from .errors import ApiError
-from .render_routes import _edit_error
+from .gpu_routes import _crop_of
+from .render_routes import RenderRequest, _edit_error, _merge, _read_edit, _unavailable
 from .routes import _shot_or_404, ctx
 
 router = APIRouter()
@@ -91,6 +97,28 @@ def photo_meta(shot_id: str, request: Request) -> dict[str, Any]:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     return meta_payload(c.lib, shot)
+
+
+@router.post("/api/photos/{shot_id}/output-size", response_model=None)
+def photo_output_size(shot_id: str, request: Request, body: RenderRequest | None = None) -> dict[str, Any]:
+    c = ctx(request)
+    shot = _shot_or_404(c, shot_id)
+    edit, side = _read_edit(c, shot)
+    edit = _merge(edit, body)
+    crop = body.crop if body is not None and "crop" in body.model_fields_set else side.get("crop")
+    if isinstance(crop, dict):
+        crop = {key: value for key, value in crop.items() if key != "angle_deg"}
+    rect, preset = _crop_of(crop)
+    try:
+        return output_sizes(c.render, c.lib, shot, edit, rect, preset)
+    except EditError as exc:
+        raise _edit_error(exc) from exc
+    except RenderUnavailable as exc:
+        raise _unavailable(c, exc) from exc
+    except LutError as exc:
+        raise ApiError(exc.status, exc.code, exc.message) from exc
+    except (RawDecodeError, MediaRefused, OSError) as exc:
+        raise ApiError(422, "size_unavailable", "无法读取成品尺寸。请检查照片文件后重试。") from exc
 
 
 @router.get("/api/defaults/finish", response_model=None)
