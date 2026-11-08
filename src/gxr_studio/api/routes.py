@@ -20,8 +20,9 @@ from ..cards.coverage import Identity
 from ..cards.discovery import find_cards
 from ..cards.session import MountSession, SessionError
 from ..crop import Crop, CropError
-from ..export import ExportError, ExportOptions, RevealError, reveal_export
+from ..export import ExportError, ExportOptions, RevealError, check_destination, reveal_export
 from ..flags import flag_enabled
+from ..folder_picker import FolderPickerError, choose_export_folder
 from ..hdr import derived as hdr_derived
 from ..library import edits, thumbs
 from ..library import sidecar as sc
@@ -100,6 +101,10 @@ class ExportFile(BaseModel):
 class BatchExportRequest(ExportRequest):
     ids: list[str] | None = None
     date: str | None = None
+
+
+class ExportDestinationRequest(BaseModel):
+    dest_dir: str | None = None
 
 
 # ---- 小工具 -----------------------------------------------------------------
@@ -565,6 +570,25 @@ def crop_presets() -> list[Any]:
 
 
 # ---- 导出 -------------------------------------------------------------------
+
+
+@router.post("/api/export/destination", response_model=None)
+def pick_export_destination(body: ExportDestinationRequest, request: Request) -> dict[str, str | bool | None]:
+    """显式点击才弹出系统选择器；选定路径仍经导出的卡卷/图库检查，导出时再核对写入权限。"""
+    c = ctx(request)
+    default = Path(body.dest_dir).expanduser() if body.dest_dir else c.settings.export_dir
+    if not default.is_absolute():
+        default = c.settings.export_dir
+    try:
+        chosen = choose_export_folder(default)
+        if chosen is None:
+            return {"cancelled": True, "path": None}
+        dest = check_destination(chosen, [*_forbidden_roots(c), c.lib.root])
+    except FolderPickerError as exc:
+        raise ApiError(exc.status, exc.code, exc.message) from exc
+    except ExportError as exc:
+        raise ApiError(422, exc.code, exc.message, {"detail": exc.detail}) from exc
+    return {"cancelled": False, "path": str(dest)}
 
 
 @router.post("/api/photos/{shot_id}/export", response_model=ExportFile)

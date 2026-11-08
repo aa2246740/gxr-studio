@@ -12,6 +12,7 @@ import { flushPhotos, flushDate } from './saves.js';
 import { trackJob } from './jobs.js';
 import { delayed, busyButton, SHOW_AFTER_MS, DETAIL_AFTER_MS } from './busy.js';
 import { exportSizePreview } from './output_size.js';
+import { exportDestination } from './export_destination.js';
 
 export const SIZES = [
   ['original', '原始尺寸'],
@@ -113,7 +114,6 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   let qualityTier = 'high';
   // 精确（API 的 precise）界面不提供，固定用默认的烘焙表（COPY 3.10）
   const precise = false;
-  let dest = state.settings ? state.settings.export_dir : '';
   let remembered = !!(state.prefs && state.prefs.export_hdr);
   let hdr = false;
 
@@ -133,13 +133,8 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     ? fieldRow('范围', segOf(scopes.map((s) => [s.key, s.label]), scope, (v) => { scope = v; refresh(); }, '范围'))
     : date ? fieldRow('范围', h('span', {}, scopes[0].label)) : null;
 
-  const destInput = h('input', {
-    type: 'text', value: dest, class: 'input wide-input', 'aria-label': '导出到', spellcheck: 'false',
-    oninput: (e) => {
-      dest = e.target.value;
-      if (dest.trim()) destInput.removeAttribute('aria-invalid');
-    },
-  });
+  const destination = exportDestination(state.settings ? state.settings.export_dir : '');
+  const destInput = destination.input;
 
   const nameText = h('span', { class: 'dim num' });
   const single = ids && ids.length === 1 ? photos.find((p) => p.id === ids[0]) : null;
@@ -174,7 +169,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     fieldRow('成品', sizePreview.line),
     fieldRow('品质', segOf(QUALITIES, qualityTier, (v) => { qualityTier = v; }, '品质')),
     h('div', { class: 'row form' }, h('span', { class: 'lab' }, 'HDR'), hdrField),
-    fieldRow('导出到', destInput),
+    fieldRow('导出到', destination.el),
     fieldRow('文件名', h('div', {}, nameText, h('div', { class: 'small dim' }, NAME_SUFFIX_NOTE))),
     guide,
     result,
@@ -210,7 +205,8 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   }
 
   async function submit() {
-    if (busy) return;
+    if (busy || destination.picking) return;
+    const dest = destInput.value;
     if (!dest.trim()) {
       destInput.setAttribute('aria-invalid', 'true');
       result.replaceChildren(resultBox('bad', '请填写导出位置（文件夹的完整路径）。'));
@@ -247,12 +243,14 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
         } finally {
           slow.cancel();
         }
+        destination.remember(opts.dest_dir);
         result.replaceChildren(resultBox('ok', singleResult(r)));
         // 单张导出不能中途取消；对话框已经关了就用提示告诉结果（F10）
         if (closed) singleToast(r);
       } else {
         const body = sub.scope === 'date' ? { ...opts, date: sub.date } : { ...opts, ids: sub.ids };
         const job = await api('/api/export', { method: 'POST', body });
+        destination.remember(opts.dest_dir);
         if (onStarted) onStarted(job);
         await followBatch(job, result, photos);
       }

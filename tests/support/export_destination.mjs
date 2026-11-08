@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+import { installDom, tick } from './mini_dom.mjs';
+
+installDom();
+const file = (name) => pathToFileURL(`${process.argv[2]}/${name}`).href;
+const { state } = await import(file('state.js'));
+const { exportForm } = await import(file('export.js'));
+const original = '/tmp/原来的导出文件夹';
+const chosen = `/tmp/${'这是一段很长的路径/'.repeat(9)}导出照片`;
+state.settings = { export_dir: original };
+state.camdata = { ready: true };
+let pick = { cancelled: false, path: chosen };
+let pickerError = null;
+let exportError = null;
+const calls = [];
+globalThis.apiStub = async (url, opts = {}) => {
+  calls.push({ url, ...opts });
+  if (url === '/api/export/destination') {
+    if (pickerError) throw pickerError;
+    return pick;
+  }
+  if (url.endsWith('/output-size')) return { sizes: { original: [640, 360] }, ratio: [16, 9] };
+  if (url === '/api/photos/p1/export') {
+    if (exportError) throw exportError;
+    return { path: `${opts.body.dest_dir}/photo.jpg`, width: 640, height: 360, bytes: 400 };
+  }
+  throw new Error(`Unexpected API call: ${url}`);
+};
+const make = () => exportForm({ ids: ['p1'], label: '这一张', photos: [{ id: 'p1', has_jpg: true, has_raw: false }] });
+const form = make();
+document.body.append(form);
+await tick();
+const input = form.querySelector('[aria-label="导出到"]');
+const buttons = () => form.querySelectorAll('button');
+const choose = buttons().find((b) => b.textContent === '选择文件夹…');
+assert.ok(choose, '导出表单必须有「选择文件夹…」按钮');
+assert.equal(calls.filter((c) => c.url === '/api/export/destination').length, 0, '只能点击后打开选择器');
+choose.click();
+choose.click();
+await tick();
+assert.equal(calls.filter((c) => c.url === '/api/export/destination').length, 1, '防止重复弹出对话框');
+assert.deepEqual(calls.find((c) => c.url === '/api/export/destination').body, { dest_dir: original });
+assert.equal(input.value, chosen);
+assert.equal(input.title || input.getAttribute('title'), chosen);
+assert.ok(form.textContent.includes(chosen), '完整路径要在输入框外可读');
+pick = { cancelled: true, path: null };
+choose.click();
+await tick();
+assert.equal(input.value, chosen, '取消不改路径');
+pickerError = new Error('无法打开文件夹选择器。请粘贴文件夹的完整路径。');
+choose.click();
+await tick();
+assert.equal(input.value, chosen);
+assert.ok(form.textContent.includes(pickerError.message));
+assert.equal(input.readOnly, false, '失败后仍能编辑路径');
+const pasted = '/tmp/手动粘贴';
+input.value = pasted;
+input.dispatchEvent(new Event('input'));
+assert.ok(form.textContent.includes(pasted));
+assert.ok(!form.textContent.includes(pickerError.message), '手动修改后清掉选择器的旧错误');
+exportError = new Error('无法导出到这个位置。请换一个文件夹。');
+buttons().find((b) => b.textContent === '导出').click();
+await tick();
+assert.equal(calls.findLast((c) => c.url.endsWith('/export')).body.dest_dir, pasted);
+assert.ok(form.textContent.includes(exportError.message), '路径校验错误必须显示');
+exportError = null;
+buttons().find((b) => b.textContent === '导出').click();
+await tick();
+assert.equal(make().querySelector('[aria-label="导出到"]').value, pasted, '下次沿用最后成功导出的位置');
+assert.ok(form.textContent.includes('已导出 1 张'));
+process.exit(0);

@@ -80,6 +80,7 @@ def _run_scene(tmp_path: Path) -> dict:
         "controls.js",
         "onboarding.js",
         "export.js",
+        "export_destination.js",
         "lut.js",
         "lut_choices.js",
         "saves.js",
