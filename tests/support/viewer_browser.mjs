@@ -6,10 +6,13 @@
 // 里面的 step 是卡住的那一步，chromeLog 是 Chrome 自己的输出末尾。进度逐行写到 stderr。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
+import { walkRounds } from './frame_nav_walk.mjs';
+import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
 const deadlineMs = Number(process.env.VIEWER_DEADLINE_MS || 200000);
+const delayRenderMs = Number(process.env.VIEWER_DELAY_RENDER_MS || 0);
 const debugPort = 19500 + Math.floor(Math.random() * 400);
 const chromeLogPath = `${profile}.log`;
 const chromeLog = openSync(chromeLogPath, 'w');
@@ -28,34 +31,13 @@ const step = (name) => {
   process.stderr.write(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${name}\n`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const chromeTail = () => {
-  try {
-    return readFileSync(chromeLogPath, 'utf8').slice(-3000);
-  } catch {
-    return '';
-  }
-};
-// 整份 Chrome 日志（只用来查有没有某一种错误）
-chromeTail.full = () => {
-  try {
-    return readFileSync(chromeLogPath, 'utf8');
-  } catch {
-    return '';
-  }
-};
-// Chrome 日志里和显卡有关的行（GPU 进程崩溃、看门狗、设备丢失、Dawn 报错），留最后 30 行
-const gpuLogLines = () => {
-  try {
-    return readFileSync(chromeLogPath, 'utf8').split('\n').filter((l) => /gpu|webgpu|dawn|swiftshader|vulkan|watchdog|lost|context/i.test(l)).slice(-30).map((l) => l.slice(0, 300));
-  } catch {
-    return [];
-  }
-};
+// Chrome 日志（尾部、整份、和显卡有关的行、共享图像的错）：和 warp_browser.mjs 共用 gpu_diag.mjs
+const gpuLog = chromeLogReader(chromeLogPath);
 let finished = false;
 async function finish(code) {
   if (finished) return;
   finished = true;
-  if (code !== 0) out.chromeLog = chromeTail();
+  if (code !== 0) out.chromeLog = gpuLog.tail();
   console.log(JSON.stringify(out));
   try { ws.close(); } catch { /* 已经关了 */ }
   chrome.kill('SIGTERM');
@@ -172,7 +154,11 @@ try {
     if (holding && p.request.method === 'PUT' && /\/crop$/.test(p.request.url)) held.push(p.requestId);
     else if (holdEdit && p.request.method === 'PUT' && /\/edit$/.test(p.request.url)) held.push(p.requestId);
     else if (fakeAuto && p.request.method === 'POST' && /\/geometry\/auto$/.test(p.request.url)) pausedAuto.push(p.requestId);
-    else await call('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
+    else {
+      // VIEWER_DELAY_RENDER_MS：舞台自己的出图（不是边框卡片 480 像素的小底图）慢这么久才回来，模拟忙的机器或慢的服务器
+      if (delayRenderMs && p.request.method === 'POST' && p.request.url.includes('/render?') && !p.request.url.includes('max_edge=480')) await sleep(delayRenderMs);
+      await call('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
+    }
   });
   const answerAuto = async (json) => {
     for (const requestId of pausedAuto.splice(0)) {
@@ -200,16 +186,62 @@ try {
     }
     return ids.length;
   };
-  await call('Fetch.enable', { patterns: ['*/crop', '*/edit', '*/geometry/auto'].map((urlPattern) => ({ urlPattern, requestStage: 'Request' })) });
+  await call('Fetch.enable', { patterns: ['*/crop', '*/edit', '*/geometry/auto', ...(delayRenderMs ? ['*/render*'] : [])].map((urlPattern) => ({ urlPattern, requestStage: 'Request' })) });
   await call('Page.enable');
+  // 每个新页面都装一个记录：照片出图（/render?…）什么时候「发出」、有几个还在路上、最近一次动静是什么时候。
+  // 数「回来」的（resource timing 只记完成的）会把前一步发出、这一步才回来的出图算到这一步头上，机器一慢就误报
+  await call('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      const real = window.fetch.bind(window);
+      const log = (window.__fetchLog = { renders: 0, inflight: 0, lastAt: 0 });
+      window.fetch = (...args) => {
+        const first = args[0];
+        const isRender = String((first && first.url) || first).includes('/render?');
+        if (isRender) { log.renders += 1; log.inflight += 1; log.lastAt = performance.now(); }
+        const p = real(...args);
+        if (isRender) { const done = () => { log.inflight -= 1; log.lastAt = performance.now(); }; p.then(done, done); }
+        return p;
+      };
+    })()`,
+  });
 
   // 第一次带令牌打开（换成 cookie），再选预览方式，然后进这张照片
   const origin = `http://127.0.0.1:${port}`;
   step('open with token');
   await call('Page.navigate', { url: `${origin}/?token=${token}` });
   await sleep(1500);
+  // NAV_NO_WEBGPU=1：页面里没有 navigator.gpu（走一遍「显卡接不了手」的路，不管这台机器有没有显卡）
+  if (process.env.NAV_NO_WEBGPU) await call('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true })" });
   step('set preview preference');
-  await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${mode === 'gpu' ? 'on' : 'off'}'); true`);
+  await evalIn(`localStorage.setItem('gxr-studio.gpu-preview', '${/gpu$/.test(mode) ? 'on' : 'off'}'); true`);
+  // 没走显卡时把判断用到的几样东西都交出去（开关、本机选择、适配器、这张照片的 /gpu、引擎能不能建、Chrome 日志里有没有共享图像的错）：
+  // gpu 模式和 nav-gpu 模式共用
+  const collectGpuDiagnostics = async () => {
+    step('collect WebGPU diagnostics');
+    out.gpuDiag = await evalIn(diagnosticsExpression(photoId), 60000).catch((e) => ({ diagError: String(e) }));
+    // 这张照片的 JPG 源图：照页面的做法取回来、解码（共用的诊断里没有这一项）
+    const jpg = await evalIn(`(async () => {
+      const d = {};
+      // 照片的 JPG 源图：照页面的做法取回来、解码
+      try {
+        const g = await (await fetch('/api/photos/${photoId}/gpu')).json();
+        if (g.jpg) {
+          const res = await fetch(g.jpg.url, { credentials: 'same-origin' });
+          d.jpgStatus = res.status;
+          const bm = await createImageBitmap(await res.blob(), { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+          d.jpgBitmap = [bm.width, bm.height];
+          bm.close();
+        }
+        d.photoRaw = g.raw ? 'layout' : g.raw_reason;
+      } catch (e) { d.jpgError = String(e).slice(0, 300); }
+      return d;
+    })()`, 30000).catch((e) => ({ jpgDiagError: String(e) }));
+    Object.assign(out.gpuDiag, jpg);
+    out.gpuChromeLog = gpuLog.gpuLines();
+    out.gpuSharedImageError = gpuLog.sharedImageError();
+    out.failedBeforeClicks = [...out.failedRequests];
+    out.consoleBeforeClicks = [...out.console];
+  };
   if (mode === 'layout') {
     // 边框和时间戳的版面在真 Chrome 里算：字体表从服务器下载（和导出读的是同一份），版面只用表里的整数，交给 Python 的结果对
     step('load the font tables and lay out');
@@ -224,6 +256,14 @@ try {
       const stamps = data.stamps.map((c) => { const text = L.stampText(c.spec, c.when); return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m) }; });
       return { frames, stamps };
     })()`, 120000);
+    out.ready = true;
+    await finish(0);
+  }
+  if (mode.startsWith('nav-')) {
+    // 换照片、换边框、进出裁剪、100%：每一步之后大图还在不在（tests/support/frame_nav_walk.mjs）
+    const walked = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu', collectGpuDiagnostics, presentErrors: () => gpuLog.sharedImageError() });
+    out.nav = walked.steps;
+    out.gpuWaitMs = walked.gpuWaitMs;
     out.ready = true;
     await finish(0);
   }
@@ -279,44 +319,7 @@ try {
     })()`, 130000);
   }
   out.gpu = await evalIn(`!!document.querySelector('.gpu')`);
-  if (mode === 'gpu' && !out.gpu) {
-    // 没走显卡：把判断用到的几样东西都交出去（开关、本机选择、适配器、这张照片的 /gpu、引擎能不能建）
-    step('collect WebGPU diagnostics');
-    out.gpuDiag = await evalIn(`(async () => {
-      const d = { navigatorGpu: !!navigator.gpu, pref: localStorage.getItem('gxr-studio.gpu-preview') };
-      try { d.flag = (await (await fetch('/api/settings')).json()).gpu_preview; } catch (e) { d.settingsError = String(e); }
-      try { const g = await (await fetch('/api/photos/${photoId}/gpu')).json(); d.photo = { enabled: g.enabled, keys: Object.keys(g).slice(0, 24) }; } catch (e) { d.photoError = String(e); }
-      try {
-        const a = navigator.gpu ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) : null;
-        d.adapter = a ? { vendor: a.info?.vendor, architecture: a.info?.architecture, description: a.info?.description, fallback: a.info?.isFallbackAdapter } : null;
-      } catch (e) { d.adapterError = String(e); }
-      try { const m = await import('/assets/gpu/engine.js'); d.engine = (await m.Engine.create()) ? 'created' : 'null'; } catch (e) { d.engineError = String(e).slice(0, 300); }
-      // 页面自己的那台引擎（和页面同一个模块实例）：没建起来，还是建了又丢了（设备丢失后整个会话都走服务器）
-      try {
-        const st = await import('/assets/gpu_stage.js');
-        const e = st.gpuEngineForTests();
-        d.pageEngine = e ? { lost: !!e.lost, currentKey: typeof e.currentKey === 'function' ? e.currentKey() : null } : null;
-      } catch (e) { d.pageEngineError = String(e).slice(0, 300); }
-      // 照片的 JPG 源图：照页面的做法取回来、解码
-      try {
-        const g = await (await fetch('/api/photos/${photoId}/gpu')).json();
-        if (g.jpg) {
-          const res = await fetch(g.jpg.url, { credentials: 'same-origin' });
-          d.jpgStatus = res.status;
-          const bm = await createImageBitmap(await res.blob(), { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-          d.jpgBitmap = [bm.width, bm.height];
-          bm.close();
-        }
-        d.photoRaw = g.raw ? 'layout' : g.raw_reason;
-      } catch (e) { d.jpgError = String(e).slice(0, 300); }
-      d.stage = { classes: document.querySelector('.stage-area, .stage')?.className || null, img: !!document.querySelector('.pv-img'), canvas: !!document.querySelector('canvas') };
-      return d;
-    })()`, 60000).catch((e) => ({ diagError: String(e) }));
-    out.gpuChromeLog = gpuLogLines();
-    out.gpuSharedImageError = /Unable to create shared image|SharedImageBackingFactory/.test(chromeTail.full());
-    out.failedBeforeClicks = [...out.failedRequests];
-    out.consoleBeforeClicks = [...out.console];
-  }
+  if (mode === 'gpu' && !out.gpu) await collectGpuDiagnostics();
   out.boxAfterEnter = await evalIn(`(() => { ${helpers} return boxRect(); })()`);
 
   if (process.env.VIEWER_SCENARIO === 'edit-fixes') {
@@ -495,6 +498,7 @@ try {
   // 离开裁切页时大图会重新出一次（服务器出图时）；卡片自己的底图请求带 max_edge=480，最多一张
   out.cards.cardRenders = renderCount(mark, /max_edge=480/);
   out.cards.stageRenders = renderCount(mark, /^(?!.*max_edge=480)/);
+  out.cards.renderUrls = requestLog.slice(mark).filter((r) => /\/render\b/.test(r)).map((r) => r.replace(/^POST http:\/\/[^/]+/, '').replace(/token=[^&\s]+/, 'token=…'));
 
   // 7) 加了边框和时间戳以后：显卡还在管，拖滑块不请求 /render，点样式、改选项当帧就画出来
   step('frame and stamp with the preview on');
@@ -503,7 +507,11 @@ try {
     const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
     const deco = () => { const pv = document.querySelector('.pv'); return { framed: pv.classList.contains('framed'), overlay: !!pv.querySelector('.pv-deco'), size: [pv.style.width, pv.style.height] }; };
     const card = (name) => [...document.querySelectorAll('.fcard')].find((x) => x.textContent.trim() === name);
-    const renders = () => performance.getEntriesByType('resource').filter((e) => /\\/render\\b/.test(e.name)).length;
+    // 前一步（离开裁剪页、画边框卡片）发出的出图可能还在路上，或者刚发出：等到安静下来（没有在路上的、最近 0.8 秒没有新的）再开始数，
+    // 数的是点下去之后「发出」的 /render，不是「回来」的：前一步留下的那一个晚到，不算在这些点击头上
+    const fetchLog = window.__fetchLog;
+    const quiet = await until(() => fetchLog.inflight === 0 && performance.now() - fetchLog.lastAt > 800, 30000);
+    const renders = () => fetchLog.renders;
     const renders0 = renders();
     // 每个「当帧画出来」的操作都记三样：点下（或输入）之后的下一帧，叠加层的画法（key）变了没有（服务器出图的话一帧里不可能变）；
     // 耗时多少；这一次操作前后各三帧里最长的一帧是多长（机器忙时帧本身就拖长，拿它当这一次的尺子）
@@ -601,9 +609,11 @@ try {
     const next = await settle((l) => !l.framed && !l.overlay);
     document.querySelector('button[aria-label^="上一张"]').click();
     const back = await settle(framed);
-    return { clicks, styleFramed, frame, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
+    return { quiet: !!quiet, clicks, styleFramed, frame, stampOn, clickRenders, dragRenders, typed, gpu: gpuNow, dragMs, worstFrameMs: Math.max(...frames), zoom100, fit, next, back };
   })()`, 90000);
   out.live.requests = requestLog.slice(mark).filter((r) => !/^PUT /.test(r) && !/\/(edit|crop)$/.test(r)).slice(-8);
+  // 步骤 7 里发出的每一个 /render（带地址）：失败时看得出是哪一个
+  out.live.renderUrls = requestLog.slice(mark).filter((r) => /\/render\b/.test(r)).map((r) => r.replace(/token=[^&\s]+/, 'token=…'));
   step('done');
 } catch (e) {
   out.error = String(e && e.message ? e.message : e).slice(0, 800);

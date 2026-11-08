@@ -7,14 +7,18 @@ const scenario = process.argv[3];
 const file = (name) => pathToFileURL(`${folder}/${name}`).href;
 
 // ---- 替身 ----
-const calls = { api: [], fetch: [], engine: [] };
+const calls = { api: [], fetch: [], engine: [], boxBodies: [] };
 const deferred = new Map(); // url 片段 → { resolve, reject }[]
-const routes = { info: () => null, edit: () => ({ recipe: null }), table: null, bake: null };
+const routes = { info: () => null, edit: () => ({ recipe: null }), table: null, bake: null, box: null };
 Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true, writable: true });
 globalThis.createImageBitmap = async () => ({ width: 120, height: 80, close() {} });
 globalThis.engineLog = calls.engine;
-globalThis.apiStub = async (path) => {
+globalThis.apiStub = async (path, opts) => {
   calls.api.push(path);
+  if (path.endsWith('/gpu/box')) {
+    calls.boxBodies.push(opts.body);
+    return routes.box(opts.body);
+  }
   const m = path.match(/^\/api\/photos\/([^/]+)\/(gpu|edit)$/);
   if (m && m[2] === 'gpu') return routes.info(m[1]);
   if (m && m[2] === 'edit') return routes.edit(m[1]);
@@ -130,6 +134,40 @@ if (scenario === 'lut-patched-to-vlog') {
   await flush();
   out.neighbourEdits = calls.api.filter((p) => /\/api\/photos\/(A|C)\/edit/.test(p)).length;
   out.neighbourInfos = calls.api.filter((p) => /\/api\/photos\/(A|C)\/gpu/.test(p)).length;
+} else if (scenario === 'warp-export-size') {
+  // 透视 / 畸变的成片：边框和时间戳按导出时的像素算版面。全尺寸（200×160）的裁切框到了就用它的宽高，不用颜色层（100×80）的估计
+  routes.box = (b) => (b.width === 200 ? { box: [3, 4, 111, 77], valid: [0, 0, 1, 1] } : { box: [1, 1, 50, 36], valid: [0, 0, 1, 1] });
+  routes.bake = () => okBody(bakeHeader('K1'));
+  const view = makeView();
+  const ctx = { ...ctxFor(REC), geometry: { straighten: 0, vertical: 30, horizontal: -10, distortion: 20, rotate90: 1, flip: false } };
+  out.first = await settle(view, ctx);
+  await flush();
+  out.again = await settle(view, ctx);
+  out.export = view.gpuExport;
+  out.boxSizes = calls.boxBodies.map((b) => [b.width, b.height]);
+  out.fullBodyGeometry = calls.boxBodies.find((b) => b.width === 200)?.geometry || null;
+} else if (scenario === 'warp-canvas-aspect') {
+  // 精确的导出框（111×77）和成片纹理（100×80）比例不同：框到了以后，画布按导出的比例显示
+  globalThis.document = { createElement: () => ({ style: {}, dataset: {}, setAttribute() {}, className: '' }) };
+  routes.box = (b) => (b.width === 200 ? { box: [3, 4, 111, 77], valid: [0, 0, 1, 1] } : { box: [1, 1, 100, 80], valid: [0, 0, 1, 1] });
+  routes.bake = () => okBody(bakeHeader('K1'));
+  const view = makeView();
+  const ctx = { ...ctxFor(REC), geometry: { straighten: 0, vertical: 30, horizontal: -10, distortion: 20, rotate90: 1, flip: false } };
+  // 全尺寸的框第一次请求时先挂住，只放行颜色层的
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const real = routes.box;
+  routes.box = (b) => (b.width === 200 ? gate.then(() => real(b)) : real(b));
+  out.first = await settle(view, ctx, 8);
+  view.gpuActive = 'final';
+  const look = () => { const c = gs.gpuCanvas(view, 400, 300); return { aspect: view.gpuAspect, css: [parseFloat(c.style.width), parseFloat(c.style.height)] }; };
+  out.before = look();
+  release();
+  await flush();
+  out.again = await settle(view, ctx);
+  view.gpuActive = 'final';
+  out.after = look();
+  out.engineAspects = calls.engine.filter((c) => c[0] === 'setDisplayAspect').map((c) => c[1]);
 } else if (scenario === 'flag-off') {
   state.settings = { gpu_preview: false };
   const view = makeView();

@@ -1,7 +1,7 @@
 // 大图的 WebGPU 实时预览（功能开关 gpu_preview，见 docs/feature-flags.md）。
 // 引擎在 /assets/gpu/engine.js（frontend/ 构建，已提交）。数据只上传一次，拖滑块只改参数，不再请求服务器出图。
 // 显卡做不了、或这张照片不支持的情况一律退回原来的服务器出图（preview.js 的 runPreview），不显示不对的画面：
-//   原图（按住空格）、透视/畸变、只有 JPG 却选了配方（近似）、
+//   原图（按住空格）、只有 JPG 却选了配方（近似）、
 //   RAW 写法特殊（压缩、线性化表、逐行黑电平等），以及浏览器没有 WebGPU。
 // 边框和时间戳不在其中：显卡只画照片，边框和日期戳由浏览器画在照片外面和上面（stage_finish.js），加边框不会让显卡退场。
 //
@@ -11,9 +11,11 @@
 import { api } from './api.js';
 import { state, on } from './state.js';
 import { gpuPreference } from './gpu_pref.js';
+import { normalGeometry, expands, warpValid, warpCanvas, exportSize } from './gpu_warp.js';
 
 let enginePromise = null;
 let engine = null;
+let warpApi = null; // 引擎模块：透视 / 畸变的画布和有效区（geometry.py 的浏览器版，见 frontend/src/warp.ts）
 let disabled = false; // 浏览器没有 WebGPU 或设备丢失：本次会话都走服务器
 let canvas = null; // 唯一的画布，跨照片复用（不重建 WebGPU 上下文）
 let generation = 0; // 数据代数
@@ -54,6 +56,7 @@ function loadEngine() {
       const mod = await import('./gpu/engine.js');
       const e = await mod.Engine.create();
       if (e) {
+        warpApi = mod;
         e.onLost = () => {
           disabled = true;
           engine = null;
@@ -109,8 +112,6 @@ const DISPLAY_SPACES = ['srgb', 'rec709', 'gamma24'];
 export function decide(ed, info, stage, recipe, lutSpace) {
   if (!ed || !ed.v2 || !info || !info.enabled) return null;
   if (stage !== 'final' && stage !== 'uncropped') return null;
-  const g = ed.geometry || {};
-  if (g.vertical || g.horizontal || g.distortion) return null;
   const raw = info.raw;
   const jpg = info.jpg;
   const hasDng = info.raw_reason !== 'no_raw';
@@ -279,8 +280,8 @@ export function route(view, ctx, rerun) {
     adjust: ctx.adjust,
     curve: ctx.curve,
   });
-  const g = ctx.geometry || {};
-  engine.setGeometry({ straighten: g.straighten || 0, rotate90: g.rotate90 || 0, flip: !!g.flip, box: ctx.stage === 'final' ? box.box : null });
+  const g = normalGeometry(ctx.geometry);
+  engine.setGeometry({ ...g, box: ctx.stage === 'final' ? box.box : null });
   if (ctx.stage === 'uncropped' && box.valid) {
     const [x, y, w, h] = box.valid;
     ed.valid = { x, y, w, h };
@@ -297,23 +298,41 @@ export function route(view, ctx, rerun) {
   view.gpuActive = ctx.stage;
   view.gpuFull = full(info, plan.base, layer, g);
   // 导出时（已裁切）照片的像素：边框和时间戳的版面按它算（stage_finish.js），浏览器自己画，不请服务器
-  const shown = engine.finalSize();
   const grow = plan.base === 'raw' ? info.raw.full[0] / info.raw.layer[0] : 1;
-  view.gpuExport = shown ? { w: Math.round(shown.w * grow), h: Math.round(shown.h * grow) } : null;
+  const exact = expands(g) && ctx.stage === 'final' ? fullBox(id, exportFrame(info, plan.base, layer), g, ctx.crop || null, rerun) : null;
+  view.gpuExport = exportSize(engine.finalSize(), grow, g, exact, view.gpuFull, expands(g) ? engine.canvasSize() : null);
+  // 精确的导出框到了：成片按导出的宽高比显示（半分辨率的成片比例和导出差一点，边框里的洞是导出的比例）。框到之前仍是成片自己的比例。
+  view.gpuAspect = exact && view.gpuExport ? view.gpuExport.w / view.gpuExport.h : null;
+  engine.setDisplayAspect(view.gpuAspect);
   ed.error = null;
   ed.busy = false;
   prefetch(view);
   return 'gpu';
 }
 
+// 导出时的画面（转正后、纠正之前）的像素：RAW 是全尺寸，相机 JPG 就是它自己
+function exportFrame(info, base, layer) {
+  return base === 'raw' ? { w: info.raw.full[0], h: info.raw.full[1] } : layer;
+}
+
+// 透视 / 畸变的成片在全尺寸上的裁切框，只给边框和时间戳的版面用（要和导出的照片同样大）。不挡画面：没到之前先用估计，到了再重画。
+function fullBox(id, size, g, crop, rerun) {
+  const key = boxKey(id, size.w, size.h, g, crop);
+  const hit = boxes.get(key);
+  if (hit) return hit;
+  if (!failed.has(`box:${key}`)) ensureBox(id, size.w, size.h, g, crop)?.then(rerun, rerun);
+  return null;
+}
+
 function boxFor(view, id, layer, ctx, rerun) {
   // 成片要裁切框；裁剪页（未裁切）也要有效区，给裁切框的约束用
-  const geometry = { straighten: 0, rotate90: 0, flip: false, ...(ctx.geometry || {}) };
-  const g = { straighten: geometry.straighten || 0, rotate90: geometry.rotate90 || 0, flip: !!geometry.flip };
+  const g = normalGeometry(ctx.geometry);
   const crop = ctx.stage === 'final' ? ctx.crop || null : null;
-  const identity = !g.straighten && !(g.rotate90 % 4) && !g.flip;
+  const identity = !g.straighten && !expands(g) && !(g.rotate90 % 4) && !g.flip;
   const plain = !crop || (crop.rect && crop.rect.join(',') === '0,0,1,1');
   if (identity && plain) return { box: null, valid: [0, 0, 1, 1] };
+  // 透视 / 畸变，裁剪页：拖滑块每一步都是新的几何，有效区在浏览器里算，不等服务器
+  if (expands(g) && ctx.stage !== 'final' && warpApi) return { box: null, valid: warpValid(warpApi, g, layer.w, layer.h) };
   const key = boxKey(id, layer.w, layer.h, g, crop);
   const hit = boxes.get(key);
   if (hit) return hit;
@@ -326,6 +345,7 @@ function boxFor(view, id, layer, ctx, rerun) {
 function full(info, base, layer, g) {
   const swap = (g.rotate90 || 0) % 2 === 1;
   const size = base === 'raw' ? layerSize(info, base) : { fw: layer.w, fh: layer.h };
+  if (expands(g) && warpApi) return warpCanvas(warpApi, g, size.fw, size.fh); // 透视 / 畸变扩大画布：按全尺寸算（和导出同一个 _expanded_bounds）
   return swap ? { w: size.fh, h: size.fw } : { w: size.fw, h: size.fh };
 }
 
@@ -371,9 +391,22 @@ export function gpuCanvas(view, maxW, maxH, { natural = false } = {}) {
   }
   const size = engine.finalSize();
   if (!size) return null;
-  const scale = natural ? 1 / (globalThis.devicePixelRatio || 1) : Math.min(maxW / size.w, maxH / size.h);
-  canvas.style.width = `${Math.max(1, Math.floor(size.w * scale))}px`;
-  canvas.style.height = `${Math.max(1, Math.floor(size.h * scale))}px`;
+  // 成片按导出的宽高比显示时（view.gpuAspect，见 route）：画布的 CSS 框也是这个比例，宽度不变、高度跟着，引擎把成片拉伸进去
+  const aspect = view.gpuActive === 'final' && view.gpuAspect ? view.gpuAspect : null;
+  let cssW;
+  let cssH;
+  if (aspect) {
+    cssW = natural ? size.w / (globalThis.devicePixelRatio || 1) : Math.min(maxW, maxH * aspect);
+    cssH = cssW / aspect;
+  } else {
+    const scale = natural ? 1 / (globalThis.devicePixelRatio || 1) : Math.min(maxW / size.w, maxH / size.h);
+    cssW = size.w * scale;
+    cssH = size.h * scale;
+  }
+  canvas.style.width = `${Math.max(1, Math.floor(cssW))}px`;
+  canvas.style.height = `${Math.max(1, Math.floor(cssH))}px`;
+  if (aspect) canvas.dataset.aspect = String(aspect);
+  else delete canvas.dataset.aspect;
   canvas.setAttribute('aria-label', view.photo.name);
   engine.attach(canvas);
   engine.redraw();

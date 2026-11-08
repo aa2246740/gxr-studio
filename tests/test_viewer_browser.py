@@ -150,6 +150,7 @@ def check(out):
         assert stage["deco"] == stage["pv"], (name, stage)  # 叠加层和整张成片一样大
         assert stage["pv"][0] >= stage["media"][0] and stage["pv"][1] > stage["media"][1], (name, stage)  # 徕卡的条在下面：成片比照片高
     assert live_out["next"] and live_out["next"]["framed"] is False and live_out["next"]["overlay"] is False, live_out["next"]
+    assert live_out["quiet"] is True, "点样式之前舞台一直没有安静下来（30 秒内一直有出图在路上或刚发出）：没法判断点击有没有引起出图"
     assert_painted_at_once(live_out)
     print_timings(out)
 
@@ -181,7 +182,7 @@ def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     live_out = out["live"]
     assert all(live_out["styleFramed"].values()) and len(live_out["styleFramed"]) == 6, live_out
     assert live_out["stampOn"]["overlay"] is True, live_out
-    assert live_out["clickRenders"] == 0, live_out
+    assert live_out["clickRenders"] == 0, f"点样式、改选项时发出了 /render：{live_out['renderUrls']}"
 
 
 def test_rotate_after_auto_and_one_press_undo_in_a_real_browser(live, tmp_path):
@@ -204,6 +205,18 @@ def test_rotate_after_auto_and_one_press_undo_in_a_real_browser(live, tmp_path):
     assert out["autoPaused"] == 1, "分析中再点一下不该再发请求"
     assert any("已自动拉直 +4.0°、垂直 +60（可以撤销）" in t for t in fx["autoAfter"]["toasts"]), fx["autoAfter"]
     assert fx["autoAfter"]["restored"] is True
+
+
+def test_frame_clicks_send_no_render_even_when_the_stage_render_is_slow(live, tmp_path):  # noqa: F811
+    """点样式、改颜色、开日期戳、打字，一个 /render 也不发：数的是点下去之后「发出」的，不是「回来」的。
+    离开裁剪页时舞台会发一个出图（stage=final&size=full）；服务器慢的时候（CI 上一帧要 100 多毫秒）它在点击期间才回来，
+    原来数「回来」的 resource timing，就把它算到点击头上，测试偶尔得到「1 == 0」。VIEWER_DELAY_RENDER_MS 让舞台的出图慢 1 秒才回来，
+    每次都能重现；现在先等舞台安静再开始数，数发出的，不受影响。点击也照样当帧画出来（图已经在了，边框当场叠上去）。"""
+    out = drive(live, tmp_path, "server", {"VIEWER_DELAY_RENDER_MS": "1000"})
+    live_out = out["live"]
+    assert live_out["quiet"] is True, live_out
+    assert live_out["clickRenders"] == 0, f"点样式、改选项时发出了 /render：{live_out['renderUrls']}"
+    assert all(c["changed"] for c in live_out["clicks"]), [c for c in live_out["clicks"] if not c["changed"]]
 
 
 def cannot_present(out: dict) -> bool:
@@ -230,7 +243,7 @@ def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
     live_out = out["live"]
     # 加了边框和时间戳以后显卡还在管：还是 .gpu 画面，拖滑块的整个过程里一个 /render 也没有
     assert live_out["gpu"] is True, live_out
-    assert live_out["dragRenders"] == 0 and live_out["clickRenders"] == 0, live_out
+    assert live_out["dragRenders"] == 0 and live_out["clickRenders"] == 0, f"显卡路径上发出了 /render：{live_out['renderUrls']}"
     assert live_out["frame"]["framed"] is True and live_out["frame"]["overlay"] is True, live_out
     assert live_out["stampOn"]["overlay"] is True, live_out
 
