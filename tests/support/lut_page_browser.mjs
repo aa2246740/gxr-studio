@@ -13,16 +13,22 @@ try {
   let done = false;
   let saved = null;
   let photos = [];
+  let photoRequests = 0;
+  let releasePhotos;
+  const photosReady = new Promise((resolve) => { releasePhotos = resolve; });
+  let photosBlocked = true;
   const candidate = {
     unit: 'jlaunch', slot: 8, amount: 100, levels: { amount: 100 }, similarity: 88, label: '大致',
     holdout: { median: 1.2 }, baseline04_holdout: {}, differences: ['暗部比 LUT 更亮'], entry_sha256: 'a'.repeat(64),
   };
   await page.route('**/api/photos?*', async (route) => {
+    photoRequests++;
     const response = await route.fetch();
     // 和真实 API 一样：unit 是焦距文字；MOUNT 50mm 也不能被当作 A12 50mm。
     photos = (await response.json()).map((p, i) => ({ ...p,
       unit: i < 2 ? '50mm' : '28mm', lens: i === 0 ? 'GXR MOUNT 50mm' : i === 1 ? 'A12 50mm' : 'A12 28mm',
     }));
+    await photosReady;
     await route.fulfill({ json: photos });
   });
   await page.route('**/api/lut/fit', async (route) => {
@@ -65,11 +71,24 @@ try {
     }
   };
   const importLut = async (filename) => {
+    const uploaded = page.waitForResponse((response) => response.url().endsWith('/api/lut/upload'));
+    const importedLibrary = photosBlocked ? page.waitForResponse((response) => response.url().endsWith('/api/luts')) : null;
     await page.getByLabel('导入 LUT', { exact: true }).setInputFiles(path.join(files, filename));
+    await (await uploaded).finished();
+    if (photosBlocked) {
+      await (await importedLibrary).finished();
+      // 导入已返回，等一帧让页面进入照片读取，再放行初始化请求。
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      photosBlocked = false;
+      releasePhotos();
+    }
     await space().waitFor();
   };
 
+  const firstPhotoRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/photos');
   await page.goto(`http://127.0.0.1:${port}/?token=${token}#/recipes`);
+  await firstPhotoRequest;
+  assert.doesNotMatch(await page.locator('.lut-page').innerText(), /^null$/m);
   await importLut('Warm_Street.cube');
   out.default = { ...await choice(), unit: await unit().inputValue() };
   assert.equal(out.default.unit, 'qlaunch', '没有手选时取照片最多的组件');
@@ -133,6 +152,7 @@ try {
   out.narrowOutliers = await page.evaluate(() => [...document.querySelectorAll('body *')]
     .filter((el) => el.getBoundingClientRect().right > innerWidth)
     .slice(0, 12).map((el) => ({ tag: el.tagName, id: el.id, class: el.className })));
+  out.photoRequests = photoRequests;
   assert.equal(out.errors.length, 0, JSON.stringify(out.errors));
   console.log(JSON.stringify(out));
 } finally {

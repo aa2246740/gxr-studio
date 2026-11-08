@@ -81,4 +81,5 @@ def test_lut_defaults_units_save_and_above_fold_in_pinned_browser(live, tmp_path
     assert out["queryUnit"] == "l08firm"
     assert out["invalidQueryUnit"] == "l08firm"
     assert out["narrowOverflow"] is False, out["narrowOutliers"]
+    assert out["photoRequests"] == 1, "初始化与导入应共用同一次照片读取"
     assert out["errors"] == []

@@ -46,6 +46,7 @@ const flow = {
 };
 let root = null;
 let timer = null;
+let photoLoad = null;
 
 const LABELS = { 接近: 'ok', 大致: 'warn', 差别明显: 'bad' };
 const SIM_WORDS = { 接近: '接近', 大致: '大致', 差别明显: '差别明显' };
@@ -102,9 +103,11 @@ function lutLibrary() {
 
 function importSection() {
   const sec = h('section', { class: 'lut-card' }, h('h3', {}, '用 LUT 生成配方'));
+  const report = importResults();
   if (flow.error) sec.append(h('div', { class: 'result bad small' }, flow.error));
   if (!flow.cube) {
-    sec.append(dropzone(), importResults());
+    sec.append(dropzone());
+    if (report) sec.append(report);
     return sec;
   }
   const c = flow.cube;
@@ -127,7 +130,8 @@ function importSection() {
     controls.append(resultBox());
   }
   sec.append(h('details', { class: 'lut-more' }, h('summary', {}, '更多信息（可选）'),
-    h('p', { class: 'small dim' }, `${c.filename || 'LUT'} · ${c.kind} · ${size}`), attributionFields(c, libraryChanged)), importResults());
+    h('p', { class: 'small dim' }, `${c.filename || 'LUT'} · ${c.kind} · ${size}`), attributionFields(c, libraryChanged)));
+  if (report) sec.append(report);
   return sec;
 }
 
@@ -253,6 +257,11 @@ async function resetFlow() {
 
 async function loadPhotos() {
   if (flow.photos) return;
+  if (!photoLoad) photoLoad = readPhotos();
+  return photoLoad;
+}
+
+async function readPhotos() {
   try {
     const all = [];
     for (let offset = 0; ; offset += 5000) {

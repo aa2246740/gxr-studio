@@ -68,6 +68,15 @@ def test_manual_space_wins_on_reimport_and_is_not_labelled_a_guess(client):
     assert repeated["input_space_manual"]
 
 
+def test_output_only_choice_does_not_claim_an_input_space_was_chosen(client):
+    item = upload(client, cube_bytes(), "warm.cube").json()
+    response = client.patch(f"/api/luts/{item['cube_id']}", json={"output_space": "rec709"})
+    assert response.status_code == 200
+    assert response.json()["input_space"] is None
+    assert response.json()["default_input_space"] == "srgb"
+    assert response.json()["default_input_source"] == "fallback"
+
+
 def test_spaces_and_unit_capabilities_are_explicit(client):
     response = client.get("/api/lut/spaces").json()
     assert response["default_input"] == "srgb"

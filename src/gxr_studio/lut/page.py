@@ -14,7 +14,7 @@ def input_choice(item: dict[str, Any]) -> dict[str, Any]:
     space = item.get("input_space")
     evidence = item.get("space_evidence", {})
     declarations = evidence.get("input_declarations", [])
-    if item.get("input_space_manual"):
+    if item.get("input_space_manual") and space:
         source, note = "manual", "使用你选择的输入色彩空间。"
     elif space and declarations:
         source, note = "declared", "按 LUT 文件写明的输入色彩空间选择。"
