@@ -24,14 +24,19 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = "654cbe6"
 
 
-@pytest.fixture
-def real_photo(lib, settings):
+@pytest.fixture(scope="session")
+def real_sample():
     parent = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", ROOT.parent))
     source = parent / "captures/a12-50/2026-10-19/stage2c-first-run/R8051145.JPG"
     if not source.is_file():
         pytest.skip("没有现场 a12-50 样本")
+    return source
+
+
+@pytest.fixture
+def real_photo(lib, settings, real_sample):
     path = lib.root / "sample.JPG"
-    shutil.copyfile(source, path)
+    shutil.copyfile(real_sample, path)
     with Image.open(path) as image:
         w, h = image.size
         if image.getexif().get(274, 1) in (5, 6, 7, 8):
@@ -42,6 +47,23 @@ def real_photo(lib, settings):
 
 def export(lib, settings, render, shot, edit, side, edge=None):
     return export_finish(render, lib, shot, edit, side, settings.export_dir, [], quality=95, long_edge=edge, fmt="jpeg")
+
+
+@pytest.fixture(scope="session")
+def frozen_layout(real_sample, tmp_path_factory):
+    result = subprocess.run(["git", "show", f"{BASE}:src/gxr_studio/finish/layout.py"], cwd=ROOT, capture_output=True, text=True, check=True)
+    frozen = tmp_path_factory.mktemp("output-ratio-baseline") / "baseline_layout.py"
+    frozen.write_text(result.stdout, encoding="utf-8")
+    name = "output_ratio_baseline"
+    spec = importlib.util.spec_from_file_location(name, frozen)
+    module = importlib.util.module_from_spec(spec)
+    module.__package__ = "gxr_studio.finish"  # 解析相对导入，模块本身不属于产品包。
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        sys.modules.pop(name, None)
 
 
 @pytest.mark.parametrize("style", ("gallery", "instant"))
@@ -60,22 +82,14 @@ def test_real_3_by_4_with_frame_and_stamp_matches_the_preflight_size(lib, settin
 
 @pytest.mark.parametrize("style", ("gallery", "leica", "hasselblad", "film", "instant", "canvas"))
 @pytest.mark.parametrize("preset", ("original", "free"))
-def test_real_legacy_frames_export_byte_identically_to_main(lib, settings, real_photo, tmp_path, monkeypatch, style, preset):
+def test_real_legacy_frames_export_byte_identically_to_main(lib, settings, real_photo, frozen_layout, monkeypatch, style, preset):
     """只替换实际主分支的版面函数；编码、EXIF、颜色、裁剪、时间戳与导出全部走真管线。"""
-    result = subprocess.run(["git", "show", f"{BASE}:src/gxr_studio/finish/layout.py"], cwd=ROOT, capture_output=True, text=True, check=True)
-    frozen = tmp_path / "baseline_layout.py"
-    frozen.write_text(result.stdout, encoding="utf-8")
-    name = "gxr_studio.finish._output_ratio_baseline"
-    spec = importlib.util.spec_from_file_location(name, frozen)
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, name, module)
-    spec.loader.exec_module(module)
     render, shot, w, h = real_photo
     crop = default_crop(preset, w, h)
     side = {"crop": crop.to_json()}
     edit = EditState(frame=FrameSpec(style=style, text="Hello"), stamp=StampSpec(enabled=True))
     current = export(lib, settings, render, shot, edit, side)
-    monkeypatch.setattr(frame_mod, "frame_layout", lambda w, h, f, meta, m, preset=None: module.frame_layout(w, h, f, meta, m))
+    monkeypatch.setattr(frame_mod, "frame_layout", lambda w, h, f, meta, m, preset=None: frozen_layout.frame_layout(w, h, f, meta, m))
     previous = export(lib, settings, render, shot, edit, side)
     assert (current.width, current.height) == (previous.width, previous.height)
     assert current.path.read_bytes() == previous.path.read_bytes()
