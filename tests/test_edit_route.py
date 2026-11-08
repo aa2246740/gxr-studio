@@ -711,12 +711,12 @@ def test_retry_after_a_failed_turn_and_a_later_perspective_keeps_the_box(tmp_pat
 
 def test_retrying_a_rejected_drag_keeps_the_users_box(tmp_path):
     """评审 P1（第五轮）：拖的框被服务器拒了（形状不对），重试时不能悄悄换成 fit 收小的框：
-    还是原来的写入、还是被拒，提示出来，界面上的框原样留着；服务器认了（条件变了）才写进去。"""
+    提供明确的恢复选择，界面上的框原样留着；没有用户选择就不再写。"""
     out = run(tmp_path, "retry-rejected-drag", real=("crop.js", "correct.js"))
     mine = [0.2, 0.15, 0.3, 0.6]
     assert out["first"]["puts"] == [["crop", mine, False]] and out["first"]["status"] == "failed" and out["first"]["screen"] == mine
     assert out["retry"] is False
-    assert out["afterRetry"]["puts"] == [["crop", mine, False]], "重试发的还是原来的写入，没有 fit"
+    assert out["afterRetry"]["puts"] == [], "已被拒的框只提供明确选择，不盲重发，也不自动 fit"
     assert out["afterRetry"]["status"] == "failed" and out["afterRetry"]["screen"] == mine
 
 

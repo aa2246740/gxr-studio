@@ -1676,6 +1676,21 @@ if (scenario === 'reset-then-switch') {
     status: preview.saveStatus(PHOTOS.A.id),
     sawNull: requests.some((r) => r.method === 'PUT' && r.url.endsWith('/crop') && r.body.rect === null && r.body.preset === '4:3' && requests.indexOf(r) > requests.length - 8),
   };
+} else if (scenario === 'shape-status-retry') {
+  globalThis.statefulCrop = true;
+  globalThis.cropCheck = () => ({ status: 422, code: 'ratio_mismatch', message: '裁剪比例不符' });
+  await go(`#/photo/${PHOTOS.A.id}`);
+  await tick(5);
+  const saves = await import(file('saves.js'));
+  const v = viewer.currentView();
+  const errors = () => [...document.getElementById('toast-root').children].filter((t) => t.classList.contains('err') && !t.classList.contains('leaving'));
+  await saves.writeSave(saves.saveRecord(PHOTOS.A.id), 'crop', { preset: '4:5', rect: [0.2, 0.15, 0.3, 0.6], orientation: 'portrait' });
+  out.before = { writes: puts(PHOTOS.A.id).length, errors: errors().length };
+  const start = requests.length;
+  for (let i = 0; i < 3; i += 1) { buttonByText('重试', v.saveEl).click(); await tick(5); }
+  out.after = { writes: requests.slice(start).filter((r) => r.method === 'PUT').length, reads: requests.slice(start).filter((r) => r.method === 'GET').length, errors: errors().length, status: saves.saveStatus(PHOTOS.A.id) };
+  out.choices = [...errors().at(-1).querySelectorAll('button')].map((b) => b.textContent);
+  out.focused = document.activeElement.textContent;
 } else if (scenario === 'retry-rejected-drag' || scenario === 'retry-geometry-then-plain-box') {
   // 评审 P1（第五轮）：只重试一个框（拖的、缩放的）时，服务器说形状不对就是不对：照常提示，界面上的框原样留着，
   // 不能悄悄换成收小的框（fit）。只有这次重试刚把这个框对着的几何写进去，才把框当目标让服务器收。
@@ -1785,7 +1800,7 @@ if (scenario === 'reset-then-switch') {
     out.afterGeometry = { boxStale: !!v.boxStale, fit: body().fit === undefined };
   } else if (scenario.startsWith('shape-rejected-then-geometry:')) {
     // 评审第八轮 P1：框被服务器说「本身不对」（形状 / 范围 / 太小 / 坏框）。之后几何写成功了，也不能把它改成 fit 蒙混过去：
-    // 重试仍然是原来的普通写入、仍然被拒，提示出来，界面上的框原样留着；它之后的拖动也不带 fit。
+    // 重试提供两个明确选择，不重发已被拒的框；界面上的框原样留着，它之后的拖动也不带 fit。
     const code = scenario.split(':')[1];
     const reject = { status: 422, code, message: '裁剪框超出画面范围' };
     globalThis.cropCheck = (body) => (body.rect && !body.fit ? reject : null);
@@ -1817,8 +1832,8 @@ if (scenario === 'reset-then-switch') {
     await drag([0.25, 0.2, 0.3, 0.6]);
     out.laterDrag = { puts: puts(mark2), status: preview.saveStatus(PHOTOS.A.id) };
   } else if (scenario.startsWith('shape-rejected-transient-retry:')) {
-    // 评审第九轮 P1：被服务器说「本身不对」的框，重试时碰上一次 500 / 409 / 断网。标记不能被清掉：
-    // 之后几何再写成功，也不能给这个框盖上 fit。下一次重试仍是原来的普通写入、仍然被拒，提示照常，服务器上的框不变。
+    // 评审第九轮 P1：被服务器说「本身不对」的框，用户明确选择 fit 时碰上一次 500 / 409 / 断网。标记不能被清掉：
+    // 之后几何再写成功，也不能给这个框盖上 fit。下一次普通重试只提供选择，服务器上的框不变。
     const [, code, transient] = scenario.split(':');
     const reject = { status: 422, code, message: '裁剪框超出画面范围' };
     globalThis.cropCheck = (body) => (body.rect && !body.fit ? reject : null);
@@ -1833,11 +1848,17 @@ if (scenario === 'reset-then-switch') {
       offline: () => Object.assign(new StubError(0, '无法连接到 GXR Studio。'), { code: 'offline' }),
     }[transient];
     failIf.push((method, url) => (method === 'PUT' && url.endsWith('/crop') ? flaky() : null));
-    out.transientRetry = await preview.retrySaves(PHOTOS.A.id);
-    await tick(6);
-    await dragSlider(30); // 几何又写成功一次：旧代码在这里给被拒的框盖上 fit
     const saves = await import(file('saves.js'));
     const rec = saves.saveRecord(PHOTOS.A.id);
+    const attempt = requests.length;
+    const notice = [...document.getElementById('toast-root').children].findLast((t) => t.classList.contains('err') && !t.classList.contains('leaving'));
+    buttonByText('收进画面', notice).click();
+    await tick(6); await rec.tail; if (rec.retrying) await rec.retrying;
+    out.transientRetry = preview.saveStatus(PHOTOS.A.id) === 'saved';
+    out.transientAttempt = puts(attempt);
+    out.transientCode = rec.failed?.error?.code;
+    await tick(6);
+    await dragSlider(30); // 几何又写成功一次：旧代码在这里给被拒的框盖上 fit
     document.getElementById('toast-root').replaceChildren();
     const mark = requests.length;
     out.retry = await preview.retrySaves(PHOTOS.A.id);
