@@ -312,8 +312,9 @@ try {
   }
   await sleep(1500);
   // 进裁切页：框要出现（显卡预览时画面是画布，框也要有）
-  if (mode === 'panel-frame') {
-    out.panel = await walkPanelLayout({ call, evalIn }, 'frame', [1280, 1440]);
+  if (mode.startsWith('panel-')) {
+    const tab = mode.slice('panel-'.length);
+    out.panel = await walkPanelLayout({ call, evalIn }, tab, tab === 'frame' ? [1280, 1440] : [375, 768, 1024, 1280, 1440]);
     await finish(0);
   }
   if (mode === 'slider-keys') {

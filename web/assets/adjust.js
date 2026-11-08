@@ -60,7 +60,7 @@ export function adjustPanel(view) {
   }
   rows.push(h('div', { class: 'sec' }, '曲线'));
   rows.push(curveEditor(view));
-  rows.push(h('div', { class: 'sticky-foot' }, resetButton(view)));
+  rows.push(h('div', { class: 'foot' }, resetButton(view)));
   return h('div', { class: 'pane edit-panel' }, ...rows);
 }
 

@@ -7,3 +7,9 @@ def test_frame_default_button_never_overlaps_the_canvas_card(live, tmp_path):  #
     out = drive(live, tmp_path, "panel-frame")
     for row in out["panel"]:
         assert all(s["gap"] >= 6 for s in row["samples"]), row
+
+
+def test_adjust_reset_never_overlaps_the_curve_at_any_panel_size(live, tmp_path):  # noqa: F811
+    out = drive(live, tmp_path, "panel-adjust")
+    for row in out["panel"]:
+        assert all(s["gap"] >= 6 for s in row["samples"]), row
