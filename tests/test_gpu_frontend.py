@@ -213,8 +213,10 @@ def test_engine_replaces_and_frees_resources_with_the_same_key(tmp_path):
         "e.addBake('K', meta, new ArrayBuffer(64)); const first = made[made.length - 1];\n"
         "e.addBake('K', meta, new ArrayBuffer(64));\n"
         "const sameBake = { firstDestroyed: first.destroyed, bakes: e.stats().bakes, extra: live('buffer').length - base.buffer };\n"
-        "for (let i = 0; i < 30; i++) e.addBake('B' + i, meta, new ArrayBuffer(64));\n"
-        "const bakeCap = { bakes: e.stats().bakes, extra: live('buffer').length - base.buffer };\n"
+        "e.setLook({ recipe: 'K' });\n"  # 舞台正在用的那张（配方卡片会一次装进几十张，不能把它挤掉）
+        "for (let i = 0; i < 80; i++) e.addBake('B' + i, meta, new ArrayBuffer(64));\n"
+        "const bakeCap = { bakes: e.stats().bakes, extra: live('buffer').length - base.buffer,\n"
+        "  inUseKept: e.hasBake('K'), oldestDropped: !e.hasBake('B0') };\n"
         "const lut8 = { n: 256, display: true, table8: true };\n"
         "e.addLut('L', lut8, new ArrayBuffer(16)); const lutFirst = made[made.length - 1];\n"
         "e.addLut('L', lut8, new ArrayBuffer(16)); const lutSecond = made[made.length - 1];\n"
@@ -225,6 +227,6 @@ def test_engine_replaces_and_frees_resources_with_the_same_key(tmp_path):
         "console.log(JSON.stringify({ sameBake, bakeCap, sameLut, lutCap }));\n",
     )
     assert out["sameBake"] == {"firstDestroyed": True, "bakes": 1, "extra": 1}
-    assert out["bakeCap"] == {"bakes": 24, "extra": 24}
+    assert out["bakeCap"] == {"bakes": 64, "extra": 64, "inUseKept": True, "oldestDropped": True}
     assert out["sameLut"] == {"firstDestroyed": True, "format": "rgba8unorm", "luts": 1}
     assert out["lutCap"] == {"luts": 3, "oldestDestroyed": True, "extra": 3, "floatFormat": "rgba32float"}

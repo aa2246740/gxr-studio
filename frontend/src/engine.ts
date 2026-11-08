@@ -148,6 +148,14 @@ const MAX_SOURCE_BYTES = 640 << 20;
 // 画布外的空白：设计系统的舞台灰 --stage-dark #2a2a2a
 const STAGE_GRAY = 0x2a / 255;
 
+function canvasSizeOf(g: Geometry, src: { w: number; h: number }): { w: number; h: number } {
+  return rotatedSize(canvasOf(g, src.w, src.h), ((g.rotate90 % 4) + 4) % 4);
+}
+
+function finalSizeOf(g: Geometry, src: { w: number; h: number }): { w: number; h: number } {
+  return g.box ? { w: g.box[2], h: g.box[3] } : canvasSizeOf(g, src);
+}
+
 function mul3(a: Mat3, b: Mat3): Mat3 {
   return a.map((row) => [0, 1, 2].map((j) => row[0] * b[0][j] + row[1] * b[1][j] + row[2] * b[2][j])) as Mat3;
 }
@@ -361,7 +369,8 @@ export class Engine {
     const buf = this.device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.device.queue.writeBuffer(buf, 0, data);
     this.bakes.set(key, { meta, buf });
-    this.trim(this.bakes, 24, (b) => b.buf.destroy());
+    // 配方卡片会一次装进几十张表：舞台正在用的那张不能被挤掉（挤掉了下一帧的颜色就画不出来）
+    this.trim(this.bakes, 64, (b) => b.buf.destroy(), this.look.recipe);
   }
 
   addLut(key: string, meta: LutMeta, data: ArrayBuffer): void {
@@ -383,12 +392,12 @@ export class Engine {
     this.trim(this.luts, 3, (l) => l.tex.destroy()); // 精确表每张 64 MB
   }
 
-  private trim<T>(map: Map<string, T>, max: number, drop: (v: T) => void): void {
-    while (map.size > max) {
-      const first = map.entries().next().value;
-      if (!first) break;
-      drop(first[1]);
-      map.delete(first[0]);
+  private trim<T>(map: Map<string, T>, max: number, drop: (v: T) => void, keep: string | null = null): void {
+    for (const [k, v] of map) {
+      if (map.size <= max) break;
+      if (k === keep) continue;
+      drop(v);
+      map.delete(k);
     }
   }
 
@@ -460,15 +469,13 @@ export class Engine {
   /** 未裁切的画布尺寸（拉直、透视、畸变、旋转之后；颜色层像素）。 */
   canvasSize(): { w: number; h: number } | null {
     const src = this.current;
-    if (!src) return null;
-    return rotatedSize(canvasOf(this.geometry, src.w, src.h), ((this.geometry.rotate90 % 4) + 4) % 4);
+    return src ? canvasSizeOf(this.geometry, src) : null;
   }
 
   /** 成片尺寸（拉直、透视、畸变、旋转、裁切之后）。 */
   finalSize(): { w: number; h: number } | null {
-    const box = this.geometry.box;
-    if (box) return this.current ? { w: box[2], h: box[3] } : null;
-    return this.canvasSize();
+    const src = this.current;
+    return src ? finalSizeOf(this.geometry, src) : null;
   }
 
   private schedule(): void {
@@ -479,22 +486,22 @@ export class Engine {
     });
   }
 
-  private lutState(src: Source): { mode: number; lut: Lut | null } {
-    const lut = this.look.lut ? this.luts.get(this.look.lut) ?? null : null;
+  private lutState(src: Source, look: Look = this.look): { mode: number; lut: Lut | null } {
+    const lut = look.lut ? this.luts.get(look.lut) ?? null : null;
     if (src.kind === 'jpg') return { mode: lut ? 4 : 3, lut };
     if (!lut) return { mode: 0, lut: null };
     return { mode: lut.meta.display ? 1 : 2, lut };
   }
 
-  private writeUniform(src: Source, bake: Bake | null, lut: Lut | null, mode: number): void {
-    const a = this.look.adjust;
+  private writeUniform(src: Source, bake: Bake | null, lut: Lut | null, mode: number, look: Look = this.look): void {
+    const a = look.adjust;
     const u = new Float32Array(UNIFORM_FLOATS);
     const gains = channelGains(a) ?? [1, 1, 1];
     u.set([...gains, 0], 0);
-    const table = displayTable(a, this.look.curve);
+    const table = displayTable(a, look.curve);
     if (table) this.device.queue.writeBuffer(this.toneBuf, 0, table);
     const anyBase = Boolean(a.exposure_ev || a.wb?.warm || a.wb?.tint || table);
-    u.set([table ? 1 : 0, mode, anyBase ? 1 : 0, this.look.lutStrength], 4);
+    u.set([table ? 1 : 0, mode, anyBase ? 1 : 0, look.lutStrength], 4);
     u.set([a.black_point ?? 0, a.saturation ?? 0, a.vibrance ?? 0, a.vignette ?? 0], 8);
     u.set([src.w, src.h, 0, 0], 12);
     if (bake) {
@@ -534,14 +541,14 @@ export class Engine {
     }
   }
 
-  private encodeColor(enc: GPUCommandEncoder, src: Source): boolean {
-    const { mode, lut } = this.lutState(src);
+  private encodeColor(enc: GPUCommandEncoder, src: Source, look: Look = this.look, target: GPUTexture | null = this.colorTex): boolean {
+    const { mode, lut } = this.lutState(src, look);
     const needsBake = mode === 0 || mode === 1;
-    const bake = this.look.recipe ? this.bakes.get(this.look.recipe) ?? null : null;
+    const bake = look.recipe ? this.bakes.get(look.recipe) ?? null : null;
     if (needsBake && !bake) return false;
-    if (this.look.lut && !lut) return false;
+    if (look.lut && !lut) return false;
     if (mode === 2 && !src.scene) return false;
-    this.writeUniform(src, bake, lut, mode);
+    this.writeUniform(src, bake, lut, mode, look);
     const d = this.device;
     const anyBake = bake ?? this.bakes.values().next().value;
     const recBuf = anyBake ? anyBake.buf : this.toneBuf;
@@ -561,7 +568,7 @@ export class Engine {
       layout: this.colorPipe.getBindGroupLayout(1),
       entries: [{ binding: 0, resource: rawView }, { binding: 1, resource: jpgView }],
     });
-    const pass = enc.beginRenderPass({ colorAttachments: [{ view: this.colorTex!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: target!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
     pass.setPipeline(this.colorPipe);
     pass.setBindGroup(0, g0);
     pass.setBindGroup(1, g1);
@@ -576,8 +583,7 @@ export class Engine {
     return this.dummyRaw.createView();
   }
 
-  private encodeGeo(enc: GPUCommandEncoder, src: Source, fw: number, fh: number): void {
-    const g = this.geometry;
+  private encodeGeo(enc: GPUCommandEncoder, src: Source, fw: number, fh: number, from: GPUTexture | null = this.colorTex, to: GPUTexture | null = this.finalTex, g: Geometry = this.geometry): void {
     const th = (g.straighten * Math.PI) / 180;
     const turns = ((g.rotate90 % 4) + 4) % 4;
     const canvas = canvasOf(g, src.w, src.h);
@@ -592,11 +598,11 @@ export class Engine {
       l.radial, l.sv, l.sh, l.halfDiag,
       canvas.minx, canvas.miny, canvas.expanded ? 1 : 0, 0,
     ]));
-    const pass = enc.beginRenderPass({ colorAttachments: [{ view: this.finalTex!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: to!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
     pass.setPipeline(this.geoPipe);
     pass.setBindGroup(0, this.device.createBindGroup({
       layout: this.geoPipe.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.geoUniform } }, { binding: 1, resource: this.colorTex!.createView() }],
+      entries: [{ binding: 0, resource: { buffer: this.geoUniform } }, { binding: 1, resource: from!.createView() }],
     }));
     pass.draw(3);
     pass.end();
@@ -617,12 +623,11 @@ export class Engine {
   }
 
   /** 第三遍画到指定的目标（画布的当前纹理，或测试读回用的离屏纹理）。 */
-  private presentTo(enc: GPUCommandEncoder, target: GPUTextureView, cw: number, ch: number, fw: number, fh: number): void {
+  private presentTo(enc: GPUCommandEncoder, target: GPUTextureView, cw: number, ch: number, fw: number, fh: number, from: GPUTexture | null = this.finalTex, o: ClipOverlay = this.clipOverlay, aspect: number | null = this.displayAspect): void {
     let sx = Math.max(fw / cw, fh / ch);
     let sy = sx;
     let ox = (cw - fw / sx) / 2;
     let oy = (ch - fh / sy) / 2;
-    const aspect = this.displayAspect;
     if (aspect !== null) {
       // 成片要显示成另一个宽高比（透视 / 畸变：导出的照片比半分辨率的成片比例略有不同）：显示矩形取这个比例，成片纹理横竖各自拉伸进去
       const dw = Math.min(cw, ch * aspect);
@@ -632,7 +637,6 @@ export class Engine {
       ox = (cw - dw) / 2;
       oy = (ch - dh) / 2;
     }
-    const o = this.clipOverlay;
     this.device.queue.writeBuffer(this.presentUniform, 0, new Float32Array([
       sx, ox, oy, STAGE_GRAY,
       fw, fh, sy, 0,
@@ -642,7 +646,7 @@ export class Engine {
     pass.setPipeline(this.presentPipe);
     pass.setBindGroup(0, this.device.createBindGroup({
       layout: this.presentPipe.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.presentUniform } }, { binding: 1, resource: this.finalTex!.createView() }, { binding: 2, resource: this.sampler }],
+      entries: [{ binding: 0, resource: { buffer: this.presentUniform } }, { binding: 1, resource: from!.createView() }, { binding: 2, resource: this.sampler }],
     }));
     pass.draw(3);
     pass.end();
@@ -778,6 +782,15 @@ export class Engine {
     this.encodeGeo(enc, src, size.w, size.h);
     const target = d.createTexture({ size: [cw, ch], format: this.format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
     this.presentTo(enc, target.createView(), cw, ch, size.w, size.h);
+    const data = await this.readTarget(enc, target, cw, ch);
+    this.dirtyColor = true;
+    this.schedule();
+    return { w: cw, h: ch, data };
+  }
+
+  /** 把 enc 里已经画好的 target（显示格式）读回成 RGBA。读完销毁 target。 */
+  private async readTarget(enc: GPUCommandEncoder, target: GPUTexture, cw: number, ch: number): Promise<Uint8Array> {
+    const d = this.device;
     const bpr = Math.ceil((cw * 4) / 256) * 256;
     const buf = d.createBuffer({ size: bpr * ch, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     enc.copyTextureToBuffer({ texture: target }, { buffer: buf, bytesPerRow: bpr }, [cw, ch]);
@@ -799,9 +812,42 @@ export class Engine {
     buf.unmap();
     buf.destroy();
     target.destroy();
-    this.dirtyColor = true;
-    this.schedule();
-    return { w: cw, h: ch, data: out };
+    return out;
+  }
+
+  private scratch(tex: GPUTexture | null, w: number, h: number): GPUTexture {
+    if (tex && tex.width === w && tex.height === h) return tex;
+    tex?.destroy();
+    return this.device.createTexture({ size: [w, h], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+  }
+
+  private thumbColor: GPUTexture | null = null;
+  private thumbFinal: GPUTexture | null = null;
+
+  /**
+   * 配方卡片的小图：给定的源图、颜色（配方 / LUT / 调整 / 曲线）和几何，画一张长边 maxEdge 个像素的小图。
+   * 三遍和舞台一样（颜色 → 几何 → 缩小，缩小用同一个显示遍），画到自己的纹理里：不碰舞台的纹理，也不看舞台现在显示什么，
+   * 所以舞台在画别的、或还在用相机 JPG 时也能给 RAW 的另一个配方出图。aspect：成片显示的宽高比（null = 成片自己的比例）。
+   * 源图或配方表（LUT）还没到、设备丢了返回 null。
+   */
+  async thumb(opts: { source: string; look: Partial<Look>; geometry: Geometry; aspect: number | null; maxEdge: number }): Promise<{ w: number; h: number; data: Uint8Array } | null> {
+    const src = this.sources.get(opts.source);
+    if (!src || this.lost) return null;
+    const size = finalSizeOf(opts.geometry, src);
+    const maxEdge = opts.maxEdge;
+    const d = this.device;
+    this.thumbColor = this.scratch(this.thumbColor, src.w, src.h);
+    this.thumbFinal = this.scratch(this.thumbFinal, size.w, size.h);
+    const enc = d.createCommandEncoder();
+    if (!this.encodeColor(enc, src, { ...this.look, ...opts.look }, this.thumbColor)) return null;
+    this.encodeGeo(enc, src, size.w, size.h, this.thumbColor, this.thumbFinal, opts.geometry);
+    const aspect = opts.aspect ?? size.w / size.h;
+    const cw = Math.max(1, Math.round(aspect >= 1 ? maxEdge : maxEdge * aspect));
+    const ch = Math.max(1, Math.round(aspect >= 1 ? maxEdge / aspect : maxEdge));
+    const target = d.createTexture({ size: [cw, ch], format: this.format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    this.presentTo(enc, target.createView(), cw, ch, size.w, size.h, this.thumbFinal, { shadow: false, highlight: false }, opts.aspect);
+    const data = await this.readTarget(enc, target, cw, ch);
+    return { w: cw, h: ch, data };
   }
 
   /** 显卡吞吐：同一帧（颜色 + 几何）连续提交 n 次的平均毫秒。 */
@@ -831,6 +877,8 @@ export class Engine {
 
   dispose(): void {
     this.detach();
+    this.thumbColor?.destroy();
+    this.thumbFinal?.destroy();
     for (const s of this.sources.values()) s.tex.destroy();
     for (const b of this.bakes.values()) b.buf.destroy();
     for (const l of this.luts.values()) l.tex.destroy();

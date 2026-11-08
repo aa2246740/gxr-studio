@@ -426,6 +426,51 @@ export function gpuSnapshot(use) {
   return use(canvas);
 }
 
+// ---- 配方卡片（look_cards.js） ------------------------------------------------------
+// 用显卡按另一个配方画这张照片的一张小图（长边 edge 个像素），颜色、几何、调整和曲线取 ctx（和舞台同一份草稿，preview.js 的 gpuContext）。
+// 小图画在引擎自己的纹理里，不看也不动舞台现在显示什么。返回：
+//   { w, h, data }  画好了（RGBA 字节）
+//   'wait'          照片信息、引擎、RAW、配方表或裁切框还没到（缺的这里会去取，取到之前先回这个）：过一会儿再问
+//   null            显卡做不了这一张（没有显卡、只有 JPG、RAW 写法特殊……）：改用服务器出小图
+export async function lookThumb(view, ctx, recipe, edge) {
+  if (disabled || !flagOn()) return null;
+  const ed = view.ed;
+  const info = view.gpuInfo;
+  const id = view.photo.id;
+  const gen = generation;
+  if (!ed || !info || view.gpuInfoId !== `${id}@${gen}`) return 'wait';
+  if (!info.enabled) return null;
+  if (!engine) return 'wait';
+  if (ed.lut && !lutMeta.has(ed.lut)) return failed.has(`lut:${ed.lut}`) ? null : 'wait';
+  const plan = decide(ed, info, 'final', recipe, ed.lut ? (lutMeta.get(ed.lut).table8 ? 'srgb' : 'log') : null);
+  if (!plan || plan.base !== 'raw' || plan.recipe === undefined) return null;
+  const sKey = sourceKey(id, info, 'raw');
+  const url = bakeUrl(id, plan.recipe);
+  if (failed.has(sKey) || failed.has(url)) return null;
+  const loads = [ensureSource(id, info, 'raw'), ensureBake(id, plan.recipe)].filter(Boolean);
+  if (loads.length) {
+    try {
+      await Promise.all(loads);
+    } catch {
+      return null;
+    }
+  }
+  const meta = bakeMeta.get(url);
+  if (gen !== generation || view.ed !== ed || view.disposed || !engine || !meta || !engine.hasBake(meta.key) || !engine.hasSource(sKey)) return 'wait';
+  const g = normalGeometry(ctx.geometry);
+  const box = boxFor(view, id, engine.sourceSize(sKey), ctx, () => {});
+  if (box === 'wait') return 'wait';
+  if (box === 'server') return null;
+  const out = await engine.thumb({
+    source: sKey,
+    look: { recipe: meta.key, lut: plan.lut ? lutMeta.get(plan.lut).key : null, lutStrength: 1, adjust: ctx.adjust, curve: ctx.curve },
+    geometry: { ...g, box: box.box },
+    aspect: view.gpuAspect || null,
+    maxEdge: edge,
+  });
+  return out && gen === generation && view.ed === ed ? out : out ? 'wait' : null;
+}
+
 // 直方图要在引擎的成片纹理上数（histogram.js）；引擎还没建好、或这台电脑走服务器出图时是 null
 export function gpuEngine() {
   return engine;
