@@ -501,18 +501,26 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .knob { margin: 4px 0; }
 .knob-tag-line { display: flex; gap: 6px; margin-bottom: 2px; }
 
-/* 配方格（内置 / Looks / 我的配方） */
-.base-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 6px; margin: 4px 0; }
-.base-grid .btn {
-  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 5px; height: auto; min-height: 0; padding: 0;
-  background: transparent; box-shadow: none; color: var(--text-2); font: var(--fw-regular) var(--fs-small)/15px var(--font-ui); white-space: normal; text-align: center;
-}
-.base-grid .btn:hover { background: transparent; box-shadow: none; }
-.base-grid .btn:active { transform: none; }
-.base-grid .btn .nm { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.base-grid .btn[aria-pressed="true"] .nm { color: var(--text-1); font-weight: var(--fw-medium); }
-.base-grid .btn[aria-pressed="true"] { background: transparent; }
-.base-grid .btn[aria-disabled="true"] { opacity: 0.45; background: transparent; box-shadow: none; }
+/* 配方卡片（内置 / Looks / 我的配方）：和边框卡片同一套，下面多一行说明 */
+.look-group { margin: 4px 0; }
+.lcards { margin: 4px 0; }
+.lcard { cursor: pointer; }
+.lcard .thumb.off { background: var(--gray-850); }
+.lcard .nm, .lcard .ds { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lcard .ds { margin-top: -3px; color: var(--text-3); font-size: 11px; line-height: 14px; }
+.lcard[aria-pressed="true"] .thumb::after { content: "✓"; position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-text); color: var(--gray-900); font-size: 12px; line-height: 18px; text-align: center; }
+.lcard:focus-visible { outline: none; }
+.lcard:focus-visible .thumb { box-shadow: 0 0 0 2px var(--text-1); }
+.lcard[aria-pressed="true"]:focus-visible .thumb { box-shadow: 0 0 0 2px var(--accent-text), 0 0 0 4px var(--text-1); }
+.lcard[aria-disabled="true"] { cursor: default; }
+.cur-look { margin: 2px 0 6px; }
+.cur-look .strong { color: var(--text-1); font-weight: var(--fw-medium); }
+.calib-note { margin-top: 2px; }
+.other-units { margin-top: 8px; }
+.other-list { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 6px; }
+.other-recipe { display: grid; gap: 1px; opacity: 0.55; }
+.other-recipe .nm { color: var(--text-2); }
+.other-units a { color: var(--accent-text); }
 
 /* 边框卡片 */
 .fcards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 8px; margin: 8px 0; }

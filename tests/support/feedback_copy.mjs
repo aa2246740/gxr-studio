@@ -12,6 +12,8 @@ installDom();
 const walk = (n, acc = []) => { acc.push(n); for (const c of n.children || []) walk(c, acc); return acc; };
 const find = (n, test) => walk(n).find(test);
 const buttonByText = (text, under = document.body) => find(under, (n) => n.tagName === 'BUTTON' && n.textContent.trim() === text);
+// 配方卡片：按名字找（卡片里除了名字还有说明）
+const cardByName = (name, under = document.body) => find(under, (n) => n.tagName === 'BUTTON' && n.classList.contains('lcard') && walk(n).some((c) => c.classList && c.classList.contains('nm') && c.textContent === name));
 const out = {};
 
 const CARD = { id: 'C'.repeat(26), label: 'NO NAME', uuid_state: 'missing' };
@@ -211,17 +213,17 @@ if (scenario === 'summary') {
   out.text = el.textContent;
   out.secs = walk(el).filter((n) => n.classList && n.classList.contains('sec')).map((n) => n.textContent);
   out.sources = walk(el).filter((n) => n.classList && n.classList.contains('sec-source')).map((n) => n.textContent);
-  const btn = buttonByText('Kodak 风', el);
-  out.hasOtherUnit = !!buttonByText('别的单元', el);
+  const btn = cardByName('Kodak 风', el);
+  out.hasOtherUnit = !!cardByName('别的单元', el);
   out.mineTitle = btn && btn.getAttribute('title');
-  out.cameraTitle = buttonByText('FCC-001', el).getAttribute('title');
+  out.cameraTitle = cardByName('FCC-001', el).getAttribute('title');
   out.pressedBefore = btn.getAttribute('aria-pressed');
   out.disabled = btn.getAttribute('aria-disabled');
   btn.click();
   await tick(5);
   out.applied = view.ed.recipe ? JSON.parse(JSON.stringify(view.ed.recipe)) : null;
   out.puts = calls.filter((c) => c.method === 'PUT').length;
-  out.pressedAfter = buttonByText('Kodak 风', panel()).getAttribute('aria-pressed');
+  out.pressedAfter = cardByName('Kodak 风', panel()).getAttribute('aria-pressed');
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }
