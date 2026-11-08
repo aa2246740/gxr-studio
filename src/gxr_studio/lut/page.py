@@ -7,6 +7,8 @@ from typing import Any
 
 from .identify import FIELD, guess_space
 
+_SPACE_HINT = re.compile(r"(?<![a-z0-9])(?:(?:apple|red|[afvslcd])[-_ ]?)?(?:log[a-z0-9]*|linear[a-z0-9]*|gamma[a-z0-9]*)", re.I)
+
 
 def input_choice(item: dict[str, Any]) -> dict[str, Any]:
     space = item.get("input_space")
@@ -29,7 +31,7 @@ def _undeclared_choice(item: dict[str, Any], evidence: dict[str, Any], declarati
     if declarations:
         return None, "required", "暂时无法识别文件写明的输入颜色，请按 LUT 的说明选择。"
     naming = f"{item.get('filename', '')} {item.get('title', '')}"
-    if re.search(r"log|linear|gamma", naming, re.I) and not guess_space(item.get("filename", ""), item.get("title", ""))[0]:
+    if _SPACE_HINT.search(naming) and not guess_space(item.get("filename", ""), item.get("title", ""))[0]:
         return None, "required", "无法确定这个 LUT 的输入颜色，请按 LUT 的说明选择。"
     comments = [
         text
@@ -44,6 +46,6 @@ def _undeclared_choice(item: dict[str, Any], evidence: dict[str, Any], declarati
         if evidence.get("content") in (None, kind):
             return space, "guessed", "根据文件注释推测，请核对 LUT 的说明。"
     text = " ".join([item.get("filename", ""), item.get("title", ""), *comments])
-    if guesses or evidence.get("content") == "log" or re.search(r"log|linear|gamma", text, re.I):
+    if guesses or evidence.get("content") == "log" or _SPACE_HINT.search(text):
         return None, "required", "无法确定这个 LUT 的输入颜色，请按 LUT 的说明选择。"
     return "srgb", "fallback", "文件没有写明输入颜色，先用创意 LUT 常用的 sRGB（Rec.709 色域）。请核对 LUT 的说明。"

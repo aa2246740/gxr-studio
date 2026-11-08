@@ -19,7 +19,10 @@ try {
   };
   await page.route('**/api/photos?*', async (route) => {
     const response = await route.fetch();
-    photos = (await response.json()).map((p, i) => ({ ...p, unit: i === 0 ? 'l08firm' : i === 1 ? 'jlaunch' : 'qlaunch' }));
+    // 和真实 API 一样：unit 是焦距文字；MOUNT 50mm 也不能被当作 A12 50mm。
+    photos = (await response.json()).map((p, i) => ({ ...p,
+      unit: i < 2 ? '50mm' : '28mm', lens: i === 0 ? 'GXR MOUNT 50mm' : i === 1 ? 'A12 50mm' : 'A12 28mm',
+    }));
     await route.fulfill({ json: photos });
   });
   await page.route('**/api/lut/fit', async (route) => {

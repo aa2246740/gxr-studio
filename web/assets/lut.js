@@ -11,7 +11,7 @@ import { selectedFiles, droppedFiles, importFiles } from './lut_files.js';
 import { every } from './poll.js';
 import { MY_RECIPES_CHANGED, sourceText } from './my_recipes.js';
 import { delayed, SHOW_AFTER_MS } from './busy.js';
-import { mostUsedUnit, suggestedName, spaceFields, unitFields, unitName, fitSupported, UNIT_NAMES } from './lut_choices.js';
+import { mostUsedUnit, photoUnit, suggestedName, spaceFields, unitFields, unitName, fitSupported, UNIT_NAMES } from './lut_choices.js';
 
 export const RECIPE_APPLY_HINT = '相机关机再开后，按 ADJ 再按 OK 套用上次的配方';
 
@@ -260,10 +260,11 @@ async function loadPhotos() {
       all.push(...page);
       if (page.length < 5000) break;
     }
-    flow.photos = all;
-    const selected = all.find((p) => state.selection.has(p.id));
-    const preferred = flow.unitManual ? flow.unit : mostUsedUnit(all);
-    const photo = selected || all.find((p) => p.unit === preferred && p.has_raw) || all.find((p) => p.unit === preferred) || all[0];
+    flow.photos = all.map((p) => ({ ...p, unit: photoUnit(p) }));
+    const photos = flow.photos;
+    const selected = photos.find((p) => state.selection.has(p.id));
+    const preferred = flow.unitManual ? flow.unit : mostUsedUnit(photos);
+    const photo = selected || photos.find((p) => p.unit === preferred && p.has_raw) || photos.find((p) => p.unit === preferred) || photos[0];
     flow.photoId = photo?.id || '';
     if (!flow.unitManual) flow.unit = Object.hasOwn(UNIT_NAMES, photo?.unit) ? photo.unit : preferred;
   } catch {

@@ -5,6 +5,15 @@ export const UNIT_NAMES = { jlaunch: 'A12 50mm', qlaunch: 'A12 28mm', l08firm: '
 export const unitName = (unit) => Object.hasOwn(UNIT_NAMES, unit) ? UNIT_NAMES[unit] : '未知镜头组件';
 export const fitSupported = (flow) => !!flow.units?.find((unit) => unit.id === flow.unit)?.fit_supported;
 
+// /api/photos 的 unit 是拍摄信息（如 50mm），配方组件按 render.recipes.unit_of_lens 识别。
+export function photoUnit(photo) {
+  const lens = String(photo.lens || '').toLowerCase();
+  if (lens.includes('mount')) return 'l08firm';
+  if (lens.includes('50mm')) return 'jlaunch';
+  if (lens.includes('28mm')) return 'qlaunch';
+  return null;
+}
+
 export function mostUsedUnit(photos) {
   const counts = Object.fromEntries(Object.keys(UNIT_NAMES).map((unit) => [unit, 0]));
   for (const photo of photos) if (Object.hasOwn(counts, photo.unit)) counts[photo.unit]++;

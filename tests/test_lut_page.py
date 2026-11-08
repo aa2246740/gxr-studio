@@ -23,6 +23,8 @@ from test_lut_library import cube_bytes, upload
         ("", "film", "warm_sRGB.cube", "srgb", "guessed"),
         ("# Creative look for V-Log\n", "film", "film.cube", "vlog", "guessed"),
         ("", "warm film", "warm_film.cube", "srgb", "fallback"),
+        ("", "Analog Street", "Analog_Street.cube", "srgb", "fallback"),
+        ("", "Catalog look", "catalog.cube", "srgb", "fallback"),
         ("# Output: Rec.709\n", "warm film", "warm_film.cube", "srgb", "fallback"),
         ("# Input: unsupported\n", "film", "film.cube", None, "required"),
         ("", "FLog2C style", "FLog2C.cube", None, "required"),
