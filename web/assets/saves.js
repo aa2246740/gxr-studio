@@ -22,6 +22,16 @@ const SHAPE_REJECTED = new Set(['ratio_mismatch', 'crop_outside_image', 'bad_rec
 const records = new Map();
 const URLS = { edit: (id) => `/api/photos/${id}/edit`, crop: (id) => `/api/photos/${id}/crop` };
 
+function notifyFailure(rec, fallback = '无法保存修改。') {
+  const crop = rec.failed?.crop;
+  const cropGen = rec.fieldGen.crop || 0;
+  const actions = rec.failed?.cropShape && crop ? [
+    { label: '收进画面', run: () => retrySaves(rec.id, { fitCrop: crop, cropGen }) },
+    { label: '恢复已保存的框', run: () => restoreSavedCrop(rec.id, crop, cropGen) },
+  ] : [{ label: '重试', run: () => retrySaves(rec.id) }];
+  toastError(rec.failed?.error, fallback, { actions });
+}
+
 export function saveRecord(id) {
   let r = records.get(id);
   if (!r) {
@@ -122,7 +132,7 @@ export function writeSave(rec, kind, changes, { onOk = null, onFail = null } = {
       onOk?.(r);
     } catch (e) {
       recordFailure(rec, kind, body, e);
-      if (!(e instanceof Skipped)) toastError(e, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(rec.id) } });
+      if (!(e instanceof Skipped)) notifyFailure(rec);
       onFail?.(e);
       throw e;
     }
@@ -180,9 +190,11 @@ export async function readFresh(id, read, onStale = null) {
 // 正在显示这张照片的视图直接用它更新，不再另外去读（F03；N02：另读一次可能失败，也可能盖掉更新的草稿）。
 // 不等整笔重试都成功：编辑写进去、裁剪又失败时，写进去的编辑也要交给视图（V02）。
 // 字段级判断（V01）：重试排队以后界面又写了某个字段，这个字段以界面为准，其余补写的字段照样采用。
-export function retrySaves(id) {
+export function retrySaves(id, { fitCrop = null, cropGen = null } = {}) {
   const rec = records.get(id);
   if (!rec || !rec.failed) return Promise.resolve(true);
+  const chosenCrop = () => rec.failed?.crop === fitCrop && (rec.fieldGen.crop || 0) === cropGen;
+  if (fitCrop && !chosenCrop()) return Promise.resolve(false);
   if (rec.retrying) return rec.retrying;
   const since = { ...rec.fieldGen };
   const put = async (kind, body) => {
@@ -194,6 +206,7 @@ export function retrySaves(id) {
   };
   const job = async () => {
     if (!rec.failed) return;
+    if (fitCrop && !chosenCrop()) return;
     try {
       rec.rev = (await api(URLS.edit(id))).rev;
       // 读的是执行时的失败记录（排队期间可能已经被新修改去掉了一部分）
@@ -201,7 +214,7 @@ export function retrySaves(id) {
       const wasRejected = !!(rec.failed && rec.failed.cropShape); // 这个框当初就是被服务器说「形状不对」才没写进去的
       if (rec.failed && rec.failed.edit) await put('edit', { ...rec.failed.edit });
       if (rec.failed && rec.failed.crop) {
-        const box = { ...rec.failed.crop };
+        const box = { ...rec.failed.crop, ...(fitCrop ? { fit: true } : {}) };
         try {
           await put('crop', box);
         } catch (e) {
@@ -240,12 +253,41 @@ export function retrySaves(id) {
     if (ok && !rec.failed) {
       toast('修改已保存', 'info');
     } else {
-      toastError(rec.failed && rec.failed.error, '无法保存修改。', { action: { label: '重试', run: () => retrySaves(id) } });
+      notifyFailure(rec);
     }
     announce(rec);
     return ok && !rec.failed;
   });
   return rec.retrying;
+}
+
+// 只丢掉这一笔被拒的裁剪，不动别的未保存编辑。旧提示不能作用在后来排队的新框上。
+function restoreSavedCrop(id, crop, cropGen) {
+  const rec = records.get(id);
+  const current = () => rec?.failed?.crop === crop && (rec.fieldGen.crop || 0) === cropGen;
+  if (!rec || !current()) return Promise.resolve(false);
+  let restored = false;
+  return enqueue(rec, async () => {
+    if (!current()) return;
+    try {
+      const response = await api(URLS.crop(id));
+      if (!current()) return;
+      rec.rev = response.rev;
+      rec.failed.crop = null;
+      rec.failed.cropShape = false;
+      rec.failed.stale = false;
+      if (!rec.failed.edit) rec.failed = null;
+      emit('save-retried', { id, kind: 'crop', response, fields: ['crop'], rev: rec.rev });
+      restored = true;
+    } catch (e) {
+      if (rec.failed) rec.failed.error = e;
+      notifyFailure(rec, '无法读取已保存的裁剪框。');
+      throw e;
+    }
+  }).then((ok) => {
+    if (restored) toast('已恢复保存的裁剪框', 'info');
+    return ok && restored;
+  });
 }
 
 // 几何写进去了，但服务器收过的框读不回来：界面上的框和服务器的不是一个，不能算「已保存」（导出也会拒绝）。
