@@ -10,7 +10,7 @@ import { h } from './dom.js';
 import { apiBlob } from './api.js';
 import { state, on } from './state.js';
 import { cleanLevels, draftBody, gpuContext, recipeInfo, recipeKey, selection } from './preview.js';
-import { lookThumb } from './gpu_stage.js';
+import { lookThumb, thumbWay } from './gpu_stage.js';
 import { Lru, cardKey, sharedKey } from './look_model.js';
 
 const CARD_CSS_EDGE = 150; // 卡片图的长边（CSS 像素）；高分屏按两倍画
@@ -20,6 +20,7 @@ const cache = new Lru(90); // 最近用过的 90 张小图（每张约 0.25 MB�
 
 on('camdata-changed', () => cache.clear());
 on('luts-changed', () => cache.clear());
+on('gpu-pref-changed', () => cache.clear()); // 换了画法：显卡画的和服务器画的不混用
 
 const dpr = () => Math.min(2, globalThis.devicePixelRatio || 1);
 const now = () => (globalThis.performance ? performance.now() : Date.now());
@@ -27,9 +28,10 @@ const now = () => (globalThis.performance ? performance.now() : Date.now());
 // ---- 手有没有在动：拖滑块、拖框、滚面板、敲键盘时不画 ------------------------------------------
 let down = false;
 let lastInput = 0;
+let current = null; // 最新的一副卡片：手按下去时，它在路上的服务器请求要当场取消
 if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
   const stamp = () => { lastInput = now(); };
-  document.addEventListener('pointerdown', () => { down = true; stamp(); }, true);
+  document.addEventListener('pointerdown', () => { down = true; stamp(); current?.abort(); }, true);
   for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, () => { down = false; stamp(); }, true);
   for (const type of ['keydown', 'wheel', 'input']) document.addEventListener(type, stamp, true);
   if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('blur', () => { down = false; });
@@ -69,10 +71,11 @@ export function renderRecipe(view, sel, approx) {
 
 // ---- 一副卡片 ----------------------------------------------------------------------------------
 
-function sharedOf(view, edge) {
+export function sharedOf(view, edge) {
   const ctx = gpuContext(view);
   const shared = sharedKey({
-    photoId: view.photo.id, dataVersion: state.camdata?.dataVersion, edge, lut: view.ed.lut, adjust: ctx.adjust, curve: ctx.curve, geometry: ctx.geometry, crop: ctx.crop,
+    photoId: view.photo.id, dataVersion: state.camdata?.dataVersion, way: thumbWay(view), aspect: view.gpuAspect, edge,
+    lut: view.ed.lut, adjust: ctx.adjust, curve: ctx.curve, geometry: ctx.geometry, crop: ctx.crop,
   });
   return { ctx, shared };
 }
@@ -93,9 +96,9 @@ function failedHolder(holder) {
   holder.replaceChildren(h('span', { class: 'dim small' }, '没有预览'));
 }
 
-async function serverThumb(view, recipe, edge) {
+async function serverThumb(view, recipe, edge, signal) {
   const body = { ...draftBody(view, 'final'), recipe };
-  const { blob } = await apiBlob(`/api/photos/${view.photo.id}/render?stage=final&max_edge=${edge}`, { body });
+  const { blob } = await apiBlob(`/api/photos/${view.photo.id}/render?stage=final&max_edge=${edge}`, { body, signal });
   const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
   canvas.width = bitmap.width;
@@ -116,6 +119,7 @@ class Deck {
     this.dead = false;
     this.timer = 0;
     this.busy = false;
+    this.ctl = null; // 在路上的服务器请求的取消开关
     this.detached = 0;
     this.lastSig = null;
     this.t0 = now();
@@ -203,6 +207,12 @@ class Deck {
   cancel() {
     this.dead = true;
     clearTimeout(this.timer);
+    this.abort();
+  }
+
+  // 手按下去、面板换掉：在路上的服务器小图不再要了（服务器要留给滑块的预览）。被取消的卡片稍后重来，不算失败
+  abort() {
+    this.ctl?.abort();
   }
 
   later(ms) {
@@ -292,19 +302,24 @@ class Deck {
     });
   }
 
-  // 画一张。返回 true = 要等一等再来（舞台还没稳、数据还没到）
+  // 画一张。返回 true = 要等一等再来（舞台还没稳、数据还没到、手按下去了）
   async draw(card, key, ctx) {
     const view = this.view;
     const ed = view.ed;
+    // 这一张还该不该画：卡片没取消、照片没换、没有手在拖。每个 await 之后、花力气的一步之前都要再问
+    const still = () => !this.dead && !view.disposed && view.ed === ed && !down && !view.pending;
+    const ctl = new AbortController();
+    this.ctl = ctl;
     try {
-      let result = ed.v2 ? await lookThumb(view, ctx, card.item.render, this.edge) : null;
+      const result = ed.v2 ? await lookThumb(view, ctx, card.item.render, this.edge, still) : null;
       if (result === 'wait') return true;
       let img;
       if (result) {
         img = { w: result.w, h: result.h, image: new ImageData(new Uint8ClampedArray(result.data.buffer, result.data.byteOffset, result.data.byteLength), result.w, result.h) };
         this.stats.gpu += 1;
       } else if (ed.v2) {
-        img = await serverThumb(view, card.item.render, this.edge);
+        if (!still()) return true;
+        img = await serverThumb(view, card.item.render, this.edge, ctl.signal);
         this.stats.server += 1;
       } else {
         card.failed = key; // 旧版后端没有小图接口
@@ -316,7 +331,7 @@ class Deck {
       card.key = key;
       this.count();
     } catch (e) {
-      if (e && e.name === 'AbortError') return false;
+      if (e && e.name === 'AbortError') return true; // 取消的不算失败，稍后重来
       if (!this.dead && !view.disposed && view.ed === ed) {
         card.failed = key;
         if (!card.key) failedHolder(card.holder);
@@ -364,6 +379,7 @@ export function newDeck(view) {
   view.lookDeck?.cancel();
   const deck = new Deck(view);
   view.lookDeck = deck;
+  current = deck;
   return deck;
 }
 
@@ -371,3 +387,5 @@ export function newDeck(view) {
 export function clearLookCache() {
   cache.clear();
 }
+
+export const lookCacheForTests = cache;

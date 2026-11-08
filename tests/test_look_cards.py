@@ -28,13 +28,29 @@ def scene(name: str) -> dict:
 @needs_node
 def test_descriptions_are_short_and_unknown_looks_get_none():
     out = scene("model")
-    assert out["builtin"] == ["饱和度高，偏暗", "饱和度低，偏亮", "黑白，对比高", "原厂标准色彩", None, None]  # 5–8 是用户空位，不写
+    assert out["builtin"] == ["饱和度高", "饱和度略低", "黑白，对比高", "原厂标准色彩", None, None]  # 5–8 是用户空位，不写
     assert out["known"] == "黑白"
     assert out["unknown"] is None  # 不认识的 Look 不编说明
     assert out["camera"] == "相机里的配方"
     assert out["computerTitled"] == "来自 Portra 400"
     assert out["computerUntitled"] == "用 LUT 生成"
     assert out["longest"] <= out["max"] == 14
+
+
+ALLOWED_WORDS = {"饱和度高", "饱和度低", "饱和度略低", "对比高", "对比低", "偏亮", "偏暗", "偏暖", "黑白", "原厂标准色彩"}
+
+
+@needs_node
+def test_descriptions_only_use_the_words_the_measurement_rule_defines():
+    # look_model.js 表上面的规则只定义了这些词（和阈值）；表里别的说法就是没有依据的
+    out = scene("model")
+    used = {word for text in out["texts"] for word in text.split("，")}
+    assert used <= ALLOWED_WORDS, used - ALLOWED_WORDS
+    model = (ASSETS / "look_model.js").read_text(encoding="utf-8")
+    rules = ("≥ 1.15 → 饱和度高", "0.75–0.9 → 饱和度略低", "≤ 0.75 → 饱和度低", "→ 黑白")
+    rules += ("≥ 1.3 → 对比高", "≤ 0.8 → 对比低", "→ 偏亮", "→ 偏暗", "→ 偏暖")
+    for rule in rules:
+        assert rule in model, rule
 
 
 @needs_node
@@ -56,6 +72,27 @@ def test_card_cache_key_changes_only_with_what_changes_the_picture():
     assert all(out["changes"].values()), out["changes"]  # 照片、相机数据、小图大小、LUT、调整、曲线、几何、裁切、档位、底子
     assert out["ignores"] is True  # 边框、时间戳、选中哪张、换标签
     assert out["lru"] == [1, None, 3, 2]  # 最近用过的留着
+
+
+@needs_node
+def test_cache_key_follows_the_preview_path_and_the_display_aspect():
+    out = scene("shared-key")
+    assert out["stable"] is True
+    assert out["aspectChanges"] is True  # 透视 / 畸变的导出框到了，舞台重新拉伸，卡片也要重画
+    assert out["wayChanges"] is True and out["backAgain"] is True  # 本机关掉显卡预览：显卡画的图不再用；打开又回到原来的键
+    assert out["flagChanges"] is True  # 服务器开关关了
+    assert out["sizeBefore"] == 1 and out["sizeAfter"] == 0  # 换了画法，缓存清掉
+
+
+@needs_node
+def test_a_gesture_aborts_the_server_card_that_is_already_on_its_way():
+    out = scene("drag-aborts")
+    assert out["started"] == 1 and out["signalGiven"] is True  # 请求带取消开关（327c3ea 没有）
+    assert out["abortedAtOnce"] is True  # 手按下去，在路上的请求当场取消
+    assert out["rendersWhileDown"] == 1 and out["paintedWhileDown"] == 0  # 按着的时候不再发新的，也什么都没画
+    assert out["failedWhileDown"] is False  # 取消的不算失败
+    assert out["rendersAfterRelease"] == 2  # 松手以后重来
+    assert out["paintedAfter"] == 1 and out["failedAfter"] is False and out["serverCount"] == 1
 
 
 @needs_node

@@ -23,6 +23,7 @@ if (scenario === 'model') {
   const all = [...Object.values(M.BUILTIN_TEXT), ...Object.values(M.LOOK_TEXT)];
   out.longest = Math.max(...all.map((t) => [...t].length));
   out.max = M.LOOK_TEXT_MAX;
+  out.texts = all;
   const mine = [
     { name: 'a', recipe: { unit: 'jlaunch', slot: 2 } },
     { name: 'b', recipe: { unit: 'qlaunch', slot: 2 } },
@@ -35,7 +36,7 @@ if (scenario === 'model') {
   out.unknownPhoto = M.groupComputer(mine, 'jlaunch', null).other.map((o) => o.reason);
   out.none = M.groupComputer(null, 'jlaunch', 'jlaunch');
   // 缓存键：什么让卡片重画，什么不让
-  const base = { photoId: 'p1', dataVersion: 'v1', edge: 300, lut: null, adjust: { exposure_ev: 0 }, curve: null, geometry: { straighten: 0 }, crop: { rect: [0, 0, 1, 1] } };
+  const base = { photoId: 'p1', dataVersion: 'v1', way: 'gpu', aspect: null, edge: 300, lut: null, adjust: { exposure_ev: 0 }, curve: null, geometry: { straighten: 0 }, crop: { rect: [0, 0, 1, 1] } };
   const recipe = { kind: 'builtin', unit: 'jlaunch', slot: 2, levels: { contrast: 1 } };
   const k = (patch = {}, r = recipe) => M.cardKey(M.sharedKey({ ...base, ...patch }), r);
   const same = k();
@@ -44,6 +45,8 @@ if (scenario === 'model') {
     photo: k({ photoId: 'p2' }) !== same,
     data: k({ dataVersion: 'v2' }) !== same,
     edge: k({ edge: 600 }) !== same,
+    way: k({ way: 'server' }) !== same,
+    aspect: k({ aspect: 1.44 }) !== same,
     lut: k({ lut: 'cube' }) !== same,
     adjust: k({ adjust: { exposure_ev: 1 } }) !== same,
     curve: k({ curve: [[0, 0], [1, 1]] }) !== same,
@@ -60,6 +63,95 @@ if (scenario === 'model') {
   lru.get('a');
   lru.set('c', 3);
   out.lru = [lru.get('a'), lru.get('b'), lru.get('c'), lru.size];
+} else if (scenario === 'shared-key') {
+  // 缓存键里有「现在走哪条路」和「成片显示的宽高比」；换路、设备丢了、本机关掉显卡预览，缓存里显卡画的图不再用
+  const { state, emit } = await import(file('state.js'));
+  const { setGpuPreference } = await import(file('gpu_pref.js'));
+  const cards = await import(file('look_cards.js'));
+  state.settings = { gpu_preview: true };
+  state.camdata = { dataVersion: 'v1' };
+  const view = { photo: { id: 'p' }, stage: 'final', crop: null, ed: { v2: true, adj: {}, curve: null, geometry: {}, lut: null, caps: { recipe: 'full' }, recipe: null } };
+  const key = () => cards.sharedOf(view, 300).shared;
+  const first = key();
+  out.stable = key() === first;
+  view.gpuAspect = 111 / 77; // 透视 / 畸变：导出框到了，舞台按导出的比例重新拉伸
+  const stretched = key();
+  out.aspectChanges = stretched !== first;
+  view.gpuAspect = null;
+  setGpuPreference(false); // 设置里关掉这台电脑的显卡预览
+  const server = key();
+  out.wayChanges = server !== first;
+  setGpuPreference(true);
+  out.backAgain = key() === first;
+  state.settings = { gpu_preview: false }; // 服务器开关关了
+  out.flagChanges = key() !== first;
+  state.settings = { gpu_preview: true };
+  cards.lookCacheForTests.set('x', 1);
+  out.sizeBefore = cards.lookCacheForTests.size;
+  emit('gpu-pref-changed', false);
+  out.sizeAfter = cards.lookCacheForTests.size;
+} else if (scenario === 'drag-aborts') {
+  // 卡片已经通过了「开始画」的检查、服务器小图在路上时手按下去：请求当场取消、什么都不画、不算失败；手松开以后重来
+  globalThis.ImageData = class { constructor(data, w, hh) { this.data = data; this.width = w; this.height = hh; } };
+  const makeElement = document.createElement;
+  document.createElement = (tag) => {
+    const n = makeElement(tag);
+    if (tag === 'canvas') n.getContext = () => ({ putImageData() {}, drawImage() {}, getImageData: (x, y, w, hh) => new ImageData(new Uint8ClampedArray(w * hh * 4), w, hh) });
+    return n;
+  };
+  globalThis.createImageBitmap = async () => ({ width: 8, height: 6, close() {} });
+  const info = (slot, name) => ({ slot, name, is_stock: slot === 4, controls: [{ name: 'amount', label: 'Amount', levels: [0, 50, 100], default: 100 }] });
+  const unit = { id: 'jlaunch', recipes: [info(1, 'GR 正片'), info(2, 'GR 负片')], looks: [], users: [] };
+  const renders = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const json = (data) => ({ ok: true, status: 200, text: async () => JSON.stringify(data), headers: { get: () => null } });
+    if (url.includes('/render?')) {
+      return new Promise((resolve, reject) => {
+        const r = { url, signal: opts.signal, aborted: false, release: () => resolve({ ok: true, status: 200, headers: { get: () => null }, blob: async () => ({}), text: async () => '' }) };
+        renders.push(r);
+        opts.signal?.addEventListener('abort', () => { r.aborted = true; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+      });
+    }
+    if (url === '/api/luts') return json({ luts: [], groups: [] });
+    if (url === '/api/photos/p1/edit') return json({ rev: 1, recipe: null, lut: null, adjust: {}, curve: null, geometry: {}, frame: null, stamp: null, memory: {} });
+    if (url === '/api/photos/p1/capabilities') return json({ raw: true, recipe: 'full', reason: '' });
+    if (url === '/api/photos/p1/crop') return json({ preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, orientation: 'landscape', frame: { width: 3000, height: 2000 }, rev: 1 });
+    if (url === '/api/frames') return json({ styles: [] });
+    if (url === '/api/defaults/finish') return json({ frame: { style: 'none' }, stamp: { enabled: false } });
+    if (url === '/api/my-recipes') return json({ recipes: [] });
+    if (url === '/api/recipes') return json({ status: {}, units: [unit] });
+    return json({});
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const { state } = await import(file('state.js'));
+  const preview = await import(file('preview.js'));
+  const { recipePanel } = await import(file('recipes.js'));
+  state.camdata = { ready: true, state: 'ready' };
+  state.catalog = { units: [unit] };
+  state.settings = { gpu_preview: false }; // 显卡不接：卡片走服务器小图
+  const view = { photo: { id: 'p1', iso: 200, lens: 'GR LENS A12 50mm F2.5 MACRO', has_raw: true, has_jpg: true }, onChange() {}, redrawSide() {} };
+  await preview.ensureEdit(view);
+  const panel = recipePanel(view);
+  document.body.append(panel);
+  const stat = () => ({ ...panel.dataset });
+  for (let i = 0; i < 40 && !renders.length; i++) await wait(25);
+  out.started = renders.length;
+  out.signalGiven = !!(renders[0] && renders[0].signal);
+  document.dispatchEvent(new Event('pointerdown')); // 手按在滑块上
+  await wait(50);
+  out.abortedAtOnce = !!(renders[0] && renders[0].aborted);
+  await wait(500);
+  out.rendersWhileDown = renders.length;
+  out.paintedWhileDown = Number(stat().looksPainted);
+  out.failedWhileDown = panel.textContent.includes('没有预览');
+  document.dispatchEvent(new Event('pointerup'));
+  for (let i = 0; i < 60 && renders.length < 2; i++) await wait(25);
+  out.rendersAfterRelease = renders.length;
+  renders[renders.length - 1]?.release();
+  for (let i = 0; i < 40 && Number(stat().looksPainted) < 1; i++) await wait(25);
+  out.paintedAfter = Number(stat().looksPainted);
+  out.failedAfter = panel.textContent.includes('没有预览');
+  out.serverCount = Number(stat().looksServer);
 } else if (scenario === 'panel' || scenario === 'panel-approx' || scenario === 'panel-mount' || scenario === 'panel-mount-plain' || scenario === 'panel-jpg-none') {
   const approx = scenario === 'panel-approx';
   const mount = scenario.startsWith('panel-mount');
