@@ -127,7 +127,9 @@ def check(out, *, gpu: bool):
     assert "error" not in adjust, adjust
     assert adjust["before"]["looksPainted"] == adjust["during"]["looksPainted"], adjust
     if gpu:
-        assert out["dragAdjustRequests"] == [], out["dragAdjustRequests"]
+        polls = ("/api/camdata/status", "/api/cards")  # 页面自己的定时刷新（15 秒、3 秒一次），和拖动无关
+        sent = [r for r in out["dragAdjustRequests"] if not r.endswith(polls)]
+        assert sent == [], sent
     # 换照片：旧照片的卡片停下（下一张的卡片出到一半时离开，之后不再为它发请求；在路上的那一张最多发完）
     after = out["afterSwitch"]
     assert after["later"] == 0 and after["rightAway"] <= 2, after

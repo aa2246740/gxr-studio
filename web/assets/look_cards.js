@@ -128,7 +128,7 @@ class Deck {
   // render：这张卡片要画的配方（渲染请求里的形状）；没有就不画（灰着的卡片）
   grid(items) {
     const cards = items.map((item) => this.card(item));
-    return h('div', { class: 'fcards lcards' }, cards.map((c) => c.el));
+    return h('div', { class: 'lcards' }, cards.map((c) => c.el));
   }
 
   card(item) {
@@ -136,7 +136,7 @@ class Deck {
     const label = [item.name, item.desc, item.pressed ? '当前配方' : null].filter(Boolean).join('，');
     const el = h('button', {
       type: 'button',
-      class: 'fcard lcard',
+      class: 'lcard',
       'aria-pressed': String(!!item.pressed),
       'aria-disabled': item.disabled ? 'true' : null,
       'aria-label': label,

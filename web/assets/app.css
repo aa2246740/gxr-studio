@@ -501,11 +501,16 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .knob { margin: 4px 0; }
 .knob-tag-line { display: flex; gap: 6px; margin-bottom: 2px; }
 
-/* 配方卡片（内置 / Looks / 我的配方）：和边框卡片同一套，下面多一行说明 */
+/* 配方卡片（内置 / Looks / 我的配方）：样子和边框卡片（下面的 .fcard）一样，下面多一行说明 */
 .look-group { margin: 4px 0; }
-.lcards { margin: 4px 0; }
-.lcard { cursor: pointer; }
+.lcards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 8px; margin: 4px 0; }
+.lcard { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text-2); font-size: var(--fs-small); text-align: center; cursor: pointer; }
+.lcard .thumb { aspect-ratio: 4 / 3; position: relative; border-radius: var(--r-md); background: var(--gray-800); display: grid; place-items: center; overflow: hidden; transition: box-shadow var(--dur-fast); }
+.lcard .thumb canvas { width: 100%; height: 100%; object-fit: contain; display: block; animation: fadein var(--dur-base) var(--ease-standard); }
 .lcard .thumb.off { background: var(--gray-850); }
+.lcard:hover .thumb { box-shadow: 0 0 0 1px var(--line-strong); }
+.lcard[aria-pressed="true"] .thumb { box-shadow: 0 0 0 2px var(--accent-text); }
+.lcard[aria-pressed="true"] .nm { color: var(--text-1); font-weight: var(--fw-medium); }
 .lcard .nm, .lcard .ds { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lcard .ds { margin-top: -3px; color: var(--text-3); font-size: 11px; line-height: 14px; }
 .lcard[aria-pressed="true"] .thumb::after { content: "✓"; position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-text); color: var(--gray-900); font-size: 12px; line-height: 18px; text-align: center; }
