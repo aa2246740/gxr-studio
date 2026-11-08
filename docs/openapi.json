@@ -821,6 +821,98 @@
         "title": "LutPatch",
         "type": "object"
       },
+      "PasteRequest": {
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "groups": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Groups",
+            "type": "array"
+          },
+          "include_state": {
+            "default": false,
+            "title": "Include State",
+            "type": "boolean"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/PasteTarget"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "groups",
+          "targets"
+        ],
+        "title": "PasteRequest",
+        "type": "object"
+      },
+      "PasteTarget": {
+        "properties": {
+          "expected_rev": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Rev"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PasteTarget",
+        "type": "object"
+      },
       "PathRequest": {
         "properties": {
           "path": {
@@ -998,6 +1090,21 @@
           "name"
         ],
         "title": "SaveRecipeRequest",
+        "type": "object"
+      },
+      "UndoRequest": {
+        "properties": {
+          "batch_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "UndoRequest",
         "type": "object"
       },
       "ValidationError": {
@@ -1400,6 +1507,80 @@
           }
         },
         "summary": "Put Finish Defaults"
+      }
+    },
+    "/api/edits/paste": {
+      "post": {
+        "description": "把复制的编辑粘贴到一批照片。每张照片各有结果（用上的组、跳过的组和原因、新的版本）；能用的用，不能用的跳过。",
+        "operationId": "paste_edits_api_edits_paste_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paste Edits"
+      }
+    },
+    "/api/edits/paste/undo": {
+      "post": {
+        "description": "把一批粘贴还原成粘贴之前；粘贴之后又改过的照片不动，结果里说明。",
+        "operationId": "undo_paste_api_edits_paste_undo_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Undo Paste"
       }
     },
     "/api/export": {

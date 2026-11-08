@@ -5,7 +5,9 @@ import { state, emit, on } from './state.js';
 import { toast, modalOpen, closeTopModal, isTyping, toastError, modKey, fmtDate } from './dom.js';
 import { refreshCards, tickImport, loadLatestJob, renderBanner, renderCardStatus, bindCardChip } from './import.js';
 import { renderGallery, openFocused, galleryKeys, exportSelection } from './gallery.js';
-import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto } from './viewer.js';
+import { renderViewer, viewerKeys, leaveViewer, exportCurrentPhoto, refreshViewerPhoto, currentView } from './viewer.js';
+import { copyEdits, pasteEdits } from './paste_edits.js';
+import { pasteToSelection } from './paste_batch.js';
 import { openExportDialog } from './export.js';
 import { showHelp, showSettings } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
@@ -54,6 +56,11 @@ function exportCurrent() {
   toast(`先在图库里选择要导出的照片：点照片左上角的圈或按住 ${modKey()} 点击加选，按住 ⇧ 连续选择，${modKey()}A 全选。`, 'info');
 }
 
+function copyPasteKey(paste) {
+  if (router.current() === 'viewer') (paste ? pasteEdits : copyEdits)(currentView());
+  else if (router.current() === 'photos' && paste) pasteToSelection();
+}
+
 function bindGlobalKeys() {
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
@@ -63,6 +70,12 @@ function bindGlobalKeys() {
       const redo = e.key === 'y' || e.key === 'Y' || e.shiftKey;
       const fn = keys && (redo ? keys.redo : keys.undo);
       if (fn && fn()) e.preventDefault();
+      return;
+    }
+    // 复制 / 粘贴调整：⌘⇧C / ⌘⇧V（输入框里留给文字复制粘贴）
+    if (mod && e.shiftKey && 'cCvV'.includes(e.key) && !isTyping(e.target)) {
+      e.preventDefault();
+      if (!modalOpen()) copyPasteKey(e.key.toLowerCase() === 'v');
       return;
     }
     if (mod && (e.key === 'e' || e.key === 'E')) {

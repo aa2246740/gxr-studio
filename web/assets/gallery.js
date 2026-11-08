@@ -6,6 +6,7 @@ import { api } from './api.js';
 import { state, on } from './state.js';
 import { h, icon, fmtDate, fmtTime, modKey } from './dom.js';
 import { openExportDialog } from './export.js';
+import { pasteSelectionButton } from './paste_batch.js';
 import { cardPresent, importNow } from './import.js';
 import { isPrediction, rawOnlyBadgeText } from './look_notes.js';
 import { fetchAllPhotos } from './photos.js';
@@ -483,6 +484,7 @@ function renderSelBar() {
     h('span', { class: 't', role: 'status' }, `已选 ${n} 张`),
     h('button', { class: 'btn ghost', type: 'button', title: `全选（${modKey()}A）`, onclick: selectAll }, '全选'),
     h('button', { class: 'btn ghost', type: 'button', title: '取消选择（Esc）', onclick: clearSelection }, '取消选择'),
+    pasteSelectionButton(n),
     h('button', { class: 'btn primary', type: 'button', title: `导出（${modKey()}E）`, onclick: exportSelection }, '导出…'),
   );
 }

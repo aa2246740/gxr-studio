@@ -15,7 +15,8 @@ import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from 
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
-import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, withOwned } from './undo_entries.js';
+import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, syncUndo, withOwned } from './undo_entries.js';
+export { syncUndo }; // 撤销 / 重做按钮的置灰在 undo_entries.js
 
 export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
@@ -217,7 +218,7 @@ export async function reloadEdit(view, { refreshCatalog = true } = {}) {
 }
 
 // 编辑记录的顶层字段 → ed 上对应的属性（重试只采用补写进去、界面之后又没改过的字段）。
-// 撤销快照（snapshot）里的键和 ed 上的属性同名（memory 不在快照里）
+// 撤销快照（undo_entries.js 的 snapshot）里的键和 ed 上的属性同名
 const EDIT_FIELD_PROPS = {
   recipe: ['recipe', 'memory'],
   lut: ['lut'],
@@ -439,21 +440,6 @@ export function endChange(view) {
   syncUndo(view);
 }
 
-export function undoAvailable(view) {
-  return !!(view.undo && view.undo.length);
-}
-
-// 撤销 / 重做按钮：没有可以撤销（重做）的内容时置灰（COPY 3.10）
-export function syncUndo(view) {
-  const set = (btn, ok) => {
-    if (!btn) return;
-    if (ok) btn.removeAttribute('aria-disabled');
-    else btn.setAttribute('aria-disabled', 'true');
-  };
-  set(view.undoBtn, undoAvailable(view));
-  set(view.redoBtn, !!(view.redo && view.redo.length));
-}
-
 export function undoChange(view) {
   const s = view.undo && view.undo.pop();
   if (!s || !view.ed) return false;
@@ -490,7 +476,11 @@ function restoreSnapshot(view, s) {
   const changes = {};
   if (own.has('recipe')) {
     ed.recipe = o.recipe;
-    changes.recipe = recipeBody(view, { memory: true });
+    if ('memory' in o) ed.memory = o.memory || {}; // 配方旁边记着的旋钮档位跟着这一步还原，不留粘贴进来的别张照片的
+    const body = recipeBody(view, { memory: true });
+    // 记忆是空的也要写过去：不带 memory 键，服务器会留着粘贴进来的档位（render/edits.py 的 write）
+    if (body && 'memory' in o) body.memory = ed.memory;
+    changes.recipe = body;
   }
   if (own.has('lut')) changes.lut = ed.lut = o.lut || null;
   if (own.has('adjust')) {
