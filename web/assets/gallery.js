@@ -4,7 +4,7 @@
 
 import { api } from './api.js';
 import { state, on } from './state.js';
-import { h, icon, fmtDate, fmtTime, modKey } from './dom.js';
+import { h, icon, fmtDate, fmtTime, modKey, toast } from './dom.js';
 import { openExportDialog } from './export.js';
 import { pasteSelectionButton } from './paste_batch.js';
 import { cardPresent, importNow } from './import.js';
@@ -14,11 +14,14 @@ import { delayed } from './busy.js';
 
 const ALL = null;
 const SIZE_KEY = 'gxr-studio.thumb-size';
+const FULL_KEY = 'gxr-studio.thumb-full';
 const SIZES = { min: 120, max: 320, dflt: 196 };
 let root = null;
 let focusId = null;
 let anchorId = null;
 let loadSeq = 0;
+let selectionRevision = 0;
+let undoFilterToast = null;
 
 export function pairTag(p) {
   if (p.has_raw && p.has_jpg) return h('span', { class: 'badge pair tag' }, 'RAW+JPG');
@@ -28,7 +31,7 @@ export function pairTag(p) {
   return h('span', { class: `badge tag ${isPrediction(look) ? 'pred' : 'gray'}`, title: look.label || null }, rawOnlyBadgeText(look));
 }
 
-// 选择逻辑是纯函数，方便单独测（tests/test_gallery_select.py）
+// 选择逻辑是纯函数，方便单独测（tests/test_busy.py）
 // order：当前网格里照片 id 的顺序；返回新的选择集合
 export function rangeSelect(order, anchor, target, base = new Set()) {
   const a = order.indexOf(anchor);
@@ -60,13 +63,18 @@ function storedSize() {
   }
 }
 
+function storedFull() {
+  try { return localStorage.getItem(FULL_KEY) === 'true'; }
+  catch { return false; }
+}
+
 // isCurrent：路由层给的「图库还是当前页面吗」（R11）。过时的列表不写进 state.photos，也不改页面。
 let galleryCurrent = () => true;
 export async function renderGallery(container, isCurrent = () => true) {
   galleryCurrent = isCurrent;
   root = container;
   const grid = h('div', {
-    class: 'grid',
+    class: `grid${storedFull() ? ' show-full' : ''}`,
     id: 'grid-wrap',
     role: 'listbox',
     'aria-multiselectable': 'true',
@@ -114,16 +122,41 @@ function sideItem(label, count, date, numeric = false) {
       'aria-pressed': String(state.galleryDate === date),
       onclick: () => {
         if (state.galleryDate === date) return;
-        state.galleryDate = date;
-        anchorId = null;
-        for (const b of document.querySelectorAll('#dates .it')) b.setAttribute('aria-pressed', String(b === btn));
-        loadAll();
+        changeDate(date);
       },
     },
     h('span', { class: numeric ? 'num' : '' }, label),
     h('span', { class: 'n' }, String(count)),
   );
   return btn;
+}
+
+async function changeDate(date, restore = null) {
+  const saved = { date: state.galleryDate, ids: [...state.selection], anchor: anchorId, focus: focusId };
+  state.galleryDate = date;
+  focusId = null;
+  state.photos = [];
+  state.photosComplete = false;
+  clearSelection();
+  const revision = selectionRevision;
+  for (const b of document.querySelectorAll('#dates .it')) b.setAttribute('aria-pressed', 'false');
+  if (saved.ids.length) {
+    undoFilterToast?.();
+    undoFilterToast = toast(`切换日期，已清除 ${saved.ids.length} 张选择`, 'info', {
+      timeout: 0,
+      action: { label: '恢复选择', run: () => changeDate(saved.date, saved) },
+    });
+  }
+  await loadAll();
+  if (!restore || state.galleryDate !== date || !galleryCurrent() || selectionRevision !== revision) return;
+  if (!state.photosComplete) {
+    toast('无法恢复选择，请重试。', 'error', { timeout: 0, action: { label: '恢复选择', run: () => changeDate(date, restore) } });
+    return;
+  }
+  const alive = new Set(state.photos.map((p) => p.id));
+  anchorId = restore.anchor;
+  setSelection(new Set(restore.ids.filter((id) => alive.has(id))));
+  moveFocus(alive.has(restore.focus) ? restore.focus : state.photos[0]?.id);
 }
 
 async function loadDates() {
@@ -162,7 +195,16 @@ function renderLibbar() {
       } catch { /* 隐私模式 */ }
     },
   });
-  bar.replaceChildren(h('span', { class: 't' }, title), count, h('span', { class: 'grow' }), icon('layout-grid', 'faint'), size);
+  const full = h('button', {
+    class: 'btn sm ghost', type: 'button', 'aria-pressed': String(storedFull()), title: '显示整张照片，包括宽幅和竖拍',
+    onclick: () => {
+      const on = full.getAttribute('aria-pressed') !== 'true';
+      full.setAttribute('aria-pressed', String(on));
+      document.getElementById('grid-wrap')?.classList.toggle('show-full', on);
+      try { localStorage.setItem(FULL_KEY, String(on)); } catch { /* 隐私模式 */ }
+    },
+  }, '完整显示');
+  bar.replaceChildren(h('span', { class: 't' }, title), count, h('span', { class: 'grow' }), full, icon('layout-grid', 'faint'), size);
 }
 
 // 第一页没到之前：150ms 内什么都不画，超过就放骨架格子（加载态分档，见 busy.js）
@@ -227,7 +269,7 @@ async function loadPhotos({ quiet = false } = {}) {
 
 export function sameIds(a, b) {
   if (!a || !b || a.length !== b.length) return false;
-  // 整条比：角标（编辑过、HDR、只有 RAW）跟着字段变，变了要重画
+  // 整条比：编辑过、只有 RAW 等角标跟着字段变，变了要重画
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i] && JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false;
   return true;
 }
@@ -235,6 +277,23 @@ export function sameIds(a, b) {
 function updateCount() {
   const el = document.getElementById('lib-count');
   if (el) el.textContent = `${state.photos.length} 张`;
+  updateGalleryExport();
+}
+
+export function galleryExportLabel(date, count, selected) {
+  if (selected) return `导出选中的 ${selected} 张`;
+  if (date !== ALL) return count === null ? '导出这一天…' : `导出 ${fmtDate(date)} 的 ${count} 张`;
+  return '导出';
+}
+
+export function updateGalleryExport(active = true) {
+  const btn = document.getElementById('btn-export-top');
+  if (!btn) return;
+  const count = (state.dates || []).find((d) => d.date === state.galleryDate)?.count ?? (state.photosComplete ? state.photos.length : null);
+  const label = active ? galleryExportLabel(state.galleryDate, count, state.selection.size) : '导出';
+  const span = btn.querySelector('span');
+  if (span) span.textContent = label;
+  btn.title = `${label}（${modKey()}E）`;
 }
 
 function renderGrid() {
@@ -273,7 +332,7 @@ function appendCells(list) {
 }
 
 function countOn(date) {
-  const d = (state.dates || []).find((x) => x.date === date);
+  const d = (state.dates || []).find((x) => x.date === (date ?? 'unknown'));
   return d ? d.count : state.photos.filter((p) => p.date === date).length;
 }
 
@@ -288,7 +347,6 @@ function cell(p) {
     img.addEventListener('error', () => img.classList.add('ready', 'broken'), { once: true });
   }
   const badges = [];
-  if (p.hdr === 'ready') badges.push(h('span', { class: 'badge hdr', title: '已生成 HDR 版本' }, 'HDR'));
   if (!p.has_raw || !p.has_jpg) badges.push(pairTag(p));
   const el = h(
     'div',
@@ -300,11 +358,11 @@ function cell(p) {
       'aria-label': `${p.name}，${fmtTime(p.captured_at) || '时间未知'}`,
       title: `${p.name} · ${fmtTime(p.captured_at)}${p.date_source === 'mtime' ? '（使用文件修改日期）' : ''}`,
       onclick: (e) => onCellClick(e, p.id),
-      ondblclick: () => openPhoto(p.id),
     },
     img,
     h('span', { class: 'ck', 'aria-hidden': 'true', title: '选择' }, icon('check')),
     h('span', { class: 'b' }, badges),
+    p.sidecar_rev > 0 ? h('span', { class: 'e', title: '编辑过', 'aria-label': '编辑过' }, icon('pencil')) : null,
   );
   el.dataset.id = p.id;
   return el;
@@ -320,6 +378,7 @@ function order() {
 }
 
 function setSelection(next) {
+  selectionRevision++;
   state.selection.clear();
   for (const id of next) state.selection.add(id);
   for (const el of document.querySelectorAll('#grid-wrap .cell[role="option"]')) {
@@ -328,15 +387,17 @@ function setSelection(next) {
   renderSelBar();
 }
 
-// 点击：点右上角的圈、⌘/Ctrl 点 → 加选或取消；⇧ 点 → 连选；已经在选照片时，普通点击也是加选；否则打开
+// 点击：点左上角的圈、⌘/Ctrl 点 → 加选或取消；⇧ 点 → 连选；普通点击始终打开。
 function onCellClick(e, id) {
   const tick = e.target.closest && e.target.closest('.ck');
+  const previousFocus = focusId;
   moveFocus(id, false);
-  if (e.shiftKey && anchorId) {
+  if (e.shiftKey) {
+    if (!anchorId) anchorId = previousFocus || id;
     setSelection(rangeSelect(order(), anchorId, id, e.metaKey || e.ctrlKey ? state.selection : new Set()));
     return;
   }
-  if (tick || e.metaKey || e.ctrlKey || state.selection.size) {
+  if (tick || e.metaKey || e.ctrlKey) {
     anchorId = id;
     setSelection(toggleSelect(state.selection, id));
     return;
@@ -472,6 +533,7 @@ export function exportSelection() {
 }
 
 function renderSelBar() {
+  updateGalleryExport();
   const bar = document.getElementById('selbar');
   if (!bar) return;
   const n = state.selection.size;

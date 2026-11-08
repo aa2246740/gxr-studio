@@ -14,6 +14,8 @@ const FRAMES = {
   canvas: { style: 'canvas', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', canvas_ratio: '4:5' },
 };
 const STAMP = { enabled: true, content: 'text', text: 'Paris', font: 'typewriter', color: 'orange', size: 'large', corner: 'br', glow: false };
+// 六张可渲染 JPG，含 RAW+JPG、只有 JPG 和竖拍；不依赖图库首六张恰好都能出图。
+const PHOTO_NAMES = ['R0000101', 'R0000102', 'R0000103', 'R0000104', 'R0000105', 'R0000106'];
 
 // 两轮，每轮六张照片各自的边框 / 时间戳，和走的路线（照片序号，加上到之前要做的事）。
 // 第一轮：没有 → 没有 → 白边 → 徕卡 → 拍立得 + 日期戳 → 只有日期戳，再原路退回来；第二轮：换一批样式，再走一遍。
@@ -51,7 +53,7 @@ async function gpuTakesOver(arg) {
   };
   const stage = await import('/assets/gpu_stage.js');
   const listed = await (await fetch('/api/photos')).json();
-  const first = (listed.photos || listed.items || listed)[0];
+  const first = (listed.photos || listed.items || listed).find(p => p.has_jpg && arg.names.includes(p.name));
   location.hash = `#/photo/${first.id}`;
   const adapter = navigator.gpu ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }).catch(() => null) : null;
   const gpuStage = () => !!document.querySelector('.stage-area.gpu .pv');
@@ -114,7 +116,11 @@ async function inPage(arg) {
   const gpuStage = await import('/assets/gpu_stage.js');
   let sawEngine = false;
   const listed = await (await fetch('/api/photos')).json();
-  const photos = (listed.photos || listed.items || listed).slice(0, round.plan.length);
+  const photos = (listed.photos || listed.items || listed).filter(p => p.has_jpg && arg.names.includes(p.name)).slice(0, round.plan.length);
+  if (photos.length !== round.plan.length) throw new Error('边框导航夹具需要六张有效 JPG，包含竖拍');
+  const { state } = await import('/assets/state.js');
+  state.photos = photos;
+  state.photosComplete = true;
   // 这一轮每张照片的边框和时间戳
   for (const [i, p] of photos.entries()) {
     const want = round.plan[i];
@@ -283,7 +289,7 @@ export async function walkRounds({ call, evalIn, origin, step, wantGpu, collectG
     step('wait for the WebGPU canvas');
     await call('Page.navigate', { url: `${origin}/?open=1&round=gpu` });
     await new Promise((r) => setTimeout(r, pauseMs));
-    const took = await evalIn(`(${gpuTakesOver.toString()})(${JSON.stringify({ boundMs: 120000, holdMs: 3000 })})`, 135000);
+    const took = await evalIn(`(${gpuTakesOver.toString()})(${JSON.stringify({ boundMs: 120000, holdMs: 3000, names: PHOTO_NAMES })})`, 135000);
     gpuWaitMs = took.waitMs;
     // 画布留住了也不一定上得了屏：Chrome 自己的日志里有共享图像的错（建不起来、取不到），就是上不了屏（页面里看不到这个）
     const presentError = presentErrors();
@@ -299,7 +305,7 @@ export async function walkRounds({ call, evalIn, origin, step, wantGpu, collectG
     // 每一轮整页重新加载（带不同的查询串，Chrome 不会只当成换 hash）：上一轮的编辑存在服务器上，这一轮前端重新读
     await call('Page.navigate', { url: `${origin}/?open=1&round=${n}` });
     await new Promise((r) => setTimeout(r, pauseMs));
-    const arg = { round, frames: FRAMES, stamp: STAMP, wantGpu };
+    const arg = { round, frames: FRAMES, stamp: STAMP, wantGpu, names: PHOTO_NAMES };
     const steps = await evalIn(`(${inPage.toString()})(${JSON.stringify(arg)})`, 270000);
     all.push(...steps);
     if (steps.some((x) => x.timedOut)) {

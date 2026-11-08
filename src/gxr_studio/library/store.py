@@ -381,7 +381,7 @@ class Library:
                           COALESCE(
                             (SELECT s.shot_id FROM shots s
                              WHERE COALESCE(s.date,'unknown')=g.d
-                             ORDER BY s.captured_at, s.name LIMIT 1),
+                             ORDER BY s.captured_at DESC, s.name, s.shot_id LIMIT 1),
                             g.any_id) AS cover_id
                    FROM grouped g
                    ORDER BY (g.d='unknown'), g.d DESC"""
@@ -438,7 +438,8 @@ class Library:
         elif date:
             sql += " WHERE date=?"
             args.append(date)
-        sql += " ORDER BY captured_at, name LIMIT ? OFFSET ?"
+        # DESC 把未知日期 NULL 放在最后；固定同一时刻的顺序，分页和编辑器共用。
+        sql += " ORDER BY date DESC, captured_at DESC, name, shot_id LIMIT ? OFFSET ?"
         args += [limit, offset]
         with self.lock:
             return self._rows_to_shots(self.db.execute(sql, args).fetchall())

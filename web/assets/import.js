@@ -3,7 +3,7 @@
 import { api } from './api.js';
 import { state, emit } from './state.js';
 import { h, toast, toastError, setFraction, platform } from './dom.js';
-import { doneStatusText, ejectWords, hasProblems, importToast, multiCardNote, summarizeImport } from './import_summary.js';
+import { doneStatusText, ejectWords, hasProblems, importToast, multiCardNote, progressLine, summarizeImport } from './import_summary.js';
 
 // 本次会话里已经自动处理过的卡（卡拔掉后会移出，插回来可以再导入缺的部分）。键是挂载会话号（card_id）
 const handled = new Set();
@@ -255,17 +255,14 @@ export function renderBanner() {
   const p = job ? job.progress : null;
 
   if (job && job.running) {
-    let msg = `正在导入 ${p.done_shots}/${p.total_shots}`;
-    if (p.state === 'scanning' || !p.total_shots) msg = '正在读取存储卡…';
-    else if (p.state === 'checking') msg = '正在核对存储卡上的照片…';
-    const pct = p.total_shots ? Math.round((p.done_shots / p.total_shots) * 100) : 0;
+    const line = progressLine(p);
     const bar = h('i', {});
-    setFraction(bar, pct / 100);
+    setFraction(bar, line.fraction ?? 0);
     slot.append(
       h(
         'div',
         { class: 'banner' },
-        h('div', { class: 'msg' }, msg, h('div', { class: `progress${p.total_shots && p.state !== 'checking' ? '' : ' indet'}` }, bar),
+        h('div', { class: 'msg' }, line.text, h('div', { class: `progress${line.fraction === null ? ' indet' : ''}` }, bar),
           h('div', { class: 'small dim' }, '只读复制，卡上的文件不会被改动。')),
         h('div', { class: 'acts' }, h('button', { class: 'btn sm', type: 'button', onclick: cancelImport }, '取消导入')),
       ),
@@ -366,7 +363,7 @@ function paintChip(kind, pct = null) {
 let lastSignature = '';
 function announceImportState() {
   const p = state.job?.progress;
-  const sig = [state.card?.id, state.job?.id, state.job?.running, p?.state, p?.done_shots, p?.total_shots, state.dismissedJobId === state.job?.id].join('|');
+  const sig = [state.card?.id, state.job?.id, state.job?.running, p?.state, p?.phase, p?.done_shots, p?.total_shots, state.dismissedJobId === state.job?.id].join('|');
   if (sig === lastSignature) return;
   lastSignature = sig;
   emit('import-state');
@@ -386,9 +383,9 @@ export function renderCardStatus() {
   document.getElementById('card-chip')?.setAttribute?.('title', '存储卡与导入');
   if (isImporting()) {
     const p = state.job.progress;
-    const known = p.total_shots && p.state !== 'scanning' && p.state !== 'checking';
-    el.textContent = known ? `正在导入 ${p.done_shots}/${p.total_shots}` : '正在读取存储卡…';
-    paintChip('importing', known ? Math.round((p.done_shots / p.total_shots) * 100) : null);
+    const line = progressLine(p);
+    el.textContent = line.text;
+    paintChip('importing', line.fraction === null ? null : Math.round(line.fraction * 100));
     return;
   }
   if (!state.card) {
