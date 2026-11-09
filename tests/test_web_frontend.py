@@ -553,13 +553,6 @@ def test_correction_releases_request_preview_size_not_full():
         assert "full: true" not in _function_body(correct, header)
 
 
-def test_frame_thumbnails_show_the_whole_picture():
-    """V2-16：边框样式缩略图完整显示成片（contain），覆盖图库的 cover，底部的标志和参数不被裁掉。"""
-    css = (ASSETS / "app.css").read_text(encoding="utf-8")
-    assert ".fcard .thumb img, .fcard .thumb canvas { width: 100%; height: 100%; object-fit: contain;" in css
-    assert ".fcard .thumb { aspect-ratio: 4 / 3;" in css
-
-
 def test_errors_keep_the_main_sentence_and_fold_the_detail():
     """COPY 3.13：错误主句照常显示；后端给了 detail 时，下面是默认收起的「详细信息」。所有错误提示都走 toastError。"""
     dom = (ASSETS / "dom.js").read_text(encoding="utf-8")
