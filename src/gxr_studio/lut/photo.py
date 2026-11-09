@@ -24,7 +24,7 @@ def color_image(
     try:
         target, item = render.luts.target(edit.lut)
         if target.input_space in DISPLAY:
-            stripped = replace(edit, lut=None, adjust=Adjust(), master=None)
+            stripped = replace(edit, lut=None, adjust=Adjust(), curve=None)
             try:
                 rgb, _from_raw, _labels = base_image(render, shot, stripped, max_edge=max_edge, quality=quality, lib=lib, base=base, full=full)
             except RenderUnavailable:

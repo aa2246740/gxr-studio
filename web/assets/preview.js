@@ -14,10 +14,11 @@ import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from 
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
+import { curveBody, normalizeCurves } from './curves.js';
+export { CURVE_MAX, curveBody } from './curves.js';
 import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, syncUndo, withOwned } from './undo_entries.js';
 export { syncUndo }; // 撤销 / 重做按钮的置灰在 undo_entries.js
 
-export const CURVE_MAX = 16;
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
 const DEBOUNCE_MS = 120;
 
@@ -145,7 +146,7 @@ function applyEdit(ed, edit) {
     vibrance: a.vibrance ?? 0,
     vignette: a.vignette ?? 0,
   };
-  ed.curve = edit.curve?.master ? edit.curve.master.map((p) => [...p]) : null;
+  ed.curve = normalizeCurves(edit.curve);
   ed.geometry = ed.v2 ? { ...DEFAULT_GEOMETRY, ...(edit.geometry || {}) } : null;
   const fin = resolveFinish(edit, ed.defaults);
   ed.frame = fin.frame;
@@ -337,10 +338,6 @@ export function adjustBody(ed) {
   const body = { exposure_ev: a.exposure_ev, wb: { warm: a.warm, tint: a.tint }, contrast: a.contrast, highlight: a.highlight, shadow: a.shadow };
   if (ed.v2) Object.assign(body, { black_point: a.black_point, saturation: a.saturation, vibrance: a.vibrance, vignette: a.vignette });
   return body;
-}
-
-export function curveBody(ed) {
-  return ed.curve ? { master: ed.curve } : null;
 }
 
 // 旧版的「能不能调」：只有 v2 才认黑点、饱和度、自然饱和度、暗角

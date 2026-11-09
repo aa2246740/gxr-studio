@@ -3,12 +3,9 @@
 // 曲线拖动时，工作副本直接写进 ed.curve，预览请求用的就是拖动中的这条曲线（DIAG 原因 4）；松手才保存。
 
 import { h } from './dom.js';
-import { CURVE_MAX, adjustBody, curveBody, persist, schedulePreview, beginChange, endChange } from './preview.js';
+import { adjustBody, persist, schedulePreview, beginChange, endChange } from './preview.js';
 import { slider, notReady } from './controls.js';
-
-const DIAG = [[0, 0], [255, 255]];
-const HIT = 14; // 点按在 14 个单位（曲线坐标 0–255）以内算点中了
-const NS = (() => { const t = document.createElement('template'); t.innerHTML = '<svg></svg>'; return t.content.firstElementChild.namespaceURI; })();
+import { curveEditor } from './curve_editor.js';
 
 const fmtEv = (v) => `${v > 0 ? '+' : ''}${Number(v).toFixed(1)}`;
 const fmtSigned = (v) => (v > 0 ? `+${v}` : `${v}`);
@@ -62,139 +59,6 @@ export function adjustPanel(view) {
   rows.push(curveEditor(view));
   rows.push(h('div', { class: 'foot' }, resetButton(view)));
   return h('div', { class: 'pane edit-panel' }, ...rows);
-}
-
-function isIdentity(points) {
-  return points.every(([x, y]) => x === y);
-}
-
-function svgEl(tag, attrs = {}) {
-  const n = document.createElementNS(NS, tag);
-  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
-  return n;
-}
-
-// 曲线编辑：SVG 坐标 0–255，y 向上。ed.curve 为 null 表示恒等直线。
-// 拖动时工作副本（working）同时写进 ed.curve，所以 schedulePreview 发出去的请求带的就是拖动中的曲线。
-function curveEditor(view) {
-  const ed = view.ed;
-  const svg = svgEl('svg', { viewBox: '0 0 255 255', class: 'curve', role: 'group', 'aria-label': '曲线' });
-  const count = h('span', { class: 'small dim' });
-  const wrap = h('div', { class: 'curve-wrap' }, svg, count);
-  let working = null;
-  let drag = null;
-
-  const pts = () => working || (ed.curve ? ed.curve : DIAG).map((p) => [...p]);
-
-  const draw = () => {
-    const list = pts();
-    svg.replaceChildren(
-      svgEl('rect', { x: 0, y: 0, width: 255, height: 255, class: 'curve-bg' }),
-      svgEl('line', { x1: 0, y1: 255, x2: 255, y2: 0, class: 'curve-diag' }),
-      svgEl('polyline', { points: list.map(([x, y]) => `${x},${255 - y}`).join(' '), class: 'curve-line' }),
-      ...list.map(([x, y], i) => svgEl('circle', { cx: x, cy: 255 - y, r: 6, class: 'curve-point', 'data-i': i })),
-    );
-    count.textContent = `${list.length} / ${CURVE_MAX}`;
-  };
-
-  const toPoint = (e) => {
-    const r = svg.getBoundingClientRect();
-    const x = ((e.clientX - r.left) / r.width) * 255;
-    const y = 255 - ((e.clientY - r.top) / r.height) * 255;
-    return [Math.round(Math.min(255, Math.max(0, x))), Math.round(Math.min(255, Math.max(0, y)))];
-  };
-
-  const nearest = ([x, y]) => {
-    let best = -1;
-    let bestD = HIT;
-    pts().forEach(([px, py], i) => {
-      const d = Math.hypot(px - x, py - y);
-      if (d <= bestD) {
-        best = i;
-        bestD = d;
-      }
-    });
-    return best;
-  };
-
-  // 把工作副本写进 ed.curve（拖动中的请求要用到）
-  const setLive = () => {
-    ed.curve = isIdentity(working) ? null : working.map((p) => [...p]);
-  };
-
-  svg.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    const p = toPoint(e);
-    let i = nearest(p);
-    let added = false;
-    beginChange(view);
-    working = pts();
-    if (i < 0) {
-      if (working.length >= CURVE_MAX) {
-        endChange(view);
-        working = null;
-        return;
-      }
-      i = working.findIndex(([x]) => x > p[0]);
-      if (i < 0) i = working.length;
-      working.splice(i, 0, p);
-      added = true;
-      setLive();
-      draw();
-    }
-    drag = { i, added, moved: false };
-    svg.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-
-  svg.addEventListener('pointermove', (e) => {
-    if (!drag || !working) return;
-    const [x, y] = toPoint(e);
-    const { i } = drag;
-    const last = working.length - 1;
-    const lo = i === 0 ? 0 : working[i - 1][0] + 1;
-    const hi = i === last ? 255 : working[i + 1][0] - 1;
-    const nx = i === 0 || i === last ? working[i][0] : Math.min(hi, Math.max(lo, x));
-    const ny = Math.min(255, Math.max(0, y));
-    if (nx !== working[i][0] || ny !== working[i][1]) drag.moved = true;
-    working[i] = [nx, ny];
-    setLive();
-    draw();
-    schedulePreview(view);
-  });
-
-  const end = () => {
-    if (!drag) return;
-    const changed = drag.moved || drag.added;
-    drag = null;
-    const list = working;
-    working = null;
-    if (!changed) {
-      endChange(view);
-      return;
-    }
-    ed.curve = isIdentity(list) ? null : list.map((p) => [...p]);
-    persist(view, { curve: curveBody(ed) }).then(() => endChange(view));
-    schedulePreview(view, { full: true });
-    draw();
-  };
-  svg.addEventListener('pointerup', end);
-  svg.addEventListener('pointercancel', end);
-
-  svg.addEventListener('dblclick', (e) => {
-    const i = nearest(toPoint(e));
-    const list = (ed.curve ? ed.curve : DIAG).map((p) => [...p]);
-    if (i <= 0 || i >= list.length - 1 || list.length <= 2) return;
-    beginChange(view);
-    list.splice(i, 1);
-    ed.curve = isIdentity(list) ? null : list;
-    persist(view, { curve: curveBody(ed) }).then(() => endChange(view));
-    schedulePreview(view, { full: true });
-    draw();
-  });
-
-  draw();
-  return wrap;
 }
 
 // 重置：只清调整和曲线，不动配方（COPY 3.2）

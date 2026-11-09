@@ -3,7 +3,7 @@
 
 struct P {
   gains: vec4f,     // render/tones.py channel_gains：R、G、B 乘数（无调整时为 1）
-  flags: vec4f,     // x 有调子表；y 模式（0 配方、1 配方+显示类 LUT、2 Log LUT、3 相机 JPG、4 相机 JPG+显示类 LUT）；z apply_base 生效；w LUT 强度
+  flags: vec4f,     // x 调子表数量（0、1 或 3）；y 模式（0 配方、1 配方+显示类 LUT、2 Log LUT、3 相机 JPG、4 相机 JPG+显示类 LUT）；z apply_base 生效；w LUT 强度
   extra: vec4f,     // finish/pixels.py apply_extra：黑点、饱和度、自然饱和度、暗角
   dims: vec4f,      // 颜色层（未裁切、未拉直）宽、高
   bake: vec4f,      // render/chain.py ChromaBake：origin cb、origin cr、1/step、nx
@@ -17,7 +17,7 @@ struct P {
 };
 @group(0) @binding(0) var<uniform> p: P;
 @group(0) @binding(1) var<storage, read> rec: array<f32>;   // pre(4096×3) | matrix(9) | offset(3) | gain(ny×nx×2)
-@group(0) @binding(2) var<storage, read> tone: array<f32>;  // render/tones.py display_table（1021 点）
+@group(0) @binding(2) var<storage, read> tone: array<f32>;  // render/tones.py display_table（每通道 1021 点）
 @group(0) @binding(3) var lut3: texture_3d<f32>;             // Log 类 LUT：.cube 3D 表，x=R、y=G、z=B
 @group(0) @binding(4) var lut8: texture_3d<f32>;             // 显示类 LUT：256³ 精确表（服务器用 lut.photo._apply 逐个算好），rgba8unorm
 
@@ -33,8 +33,9 @@ fn applyTable(v: vec3f) -> vec3f {
   for (var c = 0u; c < 3u; c++) {
     let pos = clamp(v[c], 0.0, 255.0) * 4.0;
     let i = min(u32(pos), 1019u);
-    let lo = tone[i];
-    o[c] = lo + (tone[i + 1u] - lo) * (pos - f32(i));
+    let at = select(0u, c * 1021u, p.flags.x > 1.5);
+    let lo = tone[at + i];
+    o[c] = lo + (tone[at + i + 1u] - lo) * (pos - f32(i));
   }
   return o;
 }

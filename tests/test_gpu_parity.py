@@ -199,9 +199,10 @@ def parity(tmp_path_factory):
 
     def add(cid, *, src, look_adjust, curve=None, lut=None, geometry=None, crop=None, stage="final"):
         adjust = parse_adjust(look_adjust)
-        master = parse_curve({"master": curve}) if curve else None
+        curve = {"master": curve} if isinstance(curve, list) else curve
+        curves = parse_curve(curve)
         geom = parse_geometry(geometry or {})
-        edit = EditState(adjust=adjust, master=master, geometry=geom)
+        edit = EditState(adjust=adjust, curve=curves, geometry=geom)
         if src.startswith("jpg"):
             k = int(src[3:])
             base = jpg_rgb[k]
@@ -219,7 +220,7 @@ def parity(tmp_path_factory):
                 rgb = _apply(targets[lut], chroma_u8(codes[src], bake, None, None))
                 ref = _finish(rgb, edit, stage=stage, crop=crop, from_raw=False)
             else:
-                rgb = chroma_u8(codes[src], bake, channel_gains(adjust), display_table(adjust, master))
+                rgb = chroma_u8(codes[src], bake, channel_gains(adjust), display_table(adjust, curves))
                 ref = _finish(rgb, edit, stage=stage, crop=crop, from_raw=True)
         box = None
         if stage == "final" and (crop or not geom.is_identity()):
@@ -247,6 +248,19 @@ def parity(tmp_path_factory):
     add("jpg_o6_adjust", src="jpg6", look_adjust={**ADJ_TONE, **ADJ_EXTRA})
     add("jpg_rec709_lut_curve", src="jpg1", look_adjust={"shadow": 30}, curve=[[0, 10], [128, 120], [255, 250]], lut="rec709")
     add("jpg_untouched", src="jpg6", look_adjust={})
+    rgb_curves = {
+        "master": CURVE,
+        "r": [[0, 0], [190, 160], [255, 228]],
+        "g": [[0, 0], [128, 140], [255, 255]],
+        "b": [[0, 20], [64, 90], [255, 255]],
+    }
+    add("raw_rgb_curves", src="b", look_adjust=ADJ_TONE, curve=rgb_curves)
+    add("jpg_rgb_curves", src="jpg6", look_adjust={}, curve=rgb_curves)
+    add("raw_lut_rgb_curves", src="a", look_adjust={"shadow": 30}, curve=rgb_curves, lut="log")
+    add("jpg_lut_rgb_curves", src="jpg1", look_adjust={"contrast": 20}, curve=rgb_curves, lut="rec709")
+    for channel in ("r", "g", "b"):
+        add(f"raw_{channel}_only", src="c", look_adjust={}, curve={channel: rgb_curves[channel]})
+        add(f"jpg_{channel}_only", src="jpg6", look_adjust={}, curve={channel: rgb_curves[channel]})
     add(
         "raw_geometry_ratio",
         src="a",
@@ -280,6 +294,16 @@ CASES = [
     "jpg_o6_adjust",
     "jpg_rec709_lut_curve",
     "jpg_untouched",
+    "raw_rgb_curves",
+    "jpg_rgb_curves",
+    "raw_lut_rgb_curves",
+    "jpg_lut_rgb_curves",
+    "raw_r_only",
+    "raw_g_only",
+    "raw_b_only",
+    "jpg_r_only",
+    "jpg_g_only",
+    "jpg_b_only",
     "raw_geometry_ratio",
     "raw_free_crop",
     "raw_uncropped_straighten",

@@ -129,6 +129,27 @@ def test_an_inline_source_is_the_same_as_a_source_photo(client, photos):
     assert state(client, a)["edit"]["recipe"] == state(client, b)["edit"]["recipe"]
 
 
+def test_rgb_curves_survive_save_paste_read_and_batch_undo(client, photos):
+    source, target = photos["R0000101"], photos["R0000102"]
+    curves = {
+        "master": [[0, 5], [255, 250]],
+        "r": [[0, 0], [200, 175], [255, 240]],
+        "g": [[0, 0], [128, 140], [255, 255]],
+        "b": [[0, 18], [64, 90], [255, 255]],
+    }
+    put_edit(client, source, curve=curves)
+    put_edit(client, target, curve={"g": [[0, 10], [255, 245]]}, adjust={"exposure_ev": 0.3})
+    before = state(client, target)
+    result = ok(paste(client, ["adjust"], [target], source_id=source["id"], include_state=True))
+    assert result["results"][0]["edit"]["curve"] == curves
+    assert state(client, target)["edit"]["curve"] == curves
+    assert client.post("/api/edits/paste/undo", json={"batch_id": result["batch_id"]}).status_code == 200
+    assert state(client, target) == before
+    # 内联的剪贴板来源也携带四通道。
+    ok(paste(client, ["adjust"], [target], source={"curve": curves}))
+    assert state(client, target)["edit"]["curve"] == curves
+
+
 def test_groups_that_are_not_asked_for_stay_exactly_as_they_were(client, photos):
     source, target = photos["R0000101"], photos["R0000102"]
     dress(client, source)

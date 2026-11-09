@@ -4,4 +4,4 @@ export type { BakeMeta, ClipOverlay, FrameInfo, Geometry, HistogramData, Look, L
 export { canvasOf, expands, rotatedSize, validRect } from './warp';
 export type { Canvas } from './warp';
 export { channelGains, displayTable, pchip, TABLE_SIZE } from './tones';
-export type { Adjust, CurvePoints } from './tones';
+export type { Adjust, CurvePoints, Curves } from './tones';

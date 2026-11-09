@@ -431,7 +431,7 @@ class RenderService:
             "adjust": edit.adjust.to_json(),
             "recipe_entry": plan.entry_sha256,
             "model_iso": plan.model_iso,
-            "curve": [list(p) for p in edit.master] if edit.master else None,
+            "curve": edit.curve.to_json() if edit.curve else None,
             "engine": self.engine_pin(),
             "width": max_edge,
             "exact": exact,
@@ -469,7 +469,7 @@ class RenderService:
             codes = self._proxy(shot, max_edge)
             ms["decode"] = (time.perf_counter() - t) * 1000 if self.stats["decodes"] != decodes else 0.0
             gains = channel_gains(edit.adjust)
-            table = display_table(edit.adjust, edit.master)
+            table = display_table(edit.adjust, edit.curve)
             t = time.perf_counter()
             if exact:
                 rgb = chain.exact_u8(self.model(plan.model_iso), plan.entry, codes, gains, table)
@@ -497,7 +497,7 @@ class RenderService:
         """给 `export.export_shot` 用的渲染器：条带逐块调用 `display`。导出文件名和 EXIF 都写明"电脑预测"。"""
         plan = self.plan(shot, edit)
         gains = channel_gains(edit.adjust)
-        table = display_table(edit.adjust, edit.master)
+        table = display_table(edit.adjust, edit.curve)
         if precise:
             model = self.model(plan.model_iso)
 
