@@ -133,7 +133,7 @@ def _merge(edit: EditState, body: RenderRequest | None) -> EditState:
         return EditState(
             recipe=parse_recipe(body.recipe) if "recipe" in given else edit.recipe,
             adjust=parse_adjust(body.adjust) if "adjust" in given else edit.adjust,
-            master=parse_curve(body.curve) if "curve" in given else edit.master,
+            curve=parse_curve(body.curve) if "curve" in given else edit.curve,
             geometry=parse_geometry(body.geometry) if "geometry" in given else edit.geometry,
             frame=parse_frame(body.frame) if "frame" in given else edit.frame,
             stamp=parse_stamp(body.stamp) if "stamp" in given else edit.stamp,

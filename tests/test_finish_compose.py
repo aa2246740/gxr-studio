@@ -31,7 +31,7 @@ def _old_finish_array(rgb, edit, *, stage, frame, stamp, crop_rect, meta, taken,
     if from_raw:
         rgb = apply_extra(rgb, edit.adjust)
     else:
-        rgb = apply_base(rgb, edit.adjust, edit.master)
+        rgb = apply_base(rgb, edit.adjust, edit.curve)
         rgb = apply_extra(rgb, edit.adjust)
     geom = edit.geometry if isinstance(edit.geometry, Geometry) else Geometry()
     if geom.is_identity():

@@ -5,7 +5,7 @@
     暖/品偏移只动 R 和 B 的增益（ARCHITECTURE §5.1 阶段 2）：暖 = R 升 B 降，品红 = R、B 一起升（相对绿）。
 
 输出端（显示域 0..255，配方链之后）：
-    画面对比、高光、阴影与主曲线合成**一条**表，逐通道套用（§5.5）。名字和相机旋钮相同，但是另一套算法，
+    画面对比、高光、阴影 → 单通道曲线 → 主曲线，合成查找表（§5.5）。名字和相机旋钮相同，但是另一套算法，
     不复用 `knobs.tone_curve` 的剂量，界面上标"仅电脑"。
 """
 
@@ -16,7 +16,7 @@ from typing import cast
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 
-from .params import Adjust
+from .params import Adjust, CurvePoints, Curves
 
 WARM_EV = 0.35  # 色温 ±100 对应 R/B 增益 2^±0.35
 TINT_EV = 0.25  # 色调 ±100 对应 R、B 同升/同降 2^±0.25
@@ -53,18 +53,27 @@ def tone_function(t: np.ndarray, adjust: Adjust) -> np.ndarray:
     return cast(np.ndarray, np.clip(y, 0.0, 1.0))
 
 
-def display_table(adjust: Adjust, master: tuple[tuple[float, float], ...] | None) -> np.ndarray | None:
-    """显示域一维表 (TABLE_SIZE,) float32，输入 0..255 每 1/TABLE_STEP 一个点；全是恒等就返回 None。"""
-    if adjust.tone_is_identity and master is None:
+def _map_curve(y: np.ndarray, points: CurvePoints | None) -> np.ndarray:
+    if points is None:
+        return y
+    xs, ys = (np.array(v, np.float64) for v in zip(*points))
+    curve = PchipInterpolator(xs, ys, extrapolate=False)
+    return cast(np.ndarray, np.clip(curve(np.clip(y, xs[0], xs[-1])), 0.0, 255.0))
+
+
+def display_table(adjust: Adjust, curves: Curves | None) -> np.ndarray | None:
+    """显示域 float32 表；仅主曲线仍用 (TABLE_SIZE,)，RGB 曲线用 (3, TABLE_SIZE)。"""
+    if adjust.tone_is_identity and curves is None:
         return None
     x = np.linspace(0.0, 255.0, TABLE_SIZE)
     y = tone_function(x / 255.0, adjust) * 255.0
-    if master is not None:
-        xs, ys = (np.array(v, np.float64) for v in zip(*master))
-        curve = PchipInterpolator(xs, ys, extrapolate=False)
-        inside = curve(np.clip(y, xs[0], xs[-1]))
-        y = np.clip(inside, 0.0, 255.0)
-    return y.astype(np.float32)
+    master = curves.master if curves else None
+    channels = (curves.r, curves.g, curves.b) if curves else (None, None, None)
+    if not any(channels):
+        return _map_curve(y, master).astype(np.float32)
+    # 与 GIMP gimp_curve_map_pixels 一致：单通道先映射，主曲线后映射。
+    # 在原有的配方输出/显示编码域合表，不在线性光中曲线化，也不增加中间量化。
+    return np.stack([_map_curve(_map_curve(y, points), master) for points in channels]).astype(np.float32)
 
 
 def apply_table(values: np.ndarray, table: np.ndarray) -> np.ndarray:
@@ -72,5 +81,11 @@ def apply_table(values: np.ndarray, table: np.ndarray) -> np.ndarray:
     pos = np.clip(np.asarray(values, np.float32), 0.0, 255.0) * np.float32(TABLE_STEP)
     i = np.minimum(pos.astype(np.int32), TABLE_SIZE - 2)
     f = pos - i
-    lo = table[i]
-    return cast(np.ndarray, lo + (table[i + 1] - lo) * f)
+    if table.ndim == 1:
+        lo = table[i]
+        hi = table[i + 1]
+    else:
+        channels = np.arange(3)
+        lo = table[channels, i]
+        hi = table[channels, i + 1]
+    return cast(np.ndarray, lo + (hi - lo) * f)

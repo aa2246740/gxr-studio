@@ -329,7 +329,7 @@ def test_retry_keeps_the_saved_exposure_when_only_the_curve_changed_meanwhile(tm
     out = run(tmp_path, "retry-other-field")
     assert out["reopenedExposure"] == 0
     assert out["retry"] is True and out["newer"] is True
-    assert out["viewExposure"] == 1 and out["viewCurve"] == [[0, 0], [128, 110], [255, 255]]
+    assert out["viewExposure"] == 1 and out["viewCurve"] == {"master": [[0, 0], [128, 110], [255, 255]]}
     assert out["status"] == "saved" and out["next"] is True
     assert out["serverExposure"] == 1 and out["serverCurve"] == {"master": [[0, 0], [128, 110], [255, 255]]}
 

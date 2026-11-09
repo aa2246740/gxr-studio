@@ -1,4 +1,4 @@
-// WebGPU 预览引擎。数据（RAW 字节、相机 JPG、配方表、LUT 表）各上传一次；拖滑块只改一块 uniform 和 1021 点调子表。
+// WebGPU 预览引擎。源图、配方表、LUT 各上传一次；拖动只改 uniform 与 1 或 3 张 1021 点调子表。
 // 三遍：颜色（源图分辨率）→ 几何（1:1 成片纹理，读回和 Python 比的就是它）→ 显示（缩放到画布）。
 import colorWgsl from './shaders/color.wgsl?raw';
 import commonWgsl from './shaders/common.wgsl?raw';
@@ -6,7 +6,7 @@ import geoWgsl from './shaders/geo.wgsl?raw';
 import binWgsl from './shaders/bin.wgsl?raw';
 import presentWgsl from './shaders/present.wgsl?raw';
 import histWgsl from './shaders/hist.wgsl?raw';
-import { type Adjust, type CurvePoints, channelGains, displayTable, TABLE_SIZE } from './tones';
+import { type Adjust, type Curves, channelGains, displayTable, TABLE_SIZE } from './tones';
 import { canvasOf, lens, rotatedSize } from './warp';
 
 type Mat3 = [number[], number[], number[]];
@@ -61,7 +61,7 @@ export interface Look {
   lut: string | null;
   lutStrength: number;
   adjust: Adjust;
-  curve: CurvePoints | null;
+  curve: Curves | null;
 }
 
 export interface Geometry {
@@ -255,7 +255,7 @@ export class Engine {
     this.histUniform = ub(2 * 16);
     this.histTotal = device.createBuffer({ size: HIST_SIZE * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
     this.histStage = device.createBuffer({ size: HIST_SIZE * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-    this.toneBuf = device.createBuffer({ size: TABLE_SIZE * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.toneBuf = device.createBuffer({ size: TABLE_SIZE * 3 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.dummyLut = device.createTexture({ size: [2, 2, 2], dimension: '3d', format: 'rgba32float', usage: GPUTextureUsage.TEXTURE_BINDING });
     this.dummyLut8 = device.createTexture({ size: [1, 1, 1], dimension: '3d', format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
     this.dummy2d = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
@@ -501,7 +501,7 @@ export class Engine {
     const table = displayTable(a, look.curve);
     if (table) this.device.queue.writeBuffer(this.toneBuf, 0, table);
     const anyBase = Boolean(a.exposure_ev || a.wb?.warm || a.wb?.tint || table);
-    u.set([table ? 1 : 0, mode, anyBase ? 1 : 0, look.lutStrength], 4);
+    u.set([table ? table.length / TABLE_SIZE : 0, mode, anyBase ? 1 : 0, look.lutStrength], 4);
     u.set([a.black_point ?? 0, a.saturation ?? 0, a.vibrance ?? 0, a.vignette ?? 0], 8);
     u.set([src.w, src.h, 0, 0], 12);
     if (bake) {

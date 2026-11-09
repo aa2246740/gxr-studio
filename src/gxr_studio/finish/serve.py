@@ -257,7 +257,7 @@ def color_image(
                 "key": "",
             },
         )
-    raw_edit = edit if mode == "recipe" else EditState(adjust=edit.adjust, master=edit.master)
+    raw_edit = edit if mode == "recipe" else EditState(adjust=edit.adjust, curve=edit.curve)
     try:
         rgb, labels = _raw_rgb(render, lib, shot, raw_edit, full=full)
     except (NoRaw, RenderUnavailable, RawDecodeError) as exc:

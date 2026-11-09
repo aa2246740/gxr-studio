@@ -37,7 +37,7 @@ def describe(side: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
         "lut": edit.lut,
         "memory": (recipe or {}).get("memory") or {},
         "adjust": edit.adjust.to_json(),
-        "curve": {"master": [list(p) for p in edit.master]} if edit.master else None,
+        "curve": edit.curve.to_json() if edit.curve else None,
         "geometry": edit.geometry.to_json() if getattr(edit.geometry, "to_json", None) else None,
         "frame": edit.frame.to_json() if getattr(edit.frame, "to_json", None) else None,
         "stamp": edit.stamp.to_json() if getattr(edit.stamp, "to_json", None) else None,
@@ -95,11 +95,11 @@ def write(
         else:
             new["adjust"] = adjust.to_json()
     if "curve" in changes:
-        master = parse_curve(changes["curve"])
-        if master is None:
+        curve = parse_curve(changes["curve"])
+        if curve is None:
             new.pop("curve", None)
         else:
-            new["curve"] = {"master": [list(p) for p in master]}
+            new["curve"] = curve.to_json()
     if "lut" in changes:
         lut = parse_lut(changes["lut"])
         if lut is None:

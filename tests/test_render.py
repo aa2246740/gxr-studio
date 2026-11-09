@@ -22,10 +22,12 @@ import e0_support as t
 from conftest import PORT
 from gxr_studio.app import create_app
 from gxr_studio.camdata import calib, store
+from gxr_studio.devtools.synthetic_card import make_card
 from gxr_studio.engine import colour, knobs, menu
 from gxr_studio.library import thumbs
 from gxr_studio.render import chain, tones
 from gxr_studio.render.params import (
+    Curves,
     EditError,
     EditState,
     RecipeSel,
@@ -38,12 +40,20 @@ from gxr_studio.render.recipes import CameraData, Menu, unit_of_lens
 from gxr_studio.render.service import RenderService, RenderUnavailable, shrink_codes
 from test_api import find, import_all
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = t.REPO
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
 needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-50 样本不在本机")
 
 
 # ---- 夹具 --------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_card(volumes):
+    """盖掉 conftest 的同名夹具，换成本文件的样本目录；找不到样本就跳过，和 conftest 一样。"""
+    if not SAMPLE_DIR.is_dir():
+        pytest.skip("captures/a12-50 样本不在本机")
+    return make_card(volumes, samples=SAMPLE_DIR)
 
 
 @pytest.fixture(scope="module")
@@ -114,7 +124,7 @@ def test_param_validation_and_canonical_form():
         with pytest.raises(EditError):
             parse_adjust(bad)
     assert parse_curve({"master": [[0, 0], [255, 255]]}) is None, "恒等直线等于没有曲线"
-    assert parse_curve({"master": [[0, 0], [128, 100], [255, 255]]}) == ((0, 0), (128, 100), (255, 255))
+    assert parse_curve({"master": [[0, 0], [128, 100], [255, 255]]}) == Curves(master=((0, 0), (128, 100), (255, 255)))
     for bad in ({"master": [[0, 0]]}, {"master": [[0, 0], [0, 5]]}, {"master": [[0, 0], [300, 5]]}, {"red": []}):
         with pytest.raises(EditError):
             parse_curve(bad)
@@ -160,7 +170,7 @@ def test_tones_identity_and_monotone():
                 assert np.all(np.diff(tab) >= -1e-4), (c, h, s)
                 assert tab[0] <= 0.5 and tab[-1] >= 254.5, "黑白场不动"
     # 主曲线：按点走，端点外取平
-    tab = tones.display_table(parse_adjust({}), ((0.0, 10.0), (128.0, 128.0), (255.0, 250.0)))
+    tab = tones.display_table(parse_adjust({}), Curves(master=((0.0, 10.0), (128.0, 128.0), (255.0, 250.0))))
     assert abs(tab[0] - 10) < 1e-3 and abs(tab[-1] - 250) < 1e-3
     x = np.array([0.0, 64.5, 255.0], np.float32)
     assert np.allclose(tones.apply_table(x, tab), np.interp(x, np.linspace(0, 255, tones.TABLE_SIZE), tab), atol=1e-3)
@@ -268,7 +278,7 @@ def test_identity_curve_and_tone_are_byte_identical_to_no_curve(cam, model200, s
     plain = chain.exact_u8(model200, e, x, None, None)
     ident = tones.display_table(parse_adjust({}), parse_curve({"master": [[0, 0], [100, 100], [255, 255]]}))
     assert ident is None and np.array_equal(chain.exact_u8(model200, e, x, None, ident), plain)
-    curved = tones.display_table(parse_adjust({}), ((0, 0), (128, 90), (255, 255)))
+    curved = tones.display_table(parse_adjust({}), Curves(master=((0, 0), (128, 90), (255, 255))))
     out = chain.exact_u8(model200, e, x, None, curved)
     assert not np.array_equal(out, plain) and out.mean() < plain.mean(), "把中间调压暗的曲线要让图变暗"
 
@@ -305,7 +315,7 @@ def test_chroma_bake_with_gains_table_and_precision_grid(cam, model200, scene_co
     e = cam.entries[(0, 1)]
     x = scene_codes[::5]
     g = tones.channel_gains(parse_adjust({"exposure_ev": -0.7, "wb": {"warm": 40, "tint": -20}}))
-    tab = tones.display_table(parse_adjust({"contrast": 30, "shadow": 40}), ((0, 0), (80, 70), (255, 255)))
+    tab = tones.display_table(parse_adjust({"contrast": 30, "shadow": 40}), Curves(master=((0, 0), (80, 70), (255, 255))))
     ref = chain.exact_float(model200, e, x, g, tab)
     coarse = chain.chroma_float(x, chain.bake_chroma(model200, e, 0.75), g, tab)
     fine = chain.chroma_float(x, chain.bake_chroma(model200, e, 0.5), g, tab)

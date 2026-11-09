@@ -14,6 +14,7 @@ export interface Adjust {
 }
 
 export type CurvePoints = ReadonlyArray<readonly [number, number]>;
+export type Curves = Readonly<Partial<Record<'master' | 'r' | 'g' | 'b', CurvePoints | null>>>;
 
 const WARM_EV = 0.35;
 const TINT_EV = 0.25;
@@ -89,18 +90,30 @@ export function effectiveCurve(curve: CurvePoints | null | undefined): CurvePoin
   return curve.every(([x, y]) => x === y) ? null : curve;
 }
 
-/** render/tones.py display_table：全是恒等时返回 null。 */
-export function displayTable(a: Adjust, rawCurve: CurvePoints | null): Float32Array | null {
-  const curve = effectiveCurve(rawCurve);
-  if (toneIsIdentity(a) && !curve) return null;
-  const out = new Float32Array(TABLE_SIZE);
-  const xs = curve ? curve.map((pt) => pt[0]) : [];
-  const f = curve ? pchip(xs, curve.map((pt) => pt[1])) : null;
+function curveFunction(points: CurvePoints | null | undefined): ((x: number) => number) | null {
+  const curve = effectiveCurve(points);
+  if (!curve) return null;
+  const xs = curve.map((pt) => pt[0]);
+  const f = pchip(xs, curve.map((pt) => pt[1]));
+  return (x) => Math.min(255, Math.max(0, f(Math.min(xs[xs.length - 1], Math.max(xs[0], x)))));
+}
+
+/** render/tones.py display_table：全恒等为 null，仅主曲线 1021 点，RGB 表按 R/G/B 连续存放。 */
+export function displayTable(a: Adjust, curves: Curves | null): Float32Array | null {
+  const master = curveFunction(curves?.master);
+  const channels = [curves?.r, curves?.g, curves?.b].map(curveFunction);
+  const separate = channels.some((f) => f !== null);
+  if (toneIsIdentity(a) && !master && !separate) return null;
+  const count = separate ? 3 : 1;
+  const out = new Float32Array(TABLE_SIZE * count);
   for (let i = 0; i < TABLE_SIZE; i++) {
     const x = (255 * i) / (TABLE_SIZE - 1);
-    let y = toneFunction(x / 255, a) * 255;
-    if (f) y = Math.min(255, Math.max(0, f(Math.min(xs[xs.length - 1], Math.max(xs[0], y)))));
-    out[i] = y;
+    const base = toneFunction(x / 255, a) * 255;
+    for (let c = 0; c < count; c++) {
+      // 与 GIMP gimp_curve_map_pixels 一致：单通道 → 主曲线，在原显示编码域合表。
+      const y = channels[c]?.(base) ?? base;
+      out[c * TABLE_SIZE + i] = master?.(y) ?? y;
+    }
   }
   return out;
 }

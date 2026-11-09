@@ -1,7 +1,7 @@
 """编辑参数：sidecar 里的 `recipe` / `adjust` / `curve` 三块的读取与校验（ARCHITECTURE §4.4、§5.5）。
 
 - `recipe` 是"会跟着配方进相机"的部分：单元 + 槽位（01..08）+ 旋钮档位（用户看到的档位，不是剂量）；
-- `adjust` 和 `curve` 是"只在电脑里生效"的部分：曝光、色温/色调偏移、画面对比/高光/阴影、主曲线。
+- `adjust` 和 `curve` 是"只在电脑里生效"的部分：曝光、色温/色调偏移、画面对比/高光/阴影、主曲线和 RGB 曲线。
   数据结构上和 `recipe.levels` 分开存，界面和导出文件里也要分开说。
 
 这里只管数据形状和范围；旋钮档位是否合法（到顶标记、03 没有饱和…）由 `recipes.py` 按 final.json 判断。
@@ -22,6 +22,8 @@ KNOB_NAMES = ("amount", "contrast", "highlight", "shadow", "fade", "saturation",
 EXPOSURE_RANGE = 5.0  # ±EV
 SLIDER_RANGE = 100  # 色温/色调/画面对比/高光/阴影：-100..+100
 CURVE_MAX_POINTS = 16
+CURVE_CHANNELS = ("master", "r", "g", "b")
+CurvePoints = tuple[tuple[float, float], ...]
 
 
 class EditError(ValueError):
@@ -91,10 +93,22 @@ class Adjust:
 
 
 @dataclass(frozen=True)
+class Curves:
+    master: CurvePoints | None = None
+    r: CurvePoints | None = None
+    g: CurvePoints | None = None
+    b: CurvePoints | None = None
+
+    def to_json(self) -> dict[str, list[list[float]]]:
+        # 省略恒等通道，旧的 {"master": [...]} 保持原样。
+        return {key: [list(p) for p in points] for key in CURVE_CHANNELS if (points := getattr(self, key)) is not None}
+
+
+@dataclass(frozen=True)
 class EditState:
     recipe: RecipeSel | None = None
     adjust: Adjust = field(default_factory=Adjust)
-    master: tuple[tuple[float, float], ...] | None = None  # 曲线控制点（0..255）
+    curve: Curves | None = None  # 四条曲线的控制点（0..255）；恒等通道为 None
     geometry: Any = None
     frame: Any = None
     stamp: Any = None
@@ -104,7 +118,7 @@ class EditState:
         return {
             "recipe": self.recipe.to_json() if self.recipe else None,
             "adjust": self.adjust.to_json(),
-            "curve": {"master": [list(p) for p in self.master]} if self.master else None,
+            "curve": self.curve.to_json() if self.curve else None,
             **({"lut": self.lut} if self.lut is not None else {}),
         }
 
@@ -153,17 +167,21 @@ def parse_adjust(raw: Any) -> Adjust:
     )
 
 
-def parse_curve(raw: Any) -> tuple[tuple[float, float], ...] | None:
-    """返回主曲线控制点；缺省、空、或恰好是恒等直线 → None。"""
+def parse_curve(raw: Any) -> Curves | None:
+    """四个通道独立校验；缺省、null 和恒等直线不参与渲染。"""
     if raw is None:
         return None
-    if not isinstance(raw, dict) or set(raw) - {"master"}:
-        raise EditError("bad_curve", INVALID_REQUEST, "只支持一条曲线。")
-    pts = raw.get("master")
+    if not isinstance(raw, dict) or set(raw) - set(CURVE_CHANNELS):
+        raise EditError("bad_curve", "曲线只能包含主曲线、红、绿、蓝四个通道。")
+    curves = Curves(**{key: _parse_points(raw.get(key)) for key in CURVE_CHANNELS})
+    return curves if curves.to_json() else None
+
+
+def _parse_points(pts: Any) -> CurvePoints | None:
     if pts is None:
         return None
     if not isinstance(pts, (list, tuple)) or not 2 <= len(pts) <= CURVE_MAX_POINTS:
-        raise EditError("bad_curve", INVALID_REQUEST, f"曲线要有 2 到 {CURVE_MAX_POINTS} 个点。")
+        raise EditError("bad_curve", f"每条曲线要有 2 到 {CURVE_MAX_POINTS} 个点。")
     out = []
     for p in pts:
         if (
@@ -171,10 +189,10 @@ def parse_curve(raw: Any) -> tuple[tuple[float, float], ...] | None:
             or len(p) != 2
             or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 255 for v in p)
         ):
-            raise EditError("bad_curve", INVALID_REQUEST, "曲线点的格式不对。")
+            raise EditError("bad_curve", "曲线上的点须包含两个 0 到 255 之间的数值。")
         out.append((round(float(p[0]), 4), round(float(p[1]), 4)))
     if any(b[0] <= a[0] for a, b in zip(out, out[1:])):
-        raise EditError("bad_curve", INVALID_REQUEST, "曲线输入要从小到大。")
+        raise EditError("bad_curve", "曲线上的点须按从左到右排列，横坐标不能相同。")
     if all(x == y for x, y in out):
         return None
     return tuple(out)
@@ -240,7 +258,7 @@ def parse_edit(side: dict[Any, Any]) -> EditState:
     return EditState(
         recipe=parse_recipe(side.get("recipe")),
         adjust=parse_adjust(side.get("adjust")),
-        master=parse_curve(side.get("curve")),
+        curve=parse_curve(side.get("curve")),
         geometry=geometry,
         frame=parse_frame(raw_border) if raw_border is not None else None,
         stamp=parse_stamp(side["stamp"]) if "stamp" in side else None,

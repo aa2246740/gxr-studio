@@ -46,8 +46,17 @@ CURVES = [
 ]
 
 
+CHANNEL_CURVES = [
+    {"r": CURVES[2]},
+    {"g": CURVES[3]},
+    {"b": CURVES[4]},
+    {"master": CURVES[3], "r": CURVES[2], "g": None, "b": CURVES[4]},
+    {"master": None, "r": CURVES[1], "g": CURVES[1], "b": CURVES[1]},
+]
+
+
 def test_display_table_and_gains_match_python(tmp_path):
-    cases = [(a, c) for a in ADJUSTS for c in CURVES]
+    cases = [(a, c) for a in ADJUSTS for c in [*({"master": c} for c in CURVES), *CHANNEL_CURVES]]
     out = run_node(
         tmp_path,
         "import { displayTable, channelGains } from './engine.js';\n"
@@ -58,13 +67,13 @@ def test_display_table_and_gains_match_python(tmp_path):
     assert isinstance(out, list)
     for (adjust_raw, curve), got in zip(cases, out):
         adjust = parse_adjust(adjust_raw)
-        master = parse_curve({"master": curve}) if curve else None
-        ref = display_table(adjust, master)
+        curves = parse_curve(curve)
+        ref = display_table(adjust, curves)
         if ref is None:
             assert got["t"] is None, (adjust_raw, curve)
         else:
             assert got["t"] is not None
-            np.testing.assert_allclose(np.asarray(got["t"], np.float32), ref, atol=2e-4, err_msg=json.dumps([adjust_raw, curve]))
+            np.testing.assert_allclose(np.asarray(got["t"], np.float32), ref.ravel(), atol=2e-4, err_msg=json.dumps([adjust_raw, curve]))
         gains = channel_gains(adjust)
         if gains is None:
             assert got["g"] is None

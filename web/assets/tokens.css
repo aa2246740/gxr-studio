@@ -84,6 +84,10 @@
   --clip-shadow: rgb(40, 110, 255);
   --clip-highlight: rgb(255, 50, 40);
   --ok-text: #5cc882;                         /* 只用于小图标（如导入完成的对勾），不用整条色块 */
+  /* 曲线通道是数据颜色，主曲线沿用正文灰。 */
+  --curve-red: #ff7a70;
+  --curve-green: #74d795;
+  --curve-blue: #80b6ff;
 
   /* ---------- 8. 字体 ---------- */
   /* 跨平台：macOS 用系统字体 + 苹方；Windows 用 Segoe UI + 微软雅黑。都是系统自带，不用授权字体 */

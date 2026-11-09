@@ -381,5 +381,31 @@ if (scenario === 'queued-paste-after-a-failed-save') {
   out.undoLen = v.undo.length;
 }
 
+if (scenario === 'rgb-copy-paste-undo-redo') {
+  const curves = { master: [[0, 5], [255, 250]], r: [[0, 0], [200, 180], [255, 240]], g: [[0, 0], [128, 140], [255, 255]], b: [[0, 18], [64, 90], [255, 255]] };
+  stored.a0.curve = curves;
+  stored.b0.curve = { g: [[0, 10], [255, 245]] };
+  await go('#/photo/a0');
+  await tick();
+  core.copyFromView(viewer.currentView(), ['adjust']);
+  out.clip = core.clipboard().source.curve;
+  out.summary = core.PASTE_GROUPS.find(([id]) => id === 'adjust')[2];
+  // 复制的是快照，之后改来源不能悄悄改剪贴板。
+  viewer.currentView().ed.curve.b[0][1] = 50;
+  await go('#/photo/b0');
+  await tick();
+  const view = viewer.currentView();
+  await edits.pasteEdits(view);
+  await tick();
+  out.pasted = structuredClone(view.ed.curve);
+  preview.undoChange(view);
+  await tick();
+  out.undone = structuredClone(view.ed.curve);
+  preview.redoChange(view);
+  await tick();
+  out.redone = view.ed.curve;
+  out.saved = stored.b0.curve;
+}
+
 console.log(JSON.stringify(out));
 process.exit(0);

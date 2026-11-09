@@ -44,6 +44,19 @@ def test_copy_takes_recipe_and_adjust_by_default_and_says_so(tmp_path):
     assert "⇧⌘V" in out["pasteButtonTitle"] and "R0010001.DNG" in out["pasteButtonTitle"], "按钮的提示说明粘贴的是哪张的什么"
 
 
+def test_rgb_copy_paste_undo_redo_keeps_every_channel(tmp_path):
+    out = run(tmp_path, "rgb-copy-paste-undo-redo")
+    curves = {
+        "master": [[0, 5], [255, 250]],
+        "r": [[0, 0], [200, 180], [255, 240]],
+        "g": [[0, 0], [128, 140], [255, 255]],
+        "b": [[0, 18], [64, 90], [255, 255]],
+    }
+    assert out["clip"] == out["pasted"] == out["redone"] == out["saved"] == curves
+    assert out["undone"] == {"g": [[0, 10], [255, 245]]}
+    assert "主曲线和红绿蓝曲线" in out["summary"]
+
+
 def test_frame_ratio_choice_is_copied_pasted_undone_and_redone(tmp_path):
     out = run(tmp_path, "frame-ratio-copy-paste-undo")
     assert out == {"copied": True, "pasted": True, "crop": "1:1", "undone": False, "undoSaved": False, "redone": True, "redoSaved": True}
@@ -64,7 +77,7 @@ def test_paste_in_the_editor_is_queued_with_the_latest_rev_and_is_one_undo_step(
     out = run(tmp_path, "paste-is-one-undo-step")
     assert out["pasteBefore"] is True
     assert out["pastePosts"] == [{"targets": [{"id": "b0", "expected_rev": 5}], "groups": ["recipe", "adjust"], "include": True}]
-    assert (out["adjAfter"], out["recipeAfter"]) == (7, 2) and out["curveAfter"] == [[0, 0], [128, 120], [255, 255]]
+    assert (out["adjAfter"], out["recipeAfter"]) == (7, 2) and out["curveAfter"] == {"master": [[0, 0], [128, 120], [255, 255]]}
     assert out["undoAfter"] == out["undoBefore"] + 1, "撤销记录里只多一步"
     assert out["status"] == "saved" and out["recRev"] == out["viewRev"] == 6
     assert out["toast"] == "已套用：配方 / 风格、调整" and out["hasUndoAction"]

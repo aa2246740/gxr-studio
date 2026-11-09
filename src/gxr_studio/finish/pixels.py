@@ -6,7 +6,7 @@ from typing import cast
 
 import numpy as np
 
-from ..render.params import Adjust
+from ..render.params import Adjust, Curves
 from ..render.tones import apply_table as _apply_table
 from ..render.tones import channel_gains, display_table
 
@@ -22,7 +22,7 @@ def _linear_to_srgb(lin: np.ndarray) -> np.ndarray:
     return cast(np.ndarray, np.clip(encoded * 255.0 + 0.5, 0, 255).astype(np.uint8))
 
 
-def apply_base(rgb: np.ndarray, adjust: Adjust, curve: tuple[tuple[float, float], ...] | None) -> np.ndarray:
+def apply_base(rgb: np.ndarray, adjust: Adjust, curve: Curves | None) -> np.ndarray:
     """曝光、色温、色调、对比度、高光、阴影、曲线。给没有 RAW 的 JPEG 用。"""
     if adjust.exposure_ev == 0 and adjust.warm == 0 and adjust.tint == 0 and adjust.tone_is_identity and curve is None:
         return rgb

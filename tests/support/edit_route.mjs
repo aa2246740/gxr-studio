@@ -734,7 +734,7 @@ if (scenario === 'reset-then-switch') {
   const retry = preview.retrySaves(PHOTOS.A.id);
   await tick();
   const curve = [[0, 0], [128, 110], [255, 255]];
-  v.ed.curve = curve.map((q) => [...q]);
+  v.ed.curve = { master: curve.map((q) => [...q]) };
   const newer = preview.persist(v, { curve: { master: curve } });
   g.release(`GET /api/photos/${PHOTOS.A.id}/edit`);
   out.retry = await retry;
@@ -855,7 +855,7 @@ if (scenario === 'reset-then-switch') {
   await tick();
   preview.beginChange(v); // 按下曲线
   const curve = [[0, 0], [133, 148], [255, 255]];
-  v.ed.curve = curve.map((q) => [...q]);
+  v.ed.curve = { master: curve.map((q) => [...q]) };
   g.release(`PUT /api/photos/${PHOTOS.A.id}/edit`);
   out.retry = await retry;
   await tick(5);
@@ -886,7 +886,7 @@ if (scenario === 'reset-then-switch') {
   await tick();
   preview.beginChange(v);
   const curve = [[0, 0], [128, 110], [255, 255]];
-  v.ed.curve = curve.map((q) => [...q]);
+  v.ed.curve = { master: curve.map((q) => [...q]) };
   const curveSave = preview.persist(v, { curve: preview.curveBody(v.ed) }).then(() => preview.endChange(v));
   g.release(`GET /api/photos/${PHOTOS.A.id}/edit`);
   out.retry = await retry;
@@ -1015,7 +1015,7 @@ if (scenario === 'reset-then-switch') {
   await tick(5);
   out.afterRefresh = v.ed.adj.exposure_ev;
   const curve = [[0, 0], [133, 148], [255, 255]];
-  if (mixed) await step(() => { v.ed.curve = curve.map((q) => [...q]); }, () => ({ curve: preview.curveBody(v.ed) }));
+  if (mixed) await step(() => { v.ed.curve = { master: curve.map((q) => [...q]) }; }, () => ({ curve: preview.curveBody(v.ed) }));
   out.retry = await preview.retrySaves(PHOTOS.A.id);
   await tick(5);
   out.afterRetry = { view: v.ed.adj.exposure_ev, server: stored[PHOTOS.A.id].adjust.exposure_ev };

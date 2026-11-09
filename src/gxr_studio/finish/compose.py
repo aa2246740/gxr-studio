@@ -31,7 +31,7 @@ def resolved_stamp(edit_stamp: StampSpec | None, defaults: StampSpec | None) -> 
 
 
 def has_visible_edit(edit: EditState, side: dict[str, Any], frame: FrameSpec, stamp: StampSpec) -> bool:
-    if edit.recipe is not None or edit.lut is not None or edit.master is not None or not edit.adjust.is_identity:
+    if edit.recipe is not None or edit.lut is not None or edit.curve is not None or not edit.adjust.is_identity:
         return True
     geom = edit.geometry
     if geom is not None and not geom.is_identity():
@@ -75,7 +75,7 @@ def finish_unframed(
     if from_raw:
         rgb = apply_extra(rgb, edit.adjust)
     else:
-        rgb = apply_base(rgb, edit.adjust, edit.master)
+        rgb = apply_base(rgb, edit.adjust, edit.curve)
         rgb = apply_extra(rgb, edit.adjust)
     geom = edit.geometry if isinstance(edit.geometry, Geometry) else Geometry()
     if geom.is_identity():
