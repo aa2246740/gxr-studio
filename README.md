@@ -91,12 +91,14 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 
 **1. 相机数据（`GXRCE.DAT`）** —— 来自你自己装过配方程序的那张卡，在卡的最外层（和 `DCIM` 并排）。
 
+r5 的 g176、g178 必须同时导入同一套 `GXRCE.DAT` 和 `GXRFX.BIN`。将两个文件复制到同一文件夹，在文件选择器中同时选择它们；路径接口自动读取同目录的库。g178 每个单元显示相机顺序的 23 份完整配方，详见 [r5 配方导入](docs/r5-recipes.md)。
+
 - 插着卡：`POST /api/camdata/import-card`（可选 `{card_id}`；插着不止一张带 `GXRCE.DAT` 的卡会返回 409 `multiple_cards` 和候选）。
-  **只读**：只以 `rb` 打开这一个文件，卡上的东西一个字节都不会动。
+  **只读**：以 `rb` 打开配方文件，r5 同时读取库，卡上的东西一个字节都不会动。
 - 没有卡：把 `GXRCE.DAT`（或装着它的文件夹）拷到电脑上，`POST /api/camdata/import-file {"path": "/完整/路径"}`。
   界面里的「选择 GXRCE.DAT 文件…」走 `POST /api/camdata/import-upload`：浏览器拿不到本地路径，所以直接把选中文件的
   原始字节（`application/octet-stream`，文件名放在 `X-GXR-Filename` 头里，只用来显示）发过来，校验和 `import-file` 完全相同。
-- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156 / 158，其它代一律拒绝，不猜）、两层 CRC、钉子、
+- 提取之前先全部校验：魔数、代数（目前认 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156 / 158 / 176 / 178，其它代一律拒绝，不猜）、两层 CRC、钉子、
   重新封装后与原文件逐字节相同、三个单元的原厂 04。任何一项不过，返回带中文说明的 422
   （`generation_unsupported` / `dat_invalid`），应用数据目录里原来的数据原封不动。
   文件版本比工作室当前支持的更新时，主提示为「这个相机配方文件需要更新版本的 GXR 工作室。」；

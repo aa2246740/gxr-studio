@@ -377,7 +377,7 @@ def test_r1_p1_05_calibration_writer_itself_is_fd_guarded(volumes, tmp_path, mon
 def test_r1_p1_05_camera_data_writer_is_fd_guarded(volumes, tmp_path, monkeypatch):
     """P1-05：相机数据写入（store.import_from_dat）同样。解析器换成合成条目（不是写入函数），写入走真实路径。"""
     entries = {(u, s): bytes([u, s]) * 276 for u in range(3) for s in range(1, 9)}
-    monkeypatch.setattr(store, "entries_from_dat", lambda raw: (SimpleNamespace(generation=137), entries))
+    monkeypatch.setattr(store, "entries_from_dat", lambda raw, library=None: (SimpleNamespace(generation=137), entries))
     home = tmp_path / "app-data"
     home.mkdir()
     card = make_fake_card(volumes)

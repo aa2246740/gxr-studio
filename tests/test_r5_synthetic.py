@@ -9,6 +9,7 @@ import pytest
 
 from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import intake, r5
+from test_a1a_privacy import load_checker
 from test_camdata_api import client as client
 from test_camdata_api import reader as reader
 
@@ -64,3 +65,10 @@ def test_r5_file_picker_reads_the_companion_with_a_bounded_length(tmp_path):
     (tmp_path / "gxrfx.bin").write_bytes(bytes(r5.MAX_LIBRARY_BYTES + 1))
     with pytest.raises(intake.IntakeError, match="过大"):
         intake.read_bundle_from_path(path)
+
+
+@pytest.mark.parametrize("magic", (b"GXRLB003", b"GXRCL002"))
+def test_public_byte_scanner_rejects_synthetic_r5_binary_headers(magic):
+    scanner = load_checker()
+    assert scanner._magic(bytes(20) + magic + bytes(80), True) == "R2 ricoh-magic"
+    assert scanner._magic(b'header = b"' + magic + b'"', False) is None

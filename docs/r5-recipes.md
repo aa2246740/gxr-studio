@@ -20,3 +20,5 @@ lockf -k /tmp/gxr-heavy.lock nice -n 15 env GXR_STUDIO_TEST_PARENT=/Volumes/Work
 ```
 
 只在 loadgate 返回 `admit: true` 后运行第二条。测试从本地研究路径读取受审文件，缺少它们时跳过。DAT、库、完整记录、C 源码和校准参数均不随公开仓库分发。
+
+`scripts/verify_g178.py` 另对 69 份默认记录逐单元比较研究颜色模型，覆盖 ISO 200 和 1600、两种 half 模式。用 `python -I -B` 在同一准入和锁下运行，参数为 `--research`、`--out` 和 `--home`。输出必须位于研究任务的 `local/`，临时应用数据目录必须在 Git 工作区之外。`prediction.json` 逐项记录浮点字节是否相同、最大差及量化后变化分量数，任何一项字节不同即失败。
