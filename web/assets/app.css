@@ -724,9 +724,9 @@ table.keys h4, .keys-group { margin: 14px 0 6px; font: var(--fw-semibold) var(--
   .stage-area { padding: 12px 16px 8px; }
 }
 
-/* 系统要求减少动态效果：所有过渡和动画都关掉（进度条的流动也停，只留静态条） */
+/* 减少动态效果：直接关闭过渡。正的时长会让默认 transition-property: all 给宽高变化创建动画。 */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition: none !important; }
   .stage-progress::after, .progress.indet > i { animation: none !important; left: 0; width: 100%; opacity: .6; }
   .btn[aria-busy="true"]::after, .cardchip .ring.indet { animation: none !important; }
 }

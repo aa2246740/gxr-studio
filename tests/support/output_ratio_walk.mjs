@@ -32,8 +32,6 @@ export async function walkOutputRatios({ evalIn }) {
     for (const name of ['白边', '徕卡水印', '哈苏水印', '胶片', '拍立得']) {
       card(name).click();
       for (const ratio of ['1:1', '4:5', '3:4', '2:3', '9:16', '16:9', '3:2', 'original']) {
-        const traced = name === '白边' && ratio === '1:1';
-        if (traced) window.__ratioTrace.begin(name + ' ' + ratio);
         const before = {renders:window.__fetchLog.renders, queries};
         const start = performance.now();
         const select = document.querySelector('select[aria-label="成品比例"]');
@@ -43,7 +41,6 @@ export async function walkOutputRatios({ evalIn }) {
         await raf();
         const ms = performance.now() - start;
         const stage = document.querySelector('.pv.framed').getBoundingClientRect();
-        const diagnostic = traced ? window.__ratioTrace.mark('first-rAF-measured', [stage.width,stage.height]) : null;
         const key = document.querySelector('.pv-deco').dataset.key;
         const clickRenders = window.__fetchLog.renders - before.renders;
         const clickQueries = queries - before.queries;
@@ -55,9 +52,8 @@ export async function walkOutputRatios({ evalIn }) {
         });
         const size = await api('/output-size', {});
         const exported = await api('/export', {size:'original'});
-        samples.push({name, ratio, ms, immediate, key, diagnostic, stage:[stage.width, stage.height],
+        samples.push({name, ratio, ms, immediate, key, stage:[stage.width, stage.height],
           size:size.sizes.original, exported:[exported.width, exported.height], clickRenders, clickQueries});
-        if (traced) window.__ratioTrace.end();
       }
     }
     window.fetch = realFetch;
@@ -106,19 +102,16 @@ export async function walkPendingFrameRatio({ evalIn }) {
       await until(() => held > 0);
       replacement = view.ed.urls.final;
       const renders = window.__fetchLog.renders;
-      window.__ratioTrace.begin('held-decode 1:1');
       select().value = '1:1';
       select().dispatchEvent(new Event('change', {bubbles:true}));
       const immediate = document.querySelector('.frame-size').textContent;
       await raf();
       const nextFrame = stage();
-      const diagnostic = window.__ratioTrace.mark('first-rAF-measured', nextFrame);
       await wait(150);
-      result = {before, immediate, nextFrame, diagnostic, heldStage:stage(), held, gpu:!!view.gpuActive,
+      result = {before, immediate, nextFrame, heldStage:stage(), held, gpu:!!view.gpuActive,
         originalStillVisible:pv().dataset.src === originalSrc, clickRenders:window.__fetchLog.renders-renders};
     } finally {
       HTMLImageElement.prototype.decode = nativeDecode;
-      window.__ratioTrace.end();
       release();
     }
     await until(() => pv()?.dataset.src === replacement);

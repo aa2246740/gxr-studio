@@ -13,7 +13,6 @@ import { walkPanelLayout } from './panel_layout_walk.mjs';
 import { walkSliderKeys } from './slider_keys_walk.mjs';
 import { walkStampBorder } from './stamp_border_walk.mjs';
 import { walkOutputRatios, walkPendingFrameRatio } from './output_ratio_walk.mjs';
-import { installRatioTrace } from './frame_ratio_diag.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -145,6 +144,9 @@ try {
     if (line) out.failedRequests = [...out.failedRequests.slice(-19), line.replace(/token=[^&\s]+/, 'token=…').slice(0, 300)];
   });
   await call('Network.enable');
+  if (process.env.VIEWER_REDUCED_MOTION) await call('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: process.env.VIEWER_REDUCED_MOTION }],
+  });
   await call('Runtime.enable');
   await call('Log.enable');
 
@@ -325,15 +327,13 @@ try {
     await finish(0);
   }
   if (mode === 'output-ratio') {
-    await installRatioTrace({ evalIn });
+    out.reducedMotion = await evalIn("matchMedia('(prefers-reduced-motion: reduce)').matches");
     out.outputRatio = await walkOutputRatios({ evalIn });
-    await evalIn('window.__ratioTrace.close()');
     await finish(0);
   }
   if (mode === 'output-ratio-pending') {
-    await installRatioTrace({ evalIn });
+    out.reducedMotion = await evalIn("matchMedia('(prefers-reduced-motion: reduce)').matches");
     out.pendingFrameRatio = await walkPendingFrameRatio({ evalIn });
-    await evalIn('window.__ratioTrace.close()');
     await finish(0);
   }
   if (mode === 'stamp-border') {
