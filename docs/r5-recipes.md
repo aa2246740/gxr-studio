@@ -6,7 +6,7 @@
 
 g178 每单元显示相机顺序的 23 份完整配方。原生 01–04 后面接 19 份独立记录，原生 05–08 的旧入口隐藏。Acros 保留 Cont、High、Shad、Fade、Filt 五项。完整记录按单元及内容摘要选择，换库或跨单元不会按旧编号误选另一种风格。
 
-记录按库内十行数据展开为 552 B，旋钮使用同库的整数档位和剂量。MOUNT 的旋钮表按相机规则使用 50mm 的对应表，04 除外。每单元颜色标定等待 [PR #106](https://github.com/aa2246740/gxr-studio/pull/106) 合入后接入；本分支沿用 main 的标定范围，28mm 和 MOUNT 仍标为未单独校准。电脑预测不是实机照片。
+记录按库内十行数据展开为 552 B，旋钮使用同库的整数档位和剂量。MOUNT 的旋钮表按相机规则使用 50mm 的对应表，04 除外。颜色预测按配方单元选择各自的原厂 04、输入映射和校准模型，见 [逐单元校准](unit-calibration.md)。50mm 的实拍校准 ISO 为 200、1600，28mm 和 MOUNT 为 200；后二者的高 ISO 属迁移预测，曝光沿用 50mm。电脑预测不是实机照片。
 
 旧代数继续走原来的解析路径。旧代数的 Looks 只用于旧文件，g178 不列 Looks 或旧用户条目。r5 接入只读取源文件，在受保护的应用目录保存副本，不提供写卡操作。
 
@@ -25,6 +25,6 @@ lockf -k /tmp/gxr-heavy.lock nice -n 15 env GXR_STUDIO_TEST_PARENT=/Volumes/Work
 
 只在 loadgate 返回 `admit: true` 后运行第二条。测试从本地研究路径读取受审文件，缺少它们时跳过。DAT、库、完整记录、C 源码和校准参数均不随公开仓库分发。
 
-`scripts/verify_g178.py` 在 #106 合入后对 69 份默认记录逐单元比较研究颜色模型，覆盖 ISO 200 和 1600、两种 half 模式。用 `python -I -B` 在同一准入和锁下运行，参数为 `--research`、`--out` 和 `--home`。输出必须位于研究任务的 `local/`，临时应用数据目录必须在 Git 工作区之外。`prediction.json` 逐项记录浮点字节是否相同、最大差及量化后变化分量数，任何一项字节不同即失败。
+`scripts/verify_g178.py` 对 69 份默认记录逐单元比较研究颜色模型，覆盖 ISO 200 和 1600、两种 half 模式。用 `python -I -B` 在同一准入和锁下运行，参数为 `--research`、`--out` 和 `--home`。输出必须位于研究任务的 `local/`，临时应用数据目录必须在 Git 工作区之外。`prediction.json` 逐项记录浮点字节是否相同、最大差及量化后变化分量数，任何一项字节不同即失败。
 
 CI 没有本地研究文件时，`tests/test_g178.py` 的真实包解码、引擎绑定、库错配、记录列表、69 条实际 C 对照、登记表和真实文件导入会明确跳过；缺少 C 源码或 clang 时 C 对照也跳过。未知代数与选择形状测试、`tests/test_r5_synthetic.py` 和 `tests/test_r5_coexistence.py` 继续运行，只使用独立合成数据。`tests/test_look_cards.py` 还用合成卡片检查完整配方的名称、选择和摘要，安装了 Node 时运行。
