@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import numpy as np
@@ -29,23 +30,35 @@ def test_gpu_applies_input_polynomial_before_curves_and_uses_factory_lookup(tmp_
         dng.release()
     files = {"/raw.dng": dng_data}
     cases, references = [], {}
-    for degree in (4, 10):
+    for unit, degree in (("jlaunch", 10), ("qlaunch", 4), ("l08firm", 4)):
         coefficients = np.zeros((degree, 3))
-        coefficients[0] = [0.005, -0.003, 0.002]
-        coefficients[1:] = np.arange((degree - 1) * 3).reshape(-1, 3) / 2000
+        if unit != "qlaunch":
+            coefficients[0] = [0.005, -0.003, 0.002]
+            coefficients[1:] = np.arange((degree - 1) * 3).reshape(-1, 3) / 2000
         base = _bake()
         # The stock lookup and recipe chroma deliberately rotate differently.
         lookup = base.matrix.copy()
         lookup[[1, 2]] = lookup[[2, 1]]
         bake = replace(base, input_coefficients=coefficients, lookup_matrix=lookup, lookup_offset=base.offset)
         data, meta = bake_bytes(bake)
-        url = f"/bake{degree}.bin"
+        url = f"/bake-{unit}.bin"
         files[url] = data
         for exposure in (0, 0.6):
-            identity = f"{degree}-{exposure}"
+            identity = f"{unit}-{exposure}"
             adjust = {"exposure_ev": exposure}
             state = parse_adjust(adjust)
             references[identity] = chroma_u8(codes, bake, channel_gains(state), display_table(state, None), workers=1)
+            if exposure == 0:
+                linear_pre = np.repeat(np.linspace(0, 255, 4096, dtype=np.float32)[:, None], 3, axis=1)
+                wrong_input = np.full_like(coefficients, 0.01) if unit == "qlaunch" else None
+                counterexamples = {
+                    "input": replace(bake, input_coefficients=wrong_input),
+                    "curves": replace(bake, pre=linear_pre),
+                    "factory_lookup": replace(bake, lookup_matrix=bake.matrix, lookup_offset=bake.offset),
+                }
+                for layer, wrong in counterexamples.items():
+                    missing_layer = chroma_u8(codes, wrong, None, None, workers=1)
+                    assert not evaluate(missing_layer, references[identity])["pass"], (unit, layer)
             cases.append(
                 dict(
                     id=identity,
@@ -58,6 +71,8 @@ def test_gpu_applies_input_polynomial_before_curves_and_uses_factory_lookup(tmp_
             )
     results, summary = run_engine(tmp_path, files, cases)
     assert summary.get("info", {}).get("vendor"), summary
+    assert set(results) == set(references)
     for identity, expected in references.items():
         verdict = evaluate(results[identity], expected)
+        print(json.dumps({"case": identity, **verdict}))
         assert verdict["pass"], (identity, verdict)

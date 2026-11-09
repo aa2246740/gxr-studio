@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,8 @@ class _Server:
         self.results: dict[str, tuple[int, int, bytes]] = {}
         self.done = threading.Event()
         self.summary: dict[str, Any] = {}
+        self.progress: dict[str, Any] = {}
+        self.requests: list[str] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -70,6 +73,7 @@ class _Server:
 
             def do_GET(self) -> None:  # noqa: N802
                 path = urlparse(self.path).path
+                outer.requests.append(path)
                 body = outer.files.get(path)
                 if body is None:
                     self.send_error(404)
@@ -86,6 +90,8 @@ class _Server:
                 if url.path.startswith("/result/"):
                     q = parse_qs(url.query)
                     outer.results[url.path[len("/result/") :]] = (int(q["w"][0]), int(q["h"][0]), body)
+                elif url.path == "/progress":
+                    outer.progress = json.loads(body)
                 elif url.path == "/done":
                     outer.summary = json.loads(body or b"{}")
                     outer.done.set()
@@ -126,6 +132,9 @@ def run_engine(
         "--no-default-browser-check",
         "--disable-extensions",
         "--disable-background-networking",
+        # 与现有浏览器驱动相同：临时 HOME 下不让 macOS Chrome 等待系统钥匙串。
+        "--use-mock-keychain",
+        "--password-store=basic",
         "--enable-unsafe-webgpu",
         "--enable-unsafe-swiftshader",
         "--use-webgpu-adapter=swiftshader",
@@ -143,7 +152,11 @@ def run_engine(
     with _Server(files, harness) as srv, (tmp_path / "chrome.log").open("wb") as stderr:
         proc = subprocess.Popen([*args, srv.url], stdout=subprocess.DEVNULL, stderr=stderr)  # noqa: S603
         try:
-            finished = srv.done.wait(timeout)
+            deadline = time.monotonic() + timeout
+            while not srv.done.wait(min(0.1, max(0.0, deadline - time.monotonic()))):
+                if proc.poll() is not None or time.monotonic() >= deadline:
+                    break
+            finished, exit_code = srv.done.is_set(), proc.poll()
         finally:
             proc.terminate()
             try:
@@ -156,7 +169,9 @@ def run_engine(
         if internal.is_file():
             detail += internal.read_text(encoding="utf-8", errors="replace")[-10000:]
         if not finished:
-            pytest.fail(f"显卡一致性页面超时没有结束\n{detail}")
+            context = {"phase": srv.progress, "completed": list(srv.results), "requests": srv.requests, "exit_code": exit_code}
+            reason = "显卡一致性浏览器提前退出" if exit_code is not None else "显卡一致性页面超时没有结束"
+            pytest.fail(f"{reason}\n{json.dumps(context, ensure_ascii=False)}\n{detail}")
         if "error" in srv.summary:
             if os.environ.get("GXR_REQUIRE_GPU_TEST") != "1" and "no WebGPU adapter" in srv.summary["error"]:
                 pytest.skip("这台机器的 Chrome 拿不到 WebGPU 软件适配器")
