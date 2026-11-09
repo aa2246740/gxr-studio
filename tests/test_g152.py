@@ -231,7 +231,7 @@ def client(settings):
 
 def install_calibration(settings):
     sources = calib.dev_sources(ROOT)
-    if not all(p.is_file() for pair in sources.values() for p in pair):
+    if not sources:
         pytest.skip("本机没有校准数据")
     calib.import_calibration(settings.home_dir, sources)
 
@@ -278,7 +278,8 @@ def test_import_api_lists_file_entries_in_order(client, gen, test):
         assert [r["slot"] for r in info["recipes"]] == list(range(1, 9))
         assert [r["name"] for r in info["looks"]] == ([] if gen == 150 else list(LOOK_NAMES))
         assert [r["name"] for r in info["users"]] == (["FCC-001", "FCC*002", "GRN*001"] if test else [])
-        assert info["calibration_note"] == (None if i == 0 else "未校准")
+        assert info["calibrated"] is False
+        assert info["calibration_note"] == "缺少校准数据"
 
 
 def test_all_file_selections_save_render_and_export(client, real_card, settings):

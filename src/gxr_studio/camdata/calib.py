@@ -1,13 +1,4 @@
-"""标定上下文（电脑预测要用）：放进应用数据目录 `calib/`，运行时和相机数据合成渲染模型。
-
-研究里的 `data_<iso>.npz` 含理光的原厂扇区字 `stock`；这里**拆开**：
-
-- 只存 `d0`、`d1`（五色修饰量，来自固件参数，视为理光派生，本地数据）和 `ring_model_v2*.json`（我们的实测拟合）；
-- `stock` 在运行时取自用户卡上原厂 04（jlaunch）的色表行，不另存；`S_eff` 由两者算出（与 npz 里的逐位相同）。
-
-导入时用 npz 里的 `stock` 核对卡上的 04（取代研究里 `Engine` 对 DEEPTBL0.DAT 的核对），不一致就拒绝。
-只有 A12-50 的 ISO 200 / 1600 两套实拍标定；其它 ISO 用最近的一套并标注"未标定"。
-"""
+"""逐单元标定包。理光派生量只保存在本机；stock 运行时取各单元自己的原厂 04。"""
 
 from __future__ import annotations
 
@@ -21,9 +12,14 @@ from typing import Any, Iterable
 import numpy as np
 
 from . import store
+from .unit_model import UnitModel
 
-SCHEMA = "gxr-studio/calib/1"
+SCHEMA = "gxr-studio/calib/2"
 CALIBRATED_ISOS = (200, 1600)
+UNIT_ISOS = {"jlaunch": CALIBRATED_ISOS, "qlaunch": (200,), "l08firm": (200,)}
+MODEL_ISOS = (200, 1600)
+Source = Path | tuple[str, bytes]
+Sources = dict[str, dict[int, tuple[Source, Source]]]
 
 
 class CalibError(ValueError):
@@ -31,43 +27,28 @@ class CalibError(ValueError):
 
 
 class StockMismatch(CalibError):
-    """标定包里的 stock 与已导入相机数据里 jlaunch 的原厂 04 色表行对不上。"""
+    """标定包与对应单元的原厂 04 色表行不同。"""
 
 
 def calib_dir(home: Path) -> Path:
     return Path(home) / "calib"
 
 
-def dev_sources(repo_root: Path) -> dict[Any, Any]:
-    """研究目录里的标定文件位置（只在开发机上用于第一次导入）。"""
-    r = Path(repo_root) / "research"
-    return {
-        200: (
-            r / "color_fit_v2/06_classic_neg/round4/local/cache/data_200.npz",
-            r / "hue_ring/local/ring_model_v2.json",
-        ),
-        1600: (
-            r / "color_fit_v2/06_classic_neg/round4/local/cache/data_1600.npz",
-            r / "hue_ring/local/ring_model_v2_iso1600.json",
-        ),
-    }
+def dev_sources(repo_root: Path) -> Sources:
+    from .dev_calib import sources
+
+    return sources(repo_root)
 
 
 def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-Source = Path | tuple[str, bytes]  # 文件路径，或已经核对过 SHA 的 (文件名, 字节)
-
-
 def _load(src: Source) -> tuple[str, bytes]:
-    if isinstance(src, tuple):
-        return src
-    return Path(src).name, Path(src).read_bytes()
+    return src if isinstance(src, tuple) else (src.name, src.read_bytes())
 
 
 def stock_words_of_entry(entry: bytes) -> np.ndarray:
-    """原厂 04 条目的 24 个扇区字 → (24, 2) 整数（`colour.decode_word`）。"""
     from ..engine import colour
 
     row = entry[115:211]
@@ -75,71 +56,111 @@ def stock_words_of_entry(entry: bytes) -> np.ndarray:
 
 
 def stock_fingerprint(entry: bytes) -> str:
-    """原厂 04 的色表行（标定要核对的那 96 B）的 SHA-256；标定清单里记一份，相机数据换了能发现。"""
-    return hashlib.sha256(entry[115:211]).hexdigest()
+    return _sha(entry[115:211])
 
 
-def import_calibration(
-    home: Path, sources: dict[Any, Any], *, origin: dict[Any, Any] | None = None, forbidden: Iterable[Path] = ()
-) -> dict[Any, Any]:
-    """sources: {iso: (npz, ring_json)}，每项是路径或 (文件名, 字节)。需要先导入相机数据（用来核对 stock）。
+def _context(data: bytes, stock: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    with np.load(io.BytesIO(data), allow_pickle=False) as z:
+        if not np.array_equal(z["stock"], stock):
+            raise StockMismatch("校准数据和对应单元原厂 04 的色表行不一致")
+        d0, d1, coefficients = (z[k].astype(float) for k in ("d0", "d1", "input_coefficients"))
+        if d0.shape != (24,) or d1.shape != (24,) or coefficients.shape not in ((4, 3), (10, 3)):
+            raise CalibError("校准数据的数组尺寸不正确")
+        if not all(np.all(np.isfinite(a)) for a in (d0, d1, coefficients)):
+            raise CalibError("校准数据含非有限数")
+        s_eff = ((stock[:, 0] + d0) - 1j * (stock[:, 1] + d1)) / 32
+        if not np.array_equal(s_eff, z["S_eff"]):
+            raise CalibError("S_eff 不能由 stock/d0/d1 逐位还原")
+    return d0, d1, coefficients
 
-    先把来源全部读进内存并核对，再按已核对的应用数据目录 fd 一次写好 `calib.new/`、读回比对、整体换掉 `calib/`。"""
-    stock04 = store.load_stock04(home, "jlaunch")
-    stock = stock_words_of_entry(stock04)
-    manifest: dict[Any, Any] = {
-        "schema": SCHEMA,
-        "files": {},
-        "sources": {},
-        "note": "d0/d1 为固件参数派生（理光派生，仅本地）；ring_model 为我们的拟合；stock 不存，运行时取自 04",
-        "camera_stock_sha256": stock_fingerprint(stock04),
-        "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
+
+def import_calibration(home: Path, sources: Sources, *, origin: dict[Any, Any] | None = None, forbidden: Iterable[Path] = ()) -> dict[str, Any]:
+    """先核对所有来源，再原子替换整个包。可只导入部分单元，不迁移旧格式。"""
+    if not sources or not set(sources) <= set(UNIT_ISOS):
+        raise CalibError("校准数据的单元不正确")
+    manifest: dict[str, Any] = {"schema": SCHEMA, "units": {}, "sources": {}, "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
     if origin:
         manifest["origin"] = origin
     files: dict[str, bytes] = {}
-    for iso, (npz_src, ring_src) in sorted(sources.items()):
-        npz_name, npz_bytes = _load(npz_src)
-        ring_name, ring_bytes = _load(ring_src)
-        with np.load(io.BytesIO(npz_bytes), allow_pickle=False) as z:
-            if not np.array_equal(z["stock"], stock):
-                raise StockMismatch(f"ISO {iso} 的校准数据和存储卡上原厂 04 的色表行不一致")
-            d0, d1 = z["d0"].astype(float), z["d1"].astype(float)
-            s_eff = ((z["stock"][:, 0] + d0) - 1j * (z["stock"][:, 1] + d1)) / 32
-            if not np.array_equal(s_eff, z["S_eff"]):
-                raise CalibError(f"ISO {iso}：S_eff 不能由 stock/d0/d1 逐位还原")
-        ring = json.loads(ring_bytes)
-        if ring.get("schema") != "gxr-sector-model/2":
-            raise CalibError("需要 gxr-sector-model/2")
-        ctx = io.BytesIO()
-        np.savez(ctx, d0=d0, d1=d1)
-        files[f"ctx_{iso}.npz"] = ctx.getvalue()
-        files[f"ring_model_{iso}.json"] = ring_bytes
-        manifest["sources"][str(iso)] = {
-            "ctx": npz_name,
-            "ctx_source_sha256": _sha(npz_bytes),
-            "ring": ring_name,
-            "ring_source_sha256": _sha(ring_bytes),
+    for unit, isos in sorted(sources.items()):
+        if tuple(sorted(isos)) != MODEL_ISOS:
+            raise CalibError("每个单元需要 ISO 200 / 1600 两个模型分支；实拍校准范围另行标注")
+        stock04 = store.load_stock04(home, unit)
+        meta: dict[str, Any] = {
+            "camera_stock_sha256": stock_fingerprint(stock04),
+            "models": {},
+            "isos": list(UNIT_ISOS[unit]),
+            "exposure_unit": "jlaunch",
         }
+        for iso, (npz_src, ring_src) in sorted(isos.items()):
+            npz_name, npz_bytes = _load(npz_src)
+            ring_name, ring_bytes = _load(ring_src)
+            d0, d1, coefficients = _context(npz_bytes, stock_words_of_entry(stock04))
+            ring = json.loads(ring_bytes)
+            if not isinstance(ring, dict) or ring.get("schema") != "gxr-sector-model/2":
+                raise CalibError("需要 gxr-sector-model/2")
+            UnitModel(stock_words_of_entry(stock04), d0, d1, ring, stock04, coefficients)
+            ctx = io.BytesIO()
+            np.savez(ctx, d0=d0, d1=d1, input_coefficients=coefficients)
+            ctx_name, ring_dest = f"ctx_{unit}_{iso}.npz", f"ring_{unit}_{iso}.json"
+            files[ctx_name], files[ring_dest] = ctx.getvalue(), ring_bytes
+            meta["models"][str(iso)] = {"ctx": ctx_name, "ring": ring_dest}
+            manifest["sources"][f"{unit}/{iso}"] = {
+                "ctx": npz_name,
+                "ctx_source_sha256": _sha(npz_bytes),
+                "ring": ring_name,
+                "ring_source_sha256": _sha(ring_bytes),
+            }
+        manifest["units"][unit] = meta
     manifest["files"] = {name: {"size": len(b), "sha256": _sha(b)} for name, b in sorted(files.items())}
     files["manifest.json"] = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()
     store.write_tree(home, calib_dir(home).name, files, manifest["files"], "calibration", forbidden)
     return manifest
 
 
-def model_for(home: Path, iso: int = 200) -> tuple[Any, ...]:
-    """返回 (Model, info)。info['calibrated'] = 该 ISO 是否有实拍标定。"""
-    from ..engine.model import Model
-
+def model_for(home: Path, iso: int = 200, *, unit: str = "jlaunch") -> tuple[UnitModel, dict[str, Any]]:
     d = calib_dir(home)
     m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
-    for name, meta in m["files"].items():
-        if _sha((d / name).read_bytes()) != meta["sha256"]:
-            raise CalibError("校准数据被改动")
-    model_iso = 1600 if int(iso) == 1600 else 200
-    with np.load(d / f"ctx_{model_iso}.npz", allow_pickle=False) as z:
-        d0, d1 = z["d0"].copy(), z["d1"].copy()
-    ring = json.loads((d / f"ring_model_{model_iso}.json").read_text(encoding="utf-8"))
-    stock = stock_words_of_entry(store.load_stock04(home, "jlaunch"))
-    model = Model(stock, d0, d1, ring)
-    return model, {"iso": int(iso), "calibrated": int(iso) in CALIBRATED_ISOS, "model_iso": model_iso}
+    if not isinstance(m, dict) or m.get("schema") != SCHEMA:
+        raise CalibError("校准数据版本已更新，请重新导入")
+    if unit not in UNIT_ISOS or unit not in m["units"]:
+        raise CalibError("缺少这个单元的校准数据")
+    meta = m["units"][unit]
+    stock04 = store.load_stock04(home, unit)
+    if meta["camera_stock_sha256"] != stock_fingerprint(stock04):
+        raise StockMismatch("校准数据与这个单元的原厂 04 不匹配，请重新导入")
+    blobs = {}
+    for branch in MODEL_ISOS:
+        for name in meta["models"][str(branch)].values():
+            if not isinstance(name, str) or Path(name).name != name or name not in m["files"]:
+                raise CalibError("校准数据的文件清单不正确")
+            blob = (d / name).read_bytes()
+            if _sha(blob) != m["files"][name]["sha256"]:
+                raise CalibError("校准数据被改动，请重新导入")
+            blobs[name] = blob
+    model_iso = 1600 if int(iso) >= 566 else 200
+    pair = meta["models"][str(model_iso)]
+    with np.load(io.BytesIO(blobs[pair["ctx"]]), allow_pickle=False) as z:
+        d0, d1, coefficients = (z[k].copy() for k in ("d0", "d1", "input_coefficients"))
+    model = UnitModel(stock_words_of_entry(stock04), d0, d1, json.loads(blobs[pair["ring"]]), stock04, coefficients)
+    return model, {"iso": int(iso), "calibrated": int(iso) in UNIT_ISOS[unit], "model_iso": model_iso}
+
+
+def unit_status(home: Path, unit: str) -> dict[str, Any]:
+    state: str = "ready"
+    message: str | None = None
+    try:
+        model_for(home, 200, unit=unit)
+    except FileNotFoundError:
+        state = "missing" if not (calib_dir(home) / "manifest.json").exists() else "invalid"
+        message = "缺少校准数据" if state == "missing" else "校准数据文件缺失，请重新导入"
+    except CalibError as exc:
+        state, message = ("missing" if "缺少" in str(exc) else "invalid"), str(exc)
+    except Exception:  # noqa: BLE001  文件格式、解压或模型参数损坏都归为校准失效
+        state, message = "invalid", "校准数据读不出来，请重新导入"
+    return {
+        "state": state,
+        "message": message,
+        "isos": list(UNIT_ISOS[unit]) if state == "ready" else [],
+        "exposure_note": "曝光沿用 50mm" if unit != "jlaunch" else None,
+    }

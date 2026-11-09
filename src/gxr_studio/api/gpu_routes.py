@@ -118,7 +118,7 @@ def gpu_info(shot_id: str, request: Request) -> dict[str, Any]:
         "raw_reason": None if "dng" in files else "no_raw",
         "jpg": None,
         "scene": None,
-        "render_available": c.render.available(),
+        "render_available": c.render.available(c.render.photo_unit(shot) or "jlaunch"),
     }
     if "dng" in files:
         c.render.warm_preview_bakes(shot)
@@ -178,7 +178,7 @@ def gpu_bake(shot_id: str, request: Request, recipe: str | None = None) -> Respo
     except ValueError as exc:  # 色表行不对称：冻结模型不能预测这个条目
         raise ApiError(422, "cannot_predict", "无法生成电脑预测。请重试。", {"detail": str(exc)}) from exc
     data, meta = bake_bytes(bake)
-    key = hashlib.sha256(f"{plan.entry_sha256}:{plan.model_iso}:{meta['step']}:{c.render.engine_pin()}".encode()).hexdigest()[:24]
+    key = hashlib.sha256(f"{plan.unit}:{plan.entry_sha256}:{plan.model_iso}:{meta['step']}:{c.render.engine_pin()}".encode()).hexdigest()[:24]
     meta.update(
         {
             "key": key,

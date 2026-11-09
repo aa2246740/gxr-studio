@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -115,7 +116,7 @@ def test_unregistered_generation_is_not_imported(home):
 @pytest.fixture(scope="module")
 def sources():
     src = calib.dev_sources(t.REPO)
-    if not all(p.is_file() for pair in src.values() for p in pair):
+    if not src:
         pytest.skip("研究目录里的标定文件不在本机")
     return src
 
@@ -123,11 +124,11 @@ def sources():
 def test_calibration_pack_has_no_stock_and_rebuilds_s_eff_bit_for_bit(home, sources):
     store.import_from_dat(need(127), home)
     m = calib.import_calibration(home, sources)
-    assert sorted(m["files"]) == ["ctx_1600.npz", "ctx_200.npz", "ring_model_1600.json", "ring_model_200.json"]
+    assert len(m["files"]) == 12 and set(m["units"]) == set(store.UNITS)
     for iso in (200, 1600):
-        with np.load(home / "calib" / f"ctx_{iso}.npz", allow_pickle=False) as z:
-            assert sorted(z.files) == ["d0", "d1"]  # 没有 stock，也没有 S_eff
-        with np.load(sources[iso][0], allow_pickle=False) as z:
+        with np.load(home / "calib" / f"ctx_jlaunch_{iso}.npz", allow_pickle=False) as z:
+            assert sorted(z.files) == ["d0", "d1", "input_coefficients"]  # 没有 stock，也没有 S_eff
+        with np.load(io.BytesIO(sources["jlaunch"][iso][0][1]), allow_pickle=False) as z:
             model, info = calib.model_for(home, iso)
             assert info == {"iso": iso, "calibrated": True, "model_iso": iso}
             c = model.engine.ctx
@@ -138,28 +139,28 @@ def test_calibration_pack_has_no_stock_and_rebuilds_s_eff_bit_for_bit(home, sour
 def test_other_isos_use_the_nearest_calibration_and_say_so(home, sources):
     store.import_from_dat(need(127), home)
     calib.import_calibration(home, sources)
-    for iso, model_iso in ((100, 200), (400, 200), (800, 200), (3200, 200), (6400, 200)):
+    for iso, model_iso in ((100, 200), (400, 200), (800, 1600), (3200, 1600), (6400, 1600)):
         _, info = calib.model_for(home, iso)
         assert info == {"iso": iso, "calibrated": False, "model_iso": model_iso}
 
 
 def test_calibration_with_a_different_stock_is_refused(home, sources):
     store.import_from_dat(need(127), home)
-    with np.load(sources[200][0], allow_pickle=False) as z:
+    with np.load(io.BytesIO(sources["jlaunch"][200][0][1]), allow_pickle=False) as z:
         arrays = {k: z[k] for k in z.files}
     arrays["stock"] = arrays["stock"].copy()
     arrays["stock"][3, 0] += 1
     forged = home.parent / "forged.npz"
     np.savez(forged, **arrays)
     with pytest.raises(calib.CalibError):
-        calib.import_calibration(home, {200: (forged, sources[200][1])})
+        calib.import_calibration(home, {"jlaunch": {200: (forged, sources["jlaunch"][200][1]), 1600: sources["jlaunch"][1600]}})
 
 
 def test_calibration_tampering_is_detected(home, sources):
     store.import_from_dat(need(127), home)
     calib.import_calibration(home, sources)
-    ring = home / "calib/ring_model_200.json"
-    ring.write_text(ring.read_text(encoding="utf-8").replace("0.99", "0.98", 1), encoding="utf-8")
+    ring = home / "calib/ring_jlaunch_200.json"
+    ring.write_text("{}", encoding="utf-8")
     with pytest.raises(calib.CalibError):
         calib.model_for(home, 200)
 

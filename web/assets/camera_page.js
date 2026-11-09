@@ -68,7 +68,7 @@ function unitCard(unit) {
   return h('section', { class: 'card-sec unit' },
     h('div', { class: 'unit-head' },
       h('h3', {}, unit.label || unit.lens || unit.id),
-      unit.calibrated ? h('span', { class: 'tag soft', title: '电脑预测用这个单元自己的颜色模型' }, '专用颜色模型') : h('span', { class: 'tag soft warn', title: '这个单元还没有自己的颜色模型，电脑预测暂用 A12 50mm 的' }, '借用 50mm 颜色模型')),
+      unit.calibrated ? h('span', { class: 'tag soft', title: '电脑预测用这个单元自己的颜色模型' }, '专用颜色模型') : h('span', { class: 'tag soft warn', title: '请先导入这个单元的校准数据' }, '未校准')),
     h('ol', { class: 'slots' }, recipes.map((r) => h('li', { class: r.is_stock ? 'stock' : '' },
       h('span', { class: 'num' }, r.number || String(r.slot).padStart(2, '0')),
       h('span', { class: 'nm' }, slotName(unit.id, r.slot).slice(3)),

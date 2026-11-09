@@ -141,10 +141,10 @@ def test_uncalibrated_moves_under_the_chosen_recipe():
     # 50mm、ISO 200 的照片是校准过的：选了配方也没有「未校准」
     assert out["calib"] is None and "未校准" not in out["chips"]
     assert "当前：Acros" in out["cur"]
-    # MOUNT 的照片没有校准：选了配方，名字下面有一行，原因在提示气泡里
+    # MOUNT 的 ISO 800 没有实拍校准：选了配方，名字下方说明 ISO 原因
     mount = scene("panel-mount")
     assert mount["calib"]["text"] == "未校准：颜色可能有些偏差"
-    assert "MOUNT" in mount["calib"]["title"] and "借用 50mm 的颜色模型" in mount["calib"]["title"]
+    assert "ISO 800" in mount["calib"]["title"] and "只做了 ISO 200" in mount["calib"]["title"]
     assert "未校准" not in mount["chips"]
     # 没选配方就没有预测，这一行不写
     plain = scene("panel-mount-plain")

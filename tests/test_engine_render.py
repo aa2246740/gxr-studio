@@ -21,6 +21,7 @@ import e0_support as t
 from gxr_studio.camdata import calib, store
 from gxr_studio.camdata import datcodec as dc
 from gxr_studio.engine import knobs, menu
+from gxr_studio.engine.model import Model
 
 TOOLS = t.RESEARCH / "studio_engine_e0/tools"
 
@@ -31,7 +32,7 @@ def home(tmp_path_factory):
     if raw is None:
         pytest.skip("g127 夹具 DAT 不在本机")
     src = calib.dev_sources(t.REPO)
-    if not all(p.is_file() for pair in src.values() for p in pair):
+    if not src:
         pytest.skip("研究目录里的标定文件不在本机")
     h = tmp_path_factory.mktemp("e0-home")
     store.import_from_dat(raw, h)
@@ -40,8 +41,17 @@ def home(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def models(home):
-    return {iso: calib.model_for(home, iso)[0] for iso in (200, 1600)}
+def models():
+    models = {}
+    for iso in (200, 1600):
+        context = t.RESEARCH / f"color_fit_v2/06_classic_neg/round4/local/cache/data_{iso}.npz"
+        ring = t.RESEARCH / "hue_ring/local" / ("ring_model_v2.json" if iso == 200 else "ring_model_v2_iso1600.json")
+        if not context.is_file() or not ring.is_file():
+            pytest.skip("E0 冻结的 50mm 校准夹具不在本机")
+        with np.load(context, allow_pickle=False) as z:
+            spec = json.loads(ring.read_text())
+            models[iso] = Model(z["stock"], z["d0"], z["d1"], spec)
+    return models
 
 
 @pytest.fixture(scope="module")

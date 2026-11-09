@@ -122,9 +122,11 @@ def run(job_dir: Path) -> int:
         home = Path(spec["home"])
         cube = Cube.read(spec["cube"])
         cam = CameraData(home)
-        model = calib.model_for(home, 200)[0]  # 拟合固定用 ISO 200 的标定
+        unit = spec["unit"]
+        unit_index = ("jlaunch", "qlaunch", "l08firm").index(unit)
+        model = calib.model_for(home, 200, unit=unit)[0]  # 拟合固定用 ISO 200 的标定
         photos, skipped = load_photos(spec.get("photos", []), spec.get("max_photos", 3))
-        samples = build_samples(model, cam.stock[0], spec["input_space"], photos)
+        samples = build_samples(model, cam.stock[unit_index], spec["input_space"], photos)
         target = Target(
             cube,
             spec["input_space"],
@@ -134,13 +136,14 @@ def run(job_dir: Path) -> int:
             spec.get("input_range", "full"),
             spec.get("output_range", "full"),
         )
-        stock, ideal = target_rgb(model, cam.stock[0], samples, target)
+        stock, ideal = target_rgb(model, cam.stock[unit_index], samples, target)
         fitter = Fitter(
             cam,
             model,
             samples,
             stock,
             ideal,
+            unit=unit,
             profile=spec.get("profile", "normal"),
             progress=progress,
             cancelled=cancelled,

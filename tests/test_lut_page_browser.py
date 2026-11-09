@@ -78,6 +78,8 @@ def test_lut_defaults_units_save_and_above_fold_in_pinned_browser(live, tmp_path
     assert out["manual"] == {"space": "rec709", "source": "已手选"}
     assert out["declared"] == {"space": "srgb", "source": "文件已写明"}
     assert out["guessed"] == {"space": "srgb", "source": "推测"}
+    assert out["calibratedUnits"] == ["qlaunch", "l08firm"]
+    assert out["logLutUnits"] == [False, False, False, True]
     assert out["queryUnit"] == "l08firm"
     assert out["invalidQueryUnit"] == "l08firm"
     assert out["narrowOverflow"] is False, out["narrowOutliers"]

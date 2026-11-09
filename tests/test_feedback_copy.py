@@ -158,8 +158,8 @@ def test_uncalibrated_tooltip_names_the_real_reason():
     assert out["iso400"].startswith("这张照片是 ISO 400，颜色校准只做了 ISO 200 和 ISO 1600")
     assert "ISO 500" in out["iso500"]
     assert "读不到这张照片的 ISO" in out["noIso"]
-    assert "28mm" in out["q28"] and "只做了 A12 50mm" in out["q28"] and "借用 50mm 的颜色模型" in out["q28"]
-    assert "MOUNT" in out["mount"] and "借用 50mm 的颜色模型" in out["mount"]
+    assert "没有对应的颜色校准" in out["q28"] and "借用 50mm" not in out["q28"]
+    assert "ISO 1600" in out["mount"] and "只做了 ISO 200" in out["mount"]
     assert out["unknown"].startswith("认不出这张照片用的镜头单元")
     assert out["lut"].startswith("套用了 LUT")
     assert "28mm 单元" in out["cross"]

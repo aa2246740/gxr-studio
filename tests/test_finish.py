@@ -194,6 +194,7 @@ def test_render_key_includes_quality(tmp_path) -> None:
         shot = {"files": {"dng": {"sha256": "abc"}}, "orientation": 1, "iso": 200, "lens": "50mm"}
 
         class Plan:
+            unit = "jlaunch"
             entry_sha256 = "e"
             model_iso = 200
             calibrated = True

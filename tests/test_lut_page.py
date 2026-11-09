@@ -80,18 +80,17 @@ def test_output_only_choice_does_not_claim_an_input_space_was_chosen(client):
 def test_spaces_and_unit_capabilities_are_explicit(client):
     response = client.get("/api/lut/spaces").json()
     assert response["default_input"] == "srgb"
-    assert {u["id"]: u["fit_supported"] for u in response["units"]} == {"jlaunch": True, "qlaunch": False, "l08firm": False}
+    assert {u["id"]: u["fit_supported"] for u in response["units"]} == {"jlaunch": False, "qlaunch": False, "l08firm": False}
     assert {s["id"] for s in response["spaces"] if s["kind"] == "display"} == {"srgb", "rec709", "gamma24"}
 
 
 @pytest.mark.parametrize("unit", ["qlaunch", "l08firm"])
-def test_unsupported_units_explain_the_scope_before_camera_data_is_needed(client, unit):
+def test_supported_units_need_camera_data_before_fitting(client, unit):
     item = upload(client).json()
     response = client.post("/api/lut/fit", json={"cube_id": item["cube_id"], "unit": unit})
-    assert response.status_code == 422
-    assert response.json()["error"] == "unit_not_calibrated"
-    assert "现在只能为 A12 50mm 生成" in response.json()["message"]
-    assert "只用于 50mm 拍的照片" in response.json()["message"]
+    assert response.status_code == 409
+    assert response.json()["error"] == "camera_data_missing"
+    assert "相机配方文件" in response.json()["message"]
 
 
 def test_explicit_50mm_selection_preserves_existing_recipe_bytes_and_reports_unit(data_client, settings):

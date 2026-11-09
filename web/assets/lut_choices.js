@@ -65,8 +65,8 @@ export function unitFields(flow, onChange) {
         onchange: (e) => onChange(e.target.value) },
       Object.entries(UNIT_NAMES).map(([id, label]) => h('option', { value: id, selected: id === flow.unit }, label)))),
     h('p', { class: `small ${supported ? 'dim' : 'warn-text'}`, role: 'status' }, supported
-      ? '现在只能为 A12 50mm 生成。生成的 LUT 配方只用于 50mm 拍的照片。'
-      : `${unitName(flow.unit)} 还没有单独的校准数据，暂时不能生成。现在只能为 A12 50mm 生成配方。`),
+      ? `为所选单元生成配方，结果是电脑预测。${flow.units?.find((u) => u.id === flow.unit)?.calibration?.exposure_note || ''}`
+      : `${unitName(flow.unit)} 的校准数据尚未导入或已失效，暂时不能生成。`),
     photo && photo.unit !== flow.unit ? h('p', { class: 'small warn-text' },
       `预览照片来自${unitName(photo.unit)}。配方只会出现在${unitName(flow.unit)}拍的照片上。`) : null);
 }

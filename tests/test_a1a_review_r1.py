@@ -289,15 +289,28 @@ def _calib_pack(folder: Path, entry: bytes) -> None:
     folder.mkdir(parents=True)
     for iso in calib.CALIBRATED_ISOS:
         bio = io.BytesIO()
-        np.savez(bio, stock=stock, d0=d0, d1=d1, S_eff=((stock[:, 0] + d0) - 1j * (stock[:, 1] + d1)) / 32)
+        np.savez(bio, stock=stock, d0=d0, d1=d1, S_eff=((stock[:, 0] + d0) - 1j * (stock[:, 1] + d1)) / 32, input_coefficients=np.zeros((4, 3)))
         npz, ring = f"ctx_{iso}.npz", f"ring_{iso}.json"
         (folder / npz).write_bytes(bio.getvalue())
-        (folder / ring).write_text(json.dumps({"schema": "gxr-sector-model/2"}), encoding="utf-8")
+        (folder / ring).write_text(
+            json.dumps(
+                {
+                    "schema": "gxr-sector-model/2",
+                    "k_coupling": 1.0,
+                    "nodes_unwrapped_deg": [i * 15.0 for i in range(24)],
+                    "kernel": {"type": "linear", "blur_deg": 4.0, "blur_kappa": 2.0},
+                    "gain": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
         isos[str(iso)] = {"npz": npz, "ring": ring}
         for name in (npz, ring):
             data = (folder / name).read_bytes()
             files[name] = {"sha256": sha(data), "size": len(data)}
-    (folder / "calib-pack.json").write_text(json.dumps({"schema": "gxr-studio/calib-pack/1", "isos": isos, "files": files}), encoding="utf-8")
+    (folder / "calib-pack.json").write_text(
+        json.dumps({"schema": "gxr-studio/calib-pack/2", "units": {"jlaunch": isos}, "files": files}), encoding="utf-8"
+    )
 
 
 def _card_files(root: Path) -> dict:
@@ -357,7 +370,7 @@ def test_r1_p1_05_calibration_writer_itself_is_fd_guarded(volumes, tmp_path, mon
     sources = {iso: (pack / f"ctx_{iso}.npz", pack / f"ring_{iso}.json") for iso in calib.CALIBRATED_ISOS}
     swapped = _swap_after_check(monkeypatch, home, card.root, "calibration")
     with pytest.raises(privacy.PrivatePathError):
-        calib.import_calibration(home, sources)
+        calib.import_calibration(home, {"jlaunch": sources})
     assert swapped and _card_files(card.root) == before
 
 

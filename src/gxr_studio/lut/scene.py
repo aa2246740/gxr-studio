@@ -185,7 +185,7 @@ def build_samples(model: Any, stock04: bytes, input_space: str, photos: list[dic
     if need_xyz and ref is None:
         raise SceneError(
             "needs_photo",
-            "这个调色文件是 Log 格式，换算需要图库里至少一张 50mm 的 RAW 照片（用它的色彩矩阵）。"
+            "这个调色文件是 Log 格式，换算需要图库里至少一张所选单元的 RAW 照片（用它的色彩矩阵）。"
             "请先导入照片，或者换一个 sRGB / Rec.709 格式的调色文件。",
         )
     xs, groups, hold, labels = [s.x], [s.group], [s.holdout], []

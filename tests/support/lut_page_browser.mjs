@@ -10,6 +10,15 @@ const out = { errors: [], viewports: [] };
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', (error) => out.errors.push(error.message));
+  const calibratedUnits = new Set(['jlaunch']);
+  await page.route('**/api/lut/spaces', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.units = body.units.map((u) => ({ ...u, calibrated: calibratedUnits.has(u.id),
+      fit_supported: calibratedUnits.has(u.id), calibration: { state: calibratedUnits.has(u.id) ? 'ready' : 'missing',
+        isos: u.id === 'jlaunch' ? [200, 1600] : [200], exposure_note: u.id === 'jlaunch' ? null : '曝光沿用 50mm' } }));
+    await route.fulfill({ response, json: body });
+  });
   let done = false;
   let saved = null;
   let photos = [];
@@ -93,7 +102,7 @@ try {
   out.default = { ...await choice(), unit: await unit().inputValue() };
   assert.equal(out.default.unit, 'qlaunch', '没有手选时取照片最多的组件');
   assert(await page.getByRole('button', { name: '为A12 28mm生成配方', exact: true }).isDisabled());
-  assert(await page.getByText('A12 28mm 还没有单独的校准数据', { exact: false }).isVisible());
+  assert(await page.getByText('A12 28mm 的校准数据尚未导入或已失效', { exact: false }).isVisible());
   await page.getByLabel('预览照片', { exact: true }).selectOption(photos[0].id);
   assert.equal(await unit().inputValue(), 'l08firm', '预览换组件时默认值也随之变化');
   assert(await page.getByRole('button', { name: '为MOUNT生成配方', exact: true }).isDisabled());
@@ -114,7 +123,7 @@ try {
   out.name = await page.getByLabel('名称', { exact: true }).inputValue();
   await visibleInViewport(page.getByRole('button', { name: '保存相机配方', exact: true }), 'save');
   await page.getByRole('button', { name: '保存相机配方', exact: true }).click();
-  await page.getByText('已保存「Warm Street」，这是为A12 50mm做的配方，只用于 50mm 拍的照片。', { exact: false }).waitFor();
+  await page.getByText('已保存「Warm Street」，这是为A12 50mm做的配方。', { exact: false }).waitFor();
   assert(await page.getByRole('button', { name: '配方已保存', exact: true }).isDisabled());
   await page.getByText('更多信息（可选）', { exact: true }).click();
   assert(await page.getByRole('button', { name: '保存 LUT 信息', exact: true }).isVisible());
@@ -144,6 +153,33 @@ try {
     renderLutPage(document.getElementById('view'));
   });
   out.invalidQueryUnit = await unit().inputValue();
+  out.calibratedUnits = [];
+  for (const [id, label] of [['qlaunch', 'A12 28mm'], ['l08firm', 'MOUNT']]) {
+    calibratedUnits.add(id);
+    await page.evaluate(async (unitId) => {
+      history.replaceState(null, '', `#/recipes?unit=${unitId}`);
+      const { renderLutPage } = await import('/assets/lut.js');
+      renderLutPage(document.getElementById('view'));
+    }, id);
+    const text = `为${label}生成配方`;
+    await page.waitForFunction((name) => [...document.querySelectorAll('button')].some((b) => b.textContent === name && !b.disabled), text);
+    assert(await page.getByText('为所选单元生成配方，结果是电脑预测。曝光沿用 50mm', { exact: true }).isVisible());
+    out.calibratedUnits.push(id);
+  }
+  out.logLutUnits = await page.evaluate(async () => {
+    const { api } = await import('/assets/api.js');
+    const { loadLutLibrary, photoLutField } = await import('/assets/lut_library.js');
+    const list = await loadLutLibrary();
+    const cube = list.luts[0].cube_id;
+    await api(`/api/luts/${cube}`, { method: 'PATCH', body: { input_space: 'vlog', output_space: 'srgb' } });
+    await loadLutLibrary();
+    const callbacks = { beginChange() {}, persist: async () => {}, endChange() {}, schedulePreview() {} };
+    return [['A12 50mm', true], ['A12 28mm', true], ['GXR MOUNT 35mm', true], ['A12 28mm', false]].map(([lens, has_raw]) => {
+      const field = photoLutField({ photo: { lens, has_raw }, ed: { lut: null } }, callbacks);
+      return field.querySelector(`option[value="${cube}"]`).disabled;
+    });
+  });
+  assert.deepEqual(out.logLutUnits, [false, false, false, true]);
   await page.setViewportSize({ width: 375, height: 812 });
   out.narrowOverflow = await page.locator('.lut-page').evaluate((el) => {
     const rect = el.getBoundingClientRect();

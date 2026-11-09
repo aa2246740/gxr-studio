@@ -1,4 +1,4 @@
-"""路线 1：旋钮拟合（ARCHITECTURE §6.4）。对 50mm 的每个底子，在 `final.json` 允许的**整数档位**上搜索，
+"""路线 1：旋钮拟合（ARCHITECTURE §6.4）。对所选单元的每个底子，在 `final.json` 允许的**整数档位**上搜索，
 让"底子 + 旋钮 + Amount"的电脑预测输出最接近 LUT 的理想输出。
 
 算法（有界、确定性、不动 DAT 结构）：
@@ -30,7 +30,6 @@ from ..render.params import EditError, RecipeSel
 from ..render.recipes import SLOT_SHORT
 from .scene import GROUP_NAMES, Samples
 
-UNIT = "jlaunch"  # 拟合只对 50mm 做（28mm / MOUNT 没有标定模型）
 SLOTS = tuple(range(1, 9))
 TONE = ("amount", "contrast", "highlight", "shadow", "fade")
 CONTROL_ORDER = ("amount", "contrast", "highlight", "shadow", "fade", "saturation", "warmth", "tint", "split", "filter")
@@ -118,11 +117,14 @@ class Fitter:
         stock_rgb: np.ndarray,
         ideal_rgb: np.ndarray,
         *,
+        unit: str = "jlaunch",
         profile: str = "normal",
         progress: Callable[[Progress], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.cam, self.model, self.samples = cam, model, samples
+        self.unit = unit
+        self.unit_index = ("jlaunch", "qlaunch", "l08firm").index(unit)
         self.cfg = PROFILES[profile]
         self.profile = profile
         self._progress_cb, self._cancelled = progress, cancelled
@@ -138,20 +140,20 @@ class Fitter:
         self.neutral = neutral if len(neutral) >= 20 else self.coarse  # 灰阶不受饱和度/色温旋钮影响，先用它定色调
         self.neutral_small = self.neutral[::4] if len(self.neutral) >= 80 else self.neutral
         self._grid: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        self.stock04 = cam.stock[0]
+        self.stock04 = cam.stock[self.unit_index]
         self._cache: dict[tuple[Any, ...], float] = {}
         self._last_emit = 0.0
 
     # ---- 基础 -------------------------------------------------------------
     def controls(self, slot: int) -> list[dict[Any, Any]]:
-        by_name = {c["name"]: c for c in self.cam.controls(0, slot)}
+        by_name = {c["name"]: c for c in self.cam.controls(self.unit_index, slot)}
         return [by_name[n] for n in CONTROL_ORDER if n in by_name]
 
     def defaults(self, slot: int) -> dict[Any, Any]:
         return {c["name"]: c["default"] for c in self.controls(slot)}
 
     def entry_of(self, slot: int, levels: dict[Any, Any]) -> bytes:
-        return cast(bytes, self.cam.resolve(RecipeSel(UNIT, slot, tuple(sorted(levels.items())))).entry)
+        return cast(bytes, self.cam.resolve(RecipeSel(self.unit, slot, tuple(sorted(levels.items())))).entry)
 
     def pred_lab(self, slot: int, levels: dict[Any, Any], idx: np.ndarray) -> np.ndarray:
         entry = self.entry_of(slot, levels)
@@ -418,7 +420,7 @@ class Fitter:
         import hashlib
 
         return {
-            "unit": UNIT,
+            "unit": self.unit,
             "slot": slot,
             "number": f"{slot:02d}",
             "short": SLOT_SHORT[slot - 1],

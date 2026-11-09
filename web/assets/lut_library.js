@@ -185,7 +185,7 @@ export function photoLutField(view, { beginChange, persist, endChange, scheduleP
   function fill(list) {
     const current = view.ed.lut || '';
     select.replaceChildren(h('option', { value: '', selected: !current }, '无'), ...list.luts.map((l) => h('option', {
-      value: l.cube_id, selected: l.cube_id === current, disabled: !l.input_space || ((!view.photo.has_raw || !String(view.photo.lens || '').includes('50mm')) && !['srgb', 'rec709', 'gamma24'].includes(l.input_space)),
+      value: l.cube_id, selected: l.cube_id === current, disabled: !l.input_space || (!view.photo.has_raw && !['srgb', 'rec709', 'gamma24'].includes(l.input_space)),
     }, l.input_space ? l.name : `${l.name} · 请选择输入色彩空间`)));
     if (current && !list.luts.some((l) => l.cube_id === current)) select.append(h('option', { value: current, selected: true }, 'LUT 已删除'));
   }

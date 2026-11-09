@@ -72,13 +72,21 @@ def _svc(request: Request) -> Any:
 
 
 @router.get("/api/lut/spaces", response_model=None)
-def lut_spaces() -> dict[Any, Any]:
+def lut_spaces(request: Request) -> dict[Any, Any]:
     return {
         "spaces": spaces_listing(),
         "default_input": "srgb",
         "default_output": "srgb",
         "note": "",
-        "units": [{**unit, "fit_supported": unit["id"] == "jlaunch"} for unit in UNIT_INFO],
+        "units": [
+            {
+                **unit,
+                "calibrated": ctx(request).render.available(unit["id"]),
+                "fit_supported": ctx(request).render.available(unit["id"]),
+                "calibration": ctx(request).render.status()["calibration"]["units"][unit["id"]],
+            }
+            for unit in UNIT_INFO
+        ],
     }
 
 

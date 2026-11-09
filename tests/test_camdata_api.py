@@ -47,7 +47,7 @@ def dat(gen: int = 127) -> bytes:
 @pytest.fixture(scope="module")
 def dev_sources():
     src = calib.dev_sources(t.REPO)
-    if not all(p.is_file() for pair in src.values() for p in pair):
+    if not src:
         pytest.skip("研究目录里的标定文件不在本机")
     return src
 
@@ -498,9 +498,9 @@ def test_import_calibration_pack_makes_the_renderer_ready(client, with_camdata, 
     home = settings.home_dir
     assert sorted(p.name for p in home.iterdir()) == ["calib", "camera-data"]  # 没有临时目录残留
     m = json.loads((home / "calib/manifest.json").read_text(encoding="utf-8"))
-    assert m["camera_stock_sha256"] == calib.stock_fingerprint(store.load_stock04(home, "jlaunch"))
-    with np.load(home / "calib/ctx_200.npz", allow_pickle=False) as z:
-        assert sorted(z.files) == ["d0", "d1"]
+    assert m["units"]["jlaunch"]["camera_stock_sha256"] == calib.stock_fingerprint(store.load_stock04(home, "jlaunch"))
+    with np.load(home / "calib/ctx_jlaunch_200.npz", allow_pickle=False) as z:
+        assert sorted(z.files) == ["d0", "d1", "input_coefficients"]
 
 
 @pytest.mark.parametrize("target", ["root", "research"])
@@ -516,7 +516,7 @@ def test_tampered_pack_file_is_refused_and_old_calibration_stays(client, with_ca
     before = tree(settings.home_dir / "calib")
     bad = tmp_path / "bad-pack"
     shutil.copytree(pack, bad)
-    f = bad / "ring_model_200.json"
+    f = bad / "ring_jlaunch_200.json"
     f.write_text(f.read_text(encoding="utf-8").replace("0.99", "0.98", 1) + " ", encoding="utf-8")
     r = client.post("/api/calibration/import", json={"path": str(bad)})
     assert r.status_code == 422 and r.json()["error"] == "calibration_pack_invalid"
@@ -527,14 +527,16 @@ def test_tampered_pack_file_is_refused_and_old_calibration_stays(client, with_ca
 
 
 def test_pack_with_a_different_stock_is_refused(client, with_camdata, dev_sources, tmp_path, settings):
-    with np.load(dev_sources[200][0], allow_pickle=False) as z:
+    with np.load(io.BytesIO(dev_sources["jlaunch"][200][0][1]), allow_pickle=False) as z:
         arrays = {k: z[k] for k in z.files}
     arrays["stock"] = arrays["stock"].copy()
     arrays["stock"][3, 0] += 1
-    forged = tmp_path / "data_200.npz"
+    forged = tmp_path / "data_jlaunch_200.npz"
     np.savez(forged, **arrays)
     folder = tmp_path / "forged-pack"
-    intake.write_pack(folder, {200: (forged, dev_sources[200][1]), 1600: dev_sources[1600]})  # 清单 SHA 是对的，内容是错的
+    intake.write_pack(
+        folder, {"jlaunch": {200: (forged, dev_sources["jlaunch"][200][1]), 1600: dev_sources["jlaunch"][1600]}}
+    )  # 清单 SHA 是对的，内容是错的
     r = client.post("/api/calibration/import", json={"path": str(folder)})
     assert r.status_code == 422 and r.json()["error"] == "calibration_stock_mismatch", r.text
     assert sorted(p.name for p in settings.home_dir.iterdir()) == ["camera-data"]
@@ -551,22 +553,22 @@ def test_malformed_packs(client, with_camdata, pack, tmp_path, settings):
         return d
 
     def drop_1600(m, d):
-        del m["isos"]["1600"]
+        del m["units"]["jlaunch"]["1600"]
 
     def traversal(m, d):
-        m["isos"]["200"]["npz"] = "../data_200.npz"
+        m["units"]["jlaunch"]["200"]["npz"] = "../data_200.npz"
 
     def schema(m, d):
         m["schema"] = "something/else"
 
     def no_hash(m, d):
-        m["files"]["data_200.npz"] = {"size": 1}
+        m["files"]["data_jlaunch_200.npz"] = {"size": 1}
 
     def missing_file(m, d):
-        (d / "data_1600.npz").unlink()
+        (d / "data_jlaunch_1600.npz").unlink()
 
     def wrong_size(m, d):
-        m["files"]["data_200.npz"]["size"] += 1
+        m["files"]["data_jlaunch_200.npz"]["size"] += 1
 
     cases = {
         n: variant(n, f)
@@ -605,11 +607,12 @@ def test_calibration_for_another_stock_04_is_flagged_after_camera_data_changes(c
     assert client.post("/api/calibration/import", json={"path": str(pack)}).status_code == 200
     mp = settings.home_dir / "calib/manifest.json"
     m = json.loads(mp.read_text(encoding="utf-8"))
-    m["camera_stock_sha256"] = "0" * 64
+    for unit in m["units"].values():
+        unit["camera_stock_sha256"] = "0" * 64
     mp.write_text(json.dumps(m, indent=2), encoding="utf-8")
     s = client.get("/api/camdata/status").json()
     assert s["ready"] is False and s["calibration"]["state"] == "invalid"
-    assert s["calibration"]["message"] == "校准数据与相机配方文件不匹配"
+    assert "不匹配" in s["calibration"]["message"]
     assert s["next"] == "import_calibration"
     assert client.post("/api/calibration/import", json={"path": str(pack)}).json()["status"]["ready"] is True
 

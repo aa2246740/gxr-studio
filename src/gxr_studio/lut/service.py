@@ -238,7 +238,7 @@ class LutService:
         return buf.getvalue(), info
 
     # ---- 拟合任务 ---------------------------------------------------------------
-    def pick_photos(self, ids: list[str] | None = None, limit: int = 8) -> list[dict[Any, Any]]:
+    def pick_photos(self, ids: list[str] | None = None, limit: int = 8, *, unit: str | None = None) -> list[dict[Any, Any]]:
         """图库里的 DNG 照片候选：优先 ISO 200，其次 1600，再按拍摄时间新的在前。子进程从前面开始取读得出来的 3 张，最后一张只验收。"""
         if ids is not None:
             shots = [self.lib.get_shot(i) for i in ids]
@@ -249,6 +249,8 @@ class LutService:
             shots = [s for s in self.lib.list_shots(limit=2000) if "dng" in s["files"]]
             shots.sort(key=lambda s: (s["captured_at"] or "", s["name"]), reverse=True)  # 新的在前
             shots.sort(key=lambda s: 0 if s["iso"] == 200 else 1 if s["iso"] == 1600 else 2)  # 稳定排序：ISO 优先
+        if unit is not None:
+            shots = [s for s in shots if self.render.photo_unit(s) == unit]
         out = []
         for s in shots[:limit]:
             f = s["files"]["dng"]
@@ -273,13 +275,6 @@ class LutService:
         profile: str = "normal",
         guessed: bool = False,
     ) -> dict[Any, Any]:
-        if unit != "jlaunch":
-            raise LutError(
-                422,
-                "unit_not_calibrated",
-                "现在只能为 A12 50mm 生成配方。28mm 和 MOUNT 还没有单独的校准数据。生成的配方只用于 50mm 拍的照片。",
-                {"unit": unit},
-            )
         if profile not in ("normal", "quick"):
             raise LutError(422, "bad_profile", "请求无效。请刷新页面后重试。", {"detail": "profile 只能是 normal 或 quick"})
         cube = self.cube(cube_id)
@@ -288,11 +283,13 @@ class LutService:
         if not self.render.available():
             st = self.render.status()
             raise LutError(409, "camera_data_missing", st["hint"] or "请先导入相机配方文件", {"status": st})
+        if not self.render.available(unit):
+            raise LutError(422, "unit_not_calibrated", "这个单元的校准数据尚未导入或已失效，请重新导入。", {"unit": unit})
         with self._lock:
             busy = next((j for j, p in self._procs.items() if p.poll() is None), None)
             if busy is not None:
                 raise LutError(409, "fit_busy", "无法生成配方。已经有一个在进行。", {"job_id": busy})
-            photos = self.pick_photos(photo_ids)
+            photos = self.pick_photos(photo_ids, unit=unit)
             job_id = uuid.uuid4().hex[:12]
             job_dir = self.jobs_dir / job_id
             job = {

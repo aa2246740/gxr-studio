@@ -120,8 +120,8 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
   引用 flags7 彩色基底的 Look 使用该基底的 Amt / Satu / Warm / Tint / Splt。158 两包没有这种彩色 Look，测试用内存构造的 Look 覆盖它。
   文件内条目按内容摘要识别，默认值沿用文件；导入失败不会替换已导入的数据。
 
-**2. 校准数据（标定包）** —— 电脑预测用的校准数据（ISO 200 / 1600 两套），**必须在相机数据之后导入**，
-导入时用包里的 stock 核对相机数据里 50mm 的原厂 04，对不上就拒绝（422 `calibration_stock_mismatch`）。
+**2. 校准数据（标定包）** —— 按 50mm、28mm、MOUNT 分开的电脑预测校准数据，**必须在相机数据之后导入**，
+导入时用各单元包里的 stock 核对相机数据里同单元的原厂 04，对不上就拒绝（422 `calibration_stock_mismatch`）。
 
 - `POST /api/calibration/import {"path": "/完整/路径/文件夹"}`。文件夹里是 `calib-pack.json`（清单，列出每个文件的 SHA-256）
   加上数据文件；先逐个核 SHA-256、复制到临时目录，再从这份副本导入（核对的和导入的是同一份字节）。
@@ -133,10 +133,14 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
   （`GET /api/camdata/status` 的 `project_dir`），点「导入校准数据」。要先导入相机配方文件，否则会提示「请先导入相机配方文件」。
   相机配方文件已导入、校准数据还缺时，「配方」「导出」里的引导也会给一个「导入校准数据」按钮，打开这一栏。
   界面上的名字一律叫「校准数据」；README 和接口文档里的"标定包""标定"说的是同一样东西。
-- 之后如果相机数据换成了原厂 04 不同的版本，状态里标定会变成 `invalid`（"请重新导入校准数据"），不会悄悄继续预测。
+- 之后如果相机数据换成了原厂 04 不同的版本，状态里对应单元的标定会变成 `invalid`（"请重新导入校准数据"），不会悄悄继续预测。
+
+三个单元都使用自己的原厂 C040 节点、色表修饰量和输入映射。实拍校准范围为 50mm 的 ISO 200 / 1600，28mm 和 MOUNT 的 ISO 200；其它 ISO 使用相近模型分支并标为“未校准”。28mm、MOUNT 的曝光沿用 50mm，界面也会显示这条说明。
+
+旧版标定包需要重新导入，不转换旧包或旧编辑记录。新包为 `gxr-studio/calib-pack/2`，可以只含部分单元；导入会替换整个包。LUT 页只为已导入且有效的单元启用“生成配方”，仍使用“底子 + 旋钮”路线。模型组成和接口字段见 [逐单元校准](docs/unit-calibration.md)。
 
 `GET /api/camdata/status` 一次给全：是否可以出图（`ready`）、相机数据的来源（卡的卷标或"文件"、文件名、大小、SHA-256、代数、导入时间）、
-三个单元的 8 个槽位和原厂 04 是否齐全、标定状态、插着的卡里哪张有 `GXRCE.DAT`、下一步该做什么（`next`）和 `data_version`。
+三个单元的 8 个槽位和原厂 04 是否齐全、逐单元标定状态、插着的卡里哪张有 `GXRCE.DAT`、下一步该做什么（`next`）和 `data_version`。
 
 导入成功后：渲染结果和烘焙缓存清空；没有 JPG 的照片的缩略图/预览缓存删除重画，`/api/photos` 里这些照片的
 `thumb_url` / `preview_url` 带上 `?v=<data_version>`，浏览器缓存的旧图（`immutable`）因此不会再被用到。
@@ -217,14 +221,14 @@ tests/                     pytest；tests/perf/ 是性能基线
 | `POST /api/camdata/import-upload`（请求体 = 文件字节） | 界面选中的 GXRCE.DAT，校验同上 |
 | `POST /api/calibration/import` `{path}` | 从本地文件夹导入标定包（要先有相机数据；开发阶段可指向仓库根或 `research/`） |
 
-LUT 导入（路线 1 旋钮拟合，数字一律是"电脑预测"；28mm / MOUNT 没有标定，拒绝）：
+LUT 导入（路线 1 旋钮拟合，数字一律是"电脑预测"；已校准的单元可以生成配方）：
 
 | 方法 路径 | 作用 |
 |---|---|
 | `GET /api/lut/spaces` | 可选的输入/输出色彩空间（sRGB / Rec.709 / Gamma 2.4 / F-Log / F-Log2 / L-Log / V-Log / S-Log3 / Apple Log / 线性） |
 | `POST /api/lut/upload`（请求体 = .cube 字节，`X-GXR-Filename` 放 URL 编码的文件名） | 校验并存进应用数据目录 `luts/`，返回 `cube_id`（SHA-256）、尺寸、按文件名猜的输入空间 |
 | `GET /api/lut/{cube_id}/preview?which=original｜lut&photo=&space=&output=` | 原图 / 加 LUT 后（有相机数据 + 照片：04 电脑模拟上套 LUT；否则中性转换/示例照片） |
-| `POST /api/lut/fit` `{cube_id, space, output, profile?}` | 开始拟合（独立子进程，同时只跑一个），返回 `job_id` |
+| `POST /api/lut/fit` `{cube_id, space, output, unit?, profile?}` | 开始拟合（独立子进程，同时只跑一个），返回 `job_id` |
 | `GET /api/lut/fit/{job_id}` · `POST /api/lut/fit/{job_id}/cancel` | 进度 / 结果（`state` = running｜done｜cancelled｜error）；取消会结束子进程 |
 | `GET/POST /api/my-recipes` · `GET/PUT/DELETE /api/my-recipes/{id}` | 电脑端的"我的配方"（`my_recipes/<id>.json`）；`POST {job_id, candidate, name}` 从服务器上的结果里取，不信客户端给的档位 |
 
