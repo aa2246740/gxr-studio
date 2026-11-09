@@ -570,10 +570,11 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .crop-box .guides line, .crop-box .guides path { stroke: #fff; stroke-opacity: .8; stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
 .crop-box[data-fade="true"][data-moving="false"] .guides { opacity: .35; }
 .crop-box .h { position: absolute; width: 28px; height: 28px; border: 0 solid #fff; }
-.crop-box .h.tl { left: -3px; top: -3px; border-left-width: 3px; border-top-width: 3px; cursor: nwse-resize; }
-.crop-box .h.tr { right: -3px; top: -3px; border-right-width: 3px; border-top-width: 3px; cursor: nesw-resize; }
-.crop-box .h.bl { left: -3px; bottom: -3px; border-left-width: 3px; border-bottom-width: 3px; cursor: nesw-resize; }
-.crop-box .h.br { right: -3px; bottom: -3px; border-right-width: 3px; border-bottom-width: 3px; cursor: nwse-resize; }
+/* 握柄画在框内：贴住照片边缘时，外侧白边会被 .pv 的 overflow:hidden 裁掉。 */
+.crop-box .h.tl { left: 0; top: 0; border-left-width: 3px; border-top-width: 3px; cursor: nwse-resize; }
+.crop-box .h.tr { right: 0; top: 0; border-right-width: 3px; border-top-width: 3px; cursor: nesw-resize; }
+.crop-box .h.bl { left: 0; bottom: 0; border-left-width: 3px; border-bottom-width: 3px; cursor: nesw-resize; }
+.crop-box .h.br { right: 0; bottom: 0; border-right-width: 3px; border-bottom-width: 3px; cursor: nwse-resize; }
 .crop-size { position: absolute; right: 8px; bottom: 8px; padding: 3px 7px; border-radius: var(--r-sm); background: rgba(20,20,20,0.75); color: var(--text-1); font: var(--fw-medium) var(--fs-small)/16px var(--font-num); pointer-events: none; }
 .ruler { position: relative; height: 40px; background: var(--surface-raised); border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line-subtle); overflow: hidden; cursor: ew-resize; user-select: none; margin: 4px 0; }
 .ruler .tick { position: absolute; bottom: 0; width: 1px; height: 8px; background: rgba(255,255,255,0.45); }
