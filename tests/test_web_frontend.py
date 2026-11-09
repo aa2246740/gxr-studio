@@ -216,8 +216,8 @@ def test_fmt_deg_writes_one_decimal_with_sign(tmp_path):
 def test_photo_own_frame_wins_over_the_default(tmp_path):
     out = run_node(
         tmp_path,
-        "const d={frame:{style:'gallery'}, stamp:{enabled:true}};"
-        "const own=F.resolveFinish({frame:{style:'leica'}}, d);"
+        "const d={frame:{version:2,style:'gallery'}, stamp:{enabled:true}};"
+        "const own=F.resolveFinish({frame:{version:2,style:'leica'}}, d);"
         "const dflt=F.resolveFinish({}, d);"
         "return {own:[own.frame.style, own.frameFrom], dflt:[dflt.frame.style, dflt.frameFrom, dflt.stamp.enabled]};",
     )

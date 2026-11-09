@@ -101,7 +101,15 @@ console.log(JSON.stringify(out));
 
 
 def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: Path) -> None:
-    for name in ("stage_finish.js", "finish_layout.js", "finish_fonts.js", "finish_draw.js"):
+    for name in (
+        "stage_finish.js",
+        "finish_layout.js",
+        "finish_fonts.js",
+        "finish_draw.js",
+        "finish_frame_core.js",
+        "finish_frame_styles.js",
+        "finish_frame_objects.js",
+    ):
         (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "output_photo_size.js").write_text(
         "export function photoSize() { throw new Error('清除装饰不应查询尺寸'); }\n", encoding="utf-8"

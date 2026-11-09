@@ -13,7 +13,7 @@ from typing import Any
 from .. import crop as cropmod
 from ..crop import Crop, CropError
 from ..finish.geometry import fitted_crop, output_size
-from ..finish.spec import Geometry, parse_frame, parse_geometry
+from ..finish.spec import Geometry, parse_geometry, stored_frame
 from ..meta import read_dng_meta, read_jpeg_meta
 from . import sidecar as sc
 from .store import Library
@@ -23,6 +23,16 @@ class RevisionConflict(Exception):
     def __init__(self, current: int) -> None:
         super().__init__(f"sidecar 已经是第 {current} 版")
         self.current = current
+
+
+def clean_border(side: dict[Any, Any]) -> dict[Any, Any]:
+    """Never carry retired or malformed frame settings into a new sidecar revision."""
+    if "border" not in side:
+        return side
+    frame = stored_frame(side["border"])
+    if frame is None:
+        return side
+    return {**side, "border": frame.to_json()}
 
 
 def _has_border(side: dict[Any, Any]) -> bool:
@@ -83,7 +93,7 @@ def heal_frame(lib: Library, shot: dict[Any, Any], side: dict[Any, Any]) -> dict
         return side
     updated = dict(side)
     if has_style and frame is not None and not _has_border(side):
-        border = parse_frame(frame)
+        border = stored_frame(frame)
         updated["border"] = border.to_json() if border is not None else {"style": "none"}
     if recovered is not None:
         width, height, orientation = recovered
@@ -207,6 +217,6 @@ def write_crop(
         current = lib.read_sidecar_for_write(shot)
         if int(current.get("rev", 0)) != base_rev:
             raise RevisionConflict(int(current.get("rev", 0)))
-        out = sc.write_atomic(path, side, tmp_dir=lib.tmp_dir)
+        out = sc.write_atomic(path, clean_border(side), tmp_dir=lib.tmp_dir)
         lib.set_edit_cache(shot["shot_id"], int(out["rev"]), out["crop"])
         return describe(out)

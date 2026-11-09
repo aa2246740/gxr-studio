@@ -9,11 +9,12 @@ import { ascentPx } from './finish_layout.js';
 const FILES = {
   atkinson: 'AtkinsonHyperlegible-Regular.ttf',
   inter: 'Inter-Regular.ttf',
+  inter_sb: 'Inter-SemiBold.ttf',
   courier: 'CourierPrime-Regular.ttf',
   patrick: 'PatrickHand-Regular.ttf',
   dseg: 'DSEG7Classic-Regular.ttf',
 };
-const FAMILY = { atkinson: 'GXR Atkinson', inter: 'GXR Inter', courier: 'GXR Courier', patrick: 'GXR Patrick', dseg: 'GXR DSEG' };
+const FAMILY = { atkinson: 'GXR Atkinson', inter: 'GXR Inter', inter_sb: 'GXR Inter SemiBold', courier: 'GXR Courier', patrick: 'GXR Patrick', dseg: 'GXR DSEG' };
 // 导出时中文用系统字体，顺序和 stamp.py 的 _CJK_FONTS 一样
 const CJK = '"PingFang SC", "Hiragino Sans GB", "STHeiti", sans-serif';
 const CJK_PX = 1000; // 和 fonts.py 的 CJK_REFERENCE_PX 一样
@@ -77,7 +78,7 @@ export function loadFont(id) {
   return Promise.all([loadTable(id), loadFace(id)]);
 }
 
-// 页面空闲时把五个字体先下好：第一次点边框、日期戳时不用等网络
+// 页面空闲时把六个字体先下好：第一次点边框、日期戳时不用等网络
 export function warmUp() {
   for (const id of Object.keys(FILES)) loadFont(id).catch(() => {});
 }
@@ -104,9 +105,9 @@ export function logoImage(onReady) {
 export function fontsNeeded(frame, stamp, stampTextIsCjk = false) {
   const ids = new Set();
   const style = frame && frame.style;
-  if (style === 'leica' || style === 'hasselblad') ids.add('atkinson').add('inter');
-  if (style === 'film') ids.add('courier');
-  if (style === 'instant' && frame.text) ids.add('patrick');
+  if (style === 'leica' || style === 'hasselblad') ids.add('inter_sb').add('inter');
+  if (style === 'film') ids.add('inter_sb');
+  if (style === 'instant' && (frame.text || frame.show_date)) ids.add('patrick');
   if (stamp && stamp.enabled && !stampTextIsCjk) ids.add({ seg7: 'dseg', typewriter: 'courier', sans: 'atkinson' }[stamp.font] || 'dseg');
   return [...ids];
 }

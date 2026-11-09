@@ -22,8 +22,9 @@ import pytest
 from gxr_studio.finish import stamp as stamp_mod
 from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, table_dict
 from gxr_studio.finish.layout import frame_layout, stamp_layout
-from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, StampSpec
+from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, StampSpec, parse_frame
 from gxr_studio.finish.stamp import format_stamp
+from test_frame_reference import cases as reference_cases
 
 WEB = Path(__file__).resolve().parents[1] / "web" / "assets"
 FIXTURE_CJK = Path(__file__).resolve().parent / "fixtures" / "NotoSansSC-Shanghai.otf"
@@ -242,7 +243,15 @@ def test_preview_layout_equals_export_layout(tmp_path: Path) -> None:
                 frame_cases.append({"w": w, "h": h, "spec": spec.to_json(), "meta": METAS[0], "preset": preset})
                 got = frame_layout(w, h, spec, METAS[0], rec)
                 frame_want.append(None if got is None else got.to_json())
-        for name in ("finish_layout.js", "finish_fonts.js"):
+        # Every approved option, every finished ratio, all six requested photo shapes.
+        for case in reference_cases():
+            spec = parse_frame(case["spec"])
+            assert spec is not None
+            w, h = case["size"]
+            frame_cases.append({"w": w, "h": h, "spec": spec.to_json(), "meta": case["meta"]})
+            layout = frame_layout(w, h, spec, case["meta"], rec)
+            frame_want.append(layout.to_json() if layout else None)
+        for name in ("finish_layout.js", "finish_fonts.js", "finish_frame_core.js", "finish_frame_styles.js", "finish_frame_objects.js"):
             (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
         (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
         (tmp_path / "check.mjs").write_text(JS, encoding="utf-8")

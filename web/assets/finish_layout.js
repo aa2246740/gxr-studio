@@ -1,13 +1,13 @@
+import * as plain from './finish_frame_styles.js';
+import * as objects from './finish_frame_objects.js';
 // 边框和时间戳的版面（纯函数）。src/gxr_studio/finish/layout.py 的 JS 版：算式逐行对应，导出和预览的版面因此相同。
 // tests/test_finish_layout_parity.py 用同样的输入逐项对照。改这里的算式，layout.py 要一起改。
 // 字的宽度、每个字的位置、墨迹框都由字体表里的整数（步进宽度、字形外框，src/gxr_studio/finish/sfnt.py 从字体文件读出，
 // /api/finish/assets/<字体>.json 给浏览器）和整数算式得出：不用画布量字，也不管 Pillow 的排版引擎。表由调用方给（m.upm、m.glyph、m.ascent）。
 // 数字一律是「导出时的像素」：照片是已裁切、已盖日期戳的整张，宽 w 高 h。
 
-export const WEIGHT = { thin: 0.02, medium: 0.04, thick: 0.07 };
 export const OUTPUT_RATIOS = { '1:1': [1, 1], '4:5': [4, 5], '3:4': [3, 4], '2:3': [2, 3], '9:16': [9, 16], '16:9': [16, 9], '3:2': [3, 2] };
 const CROP_RATIOS = { '3:2': [3, 2], '4:3': [4, 3], '1:1': [1, 1], '4:5': [5, 4], '16:9': [16, 9], '16:10': [8, 5], '1.91:1': [191, 100], '2.35:1': [47, 20], 'xpan-65-24': [65, 24] };
-export const COLORS = { white: [255, 255, 255], black: [12, 12, 12], cream: [245, 236, 220] };
 export const STAMP_COLORS = { orange: [255, 106, 0], red: [220, 32, 32], yellow: [255, 196, 40], white: [255, 255, 255] };
 export const STAMP_SIZE = { small: 0.038, medium: 0.055, large: 0.078 };
 export const STAMP_FONT = { seg7: 'dseg', typewriter: 'courier', sans: 'atkinson' };
@@ -85,137 +85,6 @@ function textItem(m, x, y, px, font, text, fill, cjk = false) {
   return { k: 'text', x, y: Math.floor(y + 0.5), px, font, text, fill: [...fill], cjk, xs: glyphXs(m, font, px, text, x, cjk) };
 }
 
-const facePx = (px) => Math.max(8, px); // 边框用的字体不会小于 8 像素
-
-function fit(m, text, font, px, maxW, floor = 10) {
-  while (px > floor && advance(m, font, facePx(px), text, false) > maxW) px -= 1;
-  return facePx(px);
-}
-
-const margin = (w, h, weight) => Math.max(8, pyRound(Math.max(w, h) * WEIGHT[weight]));
-
-function gallery(w, h, spec) {
-  const m = margin(w, h, spec.weight);
-  return { width: w + 2 * m, height: h + 2 * m, photo: [m, m], bg: [...COLORS[spec.color]], items: [] };
-}
-
-function leicaLines(spec, meta) {
-  const lines = [];
-  if (spec.show_params && meta.lens) lines.push(meta.lens);
-  const second = [meta.aperture, meta.shutter, meta.iso].filter(Boolean).join('  ');
-  if (spec.show_params && second) lines.push(second);
-  if (spec.show_date && meta.date) lines.push(meta.date);
-  if (spec.text) lines.push(spec.text);
-  return lines;
-}
-
-function leica(w, h, spec, meta, m) {
-  const bar = Math.max(64, pyRound(Math.min(w, h) * 0.09));
-  const dark = spec.color === 'black';
-  const ink = dark ? [245, 245, 245] : [20, 20, 20];
-  const muted = dark ? [170, 170, 170] : [90, 90, 90];
-  const pad = Math.max(16, idiv(bar, 5));
-  const items = [];
-  if (spec.show_logo) {
-    const lh = trunc(bar * 0.42);
-    const lw = Math.max(1, pyRound((LOGO_SIZE[0] * lh) / LOGO_SIZE[1]));
-    items.push({ k: 'logo', x: pad, y: h + idiv(bar - lh, 2), w: lw, h: lh });
-    const gx = pad + lw + idiv(pad, 2);
-    const gxrPx = facePx(trunc(bar * 0.34));
-    if (gx + advance(m, 'atkinson', gxrPx, 'GXR') <= w) items.push(textItem(m, gx, h + idiv(bar - trunc(bar * 0.34), 2) - 2, gxrPx, 'atkinson', 'GXR', ink));
-  }
-  const lines = leicaLines(spec, meta);
-  if (lines.length) {
-    const first = lines[0];
-    const second = lines.slice(1).join('  ');
-    const px1 = fit(m, first, 'inter', trunc(bar * 0.26), idiv(w, 2), 8);
-    const px2 = second ? fit(m, second, 'inter', trunc(bar * 0.22), idiv(w, 2), 8) : px1;
-    const w1 = advance(m, 'inter', px1, first);
-    const w2 = second ? advance(m, 'inter', px2, second) : 0;
-    const right = w - pad;
-    const rule = right - Math.max(w1, w2) - Math.max(8, idiv(bar, 8));
-    items.push({ k: 'line', x1: rule, y1: h + pad, x2: rule, y2: h + bar - pad, w: Math.max(1, idiv(bar, 28)), fill: [...muted] });
-    items.push(textItem(m, Math.max(0, right - w1), h + trunc(bar * 0.16), px1, 'inter', first, ink));
-    if (second) items.push(textItem(m, Math.max(0, right - w2), h + trunc(bar * 0.52), px2, 'inter', second, muted));
-  }
-  return { width: w, height: h + bar, photo: [0, 0], bg: [...COLORS[spec.color]], items };
-}
-
-function hasselblad(w, h, spec, meta, m) {
-  const thin = Math.max(10, pyRound(Math.max(w, h) * 0.018));
-  const bottom = Math.max(thin * 4, pyRound(Math.min(w, h) * 0.16));
-  const outW = w + 2 * thin;
-  const outH = h + thin + bottom;
-  const dark = spec.color === 'black';
-  const ink = dark ? [245, 245, 245] : [24, 24, 24];
-  const muted = dark ? [180, 180, 180] : [120, 120, 120];
-  const titlePx = facePx(Math.max(16, idiv(bottom, 5)));
-  const subPx = facePx(Math.max(13, idiv(bottom, 7)));
-  const cx = idiv(outW, 2);
-  const y0 = thin + h + trunc(bottom * 0.28);
-  const name = 'RICOH GXR';
-  const items = [textItem(m, Math.max(0, cx - advance(m, 'atkinson', titlePx, name) / 2), y0, titlePx, 'atkinson', name, ink)];
-  const bits = [];
-  if (spec.show_params) bits.push(...[meta.lens, meta.aperture, meta.shutter, meta.iso].filter(Boolean));
-  if (spec.show_date && meta.date) bits.push(meta.date);
-  if (spec.text) bits.push(spec.text);
-  let line = bits.join('  ·  ');
-  const maxW = outW - 2 * thin;
-  // 一行参数比照片还宽时先缩字号（最小 8 像素）；还放不下就从最后一项开始去掉，直到放得下（至少留一项）
-  while (bits.length > 1 && advance(m, 'inter', fit(m, line, 'inter', subPx, maxW, 8), line) > maxW) {
-    bits.pop();
-    line = bits.join('  ·  ');
-  }
-  if (line) {
-    const fitted = fit(m, line, 'inter', subPx, maxW, 8);
-    items.push(textItem(m, Math.max(0, cx - advance(m, 'inter', fitted, line) / 2), y0 + trunc(bottom * 0.28), fitted, 'inter', line, muted));
-  }
-  return { width: outW, height: outH, photo: [thin, thin], bg: [...COLORS[spec.color]], items };
-}
-
-function film(w, h, meta, m) {
-  const mg = Math.max(28, pyRound(Math.max(w, h) * 0.045));
-  const outW = w + 2 * mg;
-  const outH = h + 2 * mg;
-  const amber = [232, 164, 74];
-  const px = facePx(Math.max(11, idiv(mg, 3)));
-  const lens = meta.lens_short || 'A12 50mm';
-  const items = [textItem(m, mg, outH - mg + 6, px, 'courier', `RICOH GXR  ·  ${lens}`, amber)];
-  const number = meta.frame_no || '';
-  if (number) items.push(textItem(m, Math.max(0, outW - mg - advance(m, 'courier', px, number)), 6, px, 'courier', number, amber));
-  return { width: outW, height: outH, photo: [mg, mg], bg: [8, 8, 8], items };
-}
-
-function instant(w, h, spec, m) {
-  const side = Math.max(18, pyRound(Math.max(w, h) * 0.035));
-  const bottom = Math.max(side * 4, pyRound(Math.min(w, h) * 0.2));
-  const outW = w + 2 * side;
-  const outH = h + side + bottom;
-  const items = [];
-  if (spec.text) {
-    const cjk = needsCjk(spec.text);
-    const eff = (size) => (cjk ? Math.max(1, size) : facePx(size));
-    let px = Math.max(22, idiv(bottom, 4));
-    const maxW = Math.max(8, outW - 2 * side);
-    while (px > 10 && advance(m, 'patrick', eff(px), spec.text, cjk) > maxW) px = Math.max(10, trunc(px * 0.85));
-    const tw = advance(m, 'patrick', eff(px), spec.text, cjk);
-    items.push(textItem(m, Math.max(0, (outW - tw) / 2), side + h + (bottom - eff(px)) / 2, eff(px), 'patrick', spec.text, [40, 40, 40], cjk));
-  }
-  return { width: outW, height: outH, photo: [side, side], bg: [248, 246, 242], items };
-}
-
-// 样式 none（或不认识的样式）返回 null。meta：{ lens, lens_short, aperture, shutter, iso, date, frame_no }
-function baseFrame(w, h, spec, meta, m) {
-  switch (spec.style) {
-    case 'gallery': return gallery(w, h, spec);
-    case 'leica': return leica(w, h, spec, meta || {}, m);
-    case 'hasselblad': return hasselblad(w, h, spec, meta || {}, m);
-    case 'film': return film(w, h, meta || {}, m);
-    case 'instant': return instant(w, h, spec, m);
-    default: return null;
-  }
-}
-
 export function cropRatio(preset, w, h) {
   const ratio = CROP_RATIOS[preset];
   return ratio ? (w >= h ? [...ratio] : [ratio[1], ratio[0]]) : null;
@@ -226,41 +95,12 @@ export function ratioSize(w, h, rw, rh) {
   return [multiple * rw, multiple * rh];
 }
 
-function contentSize(layout, m) {
-  let ex = 0;
-  let ey = 0;
-  for (const item of layout.items) {
-    let left, top, right, bottom;
-    if (item.k === 'text') {
-      const box = inkBox(m, item.font, item.px, item.text, item.cjk);
-      [left, top, right, bottom] = [item.x + box[0], item.y + box[1], item.x + box[2], item.y + box[3]];
-    } else if (item.k === 'line') {
-      const stroke = idiv(item.w + 1, 2);
-      [left, top, right, bottom] = [item.x1 - stroke, item.y1 - stroke, item.x2 + stroke, item.y2 + stroke];
-    } else {
-      [left, top, right, bottom] = [item.x, item.y, item.x + item.w, item.y + item.h];
-    }
-    ex = Math.max(ex, Math.ceil(-left), Math.ceil(right - layout.width));
-    ey = Math.max(ey, Math.ceil(-top), Math.ceil(bottom - layout.height));
-  }
-  return [layout.width + 2 * ex, layout.height + 2 * ey];
-}
-
 export function frameLayout(w, h, spec, meta, m) {
-  const layout = baseFrame(w, h, spec, meta, m);
-  const ratio = OUTPUT_RATIOS[spec.output_ratio ?? '3:4'];
-  if (!layout || !ratio) return layout;
-  const [width, height] = ratioSize(...contentSize(layout, m), ...ratio);
-  const dx = idiv(width - layout.width, 2);
-  const dy = idiv(height - layout.height, 2);
-  const items = layout.items.map((original) => {
-    const item = { ...original };
-    for (const key of ['x', 'x1', 'x2']) if (key in item) item[key] += dx;
-    for (const key of ['y', 'y1', 'y2']) if (key in item) item[key] += dy;
-    if (item.xs) item.xs = item.xs.map((x) => x + dx);
-    return item;
-  });
-  return { ...layout, width, height, photo: [layout.photo[0] + dx, layout.photo[1] + dy], items };
+  if (spec.style === 'none') return null;
+  const ratio = OUTPUT_RATIOS[spec.output_ratio ?? '3:4'] || null;
+  const build = plain[spec.style] || objects[spec.style];
+  const effective = { ...spec, fmt: spec.fmt || (spec.style === 'instant' ? 'polaroid' : '135'), table: spec.table || 'light' };
+  return build ? build(w, h, effective, meta || {}, m, ratio) : null;
 }
 
 // ---- 时间戳 -------------------------------------------------------------------
@@ -338,7 +178,8 @@ function borderStampLayout(w, h, spec, text, m, frame) {
       top = Math.max(top, item.y + box[3] + 1);
     }
   }
-  const margin = Math.max(2, Math.min(pyRound(Math.min(w, h) * 0.035), Math.floor((frame.height - top) / 8)));
+  const bottom = frame.unit_box[1] + frame.unit_box[3];
+  const margin = Math.max(2, Math.min(pyRound(Math.min(w, h) * 0.035), Math.floor((bottom - top) / 8)));
   const cjk = needsCjk(text);
   const shown = spec.font === 'seg7' && !cjk ? seg7Text(text) : text;
   let px = base.px;
@@ -348,12 +189,12 @@ function borderStampLayout(w, h, spec, text, m, frame) {
     glow = base.glow !== null ? Math.max(1.2, px * 0.16) : null;
     pad = glow !== null ? Math.max(margin, Math.ceil(3 * glow) + 2) : margin;
     tw = box[2] - box[0]; th = box[3] - box[1];
-    if (tw <= w - 2 * pad && th <= frame.height - top - 2 * pad) break;
+    if (tw <= w - 2 * pad && th <= bottom - top - 2 * pad) break;
     if (px === 1) return null;
     px = Math.max(1, trunc(px * 0.85));
   }
   const x = frame.photo[0] + (spec.corner[1] === 'l' ? pad : w - pad - tw);
-  const y = spec.corner[0] === 't' ? top + pad : frame.height - pad - th;
+  const y = spec.corner[0] === 't' ? top + pad : bottom - pad - th;
   const ops = stampOps([x - box[0], y - box[1]], text, px, base.font, cjk, base.ink, m);
   return { px, font: base.font, rect: [x, y, tw, th], ink: [...base.ink], glow, ops };
 }
