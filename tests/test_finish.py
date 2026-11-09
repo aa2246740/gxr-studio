@@ -70,27 +70,26 @@ def test_clamp_keeps_a_rect_that_is_already_inside() -> None:
     assert clamp_norm_rect(mask, rect) == rect
 
 
-def test_leica_bar_right_aligns_both_lines() -> None:
-    from gxr_studio.finish.frame import apply_frame
+def test_leica_bar_left_aligns_the_two_lines_on_the_right() -> None:
+    from gxr_studio.finish.fonts import FontMetrics
+    from gxr_studio.finish.layout import frame_layout
     from gxr_studio.finish.spec import parse_frame
 
-    photo = np.full((120, 640, 3), 180, np.uint8)
-    meta = {
-        "lens": "GR LENS A12 50mm F2.5 MACRO",
-        "aperture": "f/2.5",
-        "shutter": "1/80s",
-        "iso": "ISO 800",
-        "date": "26 10 23",
-    }
-    frame = parse_frame({"style": "leica", "show_logo": True, "show_params": True, "show_date": True, "output_ratio": "original"})
-    assert frame is not None
-    out = apply_frame(photo, frame, meta)
-    dark = np.any(out < 80, axis=2)
-    bar = dark[photo.shape[0] :]
-    rows = [np.nonzero(bar[i])[0] for i in range(bar.shape[0]) if bar[i].any()]
-    rights = [int(cols.max()) for cols in rows if cols.max() > out.shape[1] * 0.55]
-    assert max(rights) - min(rights) <= 8
-    assert max(rights) > out.shape[1] - 40
+    spec = parse_frame({"style": "leica", "output_ratio": "original"})
+    assert spec is not None
+    layout = frame_layout(
+        1200,
+        800,
+        spec,
+        {"lens_short": "A12 50mm", "aperture": "f/7.1", "shutter": "1/100s", "iso": "ISO 200", "date": "2026.10.24"},
+        FontMetrics(),
+    )
+    assert layout is not None
+    lines = [i for i in layout.items if i["k"] == "text" and i["text"] != "GXR"]
+    assert len(lines) == 2
+    assert lines[0]["x"] == lines[1]["x"]
+    assert lines[0]["font"] == "inter_sb" and lines[1]["font"] == "inter"
+    assert lines[0]["x"] > layout.width / 2
 
 
 def test_frame_catalog_uses_the_copy_names() -> None:

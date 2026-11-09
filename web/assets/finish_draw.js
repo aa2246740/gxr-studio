@@ -18,7 +18,10 @@ function drawText(ctx, item, dx, dy, s) {
   ctx.fillStyle = rgb(item.fill);
   const baseline = dy + (item.y + ascentOf(item.font, item.px, item.cjk)) * s;
   Array.from(item.text).forEach((ch, i) => {
-    if (ch !== ' ' && ch.codePointAt(0) >= 0x20) ctx.fillText(ch, dx + item.xs[i] * s, baseline);
+    if (ch !== ' ' && ch.codePointAt(0) >= 0x20) {
+      ctx.font = fontCss(item.font, item.px * s, item.cjk || ch.codePointAt(0) >= 0x2e80);
+      ctx.fillText(ch, dx + item.xs[i] * s, baseline);
+    }
   });
 }
 
@@ -30,23 +33,71 @@ function drawPoly(ctx, item, dx, dy, s) {
   ctx.fill();
 }
 
-function drawFrameItems(ctx, frame, s, onLogo) {
+function rectPath(ctx, item, s, inset = 0) {
+  ctx.beginPath();
+  const x=(item.x+inset)*s,y=(item.y+inset)*s,w=(item.w-2*inset)*s,h=(item.h-2*inset)*s;
+  if (w<=0 || h<=0) return;
+  ctx.roundRect(x,y,w,h,Math.max(0,Math.min((item.radius||0)-inset,Math.min(w,h)/s/2))*s);
+}
+
+function background(ctx, frame, s) {
+  ctx.save();
+  ctx.fillStyle=rgb(frame.bg);
+  ctx.fillRect(0,0,frame.width*s,frame.height*s);
+  if (frame.bgfx?.kind==='glow' && frame.bgfx.falloff) {
+    const W=frame.width*s,H=frame.height*s;
+    ctx.translate(W/2,H/2);ctx.scale(W/2,H/2);
+    const g=ctx.createRadialGradient(0,0,0,0,0,Math.SQRT2);
+    for(let i=0;i<=32;i++) {
+      const f=i/32,k=1-frame.bgfx.falloff*f*f;
+      g.addColorStop(f,rgb(frame.bg.map(c=>Math.floor(c*k))));
+    }
+    ctx.fillStyle=g;ctx.fillRect(-1,-1,2,2);
+  }
+  ctx.restore();
+}
+
+function rotatedText(ctx,item,s) {
+  if (!drawable(item)) return;
+  const cv=document.createElement('canvas');
+  cv.width=Math.ceil(item.tw*s);
+  cv.height=Math.ceil((ascentOf(item.font,item.px,false)+Math.ceil(item.px*0.4))*s);
+  const sc=cv.getContext('2d');
+  sc.fontKerning='none';sc.textBaseline='alphabetic';
+  drawText(sc,{...item,y:0,xs:item.xs0},0,0,s);
+  ctx.save();ctx.translate(item.gx*s,(item.gy+item.tw)*s);ctx.rotate(-Math.PI/2);
+  ctx.drawImage(cv,0,0);ctx.restore();
+}
+
+function drawFrameItems(ctx, frame, s, onLogo, photo) {
   for (const item of frame.items) {
-    if (item.k === 'text') {
-      drawText(ctx, item, 0, 0, s);
+    if (item.k === 'photo') {
+      if (photo) ctx.drawImage(photo,item.x*s,item.y*s,item.w*s,item.h*s);
+      else ctx.clearRect(item.x*s,item.y*s,item.w*s,item.h*s);
+    } else if (item.k === 'text') {
+      if (item.rot) rotatedText(ctx,item,s);
+      else drawText(ctx, item, 0, 0, s);
+    } else if (item.k === 'poly') drawPoly(ctx,item,0,0,s);
+    else if (item.k === 'rect') {
+      if (item.fill) { rectPath(ctx,item,s);ctx.fillStyle=rgb(item.fill);ctx.fill(); }
+      if (item.outline) {
+        const sw=item.stroke_w||1;
+        rectPath(ctx,item,s,sw/2);ctx.strokeStyle=rgb(item.outline);ctx.lineWidth=sw*s;ctx.stroke();
+      }
+    } else if (item.k === 'shadow') {
+      if (!item.alpha) continue;
+      ctx.save();
+      ctx.shadowColor=`rgba(0,0,0,${item.alpha})`;
+      ctx.shadowBlur=2*item.blur*s;ctx.shadowOffsetX=(item.dx||0)*s;ctx.shadowOffsetY=(item.dy||0)*s;
+      rectPath(ctx,item,s);ctx.fillStyle='rgb(0,0,0)';ctx.fill();ctx.restore();
+    } else if (item.k === 'hole') {
+      ctx.save();rectPath(ctx,item,s);ctx.clip();background(ctx,frame,s);ctx.restore();
     } else if (item.k === 'line') {
-      ctx.strokeStyle = rgb(item.fill);
-      ctx.lineWidth = item.w * s;
-      ctx.beginPath();
-      ctx.moveTo(item.x1 * s, item.y1 * s);
-      ctx.lineTo(item.x2 * s, item.y2 * s);
-      ctx.stroke();
+      ctx.strokeStyle = rgb(item.fill);ctx.lineWidth = item.w * s;ctx.beginPath();
+      ctx.moveTo(item.x1 * s, item.y1 * s);ctx.lineTo(item.x2 * s, item.y2 * s);ctx.stroke();
     } else if (item.k === 'logo') {
       const img = logoImage(onLogo);
-      if (img) {
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, item.x * s, item.y * s, item.w * s, item.h * s);
-      }
+      if (img) {ctx.imageSmoothingQuality = 'high';ctx.drawImage(img,item.x*s,item.y*s,item.w*s,item.h*s);}
     }
   }
 }
@@ -92,18 +143,13 @@ function drawStamp(ctx, stamp, ox, oy, s) {
 export function drawDecor(ctx, deco, s, { photo = null, onLogo = null } = {}) {
   const { frame, stamp } = deco;
   const [px, py] = frame ? frame.photo : [0, 0];
-  if (photo) {
-    if (frame) {
-      ctx.fillStyle = rgb(frame.bg);
-      ctx.fillRect(0, 0, Math.ceil(frame.width * s), Math.ceil(frame.height * s));
-    }
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(photo, px * s, py * s, deco.ew * s, deco.eh * s);
-  }
+  ctx.imageSmoothingQuality = 'high';
+  if (frame) background(ctx,frame,s);
+  else if (photo) ctx.drawImage(photo,0,0,deco.ew*s,deco.eh*s);
   ctx.fontKerning = 'none';
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
-  if (frame) drawFrameItems(ctx, frame, s, onLogo);
+  if (frame) drawFrameItems(ctx, frame, s, onLogo, photo);
   if (stamp) {
     const [sx, sy] = deco.stampOrigin || [px, py];
     drawStamp(ctx, stamp, sx, sy, s);

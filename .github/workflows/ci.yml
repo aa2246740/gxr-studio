@@ -92,7 +92,7 @@ jobs:
         os: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/ci/')) && fromJSON('["windows-latest", "macos-latest"]') || fromJSON('["macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     # 上一轮 windows-latest 挂了 2 小时没有结束：限时，并在单个测试超过 5 分钟时打印所有线程的调用栈
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

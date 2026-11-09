@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .spec import parse_frame
+
 
 def frames_document() -> dict[str, Any]:
     color = [
@@ -33,15 +35,17 @@ def frames_document() -> dict[str, Any]:
     ]
     styles: list[dict[str, Any]] = [
         {"id": "none", "name": "无", "options": []},
-        {"id": "gallery", "name": "白边", "options": ["color", "weight"]},
         {"id": "leica", "name": "徕卡水印", "options": ["color", "show_logo", "show_params", "show_date", "text"]},
+        {"id": "gallery", "name": "白边", "options": ["color", "weight"]},
         {"id": "hasselblad", "name": "哈苏水印", "options": ["color", "show_params", "show_date", "text"]},
-        {"id": "film", "name": "胶片", "options": []},
-        {"id": "instant", "name": "拍立得", "options": ["text"]},
+        {"id": "instant", "name": "拍立得", "options": ["fmt", "show_date", "text"]},
+        {"id": "film", "name": "胶片", "options": ["fmt", "table"]},
     ]
     for style in styles:
         if style["id"] != "none":
             style["options"].append("output_ratio")
+        spec = parse_frame({"style": style["id"]})
+        style["defaults"] = spec.to_json() if spec else None
     return {
         "styles": styles,
         "options": {"color": color, "weight": weight, "show": show, "output_ratio": ratios},

@@ -330,29 +330,33 @@ if (scenario === 'crop-that-fills-the-frame') {
 }
 
 if (scenario === 'frame-ratio-copy-paste-undo') {
-  stored.a0.frame = { style: 'instant', output_ratio: '9:16' };
-  stored.b0.frame = { style: 'gallery', output_ratio: '1:1' };
+  stored.a0.frame = { version: 2, style: 'film', fmt: '120', table: 'black', show_date: true, text: 'Harbour', output_ratio: '9:16' };
+  stored.b0.frame = { version: 2, style: 'instant', fmt: 'instax_mini', output_ratio: '1:1' };
   stored.b0.cropBox = { preset: '1:1', rect: [0.1, 0.1, 0.5, 0.75] };
   core.rememberGroups(['frame']);
   await go('#/photo/a0');
   await tick();
   edits.copyEdits(viewer.currentView());
   out.copied = core.clipboard().source.frame.output_ratio;
+  out.payloads = [core.clipboard().source.frame];
   await go('#/photo/b0');
   await tick();
   const v = viewer.currentView();
   await edits.pasteEdits(v);
   await tick();
   out.pasted = v.ed.frame.output_ratio;
+  out.payloads.push(structuredClone(v.ed.frame));
   out.crop = v.crop.preset;
   preview.undoChange(v);
   await tick();
   out.undone = v.ed.frame.output_ratio;
   out.undoSaved = puts('b0').at(-1).body.frame.output_ratio;
+  out.payloads.push(structuredClone(v.ed.frame), puts('b0').at(-1).body.frame);
   preview.redoChange(v);
   await tick();
   out.redone = v.ed.frame.output_ratio;
   out.redoSaved = puts('b0').at(-1).body.frame.output_ratio;
+  out.payloads.push(structuredClone(v.ed.frame), puts('b0').at(-1).body.frame);
 }
 
 if (scenario === 'queued-paste-after-a-failed-save') {

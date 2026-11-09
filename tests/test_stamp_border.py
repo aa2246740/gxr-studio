@@ -52,6 +52,8 @@ def test_border_stamp_leaves_the_photo_untouched_and_clears_the_caption(size, ca
     mark = stamp_layout(w, h, stamp, format_stamp(stamp, taken, None), FontMetrics(), layout)
     assert mark is not None and mark.rect[1] >= y + h
     for item in layout.items:
+        if item["k"] != "text":
+            continue
         box = ink_box(FontMetrics(), item["font"], item["px"], item["text"], item["cjk"])
         assert mark.rect[1] > item["y"] + box[3], "印记不能盖住边框题字"
 

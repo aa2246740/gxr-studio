@@ -59,6 +59,7 @@ def test_rgb_copy_paste_undo_redo_keeps_every_channel(tmp_path):
 
 def test_frame_ratio_choice_is_copied_pasted_undone_and_redone(tmp_path):
     out = run(tmp_path, "frame-ratio-copy-paste-undo")
+    payloads = out.pop("payloads")
     assert out == {
         "copied": "9:16",
         "pasted": "9:16",
@@ -68,6 +69,22 @@ def test_frame_ratio_choice_is_copied_pasted_undone_and_redone(tmp_path):
         "redone": "9:16",
         "redoSaved": "9:16",
     }
+
+    copied = {
+        "version": 2,
+        "style": "film",
+        "color": "white",
+        "weight": "medium",
+        "show_logo": True,
+        "show_params": True,
+        "show_date": True,
+        "text": "Harbour",
+        "output_ratio": "9:16",
+        "fmt": "120",
+        "table": "black",
+    }
+    previous = {**copied, "style": "instant", "show_date": False, "text": "", "output_ratio": "1:1", "fmt": "instax_mini", "table": "light"}
+    assert payloads == [copied, copied, previous, previous, copied, copied]
 
 
 def test_copy_options_are_remembered_and_empty_groups_are_not_copied(tmp_path):

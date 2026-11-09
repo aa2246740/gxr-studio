@@ -32,7 +32,7 @@ def defaults_path(home: Path) -> Path:
 
 
 def load_defaults(home: Path) -> tuple[Any, Any]:
-    from .spec import factory_frame, factory_stamp, parse_frame, parse_stamp
+    from .spec import factory_frame, factory_stamp, parse_stamp, stored_frame
 
     path = defaults_path(home)
     if not path.is_file():
@@ -41,7 +41,14 @@ def load_defaults(home: Path) -> tuple[Any, Any]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return factory_frame(), factory_stamp()
-    return parse_frame(raw.get("frame")) or factory_frame(), parse_stamp(raw.get("stamp")) or factory_stamp()
+    if not isinstance(raw, dict):
+        return factory_frame(), factory_stamp()
+    frame = stored_frame(raw.get("frame")) or factory_frame()
+    try:
+        stamp = parse_stamp(raw.get("stamp")) or factory_stamp()
+    except EditError:
+        stamp = factory_stamp()
+    return frame, stamp
 
 
 def save_defaults(home: Path, frame: Any, stamp: Any) -> dict[str, Any]:

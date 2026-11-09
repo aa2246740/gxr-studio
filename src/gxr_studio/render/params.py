@@ -235,14 +235,16 @@ def stored_border(side: dict[Any, Any]) -> dict[Any, Any] | None:
     """边框样式在 `border`。旧 sidecar 把样式写进 `frame` 时，带 `style` 的那份也认。尺寸帧没有 style。"""
     for key in ("border", "frame"):
         raw = side.get(key)
-        if isinstance(raw, dict) and isinstance(raw.get("style"), str):
+        if key == "border" and raw is not None:
+            return raw if isinstance(raw, dict) else {"invalid": True}
+        if isinstance(raw, dict) and "style" in raw:
             return raw
     return None
 
 
 def parse_edit(side: dict[Any, Any]) -> EditState:
     """从 sidecar 读出编辑状态；其中任何一块有问题都当作 EditError（让调用方决定是报错还是忽略）。"""
-    from ..finish.spec import parse_frame, parse_geometry, parse_stamp
+    from ..finish.spec import parse_geometry, parse_stamp, stored_frame
 
     raw_geo = side.get("geometry")
     geometry = parse_geometry(raw_geo) if raw_geo else None
@@ -260,7 +262,7 @@ def parse_edit(side: dict[Any, Any]) -> EditState:
         adjust=parse_adjust(side.get("adjust")),
         curve=parse_curve(side.get("curve")),
         geometry=geometry,
-        frame=parse_frame(raw_border) if raw_border is not None else None,
+        frame=stored_frame(raw_border) if raw_border is not None else None,
         stamp=parse_stamp(side["stamp"]) if "stamp" in side else None,
         lut=parse_lut(side.get("lut")),
     )

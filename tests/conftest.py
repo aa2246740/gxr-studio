@@ -33,6 +33,14 @@ from gxr_studio.library.store import Library  # noqa: E402
 PORT = 8765
 
 
+@pytest.fixture(scope="session")
+def approved_frame_layouts():
+    """摘要、独立参考和 JS 对照共用一份实际布局，只在这里注册一次。"""
+    from test_frame_reference import build_frame_layouts
+
+    return build_frame_layouts()
+
+
 @pytest.fixture(autouse=True)
 def _isolated_env(tmp_path, monkeypatch):
     home = tmp_path / "home"
