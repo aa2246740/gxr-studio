@@ -7,7 +7,7 @@ import { apiBlob } from './api.js';
 import { state } from './state.js';
 import { draftBody } from './preview.js';
 import { gpuSnapshot } from './gpu_stage.js';
-import { DEFAULT_FRAME } from './finish.js';
+import { DEFAULT_FRAME, selectFrame } from './finish.js';
 import { makeDeco } from './stage_finish.js';
 import { drawDecor } from './finish_draw.js';
 import { photoSize } from './output_photo_size.js';
@@ -75,7 +75,8 @@ function baseFor(view) {
 
 function cardSpec(style, frame) {
   const base = style.defaults ? { ...DEFAULT_FRAME, ...style.defaults } : { ...DEFAULT_FRAME };
-  return style.id === 'none' ? null : { ...base, ...frame, style: style.id };
+  if (style.id === 'none') return null;
+  return style.id === frame.style ? { ...base, ...frame } : selectFrame({ ...base, ...frame }, style.id);
 }
 
 // 把一张卡片画进 holder（一个 .thumb）。同一个 holder 画第二次就换掉里面的 canvas。

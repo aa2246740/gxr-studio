@@ -265,7 +265,7 @@ try {
       const L = await import('/assets/finish_layout.js');
       const F = await import('/assets/finish_fonts.js');
       const data = ${cases};
-      await Promise.all(['atkinson', 'inter', 'courier', 'patrick', 'dseg'].map((id) => F.loadFont(id)));
+      await Promise.all(['atkinson', 'inter_sb', 'inter', 'courier', 'patrick', 'dseg'].map((id) => F.loadFont(id)));
       const m = F.metrics;
       const frames = data.frames.map((c) => L.frameLayout(c.w, c.h, c.spec, c.meta, m));
       const stamps = data.stamps.map((c) => { const text = L.stampText(c.spec, c.when); return { text, layout: L.stampLayout(c.w, c.h, c.spec, text, m) }; });

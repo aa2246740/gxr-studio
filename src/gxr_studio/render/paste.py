@@ -330,7 +330,7 @@ def restore(lib: Library, shot: dict[Any, Any], entry: UndoEntry) -> int:
                 new[key] = copy.deepcopy(entry.previous[key])
             else:
                 new.pop(key, None)
-        out = sc.write_atomic(path, new, tmp_dir=lib.tmp_dir)
+        out = sc.write_atomic(path, crop_edits.clean_border(new), tmp_dir=lib.tmp_dir)
         lib.set_edit_cache(shot["shot_id"], int(out["rev"]), out.get("crop"))
         return int(out["rev"])
 

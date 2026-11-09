@@ -13,7 +13,7 @@ from typing import Any
 from ..finish.geometry import fitted_crop, output_size
 from ..finish.spec import Geometry, parse_frame, parse_geometry, parse_stamp
 from ..library import sidecar as sc
-from ..library.edits import RevisionConflict, heal_frame
+from ..library.edits import RevisionConflict, clean_border, heal_frame
 from ..library.store import Library
 from .params import EditError, EditState, parse_adjust, parse_curve, parse_edit, parse_lut, parse_recipe
 from .recipes import Menu, unit_of_lens
@@ -168,6 +168,6 @@ def write(
         current = lib.read_sidecar_for_write(shot)
         if int(current.get("rev", 0)) != base_rev:
             raise RevisionConflict(int(current.get("rev", 0)))
-        out = sc.write_atomic(path, new, tmp_dir=lib.tmp_dir)
+        out = sc.write_atomic(path, clean_border(new), tmp_dir=lib.tmp_dir)
         lib.set_edit_cache(shot["shot_id"], int(out["rev"]), out.get("crop"))
         return parse_edit(out), out

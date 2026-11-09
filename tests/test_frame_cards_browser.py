@@ -25,7 +25,10 @@ def test_frame_cards_fit_every_output_ratio_and_update_locally(live, tmp_path): 
         if sample["kind"] == "xpan":
             assert w / h == pytest.approx(65 / 24, abs=0.02), why
         for card in sample["cards"]:
-            spec = parse_frame({**sample["spec"], "style": card["style"]})
+            raw = {**sample["spec"], "style": card["style"]}
+            if card["style"] != sample["spec"]["style"]:
+                raw.update(fmt="polaroid" if card["style"] == "instant" else "135", show_date=card["style"] in ("leica", "hasselblad"))
+            spec = parse_frame(raw)
             assert spec is not None
             layout = frame_layout(w, h, spec, sample["meta"], metrics)
             aspect = layout.width / layout.height if layout else w / h
@@ -48,9 +51,16 @@ def test_frame_cards_fit_every_output_ratio_and_update_locally(live, tmp_path): 
         assert update["clickRenders"] == 0, update
         if "corner" in update:
             assert update["corner"] == update["expected"], update
-            assert update["changed"] == ["gallery", "leica", "hasselblad"], update
+            assert update["changed"] == ["leica", "gallery", "hasselblad"], update
         else:
             assert update["aspect"] == pytest.approx(update["expectedAspect"], abs=0.01), update
+    assert len(out["captionUpdates"]) == 3
+    for update in out["captionUpdates"]:
+        assert update["painted"] == ["leica", "hasselblad", "instant"], update
+        assert all(style in update["changed"] for style in update["painted"]), update
+        assert update["focusKept"] is True and update["clickRenders"] == 0, update
+        assert update["shown"] == update["savedBefore"]["text"] == update["savedAfter"]["text"] == "Harbour walk", update
+        assert update["savedBefore"]["style"] == "leica" and update["savedAfter"]["style"] == "hasselblad", update
     assert len(out["navigation"]) == 3
     assert len({step["signature"] for step in out["navigation"]}) == 3, out["navigation"]
     assert all(step["key"].startswith(step["id"] + "|") for step in out["navigation"]), out["navigation"]

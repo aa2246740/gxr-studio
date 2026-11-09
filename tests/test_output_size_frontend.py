@@ -89,8 +89,8 @@ def test_exact_size_is_shared_and_frame_choices_update_without_querying(tmp_path
     result = subprocess.run(["node", str(script), str(folder)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     out = json.loads(result.stdout.strip())
-    assert out["deco"] == [2136, 2848, 2364, 3152]
-    assert out["lines"] == ["成品 2364 × 3152 像素 · 3:4", "成品 2534 × 3246 像素", "成品 2364 × 3152 像素 · 3:4"]
+    assert out["deco"] == [2136, 2848, 2607, 3476]
+    assert out["lines"] == ["成品 2607 × 3476 像素 · 3:4", "成品 2564 × 3336 像素", "成品 2607 × 3476 像素 · 3:4"]
     assert out["frameAndKnobQueries"] == 1
     assert out["changedQueries"] == 4
     assert out["dialogQueries"] == 1

@@ -23,8 +23,8 @@ BG = {
     "gallery": "rgb(255, 255, 255)",
     "leica": "rgb(255, 255, 255)",
     "hasselblad": "rgb(255, 255, 255)",
-    "film": "rgb(8, 8, 8)",
-    "instant": "rgb(248, 246, 242)",
+    "film": "rgb(243, 241, 236)",
+    "instant": "rgb(232, 228, 220)",
 }
 UNSET = {"position": "", "left": "", "top": ""}
 

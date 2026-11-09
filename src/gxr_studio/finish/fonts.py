@@ -22,6 +22,7 @@ ASSETS = Path(__file__).resolve().parents[1] / "assets"
 FONT_FILES = {
     "atkinson": "AtkinsonHyperlegible-Regular.ttf",
     "inter": "Inter-Regular.ttf",
+    "inter_sb": "Inter-SemiBold.ttf",
     "courier": "CourierPrime-Regular.ttf",
     "patrick": "PatrickHand-Regular.ttf",
     "dseg": "DSEG7Classic-Regular.ttf",
@@ -77,7 +78,11 @@ def draw_run(draw: ImageDraw.ImageDraw, item: dict[str, Any], fonts: PilFonts, f
     face = fonts.face(item["font"], item["px"], item["cjk"])
     for ch, x in zip(item["text"], item["xs"], strict=True):
         if ch != " " and ord(ch) >= 0x20:
-            draw.text((x, item["y"]), ch, font=face, fill=fill)
+            cjk = ord(ch) >= 0x2E80
+            glyph_face = fonts.face(item["font"], item["px"], True) if cjk else face
+            baseline = face.getmetrics()[0]
+            offset = baseline - glyph_face.getmetrics()[0]
+            draw.text((x, item["y"] + offset), ch, font=glyph_face, fill=fill)
 
 
 class FontMetrics:

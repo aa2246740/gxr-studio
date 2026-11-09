@@ -55,12 +55,21 @@ class FrameSpec:
     weight: str = "medium"
     show_logo: bool = True
     show_params: bool = True
-    show_date: bool = False
+    show_date: bool | None = None
     text: str = ""
     output_ratio: str = "3:4"
+    fmt: str = ""
+    table: str = "light"
+
+    def __post_init__(self) -> None:
+        if self.show_date is None:
+            object.__setattr__(self, "show_date", self.style in {"leica", "hasselblad"})
+        if not self.fmt:
+            object.__setattr__(self, "fmt", "polaroid" if self.style == "instant" else "135")
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "version": 2,
             "style": self.style,
             "color": self.color,
             "weight": self.weight,
@@ -69,6 +78,8 @@ class FrameSpec:
             "show_date": self.show_date,
             "text": self.text,
             "output_ratio": self.output_ratio,
+            "fmt": self.fmt,
+            "table": self.table,
         }
 
 
@@ -149,16 +160,17 @@ def parse_frame(raw: Any) -> FrameSpec | None:
         return None
     if not isinstance(raw, dict):
         raise EditError("bad_frame", "边框设置格式不对。请重新选择样式后再试。")
-    if "keep_ratio" in raw or "canvas_ratio" in raw or raw.get("style") == "canvas":
-        return FrameSpec()
+    known = {"version", "style", "color", "weight", "show_logo", "show_params", "show_date", "text", "output_ratio", "fmt", "table"}
+    if set(raw) - known or ("version" in raw and (type(raw["version"]) is not int or raw["version"] != 2)):
+        raise EditError("bad_frame", "边框设置已更新。请重新选择边框样式。")
     style = raw.get("style", "none")
-    if style not in {"none", "gallery", "leica", "hasselblad", "film", "instant"}:
+    if not isinstance(style, str) or style not in {"none", "gallery", "leica", "hasselblad", "film", "instant"}:
         raise EditError("bad_frame", INVALID_REQUEST, "没有这个边框样式。")
     color = raw.get("color", "white")
-    if color not in {"white", "black", "cream"}:
+    if not isinstance(color, str) or color not in {"white", "black", "cream"}:
         raise EditError("bad_frame", INVALID_REQUEST, "边框颜色只能是白、黑或米白。")
     weight = raw.get("weight", "medium")
-    if weight not in {"thin", "medium", "thick"}:
+    if not isinstance(weight, str) or weight not in {"thin", "medium", "thick"}:
         raise EditError("bad_frame", INVALID_REQUEST, "边框宽度只能是细、中或粗。")
     ratio = raw.get("output_ratio", "3:4")
     if not isinstance(ratio, str) or ratio not in (*OUTPUT_RATIOS, "original"):
@@ -169,16 +181,37 @@ def parse_frame(raw: Any) -> FrameSpec | None:
     for key in ("show_logo", "show_params", "show_date"):
         if key in raw and not isinstance(raw[key], bool):
             raise EditError("bad_frame", INVALID_REQUEST, "边框的显示开关只能打开或关闭。")
+    fmt = raw.get("fmt", "polaroid" if style == "instant" else "135")
+    formats = {"polaroid", "instax_square", "instax_wide", "instax_mini"} if style == "instant" else {"135", "120"}
+    if not isinstance(fmt, str) or fmt not in formats:
+        raise EditError("bad_frame", "请选择这个边框支持的画幅。")
+    table = raw.get("table", "light")
+    if not isinstance(table, str) or table not in {"light", "black"}:
+        raise EditError("bad_frame", "胶片背景只能选灯台或黑色。")
     return FrameSpec(
         style=style,
         color=color,
         weight=weight,
         show_logo=bool(raw.get("show_logo", True)),
         show_params=bool(raw.get("show_params", True)),
-        show_date=bool(raw.get("show_date", False)),
+        show_date=bool(raw.get("show_date", style in {"leica", "hasselblad"})),
         text=text,
         output_ratio=ratio,
+        fmt=fmt,
+        table=table,
     )
+
+
+def stored_frame(raw: Any) -> FrameSpec | None:
+    """Legacy or malformed stored settings mean explicit factory no-frame, not inheritance."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or raw.get("version") != 2:
+        return FrameSpec()
+    try:
+        return parse_frame(raw)
+    except EditError:
+        return FrameSpec()
 
 
 def parse_stamp(raw: Any) -> StampSpec | None:

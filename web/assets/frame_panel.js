@@ -5,7 +5,7 @@
 import { h, toast, toastError } from './dom.js';
 import { persist, beginChange, endChange, styleOptions } from './preview.js';
 import { saveDefaults } from './caps.js';
-import { normalizeFrame, frameBody, defaultsPayload, clipText, TEXT_MAX } from './finish.js';
+import { normalizeFrame, frameBody, defaultsPayload, selectFrame, clipText, TEXT_MAX } from './finish.js';
 import { seg, toggle, swatch, notReady } from './controls.js';
 import { paintCards } from './finish_cards.js';
 import { liveText } from './live_text.js';
@@ -19,7 +19,7 @@ export const FRAME_NAMES = {
   film: '胶片',
   instant: '拍立得',
 };
-const COLOR_HEX = { white: '#ffffff', black: '#111214', cream: '#f2ead8' };
+const COLOR_HEX = { white: '#ffffff', black: '#0e0e10', cream: '#f4efe6' };
 const COLOR_NAMES = { white: '白', black: '黑', cream: '米白' };
 const WEIGHT_NAMES = { thin: '细', medium: '中', thick: '粗' };
 export const OUTPUT_CHOICES = [
@@ -36,7 +36,8 @@ export const OUTPUT_CHOICES = [
 function styleList(ed) {
   const list = ed.frames && ed.frames.styles;
   const arr = Array.isArray(list) ? list : Object.values(list || {});
-  return arr.filter((s) => s && s.id).map((s) => ({ id: s.id, name: FRAME_NAMES[s.id] || s.name || s.id, options: s.options || [], defaults: s.defaults || null }));
+  const order = ['none', 'leica', 'blur_fill', 'gallery', 'hasselblad', 'instant', 'film', 'thin_keyline', 'cinema', 'exhibition_label', 'slide_mount', 'darkroom', 'postage_stamp'];
+  return arr.filter((s) => s && order.includes(s.id)).sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id)).map((s) => ({ id: s.id, name: FRAME_NAMES[s.id] || s.name || s.id, options: s.options || [], defaults: s.defaults || null }));
 }
 
 // 改一项：界面和大图马上变，保存另外排队
@@ -74,7 +75,7 @@ export function framePanel(view) {
     return h('button', {
       type: 'button', class: `fcard${s.id === 'none' ? ' none' : ''}`, 'aria-pressed': String(cur.style === s.id),
       onclick: () => {
-        if (cur.style !== s.id) setFrame(view, { style: s.id });
+        if (ed.frame.style !== s.id) setFrame(view, selectFrame(ed.frame, s.id));
       },
     }, thumb, h('div', { class: 'nm' }, s.name));
   }));
@@ -94,6 +95,11 @@ export function framePanel(view) {
     if (opts.includes('weight')) {
       rows.push(seg(['thin', 'medium', 'thick'].map((w) => [w, WEIGHT_NAMES[w]]), cur.weight, (w) => setFrame(view, { weight: w }), { label: '宽度' }));
     }
+    if (opts.includes('fmt')) {
+      const formats=cur.style==='film'?[['135','135'],['120','120']]:[['polaroid','宝丽来'],['instax_square','方形'],['instax_wide','宽幅'],['instax_mini','迷你']];
+      rows.push(seg(formats,cur.fmt,fmt=>setFrame(view,{fmt}),{label:'画幅'}));
+    }
+    if (opts.includes('table')) rows.push(seg([['light','灯台'],['black','黑色']],cur.table,table=>setFrame(view,{table}),{label:'背景'}));
     const shows = [];
     if (opts.includes('show_logo')) shows.push(['show_logo', '标志']);
     if (opts.includes('show_params')) shows.push(['show_params', '参数']);
@@ -106,11 +112,15 @@ export function framePanel(view) {
     if (opts.includes('text')) {
       const input = h('input', { type: 'text', value: cur.text, maxlength: String(TEXT_MAX), 'aria-label': '文字' });
       // 边输入边变，停下来再保存。这个输入框不重搭面板（重搭会丢掉光标）
+      const updateText = (text) => {
+        change(view, { text });
+        sizeLine.update();
+        if (cards.isConnected) paintCards(view, items);
+      };
       liveText(input, {
-        apply: () => { change(view, { text: clipText(input.value) }); sizeLine.update(); },
+        apply: () => updateText(clipText(input.value)),
         save: () => {
-          change(view, { text: ed.frame.text.trim() }); // 前后的空格输入时留着，写下来时去掉
-          sizeLine.update();
+          updateText(ed.frame.text.trim()); // 前后的空格输入时留着，写下来时去掉
           save(view, ed);
         },
       });

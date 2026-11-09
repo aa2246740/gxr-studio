@@ -9,10 +9,10 @@
 
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from ..crop import PRESETS, target_ratio
 from .sfnt import Glyph
@@ -20,8 +20,6 @@ from .spec import OUTPUT_RATIOS, FrameSpec, StampSpec
 
 Rgb = tuple[int, int, int]
 
-WEIGHT = {"thin": 0.02, "medium": 0.04, "thick": 0.07}
-COLORS: dict[str, Rgb] = {"white": (255, 255, 255), "black": (12, 12, 12), "cream": (245, 236, 220)}
 STAMP_COLORS: dict[str, Rgb] = {"orange": (255, 106, 0), "red": (220, 32, 32), "yellow": (255, 196, 40), "white": (255, 255, 255)}
 STAMP_SIZE = {"small": 0.038, "medium": 0.055, "large": 0.078}
 STAMP_FONT = {"seg7": "dseg", "typewriter": "courier", "sans": "atkinson"}
@@ -32,7 +30,7 @@ Item = dict[str, Any]
 
 
 class Metrics(Protocol):
-    """字体表。`font` 是字体代号（atkinson / inter / courier / patrick / dseg），`cjk` 为真时用系统中文字体。
+    """字体表。`font` 是字体代号（atkinson / inter / inter_sb / courier / patrick / dseg），`cjk` 为真时用系统中文字体。
     单位是字体单位（em 的 1/upm）；中文字体读不到表，按 1000 像素的字号量出来，当作 upm = 1000。"""
 
     def upm(self, font: str, cjk: bool) -> int: ...
@@ -92,22 +90,37 @@ def ink_box(m: Metrics, font: str, px: int, text: str, cjk: bool = False) -> tup
 
 @dataclass(frozen=True)
 class FrameLayout:
-    """边框外的整张画布：宽高、照片的左上角、底色，以及画在照片外面的文字、线和标志。"""
+    """成品画布：宽高、照片位置、底色，以及按顺序绘制的底层、照片和装饰。"""
 
     width: int
     height: int
     photo: tuple[int, int]
     bg: Rgb
     items: tuple[Item, ...]
+    bgfx: Item | None = None
+    unit_box: tuple[int, int, int, int] = (0, 0, 0, 0)
+    fixed: bool = False
+    grain: float = 0.0
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "width": self.width,
-            "height": self.height,
-            "photo": list(self.photo),
-            "bg": list(self.bg),
-            "items": [dict(item) for item in self.items],
-        }
+        return cast(
+            dict[str, Any],
+            json.loads(
+                json.dumps(
+                    {
+                        "width": self.width,
+                        "height": self.height,
+                        "photo": self.photo,
+                        "bg": self.bg,
+                        "items": self.items,
+                        "bgfx": self.bgfx,
+                        "unit_box": self.unit_box,
+                        "fixed": self.fixed,
+                        "grain": self.grain,
+                    }
+                )
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -147,136 +160,6 @@ def text_item(m: Metrics, x: float, y: float, px: int, font: str, text: str, fil
     }
 
 
-def _face_px(px: int) -> int:
-    """边框用的字体不会小于 8 像素。"""
-    return max(8, px)
-
-
-def _fit(m: Metrics, text: str, font: str, px: int, max_w: int, floor: int = 10) -> int:
-    while px > floor and advance(m, font, _face_px(px), text) > max_w:
-        px -= 1
-    return _face_px(px)
-
-
-def _margin(w: int, h: int, weight: str) -> int:
-    return max(8, round(max(w, h) * WEIGHT[weight]))
-
-
-def _gallery(w: int, h: int, spec: FrameSpec) -> FrameLayout:
-    m = _margin(w, h, spec.weight)
-    return FrameLayout(w + 2 * m, h + 2 * m, (m, m), COLORS[spec.color], ())
-
-
-def _leica_lines(spec: FrameSpec, meta: dict[str, str]) -> list[str]:
-    lines = []
-    if spec.show_params and meta.get("lens"):
-        lines.append(meta["lens"])
-    second = "  ".join(bit for bit in (meta.get("aperture"), meta.get("shutter"), meta.get("iso")) if bit)
-    if spec.show_params and second:
-        lines.append(second)
-    if spec.show_date and meta.get("date"):
-        lines.append(meta["date"])
-    if spec.text:
-        lines.append(spec.text)
-    return lines
-
-
-def _leica(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metrics) -> FrameLayout:
-    bar = max(64, round(min(w, h) * 0.09))
-    dark = spec.color == "black"
-    ink: Rgb = (245, 245, 245) if dark else (20, 20, 20)
-    muted: Rgb = (170, 170, 170) if dark else (90, 90, 90)
-    pad = max(16, bar // 5)
-    items: list[Item] = []
-    if spec.show_logo:
-        lh = int(bar * 0.42)
-        lw = max(1, round(LOGO_SIZE[0] * lh / LOGO_SIZE[1]))
-        items.append({"k": "logo", "x": pad, "y": h + (bar - lh) // 2, "w": lw, "h": lh})
-        gx = pad + lw + pad // 2
-        gxr_px = _face_px(int(bar * 0.34))
-        if gx + advance(m, "atkinson", gxr_px, "GXR") <= w:  # 画布窄得放不下标志旁边的字，就不画，不让字伸到画布外面去
-            items.append(text_item(m, gx, h + (bar - int(bar * 0.34)) // 2 - 2, gxr_px, "atkinson", "GXR", ink))
-    lines = _leica_lines(spec, meta)
-    if lines:
-        first, second = lines[0], "  ".join(lines[1:])
-        px1 = _fit(m, first, "inter", int(bar * 0.26), w // 2, 8)
-        px2 = _fit(m, second, "inter", int(bar * 0.22), w // 2, 8) if second else px1
-        w1 = advance(m, "inter", px1, first)
-        w2 = advance(m, "inter", px2, second) if second else 0
-        right = w - pad
-        rule = right - max(w1, w2) - max(8, bar // 8)
-        items.append({"k": "line", "x1": rule, "y1": h + pad, "x2": rule, "y2": h + bar - pad, "w": max(1, bar // 28), "fill": list(muted)})
-        items.append(text_item(m, max(0.0, right - w1), h + int(bar * 0.16), px1, "inter", first, ink))
-        if second:
-            items.append(text_item(m, max(0.0, right - w2), h + int(bar * 0.52), px2, "inter", second, muted))
-    return FrameLayout(w, h + bar, (0, 0), COLORS[spec.color], tuple(items))
-
-
-def _hasselblad(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metrics) -> FrameLayout:
-    thin = max(10, round(max(w, h) * 0.018))
-    bottom = max(thin * 4, round(min(w, h) * 0.16))
-    out_w, out_h = w + 2 * thin, h + thin + bottom
-    dark = spec.color == "black"
-    ink: Rgb = (245, 245, 245) if dark else (24, 24, 24)
-    muted: Rgb = (180, 180, 180) if dark else (120, 120, 120)
-    title_px, sub_px = _face_px(max(16, bottom // 5)), _face_px(max(13, bottom // 7))
-    cx = out_w // 2
-    y0 = thin + h + int(bottom * 0.28)
-    name = "RICOH GXR"
-    items = [text_item(m, max(0.0, cx - advance(m, "atkinson", title_px, name) / 2), y0, title_px, "atkinson", name, ink)]
-    bits: list[str] = []
-    if spec.show_params:
-        bits.extend(bit for bit in (meta.get("lens"), meta.get("aperture"), meta.get("shutter"), meta.get("iso")) if bit)
-    if spec.show_date and meta.get("date"):
-        bits.append(meta["date"])
-    if spec.text:
-        bits.append(spec.text)
-    line = "  ·  ".join(bits)
-    max_w = out_w - 2 * thin
-    # 一行参数比照片还宽时先缩字号（最小 8 像素）；还放不下就从最后一项开始去掉，直到放得下（至少留一项）
-    while len(bits) > 1 and advance(m, "inter", _fit(m, line, "inter", sub_px, max_w, 8), line) > max_w:
-        bits.pop()
-        line = "  ·  ".join(bits)
-    if line:
-        sub_px = _fit(m, line, "inter", sub_px, max_w, 8)
-        items.append(text_item(m, max(0.0, cx - advance(m, "inter", sub_px, line) / 2), y0 + int(bottom * 0.28), sub_px, "inter", line, muted))
-    return FrameLayout(out_w, out_h, (thin, thin), COLORS[spec.color], tuple(items))
-
-
-def _film(w: int, h: int, meta: dict[str, str], m: Metrics) -> FrameLayout:
-    margin = max(28, round(max(w, h) * 0.045))
-    out_w, out_h = w + 2 * margin, h + 2 * margin
-    amber: Rgb = (232, 164, 74)
-    px = _face_px(max(11, margin // 3))
-    lens = meta.get("lens_short") or "A12 50mm"
-    items = [text_item(m, margin, out_h - margin + 6, px, "courier", f"RICOH GXR  ·  {lens}", amber)]
-    number = meta.get("frame_no") or ""
-    if number:
-        items.append(text_item(m, max(0.0, out_w - margin - advance(m, "courier", px, number)), 6, px, "courier", number, amber))
-    return FrameLayout(out_w, out_h, (margin, margin), (8, 8, 8), tuple(items))
-
-
-def _instant(w: int, h: int, spec: FrameSpec, m: Metrics) -> FrameLayout:
-    side = max(18, round(max(w, h) * 0.035))
-    bottom = max(side * 4, round(min(w, h) * 0.20))
-    out_w, out_h = w + 2 * side, h + side + bottom
-    items: list[Item] = []
-    if spec.text:
-        cjk = needs_cjk(spec.text)
-
-        def eff(size: int) -> int:
-            return max(1, size) if cjk else _face_px(size)
-
-        px = max(22, bottom // 4)
-        max_w = max(8, out_w - 2 * side)
-        while px > 10 and advance(m, "patrick", eff(px), spec.text, cjk) > max_w:
-            px = max(10, int(px * 0.85))
-        tw = advance(m, "patrick", eff(px), spec.text, cjk)
-        x, y = max(0.0, (out_w - tw) / 2), side + h + (bottom - eff(px)) / 2
-        items.append(text_item(m, x, y, eff(px), "patrick", spec.text, (40, 40, 40), cjk))
-    return FrameLayout(out_w, out_h, (side, side), (248, 246, 242), tuple(items))
-
-
 def crop_ratio(preset: str | None, w: int, h: int) -> tuple[int, int] | None:
     """无边框时显示的固定裁剪比例；照片横竖决定方向，原始和自由不标比例。"""
     if preset is None or PRESETS.get(preset) is None:
@@ -299,54 +182,40 @@ def fit_size(w: int, h: int, max_edge: int | None) -> tuple[int, int]:
     return max(1, round(w * scale)), max(1, round(h * scale))
 
 
-def _content_size(layout: FrameLayout, m: Metrics) -> tuple[int, int]:
-    """极窄的小照片也要容得下标志和最小字号，补边不能把原有文字切掉。"""
-    ex = ey = 0
-    for item in layout.items:
-        if item["k"] == "text":
-            box = ink_box(m, item["font"], item["px"], item["text"], item["cjk"])
-            left, top, right, bottom = item["x"] + box[0], item["y"] + box[1], item["x"] + box[2], item["y"] + box[3]
-        elif item["k"] == "line":
-            stroke = (item["w"] + 1) // 2
-            left, top, right, bottom = item["x1"] - stroke, item["y1"] - stroke, item["x2"] + stroke, item["y2"] + stroke
-        else:
-            left, top, right, bottom = item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]
-        ex = max(ex, math.ceil(-left), math.ceil(right - layout.width))
-        ey = max(ey, math.ceil(-top), math.ceil(bottom - layout.height))
-    return layout.width + 2 * ex, layout.height + 2 * ey
-
-
-def _pad_ratio(layout: FrameLayout, ratio: tuple[int, int], m: Metrics) -> FrameLayout:
-    width, height = ratio_size(*_content_size(layout, m), *ratio)
-    dx, dy = (width - layout.width) // 2, (height - layout.height) // 2
-    items = []
-    for original in layout.items:
-        item = dict(original)
-        for key in ("x", "x1", "x2"):
-            if key in item:
-                item[key] += dx
-        for key in ("y", "y1", "y2"):
-            if key in item:
-                item[key] += dy
-        if "xs" in item:
-            item["xs"] = [x + dx for x in item["xs"]]
-        items.append(item)
-    return FrameLayout(width, height, (layout.photo[0] + dx, layout.photo[1] + dy), layout.bg, tuple(items))
-
-
 def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metrics) -> FrameLayout | None:
-    """w、h 是要装进边框的照片（已裁切、已盖日期戳）的像素宽高。样式 none 返回 None。"""
-    builders: dict[str, Callable[[], FrameLayout]] = {
-        "gallery": lambda: _gallery(w, h, spec),
-        "leica": lambda: _leica(w, h, spec, meta, m),
-        "hasselblad": lambda: _hasselblad(w, h, spec, meta, m),
-        "film": lambda: _film(w, h, meta, m),
-        "instant": lambda: _instant(w, h, spec, m),
-    }
-    build = builders.get(spec.style)
-    layout = build() if build else None
+    """Photo pixels are never scaled or cropped. Port of approved DESIGN sections 3–6."""
+    from . import frame_objects as objects
+    from . import frame_styles as plain
+
     ratio = OUTPUT_RATIOS.get(spec.output_ratio)
-    return _pad_ratio(layout, ratio, m) if layout is not None and ratio is not None else layout
+    if spec.style == "none":
+        return None
+    if spec.style == "gallery":
+        raw = plain.gallery(w, h, meta, ratio, m, color=spec.color, weight=spec.weight)
+    elif spec.style == "leica":
+        raw = plain.leica(
+            w,
+            h,
+            meta,
+            ratio,
+            m,
+            color=spec.color,
+            show_logo=spec.show_logo,
+            show_params=spec.show_params,
+            show_date=bool(spec.show_date),
+            text=spec.text,
+        )
+    elif spec.style == "hasselblad":
+        raw = plain.hasselblad(
+            w, h, meta, ratio, m, color=spec.color, show_params=spec.show_params, show_date=bool(spec.show_date), text=spec.text
+        )
+    elif spec.style == "film":
+        raw = objects._strip(w, h, meta, ratio, spec.fmt, spec.table, m)
+    else:
+        raw = objects.instant(w, h, meta, ratio, m, text=spec.text, show_date=bool(spec.show_date), fmt=spec.fmt)
+    return FrameLayout(
+        raw["width"], raw["height"], raw["photo"], raw["bg"], tuple(raw["items"]), raw["bgfx"], raw["unit_box"], raw["fixed"], raw["grain"]
+    )
 
 
 # ---- 时间戳 -------------------------------------------------------------------
@@ -425,7 +294,8 @@ def _border_stamp_layout(w: int, h: int, spec: StampSpec, text: str, m: Metrics,
         if item["k"] == "text":
             box = ink_box(m, item["font"], item["px"], item["text"], item["cjk"])
             top = max(top, item["y"] + box[3] + 1)
-    margin = max(2, min(round(min(w, h) * 0.035), (frame.height - top) // 8))
+    bottom = frame.unit_box[1] + frame.unit_box[3]
+    margin = max(2, min(round(min(w, h) * 0.035), (bottom - top) // 8))
     cjk = needs_cjk(text)
     shown = seg7_text(text) if spec.font == "seg7" and not cjk else text
     px = base.px
@@ -434,12 +304,12 @@ def _border_stamp_layout(w: int, h: int, spec: StampSpec, text: str, m: Metrics,
         glow = max(1.2, px * 0.16) if base.glow is not None else None
         pad = max(margin, math.ceil(3 * glow) + 2) if glow is not None else margin
         tw, th = box[2] - box[0], box[3] - box[1]
-        if tw <= w - 2 * pad and th <= frame.height - top - 2 * pad:
+        if tw <= w - 2 * pad and th <= bottom - top - 2 * pad:
             break
         if px == 1:
             return None
         px = max(1, int(px * 0.85))
     x = frame.photo[0] + (pad if spec.corner[1] == "l" else w - pad - tw)
-    y = top + pad if spec.corner[0] == "t" else frame.height - pad - th
+    y = top + pad if spec.corner[0] == "t" else bottom - pad - th
     ops = _stamp_ops((x - box[0], y - box[1]), text, px, base.font, cjk, base.ink, m)
     return StampLayout(px, base.font, (x, y, tw, th), base.ink, glow, tuple(ops))

@@ -72,9 +72,9 @@ def test_style_only_frame_heals_from_the_photo(settings, card):
         healed = json.loads(path.read_text(encoding="utf-8"))
         assert healed["frame"]["width"] == original["width"] and healed["frame"]["height"] == original["height"]
         assert "style" not in healed["frame"]
-        assert healed["border"]["style"] == "film" and healed["border"]["color"] == "black"
+        assert healed["border"]["style"] == "none" and healed["border"]["version"] == 2
         edit = client.get(f"/api/photos/{photo['id']}/edit").json()
-        assert edit["frame"]["style"] == "film"
+        assert edit["frame"]["style"] == "none"
 
 
 def test_omitted_crop_angle_keeps_the_previous_value(settings, card):

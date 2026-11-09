@@ -9,7 +9,7 @@ export async function walkOutputRatios({ evalIn }) {
     };
     const raf = () => new Promise((resolve) => requestAnimationFrame(resolve));
     const fonts = await import('/assets/finish_fonts.js');
-    await Promise.all(['atkinson', 'inter', 'courier', 'patrick'].map(fonts.loadFont));
+    await Promise.all(['atkinson', 'inter_sb', 'inter', 'courier', 'patrick'].map(fonts.loadFont));
     document.querySelector('#tab-frame').click();
     const card = (name) => [...document.querySelectorAll('.fcard')].find((node) => node.textContent.trim() === name);
     card('白边').click();
@@ -53,7 +53,7 @@ export async function walkOutputRatios({ evalIn }) {
         const size = await api('/output-size', {});
         const exported = await api('/export', {size:'original'});
         samples.push({name, ratio, ms, immediate, key, stage:[stage.width, stage.height],
-          size:size.sizes.original, exported:[exported.width, exported.height], clickRenders, clickQueries});
+          size:size.sizes.original, exported:[exported.width, exported.height], path:exported.path, clickRenders, clickQueries});
       }
     }
     window.fetch = realFetch;

@@ -5,7 +5,7 @@
 （按像素取整的步进，DSEG 这类没有字体指令的字还要被自动对齐器再改一遍），同一个字号量出来的宽度就不一样。
 这里不受那些影响：表是从字体文件本身读的，浏览器拿到的是同一份（`/api/finish/assets/<字体>.json`）。
 
-只读 `glyf` 轮廓的 TrueType（五个内置字体都是）。cmap 认格式 4 和 12，别的格式读不了就报错，不猜。
+只读 `glyf` 轮廓的 TrueType（包括 Inter SemiBold 在内的六个内置字体都是）。cmap 认格式 4 和 12，别的格式读不了就报错，不猜。
 """
 
 from __future__ import annotations

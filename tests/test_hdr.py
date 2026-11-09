@@ -238,7 +238,11 @@ def test_float_layer_follows_the_same_warp(geom):
     assert np.abs(np.clip(layer[valid] + 0.5, 0, 255).astype(np.uint8).astype(int) - out[valid].astype(int)).max() <= 1
 
 
-def test_frame_and_stamp_gain_is_exactly_zero():
+@pytest.mark.parametrize(
+    "raw_frame",
+    [{"style": "leica", "color": "white"}, {"style": "gallery", "weight": "thick", "output_ratio": "original"}],
+)
+def test_frame_and_stamp_gain_is_exactly_zero(raw_frame):
     """数据层跟着日期戳和边框走：那些格子的增益（编码之前）正好是 0，旁边发白的照片照常提亮。"""
     from gxr_studio.finish.hdr_export import HdrTrack, _to_grid
     from gxr_studio.finish.spec import parse_frame, parse_stamp
@@ -250,7 +254,7 @@ def test_frame_and_stamp_gain_is_exactly_zero():
     y, clip = g.register(raw, rgb.shape[:2], g.Alignment(1.0, 0, 0, 1.0), g.grid_shape(rgb.shape, 4))
     track.layer = np.dstack([y, clip.astype(np.float32)])
     stamp = parse_stamp({"enabled": True, "content": "date", "date_override": "2026-10-31", "corner": "tr", "size": "large", "glow": True})
-    frame = parse_frame({"style": "leica", "color": "white"})
+    frame = parse_frame(raw_frame)
     from gxr_studio.finish.frame import apply_frame
     from gxr_studio.finish.stamp import apply_stamp
 
@@ -259,10 +263,12 @@ def test_frame_and_stamp_gain_is_exactly_zero():
     track.frame(frame, {"lens": "A12 50mm"})
     assert track.layer is not None and track.layer.shape[:2] == out.shape[:2]
     raw_y, raw_clip = _to_grid(track.layer, (out.shape[1], out.shape[0]), 4)
-    res = g.compute_gain(g.sdr_luma_grid(out, 4), raw_y, raw_clip, g.Params())
+    sdr_y = g.sdr_luma_grid(out, 4)
+    res = g.compute_gain(sdr_y, raw_y, raw_clip, g.Params())
     photo = np.isfinite(raw_y)
-    assert not photo[-3:].any()  # 徕卡边框的下边条
+    assert not photo[-3:].any()  # 边框底边不是照片
     assert float(res.delta[~photo].max()) == 0.0
+    assert float(res.delta[photo & (sdr_y < 0.15)].max()) == 0.0
     assert float(res.delta[photo].max()) > 1.0
 
 
@@ -460,15 +466,22 @@ def test_export_hdr_follows_rotation_straighten_crop_and_frame(client, hdr_card)
     lg, sdr_y = r["log_gain"], _grid_luma(plain)
     # 白色边框（SDR 发白，但不是照片）不提亮：外圈 m/4 − 1 格
     hh, ww = np.asarray(Image.open(io.BytesIO(plain))).shape[:2]
-    edge = int(max(hh, ww) * 0.07 / 1.14 / 4) - 1
+    size = client.post(f"/api/photos/{photo['id']}/output-size", json={}).json()
+    pw, ph = size["photo"]
+    assert size["sizes"]["original"] == [ww, hh]
+    # 原比例白边的顶边与侧边等宽，底边更宽；从实际成品尺寸找照片位置。
+    margin = (ww - pw) // 2
+    edge = margin // 4 - 1
     assert edge >= 2
     for strip in (lg[:edge], lg[-edge:], lg[:, :edge], lg[:, -edge:]):
         assert float(strip.max()) < ENCODED_ZERO and float(strip.mean()) < 0.01
     # 照片里：SDR 发白的地方提亮（数据层跟着转了、裁了），暗的地方不动
-    k = edge + 3  # 再往里 3 格：边框和照片交界的那一圈不算
-    inner, inner_y = lg[k:-k, k:-k], sdr_y[k:-k, k:-k]
+    rows = slice((margin + 3) // 4 + 3, (margin + ph) // 4 - 3)
+    cols = slice((margin + 3) // 4 + 3, (margin + pw) // 4 - 3)
+    inner, inner_y = lg[rows, cols], sdr_y[rows, cols]
     assert float(inner[inner_y > 0.95].mean()) > 0.5
-    assert float(inner[inner_y < 0.15].max()) < 0.05
+    # 新边框把照片移到不同的 JPEG 块上；编码前暗部为 0，编码后允许同一振铃上限。
+    assert float(inner[inner_y < 0.15].max()) < ENCODED_ZERO
 
 
 @pytest.mark.parametrize("ratio", ("3:4", "16:9"))

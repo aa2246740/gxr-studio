@@ -2,15 +2,17 @@
 // 规则（PRD 第 10 节第 5 条）：照片自己有 frame / stamp 键就用它；没有就用默认（后端渲染和导出时套用，前端不往 sidecar 里复制）。
 
 export const DEFAULT_FRAME = {
+  version: 2,
   style: 'none',
   color: 'white',
   weight: 'medium',
   show_logo: true,
   show_params: true,
   show_date: false,
-  show_frame_no: true,
   text: '',
   output_ratio: '3:4',
+  fmt: '135',
+  table: 'light',
 };
 
 export const DEFAULT_STAMP = {
@@ -38,11 +40,21 @@ export const TEXT_MAX = 24;
 
 // 不加边框：后端写 "none"，旧数据里的 null 也当成不加
 export function normalizeFrame(f) {
-  if (f && ('keep_ratio' in f || 'canvas_ratio' in f || f.style === 'canvas')) return { ...DEFAULT_FRAME };
-  const out = { ...DEFAULT_FRAME, ...(f || {}) };
-  if (!out.style) out.style = 'none';
-  out.text = clipText(out.text, TEXT_MAX);
+  if (!f) return { ...DEFAULT_FRAME };
+  const keys = Object.keys(DEFAULT_FRAME);
+  if (typeof f !== 'object' || Array.isArray(f) || Object.keys(f).some((k) => !keys.includes(k)) || ('version' in f && f.version !== 2)) return { ...DEFAULT_FRAME };
+  const style = f.style === undefined ? 'none' : f.style;
+  if (!['none', 'leica', 'gallery', 'hasselblad', 'instant', 'film'].includes(style)) return { ...DEFAULT_FRAME };
+  const formats = style === 'instant' ? ['polaroid', 'instax_square', 'instax_wide', 'instax_mini'] : ['135', '120'];
+  const out = { ...DEFAULT_FRAME, show_date: ['leica', 'hasselblad'].includes(style), fmt: formats[0], ...f, style };
+  if (!formats.includes(out.fmt) || !['light', 'black'].includes(out.table) || !['white', 'black', 'cream'].includes(out.color) || !['thin', 'medium', 'thick'].includes(out.weight)) return { ...DEFAULT_FRAME };
+  if (!['1:1', '4:5', '3:4', '2:3', '9:16', '16:9', '3:2', 'original'].includes(out.output_ratio)) return { ...DEFAULT_FRAME };
+  if (['show_logo', 'show_params', 'show_date'].some((k) => typeof out[k] !== 'boolean') || typeof out.text !== 'string' || Array.from(out.text).length > TEXT_MAX) return { ...DEFAULT_FRAME };
   return out;
+}
+
+export function selectFrame(frame, style) {
+  return normalizeFrame({ ...frame, style, fmt: style === 'instant' ? 'polaroid' : '135', show_date: ['leica', 'hasselblad'].includes(style) });
 }
 
 export function normalizeStamp(s) {
@@ -53,7 +65,8 @@ export function normalizeStamp(s) {
 export function resolveFinish(edit, defaults) {
   const hasOwnFrame = !!(edit && edit.frame);
   const hasOwnStamp = !!(edit && edit.stamp);
-  const frameBase = hasOwnFrame ? edit.frame : defaults && defaults.frame;
+  const raw = hasOwnFrame ? edit.frame : defaults && defaults.frame;
+  const frameBase = raw?.version === 2 ? raw : null;
   const stampBase = hasOwnStamp ? edit.stamp : defaults && defaults.stamp;
   return {
     frame: normalizeFrame(frameBase),
@@ -116,6 +129,7 @@ export function stampLine(stamp, photo) {
 // 发给后端的边框键（PRD 7.1）。帧号由胶片样式自带，不单独发。
 export function frameBody(frame) {
   const body = {
+    version: 2,
     style: frame.style,
     color: frame.color,
     weight: frame.weight,
@@ -124,6 +138,8 @@ export function frameBody(frame) {
     show_date: frame.show_date,
     text: clipText(frame.text),
     output_ratio: frame.output_ratio,
+    fmt: frame.fmt,
+    table: frame.table,
   };
   return body;
 }

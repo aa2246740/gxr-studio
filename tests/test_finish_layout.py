@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from PIL import Image
 
 from gxr_studio.finish.fonts import ASSETS, FontMetrics
 from gxr_studio.finish.frame import apply_frame
-from gxr_studio.finish.layout import LOGO_SIZE, WEIGHT, advance, frame_layout, stamp_layout
+from gxr_studio.finish.layout import LOGO_SIZE, advance, frame_layout, stamp_layout
 from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, StampSpec
 
 META = {
@@ -32,20 +34,20 @@ def test_logo_size_constant_matches_the_file() -> None:
 @pytest.mark.parametrize("ratio", list(OUTPUT_RATIOS))
 @pytest.mark.parametrize("color", ["white", "black", "cream"])
 def test_gallery_keeps_the_white_border_margin_on_all_four_sides(w: int, h: int, ratio: str, color: str) -> None:
-    """白边：四边都留出和「白边 · 中」一样宽的边，再补到所选比例，照片居中。"""
+    """Medium mat has 9% minimums, with 45% of spare height above the photo."""
     layout = frame_layout(w, h, FrameSpec(style="gallery", color=color, output_ratio=ratio), META, FontMetrics())
     assert layout is not None
-    margin = max(8, round(max(w, h) * WEIGHT["medium"]))
     x, y = layout.photo
-    assert min(x, y, layout.width - w - x, layout.height - h - y) >= margin
-    # 居中（奇数差一个像素分给右边和下边）
-    assert 0 <= (layout.width - w - x) - x <= 1 and 0 <= (layout.height - h - y) - y <= 1
+    width, height = layout.width, layout.height
+    assert min(x, width - w - x) >= math.ceil(0.09 * width)
+    assert min(y, height - h - y) >= math.ceil(0.09 * height)
+    assert abs((width - w - x) - x) <= 1
+    assert y == max(math.ceil(0.09 * height), min(height - h - math.ceil(0.09 * height), round(0.45 * (height - h))))
     rw, rh = OUTPUT_RATIOS[ratio]
-    assert abs(layout.width / layout.height - rw / rh) < 1.5 / min(layout.width, layout.height) + 1e-9
-    # 照片加四边的边已经够大的那一边不再加宽：补边只补在比例不够的那个方向上
-    inner_w, inner_h = w + 2 * margin, h + 2 * margin
-    assert layout.width * rh == layout.height * rw
-    assert layout.width - inner_w < rw or layout.height - inner_h < rh
+    assert width * rh == height * rw
+    # A single smaller integer ratio unit cannot contain the photo and all minimum margins.
+    pw, ph = width - rw, height - rh
+    assert pw - w < 2 * math.ceil(0.09 * pw) or ph - h < 2 * math.ceil(0.09 * ph)
 
 
 def test_gallery_with_a_crop_that_already_has_the_ratio_still_gets_a_border() -> None:
@@ -53,10 +55,10 @@ def test_gallery_with_a_crop_that_already_has_the_ratio_still_gets_a_border() ->
     w, h = 2400, 3000
     layout = frame_layout(w, h, FrameSpec(style="gallery", output_ratio="4:5"), {}, FontMetrics())
     assert layout is not None
-    margin = max(8, round(max(w, h) * WEIGHT["medium"]))
+    margin = math.ceil(0.09 * layout.width)
     x, y = layout.photo
-    assert x == margin and y >= margin  # 四边的边一样宽，上下再补到 4:5
-    assert layout.width == w + 2 * margin and layout.height == round(layout.width * 5 / 4)
+    assert x >= margin and y >= math.ceil(0.09 * layout.height)
+    assert (layout.width, layout.height) == (2928, 3660)
 
 
 def test_gallery_of_a_3_by_4_crop_in_4_by_5_has_no_bare_top_and_bottom() -> None:
@@ -64,11 +66,11 @@ def test_gallery_of_a_3_by_4_crop_in_4_by_5_has_no_bare_top_and_bottom() -> None
     w, h = 2400, 3200
     layout = frame_layout(w, h, FrameSpec(style="gallery", output_ratio="4:5"), {}, FontMetrics())
     assert layout is not None
-    margin = max(8, round(max(w, h) * WEIGHT["medium"]))
+    margin = math.ceil(0.09 * layout.height)
     x, y = layout.photo
     assert y >= margin and layout.height - h - y >= margin
-    assert (layout.width, layout.height) == (2768, 3460)
-    assert (x, y) == (184, 130)
+    assert (layout.width, layout.height) == (3124, 3905)
+    assert (x, y) == (362, 352)
 
 
 def test_gallery_export_pixels_follow_the_layout() -> None:
@@ -80,7 +82,7 @@ def test_gallery_export_pixels_follow_the_layout() -> None:
     assert layout is not None and out.shape[:2] == (layout.height, layout.width)
     x, y = layout.photo
     assert np.array_equal(out[y : y + 90, x : x + 120], photo)
-    assert tuple(out[0, 0]) == (245, 236, 220) and tuple(out[-1, -1]) == (245, 236, 220)
+    assert tuple(out[0, 0]) == (244, 239, 230) and tuple(out[-1, -1]) == (244, 239, 230)
 
 
 @pytest.mark.parametrize("style", ["gallery", "leica", "hasselblad", "film", "instant"])
@@ -95,7 +97,7 @@ def test_layout_items_stay_inside_the_frame_canvas(style: str, w: int, h: int) -
     x, y = layout.photo
     assert x >= 0 and y >= 0 and x + w <= layout.width and y + h <= layout.height
     for item in layout.items:
-        if item["k"] == "text":
+        if item["k"] == "text" and not item.get("rot"):
             width = advance(metrics, item["font"], item["px"], item["text"], item["cjk"])
             assert item["x"] >= 0 and item["x"] + width <= layout.width + 0.5, (item["text"], item["x"], width, layout.width)
             assert 0 <= item["y"] and item["y"] + item["px"] <= layout.height + 1, item
