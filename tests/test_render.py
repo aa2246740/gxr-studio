@@ -50,6 +50,9 @@ needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-
 
 @pytest.fixture
 def real_card(volumes):
+    """盖掉 conftest 的同名夹具，换成本文件的样本目录；找不到样本就跳过，和 conftest 一样。"""
+    if not SAMPLE_DIR.is_dir():
+        pytest.skip("captures/a12-50 样本不在本机")
     return make_card(volumes, samples=SAMPLE_DIR)
 
 
