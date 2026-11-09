@@ -142,7 +142,9 @@ def _run_scene(tmp_path: Path) -> dict:
         encoding="utf-8",
     )
     (folder / "preview.js").write_text(
-        "export const BASE_NAMES = [];\nexport const KNOB_NAMES = {};\nexport function slotName(_u, s) { return String(s); }\n",
+        "export const BASE_NAMES = [];\nexport const KNOB_NAMES = {};\n"
+        "export function slotName(_u, s) { return String(s); }\n"
+        "export function recipeLabel(_u, r) { return String(r.slot); }\n",
         encoding="utf-8",
     )
     (folder / "lut_library.js").write_text(
