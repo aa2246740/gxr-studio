@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -49,6 +50,28 @@ def test_records_sharing_bases_keep_their_names_and_positions():
     assert out["labels"][0] == expected
     assert all(f" · {label}（无调整）" in text for label, text in zip(expected, out["lut"], strict=True))
     assert out["bases"][0] == [f"{i:02} {name}" for i, name in enumerate(BASE_NAMES, 1)]
+
+
+def test_fit_searches_available_builtin_positions_without_using_record_bases():
+    rows = [{"slot": slot} for slot in range(1, 5)] + [{"kind": "record", "slot": 6}, {"kind": "record", "slot": 3}]
+    seen = set()
+
+    def controls(_unit, slot):
+        assert slot in (1, 2, 3, 4), "完整记录的底子槽位不是可选的内置位置"
+        return [{"name": "contrast", "default": 0, "levels": [0]}]
+
+    def resolve(selection):
+        assert selection.kind == "builtin"
+        seen.add(selection.slot)
+        return SimpleNamespace(entry=bytes([selection.slot]))
+
+    camera = SimpleNamespace(stock=[b"synthetic"] * 3, listing=lambda: [{"recipes": rows}] * 3, controls=controls, resolve=resolve)
+    codes = np.array([[32, 32, 32], [64, 64, 64], [128, 128, 128], [224, 224, 224]], dtype=float)
+    samples = Samples(codes, codes, np.ones(4), np.zeros(4, np.int8), np.array([True, False, False, False]), [])
+    model = SimpleNamespace(predict=lambda _entry, values: values)
+    result = Fitter(camera, model, samples, codes, codes, profile="quick").run()
+    assert seen == {1, 2, 3, 4}
+    assert [c["slot"] for c in result["candidates"]] == [1, 2]
 
 
 @pytest.mark.parametrize("generation", (176, 178))

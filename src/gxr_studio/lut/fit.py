@@ -30,7 +30,6 @@ from ..render.params import EditError, RecipeSel
 from ..render.recipes import SLOT_SHORT
 from .scene import GROUP_NAMES, Samples
 
-SLOTS = tuple(range(1, 9))
 TONE = ("amount", "contrast", "highlight", "shadow", "fade")
 CONTROL_ORDER = ("amount", "contrast", "highlight", "shadow", "fade", "saturation", "warmth", "tint", "split", "filter")
 MIN_DENOMINATOR = 0.25
@@ -339,10 +338,11 @@ class Fitter:
     def run(self) -> dict[Any, Any]:
         t0 = time.perf_counter()
         cfg = self.cfg
-        # A. 给 8 个底子排序：网格上最好的起点 + 粗档位坐标下降
+        # A. 给可选的内置底子排序：完整记录的 slot 只是其底子，不能当作内置位置
+        slots = [r["slot"] for r in self.cam.listing()[self.unit_index]["recipes"] if r.get("kind", "builtin") == "builtin"]
         ranked = []
-        for i, slot in enumerate(SLOTS):
-            span = (0.2 * i / len(SLOTS), 0.2 * (i + 1) / len(SLOTS))
+        for i, slot in enumerate(slots):
+            span = (0.2 * i / len(slots), 0.2 * (i + 1) / len(slots))
             self.prog.phase = "比较内置配方"
             start = self.grid_starts(slot, cfg["starts"])[0]
             levels, value = self.descend(
