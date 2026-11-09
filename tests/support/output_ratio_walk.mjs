@@ -60,3 +60,62 @@ export async function walkOutputRatios({ evalIn }) {
     return {labels, samples};
   })()`, 120000);
 }
+
+// 网络请求完成不代表替换图片已经解码。旧照片可见时，改框也必须马上更新。
+export async function walkPendingFrameRatio({ evalIn }) {
+  return evalIn(`(async () => {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const until = async (fn) => {
+      const deadline = performance.now() + 30000;
+      while (performance.now() < deadline) { const value = fn(); if (value) return value; await wait(25); }
+      throw new Error('服务器预览解码检查等待超时');
+    };
+    const raf = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const viewer = await import('/assets/viewer.js');
+    const preview = await import('/assets/preview.js');
+    const view = viewer.currentView();
+    const pv = () => document.querySelector('.pv.framed');
+    const stage = () => { const rect = pv().getBoundingClientRect(); return [rect.width, rect.height]; };
+    document.querySelector('#tab-frame').click();
+    [...document.querySelectorAll('.fcard')].find((node) => node.textContent.trim() === '白边').click();
+    await until(() => pv() && pv().dataset.src === view.ed.urls.final && document.querySelector('.frame-size')?.textContent.includes('像素'));
+    const select = () => document.querySelector('select[aria-label="成品比例"]');
+    select().value = '3:4';
+    select().dispatchEvent(new Event('change', {bubbles:true}));
+    await until(() => window.__fetchLog.inflight === 0 && performance.now() - window.__fetchLog.lastAt > 800);
+    const before = stage();
+    const originalSrc = view.ed.urls.final;
+    const nativeDecode = HTMLImageElement.prototype.decode;
+    let release;
+    let held = 0;
+    const gate = new Promise((resolve) => { release = resolve; });
+    HTMLImageElement.prototype.decode = function (...args) {
+      const decoded = nativeDecode.apply(this, args);
+      if (!this.classList.contains('pv-img') || this.src === originalSrc) return decoded;
+      held++;
+      return Promise.all([decoded, gate]).then(() => undefined);
+    };
+    let result;
+    let replacement;
+    try {
+      preview.schedulePreview(view, {full:true});
+      await until(() => held > 0);
+      replacement = view.ed.urls.final;
+      const renders = window.__fetchLog.renders;
+      select().value = '1:1';
+      select().dispatchEvent(new Event('change', {bubbles:true}));
+      const immediate = document.querySelector('.frame-size').textContent;
+      await raf();
+      const nextFrame = stage();
+      await wait(150);
+      result = {before, immediate, nextFrame, heldStage:stage(), held, gpu:!!view.gpuActive,
+        originalStillVisible:pv().dataset.src === originalSrc, clickRenders:window.__fetchLog.renders-renders};
+    } finally {
+      HTMLImageElement.prototype.decode = nativeDecode;
+      release();
+    }
+    await until(() => pv()?.dataset.src === replacement);
+    result.afterDecode = stage();
+    return result;
+  })()`);
+}

@@ -23,7 +23,8 @@ def test_frame_ratio_and_size_change_locally_and_match_export(live, tmp_path):  
     for sample in out["samples"]:
         width, height = sample["size"]
         assert sample["exported"] == [width, height], sample
-        assert sample["stage"][0] / sample["stage"][1] == pytest.approx(width / height, abs=0.002), sample
+        stage_ratio = sample["stage"][0] / sample["stage"][1]
+        assert stage_ratio == pytest.approx(width / height, abs=0.002), json.dumps(sample, ensure_ascii=False)
         assert sample["immediate"].startswith(f"成品 {width} × {height} 像素"), sample
         assert sample["clickRenders"] == sample["clickQueries"] == 0, sample
         assert f'"output_ratio":"{sample["ratio"]}"' in sample["key"], sample
@@ -31,3 +32,15 @@ def test_frame_ratio_and_size_change_locally_and_match_export(live, tmp_path):  
             rw, rh = map(int, sample["ratio"].split(":"))
             assert width * rh == height * rw, sample
     print("output ratio click timings", json.dumps([round(s["ms"], 1) for s in out["samples"]]))
+
+
+def test_frame_ratio_updates_while_the_server_preview_is_decoding(live, tmp_path):  # noqa: F811
+    out = drive(live, tmp_path, "output-ratio-pending", {"NAV_NO_WEBGPU": "1"})["pendingFrameRatio"]
+    why = json.dumps(out, ensure_ascii=False)
+    assert out["gpu"] is False and out["held"] > 0 and out["originalStillVisible"] is True, why
+    assert out["before"][0] / out["before"][1] == pytest.approx(3 / 4, abs=0.002), why
+    assert out["immediate"] == "成品 692 × 692 像素 · 1:1", why
+    for step in ("nextFrame", "heldStage", "afterDecode"):
+        assert out[step][0] / out[step][1] == pytest.approx(1.0, abs=0.002), why
+    assert out["clickRenders"] == 0, why
+    print("server preview decode ratio", why)

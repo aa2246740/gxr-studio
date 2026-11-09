@@ -12,7 +12,7 @@ import { walkLibrary, walkLibraryRefresh } from './library_walk.mjs';
 import { walkPanelLayout } from './panel_layout_walk.mjs';
 import { walkSliderKeys } from './slider_keys_walk.mjs';
 import { walkStampBorder } from './stamp_border_walk.mjs';
-import { walkOutputRatios } from './output_ratio_walk.mjs';
+import { walkOutputRatios, walkPendingFrameRatio } from './output_ratio_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -325,6 +325,10 @@ try {
   }
   if (mode === 'output-ratio') {
     out.outputRatio = await walkOutputRatios({ evalIn });
+    await finish(0);
+  }
+  if (mode === 'output-ratio-pending') {
+    out.pendingFrameRatio = await walkPendingFrameRatio({ evalIn });
     await finish(0);
   }
   if (mode === 'stamp-border') {
