@@ -285,8 +285,9 @@ export function selection(view) {
 export function recipeInfo(view, sel = selection(view)) {
   const unit = state.catalog?.units.find((u) => u.id === sel.unit);
   if (sel.kind === 'look') return unit?.looks?.find((r) => r.id === sel.id) || null;
+  if (sel.kind === 'record') return unit?.recipes.find((r) => r.kind === 'record' && r.id === sel.id) || null;
   if (sel.kind === 'camera_user') return unit?.users?.find((r) => r.id === sel.id) || null;
-  return unit?.recipes.find((r) => r.slot === sel.slot) || null;
+  return unit?.recipes.find((r) => (!r.kind || r.kind === 'builtin') && r.slot === sel.slot) || null;
 }
 
 export function recipeKey(sel) {

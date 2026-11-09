@@ -1,17 +1,8 @@
-"""GXRCE.DAT 的解析与封装（按代数分派）。
+"""按已登记代数解析与封装 DAT，r5 的双文件路径见 r5.py。
 
-格式细节来自研究目录里的打包器和校验器（`firmware/engine_v4x_*/candidate/containers/product/pack.py`、
-`ui_data.py`、`gate.c`），来源 SHA 见 `engine/PROVENANCE.json` 的 `datcodec_sources`。已有代码各认一个代数
-（`ui_data.parse_dat` 写死 127），这里把代数做成参数：
-
-- 支持 127 / 129 / 131 / 135 / 137 / 138 / 150 / 152 / 153 / 154 / 155 / 156 / 158。未登记的代数一律拒绝。
-- 156 沿用 g155c 配方库：外层代数必须为 156，三个 bank 头必须为 155；其它已登记代数的 bank 必须等于外层代数。
-- 156 / 158 还必须匹配各自登记的引擎 SHA、入口、BSS、重定位和链接数据末端，不能把它们移入旧代数；
-  GXUI 用户条目不按整个 DAT SHA 锁定。158 的三个 bank 头代数也必须为 158。
-- `parse()` 严格：任何没有建模的头部字节、区段尺寸、CRC、钉子（`PIN_CRC32`）对不上都抛 `DatError`。
-- `pack(parse(b)) == b` 逐字节成立（每一代都有往返测试）。解析结果里的引擎、重定位、`gxkv2r2` 块都原样保存，
-  不重新编译、不改写。
-- 理光字节（行池、描述符里的深层行）只在内存里经过这里；本模块不写任何文件。
+g156 绑定 g155 bank；g156/g158/g176/g178 另绑定引擎与链接布局。
+解析核对 CRC、原厂钉子与往返字节。理光数据只经过内存，不写文件。
+来源见 engine/PROVENANCE.json 的 datcodec_sources。
 """
 
 from __future__ import annotations
@@ -21,6 +12,8 @@ import struct
 import zlib
 from dataclasses import dataclass
 from typing import Any, cast
+
+from .engine_bindings import BOUND_ENGINES, EngineDescription
 
 NAMES = ("jlaunch", "qlaunch", "l08firm")
 KINDS = (0, 1, 2, 3, 0, 1, 1, 1, 0, 1)
@@ -99,8 +92,6 @@ PROFILES = {
     129: Profile(129, 98304, True),
     131: Profile(131, 98304, True),
     135: Profile(135, 98304, True),
-    # 137、138 和 135 同一套区段尺寸。配方映射、行池、kv2 相同。
-    # 变的是引擎长度，以及跟着引擎走的重定位、目录里的绝对地址、配方库头里的代数和它的 CRC。
     137: Profile(137, 98304, True),
     138: Profile(138, 98304, True),
     150: Profile(150, 98304, True),
@@ -110,6 +101,8 @@ PROFILES = {
     155: Profile(155, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
     156: Profile(156, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
     158: Profile(158, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
+    176: Profile(176, 98304, True, max_engine=81920, mount_knobs_from_50mm=True),
+    178: Profile(178, 98304, True, max_engine=81920, mount_knobs_from_50mm=True),
 }
 
 
@@ -171,6 +164,14 @@ class Look:
     entry: bytes
 
 
+@dataclass(frozen=True)
+class FullRecipe:
+    name: str
+    base: int
+    unit_mask: int
+    entry: bytes
+
+
 @dataclass
 class Dat:
     generation: int
@@ -189,60 +190,14 @@ class Dat:
     effect_area: bytes = b""
     looks: tuple[Look, ...] = ()
     user_names: tuple[str, ...] = ()
+    recipes: tuple[FullRecipe, ...] = ()
+    library: bytes | None = None
+    shell_header: bytes = b""
 
     def entry_of(self, unit: int, slot: int) -> bytes:
         """槽位 1..16 的 552 B 深层条目（别名槽位解引用到所有者）。"""
         m = self.modules[unit]
         return cast(bytes, m.entries[m.refs[slot - 1]])
-
-
-@dataclass(frozen=True)
-class EngineDescription:
-    engine_sha256: str
-    entry: int
-    bss_bytes: int
-    relocations: tuple[tuple[int, int], ...]
-    linked_data_end: int  # ELF .bss 的起点，必须等于 DAT 长度
-
-
-# firmware/engine_v68_g156/candidate/local/{boot-off,boot-on}/engine.elf：
-# .engine 逐字节匹配真实 DAT；入口、.bss 与 reloc.bin 同时核对，不以整个 DAT SHA 限制用户修改。
-G156_ENGINES = (
-    EngineDescription(
-        engine_sha256="e406f24535118960ec63a835c918659c87a53be0b279e8687d0f836cae17d654",
-        entry=61984,
-        bss_bytes=9284,
-        relocations=((65840, 56136),),
-        linked_data_end=88684,
-    ),
-    EngineDescription(
-        engine_sha256="688427df58d334a375b125f1b5574ac6f0854962f5123859e47e5030c0052bf0",
-        entry=64892,
-        bss_bytes=9296,
-        relocations=((68748, 59044),),
-        linked_data_end=90532,
-    ),
-)
-
-# firmware/engine_v70_g158/candidate/local/model-boot-{off,on}/engine.elf：
-# 已核对真实 DAT 的 .engine、入口、.bss、reloc.bin；bank 代数恢复为内外一致的 158。
-G158_ENGINES = (
-    EngineDescription(
-        engine_sha256="86c9eb3a42d5d43f8c8fefa07b574f2ba723f750256d31472d762fbd0885528c",
-        entry=63832,
-        bss_bytes=4360,
-        relocations=((67484, 57984),),
-        linked_data_end=92484,
-    ),
-    EngineDescription(
-        engine_sha256="441531dc1900ae5c3cf2e62092c5c6dc88a1f326b7cb74f8506159245fd2b34e",
-        entry=66056,
-        bss_bytes=4360,
-        relocations=((69716, 60208),),
-        linked_data_end=94952,
-    ),
-)
-BOUND_ENGINES = {156: G156_ENGINES, 158: G158_ENGINES}
 
 
 def _check_engine_binding(dat: Dat, data_end: int) -> None:
@@ -273,11 +228,17 @@ def peek_generation(raw: bytes) -> int:
     return u32(raw, 28)
 
 
-def parse(raw: bytes) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开会把已经对过的字节路径拆散
+def parse(raw: bytes, library: bytes | None = None) -> Dat:  # noqa: C901  按代数读 DAT 的布局，拆开会把已经对过的字节路径拆散
     g = peek_generation(raw)
     prof = PROFILES.get(g)
     if prof is None:
         raise UnsupportedGeneration(f"代数 {g} 未登记（支持 {sorted(PROFILES)}）")
+    if g in (176, 178):
+        from . import r5
+
+        return r5.parse(raw, library)
+    if library is not None:
+        raise DatError("这个代数使用单文件配方，不支持附加 GXRFX.BIN。请只选择 GXRCE.DAT。")
     if len(raw) > prof.max_file or u32(raw, 16) != len(raw):
         raise DatError("DAT 长度不合格")
     if u32(raw, 20) != _zero_crc(raw[:HEADER], 20) or u32(raw, 24) != crc(raw[HEADER:]):
@@ -684,6 +645,10 @@ def pack(dat: Dat) -> bytes:
     prof = PROFILES.get(dat.generation)
     if prof is None:
         raise UnsupportedGeneration(f"代数 {dat.generation} 未登记")
+    if dat.generation in (176, 178):
+        from . import r5
+
+        return r5.pack(dat)
     _check_list_capacity(dat, prof)
     modules = dat.modules
     if len(modules) != 3 or tuple(m.name for m in modules) != NAMES:

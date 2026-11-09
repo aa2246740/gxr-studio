@@ -106,17 +106,23 @@ export function cameraImportControls({ onDone } = {}) {
   };
   const fileInput = h('input', {
     type: 'file',
-    accept: '.DAT,.dat',
+    accept: '.DAT,.dat,.BIN,.bin',
+    multiple: true,
     hidden: true,
     'aria-label': '选择相机配方文件',
     onchange: async (e) => {
-      const file = e.target.files && e.target.files[0];
-      if (!file) return;
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      const file = files.find((f) => f.name.toUpperCase() === 'GXRCE.DAT');
+      const library = files.find((f) => f.name.toUpperCase() === 'GXRFX.BIN');
+      if (!file) { msg.textContent = '请选择 GXRCE.DAT；r5 还需同时选择同一套 GXRFX.BIN。'; return; }
       busy(true);
       msg.textContent = '正在导入…';
       try {
         // 浏览器拿不到本地路径，所以直接把文件的字节交给工作室（它只校验、提取，不改你的文件）
-        await finish(await api('/api/camdata/import-upload', { method: 'POST', body: file, headers: { 'X-GXR-Filename': file.name } }));
+        const headers = { 'X-GXR-Filename': file.name };
+        if (library) headers['X-GXR-Dat-Bytes'] = String(file.size);
+        await finish(await api('/api/camdata/import-upload', { method: 'POST', body: library ? new Blob([file, library]) : file, headers }));
       } catch (err) {
         msg.textContent = err.message;
         if (err.code === 'generation_unsupported') {
@@ -154,6 +160,7 @@ export function cameraImportControls({ onDone } = {}) {
     h('div', { class: 'guide-actions' }, h('button', { class: 'btn primary', type: 'button', onclick: () => importCard() }, '从存储卡导入配方')),
         h('div', { class: 'guide-actions' }, h('button', { class: 'btn', type: 'button', onclick: () => fileInput.click() }, '选择文件…'), fileInput),
     choices,
+    h('p', { class: 'small' }, 'r5 请同时选择从卡上复制的 GXRCE.DAT 和 GXRFX.BIN。'),
     msg,
   );
   return box;
