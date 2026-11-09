@@ -14,6 +14,7 @@ import { walkSliderKeys } from './slider_keys_walk.mjs';
 import { walkStampBorder } from './stamp_border_walk.mjs';
 import { walkOutputRatios, walkPendingFrameRatio } from './output_ratio_walk.mjs';
 import { walkFrameCards } from './frame_cards_walk.mjs';
+import { walkCropHandles } from './crop_handles_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -278,6 +279,11 @@ try {
     const walked = await walkRounds({ call, evalIn, origin, step, wantGpu: mode === 'nav-gpu', collectGpuDiagnostics, presentErrors: () => gpuLog.sharedImageError() });
     out.nav = walked.steps;
     out.gpuWaitMs = walked.gpuWaitMs;
+    out.ready = true;
+    await finish(0);
+  }
+  if (mode.startsWith('handles-')) {
+    out.handles = await walkCropHandles({ call, evalIn, origin, photoId, wantGpu: mode === 'handles-gpu', step });
     out.ready = true;
     await finish(0);
   }
