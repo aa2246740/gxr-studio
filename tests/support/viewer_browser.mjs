@@ -13,6 +13,7 @@ import { walkPanelLayout } from './panel_layout_walk.mjs';
 import { walkSliderKeys } from './slider_keys_walk.mjs';
 import { walkStampBorder } from './stamp_border_walk.mjs';
 import { walkOutputRatios, walkPendingFrameRatio } from './output_ratio_walk.mjs';
+import { installRatioTrace } from './frame_ratio_diag.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -324,11 +325,15 @@ try {
     await finish(0);
   }
   if (mode === 'output-ratio') {
+    await installRatioTrace({ evalIn });
     out.outputRatio = await walkOutputRatios({ evalIn });
+    await evalIn('window.__ratioTrace.close()');
     await finish(0);
   }
   if (mode === 'output-ratio-pending') {
+    await installRatioTrace({ evalIn });
     out.pendingFrameRatio = await walkPendingFrameRatio({ evalIn });
+    await evalIn('window.__ratioTrace.close()');
     await finish(0);
   }
   if (mode === 'stamp-border') {

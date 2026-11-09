@@ -7,8 +7,10 @@ import pytest
 from test_viewer_browser import drive, live  # noqa: F401
 
 
-def test_frame_ratio_and_size_change_locally_and_match_export(live, tmp_path):  # noqa: F811
+def test_frame_ratio_and_size_change_locally_and_match_export(live, tmp_path, capsys):  # noqa: F811
     out = drive(live, tmp_path, "output-ratio", {"NAV_NO_WEBGPU": "1"})["outputRatio"]
+    with capsys.disabled():
+        print("FRAME_RATIO_DIAGNOSTIC", json.dumps(out["samples"][0], ensure_ascii=False))
     assert out["labels"] == [
         "1:1 · 方图",
         "4:5 · Instagram 竖图",
@@ -34,8 +36,10 @@ def test_frame_ratio_and_size_change_locally_and_match_export(live, tmp_path):  
     print("output ratio click timings", json.dumps([round(s["ms"], 1) for s in out["samples"]]))
 
 
-def test_frame_ratio_updates_while_the_server_preview_is_decoding(live, tmp_path):  # noqa: F811
+def test_frame_ratio_updates_while_the_server_preview_is_decoding(live, tmp_path, capsys):  # noqa: F811
     out = drive(live, tmp_path, "output-ratio-pending", {"NAV_NO_WEBGPU": "1"})["pendingFrameRatio"]
+    with capsys.disabled():
+        print("FRAME_RATIO_DIAGNOSTIC", json.dumps(out, ensure_ascii=False))
     why = json.dumps(out, ensure_ascii=False)
     assert out["gpu"] is False and out["held"] > 0 and out["originalStillVisible"] is True, why
     assert out["before"][0] / out["before"][1] == pytest.approx(3 / 4, abs=0.002), why
