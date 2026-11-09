@@ -23,7 +23,7 @@ from gxr_studio.finish.spec import FrameSpec, Geometry, StampSpec
 from gxr_studio.finish.stamp import apply_stamp
 from gxr_studio.render.params import EditState
 
-STYLES = ["none", "gallery", "leica", "hasselblad", "film", "instant", "canvas"]
+STYLES = ["none", "gallery", "leica", "hasselblad", "film", "instant"]
 
 
 def _old_finish_array(rgb, edit, *, stage, frame, stamp, crop_rect, meta, taken, file_time, from_raw, crop_preset=None):

@@ -34,7 +34,7 @@ const deco = decorOf(view, 2136, 2846); // 半分辨率预览猜错两个像素�
 const out = { deco: [deco.ew, deco.eh, deco.width, deco.height], lines: [] };
 const liveLine = frameSizeLine(view);
 out.lines.push(liveLine.textContent);
-view.ed.frame.keep_ratio = false;
+view.ed.frame.output_ratio = 'original';
 view.ed.frame.weight = 'thick';
 liveLine.update();
 out.lines.push(liveLine.textContent);

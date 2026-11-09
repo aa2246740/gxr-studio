@@ -12,6 +12,7 @@ import { walkLibrary, walkLibraryRefresh } from './library_walk.mjs';
 import { walkPanelLayout } from './panel_layout_walk.mjs';
 import { walkSliderKeys } from './slider_keys_walk.mjs';
 import { walkStampBorder } from './stamp_border_walk.mjs';
+import { walkOutputRatios } from './output_ratio_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -322,6 +323,10 @@ try {
     out.keys = await walkSliderKeys({ call, evalIn });
     await finish(0);
   }
+  if (mode === 'output-ratio') {
+    out.outputRatio = await walkOutputRatios({ evalIn });
+    await finish(0);
+  }
   if (mode === 'stamp-border') {
     out.stampBorder = await walkStampBorder({ evalIn });
     await finish(0);
@@ -552,7 +557,7 @@ try {
       clicks.push({ name, ms, changed, frameMs: Math.round(Math.max(...lead, ...trail)) });
     };
     const styleFramed = {};
-    for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '画布', '白边', '徕卡水印']) {
+    for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '白边', '哈苏水印', '徕卡水印']) {
       await timed(name, () => card(name).click());
       styleFramed[name] = deco().framed;
     }

@@ -8,8 +8,8 @@ from PIL import Image
 
 from gxr_studio.finish.fonts import ASSETS, FontMetrics
 from gxr_studio.finish.frame import apply_frame
-from gxr_studio.finish.layout import CANVAS, LOGO_SIZE, WEIGHT, advance, frame_layout, stamp_layout
-from gxr_studio.finish.spec import FrameSpec, StampSpec
+from gxr_studio.finish.layout import LOGO_SIZE, WEIGHT, advance, frame_layout, stamp_layout
+from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, StampSpec
 
 META = {
     "lens": "GR LENS A12 50mm F2.5 MACRO",
@@ -29,32 +29,29 @@ def test_logo_size_constant_matches_the_file() -> None:
 
 
 @pytest.mark.parametrize(("w", "h"), SIZES)
-@pytest.mark.parametrize("ratio", list(CANVAS))
+@pytest.mark.parametrize("ratio", list(OUTPUT_RATIOS))
 @pytest.mark.parametrize("color", ["white", "black", "cream"])
-def test_canvas_keeps_the_white_border_margin_on_all_four_sides(w: int, h: int, ratio: str, color: str) -> None:
-    """画布：四边都留出和「白边 · 中」一样宽的边，再补到所选比例，照片居中。"""
-    layout = frame_layout(w, h, FrameSpec(style="canvas", color=color, canvas_ratio=ratio), META, FontMetrics())
+def test_gallery_keeps_the_white_border_margin_on_all_four_sides(w: int, h: int, ratio: str, color: str) -> None:
+    """白边：四边都留出和「白边 · 中」一样宽的边，再补到所选比例，照片居中。"""
+    layout = frame_layout(w, h, FrameSpec(style="gallery", color=color, output_ratio=ratio), META, FontMetrics())
     assert layout is not None
     margin = max(8, round(max(w, h) * WEIGHT["medium"]))
     x, y = layout.photo
     assert min(x, y, layout.width - w - x, layout.height - h - y) >= margin
     # 居中（奇数差一个像素分给右边和下边）
     assert 0 <= (layout.width - w - x) - x <= 1 and 0 <= (layout.height - h - y) - y <= 1
-    rw, rh = CANVAS[ratio]
+    rw, rh = OUTPUT_RATIOS[ratio]
     assert abs(layout.width / layout.height - rw / rh) < 1.5 / min(layout.width, layout.height) + 1e-9
     # 照片加四边的边已经够大的那一边不再加宽：补边只补在比例不够的那个方向上
     inner_w, inner_h = w + 2 * margin, h + 2 * margin
-    if ratio in {"3:4", "2:3"}:
-        assert layout.width * rh == layout.height * rw
-        assert layout.width - inner_w < rw or layout.height - inner_h < rh
-    else:
-        assert layout.width == inner_w or layout.height == inner_h
+    assert layout.width * rh == layout.height * rw
+    assert layout.width - inner_w < rw or layout.height - inner_h < rh
 
 
-def test_canvas_with_a_crop_that_already_has_the_ratio_still_gets_a_border() -> None:
+def test_gallery_with_a_crop_that_already_has_the_ratio_still_gets_a_border() -> None:
     """4:5 的照片放进画布 4:5：原来一点边也没有，现在四边都有。"""
     w, h = 2400, 3000
-    layout = frame_layout(w, h, FrameSpec(style="canvas", canvas_ratio="4:5"), {}, FontMetrics())
+    layout = frame_layout(w, h, FrameSpec(style="gallery", output_ratio="4:5"), {}, FontMetrics())
     assert layout is not None
     margin = max(8, round(max(w, h) * WEIGHT["medium"]))
     x, y = layout.photo
@@ -62,21 +59,22 @@ def test_canvas_with_a_crop_that_already_has_the_ratio_still_gets_a_border() -> 
     assert layout.width == w + 2 * margin and layout.height == round(layout.width * 5 / 4)
 
 
-def test_canvas_of_a_3_by_4_crop_in_4_by_5_has_no_bare_top_and_bottom() -> None:
+def test_gallery_of_a_3_by_4_crop_in_4_by_5_has_no_bare_top_and_bottom() -> None:
     """3:4 的照片放进 4:5：原来只有左右两条细白边，上下没有；现在上下也有边，左右更宽。"""
     w, h = 2400, 3200
-    layout = frame_layout(w, h, FrameSpec(style="canvas", canvas_ratio="4:5"), {}, FontMetrics())
+    layout = frame_layout(w, h, FrameSpec(style="gallery", output_ratio="4:5"), {}, FontMetrics())
     assert layout is not None
     margin = max(8, round(max(w, h) * WEIGHT["medium"]))
     x, y = layout.photo
-    assert y == margin and layout.height - h - y == margin
-    assert x > margin and layout.width == round(layout.height * 4 / 5)
+    assert y >= margin and layout.height - h - y >= margin
+    assert (layout.width, layout.height) == (2768, 3460)
+    assert (x, y) == (184, 130)
 
 
-def test_canvas_export_pixels_follow_the_layout() -> None:
+def test_gallery_export_pixels_follow_the_layout() -> None:
     rng = np.random.default_rng(3)
     photo = rng.integers(0, 256, size=(90, 120, 3), dtype=np.uint8)
-    spec = FrameSpec(style="canvas", color="cream", canvas_ratio="1:1")
+    spec = FrameSpec(style="gallery", color="cream", output_ratio="1:1")
     out = apply_frame(photo, spec, {})
     layout = frame_layout(120, 90, spec, {}, FontMetrics())
     assert layout is not None and out.shape[:2] == (layout.height, layout.width)
@@ -85,7 +83,7 @@ def test_canvas_export_pixels_follow_the_layout() -> None:
     assert tuple(out[0, 0]) == (245, 236, 220) and tuple(out[-1, -1]) == (245, 236, 220)
 
 
-@pytest.mark.parametrize("style", ["gallery", "leica", "hasselblad", "film", "instant", "canvas"])
+@pytest.mark.parametrize("style", ["gallery", "leica", "hasselblad", "film", "instant"])
 @pytest.mark.parametrize(("w", "h"), SIZES)
 def test_layout_items_stay_inside_the_frame_canvas(style: str, w: int, h: int) -> None:
     """每个尺寸、每种样式：照片和每一行字（整行的宽度）、标志都在画布里面。

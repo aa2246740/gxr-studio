@@ -9,8 +9,7 @@ import { normalizeFrame, frameBody, defaultsPayload, clipText, TEXT_MAX } from '
 import { seg, toggle, swatch, notReady } from './controls.js';
 import { paintCards } from './finish_cards.js';
 import { liveText } from './live_text.js';
-import { cropRatio } from './finish_layout.js';
-import { frameSizeLine, ratioText } from './output_size.js';
+import { frameSizeLine } from './output_size.js';
 
 export const FRAME_NAMES = {
   none: '无',
@@ -19,12 +18,20 @@ export const FRAME_NAMES = {
   hasselblad: '哈苏水印',
   film: '胶片',
   instant: '拍立得',
-  canvas: '画布',
 };
 const COLOR_HEX = { white: '#ffffff', black: '#111214', cream: '#f2ead8' };
 const COLOR_NAMES = { white: '白', black: '黑', cream: '米白' };
 const WEIGHT_NAMES = { thin: '细', medium: '中', thick: '粗' };
-const CANVAS = ['1:1', '3:4', '2:3', '4:5', '3:2', '9:16'];
+export const OUTPUT_CHOICES = [
+  ['1:1', '1:1 · 方图'],
+  ['4:5', '4:5 · Instagram 竖图'],
+  ['3:4', '3:4 · 小红书'],
+  ['2:3', '2:3 · 竖幅'],
+  ['9:16', '9:16 · 快拍 · 短视频'],
+  ['16:9', '16:9 · 横屏视频'],
+  ['3:2', '3:2 · 横幅'],
+  ['original', '照片原比例'],
+];
 
 function styleList(ed) {
   const list = ed.frames && ed.frames.styles;
@@ -76,13 +83,9 @@ export function framePanel(view) {
   const sizeLine = frameSizeLine(view);
   const rows = [h('div', { class: 'pane-head' }, h('h2', {}, '边框'), sizeLine), cards];
   if (cur.style !== 'none') {
-    if (cur.style !== 'canvas') {
-      const c = view.crop;
-      const ratio = c ? cropRatio(c.preset, c.rect.w * c.frame.width, c.rect.h * c.frame.height) : null;
-      rows.push(seg([['crop', `跟裁剪${ratio ? ` ${ratioText(ratio)}` : ''}`], ['frame', '边框原样']],
-        cur.keep_ratio !== false ? 'crop' : 'frame', (value) => setFrame(view, { keep_ratio: value === 'crop' }), { label: '成品比例' }));
-      if (!ratio) rows.push(h('p', { class: 'small dim' }, '先在「裁剪」选择比例，成品会连边框一起保持比例。'));
-    }
+    const ratios = h('select', { 'aria-label': '成品比例', onchange: (event) => setFrame(view, { output_ratio: event.target.value }) },
+      ...OUTPUT_CHOICES.map(([value, label]) => h('option', { value, selected: cur.output_ratio === value }, label)));
+    rows.push(h('label', { class: 'field-row' }, h('span', {}, '成品比例'), ratios));
     if (opts.includes('color')) {
       // 颜色只用色块（不再加文字按钮）；鼠标停在色块上看颜色名，选中的色块有外圈
       rows.push(h('div', { class: 'seg-row' }, h('span', { class: 'seg-label' }, '颜色'), h('div', { class: 'swrow' },
@@ -113,14 +116,9 @@ export function framePanel(view) {
       });
       rows.push(h('div', { class: 'sec' }, '文字'), input);
     }
-    if (opts.includes('canvas_ratio')) {
-      const ratios = seg(CANVAS.map((r) => [r, r]), cur.canvas_ratio, (r) => setFrame(view, { canvas_ratio: r }), { label: '画布比例' });
-      ratios.style.gridTemplateColumns = '1fr'; // 六个比例用整行，窄面板里数字也不截断
-      rows.push(ratios);
-    }
   }
 
-  // 跟在样式和选项后面滚动，避免窄屏或矮窗口时盖住「画布」卡片。
+  // 跟在样式和选项后面滚动，避免窄屏或矮窗口时盖住样式卡片。
   rows.push(h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn sm primary', onclick: () => setDefaults(view) }, '设为默认')));
   return h('div', { class: 'pane' }, ...rows);
 }

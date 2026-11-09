@@ -330,29 +330,29 @@ if (scenario === 'crop-that-fills-the-frame') {
 }
 
 if (scenario === 'frame-ratio-copy-paste-undo') {
-  stored.a0.frame = { style: 'instant', keep_ratio: true };
-  stored.b0.frame = { style: 'gallery', keep_ratio: false };
+  stored.a0.frame = { style: 'instant', output_ratio: '9:16' };
+  stored.b0.frame = { style: 'gallery', output_ratio: '1:1' };
   stored.b0.cropBox = { preset: '1:1', rect: [0.1, 0.1, 0.5, 0.75] };
   core.rememberGroups(['frame']);
   await go('#/photo/a0');
   await tick();
   edits.copyEdits(viewer.currentView());
-  out.copied = core.clipboard().source.frame.keep_ratio;
+  out.copied = core.clipboard().source.frame.output_ratio;
   await go('#/photo/b0');
   await tick();
   const v = viewer.currentView();
   await edits.pasteEdits(v);
   await tick();
-  out.pasted = v.ed.frame.keep_ratio;
+  out.pasted = v.ed.frame.output_ratio;
   out.crop = v.crop.preset;
   preview.undoChange(v);
   await tick();
-  out.undone = v.ed.frame.keep_ratio;
-  out.undoSaved = puts('b0').at(-1).body.frame.keep_ratio;
+  out.undone = v.ed.frame.output_ratio;
+  out.undoSaved = puts('b0').at(-1).body.frame.output_ratio;
   preview.redoChange(v);
   await tick();
-  out.redone = v.ed.frame.keep_ratio;
-  out.redoSaved = puts('b0').at(-1).body.frame.keep_ratio;
+  out.redone = v.ed.frame.output_ratio;
+  out.redoSaved = puts('b0').at(-1).body.frame.output_ratio;
 }
 
 if (scenario === 'queued-paste-after-a-failed-save') {

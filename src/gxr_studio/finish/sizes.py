@@ -17,10 +17,10 @@ from ..render.params import EditState
 from ..render.service import RenderService, RenderUnavailable
 from .compose import resolved_frame
 from .fonts import FontMetrics
-from .layout import CANVAS, crop_ratio, fit_size, frame_layout
+from .layout import crop_ratio, fit_size, frame_layout
 from .meta_text import photo_meta
 from .serve import _embedded_rgb, load_defaults
-from .spec import Geometry
+from .spec import OUTPUT_RATIOS, Geometry
 
 TIERS = {"original": None, "large": 3000, "medium": 2048, "small": 1600}
 
@@ -73,11 +73,9 @@ def output_sizes(
     (_x, _y, w, h), _valid = final_box(width, height, geom, rect, preset)
     frame = resolved_frame(edit.frame, load_defaults(render.home)[0])
     meta = photo_meta(lib, shot)[0]
-    layout = frame_layout(w, h, frame, meta, FontMetrics(), preset)
+    layout = frame_layout(w, h, frame, meta, FontMetrics())
     out_w, out_h = (layout.width, layout.height) if layout is not None else (w, h)
-    ratio = CANVAS[frame.canvas_ratio] if frame.style == "canvas" else crop_ratio(preset, w, h)
-    if frame.style not in {"none", "canvas"} and not frame.keep_ratio:
-        ratio = None
+    ratio = crop_ratio(preset, w, h) if frame.style == "none" else OUTPUT_RATIOS.get(frame.output_ratio)
     return {
         "photo": [w, h],
         "frame": frame.to_json(),

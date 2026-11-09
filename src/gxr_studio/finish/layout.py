@@ -16,12 +16,11 @@ from typing import Any, Protocol
 
 from ..crop import PRESETS, target_ratio
 from .sfnt import Glyph
-from .spec import FrameSpec, StampSpec
+from .spec import OUTPUT_RATIOS, FrameSpec, StampSpec
 
 Rgb = tuple[int, int, int]
 
 WEIGHT = {"thin": 0.02, "medium": 0.04, "thick": 0.07}
-CANVAS = {"1:1": (1, 1), "3:4": (3, 4), "2:3": (2, 3), "4:5": (4, 5), "3:2": (3, 2), "9:16": (9, 16)}
 COLORS: dict[str, Rgb] = {"white": (255, 255, 255), "black": (12, 12, 12), "cream": (245, 236, 220)}
 STAMP_COLORS: dict[str, Rgb] = {"orange": (255, 106, 0), "red": (220, 32, 32), "yellow": (255, 196, 40), "white": (255, 255, 255)}
 STAMP_SIZE = {"small": 0.038, "medium": 0.055, "large": 0.078}
@@ -278,24 +277,8 @@ def _instant(w: int, h: int, spec: FrameSpec, m: Metrics) -> FrameLayout:
     return FrameLayout(out_w, out_h, (side, side), (248, 246, 242), tuple(items))
 
 
-def _canvas(w: int, h: int, spec: FrameSpec) -> FrameLayout:
-    """四边留出和「白边 · 中」一样宽的边，再补到所选的画布比例，照片居中。"""
-    margin = _margin(w, h, "medium")
-    inner_w, inner_h = w + 2 * margin, h + 2 * margin
-    rw, rh = CANVAS[spec.canvas_ratio]
-    if spec.canvas_ratio in {"3:4", "2:3"}:
-        out_w, out_h = ratio_size(inner_w, inner_h, rw, rh)
-        return FrameLayout(out_w, out_h, ((out_w - w) // 2, (out_h - h) // 2), COLORS[spec.color], ())
-    target = rw / rh
-    if inner_w / inner_h > target:
-        out_w, out_h = inner_w, round(inner_w / target)
-    else:
-        out_h, out_w = inner_h, round(inner_h * target)
-    return FrameLayout(out_w, out_h, ((out_w - w) // 2, (out_h - h) // 2), COLORS[spec.color], ())
-
-
 def crop_ratio(preset: str | None, w: int, h: int) -> tuple[int, int] | None:
-    """固定裁剪的成品比例；照片的横竖决定方向，原始和自由不补边。"""
+    """无边框时显示的固定裁剪比例；照片横竖决定方向，原始和自由不标比例。"""
     if preset is None or PRESETS.get(preset) is None:
         return None
     ratio = target_ratio(preset, w, h)
@@ -351,7 +334,7 @@ def _pad_ratio(layout: FrameLayout, ratio: tuple[int, int], m: Metrics) -> Frame
     return FrameLayout(width, height, (layout.photo[0] + dx, layout.photo[1] + dy), layout.bg, tuple(items))
 
 
-def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metrics, crop_preset: str | None = None) -> FrameLayout | None:
+def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metrics) -> FrameLayout | None:
     """w、h 是要装进边框的照片（已裁切、已盖日期戳）的像素宽高。样式 none 返回 None。"""
     builders: dict[str, Callable[[], FrameLayout]] = {
         "gallery": lambda: _gallery(w, h, spec),
@@ -359,11 +342,10 @@ def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metri
         "hasselblad": lambda: _hasselblad(w, h, spec, meta, m),
         "film": lambda: _film(w, h, meta, m),
         "instant": lambda: _instant(w, h, spec, m),
-        "canvas": lambda: _canvas(w, h, spec),
     }
     build = builders.get(spec.style)
     layout = build() if build else None
-    ratio = crop_ratio(crop_preset, w, h) if spec.keep_ratio and spec.style != "canvas" else None
+    ratio = OUTPUT_RATIOS.get(spec.output_ratio)
     return _pad_ratio(layout, ratio, m) if layout is not None and ratio is not None else layout
 
 

@@ -19,7 +19,7 @@ export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts, cropPreset =
   const needed = fontsNeeded(frameSpec, text ? stampSpec : null, needsCjk(text));
   for (const id of needed) if (!tableReady(id) || !fontReady(id)) loadFont(id).then(onFonts, () => {});
   if (needed.some((id) => !tableReady(id))) return null;
-  const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics, cropPreset) : null;
+  const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics) : null;
   const borderStamp = stampSpec?.placement === 'border' && frameSpec?.style === 'instant';
   const stamp = stampSpec ? stampLayout(ew, eh, stampSpec, text, metrics, borderStamp ? frame : null) : null;
   if (!frame && !stamp) return null;

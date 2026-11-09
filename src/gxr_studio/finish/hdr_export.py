@@ -110,12 +110,12 @@ class HdrTrack:
             self.layer = self.layer.copy()
             self.layer[ndimage.binary_dilation(mask, iterations=2)] = np.nan
 
-    def frame(self, spec: FrameSpec, meta: dict[str, str], crop_preset: str | None = None) -> None:
+    def frame(self, spec: FrameSpec, meta: dict[str, str]) -> None:
         """边框把照片原样贴在画布里：两张纯色图各加一次边框，不一样的那块就是照片的位置，其余记为 NaN。"""
         if self.layer is None or spec.style == "none":
             return
         h, w = self.layer.shape[:2]
-        outs = [apply_frame(_solid(self.layer.shape, v), spec, meta, crop_preset) for v in _SOLIDS]
+        outs = [apply_frame(_solid(self.layer.shape, v), spec, meta) for v in _SOLIDS]
         diff = (outs[0] != outs[1]).any(axis=2)
         ys, xs = np.nonzero(diff)
         if ys.size == 0 or (ys.max() - ys.min() + 1, xs.max() - xs.min() + 1) != (h, w):

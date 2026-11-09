@@ -82,7 +82,7 @@ def test_leica_bar_right_aligns_both_lines() -> None:
         "iso": "ISO 800",
         "date": "26 10 23",
     }
-    frame = parse_frame({"style": "leica", "show_logo": True, "show_params": True, "show_date": True})
+    frame = parse_frame({"style": "leica", "show_logo": True, "show_params": True, "show_date": True, "output_ratio": "original"})
     assert frame is not None
     out = apply_frame(photo, frame, meta)
     dark = np.any(out < 80, axis=2)
@@ -103,7 +103,6 @@ def test_frame_catalog_uses_the_copy_names() -> None:
         "hasselblad": "哈苏水印",
         "film": "胶片",
         "instant": "拍立得",
-        "canvas": "画布",
     }
     assert doc["stamp"]["text_max_length"] == 24
     assert doc["stamp"]["fonts"][0]["name"] == "数码管"

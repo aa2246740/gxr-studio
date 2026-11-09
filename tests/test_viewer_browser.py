@@ -132,8 +132,8 @@ def check(out):
     # 撤销：框回到上一步，后端也回去了
     assert out["undo"]["changed"] is True and near(out["undo"]["box"], out["undo"]["server"])
     assert out["undo"]["preset"] != "16:9"
-    # 边框卡片：7 张都出来，是浏览器自己画的（没有给每种样式请求 /render）
-    assert out["cards"]["cards"] == 7 and out["cards"]["canvases"] == 7
+    # 无边框和五种样式都出来，是浏览器自己画的（没有给每种样式请求 /render）
+    assert out["cards"]["cards"] == 6 and out["cards"]["canvases"] == 6
     assert out["cards"]["cardRenders"] <= 1, out["cards"]  # 舞台上没有现成的画面时才请求一张小图
     assert out["cards"]["stageRenders"] <= 1, out["cards"]  # 离开裁切页，服务器出图时大图重出一次；走显卡时一次也没有
     assert out["cards"]["distinct"] > 8, out["cards"]  # 底图是真的照片，不是一张空白或纯黑
@@ -180,7 +180,7 @@ def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     check(out)
     # 服务器出图时也一样：点样式、改选项、开时间戳都不请求 /render，当帧就画出来
     live_out = out["live"]
-    assert all(live_out["styleFramed"].values()) and len(live_out["styleFramed"]) == 6, live_out
+    assert all(live_out["styleFramed"].values()) and len(live_out["styleFramed"]) == 5, live_out
     assert live_out["stampOn"]["overlay"] is True, live_out
     assert live_out["clickRenders"] == 0, f"点样式、改选项时发出了 /render：{live_out['renderUrls']}"
 
@@ -258,7 +258,7 @@ def _layout_cases():
 
     from gxr_studio.finish.fonts import FontMetrics
     from gxr_studio.finish.layout import frame_layout, stamp_layout
-    from gxr_studio.finish.spec import FrameSpec, StampSpec
+    from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, StampSpec
     from gxr_studio.finish.stamp import format_stamp
     from test_finish_layout_parity import METAS, when_json
 
@@ -266,10 +266,12 @@ def _layout_cases():
     sizes = [(640, 480), (480, 640), (1600, 1066), (4288, 2848), (2848, 4288), (900, 900), (4288, 1583)]
     frames, want_frames, stamps, want_stamps = [], [], [], []
     for w, h in sizes:
-        for style in ("gallery", "leica", "hasselblad", "film", "instant", "canvas"):
+        for style in ("gallery", "leica", "hasselblad", "film", "instant"):
             specs = [
-                FrameSpec(style=style, text=text, show_date=date, color=color, canvas_ratio=ratio)
-                for text, date, color, ratio in itertools.product(("", "Hello 42"), (False, True), ("white", "black"), ("4:5", "9:16"))
+                FrameSpec(style=style, text=text, show_date=date, color=color, output_ratio=ratio)
+                for text, date, color, ratio in itertools.product(
+                    ("", "Hello 42"), (False, True), ("white", "black"), (*OUTPUT_RATIOS, "original")
+                )
             ]
             for spec in specs:
                 for meta in METAS[:2] if w < 2000 else METAS[:1]:

@@ -1,41 +1,34 @@
-"""固定比例加框：保留照片、最小留边和字幕块，只在外面补画布。"""
+"""成品比例独立于裁剪，只增加居中的画布，保留照片和字幕块。"""
 
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from gxr_studio.finish.fonts import FontMetrics
 from gxr_studio.finish.frame import apply_frame
-from gxr_studio.finish.layout import advance, frame_layout
-from gxr_studio.finish.spec import FrameSpec, parse_frame
+from gxr_studio.finish.layout import frame_layout, ink_box
+from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, parse_frame
 from gxr_studio.render.params import EditError
 from test_finish_layout import META
+from test_output_ratio_real import frozen_layout as frozen_layout
 
 STYLES = ("gallery", "leica", "hasselblad", "film", "instant")
-RATIOS = [
-    ("4:3", 240, 320, 3, 4),
-    ("4:3", 2400, 3200, 3, 4),
-    ("4:5", 2400, 3000, 4, 5),
-    ("1:1", 500, 500, 1, 1),
-    ("16:9", 180, 320, 9, 16),
-    ("16:9", 1800, 3200, 9, 16),
-    ("xpan-65-24", 325, 120, 65, 24),
-    ("xpan-65-24", 3250, 1200, 65, 24),
-    ("xpan-65-24", 120, 325, 24, 65),
-    ("xpan-65-24", 1200, 3250, 24, 65),
-]
+SHAPES = [(900, 600), (600, 900), (500, 500), (3250, 1200), (1800, 3200), (120, 325)]
 
 
 @pytest.mark.parametrize("style", STYLES)
-@pytest.mark.parametrize(("preset", "w", "h", "rw", "rh"), RATIOS)
-def test_finished_ratio_keeps_the_photo_and_caption_block(style, preset, w, h, rw, rh):
-    spec = FrameSpec(style=style, text="Hello", show_date=True)
+@pytest.mark.parametrize("ratio", OUTPUT_RATIOS)
+@pytest.mark.parametrize(("w", "h"), SHAPES)
+def test_finished_ratio_keeps_the_photo_and_caption_block(style, ratio, w, h):
+    spec = FrameSpec(style=style, output_ratio=ratio, text="Hello", show_date=True)
     m = FontMetrics()
-    base = frame_layout(w, h, replace(spec, keep_ratio=False), META, m, preset)
-    layout = frame_layout(w, h, spec, META, m, preset)
+    base = frame_layout(w, h, replace(spec, output_ratio="original"), META, m)
+    layout = frame_layout(w, h, spec, META, m)
+    rw, rh = OUTPUT_RATIOS[ratio]
     assert layout.width * rh == layout.height * rw
     assert layout.width >= base.width and layout.height >= base.height
     dx, dy = layout.photo[0] - base.photo[0], layout.photo[1] - base.photo[1]
@@ -51,64 +44,61 @@ def test_finished_ratio_keeps_the_photo_and_caption_block(style, preset, w, h, r
                 assert item[key] == old[key] + dy
         if item["k"] == "text":
             assert item["xs"] == [x + dx for x in old["xs"]]
-            assert item["x"] + advance(m, item["font"], item["px"], item["text"], item["cjk"]) <= layout.width + 0.5
-            assert 0 <= item["y"] and item["y"] + item["px"] <= layout.height + 1
+            left, top, right, bottom = ink_box(m, item["font"], item["px"], item["text"], item["cjk"])
+            assert 0 <= item["x"] + left <= item["x"] + right <= layout.width
+            assert 0 <= item["y"] + top <= item["y"] + bottom <= layout.height
         elif item["k"] == "logo":
             assert 0 <= item["x"] and item["x"] + item["w"] <= layout.width
             assert 0 <= item["y"] and item["y"] + item["h"] <= layout.height
         else:
-            assert 0 <= item["x1"] <= layout.width and 0 <= item["x2"] <= layout.width
-            assert 0 <= item["y1"] <= layout.height and 0 <= item["y2"] <= layout.height
+            stroke = (item["w"] + 1) // 2
+            assert 0 <= item["x1"] - stroke <= item["x2"] + stroke <= layout.width
+            assert 0 <= item["y1"] - stroke <= item["y2"] + stroke <= layout.height
 
 
 @pytest.mark.parametrize("style", STYLES)
-def test_the_framed_photo_is_not_resampled(style):
+@pytest.mark.parametrize("ratio", (*OUTPUT_RATIOS, "original"))
+def test_the_framed_photo_is_not_resampled(style, ratio):
     photo = np.random.default_rng(55).integers(0, 256, size=(320, 240, 3), dtype=np.uint8)
-    spec = FrameSpec(style=style, text="Hello")
-    layout = frame_layout(240, 320, spec, META, FontMetrics(), "4:3")
-    out = apply_frame(photo, spec, META, "4:3")
+    spec = FrameSpec(style=style, output_ratio=ratio, text="Hello")
+    layout = frame_layout(240, 320, spec, META, FontMetrics())
+    out = apply_frame(photo, spec, META)
     x, y = layout.photo
     assert out.shape[:2] == (layout.height, layout.width)
     assert np.array_equal(out[y : y + 320, x : x + 240], photo)
 
 
-@pytest.mark.parametrize("style", (*STYLES, "canvas"))
-@pytest.mark.parametrize("preset", (None, "original", "free"))
-def test_original_free_and_missing_crops_take_the_old_layout_path(style, preset):
-    spec = FrameSpec(style=style, text="Hello")
-    assert frame_layout(900, 600, spec, META, FontMetrics(), preset) == frame_layout(
-        900, 600, replace(spec, keep_ratio=False), META, FontMetrics()
-    )
-
-
 @pytest.mark.parametrize("style", STYLES)
-def test_turning_ratio_off_is_the_existing_layout(style):
-    spec = FrameSpec(style=style, keep_ratio=False, text="Hello")
-    assert frame_layout(2400, 3200, spec, META, FontMetrics(), "4:3") == frame_layout(2400, 3200, spec, META, FontMetrics())
+@pytest.mark.parametrize(("w", "h"), SHAPES)
+def test_original_ratio_is_the_main_layout_without_ratio_padding(frozen_layout, style, w, h):
+    spec = FrameSpec(style=style, output_ratio="original", text="Hello", show_date=True)
+    old = SimpleNamespace(**spec.to_json(), keep_ratio=False)
+    m = FontMetrics()
+    assert frame_layout(w, h, spec, META, m).to_json() == frozen_layout.frame_layout(w, h, old, META, m, "4:3").to_json()
 
 
-@pytest.mark.parametrize("value", (0, 1, "false", None, []))
-def test_keep_ratio_must_be_a_boolean(value):
+@pytest.mark.parametrize("value", (0, True, "2:1", None, [], {}))
+def test_output_ratio_must_be_one_of_the_choices(value):
     with pytest.raises(EditError) as error:
-        parse_frame({"style": "gallery", "keep_ratio": value})
+        parse_frame({"style": "gallery", "output_ratio": value})
     assert error.value.code == "bad_frame"
-    assert "只能打开或关闭" in error.value.detail
+    assert error.value.message == "请选择成品比例后再试。"
 
 
-def test_older_clients_and_sidecars_follow_the_crop_by_default():
+def test_a_new_frame_defaults_to_three_by_four():
     spec = parse_frame({"style": "instant"})
-    assert spec.keep_ratio is True
-    assert spec.to_json()["keep_ratio"] is True
+    assert spec.output_ratio == "3:4"
+    assert spec.to_json()["output_ratio"] == "3:4"
 
 
 def test_hdr_uses_the_same_new_frame_canvas_and_photo_position():
     from gxr_studio.finish.hdr_export import HdrTrack
 
-    spec = FrameSpec(style="instant")
-    layout = frame_layout(240, 320, spec, {}, FontMetrics(), "4:3")
+    spec = FrameSpec(style="instant", output_ratio="16:9")
+    layout = frame_layout(240, 320, spec, {}, FontMetrics())
     track = HdrTrack(None)
     track.layer = np.full((320, 240, 2), 0.5, dtype=np.float32)
-    track.frame(spec, {}, "4:3")
+    track.frame(spec, {})
     x, y = layout.photo
     assert track.layer.shape[:2] == (layout.height, layout.width)
     assert np.all(track.layer[y : y + 320, x : x + 240] == 0.5)
