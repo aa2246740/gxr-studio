@@ -91,6 +91,8 @@ function drawCard(view, style, holder, base) {
   const canvas = holder.querySelector('canvas') || h('canvas', { 'aria-hidden': 'true' });
   canvas.width = Math.max(1, Math.round(deco.width * scale));
   canvas.height = Math.max(1, Math.round(deco.height * scale));
+  // 显示比例取自导出版面，不用小位图取整后的宽高比（宽幅照片尤其明显）。
+  canvas.style.aspectRatio = `${deco.width} / ${deco.height}`;
   const ctx = canvas.getContext('2d');
   drawDecor(ctx, deco, scale, { photo: base.image, onLogo: redo });
   holder.classList.remove('skel');

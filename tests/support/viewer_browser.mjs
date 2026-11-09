@@ -13,6 +13,7 @@ import { walkPanelLayout } from './panel_layout_walk.mjs';
 import { walkSliderKeys } from './slider_keys_walk.mjs';
 import { walkStampBorder } from './stamp_border_walk.mjs';
 import { walkOutputRatios, walkPendingFrameRatio } from './output_ratio_walk.mjs';
+import { walkFrameCards } from './frame_cards_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -324,6 +325,10 @@ try {
   }
   if (mode === 'slider-keys') {
     out.keys = await walkSliderKeys({ call, evalIn });
+    await finish(0);
+  }
+  if (mode === 'frame-cards') {
+    out.frameCards = await walkFrameCards({ evalIn });
     await finish(0);
   }
   if (mode === 'output-ratio') {
