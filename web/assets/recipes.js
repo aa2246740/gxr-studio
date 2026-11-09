@@ -101,7 +101,7 @@ export function recipePanel(view) {
     nodes.push(h('div', { class: usable ? 'look-group' : 'look-group dimmed-block' }, deck.grid(items)));
   };
 
-  section('内置配方', unit.recipes.map((r) => builtinCard({ kind: r.kind || 'builtin', slot: r.slot, ...(r.id ? { id: r.id } : {}) }, r.name || slotName(sel.unit, r.slot))));
+  section('内置配方', unit.recipes.map((r) => builtinCard({ kind: r.kind || 'builtin', slot: r.slot, ...(r.id ? { id: r.id } : {}) }, r.kind === 'record' ? r.name : slotName(sel.unit, r.slot))));
   if ((unit.looks || []).length) {
     section('Looks', unit.looks.map((r) => builtinCard({ kind: 'look', slot: r.slot, id: r.id }, r.name)));
   }

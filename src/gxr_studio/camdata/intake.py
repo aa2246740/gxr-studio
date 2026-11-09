@@ -219,7 +219,7 @@ def inspect_dat(raw: bytes, library: bytes | None = None) -> DatInfo:
         raise IntakeError(
             422,
             "dat_invalid",
-            str(exc) if gen in (176, 178) else "无法导入相机配方文件。请从存储卡重新复制。",
+            str(exc) if gen in (176, 178) or library is not None else "无法导入相机配方文件。请从存储卡重新复制。",
             {"detail": str(exc)},
         ) from exc
     except Exception as exc:  # noqa: BLE001  畸形输入可能触发任何解析错误，统一当作损坏

@@ -27,8 +27,10 @@ def main():
     assert sys.flags.isolated and sys.dont_write_bytecode and os.getpriority(os.PRIO_PROCESS, 0) == 15
     root, out = args.research.resolve(), args.out.resolve()
     assert out.is_relative_to(root / "research/studio_g178_codec_r1/local")
-    out.mkdir(parents=True, exist_ok=True)
     helper_path = Path(__file__).with_name("verify_unit_calibration.py")
+    if not helper_path.is_file() or calib.SCHEMA != "gxr-studio/calib/2":
+        parser.error("逐单元颜色复核需要先合入 PR #106；当前分支只接入双文件和完整记录。")
+    out.mkdir(parents=True, exist_ok=True)
     spec = importlib.util.spec_from_file_location("unitcal_helpers", helper_path)
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
