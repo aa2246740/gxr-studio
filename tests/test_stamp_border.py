@@ -42,11 +42,11 @@ def test_border_stamp_leaves_the_photo_untouched_and_clears_the_caption(size, ca
         crop_preset="4:3",
         track=track,
     )
-    layout = frame_layout(w, h, frame, {}, FontMetrics(), "4:3")
+    layout = frame_layout(w, h, frame, {}, FontMetrics())
     assert layout is not None
     x, y = layout.photo
     assert np.array_equal(result[y : y + h, x : x + w], rgb), "印记必须在照片外"
-    assert not np.array_equal(result, apply_frame(rgb, frame, {}, "4:3")), "底边确实印出了日期"
+    assert not np.array_equal(result, apply_frame(rgb, frame, {})), "底边确实印出了日期"
     assert track.layer is not None and np.isfinite(track.layer[y : y + h, x : x + w]).all()
     assert stamp.to_json()["placement"] == "border"
     mark = stamp_layout(w, h, stamp, format_stamp(stamp, taken, None), FontMetrics(), layout)

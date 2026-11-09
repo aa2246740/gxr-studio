@@ -21,13 +21,15 @@ def frames_document() -> dict[str, Any]:
         {"id": "show_params", "name": "参数"},
         {"id": "show_date", "name": "日期"},
     ]
-    canvas = [
-        {"id": "1:1", "name": "1:1"},
-        {"id": "3:4", "name": "3:4"},
-        {"id": "2:3", "name": "2:3"},
-        {"id": "4:5", "name": "4:5"},
-        {"id": "3:2", "name": "3:2"},
-        {"id": "9:16", "name": "9:16"},
+    ratios = [
+        {"id": "1:1", "name": "1:1 · 方图"},
+        {"id": "4:5", "name": "4:5 · Instagram 竖图"},
+        {"id": "3:4", "name": "3:4 · 小红书"},
+        {"id": "2:3", "name": "2:3 · 竖幅"},
+        {"id": "9:16", "name": "9:16 · 快拍 · 短视频"},
+        {"id": "16:9", "name": "16:9 · 横屏视频"},
+        {"id": "3:2", "name": "3:2 · 横幅"},
+        {"id": "original", "name": "照片原比例"},
     ]
     styles: list[dict[str, Any]] = [
         {"id": "none", "name": "无", "options": []},
@@ -36,15 +38,14 @@ def frames_document() -> dict[str, Any]:
         {"id": "hasselblad", "name": "哈苏水印", "options": ["color", "show_params", "show_date", "text"]},
         {"id": "film", "name": "胶片", "options": []},
         {"id": "instant", "name": "拍立得", "options": ["text"]},
-        {"id": "canvas", "name": "画布", "options": ["color", "canvas_ratio"]},
     ]
     for style in styles:
-        if style["id"] not in {"none", "canvas"}:
-            style["options"].append("keep_ratio")
+        if style["id"] != "none":
+            style["options"].append("output_ratio")
     return {
         "styles": styles,
-        "options": {"color": color, "weight": weight, "show": show, "canvas_ratio": canvas},
-        "defaults": {"frame": {"style": "none", "color": "white", "weight": "medium", "canvas_ratio": "4:5"}},
+        "options": {"color": color, "weight": weight, "show": show, "output_ratio": ratios},
+        "defaults": {"frame": {"style": "none", "color": "white", "weight": "medium", "output_ratio": "3:4"}},
         "stamp": {
             "placements": [{"id": "photo", "name": "照片上"}, {"id": "border", "name": "拍立得边框上"}],
             "content": [

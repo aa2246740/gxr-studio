@@ -11,6 +11,7 @@ from ..render.params import INVALID_REQUEST, EditError
 
 SLIDER = 100
 STAMP_TEXT_MAX = 24
+OUTPUT_RATIOS = {"1:1": (1, 1), "4:5": (4, 5), "3:4": (3, 4), "2:3": (2, 3), "9:16": (9, 16), "16:9": (16, 9), "3:2": (3, 2)}
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,7 @@ class FrameSpec:
     show_params: bool = True
     show_date: bool = False
     text: str = ""
-    canvas_ratio: str = "4:5"
-    keep_ratio: bool = True
+    output_ratio: str = "3:4"
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -68,8 +68,7 @@ class FrameSpec:
             "show_params": self.show_params,
             "show_date": self.show_date,
             "text": self.text,
-            "canvas_ratio": self.canvas_ratio,
-            "keep_ratio": self.keep_ratio,
+            "output_ratio": self.output_ratio,
         }
 
 
@@ -150,8 +149,10 @@ def parse_frame(raw: Any) -> FrameSpec | None:
         return None
     if not isinstance(raw, dict):
         raise EditError("bad_frame", "边框设置格式不对。请重新选择样式后再试。")
+    if "keep_ratio" in raw or "canvas_ratio" in raw or raw.get("style") == "canvas":
+        return FrameSpec()
     style = raw.get("style", "none")
-    if style not in {"none", "gallery", "leica", "hasselblad", "film", "instant", "canvas"}:
+    if style not in {"none", "gallery", "leica", "hasselblad", "film", "instant"}:
         raise EditError("bad_frame", INVALID_REQUEST, "没有这个边框样式。")
     color = raw.get("color", "white")
     if color not in {"white", "black", "cream"}:
@@ -159,13 +160,13 @@ def parse_frame(raw: Any) -> FrameSpec | None:
     weight = raw.get("weight", "medium")
     if weight not in {"thin", "medium", "thick"}:
         raise EditError("bad_frame", INVALID_REQUEST, "边框宽度只能是细、中或粗。")
-    ratio = raw.get("canvas_ratio", "4:5")
-    if ratio not in {"1:1", "3:4", "2:3", "4:5", "3:2", "9:16"}:
-        raise EditError("bad_frame", INVALID_REQUEST, "画布比例不在可选范围内。")
+    ratio = raw.get("output_ratio", "3:4")
+    if not isinstance(ratio, str) or ratio not in (*OUTPUT_RATIOS, "original"):
+        raise EditError("bad_frame", "请选择成品比例后再试。")
     text = raw.get("text", "")
     if not isinstance(text, str) or len(text) > STAMP_TEXT_MAX:
         raise EditError("bad_frame", INVALID_REQUEST, f"边框文字最多 {STAMP_TEXT_MAX} 个字。")
-    for key in ("show_logo", "show_params", "show_date", "keep_ratio"):
+    for key in ("show_logo", "show_params", "show_date"):
         if key in raw and not isinstance(raw[key], bool):
             raise EditError("bad_frame", INVALID_REQUEST, "边框的显示开关只能打开或关闭。")
     return FrameSpec(
@@ -176,8 +177,7 @@ def parse_frame(raw: Any) -> FrameSpec | None:
         show_params=bool(raw.get("show_params", True)),
         show_date=bool(raw.get("show_date", False)),
         text=text,
-        canvas_ratio=ratio,
-        keep_ratio=raw.get("keep_ratio", True),
+        output_ratio=ratio,
     )
 
 

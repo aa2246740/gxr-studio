@@ -67,7 +67,7 @@ def test_frames_stamp_and_valid_crop_cover_the_synthetic_paths() -> None:
 def _frames_stamp_and_valid_crop() -> None:
     photo = np.full((80, 120, 3), 180, np.uint8)
     meta = {"lens_short": "A12 50mm", "aperture": "f/2.5", "shutter": "1/80s", "iso": "ISO 200", "date": "2026.10.31", "frame_no": "001"}
-    for style in ("gallery", "leica", "hasselblad", "film", "instant", "canvas"):
+    for style in ("gallery", "leica", "hasselblad", "film", "instant"):
         spec = parse_frame({"style": style, "text": "上海" if style == "instant" else "", "show_date": True})
         assert spec is not None
         out = apply_frame(photo, spec, meta)
@@ -97,7 +97,7 @@ def test_bad_spec_values_are_rejected_before_they_can_be_saved() -> None:
         {"style": "nope"},
         {"color": "red"},
         {"weight": "huge"},
-        {"canvas_ratio": "2:1"},
+        {"output_ratio": "2:1"},
         {"text": "字" * 30},
     ):
         try:

@@ -6,12 +6,11 @@
 // 没有上一张版面留下的行内样式。等的都是「画面成了想要的样子」，不是固定的睡眠：机器忙的时候慢一点，不会误报。
 
 const FRAMES = {
-  gallery: { style: 'gallery', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', canvas_ratio: '4:5' },
-  leica: { style: 'leica', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: 'Leica', canvas_ratio: '4:5' },
-  hasselblad: { style: 'hasselblad', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', canvas_ratio: '4:5' },
-  film: { style: 'film', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', canvas_ratio: '4:5' },
-  instant: { style: 'instant', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: 'Hello', canvas_ratio: '4:5' },
-  canvas: { style: 'canvas', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', canvas_ratio: '4:5' },
+  gallery: { style: 'gallery', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', output_ratio: '3:4' },
+  leica: { style: 'leica', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: 'Leica', output_ratio: '3:4' },
+  hasselblad: { style: 'hasselblad', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', output_ratio: '3:4' },
+  film: { style: 'film', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: '', output_ratio: '3:4' },
+  instant: { style: 'instant', color: 'white', weight: 'medium', show_logo: true, show_params: true, show_date: false, text: 'Hello', output_ratio: '3:4' },
 };
 const STAMP = { enabled: true, content: 'text', text: 'Paris', font: 'typewriter', color: 'orange', size: 'large', corner: 'br', glow: false };
 // 六张可渲染 JPG，含 RAW+JPG、只有 JPG 和竖拍；不依赖图库首六张恰好都能出图。
@@ -25,7 +24,7 @@ const ROUNDS = [
     path: [0, 1, 2, 3, 4, 5, 4, 3, { to: 2, zoomBefore: true }, 1, 0, 1, { to: 2, cropBefore: true }, 1],
   },
   {
-    plan: [{ frame: 'hasselblad' }, { frame: 'film' }, { frame: 'canvas' }, {}, {}, { frame: 'leica', stamp: true }],
+    plan: [{ frame: 'hasselblad' }, { frame: 'film' }, { frame: 'gallery' }, {}, {}, { frame: 'leica', stamp: true }],
     path: [0, 1, 2, 3, 4, 5, 4, 3, 2, { to: 1, zoomBefore: true }, 0, { to: 1, cropBefore: true }, 2],
   },
 ];

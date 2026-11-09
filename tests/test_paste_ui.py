@@ -59,7 +59,15 @@ def test_rgb_copy_paste_undo_redo_keeps_every_channel(tmp_path):
 
 def test_frame_ratio_choice_is_copied_pasted_undone_and_redone(tmp_path):
     out = run(tmp_path, "frame-ratio-copy-paste-undo")
-    assert out == {"copied": True, "pasted": True, "crop": "1:1", "undone": False, "undoSaved": False, "redone": True, "redoSaved": True}
+    assert out == {
+        "copied": "9:16",
+        "pasted": "9:16",
+        "crop": "1:1",
+        "undone": "1:1",
+        "undoSaved": "1:1",
+        "redone": "9:16",
+        "redoSaved": "9:16",
+    }
 
 
 def test_copy_options_are_remembered_and_empty_groups_are_not_copied(tmp_path):

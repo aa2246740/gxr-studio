@@ -100,6 +100,9 @@ export function paintStage(view) {
     return;
   }
 
+  // 新图解码时旧图仍然可见：边框先在旧图上更新，不等换图。
+  if (curImg && cur.dataset.mode === mode) decorImage(view, cur, curImg, mode, maxW, maxH, natural);
+
   const pv = h('div', { class: 'pv' });
   pv.dataset.mode = mode;
   pv.dataset.src = src;

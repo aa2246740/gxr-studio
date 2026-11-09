@@ -13,12 +13,10 @@ from typing import Any
 from .. import crop as cropmod
 from ..crop import Crop, CropError
 from ..finish.geometry import fitted_crop, output_size
-from ..finish.spec import Geometry, parse_geometry
+from ..finish.spec import Geometry, parse_frame, parse_geometry
 from ..meta import read_dng_meta, read_jpeg_meta
 from . import sidecar as sc
 from .store import Library
-
-_BORDER_KEYS = ("style", "color", "weight", "show_logo", "show_params", "show_date", "text", "canvas_ratio", "keep_ratio")
 
 
 class RevisionConflict(Exception):
@@ -85,7 +83,8 @@ def heal_frame(lib: Library, shot: dict[Any, Any], side: dict[Any, Any]) -> dict
         return side
     updated = dict(side)
     if has_style and frame is not None and not _has_border(side):
-        updated["border"] = {key: frame[key] for key in _BORDER_KEYS if key in frame}
+        border = parse_frame(frame)
+        updated["border"] = border.to_json() if border is not None else {"style": "none"}
     if recovered is not None:
         width, height, orientation = recovered
     elif isinstance(width_raw, int) and not isinstance(width_raw, bool) and isinstance(height_raw, int) and not isinstance(height_raw, bool):

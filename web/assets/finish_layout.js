@@ -5,7 +5,7 @@
 // 数字一律是「导出时的像素」：照片是已裁切、已盖日期戳的整张，宽 w 高 h。
 
 export const WEIGHT = { thin: 0.02, medium: 0.04, thick: 0.07 };
-export const CANVAS = { '1:1': [1, 1], '3:4': [3, 4], '2:3': [2, 3], '4:5': [4, 5], '3:2': [3, 2], '9:16': [9, 16] };
+export const OUTPUT_RATIOS = { '1:1': [1, 1], '4:5': [4, 5], '3:4': [3, 4], '2:3': [2, 3], '9:16': [9, 16], '16:9': [16, 9], '3:2': [3, 2] };
 const CROP_RATIOS = { '3:2': [3, 2], '4:3': [4, 3], '1:1': [1, 1], '4:5': [5, 4], '16:9': [16, 9], '16:10': [8, 5], '1.91:1': [191, 100], '2.35:1': [47, 20], 'xpan-65-24': [65, 24] };
 export const COLORS = { white: [255, 255, 255], black: [12, 12, 12], cream: [245, 236, 220] };
 export const STAMP_COLORS = { orange: [255, 106, 0], red: [220, 32, 32], yellow: [255, 196, 40], white: [255, 255, 255] };
@@ -204,29 +204,6 @@ function instant(w, h, spec, m) {
   return { width: outW, height: outH, photo: [side, side], bg: [248, 246, 242], items };
 }
 
-// 画布：四边留出和「白边 · 中」一样宽的边，再补到所选的画布比例，照片居中
-function canvas(w, h, spec) {
-  const mg = margin(w, h, 'medium');
-  const innerW = w + 2 * mg;
-  const innerH = h + 2 * mg;
-  const [rw, rh] = CANVAS[spec.canvas_ratio];
-  if (spec.canvas_ratio === '3:4' || spec.canvas_ratio === '2:3') {
-    const [width, height] = ratioSize(innerW, innerH, rw, rh);
-    return { width, height, photo: [idiv(width - w, 2), idiv(height - h, 2)], bg: [...COLORS[spec.color]], items: [] };
-  }
-  const target = rw / rh;
-  let outW;
-  let outH;
-  if (innerW / innerH > target) {
-    outW = innerW;
-    outH = pyRound(innerW / target);
-  } else {
-    outH = innerH;
-    outW = pyRound(innerH * target);
-  }
-  return { width: outW, height: outH, photo: [idiv(outW - w, 2), idiv(outH - h, 2)], bg: [...COLORS[spec.color]], items: [] };
-}
-
 // 样式 none（或不认识的样式）返回 null。meta：{ lens, lens_short, aperture, shutter, iso, date, frame_no }
 function baseFrame(w, h, spec, meta, m) {
   switch (spec.style) {
@@ -235,7 +212,6 @@ function baseFrame(w, h, spec, meta, m) {
     case 'hasselblad': return hasselblad(w, h, spec, meta || {}, m);
     case 'film': return film(w, h, meta || {}, m);
     case 'instant': return instant(w, h, spec, m);
-    case 'canvas': return canvas(w, h, spec);
     default: return null;
   }
 }
@@ -270,9 +246,9 @@ function contentSize(layout, m) {
   return [layout.width + 2 * ex, layout.height + 2 * ey];
 }
 
-export function frameLayout(w, h, spec, meta, m, cropPreset = null) {
+export function frameLayout(w, h, spec, meta, m) {
   const layout = baseFrame(w, h, spec, meta, m);
-  const ratio = spec.keep_ratio !== false && spec.style !== 'canvas' ? cropRatio(cropPreset, w, h) : null;
+  const ratio = OUTPUT_RATIOS[spec.output_ratio ?? '3:4'];
   if (!layout || !ratio) return layout;
   const [width, height] = ratioSize(...contentSize(layout, m), ...ratio);
   const dx = idiv(width - layout.width, 2);

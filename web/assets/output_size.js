@@ -3,7 +3,7 @@ import { api } from './api.js';
 import { h } from './dom.js';
 import { state } from './state.js';
 import { flushPhotos } from './saves.js';
-import { cropRatio } from './finish_layout.js';
+import { cropRatio, OUTPUT_RATIOS } from './finish_layout.js';
 import { makeDeco } from './stage_finish.js';
 import { photoSize } from './output_photo_size.js';
 
@@ -34,8 +34,7 @@ export function frameSizeLine(view) {
     const deco = makeDeco({ meta: { frame: data.meta } }, frame, null, w, h, paint, data.crop_preset);
     if (!deco && frame.style !== 'none') return;
     const size = deco ? [deco.width, deco.height] : [w, h];
-    const ratio = frame.style === 'canvas' ? frame.canvas_ratio.split(':').map(Number)
-      : frame.style === 'none' || frame.keep_ratio !== false ? cropRatio(data.crop_preset, w, h) : null;
+    const ratio = frame.style === 'none' ? cropRatio(data.crop_preset, w, h) : OUTPUT_RATIOS[frame.output_ratio];
     line.textContent = `成品 ${sizeText(size, ratio)}`;
   }
   if (entry.value) paint();

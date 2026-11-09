@@ -15,7 +15,7 @@ export const PASTE_GROUPS = [
   ['adjust', '调整', '曝光、色温、对比度、主曲线和红绿蓝曲线等'],
   ['geometry', '几何', '拉直、透视、畸变（不含旋转和翻转）'],
   ['crop', '裁剪', '比例和裁剪框'],
-  ['frame', '边框', '边框样式'],
+  ['frame', '边框', '边框样式、成品比例'],
   ['stamp', '时间戳', '日期或文字戳'],
 ];
 const DEFAULT_GROUPS = ['recipe', 'adjust'];

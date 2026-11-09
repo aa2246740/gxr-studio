@@ -3,7 +3,7 @@
 from test_viewer_browser import drive, live  # noqa: F401  live 是夹具
 
 
-def test_frame_default_button_never_overlaps_the_canvas_card(live, tmp_path):  # noqa: F811
+def test_frame_default_button_never_overlaps_the_last_style_card(live, tmp_path):  # noqa: F811
     out = drive(live, tmp_path, "panel-frame")
     for row in out["panel"]:
         assert all(s["gap"] >= 6 for s in row["samples"]), row

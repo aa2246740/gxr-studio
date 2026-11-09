@@ -446,7 +446,10 @@ def _grid_luma(jpeg: bytes) -> np.ndarray:
 def test_export_hdr_follows_rotation_straighten_crop_and_frame(client, hdr_card):
     _import(client)
     photo = _photo(client, "HDR0001")
-    edit = {"geometry": {"rotate90": 1, "straighten": 2.0}, "frame": {"style": "gallery", "color": "white", "weight": "thick"}}
+    edit = {
+        "geometry": {"rotate90": 1, "straighten": 2.0},
+        "frame": {"style": "gallery", "color": "white", "weight": "thick", "output_ratio": "original"},
+    }
     assert client.put(f"/api/photos/{photo['id']}/edit", json=edit).status_code == 200
     assert client.put(f"/api/photos/{photo['id']}/crop", json={"preset": "free", "rect": [0.1, 0.05, 0.8, 0.9]}).status_code == 200
     plain = Path(_export(client, photo)["path"]).read_bytes()
@@ -466,6 +469,33 @@ def test_export_hdr_follows_rotation_straighten_crop_and_frame(client, hdr_card)
     inner, inner_y = lg[k:-k, k:-k], sdr_y[k:-k, k:-k]
     assert float(inner[inner_y > 0.95].mean()) > 0.5
     assert float(inner[inner_y < 0.15].max()) < 0.05
+
+
+@pytest.mark.parametrize("ratio", ("3:4", "16:9"))
+def test_fixed_output_ratio_hdr_keeps_padding_dark(client, hdr_card, ratio):
+    _import(client)
+    photo = _photo(client, "HDR0001")
+    edit = {"geometry": {"rotate90": 1, "straighten": 2.0}, "frame": {"style": "gallery", "weight": "thick", "output_ratio": ratio}}
+    assert client.put(f"/api/photos/{photo['id']}/edit", json=edit).status_code == 200
+    assert client.put(f"/api/photos/{photo['id']}/crop", json={"preset": "free", "rect": [0.1, 0.05, 0.8, 0.9]}).status_code == 200
+    plain = Path(_export(client, photo)["path"]).read_bytes()
+    made = _export(client, photo, hdr=True)
+    assert made["hdr"] is True
+    result = hs.check_file(plain, Path(made["path"]).read_bytes())
+    assert result["ok"], result["fail"]
+    hh, ww = np.asarray(Image.open(io.BytesIO(plain))).shape[:2]
+    size = client.post(f"/api/photos/{photo['id']}/output-size", json={}).json()
+    pw, ph = size["photo"]
+    rw, rh = map(int, ratio.split(":"))
+    assert size["sizes"]["original"] == [ww, hh] and ww * rh == hh * rw
+    x, y = (ww - pw) // 2, (hh - ph) // 2
+    gain = result["log_gain"]
+    # 每格 4 像素，避开照片边界的混合格；新增留白不能有 HDR 增益。
+    for strip in (gain[: y // 4 - 1], gain[(y + ph + 3) // 4 + 1 :], gain[:, : x // 4 - 1], gain[:, (x + pw + 3) // 4 + 1 :]):
+        assert float(strip.max()) < ENCODED_ZERO and float(strip.mean()) < 0.01
+    rows, cols = slice((y + 3) // 4 + 3, (y + ph) // 4 - 3), slice((x + 3) // 4 + 3, (x + pw) // 4 - 3)
+    inner, luma = gain[rows, cols], _grid_luma(plain)[rows, cols]
+    assert float(inner[luma > 0.95].mean()) > 0.5
 
 
 def test_export_hdr_leaves_the_date_stamp_alone(client, hdr_card):

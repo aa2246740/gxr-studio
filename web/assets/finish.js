@@ -10,8 +10,7 @@ export const DEFAULT_FRAME = {
   show_date: false,
   show_frame_no: true,
   text: '',
-  canvas_ratio: '4:5',
-  keep_ratio: true,
+  output_ratio: '3:4',
 };
 
 export const DEFAULT_STAMP = {
@@ -39,6 +38,7 @@ export const TEXT_MAX = 24;
 
 // 不加边框：后端写 "none"，旧数据里的 null 也当成不加
 export function normalizeFrame(f) {
+  if (f && ('keep_ratio' in f || 'canvas_ratio' in f || f.style === 'canvas')) return { ...DEFAULT_FRAME };
   const out = { ...DEFAULT_FRAME, ...(f || {}) };
   if (!out.style) out.style = 'none';
   out.text = clipText(out.text, TEXT_MAX);
@@ -123,8 +123,7 @@ export function frameBody(frame) {
     show_params: frame.show_params,
     show_date: frame.show_date,
     text: clipText(frame.text),
-    canvas_ratio: frame.canvas_ratio,
-    keep_ratio: frame.keep_ratio,
+    output_ratio: frame.output_ratio,
   };
   return body;
 }

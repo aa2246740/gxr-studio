@@ -10,12 +10,12 @@ from test_finish_routes import client as client
 from test_raw_export import raw_only as raw_only
 
 
-@pytest.mark.parametrize("style", ("none", "gallery", "leica", "hasselblad", "film", "instant", "canvas"))
-@pytest.mark.parametrize("keep", (True, False))
-def test_size_tiers_equal_the_exported_file(client, style, keep):
+@pytest.mark.parametrize("style", ("none", "gallery", "leica", "hasselblad", "film", "instant"))
+@pytest.mark.parametrize("ratio", ("3:4", "16:9", "original"))
+def test_size_tiers_equal_the_exported_file(client, style, ratio):
     pid = find(client, "R0000102")["id"]
     assert client.put(f"/api/photos/{pid}/crop", json={"preset": "4:3", "orientation": "portrait"}).status_code == 200
-    frame = {"style": style, "keep_ratio": keep, "canvas_ratio": "3:4", "text": "Hello"}
+    frame = {"style": style, "output_ratio": ratio, "text": "Hello"}
     assert client.put(f"/api/photos/{pid}/edit", json={"frame": frame}).status_code == 200
     result = client.post(f"/api/photos/{pid}/output-size", json={})
     assert result.status_code == 200, result.text
@@ -26,8 +26,9 @@ def test_size_tiers_equal_the_exported_file(client, style, keep):
         out = result.json()
         with Image.open(out["path"]) as image:
             assert list(image.size) == before["sizes"][tier] == [out["width"], out["height"]]
-        if tier == "original" and ((keep and style != "none") or style == "canvas"):
-            assert out["width"] * 4 == out["height"] * 3
+        if tier == "original" and style != "none" and ratio != "original":
+            rw, rh = map(int, ratio.split(":"))
+            assert out["width"] * rh == out["height"] * rw
 
 
 def test_size_queries_accept_the_live_crop_without_saving_or_rendering(client, monkeypatch):
@@ -46,7 +47,7 @@ def test_size_queries_accept_the_live_crop_without_saving_or_rendering(client, m
         json={
             "geometry": {"rotate90": 1},
             "crop": {"preset": "4:3", "rect": [0, 0, 1, 1]},
-            "frame": {"style": "instant", "keep_ratio": True},
+            "frame": {"style": "instant", "output_ratio": "3:4"},
         },
     )
     assert result.status_code == 200, result.text

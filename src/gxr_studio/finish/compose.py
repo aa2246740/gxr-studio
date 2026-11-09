@@ -142,10 +142,10 @@ def finish_array(
     if border_stamp:
         h, w = rgb.shape[:2]
         fonts = FontMetrics()
-        border = frame_layout(w, h, frame, meta, fonts, crop_preset)
+        border = frame_layout(w, h, frame, meta, fonts)
         mark = stamp_layout(w, h, stamp, format_stamp(stamp, taken, file_time), fonts, border)
-    rgb = apply_frame(rgb, frame, meta, crop_preset)
-    track.frame(frame, meta, crop_preset)
+    rgb = apply_frame(rgb, frame, meta)
+    track.frame(frame, meta)
     if border_stamp and mark is not None:
         rgb = apply_stamp(rgb, stamp, taken, file_time, mark)
     return rgb, None

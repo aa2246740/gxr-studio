@@ -12,6 +12,7 @@ import { walkLibrary, walkLibraryRefresh } from './library_walk.mjs';
 import { walkPanelLayout } from './panel_layout_walk.mjs';
 import { walkSliderKeys } from './slider_keys_walk.mjs';
 import { walkStampBorder } from './stamp_border_walk.mjs';
+import { walkOutputRatios, walkPendingFrameRatio } from './output_ratio_walk.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -143,6 +144,9 @@ try {
     if (line) out.failedRequests = [...out.failedRequests.slice(-19), line.replace(/token=[^&\s]+/, 'token=…').slice(0, 300)];
   });
   await call('Network.enable');
+  if (process.env.VIEWER_REDUCED_MOTION) await call('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: process.env.VIEWER_REDUCED_MOTION }],
+  });
   await call('Runtime.enable');
   await call('Log.enable');
 
@@ -320,6 +324,16 @@ try {
   }
   if (mode === 'slider-keys') {
     out.keys = await walkSliderKeys({ call, evalIn });
+    await finish(0);
+  }
+  if (mode === 'output-ratio') {
+    out.reducedMotion = await evalIn("matchMedia('(prefers-reduced-motion: reduce)').matches");
+    out.outputRatio = await walkOutputRatios({ evalIn });
+    await finish(0);
+  }
+  if (mode === 'output-ratio-pending') {
+    out.reducedMotion = await evalIn("matchMedia('(prefers-reduced-motion: reduce)').matches");
+    out.pendingFrameRatio = await walkPendingFrameRatio({ evalIn });
     await finish(0);
   }
   if (mode === 'stamp-border') {
@@ -552,7 +566,7 @@ try {
       clicks.push({ name, ms, changed, frameMs: Math.round(Math.max(...lead, ...trail)) });
     };
     const styleFramed = {};
-    for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '画布', '白边', '徕卡水印']) {
+    for (const name of ['徕卡水印', '哈苏水印', '胶片', '拍立得', '白边', '哈苏水印', '徕卡水印']) {
       await timed(name, () => card(name).click());
       styleFramed[name] = deco().framed;
     }
