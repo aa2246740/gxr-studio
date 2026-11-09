@@ -94,26 +94,28 @@ def reference_layouts(directory: Path, inputs: list[dict[str, Any]]) -> list[Any
         sys.path.pop(0)
 
 
-def test_all_frame_layouts_match_the_approved_reference_digests() -> None:
-    fixture = json.loads(FIXTURE.read_text())
-    inputs = cases()
-    assert len(inputs) == fixture["count"]
+def build_frame_layouts() -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Real layouts for the shared session fixture, without replacing any engine code."""
     metrics = FontMetrics()
-    for index, (case, want) in enumerate(zip(inputs, fixture["sha256"], strict=True)):
+    out = []
+    for case in cases():
         spec = parse_frame(case["spec"])
         assert spec is not None
         layout = frame_layout(*case["size"], spec, case["meta"], metrics)
         assert layout is not None
-        assert digest(layout.to_json()) == want, (index, case, layout.to_json())
+        out.append((case, layout.to_json()))
+    return out
+
+
+def test_all_frame_layouts_match_the_approved_reference_digests(approved_frame_layouts) -> None:
+    fixture = json.loads(FIXTURE.read_text())
+    assert len(approved_frame_layouts) == fixture["count"]
+    for index, ((case, layout), want) in enumerate(zip(approved_frame_layouts, fixture["sha256"], strict=True)):
+        assert digest(layout) == want, (index, case, layout)
 
 
 @pytest.mark.skipif(not (REFERENCE / "gxr_core.py").is_file(), reason="local approved design reference is absent")
-def test_every_layout_number_equals_the_local_reference() -> None:
-    inputs = cases()
-    metrics = FontMetrics()
-    for case, want in zip(inputs, reference_layouts(REFERENCE, inputs), strict=True):
-        spec = parse_frame(case["spec"])
-        assert spec is not None
-        layout = frame_layout(*case["size"], spec, case["meta"], metrics)
-        assert layout is not None
-        assert canonical(layout.to_json(), exact=True) == canonical(want, exact=True), case
+def test_every_layout_number_equals_the_local_reference(approved_frame_layouts) -> None:
+    inputs = [case for case, _ in approved_frame_layouts]
+    for (case, layout), want in zip(approved_frame_layouts, reference_layouts(REFERENCE, inputs), strict=True):
+        assert canonical(layout, exact=True) == canonical(want, exact=True), case

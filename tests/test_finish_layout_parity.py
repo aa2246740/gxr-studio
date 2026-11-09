@@ -24,7 +24,6 @@ from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, table_dict
 from gxr_studio.finish.layout import frame_layout, stamp_layout
 from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, StampSpec, parse_frame
 from gxr_studio.finish.stamp import format_stamp
-from test_frame_reference import cases as reference_cases
 
 WEB = Path(__file__).resolve().parents[1] / "web" / "assets"
 FIXTURE_CJK = Path(__file__).resolve().parent / "fixtures" / "NotoSansSC-Shanghai.otf"
@@ -168,6 +167,8 @@ console.log(JSON.stringify({ frames, stamps }));
 
 def same(a: Any, b: Any, path: str = "") -> None:
     """数字在 1e-9 以内相同，其余逐项相等。"""
+    if a == b:
+        return
     if isinstance(a, dict):
         assert isinstance(b, dict) and a.keys() == b.keys(), (path, sorted(a), sorted(b))
         for k in a:
@@ -182,7 +183,7 @@ def same(a: Any, b: Any, path: str = "") -> None:
         assert a == b, (path, a, b)
 
 
-def test_preview_layout_equals_export_layout(tmp_path: Path) -> None:
+def test_preview_layout_equals_export_layout(tmp_path: Path, approved_frame_layouts) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("本机没有 node，跳过前端纯函数测试")
@@ -244,13 +245,12 @@ def test_preview_layout_equals_export_layout(tmp_path: Path) -> None:
                 got = frame_layout(w, h, spec, METAS[0], rec)
                 frame_want.append(None if got is None else got.to_json())
         # Every approved option, every finished ratio, all six requested photo shapes.
-        for case in reference_cases():
+        for case, layout in approved_frame_layouts:
             spec = parse_frame(case["spec"])
             assert spec is not None
             w, h = case["size"]
             frame_cases.append({"w": w, "h": h, "spec": spec.to_json(), "meta": case["meta"]})
-            layout = frame_layout(w, h, spec, case["meta"], rec)
-            frame_want.append(layout.to_json() if layout else None)
+            frame_want.append(layout)
         for name in ("finish_layout.js", "finish_fonts.js", "finish_frame_core.js", "finish_frame_styles.js", "finish_frame_objects.js"):
             (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
         (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
