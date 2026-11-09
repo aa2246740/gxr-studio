@@ -5,7 +5,7 @@ import { api, apiBlob, ApiError } from './api.js';
 import { emit, state } from './state.js';
 import { h, toast, toastError, errorBody, confirmAction, setFraction } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
-import { KNOB_NAMES, slotName } from './preview.js';
+import { KNOB_NAMES, recipeLabel } from './preview.js';
 import { loadLutLibrary, librarySection, attributionFields } from './lut_library.js';
 import { selectedFiles, droppedFiles, importFiles } from './lut_files.js';
 import { every } from './poll.js';
@@ -525,7 +525,7 @@ function resultBox() {
       h('span', { class: `sim-tag ${tone}` }, c.label ? SIM_WORDS[c.label] : '接近 04 标准')),
     h('details', { class: 'lut-candidate-details small' }, h('summary', {}, '比较方案与颜色差异'),
       picks,
-      h('div', {}, '基于内置配方：', `${slotName(c.unit, c.slot)}（${describeLevels(c)}）`),
+      h('div', {}, '基于内置配方：', `${recipeLabel(c.unit, c)}（${describeLevels(c)}）`),
       h('div', { class: 'dim' }, `色差 ${c.holdout.median.toFixed(2)}`),
       h('ul', { class: 'diffs' }, c.differences.map((t) => h('li', {}, t)))),
     h('label', { class: 'field' }, h('span', { class: 'small dim' }, '配方名称'), nameInput),
@@ -576,7 +576,7 @@ function recipeCard(r) {
   const rename = h('button', { class: 'btn ghost sm', type: 'button', onclick: () => editName(r) }, '重命名');
   card.append(
     h('div', { class: 'recipe-head' }, h('b', {}, r.name), h('span', { class: 'small dim' }, ` · ${r.camera_short_name}`), h('span', { class: 'grow' }), rename, del),
-    h('div', { class: 'small' }, `${unitName(r.recipe.unit)} · ${slotName(r.recipe.unit, r.recipe.slot)}（${describeLevels(c)}）`),
+    h('div', { class: 'small' }, `${unitName(r.recipe.unit)} · ${recipeLabel(r.recipe.unit, r.recipe)}（${describeLevels(c)}）`),
     h('div', { class: 'small dim' }, `${sourceText(r)} · 相似度 ${sim}`,
       r.source.input_space_guessed ? h('span', { class: 'tag' }, '推测') : null),
   );

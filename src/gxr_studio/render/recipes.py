@@ -170,7 +170,10 @@ class CameraData(Menu):
             info["users"] = self._groups.get((unit, "camera_user"), [])
             if self.manifest["generation"] in (176, 178):
                 count = 4 if self.manifest["generation"] == 178 else 8
-                info["recipes"] = info["recipes"][:count] + self._groups.get((unit, "record"), [])
+                info["recipes"] = [
+                    {**recipe, "position": position, "number": f"{position:02d}"}
+                    for position, recipe in enumerate(info["recipes"][:count] + self._groups.get((unit, "record"), []), 1)
+                ]
         return units
 
     def _extra_for(self, sel: RecipeSel) -> dict[str, Any]:

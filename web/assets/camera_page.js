@@ -69,9 +69,9 @@ function unitCard(unit) {
     h('div', { class: 'unit-head' },
       h('h3', {}, unit.label || unit.lens || unit.id),
       unit.calibrated ? h('span', { class: 'tag soft', title: '电脑预测用这个单元自己的颜色模型' }, '专用颜色模型') : h('span', { class: 'tag soft warn', title: '请先导入这个单元的校准数据' }, '未校准')),
-    h('ol', { class: 'slots' }, recipes.map((r) => h('li', { class: r.is_stock ? 'stock' : '' },
-      h('span', { class: 'num' }, r.number || String(r.slot).padStart(2, '0')),
-      h('span', { class: 'nm' }, slotName(unit.id, r.slot).slice(3)),
+    h('ol', { class: 'slots' }, recipes.map((r, index) => h('li', { class: r.is_stock ? 'stock' : '' },
+      h('span', { class: 'num' }, String(r.position || index + 1).padStart(2, '0')),
+      h('span', { class: 'nm' }, r.kind === 'record' ? r.name : slotName(unit.id, r.slot).slice(3)),
       r.is_stock ? h('span', { class: 'faint small' }, '原厂') : null))),
     (unit.looks && unit.looks.length) ? h('p', { class: 'small dim' }, `另有 ${unit.looks.length} 个 Looks`) : null);
 }
@@ -87,7 +87,7 @@ export function renderCamera(root, isCurrent = () => true) {
       cardSection(isCurrent),
       h('section', { class: 'card-sec' },
         h('h2', { class: 'sec-title' }, '配方位置一览'),
-        h('p', { class: 'small dim' }, '每个单元在相机里的 8 个配方位置（只读）。相机里给配方改的名字读不出来，这里显示的是默认名。'),
+        h('p', { class: 'small dim' }, '按相机顺序列出每个单元的配方。完整配方显示文件里的名字，内置位置显示默认名（只读）。'),
         sum,
         units)));
   root.replaceChildren(page);

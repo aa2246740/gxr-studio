@@ -134,10 +134,11 @@ def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any], library: byt
     c.render.note_import_generation(None)
     status = _status(c)
     where = f"存储卡「{origin['label']}」" if origin.get("kind") == "card" else "你选的文件"
+    counts = "，".join(f"{u['label']} {len(u['recipes'])} 条" for u in c.render.recipe_menu().listing())
     msg = (
         f"相机配方文件已经是最新的（{where}，第 {info.generation} 代），没有改动"
         if unchanged
-        else f"已从{where}导入相机配方文件：第 {info.generation} 代，3 个单元 × {23 if info.generation == 178 else 8} 个完整配方。"
+        else f"已从{where}导入相机配方文件：第 {info.generation} 代，{counts}。"
     )
     if status["next"] == "import_calibration":
         msg += " 还需要导入校准数据才能使用配方。"

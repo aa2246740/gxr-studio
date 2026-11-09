@@ -28,9 +28,17 @@ export const BASE_NAMES = ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原�
 // 配方名：/api/recipes 给了名字就用它，没给按位置号取默认名
 export function slotName(unitId, slot) {
   const unit = state.catalog && state.catalog.units ? state.catalog.units.find((u) => u.id === unitId) : null;
-  const base = unit && unit.recipes ? unit.recipes.find((b) => b.slot === slot) : null;
+  const base = unit && unit.recipes ? unit.recipes.find((b) => b.slot === slot && (!b.kind || b.kind === 'builtin')) : null;
   const name = (base && base.name) || BASE_NAMES[slot - 1] || `空位 ${slot}`;
   return `${String(slot).padStart(2, '0')} ${name}`;
+}
+
+export function recipeLabel(unitId, recipe) {
+  if (recipe.kind !== 'record') return slotName(unitId, recipe.slot);
+  const recipes = state.catalog?.units.find((u) => u.id === unitId)?.recipes || [];
+  const index = recipes.findIndex((r) => r.kind === 'record' && r.id === recipe.id);
+  const record = recipes[index];
+  return record ? `${String(record.position || index + 1).padStart(2, '0')} ${record.name}` : '完整配方';
 }
 
 export const KNOB_NAMES = {

@@ -85,7 +85,7 @@ export function recipePanel(view) {
     return {
       id: `${target.kind}:${target.id || target.slot}`,
       name,
-      desc: describeLook({ kind: target.kind, slot: target.slot, name }),
+      desc: target.kind === 'record' ? null : describeLook({ kind: target.kind, slot: target.slot, name }),
       pressed: target.kind === 'builtin' ? (!sel.kind || sel.kind === 'builtin') && target.slot === sel.slot && !!ed.recipe : sel.kind === target.kind && sel.id === target.id,
       render: usable && r ? renderRecipe(view, t.same ? sel : t.next, approx) : null,
       onPick: () => (usable ? switchRecipe(view, target) : flash()),
