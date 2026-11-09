@@ -44,7 +44,7 @@ LUT_PKG = Path(__file__).resolve().parents[1] / "src/gxr_studio/lut"
 def camhome(tmp_path_factory):
     raw = t.fixture_dat(127)
     src = calib.dev_sources(t.REPO)
-    if raw is None or not all(p.is_file() for pair in src.values() for p in pair):
+    if raw is None or not src:
         pytest.skip("相机数据夹具（g127 DAT 和标定文件）不在本机")
     h = tmp_path_factory.mktemp("s8a-home")
     store.import_from_dat(raw, h)
@@ -440,12 +440,12 @@ def test_preview_without_camera_data_uses_the_chart(client):
     assert unquote(c.headers["x-gxr-label"]) == "示例照片"
 
 
-def test_28mm_and_mount_are_refused_with_a_reason(data_client):
+def test_calibrated_28mm_and_mount_can_start_a_fit(data_client):
     cid = upload(data_client, cube_bytes(warm)).json()["cube_id"]
     for unit in ("qlaunch", "l08firm"):
         r = data_client.post("/api/lut/fit", json={"cube_id": cid, "unit": unit})
-        assert r.status_code == 422 and r.json()["error"] == "unit_not_calibrated"
-        assert "没有单独的校准数据" in r.json()["message"]
+        assert r.status_code == 200 and r.json()["unit"] == unit
+        assert data_client.post(f"/api/lut/fit/{r.json()['job_id']}/cancel").status_code == 200
 
 
 def _plant_fit(settings, cube_id, space, guessed, job_id):

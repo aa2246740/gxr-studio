@@ -49,7 +49,7 @@ def live(settings, volumes):
     make_card(volumes, samples=samples)  # 含 4 对真实样本的假卡（只读复制）
     raw = t.fixture_dat(127)
     src = calib.dev_sources(t.REPO)
-    if raw is None or not all(p.is_file() for pair in src.values() for p in pair):
+    if raw is None or not src:
         pytest.skip("相机数据夹具（g127 DAT 和标定文件）不在本机")
     settings.home_dir.mkdir(parents=True, exist_ok=True)
     store.import_from_dat(raw, settings.home_dir)

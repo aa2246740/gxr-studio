@@ -144,10 +144,10 @@ def test_bake_bytes_layout_matches_the_shader_offsets():
     bk = _synthetic_bake()
     data, meta = bake_bytes(bk)
     arr = np.frombuffer(data, "<f4")
-    assert arr.size == 12288 + 9 + 3 + 5 * 4 * 2
+    assert arr.size == 12288 + 9 + 3 + 42 + 5 * 4 * 2
     assert meta == {"nx": 4, "ny": 5, "origin": [-4.0, -5.0], "step": 2.0}
     np.testing.assert_array_equal(arr[12288:12297].reshape(3, 3), np.eye(3))
-    assert arr[12300] == 1.0 and arr[12301] == 0.0
+    assert arr[12342] == 1.0 and arr[12343] == 0.0
 
 
 def test_bake_bytes_refuses_a_wrong_curve_length():
@@ -346,7 +346,7 @@ def test_bake_serves_the_preview_table_with_etag(client, volumes, monkeypatch):
     r = client.get(f"/api/photos/{photo['id']}/bake?recipe={rec}")
     assert r.status_code == 200, r.text
     meta = json.loads(unquote(r.headers["x-gxr-bake"]))
-    assert meta["nx"] == 4 and meta["label"] == "电脑预测" and meta["calibrated"] is True and len(r.content) == (12300 + 40) * 4
+    assert meta["nx"] == 4 and meta["label"] == "电脑预测" and meta["calibrated"] is True and len(r.content) == (12342 + 40) * 4
     again = client.get(f"/api/photos/{photo['id']}/bake?recipe={rec}", headers={"If-None-Match": r.headers["etag"]})
     assert again.status_code == 304
 

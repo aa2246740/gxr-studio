@@ -27,6 +27,7 @@ from typing import Any, cast
 import numpy as np
 from scipy.spatial import ConvexHull
 
+from ..camdata.unit_model import input_codes
 from ..engine import knobs as k
 from ..engine.model import Model
 from .tones import apply_table
@@ -52,6 +53,7 @@ def _post_model(model: Any) -> Any:
     shim = getattr(model, "_gxr_post", None)
     if shim is None:
         shim = copy.copy(model)
+        shim.input_coefficients = None
         shim.pre = lambda b, x, channel_mode=None: x
         model._gxr_post = shim
     return shim
@@ -108,6 +110,7 @@ class Bake:
     pre: np.ndarray  # (4096, 3) float32：每通道一维曲线在整数码值上的输出（0..255）
     lut: np.ndarray  # (G, G, G, 3) float32：曲线输出域三个数 → 模型输出 RGB（0..255，已夹紧），索引 [r][g][b]
     grid: int
+    input_coefficients: np.ndarray | None = None
 
     def folded(self, table: np.ndarray | None) -> np.ndarray:
         """把显示域调子表折进 3D 表节点：返回 (G³, 3) float32，供 `apply_baked` 用。"""
@@ -126,14 +129,14 @@ def bake_model(model: Any, entry: bytes, grid: int = DEFAULT_GRID, *, workers: i
         lut[a:b] = post.predict(entry, nodes[a:b])
 
     _map_chunks(run, len(nodes), 4096, workers)
-    return Bake(pre.astype(np.float32), lut.reshape(grid, grid, grid, 3), grid)
+    return Bake(pre.astype(np.float32), lut.reshape(grid, grid, grid, 3), grid, getattr(model, "input_coefficients", None))
 
 
-def _lookup_chunk(x: np.ndarray, gains32: Any, pre_flat: np.ndarray, lut: np.ndarray, grid: int) -> np.ndarray:
+def _lookup_chunk(x: np.ndarray, gains32: Any, pre_flat: np.ndarray, lut: np.ndarray, grid: int, coefficients: Any = None) -> np.ndarray:
     """(n, 3) float32 码值 → (n, 3) float32 0..255（未量化）。"""
     if gains32 is not None:
         x = x * gains32
-    x = np.clip(x, 0.0, CODE_MAX)
+    x = np.clip(input_codes(x, coefficients), 0.0, CODE_MAX)
     i = np.minimum(x.astype(np.int32), CODE_MAX - 1)
     f = x - i
     idx = i * 3 + np.arange(3, dtype=np.int32)
@@ -170,7 +173,7 @@ def apply_baked_float(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains
     out = np.empty((len(x), 3), np.float32)
 
     def run(a: int, b: int) -> None:
-        out[a:b] = _lookup_chunk(x[a:b], g32, pre_flat, lut_flat, bake.grid)
+        out[a:b] = _lookup_chunk(x[a:b], g32, pre_flat, lut_flat, bake.grid, bake.input_coefficients)
 
     _map_chunks(run, len(x), CHUNK, workers)
     return out
@@ -184,7 +187,7 @@ def apply_baked(codes: np.ndarray, bake: Bake, lut_flat: np.ndarray, gains: np.n
     out = np.empty((len(x), 3), np.uint8)
 
     def run(a: int, b: int) -> None:
-        out[a:b] = quantize(_lookup_chunk(x[a:b], g32, pre_flat, lut_flat, bake.grid))
+        out[a:b] = quantize(_lookup_chunk(x[a:b], g32, pre_flat, lut_flat, bake.grid, bake.input_coefficients))
 
     _map_chunks(run, len(x), CHUNK, workers)
     return out.reshape(codes.shape)
@@ -203,6 +206,9 @@ class ChromaBake:
     gain: np.ndarray  # (ny, nx, 2) float32：G(c) 的实部、虚部；索引 [Cr 格][Cb 格]
     origin: tuple[float, float]  # 网格第 0 格的 (Cb, Cr)
     step: float
+    input_coefficients: np.ndarray | None = None
+    lookup_matrix: np.ndarray | None = None
+    lookup_offset: np.ndarray | None = None
 
 
 def _sector_z(model: Model, entry: bytes) -> np.ndarray:
@@ -220,7 +226,11 @@ def bake_chroma(model: Any, entry: bytes, step: float = CHROMA_STEP, *, workers:
     row = model.mm.MatrixRow.from_bytes(entry[216:244])
     m = row.effective(100.0)
     off = row.offsets - np.array([0.0, 128.0, 128.0])
-    corners = np.array([[r, g, b] for r in (0, 255) for g in (0, 255) for b in (0, 255)], np.float64) @ m.T + off
+    factory = getattr(model, "factory", entry)
+    lookup = model.mm.MatrixRow.from_bytes(factory[216:244])
+    lookup_matrix = lookup.effective(100.0)
+    lookup_offset = lookup.offsets - np.array([0.0, 128.0, 128.0])
+    corners = np.array([[r, g, b] for r in (0, 255) for g in (0, 255) for b in (0, 255)], np.float64) @ lookup_matrix.T + lookup_offset
     lo = np.floor(corners[:, 1:].min(axis=0) / step) * step - step
     hi = np.ceil(corners[:, 1:].max(axis=0) / step) * step + step
     nx, ny = int(round((hi[0] - lo[0]) / step)) + 1, int(round((hi[1] - lo[1]) / step)) + 1
@@ -255,6 +265,9 @@ def bake_chroma(model: Any, entry: bytes, step: float = CHROMA_STEP, *, workers:
         g,
         (float(lo[0]), float(lo[1])),
         float(step),
+        getattr(model, "input_coefficients", None),
+        lookup_matrix.astype(np.float32),
+        lookup_offset.astype(np.float32),
     )
 
 
@@ -262,7 +275,7 @@ def _chroma_chunk(x: np.ndarray, g32: Any, pre_flat: np.ndarray, bk: ChromaBake,
     """(n, 3) float32 码值 → (n, 3) float32 0..255（未量化）。"""
     if g32 is not None:
         x = x * g32
-    x = np.clip(x, 0.0, CODE_MAX)
+    x = np.clip(input_codes(x, bk.input_coefficients), 0.0, CODE_MAX)
     i = np.minimum(x.astype(np.int32), CODE_MAX - 1)
     idx = i * 3 + np.arange(3, dtype=np.int32)
     v0 = np.take(pre_flat, idx)
@@ -270,8 +283,9 @@ def _chroma_chunk(x: np.ndarray, g32: Any, pre_flat: np.ndarray, bk: ChromaBake,
     ycc = p @ bk.matrix.T + bk.offset
     y, cb, cr = ycc[:, 0], ycc[:, 1], ycc[:, 2]
     ny, nx = bk.gain.shape[:2]
-    u = (cb - np.float32(bk.origin[0])) * np.float32(1.0 / bk.step)
-    v = (cr - np.float32(bk.origin[1])) * np.float32(1.0 / bk.step)
+    lk = p @ bk.lookup_matrix.T + bk.lookup_offset if bk.lookup_matrix is not None else ycc
+    u = (lk[:, 1] - np.float32(bk.origin[0])) * np.float32(1.0 / bk.step)
+    v = (lk[:, 2] - np.float32(bk.origin[1])) * np.float32(1.0 / bk.step)
     iu = np.clip(u.astype(np.int32), 0, nx - 2)
     iv = np.clip(v.astype(np.int32), 0, ny - 2)
     fu = (u - iu)[:, None]

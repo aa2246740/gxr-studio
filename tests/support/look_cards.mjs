@@ -184,7 +184,7 @@ if (scenario === 'model') {
   state.camdata = { ready: true, state: 'ready' };
   state.catalog = { units };
   const lens = mount ? 'GXR MOUNT A12' : 'GR LENS A12 50mm F2.5 MACRO';
-  const view = { photo: { id: 'p1', iso: 200, lens, has_raw: !approx && !none, has_jpg: true }, onChange() {}, redrawSide: () => { view.redraws = (view.redraws || 0) + 1; } };
+  const view = { photo: { id: 'p1', iso: mount ? 800 : 200, lens, has_raw: !approx && !none, has_jpg: true }, onChange() {}, redrawSide: () => { view.redraws = (view.redraws || 0) + 1; } };
   await preview.ensureEdit(view);
   recipePanel(view);
   await tick(5);

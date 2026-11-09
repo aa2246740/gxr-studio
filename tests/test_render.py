@@ -37,8 +37,9 @@ from gxr_studio.render.params import (
     parse_recipe,
 )
 from gxr_studio.render.recipes import CameraData, Menu, unit_of_lens
-from gxr_studio.render.service import RenderService, RenderUnavailable, shrink_codes
+from gxr_studio.render.service import PREVIEW_STEP, RenderService, RenderUnavailable, shrink_codes
 from test_api import find, import_all
+from test_engine_render import models as models
 
 ROOT = t.REPO
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
@@ -60,7 +61,7 @@ def real_card(volumes):
 def camhome(tmp_path_factory):
     raw = t.fixture_dat(127)
     src = calib.dev_sources(t.REPO)
-    if raw is None or not all(p.is_file() for pair in src.values() for p in pair):
+    if raw is None or not src:
         pytest.skip("相机数据夹具（g127 DAT 和标定文件）不在本机")
     h = tmp_path_factory.mktemp("s6-home")
     store.import_from_dat(raw, h)
@@ -184,7 +185,7 @@ def test_menu_lists_recipes_without_camera_data():
     units = m.listing()
     assert [u["id"] for u in units] == ["jlaunch", "qlaunch", "l08firm"]
     assert all(len(u["recipes"]) == 8 for u in units)
-    assert units[0]["calibrated"] and not units[1]["calibrated"] and units[1]["calibration_note"]
+    assert not any(u["calibrated"] for u in units) and units[1]["calibration_note"]
     bw = units[0]["recipes"][2]
     assert [c["name"] for c in bw["controls"]] == ["contrast", "highlight", "shadow", "fade", "filter"] and not bw["has_amount"]
     std = units[0]["recipes"][3]
@@ -222,16 +223,17 @@ def test_resolve_matches_knobs_core_and_rejects_bad_levels(cam):
 # ---- 与 E0 的等价 -------------------------------------------------------------------
 
 
-def test_exact_chain_with_default_params_equals_e0_predict(cam, model200, scene_codes):
+def test_exact_chain_with_default_params_equals_unit_predict(cam, camhome, scene_codes):
     for unit in range(3):
+        model = calib.model_for(camhome, unit=store.UNITS[unit])[0]
         for slot in range(1, 9):
             e = cam.entries[(unit, slot)]
-            ref = model200.predict(e, scene_codes, quantize=True)
-            got = chain.exact_u8(model200, e, scene_codes, None, None)
+            ref = model.predict(e, scene_codes, quantize=True)
+            got = chain.exact_u8(model, e, scene_codes, None, None)
             assert got.dtype == np.uint8 and np.array_equal(got, ref), (unit, slot)
 
 
-def test_exact_chain_reproduces_e0_golden_frames(cam, model200):
+def test_frozen_chain_still_reproduces_e0_golden_frames(cam, models):
     golden = json.loads((t.GOLDEN / "render_frames.json").read_text(encoding="utf-8"))["frames"]
     data = menu.load()
     inputs = {}
@@ -251,24 +253,24 @@ def test_exact_chain_reproduces_e0_golden_frames(cam, model200):
         lv[f["param"]] = f["level"]
         res = cam.resolve(RecipeSel(f["unit"], slot, tuple(lv.items())))
         assert res.entry_sha256 == f["entry_sha256"]
-        rgb = chain.exact_u8(model200, res.entry, inputs[f["scene"]], None, None)
+        rgb = chain.exact_u8(models[200], res.entry, inputs[f["scene"]], None, None)
         assert hashlib.sha256(rgb.tobytes()).hexdigest() == f["display_RGB_sha256"], f
         n += 1
     assert n >= 40
 
 
-def test_exposure_is_input_gain_with_clamp(cam, model200, scene_codes):
+def test_exposure_is_input_gain_before_calibration_and_clamp(cam, model200, scene_codes):
     e = cam.entries[(0, 6)]
     x = scene_codes[::7]
     g = tones.channel_gains(parse_adjust({"exposure_ev": 1.0}))
     got = chain.exact_u8(model200, e, x, g, None)
-    ref = model200.predict(e, np.clip(x * 2.0, 0, 4095), quantize=True)
+    ref = model200.predict(e, x * 2.0, quantize=True)
     assert np.array_equal(got, ref)
-    # 超过 4095 的高光夹紧：+3 EV 后与"输入全是 4095"一样
+    # 输入残差有跨通道项：先乘曝光增益，再由模型映射、夹紧，不能提前逐通道截断。
     bright = np.full((4, 3), 4000.0)
     assert np.array_equal(
         chain.exact_u8(model200, e, bright, tones.channel_gains(parse_adjust({"exposure_ev": 3.0})), None),
-        model200.predict(e, np.full((4, 3), 4095.0), quantize=True),
+        model200.predict(e, bright * 8.0, quantize=True),
     )
 
 
@@ -290,15 +292,17 @@ def _de(a, b):
     return colour.delta_e00(colour.lab_from_codes(a), colour.lab_from_codes(b))
 
 
-def test_chroma_bake_error_budget_on_all_24_recipes(cam, model200, scene_codes):
+@pytest.mark.parametrize("iso", (200, 1600))
+def test_chroma_bake_error_budget_on_all_24_recipes(cam, camhome, scene_codes, iso):
     """烘焙对精确链：p99 ΔE00 ≤ 0.3（未量化的浮点输出比；8 位输出再加最多 ±1 码的取整翻转）。"""
     x = np.concatenate([scene_codes[::9], t_synthetic()])
     worst_p99 = worst_code = 0.0
     for unit in range(3):
+        model = calib.model_for(camhome, iso, unit=store.UNITS[unit])[0]
         for slot in range(1, 9):
             e = cam.entries[(unit, slot)]
-            ref = chain.exact_float(model200, e, x, None, None)
-            got = chain.chroma_float(x, chain.bake_chroma(model200, e, 0.75), None, None)
+            ref = chain.exact_float(model, e, x, None, None)
+            got = chain.chroma_float(x, chain.bake_chroma(model, e, PREVIEW_STEP), None, None)
             worst_p99 = max(worst_p99, float(np.percentile(_de(ref, got), 99)))
             worst_code = max(worst_code, float(np.abs(chain.quantize(ref).astype(int) - chain.quantize(got).astype(int)).max()))
     assert worst_p99 <= 0.3, worst_p99
@@ -317,20 +321,20 @@ def test_chroma_bake_with_gains_table_and_precision_grid(cam, model200, scene_co
     g = tones.channel_gains(parse_adjust({"exposure_ev": -0.7, "wb": {"warm": 40, "tint": -20}}))
     tab = tones.display_table(parse_adjust({"contrast": 30, "shadow": 40}), Curves(master=((0, 0), (80, 70), (255, 255))))
     ref = chain.exact_float(model200, e, x, g, tab)
-    coarse = chain.chroma_float(x, chain.bake_chroma(model200, e, 0.75), g, tab)
-    fine = chain.chroma_float(x, chain.bake_chroma(model200, e, 0.5), g, tab)
+    coarse = chain.chroma_float(x, chain.bake_chroma(model200, e, PREVIEW_STEP), g, tab)
+    fine = chain.chroma_float(x, chain.bake_chroma(model200, e, PREVIEW_STEP / 2), g, tab)
     assert np.percentile(_de(ref, coarse), 99) <= 0.3
     assert np.percentile(_de(ref, fine), 99) <= np.percentile(_de(ref, coarse), 99)
     assert np.array_equal(
-        chain.chroma_u8(x, chain.bake_chroma(model200, e, 0.75), g, tab),
-        chain.quantize(chain.chroma_float(x, chain.bake_chroma(model200, e, 0.75), g, tab)),
+        chain.chroma_u8(x, chain.bake_chroma(model200, e, PREVIEW_STEP), g, tab),
+        chain.quantize(chain.chroma_float(x, chain.bake_chroma(model200, e, PREVIEW_STEP), g, tab)),
     )
 
 
 def test_neutral_axis_stays_neutral_through_the_bake(cam, model200):
     e = cam.entries[(0, 4)]
     ramp = np.repeat(np.geomspace(5, 4000, 200)[:, None], 3, axis=1)
-    got = chain.chroma_u8(ramp, chain.bake_chroma(model200, e, 0.75), None, None).astype(int)
+    got = chain.chroma_u8(ramp, chain.bake_chroma(model200, e, PREVIEW_STEP), None, None).astype(int)
     ref = model200.predict(e, ramp, quantize=True).astype(int)
     assert np.abs(got - ref).max() <= 1
 
@@ -341,7 +345,7 @@ def test_lut3d_comparison_path_runs_and_is_worse_than_chroma(cam, model200, scen
     ref = chain.exact_float(model200, e, x, None, None)
     b3 = chain.bake_model(model200, e, 33)
     got3 = chain.apply_baked_float(x, b3, b3.folded(None), None)
-    got2 = chain.chroma_float(x, chain.bake_chroma(model200, e, 0.75), None, None)
+    got2 = chain.chroma_float(x, chain.bake_chroma(model200, e, PREVIEW_STEP), None, None)
     assert np.percentile(_de(ref, got3), 99) > np.percentile(_de(ref, got2), 99)
     assert chain.apply_baked(x, b3, b3.folded(None), None).shape == x.shape
 
@@ -388,7 +392,7 @@ def test_service_caches_and_labels(lib, camhome):
     # 标签：非 200/1600 的 ISO、28mm 都标"未标定"
     assert svc.plan(fake_shot(lib, rel, sha, iso=400), e0).label == "电脑预测 未校准"
     p28 = svc.plan(fake_shot(lib, rel, sha, iso=1600, lens="GR LENS A12 28mm F2.5"), EditState(RecipeSel("qlaunch", 2)))
-    assert not p28.calibrated and p28.model_iso == 1600 and p28.reasons == ("使用 A12 50mm 的颜色模型",)
+    assert not p28.calibrated and p28.model_iso == 1600 and p28.reasons == ("镜头单元、配方单元或 ISO 不在实拍校准范围",)
     assert svc.plan(fake_shot(lib, rel, sha, iso=1600), e0).calibrated
     # 配方与镜头单元不一致也要说
     assert not svc.plan(fake_shot(lib, rel, sha, iso=200), EditState(RecipeSel("qlaunch", 1))).calibrated

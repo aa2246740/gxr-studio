@@ -88,4 +88,4 @@ def apply_table(values: np.ndarray, table: np.ndarray) -> np.ndarray:
         channels = np.arange(3)
         lo = table[channels, i]
         hi = table[channels, i + 1]
-    return cast(np.ndarray, lo + (hi - lo) * f)
+    return np.asarray(lo + (hi - lo) * f, np.float32)

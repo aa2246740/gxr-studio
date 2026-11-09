@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, cast
@@ -26,9 +26,8 @@ from . import calib, datcodec, store
 
 DAT_NAME = "GXRCE.DAT"
 MAX_DAT_BYTES = max(p.max_file for p in datcodec.PROFILES.values())
-PACK_SCHEMA = "gxr-studio/calib-pack/1"
+PACK_SCHEMA = "gxr-studio/calib-pack/2"
 PACK_FILE = "calib-pack.json"
-PACK_ISOS = calib.CALIBRATED_ISOS
 MAX_PACK_FILE_BYTES = 64 << 20
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
@@ -245,32 +244,33 @@ def describe_calibration(home: Path) -> dict[Any, Any] | None:
     p = calib.calib_dir(home) / "manifest.json"
     try:
         m = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if not isinstance(m, dict) or not isinstance(m.get("units"), dict):
+            return None
+        isos = sorted({iso for u in m["units"].values() for iso in u["isos"]})
+        return {"imported_at": m.get("imported_at"), "origin": m.get("origin"), "isos": isos}
+    except (OSError, ValueError, KeyError, TypeError):
         return None
-    return {
-        "imported_at": m.get("imported_at"),
-        "origin": m.get("origin"),
-        "isos": sorted(int(i) for i in m.get("sources", {})),
-    }
 
 
 # ---- 标定包 ---------------------------------------------------------------------
 
 
-def write_pack(dest: Path, sources: dict[Any, Any]) -> dict[Any, Any]:
-    """把 {iso: (npz, ring_json)} 整理成标定包文件夹（calib-pack.json + 文件）。给开发机和测试用；返回清单。"""
+def write_pack(dest: Path, sources: calib.Sources) -> dict[Any, Any]:
+    """逐单元 sources → calib-pack/2；给开发导入和合成测试用。"""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    isos, files = {}, {}
-    for iso, (npz, ring) in sorted(sources.items()):
-        n_name, r_name = f"data_{iso}.npz", f"ring_model_{iso}.json"
-        shutil.copyfile(npz, dest / n_name)
-        shutil.copyfile(ring, dest / r_name)
-        isos[str(iso)] = {"npz": n_name, "ring": r_name}
-        for name in (n_name, r_name):
-            b = (dest / name).read_bytes()
-            files[name] = {"size": len(b), "sha256": _sha(b)}
-    manifest = {"schema": PACK_SCHEMA, "isos": isos, "files": files}
+    units: dict[str, Any] = {}
+    files: dict[str, Any] = {}
+    for unit, isos in sorted(sources.items()):
+        units[unit] = {}
+        for iso, pair in sorted(isos.items()):
+            names = (f"data_{unit}_{iso}.npz", f"ring_{unit}_{iso}.json")
+            for name, source in zip(names, pair):
+                data = source[1] if isinstance(source, tuple) else source.read_bytes()
+                (dest / name).write_bytes(data)
+                files[name] = {"size": len(data), "sha256": _sha(data)}
+            units[unit][str(iso)] = dict(zip(("npz", "ring"), names))
+    manifest = {"schema": PACK_SCHEMA, "units": units, "files": files}
     (dest / PACK_FILE).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return manifest
 
@@ -283,7 +283,7 @@ def _bad_pack(detail: str) -> IntakeError:
 
 
 def _snapshot_pack(folder: Path) -> dict[Any, Any]:
-    """校验 calib-pack.json，逐个文件读进内存并核 SHA-256。返回 {iso: ((文件名, 字节), (文件名, 字节))}：
+    """校验 calib-pack.json，逐个文件读进内存并核 SHA-256。返回逐单元、逐 ISO 的文件快照：
     核对的和导入的是同一份字节，而且不在应用数据目录里落任何临时文件。"""
     try:
         pack = json.loads((folder / PACK_FILE).read_text(encoding="utf-8"))
@@ -291,16 +291,19 @@ def _snapshot_pack(folder: Path) -> dict[Any, Any]:
         raise _bad_pack("校准数据的清单（calib-pack.json）读不出来或不是有效的 JSON。") from exc
     if not isinstance(pack, dict) or pack.get("schema") != PACK_SCHEMA:
         raise _bad_pack("校准数据的版本不认识，没有导入。请重新选择后再试。")
-    isos, files = pack.get("isos"), pack.get("files")
-    if not isinstance(isos, dict) or sorted(isos) != sorted(str(i) for i in PACK_ISOS):
-        raise _bad_pack(f"校准数据必须正好包含 ISO {' 和 '.join(str(i) for i in PACK_ISOS)} 两套。请重新选择后再试。")
+    units, files = pack.get("units"), pack.get("files")
+    if not isinstance(units, dict) or not units or not set(units) <= set(calib.UNIT_ISOS):
+        raise _bad_pack("校准数据的单元不正确。")
+    for isos in units.values():
+        if not isinstance(isos, dict) or sorted(isos) != ["1600", "200"]:
+            raise _bad_pack("每个单元必须包含 ISO 200 / 1600 两个模型分支。")
     if not isinstance(files, dict):
         raise _bad_pack("校准数据的清单里没有文件表。请重新选择后再试。")
     wanted: dict[str, str] = {}
     sources = {}
-    for iso_s, pair in isos.items():
+    for identity, pair in ((f"{unit}/{iso}", pair) for unit, isos in units.items() for iso, pair in isos.items()):
         if not isinstance(pair, dict) or set(pair) != {"npz", "ring"}:
-            raise _bad_pack(f"ISO {iso_s} 的条目要有 npz 和 ring 两项。")
+            raise _bad_pack(f"{identity} 的条目要有 npz 和 ring 两项。")
         for name in (pair["npz"], pair["ring"]):
             if not isinstance(name, str) or not _NAME_RE.match(name):
                 raise _bad_pack("校准数据里的文件名只能是普通文件名。请重新选择后再试。")
@@ -308,7 +311,7 @@ def _snapshot_pack(folder: Path) -> dict[Any, Any]:
             if not isinstance(meta, dict) or not isinstance(meta.get("sha256"), str) or len(meta["sha256"]) != 64:
                 raise _bad_pack(f"清单里没有「{name}」的 SHA-256。")
             wanted[name] = meta["sha256"].lower()
-        sources[int(iso_s)] = (pair["npz"], pair["ring"])
+        sources[identity] = (pair["npz"], pair["ring"])
     data_by_name: dict[str, bytes] = {}
     for name, want in sorted(wanted.items()):
         src = folder / name
@@ -323,14 +326,21 @@ def _snapshot_pack(folder: Path) -> dict[Any, Any]:
         if declared is not None and declared != len(data):
             raise _bad_pack(f"文件「{name}」的大小和清单对不上，没有导入。")
         data_by_name[name] = data
-    return {iso: ((npz, data_by_name[npz]), (ring, data_by_name[ring])) for iso, (npz, ring) in sources.items()}
+    result: calib.Sources = {}
+    for identity, (npz, ring) in sources.items():
+        unit, iso = identity.split("/")
+        result.setdefault(unit, {})[int(iso)] = ((npz, data_by_name[npz]), (ring, data_by_name[ring]))
+    return result
 
 
 def _dev_sources(folder: Path) -> dict[Any, Any] | None:
-    """开发机：folder 是仓库根（里面有 research/）或 research/ 本身。找全两套文件才算。"""
+    """开发机：folder 是仓库根（里面有 research/）或 research/ 本身。找到现行逐单元模型才算。"""
     for root in (folder, folder.parent):
-        src = calib.dev_sources(root)
-        if all(p.is_file() for pair in src.values() for p in pair):
+        try:
+            src = calib.dev_sources(root)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise _bad_pack("研究目录里的校准数据不完整或已失效，请重新准备。") from exc
+        if src:
             return src
     return None
 
@@ -367,5 +377,5 @@ def import_calibration_folder(home: Path, folder: Path, forbidden: Iterable[Path
         ) from exc
     except calib.CalibError as exc:
         raise _bad_pack("校准数据不合格，没有导入。请重新选择后再试。") from exc
-    except (OSError, ValueError, KeyError, EOFError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile) as exc:
         raise _bad_pack("校准数据里的文件读不出来，没有导入。请重新选择后再试。") from exc

@@ -320,10 +320,10 @@ def test_synthetic_camera_data_drives_render_status(tmp_path: object):
     for iso in (200, 1600):
         npz = src / f"data_{iso}.npz"
         ring_path = src / f"ring_{iso}.json"
-        np.savez(npz, stock=stock, d0=d0, d1=d1, S_eff=s_eff)
+        np.savez(npz, stock=stock, d0=d0, d1=d1, S_eff=s_eff, input_coefficients=np.zeros((4, 3)))
         ring_path.write_text(json.dumps(ring), encoding="utf-8")
         sources[iso] = (npz, ring_path)
-    calib.import_calibration(home, sources, origin={"kind": "synthetic"})
+    calib.import_calibration(home, {unit: sources for unit in dc.NAMES}, origin={"kind": "synthetic"})
     lib = Library(Path(str(tmp_path)) / "lib").open()
     try:
         render = RenderService(home, lib)

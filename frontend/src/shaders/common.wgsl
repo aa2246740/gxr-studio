@@ -16,14 +16,17 @@ struct P {
   outM0: vec4f, outM1: vec4f, outM2: vec4f,  // LUT 输出线性 → sRGB 线性
 };
 @group(0) @binding(0) var<uniform> p: P;
-@group(0) @binding(1) var<storage, read> rec: array<f32>;   // pre(4096×3) | matrix(9) | offset(3) | gain(ny×nx×2)
+@group(0) @binding(1) var<storage, read> rec: array<f32>;   // pre(4096×3) | matrix(9) | offset(3) | input(30) | lookup(12) | gain(ny×nx×2)
 @group(0) @binding(2) var<storage, read> tone: array<f32>;  // render/tones.py display_table（每通道 1021 点）
 @group(0) @binding(3) var lut3: texture_3d<f32>;             // Log 类 LUT：.cube 3D 表，x=R、y=G、z=B
 @group(0) @binding(4) var lut8: texture_3d<f32>;             // 显示类 LUT：256³ 精确表（服务器用 lut.photo._apply 逐个算好），rgba8unorm
 
 const MAT_AT: u32 = 12288u;
 const OFF_AT: u32 = 12297u;
-const GAIN_AT: u32 = 12300u;
+const INPUT_AT = 12300u;
+const LOOK_AT = 12330u;
+const LOOK_OFF = 12339u;
+const GAIN_AT: u32 = 12342u;
 
 fn q8(v: vec3f) -> vec3f { return floor(clamp(v, vec3f(0.0), vec3f(255.0)) + 0.5); }
 
@@ -42,7 +45,18 @@ fn applyTable(v: vec3f) -> vec3f {
 
 // render/chain.py _chroma_chunk + quantize
 fn recipeChain(codesIn: vec3f, gains: vec3f, useTable: bool) -> vec3f {
-  let x = clamp(codesIn * gains, vec3f(0.0), vec3f(4095.0));
+  let raw = codesIn * gains;
+  let norm = raw / 4095.0;
+  let basis = array<f32, 10>(1.0, norm.x, norm.y, norm.z,
+    norm.x * norm.x, norm.y * norm.y, norm.z * norm.z,
+    norm.x * norm.y, norm.x * norm.z, norm.y * norm.z);
+  var mapped = raw;
+  for (var c = 0u; c < 3u; c++) {
+    var delta = 0.0;
+    for (var j = 0u; j < 10u; j++) { delta += basis[j] * rec[INPUT_AT + j * 3u + c]; }
+    mapped[c] += 4095.0 * delta;
+  }
+  let x = clamp(mapped, vec3f(0.0), vec3f(4095.0));
   var pc: vec3f;
   for (var c = 0u; c < 3u; c++) {
     let i = min(u32(x[c]), 4094u);
@@ -54,8 +68,10 @@ fn recipeChain(codesIn: vec3f, gains: vec3f, useTable: bool) -> vec3f {
   let cr = rec[MAT_AT + 6u] * pc.x + rec[MAT_AT + 7u] * pc.y + rec[MAT_AT + 8u] * pc.z + rec[OFF_AT + 2u];
   let nx = i32(p.bake.w);
   let ny = i32(p.bake2.x);
-  let u = (cb - p.bake.x) * p.bake.z;
-  let v = (cr - p.bake.y) * p.bake.z;
+  let lookCb = rec[LOOK_AT + 3u] * pc.x + rec[LOOK_AT + 4u] * pc.y + rec[LOOK_AT + 5u] * pc.z + rec[LOOK_OFF + 1u];
+  let lookCr = rec[LOOK_AT + 6u] * pc.x + rec[LOOK_AT + 7u] * pc.y + rec[LOOK_AT + 8u] * pc.z + rec[LOOK_OFF + 2u];
+  let u = (lookCb - p.bake.x) * p.bake.z;
+  let v = (lookCr - p.bake.y) * p.bake.z;
   let iu = clamp(i32(clamp(u, -1e6, 1e6)), 0, nx - 2);   // numpy astype(int32)：向零取整，再夹
   let iv = clamp(i32(clamp(v, -1e6, 1e6)), 0, ny - 2);
   let fu = u - f32(iu);

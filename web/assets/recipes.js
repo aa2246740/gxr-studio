@@ -132,10 +132,12 @@ export function recipePanel(view) {
   if (ed.recipe) {
     const now = chosen.find((c) => c.pressed);
     const name = now ? now.name : info && (info.name || slotName(sel.unit, sel.slot));
-    const warn = !ed.lut && (ed.calibrated === false || photoUnit !== 'jlaunch');
+    const calibratedIsos = unit.calibrated_isos || (sel.unit === 'jlaunch' ? [200, 1600] : [200]);
+    const warn = !ed.lut && (ed.calibrated === false || !photoUnit || sel.unit !== photoUnit || !calibratedIsos.includes(Number(view.photo.iso)));
     nodes.splice(1, 0, h('div', { class: 'cur-look' },
       h('div', { class: 'small' }, h('span', { class: 'dim' }, '当前：'), h('span', { class: 'strong' }, name || '')),
-      warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null));
+      warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null,
+      unit.exposure_note ? h('div', { class: 'small dim' }, unit.exposure_note) : null));
   }
 
   // 强度和旋钮：配方不能用时整块变淡；点了（捕获阶段拦住）闪一下

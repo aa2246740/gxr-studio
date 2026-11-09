@@ -30,13 +30,26 @@ PRE_FLOATS = 4096 * 3
 
 
 def bake_bytes(bk: ChromaBake) -> tuple[bytes, dict[str, Any]]:
-    """pre(4096×3) | matrix(9) | offset(3) | gain(ny×nx×2)。"""
+    """pre(4096×3) | matrix(9) | offset(3) | input(30) | lookup(12) | gain(ny×nx×2)。"""
     pre = np.asarray(bk.pre, "<f4").reshape(-1)
     if pre.size != PRE_FLOATS:
         raise ValueError("一维曲线不是 4096×3")
     ny, nx = bk.gain.shape[:2]
+    coefficients = np.zeros((10, 3), dtype="<f4")
+    if bk.input_coefficients is not None:
+        coefficients[: len(bk.input_coefficients)] = bk.input_coefficients
+    lookup_matrix = bk.matrix if bk.lookup_matrix is None else bk.lookup_matrix
+    lookup_offset = bk.offset if bk.lookup_offset is None else bk.lookup_offset
     arr = np.concatenate(
-        [pre, np.asarray(bk.matrix, "<f4").reshape(-1), np.asarray(bk.offset, "<f4").reshape(-1), np.asarray(bk.gain, "<f4").reshape(-1)]
+        [
+            pre,
+            np.asarray(bk.matrix, "<f4").reshape(-1),
+            np.asarray(bk.offset, "<f4").reshape(-1),
+            coefficients.reshape(-1),
+            np.asarray(lookup_matrix, "<f4").reshape(-1),
+            np.asarray(lookup_offset, "<f4").reshape(-1),
+            np.asarray(bk.gain, "<f4").reshape(-1),
+        ]
     )
     meta = {"nx": int(nx), "ny": int(ny), "origin": [float(bk.origin[0]), float(bk.origin[1])], "step": float(bk.step)}
     return arr.astype("<f4").tobytes(), meta

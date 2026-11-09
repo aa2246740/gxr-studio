@@ -68,7 +68,7 @@ export function renderLutPage(view) {
 
 async function load() {
   try {
-    const [sp, rec] = await Promise.all([flow.spaces ? null : api('/api/lut/spaces'), api('/api/my-recipes')]);
+    const [sp, rec] = await Promise.all([api('/api/lut/spaces'), api('/api/my-recipes')]);
     if (sp) { flow.spaces = sp.spaces; flow.units = sp.units; }
     flow.recipes = rec.recipes;
     await loadPhotos();
@@ -87,7 +87,7 @@ function redraw() {
   if (!alive()) return;
   root.replaceChildren(
     h('h2', {}, '配方'),
-    h('p', { class: 'small dim', dataset: { role: 'page-lead' } }, '用 LUT 做配方，存在这台电脑里。现在只能为 A12 50mm 生成，配方只用于 50mm 拍的照片。'),
+    h('p', { class: 'small dim', dataset: { role: 'page-lead' } }, '用 LUT 做配方，存在这台电脑里。为已校准的镜头单元生成电脑预测配方。'),
     importSection(),
     flow.cube ? h('details', { class: 'lut-library-disclosure' }, h('summary', {}, '选择其他 LUT · 管理 LUT 库'), lutLibrary()) : lutLibrary(),
     recipesSection(),
@@ -360,7 +360,7 @@ function previewBox() {
     }, t))),
     flow.previewUrl ? h('img', { class: 'lut-img', src: flow.previewUrl, alt: '预览' }) : h('div', { class: 'lut-img empty-img small dim' }, flow.busy || (!flow.space ? '请选择输入色彩空间' : '预览生成中…')),
     h('p', { class: 'small dim' }, `${flow.previewLabel ? flow.previewLabel + ' · ' : ''}电脑预测`, flow.previewNote),
-    photo && photo.unit !== 'jlaunch' ? h('p', { class: 'small dim' }, '预览使用 A12 50mm 的颜色模型，仅供参考。') : null);
+    photo && photo.unit !== 'jlaunch' ? h('p', { class: 'small dim' }, '曝光沿用 50mm。') : null);
 }
 
 async function refreshPreview() {
@@ -533,9 +533,9 @@ function resultBox() {
     h('div', { class: 'modal-foot start' }, save,
       h('button', { class: 'btn', type: 'button', disabled: !!flow.busy, onclick: resetFlow }, '重新选择')),
     flow.saved ? h('div', { class: 'small', role: 'status' },
-      `已保存「${flow.saved.name}」，这是为${unitName(flow.saved.recipe.unit)}做的配方，只用于 50mm 拍的照片。`,
-      h('details', { class: 'lut-followup' }, h('summary', {}, '也想用于 28mm 或 MOUNT？'),
-        h('p', { class: 'dim' }, '这两个组件还没有单独的校准数据，暂时不能制作。LUT 已留在库中，以后可以继续使用。'))) : null);
+      `已保存「${flow.saved.name}」，这是为${unitName(flow.saved.recipe.unit)}做的配方。`,
+      h('details', { class: 'lut-followup' }, h('summary', {}, '也想用于其他镜头单元？'),
+        h('p', { class: 'dim' }, 'LUT 已留在库中。选择已校准的对应单元，再生成一份配方。'))) : null);
 }
 
 async function saveRecipe() {
@@ -546,7 +546,7 @@ async function saveRecipe() {
     flow.saved = await api('/api/my-recipes', { method: 'POST', body: { job_id: flow.job.job_id, candidate: flow.chosen, name: flow.name } });
     flow.recipes = (await api('/api/my-recipes')).recipes;
     emit(MY_RECIPES_CHANGED);
-    toast(`已保存「${flow.saved.name}」 · 为${unitName(flow.saved.recipe.unit)}做的配方，只用于 50mm 拍的照片`, 'ok');
+    toast(`已保存「${flow.saved.name}」 · 为${unitName(flow.saved.recipe.unit)}做的配方`, 'ok');
   } catch (e) {
     toastError(e, '没有存下这个配方。请重试。');
   } finally {

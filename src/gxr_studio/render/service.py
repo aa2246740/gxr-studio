@@ -9,7 +9,7 @@
   引擎版本、目标宽度；同一张照片同一组参数不重复计算；
 - 没有导入相机数据（或没有标定包）时抛 `RenderUnavailable`，调用方返回明确的状态，而不是渲染一张不对的图。
 
-每一张由这里渲染出来的图都是"电脑预测"：50mm 的 ISO 200 / 1600 之外一律再加"跨单元/跨 ISO，未标定"。
+每一张图都是"电脑预测"。仅对应单元的实拍校准 ISO 算已校准；未知镜头或跨单元配方另标未校准。
 """
 
 from __future__ import annotations
@@ -38,14 +38,13 @@ from .params import EditState, RecipeSel
 from .recipes import CameraData, Menu, unit_of_lens
 from .tones import channel_gains, display_table
 
-ENGINE = "gxr_render/1"
-PREVIEW_STEP = 0.75  # 预览用的色度增益网格间距（实测 p99 ΔE00 ≤ 0.3，见报告）
-EXPORT_STEP = 0.5  # 导出用更细的网格
+ENGINE = "gxr_render/2"
+PREVIEW_STEP = 0.375  # 现行逐单元模型需要更密的网格，保持 p99 ΔE00 ≤ 0.3
+EXPORT_STEP = 0.375  # 导出保持相同的色度网格精度
 ISO_SPLIT = 566  # 200 和 1600 的几何中点：低于它用 ISO 200 的模型，否则用 ISO 1600 的
-CALIBRATED_ISOS = calib.CALIBRATED_ISOS
 UNCALIBRATED_LABEL = "电脑预测 未校准"
 CALIBRATED_LABEL = "电脑预测"
-MODEL_NOTE = "使用 A12 50mm 的颜色模型"
+MODEL_NOTE = "镜头单元、配方单元或 ISO 不在实拍校准范围"
 
 
 class RenderUnavailable(Exception):
@@ -170,6 +169,7 @@ class RenderService:
         self._import_generation: int | None = None
         self._calib_manifest_sha: str | None = None
         self._calib_error: str | None = None
+        self._unit_calibration: dict[str, dict[str, Any]] = {}
         self._models: dict[Any, Any] = {}
         self._look_labels: dict[tuple[Any, Any, Any], str | None] = {}
         self._proxies: ByteLRU[np.ndarray] = ByteLRU(proxy_bytes)
@@ -184,6 +184,7 @@ class RenderService:
         token = (
             _stat_token(store.camera_data_dir(self.home) / "manifest.json"),
             _stat_token(calib.calib_dir(self.home) / "manifest.json"),
+            tuple((p.name, _stat_token(p)) for p in sorted(calib.calib_dir(self.home).glob("*"))),
         )
         with self._lock:
             if token == self._state_token:
@@ -201,25 +202,17 @@ class RenderService:
                     self._camera = CameraData(self.home)
                 except (CamdataError, OSError, ValueError, KeyError):
                     self._camera_error = ("invalid", "相机配方文件读不出来或被改动。请重新导入后再试。")
-            if token[1] is None:
-                self._calib_error = "缺少校准数据"
-            else:
-                try:
-                    cal = calib.calib_dir(self.home) / "manifest.json"
-                    cal_bytes = cal.read_bytes()
-                    self._calib_manifest_sha = hashlib.sha256(cal_bytes).hexdigest()
-                    calib.model_for(self.home, 200)  # 校验标定文件的 SHA-256 并确认能建模
-                    want = json.loads(cal_bytes).get("camera_stock_sha256")
-                    if want and self._camera is not None and want != calib.stock_fingerprint(self._camera.stock[0]):
-                        self._calib_error = "校准数据与相机配方文件不匹配"
-                        self._calib_manifest_sha = None
-                except Exception:  # noqa: BLE001  校准数据任何问题都归为不可用
-                    self._calib_error = "校准数据读不出来或被改动。请重新导入后再试。"
-                    self._calib_manifest_sha = None
+            self._unit_calibration = {unit: calib.unit_status(self.home, unit) for unit in calib.UNIT_ISOS}
+            usable = any(st["state"] == "ready" for st in self._unit_calibration.values())
+            self._calib_error = None if usable else next(iter(self._unit_calibration.values()))["message"]
+            if token[1] is not None:
+                self._calib_manifest_sha = hashlib.sha256(repr(token[1:]).encode()).hexdigest()
 
-    def available(self) -> bool:
+    def available(self, unit: str | None = None) -> bool:
         self._refresh()
-        return self._camera is not None and self._calib_error is None
+        return self._camera is not None and (
+            self._unit_calibration.get(unit, {}).get("state") == "ready" if unit is not None else self._calib_error is None
+        )
 
     def invalidate(self) -> None:
         """相机数据或标定包刚被换掉：下次访问重新读盘，烘焙和渲染结果缓存清空（解码后的码值图与相机数据无关，保留）。"""
@@ -276,12 +269,17 @@ class RenderService:
                 "source_sha256": cam.manifest["source"]["sha256"] if cam else None,
                 "imported_at": cam.manifest["imported_at"] if cam else None,
             },
-            "calibration": {"state": cal_state, "message": self._calib_error, "isos": list(CALIBRATED_ISOS)},
+            "calibration": {
+                "state": cal_state,
+                "message": self._calib_error,
+                "isos": sorted({iso for st in self._unit_calibration.values() for iso in st["isos"]}),
+                "units": self._unit_calibration,
+            },
             "engine": self.engine_pin() if ready else None,
             "hint": camera_message if cam is None else self._calib_error,
         }
 
-    def _require(self) -> CameraData:
+    def _require(self, unit: str | None = None) -> CameraData:
         self._refresh()
         if self._camera is None:
             if self._import_generation is not None:
@@ -289,7 +287,7 @@ class RenderService:
             state, _msg = self._camera_error  # type: ignore[misc]
             text = "无法生成电脑预测。请先导入相机配方文件。" if state == "missing" else "无法读取相机配方文件。请重新导入后再试。"
             raise RenderUnavailable("camera_data_missing" if state == "missing" else "camera_data_invalid", text, state)
-        if self._calib_error is not None:
+        if self._calib_error is not None or (unit is not None and not self.available(unit)):
             raise RenderUnavailable("calibration_missing", "无法生成电脑预测。请先导入校准数据。", "calibration")
         return self._camera
 
@@ -297,17 +295,26 @@ class RenderService:
         cam = self._camera
         return f"{ENGINE}:{cam.table_sha256[:12]}:{cam.manifest_sha256[:12]}:{(self._calib_manifest_sha or '')[:12]}"  # type: ignore[union-attr]
 
-    def model(self, model_iso: int) -> Any:
-        self._require()
+    def model(self, model_iso: int, unit: str = "jlaunch") -> Any:
+        self._require(unit)
         with self._lock:
-            m = self._models.get(model_iso)
+            m = self._models.get((unit, model_iso))
             if m is None:
-                m = self._models[model_iso] = calib.model_for(self.home, model_iso)[0]
+                m = self._models[(unit, model_iso)] = calib.model_for(self.home, model_iso, unit=unit)[0]
             return m
 
     def catalog(self) -> list[dict[Any, Any]]:
         """配方列表：相机数据已导入时带条目 SHA-256，没导入也能列（菜单表不含理光字节）。"""
-        return self.recipe_menu().listing()
+        return [
+            {
+                **u,
+                "calibrated": self.available(u["id"]),
+                "calibration_note": self._unit_calibration[u["id"]]["message"],
+                "calibrated_isos": self._unit_calibration[u["id"]]["isos"],
+                "exposure_note": self._unit_calibration[u["id"]]["exposure_note"],
+            }
+            for u in self.recipe_menu().listing()
+        ]
 
     def recipe_menu(self) -> Menu:
         self._refresh()
@@ -318,14 +325,13 @@ class RenderService:
 
     # ---- 计划 -------------------------------------------------------------
     def plan(self, shot: dict[Any, Any], edit: EditState) -> Plan:
-        cam = self._require()
         photo_unit = self.photo_unit(shot)
         defaulted = edit.recipe is None
         sel = edit.recipe or RecipeSel(photo_unit or "jlaunch", 4)
-        res = cam.resolve(sel)
+        res = self._require(sel.unit).resolve(sel)
         iso = shot.get("iso")
         model_iso = 1600 if iso and iso >= ISO_SPLIT else 200
-        crossed = photo_unit != "jlaunch" or iso not in CALIBRATED_ISOS or (photo_unit is not None and sel.unit != photo_unit)
+        crossed = photo_unit is None or iso not in calib.UNIT_ISOS[sel.unit] or sel.unit != photo_unit
         reasons = [MODEL_NOTE] if crossed else []
         return Plan(
             sel.unit,
@@ -370,11 +376,11 @@ class RenderService:
         return self._proxy(shot, max_edge)
 
     def _bake(self, plan: Plan, step: float) -> chain.ChromaBake:
-        key = (plan.entry_sha256, plan.model_iso, step, self._state_token)
+        key = (plan.unit, plan.entry_sha256, plan.model_iso, step, self._state_token)
         hit = self._bakes.get(key)
         if hit is not None:
             return hit
-        bk = chain.bake_chroma(self.model(plan.model_iso), plan.entry, step)
+        bk = chain.bake_chroma(self.model(plan.model_iso, plan.unit), plan.entry, step)
         self._bakes.put(key, bk, bk.gain.nbytes + bk.pre.nbytes)
         self.stats["bakes"] += 1
         return bk
@@ -420,7 +426,7 @@ class RenderService:
         cam = self._require()
         stock = cam.resolve(RecipeSel(unit, 4)).entry
         recipe = cam.resolve(RecipeSel(unit, int(slot))).entry
-        lut = lut_for_entries(self.model(model_iso), stock, recipe)
+        lut = lut_for_entries(self.model(model_iso, unit), stock, recipe)
         self._approx[key] = lut
         return lut
 
@@ -431,6 +437,7 @@ class RenderService:
             "adjust": edit.adjust.to_json(),
             "recipe_entry": plan.entry_sha256,
             "model_iso": plan.model_iso,
+            "model_unit": plan.unit,
             "curve": edit.curve.to_json() if edit.curve else None,
             "engine": self.engine_pin(),
             "width": max_edge,
@@ -472,7 +479,7 @@ class RenderService:
             table = display_table(edit.adjust, edit.curve)
             t = time.perf_counter()
             if exact:
-                rgb = chain.exact_u8(self.model(plan.model_iso), plan.entry, codes, gains, table)
+                rgb = chain.exact_u8(self.model(plan.model_iso, plan.unit), plan.entry, codes, gains, table)
                 ms["bake"] = 0.0
             else:
                 bakes = self.stats["bakes"]
@@ -499,12 +506,12 @@ class RenderService:
         gains = channel_gains(edit.adjust)
         table = display_table(edit.adjust, edit.curve)
         if precise:
-            model = self.model(plan.model_iso)
+            model = self.model(plan.model_iso, plan.unit)
 
             def display(codes: np.ndarray) -> np.ndarray:
                 return chain.exact_u8(model, plan.entry, codes, gains, table)
         else:
-            bk = chain.bake_chroma(self.model(plan.model_iso), plan.entry, EXPORT_STEP)
+            bk = chain.bake_chroma(self.model(plan.model_iso, plan.unit), plan.entry, EXPORT_STEP)
 
             def display(codes: np.ndarray) -> np.ndarray:
                 return chain.chroma_u8(codes, bk, gains, table)

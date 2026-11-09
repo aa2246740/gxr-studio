@@ -17,6 +17,10 @@
 | 导出的 JPEG/PNG | 导出目录 | `export` |
 | 存储卡 | 只读。测试禁止碰 `/Volumes` 里真实的卡 | `cards` |
 
+校准包 `calib/2` 按 `jlaunch`、`qlaunch`、`l08firm` 保存两套 ISO 模型分支，各自核对相机数据中同单元的原厂 04 色表行。`camdata.unit_model.UnitModel` 在冻结的 `engine/` 外接入 fit-v4-r2 的 native-C040-v2.0：白平衡后码值 → 本单元输入映射 → 配方曲线 → C100 矩阵 → 色表 → RGB。查表色度来自原厂 04 矩阵，乘子作用在配方矩阵的色度上。50mm 用二次输入残差，MOUNT 用一次残差；fit-v4-r2 冻结的 28mm 输入残差为零，尚未包含 cal28-r1 的 IN6w。
+
+CPU 烘焙与 WebGPU 共享输入多项式和原厂 04 查表矩阵。烘焙表按查表色度建网格，配方色度仍用自身矩阵；缓存包含单元、ISO、相机数据与校准版本。精确路径保留 float64 的研究运算顺序。实拍校准 ISO、部分包、状态和复核命令见 [逐单元校准](unit-calibration.md)。
+
 渲染链是 `raw` 读 DNG，`engine` 拿拟合好的整数表，`render` 把裁切和配方套上去。`lut` 在已经有相机数据时做路线 1 的旋钮拟合。`devtools` 只给测试和假卡用，运行时代码不许 import 它（import-linter 会查）。
 
 LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write` 保存。输入空间先读文件内的明确声明（`LUMIXPHOTOSTYLE`、注释里的 input 字段），再读 TITLE、文件名中的输入域，最后才读目标风格名。TITLE、文件名先一起检查明确的 input 标记，再检查转换源域和其他关键词，同级标记冲突时保留 conflict。文件内声明不受风格名或灰轴形状覆盖。只自动选择现有受支持空间，F-Log2C 的独立色域尚未支持，保留 unknown。无声明、无输入域关键词的创意 LUT 保留 unknown，不凭灰轴选 sRGB。33 点灰轴仅用于核对关键词猜测，known、guessed、unknown、conflict 四态沿用；未知或冲突时需选择输入空间。
@@ -27,7 +31,7 @@ LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write`
 
 署名从整个 cube 的注释读取。内容和署名未改时，导出使用原始字节，TITLE 需要清理时只替换该行；署名改过时保留全部原注释，头部增加当前字段，末尾的 JSON 注释保留多行字段。旧库首次读取时补齐此前未采集的署名，保留用户已改过的字段。
 
-照片编辑只存 LUT 的 SHA，颜色空间从库读取。`lut.photo` 接在 `finish.serve.color_image`，预览和全尺寸导出共用。显示类 LUT 使用现有底图，Log 类使用 DNG 的场景 XYZ，支持 A12 50mm、28mm、MOUNT；仍需可用的白平衡和色彩矩阵。各单元使用自身 DNG 矩阵，曝光采用既有固定中灰锚（50mm 测光标定），不按 LUT 自动曝光；MOUNT 与 28mm 的绝对曝光、测色尚无独立标定，输出均标为电脑预测。全尺寸仍按 RAW 条带计算。照片调整在 LUT 之后执行。没有新增写卡路径；全部调节和机内 LUT 两档预测延期。
+照片编辑只存 LUT 的 SHA，颜色空间从库读取。`lut.photo` 接在 `finish.serve.color_image`，预览和全尺寸导出共用。显示类 LUT 使用现有底图，Log 类使用 DNG 的场景 XYZ，支持 A12 50mm、28mm、MOUNT；仍需可用的白平衡和色彩矩阵。各单元使用自身 DNG 矩阵，曝光采用既有固定中灰锚（50mm 测光标定），不按 LUT 自动曝光；MOUNT 与 28mm 的绝对曝光沿用 50mm 锚，输出均标为电脑预测。全尺寸仍按 RAW 条带计算。照片调整在 LUT 之后执行。没有新增写卡路径；全部调节和机内 LUT 两档预测延期。
 
 边框和时间戳在浏览器里画，大图不为它们请求服务器，显卡预览也不因它们退场。版面（边框的外形、条的高度、标志和文字的位置与字号、日期戳的位置、字号和发光半径）是纯函数：`finish/layout.py` 是导出用的那一份，`frame.py`、`stamp.py` 只按它画；`web/assets/finish_layout.js` 是同一套算式的 JS 版，`tests/test_finish_layout_parity.py` 用同样的输入逐项对照（矩形、线、标志、字号、每个字的列逐个数字相同，字符串逐字相同）。量字不用 Pillow 的排版引擎，也不用画布：Pillow 在装了 libraqm 的电脑上走 RAQM（小数步进、字距），没有的走 BASIC（按像素取整的步进，DSEG 这类没有字体指令的字还要被自动对齐器再改一遍），同一个字号量出来的宽度不一样，版面会随电脑变。版面用的是字体文件本身的整数（`finish/sfnt.py` 读出每个字符的步进宽度、字形外框、上沿高度，单位是字体单位）和整数算式：一行字的宽度 = 步进之和 × 字号 / upm，每个字画在 `floor(起点 + 前面各字的步进之和 × 字号 / upm + 0.5)` 那一列，没有字距。导出一个字一个字地画在这些列上（Pillow 一次只排一个字，所有字体对象还是明确指定 BASIC，中文回退字体也一样）；预览拿到的是同一份表（`/api/finish/assets/<字体>.json`，只读，和字体文件、标志一样只有固定几个名字），一个字一个字地画在同样的列上。`tests/test_finish_fonts.py` 核对表和 Pillow 逐字相符（五个字体的每个字形）、两种引擎下导出的字节相同、版面不碰 Pillow 的量字；`tests/test_viewer_browser.py::test_browser_layout_matches_the_export_layout` 在真 Chrome 里用服务器给的表算一遍，和 Python 的结果逐项相同。中文回退字体是系统字体，读不到表，按 1000 像素的字号量一次（Pillow 一次、画布一次），只能和系统字体一样准。文字放不下时：先缩字号，哈苏的参数行再放不下就从最后一项开始去掉，徕卡标志旁边的字放不下就不画，字都不会画到画布外面去。边框上的字符串来自 `/api/photos/{id}/meta` 的 `frame`，和导出是同一份。
 

@@ -95,10 +95,10 @@ def _install_camera(home: Path, entry: bytes) -> None:
     for iso in (200, 1600):
         npz = src / f"data_{iso}.npz"
         ring_path = src / f"ring_{iso}.json"
-        np.savez(npz, stock=stock, d0=d0, d1=d1, S_eff=s_eff)
+        np.savez(npz, stock=stock, d0=d0, d1=d1, S_eff=s_eff, input_coefficients=np.zeros((4, 3)))
         ring_path.write_text(json.dumps(ring), encoding="utf-8")
         sources[iso] = (npz, ring_path)
-    calib.import_calibration(home, sources, origin={"kind": "synthetic"})
+    calib.import_calibration(home, {unit: sources for unit in dc.NAMES}, origin={"kind": "synthetic"})
 
 
 def _commit_dng(lib: Library, blob: bytes, shot_id: str = "syn1", iso: int = 200) -> dict[str, object]:
@@ -362,7 +362,7 @@ def test_lut_jobs_worker_and_recipes(tmp_path: Path, monkeypatch: pytest.MonkeyP
         with pytest.raises(Exception):
             svc.preview(cube_id, "nope", {"space": "srgb", "output": "srgb"}, None)
         with pytest.raises(Exception):
-            svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, unit="qlaunch")
+            svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, unit="unknown")
         started = svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, profile="quick")
         with pytest.raises(Exception):
             svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, profile="quick")
@@ -437,7 +437,7 @@ def test_worker_result_files_and_parent_watch(tmp_path: Path, monkeypatch: pytes
     job2 = tmp_path / "job-scene"
     job2.mkdir()
     (job2 / "job.json").write_text(
-        json.dumps({"home": str(home), "cube": str(cube_path), "input_space": "srgb", "output_space": "srgb", "photos": []}),
+        json.dumps({"home": str(home), "unit": "jlaunch", "cube": str(cube_path), "input_space": "srgb", "output_space": "srgb", "photos": []}),
         encoding="utf-8",
     )
     assert worker.run(job2) == 1
@@ -486,7 +486,7 @@ def test_intake_pack_scan_and_api(tmp_path: Path, settings):  # type: ignore[no-
         intake.install_dat(b"GXRCE001" + bytes(64), home, source_name="GXRCE.DAT", origin={"kind": "file"})
     pack = tmp_path / "pack"
     sources = {iso: (home / "calib-src" / f"data_{iso}.npz", home / "calib-src" / f"ring_{iso}.json") for iso in (200, 1600)}
-    intake.write_pack(pack, sources)
+    intake.write_pack(pack, {unit: sources for unit in dc.NAMES})
     manifest, kind = intake.import_calibration_folder(home, pack)
     assert kind == "pack" and manifest["schema"]
     empty = tmp_path / "empty"
@@ -601,7 +601,7 @@ def test_intake_pack_scan_and_api(tmp_path: Path, settings):  # type: ignore[no-
         preview = client.get(f"/api/lut/{cube_id}/preview", params={"which": "lut", "space": "srgb", "max_edge": 64, "photo": shot["shot_id"]})
         assert preview.status_code == 200 and preview.content[:2] == b"\xff\xd8"
         refused = client.post("/api/lut/fit", json={"cube_id": cube_id, "unit": "qlaunch", "profile": "quick", "space": "srgb"})
-        assert refused.status_code == 422
+        assert refused.status_code == 200 and refused.json()["unit"] == "qlaunch"
 
 
 def test_audit_hook_branches(tmp_path: Path):

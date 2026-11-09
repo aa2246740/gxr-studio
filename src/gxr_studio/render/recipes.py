@@ -18,9 +18,9 @@ from ..camdata import datcodec, knob_table, store
 from ..engine import knobs, menu
 from .params import EditError, RecipeSel
 
-# 单元顺序推断对应 50mm / 28mm / MOUNT（来自研究代码的用法；只有 50mm 有真机样本）
+# 单元顺序为 50mm / 28mm / MOUNT；运行时校准状态由 RenderService.catalog 给出。
 UNIT_INFO = (
-    {"id": "jlaunch", "label": "50mm（A12）", "lens": "50mm", "calibrated": True},
+    {"id": "jlaunch", "label": "50mm（A12）", "lens": "50mm", "calibrated": False},
     {"id": "qlaunch", "label": "28mm", "lens": "28mm", "calibrated": False},
     {"id": "l08firm", "label": "MOUNT", "lens": "MOUNT", "calibrated": False},
 )
@@ -199,7 +199,7 @@ class CameraData(Menu):
 def unit_of_lens(lens: str | None, model: str | None = None) -> str | None:
     """EXIF 镜头名 → 单元 id；认不出就返回 None（调用方标"未标定"）。
 
-    只认 A12-50 / A12-28 / MOUNT 这三种写法，与 DECISIONS 一致；28mm、MOUNT 没有真机文件核实过。
+    识别 50mm、28mm 和 MOUNT 镜头名。
     """
     text = f"{lens or ''} {model or ''}".lower()
     if "mount" in text:
