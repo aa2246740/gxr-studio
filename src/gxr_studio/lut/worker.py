@@ -158,14 +158,14 @@ def run(job_dir: Path) -> int:
         write_result({"state": "cancelled"})
         return 0
     except SceneError as exc:
-        write_result({"state": "error", "code": exc.code, "message": exc.message})
+        write_result({"state": "error", "code": exc.code, "message": exc.message, "trace": traceback.format_exc()[-2000:]})
         return 1
     except Exception:  # noqa: BLE001  子进程里任何问题都要写成结果文件，父进程才能告诉用户
         write_result(
             {
                 "state": "error",
                 "code": "fit_failed",
-                "message": "无法生成配方。请重试。",
+                "message": "配方计算失败，未生成可保存的结果。请查看工作室日志。",
                 "trace": traceback.format_exc()[-2000:],
             },
         )
