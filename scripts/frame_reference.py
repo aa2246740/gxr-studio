@@ -17,7 +17,11 @@ def main() -> None:
     args = parser.parse_args()
     inputs = cases()
     layouts = reference_layouts(args.reference, inputs)
-    payload = {"source": "R3 frame-design revision 2; synthetic sizes only", "count": len(inputs), "sha256": [digest(v) for v in layouts]}
+    payload = {
+        "source": "R3 revision 2; compact carrier; DESIGN original-blur and focal-data corrections; synthetic sizes only",
+        "count": len(inputs),
+        "sha256": [digest(v) for v in layouts],
+    }
     FIXTURE.write_text(json.dumps(payload, indent=2) + "\n")
     print(f"{len(inputs)} reference layouts written to {FIXTURE}")
 

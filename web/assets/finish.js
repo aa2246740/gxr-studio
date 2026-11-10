@@ -44,9 +44,9 @@ export function normalizeFrame(f) {
   const keys = Object.keys(DEFAULT_FRAME);
   if (typeof f !== 'object' || Array.isArray(f) || Object.keys(f).some((k) => !keys.includes(k)) || ('version' in f && f.version !== 2)) return { ...DEFAULT_FRAME };
   const style = f.style === undefined ? 'none' : f.style;
-  if (!['none', 'leica', 'gallery', 'hasselblad', 'instant', 'film'].includes(style)) return { ...DEFAULT_FRAME };
+  if (!['none', 'leica', 'blur_fill', 'gallery', 'hasselblad', 'instant', 'film', 'thin_keyline', 'cinema', 'exhibition_label', 'slide_mount', 'darkroom', 'postage_stamp'].includes(style)) return { ...DEFAULT_FRAME };
   const formats = style === 'instant' ? ['polaroid', 'instax_square', 'instax_wide', 'instax_mini'] : ['135', '120'];
-  const out = { ...DEFAULT_FRAME, show_date: ['leica', 'hasselblad'].includes(style), fmt: formats[0], ...f, style };
+  const out = { ...DEFAULT_FRAME, color: ['thin_keyline', 'slide_mount'].includes(style) ? 'cream' : 'white', show_date: ['leica', 'hasselblad'].includes(style), fmt: formats[0], ...f, style };
   if (!formats.includes(out.fmt) || !['light', 'black'].includes(out.table) || !['white', 'black', 'cream'].includes(out.color) || !['thin', 'medium', 'thick'].includes(out.weight)) return { ...DEFAULT_FRAME };
   if (!['1:1', '4:5', '3:4', '2:3', '9:16', '16:9', '3:2', 'original'].includes(out.output_ratio)) return { ...DEFAULT_FRAME };
   if (['show_logo', 'show_params', 'show_date'].some((k) => typeof out[k] !== 'boolean') || typeof out.text !== 'string' || Array.from(out.text).length > TEXT_MAX) return { ...DEFAULT_FRAME };
@@ -54,7 +54,7 @@ export function normalizeFrame(f) {
 }
 
 export function selectFrame(frame, style) {
-  return normalizeFrame({ ...frame, style, fmt: style === 'instant' ? 'polaroid' : '135', show_date: ['leica', 'hasselblad'].includes(style) });
+  return normalizeFrame({ ...frame, style, color: ['thin_keyline', 'slide_mount'].includes(style) ? 'cream' : frame.color, fmt: style === 'instant' ? 'polaroid' : '135', show_date: ['leica', 'hasselblad'].includes(style) });
 }
 
 export function normalizeStamp(s) {

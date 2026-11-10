@@ -82,6 +82,16 @@ def paint_poly(canvas: Image.Image, it: dict[str, Any]) -> None:
     aa_paint(canvas, bbox, fn, tuple(it["fill"]), it.get("alpha", 1.0))
 
 
+def paint_ellipse(canvas: Image.Image, it: dict[str, Any]) -> None:
+    cx, cy, radius = it["cx"], it["cy"], it["r"]
+    bbox = (math.floor(cx - radius) - 2, math.floor(cy - radius) - 2, math.ceil(cx + radius) + 2, math.ceil(cy + radius) + 2)
+
+    def disc(d: ImageDraw.ImageDraw, ss: int, ox: int, oy: int) -> None:
+        d.ellipse([(cx - radius - ox) * ss, (cy - radius - oy) * ss, (cx + radius - ox) * ss, (cy + radius - oy) * ss], fill=255)
+
+    aa_paint(canvas, bbox, disc, tuple(it["fill"]), it.get("alpha", 1.0))
+
+
 def paint_hole(canvas: Image.Image, it: dict[str, Any], base: Image.Image) -> None:
     x, y, w, h, r = (it["x"], it["y"], it["w"], it["h"], it.get("radius", 0))
     aa_paint(canvas, (x - 1, y - 1, x + w + 1, y + h + 1), lambda d, ss, ox, oy: _rr(d, ss, ox, oy, x, y, w, h, r), (0, 0, 0), 1.0, src=base)

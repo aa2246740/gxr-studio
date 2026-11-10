@@ -36,10 +36,17 @@ def frames_document() -> dict[str, Any]:
     styles: list[dict[str, Any]] = [
         {"id": "none", "name": "无", "options": []},
         {"id": "leica", "name": "徕卡水印", "options": ["color", "show_logo", "show_params", "show_date", "text"]},
+        {"id": "blur_fill", "name": "模糊背景", "options": ["show_params"]},
         {"id": "gallery", "name": "白边", "options": ["color", "weight"]},
         {"id": "hasselblad", "name": "哈苏水印", "options": ["color", "show_params", "show_date", "text"]},
         {"id": "instant", "name": "拍立得", "options": ["fmt", "show_date", "text"]},
         {"id": "film", "name": "胶片", "options": ["fmt", "table"]},
+        {"id": "thin_keyline", "name": "极简细线", "options": ["color"]},
+        {"id": "cinema", "name": "电影宽银幕", "options": ["text"]},
+        {"id": "exhibition_label", "name": "展签", "options": ["color", "text"]},
+        {"id": "slide_mount", "name": "幻灯片", "options": ["color"]},
+        {"id": "darkroom", "name": "暗房相纸", "options": ["text"]},
+        {"id": "postage_stamp", "name": "邮票齿孔", "options": []},
     ]
     for style in styles:
         if style["id"] != "none":

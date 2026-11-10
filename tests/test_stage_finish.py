@@ -109,8 +109,12 @@ def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: P
         "finish_frame_core.js",
         "finish_frame_styles.js",
         "finish_frame_objects.js",
+        "finish_frame_new.js",
+        "finish_background.js",
+        "finish_texture.js",
     ):
         (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "finish_source.js").write_text("export function baseFor() { throw new Error('清除装饰不应读取照片'); }\n")
     (tmp_path / "output_photo_size.js").write_text(
         "export function photoSize() { throw new Error('清除装饰不应查询尺寸'); }\n", encoding="utf-8"
     )
@@ -125,3 +129,58 @@ def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: P
     assert out["stampOnlyPv"] == {"decor": None, "deco": 0}
     assert out["clean"] == {"pv": {}, "pvClasses": ["pv"], "canvas": {"width": "885px"}}
     assert out["otherStyles"] == {"opacity": "0.5"}
+
+
+@pytest.mark.parametrize("kind", ["blur", "grain", "carrier"])
+def test_adjust_redraw_reuses_frame_decoration_until_its_inputs_change(tmp_path, kind):
+    shutil.copyfile(WEB / "stage_finish.js", tmp_path / "stage_finish.js")
+    (tmp_path / "package.json").write_text('{"type":"module"}\n')
+    (tmp_path / "finish_layout.js").write_text(
+        "export const frameLayout=()=>{},stampLayout=()=>{},stampText=()=>{},momentOf=()=>{},needsCjk=()=>{};"
+    )
+    (tmp_path / "finish_fonts.js").write_text(
+        "export const fontReady=()=>true,fontsNeeded=()=>[],loadFont=()=>{},metrics={},tableReady=()=>true;"
+    )
+    (tmp_path / "output_photo_size.js").write_text("export const photoSize=()=>{};")
+    (tmp_path / "finish_source.js").write_text("export const baseFor=()=>{throw Error('stage redraw read back the photo');};")
+    (tmp_path / "finish_draw.js").write_text("export const drawDecor=()=>{globalThis.paints++;};")
+    (tmp_path / "finish_background.js").write_text("export const primeBlur=()=>{globalThis.primes++;};")
+    script = """
+      import {applyDecor} from './stage_finish.js';
+      globalThis.paints=0;globalThis.primes=0;
+      const style={setProperty(){},removeProperty(){}};
+      const overlay={classList:{contains:c=>c==='pv-deco'},dataset:{},getContext:()=>({clearRect(){}})};
+      const pv={children:[overlay],dataset:{},style,classList:{add(){},remove(){}}};
+      const media={style:{}};
+      const view={ed:{frame:{style:'blur_fill'},meta:{}},cardBase:{base:{image:{},source:'gpu:one'}}};
+      const frame={width:400,height:300,photo:[20,20,360,240],bg:[250,250,250],bgfx:{kind:KIND}};
+      const deco={key:'frame-one',ew:360,eh:240,frame};
+      applyDecor(view,pv,media,deco,360,240);
+      const first={paints,primes};
+      for(const exposure_ev of [1,2,3,4,5]){
+        view.ed.adjust={exposure_ev};applyDecor(view,pv,media,deco,360,240);
+      }
+      const drag={paints,primes};
+      view.cardBase.base={image:{},source:'gpu:settled'};
+      applyDecor(view,pv,media,deco,360,240);
+      const settled={paints,primes};
+      applyDecor(view,pv,media,{...deco,key:'frame-two'},360,240);
+      console.log(JSON.stringify({first,drag,settled,option:{paints,primes}}));
+    """.replace("KIND", json.dumps(kind))
+    (tmp_path / "check.mjs").write_text(script)
+    result = subprocess.run(["node", "check.mjs"], cwd=tmp_path, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    if kind == "blur":
+        assert json.loads(result.stdout) == {
+            "first": {"paints": 1, "primes": 1},
+            "drag": {"paints": 1, "primes": 1},
+            "settled": {"paints": 2, "primes": 2},
+            "option": {"paints": 3, "primes": 3},
+        }
+    else:
+        assert json.loads(result.stdout) == {
+            "first": {"paints": 1, "primes": 0},
+            "drag": {"paints": 1, "primes": 0},
+            "settled": {"paints": 1, "primes": 0},
+            "option": {"paints": 2, "primes": 0},
+        }

@@ -184,6 +184,7 @@ def fit_size(w: int, h: int, max_edge: int | None) -> tuple[int, int]:
 
 def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metrics) -> FrameLayout | None:
     """Photo pixels are never scaled or cropped. Port of approved DESIGN sections 3–6."""
+    from . import frame_new as new
     from . import frame_objects as objects
     from . import frame_styles as plain
 
@@ -211,8 +212,22 @@ def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metri
         )
     elif spec.style == "film":
         raw = objects._strip(w, h, meta, ratio, spec.fmt, spec.table, m)
-    else:
+    elif spec.style == "instant":
         raw = objects.instant(w, h, meta, ratio, m, text=spec.text, show_date=bool(spec.show_date), fmt=spec.fmt)
+    elif spec.style == "thin_keyline":
+        raw = new.thin_keyline(w, h, meta, ratio, m, color=spec.color)
+    elif spec.style == "exhibition_label":
+        raw = new.exhibition_label(w, h, meta, ratio, m, color=spec.color, text=spec.text)
+    elif spec.style == "blur_fill":
+        raw = new.blur_fill(w, h, meta, ratio, m, show_params=spec.show_params)
+    elif spec.style == "cinema":
+        raw = new.cinema(w, h, meta, ratio, m, text=spec.text)
+    elif spec.style == "slide_mount":
+        raw = new.slide_mount(w, h, meta, ratio, m, color=spec.color)
+    elif spec.style == "darkroom":
+        raw = new.darkroom(w, h, meta, ratio, m, text=spec.text)
+    else:
+        raw = new.postage_stamp(w, h, meta, ratio, m)
     return FrameLayout(
         raw["width"], raw["height"], raw["photo"], raw["bg"], tuple(raw["items"]), raw["bgfx"], raw["unit_box"], raw["fixed"], raw["grain"]
     )

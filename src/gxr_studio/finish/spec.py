@@ -12,6 +12,21 @@ from ..render.params import INVALID_REQUEST, EditError
 SLIDER = 100
 STAMP_TEXT_MAX = 24
 OUTPUT_RATIOS = {"1:1": (1, 1), "4:5": (4, 5), "3:4": (3, 4), "2:3": (2, 3), "9:16": (9, 16), "16:9": (16, 9), "3:2": (3, 2)}
+FRAME_STYLES = {
+    "none",
+    "leica",
+    "blur_fill",
+    "gallery",
+    "hasselblad",
+    "instant",
+    "film",
+    "thin_keyline",
+    "cinema",
+    "exhibition_label",
+    "slide_mount",
+    "darkroom",
+    "postage_stamp",
+}
 
 
 @dataclass(frozen=True)
@@ -51,7 +66,7 @@ class Geometry:
 @dataclass(frozen=True)
 class FrameSpec:
     style: str = "none"
-    color: str = "white"
+    color: str = ""
     weight: str = "medium"
     show_logo: bool = True
     show_params: bool = True
@@ -62,6 +77,8 @@ class FrameSpec:
     table: str = "light"
 
     def __post_init__(self) -> None:
+        if not self.color:
+            object.__setattr__(self, "color", "cream" if self.style in {"thin_keyline", "slide_mount"} else "white")
         if self.show_date is None:
             object.__setattr__(self, "show_date", self.style in {"leica", "hasselblad"})
         if not self.fmt:
@@ -164,9 +181,9 @@ def parse_frame(raw: Any) -> FrameSpec | None:
     if set(raw) - known or ("version" in raw and (type(raw["version"]) is not int or raw["version"] != 2)):
         raise EditError("bad_frame", "边框设置已更新。请重新选择边框样式。")
     style = raw.get("style", "none")
-    if not isinstance(style, str) or style not in {"none", "gallery", "leica", "hasselblad", "film", "instant"}:
+    if not isinstance(style, str) or style not in FRAME_STYLES:
         raise EditError("bad_frame", INVALID_REQUEST, "没有这个边框样式。")
-    color = raw.get("color", "white")
+    color = raw.get("color", "cream" if style in {"thin_keyline", "slide_mount"} else "white")
     if not isinstance(color, str) or color not in {"white", "black", "cream"}:
         raise EditError("bad_frame", INVALID_REQUEST, "边框颜色只能是白、黑或米白。")
     weight = raw.get("weight", "medium")

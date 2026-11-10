@@ -304,6 +304,9 @@ export function route(view, ctx, rerun) {
   // 精确的导出框到了：成片按导出的宽高比显示（半分辨率的成片比例和导出差一点，边框里的洞是导出的比例）。框到之前仍是成片自己的比例。
   view.gpuAspect = exact && view.gpuExport ? view.gpuExport.w / view.gpuExport.h : null;
   engine.setDisplayAspect(view.gpuAspect);
+  // Backdrops must follow the look actually installed in the engine. A pending
+  // recipe table can leave the old photo visible while the edit draft is new.
+  view.gpuFinishKey=JSON.stringify([generation,sKey,bake?.key,plan.lut?lutMeta.get(plan.lut).key:null,ctx.adjust,ctx.curve,g,ctx.stage==='final'?box.box:null,view.gpuAspect]);
   ed.error = null;
   ed.busy = false;
   prefetch(view);

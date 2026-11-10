@@ -102,6 +102,13 @@ def test_frame_catalog_uses_the_copy_names() -> None:
         "hasselblad": "哈苏水印",
         "film": "胶片",
         "instant": "拍立得",
+        "blur_fill": "模糊背景",
+        "thin_keyline": "极简细线",
+        "cinema": "电影宽银幕",
+        "exhibition_label": "展签",
+        "slide_mount": "幻灯片",
+        "darkroom": "暗房相纸",
+        "postage_stamp": "邮票齿孔",
     }
     assert doc["stamp"]["text_max_length"] == 24
     assert doc["stamp"]["fonts"][0]["name"] == "数码管"

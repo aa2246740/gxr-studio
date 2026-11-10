@@ -87,6 +87,17 @@ def test_frame_ratio_choice_is_copied_pasted_undone_and_redone(tmp_path):
     assert payloads == [copied, copied, previous, previous, copied, copied]
 
 
+@pytest.mark.parametrize("style", ("blur_fill", "thin_keyline", "cinema", "exhibition_label", "slide_mount", "darkroom", "postage_stamp"))
+def test_new_frame_copy_paste_undo_redo_keeps_the_complete_setting(tmp_path, style):
+    from gxr_studio.finish.spec import FrameSpec
+
+    out = run(tmp_path, "new-frame-copy:" + style)
+    expected = FrameSpec(style=style, color="black", text="海边", show_params=False, output_ratio="9:16").to_json()
+    previous = FrameSpec(style="instant", fmt="instax_mini", output_ratio="1:1").to_json()
+    assert out["payloads"] == [expected, expected, previous, previous, expected, expected]
+    assert out["crop"] == "1:1"
+
+
 def test_copy_options_are_remembered_and_empty_groups_are_not_copied(tmp_path):
     out = run(tmp_path, "copy-options")
     assert out["initial"] == ["recipe", "adjust"]

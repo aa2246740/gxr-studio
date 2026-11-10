@@ -105,6 +105,9 @@ def check(out: dict, mode: str) -> None:
     rate = out["rate"]
     print(f"[{mode}] 拖动时直方图 {rate['perSecond']:.1f} 次/秒（{rate['updates']} 次 / {rate['seconds']:.1f} 秒）")
     print(f"[{mode}] 画面帧间隔 {rate['frameMs']}，两次更新间隔 {rate['gapMs']}")
+    frame_work = rate["frameWork"]
+    print(f"[{mode}] hidden frame work: {frame_work}")
+    assert frame_work == {"cards": 13, "hidden": True, "redraws": 0, "blurBuilds": 0}, frame_work
     assert rate["perSecond"] >= min_hz, rate
     # 三角：曝光 +5 档高光死白，−5 档暗部死黑，各自亮起；提示里写着多少、怎么点、J
     lit = out["lit"]

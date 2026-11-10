@@ -133,7 +133,7 @@ def check(out):
     assert out["undo"]["changed"] is True and near(out["undo"]["box"], out["undo"]["server"])
     assert out["undo"]["preset"] != "16:9"
     # 无边框和五种样式都出来，是浏览器自己画的（没有给每种样式请求 /render）
-    assert out["cards"]["cards"] == 6 and out["cards"]["canvases"] == 6
+    assert out["cards"]["cards"] == 13 and out["cards"]["canvases"] == 13
     assert out["cards"]["cardRenders"] <= 1, out["cards"]  # 舞台上没有现成的画面时才请求一张小图
     assert out["cards"]["stageRenders"] <= 1, out["cards"]  # 离开裁切页，服务器出图时大图重出一次；走显卡时一次也没有
     assert out["cards"]["distinct"] > 8, out["cards"]  # 底图是真的照片，不是一张空白或纯黑

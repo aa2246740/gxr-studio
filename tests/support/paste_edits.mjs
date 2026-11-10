@@ -329,8 +329,10 @@ if (scenario === 'crop-that-fills-the-frame') {
   out.shifted = core.copyFromView(v, ['crop']).copied;
 }
 
-if (scenario === 'frame-ratio-copy-paste-undo') {
-  stored.a0.frame = { version: 2, style: 'film', fmt: '120', table: 'black', show_date: true, text: 'Harbour', output_ratio: '9:16' };
+if (scenario === 'frame-ratio-copy-paste-undo' || scenario.startsWith('new-frame-copy:')) {
+  stored.a0.frame = scenario.startsWith('new-frame-copy:')
+    ? { version: 2, style: scenario.split(':')[1], color: 'black', text: '海边', show_params: false, output_ratio: '9:16' }
+    : { version: 2, style: 'film', fmt: '120', table: 'black', show_date: true, text: 'Harbour', output_ratio: '9:16' };
   stored.b0.frame = { version: 2, style: 'instant', fmt: 'instax_mini', output_ratio: '1:1' };
   stored.b0.cropBox = { preset: '1:1', rect: [0.1, 0.1, 0.5, 0.75] };
   core.rememberGroups(['frame']);
