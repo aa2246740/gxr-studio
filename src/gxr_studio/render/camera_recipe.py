@@ -38,3 +38,12 @@ def photo_edit(side: dict[Any, Any], shot: dict[Any, Any], menu: Menu) -> EditSt
         return edit
     selection = recorded_recipe(shot.get("recipe_tag"), menu)
     return replace(edit, recipe=selection)
+
+
+def editor_edit(side: dict[Any, Any], shot: dict[Any, Any], menu: Menu) -> tuple[EditState, EditError | None]:
+    """存储状态必须有效；拍摄配方不可预测时，电脑编辑仍可读写。"""
+    stored = parse_edit(side)
+    try:
+        return photo_edit(side, shot, menu), None
+    except EditError as problem:
+        return stored, problem

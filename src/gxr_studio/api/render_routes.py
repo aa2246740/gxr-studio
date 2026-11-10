@@ -20,7 +20,7 @@ from ..lut.errors import LutError
 from ..lut.spaces import DISPLAY
 from ..raw.dng import RawDecodeError
 from ..render import edits as render_edits
-from ..render.camera_recipe import photo_edit
+from ..render.camera_recipe import editor_edit
 from ..render.params import EditError, EditState, parse_adjust, parse_curve, parse_lut, parse_recipe
 from ..render.service import NoRaw, RenderUnavailable
 from .errors import ApiError
@@ -86,14 +86,16 @@ def _read_edit(c: Any, shot: dict[Any, Any], *, inherit_recipe: bool = True) -> 
 def _payload(
     c: Any,
     shot: dict[Any, Any],
-    edit: EditState,
     side: dict[Any, Any],
     warning: str | None = None,
-    *,
-    render_info: dict[Any, Any] | None = None,
 ) -> dict[Any, Any]:
+    edit, problem = editor_edit(side, shot, c.render.recipe_menu())
     out = render_edits.describe(side, edit)
-    out["render"] = _render_info(c, shot, edit) if render_info is None else render_info
+    out["render"] = (
+        {"available": False, "reason": problem.code, "message": f"{problem.message} 照片调整仍可保存，暂不生成拍摄配方预测。"}
+        if problem is not None
+        else _render_info(c, shot, edit)
+    )
     if warning:
         out["warning"] = warning
     return out
@@ -274,16 +276,8 @@ def list_recipes(request: Request) -> dict[Any, Any]:
 def get_edit(shot_id: str, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    edit, side = _read_edit(c, shot, inherit_recipe=False)
-    try:
-        edit = photo_edit(side, shot, c.render.recipe_menu())
-    except EditError as exc:
-        if exc.code != "camera_recipe_catalog_missing":
-            raise _edit_error(exc) from exc
-        return _payload(
-            c, shot, edit, side, c.lib.sidecar_problem(shot), render_info={"available": False, "reason": exc.code, "message": exc.message}
-        )
-    return _payload(c, shot, edit, side, c.lib.sidecar_problem(shot))
+    _edit, side = _read_edit(c, shot, inherit_recipe=False)
+    return _payload(c, shot, side, c.lib.sidecar_problem(shot))
 
 
 @router.put("/api/photos/{shot_id}/edit", response_model=None)
@@ -300,7 +294,7 @@ def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
                 raise ApiError(exc.status, exc.code, exc.message, exc.extra) from exc
             if target.input_space not in DISPLAY and "dng" not in shot["files"]:
                 raise EditError("lut_needs_raw", "这个 LUT 需要 RAW 文件")
-        edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev)
+        _edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev)
     except EditError as exc:
         raise _edit_error(exc) from exc
     except RevisionConflict as exc:
@@ -309,7 +303,7 @@ def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
         raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
-    return _payload(c, shot, edit, side, warning)
+    return _payload(c, shot, side, warning)
 
 
 @router.delete("/api/photos/{shot_id}/edit", response_model=None)
@@ -318,7 +312,7 @@ def delete_edit(shot_id: str, request: Request) -> Any:
     shot = _shot_or_404(c, shot_id)
     warning = c.lib.sidecar_problem(shot)
     try:
-        edit, side = render_edits.write(
+        _edit, side = render_edits.write(
             c.lib,
             shot,
             {"recipe": None, "lut": None, "adjust": None, "curve": None, "geometry": None, "frame": None, "stamp": None},
@@ -328,7 +322,7 @@ def delete_edit(shot_id: str, request: Request) -> Any:
         raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
-    return _payload(c, shot, edit, side, warning)
+    return _payload(c, shot, side, warning)
 
 
 # ---- 预览图 ---------------------------------------------------------------------

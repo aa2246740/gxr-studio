@@ -228,7 +228,7 @@ def paste_one(
     """粘贴到一张照片。返回结果和粘贴之前的内容（没写过就是 None）。读写失败、版本对不上记成这一张的错，不抛出。"""
     shot_id = str(shot["shot_id"])
     try:
-        _edit, side = read_edit(lib, shot)
+        _edit, side = read_edit(lib, shot, repair=False)
         sc.check_writable(side)
     except sc.SidecarTooNew:
         return _failed(shot_id, "sidecar_too_new", "这张照片的编辑来自更新的版本，没有粘贴。"), None

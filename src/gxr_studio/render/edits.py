@@ -13,9 +13,9 @@ from typing import Any
 from ..finish.geometry import fitted_crop, output_size
 from ..finish.spec import Geometry, parse_frame, parse_geometry, parse_stamp
 from ..library import sidecar as sc
-from ..library.edits import RevisionConflict, clean_border, heal_frame
+from ..library.edits import RevisionConflict, clean_border, heal_frame, recovered_frame
 from ..library.store import Library
-from .camera_recipe import photo_edit
+from .camera_recipe import editor_edit, photo_edit
 from .params import EditError, EditState, parse_adjust, parse_curve, parse_edit, parse_lut, parse_recipe
 from .recipes import Menu, unit_of_lens
 
@@ -23,10 +23,10 @@ _UNSET = object()
 SCOPE = {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop", "lut"]}
 
 
-def read(lib: Library, shot: dict[Any, Any], menu: Menu | None = None) -> tuple[EditState, dict[Any, Any]]:
+def read(lib: Library, shot: dict[Any, Any], menu: Menu | None = None, *, repair: bool = True) -> tuple[EditState, dict[Any, Any]]:
     with lib.lock:
         side, _ = lib.read_sidecar_or_default(shot)  # 编辑记录坏了/不见了就当没有编辑
-        side = heal_frame(lib, shot, side)
+        side = (heal_frame if repair else recovered_frame)(lib, shot, side)
     return (photo_edit(side, shot, menu) if menu is not None else parse_edit(side)), side
 
 
@@ -75,7 +75,7 @@ def write(
         sc.check_writable(side)
         if expected_rev is not None and int(side.get("rev", 0)) != expected_rev:
             raise RevisionConflict(int(side.get("rev", 0)))
-        side = heal_frame(lib, shot, side)
+        side = recovered_frame(lib, shot, side)
         base_rev = int(side.get("rev", 0))
         new = copy.deepcopy(side)
     if "recipe" in changes:
@@ -166,10 +166,12 @@ def write(
         else:
             parsed_stamp = parse_stamp(changes["stamp"])
             new["stamp"] = parsed_stamp.to_json() if parsed_stamp is not None else {"enabled": False}
+    new = clean_border(new)
+    edit, _prediction_problem = editor_edit(new, shot, menu)
     with lib.lock:
         current = lib.read_sidecar_for_write(shot)
         if int(current.get("rev", 0)) != base_rev:
             raise RevisionConflict(int(current.get("rev", 0)))
-        out = sc.write_atomic(path, clean_border(new), tmp_dir=lib.tmp_dir)
+        out = sc.write_atomic(path, new, tmp_dir=lib.tmp_dir)
         lib.set_edit_cache(shot["shot_id"], int(out["rev"]), out.get("crop"))
-        return photo_edit(out, shot, menu), out
+        return edit, out
