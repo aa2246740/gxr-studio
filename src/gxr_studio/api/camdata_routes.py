@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .. import privacy
-from ..camdata import datcodec, intake
+from ..camdata import datcodec, intake, r5
 from ..cards.session import MountSession, SessionError
 from ..library import thumbs
 from .errors import ApiError
@@ -111,17 +111,19 @@ def _status(c: Any) -> dict[Any, Any]:
     }
 
 
-def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any]) -> dict[Any, Any]:
+def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any], library: bytes | None = None) -> dict[Any, Any]:
     """校验（不过就原样保留旧数据）→ 与已导入的相同就不动 → 否则在渲染锁里替换并让缓存失效。"""
     try:
         forbidden = _guard_home(c)  # 先核对目标目录，再看字节：拒绝时一个字节都不落盘
-        info = intake.inspect_dat(raw)
+        info = intake.inspect_dat(raw, library)
         home = c.settings.home_dir
         with c.camdata_lock:
             unchanged = intake.existing_source_sha(home) == info.sha256
             removed = 0
             if not unchanged:
-                c.render.replace_data(lambda: intake.install_dat(raw, home, source_name=name, origin=origin, forbidden=forbidden))
+                c.render.replace_data(
+                    lambda: intake.install_dat(raw, home, source_name=name, origin=origin, forbidden=forbidden, library=library)
+                )
                 removed = thumbs.purge_variants(c.lib)
     except intake.IntakeError as exc:
         generation = datcodec.peek_generation(raw) if exc.code == "generation_unsupported" else None
@@ -132,10 +134,11 @@ def _install(c: Any, raw: bytes, name: str, origin: dict[Any, Any]) -> dict[Any,
     c.render.note_import_generation(None)
     status = _status(c)
     where = f"存储卡「{origin['label']}」" if origin.get("kind") == "card" else "你选的文件"
+    counts = "，".join(f"{u['label']} {len(u['recipes'])} 条" for u in c.render.recipe_menu().listing())
     msg = (
         f"相机配方文件已经是最新的（{where}，第 {info.generation} 代），没有改动"
         if unchanged
-        else f"已从{where}导入相机配方文件：第 {info.generation} 代，3 个单元 × 8 个内置配方。"
+        else f"已从{where}导入相机配方文件：第 {info.generation} 代，{counts}。"
     )
     if status["next"] == "import_calibration":
         msg += " 还需要导入校准数据才能使用配方。"
@@ -194,20 +197,20 @@ def import_from_card(request: Request, body: ImportCardRequest | None = None) ->
         raise ApiError(404, "dat_not_found", "存储卡上没有相机配方文件（GXRCE.DAT）")
     try:
         fingerprint = session.fingerprint
-        raw = intake.read_dat_from_card(c.reader, pick, expect=(fingerprint.root_dev, fingerprint.root_ino))
+        raw, library = intake.read_bundle_from_card(c.reader, pick, expect=(fingerprint.root_dev, fingerprint.root_ino))
     except intake.IntakeError as exc:
         raise _api(exc) from exc
-    return _install(c, raw, pick.dat_path.name, {"kind": "card", "label": pick.card.label})  # type: ignore[union-attr]
+    return _install(c, raw, pick.dat_path.name, {"kind": "card", "label": pick.card.label}, library)  # type: ignore[union-attr]
 
 
 @router.post("/api/camdata/import-file", response_model=None)
 def import_from_file(body: PathRequest, request: Request) -> Any:
     c = ctx(request)
     try:
-        raw, name = intake.read_dat_from_path(Path(body.path))
+        raw, name, library = intake.read_bundle_from_path(Path(body.path))
     except intake.IntakeError as exc:
         raise _api(exc) from exc
-    return _install(c, raw, name, {"kind": "file"})
+    return _install(c, raw, name, {"kind": "file"}, library)
 
 
 @router.post("/api/camdata/import-upload", response_model=None)
@@ -215,10 +218,12 @@ async def import_from_upload(request: Request) -> Any:
     """浏览器的文件选择器拿不到本地路径：界面把选中的 GXRCE.DAT 的原始字节直接 POST 过来（文件名放在
     `X-GXR-Filename`，只用来显示）。校验、替换和 `import-file` 完全相同；超过上限边读边拒绝。"""
     c = ctx(request)
+    dat_bytes = request.headers.get("x-gxr-dat-bytes")
+    limit = intake.MAX_DAT_BYTES + r5.MAX_LIBRARY_BYTES if dat_bytes is not None else intake.MAX_DAT_BYTES
     chunks, total = [], 0
     async for chunk in request.stream():
         total += len(chunk)
-        if total > intake.MAX_DAT_BYTES:
+        if total > limit:
             raise ApiError(
                 422,
                 "dat_invalid",
@@ -227,7 +232,20 @@ async def import_from_upload(request: Request) -> Any:
             )
         chunks.append(chunk)
     name = Path(request.headers.get("x-gxr-filename") or intake.DAT_NAME).name or intake.DAT_NAME
-    return await run_in_threadpool(_install, c, b"".join(chunks), name, {"kind": "file"})
+    raw, library = b"".join(chunks), None
+    if dat_bytes is not None:
+        if (
+            len(dat_bytes) > 6
+            or not dat_bytes.isascii()
+            or not dat_bytes.isdecimal()
+            or not 256 <= int(dat_bytes) <= min(total, intake.MAX_DAT_BYTES)
+        ):
+            raise ApiError(422, "dat_invalid", "两个文件的上传长度不合格，请重新选择 GXRCE.DAT 和 GXRFX.BIN。")
+        split = int(dat_bytes)
+        raw, library = raw[:split], raw[split:]
+        if len(library) > r5.MAX_LIBRARY_BYTES:
+            raise ApiError(422, "dat_invalid", "GXRFX.BIN 过大，请重新复制两个文件。")
+    return await run_in_threadpool(_install, c, raw, name, {"kind": "file"}, library)
 
 
 @router.post("/api/calibration/import", response_model=None)

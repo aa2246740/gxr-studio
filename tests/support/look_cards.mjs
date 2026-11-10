@@ -154,7 +154,8 @@ if (scenario === 'model') {
   const none = scenario === 'panel-jpg-none';
   const calls = [];
   const info = (slot, name) => ({ slot, name, is_stock: slot === 4, controls: [{ name: 'amount', label: 'Amount', levels: [0, 50, 100], default: 100 }, { name: 'contrast', label: 'Contrast', levels: [-1, 0, 1], default: 0 }] });
-  const mk = (id) => ({ id, recipes: [info(1, 'GR 正片'), info(2, 'GR 负片'), info(4, '原厂标准')], looks: [{ kind: 'look', id: 'acros', name: 'Acros', slot: 3, controls: [] }, { kind: 'look', id: 'odd', name: '没见过的名字', slot: 4, controls: [] }],
+  const records = ['a', 'b'].map((id) => ({ ...info(2, `Synthetic ${id}`), kind: 'record', id: id.repeat(64) }));
+  const mk = (id) => ({ id, recipes: [info(1, 'GR 正片'), info(2, 'GR 负片'), info(4, '原厂标准'), ...records], looks: [{ kind: 'look', id: 'acros', name: 'Acros', slot: 3, controls: [] }, { kind: 'look', id: 'odd', name: '没见过的名字', slot: 4, controls: [] }],
     users: [{ kind: 'camera_user', id: 'u1', name: 'FCC-001', slot: 4, controls: [] }] });
   const units = [mk('jlaunch'), mk('qlaunch'), mk('l08firm')];
   const mine = [
@@ -242,6 +243,14 @@ if (scenario === 'model') {
   out.focusAfterRight = document.activeElement === list[1];
   out.tabindexAfterRight = [list[0].getAttribute('tabindex'), list[1].getAttribute('tabindex')];
   out.otherKey = key('a');
+  out.recordNames = cards.filter((c) => c.getAttribute('data-look').startsWith('record:')).map((c) => find(c, (n) => n.classList && n.classList.contains('nm')).textContent);
+  click('Synthetic a');
+  await tick(5);
+  out.firstRecord = JSON.parse(JSON.stringify(view.ed.recipe));
+  click('Synthetic b');
+  await tick(5);
+  out.secondRecord = JSON.parse(JSON.stringify(view.ed.recipe));
+  out.recordBodies = calls.filter((c) => c.method === 'PUT').slice(-2).map((c) => c.body.recipe);
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

@@ -132,12 +132,15 @@ class CameraData(Menu):
         # 旧代数的规范化数据可独立使用。新代数须从原 DAT 读取控制表和文件内配方。
         if self.manifest["generation"] in (127, 129, 131, 135, 137, 138) and "dat-template/GXRCE.DAT" not in self.manifest["files"]:
             return
-        dat = datcodec.parse(store.load_template(self.home))
+        dat = datcodec.parse(store.load_template(self.home), store.load_library(self.home))
         if dat.kv2_block is not None:
             self.menu = knob_table.read(dat.kv2_block, self.menu, mount_knobs_from_50mm=datcodec.PROFILES[dat.generation].mount_knobs_from_50mm)
             self._recipes = {(r["unit"], r["slot"]): r for r in self.menu["recipes"]}
             self.table_sha256 = hashlib.sha256(dat.kv2_block).hexdigest()
         for unit in range(3):
+            for i, record in enumerate(dat.recipes):
+                if record.unit_mask >> unit & 1:
+                    self._add_extra(unit, "record", i, record.name, record.base, record.entry, {})
             for i, look in enumerate(dat.looks):
                 if look.unit_mask >> unit & 1:
                     self._add_extra(unit, "look", i, look.name, look.base, look.entry, {})
@@ -165,6 +168,12 @@ class CameraData(Menu):
         for unit, info in enumerate(units):
             info["looks"] = self._groups.get((unit, "look"), [])
             info["users"] = self._groups.get((unit, "camera_user"), [])
+            if self.manifest["generation"] in (176, 178):
+                count = 4 if self.manifest["generation"] == 178 else 8
+                info["recipes"] = [
+                    {**recipe, "position": position, "number": f"{position:02d}"}
+                    for position, recipe in enumerate(info["recipes"][:count] + self._groups.get((unit, "record"), []), 1)
+                ]
         return units
 
     def _extra_for(self, sel: RecipeSel) -> dict[str, Any]:
@@ -175,6 +184,8 @@ class CameraData(Menu):
 
     def request_for(self, sel: RecipeSel) -> tuple[list[str], list[int], knobs.Request]:
         if sel.kind == "builtin":
+            if self.manifest["generation"] == 178 and sel.slot > 4:
+                raise EditError("recipe_not_found", "g178 已移除这个旧配方入口，请从完整配方列表重新选择。")
             return super().request_for(sel)
         extra = self._extra_for(sel)
         given = {**extra["defaults"], **sel.levels_dict()}

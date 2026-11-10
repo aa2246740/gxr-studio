@@ -85,7 +85,7 @@ export function recipePanel(view) {
     return {
       id: `${target.kind}:${target.id || target.slot}`,
       name,
-      desc: describeLook({ kind: target.kind, slot: target.slot, name }),
+      desc: target.kind === 'record' ? null : describeLook({ kind: target.kind, slot: target.slot, name }),
       pressed: target.kind === 'builtin' ? (!sel.kind || sel.kind === 'builtin') && target.slot === sel.slot && !!ed.recipe : sel.kind === target.kind && sel.id === target.id,
       render: usable && r ? renderRecipe(view, t.same ? sel : t.next, approx) : null,
       onPick: () => (usable ? switchRecipe(view, target) : flash()),
@@ -101,7 +101,7 @@ export function recipePanel(view) {
     nodes.push(h('div', { class: usable ? 'look-group' : 'look-group dimmed-block' }, deck.grid(items)));
   };
 
-  section('内置配方', unit.recipes.map((r) => builtinCard({ kind: 'builtin', slot: r.slot }, slotName(sel.unit, r.slot))));
+  section('内置配方', unit.recipes.map((r) => builtinCard({ kind: r.kind || 'builtin', slot: r.slot, ...(r.id ? { id: r.id } : {}) }, r.kind === 'record' ? r.name : slotName(sel.unit, r.slot))));
   if ((unit.looks || []).length) {
     section('Looks', unit.looks.map((r) => builtinCard({ kind: 'look', slot: r.slot, id: r.id }, r.name)));
   }

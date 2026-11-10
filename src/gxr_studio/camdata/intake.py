@@ -22,7 +22,7 @@ from typing import Any, Iterable, cast
 
 from .. import audit
 from ..cards.discovery import Card, CardReader
-from . import calib, datcodec, store
+from . import calib, datcodec, r5, store
 
 DAT_NAME = "GXRCE.DAT"
 MAX_DAT_BYTES = max(p.max_file for p in datcodec.PROFILES.values())
@@ -31,7 +31,7 @@ PACK_FILE = "calib-pack.json"
 MAX_PACK_FILE_BYTES = 64 << 20
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
-HOW_TO_GET_DAT = "相机配方文件在存储卡最外层，和 DCIM 并排。"
+HOW_TO_GET_DAT = "相机配方文件在存储卡最外层，和 DCIM 并排。r5 请同时复制 GXRCE.DAT 和 GXRFX.BIN。"
 
 
 class IntakeError(Exception):
@@ -53,6 +53,7 @@ class CardScan:
     has_dcim: bool
     dat_path: Path | None
     dat_size: int | None
+    library_path: Path | None = None
 
     @property
     def has_dat(self) -> bool:
@@ -79,6 +80,7 @@ def scan_cards_for_dat(volumes_roots: Iterable[Path], reader: CardReader | None 
                 continue
             root = Path(vol.path)
             has_dcim, dat_path, dat_size = False, None, None
+            library_path = None
             try:
                 with reader.scandir(root) as it:
                     for e in it:
@@ -87,15 +89,17 @@ def scan_cards_for_dat(volumes_roots: Iterable[Path], reader: CardReader | None 
                             has_dcim = True
                         elif upper == DAT_NAME and not e.name.startswith(".") and e.is_file(follow_symlinks=False):
                             dat_path, dat_size = Path(e.path), e.stat(follow_symlinks=False).st_size
+                        elif upper == r5.LIBRARY_NAME and e.is_file(follow_symlinks=False):
+                            library_path = Path(e.path)
             except OSError:
                 continue
             if has_dcim or dat_path is not None:
                 audit.protect(root)
-                out.append(CardScan(Card(root=root, label=vol.name), has_dcim, dat_path, dat_size))
+                out.append(CardScan(Card(root=root, label=vol.name), has_dcim, dat_path, dat_size, library_path))
     return out
 
 
-def _read_limited(fh: Any) -> bytes:
+def _read_limited(fh: Any, limit: int = MAX_DAT_BYTES) -> bytes:
     chunks, total = [], 0
     while True:
         chunk = fh.read(1 << 16)
@@ -103,12 +107,12 @@ def _read_limited(fh: Any) -> bytes:
             break
         chunks.append(chunk)
         total += len(chunk)
-        if total > MAX_DAT_BYTES:
+        if total > limit:
             raise IntakeError(
                 422,
                 "dat_invalid",
                 "无法导入相机配方文件。文件过大。",
-                {"detail": f"超过 {MAX_DAT_BYTES // 1024} KB"},
+                {"detail": f"超过 {limit} B"},
             )
     return b"".join(chunks)
 
@@ -142,6 +146,42 @@ def read_dat_from_path(path: Path) -> tuple[bytes, str]:
         raise IntakeError(422, "file_unreadable", "无法读取这个文件。请检查权限后再试。", {"detail": exc.strerror or str(exc)}) from exc
 
 
+def _needs_library(raw: bytes) -> bool:
+    try:
+        return datcodec.peek_generation(raw) in (176, 178)
+    except datcodec.DatError:
+        return False
+
+
+def read_bundle_from_path(path: Path) -> tuple[bytes, str, bytes | None]:
+    raw, name = read_dat_from_path(path)
+    library = None
+    if _needs_library(raw):
+        folder = path.expanduser() if path.expanduser().is_dir() else path.expanduser().parent
+        companion = next(
+            (p for p in sorted(folder.iterdir()) if p.name.upper() == r5.LIBRARY_NAME and p.is_file() and not p.is_symlink()), None
+        )
+        if companion is not None:
+            try:
+                with open(companion, "rb") as fh:
+                    library = _read_limited(fh, r5.MAX_LIBRARY_BYTES)
+            except OSError as exc:
+                raise IntakeError(422, "library_unreadable", "无法读取 GXRFX.BIN，请重新复制同一套两个文件。") from exc
+    return raw, name, library
+
+
+def read_bundle_from_card(reader: CardReader, scan: CardScan, *, expect: tuple[int, int]) -> tuple[bytes, bytes | None]:
+    raw = read_dat_from_card(reader, scan, expect=expect)
+    library = None
+    if _needs_library(raw) and scan.library_path is not None:
+        try:
+            with reader.open_rb(scan.library_path, root=scan.card.root, expect=expect) as fh:
+                library = _read_limited(fh, r5.MAX_LIBRARY_BYTES)
+        except OSError as exc:
+            raise IntakeError(409, "card_read_failed", "无法读取存储卡上的 GXRFX.BIN，请重新插入后重试。") from exc
+    return raw, library
+
+
 # ---- 校验与导入 -----------------------------------------------------------------
 
 
@@ -152,13 +192,14 @@ class DatInfo:
     sha256: str
 
 
-def inspect_dat(raw: bytes) -> DatInfo:
+def inspect_dat(raw: bytes, library: bytes | None = None) -> DatInfo:
     """写入前调用 codec 的完整校验（含 g156/g158 引擎绑定）。不过则抛带中文说明的 IntakeError。"""
     if not raw:
         raise IntakeError(422, "dat_invalid", "无法导入相机配方文件。文件是空的。")
+    gen = -1
     try:
         gen = datcodec.peek_generation(raw)
-        dat = datcodec.parse(raw)
+        dat = datcodec.parse(raw, library)
         if datcodec.pack(dat) != raw:
             raise datcodec.DatError("重新封装后与原文件不一致")
         for unit in range(3):
@@ -178,7 +219,7 @@ def inspect_dat(raw: bytes) -> DatInfo:
         raise IntakeError(
             422,
             "dat_invalid",
-            "无法导入相机配方文件。请从存储卡重新复制。",
+            str(exc) if gen in (176, 178) or library is not None else "无法导入相机配方文件。请从存储卡重新复制。",
             {"detail": str(exc)},
         ) from exc
     except Exception as exc:  # noqa: BLE001  畸形输入可能触发任何解析错误，统一当作损坏
@@ -194,11 +235,13 @@ def existing_source_sha(home: Path) -> str | None:
         return None
 
 
-def install_dat(raw: bytes, home: Path, *, source_name: str, origin: dict[Any, Any], forbidden: Iterable[Path] = ()) -> dict[Any, Any]:
+def install_dat(
+    raw: bytes, home: Path, *, source_name: str, origin: dict[Any, Any], forbidden: Iterable[Path] = (), library: bytes | None = None
+) -> dict[Any, Any]:
     """（已经 `inspect_dat` 通过的）DAT 提取到 `home/camera-data/`，返回 manifest。写入先落临时目录、读回比对再整体替换。
     `forbidden` 是不许落盘的目录（卷根、卡根、图库），见 `privacy.forbidden_for`。"""
     try:
-        return store.import_from_dat(raw, home, source_name=source_name, origin=origin, forbidden=forbidden)
+        return store.import_from_dat(raw, home, source_name=source_name, origin=origin, forbidden=forbidden, library=library)
     except (store.CamdataError, datcodec.DatError, OSError) as exc:
         raise IntakeError(500, "camdata_write_failed", "相机配方文件没能存进应用数据目录。请重试。") from exc
 
@@ -234,6 +277,7 @@ def describe(home: Path) -> dict[Any, Any] | None:
             "size": src.get("size"),
             "sha256": src.get("sha256"),
             "origin": src.get("origin"),
+            **({"library": src["library"]} if "library" in src else {}),
         },
         "units": units,
         "all_units_complete": all(u["complete"] for u in units),

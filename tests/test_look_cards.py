@@ -127,6 +127,16 @@ def test_clicking_a_card_writes_the_same_edit_as_the_old_recipe_button():
 
 
 @needs_node
+def test_full_record_cards_keep_their_names_and_distinct_identities_for_the_same_base():
+    out = scene("panel")
+    assert out["recordNames"] == ["Synthetic a", "Synthetic b"]
+    first = {"unit": "jlaunch", "kind": "record", "slot": 2, "id": "a" * 64, "levels": {}}
+    second = {**first, "id": "b" * 64}
+    assert out["firstRecord"] == first and out["secondRecord"] == second
+    assert [{key: body[key] for key in first} for body in out["recordBodies"]] == [first, second]
+
+
+@needs_node
 def test_arrow_keys_move_between_cards_and_do_not_change_photo():
     out = scene("panel")
     assert out["rightKey"] == [True, True]  # 拦下默认动作，也不让大图把左右键当成换照片

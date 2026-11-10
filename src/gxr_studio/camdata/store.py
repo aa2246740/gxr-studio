@@ -44,9 +44,9 @@ def camera_data_dir(home: Path) -> Path:
     return Path(home) / CAMERA_DATA
 
 
-def entries_from_dat(raw: bytes) -> tuple[Any, ...]:
+def entries_from_dat(raw: bytes, library: bytes | None = None) -> tuple[Any, ...]:
     """解析 DAT，返回 (dat, {(unit, slot): 552 B})，unit 0..2，slot 1..8。"""
-    dat = datcodec.parse(raw)
+    dat = datcodec.parse(raw, library)
     out = {}
     for unit in range(3):
         for slot in SLOTS:
@@ -64,6 +64,7 @@ def import_from_dat(
     source_name: str = "GXRCE.DAT",
     origin: dict[Any, Any] | None = None,
     forbidden: Iterable[Path] = (),
+    library: bytes | None = None,
 ) -> dict[Any, Any]:
     """从 DAT 字节提取三个单元 × 8 个配方（含原厂 04）到 `home/camera-data/`，返回 manifest。
 
@@ -71,8 +72,10 @@ def import_from_dat(
     `forbidden`：卷根、卡根、图库等不许落盘的目录（`privacy.forbidden_for`）。所有写入都相对已核对的目录 fd。
     """
     privacy.check_private_dir(home, "camera_data", forbidden)  # 解析之前先拒绝不合格的目录
-    dat, entries = entries_from_dat(raw)
+    dat, entries = entries_from_dat(raw, library)
     files: dict[str, bytes] = {"dat-template/GXRCE.DAT": bytes(raw)}
+    if library is not None:
+        files["dat-template/GXRFX.BIN"] = bytes(library)
     for (unit, slot), e in entries.items():
         files[f"units/{UNITS[unit]}/recipes/{slot:02d}.entry"] = e
     for unit in range(3):
@@ -93,6 +96,8 @@ def import_from_dat(
     }
     if origin:
         manifest["source"]["origin"] = origin
+    if library is not None:
+        manifest["source"]["library"] = {"name": "GXRFX.BIN", "size": len(library), "sha256": _sha(library)}
     files["manifest.json"] = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()
     write_tree(home, CAMERA_DATA, files, manifest["files"], "camera_data", forbidden)
     return manifest
@@ -158,8 +163,10 @@ def recover_interrupted_swaps(home: Path, forbidden: Iterable[Path] = ()) -> lis
 
 
 def import_from_dat_file(path: Path, home: Path) -> dict[Any, Any]:
-    path = Path(path)
-    return import_from_dat(path.read_bytes(), home, source_name=path.name)
+    from .intake import read_bundle_from_path
+
+    raw, name, library = read_bundle_from_path(Path(path))
+    return import_from_dat(raw, home, source_name=name, library=library)
 
 
 def read_manifest(home: Path) -> dict[Any, Any]:
@@ -210,3 +217,8 @@ def load_stock04(home: Path, unit: str | int) -> bytes:
 
 def load_template(home: Path) -> bytes:
     return (camera_data_dir(home) / "dat-template" / "GXRCE.DAT").read_bytes()
+
+
+def load_library(home: Path) -> bytes | None:
+    path = camera_data_dir(home) / "dat-template" / "GXRFX.BIN"
+    return path.read_bytes() if path.is_file() else None

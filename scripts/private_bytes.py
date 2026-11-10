@@ -56,7 +56,7 @@ KNOWN_SHA256 = frozenset(
     }
 )
 MAGIC_HEAD = b"GXRCE001"
-MAGIC_ANY = re.compile(rb"GXUI124\x00|GXUI140\x00|GXRRV201|GXDP\x00[\x01-\x0f]\x00\x40")
+MAGIC_ANY = re.compile(rb"GXRLB003|GXRCL002|GXUI124\x00|GXUI140\x00|GXRRV201|GXDP\x00[\x01-\x0f]\x00\x40")
 HEX_RUN = re.compile(rb"[0-9A-Fa-f]{512,}")
 B64_RUN = re.compile(rb"[A-Za-z0-9+/_-]{512,}={0,2}")
 # 换行编码：一行里只有一段 base64/hex 字符（可以带引号、逗号），连起来够长就当成一整块解码
