@@ -389,7 +389,7 @@ def test_section_3_10_sentences_are_used_verbatim():
     # 3.3：只有 JPG 时的主句和小字
     assert "配方需要 RAW 文件" in texts["recipes.js"] and "拍摄时将画质设为 RAW+JPEG" in texts["recipes.js"]
     # 3.10 第 4 项：LUT 与校准
-    for phrase in ("输入色彩空间", "示例照片", "接近 04 标准", "色差 ", "将 LUT 文件拖到这里，或点击选择", "删除「"):
+    for phrase in ("输入色彩空间", "示例照片", "独立 RGB 曲线", "电脑预测", "将 LUT 文件拖到这里，或点击选择", "删除「"):
         assert phrase in texts["lut.js"], phrase
     assert "校准数据文件夹" in texts["camdata.js"] and "请输入完整路径" in texts["camdata.js"]
     # 3.10 第 5 项：存储卡

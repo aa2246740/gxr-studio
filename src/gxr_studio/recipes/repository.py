@@ -323,6 +323,8 @@ class RecipeRepository:
             return self._view(db, identity)
 
     def listing(self) -> list[dict[str, Any]]:
+        if not self.root.exists() and not self.root.is_symlink():
+            return []
         with self._transaction() as db:
             return [self._view(db, r[0]) for r in db.execute("SELECT id FROM names WHERE hidden=0 ORDER BY created,id").fetchall()]
 

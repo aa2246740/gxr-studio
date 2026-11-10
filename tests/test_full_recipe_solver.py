@@ -27,7 +27,9 @@ def test_actual_full_solver_and_holdout_isolation(settings, tmp_path):
     second = contexts.freeze(imported_b["id"], target=target, plan=default_plan(), environment=environment)
     assert first.identity != second.identity and first.training.identity == second.training.identity
     seals = []
-    winner = solve_full(first.training, seal=lambda value: seals.append(digest(value.entry)))
+    reports = []
+    winner = solve_full(first.training, seal=lambda value: seals.append(digest(value.entry)), progress=reports.append)
+    assert any(p.get("evaluations", 0) > 0 and p["completed_starts"] == 0 for p in reports)
     replay = solve_full(second.training)
     assert seals == [digest(winner.entry)] and replay.entry == winner.entry
     receipt, replay_receipt = json.loads(winner.receipt), json.loads(replay.receipt)

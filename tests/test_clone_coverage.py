@@ -394,52 +394,88 @@ def test_lut_jobs_worker_and_recipes(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 def test_worker_result_files_and_parent_watch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from full_recipe_support import environment_at, quality_pack
+    from gxr_studio.fit_contexts import FitContexts
+    from gxr_studio.recipes import Quality, RecipeError
+    from gxr_studio.recipes.fit import FitCancelled, Winner, default_plan
+    from gxr_studio.recipes.numerics import FullProblem, curve_x, integer_objective
+    from gxr_studio.recipes.types import canonical, digest
+
     watchers_before = {thread.ident for thread in threading.enumerate() if thread.name == "parent-watch"}
     real_watch_parent = worker.watch_parent
     handlers = {}
-    # run() 的文件结果在当前进程核对；进程监测在下面单独启动并等待结束。
     monkeypatch.setattr(worker, "watch_parent", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(worker.signal, "signal", lambda signum, handler: handlers.__setitem__(signum, handler))
-    entry = _render_entry()
+    # Exercise the standalone worker root, as well as the service-owned root in the real flow test.
+    monkeypatch.delenv("GXR_STUDIO_LUT_HOME", raising=False)
     home = tmp_path / "app"
-    _install_camera(home, entry)
-    cube_path = tmp_path / "a.cube"
-    cube_path.write_text("LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n", encoding="utf-8")
+    environment = environment_at(home)
+    _manifest, target, _entry, _groups = quality_pack(tmp_path / "quality", environment)
+    contexts = FitContexts(home)
+    imported = contexts.import_pack(tmp_path / "quality")
+    context = contexts.freeze(imported["id"], target=target, plan=default_plan(), environment=environment)
     job = tmp_path / "job-missing"
     job.mkdir()
-    spec = {"home": str(home), "cube": str(tmp_path / "nope.cube"), "input_space": "srgb", "output_space": "srgb"}
-    (job / "job.json").write_text(json.dumps(spec), encoding="utf-8")
+    (job / "job.json").write_text(json.dumps({"home": str(home)}), encoding="utf-8")
     assert worker.run(job) == 1
-    assert json.loads((job / "result.json").read_text(encoding="utf-8"))["state"] == "error"
+    missing = json.loads((job / "result.json").read_text(encoding="utf-8"))
+    assert missing["state"] == "error" and missing["code"] == "quality_context_missing"
 
-    def boom(*_a: object, **_k: object) -> object:
-        raise SceneError("needs_photo", "需要照片")
+    def boom(*_args, **_kwargs):
+        raise RecipeError("controlled_training_failure", "合成训练失败")
 
-    monkeypatch.setattr("gxr_studio.lut.scene.build_samples", boom)
-    job2 = tmp_path / "job-scene"
+    monkeypatch.setattr("gxr_studio.recipes.fit.solve_full", boom)
+    spec = {"home": str(home), "context": context.identity}
+    job2 = tmp_path / "job-error"
     job2.mkdir()
-    (job2 / "job.json").write_text(
-        json.dumps({"home": str(home), "unit": "jlaunch", "cube": str(cube_path), "input_space": "srgb", "output_space": "srgb", "photos": []}),
-        encoding="utf-8",
-    )
+    (job2 / "job.json").write_text(json.dumps(spec), encoding="utf-8")
     assert worker.run(job2) == 1
-    assert json.loads((job2 / "result.json").read_text(encoding="utf-8"))["code"] == "needs_photo"
-    monkeypatch.setattr("gxr_studio.lut.scene.build_samples", lambda *a, **k: (_ for _ in ()).throw(Cancelled()))
+    assert json.loads((job2 / "result.json").read_text(encoding="utf-8"))["code"] == "controlled_training_failure"
+    monkeypatch.setattr("gxr_studio.recipes.fit.solve_full", lambda *a, **k: (_ for _ in ()).throw(FitCancelled()))
     job3 = tmp_path / "job-cancel"
     job3.mkdir()
-    (job3 / "job.json").write_text((job2 / "job.json").read_text(encoding="utf-8"), encoding="utf-8")
+    (job3 / "job.json").write_text(json.dumps(spec), encoding="utf-8")
     assert worker.run(job3) == 0
     assert json.loads((job3 / "result.json").read_text(encoding="utf-8"))["state"] == "cancelled"
-    tiny = Samples(np.zeros((4, 3)), None, np.ones(4), np.zeros(4, np.int8), np.array([False, False, False, True]), [])
-    monkeypatch.setattr("gxr_studio.lut.scene.build_samples", lambda *a, **k: tiny)
-    monkeypatch.setattr("gxr_studio.lut.scene.target_rgb", lambda *a, **k: (np.zeros((4, 3)), np.ones((4, 3))))
-    monkeypatch.setattr("gxr_studio.lut.fit.Fitter.run", lambda self: {"samples": {"n": 1}})
+
+    def controlled_winner(training, *, seal, **_kwargs):
+        # Terminal-protocol fixture only; real numerical convergence is tested separately.
+        problem = FullProblem(training, curve_x(training.original))
+        vector = problem.seed(training.original)
+        entry = problem.encode(vector)
+        samples, model = training.samples, training.environment.model_for(200)[0]
+        receipt = canonical(
+            {
+                "contract": default_plan()["contract"],
+                "plan": json.loads(training.plan),
+                "source_sha256": json.loads(training.plan)["source_sha256"],
+                "training_identity": training.identity,
+                "record_sha256": digest(entry),
+                "objective": integer_objective(model, entry, samples.x, samples.want, samples.sw),
+                "baseline_objective": integer_objective(model, training.original, samples.x, samples.want, samples.sw),
+                "winner_axis": problem.axis.tolist(),
+                "winner_vector": vector.tolist(),
+                "starts": [],
+                "attempts": [],
+                "controlled_terminal_fixture": True,
+            }
+        )
+        winner = Winner(entry, receipt)
+        seal(winner)
+        return winner
+
+    monkeypatch.setattr("gxr_studio.recipes.fit.solve_full", controlled_winner)
     job4 = tmp_path / "job-done"
     job4.mkdir()
-    (job4 / "job.json").write_text((job2 / "job.json").read_text(encoding="utf-8"), encoding="utf-8")
-    assert worker.run(job4) == 0
+    (job4 / "job.json").write_text(json.dumps(spec), encoding="utf-8")
+    assert worker.run(job4) == 0, (job4 / "result.json").read_text()
     done = json.loads((job4 / "result.json").read_text(encoding="utf-8"))
-    assert done["state"] == "done" and done["result"]["samples"]["skipped_photos"] == []
+    assert done["state"] == "done" and done["context"] == context.identity
+    assert done["record_sha256"] == digest((job4 / "candidate.record").read_bytes())
+    assert done["receipt_sha256"] == digest((job4 / "winner.json").read_bytes())
+    assert done["quality_sha256"] == digest((job4 / "quality.json").read_bytes())
+    proof = Quality.from_json(json.loads((job4 / "quality.json").read_bytes()))
+    assert proof.state != "passed" and "exact_starts" in proof.missing
     assert set(handlers) == {worker.signal.SIGTERM, worker.signal.SIGINT}
 
     monkeypatch.setattr(worker.time, "sleep", lambda _s: None)
@@ -583,7 +619,7 @@ def test_intake_pack_scan_and_api(tmp_path: Path, settings):  # type: ignore[no-
         preview = client.get(f"/api/lut/{cube_id}/preview", params={"which": "lut", "space": "srgb", "max_edge": 64, "photo": shot["shot_id"]})
         assert preview.status_code == 200 and preview.content[:2] == b"\xff\xd8"
         refused = client.post("/api/lut/fit", json={"cube_id": cube_id, "unit": "qlaunch", "profile": "quick", "space": "srgb"})
-        assert refused.status_code == 200 and refused.json()["unit"] == "qlaunch"
+        assert refused.status_code == 422 and refused.json()["error"] == "quality_source_required"
 
 
 def test_audit_hook_branches(tmp_path: Path):

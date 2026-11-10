@@ -150,10 +150,19 @@ def solve_full(
                 starts.append(start_doc)
                 progress({"stage": phase, "start": attempt, "completed_starts": len(attempts)})
 
+                evaluations, reported_at = 0, 0.0
+
                 def evaluate(point: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+                    nonlocal evaluations, reported_at
                     if cancelled():
                         raise FitCancelled
-                    return problem.evaluate(point) if guarded is None else guarded.evaluate(point)
+                    values = problem.evaluate(point) if guarded is None else guarded.evaluate(point)
+                    evaluations += 1
+                    now = time.monotonic()
+                    if evaluations == 1 or now - reported_at >= 1.0:
+                        reported_at = now
+                        progress({"stage": phase, "start": attempt, "completed_starts": len(attempts), "evaluations": evaluations})
+                    return values
 
                 began = time.monotonic()
                 optimum = least_squares(

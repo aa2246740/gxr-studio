@@ -550,14 +550,14 @@ def test_progress_is_reported_while_running(data_client):
 
     def reported():
         st = c.get(f"/api/lut/fit/{job}").json()
-        return st["progress"] if st["progress"] and st["progress"].get("completed_starts", 0) > 0 else None
+        return st["progress"] if st["state"] == "running" and st["progress"] and st["progress"].get("evaluations", 0) > 0 else None
 
     try:
         # 原来是 240 次 × 0.25 秒，约 60 秒；进度要在这段时间里出现，不能放宽成 240 秒。
         seen = wait_until(reported, f"拟合进度（任务 {job}）", timeout=60, interval=0.25)
     finally:
         c.post(f"/api/lut/fit/{job}/cancel")
-    assert seen and seen["stage"] in ("iterate", "exact", "admission") and seen.get("completed_starts", 0) > 0
+    assert seen and seen["stage"] in ("iterate", "exact") and seen.get("evaluations", 0) > 0
 
 
 @needs_sample

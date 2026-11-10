@@ -514,7 +514,7 @@ function updateProgress() {
   if (!ui) return;
   ui.text.textContent = `正在为${unitName(flow.job.unit)}生成配方… ${pct}%`;
   setFraction(ui.bar, pct / 100);
-  ui.detail.textContent = { iterate: '正在拟合三条曲线、矩阵和扇区…', exact: '正在精确收敛并重算整数记录…', admission: '胜者已固定，正在检查全部质量门和量化分支…' }[p?.stage] || '正在读取冻结输入…';
+  ui.detail.textContent = { iterate: '正在拟合三条曲线、矩阵和扇区…', exact: '正在收敛并重算整数记录…', admission: '胜者已固定，正在检查全部质量门和量化分支…' }[p?.stage] || '正在读取冻结输入…';
 }
 
 async function cancelFit() {

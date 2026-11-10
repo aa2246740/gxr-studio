@@ -124,11 +124,11 @@ def run(job_dir: Path) -> int:
 
         def seal(winner: Any) -> None:
             with PrivateDir(write_home, "完整配方计算", forbidden) as directory:
-                prefix = job_dir.relative_to(write_home).as_posix()
-                directory.replace_file(f"{prefix}/candidate.record", winner.entry)
-                directory.replace_file(f"{prefix}/winner.json", winner.receipt)
+                prefix = job_dir.relative_to(write_home)
+                directory.replace_file((prefix / "candidate.record").as_posix(), winner.entry)
+                directory.replace_file((prefix / "winner.json").as_posix(), winner.receipt)
                 directory.replace_file(
-                    f"{prefix}/winner-seal.json",
+                    (prefix / "winner-seal.json").as_posix(),
                     canonical(
                         {
                             "context": context.identity,
@@ -145,7 +145,7 @@ def run(job_dir: Path) -> int:
         quality = evaluate_winner(context, winner, groups, references, cancelled=cancelled, progress=progress)
         quality_bytes = canonical(quality.to_json())
         with PrivateDir(write_home, "完整配方计算", forbidden) as directory:
-            directory.replace_file(f"{job_dir.relative_to(write_home).as_posix()}/quality.json", quality_bytes)
+            directory.replace_file((job_dir / "quality.json").relative_to(write_home).as_posix(), quality_bytes)
         write_result(
             {
                 "state": "done",

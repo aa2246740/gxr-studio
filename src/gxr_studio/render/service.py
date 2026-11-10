@@ -107,7 +107,7 @@ class Plan:
     calibrated: bool
     reasons: tuple[str, ...]
     label: str
-    model: UnitModel
+    model: UnitModel | None
     record_sha256: str = ""
     binding_sha256: str = ""
     selection_id: str | None = None
@@ -380,7 +380,7 @@ class RenderService:
             not reasons,
             tuple(reasons),
             CALIBRATED_LABEL if not reasons else UNCALIBRATED_LABEL,
-            self.model(model_iso, sel.unit),
+            None,
             res.entry_sha256,
             self.engine_pin(),
         )
@@ -419,7 +419,7 @@ class RenderService:
         hit = self._bakes.get(key)
         if hit is not None:
             return hit
-        bk = chain.bake_chroma(plan.model, plan.entry, step)
+        bk = chain.bake_chroma(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, step)
         self._bakes.put(key, bk, bk.gain.nbytes + bk.pre.nbytes)
         self.stats["bakes"] += 1
         return bk
@@ -519,7 +519,7 @@ class RenderService:
             table = display_table(edit.adjust, edit.curve)
             t = time.perf_counter()
             if exact:
-                rgb = chain.exact_u8(plan.model, plan.entry, codes, gains, table)
+                rgb = chain.exact_u8(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, codes, gains, table)
                 ms["bake"] = 0.0
             else:
                 bakes = self.stats["bakes"]
@@ -546,12 +546,12 @@ class RenderService:
         gains = channel_gains(edit.adjust)
         table = display_table(edit.adjust, edit.curve)
         if precise:
-            model = plan.model
+            model = plan.model or self.model(plan.model_iso, plan.unit)
 
             def display(codes: np.ndarray) -> np.ndarray:
                 return chain.exact_u8(model, plan.entry, codes, gains, table)
         else:
-            bk = chain.bake_chroma(plan.model, plan.entry, EXPORT_STEP)
+            bk = chain.bake_chroma(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, EXPORT_STEP)
 
             def display(codes: np.ndarray) -> np.ndarray:
                 return chain.chroma_u8(codes, bk, gains, table)
