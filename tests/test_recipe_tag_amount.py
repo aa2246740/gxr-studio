@@ -86,10 +86,11 @@ def test_cached_copyright_is_reparsed_for_new_amount_semantics_without_reading_t
     assert tag["version"] == 3 and tag["knob_code"] == "I99999999-" and tag["levels"]["amount"] is None
 
 
-def test_current_sealed_catalog_has_no_per_recipe_amount_character_collisions(tmp_path):
+@pytest.mark.parametrize("generation", (178, 181, 182))
+def test_current_sealed_catalog_has_no_per_recipe_amount_character_collisions(tmp_path, generation):
     from g178_support import need_bundle
 
-    raw, library = need_bundle(178)
+    raw, library = need_bundle(generation)
     store.import_from_dat(raw, tmp_path, library=library)
     camera = CameraData(tmp_path)
     checked = 0
@@ -110,10 +111,11 @@ def test_current_sealed_catalog_has_no_per_recipe_amount_character_collisions(tm
         ("GXR1 6a3a5a3c02 28 06 A99999999-", "record", 100),
     ),
 )
-def test_g181_sample_tags_parse_and_resolve_against_the_sealed_catalog(tmp_path, text, kind, amount):
+@pytest.mark.parametrize("generation", (178, 181, 182))
+def test_g181_sample_tags_parse_and_resolve_against_the_sealed_catalog(tmp_path, generation, text, kind, amount):
     from g178_support import need_bundle
 
-    raw, library = need_bundle(178)
+    raw, library = need_bundle(generation)
     store.import_from_dat(raw, tmp_path, library=library)
     camera = CameraData(tmp_path)
     tag = parse_recipe_tag(text)
@@ -126,10 +128,11 @@ def test_g181_sample_tags_parse_and_resolve_against_the_sealed_catalog(tmp_path,
     assert payload["amount_unknown"] is False
 
 
-def test_quarter_amount_levels_in_the_real_catalog_resolve_to_the_recorded_percent(tmp_path):
+@pytest.mark.parametrize("generation", (178, 181, 182))
+def test_quarter_amount_levels_in_the_real_catalog_resolve_to_the_recorded_percent(tmp_path, generation):
     from g178_support import need_bundle
 
-    raw, library = need_bundle(178)
+    raw, library = need_bundle(generation)
     store.import_from_dat(raw, tmp_path, library=library)
     camera = CameraData(tmp_path)
     checked = 0

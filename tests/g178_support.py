@@ -19,10 +19,14 @@ from gxr_studio.camdata import r5
 PACKAGES = {
     176: REPO / "research/body_r5_freeze/local/packages/r5-NOT_FOR_INSTALLATION/SD_ROOT",
     178: REPO / "research/build_g178_r1/local/model",
+    181: REPO / "firmware/package_v310b_g181/local/g181-daily",
+    182: REPO / "firmware/package_v310b_g182/local/g182-daily-r2",
 }
 DAT_SHA256 = {
     176: "852f72f6b7a48c592b0658ca65c6571b23075a6037cbb800c6145cef987a475f",
     178: "2cb4d5817c9bcad91194f9c2d02b6c135a83524bfcfa5cdc349afb81bb91fae6",
+    181: "1d3cd3294e677cbea04d528ca7034a398d982f35310cf4e192ed645bd1ac8c59",
+    182: "8f8cff3dc0f353c9402cfd9b8b17034876dafb53b591d9aec06c7bd9333f2696",
 }
 
 
@@ -32,7 +36,8 @@ def need_bundle(generation):
         pytest.skip(f"g{generation} 的本地双文件副本不在本机")
     raw, library = (folder / "GXRCE.DAT").read_bytes(), (folder / "GXRFX.BIN").read_bytes()
     assert hashlib.sha256(raw).hexdigest() == DAT_SHA256[generation], "受审 DAT 已变化，停止对照"
-    assert hashlib.sha256(library).hexdigest() == r5.LIBRARY_SHA256[generation], "受审库已变化，停止对照"
+    library_generation = {176: 176, 178: 178, 181: 178, 182: 178}[generation]
+    assert hashlib.sha256(library).hexdigest() == r5.LIBRARY_SHA256[library_generation], "受审库已变化，停止对照"
     return raw, library
 
 

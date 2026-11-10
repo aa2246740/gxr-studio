@@ -18,7 +18,7 @@ def shell(generation):
     return bytes(raw)
 
 
-@pytest.mark.parametrize("generation", (156, 176, 178))
+@pytest.mark.parametrize("generation", (156, 176, 178, 181, 182))
 @pytest.mark.parametrize("source", ("directory", "card"))
 def test_named_root_wins_over_renamed_and_nested_backups(volumes, reader, generation, source):
     root = volumes / "copy"

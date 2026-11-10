@@ -74,7 +74,7 @@ def test_fit_searches_available_builtin_positions_without_using_record_bases():
     assert [c["slot"] for c in result["candidates"]] == [1, 2]
 
 
-@pytest.mark.parametrize("generation", (176, 178))
+@pytest.mark.parametrize("generation", (176, 178, 181, 182))
 def test_real_bundle_names_positions_and_import_counts(generation, tmp_path, client):
     raw, library = need_bundle(generation)
     dat = datcodec.parse(raw, library)
@@ -83,7 +83,7 @@ def test_real_bundle_names_positions_and_import_counts(generation, tmp_path, cli
     camera = CameraData(home)
     units = camera.listing()
     out = scene(units)
-    offset = 4 if generation == 178 else 8
+    offset = 8 if generation == 176 else 4
     all_labels = []
     for index, unit in enumerate(units):
         names = BASE_NAMES[:offset] + [r.name for r in dat.recipes if r.unit_mask >> index & 1]

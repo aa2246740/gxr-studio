@@ -10,6 +10,7 @@ from .catalog_names import UNIT_LABELS, recipe_name
 
 _TAG = re.compile(r"GXR1 ([0-9a-fA-F]{10}) (28|50|MT) (0[1-9]|[1-9][0-9])(?: ([0-9A-I-]{10}))?")
 MAX_TAG_BYTES = 47  # 含一个结尾 NUL；解码后的文本最多 46 字节
+COPYRIGHT_FIELD_CHARS = 69  # 实拍 TIFF Copyright 以 ASCII 空格填满的固定字段，不改变标签自身上限
 RECIPE_TAG_VERSION = 3  # Amount 延迟到匹配目录解码；旧索引用缓存 Copyright 重解码。
 
 # g181 使用此顺序；与 Studio 控件 ID / g178 封存目录相同。
@@ -36,15 +37,17 @@ def copyright_text(value: object) -> str | None:
 
 def parse_recipe_tag(value: object) -> RecipeTag | None:
     if isinstance(value, bytes):
-        if len(value) > MAX_TAG_BYTES:
+        if len(value) > COPYRIGHT_FIELD_CHARS + 1:
             return None
         try:
             value = value.decode("ascii")
         except UnicodeDecodeError:
             return None
-    if not isinstance(value, str) or len(value) > MAX_TAG_BYTES or not value.isascii():
+    if not isinstance(value, str) or len(value) > COPYRIGHT_FIELD_CHARS + 1 or not value.isascii():
         return None
     text = value.removesuffix("\0")
+    if len(text) == COPYRIGHT_FIELD_CHARS:
+        text = text.rstrip(" ")
     if len(text) >= MAX_TAG_BYTES:
         return None
     match = _TAG.fullmatch(text)

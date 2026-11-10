@@ -1,4 +1,4 @@
-// 大图「配方」标签：8 个内置配方、文件内 Looks 和用户配方，档位来自 /api/recipes。
+// 大图「配方」标签：现行相机顺序的完整配方、历史文件条目和用户配方，档位来自 /api/recipes。
 // 三种状态（来自 /capabilities，旧版后端由 has_raw 推断）：
 //   full：有 RAW，全部可用。
 //   approx：只有 JPG，内置配方用近似（不带旋钮，旋钮置灰），画面标「近似」。
@@ -103,7 +103,7 @@ export function recipePanel(view) {
 
   section('内置配方', unit.recipes.map((r) => builtinCard({ kind: r.kind || 'builtin', slot: r.slot, ...(r.id ? { id: r.id } : {}) }, r.kind === 'record' ? r.name : slotName(sel.unit, r.slot))));
   if ((unit.looks || []).length) {
-    section('Looks', unit.looks.map((r) => builtinCard({ kind: 'look', slot: r.slot, id: r.id }, r.name)));
+    section('历史文件条目', unit.looks.map((r) => builtinCard({ kind: 'look', slot: r.slot, id: r.id }, r.name)));
   }
 
   // 「我的配方」有两个来源，分开写清楚：相机里（相机配方文件里的自定义配方）、电脑上（用 LUT 生成的，存在这台电脑里）
