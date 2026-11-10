@@ -216,3 +216,11 @@ def test_local_recipe_keeps_frozen_controls_without_camera_catalog():
 def test_new_modules_stay_under_the_line_cap():
     for name in ("look_cards.js", "look_model.js", "recipes.js"):
         assert len((ASSETS / name).read_text(encoding="utf-8").splitlines()) <= 400, name
+
+
+def test_local_quality_note_tracks_live_knob_changes():
+    out = scene("local-without-catalog")
+    assert "基础完整配方的全部适用质量门通过" in out["qualityBeforeInput"]
+    assert "当前效果未经质量评估" not in out["qualityBeforeInput"]
+    assert "当前效果未经质量评估" in out["qualityAfterInput"]
+    assert "当前效果未经质量评估" not in out["qualityAfterRestore"]

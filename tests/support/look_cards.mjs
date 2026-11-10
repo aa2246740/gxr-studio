@@ -310,6 +310,16 @@ if (scenario === 'model') {
   out.sliderMaxes = inputs.map((i) => Number(i.getAttribute('max') ?? i.max));
   out.contrastText = walk(el).map((n) => n.textContent).filter((t) => t === '+8').length;
   out.tags = tags;
+  view.ed.recipe.levels = {};
+  const livePanel = recipePanel(view);
+  const liveInputs = walk(livePanel).filter((n) => n.tagName === 'INPUT' && (n.type === 'range' || n.getAttribute('type') === 'range'));
+  out.qualityBeforeInput = livePanel.textContent;
+  liveInputs[1].value = '5';
+  liveInputs[1].dispatchEvent(new Event('input'));
+  out.qualityAfterInput = livePanel.textContent;
+  liveInputs[1].value = '2';
+  liveInputs[1].dispatchEvent(new Event('input'));
+  out.qualityAfterRestore = livePanel.textContent;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }

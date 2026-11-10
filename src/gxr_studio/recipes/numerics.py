@@ -217,7 +217,7 @@ class FullProblem:
 
     def constraints(self, theta: np.ndarray) -> np.ndarray:
         state = self.state(theta)
-        q = state.curves
+        q = np.repeat(state.curves, 3, axis=0) if self.nc == 1 else state.curves
         result = [
             2 * np.minimum(np.diff(q, axis=1), 0).ravel(),
             2 * np.minimum(q, 0).ravel(),

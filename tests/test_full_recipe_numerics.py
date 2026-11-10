@@ -63,6 +63,23 @@ def test_gray_family_is_explicit_and_uses_physical_zero_chroma(settings):
     assert np.max(np.ptp(rgb, axis=1)) < 1e-8
 
 
+def test_gray_curve_keeps_all_three_frozen_constraint_contributions(settings):
+    environment = environment_at(settings.home_dir)
+    training = dataclasses.replace(training_input(environment), family="bw", slot=3)
+    problem = FullProblem(training, curve_x(environment.stock))
+    point = problem.theta0.copy()
+    curve = np.array([255.0] * 32 + [127.0])
+    point[problem.qstart : problem.qend] = (curve - problem.stock_curve).ravel()
+
+    # Each of RGB contributes a -256 monotonicity penalty and a -2 endpoint penalty.
+    penalties = problem.constraints(point)
+    assert penalties.shape == (306,)
+    assert np.dot(penalties, penalties) == 196620
+    _residual, jacobian = problem.evaluate(point)
+    gradient = 2 * jacobian[-306:, problem.qend - 1] @ penalties
+    np.testing.assert_allclose(gradient, -3096, atol=1e-5, rtol=0)
+
+
 def test_fixed_hue_penalty_derivative_uses_the_v2_lookup(settings):
     environment = environment_at(settings.home_dir)
     primary = FullProblem(training_input(environment), curve_x(environment.stock))

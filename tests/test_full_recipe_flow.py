@@ -16,7 +16,7 @@ from PIL import Image
 from conftest import PORT, REAL_HOME
 from full_recipe_support import environment_at, quality_pack
 from gpu_gate import evaluate
-from gpu_support import _Server, run_engine
+from gpu_support import _Server
 from gxr_studio.app import create_app
 from gxr_studio.gpu.source import raw_layout
 from gxr_studio.library.store import FileRecord, ShotRecord, sha256_file
@@ -71,13 +71,15 @@ def _gpu_pixels(tmp_path, raw, bake, meta, layout):
     }
     configured = os.environ.get("GXR_PLAYWRIGHT_RUNTIME")
     runtime = Path(configured) if configured else REAL_HOME / ".codex/playwright-runtime/runtime.mjs"
-    if not configured and (shutil.which("node") is None or not runtime.is_file()):
-        rendered, summary = run_engine(tmp_path, {"/raw.dng": raw, "/bake.bin": bake}, [case], harness=SUPPORT / "full_recipe_gpu_harness.mjs")
-        return rendered[case["id"]], summary
+    node = shutil.which("node")
+    if node is None:
+        raise RuntimeError("pinned GPU verification requires Node.js")
+    if not runtime.is_file():
+        raise RuntimeError(f"pinned Playwright runtime is missing: {runtime}")
     files = {"/raw.dng": raw, "/bake.bin": bake, "/cases.json": json.dumps([case]).encode()}
     with _Server(files, SUPPORT / "full_recipe_gpu_harness.mjs") as server:
         result = subprocess.run(
-            ["node", str(SUPPORT / "full_recipe_gpu_driver.mjs"), str(runtime), server.url],
+            [node, str(SUPPORT / "full_recipe_gpu_driver.mjs"), str(runtime), server.url],
             capture_output=True,
             text=True,
             timeout=180,

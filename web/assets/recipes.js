@@ -33,6 +33,12 @@ const NEW_TONE_KNOBS = ['contrast', 'highlight', 'shadow', 'saturation'];
 const COMPUTER_ONLY = ['fade', 'warmth', 'tint', 'split', 'filter'];
 const LEGACY_LIMIT = 5;
 const APPROX_NOTE = '只有 JPG：配方按近似效果显示，旋钮不能用';
+const LOCAL_QUALITY = {
+  passed: '基础完整配方的全部适用质量门通过。',
+  rejected: '基础完整配方未通过准入，当前使用本机草稿。',
+  needs_evidence: '基础完整配方的质量证据未齐，当前使用本机草稿。',
+  historical_exception: '历史授权收录，原准入未通过项仍保留。',
+};
 
 export function recipePanel(view) {
   const ed = view.ed;
@@ -132,23 +138,27 @@ export function recipePanel(view) {
 
   // 当前配方的名字，名字下面一行安静的「未校准」（原因在提示气泡里）。只在选了配方、又没套 LUT 时才有意义：
   // 配方的颜色是电脑预测，没有校准的照片上预测可能有偏差；LUT 的颜色不经过相机的校准，不用提醒
+  let updateQualityNote = () => {};
   if (ed.recipe) {
     const now = chosen.find((c) => c.pressed);
     const name = now ? now.name : info && (info.name || slotName(sel.unit, sel.slot));
     const calibratedIsos = unit?.calibrated_isos || (sel.unit === 'jlaunch' ? [200, 1600] : [200]);
     const warn = !ed.lut && (ed.calibrated === false || !photoUnit || sel.unit !== photoUnit || !calibratedIsos.includes(Number(view.photo.iso)));
-    const adjustedLocal = sel.kind === 'local' && info?.controls.some((c) => effective(c, sel.levels) !== c.default);
-    const localQuality = {
-      passed: '基础完整配方的全部适用质量门通过。',
-      rejected: '基础完整配方未通过准入，当前使用本机草稿。',
-      needs_evidence: '基础完整配方的质量证据未齐，当前使用本机草稿。',
-      historical_exception: '历史授权收录，原准入未通过项仍保留。',
-    }[info?.quality?.state];
+    const qualityNote = sel.kind === 'local' ? h('div', { class: 'small dim' }) : null;
+    if (qualityNote) {
+      updateQualityNote = () => {
+        const current = selection(view);
+        const currentInfo = recipeInfo(view, current);
+        const adjusted = currentInfo?.controls.some((c) => effective(c, current.levels) !== c.default);
+        qualityNote.textContent = (LOCAL_QUALITY[currentInfo?.quality?.state] || '质量状态不可用。')
+          + (adjusted ? ' 额外控制已调整，当前效果未经质量评估。' : '');
+      };
+      updateQualityNote();
+    }
     const exposureNote = unit ? unit.exposure_note : (sel.unit !== 'jlaunch' ? '曝光沿用 50mm 的曲线' : null);
     nodes.splice(1, 0, h('div', { class: 'cur-look' },
       h('div', { class: 'small' }, h('span', { class: 'dim' }, '当前：'), h('span', { class: 'strong' }, name || '')),
-      sel.kind === 'local' ? h('div', { class: 'small dim' }, localQuality || '质量状态不可用。',
-        adjustedLocal ? ' 额外控制已调整，当前效果未经质量评估。' : null) : null,
+      qualityNote,
       warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null,
       ed.recipeFromCamera && view.photo.recipe_tag?.levels === null ? h('div', { class: 'small dim' }, '微调未知，电脑预测使用配方默认值') : null,
       exposureNote ? h('div', { class: 'small dim' }, exposureNote) : null));
@@ -165,10 +175,10 @@ export function recipePanel(view) {
   }
   const controls = info?.controls || [];
   const amount = controls.find((c) => c.name === 'amount');
-  if (amount) rest.append(levelRow(view, amount, KNOB_NAMES.amount, knobsOn, { title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
+  if (amount) rest.append(levelRow(view, amount, KNOB_NAMES.amount, knobsOn, { onChange: updateQualityNote, title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
   for (const c of controls) {
     if (c.name === 'amount') continue;
-    rest.append(levelRow(view, c, KNOB_NAMES[c.name] || c.label, knobsOn, { tag: tagFor(c, sel.kind), title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
+    rest.append(levelRow(view, c, KNOB_NAMES[c.name] || c.label, knobsOn, { onChange: updateQualityNote, tag: tagFor(c, sel.kind), title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
   }
   nodes.push(rest);
   // 底部只留 [重置] 靠右，固定在面板底边。原来的「存储为我的配方」「写入存储卡」点了没有反应，删掉（U8）；
@@ -256,7 +266,7 @@ function fmtValue(control, v) {
 }
 
 // 一根档位滑块：滑块的位置是档位的序号
-function levelRow(view, control, label, enabled, { tag = null, title = null } = {}) {
+function levelRow(view, control, label, enabled, { tag = null, title = null, onChange }) {
   const sel = selection(view);
   const levels = levelsFor(control, sel.kind);
   const cur = effective(control, sel.levels);
@@ -265,13 +275,14 @@ function levelRow(view, control, label, enabled, { tag = null, title = null } = 
     'div',
     { class: 'knob', title },
     tagEl ? h('div', { class: 'knob-tag-line' }, tagEl) : null,
-    sliderEl(view, { label, levels, control, index: nearestIndex(levels, cur), enabled }),
+    sliderEl(view, { label, levels, control, index: nearestIndex(levels, cur), enabled, onChange }),
   );
 }
 
-function sliderEl(view, { label, levels, control, index, enabled }) {
+function sliderEl(view, { label, levels, control, index, enabled, onChange }) {
   const setLevelAt = (i) => {
     ensureRecipe(view).levels[control.name] = levels[i];
+    onChange();
   };
   const defaultIndex = nearestIndex(levels, control.default);
   const s = slider({
@@ -291,7 +302,10 @@ function sliderEl(view, { label, levels, control, index, enabled }) {
     },
     onCommit: (i) => {
       setLevelAt(i);
-      persist(view, { recipe: recipeBody(view, { memory: true }) }).then(() => endChange(view));
+      persist(view, { recipe: recipeBody(view, { memory: true }) }).then(() => {
+        onChange();
+        endChange(view);
+      });
       schedulePreview(view, { full: true });
     },
   });
