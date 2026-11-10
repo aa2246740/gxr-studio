@@ -134,9 +134,9 @@ def prepare_source(source: Any, groups: list[str]) -> dict[str, Any]:
     return out
 
 
-def source_from_photo(lib: Library, shot: dict[Any, Any]) -> dict[str, Any]:
+def source_from_photo(lib: Library, shot: dict[Any, Any], menu: Menu | None = None) -> dict[str, Any]:
     """用某张照片现在存着的编辑当来源（和界面「复制」得到的内容同样的形状）。"""
-    edit, side = read_edit(lib, shot)
+    edit, side = read_edit(lib, shot, menu)
     described = describe_edit(side, edit)
     recipe = described["recipe"]
     if recipe and described["memory"]:

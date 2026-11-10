@@ -73,7 +73,7 @@ def _validate(body: PasteRequest) -> None:
 
 
 def _state(c: Any, shot: dict[Any, Any], out: dict[str, Any]) -> None:
-    edit, side = render_edits.read(c.lib, shot)
+    edit, side = render_edits.read(c.lib, shot, c.render.recipe_menu())
     out["edit"] = _payload(c, shot, edit, side)
     try:
         out["crop"] = crop_edits.describe(side)
@@ -88,7 +88,7 @@ def paste_edits(body: PasteRequest, request: Request) -> Any:
     _validate(body)
     try:
         if body.source_id is not None:
-            source = paste.source_from_photo(c.lib, _shot_or_404(c, body.source_id))
+            source = paste.source_from_photo(c.lib, _shot_or_404(c, body.source_id), c.render.recipe_menu())
         else:
             source = body.source or {}
         source = paste.prepare_source(source, body.groups)

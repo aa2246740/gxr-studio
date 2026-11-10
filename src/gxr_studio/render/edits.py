@@ -15,6 +15,7 @@ from ..finish.spec import Geometry, parse_frame, parse_geometry, parse_stamp
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict, clean_border, heal_frame
 from ..library.store import Library
+from .camera_recipe import photo_edit
 from .params import EditError, EditState, parse_adjust, parse_curve, parse_edit, parse_lut, parse_recipe
 from .recipes import Menu, unit_of_lens
 
@@ -22,11 +23,11 @@ _UNSET = object()
 SCOPE = {"camera": ["recipe"], "computer_only": ["adjust", "curve", "crop", "lut"]}
 
 
-def read(lib: Library, shot: dict[Any, Any]) -> tuple[EditState, dict[Any, Any]]:
+def read(lib: Library, shot: dict[Any, Any], menu: Menu | None = None) -> tuple[EditState, dict[Any, Any]]:
     with lib.lock:
         side, _ = lib.read_sidecar_or_default(shot)  # 编辑记录坏了/不见了就当没有编辑
         side = heal_frame(lib, shot, side)
-    return parse_edit(side), side
+    return (photo_edit(side, shot, menu) if menu is not None else parse_edit(side)), side
 
 
 def describe(side: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
@@ -34,6 +35,7 @@ def describe(side: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     return {
         "rev": int(side.get("rev", 0)),
         "recipe": edit.recipe.to_json() if edit.recipe else None,
+        "recipe_from_camera": "recipe" not in side and edit.recipe is not None,
         "lut": edit.lut,
         "memory": (recipe or {}).get("memory") or {},
         "adjust": edit.adjust.to_json(),
@@ -66,7 +68,7 @@ def _memory(raw: Any) -> dict[Any, Any]:
 def write(
     lib: Library, shot: dict[Any, Any], changes: dict[Any, Any], menu: Menu, *, expected_rev: int | None = None
 ) -> tuple[EditState, dict[Any, Any]]:
-    """`changes` 里出现的键才会被改：值为 None 表示还原（删掉这一块）。"""
+    """只改请求中出现的键。None 清空对应块；recipe:null 显式关闭，不再沿用相机配方。"""
     path = lib.sidecar_path_for(shot)
     with lib.lock:
         side = lib.read_sidecar_for_write(shot)
@@ -80,7 +82,7 @@ def write(
         raw = changes["recipe"]
         sel = parse_recipe(raw)
         if sel is None:
-            new.pop("recipe", None)
+            new["recipe"] = None  # 显式关闭；缺键才表示沿用拍摄配方。
         else:
             photo_unit = unit_of_lens(shot.get("lens"))
             if photo_unit is not None and sel.unit != photo_unit:
@@ -170,4 +172,4 @@ def write(
             raise RevisionConflict(int(current.get("rev", 0)))
         out = sc.write_atomic(path, clean_border(new), tmp_dir=lib.tmp_dir)
         lib.set_edit_cache(shot["shot_id"], int(out["rev"]), out.get("crop"))
-        return parse_edit(out), out
+        return photo_edit(out, shot, menu), out

@@ -208,8 +208,12 @@ def _export_source(c: Any, shot: dict[Any, Any], req: ExportRequest) -> tuple[st
     """决定这张照片从哪里出图：'recipe' | 'camera-jpg' | 'neutral'，以及它的编辑状态。"""
     files = shot["files"]
     try:
-        edit, _ = render_edits.read(c.lib, shot)
-    except (sc.SidecarCorrupt, EditError):
+        edit, _ = render_edits.read(c.lib, shot, c.render.recipe_menu() if req.source in ("auto", "recipe") else None)
+    except EditError as exc:
+        if exc.code.startswith("camera_"):
+            raise ApiError(409, exc.code, exc.message) from exc
+        edit = EditState()
+    except sc.SidecarCorrupt:
         edit = EditState()  # 编辑读不出来不挡导出；退回没有编辑
     if req.source not in ("auto", "recipe", "camera-jpg", "neutral"):
         raise ApiError(422, "bad_source", "请求无效。请刷新页面后重试。", {"detail": "画面来源无法识别。"})

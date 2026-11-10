@@ -93,7 +93,7 @@ GXR_STUDIO_VOLUMES=/tmp/fake-volumes GXR_STUDIO_LIBRARY=/tmp/fake-lib GXR_STUDIO
 
 r5 的 g176、g178 必须同时导入同一套 `GXRCE.DAT` 和 `GXRFX.BIN`。将两个文件复制到同一文件夹，在文件选择器中同时选择它们；路径接口自动读取同目录的库。g178 每个单元显示相机顺序的 23 份完整配方，详见 [r5 配方导入](docs/r5-recipes.md)。
 
-照片带有 `GXR1` 拍摄配方标签时，「信息」显示目录中的配方名和是否微调；没有标签显示「未标记」。读取规则、旧图库重建和真机验证限制见 [照片里的拍摄配方](docs/exif-recipe-tags.md)。
+照片带有 `GXR1` 拍摄配方标签时，「信息」显示目录中的配方名和调过的项，编辑器沿用拍摄旋钮；旧四字段记录显示「微调未知」，没有标签显示「未标记」。读取规则、旧图库重建和真机验证限制见 [照片里的拍摄配方](docs/exif-recipe-tags.md)。
 
 - 插着卡：`POST /api/camdata/import-card`（可选 `{card_id}`；插着不止一张带 `GXRCE.DAT` 的卡会返回 409 `multiple_cards` 和候选）。
   **只读**：以 `rb` 打开配方文件，r5 同时读取库，卡上的东西一个字节都不会动。

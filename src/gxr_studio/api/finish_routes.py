@@ -40,6 +40,8 @@ def _capabilities(c: Any, shot: dict[str, Any]) -> dict[str, Any]:
     from ..finish.approx import ENABLED
 
     raw = "dng" in shot["files"]
+    if not raw and shot.get("recipe_tag"):
+        return {"raw": False, "recipe": "none", "reason": "拍摄配方预测需要 RAW 文件；当前显示相机 JPG"}
     unit = c.render.photo_unit(shot) or "jlaunch"
     if raw and c.render.available(unit):
         return {"raw": True, "recipe": "full", "reason": ""}
@@ -105,7 +107,7 @@ def photo_meta(shot_id: str, request: Request) -> dict[str, Any]:
 def photo_output_size(shot_id: str, request: Request, body: RenderRequest | None = None) -> dict[str, Any]:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    edit, side = _read_edit(c, shot)
+    edit, side = _read_edit(c, shot, inherit_recipe=False)
     edit = _merge(edit, body)
     crop = body.crop if body is not None and "crop" in body.model_fields_set else side.get("crop")
     if isinstance(crop, dict):

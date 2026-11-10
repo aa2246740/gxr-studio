@@ -30,7 +30,7 @@ from typing import Any, Iterable, cast
 
 from .. import audit, osplat
 from .. import meta as metamod
-from ..camdata.recipe_tags import RecipeTag
+from ..camdata.recipe_tags import RECIPE_TAG_VERSION, RecipeTag, parse_recipe_tag
 from . import sidecar as sc
 from .location import check_library_location
 
@@ -436,6 +436,8 @@ class Library:
             d["sidecar_rev"] = edit["sidecar_rev"] if edit else 0
             d["crop"] = json.loads(edit["crop_json"]) if edit and edit["crop_json"] else None
             d["recipe_tag"] = json.loads(d["recipe_tag"]) if d["recipe_tag"] else None
+            if d["recipe_tag"] and d["recipe_tag"].get("version") != RECIPE_TAG_VERSION:
+                d["recipe_tag"] = parse_recipe_tag(d["copyright"])
             out.append(d)
         return out
 

@@ -20,6 +20,7 @@ from ..lut.errors import LutError
 from ..lut.spaces import DISPLAY
 from ..raw.dng import RawDecodeError
 from ..render import edits as render_edits
+from ..render.camera_recipe import photo_edit
 from ..render.params import EditError, EditState, parse_adjust, parse_curve, parse_lut, parse_recipe
 from ..render.service import NoRaw, RenderUnavailable
 from .errors import ApiError
@@ -73,18 +74,26 @@ def _unavailable(c: Any, exc: RenderUnavailable) -> ApiError:
     return ApiError(409, exc.code, exc.message, {"status": c.render.status()})
 
 
-def _read_edit(c: Any, shot: dict[Any, Any]) -> tuple[EditState, dict[Any, Any]]:
+def _read_edit(c: Any, shot: dict[Any, Any], *, inherit_recipe: bool = True) -> tuple[EditState, dict[Any, Any]]:
     try:
-        return render_edits.read(c.lib, shot)
+        return render_edits.read(c.lib, shot, c.render.recipe_menu() if inherit_recipe else None)
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
     except EditError as exc:
         raise _edit_error(exc) from exc
 
 
-def _payload(c: Any, shot: dict[Any, Any], edit: EditState, side: dict[Any, Any], warning: str | None = None) -> dict[Any, Any]:
+def _payload(
+    c: Any,
+    shot: dict[Any, Any],
+    edit: EditState,
+    side: dict[Any, Any],
+    warning: str | None = None,
+    *,
+    render_info: dict[Any, Any] | None = None,
+) -> dict[Any, Any]:
     out = render_edits.describe(side, edit)
-    out["render"] = _render_info(c, shot, edit)
+    out["render"] = _render_info(c, shot, edit) if render_info is None else render_info
     if warning:
         out["warning"] = warning
     return out
@@ -93,6 +102,8 @@ def _payload(c: Any, shot: dict[Any, Any], edit: EditState, side: dict[Any, Any]
 def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     svc = c.render
     if "dng" not in shot["files"]:
+        if shot.get("recipe_tag"):
+            return {"available": True, "reason": "no_raw", "recipe": "none", "message": "拍摄配方预测需要 RAW 文件；当前显示相机 JPG"}
         from ..finish.approx import ENABLED
 
         approx = ENABLED and svc.available()
@@ -173,7 +184,7 @@ def _render(
         raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": f"max_edge 要在 64 到 {MAX_EDGE_LIMIT} 之间"})
     if not 30 <= quality <= 100:
         raise ApiError(422, "bad_quality", "请求无效。请刷新页面后重试。", {"detail": "品质要在 30 到 100 之间。"})
-    edit, side = _read_edit(c, shot)
+    edit, side = _read_edit(c, shot, inherit_recipe=stage != "original" and not (body is not None and "recipe" in body.model_fields_set))
     edit = _merge(edit, body)
     if body is not None and "crop" in body.model_fields_set:
         side = {**side, "crop": body.crop}
@@ -263,7 +274,15 @@ def list_recipes(request: Request) -> dict[Any, Any]:
 def get_edit(shot_id: str, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    edit, side = _read_edit(c, shot)
+    edit, side = _read_edit(c, shot, inherit_recipe=False)
+    try:
+        edit = photo_edit(side, shot, c.render.recipe_menu())
+    except EditError as exc:
+        if exc.code != "camera_recipe_catalog_missing":
+            raise _edit_error(exc) from exc
+        return _payload(
+            c, shot, edit, side, c.lib.sidecar_problem(shot), render_info={"available": False, "reason": exc.code, "message": exc.message}
+        )
     return _payload(c, shot, edit, side, c.lib.sidecar_problem(shot))
 
 

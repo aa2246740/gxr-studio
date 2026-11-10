@@ -86,10 +86,12 @@ export function infoPanel(view) {
   const position = tag ? String(tag.position).padStart(2, '0') : '';
   const recorded = tag ? `GXR1 ${tag.catalog_identity} ${tag.unit} ${position}` : '';
   const label = !tag ? '未标记' : tag.name ? `${tag.name}（${tag.unit_label} · ${position}）` : recorded;
+  const changes = tag ? Object.entries(tag.changes || {}).map(([name, value]) =>
+    `${KNOB_NAMES[name] || name} ${name === 'amount' ? `${value}%` : fmtSigned(value)}`) : [];
+  const detail = tag && tag.levels === null ? '微调未知' : changes.join(' · ');
   const recipe = section('拍摄配方', kv([
-    ['配方', label, tag ? '' : 'dim'],
+    ['配方', [label, detail].filter(Boolean).join(' · '), tag ? '' : 'dim'],
     tag && !tag.catalogued ? ['', '（相机记录，Studio 目录里没有）', 'dim small'] : null,
-    tag && tag.tweaked ? ['', '已微调'] : null,
   ]));
   const el = h('div', { class: 'pane info-pane' }, recipe, editSection(view), shot);
   el.dataset.ready = '1';
