@@ -280,7 +280,9 @@ def main():
     args = parser.parse_args()
     assert sys.flags.isolated and sys.dont_write_bytecode and os.getpriority(os.PRIO_PROCESS, 0) == 15
     root, out, home = args.research.resolve(), args.out.resolve(), args.home.resolve()
-    assert out.is_relative_to(root / "research/studio_full_recipe_r1/local")
+    parts = out.relative_to(root / "research").parts if out.is_relative_to(root / "research") else ()
+    assert len(parts) >= 2 and parts[0].startswith("studio_full_recipe_") and parts[1] == "local"
+    assert not home.is_relative_to(Path(__file__).resolve().parents[1])
     assert not out.exists(), "preserve first failure; choose a new output"
     out.mkdir(parents=True)
     workspace = root / "research/fit_v4_r2/local/adapter/local_batch"

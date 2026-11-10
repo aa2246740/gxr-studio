@@ -7,7 +7,7 @@ const pin = verifyPinnedRuntime();
 assert.equal(pin.playwrightVersion, '1.61.1');
 assert.equal(pin.chromiumRevision, '1228');
 const browser = await launchPinnedChromium({ args: [
-  '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-webgpu-adapter=swiftshader',
+  '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader',
 ] });
 try {
   const page = await browser.newPage();

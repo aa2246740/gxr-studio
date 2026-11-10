@@ -122,7 +122,7 @@ try {
   await page.getByText('正在为A12 50mm生成配方…', { exact: false }).waitFor();
   assert(await unit().isDisabled());
   assert(await space().isDisabled());
-  await page.getByText('正在精确收敛并重算整数记录…', { exact: true }).waitFor();
+  await page.getByText('正在收敛并重算整数记录…', { exact: true }).waitFor();
   assert.equal(out.request.quality_source, '1'.repeat(64));
   done = true;
   await page.getByText('为A12 50mm做的配方', { exact: true }).waitFor();

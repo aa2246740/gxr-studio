@@ -37,7 +37,7 @@ export function slotName(unitId, slot) {
 export function recipeLabel(unitId, recipe) {
   if (recipe.kind === 'local') return localRecipe(recipe.id)?.name || '本机完整配方';
   if (recipe.kind !== 'record') return slotName(unitId, recipe.slot);
-  const recipes = state.catalog?.units.find((u) => u.id === unitId)?.recipes || [];
+  const recipes = state.catalog?.units?.find((u) => u.id === unitId)?.recipes || [];
   const index = recipes.findIndex((r) => r.kind === 'record' && r.id === recipe.id);
   const record = recipes[index];
   return record ? `${String(record.position || index + 1).padStart(2, '0')} ${record.name}` : '完整配方';
@@ -294,11 +294,11 @@ export function selection(view) {
 
 export function recipeInfo(view, sel = selection(view)) {
   if (sel.kind === 'local') return localRecipe(sel.id);
-  const unit = state.catalog?.units.find((u) => u.id === sel.unit);
+  const unit = state.catalog?.units?.find((u) => u.id === sel.unit);
   if (sel.kind === 'look') return unit?.looks?.find((r) => r.id === sel.id) || null;
-  if (sel.kind === 'record') return unit?.recipes.find((r) => r.kind === 'record' && r.id === sel.id) || null;
+  if (sel.kind === 'record') return unit?.recipes?.find((r) => r.kind === 'record' && r.id === sel.id) || null;
   if (sel.kind === 'camera_user') return unit?.users?.find((r) => r.id === sel.id) || null;
-  return unit?.recipes.find((r) => (!r.kind || r.kind === 'builtin') && r.slot === sel.slot) || null;
+  return unit?.recipes?.find((r) => (!r.kind || r.kind === 'builtin') && r.slot === sel.slot) || null;
 }
 
 export function recipeKey(sel) {

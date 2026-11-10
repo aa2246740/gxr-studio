@@ -202,6 +202,17 @@ def test_router_accepts_a_unit_parameter_on_the_recipes_page():
     assert "h.startsWith('#/recipes?')" in router
 
 
+@needs_node
+def test_local_recipe_keeps_frozen_controls_without_camera_catalog():
+    out = scene("local-without-catalog")
+    assert "无法读取配方" not in out["text"]
+    assert out["cards"] == ["独立完整配方"]
+    assert "全部适用质量门通过" in out["text"] and "额外控制已调整" in out["text"]
+    assert out["sliderMaxes"] == [3, 5, 2]
+    assert out["contrastText"] >= 1
+    assert "仅电脑" not in out["tags"]
+
+
 def test_new_modules_stay_under_the_line_cap():
     for name in ("look_cards.js", "look_model.js", "recipes.js"):
         assert len((ASSETS / name).read_text(encoding="utf-8").splitlines()) <= 400, name

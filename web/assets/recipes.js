@@ -39,7 +39,7 @@ export function recipePanel(view) {
   const caps = ed.caps || { recipe: 'none' };
   const state3 = caps.recipe;
   const sel = selection(view);
-  const unit = state.catalog?.units.find((u) => u.id === sel.unit);
+  const unit = state.catalog?.units?.find((u) => u.id === sel.unit);
   const info = recipeInfo(view, sel);
   const hasRaw = caps.raw ?? view.photo.has_raw;
   const localReady = sel.kind === 'local' && ed.render?.available;
@@ -70,11 +70,13 @@ export function recipePanel(view) {
     noticeEl.classList.add('flash');
   };
 
-  if (!unit) {
+  const { usable: mine, other } = groupComputer(cachedMyRecipes(), sel.unit, photoUnit);
+  if (!cachedMyRecipes()) loadMyRecipes().then((list) => list.length && view.redrawSide?.());
+  if (!unit && !localReady && !mine.length && !other.length) {
     nodes.push(h('p', { class: 'small' }, '无法读取配方。请重试。'));
     return h('div', { class: 'edit-panel' }, ...nodes);
   }
-  if (!info) nodes.push(h('p', { class: 'small' }, '找不到这个配方。请重新选择。'));
+  if ((unit || ed.recipe) && !info) nodes.push(h('p', { class: 'small' }, '找不到这个配方。请重新选择。'));
 
   // 每个配方一张卡片：当前这张照片套上它的样子（look_cards.js），名字和一行说明
   const deck = newDeck(view);
@@ -102,17 +104,17 @@ export function recipePanel(view) {
     nodes.push(h('div', { class: usable ? 'look-group' : 'look-group dimmed-block' }, deck.grid(items)));
   };
 
-  section('内置配方', unit.recipes.map((r) => builtinCard({ kind: r.kind || 'builtin', slot: r.slot, ...(r.id ? { id: r.id } : {}) }, r.kind === 'record' ? r.name : slotName(sel.unit, r.slot))));
-  if ((unit.looks || []).length) {
-    section('历史文件条目', unit.looks.map((r) => builtinCard({ kind: 'look', slot: r.slot, id: r.id }, r.name)));
+  if (unit) {
+    section('内置配方', unit.recipes.map((r) => builtinCard({ kind: r.kind || 'builtin', slot: r.slot, ...(r.id ? { id: r.id } : {}) }, r.kind === 'record' ? r.name : slotName(sel.unit, r.slot))));
+    if ((unit.looks || []).length) {
+      section('历史文件条目', unit.looks.map((r) => builtinCard({ kind: 'look', slot: r.slot, id: r.id }, r.name)));
+    }
   }
 
   // 「我的配方」有两个来源，分开写清楚：相机里（相机配方文件里的自定义配方）、电脑上（用 LUT 生成的，存在这台电脑里）
-  const { usable: mine, other } = groupComputer(cachedMyRecipes(), sel.unit, photoUnit);
-  if (!cachedMyRecipes()) loadMyRecipes().then((list) => list.length && view.redrawSide?.());
-  if ((unit.users || []).length || mine.length) {
+  if ((unit?.users || []).length || mine.length) {
     nodes.push(h('div', { class: 'sec' }, '我的配方'));
-    if ((unit.users || []).length) {
+    if ((unit?.users || []).length) {
       section(null, unit.users.map((r) => builtinCard({ kind: r.kind, slot: r.slot, id: r.id }, r.name, { title: `${CAMERA_SOURCE}的配方` })), CAMERA_SOURCE);
     }
     if (mine.length) {
@@ -133,7 +135,7 @@ export function recipePanel(view) {
   if (ed.recipe) {
     const now = chosen.find((c) => c.pressed);
     const name = now ? now.name : info && (info.name || slotName(sel.unit, sel.slot));
-    const calibratedIsos = unit.calibrated_isos || (sel.unit === 'jlaunch' ? [200, 1600] : [200]);
+    const calibratedIsos = unit?.calibrated_isos || (sel.unit === 'jlaunch' ? [200, 1600] : [200]);
     const warn = !ed.lut && (ed.calibrated === false || !photoUnit || sel.unit !== photoUnit || !calibratedIsos.includes(Number(view.photo.iso)));
     const adjustedLocal = sel.kind === 'local' && info?.controls.some((c) => effective(c, sel.levels) !== c.default);
     const localQuality = {
@@ -142,13 +144,14 @@ export function recipePanel(view) {
       needs_evidence: '基础完整配方的质量证据未齐，当前使用本机草稿。',
       historical_exception: '历史授权收录，原准入未通过项仍保留。',
     }[info?.quality?.state];
+    const exposureNote = unit ? unit.exposure_note : (sel.unit !== 'jlaunch' ? '曝光沿用 50mm 的曲线' : null);
     nodes.splice(1, 0, h('div', { class: 'cur-look' },
       h('div', { class: 'small' }, h('span', { class: 'dim' }, '当前：'), h('span', { class: 'strong' }, name || '')),
       sel.kind === 'local' ? h('div', { class: 'small dim' }, localQuality || '质量状态不可用。',
         adjustedLocal ? ' 额外控制已调整，当前效果未经质量评估。' : null) : null,
       warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null,
       ed.recipeFromCamera && view.photo.recipe_tag?.levels === null ? h('div', { class: 'small dim' }, '微调未知，电脑预测使用配方默认值') : null,
-      unit.exposure_note ? h('div', { class: 'small dim' }, unit.exposure_note) : null));
+      exposureNote ? h('div', { class: 'small dim' }, exposureNote) : null));
   }
 
   // 强度和旋钮：配方不能用时整块变淡；点了（捕获阶段拦住）闪一下
@@ -165,7 +168,7 @@ export function recipePanel(view) {
   if (amount) rest.append(levelRow(view, amount, KNOB_NAMES.amount, knobsOn, { title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
   for (const c of controls) {
     if (c.name === 'amount') continue;
-    rest.append(levelRow(view, c, KNOB_NAMES[c.name] || c.label, knobsOn, { tag: tagFor(c), title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
+    rest.append(levelRow(view, c, KNOB_NAMES[c.name] || c.label, knobsOn, { tag: tagFor(c, sel.kind), title: state3 === 'approx' ? '近似效果只支持默认参数' : null }));
   }
   nodes.push(rest);
   // 底部只留 [重置] 靠右，固定在面板底边。原来的「存储为我的配方」「写入存储卡」点了没有反应，删掉（U8）；
@@ -224,15 +227,15 @@ function applyComputer(view, r) {
   view.redrawSide?.();
 }
 
-// 写不进旧版相机配方文件的旋钮打「仅电脑」（新版相机上不打标签，COPY 3.10）
-function tagFor(control) {
-  return isLegacyCamera() && COMPUTER_ONLY.includes(control.name) ? '仅电脑' : null;
+// 写不进旧版相机配方文件的旋钮打「仅电脑」（新版相机和自带控制快照的本机配方不打标签，COPY 3.10）
+function tagFor(control, kind) {
+  return kind !== 'local' && isLegacyCamera() && COMPUTER_ONLY.includes(control.name) ? '仅电脑' : null;
 }
 
-// 旧版相机配方文件只认 ±5：这四项的滑块范围直接限制在 ±5，不打标签（COPY 3.10）
-function levelsFor(control) {
+// 旧版相机配方文件只认 ±5：这四项的滑块范围直接限制在 ±5，不打标签（COPY 3.10）；本机完整配方按自身冻结控制表保持原范围
+function levelsFor(control, kind) {
   const levels = [...control.levels].sort((a, b) => a - b);
-  if (isLegacyCamera() && NEW_TONE_KNOBS.includes(control.name)) return levels.filter((v) => Math.abs(v) <= LEGACY_LIMIT);
+  if (kind !== 'local' && isLegacyCamera() && NEW_TONE_KNOBS.includes(control.name)) return levels.filter((v) => Math.abs(v) <= LEGACY_LIMIT);
   return levels;
 }
 
@@ -254,8 +257,9 @@ function fmtValue(control, v) {
 
 // 一根档位滑块：滑块的位置是档位的序号
 function levelRow(view, control, label, enabled, { tag = null, title = null } = {}) {
-  const levels = levelsFor(control);
-  const cur = effective(control, selection(view).levels);
+  const sel = selection(view);
+  const levels = levelsFor(control, sel.kind);
+  const cur = effective(control, sel.levels);
   const tagEl = tag ? h('span', { class: 'tag soft' }, tag) : null;
   return h(
     'div',

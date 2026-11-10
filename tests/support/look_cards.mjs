@@ -257,6 +257,59 @@ if (scenario === 'model') {
   await tick(5);
   out.secondRecord = JSON.parse(JSON.stringify(view.ed.recipe));
   out.recordBodies = calls.filter((c) => c.method === 'PUT').slice(-2).map((c) => c.body.recipe);
+} else if (scenario === 'local-without-catalog') {
+  const localId = 'e'.repeat(64);
+  const localDoc = {
+    id: localId,
+    name: '独立完整配方',
+    hidden: false,
+    recipe: { kind: 'local', id: localId, unit: 'jlaunch', slot: 2 },
+    controls: [
+      { name: 'amount', label: 'Amount', levels: [0, 50, 100, 150], default: 100 },
+      { name: 'contrast', label: 'Contrast', levels: [-9, -5, 0, 5, 8, 9], default: 0 },
+      { name: 'warmth', label: 'Warm', levels: [-9, 0, 9], default: 0 },
+    ],
+    quality: { state: 'passed', failures: [], missing: [] },
+    source: { kind: 'lut', title: 'Frozen Cube' },
+  };
+  globalThis.fetch = async (url) => {
+    let data = {};
+    if (url === '/api/luts') data = { luts: [], groups: [] };
+    if (url === '/api/photos/p1/edit') {
+      data = {
+        rev: 1,
+        recipe: { kind: 'local', id: localId, unit: 'jlaunch', slot: 2, levels: { contrast: 8 } },
+        local_recipe: localDoc,
+        render: { available: true, calibrated: true },
+        lut: null, adjust: {}, curve: null, geometry: {}, frame: null, stamp: null, memory: {},
+      };
+    }
+    if (url === '/api/photos/p1/capabilities') data = { raw: true, recipe: 'none', reason: 'camera_data_missing' };
+    if (url === '/api/photos/p1/crop') data = { preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0, orientation: 'landscape', frame: { width: 3000, height: 2000 }, rev: 1 };
+    if (url === '/api/frames') data = { styles: [] };
+    if (url === '/api/defaults/finish') data = { frame: { style: 'none' }, stamp: { enabled: false } };
+    if (url === '/api/recipes') data = { status: { ready: false }, units: [] };
+    if (url === '/api/my-recipes') data = { recipes: [localDoc] };
+    return { ok: true, status: 200, text: async () => JSON.stringify(data) };
+  };
+  const { state } = await import(file('state.js'));
+  const preview = await import(file('preview.js'));
+  const { recipePanel } = await import(file('recipes.js'));
+  state.camdata = { ready: false, state: 'missing', generation: null };
+  state.catalog = null;
+  const view = { photo: { id: 'p1', iso: 200, lens: 'GR LENS A12 50mm F2.5 MACRO', has_raw: true, has_jpg: true }, onChange() {}, redrawSide() {} };
+  await preview.ensureEdit(view);
+  recipePanel(view);
+  await tick(5);
+  const el = recipePanel(view);
+  const cards = walk(el).filter((n) => n.classList && n.classList.contains('lcard'));
+  const inputs = walk(el).filter((n) => n.tagName === 'INPUT' && (n.type === 'range' || n.getAttribute('type') === 'range'));
+  const tags = walk(el).filter((n) => n.classList && n.classList.contains('tag')).map((n) => n.textContent);
+  out.text = el.textContent;
+  out.cards = cards.map((c) => find(c, (n) => n.classList && n.classList.contains('nm')).textContent);
+  out.sliderMaxes = inputs.map((i) => Number(i.getAttribute('max') ?? i.max));
+  out.contrastText = walk(el).map((n) => n.textContent).filter((t) => t === '+8').length;
+  out.tags = tags;
 } else {
   throw new Error(`没有这个场景：${scenario}`);
 }
