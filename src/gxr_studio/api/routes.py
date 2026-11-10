@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .. import __version__
 from .. import crop as cropmod
+from ..camdata.recipe_tags import recipe_payload
 from ..cards import coverage, importer
 from ..cards.coverage import Identity
 from ..cards.discovery import find_cards
@@ -176,6 +177,8 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
         "width": shot["width"],
         "height": shot["height"],
         "orientation": shot["orientation"],
+        "copyright": shot.get("copyright"),
+        "recipe_tag": recipe_payload(shot.get("recipe_tag")),
         "thumb_url": f"/api/photos/{sid}/thumb{vq}",
         "preview_url": f"/api/photos/{sid}/preview{vq}",
         "preview_kind": thumbs.preview_kind(shot),

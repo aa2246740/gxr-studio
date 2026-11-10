@@ -30,6 +30,7 @@ from typing import Any, Iterable, cast
 
 from .. import audit, osplat
 from .. import meta as metamod
+from ..camdata.recipe_tags import RecipeTag
 from . import sidecar as sc
 from .location import check_library_location
 
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS shots(
   shot_id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL,
   date TEXT, date_source TEXT, captured_at TEXT,
   unit TEXT, lens TEXT, iso INTEGER, orientation INTEGER, width INTEGER, height INTEGER,
-  has_raw INTEGER NOT NULL, has_jpg INTEGER NOT NULL, added_at TEXT NOT NULL);
+  has_raw INTEGER NOT NULL, has_jpg INTEGER NOT NULL, added_at TEXT NOT NULL,
+  copyright TEXT, recipe_tag TEXT);
 CREATE TABLE IF NOT EXISTS files(
   shot_id TEXT NOT NULL, kind TEXT NOT NULL, relpath TEXT NOT NULL,
   sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
@@ -124,6 +126,8 @@ class ShotRecord:
     files: list[FileRecord] = field(default_factory=list)
     sidecar_rev: int = 0
     crop: dict[Any, Any] | None = None
+    copyright: str | None = None
+    recipe_tag: RecipeTag | None = None
 
     @property
     def has_raw(self) -> bool:
@@ -184,6 +188,10 @@ class Library:
             db = sqlite3.connect(self.index_path, check_same_thread=False, isolation_level=None)
             db.row_factory = sqlite3.Row
         db.executescript(_SCHEMA)
+        columns = {row[1] for row in db.execute("PRAGMA table_info(shots)")}
+        for column in ("copyright", "recipe_tag"):
+            if column not in columns:
+                db.execute(f"ALTER TABLE shots ADD COLUMN {column} TEXT")  # nosec B608  column 来自固定元组
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self._db = db
 
@@ -427,6 +435,7 @@ class Library:
             edit = edits.get(r["shot_id"])
             d["sidecar_rev"] = edit["sidecar_rev"] if edit else 0
             d["crop"] = json.loads(edit["crop_json"]) if edit and edit["crop_json"] else None
+            d["recipe_tag"] = json.loads(d["recipe_tag"]) if d["recipe_tag"] else None
             out.append(d)
         return out
 
@@ -490,7 +499,7 @@ class Library:
         db = self.db
         db.execute(
             """INSERT OR REPLACE INTO shots(shot_id,name,folder,date,date_source,captured_at,unit,lens,iso,
-                 orientation,width,height,has_raw,has_jpg,added_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 orientation,width,height,has_raw,has_jpg,added_at,copyright,recipe_tag) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rec.shot_id,
                 rec.name,
@@ -507,6 +516,8 @@ class Library:
                 int(rec.has_raw),
                 int(rec.has_jpg),
                 rec.added_at,
+                rec.copyright,
+                json.dumps(rec.recipe_tag) if rec.recipe_tag is not None else None,
             ),
         )
         db.execute("DELETE FROM files WHERE shot_id=?", (rec.shot_id,))
@@ -723,6 +734,7 @@ class Library:
         pm = metamod.read_jpeg_meta(jpg) if jpg else pm_dng
         if pm.error:
             pm = pm_dng
+        tag_meta = pm if pm.copyright is not None else pm_dng
         imp = (side or {}).get("import", {})
         folder_date = Path(rel_dir).name if _DATE_DIR.match(Path(rel_dir).name) else None
         date = imp.get("date", folder_date)
@@ -767,6 +779,8 @@ class Library:
             files=files,
             sidecar_rev=int(side.get("rev", 0)),
             crop=crop,
+            copyright=tag_meta.copyright,
+            recipe_tag=tag_meta.recipe_tag,
         )
         self._insert_shot(rec)
         report.shots += 1

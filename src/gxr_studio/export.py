@@ -212,6 +212,8 @@ def render_raw(src: Path, crop: Crop | None, opts: ExportOptions, renderer: Rend
     try:
         with Image.open(src) as im0:
             exif = im0.getexif()
+            if 33432 in exif:
+                base[33432] = exif[33432]
             for tag in (271, 272, 306):
                 text = _clean_text(exif.get(tag))
                 if text:
@@ -250,8 +252,11 @@ def _finish(
 
     def build_exif(full: bool) -> Image.Exif:
         out = Image.Exif()
-        keep = base if full else {k: base[k] for k in (270, 271, 272, 306) if k in base}
+        keep = base if full else {k: base[k] for k in (270, 271, 272, 306, 33432) if k in base}
         for k, v in keep.items():
+            # Pillow 用 latin-1 解读 TIFF ASCII；还原原始字节，避免再次写入时把非 ASCII 版权换成问号。
+            if k == 33432 and isinstance(v, str):
+                v = v.encode("latin-1")
             # ImageDescription 要能放下「电脑预测」「未校准」「近似」。Pillow 把 str 写成 ASCII，所以这里改用 UTF-8 字节。
             out[k] = v.encode("utf-8") if k == 270 and isinstance(v, str) else v
         out[274] = 1
@@ -295,6 +300,8 @@ def write_with_exif(data: bytes, source: Path, note: str, *, quality: int, fmt: 
     try:
         with Image.open(source) as src:
             exif = src.getexif()
+            if 33432 in exif:
+                base[33432] = exif[33432]
             for tag in (271, 272, 306):
                 text = _clean_text(exif.get(tag))
                 if text:

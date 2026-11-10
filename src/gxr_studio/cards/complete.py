@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .. import meta as metamod
 from ..library import sidecar as sc
 from ..library import thumbs
 from ..library.store import FileRecord, ShotRecord, make_shot_id
@@ -62,6 +63,13 @@ def complete_existing(
     except (sc.SidecarCorrupt, sc.SidecarTooNew):
         return False
 
+    copyright, recipe_tag = existing.get("copyright"), existing.get("recipe_tag")
+    for s in fresh:
+        kind = s.card_file.kind
+        meta = metamod.read_jpeg_meta(s.path) if kind == "jpg" else metamod.read_dng_meta(s.path)
+        if meta.copyright is not None and (kind == "jpg" or copyright is None):
+            copyright, recipe_tag = meta.copyright, meta.recipe_tag
+
     records = [
         FileRecord(k, v["relpath"], v["sha256"], v["size"], lib.abspath(v["relpath"]).stat().st_mtime_ns) for k, v in existing["files"].items()
     ]
@@ -106,6 +114,8 @@ def complete_existing(
         files=records,
         sidecar_rev=int(out.get("rev", 0)),
         crop=out.get("crop"),
+        copyright=copyright,
+        recipe_tag=recipe_tag,
     )
     if opts.make_thumbs:
         try:
