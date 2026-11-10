@@ -162,4 +162,4 @@ POSIX（macOS、Linux）和 Windows 的差别都收在 `osplat`：文件锁（`f
   原语里自己发出同名的审计事件，`audit` 的保护规则照常生效。
 
 没有"按路径核对、再按路径操作"的实现，也就没有那段空隙。`make type` 同时按 win32 平台做类型检查；
-`tests/test_platform_io.py` 的竞态测试在 CI 的 windows-latest 上跑的是 Windows 原语。
+`tests/test_platform_io.py` 的竞态测试在 Windows 上跑时用的是 Windows 原语（Windows 适配暂停期间不走 CI）。

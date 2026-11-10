@@ -1,53 +1,12 @@
 name: ci
 
+# 全量测试只能手动触发（2026-11-10 机主定的测试规矩）：日常测试全在本地跑，合并前以本地 `make check` 通过为准；
+# GitHub 上的全量 CI 只在重大版本发布、机主明确要求时，到 Actions → ci → Run workflow 手动跑。
+# push 和 PR 不再自动触发。Windows 先不走任何 CI。
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 jobs:
-  windows-probes:
-    if: startsWith(github.ref, 'refs/heads/ci/') || github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          python-version: "3.14"
-      - run: uv sync --frozen
-      - name: Handle operations
-        run: uv run --frozen python -u scripts/windows_probe.py io
-      - name: Event loop
-        run: uv run --frozen python -u scripts/windows_probe.py loop
-      - name: Preference permissions and settings boundaries
-        run: uv run --frozen pytest -x -vv tests/test_prefs.py tests/test_security.py -o faulthandler_timeout=120
-      - name: Worker lifecycle
-        run: uv run --frozen pytest -x -vvs tests/test_polish_p2.py::test_worker_exits_by_itself_when_the_parent_is_killed tests/test_polish_p2.py::test_worker_sets_the_stop_flag_when_the_parent_goes_away tests/test_import.py::test_kill_the_process_20_times -o faulthandler_timeout=180
-      - name: Software WebGPU adapter
-        id: webgpu
-        run: uv run --frozen python -u scripts/windows_probe.py gpu
-      - name: Two independent matrix workers
-        run: uv run --frozen python -u scripts/windows_probe.py matmul
-      - name: Two independent inverse workers
-        run: uv run --frozen python -u scripts/windows_probe.py inverse
-      - name: Exact LUT table without file operations
-        run: uv run --frozen python -u scripts/windows_probe.py lut
-      - name: First handle or boundary test failure
-        run: uv run --frozen pytest -x -vv tests/test_windows_io.py tests/test_network_guard.py tests/test_card_read_boundaries.py tests/test_platform_io.py tests/test_a1a_privacy.py tests/test_a1a_review_r2.py tests/test_a1a_review_r3.py tests/test_fix_review.py -o faulthandler_timeout=120
-      - name: First GPU test failure
-        run: uv run --frozen pytest -x -vv tests/test_gpu_api.py -o faulthandler_timeout=120
-      - name: Source bytes and synthetic calibration
-        run: uv run --frozen pytest -x -vv tests/test_clone_coverage.py tests/test_engine_knobs.py tests/test_launcher.py -o faulthandler_timeout=120
-      - name: GPU colour comparison
-        env:
-          GXR_REQUIRE_GPU_TEST: "1"
-        run: uv run --frozen pytest -x -vvs tests/test_gpu_parity.py -o faulthandler_timeout=120
-      - name: Additional failure details
-        if: failure() && steps.webgpu.conclusion != 'failure'
-        run: uv run --frozen pytest -vv --maxfail=10 tests/test_a1a_privacy.py tests/test_a1a_review_r2.py tests/test_fix_review.py tests/test_gpu_api.py -o faulthandler_timeout=120
-
   check:
     runs-on: ubuntu-latest
     steps:
@@ -82,16 +41,10 @@ jobs:
         if: always()
         run: mkdir -p artifacts && cp -f .coverage artifacts/coverage.sqlite || true
 
-  # macOS（和 Windows）：完整测试套件。显卡一致性同样用 Chrome 的软件适配器，找不到适配器就失败（GXR_REQUIRE_GPU_TEST=1）。
-  # Windows 适配暂停（2026-11-06 机主决定：先把 Mac 版做完再适配 Windows）。push 和 PR 只跑 macOS；
-  # 手动触发（workflow_dispatch）或推到 ci/ 开头的分支时，Windows 照旧一起跑。恢复适配时把下面的条件去掉即可。
+  # macOS 完整测试套件。显卡一致性用 Chrome 的软件适配器，找不到适配器就失败（GXR_REQUIRE_GPU_TEST=1）。
   tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/ci/')) && fromJSON('["windows-latest", "macos-latest"]') || fromJSON('["macos-latest"]') }}
-    runs-on: ${{ matrix.os }}
-    # 上一轮 windows-latest 挂了 2 小时没有结束：限时，并在单个测试超过 5 分钟时打印所有线程的调用栈
+    runs-on: macos-latest
+    # 限时，并在单个测试超过 5 分钟时打印所有线程的调用栈
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

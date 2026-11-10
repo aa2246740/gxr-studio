@@ -44,8 +44,8 @@ curl -H "Host: 127.0.0.1:18765" -H "X-GXR-Token: $GXR_STUDIO_TOKEN" http://127.0
 
 - Python 用 ruff 做 lint 和 format，mypy 开了 strict（`[tool.mypy] strict = true`）。`engine/` 和 `lut/spaces.py` 逐字节锁定，注解在旁边的 `.pyi`。
 - 复杂度用 ruff 的 mccabe，上限写在 `[tool.ruff.lint.mccabe]`。
-- 覆盖率门槛在 `make test` / CI 的 `--cov-fail-under`，也写在 `[tool.coverage.report]`。本地只想看结果可以用 `uv run --frozen pytest -q`。
-- CI 失败会重跑一次失败的测试（`--reruns 1`）。
+- 覆盖率门槛在 `make test` / `make check` 的 `--cov-fail-under`，也写在 `[tool.coverage.report]`。本地只想看结果可以用 `uv run --frozen pytest -q`。
+- 测试规矩（2026-11-10 机主定）：日常测试全在本地跑，合并前以本地 `make check` 通过为准，不等 GitHub。GitHub 的全量 CI 只能手动触发（Actions → ci → Run workflow），只在重大版本发布、机主明确要求时跑。需要干净环境或 Linux 检查时，用 Apple Container 开容器跑。Windows 不走 CI。
 - 依赖要钉死版本并更新 `uv.lock`。新版本至少等 7 天，见 `docs/dependencies.md`。
 
 ## 命名
@@ -56,7 +56,7 @@ Python 模块、函数、变量用 snake_case，类用 PascalCase，常量用 UP
 
 ## 改代码时
 
-先只做 macOS。Windows 适配暂停（2026-11-06 机主决定）：不为 Windows 写新代码，也不追 Windows 专属的失败；已有的 Windows 代码不删。CI 的 push 和 PR 只跑 macOS 的完整测试，Windows 只在手动触发或 `ci/` 分支上跑。
+先只做 macOS。Windows 适配暂停（2026-11-06 机主决定）：不为 Windows 写新代码，也不追 Windows 专属的失败；已有的 Windows 代码不删。Windows 先不走任何 CI，以后由机主自己测。
 
 界面行为保持不变，除非这次任务就是改界面。`library_rebuild` 开关默认开着，关了才会拒绝重建索引。
 
