@@ -23,7 +23,11 @@ function cardSpec(style, frame) {
 function drawCard(view, style, holder, base) {
   const ed = view.ed;
   const stampSpec = ed.stamp && ed.stamp.enabled ? ed.stamp : null;
-  const redo = () => { if (!view.disposed) drawCard(view, style, holder, base); };
+  const redo = () => {
+    if(view.disposed) return;
+    if(view.tab!=='frame'||view.collapsed) {view.frameCardsStale=true;return;}
+    drawCard(view,style,holder,base);
+  };
   const exact = photoSize(view);
   if (!exact.value) exact.promise.then(redo, () => {});
   const [ew, eh] = exact.value ? exact.value.photo : [base.ew, base.eh];
@@ -35,7 +39,7 @@ function drawCard(view, style, holder, base) {
   // 显示比例取自导出版面，不用小位图取整后的宽高比（宽幅照片尤其明显）。
   canvas.style.aspectRatio = `${deco.width} / ${deco.height}`;
   const ctx = canvas.getContext('2d');
-  if (style.id === 'blur_fill') primeBlur(base.image, ew, eh, ed.meta?.frame || {});
+  if (style.id === 'blur_fill') primeBlur(base.image, ew, eh, ed.meta?.frame || {}, deco.frame, () => !view.disposed && view.tab === 'frame' && !view.collapsed && !view.pending && view.cardBase?.base?.image === base.image);
   drawDecor(ctx, deco, scale, { photo: base.image, onLogo: redo });
   holder.classList.remove('skel');
   holder.removeAttribute('aria-busy');
@@ -50,7 +54,14 @@ function failed(holder) {
 
 // items：[{ style, holder }]。底图一到手 7 张一起画；上一次的底图还在的话先用它画（不闪骨架），新的到了再换。
 export function paintCards(view, items) {
-  view.refreshFrameCards=()=>{if(!view.disposed&&items.some(item=>item.holder.isConnected)) paintCards(view,items);};
+  if(view.disposed) return;
+  view.refreshFrameCards=()=>{
+    if(view.disposed||!items.some(item=>item.holder.isConnected)) return;
+    if(view.tab!=='frame'||view.collapsed) {view.frameCardsStale=true;return;}
+    paintCards(view,items);
+  };
+  if(view.tab!=='frame'||view.collapsed) {view.frameCardsStale=true;return;}
+  view.frameCardsStale=false;
   const stale = view.cardBase && (view.cardBase.base || view.cardBase.last);
   const key = draftKey(view);
   const fresh = baseFor(view);
@@ -61,6 +72,7 @@ export function paintCards(view, items) {
   if (stale) for (const { style, holder } of items) drawCard(view, style, holder, stale);
   fresh.then((base) => {
     if (view.disposed || draftKey(view) !== key) return;
+    if(view.tab!=='frame'||view.collapsed) {view.frameCardsStale=true;return;}
     for (const { style, holder } of items) drawCard(view, style, holder, base);
   }, () => {
     if (!stale) for (const { holder } of items) failed(holder);

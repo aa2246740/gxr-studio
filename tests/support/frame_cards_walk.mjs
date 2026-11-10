@@ -78,6 +78,7 @@ async function inPage() {
     out.navigation.push({ kind: item.kind, key: currentView().cardBase.key, id: item.photo.id, signature: signature(canvases()[0]) });
     card('gallery').click();
     await until(() => document.querySelector('.pv.framed'));
+    await until(()=>backgroundStats().pending===0);
     const blurBefore=backgroundStats();
     for (const ratio of ['1:1', '4:5', '3:4', '2:3', '9:16', '16:9', '3:2', 'original']) {
       const renders = window.__fetchLog.renders;

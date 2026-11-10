@@ -6,7 +6,6 @@ import { frameLayout, stampLayout, stampText, momentOf, needsCjk } from './finis
 import { fontReady, fontsNeeded, loadFont, metrics, tableReady } from './finish_fonts.js';
 import { drawDecor } from './finish_draw.js';
 import { photoSize } from './output_photo_size.js';
-import { baseFor } from './finish_source.js';
 import { primeBlur } from './finish_background.js';
 
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
@@ -130,12 +129,11 @@ export function applyDecor(view, pv, media, deco, cssW, cssH) {
   const dpr = globalThis.devicePixelRatio || 1;
   let backdrop=null;
   if(frame?.bgfx?.kind==='blur') {
-    baseFor(view,{media,request:false});
     backdrop=view.cardBase?.base;
-    if(backdrop) primeBlur(backdrop.image,deco.ew,deco.eh,view.ed.meta?.frame||{});
   }
   const key = `${deco.key}|${W}x${H}|${dpr}|${rgb(frame ? frame.bg : [0, 0, 0])}|${backdrop?.source||''}`;
   if (canvas.dataset.key === key) return;
+  if(backdrop) primeBlur(backdrop.image,deco.ew,deco.eh,view.ed.meta?.frame||{},frame,()=>!view.disposed&&view.tab==='frame'&&!view.collapsed&&!view.pending&&view.cardBase?.base?.image===backdrop.image);
   canvas.dataset.key = key;
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);

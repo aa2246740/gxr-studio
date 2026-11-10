@@ -1,17 +1,17 @@
-// Blur only small copies of the edited photo. All ratios and the caption toggle
-// are prepared together once per source, then shared by the stage and cards.
+// Blur small copies of the edited photo. Build the visible ratio now and warm
+// the other ratios one at a time during idle, only while the frame panel is visible.
 import { frameLayout, OUTPUT_RATIOS } from './finish_layout.js';
 import { metrics, tableReady } from './finish_fonts.js';
 import { paintGrain } from './finish_texture.js';
 
 const rgb=c=>`rgb(${c[0]},${c[1]},${c[2]})`;
 const cache=new WeakMap();
-const stats={builds:0,hits:0,ms:0};
+const stats={builds:0,hits:0,ms:0,pending:0};
 export const backgroundStats=()=>({...stats});
 const keyFor=f=>`${f.width}x${f.height}|${f.bgfx.sigma}|${f.bgfx.veil}|${f.bgfx.sat}`;
 
 function entry(photo) {
-  if(!cache.has(photo)) cache.set(photo,{canvases:new Map(),primed:new Set()});
+  if(!cache.has(photo)) cache.set(photo,{canvases:new Map(),primed:new Set(),warming:new Set()});
   return cache.get(photo);
 }
 
@@ -66,15 +66,24 @@ export function blurBackdrop(photo,frame) {
   return cv;
 }
 
-export function primeBlur(photo,w,h,meta) {
-  if(!tableReady('inter_sb')||!tableReady('inter')) return;
+export function primeBlur(photo,w,h,meta,current,active=()=>false) {
+  if(current?.bgfx?.kind==='blur') blurBackdrop(photo,current);
+  if(!active()||typeof requestIdleCallback!=='function'||!tableReady('inter_sb')||!tableReady('inter')) return;
   const kept=entry(photo),key=`${w}x${h}`;
-  if(kept.primed.has(key)) return;
-  kept.primed.add(key);
-  for(const output_ratio of [...Object.keys(OUTPUT_RATIOS),'original']) for(const show_params of [false,true]) {
-    const frame=frameLayout(w,h,{style:'blur_fill',output_ratio,show_params},meta,metrics);
+  if(kept.primed.has(key)||kept.warming.has(key)) return;
+  const options=[];
+  for(const output_ratio of [...Object.keys(OUTPUT_RATIOS),'original']) for(const show_params of [false,true]) options.push({output_ratio,show_params});
+  kept.warming.add(key);stats.pending++;
+  let index=0;
+  const warm=deadline=>{
+    if(!active()) {kept.warming.delete(key);stats.pending--;return;}
+    if(deadline.timeRemaining()<4) {requestIdleCallback(warm);return;}
+    const frame=frameLayout(w,h,{style:'blur_fill',...options[index++]},meta,metrics);
     if(frame.bgfx?.kind==='blur') blurBackdrop(photo,frame);
-  }
+    if(index<options.length) requestIdleCallback(warm);
+    else {kept.warming.delete(key);kept.primed.add(key);stats.pending--;}
+  };
+  requestIdleCallback(warm);
 }
 
 export function paintBackground(ctx,frame,s,photo=null) {

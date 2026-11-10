@@ -245,6 +245,12 @@ try {
   // 4) 拖滑块量更新速度：每帧改一次曝光，来回扫 dragMs 毫秒，数直方图更新了几次
   step('drag rate');
   out.rate = await evalIn(`(async () => { ${helpers}
+    const {backgroundStats}=await import('/assets/finish_background.js');
+    const cards=[...document.querySelectorAll('#tp-frame .fcards canvas')];
+    const blurBefore=backgroundStats().builds;
+    let cardRedraws=0;
+    const observer=new MutationObserver(records=>{cardRedraws+=records.length;});
+    for(const canvas of cards) observer.observe(canvas,{attributes:true,attributeFilter:['width']});
     const input = slider('曝光');
     const s0 = await hs();
     grab(input);
@@ -270,7 +276,9 @@ try {
     dts.sort((a, b) => a - b);
     const gaps = stamps.slice(1).map((v, i) => v - stamps[i]).sort((a, b) => a - b);
     const q = (arr, p) => arr.length ? Math.round(arr[Math.min(arr.length - 1, Math.floor(arr.length * p))]) : null;
-    return { lastMs, seconds: secs, updates: s1.updates - s0.updates, perSecond: (s1.updates - s0.updates) / secs, frames, frameMs: { p50: q(dts, 0.5), p95: q(dts, 0.95), max: q(dts, 1) }, gapMs: { p50: q(gaps, 0.5), p95: q(gaps, 0.95) } };
+    observer.disconnect();
+    const frameWork={cards:cards.length,hidden:document.querySelector('#tp-frame').hidden,redraws:cardRedraws,blurBuilds:backgroundStats().builds-blurBefore};
+    return { frameWork, lastMs, seconds: secs, updates: s1.updates - s0.updates, perSecond: (s1.updates - s0.updates) / secs, frames, frameMs: { p50: q(dts, 0.5), p95: q(dts, 0.95), max: q(dts, 1) }, gapMs: { p50: q(gaps, 0.5), p95: q(gaps, 0.95) } };
   })()`, dragMs + 60000);
   await sleep(600);
 

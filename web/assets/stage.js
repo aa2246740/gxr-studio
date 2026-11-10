@@ -11,20 +11,20 @@ import { cropBody, guidesSvg, guideFade, lockRatio, orientationNow, rectArray, p
 import { moveRect, resizeRect } from './geom.js';
 import { gpuCanvas } from './gpu_stage.js';
 import { fitPhoto, fitImage, applyDecor, clearDecor } from './stage_finish.js';
-import { baseFor } from './finish_source.js';
+import { refreshFrameSource } from './finish_source.js';
 
 const pct = (v) => `${(v * 100).toFixed(4)}%`;
 
 // 边框和时间戳（stage_finish.js）：显卡画布按「整张成片放得下」的大小放，再把边框和日期戳叠上去
 function decorGpu(view, pv, cv, fit) {
-  if(view.refreshFrameCards) baseFor(view,{request:false,notify:true});
+  refreshFrameSource(view);
   if (!fit) clearDecor(pv, cv);
   else applyDecor(view, pv, cv, fit.deco, parseFloat(cv.style.width), parseFloat(cv.style.height));
 }
 
 // 服务器出的图是没有边框的照片：边框和日期戳同样叠上去。没有装饰时恢复成图自己的大小。
 function decorImage(view, pv, img, mode, maxW, maxH, natural) {
-  if(mode==='final'&&view.refreshFrameCards) baseFor(view,{media:img,request:false,notify:true});
+  if(mode==='final') refreshFrameSource(view,{media:img});
   const fit = fitImage(view, mode, img, maxW, maxH, natural);
   if (fit) {
     Object.assign(img.style, { maxWidth: 'none', maxHeight: 'none', width: `${fit.cssW}px`, height: `${fit.cssH}px` });
