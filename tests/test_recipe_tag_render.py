@@ -168,6 +168,33 @@ def test_explicit_original_and_neutral_do_not_require_the_recorded_catalog(setti
         assert neutral.status_code == 200, neutral.text
 
 
+@pytest.mark.parametrize("text", (TAG, LEGACY))
+@pytest.mark.parametrize("matching_catalog", (True, False))
+def test_jpeg_only_keeps_camera_pixels_and_copyright(settings, lib, camera, monkeypatch, text, matching_catalog):
+    path = lib.root / "2026/2026-11-10/R0000002.JPG"
+    path.parent.mkdir(parents=True)
+    exif = Image.Exif()
+    exif[33432] = text
+    Image.new("RGB", (24, 16), (90, 110, 120)).save(path, "JPEG", exif=exif)
+    lib.rebuild()
+    sid = lib.list_shots()[0]["shot_id"]
+    menu = camera if matching_catalog else Menu()
+    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
+        monkeypatch.setattr(client.app.state.ctx.render, "recipe_menu", lambda: menu)
+        preview = client.post(f"/api/photos/{sid}/render?stage=final&max_edge=64", json={})
+        assert preview.status_code == 200, preview.text[:200]
+        with Image.open(io.BytesIO(preview.content)) as image:
+            np.testing.assert_allclose(np.asarray(image.convert("RGB"))[8, 12], [90, 110, 120], atol=2)
+        response = client.post(f"/api/photos/{sid}/export", json={"source": "auto"})
+        assert response.status_code == 200, response.text
+        exported = response.json()
+        assert exported["render_label"] == "original"
+        with Image.open(exported["path"]) as image:
+            assert image.getexif()[33432] == text
+            np.testing.assert_allclose(np.asarray(image.convert("RGB"))[8, 12], [90, 110, 120], atol=2)
+        assert client.get(f"/api/photos/{sid}/edit").json()["recipe"] is None
+
+
 def test_lut_preview_uses_the_actual_recipe_and_user_override(renderer, settings, lib, shot, camera):
     service = LutService(settings.home_dir, lib, renderer)
     item = service.add_cube(cube_bytes(lambda rgb: rgb * [0.6, 1, 1], size=2), "synthetic.cube")

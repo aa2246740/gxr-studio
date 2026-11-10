@@ -33,12 +33,8 @@ def recorded_recipe(tag: RecipeTag | None, menu: Menu) -> RecipeSel | None:
 
 def photo_edit(side: dict[Any, Any], shot: dict[Any, Any], menu: Menu) -> EditState:
     edit = parse_edit(side)
-    if "recipe" in side:
+    # JPEG 已含机内配方颜色；只有 RAW 能重算拍摄旋钮。显式用户选择仍优先。
+    if "recipe" in side or "dng" not in shot.get("files", {}):
         return edit
-    try:
-        selection = recorded_recipe(shot.get("recipe_tag"), menu)
-    except EditError as exc:
-        if exc.code == "camera_recipe_catalog_missing" and "dng" not in shot.get("files", {}):
-            return edit  # JPEG 无法重算拍摄旋钮，继续显示相机 JPG 和标签。
-        raise
+    selection = recorded_recipe(shot.get("recipe_tag"), menu)
     return replace(edit, recipe=selection)
