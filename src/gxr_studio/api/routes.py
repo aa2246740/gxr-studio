@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 
 from .. import __version__
 from .. import crop as cropmod
-from ..camdata.recipe_tags import recipe_payload
 from ..cards import coverage, importer
 from ..cards.coverage import Identity
 from ..cards.discovery import find_cards
@@ -28,6 +27,7 @@ from ..hdr import derived as hdr_derived
 from ..library import edits, thumbs
 from ..library import sidecar as sc
 from ..render import edits as render_edits
+from ..render.camera_recipe import recipe_tag_payload
 from ..render.params import EditError, EditState
 from ..render.service import RenderUnavailable
 from .errors import ApiError
@@ -143,6 +143,7 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
     链接变了浏览器缓存的旧图才不会被继续用（图片响应是 immutable 缓存）。
     `preview_look` 说明默认画面是什么（相机 JPG / 原厂 04 电脑模拟=电脑预测 / 中性转换），界面据此标注。"""
     sid = shot["shot_id"]
+    tag = shot.get("recipe_tag")
     rev = int(shot.get("sidecar_rev") or 0)
     token = _UNSET_DEFAULTS
     if render is not None:
@@ -178,7 +179,7 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
         "height": shot["height"],
         "orientation": shot["orientation"],
         "copyright": shot.get("copyright"),
-        "recipe_tag": recipe_payload(shot.get("recipe_tag")),
+        "recipe_tag": recipe_tag_payload(tag, render.recipe_menu() if render is not None and tag else None),
         "thumb_url": f"/api/photos/{sid}/thumb{vq}",
         "preview_url": f"/api/photos/{sid}/preview{vq}",
         "preview_kind": thumbs.preview_kind(shot),

@@ -90,7 +90,7 @@ export function infoPanel(view) {
     `${KNOB_NAMES[name] || name} ${name === 'amount' ? `${value}%` : fmtSigned(value)}`) : [];
   const detail = tag && tag.levels === null ? '微调未知' : changes.join(' · ');
   const recipe = section('拍摄配方', kv([
-    ['配方', [label, detail].filter(Boolean).join(' · '), tag ? '' : 'dim'],
+    ['配方', [label, detail, tag?.amount_unknown ? '强度未知' : ''].filter(Boolean).join(' · '), tag ? '' : 'dim'],
     tag && !tag.catalogued ? ['', '（相机记录，Studio 目录里没有）', 'dim small'] : null,
   ]));
   const el = h('div', { class: 'pane info-pane' }, recipe, editSection(view), shot);

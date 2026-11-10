@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from dataclasses import replace
 
@@ -233,3 +234,37 @@ def test_actual_g178_record_receives_the_decoded_knobs(tmp_path):
     literal = RecipeSel("jlaunch", 6, (("contrast", -1), ("saturation", 2)), "record", camera.listing()[0]["recipes"][5]["id"])
     assert camera.resolve(actual).entry == camera.resolve(literal).entry
     assert camera.resolve(actual).entry != camera.resolve(replace(literal, levels=())).entry
+
+
+def test_catalog_amount_75_drives_prediction_pixels_and_lut_preview(renderer, settings, lib, shot, camera):
+    from gxr_studio.export import srgb_icc
+    from test_recipe_tag_amount import quarter_amounts
+
+    original = recorded_recipe(parse_recipe_tag(TAG), camera)
+    changed_entry = camera.resolve(replace(original, levels=(("contrast", 3),))).entry
+    extra = camera._extras[(original.kind, original.id, original.unit_index)]
+    extra["entry"] = changed_entry
+    extra["info"]["entry_sha256"] = hashlib.sha256(changed_entry).hexdigest()
+    quarter_amounts(camera, "jlaunch")
+    shot = {**shot, "recipe_tag": parse_recipe_tag(TAG.replace("A8999B999-", "78999B999-"))}
+    edit, _ = edits.read(lib, shot, camera)
+    assert edit.recipe.levels_dict()["amount"] == 75
+    literal = RecipeSel("jlaunch", 6, (("amount", 75), ("contrast", -1), ("saturation", 2)), "record", original.id)
+    actual = renderer.render_preview(shot, edit, max_edge=64)
+    expected = renderer.render_preview(shot, EditState(recipe=literal), max_edge=64)
+    hundred_edit = EditState(recipe=replace(literal, levels=(("amount", 100), ("contrast", -1), ("saturation", 2))))
+    hundred = renderer.render_preview(shot, hundred_edit, max_edge=64)
+    assert actual.plan.levels["amount"] == 75 and actual.jpeg == expected.jpeg and actual.jpeg != hundred.jpeg
+    service = LutService(settings.home_dir, lib, renderer)
+    cube = service.add_cube(cube_bytes(lambda rgb: rgb * [0.6, 1, 1], size=2), "amount.cube")
+    image, info = service.preview(cube["cube_id"], "lut", {"space": "srgb"}, shot, 64)
+    assert info["mode"] == "recipe-prediction"
+    rgb = renderer.renderer(shot, EditState(recipe=literal)).display(renderer.proxy_codes(shot, 64))
+    pixels = np.floor(np.clip(rgb * [0.6, 1, 1], 0, 255) + 0.5).astype(np.uint8)
+    encoded = io.BytesIO()
+    Image.fromarray(pixels).save(encoded, "JPEG", quality=88, icc_profile=srgb_icc())
+    np.testing.assert_array_equal(np.asarray(Image.open(io.BytesIO(image))), np.asarray(Image.open(io.BytesIO(encoded.getvalue()))))
+    unknown = {**shot, "recipe_tag": parse_recipe_tag(TAG.replace("A8999B999-", "98999B999-"))}
+    with pytest.raises(LutError, match="强度未知") as error:
+        service.preview(cube["cube_id"], "lut", {"space": "srgb"}, unknown, 64)
+    assert error.value.code == "camera_amount_unknown"

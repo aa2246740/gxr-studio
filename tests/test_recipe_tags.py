@@ -19,7 +19,7 @@ from gxr_studio.api.routes import photo_json
 from gxr_studio.app import create_app
 from gxr_studio.camdata import datcodec
 from gxr_studio.camdata.catalog_names import CAMERA_UNITS, CATALOG_NAMES, recipe_name
-from gxr_studio.camdata.recipe_tags import KNOB_ORDER, copyright_text, parse_recipe_tag, recipe_payload
+from gxr_studio.camdata.recipe_tags import KNOB_ORDER, copyright_text, decoded_levels, parse_recipe_tag, recipe_payload
 from gxr_studio.cards.discovery import CardReader, find_cards
 from gxr_studio.cards.importer import ImportOptions, run_import
 from gxr_studio.export import ExportOptions, render, render_raw, write_with_exif
@@ -72,7 +72,7 @@ def test_strict_parser_accepts_knob_fields_and_old_four_fields(text, identity, u
 
 def test_decoded_knobs_are_actual_values_and_hyphens_are_not_zeros():
     assert parse_recipe_tag(TAG)["levels"] == {
-        "amount": 100,
+        "amount": None,
         "contrast": -1,
         "highlight": 0,
         "shadow": 0,
@@ -83,17 +83,17 @@ def test_decoded_knobs_are_actual_values_and_hyphens_are_not_zeros():
         "split": 0,
         "filter": None,
     }
-    levels = parse_recipe_tag("GXR1 6a3a5a3c02 28 06 F0I999999-")["levels"]
+    levels = decoded_levels(parse_recipe_tag("GXR1 6a3a5a3c02 28 06 F0I999999-"), (0, 150))
     assert levels["amount"] == 150 and levels["contrast"] == -9 and levels["highlight"] == 9
-    assert parse_recipe_tag("GXR1 6a3a5a3c02 28 06 09A999999-")["levels"]["amount"] == 0
+    assert decoded_levels(parse_recipe_tag("GXR1 6a3a5a3c02 28 06 09A999999-"), (0,))["amount"] == 0
     assert parse_recipe_tag(LEGACY)["levels"] is None
     assert KNOB_ORDER == ("amount", "contrast", "highlight", "shadow", "fade", "saturation", "warmth", "tint", "split", "filter")
 
 
-def test_g179_build_report_sample_uses_the_confirmed_order():
+def test_g181_uses_the_confirmed_knob_order():
     tag = parse_recipe_tag("GXR1 6a3a5a3c02 28 06 9999C9999-")
     assert tag["levels"] == {
-        "amount": 90,
+        "amount": None,
         "contrast": 0,
         "highlight": 0,
         "shadow": 0,
@@ -104,7 +104,9 @@ def test_g179_build_report_sample_uses_the_confirmed_order():
         "split": 0,
         "filter": None,
     }
-    assert recipe_payload(tag)["changes"] == {"amount": 90, "fade": 3}
+    assert recipe_payload(tag)["changes"] == {"fade": 3}
+    assert recipe_payload(tag)["amount_unknown"] is True
+    assert recipe_payload(tag, amount_levels=range(0, 151, 10))["changes"] == {"amount": 90, "fade": 3}
 
 
 @pytest.mark.parametrize(
@@ -145,7 +147,7 @@ def test_g179_build_report_sample_uses_the_confirmed_order():
         "GXR1 6a3a5a3c02 28 06 A9999999999",
         "GXR1 6a3a5a3c02 28 06 A9999Z999-",
         "GXR1 6a3a5a3c02 28 06 a99999999-",
-        "GXR1 6a3a5a3c02 28 06 G99999999-",
+        "GXR1 6a3a5a3c02 28 06 J99999999-",
         "GXR1 6a3a5a3c02 28 06 A99999999- *",
     ],
 )
@@ -369,9 +371,15 @@ def test_info_panel_displays_recipe_fallback_copyright_and_tweaks(tmp_path):
     )
     (modules / "controls.js").write_text("export const fmtSigned=v=>v>0?'+'+v:String(v);\n")
     (modules / "state.js").write_text("export const state={}; export const on=()=>{};\n")
-    tags = [TAG, LEGACY, UNKNOWN, "GXR1 0123456789 50 01", "GXR1 6a3a5a3c02 MT 22 -9999----9", "Alice <b>copyright</b>", None, "GXR1 bad"]
+    tags = [TAG, LEGACY, UNKNOWN, "GXR1 0123456789 50 01", "GXR1 6a3a5a3c02 MT 22 -9999----9", "Alice <b>copyright</b>", None, "GXR1 bad", TAG]
     photos = [
-        {"id": str(i), "name": "R0000001", "has_jpg": True, "recipe_tag": recipe_payload(parse_recipe_tag(t)), "copyright": t}
+        {
+            "id": str(i),
+            "name": "R0000001",
+            "has_jpg": True,
+            "recipe_tag": recipe_payload(parse_recipe_tag(t), amount_levels=range(0, 151, 10) if i == 0 else None),
+            "copyright": t,
+        }
         for i, t in enumerate(tags)
     ]
     data = tmp_path / "photos.json"
@@ -382,9 +390,10 @@ def test_info_panel_displays_recipe_fallback_copyright_and_tweaks(tmp_path):
     rows = json.loads(result.stdout)
     assert rows[0]["recipe"] == "配方F-CN（28mm · 06） · 对比度 -1 · 饱和度 +2"
     assert rows[1]["recipe"] == "配方F-CN（28mm · 06） · 微调未知"
-    assert rows[2]["recipe"] == "配方GXR1 0123456789 MT 99 · 强度 90% · 褪色 +3（相机记录，Studio 目录里没有）"
+    assert rows[2]["recipe"] == "配方GXR1 0123456789 MT 99 · 褪色 +3 · 强度未知（相机记录，Studio 目录里没有）"
     assert rows[3]["recipe"] == "配方GXR1 0123456789 50 01 · 微调未知（相机记录，Studio 目录里没有）"
     assert rows[4]["recipe"] == "配方Acros（MOUNT · 22）"
+    assert rows[8]["recipe"] == "配方F-CN（28mm · 06） · 对比度 -1 · 饱和度 +2 · 强度未知"
     for i in (5, 6, 7):
         assert rows[i]["recipe"] == "配方未标记"
     assert "版权Alice <b>copyright</b>" in rows[5]["shot"]
