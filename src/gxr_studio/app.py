@@ -111,7 +111,7 @@ def create_app(
         jobs,
         recorder,
         render,
-        LutService(settings.home_dir, lib, render),
+        LutService(settings.home_dir, lib, render, notifier=alerts),
         reader or CardReader(),
         import_options,
         metrics=metrics,

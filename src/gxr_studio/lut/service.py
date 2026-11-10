@@ -23,10 +23,13 @@ from typing import Any, cast
 import numpy as np
 from PIL import Image
 
+from ..alerts import StudioNotifier, on_job_failed
 from ..export import srgb_icc
+from ..jobs import Job
 from ..raw import open_dng
 from ..render.params import EditError, RecipeSel
 from ..render.service import RenderUnavailable
+from ..tracking import scrub_text
 from .cube import Cube
 from .errors import LutError as LutError
 from .library import LutLibrary
@@ -72,7 +75,7 @@ def clean_name(name: Any) -> str:
 
 
 class LutService:
-    def __init__(self, home: Path, library: Any, render: Any) -> None:
+    def __init__(self, home: Path, library: Any, render: Any, *, notifier: StudioNotifier | None = None) -> None:
         self.home = Path(home)
         self.lib = library
         self.render = render
@@ -81,6 +84,9 @@ class LutService:
         self._procs: dict[str, subprocess.Popen[Any]] = {}
         self._cancelled: set[str] = set()
         self._colours: dict[Any, Any] = {}
+        self._notifier = notifier or StudioNotifier()
+        self._reported_failures: set[str] = set()
+        self._failure_lock = threading.Lock()
 
     def _write_file(self, relative: str, data: bytes) -> None:
         try:
@@ -348,6 +354,8 @@ class LutService:
         d = self._job_dir(job_id)
         job = self._read(d / "job.json")
         proc = self._procs.get(job_id)
+        # Poll before reading, so a worker that publishes its result and exits cannot be mistaken for a crash.
+        exit_code = proc.poll() if proc is not None else None
         result = self._read(d / "result.json")
         progress = self._read(d / "progress.json")
         try:
@@ -361,12 +369,19 @@ class LutService:
             state, result = "error", {"code": "lut_changed", "message": "LUT 已更改。请重新生成配方。"}
         elif result is not None:
             state = result["state"]
-        elif proc is not None and proc.poll() is None:
+        elif proc is not None and exit_code is None:
             state = "running"
         elif proc is not None:
-            state, result = "error", {"code": "worker_died", "message": "无法生成配方。请重试。"}
+            state, result = (
+                "error",
+                {
+                    "code": "worker_died",
+                    "message": "配方计算进程意外退出，未能取得结果。请查看工作室日志。",
+                    "exit_code": exit_code,
+                },
+            )
         else:
-            state, result = "error", {"code": "interrupted", "message": "无法生成配方。请重新开始。"}
+            state, result = "error", {"code": "interrupted", "message": "工作室已重启，这次配方计算已中断。请重新生成。"}
         out = {
             "job_id": job_id,
             "unit": job.get("unit", "jlaunch"),
@@ -378,9 +393,28 @@ class LutService:
         }
         if state == "error":
             out["error"] = {"code": result.get("code"), "message": result.get("message")}
+            if "exit_code" in result:
+                out["error"]["exit_code"] = result["exit_code"]
+            if result.get("code") != "lut_changed":
+                self._report_failure(job_id, progress, result)
         if state == "done" and with_result:
             out["result"] = result["result"]
         return out
+
+    def _report_failure(self, job_id: str, progress: Any, result: dict[Any, Any]) -> None:
+        with self._failure_lock:
+            if job_id in self._reported_failures:
+                return
+            self._reported_failures.add(job_id)
+        failure = Job("lut_fit", progress or {})
+        failure.id = job_id
+        details = [f"{result.get('code')}: {result.get('message')}"]
+        if "exit_code" in result:
+            details.append(f"exit_code={result['exit_code']}")
+        if result.get("trace"):
+            details.append(result["trace"])
+        failure.error = scrub_text("\n".join(details))
+        on_job_failed(failure, self._notifier)
 
     def cancel(self, job_id: str) -> dict[Any, Any]:
         d = self._job_dir(job_id)
@@ -425,6 +459,8 @@ class LutService:
             if p.name not in self._procs or self._procs[p.name].poll() is not None:
                 with self.library.private() as directory:
                     directory.remove(f"lut_jobs/{p.name}")
+                with self._failure_lock:
+                    self._reported_failures.discard(p.name)
 
     # ---- 我的配方 -----------------------------------------------------------------
     def _filename_guess_matches(self, cube_id: str, space: str) -> bool:

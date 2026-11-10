@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -14,6 +16,8 @@ from conftest import PORT
 from gxr_studio.app import create_app
 from gxr_studio.camdata import calib, intake, store
 from gxr_studio.engine import colour, knobs, matrix_model
+from gxr_studio.lut import service as lut_service
+from gxr_studio.lut import worker
 from gxr_studio.lut.fit import Fitter
 from gxr_studio.lut.scene import Samples
 from gxr_studio.render import chain, tones
@@ -182,15 +186,29 @@ def test_lut_capability_is_the_imported_state(client, settings, installed):
 
 
 @pytest.mark.parametrize("unit", ("qlaunch", "l08firm"))
-def test_calibrated_units_finish_a_real_fit_and_save_their_own_recipe(client, settings, installed, unit):
+@pytest.mark.parametrize("finish_during_poll", [False, True], ids=["normal-poll", "finish-during-poll"])
+def test_calibrated_units_finish_a_real_fit_and_save_their_own_recipe(client, settings, installed, unit, finish_during_poll, monkeypatch):
     raw = cube_bytes(lambda x: x * [0.95, 1.0, 0.9], size=5, comments="# Input: sRGB\n")
     uploaded = upload(client, raw)
     assert uploaded.status_code == 200, uploaded.text
     started = client.post("/api/lut/fit", json={"cube_id": uploaded.json()["cube_id"], "unit": unit, "profile": "quick", "space": "srgb"})
     assert started.status_code == 200, started.text
     job = started.json()["job_id"]
+    if finish_during_poll:
+        service = client.app.state.ctx.lut
+        read = service._read
+        result_path = service.jobs_dir / job / "result.json"
+
+        def finish_after_read(path):
+            doc = read(path)
+            if path == result_path and doc is None:
+                # Publish the real, exact fit after this read but before status can observe its exit.
+                service._procs[job].wait(timeout=240)
+            return doc
+
+        monkeypatch.setattr(service, "_read", finish_after_read)
     result = wait(client, job)
-    assert result["state"] == "done", result
+    assert result["state"] == "done", json.dumps(result, ensure_ascii=False, indent=2)
     assert result["unit"] == unit
     candidates = result["result"]["candidates"]
     assert candidates and all(candidate["unit"] == unit for candidate in candidates)
@@ -201,6 +219,45 @@ def test_calibrated_units_finish_a_real_fit_and_save_their_own_recipe(client, se
     saved = client.post("/api/my-recipes", json={"job_id": job, "candidate": 0, "name": "synthetic per-unit"})
     assert saved.status_code == 200, saved.text
     assert saved.json()["recipe"]["unit"] == unit
+
+
+def test_refinement_exception_has_a_readable_status_and_one_redacted_alert(client, settings, installed, monkeypatch, caplog):
+    process = SimpleNamespace(poll=lambda: 1)
+    monkeypatch.setattr(lut_service.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(worker, "watch_parent", lambda *args: None)
+    monkeypatch.setattr(worker.signal, "signal", lambda *args: None)
+    logger = logging.getLogger("gxr_studio")
+    monkeypatch.setattr(logger, "handlers", [caplog.handler])
+    monkeypatch.setattr(logger, "propagate", False)
+
+    def fail_refinement(self):
+        raise ArithmeticError("injected refinement failure token=private-value")
+
+    monkeypatch.setattr(Fitter, "run", fail_refinement)
+    item = upload(client, cube_bytes(lambda x: x, size=2)).json()
+    started = client.post("/api/lut/fit", json={"cube_id": item["cube_id"], "unit": "qlaunch", "profile": "quick"})
+    assert started.status_code == 200, started.text
+    job_id = started.json()["job_id"]
+    directory = settings.home_dir / "lut_jobs" / job_id
+    assert worker.run(directory) == 1
+    private_result = json.loads((directory / "result.json").read_text())
+    assert "ArithmeticError: injected refinement failure" in private_result["trace"]
+    with caplog.at_level(logging.ERROR, logger="gxr_studio"):
+        response = client.get(f"/api/lut/fit/{job_id}")
+        client.get(f"/api/lut/fit/{job_id}")
+    assert response.json()["state"] == "error", response.text
+    assert response.json()["error"] == {
+        "code": "fit_failed",
+        "message": "配方计算失败，未生成可保存的结果。请查看工作室日志。",
+    }
+    assert "trace" not in response.text and "private-value" not in response.text
+    alerts = client.app.state.ctx.alerts.recent()
+    assert len(alerts) == 1
+    assert alerts[0]["handler"] == "on_job_failed" and alerts[0]["job_id"] == job_id
+    events = [json.loads(record.message) for record in caplog.records]
+    assert len(events) == 1
+    assert "ArithmeticError: injected refinement failure" in events[0]["error"]
+    assert "private-value" not in events[0]["error"]
 
 
 def test_units_with_different_stock_rows_import_without_using_50mm(settings):
