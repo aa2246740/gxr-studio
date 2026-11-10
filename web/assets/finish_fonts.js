@@ -105,7 +105,9 @@ export function logoImage(onReady) {
 export function fontsNeeded(frame, stamp, stampTextIsCjk = false) {
   const ids = new Set();
   const style = frame && frame.style;
-  if (style === 'leica' || style === 'hasselblad') ids.add('inter_sb').add('inter');
+  if (['leica', 'hasselblad', 'thin_keyline', 'exhibition_label', 'blur_fill', 'postage_stamp'].includes(style)) ids.add('inter_sb').add('inter');
+  if (style === 'cinema' || style === 'slide_mount') ids.add('inter_sb').add('courier');
+  if (style === 'darkroom') ids.add('patrick');
   if (style === 'film') ids.add('inter_sb');
   if (style === 'instant' && (frame.text || frame.show_date)) ids.add('patrick');
   if (stamp && stamp.enabled && !stampTextIsCjk) ids.add({ seg7: 'dseg', typewriter: 'courier', sans: 'atkinson' }[stamp.font] || 'dseg');

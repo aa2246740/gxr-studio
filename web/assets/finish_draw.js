@@ -4,6 +4,8 @@
 
 import { ascentOf, fontCss, fontReady, logoImage } from './finish_fonts.js';
 import { GLOW_GAIN } from './finish_layout.js';
+import { paintBackground } from './finish_background.js';
+import { paintCarrier } from './finish_texture.js';
 
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 
@@ -15,7 +17,7 @@ const drawable = (item) => item.cjk || fontReady(item.font);
 function drawText(ctx, item, dx, dy, s) {
   if (!drawable(item)) return;
   ctx.font = fontCss(item.font, item.px * s, item.cjk);
-  ctx.fillStyle = rgb(item.fill);
+  ctx.fillStyle = rgb(textInk(ctx,item,s));
   const baseline = dy + (item.y + ascentOf(item.font, item.px, item.cjk)) * s;
   Array.from(item.text).forEach((ch, i) => {
     if (ch !== ' ' && ch.codePointAt(0) >= 0x20) {
@@ -23,6 +25,18 @@ function drawText(ctx, item, dx, dy, s) {
       ctx.fillText(ch, dx + item.xs[i] * s, baseline);
     }
   });
+}
+
+function textInk(ctx,item,s) {
+  if(!item.auto_ink) return item.fill;
+  const left=Math.max(0,Math.floor(((item.xs[0]||0)-6)*s)),top=Math.max(0,Math.floor(item.y*s));
+  const right=Math.min(ctx.canvas.width,Math.ceil(((item.xs.at(-1)||0)+item.px+6)*s));
+  const bottom=Math.min(ctx.canvas.height,Math.ceil((item.y+item.px)*s));
+  if(right<=left||bottom<=top) return item.auto_ink[0];
+  const data=ctx.getImageData(left,top,right-left,bottom-top).data;
+  let luma=0;
+  for(let i=0;i<data.length;i+=4) luma+=0.299*data[i]+0.587*data[i+1]+0.114*data[i+2];
+  return item.auto_ink[luma/(data.length/4)>150?1:0];
 }
 
 function drawPoly(ctx, item, dx, dy, s) {
@@ -38,23 +52,6 @@ function rectPath(ctx, item, s, inset = 0) {
   const x=(item.x+inset)*s,y=(item.y+inset)*s,w=(item.w-2*inset)*s,h=(item.h-2*inset)*s;
   if (w<=0 || h<=0) return;
   ctx.roundRect(x,y,w,h,Math.max(0,Math.min((item.radius||0)-inset,Math.min(w,h)/s/2))*s);
-}
-
-function background(ctx, frame, s) {
-  ctx.save();
-  ctx.fillStyle=rgb(frame.bg);
-  ctx.fillRect(0,0,frame.width*s,frame.height*s);
-  if (frame.bgfx?.kind==='glow' && frame.bgfx.falloff) {
-    const W=frame.width*s,H=frame.height*s;
-    ctx.translate(W/2,H/2);ctx.scale(W/2,H/2);
-    const g=ctx.createRadialGradient(0,0,0,0,0,Math.SQRT2);
-    for(let i=0;i<=32;i++) {
-      const f=i/32,k=1-frame.bgfx.falloff*f*f;
-      g.addColorStop(f,rgb(frame.bg.map(c=>Math.floor(c*k))));
-    }
-    ctx.fillStyle=g;ctx.fillRect(-1,-1,2,2);
-  }
-  ctx.restore();
 }
 
 function rotatedText(ctx,item,s) {
@@ -78,6 +75,11 @@ function drawFrameItems(ctx, frame, s, onLogo, photo) {
       if (item.rot) rotatedText(ctx,item,s);
       else drawText(ctx, item, 0, 0, s);
     } else if (item.k === 'poly') drawPoly(ctx,item,0,0,s);
+    else if (item.k === 'carrier') paintCarrier(ctx,item,s);
+    else if (item.k === 'ellipse') {
+      ctx.beginPath();ctx.ellipse(item.cx*s,item.cy*s,item.r*s,item.r*s,0,0,2*Math.PI);
+      ctx.fillStyle=rgb(item.fill);ctx.fill();
+    }
     else if (item.k === 'rect') {
       if (item.fill) { rectPath(ctx,item,s);ctx.fillStyle=rgb(item.fill);ctx.fill(); }
       if (item.outline) {
@@ -91,7 +93,7 @@ function drawFrameItems(ctx, frame, s, onLogo, photo) {
       ctx.shadowBlur=2*item.blur*s;ctx.shadowOffsetX=(item.dx||0)*s;ctx.shadowOffsetY=(item.dy||0)*s;
       rectPath(ctx,item,s);ctx.fillStyle='rgb(0,0,0)';ctx.fill();ctx.restore();
     } else if (item.k === 'hole') {
-      ctx.save();rectPath(ctx,item,s);ctx.clip();background(ctx,frame,s);ctx.restore();
+      ctx.save();rectPath(ctx,item,s);ctx.clip();paintBackground(ctx,frame,s);ctx.restore();
     } else if (item.k === 'line') {
       ctx.strokeStyle = rgb(item.fill);ctx.lineWidth = item.w * s;ctx.beginPath();
       ctx.moveTo(item.x1 * s, item.y1 * s);ctx.lineTo(item.x2 * s, item.y2 * s);ctx.stroke();
@@ -140,11 +142,11 @@ function drawStamp(ctx, stamp, ox, oy, s) {
 
 // deco：{ frame, stamp, ew, eh }（stage_finish.js 的 decorOf）。ctx 已经清好；photo 给了就连底色和照片一起画（卡片），
 // 不给就只画边框上的字、线、标志和日期戳（大图：照片和底色是别的元素）。
-export function drawDecor(ctx, deco, s, { photo = null, onLogo = null } = {}) {
+export function drawDecor(ctx, deco, s, { photo = null, backdrop = photo, onLogo = null } = {}) {
   const { frame, stamp } = deco;
   const [px, py] = frame ? frame.photo : [0, 0];
   ctx.imageSmoothingQuality = 'high';
-  if (frame) background(ctx,frame,s);
+  if (frame) paintBackground(ctx,frame,s,backdrop);
   else if (photo) ctx.drawImage(photo,0,0,deco.ew*s,deco.eh*s);
   ctx.fontKerning = 'none';
   ctx.textBaseline = 'alphabetic';

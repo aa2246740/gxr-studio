@@ -251,7 +251,24 @@ def test_preview_layout_equals_export_layout(tmp_path: Path, approved_frame_layo
             w, h = case["size"]
             frame_cases.append({"w": w, "h": h, "spec": spec.to_json(), "meta": case["meta"]})
             frame_want.append(layout)
-        for name in ("finish_layout.js", "finish_fonts.js", "finish_frame_core.js", "finish_frame_styles.js", "finish_frame_objects.js"):
+        for style, size, text in itertools.product(
+            ("thin_keyline", "exhibition_label", "blur_fill", "cinema", "slide_mount", "darkroom", "postage_stamp"),
+            ((320, 240), (800, 1200), (1300, 480)),
+            ("上海", "北京" * 12),
+        ):
+            spec = FrameSpec(style=style, output_ratio="4:5", text=text)
+            layout = frame_layout(*size, spec, METAS[0], rec)
+            assert layout is not None
+            frame_cases.append({"w": size[0], "h": size[1], "spec": spec.to_json(), "meta": METAS[0]})
+            frame_want.append(layout.to_json())
+        for name in (
+            "finish_layout.js",
+            "finish_fonts.js",
+            "finish_frame_core.js",
+            "finish_frame_styles.js",
+            "finish_frame_objects.js",
+            "finish_frame_new.js",
+        ):
             (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
         (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
         (tmp_path / "check.mjs").write_text(JS, encoding="utf-8")

@@ -18,6 +18,13 @@ export const FRAME_NAMES = {
   hasselblad: '哈苏水印',
   film: '胶片',
   instant: '拍立得',
+  blur_fill: '模糊背景',
+  thin_keyline: '极简细线',
+  cinema: '电影宽银幕',
+  exhibition_label: '展签',
+  slide_mount: '幻灯片',
+  darkroom: '暗房相纸',
+  postage_stamp: '邮票齿孔',
 };
 const COLOR_HEX = { white: '#ffffff', black: '#0e0e10', cream: '#f4efe6' };
 const COLOR_NAMES = { white: '白', black: '黑', cream: '米白' };
@@ -73,7 +80,7 @@ export function framePanel(view) {
     const thumb = h('div', { class: 'thumb skel', 'aria-busy': 'true' });
     items.push({ style: s, holder: thumb });
     return h('button', {
-      type: 'button', class: `fcard${s.id === 'none' ? ' none' : ''}`, 'aria-pressed': String(cur.style === s.id),
+      type: 'button', class: `fcard${s.id === 'none' ? ' none' : ''}`, 'data-style': s.id, 'aria-pressed': String(cur.style === s.id),
       onclick: () => {
         if (ed.frame.style !== s.id) setFrame(view, selectFrame(ed.frame, s.id));
       },
@@ -90,7 +97,7 @@ export function framePanel(view) {
     if (opts.includes('color')) {
       // 颜色只用色块（不再加文字按钮）；鼠标停在色块上看颜色名，选中的色块有外圈
       rows.push(h('div', { class: 'seg-row' }, h('span', { class: 'seg-label' }, '颜色'), h('div', { class: 'swrow' },
-        ...['white', 'black', 'cream'].map((c) => swatch(COLOR_HEX[c], cur.color === c, () => setFrame(view, { color: c }), COLOR_NAMES[c])))));
+        ...(cur.style === 'slide_mount' ? ['cream', 'black'] : ['white', 'black', 'cream']).map((c) => swatch(COLOR_HEX[c], cur.color === c, () => setFrame(view, { color: c }), COLOR_NAMES[c])))));
     }
     if (opts.includes('weight')) {
       rows.push(seg(['thin', 'medium', 'thick'].map((w) => [w, WEIGHT_NAMES[w]]), cur.weight, (w) => setFrame(view, { weight: w }), { label: '宽度' }));

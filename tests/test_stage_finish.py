@@ -109,8 +109,12 @@ def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: P
         "finish_frame_core.js",
         "finish_frame_styles.js",
         "finish_frame_objects.js",
+        "finish_frame_new.js",
+        "finish_background.js",
+        "finish_texture.js",
     ):
         (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "finish_source.js").write_text("export function baseFor() { throw new Error('清除装饰不应读取照片'); }\n")
     (tmp_path / "output_photo_size.js").write_text(
         "export function photoSize() { throw new Error('清除装饰不应查询尺寸'); }\n", encoding="utf-8"
     )

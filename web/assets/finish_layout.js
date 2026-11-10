@@ -1,5 +1,6 @@
 import * as plain from './finish_frame_styles.js';
 import * as objects from './finish_frame_objects.js';
+import * as newStyles from './finish_frame_new.js';
 // 边框和时间戳的版面（纯函数）。src/gxr_studio/finish/layout.py 的 JS 版：算式逐行对应，导出和预览的版面因此相同。
 // tests/test_finish_layout_parity.py 用同样的输入逐项对照。改这里的算式，layout.py 要一起改。
 // 字的宽度、每个字的位置、墨迹框都由字体表里的整数（步进宽度、字形外框，src/gxr_studio/finish/sfnt.py 从字体文件读出，
@@ -98,7 +99,8 @@ export function ratioSize(w, h, rw, rh) {
 export function frameLayout(w, h, spec, meta, m) {
   if (spec.style === 'none') return null;
   const ratio = OUTPUT_RATIOS[spec.output_ratio ?? '3:4'] || null;
-  const build = plain[spec.style] || objects[spec.style];
+  const added = { thin_keyline: newStyles.thinKeyline, exhibition_label: newStyles.exhibitionLabel, blur_fill: newStyles.blurFill, cinema: newStyles.cinema, slide_mount: newStyles.slideMount, darkroom: newStyles.darkroom, postage_stamp: newStyles.postageStamp };
+  const build = plain[spec.style] || objects[spec.style] || added[spec.style];
   const effective = { ...spec, fmt: spec.fmt || (spec.style === 'instant' ? 'polaroid' : '135'), table: spec.table || 'light' };
   return build ? build(w, h, effective, meta || {}, m, ratio) : null;
 }

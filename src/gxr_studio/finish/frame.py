@@ -1,4 +1,4 @@
-"""五种边框加在照片外面。尺寸、位置和字号都在 `layout.py`，这里只按版面画。"""
+"""边框加在照片外面。尺寸、位置和字号都在 `layout.py`，这里只按版面画。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from . import frame_paint as paint
+from . import frame_texture as texture
 from .fonts import ASSETS, FontMetrics, PilFonts, draw_run
 from .layout import FrameLayout, frame_layout
 from .spec import FrameSpec
@@ -25,7 +26,13 @@ def apply_frame(rgb: np.ndarray, spec: FrameSpec, meta: dict[str, str]) -> np.nd
 
 
 def draw_frame(image: Image.Image, layout: FrameLayout, fonts: PilFonts) -> Image.Image:
-    canvas = paint.background(layout.width, layout.height, layout.bg, layout.bgfx)
+    canvas = (
+        texture.blurred_background(image, layout.width, layout.height, layout.bgfx)
+        if layout.bgfx and layout.bgfx["kind"] == "blur"
+        else paint.background(layout.width, layout.height, layout.bg, layout.bgfx)
+    )
+    if layout.grain:
+        canvas = texture.paper_grain(canvas, layout.grain)
     base = canvas.copy()
     for item in layout.items:
         kind = item["k"]
@@ -40,7 +47,7 @@ def draw_frame(image: Image.Image, layout: FrameLayout, fonts: PilFonts) -> Imag
                 tmp = tmp.rotate(90, expand=True)
                 canvas.paste(tmp.convert("RGB"), (item["gx"], item["gy"]), tmp.getchannel("A"))
             else:
-                draw_run(ImageDraw.Draw(canvas), item, fonts, tuple(item["fill"]))
+                draw_run(ImageDraw.Draw(canvas), item, fonts, texture.text_ink(canvas, item, FontMetrics(fonts)))
         elif kind == "line":
             ImageDraw.Draw(canvas).line([(item["x1"], item["y1"]), (item["x2"], item["y2"])], fill=tuple(item["fill"]), width=item["w"])
         elif kind == "rect":
@@ -51,6 +58,10 @@ def draw_frame(image: Image.Image, layout: FrameLayout, fonts: PilFonts) -> Imag
             paint.paint_hole(canvas, item, base)
         elif kind == "poly":
             paint.paint_poly(canvas, item)
+        elif kind == "ellipse":
+            paint.paint_ellipse(canvas, item)
+        elif kind == "carrier":
+            texture.paint_carrier(canvas, item)
         elif kind == "logo":
             with Image.open(ASSETS / "logo" / "ricoh.png") as source:
                 logo = source.convert("RGBA").resize((item["w"], item["h"]), Image.Resampling.LANCZOS)

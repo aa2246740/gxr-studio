@@ -6,6 +6,8 @@ import { frameLayout, stampLayout, stampText, momentOf, needsCjk } from './finis
 import { fontReady, fontsNeeded, loadFont, metrics, tableReady } from './finish_fonts.js';
 import { drawDecor } from './finish_draw.js';
 import { photoSize } from './output_photo_size.js';
+import { baseFor } from './finish_source.js';
+import { primeBlur } from './finish_background.js';
 
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 
@@ -126,7 +128,13 @@ export function applyDecor(view, pv, media, deco, cssW, cssH) {
   }
   const canvas = overlay(pv);
   const dpr = globalThis.devicePixelRatio || 1;
-  const key = `${deco.key}|${W}x${H}|${dpr}|${rgb(frame ? frame.bg : [0, 0, 0])}`;
+  let backdrop=null;
+  if(frame?.bgfx?.kind==='blur') {
+    baseFor(view,{media,request:false});
+    backdrop=view.cardBase?.base;
+    if(backdrop) primeBlur(backdrop.image,deco.ew,deco.eh,view.ed.meta?.frame||{});
+  }
+  const key = `${deco.key}|${W}x${H}|${dpr}|${rgb(frame ? frame.bg : [0, 0, 0])}|${backdrop?.source||''}`;
   if (canvas.dataset.key === key) return;
   canvas.dataset.key = key;
   canvas.width = Math.round(W * dpr);
@@ -134,5 +142,5 @@ export function applyDecor(view, pv, media, deco, cssW, cssH) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   // 标志图片还没下载好：好了再画一遍（让下一次 applyDecor 不被缓存挡住）
-  drawDecor(ctx, deco, s * dpr, { onLogo: () => { delete canvas.dataset.key; if (!view.disposed) view.onChange?.(); } });
+  drawDecor(ctx, deco, s * dpr, { backdrop:backdrop?.image||null, onLogo: () => { delete canvas.dataset.key; if (!view.disposed) view.onChange?.(); } });
 }

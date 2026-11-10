@@ -51,6 +51,13 @@ OPTIONS = {
         {"fmt": fmt, "show_date": date, "text": text}
         for fmt, date, text in itertools.product(("polaroid", "instax_square", "instax_wide", "instax_mini"), (False, True), CAPTIONS)
     ],
+    "thin_keyline": [{"color": c} for c in COLORS],
+    "exhibition_label": [{"color": c, "text": text} for c, text in itertools.product(COLORS, CAPTIONS)],
+    "blur_fill": [{"show_params": on} for on in (False, True)],
+    "cinema": [{"text": text} for text in CAPTIONS],
+    "slide_mount": [{"color": c} for c in ("cream", "black")],
+    "darkroom": [{"text": text} for text in CAPTIONS],
+    "postage_stamp": [{}],
 }
 
 
@@ -83,15 +90,53 @@ def reference_layouts(directory: Path, inputs: list[dict[str, Any]]) -> list[Any
     try:
         plain = importlib.import_module("gxr_styles_a")
         objects = importlib.import_module("gxr_styles_b")
+        core = importlib.import_module("gxr_core")
         out = []
         for case in inputs:
             spec = dict(case["spec"])
             style, ratio = spec.pop("style"), spec.pop("output_ratio")
-            fn = getattr(plain if style in ("gallery", "leica", "hasselblad") else objects, style)
-            out.append(fn(*case["size"], case["meta"], OUTPUT_RATIOS.get(ratio), **spec))
+            fn = getattr(plain if hasattr(plain, style) else objects, style)
+            raw = fn(*case["size"], case["meta"], OUTPUT_RATIOS.get(ratio), **spec)
+            out.append(compact_reference(raw, case, core))
         return out
     finally:
         sys.path.pop(0)
+
+
+def compact_reference(raw: dict[str, Any], case: dict[str, Any], core: Any) -> dict[str, Any]:
+    """Lossless carrier descriptor; two explicitly documented DESIGN corrections.
+
+    R3 accidentally drops original-ratio blur in assemble and hardcodes focal 50.
+    Keep all other reference geometry/type values untouched. Separate tests check
+    the exported carrier's expanded contours against the original reference.
+    """
+    style = case["spec"]["style"]
+    w, h = case["size"]
+    if style == "darkroom":
+        short = min(w, h)
+        c = max(10, round(0.017 * short))
+        carrier = {
+            "k": "carrier",
+            "x": raw["photo"][0],
+            "y": raw["photo"][1],
+            "w": w,
+            "h": h,
+            "c": c,
+            "jit": max(4, round(0.5 * c)),
+            "seed": 19790324,
+            "fill": raw["items"][0]["fill"],
+            "paper": raw["items"][1]["fill"],
+        }
+        raw["items"] = [carrier, *raw["items"][2:]]
+    if style == "blur_fill" and case["spec"]["output_ratio"] == "original":
+        assert raw["bgfx"] is None
+        raw["bgfx"] = {"kind": "blur", "sigma": max(90, round(0.16 * max(w, h))), "veil": 0.90, "sat": 1.15}
+    if style == "postage_stamp" and not case["meta"]:
+        index = next(i for i, item in enumerate(raw["items"]) if item["k"] == "text")
+        item = raw["items"][index]
+        assert item["text"] == "RICOH GXR  ·  50"
+        raw["items"][index] = core.T(item["x"], item["y"], item["px"], item["font"], "RICOH GXR", item["fill"], item["track"])
+    return raw
 
 
 def build_frame_layouts() -> list[tuple[dict[str, Any], dict[str, Any]]]:

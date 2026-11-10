@@ -16,6 +16,7 @@ async function inPage() {
   const { metrics, loadFont } = await import('/assets/finish_fonts.js');
   const { frameLayout } = await import('/assets/finish_layout.js');
   const { flushPhotos } = await import('/assets/saves.js');
+  const { backgroundStats } = await import('/assets/finish_background.js');
   await Promise.all(['atkinson', 'inter_sb', 'inter', 'courier', 'patrick', 'dseg'].map(loadFont));
   const response = await fetch('/api/photos');
   if (!response.ok) throw new Error('无法读取夹具照片');
@@ -27,9 +28,9 @@ async function inPage() {
     { kind: 'portrait', photo: find('R0000105'), preset: 'original', rect: [0, 0, 1, 1] },
     { kind: 'xpan', photo: find('R0000103'), preset: 'xpan-65-24', rect: [0, 0.25, 1, 0.49] },
   ];
-  const styles = ['none', 'leica', 'gallery', 'hasselblad', 'instant', 'film'];
+  const styles = ['none', 'leica', 'blur_fill', 'gallery', 'hasselblad', 'instant', 'film', 'thin_keyline', 'cinema', 'exhibition_label', 'slide_mount', 'darkroom', 'postage_stamp'];
   const { selectFrame } = await import('/assets/finish.js');
-  const card = (style) => document.querySelectorAll('.fcard')[styles.indexOf(style)];
+  const card = (style) => document.querySelector(`.fcard[data-style="${style}"]`);
   const canvases = () => [...document.querySelectorAll('.fcard canvas')];
   const box = (node) => {
     const rect = node.getBoundingClientRect();
@@ -51,7 +52,7 @@ async function inPage() {
     return ctx.getImageData(0, 0, 16, 16).data;
   };
   const quiet = () => until(() => window.__fetchLog.inflight === 0 && performance.now() - window.__fetchLog.lastAt > 800);
-  const out = { samples: [], updates: [], captionUpdates: [], navigation: [], reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches, gpu: !!navigator.gpu };
+  const out = { samples: [], updates: [], captionUpdates: [], navigation: [], blurCache: [], editedBlur: [], reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches, gpu: !!navigator.gpu };
   for (const item of cases) {
     if (!item.photo) throw new Error('缺少 ' + item.kind + ' 夹具');
     location.hash = '#/photos';
@@ -71,12 +72,13 @@ async function inPage() {
     location.hash = '#/photo/' + item.photo.id;
     await until(() => currentView()?.photo.id === item.photo.id && currentView()?.ed && !currentView().ed.loading);
     document.querySelector('#tab-frame').click();
-    await until(() => canvases().length === 6);
+    await until(() => canvases().length === 13);
     await photoSize(currentView()).promise;
     await quiet();
     out.navigation.push({ kind: item.kind, key: currentView().cardBase.key, id: item.photo.id, signature: signature(canvases()[0]) });
     card('gallery').click();
     await until(() => document.querySelector('.pv.framed'));
+    const blurBefore=backgroundStats();
     for (const ratio of ['1:1', '4:5', '3:4', '2:3', '9:16', '16:9', '3:2', 'original']) {
       const renders = window.__fetchLog.renders;
       const start = performance.now();
@@ -88,7 +90,7 @@ async function inPage() {
       const view = currentView();
       const [w, h] = photoSize(view).value.photo;
       const reference = photoPixels(canvases()[0], null, w, h);
-      const sample = { kind: item.kind, ratio, photo: [w, h], meta: view.ed.meta.frame, cards: [], stages: [], ms };
+      const sample = { kind: item.kind, ratio, photo: [w, h], meta: view.ed.meta.frame, cards: [], stages: [], params: [], ms };
       for (const style of styles) {
         const button = card(style);
         const canvas = button.querySelector('canvas');
@@ -99,6 +101,27 @@ async function inPage() {
         sample.cards.push({ style, bitmap: [canvas.width, canvas.height], content: box(canvas), box: box(holder),
           photoError, objectFit: getComputedStyle(canvas).objectFit,
           background: getComputedStyle(holder).backgroundColor, outline: getComputedStyle(canvas).boxShadow });
+      }
+      card('blur_fill').click();
+      await raf();
+      for (const enabled of [false, true]) {
+        const drawn = new Map(), prototype = CanvasRenderingContext2D.prototype, fillText = prototype.fillText;
+        prototype.fillText = function(text, ...args) {
+          if (!drawn.has(this.canvas)) drawn.set(this.canvas, []);
+          drawn.get(this.canvas).push(text);
+          return fillText.call(this, text, ...args);
+        };
+        try {
+          document.querySelector('input[aria-label="参数"]').click();
+          await raf();
+          const canvas = card('blur_fill').querySelector('canvas');
+          sample.params.push({ on: currentView().ed.frame.show_params,
+            checked: document.querySelector('input[aria-label="参数"]').checked,
+            paintedHeader: (drawn.get(canvas) || []).join('').replace(/\s/g, '').includes('RICOHGXR') });
+          if (currentView().ed.frame.show_params !== enabled) throw new Error('参数开关没有响应');
+        } finally {
+          prototype.fillText = fillText;
+        }
       }
       // 每种样式选中时，卡片和舞台都显示同一张成片。
       for (const style of styles.slice(1)) {
@@ -111,6 +134,7 @@ async function inPage() {
       sample.clickRenders = window.__fetchLog.renders - renders;
       out.samples.push(sample);
     }
+    out.blurCache.push({kind:item.kind,before:blurBefore,after:backgroundStats()});
     card('gallery').click();
     await quiet();
     for (const [label, expected] of [['黑', [14, 14, 16, 255]], ['米白', [244, 239, 230, 255]], ['白', [255, 255, 255, 255]]]) {
@@ -176,6 +200,22 @@ async function inPage() {
     await flushPhotos([item.photo.id]);
     out.captionUpdates.push({ kind: item.kind, ...typed, shown, savedBefore, savedAfter: await readFrame(),
       clickRenders: window.__fetchLog.renders - renders });
+    if(item.kind==='landscape') {
+      card('blur_fill').click();await raf();await quiet();
+      const oldUrl=currentView().ed.urls.final,oldKey=currentView().cardBase.key;
+      const before=[...document.querySelector('.pv-deco').getContext('2d').getImageData(0,0,1,1).data];
+      document.querySelector('#tab-adjust').click();
+      const exposure=document.querySelector('input[aria-label="曝光"]');
+      exposure.focus();
+      exposure.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+      exposure.value='1.2';exposure.dispatchEvent(new Event('input',{bubbles:true}));exposure.dispatchEvent(new Event('change',{bubbles:true}));
+      await until(()=>currentView().ed.urls.final!==oldUrl&&document.querySelector('.pv-img')?.src===currentView().ed.urls.final&&document.querySelector('.pv-img')?.complete);
+      await quiet();await raf();
+      const after=[...document.querySelector('.pv-deco').getContext('2d').getImageData(0,0,1,1).data];
+      document.querySelector('#tab-frame').click();await until(()=>canvases().length===13);await raf();
+      out.editedBlur.push({before,after,keyChanged:currentView().cardBase.key!==oldKey,
+        card:[...card('blur_fill').querySelector('canvas').getContext('2d').getImageData(0,0,1,1).data]});
+    }
   }
   return out;
 }
