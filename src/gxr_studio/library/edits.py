@@ -72,8 +72,8 @@ def _photo_size(lib: Library, shot: dict[Any, Any]) -> tuple[int, int, int] | No
     return sw, sh, orientation
 
 
-def heal_frame(lib: Library, shot: dict[Any, Any], side: dict[Any, Any]) -> dict[Any, Any]:
-    """尺寸还在、也没有被样式盖住时原样返回。否则从照片把宽高写回 `frame`，样式迁到 `border`。"""
+def recovered_frame(lib: Library, shot: dict[Any, Any], side: dict[Any, Any]) -> dict[Any, Any]:
+    """准备修复后的尺寸和样式，不写文件；保存请求可把修复合入同一版。"""
     frame = side.get("frame") if isinstance(side.get("frame"), dict) else None
     width_raw = frame.get("width") if frame is not None else None
     height_raw = frame.get("height") if frame is not None else None
@@ -104,6 +104,14 @@ def heal_frame(lib: Library, shot: dict[Any, Any], side: dict[Any, Any]) -> dict
     else:
         return side
     updated["frame"] = {"orientation": orientation, "width": width, "height": height}
+    return updated
+
+
+def heal_frame(lib: Library, shot: dict[Any, Any], side: dict[Any, Any]) -> dict[Any, Any]:
+    """读取时修复旧尺寸记录。保存时用 recovered_frame，与通过验证的编辑一起写。"""
+    updated = recovered_frame(lib, shot, side)
+    if updated is side:
+        return side
     out = sc.write_atomic(lib.sidecar_path_for(shot), updated, tmp_dir=lib.tmp_dir)
     lib.set_edit_cache(shot["shot_id"], int(out["rev"]), out.get("crop"))
     return out
@@ -172,7 +180,7 @@ def write_crop(
         sc.check_writable(side)
         if expected_rev is not None and int(side.get("rev", 0)) != expected_rev:
             raise RevisionConflict(int(side.get("rev", 0)))
-        side = heal_frame(lib, shot, side)
+        side = recovered_frame(lib, shot, side)
         base_rev = int(side.get("rev", 0))
         side = copy.deepcopy(side)
     w, h = _frame(side)

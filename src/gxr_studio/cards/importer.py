@@ -595,6 +595,7 @@ def _import_shot(lib: Any, card: Any, shot: CardShot, opts: Any, progress: Any, 
     dng_meta = metamod.read_dng_meta(by_kind["dng"].path) if "dng" in by_kind else None
     taken = next((m.taken for m in (jpg_meta, dng_meta) if m and m.taken), None)
     primary = jpg_meta if jpg_meta and not jpg_meta.error else dng_meta
+    tag_meta = next((m for m in (jpg_meta, dng_meta) if m and m.copyright is not None), None)
     mtime_ns = (by_kind.get("jpg") or main).card_file.mtime_ns
     date, captured_at, date_source = decide_date(taken, mtime_ns, shift, opts.undated_policy)
     folder = f"{date[:4]}/{date}" if date else UNKNOWN_DATE_DIR
@@ -684,6 +685,8 @@ def _import_shot(lib: Any, card: Any, shot: CardShot, opts: Any, progress: Any, 
         files=records,
         sidecar_rev=int(side.get("rev", 0)),
         crop=side.get("crop"),
+        copyright=tag_meta.copyright if tag_meta else None,
+        recipe_tag=tag_meta.recipe_tag if tag_meta else None,
     )
     if opts.make_thumbs:
         try:

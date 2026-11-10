@@ -138,7 +138,13 @@ def lut_preview(
         jpeg, info = c.lut.preview(cube_id, which, spec, shot, max_edge)
     except LutError as exc:
         raise _api(exc) from exc
-    label = {"04-simulation": "04 电脑模拟", "neutral": "中性转换", "camera-jpg": "相机 JPG", "chart": "示例照片"}[info["mode"]]
+    label = {
+        "04-simulation": "04 电脑模拟",
+        "recipe-prediction": "配方电脑预测",
+        "neutral": "中性转换",
+        "camera-jpg": "相机 JPG",
+        "chart": "示例照片",
+    }[info["mode"]]
     return Response(
         jpeg,
         media_type="image/jpeg",

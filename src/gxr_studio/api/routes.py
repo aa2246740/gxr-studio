@@ -27,6 +27,7 @@ from ..hdr import derived as hdr_derived
 from ..library import edits, thumbs
 from ..library import sidecar as sc
 from ..render import edits as render_edits
+from ..render.camera_recipe import recipe_tag_payload
 from ..render.params import EditError, EditState
 from ..render.service import RenderUnavailable
 from .errors import ApiError
@@ -142,6 +143,7 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
     链接变了浏览器缓存的旧图才不会被继续用（图片响应是 immutable 缓存）。
     `preview_look` 说明默认画面是什么（相机 JPG / 原厂 04 电脑模拟=电脑预测 / 中性转换），界面据此标注。"""
     sid = shot["shot_id"]
+    tag = shot.get("recipe_tag")
     rev = int(shot.get("sidecar_rev") or 0)
     token = _UNSET_DEFAULTS
     if render is not None:
@@ -176,6 +178,8 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
         "width": shot["width"],
         "height": shot["height"],
         "orientation": shot["orientation"],
+        "copyright": shot.get("copyright"),
+        "recipe_tag": recipe_tag_payload(tag, render.recipe_menu() if render is not None and tag else None),
         "thumb_url": f"/api/photos/{sid}/thumb{vq}",
         "preview_url": f"/api/photos/{sid}/preview{vq}",
         "preview_kind": thumbs.preview_kind(shot),
@@ -205,8 +209,12 @@ def _export_source(c: Any, shot: dict[Any, Any], req: ExportRequest) -> tuple[st
     """决定这张照片从哪里出图：'recipe' | 'camera-jpg' | 'neutral'，以及它的编辑状态。"""
     files = shot["files"]
     try:
-        edit, _ = render_edits.read(c.lib, shot)
-    except (sc.SidecarCorrupt, EditError):
+        edit, _ = render_edits.read(c.lib, shot, c.render.recipe_menu() if req.source in ("auto", "recipe") else None)
+    except EditError as exc:
+        if exc.code.startswith("camera_"):
+            raise ApiError(409, exc.code, exc.message) from exc
+        edit = EditState()
+    except sc.SidecarCorrupt:
         edit = EditState()  # 编辑读不出来不挡导出；退回没有编辑
     if req.source not in ("auto", "recipe", "camera-jpg", "neutral"):
         raise ApiError(422, "bad_source", "请求无效。请刷新页面后重试。", {"detail": "画面来源无法识别。"})

@@ -1,5 +1,5 @@
 // 「信息」标签（I）：拍摄配方、电脑编辑、拍摄信息。只读。
-// 拍摄配方要来自真实字段：后端现在还没有「这张是用哪个配方拍的」，所以如实写「未知」，不编一个。
+// 拍摄配方来自导入时保存的 EXIF 标签，与电脑编辑分开。
 
 import { h } from './dom.js';
 import { loadMeta } from './caps.js';
@@ -69,6 +69,7 @@ function shotSection(photo, meta) {
     ['拍摄时间', when ? when.replace('T', ' ') : '未知', 'num'],
     meta && meta.date_note ? ['', meta.date_note, 'dim small'] : null,
     ['文件', `${photo.name}（${files}）`],
+    !photo.recipe_tag && photo.copyright != null ? ['版权', photo.copyright] : null,
     photo.hdr === 'ready' ? ['HDR', '已生成，可在导出时选择'] : null,
     photo.width && photo.height ? ['尺寸', `${photo.width} × ${photo.height}`, 'num'] : null,
   ];
@@ -81,9 +82,17 @@ export function infoPanel(view) {
   loadMeta(photo.id).then((res) => {
     if (res.state === 'ok' && shot.isConnected !== false) shot.replaceChildren(shotSection(photo, res.data));
   });
-  const recipe = section('拍摄配方',
-    h('div', { class: 'big-line' }, h('span', { class: 'big dim' }, '未知')),
-    h('p', { class: 'small dim' }, '这张照片里还读不出拍摄时用的配方和机内微调。'));
+  const tag = photo.recipe_tag;
+  const position = tag ? String(tag.position).padStart(2, '0') : '';
+  const recorded = tag ? `GXR1 ${tag.catalog_identity} ${tag.unit} ${position}` : '';
+  const label = !tag ? '未标记' : tag.name ? `${tag.name}（${tag.unit_label} · ${position}）` : recorded;
+  const changes = tag ? Object.entries(tag.changes || {}).map(([name, value]) =>
+    `${KNOB_NAMES[name] || name} ${name === 'amount' ? `${value}%` : fmtSigned(value)}`) : [];
+  const detail = tag && tag.levels === null ? '微调未知' : changes.join(' · ');
+  const recipe = section('拍摄配方', kv([
+    ['配方', [label, detail, tag?.amount_unknown ? '强度未知' : ''].filter(Boolean).join(' · '), tag ? '' : 'dim'],
+    tag && !tag.catalogued ? ['', '（相机记录，Studio 目录里没有）', 'dim small'] : null,
+  ]));
   const el = h('div', { class: 'pane info-pane' }, recipe, editSection(view), shot);
   el.dataset.ready = '1';
   el.sync = () => {

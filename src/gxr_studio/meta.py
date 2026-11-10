@@ -16,7 +16,10 @@ from typing import Any
 
 from PIL import Image, TiffImagePlugin
 
+from .camdata.recipe_tags import RecipeTag, copyright_text, parse_recipe_tag
+
 EXIF_IFD = 0x8769
+COPYRIGHT = 33432
 _DT_FORMATS = ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M", "%Y/%m/%d %H:%M:%S")
 MIN_YEAR = 1995
 
@@ -31,6 +34,8 @@ class PhotoMeta:
     lens: str | None = None
     model: str | None = None
     error: str | None = None
+    copyright: str | None = None
+    recipe_tag: RecipeTag | None = None
 
 
 def parse_exif_datetime(value: Any) -> datetime | None:
@@ -113,6 +118,8 @@ def read_jpeg_meta(path: Path) -> PhotoMeta:
                 iso=_iso(sub.get(34855)),
                 lens=_clean(sub.get(42036)),
                 model=_clean(exif.get(272)),
+                copyright=copyright_text(exif.get(COPYRIGHT)),
+                recipe_tag=parse_recipe_tag(exif.get(COPYRIGHT)),
             )
     except Exception as exc:  # 元数据读不出来不能挡住导入
         return PhotoMeta(error=f"{type(exc).__name__}: {exc}")
@@ -164,6 +171,8 @@ def read_dng_meta(path: Path) -> PhotoMeta:
                 iso=_iso(sub.get(34855)),
                 lens=lens,
                 model=_clean(tags.get(272)),
+                copyright=copyright_text(tags.get(COPYRIGHT)),
+                recipe_tag=parse_recipe_tag(tags.get(COPYRIGHT)),
             )
     except Exception as exc:
         return PhotoMeta(error=f"{type(exc).__name__}: {exc}")

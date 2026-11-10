@@ -134,9 +134,9 @@ def prepare_source(source: Any, groups: list[str]) -> dict[str, Any]:
     return out
 
 
-def source_from_photo(lib: Library, shot: dict[Any, Any]) -> dict[str, Any]:
+def source_from_photo(lib: Library, shot: dict[Any, Any], menu: Menu | None = None) -> dict[str, Any]:
     """用某张照片现在存着的编辑当来源（和界面「复制」得到的内容同样的形状）。"""
-    edit, side = read_edit(lib, shot)
+    edit, side = read_edit(lib, shot, menu)
     described = describe_edit(side, edit)
     recipe = described["recipe"]
     if recipe and described["memory"]:
@@ -228,7 +228,7 @@ def paste_one(
     """粘贴到一张照片。返回结果和粘贴之前的内容（没写过就是 None）。读写失败、版本对不上记成这一张的错，不抛出。"""
     shot_id = str(shot["shot_id"])
     try:
-        _edit, side = read_edit(lib, shot)
+        _edit, side = read_edit(lib, shot, repair=False)
         sc.check_writable(side)
     except sc.SidecarTooNew:
         return _failed(shot_id, "sidecar_too_new", "这张照片的编辑来自更新的版本，没有粘贴。"), None

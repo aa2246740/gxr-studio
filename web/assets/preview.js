@@ -141,6 +141,7 @@ function applyEdit(ed, edit) {
   ed.memory = edit.memory || {};
   ed.lut = edit.lut || null;
   ed.recipe = edit.recipe ? { ...edit.recipe, levels: { ...(edit.recipe.levels || {}) } } : null;
+  ed.recipeFromCamera = !!edit.recipe_from_camera;
   const a = edit.adjust || {};
   ed.adj = {
     exposure_ev: a.exposure_ev ?? 0,
@@ -367,6 +368,7 @@ export function styleOptions(ed, styleId) {
 // 写 /edit。changes 只带要改的键（后端只认带上来的键）。
 // 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
 export function persist(view, changes) {
+  if (view.ed && 'recipe' in changes) view.ed.recipeFromCamera = false;
   endChange(view); // 调用方在写之前已经改好了界面：这一下操作到此为止，撤销记一步，不等服务器回来
   if ('geometry' in changes) view.boxStale = true; // 服务器会顺带收框，界面的框要等读回来才跟上（setCrop 清掉）；这期间的框写入当目标写（crop.js cropBody）
   return writeSave(saveRecord(view.photo.id), 'edit', changes, {
@@ -542,7 +544,7 @@ export function recipeForRender(view) {
   const caps = ed.caps && ed.caps.recipe;
   if (caps === 'none') return null;
   const body = recipeBody(view);
-  if (body && caps === 'approx') body.levels = {};
+  if (body && caps === 'approx' && !view.photo.recipe_tag) body.levels = {};
   return body;
 }
 

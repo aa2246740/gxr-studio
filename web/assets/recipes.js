@@ -137,6 +137,7 @@ export function recipePanel(view) {
     nodes.splice(1, 0, h('div', { class: 'cur-look' },
       h('div', { class: 'small' }, h('span', { class: 'dim' }, '当前：'), h('span', { class: 'strong' }, name || '')),
       warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null,
+      ed.recipeFromCamera && view.photo.recipe_tag?.levels === null ? h('div', { class: 'small dim' }, '微调未知，电脑预测使用配方默认值') : null,
       unit.exposure_note ? h('div', { class: 'small dim' }, unit.exposure_note) : null));
   }
 

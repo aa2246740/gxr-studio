@@ -27,7 +27,8 @@ from ..alerts import StudioNotifier, on_job_failed
 from ..export import srgb_icc
 from ..jobs import Job
 from ..raw import open_dng
-from ..render.params import EditError, RecipeSel
+from ..render.edits import read as read_edit
+from ..render.params import EditError, EditState, RecipeSel
 from ..render.service import RenderUnavailable
 from ..tracking import scrub_text
 from .cube import Cube
@@ -184,11 +185,19 @@ class LutService:
             colour = self._colour_of(dng_rec)
             xyz = None if colour is None else colour.xyz(codes.reshape(-1, 3)).reshape(codes.shape)
             try:
+                edit, _side = read_edit(self.lib, shot, self.render.recipe_menu())
+                if edit.recipe is not None:
+                    rgb = self.render.renderer(shot, EditState(recipe=edit.recipe)).display(codes)
+                    return rgb.astype(float), xyz, "recipe-prediction"
                 base = self.render.default_look(shot, codes)
                 if base is not None:
                     return base.astype(float), xyz, "04-simulation"
             except RenderUnavailable:
+                if edit.recipe is not None:
+                    raise LutError(409, "camera_prediction_unavailable", "无法生成拍摄配方的电脑预测。请检查相机配方文件和校准数据。") from None
                 pass
+            except EditError as exc:
+                raise LutError(422, exc.code, exc.message) from exc
             from ..raw.render import NEUTRAL
 
             return NEUTRAL.display(codes).astype(float), xyz, "neutral"
@@ -217,7 +226,7 @@ class LutService:
     def preview(
         self, cube_id: str, which: str, spec: dict[Any, Any], shot: dict[Any, Any] | None, max_edge: int = 640
     ) -> tuple[bytes, dict[Any, Any]]:
-        """which = original | lut。original 是"04 电脑模拟"（没有相机数据时是中性转换），lut 是套上 LUT 后的理想效果。"""
+        """which = original | lut。基准沿用有效配方及旋钮；没有配方时用 04，缺相机数据时用中性转换。"""
         if which not in ("original", "lut"):
             raise LutError(422, "bad_which", "请求无效。请刷新页面后重试。", {"detail": "which 只能是 original 或 lut"})
         cube = self.cube(cube_id)

@@ -20,6 +20,7 @@ from ..lut.errors import LutError
 from ..lut.spaces import DISPLAY
 from ..raw.dng import RawDecodeError
 from ..render import edits as render_edits
+from ..render.camera_recipe import editor_edit
 from ..render.params import EditError, EditState, parse_adjust, parse_curve, parse_lut, parse_recipe
 from ..render.service import NoRaw, RenderUnavailable
 from .errors import ApiError
@@ -73,18 +74,28 @@ def _unavailable(c: Any, exc: RenderUnavailable) -> ApiError:
     return ApiError(409, exc.code, exc.message, {"status": c.render.status()})
 
 
-def _read_edit(c: Any, shot: dict[Any, Any]) -> tuple[EditState, dict[Any, Any]]:
+def _read_edit(c: Any, shot: dict[Any, Any], *, inherit_recipe: bool = True) -> tuple[EditState, dict[Any, Any]]:
     try:
-        return render_edits.read(c.lib, shot)
+        return render_edits.read(c.lib, shot, c.render.recipe_menu() if inherit_recipe else None)
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
     except EditError as exc:
         raise _edit_error(exc) from exc
 
 
-def _payload(c: Any, shot: dict[Any, Any], edit: EditState, side: dict[Any, Any], warning: str | None = None) -> dict[Any, Any]:
+def _payload(
+    c: Any,
+    shot: dict[Any, Any],
+    side: dict[Any, Any],
+    warning: str | None = None,
+) -> dict[Any, Any]:
+    edit, problem = editor_edit(side, shot, c.render.recipe_menu())
     out = render_edits.describe(side, edit)
-    out["render"] = _render_info(c, shot, edit)
+    out["render"] = (
+        {"available": False, "reason": problem.code, "message": f"{problem.message} 照片调整仍可保存，暂不生成拍摄配方预测。"}
+        if problem is not None
+        else _render_info(c, shot, edit)
+    )
     if warning:
         out["warning"] = warning
     return out
@@ -93,6 +104,8 @@ def _payload(c: Any, shot: dict[Any, Any], edit: EditState, side: dict[Any, Any]
 def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     svc = c.render
     if "dng" not in shot["files"]:
+        if shot.get("recipe_tag"):
+            return {"available": True, "reason": "no_raw", "recipe": "none", "message": "拍摄配方预测需要 RAW 文件；当前显示相机 JPG"}
         from ..finish.approx import ENABLED
 
         approx = ENABLED and svc.available()
@@ -173,7 +186,7 @@ def _render(
         raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": f"max_edge 要在 64 到 {MAX_EDGE_LIMIT} 之间"})
     if not 30 <= quality <= 100:
         raise ApiError(422, "bad_quality", "请求无效。请刷新页面后重试。", {"detail": "品质要在 30 到 100 之间。"})
-    edit, side = _read_edit(c, shot)
+    edit, side = _read_edit(c, shot, inherit_recipe=stage != "original" and not (body is not None and "recipe" in body.model_fields_set))
     edit = _merge(edit, body)
     if body is not None and "crop" in body.model_fields_set:
         side = {**side, "crop": body.crop}
@@ -263,8 +276,8 @@ def list_recipes(request: Request) -> dict[Any, Any]:
 def get_edit(shot_id: str, request: Request) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    edit, side = _read_edit(c, shot)
-    return _payload(c, shot, edit, side, c.lib.sidecar_problem(shot))
+    _edit, side = _read_edit(c, shot, inherit_recipe=False)
+    return _payload(c, shot, side, c.lib.sidecar_problem(shot))
 
 
 @router.put("/api/photos/{shot_id}/edit", response_model=None)
@@ -281,7 +294,7 @@ def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
                 raise ApiError(exc.status, exc.code, exc.message, exc.extra) from exc
             if target.input_space not in DISPLAY and "dng" not in shot["files"]:
                 raise EditError("lut_needs_raw", "这个 LUT 需要 RAW 文件")
-        edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev)
+        _edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev)
     except EditError as exc:
         raise _edit_error(exc) from exc
     except RevisionConflict as exc:
@@ -290,7 +303,7 @@ def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
         raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
-    return _payload(c, shot, edit, side, warning)
+    return _payload(c, shot, side, warning)
 
 
 @router.delete("/api/photos/{shot_id}/edit", response_model=None)
@@ -299,7 +312,7 @@ def delete_edit(shot_id: str, request: Request) -> Any:
     shot = _shot_or_404(c, shot_id)
     warning = c.lib.sidecar_problem(shot)
     try:
-        edit, side = render_edits.write(
+        _edit, side = render_edits.write(
             c.lib,
             shot,
             {"recipe": None, "lut": None, "adjust": None, "curve": None, "geometry": None, "frame": None, "stamp": None},
@@ -309,7 +322,7 @@ def delete_edit(shot_id: str, request: Request) -> Any:
         raise ApiError(409, "sidecar_too_new", "这张照片的编辑来自更新的版本。请更新 GXR Studio。") from exc
     except sc.SidecarCorrupt as exc:
         raise _sidecar_unreadable() from exc
-    return _payload(c, shot, edit, side, warning)
+    return _payload(c, shot, side, warning)
 
 
 # ---- 预览图 ---------------------------------------------------------------------
