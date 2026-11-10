@@ -49,6 +49,8 @@ def find_chrome() -> str | None:
 
 
 def require_chrome() -> str:
+    if os.environ.get("GXR_PLAYWRIGHT_RUNTIME") and not os.environ.get("GXR_CHROME"):
+        pytest.fail("设置 GXR_PLAYWRIGHT_RUNTIME 后必须显式设置 GXR_CHROME，禁止退回系统浏览器。")
     chrome = find_chrome()
     if chrome is None:
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
@@ -137,6 +139,7 @@ def run_engine(
         "--password-store=basic",
         "--enable-unsafe-webgpu",
         "--enable-unsafe-swiftshader",
+        "--use-angle=swiftshader",
         "--use-webgpu-adapter=swiftshader",
     ]
     if sys.platform.startswith("linux") and os.environ.get("CI"):

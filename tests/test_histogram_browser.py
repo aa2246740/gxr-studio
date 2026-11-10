@@ -31,7 +31,8 @@ from test_api import find, import_all
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 DRIVER = Path(__file__).parent / "support" / "histogram_browser.mjs"
-FLAGS = ["--enable-unsafe-webgpu", "--enable-unsafe-swiftshader", "--use-webgpu-adapter=swiftshader"]
+# Match the software presentation backend to the software WebGPU adapter.
+FLAGS = ["--enable-unsafe-webgpu", "--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--use-webgpu-adapter=swiftshader"]
 DEADLINE_S = 420
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node，跳过真浏览器测试")
