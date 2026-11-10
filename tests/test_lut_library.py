@@ -160,18 +160,16 @@ def test_group_management_and_star_and_rename_persist(library):
     assert result["groups"] == [second]
 
 
-def test_delete_preserves_generated_recipe_and_marks_source(library):
+def test_delete_preserves_legacy_recipe_bytes_without_dual_writing(library):
     item = library.add(cube_bytes(comments="# Author: Synthetic Author\n# License: CC BY-SA 4.0\n"), "sample.cube")
     folder = library.home / "my_recipes"
     folder.mkdir()
     recipe = {"name": "保留", "source": {"kind": "lut", "cube_sha256": item["cube_id"]}, "recipe": {"slot": 4}}
     (folder / "example.json").write_text(json.dumps(recipe), encoding="utf-8")
+    before = (folder / "example.json").read_bytes()
     library.delete(item["cube_id"])
     assert library.listing()["luts"] == [] and not (library.home / "luts" / item["file"]).exists()
-    saved = json.loads((folder / "example.json").read_text(encoding="utf-8"))
-    assert saved["recipe"] == {"slot": 4} and saved["source"]["lut_deleted"] is True
-    assert saved["name"] == "保留"
-    assert saved["source"]["attribution"] == {"source": "", "author": "Synthetic Author", "license": "CC BY-SA 4.0"}
+    assert (folder / "example.json").read_bytes() == before
 
 
 def test_interrupted_delete_finishes_from_durable_record(library, monkeypatch):
@@ -179,21 +177,21 @@ def test_interrupted_delete_finishes_from_durable_record(library, monkeypatch):
     (library.home / "my_recipes").mkdir()
     recipe_path = library.home / "my_recipes/generated.json"
     recipe_path.write_text(json.dumps({"source": {"cube_sha256": item["cube_id"]}, "recipe": {"slot": 4}}), encoding="utf-8")
-    replace_file = PrivateDir.replace_file
+    remove = PrivateDir.remove
 
-    def stop(self, name, data):
-        if name == "my_recipes/generated.json" and json.loads(data).get("source", {}).get("lut_deleted"):
+    def stop(self, name):
+        if name == f"luts/{item['file']}":
             raise OSError("sync failed")
-        return replace_file(self, name, data)
+        return remove(self, name)
 
-    monkeypatch.setattr(PrivateDir, "replace_file", stop)
+    monkeypatch.setattr(PrivateDir, "remove", stop)
     with pytest.raises(OSError):
         library.delete(item["cube_id"])
     persisted = json.loads((library.home / "luts/library.json").read_text(encoding="utf-8"))
     assert item["cube_id"] not in persisted["items"] and persisted["pending_deletes"] == [item["cube_id"]]
-    monkeypatch.setattr(PrivateDir, "replace_file", replace_file)
+    monkeypatch.setattr(PrivateDir, "remove", remove)
     assert LutLibrary(library.home).listing()["luts"] == []
-    assert json.loads(recipe_path.read_text(encoding="utf-8"))["source"]["lut_deleted"] is True
+    assert json.loads(recipe_path.read_text(encoding="utf-8"))["source"] == {"cube_sha256": item["cube_id"]}
     assert not (library.home / "luts" / item["file"]).exists()
     assert json.loads((library.home / "luts/library.json").read_text(encoding="utf-8"))["pending_deletes"] == []
 
@@ -440,18 +438,18 @@ def test_maximum_size_and_extreme_finite_values(library, monkeypatch):
     assert item["technical"] is False
 
 
-def test_space_override_invalidates_completed_fit_and_manual_is_not_guessed(client, settings):
+def test_space_override_preserves_frozen_completed_fit_and_manual_is_not_guessed(client, settings):
     from test_lut import _plant_fit
 
     item = upload(client, name="srgb.cube").json()
     job_id = "1a" * 6
-    _plant_fit(settings, item["cube_id"], "srgb", False, job_id)
+    _plant_fit(client, item["cube_id"], "srgb", False, job_id)
     assert client.get(f"/api/lut/fit/{job_id}").json()["state"] == "done"
     client.patch(f"/api/luts/{item['cube_id']}", json={"input_space": "srgb"})
     result = client.get(f"/api/lut/fit/{job_id}").json()
-    assert result["state"] == "error" and result["error"]["code"] == "lut_changed"
+    assert result["state"] == "done"
     assert not client.app.state.ctx.lut._filename_guess_matches(item["cube_id"], "srgb")
-    assert client.post("/api/my-recipes", json={"job_id": job_id, "name": "旧结果"}).status_code == 409
+    assert client.post("/api/my-recipes", json={"job_id": job_id, "name": "冻结结果"}).status_code == 200
 
 
 def test_generated_recipe_keeps_attribution_after_lut_deletion(client, settings):
@@ -462,14 +460,15 @@ def test_generated_recipe_keeps_attribution_after_lut_deletion(client, settings)
     fields = {"source": "合成来源", "author": "Synthetic Author", "license": "CC BY-SA 4.0"}
     client.patch(f"/api/luts/{cid}", json=fields)
     job_id = "4d" * 6
-    _plant_fit(settings, cid, "srgb", False, job_id)
+    _plant_fit(client, cid, "srgb", False, job_id)
     response = client.post("/api/my-recipes", json={"job_id": job_id, "name": "带署名配方"})
     assert response.status_code == 200, response.text
     recipe = response.json()
     assert recipe["source"]["attribution"] == fields
     assert client.delete(f"/api/luts/{cid}").status_code == 200
-    persisted = json.loads((settings.home_dir / "my_recipes" / f"{recipe['id']}.json").read_text(encoding="utf-8"))
-    assert persisted["source"]["attribution"] == fields and persisted["source"]["lut_deleted"] is True
+    persisted = client.get(f"/api/my-recipes/{recipe['id']}").json()
+    assert persisted["source"]["attribution"] == fields
+    assert client.get("/api/my-recipes").json()["recipes"][0]["source_available"] is False
 
 
 def test_space_override_stops_a_running_job(client, settings):
@@ -479,7 +478,8 @@ def test_space_override_stops_a_running_job(client, settings):
 
     item = upload(client).json()
     job_id = "2b" * 6
-    _plant_fit(settings, item["cube_id"], "srgb", False, job_id)
+    _plant_fit(client, item["cube_id"], "srgb", False, job_id)
+    (settings.home_dir / "lut_jobs" / job_id / "result.json").unlink()
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     client.app.state.ctx.lut._procs[job_id] = process
     try:
@@ -523,17 +523,17 @@ def test_api_private_directory_failure_writes_no_bytes(client, settings, tmp_pat
     assert list(protected.iterdir()) == []
 
 
-def test_recipe_save_rejects_a_link_outside_application_data(client, settings, tmp_path):
+def test_new_recipe_save_does_not_follow_or_write_legacy_recipe_link(client, settings, tmp_path):
     from test_lut import _plant_fit
 
     item = upload(client).json()
     job_id = "3c" * 6
-    _plant_fit(settings, item["cube_id"], "srgb", False, job_id)
+    _plant_fit(client, item["cube_id"], "srgb", False, job_id)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (settings.home_dir / "my_recipes").symlink_to(elsewhere, target_is_directory=True)
     response = client.post("/api/my-recipes", json={"job_id": job_id, "name": "保留在应用数据"})
-    assert response.status_code == 422 and response.json()["error"] == "lut_io_error"
+    assert response.status_code == 200 and response.json()["recipe"]["kind"] == "local"
     assert list(elsewhere.iterdir()) == []
 
 

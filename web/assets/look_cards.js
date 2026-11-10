@@ -51,12 +51,12 @@ export function recipeTarget(view, target) {
   return { same: false, next, memory };
 }
 
-// 电脑上的配方：换成它的底子和档位
+// 电脑上的完整配方：保存并转交服务返回的稳定引用。
 export function computerTarget(view, r) {
   const sel = selection(view);
-  const target = { unit: r.recipe.unit, kind: 'builtin', slot: r.recipe.slot };
+  const target = { ...r.recipe, levels: { ...(r.recipe.levels || {}) } };
   const memory = { ...view.ed.memory, [recipeKey(sel)]: cleanLevels(recipeInfo(view, sel), sel.levels) };
-  return { next: { ...target, levels: cleanLevels(recipeInfo(view, target), r.recipe.levels) }, memory };
+  return { next: target, memory };
 }
 
 // 渲染请求里的配方（和 preview.js 的 recipeBody / recipeForRender 同一个形状）。近似（只有 JPG）不带旋钮

@@ -188,10 +188,13 @@ def test_lut_capability_is_the_imported_state(client, settings, installed):
 @pytest.mark.parametrize("unit", ("qlaunch", "l08firm"))
 @pytest.mark.parametrize("finish_during_poll", [False, True], ids=["normal-poll", "finish-during-poll"])
 def test_calibrated_units_finish_a_real_fit_and_save_their_own_recipe(client, settings, installed, unit, finish_during_poll, monkeypatch):
+    from full_recipe_support import source_for_service
+
     raw = cube_bytes(lambda x: x * [0.95, 1.0, 0.9], size=5, comments="# Input: sRGB\n")
     uploaded = upload(client, raw)
     assert uploaded.status_code == 200, uploaded.text
-    started = client.post("/api/lut/fit", json={"cube_id": uploaded.json()["cube_id"], "unit": unit, "profile": "quick", "space": "srgb"})
+    source = source_for_service(client.app.state.ctx.lut, settings.home_dir.parent / "unit-quality", unit)
+    started = client.post("/api/lut/fit", json={"cube_id": uploaded.json()["cube_id"], "unit": unit, "quality_source": source})
     assert started.status_code == 200, started.text
     job = started.json()["job_id"]
     if finish_during_poll:
@@ -203,25 +206,28 @@ def test_calibrated_units_finish_a_real_fit_and_save_their_own_recipe(client, se
             doc = read(path)
             if path == result_path and doc is None:
                 # Publish the real, exact fit after this read but before status can observe its exit.
-                service._procs[job].wait(timeout=240)
+                service._procs[job].wait(timeout=900)
             return doc
 
         monkeypatch.setattr(service, "_read", finish_after_read)
-    result = wait(client, job)
+    result = wait(client, job, limit=900)
     assert result["state"] == "done", json.dumps(result, ensure_ascii=False, indent=2)
     assert result["unit"] == unit
     candidates = result["result"]["candidates"]
     assert candidates and all(candidate["unit"] == unit for candidate in candidates)
-    cam = CameraData(settings.home_dir)
     for candidate in candidates:
-        selection = RecipeSel(unit, candidate["slot"], tuple(sorted(candidate["levels"].items())))
-        assert cam.resolve(selection).entry_sha256 == candidate["entry_sha256"]
+        from gxr_studio.render.params import parse_recipe
+
+        selection = parse_recipe(candidate["recipe"])
+        assert client.app.state.ctx.lut.recipes.resolve(selection).record_sha256 == candidate["record_sha256"]
     saved = client.post("/api/my-recipes", json={"job_id": job, "candidate": 0, "name": "synthetic per-unit"})
     assert saved.status_code == 200, saved.text
     assert saved.json()["recipe"]["unit"] == unit
 
 
 def test_refinement_exception_has_a_readable_status_and_one_redacted_alert(client, settings, installed, monkeypatch, caplog):
+    from full_recipe_support import source_for_service
+
     process = SimpleNamespace(poll=lambda: 1)
     monkeypatch.setattr(lut_service.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(worker, "watch_parent", lambda *args: None)
@@ -230,12 +236,13 @@ def test_refinement_exception_has_a_readable_status_and_one_redacted_alert(clien
     monkeypatch.setattr(logger, "handlers", [caplog.handler])
     monkeypatch.setattr(logger, "propagate", False)
 
-    def fail_refinement(self):
+    def fail_refinement(*args, **kwargs):
         raise ArithmeticError("injected refinement failure token=private-value")
 
-    monkeypatch.setattr(Fitter, "run", fail_refinement)
+    monkeypatch.setattr("gxr_studio.recipes.fit.solve_full", fail_refinement)
     item = upload(client, cube_bytes(lambda x: x, size=2)).json()
-    started = client.post("/api/lut/fit", json={"cube_id": item["cube_id"], "unit": "qlaunch", "profile": "quick"})
+    source = source_for_service(client.app.state.ctx.lut, settings.home_dir.parent / "exception-quality", "qlaunch")
+    started = client.post("/api/lut/fit", json={"cube_id": item["cube_id"], "unit": "qlaunch", "quality_source": source})
     assert started.status_code == 200, started.text
     job_id = started.json()["job_id"]
     directory = settings.home_dir / "lut_jobs" / job_id

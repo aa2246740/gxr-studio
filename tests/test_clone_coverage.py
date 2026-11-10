@@ -55,6 +55,7 @@ def _render_entry() -> bytes:
     coefs = (306, 601, 117, -173, -339, 512, 512, -419, -83)
     words = [matrix_model.encode_coef(v) for v in coefs] + [0, 128, 128, 0, 0]
     struct.pack_into(">14H", raw, 216, *words)
+    struct.pack_into(">14H", raw, 244, *words)
     knobs.checksum(raw)
     return bytes(raw)
 
@@ -363,42 +364,23 @@ def test_lut_jobs_worker_and_recipes(tmp_path: Path, monkeypatch: pytest.MonkeyP
             svc.preview(cube_id, "nope", {"space": "srgb", "output": "srgb"}, None)
         with pytest.raises(Exception):
             svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, unit="unknown")
-        started = svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, profile="quick")
+        from full_recipe_support import publish_controlled_terminal, source_for_service
+
+        source = source_for_service(svc, tmp_path / "quality-source")
+        started = svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, quality_source=source)
         with pytest.raises(Exception):
             svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, profile="quick")
         job_id = started["job_id"]
         assert svc.status(job_id)["state"] == "running"
-        menu = Menu()
-        levels = {c["name"]: c["default"] for c in menu.controls(0, 4)}
-        result = {
-            "state": "done",
-            "result": {
-                "formula": "synthetic",
-                "cube": {"title": "plain"},
-                "candidates": [
-                    {
-                        "unit": "jlaunch",
-                        "slot": 4,
-                        "levels": levels,
-                        "similarity": 10.0,
-                        "label": "差别明显",
-                        "holdout": {"median": 1},
-                        "baseline04_holdout": {"median": 2},
-                        "differences": ["整体已经很接近"],
-                        "entry_sha256": "ab" * 32,
-                    }
-                ],
-            },
-        }
-        (svc.jobs_dir / job_id / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        publish_controlled_terminal(svc, job_id)
         procs[0].returncode = 0
         saved = svc.save_recipe(job_id, 0, "合成配方")
         assert svc.get_recipe(saved["id"])["name"] == "合成配方"
-        assert svc.rename_recipe(saved["id"], "改名")["name"] == "改名"
+        assert svc.rename_recipe(saved["id"], "改名", 1)["name"] == "改名"
         assert len(svc.list_recipes()) == 1
-        svc.delete_recipe(saved["id"])
+        svc.delete_recipe(saved["id"], 2)
         assert svc.list_recipes() == []
-        nxt = svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, profile="quick")
+        nxt = svc.start_fit(cube_id, {"space": "srgb", "output": "srgb"}, quality_source=source)
         assert svc.cancel(nxt["job_id"])["state"] == "cancelled"
         svc.close()
         dng_path = str(lib.abspath(shot["files"]["dng"]["relpath"]))  # type: ignore[index]

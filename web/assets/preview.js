@@ -15,6 +15,7 @@ import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from '
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
 import { curveBody, normalizeCurves } from './curves.js';
+import { localRecipe, rememberRecipe } from './my_recipes.js';
 export { CURVE_MAX, curveBody } from './curves.js';
 import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, syncUndo, withOwned } from './undo_entries.js';
 export { syncUndo }; // 撤销 / 重做按钮的置灰在 undo_entries.js
@@ -34,6 +35,7 @@ export function slotName(unitId, slot) {
 }
 
 export function recipeLabel(unitId, recipe) {
+  if (recipe.kind === 'local') return localRecipe(recipe.id)?.name || '本机完整配方';
   if (recipe.kind !== 'record') return slotName(unitId, recipe.slot);
   const recipes = state.catalog?.units.find((u) => u.id === unitId)?.recipes || [];
   const index = recipes.findIndex((r) => r.kind === 'record' && r.id === recipe.id);
@@ -125,7 +127,6 @@ export async function discardFailed(view) {
   view.onChange?.();
 }
 
-// ---- 读取 --------------------------------------------------------------------
 
 async function fetchEdit(view) {
   return api(`/api/photos/${view.photo.id}/edit`);
@@ -137,6 +138,7 @@ function capsFrom(photo, probe) {
 }
 
 function applyEdit(ed, edit) {
+  rememberRecipe(edit.local_recipe);
   ed.rev = edit.rev;
   ed.memory = edit.memory || {};
   ed.lut = edit.lut || null;
@@ -283,7 +285,6 @@ export function setCrop(view, c) {
   syncRev(view, c.rev);
 }
 
-// ---- 当前底子与参数 -----------------------------------------------------------
 
 export function selection(view) {
   const ed = view.ed;
@@ -292,6 +293,7 @@ export function selection(view) {
 }
 
 export function recipeInfo(view, sel = selection(view)) {
+  if (sel.kind === 'local') return localRecipe(sel.id);
   const unit = state.catalog?.units.find((u) => u.id === sel.unit);
   if (sel.kind === 'look') return unit?.looks?.find((r) => r.id === sel.id) || null;
   if (sel.kind === 'record') return unit?.recipes.find((r) => r.kind === 'record' && r.id === sel.id) || null;
@@ -332,12 +334,13 @@ export function ensureRecipe(view) {
 export function recipeBody(view, { memory = false } = {}) {
   const ed = view.ed;
   if (!ed.recipe) return null;
+  const info = recipeInfo(view, ed.recipe);
   const body = {
     kind: ed.recipe.kind || 'builtin',
     ...(ed.recipe.id ? { id: ed.recipe.id } : {}),
     unit: ed.recipe.unit,
     slot: ed.recipe.slot,
-    levels: cleanLevels(recipeInfo(view, ed.recipe), ed.recipe.levels),
+    levels: ed.recipe.kind === 'local' && !info ? { ...(ed.recipe.levels || {}) } : cleanLevels(info, ed.recipe.levels),
   };
   if (memory && Object.keys(ed.memory).length) body.memory = ed.memory;
   return body;
@@ -363,7 +366,6 @@ export function styleOptions(ed, styleId) {
   return s && Array.isArray(s.options) ? s.options : [];
 }
 
-// ---- 保存 --------------------------------------------------------------------
 
 // 写 /edit。changes 只带要改的键（后端只认带上来的键）。
 // 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
@@ -375,6 +377,7 @@ export function persist(view, changes) {
     onOk: (r) => {
       if (!live(view)) return;
       syncRev(view, r.rev);
+      rememberRecipe(r.local_recipe);
       if (view.ed) view.ed.render = r.render || view.ed.render;
       if (r.warning) toast(r.warning, 'info');
       view.onChange?.();
@@ -529,7 +532,6 @@ function restoreSnapshot(view, s) {
   return true;
 }
 
-// ---- 预览（渲染） -------------------------------------------------------------
 
 function cropDraft(view) {
   const c = view.crop;
@@ -542,8 +544,10 @@ function cropDraft(view) {
 export function recipeForRender(view) {
   const ed = view.ed;
   const caps = ed.caps && ed.caps.recipe;
-  if (caps === 'none') return null;
   const body = recipeBody(view);
+  // 本机引用自带模型。当前相机数据缺失或引用损坏时仍交给服务端明确处理。
+  if (body?.kind === 'local') return body;
+  if (caps === 'none') return null;
   if (body && caps === 'approx' && !view.photo.recipe_tag) body.levels = {};
   return body;
 }

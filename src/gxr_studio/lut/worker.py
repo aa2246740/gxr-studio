@@ -107,57 +107,60 @@ def run(job_dir: Path) -> int:
     def write_result(doc: dict[Any, Any]) -> None:
         _write(job_dir / "result.json", doc, forbidden, write_home)
 
-    def progress(p: Any) -> None:
-        _write(job_dir / "progress.json", {**p.to_dict(), "elapsed": round(time.time() - started, 1)}, forbidden, write_home)
+    def progress(p: dict[str, Any]) -> None:
+        _write(job_dir / "progress.json", {**p, "elapsed": round(time.time() - started, 1)}, forbidden, write_home)
 
     # 重的 import 放在这里，让信号处理先装好
-    from ..camdata import calib
-    from ..render.recipes import CameraData
-    from .cube import Cube
-    from .fit import Cancelled, Fitter
-    from .scene import SceneError, build_samples, target_rgb
-    from .spaces import Target
+    from ..fit_contexts import FitContexts
+    from ..recipes.admission import evaluate_winner
+    from ..recipes.fit import FitCancelled, solve_full
+    from ..recipes.types import RecipeError, canonical, digest
 
     try:
-        home = Path(spec["home"])
-        cube = Cube.read(spec["cube"])
-        cam = CameraData(home)
-        unit = spec["unit"]
-        unit_index = ("jlaunch", "qlaunch", "l08firm").index(unit)
-        model = calib.model_for(home, 200, unit=unit)[0]  # 拟合固定用 ISO 200 的标定
-        photos, skipped = load_photos(spec.get("photos", []), spec.get("max_photos", 3))
-        samples = build_samples(model, cam.stock[unit_index], spec["input_space"], photos)
-        target = Target(
-            cube,
-            spec["input_space"],
-            spec["output_space"],
-            spec.get("input_gamut"),
-            spec.get("output_gamut"),
-            spec.get("input_range", "full"),
-            spec.get("output_range", "full"),
+        if "context" not in spec:
+            raise RecipeError("quality_context_missing", "旧旋钮任务不能生成完整配方，请导入质量输入后重新生成。")
+        contexts = FitContexts(Path(spec["home"]), forbidden)
+        context = contexts.open(spec["context"])
+
+        def seal(winner: Any) -> None:
+            with PrivateDir(write_home, "完整配方计算", forbidden) as directory:
+                prefix = job_dir.relative_to(write_home).as_posix()
+                directory.replace_file(f"{prefix}/candidate.record", winner.entry)
+                directory.replace_file(f"{prefix}/winner.json", winner.receipt)
+                directory.replace_file(
+                    f"{prefix}/winner-seal.json",
+                    canonical(
+                        {
+                            "context": context.identity,
+                            "record_sha256": digest(winner.entry),
+                            "receipt_sha256": digest(winner.receipt),
+                        }
+                    ),
+                )
+
+        winner = solve_full(context.training, cancelled=cancelled, progress=progress, seal=seal)
+        if cancelled():
+            raise FitCancelled
+        groups, references = contexts.evaluation(context.identity)
+        quality = evaluate_winner(context, winner, groups, references, cancelled=cancelled, progress=progress)
+        quality_bytes = canonical(quality.to_json())
+        with PrivateDir(write_home, "完整配方计算", forbidden) as directory:
+            directory.replace_file(f"{job_dir.relative_to(write_home).as_posix()}/quality.json", quality_bytes)
+        write_result(
+            {
+                "state": "done",
+                "schema": "gxr-studio/full-fit-result/1",
+                "context": context.identity,
+                "record_sha256": digest(winner.entry),
+                "receipt_sha256": digest(winner.receipt),
+                "quality_sha256": digest(quality_bytes),
+            }
         )
-        stock, ideal = target_rgb(model, cam.stock[unit_index], samples, target)
-        fitter = Fitter(
-            cam,
-            model,
-            samples,
-            stock,
-            ideal,
-            unit=unit,
-            profile=spec.get("profile", "normal"),
-            progress=progress,
-            cancelled=cancelled,
-        )
-        result = fitter.run()
-        result["samples"]["skipped_photos"] = skipped
-        result["target"] = target.description()
-        result["cube"] = cube.description()
-        write_result({"state": "done", "result": result})
         return 0
-    except Cancelled:
+    except FitCancelled:
         write_result({"state": "cancelled"})
         return 0
-    except SceneError as exc:
+    except RecipeError as exc:
         write_result({"state": "error", "code": exc.code, "message": exc.message, "trace": traceback.format_exc()[-2000:]})
         return 1
     except Exception:  # noqa: BLE001  子进程里任何问题都要写成结果文件，父进程才能告诉用户

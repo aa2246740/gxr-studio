@@ -15,8 +15,9 @@ from ..finish.spec import Geometry, parse_frame, parse_geometry, parse_stamp
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict, clean_border, heal_frame, recovered_frame
 from ..library.store import Library
+from ..recipes import RecipeError, RecipeRepository
 from .camera_recipe import editor_edit, photo_edit
-from .params import EditError, EditState, parse_adjust, parse_curve, parse_edit, parse_lut, parse_recipe
+from .params import EditError, EditState, RecipeSel, parse_adjust, parse_curve, parse_edit, parse_lut, parse_recipe
 from .recipes import Menu, unit_of_lens
 
 _UNSET = object()
@@ -43,7 +44,9 @@ def describe(side: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
         "geometry": edit.geometry.to_json() if getattr(edit.geometry, "to_json", None) else None,
         "frame": edit.frame.to_json() if getattr(edit.frame, "to_json", None) else None,
         "stamp": edit.stamp.to_json() if getattr(edit.stamp, "to_json", None) else None,
-        "scope": SCOPE,
+        "scope": {"camera": [], "computer_only": ["recipe", "adjust", "curve", "crop", "lut"]}
+        if edit.recipe is not None and edit.recipe.kind == "local"
+        else SCOPE,
     }
 
 
@@ -65,8 +68,31 @@ def _memory(raw: Any) -> dict[Any, Any]:
     return out
 
 
+def validate_recipe(sel: RecipeSel, shot: dict[Any, Any], menu: Menu, recipes: RecipeRepository | None) -> None:
+    photo_unit = unit_of_lens(shot.get("lens"))
+    if photo_unit is not None and sel.unit != photo_unit:
+        raise EditError("unit_mismatch", "无法使用这个配方。请选择同一镜头单元的配方。", photo_unit)
+    if sel.kind != "local":
+        menu.request_for(sel)
+        return
+    if not {"dng", "jpg"} <= set(shot.get("files", {})):
+        raise EditError("local_recipe_needs_pair", "完整本机配方需要RAW+JPG照片。")
+    if recipes is None:
+        raise EditError("local_recipe_unavailable", "完整配方仓库不可用。")
+    try:
+        recipes.resolve(sel, photo_unit=photo_unit, iso=int(shot.get("iso") or 200))
+    except RecipeError as exc:
+        raise EditError(exc.code, exc.message) from exc
+
+
 def write(
-    lib: Library, shot: dict[Any, Any], changes: dict[Any, Any], menu: Menu, *, expected_rev: int | None = None
+    lib: Library,
+    shot: dict[Any, Any],
+    changes: dict[Any, Any],
+    menu: Menu,
+    *,
+    expected_rev: int | None = None,
+    recipes: RecipeRepository | None = None,
 ) -> tuple[EditState, dict[Any, Any]]:
     """只改请求中出现的键。None 清空对应块；recipe:null 显式关闭，不再沿用相机配方。"""
     path = lib.sidecar_path_for(shot)
@@ -84,10 +110,7 @@ def write(
         if sel is None:
             new["recipe"] = None  # 显式关闭；缺键才表示沿用拍摄配方。
         else:
-            photo_unit = unit_of_lens(shot.get("lens"))
-            if photo_unit is not None and sel.unit != photo_unit:
-                raise EditError("unit_mismatch", "无法使用这个配方。请选择同一镜头单元的配方。", photo_unit)
-            menu.request_for(sel)  # 档位不合法（含到顶标记）就拒绝，不钳位
+            validate_recipe(sel, shot, menu, recipes)
             memory = _memory(raw.get("memory")) if "memory" in raw else (side.get("recipe") or {}).get("memory") or {}
             new["recipe"] = {**sel.to_json(), **({"memory": memory} if memory else {})}
     if "adjust" in changes:

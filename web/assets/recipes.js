@@ -42,8 +42,9 @@ export function recipePanel(view) {
   const unit = state.catalog?.units.find((u) => u.id === sel.unit);
   const info = recipeInfo(view, sel);
   const hasRaw = caps.raw ?? view.photo.has_raw;
-  const usable = camdataReady() && (state3 === 'full' || state3 === 'approx');
-  const knobsOn = usable && state3 === 'full';
+  const localReady = sel.kind === 'local' && ed.render?.available;
+  const usable = (camdataReady() || localReady) && (state3 === 'full' || state3 === 'approx' || localReady);
+  const knobsOn = usable && (state3 === 'full' || localReady);
   const photoUnit = unitForPhoto(view.photo);
 
   const nodes = [h('div', { class: 'pane-head' }, h('h2', {}, '配方'))];
@@ -115,8 +116,8 @@ export function recipePanel(view) {
       section(null, unit.users.map((r) => builtinCard({ kind: r.kind, slot: r.slot, id: r.id }, r.name, { title: `${CAMERA_SOURCE}的配方` })), CAMERA_SOURCE);
     }
     if (mine.length) {
-      // 电脑上的配方 = 底子加档位。只有 JPG（近似）时不带旋钮：预览会丢掉档位、导出会拒绝，所以只在完整配方时能点
-      const mineUsable = usable && state3 === 'full';
+      // 本机记录只在 RAW+JPG 照片上提供选择。
+      const mineUsable = !!(view.photo.has_raw && view.photo.has_jpg);
       const note = approx ? '近似效果只支持默认参数，电脑上的配方需要 RAW 文件' : null;
       const items = mine.map((r) => computerCard(view, r, mineUsable, flash, note));
       chosen.push(...items);
@@ -134,8 +135,17 @@ export function recipePanel(view) {
     const name = now ? now.name : info && (info.name || slotName(sel.unit, sel.slot));
     const calibratedIsos = unit.calibrated_isos || (sel.unit === 'jlaunch' ? [200, 1600] : [200]);
     const warn = !ed.lut && (ed.calibrated === false || !photoUnit || sel.unit !== photoUnit || !calibratedIsos.includes(Number(view.photo.iso)));
+    const adjustedLocal = sel.kind === 'local' && info?.controls.some((c) => effective(c, sel.levels) !== c.default);
+    const localQuality = {
+      passed: '基础完整配方的全部适用质量门通过。',
+      rejected: '基础完整配方未通过准入，当前使用本机草稿。',
+      needs_evidence: '基础完整配方的质量证据未齐，当前使用本机草稿。',
+      historical_exception: '历史授权收录，原准入未通过项仍保留。',
+    }[info?.quality?.state];
     nodes.splice(1, 0, h('div', { class: 'cur-look' },
       h('div', { class: 'small' }, h('span', { class: 'dim' }, '当前：'), h('span', { class: 'strong' }, name || '')),
+      sel.kind === 'local' ? h('div', { class: 'small dim' }, localQuality || '质量状态不可用。',
+        adjustedLocal ? ' 额外控制已调整，当前效果未经质量评估。' : null) : null,
       warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null,
       ed.recipeFromCamera && view.photo.recipe_tag?.levels === null ? h('div', { class: 'small dim' }, '微调未知，电脑预测使用配方默认值') : null,
       unit.exposure_note ? h('div', { class: 'small dim' }, unit.exposure_note) : null));
@@ -170,11 +180,11 @@ export function recipePanel(view) {
   return panel;
 }
 
-// 电脑上的配方：套用 = 换成它的底子和档位。选中的判断看底子和每个旋钮的有效值是否一致
+// 本机配方按版本身份与有效控制值判断是否选中。
 function sameAsComputer(view, r) {
   const sel = selection(view);
-  if (!view.ed.recipe || (sel.kind && sel.kind !== 'builtin') || sel.unit !== r.recipe.unit || sel.slot !== r.recipe.slot) return false;
-  const info = recipeInfo(view, { unit: r.recipe.unit, kind: 'builtin', slot: r.recipe.slot });
+  if (!view.ed.recipe || sel.kind !== 'local' || sel.id !== r.recipe.id || sel.unit !== r.recipe.unit) return false;
+  const info = r;
   return !!info && info.controls.every((c) => effective(c, sel.levels) === effective(c, r.recipe.levels));
 }
 
@@ -203,7 +213,7 @@ function otherUnitGroup(other, photoUnit) {
 
 function applyComputer(view, r) {
   const ed = view.ed;
-  if ((ed.caps || {}).recipe !== 'full') return;
+  if (!(view.photo.has_raw && view.photo.has_jpg)) return;
   if (sameAsComputer(view, r)) return;
   const { next, memory } = computerTarget(view, r);
   beginChange(view);

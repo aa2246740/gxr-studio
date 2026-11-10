@@ -179,9 +179,8 @@ def test_recipe_name_limits_are_specific_at_each_entry(api, settings, name, entr
     if entry == "save":
         response = api.post("/api/my-recipes", json={"job_id": "ab" * 6, "candidate": 0, "name": name})
     else:
-        rid = "cd" * 6
-        api.app.state.ctx.lut._write_json(settings.home_dir / f"my_recipes/{rid}.json", {"id": rid, "name": "现有配方"})
-        response = api.put(f"/api/my-recipes/{rid}", json={"name": name})
+        rid = "cd" * 32
+        response = api.put(f"/api/my-recipes/{rid}", json={"name": name, "expected_revision": 1})
     assert response.status_code == 422
     assert response.json()["message"] == "配方名称需为 1–40 个字符。"
 

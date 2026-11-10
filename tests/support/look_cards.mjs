@@ -159,8 +159,9 @@ if (scenario === 'model') {
     users: [{ kind: 'camera_user', id: 'u1', name: 'FCC-001', slot: 4, controls: [] }] });
   const units = [mk('jlaunch'), mk('qlaunch'), mk('l08firm')];
   const mine = [
-    { id: 'abc123abc123', name: '50 的配方', recipe: { kind: 'builtin', unit: 'jlaunch', slot: 2, levels: { amount: 50, contrast: 1 } }, source: { kind: 'lut', title: 'Portra 400' } },
-    { id: 'def456def456', name: '28 的配方', recipe: { kind: 'builtin', unit: 'qlaunch', slot: 2, levels: {} }, source: { kind: 'lut', title: null } },
+    { ...info(2, '50 的配方'), id: 'c'.repeat(64), recipe: { kind: 'local', id: 'c'.repeat(64), unit: 'jlaunch', slot: 2 },
+      quality: { state: 'needs_evidence', failures: [], missing: ['photo_other_iso'] }, source: { kind: 'lut', title: 'Portra 400' } },
+    { ...info(2, '28 的配方'), id: 'd'.repeat(64), recipe: { kind: 'local', id: 'd'.repeat(64), unit: 'qlaunch', slot: 2 }, source: { kind: 'lut', title: null } },
   ];
   const recipeOnEdit = scenario === 'panel' ? { kind: 'look', id: 'acros', unit: 'jlaunch', slot: 3, levels: {} } : scenario === 'panel-mount' ? { kind: 'look', id: 'acros', unit: 'l08firm', slot: 3, levels: {} } : null;
   globalThis.fetch = async (url, opts = {}) => {
@@ -231,10 +232,15 @@ if (scenario === 'model') {
   out.afterOdd = view.ed.recipe ? JSON.parse(JSON.stringify(view.ed.recipe)) : null;
   out.memoryAfterOdd = JSON.parse(JSON.stringify(view.ed.memory));
   const panel2 = recipePanel(view);
-  const mineCard = walk(panel2).find((n) => n.getAttribute && n.getAttribute('data-look') === 'computer:abc123abc123');
+  const mineCard = walk(panel2).find((n) => n.getAttribute && n.getAttribute('data-look') === `computer:${'c'.repeat(64)}`);
   mineCard?.dispatchEvent(Object.assign(new Event('click'), { detail: 1 }));
   await tick(5);
   out.afterMine = view.ed.recipe ? JSON.parse(JSON.stringify(view.ed.recipe)) : null;
+  if (view.ed.recipe?.kind === 'local') {
+    out.localQuality = recipePanel(view).textContent;
+    view.ed.recipe.levels = { contrast: 1 };
+    out.adjustedLocalQuality = recipePanel(view).textContent;
+  }
   // 键盘：方向键换焦点，并且不让大图把它当成换照片
   const list = walk(panel2).filter((n) => n.classList && n.classList.contains('lcard'));
   list[0].focus();

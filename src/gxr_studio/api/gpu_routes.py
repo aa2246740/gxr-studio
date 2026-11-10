@@ -36,7 +36,7 @@ from ..lut.errors import LutError
 from ..raw import open_dng
 from ..raw.dng import RawDecodeError
 from ..render.params import EditError, EditState, parse_recipe
-from ..render.service import NoRaw, RenderUnavailable
+from ..render.service import ENGINE, NoRaw, RenderUnavailable
 from .errors import ApiError
 from .render_routes import _edit_error, _unavailable
 from .routes import _shot_or_404, ctx
@@ -178,11 +178,19 @@ def gpu_bake(shot_id: str, request: Request, recipe: str | None = None) -> Respo
     except ValueError as exc:  # 色表行不对称：冻结模型不能预测这个条目
         raise ApiError(422, "cannot_predict", "无法生成电脑预测。请重试。", {"detail": str(exc)}) from exc
     data, meta = bake_bytes(bake)
-    key = hashlib.sha256(f"{plan.unit}:{plan.entry_sha256}:{plan.model_iso}:{meta['step']}:{c.render.engine_pin()}".encode()).hexdigest()[:24]
+    identity = (
+        f"{ENGINE}:{plan.unit}:{plan.record_sha256}:{plan.entry_sha256}:"
+        f"{plan.model_iso}:{meta['step']}:{plan.binding_sha256}:{plan.selection_id}"
+    )
+    key = hashlib.sha256(identity.encode()).hexdigest()[:24]
     meta.update(
         {
             "key": key,
             "entry_sha256": plan.entry_sha256,
+            "record_sha256": plan.record_sha256,
+            "binding_sha256": plan.binding_sha256,
+            "selection_id": plan.selection_id,
+            "quality": plan.quality,
             "model_iso": plan.model_iso,
             "calibrated": plan.calibrated,
             "label": plan.label,

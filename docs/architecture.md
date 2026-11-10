@@ -13,6 +13,8 @@
 | HDR 版本（相机 JPG + 增益图） | `<图库>/.studio/hdr/<id 前两位>/<id>-v2.jpg`，做不了的记 `.json`；可以删掉，下次导入后重新生成 | `hdr.derived` |
 | 相机数据和标定 | 应用数据目录 | `camdata` |
 | LUT 库、原文件和 cube 导出 | 应用数据目录：`luts/library.json`、`luts/<SHA>.cube`、`luts/exports/<SHA>.cube` | `lut.library` |
+| 完整本机配方、候选、冻结依赖和质量证据 | 应用数据目录 `recipes/recipes.sqlite` | `recipes.repository` 独占长期写入 |
+| 私有质量包及冻结训练、评估输入 | 应用数据目录 `fit_contexts/<SHA>/` | `fit_contexts`；训练器没有评估数据加载能力 |
 | 界面偏好（引导是否结束、导出 HDR） | 应用数据目录 `prefs.json` | `prefs` |
 | 导出的 JPEG/PNG | 导出目录 | `export` |
 | 存储卡 | 只读。测试禁止碰 `/Volumes` 里真实的卡 | `cards` |
@@ -21,13 +23,13 @@
 
 CPU 烘焙与 WebGPU 共享输入多项式和原厂 04 查表矩阵。烘焙表按查表色度建网格，配方色度仍用自身矩阵；缓存包含单元、ISO、相机数据与校准版本。精确路径保留 float64 的研究运算顺序。实拍校准 ISO、部分包、状态和复核命令见 [逐单元校准](unit-calibration.md)。
 
-渲染链是 `raw` 读 DNG，`engine` 拿拟合好的整数表，`render` 把裁切和配方套上去。`lut` 在已经有相机数据时做路线 1 的旋钮拟合。`devtools` 只给测试和假卡用，运行时代码不许 import 它（import-linter 会查）。
+渲染链是 `raw` 读 DNG，`engine` 拿拟合好的整数表，`render` 把裁切和配方套上去。`lut` 沿用既有隔离worker，调用 `recipes` 拟合独立RGB曲线、C100矩阵和扇区。`fit_contexts` 在开跑前冻结显式导入的私有质量输入；唯一整数训练胜者封存后才读取留出并运行完整准入。记录和被引用的模型长期归RecipeRepository，任务清理、LUT删除、名称隐藏均不删除它们。`devtools` 只给测试和假卡用，运行时代码不许 import 它（import-linter 会查）。数据格式与质量状态见 [完整本机配方](full-recipes.md)。
 
 LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write` 保存。输入空间先读文件内的明确声明（`LUMIXPHOTOSTYLE`、注释里的 input 字段），再读 TITLE、文件名中的输入域，最后才读目标风格名。TITLE、文件名先一起检查明确的 input 标记，再检查转换源域和其他关键词，同级标记冲突时保留 conflict。文件内声明不受风格名或灰轴形状覆盖。只自动选择现有受支持空间，F-Log2C 的独立色域尚未支持，保留 unknown。无声明、无输入域关键词的创意 LUT 保留 unknown，不凭灰轴选 sRGB。33 点灰轴仅用于核对关键词猜测，known、guessed、unknown、conflict 四态沿用；未知或冲突时需选择输入空间。
 
 输出先读注释中的 output 字段，再读 TITLE、文件名及其他注释的显示传递函数。Rec709 / BT.709 选 `rec709`，sRGB 选 `srgb`，BT1886 / Gamma 2.4 选 `gamma24`（零黑位假设）；原色名不当作传递函数，Rec709 与 BT1886 同时出现时采用 Gamma 2.4。没有明确输出或声明冲突时保持原有 sRGB 默认，用户仍可手选现有输出控件。
 
-自动识别版本记在条目的 `identification_version`（当前为 2），与渲染用的空间 `version` 分开。首次读旧库时重新识别未手选过的条目；`input_space_manual=true` 的整个空间配置保持原样，包括只改过输出、色域或范围的条目。自动条目的输入或输出空间变了，空间版本只递增一次，清空 fit、recipe、camera_lut；仅依据或状态更新不升空间版本。迁移原子写入，重复打开不再改写。原始 cube、名称、分组、收藏和署名保持不动。缩略图、预览的磁盘缓存键和图片 URL 同时带 LUT 身份与空间版本，旧拟合的版本检查会拒绝迁移前的结果。用户改选空间继续沿用相同的失效规则。旧版 SHA 命名的 cube 文件首次打开时登记到库。
+自动识别版本记在条目的 `identification_version`（当前为 2），与渲染用的空间 `version` 分开。首次读旧库时重新识别未手选过的条目；`input_space_manual=true` 的整个空间配置保持原样，包括只改过输出、色域或范围的条目。自动条目的输入或输出空间变了，空间版本只递增一次，清空旧库中的 fit、recipe、camera_lut；仅依据或状态更新不升空间版本。迁移原子写入，重复打开不再改写。原始 cube、名称、分组、收藏和署名保持不动。缩略图、预览的磁盘缓存键和图片 URL 同时带 LUT 身份与空间版本。新完整拟合固定原始LUT、空间和署名，现行LUT改选或删除不会改写已归档结果。用户改选空间会停止还在运行的拟合。旧版 SHA 命名的 cube 文件首次打开时登记到库。
 
 署名从整个 cube 的注释读取。内容和署名未改时，导出使用原始字节，TITLE 需要清理时只替换该行；署名改过时保留全部原注释，头部增加当前字段，末尾的 JSON 注释保留多行字段。旧库首次读取时补齐此前未采集的署名，保留用户已改过的字段。
 

@@ -103,7 +103,8 @@ def test_cards_are_buttons_with_names_and_the_current_one_is_marked():
     assert out["acros"]["label"] == "Acros，黑白，当前配方" and out["acros"]["pressed"] == "true"
     assert out["odd"]["label"] == "没见过的名字" and out["odd"]["descLines"] == 0  # 没有说明就不写
     assert out["fcc"]["label"] == "FCC-001，相机里的配方" and out["fcc"]["title"] == "相机里的配方"
-    assert out["mine"]["label"] == "50 的配方，来自 Portra 400" and out["mine"]["title"] == "电脑上 · 来自 LUT「Portra 400」"
+    assert out["mine"]["label"] == "50 的配方，来自 Portra 400"
+    assert out["mine"]["title"] == "电脑上 · 来自 LUT「Portra 400」 · 质量证据未齐 · 本机草稿"
     # 只有一张卡片能用 Tab 进入：当前配方
     assert out["rovingZero"] == 1 and out["rovingOnCurrent"] == "look:acros"
 
@@ -123,7 +124,9 @@ def test_clicking_a_card_writes_the_same_edit_as_the_old_recipe_button():
     }
     assert out["afterOdd"] == {"unit": "jlaunch", "kind": "look", "slot": 4, "id": "odd", "levels": {}}
     assert out["memoryAfterOdd"]["jlaunch/2"] == {"contrast": 1}
-    assert out["afterMine"] == {"unit": "jlaunch", "kind": "builtin", "slot": 2, "levels": {"amount": 50, "contrast": 1}}
+    assert out["afterMine"] == {"unit": "jlaunch", "kind": "local", "slot": 2, "id": "c" * 64, "levels": {}}
+    assert "质量证据未齐，当前使用本机草稿" in out["localQuality"]
+    assert "当前效果未经质量评估" in out["adjustedLocalQuality"]
 
 
 @needs_node

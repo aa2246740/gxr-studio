@@ -142,7 +142,7 @@ r5 的 g176、g178、g181、g182 r2 必须同时导入同一套 `GXRCE.DAT` 和 
 
 三个单元都使用自己的原厂 C040 节点、色表修饰量和输入映射。实拍校准范围为 50mm 的 ISO 200 / 1600，28mm 和 MOUNT 的 ISO 200；其它 ISO 使用相近模型分支并标为“未校准”。28mm、MOUNT 的曝光沿用 50mm，界面也会显示这条说明。
 
-旧版标定包需要重新导入，不转换旧包或旧编辑记录。新包为 `gxr-studio/calib-pack/2`，可以只含部分单元；导入会替换整个包。LUT 页只为已导入且有效的单元启用“生成配方”，仍使用“底子 + 旋钮”路线。模型组成和接口字段见 [逐单元校准](docs/unit-calibration.md)。
+旧版标定包需要重新导入，不转换旧包或旧编辑记录。新包为 `gxr-studio/calib-pack/2`，可以只含部分单元；导入会替换整个包。LUT 页用私有质量包冻结训练和留出，再拟合独立RGB曲线、C100矩阵和扇区。生成结果可以保存为本机完整配方；质量证据不足或准入失败的结果明确标为草稿。模型组成见 [逐单元校准](docs/unit-calibration.md)，完整配方的数据和生命周期见 [完整本机配方](docs/full-recipes.md)。
 
 `GET /api/camdata/status` 一次给全：是否可以出图（`ready`）、相机数据的来源（卡的卷标或"文件"、文件名、大小、SHA-256、代数、导入时间）、
 三个单元的 8 个槽位和原厂 04 是否齐全、逐单元标定状态、插着的卡里哪张有 `GXRCE.DAT`、下一步该做什么（`next`）和 `data_version`。
@@ -193,8 +193,9 @@ src/gxr_studio/
   crop.py  export.py       裁切几何（纯函数）、导出 JPEG/PNG（EXIF + sRGB ICC；只有 RAW 时出"中性转换"）
   raw/                     DNG 读取、白平衡码值、半分辨率（2×2 合并）、MHC 去马赛克、渲染器接口（S4）
   cards/                   discovery（发现卡、配对）、importer（导入）
-  lut/                     LUT 导入（S8a）：cube/spaces/colorimetry（来自研究，PROVENANCE.json）、scene（色样）、fit（路线 1 旋钮拟合）、
-                           service（任务与"我的配方"）、worker（拟合子进程）
+  lut/                     cube/spaces/colorimetry、scene、service（既有任务管理）、worker（完整拟合隔离进程）
+  recipes/                 完整记录、冻结渲染依赖、长期仓库、三曲线/C100/扇区求解、D65全门
+  fit_contexts/            私有质量包构建/导入、固定分组、不可变训练与评估输入
   camdata/                 datcodec（GXRCE.DAT）、store（相机数据；`swap_in` 原子换目录，启动时 `recover_interrupted_swaps` 恢复被打断的切换）、calib（标定）、intake（导入入口：校验、卡上只读取、标定包）
   library/                 store（目录 + SQLite 索引 + 重建）、sidecar、edits（裁切读写）、thumbs（缩略图与"画面是什么"的标注）、lock（图库启动锁）
   api/                     routes.py、render_routes.py、camdata_routes.py、lut_routes.py、errors.py、temp_home.html（临时首页）
@@ -226,16 +227,17 @@ tests/                     pytest；tests/perf/ 是性能基线
 | `POST /api/camdata/import-upload`（请求体 = 文件字节） | 界面选中的 GXRCE.DAT，校验同上 |
 | `POST /api/calibration/import` `{path}` | 从本地文件夹导入标定包（要先有相机数据；开发阶段可指向仓库根或 `research/`） |
 
-LUT 导入（路线 1 旋钮拟合，数字一律是"电脑预测"；已校准的单元可以生成配方）：
+LUT 完整拟合（数字一律是"电脑预测"，需要所选单元的有效模型和私有质量输入）：
 
 | 方法 路径 | 作用 |
 |---|---|
 | `GET /api/lut/spaces` | 可选的输入/输出色彩空间（sRGB / Rec.709 / Gamma 2.4 / F-Log / F-Log2 / L-Log / V-Log / S-Log3 / Apple Log / 线性） |
 | `POST /api/lut/upload`（请求体 = .cube 字节，`X-GXR-Filename` 放 URL 编码的文件名） | 校验并存进应用数据目录 `luts/`，返回 `cube_id`（SHA-256）、尺寸、按文件名猜的输入空间 |
 | `GET /api/lut/{cube_id}/preview?which=original｜lut&photo=&space=&output=` | 原图 / 加 LUT 后（有相机数据 + 照片：04 电脑模拟上套 LUT；否则中性转换/示例照片） |
-| `POST /api/lut/fit` `{cube_id, space, output, unit?, profile?}` | 开始拟合（独立子进程，同时只跑一个），返回 `job_id` |
+| `GET/POST /api/lut/quality` | 列出质量输入，或以 `{folder}` 显式导入私有质量包 |
+| `POST /api/lut/fit` `{cube_id, quality_source, space, output, unit?, profile?}` | 冻结模型、来源、目标和分组，启动既有隔离worker，返回 `job_id` |
 | `GET /api/lut/fit/{job_id}` · `POST /api/lut/fit/{job_id}/cancel` | 进度 / 结果（`state` = running｜done｜cancelled｜error）；取消会结束子进程 |
-| `GET/POST /api/my-recipes` · `GET/PUT/DELETE /api/my-recipes/{id}` | 电脑端的"我的配方"（`my_recipes/<id>.json`）；`POST {job_id, candidate, name}` 从服务器上的结果里取，不信客户端给的档位 |
+| `GET/POST /api/my-recipes` · `GET/PUT/DELETE /api/my-recipes/{id}` | RecipeRepository长期保存独立记录；`POST {job_id, candidate:0, name}` 发布唯一训练胜者。改名和隐藏携带 `expected_revision`，照片保留稳定版本引用 |
 
 **编辑记录（sidecar）坏了或被删了**：读的接口（裁切、编辑、预览、导出）当作"没有编辑"继续，响应里带 `warning`（白话，不含路径和解析错误）；
 写的接口（保存裁切/编辑）先把坏的改名留着（`.corrupt-<时间>`），重建一份"没有编辑"的再写，同样带 `warning`；

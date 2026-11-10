@@ -375,6 +375,16 @@
             "title": "Prediction",
             "type": "boolean"
           },
+          "recipe_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportRecipeBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "render": {
             "title": "Render",
             "type": "string"
@@ -421,6 +431,51 @@
           "prediction"
         ],
         "title": "ExportFile",
+        "type": "object"
+      },
+      "ExportRecipeBinding": {
+        "properties": {
+          "assessed_entry": {
+            "title": "Assessed Entry",
+            "type": "boolean"
+          },
+          "binding_sha256": {
+            "title": "Binding Sha256",
+            "type": "string"
+          },
+          "entry_sha256": {
+            "title": "Entry Sha256",
+            "type": "string"
+          },
+          "quality_state": {
+            "enum": [
+              "passed",
+              "rejected",
+              "needs_evidence",
+              "historical_exception",
+              "unattached"
+            ],
+            "title": "Quality State",
+            "type": "string"
+          },
+          "record_sha256": {
+            "title": "Record Sha256",
+            "type": "string"
+          },
+          "selection_id": {
+            "title": "Selection Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_sha256",
+          "entry_sha256",
+          "binding_sha256",
+          "selection_id",
+          "quality_state",
+          "assessed_entry"
+        ],
+        "title": "ExportRecipeBinding",
         "type": "object"
       },
       "ExportRequest": {
@@ -529,6 +584,7 @@
         "type": "object"
       },
       "FitRequest": {
+        "additionalProperties": false,
         "properties": {
           "cube_id": {
             "title": "Cube Id",
@@ -589,6 +645,17 @@
             "default": "normal",
             "title": "Profile",
             "type": "string"
+          },
+          "quality_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Source"
           },
           "space": {
             "default": "srgb",
@@ -971,15 +1038,34 @@
         "title": "PrefsUpdate",
         "type": "object"
       },
+      "QualityImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "folder": {
+            "title": "Folder",
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder"
+        ],
+        "title": "QualityImportRequest",
+        "type": "object"
+      },
       "RenameRequest": {
         "properties": {
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "integer"
+          },
           "name": {
             "title": "Name",
             "type": "string"
           }
         },
         "required": [
-          "name"
+          "name",
+          "expected_revision"
         ],
         "title": "RenameRequest",
         "type": "object"
@@ -2208,6 +2294,56 @@
         "summary": "Lut Fit Cancel"
       }
     },
+    "/api/lut/quality": {
+      "get": {
+        "operationId": "quality_list_api_lut_quality_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Quality List"
+      },
+      "post": {
+        "operationId": "quality_import_api_lut_quality_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QualityImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Quality Import"
+      }
+    },
     "/api/lut/spaces": {
       "get": {
         "operationId": "lut_spaces_api_lut_spaces_get",
@@ -2634,6 +2770,15 @@
             "schema": {
               "title": "Rid",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_revision",
+            "required": true,
+            "schema": {
+              "title": "Expected Revision",
+              "type": "integer"
             }
           }
         ],

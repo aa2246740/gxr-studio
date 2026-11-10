@@ -338,7 +338,19 @@ def test_bake_serves_the_preview_table_with_etag(client, volumes, monkeypatch):
     _card(volumes)
     photo = _photo(client)
     svc = client.app.state.ctx.render
-    plan = SimpleNamespace(entry_sha256="e" * 64, model_iso=200, calibrated=True, label="电脑预测", unit="jlaunch", slot=1, defaulted=False)
+    plan = SimpleNamespace(
+        entry_sha256="e" * 64,
+        record_sha256="e" * 64,
+        binding_sha256="pin",
+        selection_id=None,
+        quality=None,
+        model_iso=200,
+        calibrated=True,
+        label="电脑预测",
+        unit="jlaunch",
+        slot=1,
+        defaulted=False,
+    )
     monkeypatch.setattr(svc, "plan", lambda shot, edit: plan)
     monkeypatch.setattr(svc, "preview_bake", lambda p: _synthetic_bake())
     monkeypatch.setattr(svc, "engine_pin", lambda: "pin")
@@ -346,6 +358,7 @@ def test_bake_serves_the_preview_table_with_etag(client, volumes, monkeypatch):
     r = client.get(f"/api/photos/{photo['id']}/bake?recipe={rec}")
     assert r.status_code == 200, r.text
     meta = json.loads(unquote(r.headers["x-gxr-bake"]))
+    assert meta["record_sha256"] == "e" * 64 and meta["binding_sha256"] == "pin"
     assert meta["nx"] == 4 and meta["label"] == "电脑预测" and meta["calibrated"] is True and len(r.content) == (12342 + 40) * 4
     again = client.get(f"/api/photos/{photo['id']}/bake?recipe={rec}", headers={"If-None-Match": r.headers["etag"]})
     assert again.status_code == 304

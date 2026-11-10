@@ -23,22 +23,13 @@ def client(settings):
 
 @pytest.fixture
 def pending_fit(client):
+    from full_recipe_support import plant_pending
+
     item = upload(client, cube_bytes(lambda x: x, size=2)).json()
     service = client.app.state.ctx.lut
     job_id = "a123456789ab"
     directory = service.jobs_dir / job_id
-    service._write_json(
-        directory / "job.json",
-        {
-            "cube_id": item["cube_id"],
-            "unit": "qlaunch",
-            "input_space": "srgb",
-            "output_space": "srgb",
-            "profile": "quick",
-            "space_guessed": False,
-            "photos": [],
-        },
-    )
+    plant_pending(service, item["cube_id"], job_id, unit="qlaunch")
     return service, job_id, directory
 
 
@@ -55,7 +46,12 @@ def test_worker_publishes_its_result_between_the_status_read_and_exit_check(clie
     service, job_id, directory = pending_fit
 
     def exit_with_result():
-        service._write_json(directory / "result.json", terminal)
+        if terminal["state"] == "done":
+            from full_recipe_support import publish_controlled_terminal
+
+            publish_controlled_terminal(service, job_id)
+        else:
+            service._write_json(directory / "result.json", terminal)
         return 1 if terminal["state"] == "error" else 0
 
     service._procs[job_id] = SimpleNamespace(poll=exit_with_result)
@@ -65,7 +61,9 @@ def test_worker_publishes_its_result_between_the_status_read_and_exit_check(clie
     assert status["state"] == terminal["state"], response.text
     assert status["unit"] == "qlaunch"
     if terminal["state"] == "done":
-        assert status["result"] == {"candidates": []}
+        assert len(status["result"]["candidates"]) == 1
+        assert status["result"]["candidates"][0]["recipe"]["kind"] == "local"
+        assert status["result"]["candidates"][0]["quality"]["state"] == "needs_evidence"
     if terminal["state"] == "error":
         assert status["error"] == {"code": "needs_photo", "message": "需要照片"}
 

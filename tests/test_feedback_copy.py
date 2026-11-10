@@ -210,15 +210,14 @@ def test_editor_recipe_tab_lists_both_my_recipes_with_their_source():
     assert out["cameraTitle"] == "相机里的配方"
     assert out["mineTitle"] == "电脑上 · 来自 LUT「Portra 400」"
     assert out["pressedBefore"] == "false" and out["pressedAfter"] == "true"
-    # 套用 = 换成它的底子和档位
-    assert out["applied"]["kind"] == "builtin" and out["applied"]["slot"] == 2
-    assert out["applied"]["levels"] == {"amount": 50, "contrast": 1}
+    assert out["applied"]["kind"] == "local" and out["applied"]["id"] == "c" * 64
+    assert out["applied"]["levels"] == {}
     assert out["disabled"] is None and out["puts"] == 1
 
 
 @needs_node
 def test_computer_recipe_is_not_applied_to_a_jpg_only_photo():
-    # 只有 JPG：内置配方是近似、不带旋钮。电脑上的配方（底子加档位）套上去，预览会丢掉档位，导出会报 approx_knobs
+    # 只有 JPG 时不能选择需要 RAW+JPG 的完整本机记录。
     out = scene("recipes-tab-approx")
     assert "Kodak 风" in out["text"]
     assert out["disabled"] == "true"
