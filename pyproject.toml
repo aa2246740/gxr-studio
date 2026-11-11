@@ -54,6 +54,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-ra -p no:cacheprovider"
+markers = [
+    "exclusive: 断言依赖墙钟速度，必须单独跑，不能和其他测试并行",
+]
 
 [tool.ruff]
 target-version = "py312"

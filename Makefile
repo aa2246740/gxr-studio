@@ -1,4 +1,4 @@
-.PHONY: setup dev check lint type security test dast profile openapi notes web
+.PHONY: setup dev check lint type security test test-serial dast profile openapi notes web
 
 setup:
 	uv sync --frozen
@@ -21,6 +21,9 @@ security:
 	uv run --frozen bandit -q -r src/gxr_studio -c pyproject.toml
 
 test:
+	uv run --frozen python -I scripts/run_tests.py
+
+test-serial:
 	uv run --frozen python -I -m pytest -q --durations=20 --reruns 1 --cov=gxr_studio --cov-report=term-missing --cov-fail-under=85
 
 dast:

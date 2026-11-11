@@ -175,6 +175,7 @@ def print_timings(out):
     )
 
 
+@pytest.mark.exclusive  # 比例框、横竖、失败提示要在 1000 毫秒内出现，点击中位数也有墙钟上限
 def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     out = drive(live, tmp_path, "server")
     assert out["gpu"] is False
@@ -226,6 +227,7 @@ def cannot_present(out: dict) -> bool:
     return diag.get("pageEngine", "missing") is None and diag.get("engine") == "created" and out.get("gpuSharedImageError") is True
 
 
+@pytest.mark.exclusive  # 和服务器预览同一组墙钟断言（visibleMs < 1000，点击中位数）
 def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
     out = drive(live, tmp_path, "gpu")
     if not out["gpu"]:
