@@ -56,6 +56,7 @@ python_functions = ["test_*"]
 addopts = "-ra -p no:cacheprovider"
 markers = [
     "exclusive: 断言依赖墙钟速度，必须单独跑，不能和其他测试并行",
+    "browser_serial: 长时间浏览器流程，等计算分片结束后再串行跑，不拿 exclusive 的锁",
 ]
 
 [tool.ruff]

@@ -297,6 +297,7 @@ def _layout_cases():
     return frames, stamps, want_frames, want_stamps
 
 
+@pytest.mark.browser_serial  # 最慢名单里另一条长浏览器流程，和计算分片并行时会顶满同一条 120 秒页面等待
 def test_browser_layout_matches_the_export_layout(live, tmp_path):
     """真 Chrome 里用服务器给的字体表算出的版面，和导出（Python，同一份表）算出的版面逐项相同：
     矩形、线、标志、字号、每个字的列、日期戳的外框，都是同样的数（不是「差不多」）；字符串逐字相同。"""

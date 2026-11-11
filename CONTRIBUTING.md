@@ -4,7 +4,7 @@
 
 提交前跑 `.githooks/pre-commit` 覆盖的检查。准备给别人看的改动跑 `make check`。
 
-`make test` 并行跑普通测试，进程数由 `GXR_LOADGATE` 指向的 `loadgate.py` 里 `workers()` 决定（最多 6 个）。没设置这个变量时退回 `min(cpu_count - 1, 4)`，至少 1 个。断言依赖墙钟速度的测试标 `exclusive`，串行跑，并且只在这一阶段用 `lockf` 锁住 `/tmp/gxr-heavy.lock`。要跟以前一样单进程跑，用 `make test-serial`。覆盖率仍是合并后不低于 85%，失败重跑仍是 `--reruns 1`。
+`make test` 并行跑普通测试，进程数由 `GXR_LOADGATE` 指向的 `loadgate.py` 里 `workers()` 决定（最多 6 个）。没设置这个变量时退回 `min(cpu_count - 1, 4)`，至少 1 个。收集只做一次，子进程只跑计划里的用例。长时间浏览器流程标 `browser_serial`，等计算分片结束后串行跑，不拿锁。断言依赖墙钟速度的测试标 `exclusive`，串行跑，并且只在这一阶段用 `lockf` 锁住 `/tmp/gxr-heavy.lock`。要跟以前一样单进程跑，用 `make test-serial`。覆盖率仍是合并后不低于 85%，失败重跑仍是 `--reruns 1`。JUnit 和覆盖率文件由父进程按合并结果各写一次。
 
 Python 用 snake_case，类用 PascalCase。页面脚本用 camelCase。测试文件保持 `tests/test_*.py`，端到端的放 `tests/integration/`。
 

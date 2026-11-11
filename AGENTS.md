@@ -46,7 +46,7 @@ curl -H "Host: 127.0.0.1:18765" -H "X-GXR-Token: $GXR_STUDIO_TOKEN" http://127.0
 - Python 用 ruff 做 lint 和 format，mypy 开了 strict（`[tool.mypy] strict = true`）。`engine/` 和 `lut/spaces.py` 逐字节锁定，注解在旁边的 `.pyi`。
 - 复杂度用 ruff 的 mccabe，上限写在 `[tool.ruff.lint.mccabe]`。
 - 覆盖率门槛在 `make test` / `make check` 的合并报告（`--cov-fail-under=85`），也写在 `[tool.coverage.report]`。本地只想看结果可以用 `uv run --frozen pytest -q`。
-- `make test` 把不依赖墙钟速度的测试拆开并行跑。进程数看环境变量 `GXR_LOADGATE`（指向 `loadgate.py`）的 `workers()`，最多 6 个；没设置或文件不存在时用 `min(cpu_count - 1, 4)`，至少 1 个，并说明公共仓库不依赖那条私有路径。每个分片有自己的临时目录、`TMPDIR` 和覆盖率数据。标了 `exclusive` 的测试断言依赖墙钟速度，串行跑，并且只用 `lockf -t 3600 -k /tmp/gxr-heavy.lock` 拿锁。跑测进程自己提到 nice 15。`make test-serial` 仍是原来的单进程命令。`--reruns 1` 和覆盖率门槛不变。
+- `make test` 把不依赖墙钟速度的测试拆开并行跑。进程数看环境变量 `GXR_LOADGATE`（指向 `loadgate.py`）的 `workers()`，最多 6 个；没设置或文件不存在时用 `min(cpu_count - 1, 4)`，至少 1 个，并说明公共仓库不依赖那条私有路径。每个分片有自己的临时目录、`TMPDIR` 和覆盖率数据。收集只做一次：分片只跑这次计划里的 node id，不再把位置参数、`-m` 和 `-k` 传给子进程。标了 `browser_serial` 的长时间浏览器流程等计算分片全部结束后再串行跑，不拿锁，免得和计算分片抢 CPU，把页面脚本的 120 秒等待拖过期限。标了 `exclusive` 的测试断言依赖墙钟速度，串行跑，并且只用 `lockf -t 3600 -k /tmp/gxr-heavy.lock` 拿锁。两条标记同时在的用例走 exclusive。跑测进程自己提到 nice 15，收到 SIGINT 退出 130、SIGTERM 退出 143，并清掉子进程。`make test-serial` 仍是原来的单进程命令。`--reruns 1` 和覆盖率门槛不变。用户要的 JUnit、覆盖率 XML 等报告由父进程按合并后的数据写一次。
 - 测试规矩（2026-11-10 机主定）：日常测试全在本地跑，合并前以本地 `make check` 通过为准，不等 GitHub。GitHub 的全量 CI 只能手动触发（Actions → ci → Run workflow），只在重大版本发布、机主明确要求时跑。需要干净环境或 Linux 检查时，用 Apple Container 开容器跑。Windows 不走 CI。
 - 依赖要钉死版本并更新 `uv.lock`。新版本至少等 7 天，见 `docs/dependencies.md`。
 

@@ -222,6 +222,7 @@ needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-
 
 
 @needs_sample
+@pytest.mark.exclusive  # 全尺寸 RAW 导出要在 15 秒内完成
 def test_real_raw_only_xpan_export_jpeg_and_png(lib, tmp_path):
     rel = "2026/2026-10-16/R8051144.DNG"
     (lib.root / rel).parent.mkdir(parents=True)
