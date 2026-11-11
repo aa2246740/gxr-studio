@@ -163,6 +163,7 @@ def child_env(base: dict[str, str], directory: Path, coverage_file: Path) -> dic
     env["TEMP"] = str(directory)
     env["COVERAGE_FILE"] = str(coverage_file)
     env["PYTHONPYCACHEPREFIX"] = str(directory / "pycache")
+    env["PYTHONUNBUFFERED"] = "1"
     return env
 
 
@@ -178,6 +179,7 @@ def pytest_run(extra: list[str]) -> list[str]:
         "1",
         "--cov=gxr_studio",
         "--cov-report=",
+        "--cov-fail-under=0",
         *extra,
     ]
 
