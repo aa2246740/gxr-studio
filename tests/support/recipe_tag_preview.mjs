@@ -18,4 +18,7 @@ assert.equal(recipeForRender(view), null);
 delete view.photo.recipe_tag;
 view.ed.caps.recipe = 'approx';
 assert.deepEqual(recipeForRender(view).levels, {});
+view.ed.recipe = { kind: 'local', id: 'd'.repeat(64), unit: 'jlaunch', slot: 1, levels: { contrast: 1 } };
+view.ed.caps.recipe = 'none';
+assert.deepEqual(recipeForRender(view), view.ed.recipe, '当前校准缺失不能把显式本机引用清成空配方');
 console.log(JSON.stringify({ actualKnobsKept: true, unsupportedPredictionDisabled: true, legacyApproxUnchanged: true }));

@@ -295,6 +295,11 @@ class LutLibrary:
             raise LutError(409, "cube_changed", "这个 LUT 已改变。请重新导入。")
         return raw
 
+    def snapshot(self, cube_id: str) -> tuple[bytes, dict[str, Any]]:
+        with self.lock, self.private() as directory:
+            item = self._item(self._read(directory), cube_id)
+            return self._raw(directory, cube_id), dict(item)
+
     @staticmethod
     def _group(doc: dict[str, Any], name: str) -> dict[str, Any]:
         found = next((g for g in doc["groups"] if g["name"] == name), None)
@@ -374,11 +379,7 @@ class LutLibrary:
     def delete(self, cube_id: str) -> None:
         with self.lock, self.private() as directory:
             doc = self._read(directory)
-            record = self._item(doc, cube_id)
-            # 先补齐来源署名，库删除尚未提交时这些信息也成立。
-            for relative, recipe in self._recipes_for_lut(directory, cube_id):
-                recipe["source"]["attribution"] = {key: record[key] for key in FIELDS}
-                durable_write(directory, relative, recipe)
+            self._item(doc, cube_id)
             del doc["items"][cube_id]
             doc["pending_deletes"] = [cube_id]
             self._save(directory, doc)
@@ -389,29 +390,8 @@ class LutLibrary:
 
     def _finish_deleted(self, directory: PrivateDir, cube_id: str) -> None:
         # 删除先在库中提交。中途失败时留下待完成记录，下次打开继续，只动本机应用数据。
-        for relative, recipe in self._recipes_for_lut(directory, cube_id):
-            recipe["source"]["lut_deleted"] = True
-            durable_write(directory, relative, recipe)
         directory.remove(f"luts/{cube_id}.cube")
         directory.remove(f"luts/{cube_id}.filename")
-
-    def _recipes_for_lut(self, directory: PrivateDir, cube_id: str) -> list[tuple[str, dict[str, Any]]]:
-        result = []
-        if directory.exists("my_recipes"):
-            for name in sorted(directory.names("my_recipes")):
-                if not name.endswith(".json"):
-                    continue
-                relative = f"my_recipes/{name}"
-                try:
-                    recipe = json.loads(directory.read(relative))
-                    source = recipe.get("source", {})
-                    if not isinstance(source, dict):
-                        raise ValueError("recipe source")
-                except (ValueError, AttributeError) as exc:
-                    raise LutError(422, "recipe_unreadable", "无法读取配方。请检查应用数据。") from exc
-                if source.get("cube_sha256") == cube_id:
-                    result.append((relative, recipe))
-        return result
 
     def target(self, cube_id: str, *, persist: bool = True) -> tuple[Target, dict[str, Any]]:
         target, item, _token_value = self.target_and_token(cube_id, persist=persist)

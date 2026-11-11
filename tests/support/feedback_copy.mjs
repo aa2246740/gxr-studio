@@ -200,8 +200,8 @@ if (scenario === 'import-phases') {
   const info = (slot, name) => ({ slot, name, is_stock: slot === 4, controls: [{ name: 'amount', label: 'Amount', levels: [0, 50, 100], default: 100 }, { name: 'contrast', label: 'Contrast', levels: [-1, 0, 1], default: 0 }] });
   const unit = { id: 'jlaunch', recipes: [info(1, '01 标准'), info(2, '02 鲜艳'), info(4, '04 原厂')], looks: [{ kind: 'look', id: 'night', name: 'NIGHT', slot: 4, controls: [] }],
     users: [{ kind: 'camera_user', id: 'u1', name: 'FCC-001', slot: 4, controls: [] }] };
-  const mine = [{ id: 'abc123abc123', name: 'Kodak 风', recipe: { kind: 'builtin', unit: 'jlaunch', slot: 2, levels: { amount: 50, contrast: 1 } }, source: { kind: 'lut', title: 'Portra 400' } },
-    { id: 'def456def456', name: '别的单元', recipe: { kind: 'builtin', unit: 'qlaunch', slot: 2, levels: {} }, source: { kind: 'lut', title: null } }];
+  const mine = [{ ...info(2, 'Kodak 风'), id: 'c'.repeat(64), recipe: { kind: 'local', id: 'c'.repeat(64), unit: 'jlaunch', slot: 2 }, source: { kind: 'lut', title: 'Portra 400' } },
+    { ...info(2, '别的单元'), id: 'd'.repeat(64), recipe: { kind: 'local', id: 'd'.repeat(64), unit: 'qlaunch', slot: 2 }, source: { kind: 'lut', title: null } }];
   globalThis.fetch = async (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push({ method, url, body: opts.body ? JSON.parse(opts.body) : null });

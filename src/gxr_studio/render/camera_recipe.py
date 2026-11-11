@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..camdata.catalog_names import CAMERA_UNITS, CATALOG_GENERATIONS, recipe_name
+from ..camdata.datcodec import PROFILES
 from ..camdata.recipe_tags import RecipeTag, decoded_levels, recipe_payload
 from .params import EditError, EditState, RecipeSel, parse_edit
 from .recipes import CameraData, Menu
@@ -14,7 +15,10 @@ from .recipes import CameraData, Menu
 def _catalog_recipe(tag: RecipeTag | None, menu: Menu | None) -> tuple[str, dict[Any, Any]] | None:
     if tag is None or recipe_name(tag["catalog_identity"], tag["unit"], tag["position"]) is None:
         return None
-    if not isinstance(menu, CameraData) or CATALOG_GENERATIONS.get(tag["catalog_identity"]) != menu.manifest["generation"]:
+    if (
+        not isinstance(menu, CameraData)
+        or CATALOG_GENERATIONS.get(tag["catalog_identity"]) != PROFILES[menu.manifest["generation"]].library_generation
+    ):
         raise EditError("camera_recipe_catalog_missing", "请先导入拍摄时使用的相机配方文件。")
     unit = CAMERA_UNITS[tag["unit"]]
     recipes = next(row["recipes"] for row in menu.listing() if row["id"] == unit)

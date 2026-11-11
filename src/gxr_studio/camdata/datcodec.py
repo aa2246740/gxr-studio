@@ -1,6 +1,6 @@
 """按已登记代数解析与封装 DAT，r5 的双文件路径见 r5.py。
 
-g156 绑定 g155 bank；g156/g158/g176/g178 另绑定引擎与链接布局。
+g156 绑定 g155 bank；g156/g158 与 r5 各代另绑定引擎与链接布局。
 解析核对 CRC、原厂钉子与往返字节。理光数据只经过内存，不写文件。
 来源见 engine/PROVENANCE.json 的 datcodec_sources。
 """
@@ -72,10 +72,11 @@ class Profile:
     max_engine: int = 65536
     flat_list: bool = False  # 平铺列表的 Looks 与用户条目合计至多 40 个
     mount_knobs_from_50mm: bool = False
+    library_generation: int | None = None  # 有限登记的 r5 库关系，不要求等于 DAT 代数
 
     @property
     def bank_generation(self) -> int:
-        """g156 保留 g155c 的 bank 头；其它代数仍要求内外相等。解析与封装共用此规则。"""
+        """单文件 bank：g156 保留 g155c 的头，其它代数要求内外相等。r5 库另行登记。"""
         return 155 if self.generation == 156 else self.generation
 
     @property
@@ -101,8 +102,10 @@ PROFILES = {
     155: Profile(155, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
     156: Profile(156, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
     158: Profile(158, 98304, True, True, max_engine=69632, flat_list=True, mount_knobs_from_50mm=True),
-    176: Profile(176, 98304, True, max_engine=81920, mount_knobs_from_50mm=True),
-    178: Profile(178, 98304, True, max_engine=81920, mount_knobs_from_50mm=True),
+    176: Profile(176, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=176),
+    178: Profile(178, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
+    181: Profile(181, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
+    182: Profile(182, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
 }
 
 
@@ -233,7 +236,7 @@ def parse(raw: bytes, library: bytes | None = None) -> Dat:  # noqa: C901  按�
     prof = PROFILES.get(g)
     if prof is None:
         raise UnsupportedGeneration(f"代数 {g} 未登记（支持 {sorted(PROFILES)}）")
-    if g in (176, 178):
+    if prof.library_generation is not None:
         from . import r5
 
         return r5.parse(raw, library)
@@ -645,7 +648,7 @@ def pack(dat: Dat) -> bytes:
     prof = PROFILES.get(dat.generation)
     if prof is None:
         raise UnsupportedGeneration(f"代数 {dat.generation} 未登记")
-    if dat.generation in (176, 178):
+    if prof.library_generation is not None:
         from . import r5
 
         return r5.pack(dat)

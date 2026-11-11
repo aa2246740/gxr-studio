@@ -38,9 +38,13 @@ def _check_envelope(raw: bytes, magic: bytes, flags: int) -> None:
 
 
 def _catalogue(library: bytes | None, generation: int) -> bytes:
+    profile = dc.PROFILES.get(generation)
+    if profile is None or profile.library_generation is None:
+        raise dc.UnsupportedGeneration(f"代数 {generation} 没有登记 r5 库")
+    library_generation = profile.library_generation
     if library is None:
         raise dc.DatError("缺少 GXRFX.BIN。请将 GXRCE.DAT 和 GXRFX.BIN 一起从存储卡复制到同一文件夹，再同时导入。")
-    if hashlib.sha256(library).hexdigest() != LIBRARY_SHA256[generation]:
+    if hashlib.sha256(library).hexdigest() != LIBRARY_SHA256[library_generation]:
         raise dc.DatError(f"GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。")
     cat = library[64:]
     if (
@@ -52,7 +56,7 @@ def _catalogue(library: bytes | None, generation: int) -> bytes:
         or dc.u32(library, 24) != 7
         or dc.u32(library, 28) != 3
         or dc.u32(library, 32) != dc.crc(library[:32] + bytes(4) + library[36:64])
-        or dc.u32(library, 36) != generation
+        or dc.u32(library, 36) != library_generation
         or dc.u32(library, 40) != len(cat)
         or any(library[44:64])
     ):

@@ -11,6 +11,11 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', (error) => out.errors.push(error.message));
   const calibratedUnits = new Set(['jlaunch']);
+  await page.route('**/api/lut/quality', async (route) => {
+    await route.fulfill({ json: { sources: ['jlaunch', 'qlaunch', 'l08firm'].map((unit, index) => ({
+      id: String(index + 1).repeat(64), unit, coverage: { train: 64, photo_iso200: 32 }, missing: ['photo_other_iso'],
+    })) } });
+  });
   await page.route('**/api/lut/spaces', async (route) => {
     const response = await route.fetch();
     const body = await response.json();
@@ -27,8 +32,9 @@ try {
   const photosReady = new Promise((resolve) => { releasePhotos = resolve; });
   let photosBlocked = true;
   const candidate = {
-    unit: 'jlaunch', slot: 8, amount: 100, levels: { amount: 100 }, similarity: 88, label: '大致',
-    holdout: { median: 1.2 }, baseline04_holdout: {}, differences: ['暗部比 LUT 更亮'], entry_sha256: 'a'.repeat(64),
+    unit: 'jlaunch', slot: 8, recipe: { kind: 'local', unit: 'jlaunch', slot: 8, id: 'a'.repeat(64) },
+    similarity: 88, fit: { holdout: { median: 1.2 } }, record_sha256: 'b'.repeat(64),
+    quality: { state: 'needs_evidence', failures: [], missing: ['photo_other_iso'] },
   };
   await page.route('**/api/photos?*', async (route) => {
     photoRequests++;
@@ -47,15 +53,15 @@ try {
   await page.route('**/api/lut/fit/abc123abc123', async (route) => {
     await route.fulfill({ json: {
       job_id: 'abc123abc123', unit: 'jlaunch', state: done ? 'done' : 'running',
-      progress: { fraction: 0.45, phase: '精修旋钮', message: '坐标下降', evaluations: 12345, elapsed: 1 },
+      progress: { stage: 'exact', completed_starts: 2 },
       result: { candidates: [candidate], formula: '电脑预测' },
     } });
   });
   await page.route('**/api/my-recipes', async (route) => {
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON();
-      saved = { id: 'b'.repeat(12), name: body.name, recipe: { kind: 'builtin', ...candidate },
-        camera_short_name: 'U01-8AAA', source: { title: 'Warm Street' }, fit: { similarity: 88 } };
+      saved = { id: candidate.recipe.id, name: body.name, recipe: candidate.recipe, revision: 1,
+        quality: candidate.quality, source: { title: 'Warm Street' }, fit: { similarity: 88 } };
       out.saved = saved;
       await route.fulfill({ json: saved });
     } else await route.fulfill({ json: { recipes: saved ? [saved] : [] } });
@@ -101,28 +107,30 @@ try {
   await importLut('Warm_Street.cube');
   out.default = { ...await choice(), unit: await unit().inputValue() };
   assert.equal(out.default.unit, 'qlaunch', '没有手选时取照片最多的组件');
-  assert(await page.getByRole('button', { name: '为A12 28mm生成配方', exact: true }).isDisabled());
+  assert(await page.getByRole('button', { name: '为A12 28mm生成完整配方', exact: true }).isDisabled());
   assert(await page.getByText('A12 28mm 的校准数据尚未导入或已失效', { exact: false }).isVisible());
   await page.getByLabel('预览照片', { exact: true }).selectOption(photos[0].id);
   assert.equal(await unit().inputValue(), 'l08firm', '预览换组件时默认值也随之变化');
-  assert(await page.getByRole('button', { name: '为MOUNT生成配方', exact: true }).isDisabled());
+  assert(await page.getByRole('button', { name: '为MOUNT生成完整配方', exact: true }).isDisabled());
   await unit().selectOption('jlaunch');
   assert(await page.getByText('预览照片来自MOUNT。配方只会出现在A12 50mm拍的照片上。', { exact: true }).isVisible());
   assert.equal(await page.locator('.lut-more textarea').first().isVisible(), false);
   const groups = await space().locator('optgroup').evaluateAll((els) => els.map((el) => el.label));
   assert.deepEqual(groups, ['普通照片与视频显示', '相机 Log 与高级空间']);
-  await visibleInViewport(page.getByRole('button', { name: '为A12 50mm生成配方', exact: true }), 'generate');
-  await page.getByRole('button', { name: '为A12 50mm生成配方', exact: true }).click();
+  await visibleInViewport(page.getByRole('button', { name: '为A12 50mm生成完整配方', exact: true }), 'generate');
+  await page.getByRole('button', { name: '为A12 50mm生成完整配方', exact: true }).click();
   await page.getByText('正在为A12 50mm生成配方…', { exact: false }).waitFor();
   assert(await unit().isDisabled());
   assert(await space().isDisabled());
-  assert.equal(await page.getByText('精修旋钮', { exact: false }).count(), 0);
+  await page.getByText('正在收敛并重算整数记录…', { exact: true }).waitFor();
+  assert.equal(out.request.quality_source, '1'.repeat(64));
   done = true;
   await page.getByText('为A12 50mm做的配方', { exact: true }).waitFor();
   assert(await page.getByText('电脑预测', { exact: true }).count() > 0);
   out.name = await page.getByLabel('名称', { exact: true }).inputValue();
-  await visibleInViewport(page.getByRole('button', { name: '保存相机配方', exact: true }), 'save');
-  await page.getByRole('button', { name: '保存相机配方', exact: true }).click();
+  assert(await page.getByText('质量证据未齐，可保存为本机草稿', { exact: true }).isVisible());
+  await visibleInViewport(page.getByRole('button', { name: '保存本机草稿', exact: true }), 'save');
+  await page.getByRole('button', { name: '保存本机草稿', exact: true }).click();
   await page.getByText('已保存「Warm Street」，这是为A12 50mm做的配方。', { exact: false }).waitFor();
   assert(await page.getByRole('button', { name: '配方已保存', exact: true }).isDisabled());
   await page.getByText('更多信息（可选）', { exact: true }).click();
@@ -161,7 +169,7 @@ try {
       const { renderLutPage } = await import('/assets/lut.js');
       renderLutPage(document.getElementById('view'));
     }, id);
-    const text = `为${label}生成配方`;
+    const text = `为${label}生成完整配方`;
     await page.waitForFunction((name) => [...document.querySelectorAll('button')].some((b) => b.textContent === name && !b.disabled), text);
     assert(await page.getByText('为所选单元生成配方，结果是电脑预测。曝光沿用 50mm', { exact: true }).isVisible());
     out.calibratedUnits.push(id);

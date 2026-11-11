@@ -165,11 +165,12 @@ class CameraData(Menu):
 
     def listing(self) -> list[dict[Any, Any]]:
         units = super().listing()
+        profile = datcodec.PROFILES[self.manifest["generation"]]
         for unit, info in enumerate(units):
             info["looks"] = self._groups.get((unit, "look"), [])
             info["users"] = self._groups.get((unit, "camera_user"), [])
-            if self.manifest["generation"] in (176, 178):
-                count = 4 if self.manifest["generation"] == 178 else 8
+            if profile.library_generation is not None:
+                count = 4 if profile.library_generation == 178 else 8
                 info["recipes"] = [
                     {**recipe, "position": position, "number": f"{position:02d}"}
                     for position, recipe in enumerate(info["recipes"][:count] + self._groups.get((unit, "record"), []), 1)
@@ -184,8 +185,8 @@ class CameraData(Menu):
 
     def request_for(self, sel: RecipeSel) -> tuple[list[str], list[int], knobs.Request]:
         if sel.kind == "builtin":
-            if self.manifest["generation"] == 178 and sel.slot > 4:
-                raise EditError("recipe_not_found", "g178 已移除这个旧配方入口，请从完整配方列表重新选择。")
+            if datcodec.PROFILES[self.manifest["generation"]].library_generation == 178 and sel.slot > 4:
+                raise EditError("recipe_not_found", f"g{self.manifest['generation']} 已移除这个旧配方入口，请从完整配方列表重新选择。")
             return super().request_for(sel)
         extra = self._extra_for(sel)
         given = {**extra["defaults"], **sel.levels_dict()}

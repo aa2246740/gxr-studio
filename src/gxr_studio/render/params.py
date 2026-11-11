@@ -42,7 +42,7 @@ class RecipeSel:
     unit: str  # jlaunch | qlaunch | l08firm
     slot: int  # 1..8
     levels: tuple[tuple[str, int], ...] = ()  # 用户给出的旋钮档位；没给的取菜单默认值
-    kind: str = "builtin"  # builtin | record | look | camera_user
+    kind: str = "builtin"  # builtin | record | look | camera_user | local
     id: str | None = None  # 文件内条目的内容摘要，换文件后不会误选同一序号
 
     @property
@@ -204,7 +204,7 @@ def parse_recipe(raw: Any) -> RecipeSel | None:
     if not isinstance(raw, dict):
         raise EditError("bad_recipe", "请求无效。请刷新页面后重试。", "recipe 要是一个对象")
     kind = raw.get("kind", "builtin")
-    if kind not in ("builtin", "record", "look", "camera_user"):
+    if kind not in ("builtin", "record", "look", "camera_user", "local"):
         raise EditError("recipe_kind_unsupported", INVALID_REQUEST, "配方类型无法识别。")
     identity = raw.get("id") if kind != "builtin" else None
     if kind != "builtin" and (not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity)):

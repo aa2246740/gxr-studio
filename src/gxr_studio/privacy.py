@@ -173,6 +173,24 @@ class PrivateDir:
             os.close(self.fd)
             self.fd = -1
 
+    @contextmanager
+    def child(self, name: str) -> Iterator[PrivateDir]:
+        """固定子目录的句柄能力。子目录不解析为另一条根路径，也不跟随链接。"""
+        _parts(name)
+        if "/" in name:
+            raise PrivatePathError("private_name_invalid", "私有子目录名称不能带路径")
+        self.verify()
+        with self._at(f"{name}/.guard", create=True) as (dfd, _leaf):
+            self.check_fd(dfd)
+            child = object.__new__(PrivateDir)
+            child.purpose, child.forbidden = self.purpose, self.forbidden
+            child.real, child.fd = self.real / name, os.dup(dfd)
+            try:
+                child.verify()
+                yield child
+            finally:
+                child.close()
+
     def verify(self) -> None:
         now = fd_path(self.fd)
         if now is None or _real(now) != self.real:

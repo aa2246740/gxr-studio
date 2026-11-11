@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { installDom, tick } from './mini_dom.mjs';
 
@@ -7,9 +8,10 @@ const catalog = JSON.parse(readFileSync(0, 'utf8'));
 const file = (name) => pathToFileURL(`${process.argv[2]}/${name}`).href;
 const walk = (n) => [n, ...(n.children || []).flatMap(walk)];
 const has = (n, cls) => n.classList?.contains(cls);
+const identity = (unit, index) => createHash('sha256').update(`${unit}-${index}`).digest('hex');
 const saved = catalog.units.flatMap((u) => u.recipes.map((r, i) => ({
-  id: `${u.id}-${i}`, name: `Synthetic ${i}`, camera_short_name: 'TEST',
-  recipe: { unit: u.id, kind: r.kind || 'builtin', slot: r.slot, id: r.id, levels: {} },
+  id: identity(u.id, i), name: `Synthetic ${i}`,
+  recipe: { unit: u.id, kind: 'local', slot: r.slot, id: identity(u.id, i), levels: {} }, controls: [],
   fit: { similarity: 100 }, source: { kind: 'lut', title: 'Synthetic', input_space_guessed: false },
 })));
 globalThis.fetch = async (url) => {
@@ -18,6 +20,7 @@ globalThis.fetch = async (url) => {
   if (url === '/api/camdata/status') data = { ready: true, camera_data: { state: 'ready', imported: true }, calibration: { state: 'missing' }, cards: [] };
   if (url === '/api/my-recipes') data = { recipes: saved };
   if (url === '/api/lut/spaces') data = { spaces: [], units: [] };
+  if (url === '/api/lut/quality') data = { sources: [] };
   if (url === '/api/luts') data = { luts: [], groups: [] };
   if (url.startsWith('/api/photos')) data = [];
   return { ok: true, status: 200, text: async () => JSON.stringify(data) };

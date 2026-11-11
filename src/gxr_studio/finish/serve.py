@@ -138,6 +138,8 @@ def _raw_rgb(render: RenderService, lib: Library, shot: dict[str, Any], edit: Ed
     try:
         dng = open_dng(path)
     except RawDecodeError:
+        if edit.recipe is not None and edit.recipe.kind == "local":
+            raise
         preview = _embedded_rgb(path)
         if preview is None:
             raise
@@ -180,6 +182,7 @@ def _raw_rgb(render: RenderService, lib: Library, shot: dict[str, Any], edit: Ed
         "key": "",
         "cache": "miss",
         "calibrated": "1" if renderer.calibrated else "0",
+        **(renderer.recipe_binding or {}),
     }
 
 
@@ -242,6 +245,8 @@ def color_image(
             labels["description"] = "GXR Studio neutral-preview: white-balanced linear sensor data to sRGB, no recipe applied"
         return rgb, True, labels
     if not has_dng:
+        if edit.recipe is not None and edit.recipe.kind == "local":
+            raise EditError("local_recipe_needs_pair", "完整本机配方需要RAW+JPG照片。")
         if edit.recipe is None or not ENABLED or not render.available():
             raise NoRaw(NO_RAW)
         if edit.recipe.levels_dict():
@@ -268,6 +273,8 @@ def color_image(
     try:
         rgb, labels = _raw_rgb(render, lib, shot, raw_edit, full=full)
     except (NoRaw, RenderUnavailable, RawDecodeError) as exc:
+        if raw_edit.recipe is not None and raw_edit.recipe.kind == "local":
+            raise
         if not has_jpg:
             raise
         return (
@@ -485,6 +492,11 @@ def export_finish(
         detail=labels.get("detail") or "",
         hdr=hdr_info.get("hdr") if track is not None else None,
         hdr_reason=hdr_info.get("reason"),
+        recipe_binding={
+            k: labels[k] for k in ("record_sha256", "entry_sha256", "binding_sha256", "selection_id", "quality_state", "assessed_entry")
+        }
+        if labels.get("selection_id")
+        else None,
     )
 
 

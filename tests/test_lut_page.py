@@ -7,7 +7,6 @@ import hashlib
 import pytest
 
 from gxr_studio.render.params import parse_recipe
-from gxr_studio.render.recipes import CameraData
 from test_lut import camhome as camhome
 from test_lut import client as client
 from test_lut import data_client as data_client
@@ -97,27 +96,30 @@ def test_explicit_50mm_selection_preserves_existing_recipe_bytes_and_reports_uni
     """旧的默认请求与页面显式传入相同颜色和组件的请求，得到同一组 552 B 条目。"""
     raw = cube_bytes(lambda x: x * [0.93, 0.9, 0.86], title="synthetic warm", size=5, comments="# Input: sRGB\n")
     cube_id = upload(data_client, raw).json()["cube_id"]
+    from full_recipe_support import source_for_service
+
+    service = data_client.app.state.ctx.lut
+    source = source_for_service(service, settings.home_dir.parent / "explicit-unit-quality")
     bodies = [
         {"cube_id": cube_id, "space": "srgb", "output": "srgb", "profile": "quick"},
         {"cube_id": cube_id, "space": "srgb", "output": "srgb", "profile": "quick", "unit": "jlaunch"},
     ]
     entries = []
-    cam = CameraData(settings.home_dir)
     for body in bodies:
+        body["quality_source"] = source
         started = data_client.post("/api/lut/fit", json=body)
         assert started.status_code == 200, started.text
         job = started.json()
         assert job["unit"] == "jlaunch"
         assert data_client.get(f"/api/lut/fit/{job['job_id']}").json()["unit"] == "jlaunch"
-        status = wait(data_client, job["job_id"])
+        status = wait(data_client, job["job_id"], limit=900)
         assert status["state"] == "done", status
         assert status["unit"] == "jlaunch"
         resolved = []
         for candidate in status["result"]["candidates"]:
-            selection = {"kind": "builtin", "unit": candidate["unit"], "slot": candidate["slot"], "levels": candidate["levels"]}
-            entry = cam.resolve(parse_recipe(selection)).entry
+            entry = service.recipes.resolve(parse_recipe(candidate["recipe"])).entry
             assert len(entry) == 552
-            assert hashlib.sha256(entry).hexdigest() == candidate["entry_sha256"]
+            assert hashlib.sha256(entry).hexdigest() == candidate["record_sha256"]
             resolved.append(entry)
         entries.append(resolved)
         saved = data_client.post("/api/my-recipes", json={"job_id": job["job_id"], "candidate": 0, "name": "synthetic warm"})
@@ -128,5 +130,5 @@ def test_explicit_50mm_selection_preserves_existing_recipe_bytes_and_reports_uni
         assert data_client.get(f"/api/my-recipes/{doc['id']}").json()["recipe"]["unit"] == "jlaunch"
         assert data_client.post(f"/api/lut/fit/{job['job_id']}/cancel").json()["unit"] == "jlaunch"
     assert entries[0] == entries[1]
-    assert len(entries[0]) == 2
+    assert len(entries[0]) == 1
     assert all(r["recipe"]["unit"] == "jlaunch" for r in data_client.get("/api/my-recipes").json()["recipes"])

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from ..lut.errors import LutError
 from ..lut.page import input_choice
 from ..privacy import PrivatePathError
+from ..recipes import RecipeError
 from .errors import ApiError
 from .routes import ctx
 
@@ -48,6 +49,8 @@ def call(action: Callable[..., Any], *args: Any) -> Any:
         return action(*args)
     except LutError as exc:
         raise ApiError(exc.status, exc.code, exc.message, exc.extra) from exc
+    except RecipeError as exc:
+        raise ApiError(422, exc.code, exc.message) from exc
     except PrivatePathError as exc:
         raise ApiError(422, exc.code, exc.message, {"detail": exc.detail}) from exc
     except OSError as exc:

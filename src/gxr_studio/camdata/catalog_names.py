@@ -2,7 +2,7 @@
 
 CAMERA_UNITS = {"28": "qlaunch", "50": "jlaunch", "MT": "l08firm"}
 UNIT_LABELS = {"28": "28mm", "50": "50mm", "MT": "MOUNT"}
-CATALOG_GENERATIONS = {"d25d2f0a68": 176, "6a3a5a3c02": 178}
+CATALOG_GENERATIONS = {"d25d2f0a68": 176, "6a3a5a3c02": 178}  # 库代数；g178/g181/g182 r2 共用 178 目录
 
 # 对照 r5.LIBRARY_SHA256 登记的 g176 / g178 库；前四项是两代保留的原生配方。
 _NATIVE = ("GRPos", "GRNeg", "HC BW", "Std")

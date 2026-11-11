@@ -3,7 +3,7 @@
 数据都放在应用数据目录（`home_dir`）里，不写图库、不写卡：
     luts/<sha256>.cube          用户拖进来的调色文件（原样字节）
     lut_jobs/<job>/             一次拟合：job.json、progress.json、result.json
-    my_recipes/<id>.json        "我的配方"：底子 + 旋钮档位 + 来源与相似度（电脑预测）。写回相机在后续任务里做
+    recipes/                   完整记录、冻结模型、质量证据和名称，RecipeRepository唯一写入
 """
 
 from __future__ import annotations
@@ -25,10 +25,15 @@ from PIL import Image
 
 from ..alerts import StudioNotifier, on_job_failed
 from ..export import srgb_icc
+from ..fit_contexts import FitContexts
 from ..jobs import Job
 from ..raw import open_dng
+from ..recipes import FitProduct, Quality, RecipeError, RecipeRepository, RenderEnvironment, check_record
+from ..recipes.admission import verify_archived_proof
+from ..recipes.fit import Winner, default_plan
+from ..recipes.types import canonical, digest
 from ..render.edits import read as read_edit
-from ..render.params import EditError, EditState, RecipeSel
+from ..render.params import EditError, EditState
 from ..render.service import RenderUnavailable
 from ..tracking import scrub_text
 from .cube import Cube
@@ -39,7 +44,6 @@ from .page import input_choice
 from .scene import SceneError, scene_colour
 from .spaces import DISPLAY, GAMUT, SPACES, Target
 
-SCHEMA_RECIPE = "gxr-studio/my-recipe/1"
 JOB_KEEP = 20
 NAME_MAX = 40
 
@@ -81,9 +85,10 @@ class LutService:
         self.lib = library
         self.render = render
         self.library: LutLibrary = render.luts
+        self.recipes: RecipeRepository = render.recipes
+        self.contexts = FitContexts(self.home, tuple(self.library.forbidden))
         self._lock = threading.RLock()
         self._procs: dict[str, subprocess.Popen[Any]] = {}
-        self._cancelled: set[str] = set()
         self._colours: dict[Any, Any] = {}
         self._notifier = notifier or StudioNotifier()
         self._reported_failures: set[str] = set()
@@ -108,10 +113,6 @@ class LutService:
     @property
     def jobs_dir(self) -> Path:
         return self.home / "lut_jobs"
-
-    @property
-    def recipes_dir(self) -> Path:
-        return self.home / "my_recipes"
 
     # ---- 调色文件 -------------------------------------------------------------
     def add_cube(self, raw: bytes, filename: str = "", group: str | None = None) -> dict[Any, Any]:
@@ -289,6 +290,7 @@ class LutService:
         photo_ids: list[str] | None = None,
         profile: str = "normal",
         guessed: bool = False,
+        quality_source: str | None = None,
     ) -> dict[Any, Any]:
         if profile not in ("normal", "quick"):
             raise LutError(422, "bad_profile", "请求无效。请刷新页面后重试。", {"detail": "profile 只能是 normal 或 quick"})
@@ -300,18 +302,39 @@ class LutService:
             raise LutError(409, "camera_data_missing", st["hint"] or "请先导入相机配方文件", {"status": st})
         if not self.render.available(unit):
             raise LutError(422, "unit_not_calibrated", "这个单元的校准数据尚未导入或已失效，请重新导入。", {"unit": unit})
-        with self._lock:
+        with self._lock, self.library.lock:
             busy = next((j for j, p in self._procs.items() if p.poll() is None), None)
             if busy is not None:
                 raise LutError(409, "fit_busy", "无法生成配方。已经有一个在进行。", {"job_id": busy})
-            photos = self.pick_photos(photo_ids, unit=unit)
+            if quality_source is None:
+                raise LutError(422, "quality_source_required", "请先导入该单元的私有质量输入包。训练和留出分组会在生成前冻结。")
+            # 包内的want绑定完整目标解释，不能把另一LUT或当前照片编辑当作相同目标。
+            target_bytes, source_lut = self.library.snapshot(cube_id)
+            environment = RenderEnvironment.capture(self.home, self.render._require(unit), unit)
+            target = {"kind": "lut", "cube_sha256": cube_id, "spaces": self.target(cube, **spec).description()}
+            try:
+                context = self.contexts.freeze(
+                    quality_source,
+                    target=target,
+                    plan=default_plan(),
+                    environment=environment,
+                    style=cube_id,
+                    replacement=self.recipes.reference_for_style(cube_id, unit),
+                    target_renderer=self.target(cube, **spec),
+                    target_asset=target_bytes,
+                )
+            except RecipeError as exc:
+                raise LutError(422, exc.code, exc.message) from exc
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise LutError(422, "quality_input_unreadable", "无法读取冻结质量输入，请检查私有质量包。") from exc
+            photos: list[dict[str, Any]] = []
             job_id = uuid.uuid4().hex[:12]
             job_dir = self.jobs_dir / job_id
             job = {
                 "home": str(self.home),
-                "cube": str(self.luts_dir / f"{cube_id}.cube"),
+                "context": context.identity,
                 "cube_id": cube_id,
-                "lut_version": self.library.get(cube_id)["version"],
+                "lut_version": source_lut["version"],
                 "input_space": spec["space"],
                 "output_space": spec["output"],
                 "input_gamut": spec.get("input_gamut"),
@@ -324,26 +347,54 @@ class LutService:
                 "space_guessed": guessed,
                 "unit": unit,
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "source": {
+                    "kind": "lut",
+                    "cube_sha256": cube_id,
+                    "title": source_lut.get("name") or source_lut.get("title"),
+                    "attribution": {key: source_lut[key] for key in FIELDS},
+                    "target": target,
+                    "input_space_guessed": guessed,
+                    "fit_job": job_id,
+                },
             }
             self._write_json(job_dir / "job.json", job)
+            self.recipes.start_run(
+                job_id,
+                context.identity,
+                {
+                    "unit": unit,
+                    "cube_id": cube_id,
+                    "input": {k: job[k] for k in ("input_space", "output_space", "profile", "space_guessed")},
+                    "photos": photos,
+                    "source_sha256": digest(canonical(job["source"])),
+                },
+            )
             env = {
                 **os.environ,
                 "OPENBLAS_NUM_THREADS": "1",
                 "OMP_NUM_THREADS": "1",
                 "VECLIB_MAXIMUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "NUMEXPR_NUM_THREADS": "1",
+                "BLIS_NUM_THREADS": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "GXR_STUDIO_PARENT_PID": str(os.getpid()),
                 "GXR_STUDIO_LUT_FORBIDDEN": json.dumps([str(p) for p in self.library.forbidden]),
                 "GXR_STUDIO_LUT_HOME": str(self.home),
             }  # 子进程据此发现服务没了（SIGKILL / SIGHUP）
-            proc = subprocess.Popen(  # nosec B603  参数是解释器和本包模块，没有 shell
-                [sys.executable, "-I", "-m", "gxr_studio.lut.worker", str(job_dir)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                env=env,
-                start_new_session=True,
-            )
+            try:
+                proc = subprocess.Popen(  # nosec B603  参数是解释器和本包模块，没有 shell
+                    [sys.executable, "-I", "-m", "gxr_studio.lut.worker", str(job_dir)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    env=env,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                self.recipes.finish_run(job_id, "error", {"code": "worker_start_failed", "message": "无法启动配方计算进程。"})
+                self._report_failure(job_id, None, {"code": "worker_start_failed", "message": "无法启动配方计算进程。"})
+                raise LutError(422, "worker_start_failed", "无法启动配方计算进程。") from exc
             self._procs[job_id] = proc
             self._prune()
         return {"job_id": job_id, "unit": unit, "photos": [{k: p[k] for k in ("label", "iso")} for p in photos]}
@@ -353,64 +404,194 @@ class LutService:
             raise LutError(404, "fit_not_found", "找不到这次生成。请刷新页面后重试。")
         return self.jobs_dir / job_id
 
-    def _read(self, path: Path) -> Any:
+    def _read(self, path: Path) -> dict[str, Any] | None:
+        return self._observe(path)[1]
+
+    @staticmethod
+    def _observe(path: Path) -> tuple[bool, dict[str, Any] | None]:
+        """读一次文件：(这次是否真的读到了字节, 解析出的对象；不是规范的 JSON 对象就是 None)。
+
+        "没读到"和"读到了但内容无效"必须来自同一次读取。先读不到、随后 worker 原子发布了结果时，
+        不能再看一眼文件存在，就把前一次的 None 当成坏文件（PR #121 第四轮复审的 P1）。
+        """
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
+            raw = path.read_bytes()
+        except OSError:
+            return False, None
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            if not isinstance(data, dict):
+                return True, None
+            canonical(data)
+            return True, data
+        except (TypeError, ValueError):
+            return True, None
 
     def status(self, job_id: str, *, with_result: bool = True) -> dict[Any, Any]:
+        if not re.fullmatch(r"[0-9a-f]{12}", job_id or ""):
+            raise LutError(404, "fit_not_found", "找不到这次生成。请刷新页面后重试。")
+        archived = self.recipes.run(job_id)
+        if archived is not None and archived["state"] != "running":
+            return self._archived_status(job_id, archived, with_result)
         d = self._job_dir(job_id)
         job = self._read(d / "job.json")
         proc = self._procs.get(job_id)
         # Poll before reading, so a worker that publishes its result and exits cannot be mistaken for a crash.
         exit_code = proc.poll() if proc is not None else None
-        result = self._read(d / "result.json")
+        result_seen, result = self._observe(d / "result.json")
         progress = self._read(d / "progress.json")
-        try:
-            current_version = self.library.get(job["cube_id"])["version"]
-        except LutError:
-            current_version = None
-        stale = job.get("lut_version", 1) != current_version
-        if job_id in self._cancelled:
-            state = "cancelled"
-        elif stale:
-            state, result = "error", {"code": "lut_changed", "message": "LUT 已更改。请重新生成配方。"}
-        elif result is not None:
-            state = result["state"]
-        elif proc is not None and exit_code is None:
-            state = "running"
-        elif proc is not None:
-            state, result = (
+        if archived is None:
+            # 旧任务没有冻结质量输入，不按旧算法解释成完整结果。
+            raise LutError(409, "quality_context_missing", "这次旧任务没有完整配方上下文，请重新生成。")
+        if result is not None:
+            if result.get("state") == "done":
+                try:
+                    self._archive_result(job_id, job, result)
+                except RecipeError as exc:
+                    self.recipes.finish_run(
+                        job_id,
+                        "error",
+                        {
+                            "code": "invalid_full_result",
+                            "reason_code": exc.code,
+                            "message": f"完整配方结果未能核验，无法保存。\n{exc.message}",
+                        },
+                    )
+                except OSError as exc:
+                    self.recipes.finish_run(
+                        job_id,
+                        "error",
+                        {
+                            "code": "invalid_full_result",
+                            "message": "完整配方结果未能核验，无法保存。\n结果文件缺失或无法读取。",
+                            "trace": str(exc),
+                        },
+                    )
+                except (ValueError, KeyError, TypeError) as exc:
+                    self.recipes.finish_run(
+                        job_id,
+                        "error",
+                        {
+                            "code": "invalid_full_result",
+                            "message": "完整配方结果未能核验，无法保存。\n结果文件格式无效或缺少必要字段。",
+                            "trace": str(exc),
+                        },
+                    )
+            else:
+                state = "cancelled" if result.get("state") == "cancelled" else "error"
+                self.recipes.finish_run(job_id, state, result)
+        elif result_seen:
+            self.recipes.finish_run(
+                job_id,
                 "error",
                 {
+                    "code": "invalid_full_result",
+                    "message": "完整配方结果未能核验，无法保存。\n结果文件格式无效或缺少必要字段。",
+                },
+            )
+        elif proc is None or exit_code is not None:
+            detail = (
+                {"code": "interrupted", "message": "工作室已重启，这次配方计算已中断。请重新生成。"}
+                if proc is None
+                else {
                     "code": "worker_died",
                     "message": "配方计算进程意外退出，未能取得结果。请查看工作室日志。",
                     "exit_code": exit_code,
-                },
+                }
             )
-        else:
-            state, result = "error", {"code": "interrupted", "message": "工作室已重启，这次配方计算已中断。请重新生成。"}
-        out = {
-            "job_id": job_id,
-            "unit": job.get("unit", "jlaunch"),
-            "state": state,
-            "progress": progress,
-            "input": {k: job[k] for k in ("input_space", "output_space", "profile", "space_guessed")},
-            "cube_id": job["cube_id"],
-            "photos": [{"label": p["label"], "iso": p["iso"]} for p in job["photos"]],
-        }
-        if state == "error":
-            out["error"] = {"code": result.get("code"), "message": result.get("message")}
-            if "exit_code" in result:
-                out["error"]["exit_code"] = result["exit_code"]
-            if result.get("code") != "lut_changed":
-                self._report_failure(job_id, progress, result)
+            self.recipes.finish_run(job_id, "interrupted" if proc is None else "error", detail)
+        current = self.recipes.run(job_id)
+        if current is None:
+            raise LutError(404, "fit_not_found", "找不到这次生成。")
+        return self._archived_status(job_id, current, with_result, progress)
+
+    def _archive_result(self, job_id: str, job: dict[str, Any] | None, result: dict[str, Any]) -> None:
+        if (
+            not isinstance(job, dict)
+            or not isinstance(job.get("context"), str)
+            or not isinstance(job.get("source"), dict)
+            or result.get("schema") != "gxr-studio/full-fit-result/1"
+            or result.get("context") != job.get("context")
+        ):
+            raise RecipeError("result_binding_mismatch", "拟合结果的上下文身份不符。")
+        with self.library.private() as directory:
+            entry = directory.read(f"lut_jobs/{job_id}/candidate.record")
+            receipt = directory.read(f"lut_jobs/{job_id}/winner.json")
+            proof = directory.read(f"lut_jobs/{job_id}/quality.json")
+            seal = json.loads(directory.read(f"lut_jobs/{job_id}/winner-seal.json"))
+        for key, blob in (("record_sha256", entry), ("receipt_sha256", receipt), ("quality_sha256", proof)):
+            if digest(blob) != result.get(key):
+                raise RecipeError("result_source_changed", "拟合结果成员的摘要不符。")
+        if seal != {"context": job["context"], "record_sha256": digest(entry), "receipt_sha256": digest(receipt)}:
+            raise RecipeError("winner_not_sealed", "训练胜者没有完整封存。")
+        context = self.contexts.open(job["context"])
+        archived = self.recipes.run(job_id)
+        receipt_doc = json.loads(receipt)
+        source_doc = job["source"]
+        if (
+            archived is None
+            or archived["context"] != job.get("context")
+            or not isinstance(receipt_doc, dict)
+            or canonical(receipt_doc) != receipt
+            or archived["metadata"].get("source_sha256") != digest(canonical(source_doc))
+            or context.training.unit != job.get("unit")
+            or source_doc.get("cube_sha256") != job.get("cube_id")
+            or context.document["target"] != source_doc.get("target")
+            or (context.document["target"].get("kind") == "lut" and context.document["target"].get("cube_sha256") != job.get("cube_id"))
+            or receipt_doc.get("training_identity") != context.training.identity
+            or receipt_doc.get("record_sha256") != digest(entry)
+            or receipt_doc.get("contract") != default_plan()["contract"]
+            or receipt_doc.get("plan") != json.loads(context.training.plan)
+            or receipt_doc.get("source_sha256") != context.document["plan"]["source_sha256"]
+        ):
+            raise RecipeError("result_binding_mismatch", "完整记录、训练回执或冻结来源不匹配。")
+        check_record(entry)
+        if entry[1] != (1 if context.training.family == "bw" else 7):
+            raise RecipeError("result_binding_mismatch", "完整记录、训练回执或冻结来源不匹配。")
+        proof_doc = json.loads(proof)
+        if not isinstance(proof_doc, dict) or canonical(proof_doc) != proof:
+            raise RecipeError("bad_proof", "质量回执字节不是规范编码。")
+        claimed = Quality.from_json(proof_doc)
+        groups, references = self.contexts.evaluation(context.identity)
+        quality = verify_archived_proof(context, Winner(entry, receipt), groups, references, claimed)
+        self.recipes.retain_fit(
+            job_id,
+            FitProduct(
+                context.training.unit,
+                context.training.slot,
+                entry,
+                context.training.environment.data,
+                context.identity,
+                canonical(source_doc),
+                quality,
+                receipt,
+                context.document.get("style"),
+                context.document.get("replacement_version"),
+            ),
+        )
+
+    def _archived_status(
+        self,
+        job_id: str,
+        archived: dict[str, Any],
+        with_result: bool,
+        progress: Any = None,
+    ) -> dict[str, Any]:
+        state = archived["state"]
+        out = {"job_id": job_id, **archived["metadata"], "state": "error" if state == "interrupted" else state, "progress": progress}
+        if state in ("error", "interrupted"):
+            detail = archived["detail"]
+            out["error"] = {k: detail[k] for k in ("code", "message", "exit_code") if k in detail}
+            self._report_failure(job_id, progress, detail)
         if state == "done" and with_result:
-            out["result"] = result["result"]
+            candidate = {k: archived[k] for k in ("id", "recipe", "quality", "controls", "record_sha256", "binding_sha256", "fit")}
+            candidate.update(unit=archived["recipe"]["unit"], slot=archived["recipe"]["slot"], similarity=archived["fit"]["similarity"])
+            out["result"] = {"candidates": [candidate], "formula": "100 × (1 − 配方ΔE00中位 / 原厂04ΔE00中位)，D65电脑预测"}
         return out
 
     def _report_failure(self, job_id: str, progress: Any, result: dict[Any, Any]) -> None:
+        if not self.recipes.claim_failure_report(job_id):
+            return
         with self._failure_lock:
             if job_id in self._reported_failures:
                 return
@@ -418,6 +599,8 @@ class LutService:
         failure = Job("lut_fit", progress or {})
         failure.id = job_id
         details = [f"{result.get('code')}: {result.get('message')}"]
+        if result.get("reason_code"):
+            details.append(f"reason_code={result['reason_code']}")
         if "exit_code" in result:
             details.append(f"exit_code={result['exit_code']}")
         if result.get("trace"):
@@ -426,7 +609,10 @@ class LutService:
         on_job_failed(failure, self._notifier)
 
     def cancel(self, job_id: str) -> dict[Any, Any]:
-        d = self._job_dir(job_id)
+        current = self.status(job_id, with_result=False)
+        if current["state"] != "running":
+            return current
+        self.recipes.finish_run(job_id, "cancelled", {"code": "user_cancelled", "message": "已取消生成。"})
         proc = self._procs.get(job_id)
         if proc is not None and proc.poll() is None:
             self._write_file(f"lut_jobs/{job_id}/cancel", b"1")
@@ -436,9 +622,6 @@ class LutService:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(5)
-            if not (d / "result.json").exists():
-                self._write_json(d / "result.json", {"state": "cancelled"})
-            self._cancelled.add(job_id)
         return self.status(job_id, with_result=False)
 
     def invalidate_cube(self, cube_id: str) -> None:
@@ -453,6 +636,7 @@ class LutService:
         """应用关闭时：还在跑的拟合一并结束，不留孤儿进程。"""
         for job_id, proc in list(self._procs.items()):
             if proc.poll() is None:
+                self.recipes.finish_run(job_id, "interrupted", {"code": "interrupted", "message": "工作室已关闭，这次计算已中断。"})
                 proc.terminate()
                 try:
                     proc.wait(3)
@@ -466,6 +650,12 @@ class LutService:
         dirs = sorted((p for p in self.jobs_dir.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime)
         for p in dirs[:-JOB_KEEP]:
             if p.name not in self._procs or self._procs[p.name].poll() is not None:
+                archived = self.recipes.run(p.name)
+                if archived is not None and archived["state"] == "running":
+                    self.status(p.name, with_result=False)
+                    archived = self.recipes.run(p.name)
+                if archived is None or archived["state"] == "running":
+                    continue
                 with self.library.private() as directory:
                     directory.remove(f"lut_jobs/{p.name}")
                 with self._failure_lock:
@@ -478,94 +668,24 @@ class LutService:
         choice = input_choice(record)
         return bool(choice["default_input_source"] == "guessed" and choice["default_input_space"] == space)
 
-    def _recipe_path(self, rid: str) -> Path:
-        if not re.fullmatch(r"[0-9a-f]{12}", rid or ""):
-            raise LutError(404, "recipe_not_found", "找不到这个配方。请刷新页面后重试。")
-        return self.recipes_dir / f"{rid}.json"
-
     def save_recipe(self, job_id: str, candidate: int, name: str) -> dict[Any, Any]:
-        with self.library.lock:
-            return self._save_recipe(job_id, candidate, name)
-
-    def _save_recipe(self, job_id: str, candidate: int, name: str) -> dict[Any, Any]:
         name = clean_name(name)
-        st = self.status(job_id)
-        if st["state"] != "done":
+        if self.status(job_id)["state"] != "done":
             raise LutError(409, "fit_not_done", "无法保存配方。请等生成完成后再试。")
-        cands = st["result"]["candidates"]
-        if not isinstance(candidate, int) or isinstance(candidate, bool) or not 0 <= candidate < len(cands):
-            raise LutError(422, "bad_candidate", "请求无效。请刷新页面后重试。", {"detail": "没有这个候选"})
-        c = cands[candidate]
-        sel = RecipeSel(c["unit"], c["slot"], tuple(sorted(c["levels"].items())))
-        try:  # 再核对一遍：每个档位都必须是菜单里合法的
-            self.render.menu.request_for(sel)
-        except EditError as exc:
-            raise LutError(422, exc.code, exc.message) from exc
-        rid = uuid.uuid4().hex[:12]
-        existing = len(self.list_recipes())
-        source_lut = self.library.get(st["cube_id"])
-        doc = {
-            "schema": SCHEMA_RECIPE,
-            "id": rid,
-            "name": name,
-            "camera_short_name": f"U{existing + 1:02d}-{c['slot']}{c['entry_sha256'][:3].upper()}",
-            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "recipe": {"kind": "builtin", "unit": c["unit"], "slot": c["slot"], "levels": dict(c["levels"])},
-            "source": {
-                "kind": "lut",
-                "cube_sha256": st["cube_id"],
-                "title": st["result"].get("cube", {}).get("title"),
-                "input_space": st["input"]["input_space"],
-                "output_space": st["input"]["output_space"],
-                "input_space_guessed": bool(st["input"]["space_guessed"])
-                or self._filename_guess_matches(st["cube_id"], st["input"]["input_space"]),
-                "fit_job": job_id,
-                "attribution": {key: source_lut[key] for key in FIELDS},
-            },
-            "fit": {
-                "prediction": True,
-                "label": "电脑预测",
-                "similarity": c["similarity"],
-                "similarity_label": c["label"],
-                "holdout": c["holdout"],
-                "baseline04_holdout": c["baseline04_holdout"],
-                "differences": c["differences"],
-                "entry_sha256": c["entry_sha256"],
-                "formula": st["result"]["formula"],
-            },
-            "camera_write": {
-                "status": "not_supported_yet",
-                "note": "暂不支持写入存储卡",
-            },
-        }
-        self._write_json(self._recipe_path(rid), doc)
-        return doc
+        if isinstance(candidate, bool) or candidate != 0:
+            raise LutError(422, "bad_candidate", "完整拟合只保存训练选定的唯一胜者。")
+        return self.recipes.publish(job_id, name=name)
 
     def list_recipes(self) -> list[dict[Any, Any]]:
-        if not self.recipes_dir.is_dir():
-            return []
-        out = []
-        for p in self.recipes_dir.glob("*.json"):
-            doc = self._read(p)
-            if isinstance(doc, dict) and doc.get("schema") == SCHEMA_RECIPE:
-                out.append(doc)
-        out.sort(key=lambda d: (d["created"], d["id"]))
-        return out
+        recipes = self.recipes.listing()
+        active = {item["cube_id"] for item in self.library.listing()["luts"]}
+        return [{**r, "source_available": r["source"].get("cube_sha256") in active} for r in recipes]
 
     def get_recipe(self, rid: str) -> dict[Any, Any]:
-        p = self._recipe_path(rid)
-        doc = self._read(p) if p.is_file() else None
-        if not isinstance(doc, dict):
-            raise LutError(404, "recipe_not_found", "找不到这个配方。请刷新页面后重试。")
-        return doc
+        return self.recipes.get(rid)
 
-    def rename_recipe(self, rid: str, name: str) -> dict[Any, Any]:
-        doc = self.get_recipe(rid)
-        doc["name"] = clean_name(name)
-        self._write_json(self._recipe_path(rid), doc)
-        return doc
+    def rename_recipe(self, rid: str, name: str, expected_revision: int) -> dict[Any, Any]:
+        return self.recipes.rename(rid, name=clean_name(name), expected_revision=expected_revision)
 
-    def delete_recipe(self, rid: str) -> None:
-        self.get_recipe(rid)
-        with self.library.private() as directory:
-            directory.remove(f"my_recipes/{rid}.json")
+    def delete_recipe(self, rid: str, expected_revision: int) -> None:
+        self.recipes.retire(rid, expected_revision=expected_revision)

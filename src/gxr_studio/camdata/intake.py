@@ -148,7 +148,8 @@ def read_dat_from_path(path: Path) -> tuple[bytes, str]:
 
 def _needs_library(raw: bytes) -> bool:
     try:
-        return datcodec.peek_generation(raw) in (176, 178)
+        profile = datcodec.PROFILES.get(datcodec.peek_generation(raw))
+        return profile is not None and profile.library_generation is not None
     except datcodec.DatError:
         return False
 
@@ -219,7 +220,7 @@ def inspect_dat(raw: bytes, library: bytes | None = None) -> DatInfo:
         raise IntakeError(
             422,
             "dat_invalid",
-            str(exc) if gen in (176, 178) or library is not None else "无法导入相机配方文件。请从存储卡重新复制。",
+            str(exc) if _needs_library(raw) or library is not None else "无法导入相机配方文件。请从存储卡重新复制。",
             {"detail": str(exc)},
         ) from exc
     except Exception as exc:  # noqa: BLE001  畸形输入可能触发任何解析错误，统一当作损坏

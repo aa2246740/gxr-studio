@@ -166,6 +166,7 @@ class ExportResult:
     detail: str = ""
     hdr: bool | None = None  # None = 没要 HDR；False = 要了但这张做不了，原因在 hdr_reason
     hdr_reason: str | None = None
+    recipe_binding: dict[str, str] | None = None
 
 
 def srgb_icc() -> bytes:

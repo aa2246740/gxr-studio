@@ -91,6 +91,11 @@ def _payload(
 ) -> dict[Any, Any]:
     edit, problem = editor_edit(side, shot, c.render.recipe_menu())
     out = render_edits.describe(side, edit)
+    if edit.recipe is not None and edit.recipe.kind == "local":
+        try:
+            out["local_recipe"] = c.render.recipes.get(edit.recipe.id or "")
+        except ValueError:
+            out["local_recipe"] = None
     out["render"] = (
         {"available": False, "reason": problem.code, "message": f"{problem.message} 照片调整仍可保存，暂不生成拍摄配方预测。"}
         if problem is not None
@@ -132,6 +137,9 @@ def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any
         "defaulted": plan.defaulted,
         "effective_levels": plan.levels,
         "entry_sha256": plan.entry_sha256,
+        "record_sha256": plan.record_sha256,
+        "binding_sha256": plan.binding_sha256,
+        "quality": plan.quality,
         "model_iso": plan.model_iso,
     }
 
@@ -294,7 +302,7 @@ def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
                 raise ApiError(exc.status, exc.code, exc.message, exc.extra) from exc
             if target.input_space not in DISPLAY and "dng" not in shot["files"]:
                 raise EditError("lut_needs_raw", "这个 LUT 需要 RAW 文件")
-        _edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev)
+        _edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev, recipes=c.render.recipes)
     except EditError as exc:
         raise _edit_error(exc) from exc
     except RevisionConflict as exc:

@@ -12,7 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "web" / "assets"
 SCENE = Path(__file__).resolve().parent / "support" / "ui_scene.mjs"
-HINT = "相机关机再开后，按 ADJ 再按 OK 套用上次的配方"
+HINT = "完整配方保存在这台电脑，套用和导出需要 RAW+JPG，不写入相机。"
 
 
 def test_guide_dialog_is_gone_and_help_opens_the_shortcut_table():
@@ -113,6 +113,7 @@ def _run_scene(tmp_path: Path) -> dict:
                 "  };",
                 "  if (path === '/api/lut/spaces') return { spaces: [] };",
                 "  if (path === '/api/my-recipes') return { recipes: [] };",
+                "  if (path === '/api/lut/quality') return { sources: [] };",
                 "  if (path.startsWith('/api/photos?')) return [];",
                 "  if (path === '/api/library/rebuild') return {};",
                 "  throw new Error('unexpected ' + path);",

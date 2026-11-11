@@ -28,8 +28,10 @@ from ..library import sidecar as sc
 from ..library.edits import RevisionConflict
 from ..library.store import Library
 from ..lut.errors import LutError
+from ..recipes import RecipeRepository
 from .edits import describe as describe_edit
 from .edits import read as read_edit
+from .edits import validate_recipe
 from .edits import write as write_edit
 from .params import EditError, parse_adjust, parse_curve, parse_lut, parse_recipe
 from .recipes import Menu, unit_of_lens
@@ -56,6 +58,7 @@ class Env:
     menu: Menu
     lut_needs_raw: Callable[[str], bool]  # LUT 不在库里时抛 LutError
     recipe_without_raw: bool = False  # 只有 JPG 的照片能不能用配方（近似模式开着才行）
+    recipes: RecipeRepository | None = None
 
 
 @dataclass(frozen=True)
@@ -175,7 +178,7 @@ def _recipe_changes(shot: dict[Any, Any], source: dict[str, Any], env: Env, skip
             skips.append(Skip("recipe", "needs_raw", "这张照片只有 JPG，没有套用配方。", "recipe"))
         else:
             try:
-                env.menu.request_for(sel)  # 档位不合法就不用，和手动保存同一条规则
+                validate_recipe(sel, shot, env.menu, env.recipes)
             except EditError as exc:
                 skips.append(Skip("recipe", "recipe_rejected", f"这张照片用不了这个配方，没有套用。{exc.message}", "recipe"))
             else:
@@ -249,7 +252,7 @@ def paste_one(
     try:
         if changes:
             try:
-                _edit2, out = write_edit(lib, shot, changes, env.menu, expected_rev=rev)
+                _edit2, out = write_edit(lib, shot, changes, env.menu, expected_rev=rev, recipes=env.recipes)
             except EditError as exc:
                 for group in {_group_of(k) for k in changes}:
                     skips.append(Skip(group, "rejected", exc.message))

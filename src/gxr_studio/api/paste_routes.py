@@ -58,7 +58,7 @@ def _env(c: Any) -> paste.Env:
         target, _item = c.render.luts.target(lut_id)
         return bool(target.input_space not in DISPLAY)
 
-    return paste.Env(c.render.recipe_menu(), lut_needs_raw, bool(ENABLED and c.render.available()))
+    return paste.Env(c.render.recipe_menu(), lut_needs_raw, bool(ENABLED and c.render.available()), c.render.recipes)
 
 
 def _validate(body: PasteRequest) -> None:

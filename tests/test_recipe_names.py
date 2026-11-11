@@ -48,7 +48,7 @@ def test_records_sharing_bases_keep_their_names_and_positions():
     expected = [f"{i:02} {name}" for i, name in enumerate(BASE_NAMES[:4] + ["Synthetic A", "Synthetic B", "Synthetic C", "Synthetic D"], 1)]
     assert [f"{r['number']} {r['name']}" for r in out["camera"][0]] == expected
     assert out["labels"][0] == expected
-    assert all(f" · {label}（无调整）" in text for label, text in zip(expected, out["lut"], strict=True))
+    assert out["lut"] == ["A12 50mm · 独立完整配方"] * len(expected)
     assert out["bases"][0] == [f"{i:02} {name}" for i, name in enumerate(BASE_NAMES, 1)]
 
 
@@ -74,7 +74,7 @@ def test_fit_searches_available_builtin_positions_without_using_record_bases():
     assert [c["slot"] for c in result["candidates"]] == [1, 2]
 
 
-@pytest.mark.parametrize("generation", (176, 178))
+@pytest.mark.parametrize("generation", (176, 178, 181, 182))
 def test_real_bundle_names_positions_and_import_counts(generation, tmp_path, client):
     raw, library = need_bundle(generation)
     dat = datcodec.parse(raw, library)
@@ -83,7 +83,7 @@ def test_real_bundle_names_positions_and_import_counts(generation, tmp_path, cli
     camera = CameraData(home)
     units = camera.listing()
     out = scene(units)
-    offset = 4 if generation == 178 else 8
+    offset = 8 if generation == 176 else 4
     all_labels = []
     for index, unit in enumerate(units):
         names = BASE_NAMES[:offset] + [r.name for r in dat.recipes if r.unit_mask >> index & 1]
@@ -100,7 +100,7 @@ def test_real_bundle_names_positions_and_import_counts(generation, tmp_path, cli
         for slot in range(1, offset + 1):
             assert fitter.entry_of(slot, {}) == camera.resolve(RecipeSel(unit["id"], slot)).entry
     assert len(out["lut"]) == len(all_labels)
-    assert all(f" · {label}（无调整）" in text for label, text in zip(all_labels, out["lut"], strict=True))
+    assert all(text.endswith(" · 独立完整配方") for text in out["lut"])
     response = client.post("/api/camdata/import-upload", content=raw + library, headers={"X-GXR-Dat-Bytes": str(len(raw))})
     assert response.status_code == 200, response.text
     counts = [23, 22, 23] if generation == 176 else [23, 23, 23]

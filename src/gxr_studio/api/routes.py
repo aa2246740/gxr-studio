@@ -78,6 +78,15 @@ class ExportRequest(BaseModel):
     hdr: bool = False  # 带增益图的 HDR JPEG（按成片重新算）；做不了的照片照常导出，结果里 hdr=false 并给出 hdr_note
 
 
+class ExportRecipeBinding(BaseModel):
+    record_sha256: str
+    entry_sha256: str
+    binding_sha256: str
+    selection_id: str
+    quality_state: Literal["passed", "rejected", "needs_evidence", "historical_exception", "unattached"]
+    assessed_entry: bool
+
+
 class ExportFile(BaseModel):
     """单张导出的结果。render_label 是机器值，render_text 是给人看的字。"""
 
@@ -97,6 +106,7 @@ class ExportFile(BaseModel):
     warning: str | None = None
     hdr: bool | None = None  # 没要 HDR 时为空
     hdr_note: str | None = None
+    recipe_binding: ExportRecipeBinding | None = None
 
 
 class BatchExportRequest(ExportRequest):
@@ -213,6 +223,10 @@ def _export_source(c: Any, shot: dict[Any, Any], req: ExportRequest) -> tuple[st
     except EditError as exc:
         if exc.code.startswith("camera_"):
             raise ApiError(409, exc.code, exc.message) from exc
+        side, _problem = c.lib.read_sidecar_or_default(shot)
+        stored_recipe = side.get("recipe")
+        if isinstance(stored_recipe, dict) and stored_recipe.get("kind") == "local":
+            raise ApiError(422, exc.code, exc.message) from exc
         edit = EditState()
     except sc.SidecarCorrupt:
         edit = EditState()  # 编辑读不出来不挡导出；退回没有编辑
@@ -294,6 +308,7 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
         "render_text": res.render_label,
         "prediction": res.render_kind == "prediction",
         "calibrated": res.calibrated,
+        **({"recipe_binding": res.recipe_binding} if res.recipe_binding is not None else {}),
         **({"detail": res.detail} if res.detail else {}),
         **({"warning": warning} if warning else {}),
         **({"hdr": res.hdr} if res.hdr is not None else {}),

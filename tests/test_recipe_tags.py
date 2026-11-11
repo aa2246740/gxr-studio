@@ -200,14 +200,14 @@ def test_lookup_is_bound_to_identity_unit_and_camera_position():
     assert recipe_payload(parse_recipe_tag("GXR1 6a3a5a3c02 28 99 A99999999-"))["name"] is None
 
 
-@pytest.mark.parametrize("generation,identity", ((176, "d25d2f0a68"), (178, "6a3a5a3c02")))
+@pytest.mark.parametrize("generation,identity", ((176, "d25d2f0a68"), (178, "6a3a5a3c02"), (181, "6a3a5a3c02"), (182, "6a3a5a3c02")))
 def test_all_registered_names_match_the_sealed_catalog(generation, identity):
     from g178_support import need_bundle
 
     raw, library = need_bundle(generation)
     assert library[84:89].hex() == identity
     dat = datcodec.parse(raw, library)
-    count = 4 if generation == 178 else 8
+    count = 8 if generation == 176 else 4
     for index, code in enumerate(("50", "28", "MT")):
         native = tuple(record[4:36].split(b"\0")[0].decode("ascii")[3:] for record in dat.modules[index].records[:count])
         extras = tuple(record.name for record in dat.recipes if record.unit_mask >> index & 1)

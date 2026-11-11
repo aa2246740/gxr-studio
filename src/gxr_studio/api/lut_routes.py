@@ -1,4 +1,4 @@
-"""M3a 的 LUT 导入接口（ARCHITECTURE §6.4 路线 1）。业务逻辑在 `lut/service.py`、`lut/fit.py`。
+"""LUT 导入与完整本机配方接口。业务逻辑在 `lut/service.py`、`recipes/`。
 
 - `POST /api/lut/upload`                  .cube 的原始字节作请求体（不用 multipart），文件名放在 `X-GXR-Filename`；
 - `GET  /api/lut/spaces`                  可选的输入/输出色彩空间；
@@ -8,7 +8,7 @@
 - `POST /api/lut/fit/{job_id}/cancel`     取消；
 - `GET/POST/PUT/DELETE /api/my-recipes`   电脑端的"我的配方"（只存在电脑里，这一版不写相机卡）。
 
-所有数字都是"电脑预测"；28mm / MOUNT 没有标定，拒绝导入。
+所有数字都是"电脑预测"；按单元核对已导入校准和显式质量输入。
 """
 
 from __future__ import annotations
@@ -19,12 +19,13 @@ from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
 from ..lut import cube as cubemod
 from ..lut.library import file_parts
 from ..lut.service import LutError, spaces_listing
+from ..recipes import RecipeError
 from ..render.recipes import UNIT_INFO
 from .errors import ApiError
 from .lut_library_routes import call
@@ -46,11 +47,13 @@ class SpaceArgs(BaseModel):
 
 
 class FitRequest(SpaceArgs):
+    model_config = ConfigDict(extra="forbid")
     cube_id: str
     unit: str = "jlaunch"
     photo_ids: list[str] | None = None
     profile: str = "normal"
     space_guessed: bool = False
+    quality_source: str | None = None
 
 
 class SaveRecipeRequest(BaseModel):
@@ -61,14 +64,33 @@ class SaveRecipeRequest(BaseModel):
 
 class RenameRequest(BaseModel):
     name: str
+    expected_revision: int
 
 
-def _api(exc: LutError) -> ApiError:
-    return ApiError(exc.status, exc.code, exc.message, exc.extra)
+class QualityImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    folder: str
+
+
+def _api(exc: LutError | RecipeError) -> ApiError:
+    if isinstance(exc, LutError):
+        return ApiError(exc.status, exc.code, exc.message, exc.extra)
+    status = 404 if exc.code == "recipe_not_found" else 409 if "conflict" in exc.code or exc.code.endswith("changed") else 422
+    return ApiError(status, exc.code, exc.message)
 
 
 def _svc(request: Request) -> Any:
     return ctx(request).lut
+
+
+@router.post("/api/lut/quality", response_model=None)
+def quality_import(body: QualityImportRequest, request: Request) -> Any:
+    return call(_svc(request).contexts.import_pack, Path(body.folder).expanduser())
+
+
+@router.get("/api/lut/quality", response_model=None)
+def quality_list(request: Request) -> Any:
+    return {"sources": call(_svc(request).contexts.listing)}
 
 
 @router.get("/api/lut/spaces", response_model=None)
@@ -169,8 +191,9 @@ def lut_fit(body: FitRequest, request: Request) -> Any:
             photo_ids=body.photo_ids,
             profile=body.profile,
             guessed=body.space_guessed,
+            quality_source=body.quality_source,
         )
-    except LutError as exc:
+    except (LutError, RecipeError) as exc:
         raise _api(exc) from exc
 
 
@@ -178,7 +201,7 @@ def lut_fit(body: FitRequest, request: Request) -> Any:
 def lut_fit_status(job_id: str, request: Request) -> Any:
     try:
         return _svc(request).status(job_id)
-    except LutError as exc:
+    except (LutError, RecipeError) as exc:
         raise _api(exc) from exc
 
 
@@ -186,7 +209,7 @@ def lut_fit_status(job_id: str, request: Request) -> Any:
 def lut_fit_cancel(job_id: str, request: Request) -> Any:
     try:
         return _svc(request).cancel(job_id)
-    except LutError as exc:
+    except (LutError, RecipeError) as exc:
         raise _api(exc) from exc
 
 
@@ -195,14 +218,16 @@ def lut_fit_cancel(job_id: str, request: Request) -> Any:
 
 @router.get("/api/my-recipes", response_model=None)
 def recipes_list(request: Request) -> dict[Any, Any]:
-    return {"recipes": _svc(request).list_recipes()}
+    svc = _svc(request)
+    legacy = svc.home / "my_recipes"
+    return {"recipes": call(svc.list_recipes), "legacy_unmigrated": 0 if legacy.is_symlink() else len(list(legacy.glob("*.json")))}
 
 
 @router.post("/api/my-recipes", response_model=None)
 def recipes_save(body: SaveRecipeRequest, request: Request) -> Any:
     try:
         return _svc(request).save_recipe(body.job_id, body.candidate, body.name)
-    except LutError as exc:
+    except (LutError, RecipeError) as exc:
         raise _api(exc) from exc
 
 
@@ -210,22 +235,22 @@ def recipes_save(body: SaveRecipeRequest, request: Request) -> Any:
 def recipes_get(rid: str, request: Request) -> Any:
     try:
         return _svc(request).get_recipe(rid)
-    except LutError as exc:
+    except (LutError, RecipeError) as exc:
         raise _api(exc) from exc
 
 
 @router.put("/api/my-recipes/{rid}", response_model=None)
 def recipes_rename(rid: str, body: RenameRequest, request: Request) -> Any:
     try:
-        return _svc(request).rename_recipe(rid, body.name)
-    except LutError as exc:
+        return _svc(request).rename_recipe(rid, body.name, body.expected_revision)
+    except (LutError, RecipeError) as exc:
         raise _api(exc) from exc
 
 
 @router.delete("/api/my-recipes/{rid}", response_model=None)
-def recipes_delete(rid: str, request: Request) -> dict[Any, Any]:
+def recipes_delete(rid: str, request: Request, expected_revision: int) -> dict[Any, Any]:
     try:
-        _svc(request).delete_recipe(rid)
-    except LutError as exc:
+        _svc(request).delete_recipe(rid, expected_revision)
+    except (LutError, RecipeError) as exc:
         raise _api(exc) from exc
     return {"deleted": rid}

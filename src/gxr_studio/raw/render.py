@@ -42,6 +42,7 @@ class Renderer:
     calibrated: bool  # 是否经过相机配方/标定（中性转换 = False）
     display: Callable[[np.ndarray], np.ndarray]
     description: str = ""  # 写进导出文件 EXIF ImageDescription 的话（只能是 ASCII）；空 = 用默认说明
+    recipe_binding: dict[str, str] | None = None
 
 
 NEUTRAL = Renderer(

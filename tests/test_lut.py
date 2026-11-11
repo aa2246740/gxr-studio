@@ -441,53 +441,23 @@ def test_preview_without_camera_data_uses_the_chart(client):
 
 
 def test_calibrated_28mm_and_mount_can_start_a_fit(data_client):
+    from full_recipe_support import source_for_service
+
     cid = upload(data_client, cube_bytes(warm)).json()["cube_id"]
+    service = data_client.app.state.ctx.lut
     for unit in ("qlaunch", "l08firm"):
-        r = data_client.post("/api/lut/fit", json={"cube_id": cid, "unit": unit})
+        source = source_for_service(service, service.home.parent / ("quality-" + unit), unit)
+        r = data_client.post("/api/lut/fit", json={"cube_id": cid, "unit": unit, "quality_source": source})
         assert r.status_code == 200 and r.json()["unit"] == unit
         assert data_client.post(f"/api/lut/fit/{r.json()['job_id']}/cancel").status_code == 200
 
 
-def _plant_fit(settings, cube_id, space, guessed, job_id):
-    job_dir = settings.home_dir / "lut_jobs" / job_id
-    job_dir.mkdir(parents=True)
-    (job_dir / "job.json").write_text(
-        json.dumps(
-            {
-                "cube_id": cube_id,
-                "input_space": space,
-                "output_space": "srgb",
-                "profile": "quick",
-                "space_guessed": guessed,
-                "photos": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    (job_dir / "result.json").write_text(
-        json.dumps(
-            {
-                "state": "done",
-                "result": {
-                    "formula": "median",
-                    "candidates": [
-                        {
-                            "unit": "jlaunch",
-                            "slot": 4,
-                            "levels": {},
-                            "similarity": 90,
-                            "label": "接近",
-                            "holdout": {},
-                            "baseline04_holdout": {},
-                            "differences": [],
-                            "entry_sha256": "ab" * 32,
-                        }
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+def _plant_fit(client, cube_id, space, guessed, job_id):
+    from full_recipe_support import plant_pending, publish_controlled_terminal
+
+    service = client.app.state.ctx.lut
+    plant_pending(service, cube_id, job_id, space=space, guessed=guessed)
+    publish_controlled_terminal(service, job_id)
 
 
 def test_saved_recipe_reports_a_filename_guess(data_client, settings):
@@ -495,9 +465,9 @@ def test_saved_recipe_reports_a_filename_guess(data_client, settings):
     assert guessed.status_code == 200, guessed.text
     plain = upload(data_client, cube_bytes(warm, 17, "plain"), "mystery.cube")
     assert plain.status_code == 200, plain.text
-    _plant_fit(settings, guessed.json()["cube_id"], "llog", False, "a11a11a11a11")
-    _plant_fit(settings, plain.json()["cube_id"], "srgb", False, "b22b22b22b22")
-    _plant_fit(settings, plain.json()["cube_id"], "srgb", True, "c33c33c33c33")
+    _plant_fit(data_client, guessed.json()["cube_id"], "llog", False, "a11a11a11a11")
+    _plant_fit(data_client, plain.json()["cube_id"], "srgb", False, "b22b22b22b22")
+    _plant_fit(data_client, plain.json()["cube_id"], "srgb", True, "c33c33c33c33")
     from_name = data_client.post("/api/my-recipes", json={"job_id": "a11a11a11a11", "candidate": 0, "name": "文件名猜的"})
     assert from_name.status_code == 200, from_name.text
     assert from_name.json()["source"]["input_space_guessed"] is True
@@ -518,56 +488,45 @@ def test_fit_needs_camera_data(client):
 
 
 def test_full_flow_fit_save_apply_and_manage_recipes(data_client, camhome):
-    c = data_client
-    cid = upload(c, cube_bytes(warm, 17, "warm film"), "warm.cube").json()["cube_id"]
-    r = c.post("/api/lut/fit", json={"cube_id": cid, "space": "srgb", "output": "srgb", "profile": "quick"})
-    assert r.status_code == 200, r.text
-    job = r.json()["job_id"]
-    busy = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "quick"})
-    if busy.status_code == 409:  # 同时只跑一个
-        assert busy.json()["error"] == "fit_busy" and busy.json()["job_id"] == job
-    st = wait(c, job)
-    assert st["state"] == "done", st.get("error")
-    res = st["result"]
-    assert res["prediction"] is True and res["label"] == "电脑预测" and res["caution"] == ""
-    assert len(res["candidates"]) == 2 and res["best"] == res["candidates"][0]
-    sims = [x["similarity"] for x in res["candidates"]]
-    assert sims == sorted(sims, reverse=True)
-    best = res["best"]
-    # 数字与结果文件完全一致：界面显示的相似度 = 1 - 候选中位数 / 04 中位数（留出样本）
-    assert best["similarity"] == pytest.approx(100 * (1 - best["holdout"]["median"] / best["baseline04_holdout"]["median"]))
-    assert best["label"] == fit.label_for(best["similarity"])
-    assert res["formula"] == fit.FORMULA and res["thresholds"] == {"close": 90.0, "rough": 80.0}
-    job_dir = Path(c.app.state.ctx.settings.home_dir) / "lut_jobs" / job
-    on_disk = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
-    assert on_disk["result"]["best"]["similarity"] == best["similarity"]
-    # 暖色 LUT：差别说明不为空
-    assert best["differences"]
-    # 存为我的配方
-    saved = c.post("/api/my-recipes", json={"job_id": job, "candidate": 0, "name": "  我的暖色  配方 "})
-    assert saved.status_code == 200, saved.text
-    doc = saved.json()
-    assert doc["name"] == "我的暖色 配方" and doc["recipe"]["kind"] == "builtin" and doc["recipe"]["unit"] == "jlaunch"
-    assert doc["fit"]["similarity"] == best["similarity"] and doc["camera_write"]["status"] == "not_supported_yet"
-    assert len(doc["camera_short_name"]) == 8 and doc["camera_short_name"].isascii()
-    assert [x["id"] for x in c.get("/api/my-recipes").json()["recipes"]] == [doc["id"]]
-    assert c.put(f"/api/my-recipes/{doc['id']}", json={"name": "改个名"}).json()["name"] == "改个名"
-    assert c.put(f"/api/my-recipes/{doc['id']}", json={"name": "  "}).status_code == 422
-    assert c.post("/api/my-recipes", json={"job_id": job, "candidate": 9, "name": "x"}).status_code == 422
-    assert c.post("/api/my-recipes", json={"job_id": "0123456789ab", "candidate": 0, "name": "x"}).status_code == 404
-    # 存下来的配方是内置配方的形状：直接就能当某张照片的配方去预览（走原有的渲染链）
+    from full_recipe_support import source_for_service
     from gxr_studio.render.params import parse_recipe
 
-    sel = parse_recipe(doc["recipe"])
-    assert sel.slot == best["slot"] and dict(sel.levels) == best["levels"]
-    assert c.delete(f"/api/my-recipes/{doc['id']}").status_code == 200
-    assert c.get("/api/my-recipes").json()["recipes"] == [] and c.get(f"/api/my-recipes/{doc['id']}").status_code == 404
+    c = data_client
+    service = c.app.state.ctx.lut
+    cid = upload(c, cube_bytes(warm, 17, "warm film"), "warm.cube").json()["cube_id"]
+    source = source_for_service(service, service.home.parent / "full-flow-quality")
+    r = c.post("/api/lut/fit", json={"cube_id": cid, "quality_source": source})
+    assert r.status_code == 200, r.text
+    job = r.json()["job_id"]
+    st = wait(c, job, limit=900)
+    assert st["state"] == "done", st.get("error")
+    assert len(st["result"]["candidates"]) == 1
+    winner = st["result"]["candidates"][0]
+    saved = c.post("/api/my-recipes", json={"job_id": job, "name": "  我的暖色  配方 "})
+    assert saved.status_code == 200, saved.text
+    doc = saved.json()
+    assert doc["name"] == "我的暖色 配方" and doc["recipe"]["kind"] == "local"
+    assert doc["recipe"] == winner["recipe"] and doc["quality"] == winner["quality"]
+    resolved = service.recipes.resolve(parse_recipe(doc["recipe"]))
+    assert resolved.record_sha256 == doc["record_sha256"] and len(resolved.entry) == 552
+    renamed = c.put(f"/api/my-recipes/{doc['id']}", json={"name": "改个名", "expected_revision": 1})
+    assert renamed.status_code == 200 and renamed.json()["name"] == "改个名"
+    assert c.put(f"/api/my-recipes/{doc['id']}", json={"name": " ", "expected_revision": 2}).status_code == 422
+    assert c.post("/api/my-recipes", json={"job_id": job, "candidate": 9, "name": "x"}).status_code == 422
+    assert c.post("/api/my-recipes", json={"job_id": "0123456789ab", "name": "x"}).status_code == 404
+    assert c.delete(f"/api/my-recipes/{doc['id']}?expected_revision=2").status_code == 200
+    assert c.get("/api/my-recipes").json()["recipes"] == []
+    assert c.get(f"/api/my-recipes/{doc['id']}").json()["hidden"]
+    assert service.recipes.resolve(parse_recipe(doc["recipe"])).entry == resolved.entry
 
 
 def test_cancel_kills_the_worker_and_allows_a_new_fit(data_client):
+    from full_recipe_support import source_for_service
+
     c = data_client
     cid = upload(c, cube_bytes(warm, 17), "warm.cube").json()["cube_id"]
-    job = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "normal"}).json()["job_id"]
+    source = source_for_service(c.app.state.ctx.lut, c.app.state.ctx.settings.home_dir.parent / "run-quality")
+    job = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "normal", "quality_source": source}).json()["job_id"]
     svc = c.app.state.ctx.lut
     proc = svc._procs[job]
     assert proc.poll() is None
@@ -576,26 +535,29 @@ def test_cancel_kills_the_worker_and_allows_a_new_fit(data_client):
     assert "result" not in st
     assert c.get(f"/api/lut/fit/{job}").json()["state"] == "cancelled"
     assert c.post("/api/my-recipes", json={"job_id": job, "candidate": 0, "name": "x"}).status_code == 409
-    again = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "quick"})
+    again = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "quick", "quality_source": source})
     assert again.status_code == 200
     c.post(f"/api/lut/fit/{again.json()['job_id']}/cancel")
 
 
 def test_progress_is_reported_while_running(data_client):
+    from full_recipe_support import source_for_service
+
     c = data_client
     cid = upload(c, cube_bytes(warm, 17), "warm.cube").json()["cube_id"]
-    job = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "normal"}).json()["job_id"]
+    source = source_for_service(c.app.state.ctx.lut, c.app.state.ctx.settings.home_dir.parent / "run-quality")
+    job = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "normal", "quality_source": source}).json()["job_id"]
 
     def reported():
         st = c.get(f"/api/lut/fit/{job}").json()
-        return st["progress"] if st["progress"] and st["progress"]["evaluations"] > 0 else None
+        return st["progress"] if st["state"] == "running" and st["progress"] and st["progress"].get("evaluations", 0) > 0 else None
 
     try:
         # 原来是 240 次 × 0.25 秒，约 60 秒；进度要在这段时间里出现，不能放宽成 240 秒。
         seen = wait_until(reported, f"拟合进度（任务 {job}）", timeout=60, interval=0.25)
     finally:
         c.post(f"/api/lut/fit/{job}/cancel")
-    assert seen and 0 <= seen["fraction"] <= 1 and seen["phase"] and seen["evaluations"] > 0
+    assert seen and seen["stage"] in ("iterate", "exact") and seen.get("evaluations", 0) > 0
 
 
 @needs_sample
@@ -608,10 +570,5 @@ def test_fit_and_preview_with_library_photos(data_client, real_card):
     b = c.get(f"/api/lut/{cid}/preview", params={"which": "lut", "photo": photo["id"]})
     assert a.status_code == 200 and b.status_code == 200 and a.content != b.content
     assert b.headers["x-gxr-preview-mode"] == "04-simulation"
-    job = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "quick"}).json()
-    assert job["photos"], "应当有图库里的 DNG 照片可抽样"
-    st = wait(c, job["job_id"])
-    assert st["state"] == "done", st.get("error")
-    assert st["result"]["samples"]["groups"]["照片"] > 0 and any(p["holdout_only"] for p in st["result"]["samples"]["photos"]) == (
-        len(st["result"]["samples"]["photos"]) >= 2
-    )
+    missing = c.post("/api/lut/fit", json={"cube_id": cid, "profile": "quick"})
+    assert missing.status_code == 422 and missing.json()["error"] == "quality_source_required"

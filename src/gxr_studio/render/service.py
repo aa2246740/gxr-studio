@@ -30,9 +30,11 @@ from PIL import Image
 from .. import crop as cropmod
 from ..camdata import calib, datcodec, store
 from ..camdata.store import CamdataError
+from ..camdata.unit_model import UnitModel
 from ..export import crop_image, srgb_icc
 from ..lut.library import LutLibrary
 from ..raw import Renderer, half_res_codes, open_dng, orient_array
+from ..recipes import RecipeError, RecipeRepository
 from . import chain
 from .params import EditState, RecipeSel
 from .recipes import CameraData, Menu, unit_of_lens
@@ -105,6 +107,11 @@ class Plan:
     calibrated: bool
     reasons: tuple[str, ...]
     label: str
+    model: UnitModel | None
+    record_sha256: str = ""
+    binding_sha256: str = ""
+    selection_id: str | None = None
+    quality: dict[str, Any] | None = None
 
 
 @dataclass
@@ -160,6 +167,7 @@ class RenderService:
         self.home = Path(home)
         self.lib = library
         self.luts = LutLibrary(self.home, (*forbidden, library.root))
+        self.recipes = RecipeRepository(self.home, (*forbidden, library.root))
         self.menu = Menu()
         self._lock = threading.RLock()
         self._gate = threading.BoundedSemaphore(max_concurrent)
@@ -293,7 +301,9 @@ class RenderService:
 
     def engine_pin(self) -> str:
         cam = self._camera
-        return f"{ENGINE}:{cam.table_sha256[:12]}:{cam.manifest_sha256[:12]}:{(self._calib_manifest_sha or '')[:12]}"  # type: ignore[union-attr]
+        if cam is None:
+            return f"{ENGINE}:no-current-camera"
+        return f"{ENGINE}:{cam.table_sha256[:12]}:{cam.manifest_sha256[:12]}:{(self._calib_manifest_sha or '')[:12]}"
 
     def model(self, model_iso: int, unit: str = "jlaunch") -> Any:
         self._require(unit)
@@ -328,6 +338,32 @@ class RenderService:
         photo_unit = self.photo_unit(shot)
         defaulted = edit.recipe is None
         sel = edit.recipe or RecipeSel(photo_unit or "jlaunch", 4)
+        if sel.kind == "local":
+            if not {"dng", "jpg"} <= set(shot.get("files", {})):
+                raise RenderUnavailable("local_recipe_needs_pair", "完整本机配方需要RAW+JPG照片。", "unsupported")
+            try:
+                local = self.recipes.resolve(sel, photo_unit=photo_unit, iso=int(shot.get("iso") or 200))
+            except RecipeError as exc:
+                raise RenderUnavailable(exc.code, exc.message, "local_recipe") from exc
+            local_reasons = () if local.calibrated else (MODEL_NOTE,)
+            quality = {**local.quality.summary(), "assessed_entry": local.assessed_entry}
+            return Plan(
+                sel.unit,
+                sel.slot,
+                False,
+                local.levels,
+                local.entry,
+                local.entry_sha256,
+                local.model_iso,
+                local.calibrated,
+                local_reasons,
+                CALIBRATED_LABEL if local.calibrated else UNCALIBRATED_LABEL,
+                local.model,
+                local.record_sha256,
+                local.binding_sha256,
+                sel.id,
+                quality,
+            )
         res = self._require(sel.unit).resolve(sel)
         iso = shot.get("iso")
         model_iso = 1600 if iso and iso >= ISO_SPLIT else 200
@@ -344,6 +380,9 @@ class RenderService:
             not reasons,
             tuple(reasons),
             CALIBRATED_LABEL if not reasons else UNCALIBRATED_LABEL,
+            None,
+            res.entry_sha256,
+            self.engine_pin(),
         )
 
     # ---- 缓存件 -----------------------------------------------------------
@@ -376,11 +415,11 @@ class RenderService:
         return self._proxy(shot, max_edge)
 
     def _bake(self, plan: Plan, step: float) -> chain.ChromaBake:
-        key = (plan.unit, plan.entry_sha256, plan.model_iso, step, self._state_token)
+        key = (plan.unit, plan.entry_sha256, plan.model_iso, step, plan.binding_sha256, ENGINE)
         hit = self._bakes.get(key)
         if hit is not None:
             return hit
-        bk = chain.bake_chroma(self.model(plan.model_iso, plan.unit), plan.entry, step)
+        bk = chain.bake_chroma(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, step)
         self._bakes.put(key, bk, bk.gain.nbytes + bk.pre.nbytes)
         self.stats["bakes"] += 1
         return bk
@@ -439,7 +478,8 @@ class RenderService:
             "model_iso": plan.model_iso,
             "model_unit": plan.unit,
             "curve": edit.curve.to_json() if edit.curve else None,
-            "engine": self.engine_pin(),
+            "engine": ENGINE,
+            "binding": getattr(plan, "binding_sha256", ""),
             "width": max_edge,
             "exact": exact,
             "step": PREVIEW_STEP,
@@ -479,7 +519,7 @@ class RenderService:
             table = display_table(edit.adjust, edit.curve)
             t = time.perf_counter()
             if exact:
-                rgb = chain.exact_u8(self.model(plan.model_iso, plan.unit), plan.entry, codes, gains, table)
+                rgb = chain.exact_u8(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, codes, gains, table)
                 ms["bake"] = 0.0
             else:
                 bakes = self.stats["bakes"]
@@ -506,12 +546,12 @@ class RenderService:
         gains = channel_gains(edit.adjust)
         table = display_table(edit.adjust, edit.curve)
         if precise:
-            model = self.model(plan.model_iso, plan.unit)
+            model = plan.model or self.model(plan.model_iso, plan.unit)
 
             def display(codes: np.ndarray) -> np.ndarray:
                 return chain.exact_u8(model, plan.entry, codes, gains, table)
         else:
-            bk = chain.bake_chroma(self.model(plan.model_iso, plan.unit), plan.entry, EXPORT_STEP)
+            bk = chain.bake_chroma(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, EXPORT_STEP)
 
             def display(codes: np.ndarray) -> np.ndarray:
                 return chain.chroma_u8(codes, bk, gains, table)
@@ -521,6 +561,7 @@ class RenderService:
             f"{' (stock 04 simulation)' if plan.defaulted else ''}, ISO model {plan.model_iso}"
             f"{'' if plan.calibrated else ', NOT calibrated for this lens unit/ISO'}"
             f"{', exact chain' if precise else ''}. {plan.label}"
+            f" Record SHA256 {plan.record_sha256}; entry SHA256 {plan.entry_sha256}; binding {plan.binding_sha256}."
         )
         return Renderer(
             id="recipe-prediction" if plan.calibrated else "recipe-prediction-uncalibrated",
@@ -529,6 +570,16 @@ class RenderService:
             calibrated=plan.calibrated,
             display=display,
             description=desc,
+            recipe_binding={
+                "record_sha256": plan.record_sha256,
+                "entry_sha256": plan.entry_sha256,
+                "binding_sha256": plan.binding_sha256,
+                "selection_id": plan.selection_id or "",
+                "quality_state": (plan.quality or {}).get("state", "unattached"),
+                "assessed_entry": "1" if (plan.quality or {}).get("assessed_entry") else "0",
+            }
+            if plan.selection_id
+            else None,
         )
 
     # ---- 缩略图 / 默认外观 --------------------------------------------------

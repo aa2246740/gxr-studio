@@ -43,10 +43,10 @@ NAMES = (
 )
 
 
-@pytest.fixture(scope="module")
-def camera(tmp_path_factory):
-    raw, library = need_bundle(178)
-    home = tmp_path_factory.mktemp("g178-camera")
+@pytest.fixture(scope="module", params=(178, 181, 182))
+def camera(tmp_path_factory, request):
+    raw, library = need_bundle(request.param)
+    home = tmp_path_factory.mktemp(f"g{request.param}-camera")
     store.import_from_dat(raw, home, library=library)
     return CameraData(home)
 
@@ -56,7 +56,7 @@ def reference(tmp_path_factory):
     return FullRecordReference(tmp_path_factory.mktemp("g178-c-reference"))
 
 
-@pytest.mark.parametrize("generation", (176, 178))
+@pytest.mark.parametrize("generation", (176, 178, 181, 182))
 def test_two_file_decode_and_round_trip(generation):
     raw, library = need_bundle(generation)
     dat = dc.parse(raw, library)
@@ -66,7 +66,7 @@ def test_two_file_decode_and_round_trip(generation):
     assert intake.inspect_dat(raw, library).generation == generation
 
 
-@pytest.mark.parametrize("generation", (176, 178))
+@pytest.mark.parametrize("generation", (176, 178, 181, 182))
 @pytest.mark.parametrize("damage", ("missing", "other_generation", "truncated", "changed", "trailing"))
 def test_missing_or_mismatched_library_has_a_clear_error(generation, damage):
     raw, library = need_bundle(generation)
@@ -82,7 +82,7 @@ def test_missing_or_mismatched_library_has_a_clear_error(generation, damage):
     assert rejected.value.code == "dat_invalid"
 
 
-@pytest.mark.parametrize("generation", (176, 178))
+@pytest.mark.parametrize("generation", (176, 178, 181, 182))
 @pytest.mark.parametrize("damage", ("engine", "entry", "bss", "relocation", "label"))
 def test_every_engine_field_and_label_is_bound(generation, damage):
     raw, library = need_bundle(generation)
@@ -142,16 +142,18 @@ def test_all_69_default_records_equal_the_independent_input_registry(camera):
 
 
 def test_removed_native_entries_and_foreign_record_identity_are_rejected(camera):
-    with pytest.raises(EditError, match="g178"):
-        camera.resolve(RecipeSel("jlaunch", 5))
+    for slot in range(5, 9):
+        with pytest.raises(EditError, match=f"g{camera.manifest['generation']}"):
+            camera.resolve(RecipeSel("jlaunch", slot))
     info = camera.listing()[0]["recipes"][4]
     with pytest.raises(EditError):
         camera.resolve(RecipeSel("qlaunch", info["slot"], kind="record", id=info["id"]))
 
 
 @pytest.mark.parametrize("source", ("file", "directory", "upload", "fake_card"))
-def test_import_reads_both_files_and_keeps_sources_unchanged(source, client, settings, volumes, tmp_path):
-    raw, library = need_bundle(178)
+@pytest.mark.parametrize("generation", (178, 181, 182))
+def test_import_reads_both_files_and_keeps_sources_unchanged(source, generation, client, settings, volumes, tmp_path):
+    raw, library = need_bundle(generation)
     folder = (volumes if source == "fake_card" else tmp_path) / "copy"
     folder.mkdir()
     (folder / "GXRCE.DAT").write_bytes(raw)
@@ -163,7 +165,11 @@ def test_import_reads_both_files_and_keeps_sources_unchanged(source, client, set
     else:
         response = client.post("/api/camdata/import-file", json={"path": str(folder / "GXRCE.DAT" if source == "file" else folder)})
     assert response.status_code == 200, response.text
-    assert response.json()["generation"] == 178 and "23" in response.json()["message"]
+    assert response.json()["generation"] == generation and "23" in response.json()["message"]
+    status = client.get("/api/render/status").json()
+    assert status["camera_data"]["state"] == "ready" and status["camera_data"]["generation"] == generation
+    menu = client.get("/api/recipes").json()
+    assert [len(unit["recipes"]) for unit in menu["units"]] == [23, 23, 23]
     assert store.load_template(settings.home_dir) == raw and store.load_library(settings.home_dir) == library
     assert (folder / "GXRCE.DAT").read_bytes() == raw and (folder / "GXRFX.BIN").read_bytes() == library
     before = tree(settings.home_dir)

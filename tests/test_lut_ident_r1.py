@@ -214,21 +214,21 @@ def test_interrupted_migration_keeps_the_old_index_and_retries_once(library, mon
     assert LutLibrary(library.home).get(cid)["version"] == 8
 
 
-def test_migrated_space_rejects_old_fit_status_and_recipe_save(client, settings):
+def test_frozen_result_does_not_reload_changed_lut_metadata(client, settings):
     from test_lut import _plant_fit
 
     library = client.app.state.ctx.render.luts
     cid, _ = legacy_record(library, synthetic("# Input: sRGB\n# Output: Rec709\n"), "film.cube", space="srgb")
     job_id = "b6" * 6
-    _plant_fit(settings, cid, "srgb", False, job_id)
+    _plant_fit(client, cid, "srgb", False, job_id)
     path = settings.home_dir / "lut_jobs" / job_id / "job.json"
     job = json.loads(path.read_text(encoding="utf-8"))
     job["lut_version"] = 7
     path.write_text(json.dumps(job), encoding="utf-8")
     status = client.get(f"/api/lut/fit/{job_id}")
     assert status.status_code == 200
-    assert status.json()["state"] == "error" and status.json()["error"]["code"] == "lut_changed"
-    assert client.post("/api/my-recipes", json={"job_id": job_id, "name": "过期配方"}).status_code == 409
+    assert status.json()["state"] == "done"
+    assert client.post("/api/my-recipes", json={"job_id": job_id, "name": "冻结配方"}).status_code == 200
 
 
 @pytest.mark.parametrize("key", ["thumb_url", "preview_url"])
