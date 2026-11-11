@@ -103,3 +103,106 @@ export function rotateUnitCcw(unit) {
   };
   return {...unit,w:unit.h,h:wl,px:unit.py,py:wl-unit.px-unit.pw,pw:unit.ph,ph:unit.pw,under:unit.under.map(rot),over:unit.over.map(rot)};
 }
+
+export const LOGO_STYLES = ['leica','hasselblad','thin_keyline','exhibition_label','cinema','slide_mount','postage_stamp','blur_fill'];
+export const SIZE_MULT = { small: 0.80, medium: 1.00, large: 1.25 };
+const ASPECT_PTS = [[0.5,2.6],[1.0,2.5],[1.5,2.5],[2.5,2.3],[4.0,1.5],[6.0,1.04],[9.0,0.88]];
+
+export function aspectMult(aspect) {
+  if (aspect <= ASPECT_PTS[0][0]) return ASPECT_PTS[0][1];
+  for (let i = 0; i < ASPECT_PTS.length - 1; i++) {
+    const [a0, m0] = ASPECT_PTS[i], [a1, m1] = ASPECT_PTS[i + 1];
+    if (aspect <= a1) return m0 + ((m1 - m0) * (aspect - a0)) / (a1 - a0);
+  }
+  return ASPECT_PTS.at(-1)[1];
+}
+
+export function coverageComp(coverage) {
+  return Math.min(1.25, Math.max(0.90, (0.35 / Math.max(coverage, 0.02)) ** 0.25));
+}
+
+export function fitLogo(logo, cap, maxH, maxW, size = 'medium') {
+  const aspect = logo.w / Math.max(1, logo.h);
+  const mult = SIZE_MULT[size] ?? 1.0;
+  let targetH = cap * aspectMult(aspect) * coverageComp(logo.coverage) * mult;
+  targetH = Math.min(targetH, maxH, maxW / aspect);
+  const ih = Math.max(8, pyRound(targetH));
+  return [Math.max(8, pyRound(ih * aspect)), ih];
+}
+
+export function pickLogoMode(logo, mode, bgLum) {
+  if (logo.opaque) return 'orig';
+  if (mode === 'mono' || mode === 'orig') return mode;
+  return Math.abs(logo.lum - bgLum) < 70 ? 'mono' : 'orig';
+}
+
+export function clogoItem(logo, x, y, w, h, mode, ink, bgLum) {
+  return {
+    k: 'clogo',
+    id: logo.id,
+    x,
+    y,
+    w,
+    h,
+    mode: pickLogoMode(logo, mode, bgLum),
+    ink: [...ink],
+    auto: mode === 'auto' && !logo.opaque,
+  };
+}
+
+let logoList = [];
+let logoMap = {};
+let loaded = false;
+let logoRev = 0;
+let loadingLogos = null;
+const imgCache = new Map();
+
+export function useLogos(list) {
+  logoList = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
+  logoMap = {};
+  for (const item of logoList) if (item && item.id) logoMap[item.id] = item;
+  for (const key of [...imgCache.keys()]) if (!logoMap[key]) imgCache.delete(key);
+  loaded = true;
+  logoRev += 1;
+  return logoList;
+}
+
+export const logosLoaded = () => loaded;
+export const logosRevision = () => logoRev;
+export const getLogoList = () => logoList;
+export const getLogoMap = () => logoMap;
+
+export function ensureLogosLoaded() {
+  if (loaded) return Promise.resolve(logoList);
+  if (!loadingLogos) {
+    loadingLogos = (async () => {
+      const res = await fetch('/api/logos', { credentials: 'same-origin' });
+      if (!res.ok) throw new Error(`http_${res.status}`);
+      const data = await res.json();
+      return useLogos((data && data.logos) || []);
+    })().catch((e) => {
+      loadingLogos = null;
+      throw e;
+    });
+  }
+  return loadingLogos;
+}
+
+export function customLogoImage(id, onReady) {
+  if (!id || typeof Image !== 'function') return null;
+  let rec = imgCache.get(id);
+  if (!rec) {
+    const img = new Image();
+    rec = { img, loaded: false, waiting: [] };
+    imgCache.set(id, rec);
+    img.addEventListener('load', () => {
+      rec.loaded = true;
+      for (const fn of rec.waiting.splice(0)) fn();
+    });
+    img.addEventListener('error', () => { imgCache.delete(id); });
+    img.src = `/api/logos/${encodeURIComponent(id)}/image`;
+  }
+  if (rec.loaded) return rec.img;
+  if (onReady) rec.waiting.push(onReady);
+  return null;
+}

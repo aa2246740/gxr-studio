@@ -22,7 +22,8 @@ import pytest
 from gxr_studio.finish import stamp as stamp_mod
 from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, table_dict
 from gxr_studio.finish.layout import frame_layout, stamp_layout
-from gxr_studio.finish.spec import OUTPUT_RATIOS, FrameSpec, StampSpec, parse_frame
+from gxr_studio.finish.logo_math import LogoInfo
+from gxr_studio.finish.spec import LOGO_STYLES, OUTPUT_RATIOS, FrameSpec, StampSpec, parse_frame
 from gxr_studio.finish.stamp import format_stamp
 
 WEB = Path(__file__).resolve().parents[1] / "web" / "assets"
@@ -142,9 +143,11 @@ def when_json(moment: datetime | None) -> dict[str, int] | None:
 JS = """
 import * as L from './finish_layout.js';
 import * as F from './finish_fonts.js';
+import { useLogos } from './finish_frame_core.js';
 import { readFileSync } from 'node:fs';
 const data = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 for (const [id, table] of Object.entries(data.tables)) F.useTable(id, table);
+useLogos(data.logos || []);
 const need = (map, key) => {
   if (!(key in map)) throw new Error('Python 没有问过这个：' + key);
   return map[key];
@@ -261,6 +264,54 @@ def test_preview_layout_equals_export_layout(tmp_path: Path, approved_frame_layo
             assert layout is not None
             frame_cases.append({"w": size[0], "h": size[1], "spec": spec.to_json(), "meta": METAS[0]})
             frame_want.append(layout.to_json())
+        sample_logos = [
+            LogoInfo("wordmark", "Wordmark", 734, 120, 0.34, False, 24.0),
+            LogoInfo("round_badge", "Round", 360, 360, 0.58, False, 232.0),
+            LogoInfo("tall_mark", "Tall", 180, 420, 0.28, False, 30.0),
+            LogoInfo("script_sig", "Script", 620, 230, 0.09, False, 18.0),
+            LogoInfo("opaque_card", "Opaque", 300, 180, 1.0, True, 200.0),
+        ]
+        logo_map = {lg.id: lg for lg in sample_logos}
+        logo_json = [
+            {
+                "id": lg.id,
+                "name": lg.name,
+                "w": lg.w,
+                "h": lg.h,
+                "coverage": lg.coverage,
+                "opaque": lg.opaque,
+                "lum": lg.lum,
+            }
+            for lg in sample_logos
+        ]
+        for style in sorted(LOGO_STYLES):
+            colors = ("cream", "black") if style == "slide_mount" else ("white", "black", "cream")
+            for (w, h), logo_id, mode, lsize, color, meta in itertools.product(
+                ((900, 600), (600, 900)),
+                ("wordmark", "round_badge", "tall_mark", "script_sig", "opaque_card", "none", "missing_logo"),
+                ("auto", "orig", "mono"),
+                ("small", "medium", "large"),
+                colors[:2],
+                (METAS[0], METAS[1]),
+            ):
+                if logo_id in ("none", "missing_logo") and (mode != "auto" or lsize != "medium"):
+                    continue
+                for model_on in (True, False) if style == "leica" else (True,):
+                    spec = FrameSpec(
+                        style=style,
+                        color=color,
+                        output_ratio="4:5",
+                        logo=logo_id,
+                        logo_mode=mode,
+                        logo_size=lsize,
+                        model=model_on,
+                        text="上海" if logo_id == "wordmark" else "",
+                        show_params=logo_id != "tall_mark",
+                    )
+                    layout = frame_layout(w, h, spec, meta, rec, logo_map)
+                    assert layout is not None
+                    frame_cases.append({"w": w, "h": h, "spec": spec.to_json(), "meta": meta})
+                    frame_want.append(layout.to_json())
         for name in (
             "finish_layout.js",
             "finish_fonts.js",
@@ -276,7 +327,11 @@ def test_preview_layout_equals_export_layout(tmp_path: Path, approved_frame_layo
         tables = {font: table_dict(font) for font in FONT_FILES}
         cjk = {"glyphs": rec.cjk_glyphs, "ascents": rec.cjk_ascents}
         data.write_text(
-            json.dumps({"tables": tables, "cjk": cjk, "frames": frame_cases, "stamps": stamp_cases}, ensure_ascii=False), encoding="utf-8"
+            json.dumps(
+                {"tables": tables, "cjk": cjk, "logos": logo_json, "frames": frame_cases, "stamps": stamp_cases},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
         )
         res = subprocess.run([node, "check.mjs", str(data)], capture_output=True, text=True, cwd=tmp_path, encoding="utf-8")
         assert res.returncode == 0, res.stderr[-3000:]

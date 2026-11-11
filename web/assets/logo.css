@@ -1,0 +1,325 @@
+/* 自定义标志：面板卡片行、上传去白底弹窗与管理弹窗（DESIGN.md §10.5） */
+
+.logo-sec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.logo-sec-note {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-3, #8a8a92);
+}
+
+.logo-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.logo-tile {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-2, #b6b6be);
+  min-width: 0;
+}
+
+.logo-tile[aria-pressed="true"] {
+  color: var(--fg-1, #ececef);
+}
+
+.logo-tile-box {
+  position: relative;
+  width: 100%;
+  height: 56px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  transition: border-color 120ms ease;
+}
+
+.logo-tile-box.light {
+  background: #eeeeec;
+}
+
+.logo-tile-box.plain {
+  background: var(--bg-2, #232327);
+  color: var(--fg-2, #b6b6be);
+}
+
+.logo-tile-box.dashed {
+  background: var(--bg-2, #232327);
+  border: 1.5px dashed var(--fg-3, #787880);
+  color: var(--fg-2, #b6b6be);
+}
+
+.logo-tile[aria-pressed="true"] .logo-tile-box {
+  border-color: var(--accent, #6ea8fe);
+}
+
+.logo-tile-box img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.logo-tile-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--accent, #4c8bf5);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logo-tile-check .ico {
+  width: 11px;
+  height: 11px;
+}
+
+.logo-tile-label {
+  font-size: 11px;
+  line-height: 1.3;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logo-empty {
+  background: var(--bg-2, #232327);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+}
+
+.logo-empty-title {
+  font-size: 12.5px;
+  color: var(--fg-1, #ececef);
+  margin-bottom: 3px;
+}
+
+.logo-empty-sub {
+  font-size: 11.5px;
+  color: var(--fg-2, #a8a8b2);
+}
+
+.logo-subcontrols {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.logo-manage-link {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  margin: 2px 0 6px;
+  font-size: 12px;
+  color: var(--accent-fg, #7ab0ff);
+  cursor: pointer;
+  text-align: left;
+  align-self: flex-start;
+}
+
+.logo-manage-link:hover {
+  text-decoration: underline;
+}
+
+.logo-upload-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.logo-pick-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.logo-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logo-pv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.logo-pv-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.logo-pv-label {
+  font-size: 12px;
+  color: var(--fg-2, #b6b6be);
+}
+
+.logo-pv-canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 248 / 164;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  background: #2a2a2e;
+}
+
+.logo-tol-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 32px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.logo-tol-row output {
+  text-align: right;
+  color: var(--fg-2, #b6b6be);
+}
+
+.logo-privacy-note {
+  margin: 0;
+}
+
+.logo-manage-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.logo-manage-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.logo-manage-row {
+  background: var(--bg-2, #232327);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.logo-manage-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-manage-thumb {
+  width: 84px;
+  height: 48px;
+  border-radius: 6px;
+  background: #eeeeec;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.logo-manage-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.logo-manage-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.logo-manage-name {
+  font-size: 13.5px;
+  color: var(--fg-1, #ececef);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logo-manage-acts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.logo-del-link {
+  color: var(--danger-fg, #ff7b72);
+}
+
+.logo-confirm-bar {
+  background: rgba(218, 54, 51, 0.18);
+  color: var(--danger-fg, #ff948d);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.logo-add-slot {
+  appearance: none;
+  background: transparent;
+  border: 1.5px dashed var(--fg-3, #787880);
+  border-radius: 8px;
+  padding: 16px 12px;
+  color: var(--fg-2, #b6b6be);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.logo-add-slot:hover {
+  border-color: var(--fg-2, #b6b6be);
+  color: var(--fg-1, #ececef);
+}

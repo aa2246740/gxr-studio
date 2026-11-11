@@ -13,6 +13,10 @@ export const DEFAULT_FRAME = {
   output_ratio: '3:4',
   fmt: '135',
   table: 'light',
+  logo: 'ricoh',
+  logo_mode: 'auto',
+  logo_size: 'medium',
+  model: true,
 };
 
 export const DEFAULT_STAMP = {
@@ -37,6 +41,7 @@ export const NO_STAMP = { enabled: false };
 export const DEFAULT_GEOMETRY = { straighten: 0, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false };
 
 export const TEXT_MAX = 24;
+const LOGO_ID_RE = /^[a-z0-9_-]{1,64}$/;
 
 // 不加边框：后端写 "none"，旧数据里的 null 也当成不加
 export function normalizeFrame(f) {
@@ -47,9 +52,18 @@ export function normalizeFrame(f) {
   if (!['none', 'leica', 'blur_fill', 'gallery', 'hasselblad', 'instant', 'film', 'thin_keyline', 'cinema', 'exhibition_label', 'slide_mount', 'darkroom', 'postage_stamp'].includes(style)) return { ...DEFAULT_FRAME };
   const formats = style === 'instant' ? ['polaroid', 'instax_square', 'instax_wide', 'instax_mini'] : ['135', '120'];
   const out = { ...DEFAULT_FRAME, color: ['thin_keyline', 'slide_mount'].includes(style) ? 'cream' : 'white', show_date: ['leica', 'hasselblad'].includes(style), fmt: formats[0], ...f, style };
+  if ('logo' in f && f.logo !== undefined) {
+    if (typeof f.logo !== 'string' || (f.logo !== 'ricoh' && f.logo !== 'none' && !LOGO_ID_RE.test(f.logo))) return { ...DEFAULT_FRAME };
+    out.logo = f.logo;
+  } else {
+    out.logo = out.show_logo === false ? 'none' : 'ricoh';
+  }
+  if (!('show_logo' in f)) out.show_logo = out.logo !== 'none';
   if (!formats.includes(out.fmt) || !['light', 'black'].includes(out.table) || !['white', 'black', 'cream'].includes(out.color) || !['thin', 'medium', 'thick'].includes(out.weight)) return { ...DEFAULT_FRAME };
   if (!['1:1', '4:5', '3:4', '2:3', '9:16', '16:9', '3:2', 'original'].includes(out.output_ratio)) return { ...DEFAULT_FRAME };
+  if (!['auto', 'orig', 'mono'].includes(out.logo_mode) || !['small', 'medium', 'large'].includes(out.logo_size) || typeof out.model !== 'boolean') return { ...DEFAULT_FRAME };
   if (['show_logo', 'show_params', 'show_date'].some((k) => typeof out[k] !== 'boolean') || typeof out.text !== 'string' || Array.from(out.text).length > TEXT_MAX) return { ...DEFAULT_FRAME };
+  out.show_logo = out.logo !== 'none';
   return out;
 }
 
@@ -140,6 +154,10 @@ export function frameBody(frame) {
     output_ratio: frame.output_ratio,
     fmt: frame.fmt,
     table: frame.table,
+    logo: frame.logo || (frame.show_logo === false ? 'none' : 'ricoh'),
+    logo_mode: frame.logo_mode || 'auto',
+    logo_size: frame.logo_size || 'medium',
+    model: frame.model !== false,
   };
   return body;
 }

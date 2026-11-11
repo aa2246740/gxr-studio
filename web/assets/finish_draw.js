@@ -4,10 +4,56 @@
 
 import { ascentOf, fontCss, fontReady, logoImage } from './finish_fonts.js';
 import { GLOW_GAIN } from './finish_layout.js';
+import { customLogoImage, getLogoMap } from './finish_frame_core.js';
 import { paintBackground } from './finish_background.js';
 import { paintCarrier } from './finish_texture.js';
 
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+let tintCanvas = null;
+
+function drawClogo(ctx, item, s, onLogo) {
+  const img = customLogoImage(item.id, onLogo);
+  if (!img) return;
+  const info = getLogoMap()[item.id];
+  const opaque = !!(info && info.opaque);
+  let mode = opaque ? 'orig' : (item.mode || 'orig');
+  let ink = item.ink || [22, 22, 26];
+  if (item.auto_ink && !opaque) {
+    const x0 = Math.max(0, Math.floor(item.x * s)), y0 = Math.max(0, Math.floor(item.y * s));
+    const x1 = Math.min(ctx.canvas.width, Math.ceil((item.x + item.w) * s));
+    const y1 = Math.min(ctx.canvas.height, Math.ceil((item.y + item.h) * s));
+    let bgL = 128;
+    if (x1 > x0 && y1 > y0) {
+      const data = ctx.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      bgL = sum / (data.length / 4);
+    }
+    ink = item.auto_ink[bgL > 150 ? 1 : 0];
+    if (item.auto && info) mode = Math.abs(info.lum - bgL) < 70 ? 'mono' : 'orig';
+  }
+  const dx = item.x * s, dy = item.y * s, dw = item.w * s, dh = item.h * s;
+  if (dw <= 0 || dh <= 0) return;
+  if (mode === 'mono' && !opaque) {
+    const tw = Math.max(1, Math.round(dw)), th = Math.max(1, Math.round(dh));
+    tintCanvas = tintCanvas || document.createElement('canvas');
+    tintCanvas.width = tw;
+    tintCanvas.height = th;
+    const tc = tintCanvas.getContext('2d');
+    tc.clearRect(0, 0, tw, th);
+    tc.globalCompositeOperation = 'source-over';
+    tc.imageSmoothingQuality = 'high';
+    tc.drawImage(img, 0, 0, tw, th);
+    tc.globalCompositeOperation = 'source-in';
+    tc.fillStyle = rgb(ink);
+    tc.fillRect(0, 0, tw, th);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(tintCanvas, dx, dy, dw, dh);
+  } else {
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, dx, dy, dw, dh);
+  }
+}
 
 // 字体还没下载好时先不画这行字（等字体到了会再画一遍），免得闪一下后备字体
 const drawable = (item) => item.cjk || fontReady(item.font);
@@ -100,6 +146,8 @@ function drawFrameItems(ctx, frame, s, onLogo, photo) {
     } else if (item.k === 'logo') {
       const img = logoImage(onLogo);
       if (img) {ctx.imageSmoothingQuality = 'high';ctx.drawImage(img,item.x*s,item.y*s,item.w*s,item.h*s);}
+    } else if (item.k === 'clogo') {
+      drawClogo(ctx, item, s, onLogo);
     }
   }
 }

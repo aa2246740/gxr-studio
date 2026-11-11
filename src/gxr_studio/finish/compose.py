@@ -121,6 +121,8 @@ def finish_array(
     from_raw: bool,
     crop_preset: str | None = None,
     track: HdrTrack | None = None,
+    logos: dict[str, Any] | None = None,
+    logo_images: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, str | None]:
     """`track`（导出 HDR 时）：RAW 亮度层跟着做同样的几何、裁剪，日期戳和边框处记为不是照片（见 `hdr_export`）。"""
     track = track or HdrTrack(None)
@@ -142,10 +144,10 @@ def finish_array(
     if border_stamp:
         h, w = rgb.shape[:2]
         fonts = FontMetrics()
-        border = frame_layout(w, h, frame, meta, fonts)
+        border = frame_layout(w, h, frame, meta, fonts, logos=logos)
         mark = stamp_layout(w, h, stamp, format_stamp(stamp, taken, file_time), fonts, border)
-    rgb = apply_frame(rgb, frame, meta)
-    track.frame(frame, meta)
+    rgb = apply_frame(rgb, frame, meta, logos=logos, logo_images=logo_images)
+    track.frame(frame, meta, logos=logos, logo_images=logo_images)
     if border_stamp and mark is not None:
         rgb = apply_stamp(rgb, stamp, taken, file_time, mark)
     return rgb, None

@@ -33,20 +33,30 @@ def frames_document() -> dict[str, Any]:
         {"id": "3:2", "name": "3:2 · 横幅"},
         {"id": "original", "name": "照片原比例"},
     ]
+    logo_mode = [
+        {"id": "auto", "name": "自动"},
+        {"id": "orig", "name": "原色"},
+        {"id": "mono", "name": "单色"},
+    ]
+    logo_size = [
+        {"id": "small", "name": "小"},
+        {"id": "medium", "name": "中"},
+        {"id": "large", "name": "大"},
+    ]
     styles: list[dict[str, Any]] = [
         {"id": "none", "name": "无", "options": []},
-        {"id": "leica", "name": "徕卡水印", "options": ["color", "show_logo", "show_params", "show_date", "text"]},
-        {"id": "blur_fill", "name": "模糊背景", "options": ["show_params"]},
+        {"id": "leica", "name": "徕卡水印", "options": ["color", "logo", "show_params", "show_date", "text"]},
+        {"id": "blur_fill", "name": "模糊背景", "options": ["logo", "show_params"]},
         {"id": "gallery", "name": "白边", "options": ["color", "weight"]},
-        {"id": "hasselblad", "name": "哈苏水印", "options": ["color", "show_params", "show_date", "text"]},
+        {"id": "hasselblad", "name": "哈苏水印", "options": ["color", "logo", "show_params", "show_date", "text"]},
         {"id": "instant", "name": "拍立得", "options": ["fmt", "show_date", "text"]},
         {"id": "film", "name": "胶片", "options": ["fmt", "table"]},
-        {"id": "thin_keyline", "name": "极简细线", "options": ["color"]},
-        {"id": "cinema", "name": "电影宽银幕", "options": ["text"]},
-        {"id": "exhibition_label", "name": "展签", "options": ["color", "text"]},
-        {"id": "slide_mount", "name": "幻灯片", "options": ["color"]},
+        {"id": "thin_keyline", "name": "极简细线", "options": ["color", "logo"]},
+        {"id": "cinema", "name": "电影宽银幕", "options": ["logo", "text"]},
+        {"id": "exhibition_label", "name": "展签", "options": ["color", "logo", "text"]},
+        {"id": "slide_mount", "name": "幻灯片", "options": ["color", "logo"]},
         {"id": "darkroom", "name": "暗房相纸", "options": ["text"]},
-        {"id": "postage_stamp", "name": "邮票齿孔", "options": []},
+        {"id": "postage_stamp", "name": "邮票齿孔", "options": ["logo"]},
     ]
     for style in styles:
         if style["id"] != "none":
@@ -55,7 +65,7 @@ def frames_document() -> dict[str, Any]:
         style["defaults"] = spec.to_json() if spec else None
     return {
         "styles": styles,
-        "options": {"color": color, "weight": weight, "show": show, "output_ratio": ratios},
+        "options": {"color": color, "weight": weight, "show": show, "output_ratio": ratios, "logo_mode": logo_mode, "logo_size": logo_size},
         "defaults": {"frame": {"style": "none", "color": "white", "weight": "medium", "output_ratio": "3:4"}},
         "stamp": {
             "placements": [{"id": "photo", "name": "照片上"}, {"id": "border", "name": "拍立得边框上"}],

@@ -73,7 +73,8 @@ def output_sizes(
     (_x, _y, w, h), _valid = final_box(width, height, geom, rect, preset)
     frame = resolved_frame(edit.frame, load_defaults(render.home)[0])
     meta = photo_meta(lib, shot)[0]
-    layout = frame_layout(w, h, frame, meta, FontMetrics())
+    logos_info = render.logos.info_map() if frame.style != "none" and frame.logo not in ("", "ricoh", "none") else None
+    layout = frame_layout(w, h, frame, meta, FontMetrics(), logos=logos_info)
     out_w, out_h = (layout.width, layout.height) if layout is not None else (w, h)
     ratio = crop_ratio(preset, w, h) if frame.style == "none" else OUTPUT_RATIOS.get(frame.output_ratio)
     return {

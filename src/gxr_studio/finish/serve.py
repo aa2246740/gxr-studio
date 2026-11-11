@@ -383,6 +383,9 @@ def render_stage(
     if isinstance(raw_rect, list) and len(raw_rect) == 4:
         crop_rect = (float(raw_rect[0]), float(raw_rect[1]), float(raw_rect[2]), float(raw_rect[3]))
     preset = crop_raw.get("preset") if isinstance(crop_raw, dict) else None
+    use_custom = stage == "final" and frame.style != "none" and frame.logo not in ("", "ricoh", "none")
+    logos_info = render.logos.info_map() if use_custom else None
+    logo_images = render.logos.image_map(frame.logo) if use_custom else None
     rgb, header = finish_array(
         rgb,
         bare_edit,
@@ -396,6 +399,8 @@ def render_stage(
         from_raw=from_raw,
         crop_preset=preset if isinstance(preset, str) else None,
         track=track,
+        logos=logos_info,
+        logo_images=logo_images,
     )
     labels["valid"] = header or ""
     labels.setdefault("label", labels.get("kind") or "original")

@@ -82,6 +82,10 @@ def test_frame_ratio_choice_is_copied_pasted_undone_and_redone(tmp_path):
         "output_ratio": "9:16",
         "fmt": "120",
         "table": "black",
+        "logo": "ricoh",
+        "logo_mode": "auto",
+        "logo_size": "medium",
+        "model": True,
     }
     previous = {**copied, "style": "instant", "show_date": False, "text": "", "output_ratio": "1:1", "fmt": "instax_mini", "table": "light"}
     assert payloads == [copied, copied, previous, previous, copied, copied]
