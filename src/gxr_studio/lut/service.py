@@ -28,7 +28,7 @@ from ..export import srgb_icc
 from ..fit_contexts import FitContexts
 from ..jobs import Job
 from ..raw import open_dng
-from ..recipes import FitProduct, Quality, RecipeError, RecipeRepository, RenderEnvironment
+from ..recipes import FitProduct, Quality, RecipeError, RecipeRepository, RenderEnvironment, check_record
 from ..recipes.admission import verify_archived_proof
 from ..recipes.fit import Winner, default_plan
 from ..recipes.types import canonical, digest
@@ -404,10 +404,14 @@ class LutService:
             raise LutError(404, "fit_not_found", "找不到这次生成。请刷新页面后重试。")
         return self.jobs_dir / job_id
 
-    def _read(self, path: Path) -> Any:
+    def _read(self, path: Path) -> dict[str, Any] | None:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return None
+            canonical(data)
+            return data
+        except (OSError, TypeError, ValueError):
             return None
 
     def status(self, job_id: str, *, with_result: bool = True) -> dict[Any, Any]:
@@ -421,7 +425,8 @@ class LutService:
         proc = self._procs.get(job_id)
         # Poll before reading, so a worker that publishes its result and exits cannot be mistaken for a crash.
         exit_code = proc.poll() if proc is not None else None
-        result = self._read(d / "result.json")
+        result_path = d / "result.json"
+        result = self._read(result_path)
         progress = self._read(d / "progress.json")
         if archived is None:
             # 旧任务没有冻结质量输入，不按旧算法解释成完整结果。
@@ -463,6 +468,15 @@ class LutService:
             else:
                 state = "cancelled" if result.get("state") == "cancelled" else "error"
                 self.recipes.finish_run(job_id, state, result)
+        elif result_path.is_file():
+            self.recipes.finish_run(
+                job_id,
+                "error",
+                {
+                    "code": "invalid_full_result",
+                    "message": "完整配方结果未能核验，无法保存。\n结果文件格式无效或缺少必要字段。",
+                },
+            )
         elif proc is None or exit_code is not None:
             detail = (
                 {"code": "interrupted", "message": "工作室已重启，这次配方计算已中断。请重新生成。"}
@@ -479,9 +493,10 @@ class LutService:
             raise LutError(404, "fit_not_found", "找不到这次生成。")
         return self._archived_status(job_id, current, with_result, progress)
 
-    def _archive_result(self, job_id: str, job: dict[str, Any], result: dict[str, Any]) -> None:
+    def _archive_result(self, job_id: str, job: dict[str, Any] | None, result: dict[str, Any]) -> None:
         if (
             not isinstance(job, dict)
+            or not isinstance(job.get("context"), str)
             or not isinstance(job.get("source"), dict)
             or result.get("schema") != "gxr-studio/full-fit-result/1"
             or result.get("context") != job.get("context")
@@ -516,8 +531,10 @@ class LutService:
             or receipt_doc.get("contract") != default_plan()["contract"]
             or receipt_doc.get("plan") != json.loads(context.training.plan)
             or receipt_doc.get("source_sha256") != context.document["plan"]["source_sha256"]
-            or entry[1] != (1 if context.training.family == "bw" else 7)
         ):
+            raise RecipeError("result_binding_mismatch", "完整记录、训练回执或冻结来源不匹配。")
+        check_record(entry)
+        if entry[1] != (1 if context.training.family == "bw" else 7):
             raise RecipeError("result_binding_mismatch", "完整记录、训练回执或冻结来源不匹配。")
         proof_doc = json.loads(proof)
         if not isinstance(proof_doc, dict) or canonical(proof_doc) != proof:

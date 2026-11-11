@@ -414,3 +414,80 @@ def test_corrupted_or_swapped_repository_dependencies_fail_explicitly_across_res
     )
     with pytest.raises(RecipeError):
         clean_repo.retain_fit("000000000099", forged_product)
+
+
+def test_truncated_or_malformed_candidate_record_and_result_fail_cleanly_across_restarts(settings):
+    environment_at(settings.home_dir)
+    base_url = f"http://127.0.0.1:{PORT}"
+    headers = {"X-GXR-Token": settings.token}
+
+    with TestClient(create_app(settings), base_url=base_url, headers=headers) as setup_client:
+        cube_id = upload(setup_client, cube_bytes(lambda x: x, size=3, title="short-record-repro"), "short.cube").json()["cube_id"]
+        service = setup_client.app.state.ctx.lut
+        bad_records = (
+            ("fc0000000008", b"", "552字节"),
+            ("fc0000000009", b"\x07", "552字节"),
+            ("fc0000000010", bytes([1, 0]) + b"\x00" * 550, "完整彩色或黑白字段"),
+        )
+        for run, raw_record, _phrase in bad_records:
+            plant_pending(service, cube_id, run)
+            result_doc = publish_controlled_terminal(service, run)
+            folder = service.jobs_dir / run
+            rec_sha = digest(raw_record)
+            (folder / "candidate.record").write_bytes(raw_record)
+
+            winner_doc = json.loads((folder / "winner.json").read_bytes())
+            winner_doc["record_sha256"] = rec_sha
+            winner_bytes = canonical(winner_doc)
+            (folder / "winner.json").write_bytes(winner_bytes)
+
+            quality_doc = json.loads((folder / "quality.json").read_bytes())
+            quality_doc["binding"]["record_sha256"] = rec_sha
+            quality_doc["binding"]["receipt_sha256"] = digest(winner_bytes)
+            quality_bytes = canonical(quality_doc)
+            (folder / "quality.json").write_bytes(quality_bytes)
+
+            seal_bytes = canonical({"context": result_doc["context"], "record_sha256": rec_sha, "receipt_sha256": digest(winner_bytes)})
+            (folder / "winner-seal.json").write_bytes(seal_bytes)
+
+            result_doc["record_sha256"] = rec_sha
+            result_doc["receipt_sha256"] = digest(winner_bytes)
+            result_doc["quality_sha256"] = digest(quality_bytes)
+            (folder / "result.json").write_bytes(canonical(result_doc))
+
+        for run, bad_text in (
+            ("fc0000000011", "[1, 2]\n"),
+            ("fc0000000012", '{"state": "error", "code": "nan_payload", "value": NaN}\n'),
+        ):
+            plant_pending(service, cube_id, run)
+            (service.jobs_dir / run / "result.json").write_text(bad_text, encoding="utf-8")
+
+    expected_cases = [
+        ("fc0000000008", "552字节", "bad_record"),
+        ("fc0000000009", "552字节", "bad_record"),
+        ("fc0000000010", "完整彩色或黑白字段", "bad_record"),
+        ("fc0000000011", "格式无效", None),
+        ("fc0000000012", "格式无效", None),
+    ]
+    for restart in (1, 2):
+        with TestClient(create_app(settings), base_url=base_url, headers=headers, raise_server_exceptions=False) as client:
+            svc = client.app.state.ctx.lut
+            for run, phrase, reason_code in expected_cases:
+                status = client.get(f"/api/lut/fit/{run}")
+                cancel = client.post(f"/api/lut/fit/{run}/cancel")
+                save = client.post("/api/my-recipes", json={"job_id": run, "name": "bad-record"})
+                assert status.status_code == 200, (restart, run, status.text)
+                assert cancel.status_code == 200, (restart, run, cancel.text)
+                assert save.status_code == 409, (restart, run, save.text)
+                _assert_rejected_fit_status(status.json(), phrase)
+                assert cancel.json()["state"] == "error"
+                archived = svc.recipes.run(run)
+                assert archived is not None and archived["state"] == "error"
+                assert archived["detail"]["code"] == "invalid_full_result"
+                if reason_code is not None:
+                    assert archived["detail"].get("reason_code") == reason_code
+            alerts = [a["job_id"] for a in client.app.state.ctx.alerts.recent() if a["handler"] == "on_job_failed"]
+            if restart == 1:
+                assert sorted(alerts) == [run for run, _, _ in expected_cases]
+            else:
+                assert alerts == []
