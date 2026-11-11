@@ -108,7 +108,7 @@ try {
   });
 
   await page.goto(`http://127.0.0.1:${port}/?token=${token}#/photo/${encodeURIComponent(photo1)}`);
-  await page.locator('.pv img, .pv canvas').first().waitFor({ state: 'visible' });
+  await page.locator('.pv:not([data-placeholder="1"]) > .pv-img, .pv > .pv-gpu').first().waitFor({ state: 'visible' });
 
   out.envCheck = await page.evaluate(() => ({
     hasWebGpu: Boolean(navigator.gpu),
@@ -295,17 +295,40 @@ try {
   }, photo1);
 
   // 6) 整页刷新后，未点「边框」标签时（默认在配方页）舞台叠加层也自动加载并画出已存自定义标志
-  await page.reload();
-  await page.locator('.pv img, .pv canvas').first().waitFor({ state: 'visible' });
-  await page.waitForFunction(() => {
-    const cv = document.querySelector('.pv-deco');
-    if (!cv || !cv.width || !cv.height) return false;
-    const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
-    for (let i = 3; i < d.length; i += 64) if (d[i] > 180) return true;
-    return false;
-  });
-  const reloadSample = await sampleStageSlotInkLuma(page);
-  out.reloadStageLogoMaxAlpha = reloadSample.maxAlpha;
+  const reloads = Number(process.env.GXR_LOGO_RELOAD_STRESS || 3);
+  out.reloadAttempts = reloads;
+  for (let reload = 0; reload < reloads; reload++) {
+    await page.reload();
+    await page.locator('.pv:not([data-placeholder="1"]) > .pv-img, .pv > .pv-gpu').first().waitFor({ state: 'visible' }).catch(async (error) => {
+      const diagnostic = await page.evaluate(() => ({
+        hash: location.hash,
+        stages: [...document.querySelectorAll('.pv')].map((pv) => ({
+          style: pv.getAttribute('style'),
+          width: pv.getBoundingClientRect().width,
+          height: pv.getBoundingClientRect().height,
+          media: [...pv.querySelectorAll('img, canvas')].map((media) => ({
+            tag: media.tagName, class: media.className,
+            width: media.getBoundingClientRect().width,
+            height: media.getBoundingClientRect().height,
+            naturalWidth: media.naturalWidth, naturalHeight: media.naturalHeight,
+            complete: media.complete, style: media.getAttribute('style'),
+          })),
+        })),
+      }));
+      console.error('RELOAD_DIAGNOSTIC', JSON.stringify({ ...diagnostic, errors: out.errors, consoleErrors: out.consoleErrors }));
+      await page.screenshot({ path: path.join(filesDir, 'reload-failure.png') });
+      throw error;
+    });
+    await page.waitForFunction(() => {
+      const cv = document.querySelector('.pv-deco');
+      if (!cv || !cv.width || !cv.height) return false;
+      const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+      for (let i = 3; i < d.length; i += 64) if (d[i] > 180) return true;
+      return false;
+    });
+    const reloadSample = await sampleStageSlotInkLuma(page);
+    out.reloadStageLogoMaxAlpha = reloadSample.maxAlpha;
+  }
 
   // 重新打开「边框」面板，点「设为默认」，并验证未编辑过的第三张照片自动继承该自定义标志
   await page.getByRole('tab', { name: '边框' }).or(page.locator('button', { hasText: '边框' }).first()).first().click();
@@ -399,6 +422,17 @@ try {
     const { flushPhotos } = await import('/assets/saves.js');
     await flushPhotos([id]);
   }, photo1);
+
+  await page.locator('[data-logo-action="upload"]').click();
+  const transparentDialog = page.locator('#modal-root .dialog');
+  await transparentDialog.getByLabel('选择标志图片', { exact: true }).setInputFiles(path.join(filesDir, 'transparent_mark.png'));
+  await transparentDialog.getByRole('button', { name: '保存并使用', exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('#modal-root .dialog .modal-foot .primary')?.disabled === false);
+  out.transparentKeyDisabled = await transparentDialog.getByLabel('去掉白底', { exact: true }).isDisabled();
+  out.transparentKeyChecked = await transparentDialog.getByLabel('去掉白底', { exact: true }).isChecked();
+  assert.equal(out.transparentKeyDisabled, true);
+  assert.equal(out.transparentKeyChecked, false);
+  await transparentDialog.getByRole('button', { name: '取消', exact: true }).click();
 
   await goPhoto(page, photo3);
   await page.getByRole('tab', { name: '边框' }).or(page.locator('button', { hasText: '边框' }).first()).first().click();

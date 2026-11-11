@@ -288,13 +288,13 @@ def test_preview_layout_equals_export_layout(tmp_path: Path, approved_frame_layo
             colors = ("cream", "black") if style == "slide_mount" else ("white", "black", "cream")
             for (w, h), logo_id, mode, lsize, color, meta in itertools.product(
                 ((900, 600), (600, 900)),
-                ("wordmark", "round_badge", "tall_mark", "script_sig", "opaque_card", "none", "missing_logo"),
+                ("wordmark", "round_badge", "tall_mark", "script_sig", "opaque_card", "none", "missing_logo", "constructor", "__proto__"),
                 ("auto", "orig", "mono"),
                 ("small", "medium", "large"),
                 colors[:2],
                 (METAS[0], METAS[1]),
             ):
-                if logo_id in ("none", "missing_logo") and (mode != "auto" or lsize != "medium"):
+                if logo_id in ("none", "missing_logo", "constructor", "__proto__") and (mode != "auto" or lsize != "medium"):
                     continue
                 for model_on in (True, False) if style == "leica" else (True,):
                     spec = FrameSpec(

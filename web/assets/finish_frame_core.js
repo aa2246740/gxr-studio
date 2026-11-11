@@ -151,7 +151,7 @@ export function clogoItem(logo, x, y, w, h, mode, ink, bgLum) {
 }
 
 let logoList = [];
-let logoMap = {};
+let logoMap = Object.create(null);
 let loaded = false;
 let logoRev = 0;
 let loadingLogos = null;
@@ -159,7 +159,7 @@ const imgCache = new Map();
 
 export function useLogos(list) {
   logoList = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
-  logoMap = {};
+  logoMap = Object.create(null);
   for (const item of logoList) if (item && item.id) logoMap[item.id] = item;
   for (const key of [...imgCache.keys()]) if (!logoMap[key]) imgCache.delete(key);
   loaded = true;

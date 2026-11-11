@@ -242,7 +242,7 @@ export function openUploadDialog(view, setFrame) {
       origData = decoded.imgData;
       whiteBg = hasWhiteBackground(origData);
       origOpaque = isOpaqueImageData(origData);
-      keyInput.disabled = false;
+      keyInput.disabled = !origOpaque;
       keyInput.checked = whiteBg;
       tolInput.value = '30';
       if (!nameTouched || !nameInput.value.trim()) {

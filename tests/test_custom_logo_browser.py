@@ -90,6 +90,9 @@ def test_custom_logo_upload_preview_export_defaults_copy_paste_undo_and_manage_i
     files_dir = tmp_path / "logo-inputs"
     files_dir.mkdir()
     _build_white_ring_png(files_dir / "white_ring.png")
+    transparent = Image.new("RGBA", (160, 128), (12, 34, 56, 0))
+    ImageDraw.Draw(transparent).ellipse((16, 16, 144, 112), fill=(50, 20, 70, 255))
+    transparent.save(files_dir / "transparent_mark.png", format="PNG")
     (files_dir / "sneaky_svg.png").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80"/></svg>',
         encoding="utf-8",
@@ -125,6 +128,7 @@ def test_custom_logo_upload_preview_export_defaults_copy_paste_undo_and_manage_i
     assert out["inheritedLogoOnPhoto3"] == out["uploadedLogoId"]
     assert out["reloadStageLogoMaxAlpha"] > 200
     assert out["errors"] == []
+    assert out["transparentKeyDisabled"] is True and out["transparentKeyChecked"] is False
 
     # 校验面板尺寸行、舞台 .pv、样式卡片与导出的原尺寸 PNG / JPEG 完全一致（清单第 8 项）
     m = re.match(r"^成品 (\d+) × (\d+) 像素", out["sizeLine"])

@@ -54,7 +54,7 @@ export function normalizeFrame(f) {
   const out = { ...DEFAULT_FRAME, color: ['thin_keyline', 'slide_mount'].includes(style) ? 'cream' : 'white', show_date: ['leica', 'hasselblad'].includes(style), fmt: formats[0], ...f, style };
   if ('logo' in f && f.logo !== undefined) {
     if (typeof f.logo !== 'string' || (f.logo !== 'ricoh' && f.logo !== 'none' && !LOGO_ID_RE.test(f.logo))) return { ...DEFAULT_FRAME };
-    out.logo = f.logo;
+    out.logo = f.logo === 'ricoh' && f.show_logo === false ? 'none' : f.logo;
   } else {
     out.logo = out.show_logo === false ? 'none' : 'ricoh';
   }

@@ -73,26 +73,21 @@ def decode_safe_rgba(data: bytes) -> Image.Image:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            old_max = Image.MAX_IMAGE_PIXELS
-            Image.MAX_IMAGE_PIXELS = MAX_PIXELS
-            try:
-                with Image.open(io.BytesIO(data), formats=ALLOWED_FORMATS) as src:
-                    if src.format != expected_fmt:
-                        raise LogoError(422, "logo_unreadable", ERR_UNREADABLE)
-                    if (
-                        src.width <= 0
-                        or src.height <= 0
-                        or src.width > MAX_DIMENSION
-                        or src.height > MAX_DIMENSION
-                        or src.width * src.height > MAX_PIXELS
-                    ):
-                        raise LogoError(422, "logo_unreadable", ERR_UNREADABLE)
-                    src.load()
-                    turned = ImageOps.exif_transpose(src)
-                    rgba_src = (turned if turned is not None else src).convert("RGBA")
-                    arr = np.array(rgba_src, dtype=np.uint8, copy=True)
-            finally:
-                Image.MAX_IMAGE_PIXELS = old_max
+            with Image.open(io.BytesIO(data), formats=ALLOWED_FORMATS) as src:
+                if src.format != expected_fmt:
+                    raise LogoError(422, "logo_unreadable", ERR_UNREADABLE)
+                if (
+                    src.width <= 0
+                    or src.height <= 0
+                    or src.width > MAX_DIMENSION
+                    or src.height > MAX_DIMENSION
+                    or src.width * src.height > MAX_PIXELS
+                ):
+                    raise LogoError(422, "logo_unreadable", ERR_UNREADABLE)
+                src.load()
+                turned = ImageOps.exif_transpose(src)
+                rgba_src = (turned if turned is not None else src).convert("RGBA")
+                arr = np.array(rgba_src, dtype=np.uint8, copy=True)
     except LogoError:
         raise
     except Exception as exc:
@@ -183,6 +178,7 @@ def prepare_uploaded_logo(
         use_key = key_mode
     else:
         use_key = str(key_mode).lower() in ("1", "true", "yes", "on")
+    use_key = use_key and orig_opaque
     if use_key:
         rgba = key_white(rgba, clamped_tol)
     trimmed, has_ink = trim_ink(rgba)

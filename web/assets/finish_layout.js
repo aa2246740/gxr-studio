@@ -103,7 +103,7 @@ export function resolveLogo(spec, logos = null) {
   if (raw === 'none' || spec.show_logo === false) return ['none', null];
   if (raw === 'ricoh') return ['ricoh', null];
   const map = logos || getLogoMap();
-  const custom = map ? map[raw] : null;
+  const custom = map && Object.hasOwn(map, raw) ? map[raw] : null;
   if (!custom) return ['ricoh', null];
   return ['custom', custom];
 }
