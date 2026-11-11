@@ -52,6 +52,33 @@ def test_logo_upload_does_not_change_concurrent_photo_decoding(monkeypatch: pyte
             assert pending.result(timeout=10).size == (128, 128)
 
 
+def test_logo_decode_preserves_other_threads_warning_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    logo, photo = _png((128, 128)), _png((256, 256))
+    opened, resume = threading.Event(), threading.Event()
+    original_open = Image.open
+
+    def paused_open(*args: Any, **kwargs: Any) -> Image.Image:
+        image = original_open(*args, **kwargs)
+        opened.set()
+        assert resume.wait(timeout=10)
+        return image
+
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 50_000)
+    monkeypatch.setattr(Image, "open", paused_open)
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", Image.DecompressionBombWarning)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(decode_safe_rgba, logo)
+            try:
+                assert opened.wait(timeout=10)
+                with original_open(io.BytesIO(photo)) as image:
+                    assert image.size == (256, 256)
+            finally:
+                resume.set()
+                assert pending.result(timeout=10).size == (128, 128)
+        assert [entry.category for entry in captured] == [Image.DecompressionBombWarning]
+
+
 @pytest.mark.parametrize(
     ("logo", "show_logo", "expected_logo", "expected_show"),
     [
