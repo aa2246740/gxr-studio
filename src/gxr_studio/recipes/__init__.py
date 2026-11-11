@@ -3,6 +3,16 @@
 from .environment import RenderEnvironment
 from .record import check_record
 from .repository import RecipeRepository
-from .types import FitProduct, GateResult, Quality, RecipeError, ResolvedRecipe
+from .types import FitProduct, GateResult, ProofBinding, Quality, RecipeError, ResolvedRecipe
 
-__all__ = ["FitProduct", "GateResult", "Quality", "RecipeError", "RecipeRepository", "RenderEnvironment", "ResolvedRecipe", "check_record"]
+__all__ = [
+    "FitProduct",
+    "GateResult",
+    "ProofBinding",
+    "Quality",
+    "RecipeError",
+    "RecipeRepository",
+    "RenderEnvironment",
+    "ResolvedRecipe",
+    "check_record",
+]

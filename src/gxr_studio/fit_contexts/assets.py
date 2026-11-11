@@ -14,7 +14,8 @@ from typing import Any
 import numpy as np
 
 from .. import osplat
-from ..lut.spaces import Target
+from ..lut.cube import Cube
+from ..lut.spaces import SPACES, Target
 from ..privacy import PrivateDir
 from ..recipes import RecipeError, RenderEnvironment, check_record
 from ..recipes.types import canonical, digest, require_digest
@@ -78,6 +79,75 @@ def _photos(photos: Any) -> list[dict[str, Any]]:
     return [dict(p) for p in photos]
 
 
+_GAMUTS = ("rec709", "rec2020", "vgamut", "sgamut3", "sgamut3cine")
+
+
+def _validate_lut_target_spec(target: dict[str, Any]) -> None:
+    require_digest(target.get("cube_sha256", ""))
+    spaces = target.get("spaces")
+    if not isinstance(spaces, dict):
+        raise RecipeError("quality_target_mismatch", "LUT目标缺少色彩空间解释。")
+    if spaces.get("input_space") not in SPACES or spaces.get("output_space") not in SPACES:
+        raise RecipeError("quality_target_mismatch", "LUT目标的色彩空间无效。")
+    if spaces.get("input_gamut") not in _GAMUTS or spaces.get("output_gamut") not in _GAMUTS:
+        raise RecipeError("quality_target_mismatch", "LUT目标的色域无效。")
+    if spaces.get("input_range") not in ("full", "legal") or spaces.get("output_range") not in ("full", "legal"):
+        raise RecipeError("quality_target_mismatch", "LUT目标的范围无效。")
+
+
+def _authoritative_lut_target(target: dict[str, Any], target_asset: bytes) -> Target:
+    _validate_lut_target_spec(target)
+    cube_sha = target["cube_sha256"]
+    if digest(target_asset) != cube_sha:
+        raise RecipeError("quality_target_mismatch", "LUT目标原字节与摘要不符。")
+    try:
+        cube = Cube.parse(target_asset.decode("utf-8-sig"), cube_sha)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RecipeError("quality_target_mismatch", "LUT目标文件无法解析。") from exc
+    spaces = target["spaces"]
+    renderer = Target(
+        cube,
+        spaces["input_space"],
+        spaces["output_space"],
+        spaces["input_gamut"],
+        spaces["output_gamut"],
+        spaces["input_range"],
+        spaces["output_range"],
+    )
+    if target != {"kind": "lut", "cube_sha256": cube_sha, "spaces": renderer.description()}:
+        raise RecipeError("quality_target_mismatch", "LUT目标声明与规范空间解释不一致。")
+    return renderer
+
+
+def _verify_lut_wants(groups: dict[str, SampleGroup], renderer: Target) -> None:
+    for values in groups.values():
+        try:
+            expected = np.asarray(renderer.render(values.base_new, values.xyz), dtype="<f8")
+        except ValueError as exc:
+            raise RecipeError("quality_target_mismatch", "LUT目标无法在当前采样上求值。") from exc
+        if not np.array_equal(values.want, expected):
+            raise RecipeError("quality_target_mismatch", "质量包内冻结的want与实际LUT及空间解释不一致。")
+
+
+def _render_group_wants(
+    manifest: dict[str, Any],
+    groups: dict[str, SampleGroup],
+    renderer: Target,
+    blobs: dict[str, bytes],
+    files: dict[str, Any],
+) -> None:
+    for name, values in groups.items():
+        try:
+            want = np.asarray(renderer.render(values.base_new, values.xyz), dtype="<f8")
+        except ValueError as exc:
+            raise RecipeError("quality_target_mismatch", "LUT目标无法在当前采样上求值。") from exc
+        data = replace(values, want=want).to_bytes()
+        SampleGroup.from_bytes(data)
+        filename = manifest["groups"][name]
+        blobs[filename] = data
+        files[filename] = {"size": len(data), "sha256": digest(data)}
+
+
 def _validate(manifest: dict[str, Any], blobs: dict[str, bytes]) -> tuple[RenderEnvironment, dict[str, SampleGroup], list[str]]:
     if manifest.get("unit") not in UNITS or manifest.get("family") not in ("color", "bw", "native"):
         raise RecipeError("bad_quality_manifest", "质量包的单元或记录类型无法识别。")
@@ -131,6 +201,11 @@ def _validate(manifest: dict[str, Any], blobs: dict[str, bytes]) -> tuple[Render
         raise RecipeError("quality_training_missing", "没有训练输入，不能启动完整拟合。")
     if any(used["train"] & value for key, value in used.items() if key not in ("train", "synthetic")):
         raise RecipeError("quality_split_leak", "训练和留出包含同一照片或配对家族。")
+    _validate_provenance_and_target(manifest, blobs, groups)
+    return environment, groups, sorted(set(missing))
+
+
+def _validate_provenance_and_target(manifest: dict[str, Any], blobs: dict[str, bytes], groups: dict[str, SampleGroup]) -> None:
     for seed in manifest.get("seeds", []):
         check_record(blobs[seed], full=False)
     if not isinstance(manifest.get("target"), dict) or not isinstance(manifest.get("sources"), list) or not manifest["sources"]:
@@ -139,7 +214,12 @@ def _validate(manifest: dict[str, Any], blobs: dict[str, bytes]) -> tuple[Render
         require_digest(source["sha256"])
         if not source.get("kind") or not source.get("description"):
             raise RecipeError("quality_provenance_missing", "质量包缺少采样来源说明。")
-    return environment, groups, sorted(set(missing))
+    if manifest["target"].get("kind") == "lut":
+        _validate_lut_target_spec(manifest["target"])
+        if manifest.get("schema") == CONTEXT_SCHEMA and "target.cube" not in blobs:
+            raise RecipeError("quality_target_missing", "冻结LUT上下文缺少原始.cube字节。")
+        if "target.cube" in blobs:
+            _verify_lut_wants(groups, _authoritative_lut_target(manifest["target"], blobs["target.cube"]))
 
 
 def build_quality_pack(
@@ -292,10 +372,44 @@ class FitContexts:
             names = set(manifest["files"])
             if training_only:
                 names = {manifest["environment"], manifest["groups"]["train"], *manifest["references"].values(), *manifest["seeds"]}
+                if "target.cube" in manifest["files"]:
+                    names.add("target.cube")
             blobs = {name: directory.read(f"{identity}/{_file(name)}") for name in names}
         if any(len(data) != manifest["files"][n]["size"] or digest(data) != manifest["files"][n]["sha256"] for n, data in blobs.items()):
             raise RecipeError("context_corrupt", "冻结输入成员已损坏。")
         return manifest, blobs
+
+    def _bind_lut_freeze(
+        self,
+        manifest: dict[str, Any],
+        groups: dict[str, SampleGroup],
+        target: dict[str, Any],
+        target_renderer: Target | None,
+        target_asset: bytes | None,
+        blobs: dict[str, bytes],
+        files: dict[str, Any],
+    ) -> None:
+        raw_cube = target_asset if target_asset is not None else blobs.get("target.cube")
+        if raw_cube is None:
+            raise RecipeError("quality_target_missing", "LUT目标需要提供原始.cube字节。")
+        if "target.cube" in blobs and blobs["target.cube"] != raw_cube:
+            raise RecipeError("quality_target_mismatch", "质量包内封存的LUT字节与当前目标不符。")
+        authoritative = _authoritative_lut_target(target, raw_cube)
+        if target_renderer is not None:
+            probe = groups["train"]
+            if target_renderer.description() != authoritative.description() or not np.array_equal(
+                np.asarray(target_renderer.render(probe.base_new, probe.xyz), dtype="<f8"),
+                np.asarray(authoritative.render(probe.base_new, probe.xyz), dtype="<f8"),
+            ):
+                raise RecipeError("quality_target_mismatch", "传入的LUT渲染器与实际.cube字节不一致。")
+        if manifest["target"].get("kind") == "sample-corpus":
+            _render_group_wants(manifest, groups, authoritative, blobs, files)
+        else:
+            if manifest["target"] != target:
+                raise RecipeError("quality_target_mismatch", "质量包的冻结目标与本次LUT及空间解释不同。")
+            _verify_lut_wants(groups, authoritative)
+        blobs["target.cube"] = raw_cube
+        files["target.cube"] = {"size": len(raw_cube), "sha256": digest(raw_cube)}
 
     def freeze(
         self,
@@ -314,23 +428,20 @@ class FitContexts:
         if bound.data != environment.data:
             raise RecipeError("quality_model_mismatch", "质量包绑定的模型或控制数据已变化，请重新建立质量包。")
         files = dict(manifest["files"])
-        if manifest["target"].get("kind") == "sample-corpus":
-            if target_renderer is None:
-                raise RecipeError("quality_target_missing", "采样语料需要明确的LUT目标。")
-            for name, values in _groups.items():
-                want = target_renderer.render(values.base_new, values.xyz)
-                data = replace(values, want=want).to_bytes()
-                SampleGroup.from_bytes(data)
-                filename = manifest["groups"][name]
-                blobs[filename] = data
-                files[filename] = {"size": len(data), "sha256": digest(data)}
-        elif manifest["target"] != target:
-            raise RecipeError("quality_target_mismatch", "质量包的冻结目标与本次LUT及空间解释不同。")
-        if target_asset is not None:
-            if digest(target_asset) != target.get("cube_sha256"):
-                raise RecipeError("quality_target_mismatch", "LUT目标原字节与摘要不符。")
-            blobs["target.cube"] = target_asset
-            files["target.cube"] = {"size": len(target_asset), "sha256": digest(target_asset)}
+        if target.get("kind") == "lut":
+            self._bind_lut_freeze(manifest, _groups, target, target_renderer, target_asset, blobs, files)
+        else:
+            if manifest["target"].get("kind") == "sample-corpus":
+                if target_renderer is None:
+                    raise RecipeError("quality_target_missing", "采样语料需要明确的LUT目标。")
+                _render_group_wants(manifest, _groups, target_renderer, blobs, files)
+            elif manifest["target"] != target:
+                raise RecipeError("quality_target_mismatch", "质量包的冻结目标与本次LUT及空间解释不同。")
+            if target_asset is not None:
+                if digest(target_asset) != target.get("cube_sha256"):
+                    raise RecipeError("quality_target_mismatch", "LUT目标原字节与摘要不符。")
+                blobs["target.cube"] = target_asset
+                files["target.cube"] = {"size": len(target_asset), "sha256": digest(target_asset)}
         if style is not None:
             require_digest(style)
         references = dict(manifest["references"])
@@ -381,5 +492,7 @@ class FitContexts:
 
     def evaluation(self, identity: str) -> tuple[dict[str, SampleGroup], dict[str, bytes]]:
         manifest, blobs = self._open(identity)
+        if manifest.get("schema") != CONTEXT_SCHEMA:
+            raise RecipeError("bad_context_schema", "这份输入尚未冻结为拟合上下文。")
         _environment, groups, _missing = _validate(manifest, blobs)
         return {k: v for k, v in groups.items() if k not in ("train", "synthetic")}, {k: blobs[n] for k, n in manifest["references"].items()}

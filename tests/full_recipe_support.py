@@ -9,9 +9,9 @@ import numpy as np
 from gxr_studio.camdata import calib
 from gxr_studio.engine import knobs
 from gxr_studio.fit_contexts import SampleGroup, TrainingInput, build_quality_pack
-from gxr_studio.recipes import GateResult, Quality, RenderEnvironment
-from gxr_studio.recipes.admission import required_checks
-from gxr_studio.recipes.fit import default_plan
+from gxr_studio.recipes import RenderEnvironment
+from gxr_studio.recipes.admission import evaluate_winner
+from gxr_studio.recipes.fit import Winner, default_plan
 from gxr_studio.recipes.numerics import FullProblem, curve_x, predict_mapped
 from gxr_studio.recipes.types import canonical, digest
 from gxr_studio.render.recipes import CameraData
@@ -162,7 +162,7 @@ def plant_pending(service, cube_id, job_id, *, unit="jlaunch", space="srgb", gue
 
 
 def publish_controlled_terminal(service, job_id):
-    """只供退出/取消竞态测试发布合法诊断草稿，全部未跑门明确缺证据。"""
+    """只供退出/取消竞态测试发布诚实评估草稿；未跑exact阶段，全部门由evaluate_winner实算。"""
     import json
 
     job = service._read(service.jobs_dir / job_id / "job.json")
@@ -179,9 +179,9 @@ def publish_controlled_terminal(service, job_id):
             "controlled_terminal_fixture": True,
         }
     )
-    roles = tuple(role for role in ("original", "additional", "replacement") if role in context.document["references"])
-    required = required_checks(roles)
-    quality = canonical(Quality(required, tuple(GateResult(key, "missing") for key in required)).to_json())
+    winner = Winner(entry, receipt)
+    groups, references = service.contexts.evaluation(context.identity)
+    quality = canonical(evaluate_winner(context, winner, groups, references).to_json())
     with service.library.private() as directory:
         prefix = f"lut_jobs/{job_id}"
         directory.replace_file(f"{prefix}/candidate.record", entry)

@@ -29,8 +29,8 @@ from ..fit_contexts import FitContexts
 from ..jobs import Job
 from ..raw import open_dng
 from ..recipes import FitProduct, Quality, RecipeError, RecipeRepository, RenderEnvironment
-from ..recipes.admission import required_checks
-from ..recipes.fit import default_plan
+from ..recipes.admission import verify_archived_proof
+from ..recipes.fit import Winner, default_plan
 from ..recipes.types import canonical, digest
 from ..render.edits import read as read_edit
 from ..render.params import EditError, EditState
@@ -430,9 +430,35 @@ class LutService:
             if result.get("state") == "done":
                 try:
                     self._archive_result(job_id, job, result)
-                except (RecipeError, ValueError, KeyError, TypeError, OSError) as exc:
+                except RecipeError as exc:
                     self.recipes.finish_run(
-                        job_id, "error", {"code": "invalid_full_result", "message": "完整配方结果未能核验，无法保存。", "trace": str(exc)}
+                        job_id,
+                        "error",
+                        {
+                            "code": "invalid_full_result",
+                            "reason_code": exc.code,
+                            "message": f"完整配方结果未能核验，无法保存。\n{exc.message}",
+                        },
+                    )
+                except OSError as exc:
+                    self.recipes.finish_run(
+                        job_id,
+                        "error",
+                        {
+                            "code": "invalid_full_result",
+                            "message": "完整配方结果未能核验，无法保存。\n结果文件缺失或无法读取。",
+                            "trace": str(exc),
+                        },
+                    )
+                except (ValueError, KeyError, TypeError) as exc:
+                    self.recipes.finish_run(
+                        job_id,
+                        "error",
+                        {
+                            "code": "invalid_full_result",
+                            "message": "完整配方结果未能核验，无法保存。\n结果文件格式无效或缺少必要字段。",
+                            "trace": str(exc),
+                        },
                     )
             else:
                 state = "cancelled" if result.get("state") == "cancelled" else "error"
@@ -454,7 +480,12 @@ class LutService:
         return self._archived_status(job_id, current, with_result, progress)
 
     def _archive_result(self, job_id: str, job: dict[str, Any], result: dict[str, Any]) -> None:
-        if result.get("schema") != "gxr-studio/full-fit-result/1" or result.get("context") != job["context"]:
+        if (
+            not isinstance(job, dict)
+            or not isinstance(job.get("source"), dict)
+            or result.get("schema") != "gxr-studio/full-fit-result/1"
+            or result.get("context") != job.get("context")
+        ):
             raise RecipeError("result_binding_mismatch", "拟合结果的上下文身份不符。")
         with self.library.private() as directory:
             entry = directory.read(f"lut_jobs/{job_id}/candidate.record")
@@ -469,10 +500,17 @@ class LutService:
         context = self.contexts.open(job["context"])
         archived = self.recipes.run(job_id)
         receipt_doc = json.loads(receipt)
+        source_doc = job["source"]
         if (
             archived is None
-            or archived["metadata"].get("source_sha256") != digest(canonical(job["source"]))
-            or context.document["target"] != job["source"]["target"]
+            or archived["context"] != job.get("context")
+            or not isinstance(receipt_doc, dict)
+            or canonical(receipt_doc) != receipt
+            or archived["metadata"].get("source_sha256") != digest(canonical(source_doc))
+            or context.training.unit != job.get("unit")
+            or source_doc.get("cube_sha256") != job.get("cube_id")
+            or context.document["target"] != source_doc.get("target")
+            or (context.document["target"].get("kind") == "lut" and context.document["target"].get("cube_sha256") != job.get("cube_id"))
             or receipt_doc.get("training_identity") != context.training.identity
             or receipt_doc.get("record_sha256") != digest(entry)
             or receipt_doc.get("contract") != default_plan()["contract"]
@@ -481,10 +519,12 @@ class LutService:
             or entry[1] != (1 if context.training.family == "bw" else 7)
         ):
             raise RecipeError("result_binding_mismatch", "完整记录、训练回执或冻结来源不匹配。")
-        quality = Quality.from_json(json.loads(proof))
-        roles = tuple(r for r in ("original", "additional", "replacement") if r in context.document["references"])
-        if quality.required != required_checks(roles):
-            raise RecipeError("incomplete_proof", "质量回执没有覆盖全部适用检查。")
+        proof_doc = json.loads(proof)
+        if not isinstance(proof_doc, dict) or canonical(proof_doc) != proof:
+            raise RecipeError("bad_proof", "质量回执字节不是规范编码。")
+        claimed = Quality.from_json(proof_doc)
+        groups, references = self.contexts.evaluation(context.identity)
+        quality = verify_archived_proof(context, Winner(entry, receipt), groups, references, claimed)
         self.recipes.retain_fit(
             job_id,
             FitProduct(
@@ -493,7 +533,7 @@ class LutService:
                 entry,
                 context.training.environment.data,
                 context.identity,
-                canonical(job["source"]),
+                canonical(source_doc),
                 quality,
                 receipt,
                 context.document.get("style"),
@@ -530,6 +570,8 @@ class LutService:
         failure = Job("lut_fit", progress or {})
         failure.id = job_id
         details = [f"{result.get('code')}: {result.get('message')}"]
+        if result.get("reason_code"):
+            details.append(f"reason_code={result['reason_code']}")
         if "exit_code" in result:
             details.append(f"exit_code={result['exit_code']}")
         if result.get("trace"):

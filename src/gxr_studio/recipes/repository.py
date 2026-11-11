@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,161 @@ CREATE TABLE names(id TEXT PRIMARY KEY REFERENCES versions(id), run TEXT NOT NUL
 CREATE TABLE style_heads(style TEXT NOT NULL, unit TEXT NOT NULL, version TEXT NOT NULL REFERENCES versions(id), PRIMARY KEY(style,unit));
 PRAGMA user_version=1;
 """
+
+
+@dataclass(frozen=True)
+class _LoadedVersion:
+    identity: str
+    document: dict[str, Any]
+    record: bytes
+    environment: RenderEnvironment
+    source: dict[str, Any]
+    quality: Quality | HistoricalQuality
+
+
+def _verify_historical_bundle(
+    unit: str,
+    slot: int,
+    context: str,
+    record_sha: str,
+    source_doc: dict[str, Any],
+    receipt_sha: str,
+    receipt_doc: dict[str, Any],
+    quality: HistoricalQuality,
+) -> None:
+    reg = receipt_doc.get("registry_record")
+    if (
+        quality.unit != unit
+        or quality.record_sha256 != record_sha
+        or source_doc != {"kind": "historical", "registry_id": quality.registry_id}
+        or context != receipt_sha
+        or not isinstance(reg, dict)
+        or reg.get("id") != quality.registry_id
+        or reg.get("record_sha256") != record_sha
+        or reg.get("control_binding") != slot - 1
+    ):
+        raise RecipeError("historical_identity_mismatch", "历史授权记录与来源或证据包不一致。")
+
+
+def _verify_fit_bundle(
+    context: str,
+    record_sha: str,
+    environment_sha: str,
+    source_doc: dict[str, Any],
+    receipt_sha: str,
+    receipt_doc: dict[str, Any],
+    quality: Quality,
+) -> None:
+    from .admission import _exact, required_checks
+    from .fit import SOLVER_CONTRACT
+
+    if source_doc.get("kind") == "historical":
+        raise RecipeError("bad_fit_quality", "新拟合不能伪造历史授权来源。")
+    if "cube_sha256" in source_doc:
+        require_digest(source_doc["cube_sha256"])
+        target = source_doc.get("target")
+        if isinstance(target, dict) and "cube_sha256" in target and target["cube_sha256"] != source_doc["cube_sha256"]:
+            raise RecipeError("binding_mismatch", "完整配方的来源与目标摘要不一致。")
+    if "contract" in receipt_doc:
+        if (
+            receipt_doc.get("contract") != SOLVER_CONTRACT
+            or receipt_doc.get("record_sha256") != record_sha
+            or not isinstance(receipt_doc.get("plan"), dict)
+        ):
+            raise RecipeError("binding_mismatch", "求解回执与持久记录或契约不一致。")
+        require_digest(receipt_doc.get("training_identity", ""))
+    if quality.binding is not None:
+        target = source_doc.get("target")
+        plan = receipt_doc.get("plan")
+        details = {c.key: json.loads(c.detail) for c in quality.checks}
+        if (
+            quality.binding.record_sha256 != record_sha
+            or quality.binding.environment_sha256 != environment_sha
+            or quality.binding.context_sha256 != context
+            or quality.binding.receipt_sha256 != receipt_sha
+            or not isinstance(target, dict)
+            or (target.get("kind") == "lut" and source_doc.get("cube_sha256") != target.get("cube_sha256"))
+            or quality.binding.target_sha256 != digest(canonical(target))
+            or not isinstance(plan, dict)
+            or receipt_doc.get("contract") != SOLVER_CONTRACT
+            or receipt_doc.get("record_sha256") != record_sha
+            or receipt_doc.get("source_sha256") != plan.get("source_sha256")
+            or quality.binding.plan_sha256 != digest(canonical(plan))
+            or ("record" in details and details["record"].get("sha256") != record_sha)
+            or (
+                "provenance" in details
+                and (details["provenance"].get("context"), details["provenance"].get("target")) != (context, quality.binding.target_sha256)
+            )
+        ):
+            raise RecipeError("binding_mismatch", "质量回执的身份绑定与持久记录、来源或回执不一致。")
+    if quality.state == "passed":
+        if quality.binding is None:
+            raise RecipeError("unbound_proof", "准入通过的完整配方必须具备完整身份绑定。")
+        if not set(required_checks(("original",))) <= set(quality.required):
+            raise RecipeError("incomplete_proof", "准入通过的质量回执缺少必需检查项。")
+        successful = {
+            a.get("id")
+            for a in receipt_doc.get("attempts", [])
+            if isinstance(a, dict) and a.get("success") is True and str(a.get("id", "")).startswith("exact/")
+        }
+        required_keys = ("objective", "baseline_objective", "winner_axis", "winner_vector")
+        if (
+            receipt_doc.get("contract") != SOLVER_CONTRACT
+            or receipt_doc.get("phase") != "exact"
+            or receipt_doc.get("record_sha256") != record_sha
+            or _exact(receipt_doc)[0] != "pass"
+            or receipt_doc.get("winner_attempt") not in successful
+            or any(key not in receipt_doc for key in required_keys)
+        ):
+            raise RecipeError("bad_proof", "准入通过配方的求解回执不完整或未收敛。")
+
+
+def _verify_bundle(
+    *,
+    unit: str,
+    slot: int,
+    context: str,
+    style: str | None,
+    replacement: str | None,
+    record: bytes,
+    environment_bytes: bytes,
+    source_bytes: bytes,
+    quality: Quality | HistoricalQuality,
+    receipt_bytes: bytes,
+) -> tuple[RenderEnvironment, dict[str, Any]]:
+    check_record(record)
+    environment = RenderEnvironment(environment_bytes)
+    environment.validate()
+    if unit != environment.unit or unit not in UNITS or isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 8:
+        raise RecipeError("binding_mismatch", "配方与单元或控制绑定不一致。")
+    if (record[1] == 1) != (slot == 3):
+        raise RecipeError("binding_mismatch", "完整黑白记录必须绑定含Filt的原生03控制。")
+    require_digest(context)
+    if style is not None:
+        require_digest(style)
+    if replacement is not None:
+        require_digest(replacement)
+    record_sha = digest(record)
+    # 验证默认解析不会改变被评估记录，且模板控制底子实际存在。
+    environment.apply(record, RecipeSel(unit, slot, kind="local", id=record_sha))
+    try:
+        source_doc = json.loads(source_bytes)
+        receipt_doc = json.loads(receipt_bytes)
+        canonical(source_doc)
+        canonical(receipt_doc)
+    except (UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise RecipeError("bad_proof", "完整配方的来源或求解回执格式无效。") from exc
+    if not isinstance(source_doc, dict) or not isinstance(receipt_doc, dict):
+        raise RecipeError("bad_proof", "完整配方的来源或求解回执结构无效。")
+    receipt_sha = digest(receipt_bytes)
+    if isinstance(quality, HistoricalQuality):
+        _verify_historical_bundle(unit, slot, context, record_sha, source_doc, receipt_sha, receipt_doc, quality)
+    else:
+        _verify_fit_bundle(context, record_sha, environment.identity, source_doc, receipt_sha, receipt_doc, quality)
+    return environment, source_doc
+
+
+_VERSION_KEYS = {"unit", "slot", "context", "style", "replacement", "record", "environment", "source", "quality", "receipt"}
 
 
 class RecipeRepository:
@@ -138,22 +294,18 @@ class RecipeRepository:
         return self._retain(run, product, product.quality)
 
     def _retain(self, run: str, product: FitProduct, quality: Quality | HistoricalQuality) -> dict[str, Any]:
-        check_record(product.entry)
-        environment = RenderEnvironment(product.environment)
-        environment.validate()
-        if product.unit != environment.unit or product.unit not in UNITS or not 1 <= product.slot <= 8:
-            raise RecipeError("binding_mismatch", "配方与单元或控制绑定不一致。")
-        if (product.entry[1] == 1) != (product.slot == 3):
-            raise RecipeError("binding_mismatch", "完整黑白记录必须绑定含Filt的原生03控制。")
-        require_digest(product.context)
-        if product.style is not None:
-            require_digest(product.style)
-        if product.replacement is not None:
-            require_digest(product.replacement)
-        # 验证默认解析不会改变被评估记录，且模板控制底子实际存在。
-        environment.apply(product.entry, RecipeSel(product.unit, product.slot, kind="local", id=digest(product.entry)))
-        canonical(json.loads(product.source))
-        canonical(json.loads(product.receipt))
+        _verify_bundle(
+            unit=product.unit,
+            slot=product.slot,
+            context=product.context,
+            style=product.style,
+            replacement=product.replacement,
+            record=product.entry,
+            environment_bytes=product.environment,
+            source_bytes=product.source,
+            quality=quality,
+            receipt_bytes=product.receipt,
+        )
         with self._transaction(write=True) as db:
             row = db.execute("SELECT context,state,version FROM runs WHERE id=?", (run,)).fetchone()
             if row is None or row[0] != product.context:
@@ -253,25 +405,26 @@ class RecipeRepository:
             existing = db.execute("SELECT initial_name FROM names WHERE run=?", (run,)).fetchone()
             if existing is not None and existing[0] != name:
                 raise RecipeError("publication_conflict", "这次生成已保存，请用改名修改名称。")
-            version = self._version(db, row[1])
+            loaded = self._load_version(db, row[1])
+            version = loaded.document
             if existing is None and version["style"] is not None:
                 head = db.execute("SELECT version FROM style_heads WHERE style=? AND unit=?", (version["style"], version["unit"])).fetchone()
                 if (head[0] if head is not None else None) != version["replacement"]:
                     raise RecipeError("replacement_changed", "同风格配方已更新，请重新拟合；这次结果仍保留。")
-                db.execute("INSERT OR REPLACE INTO style_heads VALUES (?,?,?)", (version["style"], version["unit"], row[1]))
+                db.execute("INSERT OR REPLACE INTO style_heads VALUES (?,?,?)", (version["style"], version["unit"], loaded.identity))
             db.execute(
                 "INSERT OR IGNORE INTO names VALUES (?,?,?,?,1,0,?)",
-                (row[1], run, name, name, time.strftime("%Y-%m-%dT%H:%M:%S%z")),
+                (loaded.identity, run, name, name, time.strftime("%Y-%m-%dT%H:%M:%S%z")),
             )
-            return self._view(db, row[1])
+            return self._view(db, loaded.identity, loaded=loaded)
 
     def reference_for_style(self, style: str, unit: str) -> tuple[str, bytes] | None:
         with self._transaction() as db:
             row = db.execute("SELECT version FROM style_heads WHERE style=? AND unit=?", (require_digest(style), unit)).fetchone()
             if row is None:
                 return None
-            doc = self._version(db, row[0])
-            return row[0], self._get(db, "record", doc["record"])
+            loaded = self._load_version(db, row[0])
+            return loaded.identity, loaded.record
 
     @staticmethod
     def _name(name: str) -> str:
@@ -282,17 +435,43 @@ class RecipeRepository:
 
     @staticmethod
     def _version(db: sqlite3.Connection, identity: str) -> dict[str, Any]:
-        row = db.execute("SELECT document FROM versions WHERE id=?", (require_digest(identity),)).fetchone()
-        if row is None or digest(bytes(row[0])) != identity:
+        row = db.execute("SELECT unit,slot,document FROM versions WHERE id=?", (require_digest(identity),)).fetchone()
+        if row is None or digest(bytes(row["document"])) != identity:
             raise RecipeError("recipe_not_found", "找不到这份完整配方，请重新选择。")
-        doc: dict[str, Any] = json.loads(row[0])
+        doc: dict[str, Any] = json.loads(row["document"])
+        if not isinstance(doc, dict) or set(doc) != _VERSION_KEYS or (doc["unit"], doc["slot"]) != (row["unit"], row["slot"]):
+            raise RecipeError("binding_mismatch", "完整配方的持久版本清单不一致。")
         return doc
 
-    def _view(self, db: sqlite3.Connection, identity: str) -> dict[str, Any]:
+    def _load_version(self, db: sqlite3.Connection, identity: str) -> _LoadedVersion:
         doc = self._version(db, identity)
-        quality = self._quality(self._get(db, "quality", doc["quality"]))
+        record = self._get(db, "record", doc["record"])
+        environment_bytes = self._get(db, "environment", doc["environment"])
+        source_bytes = self._get(db, "source", doc["source"])
+        quality_bytes = self._get(db, "quality", doc["quality"])
+        receipt_bytes = self._get(db, "receipt", doc["receipt"])
+        quality = self._quality(quality_bytes)
+        if canonical(quality.to_json()) != quality_bytes:
+            raise RecipeError("bad_proof", "完整配方的质量回执编码已损坏。")
+        environment, source_doc = _verify_bundle(
+            unit=doc["unit"],
+            slot=doc["slot"],
+            context=doc["context"],
+            style=doc["style"],
+            replacement=doc["replacement"],
+            record=record,
+            environment_bytes=environment_bytes,
+            source_bytes=source_bytes,
+            quality=quality,
+            receipt_bytes=receipt_bytes,
+        )
+        return _LoadedVersion(identity, doc, record, environment, source_doc, quality)
+
+    def _view(self, db: sqlite3.Connection, identity: str, *, loaded: _LoadedVersion | None = None) -> dict[str, Any]:
+        verified = loaded if loaded is not None else self._load_version(db, identity)
+        doc = verified.document
+        quality = verified.quality
         alias = db.execute("SELECT * FROM names WHERE id=?", (identity,)).fetchone()
-        environment = RenderEnvironment(self._get(db, "environment", doc["environment"]))
         nominal = next((c for c in quality.checks if c.key == "nominal/original"), None) if isinstance(quality, Quality) else None
         scores = json.loads(nominal.detail).get("groups", {}).get("photo_iso200", {}) if nominal else {}
         return {
@@ -306,8 +485,8 @@ class RecipeRepository:
             "record_sha256": doc["record"],
             "binding_sha256": doc["environment"],
             "quality": quality.summary(),
-            "controls": environment.controls(doc["slot"]),
-            "source": json.loads(self._get(db, "source", doc["source"])),
+            "controls": verified.environment.controls(doc["slot"]),
+            "source": verified.source,
             "fit": {
                 "prediction": True,
                 "label": "电脑预测",
@@ -336,25 +515,26 @@ class RecipeRepository:
 
     def _change(self, identity: str, revision: int, *, name: str | None = None, hidden: bool | None = None) -> dict[str, Any]:
         with self._transaction(write=True) as db:
+            loaded = self._load_version(db, identity)
             result = db.execute(
                 "UPDATE names SET name=coalesce(?,name),hidden=coalesce(?,hidden),revision=revision+1 WHERE id=? AND revision=?",
-                (name, None if hidden is None else int(hidden), require_digest(identity), revision),
+                (name, None if hidden is None else int(hidden), loaded.identity, revision),
             )
             if result.rowcount != 1:
                 raise RecipeError("recipe_revision_conflict", "配方已被修改，请刷新后重试。")
-            return self._view(db, identity)
+            return self._view(db, loaded.identity, loaded=loaded)
 
     def resolve(self, selection: RecipeSel, *, photo_unit: str | None = None, iso: int = 200) -> ResolvedRecipe:
         with self._transaction() as db:
-            doc = self._version(db, selection.id or "")
+            loaded = self._load_version(db, selection.id or "")
+            doc = loaded.document
             if selection.kind != "local" or (doc["unit"], doc["slot"]) != (selection.unit, selection.slot):
                 raise RecipeError("binding_mismatch", "完整配方引用与单元或控制绑定不一致。")
             if photo_unit is not None and photo_unit != doc["unit"]:
                 raise RecipeError("unit_mismatch", "请选择同一镜头单元的完整配方。")
-            record = self._get(db, "record", doc["record"])
-            environment = RenderEnvironment(self._get(db, "environment", doc["environment"]))
-            quality = self._quality(self._get(db, "quality", doc["quality"]))
-        check_record(record)
+            record = loaded.record
+            environment = loaded.environment
+            quality = loaded.quality
         entry, levels = environment.apply(record, selection)
         model, branch, calibrated = environment.model_for(iso)
         return ResolvedRecipe(

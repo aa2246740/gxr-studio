@@ -11,12 +11,12 @@ import numpy as np
 
 from ..engine import colour
 from ..engine import matrix_model as mm
-from ..fit_contexts.types import FrozenContext, SampleGroup
+from ..fit_contexts.types import FrozenContext, SampleGroup, TrainingInput
 from .fit import FitCancelled, Winner, default_plan
 from .fixtures import guard
 from .numerics import FullProblem, integer_objective, literal_mapped, predict_mapped
 from .record import check_record
-from .types import GateResult, GateState, Quality, RecipeError, canonical, digest
+from .types import GateResult, GateState, ProofBinding, Quality, RecipeError, canonical, digest
 
 ORDERS = ("YCbCr8_then_RGB8", "RGB8_then_YCbCr8")
 PHASES = tuple((y, cb, cr) for y, cb, cr in itertools.product(range(4), repeat=3))
@@ -154,26 +154,88 @@ def _primary(values: SampleGroup, before: np.ndarray, after: np.ndarray, *, stri
     return bool(median_ok and np.percentile(new, 95) <= np.percentile(old, 95) + 0.25 + 1e-10)
 
 
-def _exact(receipt: dict[str, Any]) -> tuple[GateState, dict[str, Any]]:
-    starts = [s for s in receipt.get("starts", []) if s.get("phase") == "exact"]
-    attempts = [a for a in receipt.get("attempts", []) if a.get("id", "").startswith("exact/")]
+def proof_binding(context: FrozenContext, winner: Winner, references: dict[str, bytes]) -> ProofBinding:
+    manifest = context.document
+    refs_sha = digest(canonical({role: digest(entry) for role, entry in sorted(references.items())}))
+    return ProofBinding(
+        record_sha256=digest(winner.entry),
+        environment_sha256=context.training.environment.identity,
+        context_sha256=context.identity,
+        target_sha256=digest(canonical(manifest["target"])),
+        plan_sha256=digest(context.training.plan),
+        receipt_sha256=digest(winner.receipt),
+        references_sha256=refs_sha,
+    )
+
+
+def _exact_pinned(starts: list[dict[str, Any]], training: TrainingInput | None) -> bool:
+    plan = default_plan()
+    bounds_cache: dict[tuple[int, ...], str] = {}
+    for item in starts:
+        try:
+            vector_bytes = np.asarray(item["vector"], dtype=float).tobytes()
+        except (KeyError, TypeError, ValueError):
+            return False
+        if item.get("settings") != plan["settings"] or digest(vector_bytes) != item.get("vector_sha256"):
+            return False
+        if training is not None:
+            axis_raw = item.get("axis")
+            if not isinstance(axis_raw, list) or item.get("max_nfev") != plan["exact_nfev"]:
+                return False
+            axis_key = tuple(int(v) for v in axis_raw)
+            if axis_key not in bounds_cache:
+                problem = FullProblem(training, np.asarray(axis_key, dtype=float))
+                bounds_cache[axis_key] = digest(problem.lower.tobytes() + problem.upper.tobytes())
+            if item.get("bounds_sha256") != bounds_cache[axis_key]:
+                return False
+    return True
+
+
+def _exact(receipt: dict[str, Any], *, training: TrainingInput | None = None) -> tuple[GateState, dict[str, Any]]:
+    starts = [s for s in receipt.get("starts", []) if isinstance(s, dict) and s.get("phase") == "exact"]
+    attempts = [a for a in receipt.get("attempts", []) if isinstance(a, dict) and str(a.get("id", "")).startswith("exact/")]
     if not starts or not attempts:
         return "missing", {"reason": "no exact starts or attempts"}
-    start_keys, attempt_keys = [s["id"] for s in starts], [a["id"] for a in attempts]
-    distinct = len(set(start_keys)) == len(start_keys) and len(set(attempt_keys)) == len(attempt_keys)
+    start_keys = [str(s.get("id", "")) for s in starts]
+    attempt_keys = [str(a.get("id", "")) for a in attempts]
+    distinct = all(start_keys) and len(set(start_keys)) == len(start_keys) and len(set(attempt_keys)) == len(attempt_keys)
     complete = distinct and set(start_keys) == set(attempt_keys)
-    pinned = all(
-        s.get("settings") == default_plan()["settings"] and digest(np.array(s["vector"]).tobytes()) == s["vector_sha256"] for s in starts
-    )
+    pinned = _exact_pinned(starts, training)
     passed = complete and pinned and all(a.get("success") is True for a in attempts)
     return ("pass" if passed else "fail" if complete else "missing"), {
         "starts": len(starts),
         "attempts": len(attempts),
         "unique": distinct,
         "complete": complete,
-        "failed": [a["id"] for a in attempts if a.get("success") is not True],
+        "failed": [a.get("id") for a in attempts if a.get("success") is not True],
         "pinned": pinned,
     }
+
+
+def _literal_forward_gate(
+    training: TrainingInput,
+    entry: bytes,
+    receipt: dict[str, Any],
+    all_groups: dict[str, SampleGroup],
+) -> GateResult:
+    model = training.environment.model_for(200)[0]
+    cross = max(float(abs(predict_mapped(model, entry, g.x) - model.predict(entry, g.raw_wb)).max()) for g in all_groups.values())
+    independent = max(float(abs(predict_mapped(model, entry, g.x) - literal_mapped(model, entry, g.x)).max()) for g in all_groups.values())
+    if "winner_axis" not in receipt or "winner_vector" not in receipt:
+        state: GateState = "missing" if cross < 1e-8 and independent < 1e-8 else "fail"
+        return GateResult("literal_forward", state, canonical({"model_rgb_max": cross, "independent_literal_rgb_max": independent}))
+    problem = FullProblem(training, np.asarray(receipt["winner_axis"], dtype=float))
+    vector = np.asarray(receipt["winner_vector"], dtype=float)
+    encoded = problem.encode(vector)
+    reference = problem.predict(vector, training.samples.x, quantized=True)
+    literal = predict_mapped(model, entry, training.samples.x)
+    maximum = float(abs(reference - literal).max())
+    passes = encoded == entry and maximum < 1e-7 and cross < 1e-8 and independent < 1e-8
+    return GateResult(
+        "literal_forward",
+        "pass" if passes else "fail",
+        canonical({"record_reference_rgb_max": maximum, "model_rgb_max": cross, "independent_literal_rgb_max": independent}),
+    )
 
 
 def evaluate_winner(
@@ -190,7 +252,7 @@ def evaluate_winner(
     manifest, receipt = context.document, json.loads(winner.receipt)
     roles = tuple(role for role in ("original", "additional", "replacement") if role in references)
     expected = required_checks(roles)
-    checks = []
+    checks: list[GateResult] = []
 
     def add(key: str, passes: bool, detail: Any = None, *, missing: bool = False) -> None:
         checks.append(GateResult(key, "missing" if missing else "pass" if passes else "fail", canonical(detail or {})))
@@ -224,27 +286,23 @@ def evaluate_winner(
         candidate_loss < min(original_loss, stock_loss) - 1e-9,
         {"candidate": candidate_loss, "original": original_loss, "factory04": stock_loss},
     )
-    add("integer_objective", abs(candidate_loss - receipt["objective"]) < 1e-8)
-    add("baseline_objective", abs(original_loss - receipt["baseline_objective"]) < 1e-8)
-    state, exact = _exact(receipt)
-    checks.append(GateResult("exact_starts", state, canonical(exact)))
-    successful = {a["id"] for a in receipt.get("attempts", []) if a.get("success") is True and a["id"].startswith("exact/")}
-    add("winner_continuous", receipt.get("winner_attempt") in successful and receipt.get("phase") == "exact")
-    problem = FullProblem(training, np.asarray(receipt["winner_axis"]))
-    vector = np.asarray(receipt["winner_vector"])
-    encoded = problem.encode(vector)
-    reference = problem.predict(vector, training.samples.x, quantized=True)
-    literal = predict_mapped(model, winner.entry, training.samples.x)
-    maximum = float(abs(reference - literal).max())
-    cross = max(float(abs(predict_mapped(model, winner.entry, g.x) - model.predict(winner.entry, g.raw_wb)).max()) for g in all_groups.values())
-    independent = max(
-        float(abs(predict_mapped(model, winner.entry, g.x) - literal_mapped(model, winner.entry, g.x)).max()) for g in all_groups.values()
-    )
+    has_obj = isinstance(receipt.get("objective"), int | float) and not isinstance(receipt.get("objective"), bool)
+    add("integer_objective", has_obj and abs(candidate_loss - float(receipt["objective"])) < 1e-8, missing="objective" not in receipt)
+    has_base = isinstance(receipt.get("baseline_objective"), int | float) and not isinstance(receipt.get("baseline_objective"), bool)
     add(
-        "literal_forward",
-        encoded == winner.entry and maximum < 1e-7 and cross < 1e-8 and independent < 1e-8,
-        {"record_reference_rgb_max": maximum, "model_rgb_max": cross, "independent_literal_rgb_max": independent},
+        "baseline_objective",
+        has_base and abs(original_loss - float(receipt["baseline_objective"])) < 1e-8,
+        missing="baseline_objective" not in receipt,
     )
+    state, exact = _exact(receipt, training=training)
+    checks.append(GateResult("exact_starts", state, canonical(exact)))
+    successful = {
+        a["id"]
+        for a in receipt.get("attempts", [])
+        if isinstance(a, dict) and a.get("success") is True and str(a.get("id", "")).startswith("exact/")
+    }
+    add("winner_continuous", receipt.get("winner_attempt") in successful and receipt.get("phase") == "exact")
+    checks.append(_literal_forward_gate(training, winner.entry, receipt, all_groups))
     outputs = {name: predict_mapped(model, winner.entry, values.x) for name, values in groups.items()}
     for role in roles:
         if cancelled():
@@ -280,4 +338,23 @@ def evaluate_winner(
                 )
                 if len(checks) % 32 == 0:
                     progress({"stage": "admission", "role": role, "completed_checks": len(checks), "total_checks": len(expected)})
-    return Quality(expected, tuple(checks))
+    return Quality(expected, tuple(checks), binding=proof_binding(context, winner, references))
+
+
+def verify_archived_proof(
+    context: FrozenContext,
+    winner: Winner,
+    groups: dict[str, SampleGroup],
+    references: dict[str, bytes],
+    claimed: Quality,
+) -> Quality:
+    if claimed.binding is None:
+        raise RecipeError("unbound_proof", "质量回执缺少上下文与胜者身份绑定。")
+    if claimed.binding != proof_binding(context, winner, references):
+        raise RecipeError("result_binding_mismatch", "质量回执的身份绑定与当前任务或胜者不符。")
+    recomputed = evaluate_winner(context, winner, groups, references)
+    if claimed.required != recomputed.required or claimed.partial != recomputed.partial:
+        raise RecipeError("incomplete_proof", "质量回执没有覆盖全部适用检查。")
+    if claimed.checks != recomputed.checks:
+        raise RecipeError("forged_proof", "质量回执的检查结论或明细与实际重算结果不符。")
+    return recomputed

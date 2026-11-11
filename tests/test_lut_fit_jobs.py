@@ -63,7 +63,8 @@ def test_worker_publishes_its_result_between_the_status_read_and_exit_check(clie
     if terminal["state"] == "done":
         assert len(status["result"]["candidates"]) == 1
         assert status["result"]["candidates"][0]["recipe"]["kind"] == "local"
-        assert status["result"]["candidates"][0]["quality"]["state"] == "needs_evidence"
+        assert status["result"]["candidates"][0]["quality"]["state"] == "rejected"
+        assert "exact_starts" in status["result"]["candidates"][0]["quality"]["missing"]
     if terminal["state"] == "error":
         assert status["error"] == {"code": "needs_photo", "message": "需要照片"}
 

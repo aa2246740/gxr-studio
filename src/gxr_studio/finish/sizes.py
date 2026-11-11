@@ -55,7 +55,7 @@ def source_size(render: RenderService, lib: Library, shot: dict[str, Any], edit:
         finally:
             dng.release()
     except (RawDecodeError, RenderUnavailable):
-        if "jpg" not in files or log_lut:
+        if "jpg" not in files or log_lut or (edit.recipe is not None and edit.recipe.kind == "local"):
             raise
         return _jpeg_size(lib, shot)
 
