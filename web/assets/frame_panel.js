@@ -62,10 +62,11 @@ function save(view, ed) {
   persist(view, { frame: frameBody(ed.frame, styleOptions(ed, ed.frame.style)) }).then(() => endChange(view));
 }
 
-function setFrame(view, patch) {
+function setFrame(view, patch, options) {
   change(view, patch);
   save(view, view.ed);
-  view.redrawSide?.();
+  // 后台目录刷新只改预览和保存，不拆掉用户正要点的侧栏。
+  if (!options || options.redraw !== false) view.redrawSide?.();
 }
 
 export function framePanel(view) {

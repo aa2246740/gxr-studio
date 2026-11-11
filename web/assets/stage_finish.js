@@ -4,7 +4,7 @@
 
 import { frameLayout, stampLayout, stampText, momentOf, needsCjk } from './finish_layout.js';
 import { fontReady, fontsNeeded, loadFont, metrics, tableReady } from './finish_fonts.js';
-import { logosRevision, refreshLogos } from './finish_frame_core.js';
+import { logosRevision, refreshLogos } from './logo_catalog.js';
 import { drawDecor } from './finish_draw.js';
 import { photoSize } from './output_photo_size.js';
 import { primeBlur } from './finish_background.js';

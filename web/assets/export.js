@@ -4,7 +4,7 @@
 // 尺寸和品质用后端的档位（README：large/medium/small/original = 3000/2048/1600/原始，high/medium/low = 95/85/70）。
 
 import { api } from './api.js';
-import { refreshLogos } from './finish_frame_core.js';
+import { refreshLogos } from './logo_catalog.js';
 import { state } from './state.js';
 import { h, openModal, fmtBytes, toast, toastError, errorBody, platform, setFraction, outOfView } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';

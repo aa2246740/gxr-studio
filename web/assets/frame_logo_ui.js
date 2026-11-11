@@ -63,14 +63,14 @@ export function maybeNotifyAutoMono(frame, explicitInfo = null) {
   }
 }
 
-function checkMissingLogo(view, setFrame) {
+function checkMissingLogo(view, setFrame, options) {
   const ed = view.ed;
   if (!ed || !ed.frame || !logosLoaded()) return false;
   const id = ed.frame.logo;
   if (!id || id === 'ricoh' || id === 'none') return false;
   if (getLogoMap()[id]) return false;
   const msgKey = `${ed.id || ''}:${id}`;
-  setFrame(view, { logo: 'ricoh', show_logo: true });
+  setFrame(view, { logo: 'ricoh', show_logo: true }, options);
   if (!reportedMissing.has(msgKey)) {
     reportedMissing.add(msgKey);
     toast('找不到这个标志，已改回 RICOH 标志。', 'info');
@@ -519,7 +519,7 @@ export function renderLogoControls(view, setFrame) {
   const cur = ed.frame;
   if (!view.logoCatalogWatch) {
     view.logoCatalogWatch = onLogoCatalog(() => {
-      if (!view.disposed) checkMissingLogo(view, setFrame);
+      if (!view.disposed) checkMissingLogo(view, setFrame, { redraw: false });
     });
   }
   if (!logosLoaded()) {

@@ -107,6 +107,7 @@ def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: P
         "finish_fonts.js",
         "finish_draw.js",
         "finish_frame_core.js",
+        "logo_catalog.js",
         "finish_frame_styles.js",
         "finish_frame_objects.js",
         "finish_frame_new.js",
@@ -134,6 +135,7 @@ def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: P
 @pytest.mark.parametrize("kind", ["blur", "grain", "carrier"])
 def test_adjust_redraw_reuses_frame_decoration_until_its_inputs_change(tmp_path, kind):
     shutil.copyfile(WEB / "stage_finish.js", tmp_path / "stage_finish.js")
+    shutil.copyfile(WEB / "logo_catalog.js", tmp_path / "logo_catalog.js")
     (tmp_path / "package.json").write_text('{"type":"module"}\n')
     (tmp_path / "finish_layout.js").write_text(
         "export const frameLayout=()=>{},stampLayout=()=>{},stampText=()=>{},momentOf=()=>{},needsCjk=()=>{};"

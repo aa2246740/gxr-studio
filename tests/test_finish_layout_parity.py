@@ -316,6 +316,7 @@ def test_preview_layout_equals_export_layout(tmp_path: Path, approved_frame_layo
             "finish_layout.js",
             "finish_fonts.js",
             "finish_frame_core.js",
+            "logo_catalog.js",
             "finish_frame_styles.js",
             "finish_frame_objects.js",
             "finish_frame_new.js",
