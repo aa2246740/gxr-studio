@@ -190,3 +190,52 @@ def test_custom_logo_upload_preview_export_defaults_copy_paste_undo_and_manage_i
         edit3 = check_client.get(f"/api/photos/{live['photo3']}/edit").json()
         assert edit3["frame"] is None
         assert check_client.post(f"/api/photos/{live['photo3']}/output-size", json={}).json()["frame"]["logo"] == "ricoh"
+
+
+def test_missing_logo_preview_and_export_fall_back_together(live: Any, tmp_path: Path) -> None:
+    """打开页面并画出自定义标志后删掉 PNG，重画和导出都改回 RICOH。"""
+    assert RUNTIME.is_file(), f"固定的 Playwright 运行时缺失（禁止回退系统 Chrome）：{RUNTIME}"
+    mark = Image.new("RGBA", (1600, 80), (255, 0, 255, 255))
+    png_path = tmp_path / "magenta-wordmark.png"
+    mark.save(png_path, format="PNG")
+    result = subprocess.run(
+        [
+            "node",
+            str(Path(__file__).parent / "support" / "custom_logo_missing.mjs"),
+            str(RUNTIME),
+            str(live["port"]),
+            live["token"],
+            live["photo1"],
+            str(png_path),
+            str(live["settings"].home_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        encoding="utf-8",
+        env={**os.environ, "HOME": str(REAL_HOME)},
+    )
+    assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+    assert out["agreed"] is True
+    assert out["preview"]["message"] is True
+    assert out["preview"]["catalogHasLogo"] is False
+    assert all(item["k"] != "clogo" for item in out["preview"]["marks"])
+    assert any(item["k"] == "logo" for item in out["preview"]["marks"])
+    exported = Path(out["exported"]["path"])
+    assert exported.is_file()
+    with Image.open(exported) as exp_img:
+        arr = np.asarray(exp_img.convert("RGB"))
+    magenta = int(((arr[:, :, 0] > 240) & (arr[:, :, 1] < 20) & (arr[:, :, 2] > 240)).sum())
+    assert magenta < 30, magenta
+    sized = out["preview"]["sized"]
+    spec = parse_frame(sized["frame"])
+    assert spec is not None
+    lay = frame_layout(sized["photo"][0], sized["photo"][1], spec, sized["meta"], FontMetrics(), logos={})
+    assert lay is not None
+    py_marks = [
+        {"k": item["k"], "id": item.get("id"), "x": item["x"], "y": item["y"], "w": item["w"], "h": item["h"]}
+        for item in lay.items
+        if item.get("k") in ("clogo", "logo")
+    ]
+    assert py_marks == out["preview"]["marks"]

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageCms, ImageFilter, ImageOps
 from scipy import ndimage
 
 from .. import privacy
@@ -39,6 +39,7 @@ ERR_TOO_SMALL = "图片太小了：标志至少要 64 像素高。"
 ERR_LIMIT = "已经保存了 12 个标志。删除一个，再上传新的。"
 ERR_NOT_FOUND = "找不到这个标志。"
 ERR_BAD_NAME = "请输入标志名称（最多 20 个字）。"
+ERR_BAD_PROFILE = "这张图的颜色配置文件读不了。请换一张 PNG、JPG 或 WebP。"
 WARN_OPAQUE = "这张图是不透明的，标志可能带着背景。可以打开「去掉白底」。"
 
 
@@ -62,6 +63,27 @@ def sniff_magic(data: bytes) -> str | None:
     return None
 
 
+def _to_srgb_rgba(src: Image.Image) -> Image.Image:
+    """按嵌入的 ICC 转到 sRGB 并保留 alpha。没有配置文件就按 sRGB 原样使用。读不了的配置文件拒绝。"""
+    icc = src.info.get("icc_profile")
+    if not isinstance(icc, bytes) or not icc:
+        return src.convert("RGBA")
+    alpha = src.getchannel("A") if "A" in src.getbands() else None
+    try:
+        converted = ImageCms.profileToProfile(
+            src.convert("RGB"),
+            ImageCms.ImageCmsProfile(io.BytesIO(icc)),
+            ImageCms.createProfile("sRGB"),
+            outputMode="RGB",
+        )
+    except Exception as exc:
+        raise LogoError(422, "logo_bad_profile", ERR_BAD_PROFILE) from exc
+    rgba = converted.convert("RGBA")
+    if alpha is not None:
+        rgba.putalpha(alpha)
+    return rgba
+
+
 def decode_safe_rgba(data: bytes) -> Image.Image:
     """安全解码上传字节，校验魔数与像素上限，剥离所有元数据并返回全新 RGBA 图像。"""
     if len(data) > MAX_BYTES:
@@ -83,7 +105,7 @@ def decode_safe_rgba(data: bytes) -> Image.Image:
                 raise LogoError(422, "logo_unreadable", ERR_UNREADABLE)
             src.load()
             turned = ImageOps.exif_transpose(src)
-            rgba_src = (turned if turned is not None else src).convert("RGBA")
+            rgba_src = _to_srgb_rgba(turned if turned is not None else src)
             arr = np.array(rgba_src, dtype=np.uint8, copy=True)
     except LogoError:
         raise

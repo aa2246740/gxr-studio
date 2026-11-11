@@ -121,13 +121,37 @@ export function coverageComp(coverage) {
   return Math.min(1.25, Math.max(0.90, (0.35 / Math.max(coverage, 0.02)) ** 0.25));
 }
 
+function fitInside(aspect, targetH, maxH, maxW) {
+  let ih = Math.min(maxH, Math.max(1, pyRound(Math.min(targetH, maxH))));
+  let iw = pyRound(ih * aspect);
+  while ((iw > maxW || ih > maxH) && ih > 1) {
+    ih -= 1;
+    iw = pyRound(ih * aspect);
+  }
+  if (iw <= maxW && ih <= maxH && iw >= 1 && ih >= 1) return [iw, ih];
+  const limited = aspect ? Math.floor(maxW / aspect) : maxH;
+  ih = Math.min(maxH, Math.max(1, limited));
+  iw = pyRound(ih * aspect);
+  while ((iw > maxW || ih > maxH) && ih > 1) {
+    ih -= 1;
+    iw = pyRound(ih * aspect);
+  }
+  return [Math.min(maxW, Math.max(1, iw)), Math.min(maxH, Math.max(1, ih))];
+}
+
 export function fitLogo(logo, cap, maxH, maxW, size = 'medium') {
   const aspect = logo.w / Math.max(1, logo.h);
+  if (aspect <= 0 || maxW < 1 || maxH < 1) {
+    const side = Math.max(0, Math.min(maxW, maxH, 8));
+    return [side, side];
+  }
   const mult = SIZE_MULT[size] ?? 1.0;
   let targetH = cap * aspectMult(aspect) * coverageComp(logo.coverage) * mult;
   targetH = Math.min(targetH, maxH, maxW / aspect);
   const ih = Math.max(8, pyRound(targetH));
-  return [Math.max(8, pyRound(ih * aspect)), ih];
+  const iw = Math.max(8, pyRound(ih * aspect));
+  if (iw <= maxW && ih <= maxH) return [iw, ih];
+  return fitInside(aspect, targetH, maxH, maxW);
 }
 
 export function pickLogoMode(logo, mode, bgLum) {
@@ -154,16 +178,41 @@ let logoList = [];
 let logoMap = Object.create(null);
 let loaded = false;
 let logoRev = 0;
+let logoFp = '';
+let logoEtag = '';
 let loadingLogos = null;
+let refreshPromise = null;
 const imgCache = new Map();
+const catalogListeners = new Set();
+
+function logoFingerprint(list) {
+  return list.map((item) => `${item.id}|${item.w}|${item.h}|${item.coverage}|${item.opaque}|${item.lum}`).join('\n');
+}
+
+function emitCatalog() {
+  for (const fn of catalogListeners) fn(logoList);
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('gxr-logos'));
+  }
+}
+
+export function onLogoCatalog(fn) {
+  catalogListeners.add(fn);
+  return () => catalogListeners.delete(fn);
+}
 
 export function useLogos(list) {
-  logoList = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
+  const next = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
+  const nextFp = logoFingerprint(next);
+  if (loaded && nextFp === logoFp) return logoList;
+  logoList = next;
   logoMap = Object.create(null);
   for (const item of logoList) if (item && item.id) logoMap[item.id] = item;
   for (const key of [...imgCache.keys()]) if (!logoMap[key]) imgCache.delete(key);
   loaded = true;
   logoRev += 1;
+  logoFp = nextFp;
+  emitCatalog();
   return logoList;
 }
 
@@ -172,15 +221,30 @@ export const logosRevision = () => logoRev;
 export const getLogoList = () => logoList;
 export const getLogoMap = () => logoMap;
 
+export function refreshLogos() {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    const headers = {};
+    if (logoEtag) headers['If-None-Match'] = logoEtag;
+    const res = await fetch('/api/logos', { credentials: 'same-origin', cache: 'no-store', headers });
+    if (res.status === 304) return false;
+    if (!res.ok) throw new Error(`http_${res.status}`);
+    const etag = res.headers.get('ETag');
+    if (etag) logoEtag = etag;
+    const before = logoFp;
+    const data = await res.json();
+    useLogos((data && data.logos) || []);
+    return logoFp !== before;
+  })().finally(() => {
+    refreshPromise = null;
+  });
+  return refreshPromise;
+}
+
 export function ensureLogosLoaded() {
   if (loaded) return Promise.resolve(logoList);
   if (!loadingLogos) {
-    loadingLogos = (async () => {
-      const res = await fetch('/api/logos', { credentials: 'same-origin' });
-      if (!res.ok) throw new Error(`http_${res.status}`);
-      const data = await res.json();
-      return useLogos((data && data.logos) || []);
-    })().catch((e) => {
+    loadingLogos = refreshLogos().then(() => logoList).catch((e) => {
       loadingLogos = null;
       throw e;
     });
@@ -199,7 +263,10 @@ export function customLogoImage(id, onReady) {
       rec.loaded = true;
       for (const fn of rec.waiting.splice(0)) fn();
     });
-    img.addEventListener('error', () => { imgCache.delete(id); });
+    img.addEventListener('error', () => {
+      imgCache.delete(id);
+      if (logoMap[id]) useLogos(logoList.filter((item) => item.id !== id));
+    });
     img.src = `/api/logos/${encodeURIComponent(id)}/image`;
   }
   if (rec.loaded) return rec.img;

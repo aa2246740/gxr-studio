@@ -4,6 +4,7 @@
 
 import { frameLayout, stampLayout, stampText, momentOf, needsCjk } from './finish_layout.js';
 import { fontReady, fontsNeeded, loadFont, metrics, tableReady } from './finish_fonts.js';
+import { logosRevision, refreshLogos } from './finish_frame_core.js';
 import { drawDecor } from './finish_draw.js';
 import { photoSize } from './output_photo_size.js';
 import { primeBlur } from './finish_background.js';
@@ -19,6 +20,10 @@ export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts, cropPreset =
   const text = stampSpec ? stampText(stampSpec, when) : '';
   const needed = fontsNeeded(frameSpec, text ? stampSpec : null, needsCjk(text));
   for (const id of needed) if (!tableReady(id) || !fontReady(id)) loadFont(id).then(onFonts, () => {});
+  const logoId = frameSpec && frameSpec.logo;
+  if (logoId && logoId !== 'ricoh' && logoId !== 'none' && frameSpec.show_logo !== false) {
+    refreshLogos().then((changed) => { if (changed && onFonts) onFonts(); }, () => {});
+  }
   if (needed.some((id) => !tableReady(id))) return null;
   const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics) : null;
   const borderStamp = stampSpec?.placement === 'border' && frameSpec?.style === 'instant';
@@ -43,7 +48,7 @@ export function decorOf(view, ew, eh) {
   }
   const known = view.decor;
   const preset = view.crop?.preset;
-  const mine = JSON.stringify([frameSpec, stampSpec, ed.meta, ew, eh, preset]);
+  const mine = JSON.stringify([frameSpec, stampSpec, ed.meta, ew, eh, preset, logosRevision()]);
   if (known && known.mine === mine && known.fonts === fontsState(frameSpec, stampSpec, ed)) return known.deco;
   const deco = makeDeco(ed, frameSpec, stampSpec, ew, eh, () => { if (!view.disposed) view.onChange?.(); }, preset);
   view.decor = { mine, fonts: fontsState(frameSpec, stampSpec, ed), deco };

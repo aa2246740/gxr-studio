@@ -13,6 +13,7 @@ import {
   ensureLogosLoaded,
   getLogoList,
   getLogoMap,
+  onLogoCatalog,
   useLogos,
 } from './finish_frame_core.js';
 import {
@@ -516,6 +517,11 @@ function logoTile({ id, label, selected, boxClass, content, onClick }) {
 export function renderLogoControls(view, setFrame) {
   const ed = view.ed;
   const cur = ed.frame;
+  if (!view.logoCatalogWatch) {
+    view.logoCatalogWatch = onLogoCatalog(() => {
+      if (!view.disposed) checkMissingLogo(view, setFrame);
+    });
+  }
   if (!logosLoaded()) {
     ensureLogosLoaded()
       .then(() => {

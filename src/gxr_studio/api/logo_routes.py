@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+import hashlib
+import json
+import logging
+from typing import Any, NoReturn
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from .. import privacy
 from ..finish.logo_store import ERR_TOO_BIG, MAX_BYTES, MAX_LOGOS, LogoError, revert_logo_usages
+from ..observe import log
 from .errors import ApiError
 from .routes import ctx
 
@@ -21,27 +26,51 @@ class LogoRenameBody(BaseModel):
     name: str
 
 
+ERR_LOGO_UNAVAILABLE = "标志库暂时不能用。请检查应用数据文件夹。"
+ERR_LOGO_FILE = "这个标志的文件读不出来。请重新上传。"
+
+
 def _api_error(exc: LogoError) -> ApiError:
     return ApiError(exc.status, exc.code, exc.message, exc.extra)
 
 
-@router.get("/api/logos", response_model=None)
-def list_logos(request: Request) -> dict[str, Any]:
-    c = ctx(request)
-    try:
-        logos = c.render.logos.list_logos()
-    except LogoError as exc:
+def _raise_logo(exc: Exception) -> NoReturn:
+    """把存储守卫和文件错误挡在接口边界：响应只有中文，路径留在本地日志里。"""
+    if isinstance(exc, LogoError):
         raise _api_error(exc) from exc
-    return {"logos": logos, "max_logos": MAX_LOGOS}
+    if isinstance(exc, privacy.PrivatePathError):
+        log.event(logging.WARNING, "logo_path_refused", code=exc.code, detail=exc.detail)
+        raise ApiError(422, "logo_unavailable", ERR_LOGO_UNAVAILABLE) from exc
+    if isinstance(exc, OSError):
+        log.event(logging.WARNING, "logo_file_unreadable", error=type(exc).__name__, errno=getattr(exc, "errno", None))
+        raise ApiError(422, "logo_file_unreadable", ERR_LOGO_FILE) from exc
+    raise exc
+
+
+def _guard(action: Any) -> Any:
+    try:
+        return action()
+    except Exception as exc:
+        _raise_logo(exc)
+
+
+@router.get("/api/logos", response_model=None)
+def list_logos(request: Request) -> Response:
+    c = ctx(request)
+    logos = _guard(c.render.logos.list_logos)
+    body = {"logos": logos, "max_logos": MAX_LOGOS}
+    raw = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    etag = '"' + hashlib.sha256(raw).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-store"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(body, headers=headers)
 
 
 @router.get("/api/logos/{logo_id}/image", response_model=None)
 def get_logo_image(logo_id: str, request: Request) -> Response:
     c = ctx(request)
-    try:
-        png = c.render.logos.read_png(logo_id)
-    except LogoError as exc:
-        raise _api_error(exc) from exc
+    png = _guard(lambda: c.render.logos.read_png(logo_id))
     return Response(png, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 
@@ -83,26 +112,21 @@ async def upload_logo(
 
     try:
         return await run_in_threadpool(_run)
-    except LogoError as exc:
-        raise _api_error(exc) from exc
+    except Exception as exc:
+        _raise_logo(exc)
 
 
 @router.put("/api/logos/{logo_id}", response_model=None)
 def rename_logo(logo_id: str, body: LogoRenameBody, request: Request) -> dict[str, Any]:
     c = ctx(request)
-    try:
-        return dict(c.render.logos.rename_logo(logo_id, body.name))
-    except LogoError as exc:
-        raise _api_error(exc) from exc
+    renamed = _guard(lambda: c.render.logos.rename_logo(logo_id, body.name))
+    return dict(renamed)
 
 
 @router.delete("/api/logos/{logo_id}", response_model=None)
 def delete_logo(logo_id: str, request: Request) -> dict[str, Any]:
     c = ctx(request)
-    try:
-        removed, remaining = c.render.logos.delete_logo(logo_id)
-    except LogoError as exc:
-        raise _api_error(exc) from exc
+    removed, remaining = _guard(lambda: c.render.logos.delete_logo(logo_id))
     reverted_revs, reverted_defaults = revert_logo_usages(logo_id, c.lib, c.settings.home_dir)
     reverted_photos = len(reverted_revs)
     nm = removed["name"]

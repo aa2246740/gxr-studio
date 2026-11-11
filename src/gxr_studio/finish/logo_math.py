@@ -53,13 +53,41 @@ def coverage_comp(coverage: float) -> float:
 
 
 def fit_logo(logo: LogoInfo, cap: int, max_h: int, max_w: int, size: str = "medium") -> tuple[int, int]:
-    """按 DESIGN.md §10.2 计算标志绘制像素尺寸 (w, h)。"""
+    """按 DESIGN.md §10.2 计算标志绘制像素尺寸 (w, h)。
+
+    最小 8 像素只在结果仍能放进槽位时保留。最小高度和最大宽度不能同时满足时，宽度上限优先，
+    高度可以小于 8，最终宽高都不超过槽位。
+    """
     aspect = logo.aspect
+    if aspect <= 0 or max_w < 1 or max_h < 1:
+        side = max(0, min(int(max_w), int(max_h), 8))
+        return side, side
     mult = SIZE_MULT.get(size, 1.0)
     target_h = cap * aspect_mult(aspect) * coverage_comp(logo.coverage) * mult
-    target_h = min(target_h, float(max_h), max_w / aspect)
+    target_h = min(float(target_h), float(max_h), max_w / aspect)
     ih = max(8, round(target_h))
-    return max(8, round(ih * aspect)), ih
+    iw = max(8, round(ih * aspect))
+    if iw <= max_w and ih <= max_h:
+        return iw, ih
+    return _fit_inside(aspect, target_h, int(max_h), int(max_w))
+
+
+def _fit_inside(aspect: float, target_h: float, max_h: int, max_w: int) -> tuple[int, int]:
+    """把已经超过槽位的尺寸收回到槽位内，并尽量保持宽高比。"""
+    ih = min(max_h, max(1, round(min(float(target_h), float(max_h)))))
+    iw = round(ih * aspect)
+    while (iw > max_w or ih > max_h) and ih > 1:
+        ih -= 1
+        iw = round(ih * aspect)
+    if iw <= max_w and ih <= max_h and iw >= 1 and ih >= 1:
+        return iw, ih
+    limited = int(max_w / aspect) if aspect else max_h
+    ih = min(max_h, max(1, limited))
+    iw = round(ih * aspect)
+    while (iw > max_w or ih > max_h) and ih > 1:
+        ih -= 1
+        iw = round(ih * aspect)
+    return min(max_w, max(1, iw)), min(max_h, max(1, ih))
 
 
 def pick_logo_mode(logo: LogoInfo, mode: str, bg_lum: float) -> str:
