@@ -122,3 +122,49 @@ def test_failure_status_does_not_wait_for_another_fit_to_start(client, pending_f
     assert finished_while_starting, "读取失败结果不应等待另一个拟合的启动锁，否则保存配方与启动拟合会互相死锁"
     assert responses[0].status_code == 200
     assert responses[0].json()["error"]["exit_code"] == -9
+
+
+def test_a_result_published_after_a_missed_read_is_picked_up_on_the_next_poll(client, pending_fit, monkeypatch):
+    """PR #121 第四轮复审的 P1：这次读 result.json 没读到，worker 随即原子发布；这一次必须仍是 running，下一次接纳结果。"""
+    from pathlib import Path
+
+    from full_recipe_support import publish_controlled_terminal
+
+    service, job_id, directory = pending_fit
+    exited: list[int] = []
+    service._procs[job_id] = SimpleNamespace(
+        poll=lambda: exited[0] if exited else None,
+        terminate=lambda: exited.append(-15),
+        kill=lambda: exited.append(-9),
+        wait=lambda *_: 0,
+    )
+    result_path = directory / "result.json"
+    published = []
+
+    def missed_once(original):
+        def read(self, *args, **kwargs):
+            if self == result_path and not published:
+                # 读的那一刻文件还不在；读失败之后 worker 才把结果原子发布出来。
+                published.append(True)
+                publish_controlled_terminal(service, job_id)
+                raise FileNotFoundError(str(self))
+            return original(self, *args, **kwargs)
+
+        return read
+
+    monkeypatch.setattr(Path, "read_bytes", missed_once(Path.read_bytes))
+    monkeypatch.setattr(Path, "read_text", missed_once(Path.read_text))
+    first = client.get(f"/api/lut/fit/{job_id}")
+    monkeypatch.undo()
+    assert published, "the result read was never attempted"
+    assert result_path.is_file()
+    assert first.status_code == 200, first.text
+    assert first.json()["state"] == "running", first.text
+    second = client.get(f"/api/lut/fit/{job_id}")
+    exited.append(0)
+    assert second.status_code == 200, second.text
+    status = second.json()
+    assert status["state"] == "done", second.text
+    assert status["result"]["candidates"][0]["recipe"]["kind"] == "local"
+    save = client.post("/api/my-recipes", json={"job_id": job_id, "name": "late-result"})
+    assert save.status_code == 200, save.text

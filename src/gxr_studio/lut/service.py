@@ -405,14 +405,27 @@ class LutService:
         return self.jobs_dir / job_id
 
     def _read(self, path: Path) -> dict[str, Any] | None:
+        return self._observe(path)[1]
+
+    @staticmethod
+    def _observe(path: Path) -> tuple[bool, dict[str, Any] | None]:
+        """读一次文件：(这次是否真的读到了字节, 解析出的对象；不是规范的 JSON 对象就是 None)。
+
+        "没读到"和"读到了但内容无效"必须来自同一次读取。先读不到、随后 worker 原子发布了结果时，
+        不能再看一眼文件存在，就把前一次的 None 当成坏文件（PR #121 第四轮复审的 P1）。
+        """
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_bytes()
+        except OSError:
+            return False, None
+        try:
+            data = json.loads(raw.decode("utf-8"))
             if not isinstance(data, dict):
-                return None
+                return True, None
             canonical(data)
-            return data
-        except (OSError, TypeError, ValueError):
-            return None
+            return True, data
+        except (TypeError, ValueError):
+            return True, None
 
     def status(self, job_id: str, *, with_result: bool = True) -> dict[Any, Any]:
         if not re.fullmatch(r"[0-9a-f]{12}", job_id or ""):
@@ -425,8 +438,7 @@ class LutService:
         proc = self._procs.get(job_id)
         # Poll before reading, so a worker that publishes its result and exits cannot be mistaken for a crash.
         exit_code = proc.poll() if proc is not None else None
-        result_path = d / "result.json"
-        result = self._read(result_path)
+        result_seen, result = self._observe(d / "result.json")
         progress = self._read(d / "progress.json")
         if archived is None:
             # 旧任务没有冻结质量输入，不按旧算法解释成完整结果。
@@ -468,7 +480,7 @@ class LutService:
             else:
                 state = "cancelled" if result.get("state") == "cancelled" else "error"
                 self.recipes.finish_run(job_id, state, result)
-        elif result_path.is_file():
+        elif result_seen:
             self.recipes.finish_run(
                 job_id,
                 "error",
