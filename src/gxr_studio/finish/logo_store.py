@@ -76,6 +76,10 @@ def _to_srgb_rgba(src: Image.Image) -> Image.Image:
             ImageCms.createProfile("sRGB"),
             outputMode="RGB",
         )
+        if converted is None:
+            raise LogoError(422, "logo_bad_profile", ERR_BAD_PROFILE)
+    except LogoError:
+        raise
     except Exception as exc:
         raise LogoError(422, "logo_bad_profile", ERR_BAD_PROFILE) from exc
     rgba = converted.convert("RGBA")
