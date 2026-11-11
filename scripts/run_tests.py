@@ -161,12 +161,17 @@ def _nap(seconds: float) -> bool:
 
 
 def raise_nice() -> None:
-    """把本进程抬到 nice 15。已经不低于 15 就不动。子进程会继承。"""
-    if not hasattr(os, "nice"):
+    """把本进程抬到 nice 15。已经不低于 15 就不动。子进程会继承。
+
+    有的启动环境不许改优先级（会报 EPERM）。那时只打印一行，照常跑。
+    """
+    if not hasattr(os, "getpriority"):
         return
-    current = os.nice(0)
-    if current < 15:
-        os.nice(15 - current)
+    try:
+        if os.getpriority(os.PRIO_PROCESS, 0) < 15:
+            os.setpriority(os.PRIO_PROCESS, 0, 15)
+    except OSError as exc:
+        print(f"没法把本进程调到 nice 15（{exc}），按现在的优先级继续。", flush=True)
 
 
 def fallback_workers(reason: str) -> int:

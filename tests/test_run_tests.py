@@ -343,3 +343,23 @@ def test_split_addopts_keeps_reports_and_selectors_apart() -> None:
     assert "-k" not in parsed.kept
     assert "tests/tree" not in parsed.kept
     assert "--force-reruns=0" in parsed.kept
+
+
+def test_raise_nice_keeps_going_when_the_os_refuses(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """有的启动环境不许改优先级（2026-11-12 make check 里 os.nice(0) 报 EPERM），runner 要照常跑。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("gxr_run_tests_nice", RUNNER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+
+    def refuse(*_args: object) -> int:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "nice", refuse, raising=False)
+    monkeypatch.setattr(os, "getpriority", lambda *_args: 0, raising=False)
+    monkeypatch.setattr(os, "setpriority", refuse, raising=False)
+    module.raise_nice()
+    assert "nice 15" in capsys.readouterr().out
