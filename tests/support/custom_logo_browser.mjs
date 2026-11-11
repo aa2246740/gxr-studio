@@ -13,6 +13,8 @@ const browser = await launchPinnedChromium({
   args: ['--disable-gpu', '--disable-vulkan'],
 });
 const out = { errors: [], consoleErrors: [], pinnedExecutable: pinned.executablePath };
+let page = null;
+let releaseInitialCatalog = () => {};
 
 function decoSignature(page) {
   return page.evaluate(() => {
@@ -101,7 +103,16 @@ try {
       // ignore
     }
   });
-  const page = await context.newPage();
+  page = await context.newPage();
+  const catalogGate = new Promise((resolve) => { releaseInitialCatalog = resolve; });
+  let catalogHeld = false;
+  await page.route('**/api/logos', async (route) => {
+    if (!catalogHeld && route.request().method() === 'GET') {
+      catalogHeld = true;
+      await catalogGate;
+    }
+    await route.continue();
+  });
   page.on('pageerror', (err) => out.errors.push(err.message));
   page.on('console', (msg) => {
     if (msg.type() === 'error') out.consoleErrors.push(msg.text());
@@ -133,6 +144,15 @@ try {
   await page.locator('.fcard[data-style="leica"]').click();
   await page.locator('.logo-tiles').waitFor({ state: 'visible' });
   assert.equal(await page.locator('.logo-tile[data-logo="ricoh"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('.logo-empty').count(), 0, '目录响应前不应抢先显示空态');
+  const catalogDone = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/logos'
+    && response.request().method() === 'GET');
+  releaseInitialCatalog();
+  const catalogResponse = await catalogDone;
+  assert.equal(catalogResponse.status(), 200);
+  await catalogResponse.finished();
+  assert.equal(catalogHeld, true, '测试必须实际延迟过目录请求');
+  await page.locator('.logo-empty').waitFor({ state: 'visible' });
   assert(await page.locator('.logo-empty').isVisible());
   assert.match(await page.locator('.logo-empty').innerText(), /还没有自己的标志/);
   await page.locator('.fcard[data-style="leica"] canvas').waitFor({ state: 'visible' });
@@ -441,5 +461,7 @@ try {
   assert.equal(out.errors.length, 0, JSON.stringify(out.errors));
   console.log(JSON.stringify(out));
 } finally {
+  releaseInitialCatalog();
+  if (page) await page.unrouteAll({ behavior: 'wait' });
   await browser.close();
 }
