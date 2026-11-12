@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageCms
@@ -25,7 +26,6 @@ from gxr_studio.finish.logo_store import LogoError, LogoStore, prepare_uploaded_
 from gxr_studio.finish.spec import LOGO_STYLES, OUTPUT_RATIOS, FrameSpec
 
 WEB = Path(__file__).resolve().parents[1]
-P3_PROFILE = Path("/System/Library/ColorSync/Profiles/Display P3.icc")
 ERR_BAD_PROFILE = "这张图的颜色配置文件读不了。请换一张 PNG、JPG 或 WebP。"
 ERR_LOGO_UNAVAILABLE = "标志库暂时不能用。请检查应用数据文件夹。"
 ERR_LOGO_FILE = "这个标志的文件读不出来。请重新上传。"
@@ -179,8 +179,7 @@ console.log(JSON.stringify({layouts, fits}));
 
 
 def test_display_p3_upload_converts_to_srgb_and_keeps_alpha() -> None:
-    assert P3_PROFILE.is_file(), P3_PROFILE
-    profile = P3_PROFILE.read_bytes()
+    profile = _need_profile("Display P3.icc")
     source = Image.new("RGBA", (96, 96), (200, 80, 50, 180))
     expected = ImageCms.profileToProfile(
         source.convert("RGB"),
@@ -196,6 +195,8 @@ def test_display_p3_upload_converts_to_srgb_and_keeps_alpha() -> None:
         assert pixel[:3] == expected.getpixel((48, 48))
         assert pixel[3] == 180
 
+
+def test_upload_without_a_profile_is_untouched_and_a_broken_one_is_refused() -> None:
     plain = Image.new("RGBA", (96, 96), (200, 80, 50, 255))
     untouched, _meta = prepare_uploaded_logo(_encode(plain), key_mode=False)
     with Image.open(io.BytesIO(untouched)) as saved:
@@ -313,6 +314,58 @@ def test_gray_cmyk_and_palette_profiles_keep_colour_and_alpha() -> None:
         assert indexed_alpha.getpixel((0, 0)) == 0
         assert saved.getpixel((16, 16))[:3] == expected_indexed.getpixel((16, 16))
         assert saved.getpixel((16, 16))[3] == 255
+
+
+_GRAY16_LEVELS = (0, 16384, 32768, 49152, 65535)
+
+
+def _gray16_png(icc: bytes | None = None) -> tuple[bytes, Image.Image]:
+    """五档 16 位灰（每档 64 像素宽），和按位深换算到 8 位的参考图。"""
+    wide = np.repeat(np.array(_GRAY16_LEVELS, dtype=np.uint16), 64)[None, :].repeat(64, axis=0)
+    eight = ((wide.astype(np.uint32) * 255 + 32767) // 65535).astype(np.uint8)
+    img = Image.fromarray(wide)
+    assert img.mode.startswith("I;16"), img.mode
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", **({"icc_profile": icc} if icc else {}))
+    with Image.open(io.BytesIO(buf.getvalue())) as check:
+        assert check.mode.startswith("I"), check.mode
+    return buf.getvalue(), Image.fromarray(eight)
+
+
+def _band_pixels(stored: bytes) -> list[tuple[int, ...]]:
+    with Image.open(io.BytesIO(stored)) as saved:
+        saved.load()
+        assert saved.size == (64 * len(_GRAY16_LEVELS), 64), saved.size
+        return [saved.getpixel((64 * band + 32, 32)) for band in range(len(_GRAY16_LEVELS))]
+
+
+def test_sixteen_bit_gray_keeps_its_mid_tones() -> None:
+    """16 位灰度 PNG 要按位深缩到 8 位。直接 convert("L") 会把大于 255 的值都截成白色。"""
+    raw, reference = _gray16_png()
+    stored, _meta = prepare_uploaded_logo(raw, key_mode=False)
+    want = [reference.getpixel((64 * band + 32, 32)) for band in range(len(_GRAY16_LEVELS))]
+    assert want == [0, 64, 128, 191, 255]
+    assert _band_pixels(stored) == [(v, v, v, 255) for v in want]
+
+
+def test_sixteen_bit_gray_with_a_gray_profile_converts_like_eight_bit() -> None:
+    gray_icc = _need_profile("Generic Gray Gamma 2.2 Profile.icc")
+    raw, reference = _gray16_png(gray_icc)
+    expected = ImageCms.profileToProfile(
+        reference,
+        ImageCms.ImageCmsProfile(io.BytesIO(gray_icc)),
+        ImageCms.createProfile("sRGB"),
+        outputMode="RGB",
+    )
+    assert expected is not None
+    stored, _meta = prepare_uploaded_logo(raw, key_mode=False)
+    got = _band_pixels(stored)
+    for band, pixel in enumerate(got):
+        want = expected.getpixel((64 * band + 32, 32))
+        assert pixel[0] == pixel[1] == pixel[2], got
+        assert all(abs(a - b) <= 1 for a, b in zip(pixel[:3], want, strict=True)), (band, got, want)
+        assert pixel[3] == 255
+    assert got[2][0] < 200, got
 
 
 def test_unreadable_logo_file_is_omitted_like_a_missing_one(settings: Any, tmp_path: Path) -> None:

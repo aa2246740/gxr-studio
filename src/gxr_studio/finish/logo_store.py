@@ -74,8 +74,23 @@ def _mode_family(mode: str) -> str:
     return "RGB"
 
 
+def _eight_bit_gray(src: Image.Image) -> Image.Image:
+    """16 位灰度（PNG 打开是 I;16，旧版 Pillow 是 I）按位深缩到 8 位 L，配置文件跟着走。
+
+    Pillow 的 convert("L") / convert("RGBA") 不换算位深，大于 255 的值全截成白色，中灰会变白。
+    """
+    if src.mode != "I" and not src.mode.startswith("I;"):
+        return src
+    wide = np.clip(np.asarray(src).astype(np.int64), 0, 65535)
+    eight = ((wide * 255 + 32767) // 65535).astype(np.uint8)
+    out = Image.fromarray(eight)
+    out.info = dict(src.info)
+    return out
+
+
 def _to_srgb_rgba(src: Image.Image) -> Image.Image:
     """按嵌入的 ICC 转到 sRGB 并保留 alpha。没有配置文件就按 sRGB 原样使用。读不了的配置文件拒绝。"""
+    src = _eight_bit_gray(src)
     icc = src.info.get("icc_profile")
     if not isinstance(icc, bytes) or not icc:
         return src.convert("RGBA")
