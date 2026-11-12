@@ -10,6 +10,7 @@ import { seg, toggle, swatch, notReady } from './controls.js';
 import { paintCards } from './finish_cards.js';
 import { liveText } from './live_text.js';
 import { frameSizeLine } from './output_size.js';
+import { renderLogoControls, maybeNotifyAutoMono } from './frame_logo_ui.js';
 
 export const FRAME_NAMES = {
   none: '无',
@@ -61,10 +62,11 @@ function save(view, ed) {
   persist(view, { frame: frameBody(ed.frame, styleOptions(ed, ed.frame.style)) }).then(() => endChange(view));
 }
 
-function setFrame(view, patch) {
+function setFrame(view, patch, options) {
   change(view, patch);
   save(view, view.ed);
-  view.redrawSide?.();
+  // 后台目录刷新只改预览和保存，不拆掉用户正要点的侧栏。
+  if (!options || options.redraw !== false) view.redrawSide?.();
 }
 
 export function framePanel(view) {
@@ -82,7 +84,10 @@ export function framePanel(view) {
     return h('button', {
       type: 'button', class: `fcard${s.id === 'none' ? ' none' : ''}`, 'data-style': s.id, 'aria-pressed': String(cur.style === s.id),
       onclick: () => {
-        if (ed.frame.style !== s.id) setFrame(view, selectFrame(ed.frame, s.id));
+        if (ed.frame.style !== s.id) {
+          setFrame(view, selectFrame(ed.frame, s.id));
+          if (view.ed?.frame) maybeNotifyAutoMono(view.ed.frame);
+        }
       },
     }, thumb, h('div', { class: 'nm' }, s.name));
   }));
@@ -97,7 +102,10 @@ export function framePanel(view) {
     if (opts.includes('color')) {
       // 颜色只用色块（不再加文字按钮）；鼠标停在色块上看颜色名，选中的色块有外圈
       rows.push(h('div', { class: 'seg-row' }, h('span', { class: 'seg-label' }, '颜色'), h('div', { class: 'swrow' },
-        ...(cur.style === 'slide_mount' ? ['cream', 'black'] : ['white', 'black', 'cream']).map((c) => swatch(COLOR_HEX[c], cur.color === c, () => setFrame(view, { color: c }), COLOR_NAMES[c])))));
+        ...(cur.style === 'slide_mount' ? ['cream', 'black'] : ['white', 'black', 'cream']).map((c) => swatch(COLOR_HEX[c], cur.color === c, () => {
+          setFrame(view, { color: c });
+          if (view.ed?.frame) maybeNotifyAutoMono(view.ed.frame);
+        }, COLOR_NAMES[c])))));
     }
     if (opts.includes('weight')) {
       rows.push(seg(['thin', 'medium', 'thick'].map((w) => [w, WEIGHT_NAMES[w]]), cur.weight, (w) => setFrame(view, { weight: w }), { label: '宽度' }));
@@ -107,8 +115,11 @@ export function framePanel(view) {
       rows.push(seg(formats,cur.fmt,fmt=>setFrame(view,{fmt}),{label:'画幅'}));
     }
     if (opts.includes('table')) rows.push(seg([['light','灯台'],['black','黑色']],cur.table,table=>setFrame(view,{table}),{label:'背景'}));
+    if (opts.includes('logo')) {
+      rows.push(...renderLogoControls(view, setFrame));
+    }
     const shows = [];
-    if (opts.includes('show_logo')) shows.push(['show_logo', '标志']);
+    if (opts.includes('show_logo') && !opts.includes('logo')) shows.push(['show_logo', '标志']);
     if (opts.includes('show_params')) shows.push(['show_params', '参数']);
     if (opts.includes('show_date')) shows.push(['show_date', '日期']);
     // 胶片边框的帧号由样式自带，不单独做开关（COPY 3.9）

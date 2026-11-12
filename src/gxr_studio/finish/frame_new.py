@@ -9,11 +9,28 @@ from typing import Any
 from .frame_core import Type, frame_index, join, make_unit, solve
 from .frame_styles import _palette
 from .layout import Metrics
+from .logo_math import LogoInfo, clogo_item, fit_logo
 
 Meta = dict[str, str]
 
 
-def thin_keyline(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics, *, color: str = "cream") -> dict[str, Any]:
+def _kind(logo_kind: str, custom: LogoInfo | None) -> str:
+    return "custom" if logo_kind == "custom" and custom is not None else ("none" if logo_kind == "none" else "ricoh")
+
+
+def thin_keyline(
+    w: int,
+    h: int,
+    meta: Meta,
+    ratio: tuple[int, int] | None,
+    m: Metrics,
+    *,
+    color: str = "cream",
+    logo_kind: str = "ricoh",
+    custom: LogoInfo | None = None,
+    logo_mode: str = "auto",
+    logo_size: str = "medium",
+) -> dict[str, Any]:
     t = Type(m)
     short = min(w, h)
     pal = _palette(color)
@@ -21,6 +38,7 @@ def thin_keyline(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: M
     g = max(10, round(0.017 * short))
     stroke = max(2, round(0.0024 * short))
     ms = max(36, round(0.08 * short))
+    kind = _kind(logo_kind, custom)
 
     def unit(wref: int) -> dict[str, Any]:
         sz = t.sizes(wref)
@@ -29,14 +47,28 @@ def thin_keyline(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: M
         cap1 = t.cap_h("inter_sb", px1)
         gap_c = max(12, round(1.1 * cap1))
         uw, kh = (w + 2 * g, h + 2 * g)
-        row_h = cap1
-        base_y = kh + gap_c + cap1
-        brand = t.base_text(0, base_y, px1, "inter_sb", "RICOH GXR", pal["ink"], 0.12)
-        brand_w = t.advance("inter_sb", px1, "RICOH GXR", 0.12)
+        items: list[dict[str, Any]] = [{"k": "rect", "x": 0, "y": 0, "w": uw, "h": kh, "fill": None, "outline": line_col, "stroke_w": stroke}]
+        if kind == "custom" and custom is not None:
+            lw, lh = fit_logo(custom, cap1, round(3.4 * cap1), round(0.30 * uw), logo_size)
+            row_h = max(cap1, lh)
+            y_mid = kh + gap_c + row_h / 2.0
+            bg_l = 18.0 if color == "black" else (238.0 if color == "cream" else 245.0)
+            items.append(clogo_item(custom, 0, round(y_mid - lh / 2), lw, lh, logo_mode, pal["ink"], bg_l))
+            brand_w: float = lw
+            base_y: float = y_mid + t.cap_h("inter", px2) / 2.0
+        elif kind == "none":
+            row_h = cap1
+            base_y = kh + gap_c + cap1
+            brand_w = 0.0
+        else:
+            row_h = cap1
+            base_y = kh + gap_c + cap1
+            items.append(t.base_text(0, base_y, px1, "inter_sb", "RICOH GXR", pal["ink"], 0.12))
+            brand_w = t.advance("inter_sb", px1, "RICOH GXR", 0.12)
         right = join([meta.get(k, "") for k in ("lens_short", "aperture", "shutter", "iso", "date")], "  ·  ")
-        while right and t.advance("inter", px2, right, 0.02) + brand_w + 40 > uw:
+        pad_left = brand_w + 40 if brand_w else 0
+        while right and t.advance("inter", px2, right, 0.02) + pad_left > uw:
             right = "  ·  ".join(right.split("  ·  ")[:-1]) if "  ·  " in right else ""
-        items = [{"k": "rect", "x": 0, "y": 0, "w": uw, "h": kh, "fill": None, "outline": line_col, "stroke_w": stroke}, brand]
         if right:
             items.append(t.base_text(uw, base_y, px2, "inter", right, pal["muted"], 0.02, "r"))
         return make_unit(uw, kh + gap_c + row_h + round(0.4 * cap1), (g, g), w, h, over=items, bg=pal["bg"])
@@ -45,7 +77,18 @@ def thin_keyline(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: M
 
 
 def exhibition_label(
-    w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics, *, color: str = "white", text: str = ""
+    w: int,
+    h: int,
+    meta: Meta,
+    ratio: tuple[int, int] | None,
+    m: Metrics,
+    *,
+    color: str = "white",
+    text: str = "",
+    logo_kind: str = "ricoh",
+    custom: LogoInfo | None = None,
+    logo_mode: str = "auto",
+    logo_size: str = "medium",
 ) -> dict[str, Any]:
     t = Type(m)
     short = min(w, h)
@@ -54,14 +97,16 @@ def exhibition_label(
     card_bg = (30, 30, 34) if dark else (251, 250, 247)
     card_line = (62, 62, 70) if dark else (220, 216, 208)
     ms = max(40, round(0.085 * short))
+    kind = _kind(logo_kind, custom)
 
     def unit(wref: int) -> dict[str, Any]:
         sz = t.sizes(wref)
         px1 = max(sz.cap("inter_sb", 0.017), round(0.022 * short))
         px2 = max(sz.cap("inter", 0.013), round(0.018 * short))
         cap1, cap2 = (t.cap_h("inter_sb", px1), t.cap_h("inter", px2))
-        head = text or "RICOH GXR"
-        details = (["RICOH GXR"] if text else []) + [
+        ricoh = kind == "ricoh"
+        head = text or ("RICOH GXR" if ricoh else "")
+        details = (["RICOH GXR"] if (ricoh and text) else []) + [
             join([meta.get("lens_short", ""), meta.get("aperture", "")]),
             join([meta.get("shutter", ""), meta.get("iso", "")]),
             meta.get("date", ""),
@@ -72,11 +117,13 @@ def exhibition_label(
         want = max([t.advance("inter_sb", px1, head, 0.02) if head else 0, *(t.advance("inter", px2, d, 0.02) for d in details)])
         card_w = min(round(0.52 * w), max(round(0.26 * w), math.ceil(want) + 2 * pad_x + 2))
         head = t.clip_text(head, "inter_sb", px1, card_w - 2 * pad_x, 0.02) if head else ""
-        head_h = cap1 + round(0.9 * cap1) if head else 0
-        card_h = 2 * pad_y + head_h + len(details) * cap2 + (len(details) - 1) * lgap + round(0.3 * cap2)
+        lw, lh = fit_logo(custom, cap1, round(3.2 * cap1), card_w - 2 * pad_x, logo_size) if kind == "custom" and custom is not None else (0, 0)
+        head_h = (lh + round(0.7 * cap1) if kind == "custom" else 0) + (cap1 + round(0.9 * cap1) if head else 0)
+        detail_gaps = (len(details) - 1) * lgap if ricoh else max(0, len(details) - 1) * lgap
+        card_h = 2 * pad_y + head_h + len(details) * cap2 + detail_gaps + round(0.3 * cap2)
         gap_c = max(26, round(0.055 * short))
         cx, cy = (w - card_w, h + gap_c)
-        items = [
+        items: list[dict[str, Any]] = [
             {
                 "k": "shadow",
                 "x": cx,
@@ -90,6 +137,9 @@ def exhibition_label(
             {"k": "rect", "x": cx, "y": cy, "w": card_w, "h": card_h, "fill": card_bg, "outline": card_line, "stroke_w": 1},
         ]
         y = cy + pad_y
+        if kind == "custom" and custom is not None:
+            items.append(clogo_item(custom, cx + pad_x, y, lw, lh, logo_mode, pal["ink"], 22.0 if dark else 250.0))
+            y += lh + round(0.7 * cap1)
         if head:
             items.append(t.base_text(cx + pad_x, y + cap1, px1, "inter_sb", head, pal["ink"], 0.02))
             y += cap1 + round(0.9 * cap1)
@@ -101,11 +151,24 @@ def exhibition_label(
     return solve(unit, ratio, w, natural=(ms, ms, ms), f_side=0.07, f_top=0.07, f_bot=0.05, split=0.4)
 
 
-def blur_fill(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics, *, show_params: bool = True) -> dict[str, Any]:
+def blur_fill(
+    w: int,
+    h: int,
+    meta: Meta,
+    ratio: tuple[int, int] | None,
+    m: Metrics,
+    *,
+    show_params: bool = True,
+    logo_kind: str = "ricoh",
+    custom: LogoInfo | None = None,
+    logo_mode: str = "auto",
+    logo_size: str = "medium",
+) -> dict[str, Any]:
     t = Type(m)
     short = min(w, h)
     m0 = max(28, round(0.065 * short))
     white, soft = ((248, 248, 250), (226, 228, 232))
+    kind = _kind(logo_kind, custom)
 
     def unit(wref: int) -> dict[str, Any]:
         sz = t.sizes(wref)
@@ -123,16 +186,34 @@ def blur_fill(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metr
         ]
         over: list[dict[str, Any]] = []
         total = h
-        if show_params:
+        if show_params or kind == "custom":
             px1, px2 = (max(sz.p1("inter_sb"), round(0.02 * short)), max(sz.p2("inter"), round(0.017 * short)))
             cap1, cap2 = (t.cap_h("inter_sb", px1), t.cap_h("inter", px2))
             sub = join([meta.get(k, "") for k in ("lens_short", "aperture", "shutter", "iso")], "  ·  ")
             gap0, g = (max(22, round(1.9 * cap1)), max(8, round(0.8 * cap2)))
             y = h + gap0
-            hdr_h = cap1
-            over.append({**t.base_text(w / 2.0, y + cap1, px1, "inter_sb", "RICOH GXR", white, 0.18, "c"), "auto_ink": [white, (28, 28, 32)]})
-            over.append({**t.base_text(w / 2.0, y + hdr_h + g + cap2, px2, "inter", sub, soft, 0.04, "c"), "auto_ink": [soft, (52, 52, 58)]})
-            total = y + hdr_h + g + cap2
+            if kind == "custom" and custom is not None:
+                lw, hdr_h = fit_logo(custom, cap1, round(3.4 * cap1), round(0.30 * w), logo_size)
+                it = clogo_item(custom, round(w / 2.0 - lw / 2), round(y), lw, hdr_h, logo_mode, white, 128.0)
+                it["auto_ink"] = [list(white), [28, 28, 32]]
+                over.append(it)
+                if show_params:
+                    sub_txt = t.base_text(w / 2.0, y + hdr_h + g + cap2, px2, "inter", sub, soft, 0.04, "c")
+                    over.append({**sub_txt, "auto_ink": [soft, (52, 52, 58)]})
+                    total = y + hdr_h + g + cap2
+                else:
+                    total = y + hdr_h
+            elif kind == "ricoh":
+                hdr_h = cap1
+                hdr_txt = t.base_text(w / 2.0, y + cap1, px1, "inter_sb", "RICOH GXR", white, 0.18, "c")
+                sub_txt = t.base_text(w / 2.0, y + hdr_h + g + cap2, px2, "inter", sub, soft, 0.04, "c")
+                over.append({**hdr_txt, "auto_ink": [white, (28, 28, 32)]})
+                over.append({**sub_txt, "auto_ink": [soft, (52, 52, 58)]})
+                total = y + hdr_h + g + cap2
+            else:
+                sub_txt = t.base_text(w / 2.0, y + cap2, px2, "inter", sub, soft, 0.04, "c")
+                over.append({**sub_txt, "auto_ink": [soft, (52, 52, 58)]})
+                total = y + cap2
         result = make_unit(
             w,
             total,
@@ -150,11 +231,24 @@ def blur_fill(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metr
     return solve(unit, ratio, w, natural=(m0, m0, round(0.065 * short)), f_side=0.06, f_top=0.06, f_bot=0.06, split=0.45)
 
 
-def cinema(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics, *, text: str = "") -> dict[str, Any]:
+def cinema(
+    w: int,
+    h: int,
+    meta: Meta,
+    ratio: tuple[int, int] | None,
+    m: Metrics,
+    *,
+    text: str = "",
+    logo_kind: str = "ricoh",
+    custom: LogoInfo | None = None,
+    logo_mode: str = "auto",
+    logo_size: str = "medium",
+) -> dict[str, Any]:
     t = Type(m)
     short = min(w, h)
     black, yellow, dim = ((8, 8, 10), (244, 198, 68), (150, 152, 160))
     gate = max(20, round(0.03 * short))
+    kind = _kind(logo_kind, custom)
 
     def unit(wref: int) -> dict[str, Any]:
         sz = t.sizes(wref)
@@ -164,12 +258,20 @@ def cinema(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics
         cap_m, cap_s, cap_e = (t.cap_h("inter_sb", px_m), t.cap_h("inter_sb", px_s), t.cap_h("courier", px_e))
         uw = w + 2 * gate
         bt = max(round(0.1 * short), round(3.4 * cap_m))
+        lw, lh = fit_logo(custom, cap_m, round(0.70 * bt), round(0.30 * w), logo_size) if kind == "custom" and custom is not None else (0, 0)
         bb = max(bt, round(0.15 * short), round(1.3 * cap_s + 1.4 * cap_e + 2.2 * cap_s)) if text else bt
         items: list[dict[str, Any]] = [
             {"k": "rect", "x": gate - 1, "y": bt - 1, "w": w + 2, "h": h + 2, "fill": None, "outline": (38, 40, 46), "stroke_w": 1}
         ]
         ym = bt / 2.0
-        items.append(t.cap_text(gate, ym, px_m, "inter_sb", join(["RICOH GXR", meta.get("lens_short", "")], "  ·  "), dim, 0.16))
+        if kind == "custom" and custom is not None:
+            items.append(clogo_item(custom, gate, round(ym - lh / 2), lw, lh, logo_mode, (236, 236, 240), 8.0))
+            if meta.get("lens_short"):
+                items.append(t.cap_text(gate + lw + round(1.4 * cap_m), ym, px_m, "inter_sb", meta["lens_short"], dim, 0.16))
+        elif kind == "ricoh":
+            items.append(t.cap_text(gate, ym, px_m, "inter_sb", join(["RICOH GXR", meta.get("lens_short", "")], "  ·  "), dim, 0.16))
+        elif meta.get("lens_short"):
+            items.append(t.cap_text(gate, ym, px_m, "inter_sb", meta["lens_short"], dim, 0.16))
         if meta.get("date"):
             items.append(t.cap_text(gate + w, ym, px_m, "inter_sb", meta["date"], dim, 0.1, "r"))
         exp = join([meta.get(k, "") for k in ("aperture", "shutter", "iso")], "   ·   ")
@@ -185,7 +287,19 @@ def cinema(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics
     return solve(unit, ratio, w, natural=(0, 0, 0), f_side=0.05, f_top=0.05, f_bot=0.03, split=0.48)
 
 
-def slide_mount(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics, *, color: str = "cream") -> dict[str, Any]:
+def slide_mount(
+    w: int,
+    h: int,
+    meta: Meta,
+    ratio: tuple[int, int] | None,
+    m: Metrics,
+    *,
+    color: str = "cream",
+    logo_kind: str = "ricoh",
+    custom: LogoInfo | None = None,
+    logo_mode: str = "auto",
+    logo_size: str = "medium",
+) -> dict[str, Any]:
     t = Type(m)
     short = min(w, h)
     dark = color == "black"
@@ -194,6 +308,7 @@ def slide_mount(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Me
     red = (224, 62, 52) if dark else (198, 44, 38)
     rule = (64, 66, 72) if dark else (206, 200, 188)
     table = (226, 222, 214) if dark else (22, 22, 26)
+    kind = _kind(logo_kind, custom)
 
     def unit(wref: int) -> dict[str, Any]:
         sz = t.sizes(wref)
@@ -233,11 +348,15 @@ def slide_mount(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Me
             {"k": "line", "x1": rx, "y1": h0 - round(ry * 0.22), "x2": w0 - rx, "y2": h0 - round(ry * 0.22), "w": 1, "fill": rule},
         ]
         ym_t, ym_b = (ry * 0.6, h0 - ry * 0.58)
-        over = [
+        over: list[dict[str, Any]] = [
             t.cap_text(rx, ym_t, px1, "inter_sb", f"{frame_index(meta)}", red, 0.06),
             t.cap_text(rx, ym_b, px2, "courier", meta.get("date", ""), red, 0.06),
         ]
-        over.append(t.cap_text(w0 / 2.0, ym_t, px1, "inter_sb", join(["RICOH GXR", meta.get("lens_short", "")], "  ·  "), ink, 0.14, "c"))
+        if kind == "custom" and custom is not None:
+            lw, lh = fit_logo(custom, cap1, round(0.60 * ry), round(0.40 * w), logo_size)
+            over.append(clogo_item(custom, round(w0 / 2.0 - lw / 2), round(ym_t - lh / 2), lw, lh, logo_mode, ink, 30.0 if dark else 240.0))
+        elif kind == "ricoh":
+            over.append(t.cap_text(w0 / 2.0, ym_t, px1, "inter_sb", join(["RICOH GXR", meta.get("lens_short", "")], "  ·  "), ink, 0.14, "c"))
         spec = join([meta.get(k, "") for k in ("aperture", "shutter", "iso")], "  ")
         while spec and t.advance("courier", px2, spec, 0.03) + t.advance("courier", px2, meta.get("date", ""), 0.06) + 40 > w:
             spec = "  ".join(spec.split("  ")[:-1])
@@ -285,7 +404,18 @@ def darkroom(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metri
     )
 
 
-def postage_stamp(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: Metrics) -> dict[str, Any]:
+def postage_stamp(
+    w: int,
+    h: int,
+    meta: Meta,
+    ratio: tuple[int, int] | None,
+    m: Metrics,
+    *,
+    logo_kind: str = "ricoh",
+    custom: LogoInfo | None = None,
+    logo_mode: str = "auto",
+    logo_size: str = "medium",
+) -> dict[str, Any]:
     t = Type(m)
     short = min(w, h)
     stock, paper, ink, muted, eng = ((22, 23, 27), (250, 247, 238), (32, 32, 36), (96, 92, 86), (78, 74, 68))
@@ -294,12 +424,14 @@ def postage_stamp(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: 
     eg = max(6, round(0.011 * short))
     focal = re.search(r"(\d+(?:\.\d+)?)\s*mm", meta.get("lens_short", ""))
     inscription = join(["RICOH GXR", focal[1] if focal else ""], "  ·  ")
+    kind = _kind(logo_kind, custom)
 
     def unit(wref: int) -> dict[str, Any]:
         sz = t.sizes(wref)
         px1, px2 = (max(sz.p1("inter_sb"), round(0.018 * short)), max(sz.p2("inter"), round(0.016 * short)))
         cap1 = t.cap_h("inter_sb", px1)
-        pad_bot = max(round(0.105 * short), round(3.4 * cap1) + eg, 3 * eg + hr)
+        lw, lh = fit_logo(custom, cap1, round(3.2 * cap1), round(0.30 * w), logo_size) if kind == "custom" and custom is not None else (0, 0)
+        pad_bot = max(round(0.105 * short), round(3.4 * cap1) + eg, lh + 3 * eg + hr)
         sw, sh = (w + 2 * pad, h + pad + pad_bot)
         under: list[dict[str, Any]] = [
             {"k": "rect", "x": 0, "y": 0, "w": sw, "h": sh, "fill": paper},
@@ -315,10 +447,18 @@ def postage_stamp(w: int, h: int, meta: Meta, ratio: tuple[int, int] | None, m: 
             for cx in (0, sw):
                 under.append({"k": "ellipse", "cx": cx, "cy": round(center_y), "r": hr, "fill": stock})
         yb = pad + h + eg + (pad_bot - eg - hr) * 0.52 + cap1 / 2
-        over = [t.base_text(pad, yb, px1, "inter_sb", inscription, ink, 0.1)]
-        left_w = t.advance("inter_sb", px1, inscription, 0.1)
+        if kind == "custom" and custom is not None:
+            over: list[dict[str, Any]] = [clogo_item(custom, pad, round(yb - cap1 / 2 - lh / 2), lw, lh, logo_mode, ink, 250.0)]
+            left_w: float = lw
+        elif kind == "none":
+            over = []
+            left_w = 0.0
+        else:
+            over = [t.base_text(pad, yb, px1, "inter_sb", inscription, ink, 0.1)]
+            left_w = t.advance("inter_sb", px1, inscription, 0.1)
         right = join([meta.get(k, "") for k in ("lens_short", "aperture", "shutter", "date")], "  ·  ")
-        while right and t.advance("inter", px2, right, 0.02) + left_w + 30 > w:
+        pad_left = left_w + 30 if left_w else 0
+        while right and t.advance("inter", px2, right, 0.02) + pad_left > w:
             right = "  ·  ".join(right.split("  ·  ")[:-1]) if "  ·  " in right else ""
         if right:
             over.append(t.base_text(pad + w, yb, px2, "inter", right, muted, 0.02, "r"))

@@ -168,6 +168,9 @@ class RenderService:
         self.lib = library
         self.luts = LutLibrary(self.home, (*forbidden, library.root))
         self.recipes = RecipeRepository(self.home, (*forbidden, library.root))
+        from ..finish.logo_store import LogoStore
+
+        self.logos = LogoStore(self.home, (*forbidden, library.root))
         self.menu = Menu()
         self._lock = threading.RLock()
         self._gate = threading.BoundedSemaphore(max_concurrent)

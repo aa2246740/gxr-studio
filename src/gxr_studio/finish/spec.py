@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -12,6 +13,8 @@ from ..render.params import INVALID_REQUEST, EditError
 SLIDER = 100
 STAMP_TEXT_MAX = 24
 OUTPUT_RATIOS = {"1:1": (1, 1), "4:5": (4, 5), "3:4": (3, 4), "2:3": (2, 3), "9:16": (9, 16), "16:9": (16, 9), "3:2": (3, 2)}
+LOGO_STYLES = {"leica", "hasselblad", "thin_keyline", "exhibition_label", "cinema", "slide_mount", "postage_stamp", "blur_fill"}
+_LOGO_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 FRAME_STYLES = {
     "none",
     "leica",
@@ -75,6 +78,10 @@ class FrameSpec:
     output_ratio: str = "3:4"
     fmt: str = ""
     table: str = "light"
+    logo: str = ""
+    logo_mode: str = "auto"
+    logo_size: str = "medium"
+    model: bool = True
 
     def __post_init__(self) -> None:
         if not self.color:
@@ -83,6 +90,12 @@ class FrameSpec:
             object.__setattr__(self, "show_date", self.style in {"leica", "hasselblad"})
         if not self.fmt:
             object.__setattr__(self, "fmt", "polaroid" if self.style == "instant" else "135")
+        if not self.logo:
+            object.__setattr__(self, "logo", "ricoh" if self.show_logo else "none")
+        elif self.logo == "none" and self.show_logo:
+            object.__setattr__(self, "show_logo", False)
+        elif self.logo != "none" and not self.show_logo:
+            object.__setattr__(self, "show_logo", True)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -97,6 +110,10 @@ class FrameSpec:
             "output_ratio": self.output_ratio,
             "fmt": self.fmt,
             "table": self.table,
+            "logo": self.logo,
+            "logo_mode": self.logo_mode,
+            "logo_size": self.logo_size,
+            "model": self.model,
         }
 
 
@@ -172,12 +189,52 @@ def parse_geometry(raw: Any) -> Geometry:
     )
 
 
+def _parse_logo_fields(raw: dict[str, Any]) -> tuple[str, bool, str, str, bool]:
+    show_logo = bool(raw.get("show_logo", True))
+    if "logo" not in raw:
+        logo = "ricoh" if show_logo else "none"
+    else:
+        raw_logo = raw["logo"]
+        if not isinstance(raw_logo, str) or (raw_logo not in {"ricoh", "none"} and not _LOGO_ID_RE.match(raw_logo)):
+            raise EditError("bad_frame", INVALID_REQUEST, "标志选择无效。")
+        if raw_logo == "none" or (raw_logo == "ricoh" and raw.get("show_logo") is False):
+            logo, show_logo = "none", False
+        else:
+            logo, show_logo = raw_logo, True
+    logo_mode = raw.get("logo_mode", "auto")
+    if not isinstance(logo_mode, str) or logo_mode not in {"auto", "orig", "mono"}:
+        raise EditError("bad_frame", INVALID_REQUEST, "标志颜色只能是自动、原色或单色。")
+    logo_size = raw.get("logo_size", "medium")
+    if not isinstance(logo_size, str) or logo_size not in {"small", "medium", "large"}:
+        raise EditError("bad_frame", INVALID_REQUEST, "标志大小只能是小、中或大。")
+    model = raw.get("model", True)
+    if not isinstance(model, bool):
+        raise EditError("bad_frame", INVALID_REQUEST, "型号文字开关只能打开或关闭。")
+    return logo, show_logo, logo_mode, logo_size, model
+
+
 def parse_frame(raw: Any) -> FrameSpec | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise EditError("bad_frame", "边框设置格式不对。请重新选择样式后再试。")
-    known = {"version", "style", "color", "weight", "show_logo", "show_params", "show_date", "text", "output_ratio", "fmt", "table"}
+    known = {
+        "version",
+        "style",
+        "color",
+        "weight",
+        "show_logo",
+        "show_params",
+        "show_date",
+        "text",
+        "output_ratio",
+        "fmt",
+        "table",
+        "logo",
+        "logo_mode",
+        "logo_size",
+        "model",
+    }
     if set(raw) - known or ("version" in raw and (type(raw["version"]) is not int or raw["version"] != 2)):
         raise EditError("bad_frame", "边框设置已更新。请重新选择边框样式。")
     style = raw.get("style", "none")
@@ -205,17 +262,22 @@ def parse_frame(raw: Any) -> FrameSpec | None:
     table = raw.get("table", "light")
     if not isinstance(table, str) or table not in {"light", "black"}:
         raise EditError("bad_frame", "胶片背景只能选灯台或黑色。")
+    logo, show_logo, logo_mode, logo_size, model = _parse_logo_fields(raw)
     return FrameSpec(
         style=style,
         color=color,
         weight=weight,
-        show_logo=bool(raw.get("show_logo", True)),
+        show_logo=show_logo,
         show_params=bool(raw.get("show_params", True)),
         show_date=bool(raw.get("show_date", style in {"leica", "hasselblad"})),
         text=text,
         output_ratio=ratio,
         fmt=fmt,
         table=table,
+        logo=logo,
+        logo_mode=logo_mode,
+        logo_size=logo_size,
+        model=model,
     )
 
 

@@ -4,6 +4,7 @@
 
 import { frameLayout, stampLayout, stampText, momentOf, needsCjk } from './finish_layout.js';
 import { fontReady, fontsNeeded, loadFont, metrics, tableReady } from './finish_fonts.js';
+import { logosRevision, refreshLogos } from './logo_catalog.js';
 import { drawDecor } from './finish_draw.js';
 import { photoSize } from './output_photo_size.js';
 import { primeBlur } from './finish_background.js';
@@ -19,6 +20,10 @@ export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts, cropPreset =
   const text = stampSpec ? stampText(stampSpec, when) : '';
   const needed = fontsNeeded(frameSpec, text ? stampSpec : null, needsCjk(text));
   for (const id of needed) if (!tableReady(id) || !fontReady(id)) loadFont(id).then(onFonts, () => {});
+  const logoId = frameSpec && frameSpec.logo;
+  if (logoId && logoId !== 'ricoh' && logoId !== 'none' && frameSpec.show_logo !== false) {
+    refreshLogos().then((changed) => { if (changed && onFonts) onFonts(); }, () => {});
+  }
   if (needed.some((id) => !tableReady(id))) return null;
   const frame = frameSpec ? frameLayout(ew, eh, frameSpec, meta, metrics) : null;
   const borderStamp = stampSpec?.placement === 'border' && frameSpec?.style === 'instant';
@@ -43,7 +48,7 @@ export function decorOf(view, ew, eh) {
   }
   const known = view.decor;
   const preset = view.crop?.preset;
-  const mine = JSON.stringify([frameSpec, stampSpec, ed.meta, ew, eh, preset]);
+  const mine = JSON.stringify([frameSpec, stampSpec, ed.meta, ew, eh, preset, logosRevision()]);
   if (known && known.mine === mine && known.fonts === fontsState(frameSpec, stampSpec, ed)) return known.deco;
   const deco = makeDeco(ed, frameSpec, stampSpec, ew, eh, () => { if (!view.disposed) view.onChange?.(); }, preset);
   view.decor = { mine, fonts: fontsState(frameSpec, stampSpec, ed), deco };
@@ -139,6 +144,15 @@ export function applyDecor(view, pv, media, deco, cssW, cssH) {
   canvas.height = Math.round(H * dpr);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  // 标志图片还没下载好：好了再画一遍（让下一次 applyDecor 不被缓存挡住）
-  drawDecor(ctx, deco, s * dpr, { backdrop:backdrop?.image||null, onLogo: () => { delete canvas.dataset.key; if (!view.disposed) view.onChange?.(); } });
+  // 标志图片还没下载好或在等重试：好了再画一遍（让下一次 applyDecor 不被缓存挡住）。
+  // 回调挂在画布上，同一块画布反复重画只登记这一个，等重试的名单不会越积越长。
+  canvas.gxrLogoView = view;
+  if (!canvas.gxrOnLogo) {
+    canvas.gxrOnLogo = () => {
+      delete canvas.dataset.key;
+      const owner = canvas.gxrLogoView;
+      if (owner && !owner.disposed) owner.onChange?.();
+    };
+  }
+  drawDecor(ctx, deco, s * dpr, { backdrop:backdrop?.image||null, onLogo: canvas.gxrOnLogo });
 }

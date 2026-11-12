@@ -182,8 +182,30 @@ def fit_size(w: int, h: int, max_edge: int | None) -> tuple[int, int]:
     return max(1, round(w * scale)), max(1, round(h * scale))
 
 
-def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metrics) -> FrameLayout | None:
-    """Photo pixels are never scaled or cropped. Port of approved DESIGN sections 3–6."""
+def _resolve_logo(spec: FrameSpec, logos: dict[str, Any] | None) -> tuple[str, Any]:
+    from .spec import LOGO_STYLES
+
+    if spec.style not in LOGO_STYLES:
+        return "none", None
+    if spec.logo == "none" or not spec.show_logo:
+        return "none", None
+    if spec.logo == "ricoh":
+        return "ricoh", None
+    custom = logos.get(spec.logo) if logos else None
+    if custom is None:
+        return "ricoh", None
+    return "custom", custom
+
+
+def frame_layout(
+    w: int,
+    h: int,
+    spec: FrameSpec,
+    meta: dict[str, str],
+    m: Metrics,
+    logos: dict[str, Any] | None = None,
+) -> FrameLayout | None:
+    """Photo pixels are never scaled or cropped. Port of approved DESIGN sections 3–6 and 10."""
     from . import frame_new as new
     from . import frame_objects as objects
     from . import frame_styles as plain
@@ -191,6 +213,8 @@ def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metri
     ratio = OUTPUT_RATIOS.get(spec.output_ratio)
     if spec.style == "none":
         return None
+    logo_kind, custom = _resolve_logo(spec, logos)
+    logo_kw = {"logo_kind": logo_kind, "custom": custom, "logo_mode": spec.logo_mode, "logo_size": spec.logo_size}
     if spec.style == "gallery":
         raw = plain.gallery(w, h, meta, ratio, m, color=spec.color, weight=spec.weight)
     elif spec.style == "leica":
@@ -201,33 +225,35 @@ def frame_layout(w: int, h: int, spec: FrameSpec, meta: dict[str, str], m: Metri
             ratio,
             m,
             color=spec.color,
-            show_logo=spec.show_logo,
+            show_logo=logo_kind != "none",
             show_params=spec.show_params,
             show_date=bool(spec.show_date),
             text=spec.text,
+            model=spec.model,
+            **logo_kw,
         )
     elif spec.style == "hasselblad":
         raw = plain.hasselblad(
-            w, h, meta, ratio, m, color=spec.color, show_params=spec.show_params, show_date=bool(spec.show_date), text=spec.text
+            w, h, meta, ratio, m, color=spec.color, show_params=spec.show_params, show_date=bool(spec.show_date), text=spec.text, **logo_kw
         )
     elif spec.style == "film":
         raw = objects._strip(w, h, meta, ratio, spec.fmt, spec.table, m)
     elif spec.style == "instant":
         raw = objects.instant(w, h, meta, ratio, m, text=spec.text, show_date=bool(spec.show_date), fmt=spec.fmt)
     elif spec.style == "thin_keyline":
-        raw = new.thin_keyline(w, h, meta, ratio, m, color=spec.color)
+        raw = new.thin_keyline(w, h, meta, ratio, m, color=spec.color, **logo_kw)
     elif spec.style == "exhibition_label":
-        raw = new.exhibition_label(w, h, meta, ratio, m, color=spec.color, text=spec.text)
+        raw = new.exhibition_label(w, h, meta, ratio, m, color=spec.color, text=spec.text, **logo_kw)
     elif spec.style == "blur_fill":
-        raw = new.blur_fill(w, h, meta, ratio, m, show_params=spec.show_params)
+        raw = new.blur_fill(w, h, meta, ratio, m, show_params=spec.show_params, **logo_kw)
     elif spec.style == "cinema":
-        raw = new.cinema(w, h, meta, ratio, m, text=spec.text)
+        raw = new.cinema(w, h, meta, ratio, m, text=spec.text, **logo_kw)
     elif spec.style == "slide_mount":
-        raw = new.slide_mount(w, h, meta, ratio, m, color=spec.color)
+        raw = new.slide_mount(w, h, meta, ratio, m, color=spec.color, **logo_kw)
     elif spec.style == "darkroom":
         raw = new.darkroom(w, h, meta, ratio, m, text=spec.text)
     else:
-        raw = new.postage_stamp(w, h, meta, ratio, m)
+        raw = new.postage_stamp(w, h, meta, ratio, m, **logo_kw)
     return FrameLayout(
         raw["width"], raw["height"], raw["photo"], raw["bg"], tuple(raw["items"]), raw["bgfx"], raw["unit_box"], raw["fixed"], raw["grain"]
     )

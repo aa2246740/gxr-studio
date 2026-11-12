@@ -40,7 +40,10 @@ function drawCard(view, style, holder, base) {
   canvas.style.aspectRatio = `${deco.width} / ${deco.height}`;
   const ctx = canvas.getContext('2d');
   if (style.id === 'blur_fill') primeBlur(base.image, ew, eh, ed.meta?.frame || {}, deco.frame, () => !view.disposed && view.tab === 'frame' && !view.collapsed && !view.pending && view.cardBase?.base?.image === base.image);
-  drawDecor(ctx, deco, scale, { photo: base.image, onLogo: redo });
+  // 标志图片的回调挂在卡片上：同一张卡片反复重画只登记这一个（等重试的名单不会被卡片挤满）。
+  holder.gxrRedo = redo;
+  if (!holder.gxrOnLogo) holder.gxrOnLogo = () => holder.gxrRedo?.();
+  drawDecor(ctx, deco, scale, { photo: base.image, onLogo: holder.gxrOnLogo });
   holder.classList.remove('skel');
   holder.removeAttribute('aria-busy');
   if (!canvas.parentElement) holder.replaceChildren(canvas);

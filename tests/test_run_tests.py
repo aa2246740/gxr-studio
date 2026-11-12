@@ -24,7 +24,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_tests.py"
-PROBE = ROOT / "src" / "gxr_studio" / "_run_tests_cov_probe.py"
+
+
+def _probe(scratch: Path) -> Path:
+    return scratch / "_run_tests_cov_probe.py"
+
 
 # 内层 runner 再收集到本文件时直接跳过，避免计划泄漏后套娃把整仓再跑一遍。
 pytestmark = pytest.mark.skipif(os.environ.get("GXR_RUN_TESTS_INNER") == "1", reason="inner runner")
@@ -33,11 +37,16 @@ pytestmark = pytest.mark.skipif(os.environ.get("GXR_RUN_TESTS_INNER") == "1", re
 @pytest.fixture
 def scratch() -> Iterator[Path]:
     path = Path(tempfile.mkdtemp(prefix="run-tests-", dir=ROOT))
-    PROBE.write_text("def touch():\n    return 1\n", encoding="utf-8")
+    _probe(path).write_text("def touch():\n    return 1\n", encoding="utf-8")
+    # 只有内层 pytest 加载探针目录，其他分片扫描产品源码时不会收录这个临时模块。
+    (path / "conftest.py").write_text(
+        "from pathlib import Path\nimport gxr_studio\n\ngxr_studio.__path__.append(str(Path(__file__).parent))\n",
+        encoding="utf-8",
+    )
     try:
         yield path
     finally:
-        PROBE.unlink(missing_ok=True)
+        _probe(path).unlink(missing_ok=True)
         shutil.rmtree(path, ignore_errors=True)
 
 
@@ -145,6 +154,34 @@ def _base_opts(tree: Path, junit: Path) -> list[str]:
     return ["--force-reruns=0", "--rootdir", str(ROOT), "--junitxml", str(junit), "-o", f"testpaths={relative}"]
 
 
+def test_coverage_report_survives_runner_probe_cleanup(tmp_path: Path, scratch: Path) -> None:
+    """并行分片的覆盖率扫描不能收录 runner 自测稍后会删除的临时模块。"""
+    script = tmp_path / "import_package.py"
+    script.write_text("import gxr_studio\nassert gxr_studio.__version__\n", encoding="utf-8")
+    data = tmp_path / "scan.coverage"
+    command = [sys.executable, "-I", "-m", "coverage"]
+    config = f"--rcfile={ROOT / 'pyproject.toml'}"
+    measured = subprocess.run(
+        [*command, "run", config, "--source=gxr_studio", f"--data-file={data}", str(script)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert measured.returncode == 0, measured.stdout + measured.stderr
+    _probe(scratch).unlink()
+    report = subprocess.run(
+        [*command, "report", config, f"--data-file={data}", "--fail-under=0"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert report.returncode == 0, report.stdout + report.stderr
+
+
 def test_positional_selectors_run_each_planned_test_once(tmp_path: Path, scratch: Path) -> None:
     tree = scratch / "tree"
     _write_tree(tree, space=True)
@@ -190,7 +227,7 @@ def test_markexpr_does_not_reexpand_into_exclusive(tmp_path: Path, scratch: Path
 def test_junit_alias_and_coverage_xml_use_the_combined_result(tmp_path: Path, scratch: Path) -> None:
     tree = scratch / "tree"
     tree.mkdir()
-    PROBE.write_text(
+    _probe(scratch).write_text(
         "def first():\n    return 17\n\ndef second():\n    return 23\n\ndef third():\n    return 31\n",
         encoding="utf-8",
     )
@@ -416,7 +453,7 @@ def _xml_lines(path: Path) -> tuple[str, str]:
 
 def test_file_reports_leave_the_coverage_floor_to_the_gate(tmp_path: Path, scratch: Path) -> None:
     """配置里写 fail_under = 100 时，xml/html/json/lcov 不能在 85% 门槛之外再卡一次（串行 pytest 用 --cov-fail-under=85）。"""
-    PROBE.write_text(
+    _probe(scratch).write_text(
         "def touch():\n    a = 1\n    b = a + 1\n    c = b + 1\n    d = c + 1\n    return d - 3\n\n\ndef unused():\n    return 2\n",
         encoding="utf-8",
     )

@@ -92,7 +92,7 @@ def test_js_ascent_equals_python(tmp_path: Path) -> None:
     if node is None:
         pytest.skip("本机没有 node，跳过前端纯函数测试")
     (tmp_path / "finish_layout.js").write_text((WEB / "finish_layout.js").read_text(encoding="utf-8"), encoding="utf-8")
-    for name in ("finish_frame_core.js", "finish_frame_styles.js", "finish_frame_objects.js", "finish_frame_new.js"):
+    for name in ("finish_frame_core.js", "logo_catalog.js", "finish_frame_styles.js", "finish_frame_objects.js", "finish_frame_new.js"):
         (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
     cases = {font: [font_table(font).ascender, font_table(font).upm] for font in FONT_FILES}

@@ -5,7 +5,9 @@
 // 中文回退字体读不到表：按 1000 像素的字号用画布量一次（当作 upm = 1000），这一项只能和系统字体一样准。
 
 import { ascentPx } from './finish_layout.js';
+import { LOGO_STYLES, logosLoaded, logosRevision, ensureLogosLoaded } from './finish_frame_core.js';
 
+const LOGOS_TOKEN = '__logos__';
 const FILES = {
   atkinson: 'AtkinsonHyperlegible-Regular.ttf',
   inter: 'Inter-Regular.ttf',
@@ -26,8 +28,8 @@ const ready = new Set();
 const tables = new Map(); // 字体代号 → { upm, ascender, notdef, glyphs }
 let logo = null; // { img, loaded, waiting }
 
-export const fontReady = (id) => ready.has(id);
-export const tableReady = (id) => tables.has(id);
+export const fontReady = (id) => (id === LOGOS_TOKEN ? logosRevision() : ready.has(id));
+export const tableReady = (id) => (id === LOGOS_TOKEN ? logosLoaded() : tables.has(id));
 
 // 列式的表（fonts.py 的 FontTable.to_json）→ { upm, ascender, notdef: [步进, 外框 | null], glyphs: Map(码点 → 同样的) }
 function build(json) {
@@ -75,6 +77,7 @@ function loadFace(id) {
 
 // 字体文件和版面表都到了才算好
 export function loadFont(id) {
+  if (id === LOGOS_TOKEN) return ensureLogosLoaded();
   return Promise.all([loadTable(id), loadFace(id)]);
 }
 
@@ -110,6 +113,7 @@ export function fontsNeeded(frame, stamp, stampTextIsCjk = false) {
   if (style === 'darkroom') ids.add('patrick');
   if (style === 'film') ids.add('inter_sb');
   if (style === 'instant' && (frame.text || frame.show_date)) ids.add('patrick');
+  if (frame && LOGO_STYLES.includes(style) && frame.logo && frame.logo !== 'ricoh' && frame.logo !== 'none' && frame.show_logo !== false) ids.add(LOGOS_TOKEN);
   if (stamp && stamp.enabled && !stampTextIsCjk) ids.add({ seg7: 'dseg', typewriter: 'courier', sans: 'atkinson' }[stamp.font] || 'dseg');
   return [...ids];
 }

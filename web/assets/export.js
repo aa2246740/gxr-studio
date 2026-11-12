@@ -4,6 +4,7 @@
 // 尺寸和品质用后端的档位（README：large/medium/small/original = 3000/2048/1600/原始，high/medium/low = 95/85/70）。
 
 import { api } from './api.js';
+import { refreshLogos } from './logo_catalog.js';
 import { state } from './state.js';
 import { h, openModal, fmtBytes, toast, toastError, errorBody, platform, setFraction, outOfView } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
@@ -231,6 +232,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     if (cancelBtn) cancelBtn.textContent = '关闭';
     try {
       // 按这次真正要导出的范围等保存（F02）：这一天的全部要等这一天所有改过的照片，不只是打开对话框时的那几张
+      await refreshLogos().catch(() => {});
       if (beforeSubmit) await beforeSubmit({ scope: sub.scope, ids: sub.ids, date: sub.date });
       const { opts } = sub;
       if (sub.scope === 'ids' && sub.ids.length === 1) {

@@ -32,6 +32,11 @@ export async function v2Ready() {
 // 默认的边框和时间戳设置
 export const loadDefaults = () => cached('defaults', '/api/defaults/finish', '边框和时间戳');
 
+export function refreshDefaults() {
+  cache.delete('defaults');
+  return loadDefaults();
+}
+
 export async function saveDefaults(body) {
   const data = await api('/api/defaults/finish', { method: 'PUT', body });
   cache.set('defaults', Promise.resolve({ state: 'ok', data }));

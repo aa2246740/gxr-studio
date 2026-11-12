@@ -20,6 +20,7 @@ from .api.camdata_routes import router as camdata_router
 from .api.errors import ApiError
 from .api.finish_routes import router as finish_router
 from .api.gpu_routes import router as gpu_router
+from .api.logo_routes import router as logo_router
 from .api.lut_library_routes import router as lut_library_router
 from .api.lut_routes import router as lut_router
 from .api.ops_routes import router as ops_router
@@ -159,6 +160,7 @@ def create_app(
     app.include_router(render_router)
     app.include_router(paste_router)
     app.include_router(finish_router)
+    app.include_router(logo_router)
     app.include_router(camdata_router)
     app.include_router(lut_router)
     app.include_router(lut_library_router)

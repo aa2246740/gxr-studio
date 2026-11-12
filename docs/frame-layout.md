@@ -16,7 +16,7 @@
 
 ## 设置
 
-边框 JSON 使用 `version: 2`，包含 `style`、`color`、`weight`、`show_logo`、`show_params`、`show_date`、`text`、`output_ratio`、`fmt`、`table`。
+边框 JSON 使用 `version: 2`，包含 `style`、`color`、`weight`、`show_logo`、`show_params`、`show_date`、`text`、`output_ratio`、`fmt`、`table`、`logo`、`logo_mode`、`logo_size`、`model`。
 
 - `film.fmt` 是 `135` 或 `120`，`table` 是 `light` 或 `black`。
 - `instant.fmt` 是 `polaroid`、`instax_square`、`instax_wide` 或 `instax_mini`。
@@ -26,6 +26,18 @@
 - 新请求里的未知键、非法画幅、比例或显示开关返回中文错误，不按旧语义猜测。没有边框设置时继续继承默认值。
 
 复制、粘贴和撤销按整块边框设置传递，成品尺寸接口与导出共用布局。
+
+## 自定义标志
+
+徕卡、哈苏、极简细线、展签、电影、幻灯片、邮票和模糊背景的标志栏可选 RICOH、已保存标志或不显示。自定义标志支持小、中、大和自动、原色、单色；徕卡可单独关闭型号文字。其余样式隐藏标志栏。
+
+上传接受 PNG、JPG、WebP，最多 5 MB。后端按内容识别格式，拒绝 SVG、超限像素和损坏文件，再解码、可选去白底、裁到墨迹框，重编码为不含原始元数据的 PNG。已有透明度的图片保留原有透明通道。裁边后短边至少 64 像素，保存时长边最多 1200 像素。去白底从边缘泛洪，保留字内白色，容差默认 30，可调到 0–60。
+
+最多保存 12 个标志，名称最多 20 个字符。文件和索引保存在配置的应用数据目录 `logos/`，写入经过私有路径守卫并原子替换。管理弹窗可改名、删除；删除会把引用该标志的照片和默认边框改回 RICOH，未知或缺失标志也回退到 RICOH。
+
+`logo` 为 `ricoh`、`none` 或保存的标志 ID；`logo_mode` 为 `auto`、`orig`、`mono`；`logo_size` 为 `small`、`medium`、`large`；`model` 控制徕卡的型号文字。旧 `show_logo: false` 仍能隐藏 RICOH。照片保存、默认值、复制粘贴与撤销携带整块边框设置。
+
+透明标志在自动模式下按墨迹和底色的亮度差选择原色或单色；模糊背景采样标志下面的底色。不透明标志保持原色。预览与导出共用标志尺寸和位置规则，导出从保存的 PNG 以 Lanczos 缩放。
 
 ## 对照
 
@@ -39,4 +51,4 @@
 uv run --frozen python -I scripts/frame_reference.py --reference /path/to/frame-design
 ```
 
-真实照片和对照图不进仓库。自定义标志和拼图另行开发。
+真实照片和对照图不进仓库。拼图另行开发。

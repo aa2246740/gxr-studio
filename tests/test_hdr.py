@@ -285,7 +285,7 @@ def test_track_without_raw_or_with_unknown_frame_layout():
 
     real = he.apply_frame
     # 不像任何边框：照片的位置认不出来
-    he.apply_frame = lambda rgb, spec, meta, crop_preset=None: np.zeros((20, 20, 3), np.uint8)
+    he.apply_frame = lambda rgb, spec, meta, logos=None, logo_images=None: np.zeros((20, 20, 3), np.uint8)
     try:
         track.frame(parse_frame({"style": "gallery"}), {})
     finally:

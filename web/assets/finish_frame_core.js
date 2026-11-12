@@ -1,5 +1,20 @@
 // Mirror of finish/frame_core.py. Ordered underlays → photo → overlays.
 import { pyRound } from './finish_layout.js';
+export {
+  onLogoCatalog,
+  useLogos,
+  logosLoaded,
+  logosRevision,
+  getLogoList,
+  getLogoMap,
+  refreshLogos,
+  ensureLogosLoaded,
+  customLogoImage,
+  noteLogoImageError,
+  noteLogoImageLoaded,
+  logoImageFailing,
+  retryLogoImageNow,
+} from './logo_catalog.js';
 export const COLORS = { white: [255,255,255], black: [14,14,16], cream: [244,239,230] };
 export const join = (parts, sep = '  ') => parts.filter(Boolean).join(sep);
 export class Type {
@@ -103,3 +118,75 @@ export function rotateUnitCcw(unit) {
   };
   return {...unit,w:unit.h,h:wl,px:unit.py,py:wl-unit.px-unit.pw,pw:unit.ph,ph:unit.pw,under:unit.under.map(rot),over:unit.over.map(rot)};
 }
+
+export const LOGO_STYLES = ['leica','hasselblad','thin_keyline','exhibition_label','cinema','slide_mount','postage_stamp','blur_fill'];
+export const SIZE_MULT = { small: 0.80, medium: 1.00, large: 1.25 };
+const ASPECT_PTS = [[0.5,2.6],[1.0,2.5],[1.5,2.5],[2.5,2.3],[4.0,1.5],[6.0,1.04],[9.0,0.88]];
+
+export function aspectMult(aspect) {
+  if (aspect <= ASPECT_PTS[0][0]) return ASPECT_PTS[0][1];
+  for (let i = 0; i < ASPECT_PTS.length - 1; i++) {
+    const [a0, m0] = ASPECT_PTS[i], [a1, m1] = ASPECT_PTS[i + 1];
+    if (aspect <= a1) return m0 + ((m1 - m0) * (aspect - a0)) / (a1 - a0);
+  }
+  return ASPECT_PTS.at(-1)[1];
+}
+
+export function coverageComp(coverage) {
+  return Math.min(1.25, Math.max(0.90, (0.35 / Math.max(coverage, 0.02)) ** 0.25));
+}
+
+function fitInside(aspect, targetH, maxH, maxW) {
+  let ih = Math.min(maxH, Math.max(1, pyRound(Math.min(targetH, maxH))));
+  let iw = pyRound(ih * aspect);
+  while ((iw > maxW || ih > maxH) && ih > 1) {
+    ih -= 1;
+    iw = pyRound(ih * aspect);
+  }
+  if (iw <= maxW && ih <= maxH && iw >= 1 && ih >= 1) return [iw, ih];
+  const limited = aspect ? Math.floor(maxW / aspect) : maxH;
+  ih = Math.min(maxH, Math.max(1, limited));
+  iw = pyRound(ih * aspect);
+  while ((iw > maxW || ih > maxH) && ih > 1) {
+    ih -= 1;
+    iw = pyRound(ih * aspect);
+  }
+  return [Math.min(maxW, Math.max(1, iw)), Math.min(maxH, Math.max(1, ih))];
+}
+
+export function fitLogo(logo, cap, maxH, maxW, size = 'medium') {
+  const aspect = logo.w / Math.max(1, logo.h);
+  if (aspect <= 0 || maxW < 1 || maxH < 1) {
+    const side = Math.max(0, Math.min(maxW, maxH, 8));
+    return [side, side];
+  }
+  const mult = SIZE_MULT[size] ?? 1.0;
+  let targetH = cap * aspectMult(aspect) * coverageComp(logo.coverage) * mult;
+  targetH = Math.min(targetH, maxH, maxW / aspect);
+  const ih = Math.max(8, pyRound(targetH));
+  const iw = Math.max(8, pyRound(ih * aspect));
+  if (iw <= maxW && ih <= maxH) return [iw, ih];
+  return fitInside(aspect, targetH, maxH, maxW);
+}
+
+export function pickLogoMode(logo, mode, bgLum) {
+  if (logo.opaque) return 'orig';
+  if (mode === 'mono' || mode === 'orig') return mode;
+  return Math.abs(logo.lum - bgLum) < 70 ? 'mono' : 'orig';
+}
+
+export function clogoItem(logo, x, y, w, h, mode, ink, bgLum) {
+  return {
+    k: 'clogo',
+    id: logo.id,
+    x,
+    y,
+    w,
+    h,
+    mode: pickLogoMode(logo, mode, bgLum),
+    ink: [...ink],
+    auto: mode === 'auto' && !logo.opaque,
+  };
+}
+
+
