@@ -22,9 +22,17 @@ make profile
 make openapi
 make notes
 make web
+make core
+make core-test
+make core-wasm
+make mobile-dev
+make mobile-build
+make mobile-check
 ```
 
 `make setup` 按 `uv.lock` 安装，并把 git 钩子指到 `.githooks/`。钩子跑 ruff、秘密扫描、大文件和死开关，不跑全量测试。全量检查是 `make check`。
+
+手机上要算的东西在 `core/`（Rust），编两个产物：`make core` 是给对拍测试用的原生 `gxr-cli`，`make core-wasm` 是网页里的 WebAssembly。`make core-test` 跑格式、clippy 和 Rust 单测。`mobile/` 是手机开发壳，`make mobile-dev` 在 `127.0.0.1:5199` 打开。`make check` 会先做这些，再跑测试，并且设 `GXR_REQUIRE_CORE=1`，对拍不能再跳过。没装 Rust 时普通的 `make test` 还是会跳过它们。`make setup` 在有 rustup 时补上 wasm32 目标；没有 rustup 只打印一行安装办法，不会失败。
 
 不装钩子时：
 
