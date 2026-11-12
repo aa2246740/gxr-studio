@@ -17,7 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check the release notes file
-        run: test -s "docs/releases/${GITHUB_REF_NAME}.md"
+        # 要求普通文件、有非空白内容，第一行标题的版本号和标签一致。
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          test -f "$notes"
+          grep -q '[^[:space:]]' "$notes"
+          IFS= read -r heading < "$notes"
+          test "$heading" = "# GXR 电脑工作室 ${GITHUB_REF_NAME#v}"
       - uses: softprops/action-gh-release@v2
         with:
           body_path: docs/releases/${{ github.ref_name }}.md
