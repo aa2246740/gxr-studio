@@ -748,8 +748,9 @@ def _run(parsed: Addopts) -> int:
     if parsed.junit:
         merge_junit(junit_parts, Path(parsed.junit))
     status = next((code for code in codes if code != 0), 0)
-    rcfile = str(Path(parsed.cov_config).expanduser().resolve()) if parsed.cov_config else None
-    coverage_status = combine_coverage(coverage_files, parsed.cov_reports, rcfile)
+    # --cov-config 原样转交：字面量 .coveragerc 是 coverage 的默认查找，*.toml 靠文件名认格式，
+    # 解析成绝对路径或链接目标都会改掉这两条。父子进程的 cwd 都是 ROOT，相对路径指向同一个文件。
+    coverage_status = combine_coverage(coverage_files, parsed.cov_reports, parsed.cov_config)
     if (stopped := _stopped()) is not None:
         return stopped
     if status != 0:

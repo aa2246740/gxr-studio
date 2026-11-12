@@ -388,3 +388,77 @@ def test_cov_config_option_reaches_the_combined_report(tmp_path: Path, scratch: 
     root = ET.parse(xml_report).getroot()
     assert root.attrib["lines-valid"] == root.attrib["lines-covered"] == "2"
     assert float(root.attrib["line-rate"]) == 1.0
+
+
+def _run_with_config(
+    tmp_path: Path, tree: Path, cov_config: str, reports: list[str], rcfile_env: str | None
+) -> subprocess.CompletedProcess[str]:
+    opts = [*_base_opts(tree, tmp_path / "junit.xml"), f"--cov-config={cov_config}", *(f"--cov-report={spec}" for spec in reports)]
+    env = _runner_env(tmp_path, opts, workers=2)
+    env.pop("COVERAGE_RCFILE")
+    if rcfile_env is not None:
+        env["COVERAGE_RCFILE"] = rcfile_env
+    return subprocess.run(
+        [sys.executable, "-I", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=90,
+        check=False,
+    )
+
+
+def _xml_lines(path: Path) -> tuple[str, str]:
+    root = ET.parse(path).getroot()
+    return root.attrib["lines-covered"], root.attrib["lines-valid"]
+
+
+def test_file_reports_leave_the_coverage_floor_to_the_gate(tmp_path: Path, scratch: Path) -> None:
+    """配置里写 fail_under = 100 时，xml/html/json/lcov 不能在 85% 门槛之外再卡一次（串行 pytest 用 --cov-fail-under=85）。"""
+    PROBE.write_text(
+        "def touch():\n    a = 1\n    b = a + 1\n    c = b + 1\n    d = c + 1\n    return d - 3\n\n\ndef unused():\n    return 2\n",
+        encoding="utf-8",
+    )
+    tree = scratch / "tree"
+    _write_tree(tree)
+    rcfile = tmp_path / "strict.coveragerc"
+    rcfile.write_text(
+        "[run]\nsource = gxr_studio\n[report]\ninclude = */_run_tests_cov_probe.py\nfail_under = 100\n",
+        encoding="utf-8",
+    )
+    xml_report = tmp_path / "coverage.xml"
+    reports = [f"xml:{xml_report}", f"json:{tmp_path / 'coverage.json'}", f"html:{tmp_path / 'html'}", f"lcov:{tmp_path / 'coverage.lcov'}"]
+    proc = _run_with_config(tmp_path, tree, str(rcfile), reports, None)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _xml_lines(xml_report) == ("7", "8")
+    assert (tmp_path / "coverage.json").is_file()
+    assert (tmp_path / "html" / "index.html").is_file()
+    assert (tmp_path / "coverage.lcov").is_file()
+
+
+def test_cov_config_value_reaches_coverage_unchanged(tmp_path: Path, scratch: Path) -> None:
+    """父进程原样转交 --cov-config：字面量 .coveragerc 仍走 coverage 的默认查找（含 COVERAGE_RCFILE），
+    指向无后缀文件的 *.toml 链接仍按 TOML 读。不能先解析成绝对路径或链接目标。"""
+    assert not (ROOT / ".coveragerc").exists()
+    tree = scratch / "tree"
+    _write_tree(tree)
+    env_rc = tmp_path / "from-env.coveragerc"
+    _rcfile(env_rc)
+    default_xml = tmp_path / "default.xml"
+    proc = _run_with_config(tmp_path, tree, ".coveragerc", [f"xml:{default_xml}"], str(env_rc))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _xml_lines(default_xml) == ("2", "2")
+
+    real = tmp_path / "toml-without-suffix"
+    real.write_text(
+        '[tool.coverage.run]\nsource = ["gxr_studio"]\n[tool.coverage.report]\ninclude = ["*/_run_tests_cov_probe.py"]\n',
+        encoding="utf-8",
+    )
+    link = tmp_path / "via-link.toml"
+    link.symlink_to(real)
+    toml_xml = tmp_path / "toml.xml"
+    (tmp_path / "hits.log").unlink(missing_ok=True)
+    proc = _run_with_config(tmp_path, tree, str(link), [f"xml:{toml_xml}"], None)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _xml_lines(toml_xml) == ("2", "2")

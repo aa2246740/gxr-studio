@@ -50,8 +50,8 @@ def merge_junit(paths: list[Path], dest: Path) -> None:
 
 
 def _rc(rcfile: str | None) -> list[str]:
-    """用户用 --cov-config 指定的配置，父进程的 coverage 命令也要用同一份。"""
-    return [f"--rcfile={rcfile}"] if rcfile else []
+    """用户用 --cov-config 指定的配置，父进程的 coverage 命令原样用同一份（空字符串也照传）。"""
+    return [f"--rcfile={rcfile}"] if rcfile is not None else []
 
 
 def _gate_report(combined: Path, specs: list[str], rcfile: str | None) -> int:
@@ -75,14 +75,14 @@ def _gate_report(combined: Path, specs: list[str], rcfile: str | None) -> int:
 def _emit_markdown(combined: Path, dest: Path, append: bool, rcfile: str | None) -> int:
     script = (
         "import coverage, sys\n"
-        "cov = coverage.Coverage(data_file=sys.argv[1], config_file=sys.argv[4] or True)\n"
+        "cov = coverage.Coverage(data_file=sys.argv[1], config_file=sys.argv[5] if sys.argv[4] == '1' else True)\n"
         "cov.load()\n"
         "with open(sys.argv[2], sys.argv[3], encoding='utf-8') as handle:\n"
         "    cov.report(ignore_errors=True, file=handle, output_format='markdown')\n"
     )
     mode = "a" if append else "w"
     return subprocess.run(  # noqa: S603
-        [sys.executable, "-I", "-c", script, str(combined), str(dest), mode, rcfile or ""],
+        [sys.executable, "-I", "-c", script, str(combined), str(dest), mode, "1" if rcfile is not None else "0", rcfile or ""],
         cwd=ROOT,
     ).returncode
 
@@ -94,14 +94,17 @@ def _emit_cov(combined: Path, spec: str, rcfile: str | None) -> int:
     if kind in {"term", "term-missing"}:
         return 0
     data = [*_rc(rcfile), "--data-file", str(combined)]
+    # 门槛只由 _gate_report 按 85% 判一次。xml/html/json/lcov 会再读配置里的 [report] fail_under，
+    # 这里关掉，免得配置写了更高的门槛时，已经过了 85% 的结果又被判失败（串行 pytest 用 --cov-fail-under=85）。
+    no_floor = ["--fail-under=0"]
     if kind == "xml":
-        command = ["xml", *data, *(["-o", dest] if dest else [])]
+        command = ["xml", *data, *no_floor, *(["-o", dest] if dest else [])]
     elif kind == "html":
-        command = ["html", *data, *(["-d", dest] if dest else [])]
+        command = ["html", *data, *no_floor, *(["-d", dest] if dest else [])]
     elif kind == "json":
-        command = ["json", *data, *(["-o", dest] if dest else [])]
+        command = ["json", *data, *no_floor, *(["-o", dest] if dest else [])]
     elif kind == "lcov":
-        command = ["lcov", *data, *(["-o", dest] if dest else [])]
+        command = ["lcov", *data, *no_floor, *(["-o", dest] if dest else [])]
     elif kind == "annotate":
         command = ["annotate", *data, *(["-d", dest] if dest else [])]
     elif kind == "markdown":
