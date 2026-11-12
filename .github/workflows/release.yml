@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the release notes file
         # 要求普通文件、有非空白内容，第一行标题的版本号和标签一致。
         run: |
