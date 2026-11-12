@@ -1,0 +1,22 @@
+{
+  "name": "gxr-studio-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GXR Studio 手机开发壳。触摸界面，WASM 核心跑在 Worker 里，预览复用 frontend/ 的引擎。",
+  "type": "module",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@webgpu/types": "0.1.74",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}
