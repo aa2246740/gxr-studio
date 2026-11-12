@@ -173,12 +173,14 @@ def check(out: dict, mode: str) -> None:
     assert not bad, out["console"]
 
 
+@pytest.mark.exclusive  # 拖动时直方图每秒次数有下限（默认 1.5）
 def test_histogram_with_the_server_preview(live, tmp_path):
     out = drive(live, tmp_path, "server")
     assert out["gpu"] is False
     check(out, "server")
 
 
+@pytest.mark.exclusive  # 拖动时直方图每秒次数有下限（显卡默认 2）
 def test_histogram_with_the_webgpu_preview(live, tmp_path):
     out = drive(live, tmp_path, "gpu")
     if not out["gpu"]:

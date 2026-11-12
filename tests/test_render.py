@@ -623,6 +623,7 @@ def test_api_export_prediction_names_labels_and_sources(data_client, real_card):
 
 
 @needs_sample
+@pytest.mark.exclusive  # 全分辨率默认配方导出要在 15 秒内完成
 def test_api_dng_only_exports_default_look_and_full_res_is_fast(data_client, real_card):
     c = data_client
     (real_card.root / "DCIM" / "100RICOH" / "R8051145.JPG").unlink()

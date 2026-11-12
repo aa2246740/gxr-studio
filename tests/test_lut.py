@@ -323,6 +323,7 @@ def test_target_from_a_real_cube_file_is_matched_as_well_as_the_truth(cam, model
     assert best["similarity"] >= truth["similarity"] - 0.5, (best["similarity"], truth["similarity"])
 
 
+@pytest.mark.exclusive  # 取消后搜索要在 5 秒内停住
 def test_cancel_stops_the_search_quickly(cam, model, samples):
     stock = model.predict(cam.stock[0], samples.x)
     ideal = model.predict(known(cam, 6, {"contrast": 2})[1], samples.x)

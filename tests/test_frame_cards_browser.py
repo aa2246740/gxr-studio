@@ -10,6 +10,7 @@ from gxr_studio.finish.spec import parse_frame
 from test_viewer_browser import drive, live  # noqa: F401
 
 
+@pytest.mark.browser_serial  # 整段走查包在一次 120 秒的 Runtime.evaluate 里，串行时已经贴近这个上限
 def test_frame_cards_fit_every_output_ratio_and_update_locally(live, tmp_path):  # noqa: F811
     browser = drive(live, tmp_path, "frame-cards", {"NAV_NO_WEBGPU": "1", "VIEWER_REDUCED_MOTION": "reduce"})
     out = browser["frameCards"]

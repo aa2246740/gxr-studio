@@ -5,16 +5,16 @@
 // 服务器出图（server）：行为不变，拖滑块照旧请求 /render。输出一行 JSON，断言在 Python 那边。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
+import { readDebugPort } from './debug_port.mjs';
 import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
 const deadlineMs = Number(process.env.VIEWER_DEADLINE_MS || 200000);
-const debugPort = 19900 + Math.floor(Math.random() * 90);
 const chromeLogPath = `${profile}.log`;
 const chromeLog = openSync(chromeLogPath, 'w');
 const chrome = spawn(chromePath, [
-  '--headless=new', `--user-data-dir=${profile}`, `--remote-debugging-port=${debugPort}`, '--no-first-run', '--no-default-browser-check',
+  '--headless=new', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check',
   '--disable-extensions', '--disable-background-networking', '--use-mock-keychain', '--password-store=basic', '--window-size=1500,950',
   '--enable-logging=stderr', '--v=0', ...extra, 'about:blank',
 ], { stdio: ['ignore', chromeLog, chromeLog] });
@@ -49,12 +49,14 @@ setTimeout(() => {
 
 async function connect() {
   for (let i = 0; i < 150; i += 1) {
-    try {
-      const v = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
-      return v.webSocketDebuggerUrl;
-    } catch {
-      await sleep(200);
+    const debugPort = readDebugPort(profile);
+    if (debugPort) {
+      try {
+        const v = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
+        return v.webSocketDebuggerUrl;
+      } catch { /* 端口文件先出现，Chrome 还没听 */ }
     }
+    await sleep(200);
   }
   throw new Error('Chrome 没有启动（调试端口 30 秒内没有回应）');
 }
