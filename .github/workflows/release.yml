@@ -5,6 +5,10 @@ on:
     tags:
       - "v*.*.*"
 
+# 发布页只放源码：用户下载源码后双击「GXR Studio.command」启动。
+# wheel 不带网页（web/ 不在包目录里），装上也打不开界面，所以不构建、不上传；
+# 源码包由 GitHub 按标签自动生成，内容就是仓库里已跟踪的文件，`make check` 的 private_bytes --tracked 已经扫过。
+# 说明是手写的 docs/releases/<标签>.md，和代码一起审过再打标签。
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -12,14 +16,14 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          python-version: "3.14"
-      - run: uv sync --frozen
-      - run: uv build
-      - run: uv run --frozen python scripts/release_notes.py
+      - name: Check the release notes file
+        # 要求普通文件、有非空白内容，第一行标题的版本号和标签一致。
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          test -f "$notes"
+          grep -q '[^[:space:]]' "$notes"
+          IFS= read -r heading < "$notes"
+          test "$heading" = "# GXR 电脑工作室 ${GITHUB_REF_NAME#v}"
       - uses: softprops/action-gh-release@v2
         with:
-          body_path: CHANGELOG.md
-          files: dist/*
+          body_path: docs/releases/${{ github.ref_name }}.md

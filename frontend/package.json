@@ -1,7 +1,7 @@
 {
   "name": "gxr-studio-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "GXR Studio 的 WebGPU 预览引擎（TypeScript + WGSL），构建到 ../web/assets/gpu/",
   "type": "module",
   "license": "SEE LICENSE IN ../LICENSE",

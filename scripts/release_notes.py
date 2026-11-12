@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从 git 历史生成 CHANGELOG.md。给发布工作流和本地 `make notes` 用。"""
+"""从 git 历史生成 CHANGELOG.md，给本地 `make notes` 用。发布页的说明是手写的 docs/releases/<标签>.md。"""
 
 from __future__ import annotations
 
