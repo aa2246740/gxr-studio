@@ -63,16 +63,36 @@ def sniff_magic(data: bytes) -> str | None:
     return None
 
 
+_PROFILE_MODE = {"RGB": "RGB", "GRAY": "L", "CMYK": "CMYK"}
+
+
+def _mode_family(mode: str) -> str:
+    if mode == "CMYK":
+        return "CMYK"
+    if mode in {"1", "L", "LA", "I", "F"} or mode.startswith("I;"):
+        return "GRAY"
+    return "RGB"
+
+
 def _to_srgb_rgba(src: Image.Image) -> Image.Image:
     """按嵌入的 ICC 转到 sRGB 并保留 alpha。没有配置文件就按 sRGB 原样使用。读不了的配置文件拒绝。"""
     icc = src.info.get("icc_profile")
     if not isinstance(icc, bytes) or not icc:
         return src.convert("RGBA")
-    alpha = src.getchannel("A") if "A" in src.getbands() else None
+    # 调色板的 tRNS 不在色带里，先变成 RGBA 才能拿到透明通道。
+    alpha = src.convert("RGBA").getchannel("A")
     try:
+        prof = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        space = prof.profile.xcolor_space
+        if isinstance(space, bytes):
+            space = space.decode("ascii", "replace")
+        space = str(space).strip()
+        in_mode = _PROFILE_MODE.get(space)
+        if in_mode is None or space != _mode_family(src.mode):
+            raise LogoError(422, "logo_bad_profile", ERR_BAD_PROFILE)
         converted = ImageCms.profileToProfile(
-            src.convert("RGB"),
-            ImageCms.ImageCmsProfile(io.BytesIO(icc)),
+            src.convert(in_mode),
+            prof,
             ImageCms.createProfile("sRGB"),
             outputMode="RGB",
         )
@@ -83,8 +103,7 @@ def _to_srgb_rgba(src: Image.Image) -> Image.Image:
     except Exception as exc:
         raise LogoError(422, "logo_bad_profile", ERR_BAD_PROFILE) from exc
     rgba = converted.convert("RGBA")
-    if alpha is not None:
-        rgba.putalpha(alpha)
+    rgba.putalpha(alpha)
     return rgba
 
 
@@ -261,6 +280,10 @@ class LogoStore:
             lid = str(entry.get("id") or "")
             if not _valid_logo_id(lid) or not pdir.exists(f"{lid}.png"):
                 continue
+            try:
+                pdir.read(f"{lid}.png")
+            except OSError:
+                continue
             out.append(entry)
         return out
 
@@ -316,7 +339,10 @@ class LogoStore:
             fname = f"{only_id}.png"
             if not pdir.exists(fname):
                 return {}
-            raw = pdir.read(fname)
+            try:
+                raw = pdir.read(fname)
+            except OSError:
+                return {}
             cached = self._img_cache.get(only_id)
             key = hash(raw)
             if cached is not None and cached[0] == key:

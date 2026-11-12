@@ -14,6 +14,7 @@ import {
   getLogoList,
   getLogoMap,
   onLogoCatalog,
+  noteLogoImageError,
   useLogos,
 } from './finish_frame_core.js';
 import {
@@ -518,9 +519,15 @@ export function renderLogoControls(view, setFrame) {
   const ed = view.ed;
   const cur = ed.frame;
   if (!view.logoCatalogWatch) {
-    view.logoCatalogWatch = onLogoCatalog(() => {
+    const unsub = onLogoCatalog(() => {
       if (!view.disposed) checkMissingLogo(view, setFrame, { redraw: false });
     });
+    const onRetry = () => { if (!view.disposed) view.onChange?.(); };
+    if (typeof window !== 'undefined') window.addEventListener('gxr-logo-image-retry', onRetry);
+    view.logoCatalogWatch = () => {
+      unsub();
+      if (typeof window !== 'undefined') window.removeEventListener('gxr-logo-image-retry', onRetry);
+    };
   }
   if (!logosLoaded()) {
     ensureLogosLoaded()
@@ -560,7 +567,11 @@ export function renderLogoControls(view, setFrame) {
         label: item.name,
         selected: activeLogo === item.id,
         boxClass: 'light',
-        content: h('img', { src: `/api/logos/${encodeURIComponent(item.id)}/image`, alt: '' }),
+        content: h('img', {
+          src: `/api/logos/${encodeURIComponent(item.id)}/image`,
+          alt: '',
+          onerror: () => noteLogoImageError(item.id),
+        }),
         onClick: () => {
           if (activeLogo !== item.id) {
             setFrame(view, { logo: item.id, show_logo: true });

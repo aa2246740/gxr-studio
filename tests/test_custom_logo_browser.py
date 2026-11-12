@@ -239,3 +239,29 @@ def test_missing_logo_preview_and_export_fall_back_together(live: Any, tmp_path:
         if item.get("k") in ("clogo", "logo")
     ]
     assert py_marks == out["preview"]["marks"]
+
+
+def test_transient_logo_image_failure_keeps_the_selection(live: Any, tmp_path: Path) -> None:
+    """图片请求短暂失败时，文件还在，就不能把用户的标志改回 RICOH。"""
+    assert RUNTIME.is_file(), f"固定的 Playwright 运行时缺失（禁止回退系统 Chrome）：{RUNTIME}"
+    mark = Image.new("RGBA", (180, 80), (0, 0, 0, 0))
+    ImageDraw.Draw(mark).rounded_rectangle((8, 8, 172, 72), radius=12, fill=(20, 90, 200, 255))
+    png_path = tmp_path / "retry-mark.png"
+    mark.save(png_path, format="PNG")
+    result = subprocess.run(
+        [
+            "node",
+            str(Path(__file__).parent / "support" / "custom_logo_image_retry.mjs"),
+            str(RUNTIME),
+            str(live["port"]),
+            live["token"],
+            live["photo1"],
+            str(png_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        encoding="utf-8",
+        env={**os.environ, "HOME": str(REAL_HOME)},
+    )
+    assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"

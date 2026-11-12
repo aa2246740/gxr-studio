@@ -10,6 +10,7 @@ let loadingLogos = null;
 let refreshPromise = null;
 const imgCache = new Map();
 const catalogListeners = new Set();
+const imageRetry = new Map();
 
 function logoFingerprint(list) {
   return list.map((item) => `${item.id}|${item.name}|${item.w}|${item.h}|${item.coverage}|${item.opaque}|${item.lum}`).join('\n');
@@ -26,6 +27,8 @@ export function onLogoCatalog(fn) {
   catalogListeners.add(fn);
   return () => catalogListeners.delete(fn);
 }
+
+export const catalogListenerCount = () => catalogListeners.size;
 
 export function useLogos(list) {
   const next = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
@@ -78,21 +81,52 @@ export function ensureLogosLoaded() {
   return loadingLogos;
 }
 
+function pokeLogoImages(id) {
+  if (typeof document === 'undefined') return;
+  const needle = `/api/logos/${encodeURIComponent(id)}/image`;
+  for (const img of document.querySelectorAll('img')) {
+    const src = img.getAttribute('src') || '';
+    if (!src.includes(needle)) continue;
+    img.src = `${src.split('?')[0]}?retry=${logoRev}`;
+  }
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('gxr-logo-image-retry'));
+}
+
+function scheduleLogoRetry(id) {
+  refreshLogos().then(() => {
+    if (!logoMap[id]) {
+      imageRetry.delete(id);
+      return;
+    }
+    const current = imageRetry.get(id);
+    if (!current || current.rev !== logoRev) {
+      imageRetry.set(id, { rev: logoRev, used: false });
+      pokeLogoImages(id);
+    }
+  }).catch(() => {});
+}
+
+export function noteLogoImageError(id) {
+  imgCache.delete(id);
+  scheduleLogoRetry(id);
+}
+
 export function customLogoImage(id, onReady) {
   if (!id || typeof Image !== 'function') return null;
   let rec = imgCache.get(id);
   if (!rec) {
+    const state = imageRetry.get(id);
+    if (state && state.rev === logoRev && state.used) return null;
+    if (state && state.rev === logoRev) state.used = true;
     const img = new Image();
     rec = { img, loaded: false, waiting: [] };
     imgCache.set(id, rec);
     img.addEventListener('load', () => {
       rec.loaded = true;
+      imageRetry.delete(id);
       for (const fn of rec.waiting.splice(0)) fn();
     });
-    img.addEventListener('error', () => {
-      imgCache.delete(id);
-      if (logoMap[id]) useLogos(logoList.filter((item) => item.id !== id));
-    });
+    img.addEventListener('error', () => noteLogoImageError(id));
     img.src = `/api/logos/${encodeURIComponent(id)}/image`;
   }
   if (rec.loaded) return rec.img;

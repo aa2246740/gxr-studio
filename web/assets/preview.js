@@ -775,6 +775,7 @@ export function defaultNote(photo) {
 // 关掉大图：只停预览、放掉图片。已经排队的保存不受影响（它们绑定的是保存记录，不是 ed）。
 export function disposeEdit(view) {
   view.disposed = true;
+  if (typeof view.logoCatalogWatch === 'function') { view.logoCatalogWatch(); view.logoCatalogWatch = null; }
   const ed = view.ed;
   if (!ed) return;
   clearTimeout(ed.timer);

@@ -21,7 +21,7 @@ from gxr_studio.app import create_app
 from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, table_dict
 from gxr_studio.finish.layout import frame_layout
 from gxr_studio.finish.logo_math import LogoInfo, fit_logo
-from gxr_studio.finish.logo_store import LogoError, prepare_uploaded_logo
+from gxr_studio.finish.logo_store import LogoError, LogoStore, prepare_uploaded_logo
 from gxr_studio.finish.spec import LOGO_STYLES, OUTPUT_RATIOS, FrameSpec
 
 WEB = Path(__file__).resolve().parents[1]
@@ -251,3 +251,107 @@ def test_symlinked_logo_file_response_is_chinese(client: Any, settings: Any, tmp
     assert str(external) not in response.text and str(stored) not in response.text
     assert settings.token not in caplog.text
     assert "logo_file_unreadable" in caplog.text
+
+
+_PROFILE_DIR = Path("/System/Library/ColorSync/Profiles")
+
+
+def _need_profile(name: str) -> bytes:
+    path = _PROFILE_DIR / name
+    if not path.is_file():
+        pytest.skip(f"系统色彩配置不在本机：{path}")
+    return path.read_bytes()
+
+
+def _reference_srgb(raw: bytes, in_mode: str) -> tuple[Image.Image, Image.Image]:
+    with Image.open(io.BytesIO(raw)) as src:
+        src.load()
+        alpha = src.convert("RGBA").getchannel("A")
+        icc = src.info["icc_profile"]
+        expected = ImageCms.profileToProfile(
+            src.convert(in_mode),
+            ImageCms.ImageCmsProfile(io.BytesIO(icc)),
+            ImageCms.createProfile("sRGB"),
+            outputMode="RGB",
+        )
+        assert expected is not None
+        return expected, alpha
+
+
+def test_gray_cmyk_and_palette_profiles_keep_colour_and_alpha() -> None:
+    gray_icc = _need_profile("Generic Gray Gamma 2.2 Profile.icc")
+    gray = Image.new("L", (64, 64), 140)
+    gray_raw = _encode(gray, icc_profile=gray_icc)
+    expected_gray, _gray_alpha = _reference_srgb(gray_raw, "L")
+    stored_gray, _meta = prepare_uploaded_logo(gray_raw, key_mode=False)
+    with Image.open(io.BytesIO(stored_gray)) as saved:
+        pixel = saved.getpixel((32, 32))
+        assert pixel[0] == pixel[1] == pixel[2]
+        assert pixel[:3] == expected_gray.getpixel((32, 32))
+
+    cmyk_icc = _need_profile("Generic CMYK Profile.icc")
+    cmyk = Image.new("CMYK", (64, 64), (20, 40, 60, 10))
+    cmyk_buf = io.BytesIO()
+    cmyk.save(cmyk_buf, format="JPEG", quality=95, icc_profile=cmyk_icc)
+    cmyk_raw = cmyk_buf.getvalue()
+    expected_cmyk, _cmyk_alpha = _reference_srgb(cmyk_raw, "CMYK")
+    stored_cmyk, _meta = prepare_uploaded_logo(cmyk_raw, key_mode=False)
+    with Image.open(io.BytesIO(stored_cmyk)) as saved:
+        got = saved.getpixel((32, 32))[:3]
+        want = expected_cmyk.getpixel((32, 32))
+        assert all(abs(a - b) <= 1 for a, b in zip(got, want, strict=True)), (got, want)
+
+    p3 = _need_profile("Display P3.icc")
+    indexed = Image.new("P", (64, 64))
+    indexed.putpalette([0, 0, 0, 200, 80, 50] + [0] * 762)
+    indexed.putdata([0] + [1] * (64 * 64 - 1))
+    indexed_raw = _encode(indexed, transparency=0, icc_profile=p3)
+    expected_indexed, indexed_alpha = _reference_srgb(indexed_raw, "RGB")
+    stored_indexed, _meta = prepare_uploaded_logo(indexed_raw, key_mode=False)
+    with Image.open(io.BytesIO(stored_indexed)) as saved:
+        assert saved.getpixel((0, 0))[3] == 0
+        assert indexed_alpha.getpixel((0, 0)) == 0
+        assert saved.getpixel((16, 16))[:3] == expected_indexed.getpixel((16, 16))
+        assert saved.getpixel((16, 16))[3] == 255
+
+
+def test_unreadable_logo_file_is_omitted_like_a_missing_one(settings: Any, tmp_path: Path) -> None:
+    store = LogoStore(settings.home_dir, forbidden=(settings.library_dir,))
+    added = store.add_logo(_solid((96, 96), (20, 40, 200, 255)), name="坏链", key_mode=False)
+    logo_id = added["logo"]["id"]
+    external = tmp_path / "outside.png"
+    external.write_bytes(b"do-not-read")
+    stored = settings.home_dir / "logos" / f"{logo_id}.png"
+    stored.unlink()
+    stored.symlink_to(external)
+    assert logo_id not in {item["id"] for item in store.list_logos()}
+    assert logo_id not in store.info_map()
+    assert store.image_map(logo_id) == {}
+    assert external.read_bytes() == b"do-not-read"
+
+
+def test_disposed_views_release_logo_catalog_listeners() -> None:
+    script = """
+import { pathToFileURL } from 'node:url';
+const root = process.argv[1];
+const cat = await import(pathToFileURL(root + '/web/assets/logo_catalog.js'));
+const preview = await import(pathToFileURL(root + '/web/assets/preview.js'));
+const views = [];
+for (let i = 0; i < 8; i += 1) {
+  const view = { ed: null };
+  view.logoCatalogWatch = cat.onLogoCatalog(() => {});
+  views.push(view);
+}
+if (cat.catalogListenerCount() !== 8) throw new Error('open ' + cat.catalogListenerCount());
+for (const view of views) preview.disposeEdit(view);
+if (cat.catalogListenerCount() !== 0) throw new Error('disposed ' + cat.catalogListenerCount());
+console.log('ok');
+"""
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(WEB)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
