@@ -408,3 +408,96 @@ console.log('ok');
         check=False,
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
+
+
+def test_logo_image_retry_backs_off_and_recovers_without_user_action() -> None:
+    """图片一直读不出来：按 1、3、10、30、60 秒再试，等待期间重画不发请求；恢复后画布自己拿到图。"""
+    script = """
+import assert from 'node:assert/strict';
+import { mock } from 'node:test';
+import { pathToFileURL } from 'node:url';
+mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+const root = process.argv[1];
+let failing = true;
+const requests = [];
+globalThis.Image = class {
+  constructor() { this.handlers = {}; }
+  addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); }
+  set src(url) {
+    requests.push(url);
+    const type = failing ? 'error' : 'load';
+    queueMicrotask(() => { for (const fn of this.handlers[type] || []) fn(); });
+  }
+};
+let stateEvents = 0;
+globalThis.window = { dispatchEvent: (event) => { if (event.type === 'gxr-logo-image-retry') stateEvents += 1; } };
+globalThis.document = { querySelectorAll: () => [] };
+globalThis.fetch = async () => ({ status: 304, ok: false, headers: { get: () => null } });
+const cat = await import(pathToFileURL(root + '/web/assets/logo_catalog.js'));
+const info = (id) => ({ id, name: id, w: 100, h: 50, coverage: 0.5, opaque: false, lum: 100 });
+cat.useLogos([info('m1'), info('m2'), info('m3')]);
+const flush = async () => { for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+
+let drawn = null;
+const redraw = () => { drawn = cat.customLogoImage('m1', redraw); };
+redraw();
+await flush();
+assert.equal(requests.length, 1);
+assert.equal(cat.logoImageFailing('m1'), true);
+assert.equal(stateEvents, 1);
+for (let i = 0; i < 50; i += 1) redraw();
+assert.equal(requests.length, 1, 'redraws while waiting must not request');
+
+for (const delay of [1000, 3000, 10000, 30000, 60000, 60000]) {
+  const before = requests.length;
+  mock.timers.tick(delay - 1);
+  await flush();
+  assert.equal(requests.length, before, `no request before ${delay} ms`);
+  mock.timers.tick(1);
+  await flush();
+  assert.equal(requests.length, before + 1, `one request after ${delay} ms`);
+}
+assert.equal(drawn, null);
+assert.equal(stateEvents, 1, 'still failing: no extra state events');
+
+failing = false;
+mock.timers.tick(60000);
+await flush();
+assert.ok(drawn, 'the waiting canvas redraws and gets the image by itself');
+assert.equal(cat.logoImageFailing('m1'), false);
+assert.equal(stateEvents, 2);
+
+failing = true;
+let drawn2 = null;
+const redraw2 = () => { drawn2 = cat.customLogoImage('m2', redraw2); };
+redraw2();
+await flush();
+assert.equal(cat.logoImageFailing('m2'), true);
+failing = false;
+const beforeManual = requests.length;
+cat.retryLogoImageNow('m2');
+await flush();
+assert.equal(requests.length, beforeManual + 1);
+assert.ok(drawn2, 'retry now draws at once');
+
+failing = true;
+const redraw3 = () => cat.customLogoImage('m3', redraw3);
+redraw3();
+await flush();
+assert.equal(cat.logoImageFailing('m3'), true);
+cat.useLogos([info('m1'), info('m2')]);
+assert.equal(cat.logoImageFailing('m3'), false);
+const beforeRemoved = requests.length;
+mock.timers.tick(120000);
+await flush();
+assert.equal(requests.length, beforeRemoved, 'a removed logo is not retried');
+console.log(JSON.stringify({ requests: requests.length }));
+"""
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(WEB)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]

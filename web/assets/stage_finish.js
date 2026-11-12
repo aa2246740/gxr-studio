@@ -144,6 +144,15 @@ export function applyDecor(view, pv, media, deco, cssW, cssH) {
   canvas.height = Math.round(H * dpr);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  // 标志图片还没下载好：好了再画一遍（让下一次 applyDecor 不被缓存挡住）
-  drawDecor(ctx, deco, s * dpr, { backdrop:backdrop?.image||null, onLogo: () => { delete canvas.dataset.key; if (!view.disposed) view.onChange?.(); } });
+  // 标志图片还没下载好或在等重试：好了再画一遍（让下一次 applyDecor 不被缓存挡住）。
+  // 回调挂在画布上，同一块画布反复重画只登记这一个，等重试的名单不会越积越长。
+  canvas.gxrLogoView = view;
+  if (!canvas.gxrOnLogo) {
+    canvas.gxrOnLogo = () => {
+      delete canvas.dataset.key;
+      const owner = canvas.gxrLogoView;
+      if (owner && !owner.disposed) owner.onChange?.();
+    };
+  }
+  drawDecor(ctx, deco, s * dpr, { backdrop:backdrop?.image||null, onLogo: canvas.gxrOnLogo });
 }

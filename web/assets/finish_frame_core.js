@@ -11,6 +11,9 @@ export {
   ensureLogosLoaded,
   customLogoImage,
   noteLogoImageError,
+  noteLogoImageLoaded,
+  logoImageFailing,
+  retryLogoImageNow,
 } from './logo_catalog.js';
 export const COLORS = { white: [255,255,255], black: [14,14,16], cream: [244,239,230] };
 export const join = (parts, sep = '  ') => parts.filter(Boolean).join(sep);

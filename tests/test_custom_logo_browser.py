@@ -265,3 +265,30 @@ def test_transient_logo_image_failure_keeps_the_selection(live: Any, tmp_path: P
         env={**os.environ, "HOME": str(REAL_HOME)},
     )
     assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+
+
+def test_logo_image_outage_recovers_and_shows_a_hint(live: Any, tmp_path: Path) -> None:
+    """图片接口短暂失败后大图自己补上；一直失败时有提示、请求有上限，恢复后点「现在重试」马上补上。"""
+    assert RUNTIME.is_file(), f"固定的 Playwright 运行时缺失（禁止回退系统 Chrome）：{RUNTIME}"
+    mark = Image.new("RGBA", (200, 90), (0, 0, 0, 0))
+    ImageDraw.Draw(mark).rounded_rectangle((6, 6, 194, 84), radius=14, fill=(255, 0, 255, 255))
+    png_path = tmp_path / "outage-mark.png"
+    mark.save(png_path, format="PNG")
+    result = subprocess.run(
+        [
+            "node",
+            str(Path(__file__).parent / "support" / "custom_logo_image_outage.mjs"),
+            str(RUNTIME),
+            str(live["port"]),
+            live["token"],
+            live["photo1"],
+            str(png_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        encoding="utf-8",
+        env={**os.environ, "HOME": str(REAL_HOME)},
+    )
+    assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    print(result.stdout.strip())

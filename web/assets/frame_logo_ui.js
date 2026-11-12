@@ -15,6 +15,9 @@ import {
   getLogoMap,
   onLogoCatalog,
   noteLogoImageError,
+  noteLogoImageLoaded,
+  logoImageFailing,
+  retryLogoImageNow,
   useLogos,
 } from './finish_frame_core.js';
 import {
@@ -36,6 +39,7 @@ const ERR_UNREADABLE = '这个文件打不开。请换一张 PNG、JPG 或 WebP 
 const ERR_LIMIT = '已经保存了 12 个标志。删除一个，再上传新的。';
 const WARN_WHITE_BG = '这张图有白色背景。去掉后，标志放在彩色或深色边框上才好看。';
 const WARN_OPAQUE = '这张图是不透明的，标志可能带着背景。可以打开「去掉白底」。';
+const WARN_IMAGE_FAILED = '这个标志的图片没读出来，大图上先空着。会自动再试。';
 
 const reportedMissing = new Set();
 
@@ -522,7 +526,12 @@ export function renderLogoControls(view, setFrame) {
     const unsub = onLogoCatalog(() => {
       if (!view.disposed) checkMissingLogo(view, setFrame, { redraw: false });
     });
-    const onRetry = () => { if (!view.disposed) view.onChange?.(); };
+    // 标志图片从好变坏、从坏变好时重搭面板（显示或收起失败提示）。重试本身由画布自己重画，这里不管。
+    const onRetry = () => {
+      if (view.disposed) return;
+      const id = view.ed?.frame?.logo;
+      if (!!(id && logoImageFailing(id)) !== !!view.logoImageFailShown) view.redrawSide?.();
+    };
     if (typeof window !== 'undefined') window.addEventListener('gxr-logo-image-retry', onRetry);
     view.logoCatalogWatch = () => {
       unsub();
@@ -571,6 +580,7 @@ export function renderLogoControls(view, setFrame) {
           src: `/api/logos/${encodeURIComponent(item.id)}/image`,
           alt: '',
           onerror: () => noteLogoImageError(item.id),
+          onload: () => noteLogoImageLoaded(item.id),
         }),
         onClick: () => {
           if (activeLogo !== item.id) {
@@ -620,6 +630,22 @@ export function renderLogoControls(view, setFrame) {
         { class: 'logo-empty' },
         h('div', { class: 'logo-empty-title' }, '还没有自己的标志'),
         h('div', { class: 'logo-empty-sub' }, '上传一张 PNG（背景透明的效果最好）。'),
+      ),
+    );
+  }
+
+  view.logoImageFailShown = isCustom && logoImageFailing(activeLogo);
+  if (view.logoImageFailShown) {
+    out.push(
+      h(
+        'div',
+        { 'data-logo-image-error': activeLogo },
+        notice(
+          'amber',
+          WARN_IMAGE_FAILED,
+          ' ',
+          h('button', { type: 'button', class: 'btn ghost sm', 'data-logo-retry': activeLogo, onclick: () => retryLogoImageNow(activeLogo) }, '现在重试'),
+        ),
       ),
     );
   }
