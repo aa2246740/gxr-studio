@@ -363,3 +363,28 @@ def test_raise_nice_keeps_going_when_the_os_refuses(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(os, "setpriority", refuse, raising=False)
     module.raise_nice()
     assert "nice 15" in capsys.readouterr().out
+
+
+def test_cov_config_option_reaches_the_combined_report(tmp_path: Path, scratch: Path) -> None:
+    """只在 PYTEST_ADDOPTS 里写 --cov-config（不设 COVERAGE_RCFILE）时，父进程合并和出报告也要用它。"""
+    tree = scratch / "tree"
+    _write_tree(tree)
+    rcfile = tmp_path / "only-probe.coveragerc"
+    _rcfile(rcfile)
+    xml_report = tmp_path / "coverage.xml"
+    opts = [*_base_opts(tree, tmp_path / "junit.xml"), f"--cov-config={rcfile}", f"--cov-report=xml:{xml_report}"]
+    env = _runner_env(tmp_path, opts, workers=2)
+    env.pop("COVERAGE_RCFILE")
+    proc = subprocess.run(
+        [sys.executable, "-I", str(RUNNER)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    root = ET.parse(xml_report).getroot()
+    assert root.attrib["lines-valid"] == root.attrib["lines-covered"] == "2"
+    assert float(root.attrib["line-rate"]) == 1.0

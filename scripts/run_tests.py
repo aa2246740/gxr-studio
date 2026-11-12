@@ -131,6 +131,7 @@ class Addopts:
     selection: list[str]
     junit: str | None
     cov_reports: list[str]
+    cov_config: str | None = None
 
 
 @dataclass(frozen=True)
@@ -242,15 +243,27 @@ def split_addopts(raw: str) -> Addopts:
 
     kept 给每个子进程。selection（位置参数、-k、-m、--deselect）只参与一次收集。
     junit 和 --cov-report 留给父进程，按合并结果写最终文件。--basetemp 丢掉，分片各自一套。
+    --cov-config 子进程照用，父进程合并和出报告也记下来用同一份。
     """
     args = shlex.split(raw)
     kept: list[str] = []
     selection: list[str] = []
     reports: list[str] = []
     junit: str | None = None
+    cov_config: str | None = None
     index = 0
     while index < len(args):
         arg = args[index]
+        if arg == "--cov-config":
+            cov_config = _take(args, index)
+            kept.extend((arg, cov_config))
+            index += 2
+            continue
+        if arg.startswith("--cov-config="):
+            cov_config = arg.split("=", 1)[1]
+            kept.append(arg)
+            index += 1
+            continue
         if arg == "--basetemp" or arg.startswith("--basetemp="):
             index += 2 if arg == "--basetemp" else 1
             continue
@@ -289,7 +302,7 @@ def split_addopts(raw: str) -> Addopts:
             continue
         selection.append(arg)
         index += 1
-    return Addopts(kept, selection, junit, reports)
+    return Addopts(kept, selection, junit, reports, cov_config)
 
 
 def collect_ids_main(args: list[str]) -> int:
@@ -735,7 +748,8 @@ def _run(parsed: Addopts) -> int:
     if parsed.junit:
         merge_junit(junit_parts, Path(parsed.junit))
     status = next((code for code in codes if code != 0), 0)
-    coverage_status = combine_coverage(coverage_files, parsed.cov_reports)
+    rcfile = str(Path(parsed.cov_config).expanduser().resolve()) if parsed.cov_config else None
+    coverage_status = combine_coverage(coverage_files, parsed.cov_reports, rcfile)
     if (stopped := _stopped()) is not None:
         return stopped
     if status != 0:

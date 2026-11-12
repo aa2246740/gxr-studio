@@ -49,35 +49,51 @@ def merge_junit(paths: list[Path], dest: Path) -> None:
     print(f"junit {dest} tests={tests} failures={failures} errors={errors} skipped={skipped}", flush=True)
 
 
-def _gate_report(combined: Path, specs: list[str]) -> int:
-    command = [sys.executable, "-I", "-m", "coverage", "report", "--data-file", str(combined), f"--fail-under={FAIL_UNDER}", "--show-missing"]
+def _rc(rcfile: str | None) -> list[str]:
+    """用户用 --cov-config 指定的配置，父进程的 coverage 命令也要用同一份。"""
+    return [f"--rcfile={rcfile}"] if rcfile else []
+
+
+def _gate_report(combined: Path, specs: list[str], rcfile: str | None) -> int:
+    command = [
+        sys.executable,
+        "-I",
+        "-m",
+        "coverage",
+        "report",
+        *_rc(rcfile),
+        "--data-file",
+        str(combined),
+        f"--fail-under={FAIL_UNDER}",
+        "--show-missing",
+    ]
     if any(spec.partition(":")[2] == "skip-covered" for spec in specs if spec.startswith("term")):
         command.append("--skip-covered")
     return subprocess.run(command, cwd=ROOT).returncode  # noqa: S603
 
 
-def _emit_markdown(combined: Path, dest: Path, append: bool) -> int:
+def _emit_markdown(combined: Path, dest: Path, append: bool, rcfile: str | None) -> int:
     script = (
         "import coverage, sys\n"
-        "cov = coverage.Coverage(data_file=sys.argv[1])\n"
+        "cov = coverage.Coverage(data_file=sys.argv[1], config_file=sys.argv[4] or True)\n"
         "cov.load()\n"
         "with open(sys.argv[2], sys.argv[3], encoding='utf-8') as handle:\n"
         "    cov.report(ignore_errors=True, file=handle, output_format='markdown')\n"
     )
     mode = "a" if append else "w"
     return subprocess.run(  # noqa: S603
-        [sys.executable, "-I", "-c", script, str(combined), str(dest), mode],
+        [sys.executable, "-I", "-c", script, str(combined), str(dest), mode, rcfile or ""],
         cwd=ROOT,
     ).returncode
 
 
-def _emit_cov(combined: Path, spec: str) -> int:
+def _emit_cov(combined: Path, spec: str, rcfile: str | None) -> int:
     if spec == "":
         return 0
     kind, _sep, dest = spec.partition(":")
     if kind in {"term", "term-missing"}:
         return 0
-    data = ["--data-file", str(combined)]
+    data = [*_rc(rcfile), "--data-file", str(combined)]
     if kind == "xml":
         command = ["xml", *data, *(["-o", dest] if dest else [])]
     elif kind == "html":
@@ -89,16 +105,16 @@ def _emit_cov(combined: Path, spec: str) -> int:
     elif kind == "annotate":
         command = ["annotate", *data, *(["-d", dest] if dest else [])]
     elif kind == "markdown":
-        return _emit_markdown(combined, Path(dest or "coverage.md"), append=False)
+        return _emit_markdown(combined, Path(dest or "coverage.md"), append=False, rcfile=rcfile)
     elif kind == "markdown-append":
-        return _emit_markdown(combined, Path(dest or "coverage.md"), append=True)
+        return _emit_markdown(combined, Path(dest or "coverage.md"), append=True, rcfile=rcfile)
     else:
         print(f"不认识的覆盖率报告 {spec}", flush=True)
         return 2
     return subprocess.run([sys.executable, "-I", "-m", "coverage", *command], cwd=ROOT).returncode  # noqa: S603
 
 
-def combine_coverage(data_files: list[Path], reports: list[str]) -> int:
+def combine_coverage(data_files: list[Path], reports: list[str], rcfile: str | None = None) -> int:
     present = [path for path in data_files if path.is_file() and path.stat().st_size > 0]
     if not present:
         print("没有覆盖率数据，无法核对 85% 门槛。", flush=True)
@@ -111,6 +127,7 @@ def combine_coverage(data_files: list[Path], reports: list[str]) -> int:
             "-m",
             "coverage",
             "combine",
+            *_rc(rcfile),
             "--keep",
             "--data-file",
             str(combined),
@@ -120,9 +137,9 @@ def combine_coverage(data_files: list[Path], reports: list[str]) -> int:
     )
     if combine.returncode != 0:
         return combine.returncode
-    status = _gate_report(combined, reports)
+    status = _gate_report(combined, reports, rcfile)
     for spec in reports:
-        code = _emit_cov(combined, spec)
+        code = _emit_cov(combined, spec, rcfile)
         if status == 0 and code != 0:
             status = code
     return status
