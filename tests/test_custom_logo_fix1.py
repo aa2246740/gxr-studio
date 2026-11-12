@@ -368,6 +368,50 @@ def test_sixteen_bit_gray_with_a_gray_profile_converts_like_eight_bit() -> None:
     assert got[2][0] < 200, got
 
 
+@pytest.mark.parametrize(
+    "transparent,levels,gray_levels",
+    [
+        (128, (0, 128, 32768, 49152, 65535), (0, 0, 128, 191, 255)),
+        (16384, (0, 16384, 32768, 49152, 65535), (0, 64, 128, 191, 255)),
+    ],
+)
+@pytest.mark.parametrize("orientation", [1, 6])
+@pytest.mark.parametrize("with_gray_profile", [False, True])
+def test_sixteen_bit_transparency_matches_original_samples_after_upload(
+    client: Any, transparent: int, levels: tuple[int, ...], gray_levels: tuple[int, ...], orientation: int, with_gray_profile: bool
+) -> None:
+    samples = np.tile(np.repeat(np.array(levels, dtype=np.uint16), 64), (128, 1))
+    gray = np.tile(np.repeat(np.array(gray_levels, dtype=np.uint8), 64), (128, 1))
+    alpha = np.tile(np.repeat(np.array([255, 0, 255, 255, 255], dtype=np.uint8), 64), (128, 1))
+    reference = Image.fromarray(gray).convert("RGB")
+    options: dict[str, Any] = {"transparency": transparent}
+    exif = Image.Exif()
+    exif[274] = orientation
+    options["exif"] = exif
+    if with_gray_profile:
+        profile = _need_profile("Generic Gray Gamma 2.2 Profile.icc")
+        options["icc_profile"] = profile
+        converted = ImageCms.profileToProfile(
+            Image.fromarray(gray), ImageCms.ImageCmsProfile(io.BytesIO(profile)), ImageCms.createProfile("sRGB"), outputMode="RGB"
+        )
+        assert converted is not None
+        reference = converted
+    expected = np.dstack([np.asarray(reference), alpha])
+    if orientation == 6:
+        expected = np.rot90(expected, k=-1)
+
+    uploaded = client.post("/api/logos?key_white=false&name=16位透明标志", content=_encode(Image.fromarray(samples), **options))
+    assert uploaded.status_code == 200, uploaded.text
+    logo = uploaded.json()["logo"]
+    stored = client.get(f"/api/logos/{logo['id']}/image")
+    assert stored.status_code == 200
+    with Image.open(io.BytesIO(stored.content)) as saved:
+        assert saved.size == (expected.shape[1], expected.shape[0])
+        assert saved.info.get("transparency") is None
+        np.testing.assert_array_equal(np.asarray(saved.convert("RGBA")), expected)
+    assert logo["opaque"] is False
+
+
 def test_unreadable_logo_file_is_omitted_like_a_missing_one(settings: Any, tmp_path: Path) -> None:
     store = LogoStore(settings.home_dir, forbidden=(settings.library_dir,))
     added = store.add_logo(_solid((96, 96), (20, 40, 200, 255)), name="坏链", key_mode=False)

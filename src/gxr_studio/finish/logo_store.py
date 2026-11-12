@@ -75,7 +75,7 @@ def _mode_family(mode: str) -> str:
 
 
 def _eight_bit_gray(src: Image.Image) -> Image.Image:
-    """16 位灰度（PNG 打开是 I;16，旧版 Pillow 是 I）按位深缩到 8 位 L，配置文件跟着走。
+    """16 位灰度（PNG 打开是 I;16，旧版 Pillow 是 I）按位深缩到 8 位 L/LA，配置文件跟着走。
 
     Pillow 的 convert("L") / convert("RGBA") 不换算位深，大于 255 的值全截成白色，中灰会变白。
     """
@@ -85,6 +85,11 @@ def _eight_bit_gray(src: Image.Image) -> Image.Image:
     eight = ((wide * 255 + 32767) // 65535).astype(np.uint8)
     out = Image.fromarray(eight)
     out.info = dict(src.info)
+    transparent = out.info.pop("transparency", None)
+    if transparent is not None:
+        # 必须在原始样本上匹配透明键：不同的 16 位灰阶可能缩到同一个 8 位值。
+        alpha = np.where(np.asarray(src) == transparent, 0, 255).astype(np.uint8)
+        out.putalpha(Image.fromarray(alpha))
     return out
 
 
