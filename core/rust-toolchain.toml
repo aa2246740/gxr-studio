@@ -1,0 +1,6 @@
+# Makefile 从这里读版本，用 `rustup run <版本> cargo` 调用（PATH 上 Homebrew 的 cargo 没有 wasm32 标准库）。
+[toolchain]
+channel = "1.93.1"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

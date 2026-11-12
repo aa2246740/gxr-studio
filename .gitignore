@@ -46,3 +46,10 @@ gxrce*.dat
 
 # 前端构建依赖（pnpm 安装）。构建产物 web/assets/gpu/ 要提交。
 /frontend/node_modules/
+
+# Rust 核心的构建产物，手机网页的依赖、产物、WASM 绑定和开发报告（docs/mobile.md）。都能重新生成，不进仓库。
+/core/target/
+/mobile/node_modules/
+/mobile/dist/
+/mobile/src/wasm-pkg/
+/mobile/.reports/
