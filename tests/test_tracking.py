@@ -71,7 +71,7 @@ def test_sentry_event_carries_request_and_job_tags(monkeypatch):
     assert tags["request_id"] == "req-0123456789abcd"
     assert tags["job_id"] == job.id
     assert tags["job_kind"] == "import"
-    assert tags["app_version"] == "0.1.0"
+    assert tags["app_version"] == "1.0.0"
     assert event["environment"] == "test"
     assert event["release"] == "gxr-studio@test"
     assert options["send_default_pii"] is False
