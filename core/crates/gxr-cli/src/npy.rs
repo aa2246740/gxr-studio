@@ -84,6 +84,9 @@ mod tests {
         assert!(text.ends_with('\n'));
         assert_eq!(&bytes[10 + len..10 + len + 2], &[1, 0]);
         let one = encode(&[1.5f32], &[1]);
-        assert!(std::str::from_utf8(&one[10..]).unwrap().contains("(1,)"));
+        let len = usize::from(u16::from_le_bytes([one[8], one[9]]));
+        let text = std::str::from_utf8(&one[10..10 + len]).unwrap();
+        assert!(text.contains("'descr': '<f4'") && text.contains("(1,)"));
+        assert_eq!(&one[10 + len..], &1.5f32.to_le_bytes());
     }
 }
