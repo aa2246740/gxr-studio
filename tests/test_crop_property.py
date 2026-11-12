@@ -333,6 +333,7 @@ def test_an_original_box_is_not_shrunk_more_than_needed():
 # ---- 大画布（真实照片是 4288×2848）-----------------------------------------------------
 
 
+@pytest.mark.exclusive  # 大画布上找整窗要在 3 秒内结束
 @pytest.mark.parametrize(("width", "height"), [(2200, 1600), (4288, 2848)])
 def test_the_whole_lattice_is_searched_on_large_masks(width, height):
     """以前按步长抽样位置，2200×1600 上步长是 2：只在 (1, 1) 有一个整窗有效的 16×16 就找不到。"""

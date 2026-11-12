@@ -140,6 +140,7 @@ def test_the_stage_survives_navigation_with_the_webgpu_preview(live, tmp_path): 
     check_walk(out, gpu=True)
 
 
+@pytest.mark.exclusive  # 没有显卡适配器时要在 30 秒内回来，而不是干等到超时
 def test_the_gpu_walk_reports_a_missing_gpu_instead_of_timing_out(live, tmp_path):  # noqa: F811
     """显卡接不了手的机器（Linux 无头 Chrome 的软件显卡能建设备却不能上屏，页面退回服务器出图）上，
     nav-gpu 模式原来在每一步等 20 秒，最后整段 evaluate 超时，轮不到测试去跳过。现在先等一次、马上交出「没走显卡」和诊断。

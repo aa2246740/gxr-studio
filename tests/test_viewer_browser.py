@@ -175,6 +175,7 @@ def print_timings(out):
     )
 
 
+@pytest.mark.exclusive  # 比例框、横竖、失败提示要在 1000 毫秒内出现，点击中位数也有墙钟上限
 def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     out = drive(live, tmp_path, "server")
     assert out["gpu"] is False
@@ -226,6 +227,7 @@ def cannot_present(out: dict) -> bool:
     return diag.get("pageEngine", "missing") is None and diag.get("engine") == "created" and out.get("gpuSharedImageError") is True
 
 
+@pytest.mark.exclusive  # 和服务器预览同一组墙钟断言（visibleMs < 1000，点击中位数）
 def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
     out = drive(live, tmp_path, "gpu")
     if not out["gpu"]:
@@ -295,6 +297,7 @@ def _layout_cases():
     return frames, stamps, want_frames, want_stamps
 
 
+@pytest.mark.browser_serial  # 最慢名单里另一条长浏览器流程，和计算分片并行时会顶满同一条 120 秒页面等待
 def test_browser_layout_matches_the_export_layout(live, tmp_path):
     """真 Chrome 里用服务器给的字体表算出的版面，和导出（Python，同一份表）算出的版面逐项相同：
     矩形、线、标志、字号、每个字的列、日期戳的外框，都是同样的数（不是「差不多」）；字符串逐字相同。"""
