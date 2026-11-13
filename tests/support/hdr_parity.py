@@ -12,6 +12,7 @@ import json
 import os
 import struct
 from dataclasses import dataclass
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -186,24 +187,46 @@ def delta_note(python: np.ndarray, rust: np.ndarray) -> str:
 POW_CODES = (71, 180)
 
 
-def srgb_to_linear_rounded(rgb: np.ndarray) -> np.ndarray:
-    """``srgb_to_linear`` with the float64 power rounded once to float32 (the Rust port).
+def _f32_of(d: Decimal) -> np.float32:
+    """Round an exact decimal once to float32, half to even."""
+    c = np.float32(float(d))
+    cands = [np.nextafter(c, np.float32(-np.inf)), c, np.nextafter(c, np.float32(np.inf))]
+    best = min(abs(Decimal(float(x)) - d) for x in cands)
+    near = [x for x in cands if abs(Decimal(float(x)) - d) == best]
+    return near[0] if len(near) == 1 else next(x for x in near if int(x.view(np.uint32)) % 2 == 0)
 
-    numpy's float32 ``**`` calls Apple's ``powf``, which is not correctly rounded at codes
-    71 and 180 (POW_CODES); everywhere else this equals ``g.srgb_to_linear``.
-    """
-    v = rgb.astype(np.float32) / np.float32(255.0)
-    base = (v + np.float32(0.055)) / np.float32(1.055)
-    powed = (base.astype(np.float64) ** np.float64(np.float32(2.4))).astype(np.float32)
-    return np.where(v <= np.float32(0.04045), v / np.float32(12.92), powed).astype(np.float32)
+
+def srgb_oracle() -> tuple[np.ndarray, np.ndarray]:
+    """``srgb_to_linear`` for codes 0..255, every float32 step correctly rounded with ``decimal``
+    at 50 digits (PORT-WAVE-1, platform libm rule). Returns (values, pow bases; NaN on the
+    linear branch)."""
+    f = lambda x: Decimal(float(np.float32(x)))  # noqa: E731  the float32 Python constants
+    out = np.empty(256, np.float32)
+    bases = np.full(256, np.nan, np.float32)
+    with localcontext() as ctx:
+        ctx.prec = 50
+        ctx.rounding = ROUND_HALF_EVEN
+        for c in range(256):
+            v = _f32_of(Decimal(c) / Decimal(255))
+            dv = Decimal(float(v))
+            if v <= np.float32(0.04045):
+                out[c] = _f32_of(dv / f(12.92))
+                continue
+            base = _f32_of(Decimal(float(_f32_of(dv + f(0.055)))) / f(1.055))
+            bases[c] = base
+            out[c] = _f32_of(Decimal(float(base)) ** f(2.4))
+    return out, bases
+
+
+_ORACLE = srgb_oracle()
 
 
 def check_sdr(python: np.ndarray, rust: np.ndarray, rgb: np.ndarray, factor: int, what: str) -> int:
-    """Rust ``sdr_luma_grid`` must equal numpy's with only the POW_CODES powers rounded once.
+    """Rust ``sdr_luma_grid`` must equal numpy's computed from the correctly rounded sRGB table.
 
-    Returns how many grid cells differ from numpy itself (reported, not gated).
+    Returns how many grid cells differ from numpy itself (Apple ``powf`` at POW_CODES).
     """
-    same_f32(g.block_mean(srgb_to_linear_rounded(rgb) @ g.LUMA, factor), rust, what)
+    same_f32(g.block_mean(_ORACLE[0][rgb] @ g.LUMA, factor), rust, what)
     return int((python.view(np.uint32) != rust.view(np.uint32)).sum())
 
 
@@ -243,8 +266,15 @@ def flow(tmp: Path, jpeg: bytes, dng: bytes | Path, tag: str, *, gain: bool = Tr
     assert rust == expect, f"{tag}: alignment python={expect} rust={rust}"
     stages = ["raw_luma", f"sdr_luma_grid:{sdr_cells}", "align"]
     if sdr_cells:
+        # Pixel chain: Rust's own grid. Python's align on that same grid must give Rust's fields.
         e2e = ok(["hdr-align", "--sdr", str(tmp / f"{tag}-sdr.npy"), "--raw", raw_in])
-        stages.append("e2e-align:" + ("same" if e2e == expect else json.dumps(e2e["alignment"])))
+        al_rust_grid = g.align(rsdr, stored_y)
+        same = {"alignment": alignment_fields(al_rust_grid), "check": check_of(al_rust_grid)}
+        assert e2e == same, f"{tag}: alignment on Rust's grid python={same} rust={e2e}"
+        moved = {k: v for k, v in e2e["alignment"].items() if v != expect["alignment"][k]}
+        assert e2e["check"] == expect["check"] and set(moved) <= {"correlation"}, f"{tag}: pixel chain moved {moved}"
+        note = "same" if not moved else f"correlation python={al.correlation!r} rust={e2e['alignment']['correlation']!r}"
+        stages.append("e2e-align:" + note)
     if gain and expect["check"] is None:
         y, clip = g.register(g.RawLuma(stored_y, stored_clip), sdr.shape, al, sdr.shape)
         (tmp / f"{tag}-al.json").write_text(json.dumps({"scale": al.scale, "dy": al.dy, "dx": al.dx}))
@@ -258,7 +288,9 @@ def flow(tmp: Path, jpeg: bytes, dng: bytes | Path, tag: str, *, gain: bool = Tr
         same_exact(clip, np.load(tmp / f"{tag}-regc.npy"), f"{tag} register.clip")
         stages += ["register", "gain:" + compare_gain(tmp, sdr, y, clip, None, tag)]
         if sdr_cells:
-            stages.append("e2e-gain-codes:" + e2e_codes(tmp, rsdr, y, clip, codes_ref(sdr, y, clip), tag))
+            changed = e2e_codes(tmp, rsdr, y, clip, codes_ref(sdr, y, clip), tag)
+            assert changed == "0", f"{tag}: uint8 gain codes from Rust's grid differ: {changed}"
+            stages.append("e2e-gain-codes:0")
     return Flow(stages, expect["alignment"], expect["check"])
 
 

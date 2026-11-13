@@ -8,6 +8,7 @@
 //! hdr-map --in A.npy --sy Y.npy --sx X.npy --out B.npy       map_coordinates(order=1, nearest)
 //! hdr-block-mean --in A.npy --factor F --out B.npy
 //! hdr-luma --rgb RGB.npy --factor F --out Y.npy               sdr_luma_grid (uint8 (h, w, 3))
+//! hdr-srgb --out L.npy                                       srgb_to_linear of codes 0..=255 (float32)
 //! hdr-raw-luma DNG --out Y.npy --clip-out C.npy               raw_luma without the metadata
 //! hdr-phase --a A.npy --b B.npy                               _phase_shift
 //! hdr-fit --x X.npy --y Y.npy --valid V.npy                   fit_curve
@@ -30,6 +31,10 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "hdr-map" => map_cmd(args)?,
         "hdr-block-mean" => block_mean_cmd(args)?,
         "hdr-luma" => luma_cmd(args)?,
+        "hdr-srgb" => {
+            let lin: Vec<f32> = (0..=255u8).map(hdr::srgb_to_linear).collect();
+            write(args, "--out", "<f4", &[256], &le_f32(&lin))?
+        }
         "hdr-raw-luma" => raw_luma_cmd(args)?,
         "hdr-phase" => phase_cmd(args)?,
         "hdr-fit" => fit_cmd(args)?,

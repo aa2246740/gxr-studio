@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import struct
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -157,9 +158,29 @@ def test_sdr_luma_grid_every_code(tmp_path: Path) -> None:
     for f in (1, 4, 5):
         hp.ok(["hdr-luma", "--rgb", hp.save(tmp_path / "rgb.npy", rgb), "--factor", str(f), "--out", str(tmp_path / f"y{f}.npy")])
         hp.check_sdr(g.sdr_luma_grid(rgb, f), np.load(tmp_path / f"y{f}.npy"), rgb, f, f"sdr_luma_grid factor {f}")
-    # The only per-code differences from numpy are Apple powf's two non-correctly-rounded values.
-    lin = g.srgb_to_linear(codes)
-    assert np.nonzero(lin != hp.srgb_to_linear_rounded(codes))[0].tolist() == list(hp.POW_CODES)
+
+
+def test_srgb_to_linear_is_correctly_rounded(tmp_path: Path) -> None:
+    """PORT-WAVE-1 platform-libm rule: the oracle is the correctly rounded float32 (``decimal``,
+    50 digits, rounded once). numpy's float32 ``**`` calls the host libm."""
+    codes = np.arange(256, dtype=np.uint8)
+    oracle, bases = hp.srgb_oracle()
+    hp.ok(["hdr-srgb", "--out", str(tmp_path / "lin.npy")])
+    hp.same_f32(oracle, np.load(tmp_path / "lin.npy"), "srgb_to_linear vs correctly rounded")
+    # 1. The power's inputs are bit-identical: numpy's float32 base equals the oracle's.
+    v = codes.astype(np.float32) / 255.0
+    base = (v + np.float32(0.055)) / np.float32(1.055)
+    on_pow = ~np.isnan(bases)
+    assert np.array_equal(base[on_pow].view(np.uint32), bases[on_pow].view(np.uint32))
+    if sys.platform != "darwin":
+        return
+    # 3. On this Mac, Apple's powf differs from the correctly rounded value exactly here.
+    numpy_lin = g.srgb_to_linear(codes)
+    differ = np.nonzero(numpy_lin.view(np.uint32) != oracle.view(np.uint32))[0].tolist()
+    for code in differ:
+        got, want = numpy_lin[code], oracle[code]
+        print(f"srgb code {code}: numpy {got!r} 0x{int(got.view(np.uint32)):08x}, correctly rounded {want!r} 0x{int(want.view(np.uint32)):08x}")
+    assert differ == list(hp.POW_CODES)
 
 
 # ---------------------------------------------------------------- 2. FFT alignment
@@ -523,6 +544,18 @@ def test_real_pair_flow(tmp_path: Path, pair: tuple[Path, Path]) -> None:
     result = hp.flow(tmp_path, jpg.read_bytes(), dng, dng.stem)
     print(f"real {dng.name}: {result.stages} check={result.check}")
     assert result.stages[0] in ("raw_luma", "raw_luma:raw_decode")
+
+
+def test_real_r8052275_correlation_follows_the_grid(tmp_path: Path) -> None:
+    """The one real pair where the pixel chain moved ``correlation``: Python's ``align`` on
+    Rust's (correctly rounded) grid gives exactly Rust's value, and the uint8 codes hold."""
+    found = [p for p in hp.CAPTURES.rglob("R8052275.DNG") if "backup" not in p.as_posix().lower()] if hp.CAPTURES.is_dir() else []
+    jpg = found[0].with_suffix(".JPG") if found else None
+    if jpg is None or not jpg.is_file():
+        pytest.skip("R8052275 is not under captures/")
+    result = hp.flow(tmp_path, jpg.read_bytes(), found[0], "R8052275")
+    note = "e2e-align:correlation python=0.9247201681137085 rust=0.9247203469276428"
+    assert note in result.stages and "e2e-gain-codes:0" in result.stages, result.stages
 
 
 def test_wasm_matches_native(tmp_path: Path) -> None:
