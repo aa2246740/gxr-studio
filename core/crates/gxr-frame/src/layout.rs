@@ -77,12 +77,21 @@ pub fn ascent_px(ascender: i64, upm: i64, px: i64) -> Result<i64, CoreError> {
     Ok(-((-q).div_euclid(64)))
 }
 
+/// `a * b` for layout integers (pens × pixel sizes), checked: Python's ints never overflow.
+fn mul(a: i64, b: i64) -> Result<i64, CoreError> {
+    a.checked_mul(b)
+        .ok_or_else(|| CoreError::new("overflow_error", "版面数值超出范围"))
+}
+
 /// Port of gxr_studio/finish/layout.py:52 _pens
 fn pens(m: &Fonts, font: &str, text: &str, cjk: bool) -> Result<Vec<i64>, CoreError> {
     let mut out = vec![0i64];
     for ch in text.chars() {
         let last = *out.last().unwrap_or(&0);
-        out.push(last + m.glyph(font, ch, cjk)?.0);
+        out.push(
+            last.checked_add(m.glyph(font, ch, cjk)?.0)
+                .ok_or_else(|| CoreError::new("overflow_error", "版面数值超出范围"))?,
+        );
     }
     Ok(out)
 }
@@ -92,7 +101,7 @@ pub fn advance(m: &Fonts, font: &str, px: i64, text: &str, cjk: bool) -> Result<
     let p = pens(m, font, text, cjk)?;
     let last = *p.last().unwrap_or(&0);
     // int * int, then true division (correctly rounded, as Python's int / int).
-    Ok(py::f(last * px) / py::f(m.upm(font, cjk)?))
+    Ok(py::f(mul(last, px)?) / py::f(m.upm(font, cjk)?))
 }
 
 /// Port of gxr_studio/finish/layout.py:65 glyph_xs
@@ -108,7 +117,7 @@ pub fn glyph_xs(
     let p = pens(m, font, text, cjk)?;
     let mut out = Vec::with_capacity(p.len().saturating_sub(1));
     for &pen in &p[..p.len() - 1] {
-        out.push(py::floor(x.f() + py::f(pen * px) / py::f(upm) + 0.5)?);
+        out.push(py::floor(x.f() + py::f(mul(pen, px)?) / py::f(upm) + 0.5)?);
     }
     Ok(out)
 }
@@ -125,17 +134,17 @@ pub fn ink_box(
     let asc = m.ascent(font, px, cjk)?;
     let p = pens(m, font, text, cjk)?;
     let mut left = 0.0f64;
-    let mut right = py::f(*p.last().unwrap_or(&0) * px) / upm;
+    let mut right = py::f(mul(*p.last().unwrap_or(&0), px)?) / upm;
     let mut up = 0.0f64;
     let mut down = 0.0f64;
     for (ch, &pen) in text.chars().zip(p.iter()) {
         let Some(b) = m.glyph(font, ch, cjk)?.1 else {
             continue;
         };
-        left = left.min(py::f((pen + b[0]) * px) / upm);
-        right = right.max(py::f((pen + b[2]) * px) / upm);
-        up = up.max(py::f(b[3] * px) / upm);
-        down = down.max(py::f(-b[1] * px) / upm);
+        left = left.min(py::f(mul(pen + b[0], px)?) / upm);
+        right = right.max(py::f(mul(pen + b[2], px)?) / upm);
+        up = up.max(py::f(mul(b[3], px)?) / upm);
+        down = down.max(py::f(mul(-b[1], px)?) / upm);
     }
     Ok([
         py::floor(left)?,

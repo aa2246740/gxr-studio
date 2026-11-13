@@ -104,8 +104,9 @@ fn read_index(data: &[u8], at: usize) -> Result<(Index, usize), CoreError> {
         if prev == 0 || next < prev {
             return Err(bad("CFF INDEX 偏移无效"));
         }
-        let start = base + prev;
-        let end = base + next;
+        // Offsets reach 2**32 − 1 with offSize 4; checked so wasm32's usize cannot wrap.
+        let start = base.checked_add(prev).ok_or_else(|| bad("CFF 表读不全"))?;
+        let end = base.checked_add(next).ok_or_else(|| bad("CFF 表读不全"))?;
         if end > data.len() {
             return Err(bad("CFF 表读不全"));
         }
@@ -228,7 +229,10 @@ fn read_fd_select(data: &[u8], at: usize, glyphs: usize) -> Result<Vec<u8>, Core
     match format {
         0 => {
             for (g, slot) in out.iter_mut().enumerate() {
-                *slot = byte(data, at + 1 + g)?;
+                *slot = byte(
+                    data,
+                    at.checked_add(1 + g).ok_or_else(|| bad("CFF 表读不全"))?,
+                )?;
             }
         }
         3 => {

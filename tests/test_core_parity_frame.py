@@ -406,6 +406,10 @@ def test_wasm_layouts_match_native(tmp_path: Path) -> None:
     add("missing-cjk", "stamp", {"w": 900, "h": 600}, StampSpec(enabled=True, content="text", text="上海").to_json(), cjk=False)
     add("bad-spec", "frame", {"w": 900, "h": 600}, {"style": "nope"})
     add("bad-size", "frame", {"w": 0, "h": 600}, FrameSpec(style="gallery").to_json())
+    # Size arithmetic (UNIT-COMMON amendment 2026-11-14): huge dimensions are one identical error.
+    for w, h in ((4294967295, 4294967295), (2147483648, 1), (1, 2147483648), (65536, 1), (9007199254740993, 3)):
+        add(f"huge-frame-{w}x{h}", "frame", {"w": w, "h": h}, FrameSpec(style="film").to_json())
+        add(f"huge-stamp-{w}x{h}", "stamp", {"w": w, "h": h, "taken": [2026, 1, 2, 3, 4]}, StampSpec(enabled=True).to_json())
     manifest = write_json(tmp_path / "frame-wasm.json", entries)
     proc = run_area("frame", [manifest], tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr

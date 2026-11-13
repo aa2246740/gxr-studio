@@ -13,7 +13,11 @@
 //! input with `frame-spec` / `stamp-spec` (`parse_frame` / `parse_stamp`) first, as the desktop
 //! routes do; the layout functions themselves accept, say, a caption longer than 24 characters.
 //!
-//! `w` and `h` must be 1 … 2**20; Python has no such check, but no real photo is near it.
+//! `w` and `h` must be 1 … 65535, JPEG's largest side (the phone exports JPEG); Python has no such
+//! check. The bound keeps every layout product far inside `i64` and caps the number of items a
+//! style can emit (the film strip's sprocket holes grow with the long side when the short side is
+//! tiny), so a huge request fails with this one `bad_request` on native and WASM alike instead of
+//! running out of memory on wasm32.
 
 use gxr_raw::{CoreError, Json, error_json};
 
@@ -24,7 +28,7 @@ use crate::metrics::Fonts;
 use crate::spec::{frame_spec_from_fields, stamp_spec_from_fields};
 use crate::value::{Val, parse_json};
 
-const MAX_SIDE: i64 = 1 << 20;
+const MAX_SIDE: i64 = 65535;
 
 fn bad(message: impl Into<String>) -> CoreError {
     CoreError::new("bad_request", message)
@@ -194,8 +198,14 @@ pub fn fonts_from_pack(index_json: &str, pack: &[u8]) -> Result<Fonts, CoreError
         else {
             return Err(bad("字体索引的每项要是 [名字, 字节数]"));
         };
-        let len = usize::try_from(*len).map_err(|_| bad("字体字节数无效"))?;
-        let end = at.checked_add(len).ok_or_else(|| bad("字体字节数无效"))?;
+        // Compare in u64 first, so native (64-bit usize) and wasm32 reject the same lengths with
+        // the same text.
+        let len = u64::try_from(*len).map_err(|_| bad("字体字节数无效"))?;
+        let left = u64::try_from(pack.len() - at).map_err(|_| bad("字体字节数无效"))?;
+        if len > left {
+            return Err(bad("字体字节数超过数据长度"));
+        }
+        let end = at + usize::try_from(len).map_err(|_| bad("字体字节数超过数据长度"))?;
         let bytes = pack
             .get(at..end)
             .ok_or_else(|| bad("字体字节数超过数据长度"))?;
