@@ -57,8 +57,8 @@ pub fn local_residual(sdr: &Plane32, raw_y: &[f32]) -> Result<bool, CoreError> {
         let weight = mean(&mask)?;
         let (ma_n, mb_n) = (mean(&am)?, mean(&bm)?);
         let (va_n, vb_n, cov_n) = (mean(&aam)?, mean(&bbm)?, mean(&abm)?);
-        let mut uncertain = vec![false; gh * gw];
-        for i in 0..gh * gw {
+        let mut uncertain = vec![false; s.len()];
+        for i in 0..s.len() {
             let wt = maximum(weight[i], 1e-6);
             let (ma, mb) = (ma_n[i] / wt, mb_n[i] / wt);
             let va = maximum(va_n[i] / wt - ma * ma, 0.0);

@@ -16,6 +16,7 @@ use crate::np::{
 };
 use crate::residual::local_residual;
 use crate::sample::map_coordinates;
+use crate::size::{self, dim};
 
 /// `LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)`.
 pub const LUMA: [f32; 3] = [0.2126_f64 as f32, 0.7152_f64 as f32, 0.0722_f64 as f32];
@@ -72,6 +73,20 @@ pub struct Plane32 {
     pub v: Vec<f32>,
 }
 
+impl Plane32 {
+    /// A plane from caller-given dimensions: the product goes through the shared count limit
+    /// before it is compared with the data.
+    pub fn new(v: Vec<f32>, h: u64, w: u64) -> Result<Self, CoreError> {
+        let n = size::count(&[h, w])?;
+        if n != v.len() {
+            return Err(bad("数组长度和形状对不上"));
+        }
+        let h = usize::try_from(h).map_err(|_| size::too_big())?;
+        let w = usize::try_from(w).map_err(|_| size::too_big())?;
+        Ok(Self { h, w, v })
+    }
+}
+
 fn bad(message: &str) -> CoreError {
     unsupported("bad_input", message)
 }
@@ -101,11 +116,13 @@ pub fn block_mean<T: Real>(
     if h == 0 || w == 0 {
         return Ok((Vec::new(), gh, gw));
     }
-    let n = factor.checked_mul(factor).ok_or_else(|| bad("分块太大"))?;
+    // numpy pads to (gh * f, gw * f) before reducing: that is the size it allocates.
+    size::count(&[dim(gh), dim(factor), dim(gw), dim(factor)])?;
+    let n = size::count(&[dim(factor), dim(factor)])?;
     let at = |y: usize, x: usize| a[y.min(h - 1) * w + x.min(w - 1)];
-    let mut out = Vec::with_capacity(gh * gw);
-    let mut row = vec![T::ZERO; factor];
-    let mut block = vec![T::ZERO; if gw == 1 { n } else { 0 }];
+    let mut out = size::with_capacity(size::count(&[dim(gh), dim(gw)])?)?;
+    let mut row = size::filled(factor, T::ZERO)?;
+    let mut block = size::filled(if gw == 1 { n } else { 0 }, T::ZERO)?;
     for gy in 0..gh {
         for gx in 0..gw {
             let total = if gw == 1 {
@@ -145,8 +162,7 @@ pub fn srgb_to_linear(c: u8) -> f32 {
 ///
 /// `@ LUMA` is written as `(r * l0 + g * l1) + b * l2` in float32.
 pub fn sdr_luma_grid(rgb: &[u8], h: usize, w: usize, factor: usize) -> Result<Plane32, CoreError> {
-    let n = h.checked_mul(w).ok_or_else(|| bad("数组太大"))?;
-    if n.checked_mul(3) != Some(rgb.len()) {
+    if size::count(&[dim(h), dim(w), 3])? != rgb.len() {
         return Err(bad("RGB 长度和形状对不上"));
     }
     let lut: Vec<f32> = (0..=255u8).map(srgb_to_linear).collect();
@@ -275,7 +291,7 @@ pub fn warp(
 ) -> Result<Vec<f32>, CoreError> {
     let (h, w) = shape;
     check_shape(a.h, a.w, a.v.len())?;
-    let n = h.checked_mul(w).ok_or_else(|| bad("数组太大"))?;
+    let n = size::count(&[dim(h), dim(w)])?;
     let zy = f32_of(count_f64(h) / count_f64(a.h) * s);
     let zx = f32_of(count_f64(w) / count_f64(a.w) * s);
     let (dy, dx) = (f32_of(dy), f32_of(dx));
@@ -287,8 +303,8 @@ pub fn warp(
         f32_of((count_f64(a.h) - 1.0) / 2.0),
         f32_of((count_f64(a.w) - 1.0) / 2.0),
     );
-    let mut sy = Vec::with_capacity(n);
-    let mut sx = Vec::with_capacity(n);
+    let mut sy = size::with_capacity(n)?;
+    let mut sx = size::with_capacity(n)?;
     for r in 0..h {
         #[allow(clippy::cast_precision_loss)]
         let yy = r as f32;

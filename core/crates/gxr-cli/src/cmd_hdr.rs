@@ -12,9 +12,10 @@
 //! hdr-raw-luma DNG --out Y.npy --clip-out C.npy               raw_luma without the metadata
 //! hdr-phase --a A.npy --b B.npy                               _phase_shift
 //! hdr-fit --x X.npy --y Y.npy --valid V.npy                   fit_curve
-//! hdr-align --sdr S.npy --raw R.npy                           align + check_alignment
+//! hdr-align --sdr S.npy --raw R.npy [--sdr-shape H W] [--raw-shape H W]   align + check_alignment
 //! hdr-register --raw R.npy --clip C.npy --align AL.json --shape H W --grid H W --out Y.npy --clip-out C2.npy
 //! hdr-gain --sdr S.npy --raw R.npy --clip C.npy [--params P.json] --out G.npy [--delta-out D.npy]
+//!          [--sdr-shape H W] [--raw-shape H W]   (reshape the float32 data as gxr-wasm does)
 //! hdr-segments --in F.jpg                                     jpeg_segments
 //! hdr-assemble --primary A.jpg --gain B.jpg --meta M.json --out O.npy   file bytes as uint8 (1, N)
 //! hdr-capture --raw TAGS.json --jpeg TAGS.json                _capture of both + differs
@@ -38,10 +39,7 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "hdr-raw-luma" => raw_luma_cmd(args)?,
         "hdr-phase" => phase_cmd(args)?,
         "hdr-fit" => fit_cmd(args)?,
-        "hdr-align" => hdr::align_report(
-            &f32_plane(&npy(args, "--sdr")?)?,
-            &f32_plane(&npy(args, "--raw")?)?,
-        )?,
+        "hdr-align" => hdr::align_report(&plane_arg(args, "--sdr")?, &plane_arg(args, "--raw")?)?,
         "hdr-register" => register_cmd(args)?,
         "hdr-gain" => gain_cmd(args)?,
         "hdr-segments" => segments_cmd(args)?,
@@ -132,14 +130,17 @@ fn parse_npy(raw: &[u8]) -> Option<Npy> {
         .map(|p| p.parse().ok())
         .collect::<Option<Vec<usize>>>()?;
     let data = raw[at + len..].to_vec();
-    let n = shape.iter().try_fold(1usize, |a, &d| a.checked_mul(d))?;
+    // Checked u64: the header's shape is untrusted input.
+    let n = shape
+        .iter()
+        .try_fold(1u64, |a, &d| a.checked_mul(u64::try_from(d).ok()?))?;
     let size = match descr.as_str() {
         "<f8" | "<i8" => 8,
         "<f4" | "<i4" => 4,
         "|u1" | "|b1" => 1,
         _ => return None,
     };
-    (n.checked_mul(size)? == data.len()).then_some(Npy { descr, shape, data })
+    (n.checked_mul(size)? == u64::try_from(data.len()).ok()?).then_some(Npy { descr, shape, data })
 }
 
 fn hw(a: &Npy) -> Result<(usize, usize), Failure> {
@@ -181,6 +182,23 @@ fn mask(a: &Npy) -> Result<Vec<bool>, Failure> {
 fn f32_plane(a: &Npy) -> Result<hdr::Plane32, Failure> {
     let (h, w) = hw(a)?;
     Ok(hdr::Plane32 { h, w, v: f32s(a)? })
+}
+
+/// `--name` npy as a plane; `--name-shape H W` reinterprets its float32 data with the given
+/// dimensions through `Plane32::new`, the path `gxr-wasm` takes with its `(height, width)`.
+fn plane_arg(args: &[String], name: &str) -> Result<hdr::Plane32, Failure> {
+    let a = npy(args, name)?;
+    let flag = format!("{name}-shape");
+    if !args.iter().any(|x| x == &flag) {
+        return f32_plane(&a);
+    }
+    let at = args.iter().position(|x| x == &flag).unwrap_or(0);
+    let get = |k: usize| -> Result<u64, Failure> {
+        args.get(at + k)
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| usage(format!("{flag} needs two sizes")))
+    };
+    Ok(hdr::Plane32::new(f32s(&a)?, get(1)?, get(2)?)?)
 }
 
 /// Write an `.npy` (format 1.0) and describe it without the path.
@@ -445,8 +463,8 @@ fn register_cmd(args: &[String]) -> Result<Json, Failure> {
 }
 
 fn gain_cmd(args: &[String]) -> Result<Json, Failure> {
-    let sdr = f32_plane(&npy(args, "--sdr")?)?;
-    let raw = f32_plane(&npy(args, "--raw")?)?;
+    let sdr = plane_arg(args, "--sdr")?;
+    let raw = plane_arg(args, "--raw")?;
     let clip = mask(&npy(args, "--clip")?)?;
     if (raw.h, raw.w) != (sdr.h, sdr.w) {
         return Err(usage("--sdr and --raw differ in shape"));

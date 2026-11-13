@@ -50,6 +50,31 @@ export function cases(inputs) {
         },
       });
     }
+    if (has('sdr.npy') && has('raw.npy')) {
+      // Huge caller dimensions: both sides must refuse with the same core error, not panic or wrap.
+      for (const [h, w] of [
+        [4294967295, 4294967295],
+        [2147483648, 1],
+      ]) {
+        const dims = ['--sdr-shape', String(h), String(w), '--raw-shape', String(h), String(w)];
+        out.push({
+          label: `${folder}::hdr_align_${h}x${w}`,
+          cliArgs: ['hdr-align', '--sdr', path('sdr.npy'), '--raw', path('raw.npy'), ...dims],
+          wasm: (mod) => {
+            const s = readNpy(path('sdr.npy'));
+            return mod.hdr_align(s.values, h, w, s.values, h, w);
+          },
+        });
+        out.push({
+          label: `${folder}::hdr_gain_${h}x${w}`,
+          cliArgs: ['hdr-gain', '--sdr', path('sdr.npy'), '--raw', path('raw.npy'), '--clip', path('sdr.npy'), ...dims, '--out', join(dir, `huge-${out.length}.npy`)],
+          wasm: (mod) => {
+            const s = readNpy(path('sdr.npy'));
+            return mod.hdr_gain(s.values, s.values, new Uint8Array(0), h, w, '').report;
+          },
+        });
+      }
+    }
     if (has('sdr.npy') && has('reg.npy') && has('clip.npy')) {
       const codesOut = join(dir, `codes-${out.length}.npy`);
       const args = ['hdr-gain', '--sdr', path('sdr.npy'), '--raw', path('reg.npy'), '--clip', path('clip.npy')];

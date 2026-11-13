@@ -21,6 +21,7 @@ mod number;
 mod report;
 mod residual;
 mod sample;
+mod size;
 
 pub use capture::{Field, MISMATCH, TagValue, capture_of, differs, field_json};
 pub use container::{
@@ -42,3 +43,4 @@ pub use number::{fmt_g7, limit_65536, py_round};
 pub use report::{align_report, gain_report};
 pub use residual::local_residual;
 pub use sample::map_coordinates;
+pub use size::{ARRAY_TOO_BIG, count};

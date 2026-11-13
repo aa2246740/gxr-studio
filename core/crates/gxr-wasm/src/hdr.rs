@@ -11,22 +11,9 @@ fn rejected(err: CoreError) -> JsValue {
     JsValue::from_str(&error_json(&err).render())
 }
 
+/// The caller's dimensions go through the shared count limit (`Plane32::new`), as in the CLI.
 fn plane(values: &[f32], height: u32, width: u32) -> Result<hdr::Plane32, JsValue> {
-    let h =
-        usize::try_from(height).map_err(|_| rejected(CoreError::new("bad_input", "数组太大")))?;
-    let w =
-        usize::try_from(width).map_err(|_| rejected(CoreError::new("bad_input", "数组太大")))?;
-    if h.checked_mul(w) != Some(values.len()) {
-        return Err(rejected(CoreError::new(
-            "bad_input",
-            "数组长度和形状对不上",
-        )));
-    }
-    Ok(hdr::Plane32 {
-        h,
-        w,
-        v: values.to_vec(),
-    })
+    hdr::Plane32::new(values.to_vec(), u64::from(height), u64::from(width)).map_err(rejected)
 }
 
 /// `align(sdr_y, raw_y)` and `check_alignment`, as `gxr-cli hdr-align` prints them.

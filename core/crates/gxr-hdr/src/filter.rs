@@ -33,9 +33,10 @@ fn bad(message: &str) -> CoreError {
 
 /// Check that `values` holds an `h × w` plane.
 pub fn check_shape(h: usize, w: usize, len: usize) -> Result<(), CoreError> {
-    match h.checked_mul(w) {
-        Some(n) if n == len => Ok(()),
-        _ => Err(bad("数组长度和形状对不上")),
+    if crate::size::count(&[crate::size::dim(h), crate::size::dim(w)])? == len {
+        Ok(())
+    } else {
+        Err(bad("数组长度和形状对不上"))
     }
 }
 
@@ -49,6 +50,7 @@ fn per_line<T: Real>(
 ) -> Vec<T> {
     let (n, lines) = if axis == 0 { (h, w) } else { (w, h) };
     let mut out = src.to_vec();
+    // `n` is one axis of a plane already in memory.
     let mut buf = vec![0.0; n];
     let mut res = vec![0.0; n];
     for l in 0..lines {

@@ -183,6 +183,33 @@ def test_srgb_to_linear_is_correctly_rounded(tmp_path: Path) -> None:
     assert differ == list(hp.POW_CODES)
 
 
+def test_huge_caller_sizes_are_refused_not_allocated(tmp_path: Path) -> None:
+    """UNIT-COMMON size amendment: caller dimensions go through checked u64 and the 2**32 - 1
+    count limit; the answer is one core error (exit 2), never a panic, abort or wrap."""
+    big = "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size."
+    plane = hp.save(tmp_path / "p.npy", np.ones((6, 8), np.float32))
+    mask = hp.save(tmp_path / "m.npy", np.zeros((6, 8), bool))
+    (tmp_path / "al.json").write_text(json.dumps({"scale": 1.0, "dy": 0, "dx": 0}))
+    rgb = hp.save(tmp_path / "rgb.npy", np.zeros((6, 8, 3), np.uint8))
+    out = ["--out", str(tmp_path / "o.npy")]
+    cases = {
+        "register": ["hdr-register", "--raw", plane, "--clip", mask, "--align", str(tmp_path / "al.json")]
+        + ["--shape", "4294967295", "4294967295", "--grid", "6", "8", *out, "--clip-out", str(tmp_path / "c.npy")],
+        "register-wide": ["hdr-register", "--raw", plane, "--clip", mask, "--align", str(tmp_path / "al.json")]
+        + ["--shape", "1", "18446744073709551615", "--grid", "6", "8", *out, "--clip-out", str(tmp_path / "c.npy")],
+        "block-mean": ["hdr-block-mean", "--in", plane, "--factor", "4294967295", *out],
+        "block-mean-pad": ["hdr-block-mean", "--in", plane, "--factor", "65536", *out],
+        "luma": ["hdr-luma", "--rgb", rgb, "--factor", "4294967296", *out],
+        "align": ["hdr-align", "--sdr", plane, "--raw", plane, "--sdr-shape", "4294967295", "4294967295"],
+        "gain": ["hdr-gain", "--sdr", plane, "--raw", plane, "--clip", mask, "--sdr-shape", "4294967295", "4294967295", *out],
+    }
+    for name, args in cases.items():
+        _, err = hp.call(args)
+        assert err is not None and (err.kind, err.message) == ("value_error", big), name
+    _, err = hp.call(["hdr-align", "--sdr", plane, "--raw", plane, "--sdr-shape", "2147483648", "1"])
+    assert err is not None and (err.kind, err.message) == ("bad_input", "数组长度和形状对不上")
+
+
 # ---------------------------------------------------------------- 2. FFT alignment
 
 

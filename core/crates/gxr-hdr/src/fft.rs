@@ -13,6 +13,7 @@ use gxr_raw::CoreError;
 
 use crate::error::unsupported;
 use crate::np::count_f64;
+use crate::size;
 
 #[derive(Clone, Copy, Debug)]
 struct Cx {
@@ -52,11 +53,10 @@ struct Pow2 {
 }
 
 impl Pow2 {
-    fn new(n: usize) -> Self {
-        Self {
-            n,
-            tw: (0..n / 2).map(|k| twiddle(k, n)).collect(),
-        }
+    fn new(n: usize) -> Result<Self, CoreError> {
+        let mut tw = size::with_capacity(n / 2)?;
+        tw.extend((0..n / 2).map(|k| twiddle(k, n)));
+        Ok(Self { n, tw })
     }
 
     /// Forward transform in place (`inverse` uses the conjugate twiddles, unscaled).
@@ -103,9 +103,10 @@ impl Pow2 {
 struct Plan {
     n: usize,
     pow2: Pow2,
-    /// Bluestein only: `exp(-iπ k² / n)` and the transformed conjugate chirp.
+    /// Bluestein only: `exp(-iπ k² / n)`, the transformed conjugate chirp, and a work buffer.
     chirp: Vec<Cx>,
     kernel: Vec<Cx>,
+    buf: Vec<Cx>,
 }
 
 impl Plan {
@@ -113,29 +114,32 @@ impl Plan {
         if n.is_power_of_two() {
             return Ok(Self {
                 n,
-                pow2: Pow2::new(n),
+                pow2: Pow2::new(n)?,
                 chirp: Vec::new(),
                 kernel: Vec::new(),
+                buf: Vec::new(),
             });
         }
-        let m = n
-            .checked_mul(2)
-            .and_then(|v| v.checked_next_power_of_two())
-            .ok_or_else(|| unsupported("bad_input", "FFT 长度太大"))?;
-        let pow2 = Pow2::new(m);
+        // The Bluestein length `m >= 2n - 1` goes through the shared count limit.
+        let twice = size::count(&[size::dim(n), 2])?;
+        let m = size::count(&[size::dim(
+            twice
+                .checked_next_power_of_two()
+                .ok_or_else(size::too_big)?,
+        )])?;
+        let pow2 = Pow2::new(m)?;
         let period = 2 * n;
-        let chirp: Vec<Cx> = (0..n)
-            .map(|k| {
-                // k² mod 2n keeps the angle exact for large k.
-                let kk = ((k as u128 * k as u128) % period as u128) as usize;
-                let theta = -std::f64::consts::PI * count_f64(kk) / count_f64(n);
-                Cx {
-                    re: cos(theta),
-                    im: sin(theta),
-                }
-            })
-            .collect();
-        let mut kernel = vec![ZERO; m];
+        let mut chirp: Vec<Cx> = size::with_capacity(n)?;
+        chirp.extend((0..n).map(|k| {
+            // k² mod 2n keeps the angle exact for large k.
+            let kk = ((k as u128 * k as u128) % period as u128) as usize;
+            let theta = -std::f64::consts::PI * count_f64(kk) / count_f64(n);
+            Cx {
+                re: cos(theta),
+                im: sin(theta),
+            }
+        }));
+        let mut kernel = size::filled(m, ZERO)?;
         for k in 0..n {
             kernel[k] = conj(chirp[k]);
             if k > 0 {
@@ -148,27 +152,29 @@ impl Plan {
             pow2,
             chirp,
             kernel,
+            buf: size::filled(m, ZERO)?,
         })
     }
 
     /// Unscaled transform of `a` (length `n`) in place.
-    fn run(&self, a: &mut [Cx], inverse: bool) {
+    fn run(&mut self, a: &mut [Cx], inverse: bool) {
         if self.chirp.is_empty() {
             self.pow2.run(a, inverse);
             return;
         }
         // The inverse is conj(forward(conj(x))).
         let m = self.pow2.n;
-        let mut buf = vec![ZERO; m];
+        let buf = &mut self.buf;
+        buf.fill(ZERO);
         for k in 0..self.n {
             let x = if inverse { conj(a[k]) } else { a[k] };
             buf[k] = mul(x, self.chirp[k]);
         }
-        self.pow2.run(&mut buf, false);
+        self.pow2.run(buf, false);
         for (v, &k) in buf.iter_mut().zip(&self.kernel) {
             *v = mul(*v, k);
         }
-        self.pow2.run(&mut buf, true);
+        self.pow2.run(buf, true);
         let scale = 1.0 / count_f64(m);
         for k in 0..self.n {
             let y = mul(
@@ -185,12 +191,12 @@ impl Plan {
 
 /// 2-D transform of a row-major `h × w` plane, rows first, then columns.
 fn fft2(a: &mut [Cx], h: usize, w: usize, inverse: bool) -> Result<(), CoreError> {
-    let rows = Plan::new(w)?;
+    let mut rows = Plan::new(w)?;
     for r in 0..h {
         rows.run(&mut a[r * w..(r + 1) * w], inverse);
     }
-    let cols = Plan::new(h)?;
-    let mut col = vec![ZERO; h];
+    let mut cols = Plan::new(h)?;
+    let mut col = size::filled(h, ZERO)?;
     for c in 0..w {
         for r in 0..h {
             col[r] = a[r * w + c];
@@ -203,25 +209,28 @@ fn fft2(a: &mut [Cx], h: usize, w: usize, inverse: bool) -> Result<(), CoreError
     Ok(())
 }
 
-fn complex(values: &[f32]) -> Vec<Cx> {
-    values
-        .iter()
-        .map(|&v| Cx {
-            re: f64::from(v),
-            im: 0.0,
-        })
-        .collect()
+fn complex(values: &[f32]) -> Result<Vec<Cx>, CoreError> {
+    let mut out = size::with_capacity(values.len())?;
+    out.extend(values.iter().map(|&v| Cx {
+        re: f64::from(v),
+        im: 0.0,
+    }));
+    Ok(out)
 }
 
 /// Port of gxr_studio/hdr/gain.py:177 `_phase_shift`: the peak of
 /// `real(ifft2(F / (|F| + 1e-9)))` with `F = fft2(a) * conj(fft2(b))`, wrapped into
 /// `[-n/2, n/2]` (`i <= n // 2` stays positive). `argmax` keeps the first index in C order.
 pub fn phase_shift(a: &[f32], b: &[f32], h: usize, w: usize) -> Result<(i64, i64), CoreError> {
-    if h == 0 || w == 0 || h.checked_mul(w) != Some(a.len()) || a.len() != b.len() {
+    if h == 0
+        || w == 0
+        || size::count(&[size::dim(h), size::dim(w)])? != a.len()
+        || a.len() != b.len()
+    {
         return Err(unsupported("bad_input", "FFT 形状对不上"));
     }
-    let mut fa = complex(a);
-    let mut fb = complex(b);
+    let mut fa = complex(a)?;
+    let mut fb = complex(b)?;
     fft2(&mut fa, h, w, false)?;
     fft2(&mut fb, h, w, false)?;
     for (x, &y) in fa.iter_mut().zip(&fb) {
