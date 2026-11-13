@@ -106,3 +106,26 @@ exit 0
     proc = run_area("raw", [garbage], tmp_path, cli=fake, check=False)
     assert proc.returncode != 0
     assert garbage.name in (proc.stdout + proc.stderr)
+
+
+@pytest.mark.parametrize("command", ["dng-half-codes", "dng-wb-block"])
+@pytest.mark.parametrize("stdout", ["", "not JSON", '{"error":{"kind":"x","message":"y"}}'])
+def test_wasm_script_rejects_bad_success_stdout(tmp_path: Path, command: str, stdout: str) -> None:
+    """Exit 0 must still print one JSON result object; empty, invalid or error-shaped output fails."""
+    sample = tmp_path / "valid.dng"
+    sample.write_bytes(write_dng(_pattern(4, 6, (1, 2, 3, 4, 5, 6))))
+    fake = tmp_path / "fake-quiet"
+    _write_cli(
+        fake,
+        f"""#!/bin/sh
+if [ "$1" = "{command}" ]; then
+  {CLI} "$@" > /dev/null || exit $?
+  printf '%s' '{stdout}'
+  exit 0
+fi
+exec {CLI} "$@"
+""",
+    )
+    proc = run_area("raw", [sample], tmp_path, cli=fake, check=False)
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert sample.name in (proc.stdout + proc.stderr)

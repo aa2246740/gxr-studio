@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 
 use crate::error::{CoreError, PyErr, PyResult};
 use crate::pyrepr::{
-    Scalar, np_shape_text, py_float, py_float_list_repr, py_float_repr, py_int, py_int_list_repr,
+    Scalar, py_float, py_float_list_repr, py_float_repr, py_int, py_int_list_repr,
     py_int_tuple_repr, py_list_repr, py_round, py_round_float,
 };
 use crate::tiff::{Ifd, Tiff, Value, val};
@@ -303,13 +303,13 @@ impl<'a> Dng<'a> {
             Some(Value::Bytes(b)) => b.iter().map(|&v| i64::from(v)).collect(),
             Some(v) => v.items().iter().map(py_int).collect::<PyResult<_>>()?,
         };
-        let size = i64::try_from(pat.len()).map_err(|_| crate::bounds::too_big())?;
-        if dim.iter().product::<i64>() != size || dim.iter().any(|&d| d < 0) {
-            return Err(PyErr::Value(format!(
-                "cannot reshape array of size {size} into shape {}",
-                np_shape_text(&dim)
-            )));
-        }
+        // `np.array(pat, int).reshape(dim)`: the same checks in numpy's order (at most 64 axes,
+        // one unknown axis, size), and the shape numpy resolves is the one kept.
+        let size = i128::try_from(pat.len()).map_err(|_| crate::bounds::too_big())?;
+        let dim: Vec<i64> = crate::bounds::numpy_reshape(size, &dim)?
+            .into_iter()
+            .map(|d| i64::try_from(d).map_err(|_| crate::bounds::too_big()))
+            .collect::<PyResult<_>>()?;
         let plane = match val(raw, 50710) {
             Some(v) => v.items(),
             None => vec![Scalar::Int(0), Scalar::Int(1), Scalar::Int(2)],
