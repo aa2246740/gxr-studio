@@ -60,14 +60,35 @@ fn centred(row: &MatrixRow) -> [f64; 3] {
 /// `int(round(v))` on a float64: half to even, then a checked integer.
 fn round_count(v: f64) -> Result<u64, CoreError> {
     let r = v.round_ties_even();
-    if !r.is_finite() {
+    if r.is_nan() {
         return Err(value("cannot convert float NaN to integer"));
     }
+    if r.is_infinite() {
+        return Err(CoreError::new(
+            "overflow",
+            "cannot convert float infinity to integer",
+        ));
+    }
     if !(0.0..=1e12).contains(&r) {
-        return Err(CoreError::new("memory", "bake grid is too large"));
+        // Far past the count limit (and negative counts cannot come from lo <= hi).
+        return Err(crate::size::too_big());
     }
     // r is a non-negative integer below 1e12: exact in u64.
     Ok(r as u64)
+}
+
+/// `nx * ny` grid cells: checked u64 and the shared count limit (one error on every target),
+/// then this port's grid cap.
+fn grid_cells(nx: u64, ny: u64) -> Result<(usize, usize, usize), CoreError> {
+    let cells = crate::size::count(&[nx, ny])?;
+    if cells > MAX_CELLS {
+        return Err(CoreError::new("memory", "bake grid is too large"));
+    }
+    Ok((
+        crate::size::fit(nx)?,
+        crate::size::fit(ny)?,
+        crate::size::fit(cells)?,
+    ))
 }
 
 /// Port of gxr_studio/render/chain.py:224 bake_chroma
@@ -113,14 +134,10 @@ pub fn bake_chroma(model: &UnitModel, entry: &[u8], step: f64) -> Result<ChromaB
     }
     let nx = round_count((hi[0] - lo[0]) / step)? + 1;
     let ny = round_count((hi[1] - lo[1]) / step)? + 1;
-    let cells = nx
-        .checked_mul(ny)
-        .filter(|&n| n <= MAX_CELLS)
-        .ok_or_else(|| CoreError::new("memory", "bake grid is too large"))?;
-    let (nx, ny, cells) = (usize_of(nx)?, usize_of(ny)?, usize_of(cells)?);
+    let (nx, ny, cells) = grid_cells(nx, ny)?;
     let cb: Vec<f64> = (0..nx).map(|k| lo[0] + step * index_f64(k)).collect();
     let cr: Vec<f64> = (0..ny).map(|k| lo[1] + step * index_f64(k)).collect();
-    let mut gain = vec![C::new(1.0, 0.0); cells];
+    let mut gain = crate::size::try_vec(cells, C::new(1.0, 0.0))?;
     if entry[0] != 3 {
         let zrow = model.model.sector_z(entry)?;
         let q = model.model.table.coupling(&zrow);
@@ -142,7 +159,9 @@ pub fn bake_chroma(model: &UnitModel, entry: &[u8], step: f64) -> Result<ChromaB
             }
         }
     }
-    let mut g = Vec::with_capacity(cells * 2);
+    let mut g = Vec::new();
+    g.try_reserve_exact(cells * 2)
+        .map_err(|_| crate::size::too_big())?;
     for v in &gain {
         g.push(v.re as f32);
         g.push(v.im as f32);
@@ -168,10 +187,6 @@ pub fn bake_chroma(model: &UnitModel, entry: &[u8], step: f64) -> Result<ChromaB
             lookup_offset[2] as f32,
         ],
     })
-}
-
-fn usize_of(v: u64) -> Result<usize, CoreError> {
-    usize::try_from(v).map_err(|_| CoreError::new("memory", "bake grid is too large"))
 }
 
 /// A grid index (below `MAX_CELLS`) as float64.
@@ -344,8 +359,8 @@ pub fn chroma_u8(
 /// and this port's float64 `input_coefficients`).
 pub fn from_bytes(
     bytes: &[u8],
-    nx: usize,
-    ny: usize,
+    nx: u64,
+    ny: u64,
     origin: [f64; 2],
     step: f64,
     input: Option<Coefficients>,
@@ -353,20 +368,20 @@ pub fn from_bytes(
     if nx < 2 || ny < 2 {
         return Err(value("bake grid needs nx >= 2 and ny >= 2"));
     }
-    let cells = u64::try_from(nx)
-        .ok()
-        .zip(u64::try_from(ny).ok())
-        .and_then(|(a, b)| a.checked_mul(b))
-        .filter(|&n| n <= MAX_CELLS);
-    let cells = cells.ok_or_else(|| CoreError::new("memory", "bake grid is too large"))?;
-    let floats = usize_of(cells)? * 2 + HEAD_FLOATS;
+    let (nx, ny, cells) = grid_cells(nx, ny)?;
+    // cells <= MAX_CELLS, so this cannot overflow on any target.
+    let floats = cells * 2 + HEAD_FLOATS;
     if bytes.len() != floats * 4 {
         return Err(value("bake table size does not match nx and ny"));
     }
-    let f: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect();
+    let mut f: Vec<f32> = Vec::new();
+    f.try_reserve_exact(floats)
+        .map_err(|_| crate::size::too_big())?;
+    f.extend(
+        bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+    );
     let take3 = |at: usize| [f[at], f[at + 1], f[at + 2]];
     let take9 = |at: usize| {
         let mut m = [0.0f32; 9];
@@ -374,10 +389,10 @@ pub fn from_bytes(
         m
     };
     Ok(ChromaBake {
-        pre: f[..12288].to_vec(),
+        pre: crate::size::try_copy(&f[..12288])?,
         matrix: take9(12288),
         offset: take3(12297),
-        gain: f[HEAD_FLOATS..].to_vec(),
+        gain: crate::size::try_copy(&f[HEAD_FLOATS..])?,
         nx,
         ny,
         origin,

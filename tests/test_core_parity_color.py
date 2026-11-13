@@ -661,9 +661,40 @@ def test_wasm_matches_native(tmp_path: Path) -> None:
         "apply": {**apply, "out": str(tmp_path / "wa.npy")},
         "apply-tones": {**apply, "params": str(tone), "out": str(tmp_path / "wt.npy")},
     }
+    # Sizes from input past the shared count limit: one error, the same on native and wasm32.
+    meta = json.loads(files[1].read_text(encoding="utf-8"))
+    for nx, ny in ((4294967295, 4294967295), (2147483648, 1), (2147483648, 2)):
+        huge = tmp_path / f"wmeta-{nx}-{ny}.json"
+        huge.write_text(json.dumps({**meta, "nx": nx, "ny": ny}), encoding="utf-8")
+        specs[f"apply-huge-{nx}x{ny}"] = {**apply, "meta": str(huge), "out": str(tmp_path / f"wh-{nx}-{ny}.npy")}
+    fine = tmp_path / "wstep.json"
+    fine.write_text(json.dumps({"step": 1e-9}), encoding="utf-8")
+    specs["bake-huge-grid"] = {**base, "params": str(fine)}
     inputs = []
     for name, spec in specs.items():
         path = tmp_path / f"case-{name}.json"
         path.write_text(json.dumps(spec), encoding="utf-8")
         inputs.append(path)
     run_area("color", inputs, tmp_path)
+
+
+def _npy_header(shape: tuple[int, ...]) -> bytes:
+    """A format 1.0 `.npy` header for float32 with this shape and no data."""
+    text = "{'descr': '<f4', 'fortran_order': False, 'shape': (" + ", ".join(str(d) for d in shape) + "), }"
+    text += " " * ((64 - (10 + len(text) + 1) % 64) % 64) + "\n"
+    return b"\x93NUMPY\x01\x00" + len(text).to_bytes(2, "little") + text.encode()
+
+
+def test_huge_dimensions_are_refused(tmp_path: Path) -> None:
+    """Shapes past the shared count limit fail with numpy's "array is too big" text, no panic."""
+    require_cli()
+    pack = cp.synthetic_pack(tmp_path / "h")
+    files = cp.write_bake(tmp_path, pack, cf.entry(words=2), "h")
+    too_big = "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size."
+    for shape in ((4294967295, 4294967295, 3), (2147483648, 1, 3), (0, 4294967296, 3)):
+        codes = _write(tmp_path / "huge.npy", _npy_header(shape))
+        _payload, err = cp.cli(["color-apply", "--bake", files[0], "--meta", files[1], "--codes", codes, "--out", tmp_path / "o.npy"])
+        assert err is not None and (err.kind, err.message) == ("value", too_big), (shape, err)
+    codes = _write(tmp_path / "short.npy", _npy_header((1431655765, 1, 3)))
+    _payload, err = cp.cli(["color-apply", "--bake", files[0], "--meta", files[1], "--codes", codes, "--out", tmp_path / "o.npy"])
+    assert err is not None and err.kind == "npy", err

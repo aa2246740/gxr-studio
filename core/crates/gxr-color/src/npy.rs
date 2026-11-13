@@ -27,9 +27,10 @@ pub fn decode(bytes: &[u8]) -> Result<Npy, CoreError> {
             (header_text(bytes, 10, len)?, 10 + len)
         }
         2 | 3 => {
-            let len = usize::try_from(u32::from_le_bytes(read4(bytes, 8)?))
+            let len = crate::size::fit(u64::from(u32::from_le_bytes(read4(bytes, 8)?)))
                 .map_err(|_| bad("npy header is short"))?;
-            (header_text(bytes, 12, len)?, 12 + len)
+            let text = header_text(bytes, 12, len)?;
+            (text, 12 + len)
         }
         _ => return Err(bad("unsupported npy version")),
     };
@@ -37,21 +38,25 @@ pub fn decode(bytes: &[u8]) -> Result<Npy, CoreError> {
         return Err(bad("fortran order arrays are not supported"));
     }
     let descr = quoted_field(&header, "descr")?;
-    let shape = shape_of(&header)?;
+    let dims = shape_of(&header)?;
     let width = width_of(&descr)?;
-    let mut count = 1usize;
-    for dim in &shape {
-        count = count
-            .checked_mul(*dim)
-            .ok_or_else(|| bad("array is too big"))?;
+    // Sizes from the header: checked u64, the shared count limit, then a fallible copy.
+    let count = crate::size::count(&dims)?;
+    let nbytes = count.checked_mul(width).ok_or_else(crate::size::too_big)?;
+    let end = u64::try_from(data_at)
+        .ok()
+        .and_then(|at| at.checked_add(nbytes))
+        .ok_or_else(crate::size::too_big)?;
+    if end > u64::try_from(bytes.len()).map_err(|_| crate::size::too_big())? {
+        return Err(bad("npy data is short"));
     }
-    let nbytes = count
-        .checked_mul(width)
-        .ok_or_else(|| bad("array is too big"))?;
-    let values = bytes
-        .get(data_at..data_at + nbytes)
-        .ok_or_else(|| bad("npy data is short"))?
-        .to_vec();
+    // `end <= bytes.len()`, so it is a valid index on this target.
+    let end = usize::try_from(end).map_err(|_| crate::size::too_big())?;
+    let values = crate::size::try_copy(&bytes[data_at..end])?;
+    let mut shape = Vec::with_capacity(dims.len());
+    for d in dims {
+        shape.push(crate::size::fit(d)?);
+    }
     Ok(Npy {
         descr,
         shape,
@@ -74,8 +79,11 @@ fn read4(bytes: &[u8], at: usize) -> Result<[u8; 4], CoreError> {
 }
 
 fn header_text(bytes: &[u8], at: usize, len: usize) -> Result<String, CoreError> {
+    let end = at
+        .checked_add(len)
+        .ok_or_else(|| bad("npy header is short"))?;
     let raw = bytes
-        .get(at..at + len)
+        .get(at..end)
         .ok_or_else(|| bad("npy header is short"))?;
     String::from_utf8(raw.to_vec()).map_err(|_| bad("npy header is not utf-8"))
 }
@@ -93,7 +101,7 @@ fn quoted_field(header: &str, key: &str) -> Result<String, CoreError> {
     Ok(rest[..end].to_string())
 }
 
-fn shape_of(header: &str) -> Result<Vec<usize>, CoreError> {
+fn shape_of(header: &str) -> Result<Vec<u64>, CoreError> {
     let needle = "'shape': (";
     let start = header
         .find(needle)
@@ -109,12 +117,16 @@ fn shape_of(header: &str) -> Result<Vec<usize>, CoreError> {
         if part.is_empty() {
             continue;
         }
-        shape.push(part.parse().map_err(|_| bad("npy header has no shape"))?);
+        if !part.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad("npy header has no shape"));
+        }
+        // All digits: a value past u64 is a size no target can hold.
+        shape.push(part.parse::<u64>().map_err(|_| crate::size::too_big())?);
     }
     Ok(shape)
 }
 
-fn width_of(descr: &str) -> Result<usize, CoreError> {
+fn width_of(descr: &str) -> Result<u64, CoreError> {
     match descr {
         "<i4" | "<f4" => Ok(4),
         "<i8" | "<f8" => Ok(8),

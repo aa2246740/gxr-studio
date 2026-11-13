@@ -137,16 +137,16 @@ pub fn bake_meta(bk: &ChromaBake) -> Json {
 }
 
 /// `(nx, ny, origin, step, input_coefficients)` of a bake.
-pub type Meta = (usize, usize, [f64; 2], f64, Option<Coefficients>);
+pub type Meta = (u64, u64, [f64; 2], f64, Option<Coefficients>);
 
 /// The grid and the float64 coefficients from a meta JSON written by [`bake_meta`].
 pub fn meta_of(meta: &Value) -> Result<Meta, CoreError> {
-    let size = |key: &str| -> Result<usize, CoreError> {
+    let size = |key: &str| -> Result<u64, CoreError> {
         let v = meta
             .get(key)
             .and_then(Value::as_int)
             .ok_or_else(|| value("bake meta needs nx and ny"))?;
-        usize::try_from(v).map_err(|_| value("bake meta needs nx and ny"))
+        u64::try_from(v).map_err(|_| value("bake meta needs nx and ny"))
     };
     let (nx, ny) = (size("nx")?, size("ny")?);
     let origin = meta
