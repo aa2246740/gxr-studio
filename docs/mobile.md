@@ -147,3 +147,13 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 ```
 
 `run_area` 把路径写成 JSON，执行 `node mobile/scripts/wasm_vs_native.mjs --area <领域> --cli <gxr-cli> --inputs <json>`。驱动失败时，默认用驱动自己的输出让测试失败。WASM 包或 `node` 不在时跳过，除非 `GXR_REQUIRE_CORE=1`。`GXR_REQUIRE_GPU_TEST` 不会把缺包变成失败。
+
+## 色彩：旋钮
+
+`gxr-color` 移植 `engine/knobs.py` 和 `engine/menu.py`。菜单 JSON 由调用方传入，不嵌进这个 crate。
+
+```text
+gxr-cli color-knobs-apply --entry BASE.bin --menu final.json --params P.json --out OUT.bin [--stock STOCK.bin]
+```
+
+`--entry` 是底子（552 字节）。`--stock` 省略时和底子相同。`P.json` 有 `levels` 时走菜单：还要 `unit`、`slot`，级别必须是整数。没有 `levels` 时用 `amount`（默认 100）、`doses`（10 个整数）、`wb_method`、`tone_method`（默认 0）。成功时把 552 字节写到 `--out`，标准输出是 `out`、`length` 和 `stats`（`clamps`、`node_repairs`、`monotone_repairs`、`slope_repairs`、`colour_cap`、`matrix_cap`、`rowsum_cap`）。`ValueError` 的 kind 是 `value`，文案与 Python 相同。`amount == 0` 仍会重写 CRC，和 `knobs.apply` 一样。
