@@ -9,17 +9,35 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 
 function sampleRoot(): string | null {
   const given = process.env.GXR_MOBILE_SAMPLES;
-  if (!given) return null;
-  return path.resolve(given);
+  if (!given || !path.isAbsolute(given)) return null;
+  try {
+    return fs.realpathSync(given);
+  } catch {
+    return null;
+  }
 }
 
-function inside(rootDir: string, name: string): string | null {
-  if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return null;
-  const full = path.resolve(rootDir, name);
-  if (full !== path.join(rootDir, name)) return null;
-  const prefix = rootDir.endsWith(path.sep) ? rootDir : rootDir + path.sep;
-  if (!full.startsWith(prefix)) return null;
-  return full;
+function dngName(name: string): boolean {
+  return !!name && !name.includes('/') && !name.includes('\\') && !name.includes('..') && /\.dng$/i.test(name);
+}
+
+/** A regular file whose real path stays inside `rootReal`. Symlinks that leave are rejected. */
+function containedFile(rootReal: string, name: string): string | null {
+  if (!dngName(name)) return null;
+  const prefix = rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep;
+  let real: string;
+  try {
+    real = fs.realpathSync(path.join(rootReal, name));
+  } catch {
+    return null;
+  }
+  if (real !== prefix.slice(0, -1) && !real.startsWith(prefix)) return null;
+  try {
+    if (!fs.statSync(real).isFile()) return null;
+  } catch {
+    return null;
+  }
+  return real;
 }
 
 function readBody(req: Connect.IncomingMessage, limit: number): Promise<Buffer> {
@@ -74,7 +92,10 @@ async function handleDev(
   if (samples) {
     const dir = sampleRoot();
     const names = dir
-      ? fs.readdirSync(dir).filter((name) => /\.dng$/i.test(name) && fs.statSync(path.join(dir, name)).isFile()).sort()
+      ? fs
+          .readdirSync(dir)
+          .filter((name) => containedFile(dir, name) !== null)
+          .sort()
       : [];
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify(names));
@@ -83,8 +104,8 @@ async function handleDev(
   if (sample) {
     const dir = sampleRoot();
     const name = decodeURIComponent(url.pathname.slice('/__dev/sample/'.length));
-    const full = dir ? inside(dir, name) : null;
-    if (!full || !fs.existsSync(full)) {
+    const full = dir ? containedFile(dir, name) : null;
+    if (!full) {
       res.statusCode = 404;
       res.end('not found');
       return;
@@ -106,9 +127,38 @@ async function handleDev(
   }
   const body = await readBody(req, 1_000_000);
   JSON.parse(body.toString('utf8'));
-  const dir = path.join(root, '.reports');
+  const dir = path.resolve(root, '.reports');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${name}.json`), body);
+  const resolved = path.resolve(dir);
+  const realDir = fs.realpathSync(dir);
+  if (realDir !== resolved) {
+    res.statusCode = 400;
+    res.end('report dir escapes');
+    return;
+  }
+  const target = path.join(dir, `${name}.json`);
+  try {
+    if (fs.lstatSync(target).isSymbolicLink()) {
+      res.statusCode = 400;
+      res.end('report target escapes');
+      return;
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      res.statusCode = 400;
+      res.end('report target escapes');
+      return;
+    }
+  }
+  const flags =
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+  const fd = fs.openSync(target, flags);
+  try {
+    fs.writeFileSync(fd, body);
+  } finally {
+    fs.closeSync(fd);
+  }
   res.statusCode = 204;
   res.end();
 }
