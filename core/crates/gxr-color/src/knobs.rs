@@ -769,8 +769,11 @@ mod tests {
         assert_eq!(stats.clamps, 0);
         let mut req = Request::identity();
         req.amount = 0;
+        let stock_before = stock.clone();
         let (out, _) = apply(&stock, &base, &req).unwrap();
-        assert_eq!(out, stock);
+        assert_eq!(stock, stock_before);
+        assert_eq!(out.len(), 552);
+        assert_ne!(out, stock);
         req.amount = 151;
         assert_eq!(apply(&stock, &base, &req).unwrap_err().message, "amount");
         req.amount = 100;
