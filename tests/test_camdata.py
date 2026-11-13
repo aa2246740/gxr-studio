@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -230,17 +231,90 @@ def test_no_ricoh_rows_in_repo_source_or_tests():
     assert scanned > 30 and hits == []
 
 
+_BUILD_DIRS = {
+    Path("core/target"),
+    Path("mobile/dist"),
+    Path("mobile/node_modules"),
+    Path("frontend/node_modules"),
+    Path("mobile/src/wasm-pkg"),
+}
+_SKIP_DIR_NAMES = {"local", "__pycache__", ".venv"}
+_CAMERA_SUFFIXES = (".dat", ".entry", ".bin")
+
+
+def _camera_files_outside_build_dirs(root: Path) -> list[str]:
+    """`.dat` / `.entry` / `.bin` files, skipping only known build directories."""
+    found: list[str] = []
+    base = root.resolve()
+    for dirpath, dirs, files in os.walk(base):
+        here = Path(dirpath).resolve()
+        rel = here.relative_to(base)
+        kept: list[str] = []
+        for name in dirs:
+            child = name if rel == Path(".") else rel / name
+            if Path(child) in _BUILD_DIRS or name in _SKIP_DIR_NAMES:
+                continue
+            kept.append(name)
+        dirs[:] = kept
+        for name in files:
+            if name.lower().endswith(_CAMERA_SUFFIXES):
+                found.append(str(here / name))
+    return found
+
+
+def _tracked_camera_files(root: Path) -> list[str]:
+    """Tracked `.dat` / `.entry` / `.bin` files. A non-checkout returns nothing."""
+    probe = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return []
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        check=False,
+        capture_output=True,
+    )
+    if listed.returncode != 0:
+        return []
+    bad: list[str] = []
+    for raw in listed.stdout.split(b"\0"):
+        if not raw:
+            continue
+        name = raw.decode("utf-8", "surrogateescape")
+        if name.lower().endswith(_CAMERA_SUFFIXES):
+            bad.append(name)
+    return bad
+
+
+def test_camera_file_walk_keeps_ordinary_build_names(tmp_path: Path):
+    planted = [
+        "feature/dist/private.entry",
+        "feature/target/x.bin",
+        "feature/node_modules/y.dat",
+        "core/target/query-cache.bin",
+    ]
+    for rel in planted:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not a camera")
+    found = _camera_files_outside_build_dirs(tmp_path)
+    for rel in planted[:3]:
+        assert any(item.endswith(rel) for item in found), rel
+    assert not any(item.endswith("core/target/query-cache.bin") for item in found)
+
+
 def test_no_dat_or_entry_files_outside_ignored_dirs():
-    bad = []
+    bad: list[str] = []
     roots = [t.STUDIO]
     research_e0 = t.REPO / "research/studio_engine_e0"
     if research_e0.is_dir():
         roots.append(research_e0)
     for root in roots:
-        for dirpath, dirs, files in os.walk(root):
-            # target / node_modules / dist 是构建产物（例如 rustc 的 query-cache.bin），不是相机文件。
-            dirs[:] = [d for d in dirs if d not in {"local", "__pycache__", ".venv", "target", "node_modules", "dist"}]
-            bad += [str(Path(dirpath) / n) for n in files if n.lower().endswith((".dat", ".entry", ".bin"))]
+        bad += _camera_files_outside_build_dirs(root)
+    bad += _tracked_camera_files(t.STUDIO)
     assert bad == []
 
 
