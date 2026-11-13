@@ -153,14 +153,14 @@ fn f32_of(v: f64) -> f32 {
 /// Port of gxr_studio/hdr/gain.py:167 warp.
 pub fn warp(
     a: &[f32],
-    ah: usize,
-    aw: usize,
-    out_h: usize,
-    out_w: usize,
+    src: (usize, usize),
+    out: (usize, usize),
     s: f64,
     dy: f64,
     dx: f64,
 ) -> Result<Vec<f32>, CoreError> {
+    let (ah, aw) = src;
+    let (out_h, out_w) = out;
     if len2(ah, aw)? != a.len() || ah == 0 || aw == 0 || out_h == 0 || out_w == 0 {
         return Err(unsupported("bad_shape", "无法缩放空图"));
     }
@@ -456,13 +456,13 @@ pub fn align(
     }
     let a = norm_of(&hp64(sdr_y, h, w)?);
     let corr_at = |s: f64, dy: i64, dx: i64| -> Result<f64, CoreError> {
-        let warped = warp(raw_y, raw_h, raw_w, h, w, s, dy as f64, dx as f64)?;
+        let warped = warp(raw_y, (raw_h, raw_w), (h, w), s, dy as f64, dx as f64)?;
         let hb = norm_of(&hp32(&warped, h, w)?);
         Ok(mean_product(&a, &hb))
     };
     let mut best: Option<(f64, f64, i64, i64)> = None;
     for &s in &SCALES {
-        let base = warp(raw_y, raw_h, raw_w, h, w, s, 0.0, 0.0)?;
+        let base = warp(raw_y, (raw_h, raw_w), (h, w), s, 0.0, 0.0)?;
         let template = norm_of(&hp32(&base, h, w)?);
         let (mut dy, mut dx) = phase_shift(&a, &template, h, w)?;
         let mut corr = corr_at(s, dy, dx)?;
@@ -491,7 +491,7 @@ pub fn align(
     let Some((corr, s, dy, dx)) = best else {
         return Err(unsupported("not_aligned", "没有可用的对齐"));
     };
-    let registered = warp(raw_y, raw_h, raw_w, h, w, s, dy as f64, dx as f64)?;
+    let registered = warp(raw_y, (raw_h, raw_w), (h, w), s, dy as f64, dx as f64)?;
     let ha = hp64(sdr_y, h, w)?;
     let hb = hp32(&registered, h, w)?;
     let moved = tiles_moved(&ha, &hb, h, w);
@@ -705,12 +705,7 @@ pub fn quantise_gain(delta: &[f32], gain_min: f64, gain_max: f64, gamma: f64) ->
     }
     let mut out = Vec::with_capacity(delta.len());
     for &d in delta {
-        let mut r = (f64::from(d) - gain_min) / span;
-        if r < 0.0 {
-            r = 0.0;
-        } else if r > 1.0 {
-            r = 1.0;
-        }
+        let r = ((f64::from(d) - gain_min) / span).clamp(0.0, 1.0);
         let powered = if gamma == 1.0 { r } else { gxr_math::powf(r, gamma) };
         let code = (powered * 255.0 + 0.5).floor();
         let code = if code <= 0.0 {

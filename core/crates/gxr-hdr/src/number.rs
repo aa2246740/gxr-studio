@@ -17,14 +17,10 @@ pub fn round_half_even(x: f64) -> f64 {
     }
     let base = x.floor();
     let diff = x - base;
-    if diff > 0.5 {
+    if diff > 0.5 || (diff == 0.5 && !even_integer(base)) {
         base + 1.0
-    } else if diff < 0.5 {
-        base
-    } else if even_integer(base) {
-        base
     } else {
-        base + 1.0
+        base
     }
 }
 

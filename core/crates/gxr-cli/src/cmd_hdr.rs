@@ -42,26 +42,10 @@ fn opt<'a>(args: &'a [String], name: &str) -> Result<&'a str, Failure> {
 }
 
 fn opt_or<'a>(args: &'a [String], name: &str, default: &'a str) -> &'a str {
-    common::option(args, name).unwrap_or(default)
-}
-
-fn shape2(args: &[String], name: &str) -> Result<(usize, usize), Failure> {
-    let text = opt(args, name)?;
-    let mut parts = text.split_whitespace();
-    let h: usize = parts
-        .next()
-        .ok_or_else(|| Failure::Usage(format!("bad {name}")))?
-        .parse()
-        .map_err(|_| Failure::Usage(format!("bad {name}")))?;
-    let w: usize = parts
-        .next()
-        .ok_or_else(|| Failure::Usage(format!("bad {name}")))?
-        .parse()
-        .map_err(|_| Failure::Usage(format!("bad {name}")))?;
-    if parts.next().is_some() {
-        return Err(Failure::Usage(format!("bad {name}")));
+    match common::option(args, name) {
+        Ok(value) => value,
+        Err(_) => default,
     }
-    Ok((h, w))
 }
 
 struct Npy {
@@ -119,7 +103,15 @@ fn f64s(npy: &Npy) -> Result<Vec<f64>, Failure> {
             if npy.bytes.len() % 8 != 0 {
                 return Err(Failure::Usage("f8 payload is short".into()));
             }
-            Ok(npy.bytes.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap_or([0; 8]))).collect())
+            Ok(npy
+                .bytes
+                .chunks_exact(8)
+                .map(|c| {
+                    let mut b = [0u8; 8];
+                    b.copy_from_slice(c);
+                    f64::from_le_bytes(b)
+                })
+                .collect())
         }
         "<f4" => {
             if npy.bytes.len() % 4 != 0 {
@@ -128,7 +120,11 @@ fn f64s(npy: &Npy) -> Result<Vec<f64>, Failure> {
             Ok(npy
                 .bytes
                 .chunks_exact(4)
-                .map(|c| f64::from(f32::from_le_bytes(c.try_into().unwrap_or([0; 4]))))
+                .map(|c| {
+                    let mut b = [0u8; 4];
+                    b.copy_from_slice(c);
+                    f64::from(f32::from_le_bytes(b))
+                })
                 .collect())
         }
         _ => Err(Failure::Usage(format!("unsupported descr {}", npy.descr))),
@@ -140,7 +136,11 @@ fn f32s(npy: &Npy) -> Result<Vec<f32>, Failure> {
         "<f4" => Ok(npy
             .bytes
             .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap_or([0; 4])))
+            .map(|c| {
+                let mut b = [0u8; 4];
+                b.copy_from_slice(c);
+                f32::from_le_bytes(b)
+            })
             .collect()),
         "<f8" => Ok(f64s(npy)?.into_iter().map(|v| v as f32).collect()),
         _ => Err(Failure::Usage(format!("unsupported descr {}", npy.descr))),
@@ -428,7 +428,7 @@ fn capture_cmd(args: &[String]) -> Result<Output, Failure> {
 fn round_cmd(args: &[String]) -> Result<Output, Failure> {
     let x: f64 = opt(args, "--x")?.parse().map_err(|_| Failure::Usage("bad --x".into()))?;
     let n: i32 = opt(args, "--n")?.parse().map_err(|_| Failure::Usage("bad --n".into()))?;
-    let y = gxr_hdr::py_round_pub(x, n).map_err(core)?;
+    let y = gxr_hdr::py_round(x, n).map_err(core)?;
     Ok(Output {
         text: Json::object([("value", Json::Float(y))]).render(),
         ok: true,
@@ -437,7 +437,7 @@ fn round_cmd(args: &[String]) -> Result<Output, Failure> {
 
 fn frac_cmd(args: &[String]) -> Result<Output, Failure> {
     let x: f64 = opt(args, "--x")?.parse().map_err(|_| Failure::Usage("bad --x".into()))?;
-    let (n, d) = gxr_hdr::frac_pub(x).map_err(core)?;
+    let (n, d) = gxr_hdr::frac_65536(x).map_err(core)?;
     Ok(Output {
         text: Json::object([("numer", Json::Int(n as i64)), ("denom", Json::Int(d as i64))]).render(),
         ok: true,

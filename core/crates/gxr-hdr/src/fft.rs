@@ -173,7 +173,7 @@ fn fft_1d(input: &[Cx], inverse: bool) -> Result<Vec<Cx>, CoreError> {
 }
 
 /// `np.fft.fft2` on a real plane, row-major. Returns complex values, row-major.
-pub fn fft2_real(values: &[f64], h: usize, w: usize) -> Result<Vec<Cx>, CoreError> {
+fn fft2_real(values: &[f64], h: usize, w: usize) -> Result<Vec<Cx>, CoreError> {
     if h.checked_mul(w) != Some(values.len()) {
         return Err(container("FFT 形状对不上"));
     }

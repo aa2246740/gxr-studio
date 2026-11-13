@@ -63,7 +63,7 @@ pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<(u8, usize, usize
             i += 1;
         }
         if i + 1 >= data.len() || data[i] != 0xff {
-            return Err(container(&format!("段结构错误 @ {i}")));
+            return Err(container(format!("段结构错误 @ {i}")));
         }
         let marker = data[i + 1];
         if marker == 0xda {
@@ -71,7 +71,7 @@ pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<(u8, usize, usize
         }
         let length = u16_be(data, i + 2)?;
         if length < 2 || i + 2 + length > data.len() {
-            return Err(container(&format!("段长度错误 @ {i}")));
+            return Err(container(format!("段长度错误 @ {i}")));
         }
         segs.push(Segment {
             marker,

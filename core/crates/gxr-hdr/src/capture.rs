@@ -45,7 +45,7 @@ pub fn capture_of(tags: &BTreeMap<i64, Field>) -> BTreeMap<String, Field> {
             continue;
         };
         let value = text_of(raw);
-        if value.is_empty() || (*tag == 36867 && value.starts_with("0000")) {
+        if value.is_empty() || (tag == 36867 && value.starts_with("0000")) {
             continue;
         }
         result.insert((*name).to_string(), Field::Text(value.to_lowercase()));

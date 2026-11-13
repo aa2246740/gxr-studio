@@ -27,4 +27,5 @@ pub use gain::{
     quantise_gain, sdr_luma_grid, srgb_to_linear, warp,
 };
 pub use label::{binary_dilation, label_f64, label_u8};
+pub use number::{frac_65536, py_round};
 pub use sample::map_coordinates;
