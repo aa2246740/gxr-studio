@@ -296,6 +296,46 @@ def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
             _assert_exif_identical(rust_jpg, py_jpg)
 
 
+def test_real_cropped_non16_arrays_gate_a_and_b(tmp_path: Path) -> None:
+    """F2 regression: real arrays cropped to non-16-aligned odd and even sizes at all 3 tiers."""
+    require_cli()
+    if len(REAL_DNGS) < 3:
+        if os.environ.get("GXR_REQUIRE_CORE") == "1":
+            pytest.fail(f"need at least 3 real DNGs under {CAPTURES}, found {len(REAL_DNGS)}")
+        pytest.skip(f"need 3 real DNGs under {CAPTURES}")
+
+    crop_specs = [
+        (0, 286, 430),  # even, non-16-aligned
+        (1, 287, 431),  # odd, non-16-aligned
+        (2, 214, 311),  # mixed even height, odd width, non-16-aligned
+    ]
+    for dng_idx, crop_h, crop_w in crop_specs:
+        dng_path = REAL_DNGS[dng_idx]
+        dng = open_dng(dng_path)
+        try:
+            rgb = np.ascontiguousarray(render_full(dng, NEUTRAL)[:crop_h, :crop_w])
+        finally:
+            dng.release()
+        base = {270: "GXR Studio neutral-preview", 271: "RICOH", 272: "GXR"}
+        sub = {34855: 200}
+        label = f"{_real_id(dng_path)}[{crop_h}x{crop_w}]"
+        for quality in (95, 85, 70):
+            rust_jpg = _cli_encode(rgb, quality, base, sub, tmp_path, f"crop{dng_idx}_{crop_h}x{crop_w}_q{quality}")
+            py_jpg = _python_single_encode(rgb, quality, base, sub)
+            mean_ch, max_ch, gt4_count, total_px = _assert_structure_and_measure_picture(rgb, quality, rust_jpg, py_jpg, label)
+            gt4_frac = gt4_count / total_px
+            print(
+                f"real_crop[{dng_idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
+                f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
+            )
+            assert all(m <= 0.5 for m in mean_ch), f"{label} q={quality}: channel mean abs diff {mean_ch} > 0.5"
+            if quality >= 85:
+                assert max(max_ch) <= 4, f"{label} q={quality}: channel max abs diff {max_ch} > 4"
+            else:
+                assert gt4_frac <= 1e-4, f"{label} q={quality}: fraction > 4 ({gt4_frac:.6e}) > 1e-4"
+                assert max(max_ch) <= 16, f"{label} q={quality}: channel max abs diff {max_ch} > 16"
+
+
 def _assert_exif_identical(rust_jpg: bytes, py_jpg: bytes) -> None:
     ex_r = Image.open(io.BytesIO(rust_jpg)).getexif()
     ex_p = Image.open(io.BytesIO(py_jpg)).getexif()

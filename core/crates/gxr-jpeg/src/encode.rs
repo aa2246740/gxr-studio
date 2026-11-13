@@ -42,9 +42,15 @@ fn rgb_to_ycbcr_h2v2(rgb: &[u8], width: usize, height: usize) -> Vec<u8> {
                 + cr_plane[row0 + c1]
                 + cr_plane[row1 + c0]
                 + cr_plane[row1 + c1];
-            let dst = (row0 + c0) * 3;
-            ycc[dst + 1] = ((cb_sum + bias) >> 2) as u8;
-            ycc[dst + 2] = ((cr_sum + bias) >> 2) as u8;
+            let cb_avg = ((cb_sum + bias) >> 2) as u8;
+            let cr_avg = ((cr_sum + bias) >> 2) as u8;
+            for &r in &[row0, row1] {
+                for &c in &[c0, c1] {
+                    let dst = (r + c) * 3;
+                    ycc[dst + 1] = cb_avg;
+                    ycc[dst + 2] = cr_avg;
+                }
+            }
             bias ^= 3; // alternates 1, 2, 1, 2 across columns like libjpeg h2v2_downsample
             col += 2;
         }
