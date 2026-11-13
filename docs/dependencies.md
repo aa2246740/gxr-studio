@@ -43,8 +43,8 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 | `libm` | 0.2.16 | MIT | `gxr-math` 的数学函数。原生和 WASM 走同一份，避免两边的 `sin`/`exp` 差一位 |
 | `wasm-bindgen` | 0.2.130 | MIT OR Apache-2.0 | 只在 `gxr-wasm` 里用，把描述和半分辨率码值导出给网页 |
 | `wasm-bindgen-cli` | 0.2.130 | MIT OR Apache-2.0 | 构建机上的命令，和库同一个版本：`cargo install --locked wasm-bindgen-cli --version 0.2.130` |
-| `jpeg-encoder` | 0.6.0 | MIT OR Apache-2.0 | 留给 `gxr-jpeg`。2026-11-13 钉在 `[workspace.dependencies]`，当时还没有任何 crate 引用它，所以 `Cargo.lock` 先不下载 |
+| `jpeg-encoder` | 0.6.0 | `(MIT OR Apache-2.0)`，且默认编译的 `src/fdct.rs` 含 IJG 派生代码 | 给 `gxr-jpeg` 使用；已锁定进 `core/Cargo.lock`。this software is based in part on the work of the Independent JPEG Group |
 
-`jpeg-encoder` 0.6.0 于 2023-10-09 发布。crates.io 没有写 `rust-version`，包里的 README 写最低 Rust 是 1.61，低于工具链 1.93.1。更新的 0.6.1（2025-03-23）、0.7.0（2026-01-20）和 0.7.1（2026-07-27）许可是 `(MIT OR Apache-2.0) AND IJG`，不是 MIT 或 Apache-2.0，所以不用。
+`jpeg-encoder` 0.6.0 于 2023-10-09 发布。crates.io 没有写 `rust-version`，包里的 README 写最低 Rust 是 1.61，低于工具链 1.93.1。虽然其 Cargo 元数据为 `MIT OR Apache-2.0`，但默认 `std` 路径无条件编译和调用带有 IJG 许可头的标量 `src/fdct.rs`（`core/crates/gxr-jpeg/NOTICE` 与本文件按该许可要求保留声明："this software is based in part on the work of the Independent JPEG Group"）。更新的 0.6.1（2025-03-23）、0.7.0（2026-01-20）和 0.7.1（2026-07-27）进一步把包级许可写为 `(MIT OR Apache-2.0) AND IJG`，因此继续锁定 `=0.6.0` 并附带上述声明。
 
 核心 crate 之间只能互相依赖，再加 `libm`。`gxr-jpeg` 以后可以再依赖 `jpeg-encoder`（见 `docs/mobile.md`）。不使用 serde。JSON 由 `gxr-raw` 里手写的写入器生成，命令行和 WASM 共用，所以两边的字节一样。`mobile/` 的开发依赖和 `frontend/` 是同一组精确版本（vite 8.3.5、typescript 7.0.2、`@webgpu/types` 0.1.74），锁在 `mobile/pnpm-lock.yaml`。
