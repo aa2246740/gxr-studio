@@ -171,8 +171,34 @@ def compare_gain(tmp: Path, sdr: np.ndarray, y: np.ndarray, clip: np.ndarray, pa
     return "ok"
 
 
+POW_CODES = (71, 180)
+
+
+def srgb_to_linear_rounded(rgb: np.ndarray) -> np.ndarray:
+    """``srgb_to_linear`` with the float64 power rounded once to float32 (the Rust port).
+
+    numpy's float32 ``**`` calls Apple's ``powf``, which is not correctly rounded at codes
+    71 and 180 (POW_CODES); everywhere else this equals ``g.srgb_to_linear``.
+    """
+    v = rgb.astype(np.float32) / np.float32(255.0)
+    base = (v + np.float32(0.055)) / np.float32(1.055)
+    powed = (base.astype(np.float64) ** np.float64(np.float32(2.4))).astype(np.float32)
+    return np.where(v <= np.float32(0.04045), v / np.float32(12.92), powed).astype(np.float32)
+
+
+def check_sdr(python: np.ndarray, rust: np.ndarray, rgb: np.ndarray, factor: int, what: str) -> int:
+    """Rust ``sdr_luma_grid`` must equal numpy's with only the POW_CODES powers rounded once.
+
+    Returns how many grid cells differ from numpy itself (reported, not gated).
+    """
+    same_f32(g.block_mean(srgb_to_linear_rounded(rgb) @ g.LUMA, factor), rust, what)
+    return int((python.view(np.uint32) != rust.view(np.uint32)).sum())
+
+
 def flow(tmp: Path, jpeg: bytes, dng: bytes | Path, tag: str, *, gain: bool = True) -> Flow:
-    """``hdr_from_camera_jpeg``'s numeric steps, Python against Rust, each stage exact."""
+    """``hdr_from_camera_jpeg``'s numeric steps. Each Rust stage gets the same input as the
+    Python stage and must match exactly; the chain run purely from Rust's own ``sdr_luma_grid``
+    is recorded in ``stages`` (``e2e:...``)."""
     from gxr_studio.raw import open_dng
 
     dng_path = dng if isinstance(dng, Path) else tmp / f"{tag}.dng"
@@ -188,28 +214,48 @@ def flow(tmp: Path, jpeg: bytes, dng: bytes | Path, tag: str, *, gain: bool = Tr
     sdr = g.sdr_luma_grid(rgb, 4)
     ok(["hdr-luma", "--rgb", save(tmp / f"{tag}-rgb.npy", rgb), "--factor", "4", "--out", str(tmp / f"{tag}-sdr.npy")])
     rsdr = np.load(tmp / f"{tag}-sdr.npy")
-    same_f32(sdr, rsdr, f"{tag} sdr_luma_grid")
+    sdr_cells = check_sdr(sdr, rsdr, rgb, 4, f"{tag} sdr_luma_grid")
     stored_y, stored_clip = g.to_storage(raw.y, orientation), g.to_storage(raw.clip, orientation)
     al = g.align(sdr, stored_y)
-    rust = ok(
-        ["hdr-align", "--sdr", save(tmp / f"{tag}-sdr-in.npy", rsdr), "--raw", save(tmp / f"{tag}-raw-in.npy", g.to_storage(ry, orientation))]
-    )
+    raw_in = save(tmp / f"{tag}-raw-in.npy", g.to_storage(ry, orientation))
+    rust = ok(["hdr-align", "--sdr", save(tmp / f"{tag}-sdr-in.npy", sdr), "--raw", raw_in])
     expect = {"alignment": alignment_fields(al), "check": check_of(al)}
     assert rust == expect, f"{tag}: alignment python={expect} rust={rust}"
-    stages = ["raw_luma", "sdr_luma_grid", "align"]
+    stages = ["raw_luma", f"sdr_luma_grid:{sdr_cells}", "align"]
+    if sdr_cells:
+        e2e = ok(["hdr-align", "--sdr", str(tmp / f"{tag}-sdr.npy"), "--raw", raw_in])
+        stages.append("e2e-align:" + ("same" if e2e == expect else json.dumps(e2e["alignment"])))
     if gain and expect["check"] is None:
         y, clip = g.register(g.RawLuma(stored_y, stored_clip), sdr.shape, al, sdr.shape)
         (tmp / f"{tag}-al.json").write_text(json.dumps({"scale": al.scale, "dy": al.dy, "dx": al.dx}))
         h, w = sdr.shape
         ok(
-            ["hdr-register", "--raw", str(tmp / f"{tag}-raw-in.npy"), "--clip", save(tmp / f"{tag}-sc.npy", g.to_storage(rclip, orientation))]
+            ["hdr-register", "--raw", raw_in, "--clip", save(tmp / f"{tag}-sc.npy", g.to_storage(rclip, orientation))]
             + ["--align", str(tmp / f"{tag}-al.json"), "--shape", str(h), str(w), "--grid", str(h), str(w)]
             + ["--out", str(tmp / f"{tag}-reg.npy"), "--clip-out", str(tmp / f"{tag}-regc.npy")]
         )
         same_f32(y, np.load(tmp / f"{tag}-reg.npy"), f"{tag} register.y")
         same_exact(clip, np.load(tmp / f"{tag}-regc.npy"), f"{tag} register.clip")
         stages += ["register", "gain:" + compare_gain(tmp, sdr, y, clip, None, tag)]
+        if sdr_cells:
+            stages.append("e2e-gain-codes:" + e2e_codes(tmp, rsdr, y, clip, codes_ref(sdr, y, clip), tag))
     return Flow(stages, expect["alignment"], expect["check"])
+
+
+def codes_ref(sdr: np.ndarray, y: np.ndarray, clip: np.ndarray) -> np.ndarray | None:
+    try:
+        return codes_of(g.compute_gain(sdr, y, clip, g.Params()))
+    except g.HdrUnsupported:
+        return None
+
+
+def e2e_codes(tmp: Path, rsdr: np.ndarray, y: np.ndarray, clip: np.ndarray, ref: np.ndarray | None, tag: str) -> str:
+    """How many uint8 gain codes change when Rust's own ``sdr_luma_grid`` feeds ``compute_gain``."""
+    args = ["hdr-gain", "--sdr", str(tmp / f"{tag}-sdr.npy"), "--raw", str(tmp / f"{tag}-r.npy"), "--clip", str(tmp / f"{tag}-c.npy")]
+    payload, err = call([*args, "--out", str(tmp / f"{tag}-e2e.npy")])
+    if ref is None or err is not None:
+        return f"{'none' if ref is None else 'ok'}/{'none' if err is not None else 'ok'}"
+    return str(int((np.load(tmp / f"{tag}-e2e.npy") != ref).sum()))
 
 
 def real_pairs(limit: int = 6) -> list[tuple[Path, Path]]:
@@ -240,6 +286,8 @@ def tag_json(tags: dict[int, Any]) -> str:
             return [conv(x) for x in v]
         if isinstance(v, (str, bool, int)) or v is None:
             return v
+        if isinstance(v, bytes):  # `_text` decodes bytes this way; float() of either fails alike
+            return v.decode("ascii", errors="replace")
         return float(v)
 
     return json.dumps({str(k): conv(v) for k, v in tags.items()})

@@ -20,7 +20,7 @@
 //! ```
 
 use gxr_hdr as hdr;
-use gxr_raw::{CoreError, Dng, Json};
+use gxr_raw::{Dng, Json};
 
 use crate::common::{self, Failure, Output};
 
@@ -94,7 +94,7 @@ fn parse_npy(raw: &[u8]) -> Option<Npy> {
         return None;
     }
     let (at, len) = match raw.get(6)? {
-        1 => (10, usize::from(u16::from_le_bytes([*raw.get(8)?, *raw.get(9)?]))),
+        1 => (10usize, usize::from(u16::from_le_bytes([*raw.get(8)?, *raw.get(9)?]))),
         2 | 3 => (12, usize::try_from(u32::from_le_bytes(raw.get(8..12)?.try_into().ok()?)).ok()?),
         _ => return None,
     };

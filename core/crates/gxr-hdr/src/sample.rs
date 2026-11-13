@@ -4,8 +4,10 @@
 //! (`NI_GeometricTransform`): clamp each coordinate into `[0, n - 1]`, take
 //! `start = floor(c)` and the weights `[1 - t, t]` with `t = c - start`, then add the four
 //! neighbours in C order, each as `(value * wy) * wx`, starting from `0.0`. Neighbour indices
-//! past the edge are clamped. The sum is float64 and is cast to the plane's dtype.
-//! This order was checked against scipy 1.17.1 on random planes.
+//! past the edge are clamped (a length-1 axis is not clamped at all). The sum is float64 and
+//! is cast to the plane's dtype. float32 planes (the only kind `warp` passes) match scipy
+//! 1.17.1 bit for bit; on float64 planes scipy's compiled accumulation can differ in the
+//! last bit, inside the float64 gate.
 
 use gxr_raw::CoreError;
 
@@ -18,7 +20,10 @@ fn axis_weights(c: f64, n: usize) -> (i64, [f64; 2]) {
     let top = i64::try_from(n).unwrap_or(i64::MAX) - 1;
     #[allow(clippy::cast_precision_loss)]
     let hi = top as f64;
-    let c = if c < 0.0 {
+    // scipy leaves the coordinate alone on a length-1 axis; the neighbours clamp to 0.
+    let c = if n <= 1 {
+        c
+    } else if c < 0.0 {
         0.0
     } else if c > hi {
         hi

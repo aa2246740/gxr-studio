@@ -122,22 +122,8 @@ pub struct View {
 }
 
 impl View {
-    pub fn whole(h: usize, w: usize) -> Self {
-        Self {
-            y0: 0,
-            x0: 0,
-            h,
-            w,
-            stride: w,
-        }
-    }
-
     pub fn len(&self) -> usize {
         self.h * self.w
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// The view copied out in C order.
