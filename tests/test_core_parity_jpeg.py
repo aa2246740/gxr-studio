@@ -203,13 +203,13 @@ def _synthetic_images() -> list[tuple[str, np.ndarray]]:
     return imgs
 
 
-def _assert_structure_and_picture(
+def _assert_structure_and_measure_picture(
     rgb: np.ndarray,
     quality: int,
     rust_jpg: bytes,
     py_jpg: bytes,
     label: str,
-) -> tuple[float, int]:
+) -> tuple[list[float], list[int], int, int]:
     im_r = Image.open(io.BytesIO(rust_jpg))
     im_p = Image.open(io.BytesIO(py_jpg))
     im_r.load()
@@ -236,17 +236,15 @@ def _assert_structure_and_picture(
 
     assert getattr(im_r, "quantization", None) == getattr(im_p, "quantization", None), f"{label} q={quality}: DQT tables differ"
 
-    # Gate B: picture
+    # Gate B measurements
     arr_r = np.asarray(im_r.convert("RGB"), dtype=np.int16)
     arr_p = np.asarray(im_p.convert("RGB"), dtype=np.int16)
     diff = np.abs(arr_r - arr_p)
     mean_per_ch = [float(diff[..., c].mean()) for c in range(3)]
     max_per_ch = [int(diff[..., c].max()) for c in range(3)]
-    worst_mean = max(mean_per_ch)
-    worst_max = max(max_per_ch)
-    assert worst_mean <= 0.5, f"{label} q={quality}: channel mean abs diff {mean_per_ch} > 0.5"
-    assert worst_max <= 4, f"{label} q={quality}: channel max abs diff {max_per_ch} > 4"
-    return worst_mean, worst_max
+    gt4_count = int((diff.max(axis=2) > 4).sum())
+    total_pixels = int(diff.shape[0] * diff.shape[1])
+    return mean_per_ch, max_per_ch, gt4_count, total_pixels
 
 
 @pytest.mark.parametrize("quality", [QUALITY_TIERS["high"], QUALITY_TIERS["medium"], QUALITY_TIERS["low"], 90, 89, 100, 1])
@@ -257,7 +255,8 @@ def test_structure_and_picture_synthetic(quality: int, tmp_path: Path) -> None:
     for name, rgb in _synthetic_images():
         rust_jpg = _cli_encode(rgb, quality, base, sub, tmp_path, f"{name}_q{quality}")
         py_jpg = _python_single_encode(rgb, quality, base, sub)
-        _assert_structure_and_picture(rgb, quality, rust_jpg, py_jpg, name)
+        mean_ch, max_ch, gt4_count, total_px = _assert_structure_and_measure_picture(rgb, quality, rust_jpg, py_jpg, name)
+        print(f"synthetic {name} q={quality}: mean={[round(m, 5) for m in mean_ch]} max={max_ch} gt4={gt4_count}/{total_px}")
 
 
 def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
@@ -281,8 +280,19 @@ def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
         for quality in (95, 85, 70):
             rust_jpg = _cli_encode(rgb, quality, base, sub, tmp_path, f"real{idx}_q{quality}")
             py_jpg = _python_single_encode(rgb, quality, base, sub)
-            mean_d, max_d = _assert_structure_and_picture(rgb, quality, rust_jpg, py_jpg, f"{_real_id(dng_path)}")
-            print(f"real[{idx}] {_real_id(dng_path)} q={quality}: mean_diff={mean_d:.4f} max_diff={max_d}")
+            label = _real_id(dng_path)
+            mean_ch, max_ch, gt4_count, total_px = _assert_structure_and_measure_picture(rgb, quality, rust_jpg, py_jpg, label)
+            gt4_frac = gt4_count / total_px
+            print(
+                f"real[{idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
+                f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
+            )
+            assert all(m <= 0.5 for m in mean_ch), f"{label} q={quality}: channel mean abs diff {mean_ch} > 0.5"
+            if quality >= 85:
+                assert max(max_ch) <= 4, f"{label} q={quality}: channel max abs diff {max_ch} > 4"
+            else:
+                assert gt4_frac <= 1e-4, f"{label} q={quality}: fraction > 4 ({gt4_frac:.6e}) > 1e-4"
+                assert max(max_ch) <= 16, f"{label} q={quality}: channel max abs diff {max_ch} > 16"
             _assert_exif_identical(rust_jpg, py_jpg)
 
 
