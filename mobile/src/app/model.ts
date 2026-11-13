@@ -71,5 +71,7 @@ export interface AppApi {
   takeWarm(id: string): ArrayBuffer | null;
   keepWarm(id: string, bytes: ArrayBuffer): void;
   gpu(): boolean;
+  /** 编辑器里没有显卡或只有 JPG 时，按屏幕宽度在 Worker 里解一张清楚的。 */
+  still(photo: Photo, width: number): Promise<ImageBitmap | null>;
   watch(kind: 'scroll' | 'drag', on: boolean): void;
 }

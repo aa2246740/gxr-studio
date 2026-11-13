@@ -22,13 +22,16 @@ export class ThumbQueue {
     for (let i = 0; i < limit; i++) this.idle.push(this.make());
   }
 
-  run(file: File, role: 'jpg' | 'dng', width = 360): Promise<Reply> {
+  /** `urgent` 插到队首：编辑器要的大图不排在缩略图后面。 */
+  run(file: File, role: 'jpg' | 'dng', width = 360, urgent = false): Promise<Reply> {
     return new Promise((resolve) => {
       if (this.closed) {
         resolve({ id: 0, ok: false, gone: false });
         return;
       }
-      this.jobs.push({ file, role, width, resolve });
+      const job = { file, role, width, resolve };
+      if (urgent) this.jobs.unshift(job);
+      else this.jobs.push(job);
       this.pump();
     });
   }

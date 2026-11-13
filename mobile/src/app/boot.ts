@@ -101,6 +101,13 @@ class App implements AppApi {
     return this.engine !== null;
   }
 
+  async still(photo: Photo, width: number): Promise<ImageBitmap | null> {
+    const file = photo.jpg ?? photo.dng;
+    if (!file) return null;
+    const reply = await this.queue.run(file, photo.jpg ? 'jpg' : 'dng', width, true);
+    return reply.ok ? reply.bitmap : null;
+  }
+
   setOrder(order: Order): void {
     this.sortOrder = order;
     saveOrder(order);

@@ -64,6 +64,7 @@ export class EditorView {
   private still: HTMLCanvasElement | null = null;
   private hist: HTMLCanvasElement | null = null;
   private caption = '';
+  private sharp: ImageBitmap | null = null;
   private restLabel = '';
 
   constructor(
@@ -91,6 +92,8 @@ export class EditorView {
     this.wantNeighbor = '';
     if (this.histLoop) cancelAnimationFrame(this.histLoop);
     this.shell.dataset.drag = '0';
+    this.sharp?.close();
+    this.sharp = null;
     this.engine?.detach();
   }
 
@@ -497,5 +500,30 @@ export class EditorView {
     this.paintStill(photo.bitmap);
     if (this.gpuCanvas) this.gpuCanvas.hidden = true;
     if (!this.engine && this.input) this.input.disabled = true;
+    void this.sharpen(photo);
+  }
+
+  /** 先放缩略图，Worker 解好屏幕宽度的那张再换上。主线程只画一次。 */
+  private async sharpen(photo: Photo): Promise<void> {
+    const token = this.token;
+    const width = Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
+    const bitmap = await this.api.still(photo, width);
+    if (!bitmap) return;
+    if (token !== this.token || this.mode === 'raw') {
+      bitmap.close();
+      return;
+    }
+    if (this.mode === 'jpg' && this.engine) {
+      // 只有 JPG 又有显卡：换成清楚的纹理。复制进显卡后位图就能关掉。
+      const key = `jpg:${photo.id}`;
+      this.engine.addJpg(key, bitmap);
+      bitmap.close();
+      this.engine.show(key);
+      this.push();
+      return;
+    }
+    this.sharp?.close();
+    this.sharp = bitmap;
+    this.paintStill(bitmap);
   }
 }
