@@ -96,37 +96,18 @@ pub(crate) fn reserve_f64(n: u64) -> Result<Vec<f64>, CoreError> {
     Ok(out)
 }
 
+/// numpy's `raise_reshape_size_mismatch`: the requested shape as numpy prints it.
 fn cannot_reshape(size: i128, dims: &[i64]) -> PyErr {
-    let shown: Vec<i64> = dims.iter().map(|&d| if d < 0 { 0 } else { d }).collect();
-    // Negatives are numpy's "unknown" axis. The common message prints the
-    // requested shape; a leading unknown next to a zero collapses in numpy and
-    // is not reproduced character for character (see docs/mobile.md).
-    let shape = if dims.iter().any(|&d| d < 0) && dims.contains(&0) {
-        np_shape_text(&shown)
-    } else if dims.iter().any(|&d| d < 0) {
-        let parts: Vec<String> = dims
-            .iter()
-            .map(|&d| {
-                if d < 0 {
-                    "newaxis".into()
-                } else {
-                    d.to_string()
-                }
-            })
-            .collect();
-        format!("({})", parts.join(","))
-    } else {
-        np_shape_text(dims)
-    };
     PyErr::Value(format!(
-        "cannot reshape array of size {size} into shape {shape}"
+        "cannot reshape array of size {size} into shape {}",
+        np_shape_text(dims)
     ))
 }
 
-/// `ndarray.reshape(dims)` for a C-order array of `size` elements.
 /// NumPy 2's `NPY_MAXDIMS`.
 const NPY_MAXDIMS: usize = 64;
 
+/// `ndarray.reshape(dims)` for a C-order array of `size` elements.
 pub(crate) fn numpy_reshape(size: i128, dims: &[i64]) -> Result<Vec<usize>, PyErr> {
     // NumPy refuses more than NPY_MAXDIMS (64) axes before looking at the values.
     if dims.len() > NPY_MAXDIMS {
@@ -135,34 +116,33 @@ pub(crate) fn numpy_reshape(size: i128, dims: &[i64]) -> Result<Vec<usize>, PyEr
             dims.len()
         )));
     }
-    if dims.iter().filter(|&&d| d < 0).count() > 1 {
-        return Err(PyErr::Value(
-            "can only specify one unknown dimension".into(),
-        ));
-    }
-    let mut known: i128 = 1;
+    // `_fix_unknown_dimension`, in its order: walking the axes, a second unknown
+    // axis or an `npy_intp` overflow of the known product stops at that axis.
+    let mut known: i64 = 1;
     let mut unknown: Option<usize> = None;
     for (i, &dim) in dims.iter().enumerate() {
         if dim < 0 {
+            if unknown.is_some() {
+                return Err(PyErr::Value(
+                    "can only specify one unknown dimension".into(),
+                ));
+            }
             unknown = Some(i);
         } else {
-            known = known.saturating_mul(i128::from(dim));
+            known = known
+                .checked_mul(dim)
+                .ok_or_else(|| cannot_reshape(size, dims))?;
         }
     }
+    let known = i128::from(known);
     let mut resolved = dims.to_vec();
     if let Some(slot) = unknown {
         if known == 0 || size.checked_rem(known) != Some(0) {
             return Err(cannot_reshape(size, dims));
         }
         resolved[slot] = i64::try_from(size / known).map_err(|_| too_big())?;
-    } else {
-        let mut prod: i128 = 1;
-        for &dim in dims {
-            prod = prod.saturating_mul(i128::from(dim));
-        }
-        if prod != size {
-            return Err(cannot_reshape(size, dims));
-        }
+    } else if known != size {
+        return Err(cannot_reshape(size, dims));
     }
     let mut shape = Vec::with_capacity(resolved.len());
     for dim in resolved {

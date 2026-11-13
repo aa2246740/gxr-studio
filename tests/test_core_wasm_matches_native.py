@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 from support.dng_writer import write_dng
-from test_core_parity_raw import REAL, _pattern, hostile_cases
+from test_core_parity_raw import REAL, _pattern, hostile_cases, strips_over_the_limit
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "mobile" / "scripts" / "wasm_vs_native.mjs"
@@ -160,3 +160,12 @@ exec {CLI} "$@"
     proc = _run_script([sample], fake, tmp_path)
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert sample.name in (proc.stdout + proc.stderr)
+
+
+def test_wasm_refuses_strips_past_the_limit_like_native(tmp_path: Path) -> None:
+    """65536 repeated strips add up to 2**32 bytes: WASM must give native's error, not trap (r4, R4-2)."""
+    _need_tools()
+    path = tmp_path / "strips-over-limit.dng"
+    path.write_bytes(strips_over_the_limit())
+    proc = _run_script([path], CLI, tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
