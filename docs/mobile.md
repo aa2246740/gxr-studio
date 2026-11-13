@@ -147,3 +147,14 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 ```
 
 `run_area` 把路径写成 JSON，执行 `node mobile/scripts/wasm_vs_native.mjs --area <领域> --cli <gxr-cli> --inputs <json>`。驱动失败时，默认用驱动自己的输出让测试失败。WASM 包或 `node` 不在时跳过，除非 `GXR_REQUIRE_CORE=1`。`GXR_REQUIRE_GPU_TEST` 不会把缺包变成失败。
+
+## 几何（`gxr-finish`）
+
+`gxr-finish` 现阶段包含裁剪预设与校验（`crop.py`）、纠正与有效区收框（`finish/geometry.py`）、以及显卡预览裁切框（`gpu/box.py`）。
+
+- 两种取整：`crop::crop_box` 用 `floor(v + 0.5)`（与 `crop.py` 一致），而 `geometry::crop_box` 与 `final_box` 用一半向偶数（与 Python `round` 一致）。
+- 拉直中心：`warp` 围绕 `(w - 1) / 2` 旋转并双线性采样，`crop::box_inside` 围绕 `w / 2`；水平翻转在 `rotate90` 之后执行，`validate_crop(..., mirrored=true)` 按 `-angle` 检查。
+- 大图有效区：长边超过 240 时 `normalized_valid_rect` 先抽样求最大内接矩形并向内缩 1 像素；`fit_ratio_in_valid` 的最近位置在全像素格点上逐个查找，不抽样。
+- CLI 子命令：`geom-crop-box`、`geom-final-box`、`geom-warp`、`geom-header`（另附 `geom-warp-valid`、`geom-fitted-crop`、`geom-clamp-rect`、`geom-fit-ratio` 供对拍）。
+- WASM 导出：`geom_final_box(w, h, geometry_json, crop_json)` 与 `geom_warp(rgb_u8, w, h, geometry_json)`（返回 `WarpedImage`，提供 `width`、`height`、`rgb()`、`mask()`）。
+
