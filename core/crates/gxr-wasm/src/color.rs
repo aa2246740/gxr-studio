@@ -28,7 +28,7 @@ impl ColorBake {
         self.meta.clone()
     }
 
-    /// `{"bytes", "sha256", "meta"}`, the CLI's stdout.
+    /// `{"bytes", "sha256", "meta"}`, the CLI's stdout including the newline `println!` adds.
     #[wasm_bindgen(getter)]
     pub fn summary(&self) -> String {
         self.summary.clone()
@@ -60,7 +60,7 @@ pub fn color_bake(
     let (bytes, meta) =
         gxr_color::bake_with_params(entry, stock, menu, ctx_npz, ring_json, params_json)
             .map_err(rejected)?;
-    let summary = gxr_color::bake_summary(&bytes, &meta);
+    let summary = format!("{}\n", gxr_color::bake_summary(&bytes, &meta));
     Ok(ColorBake {
         bytes,
         meta,
