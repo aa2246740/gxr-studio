@@ -94,8 +94,13 @@ pub fn render_full(dng: &Dng<'_>) -> Result<Image<u8>, CoreError> {
 
     demosaic_strips(dng, STRIP_ROWS, |y0, strip| {
         require_finite(strip.values.iter().map(|&v| f64::from(v)), "去马赛克结果")?;
-        let uy0 = usize::try_from(y0).map_err(|_| crate::bounds::too_big_core())?;
-        let mut idx = uy0 * uw * 3;
+        let y0_u64 = u64::try_from(y0).map_err(|_| crate::bounds::too_big_core())?;
+        let row_elems = crate::bounds::mul_u64(
+            u64::try_from(uw).map_err(|_| crate::bounds::too_big_core())?,
+            3,
+        )?;
+        let mut idx =
+            crate::bounds::fit_count_core(u128::from(crate::bounds::mul_u64(y0_u64, row_elems)?))?;
         for &code in &strip.values {
             out_values[idx] = neutral_display_sample(code);
             idx += 1;

@@ -248,12 +248,25 @@ def verify_negative_crop_origin_no_alloc(tmp_path: Path, patch_fn: object) -> No
     assert err is not None and err.kind == "index_error"
 
     assert neg_4m_path is not None
+    huge_paths: list[Path] = []
+    for h_name, w, h in (
+        ("huge-4294967295x4294967295", 0xFFFFFFFF, 0xFFFFFFFF),
+        ("huge-2147483648x1", 0x80000000, 1),
+        ("huge-2147483648x4", 0x80000000, 4),
+    ):
+        hp = patch_fn(patch_fn(base, 256, 4, [w]), 257, 4, [h])  # type: ignore[operator]
+        hp = patch_fn(hp, 50829, 4, [0, 0, h, w])  # type: ignore[operator]
+        hp = patch_fn(hp, 50720, 4, [w, h])  # type: ignore[operator]
+        hpath = tmp_path / f"{h_name}.dng"
+        hpath.write_bytes(hp)
+        huge_paths.append(hpath)
+
     if shutil.which("node") is None or not PKG.is_file():
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail("node and gxr_wasm.js required for negative crop WASM test")
         return
 
-    proc_area = run_area("raw", [neg_4m_path, active_path], tmp_path)
+    proc_area = run_area("raw", [neg_4m_path, active_path, *huge_paths], tmp_path)
     assert proc_area.returncode == 0, proc_area.stdout + proc_area.stderr
 
     wasm_bg = PKG.with_name("gxr_wasm_bg.wasm")

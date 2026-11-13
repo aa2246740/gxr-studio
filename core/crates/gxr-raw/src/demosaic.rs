@@ -78,7 +78,10 @@ pub fn demosaic_block(padded: &Image<f32>, phase: [[i64; 2]; 2]) -> Result<Image
     if ph <= 2 * PAD || pw <= 2 * PAD {
         return Err(CoreError::raw_decode("画面太小"));
     }
-    let expected = ph.checked_mul(pw).ok_or_else(crate::bounds::too_big_core)?;
+    let ph_u64 = u64::try_from(ph).map_err(|_| crate::bounds::too_big_core())?;
+    let pw_u64 = u64::try_from(pw).map_err(|_| crate::bounds::too_big_core())?;
+    let expected =
+        crate::bounds::fit_count_core(u128::from(crate::bounds::mul_u64(ph_u64, pw_u64)?))?;
     if padded.values.len() != expected {
         return Err(CoreError::new(
             "value_error",
@@ -172,17 +175,18 @@ fn reflect_pad(block: &Image<f32>, top: usize, bottom: usize) -> Result<Image<f3
     }
     let bh = block.height;
     let bw = block.width;
-    let ph = top
-        .checked_add(bh)
-        .and_then(|v| v.checked_add(bottom))
+    let ph_u64 = u64::try_from(top)
+        .ok()
+        .and_then(|t| u64::try_from(bh).ok().and_then(|b| t.checked_add(b)))
+        .and_then(|s| u64::try_from(bottom).ok().and_then(|b| s.checked_add(b)))
         .ok_or_else(crate::bounds::too_big_core)?;
-    let pw = bw
-        .checked_add(2 * PAD)
+    let pw_u64 = u64::try_from(bw)
+        .ok()
+        .and_then(|b| b.checked_add(2 * PAD as u64))
         .ok_or_else(crate::bounds::too_big_core)?;
-    let total = crate::bounds::mul_u64(
-        u64::try_from(ph).map_err(|_| crate::bounds::too_big_core())?,
-        u64::try_from(pw).map_err(|_| crate::bounds::too_big_core())?,
-    )?;
+    let ph = crate::bounds::fit_count_core(u128::from(ph_u64))?;
+    let pw = crate::bounds::fit_count_core(u128::from(pw_u64))?;
+    let total = crate::bounds::mul_u64(ph_u64, pw_u64)?;
     let total_us = crate::bounds::fit_count_core(u128::from(total))?;
     let mut padded = Vec::new();
     padded
@@ -191,12 +195,14 @@ fn reflect_pad(block: &Image<f32>, top: usize, bottom: usize) -> Result<Image<f3
 
     let top_isize = isize::try_from(top).map_err(|_| crate::bounds::too_big_core())?;
     let pad_isize = isize::try_from(PAD).map_err(|_| crate::bounds::too_big_core())?;
-    let col_map: Vec<usize> = (0..pw)
-        .map(|px| {
-            let x_rel = isize::try_from(px).unwrap_or(0) - pad_isize;
-            reflect_idx(x_rel, bw)
-        })
-        .collect();
+    let mut col_map = Vec::new();
+    col_map
+        .try_reserve_exact(pw)
+        .map_err(|_| crate::bounds::too_big_core())?;
+    for px in 0..pw {
+        let x_rel = isize::try_from(px).unwrap_or(0) - pad_isize;
+        col_map.push(reflect_idx(x_rel, bw));
+    }
 
     for py in 0..ph {
         let py_isize = isize::try_from(py).map_err(|_| crate::bounds::too_big_core())?;
@@ -320,8 +326,13 @@ pub fn demosaic_full(dng: &Dng<'_>) -> Result<Image<f32>, CoreError> {
     out.resize(out_len, 0.0_f32);
 
     demosaic_strips(dng, STRIP_ROWS, |y0, strip| {
-        let uy0 = usize::try_from(y0).map_err(|_| crate::bounds::too_big_core())?;
-        let offset = uy0 * uw * 3;
+        let y0_u64 = u64::try_from(y0).map_err(|_| crate::bounds::too_big_core())?;
+        let row_elems = crate::bounds::mul_u64(
+            u64::try_from(uw).map_err(|_| crate::bounds::too_big_core())?,
+            3,
+        )?;
+        let offset =
+            crate::bounds::fit_count_core(u128::from(crate::bounds::mul_u64(y0_u64, row_elems)?))?;
         out[offset..offset + strip.values.len()].copy_from_slice(&strip.values);
         Ok(())
     })?;
@@ -409,5 +420,18 @@ mod tests {
         let err_rn = crate::render::render_full(&dng).unwrap_err();
         assert_eq!(err_rn.kind, "index_error");
         assert_eq!(err_rn.message, err_dm.message);
+    }
+
+    #[test]
+    fn huge_dimensions_hit_shared_count_limit() {
+        let huge = Image {
+            height: 2_147_483_652,
+            width: 6,
+            channels: 1,
+            values: Vec::new(),
+        };
+        let err = demosaic_block(&huge, [[0, 1], [1, 2]]).unwrap_err();
+        assert_eq!(err.kind, "raw_decode");
+        assert!(err.message.contains("array is too big"));
     }
 }
