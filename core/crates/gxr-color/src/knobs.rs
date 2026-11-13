@@ -4,8 +4,18 @@ use gxr_raw::CoreError;
 
 use crate::crc::crc32;
 
+#[path = "exp_q12.rs"]
+mod exp_q12;
+use exp_q12::EXP_Q12;
+
+#[cfg(test)]
+#[path = "knobs_tests.rs"]
+mod tests;
+
 const Q: i64 = 4096;
-const MAX_DOSES: [i64; 10] = [16384, 16384, 16384, 4096, 16384, 4096, 4096, 4096, 4096, 4096];
+const MAX_DOSES: [i64; 10] = [
+    16384, 16384, 16384, 4096, 16384, 4096, 4096, 4096, 4096, 4096,
+];
 const OFFSETS: [usize; 10] = [20, 82, 115, 216, 284, 346, 379, 412, 456, 518];
 const LENGTHS: [usize; 10] = [62, 33, 96, 56, 62, 33, 33, 33, 62, 33];
 const CRCS: [(usize, usize, usize); 9] = [
@@ -30,35 +40,6 @@ const PARAMS: [&str; 10] = [
     "split",
     "filter",
     "tone",
-];
-
-/// `EXP_Q12` from `knobs.py`. 257 entries, index 0..=256.
-const EXP_Q12: [i64; 257] = [
-    4096, 4277, 4467, 4664, 4871, 5087, 5312, 5547, 5793, 6049, 6317, 6597, 6889, 7194, 7512, 7845,
-    8192, 8555, 8933, 9329, 9742, 10173, 10624, 11094, 11585, 12098, 12634, 13193, 13777, 14387,
-    15024, 15689, 16384, 17109, 17867, 18658, 19484, 20347, 21247, 22188, 23170, 24196, 25268,
-    26386, 27554, 28774, 30048, 31379, 32768, 34219, 35734, 37316, 38968, 40693, 42495, 44376,
-    46341, 48393, 50535, 52773, 55109, 57549, 60097, 62757, 65536, 68438, 71468, 74632, 77936,
-    81386, 84990, 88752, 92682, 96785, 101070, 105545, 110218, 115098, 120194, 125515, 131072,
-    136875, 142935, 149263, 155872, 162773, 169979, 177505, 185364, 193571, 202141, 211090, 220436,
-    230195, 240387, 251030, 262144, 273750, 285870, 298527, 311744, 325546, 339959, 355010, 370728,
-    387141, 404281, 422180, 440872, 460391, 480774, 502060, 524288, 547500, 571740, 597053, 623487,
-    651091, 679917, 710020, 741455, 774282, 808563, 844361, 881744, 920782, 961548, 1004120,
-    1048576, 1095000, 1143480, 1194106, 1246974, 1302182, 1359835, 1420040, 1482910, 1548564,
-    1617125, 1688722, 1763488, 1841564, 1923097, 2008240, 2097152, 2190001, 2286960, 2388213,
-    2493948, 2604365, 2719670, 2840080, 2965821, 3097129, 3234251, 3377443, 3526975, 3683128,
-    3846194, 4016479, 4194304, 4380002, 4573921, 4776426, 4987896, 5208729, 5439339, 5680159,
-    5931642, 6194258, 6468501, 6754886, 7053950, 7366255, 7692387, 8032959, 8388608, 8760003,
-    9147842, 9552851, 9975792, 10417458, 10878679, 11360319, 11863283, 12388516, 12937002,
-    13509772, 14107901, 14732511, 15384775, 16065917, 16777216, 17520007, 18295684, 19105703,
-    19951585, 20834917, 21757357, 22720638, 23726566, 24777031, 25874004, 27019544, 28215802,
-    29465022, 30769550, 32131834, 33554432, 35040014, 36591368, 38211406, 39903169, 41669834,
-    43514715, 45441276, 47453133, 49554062, 51748008, 54039088, 56431603, 58930044, 61539100,
-    64263668, 67108864, 70080027, 73182735, 76422812, 79806339, 83339667, 87029429, 90882551,
-    94906266, 99108125, 103496017, 108078177, 112863206, 117860087, 123078199, 128527337,
-    134217728, 140160054, 146365470, 152845623, 159612677, 166679334, 174058859, 181765103,
-    189812531, 198216250, 206992033, 216156353, 225726413, 235720175, 246156398, 257054673,
-    268435456,
 ];
 
 fn value(message: &str) -> CoreError {
@@ -265,7 +246,7 @@ fn effective(b: &[u8], stock: &[u8]) -> Vec<u8> {
 fn interp_q16(knot_bytes: &[u8], curve: &[u8], x: i64) -> Result<i64, CoreError> {
     let xs = knots(knot_bytes, 0)?;
     if x >= 4095 {
-        return Ok(mul(i64::from(curve[32]), 65536)?);
+        return mul(i64::from(curve[32]), 65536);
     }
     let mut right = 1usize;
     while xs[right] < x {
@@ -278,7 +259,7 @@ fn interp_q16(knot_bytes: &[u8], curve: &[u8], x: i64) -> Result<i64, CoreError>
     let span = xs[right] - xs[left];
     let delta = i64::from(curve[right]) - i64::from(curve[left]);
     let numer = mul(mul(x - xs[left], delta)?, 65536)?;
-    Ok(add(mul(i64::from(curve[left]), 65536)?, rd(numer, span)?)?)
+    add(mul(i64::from(curve[left]), 65536)?, rd(numer, span)?)
 }
 
 /// Port of gxr_studio/engine/knobs.py:71 blend
@@ -354,7 +335,13 @@ fn blend_matrix(
         let av = i64::from(read_u16(a, at + 2 * j)?);
         let bv = i64::from(read_u16(b, at + 2 * j)?);
         let v = if j % 14 < 9 {
-            let mixed = rd(add(mul(100 - amount, dec(av, 2048))?, mul(amount, dec(bv, 2048))?)?, 100)?;
+            let mixed = rd(
+                add(
+                    mul(100 - amount, dec(av, 2048))?,
+                    mul(amount, dec(bv, 2048))?,
+                )?,
+                100,
+            )?;
             let lim = if j % 14 < 3 { 2047 } else { 1279 };
             enc(clamp(mixed, -lim, lim, stats), 2048)?
         } else {
@@ -386,7 +373,10 @@ fn blend_curve(
     let mut prev = 0i64;
     for j in 0..length {
         let av = interp_q16(&a[aa..aa + 62], &a[at..at + 33], xs[j])?;
-        let numer = add(mul(100 - amount, av)?, mul(mul(amount, i64::from(b[at + j]))?, 65536)?)?;
+        let numer = add(
+            mul(100 - amount, av)?,
+            mul(mul(amount, i64::from(b[at + j]))?, 65536)?,
+        )?;
         let mut v = clamp(rd(numer, 100 * 65536)?, 0, 255, stats);
         if v < prev {
             stats.monotone_repairs += 1;
@@ -436,12 +426,15 @@ fn warp(y: i64, lo: i64, hi: i64, s: i64) -> Result<i64, CoreError> {
     } else {
         let step = EXP_Q12[usize::try_from(j + 1).map_err(|_| overflow())?]
             - EXP_Q12[usize::try_from(j).map_err(|_| overflow())?];
-        add(EXP_Q12[usize::try_from(j).map_err(|_| overflow())?], rd(mul(step, rem)?, 64)?)?
+        add(
+            EXP_Q12[usize::try_from(j).map_err(|_| overflow())?],
+            rd(mul(step, rem)?, 64)?,
+        )?
     };
     let (n, d) = if s > 0 { (gain, Q) } else { (Q, gain) };
     let numer = mul(mul(length, n)?, t)?;
     let denom = add(mul(d, length - t)?, mul(n, t)?)?;
-    Ok(add(lo, rd(numer, denom)?)?)
+    add(lo, rd(numer, denom)?)
 }
 
 /// Port of gxr_studio/engine/knobs.py:128 tone_curve
@@ -451,7 +444,11 @@ fn tone_curve(curve: &[u8], doses: &[i64; 10]) -> Result<Vec<u8>, CoreError> {
     for &byte in curve {
         let mut y = i64::from(byte);
         if c != 0 {
-            y = if y <= 128 { warp(y, 0, 128, -c)? } else { warp(y, 128, 255, c)? };
+            y = if y <= 128 {
+                warp(y, 0, 128, -c)?
+            } else {
+                warp(y, 128, 255, c)?
+            };
         }
         if h != 0 {
             y = warp(y, 112, 255, h)?;
@@ -491,9 +488,17 @@ fn sat(b: &mut [u8], dose: i64, stats: &mut Stats) -> Result<(), CoreError> {
     };
     let cm = max_of(b[115..211].iter().map(|v| i64::from(v & 127)))?;
     let mm = max_of(idx.iter().map(|&i| w[i].abs()))?;
-    let cg = if cm == 0 { wanted } else { wanted.min(floor_div(mul(127, Q)?, cm)?) };
+    let cg = if cm == 0 {
+        wanted
+    } else {
+        wanted.min(floor_div(mul(127, Q)?, cm)?)
+    };
     let residual = rd(mul(wanted, Q)?, cg)?;
-    let mg = if mm == 0 { residual } else { residual.min(floor_div(mul(1279, Q)?, mm)?) };
+    let mg = if mm == 0 {
+        residual
+    } else {
+        residual.min(floor_div(mul(1279, Q)?, mm)?)
+    };
     stats.colour_cap += i64::from(cg < wanted);
     stats.matrix_cap += i64::from(mg < residual);
     for j in 0..96 {
@@ -613,7 +618,13 @@ fn add_rowsum(b: &mut [u8], cb: i64, cr: i64, stats: &mut Stats) -> Result<(), C
 }
 
 /// Port of gxr_studio/engine/knobs.py:201 t1
-fn t1(b: &mut [u8], warmth: i64, tint: i64, split: i64, stats: &mut Stats) -> Result<(), CoreError> {
+fn t1(
+    b: &mut [u8],
+    warmth: i64,
+    tint: i64,
+    split: i64,
+    stats: &mut Stats,
+) -> Result<(), CoreError> {
     if warmth == 0 && tint == 0 && split == 0 {
         return Ok(());
     }
@@ -710,8 +721,18 @@ pub fn apply(stock: &[u8], base: &[u8], request: &Request) -> Result<(Vec<u8>, S
         } else {
             let mut w = words(&b, 216)?;
             for half in [0usize, 14] {
-                w[half + 10] = clamp(add(w[half + 10], rd(mul(-8, doses[9])?, Q)?)?, 120, 136, &mut stats);
-                w[half + 11] = clamp(add(w[half + 11], rd(mul(8, doses[9])?, Q)?)?, 120, 136, &mut stats);
+                w[half + 10] = clamp(
+                    add(w[half + 10], rd(mul(-8, doses[9])?, Q)?)?,
+                    120,
+                    136,
+                    &mut stats,
+                );
+                w[half + 11] = clamp(
+                    add(w[half + 11], rd(mul(8, doses[9])?, Q)?)?,
+                    120,
+                    136,
+                    &mut stats,
+                );
             }
             store_matrix(&mut b, &w)?;
         }
@@ -732,7 +753,10 @@ pub fn request_for(
 ) -> Result<Request, CoreError> {
     let mut doses = [0; 10];
     if param != "amount" {
-        let index = PARAMS.iter().position(|name| *name == param).ok_or_else(|| value("param"))?;
+        let index = PARAMS
+            .iter()
+            .position(|name| *name == param)
+            .ok_or_else(|| value("param"))?;
         doses[index] = dose;
     }
     Ok(Request {
@@ -741,44 +765,4 @@ pub fn request_for(
         wb_method,
         tone_method,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Request, apply, rd};
-
-    #[test]
-    fn rounding_is_half_away_from_zero() {
-        assert_eq!(rd(1, 2).unwrap(), 1);
-        assert_eq!(rd(-1, 2).unwrap(), -1);
-        assert_eq!(rd(5, 2).unwrap(), 3);
-        assert_eq!(rd(-5, 2).unwrap(), -3);
-        assert_eq!(rd(1, 0).unwrap_err().message, "positive divisor");
-    }
-
-    #[test]
-    fn identity_and_amount_zero_do_not_touch_the_other_entry() {
-        let mut stock = vec![0u8; 552];
-        let mut base = vec![7u8; 552];
-        stock[0] = 4;
-        base[0] = 4;
-        stock[1] = 0x17;
-        base[1] = 0x17;
-        let (out, stats) = apply(&stock, &base, &Request::identity()).unwrap();
-        assert_eq!(out, base);
-        assert_eq!(stats.clamps, 0);
-        let mut req = Request::identity();
-        req.amount = 0;
-        let stock_before = stock.clone();
-        let (out, _) = apply(&stock, &base, &req).unwrap();
-        assert_eq!(stock, stock_before);
-        assert_eq!(out.len(), 552);
-        assert_ne!(out, stock);
-        req.amount = 151;
-        assert_eq!(apply(&stock, &base, &req).unwrap_err().message, "amount");
-        req.amount = 100;
-        req.doses[3] = -1;
-        assert_eq!(apply(&stock, &base, &req).unwrap_err().message, "fade is one-way");
-        assert_eq!(apply(&[0], &base, &Request::identity()).unwrap_err().message, "entry length");
-    }
 }

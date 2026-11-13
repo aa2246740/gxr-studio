@@ -38,13 +38,28 @@ fn index_err() -> CoreError {
 /// The file bytes are an argument. This crate does not open `final.json` itself.
 pub fn load(bytes: &[u8]) -> Result<Menu, CoreError> {
     let data = parse(bytes)?;
-    let recipes = data.get("recipes").and_then(Value::as_array).ok_or_else(|| err("recipes"))?;
-    let items = data.get("items").and_then(Value::as_array).ok_or_else(|| err("items"))?;
-    let controls = data.get("controls").and_then(Value::as_array).ok_or_else(|| err("controls"))?;
+    let recipes = data
+        .get("recipes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| err("recipes"))?;
+    let items = data
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| err("items"))?;
+    let controls = data
+        .get("controls")
+        .and_then(Value::as_array)
+        .ok_or_else(|| err("controls"))?;
     Ok(Menu {
-        recipes: recipes.iter().map(recipe_of).collect::<Result<Vec<_>, _>>()?,
+        recipes: recipes
+            .iter()
+            .map(recipe_of)
+            .collect::<Result<Vec<_>, _>>()?,
         items: items.iter().map(item_of).collect::<Result<Vec<_>, _>>()?,
-        controls: controls.iter().map(dose_index_of).collect::<Result<Vec<_>, _>>()?,
+        controls: controls
+            .iter()
+            .map(dose_index_of)
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -56,7 +71,10 @@ fn recipe_of(value: &Value) -> Result<Recipe, CoreError> {
 }
 
 fn item_of(value: &Value) -> Result<Item, CoreError> {
-    let points = value.get("points").and_then(Value::as_array).ok_or_else(|| err("points"))?;
+    let points = value
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| err("points"))?;
     let mut pairs = Vec::with_capacity(points.len());
     for point in points {
         pairs.push((int_field(point, "level")?, int_field(point, "dose")?));
@@ -72,11 +90,19 @@ fn dose_index_of(value: &Value) -> Result<i64, CoreError> {
 }
 
 fn int_field(value: &Value, key: &str) -> Result<i64, CoreError> {
-    value.get(key).and_then(Value::as_int).ok_or_else(|| err(key))
+    value
+        .get(key)
+        .and_then(Value::as_int)
+        .ok_or_else(|| err(key))
 }
 
 /// Port of gxr_studio/engine/menu.py:13 request
-pub fn request(menu: &Menu, unit: i64, slot: i64, levels: &[Option<i64>]) -> Result<Request, CoreError> {
+pub fn request(
+    menu: &Menu,
+    unit: i64,
+    slot: i64,
+    levels: &[Option<i64>],
+) -> Result<Request, CoreError> {
     if !(0..3).contains(&unit) || !(1..=8).contains(&slot) {
         return Err(err("unit/slot"));
     }
@@ -84,8 +110,13 @@ pub fn request(menu: &Menu, unit: i64, slot: i64, levels: &[Option<i64>]) -> Res
     let recipe = menu.recipes.get(index).ok_or_else(index_err)?;
     let start = usize::try_from(recipe.first_item).map_err(|_| index_err())?;
     let count = usize::try_from(recipe.item_count).map_err(|_| err("menu item count"))?;
-    let end = start.checked_add(count).ok_or_else(|| err("menu item count"))?;
-    let items = menu.items.get(start..end).ok_or_else(|| err("menu item count"))?;
+    let end = start
+        .checked_add(count)
+        .ok_or_else(|| err("menu item count"))?;
+    let items = menu
+        .items
+        .get(start..end)
+        .ok_or_else(|| err("menu item count"))?;
     // Python slices a short tail and then compares lengths. A start past the end yields [].
     let items = if recipe.first_item < 0 {
         return Err(err("menu item count"));
@@ -142,14 +173,24 @@ mod tests {
         let req = request(&menu, 0, 1, &[Some(1), Some(2)]).unwrap();
         assert_eq!(req.amount, 80);
         assert_eq!(req.doses[0], 50);
-        assert_eq!(request(&menu, 3, 1, &[Some(1), Some(2)]).unwrap_err().message, "unit/slot");
-        assert_eq!(request(&menu, 0, 1, &[Some(1)]).unwrap_err().message, "menu item count");
+        assert_eq!(
+            request(&menu, 3, 1, &[Some(1), Some(2)])
+                .unwrap_err()
+                .message,
+            "unit/slot"
+        );
+        assert_eq!(
+            request(&menu, 0, 1, &[Some(1)]).unwrap_err().message,
+            "menu item count"
+        );
         assert_eq!(
             request(&menu, 0, 1, &[Some(1), None]).unwrap_err().message,
             "integer UI level required"
         );
         assert_eq!(
-            request(&menu, 0, 1, &[Some(9), Some(2)]).unwrap_err().message,
+            request(&menu, 0, 1, &[Some(9), Some(2)])
+                .unwrap_err()
+                .message,
             "unlisted or capped UI level"
         );
     }

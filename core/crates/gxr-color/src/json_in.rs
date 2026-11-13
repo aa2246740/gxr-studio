@@ -200,9 +200,11 @@ impl<'a> Parser<'a> {
             Some('0') => {
                 self.bump()?;
             }
-            Some('1'..='9') => while matches!(self.peek(), Some('0'..='9')) {
-                self.bump()?;
-            },
+            Some('1'..='9') => {
+                while matches!(self.peek(), Some('0'..='9')) {
+                    self.bump()?;
+                }
+            }
             _ => return Err(bad("bad number")),
         }
         let mut is_float = false;
@@ -242,7 +244,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, Value};
+    use super::{Value, parse};
 
     #[test]
     fn reads_the_shapes_the_menu_uses() {

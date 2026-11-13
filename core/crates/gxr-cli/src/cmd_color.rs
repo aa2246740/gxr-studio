@@ -71,11 +71,15 @@ fn required_int(params: &Value, key: &str) -> Result<i64, gxr_raw::CoreError> {
 }
 
 fn py_int(value: &Value, message: &str) -> Result<i64, gxr_raw::CoreError> {
-    value.as_int().ok_or_else(|| gxr_raw::CoreError::new("value", message))
+    value
+        .as_int()
+        .ok_or_else(|| gxr_raw::CoreError::new("value", message))
 }
 
 fn dose_list(value: &Value) -> Result<[i64; 10], gxr_raw::CoreError> {
-    let items = value.as_array().ok_or_else(|| gxr_raw::CoreError::new("value", "doses"))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| gxr_raw::CoreError::new("value", "doses"))?;
     if items.len() != 10 {
         return Err(gxr_raw::CoreError::new("value", "doses"));
     }
@@ -87,7 +91,9 @@ fn dose_list(value: &Value) -> Result<[i64; 10], gxr_raw::CoreError> {
 }
 
 fn level_list(value: &Value) -> Result<Vec<Option<i64>>, gxr_raw::CoreError> {
-    let items = value.as_array().ok_or_else(|| gxr_raw::CoreError::new("value", "menu item count"))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| gxr_raw::CoreError::new("value", "menu item count"))?;
     let mut levels = Vec::with_capacity(items.len());
     for item in items {
         levels.push(match item {
@@ -121,9 +127,12 @@ fn optional<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Failu
     let Some(at) = args.iter().position(|a| a == name) else {
         return Ok(None);
     };
-    args.get(at + 1).map(|s| Some(s.as_str())).ok_or_else(|| Failure::Usage(format!("{name} needs a value")))
+    args.get(at + 1)
+        .map(|s| Some(s.as_str()))
+        .ok_or_else(|| Failure::Usage(format!("{name} needs a value")))
 }
 
 fn read_bin(path: &str) -> Result<Vec<u8>, Failure> {
-    std::fs::read(path).map_err(|e| Failure::Usage(format!("cannot read {}: {e}", Path::new(path).display())))
+    std::fs::read(path)
+        .map_err(|e| Failure::Usage(format!("cannot read {}: {e}", Path::new(path).display())))
 }
