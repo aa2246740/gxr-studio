@@ -1,5 +1,8 @@
 // Owner: wave-1 unit jpeg.
-// Inputs are JSON spec files: { "npy": "...", "out": "...", "quality": 95, "exif": "..." }.
+// Inputs are JSON spec files:
+//   { "npy": "...", "out": "...", "quality": 95, "exif": "..." }
+// or raw byte buffer specs (including empty huge-dimension error tests):
+//   { "raw": "...", "width": 65535, "height": 65535, "out": "...", "quality": 85, "exif": "..." }
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
@@ -26,7 +29,21 @@ export function cases(inputs) {
   for (const specPath of inputs) {
     const spec = JSON.parse(readFileSync(specPath, 'utf8'));
     const exifJson = spec.exif ? readFileSync(spec.exif, 'utf8') : '';
-    const cliArgs = ['jpeg-encode', '--in', spec.npy, '--quality', String(spec.quality), '--out', spec.out];
+    const cliArgs = spec.raw
+      ? [
+          'jpeg-encode',
+          '--raw',
+          spec.raw,
+          '--width',
+          String(spec.width),
+          '--height',
+          String(spec.height),
+          '--quality',
+          String(spec.quality),
+          '--out',
+          spec.out,
+        ]
+      : ['jpeg-encode', '--in', spec.npy, '--quality', String(spec.quality), '--out', spec.out];
     if (spec.exif) {
       cliArgs.push('--exif', spec.exif);
     }
@@ -34,7 +51,9 @@ export function cases(inputs) {
       label: `${specPath}::jpeg_encode`,
       cliArgs,
       wasm: (mod) => {
-        const { height, width, payload } = readNpyRgb(spec.npy);
+        const { height, width, payload } = spec.raw
+          ? { height: spec.height, width: spec.width, payload: new Uint8Array(readFileSync(spec.raw)) }
+          : readNpyRgb(spec.npy);
         const jpg = mod.jpeg_encode(payload, width, height, spec.quality, exifJson);
         const cliJpg = readFileSync(spec.out);
         if (!Buffer.from(jpg.buffer, jpg.byteOffset, jpg.byteLength).equals(cliJpg)) {

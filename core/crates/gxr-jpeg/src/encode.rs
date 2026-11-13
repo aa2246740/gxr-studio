@@ -84,18 +84,20 @@ pub fn encode_jpeg(
         .map_err(|_| CoreError::new("bad_image", "图像宽度超过 JPEG 上限 65535"))?;
     let h16 = u16::try_from(height)
         .map_err(|_| CoreError::new("bad_image", "图像高度超过 JPEG 上限 65535"))?;
-    let w_usize = usize::from(w16);
-    let h_usize = usize::from(h16);
-    let expected = w_usize
-        .checked_mul(h_usize)
+    let expected_u64 = u64::from(width)
+        .checked_mul(u64::from(height))
         .and_then(|px| px.checked_mul(3))
         .ok_or_else(|| CoreError::new("bad_image", "图像字节数溢出"))?;
-    if rgb.len() != expected {
+    let actual_u64 =
+        u64::try_from(rgb.len()).map_err(|_| CoreError::new("bad_image", "图像字节数溢出"))?;
+    if actual_u64 != expected_u64 {
         return Err(CoreError::new(
             "bad_image",
-            format!("RGB 字节长度不符：需要 {expected}，实际 {}", rgb.len()),
+            format!("RGB 字节长度不符：需要 {expected_u64}，实际 {actual_u64}"),
         ));
     }
+    let w_usize = usize::from(w16);
+    let h_usize = usize::from(h16);
 
     let spec = parse_exif_json(exif_json)?;
     let exif_payload = build_exif(&spec, width, height)?;

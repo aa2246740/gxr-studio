@@ -43,7 +43,6 @@ fn write_bytes(path: &str, data: &[u8]) -> Result<(), Failure> {
 }
 
 fn cmd_encode(args: &[String]) -> Result<Json, Failure> {
-    let in_path = common::option(args, "--in")?;
     let out_path = common::option(args, "--out")?;
     let q_str = common::option(args, "--quality")?;
     let quality: i32 = q_str
@@ -54,8 +53,22 @@ fn cmd_encode(args: &[String]) -> Result<Json, Failure> {
         None => String::new(),
     };
 
-    let npy_bytes = common::read(in_path)?;
-    let (h, w, rgb) = parse_rgb_u8_npy(&npy_bytes)?;
+    let (h, w, rgb) = if let Some(raw_path) = opt_option(args, "--raw")? {
+        let w_str = common::option(args, "--width")?;
+        let h_str = common::option(args, "--height")?;
+        let w: u32 = w_str
+            .parse()
+            .map_err(|_| Failure::Usage(format!("bad --width {w_str:?}")))?;
+        let h: u32 = h_str
+            .parse()
+            .map_err(|_| Failure::Usage(format!("bad --height {h_str:?}")))?;
+        let raw = common::read(raw_path)?;
+        (h, w, raw)
+    } else {
+        let in_path = common::option(args, "--in")?;
+        let npy_bytes = common::read(in_path)?;
+        parse_rgb_u8_npy(&npy_bytes)?
+    };
     let encoded = encode_jpeg(&rgb, w, h, quality, &exif_json)?;
     write_bytes(out_path, &encoded)?;
 
@@ -185,23 +198,23 @@ fn parse_rgb_u8_npy(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), Failure> {
             format!("expected 3 RGB channels, got {c}"),
         )));
     }
-    let expected = usize::try_from(h)
-        .ok()
-        .and_then(|hh| usize::try_from(w).ok().and_then(|ww| hh.checked_mul(ww)))
+    let expected_u64 = u64::from(h)
+        .checked_mul(u64::from(w))
         .and_then(|px| px.checked_mul(3))
         .ok_or_else(|| Failure::Core(CoreError::new("bad_image", "npy image size overflow")))?;
     let payload = bytes
         .get(data_at..)
         .ok_or_else(|| Failure::Core(CoreError::new("bad_image", "missing .npy payload")))?;
-    if payload.len() < expected {
+    let payload_u64 = u64::try_from(payload.len())
+        .map_err(|_| Failure::Core(CoreError::new("bad_image", "npy image size overflow")))?;
+    if payload_u64 < expected_u64 {
         return Err(Failure::Core(CoreError::new(
             "bad_image",
-            format!(
-                "truncated .npy payload: expected {expected} bytes, got {}",
-                payload.len()
-            ),
+            format!("truncated .npy payload: expected {expected_u64} bytes, got {payload_u64}"),
         )));
     }
+    let expected = usize::try_from(expected_u64)
+        .map_err(|_| Failure::Core(CoreError::new("bad_image", "npy image size overflow")))?;
     Ok((h, w, payload[..expected].to_vec()))
 }
 

@@ -541,13 +541,40 @@ def test_wasm_matches_native_jpeg(tmp_path: Path) -> None:
             )
             specs.append(spec)
 
-    # Error cases: bad quality and bad exif json
+    # Error cases: bad quality, bad exif json, and raw buffer/dimension validation (F3: 65535x65535 & 65535x21846)
     bad_exif = tmp_path / "bad_wasm.exif.json"
     bad_exif.write_text("{broken", encoding="utf-8")
     for tag, q, ex_path in (("bad_q0", 0, tmp_path / "w_0.exif.json"), ("bad_q101", 101, tmp_path / "w_0.exif.json"), ("bad_ex", 90, bad_exif)):
         spec = tmp_path / f"spec_{tag}.json"
         spec.write_text(
             json.dumps({"npy": str(tmp_path / "w_0.npy"), "exif": str(ex_path), "quality": q, "out": str(tmp_path / f"out_{tag}.jpg")}),
+            encoding="utf-8",
+        )
+        specs.append(spec)
+
+    raw_error_cases = [
+        ("empty_65535x65535", 65535, 65535, b""),
+        ("empty_65535x21846", 65535, 21846, b""),
+        ("zero_0x0", 0, 0, b""),
+        ("too_wide_65536x1", 65536, 1, b""),
+        ("too_high_1x65536", 1, 65536, b""),
+        ("short_1x1", 1, 1, b"\x01\x02"),
+        ("long_1x1", 1, 1, b"\x01\x02\x03\x04"),
+    ]
+    for tag, w_val, h_val, raw_bytes in raw_error_cases:
+        raw_path = tmp_path / f"raw_{tag}.bin"
+        raw_path.write_bytes(raw_bytes)
+        spec = tmp_path / f"spec_{tag}.json"
+        spec.write_text(
+            json.dumps(
+                {
+                    "raw": str(raw_path),
+                    "width": w_val,
+                    "height": h_val,
+                    "quality": 85,
+                    "out": str(tmp_path / f"out_{tag}.jpg"),
+                }
+            ),
             encoding="utf-8",
         )
         specs.append(spec)
