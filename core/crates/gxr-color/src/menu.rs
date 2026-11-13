@@ -25,7 +25,7 @@ struct Item {
     points: Vec<(i64, i64)>,
 }
 
-fn value(message: &str) -> CoreError {
+fn err(message: &str) -> CoreError {
     CoreError::new("value", message)
 }
 
