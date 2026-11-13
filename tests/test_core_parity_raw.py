@@ -517,6 +517,13 @@ def hostile_cases() -> dict[str, bytes]:
         # NumPy stops at 64 axes; the 100000-axis file once overflowed the Rust stack in summary.
         "repeat-65-axes": _patch(base, 50713, 3, [1] * 65),
         "repeat-100000-axes": _patch(base, 50713, 3, [1] * 100000),
+        # The CFA pattern is reshaped the same way (r3): 64 axes reach the 2×2 check, 65 stop in numpy,
+        # and one unknown axis resolves like numpy does.
+        "cfa-64-axes": _patch(base, 33421, 3, [2, 2] + [1] * 62),
+        "cfa-65-axes": _patch(base, 33421, 3, [2, 2] + [1] * 63),
+        "cfa-100000-axes": _patch(base, 33421, 3, [2, 2] + [1] * 99998),
+        "cfa-unknown-axis": _patch(base, 33421, 9, [-1, 2]),
+        "cfa-two-unknown-axes": _patch(base, 33421, 9, [-1, -1]),
         "bps-zero": _patch(base, 258, 3, [0]),
         "absurd-dimensions": _patch(_patch(base, 256, 4, [0xFFFFFFFF]), 257, 4, [0xFFFFFFFF]),
         "signed-negative-black-repeat": _patch(base, 50713, 9, [-1, -1]),
