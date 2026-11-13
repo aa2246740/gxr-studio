@@ -78,11 +78,19 @@ pub fn context(npz_bytes: &[u8], stock: &[[i64; 2]; 24]) -> Result<Context, Core
     if stored_arr.shape != [24] || !same_complex(&stored, &computed) {
         return Err(calib("S_eff 不能由 stock/d0/d1 逐位还原"));
     }
-    Ok(Context { d0, d1, coefficients, rows })
+    Ok(Context {
+        d0,
+        d1,
+        coefficients,
+        rows,
+    })
 }
 
 fn find(arrays: &[(String, Vec<u8>)], name: &str) -> Result<Npy, CoreError> {
-    let (_, data) = arrays.iter().find(|(key, _)| key == name).ok_or_else(|| missing(name))?;
+    let (_, data) = arrays
+        .iter()
+        .find(|(key, _)| key == name)
+        .ok_or_else(|| missing(name))?;
     decode(data)
 }
 
@@ -99,7 +107,10 @@ fn word_f64(v: i64) -> Result<f64, CoreError> {
 fn s_eff(stock: &[[i64; 2]; 24], d0: &[f64], d1: &[f64]) -> Result<Vec<(f64, f64)>, CoreError> {
     let mut out = Vec::with_capacity(24);
     for i in 0..24 {
-        let c = word_ratio(word_f64(stock[i][0])? + d0[i], word_f64(stock[i][1])? + d1[i]);
+        let c = word_ratio(
+            word_f64(stock[i][0])? + d0[i],
+            word_f64(stock[i][1])? + d1[i],
+        );
         out.push((c.re, c.im));
     }
     Ok(out)
@@ -107,7 +118,10 @@ fn s_eff(stock: &[[i64; 2]; 24], d0: &[f64], d1: &[f64]) -> Result<Vec<(f64, f64
 
 fn same_complex(stored: &[(f64, f64)], computed: &[(f64, f64)]) -> bool {
     stored.len() == computed.len()
-        && stored.iter().zip(computed).all(|(a, b)| a.0 == b.0 && a.1 == b.1)
+        && stored
+            .iter()
+            .zip(computed)
+            .all(|(a, b)| a.0 == b.0 && a.1 == b.1)
 }
 
 /// The three arrays `model_for` reads from a pack's ctx npz, with their shapes.
@@ -135,7 +149,11 @@ pub fn load_ctx(npz_bytes: &[u8]) -> Result<CtxArrays, CoreError> {
     let coefficients = out.pop().unwrap_or_default();
     let d1 = out.pop().unwrap_or_default();
     let d0 = out.pop().unwrap_or_default();
-    Ok(CtxArrays { d0, d1, coefficients })
+    Ok(CtxArrays {
+        d0,
+        d1,
+        coefficients,
+    })
 }
 
 /// `UnitModel(stock_words_of_entry(stock04), d0, d1, ring, stock04, coefficients)` from a
@@ -175,7 +193,10 @@ pub struct Pick {
 
 fn obj_get<'a>(v: &'a Value, key: &str) -> Result<&'a Value, CoreError> {
     if !matches!(v, Value::Object(_)) {
-        return Err(CoreError::new("type", format!("expected an object at {key:?}")));
+        return Err(CoreError::new(
+            "type",
+            format!("expected an object at {key:?}"),
+        ));
     }
     v.get(key).ok_or_else(|| dict_key(key))
 }
@@ -197,7 +218,9 @@ pub fn model_for(
     read: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> Result<(Pick, Vec<u8>, Vec<u8>), CoreError> {
     let m = parse_json(manifest)?;
-    if !matches!(&m, Value::Object(_)) || !matches!(m.get("schema"), Some(Value::Str(s)) if s == SCHEMA) {
+    if !matches!(&m, Value::Object(_))
+        || !matches!(m.get("schema"), Some(Value::Str(s)) if s == SCHEMA)
+    {
         return Err(calib("校准数据版本已更新，请重新导入"));
     }
     let isos = unit_isos(unit);
@@ -213,7 +236,9 @@ pub fn model_for(
     let len = stock04.len();
     let fingerprint = gxr_raw::sha256::sha256_hex(&stock04[115.min(len)..211.min(len)]);
     if !matches!(obj_get(meta, "camera_stock_sha256")?, Value::Str(s) if *s == fingerprint) {
-        return Err(stock_mismatch("校准数据与这个单元的原厂 04 不匹配，请重新导入"));
+        return Err(stock_mismatch(
+            "校准数据与这个单元的原厂 04 不匹配，请重新导入",
+        ));
     }
     let files = obj_get(&m, "files")?;
     let models = obj_get(meta, "models")?;
@@ -221,7 +246,10 @@ pub fn model_for(
     for branch in MODEL_ISOS {
         let pair = obj_get(models, &branch.to_string())?;
         let Value::Object(entries) = pair else {
-            return Err(CoreError::new("attribute", "models entry must be an object"));
+            return Err(CoreError::new(
+                "attribute",
+                "models entry must be an object",
+            ));
         };
         for (_, name) in entries {
             let Value::Str(name) = name else {
@@ -230,7 +258,8 @@ pub fn model_for(
             if !plain_name(name) || files.get(name).is_none() {
                 return Err(calib("校准数据的文件清单不正确"));
             }
-            let blob = read(name).ok_or_else(|| CoreError::new("file_not_found", format!("缺少校准文件 {name}")))?;
+            let blob = read(name)
+                .ok_or_else(|| CoreError::new("file_not_found", format!("缺少校准文件 {name}")))?;
             let want = obj_get(obj_get(files, name)?, "sha256")?;
             if !matches!(want, Value::Str(s) if *s == gxr_raw::sha256::sha256_hex(&blob)) {
                 return Err(calib("校准数据被改动，请重新导入"));
@@ -247,8 +276,24 @@ pub fn model_for(
         }
     };
     let (ctx_name, ring_name) = (name_of("ctx")?, name_of("ring")?);
-    let blob = |name: &str| blobs.iter().find(|(n, _)| n == name).map(|(_, b)| b.clone()).ok_or_else(|| dict_key(name));
+    let blob = |name: &str| {
+        blobs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.clone())
+            .ok_or_else(|| dict_key(name))
+    };
     let (ctx, ring) = (blob(&ctx_name)?, blob(&ring_name)?);
     let calibrated = isos.is_some_and(|list| list.contains(&iso));
-    Ok((Pick { ctx: ctx_name, ring: ring_name, iso, calibrated, model_iso }, ctx, ring))
+    Ok((
+        Pick {
+            ctx: ctx_name,
+            ring: ring_name,
+            iso,
+            calibrated,
+            model_iso,
+        },
+        ctx,
+        ring,
+    ))
 }

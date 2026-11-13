@@ -37,7 +37,11 @@ impl Codes<'_> {
 
     fn get(&self, i: usize) -> [f64; 3] {
         match self {
-            Codes::F32(v) => [f64::from(v[3 * i]), f64::from(v[3 * i + 1]), f64::from(v[3 * i + 2])],
+            Codes::F32(v) => [
+                f64::from(v[3 * i]),
+                f64::from(v[3 * i + 1]),
+                f64::from(v[3 * i + 2]),
+            ],
             Codes::F64(v) => [v[3 * i], v[3 * i + 1], v[3 * i + 2]],
         }
     }
@@ -66,7 +70,11 @@ fn input_row_f32(x: [f32; 3], c: &Coefficients) -> [f64; 3] {
             *slot = f64::from(q);
         }
     }
-    finish_row([f64::from(x[0]), f64::from(x[1]), f64::from(x[2])], &basis, c)
+    finish_row(
+        [f64::from(x[0]), f64::from(x[1]), f64::from(x[2])],
+        &basis,
+        c,
+    )
 }
 
 fn input_row_f64(x: [f64; 3], c: &Coefficients) -> [f64; 3] {
@@ -126,7 +134,11 @@ fn search(key: f64, arr: &[f64], guess: isize) -> isize {
     }
     // numpy clamps the carried guess (which may be -1 or len) into [1, len - 3].
     let top = len - 3;
-    let guess = if guess < 1 { 1 } else { usize::try_from(guess).map_or(top, |g| g.min(top)) };
+    let guess = if guess < 1 {
+        1
+    } else {
+        usize::try_from(guess).map_or(top, |g| g.min(top))
+    };
     let mut imin = 0usize;
     let mut imax = len;
     if key < arr[guess] {
@@ -234,7 +246,7 @@ fn py_type(v: &Value) -> &'static str {
 
 /// `((a + d0) - 1j * (b + d1)) / 32`, the shared form of `S_eff` and `Z_of_words`.
 pub(crate) fn word_ratio(a: f64, b: f64) -> C {
-    C::real(a).sub(J.mul(C::real(b))).div(C::real(32.0))
+    C::real(a).minus(J.times(C::real(b))).over(C::real(32.0))
 }
 
 fn arr24(v: &[f64]) -> [f64; 24] {
@@ -271,7 +283,12 @@ impl Model {
             s_eff[s] = word_ratio(word(stock[s][0])? + d0[s], word(stock[s][1])? + d1[s]);
         }
         let table = PreTable::new(ring, s_eff)?;
-        Ok(Self { d0, d1, s_eff, table })
+        Ok(Self {
+            d0,
+            d1,
+            s_eff,
+            table,
+        })
     }
 
     /// Port of gxr_studio/engine/model.py:37 Model.pre
@@ -302,9 +319,14 @@ impl Model {
     pub fn sector_z(&self, b: &[u8]) -> Result<[C; 24], CoreError> {
         let mut ab = [[0i64; 2]; 24];
         for (s, slot) in ab.iter_mut().enumerate() {
-            let w: Vec<i64> = b[115 + 4 * s..119 + 4 * s].iter().map(|&v| dec(i64::from(v), 128)).collect();
+            let w: Vec<i64> = b[115 + 4 * s..119 + 4 * s]
+                .iter()
+                .map(|&v| dec(i64::from(v), 128))
+                .collect();
             if w[0] != w[3] || w[1] != -w[2] {
-                return Err(value("frozen symmetric sector model cannot predict asymmetric rows"));
+                return Err(value(
+                    "frozen symmetric sector model cannot predict asymmetric rows",
+                ));
             }
             *slot = [w[0], w[1]];
         }
@@ -318,7 +340,7 @@ impl Model {
 
     /// Port of gxr_studio/engine/colour.py:92 Z_of_words
     fn z_of_words(&self, s: usize, a: f64, b: f64) -> C {
-        word_ratio(a + self.d0[s], b + self.d1[s]).div(self.s_eff[s])
+        word_ratio(a + self.d0[s], b + self.d1[s]).over(self.s_eff[s])
     }
 }
 
@@ -360,7 +382,12 @@ impl UnitModel {
         let model = Model::new(stock, d0, d1, ring)?;
         let t = &model.table;
         let increasing = t.nodes.windows(2).all(|w| w[1] - w[0] > 0.0);
-        let finite = t.nodes.iter().chain(&t.gain).chain([&t.k, &t.s0, &t.kappa]).all(|v| v.is_finite());
+        let finite = t
+            .nodes
+            .iter()
+            .chain(&t.gain)
+            .chain([&t.k, &t.s0, &t.kappa])
+            .all(|v| v.is_finite());
         if !increasing || !finite {
             return Err(value("校准色相环的节点或参数不正确"));
         }
@@ -370,7 +397,10 @@ impl UnitModel {
         Ok(Self {
             model,
             factory: factory.to_vec(),
-            coefficients: Coefficients { rows, values: coefficients.1.to_vec() },
+            coefficients: Coefficients {
+                rows,
+                values: coefficients.1.to_vec(),
+            },
         })
     }
 }
@@ -384,7 +414,13 @@ pub enum Flavour {
 
 /// Port of gxr_studio/camdata/unit_model.py:42 UnitModel.predict (and model.py:43
 /// Model.predict for [`Flavour::Base`]), before quantising: clipped float64 RGB.
-pub fn predict(unit: &UnitModel, b: &[u8], x: Codes<'_>, half: usize, flavour: Flavour) -> Result<Vec<[f64; 3]>, CoreError> {
+pub fn predict(
+    unit: &UnitModel,
+    b: &[u8],
+    x: Codes<'_>,
+    half: usize,
+    flavour: Flavour,
+) -> Result<Vec<[f64; 3]>, CoreError> {
     if b.len() != ENTRY_BYTES {
         return Err(value("entry must be 552 bytes"));
     }
@@ -419,12 +455,16 @@ pub fn predict(unit: &UnitModel, b: &[u8], x: Codes<'_>, half: usize, flavour: F
             let (hue, magnitude) = (hue_deg(cl), cl.abs());
             let w = table.kernel_weights(hue, magnitude)?;
             let s_of = table.dot_s(&w);
-            ci.mul(s_of).mul(table.z(&q, &w, s_of))
+            ci.times(s_of).times(table.z(&q, &w, s_of))
         } else {
             table.forward(ci, &q)?
         };
         let rgb = rgb_from_ycc(y, co);
-        out.push([clip(rgb[0], 0.0, 255.0), clip(rgb[1], 0.0, 255.0), clip(rgb[2], 0.0, 255.0)]);
+        out.push([
+            clip(rgb[0], 0.0, 255.0),
+            clip(rgb[1], 0.0, 255.0),
+            clip(rgb[2], 0.0, 255.0),
+        ]);
     }
     Ok(out)
 }
@@ -457,7 +497,11 @@ mod tests {
     fn interp_matches_numpy_on_nodes_and_between() {
         let xp = [0.0, 10.0, 20.0, 30.0, 40.0, 4095.0];
         let fp = [0.0, 5.0, 5.0, 9.0, 12.0, 255.0];
-        let got = interp(&[0.0, 5.0, 10.0, 25.0, 4095.0, 5000.0, -1.0, 39.0], &xp, &fp);
+        let got = interp(
+            &[0.0, 5.0, 10.0, 25.0, 4095.0, 5000.0, -1.0, 39.0],
+            &xp,
+            &fp,
+        );
         assert_eq!(got, vec![0.0, 2.5, 5.0, 7.0, 255.0, 255.0, 0.0, 11.7]);
     }
 }

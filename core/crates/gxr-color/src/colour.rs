@@ -19,7 +19,11 @@ pub fn decode_word(word: &[u8]) -> Result<(i64, i64), CoreError> {
 }
 
 fn dec_byte(v: u8) -> i64 {
-    if v < 128 { i64::from(v) } else { -i64::from(v - 128) }
+    if v < 128 {
+        i64::from(v)
+    } else {
+        -i64::from(v - 128)
+    }
 }
 
 fn hex_of(word: &[u8]) -> String {

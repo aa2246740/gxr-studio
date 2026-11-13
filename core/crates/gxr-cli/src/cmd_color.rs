@@ -3,9 +3,9 @@
 use std::path::Path;
 
 use gxr_color::{
-    Codes, Flavour, Stats, Table, apply, apply_with_params, bake_summary, bake_with_params, channel_gains, context,
-    decode_npy, display_table, encode_npy, knobs_request, model_for, parse_json, predict, quantize_f64,
-    stock_words_of_entry, tones_of, unit_model,
+    Codes, Flavour, Stats, Table, apply, apply_with_params, bake_summary, bake_with_params,
+    channel_gains, context, decode_npy, display_table, encode_npy, knobs_request, model_for,
+    parse_json, predict, quantize_f64, stock_words_of_entry, tones_of, unit_model,
 };
 use gxr_raw::Json;
 
@@ -24,7 +24,10 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
 }
 
 fn ok(json: Json) -> Result<Output, Failure> {
-    Ok(Output { text: json.render(), ok: true })
+    Ok(Output {
+        text: json.render(),
+        ok: true,
+    })
 }
 
 fn count(n: usize) -> Json {
@@ -39,14 +42,20 @@ fn calib_check(args: &[String]) -> Result<Output, Failure> {
     let entry = read_bin(option(args, "--entry")?)?;
     let words = stock_words_of_entry(&entry)?;
     let checked = context(&npz, &words)?;
-    ok(Json::object([("rows", count(checked.rows)), ("d0", count(checked.d0.len())), ("d1", count(checked.d1.len()))]))
+    ok(Json::object([
+        ("rows", count(checked.rows)),
+        ("d0", count(checked.d0.len())),
+        ("d1", count(checked.d1.len())),
+    ]))
 }
 
 /// `model_for(home, iso, unit=unit)` on a pack folder: the pick, then the model it builds.
 fn pack_check(args: &[String]) -> Result<Output, Failure> {
     let dir = option(args, "--dir")?.to_string();
     let unit = option(args, "--unit")?;
-    let iso: i64 = option(args, "--iso")?.parse().map_err(|_| Failure::Usage("--iso must be an integer".into()))?;
+    let iso: i64 = option(args, "--iso")?
+        .parse()
+        .map_err(|_| Failure::Usage("--iso must be an integer".into()))?;
     let stock = read_bin(option(args, "--stock")?)?;
     let manifest = read_bin(&format!("{dir}/manifest.json"))?;
     let read = |name: &str| std::fs::read(Path::new(&dir).join(name)).ok();
@@ -74,9 +83,18 @@ fn read_codes(path: &str) -> Result<(CodeArray, Vec<usize>), Failure> {
         return Err(Failure::Usage("codes must have a last axis of 3".into()));
     }
     let codes = match npy.descr.as_str() {
-        "<f4" => CodeArray::F32(npy.values.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()),
+        "<f4" => CodeArray::F32(
+            npy.values
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect(),
+        ),
         "<f8" => CodeArray::F64(npy.f64s()?),
-        other => return Err(Failure::Usage(format!("codes must be float32 or float64, not {other}"))),
+        other => {
+            return Err(Failure::Usage(format!(
+                "codes must be float32 or float64, not {other}"
+            )));
+        }
     };
     Ok((codes, npy.shape))
 }
@@ -91,11 +109,24 @@ impl CodeArray {
 }
 
 fn write_out(out: &str, descr: &str, shape: &[usize], payload: &[u8]) -> Result<Json, Failure> {
-    std::fs::write(out, encode_npy(descr, shape, payload)).map_err(|e| Failure::Usage(format!("cannot write {out}: {e}")))?;
+    std::fs::write(out, encode_npy(descr, shape, payload))
+        .map_err(|e| Failure::Usage(format!("cannot write {out}: {e}")))?;
     Ok(Json::object([
         ("out", Json::str(out)),
-        ("dtype", Json::str(if descr == "|u1" { "uint8" } else if descr == "<f8" { "float64" } else { "float32" })),
-        ("shape", Json::Array(shape.iter().map(|&d| count(d)).collect())),
+        (
+            "dtype",
+            Json::str(if descr == "|u1" {
+                "uint8"
+            } else if descr == "<f8" {
+                "float64"
+            } else {
+                "float32"
+            }),
+        ),
+        (
+            "shape",
+            Json::Array(shape.iter().map(|&d| count(d)).collect()),
+        ),
     ]))
 }
 
@@ -107,10 +138,16 @@ fn predict_cmd(args: &[String]) -> Result<Output, Failure> {
     let (codes, shape) = read_codes(option(args, "--codes")?)?;
     let out = option(args, "--out")?;
     let half: usize = match optional(args, "--half")? {
-        Some(h) => h.parse().map_err(|_| Failure::Usage("--half must be 0 or 1".into()))?,
+        Some(h) => h
+            .parse()
+            .map_err(|_| Failure::Usage("--half must be 0 or 1".into()))?,
         None => 0,
     };
-    let flavour = if args.iter().any(|a| a == "--base") { Flavour::Base } else { Flavour::Unit };
+    let flavour = if args.iter().any(|a| a == "--base") {
+        Flavour::Base
+    } else {
+        Flavour::Unit
+    };
     let model = unit_model(&stock, &ctx, &ring)?;
     let rgb = predict(&model, &entry, codes.view(), half, flavour)?;
     let json = if args.iter().any(|a| a == "--float") {
@@ -141,8 +178,12 @@ fn bake_cmd(args: &[String]) -> Result<Output, Failure> {
     let (bin, meta) = bake_with_params(&entry, &stock, menu.as_deref(), &ctx, &ring, &params)?;
     let summary = bake_summary(&bin, &meta);
     std::fs::write(out, &bin).map_err(|e| Failure::Usage(format!("cannot write {out}: {e}")))?;
-    std::fs::write(meta_path, meta).map_err(|e| Failure::Usage(format!("cannot write {meta_path}: {e}")))?;
-    Ok(Output { text: summary, ok: true })
+    std::fs::write(meta_path, meta)
+        .map_err(|e| Failure::Usage(format!("cannot write {meta_path}: {e}")))?;
+    Ok(Output {
+        text: summary,
+        ok: true,
+    })
 }
 
 fn apply_cmd(args: &[String]) -> Result<Output, Failure> {
@@ -226,9 +267,12 @@ fn optional<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Failu
     let Some(at) = args.iter().position(|a| a == name) else {
         return Ok(None);
     };
-    args.get(at + 1).map(|s| Some(s.as_str())).ok_or_else(|| Failure::Usage(format!("{name} needs a value")))
+    args.get(at + 1)
+        .map(|s| Some(s.as_str()))
+        .ok_or_else(|| Failure::Usage(format!("{name} needs a value")))
 }
 
 fn read_bin(path: &str) -> Result<Vec<u8>, Failure> {
-    std::fs::read(path).map_err(|e| Failure::Usage(format!("cannot read {}: {e}", Path::new(path).display())))
+    std::fs::read(path)
+        .map_err(|e| Failure::Usage(format!("cannot read {}: {e}", Path::new(path).display())))
 }

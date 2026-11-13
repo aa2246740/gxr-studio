@@ -51,8 +51,13 @@ impl MatrixRow {
     ///
     /// Only `vivid_pct == 100` is used; the chroma rows are multiplied by `100.0 / 100.0`.
     pub fn effective(&self) -> [[f64; 3]; 3] {
+        self.effective_at(100.0)
+    }
+
+    /// `effective(vivid_pct)`: chroma rows times `vivid_pct / 100.0`.
+    fn effective_at(&self, vivid_pct: f64) -> [[f64; 3]; 3] {
         let mut m = [[0.0; 3]; 3];
-        let scale = 100.0f64 / 100.0;
+        let scale = vivid_pct / 100.0;
         for (i, row) in m.iter_mut().enumerate() {
             for (j, v) in row.iter_mut().enumerate() {
                 *v = f64::from(self.coef[i][j]) / 1024.0;
@@ -66,7 +71,11 @@ impl MatrixRow {
 
     /// `self.offsets`: tail words 0..3 as float.
     pub fn offsets(&self) -> [f64; 3] {
-        [f64::from(self.tail[0]), f64::from(self.tail[1]), f64::from(self.tail[2])]
+        [
+            f64::from(self.tail[0]),
+            f64::from(self.tail[1]),
+            f64::from(self.tail[2]),
+        ]
     }
 
     /// Port of gxr_studio/engine/matrix_model.py:111 MatrixRow.apply
@@ -75,8 +84,8 @@ impl MatrixRow {
         let off = self.offsets();
         let y = ycc[0] + off[0];
         let cb = C::real(ycc[1] + off[1] - CENTRE);
-        let cr = J.mul(C::real(ycc[2] + off[2] - CENTRE));
-        (y, cb.add(cr))
+        let cr = J.times(C::real(ycc[2] + off[2] - CENTRE));
+        (y, cb.plus(cr))
     }
 }
 
@@ -95,7 +104,11 @@ pub fn matvec(m: &[[f64; 3]; 3], p: [f64; 3]) -> [f64; 3] {
 /// Port of gxr_studio/engine/matrix_model.py:170 rgb_from_ycc
 pub fn rgb_from_ycc(y: f64, c: C) -> [f64; 3] {
     let (cb, cr) = (c.re, c.im);
-    [y + 1.402 * cr, y - 0.344136 * cb - 0.714136 * cr, y + 1.772 * cb]
+    [
+        y + 1.402 * cr,
+        y - 0.344136 * cb - 0.714136 * cr,
+        y + 1.772 * cb,
+    ]
 }
 
 #[cfg(test)]
@@ -108,6 +121,9 @@ mod tests {
         assert_eq!(decode_coef(0x0C00).unwrap(), -1024);
         let err = decode_coef(0x1000).unwrap_err();
         assert_eq!(err.message, "coefficient word 0x1000 has bits above 11");
-        assert_eq!(MatrixRow::from_bytes(&[0; 27]).unwrap_err().message, "a matrix row is 28 bytes");
+        assert_eq!(
+            MatrixRow::from_bytes(&[0; 27]).unwrap_err().message,
+            "a matrix row is 28 bytes"
+        );
     }
 }

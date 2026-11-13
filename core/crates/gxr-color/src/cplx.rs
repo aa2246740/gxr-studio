@@ -23,20 +23,20 @@ impl C {
         Self { re: x, im: 0.0 }
     }
 
-    pub fn add(self, o: Self) -> Self {
+    pub fn plus(self, o: Self) -> Self {
         Self::new(self.re + o.re, self.im + o.im)
     }
 
-    pub fn sub(self, o: Self) -> Self {
+    pub fn minus(self, o: Self) -> Self {
         Self::new(self.re - o.re, self.im - o.im)
     }
 
-    pub fn neg(self) -> Self {
+    pub fn negate(self) -> Self {
         Self::new(-self.re, -self.im)
     }
 
     /// numpy `multiply`: `(ar*br - ai*bi, ar*bi + ai*br)`, each product rounded.
-    pub fn mul(self, o: Self) -> Self {
+    pub fn times(self, o: Self) -> Self {
         let rr = self.re * o.re;
         let ii = self.im * o.im;
         let ri = self.re * o.im;
@@ -47,7 +47,7 @@ impl C {
     /// numpy `divide` (`loops.c.src` complex divide): Smith's choice of branch, then a
     /// reciprocal scale. Measured on numpy 2.4.3: this form with fused products matched
     /// 4000/4000 draws, so the unfused form here differs only by the fusing.
-    pub fn div(self, o: Self) -> Self {
+    pub fn over(self, o: Self) -> Self {
         let (in1r, in1i, in2r, in2i) = (self.re, self.im, o.re, o.im);
         let in2r_abs = in2r.abs();
         let in2i_abs = in2i.abs();
@@ -94,16 +94,19 @@ mod tests {
     fn division_uses_the_reciprocal_scale() {
         let a = C::new(3.0, 4.0);
         let b = C::new(1.0, 2.0);
-        let q = a.div(b);
+        let q = a.over(b);
         assert_eq!(q, C::new(2.2, -0.4));
-        let z = C::new(1.0, 1.0).div(C::real(0.0));
+        let z = C::new(1.0, 1.0).over(C::real(0.0));
         assert!(z.re.is_infinite() && z.im.is_infinite());
-        assert_eq!(C::new(5.0, -3.0).div(C::real(32.0)), C::new(5.0 / 32.0, -3.0 / 32.0));
+        assert_eq!(
+            C::new(5.0, -3.0).over(C::real(32.0)),
+            C::new(5.0 / 32.0, -3.0 / 32.0)
+        );
     }
 
     #[test]
     fn promotion_keeps_numpy_signed_zeros() {
-        let p = super::J.mul(C::real(-2.0));
+        let p = super::J.times(C::real(-2.0));
         assert_eq!(p.re.to_bits(), (-0.0f64).to_bits());
         assert_eq!(p.im, -2.0);
     }

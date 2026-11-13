@@ -52,16 +52,30 @@ pub fn color_bake(
     ring_json: &[u8],
     params_json: &[u8],
 ) -> Result<ColorBake, JsValue> {
-    let menu = if menu_json.is_empty() { None } else { Some(menu_json) };
+    let menu = if menu_json.is_empty() {
+        None
+    } else {
+        Some(menu_json)
+    };
     let (bytes, meta) =
-        gxr_color::bake_with_params(entry, stock, menu, ctx_npz, ring_json, params_json).map_err(rejected)?;
+        gxr_color::bake_with_params(entry, stock, menu, ctx_npz, ring_json, params_json)
+            .map_err(rejected)?;
     let summary = gxr_color::bake_summary(&bytes, &meta);
-    Ok(ColorBake { bytes, meta, summary })
+    Ok(ColorBake {
+        bytes,
+        meta,
+        summary,
+    })
 }
 
 /// `chroma_u8` of float32 codes (RGB interleaved) through a bake. `params_json` is
 /// `{"adjust", "curves"}` (both optional).
 #[wasm_bindgen]
-pub fn color_apply(bake_bin: &[u8], meta_json: &[u8], codes_f32: &[f32], params_json: &[u8]) -> Result<Vec<u8>, JsValue> {
+pub fn color_apply(
+    bake_bin: &[u8],
+    meta_json: &[u8],
+    codes_f32: &[f32],
+    params_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
     gxr_color::apply_with_params(bake_bin, meta_json, codes_f32, params_json).map_err(rejected)
 }

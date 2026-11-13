@@ -113,7 +113,18 @@ impl PreTable {
             None => [number(need(model, "gain")?, "gain")?; 24],
         };
         let (coef, dc, om) = fourier(&nodes, &kernel);
-        let table = Self { s: stock, k, nodes, s0, kappa, kernel, gain, coef, dc, om };
+        let table = Self {
+            s: stock,
+            k,
+            nodes,
+            s0,
+            kappa,
+            kernel,
+            gain,
+            coef,
+            dc,
+            om,
+        };
         table.scan()?;
         Ok(table)
     }
@@ -168,10 +179,10 @@ impl PreTable {
         let mut phase = [C::real(0.0); 32];
         for (m, slot) in phase.iter_mut().enumerate() {
             let om = self.om[m];
-            let rot = J.mul(C::real(h)).mul(C::real(om)).exp();
+            let rot = J.times(C::real(h)).times(C::real(om)).exp();
             let so = sigma * om;
             let damp = gxr_math::exp(-0.5 * (so * so));
-            *slot = rot.mul(C::real(damp));
+            *slot = rot.times(C::real(damp));
         }
         let mut row = [0.0; 24];
         for s in 0..24 {
@@ -209,7 +220,7 @@ impl PreTable {
         let mut out = [C::real(0.0); 24];
         for s in 0..24 {
             let e = effective(zrow[s], self.k);
-            out[s] = self.s[s].mul(C::new(e.re - 1.0, e.im - 0.0));
+            out[s] = self.s[s].times(C::new(e.re - 1.0, e.im - 0.0));
         }
         out
     }
@@ -230,7 +241,7 @@ impl PreTable {
                 im = im + wg * q[s].im;
             }
         }
-        let ratio = C::new(re, im).div(t);
+        let ratio = C::new(re, im).over(t);
         C::new(1.0 + ratio.re, 0.0 + ratio.im)
     }
 
@@ -242,8 +253,8 @@ impl PreTable {
         let m = c_in.abs();
         let w = self.kernel_weights(h, m)?;
         let s_of = self.dot_s(&w);
-        let cb = c_in.mul(s_of);
-        Ok(cb.mul(self.z(q, &w, s_of)))
+        let cb = c_in.times(s_of);
+        Ok(cb.times(self.z(q, &w, s_of)))
     }
 }
 
@@ -286,8 +297,8 @@ fn fourier(n: &[f64; 24], kernel: &KernelName) -> (Vec<[C; 24]>, [f64; 24], [f64
         *slot = 2.0 * std::f64::consts::PI * mode / 360.0;
     }
     // `-1j` in Python is `-(1j)`: (-0.0, -1.0).
-    let minus_j = J.neg();
-    let e = |om: f64, x: f64| minus_j.mul(C::real(om)).mul(C::real(x)).exp();
+    let minus_j = J.negate();
+    let e = |om: f64, x: f64| minus_j.times(C::real(om)).times(C::real(x)).exp();
     let linear = matches!(kernel, KernelName::Known(Kernel::Linear));
     let mut coef = Vec::with_capacity(32);
     for &o in &om {
@@ -296,21 +307,29 @@ fn fourier(n: &[f64; 24], kernel: &KernelName) -> (Vec<[C; 24]>, [f64; 24], [f64
             row[s] = if linear {
                 let na = n[s] - a[s];
                 let cn = c[s] - n[s];
-                let first = e(o, a[s]).div(C::real(na));
-                let second = e(o, n[s]).mul(C::real(1.0 / na + 1.0 / cn));
-                let third = e(o, c[s]).div(C::real(cn));
-                first.sub(second).add(third).neg().div(C::real(360.0 * (o * o)))
+                let first = e(o, a[s]).over(C::real(na));
+                let second = e(o, n[s]).times(C::real(1.0 / na + 1.0 / cn));
+                let third = e(o, c[s]).over(C::real(cn));
+                first
+                    .minus(second)
+                    .plus(third)
+                    .negate()
+                    .over(C::real(360.0 * (o * o)))
             } else {
                 // `360 * 1j` is a Python int times a complex: (0.0, 360.0).
-                let den = C::new(360.0 * J.re, 360.0 * J.im).mul(C::real(o));
-                e(o, n[s]).sub(e(o, c[s])).div(den)
+                let den = C::new(360.0 * J.re, 360.0 * J.im).times(C::real(o));
+                e(o, n[s]).minus(e(o, c[s])).over(den)
             };
         }
         coef.push(row);
     }
     let mut dc = [0.0; 24];
     for s in 0..24 {
-        dc[s] = if linear { (c[s] - a[s]) / 720.0 } else { (c[s] - n[s]) / 360.0 };
+        dc[s] = if linear {
+            (c[s] - a[s]) / 720.0
+        } else {
+            (c[s] - n[s]) / 360.0
+        };
     }
     (coef, dc, om)
 }

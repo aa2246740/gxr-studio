@@ -1,4 +1,3 @@
-
 use super::{Request, apply, rd};
 
 #[test]

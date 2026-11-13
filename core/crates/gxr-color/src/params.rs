@@ -34,8 +34,14 @@ fn number(v: &Value, message: &str) -> Result<f64, CoreError> {
 pub fn knobs_request(params: &Value, menu_bytes: &[u8]) -> Result<Request, CoreError> {
     let menu = load_menu(menu_bytes)?;
     if let Some(levels) = params.get("levels") {
-        let unit = params.get("unit").ok_or_else(|| value("unit/slot")).and_then(|v| py_int(v, "unit/slot"))?;
-        let slot = params.get("slot").ok_or_else(|| value("unit/slot")).and_then(|v| py_int(v, "unit/slot"))?;
+        let unit = params
+            .get("unit")
+            .ok_or_else(|| value("unit/slot"))
+            .and_then(|v| py_int(v, "unit/slot"))?;
+        let slot = params
+            .get("slot")
+            .ok_or_else(|| value("unit/slot"))
+            .and_then(|v| py_int(v, "unit/slot"))?;
         let items = levels.as_array().ok_or_else(|| value("menu item count"))?;
         let levels: Vec<Option<i64>> = items.iter().map(Value::as_int).collect();
         return menu_request(&menu, unit, slot, &levels);
@@ -45,7 +51,10 @@ pub fn knobs_request(params: &Value, menu_bytes: &[u8]) -> Result<Request, CoreE
         request.amount = py_int(amount, "amount")?;
     }
     if let Some(doses) = params.get("doses") {
-        let items = doses.as_array().filter(|d| d.len() == 10).ok_or_else(|| value("doses"))?;
+        let items = doses
+            .as_array()
+            .filter(|d| d.len() == 10)
+            .ok_or_else(|| value("doses"))?;
         for (slot, item) in request.doses.iter_mut().zip(items) {
             *slot = py_int(item, "doses")?;
         }
@@ -67,8 +76,14 @@ fn points(v: Option<&Value>) -> Result<Option<Points>, CoreError> {
     let items = v.as_array().ok_or_else(|| value("curve points"))?;
     let mut out = Vec::with_capacity(items.len());
     for p in items {
-        let pair = p.as_array().filter(|q| q.len() == 2).ok_or_else(|| value("curve points"))?;
-        out.push((number(&pair[0], "curve points")?, number(&pair[1], "curve points")?));
+        let pair = p
+            .as_array()
+            .filter(|q| q.len() == 2)
+            .ok_or_else(|| value("curve points"))?;
+        out.push((
+            number(&pair[0], "curve points")?,
+            number(&pair[1], "curve points")?,
+        ));
     }
     Ok(Some(out))
 }
@@ -121,28 +136,53 @@ pub fn bake_meta(bk: &ChromaBake) -> Json {
     ])
 }
 
+/// `(nx, ny, origin, step, input_coefficients)` of a bake.
+pub type Meta = (usize, usize, [f64; 2], f64, Option<Coefficients>);
+
 /// The grid and the float64 coefficients from a meta JSON written by [`bake_meta`].
-pub fn meta_of(meta: &Value) -> Result<(usize, usize, [f64; 2], f64, Option<Coefficients>), CoreError> {
+pub fn meta_of(meta: &Value) -> Result<Meta, CoreError> {
     let size = |key: &str| -> Result<usize, CoreError> {
-        let v = meta.get(key).and_then(Value::as_int).ok_or_else(|| value("bake meta needs nx and ny"))?;
+        let v = meta
+            .get(key)
+            .and_then(Value::as_int)
+            .ok_or_else(|| value("bake meta needs nx and ny"))?;
         usize::try_from(v).map_err(|_| value("bake meta needs nx and ny"))
     };
     let (nx, ny) = (size("nx")?, size("ny")?);
-    let origin = meta.get("origin").and_then(Value::as_array).filter(|o| o.len() == 2).ok_or_else(|| value("bake meta origin"))?;
-    let origin = [number(&origin[0], "bake meta origin")?, number(&origin[1], "bake meta origin")?];
-    let step = number(meta.get("step").ok_or_else(|| value("bake meta step"))?, "bake meta step")?;
+    let origin = meta
+        .get("origin")
+        .and_then(Value::as_array)
+        .filter(|o| o.len() == 2)
+        .ok_or_else(|| value("bake meta origin"))?;
+    let origin = [
+        number(&origin[0], "bake meta origin")?,
+        number(&origin[1], "bake meta origin")?,
+    ];
+    let step = number(
+        meta.get("step").ok_or_else(|| value("bake meta step"))?,
+        "bake meta step",
+    )?;
     let coefficients = match meta.get("input_coefficients") {
         None | Some(Value::Null) => None,
         Some(rows) => {
-            let rows = rows.as_array().filter(|r| r.len() == 4 || r.len() == 10).ok_or_else(|| value("bake meta input_coefficients"))?;
+            let rows = rows
+                .as_array()
+                .filter(|r| r.len() == 4 || r.len() == 10)
+                .ok_or_else(|| value("bake meta input_coefficients"))?;
             let mut values = Vec::with_capacity(rows.len() * 3);
             for row in rows {
-                let row = row.as_array().filter(|r| r.len() == 3).ok_or_else(|| value("bake meta input_coefficients"))?;
+                let row = row
+                    .as_array()
+                    .filter(|r| r.len() == 3)
+                    .ok_or_else(|| value("bake meta input_coefficients"))?;
                 for v in row {
                     values.push(number(v, "bake meta input_coefficients")?);
                 }
             }
-            Some(Coefficients { rows: rows.len(), values })
+            Some(Coefficients {
+                rows: rows.len(),
+                values,
+            })
         }
     };
     Ok((nx, ny, origin, step, coefficients))

@@ -63,7 +63,10 @@ pub fn equations(points: &[[f64; 2]]) -> Result<Vec<Equation>, CoreError> {
 /// scipy raises `QhullError` (QH6154) when the eight corners span no area. Its long text is
 /// not reproduced; the kind is stable.
 fn flat() -> CoreError {
-    CoreError::new("qhull", "QH6154 Qhull precision error: initial simplex is flat")
+    CoreError::new(
+        "qhull",
+        "QH6154 Qhull precision error: initial simplex is flat",
+    )
 }
 
 #[cfg(test)]
@@ -72,7 +75,15 @@ mod tests {
 
     #[test]
     fn square_has_four_outward_unit_normals() {
-        let eq = equations(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5], [1.0, 0.5]]).unwrap();
+        let eq = equations(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0],
+            [0.5, 0.5],
+            [1.0, 0.5],
+        ])
+        .unwrap();
         assert_eq!(eq.len(), 4);
         for e in &eq {
             assert!(e[0] * 0.5 + e[1] * 0.5 + e[2] < 0.0);

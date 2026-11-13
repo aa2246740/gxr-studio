@@ -3,6 +3,9 @@
 //! Port of gxr_studio/engine/sector_model.py, plus Cephes `ndtr` (what `scipy.special.ndtr`
 //! runs), written with unfused `polevl` / `p1evl` and libm `exp`.
 
+// The Cephes coefficients keep the digits the C source prints; they round to the same f64.
+#![allow(clippy::excessive_precision)]
+
 use crate::cplx::{C, J};
 
 /// `SIGMA_ZERO`, degrees.
@@ -43,8 +46,8 @@ pub fn hue_deg(c: C) -> f64 {
 /// `|Z| * exp(1j * k * angle(Z))`. `1j * k` is a Python complex times a float.
 pub fn effective(z: C, k: f64) -> C {
     let jk = C::new(J.re * k, J.im * k);
-    let arg = jk.mul(C::real(z.angle()));
-    C::real(z.abs()).mul(arg.exp())
+    let arg = jk.times(C::real(z.angle()));
+    C::real(z.abs()).times(arg.exp())
 }
 
 /// Port of gxr_studio/engine/sector_model.py:30 _phi

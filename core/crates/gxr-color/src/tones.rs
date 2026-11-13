@@ -130,11 +130,17 @@ impl Pchip {
     pub fn new(x: &[f64], y: &[f64]) -> Result<Self, CoreError> {
         let n = x.len();
         if n < 2 {
-            return Err(CoreError::new("value", "`x` must contain at least 2 elements."));
+            return Err(CoreError::new(
+                "value",
+                "`x` must contain at least 2 elements.",
+            ));
         }
         let hk: Vec<f64> = x.windows(2).map(|w| w[1] - w[0]).collect();
         if hk.iter().any(|h| *h <= 0.0) {
-            return Err(CoreError::new("value", "`x` must be strictly increasing sequence."));
+            return Err(CoreError::new(
+                "value",
+                "`x` must be strictly increasing sequence.",
+            ));
         }
         let mk: Vec<f64> = (0..n - 1).map(|i| (y[i + 1] - y[i]) / hk[i]).collect();
         let mut dk = vec![0.0; n];
@@ -195,7 +201,9 @@ fn map_curve(y: &[f64], points: Option<&Points>) -> Result<Vec<f64>, CoreError> 
     let ys: Vec<f64> = points.iter().map(|p| p.1).collect();
     let curve = Pchip::new(&xs, &ys)?;
     let (lo, hi) = (xs[0], xs[xs.len() - 1]);
-    Ok(y.iter().map(|&v| crate::model::clip(curve.eval(crate::model::clip(v, lo, hi)), 0.0, 255.0)).collect())
+    Ok(y.iter()
+        .map(|&v| crate::model::clip(curve.eval(crate::model::clip(v, lo, hi)), 0.0, 255.0))
+        .collect())
 }
 
 /// Port of gxr_studio/render/tones.py:64 display_table
@@ -207,7 +215,11 @@ pub fn display_table(a: &Adjust, curves: Option<&Curves>) -> Result<Option<Table
     let step = 255.0 / (TABLE_SIZE - 1) as f64;
     let y: Vec<f64> = (0..TABLE_SIZE)
         .map(|i| {
-            let x = if i == TABLE_SIZE - 1 { 255.0 } else { i as f64 * step + 0.0 };
+            let x = if i == TABLE_SIZE - 1 {
+                255.0
+            } else {
+                i as f64 * step + 0.0
+            };
             tone_function(x / 255.0, a) * 255.0
         })
         .collect();
@@ -251,10 +263,8 @@ const LAST_CELL: i32 = 1019;
 
 /// `i` is in `0..=LAST_CELL` here: `pos` was clipped to `[0, 1020]` (NaN casts to 0).
 fn cell_index(i: i32) -> usize {
-    match usize::try_from(i) {
-        Ok(v) => v,
-        Err(_) => 0,
-    }
+    // u32 to usize widens on every target.
+    i.clamp(0, LAST_CELL).unsigned_abs() as usize
 }
 
 /// `np.clip` on float32: NaN passes through.

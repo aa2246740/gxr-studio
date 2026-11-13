@@ -27,7 +27,8 @@ pub fn decode(bytes: &[u8]) -> Result<Npy, CoreError> {
             (header_text(bytes, 10, len)?, 10 + len)
         }
         2 | 3 => {
-            let len = usize::try_from(u32::from_le_bytes(read4(bytes, 8)?)).map_err(|_| bad("npy header is short"))?;
+            let len = usize::try_from(u32::from_le_bytes(read4(bytes, 8)?))
+                .map_err(|_| bad("npy header is short"))?;
             (header_text(bytes, 12, len)?, 12 + len)
         }
         _ => return Err(bad("unsupported npy version")),
@@ -40,41 +41,68 @@ pub fn decode(bytes: &[u8]) -> Result<Npy, CoreError> {
     let width = width_of(&descr)?;
     let mut count = 1usize;
     for dim in &shape {
-        count = count.checked_mul(*dim).ok_or_else(|| bad("array is too big"))?;
+        count = count
+            .checked_mul(*dim)
+            .ok_or_else(|| bad("array is too big"))?;
     }
-    let nbytes = count.checked_mul(width).ok_or_else(|| bad("array is too big"))?;
-    let values = bytes.get(data_at..data_at + nbytes).ok_or_else(|| bad("npy data is short"))?.to_vec();
-    Ok(Npy { descr, shape, values })
+    let nbytes = count
+        .checked_mul(width)
+        .ok_or_else(|| bad("array is too big"))?;
+    let values = bytes
+        .get(data_at..data_at + nbytes)
+        .ok_or_else(|| bad("npy data is short"))?
+        .to_vec();
+    Ok(Npy {
+        descr,
+        shape,
+        values,
+    })
 }
 
 fn read_n(bytes: &[u8], at: usize) -> Result<[u8; 2], CoreError> {
-    let s = bytes.get(at..at + 2).ok_or_else(|| bad("npy header is short"))?;
+    let s = bytes
+        .get(at..at + 2)
+        .ok_or_else(|| bad("npy header is short"))?;
     Ok([s[0], s[1]])
 }
 
 fn read4(bytes: &[u8], at: usize) -> Result<[u8; 4], CoreError> {
-    let s = bytes.get(at..at + 4).ok_or_else(|| bad("npy header is short"))?;
+    let s = bytes
+        .get(at..at + 4)
+        .ok_or_else(|| bad("npy header is short"))?;
     Ok([s[0], s[1], s[2], s[3]])
 }
 
 fn header_text(bytes: &[u8], at: usize, len: usize) -> Result<String, CoreError> {
-    let raw = bytes.get(at..at + len).ok_or_else(|| bad("npy header is short"))?;
+    let raw = bytes
+        .get(at..at + len)
+        .ok_or_else(|| bad("npy header is short"))?;
     String::from_utf8(raw.to_vec()).map_err(|_| bad("npy header is not utf-8"))
 }
 
 fn quoted_field(header: &str, key: &str) -> Result<String, CoreError> {
     let needle = format!("'{key}': '");
-    let start = header.find(&needle).ok_or_else(|| bad(format!("npy header has no {key}")))? + needle.len();
+    let start = header
+        .find(&needle)
+        .ok_or_else(|| bad(format!("npy header has no {key}")))?
+        + needle.len();
     let rest = &header[start..];
-    let end = rest.find('\'').ok_or_else(|| bad(format!("npy header has no {key}")))?;
+    let end = rest
+        .find('\'')
+        .ok_or_else(|| bad(format!("npy header has no {key}")))?;
     Ok(rest[..end].to_string())
 }
 
 fn shape_of(header: &str) -> Result<Vec<usize>, CoreError> {
     let needle = "'shape': (";
-    let start = header.find(needle).ok_or_else(|| bad("npy header has no shape"))? + needle.len();
+    let start = header
+        .find(needle)
+        .ok_or_else(|| bad("npy header has no shape"))?
+        + needle.len();
     let rest = &header[start..];
-    let end = rest.find(')').ok_or_else(|| bad("npy header has no shape"))?;
+    let end = rest
+        .find(')')
+        .ok_or_else(|| bad("npy header has no shape"))?;
     let mut shape = Vec::new();
     for part in rest[..end].split(',') {
         let part = part.trim();
@@ -96,7 +124,9 @@ fn width_of(descr: &str) -> Result<usize, CoreError> {
 }
 
 fn take<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], CoreError> {
-    let s = bytes.get(at..at + N).ok_or_else(|| bad("npy data is short"))?;
+    let s = bytes
+        .get(at..at + N)
+        .ok_or_else(|| bad("npy data is short"))?;
     let mut buf = [0u8; N];
     buf.copy_from_slice(s);
     Ok(buf)
@@ -166,8 +196,13 @@ impl Npy {
 /// little-endian in C order.
 pub fn encode(descr: &str, shape: &[usize], payload: &[u8]) -> Vec<u8> {
     let dims: Vec<String> = shape.iter().map(ToString::to_string).collect();
-    let shape_text = if dims.len() == 1 { format!("({},)", dims[0]) } else { format!("({})", dims.join(", ")) };
-    let mut dict = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_text}, }}");
+    let shape_text = if dims.len() == 1 {
+        format!("({},)", dims[0])
+    } else {
+        format!("({})", dims.join(", "))
+    };
+    let mut dict =
+        format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_text}, }}");
     let total = 10 + dict.len() + 1;
     dict.push_str(&" ".repeat((64 - total % 64) % 64));
     dict.push('\n');

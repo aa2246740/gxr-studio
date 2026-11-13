@@ -101,7 +101,9 @@ impl<'a> Parser<'a> {
             '{' => self.object(),
             'N' => self.literal("NaN", Value::Float(f64::NAN)),
             'I' => self.literal("Infinity", Value::Float(f64::INFINITY)),
-            '-' if self.text[self.i..].starts_with("-Infinity") => self.literal("-Infinity", Value::Float(f64::NEG_INFINITY)),
+            '-' if self.text[self.i..].starts_with("-Infinity") => {
+                self.literal("-Infinity", Value::Float(f64::NEG_INFINITY))
+            }
             '-' | '0'..='9' => self.number(),
             _ => Err(bad("expected a value")),
         }
