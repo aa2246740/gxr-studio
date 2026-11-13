@@ -1,28 +1,50 @@
-// 同一批 DNG：WASM 和 gxr-cli 必须给出相同的成功字节，或相同的 kind 与 message。
+// 同一批输入：WASM 和 gxr-cli 必须给出相同的成功字节，或相同的 kind 与 message。
 // CLI 只有退出码正好是 2、且 stdout 是 {"error":{"kind","message"}} 时才算失败结果。
 // 其它退出码、信号、spawn 错误、空 stdout、无法解析、超时，都是脚本失败，不能当成一致。
-// 用法：node mobile/scripts/wasm_vs_native.mjs <paths.json> <gxr-cli>
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+// 一边成功一边失败也是失败。每个子进程最多 60 秒。
+// 用法：node wasm_vs_native.mjs --area <name> --cli <path> --inputs <json>
+//
+// 领域模块导出 cases(inputs)，每项是 {label, cliArgs, wasm}。
+// label 用「<文件>::<检查名>」。字节或错误不一致时，输出仍是「<文件>: <检查名> bytes differ」。
+// wasm 返回 string 时和 CLI 的 stdout 比；返回 Uint8Array 时，先比 --out 的 npy 宽高，再比样本字节。
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 const TIMEOUT_MS = 60_000;
-const [listPath, cli] = process.argv.slice(2);
-if (!listPath || !cli) {
-  console.error('usage: node wasm_vs_native.mjs <paths.json> <gxr-cli>');
+
+function flag(name) {
+  const at = process.argv.indexOf(name);
+  if (at < 0 || at + 1 >= process.argv.length) return '';
+  return process.argv[at + 1];
+}
+
+const area = flag('--area');
+const cli = flag('--cli');
+const listPath = flag('--inputs');
+if (!area || !cli || !listPath || !/^[a-z][a-z0-9_-]*$/.test(area)) {
+  console.error('usage: node wasm_vs_native.mjs --area <name> --cli <path> --inputs <json>');
   process.exit(1);
 }
 
-const pkg = fileURLToPath(new URL('../src/wasm-pkg/gxr_wasm.js', import.meta.url));
-const wasmPath = fileURLToPath(new URL('../src/wasm-pkg/gxr_wasm_bg.wasm', import.meta.url));
-const wasm = await import(pathToFileURL(pkg).href);
-wasm.initSync({ module: readFileSync(wasmPath) });
+const wasm = await import(new URL('../src/wasm-pkg/gxr_wasm.js', import.meta.url).href);
+wasm.initSync({ module: readFileSync(new URL('../src/wasm-pkg/gxr_wasm_bg.wasm', import.meta.url)) });
 
-const paths = JSON.parse(readFileSync(listPath, 'utf8'));
-const dir = mkdtempSync(join(tmpdir(), 'gxr-wasm-'));
+const inputs = JSON.parse(readFileSync(listPath, 'utf8'));
+if (!Array.isArray(inputs)) {
+  console.error('inputs JSON must be an array');
+  process.exit(1);
+}
+
+const areaMod = await import(new URL(`./wasm_cases/${area}.mjs`, import.meta.url).href);
+if (typeof areaMod.cases !== 'function') {
+  console.error(`area ${area} does not export cases`);
+  process.exit(1);
+}
+const list = areaMod.cases(inputs);
+if (!Array.isArray(list)) {
+  console.error('cases() did not return a list');
+  process.exit(1);
+}
 
 function npyPayload(buf) {
   if (buf.subarray(0, 6).toString('latin1') !== '\u0093NUMPY') throw new Error('not an npy file');
@@ -38,8 +60,11 @@ function npyPayload(buf) {
   return { shape, payload: buf.subarray(headerAt + headerLen) };
 }
 
-function sha256(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
+function framed(height, width, payload) {
+  const header = Buffer.alloc(8);
+  header.writeUInt32LE(height, 0);
+  header.writeUInt32LE(width, 4);
+  return Buffer.concat([header, payload]);
 }
 
 function spawnCli(args) {
@@ -87,84 +112,53 @@ function sameError(left, right) {
   return !left.ok && !right.ok && left.kind === right.kind && left.message === right.message;
 }
 
-function floatView(block) {
-  const height = block.height;
-  const width = block.width;
-  const values = block.values();
-  return {
-    height,
-    width,
-    raw: Buffer.from(values.buffer, values.byteOffset, values.byteLength),
-  };
+function bytesOf(cliArgs, stdout, value) {
+  if (typeof value === 'string') {
+    if (value !== stdout) throw new Error('bytes differ');
+    return;
+  }
+  if (!(value instanceof Uint8Array)) throw new Error('wasm result is not bytes or string');
+  const at = cliArgs.lastIndexOf('--out');
+  if (at < 0 || !cliArgs[at + 1]) throw new Error('wasm returned bytes but the command has no --out');
+  const npy = npyPayload(readFileSync(cliArgs[at + 1]));
+  if (npy.shape.length < 2) throw new Error('npy shape is shorter than 2');
+  const got = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  const expect = framed(npy.shape[0], npy.shape[1], npy.payload);
+  if (!got.equals(expect)) throw new Error('bytes differ');
+}
+
+function report(label, err) {
+  const message = err instanceof Error ? err.message : String(err);
+  const mark = label.lastIndexOf('::');
+  const file = mark < 0 ? label : label.slice(0, mark);
+  const name = mark < 0 ? '' : label.slice(mark + 2);
+  const named = name && (message === 'bytes differ' || message === 'error differs');
+  console.error(`${file}: ${named ? `${name} ${message}` : message}`);
 }
 
 let failed = 0;
-try {
-  for (const file of paths) {
-    const name = basename(file);
-    const bytes = new Uint8Array(readFileSync(file));
-    try {
-      const described = cliSide(spawnCli(['dng-describe', file]));
-      let fromWasm;
-      try {
-        const text = wasm.dng_describe_named(bytes, name);
-        const parsed = JSON.parse(text);
-        fromWasm = parsed.error
-          ? { ok: false, kind: parsed.error.kind, message: parsed.error.message }
-          : { ok: true, text };
-      } catch (err) {
-        fromWasm = wasmFailure(err);
-      }
-      if (described.ok && fromWasm.ok) {
-        if (described.stdout !== fromWasm.text) throw new Error('dng_describe bytes differ');
-      } else if (!sameError(described, fromWasm)) {
-        throw new Error('dng_describe error differs');
-      }
-
-      const halfOut = join(dir, 'half.npy');
-      const halfCli = cliSide(spawnCli(['dng-half-codes', file, '--out', halfOut]));
-      let halfWasm;
-      try {
-        const half = floatView(wasm.dng_half_codes_named(bytes, name));
-        halfWasm = { ok: true, raw: half.raw, height: half.height, width: half.width };
-      } catch (err) {
-        halfWasm = wasmFailure(err);
-      }
-      if (halfCli.ok && halfWasm.ok) {
-        const npy = npyPayload(readFileSync(halfOut));
-        if (sha256(halfWasm.raw) !== sha256(npy.payload) || halfWasm.height !== npy.shape[0] || halfWasm.width !== npy.shape[1]) {
-          throw new Error('half-codes bytes differ');
-        }
-      } else if (!sameError(halfCli, halfWasm)) {
-        throw new Error('half-codes error differs');
-      }
-
-      const wbOut = join(dir, 'wb.npy');
-      const wbCli = cliSide(spawnCli(['dng-wb-block', file, '--rows', '0:1', '--out', wbOut]));
-      let wbWasm;
-      try {
-        const block = floatView(wasm.dng_wb_block_named(bytes, name, 0, 1));
-        wbWasm = { ok: true, raw: block.raw, height: block.height, width: block.width };
-      } catch (err) {
-        wbWasm = wasmFailure(err);
-      }
-      if (wbCli.ok && wbWasm.ok) {
-        const npy = npyPayload(readFileSync(wbOut));
-        if (sha256(wbWasm.raw) !== sha256(npy.payload) || wbWasm.height !== npy.shape[0] || wbWasm.width !== npy.shape[1]) {
-          throw new Error('wb-block bytes differ');
-        }
-      } else if (!sameError(wbCli, wbWasm)) {
-        throw new Error('wb-block error differs');
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`${file}: ${message}`);
-      failed += 1;
+for (const item of list) {
+  try {
+    if (typeof item.label !== 'string' || !Array.isArray(item.cliArgs) || typeof item.wasm !== 'function') {
+      throw new Error('bad case');
     }
+    const side = cliSide(spawnCli(item.cliArgs));
+    let fromWasm;
+    try {
+      fromWasm = { ok: true, value: item.wasm(wasm) };
+    } catch (err) {
+      fromWasm = wasmFailure(err);
+    }
+    if (side.ok && fromWasm.ok) {
+      bytesOf(item.cliArgs, side.stdout, fromWasm.value);
+    } else if (!sameError(side, fromWasm)) {
+      throw new Error('error differs');
+    }
+  } catch (err) {
+    report(typeof item.label === 'string' ? item.label : '(case)', err);
+    failed += 1;
   }
-} finally {
-  rmSync(dir, { recursive: true, force: true });
 }
 
 if (failed) process.exit(1);
-console.log(`wasm matches native on ${paths.length} files`);
+console.log(`wasm matches native on ${inputs.length} files`);
