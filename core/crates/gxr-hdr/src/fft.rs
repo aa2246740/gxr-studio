@@ -128,8 +128,8 @@ fn fft_bluestein(input: &[Cx], inverse: bool) -> Result<Vec<Cx>, CoreError> {
     let n_i = i64::try_from(n).map_err(|_| container("FFT 长度太大"))?;
     let m = next_pow2(n.checked_mul(2).and_then(|v| v.checked_sub(1)).ok_or_else(|| container("FFT 长度太大"))?)?;
     let mut chirp = vec![Cx { re: 0.0, im: 0.0 }; n];
-    for k in 0..n {
-        chirp[k] = cis(chirp_theta(k as i64, n_i, inverse));
+    for (k, slot) in chirp.iter_mut().enumerate() {
+        *slot = cis(chirp_theta(k as i64, n_i, inverse));
     }
     let mut a = vec![Cx { re: 0.0, im: 0.0 }; m];
     let mut b = vec![Cx { re: 0.0, im: 0.0 }; m];

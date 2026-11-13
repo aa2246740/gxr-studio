@@ -38,10 +38,11 @@ impl Default for GainMeta {
     }
 }
 
-struct Segment {
-    marker: u8,
-    start: usize,
-    end: usize,
+/// One marker before the entropy scan. Offsets are into the JPEG bytes.
+pub struct Segment {
+    pub marker: u8,
+    pub start: usize,
+    pub end: usize,
 }
 
 fn u16_be(data: &[u8], pos: usize) -> Result<usize, CoreError> {
@@ -52,7 +53,7 @@ fn u16_be(data: &[u8], pos: usize) -> Result<usize, CoreError> {
 }
 
 /// Port of gxr_studio/hdr/container.py:64 jpeg_segments.
-pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<(u8, usize, usize)>, usize, usize), CoreError> {
+pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<Segment>, usize, usize), CoreError> {
     if start.checked_add(2).is_none_or(|end| end > data.len()) || data[start] != 0xff || data[start + 1] != 0xd8 {
         return Err(container("不是 JPEG（缺 SOI）"));
     }
@@ -92,8 +93,7 @@ pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<(u8, usize, usize
         }
         let nxt = data[j + 1];
         if nxt == 0xd9 {
-            let out = segs.into_iter().map(|s| (s.marker, s.start, s.end)).collect();
-            return Ok((out, sos, j + 2));
+            return Ok((segs, sos, j + 2));
         }
         if nxt == 0x00 || (0xd0..=0xd7).contains(&nxt) {
             j += 2;
@@ -233,7 +233,8 @@ pub fn assemble(jpg: &[u8], gain_jpeg: &[u8], meta: &GainMeta) -> Result<Vec<u8>
     let (segs, sos, eoi) = jpeg_segments(jpg, 0)?;
     let mut keep_app = Vec::new();
     let mut keep_rest = Vec::new();
-    for (marker, start, end) in segs {
+    for seg in segs {
+        let (marker, start, end) = (seg.marker, seg.start, seg.end);
         let payload = if end >= start + 4 { &jpg[start + 4..end] } else { &[] };
         if replaced(marker, payload) {
             continue;
@@ -246,7 +247,8 @@ pub fn assemble(jpg: &[u8], gain_jpeg: &[u8], meta: &GainMeta) -> Result<Vec<u8>
     }
     let (gsegs, gsos, geoi) = jpeg_segments(gain_jpeg, 0)?;
     let mut gplain = Vec::new();
-    for (marker, start, end) in gsegs {
+    for seg in gsegs {
+        let (marker, start, end) = (seg.marker, seg.start, seg.end);
         if marker != 0xe1 && marker != 0xe2 {
             gplain.extend_from_slice(&gain_jpeg[start..end]);
         }

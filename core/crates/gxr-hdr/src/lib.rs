@@ -18,8 +18,8 @@ mod sample;
 
 pub use capture::{Field, MISMATCH, capture_of, differs, field_json};
 pub use container::{
-    GainMeta, MPF_SEG_LEN, app_segment, assemble, iso_full, iso_version_only, jpeg_segments, mpf_segment,
-    xmp_gainmap, xmp_primary,
+    GainMeta, MPF_SEG_LEN, Segment, app_segment, assemble, iso_full, iso_version_only, jpeg_segments,
+    mpf_segment, xmp_gainmap, xmp_primary,
 };
 pub use filter::{Plane, gaussian_filter, minimum_filter, uniform_filter};
 pub use gain::{
