@@ -2,7 +2,10 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_lut::{Cube, LutTableResult, RenderSpec, Target, apply_u8, identify, lut_bytes};
+use gxr_lut::{
+    Cube, LutTableResult, RenderSpec, Target, apply_u8, checked_elements, identify, lut_bytes,
+    try_vec_cap,
+};
 use gxr_raw::{CoreError, Json, error_json};
 
 fn rejected(err: CoreError) -> JsValue {
@@ -138,20 +141,19 @@ pub fn lut_apply_u8(
     let spec = RenderSpec::from_json(space_json).map_err(rejected)?;
     let target = Target::from_spec(&cube, &spec);
 
-    let expected_len = (height as usize)
-        .checked_mul(width as usize)
-        .and_then(|n| n.checked_mul(3))
-        .ok_or_else(|| rejected(CoreError::new("value_error", "image dimensions overflow")))?;
+    let expected_len =
+        checked_elements(&[u64::from(height), u64::from(width), 3]).map_err(rejected)?;
+    let npixels = checked_elements(&[u64::from(height), u64::from(width)]).map_err(rejected)?;
     if rgb.len() != expected_len {
         return Err(rejected(CoreError::new(
             "value_error",
             "LUT 输入必须为有限 RGB",
         )));
     }
-    let rgb_triples: Vec<[f64; 3]> = rgb
-        .chunks_exact(3)
-        .map(|c| [f64::from(c[0]), f64::from(c[1]), f64::from(c[2])])
-        .collect();
+    let mut rgb_triples: Vec<[f64; 3]> = try_vec_cap(npixels).map_err(rejected)?;
+    for c in rgb.chunks_exact(3) {
+        rgb_triples.push([f64::from(c[0]), f64::from(c[1]), f64::from(c[2])]);
+    }
     let xyz_triples = match xyz {
         Some(v) => {
             if v.len() != expected_len {
@@ -164,17 +166,17 @@ pub fn lut_apply_u8(
                     ),
                 )));
             }
-            Some(
-                v.chunks_exact(3)
-                    .map(|c| [c[0], c[1], c[2]])
-                    .collect::<Vec<[f64; 3]>>(),
-            )
+            let mut out = try_vec_cap(npixels).map_err(rejected)?;
+            for c in v.chunks_exact(3) {
+                out.push([c[0], c[1], c[2]]);
+            }
+            Some(out)
         }
         None => None,
     };
 
     let pixels = apply_u8(&target, &rgb_triples, xyz_triples.as_deref()).map_err(rejected)?;
-    let mut values = Vec::with_capacity(expected_len);
+    let mut values = try_vec_cap(expected_len).map_err(rejected)?;
     for px in pixels {
         values.extend_from_slice(&px);
     }

@@ -2,6 +2,7 @@
 
 use gxr_raw::CoreError;
 
+use crate::bounds::try_vec_cap;
 use crate::spaces::Target;
 
 /// Chunk size used by `lut/photo.py:82`.
@@ -25,7 +26,7 @@ pub fn apply_u8(
             ),
         ));
     }
-    let mut out = Vec::with_capacity(rgb.len());
+    let mut out = try_vec_cap(rgb.len())?;
     let mut start = 0;
     while start < rgb.len() {
         let end = (start + CHUNK_PIXELS).min(rgb.len());

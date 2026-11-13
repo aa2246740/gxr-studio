@@ -4,6 +4,7 @@ use gxr_raw::linalg::{Mat3, inv, matmul};
 use gxr_raw::sha256::sha256_hex;
 use gxr_raw::{CoreError, Json};
 
+use crate::bounds::{checked_elements, too_big_core, try_vec_cap, try_vec_filled};
 use crate::photo::apply_u8;
 use crate::spaces::{Target, default_gamut, is_display, matrix};
 
@@ -118,10 +119,10 @@ impl LutTableResult {
 
 /// Port of gxr_studio/gpu/tables.py:65 display_lut_u8.
 pub fn display_lut_u8(target: &Target<'_>) -> Result<Vec<u8>, CoreError> {
-    let slice_len = 256usize * 256usize;
-    let total_bytes = 256usize * slice_len * 4;
-    let mut out = Vec::with_capacity(total_bytes);
-    let mut rgb = vec![[0.0f64; 3]; slice_len];
+    let slice_len = checked_elements(&[256, 256])?;
+    let total_bytes = checked_elements(&[256, 256, 256, 4])?;
+    let mut out = try_vec_cap(total_bytes)?;
+    let mut rgb = try_vec_filled(slice_len, [0.0f64; 3])?;
     for b in 0..256u16 {
         let bf = f64::from(b);
         for g in 0..256u16 {
@@ -175,13 +176,16 @@ pub fn lut_bytes(target: &Target<'_>) -> Result<LutTableResult, CoreError> {
         });
     };
     let n = t3.size;
-    if n < 2 || t3.rows.len() != n * n * n {
+    let n64 = u64::try_from(n).map_err(|_| too_big_core())?;
+    let cube_elems = checked_elements(&[n64, n64, n64])?;
+    if n < 2 || t3.rows.len() != cube_elems {
         return Ok(LutTableResult::Refused {
             reason: "lut_shape",
         });
     }
 
-    let mut rgba = Vec::with_capacity(t3.rows.len() * 16);
+    let byte_len = checked_elements(&[cube_elems as u64, 16])?;
+    let mut rgba = try_vec_cap(byte_len)?;
     for row in &t3.rows {
         #[allow(clippy::cast_possible_truncation)]
         let vals = [row[0] as f32, row[1] as f32, row[2] as f32, 0.0f32];

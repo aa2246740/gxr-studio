@@ -34,6 +34,7 @@ from gxr_studio.raw.dng import RawDecodeError
 from gxr_studio.render.params import EditError
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
+from support.lut_cases import IDENTIFY_CASES
 from support.wasm_check import run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -560,55 +561,7 @@ def test_gpu_lut_bytes_refusals(tmp_path: Path) -> None:
 # ---- Unit B part 3: identify & _undeclared_choice ----
 
 
-@pytest.mark.parametrize(
-    ("comments", "title", "filename", "fun"),
-    [
-        ("#LUMIXPHOTOSTYLE VLOG\n", "FLog2C_to_Style", "FLog2C_to_Style_VLog.cube", lambda x: x),
-        ("# Input: Panasonic V-Log / V-Gamut\n", "L-Log_to_Style", "L-Log_to_Style_VLog.cube", lambda x: x),
-        ("# INPUT_COLORSPACE V-Log\n", "S-Log3_style", "S-Log3_style_VLog.cube", lambda x: x),
-        ("# Input Space = sRGB\n# Output: Rec709\n", "V-Log style", "L-Log.cube", lambda x: 1 - x),
-        ("# input_colour_space: S-Log3\n", "FLog2C style", "vlog.cube", lambda x: 1 - x),
-        ("# Input: linear\n", "synthetic", "FLog2C.cube", lambda x: 1 - x),
-        ("", "V-Log to sRGB", "FLog2C_Style.cube", lambda x: 1 - x),
-        ("", "sRGB to V-Log", "vlog_style.cube", lambda x: 1 - x),
-        ("", "synthetic", "FLog2C_to_Style_VLog.cube", lambda x: 1 - x),
-        ("", "synthetic", "Leica_L-Log_warm.cube", lambda x: 1 - x),
-        ("", "Input V-Log / V-Gamut; Target FLog2C", "film.cube", lambda x: 1 - x),
-        ("", "synthetic", "input_srgb_target_FLog2C.cube", lambda x: 1 - x),
-        ("# Input: V-Log; Output: sRGB\n", "FLog2C style", "film.cube", lambda x: 1 - x),
-        ("", "L-Log_to_style", "input_vlog.cube", lambda x: 1 - x),
-        ("", "L-Log_to_style", "FLog2C_to_Style_VLog.cube", lambda x: 1 - x),
-        ("# Output: BT.709\n", "synthetic", "film.cube", lambda x: 1 - x),
-        ("# OUTPUT_COLORSPACE Rec.709 primaries / D65 / BT.709 OETF\n", "synthetic", "film.cube", lambda x: 1 - x),
-        ("# OUTPUT_COLORSPACE Rec.709 primaries / D65 / Gamma 2.4\n", "synthetic", "film.cube", lambda x: 1 - x),
-        ("# Output transfer function: BT1886\n", "synthetic", "film_sRGB.cube", lambda x: 1 - x),
-        ("# Output: sRGB\n", "synthetic", "film_Rec709.cube", lambda x: 1 - x),
-        ("# Output gamma: 2.4\n", "synthetic", "film.cube", lambda x: 1 - x),
-        ("# Gamma 2.4\n", "synthetic", "film.cube", lambda x: 1 - x),
-        ("", "synthetic", "Film_Rec709_BT1886_VLog.cube", lambda x: 1 - x),
-        ("# Input: sRGB\n", "synthetic", "sRGB_to_VLog.cube", lambda x: 1 - x),
-        ("# Created by Synthetic Author\n", "Synthetic creator", "Creative_1234.cube", lambda x: x),
-        ("# Input: V-Log\n# Input: F-Log2\n", "synthetic", "vlog.cube", lambda x: x),
-        ("# Input: unsupported-input\n", "synthetic", "vlog.cube", lambda x: x),
-        ("#LUMIXPHOTOSTYLE VLOG\n# Input: unsupported\n", "synthetic", "vlog.cube", lambda x: x),
-        ("", "input_vlog", "input_srgb.cube", lambda x: 1 - x),
-        ("", "synthetic", "FLog2C.cube", lambda x: x),
-        ("# Input: V-Log\n# Output: sRGB\n# Output: BT709\n", "synthetic", "film.cube", lambda x: x),
-        ("", "film", "srgb.cube", lambda x: x),
-        ("", "film", "vlog.cube", lambda x: np.clip(x * 1.6, 0, 1)),
-        ("", "film", "plain.cube", lambda x: np.clip(x * 1.6, 0, 1)),
-        ("", "film", "plain.cube", lambda x: 1 / (1 + np.exp(-14 * (x - 0.5)))),
-        ("", "film", "plain.cube", lambda x: x**1.8),
-        ("", "film", "plain.cube", lambda x: x[:, [1, 2, 0]]),
-        ("# Creative look for V-Log\n", "film", "film.cube", lambda x: 1 - x),
-        ("", "warm film", "warm_film.cube", lambda x: 1 - x),
-        ("", "Analog Street", "Analog_Street.cube", lambda x: 1 - x),
-        ("", "Catalog look", "catalog.cube", lambda x: 1 - x),
-        ("# Output: Rec.709\n", "warm film", "warm_film.cube", lambda x: 1 - x),
-        ("# sRGB look\n", "FLog2C style", "FLog2C.cube", lambda x: 1 - x),
-        ("# Author: V-Log master\n", "film", "film.cube", lambda x: 1 - x),
-    ],
-)
+@pytest.mark.parametrize(("comments", "title", "filename", "fun"), IDENTIFY_CASES)
 def test_identify_and_undeclared_choice_parity(tmp_path: Path, comments: str, title: str, filename: str, fun: Any) -> None:
     require_cli()
     cube_path = _write_cube(tmp_path, "case.cube", _cube_text(fun, size=5, title=title, comments=comments))
@@ -712,6 +665,14 @@ def test_scene_xyz_real_dngs(path: Path, tmp_path: Path) -> None:
 # ---- WASM matches native ----
 
 
+def _write_huge_npy_header(path: Path, height: int, width: int) -> Path:
+    body = f"{{'descr': '|u1', 'fortran_order': False, 'shape': ({height}, {width}, 3), }}"
+    pad = (64 - (10 + len(body) + 1) % 64) % 64
+    header = body.encode("latin1") + b" " * pad + b"\n"
+    path.write_bytes(b"\x93NUMPY\x01\x00" + len(header).to_bytes(2, "little") + header)
+    return path
+
+
 def test_wasm_matches_native_lut(tmp_path: Path) -> None:
     require_cli()
     v = np.linspace(0, 1, 17)
@@ -764,6 +725,28 @@ def test_wasm_matches_native_lut(tmp_path: Path) -> None:
             "width": 2,
         },
     ]
+    huge1 = _write_huge_npy_header(tmp_path / "huge-4294967295.npy", 4294967295, 4294967295)
+    huge2 = _write_huge_npy_header(tmp_path / "huge-2147483648.npy", 2147483648, 1)
+    cases_specs.extend(
+        [
+            {
+                "kind": "apply_u8",
+                "cube": str(shaper_cube),
+                "space": {"input_space": "srgb", "output_space": "srgb"},
+                "rgb_npy": str(huge1),
+                "height": 4294967295,
+                "width": 4294967295,
+            },
+            {
+                "kind": "apply_u8",
+                "cube": str(shaper_cube),
+                "space": {"input_space": "srgb", "output_space": "srgb"},
+                "rgb_npy": str(huge2),
+                "height": 2147483648,
+                "width": 1,
+            },
+        ]
+    )
     for i, item in enumerate(cases_specs):
         p = tmp_path / f"case-{i}.json"
         p.write_text(json.dumps(item), encoding="utf-8")

@@ -4,8 +4,9 @@ use std::io::Write;
 use std::path::Path;
 
 use gxr_lut::{
-    Cube, LutTableResult, RenderSpec, Target, apply_u8, decode, encode, identify, lut_bytes,
-    scene_colour, scene_xyz,
+    Cube, LutTableResult, RenderSpec, Target, apply_u8, checked_elements, checked_product_u64,
+    decode, encode, fit_count_u64, identify, lut_bytes, mul_u64, scene_colour, scene_xyz,
+    too_big_core, try_vec_cap,
 };
 use gxr_raw::{CoreError, Dng, Json};
 
@@ -88,14 +89,18 @@ fn run_apply(args: &[String]) -> Result<Json, Failure> {
 
     if as_u8 {
         let pixels = apply_u8(&target, &rgb_triples, xyz_triples.as_deref())?;
-        let mut flat = Vec::with_capacity(pixels.len() * 3);
+        let total =
+            checked_elements(&[u64::try_from(pixels.len()).map_err(|_| too_big_core())?, 3])?;
+        let mut flat = try_vec_cap(total)?;
         for px in pixels {
             flat.extend_from_slice(&px);
         }
         write_npy_u8(out_path, &flat, &shape)
     } else {
         let (pixels, stats) = target.render(&rgb_triples, xyz_triples.as_deref())?;
-        let mut flat = Vec::with_capacity(pixels.len() * 3);
+        let total =
+            checked_elements(&[u64::try_from(pixels.len()).map_err(|_| too_big_core())?, 3])?;
+        let mut flat = try_vec_cap(total)?;
         for px in pixels {
             flat.extend_from_slice(&px);
         }
@@ -188,7 +193,8 @@ fn run_scene_xyz(args: &[String]) -> Result<Json, Failure> {
     let codes = into_triples(&shape, &flat_codes)?;
     let xyz = scene_xyz(&colour, &codes)?;
 
-    let mut out_flat = Vec::with_capacity(xyz.len() * 3);
+    let total = checked_elements(&[u64::try_from(xyz.len()).map_err(|_| too_big_core())?, 3])?;
+    let mut out_flat = try_vec_cap(total)?;
     for px in xyz {
         out_flat.extend_from_slice(&px);
     }
@@ -219,7 +225,7 @@ fn into_triples(shape: &[usize], flat: &[f64]) -> Result<Vec<[f64; 3]>, Failure>
             "LUT 输入必须为有限 RGB",
         )));
     }
-    let mut out = Vec::with_capacity(flat.len() / 3);
+    let mut out = try_vec_cap(flat.len() / 3)?;
     for chunk in flat.chunks_exact(3) {
         out.push([chunk[0], chunk[1], chunk[2]]);
     }
@@ -289,46 +295,60 @@ fn read_npy_f64(path: &str) -> Result<(Vec<usize>, Vec<f64>), Failure> {
     }
     let descr = extract_quoted_field(header, "'descr'")
         .ok_or_else(|| Failure::Usage(format!("{path} missing descr")))?;
-    let shape =
-        extract_shape(header).ok_or_else(|| Failure::Usage(format!("{path} invalid shape")))?;
-    let count = shape
-        .iter()
-        .try_fold(1usize, |acc, &d| acc.checked_mul(d))
-        .ok_or_else(|| Failure::Usage(format!("{path} shape overflow")))?;
+    let shape_u64 =
+        extract_shape_u64(header).ok_or_else(|| Failure::Usage(format!("{path} invalid shape")))?;
+    let count_u64 = checked_product_u64(&shape_u64)?;
+    let count = fit_count_u64(count_u64)?;
+    let mut shape = try_vec_cap(shape_u64.len())?;
+    for &d in &shape_u64 {
+        shape.push(fit_count_u64(d)?);
+    }
     let payload = &bytes[hdr_end..];
     let values = match descr {
         "<f8" | "=f8" => {
-            if payload.len() != count * 8 {
+            let nbytes = mul_u64(count_u64, 8)?;
+            if payload.len() as u64 != nbytes {
                 return Err(Failure::Usage(format!("{path} payload length mismatch")));
             }
-            payload
-                .chunks_exact(8)
-                .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-                .collect()
+            let mut out = try_vec_cap(count)?;
+            for c in payload.chunks_exact(8) {
+                out.push(f64::from_le_bytes([
+                    c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+                ]));
+            }
+            out
         }
         "<f4" | "=f4" => {
-            if payload.len() != count * 4 {
+            let nbytes = mul_u64(count_u64, 4)?;
+            if payload.len() as u64 != nbytes {
                 return Err(Failure::Usage(format!("{path} payload length mismatch")));
             }
-            payload
-                .chunks_exact(4)
-                .map(|c| f64::from(f32::from_le_bytes([c[0], c[1], c[2], c[3]])))
-                .collect()
+            let mut out = try_vec_cap(count)?;
+            for c in payload.chunks_exact(4) {
+                out.push(f64::from(f32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+            }
+            out
         }
         "<u2" | "=u2" => {
-            if payload.len() != count * 2 {
+            let nbytes = mul_u64(count_u64, 2)?;
+            if payload.len() as u64 != nbytes {
                 return Err(Failure::Usage(format!("{path} payload length mismatch")));
             }
-            payload
-                .chunks_exact(2)
-                .map(|c| f64::from(u16::from_le_bytes([c[0], c[1]])))
-                .collect()
+            let mut out = try_vec_cap(count)?;
+            for c in payload.chunks_exact(2) {
+                out.push(f64::from(u16::from_le_bytes([c[0], c[1]])));
+            }
+            out
         }
         "|u1" | "<u1" | "=u1" => {
-            if payload.len() != count {
+            if payload.len() as u64 != count_u64 {
                 return Err(Failure::Usage(format!("{path} payload length mismatch")));
             }
-            payload.iter().map(|&b| f64::from(b)).collect()
+            let mut out = try_vec_cap(count)?;
+            for &b in payload {
+                out.push(f64::from(b));
+            }
+            out
         }
         other => {
             return Err(Failure::Usage(format!(
@@ -348,7 +368,7 @@ fn extract_quoted_field<'a>(header: &'a str, key: &str) -> Option<&'a str> {
     Some(&after[..q2])
 }
 
-fn extract_shape(header: &str) -> Option<Vec<usize>> {
+fn extract_shape_u64(header: &str) -> Option<Vec<u64>> {
     let at = header.find("'shape'")?;
     let rest = &header[at + 7..];
     let open = rest.find('(')?;
@@ -364,7 +384,7 @@ fn extract_shape(header: &str) -> Option<Vec<usize>> {
         if p.is_empty() {
             continue;
         }
-        dims.push(p.parse::<usize>().ok()?);
+        dims.push(p.parse::<u64>().ok()?);
     }
     Some(dims)
 }

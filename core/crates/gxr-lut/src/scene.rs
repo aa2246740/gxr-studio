@@ -9,6 +9,7 @@ use gxr_raw::error::CoreError;
 pub use gxr_raw::gpu_source::{SceneAffine, affine_of, scene_affine};
 pub use gxr_raw::scene::{ANCHOR_F, ANCHOR_U_M, SceneColour, SceneError, SceneFailure};
 
+use crate::bounds::try_vec_cap;
 use crate::photo::apply_u8;
 use crate::spaces::Target;
 
@@ -28,7 +29,7 @@ pub fn scene_colour(dng: &Dng<'_>) -> Result<SceneColour, CoreError> {
 
 /// Port of gxr_studio/lut/scene.py:45 SceneColour.xyz over a slice of `(n, 3)` sensor codes.
 pub fn scene_xyz(colour: &SceneColour, codes: &[[f64; 3]]) -> Result<Vec<[f64; 3]>, CoreError> {
-    let mut out = Vec::with_capacity(codes.len());
+    let mut out = try_vec_cap(codes.len())?;
     for px in codes {
         out.push(colour.xyz(px).map_err(scene_error_to_core)?);
     }

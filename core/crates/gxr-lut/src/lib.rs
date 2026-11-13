@@ -2,6 +2,7 @@
 //! display/log GPU LUT tables, cube space identification, and scene XYZ glue over `gxr-raw`).
 #![forbid(unsafe_code)]
 
+pub mod bounds;
 pub mod cube;
 pub mod identify;
 mod identify_scan;
@@ -9,6 +10,11 @@ pub mod photo;
 pub mod scene;
 pub mod spaces;
 pub mod tables;
+
+pub use bounds::{
+    ARRAY_TOO_BIG, add_u64, checked_elements, checked_product_u64, fit_count_u64, mul_u64,
+    too_big_core, try_vec_cap, try_vec_filled,
+};
 
 pub use cube::{Cube, MAX_1D, MAX_3D, MAX_BYTES, Table3, comment_start};
 pub use identify::{IDENTIFICATION_VERSION, IdentifyResult, guess_space, identify};

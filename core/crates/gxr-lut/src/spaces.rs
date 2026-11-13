@@ -5,6 +5,7 @@ use gxr_raw::CoreError;
 use gxr_raw::linalg::{Mat3, inv, matvec, solve};
 use gxr_raw::sha256::sha256_hex;
 
+use crate::bounds::try_vec_cap;
 use crate::cube::Cube;
 
 /// Port of gxr_studio/lut/spaces.py:14 DISPLAY.
@@ -202,7 +203,11 @@ pub fn encode(xs: &[f64], space: &str) -> Result<Vec<f64>, CoreError> {
             format!("不支持输入空间：{space}"),
         ));
     }
-    xs.iter().map(|&v| encode_scalar(v, space)).collect()
+    let mut out = try_vec_cap(xs.len())?;
+    for &v in xs {
+        out.push(encode_scalar(v, space)?);
+    }
+    Ok(out)
 }
 
 /// Port of gxr_studio/lut/spaces.py:58 decode (scalar).
@@ -293,7 +298,11 @@ pub fn decode(xs: &[f64], space: &str) -> Result<Vec<f64>, CoreError> {
             format!("不支持输出空间：{space}"),
         ));
     }
-    xs.iter().map(|&v| decode_scalar(v, space)).collect()
+    let mut out = try_vec_cap(xs.len())?;
+    for &v in xs {
+        out.push(decode_scalar(v, space)?);
+    }
+    Ok(out)
 }
 
 fn resolved_gamut<'a>(space: &str, gamut: Option<&'a str>) -> Result<&'a str, CoreError> {
@@ -319,7 +328,7 @@ pub fn xyz_to_encoded(
     let g = resolved_gamut(space, gamut)?;
     let inv_m = inv(&matrix(g)?)
         .map_err(|_| CoreError::new("bad_gamut", format!("singular gamut matrix: {g}")))?;
-    let mut out = Vec::with_capacity(xyz.len());
+    let mut out = try_vec_cap(xyz.len())?;
     for px in xyz {
         let lin = matvec(&inv_m, px);
         out.push([
@@ -347,7 +356,7 @@ pub fn to_srgb(
     let m = matrix(g)?;
     let inv_709 = inv(&matrix("rec709")?)
         .map_err(|_| CoreError::new("bad_gamut", "singular rec709 matrix"))?;
-    let mut out = Vec::with_capacity(encoded.len());
+    let mut out = try_vec_cap(encoded.len())?;
     for px in encoded {
         let lin = [
             decode_scalar(px[0], space)?,
@@ -542,7 +551,7 @@ impl<'a> Target<'a> {
     ) -> Result<(Vec<[f64; 3]>, RenderStats), CoreError> {
         let mut x = if is_display(&self.input_space) {
             let m709 = matrix("rec709")?;
-            let mut xyz_display = Vec::with_capacity(stock_rgb.len());
+            let mut xyz_display = try_vec_cap(stock_rgb.len())?;
             for px in stock_rgb {
                 let lin = [
                     decode_scalar(px[0] / 255.0, "srgb")?,
@@ -592,7 +601,7 @@ impl<'a> Target<'a> {
 
         let srgb = to_srgb(&out, &self.output_space, self.output_gamut.as_deref())?;
         let mut gamut_clipped = 0usize;
-        let mut rgb = Vec::with_capacity(srgb.len());
+        let mut rgb = try_vec_cap(srgb.len())?;
         for px in &srgb {
             if px.iter().any(|&v| !(0.0..=1.0).contains(&v)) {
                 gamut_clipped += 1;

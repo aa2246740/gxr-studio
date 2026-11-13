@@ -6,6 +6,8 @@ use std::path::Path;
 use gxr_raw::sha256::sha256_hex;
 use gxr_raw::{CoreError, Json};
 
+use crate::bounds::{add_u64, fit_count_u64, mul_u64, try_vec_cap, try_vec_filled};
+
 /// Port of gxr_studio/lut/cube.py:14 MAX_BYTES.
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Port of gxr_studio/lut/cube.py:15 MAX_1D.
@@ -401,8 +403,8 @@ impl Cube {
                     format!("line {no}: expected three finite numbers"),
                 ));
             }
-            let n1 = hdr.n1.unwrap_or(0);
-            let n3 = hdr.n3.unwrap_or(0);
+            let n1 = hdr.n1.unwrap_or(0) as u64;
+            let n3 = hdr.n3.unwrap_or(0) as u64;
             let expected = expected_rows(n1, n3)?;
             if (n1 == 0 && n3 == 0) || data.len() >= expected {
                 return Err(CoreError::new(
@@ -415,7 +417,7 @@ impl Cube {
 
         let n1 = hdr.n1.unwrap_or(0);
         let n3 = hdr.n3.unwrap_or(0);
-        let expected = expected_rows(n1, n3)?;
+        let expected = expected_rows(n1 as u64, n3 as u64)?;
         if (n1 == 0 && n3 == 0) || data.len() != expected {
             return Err(CoreError::new("value_error", "LUT 数据行数与声明不符"));
         }
@@ -483,17 +485,15 @@ impl Cube {
             self.domain_max[1] - self.domain_min[1],
             self.domain_max[2] - self.domain_min[2],
         ];
-        let mut x: Vec<[f64; 3]> = rgb
-            .iter()
-            .map(|px| {
-                [
-                    (px[0] - self.domain_min[0]) / d_span[0],
-                    (px[1] - self.domain_min[1]) / d_span[1],
-                    (px[2] - self.domain_min[2]) / d_span[2],
-                ]
-            })
-            .collect();
-        let mut clipped = vec![false; n];
+        let mut x: Vec<[f64; 3]> = try_vec_cap(n)?;
+        for px in rgb {
+            x.push([
+                (px[0] - self.domain_min[0]) / d_span[0],
+                (px[1] - self.domain_min[1]) / d_span[1],
+                (px[2] - self.domain_min[2]) / d_span[2],
+            ]);
+        }
+        let mut clipped = try_vec_filled(n, false)?;
 
         if let Some(t1) = &self.table1 {
             let r1_span = self.range1[1] - self.range1[0];
@@ -521,7 +521,7 @@ impl Cube {
                     *v = norm.clamp(0.0, 1.0);
                 }
             }
-            x = Self::tetrahedral_table(t3, &x);
+            x = Self::tetrahedral_table(t3, &x)?;
         }
 
         let share = if n == 0 {
@@ -538,14 +538,14 @@ impl Cube {
         let Some(t3) = &self.table3 else {
             return Err(CoreError::new("value_error", "LUT 没有 3D 表"));
         };
-        Ok(Self::tetrahedral_table(t3, x))
+        Self::tetrahedral_table(t3, x)
     }
 
-    fn tetrahedral_table(t3: &Table3, x: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    fn tetrahedral_table(t3: &Table3, x: &[[f64; 3]]) -> Result<Vec<[f64; 3]>, CoreError> {
         let n = t3.size;
         let max_idx = n - 2;
         let nf = (n - 1) as f64;
-        let mut out = Vec::with_capacity(x.len());
+        let mut out = try_vec_cap(x.len())?;
 
         for px in x {
             let pos = [px[0] * nf, px[1] * nf, px[2] * nf];
@@ -591,7 +591,7 @@ impl Cube {
                 v0[2] + u0 * (v1[2] - v0[2]) + u1 * (v2[2] - v1[2]) + u2 * (v3[2] - v2[2]),
             ]);
         }
-        out
+        Ok(out)
     }
 
     pub fn size_1d(&self) -> usize {
@@ -640,11 +640,11 @@ impl Cube {
     }
 }
 
-fn expected_rows(n1: usize, n3: usize) -> Result<usize, CoreError> {
-    n3.checked_mul(n3)
-        .and_then(|v| v.checked_mul(n3))
-        .and_then(|v| v.checked_add(n1))
-        .ok_or_else(|| CoreError::new("value_error", "LUT size overflow"))
+fn expected_rows(n1: u64, n3: u64) -> Result<usize, CoreError> {
+    let n3_sq = mul_u64(n3, n3)?;
+    let n3_cu = mul_u64(n3_sq, n3)?;
+    let total = add_u64(n3_cu, n1)?;
+    fit_count_u64(total)
 }
 
 fn linspace_0_1(num: usize) -> Vec<f64> {
