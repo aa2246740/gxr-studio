@@ -22,10 +22,12 @@ edition = "2024"
 rust-version = "1.93.1"
 publish = false
 
-# 版本一律 `=x.y.z`，发布满 7 天才能用（docs/dependencies.md）。核心 crate 只能依赖 libm 和彼此。
+# 版本一律 `=x.y.z`，发布满 7 天才能用（docs/dependencies.md）。
+# 核心 crate 只能依赖 libm 和彼此，外加下面这条 JPEG 例外（还没有任何 crate 引用它）。
 [workspace.dependencies]
 libm = "=0.2.16"
 wasm-bindgen = "=0.2.130"
+jpeg-encoder = "=0.6.0"
 gxr-math = { path = "crates/gxr-math" }
 gxr-raw = { path = "crates/gxr-raw" }
 gxr-camdata = { path = "crates/gxr-camdata" }
