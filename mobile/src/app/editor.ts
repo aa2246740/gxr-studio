@@ -65,6 +65,10 @@ export class EditorView {
   private hist: HTMLCanvasElement | null = null;
   private caption = '';
   private sharp: ImageBitmap | null = null;
+  private placeholder: HTMLElement | null = null;
+  /** 这张读完、清楚的图也换上之后才 resolve。只给截图和测试等。 */
+  settled: Promise<void> = Promise.resolve();
+  private sharpening: Promise<void> = Promise.resolve();
   private restLabel = '';
 
   constructor(
@@ -77,7 +81,7 @@ export class EditorView {
   open(photo: Photo): void {
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
     this.build(photo, index);
-    void this.load(photo);
+    this.settled = this.load(photo).then(() => this.sharpening);
   }
 
   /** 模拟器没有显卡，滑块是停用的。截图时只把拖动中的版式摆出来。 */
@@ -118,7 +122,9 @@ export class EditorView {
     this.still = document.createElement('canvas');
     this.still.className = 'still';
     this.still.hidden = true;
-    pv.append(this.gpuCanvas, this.still);
+    this.placeholder = el('div', 'ph', '只有 RAW');
+    this.placeholder.hidden = true;
+    pv.append(this.gpuCanvas, this.still, this.placeholder);
     this.stageLabel = el('div', 'lbl');
     stage.append(pv, this.stageLabel);
     this.bindGesture(stage);
@@ -314,6 +320,7 @@ export class EditorView {
       this.still.hidden = true;
       return;
     }
+    if (this.placeholder) this.placeholder.hidden = true;
     this.still.hidden = false;
     this.still.width = bitmap.width;
     this.still.height = bitmap.height;
@@ -500,7 +507,9 @@ export class EditorView {
     this.paintStill(photo.bitmap);
     if (this.gpuCanvas) this.gpuCanvas.hidden = true;
     if (!this.engine && this.input) this.input.disabled = true;
-    void this.sharpen(photo);
+    // 没有相机 JPG、DNG 里也没有预览：照片区写「只有 RAW」，不留一块空灰。
+    if (this.placeholder) this.placeholder.hidden = !!photo.bitmap || !!photo.jpg;
+    this.sharpening = this.sharpen(photo);
   }
 
   /** 先放缩略图，Worker 解好屏幕宽度的那张再换上。主线程只画一次。 */

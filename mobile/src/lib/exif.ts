@@ -71,6 +71,8 @@ interface Found {
   subOriginal: string | null;
   dateTime: string | null;
   embedded: ByteRange | null;
+  /** 缩小尺寸、JPEG 压缩的单条带（GXR 的 DNG 把 640×480 预览放在第二个 SubIFD 里）。 */
+  strips: ByteRange[];
 }
 
 function typeSize(type: number): number | null {
@@ -107,6 +109,11 @@ function walk(bytes: Uint8Array, le: boolean, ifd: number, depth: number, found:
   if (count === null || count > MAX_ENTRIES) return;
   const exifAt: number[] = [];
   const subAt: number[] = [];
+  let subfile: number | null = null;
+  let compression: number | null = null;
+  let photometric: number | null = null;
+  let stripOffset: number | null = null;
+  let stripLength: number | null = null;
   for (let i = 0; i < count; i++) {
     const entry = ifd + 2 + i * 12;
     if (entry + 12 > bytes.length) return;
@@ -135,6 +142,20 @@ function walk(bytes: Uint8Array, le: boolean, ifd: number, depth: number, found:
     }
     if (tag === 0x0201 && type === 4 && n === 1) noteEmbedded(found, u32(bytes, entry + 8, le), null);
     if (tag === 0x0202 && type === 4 && n === 1) noteEmbedded(found, null, u32(bytes, entry + 8, le));
+    if (n === 1 && (type === 3 || type === 4)) {
+      const value = type === 3 ? u16(bytes, entry + 8, le) : u32(bytes, entry + 8, le);
+      if (tag === 0x00fe) subfile = value;
+      if (tag === 0x0103) compression = value;
+      if (tag === 0x0106) photometric = value;
+      if (tag === 0x0111) stripOffset = value;
+      if (tag === 0x0117) stripLength = value;
+    }
+  }
+  const reduced = subfile !== null && (subfile & 1) === 1;
+  const jpeg = compression === 6 || compression === 7;
+  const picture = photometric !== 32803 && photometric !== 34892;
+  if (reduced && jpeg && picture && stripOffset !== null && stripLength !== null && stripLength > 0 && found.strips.length < MAX_IFD) {
+    found.strips.push({ offset: stripOffset, length: stripLength });
   }
   for (const next of exifAt) walk(bytes, le, next, depth + 1, found);
   for (const next of subAt) walk(bytes, le, next, depth + 1, found);
@@ -151,7 +172,7 @@ function fromTiff(bytes: Uint8Array): Found | null {
   if (u16(bytes, 2, le) !== 42) return null;
   const first = u32(bytes, 4, le);
   if (first === null) return null;
-  const found: Found = { original: null, subOriginal: null, dateTime: null, embedded: null };
+  const found: Found = { original: null, subOriginal: null, dateTime: null, embedded: null, strips: [] };
   walk(bytes, le, first, 0, found);
   return found;
 }
@@ -210,11 +231,14 @@ export function captureTimeFromTiff(bytes: Uint8Array): CaptureTime | null {
 export function embeddedJpegRange(bytes: Uint8Array): ByteRange | null {
   try {
     const found = fromTiff(bytes);
-    const range = found?.embedded;
-    if (!range) return null;
-    if (range.offset < 0 || range.length <= 0 || range.length > MAX_EMBEDDED) return null;
-    if (range.offset > 0xffffffff - range.length) return null;
-    return range;
+    if (!found) return null;
+    const candidates = [found.embedded, ...found.strips].filter(
+      (range): range is ByteRange =>
+        range !== null && range.offset > 0 && range.length > 0 && range.length <= MAX_EMBEDDED && range.offset <= 0xffffffff - range.length,
+    );
+    if (!candidates.length) return null;
+    // 有几份时取最大的那份：缩略图要够清楚。
+    return candidates.reduce((best, range) => (range.length > best.length ? range : best));
   } catch {
     return null;
   }

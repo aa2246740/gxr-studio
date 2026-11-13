@@ -13,3 +13,12 @@ export async function sampleFiles(limit = 6): Promise<File[]> {
   }
   return files;
 }
+
+/** 截图脚本等这个文件出现再截。开发服务器把它写进 mobile/.reports（不进仓库）。 */
+export async function reportShot(name: string, data: unknown): Promise<void> {
+  try {
+    await fetch(`/__dev/report/shot-${encodeURIComponent(name)}`, { method: 'POST', body: JSON.stringify(data) });
+  } catch {
+    /* 截图脚本会超时并报出来。 */
+  }
+}

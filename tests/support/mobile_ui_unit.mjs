@@ -96,6 +96,47 @@ test('embedded jpeg range points at the preview bytes', () => {
   assert.equal(bytes[range.offset], 0xff);
 });
 
+test('dng preview in a reduced jpeg strip of a sub ifd', () => {
+  // IFD0：160×120 未压缩缩略图，SubIFD 两个：CFA 原始数据（无损 JPEG）和 JPEG 预览。只该挑预览。
+  const ifd0 = 8;
+  const subs = ifd0 + 2 + 12 * 3 + 4;
+  const raw = subs + 8;
+  const preview = raw + 2 + 12 * 5 + 4;
+  const data = preview + 2 + 12 * 5 + 4;
+  const bytes = Uint8Array.from([
+    0x49, 0x49, 0x2a, 0x00,
+    ...u32(ifd0),
+    ...u16(3),
+    ...entry(0x00fe, 4, 1, 1),
+    ...entry(0x0111, 4, 1, 9000),
+    ...entry(0x014a, 4, 2, subs),
+    ...u32(0),
+    ...u32(raw),
+    ...u32(preview),
+    ...u16(5),
+    ...entry(0x00fe, 4, 1, 0),
+    ...entry(0x0103, 3, 1, 7),
+    ...entry(0x0106, 3, 1, 32803),
+    ...entry(0x0111, 4, 1, 100000),
+    ...entry(0x0117, 4, 1, 5000000),
+    ...u32(0),
+    ...u16(5),
+    ...entry(0x00fe, 4, 1, 1),
+    ...entry(0x0103, 3, 1, 7),
+    ...entry(0x0106, 3, 1, 6),
+    ...entry(0x0111, 4, 1, data),
+    ...entry(0x0117, 4, 1, 4),
+    ...u32(0),
+    0xff, 0xd8, 0xff, 0xd9,
+  ]);
+  assert.deepEqual(embeddedJpegRange(bytes), { offset: data, length: 4 });
+  // 只有原始数据那一条时不当成预览。
+  const rawOnly = bytes.slice();
+  rawOnly[subs + 4] = raw & 255;
+  rawOnly[subs + 5] = (raw >> 8) & 255;
+  assert.equal(embeddedJpegRange(rawOnly), null);
+});
+
 test('pairing, dat and ignored files', () => {
   const files = [
     { name: 'R001.DNG', lastModified: 10 },

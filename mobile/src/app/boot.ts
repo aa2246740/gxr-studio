@@ -54,17 +54,35 @@ class App implements AppApi {
     if (!import.meta.env.DEV) return;
     const shot = new URLSearchParams(location.search).get('shot');
     if (!shot) return;
-    const { sampleFiles } = await import('./shots');
-    const files = await sampleFiles();
-    if (!files.length) return;
-    this.ingest(files);
-    await this.settle();
-    if (shot === 'start') this.showStart();
+    const { sampleFiles, reportShot } = await import('./shots');
+    if (shot !== 'start') {
+      const files = await sampleFiles();
+      if (files.length) {
+        this.ingest(files);
+        await this.settle();
+      }
+    }
     if ((shot === 'editor' || shot === 'drag') && this.byId.size) {
       const first = this.ordered()[0];
       if (first) this.open(first.id);
-      if (shot === 'drag') requestAnimationFrame(() => this.editor?.forceDrag());
+      await this.editor?.settled;
+      if (shot === 'drag') this.editor?.forceDrag();
     }
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    this.shell.dataset.shot = shot;
+    await reportShot(shot, {
+      screen: this.screen,
+      gpu: this.engine !== null,
+      drag: this.shell.dataset.drag,
+      photos: this.ordered().map((photo) => ({
+        stem: photo.stem,
+        status: photo.status,
+        jpg: photo.jpg !== null,
+        bitmap: photo.bitmap ? [photo.bitmap.width, photo.bitmap.height] : null,
+        captureMs: photo.captureMs,
+      })),
+      errors: this.pageErrors.slice(0, 10),
+    });
   }
 
   photos(): Photo[] {
