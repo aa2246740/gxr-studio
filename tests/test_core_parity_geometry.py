@@ -464,9 +464,37 @@ def test_final_box_matches_python_exact(
         ]
     )
     assert code == 0, payload
-    assert payload["box"] == list(py_box)
-    assert payload["header"] == header_value(py_valid)
-    _assert_close_rect(py_valid, payload["valid"], "final_box.valid")
+    assert payload == {
+        "box": list(py_box),
+        "valid": list(py_valid),
+        "header": header_value(py_valid),
+    }
+
+
+def test_final_box_rejects_oversized_dimensions() -> None:
+    require_cli()
+    for bad_w, bad_h, geom_dict in (
+        (4294967295, 4294967295, {}),
+        (2147483648, 1, {}),
+        (4294967295, 4294967295, {"straighten": 5.0}),
+        (4294967295, 4294967295, {"vertical": 40}),
+    ):
+        bad_code, bad_payload = run_json(
+            [
+                "geom-final-box",
+                "--w",
+                str(bad_w),
+                "--h",
+                str(bad_h),
+                "--geometry",
+                json.dumps(geom_dict),
+                "--crop",
+                "null",
+            ]
+        )
+        bad_err = error_of(bad_code, bad_payload)
+        assert bad_err is not None and bad_err.kind == "bad_geometry"
+        assert "array is too big" in bad_err.message
 
 
 def test_final_box_on_real_dng_dimensions() -> None:
@@ -503,9 +531,11 @@ def test_final_box_on_real_dng_dimensions() -> None:
                 ]
             )
             assert code == 0, (rel, payload)
-            assert payload["box"] == list(py_box), rel
-            assert payload["header"] == header_value(py_valid), rel
-            _assert_close_rect(py_valid, payload["valid"], rel)
+            assert payload == {
+                "box": list(py_box),
+                "valid": list(py_valid),
+                "header": header_value(py_valid),
+            }, rel
 
 
 # ---- 5. WASM vs native parity ------------------------------------------------
@@ -524,6 +554,7 @@ def test_wasm_matches_native_for_geometry(tmp_path: Path) -> None:
         rgb: np.ndarray | None = None,
         expect_error: bool = False,
         check_final_box: bool = True,
+        override_dims: bool = False,
     ) -> None:
         rgb_npy = None
         if rgb is not None:
@@ -540,6 +571,7 @@ def test_wasm_matches_native_for_geometry(tmp_path: Path) -> None:
                     "rgbNpy": str(rgb_npy) if rgb_npy else None,
                     "expectError": expect_error,
                     "checkFinalBox": check_final_box,
+                    "overrideDims": override_dims,
                 }
             ),
             encoding="utf-8",
@@ -573,6 +605,11 @@ def test_wasm_matches_native_for_geometry(tmp_path: Path) -> None:
     add_case("bad-geom", 97, 65, '{"straighten": 99}', None, rgb=img_small, expect_error=True)
     add_case("bad-geom-nan", 97, 65, '{"straighten": NaN}', None, rgb=img_small, expect_error=True)
     add_case("bad-crop", 97, 65, {}, '{"preset": "nope"}', expect_error=True)
+    add_case("huge-4294967295", 4294967295, 4294967295, {}, None, expect_error=True)
+    add_case("huge-2147483648x1", 2147483648, 1, {}, None, expect_error=True)
+    add_case("huge-expand-4294967295", 4294967295, 4294967295, {"vertical": 40}, None, expect_error=True)
+    add_case("mismatch-warp", 97, 64, {}, None, rgb=img_small, expect_error=True, check_final_box=False, override_dims=True)
+    add_case("huge-warp-dims", 4294967295, 4294967295, {}, None, rgb=img_small, expect_error=True, override_dims=True)
 
     proc = run_area("geometry", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
