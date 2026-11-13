@@ -167,8 +167,20 @@ def compare_gain(tmp: Path, sdr: np.ndarray, y: np.ndarray, clip: np.ndarray, pa
     assert err is None, f"rust raised {err.kind}: {err.message}"
     assert payload == gain_expect(result)
     same_exact(codes_of(result), np.load(tmp / f"{tag}-g.npy"), f"{tag} gain codes")
-    same_f32(result.delta, np.load(tmp / f"{tag}-d.npy"), f"{tag} delta")
-    return "ok"
+    return "ok" + delta_note(result.delta, np.load(tmp / f"{tag}-d.npy"))
+
+
+def delta_note(python: np.ndarray, rust: np.ndarray) -> str:
+    """The float32 ``delta`` plane before quantisation is reported, not gated (UNIT-hdr gates
+    the uint8 codes): scipy's fused sigma-0.6 Gaussian can move its last bit. Returns
+    ``""`` when every bit matches, else the count, first index and both values."""
+    assert python.dtype == rust.dtype == np.float32 and python.shape == rust.shape
+    both_nan = np.isnan(python) & np.isnan(rust)
+    differ = (python.view(np.uint32) != rust.view(np.uint32)) & ~both_nan
+    if not differ.any():
+        return ""
+    at = _first(differ)
+    return f" delta {int(differ.sum())}/{python.size} first {at} python={float(python[at])!r} rust={float(rust[at])!r}"
 
 
 POW_CODES = (71, 180)
@@ -204,8 +216,16 @@ def flow(tmp: Path, jpeg: bytes, dng: bytes | Path, tag: str, *, gain: bool = Tr
     dng_path = dng if isinstance(dng, Path) else tmp / f"{tag}.dng"
     if not isinstance(dng, Path):
         dng_path.write_bytes(dng)
-    raw = g.raw_luma(open_dng(dng_path))
-    ok(["hdr-raw-luma", str(dng_path), "--out", str(tmp / f"{tag}-y.npy"), "--clip-out", str(tmp / f"{tag}-clip.npy")])
+    from gxr_studio.raw.dng import RawDecodeError
+
+    rust_args = ["hdr-raw-luma", str(dng_path), "--out", str(tmp / f"{tag}-y.npy"), "--clip-out", str(tmp / f"{tag}-clip.npy")]
+    try:
+        raw = g.raw_luma(open_dng(dng_path))
+    except RawDecodeError as exc:
+        _, err = call(rust_args)
+        assert err is not None and (err.kind, err.message) == ("raw_decode", str(exc))
+        return Flow(["raw_luma:raw_decode"], {}, None)
+    ok(rust_args)
     ry, rclip = np.load(tmp / f"{tag}-y.npy"), np.load(tmp / f"{tag}-clip.npy")
     same_f32(raw.y, ry, f"{tag} raw_luma.y")
     same_exact(raw.clip, rclip, f"{tag} raw_luma.clip")
@@ -258,7 +278,7 @@ def e2e_codes(tmp: Path, rsdr: np.ndarray, y: np.ndarray, clip: np.ndarray, ref:
     return str(int((np.load(tmp / f"{tag}-e2e.npy") != ref).sum()))
 
 
-def real_pairs(limit: int = 6) -> list[tuple[Path, Path]]:
+def real_pairs(limit: int = 8) -> list[tuple[Path, Path]]:
     """RAW+JPG pairs (same stem) under ``captures/``, no backup paths, spread in sorted order."""
     if not CAPTURES.is_dir():
         return []
