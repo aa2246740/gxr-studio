@@ -380,7 +380,9 @@ def _check_predict(tmp: Path, pack: Any, entry: bytes, codes: np.ndarray, **kw: 
         assert cp.same_error(py, rust) is None, cp.same_error(py, rust)
         return
     if kw.get("flt"):
-        gap = cp.float_gap(py, rust)
+        gap, decided = cp.predict_gap(pack, entry, codes, py, rust, half=kw.get("half", 0), base=kw.get("base", False))
+        for line in decided:
+            print(f"predict decided by numpy's own spread: {line}")
         assert gap is None, gap
     else:
         assert py.dtype == np.uint8 and rust.dtype == np.uint8
@@ -439,7 +441,9 @@ def _check_bake(tmp: Path, pack: Any, entry: bytes, **kw: Any) -> Any:
     if isinstance(py, BaseException) or isinstance(rust, CoreCliError):
         assert cp.same_error(py, rust) is None, cp.same_error(py, rust)
         return None
-    gap = cp.bake_gap(py, rust, pack.model(), entry)
+    gap, allowed = cp.bake_gap(py, rust, pack.model(), entry)
+    for line in allowed:
+        print(f"bake float32 at an f32 rounding midpoint (allowed): {line}")
     assert gap is None, gap
     return py[2]
 
@@ -612,6 +616,18 @@ def test_real_dngs_apply_matches_python(real_home: Path, tmp_path: Path) -> None
         assert not isinstance(rust, CoreCliError), rust
         assert rust.shape == codes.shape and np.array_equal(py, rust), (dng.name, cf.first_difference(py, rust))
         print(f"real apply {dng.name} unit={unit} iso={iso} pixels={codes.size // 3}")
+    # The bakes with float32 cells at a rounding midpoint (jlaunch ISO 1600, slots 4 and 5) must
+    # still give exact uint8 on a real photo.
+    pack = _real_pack(tmp_path, real_home, "jlaunch", 1600)
+    for k, slot in enumerate((4, 5)):
+        entry = store.load_entry(real_home, "jlaunch", slot)
+        bk = _check_bake(tmp_path, pack, entry)
+        files = cp.write_bake(tmp_path, pack, entry, f"mid{slot}")
+        codes = run_npy(["dng-half-codes", str(picked[k])], tmp_path / f"mid{slot}.npy")
+        py, rust = cp.apply(tmp_path, files, bk, codes)
+        assert not isinstance(rust, CoreCliError), rust
+        assert rust.shape == codes.shape and np.array_equal(py, rust), (picked[k].name, slot, cf.first_difference(py, rust))
+        print(f"real apply {picked[k].name} unit=jlaunch iso=1600 slot={slot} pixels={codes.size // 3}")
 
 
 # ---- WASM against native ------------------------------------------------------------------
