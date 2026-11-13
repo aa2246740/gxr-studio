@@ -22,7 +22,17 @@ version = "0.1.0"
 name = "gxr-cli"
 version = "0.1.0"
 dependencies = [
+ "gxr-camdata",
+ "gxr-color",
+ "gxr-export",
+ "gxr-finish",
+ "gxr-frame",
+ "gxr-hdr",
+ "gxr-jpeg",
+ "gxr-lut",
+ "gxr-math",
  "gxr-raw",
+ "gxr-wasm",
 ]
 
 [[package]]
