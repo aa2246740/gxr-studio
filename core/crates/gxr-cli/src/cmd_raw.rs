@@ -7,7 +7,7 @@ use gxr_raw::{CoreError, Dng, Json};
 use crate::common::{self, Failure, Output};
 
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
-    if command == "dng-demosaic" || command == "dng-neutral" {
+    if command == "dng-demosaic" || command == "dng-neutral" || command == "dng-srgb-pow" {
         return run_render(command, args).map(|json| Output {
             text: json.render(),
             ok: true,
@@ -93,6 +93,23 @@ fn run_render(command: &str, args: &[String]) -> Result<Json, Failure> {
             let dng = Dng::open(&data, &common::base_name(path))?;
             let img = gxr_raw::render_full(&dng)?;
             write_u8_npy(out, &img.values, &[img.height, img.width, 3])
+        }
+        "dng-srgb-pow" => {
+            let raw = common::option(args, "--bits")?;
+            let trimmed = raw
+                .strip_prefix("0x")
+                .or_else(|| raw.strip_prefix("0X"))
+                .unwrap_or(raw);
+            let bits = u32::from_str_radix(trimmed, 16)
+                .map_err(|_| Failure::Usage(format!("bad --bits {raw:?}, expected hex u32")))?;
+            let a = f32::from_bits(bits);
+            let pow = gxr_raw::srgb_gamma_pow(a);
+            let enc = gxr_raw::srgb_encode(a);
+            Ok(Json::object([
+                ("input_bits", Json::str(format!("0x{bits:08x}"))),
+                ("power_bits", Json::str(format!("0x{:08x}", pow.to_bits()))),
+                ("srgb_bits", Json::str(format!("0x{:08x}", enc.to_bits()))),
+            ]))
         }
         _ => Err(Failure::Usage(format!("unknown command {command:?}"))),
     }

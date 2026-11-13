@@ -1,10 +1,25 @@
 //! Port of gxr_studio/raw/render.py: neutral full-resolution RAW -> sRGB uint8 rendering.
 
-use crate::codes::{CODE_MAX, Image, STRIP_ROWS, crop_shape, orient_array, wb_gains};
-use crate::demosaic::demosaic_strips;
+use crate::codes::{CODE_MAX, Image, STRIP_ROWS, orient_array, wb_gains};
+use crate::demosaic::{check_crop_window, demosaic_strips};
 use crate::dng::Dng;
 use crate::error::CoreError;
 use crate::mosaic::require_finite;
+
+/// Power term `a ** f32(1/2.4)` used by `srgb_encode` above the linear segment.
+///
+/// NumPy 2.4 NEP 50 promotes `1 / 2.4` to float32 (`(1.0_f64 / 2.4_f64) as f32`). Evaluating
+/// via double precision (`libm::pow(f64::from(a), f64::from(inv_gamma_f32)) as f32`) produces
+/// the correctly rounded float32 power, avoiding macOS `libSystem powf` 1-ULP errors.
+#[inline]
+pub fn srgb_gamma_pow(a: f32) -> f32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let inv_gamma_f32 = (1.0_f64 / 2.4_f64) as f32;
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        gxr_math::powf(f64::from(a), f64::from(inv_gamma_f32)) as f32
+    }
+}
 
 /// Port of gxr_studio/raw/render.py:27 srgb_encode.
 ///
@@ -14,14 +29,7 @@ pub fn srgb_encode(linear: f32) -> f32 {
     if a <= 0.003_130_8_f32 {
         a * 12.92_f32
     } else {
-        // NumPy 2.4 NEP 50 promotes `1 / 2.4` to float32 (`(1.0_f64 / 2.4_f64) as f32`) and calls
-        // `powf(a, exp)` via float64 intermediate (`libm::pow(a as f64, exp as f64) as f32`),
-        // matching macOS libSystem `powf` to the exact float32 bit on every boundary crossing.
-        #[allow(clippy::cast_possible_truncation)]
-        let inv_gamma_f32 = (1.0_f64 / 2.4_f64) as f32;
-        #[allow(clippy::cast_possible_truncation)]
-        let powered = gxr_math::powf(f64::from(a), f64::from(inv_gamma_f32)) as f32;
-        1.055_f32 * powered - 0.055_f32
+        1.055_f32 * srgb_gamma_pow(a) - 0.055_f32
     }
 }
 
@@ -58,10 +66,7 @@ pub fn neutral_display(codes: &Image<f32>) -> Image<u8> {
 /// Runs strip-wise (`STRIP_ROWS = 256`) white-balanced demosaic -> `_neutral_display` ->
 /// `orient_array`, keeping peak memory bounded without allocating a full-frame float buffer.
 pub fn render_full(dng: &Dng<'_>) -> Result<Image<u8>, CoreError> {
-    let (h, w) = crop_shape(dng);
-    if h < 4 || w < 4 {
-        return Err(CoreError::raw_decode("画面太小"));
-    }
+    let (_, _, h, w) = check_crop_window(dng)?;
     // Check neutral & decode strips before allocating the full output buffer so a huge synthetic
     // crop on a truncated file reports the missing strips rather than trying to reserve gigabytes.
     wb_gains(dng)?;
@@ -135,11 +140,20 @@ mod tests {
     }
 
     #[test]
-    fn neutral_display_correctly_rounds_0x3eadd76b_boundary() {
-        // R8051302.DNG boundary sample: code = 1390.392333984375 -> lin = 0x3eadd76b.
-        // Correctly rounded powf is 0x3f233874, which encodes to 157.50003 -> 158.
-        let code = f32::from_bits(0x44ad_cc8e);
-        assert_eq!((code / 4095.0_f32).to_bits(), 0x3ead_d76b);
-        assert_eq!(neutral_display_sample(code), 158);
+    fn neutral_display_correctly_rounds_known_powf_boundaries() {
+        // Known inputs where macOS libSystem powf differs by 1 ULP from correctly rounded f32:
+        // (linear_bits, expected_power_bits, expected_code_bits, expected_u8)
+        let cases: [(u32, u32, u32, u8); 3] = [
+            (0x3cc1_c2a9, 0x3e57_273c, 0x42c1_b68d, 43),
+            (0x3da2_3384, 0x3eb1_fe6f, 0x43a2_2961, 80),
+            (0x3ead_d76b, 0x3f23_3874, 0x44ad_cc8e, 158),
+        ];
+        for (lin_bits, pow_bits, code_bits, want_u8) in cases {
+            let code = f32::from_bits(code_bits);
+            let lin = code / 4095.0_f32;
+            assert_eq!(lin.to_bits(), lin_bits);
+            assert_eq!(srgb_gamma_pow(lin).to_bits(), pow_bits);
+            assert_eq!(neutral_display_sample(code), want_u8);
+        }
     }
 }

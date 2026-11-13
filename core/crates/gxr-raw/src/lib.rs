@@ -29,4 +29,4 @@ pub use dng::Dng;
 pub use error::CoreError;
 pub use gpu_source::{RawSource, describe, describe_json, error_json};
 pub use json::Json;
-pub use render::{neutral_display, render_full, srgb_encode};
+pub use render::{neutral_display, render_full, srgb_encode, srgb_gamma_pow};

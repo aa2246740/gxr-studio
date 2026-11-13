@@ -30,6 +30,8 @@ from support.raw_render_parity import (
     expect_demosaic_error,
     expect_demosaic_strip,
     expect_neutral,
+    verify_negative_crop_origin_no_alloc,
+    verify_powf_boundary_counterexamples,
 )
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -741,3 +743,13 @@ def test_real_demosaic_strip_and_neutral_match_python(path: Path, tmp_path: Path
         tmp_path / "last.npy",
     )
     assert_f32_exact(last_strip, rust_last)
+
+
+def test_negative_crop_origin_rejects_without_allocating(tmp_path: Path) -> None:
+    require_cli()
+    verify_negative_crop_origin_no_alloc(tmp_path, _patch)
+
+
+def test_synthetic_powf_boundary_counterexamples(tmp_path: Path) -> None:
+    require_cli()
+    verify_powf_boundary_counterexamples(tmp_path)

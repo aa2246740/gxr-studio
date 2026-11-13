@@ -215,14 +215,45 @@ fn reflect_pad(block: &Image<f32>, top: usize, bottom: usize) -> Result<Image<f3
     })
 }
 
-/// Demosaic one strip `[y0, y1)` in crop coordinates.
-///
-/// Mirrors one iteration of `demosaic_strips`; supports any valid `[y0, y1)` in `[0, crop_h]`.
-pub fn demosaic_strip(dng: &Dng<'_>, y0: i64, y1: i64) -> Result<Image<f32>, CoreError> {
+/// Validate crop bounds with checked arithmetic before allocating any strip or full-frame
+/// buffer. Rejects negative `crop_origin`, out-of-`ActiveArea`, and out-of-plane bounds.
+pub(crate) fn check_crop_window(dng: &Dng<'_>) -> Result<(i64, i64, i64, i64), CoreError> {
     let (h, w) = crop_shape(dng);
     if h < 4 || w < 4 {
         return Err(CoreError::raw_decode("画面太小"));
     }
+    let cy0 = dng.active[0]
+        .checked_add(dng.crop_origin.1)
+        .ok_or_else(crate::bounds::too_big_core)?;
+    let cx0 = dng.active[1]
+        .checked_add(dng.crop_origin.0)
+        .ok_or_else(crate::bounds::too_big_core)?;
+    let cy1 = cy0.checked_add(h).ok_or_else(crate::bounds::too_big_core)?;
+    let cx1 = cx0.checked_add(w).ok_or_else(crate::bounds::too_big_core)?;
+    if dng.crop_origin.0 < 0
+        || dng.crop_origin.1 < 0
+        || cy0 < dng.active[0]
+        || cx0 < dng.active[1]
+        || cy1 > dng.active[2]
+        || cx1 > dng.active[3]
+        || cy0 < 0
+        || cx0 < 0
+        || cy1 > dng.height
+        || cx1 > dng.width
+    {
+        return Err(CoreError::new(
+            "index_error",
+            format!("block [{cy0}, {cy1}) x [{cx0}, {cx1}) outside the raw plane"),
+        ));
+    }
+    Ok((cy0, cx0, h, w))
+}
+
+/// Demosaic one strip `[y0, y1)` in crop coordinates.
+///
+/// Mirrors one iteration of `demosaic_strips`; supports any valid `[y0, y1)` in `[0, crop_h]`.
+pub fn demosaic_strip(dng: &Dng<'_>, y0: i64, y1: i64) -> Result<Image<f32>, CoreError> {
+    let (_, _, h, _) = check_crop_window(dng)?;
     if y0 < 0 || y1 > h || y0 >= y1 {
         return Err(CoreError::new(
             "index_error",
@@ -253,10 +284,7 @@ pub fn demosaic_strips(
     if rows < 2 || rows % 2 != 0 {
         return Err(CoreError::new("value_error", "条带行数要是正偶数"));
     }
-    let (h, w) = crop_shape(dng);
-    if h < 4 || w < 4 {
-        return Err(CoreError::raw_decode("画面太小"));
-    }
+    let (_, _, h, _) = check_crop_window(dng)?;
     let mut y0 = 0;
     while y0 < h {
         let y1 = h.min(y0 + rows);
@@ -269,10 +297,9 @@ pub fn demosaic_strips(
 
 /// Port of gxr_studio/raw/demosaic.py:77 demosaic_full.
 pub fn demosaic_full(dng: &Dng<'_>) -> Result<Image<f32>, CoreError> {
-    let (h, w) = crop_shape(dng);
-    if h < 4 || w < 4 {
-        return Err(CoreError::raw_decode("画面太小"));
-    }
+    let (_, _, h, w) = check_crop_window(dng)?;
+    crate::codes::wb_gains(dng)?;
+    dng.mosaic()?;
     let uh = crate::bounds::fit_count_core(
         u128::try_from(h).map_err(|_| crate::bounds::too_big_core())?,
     )?;
@@ -338,5 +365,49 @@ mod tests {
             demosaic_block(&small, [[0, 1], [1, 2]]).unwrap_err().kind,
             "raw_decode"
         );
+    }
+
+    #[test]
+    fn negative_crop_origin_is_rejected_before_allocating() {
+        let dng = Dng {
+            data: &[],
+            name: "neg".into(),
+            big_endian: true,
+            width: 6,
+            height: 4,
+            bps: 16,
+            strips: (Vec::new(), Vec::new()),
+            cfa: [[0, 1], [1, 2]],
+            lin_table: None,
+            active: [0, 0, 4, 6],
+            black_pattern: crate::dng::Grid {
+                rows: 1,
+                cols: 1,
+                shape: vec![1, 1],
+                values: vec![0.0],
+            },
+            black_dh: None,
+            black_dv: None,
+            white: 4095.0,
+            default_scale: vec![1.0, 1.0],
+            crop_origin: (-4_000_000, 0),
+            crop_size: (4_000_006, 4),
+            orientation: 1,
+            as_shot_neutral: Some(vec![1.0, 1.0, 1.0]),
+            as_shot_white_xy: None,
+            analog_balance: vec![1.0, 1.0, 1.0],
+            baseline_exposure: 0.0,
+            exif: Vec::new(),
+            mosaic_cache: std::cell::OnceCell::new(),
+        };
+        let err_dm = demosaic_full(&dng).unwrap_err();
+        assert_eq!(err_dm.kind, "index_error");
+        assert_eq!(
+            err_dm.message,
+            "block [0, 4) x [-4000000, 6) outside the raw plane"
+        );
+        let err_rn = crate::render::render_full(&dng).unwrap_err();
+        assert_eq!(err_rn.kind, "index_error");
+        assert_eq!(err_rn.message, err_dm.message);
     }
 }
