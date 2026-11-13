@@ -198,11 +198,12 @@ def test_cff_fixture_fails_like_read_font() -> None:
 
 CJK_CHARS = "上海北京H A0'é字"
 CJK_PXS = [*range(1, 241), 255, 333, 512, 999, 1000, 1001, 2048, 4096]
-HINTING_GAP = (
-    "FreeType hints CFF outlines (Adobe engine) before Pillow measures them; gxr-frame returns the "
-    "unhinted control box, which equals FreeType's FT_LOAD_NO_HINTING box exactly. Example: 上 top "
-    "825 (Rust) vs 825.421875 hinted → 826 (Pillow). Reported, not ported; see the unit REPORT.md."
-)
+# Manager amendment 2026-11-13 (UNIT-frame.md): Pillow measures CJK ink boxes after FreeType's
+# Adobe CFF hinter; gxr-frame uses the unhinted control box (FreeType FT_LOAD_NO_HINTING, exactly).
+# Example: 上 top 825 (Rust) vs 825.421875 hinted → 826 (Pillow). The hinter is not ported. Where a
+# layout needs a CJK ink box, each box edge and each derived position may differ by at most 1 px;
+# everything else stays exact. The desktop keeps Pillow's box; the phone accepts the 1-px difference.
+CJK_BOX_PX = 1
 
 
 def _cjk_python() -> tuple[list, list]:
@@ -229,12 +230,20 @@ def test_cjk_fallback_advances_and_ascents_match_pillow() -> None:
         assert value == want, (px, value, want)
 
 
-@pytest.mark.xfail(strict=True, reason=HINTING_GAP)
-def test_cjk_fallback_ink_boxes_match_pillow() -> None:
+def test_cjk_fallback_ink_boxes_are_within_one_pixel_of_pillow() -> None:
+    """Each CJK box edge: Rust (unhinted) and Pillow (hinted) differ by at most CJK_BOX_PX."""
     glyphs, _ascents = _cjk_python()
     got = _cjk_rust()
+    differ = []
     for ch, (_adv, box), (_gadv, gbox) in zip(CJK_CHARS, glyphs, got["glyphs"], strict=True):
-        assert gbox == (list(box) if box is not None else None), (ch, gbox, box)
+        assert (gbox is None) == (box is None), (ch, gbox, box)
+        if box is None:
+            continue
+        for edge, (a, b) in enumerate(zip(box, gbox, strict=True)):
+            assert abs(a - b) <= CJK_BOX_PX, (ch, edge, a, b)
+        if list(box) != gbox:
+            differ.append((ch, list(box), gbox))
+    print(f"CJK ink boxes within {CJK_BOX_PX} px of Pillow: {len(differ)} of {len(CJK_CHARS)} glyph boxes differ: {differ}")
 
 
 def _batch(tmp_path: Path, frames: list, stamps: list, *, cjk: bool = True) -> dict:
@@ -284,11 +293,34 @@ def test_stamp_layouts_match_python(tmp_path: Path) -> None:
     _compare("stamp", cases, want, got["stamps"])
 
 
-@pytest.mark.xfail(strict=True, reason=HINTING_GAP)
-def test_cjk_stamp_layouts_match_python(tmp_path: Path) -> None:
+def _near(a: object, b: object, path: str) -> bool:
+    """Like `same`, but ints may differ by CJK_BOX_PX. Returns whether anything differed."""
+    if isinstance(a, bool) or isinstance(b, bool) or not (isinstance(a, int) and isinstance(b, int)):
+        if isinstance(a, dict):
+            assert isinstance(b, dict) and list(a) == list(b), (path, a, b)
+            return any([_near(a[k], b[k], f"{path}.{k}") for k in a])
+        if isinstance(a, list):
+            assert isinstance(b, list) and len(a) == len(b), (path, a, b)
+            return any([_near(x, y, f"{path}[{i}]") for i, (x, y) in enumerate(zip(a, b, strict=True))])
+        same(a, b, path)
+        return False
+    assert abs(a - b) <= CJK_BOX_PX, (path, a, b)
+    return a != b
+
+
+def test_cjk_stamp_layouts_are_within_one_pixel(tmp_path: Path) -> None:
+    """Stamps that need a CJK ink box: every int (box edge, rect, column, row, point) within 1 px;
+    text, font, size, colours, glow and types exact. Counts the cases that differ at all."""
     _plain, (cases, want) = _stamp_split()
-    got = _batch(tmp_path, [], cases)
-    _compare("stamp", cases, want, got["stamps"])
+    got = _batch(tmp_path, [], cases)["stamps"]
+    assert len(got) == len(want) == len(cases)
+    differ = 0
+    for i, (case, expected, value) in enumerate(zip(cases, want, got, strict=True)):
+        if isinstance(expected, dict) and "ops" in expected:
+            assert isinstance(value, dict) and value.get("px") == expected["px"], (i, case, value)
+        differ += _near(expected, value, f"cjk stamp #{i} {case['request']['w']}x{case['request']['h']}")
+    print(f"CJK stamp layouts: {differ} of {len(cases)} differ by 1 px, the rest are exact")
+    assert differ < len(cases)
 
 
 def test_missing_cjk_face_is_the_python_error(tmp_path: Path) -> None:
