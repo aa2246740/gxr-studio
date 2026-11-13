@@ -157,3 +157,13 @@ gxr-cli color-knobs-apply --entry BASE.bin --menu final.json --params P.json --o
 ```
 
 `--entry` 是底子（552 字节）。`--stock` 省略时和底子相同。`P.json` 有 `levels` 时走菜单：还要 `unit`、`slot`，级别必须是整数。没有 `levels` 时用 `amount`（默认 100）、`doses`（10 个整数）、`wb_method`、`tone_method`（默认 0）。成功时把 552 字节写到 `--out`，标准输出是 `out`、`length` 和 `stats`（`clamps`、`node_repairs`、`monotone_repairs`、`slope_repairs`、`colour_cap`、`matrix_cap`、`rowsum_cap`）。`ValueError` 的 kind 是 `value`，文案与 Python 相同。`amount == 0` 仍会重写 CRC，和 `knobs.apply` 一样。
+
+## 色彩：校准 npz
+
+`np.savez` 的包是未压缩的 zip，每个成员是一个 `.npy`。压缩成员拒绝，kind 是 `zip`。`_context` 的检查和 Python 同一句文案：色表行不一致时 kind 是 `stock_mismatch`，尺寸、非有限数和 `S_eff` 还原失败时 kind 是 `calib`。缺数组时 kind 是 `key`，文案是 `'名字'`。
+
+```text
+gxr-cli color-calib-check --npz CTX.npz --entry ENTRY.bin
+```
+
+`ENTRY.bin` 是 552 字节条目，色表行从字节 115:211 解码。成功时 JSON 给出 `rows`（4 或 10）、`d0` 和 `d1` 的长度。

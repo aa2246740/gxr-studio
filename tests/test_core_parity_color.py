@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+import e0_support as e0
+from gxr_studio.camdata import datcodec
 from gxr_studio.engine import knobs, menu
 from support.core_cli import error_of, require_cli, run_json
 
@@ -189,3 +191,92 @@ def test_menu_levels_match_final_json(tmp_path: Path) -> None:
     code, payload, _written = _apply(tmp_path, _entry(), _entry(), floated, "menu-float")
     err = error_of(code, payload)
     assert err is not None and err.message == "integer UI level required"
+
+
+def _case_params(case: dict) -> dict:
+    if case["kind"] == "menu":
+        return {"unit": case["unit"], "slot": case["slot"], "levels": case["levels"]}
+    return {
+        "amount": case["amount"],
+        "doses": case["doses"],
+        "wb_method": case["wb_method"],
+        "tone_method": case["tone_method"],
+    }
+
+
+def _same_outcome(outcome: tuple, code: int, payload: dict, written: bytes) -> bool:
+    if outcome[0] == "error":
+        err = error_of(code, payload)
+        return err is not None and err.kind == "value" and err.message == outcome[1]
+    err = error_of(code, payload)
+    return err is None and written == outcome[1] and payload["stats"] == outcome[2]
+
+
+def test_golden_knob_list_matches_python(tmp_path: Path) -> None:
+    """Every knob case from the g127 fixture, against Python and the golden digests."""
+    require_cli()
+    raw = e0.fixture_dat(127)
+    if raw is None:
+        pytest.skip("g127 fixture DAT is not on this machine")
+    parsed = datcodec.parse(raw)
+    data = menu.load()
+    cases = e0.knob_cases(data)
+    golden = json.loads((e0.GOLDEN / "knobs_cases.json").read_text(encoding="utf-8"))
+    assert golden["cases"] == len(cases)
+    mismatch: list[str] = []
+    ok = 0
+    errors = 0
+    for case in cases:
+        stock = parsed.entry_of(case["unit"], 4)
+        base = parsed.entry_of(case["unit"], case["slot"])
+        outcome = e0.run_case(knobs, menu, data, case, stock, base)
+        code, payload, written = _apply(tmp_path, stock, base, _case_params(case), "golden")
+        if not _same_outcome(outcome, code, payload, written):
+            mismatch.append(case["id"])
+            continue
+        if e0.outcome_digest(outcome) != golden["digests"][case["id"]]:
+            mismatch.append(case["id"] + ":golden")
+            continue
+        if outcome[0] == "error":
+            errors += 1
+        else:
+            ok += 1
+    assert mismatch == [], mismatch[:5]
+    print(f"golden cases={len(cases)} ok={ok} errors={errors}")
+
+
+def test_context_matches_python(tmp_path: Path) -> None:
+    """`_context` on a stored npz: shapes, the stock mismatch, and a tampered S_eff."""
+    require_cli()
+    import io
+
+    import numpy as np
+
+    from gxr_studio.camdata import calib
+
+    entry = _entry()
+    stock = calib.stock_words_of_entry(entry)
+    d0 = np.linspace(-1.0, 1.0, 24)
+    d1 = np.zeros(24)
+    coefficients = np.zeros((4, 3))
+    s_eff = ((stock[:, 0] + d0) - 1j * (stock[:, 1] + d1)) / 32
+    npz = tmp_path / "ctx.npz"
+    entry_path = tmp_path / "entry.bin"
+    entry_path.write_bytes(entry)
+    buf = io.BytesIO()
+    np.savez(buf, stock=stock, d0=d0, d1=d1, input_coefficients=coefficients, S_eff=s_eff)
+    npz.write_bytes(buf.getvalue())
+    code, payload = run_json(["color-calib-check", "--npz", str(npz), "--entry", str(entry_path)])
+    assert error_of(code, payload) is None
+    got = calib._context(npz.read_bytes(), stock)
+    assert payload["rows"] == len(got[2])
+    assert payload["d0"] == 24 and payload["d1"] == 24
+    bad = tmp_path / "bad.npz"
+    buf = io.BytesIO()
+    np.savez(buf, stock=stock + 1, d0=d0, d1=d1, input_coefficients=coefficients, S_eff=s_eff)
+    bad.write_bytes(buf.getvalue())
+    code, payload = run_json(["color-calib-check", "--npz", str(bad), "--entry", str(entry_path)])
+    err = error_of(code, payload)
+    with pytest.raises(calib.StockMismatch) as caught:
+        calib._context(bad.read_bytes(), stock)
+    assert err is not None and err.kind == "stock_mismatch" and err.message == str(caught.value)

@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use gxr_color::{Menu, Request, Stats, Value, apply, load_menu, menu_request, parse_json};
+use gxr_color::{
+    Menu, Request, Stats, Value, apply, context, load_menu, menu_request, parse_json, stock_words_of_entry,
+};
 use gxr_raw::Json;
 
 use crate::common::{Failure, Output, option};
@@ -10,8 +12,23 @@ use crate::common::{Failure, Output, option};
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
     match command {
         "color-knobs-apply" => knobs_apply(args),
+        "color-calib-check" => calib_check(args),
         _ => Err(Failure::Usage(format!("unknown command {command:?}"))),
     }
+}
+
+fn calib_check(args: &[String]) -> Result<Output, Failure> {
+    let npz_path = option(args, "--npz")?;
+    let entry_path = option(args, "--entry")?;
+    let npz = read_bin(npz_path)?;
+    let entry = read_bin(entry_path)?;
+    let words = stock_words_of_entry(&entry).map_err(Failure::Core)?;
+    let checked = context(&npz, &words).map_err(Failure::Core)?;
+    let rows = i64::try_from(checked.rows).map_err(|_| Failure::Usage("array is too big"))?;
+    let d0 = i64::try_from(checked.d0.len()).map_err(|_| Failure::Usage("array is too big"))?;
+    let d1 = i64::try_from(checked.d1.len()).map_err(|_| Failure::Usage("array is too big"))?;
+    let json = Json::object([("rows", Json::Int(rows)), ("d0", Json::Int(d0)), ("d1", Json::Int(d1))]);
+    Ok(Output { text: json.render(), ok: true })
 }
 
 fn knobs_apply(args: &[String]) -> Result<Output, Failure> {
