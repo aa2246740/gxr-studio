@@ -50,6 +50,9 @@ version = "0.1.0"
 [[package]]
 name = "gxr-frame"
 version = "0.1.0"
+dependencies = [
+ "gxr-raw",
+]
 
 [[package]]
 name = "gxr-hdr"

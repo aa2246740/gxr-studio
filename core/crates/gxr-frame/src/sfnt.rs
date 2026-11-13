@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use gxr_raw::CoreError;
+use gxr_raw::{CoreError, Json};
 
 /// One glyph: id, advance width, and the ink box `(x_min, y_min, x_max, y_max)` in font units.
 ///
@@ -32,6 +32,72 @@ impl FontTable {
     /// Port of `gxr_studio/finish/sfnt.py:30` `FontTable.glyph`.
     pub fn glyph(&self, code: u32) -> &Glyph {
         self.glyphs.get(&code).unwrap_or(&self.notdef)
+    }
+
+    /// Port of `gxr_studio/finish/sfnt.py:33` `FontTable.to_json`, plus `ids` (cmap glyph ids).
+    ///
+    /// `chars` is one object per Unicode scalar in `text`, in order. A missing code point uses
+    /// glyph id 0 and `.notdef`'s advance and box, which is what `FontTable.glyph` returns.
+    pub fn metrics_json(&self, text: &str) -> Json {
+        let mut cps = Vec::new();
+        let mut adv = Vec::new();
+        let mut ids = Vec::new();
+        let mut flat_box = Vec::new();
+        for (&code, glyph) in &self.glyphs {
+            cps.push(Json::Int(i64::from(code)));
+            adv.push(Json::Int(i64::from(glyph.advance)));
+            ids.push(Json::Int(i64::from(glyph.id)));
+            for n in ink_or_zero(glyph.ink) {
+                flat_box.push(Json::Int(n));
+            }
+        }
+        let mut chars = Vec::new();
+        for ch in text.chars() {
+            let code = u32::from(ch);
+            let known = self.glyphs.get(&code);
+            let glyph = known.unwrap_or(&self.notdef);
+            let id = known.map_or(0, |g| g.id);
+            chars.push(Json::object([
+                ("cp", Json::Int(i64::from(code))),
+                ("glyph", Json::Int(i64::from(id))),
+                ("adv", Json::Int(i64::from(glyph.advance))),
+                ("box", ink_json(glyph.ink)),
+            ]));
+        }
+        let notdef = ink_or_zero(self.notdef.ink);
+        Json::object([
+            ("upm", Json::Int(self.upm)),
+            ("ascender", Json::Int(self.ascender)),
+            (
+                "notdef",
+                Json::Array(vec![
+                    Json::Int(i64::from(self.notdef.advance)),
+                    Json::Int(notdef[0]),
+                    Json::Int(notdef[1]),
+                    Json::Int(notdef[2]),
+                    Json::Int(notdef[3]),
+                ]),
+            ),
+            ("cps", Json::Array(cps)),
+            ("adv", Json::Array(adv)),
+            ("box", Json::Array(flat_box)),
+            ("ids", Json::Array(ids)),
+            ("chars", Json::Array(chars)),
+        ])
+    }
+}
+
+fn ink_or_zero(ink: Option<[i32; 4]>) -> [i64; 4] {
+    match ink {
+        Some([x0, y0, x1, y1]) => [i64::from(x0), i64::from(y0), i64::from(x1), i64::from(y1)],
+        None => [0, 0, 0, 0],
+    }
+}
+
+fn ink_json(ink: Option<[i32; 4]>) -> Json {
+    match ink {
+        Some(box_) => Json::Array(ink_or_zero(Some(box_)).into_iter().map(Json::Int).collect()),
+        None => Json::Null,
     }
 }
 
