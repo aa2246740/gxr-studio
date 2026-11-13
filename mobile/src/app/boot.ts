@@ -5,6 +5,7 @@ import { neutralBake, NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
 import { classify } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
+import { warmCore } from '../core/api';
 import { EditorView } from './editor';
 import { GridView } from './grid';
 import { photoMs, zeroKnobs, type AppApi, type Photo } from './model';
@@ -376,6 +377,7 @@ export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<
   perf.hidden = true;
   shell.append(picker, view, perf);
   root.replaceChildren(shell);
+  const coreReady = warmCore();
 
   const perfOn = new URLSearchParams(location.search).get('perf') === '1';
   const app = new App(shell, view, picker, perf, perfOn, pageErrors);
@@ -402,5 +404,7 @@ export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<
     };
   }
   shell.dataset.gpu = engine ? '1' : '0';
+  await coreReady;
+  shell.dataset.core = '1';
   await app.start(engine);
 }

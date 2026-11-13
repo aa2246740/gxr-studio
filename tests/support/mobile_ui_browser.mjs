@@ -25,8 +25,23 @@ function ids(page) {
 
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const notes = [];
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
+  page.on('console', (msg) => {
+    const text = msg.text();
+    if (text.includes('[vite]') || text.includes('reload')) notes.push(text.slice(0, 240));
+  });
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) notes.push(`nav ${frame.url()}`);
+  });
   await page.goto(url);
+  // 描述 Worker 第一次编译时，开发服务器可能整页刷新一次。等它停稳再选文件。
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await page.waitForSelector('.app[data-core="1"]', { timeout: 30_000 });
+    const reloaded = await page.waitForEvent('framenavigated', { timeout: 4_000 }).then(() => true).catch(() => false);
+    if (!reloaded) break;
+    if (attempt === 4) throw new Error(`page kept reloading\n${notes.join('\n')}`);
+  }
   await page.locator('input[type=file]').setInputFiles(manifest.pairs.flat());
   await page.waitForFunction(() => {
     const sub = document.querySelector('.nav small');
@@ -46,7 +61,7 @@ try {
   } catch (err) {
     const text = await page.locator('body').innerText();
     const screen = await page.locator('.app').getAttribute('data-screen');
-    throw new Error(`${err instanceof Error ? err.message : err}\nscreen=${screen}\n${text.slice(0, 500)}`);
+    throw new Error(`${err instanceof Error ? err.message : err}\nscreen=${screen}\n${notes.join('\n')}\n${text.slice(0, 500)}`);
   }
   const slider = page.locator('input[data-key="exposure_ev"]');
   await slider.scrollIntoViewIfNeeded();
