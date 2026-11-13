@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,75 @@ def test_sfnt_errors_match_python(tmp_path: Path) -> None:
         assert err is not None
         assert err.kind == kind
         assert err.message == message
+
+
+def _spec(command: str, tmp_path: Path, raw: object):
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    code, payload = run_json([command, "--spec", str(path)])
+    return error_of(code, payload), payload
+
+
+def test_frame_and_stamp_specs_match_python(tmp_path: Path) -> None:
+    from gxr_studio.finish.spec import factory_frame, factory_stamp, parse_frame, parse_stamp, stored_frame
+    from gxr_studio.render.params import EditError
+
+    frames = [
+        None,
+        {},
+        {"style": "gallery", "color": "black", "weight": "thin", "output_ratio": "original"},
+        {"style": "leica", "show_logo": False, "show_date": True, "text": "Hello"},
+        {"style": "instant", "fmt": "instax_mini", "text": "上海"},
+        {"style": "thin_keyline"},
+        {"style": "postage_stamp", "logo": "my_logo", "logo_mode": "mono", "logo_size": "large", "model": False},
+        {"style": "nope"},
+        {"color": "red"},
+        {"weight": "huge"},
+        {"output_ratio": "2:1"},
+        {"text": "字" * 30},
+        {"version": 1, "style": "gallery"},
+        {"style": "gallery", "show_logo": 1},
+        {"style": "film", "fmt": "polaroid"},
+        {"style": "gallery", "extra": 1},
+    ]
+    for raw in frames:
+        err, got = _spec("frame-spec", tmp_path, raw)
+        try:
+            parsed = parse_frame(raw)
+        except EditError as exc:
+            assert err is not None and err.kind == exc.code and err.message == exc.message
+        else:
+            assert err is None
+            assert got == (None if parsed is None else parsed.to_json())
+        stored_err, stored_got = _spec("frame-stored", tmp_path, raw)
+        assert stored_err is None
+        kept = stored_frame(raw)
+        assert stored_got == (None if kept is None else kept.to_json())
+    assert factory_frame().to_json()["style"] == "none"
+
+    stamps = [
+        None,
+        {},
+        {"enabled": True, "placement": "border", "content": "date+text", "text": "Paris", "date_override": "2024-02-29"},
+        {"content": "nope"},
+        {"font": "comic"},
+        {"date_override": "2026-99-99"},
+        {"date_override": "2026-02-29"},
+        {"date_format": "nope"},
+        {"text": "W" * 25},
+        {"glow": "yes"},
+        {"date_override": 1},
+    ]
+    for raw in stamps:
+        err, got = _spec("stamp-spec", tmp_path, raw)
+        try:
+            parsed = parse_stamp(raw)
+        except EditError as exc:
+            assert err is not None and err.kind == exc.code and err.message == exc.message, raw
+        else:
+            assert err is None, raw
+            assert got == (None if parsed is None else parsed.to_json())
+    assert "placement" not in factory_stamp().to_json()
 
 
 def test_cff_fixture_fails_like_read_font() -> None:

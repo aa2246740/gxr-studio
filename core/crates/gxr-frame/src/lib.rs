@@ -2,5 +2,9 @@
 #![forbid(unsafe_code)]
 
 mod sfnt;
+mod spec;
+mod value;
 
 pub use sfnt::{FontTable, Glyph, read_font};
+pub use spec::{FrameSpec, StampSpec, factory_frame, factory_stamp, parse_frame, parse_stamp, stored_frame};
+pub use value::{Val, parse_json};
