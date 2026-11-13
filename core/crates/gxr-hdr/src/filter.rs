@@ -1,281 +1,220 @@
-//! Separable filters matching scipy.ndimage on the HDR path.
+//! scipy.ndimage `gaussian_filter`, `uniform_filter` and `minimum_filter` on 2-D planes.
 //!
-//! `gaussian_filter`, `uniform_filter` and `minimum_filter` all use `mode="reflect"`
-//! and `origin=0`. An even window is not centred: it starts at `i - size // 2`
-//! and looks toward the lower indices (PORT-NOTES §3). Axes run in order 0, then 1.
-//! A float64 kernel is built the way `_gaussian_kernel1d` does (`arange` then `exp`),
-//! then cast to the array dtype. The correlate accumulates in that dtype.
+//! All three are separable: axis 0, then axis 1, with the first pass written to the output
+//! dtype before the second pass reads it. `mode="reflect"`, `origin=0`, so an even window
+//! covers `[i - size/2, i - size/2 + size - 1]` and leans toward the lower indices.
+//!
+//! Each line is copied into a float64 buffer (`NI_LineBuffer`), filtered in float64 and cast
+//! back to the array dtype, as `ni_filters.c` does:
+//!
+//! - Gaussian: the kernel is `_gaussian_kernel1d` (`exp(-0.5 / sigma**2 * x**2)` over a
+//!   numpy-summed total). The kernel is symmetric, so `NI_Correlate1D` computes
+//!   `t = in[0] * w[0]`, then `t += (in[-j] + in[j]) * w[-j]` from the outside in. scipy's
+//!   arm64 build fuses that update for short kernels. This port does not (CONVENTIONS §4),
+//!   so float64 results may differ in the last bit; float32 results only when that bit
+//!   crosses a float32 rounding boundary.
+//! - Uniform: a running window sum `s += in[i + size - 1] - in[i - 1]`, written as `s / size`.
+//! - Minimum: the smallest value in the window; exact.
 
 use gxr_math::exp;
 use gxr_raw::CoreError;
 
-use crate::error::container;
+use crate::error::unsupported;
 use crate::extend::reflect;
+use crate::np::{Real, count_f64, sum};
 
-/// One plane, row-major. `f32` is stored as bits so NaN survives equality checks in tests.
-#[derive(Clone, Debug)]
-pub enum Plane {
-    F64(Vec<f64>),
-    F32(Vec<f32>),
-    U8(Vec<u8>),
+/// Largest Gaussian radius and window this port accepts (scipy has no limit; a larger
+/// window only repeats the reflected line).
+const MAX_RADIUS: i64 = 4096;
+
+fn bad(message: &str) -> CoreError {
+    unsupported("bad_input", message)
 }
 
-impl Plane {
-    pub fn shape_ok(h: usize, w: usize, len: usize) -> Result<(), CoreError> {
-        let n = h
-            .checked_mul(w)
-            .ok_or_else(|| container("数组太大"))?;
-        if n != len {
-            return Err(container("数组长度和形状对不上"));
+/// Check that `values` holds an `h × w` plane.
+pub fn check_shape(h: usize, w: usize, len: usize) -> Result<(), CoreError> {
+    match h.checked_mul(w) {
+        Some(n) if n == len => Ok(()),
+        _ => Err(bad("数组长度和形状对不上")),
+    }
+}
+
+/// Run `line` over every line of axis `axis`, reading float64 and writing `T`.
+fn per_line<T: Real>(
+    src: &[T],
+    h: usize,
+    w: usize,
+    axis: usize,
+    mut line: impl FnMut(&[f64], &mut [f64]),
+) -> Vec<T> {
+    let (n, lines) = if axis == 0 { (h, w) } else { (w, h) };
+    let mut out = src.to_vec();
+    let mut buf = vec![0.0; n];
+    let mut res = vec![0.0; n];
+    for l in 0..lines {
+        for (i, slot) in buf.iter_mut().enumerate() {
+            let at = if axis == 0 { i * w + l } else { l * w + i };
+            *slot = src[at].wide();
         }
-        Ok(())
+        line(&buf, &mut res);
+        for (i, &v) in res.iter().enumerate() {
+            let at = if axis == 0 { i * w + l } else { l * w + i };
+            out[at] = T::narrow(v);
+        }
     }
+    out
 }
 
-fn radius_of(sigma: f64) -> Result<i64, CoreError> {
-    if !(sigma.is_finite() && sigma > 0.0) {
-        return Err(container("sigma 必须是正的有限数"));
-    }
-    // `int(truncate * float(sigma) + 0.5)` with truncate 4. Truncation is toward zero.
+fn to_i64(v: usize) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+fn ext(line: &[f64], index: i64) -> f64 {
+    // `reflect` stays inside `0 .. n`, so the index is valid.
+    let i = usize::try_from(reflect(index, to_i64(line.len()))).unwrap_or(0);
+    line[i]
+}
+
+/// Port of scipy `_gaussian_kernel1d(sigma, 0, radius)` with
+/// `radius = int(truncate * sigma + 0.5)` and `truncate = 4`.
+pub fn gaussian_kernel(sigma: f64) -> Result<Vec<f64>, CoreError> {
     let raw = 4.0 * sigma + 0.5;
-    if !raw.is_finite() || raw < 0.0 || raw >= i64::MAX as f64 {
-        return Err(container("sigma 太大"));
+    if !raw.is_finite() {
+        return Err(CoreError::new("overflow_error", "cannot convert float infinity to integer"));
     }
-    Ok(raw.floor() as i64)
-}
-
-fn gaussian_kernel(sigma: f64) -> Result<Vec<f64>, CoreError> {
-    let radius = radius_of(sigma)?;
+    if raw >= (MAX_RADIUS + 1) as f64 {
+        return Err(bad("高斯半径太大"));
+    }
+    // `int()` truncates toward zero; `raw` is positive here because sigma > 1e-15.
+    #[allow(clippy::cast_possible_truncation)]
+    let radius = raw.trunc() as i64;
     let sigma2 = sigma * sigma;
-    let mut phi = Vec::new();
-    let mut sum = 0.0;
-    let mut x = -radius;
-    while x <= radius {
-        let xx = (x as f64) * (x as f64);
-        let w = exp(-0.5 / sigma2 * xx);
-        phi.push(w);
-        sum += w;
-        x += 1;
-    }
-    if sum == 0.0 || !sum.is_finite() {
-        return Err(container("高斯核不是有限数"));
-    }
-    for w in &mut phi {
-        *w /= sum;
-    }
-    Ok(phi)
+    let factor = -0.5 / sigma2;
+    let phi: Vec<f64> = (-radius..=radius)
+        .map(|x| {
+            #[allow(clippy::cast_precision_loss)]
+            let xx = (x * x) as f64;
+            exp(factor * xx)
+        })
+        .collect();
+    let total = sum(&phi);
+    Ok(phi.iter().map(|v| v / total).collect())
 }
 
-fn idx(x: usize, y: usize, w: usize) -> usize {
-    x * w + y
-}
-
-/// Correlate one axis with `kernel` (already in the accumulation dtype's wider form).
-fn correlate_f64(src: &[f64], h: usize, w: usize, axis: usize, kernel: &[f64]) -> Result<Vec<f64>, CoreError> {
-    let n = if axis == 0 { h } else { w };
-    let radius = (kernel.len() / 2) as i64;
-    let mut out = vec![0.0; src.len()];
-    for r in 0..h {
-        for c in 0..w {
-            let mut acc = 0.0;
-            for (k, &weight) in kernel.iter().enumerate() {
-                let at = (k as i64) - radius;
-                let coord = if axis == 0 { r as i64 } else { c as i64 };
-                let src_i = reflect(coord + at, n as i64)?;
-                let (rr, cc) = if axis == 0 {
-                    (src_i as usize, c)
-                } else {
-                    (r, src_i as usize)
-                };
-                acc += src[idx(rr, cc, w)] * weight;
-            }
-            out[idx(r, c, w)] = acc;
-        }
-    }
-    Ok(out)
-}
-
-fn correlate_f32(src: &[f32], h: usize, w: usize, axis: usize, kernel: &[f64]) -> Result<Vec<f32>, CoreError> {
-    let n = if axis == 0 { h } else { w };
-    let radius = (kernel.len() / 2) as i64;
-    let mut out = vec![0.0; src.len()];
-    for r in 0..h {
-        for c in 0..w {
-            let mut acc = 0.0f32;
-            for (k, &weight) in kernel.iter().enumerate() {
-                let at = (k as i64) - radius;
-                let coord = if axis == 0 { r as i64 } else { c as i64 };
-                let src_i = reflect(coord + at, n as i64)?;
-                let (rr, cc) = if axis == 0 {
-                    (src_i as usize, c)
-                } else {
-                    (r, src_i as usize)
-                };
-                acc += src[idx(rr, cc, w)] * (weight as f32);
-            }
-            out[idx(r, c, w)] = acc;
-        }
-    }
-    Ok(out)
-}
-
-/// Port of the `ndimage.gaussian_filter` calls in `gxr_studio/hdr/gain.py`.
+/// Port of `ndimage.gaussian_filter(plane, sigma)` (all other arguments default).
 ///
-/// `order=0`, `mode="reflect"`, `truncate=4`. Output dtype follows the input.
-pub fn gaussian_filter(plane: &Plane, h: usize, w: usize, sigma: f64) -> Result<Plane, CoreError> {
-    Plane::shape_ok(h, w, match plane {
-        Plane::F64(v) => v.len(),
-        Plane::F32(v) => v.len(),
-        Plane::U8(_) => return Err(container("gaussian 只接受浮点")),
-    })?;
-    let kernel = gaussian_kernel(sigma)?;
-    match plane {
-        Plane::F64(v) => {
-            let a0 = correlate_f64(v, h, w, 0, &kernel)?;
-            Ok(Plane::F64(correlate_f64(&a0, h, w, 1, &kernel)?))
-        }
-        Plane::F32(v) => {
-            let a0 = correlate_f32(v, h, w, 0, &kernel)?;
-            Ok(Plane::F32(correlate_f32(&a0, h, w, 1, &kernel)?))
-        }
-        Plane::U8(_) => Err(container("gaussian 只接受浮点")),
+/// scipy skips an axis whose sigma is not above `1e-15`; then the plane is copied.
+pub fn gaussian_filter<T: Real>(src: &[T], h: usize, w: usize, sigma: f64) -> Result<Vec<T>, CoreError> {
+    check_shape(h, w, src.len())?;
+    if sigma.is_nan() || sigma <= 1e-15 {
+        return Ok(src.to_vec());
     }
-}
-
-fn window_start(index: i64, size: i64) -> i64 {
-    // origin 0: the window begins `size // 2` samples before the output.
-    index - size / 2
-}
-
-fn filter_uniform_f64(src: &[f64], h: usize, w: usize, axis: usize, size: i64) -> Result<Vec<f64>, CoreError> {
-    let n = if axis == 0 { h } else { w };
-    let mut out = vec![0.0; src.len()];
-    let denom = size as f64;
-    for r in 0..h {
-        for c in 0..w {
-            let origin = if axis == 0 { r as i64 } else { c as i64 };
-            let start = window_start(origin, size);
-            let mut acc = 0.0;
-            for k in 0..size {
-                let src_i = reflect(start + k, n as i64)?;
-                let (rr, cc) = if axis == 0 {
-                    (src_i as usize, c)
-                } else {
-                    (r, src_i as usize)
-                };
-                acc += src[idx(rr, cc, w)];
+    let k = gaussian_kernel(sigma)?;
+    let r = k.len() / 2;
+    let run = |line: &[f64], out: &mut [f64]| {
+        for (i, slot) in out.iter_mut().enumerate() {
+            let c = to_i64(i);
+            let mut t = line[i] * k[r];
+            for j in (1..=r).rev() {
+                let jj = to_i64(j);
+                t = t + (ext(line, c - jj) + ext(line, c + jj)) * k[r - j];
             }
-            out[idx(r, c, w)] = acc / denom;
+            *slot = t;
         }
-    }
-    Ok(out)
+    };
+    let first = per_line(src, h, w, 0, run);
+    Ok(per_line(&first, h, w, 1, run))
 }
 
-fn less_f64(a: f64, b: f64) -> bool {
-    a < b
+/// The 2-D wrappers skip an axis whose size is not above 1, so `size <= 1` copies.
+fn check_size(size: i64) -> Result<usize, CoreError> {
+    if size <= 1 {
+        return Ok(1);
+    }
+    if size > MAX_RADIUS {
+        return Err(bad("滤波器尺寸太大"));
+    }
+    usize::try_from(size).map_err(|_| bad("滤波器尺寸太大"))
 }
 
-fn filter_minimum<T, F>(src: &[T], h: usize, w: usize, axis: usize, size: i64, less: F) -> Result<Vec<T>, CoreError>
-where
-    T: Copy,
-    F: Fn(T, T) -> bool,
-{
-    let n = if axis == 0 { h } else { w };
-    let mut out = vec![src[0]; src.len()];
-    if src.is_empty() {
-        return Ok(out);
+/// Port of `ndimage.uniform_filter(plane, size, mode="reflect")`. Size <= 1 copies.
+pub fn uniform_filter<T: Real>(src: &[T], h: usize, w: usize, size: i64) -> Result<Vec<T>, CoreError> {
+    check_shape(h, w, src.len())?;
+    let size_u = check_size(size)?;
+    if size_u == 1 {
+        return Ok(src.to_vec());
     }
-    for r in 0..h {
-        for c in 0..w {
-            let origin = if axis == 0 { r as i64 } else { c as i64 };
-            let start = window_start(origin, size);
-            let mut acc = {
-                let src_i = reflect(start, n as i64)?;
-                let (rr, cc) = if axis == 0 {
-                    (src_i as usize, c)
-                } else {
-                    (r, src_i as usize)
-                };
-                src[idx(rr, cc, w)]
-            };
+    let start = -(size / 2);
+    let denom = count_f64(size_u);
+    let run = |line: &[f64], out: &mut [f64]| {
+        let mut s = 0.0;
+        for k in 0..size {
+            s += ext(line, start + k);
+        }
+        out[0] = s / denom;
+        for i in 1..line.len() {
+            let c = to_i64(i);
+            s += ext(line, start + c + size - 1) - ext(line, start + c - 1);
+            out[i] = s / denom;
+        }
+    };
+    let first = per_line(src, h, w, 0, run);
+    Ok(per_line(&first, h, w, 1, run))
+}
+
+fn min_axis<T: Copy + PartialOrd>(src: &[T], h: usize, w: usize, axis: usize, size: i64) -> Vec<T> {
+    let (n, lines) = if axis == 0 { (h, w) } else { (w, h) };
+    let start = -(size / 2);
+    let nn = to_i64(n);
+    let mut out = src.to_vec();
+    for l in 0..lines {
+        let at = |i: i64| {
+            let i = usize::try_from(reflect(i, nn)).unwrap_or(0);
+            if axis == 0 { i * w + l } else { l * w + i }
+        };
+        for i in 0..n {
+            let c = to_i64(i);
+            let mut best = src[at(c + start)];
             for k in 1..size {
-                let src_i = reflect(start + k, n as i64)?;
-                let (rr, cc) = if axis == 0 {
-                    (src_i as usize, c)
-                } else {
-                    (r, src_i as usize)
-                };
-                let v = src[idx(rr, cc, w)];
-                if less(v, acc) {
-                    acc = v;
+                let v = src[at(c + start + k)];
+                if v < best {
+                    best = v;
                 }
             }
-            out[idx(r, c, w)] = acc;
+            out[if axis == 0 { i * w + l } else { l * w + i }] = best;
         }
     }
-    Ok(out)
+    out
 }
 
-fn check_size(size: i64) -> Result<(), CoreError> {
-    if size < 1 {
-        return Err(container("滤波器尺寸至少是 1"));
+/// Port of `ndimage.minimum_filter(plane, size)`, `mode="reflect"`. Size <= 1 copies.
+pub fn minimum_filter<T: Copy + PartialOrd>(src: &[T], h: usize, w: usize, size: i64) -> Result<Vec<T>, CoreError> {
+    check_shape(h, w, src.len())?;
+    if check_size(size)? == 1 || src.is_empty() {
+        return Ok(src.to_vec());
     }
-    if size > 4096 {
-        return Err(container("滤波器尺寸太大"));
-    }
-    Ok(())
+    let first = min_axis(src, h, w, 0, size);
+    Ok(min_axis(&first, h, w, 1, size))
 }
 
-/// Port of `ndimage.uniform_filter(..., mode="reflect", origin=0)`.
-pub fn uniform_filter(plane: &Plane, h: usize, w: usize, size: i64) -> Result<Plane, CoreError> {
-    check_size(size)?;
-    match plane {
-        Plane::F64(v) => {
-            Plane::shape_ok(h, w, v.len())?;
-            let a0 = filter_uniform_f64(v, h, w, 0, size)?;
-            Ok(Plane::F64(filter_uniform_f64(&a0, h, w, 1, size)?))
-        }
-        Plane::F32(v) => {
-            Plane::shape_ok(h, w, v.len())?;
-            let wide: Vec<f64> = v.iter().map(|x| f64::from(*x)).collect();
-            let a0 = filter_uniform_f64(&wide, h, w, 0, size)?;
-            let a1 = filter_uniform_f64(&a0, h, w, 1, size)?;
-            // scipy keeps the input dtype. float32 division is not this path's call
-            // (`_local_residual` filters float64). Cast back only when asked.
-            Ok(Plane::F32(a1.iter().map(|x| *x as f32).collect()))
-        }
-        Plane::U8(_) => Err(container("uniform 只接受浮点")),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Port of `ndimage.minimum_filter(..., mode="reflect", origin=0)`.
-pub fn minimum_filter(plane: &Plane, h: usize, w: usize, size: i64) -> Result<Plane, CoreError> {
-    check_size(size)?;
-    match plane {
-        Plane::F64(v) => {
-            Plane::shape_ok(h, w, v.len())?;
-            if v.is_empty() {
-                return Ok(Plane::F64(vec![]));
-            }
-            let a0 = filter_minimum(v, h, w, 0, size, less_f64)?;
-            Ok(Plane::F64(filter_minimum(&a0, h, w, 1, size, less_f64)?))
-        }
-        Plane::U8(v) => {
-            Plane::shape_ok(h, w, v.len())?;
-            if v.is_empty() {
-                return Ok(Plane::U8(vec![]));
-            }
-            let a0 = filter_minimum(v, h, w, 0, size, |a, b| a < b)?;
-            Ok(Plane::U8(filter_minimum(&a0, h, w, 1, size, |a, b| a < b)?))
-        }
-        Plane::F32(v) => {
-            Plane::shape_ok(h, w, v.len())?;
-            if v.is_empty() {
-                return Ok(Plane::F32(vec![]));
-            }
-            let less = |a: f32, b: f32| a < b;
-            let a0 = filter_minimum(v, h, w, 0, size, less)?;
-            Ok(Plane::F32(filter_minimum(&a0, h, w, 1, size, less)?))
-        }
+    #[test]
+    fn even_uniform_window_leans_low() {
+        let a: Vec<f64> = (0..16).map(f64::from).collect();
+        let u = uniform_filter(&a, 4, 4, 4).unwrap();
+        assert_eq!(u[0], 2.5);
+        let m = minimum_filter(&a, 4, 4, 2).unwrap();
+        assert_eq!(&m[..4], &[0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn gaussian_radius_and_centre() {
+        let k = gaussian_kernel(0.6).unwrap();
+        assert_eq!(k.len(), 5);
+        assert_eq!(k[2], 0.6638183293849666);
+        assert_eq!(gaussian_kernel(8.0).unwrap().len(), 65);
     }
 }

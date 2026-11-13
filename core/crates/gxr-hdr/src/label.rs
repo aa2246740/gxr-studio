@@ -1,135 +1,139 @@
-//! `ndimage.label` (cross, connectivity 1) and `binary_dilation` (same cross).
+//! `ndimage.label` and `ndimage.binary_dilation` with the default structure: the cross
+//! (connectivity 1, `generate_binary_structure(2, 1)`).
 //!
-//! Labels are assigned in C order. A new component takes the next integer.
-//! When the upper and left neighbours disagree, both roots are joined to the
-//! smaller one, which is what scipy's equivalence table resolves to. Gaps are
-//! left in place: the ids are not renumbered.
+//! scipy numbers components `1..=n` in the raster order of each component's first pixel
+//! (measured on random masks). The labels are int32.
 
 use gxr_raw::CoreError;
 
-use crate::error::container;
-use crate::filter::Plane;
+use crate::error::unsupported;
+use crate::filter::check_shape;
 
-fn at(h: usize, w: usize, len: usize) -> Result<(), CoreError> {
-    Plane::shape_ok(h, w, len)
+fn find(parent: &mut [usize], mut x: usize) -> usize {
+    let mut root = x;
+    while parent[root] != root {
+        root = parent[root];
+    }
+    while parent[x] != root {
+        let up = parent[x];
+        parent[x] = root;
+        x = up;
+    }
+    root
 }
 
-fn foreground_f64(v: f64) -> bool {
-    v != 0.0
-}
-
-/// Port of `ndimage.label(..., structure=None)` → `(labels, count)`.
-///
-/// Labels are `i32`. The count is the number of ids that were issued, which
-/// can be higher than the number of components after merges; callers that only
-/// index `bincount` still see the right size on each pixel.
-pub fn label_f64(src: &[f64], h: usize, w: usize) -> Result<(Vec<i32>, i32), CoreError> {
-    at(h, w, src.len())?;
-    label_mask(h, w, |i| foreground_f64(src[i]))
-}
-
-/// Same labelling for a 0 / non-zero byte mask.
-pub fn label_u8(src: &[u8], h: usize, w: usize) -> Result<(Vec<i32>, i32), CoreError> {
-    at(h, w, src.len())?;
-    label_mask(h, w, |i| src[i] != 0)
-}
-
-fn label_mask(h: usize, w: usize, on: impl Fn(usize) -> bool) -> Result<(Vec<i32>, i32), CoreError> {
-    let n = h * w;
-    let mut labels = vec![0i32; n];
-    let mut parent = vec![0i32];
-    let mut next: i32 = 0;
-    let find = |parent: &mut [i32], mut x: i32| -> i32 {
-        let mut root = x;
-        while parent[root as usize] != root {
-            root = parent[root as usize];
-        }
-        while parent[x as usize] != root {
-            let up = parent[x as usize];
-            parent[x as usize] = root;
-            x = up;
-        }
-        root
-    };
+/// Port of `ndimage.label(mask)` → `(labels, count)`; non-zero is foreground.
+pub fn label(mask: &[bool], h: usize, w: usize) -> Result<(Vec<i32>, i32), CoreError> {
+    check_shape(h, w, mask.len())?;
+    let mut provisional = vec![0usize; mask.len()];
+    let mut parent: Vec<usize> = vec![0];
     for r in 0..h {
         for c in 0..w {
             let i = r * w + c;
-            if !on(i) {
+            if !mask[i] {
                 continue;
             }
-            let mut neigh = [0i32; 2];
-            let mut nneigh = 0;
-            if r > 0 && labels[(r - 1) * w + c] != 0 {
-                neigh[nneigh] = labels[(r - 1) * w + c];
-                nneigh += 1;
-            }
-            if c > 0 && labels[r * w + c - 1] != 0 {
-                neigh[nneigh] = labels[r * w + c - 1];
-                nneigh += 1;
-            }
-            if nneigh == 0 {
-                next = next.checked_add(1).ok_or_else(|| container("连通域太多"))?;
-                parent.push(next);
-                labels[i] = next;
-            } else {
-                let mut roots = [0i32; 2];
-                let mut best = i32::MAX;
-                for k in 0..nneigh {
-                    let root = find(&mut parent, neigh[k]);
-                    roots[k] = root;
-                    if root < best {
-                        best = root;
-                    }
+            let up = if r > 0 { provisional[i - w] } else { 0 };
+            let left = if c > 0 { provisional[i - 1] } else { 0 };
+            provisional[i] = match (up, left) {
+                (0, 0) => {
+                    parent.push(parent.len());
+                    parent.len() - 1
                 }
-                labels[i] = best;
-                for k in 0..nneigh {
-                    parent[roots[k] as usize] = best;
+                (a, 0) | (0, a) => a,
+                (a, b) => {
+                    let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+                    let keep = ra.min(rb);
+                    parent[ra] = keep;
+                    parent[rb] = keep;
+                    keep
                 }
-            }
+            };
         }
     }
-    for label in &mut labels {
-        if *label != 0 {
-            *label = find(&mut parent, *label);
+    // Final ids follow the raster order of each component's first pixel.
+    let mut final_id = vec![0i32; parent.len()];
+    let mut next: i32 = 0;
+    let mut labels = vec![0i32; mask.len()];
+    for (i, &p) in provisional.iter().enumerate() {
+        if p == 0 {
+            continue;
         }
+        let root = find(&mut parent, p);
+        if final_id[root] == 0 {
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| unsupported("bad_input", "连通域太多"))?;
+            final_id[root] = next;
+        }
+        labels[i] = final_id[root];
     }
     Ok((labels, next))
 }
 
-/// Port of `ndimage.binary_dilation(..., structure=None, iterations, border_value=0, origin=0)`.
-///
-/// The default structure is the radius-1 cross. `iterations=2` grows a Manhattan diamond.
-pub fn binary_dilation(src: &[u8], h: usize, w: usize, iterations: i64) -> Result<Vec<u8>, CoreError> {
-    at(h, w, src.len())?;
-    if iterations < 0 {
-        return Err(container("膨胀次数不能为负"));
+fn dilate_once(cur: &[bool], h: usize, w: usize) -> Vec<bool> {
+    let mut next = vec![false; cur.len()];
+    for r in 0..h {
+        for c in 0..w {
+            let i = r * w + c;
+            next[i] = cur[i]
+                || (r > 0 && cur[i - w])
+                || (r + 1 < h && cur[i + w])
+                || (c > 0 && cur[i - 1])
+                || (c + 1 < w && cur[i + 1]);
+        }
     }
-    if iterations > 64 {
-        return Err(container("膨胀次数太大"));
-    }
-    let mut cur: Vec<u8> = src.iter().map(|&v| u8::from(v != 0)).collect();
-    for _ in 0..iterations {
-        let mut next = vec![0u8; cur.len()];
-        for r in 0..h {
-            for c in 0..w {
-                let i = r * w + c;
-                let mut on = cur[i] != 0;
-                if r > 0 {
-                    on |= cur[(r - 1) * w + c] != 0;
-                }
-                if r + 1 < h {
-                    on |= cur[(r + 1) * w + c] != 0;
-                }
-                if c > 0 {
-                    on |= cur[i - 1] != 0;
-                }
-                if c + 1 < w {
-                    on |= cur[i + 1] != 0;
-                }
-                next[i] = u8::from(on);
+    next
+}
+
+/// Port of `ndimage.binary_dilation(mask, iterations=n)` (`structure=None`, `border_value=0`,
+/// `origin=0`). `iterations < 1` repeats until nothing changes, as scipy documents.
+pub fn binary_dilation(mask: &[bool], h: usize, w: usize, iterations: i64) -> Result<Vec<bool>, CoreError> {
+    check_shape(h, w, mask.len())?;
+    let mut cur = mask.to_vec();
+    if iterations < 1 {
+        loop {
+            let next = dilate_once(&cur, h, w);
+            if next == cur {
+                return Ok(cur);
             }
+            cur = next;
+        }
+    }
+    // More passes than the plane is long change nothing further.
+    let limit = u64::try_from(h.saturating_add(w)).unwrap_or(u64::MAX);
+    let passes = u64::try_from(iterations).unwrap_or(u64::MAX).min(limit.saturating_add(1));
+    for _ in 0..passes {
+        let next = dilate_once(&cur, h, w);
+        if next == cur {
+            break;
         }
         cur = next;
     }
     Ok(cur)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagonal_pixels_are_separate_and_ids_follow_first_pixel() {
+        // 1 0 1
+        // 0 1 1
+        let m = [true, false, true, false, true, true];
+        let (lab, n) = label(&m, 2, 3).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(lab, vec![1, 0, 2, 0, 2, 2]);
+    }
+
+    #[test]
+    fn two_iterations_grow_a_diamond() {
+        let mut m = vec![false; 25];
+        m[12] = true;
+        let d = binary_dilation(&m, 5, 5, 2).unwrap();
+        let on: usize = d.iter().filter(|v| **v).count();
+        assert_eq!(on, 13);
+        assert!(!d[0] && d[2] && d[10]);
+    }
 }

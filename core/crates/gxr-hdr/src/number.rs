@@ -1,223 +1,188 @@
-//! Python `round`, `Fraction.limit_denominator` and `format(v, ".7g")`.
+//! Python number formatting and fractions used by the gain metadata.
+//!
+//! - `round(x, n)`: CPython rounds the exact binary value to `n` decimals, half to even,
+//!   then parses that text. Rust's `{:.n}` formats the exact value with the same tie rule.
+//! - `format(v, ".7g")`: seven significant digits, the `%g` switch between fixed and
+//!   exponent notation, trailing zeros dropped.
+//! - `Fraction(v).limit_denominator(1 << 16)`: CPython 3.14 `fractions.py`, line for line.
 
-use gxr_math::{log10, powi};
 use gxr_raw::CoreError;
 
 use crate::error::container;
 
-fn even_integer(f: f64) -> bool {
-    let half = f / 2.0;
-    half.floor() == half
-}
-
-/// Python `round` of a finite float to an integer, half to even.
-pub fn round_half_even(x: f64) -> f64 {
-    if !x.is_finite() {
-        return x;
-    }
-    let base = x.floor();
-    let diff = x - base;
-    if diff > 0.5 || (diff == 0.5 && !even_integer(base)) {
-        base + 1.0
-    } else {
-        base
-    }
-}
-
-/// Python `round(x, ndigits)` for a small non-negative `ndigits`.
-pub fn py_round(x: f64, ndigits: i32) -> Result<f64, CoreError> {
+/// Python `round(x, ndigits)` for `0 <= ndigits <= 17`.
+pub fn py_round(x: f64, ndigits: usize) -> Result<f64, CoreError> {
     if !x.is_finite() {
         return Ok(x);
     }
-    if !(0..=15).contains(&ndigits) {
-        return Err(container("round 的位数超出范围"));
+    if ndigits > 17 {
+        return Err(CoreError::new("bad_input", "round 的位数超出范围"));
     }
-    let scale = powi(10.0, ndigits);
-    Ok(round_half_even(x * scale) / scale)
+    let text = format!("{x:.ndigits$}");
+    text.parse::<f64>()
+        .map_err(|_| CoreError::new("bad_input", "round 的结果读不回来"))
 }
 
-fn gcd(mut a: i128, mut b: i128) -> i128 {
-    if a < 0 {
-        a = -a;
+/// Python `format(v, ".7g")`.
+pub fn fmt_g7(v: f64) -> String {
+    if v.is_nan() {
+        return "nan".to_string();
     }
-    if b < 0 {
-        b = -b;
+    if v.is_infinite() {
+        return if v > 0.0 { "inf" } else { "-inf" }.to_string();
     }
-    while b != 0 {
-        let r = a % b;
-        a = b;
-        b = r;
-    }
-    a
+    let sci = format!("{v:.6e}");
+    let (mant, exp) = sci.split_once('e').unwrap_or((sci.as_str(), "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let neg = mant.starts_with('-');
+    let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+    let body = if (-4..7).contains(&exp) {
+        let text = if exp >= 0 {
+            let split = usize::try_from(exp).unwrap_or(0) + 1;
+            format!("{}.{}", &digits[..split], &digits[split..])
+        } else {
+            let zeros = "0".repeat(usize::try_from(-exp - 1).unwrap_or(0));
+            format!("0.{zeros}{digits}")
+        };
+        strip(&text)
+    } else {
+        let m = strip(&format!("{}.{}", &digits[..1], &digits[1..]));
+        let sign = if exp < 0 { '-' } else { '+' };
+        format!("{m}e{sign}{:02}", exp.abs())
+    };
+    if neg { format!("-{body}") } else { body }
 }
 
-/// `float.as_integer_ratio` for finite values whose reduced denominator fits `i128`.
-pub fn as_integer_ratio(x: f64) -> Result<(i128, i128), CoreError> {
-    if !x.is_finite() {
-        return Err(container("分数不是有限数"));
+fn strip(text: &str) -> String {
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text.to_string()
     }
-    if x == 0.0 {
+}
+
+fn floor_div(n: i128, d: i128) -> i128 {
+    n.div_euclid(d)
+}
+
+fn overflow() -> CoreError {
+    container("分数太大")
+}
+
+/// `Fraction(v).limit_denominator(1 << 16)` → `(numerator, denominator)`.
+///
+/// `v` must be finite. `|v| < 2**-40` always limits to `0/1`; `|v| >= 2**62` keeps its
+/// integer value (`denominator 1`), which no 32-bit field can hold.
+pub fn limit_65536(v: f64) -> Result<(i128, i128), CoreError> {
+    if v.is_nan() {
+        return Err(CoreError::new("value_error", "cannot convert NaN to integer ratio"));
+    }
+    if v.is_infinite() {
+        return Err(CoreError::new("overflow_error", "cannot convert Infinity to integer ratio"));
+    }
+    if v.abs() < 1.0 / (1u64 << 40) as f64 {
         return Ok((0, 1));
     }
-    let bits = x.to_bits();
-    let neg = bits >> 63 != 0;
-    let biased = ((bits >> 52) & 0x7ff) as i32;
-    let frac = bits & ((1u64 << 52) - 1);
-    let (mant, exp) = if biased == 0 {
-        (i128::from(frac), 1 - 1023 - 52)
-    } else {
-        (i128::from(frac | (1u64 << 52)), biased - 1023 - 52)
-    };
-    let mut numer = mant;
-    let mut denom = 1i128;
-    if exp >= 0 {
-        if exp > 120 {
-            return Err(container("分数太大"));
-        }
-        numer <<= exp;
-    } else {
-        let shift = -exp;
-        if shift > 120 {
-            return Err(container("分数太大"));
-        }
-        denom <<= shift;
+    if v.abs() >= (1u64 << 62) as f64 {
+        // Integral already; saturate past i64, the caller rejects it for 32-bit packing.
+        #[allow(clippy::cast_possible_truncation)]
+        let n = v as i128;
+        return Ok((n, 1));
     }
-    if neg {
-        numer = -numer;
+    let (num, den) = as_integer_ratio(v);
+    let max_den: i128 = 1 << 16;
+    if den <= max_den {
+        return Ok((num, den));
     }
-    let g = gcd(numer, denom);
-    Ok((numer / g, denom / g))
-}
-
-fn abs_diff_cross(n: i128, d: i128, on: i128, od: i128, scale_d: i128) -> Option<i128> {
-    let left = n.checked_mul(od)?;
-    let right = on.checked_mul(d)?;
-    let diff = left.checked_sub(right)?.checked_abs()?;
-    diff.checked_mul(scale_d.checked_abs()?)
-}
-
-/// Port of `Fraction(v).limit_denominator(65536)` after `as_integer_ratio`.
-pub fn limit_denominator(numer: i128, denom: i128, max_den: i128) -> Result<(i128, i128), CoreError> {
-    if denom == 0 || max_den < 1 {
-        return Err(container("分母无效"));
-    }
-    let (orig_n, orig_d) = if denom < 0 {
-        (-numer, -denom)
-    } else {
-        (numer, denom)
-    };
-    if orig_d <= max_den {
-        return Ok((orig_n, orig_d));
-    }
-    let (mut n, mut d) = (orig_n, orig_d);
     let (mut p0, mut q0, mut p1, mut q1) = (0i128, 1i128, 1i128, 0i128);
+    let (mut n, mut d) = (num, den);
     loop {
-        let a = n / d;
-        let q2 = q0
-            .checked_add(a.checked_mul(q1).ok_or_else(|| container("分数太大"))?)
-            .ok_or_else(|| container("分数太大"))?;
+        let a = floor_div(n, d);
+        let q2 = a.checked_mul(q1).and_then(|x| x.checked_add(q0)).ok_or_else(overflow)?;
         if q2 > max_den {
             break;
         }
-        let p2 = p0
-            .checked_add(a.checked_mul(p1).ok_or_else(|| container("分数太大"))?)
-            .ok_or_else(|| container("分数太大"))?;
-        p0 = p1;
-        q0 = q1;
-        p1 = p2;
-        q1 = q2;
-        let rem = n - a * d;
-        n = d;
-        d = rem;
-        if d == 0 {
-            break;
-        }
+        let p2 = a.checked_mul(p1).and_then(|x| x.checked_add(p0)).ok_or_else(overflow)?;
+        (p0, q0, p1, q1) = (p1, q1, p2, q2);
+        let r = n - a * d;
+        (n, d) = (d, r);
     }
-    let k = (max_den - q0) / q1;
-    let n1 = p0
-        .checked_add(k.checked_mul(p1).ok_or_else(|| container("分数太大"))?)
-        .ok_or_else(|| container("分数太大"))?;
-    let d1 = q0
-        .checked_add(k.checked_mul(q1).ok_or_else(|| container("分数太大"))?)
-        .ok_or_else(|| container("分数太大"))?;
-    let (n2, d2) = (p1, q1);
-    let left = abs_diff_cross(n2, d2, orig_n, orig_d, d1).ok_or_else(|| container("分数太大"))?;
-    let right = abs_diff_cross(n1, d1, orig_n, orig_d, d2).ok_or_else(|| container("分数太大"))?;
-    if left <= right { Ok((n2, d2)) } else { Ok((n1, d1)) }
-}
-
-/// `Fraction(float).limit_denominator(1 << 16)`, numerator then denominator.
-pub fn frac_65536(v: f64) -> Result<(i128, i128), CoreError> {
-    let (n, d) = as_integer_ratio(v)?;
-    limit_denominator(n, d, 1 << 16)
-}
-
-fn trim_zeros(digits: &mut String) {
-    while digits.ends_with('0') {
-        digits.pop();
-    }
-    if digits.ends_with('.') {
-        digits.pop();
-    }
-}
-
-/// Python `format(v, ".7g")` for the finite metadata values the container prints.
-pub fn fmt_g7(v: f64) -> Result<String, CoreError> {
-    if !v.is_finite() {
-        return Err(container("元数据不是有限数"));
-    }
-    if v == 0.0 {
-        return Ok("0".to_string());
-    }
-    let neg = v.is_sign_negative();
-    let x = v.abs();
-    let mut exp = log10(x).floor() as i32;
-    let mut pow = powi(10.0, exp);
-    if x / pow >= 10.0 {
-        exp += 1;
-        pow = powi(10.0, exp);
-    } else if x / pow < 1.0 {
-        exp -= 1;
-        pow = powi(10.0, exp);
-    }
-    let scaled = x / pow * powi(10.0, 6);
-    let mut rounded = round_half_even(scaled);
-    if rounded >= 10_000_000.0 {
-        rounded /= 10.0;
-        exp += 1;
-    }
-    let mut digits = format!("{rounded:.0}");
-    while digits.len() < 7 {
-        digits.push('0');
-    }
-    let body = if (-4..7).contains(&exp) {
-        if exp >= 0 {
-            let split = (exp as usize) + 1;
-            let mut text = digits[..split].to_string();
-            let rest = digits[split..].trim_end_matches('0');
-            if !rest.is_empty() {
-                text.push('.');
-                text.push_str(rest);
-            }
-            text
-        } else {
-            let mut text = "0.".to_string();
-            for _ in 0..(-exp - 1) {
-                text.push('0');
-            }
-            let rest = digits.trim_end_matches('0');
-            text.push_str(rest);
-            text
-        }
+    let k = floor_div(max_den - q0, q1);
+    let lhs = 2i128
+        .checked_mul(d)
+        .and_then(|x| x.checked_mul(q0 + k * q1))
+        .ok_or_else(overflow)?;
+    if lhs <= den {
+        Ok((p1, q1))
     } else {
-        let mut mant = digits[..1].to_string();
-        let rest = digits[1..].trim_end_matches('0');
-        if !rest.is_empty() {
-            mant.push('.');
-            mant.push_str(rest);
-        }
-        format!("{mant}e{exp:+03}")
+        Ok((p0 + k * p1, q0 + k * q1))
+    }
+}
+
+/// `float.as_integer_ratio` for `2**-40 <= |v| < 2**62` (fits in i128).
+fn as_integer_ratio(v: f64) -> (i128, i128) {
+    let bits = v.to_bits();
+    let neg = bits >> 63 != 0;
+    let biased = i32::try_from((bits >> 52) & 0x7ff).unwrap_or(0);
+    let frac = bits & ((1u64 << 52) - 1);
+    let (mant, exp) = if biased == 0 {
+        (frac, -1074)
+    } else {
+        (frac | (1u64 << 52), biased - 1075)
     };
-    let _ = trim_zeros;
-    Ok(if neg { format!("-{body}") } else { body })
+    let mut num = i128::from(mant);
+    let mut den = 1i128;
+    if exp >= 0 {
+        num <<= exp;
+    } else {
+        den <<= -exp;
+    }
+    let tz = num.trailing_zeros().min(den.trailing_zeros());
+    num >>= tz;
+    den >>= tz;
+    (if neg { -num } else { num }, den)
+}
+
+/// `struct.pack(">i", n)` range check.
+pub fn signed32(n: i128) -> Result<i32, CoreError> {
+    i32::try_from(n)
+        .map_err(|_| CoreError::new("struct_error", "'i' format requires -2147483648 <= number <= 2147483647"))
+}
+
+/// `struct.pack(">I", n)` range check.
+pub fn unsigned32(n: i128) -> Result<u32, CoreError> {
+    u32::try_from(n).map_err(|_| CoreError::new("struct_error", "'I' format requires 0 <= number <= 4294967295"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rounds_like_python() {
+        assert_eq!(py_round(2.5, 0).unwrap(), 2.0);
+        assert_eq!(py_round(3.5, 0).unwrap(), 4.0);
+        assert_eq!(py_round(0.00025, 4).unwrap(), 0.0003);
+        assert_eq!(py_round(2.675, 2).unwrap(), 2.67);
+        assert_eq!(format!("{:.1}", 0.25), "0.2");
+    }
+
+    #[test]
+    fn g7_like_python() {
+        assert_eq!(fmt_g7(1.25), "1.25");
+        assert_eq!(fmt_g7(1.0 / 64.0), "0.015625");
+        assert_eq!(fmt_g7(0.0), "0");
+        assert_eq!(fmt_g7(-0.0), "-0");
+        assert_eq!(fmt_g7(1e-5), "1e-05");
+        assert_eq!(fmt_g7(12345678.0), "1.234568e+07");
+        assert_eq!(fmt_g7(0.0001), "0.0001");
+    }
+
+    #[test]
+    fn limits_like_fractions() {
+        assert_eq!(limit_65536(1.0 / 64.0).unwrap(), (1, 64));
+        assert_eq!(limit_65536(2.5).unwrap(), (5, 2));
+        assert_eq!(limit_65536(0.1).unwrap(), (1, 10));
+        assert_eq!(limit_65536(1.23456789).unwrap(), (100, 81));
+    }
 }

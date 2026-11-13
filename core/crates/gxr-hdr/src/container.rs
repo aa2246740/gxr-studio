@@ -3,7 +3,7 @@
 use gxr_raw::CoreError;
 
 use crate::error::container;
-use crate::number::{fmt_g7, frac_65536};
+use crate::number::{fmt_g7, limit_65536, signed32, unsigned32};
 
 const XMP_NS: &[u8] = b"http://ns.adobe.com/xap/1.0/\x00";
 const ISO_NS: &[u8] = b"urn:iso:std:iso:ts:21496:-1\x00";
@@ -83,7 +83,8 @@ pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<Segment>, usize, 
     };
     let mut j = sos + 2 + u16_be(data, sos + 2)?;
     loop {
-        let found = data[j..].iter().position(|b| *b == 0xff).map(|p| j + p);
+        // `data.find(b"\xff", j)` is -1 when `j` is past the end.
+        let found = data.get(j..).and_then(|rest| rest.iter().position(|b| *b == 0xff)).map(|p| j + p);
         let Some(j_at) = found else {
             return Err(container("JPEG 缺 EOI"));
         };
@@ -126,73 +127,71 @@ pub fn xmp_primary(gain_len: usize) -> Vec<u8> {
 }
 
 /// Port of gxr_studio/hdr/container.py:138 xmp_gainmap.
-pub fn xmp_gainmap(m: &GainMeta) -> Result<Vec<u8>, CoreError> {
-    let text = format!(
+pub fn xmp_gainmap(m: &GainMeta) -> Vec<u8> {
+    format!(
         "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"{XMPTK}\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\"\n    xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\"\n   hdrgm:Version=\"1.0\"\n   hdrgm:GainMapMin=\"{}\"\n   hdrgm:GainMapMax=\"{}\"\n   hdrgm:Gamma=\"{}\"\n   hdrgm:OffsetSDR=\"{}\"\n   hdrgm:OffsetHDR=\"{}\"\n   hdrgm:HDRCapacityMin=\"{}\"\n   hdrgm:HDRCapacityMax=\"{}\"\n   hdrgm:BaseRenditionIsHDR=\"False\"/>\n </rdf:RDF>\n</x:xmpmeta>",
-        fmt_g7(m.gain_min)?,
-        fmt_g7(m.gain_max)?,
-        fmt_g7(m.gamma)?,
-        fmt_g7(m.offset_sdr)?,
-        fmt_g7(m.offset_hdr)?,
-        fmt_g7(m.cap_min)?,
-        fmt_g7(m.cap_max)?,
-    );
-    Ok(text.into_bytes())
+        fmt_g7(m.gain_min),
+        fmt_g7(m.gain_max),
+        fmt_g7(m.gamma),
+        fmt_g7(m.offset_sdr),
+        fmt_g7(m.offset_hdr),
+        fmt_g7(m.cap_min),
+        fmt_g7(m.cap_max),
+    )
+    .into_bytes()
 }
 
-fn pack_frac(v: f64, signed: bool) -> Result<(i32, u32), CoreError> {
-    let (n, d) = frac_65536(v)?;
+/// Port of gxr_studio/hdr/container.py:159 `_frac`.
+fn frac(v: f64, signed: bool) -> Result<(i128, i128), CoreError> {
+    let (n, d) = limit_65536(v)?;
     if !signed && n < 0 {
         return Err(container("无符号字段不能为负"));
     }
-    let numer = i32::try_from(n).map_err(|_| container("'i' format requires -2147483648 <= number <= 2147483647"))?;
-    let denom = u32::try_from(d).map_err(|_| container("分母超出范围"))?;
-    Ok((numer, denom))
+    Ok((n, d))
 }
 
 /// Port of gxr_studio/hdr/container.py:166 iso_version_only.
 pub fn iso_version_only() -> Vec<u8> {
     let mut out = ISO_NS.to_vec();
-    out.extend_from_slice(&0u16.to_be_bytes());
-    out.extend_from_slice(&0u16.to_be_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0]);
     out
 }
 
 /// Port of gxr_studio/hdr/container.py:171 iso_full.
+///
+/// Errors come in Python's order: each capacity is limited and packed in turn, then the
+/// five other fractions are limited, then packed together left to right.
 pub fn iso_full(m: &GainMeta) -> Result<Vec<u8>, CoreError> {
     let mut out = ISO_NS.to_vec();
-    out.extend_from_slice(&0u16.to_be_bytes());
-    out.extend_from_slice(&0u16.to_be_bytes());
-    out.push(0x40);
+    out.extend_from_slice(&[0, 0, 0, 0, 0x40]);
     for v in [m.cap_min, m.cap_max] {
-        let (n, d) = pack_frac(v, false)?;
-        out.extend_from_slice(&(n as u32).to_be_bytes());
-        out.extend_from_slice(&d.to_be_bytes());
+        let (n, d) = frac(v, false)?;
+        out.extend_from_slice(&unsigned32(n)?.to_be_bytes());
+        out.extend_from_slice(&unsigned32(d)?.to_be_bytes());
     }
-    let gmin = pack_frac(m.gain_min, true)?;
-    let gmax = pack_frac(m.gain_max, true)?;
-    let gam = pack_frac(m.gamma, false)?;
-    let bo = pack_frac(m.offset_sdr, true)?;
-    let ao = pack_frac(m.offset_hdr, true)?;
-    for (n, d, signed) in [
-        (gmin.0, gmin.1, true),
-        (gmax.0, gmax.1, true),
-        (gam.0, gam.1, false),
-        (bo.0, bo.1, true),
-        (ao.0, ao.1, true),
-    ] {
+    let gmin = frac(m.gain_min, true)?;
+    let gmax = frac(m.gain_max, true)?;
+    let gam = frac(m.gamma, false)?;
+    let bo = frac(m.offset_sdr, true)?;
+    let ao = frac(m.offset_hdr, true)?;
+    for ((n, d), signed) in [(gmin, true), (gmax, true), (gam, false), (bo, true), (ao, true)] {
         if signed {
-            out.extend_from_slice(&n.to_be_bytes());
+            out.extend_from_slice(&signed32(n)?.to_be_bytes());
         } else {
-            out.extend_from_slice(&(n as u32).to_be_bytes());
+            out.extend_from_slice(&unsigned32(n)?.to_be_bytes());
         }
-        out.extend_from_slice(&d.to_be_bytes());
+        out.extend_from_slice(&unsigned32(d)?.to_be_bytes());
     }
     Ok(out)
 }
 
 /// Port of gxr_studio/hdr/container.py:183 mpf_segment.
-pub fn mpf_segment(primary_size: u32, gain_size: u32, gain_offset: u32) -> Result<Vec<u8>, CoreError> {
+pub fn mpf_segment(primary_size: usize, gain_size: usize, gain_offset: usize) -> Result<Vec<u8>, CoreError> {
+    let (primary_size, gain_size, gain_offset) = (
+        unsigned32(i128::try_from(primary_size).unwrap_or(i128::MAX))?,
+        unsigned32(i128::try_from(gain_size).unwrap_or(i128::MAX))?,
+        unsigned32(i128::try_from(gain_offset).unwrap_or(i128::MAX))?,
+    );
     let mut t = b"MM\x00\x2a".to_vec();
     t.extend_from_slice(&8u32.to_be_bytes());
     t.extend_from_slice(&3u16.to_be_bytes());
@@ -254,7 +253,7 @@ pub fn assemble(jpg: &[u8], gain_jpeg: &[u8], meta: &GainMeta) -> Result<Vec<u8>
         }
     }
     gplain.extend_from_slice(&gain_jpeg[gsos..geoi]);
-    let gain_xmp = xmp_gainmap(meta)?;
+    let gain_xmp = xmp_gainmap(meta);
     let secondary = [
         b"\xff\xd8".as_slice(),
         &app_segment(0xe1, &[XMP_NS, &gain_xmp].concat())?,
@@ -276,11 +275,7 @@ pub fn assemble(jpg: &[u8], gain_jpeg: &[u8], meta: &GainMeta) -> Result<Vec<u8>
         .and_then(|n| n.checked_add(eoi - sos))
         .ok_or_else(|| container("MPF 长度不一致"))?;
     let tiff_pos = head.len() + 8;
-    let mpf = mpf_segment(
-        u32::try_from(primary_size).map_err(|_| container("MPF 长度不一致"))?,
-        u32::try_from(secondary.len()).map_err(|_| container("MPF 长度不一致"))?,
-        u32::try_from(primary_size - tiff_pos).map_err(|_| container("MPF 长度不一致"))?,
-    )?;
+    let mpf = mpf_segment(primary_size, secondary.len(), primary_size - tiff_pos)?;
     let mut out = head;
     out.extend_from_slice(&mpf);
     out.extend_from_slice(&keep_rest);

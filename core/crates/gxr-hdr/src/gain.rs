@@ -1,24 +1,27 @@
-//! Port of `gxr_studio/hdr/gain.py`: the grid, the alignment and the gain plane.
+//! Port of `gxr_studio/hdr/gain.py`: luma grids, alignment and registration.
 //!
-//! JPEG encoding of the gain map is not here. `quantise_gain` is the uint8
-//! formula inside `encode_gainmap`, before Pillow saves it.
+//! The curve fit and the gain plane are in `curve.rs`, the continuous residual check in
+//! `residual.rs`. dtypes follow numpy 2 (NEP 50): `sdr_y` and `raw_y` are float32, and a
+//! Python float next to a float32 array is cast to float32 before the operation.
 
-use gxr_math::{exp2, log2, log2f, powff};
-use gxr_raw::{CoreError, Json};
-use libm::tanh;
+use gxr_raw::{CODE_MAX, CoreError, Dng, Json, orient_array};
 
+use crate::curve::fit_curve;
+use crate::elem::{exp2, log2, log2f, powf32};
 use crate::error::unsupported;
 use crate::fft::phase_shift;
-use crate::filter::{Plane, gaussian_filter};
-use crate::number::py_round;
+use crate::filter::{check_shape, gaussian_filter};
+use crate::np::{Real, View, count_f64, interp, maximum, mean, mean_of, pairwise, std, std_view, sum};
+use crate::residual::local_residual;
 use crate::sample::map_coordinates;
 
-const LUMA_R: f32 = 0.2126;
-const LUMA_G: f32 = 0.7152;
-const LUMA_B: f32 = 0.0722;
+/// `LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)`.
+pub const LUMA: [f32; 3] = [0.2126_f64 as f32, 0.7152_f64 as f32, 0.0722_f64 as f32];
+/// `RAW_WEIGHTS`.
+pub const RAW_WEIGHTS: [f32; 3] = [0.25, 0.5, 0.25];
 const MIN_CORRELATION: f64 = 0.5;
 const MAX_SHIFT: f64 = 0.02;
-const TILES: usize = 4;
+const TILES: i64 = 4;
 const TILE_REACH: i64 = 3;
 const TILE_TEXTURE: f64 = 0.1;
 const TILE_GAIN: f64 = 0.03;
@@ -26,34 +29,14 @@ const TILE_MATCH: f64 = 0.8;
 const MIN_TILE_CORRELATION: f64 = 0.5;
 const SCALES: [f64; 5] = [1.0, 0.99, 1.01, 0.98, 1.02];
 
-/// Port of gxr_studio/hdr/gain.py:55 Params.
-#[derive(Clone, Debug)]
-pub struct Params {
-    pub map_factor: i64,
-    pub max_stops: f64,
-    pub knee: f64,
-    pub hdr_slope: f64,
-    pub gate_lo: f64,
-    pub gate_hi: f64,
-    pub quality: i64,
-}
-
-impl Default for Params {
-    fn default() -> Self {
-        Self {
-            map_factor: 4,
-            max_stops: 2.5,
-            knee: 0.45,
-            hdr_slope: 1.0,
-            gate_lo: 0.30,
-            gate_hi: 0.50,
-            quality: 90,
-        }
-    }
+/// Python float → float32, as NEP 50 casts a weak scalar.
+#[allow(clippy::cast_possible_truncation)]
+pub const fn f32_of(v: f64) -> f32 {
+    v as f32
 }
 
 /// Port of gxr_studio/hdr/gain.py:75 Alignment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Alignment {
     pub scale: f64,
     pub dy: i64,
@@ -65,6 +48,7 @@ pub struct Alignment {
 }
 
 impl Alignment {
+    /// Every dataclass field, for parity (not `to_dict`, which rounds).
     pub fn to_json(&self) -> Json {
         Json::object([
             ("scale", Json::Float(self.scale)),
@@ -78,186 +62,243 @@ impl Alignment {
     }
 }
 
-fn len2(h: usize, w: usize) -> Result<usize, CoreError> {
-    h.checked_mul(w).ok_or_else(|| unsupported("bad_shape", "数组太大"))
+/// A row-major float32 plane.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plane32 {
+    pub h: usize,
+    pub w: usize,
+    pub v: Vec<f32>,
 }
 
-/// Port of gxr_studio/hdr/gain.py:141 grid_shape.
+fn bad(message: &str) -> CoreError {
+    unsupported("bad_input", message)
+}
+
+/// Port of gxr_studio/hdr/gain.py:141 grid_shape (`math.ceil(h / factor)`).
 pub fn grid_shape(h: usize, w: usize, factor: usize) -> Result<(usize, usize), CoreError> {
     if factor == 0 {
-        return Err(unsupported("bad_shape", "分块因子是 0"));
+        return Err(bad("division by zero"));
     }
     Ok((h.div_ceil(factor), w.div_ceil(factor)))
 }
 
-/// Port of gxr_studio/hdr/gain.py:145 block_mean. The mean is float64.
-pub fn block_mean(a: &[f64], h: usize, w: usize, factor: usize) -> Result<(Vec<f64>, usize, usize), CoreError> {
-    if len2(h, w)? != a.len() || h == 0 || w == 0 {
-        return Err(unsupported("bad_shape", "数组长度和形状对不上"));
-    }
+/// Port of gxr_studio/hdr/gain.py:145 block_mean on a 2-D plane.
+///
+/// `np.pad(mode="edge")`, then `reshape(gh, f, gw, f).mean(axis=(1, 3))`. numpy reduces
+/// axis 3 innermost (one pairwise sum of `f` values per block row) and adds the block rows
+/// in order from `0`. With one block column the two axes are adjacent in memory and numpy
+/// sums all `f * f` values of a block in one pairwise sum. The mean divides by `intp(f*f)`.
+pub fn block_mean<T: Real>(a: &[T], h: usize, w: usize, factor: usize) -> Result<(Vec<T>, usize, usize), CoreError> {
+    check_shape(h, w, a.len())?;
     let (gh, gw) = grid_shape(h, w, factor)?;
-    let count = (factor * factor) as f64;
-    let mut out = vec![0.0; len2(gh, gw)?];
+    if h == 0 || w == 0 {
+        return Ok((Vec::new(), gh, gw));
+    }
+    let n = factor.checked_mul(factor).ok_or_else(|| bad("分块太大"))?;
+    let at = |y: usize, x: usize| a[y.min(h - 1) * w + x.min(w - 1)];
+    let mut out = Vec::with_capacity(gh * gw);
+    let mut row = vec![T::ZERO; factor];
+    let mut block = vec![T::ZERO; if gw == 1 { n } else { 0 }];
     for gy in 0..gh {
         for gx in 0..gw {
-            let mut sum = 0.0;
-            for iy in 0..factor {
-                let yy = if gy * factor + iy >= h { h - 1 } else { gy * factor + iy };
-                for ix in 0..factor {
-                    let xx = if gx * factor + ix >= w { w - 1 } else { gx * factor + ix };
-                    sum += a[yy * w + xx];
+            let total = if gw == 1 {
+                for iy in 0..factor {
+                    for ix in 0..factor {
+                        block[iy * factor + ix] = at(gy * factor + iy, gx * factor + ix);
+                    }
                 }
-            }
-            out[gy * gw + gx] = sum / count;
+                sum(&block)
+            } else {
+                let mut acc = T::ZERO;
+                for iy in 0..factor {
+                    for (ix, slot) in row.iter_mut().enumerate() {
+                        *slot = at(gy * factor + iy, gx * factor + ix);
+                    }
+                    acc = acc + pairwise(&row);
+                }
+                acc
+            };
+            out.push(mean_of(total, n));
         }
     }
     Ok((out, gh, gw))
 }
 
-/// Port of gxr_studio/hdr/gain.py:136 srgb_to_linear.
-pub fn srgb_to_linear(rgb: &[u8], h: usize, w: usize) -> Result<Vec<f32>, CoreError> {
-    if h.checked_mul(w).and_then(|n| n.checked_mul(3)) != Some(rgb.len()) {
-        return Err(unsupported("bad_shape", "RGB 长度和形状对不上"));
+/// Port of gxr_studio/hdr/gain.py:136 srgb_to_linear (uint8 in, float32 out).
+pub fn srgb_to_linear(c: u8) -> f32 {
+    let v = f32::from(c) / f32_of(255.0);
+    if v <= f32_of(0.04045) {
+        v / f32_of(12.92)
+    } else {
+        powf32((v + f32_of(0.055)) / f32_of(1.055), f32_of(2.4))
     }
-    let mut out = Vec::with_capacity(rgb.len());
-    for &c in rgb {
-        let v = f32::from(c) / 255.0;
-        let lin = if v <= 0.04045 {
-            v / 12.92
-        } else {
-            powff((v + 0.055) / 1.055, 2.4)
-        };
-        out.push(lin);
-    }
-    Ok(out)
 }
 
-/// Port of gxr_studio/hdr/gain.py:153 sdr_luma_grid.
-pub fn sdr_luma_grid(rgb: &[u8], h: usize, w: usize, factor: usize) -> Result<(Vec<f64>, usize, usize), CoreError> {
-    let lin = srgb_to_linear(rgb, h, w)?;
-    let mut y = Vec::with_capacity(lin.len() / 3);
-    let mut i = 0;
-    while i + 2 < lin.len() {
-        let acc = lin[i] * LUMA_R;
-        let acc = acc + lin[i + 1] * LUMA_G;
-        y.push(f64::from(acc + lin[i + 2] * LUMA_B));
-        i += 3;
+/// Port of gxr_studio/hdr/gain.py:153 sdr_luma_grid: `(h, w, 3)` uint8 → float32 grid.
+///
+/// `@ LUMA` is written as `(r * l0 + g * l1) + b * l2` in float32.
+pub fn sdr_luma_grid(rgb: &[u8], h: usize, w: usize, factor: usize) -> Result<Plane32, CoreError> {
+    let n = h.checked_mul(w).ok_or_else(|| bad("数组太大"))?;
+    if n.checked_mul(3) != Some(rgb.len()) {
+        return Err(bad("RGB 长度和形状对不上"));
     }
-    block_mean(&y, h, w, factor)
+    let lut: Vec<f32> = (0..=255u8).map(srgb_to_linear).collect();
+    let y: Vec<f32> = rgb
+        .chunks_exact(3)
+        .map(|p| {
+            let (r, g, b) = (lut[usize::from(p[0])], lut[usize::from(p[1])], lut[usize::from(p[2])]);
+            r * LUMA[0] + g * LUMA[1] + b * LUMA[2]
+        })
+        .collect();
+    let (v, gh, gw) = block_mean(&y, h, w, factor)?;
+    Ok(Plane32 { h: gh, w: gw, v })
 }
 
-fn f32_of(v: f64) -> f32 {
-    v as f32
+/// Port of gxr_studio/hdr/gain.py:102 raw_luma, without the capture metadata (see
+/// `capture.rs`): white-balanced half-resolution luma and the RAW clip mask, both upright.
+pub fn raw_luma(dng: &mut Dng<'_>) -> Result<(Plane32, Vec<bool>), CoreError> {
+    let result = raw_parts(dng);
+    dng.release();
+    let (codes, clip) = result?;
+    let scale = f32_of(CODE_MAX);
+    let y: Vec<f32> = codes
+        .values
+        .chunks_exact(3)
+        .map(|c| {
+            let v = (c[0] / scale) * RAW_WEIGHTS[0] + (c[1] / scale) * RAW_WEIGHTS[1] + (c[2] / scale) * RAW_WEIGHTS[2];
+            maximum(v, f32_of(1e-6))
+        })
+        .collect();
+    let y_img = gxr_raw::Image {
+        height: codes.height,
+        width: codes.width,
+        channels: 1,
+        values: y,
+    };
+    let clip_img = gxr_raw::Image {
+        height: codes.height,
+        width: codes.width,
+        channels: 1,
+        values: clip,
+    };
+    let y_up = orient_array(&y_img, dng.orientation)?;
+    let clip_up = orient_array(&clip_img, dng.orientation)?;
+    Ok((
+        Plane32 {
+            h: y_up.height,
+            w: y_up.width,
+            v: y_up.values,
+        },
+        clip_up.values,
+    ))
 }
 
-/// Port of gxr_studio/hdr/gain.py:167 warp.
-pub fn warp(
-    a: &[f32],
-    src: (usize, usize),
-    out: (usize, usize),
-    s: f64,
-    dy: f64,
-    dx: f64,
-) -> Result<Vec<f32>, CoreError> {
-    let (ah, aw) = src;
-    let (out_h, out_w) = out;
-    if len2(ah, aw)? != a.len() || ah == 0 || aw == 0 || out_h == 0 || out_w == 0 {
-        return Err(unsupported("bad_shape", "无法缩放空图"));
+type RawParts = (gxr_raw::Image<f32>, Vec<bool>);
+
+fn raw_parts(dng: &Dng<'_>) -> Result<RawParts, CoreError> {
+    let codes = gxr_raw::half_res_codes(dng)?;
+    let (h2, w2) = (codes.height, codes.width);
+    let crop = dng.crop_mosaic()?;
+    if crop.height < 2 * h2 || crop.width < 2 * w2 {
+        return Err(bad("裁切区域比半分辨率小"));
     }
-    let zy = f32_of(out_h as f64 / ah as f64 * s);
-    let zx = f32_of(out_w as f64 / aw as f64 * s);
-    if zy == 0.0 || zx == 0.0 {
-        return Err(unsupported("bad_shape", "缩放是 0"));
+    // `uint16 >= white * 0.98` compares in float64 (an integer array and a Python float).
+    let limit = dng.white * 0.98;
+    let mut clip = vec![false; h2 * w2];
+    for y in 0..2 * h2 {
+        for x in 0..2 * w2 {
+            if f64::from(crop.values[y * crop.width + x]) >= limit {
+                clip[(y / 2) * w2 + x / 2] = true;
+            }
+        }
     }
-    let (dy32, dx32) = (f32_of(dy), f32_of(dx));
-    let y_mid = f32_of((out_h as f64 - 1.0) / 2.0);
-    let x_mid = f32_of((out_w as f64 - 1.0) / 2.0);
-    let src_y = f32_of((ah as f64 - 1.0) / 2.0);
-    let src_x = f32_of((aw as f64 - 1.0) / 2.0);
-    let n = len2(out_h, out_w)?;
+    Ok((codes, clip))
+}
+
+/// Port of gxr_studio/hdr/gain.py:158 `_hp` on a float32 plane.
+pub fn hp32(a: &[f32], h: usize, w: usize) -> Result<Vec<f32>, CoreError> {
+    let logged: Vec<f32> = a.iter().map(|&v| log2f(maximum(v, f32_of(1e-4)))).collect();
+    let smooth = gaussian_filter(&logged, h, w, 8.0)?;
+    Ok(logged.iter().zip(&smooth).map(|(&l, &s)| l - s).collect())
+}
+
+/// Port of gxr_studio/hdr/gain.py:158 `_hp` on a float64 plane.
+pub fn hp64(a: &[f64], h: usize, w: usize) -> Result<Vec<f64>, CoreError> {
+    let logged: Vec<f64> = a.iter().map(|&v| log2(maximum(v, 1e-4))).collect();
+    let smooth = gaussian_filter(&logged, h, w, 8.0)?;
+    Ok(logged.iter().zip(&smooth).map(|(&l, &s)| l - s).collect())
+}
+
+/// Port of gxr_studio/hdr/gain.py:163 `_norm` of a contiguous array.
+pub fn norm<T: Real>(a: &[T]) -> Vec<T> {
+    let m = mean(a);
+    let d = std(a) + T::narrow(1e-6);
+    a.iter().map(|&v| (v - m) / d).collect()
+}
+
+/// `_norm` of a view; the result is a new C-order array.
+fn norm_view(src: &[f32], v: View) -> Vec<f32> {
+    let m = crate::np::mean_view(src, v);
+    let d = std_view(src, v) + f32_of(1e-6);
+    v.copy(src).iter().map(|&x| (x - m) / d).collect()
+}
+
+/// `float(np.mean(a * b))` for two float32 arrays.
+fn mean_product(a: &[f32], b: &[f32]) -> f64 {
+    let p: Vec<f32> = a.iter().zip(b).map(|(&x, &y)| x * y).collect();
+    f64::from(mean(&p))
+}
+
+/// Port of gxr_studio/hdr/gain.py:167 warp (`order=1`).
+///
+/// Coordinates are float32: `(yy - dy - (h - 1) / 2) / zy + (a.h - 1) / 2`, every Python
+/// float cast to float32, `zy = h / a.h * s` computed in float64 first.
+pub fn warp(a: &Plane32, shape: (usize, usize), s: f64, dy: f64, dx: f64) -> Result<Vec<f32>, CoreError> {
+    let (h, w) = shape;
+    check_shape(a.h, a.w, a.v.len())?;
+    let n = h.checked_mul(w).ok_or_else(|| bad("数组太大"))?;
+    let zy = f32_of(count_f64(h) / count_f64(a.h) * s);
+    let zx = f32_of(count_f64(w) / count_f64(a.w) * s);
+    let (dy, dx) = (f32_of(dy), f32_of(dx));
+    let (cy, cx) = (f32_of((count_f64(h) - 1.0) / 2.0), f32_of((count_f64(w) - 1.0) / 2.0));
+    let (ay, ax) = (f32_of((count_f64(a.h) - 1.0) / 2.0), f32_of((count_f64(a.w) - 1.0) / 2.0));
     let mut sy = Vec::with_capacity(n);
     let mut sx = Vec::with_capacity(n);
-    for r in 0..out_h {
-        for c in 0..out_w {
-            sy.push(((r as f32 - dy32) - y_mid) / zy + src_y);
-            sx.push(((c as f32 - dx32) - x_mid) / zx + src_x);
+    for r in 0..h {
+        #[allow(clippy::cast_precision_loss)]
+        let yy = r as f32;
+        for c in 0..w {
+            #[allow(clippy::cast_precision_loss)]
+            let xx = c as f32;
+            sy.push((yy - dy - cy) / zy + ay);
+            sx.push((xx - dx - cx) / zx + ax);
         }
     }
-    match map_coordinates(&Plane::F32(a.to_vec()), ah, aw, &sy, &sx, out_h, out_w)? {
-        Plane::F32(v) => Ok(v),
-        _ => Err(unsupported("bad_shape", "插值类型不对")),
-    }
+    map_coordinates(&a.v, a.h, a.w, &sy, &sx)
 }
 
-fn mean_std(a: &[f64]) -> (f64, f64) {
-    if a.is_empty() {
-        return (f64::NAN, f64::NAN);
-    }
-    let mut sum = 0.0;
-    for &v in a {
-        sum += v;
-    }
-    let mean = sum / a.len() as f64;
-    let mut var = 0.0;
-    for &v in a {
-        let d = v - mean;
-        var += d * d;
-    }
-    (mean, (var / a.len() as f64).sqrt())
+fn to_i64(v: usize) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
 }
 
-fn norm_of(a: &[f64]) -> Vec<f64> {
-    let (mean, std) = mean_std(a);
-    a.iter().map(|v| (v - mean) / (std + 1e-6)).collect()
-}
-
-fn hp64(a: &[f64], h: usize, w: usize) -> Result<Vec<f64>, CoreError> {
-    let logged: Vec<f64> = a.iter().map(|v| log2(v.max(1e-4))).collect();
-    let smooth = match gaussian_filter(&Plane::F64(logged.clone()), h, w, 8.0)? {
-        Plane::F64(v) => v,
-        _ => return Err(unsupported("bad_shape", "高通类型不对")),
-    };
-    Ok(logged.into_iter().zip(smooth).map(|(v, s)| v - s).collect())
-}
-
-fn hp32(a: &[f32], h: usize, w: usize) -> Result<Vec<f64>, CoreError> {
-    let logged: Vec<f32> = a.iter().map(|v| log2f(v.max(1e-4))).collect();
-    let smooth = match gaussian_filter(&Plane::F32(logged.clone()), h, w, 8.0)? {
-        Plane::F32(v) => v,
-        _ => return Err(unsupported("bad_shape", "高通类型不对")),
-    };
-    Ok(logged.into_iter().zip(smooth).map(|(v, s)| f64::from(v - s)).collect())
-}
-
-fn mean_product(a: &[f64], b: &[f64]) -> f64 {
-    let mut sum = 0.0;
-    for i in 0..a.len().min(b.len()) {
-        sum += a[i] * b[i];
-    }
-    if a.is_empty() { f64::NAN } else { sum / a.len() as f64 }
-}
-
-fn patch(b: &[f64], bw: usize, y0: i64, x0: i64, th: usize, tw: usize) -> Vec<f64> {
-    let mut out = Vec::with_capacity(th * tw);
-    for r in 0..th {
-        for c in 0..tw {
-            let y = (y0 + r as i64) as usize;
-            let x = (x0 + c as i64) as usize;
-            out.push(b[y * bw + x]);
-        }
-    }
-    out
+fn idx(v: i64) -> usize {
+    usize::try_from(v).unwrap_or(0)
 }
 
 /// Port of gxr_studio/hdr/gain.py:185 `_tile_moved`.
-fn tile_moved(ta: &[f64], b: &[f64], bw: usize, y0: usize, x0: usize, th: usize, tw: usize) -> bool {
-    let tn = norm_of(ta);
-    let here = mean_product(&tn, &norm_of(&patch(b, bw, y0 as i64, x0 as i64, th, tw)));
+fn tile_moved(a: &[f32], b: &[f32], tile: View) -> bool {
+    let tn = norm_view(a, tile);
+    let at = |dy: i64, dx: i64| View {
+        y0: idx(to_i64(tile.y0) + dy),
+        x0: idx(to_i64(tile.x0) + dx),
+        ..tile
+    };
+    let here = mean_product(&tn, &norm_view(b, at(0, 0)));
     let mut best = here;
     let mut far = false;
     for dy in -TILE_REACH..=TILE_REACH {
         for dx in -TILE_REACH..=TILE_REACH {
-            let c = mean_product(&tn, &norm_of(&patch(b, bw, y0 as i64 + dy, x0 as i64 + dx, th, tw)));
+            let c = mean_product(&tn, &norm_view(b, at(dy, dx)));
             if c > best {
                 best = c;
                 far = dy.abs().max(dx.abs()) >= 1;
@@ -267,220 +308,134 @@ fn tile_moved(ta: &[f64], b: &[f64], bw: usize, y0: usize, x0: usize, th: usize,
     far && ((best >= TILE_MATCH && best - here > TILE_GAIN) || best - here > 0.1)
 }
 
+/// Python slice bounds `[lo, hi)` clipped to `0 .. n` (negative ends never occur here
+/// except `h - r < 0`, which leaves the slice empty either way).
+fn span(lo: i64, hi: i64, n: usize) -> (usize, usize) {
+    let n = to_i64(n);
+    let hi = if hi < 0 { (hi + n).max(0) } else { hi.min(n) };
+    let lo = lo.clamp(0, n);
+    (idx(lo), idx(hi.max(lo)))
+}
+
 /// Port of gxr_studio/hdr/gain.py:200 `_tiles_moved`.
-fn tiles_moved(a: &[f64], b: &[f64], h: usize, w: usize) -> i64 {
-    let mut moved = 0i64;
-    let r = TILE_REACH as usize;
-    if h <= r || w <= r {
-        return 0;
-    }
+fn tiles_moved(a: &[f32], b: &[f32], h: usize, w: usize) -> i64 {
+    let (hh, ww) = (to_i64(h), to_i64(w));
+    let r = TILE_REACH;
+    let mut moved = 0;
     for i in 0..TILES {
         for j in 0..TILES {
-            let y0 = r.max(i * h / TILES);
-            let y1 = (h - r).min((i + 1) * h / TILES);
-            let x0 = r.max(j * w / TILES);
-            let x1 = (w - r).min((j + 1) * w / TILES);
-            if y1 <= y0 || x1 <= x0 {
+            let (y0, y1) = span(r.max(i * hh / TILES), (hh - r).min((i + 1) * hh / TILES), h);
+            let (x0, x1) = span(r.max(j * ww / TILES), (ww - r).min((j + 1) * ww / TILES), w);
+            let tile = View {
+                y0,
+                x0,
+                h: y1 - y0,
+                w: x1 - x0,
+                stride: w,
+            };
+            if tile.len() < 64 || f64::from(std_view(a, tile)) < TILE_TEXTURE {
                 continue;
             }
-            let th = y1 - y0;
-            let tw = x1 - x0;
-            if th * tw < 64 {
-                continue;
-            }
-            let tile = patch(a, w, y0 as i64, x0 as i64, th, tw);
-            if mean_std(&tile).1 < TILE_TEXTURE {
-                continue;
-            }
-            moved += i64::from(tile_moved(&tile, b, w, y0, x0, th, tw));
+            moved += i64::from(tile_moved(a, b, tile));
         }
     }
     moved
 }
 
-fn percentile(sorted: &[f64], q: f64) -> f64 {
-    if sorted.is_empty() {
-        return f64::NAN;
-    }
-    if sorted.len() == 1 {
-        return sorted[0];
-    }
-    let idx = (sorted.len() as f64 - 1.0) * (q / 100.0);
-    let lo = idx.floor() as usize;
-    let hi = idx.ceil() as usize;
-    let frac = idx - lo as f64;
-    sorted[lo] * (1.0 - frac) + sorted[hi] * frac
-}
-
-fn median(values: &mut [f64]) -> f64 {
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = values.len();
-    if n == 0 {
-        return f64::NAN;
-    }
-    if n % 2 == 1 {
-        values[n / 2]
-    } else {
-        (values[n / 2 - 1] + values[n / 2]) * 0.5
-    }
-}
-
-/// Port of gxr_studio/hdr/gain.py:322 fit_curve.
-pub fn fit_curve(x: &[f64], y: &[f64], valid: &[bool]) -> Result<(Vec<f64>, Vec<f64>), CoreError> {
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    for i in 0..x.len().min(y.len()).min(valid.len()) {
-        if valid[i] {
-            xs.push(x[i]);
-            ys.push(y[i]);
-        }
-    }
-    if xs.len() < 100 {
-        return Err(unsupported("no_curve", "可用于拟合的像素太少"));
-    }
-    let mut order = xs.clone();
-    order.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let lo = percentile(&order, 0.5);
-    let hi = percentile(&order, 99.95);
-    let mut edges = Vec::new();
-    let mut e = lo;
-    let step = 0.125;
-    while e < hi + step {
-        edges.push(e);
-        e += step;
-        if edges.len() > 1_000_000 {
-            return Err(unsupported("no_curve", "亮度范围太窄，拟合不出曲线"));
-        }
-    }
-    let mut cx = Vec::new();
-    let mut cy = Vec::new();
-    let mut bins: Vec<Vec<f64>> = (0..edges.len()).map(|_| Vec::new()).collect();
-    for i in 0..xs.len() {
-        // np.digitize(..., right=False) is searchsorted side="right".
-        let idx = edges.partition_point(|edge| *edge <= xs[i]);
-        if idx > 0 && idx < edges.len() {
-            bins[idx].push(ys[i]);
-        }
-    }
-    for k in 1..edges.len() {
-        if bins[k].len() >= 30 {
-            cx.push(0.5 * (edges[k - 1] + edges[k]));
-            cy.push(median(&mut bins[k]));
-        }
-    }
-    if cx.len() < 2 {
-        return Err(unsupported("no_curve", "亮度范围太窄，拟合不出曲线"));
-    }
-    let mut acc = f64::NEG_INFINITY;
-    for v in &mut cy {
-        if *v > acc {
-            acc = *v;
-        }
-        *v = acc;
-    }
-    if cy.len() >= 5 {
-        let mut padded = Vec::with_capacity(cy.len() + 4);
-        padded.push(cy[0]);
-        padded.push(cy[0]);
-        padded.extend_from_slice(&cy);
-        let last = cy[cy.len() - 1];
-        padded.push(last);
-        padded.push(last);
-        let mut smooth = Vec::with_capacity(cy.len());
-        for i in 0..cy.len() {
-            let mut sum = 0.0;
-            for k in 0..5 {
-                sum += padded[i + k];
+/// Port of gxr_studio/hdr/gain.py:216 `_tiles_unverified`.
+fn tiles_unverified(sdr: &Plane32, raw: &[f32]) -> Result<i64, CoreError> {
+    let (h, w) = (sdr.h, sdr.w);
+    let x: Vec<f32> = raw.iter().map(|&v| log2f(maximum(v, f32_of(1e-6)))).collect();
+    let y: Vec<f32> = sdr.v.iter().map(|&v| log2f(maximum(v, f32_of(1e-5)))).collect();
+    let valid: Vec<bool> = sdr.v.iter().map(|&v| v > f32_of(0.003) && v < f32_of(0.97)).collect();
+    let (cx, cy) = match fit_curve(&x, &y, &valid) {
+        Ok(curve) => curve,
+        Err(e) if is_unsupported(&e) => return Ok(1),
+        Err(e) => return Err(e),
+    };
+    let a = hp32(&sdr.v, h, w)?;
+    let (left, right) = (cy[0], cy[cy.len() - 1]);
+    let predicted: Vec<f64> = x.iter().map(|&v| exp2(interp(f64::from(v), &cx, &cy, left, right))).collect();
+    let b = hp64(&predicted, h, w)?;
+    let visible: Vec<bool> = sdr.v.iter().map(|&v| v > f32_of(0.01) && v < f32_of(0.95)).collect();
+    let (hh, ww) = (to_i64(h), to_i64(w));
+    let (mut unverified, mut verified) = (0i64, 0i64);
+    for i in 0..TILES {
+        for j in 0..TILES {
+            let (y0, y1) = (idx(i * hh / TILES), idx((i + 1) * hh / TILES));
+            let (x0, x1) = (idx(j * ww / TILES), idx((j + 1) * ww / TILES));
+            let mut ta = Vec::new();
+            let mut tb = Vec::new();
+            for r in y0..y1 {
+                for c in x0..x1 {
+                    if visible[r * w + c] {
+                        ta.push(a[r * w + c]);
+                        tb.push(b[r * w + c]);
+                    }
+                }
             }
-            smooth.push(sum / 5.0);
+            if ta.is_empty() || f64::from(std(&ta)) < TILE_TEXTURE {
+                continue;
+            }
+            let low = ta.len() < 32 || {
+                let na = norm(&ta);
+                let nb = norm(&tb);
+                let p: Vec<f64> = na.iter().zip(&nb).map(|(&p, &q)| f64::from(p) * q).collect();
+                mean(&p) < MIN_TILE_CORRELATION
+            };
+            if low {
+                unverified += 1;
+            } else {
+                verified += 1;
+            }
         }
-        cy = smooth;
     }
-    Ok((cx, cy))
+    Ok(if verified > 0 { unverified } else { unverified.max(1) })
 }
 
-fn interp_one(x: f64, xp: &[f64], fp: &[f64], left: f64, right: f64) -> f64 {
-    if xp.is_empty() || fp.is_empty() {
-        return f64::NAN;
-    }
-    if x < xp[0] {
-        return left;
-    }
-    if x > xp[xp.len() - 1] {
-        return right;
-    }
-    let lo = xp.partition_point(|v| *v < x);
-    if lo == 0 {
-        return fp[0];
-    }
-    if lo >= xp.len() {
-        return fp[fp.len() - 1];
-    }
-    let x0 = xp[lo - 1];
-    let x1 = xp[lo];
-    let y0 = fp[lo - 1];
-    let y1 = fp[lo];
-    if x1 == x0 {
-        return y0;
-    }
-    let slope = (y1 - y0) / (x1 - x0);
-    y0 + slope * (x - x0)
+/// `except HdrUnsupported`: every reason this crate raises from the gain math.
+pub fn is_unsupported(e: &CoreError) -> bool {
+    matches!(e.kind, "no_curve" | "not_aligned" | "capture_mismatch" | "metadata_unreadable")
 }
 
-fn fmt_fixed(v: f64, digits: u32) -> String {
-    let neg = v.is_sign_negative() && v != 0.0;
-    let scale = gxr_math::powi(10.0, digits as i32);
-    let rounded = crate::number::round_half_even(v.abs() * scale);
-    let ip = rounded.round() as u64;
-    let div = 10u64.pow(digits);
-    format!(
-        "{}{}.{:0width$}",
-        if neg { "-" } else { "" },
-        ip / div,
-        ip % div,
-        width = digits as usize
-    )
+/// `_norm(_hp(warp(raw_y, shape, s, dy, dx)))`.
+fn warped_norm(raw: &Plane32, h: usize, w: usize, s: f64, dy: i64, dx: i64) -> Result<Vec<f32>, CoreError> {
+    #[allow(clippy::cast_precision_loss)]
+    let warped = warp(raw, (h, w), s, dy as f64, dx as f64)?;
+    Ok(norm(&hp32(&warped, h, w)?))
 }
 
 /// Port of gxr_studio/hdr/gain.py:273 align.
-pub fn align(
-    sdr_y: &[f64],
-    h: usize,
-    w: usize,
-    raw_y: &[f32],
-    raw_h: usize,
-    raw_w: usize,
-) -> Result<Alignment, CoreError> {
-    if len2(h, w)? != sdr_y.len() || len2(raw_h, raw_w)? != raw_y.len() {
-        return Err(unsupported("bad_shape", "亮度平面对不上"));
+pub fn align(sdr: &Plane32, raw: &Plane32) -> Result<Alignment, CoreError> {
+    check_shape(sdr.h, sdr.w, sdr.v.len())?;
+    check_shape(raw.h, raw.w, raw.v.len())?;
+    if sdr.v.is_empty() || raw.v.is_empty() {
+        return Err(bad("无法对齐空图"));
     }
-    let a = norm_of(&hp64(sdr_y, h, w)?);
+    let (h, w) = (sdr.h, sdr.w);
+    let a = norm(&hp32(&sdr.v, h, w)?);
     let corr_at = |s: f64, dy: i64, dx: i64| -> Result<f64, CoreError> {
-        let warped = warp(raw_y, (raw_h, raw_w), (h, w), s, dy as f64, dx as f64)?;
-        let hb = norm_of(&hp32(&warped, h, w)?);
-        Ok(mean_product(&a, &hb))
+        Ok(mean_product(&a, &warped_norm(raw, h, w, s, dy, dx)?))
     };
     let mut best: Option<(f64, f64, i64, i64)> = None;
     for &s in &SCALES {
-        let base = warp(raw_y, (raw_h, raw_w), (h, w), s, 0.0, 0.0)?;
-        let template = norm_of(&hp32(&base, h, w)?);
-        let (mut dy, mut dx) = phase_shift(&a, &template, h, w)?;
+        let (mut dy, mut dx) = phase_shift(&a, &warped_norm(raw, h, w, s, 0, 0)?, h, w)?;
         let mut corr = corr_at(s, dy, dx)?;
         if s == 1.0 && dy == 0 && dx == 0 && corr > 0.6 {
             best = Some((corr, s, dy, dx));
             break;
         }
-        let (phase_y, phase_x) = (dy, dx);
+        let (py, px) = (dy, dx);
         for i in -1..=1 {
             for j in -1..=1 {
                 if i == 0 && j == 0 {
                     continue;
                 }
-                let cand = corr_at(s, phase_y + i, phase_x + j)?;
-                if cand > corr {
-                    corr = cand;
-                    dy = phase_y + i;
-                    dx = phase_x + j;
+                let c = corr_at(s, py + i, px + j)?;
+                if c > corr {
+                    corr = c;
+                    dy = py + i;
+                    dx = px + j;
                 }
             }
         }
@@ -488,16 +443,15 @@ pub fn align(
             best = Some((corr, s, dy, dx));
         }
     }
-    let Some((corr, s, dy, dx)) = best else {
-        return Err(unsupported("not_aligned", "没有可用的对齐"));
-    };
-    let registered = warp(raw_y, (raw_h, raw_w), (h, w), s, dy as f64, dx as f64)?;
-    let ha = hp64(sdr_y, h, w)?;
+    let (corr, s, dy, dx) = best.ok_or_else(|| bad("SCALES 是空的"))?;
+    #[allow(clippy::cast_precision_loss)]
+    let registered = warp(raw, (h, w), s, dy as f64, dx as f64)?;
+    let ha = hp32(&sdr.v, h, w)?;
     let hb = hp32(&registered, h, w)?;
     let moved = tiles_moved(&ha, &hb, h, w);
-    let unverified = tiles_unverified(sdr_y, &registered, h, w)?
-        + i64::from(crate::residual::local_residual(sdr_y, &registered, h, w)?);
-    let shift_frac = (dy.abs() as f64 / h as f64).max(dx.abs() as f64 / w as f64);
+    let unverified = tiles_unverified(sdr, &registered)? + i64::from(local_residual(sdr, &registered)?);
+    #[allow(clippy::cast_precision_loss)]
+    let shift_frac = (dy.abs() as f64 / count_f64(h)).max(dx.abs() as f64 / count_f64(w));
     Ok(Alignment {
         scale: s,
         dy,
@@ -509,213 +463,57 @@ pub fn align(
     })
 }
 
+/// Python `f"{x:.2f}"` for the correlation in the not-aligned message.
+fn fixed2(x: f64) -> String {
+    format!("{x:.2}")
+}
+
 /// Port of gxr_studio/hdr/gain.py:303 check_alignment.
 pub fn check_alignment(al: &Alignment) -> Result<(), CoreError> {
+    let fail = |detail: String| Err(unsupported("not_aligned", &detail));
     if al.correlation < MIN_CORRELATION {
-        return Err(unsupported(
-            "not_aligned",
-            &format!("RAW 与 JPG 对不齐（相关系数 {}）", fmt_fixed(al.correlation, 2)),
-        ));
+        return fail(format!("RAW 与 JPG 对不齐（相关系数 {}）", fixed2(al.correlation)));
     }
     if al.shift_frac > MAX_SHIFT {
-        return Err(unsupported(
-            "not_aligned",
-            &format!("RAW 与 JPG 错开太多（{}, {}）", al.dy, al.dx),
-        ));
+        return fail(format!("RAW 与 JPG 错开太多（{}, {}）", al.dy, al.dx));
     }
     if al.tiles_moved != 0 {
-        return Err(unsupported(
-            "not_aligned",
-            &format!("RAW 与 JPG 局部对不齐（{} 块）", al.tiles_moved),
-        ));
+        return fail(format!("RAW 与 JPG 局部对不齐（{} 块）", al.tiles_moved));
     }
     if al.tiles_unverified != 0 {
-        return Err(unsupported(
-            "not_aligned",
-            &format!("无法确认 RAW 与 JPG 局部对齐（{} 块）", al.tiles_unverified),
-        ));
+        return fail(format!("无法确认 RAW 与 JPG 局部对齐（{} 块）", al.tiles_unverified));
     }
     Ok(())
 }
 
-/// Port of gxr_studio/hdr/gain.py:216 `_tiles_unverified`.
-fn tiles_unverified(sdr_y: &[f64], raw_y: &[f32], h: usize, w: usize) -> Result<i64, CoreError> {
-    let x: Vec<f64> = raw_y.iter().map(|v| log2(f64::from((*v).max(1e-6)))).collect();
-    let y: Vec<f64> = sdr_y.iter().map(|v| log2(v.max(1e-5))).collect();
-    let valid: Vec<bool> = sdr_y.iter().map(|v| *v > 0.003 && *v < 0.97).collect();
-    let (cx, cy) = match fit_curve(&x, &y, &valid) {
-        Ok(curve) => curve,
-        Err(err) if err.kind == "no_curve" => return Ok(1),
-        Err(err) => return Err(err),
-    };
-    let a = hp64(sdr_y, h, w)?;
-    let predicted: Vec<f64> = x.iter().map(|v| exp2(interp_one(*v, &cx, &cy, cy[0], cy[cy.len() - 1]))).collect();
-    let b = hp64(&predicted, h, w)?;
-    let mut unverified = 0i64;
-    let mut verified = 0i64;
-    for i in 0..TILES {
-        for j in 0..TILES {
-            let y0 = i * h / TILES;
-            let y1 = (i + 1) * h / TILES;
-            let x0 = j * w / TILES;
-            let x1 = (j + 1) * w / TILES;
-            let mut ta = Vec::new();
-            let mut tb = Vec::new();
-            for r in y0..y1 {
-                for c in x0..x1 {
-                    let s = sdr_y[r * w + c];
-                    if s > 0.01 && s < 0.95 {
-                        ta.push(a[r * w + c]);
-                        tb.push(b[r * w + c]);
-                    }
-                }
-            }
-            if ta.is_empty() || mean_std(&ta).1 < TILE_TEXTURE {
-                continue;
-            }
-            if ta.len() < 32 || mean_product(&norm_of(&ta), &norm_of(&tb)) < MIN_TILE_CORRELATION {
-                unverified += 1;
-            } else {
-                verified += 1;
-            }
-        }
+/// Port of gxr_studio/hdr/gain.py:314 register: luma and clip resampled to `shape`.
+pub fn register(
+    raw: &Plane32,
+    clip: &[bool],
+    shape: (usize, usize),
+    al: &Alignment,
+    grid: (usize, usize),
+) -> Result<(Vec<f32>, Vec<bool>), CoreError> {
+    check_shape(raw.h, raw.w, clip.len())?;
+    if grid.0 == 0 || grid.1 == 0 {
+        return Err(bad("division by zero"));
     }
-    Ok(if verified == 0 { unverified.max(1) } else { unverified })
-}
-
-/// The float32 gain plane and the `gmax` Python `round(..., 4)` stores.
-pub struct GainPlane {
-    pub delta: Vec<f32>,
-    pub gmax: f64,
-    pub h: usize,
-    pub w: usize,
-    pub stats: Json,
-}
-
-/// Port of gxr_studio/hdr/gain.py:345 compute_gain, up to the float32 plane and `gmax`.
-pub fn compute_gain(
-    sdr_y: &[f64],
-    raw_y: &[f32],
-    clip: &[u8],
-    h: usize,
-    w: usize,
-    p: &Params,
-) -> Result<GainPlane, CoreError> {
-    if len2(h, w)? != sdr_y.len() || raw_y.len() != sdr_y.len() || clip.len() != sdr_y.len() {
-        return Err(unsupported("bad_shape", "增益平面对不上"));
-    }
-    let photo: Vec<bool> = raw_y.iter().map(|v| v.is_finite()).collect();
-    let x: Vec<f64> = raw_y
-        .iter()
-        .zip(&photo)
-        .map(|(v, on)| log2(if *on { f64::from((*v).max(1e-6)) } else { 1.0 }))
+    let ky = count_f64(shape.0) / count_f64(grid.0);
+    let kx = count_f64(shape.1) / count_f64(grid.1);
+    #[allow(clippy::cast_precision_loss)]
+    let (dy, dx) = (al.dy as f64 * ky, al.dx as f64 * kx);
+    let y: Vec<f32> = warp(raw, shape, al.scale, dy, dx)?
+        .into_iter()
+        .map(|v| maximum(v, f32_of(1e-6)))
         .collect();
-    let ylog: Vec<f64> = sdr_y.iter().map(|v| log2(v.max(1e-5))).collect();
-    let valid: Vec<bool> = photo
-        .iter()
-        .zip(clip)
-        .zip(sdr_y)
-        .map(|((on, c), s)| *on && *c == 0 && *s > 0.003 && *s < 0.97)
+    let clip_plane = Plane32 {
+        h: raw.h,
+        w: raw.w,
+        v: clip.iter().map(|&c| if c { 1.0 } else { 0.0 }).collect(),
+    };
+    let c: Vec<bool> = warp(&clip_plane, shape, al.scale, dy, dx)?
+        .into_iter()
+        .map(|v| v > f32_of(0.01))
         .collect();
-    let (cx, cy) = fit_curve(&x, &ylog, &valid)?;
-    let mut mid = Vec::new();
-    for i in 0..h * w {
-        if valid[i] && sdr_y[i] > 0.10 && sdr_y[i] < 0.30 {
-            mid.push(ylog[i] - x[i]);
-        }
-    }
-    let ev = if mid.len() > 100 { median(&mut mid) } else { f64::NAN };
-    let mut yk = log2(p.knee);
-    let xk = if cy.iter().copied().fold(f64::NEG_INFINITY, f64::max) <= yk {
-        yk = cy[cy.len() - 1];
-        cx[cx.len() - 1]
-    } else {
-        interp_one(yk, &cy, &cx, cx[0], cx[cx.len() - 1])
-    };
-    let mut delta = Vec::with_capacity(h * w);
-    for i in 0..h * w {
-        let t_sdr = interp_one(x[i], &cx, &cy, cy[0], cy[cy.len() - 1]).min(0.0);
-        let y_hdr = if x[i] > xk { yk + p.hdr_slope * (x[i] - xk) } else { t_sdr };
-        let mut d = (y_hdr - t_sdr).max(0.0);
-        d = p.max_stops * tanh(d / p.max_stops);
-        delta.push(if photo[i] { d } else { 0.0 });
-    }
-    let narrow: Vec<f32> = delta.iter().map(|v| *v as f32).collect();
-    let smooth = match gaussian_filter(&Plane::F32(narrow), h, w, 0.6)? {
-        Plane::F32(v) => v,
-        _ => return Err(unsupported("bad_shape", "平滑类型不对")),
-    };
-    let mut out = Vec::with_capacity(h * w);
-    let mut gt01 = 0.0f64;
-    let mut gt1 = 0.0f64;
-    for i in 0..h * w {
-        let span = p.gate_hi - p.gate_lo;
-        let mut gate = ((sdr_y[i] - p.gate_lo) / span).clamp(0.0, 1.0);
-        gate = gate * gate * (3.0 - 2.0 * gate);
-        let value = (f64::from(smooth[i]) * gate) * if photo[i] { 1.0 } else { 0.0 };
-        let stored = value as f32;
-        if stored > 0.1 {
-            gt01 += 1.0;
-        }
-        if stored > 1.0 {
-            gt1 += 1.0;
-        }
-        out.push(stored);
-    }
-    let mut peak = 0.05f64;
-    for &v in &out {
-        peak = peak.max(f64::from(v));
-    }
-    let gmax = py_round(peak, 4)?;
-    let n = (h * w) as f64;
-    let clipped = if photo.iter().any(|v| *v) {
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for i in 0..photo.len() {
-            if photo[i] {
-                den += 1.0;
-                if clip[i] != 0 {
-                    num += 1.0;
-                }
-            }
-        }
-        num / den
-    } else {
-        0.0
-    };
-    let stats = Json::object([
-        ("gainmap_wh", Json::ints(&[w as i64, h as i64])),
-        ("raw_clipped_frac", Json::Float(py_round(clipped, 4)?)),
-        ("ev_raw_to_sdr_mid", if ev.is_nan() { Json::Null } else { Json::Float(py_round(ev, 3)?) }),
-        ("knee_raw_log2", Json::Float(py_round(xk, 3)?)),
-        ("gain_max_stops", Json::Float(py_round(gmax, 3)?)),
-        ("frac_gain_gt_0p1_stop", Json::Float(py_round(gt01 / n, 4)?)),
-        ("frac_gain_gt_1_stop", Json::Float(py_round(gt1 / n, 4)?)),
-        ("gmax", Json::Float(gmax)),
-    ]);
-    Ok(GainPlane { delta: out, gmax, h, w, stats })
-}
-
-/// Port of the quantisation in gxr_studio/hdr/container.py:198 encode_gainmap.
-/// `floor(clip((delta - min) / (max - min), 0, 1) ** gamma * 255 + 0.5)`.
-pub fn quantise_gain(delta: &[f32], gain_min: f64, gain_max: f64, gamma: f64) -> Result<Vec<u8>, CoreError> {
-    let span = gain_max - gain_min;
-    if span == 0.0 || !span.is_finite() {
-        return Err(unsupported("bad_meta", "增益范围是 0"));
-    }
-    let mut out = Vec::with_capacity(delta.len());
-    for &d in delta {
-        let r = ((f64::from(d) - gain_min) / span).clamp(0.0, 1.0);
-        let powered = if gamma == 1.0 { r } else { gxr_math::powf(r, gamma) };
-        let code = (powered * 255.0 + 0.5).floor();
-        let code = if code <= 0.0 {
-            0
-        } else if code >= 255.0 {
-            255
-        } else {
-            code as u8
-        };
-        out.push(code);
-    }
-    Ok(out)
+    Ok((y, c))
 }

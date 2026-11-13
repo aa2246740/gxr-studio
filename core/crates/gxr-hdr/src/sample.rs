@@ -1,83 +1,82 @@
-//! `ndimage.map_coordinates` for `order=1`, `mode="nearest"`, `prefilter=False`.
+//! `ndimage.map_coordinates(plane, [sy, sx], order=1, mode="nearest")`.
 //!
-//! Order 1 does not prefilter (`prefilter and order > 1` is false). Coordinates are
-//! interpolated in float64 after the float32 values Python built (casting float32
-//! to float64 is exact). Each sample index is clamped into the array. The output
-//! dtype matches the input: the weights are applied in float64 and then cast.
+//! Order 1 skips the spline prefilter (`prefilter and order > 1`). For each output point
+//! (`NI_GeometricTransform`): clamp each coordinate into `[0, n - 1]`, take
+//! `start = floor(c)` and the weights `[1 - t, t]` with `t = c - start`, then add the four
+//! neighbours in C order, each as `(value * wy) * wx`, starting from `0.0`. Neighbour indices
+//! past the edge are clamped. The sum is float64 and is cast to the plane's dtype.
+//! This order was checked against scipy 1.17.1 on random planes.
 
 use gxr_raw::CoreError;
 
-use crate::error::container;
+use crate::error::unsupported;
 use crate::extend::nearest;
-use crate::filter::Plane;
+use crate::filter::check_shape;
+use crate::np::Real;
 
-fn shape_of(h: usize, w: usize, len: usize) -> Result<(), CoreError> {
-    Plane::shape_ok(h, w, len)
-}
-
-fn floor_toward_neg(v: f64) -> i64 {
-    let f = v.floor();
-    if !f.is_finite() || f < i64::MIN as f64 || f > i64::MAX as f64 {
-        if v.is_sign_negative() {
-            i64::MIN
-        } else {
-            i64::MAX
-        }
+fn axis_weights(c: f64, n: usize) -> (i64, [f64; 2]) {
+    let top = i64::try_from(n).unwrap_or(i64::MAX) - 1;
+    #[allow(clippy::cast_precision_loss)]
+    let hi = top as f64;
+    let c = if c < 0.0 {
+        0.0
+    } else if c > hi {
+        hi
     } else {
-        f as i64
-    }
-}
-
-fn bilinear_at(src_f64: &[f64], src_f32: &[f32], h: usize, w: usize, y: f64, x: f64) -> f64 {
-    let y0 = floor_toward_neg(y);
-    let x0 = floor_toward_neg(x);
-    let fy = y - y0 as f64;
-    let fx = x - x0 as f64;
-    let sample = |yy: i64, xx: i64| -> f64 {
-        let rr = nearest(yy, h as i64) as usize;
-        let cc = nearest(xx, w as i64) as usize;
-        let i = rr * w + cc;
-        if src_f64.is_empty() { f64::from(src_f32[i]) } else { src_f64[i] }
+        c
     };
-    let v00 = sample(y0, x0);
-    let v01 = sample(y0, x0 + 1);
-    let v10 = sample(y0 + 1, x0);
-    let v11 = sample(y0 + 1, x0 + 1);
-    let v0 = (1.0 - fx) * v00 + fx * v01;
-    let v1 = (1.0 - fx) * v10 + fx * v11;
-    (1.0 - fy) * v0 + fy * v1
+    let f = c.floor();
+    #[allow(clippy::cast_possible_truncation)]
+    let start = if f.is_finite() { f as i64 } else { 0 };
+    #[allow(clippy::cast_precision_loss)]
+    let t = c - start as f64;
+    (start, [1.0 - t, t])
 }
 
-/// Port of `ndimage.map_coordinates(values, [sy, sx], order=1, mode="nearest")`.
-pub fn map_coordinates(
-    plane: &Plane,
+/// Port of the `map_coordinates` call in gxr_studio/hdr/gain.py:174 `warp`.
+pub fn map_coordinates<T: Real>(
+    src: &[T],
     h: usize,
     w: usize,
     sy: &[f32],
     sx: &[f32],
-    out_h: usize,
-    out_w: usize,
-) -> Result<Plane, CoreError> {
-    shape_of(out_h, out_w, sy.len())?;
-    shape_of(out_h, out_w, sx.len())?;
-    match plane {
-        Plane::F64(v) => {
-            shape_of(h, w, v.len())?;
-            let mut out = Vec::with_capacity(sy.len());
-            for i in 0..sy.len() {
-                out.push(bilinear_at(v, &[], h, w, f64::from(sy[i]), f64::from(sx[i])));
+) -> Result<Vec<T>, CoreError> {
+    check_shape(h, w, src.len())?;
+    if sy.len() != sx.len() {
+        return Err(unsupported("bad_input", "坐标数组长度不一致"));
+    }
+    if h == 0 || w == 0 {
+        return Err(unsupported("bad_input", "无法在空图上取样"));
+    }
+    let (hh, ww) = (i64::try_from(h).unwrap_or(i64::MAX), i64::try_from(w).unwrap_or(i64::MAX));
+    let mut out = Vec::with_capacity(sy.len());
+    for (&y, &x) in sy.iter().zip(sx) {
+        let (y0, wy) = axis_weights(f64::from(y), h);
+        let (x0, wx) = axis_weights(f64::from(x), w);
+        let mut acc = 0.0f64;
+        for (i, &fy) in wy.iter().enumerate() {
+            let row = usize::try_from(nearest(y0 + i64::try_from(i).unwrap_or(0), hh)).unwrap_or(0);
+            for (j, &fx) in wx.iter().enumerate() {
+                let col = usize::try_from(nearest(x0 + i64::try_from(j).unwrap_or(0), ww)).unwrap_or(0);
+                let mut coeff = src[row * w + col].wide();
+                coeff *= fy;
+                coeff *= fx;
+                acc += coeff;
             }
-            Ok(Plane::F64(out))
         }
-        Plane::F32(v) => {
-            shape_of(h, w, v.len())?;
-            let mut out = Vec::with_capacity(sy.len());
-            for i in 0..sy.len() {
-                let y = bilinear_at(&[], v, h, w, f64::from(sy[i]), f64::from(sx[i]));
-                out.push(y as f32);
-            }
-            Ok(Plane::F32(out))
-        }
-        Plane::U8(_) => Err(container("map_coordinates 只接受浮点")),
+        out.push(T::narrow(acc));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_way_is_the_mean() {
+        let a = [1.0f32, 2.0, 3.0, 4.0];
+        let got = map_coordinates(&a, 2, 2, &[0.0, 0.5], &[0.0, 0.5]).unwrap();
+        assert_eq!(got, vec![1.0, 2.5]);
     }
 }
