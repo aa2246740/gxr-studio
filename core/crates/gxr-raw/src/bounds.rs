@@ -124,7 +124,17 @@ fn cannot_reshape(size: i128, dims: &[i64]) -> PyErr {
 }
 
 /// `ndarray.reshape(dims)` for a C-order array of `size` elements.
+/// NumPy 2's `NPY_MAXDIMS`.
+const NPY_MAXDIMS: usize = 64;
+
 pub(crate) fn numpy_reshape(size: i128, dims: &[i64]) -> Result<Vec<usize>, PyErr> {
+    // NumPy refuses more than NPY_MAXDIMS (64) axes before looking at the values.
+    if dims.len() > NPY_MAXDIMS {
+        return Err(PyErr::Value(format!(
+            "maximum supported dimension for an ndarray is currently {NPY_MAXDIMS}, found {}",
+            dims.len()
+        )));
+    }
     if dims.iter().filter(|&&d| d < 0).count() > 1 {
         return Err(PyErr::Value(
             "can only specify one unknown dimension".into(),

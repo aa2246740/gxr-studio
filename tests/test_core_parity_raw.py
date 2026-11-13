@@ -514,6 +514,9 @@ def hostile_cases() -> dict[str, bytes]:
         "ifd-points-at-itself": _point_next_ifd_at_itself(base),
         "huge-black-repeat": _patch(base, 50713, 4, [2147483648, 2147483648]),
         "repeat-one-dimensional": _patch(base, 50713, 3, [1, 1, 1]),
+        # NumPy stops at 64 axes; the 100000-axis file once overflowed the Rust stack in summary.
+        "repeat-65-axes": _patch(base, 50713, 3, [1] * 65),
+        "repeat-100000-axes": _patch(base, 50713, 3, [1] * 100000),
         "bps-zero": _patch(base, 258, 3, [0]),
         "absurd-dimensions": _patch(_patch(base, 256, 4, [0xFFFFFFFF]), 257, 4, [0xFFFFFFFF]),
         "signed-negative-black-repeat": _patch(base, 50713, 9, [-1, -1]),
@@ -536,6 +539,28 @@ def test_hostile_dimensions_do_not_panic(tmp_path: Path) -> None:
         path.write_bytes(payload)
         for command in ("dng-describe", "dng-mosaic", "dng-half-codes"):
             _expect_command(path, command, tmp_path)
+
+
+def test_hostile_inputs_summary_matches_python_errors(tmp_path: Path) -> None:
+    require_cli()
+    for name, payload in hostile_cases().items():
+        path = tmp_path / f"{name}.dng"
+        path.write_bytes(payload)
+        try:
+            open_dng(path).summary()
+            py_err: BaseException | None = None
+        except Exception as exc:  # noqa: BLE001
+            py_err = exc
+        code, payload = run_json(["dng-summary", str(path)])
+        assert code in (0, 2), f"{name}: exit {code}"
+        rs_err = error_of(code, payload)
+        if isinstance(py_err, RawDecodeError):
+            assert rs_err is not None and rs_err.kind == "raw_decode", name
+            assert _message_ok(str(py_err), rs_err.message), f"{name}: {py_err} vs {rs_err.message}"
+        elif py_err is None:
+            assert rs_err is None, f"{name}: rust {rs_err}"
+        else:
+            assert rs_err is not None, f"{name}: python {type(py_err).__name__}: {py_err}"
 
 
 def _expect_wb(path: Path, y0: int, y1: int, tmp_path: Path) -> None:
