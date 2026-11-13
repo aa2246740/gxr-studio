@@ -132,8 +132,17 @@ export class EditorView {
     const strip = el('div', 'strip');
     for (const name of ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原厂标准', 'Kodachrome 25']) {
       const card = button('rc', '');
-      const thumb = el('div', 'th', photo.dng ? '中性转换' : '相机 JPG');
-      card.append(thumb, el('div', 'nm', name));
+      // 没导入校准数据：每张小卡都是同一张中性转换（只有 JPG 时是相机 JPG）。
+      const thumb = el('div', 'th', photo.bitmap ? undefined : photo.dng ? '中性转换' : '相机 JPG');
+      if (photo.bitmap) {
+        const mini = document.createElement('canvas');
+        mini.width = photo.bitmap.width;
+        mini.height = photo.bitmap.height;
+        mini.getContext('2d')?.drawImage(photo.bitmap, 0, 0);
+        thumb.append(mini);
+      }
+      card.append(thumb, el('div', 'nm', name), el('div', 'sub', photo.dng ? '中性转换' : '相机 JPG'));
+      if (!photo.dng) card.disabled = true;
       card.addEventListener('click', () => {
         for (const other of strip.querySelectorAll('.rc')) other.classList.remove('on');
         card.classList.add('on');

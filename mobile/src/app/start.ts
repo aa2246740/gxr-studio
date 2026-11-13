@@ -39,7 +39,7 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   if (hdTag) hdTag.setAttribute('style', 'margin-left:auto');
   calib.append(
     hd,
-    el('p', '', '还没导入校准数据。配方只显示中性转换，和相机里的颜色不同。'),
+    el('p', '', '还没导入：配方只显示中性转换，和相机里的颜色不同。'),
     el('p', 's', '在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 iPhone。'),
   );
   const choose = button('btn block', '选择校准数据文件');

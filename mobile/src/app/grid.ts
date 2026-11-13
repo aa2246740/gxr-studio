@@ -133,10 +133,10 @@ export class GridView {
     if (prog) prog.style.width = '0';
     const day = photos.length ? formatDay(photoMs(photos[0])) : '';
     const sameDay = photos.every((photo) => formatDay(photoMs(photo)) === day);
-    const head = sameDay && day ? day : '照片';
     const ignored = this.api.ignored();
     const extra = ignored ? ` · 另外 ${ignored} 个文件没有用上` : '';
-    this.sub.textContent = `${head} · ${photos.length} 张 · ${groups} 组${extra}`;
+    const head = sameDay && day ? `${day} · ` : '';
+    this.sub.textContent = `${head}${photos.length} 张 · ${groups} 组${extra}`;
   }
 
   private renderWindow(): void {
