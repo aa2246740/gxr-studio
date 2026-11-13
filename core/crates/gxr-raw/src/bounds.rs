@@ -107,8 +107,9 @@ fn cannot_reshape(size: i128, dims: &[i64]) -> PyErr {
 /// NumPy 2's `NPY_MAXDIMS`.
 const NPY_MAXDIMS: usize = 64;
 
-/// `ndarray.reshape(dims)` for a C-order array of `size` elements.
-pub(crate) fn numpy_reshape(size: i128, dims: &[i64]) -> Result<Vec<usize>, PyErr> {
+/// `ndarray.reshape(dims)` for a C-order array of `size` elements of `itemsize` bytes
+/// (8 for the int64 and float64 arrays the DNG reader reshapes).
+pub(crate) fn numpy_reshape(size: i128, dims: &[i64], itemsize: u128) -> Result<Vec<usize>, PyErr> {
     // NumPy refuses more than NPY_MAXDIMS (64) axes before looking at the values.
     if dims.len() > NPY_MAXDIMS {
         return Err(PyErr::Value(format!(
@@ -143,6 +144,16 @@ pub(crate) fn numpy_reshape(size: i128, dims: &[i64]) -> Result<Vec<usize>, PyEr
         resolved[slot] = i64::try_from(size / known).map_err(|_| too_big())?;
     } else if known != size {
         return Err(cannot_reshape(size, dims));
+    }
+    // numpy builds the new array's strides from max(dim, 1), so an empty shape whose
+    // other axes span more than 2**63 - 1 bytes is refused as too big (Sol review r6, R6-1).
+    let mut virtual_nbytes = itemsize;
+    for &dim in &resolved {
+        let extent = u128::try_from(dim.max(1)).map_err(|_| too_big())?;
+        virtual_nbytes = virtual_nbytes
+            .checked_mul(extent)
+            .filter(|&n| n <= I64_MAX_U128)
+            .ok_or_else(too_big)?;
     }
     let mut shape = Vec::with_capacity(resolved.len());
     for dim in resolved {
@@ -210,13 +221,30 @@ mod tests {
     #[test]
     fn reshape_follows_numpy_for_the_black_level_cases() {
         assert_eq!(
-            numpy_reshape(1, &[-1, -1]).unwrap_err(),
+            numpy_reshape(1, &[-1, -1], 8).unwrap_err(),
             PyErr::Value("can only specify one unknown dimension".into())
         );
-        assert_eq!(numpy_reshape(1, &[1, 1, 1]).unwrap(), vec![1, 1, 1]);
-        assert_eq!(numpy_reshape(0, &[0, 2]).unwrap(), vec![0, 2]);
-        assert_eq!(numpy_reshape(4, &[2, 2, -1]).unwrap(), vec![2, 2, 1]);
-        assert_eq!(numpy_reshape(4, &[-1, 2]).unwrap(), vec![2, 2]);
+        assert_eq!(numpy_reshape(1, &[1, 1, 1], 8).unwrap(), vec![1, 1, 1]);
+        assert_eq!(numpy_reshape(0, &[0, 2], 8).unwrap(), vec![0, 2]);
+        assert_eq!(numpy_reshape(4, &[2, 2, -1], 8).unwrap(), vec![2, 2, 1]);
+        assert_eq!(numpy_reshape(4, &[-1, 2], 8).unwrap(), vec![2, 2]);
+        // An empty array still needs its strides to fit: 8 * 1 * (2**32 - 1)**2 bytes is too big.
+        assert_eq!(
+            numpy_reshape(0, &[0, 4_294_967_295, 4_294_967_295], 8)
+                .unwrap_err()
+                .text(),
+            ARRAY_TOO_BIG
+        );
+        assert_eq!(
+            numpy_reshape(0, &[0, 2_147_483_647, 2_147_483_647], 8)
+                .unwrap_err()
+                .text(),
+            ARRAY_TOO_BIG
+        );
+        assert_eq!(
+            numpy_reshape(0, &[0, 4_294_967_295], 8).unwrap(),
+            vec![0, 4_294_967_295]
+        );
     }
 
     #[test]

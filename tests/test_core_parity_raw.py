@@ -527,6 +527,12 @@ def hostile_cases() -> dict[str, bytes]:
         "cfa-trailing-unknown-mismatch": _patch(base, 33421, 9, [3, -1]),
         "cfa-unknown-next-to-zero": _patch(base, 33421, 9, [-1, 0]),
         "black-unknown-next-to-zero": _patch(base, 50713, 9, [0, -1]),
+        # Empty black repeats whose other axes span more than 2**63 - 1 bytes: numpy says
+        # "array is too big" at reshape; [0, 2**32 - 1] still reshapes and fails later (r6).
+        "black-zero-large-strides": _patch(base, 50713, 4, [0, 4294967295, 4294967295]),
+        "black-middle-zero-large-strides": _patch(base, 50713, 4, [4294967295, 0, 4294967295]),
+        "black-zero-large-strides-i32": _patch(base, 50713, 4, [0, 2147483647, 2147483647]),
+        "black-zero-large-axis-control": _patch(base, 50713, 4, [0, 4294967295]),
         "bps-zero": _patch(base, 258, 3, [0]),
         "absurd-dimensions": _patch(_patch(base, 256, 4, [0xFFFFFFFF]), 257, 4, [0xFFFFFFFF]),
         "signed-negative-black-repeat": _patch(base, 50713, 9, [-1, -1]),
