@@ -147,3 +147,12 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 ```
 
 `run_area` 把路径写成 JSON，执行 `node mobile/scripts/wasm_vs_native.mjs --area <领域> --cli <gxr-cli> --inputs <json>`。驱动失败时，默认用驱动自己的输出让测试失败。WASM 包或 `node` 不在时跳过，除非 `GXR_REQUIRE_CORE=1`。`GXR_REQUIRE_GPU_TEST` 不会把缺包变成失败。
+
+## raw-render（全分辨率去马赛克与中性转换）
+
+`gxr-raw` 的 `demosaic.rs` 和 `render.rs` 分别对应 `gxr_studio/raw/demosaic.py` 与 `gxr_studio/raw/render.py` 的中性路径：
+
+- `demosaic_strips` / `demosaic_block`：先做 `reflect` 镜像延拓（不重复边缘样本），再用 5×5 MHC 核做不翻转的 `correlate`，在 float64 中按行主序累加并存为 float32，按 `STRIP_ROWS = 256` 逐条带运行。
+- `render_full`：逐条带跑白平衡去马赛克、`srgb_encode` 与 `_neutral_display`（`np.rint` 一半向偶数，不同于 `pixels._linear_to_srgb` 的 `+0.5` 截断），最后按 `Orientation` 转正为 uint8 `(H, W, 3)`。
+- CLI 新增 `dng-demosaic --dng PATH --y0 A --y1 B --out OUT.npy` 和 `dng-neutral --dng PATH --out OUT.npy`；WASM 在 `gxr-wasm/src/raw.rs` 暴露 `dng_neutral` / `dng_neutral_named`。
+
