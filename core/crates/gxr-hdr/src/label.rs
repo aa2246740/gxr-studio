@@ -88,7 +88,12 @@ fn dilate_once(cur: &[bool], h: usize, w: usize) -> Vec<bool> {
 
 /// Port of `ndimage.binary_dilation(mask, iterations=n)` (`structure=None`, `border_value=0`,
 /// `origin=0`). `iterations < 1` repeats until nothing changes, as scipy documents.
-pub fn binary_dilation(mask: &[bool], h: usize, w: usize, iterations: i64) -> Result<Vec<bool>, CoreError> {
+pub fn binary_dilation(
+    mask: &[bool],
+    h: usize,
+    w: usize,
+    iterations: i64,
+) -> Result<Vec<bool>, CoreError> {
     check_shape(h, w, mask.len())?;
     let mut cur = mask.to_vec();
     if iterations < 1 {
@@ -102,7 +107,9 @@ pub fn binary_dilation(mask: &[bool], h: usize, w: usize, iterations: i64) -> Re
     }
     // More passes than the plane is long change nothing further.
     let limit = u64::try_from(h.saturating_add(w)).unwrap_or(u64::MAX);
-    let passes = u64::try_from(iterations).unwrap_or(u64::MAX).min(limit.saturating_add(1));
+    let passes = u64::try_from(iterations)
+        .unwrap_or(u64::MAX)
+        .min(limit.saturating_add(1));
     for _ in 0..passes {
         let next = dilate_once(&cur, h, w);
         if next == cur {

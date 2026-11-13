@@ -13,9 +13,15 @@ pub fn align_report(sdr: &Plane32, raw: &Plane32) -> Result<Json, CoreError> {
     let al = align(sdr, raw)?;
     let check = match check_alignment(&al) {
         Ok(()) => Json::Null,
-        Err(e) => Json::object([("kind", Json::str(e.kind)), ("message", Json::str(e.message))]),
+        Err(e) => Json::object([
+            ("kind", Json::str(e.kind)),
+            ("message", Json::str(e.message)),
+        ]),
     };
-    Ok(Json::object([("alignment", al.to_json()), ("check", check)]))
+    Ok(Json::object([
+        ("alignment", al.to_json()),
+        ("check", check),
+    ]))
 }
 
 /// `GainMeta`, its ISO 21496-1 fractions (`limit_denominator(65536)`) and the stats dict.
@@ -34,10 +40,19 @@ pub fn gain_report(result: &GainResult) -> Result<Json, CoreError> {
     for (k, v) in fields {
         let (n, d) = limit_65536(v)?;
         let big = || CoreError::new("bad_input", "分数太大");
-        fracs.push((k, Json::ints(&[i64::try_from(n).map_err(|_| big())?, i64::try_from(d).map_err(|_| big())?])));
+        fracs.push((
+            k,
+            Json::ints(&[
+                i64::try_from(n).map_err(|_| big())?,
+                i64::try_from(d).map_err(|_| big())?,
+            ]),
+        ));
     }
     Ok(Json::object([
-        ("meta", Json::object(fields.iter().map(|&(k, v)| (k, Json::Float(v))))),
+        (
+            "meta",
+            Json::object(fields.iter().map(|&(k, v)| (k, Json::Float(v)))),
+        ),
         ("fractions", Json::object(fracs)),
         ("stats", result.stats.clone()),
     ]))

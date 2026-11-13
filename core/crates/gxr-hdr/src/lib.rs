@@ -24,8 +24,8 @@ mod sample;
 
 pub use capture::{Field, MISMATCH, TagValue, capture_of, differs, field_json};
 pub use container::{
-    GainMeta, MPF_SEG_LEN, Segment, app_segment, assemble, iso_full, iso_version_only, jpeg_segments, mpf_segment,
-    xmp_gainmap, xmp_primary,
+    GainMeta, MPF_SEG_LEN, Segment, app_segment, assemble, iso_full, iso_version_only,
+    jpeg_segments, mpf_segment, xmp_gainmap, xmp_primary,
 };
 pub use curve::{GainResult, Params, compute_gain, fit_curve, quantise_gain};
 pub use elem::{log2f, powf32};
@@ -33,8 +33,8 @@ pub use error::unsupported;
 pub use fft::phase_shift;
 pub use filter::{gaussian_filter, gaussian_kernel, minimum_filter, uniform_filter};
 pub use gain::{
-    Alignment, LUMA, Plane32, RAW_WEIGHTS, align, block_mean, check_alignment, grid_shape, hp32, is_unsupported, norm,
-    raw_luma, register, sdr_luma_grid, srgb_to_linear, warp,
+    Alignment, LUMA, Plane32, RAW_WEIGHTS, align, block_mean, check_alignment, grid_shape, hp32,
+    is_unsupported, norm, raw_luma, register, sdr_luma_grid, srgb_to_linear, warp,
 };
 pub use input::{Value, meta_from_json, params_from_json, parse as parse_json, tags_from_json};
 pub use label::{binary_dilation, label};

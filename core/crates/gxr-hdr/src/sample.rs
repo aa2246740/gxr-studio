@@ -53,7 +53,10 @@ pub fn map_coordinates<T: Real>(
     if h == 0 || w == 0 {
         return Err(unsupported("bad_input", "无法在空图上取样"));
     }
-    let (hh, ww) = (i64::try_from(h).unwrap_or(i64::MAX), i64::try_from(w).unwrap_or(i64::MAX));
+    let (hh, ww) = (
+        i64::try_from(h).unwrap_or(i64::MAX),
+        i64::try_from(w).unwrap_or(i64::MAX),
+    );
     let mut out = Vec::with_capacity(sy.len());
     for (&y, &x) in sy.iter().zip(sx) {
         let (y0, wy) = axis_weights(f64::from(y), h);
@@ -62,7 +65,8 @@ pub fn map_coordinates<T: Real>(
         for (i, &fy) in wy.iter().enumerate() {
             let row = usize::try_from(nearest(y0 + i64::try_from(i).unwrap_or(0), hh)).unwrap_or(0);
             for (j, &fx) in wx.iter().enumerate() {
-                let col = usize::try_from(nearest(x0 + i64::try_from(j).unwrap_or(0), ww)).unwrap_or(0);
+                let col =
+                    usize::try_from(nearest(x0 + i64::try_from(j).unwrap_or(0), ww)).unwrap_or(0);
                 let mut coeff = src[row * w + col].wide();
                 coeff *= fy;
                 coeff *= fx;

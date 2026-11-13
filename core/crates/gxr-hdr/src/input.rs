@@ -43,7 +43,11 @@ impl Reader<'_> {
             self.i += 1;
             Ok(())
         } else {
-            Err(bad(format!("JSON 第 {} 个字节应该是 {:?}", self.i, char::from(c))))
+            Err(bad(format!(
+                "JSON 第 {} 个字节应该是 {:?}",
+                self.i,
+                char::from(c)
+            )))
         }
     }
 
@@ -125,7 +129,12 @@ impl Reader<'_> {
             self.i += 9;
             return Ok(Value::Float(f64::NEG_INFINITY));
         }
-        while self.i < self.s.len() && matches!(self.s[self.i], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E') {
+        while self.i < self.s.len()
+            && matches!(
+                self.s[self.i],
+                b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
+            )
+        {
             self.i += 1;
         }
         let text = std::str::from_utf8(&self.s[start..self.i]).map_err(|_| bad("JSON 数字不对"))?;
@@ -153,13 +162,19 @@ impl Reader<'_> {
             Ok(())
         };
         loop {
-            let c = *self.s.get(self.i).ok_or_else(|| bad("JSON 字符串没有结束"))?;
+            let c = *self
+                .s
+                .get(self.i)
+                .ok_or_else(|| bad("JSON 字符串没有结束"))?;
             self.i += 1;
             match c {
                 b'"' => break,
                 b'\\' => {
                     flush(&mut bytes, &mut out)?;
-                    let e = *self.s.get(self.i).ok_or_else(|| bad("JSON 字符串没有结束"))?;
+                    let e = *self
+                        .s
+                        .get(self.i)
+                        .ok_or_else(|| bad("JSON 字符串没有结束"))?;
                     self.i += 1;
                     let unit = match e {
                         b'"' => 0x22,
@@ -171,7 +186,10 @@ impl Reader<'_> {
                         b'r' => 0x0d,
                         b't' => 0x09,
                         b'u' => {
-                            let hex = self.s.get(self.i..self.i + 4).ok_or_else(|| bad("JSON \\u 不完整"))?;
+                            let hex = self
+                                .s
+                                .get(self.i..self.i + 4)
+                                .ok_or_else(|| bad("JSON \\u 不完整"))?;
                             self.i += 4;
                             let hex = std::str::from_utf8(hex).map_err(|_| bad("JSON \\u 不对"))?;
                             u16::from_str_radix(hex, 16).map_err(|_| bad("JSON \\u 不对"))?
@@ -192,7 +210,10 @@ impl Reader<'_> {
 
 /// Parse one JSON document.
 pub fn parse(text: &str) -> Result<Value, CoreError> {
-    let mut r = Reader { s: text.as_bytes(), i: 0 };
+    let mut r = Reader {
+        s: text.as_bytes(),
+        i: 0,
+    };
     let v = r.value(0)?;
     r.ws();
     if r.i != r.s.len() {
@@ -268,7 +289,9 @@ fn tag_value(v: Value) -> Result<TagValue, CoreError> {
         Value::Int(n) => TagValue::Int(n),
         Value::Float(f) => TagValue::Float(f),
         Value::Str(s) => TagValue::Text(s),
-        Value::Arr(items) => TagValue::List(items.into_iter().map(tag_value).collect::<Result<_, _>>()?),
+        Value::Arr(items) => {
+            TagValue::List(items.into_iter().map(tag_value).collect::<Result<_, _>>()?)
+        }
         Value::Obj(_) => return Err(bad("标签值不能是对象")),
     })
 }
@@ -278,7 +301,9 @@ pub fn tags_from_json(text: &str) -> Result<Vec<(u32, TagValue)>, CoreError> {
     object(text)?
         .into_iter()
         .map(|(k, v)| {
-            let tag = k.parse::<u32>().map_err(|_| bad(format!("标签号不对：{k}")))?;
+            let tag = k
+                .parse::<u32>()
+                .map_err(|_| bad(format!("标签号不对：{k}")))?;
             Ok((tag, tag_value(v)?))
         })
         .collect()

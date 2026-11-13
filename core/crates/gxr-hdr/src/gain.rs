@@ -11,7 +11,9 @@ use crate::elem::{exp2, log2, log2f, powf32};
 use crate::error::unsupported;
 use crate::fft::phase_shift;
 use crate::filter::{check_shape, gaussian_filter};
-use crate::np::{Real, View, count_f64, interp, maximum, mean, mean_of, pairwise, std, std_view, sum};
+use crate::np::{
+    Real, View, count_f64, interp, maximum, mean, mean_of, pairwise, std, std_view, sum,
+};
 use crate::residual::local_residual;
 use crate::sample::map_coordinates;
 
@@ -88,7 +90,12 @@ pub fn grid_shape(h: usize, w: usize, factor: usize) -> Result<(usize, usize), C
 /// axis 3 innermost (one pairwise sum of `f` values per block row) and adds the block rows
 /// in order from `0`. With one block column the two axes are adjacent in memory and numpy
 /// sums all `f * f` values of a block in one pairwise sum. The mean divides by `intp(f*f)`.
-pub fn block_mean<T: Real>(a: &[T], h: usize, w: usize, factor: usize) -> Result<(Vec<T>, usize, usize), CoreError> {
+pub fn block_mean<T: Real>(
+    a: &[T],
+    h: usize,
+    w: usize,
+    factor: usize,
+) -> Result<(Vec<T>, usize, usize), CoreError> {
     check_shape(h, w, a.len())?;
     let (gh, gw) = grid_shape(h, w, factor)?;
     if h == 0 || w == 0 {
@@ -146,7 +153,11 @@ pub fn sdr_luma_grid(rgb: &[u8], h: usize, w: usize, factor: usize) -> Result<Pl
     let y: Vec<f32> = rgb
         .chunks_exact(3)
         .map(|p| {
-            let (r, g, b) = (lut[usize::from(p[0])], lut[usize::from(p[1])], lut[usize::from(p[2])]);
+            let (r, g, b) = (
+                lut[usize::from(p[0])],
+                lut[usize::from(p[1])],
+                lut[usize::from(p[2])],
+            );
             r * LUMA[0] + g * LUMA[1] + b * LUMA[2]
         })
         .collect();
@@ -165,7 +176,9 @@ pub fn raw_luma(dng: &mut Dng<'_>) -> Result<(Plane32, Vec<bool>), CoreError> {
         .values
         .chunks_exact(3)
         .map(|c| {
-            let v = (c[0] / scale) * RAW_WEIGHTS[0] + (c[1] / scale) * RAW_WEIGHTS[1] + (c[2] / scale) * RAW_WEIGHTS[2];
+            let v = (c[0] / scale) * RAW_WEIGHTS[0]
+                + (c[1] / scale) * RAW_WEIGHTS[1]
+                + (c[2] / scale) * RAW_WEIGHTS[2];
             maximum(v, f32_of(1e-6))
         })
         .collect();
@@ -253,15 +266,27 @@ fn mean_product(a: &[f32], b: &[f32]) -> f64 {
 ///
 /// Coordinates are float32: `(yy - dy - (h - 1) / 2) / zy + (a.h - 1) / 2`, every Python
 /// float cast to float32, `zy = h / a.h * s` computed in float64 first.
-pub fn warp(a: &Plane32, shape: (usize, usize), s: f64, dy: f64, dx: f64) -> Result<Vec<f32>, CoreError> {
+pub fn warp(
+    a: &Plane32,
+    shape: (usize, usize),
+    s: f64,
+    dy: f64,
+    dx: f64,
+) -> Result<Vec<f32>, CoreError> {
     let (h, w) = shape;
     check_shape(a.h, a.w, a.v.len())?;
     let n = h.checked_mul(w).ok_or_else(|| bad("数组太大"))?;
     let zy = f32_of(count_f64(h) / count_f64(a.h) * s);
     let zx = f32_of(count_f64(w) / count_f64(a.w) * s);
     let (dy, dx) = (f32_of(dy), f32_of(dx));
-    let (cy, cx) = (f32_of((count_f64(h) - 1.0) / 2.0), f32_of((count_f64(w) - 1.0) / 2.0));
-    let (ay, ax) = (f32_of((count_f64(a.h) - 1.0) / 2.0), f32_of((count_f64(a.w) - 1.0) / 2.0));
+    let (cy, cx) = (
+        f32_of((count_f64(h) - 1.0) / 2.0),
+        f32_of((count_f64(w) - 1.0) / 2.0),
+    );
+    let (ay, ax) = (
+        f32_of((count_f64(a.h) - 1.0) / 2.0),
+        f32_of((count_f64(a.w) - 1.0) / 2.0),
+    );
     let mut sy = Vec::with_capacity(n);
     let mut sx = Vec::with_capacity(n);
     for r in 0..h {
@@ -345,9 +370,20 @@ fn tiles_moved(a: &[f32], b: &[f32], h: usize, w: usize) -> i64 {
 /// Port of gxr_studio/hdr/gain.py:216 `_tiles_unverified`.
 fn tiles_unverified(sdr: &Plane32, raw: &[f32]) -> Result<i64, CoreError> {
     let (h, w) = (sdr.h, sdr.w);
-    let x: Vec<f32> = raw.iter().map(|&v| log2f(maximum(v, f32_of(1e-6)))).collect();
-    let y: Vec<f32> = sdr.v.iter().map(|&v| log2f(maximum(v, f32_of(1e-5)))).collect();
-    let valid: Vec<bool> = sdr.v.iter().map(|&v| v > f32_of(0.003) && v < f32_of(0.97)).collect();
+    let x: Vec<f32> = raw
+        .iter()
+        .map(|&v| log2f(maximum(v, f32_of(1e-6))))
+        .collect();
+    let y: Vec<f32> = sdr
+        .v
+        .iter()
+        .map(|&v| log2f(maximum(v, f32_of(1e-5))))
+        .collect();
+    let valid: Vec<bool> = sdr
+        .v
+        .iter()
+        .map(|&v| v > f32_of(0.003) && v < f32_of(0.97))
+        .collect();
     let (cx, cy) = match fit_curve(&x, &y, &valid) {
         Ok(curve) => curve,
         Err(e) if is_unsupported(&e) => return Ok(1),
@@ -355,9 +391,16 @@ fn tiles_unverified(sdr: &Plane32, raw: &[f32]) -> Result<i64, CoreError> {
     };
     let a = hp32(&sdr.v, h, w)?;
     let (left, right) = (cy[0], cy[cy.len() - 1]);
-    let predicted: Vec<f64> = x.iter().map(|&v| exp2(interp(f64::from(v), &cx, &cy, left, right))).collect();
+    let predicted: Vec<f64> = x
+        .iter()
+        .map(|&v| exp2(interp(f64::from(v), &cx, &cy, left, right)))
+        .collect();
     let b = hp64(&predicted, h, w)?;
-    let visible: Vec<bool> = sdr.v.iter().map(|&v| v > f32_of(0.01) && v < f32_of(0.95)).collect();
+    let visible: Vec<bool> = sdr
+        .v
+        .iter()
+        .map(|&v| v > f32_of(0.01) && v < f32_of(0.95))
+        .collect();
     let (hh, ww) = (to_i64(h), to_i64(w));
     let (mut unverified, mut verified) = (0i64, 0i64);
     for i in 0..TILES {
@@ -380,7 +423,11 @@ fn tiles_unverified(sdr: &Plane32, raw: &[f32]) -> Result<i64, CoreError> {
             let low = ta.len() < 32 || {
                 let na = norm(&ta);
                 let nb = norm(&tb);
-                let p: Vec<f64> = na.iter().zip(&nb).map(|(&p, &q)| f64::from(p) * q).collect();
+                let p: Vec<f64> = na
+                    .iter()
+                    .zip(&nb)
+                    .map(|(&p, &q)| f64::from(p) * q)
+                    .collect();
                 mean(&p) < MIN_TILE_CORRELATION
             };
             if low {
@@ -390,16 +437,30 @@ fn tiles_unverified(sdr: &Plane32, raw: &[f32]) -> Result<i64, CoreError> {
             }
         }
     }
-    Ok(if verified > 0 { unverified } else { unverified.max(1) })
+    Ok(if verified > 0 {
+        unverified
+    } else {
+        unverified.max(1)
+    })
 }
 
 /// `except HdrUnsupported`: every reason this crate raises from the gain math.
 pub fn is_unsupported(e: &CoreError) -> bool {
-    matches!(e.kind, "no_curve" | "not_aligned" | "capture_mismatch" | "metadata_unreadable")
+    matches!(
+        e.kind,
+        "no_curve" | "not_aligned" | "capture_mismatch" | "metadata_unreadable"
+    )
 }
 
 /// `_norm(_hp(warp(raw_y, shape, s, dy, dx)))`.
-fn warped_norm(raw: &Plane32, h: usize, w: usize, s: f64, dy: i64, dx: i64) -> Result<Vec<f32>, CoreError> {
+fn warped_norm(
+    raw: &Plane32,
+    h: usize,
+    w: usize,
+    s: f64,
+    dy: i64,
+    dx: i64,
+) -> Result<Vec<f32>, CoreError> {
     #[allow(clippy::cast_precision_loss)]
     let warped = warp(raw, (h, w), s, dy as f64, dx as f64)?;
     Ok(norm(&hp32(&warped, h, w)?))
@@ -449,7 +510,8 @@ pub fn align(sdr: &Plane32, raw: &Plane32) -> Result<Alignment, CoreError> {
     let ha = hp32(&sdr.v, h, w)?;
     let hb = hp32(&registered, h, w)?;
     let moved = tiles_moved(&ha, &hb, h, w);
-    let unverified = tiles_unverified(sdr, &registered)? + i64::from(local_residual(sdr, &registered)?);
+    let unverified =
+        tiles_unverified(sdr, &registered)? + i64::from(local_residual(sdr, &registered)?);
     #[allow(clippy::cast_precision_loss)]
     let shift_frac = (dy.abs() as f64 / count_f64(h)).max(dx.abs() as f64 / count_f64(w));
     Ok(Alignment {
@@ -472,7 +534,10 @@ fn fixed2(x: f64) -> String {
 pub fn check_alignment(al: &Alignment) -> Result<(), CoreError> {
     let fail = |detail: String| Err(unsupported("not_aligned", &detail));
     if al.correlation < MIN_CORRELATION {
-        return fail(format!("RAW 与 JPG 对不齐（相关系数 {}）", fixed2(al.correlation)));
+        return fail(format!(
+            "RAW 与 JPG 对不齐（相关系数 {}）",
+            fixed2(al.correlation)
+        ));
     }
     if al.shift_frac > MAX_SHIFT {
         return fail(format!("RAW 与 JPG 错开太多（{}, {}）", al.dy, al.dx));
@@ -481,7 +546,10 @@ pub fn check_alignment(al: &Alignment) -> Result<(), CoreError> {
         return fail(format!("RAW 与 JPG 局部对不齐（{} 块）", al.tiles_moved));
     }
     if al.tiles_unverified != 0 {
-        return fail(format!("无法确认 RAW 与 JPG 局部对齐（{} 块）", al.tiles_unverified));
+        return fail(format!(
+            "无法确认 RAW 与 JPG 局部对齐（{} 块）",
+            al.tiles_unverified
+        ));
     }
     Ok(())
 }

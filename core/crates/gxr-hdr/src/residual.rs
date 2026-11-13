@@ -28,11 +28,23 @@ pub fn local_residual(sdr: &Plane32, raw_y: &[f32]) -> Result<bool, CoreError> {
     let (r, _, _) = block_mean(raw_y, h, w, factor)?;
     let log_s: Vec<f32> = s.iter().map(|&v| log2f(maximum(v, f32_of(1e-5)))).collect();
     let log_r: Vec<f32> = r.iter().map(|&v| log2f(maximum(v, f32_of(1e-6)))).collect();
-    let a: Vec<f64> = gaussian_filter(&log_s, gh, gw, 0.5)?.iter().map(|&v| f64::from(v)).collect();
-    let b: Vec<f64> = gaussian_filter(&log_r, gh, gw, 0.5)?.iter().map(|&v| f64::from(v)).collect();
+    let a: Vec<f64> = gaussian_filter(&log_s, gh, gw, 0.5)?
+        .iter()
+        .map(|&v| f64::from(v))
+        .collect();
+    let b: Vec<f64> = gaussian_filter(&log_r, gh, gw, 0.5)?
+        .iter()
+        .map(|&v| f64::from(v))
+        .collect();
     let inside: Vec<f64> = s
         .iter()
-        .map(|&v| if v > f32_of(0.01) && v < f32_of(0.95) { 1.0 } else { 0.0 })
+        .map(|&v| {
+            if v > f32_of(0.01) && v < f32_of(0.95) {
+                1.0
+            } else {
+                0.0
+            }
+        })
         .collect();
     let mask = minimum_filter(&inside, gh, gw, 3)?;
     let am = mul(&a, &mask);
@@ -55,7 +67,8 @@ pub fn local_residual(sdr: &Plane32, raw_y: &[f32]) -> Result<bool, CoreError> {
             let slope = clip(cov / maximum(vb, 1e-8), 0.0, 8.0);
             let residual = ((a[i] - ma) - slope * (b[i] - mb)).abs();
             let sigma = maximum(va - 2.0 * slope * cov + slope * slope * vb, 0.0).sqrt();
-            uncertain[i] = residual > maximum(0.125, 5.0 * sigma) && weight[i] > 0.5 && mask[i] > 0.0;
+            uncertain[i] =
+                residual > maximum(0.125, 5.0 * sigma) && weight[i] > 0.5 && mask[i] > 0.0;
         }
         let (labels, count) = label(&uncertain, gh, gw)?;
         let mut counts = vec![0usize; usize::try_from(count).unwrap_or(0) + 1];

@@ -12,10 +12,15 @@ fn rejected(err: CoreError) -> JsValue {
 }
 
 fn plane(values: &[f32], height: u32, width: u32) -> Result<hdr::Plane32, JsValue> {
-    let h = usize::try_from(height).map_err(|_| rejected(CoreError::new("bad_input", "数组太大")))?;
-    let w = usize::try_from(width).map_err(|_| rejected(CoreError::new("bad_input", "数组太大")))?;
+    let h =
+        usize::try_from(height).map_err(|_| rejected(CoreError::new("bad_input", "数组太大")))?;
+    let w =
+        usize::try_from(width).map_err(|_| rejected(CoreError::new("bad_input", "数组太大")))?;
     if h.checked_mul(w) != Some(values.len()) {
-        return Err(rejected(CoreError::new("bad_input", "数组长度和形状对不上")));
+        return Err(rejected(CoreError::new(
+            "bad_input",
+            "数组长度和形状对不上",
+        )));
     }
     Ok(hdr::Plane32 {
         h,
@@ -26,8 +31,19 @@ fn plane(values: &[f32], height: u32, width: u32) -> Result<hdr::Plane32, JsValu
 
 /// `align(sdr_y, raw_y)` and `check_alignment`, as `gxr-cli hdr-align` prints them.
 #[wasm_bindgen]
-pub fn hdr_align(sdr: &[f32], sdr_height: u32, sdr_width: u32, raw: &[f32], raw_height: u32, raw_width: u32) -> Result<String, JsValue> {
-    let report = hdr::align_report(&plane(sdr, sdr_height, sdr_width)?, &plane(raw, raw_height, raw_width)?).map_err(rejected)?;
+pub fn hdr_align(
+    sdr: &[f32],
+    sdr_height: u32,
+    sdr_width: u32,
+    raw: &[f32],
+    raw_height: u32,
+    raw_width: u32,
+) -> Result<String, JsValue> {
+    let report = hdr::align_report(
+        &plane(sdr, sdr_height, sdr_width)?,
+        &plane(raw, raw_height, raw_width)?,
+    )
+    .map_err(rejected)?;
     Ok(format!("{}\n", report.render()))
 }
 
@@ -67,7 +83,14 @@ impl HdrGain {
 /// `compute_gain(sdr_y, raw_y, clip, Params(**params))` and the uint8 quantisation.
 /// `clip` is one byte per pixel (non-zero = clipped); `raw` is NaN outside the photo.
 #[wasm_bindgen]
-pub fn hdr_gain(sdr: &[f32], raw: &[f32], clip: &[u8], height: u32, width: u32, params_json: &str) -> Result<HdrGain, JsValue> {
+pub fn hdr_gain(
+    sdr: &[f32],
+    raw: &[f32],
+    clip: &[u8],
+    height: u32,
+    width: u32,
+    params_json: &str,
+) -> Result<HdrGain, JsValue> {
     let s = plane(sdr, height, width)?;
     let r = plane(raw, height, width)?;
     let mask: Vec<bool> = clip.iter().map(|&b| b != 0).collect();

@@ -30,7 +30,10 @@ fn mul(a: Cx, b: Cx) -> Cx {
 }
 
 fn conj(a: Cx) -> Cx {
-    Cx { re: a.re, im: -a.im }
+    Cx {
+        re: a.re,
+        im: -a.im,
+    }
 }
 
 /// `exp(-2πi k / n)`.
@@ -140,7 +143,12 @@ impl Plan {
             }
         }
         pow2.run(&mut kernel, false);
-        Ok(Self { n, pow2, chirp, kernel })
+        Ok(Self {
+            n,
+            pow2,
+            chirp,
+            kernel,
+        })
     }
 
     /// Unscaled transform of `a` (length `n`) in place.
@@ -281,7 +289,10 @@ mod tests {
             let mut got = x.clone();
             Plan::new(n).unwrap().run(&mut got, false);
             for (g, e) in got.iter().zip(dft(&x)) {
-                assert!((g.re - e.re).abs() < 1e-9 && (g.im - e.im).abs() < 1e-9, "n={n}");
+                assert!(
+                    (g.re - e.re).abs() < 1e-9 && (g.im - e.im).abs() < 1e-9,
+                    "n={n}"
+                );
             }
         }
     }
@@ -289,7 +300,9 @@ mod tests {
     #[test]
     fn a_shifted_copy_peaks_at_the_shift() {
         let (h, w) = (24usize, 30usize);
-        let base: Vec<f32> = (0..h * w).map(|i| ((i * 7919) % 101) as f32 / 101.0).collect();
+        let base: Vec<f32> = (0..h * w)
+            .map(|i| ((i * 7919) % 101) as f32 / 101.0)
+            .collect();
         let mut moved = vec![0.0f32; h * w];
         for y in 0..h {
             for x in 0..w {

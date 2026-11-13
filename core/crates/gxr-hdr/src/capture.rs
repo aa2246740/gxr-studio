@@ -34,7 +34,12 @@ const TEXT_TAGS: [(u32, &str); 6] = [
     (42036, "LensModel"),
     (42016, "ImageUniqueID"),
 ];
-const NUMBER_TAGS: [(u32, &str); 4] = [(33434, "ExposureTime"), (33437, "FNumber"), (34855, "ISO"), (37386, "FocalLength")];
+const NUMBER_TAGS: [(u32, &str); 4] = [
+    (33434, "ExposureTime"),
+    (33437, "FNumber"),
+    (34855, "ISO"),
+    (37386, "FocalLength"),
+];
 
 /// `capture.MISMATCH`.
 pub const MISMATCH: &str = "RAW 与 JPG 不是同一次拍摄";
@@ -63,7 +68,13 @@ fn text(v: Option<&TagValue>) -> Option<String> {
         Some(v) => py_str(v)?,
     };
     let cleaned = raw.replace('\u{0}', "");
-    Some(cleaned.split(py_space).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" "))
+    Some(
+        cleaned
+            .split(py_space)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// `str.casefold`: lower case plus the full case-folding mappings that differ from it
@@ -156,7 +167,7 @@ pub fn capture_of(tags: &[(u32, TagValue)]) -> Option<Vec<(String, Field)>> {
     let mut result = Vec::new();
     for (tag, name) in TEXT_TAGS {
         let value = text(get(tag))?;
-        if !value.is_empty() && !(tag == 36867 && value.starts_with("0000")) {
+        if !value.is_empty() && (tag != 36867 || !value.starts_with("0000")) {
             result.push((name.to_string(), Field::Text(casefold(&value))));
         }
     }
@@ -194,10 +205,12 @@ fn isclose(a: f64, b: f64) -> bool {
 /// Port of gxr_studio/hdr/capture.py:71 differs: only keys present on both sides count.
 pub fn differs(raw: &[(String, Field)], jpeg: &[(String, Field)]) -> bool {
     raw.iter().any(|(name, a)| {
-        jpeg.iter().find(|(k, _)| k == name).is_some_and(|(_, b)| match (a, b) {
-            (Field::Number(x), Field::Number(y)) => !isclose(*x, *y),
-            _ => a != b,
-        })
+        jpeg.iter()
+            .find(|(k, _)| k == name)
+            .is_some_and(|(_, b)| match (a, b) {
+                (Field::Number(x), Field::Number(y)) => !isclose(*x, *y),
+                _ => a != b,
+            })
     })
 }
 

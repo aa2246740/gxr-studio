@@ -80,7 +80,10 @@ fn ext(line: &[f64], index: i64) -> f64 {
 pub fn gaussian_kernel(sigma: f64) -> Result<Vec<f64>, CoreError> {
     let raw = 4.0 * sigma + 0.5;
     if !raw.is_finite() {
-        return Err(CoreError::new("overflow_error", "cannot convert float infinity to integer"));
+        return Err(CoreError::new(
+            "overflow_error",
+            "cannot convert float infinity to integer",
+        ));
     }
     if raw >= (MAX_RADIUS + 1) as f64 {
         return Err(bad("高斯半径太大"));
@@ -104,7 +107,12 @@ pub fn gaussian_kernel(sigma: f64) -> Result<Vec<f64>, CoreError> {
 /// Port of `ndimage.gaussian_filter(plane, sigma)` (all other arguments default).
 ///
 /// scipy skips an axis whose sigma is not above `1e-15`; then the plane is copied.
-pub fn gaussian_filter<T: Real>(src: &[T], h: usize, w: usize, sigma: f64) -> Result<Vec<T>, CoreError> {
+pub fn gaussian_filter<T: Real>(
+    src: &[T],
+    h: usize,
+    w: usize,
+    sigma: f64,
+) -> Result<Vec<T>, CoreError> {
     check_shape(h, w, src.len())?;
     if sigma.is_nan() || sigma <= 1e-15 {
         return Ok(src.to_vec());
@@ -117,7 +125,7 @@ pub fn gaussian_filter<T: Real>(src: &[T], h: usize, w: usize, sigma: f64) -> Re
             let mut t = line[i] * k[r];
             for j in (1..=r).rev() {
                 let jj = to_i64(j);
-                t = t + (ext(line, c - jj) + ext(line, c + jj)) * k[r - j];
+                t += (ext(line, c - jj) + ext(line, c + jj)) * k[r - j];
             }
             *slot = t;
         }
@@ -138,7 +146,12 @@ fn check_size(size: i64) -> Result<usize, CoreError> {
 }
 
 /// Port of `ndimage.uniform_filter(plane, size, mode="reflect")`. Size <= 1 copies.
-pub fn uniform_filter<T: Real>(src: &[T], h: usize, w: usize, size: i64) -> Result<Vec<T>, CoreError> {
+pub fn uniform_filter<T: Real>(
+    src: &[T],
+    h: usize,
+    w: usize,
+    size: i64,
+) -> Result<Vec<T>, CoreError> {
     check_shape(h, w, src.len())?;
     let size_u = check_size(size)?;
     if size_u == 1 {
@@ -152,10 +165,10 @@ pub fn uniform_filter<T: Real>(src: &[T], h: usize, w: usize, size: i64) -> Resu
             s += ext(line, start + k);
         }
         out[0] = s / denom;
-        for i in 1..line.len() {
+        for (i, slot) in out.iter_mut().enumerate().skip(1) {
             let c = to_i64(i);
             s += ext(line, start + c + size - 1) - ext(line, start + c - 1);
-            out[i] = s / denom;
+            *slot = s / denom;
         }
     };
     let first = per_line(src, h, w, 0, run);
@@ -188,7 +201,12 @@ fn min_axis<T: Copy + PartialOrd>(src: &[T], h: usize, w: usize, axis: usize, si
 }
 
 /// Port of `ndimage.minimum_filter(plane, size)`, `mode="reflect"`. Size <= 1 copies.
-pub fn minimum_filter<T: Copy + PartialOrd>(src: &[T], h: usize, w: usize, size: i64) -> Result<Vec<T>, CoreError> {
+pub fn minimum_filter<T: Copy + PartialOrd>(
+    src: &[T],
+    h: usize,
+    w: usize,
+    size: i64,
+) -> Result<Vec<T>, CoreError> {
     check_shape(h, w, src.len())?;
     if check_size(size)? == 1 || src.is_empty() {
         return Ok(src.to_vec());

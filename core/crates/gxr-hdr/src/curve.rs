@@ -8,7 +8,9 @@ use crate::elem::{log2, log2f, tanh};
 use crate::error::unsupported;
 use crate::filter::{check_shape, gaussian_filter};
 use crate::gain::f32_of;
-use crate::np::{arange_f32, clip, count_f64, digitize, interp, max_of, maximum, median, minimum, percentile};
+use crate::np::{
+    arange_f32, clip, count_f64, digitize, interp, max_of, maximum, median, minimum, percentile,
+};
 use crate::number::py_round;
 
 /// Port of gxr_studio/hdr/gain.py:55 Params.
@@ -122,7 +124,14 @@ fn bool_mean(values: impl Iterator<Item = bool>) -> f64 {
 ///
 /// `sdr_y` and `raw_y` are float32 on the gain grid; `raw_y` is NaN where the pixel is not
 /// part of the photograph.
-pub fn compute_gain(sdr_y: &[f32], raw_y: &[f32], clip_mask: &[bool], h: usize, w: usize, p: &Params) -> Result<GainResult, CoreError> {
+pub fn compute_gain(
+    sdr_y: &[f32],
+    raw_y: &[f32],
+    clip_mask: &[bool],
+    h: usize,
+    w: usize,
+    p: &Params,
+) -> Result<GainResult, CoreError> {
     check_shape(h, w, sdr_y.len())?;
     check_shape(h, w, raw_y.len())?;
     check_shape(h, w, clip_mask.len())?;
@@ -132,7 +141,10 @@ pub fn compute_gain(sdr_y: &[f32], raw_y: &[f32], clip_mask: &[bool], h: usize, 
         .zip(&photo)
         .map(|(&r, &ok)| log2f(if ok { maximum(r, f32_of(1e-6)) } else { 1.0 }))
         .collect();
-    let y: Vec<f32> = sdr_y.iter().map(|&s| log2f(maximum(s, f32_of(1e-5)))).collect();
+    let y: Vec<f32> = sdr_y
+        .iter()
+        .map(|&s| log2f(maximum(s, f32_of(1e-5))))
+        .collect();
     let valid: Vec<bool> = (0..sdr_y.len())
         .map(|i| photo[i] && !clip_mask[i] && sdr_y[i] > f32_of(0.003) && sdr_y[i] < f32_of(0.97))
         .collect();
@@ -157,7 +169,10 @@ pub fn compute_gain(sdr_y: &[f32], raw_y: &[f32], clip_mask: &[bool], h: usize, 
     let (xk32, yk32, slope32) = (f32_of(xk), f32_of(yk), f32_of(p.hdr_slope));
     let mut delta64 = Vec::with_capacity(x.len());
     for (i, &xv) in x.iter().enumerate() {
-        let t_sdr = minimum(interp(f64::from(xv), &cx, &cy, cy[0], cy[cy.len() - 1]), 0.0);
+        let t_sdr = minimum(
+            interp(f64::from(xv), &cx, &cy, cy[0], cy[cy.len() - 1]),
+            0.0,
+        );
         let y_hdr = if xv > xk32 {
             f64::from(yk32 + slope32 * (xv - xk32))
         } else {
@@ -182,7 +197,11 @@ pub fn compute_gain(sdr_y: &[f32], raw_y: &[f32], clip_mask: &[bool], h: usize, 
         .collect();
     let peak = max_of(&delta).unwrap_or(f32::NAN);
     // builtin max(peak, 0.05) compares `0.05 > peak` with 0.05 cast to float32.
-    let top = if f32_of(0.05) > peak { 0.05 } else { f64::from(peak) };
+    let top = if f32_of(0.05) > peak {
+        0.05
+    } else {
+        f64::from(peak)
+    };
     let gmax = py_round(top, 4)?;
     let meta = GainMeta {
         gain_min: 0.0,
@@ -192,23 +211,39 @@ pub fn compute_gain(sdr_y: &[f32], raw_y: &[f32], clip_mask: &[bool], h: usize, 
         ..GainMeta::default()
     };
     let clipped = if photo.iter().any(|&v| v) {
-        bool_mean(photo.iter().zip(clip_mask).filter(|(ok, _)| **ok).map(|(_, &c)| c))
+        bool_mean(
+            photo
+                .iter()
+                .zip(clip_mask)
+                .filter(|(ok, _)| **ok)
+                .map(|(_, &c)| c),
+        )
     } else {
         0.0
     };
-    let wh = [i64::try_from(w).unwrap_or(i64::MAX), i64::try_from(h).unwrap_or(i64::MAX)];
+    let wh = [
+        i64::try_from(w).unwrap_or(i64::MAX),
+        i64::try_from(h).unwrap_or(i64::MAX),
+    ];
     let stats = Json::object([
         ("gainmap_wh", Json::ints(&wh)),
         ("raw_clipped_frac", Json::Float(py_round(clipped, 4)?)),
         (
             "ev_raw_to_sdr_mid",
-            if ev.is_nan() { Json::Null } else { Json::Float(py_round(ev, 3)?) },
+            if ev.is_nan() {
+                Json::Null
+            } else {
+                Json::Float(py_round(ev, 3)?)
+            },
         ),
         ("knee_raw_log2", Json::Float(py_round(xk, 3)?)),
         ("gain_max_stops", Json::Float(py_round(gmax, 3)?)),
         (
             "frac_gain_gt_0p1_stop",
-            Json::Float(py_round(bool_mean(delta.iter().map(|&d| d > f32_of(0.1))), 4)?),
+            Json::Float(py_round(
+                bool_mean(delta.iter().map(|&d| d > f32_of(0.1))),
+                4,
+            )?),
         ),
         (
             "frac_gain_gt_1_stop",

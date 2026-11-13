@@ -75,10 +75,16 @@ fn overflow() -> CoreError {
 /// integer value (`denominator 1`), which no 32-bit field can hold.
 pub fn limit_65536(v: f64) -> Result<(i128, i128), CoreError> {
     if v.is_nan() {
-        return Err(CoreError::new("value_error", "cannot convert NaN to integer ratio"));
+        return Err(CoreError::new(
+            "value_error",
+            "cannot convert NaN to integer ratio",
+        ));
     }
     if v.is_infinite() {
-        return Err(CoreError::new("overflow_error", "cannot convert Infinity to integer ratio"));
+        return Err(CoreError::new(
+            "overflow_error",
+            "cannot convert Infinity to integer ratio",
+        ));
     }
     if v.abs() < 1.0 / (1u64 << 40) as f64 {
         return Ok((0, 1));
@@ -98,11 +104,17 @@ pub fn limit_65536(v: f64) -> Result<(i128, i128), CoreError> {
     let (mut n, mut d) = (num, den);
     loop {
         let a = floor_div(n, d);
-        let q2 = a.checked_mul(q1).and_then(|x| x.checked_add(q0)).ok_or_else(overflow)?;
+        let q2 = a
+            .checked_mul(q1)
+            .and_then(|x| x.checked_add(q0))
+            .ok_or_else(overflow)?;
         if q2 > max_den {
             break;
         }
-        let p2 = a.checked_mul(p1).and_then(|x| x.checked_add(p0)).ok_or_else(overflow)?;
+        let p2 = a
+            .checked_mul(p1)
+            .and_then(|x| x.checked_add(p0))
+            .ok_or_else(overflow)?;
         (p0, q0, p1, q1) = (p1, q1, p2, q2);
         let r = n - a * d;
         (n, d) = (d, r);
@@ -145,13 +157,22 @@ fn as_integer_ratio(v: f64) -> (i128, i128) {
 
 /// `struct.pack(">i", n)` range check.
 pub fn signed32(n: i128) -> Result<i32, CoreError> {
-    i32::try_from(n)
-        .map_err(|_| CoreError::new("struct_error", "'i' format requires -2147483648 <= number <= 2147483647"))
+    i32::try_from(n).map_err(|_| {
+        CoreError::new(
+            "struct_error",
+            "'i' format requires -2147483648 <= number <= 2147483647",
+        )
+    })
 }
 
 /// `struct.pack(">I", n)` range check.
 pub fn unsigned32(n: i128) -> Result<u32, CoreError> {
-    u32::try_from(n).map_err(|_| CoreError::new("struct_error", "'I' format requires 0 <= number <= 4294967295"))
+    u32::try_from(n).map_err(|_| {
+        CoreError::new(
+            "struct_error",
+            "'I' format requires 0 <= number <= 4294967295",
+        )
+    })
 }
 
 #[cfg(test)]

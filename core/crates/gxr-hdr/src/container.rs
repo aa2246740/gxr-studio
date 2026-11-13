@@ -54,7 +54,10 @@ fn u16_be(data: &[u8], pos: usize) -> Result<usize, CoreError> {
 
 /// Port of gxr_studio/hdr/container.py:64 jpeg_segments.
 pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<Segment>, usize, usize), CoreError> {
-    if start.checked_add(2).is_none_or(|end| end > data.len()) || data[start] != 0xff || data[start + 1] != 0xd8 {
+    if start.checked_add(2).is_none_or(|end| end > data.len())
+        || data[start] != 0xff
+        || data[start + 1] != 0xd8
+    {
         return Err(container("不是 JPEG（缺 SOI）"));
     }
     let mut i = start + 2;
@@ -84,7 +87,10 @@ pub fn jpeg_segments(data: &[u8], start: usize) -> Result<(Vec<Segment>, usize, 
     let mut j = sos + 2 + u16_be(data, sos + 2)?;
     loop {
         // `data.find(b"\xff", j)` is -1 when `j` is past the end.
-        let found = data.get(j..).and_then(|rest| rest.iter().position(|b| *b == 0xff)).map(|p| j + p);
+        let found = data
+            .get(j..)
+            .and_then(|rest| rest.iter().position(|b| *b == 0xff))
+            .map(|p| j + p);
         let Some(j_at) = found else {
             return Err(container("JPEG 缺 EOI"));
         };
@@ -174,7 +180,13 @@ pub fn iso_full(m: &GainMeta) -> Result<Vec<u8>, CoreError> {
     let gam = frac(m.gamma, false)?;
     let bo = frac(m.offset_sdr, true)?;
     let ao = frac(m.offset_hdr, true)?;
-    for ((n, d), signed) in [(gmin, true), (gmax, true), (gam, false), (bo, true), (ao, true)] {
+    for ((n, d), signed) in [
+        (gmin, true),
+        (gmax, true),
+        (gam, false),
+        (bo, true),
+        (ao, true),
+    ] {
         if signed {
             out.extend_from_slice(&signed32(n)?.to_be_bytes());
         } else {
@@ -186,7 +198,11 @@ pub fn iso_full(m: &GainMeta) -> Result<Vec<u8>, CoreError> {
 }
 
 /// Port of gxr_studio/hdr/container.py:183 mpf_segment.
-pub fn mpf_segment(primary_size: usize, gain_size: usize, gain_offset: usize) -> Result<Vec<u8>, CoreError> {
+pub fn mpf_segment(
+    primary_size: usize,
+    gain_size: usize,
+    gain_offset: usize,
+) -> Result<Vec<u8>, CoreError> {
     let (primary_size, gain_size, gain_offset) = (
         unsigned32(i128::try_from(primary_size).unwrap_or(i128::MAX))?,
         unsigned32(i128::try_from(gain_size).unwrap_or(i128::MAX))?,
@@ -234,7 +250,11 @@ pub fn assemble(jpg: &[u8], gain_jpeg: &[u8], meta: &GainMeta) -> Result<Vec<u8>
     let mut keep_rest = Vec::new();
     for seg in segs {
         let (marker, start, end) = (seg.marker, seg.start, seg.end);
-        let payload = if end >= start + 4 { &jpg[start + 4..end] } else { &[] };
+        let payload = if end >= start + 4 {
+            &jpg[start + 4..end]
+        } else {
+            &[]
+        };
         if replaced(marker, payload) {
             continue;
         }

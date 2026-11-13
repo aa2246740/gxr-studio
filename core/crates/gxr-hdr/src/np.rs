@@ -21,7 +21,12 @@ const PW_BLOCKSIZE: usize = 128;
 
 /// float32 or float64, with numpy's conversions.
 pub trait Real:
-    Copy + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Div<Output = Self>
+    Copy
+    + PartialOrd
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Div<Output = Self>
 {
     const ZERO: Self;
     const NEG_ZERO: Self;

@@ -33,7 +33,10 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "hdr-raw-luma" => raw_luma_cmd(args)?,
         "hdr-phase" => phase_cmd(args)?,
         "hdr-fit" => fit_cmd(args)?,
-        "hdr-align" => hdr::align_report(&f32_plane(&npy(args, "--sdr")?)?, &f32_plane(&npy(args, "--raw")?)?)?,
+        "hdr-align" => hdr::align_report(
+            &f32_plane(&npy(args, "--sdr")?)?,
+            &f32_plane(&npy(args, "--raw")?)?,
+        )?,
         "hdr-register" => register_cmd(args)?,
         "hdr-gain" => gain_cmd(args)?,
         "hdr-segments" => segments_cmd(args)?,
@@ -67,7 +70,10 @@ fn number<T: std::str::FromStr>(args: &[String], name: &str) -> Result<T, Failur
 }
 
 fn pair(args: &[String], name: &str) -> Result<(usize, usize), Failure> {
-    let at = args.iter().position(|a| a == name).ok_or_else(|| usage(format!("missing {name}")))?;
+    let at = args
+        .iter()
+        .position(|a| a == name)
+        .ok_or_else(|| usage(format!("missing {name}")))?;
     let get = |k: usize| -> Result<usize, Failure> {
         args.get(at + k)
             .and_then(|v| v.parse().ok())
@@ -94,8 +100,14 @@ fn parse_npy(raw: &[u8]) -> Option<Npy> {
         return None;
     }
     let (at, len) = match raw.get(6)? {
-        1 => (10usize, usize::from(u16::from_le_bytes([*raw.get(8)?, *raw.get(9)?]))),
-        2 | 3 => (12, usize::try_from(u32::from_le_bytes(raw.get(8..12)?.try_into().ok()?)).ok()?),
+        1 => (
+            10usize,
+            usize::from(u16::from_le_bytes([*raw.get(8)?, *raw.get(9)?])),
+        ),
+        2 | 3 => (
+            12,
+            usize::try_from(u32::from_le_bytes(raw.get(8..12)?.try_into().ok()?)).ok()?,
+        ),
         _ => return None,
     };
     let header = std::str::from_utf8(raw.get(at..at.checked_add(len)?)?).ok()?;
@@ -134,7 +146,11 @@ fn hw(a: &Npy) -> Result<(usize, usize), Failure> {
 
 fn f32s(a: &Npy) -> Result<Vec<f32>, Failure> {
     match a.descr.as_str() {
-        "<f4" => Ok(a.data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()),
+        "<f4" => Ok(a
+            .data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()),
         d => Err(usage(format!("expected float32, got {d}"))),
     }
 }
@@ -163,7 +179,13 @@ fn f32_plane(a: &Npy) -> Result<hdr::Plane32, Failure> {
 }
 
 /// Write an `.npy` (format 1.0) and describe it without the path.
-fn write(args: &[String], name: &str, descr: &str, shape: &[usize], payload: &[u8]) -> Result<Json, Failure> {
+fn write(
+    args: &[String],
+    name: &str,
+    descr: &str,
+    shape: &[usize],
+    payload: &[u8],
+) -> Result<Json, Failure> {
     let path = common::option(args, name)?;
     let dims: Vec<String> = shape.iter().map(ToString::to_string).collect();
     let shape_text = if dims.len() == 1 {
@@ -171,16 +193,27 @@ fn write(args: &[String], name: &str, descr: &str, shape: &[usize], payload: &[u
     } else {
         format!("({})", dims.join(", "))
     };
-    let mut dict = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_text}, }}");
+    let mut dict =
+        format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_text}, }}");
     dict.push_str(&" ".repeat((64 - (11 + dict.len()) % 64) % 64));
     dict.push('\n');
     let mut out = b"\x93NUMPY\x01\x00".to_vec();
-    out.extend_from_slice(&u16::try_from(dict.len()).map_err(|_| usage("npy header too long"))?.to_le_bytes());
+    out.extend_from_slice(
+        &u16::try_from(dict.len())
+            .map_err(|_| usage("npy header too long"))?
+            .to_le_bytes(),
+    );
     out.extend_from_slice(dict.as_bytes());
     out.extend_from_slice(payload);
     std::fs::write(path, out).map_err(|e| usage(format!("cannot write {path}: {e}")))?;
-    let dims: Vec<i64> = shape.iter().map(|&d| i64::try_from(d).unwrap_or(i64::MAX)).collect();
-    Ok(Json::object([("dtype", Json::str(descr)), ("shape", Json::ints(&dims))]))
+    let dims: Vec<i64> = shape
+        .iter()
+        .map(|&d| i64::try_from(d).unwrap_or(i64::MAX))
+        .collect();
+    Ok(Json::object([
+        ("dtype", Json::str(descr)),
+        ("shape", Json::ints(&dims)),
+    ]))
 }
 
 fn le_f32(v: &[f32]) -> Vec<u8> {
@@ -201,22 +234,84 @@ fn filter(args: &[String]) -> Result<Json, Failure> {
     let (h, w) = hw(&a)?;
     let out = |descr: &str, payload: Vec<u8>| write(args, "--out", descr, &[h, w], &payload);
     match (op, a.descr.as_str()) {
-        ("gaussian", "<f4") => out("<f4", le_f32(&hdr::gaussian_filter(&f32s(&a)?, h, w, number(args, "--sigma")?)?)),
-        ("gaussian", "<f8") => out("<f8", le_f64(&hdr::gaussian_filter(&f64s(&a)?, h, w, number(args, "--sigma")?)?)),
-        ("uniform", "<f4") => out("<f4", le_f32(&hdr::uniform_filter(&f32s(&a)?, h, w, number(args, "--size")?)?)),
-        ("uniform", "<f8") => out("<f8", le_f64(&hdr::uniform_filter(&f64s(&a)?, h, w, number(args, "--size")?)?)),
-        ("minimum", "<f4") => out("<f4", le_f32(&hdr::minimum_filter(&f32s(&a)?, h, w, number(args, "--size")?)?)),
-        ("minimum", "<f8") => out("<f8", le_f64(&hdr::minimum_filter(&f64s(&a)?, h, w, number(args, "--size")?)?)),
+        ("gaussian", "<f4") => out(
+            "<f4",
+            le_f32(&hdr::gaussian_filter(
+                &f32s(&a)?,
+                h,
+                w,
+                number(args, "--sigma")?,
+            )?),
+        ),
+        ("gaussian", "<f8") => out(
+            "<f8",
+            le_f64(&hdr::gaussian_filter(
+                &f64s(&a)?,
+                h,
+                w,
+                number(args, "--sigma")?,
+            )?),
+        ),
+        ("uniform", "<f4") => out(
+            "<f4",
+            le_f32(&hdr::uniform_filter(
+                &f32s(&a)?,
+                h,
+                w,
+                number(args, "--size")?,
+            )?),
+        ),
+        ("uniform", "<f8") => out(
+            "<f8",
+            le_f64(&hdr::uniform_filter(
+                &f64s(&a)?,
+                h,
+                w,
+                number(args, "--size")?,
+            )?),
+        ),
+        ("minimum", "<f4") => out(
+            "<f4",
+            le_f32(&hdr::minimum_filter(
+                &f32s(&a)?,
+                h,
+                w,
+                number(args, "--size")?,
+            )?),
+        ),
+        ("minimum", "<f8") => out(
+            "<f8",
+            le_f64(&hdr::minimum_filter(
+                &f64s(&a)?,
+                h,
+                w,
+                number(args, "--size")?,
+            )?),
+        ),
         ("minimum", "|u1" | "|b1") => {
             let d = a.descr.clone();
-            out(&d, hdr::minimum_filter(&a.data, h, w, number(args, "--size")?)?)
+            out(
+                &d,
+                hdr::minimum_filter(&a.data, h, w, number(args, "--size")?)?,
+            )
         }
         ("label", "|b1" | "|u1") => {
             let (labels, count) = hdr::label(&mask(&a)?, h, w)?;
             let desc = out("<i4", labels.iter().flat_map(|x| x.to_le_bytes()).collect())?;
-            Ok(Json::object([("count", Json::Int(i64::from(count))), ("out", desc)]))
+            Ok(Json::object([
+                ("count", Json::Int(i64::from(count))),
+                ("out", desc),
+            ]))
         }
-        ("dilate", "|b1" | "|u1") => out("|b1", bools(&hdr::binary_dilation(&mask(&a)?, h, w, number(args, "--iterations")?)?)),
+        ("dilate", "|b1" | "|u1") => out(
+            "|b1",
+            bools(&hdr::binary_dilation(
+                &mask(&a)?,
+                h,
+                w,
+                number(args, "--iterations")?,
+            )?),
+        ),
         (op, d) => Err(usage(format!("--op {op} does not take {d}"))),
     }
 }
@@ -228,8 +323,20 @@ fn map_cmd(args: &[String]) -> Result<Json, Failure> {
     let shape = sy.shape.clone();
     let (y, x) = (f32s(&sy)?, f32s(&sx)?);
     match a.descr.as_str() {
-        "<f4" => write(args, "--out", "<f4", &shape, &le_f32(&hdr::map_coordinates(&f32s(&a)?, h, w, &y, &x)?)),
-        _ => write(args, "--out", "<f8", &shape, &le_f64(&hdr::map_coordinates(&f64s(&a)?, h, w, &y, &x)?)),
+        "<f4" => write(
+            args,
+            "--out",
+            "<f4",
+            &shape,
+            &le_f32(&hdr::map_coordinates(&f32s(&a)?, h, w, &y, &x)?),
+        ),
+        _ => write(
+            args,
+            "--out",
+            "<f8",
+            &shape,
+            &le_f64(&hdr::map_coordinates(&f64s(&a)?, h, w, &y, &x)?),
+        ),
     }
 }
 
@@ -286,7 +393,10 @@ fn fit_cmd(args: &[String]) -> Result<Json, Failure> {
         return Err(usage("--x, --y and --valid differ in size"));
     }
     let (cx, cy) = hdr::fit_curve(&x, &y, &valid)?;
-    Ok(Json::object([("cx", Json::floats(&cx)), ("cy", Json::floats(&cy))]))
+    Ok(Json::object([
+        ("cx", Json::floats(&cx)),
+        ("cy", Json::floats(&cy)),
+    ]))
 }
 
 fn register_cmd(args: &[String]) -> Result<Json, Failure> {
@@ -297,7 +407,12 @@ fn register_cmd(args: &[String]) -> Result<Json, Failure> {
         hdr::Value::Obj(pairs) => pairs,
         _ => return Err(usage("--align must be a JSON object")),
     };
-    let get = |k: &str| fields.iter().find(|(name, _)| name == k).map(|(_, v)| v.clone());
+    let get = |k: &str| {
+        fields
+            .iter()
+            .find(|(name, _)| name == k)
+            .map(|(_, v)| v.clone())
+    };
     let num = |k: &str| match get(k) {
         Some(hdr::Value::Float(f)) => Ok(f),
         #[allow(clippy::cast_precision_loss)]
@@ -339,7 +454,13 @@ fn gain_cmd(args: &[String]) -> Result<Json, Failure> {
     let codes = hdr::quantise_gain(&result.delta, &result.meta);
     write(args, "--out", "|u1", &[sdr.h, sdr.w], &codes)?;
     if common::option(args, "--delta-out").is_ok() {
-        write(args, "--delta-out", "<f4", &[sdr.h, sdr.w], &le_f32(&result.delta))?;
+        write(
+            args,
+            "--delta-out",
+            "<f4",
+            &[sdr.h, sdr.w],
+            &le_f32(&result.delta),
+        )?;
     }
     Ok(hdr::gain_report(&result)?)
 }
@@ -370,7 +491,8 @@ fn assemble_cmd(args: &[String]) -> Result<Json, Failure> {
 /// `_capture` of both tag maps and `differs`.
 pub fn capture_json(raw: &str, jpeg: &str) -> Result<Json, Failure> {
     let side = |t: &str| -> Result<Vec<(String, hdr::Field)>, Failure> {
-        hdr::capture_of(&hdr::tags_from_json(t)?).ok_or_else(|| usage("a text tag holds a list; str(list) is not ported"))
+        hdr::capture_of(&hdr::tags_from_json(t)?)
+            .ok_or_else(|| usage("a text tag holds a list; str(list) is not ported"))
     };
     let (r, j) = (side(raw)?, side(jpeg)?);
     Ok(Json::object([
