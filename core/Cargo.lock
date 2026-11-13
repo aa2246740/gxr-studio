@@ -46,6 +46,10 @@ version = "0.1.0"
 [[package]]
 name = "gxr-finish"
 version = "0.1.0"
+dependencies = [
+ "gxr-math",
+ "gxr-raw",
+]
 
 [[package]]
 name = "gxr-frame"
