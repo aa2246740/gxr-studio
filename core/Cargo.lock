@@ -51,6 +51,7 @@ version = "0.1.0"
 name = "gxr-frame"
 version = "0.1.0"
 dependencies = [
+ "gxr-math",
  "gxr-raw",
 ]
 

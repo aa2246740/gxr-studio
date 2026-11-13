@@ -34,6 +34,14 @@ impl Val {
             .map(|(_, v)| v)
     }
 
+    /// `self[i]` of an array.
+    pub fn get_index(&self, i: usize) -> Option<&Val> {
+        match self {
+            Self::Arr(items) => items.get(i),
+            _ => None,
+        }
+    }
+
     pub fn contains(&self, key: &str) -> bool {
         self.get(key).is_some()
     }
@@ -190,12 +198,31 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn hex4(&mut self) -> Result<char, CoreError> {
+    fn unit(&mut self) -> Result<u32, CoreError> {
         let mut unit = 0u32;
         for _ in 0..4 {
             let c = self.bump()?;
-            let dig = c.to_digit(16).ok_or_else(|| json_err("\\u 后面要有四位十六进制"))?;
+            let dig = c
+                .to_digit(16)
+                .ok_or_else(|| json_err("\\u 后面要有四位十六进制"))?;
             unit = unit * 16 + dig;
+        }
+        Ok(unit)
+    }
+
+    /// `\uXXXX`, joining a UTF-16 surrogate pair the way `json.loads` does. A lone surrogate is
+    /// legal in a Python `str` but not in a Rust one, so it is refused.
+    fn hex4(&mut self) -> Result<char, CoreError> {
+        let unit = self.unit()?;
+        if (0xD800..0xDC00).contains(&unit) && self.text[self.i..].starts_with("\\u") {
+            let save = self.i;
+            self.i += 2;
+            let low = self.unit()?;
+            if (0xDC00..0xE000).contains(&low) {
+                let code = 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00);
+                return char::from_u32(code).ok_or_else(|| json_err("\\u 不是一个字符"));
+            }
+            self.i = save;
         }
         char::from_u32(unit).ok_or_else(|| json_err("\\u 不是一个字符"))
     }
@@ -210,12 +237,15 @@ impl<'a> Parser<'a> {
             Some('0') => {
                 self.bump()?;
             }
-            Some('1'..='9') => while matches!(self.peek(), Some('0'..='9')) {
-                self.bump()?;
-            },
+            Some('1'..='9') => {
+                while matches!(self.peek(), Some('0'..='9')) {
+                    self.bump()?;
+                }
+            }
             _ => return Err(json_err("数字不完整")),
         }
-        if matches!(self.peek(), Some('0'..='9')) && self.text.as_bytes().get(digits) == Some(&b'0') {
+        if matches!(self.peek(), Some('0'..='9')) && self.text.as_bytes().get(digits) == Some(&b'0')
+        {
             return Err(json_err("数字不能有前导 0"));
         }
         let mut integer = true;
@@ -247,12 +277,12 @@ impl<'a> Parser<'a> {
             if token == "-0" {
                 return Ok(Val::Int(0));
             }
-            let n = token
-                .parse::<i64>()
-                .map_err(|_| json_err("整数超出范围"))?;
+            let n = token.parse::<i64>().map_err(|_| json_err("整数超出范围"))?;
             return Ok(Val::Int(n));
         }
-        let n = token.parse::<f64>().map_err(|_| json_err("无法读取这个数字"))?;
+        let n = token
+            .parse::<f64>()
+            .map_err(|_| json_err("无法读取这个数字"))?;
         if !n.is_finite() {
             return Err(json_err("数字必须是有限的"));
         }

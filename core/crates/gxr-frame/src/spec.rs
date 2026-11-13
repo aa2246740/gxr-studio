@@ -8,7 +8,7 @@ use gxr_raw::{CoreError, Json};
 use crate::value::Val;
 
 const INVALID_REQUEST: &str = "请求无效。请刷新页面后重试。";
-const STAMP_TEXT_MAX: usize = 24;
+pub(crate) const STAMP_TEXT_MAX: usize = 24;
 
 const FRAME_STYLES: &[&str] = &[
     "none",
@@ -207,7 +207,12 @@ fn apply_frame_defaults(raw: RawFrame) -> FrameSpec {
         .unwrap_or(raw.style == "leica" || raw.style == "hasselblad");
     let mut fmt = raw.fmt;
     if fmt.is_empty() {
-        fmt = if raw.style == "instant" { "polaroid" } else { "135" }.into();
+        fmt = if raw.style == "instant" {
+            "polaroid"
+        } else {
+            "135"
+        }
+        .into();
     }
     let mut logo = raw.logo;
     let mut show_logo = raw.show_logo;
@@ -236,13 +241,93 @@ fn apply_frame_defaults(raw: RawFrame) -> FrameSpec {
     }
 }
 
+fn field_str(raw: &Val, key: &str, default: &str) -> Result<String, CoreError> {
+    match raw.get(key) {
+        None => Ok(default.to_string()),
+        Some(Val::Str(s)) => Ok(s.clone()),
+        Some(_) => Err(CoreError::new("bad_request", format!("{key} 要是字符串"))),
+    }
+}
+
+fn field_bool(raw: &Val, key: &str, default: bool) -> Result<bool, CoreError> {
+    match raw.get(key) {
+        None => Ok(default),
+        Some(Val::Bool(b)) => Ok(*b),
+        Some(_) => Err(CoreError::new("bad_request", format!("{key} 要是布尔值"))),
+    }
+}
+
+/// `FrameSpec(**fields)`: the dataclass built directly, `__post_init__` included, with no value
+/// checks (that is `parse_frame`'s job). `version` is ignored, as `to_json` adds it.
+pub fn frame_spec_from_fields(raw: &Val) -> Result<FrameSpec, CoreError> {
+    if raw.as_object().is_none() {
+        return Err(CoreError::new("bad_request", "边框规格要是对象"));
+    }
+    let show_date = match raw.get("show_date") {
+        None | Some(Val::Null) => None,
+        Some(Val::Bool(b)) => Some(*b),
+        Some(_) => return Err(CoreError::new("bad_request", "show_date 要是布尔值或 null")),
+    };
+    Ok(apply_frame_defaults(RawFrame {
+        style: field_str(raw, "style", "none")?,
+        color: field_str(raw, "color", "")?,
+        weight: field_str(raw, "weight", "medium")?,
+        show_logo: field_bool(raw, "show_logo", true)?,
+        show_params: field_bool(raw, "show_params", true)?,
+        show_date,
+        text: field_str(raw, "text", "")?,
+        output_ratio: field_str(raw, "output_ratio", "3:4")?,
+        fmt: field_str(raw, "fmt", "")?,
+        table: field_str(raw, "table", "light")?,
+        logo: field_str(raw, "logo", "")?,
+        logo_mode: field_str(raw, "logo_mode", "auto")?,
+        logo_size: field_str(raw, "logo_size", "medium")?,
+        model: field_bool(raw, "model", true)?,
+    }))
+}
+
+/// `StampSpec(**fields)`, built directly with no value checks (`parse_stamp` checks).
+pub fn stamp_spec_from_fields(raw: &Val) -> Result<StampSpec, CoreError> {
+    if raw.as_object().is_none() {
+        return Err(CoreError::new("bad_request", "时间戳规格要是对象"));
+    }
+    let base = factory_stamp();
+    let date_override = match raw.get("date_override") {
+        None | Some(Val::Null) => None,
+        Some(Val::Str(s)) => Some(s.clone()),
+        Some(_) => {
+            return Err(CoreError::new(
+                "bad_request",
+                "date_override 要是字符串或 null",
+            ));
+        }
+    };
+    Ok(StampSpec {
+        enabled: field_bool(raw, "enabled", base.enabled)?,
+        content: field_str(raw, "content", &base.content)?,
+        date_format: field_str(raw, "date_format", &base.date_format)?,
+        show_time: field_bool(raw, "show_time", base.show_time)?,
+        date_override,
+        text: field_str(raw, "text", &base.text)?,
+        font: field_str(raw, "font", &base.font)?,
+        color: field_str(raw, "color", &base.color)?,
+        size: field_str(raw, "size", &base.size)?,
+        corner: field_str(raw, "corner", &base.corner)?,
+        glow: field_bool(raw, "glow", base.glow)?,
+        placement: field_str(raw, "placement", &base.placement)?,
+    })
+}
+
 /// Port of `gxr_studio/finish/spec.py:216` `parse_frame`.
 pub fn parse_frame(raw: &Val) -> Result<Option<FrameSpec>, CoreError> {
     if matches!(raw, Val::Null) {
         return Ok(None);
     }
     let Some(_) = raw.as_object() else {
-        return Err(edit("bad_frame", "边框设置格式不对。请重新选择样式后再试。"));
+        return Err(edit(
+            "bad_frame",
+            "边框设置格式不对。请重新选择样式后再试。",
+        ));
     };
     if raw.keys().iter().any(|key| !FRAME_KEYS.contains(key))
         || (raw.contains("version") && !version_is_2(raw.get("version")))
@@ -255,21 +340,23 @@ pub fn parse_frame(raw: &Val) -> Result<Option<FrameSpec>, CoreError> {
         _ => return Err(edit("bad_frame", INVALID_REQUEST)),
     };
     let color = match raw.get("color") {
-        None => {
-            if style == "thin_keyline" || style == "slide_mount" {
-                "cream"
-            } else {
-                "white"
-            }
-            .to_string()
+        None => if style == "thin_keyline" || style == "slide_mount" {
+            "cream"
+        } else {
+            "white"
         }
-        Some(Val::Str(text)) if matches!(text.as_str(), "white" | "black" | "cream") => text.clone(),
+        .to_string(),
+        Some(Val::Str(text)) if matches!(text.as_str(), "white" | "black" | "cream") => {
+            text.clone()
+        }
         _ => return Err(edit("bad_frame", INVALID_REQUEST)),
     };
     let weight = one_of(raw, "weight", "medium", &["thin", "medium", "thick"])?;
     let ratio = match raw.get("output_ratio") {
         None => "3:4".to_string(),
-        Some(Val::Str(text)) if OUTPUT_RATIOS.contains(&text.as_str()) || text == "original" => text.clone(),
+        Some(Val::Str(text)) if OUTPUT_RATIOS.contains(&text.as_str()) || text == "original" => {
+            text.clone()
+        }
         _ => return Err(edit("bad_frame", "请选择成品比例后再试。")),
     };
     let text = match raw.get("text") {
@@ -278,13 +365,17 @@ pub fn parse_frame(raw: &Val) -> Result<Option<FrameSpec>, CoreError> {
         _ => return Err(edit("bad_frame", INVALID_REQUEST)),
     };
     for key in ["show_logo", "show_params", "show_date"] {
-        if let Some(value) = raw.get(key) {
-            if !matches!(value, Val::Bool(_)) {
-                return Err(edit("bad_frame", INVALID_REQUEST));
-            }
+        if let Some(value) = raw.get(key)
+            && !matches!(value, Val::Bool(_))
+        {
+            return Err(edit("bad_frame", INVALID_REQUEST));
         }
     }
-    let fmt_default = if style == "instant" { "polaroid" } else { "135" };
+    let fmt_default = if style == "instant" {
+        "polaroid"
+    } else {
+        "135"
+    };
     let formats: &[&str] = if style == "instant" {
         &["polaroid", "instax_square", "instax_wide", "instax_mini"]
     } else {
@@ -301,13 +392,15 @@ pub fn parse_frame(raw: &Val) -> Result<Option<FrameSpec>, CoreError> {
         _ => return Err(edit("bad_frame", "胶片背景只能选灯台或黑色。")),
     };
     let (logo, show_logo, logo_mode, logo_size, model) = parse_logo_fields(raw)?;
+    let show_params = flag(raw, "show_params", true)?;
+    let show_date = flag(raw, "show_date", style == "leica" || style == "hasselblad")?;
     Ok(Some(apply_frame_defaults(RawFrame {
         style,
         color,
         weight,
         show_logo,
-        show_params: flag(raw, "show_params", true)?,
-        show_date: Some(flag(raw, "show_date", style == "leica" || style == "hasselblad")?),
+        show_params,
+        show_date: Some(show_date),
         text,
         output_ratio: ratio,
         fmt,
@@ -331,7 +424,9 @@ fn parse_logo_fields(raw: &Val) -> Result<(String, bool, String, String, bool), 
         if raw_logo != "ricoh" && raw_logo != "none" && !logo_id(raw_logo) {
             return Err(edit("bad_frame", INVALID_REQUEST));
         }
-        if raw_logo == "none" || (raw_logo == "ricoh" && matches!(raw.get("show_logo"), Some(Val::Bool(false)))) {
+        if raw_logo == "none"
+            || (raw_logo == "ricoh" && matches!(raw.get("show_logo"), Some(Val::Bool(false))))
+        {
             show_logo = false;
             "none".to_string()
         } else {
@@ -346,7 +441,9 @@ fn parse_logo_fields(raw: &Val) -> Result<(String, bool, String, String, bool), 
     };
     let logo_size = match raw.get("logo_size") {
         None => "medium".to_string(),
-        Some(Val::Str(text)) if matches!(text.as_str(), "small" | "medium" | "large") => text.clone(),
+        Some(Val::Str(text)) if matches!(text.as_str(), "small" | "medium" | "large") => {
+            text.clone()
+        }
         _ => return Err(edit("bad_frame", INVALID_REQUEST)),
     };
     let model = match raw.get("model") {
@@ -388,46 +485,16 @@ pub fn parse_stamp(raw: &Val) -> Result<Option<StampSpec>, CoreError> {
         "bad_stamp",
         INVALID_REQUEST,
     )?;
-    let content = one_of_err(
-        raw,
-        "content",
-        "date",
-        &["date", "text", "date+text"],
-        "bad_stamp",
-        INVALID_REQUEST,
-    )?;
-    let font = one_of_err(
-        raw,
-        "font",
-        "seg7",
-        &["seg7", "typewriter", "sans"],
-        "bad_stamp",
-        INVALID_REQUEST,
-    )?;
-    let color = one_of_err(
+    let content = member(raw, "content", "date", &["date", "text", "date+text"])?;
+    let font = member(raw, "font", "seg7", &["seg7", "typewriter", "sans"])?;
+    let color = member(
         raw,
         "color",
         "orange",
         &["orange", "red", "yellow", "white"],
-        "bad_stamp",
-        INVALID_REQUEST,
     )?;
-    let size = one_of_err(
-        raw,
-        "size",
-        "medium",
-        &["small", "medium", "large"],
-        "bad_stamp",
-        INVALID_REQUEST,
-    )?;
-    let corner = one_of_err(
-        raw,
-        "corner",
-        "br",
-        &["tl", "tr", "bl", "br"],
-        "bad_stamp",
-        INVALID_REQUEST,
-    )?;
+    let size = member(raw, "size", "medium", &["small", "medium", "large"])?;
+    let corner = member(raw, "corner", "br", &["tl", "tr", "bl", "br"])?;
     let text = match raw.get("text") {
         None => String::new(),
         Some(Val::Str(text)) if text.chars().count() <= STAMP_TEXT_MAX => text.clone(),
@@ -435,20 +502,30 @@ pub fn parse_stamp(raw: &Val) -> Result<Option<StampSpec>, CoreError> {
     };
     let date_override = match raw.get("date_override") {
         None | Some(Val::Null) => None,
-        Some(Val::Str(text)) if calendar_date(text) => Some(text.clone()),
+        Some(Val::Str(text)) if crate::py::strptime_ymd(text).is_some() => Some(text.clone()),
         Some(Val::Str(_)) => return Err(edit("bad_stamp", INVALID_REQUEST)),
-        _ => return Err(edit("bad_stamp", "指定日期要用 YYYY-MM-DD。请重新选择日期后再试。")),
+        _ => {
+            return Err(edit(
+                "bad_stamp",
+                "指定日期要用 YYYY-MM-DD。请重新选择日期后再试。",
+            ));
+        }
     };
     for key in ["enabled", "show_time", "glow"] {
-        if let Some(value) = raw.get(key) {
-            if !matches!(value, Val::Bool(_)) {
-                return Err(edit("bad_stamp", INVALID_REQUEST));
-            }
+        if let Some(value) = raw.get(key)
+            && !matches!(value, Val::Bool(_))
+        {
+            return Err(edit("bad_stamp", INVALID_REQUEST));
         }
     }
     let date_format = match raw.get("date_format") {
         None => "'yy mm dd".to_string(),
-        Some(Val::Str(text)) if matches!(text.as_str(), "'yy mm dd" | "yy mm dd" | "yyyy.mm.dd" | "mm dd 'yy") => {
+        Some(Val::Str(text))
+            if matches!(
+                text.as_str(),
+                "'yy mm dd" | "yy mm dd" | "yyyy.mm.dd" | "mm dd 'yy"
+            ) =>
+        {
             text.clone()
         }
         _ => return Err(edit("bad_stamp", INVALID_REQUEST)),
@@ -488,6 +565,23 @@ fn one_of_err(
     }
 }
 
+/// `value not in {...}` with no `isinstance` check first, as `parse_stamp` writes it: a list or a
+/// dict is unhashable, so Python raises `TypeError` before it can say the value is not allowed.
+/// The text is CPython 3.14's.
+fn member(raw: &Val, key: &str, default: &str, allowed: &[&str]) -> Result<String, CoreError> {
+    match raw.get(key) {
+        Some(Val::Arr(_)) => Err(CoreError::new(
+            "type_error",
+            "cannot use 'list' as a set element (unhashable type: 'list')",
+        )),
+        Some(Val::Obj(_)) => Err(CoreError::new(
+            "type_error",
+            "cannot use 'dict' as a set element (unhashable type: 'dict')",
+        )),
+        _ => one_of_err(raw, key, default, allowed, "bad_stamp", INVALID_REQUEST),
+    }
+}
+
 fn flag(raw: &Val, key: &str, default: bool) -> Result<bool, CoreError> {
     match raw.get(key) {
         None => Ok(default),
@@ -501,50 +595,15 @@ fn version_is_2(value: Option<&Val>) -> bool {
     matches!(value, Some(Val::Int(2)))
 }
 
+/// `_LOGO_ID_RE.match(text)` for `^[a-z0-9_-]{1,64}$`. Python's `$` also matches just before a
+/// final newline, so one trailing `\n` is accepted.
 fn logo_id(text: &str) -> bool {
-    let len = text.chars().count();
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    let len = body.chars().count();
     (1..=64).contains(&len)
-        && text
+        && body
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-}
-
-/// `datetime.strptime(text, "%Y-%m-%d")` for a four-digit year.
-fn calendar_date(text: &str) -> bool {
-    let mut parts = text.split('-');
-    let Some(year) = parts.next() else {
-        return false;
-    };
-    let Some(month) = parts.next() else {
-        return false;
-    };
-    let Some(day) = parts.next() else {
-        return false;
-    };
-    if parts.next().is_some() || year.len() != 4 || month.len() != 2 || day.len() != 2 {
-        return false;
-    }
-    let Ok(year) = year.parse::<i32>() else {
-        return false;
-    };
-    if !(1..=9999).contains(&year) {
-        return false;
-    }
-    let Ok(month) = month.parse::<u32>() else {
-        return false;
-    };
-    let Ok(day) = day.parse::<u32>() else {
-        return false;
-    };
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let max_day = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return false,
-    };
-    (1..=max_day).contains(&day)
 }
 
 fn edit(kind: &'static str, message: &str) -> CoreError {

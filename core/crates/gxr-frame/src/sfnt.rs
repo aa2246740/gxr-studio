@@ -120,14 +120,9 @@ pub fn read_font(data: &[u8]) -> Result<FontTable, CoreError> {
     if glyph_count == 0 {
         return Err(CoreError::new("index_error", "list index out of range"));
     }
-    if metrics == 0 {
-        return Err(CoreError::new("value_error", "hmtx 没有度量"));
-    }
-
     let mut advances = Vec::new();
     for g in 0..glyph_count {
-        let slot = g.min(metrics - 1);
-        advances.push(u32::from(be_u16(data, hmtx + slot * 4)?));
+        advances.push(u32::from(hmtx_advance(data, hmtx, metrics, g)?));
     }
     let offsets = loca_offsets(data, loca, glyph_count, long_loca)?;
     let mut by_glyph = Vec::with_capacity(usize_from(glyph_count)?);
@@ -147,9 +142,10 @@ pub fn read_font(data: &[u8]) -> Result<FontTable, CoreError> {
             glyphs.insert(code, glyph);
         }
     }
-    let notdef = by_glyph.first().cloned().ok_or_else(|| {
-        CoreError::new("index_error", "list index out of range")
-    })?;
+    let notdef = by_glyph
+        .first()
+        .cloned()
+        .ok_or_else(|| CoreError::new("index_error", "list index out of range"))?;
     Ok(FontTable {
         upm,
         ascender,
@@ -158,8 +154,31 @@ pub fn read_font(data: &[u8]) -> Result<FontTable, CoreError> {
     })
 }
 
+/// `struct.unpack(">H", data[hmtx + 4*min(g, metrics-1) : … + 2])[0]`, Python slicing included:
+/// with `metrics == 0` the slot is `-1`, and a negative start counts from the end of the file.
+pub(crate) fn hmtx_advance(data: &[u8], hmtx: u64, metrics: u64, g: u64) -> Result<u16, CoreError> {
+    let len = i64::try_from(data.len()).map_err(|_| struct_error(2))?;
+    let base = i64::try_from(hmtx).map_err(|_| struct_error(2))?;
+    let slot = if metrics == 0 {
+        -1
+    } else {
+        i64::try_from(g.min(metrics - 1)).map_err(|_| struct_error(2))?
+    };
+    let start = base
+        .checked_add(slot.checked_mul(4).ok_or_else(|| struct_error(2))?)
+        .ok_or_else(|| struct_error(2))?;
+    let end = start.checked_add(2).ok_or_else(|| struct_error(2))?;
+    let clamp = |v: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v.min(len) } };
+    let (a, b) = (clamp(start), clamp(end));
+    if b - a != 2 {
+        return Err(struct_error(2));
+    }
+    let a = usize::try_from(a).map_err(|_| struct_error(2))?;
+    Ok(u16::from_be_bytes([data[a], data[a + 1]]))
+}
+
 /// Port of `gxr_studio/finish/sfnt.py:49` `_tables`.
-fn table_directory(data: &[u8]) -> Result<BTreeMap<String, u64>, CoreError> {
+pub(crate) fn table_directory(data: &[u8]) -> Result<BTreeMap<String, (u64, u64)>, CoreError> {
     if data.len() >= 4 && &data[0..4] == b"ttcf" {
         return Err(CoreError::new("value_error", "字体集合（.ttc）不读"));
     }
@@ -173,22 +192,26 @@ fn table_directory(data: &[u8]) -> Result<BTreeMap<String, u64>, CoreError> {
             name.push(char::from(*byte));
         }
         let offset = u64::from(be_u32(data, at + 8)?);
-        out.insert(name, offset);
+        let length = u64::from(be_u32(data, at + 12)?);
+        out.insert(name, (offset, length));
     }
     Ok(out)
 }
 
-fn table_at(tables: &BTreeMap<String, u64>, name: &str) -> Result<u64, CoreError> {
+pub(crate) fn table_at(
+    tables: &BTreeMap<String, (u64, u64)>,
+    name: &str,
+) -> Result<u64, CoreError> {
     tables
         .get(name)
-        .copied()
+        .map(|t| t.0)
         .ok_or_else(|| CoreError::new("key_error", format!("'{name}'")))
 }
 
 /// Port of `gxr_studio/finish/sfnt.py:60` `_cmap`.
 ///
 /// Values are glyph ids, including 0. `read_font` drops id 0 and ids past `maxp`.
-fn cmap(data: &[u8], offset: u64) -> Result<BTreeMap<u32, u64>, CoreError> {
+pub(crate) fn cmap(data: &[u8], offset: u64) -> Result<BTreeMap<u32, u64>, CoreError> {
     let count = u64::from(be_u16(data, offset + 2)?);
     let mut subtables = Vec::new();
     for i in 0..count {
@@ -275,9 +298,11 @@ fn cmap4(data: &[u8], at: u64) -> Result<BTreeMap<u32, u64>, CoreError> {
                         + 2 * u64::from(code - start);
                     let mut glyph = u64::from(be_u16(data, at_glyph)?);
                     if glyph != 0 {
-                        glyph = u64::from(low16(i64::try_from(glyph).map_err(|_| {
-                            CoreError::new("value_error", "glyph id 超出范围")
-                        })? + i64::from(deltas[i]))?);
+                        glyph = low16(
+                            i64::try_from(glyph)
+                                .map_err(|_| CoreError::new("value_error", "glyph id 超出范围"))?
+                                + i64::from(deltas[i]),
+                        )?;
                     }
                     glyph
                 };
@@ -292,7 +317,12 @@ fn cmap4(data: &[u8], at: u64) -> Result<BTreeMap<u32, u64>, CoreError> {
     Ok(out)
 }
 
-fn loca_offsets(data: &[u8], loca: u64, glyph_count: u64, long_loca: bool) -> Result<Vec<u64>, CoreError> {
+fn loca_offsets(
+    data: &[u8],
+    loca: u64,
+    glyph_count: u64,
+    long_loca: bool,
+) -> Result<Vec<u64>, CoreError> {
     let n = glyph_count + 1;
     if long_loca {
         let words = be_u32s(data, loca, n)?;
@@ -303,14 +333,21 @@ fn loca_offsets(data: &[u8], loca: u64, glyph_count: u64, long_loca: bool) -> Re
     }
 }
 
-fn ink_box(data: &[u8], glyf: u64, offsets: &[u64], glyph: u64) -> Result<Option<[i32; 4]>, CoreError> {
+fn ink_box(
+    data: &[u8],
+    glyf: u64,
+    offsets: &[u64],
+    glyph: u64,
+) -> Result<Option<[i32; 4]>, CoreError> {
     let g = usize_from(glyph)?;
-    let start = offsets.get(g).copied().ok_or_else(|| {
-        CoreError::new("index_error", "list index out of range")
-    })?;
-    let end = offsets.get(g + 1).copied().ok_or_else(|| {
-        CoreError::new("index_error", "list index out of range")
-    })?;
+    let start = offsets
+        .get(g)
+        .copied()
+        .ok_or_else(|| CoreError::new("index_error", "list index out of range"))?;
+    let end = offsets
+        .get(g + 1)
+        .copied()
+        .ok_or_else(|| CoreError::new("index_error", "list index out of range"))?;
     if end == start {
         return Ok(None);
     }
@@ -331,7 +368,8 @@ fn ink_box(data: &[u8], glyf: u64, offsets: &[u64], glyph: u64) -> Result<Option
 const MAX_CODES: usize = 1_048_576;
 
 fn note_span(have: usize, span: u64) -> Result<(), CoreError> {
-    let extra = usize::try_from(span).map_err(|_| CoreError::new("value_error", "cmap 范围太大"))?;
+    let extra =
+        usize::try_from(span).map_err(|_| CoreError::new("value_error", "cmap 范围太大"))?;
     if have.saturating_add(extra) > MAX_CODES {
         return Err(CoreError::new("value_error", "cmap 范围太大"));
     }
@@ -350,24 +388,24 @@ fn struct_error(n: u64) -> CoreError {
     )
 }
 
-fn read_exact(data: &[u8], at: u64, n: u64) -> Result<&[u8], CoreError> {
+pub(crate) fn read_exact(data: &[u8], at: u64, n: u64) -> Result<&[u8], CoreError> {
     let start = usize::try_from(at).map_err(|_| struct_error(n))?;
     let len = usize::try_from(n).map_err(|_| struct_error(n))?;
     let end = start.checked_add(len).ok_or_else(|| struct_error(n))?;
     data.get(start..end).ok_or_else(|| struct_error(n))
 }
 
-fn be_u16(data: &[u8], at: u64) -> Result<u16, CoreError> {
+pub(crate) fn be_u16(data: &[u8], at: u64) -> Result<u16, CoreError> {
     let b = read_exact(data, at, 2)?;
     Ok(u16::from_be_bytes([b[0], b[1]]))
 }
 
-fn be_i16(data: &[u8], at: u64) -> Result<i16, CoreError> {
+pub(crate) fn be_i16(data: &[u8], at: u64) -> Result<i16, CoreError> {
     let b = read_exact(data, at, 2)?;
     Ok(i16::from_be_bytes([b[0], b[1]]))
 }
 
-fn be_u32(data: &[u8], at: u64) -> Result<u32, CoreError> {
+pub(crate) fn be_u32(data: &[u8], at: u64) -> Result<u32, CoreError> {
     let b = read_exact(data, at, 4)?;
     Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
@@ -402,7 +440,7 @@ fn be_u32s(data: &[u8], at: u64, count: u64) -> Result<Vec<u32>, CoreError> {
     Ok(out)
 }
 
-fn usize_from(v: u64) -> Result<usize, CoreError> {
+pub(crate) fn usize_from(v: u64) -> Result<usize, CoreError> {
     usize::try_from(v).map_err(|_| CoreError::new("value_error", "字形数量超出范围"))
 }
 
