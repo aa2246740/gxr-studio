@@ -1,6 +1,6 @@
 [package]
 name = "gxr-finish"
-description = "Placeholder for the port of crop, geometry, frames and stamps"
+description = "Geometry now, raster later"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

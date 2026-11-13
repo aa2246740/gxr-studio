@@ -38,6 +38,10 @@ name = "gxr-finish"
 version = "0.1.0"
 
 [[package]]
+name = "gxr-frame"
+version = "0.1.0"
+
+[[package]]
 name = "gxr-hdr"
 version = "0.1.0"
 

@@ -9,6 +9,7 @@ members = [
     "crates/gxr-lut",
     "crates/gxr-hdr",
     "crates/gxr-finish",
+    "crates/gxr-frame",
     "crates/gxr-jpeg",
     "crates/gxr-export",
     "crates/gxr-cli",
@@ -27,6 +28,16 @@ libm = "=0.2.16"
 wasm-bindgen = "=0.2.130"
 gxr-math = { path = "crates/gxr-math" }
 gxr-raw = { path = "crates/gxr-raw" }
+gxr-camdata = { path = "crates/gxr-camdata" }
+gxr-color = { path = "crates/gxr-color" }
+gxr-lut = { path = "crates/gxr-lut" }
+gxr-hdr = { path = "crates/gxr-hdr" }
+gxr-finish = { path = "crates/gxr-finish" }
+gxr-frame = { path = "crates/gxr-frame" }
+gxr-jpeg = { path = "crates/gxr-jpeg" }
+gxr-export = { path = "crates/gxr-export" }
+gxr-cli = { path = "crates/gxr-cli" }
+gxr-wasm = { path = "crates/gxr-wasm" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
