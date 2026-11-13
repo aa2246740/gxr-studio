@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, localcontext
 from pathlib import Path
 
 import numpy as np
@@ -22,20 +23,115 @@ def assert_f32_exact(python: np.ndarray, rust: np.ndarray) -> None:
     pytest.fail(f"float32 differ at {index}: python={python[index]!r} rust={rust[index]!r}")
 
 
-def assert_u8_exact(python: np.ndarray, rust: np.ndarray, *, dng: Dng | None = None) -> None:
+def _decimal_to_f32_round_half_even(value: Decimal) -> np.float32:
+    approx = np.float32(float(value))
+    cands = [
+        np.nextafter(approx, np.float32(-np.inf)),
+        approx,
+        np.nextafter(approx, np.float32(np.inf)),
+    ]
+
+    def rank(cand: np.float32) -> tuple[Decimal, int]:
+        return (abs(value - Decimal.from_float(float(cand))), int(cand.view(np.uint32)) & 1)
+
+    return min(cands, key=rank)
+
+
+def _correctly_rounded_powf(a: np.float32) -> np.float32:
+    inv32 = np.float32(1.0 / 2.4)
+    with localcontext() as ctx:
+        ctx.prec = 60
+        exact = (Decimal.from_float(float(a)).ln() * Decimal.from_float(float(inv32))).exp()
+        return _decimal_to_f32_round_half_even(exact)
+
+
+def _unoriented_yx(y: int, x: int, h: int, w: int, orientation: int) -> tuple[int, int]:
+    if orientation == 1:
+        return y, x
+    if orientation == 2:
+        return y, w - 1 - x
+    if orientation == 3:
+        return h - 1 - y, w - 1 - x
+    if orientation == 4:
+        return h - 1 - y, x
+    if orientation == 5:
+        return x, y
+    if orientation == 6:
+        return h - 1 - x, y
+    if orientation == 7:
+        return h - 1 - x, w - 1 - y
+    if orientation == 8:
+        return x, w - 1 - y
+    raise AssertionError(f"unexpected orientation {orientation}")
+
+
+def assert_u8_exact(
+    python: np.ndarray,
+    rust: np.ndarray,
+    *,
+    dng: Dng | None = None,
+    path: Path | None = None,
+    tmp_path: Path | None = None,
+) -> None:
     assert python.dtype == np.uint8 and rust.dtype == np.uint8
     assert python.shape == rust.shape
     if np.array_equal(python, rust):
         return
-    index = tuple(int(v) for v in np.argwhere(python != rust)[0])
-    extra = ""
-    if dng is not None and dng.orientation == 1:
-        y, x, c = index
-        for y0, strip in demosaic_strips(dng):
-            if y0 <= y < y0 + strip.shape[0]:
-                extra = f" float32_code={float(strip[y - y0, x, c])!r}"
+    diffs = np.argwhere(python != rust)
+    if dng is None or path is None or tmp_path is None:
+        index = tuple(int(v) for v in diffs[0])
+        pytest.fail(f"uint8 differ at {index}: python={int(python[index])} rust={int(rust[index])}")
+
+    h, w = dng.crop_size[1], dng.crop_size[0]
+    py_strips = list(demosaic_strips(dng))
+    rs_strips: dict[int, np.ndarray] = {}
+    print(f"powf_oracle_check: input={path.name} diff_count={len(diffs)}")
+    for raw_idx in diffs:
+        y, x, c = (int(v) for v in raw_idx)
+        uy, ux = _unoriented_yx(y, x, h, w, dng.orientation)
+        strip_y0 = -1
+        py_strip = None
+        for y0, strip in py_strips:
+            if y0 <= uy < y0 + strip.shape[0]:
+                strip_y0 = y0
+                py_strip = strip
                 break
-    pytest.fail(f"uint8 differ at {index}: python={int(python[index])} rust={int(rust[index])}{extra}")
+        assert py_strip is not None
+        if strip_y0 not in rs_strips:
+            rs_strips[strip_y0] = run_npy(
+                ["dng-demosaic", "--dng", str(path), "--y0", str(strip_y0), "--y1", str(strip_y0 + py_strip.shape[0])],
+                tmp_path / f"dm-oracle-{strip_y0}.npy",
+            )
+        rs_strip = rs_strips[strip_y0]
+        # 1. Pre-quantisation float32 code is bit-identical between Python and Rust.
+        assert_f32_exact(py_strip, rs_strip)
+        code = py_strip[uy - strip_y0, ux, c]
+        assert code.tobytes() == rs_strip[uy - strip_y0, ux, c].tobytes()
+
+        # 2. Independent 60-digit Decimal powf rounded half-even to f32 matches Rust & differs from libSystem.
+        a = np.clip(code / np.float32(4095.0), np.float32(0.0), np.float32(1.0))
+        assert a > np.float32(0.0031308), f"unexpected disagreement in linear segment at {(y, x, c)}: a={float(a)!r}"
+        p_oracle = _correctly_rounded_powf(a)
+        p_libsystem = np.power(np.array([a], np.float32), 1 / 2.4, dtype=np.float32)[0]
+        assert p_oracle != p_libsystem, (
+            f"non-powf mismatch at {(y, x, c)}: python={int(python[y, x, c])} rust={int(rust[y, x, c])} "
+            f"code={float(code)!r} p_oracle={p_oracle.tobytes().hex()}"
+        )
+
+        # 3. Rust's uint8 equals srgb_encode evaluated with that correctly rounded value,
+        # while Python's uint8 matches libSystem's 1-ULP-short powf.
+        enc_oracle = np.float32(1.055) * p_oracle - np.float32(0.055)
+        u8_oracle = int(np.rint(enc_oracle * np.float32(255.0)))
+        enc_libsystem = np.float32(1.055) * p_libsystem - np.float32(0.055)
+        u8_libsystem = int(np.rint(enc_libsystem * np.float32(255.0)))
+        assert int(python[y, x, c]) == u8_libsystem, f"python uint8 {int(python[y, x, c])} != libSystem {u8_libsystem} at {(y, x, c)}"
+        assert int(rust[y, x, c]) == u8_oracle, f"rust uint8 {int(rust[y, x, c])} != oracle {u8_oracle} at {(y, x, c)} code={float(code)!r}"
+
+        # 4. Print input, index and both values.
+        print(
+            f"powf_oracle_override: input={path.name} index=({y}, {x}, {c}) "
+            f"python={int(python[y, x, c])} rust={int(rust[y, x, c])} code={float(code)!r}"
+        )
 
 
 def message_ok(python: str, rust: str) -> bool:
@@ -78,7 +174,7 @@ def expect_neutral(path: Path, tmp_path: Path) -> None:
         return
     assert rs_err is None, f"rust {rs_err}"
     assert python is not None and rust is not None
-    assert_u8_exact(python, rust, dng=dng)
+    assert_u8_exact(python, rust, dng=dng, path=path, tmp_path=tmp_path)
 
 
 def expect_demosaic_error(path: Path, y0: int, y1: int, tmp_path: Path, expected_message: str) -> None:

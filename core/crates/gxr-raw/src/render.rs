@@ -133,4 +133,13 @@ mod tests {
         let got = neutral_display(&codes);
         assert_eq!(got.values, vec![0, 0, 10, 118, 255, 255]);
     }
+
+    #[test]
+    fn neutral_display_correctly_rounds_0x3eadd76b_boundary() {
+        // R8051302.DNG boundary sample: code = 1390.392333984375 -> lin = 0x3eadd76b.
+        // Correctly rounded powf is 0x3f233874, which encodes to 157.50003 -> 158.
+        let code = f32::from_bits(0x44ad_cc8e);
+        assert_eq!((code / 4095.0_f32).to_bits(), 0x3ead_d76b);
+        assert_eq!(neutral_display_sample(code), 158);
+    }
 }
