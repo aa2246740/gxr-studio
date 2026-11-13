@@ -4,8 +4,8 @@ use std::io::Read;
 use std::path::Path;
 
 use gxr_camdata::{
-    ENTRY_BYTES, MAX_DAT_BYTES, MAX_LIBRARY_BYTES, NAMES, SLOTS, entries_from_dat, menu_json,
-    parse_json, parse_recipe_tag, parse_recipe_tag_bytes, recipe_tag_to_json,
+    ENTRY_BYTES, MAX_DAT_BYTES, MAX_LIBRARY_BYTES, NAMES, SLOTS, entries_from_dat, knob_table_json,
+    menu_json, parse_json, parse_recipe_tag, parse_recipe_tag_bytes, recipe_tag_to_json,
 };
 use gxr_raw::{CoreError, Json};
 
@@ -136,6 +136,13 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
                 }
                 None => menu_json(None)?,
             };
+            Ok(Output { text, ok: true })
+        }
+        "camdata-knob-table" => {
+            let kv_path = common::option(args, "--kv")?;
+            let mount_50mm = args.iter().any(|a| a == "--mount-50mm");
+            let block = read_bounded(kv_path, MAX_DAT_BYTES)?;
+            let text = knob_table_json(&block, mount_50mm)?;
             Ok(Output { text, ok: true })
         }
         "camdata-recipe-tag" => {

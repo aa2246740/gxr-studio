@@ -29,7 +29,7 @@ pub struct MenuRecipe {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuPoint {
-    pub level: i16,
+    pub level: i32,
     pub dose: i16,
 }
 
@@ -138,10 +138,11 @@ pub fn embedded_menu() -> Result<MenuData, CoreError> {
                 .ok_or_else(|| CoreError::new("camdata", "final.json points not array"))?
                 .iter()
                 .map(|p| {
-                    Ok(MenuPoint {
-                        level: req_i64(p, "level")? as i16,
-                        dose: req_i64(p, "dose")? as i16,
-                    })
+                    let level = i32::try_from(req_i64(p, "level")?)
+                        .map_err(|_| CoreError::new("camdata", "final.json level out of range"))?;
+                    let dose = i16::try_from(req_i64(p, "dose")?)
+                        .map_err(|_| CoreError::new("camdata", "final.json dose out of range"))?;
+                    Ok(MenuPoint { level, dose })
                 })
                 .collect::<Result<Vec<_>, CoreError>>()?;
             Ok(MenuItem {
@@ -250,15 +251,14 @@ pub fn read(
         for j in 0..usize::from(count) {
             let (level, dose) = if compact {
                 let lv = if control == 0 {
-                    (j * usize::from(step)).min(150) as i16
+                    (j * usize::from(step)).min(150) as i32
                 } else {
-                    lo.checked_add(j as i16)
-                        .ok_or_else(|| dat_error("kv2 档位溢出"))?
+                    i32::from(lo) + (j as i32)
                 };
                 (lv, i16_be(block, points_at + 2 * j))
             } else {
                 (
-                    i16_be(block, points_at + 4 * j),
+                    i32::from(i16_be(block, points_at + 4 * j)),
                     i16_be(block, points_at + 4 * j + 2),
                 )
             };
@@ -379,6 +379,37 @@ mod tests {
         block[22..24].copy_from_slice(&u16::MAX.to_be_bytes());
         block[36..40].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(read(&block, base.clone(), false).is_err());
+
+        // recipe_count = 0, item_count = 1, control = 1, point_count = 2, min_level = 32767, doses = [-2, 3]
+        let mut r3_widen = vec![0u8; 64];
+        r3_widen[..8].copy_from_slice(b"GXKV2R3\0");
+        r3_widen[22..24].copy_from_slice(&0u16.to_be_bytes());
+        r3_widen[24..26].copy_from_slice(&1u16.to_be_bytes());
+        r3_widen[36..40].copy_from_slice(&44u32.to_be_bytes());
+        r3_widen[40..44].copy_from_slice(&44u32.to_be_bytes());
+        // item at 44..60
+        r3_widen[44] = 1; // control
+        r3_widen[45] = 2; // point_count
+        r3_widen[46..48].copy_from_slice(&i16::MAX.to_be_bytes());
+        r3_widen[56..60].copy_from_slice(&60u32.to_be_bytes());
+        // points at 60..64
+        r3_widen[60..62].copy_from_slice(&(-2i16).to_be_bytes());
+        r3_widen[62..64].copy_from_slice(&3i16.to_be_bytes());
+        let widened = read(&r3_widen, base.clone(), false).expect("r3 widening");
+        assert_eq!(widened.items.len(), 1);
+        assert_eq!(
+            widened.items[0].points,
+            vec![
+                MenuPoint {
+                    level: 32767,
+                    dose: -2
+                },
+                MenuPoint {
+                    level: 32768,
+                    dose: 3
+                },
+            ]
+        );
 
         block[22..24].copy_from_slice(&0u16.to_be_bytes());
         block[24..26].copy_from_slice(&u16::MAX.to_be_bytes());

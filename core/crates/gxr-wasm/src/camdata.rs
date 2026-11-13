@@ -2,7 +2,7 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_camdata::{ENTRY_BYTES, entries_from_dat, menu_json, parse_json};
+use gxr_camdata::{ENTRY_BYTES, entries_from_dat, knob_table_json, menu_json, parse_json};
 use gxr_raw::error_json;
 
 fn rejected(err: gxr_raw::CoreError) -> JsValue {
@@ -47,5 +47,15 @@ pub fn camdata_menu(
         None => menu_json(None),
     }
     .map_err(rejected)?;
+    Ok(format!("{text}\n"))
+}
+
+/// Apply a standalone kv2/kv3 knob block over the embedded `final.json` menu.
+#[wasm_bindgen]
+pub fn camdata_knob_table(
+    block_bytes: &[u8],
+    mount_knobs_from_50mm: bool,
+) -> Result<String, JsValue> {
+    let text = knob_table_json(block_bytes, mount_knobs_from_50mm).map_err(rejected)?;
     Ok(format!("{text}\n"))
 }

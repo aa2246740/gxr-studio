@@ -353,6 +353,36 @@ def test_menu_with_r5_bundle_matches_python(label: str, dat_path: Path, fx_path:
     assert payload == expected, label
 
 
+def _synthetic_r3_widen_kv() -> bytes:
+    """Synthetic R3 kv block: recipe_count=0, item_count=1, control=1, point_count=2, min_level=32767, doses=(-2, 3)."""
+    block = bytearray(64)
+    block[:8] = b"GXKV2R3\0"
+    struct.pack_into(">HH", block, 22, 0, 1)
+    struct.pack_into(">II", block, 36, 44, 44)
+    block[44] = 1
+    block[45] = 2
+    struct.pack_into(">h", block, 46, 32767)
+    struct.pack_into(">I", block, 56, 60)
+    struct.pack_into(">2h", block, 60, -2, 3)
+    return bytes(block)
+
+
+def test_knob_table_r3_level_widening_matches_python(tmp_path: Path) -> None:
+    require_cli()
+    block = _synthetic_r3_widen_kv()
+    kv_path = tmp_path / "r3_widen.kv"
+    kv_path.write_bytes(block)
+    expected = knob_table.read(block, py_menu.load())
+    assert expected["items"][0]["points"] == [{"level": 32767, "dose": -2}, {"level": 32768, "dose": 3}]
+
+    code, payload = run_json(["camdata-knob-table", "--kv", str(kv_path)])
+    assert error_of(code, payload) is None
+    assert payload == expected
+
+    proc = run_area("camdata", [kv_path], tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 # --------------------------------------------------------------------------- Recipe tags
 
 

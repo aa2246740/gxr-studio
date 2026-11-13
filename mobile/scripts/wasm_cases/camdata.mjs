@@ -29,6 +29,15 @@ export function cases(inputs) {
   });
 
   for (const file of inputs) {
+    if (file.endsWith('.kv')) {
+      const kvBytes = () => readBytes(file);
+      out.push({
+        label: `${file}::camdata_knob_table`,
+        cliArgs: ['camdata-knob-table', '--kv', file],
+        wasm: (mod) => mod.camdata_knob_table(kvBytes(), false),
+      });
+      continue;
+    }
     const datBytes = () => readBytes(file);
     const fxPath = join(dirname(file), 'GXRFX.BIN');
     const hasFx = existsSync(fxPath);

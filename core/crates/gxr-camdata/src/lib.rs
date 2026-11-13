@@ -108,3 +108,10 @@ pub fn menu_json(dat: Option<(&[u8], Option<&[u8]>)>) -> Result<String, CoreErro
     let menu = resolve_menu(dat)?;
     Ok(menu_to_json(&menu).render())
 }
+
+/// Shared JSON of `knob_table.read` on a standalone kv2/kv3 block over `final.json`.
+pub fn knob_table_json(block: &[u8], mount_knobs_from_50mm: bool) -> Result<String, CoreError> {
+    let base = embedded_menu()?;
+    let menu = read_knob_table(block, base, mount_knobs_from_50mm)?;
+    Ok(menu_to_json(&menu).render())
+}
