@@ -33,3 +33,15 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 传递依赖（`pnpm licenses list`）：rolldown、@rolldown/*、@oxc-project/types、postcss、nanoid、picomatch、tinyglobby、fdir、fsevents 为 MIT；picocolors 为 ISC；source-map-js 为 BSD-3-Clause；detect-libc 为 Apache-2.0；lightningcss 为 MPL-2.0（Vite 自带的 CSS 工具，只在构建机上运行，不进入产物，不改它的源码，所以 MPL 的文件级义务不涉及本仓库）。以上许可都允许在 PolyForm Noncommercial 1.0.0 的项目里使用。
 
 一致性测试（`tests/test_gpu_parity.py`）用本机已装的 Google Chrome 的 SwiftShader 软件适配器，不新增 Python 依赖。
+
+## Rust 核心（`core/`）
+
+`core/Cargo.toml` 把直接依赖写成 `=x.y.z`。下面这几个在 2026-11-13 核对时都已发布超过 7 天。工具链是 `core/rust-toolchain.toml` 里的 1.93.1，高于它们的 MSRV（wasm-bindgen 0.2.130 要 1.81，命令行工具要 1.86）。
+
+| 包 | 版本 | 许可 | 用途 |
+| --- | --- | --- | --- |
+| `libm` | 0.2.16 | MIT | `gxr-math` 的数学函数。原生和 WASM 走同一份，避免两边的 `sin`/`exp` 差一位 |
+| `wasm-bindgen` | 0.2.130 | MIT OR Apache-2.0 | 只在 `gxr-wasm` 里用，把描述和半分辨率码值导出给网页 |
+| `wasm-bindgen-cli` | 0.2.130 | MIT OR Apache-2.0 | 构建机上的命令，和库同一个版本：`cargo install --locked wasm-bindgen-cli --version 0.2.130` |
+
+核心 crate 之间只能互相依赖，再加 `libm`。不使用 serde。JSON 由 `gxr-raw` 里手写的写入器生成，命令行和 WASM 共用，所以两边的字节一样。`mobile/` 的开发依赖和 `frontend/` 是同一组精确版本（vite 8.3.5、typescript 7.0.2、`@webgpu/types` 0.1.74），锁在 `mobile/pnpm-lock.yaml`。

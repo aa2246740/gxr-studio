@@ -1,0 +1,12 @@
+[package]
+name = "gxr-color"
+description = "Placeholder for the port of the recipe bake tables and colour chain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

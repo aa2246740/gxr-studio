@@ -1,0 +1,45 @@
+# GXR Studio 的 Rust 核心（docs/mobile.md）。原生 gxr-cli 只给对拍测试用；gxr-wasm 编成 WebAssembly 给手机网页用。
+[workspace]
+resolver = "2"
+members = [
+    "crates/gxr-math",
+    "crates/gxr-raw",
+    "crates/gxr-camdata",
+    "crates/gxr-color",
+    "crates/gxr-lut",
+    "crates/gxr-hdr",
+    "crates/gxr-finish",
+    "crates/gxr-jpeg",
+    "crates/gxr-export",
+    "crates/gxr-cli",
+    "crates/gxr-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.1"
+publish = false
+
+# 版本一律 `=x.y.z`，发布满 7 天才能用（docs/dependencies.md）。核心 crate 只能依赖 libm 和彼此。
+[workspace.dependencies]
+libm = "=0.2.16"
+wasm-bindgen = "=0.2.130"
+gxr-math = { path = "crates/gxr-math" }
+gxr-raw = { path = "crates/gxr-raw" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+disallowed_methods = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+# make core-wasm 用这个 profile：和 release 相同，只是 panic 直接中止（WASM 里没有栈展开）。
+[profile.wasm]
+inherits = "release"
+panic = "abort"
