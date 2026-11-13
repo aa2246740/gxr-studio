@@ -147,3 +147,15 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 ```
 
 `run_area` 把路径写成 JSON，执行 `node mobile/scripts/wasm_vs_native.mjs --area <领域> --cli <gxr-cli> --inputs <json>`。驱动失败时，默认用驱动自己的输出让测试失败。WASM 包或 `node` 不在时跳过，除非 `GXR_REQUIRE_CORE=1`。`GXR_REQUIRE_GPU_TEST` 不会把缺包变成失败。
+
+## `gxr-jpeg`（JPEG 编码与容器段）
+
+`gxr-jpeg` 负责成片导出时的单次 JPEG 编码，以及给 wave-2 HDR 封装使用的段操作：
+
+- 编码参数对齐 `src/gxr_studio/export.py` 的 `_finish`：品质 `1..=100`（高 95 / 中 85 / 低 70），`quality >= 90` 用 4:4:4，否则用 4:2:0；开启优化霍夫曼表；写入 APP1 EXIF 和 588 字节 sRGB ICC（`ICC_PROFILE`）。
+- 底层编码使用 `jpeg-encoder = "=0.6.0"`（已在 `core/Cargo.toml` 登记），与 Pillow 允许的像素容差是按通道平均绝对差 ≤ 0.5、最大 ≤ 4；量化表与采样因子与 Pillow 一致。
+- EXIF 映射（`build_exif`）：`270`（`ImageDescription`）按 UTF-8 写入、`33432`（`Copyright`）按 latin-1 写入，强制 `274`（`Orientation`）= 1、`305`（`Software`）= `"GXR Studio"`、输出尺寸 `40962`/`40963`；去掉 GPS 与 MakerNote（`37500`）；超过 65533 字节自动退到精简子集。
+- sRGB ICC 固定为 LittleCMS 生成的 588 字节标准配置（头里 `24..36` 字节的创建时间戳固定，以保证原生与 WASM 逐字节一致）。
+- 容器辅助函数（`jpeg_segments`、`app_segment`、`set_meta`）按 `gxr_studio/hdr/container.py` 的段遍历逻辑实现，在不重编码熵数据的前提下替换/插入 APP1 EXIF 与 APP2 ICC。
+- WASM 导出 `jpeg_encode(rgb_u8, w, h, quality, exif_json) -> bytes`，由 `mobile/scripts/wasm_cases/jpeg.mjs` 验证与 `gxr-cli jpeg-encode` 逐字节一致。
+
