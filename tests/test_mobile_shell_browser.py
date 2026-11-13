@@ -43,12 +43,36 @@ FLAGS = [
 ]
 
 
+def core_prerequisite(present: bool, *, require_core: bool, require_gpu: bool) -> str:
+    """Missing samples or a missing core build fail only under ``GXR_REQUIRE_CORE``.
+
+    ``require_gpu`` is accepted so callers record the flag, and it does not change
+    this decision. A running test still requires a WebGPU adapter when that flag is set.
+    """
+    del require_gpu
+    if present:
+        return "run"
+    if require_core:
+        return "fail"
+    return "skip"
+
+
 def _need(ok: bool, message: str) -> None:
-    if ok:
-        return
-    if os.environ.get("GXR_REQUIRE_CORE") == "1" or os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
+    action = core_prerequisite(
+        ok,
+        require_core=os.environ.get("GXR_REQUIRE_CORE") == "1",
+        require_gpu=os.environ.get("GXR_REQUIRE_GPU_TEST") == "1",
+    )
+    if action == "fail":
         pytest.fail(message)
-    pytest.skip(message)
+    if action == "skip":
+        pytest.skip(message)
+
+
+def test_core_prerequisite_ignores_the_gpu_flag() -> None:
+    assert core_prerequisite(False, require_core=False, require_gpu=True) == "skip"
+    assert core_prerequisite(False, require_core=True, require_gpu=False) == "fail"
+    assert core_prerequisite(False, require_core=False, require_gpu=False) == "skip"
 
 
 def _free_port() -> int:
@@ -148,3 +172,7 @@ def test_mobile_shell_autotest(tmp_path: Path) -> None:
     python = asdict(describe(Dng(sample), with_scene=True))
     _same(python, {"layout": report["layout"], "reason": report["reason"], "scene": report["scene"]})
     assert "perf" in report
+    bad = report["badFile"]
+    assert "不是可识别的 GXR DNG" in bad["errorText"]
+    assert "正在读取" not in bad["statusText"]
+    assert bad["unhandledRejections"] == []

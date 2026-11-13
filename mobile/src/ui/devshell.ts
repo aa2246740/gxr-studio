@@ -16,6 +16,7 @@ export interface ShellReport {
   readback: { w: number; h: number; min: number; max: number } | null;
   perf: PerfStats | null;
   pageErrors: string[];
+  badFile?: { statusText: string; errorText: string; unhandledRejections: string[] };
 }
 
 interface Adjust {
@@ -137,15 +138,26 @@ export async function boot(root: HTMLElement, pageErrors: string[]): Promise<voi
     pushLook();
   }
 
+  function showError(err: unknown): void {
+    reason.textContent = err instanceof Error ? err.message : String(err);
+  }
+
+  async function loadFile(picked: File): Promise<void> {
+    const name = picked.name;
+    summary.textContent = `${name} · 正在读取`;
+    try {
+      const bytes = await picked.arrayBuffer();
+      await showBytes(bytes, name);
+    } catch (err) {
+      showError(err);
+      summary.textContent = name;
+    }
+  }
+
   file.addEventListener('change', () => {
     const picked = file.files?.[0];
     if (!picked) return;
-    picked.arrayBuffer().then(
-      (bytes) => showBytes(bytes, picked.name),
-      (err: unknown) => {
-        reason.textContent = err instanceof Error ? err.message : String(err);
-      },
-    );
+    void loadFile(picked);
   });
 
   async function runAuto(): Promise<PerfStats> {
@@ -169,13 +181,28 @@ export async function boot(root: HTMLElement, pageErrors: string[]): Promise<voi
   }
 
   auto.addEventListener('click', () => {
-    runAuto().then((stats) => {
-      perf.textContent = formatStats(stats);
-    });
+    void runAuto()
+      .then((stats) => {
+        perf.textContent = formatStats(stats);
+      })
+      .catch((err: unknown) => {
+        perf.textContent = err instanceof Error ? err.message : String(err);
+      });
   });
 
   if (import.meta.env.DEV && new URLSearchParams(location.search).get('autotest') === '1') {
-    await runAutotest({ engine, gpuNote, pageErrors, showBytes, runAuto, frameOf: () => engine?.frame() ?? null, readbackOf: () => engine });
+    await runAutotest({
+      engine,
+      gpuNote,
+      pageErrors,
+      showBytes,
+      loadFile,
+      summary,
+      reason,
+      runAuto,
+      frameOf: () => engine?.frame() ?? null,
+      readbackOf: () => engine,
+    });
   }
 }
 
@@ -184,6 +211,9 @@ async function runAutotest(ctx: {
   gpuNote: string;
   pageErrors: string[];
   showBytes: (bytes: ArrayBuffer, name: string) => Promise<void>;
+  loadFile: (picked: File) => Promise<void>;
+  summary: HTMLElement;
+  reason: HTMLElement;
   runAuto: () => Promise<PerfStats>;
   frameOf: () => FrameInfo | null;
   readbackOf: () => Engine | null;
@@ -220,6 +250,22 @@ async function runAutotest(ctx: {
       if (shot) report.readback = { w: shot.w, h: shot.h, ...spread(shot.data) };
       report.perf = await ctx.runAuto();
     }
+    const unhandled: string[] = [];
+    const onReject = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      unhandled.push(reason instanceof Error ? reason.message : String(reason));
+    };
+    window.addEventListener('unhandledrejection', onReject);
+    try {
+      await ctx.loadFile(new File([new Uint8Array([0x00, 0x01, 0x02, 0x03])], 'garbage.dng'));
+    } finally {
+      window.removeEventListener('unhandledrejection', onReject);
+    }
+    report.badFile = {
+      statusText: ctx.summary.textContent || '',
+      errorText: ctx.reason.textContent || '',
+      unhandledRejections: unhandled,
+    };
   } catch (err) {
     report.error = err instanceof Error ? err.message : String(err);
     report.pageErrors.push(report.error);
