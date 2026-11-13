@@ -257,22 +257,27 @@ def verify_negative_crop_origin_no_alloc(tmp_path: Path, patch_fn: object) -> No
     assert proc_area.returncode == 0, proc_area.stdout + proc_area.stderr
 
     wasm_bg = PKG.with_name("gxr_wasm_bg.wasm")
+    neg_40m_path = tmp_path / "neg-x-40m.dng"
+    neg_40m_path.write_bytes(patch_fn(patch_fn(base, 50719, 9, [-40_000_000, 0]), 50720, 4, [40_000_006, 4]))  # type: ignore[operator]
     script = (
         "import { readFileSync } from 'node:fs';"
         f"const mod = await import({json.dumps(PKG.as_uri())});"
         f"const inst = mod.initSync({{ module: readFileSync({json.dumps(str(wasm_bg))}) }});"
         "const before = inst.memory.buffer.byteLength;"
-        f"const bytes = new Uint8Array(readFileSync({json.dumps(str(neg_4m_path))}));"
-        "let msg = '';"
-        "try { mod.dng_neutral_named(bytes, 'neg-x-4m.dng'); } catch (e) { msg = String(e); }"
-        "const after = inst.memory.buffer.byteLength;"
-        "console.log(JSON.stringify({ before, after, msg }));"
+        f"const b1 = new Uint8Array(readFileSync({json.dumps(str(neg_4m_path))}));"
+        f"const b2 = new Uint8Array(readFileSync({json.dumps(str(neg_40m_path))}));"
+        "let msg1 = '', msg2 = '';"
+        "try { mod.dng_neutral_named(b1, 'neg-x-4m.dng'); } catch (e) { msg1 = String(e); }"
+        "const after1 = inst.memory.buffer.byteLength;"
+        "try { mod.dng_neutral_named(b2, 'neg-x-40m.dng'); } catch (e) { msg2 = String(e); }"
+        "const after2 = inst.memory.buffer.byteLength;"
+        "console.log(JSON.stringify({ before, after1, after2, msg1, msg2 }));"
     )
     probe = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True, timeout=30)
     info = json.loads(probe.stdout)
-    assert info["after"] <= info["before"] and info["after"] < 8 * 1024 * 1024, info
-    err_obj = json.loads(info["msg"])["error"]
-    assert err_obj == {"kind": "index_error", "message": "block [0, 4) x [-4000000, 6) outside the raw plane"}
+    assert info["after1"] < 4 * 1024 * 1024 and info["after2"] == info["after1"], info
+    assert json.loads(info["msg1"])["error"] == {"kind": "index_error", "message": "block [0, 4) x [-4000000, 6) outside the raw plane"}
+    assert json.loads(info["msg2"])["error"] == {"kind": "index_error", "message": "block [0, 4) x [-40000000, 6) outside the raw plane"}
 
 
 def verify_powf_boundary_counterexamples(tmp_path: Path) -> None:
