@@ -238,7 +238,8 @@ def test_no_dat_or_entry_files_outside_ignored_dirs():
         roots.append(research_e0)
     for root in roots:
         for dirpath, dirs, files in os.walk(root):
-            dirs[:] = [d for d in dirs if d not in {"local", "__pycache__", ".venv"}]
+            # target / node_modules / dist 是构建产物（例如 rustc 的 query-cache.bin），不是相机文件。
+            dirs[:] = [d for d in dirs if d not in {"local", "__pycache__", ".venv", "target", "node_modules", "dist"}]
             bad += [str(Path(dirpath) / n) for n in files if n.lower().endswith((".dat", ".entry", ".bin"))]
     assert bad == []
 
