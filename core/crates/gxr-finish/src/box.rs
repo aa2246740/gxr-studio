@@ -3,18 +3,19 @@
 use gxr_raw::{CoreError, Json};
 
 use crate::crop::is_known_preset;
+use crate::geometry::bounds::{checked_mask_dims, try_vec_u8};
 use crate::geometry::json::{JsonValue, parse_json};
 use crate::geometry::{
     Geometry, clamp_norm_rect, crop_box, fit_preset_in_valid, header_value, needs_valid_crop,
-    normalized_valid_rect, output_size, parse_geometry, warp_valid,
+    normalized_valid_rect, output_size, parse_geometry, warp_valid_u64,
 };
 
 pub const FULL: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 
-/// Port of `gxr_studio/gpu/box.py:24 final_box`
-pub fn final_box(
-    width: usize,
-    height: usize,
+/// Port of `gxr_studio/gpu/box.py:24 final_box` (checked `u64` entry).
+pub fn final_box_u64(
+    width: u64,
+    height: u64,
     geom: &Geometry,
     crop_rect: Option<[f64; 4]>,
     crop_preset: Option<&str>,
@@ -22,14 +23,15 @@ pub fn final_box(
     if width == 0 || height == 0 {
         return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
     }
+    let (wu, hu, pixels) = checked_mask_dims(width, height)?;
     let (vw, vh, valid) = if geom.is_identity() {
-        (width, height, vec![1_u8; width * height])
+        (wu, hu, try_vec_u8(pixels, 1)?)
     } else {
-        warp_valid(width, height, geom)?
+        warp_valid_u64(width, height, geom)?
     };
     let valid_rect = normalized_valid_rect(&valid, vw, vh);
     let fitted = if needs_valid_crop(geom) {
-        fit_preset_in_valid(&valid, vw, vh, crop_preset, crop_rect.unwrap_or(FULL))
+        fit_preset_in_valid(&valid, vw, vh, crop_preset, crop_rect.unwrap_or(FULL))?
     } else {
         None
     };
@@ -40,7 +42,7 @@ pub fn final_box(
         let rect = match crop_rect {
             None => valid_rect,
             Some(r) if r == FULL => valid_rect,
-            Some(r) => clamp_norm_rect(&valid, vw, vh, r, None),
+            Some(r) => clamp_norm_rect(&valid, vw, vh, r, None)?,
         };
         return Ok((crop_box(vw, vh, rect), valid_rect));
     }
@@ -49,8 +51,19 @@ pub fn final_box(
     {
         return Ok((crop_box(vw, vh, r), valid_rect));
     }
-    let (ow, oh) = output_size(width, height, geom)?;
+    let (ow, oh) = output_size(wu, hu, geom)?;
     Ok(([0, 0, ow, oh], valid_rect))
+}
+
+/// Port of `gxr_studio/gpu/box.py:24 final_box`
+pub fn final_box(
+    width: usize,
+    height: usize,
+    geom: &Geometry,
+    crop_rect: Option<[f64; 4]>,
+    crop_preset: Option<&str>,
+) -> Result<([usize; 4], [f64; 4]), CoreError> {
+    final_box_u64(width as u64, height as u64, geom, crop_rect, crop_preset)
 }
 
 fn parse_final_box_crop(crop_json: &str) -> Result<(Option<[f64; 4]>, Option<String>), CoreError> {
@@ -109,16 +122,16 @@ fn parse_final_box_crop(crop_json: &str) -> Result<(Option<[f64; 4]>, Option<Str
 }
 
 /// Shared CLI + WASM helper: parse geometry & crop JSON, compute `final_box`, render JSON.
-pub fn final_box_json(
-    width: usize,
-    height: usize,
+pub fn final_box_json_u64(
+    width: u64,
+    height: u64,
     geometry_json: &str,
     crop_json: &str,
 ) -> Result<Json, CoreError> {
     let geom = parse_geometry(geometry_json)?;
     let (crop_rect, crop_preset) = parse_final_box_crop(crop_json)?;
     let ([bx, by, bw, bh], valid) =
-        final_box(width, height, &geom, crop_rect, crop_preset.as_deref())?;
+        final_box_u64(width, height, &geom, crop_rect, crop_preset.as_deref())?;
     Ok(Json::object([
         (
             "box",
@@ -127,4 +140,14 @@ pub fn final_box_json(
         ("valid", Json::floats(&valid)),
         ("header", Json::str(header_value(valid))),
     ]))
+}
+
+/// Shared CLI + WASM helper (`usize` convenience wrapper).
+pub fn final_box_json(
+    width: usize,
+    height: usize,
+    geometry_json: &str,
+    crop_json: &str,
+) -> Result<Json, CoreError> {
+    final_box_json_u64(width as u64, height as u64, geometry_json, crop_json)
 }

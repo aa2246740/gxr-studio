@@ -8,5 +8,5 @@ pub mod geometry;
 #[path = "box.rs"]
 pub mod gpu_box;
 
-pub use geometry::{Geometry, parse_geometry, warp, warp_valid};
-pub use gpu_box::{final_box, final_box_json};
+pub use geometry::{Geometry, parse_geometry, warp, warp_u64, warp_valid, warp_valid_u64};
+pub use gpu_box::{final_box, final_box_json, final_box_json_u64, final_box_u64};

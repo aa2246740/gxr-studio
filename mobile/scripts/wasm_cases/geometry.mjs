@@ -46,7 +46,18 @@ export function cases(inputs) {
       const maskOnlyNpy = join(dir, `mask-only-${idx}.npy`);
       out.push({
         label: `${file}::geom_warp_rgb`,
-        cliArgs: ['geom-warp', '--in', spec.rgbNpy, '--geometry', geomJson, '--out', outNpy, '--mask', maskNpy],
+        cliArgs: [
+          'geom-warp',
+          '--in',
+          spec.rgbNpy,
+          '--geometry',
+          geomJson,
+          '--out',
+          outNpy,
+          '--mask',
+          maskNpy,
+          ...(spec.overrideDims ? ['--w', String(w), '--h', String(h)] : []),
+        ],
         wasm: (mod) => {
           const rgbBytes = npyPayload(readFileSync(spec.rgbNpy));
           const res = mod.geom_warp(rgbBytes, w, h, geomJson);

@@ -2,6 +2,7 @@
 
 use gxr_raw::CoreError;
 
+use super::bounds::{checked_mask_dims, checked_mul_u64, fit_count, too_big, try_vec_u8};
 use super::spec::Geometry;
 
 pub const FILL: [u8; 3] = [0x1B, 0x1C, 0x1F];
@@ -136,27 +137,14 @@ pub fn expanded_bounds(
     let miny = (min_fy - 1.5).floor() as i64;
     let maxx = (max_fx + 1.5).ceil() as i64;
     let maxy = (max_fy + 1.5).ceil() as i64;
-    let out_w = (maxx - minx).max(1);
-    let out_h = (maxy - miny).max(1);
-    let ow = usize::try_from(out_w).map_err(|_| {
-        CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        )
-    })?;
-    let oh = usize::try_from(out_h).map_err(|_| {
-        CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        )
-    })?;
-    // Check pixel count doesn't overflow usize
-    if ow.checked_mul(oh).and_then(|p| p.checked_mul(3)).is_none() {
-        return Err(CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        ));
-    }
+    let out_w_i64 = maxx.checked_sub(minx).ok_or_else(too_big)?.max(1);
+    let out_h_i64 = maxy.checked_sub(miny).ok_or_else(too_big)?.max(1);
+    let out_w_u64 = u64::try_from(out_w_i64).map_err(|_| too_big())?;
+    let out_h_u64 = u64::try_from(out_h_i64).map_err(|_| too_big())?;
+    let ow = fit_count(out_w_u64, 1)?;
+    let oh = fit_count(out_h_u64, 1)?;
+    let pixels = checked_mul_u64(out_w_u64, out_h_u64)?;
+    let _ = fit_count(pixels, 1)?;
     Ok((minx, miny, ow, oh))
 }
 
@@ -299,29 +287,80 @@ fn sample_pixel(image: &[u8], w: usize, h: usize, sx: f64, sy: f64) -> ([u8; 3],
     (out, 1)
 }
 
+/// Port of `gxr_studio/finish/geometry.py:252 output_size` (u64 checked entry).
+pub fn output_size_u64(
+    width: u64,
+    height: u64,
+    geom: &Geometry,
+) -> Result<(usize, usize), CoreError> {
+    let (wu, hu, _) = checked_mask_dims(width, height)?;
+    let turns = geom.rotate90.rem_euclid(4);
+    if geom.is_identity() || !geom.expands() {
+        return Ok(final_dims(wu, hu, turns));
+    }
+    let (_minx, _miny, ow, oh) = expanded_bounds(wu, hu, geom)?;
+    Ok(final_dims(ow, oh, turns))
+}
+
 /// Port of `gxr_studio/finish/geometry.py:252 output_size`
 pub fn output_size(
     width: usize,
     height: usize,
     geom: &Geometry,
 ) -> Result<(usize, usize), CoreError> {
-    if width == 0 || height == 0 {
-        return Err(CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        ));
-    }
-    let turns = geom.rotate90.rem_euclid(4);
-    if geom.is_identity() || !geom.expands() {
-        return Ok(final_dims(width, height, turns));
-    }
-    let (_minx, _miny, ow, oh) = expanded_bounds(width, height, geom)?;
-    Ok(final_dims(ow, oh, turns))
+    output_size_u64(width as u64, height as u64, geom)
 }
 
 /// Port of `gxr_studio/finish/geometry.py:264 needs_valid_crop`
 pub fn needs_valid_crop(geom: &Geometry) -> bool {
     geom.straighten.abs() > 1e-9 || geom.expands()
+}
+
+/// Port of `gxr_studio/finish/geometry.py:157 warp_valid` (u64 checked entry).
+pub fn warp_valid_u64(
+    width: u64,
+    height: u64,
+    geom: &Geometry,
+) -> Result<(usize, usize, Vec<u8>), CoreError> {
+    let (wu, hu, in_pixels) = checked_mask_dims(width, height)?;
+    let turns = geom.rotate90.rem_euclid(4);
+    let flip = geom.flip;
+
+    if geom.expands() {
+        let params = ExpandedParams::new(wu, hu, geom)?;
+        let (fw, fh) = final_dims(params.out_w, params.out_h, turns);
+        let pixels = checked_mul_u64(fw as u64, fh as u64)?;
+        let mut mask = try_vec_u8(pixels, 0)?;
+        for r in 0..fh {
+            for c in 0..fw {
+                let (ur, uc) = unrot_flip_coords(r, c, params.out_h, params.out_w, fw, turns, flip);
+                let (sx, sy) = params.coord_at(uc, ur);
+                mask[r * fw + c] = u8::from(coverage(wu, hu, sx, sy));
+            }
+        }
+        return Ok((fw, fh, mask));
+    }
+
+    let (fw, fh) = final_dims(wu, hu, turns);
+    if geom.straighten.abs() < 1e-9 {
+        return Ok((fw, fh, try_vec_u8(in_pixels, 1)?));
+    }
+
+    let th = geom.straighten.to_radians();
+    let cos_a = gxr_math::cos(th);
+    let sin_a = gxr_math::sin(th);
+    let cx = (wu as f64 - 1.0) / 2.0;
+    let cy = (hu as f64 - 1.0) / 2.0;
+
+    let mut mask = try_vec_u8(in_pixels, 0)?;
+    for r in 0..fh {
+        for c in 0..fw {
+            let (ur, uc) = unrot_flip_coords(r, c, hu, wu, fw, turns, flip);
+            let (sx, sy) = straighten_coord_at(uc, ur, cx, cy, cos_a, sin_a);
+            mask[r * fw + c] = u8::from(coverage(wu, hu, sx, sy));
+        }
+    }
+    Ok((fw, fh, mask))
 }
 
 /// Port of `gxr_studio/finish/geometry.py:157 warp_valid`
@@ -330,49 +369,32 @@ pub fn warp_valid(
     height: usize,
     geom: &Geometry,
 ) -> Result<(usize, usize, Vec<u8>), CoreError> {
+    warp_valid_u64(width as u64, height as u64, geom)
+}
+
+/// Port of `gxr_studio/finish/geometry.py:169 warp` (checked `u64` entry).
+pub fn warp_u64(
+    image: &[u8],
+    width: u64,
+    height: u64,
+    geom: &Geometry,
+) -> Result<Warped, CoreError> {
     if width == 0 || height == 0 {
         return Err(CoreError::new(
             "bad_geometry",
             "纠正参数格式不对。请重新打开这张照片后再试。",
         ));
     }
-    let turns = geom.rotate90.rem_euclid(4);
-    let flip = geom.flip;
-
-    if geom.expands() {
-        let params = ExpandedParams::new(width, height, geom)?;
-        let (fw, fh) = final_dims(params.out_w, params.out_h, turns);
-        let mut mask = vec![0_u8; fw * fh];
-        for r in 0..fh {
-            for c in 0..fw {
-                let (ur, uc) = unrot_flip_coords(r, c, params.out_h, params.out_w, fw, turns, flip);
-                let (sx, sy) = params.coord_at(uc, ur);
-                mask[r * fw + c] = u8::from(coverage(width, height, sx, sy));
-            }
-        }
-        return Ok((fw, fh, mask));
+    let (wu, hu, in_pixels) = checked_mask_dims(width, height)?;
+    let rgb_len = checked_mul_u64(in_pixels, 3)?;
+    let expected = fit_count(rgb_len, 1)?;
+    if image.len() != expected {
+        return Err(CoreError::new(
+            "bad_geometry",
+            "纠正参数格式不对。请重新打开这张照片后再试。",
+        ));
     }
-
-    let (fw, fh) = final_dims(width, height, turns);
-    if geom.straighten.abs() < 1e-9 {
-        return Ok((fw, fh, vec![1_u8; fw * fh]));
-    }
-
-    let th = geom.straighten.to_radians();
-    let cos_a = gxr_math::cos(th);
-    let sin_a = gxr_math::sin(th);
-    let cx = (width as f64 - 1.0) / 2.0;
-    let cy = (height as f64 - 1.0) / 2.0;
-
-    let mut mask = vec![0_u8; fw * fh];
-    for r in 0..fh {
-        for c in 0..fw {
-            let (ur, uc) = unrot_flip_coords(r, c, height, width, fw, turns, flip);
-            let (sx, sy) = straighten_coord_at(uc, ur, cx, cy, cos_a, sin_a);
-            mask[r * fw + c] = u8::from(coverage(width, height, sx, sy));
-        }
-    }
-    Ok((fw, fh, mask))
+    warp_checked(image, wu, hu, in_pixels, rgb_len, geom)
 }
 
 /// Port of `gxr_studio/finish/geometry.py:169 warp`
@@ -382,53 +404,32 @@ pub fn warp(
     height: usize,
     geom: &Geometry,
 ) -> Result<Warped, CoreError> {
-    if width == 0 || height == 0 {
-        return Err(CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        ));
-    }
-    let expected = width
-        .checked_mul(height)
-        .and_then(|p| p.checked_mul(3))
-        .ok_or_else(|| {
-            CoreError::new(
-                "bad_geometry",
-                "纠正参数格式不对。请重新打开这张照片后再试。",
-            )
-        })?;
-    if image.len() != expected {
-        return Err(CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        ));
-    }
+    warp_u64(image, width as u64, height as u64, geom)
+}
 
+fn warp_checked(
+    image: &[u8],
+    wu: usize,
+    hu: usize,
+    in_pixels: u64,
+    in_rgb_len: u64,
+    geom: &Geometry,
+) -> Result<Warped, CoreError> {
     let turns = geom.rotate90.rem_euclid(4);
     let flip = geom.flip;
 
     if geom.expands() {
-        let params = ExpandedParams::new(width, height, geom)?;
+        let params = ExpandedParams::new(wu, hu, geom)?;
         let (fw, fh) = final_dims(params.out_w, params.out_h, turns);
-        let total = fw.checked_mul(fh).ok_or_else(|| {
-            CoreError::new(
-                "bad_geometry",
-                "纠正参数格式不对。请重新打开这张照片后再试。",
-            )
-        })?;
-        let rgb_len = total.checked_mul(3).ok_or_else(|| {
-            CoreError::new(
-                "bad_geometry",
-                "纠正参数格式不对。请重新打开这张照片后再试。",
-            )
-        })?;
-        let mut rgb = vec![0_u8; rgb_len];
-        let mut valid = vec![0_u8; total];
+        let total = checked_mul_u64(fw as u64, fh as u64)?;
+        let rgb_len = checked_mul_u64(total, 3)?;
+        let mut rgb = try_vec_u8(rgb_len, 0)?;
+        let mut valid = try_vec_u8(total, 0)?;
         for r in 0..fh {
             for c in 0..fw {
                 let (ur, uc) = unrot_flip_coords(r, c, params.out_h, params.out_w, fw, turns, flip);
                 let (sx, sy) = params.coord_at(uc, ur);
-                let (px, v) = sample_pixel(image, width, height, sx, sy);
+                let (px, v) = sample_pixel(image, wu, hu, sx, sy);
                 let idx = r * fw + c;
                 valid[idx] = v;
                 let off = idx * 3;
@@ -443,18 +444,17 @@ pub fn warp(
         });
     }
 
-    let (fw, fh) = final_dims(width, height, turns);
-    let total = fw * fh;
-    let mut rgb = vec![0_u8; total * 3];
-    let mut valid = vec![0_u8; total];
+    let (fw, fh) = final_dims(wu, hu, turns);
+    let mut rgb = try_vec_u8(in_rgb_len, 0)?;
+    let mut valid = try_vec_u8(in_pixels, 0)?;
 
     if geom.straighten.abs() < 1e-9 {
         for r in 0..fh {
             for c in 0..fw {
-                let (ur, uc) = unrot_flip_coords(r, c, height, width, fw, turns, flip);
+                let (ur, uc) = unrot_flip_coords(r, c, hu, wu, fw, turns, flip);
                 let idx = r * fw + c;
                 valid[idx] = 1;
-                let src_off = (ur * width + uc) * 3;
+                let src_off = (ur * wu + uc) * 3;
                 let dst_off = idx * 3;
                 rgb[dst_off..dst_off + 3].copy_from_slice(&image[src_off..src_off + 3]);
             }
@@ -470,14 +470,14 @@ pub fn warp(
     let th = geom.straighten.to_radians();
     let cos_a = gxr_math::cos(th);
     let sin_a = gxr_math::sin(th);
-    let cx = (width as f64 - 1.0) / 2.0;
-    let cy = (height as f64 - 1.0) / 2.0;
+    let cx = (wu as f64 - 1.0) / 2.0;
+    let cy = (hu as f64 - 1.0) / 2.0;
 
     for r in 0..fh {
         for c in 0..fw {
-            let (ur, uc) = unrot_flip_coords(r, c, height, width, fw, turns, flip);
+            let (ur, uc) = unrot_flip_coords(r, c, hu, wu, fw, turns, flip);
             let (sx, sy) = straighten_coord_at(uc, ur, cx, cy, cos_a, sin_a);
-            let (px, v) = sample_pixel(image, width, height, sx, sy);
+            let (px, v) = sample_pixel(image, wu, hu, sx, sy);
             let idx = r * fw + c;
             valid[idx] = v;
             let off = idx * 3;

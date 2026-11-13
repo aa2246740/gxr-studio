@@ -4,6 +4,7 @@ use gxr_raw::CoreError;
 
 use crate::crop::{MIN_SIDE_PX, RATIO_TOLERANCE, is_known_preset, ratio_off, target_ratio};
 
+use super::bounds::{checked_add_u64, checked_mul_u64, fit_count, too_big, try_vec_i32};
 use super::spec::Geometry;
 use super::warp::{needs_valid_crop, warp_valid};
 
@@ -124,9 +125,16 @@ pub fn header_value(rect: [f64; 4]) -> String {
 }
 
 /// Port of `gxr_studio/finish/geometry.py:272 _valid_integral`
-pub(crate) fn valid_integral(valid: &[u8], width: usize, height: usize) -> Vec<i32> {
-    let stride = width + 1;
-    let mut sheet = vec![0_i32; (height + 1) * stride];
+pub(crate) fn valid_integral(
+    valid: &[u8],
+    width: usize,
+    height: usize,
+) -> Result<Vec<i32>, CoreError> {
+    let w1 = checked_add_u64(width as u64, 1)?;
+    let h1 = checked_add_u64(height as u64, 1)?;
+    let stride = fit_count(w1, 4)?;
+    let sheet_elems = checked_mul_u64(h1, w1)?;
+    let mut sheet = try_vec_i32(sheet_elems, 0)?;
     for y in 0..height {
         let src_row = &valid[y * width..(y + 1) * width];
         let mut row_sum = 0_i32;
@@ -137,7 +145,7 @@ pub(crate) fn valid_integral(valid: &[u8], width: usize, height: usize) -> Vec<i
             sheet[cur_off + x + 1] = sheet[prev_off + x + 1].wrapping_add(row_sum);
         }
     }
-    sheet
+    Ok(sheet)
 }
 
 /// Port of `gxr_studio/finish/geometry.py:279 _covered`
@@ -279,7 +287,7 @@ pub fn fit_ratio_in_valid(
     rect: [f64; 4],
     numer: usize,
     denom: usize,
-) -> [usize; 4] {
+) -> Result<[usize; 4], CoreError> {
     let [x, y, rw, rh] = rect;
     let cx = (x + rw / 2.0) * width as f64;
     let cy = (y + rh / 2.0) * height as f64;
@@ -290,7 +298,7 @@ pub fn fit_ratio_in_valid(
     } else {
         0
     };
-    let sheet = valid_integral(valid, width, height);
+    let sheet = valid_integral(valid, width, height)?;
     let stride = width + 1;
     let mut centred: Option<[usize; 4]> = None;
     let mut centred_k = 0_usize;
@@ -306,7 +314,7 @@ pub fn fit_ratio_in_valid(
     if let Some(c_box) = centred
         && centred_k == max_k
     {
-        return c_box;
+        return Ok(c_box);
     }
     let mut lo = centred_k;
     let mut hi = max_k;
@@ -331,10 +339,10 @@ pub fn fit_ratio_in_valid(
             cy,
         )
     {
-        return near;
+        return Ok(near);
     }
     if let Some(c_box) = centred {
-        return c_box;
+        return Ok(c_box);
     }
     let [fx, fy, fw_raw, fh_raw] = max_area_rect(valid, width, height);
     let fw = fw_raw.min(width - fx);
@@ -345,7 +353,13 @@ pub fn fit_ratio_in_valid(
         0
     };
     if k < 1 {
-        return ratio_in_box([fx, fy, fw.max(1), fh.max(1)], numer, denom, width, height);
+        return Ok(ratio_in_box(
+            [fx, fy, fw.max(1), fh.max(1)],
+            numer,
+            denom,
+            width,
+            height,
+        ));
     }
     let tw = k * numer;
     let th = k * denom;
@@ -355,7 +369,7 @@ pub fn fit_ratio_in_valid(
     let ty = round_even(cy - th as f64 / 2.0)
         .max(fy as i64)
         .min((fy + fh - th) as i64) as usize;
-    [tx, ty, tw, th]
+    Ok([tx, ty, tw, th])
 }
 
 /// Port of `gxr_studio/finish/geometry.py:397 fit_preset_in_valid`
@@ -365,26 +379,31 @@ pub fn fit_preset_in_valid(
     height: usize,
     preset: Option<&str>,
     rect: [f64; 4],
-) -> Option<[usize; 4]> {
-    let p = preset?;
+) -> Result<Option<[usize; 4]>, CoreError> {
+    let Some(p) = preset else {
+        return Ok(None);
+    };
     if !is_known_preset(p) || p == "free" || p == "original" {
-        return None;
+        return Ok(None);
     }
-    let mut ratio = target_ratio(p, width as i64, height as i64, false)
+    let Some(mut ratio) = target_ratio(p, width as i64, height as i64, false)
         .ok()
-        .flatten()?;
+        .flatten()
+    else {
+        return Ok(None);
+    };
     let [_, _, rw, rh] = rect;
     if (rw * width as f64 >= rh * height as f64) != (ratio.numer >= ratio.denom) {
         ratio = ratio.inv();
     }
-    Some(fit_ratio_in_valid(
+    Ok(Some(fit_ratio_in_valid(
         valid,
         width,
         height,
         rect,
         ratio.numer as usize,
         ratio.denom as usize,
-    ))
+    )?))
 }
 
 /// Port of `gxr_studio/finish/geometry.py:419 window_full`
@@ -446,7 +465,7 @@ pub fn clamp_norm_rect(
     height: usize,
     mut rect: [f64; 4],
     aspect: Option<f64>,
-) -> [f64; 4] {
+) -> Result<[f64; 4], CoreError> {
     let wf = width as f64;
     let hf = height as f64;
     let [x, y, rw, rh] = rect;
@@ -478,7 +497,7 @@ pub fn clamp_norm_rect(
         ];
     }
     if window_full(valid, width, height, px, py, pw, ph) {
-        return rect;
+        return Ok(rect);
     }
     let cx = px as f64 + pw as f64 / 2.0;
     let cy = py as f64 + ph as f64 / 2.0;
@@ -508,7 +527,7 @@ pub fn clamp_norm_rect(
     }
     let best_scale = if best.is_some() { lo } else { 0.0 };
     if best.is_none() || best_scale < 0.999 {
-        let sheet = valid_integral(valid, width, height);
+        let sheet = valid_integral(valid, width, height)?;
         let mut lo2 = if best.is_some() { best_scale } else { 0.05 };
         let mut hi2 = 1.0_f64;
         let mut found_size: Option<(usize, usize)> = None;
@@ -530,7 +549,7 @@ pub fn clamp_norm_rect(
             best = nearest_window(&sheet, width, height, fw, fh, cx, cy);
         }
     }
-    match best {
+    Ok(match best {
         None => {
             let [fx, fy, fw, fh] = max_area_rect(valid, width, height);
             if fw < 1 || fh < 1 {
@@ -550,7 +569,7 @@ pub fn clamp_norm_rect(
             tw as f64 / wf,
             th as f64 / hf,
         ],
-    }
+    })
 }
 
 /// Port of `gxr_studio/finish/geometry.py:551 _fit_in_valid`
@@ -561,17 +580,17 @@ fn fit_in_valid(
     preset: Option<&str>,
     target: [f64; 4],
     rect: Option<[f64; 4]>,
-) -> [f64; 4] {
+) -> Result<[f64; 4], CoreError> {
     let full = [0.0, 0.0, 1.0, 1.0];
     if let Some(p) = preset
-        && let Some([x, y, bw, bh]) = fit_preset_in_valid(valid, vw, vh, Some(p), target)
+        && let Some([x, y, bw, bh]) = fit_preset_in_valid(valid, vw, vh, Some(p), target)?
     {
-        return [
+        return Ok([
             x as f64 / vw as f64,
             y as f64 / vh as f64,
             bw as f64 / vw as f64,
             bh as f64 / vh as f64,
-        ];
+        ]);
     }
     if preset == Some("original") {
         let mut aspect = vw as f64 / vh as f64;
@@ -581,16 +600,16 @@ fn fit_in_valid(
         return clamp_norm_rect(valid, vw, vh, target, Some(aspect));
     }
     match rect {
-        None => normalized_valid_rect(valid, vw, vh),
-        Some(r) if r == full => normalized_valid_rect(valid, vw, vh),
+        None => Ok(normalized_valid_rect(valid, vw, vh)),
+        Some(r) if r == full => Ok(normalized_valid_rect(valid, vw, vh)),
         Some(r) => clamp_norm_rect(valid, vw, vh, r, None),
     }
 }
 
 /// Port of `gxr_studio/finish/geometry.py:577 _usable`
 fn usable(vw: usize, vh: usize, preset: Option<&str>, rect: [f64; 4]) -> bool {
-    let w_px = 1.max(round_even(rect[2] * vw as f64));
-    let h_px = 1.max(round_even(rect[3] * vh as f64));
+    let w_px = 1_i64.max(round_even(rect[2] * vw as f64));
+    let h_px = 1_i64.max(round_even(rect[3] * vh as f64));
     if w_px.min(h_px) < MIN_SIDE_PX {
         return false;
     }
@@ -624,12 +643,12 @@ pub fn fitted_crop(
     };
     let full = [0.0, 0.0, 1.0, 1.0];
     let target = rect.unwrap_or(full);
-    let result = fit_in_valid(&valid, vw, vh, preset, target, rect);
+    let result = fit_in_valid(&valid, vw, vh, preset, target, rect)?;
     if let Some(r) = rect
         && r != full
         && !usable(vw, vh, preset, result)
     {
-        let again = fit_in_valid(&valid, vw, vh, preset, full, None);
+        let again = fit_in_valid(&valid, vw, vh, preset, full, None)?;
         if usable(vw, vh, preset, again) {
             return Ok(Some(again));
         }
@@ -654,12 +673,15 @@ pub fn crop_valid(
     width: usize,
     height: usize,
     rect: [f64; 4],
-) -> (usize, usize, Vec<u8>) {
+) -> Result<(usize, usize, Vec<u8>), CoreError> {
     let [x, y, rw, rh] = crop_box(width, height, rect);
-    let mut out = Vec::with_capacity(rw * rh * 3);
+    let bytes = checked_mul_u64(checked_mul_u64(rw as u64, rh as u64)?, 3)?;
+    let cap = fit_count(bytes, 1)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(cap).map_err(|_| too_big())?;
     for row in y..y + rh {
         let off = (row * width + x) * 3;
         out.extend_from_slice(&rgb[off..off + rw * 3]);
     }
-    (rw, rh, out)
+    Ok((rw, rh, out))
 }

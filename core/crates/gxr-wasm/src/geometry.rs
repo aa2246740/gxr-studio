@@ -2,7 +2,7 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_finish::{final_box_json, parse_geometry, warp};
+use gxr_finish::{final_box_json_u64, parse_geometry, warp_u64};
 use gxr_raw::{CoreError, error_json};
 
 fn rejected(err: CoreError) -> JsValue {
@@ -17,7 +17,7 @@ pub fn geom_final_box(
     geometry_json: &str,
     crop_json: &str,
 ) -> Result<String, JsValue> {
-    final_box_json(w as usize, h as usize, geometry_json, crop_json)
+    final_box_json_u64(u64::from(w), u64::from(h), geometry_json, crop_json)
         .map(|json| json.render())
         .map_err(rejected)
 }
@@ -63,11 +63,11 @@ pub fn geom_warp(
     geometry_json: &str,
 ) -> Result<WarpedImage, JsValue> {
     let geom = parse_geometry(geometry_json).map_err(rejected)?;
-    let warped = warp(rgb_u8, w as usize, h as usize, &geom).map_err(rejected)?;
+    let warped = warp_u64(rgb_u8, u64::from(w), u64::from(h), &geom).map_err(rejected)?;
     let height = u32::try_from(warped.height)
-        .map_err(|_| rejected(CoreError::new("bad_geometry", "输出尺寸过大")))?;
+        .map_err(|_| rejected(gxr_finish::geometry::bounds::too_big()))?;
     let width = u32::try_from(warped.width)
-        .map_err(|_| rejected(CoreError::new("bad_geometry", "输出尺寸过大")))?;
+        .map_err(|_| rejected(gxr_finish::geometry::bounds::too_big()))?;
     Ok(WarpedImage {
         height,
         width,

@@ -1,5 +1,6 @@
 //! Port of `gxr_studio/finish/geometry.py` and `gxr_studio/finish/spec.py` (Geometry).
 
+pub mod bounds;
 pub mod fit;
 pub mod json;
 pub mod spec;
@@ -10,4 +11,7 @@ pub use fit::{
     header_value, max_area_rect, normalized_valid_rect, window_full,
 };
 pub use spec::{Geometry, parse_geometry};
-pub use warp::{FILL, Warped, needs_valid_crop, output_size, warp, warp_valid};
+pub use warp::{
+    FILL, Warped, needs_valid_crop, output_size, output_size_u64, warp, warp_u64, warp_valid,
+    warp_valid_u64,
+};

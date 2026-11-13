@@ -7,7 +7,7 @@ use gxr_finish::geometry::fit::{
     clamp_norm_rect, fit_ratio_in_valid, fitted_crop, header_value, normalized_valid_rect,
 };
 use gxr_finish::geometry::json::{JsonValue, parse_json};
-use gxr_finish::{final_box_json, parse_geometry, warp, warp_valid};
+use gxr_finish::{final_box_json_u64, parse_geometry, warp_u64, warp_valid, warp_valid_u64};
 use gxr_raw::{CoreError, Json};
 
 use crate::common::{self, Failure, Output};
@@ -30,15 +30,20 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
     })
 }
 
-fn parse_dim(args: &[String], name: &str) -> Result<usize, Failure> {
+fn parse_dim_u64(args: &[String], name: &str) -> Result<u64, Failure> {
     let raw = common::option(args, name)?;
-    let v: usize = raw
+    let v: u64 = raw
         .parse()
         .map_err(|_| Failure::Usage(format!("bad integer for {name}: {raw:?}")))?;
     if v == 0 {
         return Err(Failure::Usage(format!("{name} must be > 0")));
     }
     Ok(v)
+}
+
+fn parse_dim(args: &[String], name: &str) -> Result<usize, Failure> {
+    let v = parse_dim_u64(args, name)?;
+    usize::try_from(v).map_err(|_| Failure::Core(gxr_finish::geometry::bounds::too_big()))
 }
 
 fn opt_dim(args: &[String], name: &str, default: usize) -> Result<usize, Failure> {
@@ -69,11 +74,11 @@ fn cmd_crop_box(args: &[String]) -> Result<Json, Failure> {
 }
 
 fn cmd_final_box(args: &[String]) -> Result<Json, Failure> {
-    let w = parse_dim(args, "--w")?;
-    let h = parse_dim(args, "--h")?;
+    let w = parse_dim_u64(args, "--w")?;
+    let h = parse_dim_u64(args, "--h")?;
     let geometry = opt_str(args, "--geometry")?.unwrap_or("{}");
     let crop = opt_str(args, "--crop")?.unwrap_or("null");
-    Ok(final_box_json(w, h, geometry, crop)?)
+    Ok(final_box_json_u64(w, h, geometry, crop)?)
 }
 
 fn cmd_header(args: &[String]) -> Result<Json, Failure> {
@@ -93,12 +98,21 @@ fn cmd_header(args: &[String]) -> Result<Json, Failure> {
     }
     let geom_str = common::option(args, "--geometry")?;
     let geom = parse_geometry(geom_str)?;
-    let w = opt_dim(args, "--w", 120)?;
-    let h = opt_dim(args, "--h", 90)?;
+    let w = if args.iter().any(|a| a == "--w") {
+        parse_dim_u64(args, "--w")?
+    } else {
+        120
+    };
+    let h = if args.iter().any(|a| a == "--h") {
+        parse_dim_u64(args, "--h")?
+    } else {
+        90
+    };
+    let _ = gxr_finish::geometry::bounds::checked_mask_dims(w, h)?;
     let valid_rect = if geom.is_identity() {
         [0.0, 0.0, 1.0, 1.0]
     } else {
-        let (vw, vh, mask) = warp_valid(w, h, &geom)?;
+        let (vw, vh, mask) = warp_valid_u64(w, h, &geom)?;
         normalized_valid_rect(&mask, vw, vh)
     };
     Ok(Json::object([(
@@ -114,7 +128,17 @@ fn cmd_warp(args: &[String]) -> Result<Json, Failure> {
     let mask_path = common::option(args, "--mask")?;
     let geom = parse_geometry(geom_str)?;
     let (h, w, rgb) = read_rgb_npy(in_path)?;
-    let warped = warp(&rgb, w, h, &geom)?;
+    let w_arg = if args.iter().any(|a| a == "--w") {
+        parse_dim_u64(args, "--w")?
+    } else {
+        w as u64
+    };
+    let h_arg = if args.iter().any(|a| a == "--h") {
+        parse_dim_u64(args, "--h")?
+    } else {
+        h as u64
+    };
+    let warped = warp_u64(&rgb, w_arg, h_arg, &geom)?;
     write_npy_bytes(
         out_path,
         "|u1",
@@ -139,12 +163,12 @@ fn cmd_warp(args: &[String]) -> Result<Json, Failure> {
 }
 
 fn cmd_warp_valid(args: &[String]) -> Result<Json, Failure> {
-    let w = parse_dim(args, "--w")?;
-    let h = parse_dim(args, "--h")?;
+    let w = parse_dim_u64(args, "--w")?;
+    let h = parse_dim_u64(args, "--h")?;
     let geom_str = common::option(args, "--geometry")?;
     let out_path = common::option(args, "--out")?;
     let geom = parse_geometry(geom_str)?;
-    let (vw, vh, mask) = warp_valid(w, h, &geom)?;
+    let (vw, vh, mask) = warp_valid_u64(w, h, &geom)?;
     write_npy_bytes(out_path, "|b1", &mask, &[vh, vw])?;
     Ok(Json::object([
         ("out", Json::str(out_path)),
@@ -217,7 +241,7 @@ fn cmd_clamp_rect(args: &[String]) -> Result<Json, Failure> {
     let val = parse_json(rect_str, "bad_rect", "裁剪框超出画面范围")?;
     let rect = parse_rect4(&val)?;
     let (vw, vh, mask) = warp_valid(w, h, &geom)?;
-    let out = clamp_norm_rect(&mask, vw, vh, rect, aspect);
+    let out = clamp_norm_rect(&mask, vw, vh, rect, aspect)?;
     Ok(Json::object([("rect", Json::floats(&out))]))
 }
 
@@ -232,7 +256,7 @@ fn cmd_fit_ratio(args: &[String]) -> Result<Json, Failure> {
     let val = parse_json(rect_str, "bad_rect", "裁剪框超出画面范围")?;
     let rect = parse_rect4(&val)?;
     let (vw, vh, mask) = warp_valid(w, h, &geom)?;
-    let out = fit_ratio_in_valid(&mask, vw, vh, rect, numer, denom);
+    let out = fit_ratio_in_valid(&mask, vw, vh, rect, numer, denom)?;
     Ok(Json::object([(
         "box",
         Json::ints(&[out[0] as i64, out[1] as i64, out[2] as i64, out[3] as i64]),
