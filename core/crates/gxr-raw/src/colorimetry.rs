@@ -207,7 +207,10 @@ impl DngColour {
         }
         let pcs = xy_to_xyz(&D50_XY)?;
         let cm = tags.color_matrix.map(|m| m.map(|m| normalise(&m, &pcs)));
-        let cc = tags.camera_calibration.map(|m| m.unwrap_or(EYE));
+        let cc = tags.camera_calibration.map(|m| match m {
+            Some(matrix) => matrix,
+            None => EYE,
+        });
         let fm = tags.forward_matrix;
         let t = tags.illuminant.map(illuminant_k);
         let ab = match tags.analog_balance.as_slice() {
@@ -233,7 +236,10 @@ impl DngColour {
             }
             _ => {
                 let k = usize::from(cm[0].is_none());
-                let c = cm[k].unwrap_or(EYE);
+                let c = match cm[k] {
+                    Some(matrix) => matrix,
+                    None => EYE,
+                };
                 let tk = if t[k] == 0.0 { 5000.0 } else { t[k] };
                 (true, [c, c], [tk, tk], [cc[k], cc[k]], [fm[k], fm[k]])
             }

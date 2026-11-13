@@ -18,7 +18,13 @@ pub fn version() -> String {
 /// `describe(open(bytes), with_scene=True)` as the CLI prints it, including the trailing newline.
 #[wasm_bindgen]
 pub fn dng_describe(bytes: &[u8]) -> String {
-    let (_ok, text) = gxr_raw::describe_json(bytes, "<bytes>");
+    dng_describe_named(bytes, "<bytes>")
+}
+
+/// `dng_describe` using `name` in error text, so a parity run can match the CLI's base name.
+#[wasm_bindgen]
+pub fn dng_describe_named(bytes: &[u8], name: &str) -> String {
+    let (_ok, text) = gxr_raw::describe_json(bytes, name);
     format!("{text}\n")
 }
 
@@ -57,12 +63,61 @@ fn rejected(err: gxr_raw::CoreError) -> JsValue {
 /// `orient_array(half_res_codes(dng), dng.orientation)`, the array `bin.wgsl` reproduces.
 #[wasm_bindgen]
 pub fn dng_half_codes(bytes: &[u8]) -> Result<HalfCodes, JsValue> {
-    let dng = Dng::open(bytes, "<bytes>").map_err(rejected)?;
+    dng_half_codes_named(bytes, "<bytes>")
+}
+
+/// `dng_half_codes` using `name` in error text.
+#[wasm_bindgen]
+pub fn dng_half_codes_named(bytes: &[u8], name: &str) -> Result<HalfCodes, JsValue> {
+    let dng = Dng::open(bytes, name).map_err(rejected)?;
     let codes = gxr_raw::half_res_codes(&dng).map_err(rejected)?;
     let oriented = gxr_raw::orient_array(&codes, dng.orientation).map_err(rejected)?;
+    let height = u32::try_from(oriented.height).map_err(|_| {
+        rejected(gxr_raw::CoreError::raw_decode(
+            "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+        ))
+    })?;
+    let width = u32::try_from(oriented.width).map_err(|_| {
+        rejected(gxr_raw::CoreError::raw_decode(
+            "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+        ))
+    })?;
     Ok(HalfCodes {
-        height: u32::try_from(oriented.height).unwrap_or(u32::MAX),
-        width: u32::try_from(oriented.width).unwrap_or(u32::MAX),
+        height,
+        width,
         values: oriented.values,
+    })
+}
+
+/// White-balanced crop rows `[y0, y1)`, the same array as `gxr-cli dng-wb-block`.
+#[wasm_bindgen]
+pub fn dng_wb_block(bytes: &[u8], y0: i32, y1: i32) -> Result<HalfCodes, JsValue> {
+    dng_wb_block_named(bytes, "<bytes>", y0, y1)
+}
+
+/// `dng_wb_block` with the file name the native CLI puts in error text.
+#[wasm_bindgen]
+pub fn dng_wb_block_named(
+    bytes: &[u8],
+    name: &str,
+    y0: i32,
+    y1: i32,
+) -> Result<HalfCodes, JsValue> {
+    let dng = Dng::open(bytes, name).map_err(rejected)?;
+    let block = gxr_raw::wb_mosaic_block(&dng, i64::from(y0), i64::from(y1)).map_err(rejected)?;
+    let height = u32::try_from(block.height).map_err(|_| {
+        rejected(gxr_raw::CoreError::raw_decode(
+            "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+        ))
+    })?;
+    let width = u32::try_from(block.width).map_err(|_| {
+        rejected(gxr_raw::CoreError::raw_decode(
+            "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+        ))
+    })?;
+    Ok(HalfCodes {
+        height,
+        width,
+        values: block.values,
     })
 }

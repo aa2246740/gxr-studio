@@ -77,10 +77,15 @@ fn write_npy<T: npy::NpyElement>(
 ) -> Result<Json, Failure> {
     npy::write(out, values, shape)
         .map_err(|e| Failure::Usage(format!("cannot write {out}: {e}")))?;
-    let dims: Vec<i64> = shape
-        .iter()
-        .map(|&d| i64::try_from(d).unwrap_or(i64::MAX))
-        .collect();
+    let mut dims = Vec::with_capacity(shape.len());
+    for &dim in shape {
+        let dim = i64::try_from(dim).map_err(|_| {
+            Failure::Core(CoreError::raw_decode(
+                "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+            ))
+        })?;
+        dims.push(dim);
+    }
     Ok(Json::object([
         ("out", Json::str(out)),
         ("dtype", Json::str(dtype)),

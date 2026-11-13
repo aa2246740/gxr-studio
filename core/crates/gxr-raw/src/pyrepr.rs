@@ -39,13 +39,22 @@ pub fn py_float_repr(x: f64) -> String {
             "0.0".into()
         };
     }
-    let sci = format!("{:e}", x.abs());
-    let (mantissa, exponent) = sci.split_once('e').unwrap_or((sci.as_str(), "0"));
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let exp10: i64 = exponent.parse().unwrap_or(0);
-    let decpt = exp10 + 1;
     let sign = if x < 0.0 { "-" } else { "" };
-    let n = i64::try_from(digits.len()).unwrap_or(i64::MAX);
+    let sci = format!("{:e}", x.abs());
+    // `format!("{:e}")` of a finite float always contains `e`. These digits are not
+    // a file length; if the debug form is unexpected, return it unchanged.
+    let Some((mantissa, exponent)) = sci.split_once('e') else {
+        return format!("{sign}{sci}");
+    };
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let Ok(exp10) = exponent.parse::<i64>() else {
+        return format!("{sign}{sci}");
+    };
+    let decpt = exp10 + 1;
+    let Ok(n) = i64::try_from(digits.len()) else {
+        return format!("{sign}{sci}");
+    };
+    let zeros = |count: i64| usize::try_from(count).ok().map(|n| "0".repeat(n));
     let body = if decpt <= -4 || decpt > 16 {
         let (head, tail) = digits.split_at(1);
         let frac = if tail.is_empty() {
@@ -56,18 +65,21 @@ pub fn py_float_repr(x: f64) -> String {
         let esign = if exp10 < 0 { '-' } else { '+' };
         format!("{head}{frac}e{esign}{:02}", exp10.abs())
     } else if decpt <= 0 {
-        format!(
-            "0.{}{digits}",
-            "0".repeat(usize::try_from(-decpt).unwrap_or(0))
-        )
+        let Some(pad) = zeros(-decpt) else {
+            return format!("{sign}{sci}");
+        };
+        format!("0.{pad}{digits}")
     } else if decpt < n {
-        let (head, tail) = digits.split_at(usize::try_from(decpt).unwrap_or(0));
+        let Some(at) = usize::try_from(decpt).ok() else {
+            return format!("{sign}{sci}");
+        };
+        let (head, tail) = digits.split_at(at);
         format!("{head}.{tail}")
     } else {
-        format!(
-            "{digits}{}.0",
-            "0".repeat(usize::try_from(decpt - n).unwrap_or(0))
-        )
+        let Some(pad) = zeros(decpt - n) else {
+            return format!("{sign}{sci}");
+        };
+        format!("{digits}{pad}.0")
     };
     format!("{sign}{body}")
 }

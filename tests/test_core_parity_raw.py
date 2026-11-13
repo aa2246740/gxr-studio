@@ -9,6 +9,7 @@ A miss reports the first index and both values.
 from __future__ import annotations
 
 import os
+import struct
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
@@ -18,8 +19,9 @@ import numpy as np
 import pytest
 
 from gxr_studio.gpu.source import describe
-from gxr_studio.raw.codes import half_res_codes, orient_array
+from gxr_studio.raw.codes import half_res_codes, orient_array, wb_mosaic_block
 from gxr_studio.raw.dng import Dng, RawDecodeError, open_dng
+from gxr_studio.raw.tiff import Tiff
 from support.core_cli import CoreCliError, error_of, require_cli, run, run_json, run_npy
 from support.dng_writer import write_dng
 
@@ -190,13 +192,12 @@ def test_real_describe_summary_mosaic_and_half(path: Path, tmp_path: Path) -> No
 
 
 def _assert_f32(python: np.ndarray, rust: np.ndarray) -> None:
-    left = np.ascontiguousarray(python, np.float32)
-    right = np.ascontiguousarray(rust, np.float32)
-    assert left.shape == right.shape
-    if np.array_equal(left, right):
+    assert python.dtype == np.float32 and rust.dtype == np.float32
+    assert python.shape == rust.shape
+    if np.array_equal(python, rust):
         return
-    index = tuple(int(v) for v in np.argwhere(left != right)[0])
-    pytest.fail(f"half-codes differ at {index}: python={left[index]!r} rust={right[index]!r}")
+    index = tuple(int(v) for v in np.argwhere(python != rust)[0])
+    pytest.fail(f"float32 differ at {index}: python={python[index]!r} rust={rust[index]!r}")
 
 
 def _expect_describe(path: Path) -> None:
@@ -394,3 +395,186 @@ def test_synthetic_errors_and_lazy_describe(tmp_path: Path) -> None:
     orphan = tmp_path / "orphan.dng"
     orphan.write_bytes(b"II" + (42).to_bytes(2, "little") + (1000).to_bytes(4, "little"))
     _expect_describe(orphan)
+
+
+def _patch(data: bytes, tag: int, typ: int, values: list[int], *, root: bool = False) -> bytes:
+    """Replace one IFD entry. Values wider than 4 bytes are appended."""
+    blob = bytearray(data)
+    endian = "<" if blob[:2] == b"II" else ">"
+    tiff = Tiff(bytes(blob))
+    offset = tiff.root if root else tiff.ifd(tiff.root)[330]["value"][0]
+    count = struct.unpack_from(endian + "H", blob, offset)[0]
+    pos = next(offset + 2 + 12 * i for i in range(count) if struct.unpack_from(endian + "H", blob, offset + 2 + 12 * i)[0] == tag)
+    kind = {3: "H", 4: "I", 6: "b", 8: "h", 9: "i"}[typ]
+    payload = struct.pack(endian + str(len(values)) + kind, *values)
+    field = payload.ljust(4, b"\0") if len(payload) <= 4 else struct.pack(endian + "I", len(blob))
+    blob[pos : pos + 12] = struct.pack(endian + "HHI", tag, typ, len(values)) + field
+    if len(payload) > 4:
+        blob.extend(payload)
+    return bytes(blob)
+
+
+def _set_tag_count(data: bytes, tag: int, count: int) -> bytes:
+    blob = bytearray(data)
+    endian = ">" if blob[:2] == b"MM" else "<"
+    tiff = Tiff(bytes(blob))
+    raw = tiff.ifd(tiff.root)[330]["value"][0]
+    n = struct.unpack_from(endian + "H", blob, raw)[0]
+    pos = next(raw + 2 + 12 * i for i in range(n) if struct.unpack_from(endian + "H", blob, raw + 2 + 12 * i)[0] == tag)
+    struct.pack_into(endian + "I", blob, pos + 4, count)
+    return bytes(blob)
+
+
+def _point_next_ifd_at_itself(data: bytes) -> bytes:
+    blob = bytearray(data)
+    endian = ">" if blob[:2] == b"MM" else "<"
+    tiff = Tiff(bytes(blob))
+    raw = tiff.ifd(tiff.root)[330]["value"][0]
+    count = struct.unpack_from(endian + "H", blob, raw)[0]
+    struct.pack_into(endian + "I", blob, raw + 2 + 12 * count, raw)
+    return bytes(blob)
+
+
+def _message_ok(python: str, rust: str) -> bool:
+    if rust == python:
+        return True
+    prefix = "不是可识别的 GXR DNG（ValueError: "
+    return rust.startswith(prefix) and rust.endswith("）") and python.startswith(prefix)
+
+
+def _python_call(path: Path, command: str) -> tuple[Any, BaseException | None]:
+    try:
+        if command == "dng-describe":
+            return asdict(describe(open_dng(path), with_scene=True)), None
+        if command == "dng-mosaic":
+            return open_dng(path).mosaic(), None
+        dng = open_dng(path)
+        return orient_array(half_res_codes(dng), dng.orientation), None
+    except Exception as exc:  # noqa: BLE001 — hostile inputs raise several exception types
+        return None, exc
+
+
+def _rust_call(path: Path, command: str, tmp_path: Path) -> tuple[Any, CoreCliError | None]:
+    if command == "dng-describe":
+        code, payload = run_json([command, str(path)])
+        assert code in (0, 2)
+        return payload, error_of(code, payload)
+    try:
+        return run_npy([command, str(path)], tmp_path / f"{command}.npy"), None
+    except CoreCliError as exc:
+        return None, exc
+
+
+def _expect_command(path: Path, command: str, tmp_path: Path) -> None:
+    python, py_err = _python_call(path, command)
+    rust, rs_err = _rust_call(path, command, tmp_path)
+    if isinstance(py_err, RawDecodeError):
+        assert rs_err is not None, command
+        assert rs_err.kind == "raw_decode"
+        assert _message_ok(str(py_err), rs_err.message), f"{command}: {py_err} vs {rs_err.message}"
+        return
+    if py_err is not None:
+        assert rs_err is not None, f"{command}: python {type(py_err).__name__}: {py_err}"
+        # Half-resolution checks the strips before allocating. Python's np.empty
+        # can raise "array is too big" first when the crop itself does not fit.
+        if "array is too big" in str(py_err) and rs_err.message.startswith("RAW 数据读不全（"):
+            assert rs_err.kind == "raw_decode"
+            return
+        assert str(py_err) in rs_err.message, f"{command}: {py_err} vs {rs_err.message}"
+        return
+    assert rs_err is None, f"{command}: rust {rs_err}"
+    assert python is not None and rust is not None
+    if command == "dng-describe":
+        _same(python, rust)
+        return
+    if command == "dng-mosaic":
+        assert rust.dtype == np.uint16 and python.dtype == np.uint16
+        assert np.array_equal(python, rust)
+        return
+    _assert_f32(python, rust)
+
+
+def hostile_cases() -> dict[str, bytes]:
+    """The reviewer's inputs, plus a self-IFD, a 2**31 count, a short strip, and a 0 side."""
+    image = (np.arange(24).reshape(4, 6) * 100 + 500).astype(np.uint16)
+    base = write_dng(image)
+    tiff = Tiff(base)
+    root = tiff.root
+    cases = {
+        "valid": base,
+        "empty": b"",
+        "garbage": b"NOT_A_TIFF_123456789",
+        "truncated-header": b"II*\x00",
+        "truncated-ifd": base[: root + 4],
+        "root-offset-max": base[:4] + struct.pack(">I", 0xFFFFFFFF) + base[8:],
+        "zero-strip": _patch(base, 279, 4, [0]),
+        "strip-past-end": _patch(base, 273, 4, [0xFFFFFFFF]),
+        "strip-offset-loop": _patch(base, 273, 4, [tiff.ifd(root)[330]["value"][0]]),
+        "ifd-cycle": _patch(base, 330, 4, [root], root=True),
+        "ifd-points-at-itself": _point_next_ifd_at_itself(base),
+        "huge-black-repeat": _patch(base, 50713, 4, [2147483648, 2147483648]),
+        "repeat-one-dimensional": _patch(base, 50713, 3, [1, 1, 1]),
+        "bps-zero": _patch(base, 258, 3, [0]),
+        "absurd-dimensions": _patch(_patch(base, 256, 4, [0xFFFFFFFF]), 257, 4, [0xFFFFFFFF]),
+        "signed-negative-black-repeat": _patch(base, 50713, 9, [-1, -1]),
+        "huge-tag-count": _set_tag_count(base, 50714, 0xFFFFFFFF),
+        "tag-count-2-31": _set_tag_count(base, 50714, 0x80000000),
+        "strip-byte-count-short": _patch(base, 279, 4, [4]),
+        "width-zero": _patch(base, 256, 4, [0]),
+        "height-zero": _patch(base, 257, 4, [0]),
+    }
+    huge = _patch(_patch(base, 256, 4, [0xFFFFFFFF]), 257, 4, [0xFFFFFFFF])
+    huge = _patch(huge, 50829, 4, [0, 0, 0xFFFFFFFF, 0xFFFFFFFF])
+    cases["huge-crop-no-data"] = _patch(huge, 50720, 4, [0xFFFFFFFF, 0xFFFFFFFF])
+    return cases
+
+
+def test_hostile_dimensions_do_not_panic(tmp_path: Path) -> None:
+    require_cli()
+    for name, payload in hostile_cases().items():
+        path = tmp_path / f"{name}.dng"
+        path.write_bytes(payload)
+        for command in ("dng-describe", "dng-mosaic", "dng-half-codes"):
+            _expect_command(path, command, tmp_path)
+
+
+def _expect_wb(path: Path, y0: int, y1: int, tmp_path: Path) -> None:
+    try:
+        python = wb_mosaic_block(open_dng(path), y0, y1)
+        py_err: BaseException | None = None
+    except Exception as exc:  # noqa: BLE001
+        python, py_err = None, exc
+    try:
+        rust = run_npy(["dng-wb-block", str(path), "--rows", f"{y0}:{y1}"], tmp_path / f"wb-{y0}-{y1}.npy")
+        rs_err = None
+    except CoreCliError as exc:
+        rust, rs_err = None, exc
+    if isinstance(py_err, RawDecodeError) or (py_err is None and rs_err is not None) or (py_err is not None and rs_err is None):
+        assert isinstance(py_err, RawDecodeError) and rs_err is not None
+        assert rs_err.kind == "raw_decode"
+        assert _message_ok(str(py_err), rs_err.message)
+        return
+    if py_err is not None:
+        assert rs_err is not None
+        assert str(py_err) in rs_err.message
+        return
+    assert python is not None and rust is not None
+    _assert_f32(python, rust)
+
+
+def test_wb_block_uses_the_crop_row(tmp_path: Path) -> None:
+    """Odd start rows, a non-zero ActiveArea, and a CFA larger than 2×2."""
+    require_cli()
+    image = _pattern(8, 6, (10, 20, 30, 40, 50, 60, 70, 80))
+    path = _write(tmp_path, "rggb-active", image, active=(1, 0, 8, 6))
+    for y0, y1 in ((0, 1), (1, 2), (2, 4), (1, 3)):
+        _expect_wb(path, y0, y1, tmp_path)
+    wide = _write(tmp_path, "cfa3", image, cfa=((0, 1, 2), (1, 2, 0), (2, 0, 1)))
+    _expect_wb(wide, 0, 1, tmp_path)
+    if not REAL:
+        if os.environ.get("GXR_REQUIRE_CORE") == "1":
+            pytest.fail("no real DNGs for wb-block")
+        return
+    for path in REAL[:5]:
+        for y0 in (0, 1, 17):
+            _expect_wb(path, y0, y0 + 1, tmp_path)

@@ -50,7 +50,14 @@ pub struct RawSource {
 /// the ActiveArea origin, or `None` for patterns larger than 2×2 or per-row/column deltas.
 fn black_table(dng: &Dng<'_>) -> Option<[f64; 4]> {
     let bp = &dng.black_pattern;
-    if bp.rows > 2 || bp.cols > 2 || dng.black_dh.is_some() || dng.black_dv.is_some() {
+    if bp.shape.len() != 2
+        || bp.rows == 0
+        || bp.cols == 0
+        || bp.rows > 2
+        || bp.cols > 2
+        || dng.black_dh.is_some()
+        || dng.black_dv.is_some()
+    {
         return None;
     }
     Some(std::array::from_fn(|k| {
@@ -95,7 +102,12 @@ pub fn raw_layout(dng: &Dng<'_>) -> Result<(Option<RawLayout>, Option<String>), 
         Some(RawLayout {
             bps: dng.bps,
             big_endian: dng.big_endian,
-            row_bytes: (dng.width * dng.bps + 7).div_euclid(8),
+            row_bytes: dng
+                .width
+                .checked_mul(dng.bps)
+                .and_then(|n| n.checked_add(7))
+                .map(|n| n.div_euclid(8))
+                .ok_or_else(crate::bounds::too_big_core)?,
             strips,
             crop: [y0, x0, h, w],
             active: [dng.active[0], dng.active[1]],

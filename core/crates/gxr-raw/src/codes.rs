@@ -70,11 +70,24 @@ pub fn half_res_codes_f64(dng: &Dng<'_>) -> Result<Image<f64>, CoreError> {
         return Err(CoreError::raw_decode("画面太小"));
     }
     let phase = dng.crop_cfa_phase();
-    let (uh2, uw2) = (
-        usize::try_from(h2).unwrap_or(0),
-        usize::try_from(w2).unwrap_or(0),
-    );
-    let mut out = vec![0f64; uh2 * uw2 * 3];
+    // Strips are checked before any buffer sized from the crop. Python's
+    // `np.empty` can fail first on a huge crop; that difference is recorded
+    // in docs/mobile.md.
+    dng.mosaic()?;
+    let uh2 = crate::bounds::fit_count_core(
+        u128::try_from(h2).map_err(|_| crate::bounds::too_big_core())?,
+    )?;
+    let uw2 = crate::bounds::fit_count_core(
+        u128::try_from(w2).map_err(|_| crate::bounds::too_big_core())?,
+    )?;
+    let count = crate::bounds::mul_u64(
+        crate::bounds::mul_u64(
+            u64::try_from(uh2).map_err(|_| crate::bounds::too_big_core())?,
+            u64::try_from(uw2).map_err(|_| crate::bounds::too_big_core())?,
+        )?,
+        3,
+    )?;
+    let mut out = crate::bounds::reserve_f64(count)?;
     let neutral = dng
         .as_shot_neutral
         .clone()
@@ -102,9 +115,27 @@ pub fn half_res_codes_f64(dng: &Dng<'_>) -> Result<Image<f64>, CoreError> {
     let mut r0 = 0;
     while r0 < h2 {
         let r1 = h2.min(r0 + step);
-        let norm = dng.normalised_block(y0 + 2 * r0, y0 + 2 * r1, x0, x0 + 2 * w2)?;
-        let base = usize::try_from(r0).unwrap_or(0);
-        for r in 0..usize::try_from(r1 - r0).unwrap_or(0) {
+        let y_lo = y0
+            .checked_mul(1)
+            .and_then(|_| r0.checked_mul(2))
+            .and_then(|n| y0.checked_add(n))
+            .ok_or_else(crate::bounds::too_big_core)?;
+        let y_hi = r1
+            .checked_mul(2)
+            .and_then(|n| y0.checked_add(n))
+            .ok_or_else(crate::bounds::too_big_core)?;
+        let x_hi = w2
+            .checked_mul(2)
+            .and_then(|n| x0.checked_add(n))
+            .ok_or_else(crate::bounds::too_big_core)?;
+        let norm = dng.normalised_block(y_lo, y_hi, x0, x_hi)?;
+        let base = crate::bounds::fit_count_core(
+            u128::try_from(r0).map_err(|_| crate::bounds::too_big_core())?,
+        )?;
+        let rows = crate::bounds::fit_count_core(
+            u128::try_from(r1 - r0).map_err(|_| crate::bounds::too_big_core())?,
+        )?;
+        for r in 0..rows {
             for c2 in 0..uw2 {
                 for (c, s) in sites.iter().enumerate() {
                     let mut total = 0.0;
@@ -132,13 +163,38 @@ pub fn half_res_codes_f64(dng: &Dng<'_>) -> Result<Image<f64>, CoreError> {
 pub fn wb_mosaic_block(dng: &Dng<'_>, y0: i64, y1: i64) -> Result<Image<f32>, CoreError> {
     let gains = wb_gains(dng)?;
     let (cy0, cx0, _h, w) = dng.crop_window();
-    let norm = dng.normalised_block(cy0 + y0, cy0 + y1, cx0, cx0 + w)?;
-    let mut values = Vec::with_capacity(norm.values.len());
+    let y_lo = crate::bounds::add_i64(cy0, y0)?;
+    let y_hi = crate::bounds::add_i64(cy0, y1)?;
+    let x_hi = crate::bounds::add_i64(cx0, w)?;
+    let norm = dng.normalised_block(y_lo, y_hi, cx0, x_hi)?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(norm.values.len())
+        .map_err(|_| crate::bounds::too_big_core())?;
     for r in 0..norm.rows {
-        let y = cy0 + i64::try_from(r).unwrap_or(0);
+        let y = crate::bounds::add_i64(
+            crate::bounds::add_i64(cy0, y0)?,
+            i64::try_from(r).map_err(|_| crate::bounds::too_big_core())?,
+        )?;
         for c in 0..norm.cols {
-            let x = cx0 + i64::try_from(c).unwrap_or(0);
-            let gain = gains[usize::try_from(dng.cfa_at(y, x)).unwrap_or(0)];
+            let x = crate::bounds::add_i64(
+                cx0,
+                i64::try_from(c).map_err(|_| crate::bounds::too_big_core())?,
+            )?;
+            let colour = dng.cfa_at(y, x);
+            let gain = match colour {
+                0 => gains[0],
+                1 => gains[1],
+                2 => gains[2],
+                _ => {
+                    return Err(CoreError::new(
+                        "unexpected",
+                        format!(
+                            "IndexError: index {colour} is out of bounds for axis 0 with size 3"
+                        ),
+                    ));
+                }
+            };
             #[allow(clippy::cast_possible_truncation)]
             values.push((norm.values[r * norm.cols + c] * gain) as f32);
         }

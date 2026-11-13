@@ -10,11 +10,14 @@ use crate::pyrepr::{
 };
 use crate::tiff::{Ifd, Tiff, Value, val};
 
-/// A 2-D float64 array (`black_pattern`).
+/// A float64 array (`black_pattern`). Ordinary patterns are 2-D; an n-D repeat is kept
+/// so `raw_layout` can return `black_level_pattern` the way Python does.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Grid {
     pub rows: usize,
     pub cols: usize,
+    /// Numpy shape in C order. A 2-D pattern is `[rows, cols]`.
+    pub shape: Vec<usize>,
     pub values: Vec<f64>,
 }
 
@@ -132,8 +135,10 @@ fn default_white(bps: i64) -> PyResult<Option<f64>> {
         #[allow(clippy::cast_precision_loss)]
         return Ok(Some(((1u64 << bps) - 1) as f64));
     }
-    // 2**bps - 1 rounds to 2**bps in float64
-    let exponent = u64::try_from(1023 + bps).unwrap_or(0);
+    // 2**bps - 1 rounds to 2**bps in float64. `bps` is in `54..1024`, so the biased
+    // exponent fits in `u64`; a failure is a `CoreError`, not a zero exponent.
+    let exponent = u64::try_from(1023 + bps)
+        .map_err(|_| PyErr::Overflow("int too large to convert to float".into()))?;
     Ok(Some(f64::from_bits(exponent << 52)))
 }
 
@@ -172,6 +177,44 @@ fn read_exif(t: &Tiff<'_>, root: &Ifd) -> Vec<(&'static str, ExifValue)> {
         Err(e) => out.push(("error", ExifValue::Text(e.text().to_string()))),
     }
     out
+}
+
+/// Port of the black-level block in `Dng.__init__`: expand a single value with
+/// `np.full(bdim[0] * bdim[1], …)`, then `reshape(bdim)`.
+fn black_grid(bdim: &[i64], mut bl: Vec<f64>) -> PyResult<Grid> {
+    let missing = || PyErr::Index("list index out of range".into());
+    let b0 = *bdim.first().ok_or_else(missing)?;
+    let b1 = *bdim.get(1).ok_or_else(missing)?;
+    let prod = i128::from(b0) * i128::from(b1);
+    if bl.len() == 1 {
+        if prod < 0 {
+            return Err(PyErr::Value("negative dimensions are not allowed".into()));
+        }
+        let fill = bl[0];
+        bl = crate::bounds::fill_f64(
+            u128::try_from(prod).map_err(|_| crate::bounds::too_big())?,
+            fill,
+        )?;
+    }
+    let bl_size = i128::try_from(bl.len()).map_err(|_| crate::bounds::too_big())?;
+    if bl_size != prod {
+        return Err(PyErr::NotImplemented(format!(
+            "BlackLevel count {bl_size} for repeat {}",
+            py_int_list_repr(bdim)
+        )));
+    }
+    let shape = crate::bounds::numpy_reshape(bl_size, bdim)?;
+    let (rows, cols) = match shape.as_slice() {
+        [r, c, ..] => (*r, *c),
+        // `bdim[1]` was required above, and reshape keeps every axis, so this is unreachable.
+        _ => (0, 0),
+    };
+    Ok(Grid {
+        rows,
+        cols,
+        shape,
+        values: bl,
+    })
 }
 
 /// `np.max` over a non-empty float64 array (NaN propagates).
@@ -260,7 +303,7 @@ impl<'a> Dng<'a> {
             Some(Value::Bytes(b)) => b.iter().map(|&v| i64::from(v)).collect(),
             Some(v) => v.items().iter().map(py_int).collect::<PyResult<_>>()?,
         };
-        let size = i64::try_from(pat.len()).unwrap_or(i64::MAX);
+        let size = i64::try_from(pat.len()).map_err(|_| crate::bounds::too_big())?;
         if dim.iter().product::<i64>() != size || dim.iter().any(|&d| d < 0) {
             return Err(PyErr::Value(format!(
                 "cannot reshape array of size {size} into shape {}",
@@ -300,46 +343,12 @@ impl<'a> Dng<'a> {
         let aw = aa.get(3).ok_or_else(tuple_index)? - aa[1];
         let ah = aa[2] - aa[0];
         let bdim = ints_or(raw, 50713, &[1, 1])?;
-        let mut bl = match val(raw, 50714) {
+        let bl = match val(raw, 50714) {
             Some(v) => v.as_f64()?,
             None => vec![0.0],
         };
         let list_index = || PyErr::Index("list index out of range".into());
-        let (b0, b1) = (
-            *bdim.first().ok_or_else(list_index)?,
-            *bdim.get(1).ok_or_else(list_index)?,
-        );
-        if bl.len() == 1 {
-            if b0 * b1 < 0 {
-                return Err(PyErr::Value("negative dimensions are not allowed".into()));
-            }
-            bl = vec![bl[0]; usize::try_from(b0 * b1).unwrap_or(0)];
-        }
-        let bl_size = i64::try_from(bl.len()).unwrap_or(i64::MAX);
-        if bl_size != b0 * b1 {
-            return Err(PyErr::NotImplemented(format!(
-                "BlackLevel count {bl_size} for repeat {}",
-                py_int_list_repr(&bdim)
-            )));
-        }
-        if bdim.len() != 2 {
-            if bdim.iter().product::<i64>() != bl_size {
-                return Err(PyErr::Value(format!(
-                    "cannot reshape array of size {bl_size} into shape {}",
-                    np_shape_text(&bdim)
-                )));
-            }
-            // Python keeps an n-dimensional pattern here; the GPU and render paths never see one.
-            return Err(PyErr::RawDecode(format!(
-                "这份 RAW 的写法暂不支持（BlackLevelRepeatDim {}）",
-                py_int_list_repr(&bdim)
-            )));
-        }
-        let black_pattern = Grid {
-            rows: usize::try_from(b0).unwrap_or(0),
-            cols: usize::try_from(b1).unwrap_or(0),
-            values: bl,
-        };
+        let black_pattern = black_grid(&bdim, bl)?;
         let black_dh = val(raw, 50715).map(Value::as_f64).transpose()?;
         let black_dv = val(raw, 50716).map(Value::as_f64).transpose()?;
         if black_dh

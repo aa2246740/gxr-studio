@@ -6,6 +6,7 @@
 //! `json` is the writer `gxr-cli` and `gxr-wasm` share, so both print the same bytes.
 #![forbid(unsafe_code)]
 
+pub mod bounds;
 pub mod codes;
 pub mod colorimetry;
 pub mod dng;

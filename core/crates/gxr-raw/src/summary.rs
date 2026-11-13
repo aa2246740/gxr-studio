@@ -4,6 +4,35 @@ use crate::dng::{Dng, ExifValue};
 use crate::json::Json;
 use crate::sha256::sha256_hex;
 
+fn nest_f64(values: &[f64], shape: &[usize]) -> Json {
+    if shape.is_empty() {
+        return match values.first() {
+            Some(&value) => Json::Float(value),
+            None => Json::Null,
+        };
+    }
+    if shape.len() == 1 {
+        let n = shape[0].min(values.len());
+        return Json::floats(&values[..n]);
+    }
+    let rest = shape[1..]
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim));
+    let Some(row) = rest else {
+        return Json::Array(Vec::new());
+    };
+    let mut rows = Vec::new();
+    for r in 0..shape[0] {
+        let start = r.saturating_mul(row);
+        let end = start.saturating_add(row).min(values.len());
+        if start >= values.len() {
+            break;
+        }
+        rows.push(nest_f64(&values[start..end], &shape[1..]));
+    }
+    Json::Array(rows)
+}
+
 fn pair_grid(g: [[i64; 2]; 2]) -> Json {
     Json::Array(vec![Json::ints(&g[0]), Json::ints(&g[1])])
 }
@@ -24,10 +53,7 @@ fn exif_json(v: &ExifValue) -> Json {
 impl Dng<'_> {
     /// Port of gxr_studio/raw/dng.py:272 Dng.summary.
     pub fn summary(&self) -> Json {
-        let bp = &self.black_pattern;
-        let black_rows: Vec<Json> = (0..bp.rows)
-            .map(|r| Json::floats(&bp.values[r * bp.cols..(r + 1) * bp.cols]))
-            .collect();
+        let black_level = nest_f64(&self.black_pattern.values, &self.black_pattern.shape);
         Json::object([
             ("file", Json::str(self.name.clone())),
             ("sha256", Json::str(sha256_hex(self.data))),
@@ -49,13 +75,12 @@ impl Dng<'_> {
             ("orientation", Json::Int(self.orientation)),
             (
                 "linearization_table",
-                Json::opt(
-                    self.lin_table
-                        .as_ref()
-                        .map(|t| Json::Int(i64::try_from(t.len()).unwrap_or(i64::MAX))),
-                ),
+                Json::opt(self.lin_table.as_ref().map(|t| {
+                    // A `Vec` length is at most `isize::MAX`, which fits in `i64`.
+                    Json::Int(i64::try_from(t.len()).unwrap_or(i64::MAX))
+                })),
             ),
-            ("black_level_pattern", Json::Array(black_rows)),
+            ("black_level_pattern", black_level),
             ("black_delta_h", Json::Bool(self.black_dh.is_some())),
             ("black_delta_v", Json::Bool(self.black_dv.is_some())),
             ("white_level", Json::Float(self.white)),

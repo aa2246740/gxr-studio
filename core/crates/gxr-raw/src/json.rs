@@ -37,7 +37,10 @@ impl Json {
 
     /// `None` → `null`.
     pub fn opt(value: Option<Json>) -> Self {
-        value.unwrap_or(Self::Null)
+        match value {
+            Some(value) => value,
+            None => Self::Null,
+        }
     }
 
     /// The JSON text.

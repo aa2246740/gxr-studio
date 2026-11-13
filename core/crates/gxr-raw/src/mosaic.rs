@@ -23,10 +23,19 @@ pub struct Block {
 
 /// numpy integer indexing of a 1-D array: negative indices count from the end.
 fn np_index(i: i64, n: usize) -> Result<usize, CoreError> {
-    let len = i64::try_from(n).unwrap_or(i64::MAX);
-    let j = if i < 0 { i + len } else { i };
+    let len = crate::bounds::i64_from_len(n)?;
+    let j = if i < 0 {
+        i.checked_add(len).ok_or_else(|| {
+            CoreError::new(
+                "index_error",
+                format!("index {i} is out of bounds for axis 0 with size {n}"),
+            )
+        })?
+    } else {
+        i
+    };
     if (0..len).contains(&j) {
-        Ok(usize::try_from(j).unwrap_or(0))
+        crate::bounds::fit_count_core(u128::try_from(j).map_err(|_| crate::bounds::too_big_core())?)
     } else {
         Err(CoreError::new(
             "index_error",
@@ -37,7 +46,9 @@ fn np_index(i: i64, n: usize) -> Result<usize, CoreError> {
 
 /// `np.frombuffer(data, np.uint8, count=count, offset=offset)`.
 fn frombuffer(data: &[u8], count: i64, offset: i64) -> PyResult<&[u8]> {
-    let ts = i64::try_from(data.len()).unwrap_or(i64::MAX);
+    let ts = crate::bounds::i64_from_len(data.len()).map_err(|_| {
+        PyErr::Value("offset must be non-negative and no greater than buffer length".into())
+    })?;
     if offset < 0 || offset > ts {
         return Err(PyErr::Value(format!(
             "offset must be non-negative and no greater than buffer length ({ts})"
@@ -48,8 +59,11 @@ fn frombuffer(data: &[u8], count: i64, offset: i64) -> PyResult<&[u8]> {
     if s < n {
         return Err(PyErr::Value("buffer is smaller than requested size".into()));
     }
-    let start = usize::try_from(offset).unwrap_or(0);
-    Ok(&data[start..start + usize::try_from(n).unwrap_or(0)])
+    let start =
+        crate::bounds::fit_count(u128::try_from(offset).map_err(|_| crate::bounds::too_big())?)?;
+    let len = crate::bounds::fit_count(u128::try_from(n).map_err(|_| crate::bounds::too_big())?)?;
+    let end = start.checked_add(len).ok_or_else(crate::bounds::too_big)?;
+    Ok(&data[start..end])
 }
 
 /// Bits `[start, start + b)` of a row, most significant first, keeping the low 16 bits like
@@ -65,11 +79,27 @@ fn packed_sample(row: &[u8], start: usize, b: usize) -> u16 {
         let on = (row[bit / 8] >> (7 - bit % 8)) & 1;
         v |= u32::from(on) << shift;
     }
+    // Unreachable fallback: `v & 0xffff` always fits in `u16`.
     u16::try_from(v & 0xffff).unwrap_or(0)
 }
 
-fn decode_rows(rows: &[u8], h: usize, w: usize, b: usize, row: usize, big: bool) -> Vec<u16> {
-    let mut m = vec![0u16; h * w];
+fn fit_dim(v: i128) -> PyResult<usize> {
+    if v < 0 {
+        return Err(crate::bounds::too_big());
+    }
+    crate::bounds::fit_count(u128::try_from(v).map_err(|_| crate::bounds::too_big())?)
+}
+
+fn decode_rows(
+    rows: &[u8],
+    h: usize,
+    w: usize,
+    b: usize,
+    row: usize,
+    big: bool,
+    pixels: u64,
+) -> PyResult<Vec<u16>> {
+    let mut m = crate::bounds::reserve_u16(pixels)?;
     for y in 0..h {
         let r = &rows[y * row..(y + 1) * row];
         let out = &mut m[y * w..(y + 1) * w];
@@ -112,7 +142,7 @@ fn decode_rows(rows: &[u8], h: usize, w: usize, b: usize, row: usize, big: bool)
             }
         }
     }
-    m
+    Ok(m)
 }
 
 impl Dng<'_> {
@@ -154,20 +184,29 @@ impl Dng<'_> {
             i128::from(self.width),
             i128::from(self.bps),
         );
-        let row = (w * b + 7).div_euclid(8);
-        if (buf.len() as i128) < row * h {
+        let row = w
+            .checked_mul(b)
+            .and_then(|n| n.checked_add(7))
+            .ok_or_else(crate::bounds::too_big)?
+            .div_euclid(8);
+        let need = row.checked_mul(h).ok_or_else(crate::bounds::too_big)?;
+        let buf_len = i128::try_from(buf.len()).map_err(|_| crate::bounds::too_big())?;
+        if buf_len < need {
             return Err(PyErr::Value("raw strips shorter than the image".into()));
         }
-        let (h, w, b, row) = (
-            usize::try_from(h).unwrap_or(0),
-            usize::try_from(w).unwrap_or(0),
-            usize::try_from(b).unwrap_or(0),
-            usize::try_from(row).unwrap_or(0),
-        );
+        let h = fit_dim(h)?;
+        let w = fit_dim(w)?;
+        let b = fit_dim(b)?;
+        let row = fit_dim(row)?;
+        let plane = h.checked_mul(row).ok_or_else(crate::bounds::too_big)?;
+        let pixels = u64::try_from(h)
+            .ok()
+            .and_then(|h| u64::try_from(w).ok().and_then(|w| h.checked_mul(w)))
+            .ok_or_else(crate::bounds::too_big)?;
         Ok(Mosaic {
             height: h,
             width: w,
-            values: decode_rows(&buf[..row * h], h, w, b, row, self.big_endian),
+            values: decode_rows(&buf[..plane], h, w, b, row, self.big_endian, pixels)?,
         })
     }
 
@@ -181,7 +220,14 @@ impl Dng<'_> {
         let (y0, x0, h, w) = self.crop_window();
         let m = self.mosaic()?;
         let (y0, x0, h, w) = self.in_plane(y0, y0 + h, x0, x0 + w)?;
-        let mut values = Vec::with_capacity(h * w);
+        let n = u64::try_from(h)
+            .ok()
+            .and_then(|h| u64::try_from(w).ok().and_then(|w| h.checked_mul(w)))
+            .ok_or_else(crate::bounds::too_big_core)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(crate::bounds::fit_count_core(u128::from(n))?)
+            .map_err(|_| crate::bounds::too_big_core())?;
         for y in y0..y0 + h {
             values.extend_from_slice(&m.values[y * m.width + x0..y * m.width + x0 + w]);
         }
@@ -208,15 +254,25 @@ impl Dng<'_> {
                 format!("block [{y0}, {y1}) x [{x0}, {x1}) outside the raw plane"),
             ));
         }
-        let u = |v: i64| usize::try_from(v).unwrap_or(0);
-        Ok((u(y0), u(x0), u(y1 - y0), u(x1 - x0)))
+        let u = |v: i64| -> Result<usize, CoreError> {
+            let n = u128::try_from(v).map_err(|_| crate::bounds::too_big_core())?;
+            crate::bounds::fit_count_core(n)
+        };
+        Ok((u(y0)?, u(x0)?, u(y1 - y0)?, u(x1 - x0)?))
     }
 
     /// Port of gxr_studio/raw/dng.py:229 Dng.cfa_at: colour (0 R, 1 G, 2 B) at a raw-plane
     /// position; the pattern starts at the ActiveArea origin.
     pub fn cfa_at(&self, y: i64, x: i64) -> i64 {
-        let r = usize::try_from((y - self.active[0]).rem_euclid(2)).unwrap_or(0);
-        let c = usize::try_from((x - self.active[1]).rem_euclid(2)).unwrap_or(0);
+        // `rem_euclid(2)` is 0 or 1. The match does not convert a file integer with a fallback.
+        let r = match (y - self.active[0]).rem_euclid(2) {
+            0 => 0,
+            _ => 1,
+        };
+        let c = match (x - self.active[1]).rem_euclid(2) {
+            0 => 0,
+            _ => 1,
+        };
         self.cfa[r][c]
     }
 
@@ -224,12 +280,21 @@ impl Dng<'_> {
     pub fn black_at(&self, y: i64, x: i64) -> Result<f64, CoreError> {
         let (ry, rx) = (y - self.active[0], x - self.active[1]);
         let bp = &self.black_pattern;
-        let rows = i64::try_from(bp.rows).unwrap_or(1);
-        let cols = i64::try_from(bp.cols).unwrap_or(1);
-        let mut b = bp.at(
-            usize::try_from(ry.rem_euclid(rows)).unwrap_or(0),
-            usize::try_from(rx.rem_euclid(cols)).unwrap_or(0),
-        );
+        if bp.shape.len() != 2 || bp.rows == 0 || bp.cols == 0 {
+            return Err(CoreError::new(
+                "unexpected",
+                "ValueError: black level pattern is not a 2-D repeat",
+            ));
+        }
+        let rows = i64::try_from(bp.rows).map_err(|_| crate::bounds::too_big_core())?;
+        let cols = i64::try_from(bp.cols).map_err(|_| crate::bounds::too_big_core())?;
+        let at = |v: i64, n: i64| -> Result<usize, CoreError> {
+            let m = v.rem_euclid(n);
+            crate::bounds::fit_count_core(
+                u128::try_from(m).map_err(|_| crate::bounds::too_big_core())?,
+            )
+        };
+        let mut b = bp.at(at(ry, rows)?, at(rx, cols)?);
         if let Some(dh) = &self.black_dh {
             b += dh[np_index(rx, dh.len())?];
         }
@@ -244,7 +309,7 @@ impl Dng<'_> {
         match &self.lin_table {
             None => Ok(f64::from(v)),
             Some(t) => {
-                let last = i64::try_from(t.len()).unwrap_or(0) - 1;
+                let last = crate::bounds::i64_from_len(t.len())?.saturating_sub(1);
                 Ok(t[np_index(i64::from(v).min(last), t.len())?])
             }
         }
@@ -264,7 +329,22 @@ impl Dng<'_> {
     pub fn normalised_block(&self, y0: i64, y1: i64, x0: i64, x1: i64) -> Result<Block, CoreError> {
         let m = self.mosaic()?;
         let (py0, px0, rows, cols) = self.in_plane(y0, y1, x0, x1)?;
-        let mut values = Vec::with_capacity(rows * cols);
+        if self.black_pattern.shape.len() != 2 {
+            let mut right = vec![rows, cols];
+            right.extend_from_slice(&self.black_pattern.shape[2..]);
+            let msg = crate::bounds::broadcast_error(&[rows, cols], &right).ok_or_else(|| {
+                CoreError::new("unexpected", "ValueError: black level pattern is not 2-D")
+            })?;
+            return Err(CoreError::new("unexpected", format!("ValueError: {msg}")));
+        }
+        let n = u64::try_from(rows)
+            .ok()
+            .and_then(|r| u64::try_from(cols).ok().and_then(|c| r.checked_mul(c)))
+            .ok_or_else(crate::bounds::too_big_core)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(crate::bounds::fit_count_core(u128::from(n))?)
+            .map_err(|_| crate::bounds::too_big_core())?;
         for (r, y) in (y0..y1).enumerate() {
             for (c, x) in (x0..x1).enumerate() {
                 let black = self.black_at(y, x)?;

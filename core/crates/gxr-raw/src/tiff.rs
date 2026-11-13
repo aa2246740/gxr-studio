@@ -234,14 +234,28 @@ impl<'a> Tiff<'a> {
 
     /// Port of gxr_studio/raw/tiff.py:44 Tiff.ifd. `big_endian` overrides the file's byte order.
     pub(crate) fn ifd(&self, offset: i64, big_endian: Option<bool>) -> PyResult<Ifd> {
-        let e = big_endian.unwrap_or(self.big_endian);
-        let len = i64::try_from(self.data.len()).unwrap_or(i64::MAX);
+        let e = match big_endian {
+            Some(flag) => flag,
+            None => self.big_endian,
+        };
+        let len = crate::bounds::i64_from_len(self.data.len())
+            .map_err(|_| PyErr::Value("IFD 偏移越界".into()))?;
         if !(0 <= offset && offset <= len - 2) {
             return Err(PyErr::Value("IFD 偏移越界".into()));
         }
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let offset = crate::bounds::fit_count(
+            u128::try_from(offset).map_err(|_| PyErr::Value("IFD 偏移越界".into()))?,
+        )
+        .map_err(|_| PyErr::Value("IFD 偏移越界".into()))?;
         let count = usize::from(u16_at(self.data, offset, e));
-        if offset + 2 + 12 * count + 4 > self.data.len() {
+        let ifd_bytes = count
+            .checked_mul(12)
+            .and_then(|n| n.checked_add(6))
+            .and_then(|n| offset.checked_add(n));
+        let Some(ifd_end) = ifd_bytes else {
+            return Err(PyErr::Value("IFD 超出文件".into()));
+        };
+        if ifd_end > self.data.len() {
             return Err(PyErr::Value("IFD 超出文件".into()));
         }
         let mut result = Ifd::new();
@@ -253,21 +267,37 @@ impl<'a> Tiff<'a> {
             let Some((fmt, size)) = type_info(typ) else {
                 continue;
             };
-            let length = u64::from(n) * size as u64;
+            let length = u64::from(n)
+                .checked_mul(
+                    u64::try_from(size)
+                        .map_err(|_| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?,
+                )
+                .ok_or_else(|| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?;
+            let inline = u64::try_from(p)
+                .ok()
+                .and_then(|p| p.checked_add(8))
+                .ok_or_else(|| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?;
             let o = if length <= 4 {
-                (p + 8) as u64
+                inline
             } else {
                 u64::from(u32_at(self.data, p + 8, e))
             };
-            if o + length > self.data.len() as u64 {
+            let end = o
+                .checked_add(length)
+                .ok_or_else(|| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?;
+            let file_len = u64::try_from(self.data.len())
+                .map_err(|_| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?;
+            if end > file_len {
                 return Err(PyErr::Value(format!("标签 {tag} 的数据超出文件")));
             }
-            let (o, length) = (
-                usize::try_from(o).unwrap_or(0),
-                usize::try_from(length).unwrap_or(0),
-            );
+            let o = usize::try_from(o)
+                .map_err(|_| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?;
+            let length = usize::try_from(length)
+                .map_err(|_| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?;
             let raw = &self.data[o..o + length];
-            let n_items = usize::try_from(n).unwrap_or(0);
+            // `n` is a `u32` tag count. `try_from` fails only if it does not fit `usize`.
+            let n_items = usize::try_from(n)
+                .map_err(|_| PyErr::Value(format!("标签 {tag} 的数据超出文件")))?;
             let value = match (typ, fmt) {
                 (2, _) => Value::Ascii(ascii_value(raw)),
                 (_, None) => Value::Bytes(raw.to_vec()),

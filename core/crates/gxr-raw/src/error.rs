@@ -45,6 +45,8 @@ pub(crate) enum PyErr {
     Index(String),
     /// Python lets `OverflowError` escape `open_dng`; there is no `RawDecodeError` text for it.
     Overflow(String),
+    /// `RawDecodeError` raised inside `Dng.__init__` (re-raised by `open_dng`).
+    #[allow(dead_code)]
     RawDecode(String),
 }
 
