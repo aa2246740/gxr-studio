@@ -160,3 +160,21 @@ impl Npy {
         Ok(out)
     }
 }
+
+/// A `.npy` file (format 1.0) the way `np.save` writes it: the header dict padded with spaces
+/// and a newline so the payload starts on a 64-byte boundary. `payload` is already
+/// little-endian in C order.
+pub fn encode(descr: &str, shape: &[usize], payload: &[u8]) -> Vec<u8> {
+    let dims: Vec<String> = shape.iter().map(ToString::to_string).collect();
+    let shape_text = if dims.len() == 1 { format!("({},)", dims[0]) } else { format!("({})", dims.join(", ")) };
+    let mut dict = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_text}, }}");
+    let total = 10 + dict.len() + 1;
+    dict.push_str(&" ".repeat((64 - total % 64) % 64));
+    dict.push('\n');
+    let mut out = b"\x93NUMPY\x01\x00".to_vec();
+    let len = u16::try_from(dict.len()).map_or(u16::MAX, |v| v);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(dict.as_bytes());
+    out.extend_from_slice(payload);
+    out
+}

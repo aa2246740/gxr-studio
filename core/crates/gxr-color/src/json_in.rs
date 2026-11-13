@@ -32,6 +32,13 @@ impl Value {
         }
     }
 
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
             Value::Array(items) => Some(items),
@@ -92,6 +99,9 @@ impl<'a> Parser<'a> {
             '"' => Ok(Value::Str(self.string()?)),
             '[' => self.array(),
             '{' => self.object(),
+            'N' => self.literal("NaN", Value::Float(f64::NAN)),
+            'I' => self.literal("Infinity", Value::Float(f64::INFINITY)),
+            '-' if self.text[self.i..].starts_with("-Infinity") => self.literal("-Infinity", Value::Float(f64::NEG_INFINITY)),
             '-' | '0'..='9' => self.number(),
             _ => Err(bad("expected a value")),
         }
@@ -176,19 +186,35 @@ impl<'a> Parser<'a> {
             'n' => Ok('\n'),
             'r' => Ok('\r'),
             't' => Ok('\t'),
-            'u' => self.hex4(),
+            'u' => self.unicode(),
             _ => Err(bad("bad escape")),
         }
     }
 
-    fn hex4(&mut self) -> Result<char, CoreError> {
+    /// `\uXXXX`, joining a UTF-16 surrogate pair the way Python's `json` does.
+    fn unicode(&mut self) -> Result<char, CoreError> {
+        let first = self.hex4()?;
+        if (0xD800..0xDC00).contains(&first) && self.text[self.i..].starts_with("\\u") {
+            let save = self.i;
+            self.i += 2;
+            let second = self.hex4()?;
+            if (0xDC00..0xE000).contains(&second) {
+                let code = 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
+                return char::from_u32(code).ok_or_else(|| bad("bad unicode escape"));
+            }
+            self.i = save;
+        }
+        char::from_u32(first).ok_or_else(|| bad("bad unicode escape"))
+    }
+
+    fn hex4(&mut self) -> Result<u32, CoreError> {
         let mut code = 0u32;
         for _ in 0..4 {
             let c = self.bump()?;
             let digit = c.to_digit(16).ok_or_else(|| bad("bad unicode escape"))?;
             code = (code << 4) | digit;
         }
-        char::from_u32(code).ok_or_else(|| bad("bad unicode escape"))
+        Ok(code)
     }
 
     fn number(&mut self) -> Result<Value, CoreError> {

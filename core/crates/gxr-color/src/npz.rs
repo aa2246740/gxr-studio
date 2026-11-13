@@ -5,25 +5,33 @@
 
 use gxr_raw::CoreError;
 
-use crate::npy::{Npy, decode};
 
 fn bad(message: impl Into<String>) -> CoreError {
     CoreError::new("zip", message)
 }
 
-/// Named `.npy` members, in archive order. The `.npy` suffix is removed.
-pub fn load(bytes: &[u8]) -> Result<Vec<(String, Npy)>, CoreError> {
+/// Named `.npy` members, in archive order, still encoded (numpy decodes a member only when
+/// it is read). The `.npy` suffix is removed.
+pub fn load(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, CoreError> {
+    // `np.load` dispatch: a zip (or an empty zip) is an `NpzFile`; a bare `.npy` is an array,
+    // which `with ... as z` then rejects; anything else is the pickle path.
+    if bytes.starts_with(b"\x93NUMPY") {
+        return Err(CoreError::new("type", "'numpy.ndarray' object does not support the context manager protocol"));
+    }
+    if !bytes.starts_with(b"PK\x03\x04") && !bytes.starts_with(b"PK\x05\x06") {
+        return Err(CoreError::new(
+            "value",
+            "This file contains pickled (object) data. If you trust the file you can load it unsafely using the `allow_pickle=` keyword argument or `pickle.load()`.",
+        ));
+    }
     let mut out = Vec::new();
     let mut at = 0usize;
     while at + 4 <= bytes.len() && &bytes[at..at + 4] == b"PK\x03\x04" {
         let (name, data, next) = local(bytes, at)?;
         if let Some(stem) = name.strip_suffix(".npy") {
-            out.push((stem.to_string(), decode(&data)?));
+            out.push((stem.to_string(), data));
         }
         at = next;
-    }
-    if out.is_empty() && !bytes.starts_with(b"PK\x03\x04") {
-        return Err(bad("not a zip file"));
     }
     Ok(out)
 }

@@ -148,22 +148,53 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 
 `run_area` 把路径写成 JSON，执行 `node mobile/scripts/wasm_vs_native.mjs --area <领域> --cli <gxr-cli> --inputs <json>`。驱动失败时，默认用驱动自己的输出让测试失败。WASM 包或 `node` 不在时跳过，除非 `GXR_REQUIRE_CORE=1`。`GXR_REQUIRE_GPU_TEST` 不会把缺包变成失败。
 
-## 色彩：旋钮
+## 色彩（`gxr-color`）
 
-`gxr-color` 移植 `engine/knobs.py` 和 `engine/menu.py`。菜单 JSON 由调用方传入，不嵌进这个 crate。
+移植 `engine/knobs.py`、`engine/menu.py`、`camdata/calib.py` 的 `_context` 与 `model_for`、冻结引擎的正向模型（`sector_model`、`pretable` 正向、`matrix_model`、`colour.Z_of_words`、`model.pre/predict`、`unit_model`）、`render/chain.py` 的烘焙与套用、`render/tones.py`，以及 `gpu/tables.py` 的 `bake_bytes`。菜单 JSON 由调用方传入，不嵌进这个 crate。不移植 `exact_u8`、`inverse_stock`、`brentq` 和单调扫描（PORT-WAVE-1 A.2、A.7）。
+
+### 命令
 
 ```text
 gxr-cli color-knobs-apply --entry BASE.bin --menu final.json --params P.json --out OUT.bin [--stock STOCK.bin]
-```
-
-`--entry` 是底子（552 字节）。`--stock` 省略时和底子相同。`P.json` 有 `levels` 时走菜单：还要 `unit`、`slot`，级别必须是整数。没有 `levels` 时用 `amount`（默认 100）、`doses`（10 个整数）、`wb_method`、`tone_method`（默认 0）。成功时把 552 字节写到 `--out`，标准输出是 `out`、`length` 和 `stats`（`clamps`、`node_repairs`、`monotone_repairs`、`slope_repairs`、`colour_cap`、`matrix_cap`、`rowsum_cap`）。`ValueError` 的 kind 是 `value`，文案与 Python 相同。`amount == 0` 仍会重写 CRC，和 `knobs.apply` 一样。
-
-## 色彩：校准 npz
-
-`np.savez` 的包是未压缩的 zip，每个成员是一个 `.npy`。压缩成员拒绝，kind 是 `zip`。`_context` 的检查和 Python 同一句文案：色表行不一致时 kind 是 `stock_mismatch`，尺寸、非有限数和 `S_eff` 还原失败时 kind 是 `calib`。缺数组时 kind 是 `key`，文案是 `'名字'`。
-
-```text
 gxr-cli color-calib-check --npz CTX.npz --entry ENTRY.bin
+gxr-cli color-calib-check --dir CALDIR --unit U --iso N --stock STOCK04.bin
+gxr-cli color-predict --entry E.bin --stock STOCK04.bin --ctx C.npz --ring R.json --codes IN.npy --out OUT.npy [--float] [--half 1] [--base]
+gxr-cli color-bake --entry E.bin --stock STOCK04.bin --ctx C.npz --ring R.json [--params P.json] [--menu final.json] --out BAKE.bin --meta META.json
+gxr-cli color-apply --bake BAKE.bin --meta META.json --codes IN.npy [--params P.json] --out OUT.npy
+gxr-cli color-tones --params P.json --out TABLE.npy
 ```
 
-`ENTRY.bin` 是 552 字节条目，色表行从字节 115:211 解码。成功时 JSON 给出 `rows`（4 或 10）、`d0` 和 `d1` 的长度。
+- `color-knobs-apply`：`P.json` 有 `levels` 时走菜单（还要 `unit`、`slot`，级别必须是整数）；没有时用 `amount`（默认 100）、`doses`（10 个整数）、`wb_method`、`tone_method`。`--stock` 省略时和底子相同。输出 552 字节，标准输出是 `out`、`length` 和 `stats`。`amount == 0` 仍会重写 CRC。
+- `color-calib-check --npz`：`_context` 的检查。`ENTRY.bin` 的字节 115:211 解码成原厂色表行。成功时给出 `rows`（4 或 10）、`d0`、`d1` 的长度。
+- `color-calib-check --dir`：`model_for` 对校准包的检查（版本、单元、原厂 04 指纹、文件清单、sha256），再按 ISO 选模型（`iso >= 566` 用 1600），并建好模型。输出 `iso`、`calibrated`、`model_iso`、`ctx`、`ring`、`rows`。
+- `color-predict`：默认是 `UnitModel.predict`（先 `input_codes`，色相查找用原厂矩阵行）；`--base` 是 `Model.predict`（不做输入映射，按配方色度 `forward`）。码值 `.npy` 是 float32 或 float64，最后一维是 3，dtype 按 Python 的规则参与运算。默认输出 uint8，`--float` 输出夹紧后未量化的 float64。
+- `color-bake`：`P.json` 是 `{"step": 0.375, "knobs": {...}}`，都可省。有 `knobs` 时先 `knobs.apply(stock, entry, …)`，这时要给 `--menu`。`BAKE.bin` 就是 `bake_bytes` 的 float32 表（布局见 `common.wgsl`）。标准输出是 `bytes`、`sha256` 和 `meta`。
+- `color-apply`：`chroma_u8`。`P.json` 是 `{"adjust": {...}, "curves": {...}}`，都可省；增益来自 `channel_gains`，调子表来自 `display_table`。
+- `color-tones`：输出 `gains`（或 null），调子表写成 float32 `.npy`（或 `table: null`）。`adjust` 和 `curves` 是 `parse_adjust` / `parse_curve` 之后的值；解析本身在第二波（编辑解析）。
+
+### meta 多了 `input_coefficients`
+
+Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映射系数是 float32，而 `chroma_u8` 用的是 float64 原值，只读 `.bin` 套不出逐字节相同的结果。所以 meta 另带 `input_coefficients`（float64，4 或 10 行，原样）。显卡只读 `.bin`，不受影响。
+
+### 精度
+
+- 整数、字符串、错误种类和文案：一样。
+- 烘焙表：float32 逐字节相同。套用和 `predict(quantize=True)`：uint8 一样，没有 ±1 余量。
+- 未量化的 `predict` 和增益：`|a−b| ≤ 1e-12·max(1,|a|)`。
+- 运算都是顺序的乘加，不融合。numpy 在这台机器上会融合，也会用分块的 BLAS；这些差在 float64 的末位，存成 float32 或量化以后不见了（PORT-NOTES §2b）。
+- 复数除法照 numpy 的写法：先选分支，再乘倒数 `1/(br + bi·rat)`，不是直接除。
+- `np.sum` 沿 24 个扇区是成对求和（8 路累加再成树）。
+- `np.interp` 照 numpy 的二分查找（带上一次的猜测）和斜率公式。
+- PCHIP 用 scipy 的导数和幂次求值（不是 Horner）。`ndtr` 是 Cephes，`exp` 等走 `gxr_math`。
+- 凸包用单调链代替 Qhull。法向量和 Qhull 逐位相同；偏移量 Qhull 用了融合乘加，这里是普通乘加。
+
+### 错误
+
+- `_context`：色表行不一致 kind `stock_mismatch`；尺寸、非有限数、`S_eff` 还原失败 kind `calib`；缺数组 kind `key`，文案和 numpy 一样（`'名字 is not a file in the archive'`）。不是 zip 的文件走 numpy 的 pickle 文案（kind `value`）。压缩的 zip 成员拒绝，kind `zip`（Python 能读，这是有意的差别：不加解压依赖）。
+- `model_for`：版本、单元、清单、改动 kind `calib`，原厂 04 不匹配 kind `stock_mismatch`。包里缺文件 kind `file_not_found`，文案不和 Python 的 `FileNotFoundError` 逐字相同。
+- 预测和烘焙：`ValueError` 的文案相同（不对称色表行、系数字高位、色相环节点、输入映射尺寸、未知核类型、`需要 v2 pre-table 模型`），色相环缺键 kind `key`。
+- 不和 Python 逐字相同的：八个角张不成面积时 Qhull 报 `QhullError`，这里 kind `qhull`，文案只是一行；条目不是 552 字节（Python 的条目都来自 `datcodec`，永远是 552）；色相环里节点不是 24 个、`gain_per_sector` 不是 1 或 24 个（Python 到预测时才报 numpy 的广播错误，这里构造时就拒绝，文案用节点检查那句）；数字字段不是数字（kind `type`）；网格超过 2^24 格（kind `memory`）。
+
+### WASM
+
+`color_bake(entry, stock, menu_json, ctx_npz, ring_json, params_json)` 返回 `ColorBake`（`bytes()`、`meta`、`summary`），`color_apply(bake_bin, meta_json, codes_f32, params_json)` 返回 uint8。两者和 CLI 走同一段 `gxr-color` 代码。比较用例在 `mobile/scripts/wasm_cases/color.mjs`，每个输入是一份列出文件的 JSON。
