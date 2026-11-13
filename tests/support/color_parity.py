@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from gxr_studio.camdata import calib
-from gxr_studio.camdata.unit_model import UnitModel
+from gxr_studio.camdata.unit_model import UnitModel, input_codes
 from gxr_studio.engine import knobs, menu
 from gxr_studio.engine.model import Model
 from gxr_studio.gpu import tables
@@ -109,14 +109,38 @@ def float_gap(python: np.ndarray, rust: np.ndarray) -> str | None:
     return f"{len(bad)} over 1e-12; first {i}: python {python.reshape(-1)[i]!r} rust {rust.reshape(-1)[i]!r}"
 
 
+def _hue_spread(model: UnitModel, entry: bytes, x: np.ndarray, ch: int, *, half: int, base: bool) -> float:
+    """S: Python's own output change for one pixel when its hue input moves one float64 ulp
+    (the larger of + and -). The steps are `UnitModel.predict` / `Model.predict` with the hue
+    taken out so it can be moved."""
+    if entry[0] == 3:
+        return 0.0
+    pre = model.pre(entry, x if base else input_codes(x, model.input_coefficients))
+    at = 216 + half * 28
+    row = model.mm.MatrixRow.from_bytes(entry[at : at + 28])
+    z = chain._sector_z(model, entry)
+    y, ci = row.apply(pre)
+    cl = ci if base else model.mm.MatrixRow.from_bytes(model.factory[at : at + 28]).apply(pre)[1]
+    table = model.engine.table
+    hue, mag = table.sm.hue_deg(cl), abs(cl)
+
+    def out(h: np.ndarray) -> float:
+        co = (ci * table.S_of(h, mag)) * table.z(z, h, mag)
+        return float(np.clip(model.mm.rgb_from_ycc(y, co), 0, 255)[0, ch])
+
+    here = out(hue)
+    return max(abs(out(np.nextafter(hue, np.inf)) - here), abs(out(np.nextafter(hue, -np.inf)) - here))
+
+
 def predict_gap(
     pack: Pack, entry: bytes, codes: np.ndarray, py: np.ndarray, rust: np.ndarray, *, half: int, base: bool
 ) -> tuple[str | None, list[str]]:
-    """The float64 predict gate (UNIT-color manager amendment 2026-11-13):
-    ``|rs - py| <= max(1e-12 * max(1, |py|), 2 * |py_batched - py_single|)``.
+    """The float64 predict gate (UNIT-color manager amendment 2, 2026-11-13):
+    ``|rs - py| <= max(1e-12 * max(1, |py|), 2 * |py_batched - py_single|, 2 * S)``.
 
-    `py` is the batched result. The single-pixel value is computed for every element the first
-    term does not already decide. Returns (failure or None, the cases the second term decided).
+    `py` is the batched result; S is `_hue_spread`. Both are computed for every element the
+    first term does not already decide. Returns (failure or None, the cases the second or
+    third term decided, each with its term).
     """
     assert py.dtype == np.float64 and rust.dtype == np.float64, (py.dtype, rust.dtype)
     assert py.shape == rust.shape, (py.shape, rust.shape)
@@ -128,13 +152,16 @@ def predict_gap(
     for i in over:
         i = int(i)
         px, ch = divmod(i, 3)
-        single = float(fn(model, entry, codes[px : px + 1], quantize=False, half=half)[0, ch])
+        x = codes[px : px + 1]
+        single = float(fn(model, entry, x, quantize=False, half=half)[0, ch])
+        spread = _hue_spread(model, entry, x, ch, half=half, base=base)
         a, r = float(flat_py[i]), float(flat_rs[i])
-        bound = max(1e-12 * max(1.0, abs(a)), 2.0 * abs(a - single))
-        text = f"flat {i} (pixel {px}, channel {ch}): python batched {a!r} single {single!r} rust {r!r}"
+        terms = {"1e-12": 1e-12 * max(1.0, abs(a)), "batched-single": 2.0 * abs(a - single), "hue ulp": 2.0 * spread}
+        term, bound = max(terms.items(), key=lambda kv: kv[1])
+        text = f"flat {i} (pixel {px}, channel {ch}): python batched {a!r} single {single!r} rust {r!r}; S {spread:.3e}"
         if abs(r - a) > bound:
             return text + f"; |rs - py| {abs(r - a):.3e} > bound {bound:.3e}", decided
-        decided.append(text)
+        decided.append(text + f"; |rs - py| {abs(r - a):.3e} <= {bound:.3e} ({term})")
     return None, decided
 
 
@@ -205,11 +232,14 @@ def _gains(model: UnitModel, entry: bytes, bk: Any, nx: int, cell: int) -> tuple
 def bake_gap(
     py: tuple[bytes, dict[str, Any], Any], rust: tuple[bytes, dict[str, Any], Any], model: UnitModel, entry: bytes
 ) -> tuple[str | None, list[str]]:
-    """The bake gate (UNIT-color manager amendment 2026-11-13).
+    """The bake gate (UNIT-color manager amendments 1 and 2, 2026-11-13).
 
-    Every float32 byte is exact, except a gain component where Python's own float64 value,
-    batched or single-cell, lies within 4 float64 ulp of a float32 rounding midpoint; there the
-    Rust float32 may be the neighbouring float32. Returns (failure or None, the allowed cells).
+    Every float32 byte is exact, except a gain component where either
+    (a) Python's own float64 value, batched or single-cell, lies within 4 float64 ulp of a
+        float32 rounding midpoint and the Rust float32 is the neighbouring float32, or
+    (b) ``|rs - py| <= 8 * ulp_f64(|g_py|)``, with ``g_py`` Python's float64 gain at the cell as
+        the bake computed it (batched) and ``py`` its component.
+    Returns (failure or None, the allowed cells with their rule).
     """
     data, meta, bk = py
     r_data, r_meta, summary = rust
@@ -241,9 +271,18 @@ def bake_gap(
             return text + "; the recomputed batch does not reproduce the stored value", allowed
         neighbour = b[i] in (np.nextafter(a[i], np.float32(np.inf)), np.nextafter(a[i], np.float32(-np.inf)))
         ulps = min(_midpoint_ulps(pick(batched)), _midpoint_ulps(pick(single)))
-        if not neighbour or ulps > 4.0:
-            return text + f"; midpoint distance {ulps:.2f} f64 ulp, neighbour={neighbour}", allowed
-        allowed.append(text + f"; midpoint distance {ulps:.2f} f64 ulp")
+        if neighbour and ulps <= 4.0:
+            allowed.append(text + f"; rule (a): midpoint distance {ulps:.2f} f64 ulp")
+            continue
+        gap = abs(float(b[i]) - pick(batched))
+        scale = 8.0 * float(np.spacing(abs(batched)))
+        if gap <= scale:
+            allowed.append(text + f"; rule (b): |rs - py| {gap:.3e} <= 8 ulp_f64(|g| = {abs(batched)!r}) = {scale:.3e}")
+            continue
+        return (
+            text + f"; midpoint distance {ulps:.2f} f64 ulp (neighbour={neighbour}); |rs - py| {gap:.3e} > 8 ulp_f64(|g|) {scale:.3e}",
+            allowed,
+        )
     return None, allowed
 
 

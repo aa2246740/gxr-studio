@@ -382,7 +382,7 @@ def _check_predict(tmp: Path, pack: Any, entry: bytes, codes: np.ndarray, **kw: 
     if kw.get("flt"):
         gap, decided = cp.predict_gap(pack, entry, codes, py, rust, half=kw.get("half", 0), base=kw.get("base", False))
         for line in decided:
-            print(f"predict decided by numpy's own spread: {line}")
+            print(f"predict allowed: {line}")
         assert gap is None, gap
     else:
         assert py.dtype == np.uint8 and rust.dtype == np.uint8
@@ -443,7 +443,7 @@ def _check_bake(tmp: Path, pack: Any, entry: bytes, **kw: Any) -> Any:
         return None
     gap, allowed = cp.bake_gap(py, rust, pack.model(), entry)
     for line in allowed:
-        print(f"bake float32 at an f32 rounding midpoint (allowed): {line}")
+        print(f"bake float32 allowed: {line}")
     assert gap is None, gap
     return py[2]
 
