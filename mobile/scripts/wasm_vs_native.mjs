@@ -1,6 +1,7 @@
 // 同一批 DNG：WASM 和 gxr-cli 必须给出相同的成功字节，或相同的 kind 与 message。
 // CLI 只有退出码正好是 2、且 stdout 是 {"error":{"kind","message"}} 时才算失败结果。
 // 其它退出码、信号、spawn 错误、空 stdout、无法解析、超时，都是脚本失败，不能当成一致。
+// 退出码 0 也必须打印一个不带 error 的 JSON 对象。
 // 用法：node mobile/scripts/wasm_vs_native.mjs <paths.json> <gxr-cli>
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -53,14 +54,20 @@ function spawnCli(args) {
 }
 
 function cliSide(proc) {
-  if (proc.status === 0) return { ok: true, stdout: proc.stdout ?? '' };
-  if (proc.status !== 2) throw new Error(`status ${proc.status}`);
+  if (proc.status !== 0 && proc.status !== 2) throw new Error(`status ${proc.status}`);
+  // Both outcomes must print one JSON object; success may not carry an error.
   if (!proc.stdout || !proc.stdout.trim()) throw new Error('empty stdout');
   let parsed;
   try {
     parsed = JSON.parse(proc.stdout);
   } catch {
     throw new Error('unparseable stdout');
+  }
+  if (proc.status === 0) {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || 'error' in parsed) {
+      throw new Error('success stdout is not a result object');
+    }
+    return { ok: true, stdout: proc.stdout };
   }
   const err = parsed && parsed.error;
   if (!err || typeof err.kind !== 'string' || typeof err.message !== 'string') {
