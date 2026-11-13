@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use gxr_raw::CoreError;
 
+use crate::bounds::{add_u64, fit_count, mul_u64, try_vec_with_capacity};
 use crate::crc32::{align4, crc, u16_be, u32_be};
 use crate::datcodec::{
     CRC_FIELDS, Dat, ENTRY_BYTES, KINDS, Look, OFFSETS, POOL_LENGTHS, ROW_BYTES, dat_error,
@@ -57,26 +58,40 @@ pub fn parse_looks(
     if area.len() < 32 {
         return Err(dat_error("效果区头、尺寸或 CRC 不合格"));
     }
-    let capacity = usize::from(u16_be(area, 8));
-    let count = usize::from(u16_be(area, 10));
+    let capacity_u64 = u64::from(u16_be(area, 8));
+    let count_u64 = u64::from(u16_be(area, 10));
     let caps = &area[16..20];
     let used = &area[20..24];
-    let expected_len: usize = 32
-        + 32 * capacity
-        + (0..4)
-            .map(|k| align4(usize::from(caps[k]) * POOL_LENGTHS[k]))
-            .sum::<usize>();
+    let mut expected_len_u64 = add_u64(
+        32,
+        mul_u64(32, capacity_u64, "效果区头、尺寸或 CRC 不合格")?,
+        "效果区头、尺寸或 CRC 不合格",
+    )?;
+    for k in 0..4 {
+        let cap_bytes = mul_u64(
+            u64::from(caps[k]),
+            POOL_LENGTHS[k] as u64,
+            "效果区头、尺寸或 CRC 不合格",
+        )?;
+        let aligned = add_u64(cap_bytes, 3, "效果区头、尺寸或 CRC 不合格")? & !3u64;
+        expected_len_u64 = add_u64(expected_len_u64, aligned, "效果区头、尺寸或 CRC 不合格")?;
+    }
     if &area[..8] != b"GXFX\x00\x01\x00 "
         || area[12..16] != [0, 32, 0, 0]
-        || count > capacity
-        || capacity > 48
+        || count_u64 > capacity_u64
+        || capacity_u64 > 48
         || (0..4).any(|k| used[k] > caps[k] || caps[k] > 127)
-        || area.len() != expected_len
+        || (area.len() as u64) != expected_len_u64
         || u32_be(area, 28) != crc(&area[..28])
         || u32_be(area, 24) != crc(&area[32..])
-        || area[32 + 32 * count..32 + 32 * capacity]
-            .iter()
-            .any(|&b| b != 0)
+    {
+        return Err(dat_error("效果区头、尺寸或 CRC 不合格"));
+    }
+    let count = fit_count(count_u64, "效果区头、尺寸或 CRC 不合格")?;
+    let capacity = fit_count(capacity_u64, "效果区头、尺寸或 CRC 不合格")?;
+    if area[32 + 32 * count..32 + 32 * capacity]
+        .iter()
+        .any(|&b| b != 0)
     {
         return Err(dat_error("效果区头、尺寸或 CRC 不合格"));
     }
@@ -89,7 +104,7 @@ pub fn parse_looks(
     }
 
     let mut seen: [BTreeSet<usize>; 4] = Default::default();
-    let mut out = Vec::with_capacity(count);
+    let mut out = try_vec_with_capacity(count, "效果区头、尺寸或 CRC 不合格")?;
     for i in 0..count {
         let record = &area[32 + 32 * i..64 + 32 * i];
         let base = record[0];

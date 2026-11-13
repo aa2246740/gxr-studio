@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use gxr_raw::{CoreError, Json};
 
+use crate::bounds::{add_u64, fit_count, mul_u64, try_vec_with_capacity};
 use crate::crc32::{u16_be, u32_be};
 use crate::datcodec::{dat_error, parse, profile};
 use crate::json_parse::{Val, parse_json};
@@ -180,16 +181,19 @@ pub fn read(
         return Err(dat_error("kv2 点表头长度不合格"));
     }
     let compact = &block[..8] == b"GXKV2R3\0";
-    let recipe_count = usize::from(u16_be(block, 22));
-    let recipe_base = u32_be(block, 36) as usize;
-    let mut recipes = Vec::with_capacity(recipe_count);
+    let block_len_u64 = block.len() as u64;
+    let recipe_count_u64 = u64::from(u16_be(block, 22));
+    let recipe_base_u64 = u64::from(u32_be(block, 36));
+    let recipe_table_bytes = mul_u64(16, recipe_count_u64, "kv2 配方目录越界")?;
+    let recipe_table_end = add_u64(recipe_base_u64, recipe_table_bytes, "kv2 配方目录越界")?;
+    if recipe_table_end > block_len_u64 {
+        return Err(dat_error("kv2 配方目录越界"));
+    }
+    let recipe_count = fit_count(recipe_count_u64, "kv2 配方目录越界")?;
+    let recipe_base = fit_count(recipe_base_u64, "kv2 配方目录越界")?;
+    let mut recipes = try_vec_with_capacity(recipe_count, "kv2 配方目录越界")?;
     for i in 0..recipe_count {
-        let at = recipe_base
-            .checked_add(16 * i)
-            .ok_or_else(|| dat_error("kv2 配方目录越界"))?;
-        if at.checked_add(6).is_none_or(|end| end > block.len()) {
-            return Err(dat_error("kv2 配方目录越界"));
-        }
+        let at = recipe_base + 16 * i;
         recipes.push(MenuRecipe {
             unit: block[at],
             slot: block[at + 1],
@@ -214,16 +218,18 @@ pub fn read(
         }
     }
 
-    let item_count = usize::from(u16_be(block, 24));
-    let item_base = u32_be(block, 40) as usize;
-    let mut items = Vec::with_capacity(item_count);
+    let item_count_u64 = u64::from(u16_be(block, 24));
+    let item_base_u64 = u64::from(u32_be(block, 40));
+    let item_table_bytes = mul_u64(16, item_count_u64, "kv2 项目表越界")?;
+    let item_table_end = add_u64(item_base_u64, item_table_bytes, "kv2 项目表越界")?;
+    if item_table_end > block_len_u64 {
+        return Err(dat_error("kv2 项目表越界"));
+    }
+    let item_count = fit_count(item_count_u64, "kv2 项目表越界")?;
+    let item_base = fit_count(item_base_u64, "kv2 项目表越界")?;
+    let mut items = try_vec_with_capacity(item_count, "kv2 项目表越界")?;
     for i in 0..item_count {
-        let at = item_base
-            .checked_add(16 * i)
-            .ok_or_else(|| dat_error("kv2 项目表越界"))?;
-        if at.checked_add(16).is_none_or(|end| end > block.len()) {
-            return Err(dat_error("kv2 项目表越界"));
-        }
+        let at = item_base + 16 * i;
         let control = block[at];
         let count = block[at + 1];
         let lo = i16_be(block, at + 2);
@@ -232,15 +238,15 @@ pub fn read(
         let cap_lower = block[at + 8] & 1;
         let cap_upper = (block[at + 8] >> 1) & 1;
         let step = block[at + 9];
-        let points_at = u32_be(block, at + 12) as usize;
-        let stride = if compact { 2 } else { 4 };
-        let points_end = points_at
-            .checked_add(usize::from(count) * stride)
-            .ok_or_else(|| dat_error("kv2 点表越界"))?;
-        if points_end > block.len() {
+        let points_at_u64 = u64::from(u32_be(block, at + 12));
+        let stride_u64 = if compact { 2u64 } else { 4u64 };
+        let points_bytes = mul_u64(u64::from(count), stride_u64, "kv2 点表越界")?;
+        let points_end = add_u64(points_at_u64, points_bytes, "kv2 点表越界")?;
+        if points_end > block_len_u64 {
             return Err(dat_error("kv2 点表越界"));
         }
-        let mut points = Vec::with_capacity(usize::from(count));
+        let points_at = fit_count(points_at_u64, "kv2 点表越界")?;
+        let mut points = try_vec_with_capacity(usize::from(count), "kv2 点表越界")?;
         for j in 0..usize::from(count) {
             let (level, dose) = if compact {
                 let lv = if control == 0 {
@@ -359,4 +365,24 @@ pub fn menu_to_json(menu: &MenuData) -> Json {
         ("recipes", Json::Array(recipes)),
         ("items", Json::Array(items)),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_huge_counts_and_offsets_without_panicking() {
+        let base = embedded_menu().expect("embedded final.json");
+        let mut block = vec![0u8; 64];
+        block[..8].copy_from_slice(b"GXKV2R3\0");
+        block[22..24].copy_from_slice(&u16::MAX.to_be_bytes());
+        block[36..40].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(read(&block, base.clone(), false).is_err());
+
+        block[22..24].copy_from_slice(&0u16.to_be_bytes());
+        block[24..26].copy_from_slice(&u16::MAX.to_be_bytes());
+        block[40..44].copy_from_slice(&0x8000_0000u32.to_be_bytes());
+        assert!(read(&block, base, false).is_err());
+    }
 }

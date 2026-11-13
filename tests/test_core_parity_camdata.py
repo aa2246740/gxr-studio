@@ -180,6 +180,28 @@ def test_r5_bundles_match_python(label: str, dat_path: Path, fx_path: Path, tmp_
 # --------------------------------------------------------------------------- Damage & edge cases
 
 
+def _huge_size_synthetic_dats() -> dict[str, bytes]:
+    """Synthetic DAT headers with u32::MAX / 2**31 sizes/counts that could wrap or panic."""
+    cases: dict[str, bytes] = {}
+    for label, start, size, bss in (
+        ("huge_4g_x_4g_section", 0xFFFFFFFF, 0xFFFFFFFF, 0),
+        ("huge_2g_x_1_section", 256, 0x80000000, 0),
+        ("huge_bss_u32max", 256, 4, 0xFFFFFFFF),
+        ("huge_nreloc_65535", 256, 4, 0),
+    ):
+        blob = bytearray(512)
+        blob[:8] = b"GXRCE001"
+        struct.pack_into(">HHI", blob, 8, 1, 256, 0)
+        struct.pack_into(">I", blob, 16, len(blob))
+        struct.pack_into(">I", blob, 28, 127)
+        struct.pack_into(">II", blob, 112, 256, bss)
+        if label == "huge_nreloc_65535":
+            struct.pack_into(">H", blob, 120, 0xFFFF)
+        struct.pack_into(">HHII", blob, 128, 1, 0, start, size)
+        cases[label] = _reseal(bytes(blob))
+    return cases
+
+
 def test_synthetic_malformed_and_oversized_dats_match_python(tmp_path: Path) -> None:
     require_cli()
     bad_cases: dict[str, bytes] = {
@@ -188,6 +210,7 @@ def test_synthetic_malformed_and_oversized_dats_match_python(tmp_path: Path) -> 
         "short_header": b"GXRCE001" + b"\0" * 247,
         "wrong_magic": b"GXRCE002" + b"\0" * 248,
         "fake_dat": fake_dat(seed=1, n=512),
+        **_huge_size_synthetic_dats(),
     }
     for gen in (0, 123, 126, 130, 151, 157, 177, 999):
         hdr = bytearray(256)
@@ -402,12 +425,14 @@ def test_recipe_tag_matches_python(value: str | bytes) -> None:
 
 def test_wasm_camdata_matches_native_on_synthetic_and_damaged(tmp_path: Path) -> None:
     paths: list[Path] = []
-    for name, blob in (
-        ("empty", b""),
-        ("wrong_magic", b"GXRCE002" + b"\0" * 248),
-        ("fake", fake_dat(seed=7, n=512)),
-        ("oversized", b"\0" * (intake.MAX_DAT_BYTES + 1)),
-    ):
+    synthetic_cases: dict[str, bytes] = {
+        "empty": b"",
+        "wrong_magic": b"GXRCE002" + b"\0" * 248,
+        "fake": fake_dat(seed=7, n=512),
+        "oversized": b"\0" * (intake.MAX_DAT_BYTES + 1),
+        **_huge_size_synthetic_dats(),
+    }
+    for name, blob in synthetic_cases.items():
         p = tmp_path / f"{name}.dat"
         p.write_bytes(blob)
         paths.append(p)

@@ -1,6 +1,7 @@
 //! Port of `gxr_studio/camdata/` (DAT codec, r5 dual-file codec, knob_table, recipe_tags, menu).
 #![forbid(unsafe_code)]
 
+pub mod bounds;
 pub mod crc32;
 pub mod datcodec;
 pub mod datcodec_looks;

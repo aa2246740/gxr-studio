@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gxr_raw::CoreError;
 
+use crate::bounds::{add_u64, fit_count, mul_u64, try_vec_with_capacity, try_zeroed_vec};
 use crate::crc32::{align4, crc, hex32, u16_be, u32_be, zero_crc};
 use crate::datcodec::{
     CONFIG_BYTES, Dat, ENTRY_BYTES, EXT_BYTES, GXUI_MAGIC, HEADER, ILAUNCH3_SHA256, KINDS, MAX_RAM,
@@ -322,7 +323,15 @@ pub fn pack(dat: &Dat) -> Result<Vec<u8>, CoreError> {
         tweaks.extend_from_slice(kv2);
     }
 
-    let mut reloc = Vec::with_capacity(dat.relocations.len() * 8);
+    let reloc_bytes = fit_count(
+        mul_u64(
+            u64::try_from(dat.relocations.len()).map_err(|_| dat_error("重定位尺寸不合格"))?,
+            8,
+            "重定位尺寸不合格",
+        )?,
+        "重定位尺寸不合格",
+    )?;
+    let mut reloc = try_vec_with_capacity(reloc_bytes, "重定位尺寸不合格")?;
     for &(patch, target) in &dat.relocations {
         reloc.extend_from_slice(&patch.to_be_bytes());
         reloc.extend_from_slice(&target.to_be_bytes());
@@ -344,17 +353,17 @@ pub fn pack(dat: &Dat) -> Result<Vec<u8>, CoreError> {
         tweaks,
     ];
     let mut starts = [0usize; 7];
-    let mut cursor = HEADER;
+    let mut cursor_u64 = HEADER as u64;
     for (i, p) in parts.iter().enumerate() {
-        starts[i] = cursor;
-        cursor += p.len();
+        starts[i] = fit_count(cursor_u64, "容量超限")?;
+        let plen = u64::try_from(p.len()).map_err(|_| dat_error("容量超限"))?;
+        cursor_u64 = add_u64(cursor_u64, plen, "容量超限")?;
     }
-    if cursor > prof.max_file || cursor + dat.bss as usize > MAX_RAM {
-        return Err(dat_error(format!(
-            "容量超限 {cursor}/{}",
-            cursor + dat.bss as usize
-        )));
+    let ram_u64 = add_u64(cursor_u64, u64::from(dat.bss), "容量超限")?;
+    if cursor_u64 > prof.max_file as u64 || ram_u64 > MAX_RAM as u64 {
+        return Err(dat_error(format!("容量超限 {cursor_u64}/{ram_u64}")));
     }
+    let cursor = fit_count(cursor_u64, "容量超限")?;
     check_engine_binding(
         dat.generation,
         &dat.engine,
@@ -414,10 +423,12 @@ pub fn pack(dat: &Dat) -> Result<Vec<u8>, CoreError> {
         h[off + 8..off + 12].copy_from_slice(&(p.len() as u32).to_be_bytes());
     }
 
-    let mut b = Vec::with_capacity(cursor);
-    b.extend_from_slice(&h);
+    let mut b = try_zeroed_vec(cursor, "容量超限")?;
+    b[..HEADER].copy_from_slice(&h);
+    let mut write_at = HEADER;
     for p in &parts {
-        b.extend_from_slice(p);
+        b[write_at..write_at + p.len()].copy_from_slice(p);
+        write_at += p.len();
     }
     let total_len = b.len() as u32;
     b[16..20].copy_from_slice(&total_len.to_be_bytes());

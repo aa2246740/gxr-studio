@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use gxr_raw::CoreError;
 use gxr_raw::sha256::sha256_hex;
 
+use crate::bounds::{add_u64, fit_count, mul_u64, try_vec_with_capacity};
 use crate::crc32::{crc, u16_be, u32_be, zero_crc};
 use crate::datcodec_looks::parse_looks;
 use crate::datcodec_pack::pack;
@@ -41,7 +42,8 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
             "这个代数使用单文件配方，不支持附加 GXRFX.BIN。请只选择 GXRCE.DAT。",
         ));
     }
-    if raw.len() > prof.max_file || u32_be(raw, 16) as usize != raw.len() {
+    let raw_len_u64 = raw.len() as u64;
+    if raw.len() > prof.max_file || u64::from(u32_be(raw, 16)) != raw_len_u64 {
         return Err(dat_error("DAT 长度不合格"));
     }
     if u32_be(raw, 20) != zero_crc(&raw[..HEADER], 20) || u32_be(raw, 24) != crc(&raw[HEADER..]) {
@@ -52,63 +54,73 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         return Err(dat_error("头部不是可执行形态（本编解码器不处理占位件）"));
     }
     let bss = u32_be(raw, 116);
-    if (bss as usize) > MAX_RAM - raw.len() {
+    if u64::from(bss) > (MAX_RAM as u64) - raw_len_u64 {
         return Err(dat_error("BSS 超限"));
     }
 
-    let mut cursor = HEADER;
+    let mut cursor_u64 = HEADER as u64;
     let mut sections = [(0usize, 0usize); 7];
     for (i, slot) in sections.iter_mut().enumerate() {
         let off = 128 + 12 * i;
         let kind = u16_be(raw, off);
         let fl = u16_be(raw, off + 2);
-        let start = u32_be(raw, off + 4) as usize;
-        let size = u32_be(raw, off + 8) as usize;
+        let start_u64 = u64::from(u32_be(raw, off + 4));
+        let size_u64 = u64::from(u32_be(raw, off + 8));
         if usize::from(kind) != i + 1
             || fl != 0
-            || start != cursor
-            || !start.is_multiple_of(4)
-            || !size.is_multiple_of(4)
-            || size > raw.len() - start
+            || start_u64 != cursor_u64
+            || !start_u64.is_multiple_of(4)
+            || !size_u64.is_multiple_of(4)
+            || size_u64 > raw_len_u64 - start_u64
         {
             return Err(dat_error("区段布局不合格"));
         }
+        let start = fit_count(start_u64, "区段布局不合格")?;
+        let size = fit_count(size_u64, "区段布局不合格")?;
         *slot = (start, size);
-        cursor += size;
+        cursor_u64 = add_u64(cursor_u64, size_u64, "区段布局不合格")?;
     }
-    if cursor != raw.len() || sections[2].1 != 192 || sections[3].1 != 456 || sections[4].1 != 3168
+    if cursor_u64 != raw_len_u64
+        || sections[2].1 != 192
+        || sections[3].1 != 456
+        || sections[4].1 != 3168
     {
         return Err(dat_error("固定区段尺寸不合格"));
     }
 
     let (engine_at, engine_len) = sections[0];
-    let entry = u32_be(raw, 112);
+    let entry_u64 = u64::from(u32_be(raw, 112));
     if !(16..=prof.max_engine).contains(&engine_len)
-        || (entry as usize) < 256
-        || (entry as usize) > 256 + engine_len - 4
-        || !entry.is_multiple_of(4)
+        || entry_u64 < 256
+        || entry_u64 > 256 + (engine_len as u64) - 4
+        || !entry_u64.is_multiple_of(4)
     {
         return Err(dat_error("引擎入口越界"));
     }
+    let entry = entry_u64 as u32;
 
-    let nreloc = usize::from(u16_be(raw, 120));
-    if nreloc > 256 || sections[1].1 != 8 * nreloc {
+    let nreloc_u64 = u64::from(u16_be(raw, 120));
+    let reloc_bytes = mul_u64(8, nreloc_u64, "重定位尺寸不合格")?;
+    if nreloc_u64 > 256 || (sections[1].1 as u64) != reloc_bytes {
         return Err(dat_error("重定位尺寸不合格"));
     }
-    let mut relocations = Vec::with_capacity(nreloc);
+    let nreloc = fit_count(nreloc_u64, "重定位尺寸不合格")?;
+    let mut relocations = try_vec_with_capacity(nreloc, "重定位尺寸不合格")?;
     let mut previous = 0u32;
-    let ram_end = raw.len() + bss as usize;
+    let ram_end = add_u64(raw_len_u64, u64::from(bss), "BSS 超限")?;
     for i in 0..nreloc {
         let off = sections[1].0 + 8 * i;
         let patch = u32_be(raw, off);
         let target = u32_be(raw, off + 4);
+        let patch_u64 = u64::from(patch);
+        let target_u64 = u64::from(target);
         if patch <= previous
             || !patch.is_multiple_of(4)
-            || (patch as usize) < 256
-            || (patch as usize) > 256 + engine_len - 4
-            || (target as usize) < 256
-            || (target as usize) >= ram_end
-            || u32_be(raw, patch as usize) != target
+            || patch_u64 < 256
+            || patch_u64 > 256 + (engine_len as u64) - 4
+            || target_u64 < 256
+            || target_u64 >= ram_end
+            || u32_be(raw, fit_count(patch_u64, "重定位或映像绑定不合格")?) != target
         {
             return Err(dat_error("重定位或映像绑定不合格"));
         }
@@ -177,7 +189,7 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     ];
     if pool_bytes < pool_header
         || raw[shared..shared + 8] != want_gxdp
-        || u32_be(raw, shared + 8) as usize != pool_bytes
+        || u64::from(u32_be(raw, shared + 8)) != pool_bytes as u64
     {
         return Err(dat_error("行池头不合格"));
     }
@@ -185,35 +197,40 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     let mut effect_area = Vec::new();
     let mut pool_end = pool_bytes;
     if prof.looks {
-        pool_end = u32_be(raw, shared + 64) as usize;
-        let effect_bytes = u32_be(raw, shared + 68) as usize;
-        if !pool_end.is_multiple_of(4)
-            || pool_end < pool_header
-            || effect_bytes < 32
-            || pool_end.checked_add(effect_bytes) != Some(pool_bytes)
+        let pool_end_u64 = u64::from(u32_be(raw, shared + 64));
+        let effect_bytes_u64 = u64::from(u32_be(raw, shared + 68));
+        let total_u64 = add_u64(pool_end_u64, effect_bytes_u64, "效果区边界不合格")?;
+        if !pool_end_u64.is_multiple_of(4)
+            || pool_end_u64 < pool_header as u64
+            || effect_bytes_u64 < 32
+            || total_u64 != pool_bytes as u64
             || raw[shared + 72..shared + 80].iter().any(|&b| b != 0)
         {
             return Err(dat_error("效果区边界不合格"));
         }
+        pool_end = fit_count(pool_end_u64, "效果区边界不合格")?;
         effect_area = raw[shared + pool_end..shared + pool_bytes].to_vec();
     }
 
     let mut pools = [(0usize, 0usize, 0usize); 4];
     for (k, pool_slot) in pools.iter_mut().enumerate() {
         let off = shared + 16 + 12 * k;
-        let count = usize::from(u16_be(raw, off));
-        let size = usize::from(u16_be(raw, off + 2));
-        let offset = u32_be(raw, off + 4) as usize;
+        let count_u64 = u64::from(u16_be(raw, off));
+        let size_u64 = u64::from(u16_be(raw, off + 2));
+        let offset_u64 = u64::from(u32_be(raw, off + 4));
         let checksum = u32_be(raw, off + 8);
-        if !(1..=POOL_LIMITS[k]).contains(&count)
-            || size != POOL_LENGTHS[k]
-            || offset < pool_header
-            || offset
-                .checked_add(count * size)
-                .is_none_or(|end| end > pool_end)
+        let span_u64 = mul_u64(count_u64, size_u64, "行池边界不合格")?;
+        let end_u64 = add_u64(offset_u64, span_u64, "行池边界不合格")?;
+        if !(1..=POOL_LIMITS[k] as u64).contains(&count_u64)
+            || size_u64 != POOL_LENGTHS[k] as u64
+            || offset_u64 < pool_header as u64
+            || end_u64 > pool_end as u64
         {
             return Err(dat_error("行池边界不合格"));
         }
+        let count = fit_count(count_u64, "行池边界不合格")?;
+        let size = fit_count(size_u64, "行池边界不合格")?;
+        let offset = fit_count(offset_u64, "行池边界不合格")?;
         let body = &raw[shared + offset..shared + offset + count * size];
         if crc(body) != checksum {
             return Err(dat_error("行池 CRC 对不上"));
@@ -230,14 +247,18 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         if raw[d..d + 8] != want_name || u16_be(raw, d + 8) != 0x151 || u16_be(raw, d + 10) != 0 {
             return Err(dat_error("目录项名称或版本不合格"));
         }
-        let map_at = u32_be(raw, d + 12) as usize;
-        let bank_at = u32_be(raw, d + 16) as usize;
-        let table = u32_be(raw, d + 20) as usize;
-        let meta_ranges = u32_be(raw, d + 24) as usize;
-        let count = usize::from(raw[d + 30]);
-        if map_at != sections[3].0 + 152 * mi || bank_at != sections[4].0 + 1056 * mi {
+        let map_at_u64 = u64::from(u32_be(raw, d + 12));
+        let bank_at_u64 = u64::from(u32_be(raw, d + 16));
+        let table_u64 = u64::from(u32_be(raw, d + 20));
+        let meta_ranges_u64 = u64::from(u32_be(raw, d + 24));
+        let count_u64 = u64::from(raw[d + 30]);
+        if map_at_u64 != (sections[3].0 + 152 * mi) as u64
+            || bank_at_u64 != (sections[4].0 + 1056 * mi) as u64
+        {
             return Err(dat_error("映射或配方库地址不合格"));
         }
+        let map_at = fit_count(map_at_u64, "映射或配方库地址不合格")?;
+        let bank_at = fit_count(bank_at_u64, "映射或配方库地址不合格")?;
         let header = &raw[bank_at..bank_at + 32];
         let bank = &raw[bank_at + 32..bank_at + 32 + 1024];
         if &header[..8] != b"GXRRV201"
@@ -249,17 +270,25 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         {
             return Err(dat_error("配方库头、CRC 或代数不合格"));
         }
-        if meta_ranges != meta_at + 64 + 16 * 28 * mi {
+        if meta_ranges_u64 != (meta_at + 64 + 16 * 28 * mi) as u64 {
             return Err(dat_error("范围目录不合格"));
         }
-        if !(1..=16).contains(&count)
-            || table < shared + pool_header
-            || table
-                .checked_add(16 + 20 * count)
-                .is_none_or(|end| end > shared + pool_end)
+        let meta_ranges = fit_count(meta_ranges_u64, "范围目录不合格")?;
+        let table_bytes_u64 = add_u64(
+            16,
+            mul_u64(20, count_u64, "描述符表边界不合格")?,
+            "描述符表边界不合格",
+        )?;
+        let table_end_u64 = add_u64(table_u64, table_bytes_u64, "描述符表边界不合格")?;
+        let pool_limit_u64 = (shared + pool_end) as u64;
+        if !(1..=16).contains(&count_u64)
+            || table_u64 < (shared + pool_header) as u64
+            || table_end_u64 > pool_limit_u64
         {
             return Err(dat_error("描述符表边界不合格"));
         }
+        let count = fit_count(count_u64, "描述符表边界不合格")?;
+        let table = fit_count(table_u64, "描述符表边界不合格")?;
         let want_gxdt = [b'G', b'X', b'D', b'T', 0x06, count as u8];
         if raw[table..table + 6] != want_gxdt
             || u32_be(raw, table + 12) != crc(&raw[table + 16..table + 16 + 20 * count])
@@ -282,10 +311,11 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         }
 
         let mut entries = BTreeMap::new();
-        let mut owners = Vec::with_capacity(count);
-        let descriptors: Vec<&[u8]> = (0..count)
-            .map(|i| &raw[table + 16 + 20 * i..table + 36 + 20 * i])
-            .collect();
+        let mut owners = try_vec_with_capacity(count, "描述符所有者不合格")?;
+        let mut descriptors = try_vec_with_capacity(count, "描述符所有者不合格")?;
+        for i in 0..count {
+            descriptors.push(&raw[table + 16 + 20 * i..table + 36 + 20 * i]);
+        }
         for &desc in &descriptors {
             let slot = desc[0];
             if !(1..=16).contains(&slot) || entries.contains_key(&slot) {
@@ -427,7 +457,7 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     }
 
     let user_count = usize::from(u16_be(ext, 24));
-    let mut users = Vec::with_capacity(user_count);
+    let mut users = try_vec_with_capacity(user_count, "GXUI 头不合格")?;
     for i in 0..user_count {
         let at = USER_OFFSET + i * USER_ENTRY_BYTES;
         let mut levels = [0i8; 11];
@@ -481,7 +511,7 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         return Err(dat_error("重新封装与原文件不同（存在未建模的字节）"));
     }
 
-    let mut user_names = Vec::with_capacity(user_count);
+    let mut user_names = try_vec_with_capacity(user_count, "GXUI 头不合格")?;
     for i in 0..user_count {
         let at = USER_OFFSET + i * USER_ENTRY_BYTES + 2;
         let slice = ext[at..at + 8].split(|&b| b == 0).next().unwrap_or(&[]);

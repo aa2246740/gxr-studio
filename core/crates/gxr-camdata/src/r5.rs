@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use gxr_raw::CoreError;
 use gxr_raw::sha256::sha256_hex;
 
+use crate::bounds::{add_u64, fit_count, mul_u64, try_vec_with_capacity};
 use crate::crc32::{crc, u16_be, u32_be, zero_crc};
 use crate::datcodec::{
     CRC_FIELDS, Dat, ENTRY_BYTES, FullRecipe, HEADER, KINDS, KV3_BLOCK_BYTES, KV3_BLOCK_SHA256,
@@ -26,27 +27,31 @@ pub fn library_sha256(library_generation: u32) -> Option<&'static str> {
 
 /// Port of gxr_studio/camdata/r5.py:18 _sections.
 fn sections(raw: &[u8]) -> Result<[(usize, usize); 7], CoreError> {
-    let mut cursor = HEADER;
+    let raw_len_u64 = raw.len() as u64;
+    let mut cursor_u64 = HEADER as u64;
     let mut out = [(0usize, 0usize); 7];
     for (i, slot) in out.iter_mut().enumerate() {
         let off = 128 + 12 * i;
         let kind = u16_be(raw, off);
         let flags = u16_be(raw, off + 2);
-        let start = u32_be(raw, off + 4) as usize;
-        let size = u32_be(raw, off + 8) as usize;
+        let start_u64 = u64::from(u32_be(raw, off + 4));
+        let size_u64 = u64::from(u32_be(raw, off + 8));
         if usize::from(kind) != i + 1
             || flags != 0
-            || start != cursor
-            || !start.is_multiple_of(4)
-            || !size.is_multiple_of(4)
-            || size > raw.len() - start
+            || start_u64 != cursor_u64
+            || !start_u64.is_multiple_of(4)
+            || !size_u64.is_multiple_of(4)
+            || size_u64 > raw_len_u64 - start_u64
         {
             return Err(dat_error("r5 区段布局不合格"));
         }
-        *slot = (start, size);
-        cursor += size;
+        *slot = (
+            fit_count(start_u64, "r5 区段布局不合格")?,
+            fit_count(size_u64, "r5 区段布局不合格")?,
+        );
+        cursor_u64 = add_u64(cursor_u64, size_u64, "r5 区段布局不合格")?;
     }
-    if cursor != raw.len() {
+    if cursor_u64 != raw_len_u64 {
         return Err(dat_error("r5 区段长度不合格"));
     }
     Ok(out)
@@ -61,7 +66,7 @@ fn check_envelope(raw: &[u8], magic: &[u8; 8], flags: u32) -> Result<(), CoreErr
     {
         return Err(dat_error("r5 文件头不合格"));
     }
-    if u32_be(raw, 16) as usize != raw.len()
+    if u64::from(u32_be(raw, 16)) != raw.len() as u64
         || u32_be(raw, 20) != zero_crc(&raw[..256], 20)
         || u32_be(raw, 24) != crc(&raw[256..])
     {
@@ -81,6 +86,9 @@ fn catalogue(library: Option<&[u8]>, generation: u32) -> Result<&[u8], CoreError
             "缺少 GXRFX.BIN。请将 GXRCE.DAT 和 GXRFX.BIN 一起从存储卡复制到同一文件夹，再同时导入。",
         )
     })?;
+    if lib.len() > MAX_LIBRARY_BYTES {
+        return Err(dat_error("无法导入相机配方文件。文件过大。"));
+    }
     let expected_sha = library_sha256(lib_gen)
         .ok_or_else(|| unsupported_error(format!("代数 {generation} 没有登记 r5 库")))?;
     if sha256_hex(lib) != expected_sha {
@@ -88,19 +96,19 @@ fn catalogue(library: Option<&[u8]>, generation: u32) -> Result<&[u8], CoreError
             "GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。"
         )));
     }
-    if lib.len() < 64 || lib.len() > MAX_LIBRARY_BYTES {
+    if lib.len() < 64 {
         return Err(dat_error("GXRFX.BIN 库头或 CRC 不合格"));
     }
     let cat = &lib[64..];
     if &lib[..12] != b"GXRLB003\x00\x03\x00@"
-        || u32_be(lib, 12) as usize != lib.len()
-        || u32_be(lib, 16) as usize != cat.len()
+        || u64::from(u32_be(lib, 12)) != lib.len() as u64
+        || u64::from(u32_be(lib, 16)) != cat.len() as u64
         || u32_be(lib, 20) != crc(cat)
         || u32_be(lib, 24) != 7
         || u32_be(lib, 28) != 3
         || u32_be(lib, 32) != zero_crc(&lib[..64], 32)
         || u32_be(lib, 36) != lib_gen
-        || u32_be(lib, 40) as usize != cat.len()
+        || u64::from(u32_be(lib, 40)) != cat.len() as u64
         || lib[44..64].iter().any(|&b| b != 0)
     {
         return Err(dat_error("GXRFX.BIN 库头或 CRC 不合格"));
@@ -120,7 +128,7 @@ fn pools(shared: &[u8]) -> Result<[(usize, usize, usize); 4], CoreError> {
         *slot = (
             usize::from(u16_be(shared, off)),
             usize::from(u16_be(shared, off + 2)),
-            u32_be(shared, off + 4) as usize,
+            fit_count(u64::from(u32_be(shared, off + 4)), "r5 行池偏移越界")?,
         );
     }
     Ok(out)
@@ -143,27 +151,30 @@ pub fn build_entry(
     entry[445..447].copy_from_slice(&desc[2..4]);
 
     let extra: &[u8] = if wide {
-        let extra_off = u32_be(shared, 64) as usize;
+        let extra_off = fit_count(u64::from(u32_be(shared, 64)), "r5 扩展区偏移越界")?;
         shared
             .get(extra_off..)
             .ok_or_else(|| dat_error("r5 扩展区偏移越界"))?
     } else {
         &[]
     };
-    let mut extra_at = if wide {
+    let mut extra_at_u64 = if wide {
         if extra.len() < 48 {
             return Err(dat_error("r5 扩展区头不合格"));
         }
-        48 + 44 * usize::from(u16_be(extra, 8))
+        let desc_bytes = mul_u64(44, u64::from(u16_be(extra, 8)), "r5 扩展区头不合格")?;
+        add_u64(48, desc_bytes, "r5 扩展区头不合格")?
     } else {
         0
     };
-    let mut starts = [0usize; 4];
+    let mut starts = [0u64; 4];
     for (kind, &size) in POOL_LENGTHS.iter().enumerate() {
-        starts[kind] = extra_at;
+        starts[kind] = extra_at_u64;
         if wide {
-            let count = usize::from(u16_be(extra, 16 + 2 * kind));
-            extra_at += (count * size + 3) & !3;
+            let count = u64::from(u16_be(extra, 16 + 2 * kind));
+            let raw_bytes = mul_u64(count, size as u64, "r5 扩展区头不合格")?;
+            let padded = add_u64(raw_bytes, 3, "r5 扩展区头不合格")? & !3u64;
+            extra_at_u64 = add_u64(extra_at_u64, padded, "r5 扩展区头不合格")?;
         }
     }
 
@@ -177,16 +188,15 @@ pub fn build_entry(
             usize::from(desc[8 + i])
         };
         let row = if wide && (raw_idx & 32768) != 0 {
-            let index = raw_idx & 32767;
-            if index >= usize::from(u16_be(extra, 24 + 2 * kind)) {
+            let index = u64::from((raw_idx & 32767) as u16);
+            if index >= u64::from(u16_be(extra, 24 + 2 * kind)) {
                 return Err(dat_error("完整配方行索引越界"));
             }
-            let start = starts[kind]
-                .checked_add(index * size)
-                .ok_or_else(|| dat_error("完整配方行索引越界"))?;
-            let end = start
-                .checked_add(size)
-                .ok_or_else(|| dat_error("完整配方行索引越界"))?;
+            let row_off = mul_u64(index, size as u64, "完整配方行索引越界")?;
+            let start_u64 = add_u64(starts[kind], row_off, "完整配方行索引越界")?;
+            let end_u64 = add_u64(start_u64, size as u64, "完整配方行索引越界")?;
+            let start = fit_count(start_u64, "完整配方行索引越界")?;
+            let end = fit_count(end_u64, "完整配方行索引越界")?;
             extra
                 .get(start..end)
                 .ok_or_else(|| dat_error("完整配方行索引越界"))?
@@ -195,12 +205,11 @@ pub fn build_entry(
             if raw_idx >= count {
                 return Err(dat_error("原生配方行索引越界"));
             }
-            let start = at
-                .checked_add(raw_idx * size)
-                .ok_or_else(|| dat_error("原生配方行索引越界"))?;
-            let end = start
-                .checked_add(size)
-                .ok_or_else(|| dat_error("原生配方行索引越界"))?;
+            let row_off = mul_u64(raw_idx as u64, size as u64, "原生配方行索引越界")?;
+            let start_u64 = add_u64(at as u64, row_off, "原生配方行索引越界")?;
+            let end_u64 = add_u64(start_u64, size as u64, "原生配方行索引越界")?;
+            let start = fit_count(start_u64, "原生配方行索引越界")?;
+            let end = fit_count(end_u64, "原生配方行索引越界")?;
             shared
                 .get(start..end)
                 .ok_or_else(|| dat_error("原生配方行索引越界"))?
@@ -228,14 +237,16 @@ fn modules(
         if directory + 64 > cat.len() {
             return Err(dat_error("r5 目录越界"));
         }
-        let map_at = u32_be(cat, directory + 12) as usize;
-        let bank_at = u32_be(cat, directory + 16) as usize;
-        let table = u32_be(cat, directory + 20) as usize;
-        let ranges_at = u32_be(cat, directory + 24) as usize;
-        let count = usize::from(cat[directory + 30]);
+        let map_at = fit_count(u64::from(u32_be(cat, directory + 12)), "r5 映射越界")?;
+        let bank_at = fit_count(u64::from(u32_be(cat, directory + 16)), "r5 配方库越界")?;
+        let table = fit_count(u64::from(u32_be(cat, directory + 20)), "r5 描述符表越界")?;
+        let ranges_at = fit_count(u64::from(u32_be(cat, directory + 24)), "r5 范围表越界")?;
+        let count_u64 = u64::from(cat[directory + 30]);
+        let count = fit_count(count_u64, "r5 描述符表越界")?;
 
+        let bank_end = add_u64(bank_at as u64, 32 + 1024, "r5 配方库越界")?;
         let bank_body = cat
-            .get(bank_at + 32..bank_at + 32 + 1024)
+            .get(bank_at + 32..fit_count(bank_end, "r5 配方库越界")?)
             .ok_or_else(|| dat_error("r5 配方库越界"))?;
         let mut records = Vec::with_capacity(16);
         for i in 0..16 {
@@ -244,19 +255,26 @@ fn modules(
             records.push(rec);
         }
 
+        let desc_bytes = mul_u64(20, count_u64, "r5 描述符表越界")?;
+        let table_start = add_u64(table as u64, 16, "r5 描述符表越界")?;
+        let table_end = add_u64(table_start, desc_bytes, "r5 描述符表越界")?;
         let desc_table = cat
-            .get(table + 16..table + 16 + 20 * count)
+            .get(
+                fit_count(table_start, "r5 描述符表越界")?
+                    ..fit_count(table_end, "r5 描述符表越界")?,
+            )
             .ok_or_else(|| dat_error("r5 描述符表越界"))?;
         let mut entries = BTreeMap::new();
-        let mut owners = Vec::with_capacity(count);
+        let mut owners = try_vec_with_capacity(count, "r5 描述符表越界")?;
         for i in 0..count {
             let d = &desc_table[20 * i..20 * (i + 1)];
             entries.insert(d[0], build_entry(d, shared, &pool_info, false)?);
             owners.push(d[0]);
         }
 
+        let range_end = add_u64(ranges_at as u64, 28 * 16, "r5 范围表越界")?;
         let range_slice = cat
-            .get(ranges_at..ranges_at + 28 * 16)
+            .get(ranges_at..fit_count(range_end, "r5 范围表越界")?)
             .ok_or_else(|| dat_error("r5 范围表越界"))?;
         let mut refs = [0u8; 16];
         let mut ranges = [[[0i8; 3]; 8]; 16];
@@ -267,12 +285,17 @@ fn modules(
                 .get(owner_idx)
                 .ok_or_else(|| dat_error("r5 范围表引用越界"))?;
             for k in 0..8 {
-                ranges[i][k] = [row[3 * k] as i8, row[3 * k + 1] as i8, row[3 * k + 2] as i8];
+                ranges[i][k] = [
+                    i8::from_be_bytes([row[3 * k]]),
+                    i8::from_be_bytes([row[3 * k + 1]]),
+                    i8::from_be_bytes([row[3 * k + 2]]),
+                ];
             }
         }
 
+        let map_end = add_u64(map_at as u64, 152, "r5 映射越界")?;
         let mapping = cat
-            .get(map_at..map_at + 152)
+            .get(map_at..fit_count(map_end, "r5 映射越界")?)
             .ok_or_else(|| dat_error("r5 映射越界"))?
             .to_vec();
         let stock = entries
@@ -354,12 +377,20 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         &dat.relocations,
         raw.len(),
     )?;
-    if raw.len() + dat.bss as usize > MAX_RAM || u16_be(raw, 120) != 1 {
+    let ram_u64 = add_u64(
+        raw.len() as u64,
+        u64::from(dat.bss),
+        "r5 BSS 或重定位不合格",
+    )?;
+    if ram_u64 > MAX_RAM as u64 || u16_be(raw, 120) != 1 {
         return Err(dat_error("r5 BSS 或重定位不合格"));
     }
     for &(patch, target) in &dat.relocations {
-        let p = patch as usize;
-        if p.checked_add(4).is_none_or(|end| end > raw.len()) || u32_be(raw, p) != target {
+        let p_u64 = u64::from(patch);
+        let p_end = add_u64(p_u64, 4, "r5 重定位与引擎不匹配")?;
+        if p_end > raw.len() as u64
+            || u32_be(raw, fit_count(p_u64, "r5 重定位与引擎不匹配")?) != target
+        {
             return Err(dat_error("r5 重定位与引擎不匹配"));
         }
     }
@@ -379,19 +410,26 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     dat.kv2_block = Some(kv.to_vec());
 
     let pool_info = pools(shared)?;
-    let area_off = u32_be(shared, 64) as usize;
+    let area_off = fit_count(u64::from(u32_be(shared, 64)), "r5 完整配方区越界")?;
     let area = shared
         .get(area_off..)
         .ok_or_else(|| dat_error("r5 完整配方区越界"))?;
     if area.len() < 12 {
         return Err(dat_error("r5 完整配方区头不合格"));
     }
-    let count = usize::from(u16_be(area, 10));
-    let mut recipes = Vec::with_capacity(count);
+    let count_u64 = u64::from(u16_be(area, 10));
+    let area_need = add_u64(
+        48,
+        mul_u64(44, count_u64, "r5 完整配方描述越界")?,
+        "r5 完整配方描述越界",
+    )?;
+    if area_need > area.len() as u64 {
+        return Err(dat_error("r5 完整配方描述越界"));
+    }
+    let count = fit_count(count_u64, "r5 完整配方描述越界")?;
+    let mut recipes = try_vec_with_capacity(count, "r5 完整配方描述越界")?;
     for i in 0..count {
-        let desc = area
-            .get(48 + 44 * i..92 + 44 * i)
-            .ok_or_else(|| dat_error("r5 完整配方描述越界"))?;
+        let desc = &area[48 + 44 * i..92 + 44 * i];
         let name_bytes = desc[32..44].split(|&b| b == 0).next().unwrap_or(&[]);
         let name = std::str::from_utf8(name_bytes)
             .ok()
@@ -408,4 +446,19 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     }
     dat.recipes = recipes;
     Ok(dat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_huge_r5_library_and_wide_entry_counts() {
+        let mut desc = [0u8; 44];
+        desc[8] = 0x80;
+        let shared = vec![0u8; 80];
+        let pool_info = [(0, 62, 0), (0, 33, 0), (0, 96, 0), (0, 56, 0)];
+        assert!(build_entry(&desc, &shared, &pool_info, true).is_err());
+        assert!(catalogue(Some(&vec![0u8; MAX_LIBRARY_BYTES + 1]), 178).is_err());
+    }
 }
