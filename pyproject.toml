@@ -1,6 +1,6 @@
 [project]
 name = "gxr-studio"
-version = "0.1.0"
+version = "1.0.0"
 description = "GXR 电脑工作室：与理光 GXR 配套的本地网页工具（M1：插卡导入、图库、裁切、导出）"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
