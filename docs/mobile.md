@@ -319,6 +319,17 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - 分配前边界检查：`demosaic_full`、`demosaic_strips`、`demosaic_strip` 与 `render_full` 在分配任何输出或条带缓冲区前，先以 checked arithmetic 校验负 `DefaultCropOrigin`、超出 `ActiveArea` 与超出裸平面的裁切边界。
 - CLI 新增 `dng-demosaic --dng PATH --y0 A --y1 B --out OUT.npy`、`dng-neutral --dng PATH --out OUT.npy` 与 `dng-srgb-pow --bits HEX`；WASM 在 `gxr-wasm/src/raw.rs` 暴露 `dng_neutral` / `dng_neutral_named`。
 
+## `gxr-jpeg`（JPEG 编码与容器段）
+
+`gxr-jpeg` 负责成片导出时的单次 JPEG 编码，以及给 wave-2 HDR 封装使用的段操作：
+
+- 编码参数对齐 `src/gxr_studio/export.py` 的 `_finish`：品质 `1..=100`（高 95 / 中 85 / 低 70），`quality >= 90` 用 4:4:4，否则用 4:2:0；用 Annex K 标准霍夫曼表、单遍扫描（与 Pillow `optimize=False` 一致）；写入 APP1 EXIF 和 588 字节 sRGB ICC（`ICC_PROFILE`）。
+- 底层编码器是内置在 `core/crates/gxr-jpeg/src/jpeg_enc/` 的 `jpeg-encoder 0.6.0` 源码（MIT/Apache-2.0，含 IJG 代码，许可原文和致谢见 `core/crates/gxr-jpeg/NOTICE` 与 `docs/dependencies.md`），已改成 libjpeg-turbo 的算术：整数除法量化 `(|x| + (q>>1)) / q`、`jccolor.c` 的定点颜色转换、`h2v2_downsample` 的交替 bias 与边缘扩展。不再依赖外部 crate。门槛（Gate B）：SOF0、DQT、DHT 和 SOS 起的扫描数据与 Pillow 逐字节相同，解码像素零差。
+- EXIF 映射（`build_exif`）：`270`（`ImageDescription`）按 UTF-8 写入、`33432`（`Copyright`）按 latin-1 写入，强制 `274`（`Orientation`）= 1、`305`（`Software`）= `"GXR Studio"`、输出尺寸 `40962`/`40963`；去掉 GPS 与 MakerNote（`37500`）；超过 65533 字节自动退到精简子集。
+- sRGB ICC 固定为 LittleCMS 生成的 588 字节标准配置（头里 `24..36` 字节的创建时间戳固定，以保证原生与 WASM 逐字节一致）。
+- 容器辅助函数（`jpeg_segments`、`app_segment`、`set_meta`）按 `gxr_studio/hdr/container.py` 的段遍历逻辑实现，在不重编码熵数据的前提下替换/插入 APP1 EXIF 与 APP2 ICC。
+- WASM 导出 `jpeg_encode(rgb_u8, w, h, quality, exif_json) -> bytes`，由 `mobile/scripts/wasm_cases/jpeg.mjs` 验证与 `gxr-cli jpeg-encode` 逐字节一致。
+
 ## 几何（`gxr-finish`）
 
 `gxr-finish` 现阶段包含裁剪预设与校验（`crop.py`）、纠正与有效区收框（`finish/geometry.py`）、以及显卡预览裁切框（`gpu/box.py`）。
