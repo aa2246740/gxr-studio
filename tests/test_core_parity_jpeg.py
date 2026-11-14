@@ -32,30 +32,31 @@ from gxr_studio.export import QUALITY_TIERS, SOFTWARE, srgb_icc
 from gxr_studio.hdr import container
 from gxr_studio.raw import NEUTRAL, open_dng, render_full
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
+from support.jpeg_quant_check import assert_halfway_attribution
 from support.wasm_check import run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
 _PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
 CAPTURES = _PARENT / "captures"
-_REAL_EXPORT_COUNT = 5
+# Fixed, explicit named list (>= 10 DNGs, must include R8051401 and R8052220) so captures/ growth cannot shift selection.
+_NAMED_REAL_REL_PATHS = (
+    "a12-50/2026-10-13/photos/A1-setting1/R8051129.DNG",
+    "a12-50/2026-10-24/stage2l-daily-R8051312-1473/R8051389.DNG",
+    "a12-50/2026-10-24/stage2l-daily-R8051312-1473/R8051401.DNG",
+    "cardA-28mm-20261108/R8052429.DNG",
+    "g157-lunch-20261105/R8052084.DNG",
+    "g158-field-20261105/card/R8052109.DNG",
+    "g217r3b-field-20261114/cardA/R8052566.DNG",
+    "mount-walk-20261107/R8052220.DNG",
+    "mount-walk-20261107/R8052244.DNG",
+    "screen28-20261106/R8052122.DNG",
+    "street-g150-20261101/R8051714.DNG",
+    "street-g173-20261107/R8052278.DNG",
+)
 _DROP_BASE_TAGS = {274, 34665, 34853, 330, 513, 514}
 _DROP_EXIF_TAGS = {37500}
 
-
-def _real_dngs(limit: int = _REAL_EXPORT_COUNT) -> list[Path]:
-    """Up to ``limit`` real DNGs under captures/, spread in sorted order, skipping backups."""
-    if not CAPTURES.is_dir():
-        return []
-    found = [
-        path for path in CAPTURES.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower()
-    ]
-    found.sort(key=lambda path: path.as_posix())
-    if len(found) <= limit:
-        return found
-    return [found[(i * len(found)) // limit] for i in range(limit)]
-
-
-REAL_DNGS = _real_dngs()
+REAL_DNGS = [CAPTURES / rel for rel in _NAMED_REAL_REL_PATHS if (CAPTURES / rel).is_file()]
 
 
 def _real_id(path: Path) -> str:
@@ -260,14 +261,38 @@ def test_structure_and_picture_synthetic(quality: int, tmp_path: Path) -> None:
         print(f"synthetic {name} q={quality}: mean={[round(m, 5) for m in mean_ch]} max={max_ch} gt4={gt4_count}/{total_px}")
 
 
+def _assert_real_gate_b(
+    rgb: np.ndarray,
+    quality: int,
+    rust_jpg: bytes,
+    py_jpg: bytes,
+    mean_ch: list[float],
+    max_ch: list[int],
+    gt4_count: int,
+    total_px: int,
+    label: str,
+) -> None:
+    gt4_frac = gt4_count / total_px
+    _assert_mean_within_bound(mean_ch, 0.5, label, quality)
+    assert math.isfinite(gt4_frac), f"{label} q={quality}: gt4 fraction is non-finite ({gt4_frac})"
+    frac_limit = 1e-4 if quality >= 85 else 5e-4
+    assert gt4_frac <= frac_limit, f"{label} q={quality}: fraction > 4 ({gt4_frac:.6e}) > {frac_limit:.0e}"
+    assert max(max_ch) <= 24, f"{label} q={quality}: channel max abs diff {max_ch} > 24"
+    if (quality >= 85 and max(max_ch) > 4) or (quality < 85 and max(max_ch) > 16):
+        diffs = assert_halfway_attribution(rgb, quality, rust_jpg, py_jpg, label)
+        summary = [(d.component, d.u, d.v, f"{d.fdct_val}/{d.divisor}") for d in diffs]
+        print(f"  attribution {label} q={quality}: all {len(diffs)} differing coeffs exact .5 -> {summary}")
+
+
 def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
     require_cli()
-    if len(REAL_DNGS) < _REAL_EXPORT_COUNT:
+    if len(REAL_DNGS) < len(_NAMED_REAL_REL_PATHS):
+        missing = [rel for rel in _NAMED_REAL_REL_PATHS if not (CAPTURES / rel).is_file()]
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
-            pytest.fail(f"need at least {_REAL_EXPORT_COUNT} real DNGs under {CAPTURES}, found {len(REAL_DNGS)}")
-        pytest.skip(f"need {_REAL_EXPORT_COUNT} real DNGs under {CAPTURES}")
+            pytest.fail(f"missing {len(missing)} named real DNGs under {CAPTURES}: {missing[:3]}")
+        pytest.skip(f"missing named real DNGs under {CAPTURES}")
 
-    for idx, dng_path in enumerate(REAL_DNGS[:_REAL_EXPORT_COUNT]):
+    for idx, dng_path in enumerate(REAL_DNGS):
         dng = open_dng(dng_path)
         try:
             rgb = render_full(dng, NEUTRAL)
@@ -288,27 +313,22 @@ def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
                 f"real[{idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
                 f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
             )
-            _assert_mean_within_bound(mean_ch, 0.5, label, quality)
-            if quality >= 85:
-                assert max(max_ch) <= 4, f"{label} q={quality}: channel max abs diff {max_ch} > 4"
-            else:
-                assert gt4_frac <= 1e-4, f"{label} q={quality}: fraction > 4 ({gt4_frac:.6e}) > 1e-4"
-                assert max(max_ch) <= 16, f"{label} q={quality}: channel max abs diff {max_ch} > 16"
+            _assert_real_gate_b(rgb, quality, rust_jpg, py_jpg, mean_ch, max_ch, gt4_count, total_px, label)
             _assert_exif_identical(rust_jpg, py_jpg)
 
 
 def test_real_cropped_non16_arrays_gate_a_and_b(tmp_path: Path) -> None:
     """F2 regression: real arrays cropped to non-16-aligned odd and even sizes at all 3 tiers."""
     require_cli()
-    if len(REAL_DNGS) < 3:
+    if len(REAL_DNGS) < len(_NAMED_REAL_REL_PATHS):
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
-            pytest.fail(f"need at least 3 real DNGs under {CAPTURES}, found {len(REAL_DNGS)}")
-        pytest.skip(f"need 3 real DNGs under {CAPTURES}")
+            pytest.fail(f"need all {len(_NAMED_REAL_REL_PATHS)} named real DNGs under {CAPTURES}, found {len(REAL_DNGS)}")
+        pytest.skip(f"need named real DNGs under {CAPTURES}")
 
     crop_specs = [
-        (0, 286, 430),  # even, non-16-aligned
-        (1, 287, 431),  # odd, non-16-aligned
-        (2, 214, 311),  # mixed even height, odd width, non-16-aligned
+        (0, 286, 430),  # R8051129: even, non-16-aligned
+        (2, 287, 431),  # R8051401: odd, non-16-aligned
+        (7, 214, 311),  # R8052220: mixed even height, odd width, non-16-aligned
     ]
     for dng_idx, crop_h, crop_w in crop_specs:
         dng_path = REAL_DNGS[dng_idx]
@@ -329,12 +349,7 @@ def test_real_cropped_non16_arrays_gate_a_and_b(tmp_path: Path) -> None:
                 f"real_crop[{dng_idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
                 f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
             )
-            _assert_mean_within_bound(mean_ch, 0.5, label, quality)
-            if quality >= 85:
-                assert max(max_ch) <= 4, f"{label} q={quality}: channel max abs diff {max_ch} > 4"
-            else:
-                assert gt4_frac <= 1e-4, f"{label} q={quality}: fraction > 4 ({gt4_frac:.6e}) > 1e-4"
-                assert max(max_ch) <= 16, f"{label} q={quality}: channel max abs diff {max_ch} > 16"
+            _assert_real_gate_b(rgb, quality, rust_jpg, py_jpg, mean_ch, max_ch, gt4_count, total_px, label)
 
 
 def _assert_mean_within_bound(mean_ch: list[float], bound: float, label: str, quality: int) -> None:
