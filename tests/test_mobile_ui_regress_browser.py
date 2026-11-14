@@ -166,3 +166,21 @@ def test_card_removed_keeps_cached_photos_and_counts_unread(server: dict[str, An
     assert "存储卡已拔出" not in data["subtitleRepicked"], data["subtitleRepicked"]
     assert "gone" not in data["bClassRepicked"].split()
     assert data["repickedTitle"].lower() == data["b"]
+
+
+def test_recipe_cards_show_the_real_source(server: dict[str, Any]) -> None:
+    data = run_case(server, "recipe-cards")
+    gpu = data["gpuRun"]
+    assert set(gpu["labels"]) == {"中性转换"}
+    # 卡片就是这张 RAW 的中性小图（同一份显卡输出，只差缩放）。
+    assert gpu["diff"] <= 2.0, gpu["diff"]
+    # 第一张一次、第二张一次，滑回第一张不再请显卡出图。
+    assert gpu["callsAfterFirst"] == 1, gpu
+    assert gpu["calls"] == 2, gpu
+    fallback = data["fallback"]["out"]
+    dng_only = data["fallback"]["dngOnly"]
+    for photo_id, row in fallback.items():
+        want = "内嵌预览" if photo_id == dng_only else "相机 JPG"
+        assert set(row["labels"]) == {want}, (photo_id, row)
+        assert "中性转换" not in row["labels"]
+        assert row["drawn"] == len(row["labels"]), (photo_id, row)

@@ -50,6 +50,8 @@ export interface Photo {
   /** WASM 描述通过的版本。没有显卡时，据此不用再读卡就能打开。 */
   checked: number | null;
   bitmap: ImageBitmap | null;
+  /** 显卡出的中性转换小图（配方卡用），按版本缓存，只做一次。 */
+  neutral: { version: number; bitmap: ImageBitmap } | null;
   knobs: Knobs;
 }
 
@@ -65,6 +67,14 @@ export function openable(photo: Photo): boolean {
 /** 卡拔了、又没有缓存，真的没读完。 */
 export function unread(photo: Photo): boolean {
   return photo.gone && !openable(photo);
+}
+
+/** 放掉这张照片手里的位图（缩略图和中性小图）。 */
+export function releaseBitmaps(photo: Photo): void {
+  photo.bitmap?.close();
+  photo.bitmap = null;
+  photo.neutral?.bitmap.close();
+  photo.neutral = null;
 }
 
 export function photoMs(photo: Photo): number {

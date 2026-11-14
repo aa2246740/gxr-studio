@@ -66,6 +66,7 @@ export class EditorView {
   private caption = '';
   private sharp: ImageBitmap | null = null;
   private placeholder: HTMLElement | null = null;
+  private cards: Array<{ thumb: HTMLElement; sub: HTMLElement }> = [];
   /** 这张读完、清楚的图也换上之后才 resolve。只给截图和测试等。 */
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
@@ -130,18 +131,13 @@ export class EditorView {
     this.bindGesture(stage);
 
     const strip = el('div', 'strip');
+    this.cards = [];
     for (const name of ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原厂标准', 'Kodachrome 25']) {
       const card = button('rc', '');
-      // 没导入校准数据：每张小卡都是同一张中性转换（只有 JPG 时是相机 JPG）。
-      const thumb = el('div', 'th', photo.bitmap ? undefined : photo.dng ? '中性转换' : '相机 JPG');
-      if (photo.bitmap) {
-        const mini = document.createElement('canvas');
-        mini.width = photo.bitmap.width;
-        mini.height = photo.bitmap.height;
-        mini.getContext('2d')?.drawImage(photo.bitmap, 0, 0);
-        thumb.append(mini);
-      }
-      card.append(thumb, el('div', 'nm', name), el('div', 'sub', photo.dng ? '中性转换' : '相机 JPG'));
+      const thumb = el('div', 'th');
+      const sub = el('div', 'sub');
+      card.append(thumb, el('div', 'nm', name), sub);
+      this.cards.push({ thumb, sub });
       if (!photo.dng) card.disabled = true;
       card.addEventListener('click', () => {
         for (const other of strip.querySelectorAll('.rc')) other.classList.remove('on');
@@ -182,6 +178,7 @@ export class EditorView {
     this.host.append(screen);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
     this.paintStill(photo.bitmap);
+    this.paintSource(photo);
   }
 
   private recipePanel(photo: Photo): HTMLElement {
@@ -528,6 +525,57 @@ export class EditorView {
     }
   }
 
+  /**
+   * 配方卡上画的是什么，就写什么。有显卡的 RAW：中性转换（显卡出的小图，好了再画）；
+   * 否则是相机 JPG 或 DNG 内嵌的预览，不能叫中性转换。
+   */
+  private paintSource(photo: Photo): void {
+    if (photo.dng && this.engine) {
+      const neutral = photo.neutral && photo.neutral.version === photo.version ? photo.neutral.bitmap : null;
+      this.paintCards(neutral, '中性转换');
+      return;
+    }
+    const label = photo.jpg ? '相机 JPG' : photo.bitmap ? '内嵌预览' : '只有 RAW';
+    this.paintCards(photo.bitmap, label);
+  }
+
+  private paintCards(bitmap: ImageBitmap | null, label: string): void {
+    for (const card of this.cards) {
+      card.sub.textContent = label;
+      card.thumb.replaceChildren();
+      card.thumb.dataset.source = bitmap ? label : '';
+      if (!bitmap) continue;
+      const mini = document.createElement('canvas');
+      mini.width = bitmap.width;
+      mini.height = bitmap.height;
+      mini.getContext('2d')?.drawImage(bitmap, 0, 0);
+      card.thumb.append(mini);
+    }
+  }
+
+  /** 这张 RAW 的中性小图：每个版本只请显卡出一次，之后换片回来直接用。 */
+  private async neutralCards(photo: Photo, key: string): Promise<void> {
+    if (!this.engine) return;
+    const version = photo.version;
+    if (photo.neutral && photo.neutral.version === version) {
+      this.paintCards(photo.neutral.bitmap, '中性转换');
+      return;
+    }
+    const token = this.token;
+    const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
+    const geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
+    const out = await this.engine.thumb({ source: key, look, geometry, aspect: null, maxEdge: 192 });
+    if (!out || photo.version !== version) return;
+    const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
+    if (photo.version !== version) {
+      bitmap.close();
+      return;
+    }
+    photo.neutral?.bitmap.close();
+    photo.neutral = { version, bitmap };
+    if (token === this.token) this.paintCards(bitmap, '中性转换');
+  }
+
   private showRaw(key: string): void {
     if (!this.engine) return;
     this.engine.show(key);
@@ -539,6 +587,7 @@ export class EditorView {
     if (this.gpuCanvas) this.gpuCanvas.hidden = false;
     if (this.still) this.still.hidden = true;
     if (this.input) this.input.disabled = false;
+    if (this.photo) void this.neutralCards(this.photo, key);
   }
 
   private showStillPhoto(photo: Photo, label: string): void {

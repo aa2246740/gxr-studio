@@ -158,6 +158,100 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** F4：有显卡时配方卡是这张的中性小图，只做一次；没显卡时如实写相机 JPG / 内嵌预览。 */
+  async 'recipe-cards'() {
+    const gpuRun = await (async () => {
+      const { page, context, errors } = await makePage({ gpu: true });
+      try {
+        await pick(page, manifest.pairs.slice(0, 4));
+        await page.evaluate(() => {
+          window.__thumbCalls = 0;
+          const engine = window.__gxrEngine;
+          const original = engine.thumb.bind(engine);
+          window.__thumbOriginal = original;
+          engine.thumb = (opts) => {
+            window.__thumbCalls += 1;
+            return original(opts);
+          };
+        });
+        const waitCards = () =>
+          page.waitForFunction(() => {
+            const thumbs = [...document.querySelectorAll('.strip .rc .th')];
+            return thumbs.length && thumbs.every((node) => node.dataset.source === '中性转换' && node.querySelector('canvas'));
+          }, null, { timeout: 120_000 });
+        await page.locator('.cell').first().click();
+        await waitCards();
+        const first = await editorState(page);
+        const labels = await page.locator('.strip .rc .sub').allInnerTexts();
+        // 卡片和同一个源用显卡现出的中性小图比，缩到 96×64 后逐通道平均差。
+        const diff = await page.evaluate(async () => {
+          const key = `raw:${document.querySelector('.editor').dataset.photo.toLowerCase()}`;
+          const geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
+          const adjust = { exposure_ev: 0, wb: { warm: 0, tint: 0 }, contrast: 0, highlight: 0, shadow: 0, black_point: 0, saturation: 0, vibrance: 0, vignette: 0 };
+          const out = await window.__thumbOriginal({ source: key, look: { recipe: 'dev-neutral', lut: null, lutStrength: 1, curve: null, adjust }, geometry, aspect: null, maxEdge: 192 });
+          const scale = (source) => {
+            const c = document.createElement('canvas');
+            c.width = 96;
+            c.height = 64;
+            const ctx = c.getContext('2d');
+            ctx.drawImage(source, 0, 0, 96, 64);
+            return ctx.getImageData(0, 0, 96, 64).data;
+          };
+          const ref = document.createElement('canvas');
+          ref.width = out.w;
+          ref.height = out.h;
+          ref.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h), 0, 0);
+          const a = scale(document.querySelector('.strip .rc .th canvas'));
+          const b = scale(ref);
+          let sum = 0;
+          let n = 0;
+          for (let i = 0; i < a.length; i += 4) for (let c = 0; c < 3; c += 1) { sum += Math.abs(a[i + c] - b[i + c]); n += 1; }
+          return sum / n;
+        });
+        const callsAfterFirst = await page.evaluate(() => window.__thumbCalls);
+        await swipeLeft(page);
+        await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
+        await waitCards();
+        const swipeBack = async () => {
+          const box = await page.locator('.stage').boundingBox();
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await page.mouse.down();
+          await page.mouse.move(box.x + box.width / 2 + 140, box.y + box.height / 2, { steps: 8 });
+          await page.mouse.up();
+        };
+        const second = await editorState(page);
+        await swipeBack();
+        await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 });
+        await waitCards();
+        const calls = await page.evaluate(() => window.__thumbCalls);
+        return { labels, diff, callsAfterFirst, calls, first, second, errors };
+      } finally {
+        await context.close();
+      }
+    })();
+    const fallback = await (async () => {
+      const { page, context, errors } = await makePage({ gpu: false });
+      try {
+        await pick(page, [manifest.dngs[0], ...manifest.pairs.slice(2, 4)]);
+        const out = {};
+        for (const id of await gridIds(page)) {
+          await page.locator(`.cell[data-id="${id}"]`).click();
+          await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent, null, { timeout: 60_000 });
+          out[id] = {
+            labels: await page.locator('.strip .rc .sub').allInnerTexts(),
+            drawn: await page.locator('.strip .rc .th canvas').count(),
+          };
+          await page.getByRole('button', { name: '照片', exact: true }).click();
+          await page.waitForSelector('[data-screen="grid"]');
+        }
+        return { out, dngOnly: manifest.dngs[0].split('/').pop().replace(/\.DNG$/i, '').toLowerCase(), errors };
+      } finally {
+        await context.close();
+      }
+    })();
+    return { gpuRun, fallback, errors: [...gpuRun.errors, ...fallback.errors] };
+  },
+
   /** F2：已渲染过的 RAW 在拔卡后照样打开、调整；真读不了的计入没读完；状态一直留着；重新选后恢复。 */
   async 'card-removed'() {
     const { page, context, errors } = await makePage({ gpu: true });

@@ -8,7 +8,7 @@ import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui
 import { warmCore } from '../core/api';
 import { EditorView } from './editor';
 import { GridView } from './grid';
-import { openable, photoMs, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
+import { openable, photoMs, releaseBitmaps, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -212,7 +212,7 @@ class App implements AppApi {
 
   remove(id: string): void {
     const photo = this.byId.get(id);
-    photo?.bitmap?.close();
+    if (photo) releaseBitmaps(photo);
     this.byId.delete(id);
     if (!this.byId.size) this.showStart();
     else this.grid?.refresh();
@@ -222,7 +222,7 @@ class App implements AppApi {
     this.generation += 1;
     this.queue.cancel();
     this.closeEditor();
-    for (const photo of this.byId.values()) photo.bitmap?.close();
+    for (const photo of this.byId.values()) releaseBitmaps(photo);
     this.byId.clear();
     this.dat = null;
     this.ignoredCount = 0;
@@ -315,6 +315,7 @@ class App implements AppApi {
           cached: null,
           checked: null,
           bitmap: null,
+          neutral: null,
           knobs: zeroKnobs(),
         };
         this.byId.set(id, photo);
@@ -327,6 +328,8 @@ class App implements AppApi {
       // 换了 File 就是新版本：之前在路上的读取结果回来时都作废。
       photo.version += 1;
       photo.gone = false;
+      photo.neutral?.bitmap.close();
+      photo.neutral = null;
       photo.lastModified = Math.max(photo.lastModified, item.lastModified);
       if (photo.status !== 'pending') {
         photo.bitmap?.close();
