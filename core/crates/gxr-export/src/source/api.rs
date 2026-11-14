@@ -36,14 +36,18 @@ pub fn pack_from_index(index_json: &[u8], blob: &[u8]) -> Result<CalibPack, Core
             return Err(bad());
         };
         let name = name.as_str().ok_or_else(bad)?;
+        // u64 on both targets, so wasm32 and native refuse a huge length with the same text.
         let len = len
             .as_int()
-            .and_then(|n| usize::try_from(n).ok())
+            .and_then(|n| u64::try_from(n).ok())
             .ok_or_else(bad)?;
-        let end = at
-            .checked_add(len)
-            .filter(|&e| e <= blob.len())
-            .ok_or_else(|| CoreError::new("bad_request", "校准文件清单比字节长"))?;
+        let longer = || CoreError::new("bad_request", "校准文件清单比字节长");
+        let end = u64::try_from(at)
+            .ok()
+            .and_then(|a| a.checked_add(len))
+            .filter(|&e| u64::try_from(blob.len()).is_ok_and(|n| e <= n))
+            .and_then(|e| usize::try_from(e).ok())
+            .ok_or_else(longer)?;
         files.push((name.to_string(), blob[at..end].to_vec()));
         at = end;
     }
@@ -243,4 +247,49 @@ fn color_image_inner(
         ("shape", Json::Array(shape)),
     ]);
     Ok((json.render(), picked.rgb))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pack_index_is_checked_against_the_bytes() {
+        let pack = pack_from_index(br#"[["manifest.json",2],["a.npz",1]]"#, b"{}x").unwrap();
+        assert_eq!(pack.read("a.npz").as_deref(), Some(&b"x"[..]));
+        assert_eq!(pack.read("manifest.json").as_deref(), Some(&b"{}"[..]));
+        for (index, blob) in [
+            (&br#"[["a",4294967295]]"#[..], &b"x"[..]),
+            (
+                &br#"[["a",9223372036854775807],["b",9223372036854775807]]"#[..],
+                &b"x"[..],
+            ),
+            (&br#"[["a",1]]"#[..], &b"xy"[..]),
+            (&br#"[["a",-1]]"#[..], &b""[..]),
+            (&br#"{"a":1}"#[..], &b""[..]),
+        ] {
+            assert_eq!(
+                pack_from_index(index, blob).unwrap_err().kind,
+                "bad_request"
+            );
+        }
+        let deep = format!("{}{}", "[".repeat(129), "]".repeat(129));
+        let err = pack_from_index(deep.as_bytes(), b"").unwrap_err();
+        assert_eq!((err.kind, err.message.as_str()), ("json", "JSON 嵌套太深"));
+    }
+
+    #[test]
+    fn raw_decode_becomes_the_export_error() {
+        let fail = Fail::Core(CoreError::raw_decode("坏了"));
+        let Fail::Edit { code, detail, .. } = export_error(fail.clone(), true) else {
+            panic!("expected an export error");
+        };
+        assert_eq!(code, "raw_unreadable");
+        assert_eq!(detail, "没有全尺寸传感器数据，也没有更小的预览。坏了");
+        assert!(
+            matches!(export_error(fail, false), Fail::Edit { code, .. } if code == "no_jpg_source")
+        );
+        let other = Fail::NoRaw("x".into());
+        assert_eq!(export_error(other.clone(), true), other);
+    }
 }

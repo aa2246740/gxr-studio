@@ -51,7 +51,8 @@ def _gate_b(py: np.ndarray, rs: np.ndarray, at: np.ndarray, or_u8: np.ndarray, o
         u = int(at[p])
         assert abs(int(py[p, c]) - int(rs[p, c])) == 1, (label, int(p), int(c), int(py[p, c]), int(rs[p, c]))
         _assert_gate_a_elem(float(or_f64[u, c]), float(rs_f64[u, c]), int(or_u8[u, c]), int(rs[p, c]), label=f"{label}-gate-b", idx=(u, int(c)))
-    print(f"[gate-b-count] {label}: allowed_points={len(diffs)}")
+    rows = {(int(at[p]), int(c)) for p, c in diffs}
+    print(f"[gate-b-count] {label}: allowed_points={len(diffs)} distinct_inputs={len(rows)}")
     return int(len(diffs))
 
 

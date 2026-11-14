@@ -148,3 +148,28 @@ impl Labels {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_keep_insertion_order_and_replace_in_place() {
+        let mut l = Labels::of(&[("kind", "prediction"), ("id", "x")]);
+        l.set("kind", "original");
+        l.set("limited", "1");
+        assert_eq!(
+            l.to_json().render(),
+            r#"{"kind":"original","id":"x","limited":"1"}"#
+        );
+    }
+
+    #[test]
+    fn color_image_catches_exactly_three_classes() {
+        assert!(Fail::NoRaw(NO_RAW.into()).is_caught_by_color_image());
+        assert!(Fail::unavailable("c", "m", "calibration").is_caught_by_color_image());
+        assert!(Fail::Core(CoreError::raw_decode("x")).is_caught_by_color_image());
+        assert!(!Fail::Core(CoreError::new("calib", "x")).is_caught_by_color_image());
+        assert!(!Fail::edit("lut_needs_raw", "x").is_caught_by_color_image());
+    }
+}
