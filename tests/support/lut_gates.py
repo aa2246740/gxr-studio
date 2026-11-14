@@ -113,15 +113,19 @@ def assert_u8_gate_b(
     assert or_f64.shape == rust_f64.shape == py_u8.shape
     assert or_f64.dtype == rust_f64.dtype == np.float64
     diffs = np.argwhere(py_u8 != rust_u8)
+    max_diff = 0
     for idx_arr in diffs:
         idx = tuple(int(v) for v in idx_arr)
         pu8, rsu8, ou8 = int(py_u8[idx]), int(rust_u8[idx]), int(or_u8[idx])
-        assert abs(pu8 - rsu8) == 1, f"{label} Gate B diff > 1 at {idx}: py={pu8} rust={rsu8}"
         ov, rsv = float(or_f64[idx]), float(rust_f64[idx])
+        diff_code = abs(pu8 - rsu8)
+        if diff_code > max_diff:
+            max_diff = diff_code
+        assert diff_code == 1, f"{label} Gate B diff > 1 at {idx}: py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}"
         _assert_gate_a_elem(ov, rsv, ou8, rsu8, label=f"{label}-gate-a", idx=idx)
         extra = f" py_f64={float(py_f64[idx])!r}" if py_f64 is not None else ""
         print(f"[gate-b] {label} idx={idx} py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}{extra}")
-    print(f"[gate-b-count] {label}: allowed_points={len(diffs)}")
+    print(f"[gate-b-count] {label}: allowed_points={len(diffs)} max_code_diff={max_diff}")
     return int(len(diffs))
 
 
@@ -185,7 +189,7 @@ def assert_table_u8_gate_b(
     label: str,
     py_render_px: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> int:
-    """Gate B: mechanical attribution for full 256^3x4 RGBA GPU display tables vs real Python."""
+    """Gate B: mechanical attribution for full 256^3x4 RGBA GPU display tables vs real Python (|diff| <= 1)."""
     expected_len = 256**3 * 4
     assert len(py_bytes) == expected_len and len(rust_bytes) == expected_len and len(or_bytes) == expected_len
     py_arr = np.frombuffer(py_bytes, np.uint8).reshape(256, 256, 256, 4)
@@ -194,25 +198,32 @@ def assert_table_u8_gate_b(
     assert np.all(py_arr[..., 3] == 255) and np.all(rs_arr[..., 3] == 255) and np.all(or_arr[..., 3] == 255)
     diffs = np.argwhere(py_arr != rs_arr)
     if len(diffs) == 0:
-        print(f"[gate-b-count] {label}: allowed_points=0")
+        print(f"[gate-b-count] {label}: allowed_points=0 max_code_diff=0")
         return 0
     bgr_row, px_u8 = _unique_diff_pixels(diffs)
     or_f64 = or_render_px(px_u8)
     rs_f64 = rust_render_px(px_u8)
     py_f64 = py_render_px(px_u8) if py_render_px is not None else None
+    max_diff = 0
     for b_i, g_i, r_i, c_i in diffs:
         b, g, r, c = int(b_i), int(g_i), int(r_i), int(c_i)
         offset = ((b * 256 + g) * 256 + r) * 4 + c
         pu8, rsu8, ou8 = int(py_arr[b, g, r, c]), int(rs_arr[b, g, r, c]), int(or_arr[b, g, r, c])
-        assert abs(pu8 - rsu8) == 1, f"{label} Gate B diff > 1 at offset {offset}: py={pu8} rust={rsu8}"
         row = bgr_row[(b, g, r)]
         ov, rsv = float(or_f64[row, 0, c]), float(rs_f64[row, 0, c])
+        diff_code = abs(pu8 - rsu8)
+        if diff_code > max_diff:
+            max_diff = diff_code
+        assert diff_code == 1, (
+            f"{label} Gate B diff > 1 at offset {offset} bgr=({b},{g},{r}) c={c}: "
+            f"py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}"
+        )
         _assert_gate_a_elem(ov, rsv, ou8, rsu8, label=f"{label}@off={offset}-gate-a", idx=(b, g, r, c))
         extra = f" py_f64={float(py_f64[row, 0, c])!r}" if py_f64 is not None else ""
         print(
             f"[gate-b] {label} offset={offset} bgr=({b},{g},{r}) c={c} py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}{extra}"
         )
-    print(f"[gate-b-count] {label}: allowed_points={len(diffs)}")
+    print(f"[gate-b-count] {label}: allowed_points={len(diffs)} max_code_diff={max_diff}")
     return int(len(diffs))
 
 

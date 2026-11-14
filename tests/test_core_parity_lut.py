@@ -326,7 +326,7 @@ def test_target_render_and_apply_u8_parity(
 
 
 def test_quantisation_boundary_gate_rejects_violations() -> None:
-    # Gate A: diff > 1, float gap > 1e-12, away from k+0.5 rejected; Gate B: rejects if Gate A fails at diff point.
+    # Gate A: diff > 1, float gap > 1e-12, away from k+0.5 rejected; Gate B: rejects if Gate A fails or |py - rust| > 1.
     with pytest.raises(AssertionError, match="u8 diff > 1"):
         assert_u8_boundary_gate(np.array([10], np.uint8), np.array([12], np.uint8), np.array([10.5]), np.array([11.5]), label="neg-step2")
     with pytest.raises(AssertionError, match="1e-12 gate"):
@@ -338,6 +338,30 @@ def test_quantisation_boundary_gate_rejects_violations() -> None:
     with pytest.raises(AssertionError, match="Gate A float64 diff exceeds 1e-12"):
         assert_u8_gate_b(
             np.array([10], np.uint8), np.array([11], np.uint8), np.array([11], np.uint8), np.array([10.0]), np.array([10.1]), label="neg-b"
+        )
+    with pytest.raises(AssertionError, match="Gate B diff > 1"):
+        assert_u8_gate_b(
+            np.array([10], np.uint8),
+            np.array([12], np.uint8),
+            np.array([12], np.uint8),
+            np.array([11.5]),
+            np.array([11.5]),
+            label="neg-b-step2",
+        )
+    arr = np.zeros((256, 256, 256, 4), np.uint8)
+    arr[..., 3] = 255
+    arr[0, 0, 0, 0] = 10
+    pb = arr.tobytes()
+    arr[0, 0, 0, 0] = 12
+    rb = arr.tobytes()
+    with pytest.raises(AssertionError, match="Gate B diff > 1"):
+        assert_table_u8_gate_b(
+            pb,
+            rb,
+            rb,
+            or_render_px=lambda px: np.full(px.shape, 11.5, dtype=np.float64),
+            rust_render_px=lambda px: np.full(px.shape, 11.5, dtype=np.float64),
+            label="neg-tbl-step2",
         )
 
 
