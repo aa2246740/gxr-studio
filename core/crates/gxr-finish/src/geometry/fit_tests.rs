@@ -1,0 +1,119 @@
+use gxr_raw::CoreError;
+
+use super::super::bounds::{ARRAY_TOO_BIG, bad_geometry};
+use super::{
+    clamp_norm_rect, crop_valid, fit_preset_in_valid, fit_ratio_in_valid, max_area_rect,
+    nearest_window, normalized_valid_rect, valid_integral, window_full,
+};
+
+#[test]
+fn crop_valid_rejects_short_zero_and_oversized_inputs() {
+    assert_eq!(
+        crop_valid(&[0; 3], 2, 2, [0., 0., 1., 1.]).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        crop_valid(&[], 0, 2, [0., 0., 1., 1.]).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        crop_valid(&[0; 3], 2_147_483_648, 1, [0., 0., 0.0000000004, 1.]).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+    assert_eq!(
+        crop_valid(&[0; 3], 800_000_000, 1, [0., 0., 1., 1.]).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+}
+
+#[test]
+fn mask_helpers_reject_short_zero_and_oversized_shapes() {
+    assert_eq!(max_area_rect(&[1], 2, 2).unwrap_err(), bad_geometry());
+    assert_eq!(max_area_rect(&[], 0, 2).unwrap_err(), bad_geometry());
+    assert_eq!(
+        max_area_rect(&[1], 2_147_483_648, 1).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+
+    assert_eq!(
+        normalized_valid_rect(&[1], 2, 2).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        normalized_valid_rect(&[], 0, 2).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        normalized_valid_rect(&[1], 2_147_483_648, 1).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+
+    assert_eq!(valid_integral(&[1], 2, 2).unwrap_err(), bad_geometry());
+    assert_eq!(
+        fit_ratio_in_valid(&[1], 2, 2, [0., 0., 1., 1.], 1, 1).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        fit_preset_in_valid(&[1], 2, 2, None, [0., 0., 1., 1.]).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        window_full(&[1], 2, 2, 0, 0, 1, 1).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        clamp_norm_rect(&[1], 2, 2, [0., 0., 1., 1.], None).unwrap_err(),
+        bad_geometry()
+    );
+    assert_eq!(
+        nearest_window(&[0; 4], 2, 2, 1, 1, 1.0, 1.0).unwrap_err(),
+        bad_geometry()
+    );
+}
+
+#[test]
+fn fit_ratio_clamps_oversized_rect_before_usize_conversion() {
+    let valid = vec![1_u8; 32 * 24];
+    for px in [4_294_967_295_u64, 4_294_967_296, 4_294_967_297] {
+        assert_eq!(
+            fit_ratio_in_valid(&valid, 32, 24, [0.0, 0.0, px as f64 / 32.0, 0.5], 16, 9).unwrap(),
+            [16, 2, 16, 9]
+        );
+        assert_eq!(
+            fit_ratio_in_valid(&valid, 32, 24, [0.0, 0.0, 0.5, px as f64 / 24.0], 9, 16).unwrap(),
+            [4, 8, 9, 16]
+        );
+    }
+}
+
+#[test]
+fn max_area_rect_rejects_derived_buffer_byte_limit_before_allocating() {
+    let width = 536_870_912_usize;
+    let mut mask = vec![0_u8; width];
+    mask[0] = 1;
+    assert_eq!(
+        max_area_rect(&mask, width, 1).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+    // Stack buffer `(width + 1) * 4` also crosses `i32::MAX` at `width = 536_870_911`.
+    assert_eq!(
+        max_area_rect(&mask[..width - 1], width - 1, 1).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+}
+
+#[test]
+fn max_area_rect_stack_never_grows_past_its_reservation() {
+    // Sol geometry r4: a row of zeros after a valid row pushed `width + 2` entries into a stack
+    // reserved for `width + 1`, so the last push reallocated past the checked byte limit.
+    // The `debug_assert!` in `max_area_rect` fails on the old code in this (debug) test build.
+    let (width, height) = (8_usize, 2_usize);
+    let mut mask = vec![0_u8; width * height];
+    mask[0] = 1;
+    assert_eq!(max_area_rect(&mask, width, height).unwrap(), [0, 0, 1, 1]);
+    let full = vec![1_u8; width * height];
+    assert_eq!(
+        max_area_rect(&full, width, height).unwrap(),
+        [0, 0, width, height]
+    );
+}
