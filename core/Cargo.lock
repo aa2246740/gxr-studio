@@ -61,6 +61,11 @@ dependencies = [
 [[package]]
 name = "gxr-hdr"
 version = "0.1.0"
+dependencies = [
+ "gxr-math",
+ "gxr-raw",
+ "libm",
+]
 
 [[package]]
 name = "gxr-jpeg"

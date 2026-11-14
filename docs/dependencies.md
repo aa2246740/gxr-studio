@@ -48,3 +48,7 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 `jpeg-encoder` 0.6.0 于 2023-10-09 发布。crates.io 没有写 `rust-version`，包里的 README 写最低 Rust 是 1.61，低于工具链 1.93.1。更新的 0.6.1（2025-03-23）、0.7.0（2026-01-20）和 0.7.1（2026-07-27）许可是 `(MIT OR Apache-2.0) AND IJG`，不是 MIT 或 Apache-2.0，所以不用。
 
 核心 crate 之间只能互相依赖，再加 `libm`。`gxr-jpeg` 以后可以再依赖 `jpeg-encoder`（见 `docs/mobile.md`）。不使用 serde。JSON 由 `gxr-raw` 里手写的写入器生成，命令行和 WASM 共用，所以两边的字节一样。`mobile/` 的开发依赖和 `frontend/` 是同一组精确版本（vite 8.3.5、typescript 7.0.2、`@webgpu/types` 0.1.74），锁在 `mobile/pnpm-lock.yaml`。
+
+### 生成的 Unicode 表（`gxr-hdr`）
+
+`core/crates/gxr-hdr/src/unicode_tables.rs` 不是外部包，是 `core/crates/gxr-hdr/scripts/gen_unicode_tables.py` 用参考 Python（3.14.7，Unicode 16.0.0）逐个码点生成的：`str.isspace()` 的空白、`float(str)` 认的十进制数字、`str.casefold()` 的完整折叠。数据来自 Unicode Character Database，许可是 Unicode License v3，全文在 `core/crates/gxr-hdr/NOTICE`。换 Python 或 Unicode 版本时重跑脚本，再 `rustfmt`；`tests/test_core_parity_hdr_review.py` 会核对表和当前解释器一致。
