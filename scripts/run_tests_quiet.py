@@ -7,7 +7,7 @@
   （没有这个函数就用 `cap(0)` 的 admit）；没设置、文件不在、加载失败或调用出错时，改用公开的回退：
   1 分钟负载均值低于 CPU 数的一半。公共仓库不依赖那条私有路径。
 - 每 GXR_QUIET_POLL_S 秒（默认 10）问一次。一次 runner 里所有等待合计最多 GXR_QUIET_MAX_WAIT_S 秒
-  （默认 1800）。用完以后照样跑，每次只再问一次，并打印一行「一直没安静下来」和当时的负载。
+  （默认 600）。用完以后照样跑，每次只再问一次，并打印一行「一直没安静下来」和当时的负载。
 - 每次等待打印一行：等了多久、问了几次、最后看到的负载。
 - 速度断言抛 `SpeedBudgetExceeded`（类上 `gxr_speed_budget = True`，见 tests/support/speed.py）。
   exclusive 用例最后一次尝试只因它失败（setup、teardown 都没出错）时，记成 speed，父进程等安静后在
@@ -33,7 +33,7 @@ LOADGATE_ENV = "GXR_LOADGATE"
 MAX_WAIT_ENV = "GXR_QUIET_MAX_WAIT_S"
 POLL_ENV = "GXR_QUIET_POLL_S"
 BUDGET_ENV = "GXR_RUN_TESTS_QUIET_BUDGET"
-DEFAULT_MAX_WAIT_S = 1800.0
+DEFAULT_MAX_WAIT_S = 600.0
 DEFAULT_POLL_S = 10.0
 
 Probe = Callable[[], tuple[bool, str]]
