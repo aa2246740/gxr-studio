@@ -186,3 +186,15 @@ WASM：`hdr_align`、`hdr_gain`（`HdrGain` 有 `codes()` 和 `report`）、`hdr
 - scipy 在 arm64 上把短高斯核（sigma 0.5、0.6）的累加编成了 FMA；`np.convolve`（BLAS）和 `np.interp` 也会融合。CONVENTIONS 不许 FMA，所以这些 float64 中间量可能差最后一位，float64 滤波输出按 `1e-12` 相对比较。
 - numpy 的 float32 `log2`、`pow` 调的是 Apple 的 libm，它在少数输入上不是正确舍入。按 PORT-WAVE-1「平台 libm」那条规则，对照值是正确舍入的结果，不抄 Apple 的值。这里用「libm 的 float64 结果舍入一次」：sRGB 的 256 个码值全部等于 `decimal` 50 位算出、再舍入一次的 float32（`test_srgb_to_linear_is_correctly_rounded`）。本机 numpy 只在码值 71、180 上不同，所以 `sdr_luma_grid` 会差最后一位；测试同时断言 Python 的 `align` 在 Rust 的网格上给出和 Rust 一样的结果，uint8 增益码值不变。
 - 量化前的 float32 增益平面不设门槛：scipy 的 sigma 0.6 高斯在 arm64 上是 FMA，个别格子差 1 ulp；uint8 码值和元数据是精确的。
+
+### hdr-fft：和 numpy 逐位相同的相位相关（`crates/gxr-hdr/src/fft/`）
+
+`_phase_shift` 的 FFT 照 numpy 2.4.3 的 pocketfft 逐行移植（代码和 BSD-3 许可见 `fft/NOTICE`）。`fft2` 的 `fct=1` 是 Python int，numpy 因此走 complex128 循环：正变换在 double 里算，再舍入成 complex64；`ifft2` 走 complex64，在 float 里算并乘 float32 的 `1/n`。FMA 照 arm64 轮子的 `-ffp-contract=on` 来；`abs` 是 `simd_cabsolute_f32`，不是 `hypotf`；除法是 Smith 形式。twiddle 的 `cos`/`sin` 用正确舍入的值（PORT-WAVE-1 libm 规则），所以在 Apple `cos`/`sin` 不正确舍入的角上和本机 numpy 差最后一位，每个这样的角在 `tests/test_core_parity_hdr_fft.py` 里单独断言。
+
+| 命令 | 输入 | 输出 |
+|---|---|---|
+| `hdr-fft` | `--in` float32 `(n, 2)` 或 `(h, n, 2)`（complex64 的实部、虚部），`--inverse 0\|1`，可选 `--two-d`、`--in-shape H N` | `--out` 同形状：numpy `fft`/`ifft`（或 `fft2`/`ifft2`） |
+| `hdr-phase-plane` | `--a`、`--b` float32，可选 `--a-shape`/`--b-shape` | `--out` 整张 float32 相位相关平面；stdout 是 `dy`、`dx` |
+| `hdr-fft-twiddle` | `--n N`，`--kind float\|double\|tables` | `sincos_2pibyn` 的 twiddle；`tables` 是原始 `cos`/`sin` 表和角度 |
+
+三个命令都接受 `--trig host`（只在原生 CLI，诊断用）：用本机 `cos`/`sin` 建表，这时结果和本机 numpy 逐位相同。WASM：`hdr_fft`、`hdr_phase_plane`（`HdrPhasePlane` 有 `report` 和 `plane()`）。
