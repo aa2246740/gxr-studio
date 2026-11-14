@@ -71,21 +71,34 @@ pub fn frame_date(moment: &NaiveDateTime) -> String {
     format!("{:04}.{:02}.{:02}", moment.year, moment.month, moment.day)
 }
 
-/// Convert epoch milliseconds + `tz_offset_min` (east of UTC) into a local `NaiveDateTime`
-/// without accessing the system clock or timezone.
-pub fn datetime_from_mtime_ms(
-    mtime_ms: f64,
-    tz_offset_min: i32,
-) -> Result<NaiveDateTime, CoreError> {
-    if !mtime_ms.is_finite() {
-        return Err(CoreError::new("bad_meta", "mtime_ms must be finite"));
+/// Validate `tz_offset_min` received as JS `number` / `f64` before narrowing to `i32`.
+pub fn validate_tz_offset_min(tz_offset_min: f64) -> Result<i32, CoreError> {
+    if !tz_offset_min.is_finite() || tz_offset_min.fract() != 0.0 {
+        return Err(CoreError::new(
+            "bad_meta",
+            "tz_offset_min must be a finite integer",
+        ));
     }
-    if !(-1439..=1439).contains(&tz_offset_min) {
+    if !(-1439.0..=1439.0).contains(&tz_offset_min) {
         return Err(CoreError::new(
             "bad_meta",
             "tz_offset_min must be strictly between -1440 and 1440",
         ));
     }
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(tz_offset_min as i32)
+}
+
+/// Convert epoch milliseconds + `tz_offset_min` (east of UTC) into a local `NaiveDateTime`
+/// without accessing the system clock or timezone.
+pub fn datetime_from_mtime_ms(
+    mtime_ms: f64,
+    tz_offset_min: f64,
+) -> Result<NaiveDateTime, CoreError> {
+    if !mtime_ms.is_finite() {
+        return Err(CoreError::new("bad_meta", "mtime_ms must be finite"));
+    }
+    let tz_min = validate_tz_offset_min(tz_offset_min)?;
     // Python datetime.fromtimestamp(mtime_ms / 1000.0) divides by 1000.0 first in IEEE-754 f64,
     // then splits integer and fractional seconds (_PyTime_FromDouble) before rounding to us.
     let sec = mtime_ms / 1000.0;
@@ -109,7 +122,7 @@ pub fn datetime_from_mtime_ms(
         return Err(CoreError::new("bad_meta", "mtime_ms out of datetime range"));
     }
 
-    let offset_us = i128::from(tz_offset_min) * 60 * 1_000_000;
+    let offset_us = i128::from(tz_min) * 60 * 1_000_000;
     let local_us = utc_us + offset_us;
     let days = local_us.div_euclid(us_per_day);
     let rem_us = local_us.rem_euclid(us_per_day);
@@ -280,18 +293,13 @@ pub fn photo_meta_from_bytes(
     dng: Option<&[u8]>,
     name: &str,
     mtime_ms: Option<f64>,
-    tz_offset_min: i32,
+    tz_offset_min: f64,
     now_year: i32,
 ) -> Result<PhotoTextResult, CoreError> {
     let mtime_dt = match mtime_ms {
         Some(ms) => Some(datetime_from_mtime_ms(ms, tz_offset_min)?),
         None => {
-            if !(-1439..=1439).contains(&tz_offset_min) {
-                return Err(CoreError::new(
-                    "bad_meta",
-                    "tz_offset_min must be strictly between -1440 and 1440",
-                ));
-            }
+            let _ = validate_tz_offset_min(tz_offset_min)?;
             None
         }
     };
@@ -387,29 +395,29 @@ mod tests {
     #[test]
     fn datetime_from_mtime_ms_handles_tz_and_pre_epoch() {
         // 2024-03-01 00:00:00 UTC = 1709251200_000 ms; with +480 min (+08:00) -> 08:00:00
-        let dt = datetime_from_mtime_ms(1_709_251_200_000.0, 480).expect("valid mtime");
+        let dt = datetime_from_mtime_ms(1_709_251_200_000.0, 480.0).expect("valid mtime");
         assert_eq!(dt, NaiveDateTime::new(2024, 3, 1, 8, 0, 0));
         assert_eq!(frame_date(&dt), "2024.03.01");
 
         // Pre-1970: -86400_000 ms -> 1969-12-31 00:00:00 UTC
-        let pre = datetime_from_mtime_ms(-86_400_000.0, 0).expect("pre-1970");
+        let pre = datetime_from_mtime_ms(-86_400_000.0, 0.0).expect("pre-1970");
         assert_eq!(pre, NaiveDateTime::new(1969, 12, 31, 0, 0, 0));
 
         // Bank-rounding to nearest microsecond across second boundary
-        let carry = datetime_from_mtime_ms(999.999_9, 0).expect("carry");
+        let carry = datetime_from_mtime_ms(999.999_9, 0.0).expect("carry");
         assert_eq!(carry, NaiveDateTime::new(1970, 1, 1, 0, 0, 1));
 
         // Modern sub-ms rounding matching datetime.fromtimestamp(mtime_ms / 1000.0)
         // 1700000000000.0 + 1/4096 ms = 1700000000.0 + 0.244140625 us -> rounds to .000000
         let mod_sub =
-            datetime_from_mtime_ms(1_700_000_000_000.0 + 1.0 / 4096.0, 0).expect("mod_sub");
+            datetime_from_mtime_ms(1_700_000_000_000.0 + 1.0 / 4096.0, 0.0).expect("mod_sub");
         assert_eq!(mod_sub.microsecond, 0);
         // 1700000000000.0 + 3/4096 ms -> 0.732421875 us -> .000001 (even though ms*1000 rounds differently near boundary)
         let mod_sub3 =
-            datetime_from_mtime_ms(1_700_000_000_000.0 + 3.0 / 4096.0, 0).expect("mod_sub3");
+            datetime_from_mtime_ms(1_700_000_000_000.0 + 3.0 / 4096.0, 0.0).expect("mod_sub3");
         assert_eq!(mod_sub3.microsecond, 1);
         // 9999-12-30 23:59:59.998993 UTC at 253402214399999.0
-        let y9999 = datetime_from_mtime_ms(253_402_214_399_999.0, 0).expect("y9999");
+        let y9999 = datetime_from_mtime_ms(253_402_214_399_999.0, 0.0).expect("y9999");
         assert_eq!(
             (
                 y9999.year,
@@ -421,15 +429,22 @@ mod tests {
             (9999, 12, 30, 59, 998_993)
         );
         // Negative fractional carry at -999.9995 ms -> 1969-12-31 23:59:59.000000
-        let neg_carry = datetime_from_mtime_ms(-999.999_5, 0).expect("neg_carry");
+        let neg_carry = datetime_from_mtime_ms(-999.999_5, 0.0).expect("neg_carry");
         assert_eq!(neg_carry, NaiveDateTime::new(1969, 12, 31, 23, 59, 59));
 
         // Invalid tz_offset_min or non-finite mtime
-        assert!(datetime_from_mtime_ms(f64::NAN, 0).is_err());
-        assert!(datetime_from_mtime_ms(0.0, 1440).is_err());
-        assert!(datetime_from_mtime_ms(0.0, -1440).is_err());
-        assert!(datetime_from_mtime_ms(-62_135_596_800_000.0, -480).is_err());
-        assert!(datetime_from_mtime_ms(253_402_300_799_000.0, 480).is_err());
+        assert!(datetime_from_mtime_ms(f64::NAN, 0.0).is_err());
+        assert!(datetime_from_mtime_ms(0.0, 1440.0).is_err());
+        assert!(datetime_from_mtime_ms(0.0, -1440.0).is_err());
+        assert!(datetime_from_mtime_ms(0.0, f64::NAN).is_err());
+        assert!(datetime_from_mtime_ms(0.0, f64::INFINITY).is_err());
+        assert!(datetime_from_mtime_ms(0.0, f64::NEG_INFINITY).is_err());
+        assert!(datetime_from_mtime_ms(0.0, 1.5).is_err());
+        assert!(datetime_from_mtime_ms(0.0, 4_294_967_297.0).is_err());
+        assert!(datetime_from_mtime_ms(0.0, 9_007_199_254_740_992.0).is_err());
+        assert_eq!(validate_tz_offset_min(-0.0).unwrap(), 0);
+        assert!(datetime_from_mtime_ms(-62_135_596_800_000.0, -480.0).is_err());
+        assert!(datetime_from_mtime_ms(253_402_300_799_000.0, 480.0).is_err());
     }
 
     #[test]

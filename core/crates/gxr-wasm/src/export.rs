@@ -27,14 +27,14 @@ pub fn export_meta_photo(
     dng_or_null: Option<Vec<u8>>,
     name: &str,
     mtime_ms: Option<f64>,
-    tz_offset_min: Option<i32>,
+    tz_offset_min: Option<f64>,
 ) -> Result<String, JsValue> {
     let res = photo_meta_from_bytes(
         jpg_or_null.as_deref(),
         dng_or_null.as_deref(),
         name,
         mtime_ms,
-        tz_offset_min.unwrap_or(0),
+        tz_offset_min.unwrap_or(0.0),
         DEFAULT_NOW_YEAR,
     )
     .map_err(|e| rejected(&e))?;

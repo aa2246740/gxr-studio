@@ -661,3 +661,25 @@ def sol_mtime_tz_cases() -> list[tuple[float, int]]:
     modern_sub_ms = [1700000000000.0 + i / 4096 for i in (1, 3, 5, 7, 9)]
     pairs.extend((ms, -300) for ms in modern_sub_ms)
     return pairs
+
+
+def wasm_number_boundary_specs() -> list[tuple[str, float | int | str | None, float | int | str]]:
+    """JS number boundary cases for mtime_ms and tz_offset_min parity between CLI and WASM."""
+    return [
+        ("err::bad_tz_neg", 1000, -1440),
+        ("err::tz_2p53", 1000, 2**53),
+        ("err::tz_2p32p1", 1000, 2**32 + 1),
+        ("ok::tz_neg1", 1000, -1),
+        ("err::tz_nan", 1000, "NaN"),
+        ("err::tz_inf", 1000, "Infinity"),
+        ("err::tz_ninf", 1000, "-Infinity"),
+        ("err::tz_frac", 1000, 1.5),
+        ("err::tz_nan_nomtime", None, "NaN"),
+        ("err::mtime_2p53", 2**53, 0),
+        ("ok::mtime_2p32p1", 2**32 + 1, 0),
+        ("ok::mtime_neg1", -1, 0),
+        ("ok::mtime_frac", 1.5, 0),
+        ("err::mtime_nan", "NaN", 0),
+        ("err::mtime_inf", "Infinity", 0),
+        ("err::mtime_ninf", "-Infinity", 0),
+    ]

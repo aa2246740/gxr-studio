@@ -9,6 +9,14 @@ function readBytes(path) {
   return new Uint8Array(readFileSync(path));
 }
 
+function parseNumArg(val) {
+  if (val === undefined || val === null) return undefined;
+  if (val === 'NaN') return Number.NaN;
+  if (val === 'Infinity') return Number.POSITIVE_INFINITY;
+  if (val === '-Infinity') return Number.NEGATIVE_INFINITY;
+  return val;
+}
+
 function toCase(manifestPath, c) {
   if (c.kind === 'exif') {
     return {
@@ -19,14 +27,16 @@ function toCase(manifestPath, c) {
   }
   if (c.kind === 'photo') {
     const cliArgs = ['export-meta-photo'];
+    const mtimeMs = parseNumArg(c.mtime_ms);
+    const tzOffsetMin = parseNumArg(c.tz_offset_min);
     if (c.jpg) cliArgs.push('--jpg', c.jpg);
     if (c.dng) cliArgs.push('--dng', c.dng);
     if (c.name !== undefined && c.name !== null) cliArgs.push('--name', String(c.name));
-    if (c.mtime_ms !== undefined && c.mtime_ms !== null) {
-      cliArgs.push('--mtime-ms', String(c.mtime_ms));
+    if (mtimeMs !== undefined) {
+      cliArgs.push('--mtime-ms', String(mtimeMs));
     }
-    if (c.tz_offset_min !== undefined && c.tz_offset_min !== null) {
-      cliArgs.push('--tz-offset-min', String(c.tz_offset_min));
+    if (tzOffsetMin !== undefined) {
+      cliArgs.push('--tz-offset-min', String(tzOffsetMin));
     }
     return {
       label: `${manifestPath}::${c.label}`,
@@ -36,8 +46,8 @@ function toCase(manifestPath, c) {
           c.jpg ? readBytes(c.jpg) : undefined,
           c.dng ? readBytes(c.dng) : undefined,
           c.name ?? '',
-          c.mtime_ms ?? undefined,
-          c.tz_offset_min ?? undefined,
+          mtimeMs,
+          tzOffsetMin,
         ),
     };
   }

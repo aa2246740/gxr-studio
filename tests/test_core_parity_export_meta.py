@@ -26,7 +26,14 @@ from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
 from gxr_studio.finish.meta_text import photo_meta
 from gxr_studio.meta import _load_subifd, dng_preview_image, read_dng_meta, read_jpeg_meta
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
-from support.export_meta_cases import make_jpeg_bytes, make_tiff_doc, nonfinite_edge_cases, sol_mtime_tz_cases, synthetic_edge_cases
+from support.export_meta_cases import (
+    make_jpeg_bytes,
+    make_tiff_doc,
+    nonfinite_edge_cases,
+    sol_mtime_tz_cases,
+    synthetic_edge_cases,
+    wasm_number_boundary_specs,
+)
 from support.wasm_check import PKG, run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -554,8 +561,16 @@ def test_errors_match_core_error_kinds(tmp_path: Path) -> None:
     for bad_args, expected_kind in [
         (["export-meta-photo", "--name", "a"], "bad_input"),
         (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "NaN"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "Infinity"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "-Infinity"], "bad_meta"),
         (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "1440"], "bad_meta"),
         (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "-1440"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "NaN"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "Infinity"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "-Infinity"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "1.5"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "4294967297"], "bad_meta"),
+        (["export-meta-photo", "--jpg", str(jpg), "--mtime-ms", "1000", "--tz-offset-min", "9007199254740992"], "bad_meta"),
     ]:
         code, payload = run_json(bad_args)
         err = error_of(code, payload)
@@ -657,12 +672,16 @@ def test_wasm_matches_native_export_meta(tmp_path: Path) -> None:
         else:
             null_preview_dngs.append(dng)
 
-    # Error parity cases in WASM vs native
+    # Error & number-boundary parity cases in WASM vs native (mtime_ms & tz_offset_min as f64)
     ok_jpg = tmp_path / "xmp_orient.jpg"
     manifest_entries.extend(
         [
             {"label": "err::missing_both", "kind": "photo", "jpg": None, "dng": None, "name": "a", "mtime_ms": 1000, "tz_offset_min": 0},
             {"label": "err::bad_tz", "kind": "photo", "jpg": str(ok_jpg), "dng": None, "name": "a", "mtime_ms": 1000, "tz_offset_min": 1440},
+            *[
+                {"label": lbl, "kind": "photo", "jpg": str(ok_jpg), "dng": None, "name": "a", "mtime_ms": ms, "tz_offset_min": tz}
+                for lbl, ms, tz in wasm_number_boundary_specs()
+            ],
         ]
     )
 

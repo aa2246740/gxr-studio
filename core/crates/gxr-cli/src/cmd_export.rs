@@ -65,9 +65,9 @@ fn cmd_photo(args: &[String]) -> Result<Json, Failure> {
     };
     let tz_offset_min = match opt_option(args, "--tz-offset-min")? {
         Some(s) => s
-            .parse::<i32>()
+            .parse::<f64>()
             .map_err(|_| Failure::Usage(format!("bad --tz-offset-min {s:?}")))?,
-        None => 0,
+        None => 0.0,
     };
     let now_year = parse_now_year(args)?;
     let res = photo_meta_from_bytes(
