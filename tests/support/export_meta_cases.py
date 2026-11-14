@@ -509,6 +509,75 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
             make_jpeg_bytes(exif_payload=make_tiff_doc([], [(33434, 12, 1, struct.pack("<d", val))])),
             "jpg",
         )
+
+    # 13. Sol r1 negative/float DefaultCropSize, DNG fallback, duplicate tags, & typed EXIF tags
+    for e_tag, e, crop_idx, fb_idx, dup_idx, typed_start in [("le", "<", 113, 116, 117, 13), ("be", ">", 118, 121, 122, 57)]:
+        cases[f"dng-crop-{crop_idx}.dng"] = (
+            make_tiff_doc(
+                base_tiff(e),
+                subifd_list=[
+                    [
+                        (254, 4, 1, struct.pack(e + "I", 0)),
+                        (256, 4, 1, struct.pack(e + "I", 220)),
+                        (257, 4, 1, struct.pack(e + "I", 120)),
+                        (50720, 4, 2, struct.pack(e + "II", 200, 100)),
+                    ]
+                ],
+                endian=e,
+            ),
+            "dng",
+        )
+        cases[f"dng-crop-{crop_idx + 1}.dng"] = (
+            make_tiff_doc(
+                base_tiff(e),
+                subifd_list=[
+                    [
+                        (254, 4, 1, struct.pack(e + "I", 0)),
+                        (256, 4, 1, struct.pack(e + "I", 220)),
+                        (257, 4, 1, struct.pack(e + "I", 120)),
+                        (50720, 5, 2, struct.pack(e + "IIII", 401, 2, 201, 2)),
+                    ]
+                ],
+                endian=e,
+            ),
+            "dng",
+        )
+        cases[f"dng-crop-{crop_idx + 2}.dng"] = (
+            make_tiff_doc(
+                base_tiff(e),
+                subifd_list=[
+                    [
+                        (254, 4, 1, struct.pack(e + "I", 0)),
+                        (256, 4, 1, struct.pack(e + "I", 220)),
+                        (257, 4, 1, struct.pack(e + "I", 120)),
+                        (50720, 9, 2, struct.pack(e + "ii", -1, 100)),
+                    ]
+                ],
+                endian=e,
+            ),
+            "dng",
+        )
+        cases[f"dng-fallback-{fb_idx}.dng"] = (
+            make_tiff_doc(base_tiff(e) + [(274, 3, 1, struct.pack(e + "H", 6))], endian=e),
+            "dng",
+        )
+        cases[f"duplicate-tag-{dup_idx}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc(base_tiff(e) + [(272, 2, 5, b"BASE\x00")], [(272, 2, 4, b"SUB\x00")], endian=e)),
+            "jpg",
+        )
+        t_idx = typed_start
+        for tag in (34855, 33434, 33437, 42036, 36867, 36864, 40960, 41730):
+            for typ, raw in [
+                (3, struct.pack(e + "HH", 2, 8)),
+                (4, struct.pack(e + "II", 2, 8)),
+                (5, struct.pack(e + "IIII", 1, 0, 2, 3)),
+                (10, struct.pack(e + "iiii", -1, 0, 2, 3)),
+            ]:
+                cases[f"typed-tag-{e_tag}-{t_idx}.jpg"] = (
+                    make_jpeg_bytes(exif_payload=make_tiff_doc(base_tiff(e), [(tag, typ, 2, raw)], endian=e)),
+                    "jpg",
+                )
+                t_idx += 1
     return cases
 
 

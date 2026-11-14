@@ -62,8 +62,8 @@ impl NaiveDateTime {
 /// Port of `gxr_studio/meta.py:28 PhotoMeta`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhotoMeta {
-    pub width: Option<u32>,
-    pub height: Option<u32>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
     pub orientation: i64,
     pub taken: Option<NaiveDateTime>,
     pub iso: Option<i64>,
@@ -101,14 +101,8 @@ impl PhotoMeta {
 
     pub fn to_json(&self) -> Json {
         Json::object([
-            (
-                "width",
-                Json::opt(self.width.map(|v| Json::Int(i64::from(v)))),
-            ),
-            (
-                "height",
-                Json::opt(self.height.map(|v| Json::Int(i64::from(v)))),
-            ),
+            ("width", Json::opt(self.width.map(Json::Int))),
+            ("height", Json::opt(self.height.map(Json::Int))),
             ("orientation", Json::Int(self.orientation)),
             (
                 "taken",
@@ -356,7 +350,7 @@ fn parse_iso(value: Option<&ExifValue>) -> Result<Option<i64>, &'static str> {
 }
 
 /// Port of `gxr_studio/meta.py:90 _oriented`.
-pub fn oriented(w: u32, h: u32, orientation: i64) -> (u32, u32) {
+pub fn oriented(w: i64, h: i64, orientation: i64) -> (i64, i64) {
     if matches!(orientation, 5..=8) {
         (h, w)
     } else {
@@ -415,8 +409,8 @@ pub fn read_jpeg_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
     let exif = load_image_exif(bytes, &doc);
     let orientation = parse_orientation(exif.base.get(&274));
     let (raw_w, raw_h) = match &doc {
-        ImageDoc::Jpeg(j) => (j.width, j.height),
-        ImageDoc::Tiff(t) => (t.width, t.height),
+        ImageDoc::Jpeg(j) => (i64::from(j.width), i64::from(j.height)),
+        ImageDoc::Tiff(t) => (i64::from(t.width), i64::from(t.height)),
     };
     let (w, h) = oriented(raw_w, raw_h, orientation);
     let taken = parse_exif_datetime(exif.sub.get(&36867), now_year)
@@ -440,7 +434,7 @@ pub fn read_jpeg_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
     }
 }
 
-fn extract_crop_pair(val: Option<&ExifValue>) -> Result<Option<(u32, u32)>, &'static str> {
+fn extract_crop_pair(val: Option<&ExifValue>) -> Result<Option<(i64, i64)>, &'static str> {
     let Some(v) = val else {
         return Ok(None);
     };
@@ -459,7 +453,7 @@ fn extract_crop_pair(val: Option<&ExifValue>) -> Result<Option<(u32, u32)>, &'st
     let (Some(w), Some(h)) = pair else {
         return Ok(None);
     };
-    Ok(u32::try_from(w).ok().zip(u32::try_from(h).ok()))
+    Ok(Some((w, h)))
 }
 
 /// Port of `gxr_studio/meta.py:138 read_dng_meta`.
@@ -475,8 +469,8 @@ pub fn read_dng_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
     };
     let tags = &tiff.tag_v2.tags;
     let orientation = parse_orientation(tags.get(&274));
-    let mut width = tiff.width;
-    let mut height = tiff.height;
+    let mut width = i64::from(tiff.width);
+    let mut height = i64::from(tiff.height);
 
     if let Some(sub_offs) = tags.get(&330).and_then(ExifValue::as_ints) {
         for off in sub_offs {
@@ -511,10 +505,8 @@ pub fn read_dng_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
                             .map_or(Ok(None), ExifValue::to_python_int);
                         match (iw, ih) {
                             (Ok(Some(w)), Ok(Some(h))) => {
-                                if let (Ok(uw), Ok(uh)) = (u32::try_from(w), u32::try_from(h)) {
-                                    width = uw;
-                                    height = uh;
-                                }
+                                width = w;
+                                height = h;
                             }
                             (Err(msg), _) | (_, Err(msg)) => return PhotoMeta::from_error(msg),
                             _ => {}
@@ -647,5 +639,18 @@ mod tests {
             parse_iso(Some(&ExifValue::Str("8\x1c".to_string()))),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn extract_crop_pair_preserves_negative_and_rational_truncation() {
+        assert_eq!(
+            extract_crop_pair(Some(&ExifValue::Ints(vec![-1, 100]))),
+            Ok(Some((-1, 100)))
+        );
+        assert_eq!(
+            extract_crop_pair(Some(&ExifValue::Rationals(vec![(401, 2), (201, 2)]))),
+            Ok(Some((200, 100)))
+        );
+        assert_eq!(oriented(-1, 100, 6), (100, -1));
     }
 }
