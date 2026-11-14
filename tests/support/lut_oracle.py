@@ -473,6 +473,8 @@ from support.lut_gates import (  # noqa: E402, F401
     check_blas_gamma24_and_threshold_points,
     check_gate_b_classification_controls,
     check_negative_control_case,
+    check_r5_pathological_applelog,
+    check_r5_steep_slope_family,
     check_shaper_applelog_full_table,
     check_shaper_zero_cases,
     check_threshold_cpu_case,

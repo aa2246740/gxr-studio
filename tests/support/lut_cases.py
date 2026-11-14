@@ -307,6 +307,7 @@ AMPLIFIED_CASES: list[tuple[str, bool, float, dict[str, Any]]] = [
 
 SHAPER_APPLELOG_CUBE = "LUT_1D_SIZE 2\n-3.1415926535897931 0.19927806966646006 0.3\n2.7058973220700397 0.19927806966646006 0.3\n"
 SHAPER_APPLELOG_SPEC: dict[str, Any] = {"input_space": "srgb", "output_space": "applelog", "output_gamut": "rec2020"}
+R5_PATHOLOGICAL_CUBE = "LUT_1D_SIZE 2\n-31415926535897.93 0.2 0.3\n27058973220700.398 0.2 0.3\n"
 
 
 def shaper_applelog_rgb() -> np.ndarray:
@@ -328,6 +329,38 @@ def shaper_zero_cases() -> list[tuple[str, str]]:
         for shift in (-8, -2, -1, 0, 1, 2, 8):
             value = second + shift * abs(float(np.spacing(second)))
             cases.append((f"shaper-zero-{number}-{shift + 8}", f"LUT_1D_SIZE 2\n{first:.17g} 0.2 0.3\n{value:.17g} 0.2 0.3\n"))
+    return cases
+
+
+def steep_slope_lut_cases(kind: str) -> list[tuple[str, str, dict[str, Any]]]:
+    """Sol r5 three steep-slope ill-conditioned LUT families (`1d`, `3d`, `1d3d`) across output spaces."""
+    import math
+
+    from gxr_studio.lut import spaces
+    from support.lut_oracle import inv_seq, matmul_t_seq, matrix_seq, seq_decode, seq_encode
+
+    lin = seq_decode(shaper_applelog_rgb() / 255.0, "srgb")
+    encoded = seq_encode(matmul_t_seq(matmul_t_seq(lin, matrix_seq("rec709")), inv_seq(matrix_seq("rec709"))), "srgb")
+    x = float(encoded[0, 0, 0])
+    first = -math.pi * 1e15
+    second = first - first / x
+    cases: list[tuple[str, str, dict[str, Any]]] = []
+    for output in spaces.SPACES:
+        spec = {"input_space": "srgb", "output_space": output, "output_gamut": "rec2020"}
+        for shift in (-2, 0, 2):
+            end = second + shift * abs(float(np.spacing(second)))
+            if kind == "1d":
+                txt = f"LUT_1D_SIZE 2\n{first:.17g} 0.2 0.3\n{end:.17g} 0.2 0.3\n"
+            elif kind in ("3d", "1d3d"):
+                rows = ["LUT_1D_SIZE 2", "LUT_3D_SIZE 2", "0 0 0", "1 1 1"] if kind == "1d3d" else ["LUT_3D_SIZE 2"]
+                for _b in range(2):
+                    for _g in range(2):
+                        for r in range(2):
+                            rows.append(f"{(end if r else first):.17g} 0.2 0.3")
+                txt = "\n".join(rows) + "\n"
+            else:
+                raise ValueError(f"unknown steep-slope family {kind!r}")
+            cases.append((f"r5-steep-{kind}-{output}-s{shift + 2}", txt, spec))
     return cases
 
 
@@ -496,6 +529,14 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
     shaper_al_cube.write_text(SHAPER_APPLELOG_CUBE, encoding="utf-8")
     shaper_al_rgb_npy = tmp_path / "shaper_al_rgb.npy"
     np.save(shaper_al_rgb_npy, shaper_applelog_rgb())
+    r5_reduced_cube = tmp_path / "r5-reduced.cube"
+    r5_reduced_cube.write_text(R5_PATHOLOGICAL_CUBE, encoding="utf-8")
+    r5_steep_cubes: list[tuple[Path, dict[str, Any]]] = []
+    for _kind in ("1d", "3d", "1d3d"):
+        _lbl, _txt, _sp = next(c for c in steep_slope_lut_cases(_kind) if c[0] == f"r5-steep-{_kind}-applelog-s2")
+        _p = tmp_path / f"{_lbl}.cube"
+        _p.write_text(_txt, encoding="utf-8")
+        r5_steep_cubes.append((_p, _sp))
     th_map = {lbl: (sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES)}
     th_01_cube = tmp_path / "case-0-1.cube"
     th_01_cube.write_text(threshold_cube_text(th_map["case-0-1"][1], th_map["case-0-1"][0]), encoding="utf-8")
@@ -509,7 +550,17 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
         amp_p = tmp_path / f"{amp_lbl}.cube"
         amp_p.write_text(threshold_cube_text(amp_off, amp_sh), encoding="utf-8")
         amp_cubes.append((amp_lbl, amp_p, amp_sp))
-    manifests: list[Path] = [shaper_cube, log_cube, bad_cube, u_size, u_float, uni_size, huge64]
+    manifests: list[Path] = [
+        shaper_cube,
+        log_cube,
+        bad_cube,
+        u_size,
+        u_float,
+        uni_size,
+        huge64,
+        r5_reduced_cube,
+        *(p for p, _sp in r5_steep_cubes),
+    ]
     cases_specs: list[dict[str, Any]] = [
         {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "srgb", "output_space": "vlog"}},
         {"kind": "table", "cube": str(log_cube), "space": {"input_space": "llog", "output_space": "gamma24"}},
@@ -562,6 +613,18 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
             "height": 1,
             "width": 1,
         },
+        {
+            "kind": "apply_u8",
+            "cube": str(r5_reduced_cube),
+            "space": SHAPER_APPLELOG_SPEC,
+            "rgb_npy": str(shaper_al_rgb_npy),
+            "height": 1,
+            "width": 1,
+        },
+        *(
+            {"kind": "apply_u8", "cube": str(_p), "space": _sp, "rgb_npy": str(shaper_al_rgb_npy), "height": 1, "width": 1}
+            for _p, _sp in r5_steep_cubes
+        ),
         {
             "kind": "apply_u8",
             "cube": str(steep_cube),

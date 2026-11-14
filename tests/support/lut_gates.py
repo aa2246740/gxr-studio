@@ -703,3 +703,56 @@ def check_gate_b_classification_controls() -> None:
             label="ctrl-tbl-ill-bad-a",
             well_conditioned=False,
         )
+
+
+def check_r5_pathological_applelog(tmp_path: Path, py_target_fn: Callable[..., Any]) -> tuple[int, int]:
+    """Sol r5 pathological ±3e13 LUT: accept parity, Gate A=0, uncapped Gate B with mechanical attribution."""
+    from support.core_cli import error_of, run_json
+    from support.lut_cases import R5_PATHOLOGICAL_CUBE, SHAPER_APPLELOG_SPEC, shaper_applelog_rgb
+
+    cube_path = tmp_path / "r5-input-parse.cube"
+    cube_path.write_text(R5_PATHOLOGICAL_CUBE, encoding="utf-8")
+    py_cube = Cube.read(cube_path)
+    assert not cube_is_well_conditioned(py_cube)
+    code, payload = run_json(["lut-parse", "--cube", str(cube_path)])
+    assert error_of(code, payload) is None and payload["sha256"] == py_cube.source_sha256
+
+    n_or, n_py, max_diff, wc = check_threshold_cpu_case_detail(
+        tmp_path,
+        "r5-pathological-applelog",
+        R5_PATHOLOGICAL_CUBE,
+        SHAPER_APPLELOG_SPEC,
+        py_target_fn,
+        rgb_override=shaper_applelog_rgb(),
+        expect_or_diffs=0,
+    )
+    assert not wc and n_or == 0
+    if sys.platform == "darwin":
+        assert n_py == 1 and max_diff == 2
+    return n_py, max_diff
+
+
+def check_r5_steep_slope_family(tmp_path: Path, kind: str, py_target_fn: Callable[..., Any]) -> tuple[int, int]:
+    """Sol r5 steep-slope LUT family (`1d`, `3d`, `1d3d`): accept parity, Gate A=0, uncapped Gate B."""
+    from support.core_cli import error_of, run_json
+    from support.lut_cases import shaper_applelog_rgb, steep_slope_lut_cases
+
+    rgb = shaper_applelog_rgb()
+    total_py, max_diff = 0, 0
+    cases = steep_slope_lut_cases(kind)
+    for idx, (label, cube_txt, spec) in enumerate(cases):
+        case_dir = tmp_path / label
+        case_dir.mkdir(exist_ok=True)
+        if idx == 0:
+            p = case_dir / "parse.cube"
+            p.write_text(cube_txt, encoding="utf-8")
+            code, payload = run_json(["lut-parse", "--cube", str(p)])
+            assert error_of(code, payload) is None and payload["sha256"] == Cube.read(p).source_sha256
+        n_or, n_py, case_max, wc = check_threshold_cpu_case_detail(
+            case_dir, label, cube_txt, spec, py_target_fn, rgb_override=rgb, expect_or_diffs=0
+        )
+        assert not wc and n_or == 0
+        total_py += n_py
+        max_diff = max(max_diff, case_max)
+    print(f"[r5-steep-family] kind={kind} cases={len(cases)} allowed_points={total_py} max_code_diff={max_diff}")
+    return total_py, max_diff

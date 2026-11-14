@@ -58,6 +58,8 @@ from support.lut_oracle import (
     check_blas_gamma24_and_threshold_points,
     check_gate_b_classification_controls,
     check_negative_control_case,
+    check_r5_pathological_applelog,
+    check_r5_steep_slope_family,
     check_shaper_applelog_full_table,
     check_shaper_zero_cases,
     check_threshold_cpu_case,
@@ -418,9 +420,22 @@ def test_shaper_applelog_r4_cpu(tmp_path: Path) -> None:
 
 
 def test_shaper_zero_42_constructions(tmp_path: Path) -> None:
-    """Sol r4 42 near-zero 1D shaper constructions: Gate A 1e-12 with no masks, Gate B <= 1 code."""
+    """Sol r4 42 near-zero 1D shaper constructions: Gate A 1e-12 with no masks, classified Gate B."""
     require_cli()
     check_shaper_zero_cases(tmp_path, _python_target)
+
+
+def test_r5_pathological_applelog_cpu(tmp_path: Path) -> None:
+    """Sol r5 pathological +-3e13 LUT: accept parity, Gate A=0, uncapped Gate B with attribution."""
+    require_cli()
+    check_r5_pathological_applelog(tmp_path, _python_target)
+
+
+@pytest.mark.parametrize("kind", ["1d", "3d", "1d3d"])
+def test_r5_steep_slope_lut_families(tmp_path: Path, kind: str) -> None:
+    """Sol r5 three steep-slope ill-conditioned LUT families (`1d`, `3d`, `1d3d`)."""
+    require_cli()
+    check_r5_steep_slope_family(tmp_path, kind, _python_target)
 
 
 def test_shaper_applelog_full_256_gpu_table(tmp_path: Path) -> None:
