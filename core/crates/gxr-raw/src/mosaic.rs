@@ -166,18 +166,31 @@ impl Dng<'_> {
     /// Port of gxr_studio/raw/dng.py:186 Dng._decode_mosaic.
     fn decode_mosaic(&self) -> PyResult<Mosaic> {
         let (offs, cnts): (&[Scalar], &[Scalar]) = (&self.strips.0, &self.strips.1);
-        let mut buf: Vec<u8> = Vec::new();
-        let mut any = false;
+        // Every strip is checked in order first, as numpy's frombuffer list is. The
+        // total then has to fit the shared count limit before one buffer is
+        // reserved: strips may repeat the same bytes, so a small file can add up
+        // to more than 2**32 - 1 bytes (Sol review r4, R4-2).
+        let mut parts: Vec<&[u8]> = Vec::new();
+        let mut total: u64 = 0;
         for (o, n) in offs.iter().zip(cnts.iter()) {
             let count = py_int(n)?;
             let offset = py_int(o)?;
-            buf.extend_from_slice(frombuffer(self.data, count, offset)?);
-            any = true;
+            let part = frombuffer(self.data, count, offset)?;
+            let len = u64::try_from(part.len()).map_err(|_| crate::bounds::too_big())?;
+            total = total.checked_add(len).ok_or_else(crate::bounds::too_big)?;
+            parts.push(part);
         }
-        if !any {
+        if parts.is_empty() {
             return Err(PyErr::Value(
                 "need at least one array to concatenate".into(),
             ));
+        }
+        let total = crate::bounds::fit_count(u128::from(total))?;
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(total)
+            .map_err(|_| crate::bounds::too_big())?;
+        for part in parts {
+            buf.extend_from_slice(part);
         }
         let (h, w, b) = (
             i128::from(self.height),
