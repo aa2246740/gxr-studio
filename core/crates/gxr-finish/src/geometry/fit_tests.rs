@@ -85,3 +85,19 @@ fn fit_ratio_clamps_oversized_rect_before_usize_conversion() {
         );
     }
 }
+
+#[test]
+fn max_area_rect_rejects_derived_buffer_byte_limit_before_allocating() {
+    let width = 536_870_912_usize;
+    let mut mask = vec![0_u8; width];
+    mask[0] = 1;
+    assert_eq!(
+        max_area_rect(&mask, width, 1).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+    // Stack buffer `(width + 1) * 4` also crosses `i32::MAX` at `width = 536_870_911`.
+    assert_eq!(
+        max_area_rect(&mask[..width - 1], width - 1, 1).unwrap_err(),
+        CoreError::new("bad_geometry", ARRAY_TOO_BIG)
+    );
+}

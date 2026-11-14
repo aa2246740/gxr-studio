@@ -15,13 +15,16 @@ use super::warp::{needs_valid_crop, warp_valid};
 /// Port of `gxr_studio/finish/geometry.py:199 max_area_rect`
 pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> Result<[usize; 4], CoreError> {
     let _ = checked_mask_slice(valid, width as u64, height as u64)?;
+    let hist_len = fit_count(width as u64, std::mem::size_of::<i32>() as u64)?;
+    let stack_elems = checked_add_u64(width as u64, 1)?;
+    let stack_cap = fit_count(stack_elems, std::mem::size_of::<i32>() as u64)?;
     if !valid.iter().any(|&v| v != 0) {
         return Ok([0, 0, 0, 0]);
     }
-    let mut heights = vec![0_i32; width];
+    let mut heights = vec![0_i32; hist_len];
     let mut best = [0_usize, 0, 0, 0];
     let mut best_area = 0_u64;
-    let mut stack: Vec<isize> = Vec::with_capacity(width + 1);
+    let mut stack: Vec<i32> = Vec::with_capacity(stack_cap);
     for i in 0..height {
         let row = &valid[i * width..(i + 1) * width];
         for j in 0..width {
@@ -38,14 +41,14 @@ pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> Result<[usize
                 stack.pop();
                 let bar = heights[top as usize] as usize;
                 let left = *stack.last().unwrap_or(&-1);
-                let rect_w = (j as isize - left - 1) as usize;
+                let rect_w = (j as i64 - i64::from(left) - 1) as usize;
                 let area = (bar as u64) * (rect_w as u64);
                 if area > best_area {
                     best_area = area;
                     best = [(left + 1) as usize, i + 1 - bar, rect_w, bar];
                 }
             }
-            stack.push(j as isize);
+            stack.push(j as i32);
         }
     }
     Ok(best)
