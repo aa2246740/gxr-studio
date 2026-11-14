@@ -400,9 +400,9 @@ pub fn extract_recipe_tag(value: Option<&ExifValue>) -> Option<RecipeTag> {
 
 fn strip_ricoh_ws_prefix(s: &str) -> String {
     if let Some(rest) = s.strip_prefix("RICOH") {
-        let trimmed = rest.trim_start();
+        let trimmed = rest.trim_start_matches(is_py_whitespace);
         if trimmed.len() < rest.len() {
-            return trimmed.to_string();
+            return trimmed.trim_end_matches(is_py_whitespace).to_string();
         }
     }
     s.to_string()

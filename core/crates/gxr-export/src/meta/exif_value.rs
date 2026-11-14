@@ -205,15 +205,60 @@ impl ExifValue {
     }
 }
 
-fn format_py_float(f: f64) -> String {
+pub fn format_py_float(f: f64) -> String {
     if f.is_nan() {
-        "nan".to_string()
-    } else if f.is_infinite() {
-        if f > 0.0 { "inf" } else { "-inf" }.to_string()
-    } else {
-        let s = format!("{f}");
-        if s.contains('.') { s } else { format!("{s}.0") }
+        return "nan".to_string();
     }
+    if f.is_infinite() {
+        return if f > 0.0 { "inf" } else { "-inf" }.to_string();
+    }
+    let sign = if f.is_sign_negative() { "-" } else { "" };
+    if f == 0.0 {
+        return format!("{sign}0.0");
+    }
+    let raw = format!("{:e}", f.abs());
+    let (mantissa, exp_str) = raw.split_once('e').unwrap_or((&raw, "0"));
+    let exp: i32 = exp_str.parse().unwrap_or(0);
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return format!("{sign}0.0");
+    }
+    let mut out = String::from(sign);
+    if !(-4..16).contains(&exp) {
+        let mut chars = digits.chars();
+        if let Some(first) = chars.next() {
+            out.push(first);
+        }
+        let rest: &str = &digits[1..];
+        if !rest.is_empty() {
+            out.push('.');
+            out.push_str(rest);
+        }
+        out.push('e');
+        out.push(if exp < 0 { '-' } else { '+' });
+        out.push_str(&format!("{:02}", exp.unsigned_abs()));
+    } else if exp < 0 {
+        out.push_str("0.");
+        let zeros = (-exp - 1) as usize;
+        for _ in 0..zeros {
+            out.push('0');
+        }
+        out.push_str(&digits);
+    } else {
+        let int_digits = (exp as usize) + 1;
+        if digits.len() <= int_digits {
+            out.push_str(&digits);
+            for _ in digits.len()..int_digits {
+                out.push('0');
+            }
+            out.push_str(".0");
+        } else {
+            out.push_str(&digits[..int_digits]);
+            out.push('.');
+            out.push_str(&digits[int_digits..]);
+        }
+    }
+    out
 }
 
 fn format_int_tuple(v: &[i64]) -> String {
@@ -258,6 +303,10 @@ fn rational_json(num: i64, den: i64) -> Json {
 
 pub fn is_py_whitespace(c: char) -> bool {
     c.is_whitespace() || matches!(c, '\x1c'..='\x1f')
+}
+
+pub fn py_strip(s: &str) -> &str {
+    s.trim_matches(is_py_whitespace)
 }
 
 pub(crate) fn trim_py_ascii_bytes_ws(s: &str) -> &str {
@@ -319,4 +368,36 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
         out.push(char::from(HEX[usize::from(b & 0x0F)]));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_py_float_matches_cpython_repr() {
+        assert_eq!(format_py_float(0.0), "0.0");
+        assert_eq!(format_py_float(-0.0), "-0.0");
+        assert_eq!(format_py_float(1e-8), "1e-08");
+        assert_eq!(format_py_float(1e-7), "1e-07");
+        assert_eq!(
+            format_py_float(9.999999999999999e-5),
+            "9.999999999999999e-05"
+        );
+        assert_eq!(format_py_float(1e-4), "0.0001");
+        assert_eq!(format_py_float(1.2345), "1.2345");
+        assert_eq!(format_py_float(1e15), "1000000000000000.0");
+        assert_eq!(format_py_float(1e16), "1e+16");
+        assert_eq!(format_py_float(1e20), "1e+20");
+        assert_eq!(format_py_float(5e-324), "5e-324");
+        assert_eq!(format_py_float(f64::NAN), "nan");
+        assert_eq!(format_py_float(f64::INFINITY), "inf");
+        assert_eq!(format_py_float(f64::NEG_INFINITY), "-inf");
+    }
+
+    #[test]
+    fn py_strip_includes_control_separators_1c_to_1f() {
+        assert_eq!(py_strip("\x1cA\x1d"), "A");
+        assert_eq!(py_strip("\x1e\x1fRICOH \u{85}\u{a0}"), "RICOH");
+    }
 }

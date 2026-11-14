@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use gxr_jpeg::{ExifSpec, ExifVal};
 use gxr_raw::Json;
 
+use super::exif_value::py_strip;
 use super::tiff_exif::{ExifValue, load_image_exif, open_image};
 
 const DROP_EXIF_TAGS: &[u16] = &[37500];
@@ -83,7 +84,7 @@ pub fn clean_text(value: Option<&ExifValue>) -> Option<String> {
         other => other.to_python_str(),
     };
     let cleaned = raw.replace('\0', "");
-    let trimmed = cleaned.trim();
+    let trimmed = py_strip(&cleaned);
     if trimmed.is_empty() {
         None
     } else {
@@ -120,7 +121,7 @@ pub fn read_source_exif(bytes: &[u8]) -> SourceExif {
     if clean_text(sub.get(&42036)).is_none()
         && let Some(lens) = clean_text(loaded.base.get(&50708))
     {
-        let stripped = lens.strip_prefix("RICOH ").unwrap_or(&lens).trim();
+        let stripped = py_strip(lens.strip_prefix("RICOH ").unwrap_or(&lens));
         sub.insert(42036, ExifValue::Str(stripped.to_string()));
     }
 

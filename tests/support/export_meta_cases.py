@@ -403,6 +403,47 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
             make_jpeg_bytes(exif_payload=make_tiff_doc([], [(36867, 2, len(raw) + 1, raw + b"\x00")])),
             "jpg",
         )
+    # 10. Sol r1 DOUBLE repr, U+001C-U+001F text strip, ASCII & tag types
+    for idx, val in enumerate((1e-8, 1e-7, 1e16, 1e20, 1.2345, -0.0), start=89):
+        raw = struct.pack("<d", val)
+        cases[f"float-string-{idx}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([(272, 12, 1, raw)], [(42036, 12, 1, raw)])),
+            "jpg",
+        )
+    for idx, raw in enumerate((b"A\x1c", b"\x1dB", b"\x85C\xa0"), start=110):
+        cases[f"text-strip-{idx}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([(272, 2, len(raw), raw)], [(42036, 2, len(raw), raw)])),
+            "jpg",
+        )
+    for e_tag, e in [("le", "<"), ("be", ">")]:
+        for idx, raw in enumerate((b"A\x00\x00\x00", b"ABC", b"ABCDE", b"A\x00BC\x00", b"\xa9X\x00"), start=1):
+            cases[f"ascii-{e_tag}-{idx}.jpg"] = (
+                make_jpeg_bytes(
+                    exif_payload=make_tiff_doc([(272, 2, len(raw), raw), (33432, 2, len(raw), raw)], [(42036, 2, len(raw), raw)], endian=e)
+                ),
+                "jpg",
+            )
+        for idx, (typ, cnt, fmt, vals) in enumerate(
+            [
+                (3, 2, "HH", [12, 300]),
+                (4, 2, "II", [12, 70000]),
+                (5, 2, "IIII", [1, 0, 7, 2]),
+                (10, 2, "iiii", [-1, 0, 7, -2]),
+                (7, 3, "BBB", [65, 0, 200]),
+                (11, 2, "ff", [1e-8, 1.25]),
+                (12, 2, "dd", [1e-9, 1.25]),
+            ],
+            start=6,
+        ):
+            raw = struct.pack(e + fmt, *vals)
+            cases[f"types-{e_tag}-{idx}.jpg"] = (
+                make_jpeg_bytes(
+                    exif_payload=make_tiff_doc(
+                        [(271, 4, 1, struct.pack(e + "I", 42))], [(42036, typ, cnt, raw), (40001, typ, cnt, raw)], endian=e
+                    )
+                ),
+                "jpg",
+            )
     return cases
 
 
@@ -415,6 +456,24 @@ def nonfinite_edge_cases() -> dict[str, tuple[bytes, str]]:
         ),
         "iso-inf.jpg": (
             make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 12, 1, struct.pack("<d", float("inf")))])),
+            "jpg",
+        ),
+        "float-string-95.jpg": (
+            make_jpeg_bytes(
+                exif_payload=make_tiff_doc(
+                    [(272, 12, 1, struct.pack("<d", float("nan")))],
+                    [(42036, 12, 1, struct.pack("<d", float("nan")))],
+                )
+            ),
+            "jpg",
+        ),
+        "float-string-96.jpg": (
+            make_jpeg_bytes(
+                exif_payload=make_tiff_doc(
+                    [(272, 12, 1, struct.pack("<d", float("inf")))],
+                    [(42036, 12, 1, struct.pack("<d", float("inf")))],
+                )
+            ),
             "jpg",
         ),
     }

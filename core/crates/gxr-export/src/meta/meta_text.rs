@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use gxr_raw::{CoreError, Json};
 
+use super::exif_value::py_strip;
 use super::photo_meta::{NaiveDateTime, read_dng_meta, read_jpeg_meta};
 use super::tiff_exif::{ExifValue, load_image_exif, open_image};
 
@@ -318,11 +319,7 @@ pub fn photo_meta_from_bytes(
     };
 
     let raw_lens = parsed.lens.unwrap_or_default();
-    let lens = raw_lens
-        .strip_prefix("RICOH ")
-        .unwrap_or(&raw_lens)
-        .trim()
-        .to_string();
+    let lens = py_strip(raw_lens.strip_prefix("RICOH ").unwrap_or(&raw_lens)).to_string();
     let taken = parsed.taken;
     let moment = taken.as_ref().or(file_time.as_ref());
     let date = moment.map(frame_date).unwrap_or_default();
