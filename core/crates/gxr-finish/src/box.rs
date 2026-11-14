@@ -29,7 +29,7 @@ pub fn final_box_u64(
     } else {
         warp_valid_u64(width, height, geom)?
     };
-    let valid_rect = normalized_valid_rect(&valid, vw, vh);
+    let valid_rect = normalized_valid_rect(&valid, vw, vh)?;
     let fitted = if needs_valid_crop(geom) {
         fit_preset_in_valid(&valid, vw, vh, crop_preset, crop_rect.unwrap_or(FULL))?
     } else {

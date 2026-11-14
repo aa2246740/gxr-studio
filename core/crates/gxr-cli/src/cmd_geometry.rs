@@ -113,7 +113,7 @@ fn cmd_header(args: &[String]) -> Result<Json, Failure> {
         [0.0, 0.0, 1.0, 1.0]
     } else {
         let (vw, vh, mask) = warp_valid_u64(w, h, &geom)?;
-        normalized_valid_rect(&mask, vw, vh)
+        normalized_valid_rect(&mask, vw, vh)?
     };
     Ok(Json::object([(
         "header",

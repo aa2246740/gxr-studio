@@ -5,16 +5,18 @@ use gxr_raw::CoreError;
 use crate::crop::{MIN_SIDE_PX, RATIO_TOLERANCE, is_known_preset, ratio_off, target_ratio};
 
 use super::bounds::{
-    bad_rect, checked_add_u64, checked_mask_dims, checked_mul_u64, fit_count, rect_to_pixels,
-    round_even, too_big, try_vec_i32,
+    bad_geometry, bad_rect, checked_add_u64, checked_integral_slice, checked_mask_dims,
+    checked_mask_slice, checked_mul_u64, checked_rgb_slice, fit_count, rect_to_pixels, round_even,
+    too_big, try_vec_i32,
 };
 use super::spec::Geometry;
 use super::warp::{needs_valid_crop, warp_valid};
 
 /// Port of `gxr_studio/finish/geometry.py:199 max_area_rect`
-pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> [usize; 4] {
-    if height == 0 || width == 0 || !valid.iter().any(|&v| v != 0) {
-        return [0, 0, 0, 0];
+pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> Result<[usize; 4], CoreError> {
+    let _ = checked_mask_slice(valid, width as u64, height as u64)?;
+    if !valid.iter().any(|&v| v != 0) {
+        return Ok([0, 0, 0, 0]);
     }
     let mut heights = vec![0_i32; width];
     let mut best = [0_usize, 0, 0, 0];
@@ -46,7 +48,7 @@ pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> [usize; 4] {
             stack.push(j as isize);
         }
     }
-    best
+    Ok(best)
 }
 
 fn linspace_indices(len: usize, count: usize) -> Vec<usize> {
@@ -64,12 +66,14 @@ fn linspace_indices(len: usize, count: usize) -> Vec<usize> {
 }
 
 /// Port of `gxr_studio/finish/geometry.py:224 normalized_valid_rect`
-pub fn normalized_valid_rect(valid: &[u8], width: usize, height: usize) -> [f64; 4] {
-    if height == 0 || width == 0 {
-        return [0.0, 0.0, 1.0, 1.0];
-    }
+pub fn normalized_valid_rect(
+    valid: &[u8],
+    width: usize,
+    height: usize,
+) -> Result<[f64; 4], CoreError> {
+    let _ = checked_mask_slice(valid, width as u64, height as u64)?;
     if valid.iter().all(|&v| v != 0) {
-        return [0.0, 0.0, 1.0, 1.0];
+        return Ok([0.0, 0.0, 1.0, 1.0]);
     }
     let long_edge = height.max(width);
     if long_edge > 240 {
@@ -96,9 +100,9 @@ pub fn normalized_valid_rect(valid: &[u8], width: usize, height: usize) -> [f64;
                 dst[sx_i] = row[x];
             }
         }
-        let [x, y, rw, rh] = max_area_rect(&sub, sw, sh);
+        let [x, y, rw, rh] = max_area_rect(&sub, sw, sh)?;
         if rw == 0 || rh == 0 {
-            return [0.0, 0.0, 1.0, 1.0];
+            return Ok([0.0, 0.0, 1.0, 1.0]);
         }
         let wf = width as f64;
         let hf = height as f64;
@@ -108,20 +112,20 @@ pub fn normalized_valid_rect(valid: &[u8], width: usize, height: usize) -> [f64;
         let y0 = ((y as f64 / shf) * hf) as i64 + 1;
         let x1 = (x0 + 1).max((((x + rw) as f64 / swf) * wf) as i64 - 1);
         let y1 = (y0 + 1).max((((y + rh) as f64 / shf) * hf) as i64 - 1);
-        return [
+        return Ok([
             x0 as f64 / wf,
             y0 as f64 / hf,
             (x1 - x0) as f64 / wf,
             (y1 - y0) as f64 / hf,
-        ];
+        ]);
     }
-    let [x, y, rw, rh] = max_area_rect(valid, width, height);
+    let [x, y, rw, rh] = max_area_rect(valid, width, height)?;
     if rw == 0 || rh == 0 {
-        return [0.0, 0.0, 1.0, 1.0];
+        return Ok([0.0, 0.0, 1.0, 1.0]);
     }
     let wf = width as f64;
     let hf = height as f64;
-    [x as f64 / wf, y as f64 / hf, rw as f64 / wf, rh as f64 / hf]
+    Ok([x as f64 / wf, y as f64 / hf, rw as f64 / wf, rh as f64 / hf])
 }
 
 /// Port of `gxr_studio/finish/geometry.py:268 header_value`
@@ -138,6 +142,7 @@ pub(crate) fn valid_integral(
     width: usize,
     height: usize,
 ) -> Result<Vec<i32>, CoreError> {
+    let _ = checked_mask_slice(valid, width as u64, height as u64)?;
     let w1 = checked_add_u64(width as u64, 1)?;
     let h1 = checked_add_u64(height as u64, 1)?;
     let stride = fit_count(w1, 4)?;
@@ -170,11 +175,17 @@ fn covered(sheet: &[i32], stride: usize, x: usize, y: usize, rw: usize, rh: usiz
 }
 
 /// Port of `gxr_studio/finish/geometry.py:295 _has_window`
-fn has_window(sheet: &[i32], width: usize, height: usize, tw: usize, th: usize) -> bool {
+fn has_window(
+    sheet: &[i32],
+    width: usize,
+    height: usize,
+    tw: usize,
+    th: usize,
+) -> Result<bool, CoreError> {
+    let stride = checked_integral_slice(sheet, width, height)?;
     if tw < 1 || th < 1 || tw > width || th > height {
-        return false;
+        return Ok(false);
     }
-    let stride = width + 1;
     let target = (tw as i32).wrapping_mul(th as i32);
     let max_y = height - th;
     let max_x = width - tw;
@@ -187,11 +198,11 @@ fn has_window(sheet: &[i32], width: usize, height: usize, tw: usize, th: usize) 
                 .wrapping_sub(sheet[r1 + x])
                 .wrapping_add(sheet[r0 + x]);
             if got == target {
-                return true;
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
 /// Port of `gxr_studio/finish/geometry.py:300 _nearest_window`
@@ -203,11 +214,11 @@ pub(crate) fn nearest_window(
     th: usize,
     cx: f64,
     cy: f64,
-) -> Option<[usize; 4]> {
+) -> Result<Option<[usize; 4]>, CoreError> {
+    let stride = checked_integral_slice(sheet, width, height)?;
     if tw < 1 || th < 1 || tw > width || th > height {
-        return None;
+        return Ok(None);
     }
-    let stride = width + 1;
     let target = (tw as i32).wrapping_mul(th as i32);
     let max_y = height - th;
     let max_x = width - tw;
@@ -236,7 +247,7 @@ pub(crate) fn nearest_window(
             }
         }
     }
-    best
+    Ok(best)
 }
 
 /// Port of `gxr_studio/finish/geometry.py:317 _place_ratio`
@@ -302,6 +313,7 @@ pub fn fit_ratio_in_valid(
     numer: usize,
     denom: usize,
 ) -> Result<[usize; 4], CoreError> {
+    let _ = checked_mask_slice(valid, width as u64, height as u64)?;
     let (_px, _py, limit_w_i64, limit_h_i64) = rect_to_pixels(rect, width, height)?;
     let [x, y, rw, rh] = rect;
     let cx = (x + rw / 2.0) * width as f64;
@@ -336,7 +348,7 @@ pub fn fit_ratio_in_valid(
     let mut found_k = 0_usize;
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        if has_window(&sheet, width, height, mid * numer, mid * denom) {
+        if has_window(&sheet, width, height, mid * numer, mid * denom)? {
             found_k = mid;
             lo = mid;
         } else {
@@ -352,14 +364,14 @@ pub fn fit_ratio_in_valid(
             found_k * denom,
             cx,
             cy,
-        )
+        )?
     {
         return Ok(near);
     }
     if let Some(c_box) = centred {
         return Ok(c_box);
     }
-    let [fx, fy, fw_raw, fh_raw] = max_area_rect(valid, width, height);
+    let [fx, fy, fw_raw, fh_raw] = max_area_rect(valid, width, height)?;
     let fw = fw_raw.min(width - fx);
     let fh = fh_raw.min(height - fy);
     let k = if numer > 0 && denom > 0 && fw > 0 && fh > 0 {
@@ -391,6 +403,7 @@ pub fn fit_preset_in_valid(
     preset: Option<&str>,
     rect: [f64; 4],
 ) -> Result<Option<[usize; 4]>, CoreError> {
+    let _ = checked_mask_slice(valid, width as u64, height as u64)?;
     let Some(p) = preset else {
         return Ok(None);
     };
@@ -426,27 +439,21 @@ pub fn window_full(
     y: i64,
     rw: i64,
     rh: i64,
-) -> bool {
-    if width == 0 || height == 0 || rw < 1 || rh < 1 || x < 0 || y < 0 {
-        return false;
+) -> Result<bool, CoreError> {
+    let (wu, hu, _) = checked_mask_slice(valid, width as u64, height as u64)?;
+    if rw < 1 || rh < 1 || x < 0 || y < 0 {
+        return Ok(false);
     }
-    let Some(expected_len) = width.checked_mul(height) else {
-        return false;
-    };
-    if valid.len() != expected_len {
-        return false;
-    }
-    let (Ok(w_i64), Ok(h_i64)) = (i64::try_from(width), i64::try_from(height)) else {
-        return false;
-    };
+    let w_i64 = i64::try_from(wu).map_err(|_| bad_geometry())?;
+    let h_i64 = i64::try_from(hu).map_err(|_| bad_geometry())?;
     let Some(x_end) = x.checked_add(rw) else {
-        return false;
+        return Ok(false);
     };
     let Some(y_end) = y.checked_add(rh) else {
-        return false;
+        return Ok(false);
     };
     if x_end > w_i64 || y_end > h_i64 {
-        return false;
+        return Ok(false);
     }
     let (Ok(ux), Ok(uy), Ok(urw), Ok(urh)) = (
         usize::try_from(x),
@@ -454,20 +461,22 @@ pub fn window_full(
         usize::try_from(rw),
         usize::try_from(rh),
     ) else {
-        return false;
+        return Ok(false);
     };
     for row in uy..uy + urh {
-        let Some(start) = row.checked_mul(width).and_then(|base| base.checked_add(ux)) else {
-            return false;
-        };
-        let Some(end) = start.checked_add(urw) else {
-            return false;
-        };
-        if valid.get(start..end).is_none_or(|s| s.contains(&0)) {
-            return false;
+        let start = checked_add_u64(checked_mul_u64(row as u64, wu as u64)?, ux as u64)?;
+        let end = checked_add_u64(start, urw as u64)?;
+        let s_idx = fit_count(start, 1)?;
+        let e_idx = fit_count(end, 1)?;
+        if valid
+            .get(s_idx..e_idx)
+            .ok_or_else(bad_geometry)?
+            .contains(&0)
+        {
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 /// Port of `gxr_studio/finish/geometry.py:428 _snap_to_aspect`
@@ -511,6 +520,7 @@ pub fn clamp_norm_rect(
     mut rect: [f64; 4],
     aspect: Option<f64>,
 ) -> Result<[f64; 4], CoreError> {
+    let _ = checked_mask_slice(valid, width as u64, height as u64)?;
     let wf = width as f64;
     let hf = height as f64;
     let (mut px, mut py, mut pw, mut ph) = rect_to_pixels(rect, width, height)?;
@@ -547,7 +557,7 @@ pub fn clamp_norm_rect(
             ph as f64 / hf,
         ];
     }
-    if window_full(valid, width, height, px, py, pw, ph) {
+    if window_full(valid, width, height, px, py, pw, ph)? {
         return Ok(rect);
     }
     let cx = px as f64 + pw as f64 / 2.0;
@@ -567,7 +577,7 @@ pub fn clamp_norm_rect(
         let max_ty = h_i64.checked_sub(th).unwrap_or(0).max(0);
         let tx = round_even(cx - tw as f64 / 2.0)?.max(0).min(max_tx);
         let ty = round_even(cy - th as f64 / 2.0)?.max(0).min(max_ty);
-        if window_full(valid, width, height, tx, ty, tw, th) {
+        if window_full(valid, width, height, tx, ty, tw, th)? {
             best = Some([
                 usize::try_from(tx).map_err(|_| bad_rect())?,
                 usize::try_from(ty).map_err(|_| bad_rect())?,
@@ -595,7 +605,7 @@ pub fn clamp_norm_rect(
             if let (Ok(utw), Ok(uth)) = (usize::try_from(tw), usize::try_from(th))
                 && utw >= 1
                 && uth >= 1
-                && has_window(&sheet, width, height, utw, uth)
+                && has_window(&sheet, width, height, utw, uth)?
             {
                 found_size = Some((utw, uth));
                 lo2 = mid;
@@ -604,12 +614,12 @@ pub fn clamp_norm_rect(
             }
         }
         if let Some((fw, fh)) = found_size {
-            best = nearest_window(&sheet, width, height, fw, fh, cx, cy);
+            best = nearest_window(&sheet, width, height, fw, fh, cx, cy)?;
         }
     }
     Ok(match best {
         None => {
-            let [fx, fy, fw, fh] = max_area_rect(valid, width, height);
+            let [fx, fy, fw, fh] = max_area_rect(valid, width, height)?;
             if fw < 1 || fh < 1 {
                 [0.0, 0.0, 1.0, 1.0]
             } else {
@@ -658,8 +668,8 @@ fn fit_in_valid(
         return clamp_norm_rect(valid, vw, vh, target, Some(aspect));
     }
     match rect {
-        None => Ok(normalized_valid_rect(valid, vw, vh)),
-        Some(r) if r == full => Ok(normalized_valid_rect(valid, vw, vh)),
+        None => normalized_valid_rect(valid, vw, vh),
+        Some(r) if r == full => normalized_valid_rect(valid, vw, vh),
         Some(r) => clamp_norm_rect(valid, vw, vh, r, None),
     }
 }
@@ -747,14 +757,23 @@ pub fn crop_valid(
     height: usize,
     rect: [f64; 4],
 ) -> Result<(usize, usize, Vec<u8>), CoreError> {
-    let [x, y, rw, rh] = crop_box(width, height, rect)?;
+    let (wu, hu, _, _) = checked_rgb_slice(rgb, width as u64, height as u64)?;
+    let [x, y, rw, rh] = crop_box(wu, hu, rect)?;
     let bytes = checked_mul_u64(checked_mul_u64(rw as u64, rh as u64)?, 3)?;
     let cap = fit_count(bytes, 1)?;
     let mut out = Vec::new();
     out.try_reserve_exact(cap).map_err(|_| too_big())?;
+    let row_bytes = fit_count(checked_mul_u64(rw as u64, 3)?, 1)?;
     for row in y..y + rh {
-        let off = (row * width + x) * 3;
-        out.extend_from_slice(&rgb[off..off + rw * 3]);
+        let px_off = checked_add_u64(checked_mul_u64(row as u64, wu as u64)?, x as u64)?;
+        let off = fit_count(checked_mul_u64(px_off, 3)?, 1)?;
+        let end = off.checked_add(row_bytes).ok_or_else(bad_geometry)?;
+        let slice = rgb.get(off..end).ok_or_else(bad_geometry)?;
+        out.extend_from_slice(slice);
     }
     Ok((rw, rh, out))
 }
+
+#[cfg(test)]
+#[path = "fit_tests.rs"]
+mod tests;

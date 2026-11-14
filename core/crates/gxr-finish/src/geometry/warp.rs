@@ -2,7 +2,9 @@
 
 use gxr_raw::CoreError;
 
-use super::bounds::{checked_mask_dims, checked_mul_u64, fit_count, too_big, try_vec_u8};
+use super::bounds::{
+    checked_mask_dims, checked_mul_u64, checked_rgb_slice, fit_count, too_big, try_vec_u8,
+};
 use super::spec::Geometry;
 
 pub const FILL: [u8; 3] = [0x1B, 0x1C, 0x1F];
@@ -379,21 +381,7 @@ pub fn warp_u64(
     height: u64,
     geom: &Geometry,
 ) -> Result<Warped, CoreError> {
-    if width == 0 || height == 0 {
-        return Err(CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        ));
-    }
-    let (wu, hu, in_pixels) = checked_mask_dims(width, height)?;
-    let rgb_len = checked_mul_u64(in_pixels, 3)?;
-    let expected = fit_count(rgb_len, 1)?;
-    if image.len() != expected {
-        return Err(CoreError::new(
-            "bad_geometry",
-            "纠正参数格式不对。请重新打开这张照片后再试。",
-        ));
-    }
+    let (wu, hu, in_pixels, rgb_len) = checked_rgb_slice(image, width, height)?;
     warp_checked(image, wu, hu, in_pixels, rgb_len, geom)
 }
 

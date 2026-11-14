@@ -147,6 +147,49 @@ pub fn checked_mask_dims(w: u64, h: u64) -> Result<(usize, usize, u64), CoreErro
     Ok((wu, hu, pixels))
 }
 
+/// Check mask dimensions and verify `valid.len() == w * h`.
+pub fn checked_mask_slice(valid: &[u8], w: u64, h: u64) -> Result<(usize, usize, u64), CoreError> {
+    let (wu, hu, pixels) = checked_mask_dims(w, h)?;
+    let expected = fit_count(pixels, 1)?;
+    if valid.len() != expected {
+        return Err(bad_geometry());
+    }
+    Ok((wu, hu, pixels))
+}
+
+/// Check RGB dimensions and verify `rgb.len() == w * h * 3`.
+pub fn checked_rgb_slice(
+    rgb: &[u8],
+    w: u64,
+    h: u64,
+) -> Result<(usize, usize, u64, u64), CoreError> {
+    let (wu, hu, pixels) = checked_mask_dims(w, h)?;
+    let rgb_len = checked_mul_u64(pixels, 3)?;
+    let expected = fit_count(rgb_len, 1)?;
+    if rgb.len() != expected {
+        return Err(bad_geometry());
+    }
+    Ok((wu, hu, pixels, rgb_len))
+}
+
+/// Check integral sheet dimensions `(w + 1) * (h + 1)` and return row stride `w + 1`.
+pub(crate) fn checked_integral_slice(
+    sheet: &[i32],
+    w: usize,
+    h: usize,
+) -> Result<usize, CoreError> {
+    let _ = checked_mask_dims(w as u64, h as u64)?;
+    let w1 = checked_add_u64(w as u64, 1)?;
+    let h1 = checked_add_u64(h as u64, 1)?;
+    let stride = fit_count(w1, 4)?;
+    let elems = checked_mul_u64(h1, w1)?;
+    let expected = fit_count(elems, 4)?;
+    if sheet.len() != expected {
+        return Err(bad_geometry());
+    }
+    Ok(stride)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
