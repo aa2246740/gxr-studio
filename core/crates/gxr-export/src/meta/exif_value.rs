@@ -216,10 +216,11 @@ pub fn format_py_float(f: f64) -> String {
     if f == 0.0 {
         return format!("{sign}0.0");
     }
-    let raw = format!("{:e}", f.abs());
-    let (mantissa, exp_str) = raw.split_once('e').unwrap_or((&raw, "0"));
-    let exp: i32 = exp_str.parse().unwrap_or(0);
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let (raw_digits, exp) = super::float_repr::shortest_decimal_digits(f.abs());
+    let digits: String = raw_digits
+        .into_iter()
+        .map(|d| char::from(b'0' + d))
+        .collect();
     if digits.is_empty() {
         return format!("{sign}0.0");
     }
@@ -375,6 +376,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn format_py_float_matches_cpython_repr() {
         assert_eq!(format_py_float(0.0), "0.0");
         assert_eq!(format_py_float(-0.0), "-0.0");
@@ -393,6 +395,59 @@ mod tests {
         assert_eq!(format_py_float(f64::NAN), "nan");
         assert_eq!(format_py_float(f64::INFINITY), "inf");
         assert_eq!(format_py_float(f64::NEG_INFINITY), "-inf");
+
+        // Exact decimal midpoint ties break toward even last digit (CPython dtoa mode=0)
+        assert_eq!(
+            format_py_float(1_000_000_000_000_000.25),
+            "1000000000000000.2"
+        );
+        assert_eq!(
+            format_py_float(1_000_000_000_000_000.75),
+            "1000000000000000.8"
+        );
+        assert_eq!(
+            format_py_float(1_000_000_000_000_000.125),
+            "1000000000000000.1"
+        );
+        assert_eq!(
+            format_py_float(1_000_000_000_000_000.375),
+            "1000000000000000.4"
+        );
+        assert_eq!(
+            format_py_float(1_125_899_906_842_624.25),
+            "1125899906842624.2"
+        );
+        assert_eq!(
+            format_py_float(-1_125_899_906_842_624.25),
+            "-1125899906842624.2"
+        );
+        assert_eq!(
+            format_py_float(-2_161_885_572_975_909.25),
+            "-2161885572975909.2"
+        );
+        assert_eq!(
+            format_py_float(2_161_885_572_975_909.25),
+            "2161885572975909.2"
+        );
+        assert_eq!(
+            format_py_float(1_125_899_906_842_624.75),
+            "1125899906842624.8"
+        );
+        assert_eq!(
+            format_py_float(-2_161_885_572_975_909.75),
+            "-2161885572975909.8"
+        );
+        assert_eq!(format_py_float(9.999_999_999_999_998), "9.999999999999998");
+        assert_eq!(
+            format_py_float(2.225_073_858_507_201e-308),
+            "2.225073858507201e-308"
+        );
+        assert_eq!(
+            format_py_float(2.225_073_858_507_201_4e-308),
+            "2.2250738585072014e-308"
+        );
+        assert_eq!(format_py_float(f64::MAX), "1.7976931348623157e+308");
+        assert_eq!(format_py_float(0.1 + 0.2), "0.30000000000000004");
     }
 
     #[test]

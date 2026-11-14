@@ -3,6 +3,7 @@
 
 pub mod exif;
 pub mod exif_value;
+pub(crate) mod float_repr;
 pub mod meta_text;
 pub mod photo_meta;
 pub mod preview;

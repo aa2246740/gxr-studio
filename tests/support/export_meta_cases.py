@@ -428,8 +428,26 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
             make_jpeg_bytes(exif_payload=make_tiff_doc([], [(36867, 2, len(raw) + 1, raw + b"\x00")])),
             "jpg",
         )
-    # 10. Sol r1 DOUBLE repr, U+001C-U+001F text strip, ASCII & tag types
-    for idx, val in enumerate((1e-8, 1e-7, 1e16, 1e20, 1.2345, -0.0), start=89):
+    # 10. Sol r1/r2 DOUBLE repr (including midpoint tie-to-even), U+001C-U+001F text strip, ASCII & tag types
+    float_repr_vals = (
+        1e-8,
+        1e-7,
+        1e16,
+        1e20,
+        1.2345,
+        -0.0,
+        1000000000000000.25,
+        1000000000000000.75,
+        1000000000000000.125,
+        1000000000000000.375,
+        1125899906842624.25,
+        -1125899906842624.25,
+        -2161885572975909.25,
+        1125899906842624.75,
+        5e-324,
+        2.2250738585072014e-308,
+    )
+    for idx, val in enumerate(float_repr_vals, start=89):
         raw = struct.pack("<d", val)
         cases[f"float-string-{idx}.jpg"] = (
             make_jpeg_bytes(exif_payload=make_tiff_doc([(272, 12, 1, raw)], [(42036, 12, 1, raw)])),
