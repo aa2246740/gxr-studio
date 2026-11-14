@@ -371,3 +371,26 @@ def write_bake(tmp: Path, pack: Pack, entry: bytes, name: str = "b") -> tuple[Pa
     _payload, err = cli(["color-bake", "--entry", e, *pack.args(), "--out", out, "--meta", meta])
     assert err is None, err
     return out, meta
+
+
+def context_case(tmp: Path, name: str, npz: bytes, entry: bytes) -> tuple[BaseException | None, CoreCliError | None]:
+    """`_context` and `color-calib-check` on the same archive: (Python error, CLI error)."""
+    path = tmp / f"{name}.npz"
+    path.write_bytes(npz)
+    entry_path = tmp / f"{name}-entry.bin"
+    entry_path.write_bytes(entry)
+    payload, err = cli(["color-calib-check", "--npz", path, "--entry", entry_path])
+    py = python_error(lambda: calib._context(npz, calib.stock_words_of_entry(entry)))
+    if py is None and err is None:
+        got = calib._context(npz, calib.stock_words_of_entry(entry))
+        assert payload == {"rows": len(got[2]), "d0": 24, "d1": 24}, name
+    return py, err
+
+
+def npz_same(tmp: Path, name: str, data: bytes, entry: bytes) -> str | None:
+    """None when `_context` and `color-calib-check` agree on this archive (both accept, or the
+    same kind and message)."""
+    py, err = context_case(tmp, name, data, entry)
+    if py is None and err is None:
+        return None
+    return same_error(py, err)

@@ -12,6 +12,7 @@ import io
 import struct
 import warnings
 import zipfile
+import zlib
 from typing import Any
 
 import numpy as np
@@ -215,3 +216,53 @@ def runtime_variants() -> dict[str, bytes]:
         "runtime_descriptor": archive(runtime, descriptor=True),
         "runtime_duplicate": archive(runtime + [("d0.npy", npy(d0 + 0.1))]),
     }
+
+
+# ---- Sol review r3 (hostile fixtures, generated the same way) --------------------------
+
+
+def raw_archive(items: list[tuple[bytes, bytes]], *, flags: int = 0) -> bytes:
+    """A stored zip written byte by byte (Sol r3's `raw_archive`, no descriptors or extras)."""
+    local = bytearray()
+    central = bytearray()
+    for name, payload in items:
+        offset = len(local)
+        crc, size = zlib.crc32(payload), len(payload)
+        local += struct.pack("<4s5H3I2H", b"PK\x03\x04", 20, flags, 0, 0, 0, crc, size, size, len(name), 0) + name + payload
+        central += struct.pack("<4s6H3I5H2I", b"PK\x01\x02", 20, 20, flags, 0, 0, 0, crc, size, size, len(name), 0, 0, 0, 0, 0, offset) + name
+    end = struct.pack("<4s4H2IH", b"PK\x05\x06", 0, 0, len(items), len(items), len(central), len(local), 0)
+    return bytes(local + central + end)
+
+
+def _members(data: bytes) -> list[tuple[bytes, bytes]]:
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        return [(i.filename.encode(), z.read(i)) for i in z.infolist()]
+
+
+def trailing_crc(data: bytes, member: str, tail: int) -> bytes:
+    """`member` padded with `tail` bytes after its NPY array, then only the last tail byte
+    flipped; the central CRC is the one before the flip (Sol r3 `selected_npy_trailing_crc_*`)."""
+    padded = [(name, payload + (b"x" * tail if name == member.encode() else b"")) for name, payload in _members(data)]
+    out = raw_archive(padded)
+    with zipfile.ZipFile(io.BytesIO(out)) as z:
+        info = z.getinfo(member)
+    last = info.header_offset + 30 + len(info.filename.encode()) + info.file_size - 1
+    b = bytearray(out)
+    b[last] ^= 1
+    return bytes(b)
+
+
+def source_npz() -> bytes:
+    """The stored source npz Sol's r3 fixtures start from (`stored_standard`)."""
+    _stock, words, d0, d1, coef = source_parts()
+    return archive([(n.decode(), p) for n, p in _members(cf.source_npz(words, d0, d1, coef))])
+
+
+def runtime_npz() -> bytes:
+    """The stored pack ctx npz the bake path reads."""
+    return runtime_variants()["runtime_valid"]
+
+
+def flip_array_byte(data: bytes, member: str) -> bytes:
+    """One bit flipped inside `member`'s array bytes, CRC kept."""
+    return _flip_first_value(data, member)

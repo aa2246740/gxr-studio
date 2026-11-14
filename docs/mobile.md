@@ -192,6 +192,7 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 
 - `_context`：色表行不一致 kind `stock_mismatch`；尺寸、非有限数、`S_eff` 还原失败 kind `calib`；缺数组 kind `key`，文案和 numpy 一样（`'名字 is not a file in the archive'`）。不是 zip 的文件走 numpy 的 pickle 文案（kind `value`）。压缩的 zip 成员拒绝，kind `zip`（Python 能读，这是有意的差别：不加解压依赖）。
 - npz 照 CPython 3.14 `zipfile` 和 numpy `NpzFile` 读：打开时找结尾记录（含 ZIP64）并逐条读中央目录；取某个数组时才看它的本地头（签名、名字、和下一个成员重叠），payload 的大小和 CRC-32 以中央目录为准，所以 `np.savez` 写不可 seek 的流时产生的 data descriptor 也能读。同名成员取中央目录里最后一条，取键先按完整名、再按 `名字.npy`。文案用 `zipfile` 的原文，kind 按 Python 的异常：`BadZipFile` 是 `zip`，`NotImplementedError` 是 `not_implemented`，`RuntimeError` 是 `runtime`，`EOFError` 是 `eof`，负偏移的 `ValueError` 是 `value`。
+- 有意的偏离：手机读完整个被选中的成员再核对 CRC-32。numpy 按需读取，成员里 NPY 数组后面如果还有很长的尾部，它读不到成员结尾就不核对 CRC，所以只坏在尾部的包 Python 会接受，手机用同一句 `Bad CRC-32 for file '…'` 拒绝。`np.savez` 不会写出这种尾部；拒绝损坏的包对手机更安全。坏在数组字节里时两边都拒绝。
 - `model_for`：版本、单元、清单、改动 kind `calib`，原厂 04 不匹配 kind `stock_mismatch`。包里缺文件 kind `file_not_found`，文案不和 Python 的 `FileNotFoundError` 逐字相同。
 - 预测和烘焙：`ValueError` 的文案相同（不对称色表行、系数字高位、色相环节点、输入映射尺寸、未知核类型、`需要 v2 pre-table 模型`），色相环缺键 kind `key`。
 - 不和 Python 逐字相同的：八个角张不成面积时 Qhull 报 `QhullError`，这里 kind `qhull`，文案只是一行；条目不是 552 字节（Python 的条目都来自 `datcodec`，永远是 552）；色相环里节点不是 24 个、`gain_per_sector` 不是 1 或 24 个（Python 到预测时才报 numpy 的广播错误，这里构造时就拒绝，文案用节点检查那句）；数字字段不是数字（kind `type`）；网格超过 2^24 格（kind `memory`）。

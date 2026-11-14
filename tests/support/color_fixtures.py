@@ -165,3 +165,16 @@ def deep_json(levels: int, kind: str) -> str:
     if kind == "array":
         return '{"ignored":' + "[" * (levels - 1) + "0" + "]" * (levels - 1) + "}"
     return '{"a":' * levels + "0" + "}" * levels
+
+
+# Tone adjustments and curves the apply and tones parity tests run.
+TONE_CASES = [
+    (None, None),
+    ({"exposure_ev": 0.6667, "warm": 35, "tint": -20}, None),
+    ({"exposure_ev": -1.25}, None),
+    ({"contrast": 40, "highlight": -60, "shadow": 25}, None),
+    ({"contrast": -100, "highlight": 100, "shadow": -100, "warm": -100}, None),
+    (None, {"master": [[0, 0], [64, 80.5], [192, 170.25], [255, 255]]}),
+    ({"shadow": 10}, {"master": [[0, 10], [255, 245]], "r": [[0, 0], [128, 150], [255, 255]], "b": [[30, 0], [200, 255]]}),
+    (None, {"g": [[0, 0], [10, 40], [20, 30], [255, 250]]}),
+]

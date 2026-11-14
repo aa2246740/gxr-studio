@@ -259,19 +259,6 @@ def test_golden_knob_list_matches_python(tmp_path: Path) -> None:
 # ---- calibration: `_context` and `model_for` ---------------------------------------------
 
 
-def _context_case(tmp: Path, name: str, npz: bytes, entry: bytes) -> tuple[BaseException | None, CoreCliError | None]:
-    path = tmp / f"{name}.npz"
-    path.write_bytes(npz)
-    entry_path = tmp / f"{name}-entry.bin"
-    entry_path.write_bytes(entry)
-    payload, err = cp.cli(["color-calib-check", "--npz", path, "--entry", entry_path])
-    py = cp.python_error(lambda: calib._context(npz, calib.stock_words_of_entry(entry)))
-    if py is None and err is None:
-        got = calib._context(npz, calib.stock_words_of_entry(entry))
-        assert payload == {"rows": len(got[2]), "d0": 24, "d1": 24}, name
-    return py, err
-
-
 def test_context_matches_python(tmp_path: Path) -> None:
     """`_context` on stored npz files: both sizes, and every error path."""
     require_cli()
@@ -279,7 +266,7 @@ def test_context_matches_python(tmp_path: Path) -> None:
     stock = calib.stock_words_of_entry(entry)
     for rows in (4, 10):
         d0, d1, coef = cf.arrays(rows)
-        py, err = _context_case(tmp_path, f"ok{rows}", cf.source_npz(stock, d0, d1, coef), entry)
+        py, err = cp.context_case(tmp_path, f"ok{rows}", cf.source_npz(stock, d0, d1, coef), entry)
         assert py is None and err is None, (py, err)
     d0, d1, coef = cf.arrays(4)
     s_eff = ((stock[:, 0] + d0) - 1j * (stock[:, 1] + d1)) / 32
@@ -301,12 +288,12 @@ def test_context_matches_python(tmp_path: Path) -> None:
     for missing in ("stock", "d0", "d1", "input_coefficients", "S_eff"):
         bad[f"missing-{missing}"] = {k: v for k, v in full.items() if k != missing}
     for name, arrays in bad.items():
-        py, err = _context_case(tmp_path, name, npz(**arrays), entry)
+        py, err = cp.context_case(tmp_path, name, npz(**arrays), entry)
         assert cp.same_error(py, err) is None, (name, cp.same_error(py, err))
     for name, damaged in cf.npz_damage(cf.source_npz(stock, d0, d1, coef), "input_coefficients.npy").items():
-        py, err = _context_case(tmp_path, name, damaged, entry)
+        py, err = cp.context_case(tmp_path, name, damaged, entry)
         assert cp.same_error(py, err) is None, (name, cp.same_error(py, err))
-    py, err = _context_case(tmp_path, "pickle", b"not an npz at all", entry)
+    py, err = cp.context_case(tmp_path, "pickle", b"not an npz at all", entry)
     assert cp.same_error(py, err) is None, cp.same_error(py, err)
     buf = io.BytesIO()
     np.savez_compressed(buf, **full)
@@ -316,15 +303,6 @@ def test_context_matches_python(tmp_path: Path) -> None:
     assert err is not None and err.kind == "zip", err
 
 
-def _npz_same(tmp: Path, name: str, data: bytes, entry: bytes) -> str | None:
-    """None when `_context` and `color-calib-check` agree on this archive (both accept, or the
-    same kind and message)."""
-    py, err = _context_case(tmp, name, data, entry)
-    if py is None and err is None:
-        return None
-    return cp.same_error(py, err)
-
-
 def test_npz_duplicate_members_follow_numpy(tmp_path: Path) -> None:
     """Duplicate names: the last central record wins (`NameToInfo`), and a key matches the full
     name before `key + ".npy"` (`NpzFile`); the selected member is the one checked and read."""
@@ -332,7 +310,7 @@ def test_npz_duplicate_members_follow_numpy(tmp_path: Path) -> None:
     corpus = nc.variants()
     stock = nc.source_parts()[0]
     for name in nc.DUPLICATES:
-        assert _npz_same(tmp_path, name, corpus[name], stock) is None, (name, _npz_same(tmp_path, name, corpus[name], stock))
+        assert cp.npz_same(tmp_path, name, corpus[name], stock) is None, (name, cp.npz_same(tmp_path, name, corpus[name], stock))
     ctx = nc.runtime_variants()["runtime_duplicate"]
     pack = cp.Pack(tmp_path / "runtime-duplicate", stock, ctx, json.dumps(cf.ring()).encode())
     _check_bake(tmp_path, pack, cf.entry(words=2), params={"step": 16})
@@ -344,7 +322,7 @@ def test_npz_stored_members_read_like_zipfile(tmp_path: Path) -> None:
     require_cli()
     corpus = nc.variants()
     stock = nc.source_parts()[0]
-    bad = [(name, why) for name in nc.STORED_RULES if (why := _npz_same(tmp_path, name, corpus[name], stock)) is not None]
+    bad = [(name, why) for name in nc.STORED_RULES if (why := cp.npz_same(tmp_path, name, corpus[name], stock)) is not None]
     assert bad == [], bad
     ctx = nc.runtime_variants()["runtime_descriptor"]
     pack = cp.Pack(tmp_path / "runtime-descriptor", stock, ctx, json.dumps(cf.ring()).encode())
@@ -359,11 +337,43 @@ def test_npz_corpus_matches_python(tmp_path: Path) -> None:
     corpus = nc.variants()
     assert len(corpus) == 42
     stock = nc.source_parts()[0]
-    differ = [(name, why) for name, data in corpus.items() if (why := _npz_same(tmp_path, name, data, stock)) is not None]
+    differ = [(name, why) for name, data in corpus.items() if (why := cp.npz_same(tmp_path, name, data, stock)) is not None]
     assert [d for d in differ if d[0] not in nc.SHARED_LIMIT_EXCEPTIONS] == [], differ
     for name, ctx in nc.runtime_variants().items():
         pack = cp.Pack(tmp_path / name, stock, ctx, json.dumps(cf.ring()).encode())
         _check_bake(tmp_path, pack, cf.entry(words=2), params={"step": 16})
+
+
+def test_npz_crc_covers_bytes_numpy_never_reads(tmp_path: Path) -> None:
+    """Documented deviation (UNIT-color, Sol r3 P2): the phone CRC-checks the whole selected
+    member. When only an unread tail after the NPY array is damaged (4096 or 8192 bytes),
+    NumPy never reaches EOF and accepts; native and WASM refuse with zipfile's CRC message.
+    Damage inside the array bytes is refused by both sides."""
+    require_cli()
+    from support.wasm_check import run_area
+
+    stock, ring, entry = nc.source_parts()[0], json.dumps(cf.ring()).encode(), cf.entry(words=2)
+    source, runtime = nc.source_npz(), nc.runtime_npz()
+    for tail in (4096, 8192):
+        py, err = cp.context_case(tmp_path, f"tail-{tail}", nc.trailing_crc(source, "input_coefficients.npy", tail), stock)
+        assert py is None and err is not None, (py, err)
+        assert (err.kind, err.message) == ("zip", "Bad CRC-32 for file 'input_coefficients.npy'")
+    flipped = nc.flip_array_byte(source, "input_coefficients.npy")
+    assert cp.npz_same(tmp_path, "array-flip", flipped, stock) is None
+    specs = []
+    for name, ctx, python_accepts in (
+        ("tail-4096", nc.trailing_crc(runtime, "d0.npy", 4096), True),
+        ("tail-8192", nc.trailing_crc(runtime, "d0.npy", 8192), True),
+        ("array-flip", nc.flip_array_byte(runtime, "d0.npy"), False),
+    ):
+        pack = cp.Pack(tmp_path / f"rt-{name}", stock, ctx, ring)
+        py, rust = cp.bake(tmp_path, pack, entry, params={"step": 16})
+        assert isinstance(rust, CoreCliError) and (rust.kind, rust.message) == ("zip", "Bad CRC-32 for file 'd0.npy'"), rust
+        assert isinstance(py, BaseException) != python_accepts, (name, py)
+        e = _write(tmp_path / f"rt-{name}-entry.bin", entry)
+        spec = {"kind": "bake", "entry": str(e), "stock": str(pack.stock), "ctx": str(pack.ctx), "ring": str(pack.ring)}
+        specs.append(_write(tmp_path / f"rt-{name}.json", json.dumps(spec).encode()))
+    run_area("color", specs, tmp_path)
 
 
 def _write(path: Path, data: bytes) -> Path:
@@ -530,13 +540,13 @@ def test_apply_and_tones_match_python(tmp_path: Path) -> None:
         bk = _check_bake(tmp_path, pack, entry)
         files = cp.write_bake(tmp_path, pack, entry, f"b{rows}")
         codes = cf.codes()
-        for adjust, curves in TONE_CASES:
+        for adjust, curves in cf.TONE_CASES:
             py, rust = cp.apply(tmp_path, files, bk, codes, adjust, curves)
             assert not isinstance(rust, CoreCliError), rust
             assert rust.dtype == np.uint8 and np.array_equal(py, rust), (adjust, curves, cf.first_difference(py, rust))
         py, rust = cp.apply(tmp_path, files, bk, codes.reshape(40, 100, 3))
         assert np.array_equal(py, rust) and rust.shape == (40, 100, 3)
-    for adjust, curves in TONE_CASES:
+    for adjust, curves in cf.TONE_CASES:
         a, c, params = cp.tone_args(adjust, curves)
         p, out = tmp_path / "tones.json", tmp_path / "tones.npy"
         p.write_text(json.dumps(params), encoding="utf-8")
@@ -554,18 +564,6 @@ def test_apply_and_tones_match_python(tmp_path: Path) -> None:
         if table is not None:
             got = np.load(out)
             assert got.dtype == np.float32 and np.array_equal(got, table), cf.first_difference(table, got)
-
-
-TONE_CASES = [
-    (None, None),
-    ({"exposure_ev": 0.6667, "warm": 35, "tint": -20}, None),
-    ({"exposure_ev": -1.25}, None),
-    ({"contrast": 40, "highlight": -60, "shadow": 25}, None),
-    ({"contrast": -100, "highlight": 100, "shadow": -100, "warm": -100}, None),
-    (None, {"master": [[0, 0], [64, 80.5], [192, 170.25], [255, 255]]}),
-    ({"shadow": 10}, {"master": [[0, 10], [255, 245]], "r": [[0, 0], [128, 150], [255, 255]], "b": [[30, 0], [200, 255]]}),
-    (None, {"g": [[0, 0], [10, 40], [20, 30], [255, 250]]}),
-]
 
 
 # ---- real camera data and calibration, when this machine has them -----------------------
@@ -665,7 +663,7 @@ def test_real_dngs_apply_matches_python(real_home: Path, tmp_path: Path) -> None
         bk = _check_bake(tmp_path, pack, entry)
         files = cp.write_bake(tmp_path, pack, entry, f"real{i}")
         codes = run_npy(["dng-half-codes", str(dng)], tmp_path / f"half{i}.npy")
-        adjust, curves = TONE_CASES[(2 * i) % len(TONE_CASES)]
+        adjust, curves = cf.TONE_CASES[(2 * i) % len(cf.TONE_CASES)]
         py, rust = cp.apply(tmp_path, files, bk, codes, adjust, curves)
         assert not isinstance(rust, CoreCliError), rust
         assert rust.shape == codes.shape and np.array_equal(py, rust), (dng.name, cf.first_difference(py, rust))
