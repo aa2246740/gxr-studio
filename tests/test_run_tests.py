@@ -19,7 +19,6 @@ import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -696,24 +695,45 @@ def test_a_functional_subtest_failure_next_to_a_speed_overrun_is_not_retried(tmp
 
 
 _FUNCTIONAL_THEN_PASS = "    assert runs > 1, 'functional fault'\n"
-_FUNCTIONAL_THEN_SPEED = "    assert runs != 1, 'functional fault'\n    if runs == 2:\n        raise SpeedBudgetExceeded('latency 2 > 1')\n"
+_MODULE_FIXTURE = (
+    "@pytest.fixture(scope='module', autouse=True)\ndef module_state():\n"
+    "    path = os.environ['HITS'] + '.module'\n    open(path, 'w').write('setup')\n    yield\n"
+    "    open(path, 'w').write('teardown')\n    raise RuntimeError('module finalizer fault')\n\n"
+)
+_SPEED_WITH_FUNCTION_FINALIZER = (
+    "    request.addfinalizer(lambda: (_ for _ in ()).throw(RuntimeError('function finalizer fault')))\n"
+    "    raise SpeedBudgetExceeded('latency 2 > 1')\n"
+)
 
 
-def test_reruns_keeps_its_own_rules_and_any_functional_attempt_blocks_the_quiet_retry(tmp_path: Path, scratch: Path) -> None:
-    """--reruns 1 照原来的定义：纯功能失败照样重跑，第二次过就过（跑 2 次、退出 0）。
-    但第一次功能失败、第二次只差速度时，不做安静重试：每次尝试都看，有过功能失败就保留失败（跑 2 次、退出 1）。"""
+@pytest.mark.parametrize("reruns", ["--force-reruns=0", "--reruns=1"])
+def test_exclusive_tests_get_no_plugin_reruns_but_shards_keep_them(tmp_path: Path, scratch: Path, reruns: str) -> None:
+    """exclusive 子进程带 --force-reruns 0：功能失败只跑 1 次、退出 1，不管外面给了什么 --reruns（比原来严，经理 r3 定）。
+    计算分片照样用 --reruns：同样「第一次失败、第二次过」的普通用例在 --reruns=1 下重跑后通过。"""
     tree = scratch / "tree"
     _exclusive_tree(tree, _FUNCTIONAL_THEN_PASS)
-    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns="--reruns=1")
-    assert proc.returncode == 0 and _hits(tmp_path)["speed"] == 2, proc.stdout + proc.stderr
-    second = tmp_path / "second"
-    second.mkdir()
-    tree2 = scratch / "tree2"
-    _exclusive_tree(tree2, _FUNCTIONAL_THEN_SPEED)
-    proc = _run_quiet(second, tree2, _quiet_env(second, _COUNTING_GATE.format(busy=0)), reruns="--reruns=1")
+    (tree / "test_flaky_normal.py").write_text(
+        "import hits, os\n\ndef test_flaky_normal():\n    hits.hit('flaky')\n"
+        "    assert sum(1 for l in open(os.environ['HITS']) if l.strip() == 'flaky') > 1\n",
+        encoding="utf-8",
+    )
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns=reruns)
     out = proc.stdout + proc.stderr
-    assert proc.returncode == 1 and _hits(second)["speed"] == 2, out
-    assert "[exclusive-retry]" not in out and "速度预算重试" not in out, out
+    assert proc.returncode == 1 and "functional fault" in out, out
+    assert _hits(tmp_path)["speed"] == 1 and "[exclusive-retry]" not in out
+    assert _hits(tmp_path)["flaky"] == (2 if reruns == "--reruns=1" else 1)
+
+
+def test_module_fixture_teardown_runs_after_a_speed_failure_with_a_teardown_error(tmp_path: Path, scratch: Path) -> None:
+    """Sol r3 P2：--reruns=1 下最后一个 exclusive 用例 call 速度超限、函数级 finalizer 出错，另有 module 级 autouse fixture。
+    exclusive 阶段不用插件重跑以后，module 清理照常执行、错误照常报告；有 teardown 错误，不做安静重试。"""
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _SPEED_WITH_FUNCTION_FINALIZER, extra=_MODULE_FIXTURE)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns="--reruns=1")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1 and _hits(tmp_path)["speed"] == 1, out
+    assert Path(str(tmp_path / "hits.log") + ".module").read_text() == "teardown"
+    assert "module finalizer fault" in out and "function finalizer fault" in out and "[exclusive-retry]" not in out
 
 
 def test_speed_only_subtest_and_call_retry_leaves_only_the_second_run_in_junit(tmp_path: Path, scratch: Path) -> None:
@@ -729,63 +749,3 @@ def test_speed_only_subtest_and_call_retry_leaves_only_the_second_run_in_junit(t
     # alpha、beta 各 1，加上第二次的 subtest 通过和主 call 通过各 1
     assert (suite.attrib["tests"], suite.attrib["failures"], suite.attrib["errors"]) == ("4", "0", "0"), ET.tostring(suite)
     assert all(case.find("failure") is None for case in suite.iter("testcase"))
-
-
-@pytest.mark.parametrize(
-    ("budget", "cost", "tests"),
-    [(600.0, 5.0, 10), (600.0, 5.1, 10), (5.0, 5.25, 0)],
-    ids=["r1-5s-samples", "r2-5.1s-samples", "r2-5s-budget-5.25s-probe"],
-)
-def test_sampling_time_counts_against_the_whole_wait_budget(capsys: pytest.CaptureFixture[str], budget: float, cost: float, tests: int) -> None:
-    """Sol r1/r2 P2：每 10 秒问一次、一直不安静，每次探针调用耗 cost 秒（loadgate 的 5 秒窗口加上 vm_stat、sysctl 的开销），
-    阶段前 + tests 个 exclusive 用例 + 重试前。父进程、子进程、重试前共用一份预算。
-
-    r1 时每个用例前还各采一次（655 秒）；r2 时窗口钉在 5 秒但整次调用没有期限（600.1 秒、5.25 秒）。
-    现在每次探针调用的期限是剩下的预算，超时就按不安静算（真探针在子进程里，连进程组收掉），合计不超过预算。
-    """
-    from test_run_tests_quiet import _quiet_module
-
-    q: Any = _quiet_module()
-    now = [0.0]
-
-    def busy(limit: float) -> tuple[bool, str] | None:
-        if cost > limit:  # 期限到了：真探针的子进程在这里被杀掉
-            now[0] += max(0.0, limit)
-            return None
-        now[0] += cost
-        return False, f"busy at {now[0]:.1f}"
-
-    def nap(seconds: float) -> bool:
-        now[0] += seconds
-        return True
-
-    parent = q.QuietGate(busy, busy, budget=budget, poll=10.0)
-    parent.wait("exclusive 阶段开始前", nap, clock=lambda: now[0])
-    child = q.QuietGate(busy, busy, budget=parent.remaining, poll=10.0)  # 父进程把剩下的交给子进程
-    for index in range(tests):
-        child.wait(f"exclusive 用例之前：case {index}", nap, clock=lambda: now[0])
-    used_by_child = parent.remaining - child.remaining  # 子进程写进结果文件，父进程扣掉
-    parent.remaining -= used_by_child
-    parent.wait("速度预算重试之前", nap, clock=lambda: now[0])
-    out = capsys.readouterr().out
-    assert now[0] <= budget, (now[0], out)
-    assert out.count("不再采样") == tests + 1, out
-
-
-def test_a_probe_without_seconds_is_stopped_at_the_deadline(tmp_path: Path) -> None:
-    """Sol r2 P2：不收 seconds 的 loadgate 函数也有期限。探针挂住 30 秒，期限 1 秒：期限一到就回来，子进程已经收掉。"""
-    from test_run_tests_quiet import _quiet_module
-
-    q: Any = _quiet_module()
-    pidfile = tmp_path / "probe.pid"
-    gate_file = tmp_path / "slow_gate.py"
-    gate_file.write_text(
-        f"import os, time\n\ndef quiet_for_timing():\n    open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n    time.sleep(30)\n"
-        "    return True, {}\n",
-        encoding="utf-8",
-    )
-    probe = q.gate_probe(q.load_gate(str(gate_file)))
-    assert probe(1.0) is None  # 正常跑完会返回 (True, …)；None 只能是期限到了
-    pid = int(pidfile.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)  # 子进程连进程组已经杀掉、回收

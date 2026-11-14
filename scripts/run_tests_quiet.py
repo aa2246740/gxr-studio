@@ -11,9 +11,9 @@
   并打印一行「一直没安静下来」和最近一次看到的负载。
 - 每次等待打印一行：等了多久、问了几次、最后看到的负载。
 - 速度断言抛 `SpeedBudgetExceeded`（类上 `gxr_speed_budget = True`，见 tests/support/speed.py）。
-  exclusive 用例最后一次尝试的所有失败（含原生 subtest）都是它、setup 和 teardown 都没出错时，记成 speed，父进程等安静后在
-  exclusive 阶段把这些用例重跑一次，以第二次为准。别的失败一律不重跑。不解析断言文字。
-  这是和 pytest-rerunfailures 分开的机制，`--force-reruns=0` 时照样生效。
+  exclusive 阶段的子进程带 `--force-reruns 0`，不用 rerunfailures 重跑，每个用例只跑一次。这次尝试的所有失败
+  （含原生 subtest）都是它、setup 和 teardown 都没出错时，记成 speed，父进程等安静后在 exclusive 阶段把这些用例
+  重跑一次，以第二次为准。别的失败一律不重跑（exclusive 用例的功能失败也不靠 --reruns 重跑）。不解析断言文字。
 """
 
 from __future__ import annotations
@@ -40,6 +40,9 @@ POLL_ENV = "GXR_QUIET_POLL_S"
 BUDGET_ENV = "GXR_RUN_TESTS_QUIET_BUDGET"
 DEFAULT_MAX_WAIT_S = 600.0
 DEFAULT_POLL_S = 10.0
+# exclusive 阶段（第一次和安静重试）都关掉 rerunfailures 的重跑：命令行在 PYTEST_ADDOPTS 之后，盖过用户的 --reruns、
+# --force-reruns 和 flaky 标记。这样那个阶段唯一的重试就是安静重试。计算分片和 browser_serial 阶段的 --reruns 1 不动。
+NO_PLUGIN_RERUNS = ("--force-reruns", "0")
 SAMPLE_S = 5.0  # 单次采样的上限：loadgate 按这个窗口采（它的默认也是 5 秒）；剩余预算不到它就不再采
 
 Probe = Callable[[float], tuple[bool, str] | None]  # 参数是这次调用的期限（秒）；超时返回 None
@@ -249,8 +252,6 @@ class ExclusivePlugin:
         self.outcomes = outcomes
         self.gate = gate
         self.state: dict[str, str] = {}
-        self.attempt: dict[str, set[str]] = {}  # 这次尝试里出现过的失败种类：speed / other
-        self.tainted: set[str] = set()  # 任何一次尝试里有过非速度失败的用例
         self.junit: dict[str, dict[str, int]] = {}
         self.budget = gate.remaining if gate is not None else 0.0
 
@@ -278,36 +279,23 @@ class ExclusivePlugin:
         每次尝试先生成 setup 报告，subtest 报告在 call 期间生成（也走这个钩子），最后是 call 和 teardown。
         一次尝试里的失败全部累积：只有全是 SpeedBudgetExceeded 才记 speed，出现过别的失败就一直是 failed。
         外层包装（tryfirst），看到的是 xfail 之类改写之后的结果。
-
-        安静重试看这个用例的每一次尝试（含 rerunfailures 的重跑）：只要有一次出现过非速度失败，就记进 tainted，
-        最后不会是 speed。同一次尝试里速度失败和别的失败并存时，还告诉 rerunfailures 这次不许重跑
-        （它在每次 setup 时重建 item._terminal_errors，只要里面有一项为真就不重跑），失败原样留下；
-        纯功能失败照 --reruns 原来的规矩重跑。
+        exclusive 子进程带 --force-reruns 0 跑，每个用例只有一次尝试；这里不碰 rerunfailures 的任何内部状态。
         """
         report = yield
         nodeid = item.nodeid
         if call.when == "setup":
             self.state[nodeid] = "passed"
-            self.attempt[nodeid] = set()
         current = self.state.get(nodeid, "passed")
         if report.skipped and current == "passed":
             self.state[nodeid] = "skipped"
         elif report.failed:
             speed = call.when == "call" and call.excinfo is not None and _is_speed(call.excinfo.type)
             self.state[nodeid] = "speed" if speed and current in ("passed", "speed") else "failed"
-            kinds = self.attempt.setdefault(nodeid, set())
-            kinds.add("speed" if speed else "other")
-            if not speed:
-                self.tainted.add(nodeid)
-            terminal = getattr(item, "_terminal_errors", None)
-            if kinds == {"speed", "other"} and isinstance(terminal, dict):
-                terminal["gxr_speed_with_other_failure"] = True
         return report
 
     def pytest_sessionfinish(self) -> None:
         used = self.budget - self.gate.remaining if self.gate is not None else 0.0
-        outcomes = {nodeid: "failed" if value == "speed" and nodeid in self.tainted else value for nodeid, value in self.state.items()}
-        data = {"outcomes": outcomes, "junit": self.junit, "quiet_waited_s": max(0.0, used)}
+        data = {"outcomes": self.state, "junit": self.junit, "quiet_waited_s": max(0.0, used)}
         self.outcomes.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
@@ -414,7 +402,7 @@ def run_exclusive(gate: QuietGate, work: Path, node_ids: list[str], launch: Laun
     """exclusive 阶段：等安静，跑一次；只有速度预算没过时，再等安静、把那几个用例重跑一次，返回第二次的结果。"""
     if not gate.wait("exclusive 阶段开始前", nap):
         return stopped() or 143
-    first = launch("exclusive", node_ids, gate.remaining, ())
+    first = launch("exclusive", node_ids, gate.remaining, NO_PLUGIN_RERUNS)
     result = read_outcomes(work / "exclusive" / "ids.txt")
     retry = speed_only(first, result, node_ids)
     if not retry or result is None or stopped() is not None:
@@ -424,7 +412,7 @@ def run_exclusive(gate: QuietGate, work: Path, node_ids: list[str], launch: Laun
     if not gate.wait("速度预算重试之前", nap):
         return stopped() or 143
     drop_junit_cases(work / "exclusive" / "junit.xml", retry, result.junit)
-    code = launch("exclusive-retry", retry, gate.remaining, ("--force-reruns", "0"))
+    code = launch("exclusive-retry", retry, gate.remaining, NO_PLUGIN_RERUNS)
     report_retry(result, read_outcomes(work / "exclusive-retry" / "ids.txt"), retry)
     if "failed" in result.outcomes.values():
         print("exclusive 第一次里还有不是墙钟预算的失败，不重跑，这一阶段照样失败。", flush=True)
