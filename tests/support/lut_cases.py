@@ -263,6 +263,83 @@ THRESHOLD_CASES: list[tuple[str, bool, float, dict[str, Any]]] = [
 ]
 
 
+AMPLIFIED_CASES: list[tuple[str, bool, float, dict[str, Any]]] = [
+    (
+        "amplified-24",
+        True,
+        0.0006716134621756898,
+        {
+            "input_space": "gamma24",
+            "output_space": "srgb",
+            "input_gamut": "rec709",
+            "output_gamut": "sgamut3cine",
+            "input_range": "full",
+            "output_range": "full",
+        },
+    ),
+    (
+        "amplified-25",
+        False,
+        0.0013261247207500496,
+        {
+            "input_space": "gamma24",
+            "output_space": "rec709",
+            "input_gamut": "rec709",
+            "output_gamut": "rec2020",
+            "input_range": "legal",
+            "output_range": "full",
+        },
+    ),
+    (
+        "amplified-35",
+        False,
+        -0.001849334008636518,
+        {
+            "input_space": "gamma24",
+            "output_space": "applelog",
+            "input_gamut": "rec709",
+            "output_gamut": "rec2020",
+            "input_range": "legal",
+            "output_range": "legal",
+        },
+    ),
+]
+
+
+_R3_THRESHOLD_RGB_HEX = (
+    "0000008d8800ff00ffffffff00ff00010101808080160eb6481338fe80a90f651edd8923d3751b014acbaa6dc5dbdef1b79f95402f260ebc439bfc23"
+    "e04a8f2674dff0eb7caa1a35d49804241c2811758651c77f5638e48496703639cb98033fb22c8395a160c8448b28be199d0ae7b41c3df4b361fde98"
+    "77e013f0043e4da1333ba1ceee837f251df7a54ea94d87e8f687f95835b0afd505deed0e977d2fe2c38c78d24de1fd1747528f8669225ffc0f69981"
+    "bf3e6d8554d56001731ee9197341bacd518e6d2bcf8cc618123a2f86532cd8196c4c59d6a3ce27faa0c53c7c714c088e54959b1d7ffca7045be7748"
+    "c74f4bacaf60699c7e7951ee94fad558bacadd94726d67c404099a8acccae0f5bcdf46e0b224bb0a61b38169a09e7186290d5df485bf8786bfae03c"
+    "30afdec34a299aaaec915b9b3bbe6ba26c3897f631d1996788ed48d5ec441375da8a87616ed164fca35e07b15dc088895358d4db020e0112034b2f2"
+    "aaa97bf1612379ee8ba585b623bb2888dd98f43c3c41511b5ded406beb79a3acd14598d8e51e58494af8a5c2f57c63663c1e7b3275e1c1cd3081d73"
+    "5f936848a60cea2f2eb9f9e9fac31ebab313f7ba2268ddedb31e50e35bb59f203c963f8027d3d41ec7f4d3e52ddd5ce1c6dcd9bb7281a9dca231c66"
+    "c7757b4f8383ae5d55e656de3c1bea54980f575d01b04f9761c2f575426dc8f06dca8d43f811979e8040e3ca592b088176052e66035f48a44ae1376e"
+    "a62fa289ab28ee6714ecadefac93d94cea27444a046bc19236196bffeb2c10ce0aff5387c9360ecfd0d4af6f3f8c71b7fa53e8df7976eea04ccd6d8"
+    "443c017d5cdbaab6802ed65c15ef8dad8822994fb6defb77bb6157cd5d9f41525bdaa854798d4b0bc3d463fe58503ed949ed3ea63b405354aa00a49"
+    "c6fef0ae0a9993c0dd970f4bcec631e0961278e74368866b49abb9cab1e95e31a5609d2b6b179bb52d0618cd65feec33ffbc968397aa39cf6290815"
+    "3fe57274e47673924651316f16e098e2816761e5d8dfd85e4f9920a893a435c344c54c7a145f21aa40a52678716374af83473836261977b07f19b3f9"
+    "a388c7b2c07cae3fbcc2e8036d71d26373ff0ffdad2923496b058311cee83e0b70e16155878b26e959717b5650fd7dfc5a53fe71fbe1492dadf254d"
+    "0cf667b6dd223c29b42c4474e5976bd8f2c1aef88adddba30eb3eb730f40ef6f8a238095c0cbeecce5f57b080801e424f13ee36de774096d0de8ff0"
+    "6384a7f4d3a12976ed68ef2d87d80d9d13aae47eddb6f91c8aaf610977adaecf68af0119b2e7416e530a2554ff12ddde6eeafd10c7239596099c7e"
+    "9346db35705f301b091d439923e1927da318fce4781f6274340853488ef76bf87d5cd0f9eb8c64737502a5501cc67a7d9ce7035a47ceee71a438020"
+    "397225a8cddd574132febc931b2ee76e08e96a64845255e93497d1a970ac55556d14aa8b0b08207e29070fba06df82b22e6f0571872a11dac01cc12"
+    "b150fd6c38c61fda7b7fcb4a7b71627a24d8cb74da962fd3a437f46b5963b515f2a2344ebfd59156ff667f9b4fe539f674b7a9bb8824d926bb5d2b6"
+    "1e0ee24c72026624be0b80010fcd332190a09a5470d9df87c4feaecd00e2deadf0d2c514b60ae52aaa90eb6f9f26d143bd0ed4081833e6e8b866b7c"
+    "7f5f3b4acd44b8a6739793ea2c76ea1bfdf7014c5dd1028e1f65f9cb45ba1434d63cd81e4a7614689399b599a92a5d2c771c6eb76a74cf48fbe3afb"
+    "5cb968e9428e16dbfbabdece400835d025f7553bb76e6f78b744a01c82e1447881454fdcd1b32ec879372ed0fda0ab07235f4b930d914ba4c1862c8"
+    "1b6128514ca47367c8c0a9e4aa9dab38a8a886f403315ed88e467d460e1b957a026b392712eb897aa0fcdd5c00d930b68337efc51bb5124e62c164a"
+    "e817722ac5ae960d0f2e74f71867a7fd2f96176ab0007d457c3051779c8aca8fa1f81f808942c6d2f8b8fec8373b79e6d638783af0e6de8f3afa3b4"
+    "9f4d5356139f12e4f38577b9a00a3f9846440a5195b4bdae1980d3599954e2bbe80874fe80f447b5b774fe55806998821c46c7a6e015b4e1d5ba9270"
+    "34978a4184fb2212f154129b0983c87f0b2014df1fb2a81a3b0e448669319fb63532f0a7584dfa17a68949eb507322"
+)
+
+
+def r3_threshold_rgb() -> np.ndarray:
+    return np.frombuffer(bytes.fromhex(_R3_THRESHOLD_RGB_HEX), dtype=np.uint8).reshape(16, 32, 3).copy()
+
+
 BAD_CUBE_CASES: list[tuple[str, str]] = [
     ("hello\n", "line 1: unsupported directive hello"),
     ("LUT_3D_SIZE 2\n0 0 0\n", "LUT 数据行数与声明不符"),
@@ -333,7 +410,7 @@ def write_wasm_threshold_table_manifest(tmp_path: Path, label: str) -> list[Path
     """Build a single 256^3 threshold table manifest so each WASM run stays well under 180s."""
     import json
 
-    shaper, offset, space = next((sh, off, sp) for lbl, sh, off, sp in THRESHOLD_CASES if lbl == label)
+    shaper, offset, space = next((sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES) if lbl == label)
     cube = tmp_path / f"{label}.cube"
     cube.write_text(threshold_cube_text(offset, shaper), encoding="utf-8")
     manifest = tmp_path / f"{label}-table.json"
@@ -384,13 +461,21 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
     th_rgb_npy = tmp_path / "th_rgb.npy"
     th_rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
     np.save(th_rgb_npy, th_rgb)
-    th_map = {lbl: (sh, off, sp) for lbl, sh, off, sp in THRESHOLD_CASES}
+    r3_rgb_npy = tmp_path / "r3_rgb.npy"
+    np.save(r3_rgb_npy, r3_threshold_rgb())
+    th_map = {lbl: (sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES)}
     th_01_cube = tmp_path / "case-0-1.cube"
     th_01_cube.write_text(threshold_cube_text(th_map["case-0-1"][1], th_map["case-0-1"][0]), encoding="utf-8")
     th_10_cube = tmp_path / "case-1-0.cube"
     th_10_cube.write_text(threshold_cube_text(th_map["case-1-0"][1], th_map["case-1-0"][0]), encoding="utf-8")
     th_14_cube = tmp_path / "case-1-4.cube"
     th_14_cube.write_text(threshold_cube_text(th_map["case-1-4"][1], th_map["case-1-4"][0]), encoding="utf-8")
+    amp_cubes: list[tuple[str, Path, dict[str, Any]]] = []
+    for amp_lbl in ("amplified-24", "amplified-25", "amplified-35"):
+        amp_sh, amp_off, amp_sp = th_map[amp_lbl]
+        amp_p = tmp_path / f"{amp_lbl}.cube"
+        amp_p.write_text(threshold_cube_text(amp_off, amp_sh), encoding="utf-8")
+        amp_cubes.append((amp_lbl, amp_p, amp_sp))
     manifests: list[Path] = [shaper_cube, log_cube, bad_cube, u_size, u_float, uni_size, huge64]
     cases_specs: list[dict[str, Any]] = [
         {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "srgb", "output_space": "vlog"}},
@@ -432,6 +517,10 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
         {"kind": "apply_u8", "cube": str(th_01_cube), "space": th_map["case-0-1"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
         {"kind": "apply_u8", "cube": str(th_10_cube), "space": th_map["case-1-0"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
         {"kind": "apply_u8", "cube": str(th_14_cube), "space": th_map["case-1-4"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
+        *(
+            {"kind": "apply_u8", "cube": str(amp_p), "space": amp_sp, "rgb_npy": str(r3_rgb_npy), "height": 16, "width": 32}
+            for _amp_lbl, amp_p, amp_sp in amp_cubes
+        ),
         {
             "kind": "apply_u8",
             "cube": str(steep_cube),

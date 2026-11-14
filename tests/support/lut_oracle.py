@@ -721,3 +721,50 @@ def check_negative_control_case(
     r_idx, c_idx = want_fail_px
     assert np.any(bad[r_idx, c_idx]), f"{label} host ** unexpectedly passed Gate A at {want_fail_px}: max_rel={float(np.max(rel)):.3e}"
     print(f"[neg-control] {label} host ** failed Gate A at {want_fail_px} max_rel={float(np.max(rel[r_idx, c_idx])):.3e}")
+
+
+def check_blas_gamma24_and_threshold_points(tmp_path: Path, py_target_fn: Callable[..., Any]) -> None:
+    """PORT-WAVE-1 platform BLAS rule: gamma24 [141, 136, 0] float64 and threshold.cube CPU u8 points."""
+    from support.core_cli import run_npy
+    from support.lut_cases import assert_rel, cube_text
+
+    rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
+    assert rgb[0, 8].tolist() == [141, 136, 0]
+    rgb_npy = tmp_path / "rgb.npy"
+    np.save(rgb_npy, rgb)
+    spec = {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"}
+
+    grade_cube = tmp_path / "grade.cube"
+    grade_cube.write_text(cube_text(lambda x: np.clip(x * GRADE_MUL + GRADE_OFF, 0, 1), size=9), encoding="utf-8")
+    py_grade = Cube.read(grade_cube)
+    or_grade_f64 = SeqTarget(py_grade, **spec).render(rgb)
+    py_grade_f64 = py_target_fn(py_grade, **spec).render(rgb)
+    rs_grade_f64 = run_npy(["lut-apply", "--cube", str(grade_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy)], tmp_path / "grade.npy")
+    assert_rel(or_grade_f64, rs_grade_f64, label="grade-vs-oracle")
+    if sys.platform == "darwin":
+        assert abs(float(py_grade_f64[0, 8, 0]) - float(or_grade_f64[0, 8, 0])) > 1e-7
+        fma_px = fma_render_display_px(py_grade, rgb[0, 8], **spec)
+        assert float(py_grade_f64[0, 8, 0]) == float(fma_px[0]) and float(py_grade_f64[0, 8, 1]) == float(fma_px[1])
+    assert_rel(or_grade_f64[0:1, 8:9, :], py_target_fn(py_grade, **spec).render(rgb[0:1, 8:9, :]), label="grade-1px-vs-oracle")
+
+    thresh_cube = tmp_path / "threshold.cube"
+    thresh_cube.write_text(
+        cube_text(lambda x: np.clip(x * GRADE_MUL + THRESHOLD_OFF, 0, 1), size=9, title="review threshold synthetic"), encoding="utf-8"
+    )
+    py_thresh = Cube.read(thresh_cube)
+    or_t, py_t = SeqTarget(py_thresh, **spec), py_target_fn(py_thresh, **spec)
+    or_t_f64, py_t_f64 = or_t.render(rgb), py_t.render(rgb)
+    rs_t_f64 = run_npy(["lut-apply", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy)], tmp_path / "t_f64.npy")
+    assert_rel(or_t_f64, rs_t_f64, label="threshold-vs-oracle")
+    or_t_u8, py_t_u8 = seq_apply(or_t, rgb), _apply_ref(py_t, rgb)
+    rs_t_u8 = run_npy(
+        ["lut-apply", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy), "--u8"], tmp_path / "t_u8.npy"
+    )
+    assert np.array_equal(or_t_u8, rs_t_u8) and int(rs_t_u8[0, 8, 0]) == int(or_t_u8[0, 8, 0]) == 189
+    if sys.platform == "darwin":
+        diff_idx = np.argwhere(py_t_u8 != rs_t_u8).tolist()
+        assert diff_idx == [[0, 8, 0]], diff_idx
+        assert int(py_t_u8[0, 8, 0]) == 188
+        fma_t = fma_render_display_px(py_thresh, rgb[0, 8], **spec)
+        assert float(py_t_f64[0, 8, 0]) == float(fma_t[0]) < 188.5 < float(rs_t_f64[0, 8, 0])
+    assert int(_apply_ref(py_t, rgb[0:1, 8:9, :])[0, 0, 0]) == 189

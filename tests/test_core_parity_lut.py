@@ -32,7 +32,15 @@ from gxr_studio.render.params import EditError
 from support import lut_cases
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
-from support.lut_cases import BAD_CUBE_CASES, IDENTIFY_CASES, THRESHOLD_CASES, space_depth_text, threshold_cube_text
+from support.lut_cases import (
+    AMPLIFIED_CASES,
+    BAD_CUBE_CASES,
+    IDENTIFY_CASES,
+    THRESHOLD_CASES,
+    r3_threshold_rgb,
+    space_depth_text,
+    threshold_cube_text,
+)
 from support.lut_cases import assert_meta_same as _assert_meta_same
 from support.lut_cases import assert_rel as _assert_rel
 from support.lut_cases import check_scene_xyz as _check_scene_xyz
@@ -40,13 +48,13 @@ from support.lut_cases import cube_text as _cube_text
 from support.lut_cases import real_dngs as _real_dngs
 from support.lut_oracle import (
     GRADE_MUL,
-    GRADE_OFF,
     THRESHOLD_OFF,
     SeqTarget,
     assert_table_u8_boundary_gate,
     assert_table_u8_gate_b,
     assert_u8_boundary_gate,
     assert_u8_gate_b,
+    check_blas_gamma24_and_threshold_points,
     check_negative_control_case,
     check_threshold_cpu_case,
     check_threshold_full_table_case,
@@ -339,22 +347,36 @@ def test_threshold_15_cpu_quantisation_boundary(tmp_path: Path, label: str, shap
     check_threshold_cpu_case(tmp_path, label, threshold_cube_text(offset, shaper), spec, _python_target)
 
 
-def test_gate_a_negative_control_host_pow(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("label", "shaper", "offset", "spec"), AMPLIFIED_CASES, ids=[c[0] for c in AMPLIFIED_CASES])
+def test_threshold_amplified_cpu_cases(tmp_path: Path, label: str, shaper: bool, offset: float, spec: dict[str, Any]) -> None:
     require_cli()
-    shaper, offset, spec = next((sh, off, sp) for lbl, sh, off, sp in THRESHOLD_CASES if lbl == "case-1-2")
-    rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
-    check_negative_control_case(tmp_path, "case-1-2", threshold_cube_text(offset, shaper), spec, rgb, (0, 7))
+    check_threshold_cpu_case(tmp_path, label, threshold_cube_text(offset, shaper), spec, _python_target, rgb_override=r3_threshold_rgb())
+
+
+@pytest.mark.parametrize(
+    ("label", "want_px"),
+    [("case-1-2", (0, 7)), ("amplified-24", (6, 25)), ("amplified-25", (6, 25)), ("amplified-35", (6, 25))],
+)
+def test_gate_a_negative_control_host_pow(tmp_path: Path, label: str, want_px: tuple[int, int]) -> None:
+    require_cli()
+    shaper, offset, spec = next((sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES) if lbl == label)
+    rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8) if label == "case-1-2" else r3_threshold_rgb()
+    check_negative_control_case(tmp_path, label, threshold_cube_text(offset, shaper), spec, rgb, want_px)
 
 
 @pytest.mark.parametrize(
     ("label", "want_offset", "want_bgr", "want_or_u8", "want_py_u8", "want_rs_u8"),
-    [("case-0-1", 47724632, (182, 14, 22, 0), 47, 46, 47), ("case-1-0", 139828, (0, 136, 141, 0), 142, 141, 142)],
+    [
+        ("case-0-1", 47724632, (182, 14, 22, 0), 47, 46, 47),
+        ("case-1-0", 139828, (0, 136, 141, 0), 142, 141, 142),
+        ("amplified-25", 35184641, (134, 56, 0, 1), 85, 86, 85),
+    ],
 )
 def test_threshold_full_256_gpu_tables(
     tmp_path: Path, label: str, want_offset: int, want_bgr: tuple[int, int, int, int], want_or_u8: int, want_py_u8: int, want_rs_u8: int
 ) -> None:
     require_cli()
-    shaper, offset, spec = next((sh, off, sp) for lbl, sh, off, sp in THRESHOLD_CASES if lbl == label)
+    shaper, offset, spec = next((sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES) if lbl == label)
     check_threshold_full_table_case(
         tmp_path, label, threshold_cube_text(offset, shaper), spec, want_offset, want_bgr, want_or_u8, want_py_u8, want_rs_u8, _python_target
     )
@@ -363,54 +385,7 @@ def test_threshold_full_256_gpu_tables(
 def test_blas_gamma24_and_threshold_points(tmp_path: Path) -> None:
     """PORT-WAVE-1 platform BLAS rule: gamma24 [141, 136, 0] float64 and threshold.cube CPU u8 points."""
     require_cli()
-    rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
-    assert rgb[0, 8].tolist() == [141, 136, 0]
-    rgb_npy = tmp_path / "rgb.npy"
-    np.save(rgb_npy, rgb)
-    spec = {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"}
-
-    # 1) grade.cube float64 point at (0, 8, 0) (plus (0, 8, 1))
-    grade_cube = _write_cube(tmp_path, "grade.cube", _cube_text(lambda x: np.clip(x * GRADE_MUL + GRADE_OFF, 0, 1), size=9))
-    py_grade = Cube.read(grade_cube)
-    or_grade_f64 = SeqTarget(py_grade, **spec).render(rgb)
-    py_grade_f64 = _python_target(py_grade, **spec).render(rgb)
-    rs_grade_f64 = run_npy(["lut-apply", "--cube", str(grade_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy)], tmp_path / "grade.npy")
-    assert np.load(rgb_npy)[0, 8].tolist() == [141, 136, 0]
-    _assert_rel(or_grade_f64, rs_grade_f64, label="grade-vs-oracle")
-    if sys.platform == "darwin":
-        assert abs(float(py_grade_f64[0, 8, 0]) - float(or_grade_f64[0, 8, 0])) > 1e-7
-        fma_px = fma_render_display_px(py_grade, rgb[0, 8], **spec)
-        assert float(py_grade_f64[0, 8, 0]) == float(fma_px[0]) and float(py_grade_f64[0, 8, 1]) == float(fma_px[1])
-    one_grade = _python_target(py_grade, **spec).render(rgb[0:1, 8:9, :])
-    _assert_rel(or_grade_f64[0:1, 8:9, :], one_grade, label="grade-1px-vs-oracle")
-
-    # 2) threshold.cube CPU u8 point at (0, 8, 0): 188 (Accelerate batch) vs 189 (oracle & Rust)
-    thresh_cube = _write_cube(
-        tmp_path,
-        "threshold.cube",
-        _cube_text(lambda x: np.clip(x * GRADE_MUL + THRESHOLD_OFF, 0, 1), size=9, title="review threshold synthetic"),
-    )
-    py_thresh = Cube.read(thresh_cube)
-    or_t = SeqTarget(py_thresh, **spec)
-    py_t = _python_target(py_thresh, **spec)
-    or_t_f64 = or_t.render(rgb)
-    py_t_f64 = py_t.render(rgb)
-    rs_t_f64 = run_npy(["lut-apply", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy)], tmp_path / "t_f64.npy")
-    _assert_rel(or_t_f64, rs_t_f64, label="threshold-vs-oracle")
-    or_t_u8 = seq_apply(or_t, rgb)
-    py_t_u8 = _apply(py_t, rgb)
-    rs_t_u8 = run_npy(
-        ["lut-apply", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy), "--u8"], tmp_path / "t_u8.npy"
-    )
-    assert np.array_equal(or_t_u8, rs_t_u8)
-    assert int(rs_t_u8[0, 8, 0]) == int(or_t_u8[0, 8, 0]) == 189
-    if sys.platform == "darwin":
-        diff_idx = np.argwhere(py_t_u8 != rs_t_u8).tolist()
-        assert diff_idx == [[0, 8, 0]], diff_idx
-        assert int(py_t_u8[0, 8, 0]) == 188
-        fma_t = fma_render_display_px(py_thresh, rgb[0, 8], **spec)
-        assert float(py_t_f64[0, 8, 0]) == float(fma_t[0]) < 188.5 < float(rs_t_f64[0, 8, 0])
-    assert int(_apply(py_t, rgb[0:1, 8:9, :])[0, 0, 0]) == 189
+    check_blas_gamma24_and_threshold_points(tmp_path, _python_target)
 
 
 def test_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path) -> None:
@@ -738,7 +713,7 @@ def test_scene_xyz_real_dngs(path: Path, tmp_path: Path) -> None:
 # ---- WASM matches native ----
 
 
-@pytest.mark.parametrize("label", (None, "case-0-1", "case-1-0"))
+@pytest.mark.parametrize("label", (None, "case-0-1", "case-1-0", "amplified-25"))
 def test_wasm_matches_native_lut(tmp_path: Path, label: str | None) -> None:
     require_cli()
     inputs = lut_cases.write_wasm_lut_manifests(tmp_path) if label is None else lut_cases.write_wasm_threshold_table_manifest(tmp_path, label)
