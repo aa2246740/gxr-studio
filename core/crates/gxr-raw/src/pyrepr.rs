@@ -178,12 +178,27 @@ pub fn py_int_tuple_repr(items: &[i64]) -> String {
 }
 
 /// numpy's shape text inside reshape errors: `(3,3)`, `(4,)`.
+/// numpy's `convert_shape_to_string` (`numpy/_core/src/multiarray/common.c`): leading
+/// unknown (negative) axes are left out, later ones print as `newaxis`, and a
+/// one-axis shape keeps its trailing comma. `[3, 3]` prints `(3,3)`, `[-1, 3]`
+/// prints `(3)`, `[3, -1]` prints `(3,newaxis)`, `[-1]` prints `()`.
 pub(crate) fn np_shape_text(dims: &[i64]) -> String {
-    let parts: Vec<String> = dims.iter().map(ToString::to_string).collect();
-    if parts.len() == 1 {
-        format!("({},)", parts[0])
+    let Some(first) = dims.iter().position(|&d| d >= 0) else {
+        return "()".into();
+    };
+    let mut text = dims[first].to_string();
+    for &d in &dims[first + 1..] {
+        if d < 0 {
+            text.push_str(",newaxis");
+        } else {
+            text.push(',');
+            text.push_str(&d.to_string());
+        }
+    }
+    if dims.len() == 1 {
+        format!("({text},)")
     } else {
-        format!("({})", parts.join(","))
+        format!("({text})")
     }
 }
 
@@ -277,6 +292,11 @@ mod tests {
         assert_eq!(py_int_tuple_repr(&[0, 0, 10, 20]), "(0, 0, 10, 20)");
         assert_eq!(py_int_tuple_repr(&[4]), "(4,)");
         assert_eq!(np_shape_text(&[3, 3]), "(3,3)");
+        assert_eq!(np_shape_text(&[5]), "(5,)");
+        assert_eq!(np_shape_text(&[-1, 3]), "(3)");
+        assert_eq!(np_shape_text(&[3, -1]), "(3,newaxis)");
+        assert_eq!(np_shape_text(&[-1, 0]), "(0)");
+        assert_eq!(np_shape_text(&[-1]), "()");
         assert_eq!(py_float_list_repr(&[0.5, 0.0]), "[0.5, 0.0]");
         assert_eq!(
             py_list_repr(&[Scalar::Int(0), Scalar::Float(1.0), Scalar::Char('a')]),
