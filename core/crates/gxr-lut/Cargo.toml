@@ -1,12 +1,14 @@
 [package]
 name = "gxr-lut"
-description = "Placeholder for the port of gxr_studio/lut/"
+description = "Port of gxr_studio/lut/ (cube files, colour spaces, identify, GPU LUT tables, scene glue)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+gxr-math.workspace = true
+gxr-raw.workspace = true
 
 [lints]
 workspace = true

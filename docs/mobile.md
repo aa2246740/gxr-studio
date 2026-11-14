@@ -238,6 +238,16 @@ WASM：`frame_layout(meta_json, spec_json, font_index_json, fonts)` 和 `stamp_l
 
 对拍在 `tests/test_core_parity_frame.py`（中文墨迹框的门槛见上）：`FRAME_STYLES` 的每一种，`test_frame_reference` 的全部认可组合，`test_finish_layout_parity` 的尺寸、选项、拍摄信息和日期戳组合，中文题字，五种自定义标志的每个选项，1×1 这样的极端尺寸，以及缺中文字体。整数、字符串、布尔、键的顺序都要相同，浮点数要相等（不是接近），int 和 float 的类型也和 Python 一样。
 
+## LUT 移植（`gxr-lut`）
+
+`gxr-lut` 负责 `.cube` 解析与四面体插值（`cube.rs`）、色彩空间与 `Target.render`（`spaces.rs`）、8 位量化套用（`photo.rs`）、GPU LUT 表（`tables.rs`：`display_lut_u8` 与 `lut_bytes`）、空间识别与未声明默认选项（`identify.rs` / `identify_scan.rs`），以及复用 `gxr-raw::colorimetry` / `gxr-raw::scene` 的场景 XYZ 胶水层（`scene.rs`）。
+
+- CLI 子命令在 `core/crates/gxr-cli/src/cmd_lut.rs`：`lut-parse`、`lut-apply`、`lut-encode`、`lut-table`、`lut-identify`、`scene-xyz`。
+- WASM 导出在 `core/crates/gxr-wasm/src/lut.rs`：`lut_parse`、`lut_identify`、`lut_table`、`lut_apply_u8`。
+- `identify` 对未声明且无法唯一确认输入空间的 `.cube` 保留 `input_space: null`，绝不把未知 `.cube` 默认当成 sRGB；`undeclared_choice` 只返回界面提示的默认选项与说明文本。
+- `scene-xyz` 复用 `gxr-raw` 已有的 `scene_colour` 与 `affine_of`，并把 `SceneError.code`（`no_neutral`、`no_matrix`、`bad_matrix`、`bad_colour`）原样作为 `CoreError.kind` 返回。
+- 接受与拒绝边界和 Python 一致，不在解析端拦截极端有限值 LUT；表值都在 `[-1, 2]` 内的良态用例保持 Gate B `<= 1` 码上限，而表值极端的 LUT，在两边结果都是浮点噪声的像素上，手机和桌面可能差几个码值（仍须通过 Gate A `1e-12` 无掩码与机械归因）。
+
 ## HDR（`gxr-hdr`，命令前缀 `hdr-`）
 
 移植的是 `hdr/gain.py`（对齐、曲线、增益平面）、`hdr/container.py`（ISO 21496-1 + Ultra HDR + MPF 封装）和 `hdr/capture.py` 的 `_capture`、`differs`。增益图 JPEG 的编码不在这里：这里给出 `encode_gainmap` 交给 Pillow 之前的 uint8 平面，封装时把编好的增益图 JPEG 当输入。`derived.py` 和 `finish/hdr_export.py` 是第二波。

@@ -85,6 +85,10 @@ dependencies = [
 [[package]]
 name = "gxr-lut"
 version = "0.1.0"
+dependencies = [
+ "gxr-math",
+ "gxr-raw",
+]
 
 [[package]]
 name = "gxr-math"
