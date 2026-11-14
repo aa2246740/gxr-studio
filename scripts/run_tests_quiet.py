@@ -192,24 +192,27 @@ class ExclusivePlugin:
         if self.gate is not None:
             self.gate.wait(f"exclusive 用例之前：{item.nodeid}", _sleep)
 
-    @pytest.hookimpl(wrapper=True)
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_runtest_makereport(self, item: Any, call: Any) -> Any:
-        del item
-        report = yield
-        if call.excinfo is not None and report.failed and _is_speed(call.excinfo.type):
-            report.gxr_speed_budget = True
-        return report
+        """在报告生成时分类，不等它被记下来。
 
-    def pytest_runtest_logreport(self, report: Any) -> None:
-        if report.when == "setup":
-            self.state[report.nodeid] = "passed"
-        if report.skipped and self.state.get(report.nodeid) == "passed":
-            self.state[report.nodeid] = "skipped"
-        if not report.failed:
-            return
-        speed = report.when == "call" and getattr(report, "gxr_speed_budget", False)
-        current = self.state.get(report.nodeid, "passed")
-        self.state[report.nodeid] = "speed" if speed and current == "passed" else "failed"
+        rerunfailures 会把 setup、call、teardown 报告攒到一次尝试结束才发，原生 subtest 的报告却当场就发；
+        按 logreport 的顺序在 setup 那里重置，会把同一次尝试里先到的 subtest 失败清掉。生成报告的顺序没有这个问题：
+        每次尝试先生成 setup 报告，subtest 报告在 call 期间生成（也走这个钩子），最后是 call 和 teardown。
+        一次尝试里的失败全部累积：只有全是 SpeedBudgetExceeded 才记 speed，出现过别的失败就一直是 failed。
+        外层包装（tryfirst），看到的是 xfail 之类改写之后的结果。
+        """
+        report = yield
+        nodeid = item.nodeid
+        if call.when == "setup":
+            self.state[nodeid] = "passed"
+        current = self.state.get(nodeid, "passed")
+        if report.skipped and current == "passed":
+            self.state[nodeid] = "skipped"
+        elif report.failed:
+            speed = call.when == "call" and call.excinfo is not None and _is_speed(call.excinfo.type)
+            self.state[nodeid] = "speed" if speed and current in ("passed", "speed") else "failed"
+        return report
 
     def pytest_sessionfinish(self) -> None:
         used = self.budget - self.gate.remaining if self.gate is not None else 0.0
