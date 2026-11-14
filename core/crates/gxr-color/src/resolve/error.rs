@@ -2,6 +2,8 @@
 
 use gxr_raw::{CoreError, Json, error_json};
 
+use super::json::PyStr;
+
 pub const INVALID_REQUEST: &str = "请求无效。请刷新页面后重试。";
 
 /// Port of `gxr_studio/render/params.py:29 EditError`.
@@ -9,7 +11,7 @@ pub const INVALID_REQUEST: &str = "请求无效。请刷新页面后重试。";
 pub struct EditError {
     pub code: &'static str,
     pub message: String,
-    pub detail: String,
+    pub detail: PyStr,
 }
 
 impl EditError {
@@ -17,14 +19,14 @@ impl EditError {
         Self {
             code,
             message: message.into(),
-            detail: String::new(),
+            detail: PyStr::from(""),
         }
     }
 
     pub fn with_detail(
         code: &'static str,
         message: impl Into<String>,
-        detail: impl Into<String>,
+        detail: impl Into<PyStr>,
     ) -> Self {
         Self {
             code,
@@ -33,15 +35,15 @@ impl EditError {
         }
     }
 
-    pub fn to_json(&self) -> Json {
-        Json::object([(
-            "error",
-            Json::object([
-                ("kind", Json::str(self.code)),
-                ("message", Json::str(self.message.clone())),
-                ("detail", Json::str(self.detail.clone())),
-            ]),
-        )])
+    pub fn to_json(&self) -> String {
+        let mut out = String::from("{\"error\":{\"kind\":");
+        out.push_str(&Json::str(self.code).render());
+        out.push_str(",\"message\":");
+        out.push_str(&Json::str(&self.message).render());
+        out.push_str(",\"detail\":");
+        self.detail.write_json(&mut out);
+        out.push_str("}}");
+        out
     }
 }
 
@@ -53,10 +55,10 @@ pub enum ResolveError {
 }
 
 impl ResolveError {
-    pub fn to_json(&self) -> Json {
+    pub fn to_json(&self) -> String {
         match self {
             Self::Edit(e) => e.to_json(),
-            Self::Core(e) => error_json(e),
+            Self::Core(e) => error_json(e).render(),
         }
     }
 

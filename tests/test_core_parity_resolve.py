@@ -96,7 +96,7 @@ def _parse_edit_py(raw_text: str) -> py_params.EditState:
     )
 
 
-def _assert_edit_matches(tmp_path: Path, name: str, raw_text: str) -> None:
+def _assert_edit_matches(tmp_path: Path, name: str, raw_text: str) -> dict[str, Any]:
     p = tmp_path / f"{name}.json"
     p.write_text(raw_text, encoding="utf-8")
     code, payload = run_json(["color-parse-edit", "--json", str(p)])
@@ -108,7 +108,7 @@ def _assert_edit_matches(tmp_path: Path, name: str, raw_text: str) -> None:
         assert err.kind == exc.code, (name, err, exc)
         assert err.message == exc.message, (name, err, exc)
         assert payload["error"].get("detail", "") == exc.detail, (name, payload, exc)
-        return
+        return payload
 
     assert error_of(code, payload) is None, (name, payload)
     expected = state.to_json()
@@ -121,6 +121,7 @@ def _assert_edit_matches(tmp_path: Path, name: str, raw_text: str) -> None:
         assert "lut" not in payload, name
     assert payload["canonical"] == state.canonical(), (name, payload["canonical"], state.canonical())
     assert payload["digest"] == state.digest(), (name, payload["digest"], state.digest())
+    return payload
 
 
 def test_edit_parsing_valid_cases_and_edge_numbers(tmp_path: Path) -> None:
@@ -244,13 +245,17 @@ def test_edit_parsing_all_error_branches(tmp_path: Path) -> None:
         "recipe_slot_huge": f'{{"recipe": {{"unit": "jlaunch", "slot": {10**20}}}}}',
         "recipe_levels_truthy": '{"recipe": {"unit": "jlaunch", "slot": 1, "levels": [1]}}',
         "recipe_knob_bad": '{"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"unknown": 0}}}',
+        "recipe_knob_bad_surrogate": r'{"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"\ud800": 1}}}',
+        "recipe_knob_bad_escaped_surrogate": r'{"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"\\ud800": 1}}}',
+        "recipe_knob_bad_surrogate_low": r'{"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"\udfff": 1}}}',
+        "recipe_knob_bad_surrogate_mixed": r'{"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"\ud800A": 1}}}',
         "recipe_level_bool": '{"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"contrast": true}}}',
         "recipe_level_float": '{"recipe": {"unit": "jlaunch", "slot": 1, "levels": {"contrast": 1.0}}}',
         "recipe_memory_bad": '{"recipe": {"unit": "jlaunch", "slot": 1, "memory": [1]}}',
         "lut_bad": '{"lut": "not-hex"}',
     }
-    for name, raw_text in bad_cases.items():
-        _assert_edit_matches(tmp_path, name, raw_text)
+    results = {name: _assert_edit_matches(tmp_path, name, raw_text) for name, raw_text in bad_cases.items()}
+    assert results["recipe_knob_bad_surrogate"]["error"]["detail"] != results["recipe_knob_bad_escaped_surrogate"]["error"]["detail"]
 
 
 def test_edit_json_depth_and_size_caps(tmp_path: Path) -> None:
@@ -634,11 +639,12 @@ def test_wasm_full_error_json_and_nonfinite_controls_parity(tmp_path: Path) -> N
             ("bad-kind", '{"kind": "nope", "unit": "jlaunch", "slot": 1}'),
             ("local-404", json.dumps({"kind": "local", "id": HEX64, "unit": "jlaunch", "slot": 1})),
             ("bad-knob-surrogate", r'{"unit": "jlaunch", "slot": 1, "levels": {"\ud800": 1}}'),
+            ("bad-knob-escaped-surrogate", r'{"unit": "jlaunch", "slot": 1, "levels": {"\\ud800": 1}}'),
             ("deep-129", _deep_json(129, "object")),
         ):
             rp = tmp_path / f"err_{rname}.json"
             rp.write_text(body, encoding="utf-8")
-            cases.append({"kind": "resolve", "label": rname, "dat": str(s_dat), "recipe": str(rp)})
+            cases.append({"kind": "resolve", "label": rname, "dat": str(s_dat), "recipe": str(rp), "body": body})
 
     cases_path = tmp_path / "full_error_cases.json"
     cases_path.write_text(json.dumps(cases), encoding="utf-8")
@@ -719,4 +725,13 @@ process.stdout.write(JSON.stringify(out));
         wasm_text = wasm_results[c["label"]]
         cli_text = cli_proc.stdout.rstrip("\n")
         assert wasm_text == cli_text, f"{c['label']}: {wasm_text!r} != {cli_text!r}"
-        assert json.loads(wasm_text) == json.loads(cli_text)
+        parsed_err = json.loads(wasm_text)
+        assert parsed_err == json.loads(cli_text)
+        if c["kind"] == "resolve" and c["label"] in ("bad-knob-surrogate", "bad-knob-escaped-surrogate"):
+            with pytest.raises(py_params.EditError) as exc_info:
+                py_params.parse_recipe(json.loads(c["body"]))
+            assert parsed_err["error"]["kind"] == exc_info.value.code
+            assert parsed_err["error"]["message"] == exc_info.value.message
+            assert parsed_err["error"]["detail"] == exc_info.value.detail
+    if SINGLE_DATS:
+        assert wasm_results["bad-knob-surrogate"] != wasm_results["bad-knob-escaped-surrogate"]

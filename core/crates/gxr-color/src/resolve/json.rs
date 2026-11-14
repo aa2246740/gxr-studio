@@ -67,19 +67,14 @@ impl PyStr {
         out.push('"');
     }
 
-    /// Lossless UTF-8 text: valid scalar characters verbatim, lone surrogates as `\uXXXX`.
-    pub fn to_escaped_text(&self) -> String {
+    /// Prepend a UTF-8 prefix while preserving all code points (including lone surrogates).
+    pub fn with_prefix(&self, prefix: &str) -> Self {
         match &self.0 {
-            PyStrRepr::Utf8(s) => s.clone(),
+            PyStrRepr::Utf8(s) => Self::from(format!("{prefix}{s}")),
             PyStrRepr::CodePoints(v) => {
-                let mut out = String::new();
-                for &cp in v {
-                    match char::from_u32(cp) {
-                        Some(c) => out.push(c),
-                        None => out.push_str(&format!("\\u{cp:04x}")),
-                    }
-                }
-                out
+                let mut cps: Vec<u32> = prefix.chars().map(|c| c as u32).collect();
+                cps.extend_from_slice(v);
+                Self(PyStrRepr::CodePoints(cps))
             }
         }
     }

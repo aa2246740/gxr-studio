@@ -12,7 +12,7 @@ fn rejected(err: gxr_raw::CoreError) -> JsValue {
 }
 
 fn rejected_resolve(err: gxr_color::resolve::ResolveError) -> JsValue {
-    JsValue::from_str(&err.to_json().render())
+    JsValue::from_str(&err.to_json())
 }
 
 /// A bake: the float32 table the shader reads, its meta JSON, and the summary

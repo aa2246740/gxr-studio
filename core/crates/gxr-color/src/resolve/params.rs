@@ -657,20 +657,13 @@ pub fn parse_recipe(raw: Option<&PyJson>) -> Result<Option<RecipeSel>, EditError
             let mut keys: Vec<&(super::json::PyStr, PyJson)> = pairs.iter().collect();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             for (name, v) in keys {
-                let Some(name_str) = name.as_str() else {
+                let Some(name_str) = name.as_str().filter(|s| KNOB_NAMES.contains(s)) else {
                     return Err(EditError::with_detail(
                         "bad_recipe",
                         INVALID_REQUEST,
-                        format!("旋钮无法使用。{}", name.to_escaped_text()),
+                        name.with_prefix("旋钮无法使用。"),
                     ));
                 };
-                if !KNOB_NAMES.contains(&name_str) {
-                    return Err(EditError::with_detail(
-                        "bad_recipe",
-                        INVALID_REQUEST,
-                        format!("旋钮无法使用。{name_str}"),
-                    ));
-                }
                 let lv = match v {
                     PyJson::Num(PyNum::Int(i)) => RecipeLevel::Int(*i),
                     PyJson::Num(PyNum::BigInt { neg, digits }) => RecipeLevel::BigInt {

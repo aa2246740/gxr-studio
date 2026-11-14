@@ -277,7 +277,7 @@ fn resolve_out(res: Result<String, ResolveError>) -> Result<Output, Failure> {
     match res {
         Ok(text) => Ok(Output { text, ok: true }),
         Err(err) => Ok(Output {
-            text: err.to_json().render(),
+            text: err.to_json(),
             ok: false,
         }),
     }

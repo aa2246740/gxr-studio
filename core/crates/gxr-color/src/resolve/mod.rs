@@ -119,14 +119,24 @@ mod tests {
         let bad_bool =
             parse_adjust(Some(&parse_py_json(br#"{"contrast": true}"#).unwrap())).unwrap_err();
         assert_eq!(bad_bool.code, "bad_adjust");
-        assert!(bad_bool.detail.contains("请输入整数"));
+        assert!(
+            bad_bool
+                .detail
+                .as_str()
+                .is_some_and(|s| s.contains("请输入整数"))
+        );
 
         let huge_adj = parse_adjust(Some(
             &parse_py_json(br#"{"contrast": 100000000000000000000}"#).unwrap(),
         ))
         .unwrap_err();
         assert_eq!(huge_adj.code, "bad_adjust");
-        assert!(huge_adj.detail.contains("数值超出范围"));
+        assert!(
+            huge_adj
+                .detail
+                .as_str()
+                .is_some_and(|s| s.contains("数值超出范围"))
+        );
 
         let bad_slot = parse_recipe(Some(
             &parse_py_json(br#"{"unit": "jlaunch", "slot": 1.0}"#).unwrap(),
@@ -210,5 +220,22 @@ mod tests {
             parse_recipe(Some(&bad_unit)).unwrap_err().code,
             "bad_recipe"
         );
+
+        let bad_knob_surrogate =
+            parse_py_json(br#"{"unit":"jlaunch","slot":1,"levels":{"\ud800":1}}"#).unwrap();
+        let err_surr = parse_recipe(Some(&bad_knob_surrogate)).unwrap_err();
+        assert_eq!(
+            err_surr.to_json(),
+            r#"{"error":{"kind":"bad_recipe","message":"请求无效。请刷新页面后重试。","detail":"旋钮无法使用。\ud800"}}"#
+        );
+
+        let bad_knob_backslash =
+            parse_py_json(br#"{"unit":"jlaunch","slot":1,"levels":{"\\ud800":1}}"#).unwrap();
+        let err_bs = parse_recipe(Some(&bad_knob_backslash)).unwrap_err();
+        assert_eq!(
+            err_bs.to_json(),
+            r#"{"error":{"kind":"bad_recipe","message":"请求无效。请刷新页面后重试。","detail":"旋钮无法使用。\\ud800"}}"#
+        );
+        assert_ne!(err_surr, err_bs);
     }
 }
