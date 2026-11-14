@@ -42,7 +42,7 @@ try {
     if (!reloaded) break;
     if (attempt === 4) throw new Error(`page kept reloading\n${notes.join('\n')}`);
   }
-  await page.locator('input[type=file]').setInputFiles(manifest.pairs.flat());
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.pairs.flat());
   await page.waitForFunction(() => {
     const sub = document.querySelector('.nav small');
     return sub && !sub.textContent.includes('正在读取') && document.querySelector('.cell canvas');
@@ -93,11 +93,13 @@ try {
   await page.mouse.down();
   await page.mouse.move(sx - 140, sy, { steps: 8 });
   await page.mouse.up();
-  await page.waitForFunction((prev) => document.querySelector('.nav b')?.textContent !== prev, beforeSwipe);
+  await page.waitForFunction((prev) => document.querySelector('.nav b')?.textContent !== prev, beforeSwipe).catch(async (err) => {
+    throw new Error(`${err.message}\nerrors=${JSON.stringify(out.pageErrors)}\n${(await page.locator('body').innerText()).slice(0, 600)}`);
+  });
   out.swipe = [beforeSwipe, await page.locator('.nav b').innerText()];
   await page.getByRole('button', { name: '照片', exact: true }).click();
   await page.waitForSelector('[data-screen="grid"]');
-  await page.locator('input[type=file]').setInputFiles(manifest.bad);
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.bad);
   await page.waitForSelector('[data-state="unreadable"]');
   out.bad = await page.locator('[data-state="unreadable"]').innerText();
   const kept = await ids(page);

@@ -1,21 +1,9 @@
 // 几个各自持有一份 WASM 的 Worker。页面不能用 SharedArrayBuffer（GitHub Pages 没有 COOP/COEP）。
 
-interface Ok {
-  id: number;
-  ok: true;
-  json: string;
-}
-
-interface Fail {
-  id: number;
-  ok: false;
-  message: string;
-}
-
-type Reply = Ok | Fail;
+import type { BakeArgs, CoreOp, CoreReply, CoreRequest, CoreResult } from './protocol';
 
 interface Pending {
-  resolve: (json: string) => void;
+  resolve: (result: CoreResult) => void;
   reject: (err: Error) => void;
 }
 
@@ -34,20 +22,21 @@ export class Pool {
     const count = workerCount();
     this.workers = Array.from({ length: count }, () => {
       const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-      worker.onmessage = (event: MessageEvent<Reply>) => this.finish(event.data);
+      worker.onmessage = (event: MessageEvent<CoreReply>) => this.finish(event.data);
       worker.onerror = (event) => this.failAll(event.message || 'Worker 出错');
       return worker;
     });
   }
 
   /** 把 `buffer` 交给一个 Worker。`transfer` 里的东西发给对方之后这边就不能再用。 */
-  request(op: 'describe' | 'ping', buffer: ArrayBuffer, transfer: Transferable[]): Promise<string> {
+  request(op: CoreOp, buffer: ArrayBuffer | null, transfer: Transferable[], args: BakeArgs | null = null): Promise<CoreResult> {
     const id = this.seq++;
     const worker = this.workers[this.next % this.workers.length];
     this.next += 1;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, op, buffer }, transfer);
+      const message: CoreRequest = { id, op, buffer, args };
+      worker.postMessage(message, transfer);
     });
   }
 
@@ -56,11 +45,11 @@ export class Pool {
     for (const worker of this.workers) worker.terminate();
   }
 
-  private finish(reply: Reply): void {
+  private finish(reply: CoreReply): void {
     const pending = this.pending.get(reply.id);
     if (!pending) return;
     this.pending.delete(reply.id);
-    if (reply.ok) pending.resolve(reply.json);
+    if (reply.ok) pending.resolve({ json: reply.json, buffers: reply.buffers });
     else pending.reject(new Error(reply.message));
   }
 

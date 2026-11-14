@@ -2,12 +2,13 @@
 
 import { Engine, type Adjust } from '../../../frontend/src/index';
 import { describeDng, type Described } from '../core/api';
-import { NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
+import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
 import { button, el, icon, ICON } from './dom';
 import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
+import { RecipeView } from './recipe_view';
 
 const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
   { key: 'exposure_ev', label: '曝光', min: -5, max: 5, step: 0.1 },
@@ -73,7 +74,10 @@ export class EditorView {
   private caption = '';
   private sharp: ImageBitmap | null = null;
   private placeholder: HTMLElement | null = null;
-  private cards: Array<{ thumb: HTMLElement; sub: HTMLElement }> = [];
+  private recipes: RecipeView | null = null;
+  /** 舞台上套的烘焙表（中性转换或某个配方）。 */
+  private recipeKey = NEUTRAL_BAKE_KEY;
+  private tab = 1;
   /** 这张读完、清楚的图也换上之后才 resolve。只给截图和测试等。 */
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
@@ -106,6 +110,8 @@ export class EditorView {
     this.shell.dataset.drag = '0';
     this.sharp?.close();
     this.sharp = null;
+    this.recipes?.destroy();
+    this.recipes = null;
     this.engine?.detach();
   }
 
@@ -137,21 +143,14 @@ export class EditorView {
     stage.append(pv, this.stageLabel);
     this.bindGesture(stage);
 
-    const strip = el('div', 'strip');
-    this.cards = [];
-    for (const name of ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原厂标准', 'Kodachrome 25']) {
-      const card = button('rc', '');
-      const thumb = el('div', 'th');
-      const sub = el('div', 'sub');
-      card.append(thumb, el('div', 'nm', name), sub);
-      this.cards.push({ thumb, sub });
-      if (!photo.dng) card.disabled = true;
-      card.addEventListener('click', () => {
-        for (const other of strip.querySelectorAll('.rc')) other.classList.remove('on');
-        card.classList.add('on');
-      });
-      strip.append(card);
-    }
+    this.recipeKey = NEUTRAL_BAKE_KEY;
+    this.recipes = new RecipeView(this.api, this.engine, photo, {
+      mode: () => this.mode,
+      look: (key, label) => this.useLook(key, label),
+      dragging: () => this.dragging,
+      recipeTab: () => this.tab === 0,
+    });
+    const strip = this.recipes.stripEl();
 
     const sheet = el('div', 'sheet');
     sheet.append(el('div', 'grab'));
@@ -164,13 +163,15 @@ export class EditorView {
       tab.addEventListener('click', () => {
         for (const item of tabs.children) item.classList.remove('on');
         tab.classList.add('on');
+        this.tab = tabIndex;
+        if (tabIndex === 0) this.recipes?.tabOpened();
         panels.forEach((panel, panelIndex) => {
           panel.hidden = panelIndex !== tabIndex;
         });
       });
       tabs.append(tab);
     });
-    panels.push(this.recipePanel(photo), this.adjustPanel(), cropPanel(), framePanel(), lutPanel(), curvesPanel());
+    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanel(), framePanel(), lutPanel(), curvesPanel());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -185,24 +186,14 @@ export class EditorView {
     this.host.append(screen);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
     this.paintStill(photo.bitmap);
-    this.paintSource(photo);
   }
 
-  private recipePanel(photo: Photo): HTMLElement {
-    const panel = el('div', 'panel');
-    if (!photo.dng) {
-      const note = el('div', 'bn grey');
-      note.append(el('div', '', '配方需要 RAW 文件'), el('div', 'dim', '拍摄时将画质设为 RAW+JPEG'));
-      panel.append(note, el('p', 'pad dim', '这张只有相机 JPG。调整、裁剪、边框、曲线照常能用。'));
-      panel.append(el('p', 'pad faint', 'HDR 需要 RAW 文件。这张会存普通版本。'));
-      return panel;
-    }
-    const note = el('div', 'bn');
-    note.append(el('div', '', '还没导入校准数据。现在所有配方都只显示中性转换，和相机里的颜色不同。导出也一样。'));
-    const bring = button('btn primary block', '导入校准数据 · 下一步做');
-    bring.disabled = true;
-    panel.append(note, el('div', 'pad'), bring, el('p', 'faint pad', '在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 iPhone。只需一次。'));
-    return panel;
+  /** 配方那边定下了舞台该用哪张烘焙表。长按看原图时先记着，松手再换。 */
+  private useLook(key: string, label: string): void {
+    this.recipeKey = key;
+    if (this.holding) this.restLabel = label;
+    else this.setLabel(label);
+    this.push();
   }
 
   private adjustPanel(): HTMLElement {
@@ -302,7 +293,8 @@ export class EditorView {
     if (!this.engine || !this.photo || this.mode === 'still') return;
     const knobs = this.holding ? zeroKnobs() : this.photo.knobs;
     this.engine.setLook({
-      recipe: this.mode === 'raw' ? NEUTRAL_BAKE_KEY : null,
+      // 按住看原图：中性转换、调整归零。
+      recipe: this.mode === 'raw' ? (this.holding ? NEUTRAL_BAKE_KEY : this.recipeKey) : null,
       lut: null,
       lutStrength: 1,
       curve: null,
@@ -549,10 +541,15 @@ export class EditorView {
       this.api.markBad(photo.id, version);
       return;
     }
-    if (photo.version === version) photo.checked = version;
+    if (photo.version === version) {
+      photo.checked = version;
+      // 镜头名和 ISO：相机 JPG 里没有时用 DNG 里的（选镜头单元和模型）。
+      photo.dngMeta = described.meta;
+    }
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
       if (this.input) this.input.disabled = true;
+      this.recipes?.refresh();
       this.prefetch(this.nextPhoto(1));
       return;
     }
@@ -569,40 +566,12 @@ export class EditorView {
     }
   }
 
-  /**
-   * 配方卡上画的是什么，就写什么。有显卡的 RAW：中性转换（显卡出的小图，好了再画）；
-   * 否则是相机 JPG 或 DNG 内嵌的预览，不能叫中性转换。
-   */
-  private paintSource(photo: Photo): void {
-    if (photo.dng && this.engine) {
-      const neutral = photo.neutral && photo.neutral.version === photo.version ? photo.neutral.bitmap : null;
-      this.paintCards(neutral, '中性转换');
-      return;
-    }
-    const label = photo.jpg ? '相机 JPG' : photo.bitmap ? '内嵌预览' : '只有 RAW';
-    this.paintCards(photo.bitmap, label);
-  }
-
-  private paintCards(bitmap: ImageBitmap | null, label: string): void {
-    for (const card of this.cards) {
-      card.sub.textContent = label;
-      card.thumb.replaceChildren();
-      card.thumb.dataset.source = bitmap ? label : '';
-      if (!bitmap) continue;
-      const mini = document.createElement('canvas');
-      mini.width = bitmap.width;
-      mini.height = bitmap.height;
-      mini.getContext('2d')?.drawImage(bitmap, 0, 0);
-      card.thumb.append(mini);
-    }
-  }
-
   /** 这张 RAW 的中性小图：每个版本只请显卡出一次，之后换片回来直接用。 */
   private async neutralCards(photo: Photo, key: string): Promise<void> {
     if (!this.engine) return;
     const version = photo.version;
     if (photo.neutral && photo.neutral.version === version) {
-      this.paintCards(photo.neutral.bitmap, '中性转换');
+      this.recipes?.neutral(photo.neutral.bitmap);
       return;
     }
     const token = this.token;
@@ -620,7 +589,7 @@ export class EditorView {
     }
     photo.neutral?.bitmap.close();
     photo.neutral = { version, bitmap };
-    if (token === this.token) this.paintCards(bitmap, '中性转换');
+    if (token === this.token) this.recipes?.neutral(bitmap);
   }
 
   private showRaw(key: string): void {
@@ -630,7 +599,8 @@ export class EditorView {
     this.push();
     const frame = this.engine.frame();
     if (frame) this.shell.dataset.frame = '1';
-    this.setLabel('开发用中性预览，不是配方');
+    if (!this.caption) this.setLabel('中性转换');
+    this.recipes?.start(key);
     if (this.gpuCanvas) this.gpuCanvas.hidden = false;
     if (this.still) this.still.hidden = true;
     if (this.input) this.input.disabled = false;

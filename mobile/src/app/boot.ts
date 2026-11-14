@@ -1,14 +1,16 @@
 // 手机上的三屏：起始、网格、编辑。不碰历史记录，返回就是回到网格。
 
 import { Engine, type RawLayout, type Scene } from '../../../frontend/src/index';
-import { neutralBake, NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
+import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
 import { warmCore } from '../core/api';
+import { Book } from './book';
+import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
 import { GridView } from './grid';
-import { openable, photoMs, releaseBitmaps, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
+import { openable, photoMs, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -37,11 +39,17 @@ class App implements AppApi {
   private readonly queue = new ThumbQueue(2);
   /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
   private readonly reader = new ThumbQueue(1);
+  /** 相机配方文件、校准数据和烘焙表。文件字节都由上面那个 Worker 读。 */
+  private readonly recipeBook = new Book(async (file) => {
+    const reply = await this.reader.read(file);
+    return reply.ok ? reply.bytes : null;
+  });
 
   constructor(
     private readonly shell: HTMLElement,
     private readonly view: HTMLElement,
     private readonly picker: HTMLInputElement,
+    private readonly calibPicker: HTMLInputElement,
     private readonly perf: HTMLElement,
     private readonly perfOn: boolean,
     private readonly pageErrors: string[],
@@ -49,6 +57,12 @@ class App implements AppApi {
 
   async start(engine: Engine | null): Promise<void> {
     this.engine = engine;
+    this.recipeBook.attach(engine);
+    // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
+    this.recipeBook.onChange(() => {
+      if (this.screen === 'grid') this.grid?.refresh();
+    });
+    const restored = this.recipeBook.restore().catch(() => undefined);
     if (this.perfOn) {
       this.perf.hidden = false;
       void measureInterval().then((value) => {
@@ -57,6 +71,8 @@ class App implements AppApi {
     }
     this.showStart();
     if (!import.meta.env.DEV) return;
+    (window as unknown as { __gxrBook?: Book }).__gxrBook = this.recipeBook;
+    await restored;
     const shot = new URLSearchParams(location.search).get('shot');
     if (!shot) return;
     const { sampleFiles, reportShot } = await import('./shots');
@@ -112,6 +128,26 @@ class App implements AppApi {
 
   hasDat(): boolean {
     return this.dat !== null;
+  }
+
+  book(): Book {
+    return this.recipeBook;
+  }
+
+  pickDat(): void {
+    this.picker.click();
+  }
+
+  pickCalib(): void {
+    this.calibPicker.click();
+  }
+
+  showCalib(): void {
+    showCalibSheet(this.shell, this);
+  }
+
+  takeCalib(file: File): void {
+    void this.recipeBook.importPack(file);
   }
 
   loading(): { done: number; total: number } {
@@ -254,6 +290,7 @@ class App implements AppApi {
     for (const photo of this.byId.values()) releaseBitmaps(photo);
     this.byId.clear();
     this.dat = null;
+    this.recipeBook.clearDat();
     this.ignoredCount = 0;
     this.warm = null;
     this.showStart();
@@ -325,7 +362,10 @@ class App implements AppApi {
   private ingest(files: File[]): void {
     const classified = classify(files.map((file) => ({ name: file.name, lastModified: file.lastModified })));
     this.ignoredCount += classified.ignored;
-    if (classified.datIndex !== null) this.dat = files[classified.datIndex];
+    if (classified.datIndex !== null) {
+      this.dat = files[classified.datIndex];
+      void this.recipeBook.setDat(this.dat, classified.datCount);
+    }
     const generation = this.generation;
     for (const item of classified.photos) {
       const id = item.stem.toLowerCase();
@@ -346,6 +386,10 @@ class App implements AppApi {
           bitmap: null,
           neutral: null,
           knobs: zeroKnobs(),
+          jpgMeta: null,
+          dngMeta: null,
+          choice: null,
+          looks: new Map(),
         };
         this.byId.set(id, photo);
       }
@@ -359,6 +403,7 @@ class App implements AppApi {
       photo.gone = false;
       photo.neutral?.bitmap.close();
       photo.neutral = null;
+      releaseLooks(photo);
       photo.lastModified = Math.max(photo.lastModified, item.lastModified);
       if (photo.status !== 'pending') {
         photo.bitmap?.close();
@@ -370,6 +415,8 @@ class App implements AppApi {
     }
     // 重新选了照片：没有剩下没读完的，就不再算卡被拔出。
     this.cardIsOut = [...this.byId.values()].some((photo) => unread(photo));
+    // 只选了相机配方文件（06d 的按钮）：留在这一屏，配方那边自己会刷新。
+    if (!classified.photos.length) return;
     if (this.byId.size) this.showGrid(this.screen !== 'grid');
     else this.showStart();
   }
@@ -387,9 +434,13 @@ class App implements AppApi {
       this.drop(reply);
       return;
     }
+    let from: File = file;
     if (photo.jpg && photo.dng && reply.ok && reply.bitmap === null) {
+      // 相机 JPG 解不出来：镜头名和 ISO 还是先记下 JPG 里读到的（桌面先用 JPG 的）。
+      photo.jpgMeta = reply.meta;
       this.drop(reply);
       const dng = photo.dng;
+      from = dng;
       reply = await this.queue.run(dng, 'dng');
       if (!live(dng)) {
         this.drop(reply);
@@ -406,6 +457,8 @@ class App implements AppApi {
       return;
     }
     if (reply.captureMs !== null) photo.captureMs = reply.captureMs;
+    if (from === photo.jpg) photo.jpgMeta = reply.meta;
+    else photo.dngMeta = reply.meta;
     if (reply.bitmap) {
       photo.bitmap?.close();
       photo.bitmap = reply.bitmap;
@@ -492,21 +545,30 @@ export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<
   picker.type = 'file';
   picker.multiple = true;
   picker.className = 'filepick';
+  // 校准数据 zip 单独一个选择框，也不加 accept（「文件」里按类型过滤会把文件变灰）。
+  const calibPicker = document.createElement('input');
+  calibPicker.type = 'file';
+  calibPicker.className = 'filepick calibpick';
   const view = document.createElement('div');
   view.className = 'view';
   const perf = document.createElement('p');
   perf.className = 'perf';
   perf.hidden = true;
-  shell.append(picker, view, perf);
+  shell.append(picker, calibPicker, view, perf);
   root.replaceChildren(shell);
   const coreReady = warmCore();
 
   const perfOn = new URLSearchParams(location.search).get('perf') === '1';
-  const app = new App(shell, view, picker, perf, perfOn, pageErrors);
+  const app = new App(shell, view, picker, calibPicker, perf, perfOn, pageErrors);
   picker.addEventListener('change', () => {
     const files = picker.files ? Array.from(picker.files) : [];
     picker.value = '';
     if (files.length) app.take(files);
+  });
+  calibPicker.addEventListener('change', () => {
+    const file = calibPicker.files?.[0] ?? null;
+    calibPicker.value = '';
+    if (file) app.takeCalib(file);
   });
 
   let engine: Engine | null = null;

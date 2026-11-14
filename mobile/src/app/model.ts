@@ -1,7 +1,10 @@
 // 这一次打开里的照片。文件句柄留着，字节只在正在看的那一张上。
 
 import type { RawLayout, Scene } from '../../../frontend/src/index';
+import type { PhotoMeta } from '../lib/exif';
 import type { GapMinutes, Order } from '../lib/group';
+import type { Choice } from '../lib/recipes';
+import type { Book } from './book';
 
 /** 缩略图这一步的状态。文件读不读得了、显卡里有没有源，是另外两件事（gone、cached）。 */
 export type PhotoStatus = 'pending' | 'ready' | 'bad';
@@ -54,6 +57,13 @@ export interface Photo {
   /** 显卡出的中性转换小图（配方卡用），按版本缓存，只做一次。 */
   neutral: { version: number; bitmap: ImageBitmap } | null;
   knobs: Knobs;
+  /** 相机 JPG 和 DNG 里读到的镜头名、ISO（桌面导入时先用 JPG 的）。 */
+  jpgMeta: PhotoMeta | null;
+  dngMeta: PhotoMeta | null;
+  /** 选中的配方。和调整一样是这张照片这次的编辑状态；换片、重新选同一张都留着。 */
+  choice: Choice | null;
+  /** 配方卡的小图，按烘焙表的键记，只对当时的版本有效。 */
+  looks: Map<string, { version: number; bitmap: ImageBitmap }>;
 }
 
 /** stale：读的时候照片被重新选过，结果作废。 */
@@ -79,6 +89,13 @@ export function releaseBitmaps(photo: Photo): void {
   photo.bitmap = null;
   photo.neutral?.bitmap.close();
   photo.neutral = null;
+  releaseLooks(photo);
+}
+
+/** 放掉配方卡的小图（换版本、清空时）。 */
+export function releaseLooks(photo: Photo): void {
+  for (const look of photo.looks.values()) look.bitmap.close();
+  photo.looks.clear();
 }
 
 export function photoMs(photo: Photo): number {
@@ -122,4 +139,12 @@ export interface AppApi {
   /** 编辑器里没有显卡或只有 JPG 时，按屏幕宽度在 Worker 里解一张清楚的。 */
   still(photo: Photo, width: number): Promise<ImageBitmap | null>;
   watch(kind: 'scroll' | 'drag', on: boolean): void;
+  /** 相机配方文件、校准数据和烘焙表。 */
+  book(): Book;
+  /** 只选 GXRCE.DAT（06d 的按钮）。选完留在当前这一屏。 */
+  pickDat(): void;
+  /** 选校准数据 zip。 */
+  pickCalib(): void;
+  /** 「更多 → 校准数据」。 */
+  showCalib(): void;
 }

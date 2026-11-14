@@ -171,7 +171,8 @@ def test_card_removed_keeps_cached_photos_and_counts_unread(server: dict[str, An
 def test_recipe_cards_show_the_real_source(server: dict[str, Any]) -> None:
     data = run_case(server, "recipe-cards")
     gpu = data["gpuRun"]
-    assert set(gpu["labels"]) == {"中性转换"}
+    # 没选相机配方文件（06d）：卡片置灰、不写小字，画的仍是这张 RAW 的中性小图（data-source）。
+    assert set(gpu["labels"]) == {""}
     # 卡片就是这张 RAW 的中性小图（同一份显卡输出，只差缩放）。
     assert gpu["diff"] <= 2.0, gpu["diff"]
     # 第一张一次、第二张一次，滑回第一张不再请显卡出图。

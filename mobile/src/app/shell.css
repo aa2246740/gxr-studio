@@ -329,3 +329,35 @@ svg.curve { width: min(220px, 52vw); height: auto; flex: none; border-radius: 10
   pointer-events: none;
 }
 .perf[hidden] { display: none; }
+
+/* 配方（03a、06c、06d、06e）和校准数据（01）。 */
+.tag.ok { color: var(--accent-text); background: var(--accent-weak); }
+.calib .acts { display: flex; gap: 10px; }
+.calib .acts .btn { flex: 1; }
+.calib p.unit { color: var(--text-1); font: 500 14px/20px var(--font-num); }
+.calib p.bad { margin-top: 10px; color: var(--danger-text); }
+.calib-sheet .card { margin-top: 12px; }
+.calib-sheet .hd, .ask-sheet .hd { display: flex; align-items: center; justify-content: space-between; }
+.note.datline { padding: 6px 2px 0; }
+.rc .th { position: relative; }
+.rc .ckk { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); display: grid; place-items: center; }
+.rc .ckk .ico { width: 15px; height: 15px; stroke: #fff; stroke-width: 2.5; }
+.rc.lockd .th { opacity: 0.38; }
+.rc.lockd .nm { color: var(--text-3); }
+.rc:disabled { opacity: 1; }
+.strip .empty { align-self: center; padding: 0 4px; font-size: 14px; line-height: 20px; }
+.recipe-head .row { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.recipe-head .rname { font: 600 18px/24px var(--font-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag.neutral-tag { color: var(--text-2); background: var(--surface-raised); }
+.hdr-note { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; font-size: 14px; line-height: 20px; }
+.hdr-note .ok { color: var(--ok-text); }
+.hdr-note .ok .ico { width: 18px; height: 18px; }
+.bn .tx { flex: 1; }
+.bn .warn .ico { width: 20px; height: 20px; }
+.panel.recipe .chips { margin-top: 10px; }
+.panel.recipe .btn.block { margin-top: 10px; }
+.small { font-size: 13px; line-height: 18px; }
+.path { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-panel); box-shadow: inset 0 0 0 1px var(--line-subtle); font-size: 15px; }
+.path .fic { color: var(--accent-text); display: inline-flex; }
+.ask-sheet .btn.primary { margin-top: 14px; }
+.ask-sheet .btn.ghost { margin-top: 6px; }

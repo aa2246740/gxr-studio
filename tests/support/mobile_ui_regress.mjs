@@ -103,7 +103,7 @@ function asFiles(files) {
 }
 
 async function pick(page, files) {
-  await page.locator('input[type=file]').setInputFiles(asFiles(files));
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles(asFiles(files));
   await page.waitForFunction(() => {
     const sub = document.querySelector('.nav small');
     return sub && !sub.textContent.includes('正在读取') && document.querySelectorAll('.cell').length > 0 && !document.querySelector('.cell.skel');
@@ -195,7 +195,7 @@ const CASES = {
         };
         window.__gpuHold = true;
       });
-      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       // 第一次上传扣住；同名重选第三张真 DNG 再打开，第二次上传排在后面。
       await page.locator(`.cell[data-id="${a}"]`).click();
       await page.waitForFunction(() => window.__uploads.length === 1 && window.__gpuHeld.length === 1, null, { timeout: 120_000 });
@@ -294,7 +294,7 @@ const CASES = {
       const ids = await gridIds(page);
       const [a, b, c] = ids;
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
       // 卡拔了：之后所有整份读取都回 gone。
@@ -312,7 +312,7 @@ const CASES = {
       const screenAfterC = await page.locator('.app').getAttribute('data-screen');
       await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 60_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 60_000 });
       const reopened = await page.locator('.app').getAttribute('data-screen');
       return { ids, dialog, subtitle, classes, againDialog, screenAfterC, reopened, errors };
     } finally {
@@ -341,7 +341,7 @@ const CASES = {
         };
         window.__gpuHold = true;
       });
-      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       await page.locator('.cell').first().click();
       await page.waitForFunction(() => window.__uploads.length === 1 && window.__gpuHeld.length === 1, null, { timeout: 120_000 });
       await page.getByRole('button', { name: '照片', exact: true }).click();
@@ -573,7 +573,7 @@ const CASES = {
       const bName = `${b.toUpperCase()}.DNG`;
       const aName = `${a.toUpperCase()}.DNG`;
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       const before = await page.evaluate(() => window.__gxrEngine.stats());
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
@@ -595,7 +595,7 @@ const CASES = {
       await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
       // 已经在显卡里的那张：不读卡，直接打开、拖曝光。
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 60_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 60_000 });
       const slider = page.locator('input[data-key="exposure_ev"]');
       const box = await slider.boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -614,7 +614,7 @@ const CASES = {
       const subtitleRepicked = await page.locator('.nav small').innerText();
       const bClassRepicked = await cellClass(page, b);
       await page.locator(`.cell[data-id="${b}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       const repickedTitle = await page.locator('.editor .nav b').innerText();
       return { a, b, aName, bName, before, after, dialog, subtitle, subtitleAfterRefresh, bClass, againDialog, reopened, readsAfterCard, subtitleRepicked, bClassRepicked, repickedTitle, errors };
     } finally {
@@ -637,7 +637,7 @@ const CASES = {
       const { page, context, errors } = await makePage({ gpu: false });
       try {
         await page.evaluate(() => window.__hold('thumb'));
-        await page.locator('input[type=file]').setInputFiles({ name, mimeType: 'image/jpeg', buffer: variant.first });
+        await page.locator('input.filepick:not(.calibpick)').setInputFiles({ name, mimeType: 'image/jpeg', buffer: variant.first });
         await page.waitForFunction(() => window.__held.length === 1, null, { timeout: 30_000 });
         await pick(page, [{ name, mimeType: 'image/jpeg', buffer: real }]);
         const read = () =>
@@ -681,7 +681,7 @@ const CASES = {
       await page.waitForTimeout(1500);
       await swipeLeft(page);
       await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       const second = await editorState(page);
       return { gpu, first, second, mainReads: await page.evaluate(() => window.__mainReads), errors };
     } finally {

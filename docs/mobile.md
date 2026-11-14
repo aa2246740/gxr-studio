@@ -367,3 +367,30 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 有显卡时，配方卡是这张 RAW 的中性小图（`engine.thumb`，每个版本做一次）；没有显卡时卡片照实写「相机 JPG」或「内嵌预览」。直方图照设计稿的 `hist_svg`：红绿蓝和亮度、平方根纵轴、上限只看内部档位，两端三角在压死或溢出到 0.5% 时点亮；RAW 第一帧、换片和每次调整后数一次，按内容版本合并，静止时不读显卡。裁剪、边框、LUT、曲线四页按 03e–03h 摆好静态控件，全部停用，写「这项下一步做」。
 
 模拟器截图走开发服务器：`?shot=start|grid|editor|drag` 从样本端点读 DNG，摆好那一屏后 POST `/__dev/report/shot-<名字>`（写进不进仓库的 `mobile/.reports/`），截图脚本等这个文件出现再截。生产包里没有这段。
+
+## 换配方（M2）
+
+### 校准数据：Mac 导出，iPhone 导入
+
+桌面「设置 → 校准数据」多了「导出给 iPhone」（`POST /api/calibration/export-iphone`，`camdata/calib_export.py`）。它把 `calib_dir(home)` 里的 `manifest.json` 和清单列出的每个文件打成一个**不压缩**（stored）的 `GXR 校准数据 YYYY-MM-DD.zip`，放进导出文件夹，重名时加 `-2`、`-3`。写之前逐个核对大小和 SHA-256；缺包、改过、清单不对就拒绝，文案和 `model_for` / `unit_status` 一样。目标文件夹走导出的检查（卡卷、图库），也不能在 Git 工作区里。做好后可以和导出一样「在访达中显示」。
+
+手机上在起始页的校准卡或「更多 → 校准数据」里选这个 zip。字节在 Worker 里读：`lib/zip.ts` 只认 stored 条目，压缩、加密、ZIP64、带路径的名字、重名、CRC 不对都拒绝，所有偏移先查边界，坏数据只给原因不抛。`lib/calib.ts` 照 `model_for` 核对版本、单元、文件清单和每个 SHA-256。通过后原样存进 IndexedDB（`gxr-mobile` / `calib`），每次打开页面重新核对一遍。原厂 04 的指纹要等选了 `GXRCE.DAT` 才查：拿 DAT 里这个单元的 04 条目，`sha256(entry[115:211])` 对上 `camera_stock_sha256`，再用两个 ISO 分支各跑一次 `color_bake`（就是建模型那一步）。哪一步不过，这个单元就按没校准处理，校准卡上写桌面的原话。
+
+### 相机配方文件和配方卡
+
+`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`camdata_menu` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。
+
+配方卡照桌面 `CameraData.listing` 和 `recipes.js`：这张照片所在单元的内置 8 个（`BASE_NAMES`，说明用 `look_model.js` 的表），文件里对这个单元开放的 Looks，相机里的用户配方。镜头单元按 `unit_of_lens`（镜头名先取相机 JPG 的 `LensModel`，没有再取 DNG 的，再没有用 `UniqueCameraModel` 去掉「RICOH 」），认不出用 50mm。模型按 `model_for`：ISO ≥ 566 用 1600，否则用 200。「未校准」照 `RenderService.plan`：认不出单元、ISO 不在实拍校准范围、配方单元不是照片的单元，原因用 `calibration_note.js` 的句子。
+
+每张卡的烘焙表是 `color_bake(底子条目, 原厂 04, 菜单, ctx, ring, {"step":0.375,"knobs":{levels, unit, slot}})`，和桌面 `CameraData.resolve` 一样每次从底子重算旋钮（默认档位也走一遍 `knobs.apply`）。缓存键是（单元、模型、底子 sha256、档位），JS 里最多留 24 张。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、带档位的用户配方）。
+
+点卡就把选择记进这张照片的编辑状态（`photo.choice`），和调整放在一起，换片、重新选同一张都留着。表已经在缓存里就当帧换上；还在做时照片留着上一张，做好了而且还是要它才换。长按看原图是中性转换、调整归零。
+
+没有校准数据（或这个单元没校准）时，卡片和照片都是中性转换（`lib/neutral.ts`），配方照样能选（06c）。没有 DAT 时只列八个位置的名字，卡片置灰，点卡或打开「配方」页提示补选（06d）。只有 JPG 时卡片是相机 JPG、全部停用，面板是桌面的两句（06e）。
+
+### 还没做的
+
+- **Looks 和 r5 记录画不了。** `camdata_parse` 只给它们的名字和 sha256，WASM 没有导出它们的 552 字节条目，所以这些卡列出来但写「这项下一步做」。需要一个导出，例如 `camdata_extra_entries(dat_bytes, library_bytes?) -> Uint8Array`：按 `looks` 再 `recipes` 的顺序连续给出每条 552 字节。
+- r5（`GXRFX.BIN`）还不能选。
+- 旋钮（强度、对比度、褪色、饱和度）等 resolve 单元合并后再做。
+- 卡片用的是调整归零的样子，不跟着调整变。

@@ -1,4 +1,5 @@
 import type { AppApi } from './model';
+import { calibCard } from './calib_ui';
 import { button, el, icon, ICON } from './dom';
 
 function hero(): SVGSVGElement {
@@ -32,19 +33,7 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   const priv = el('p', 'priv', '照片只在这次使用中保留，不会上传，也不会离开这台 iPhone。');
   priv.prepend(icon(ICON.lock));
 
-  const calib = el('div', 'card calib');
-  const hd = el('div', 'hd');
-  hd.append(el('b', '', '导入校准数据'), el('span', 'dim', '只需一次'), el('span', 'tag', '未导入'));
-  const hdTag = hd.querySelector('.tag');
-  if (hdTag) hdTag.setAttribute('style', 'margin-left:auto');
-  calib.append(
-    hd,
-    el('p', '', '还没导入：配方只显示中性转换，和相机里的颜色不同。'),
-    el('p', 's', '在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 iPhone。'),
-  );
-  const choose = button('btn block', '选择校准数据文件');
-  choose.disabled = true;
-  calib.append(choose);
+  const calib = calibCard(api);
 
   const cta = el('div', 'cta');
   const pick = button('btn primary lg block', '从存储卡选照片');
