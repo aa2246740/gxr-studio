@@ -32,6 +32,7 @@ from gxr_studio.finish.spec import parse_geometry
 from gxr_studio.library import edits
 from gxr_studio.library import sidecar as sc
 from gxr_studio.render import edits as render_edits
+from support.speed import assert_fast
 
 CASES = int(os.environ.get("GXR_PROP_CASES", "250"))
 SEED = int(os.environ.get("GXR_PROP_SEED", "1"))
@@ -352,7 +353,7 @@ def test_the_whole_lattice_is_searched_on_large_masks(width, height):
 
     started = time.perf_counter()
     geometry_mod._nearest_window(geometry_mod._valid_integral(big), width // 2, height // 2, 10.0, 10.0)
-    assert time.perf_counter() - started < 3.0
+    assert_fast(time.perf_counter() - started, 3.0, "大画布找最近整窗（秒）")
 
 
 def test_large_canvas_writes_store_boxes_the_strict_check_accepts(lib, photo):

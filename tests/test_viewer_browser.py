@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from conftest import PORT
 from gpu_support import require_chrome
 from gxr_studio.app import create_app
+from support.speed import speed_budgets
 from test_api import find, import_all
 
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -92,7 +93,7 @@ def drive(live, tmp_path, mode: str, extra_env: dict | None = None) -> dict:
     return out  # type: ignore[no-any-return]
 
 
-def assert_painted_at_once(live_out):
+def assert_painted_at_once(live_out, speed):
     """点样式、改颜色、开日期戳、打字：点下之后的下一帧，叠加层的画法就变了（「当帧画出来」）。
     这是硬的：舞台要是又等服务器出图，一帧里不可能变，和机器忙不忙无关；/render 为 0 的断言（clickRenders、dragRenders）是另一半。
     耗时只当参考：每次操作拿它前后各三帧里最长的一帧当尺子（机器忙时帧本身就拖长，整台机器卡一下尺子也跟着变长），
@@ -102,18 +103,19 @@ def assert_painted_at_once(live_out):
     assert all(c["changed"] for c in clicks), [c for c in clicks if not c["changed"]]
     median_ms = statistics.median(c["ms"] for c in clicks)
     median_frame = statistics.median(c["frameMs"] for c in clicks)
-    assert median_ms <= max(100, 4 * median_frame), (median_ms, median_frame, clicks)
+    speed.at_most(median_ms, max(100, 4 * median_frame), f"点击到当帧画出的中位数（毫秒，帧中位数 {median_frame}）")
 
 
 def near(a, b, eps=0.3):
     return all(abs(x - y) < eps for x, y in zip(a, b, strict=True))
 
 
-def check(out):
+def check(out, speed):
+    """速度预算记进 speed，功能断言照常马上判。调用方用 speed_budgets() 包住整个测试。"""
     # 保存挂着（后端「忙」）时点 1:1：框马上变成居中的最大 1:1 框，面板的比例名也换了
     assert out["heldDuringRatio"] == 1
     ratio = out["ratio"]
-    assert ratio["visibleMs"] is not None and ratio["visibleMs"] < 1000, ratio
+    speed.below(ratio["visibleMs"], 1000, "点 1:1 到框变（毫秒）")
     assert ratio["label"] == "1:1"
     left, top, width, height = ratio["box"]
     assert abs(top) < 0.5 and abs(height - 100) < 0.5 and abs(left * 2 + width - 100) < 0.5, ratio["box"]
@@ -121,12 +123,12 @@ def check(out):
     # 放行以后换成后端算的准框（取整到像素，差不到 0.3%）
     assert near(out["afterRelease"]["box"], out["afterRelease"]["server"]) and out["afterRelease"]["preset"] == "1:1"
     # 横竖切换：框马上换方向，和后端一致
-    assert out["orient"]["visibleMs"] is not None and out["orient"]["visibleMs"] < 1000
+    speed.below(out["orient"]["visibleMs"], 1000, "横竖切换到框变（毫秒）")
     assert near(out["orient"]["box"], out["orient"]["server"])
     # 参考线：菜单里换一种，框里的线马上换
     assert out["guides"]["changed"] is True and out["guides"]["after"] > out["guides"]["before"]
     # 保存失败：框已经变了、留着；提示里有「重试」；重试成功后和后端一致
-    assert out["failed"]["visibleMs"] is not None and out["failed"]["visibleMs"] < 1000
+    speed.below(out["failed"]["visibleMs"], 1000, "保存失败时框变（毫秒）")
     assert out["afterFail"]["hasRetry"] is True
     assert near(out["afterFail"]["boxBefore"], out["failed"]["box"], 0.01)
     assert near(out["afterFail"]["boxAfter"], out["afterFail"]["server"]) and out["afterFail"]["preset"] == "16:9"
@@ -152,7 +154,7 @@ def check(out):
         assert stage["pv"][0] >= stage["media"][0] and stage["pv"][1] > stage["media"][1], (name, stage)  # 徕卡的条在下面：成片比照片高
     assert live_out["next"] and live_out["next"]["framed"] is False and live_out["next"]["overlay"] is False, live_out["next"]
     assert live_out["quiet"] is True, "点样式之前舞台一直没有安静下来（30 秒内一直有出图在路上或刚发出）：没法判断点击有没有引起出图"
-    assert_painted_at_once(live_out)
+    assert_painted_at_once(live_out, speed)
     print_timings(out)
 
 
@@ -179,12 +181,13 @@ def print_timings(out):
 def test_crop_and_frame_cards_with_the_server_preview(live, tmp_path):
     out = drive(live, tmp_path, "server")
     assert out["gpu"] is False
-    check(out)
-    # 服务器出图时也一样：点样式、改选项、开时间戳都不请求 /render，当帧就画出来
-    live_out = out["live"]
-    assert all(live_out["styleFramed"].values()) and len(live_out["styleFramed"]) == 5, live_out
-    assert live_out["stampOn"]["overlay"] is True, live_out
-    assert live_out["clickRenders"] == 0, f"点样式、改选项时发出了 /render：{live_out['renderUrls']}"
+    with speed_budgets() as speed:
+        check(out, speed)
+        # 服务器出图时也一样：点样式、改选项、开时间戳都不请求 /render，当帧就画出来
+        live_out = out["live"]
+        assert all(live_out["styleFramed"].values()) and len(live_out["styleFramed"]) == 5, live_out
+        assert live_out["stampOn"]["overlay"] is True, live_out
+        assert live_out["clickRenders"] == 0, f"点样式、改选项时发出了 /render：{live_out['renderUrls']}"
 
 
 def test_rotate_after_auto_and_one_press_undo_in_a_real_browser(live, tmp_path):
@@ -242,13 +245,14 @@ def test_crop_and_frame_cards_with_the_webgpu_preview(live, tmp_path):
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
             pytest.fail(f"GXR_REQUIRE_GPU_TEST=1，但等了 120 秒大图还是没有走显卡预览：{detail}")
         pytest.skip(f"这台机器的 Chrome 没有走显卡预览：{detail}")
-    check(out)
-    live_out = out["live"]
-    # 加了边框和时间戳以后显卡还在管：还是 .gpu 画面，拖滑块的整个过程里一个 /render 也没有
-    assert live_out["gpu"] is True, live_out
-    assert live_out["dragRenders"] == 0 and live_out["clickRenders"] == 0, f"显卡路径上发出了 /render：{live_out['renderUrls']}"
-    assert live_out["frame"]["framed"] is True and live_out["frame"]["overlay"] is True, live_out
-    assert live_out["stampOn"]["overlay"] is True, live_out
+    with speed_budgets() as speed:
+        check(out, speed)
+        live_out = out["live"]
+        # 加了边框和时间戳以后显卡还在管：还是 .gpu 画面，拖滑块的整个过程里一个 /render 也没有
+        assert live_out["gpu"] is True, live_out
+        assert live_out["dragRenders"] == 0 and live_out["clickRenders"] == 0, f"显卡路径上发出了 /render：{live_out['renderUrls']}"
+        assert live_out["frame"]["framed"] is True and live_out["frame"]["overlay"] is True, live_out
+        assert live_out["stampOn"]["overlay"] is True, live_out
 
 
 # ---- 预览的版面（真 Chrome 里用字体表算）和导出的版面（Python 用同一份表算）----------------------------------------

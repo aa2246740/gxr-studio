@@ -17,6 +17,7 @@ import sys
 
 import pytest
 
+from support.speed import assert_fast
 from test_viewer_browser import drive, live  # noqa: F401  （live 是 pytest 的 fixture）
 
 BG = {
@@ -147,6 +148,7 @@ def test_the_gpu_walk_reports_a_missing_gpu_instead_of_timing_out(live, tmp_path
     这里让页面没有 navigator.gpu，在任何机器上走一遍这条路：很快回来，诊断在。"""
     out = drive(live, tmp_path, "nav-gpu", {"NAV_NO_WEBGPU": "1"})
     assert len(out["nav"]) == 1 and out["nav"][0]["gpu"] is False, out["nav"]
-    assert out["nav"][0]["verdict"] == "no-adapter" and out["nav"][0]["waitMs"] < 30000, out["nav"]
+    assert out["nav"][0]["verdict"] == "no-adapter", out["nav"]
     assert out["gpuDiag"]["navigatorGpu"] is False and out["gpuSharedImageError"] is False, out["gpuDiag"]
     assert not cannot_present_nav(out)  # 页面没有 WebGPU 不等于「建得了设备、上不了屏」：Linux 跳过的条件不会被它满足
+    assert_fast(out["nav"][0]["waitMs"], 30000, "没有显卡适配器时交出结论（毫秒）")

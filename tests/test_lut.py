@@ -28,6 +28,7 @@ from gxr_studio.lut import fit, scene, spaces
 from gxr_studio.lut.cube import Cube, write_cube
 from gxr_studio.render.params import RecipeSel
 from gxr_studio.render.recipes import CameraData
+from support.speed import assert_fast
 from support.waiting import wait_until
 from test_api import find, import_all
 
@@ -337,7 +338,9 @@ def test_cancel_stops_the_search_quickly(cam, model, samples):
     t0 = time.perf_counter()
     with pytest.raises(fit.Cancelled):
         f.run()
-    assert time.perf_counter() - t0 < 5 and f.prog.evaluations <= 26
+    elapsed = time.perf_counter() - t0
+    assert f.prog.evaluations <= 26
+    assert_fast(elapsed, 5, "取消后搜索停住（秒）")
 
 
 def test_search_only_uses_menu_legal_levels(cam, model, samples):
