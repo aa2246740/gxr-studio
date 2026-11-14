@@ -238,3 +238,14 @@ def test_later_tabs_keep_the_design_layout_disabled(server: dict[str, Any]) -> N
     assert data["tabs"]["曲线"]["svg"] == 1
     assert data["tabs"]["裁剪"]["inputs"] == 1
     assert data["tabs"]["边框"]["inputs"] == 1
+
+
+def test_old_gpu_upload_cannot_replace_a_newer_version(server: dict[str, Any]) -> None:
+    data = run_case(server, "upload-race")
+    assert data["released"] == 1, data
+    after = data["after"]
+    # 两次上传都做完了；装着的是第二次（新版本）的纹理，正在显示的也是它，只有一份源。
+    assert after["uploads"] == 2, after
+    assert after["installedFrom"] == 1, after
+    assert after["currentMatches"] is True, after
+    assert after["sources"] == 1, after

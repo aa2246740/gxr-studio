@@ -54,6 +54,23 @@ function hooks({ noGpu }) {
       );
     }
   };
+  // 扣住下一次真实的 GPUQueue.onSubmittedWorkDone()：只推迟它的完成，显卡的计算照常做。
+  window.__gpuHold = false;
+  window.__gpuHeld = [];
+  if (typeof GPUQueue !== 'undefined') {
+    const nativeDone = GPUQueue.prototype.onSubmittedWorkDone;
+    GPUQueue.prototype.onSubmittedWorkDone = function held() {
+      const done = nativeDone.call(this);
+      if (!window.__gpuHold) return done;
+      window.__gpuHold = false;
+      return new Promise((resolve, reject) => window.__gpuHeld.push(() => done.then(resolve, reject)));
+    };
+  }
+  window.__gpuRelease = () => {
+    const all = window.__gpuHeld.splice(0);
+    for (const run of all) run();
+    return all.length;
+  };
   window.__hold = (kind) => window.__holdKinds.add(kind);
   window.__release = (override) => {
     const all = window.__held.splice(0);
@@ -158,6 +175,61 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** R2-1：同一张照片（同一个源键）新旧两次上传按相反顺序完成，最后装着的必须是新版本。 */
+  async 'upload-race'() {
+    const { page, context, errors } = await makePage({ gpu: true });
+    try {
+      const name = 'R8051144.DNG';
+      const oldBytes = readFileSync(manifest.dngs[0]);
+      const newBytes = readFileSync(manifest.dngs[manifest.dngs.length - 1]);
+      await pick(page, [{ name, mimeType: 'application/octet-stream', buffer: oldBytes }]);
+      await page.evaluate(() => {
+        const engine = window.__gxrEngine;
+        window.__uploads = [];
+        const original = engine.addRaw.bind(engine);
+        engine.addRaw = async (key, layout, dng, scene) => {
+          const row = { key, done: false, tex: null };
+          window.__uploads.push(row);
+          await original(key, layout, dng, scene);
+          row.done = true;
+          row.tex = engine.sources.get(key)?.tex ?? null;
+        };
+        window.__gpuHold = true;
+      });
+      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.locator('.cell').first().click();
+      await page.waitForFunction(() => window.__uploads.length === 1 && window.__gpuHeld.length === 1, null, { timeout: 120_000 });
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      await pick(page, [{ name, mimeType: 'application/octet-stream', buffer: newBytes }]);
+      await page.locator('.cell').first().click();
+      // 给新版本足够时间：旧代码里它会先装好、先出第一帧。
+      await page.waitForTimeout(4000);
+      const beforeRelease = await page.evaluate(() => ({ uploads: window.__uploads.map((row) => row.done), label: document.querySelector('.editor .lbl')?.textContent ?? '' }));
+      const released = await page.evaluate(() => window.__gpuRelease());
+      await page.waitForFunction(() => window.__uploads.length >= 2 && window.__uploads.every((row) => row.done), null, { timeout: 120_000 });
+      await label();
+      await page.waitForTimeout(500);
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      await page.locator('.cell').first().click();
+      await label();
+      const after = await page.evaluate(() => {
+        const engine = window.__gxrEngine;
+        const installed = engine.sources.get('raw:r8051144');
+        return {
+          uploads: window.__uploads.length,
+          installedFrom: window.__uploads.findIndex((row) => row.tex && installed && row.tex === installed.tex),
+          currentMatches: engine.current === installed,
+          sources: engine.stats().sources,
+        };
+      });
+      return { beforeRelease, released, after, errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** F7：裁剪、边框、LUT、曲线四页有稿上的静态控件，全部停用，写「这项下一步做」。 */
   async 'later-tabs'() {
     const { page, context, errors } = await makePage({ gpu: false });

@@ -1,6 +1,6 @@
 // 手机上的三屏：起始、网格、编辑。不碰历史记录，返回就是回到网格。
 
-import { Engine } from '../../../frontend/src/index';
+import { Engine, type RawLayout, type Scene } from '../../../frontend/src/index';
 import { neutralBake, NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
@@ -32,6 +32,8 @@ class App implements AppApi {
   private warm: { id: string; version: number; bytes: ArrayBuffer } | null = null;
   private interval = 16.7;
   private cardIsOut = false;
+  /** 每张照片最后一次上传的尾巴。新的上传接在后面。 */
+  private readonly uploads = new Map<string, Promise<unknown>>();
   private readonly queue = new ThumbQueue(2);
   /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
   private readonly reader = new ThumbQueue(1);
@@ -116,6 +118,27 @@ class App implements AppApi {
     let done = 0;
     for (const photo of this.byId.values()) if (photo.status !== 'pending' || photo.gone) done += 1;
     return { done, total: this.byId.size };
+  }
+
+  uploadRaw(photo: Photo, version: number, layout: RawLayout, bytes: ArrayBuffer, scene: Scene | null): Promise<boolean> {
+    const engine = this.engine;
+    if (!engine) return Promise.resolve(false);
+    const file = photo.dng;
+    const prev = this.uploads.get(photo.id) ?? Promise.resolve();
+    const run = prev.then(async () => {
+      // 轮到这一次时再核对：排队期间重新选过、去掉了、清空了，就不提交，免得把新源换回旧的。
+      if (!this.current(photo.id, version, photo, file)) return false;
+      await engine.addRaw(`raw:${photo.id}`, layout, bytes, scene);
+      if (!this.current(photo.id, version, photo, file)) return false;
+      photo.cached = version;
+      return true;
+    });
+    const tail = run.catch(() => false);
+    this.uploads.set(photo.id, tail);
+    void tail.then(() => {
+      if (this.uploads.get(photo.id) === tail) this.uploads.delete(photo.id);
+    });
+    return run;
   }
 
   gpu(): boolean {

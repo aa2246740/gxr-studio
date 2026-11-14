@@ -558,9 +558,9 @@ export class EditorView {
     }
     try {
       // 每张照片一个固定的键：再加一次会替换（并销毁）原来那份纹理，不会同一张占两份。
-      await this.engine.addRaw(key, described.layout, bytes, described.scene);
-      if (photo.version === version) photo.cached = version;
-      if (token !== this.token) return;
+      // 上传由 App 按照片排队，提交前核对版本；过期的请求不会碰显卡里的源。
+      const installed = await this.api.uploadRaw(photo, version, described.layout, bytes, described.scene);
+      if (!installed || token !== this.token) return;
       this.showRaw(key);
       this.prefetch(this.nextPhoto(1));
     } catch {
