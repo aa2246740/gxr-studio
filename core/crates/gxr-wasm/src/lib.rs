@@ -13,6 +13,7 @@ mod hdr;
 mod jpeg;
 mod lut;
 mod raw;
+mod source;
 
 use wasm_bindgen::prelude::wasm_bindgen;
 

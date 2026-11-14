@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+gxr-raw.workspace = true
+gxr-camdata.workspace = true
+gxr-color.workspace = true
+gxr-lut.workspace = true
 
 [lints]
 workspace = true
