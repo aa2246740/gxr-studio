@@ -522,7 +522,8 @@ pub fn split_domain_first(s: &str) -> &str {
 pub fn match_alchemy_suffix(dest: &str) -> Option<&str> {
     let mut best: Option<&str> = None;
     for (idx, ch) in dest.char_indices() {
-        if idx == 0 || (ch != '_' && ch != ' ') {
+        // `.+[_ ]` before suffix: `.` does not cross `\n`.
+        if idx == 0 || (ch != '_' && ch != ' ') || dest.as_bytes()[idx - 1] == b'\n' {
             continue;
         }
         let log_start = idx + 1;
@@ -536,8 +537,10 @@ pub fn match_alchemy_suffix(dest: &str) -> Option<&str> {
                 }
                 let p = consume_opt_sep(dest, log_start + first.len_utf8(), b"- ");
                 let mut p = consume_ci(dest, p, "log")?;
-                if p < dest.len() && dest.as_bytes()[p].is_ascii_digit() {
-                    p += 1;
+                if let Some(dc) = dest[p..].chars().next()
+                    && crate::py_num::decimal_digit(dc).is_some()
+                {
+                    p += dc.len_utf8();
                 }
                 Some(p)
             });
@@ -559,8 +562,10 @@ pub fn match_alchemy_suffix(dest: &str) -> Option<&str> {
                 cur = n;
             } else {
                 let mut d = sfx;
-                while d < dest.len() && dest.as_bytes()[d].is_ascii_digit() {
-                    d += 1;
+                while let Some(dc) = dest[d..].chars().next()
+                    && crate::py_num::decimal_digit(dc).is_some()
+                {
+                    d += dc.len_utf8();
                 }
                 if d > sfx {
                     cur = d;
@@ -569,7 +574,10 @@ pub fn match_alchemy_suffix(dest: &str) -> Option<&str> {
                 }
             }
         }
-        if cur == dest.len() {
+        // Python `re` `$` matches end of string or right before a single trailing `\n`.
+        let at_py_end = cur == dest.len()
+            || (dest.as_bytes().get(cur) == Some(&b'\n') && cur + 1 == dest.len());
+        if at_py_end {
             best = Some(&dest[log_start..end]);
         }
     }
@@ -693,5 +701,14 @@ mod tests {
             assert_eq!(matches.len(), 1, "{comment}");
             assert_eq!(matches[0].dir, want_dir, "{comment}");
         }
+    }
+
+    #[test]
+    fn alchemy_suffix_supports_unicode_nd_digits_and_single_trailing_newline() {
+        assert_eq!(match_alchemy_suffix("Style_FLog_２"), Some("FLog"));
+        assert_eq!(match_alchemy_suffix("Style_FLog_٢"), Some("FLog"));
+        assert_eq!(match_alchemy_suffix("Style_FLog\n"), Some("FLog"));
+        assert_eq!(match_alchemy_suffix("Style_FLog\n\n"), None);
+        assert_eq!(match_alchemy_suffix("Style_\n_FLog\n"), None);
     }
 }

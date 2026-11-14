@@ -162,7 +162,7 @@ pub(crate) fn py_space(c: char) -> bool {
     PY_SPACE.binary_search(&u32::from(c)).is_ok()
 }
 
-fn decimal_digit(c: char) -> Option<u32> {
+pub(crate) fn decimal_digit(c: char) -> Option<u32> {
     let cp = u32::from(c);
     let at = DECIMAL_ZERO.partition_point(|&z| z <= cp);
     let zero = *DECIMAL_ZERO.get(at.checked_sub(1)?)?;
