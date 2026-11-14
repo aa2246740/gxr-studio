@@ -114,3 +114,59 @@ pub fn dng_wb_block_named(
         values: block.values,
     })
 }
+
+/// Full-resolution neutral RGB `uint8` pixels, oriented, in row-major `(height, width, 3)` order.
+#[wasm_bindgen]
+pub struct NeutralImage {
+    height: u32,
+    width: u32,
+    values: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl NeutralImage {
+    /// Rows of the oriented full-resolution image.
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Columns of the oriented full-resolution image.
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Row-major `uint8` RGB pixels (`height * width * 3`). Consumes the object.
+    pub fn values(self) -> Vec<u8> {
+        self.values
+    }
+}
+
+/// Full-resolution neutral RAW render (`render_full(dng, NEUTRAL)`), strip-wise internally.
+#[wasm_bindgen]
+pub fn dng_neutral(bytes: &[u8]) -> Result<NeutralImage, JsValue> {
+    dng_neutral_named(bytes, "<bytes>")
+}
+
+/// `dng_neutral` with the file name the native CLI puts in error text.
+#[wasm_bindgen]
+pub fn dng_neutral_named(bytes: &[u8], name: &str) -> Result<NeutralImage, JsValue> {
+    let dng = Dng::open(bytes, name).map_err(rejected)?;
+    let img = gxr_raw::render_full(&dng).map_err(rejected)?;
+    let height = u32::try_from(img.height).map_err(|_| {
+        rejected(gxr_raw::CoreError::raw_decode(
+            "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+        ))
+    })?;
+    let width = u32::try_from(img.width).map_err(|_| {
+        rejected(gxr_raw::CoreError::raw_decode(
+            "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+        ))
+    })?;
+    Ok(NeutralImage {
+        height,
+        width,
+        values: img.values,
+    })
+}
