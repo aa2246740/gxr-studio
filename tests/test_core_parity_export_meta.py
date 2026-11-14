@@ -25,7 +25,7 @@ from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
 from gxr_studio.finish.meta_text import photo_meta
 from gxr_studio.meta import dng_preview_image, read_dng_meta, read_jpeg_meta
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
-from support.export_meta_cases import make_jpeg_bytes, synthetic_edge_cases
+from support.export_meta_cases import make_jpeg_bytes, nonfinite_edge_cases, synthetic_edge_cases
 from support.wasm_check import PKG, run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -421,7 +421,7 @@ def test_real_jpgs_and_dngs_exact_parity() -> None:
 def test_synthetic_pillow_edges_and_damaged_files(tmp_path: Path) -> None:
     require_cli()
     now_year = datetime.now().year
-    cases = _synthetic_edge_cases()
+    cases = {**_synthetic_edge_cases(), **nonfinite_edge_cases()}
 
     for filename, (blob, kind) in cases.items():
         path = tmp_path / filename
@@ -604,3 +604,63 @@ process.stdout.write(JSON.stringify(results));
         assert len(wasm_outputs) == len(null_preview_dngs)
         for p, got in zip(null_preview_dngs, wasm_outputs, strict=True):
             assert got == "null\n", (p.name, got)
+
+    nonfinite_files: list[tuple[str, str, Path]] = []
+    for name, (blob, kind) in nonfinite_edge_cases().items():
+        p = tmp_path / name
+        p.write_bytes(blob)
+        nonfinite_files.append((name, kind, p))
+    if shutil.which("node") and PKG.is_file() and nonfinite_files:
+        nf_script = """
+import { readFileSync } from 'node:fs';
+const wasm = await import(process.argv[1]);
+wasm.initSync({ module: readFileSync(process.argv[2]) });
+const out = [];
+for (const item of JSON.parse(process.argv[3])) {
+  const b = new Uint8Array(readFileSync(item.path));
+  out.push({
+    exif: wasm.export_meta_exif(b),
+    photo: wasm.export_meta_photo(item.kind === 'jpg' ? b : undefined, item.kind === 'dng' ? b : undefined, item.stem, 1700000000123, 480),
+  });
+}
+process.stdout.write(JSON.stringify(out));
+"""
+        res = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                nf_script,
+                PKG.as_uri(),
+                str(PKG.with_name("gxr_wasm_bg.wasm")),
+                json.dumps([{"name": n, "kind": k, "path": str(p), "stem": p.stem} for n, k, p in nonfinite_files]),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        wasm_nf = json.loads(res.stdout)
+        cli_bin = require_cli()
+        for (name, kind, p), got_w in zip(nonfinite_files, wasm_nf, strict=True):
+            c_exif = subprocess.run([str(cli_bin), "export-meta-exif", "--src", str(p)], capture_output=True, text=True, check=True)
+            assert got_w["exif"] == c_exif.stdout, name
+            flag = "--dng" if kind == "dng" else "--jpg"
+            c_photo = subprocess.run(
+                [
+                    str(cli_bin),
+                    "export-meta-photo",
+                    flag,
+                    str(p),
+                    "--name",
+                    p.stem,
+                    "--mtime-ms",
+                    "1700000000123",
+                    "--tz-offset-min",
+                    "480",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert got_w["photo"] == c_photo.stdout, name

@@ -344,7 +344,11 @@ fn parse_iso(value: Option<&ExifValue>) -> Result<Option<i64>, &'static str> {
         },
         other => other,
     };
-    target.to_python_int()
+    match target.to_python_int() {
+        Ok(v) => Ok(v),
+        Err(err) if err.starts_with("TypeError:") || err.starts_with("ValueError:") => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 /// Port of `gxr_studio/meta.py:90 _oriented`.
@@ -601,5 +605,31 @@ mod tests {
         for o in [5, 6, 7, 8] {
             assert_eq!(oriented(4000, 3000, o), (3000, 4000));
         }
+    }
+
+    #[test]
+    fn parse_iso_matches_python_int_and_catch() {
+        assert_eq!(parse_iso(Some(&ExifValue::Rational(1, 0))), Ok(None));
+        assert_eq!(
+            parse_iso(Some(&ExifValue::Rationals(vec![(1, 0), (2, 3)]))),
+            Ok(None)
+        );
+        assert_eq!(parse_iso(Some(&ExifValue::Float(f64::NAN))), Ok(None));
+        assert!(
+            parse_iso(Some(&ExifValue::Float(f64::INFINITY)))
+                .is_err_and(|e| e.starts_with("OverflowError:"))
+        );
+        assert_eq!(
+            parse_iso(Some(&ExifValue::Str(" 800 ".to_string()))),
+            Ok(Some(800))
+        );
+        assert_eq!(
+            parse_iso(Some(&ExifValue::Str("abc".to_string()))),
+            Ok(None)
+        );
+        assert_eq!(
+            parse_iso(Some(&ExifValue::Str("8\x1c".to_string()))),
+            Ok(None)
+        );
     }
 }

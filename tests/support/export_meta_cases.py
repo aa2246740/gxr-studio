@@ -337,4 +337,41 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
         build_preview_dng([(100, 100, 7, valid_pv, 999999), (4, 4, 7, small_pv, None)]),
         "dng",
     )
+
+    # 7. ISO (34855) zero-denominator, NaN/Inf, and ASCII rules
+    for e_tag, e in [("le", "<"), ("be", ">")]:
+        cases[f"iso-rat-zero-{e_tag}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 5, 2, struct.pack(e + "IIII", 1, 0, 2, 3))], endian=e)),
+            "jpg",
+        )
+        cases[f"iso-srat-zero-{e_tag}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 10, 2, struct.pack(e + "iiii", -1, 0, 2, 3))], endian=e)),
+            "jpg",
+        )
+        cases[f"iso-short-pair-{e_tag}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 3, 2, struct.pack(e + "HH", 2, 8))], endian=e)),
+            "jpg",
+        )
+    cases["numeric-ascii-34855.jpg"] = (
+        make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 2, 4, b"800\x00")])),
+        "jpg",
+    )
+    cases["iso-bad-ascii.jpg"] = (
+        make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 2, 3, b"8\x1c\x00")])),
+        "jpg",
+    )
     return cases
+
+
+def nonfinite_edge_cases() -> dict[str, tuple[bytes, str]]:
+    """Fixtures whose raw EXIF map emits Python NaN/Infinity tokens in `gxr_raw::Json`."""
+    return {
+        "iso-nan.jpg": (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 12, 1, struct.pack("<d", float("nan")))])),
+            "jpg",
+        ),
+        "iso-inf.jpg": (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 12, 1, struct.pack("<d", float("inf")))])),
+            "jpg",
+        ),
+    }

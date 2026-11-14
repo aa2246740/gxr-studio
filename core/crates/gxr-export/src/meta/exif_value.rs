@@ -146,23 +146,41 @@ impl ExifValue {
         }
     }
 
-    /// Convert to integer the way Python `int(v)` does. Returns `Err` for e.g. `IFDRational(_, 0)`.
+    /// Convert to integer the way Python `int(v)` does.
     pub fn to_python_int(&self) -> Result<Option<i64>, &'static str> {
         match self {
             Self::Int(i) => Ok(Some(*i)),
             Self::Float(f) => {
-                if !f.is_finite() {
-                    return Err("OverflowError: cannot convert float infinity/NaN to integer");
+                if f.is_nan() {
+                    return Err("ValueError: cannot convert float NaN to integer");
                 }
+                if f.is_infinite() {
+                    return Err("OverflowError: cannot convert float infinity to integer");
+                }
+                #[allow(clippy::cast_possible_truncation)]
                 Ok(Some(*f as i64))
             }
-            Self::Rational(_, 0) => Err("ValueError: Zero denominator in IFDRational"),
-            Self::Rational(n, d) => Ok(Some(((*n as f64) / (*d as f64)) as i64)),
-            Self::Str(s) => Ok(s.trim().parse::<i64>().ok()),
-            Self::Bytes(b) => Ok(std::str::from_utf8(b)
+            Self::Rational(_, 0) => Err("ValueError: cannot convert float NaN to integer"),
+            Self::Rational(n, d) =>
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                Ok(Some(((*n as f64) / (*d as f64)) as i64))
+            }
+            Self::Str(s) => match parse_py_int_str(s.trim()) {
+                Some(v) => Ok(Some(v)),
+                None => Err("ValueError: invalid literal for int() with base 10"),
+            },
+            Self::Bytes(b) => match std::str::from_utf8(b)
                 .ok()
-                .and_then(|s| s.trim().parse::<i64>().ok())),
-            Self::Ints(_) | Self::Floats(_) | Self::Rationals(_) => Ok(None),
+                .map(trim_py_ascii_bytes_ws)
+                .and_then(parse_py_int_str)
+            {
+                Some(v) => Ok(Some(v)),
+                None => Err("ValueError: invalid literal for int() with base 10"),
+            },
+            Self::Ints(_) | Self::Floats(_) | Self::Rationals(_) => Err(
+                "TypeError: int() argument must be a string, a bytes-like object or a real number",
+            ),
         }
     }
 
@@ -231,6 +249,37 @@ fn format_rat_tuple(v: &[(i64, i64)]) -> String {
 
 fn rational_json(num: i64, den: i64) -> Json {
     Json::object([("num", Json::Int(num)), ("den", Json::Int(den))])
+}
+
+pub(crate) fn trim_py_ascii_bytes_ws(s: &str) -> &str {
+    s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+}
+
+fn parse_py_int_str(s: &str) -> Option<i64> {
+    if s.is_empty() {
+        return None;
+    }
+    let (sign, rest) = match s.as_bytes()[0] {
+        b'+' => ("+", &s[1..]),
+        b'-' => ("-", &s[1..]),
+        _ => ("", s),
+    };
+    if rest.is_empty() || rest.starts_with('_') || rest.ends_with('_') || rest.contains("__") {
+        return None;
+    }
+    if !rest.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
+        return None;
+    }
+    let clean: String = rest
+        .bytes()
+        .filter(|&b| b != b'_')
+        .map(char::from)
+        .collect();
+    if sign == "-" {
+        format!("-{clean}").parse::<i64>().ok()
+    } else {
+        clean.parse::<i64>().ok()
+    }
 }
 
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
