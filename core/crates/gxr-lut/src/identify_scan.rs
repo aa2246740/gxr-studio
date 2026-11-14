@@ -79,9 +79,10 @@ fn py_lower_eq_ascii(s: &str, target_lower_ascii: &str) -> bool {
     s_chars.next().is_none()
 }
 
+/// Python regex `\w` matches Unicode `str.isalnum()` plus `'_'` (excludes combining marks like U+0345, U+05B0).
 #[inline]
 pub fn is_py_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_'
+    crate::py_num::py_isalnum(ch) || ch == '_'
 }
 
 fn prev_char(s: &str, byte_idx: usize) -> Option<char> {
@@ -668,6 +669,14 @@ mod tests {
         assert_eq!(search_explicit_input("input_\nsrgb"), None);
         assert_eq!(search_explicit_input("input_\ninput_vlog"), Some("vlog"));
         assert_eq!(search_explicit_input("input_  \ninput_vlog"), Some(" "));
+        assert_eq!(
+            search_explicit_input("\u{0345}input_srgb_target_vlog"),
+            Some("srgb_target_vlog")
+        );
+        assert_eq!(
+            search_explicit_input("\u{05b0}input_srgb_target_vlog"),
+            Some("srgb_target_vlog")
+        );
     }
 
     #[test]
