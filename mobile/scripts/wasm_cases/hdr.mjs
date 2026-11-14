@@ -1,7 +1,7 @@
 // HDR：对齐、增益图（uint8 码值和元数据 JSON）、容器字节。
 // inputs 是测试写好的目录，里面按需放 sdr.npy、raw.npy（对齐用）、reg.npy + clip.npy（增益用）、
 // params.json，以及 primary.jpg、gain.jpg、meta.json（容器用）。缺哪个文件就跳过那一项。
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -115,6 +115,33 @@ export function cases(inputs) {
           return framed(1, bytes.length, bytes);
         },
       });
+    }
+    if (has('primary.jpg') && has('gain.jpg')) {
+      // JSON nesting on both sides of the 128 cap, and far past it; arrays and objects.
+      const deep = {
+        array128: '['.repeat(128) + '0' + ']'.repeat(128),
+        array129: '['.repeat(129) + '0' + ']'.repeat(129),
+        object128: '{"a":'.repeat(128) + '0' + '}'.repeat(128),
+        object129: '{"a":'.repeat(129) + '0' + '}'.repeat(129),
+        array20000: '['.repeat(20000) + '0' + ']'.repeat(20000),
+        object20000: '{"a":'.repeat(20000) + '0' + '}'.repeat(20000),
+      };
+      for (const [name, text] of Object.entries(deep)) {
+        const metaPath = join(dir, `meta-${name}-${out.length}.json`);
+        writeFileSync(metaPath, text);
+        out.push({
+          label: `${folder}::hdr_assemble_json_${name}`,
+          cliArgs: ['hdr-assemble', '--primary', path('primary.jpg'), '--gain', path('gain.jpg'), '--meta', metaPath, '--out', join(dir, `deep-${out.length}.npy`)],
+          wasm: (mod) => {
+            const bytes = mod.hdr_assemble(
+              new Uint8Array(readFileSync(path('primary.jpg'))),
+              new Uint8Array(readFileSync(path('gain.jpg'))),
+              text,
+            );
+            return framed(1, bytes.length, bytes);
+          },
+        });
+      }
     }
   }
   return out;

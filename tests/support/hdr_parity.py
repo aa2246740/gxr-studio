@@ -89,13 +89,16 @@ def same_exact(python: np.ndarray, rust: np.ndarray, what: str) -> None:
 
 
 def close_f64(python: np.ndarray, rust: np.ndarray, what: str) -> int:
-    """``|a - b| <= 1e-12 * max(1, |a|)``; returns how many are not bit-identical."""
+    """``|a - b| <= 1e-12 * max(1, |a|)`` for finite values; NaN must match NaN at the same
+    position and an infinity must match exactly. Returns how many are not bit-identical."""
     assert python.dtype == np.float64 and rust.dtype == np.float64, f"{what}: dtype {python.dtype} vs {rust.dtype}"
     assert python.shape == rust.shape, f"{what}: shape {python.shape} vs {rust.shape}"
     both_nan = np.isnan(python) & np.isnan(rust)
     with np.errstate(invalid="ignore"):
         off = (np.abs(python - rust) > 1e-12 * np.maximum(1.0, np.abs(python))) & ~both_nan
         off |= np.isnan(python) != np.isnan(rust)
+        # The bound is inf when |a| is inf, so infinities are compared exactly instead.
+        off |= (np.isinf(python) | np.isinf(rust)) & (python != rust)
     if off.any():
         at = _first(off)
         pytest.fail(f"{what}: first {at}: python={python[at]!r} rust={rust[at]!r}")

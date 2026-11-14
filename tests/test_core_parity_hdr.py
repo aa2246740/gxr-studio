@@ -210,6 +210,67 @@ def test_huge_caller_sizes_are_refused_not_allocated(tmp_path: Path) -> None:
     assert err is not None and (err.kind, err.message) == ("bad_input", "数组长度和形状对不上")
 
 
+def test_float_gates_treat_nan_and_inf_strictly() -> None:
+    """UNIT-COMMON NaN amendment, proved with injected values: NaN equals NaN only at the same
+    position, NaN on one side fails, and infinities compare exactly."""
+    base64 = np.array([0.5, 1.0, -2.0, 3.0])
+    base32 = base64.astype(np.float32)
+    for check, base in ((hp.close_f64, base64), (hp.same_f32, base32)):
+        same = base.copy()
+        same[1] = np.nan
+        check(same, same.copy(), "NaN at the same position")
+        inf = base.copy()
+        inf[2] = np.inf
+        check(inf, inf.copy(), "inf on both sides")
+        cases = []
+        one_nan = base.copy()
+        one_nan[1] = np.nan
+        cases.append((base, one_nan))
+        cases.append((one_nan, base))
+        cases.append((inf, base))
+        neg = inf.copy()
+        neg[2] = -np.inf
+        cases.append((inf, neg))
+        moved = same.copy()
+        moved[1], moved[0] = base[1], np.nan
+        cases.append((same, moved))
+        for python, rust in cases:
+            with pytest.raises(pytest.fail.Exception):
+                check(python, rust, "must fail")
+    for python, rust in ((np.float32([np.nan, 1]), np.float32([1, 1])), (np.float32([1, 1]), np.float32([np.nan, 1]))):
+        assert hp.delta_note(python, rust).startswith(" delta 1/2")
+    assert hp.delta_note(np.float32([np.nan, np.inf]), np.float32([np.nan, np.inf])) == ""
+
+
+def test_json_nesting_is_capped_at_128(tmp_path: Path) -> None:
+    """UNIT-COMMON JSON depth amendment: one core error past 128 levels, checked before
+    descending (the WASM comparison runs the same documents)."""
+    deep = {
+        "array128": ("[" * 128 + "0" + "]" * 128, None),
+        "array129": ("[" * 129 + "0" + "]" * 129, ("json", "JSON 嵌套太深")),
+        "object128": ('{"a":' * 128 + "0" + "}" * 128, None),
+        "object129": ('{"a":' * 129 + "0" + "}" * 129, ("json", "JSON 嵌套太深")),
+        "array20000": ("[" * 20000 + "0" + "]" * 20000, ("json", "JSON 嵌套太深")),
+        "object20000": ('{"a":' * 20000 + "0" + "}" * 20000, ("json", "JSON 嵌套太深")),
+    }
+    plane = hp.save(tmp_path / "p.npy", np.ones((6, 8), np.float32))
+    mask = hp.save(tmp_path / "m.npy", np.zeros((6, 8), bool))
+    (tmp_path / "ok.json").write_text("{}")
+    for name, (text, want) in deep.items():
+        doc = tmp_path / f"{name}.json"
+        doc.write_text(text)
+        for args in (
+            ["hdr-capture", "--raw", str(doc), "--jpeg", str(tmp_path / "ok.json")],
+            ["hdr-gain", "--sdr", plane, "--raw", plane, "--clip", mask, "--params", str(doc), "--out", str(tmp_path / "o.npy")],
+        ):
+            _, err = hp.call(args)
+            assert err is not None, f"{name} {args[0]}"
+            if want is None:
+                assert err.kind == "bad_input", f"{name} {args[0]}: parsed, then refused as the wrong type"
+            else:
+                assert (err.kind, err.message) == want, f"{name} {args[0]}"
+
+
 # ---------------------------------------------------------------- 2. FFT alignment
 
 

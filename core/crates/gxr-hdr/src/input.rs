@@ -21,6 +21,15 @@ pub enum Value {
     Obj(Vec<(String, Value)>),
 }
 
+/// Most arrays and objects one document may nest (UNIT-COMMON, JSON depth amendment). The cap
+/// is checked before descending, so wasm32's small stack never overflows.
+pub const MAX_DEPTH: usize = 128;
+
+/// The one error past `MAX_DEPTH`, on native and WASM alike.
+fn too_deep() -> CoreError {
+    CoreError::new("json", "JSON 嵌套太深")
+}
+
 fn bad(message: impl Into<String>) -> CoreError {
     CoreError::new("bad_input", message)
 }
@@ -51,13 +60,14 @@ impl Reader<'_> {
         }
     }
 
+    /// `depth` is how many arrays and objects are already open around this value.
     fn value(&mut self, depth: usize) -> Result<Value, CoreError> {
-        if depth > 32 {
-            return Err(bad("JSON 嵌套太深"));
-        }
         self.ws();
         match self.s.get(self.i) {
             Some(b'{') => {
+                if depth >= MAX_DEPTH {
+                    return Err(too_deep());
+                }
                 self.i += 1;
                 let mut out = Vec::new();
                 self.ws();
@@ -84,6 +94,9 @@ impl Reader<'_> {
                 }
             }
             Some(b'[') => {
+                if depth >= MAX_DEPTH {
+                    return Err(too_deep());
+                }
                 self.i += 1;
                 let mut out = Vec::new();
                 self.ws();
@@ -307,4 +320,25 @@ pub fn tags_from_json(text: &str) -> Result<Vec<(u32, TagValue)>, CoreError> {
             Ok((tag, tag_value(v)?))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested(open: &str, close: &str, levels: usize) -> String {
+        format!("{}0{}", open.repeat(levels), close.repeat(levels))
+    }
+
+    #[test]
+    fn nesting_is_capped_at_128_before_descending() {
+        assert!(parse(&nested("[", "]", 128)).is_ok());
+        let err = parse(&nested("[", "]", 129)).unwrap_err();
+        assert_eq!((err.kind, err.message.as_str()), ("json", "JSON 嵌套太深"));
+        let deep_obj = format!("{}0{}", "{\"a\":".repeat(129), "}".repeat(129));
+        assert_eq!(parse(&deep_obj).unwrap_err().kind, "json");
+        let ok_obj = format!("{}0{}", "{\"a\":".repeat(128), "}".repeat(128));
+        assert!(parse(&ok_obj).is_ok());
+        assert_eq!(parse(&nested("[", "]", 20_000)).unwrap_err().kind, "json");
+    }
 }
