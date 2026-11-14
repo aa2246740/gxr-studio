@@ -5,14 +5,14 @@
 没设置或文件不存在时，改用 min(cpu_count - 1, 4)，至少 1。公共仓库不写死私有路径。
 收集只做一次。子进程只跑计划里的 node id，不再继承位置参数、-m 和 -k。
 标了 browser_serial 的用例在计算分片结束之后单独串行，不拿锁。
-exclusive 仍串行，并且用 lockf 拿 /tmp/gxr-heavy.lock。
+exclusive 仍串行，并且用 lockf 拿 /tmp/gxr-heavy.lock。开始前和每个用例之前先等机器安静；
+只有墙钟预算（SpeedBudgetExceeded）没过的用例，安静后再跑一次，以第二次为准（run_tests_quiet.py）。
 JUnit 和覆盖率报告由父进程按合并后的数据写出。门槛 85。
 收到 SIGINT 退出 130，收到 SIGTERM 退出 143，并清掉子进程组。
 """
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shlex
 import shutil
@@ -29,6 +29,7 @@ from pathlib import Path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+from run_tests_quiet import BUDGET_ENV, exclusive_plugin, load_gate, make_gate, run_exclusive  # noqa: E402
 from run_tests_report import combine_coverage, merge_junit  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +116,7 @@ _SELECTION = {"-k", "--keyword", "-m", "--markexpr", "--deselect"}
 _SELECTION_EQ = ("-k=", "--keyword=", "-m=", "--markexpr=", "--deselect=")
 
 _shutdown: int | None = None
+_gate_module: object | None = None
 _children: list[Running] = []
 
 
@@ -182,30 +184,13 @@ def fallback_workers(reason: str) -> int:
     return workers
 
 
-def _load_gate(path: str) -> object | None:
-    source = Path(path)
-    if not source.is_file():
-        print(f"{LOADGATE_ENV} 指向的文件不存在：{path}。", flush=True)
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location("gxr_loadgate", source)
-        if spec is None or spec.loader is None:
-            print(f"{LOADGATE_ENV} 无法加载：{path}。", flush=True)
-            return None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    except Exception as exc:
-        print(f"{LOADGATE_ENV} 加载失败（{exc}）。", flush=True)
-        return None
-    return module
-
-
 def decide_workers() -> int | None:
     """返回进程数。None 表示收到了信号，0 表示负荷门没放开。"""
+    global _gate_module
     path = os.environ.get(LOADGATE_ENV, "").strip()
     if not path:
         return fallback_workers(f"{LOADGATE_ENV} 没有设置。公共仓库不依赖私有的 loadgate.py。")
-    module = _load_gate(path)
+    module = _gate_module = load_gate(path)
     if module is None:
         return fallback_workers(f"{LOADGATE_ENV} 不可用。")
     for attempt in range(1, 13):
@@ -354,7 +339,10 @@ def exec_plan(plan_path: str, pytest_args: list[str]) -> int:
                 config.hook.pytest_deselected(items=drop)
             items[:] = keep
 
-    return int(pytest.main(pytest_args, plugins=[Plan()]))
+    plugins: list[object] = [Plan()]
+    if BUDGET_ENV in os.environ:
+        plugins.append(exclusive_plugin(plan_path))
+    return int(pytest.main(pytest_args, plugins=plugins))
 
 
 def _parse_plan(stdout: str) -> list[Planned]:
@@ -662,6 +650,7 @@ def _start_stage(
     junit_parts: list[Path],
     coverage_files: list[Path],
     lock: list[str] | None = None,
+    extra: tuple[str, ...] = (),
 ) -> Running:
     slot = work / prefix
     junit = slot / "junit.xml"
@@ -670,7 +659,7 @@ def _start_stage(
     _write_plan(plan, node_ids)
     junit_parts.append(junit)
     coverage_files.append(coverage)
-    cmd = _stage_cmd(plan, ["--basetemp", str(slot / "base"), "--junitxml", str(junit)], _files_of(node_ids))
+    cmd = _stage_cmd(plan, ["--basetemp", str(slot / "base"), "--junitxml", str(junit), *extra], _files_of(node_ids))
     if lock:
         cmd = [*lock, *cmd]
     return _spawn(prefix, cmd, _child_env(env, slot / "tmp", coverage), slot / "pytest.log")
@@ -690,9 +679,20 @@ def _launch_ids(
     junit_parts: list[Path],
     coverage_files: list[Path],
     lock: list[str] | None = None,
+    extra: tuple[str, ...] = (),
 ) -> int:
-    job = _start_stage(prefix, work, node_ids, env, junit_parts, coverage_files, lock)
+    job = _start_stage(prefix, work, node_ids, env, junit_parts, coverage_files, lock, extra)
     return _wait_all([job])[0]
+
+
+def _exclusive(work: Path, ids: list[str], env: dict[str, str], junit: list[Path], cov: list[Path], lock: list[str]) -> int:
+    """先等安静再拿锁跑；只有速度预算没过的用例安静后重跑一次（见 run_tests_quiet.run_exclusive）。"""
+
+    def launch(prefix: str, node_ids: list[str], budget: float, extra: tuple[str, ...]) -> int:
+        return _launch_ids(prefix, work, node_ids, {**env, BUDGET_ENV: str(budget)}, junit, cov, lock, extra)
+
+    print(f"exclusive 阶段：lockf -t 3600 -k {LOCK_PATH}，{len(ids)} 个用例。", flush=True)
+    return run_exclusive(make_gate(_gate_module), work, ids, launch, _nap, _stopped)
 
 
 def _run(parsed: Addopts) -> int:
@@ -703,6 +703,7 @@ def _run(parsed: Addopts) -> int:
         return 76
     os.chdir(ROOT)
     child_env = dict(os.environ)
+    child_env.pop(BUDGET_ENV, None)
     child_env["PYTEST_ADDOPTS"] = shlex.join(parsed.kept)
     collect_env = dict(child_env)
     collect_env["PYTEST_ADDOPTS"] = shlex.join([*parsed.kept, *parsed.selection])
@@ -739,8 +740,8 @@ def _run(parsed: Addopts) -> int:
     if (stopped := _stopped()) is not None:
         return stopped
     if exclusive:
-        print(f"exclusive 阶段：lockf -t 3600 -k {LOCK_PATH}，{len(exclusive)} 个用例。", flush=True)
-        codes.append(_launch_ids("exclusive", work, exclusive, child_env, junit_parts, coverage_files, lock))
+        assert lock is not None
+        codes.append(_exclusive(work, exclusive, child_env, junit_parts, coverage_files, lock))
     else:
         print("没有 exclusive 测试。", flush=True)
     if (stopped := _stopped()) is not None:
