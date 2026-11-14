@@ -13,7 +13,6 @@ pack is synthetic unless the owner's sources are present, and its contents are n
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,7 @@ from support.dng_writer import write_dng
 DAT = xs.real_dat()
 needs_dat = pytest.mark.skipif(DAT is None, reason="相机数据夹具（g127 DAT）不在本机")
 REAL = xs.real_pairs(20)
+CANDIDATES = xs.real_pairs(60)
 LENSES = ("GR LENS A12 50mm F2.5 MACRO", "RICOH LENS A12 28mm F2.5", "GXR MOUNT A12", "S10 24-72mm F2.5-4.4 VC", None)
 ADJUST_ON = Adjust(exposure_ev=0.7, warm=12, tint=-6, contrast=25, highlight=-30, shadow=20)
 CURVES_ON = Curves(master=((0.0, 0.0), (64.0, 50.0), (192.0, 210.0), (255.0, 255.0)), g=((0.0, 8.0), (255.0, 247.0)))
@@ -112,29 +112,36 @@ def _render_combos(i: int, unit: str) -> list[tuple[RecipeSel, Adjust, Curves | 
 
 
 @needs_dat
-@pytest.mark.skipif(len(REAL) < 20, reason="需要至少 20 张真 DNG（GXR_STUDIO_TEST_PARENT/captures）")
+@pytest.mark.skipif(len(CANDIDATES) < 20, reason="需要至少 20 张真 DNG（GXR_STUDIO_TEST_PARENT/captures）")
 def test_full_size_recipe_render_real_dngs(homes: dict[str, xs.Home], tmp_path: Path) -> None:
     h = homes["all"]
-    renders = 0
+    renders = refused = 0
+    rendered: list[Path] = []
     t_py = t_rs = 0.0
-    for i, (dng, _jpg) in enumerate(REAL):
+    for i, (dng, _jpg) in enumerate(CANDIDATES):
+        if len(rendered) >= 20:
+            break
         meta = read_dng_meta(dng)
         shot = xs.shot_for(dng, None, lens=meta.lens, iso=meta.iso)
         unit = h.render.photo_unit(shot) or "jlaunch"
         for sel, adjust, curves in _render_combos(i, unit):
-            t0 = time.perf_counter()
             py, rs, info = xr.render_case(h, tmp_path, dng, shot, EditState(recipe=sel, adjust=adjust, curve=curves))
-            t_py += time.perf_counter() - t0
+            t_py += info["python_s"]
+            t_rs += info["rust_s"]
+            if py is None:
+                refused += 1  # same RawDecodeError text on both sides (render_case asserts it)
+                break
             assert rs.dtype == np.uint8 and rs.shape == py.shape, (dng.name, py.shape, rs.shape)
             bad = np.argwhere(rs != py)
             assert len(bad) == 0, (dng.name, sel, adjust, info, len(bad), bad[:5].tolist())
             renders += 1
-    t0 = time.perf_counter()
-    py, rs, info = xr.render_case(
-        h, tmp_path, REAL[0][0], xs.shot_for(REAL[0][0], None, lens=LENSES[0], iso=200), EditState(recipe=RecipeSel("jlaunch", 2))
+        else:
+            rendered.append(dng)
+    assert len(rendered) >= 20, (len(rendered), refused)
+    print(
+        f"real full-size recipe renders: {renders} on {len(rendered)} DNGs, 0 codes differ; {refused} unreadable DNGs refused alike;"
+        f" python render_full {t_py:.1f}s, rust CLI (with bake) {t_rs:.1f}s in total"
     )
-    t_rs = time.perf_counter() - t0
-    print(f"real full-size recipe renders: {renders} on {len(REAL)} DNGs, 0 codes differ; one case (both sides) {t_rs:.2f}s, total {t_py:.1f}s")
 
 
 @needs_dat
@@ -148,7 +155,7 @@ def test_full_size_render_with_owner_pack(tmp_path: Path) -> None:
         shot = xs.shot_for(dng, None, lens=meta.lens, iso=meta.iso)
         sel = RecipeSel(h.render.photo_unit(shot) or "jlaunch", (i * 3) % 8 + 1)
         py, rs, _info = xr.render_case(h, tmp_path, dng, shot, EditState(recipe=sel, adjust=ADJUST_ON if i else Adjust()))
-        assert rs.shape == py.shape and int((rs != py).sum()) == 0, dng.name
+        assert (py is None and rs is None) or (rs.shape == py.shape and int((rs != py).sum()) == 0), dng.name
     print("owner pack renders: 3, 0 codes differ")
 
 
@@ -282,3 +289,166 @@ def test_color_image_real_pairs_full_size(homes: dict[str, xs.Home], tmp_path: P
             xr.assert_same_result(python, rust, py_rgb, rs_rgb, f"nocal:{dng.name}/{base}")
             n += 1
     print(f"real full-size color_image cases: {n}")
+
+
+# ---- 3. LUT pictures ---------------------------------------------------------------------
+
+GRADE = (np.array([1.05, 0.96, 0.91]), np.array([0.02, -0.01, 0.03]))
+DISPLAY_SPEC = {
+    "input_space": "srgb",
+    "output_space": "srgb",
+    "input_gamut": None,
+    "output_gamut": None,
+    "input_range": "full",
+    "output_range": "full",
+}
+LOG_SPEC = {
+    "input_space": "slog3",
+    "output_space": "srgb",
+    "input_gamut": None,
+    "output_gamut": None,
+    "input_range": "full",
+    "output_range": "full",
+}
+
+
+def _grade_lut(tmp: Path, spec: dict[str, Any], lut_id: str) -> xr.Lut:
+    from support.lut_cases import cube_text
+
+    return xr.Lut(tmp, cube_text(lambda x: np.clip(x * GRADE[0] + GRADE[1], 0, 1), size=17), spec, lut_id)
+
+
+@needs_dat
+def test_lut_branches_and_errors(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    h = homes["all"]
+    display, log = _grade_lut(tmp_path, DISPLAY_SPEC, "disp"), _grade_lut(tmp_path, LOG_SPEC, "log")
+    missing = xr.Lut(tmp_path, (tmp_path / "disp.cube").read_text(encoding="utf-8"), {"input_space": None}, "nospace")
+    shots = {
+        "pair": xs.shot_for(files["ok"], files["jpg"], lens=LENSES[0], iso=200),
+        "dng": xs.shot_for(files["ok8"], None, lens=LENSES[2], iso=200),
+        "jpg": xs.shot_for(None, files["jpg"], lens=LENSES[0], iso=200),
+        "no-neutral": xs.shot_for(files["no_neutral"], None, lens=LENSES[0], iso=200),
+        "unreadable": xs.shot_for(files["unreadable"], files["jpg"], lens=LENSES[0], iso=200),
+    }
+    from support import export_source_lut as gates
+
+    kinds: dict[str, int] = {}
+    points = {"a": 0, "b": 0}
+    for lut in (display, log, missing):
+        for sname, shot in shots.items():
+            for recipe in (None, RecipeSel("jlaunch", 6)):
+                for base in ("auto", "camera-jpg", "neutral", "standard"):
+                    edit = EditState(recipe=recipe, adjust=ADJUST_ON, lut=lut.id)
+                    python, rust, py_rgb, rs_rgb = xr.color_case(h, tmp_path, shot, edit, base, lut=lut, monkeypatch=monkeypatch)
+                    label = f"{lut.id}/{sname}/{recipe}/{base}"
+                    if "error" in python or py_rgb is None or rs_rgb is None or py_rgb.shape != rs_rgb.shape:
+                        xr.assert_same_result(python, rust, py_rgb, rs_rgb, label)
+                    else:
+                        assert list(rust["labels"].items()) == list(python["labels"].items()), label
+                        assert rust["from_raw"] is python["from_raw"] is False, label
+                        if rust["path"] == "lut-display":
+                            _b, _r, b_py, _b_rs = xr.color_case(h, tmp_path, shot, EditState(recipe=recipe), base, monkeypatch=monkeypatch)
+                            assert b_py is not None
+                            n_a, n_b = gates.display_gate(tmp_path, lut.cube, lut.spec, b_py, py_rgb, rs_rgb, label)
+                        else:
+                            n_a, n_b = gates.log_gate(
+                                tmp_path, lut.cube, lut.spec, Path(shot["files"]["dng"]["relpath"]), py_rgb, rs_rgb, label, sample=4000
+                            )
+                        points["a"] += n_a
+                        points["b"] += n_b
+                    key = python["error"]["kind"] if "error" in python else rust["path"]
+                    kinds[key] = kinds.get(key, 0) + 1
+    print(f"lut branches: {kinds} gate_a_points={points['a']} gate_b_points={points['b']}")
+    assert {"lut-display", "lut-log", "lut_needs_raw", "lut_space_required", "no_neutral"} <= set(kinds), kinds
+
+
+@needs_dat
+@pytest.mark.skipif(not REAL, reason="没有真 DNG")
+def test_lut_full_size_real(homes: dict[str, xs.Home], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Display LUT on the camera JPG and on a recipe render; log LUT on the RAW. Gate A and B."""
+    from support import export_source_lut as gates
+
+    h = homes["all"]
+    display, log = _grade_lut(tmp_path, DISPLAY_SPEC, "disp"), _grade_lut(tmp_path, LOG_SPEC, "log")
+    totals = {"a": 0, "b": 0, "cases": 0}
+    for dng, jpg in [(d, j) for d, j in REAL if j is not None][:2]:
+        meta = read_dng_meta(dng)
+        shot = xs.shot_for(dng, jpg, lens=meta.lens, iso=meta.iso)
+        for lut, edit, base in (
+            (display, EditState(lut="disp"), "camera-jpg"),
+            (display, EditState(recipe=RecipeSel("jlaunch", 2), lut="disp"), "auto"),
+            (log, EditState(lut="log", adjust=ADJUST_ON), "auto"),
+        ):
+            python, rust, py_rgb, rs_rgb = xr.color_case(h, tmp_path, shot, edit, base, lut=lut, monkeypatch=monkeypatch)
+            assert "error" not in python and "error" not in rust, (python, rust)
+            assert list(rust["labels"].items()) == list(python["labels"].items())
+            assert py_rgb is not None and rs_rgb is not None and py_rgb.shape == rs_rgb.shape
+            if lut is display:
+                b_python, b_rust, b_py, _b_rs = xr.color_case(h, tmp_path, shot, EditState(recipe=edit.recipe), base, monkeypatch=monkeypatch)
+                assert b_py is not None
+                n_a, n_b = gates.display_gate(tmp_path, lut.cube, lut.spec, b_py, py_rgb, rs_rgb, f"{dng.name}/{base}")
+            else:
+                n_a, n_b = gates.log_gate(tmp_path, lut.cube, lut.spec, dng, py_rgb, rs_rgb, f"{dng.name}/log")
+            totals["a"] += n_a
+            totals["b"] += n_b
+            totals["cases"] += 1
+    print(f"real full-size LUT cases={totals['cases']} gate_a_points={totals['a']} gate_b_points={totals['b']}")
+
+
+# ---- 5. WASM matches native --------------------------------------------------------------
+
+
+@needs_dat
+def test_wasm_matches_native_source(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    from support.color_fixtures import deep_json
+    from support.wasm_check import run_area
+    from test_core_parity_raw import hostile_cases
+
+    h, nocal = homes["all"], homes["nocal"]
+    specs: list[Path] = []
+
+    def spec(name: str, value: dict[str, Any]) -> None:
+        specs.append(xs.write_json(tmp_path / f"{name}.json", value))
+
+    shot = xs.write_json(tmp_path / "shot.json", xs.shot_for(files["ok"], files["jpg"], lens=LENSES[0], iso=640))
+    recipe = xs.write_json(tmp_path / "edit.json", xs.edit_json(EditState(recipe=RecipeSel("jlaunch", 3))))
+    default = xs.write_json(tmp_path / "edit-default.json", xs.edit_json(EditState()))
+    (tmp_path / "deep.json").write_text(deep_json(129, "array"), encoding="utf-8")
+    (tmp_path / "deep-ok.json").write_text('{"recipe":null,"x":' + deep_json(126, "array") + "}", encoding="utf-8")
+    entry = tmp_path / "entry.bin"
+    entry.write_bytes(h.entry(RecipeSel("jlaunch", 3)) or b"")
+    stock = tmp_path / "stock.bin"
+    stock.write_bytes(h.entry(RecipeSel("jlaunch", 4)) or b"")
+    short = tmp_path / "short.bin"
+    short.write_bytes(entry.read_bytes()[:551])
+    empty_dir = tmp_path / "empty-calib"
+    empty_dir.mkdir()
+    base = {"shot": str(shot), "dat": str(h.dat), "entry": str(entry), "calib": str(h.calib), "binding": h.binding()}
+    spec("plan", {"kind": "plan", "edit": str(recipe), **base})
+    spec("plan-default", {"kind": "plan", "edit": str(default), **base})
+    spec("plan-nodat", {"kind": "plan", "edit": str(recipe), "shot": str(shot), "calib": str(h.calib)})
+    spec("plan-nocal", {"kind": "plan", "edit": str(recipe), "shot": str(shot), "dat": str(nocal.dat), "entry": str(entry)})
+    spec("plan-deep", {"kind": "plan", "edit": str(tmp_path / "deep.json"), **base})
+    spec("plan-deep-ok", {"kind": "plan", "edit": str(tmp_path / "deep-ok.json"), **base})
+    spec("plan-no-entry", {"kind": "plan", "edit": str(recipe), "shot": str(shot), "dat": str(h.dat), "calib": str(h.calib)})
+    adjust = xs.write_json(tmp_path / "adjust.json", xs.adjust_json(ADJUST_ON, CURVES_ON))
+    render = {"entry": str(entry), "stock": str(stock), "unit": "jlaunch", "calib": str(h.calib), "iso": 640}
+    for name in ("ok", "ok8", "unreadable", "truncated", "no_neutral"):
+        spec(
+            f"render-{name}", {"kind": "render", "dng": str(files[name]), "adjust": str(adjust), "out": str(tmp_path / f"{name}.npy"), **render}
+        )
+    spec("render-short-entry", {"kind": "render", "dng": str(files["ok"]), "out": str(tmp_path / "s.npy"), **{**render, "entry": str(short)}})
+    spec("render-no-pack", {"kind": "render", "dng": str(files["ok"]), "out": str(tmp_path / "np.npy"), **{**render, "calib": str(empty_dir)}})
+    spec(
+        "render-deep-adjust",
+        {"kind": "render", "dng": str(files["ok"]), "adjust": str(tmp_path / "deep.json"), "out": str(tmp_path / "d.npy"), **render},
+    )
+    for name, payload in hostile_cases().items():
+        p = tmp_path / f"hostile-{name}.DNG"
+        p.write_bytes(payload)
+        spec(f"render-hostile-{name}", {"kind": "render", "dng": str(p), "out": str(tmp_path / f"h-{name}.npy"), **render})
+    if REAL:
+        spec("render-real", {"kind": "render", "dng": str(REAL[0][0]), "out": str(tmp_path / "real.npy"), "timing": True, **render})
+    proc = run_area("source", specs, tmp_path)
+    print(proc.stdout.strip())
+    assert proc.returncode == 0, proc.stdout + proc.stderr

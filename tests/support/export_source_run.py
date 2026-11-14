@@ -7,6 +7,7 @@ print the first difference.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ import pytest
 from gxr_studio.camdata import store
 from gxr_studio.finish import serve
 from gxr_studio.raw import open_dng, render_full
+from gxr_studio.raw.dng import RawDecodeError
 from gxr_studio.render import service
 from gxr_studio.render.params import EditState, RecipeSel
 from gxr_studio.render.recipes import unit_of_lens
@@ -92,15 +94,23 @@ def plan_case(h: xs.Home, tmp: Path, shot: dict[str, Any], edit: EditState, monk
     return py, payload
 
 
-def render_case(h: xs.Home, tmp: Path, dng: Path, shot: dict[str, Any], edit: EditState) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """`render_full(open_dng(path), renderer)` vs `source-render` (same entry, pack, ISO, adjust)."""
+def render_case(h: xs.Home, tmp: Path, dng: Path, shot: dict[str, Any], edit: EditState) -> tuple[Any, Any, dict[str, Any]]:
+    """`render_full(open_dng(path), renderer)` vs `source-render` (same entry, pack, ISO, adjust).
+
+    A file Python cannot open must fail the same way in Rust; then both pictures are None."""
     renderer = h.render.renderer(shot, edit)
     plan = h.render.plan(shot, edit)
-    d = open_dng(dng)
+    py_err: RawDecodeError | None = None
+    t0 = time.perf_counter()
     try:
-        py = render_full(d, renderer)
-    finally:
-        d.release()
+        d = open_dng(dng)
+        try:
+            py = render_full(d, renderer)
+        finally:
+            d.release()
+    except RawDecodeError as exc:
+        py_err = exc
+    py_s = time.perf_counter() - t0
     entry, stock = tmp / "entry.bin", tmp / "stock.bin"
     entry.write_bytes(plan.entry)
     stock.write_bytes(store.load_stock04(h.home, plan.unit))
@@ -108,11 +118,16 @@ def render_case(h: xs.Home, tmp: Path, dng: Path, shot: dict[str, Any], edit: Ed
     out = tmp / "render.npy"
     args = ["source-render", "--dng", str(dng), "--entry", str(entry), "--stock", str(stock), "--unit", plan.unit]
     args += ["--calib", str(h.calib), "--iso", str(plan.model_iso), "--adjust", str(a), "--out", str(out)]
+    t0 = time.perf_counter()
     code, payload = run_json(args, timeout=300)
+    rust_s = time.perf_counter() - t0
     err = error_of(code, payload)
+    info = {"model_iso": plan.model_iso, "unit": plan.unit, "slot": plan.slot, "args": args, "python_s": py_s, "rust_s": rust_s}
+    if py_err is not None:
+        assert err is not None and (err.kind, err.message) == ("raw_decode", str(py_err)), (dng.name, py_err, err)
+        return None, None, info
     assert err is None, (dng.name, err)
-    rs = np.load(out)
-    return py, rs, {"model_iso": plan.model_iso, "unit": plan.unit, "slot": plan.slot, "args": args}
+    return py, np.load(out), info
 
 
 class Lut:
