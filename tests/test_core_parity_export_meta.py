@@ -25,7 +25,7 @@ from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
 from gxr_studio.finish.meta_text import photo_meta
 from gxr_studio.meta import dng_preview_image, read_dng_meta, read_jpeg_meta
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
-from support.export_meta_cases import make_jpeg_bytes, nonfinite_edge_cases, synthetic_edge_cases
+from support.export_meta_cases import make_jpeg_bytes, nonfinite_edge_cases, sol_mtime_tz_cases, synthetic_edge_cases
 from support.wasm_check import PKG, run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -509,6 +509,47 @@ def test_errors_match_core_error_kinds(tmp_path: Path) -> None:
         code, payload = run_json(bad_args)
         err = error_of(code, payload)
         assert isinstance(err, CoreCliError) and err.kind == expected_kind, (bad_args, err)
+
+
+def test_mtime_rounding_sol_cases(tmp_path: Path) -> None:
+    require_cli()
+    jpg = tmp_path / "time.jpg"
+    jpg.write_bytes(_make_jpeg_bytes())
+    now_year = datetime.now().year
+    manifest_entries: list[dict[str, Any]] = []
+    for idx, (mtime_ms, tz_min) in enumerate(sol_mtime_tz_cases()):
+        code, got_photo = run_json(
+            [
+                "export-meta-photo",
+                "--jpg",
+                str(jpg),
+                "--name",
+                "TEST1234",
+                "--mtime-ms",
+                repr(mtime_ms),
+                "--tz-offset-min",
+                str(tz_min),
+                "--now-year",
+                str(now_year),
+            ]
+        )
+        _assert_no_core_error(code, got_photo, f"mtime[{idx}]")
+        _assert_photo_equal(got_photo, _py_photo_meta_json(jpg, None, "TEST1234", mtime_ms, tz_min), f"mtime[{idx}]")
+        manifest_entries.append(
+            {
+                "label": f"mtime_{idx}::photo",
+                "kind": "photo",
+                "jpg": str(jpg),
+                "dng": None,
+                "name": "TEST1234",
+                "mtime_ms": mtime_ms,
+                "tz_offset_min": tz_min,
+            }
+        )
+    manifest = tmp_path / "mtime-wasm.json"
+    manifest.write_text(json.dumps(manifest_entries), encoding="utf-8")
+    proc = run_area("export", [manifest], tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def test_wasm_matches_native_export_meta(tmp_path: Path) -> None:

@@ -401,3 +401,28 @@ def nonfinite_edge_cases() -> dict[str, tuple[bytes, str]]:
             "jpg",
         ),
     }
+
+
+def sol_mtime_tz_cases() -> list[tuple[float, int]]:
+    """All 90 broad + 5 modern sub-ms rounding mtime/tz pairs from Sol r1."""
+    broad_mtimes = [
+        -2208988800000.0,
+        -1.0005,
+        -0.0005,
+        0.0005,
+        1.0005,
+        999.9995,
+        1700000000123.4565,
+        1700000000123.0005,
+        1700000000123.9995,
+        1710053999999.0,
+        1710054000000.0,
+        1730613599999.0,
+        1730613600000.0,
+        2147483647123.0,
+        253402214399999.0,
+    ]
+    pairs: list[tuple[float, int]] = [(ms, tz) for ms in broad_mtimes for tz in (-480, -300, -240, 0, 330, 480)]
+    modern_sub_ms = [1700000000000.0 + i / 4096 for i in (1, 3, 5, 7, 9)]
+    pairs.extend((ms, -300) for ms in modern_sub_ms)
+    return pairs

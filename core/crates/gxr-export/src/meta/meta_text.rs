@@ -85,17 +85,31 @@ pub fn datetime_from_mtime_ms(
             "tz_offset_min must be strictly between -1440 and 1440",
         ));
     }
-    // Python datetime.fromtimestamp(mtime_ms / 1000.0) rounds to nearest microsecond (half to even).
-    let total_us_f64 = (mtime_ms * 1000.0).round_ties_even();
-    if !(-6.213_559_68e16..=2.534_023_007_999_999e17).contains(&total_us_f64) {
+    // Python datetime.fromtimestamp(mtime_ms / 1000.0) divides by 1000.0 first in IEEE-754 f64,
+    // then splits integer and fractional seconds (_PyTime_FromDouble) before rounding to us.
+    let sec = mtime_ms / 1000.0;
+    if !(-6.3e10..=2.6e11).contains(&sec) {
         return Err(CoreError::new("bad_meta", "mtime_ms out of datetime range"));
     }
+    let mut sec_int = sec.trunc();
+    let mut us_f = (sec.fract() * 1_000_000.0).round_ties_even();
+    if us_f >= 1_000_000.0 {
+        us_f -= 1_000_000.0;
+        sec_int += 1.0;
+    } else if us_f <= -1_000_000.0 {
+        us_f += 1_000_000.0;
+        sec_int -= 1.0;
+    }
     #[allow(clippy::cast_possible_truncation)]
-    let utc_us = total_us_f64 as i128;
+    let utc_us = (sec_int as i128) * 1_000_000 + (us_f as i128);
+    let us_per_day: i128 = 86_400 * 1_000_000;
+    let (utc_year, _, _) = civil_from_days(utc_us.div_euclid(us_per_day));
+    if !(1..=9999).contains(&utc_year) {
+        return Err(CoreError::new("bad_meta", "mtime_ms out of datetime range"));
+    }
+
     let offset_us = i128::from(tz_offset_min) * 60 * 1_000_000;
     let local_us = utc_us + offset_us;
-
-    let us_per_day: i128 = 86_400 * 1_000_000;
     let days = local_us.div_euclid(us_per_day);
     let rem_us = local_us.rem_euclid(us_per_day);
 
@@ -375,10 +389,37 @@ mod tests {
         let carry = datetime_from_mtime_ms(999.999_9, 0).expect("carry");
         assert_eq!(carry, NaiveDateTime::new(1970, 1, 1, 0, 0, 1));
 
+        // Modern sub-ms rounding matching datetime.fromtimestamp(mtime_ms / 1000.0)
+        // 1700000000000.0 + 1/4096 ms = 1700000000.0 + 0.244140625 us -> rounds to .000000
+        let mod_sub =
+            datetime_from_mtime_ms(1_700_000_000_000.0 + 1.0 / 4096.0, 0).expect("mod_sub");
+        assert_eq!(mod_sub.microsecond, 0);
+        // 1700000000000.0 + 3/4096 ms -> 0.732421875 us -> .000001 (even though ms*1000 rounds differently near boundary)
+        let mod_sub3 =
+            datetime_from_mtime_ms(1_700_000_000_000.0 + 3.0 / 4096.0, 0).expect("mod_sub3");
+        assert_eq!(mod_sub3.microsecond, 1);
+        // 9999-12-30 23:59:59.998993 UTC at 253402214399999.0
+        let y9999 = datetime_from_mtime_ms(253_402_214_399_999.0, 0).expect("y9999");
+        assert_eq!(
+            (
+                y9999.year,
+                y9999.month,
+                y9999.day,
+                y9999.second,
+                y9999.microsecond
+            ),
+            (9999, 12, 30, 59, 998_993)
+        );
+        // Negative fractional carry at -999.9995 ms -> 1969-12-31 23:59:59.000000
+        let neg_carry = datetime_from_mtime_ms(-999.999_5, 0).expect("neg_carry");
+        assert_eq!(neg_carry, NaiveDateTime::new(1969, 12, 31, 23, 59, 59));
+
         // Invalid tz_offset_min or non-finite mtime
         assert!(datetime_from_mtime_ms(f64::NAN, 0).is_err());
         assert!(datetime_from_mtime_ms(0.0, 1440).is_err());
         assert!(datetime_from_mtime_ms(0.0, -1440).is_err());
+        assert!(datetime_from_mtime_ms(-62_135_596_800_000.0, -480).is_err());
+        assert!(datetime_from_mtime_ms(253_402_300_799_000.0, 480).is_err());
     }
 
     #[test]
