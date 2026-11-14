@@ -184,3 +184,19 @@ def test_recipe_cards_show_the_real_source(server: dict[str, Any]) -> None:
         assert set(row["labels"]) == {want}, (photo_id, row)
         assert "中性转换" not in row["labels"]
         assert row["drawn"] == len(row["labels"]), (photo_id, row)
+
+
+def test_histogram_updates_on_content_and_rests_when_idle(server: dict[str, Any]) -> None:
+    data = run_case(server, "histogram")
+    # 第一帧就画了，不用先拖滑块。
+    assert data["first"]["version"] is not None and data["first"]["painted"] > 1000, data["first"]
+    # 静止 2 秒：一次显卡读回都没有。
+    assert data["idleCalls"] == 0, data
+    # 拖到最亮：重画了、高光三角亮了；松手以后又停下来。
+    assert data["dragged"]["version"] != data["first"]["version"], data
+    assert data["dragged"]["painted"] > 1000 and data["dragged"]["high"] is True, data["dragged"]
+    assert data["dragCalls"] >= 1, data
+    assert data["settledCalls"] == 0, data
+    assert data["exposure"].startswith("+"), data["exposure"]
+    # 换到下一张：新的编辑器里也画出来了。
+    assert data["next"]["version"] is not None and data["next"]["painted"] > 1000, data["next"]

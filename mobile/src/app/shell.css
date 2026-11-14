@@ -217,6 +217,11 @@ h1, h2, p { margin: 0; }
 .chip.on { background: var(--surface-selected); color: var(--text-1); box-shadow: inset 0 0 0 1.5px var(--accent-text); }
 .hist { position: relative; height: 64px; margin: 0 16px 8px; border-radius: 10px; background: var(--gray-875); box-shadow: inset 0 0 0 1px var(--line-subtle); overflow: hidden; }
 .hist canvas { width: 100%; height: 100%; display: block; }
+.hist .clip { position: absolute; top: 4px; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid var(--gray-600); pointer-events: none; }
+.hist .clip.l { left: 10px; }
+.hist .clip.r { right: 10px; }
+.hist .clip.l.lit { border-bottom-color: rgb(40, 110, 255); }
+.hist .clip.r.lit { border-bottom-color: rgb(255, 50, 40); }
 .big { padding: 0 16px; }
 .big .l1 { display: flex; justify-content: space-between; align-items: baseline; height: 26px; }
 .big .l1 b { font: 600 17px/22px var(--font-ui); }

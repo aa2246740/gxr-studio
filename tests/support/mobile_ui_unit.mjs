@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { captureMillis, captureTimeFromJpeg, captureTimeFromTiff, checkDng, embeddedJpegRange } from '../../mobile/src/lib/exif.ts';
 import { classify, groupByGap, groupCount, sortIds, visibleRange } from '../../mobile/src/lib/group.ts';
+import { CLIP_SHARE, histPoint, histShape } from '../../mobile/src/lib/hist.ts';
 
 function u16(value) {
   return [value & 255, (value >> 8) & 255];
@@ -179,6 +180,36 @@ test('dng structure check in the worker', () => {
     assert.doesNotThrow(() => checkDng(junk, junk.length));
     assert.notEqual(checkDng(junk, junk.length), null);
   }
+});
+
+test('histogram shape follows the design: inner max, sqrt, clip triangles', () => {
+  const counts = new Uint32Array(1026);
+  // 亮度：两端各一根很高的尖刺，中间 100 和 25。
+  counts[768 + 0] = 90_000;
+  counts[768 + 255] = 90_000;
+  counts[768 + 128] = 100;
+  counts[768 + 64] = 25;
+  // 红色内部最高 49，压死 / 溢出各占 1% 和 0.4%。
+  counts[100] = 49;
+  counts[1024] = 1000;
+  counts[1025] = 400;
+  const shape = histShape(counts, 100_000);
+  // 上限只看 2..253：尖刺不压扁中间。
+  assert.equal(shape.l[128], 1);
+  assert.equal(shape.l[64], 0.5);
+  assert.equal(shape.r[100], 0.7);
+  assert.equal(shape.l[0], 1);
+  assert.equal(shape.l[255], 1);
+  assert.equal(shape.g[10], 0);
+  assert.equal(shape.low, true);
+  assert.equal(shape.high, false);
+  assert.equal(CLIP_SHARE, 0.005);
+  // 全空、样本数 0 都不出 NaN。
+  const empty = histShape(new Uint32Array(1026), 0);
+  assert.ok([...empty.l].every((v) => v === 0));
+  assert.equal(empty.low, false);
+  assert.deepEqual(histPoint(0, 0, 255, 64), [0, 61]);
+  assert.deepEqual(histPoint(255, 1, 255, 64), [255, 5]);
 });
 
 test('pairing, dat and ignored files', () => {

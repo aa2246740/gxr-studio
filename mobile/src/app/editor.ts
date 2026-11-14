@@ -4,6 +4,7 @@ import { Engine, type Adjust } from '../../../frontend/src/index';
 import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
 import { formatClock } from '../lib/group';
+import { histPoint, histShape } from '../lib/hist';
 import { button, el, icon, ICON } from './dom';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
 
@@ -55,7 +56,12 @@ export class EditorView {
   private key: keyof Knobs = 'exposure_ev';
   private dragging = false;
   private holding = false;
-  private histLoop = 0;
+  /** 直方图：正在数、数完还要再数一次、上次画的是哪个内容版本。静止时不再读显卡。 */
+  private histBusy = false;
+  private histAgain = false;
+  private histDrawn = -1;
+  private clipLow: HTMLElement | null = null;
+  private clipHigh: HTMLElement | null = null;
   private input: HTMLInputElement | null = null;
   private valueEl: HTMLElement | null = null;
   private labelEl: HTMLElement | null = null;
@@ -95,7 +101,7 @@ export class EditorView {
     this.dragging = false;
     this.holding = false;
     this.wantNeighbor = '';
-    if (this.histLoop) cancelAnimationFrame(this.histLoop);
+    this.histAgain = false;
     this.shell.dataset.drag = '0';
     this.sharp?.close();
     this.sharp = null;
@@ -202,9 +208,13 @@ export class EditorView {
     const panel = el('div', 'panel adjust');
     const hist = el('div', 'hist');
     this.hist = document.createElement('canvas');
-    this.hist.width = 408;
-    this.hist.height = 64;
-    hist.append(this.hist);
+    this.hist.width = 816;
+    this.hist.height = 128;
+    this.clipLow = el('span', 'clip l');
+    this.clipHigh = el('span', 'clip r');
+    this.clipLow.setAttribute('aria-label', '暗部压死');
+    this.clipHigh.setAttribute('aria-label', '高光溢出');
+    hist.append(this.hist, this.clipLow, this.clipHigh);
     const chips = el('div', 'chips');
     for (const spec of SLIDERS) {
       const chip = button('chip', spec.label);
@@ -310,6 +320,7 @@ export class EditorView {
       curve: null,
       adjust: toAdjust(knobs),
     });
+    this.requestHist();
   }
 
   private setLabel(text: string): void {
@@ -338,7 +349,6 @@ export class EditorView {
     this.dragging = true;
     this.shell.dataset.drag = '1';
     this.api.watch('drag', true);
-    this.loopHist();
     requestAnimationFrame(() => this.engine?.redraw());
   }
 
@@ -346,34 +356,80 @@ export class EditorView {
     this.dragging = false;
     this.shell.dataset.drag = '0';
     this.api.watch('drag', false);
-    if (this.histLoop) cancelAnimationFrame(this.histLoop);
-    this.histLoop = 0;
     requestAnimationFrame(() => this.engine?.redraw());
   }
 
-  private loopHist = (): void => {
-    if (!this.dragging) return;
-    this.histLoop = requestAnimationFrame(this.loopHist);
-    void this.engine?.histogram().then((data) => {
-      if (this.dragging && data) this.drawHist(data.counts);
+  /**
+   * 要一次直方图：RAW 第一帧、换片、每次调整之后。正在数就只记一笔，数完看内容版本变没变再补一次，
+   * 所以拖滑块时自然合并，停下来以后不会一直读显卡。
+   */
+  private requestHist(): void {
+    if (!this.engine || this.mode === 'still') return;
+    if (this.histBusy) {
+      this.histAgain = true;
+      return;
+    }
+    this.histBusy = true;
+    this.histAgain = false;
+    const token = this.token;
+    void this.countHist(token).finally(() => {
+      this.histBusy = false;
+      if (token !== this.token) return;
+      const engine = this.engine;
+      if (this.histAgain || (engine && engine.contentVersion !== this.histDrawn)) this.requestHist();
     });
-  };
+  }
 
-  private drawHist(counts: Uint32Array): void {
+  private async countHist(token: number): Promise<void> {
+    const engine = this.engine;
+    if (!engine) return;
+    // 等这一帧画完，成片纹理才是新的。
+    for (let i = 0; i < 30 && engine.pending; i++) await new Promise((done) => requestAnimationFrame(done));
+    if (token !== this.token) return;
+    const data = await engine.histogram();
+    if (!data || token !== this.token) return;
+    this.histDrawn = data.version;
+    this.drawHist(data.counts, data.samples, data.version);
+  }
+
+  private drawHist(counts: Uint32Array, samples: number, version: number): void {
     const canvas = this.hist;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const luma = counts.subarray(768, 1024);
-    let max = 1;
-    for (let i = 0; i < luma.length; i++) if (luma[i] > max) max = luma[i];
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#6aa6ff';
-    const slot = canvas.width / 256;
+    const shape = histShape(counts, samples);
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const area = (values: Float64Array, color: string) => {
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      for (let i = 0; i < 256; i++) {
+        const [x, y] = histPoint(i, values[i], w, h);
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(w, h);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    ctx.globalCompositeOperation = 'screen';
+    area(shape.r, 'rgba(255,70,70,.62)');
+    area(shape.g, 'rgba(60,220,110,.62)');
+    area(shape.b, 'rgba(70,130,255,.7)');
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
     for (let i = 0; i < 256; i++) {
-      const height = (luma[i] / max) * (canvas.height - 4);
-      ctx.fillRect(i * slot, canvas.height - height, Math.ceil(slot), height);
+      const [x, y] = histPoint(i, shape.l[i], w, h);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
+    ctx.strokeStyle = 'rgba(255,255,255,.85)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    canvas.dataset.version = String(version);
+    this.clipLow?.classList.toggle('lit', shape.low);
+    this.clipHigh?.classList.toggle('lit', shape.high);
   }
 
   private bindGesture(stage: HTMLElement): void {

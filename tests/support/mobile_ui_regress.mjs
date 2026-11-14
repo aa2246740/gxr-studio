@@ -158,6 +158,70 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** F6：RAW 第一帧就有直方图，静止时不读显卡，拖动后更新并点亮裁切三角，换片后重画。 */
+  async 'histogram'() {
+    const { page, context, errors } = await makePage({ gpu: true });
+    try {
+      await pick(page, manifest.pairs.slice(0, 4));
+      const histState = () =>
+        page.evaluate(() => {
+          const canvas = document.querySelector('.hist canvas');
+          const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+          let painted = 0;
+          for (let i = 3; i < data.length; i += 4) if (data[i] > 0) painted += 1;
+          return {
+            version: canvas.dataset.version ?? null,
+            painted,
+            low: document.querySelector('.hist .clip.l')?.classList.contains('lit') ?? null,
+            high: document.querySelector('.hist .clip.r')?.classList.contains('lit') ?? null,
+          };
+        });
+      const waitDrawn = (prev) =>
+        page.waitForFunction((old) => {
+          const v = document.querySelector('.hist canvas')?.dataset.version;
+          return v !== undefined && v !== old;
+        }, prev ?? null, { timeout: 120_000 });
+      await page.locator('.cell').first().click();
+      await waitDrawn(null);
+      const first = await histState();
+      await page.evaluate(() => {
+        window.__histCalls = 0;
+        const engine = window.__gxrEngine;
+        const original = engine.histogram.bind(engine);
+        engine.histogram = (...args) => {
+          window.__histCalls += 1;
+          return original(...args);
+        };
+      });
+      await page.waitForTimeout(2000);
+      const idleCalls = await page.evaluate(() => window.__histCalls);
+      const slider = page.locator('input[data-key="exposure_ev"]');
+      const box = await slider.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      for (let step = 1; step <= 20; step += 1) {
+        await page.mouse.move(box.x + box.width / 2 + (box.width / 2 - 6) * (step / 20), box.y + box.height / 2);
+        await page.waitForTimeout(50);
+      }
+      await page.mouse.up();
+      await waitDrawn(first.version);
+      await page.waitForTimeout(1500);
+      const dragged = await histState();
+      const dragCalls = await page.evaluate(() => window.__histCalls);
+      await page.waitForTimeout(2000);
+      const settledCalls = (await page.evaluate(() => window.__histCalls)) - dragCalls;
+      const exposure = await page.locator('.val').innerText();
+      const title = await page.locator('.editor .nav b').innerText();
+      await swipeLeft(page);
+      await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, title, { timeout: 30_000 });
+      await waitDrawn(null);
+      const next = await histState();
+      return { first, idleCalls, dragged, dragCalls, settledCalls, exposure, next, errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** F4：有显卡时配方卡是这张的中性小图，只做一次；没显卡时如实写相机 JPG / 内嵌预览。 */
   async 'recipe-cards'() {
     const gpuRun = await (async () => {
