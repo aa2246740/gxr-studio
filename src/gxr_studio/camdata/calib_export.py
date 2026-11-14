@@ -120,6 +120,21 @@ def zip_bytes(files: dict[str, bytes], when: tuple[int, int, int, int, int, int]
     return buffer.getvalue()
 
 
+def check_models(home: Path, manifest: dict[str, Any]) -> None:
+    """照 `model_for`：包里实际有的每个单元、两个 ISO 分支都要能建出模型，原厂 04 指纹要对上当前的相机数据。
+    只有部分单元的包照样能导出。文案照 `unit_status`。"""
+    for unit in sorted(manifest["units"]):
+        for iso in calib.MODEL_ISOS:
+            try:
+                calib.model_for(home, iso, unit=unit)
+            except FileNotFoundError as exc:
+                raise _invalid(FILES_MISSING, f"{unit}/{iso}") from exc
+            except calib.CalibError as exc:
+                raise _invalid(str(exc), f"{unit}/{iso}") from exc
+            except Exception as exc:  # noqa: BLE001  数组、ring 或模型参数坏了，和 unit_status 一样归为读不出来
+                raise _invalid(UNREADABLE, f"{unit}/{iso}") from exc
+
+
 def _write_claimed(folder: privacy.PrivateDir, day: str, data: bytes) -> str:
     """在已核对的目录句柄里排他地占一个不重名的文件名并写入：`GXR 校准数据 日期.zip`、`… 日期-2.zip`…
     写到一半失败，只按这个句柄删掉自己的文件。"""
@@ -164,7 +179,8 @@ def export_for_iphone(
         raise CalibExportError(422, exc.code, exc.message, exc.detail) from exc
     except privacy.PrivatePathError as exc:
         raise CalibExportError(422, "bad_destination", "无法导出到这个位置。请换一个文件夹。", exc.detail) from exc
-    _manifest, files = collect(home)
+    manifest, files = collect(home)
+    check_models(home, manifest)
     local = time.localtime(time.time() if now is None else now)
     data = zip_bytes(files, (max(1980, local.tm_year), local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec))
     try:

@@ -40,6 +40,15 @@ def _pack(home: Path, units: tuple[str, ...] = ("jlaunch", "qlaunch", "l08firm")
     return files
 
 
+def _relist(home: Path, name: str, blob: bytes) -> None:
+    """改一个包里的文件，同时把清单里的大小和 SHA-256 改对（只剩模型本身坏了）。"""
+    folder = calib.calib_dir(home)
+    (folder / name).write_bytes(blob)
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    manifest["files"][name] = {"size": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
+    (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
 @pytest.fixture
 def client(settings):
     app = create_app(settings)
@@ -171,6 +180,34 @@ def test_a_partial_pack_still_exports(tmp_path: Path) -> None:
     path = calib_export.export_for_iphone(home, tmp_path / "out", [], now=NOON)
     with zipfile.ZipFile(path) as archive:
         assert sorted(archive.namelist()) == sorted(files) and len(files) == 5
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("stock", "校准数据与这个单元的原厂 04 不匹配，请重新导入"),
+        ("no-camera", "校准数据文件缺失，请重新导入"),
+        ("ring", "校准数据读不出来，请重新导入"),
+        ("ctx", "校准数据读不出来，请重新导入"),
+    ],
+)
+def test_a_pack_the_desktop_cannot_use_is_not_exported(tmp_path: Path, damage: str, message: str) -> None:
+    """清单和 SHA-256 都对，但 `model_for` 用不了（Sol r1 P2）：照 `unit_status` 的文案拒绝，一个字节都不写。"""
+    home = tmp_path / "app"
+    _pack(home)
+    if damage == "stock":
+        _camera(home, {"qlaunch": entry(words=4)})
+    elif damage == "no-camera":
+        (store.camera_data_dir(home) / "units" / "l08firm" / "stock04.entry").unlink()
+    elif damage == "ring":
+        _relist(home, "ring_jlaunch_1600.json", b'{"schema": "gxr-sector-model/2"}')
+    else:
+        _relist(home, "ctx_qlaunch_200.npz", b"PK not an npz")
+    dest = tmp_path / "out"
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, dest, [])
+    assert err.value.message == message
+    assert not dest.exists() or not any(dest.iterdir())
 
 
 def test_a_destination_swapped_for_a_link_after_the_check_is_not_written(tmp_path: Path, monkeypatch) -> None:
