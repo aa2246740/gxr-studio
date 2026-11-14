@@ -5,9 +5,9 @@ Gates (UNIT-jpeg.md & PORT-WAVE-1):
   and 4:2:0 for quality < 90; APP2 ICC is 588 bytes matching Python's ``srgb_icc()`` outside the
   12-byte LittleCMS creation timestamp at bytes 24..36; DQT quantization tables match Pillow's
   IJG scaling for the same quality.
-- Picture (Gate B): decoded per-channel mean absolute difference <= 0.5 and max <= 4 on
-  synthetic test images and 5 real exported arrays against Pillow's single encode with the same
-  ``_finish`` arguments.
+- Picture (Gate B): SOF0, DQT, DHT, and SOS + entropy-coded scan bytes are byte-identical to
+  Pillow (``optimize=False``), and decoded RGB pixels have 0 difference on synthetic test images,
+  12 real exported arrays, and 3 non-16-aligned crops across all quality tiers.
 - EXIF: ``im.getexif()`` and ``im.getexif().get_ifd(0x8769)`` are identical to Python ``_finish``.
 - Container helpers: ``jpeg-segments`` and ``jpeg-set-meta`` are exact against a Python
   reference using ``gxr_studio.hdr.container.jpeg_segments``.
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import io
 import json
-import math
 import os
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,6 @@ from gxr_studio.export import QUALITY_TIERS, SOFTWARE, srgb_icc
 from gxr_studio.hdr import container
 from gxr_studio.raw import NEUTRAL, open_dng, render_full
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
-from support.jpeg_quant_check import assert_halfway_attribution
 from support.wasm_check import run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -93,7 +91,7 @@ def _python_single_encode(rgb: np.ndarray, quality: int, base: dict[int, Any], s
                 "JPEG",
                 quality=quality,
                 subsampling=0 if quality >= 90 else 2,
-                optimize=True,
+                optimize=False,
                 exif=build_exif(full),
                 icc_profile=srgb_icc(),
             )
@@ -202,16 +200,20 @@ def _synthetic_images() -> list[tuple[str, np.ndarray]]:
     # Tiny edge case 1x1 and 17x15
     imgs.append(("tiny_1x1", np.array([[[123, 45, 200]]], dtype=np.uint8)))
     imgs.append(("odd_17x15", np.full((17, 15, 3), (64, 128, 192), dtype=np.uint8)))
+    imgs.append(("edge_3x2", np.array([[[0, 0, 0], [10, 20, 30], [0, 0, 0]], [[5, 5, 5], [100, 150, 200], [0, 0, 3]]], dtype=np.uint8)))
+    imgs.append(("edge_2x3", np.array([[[0, 52, 184], [0, 0, 1]], [[255, 0, 0], [0, 0, 255]], [[12, 34, 56], [78, 90, 12]]], dtype=np.uint8)))
+    imgs.append(("edge_16x18", rng.integers(0, 256, (18, 16, 3), dtype=np.uint8)))
+    imgs.append(("edge_18x16", rng.integers(0, 256, (16, 18, 3), dtype=np.uint8)))
     return imgs
 
 
-def _assert_structure_and_measure_picture(
+def _assert_structure_and_exact_gate_b(
     rgb: np.ndarray,
     quality: int,
     rust_jpg: bytes,
     py_jpg: bytes,
     label: str,
-) -> tuple[list[float], list[int], int, int]:
+) -> tuple[int, int]:
     im_r = Image.open(io.BytesIO(rust_jpg))
     im_p = Image.open(io.BytesIO(py_jpg))
     im_r.load()
@@ -238,15 +240,25 @@ def _assert_structure_and_measure_picture(
 
     assert getattr(im_r, "quantization", None) == getattr(im_p, "quantization", None), f"{label} q={quality}: DQT tables differ"
 
-    # Gate B measurements
+    # Gate B (byte-exact tables + entropy scan & 0-diff decoded pixels vs Pillow optimize=False)
+    segs_r, sos_r, eoi_r = container.jpeg_segments(rust_jpg)
+    segs_p, sos_p, eoi_p = container.jpeg_segments(py_jpg)
+
+    def marker_bytes(data: bytes, segs: list[Any], marker: int) -> bytes:
+        return b"".join(data[seg.start : seg.end] for seg in segs if seg.marker == marker)
+
+    assert marker_bytes(rust_jpg, segs_r, 0xC0) == marker_bytes(py_jpg, segs_p, 0xC0), f"{label} q={quality}: SOF0 bytes differ"
+    assert marker_bytes(rust_jpg, segs_r, 0xDB) == marker_bytes(py_jpg, segs_p, 0xDB), f"{label} q={quality}: DQT bytes differ"
+    assert marker_bytes(rust_jpg, segs_r, 0xC4) == marker_bytes(py_jpg, segs_p, 0xC4), f"{label} q={quality}: DHT bytes differ"
+    scan_r = rust_jpg[sos_r:eoi_r]
+    scan_p = py_jpg[sos_p:eoi_p]
+    assert scan_r == scan_p, f"{label} q={quality}: SOS/entropy scan differs (len rust={len(scan_r)} py={len(scan_p)})"
+
     arr_r = np.asarray(im_r.convert("RGB"), dtype=np.int16)
     arr_p = np.asarray(im_p.convert("RGB"), dtype=np.int16)
-    diff = np.abs(arr_r - arr_p)
-    mean_per_ch = [float(diff[..., c].mean()) for c in range(3)]
-    max_per_ch = [int(diff[..., c].max()) for c in range(3)]
-    gt4_count = int((diff.max(axis=2) > 4).sum())
-    total_pixels = int(diff.shape[0] * diff.shape[1])
-    return mean_per_ch, max_per_ch, gt4_count, total_pixels
+    max_diff = int(np.abs(arr_r - arr_p).max())
+    assert max_diff == 0 and np.array_equal(arr_r, arr_p), f"{label} q={quality}: decoded pixel max diff {max_diff} != 0"
+    return len(scan_r), max_diff
 
 
 @pytest.mark.parametrize("quality", [QUALITY_TIERS["high"], QUALITY_TIERS["medium"], QUALITY_TIERS["low"], 90, 89, 100, 1])
@@ -257,31 +269,8 @@ def test_structure_and_picture_synthetic(quality: int, tmp_path: Path) -> None:
     for name, rgb in _synthetic_images():
         rust_jpg = _cli_encode(rgb, quality, base, sub, tmp_path, f"{name}_q{quality}")
         py_jpg = _python_single_encode(rgb, quality, base, sub)
-        mean_ch, max_ch, gt4_count, total_px = _assert_structure_and_measure_picture(rgb, quality, rust_jpg, py_jpg, name)
-        print(f"synthetic {name} q={quality}: mean={[round(m, 5) for m in mean_ch]} max={max_ch} gt4={gt4_count}/{total_px}")
-
-
-def _assert_real_gate_b(
-    rgb: np.ndarray,
-    quality: int,
-    rust_jpg: bytes,
-    py_jpg: bytes,
-    mean_ch: list[float],
-    max_ch: list[int],
-    gt4_count: int,
-    total_px: int,
-    label: str,
-) -> None:
-    gt4_frac = gt4_count / total_px
-    _assert_mean_within_bound(mean_ch, 0.5, label, quality)
-    assert math.isfinite(gt4_frac), f"{label} q={quality}: gt4 fraction is non-finite ({gt4_frac})"
-    frac_limit = 1e-4 if quality >= 85 else 5e-4
-    assert gt4_frac <= frac_limit, f"{label} q={quality}: fraction > 4 ({gt4_frac:.6e}) > {frac_limit:.0e}"
-    assert max(max_ch) <= 24, f"{label} q={quality}: channel max abs diff {max_ch} > 24"
-    if (quality >= 85 and max(max_ch) > 4) or (quality < 85 and max(max_ch) > 16):
-        diffs = assert_halfway_attribution(rgb, quality, rust_jpg, py_jpg, label)
-        summary = [(d.component, d.u, d.v, f"{d.fdct_val}/{d.divisor}") for d in diffs]
-        print(f"  attribution {label} q={quality}: all {len(diffs)} differing coeffs exact .5 -> {summary}")
+        scan_len, max_diff = _assert_structure_and_exact_gate_b(rgb, quality, rust_jpg, py_jpg, name)
+        print(f"synthetic {name} q={quality}: scan={scan_len}B max_diff={max_diff}")
 
 
 def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
@@ -307,13 +296,8 @@ def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
             rust_jpg = _cli_encode(rgb, quality, base, sub, tmp_path, f"real{idx}_q{quality}")
             py_jpg = _python_single_encode(rgb, quality, base, sub)
             label = _real_id(dng_path)
-            mean_ch, max_ch, gt4_count, total_px = _assert_structure_and_measure_picture(rgb, quality, rust_jpg, py_jpg, label)
-            gt4_frac = gt4_count / total_px
-            print(
-                f"real[{idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
-                f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
-            )
-            _assert_real_gate_b(rgb, quality, rust_jpg, py_jpg, mean_ch, max_ch, gt4_count, total_px, label)
+            scan_len, max_diff = _assert_structure_and_exact_gate_b(rgb, quality, rust_jpg, py_jpg, label)
+            print(f"real[{idx}] {label} q={quality}: scan={scan_len}B max_diff={max_diff} (byte-identical)")
             _assert_exif_identical(rust_jpg, py_jpg)
 
 
@@ -343,19 +327,8 @@ def test_real_cropped_non16_arrays_gate_a_and_b(tmp_path: Path) -> None:
         for quality in (95, 85, 70):
             rust_jpg = _cli_encode(rgb, quality, base, sub, tmp_path, f"crop{dng_idx}_{crop_h}x{crop_w}_q{quality}")
             py_jpg = _python_single_encode(rgb, quality, base, sub)
-            mean_ch, max_ch, gt4_count, total_px = _assert_structure_and_measure_picture(rgb, quality, rust_jpg, py_jpg, label)
-            gt4_frac = gt4_count / total_px
-            print(
-                f"real_crop[{dng_idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
-                f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
-            )
-            _assert_real_gate_b(rgb, quality, rust_jpg, py_jpg, mean_ch, max_ch, gt4_count, total_px, label)
-
-
-def _assert_mean_within_bound(mean_ch: list[float], bound: float, label: str, quality: int) -> None:
-    for ch, m in enumerate(mean_ch):
-        assert math.isfinite(m), f"{label} q={quality}: channel {ch} mean abs diff is non-finite ({m})"
-        assert m <= bound, f"{label} q={quality}: channel {ch} mean abs diff {m} > {bound}"
+            scan_len, max_diff = _assert_structure_and_exact_gate_b(rgb, quality, rust_jpg, py_jpg, label)
+            print(f"real_crop[{dng_idx}] {label} q={quality}: scan={scan_len}B max_diff={max_diff} (byte-identical)")
 
 
 def _assert_exif_identical(rust_jpg: bytes, py_jpg: bytes) -> None:
@@ -638,8 +611,15 @@ def test_wasm_matches_native_jpeg(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def test_mean_bound_rejects_nan_and_inf() -> None:
-    _assert_mean_within_bound([0.0, 0.25, 0.5], 0.5, "ok", 95)
-    for bad in ([0.0, float("nan"), 0.0], [float("inf"), 0.0, 0.0], [0.0, 0.0, float("-inf")]):
-        with pytest.raises(AssertionError):
-            _assert_mean_within_bound(bad, 0.5, "injected", 95)
+def test_exact_gate_b_rejects_scan_tamper(tmp_path: Path) -> None:
+    require_cli()
+    rgb = _synthetic_images()[0][1]
+    base = {270: "GXR Studio", 271: "RICOH", 272: "GXR"}
+    rust_jpg = _cli_encode(rgb, 85, base, {}, tmp_path, "tamper_ref")
+    py_jpg = _python_single_encode(rgb, 85, base, {})
+    _assert_structure_and_exact_gate_b(rgb, 85, rust_jpg, py_jpg, "ok")
+    segs, sos, eoi = container.jpeg_segments(rust_jpg)
+    tampered = bytearray(rust_jpg)
+    tampered[sos + 20] ^= 0x01
+    with pytest.raises(AssertionError):
+        _assert_structure_and_exact_gate_b(rgb, 85, bytes(tampered), py_jpg, "tampered")
