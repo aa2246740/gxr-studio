@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -52,3 +53,37 @@ IDENTIFY_CASES: list[tuple[str, str, str, Any]] = [
     ("# sRGB look\n", "FLog2C style", "FLog2C.cube", lambda x: 1 - x),
     ("# Author: V-Log master\n", "film", "film.cube", lambda x: 1 - x),
 ]
+
+
+def space_depth_text(kind: str, depth: int) -> str:
+    """Build a RenderSpec JSON with `extra` nested to `depth` levels (root object is level 1)."""
+    if kind == "array":
+        inner = "[" * (depth - 1) + "]" * (depth - 1)
+    elif kind == "object":
+        inner = '{"a":' * (depth - 1) + "null" + "}" * (depth - 1)
+    elif kind == "bare_array":
+        return "[" * depth + "]" * depth
+    elif kind == "bare_object":
+        return '{"a":' * depth + "null" + "}" * depth
+    else:
+        raise ValueError(kind)
+    return '{"input_space":"srgb","extra":' + inner + "}"
+
+
+def cube_text(fun: Any = lambda x: x, *, size: int = 17, title: str = "synthetic", comments: str = "", extra_headers: str = "") -> str:
+    v = np.linspace(0, 1, size)
+    b, g, r = np.meshgrid(v, v, v, indexing="ij")
+    nodes = np.stack([r, g, b], axis=-1).reshape(-1, 3)
+    rows = fun(nodes)
+    title_line = f'TITLE "{title}"\n' if title is not None else ""
+    return (
+        comments + title_line + f"LUT_3D_SIZE {size}\n" + extra_headers + "\n".join(" ".join(f"{c:.17g}" for c in row) for row in rows) + "\n"
+    )
+
+
+def write_huge_npy_header(path: Path, height: int, width: int) -> Path:
+    body = f"{{'descr': '|u1', 'fortran_order': False, 'shape': ({height}, {width}, 3), }}"
+    pad = (64 - (10 + len(body) + 1) % 64) % 64
+    header = body.encode("latin1") + b" " * pad + b"\n"
+    path.write_bytes(b"\x93NUMPY\x01\x00" + len(header).to_bytes(2, "little") + header)
+    return path

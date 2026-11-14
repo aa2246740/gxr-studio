@@ -421,37 +421,54 @@ impl RenderSpec {
         })
     }
 
-    /// Parse a `--space JSON` object without serde.
+    /// Parse a `--space JSON` object without serde (with 128-level nesting limit).
     pub fn from_json(text: &str) -> Result<Self, CoreError> {
-        let map = parse_flat_json_object(text)?;
-        let input_space = match map.get("input_space").or_else(|| map.get("space")) {
-            Some(Some(s)) => s.as_str(),
-            _ => {
+        use crate::json_in::{JsonVal, parse_json};
+
+        let bad = || CoreError::new("value_error", "invalid space JSON");
+        let root = parse_json(text)?;
+        let pairs = root.as_object().ok_or_else(bad)?;
+        let lookup = |key: &str| pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v);
+        let input_space = match lookup("input_space").or_else(|| lookup("space")) {
+            Some(JsonVal::Str(s)) => s.as_str(),
+            Some(JsonVal::Null) | None => {
                 return Err(CoreError::new("lut_space_required", "请选择输入色彩空间"));
             }
+            Some(_) => return Err(bad()),
         };
-        let output_space = match map.get("output_space").or_else(|| map.get("output")) {
-            Some(Some(s)) => s.as_str(),
-            Some(None) => return Err(CoreError::new("bad_space", "请求无效。请刷新页面后重试。")),
+        let output_space = match lookup("output_space").or_else(|| lookup("output")) {
+            Some(JsonVal::Str(s)) => s.as_str(),
+            Some(JsonVal::Null) => {
+                return Err(CoreError::new("bad_space", "请求无效。请刷新页面后重试。"));
+            }
             None => "srgb",
+            Some(_) => return Err(bad()),
         };
-        let input_gamut = match map.get("input_gamut") {
-            Some(Some(s)) => Some(s.as_str()),
-            _ => None,
+        let input_gamut = match lookup("input_gamut") {
+            Some(JsonVal::Str(s)) => Some(s.as_str()),
+            Some(JsonVal::Null) | None => None,
+            Some(_) => return Err(bad()),
         };
-        let output_gamut = match map.get("output_gamut") {
-            Some(Some(s)) => Some(s.as_str()),
-            _ => None,
+        let output_gamut = match lookup("output_gamut") {
+            Some(JsonVal::Str(s)) => Some(s.as_str()),
+            Some(JsonVal::Null) | None => None,
+            Some(_) => return Err(bad()),
         };
-        let input_range = match map.get("input_range") {
-            Some(Some(s)) => s.as_str(),
-            Some(None) => return Err(CoreError::new("bad_range", "请求无效。请刷新页面后重试。")),
+        let input_range = match lookup("input_range") {
+            Some(JsonVal::Str(s)) => s.as_str(),
+            Some(JsonVal::Null) => {
+                return Err(CoreError::new("bad_range", "请求无效。请刷新页面后重试。"));
+            }
             None => "full",
+            Some(_) => return Err(bad()),
         };
-        let output_range = match map.get("output_range") {
-            Some(Some(s)) => s.as_str(),
-            Some(None) => return Err(CoreError::new("bad_range", "请求无效。请刷新页面后重试。")),
+        let output_range = match lookup("output_range") {
+            Some(JsonVal::Str(s)) => s.as_str(),
+            Some(JsonVal::Null) => {
+                return Err(CoreError::new("bad_range", "请求无效。请刷新页面后重试。"));
+            }
             None => "full",
+            Some(_) => return Err(bad()),
         };
         Self::validated(
             input_space,
@@ -630,108 +647,4 @@ impl<'a> Target<'a> {
 #[inline]
 fn clip_01(x: f64) -> f64 {
     if x.is_nan() { x } else { x.clamp(0.0, 1.0) }
-}
-
-/// Minimal flat JSON object parser (`{"key": "val" | null, ...}`) without serde.
-fn parse_flat_json_object(
-    text: &str,
-) -> Result<std::collections::HashMap<String, Option<String>>, CoreError> {
-    let bad = || CoreError::new("value_error", "invalid space JSON");
-    let bytes = text.as_bytes();
-    let mut pos = skip_ws(bytes, 0);
-    if pos >= bytes.len() || bytes[pos] != b'{' {
-        return Err(bad());
-    }
-    pos = skip_ws(bytes, pos + 1);
-    let mut out = std::collections::HashMap::new();
-    if pos < bytes.len() && bytes[pos] == b'}' {
-        pos = skip_ws(bytes, pos + 1);
-        return if pos == bytes.len() {
-            Ok(out)
-        } else {
-            Err(bad())
-        };
-    }
-    loop {
-        let (key, next_pos) = parse_json_string(text, pos).ok_or_else(bad)?;
-        pos = skip_ws(bytes, next_pos);
-        if pos >= bytes.len() || bytes[pos] != b':' {
-            return Err(bad());
-        }
-        pos = skip_ws(bytes, pos + 1);
-        let val = if bytes[pos..].starts_with(b"null") {
-            pos += 4;
-            None
-        } else if bytes.get(pos) == Some(&b'"') {
-            let (s, p) = parse_json_string(text, pos).ok_or_else(bad)?;
-            pos = p;
-            Some(s)
-        } else {
-            return Err(bad());
-        };
-        out.insert(key, val);
-        pos = skip_ws(bytes, pos);
-        if pos >= bytes.len() {
-            return Err(bad());
-        }
-        if bytes[pos] == b',' {
-            pos = skip_ws(bytes, pos + 1);
-        } else if bytes[pos] == b'}' {
-            pos = skip_ws(bytes, pos + 1);
-            return if pos == bytes.len() {
-                Ok(out)
-            } else {
-                Err(bad())
-            };
-        } else {
-            return Err(bad());
-        }
-    }
-}
-
-fn skip_ws(bytes: &[u8], mut pos: usize) -> usize {
-    while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t' | b'\r' | b'\n') {
-        pos += 1;
-    }
-    pos
-}
-
-fn parse_json_string(text: &str, start: usize) -> Option<(String, usize)> {
-    let bytes = text.as_bytes();
-    if bytes.get(start) != Some(&b'"') {
-        return None;
-    }
-    let mut out = String::new();
-    let mut chars = text[start + 1..].char_indices();
-    while let Some((idx, ch)) = chars.next() {
-        match ch {
-            '"' => return Some((out, start + 1 + idx + 1)),
-            '\\' => {
-                let (_, esc) = chars.next()?;
-                match esc {
-                    '"' => out.push('"'),
-                    '\\' => out.push('\\'),
-                    '/' => out.push('/'),
-                    'b' => out.push('\u{0008}'),
-                    'f' => out.push('\u{000c}'),
-                    'n' => out.push('\n'),
-                    'r' => out.push('\r'),
-                    't' => out.push('\t'),
-                    'u' => {
-                        let mut hex = String::with_capacity(4);
-                        for _ in 0..4 {
-                            hex.push(chars.next()?.1);
-                        }
-                        let code = u32::from_str_radix(&hex, 16).ok()?;
-                        let c = char::from_u32(code)?;
-                        out.push(c);
-                    }
-                    _ => return None,
-                }
-            }
-            c if (c as u32) < 0x20 => return None,
-            c => out.push(c),
-        }
-    }
-    None
 }

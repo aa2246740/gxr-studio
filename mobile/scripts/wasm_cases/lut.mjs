@@ -41,18 +41,20 @@ export function cases(inputs) {
           wasm: (mod) => mod.lut_identify(cubeBytes(), spec.name),
         });
       } else if (spec.kind === 'table') {
-        const spaceJson = JSON.stringify(spec.space);
+        const spaceJson = spec.space_file !== undefined ? readFileSync(spec.space_file, 'utf8') : JSON.stringify(spec.space);
+        const spaceCliArg = spec.space_file !== undefined ? spec.space_file : spaceJson;
         const outBin = join(dir, `tbl-${out.length}.bin`);
         const outMeta = join(dir, `tbl-${out.length}.json`);
         out.push({
           label: `${file}::lut_table`,
-          cliArgs: ['lut-table', '--cube', spec.cube, '--space', spaceJson, '--out', outBin, '--meta', outMeta],
+          cliArgs: ['lut-table', '--cube', spec.cube, '--space', spaceCliArg, '--out', outBin, '--meta', outMeta],
           wasm: (mod) => mod.lut_table(cubeBytes(), spaceJson).summary_json(),
         });
       } else if (spec.kind === 'apply_u8') {
-        const spaceJson = JSON.stringify(spec.space);
+        const spaceJson = spec.space_file !== undefined ? readFileSync(spec.space_file, 'utf8') : JSON.stringify(spec.space);
+        const spaceCliArg = spec.space_file !== undefined ? spec.space_file : spaceJson;
         const outNpy = join(dir, `apply-${out.length}.npy`);
-        const cliArgs = ['lut-apply', '--cube', spec.cube, '--space', spaceJson, '--rgb', spec.rgb_npy, '--out', outNpy, '--u8'];
+        const cliArgs = ['lut-apply', '--cube', spec.cube, '--space', spaceCliArg, '--rgb', spec.rgb_npy, '--out', outNpy, '--u8'];
         if (spec.xyz_npy) {
           cliArgs.push('--xyz', spec.xyz_npy);
         }

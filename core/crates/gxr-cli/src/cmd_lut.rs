@@ -44,7 +44,8 @@ fn opt_maybe<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Fail
 }
 
 fn parse_space_arg(raw_arg: &str) -> Result<RenderSpec, Failure> {
-    let text = if raw_arg.trim_start().starts_with('{') {
+    let trimmed = raw_arg.trim_start();
+    let text = if trimmed.starts_with('{') || trimmed.starts_with('[') {
         raw_arg.to_string()
     } else {
         std::fs::read_to_string(raw_arg)

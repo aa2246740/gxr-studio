@@ -6,6 +6,7 @@ pub mod bounds;
 pub mod cube;
 pub mod identify;
 mod identify_scan;
+pub mod json_in;
 pub mod photo;
 pub mod scene;
 pub mod spaces;

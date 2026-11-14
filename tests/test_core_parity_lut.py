@@ -34,7 +34,9 @@ from gxr_studio.raw.dng import RawDecodeError
 from gxr_studio.render.params import EditError
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
-from support.lut_cases import IDENTIFY_CASES
+from support.lut_cases import IDENTIFY_CASES, space_depth_text
+from support.lut_cases import cube_text as _cube_text
+from support.lut_cases import write_huge_npy_header as _write_huge_npy_header
 from support.wasm_check import run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -65,9 +67,15 @@ def _real_id(path: Path) -> str:
 def _assert_rel(python: np.ndarray, rust: np.ndarray, *, label: str = "value") -> None:
     assert python.shape == rust.shape, f"{label}: shape {python.shape} != {rust.shape}"
     assert python.dtype == np.float64 and rust.dtype == np.float64
-    limit = 1e-12 * np.maximum(1.0, np.abs(python))
-    diff = np.abs(python - rust)
-    bad = diff > limit
+    py_nan = np.isnan(python)
+    rs_nan = np.isnan(rust)
+    one_nan = py_nan ^ rs_nan
+    inf_bad = (np.isinf(python) | np.isinf(rust)) & (python != rust)
+    finite = np.isfinite(python) & np.isfinite(rust)
+    limit = np.where(finite, 1e-12 * np.maximum(1.0, np.abs(python)), 0.0)
+    diff = np.zeros_like(python)
+    diff[finite] = np.abs(python[finite] - rust[finite])
+    bad = one_nan | inf_bad | (finite & ~(diff <= limit))
     if np.any(bad):
         idx = tuple(int(v) for v in np.argwhere(bad)[0])
         pytest.fail(f"{label} differs at {idx}: python={python[idx]!r} rust={rust[idx]!r} diff={diff[idx]!r}")
@@ -83,17 +91,6 @@ def _assert_meta_same(py_meta: dict[str, Any], rs_meta: dict[str, Any]) -> None:
             _assert_rel(py_arr, rs_arr, label=f"meta.{key}")
         else:
             assert py_val == rs_val, f"meta.{key}: {py_val!r} != {rs_val!r}"
-
-
-def _cube_text(fun: Any = lambda x: x, *, size: int = 17, title: str = "synthetic", comments: str = "", extra_headers: str = "") -> str:
-    v = np.linspace(0, 1, size)
-    b, g, r = np.meshgrid(v, v, v, indexing="ij")
-    nodes = np.stack([r, g, b], axis=-1).reshape(-1, 3)
-    rows = fun(nodes)
-    title_line = f'TITLE "{title}"\n' if title is not None else ""
-    return (
-        comments + title_line + f"LUT_3D_SIZE {size}\n" + extra_headers + "\n".join(" ".join(f"{c:.17g}" for c in row) for row in rows) + "\n"
-    )
 
 
 def _write_cube(tmp_path: Path, name: str, text: str) -> Path:
@@ -528,7 +525,7 @@ def test_gpu_log_lut_bytes_and_meta(
     py_f32 = np.frombuffer(py_bytes, "<f4")
     rs_f32 = np.frombuffer(out_bin.read_bytes(), "<f4")
     assert py_f32.dtype == np.float32 and rs_f32.dtype == np.float32
-    assert np.array_equal(py_f32, rs_f32)
+    assert np.array_equal(py_f32, rs_f32, equal_nan=True)
 
 
 def test_gpu_lut_bytes_refusals(tmp_path: Path) -> None:
@@ -578,7 +575,7 @@ def test_identify_and_undeclared_choice_parity(tmp_path: Path, comments: str, ti
             assert set(got[key]) == set(val)
             for ek, ev in val.items():
                 if isinstance(ev, float):
-                    assert abs(got[key][ek] - ev) <= 1e-12 * max(1.0, abs(ev))
+                    _assert_rel(np.asarray([ev], np.float64), np.asarray([got[key][ek]], np.float64), label=f"space_evidence.{ek}")
                 else:
                     assert got[key][ek] == ev, f"space_evidence.{ek}: {got[key][ek]!r} != {ev!r}"
         else:
@@ -665,14 +662,6 @@ def test_scene_xyz_real_dngs(path: Path, tmp_path: Path) -> None:
 # ---- WASM matches native ----
 
 
-def _write_huge_npy_header(path: Path, height: int, width: int) -> Path:
-    body = f"{{'descr': '|u1', 'fortran_order': False, 'shape': ({height}, {width}, 3), }}"
-    pad = (64 - (10 + len(body) + 1) % 64) % 64
-    header = body.encode("latin1") + b" " * pad + b"\n"
-    path.write_bytes(b"\x93NUMPY\x01\x00" + len(header).to_bytes(2, "little") + header)
-    return path
-
-
 def test_wasm_matches_native_lut(tmp_path: Path) -> None:
     require_cli()
     v = np.linspace(0, 1, 17)
@@ -747,6 +736,19 @@ def test_wasm_matches_native_lut(tmp_path: Path) -> None:
             },
         ]
     )
+    for kind in ("array", "object"):
+        for depth in (128, 129, 20_000):
+            sp = tmp_path / f"space-{kind}-{depth}.json"
+            sp.write_text(space_depth_text(kind, depth), encoding="utf-8")
+            cases_specs.append({"kind": "table", "cube": str(shaper_cube), "space_file": str(sp)})
+            cases_specs.append(
+                {"kind": "apply_u8", "cube": str(shaper_cube), "space_file": str(sp), "rgb_npy": str(rgb_npy), "height": 2, "width": 2}
+            )
+    for kind in ("bare_array", "bare_object"):
+        sp = tmp_path / f"space-{kind}-129.json"
+        sp.write_text(space_depth_text(kind, 129), encoding="utf-8")
+        cases_specs.append({"kind": "table", "cube": str(shaper_cube), "space_file": str(sp)})
+
     for i, item in enumerate(cases_specs):
         p = tmp_path / f"case-{i}.json"
         p.write_text(json.dumps(item), encoding="utf-8")
@@ -754,3 +756,37 @@ def test_wasm_matches_native_lut(tmp_path: Path) -> None:
 
     proc = run_area("lut", manifests, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_float_gate_handles_nan_and_inf() -> None:
+    _assert_rel(np.array([np.nan, np.inf, -np.inf, 1.0]), np.array([np.nan, np.inf, -np.inf, 1.0 + 1e-13]))
+    for a, b in (([np.nan], [0.0]), ([0.0], [np.nan]), ([np.nan], [np.inf]), ([np.inf], [1.0]), ([1.0], [np.inf]), ([np.inf], [-np.inf])):
+        with pytest.raises(pytest.fail.Exception):
+            _assert_rel(np.array(a, dtype=np.float64), np.array(b, dtype=np.float64))
+
+
+def test_json_nesting_limit(tmp_path: Path) -> None:
+    require_cli()
+    cube_path = _write_cube(tmp_path, "id.cube", _cube_text(size=2))
+    for kind in ("array", "object"):
+        for depth, ok in ((128, True), (129, False), (20_000, False)):
+            sp = tmp_path / f"{kind}-{depth}.json"
+            sp.write_text(space_depth_text(kind, depth), encoding="utf-8")
+            code, payload = run_json(
+                [
+                    "lut-table",
+                    "--cube",
+                    str(cube_path),
+                    "--space",
+                    str(sp),
+                    "--out",
+                    str(tmp_path / "t.bin"),
+                    "--meta",
+                    str(tmp_path / "m.json"),
+                ]
+            )
+            err = error_of(code, payload)
+            if ok:
+                assert err is None, (kind, depth, payload)
+            else:
+                assert err is not None and (err.kind, err.message) == ("json", "JSON 嵌套太深"), (kind, depth, err)
