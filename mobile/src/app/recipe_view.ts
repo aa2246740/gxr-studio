@@ -415,10 +415,15 @@ export class RecipeView {
     );
   }
 
+  /** `key` 是烘焙表的身份键（或中性）；交给引擎的是它在显卡里的键。 */
   private show(key: string, label: string): void {
+    const book = this.api.book();
+    const gpu = key === NEUTRAL_BAKE_KEY ? key : book.gpuKey(key);
+    if (!gpu) return;
     this.shown = key;
+    book.pin(key);
     this.strip.closest('.app')?.setAttribute('data-recipe-key', key);
-    this.hooks.look(key, label);
+    this.hooks.look(gpu, label);
   }
 
   /** 校准好了才画配方卡：按列表顺序一张张做烘焙表、请显卡出小图。拖滑块时先停。 */
@@ -460,8 +465,19 @@ export class RecipeView {
       }
       while (alive() && this.hooks.dragging()) await new Promise((done) => setTimeout(done, 120));
       if (!alive()) return;
-      book.ready(key);
-      const out = await engine.thumb({ source, look: { recipe: key, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: GEOMETRY, aspect: null, maxEdge: 192 });
+      // 拿到显卡键就在同一轮里提交，不会被别的表换掉；JS 里已经挤掉了就再做一次。
+      let gpu = book.gpuKey(key);
+      if (!gpu) {
+        try {
+          await book.bake(job.card, scene.unit, scene.iso);
+        } catch {
+          continue;
+        }
+        if (!alive()) return;
+        gpu = book.gpuKey(key);
+        if (!gpu) continue;
+      }
+      const out = await engine.thumb({ source, look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: GEOMETRY, aspect: null, maxEdge: 192 });
       if (!out || !alive()) return;
       const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
       if (!alive()) {

@@ -9,10 +9,12 @@ import { bakeParams, unitIndex, type Card, type DatSummary, type Menu } from '..
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
 
 /**
- * 做好的烘焙表在 JS 里最多留几张。一张约 3.8 MB（683×683 的增益网格），一个单元一个模型 8 个内置加几个用户配方，
- * 两个模型也装得下；更早的丢掉，要用时再做（显卡那边自己最多留 64 张）。
+ * 烘焙表一张约 3.8 MB（683×683 的增益网格）。JS 里最多留 16 张，显卡里最多 24 张（Sol r1 的建议，等真机量过再调）：
+ * 显卡这边用 24 个固定的键轮流装，同一个键再装一次引擎会销毁旧的那份，所以引擎里我们的表永远不超过 24 张。
+ * 舞台正在用的那张不会被换掉。
  */
-const KEEP_BAKES = 24;
+const KEEP_BAKES = 16;
+const GPU_SLOTS = 24;
 
 export interface Pack {
   name: string;
@@ -85,6 +87,12 @@ export class Book {
   private readonly units = new Map<Unit, { generation: number; state: UnitState }>();
   private readonly bakes = new Map<string, Promise<Bake>>();
   private readonly done = new Map<string, Bake>();
+  /** 烘焙表（按身份键）现在装在显卡的哪个固定键上，以及每个固定键上装的是谁；`slotUse` 是最近用过的顺序。 */
+  private readonly slotOf = new Map<string, string>();
+  private readonly ownerOf = new Map<string, string>();
+  private readonly slotUse: string[] = [];
+  /** 舞台正在用的那张（身份键）。它的显卡键不会被别的表占掉。 */
+  private pinned = '';
   private readonly listeners = new Set<() => void>();
   private engine: Engine | null = null;
 
@@ -108,6 +116,15 @@ export class Book {
     this.units.clear();
     this.bakes.clear();
     this.done.clear();
+    // 舞台还在用的那个显卡键先留着（换了相机配方文件或校准数据，新表做好之前照片不变），别的都可以重用。
+    const kept = this.slotOf.get(this.pinned);
+    this.slotOf.clear();
+    this.ownerOf.clear();
+    this.slotUse.length = 0;
+    if (kept) {
+      this.ownerOf.set(kept, this.pinned);
+      this.slotUse.push(kept);
+    }
   }
 
   private nextStamp(): number {
@@ -292,7 +309,7 @@ export class Book {
     return `bake:${this.generation}:${unit}:${modelIso(iso)}:${card.entrySha256}:${card.levels.join(',')}`;
   }
 
-  /** 做好（或拿缓存）这张卡的烘焙表，装进显卡，返回键。失败抛核心的原话。 */
+  /** 做好（或拿缓存）这张卡的烘焙表，返回它的身份键（还没装进显卡，用之前调 gpuKey）。失败抛核心的原话。 */
   async bake(card: Card, unit: Unit, iso: number | null): Promise<string> {
     const key = this.bakeKey(card, unit, iso);
     const params = bakeParams(card, unit);
@@ -314,18 +331,61 @@ export class Book {
         },
       );
     }
-    const made = await job;
-    this.install(key, made);
+    await job;
     return key;
   }
 
-  /** 已经做好的就直接装进显卡（显卡最多留 64 张，被挤掉的再装一次）。没做好返回 false。 */
+  /** 已经做好、拿得到显卡键就是 true。 */
   ready(key: string): boolean {
+    return this.gpuKey(key) !== null;
+  }
+
+  /**
+   * 这张表在显卡里的键；还没装就现在装（占一个空的或最久没用的固定键，不动舞台那张）。JS 里已经没有了返回 null。
+   * 拿到键以后要在同一轮里用掉（setLook、thumb 提交命令都是同步的），之后它可能被别的表占用。
+   */
+  gpuKey(key: string): string | null {
+    const slot = this.slotOf.get(key);
+    if (slot && this.ownerOf.get(slot) === key && this.engine?.hasBake(slot)) {
+      this.touch(slot);
+      const made = this.done.get(key);
+      if (made) this.keep(key, made);
+      return slot;
+    }
     const made = this.done.get(key);
-    if (!made) return false;
+    if (!made || !this.engine) return null;
     this.keep(key, made);
-    this.install(key, made);
-    return true;
+    const next = this.freeSlot();
+    if (!next) return null;
+    const old = this.ownerOf.get(next);
+    if (old) this.slotOf.delete(old);
+    this.engine.addBake(next, made.meta, made.data);
+    this.slotOf.set(key, next);
+    this.ownerOf.set(next, key);
+    this.touch(next);
+    if (import.meta.env.DEV) recordBake(key, made);
+    return next;
+  }
+
+  /** 舞台换成这张了：它的显卡键从此不让出去。 */
+  pin(key: string): void {
+    this.pinned = key;
+  }
+
+  private touch(slot: string): void {
+    const at = this.slotUse.indexOf(slot);
+    if (at >= 0) this.slotUse.splice(at, 1);
+    this.slotUse.push(slot);
+  }
+
+  private freeSlot(): string | null {
+    if (this.slotUse.length < GPU_SLOTS) {
+      for (let i = 0; i < GPU_SLOTS; i++) {
+        const slot = `recipe-gpu-${i}`;
+        if (!this.slotUse.includes(slot)) return slot;
+      }
+    }
+    return this.slotUse.find((slot) => this.ownerOf.get(slot) !== this.pinned) ?? null;
   }
 
   /** 记下一张做好的表，按最近用过的顺序；超过上限丢最久没用的。 */
@@ -340,11 +400,6 @@ export class Book {
     }
   }
 
-  private install(key: string, made: Bake): void {
-    if (!this.engine || this.engine.hasBake(key)) return;
-    this.engine.addBake(key, made.meta, made.data);
-    if (import.meta.env.DEV) recordBake(key, made);
-  }
 }
 
 function copy(view: Uint8Array): ArrayBuffer {

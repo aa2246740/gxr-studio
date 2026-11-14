@@ -372,17 +372,17 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 ### 校准数据：Mac 导出，iPhone 导入
 
-桌面「设置 → 校准数据」多了「导出给 iPhone」（`POST /api/calibration/export-iphone`，`camdata/calib_export.py`）。它把 `calib_dir(home)` 里的 `manifest.json` 和清单列出的每个文件打成一个**不压缩**（stored）的 `GXR 校准数据 YYYY-MM-DD.zip`，放进导出文件夹，重名时加 `-2`、`-3`。写之前逐个核对大小和 SHA-256；缺包、改过、清单不对就拒绝，文案和 `model_for` / `unit_status` 一样。目标文件夹走导出的检查（卡卷、图库），也不能在 Git 工作区里。做好后可以和导出一样「在访达中显示」。
+桌面「设置 → 校准数据」多了「导出给 iPhone」（`POST /api/calibration/export-iphone`，`camdata/calib_export.py`）。它把 `calib_dir(home)` 里的 `manifest.json` 和清单列出的每个文件打成一个**不压缩**（stored）的 `GXR 校准数据 YYYY-MM-DD.zip`，放进导出文件夹，重名时加 `-2`、`-3`。写之前逐个核对大小和 SHA-256，再对包里每个单元、两个 ISO 分支跑一次 `model_for`（原厂 04 指纹要对上当前的相机数据）；缺包、改过、清单不对、模型用不了就拒绝，文案和 `model_for` / `unit_status` 一样。目标文件夹走导出的检查（卡卷、图库），也不能在 Git 工作区里；检查之后只打开一次（`privacy.PrivateDir`），写入、占名字和失败清理都通过这个目录句柄，之后路径被换成链接或目录被移走都不会写到别处。做好后可以和导出一样「在访达中显示」。
 
-手机上在起始页的校准卡或「更多 → 校准数据」里选这个 zip。字节在 Worker 里读：`lib/zip.ts` 只认 stored 条目，压缩、加密、ZIP64、带路径的名字、重名、CRC 不对都拒绝，所有偏移先查边界，坏数据只给原因不抛。`lib/calib.ts` 照 `model_for` 核对版本、单元、文件清单和每个 SHA-256。通过后原样存进 IndexedDB（`gxr-mobile` / `calib`），每次打开页面重新核对一遍。原厂 04 的指纹要等选了 `GXRCE.DAT` 才查：拿 DAT 里这个单元的 04 条目，`sha256(entry[115:211])` 对上 `camera_stock_sha256`，再用两个 ISO 分支各跑一次 `color_bake`（就是建模型那一步）。哪一步不过，这个单元就按没校准处理，校准卡上写桌面的原话。
+手机上在起始页的校准卡或「更多 → 校准数据」里选这个 zip。字节在 Worker 里读：`lib/zip.ts` 只认 stored 条目，压缩、加密、ZIP64、带路径的名字、重名、CRC 不对都拒绝，所有偏移先查边界，坏数据只给原因不抛。`lib/calib.ts` 照 `model_for` 核对版本、单元、文件清单和每个 SHA-256。zip 条目必须正好是 `manifest.json` 加清单列的文件，每个本地头都要和中央目录的名字、标志、长度、CRC 一致。File 直接交给 Worker：先看大小，超过 64 MiB 一个字节都不读；核对通过后由 Worker 原样存进 IndexedDB（`gxr-mobile` / `calib`），主线程不读也不复制整包。删除留一个时间戳，晚到的旧导入不会把删掉的包写回去。每次打开页面也在 Worker 里重新核对一遍。原厂 04 的指纹要等选了 `GXRCE.DAT` 才查：拿 DAT 里这个单元的 04 条目，`sha256(entry[115:211])` 对上 `camera_stock_sha256`，再用两个 ISO 分支各跑一次 `color_bake`（就是建模型那一步）。哪一步不过，这个单元就按没校准处理，校准卡上写桌面的原话。
 
 ### 相机配方文件和配方卡
 
-`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`camdata_menu` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。
+`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`camdata_menu` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。超过 16 MiB 的不读。每次选 DAT、清空照片都让 DAT 的版本加一，导入、删除、恢复校准数据让校准的版本加一；异步结果提交前核对版本，晚到的只丢掉。
 
 配方卡照桌面 `CameraData.listing` 和 `recipes.js`：这张照片所在单元的内置 8 个（`BASE_NAMES`，说明用 `look_model.js` 的表），文件里对这个单元开放的 Looks，相机里的用户配方。镜头单元按 `unit_of_lens`（镜头名先取相机 JPG 的 `LensModel`，没有再取 DNG 的，再没有用 `UniqueCameraModel` 去掉「RICOH 」），认不出用 50mm。模型按 `model_for`：ISO ≥ 566 用 1600，否则用 200。「未校准」照 `RenderService.plan`：认不出单元、ISO 不在实拍校准范围、配方单元不是照片的单元，原因用 `calibration_note.js` 的句子。
 
-每张卡的烘焙表是 `color_bake(底子条目, 原厂 04, 菜单, ctx, ring, {"step":0.375,"knobs":{levels, unit, slot}})`，和桌面 `CameraData.resolve` 一样每次从底子重算旋钮（默认档位也走一遍 `knobs.apply`）。缓存键是（单元、模型、底子 sha256、档位），JS 里最多留 24 张。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、带档位的用户配方）。
+每张卡的烘焙表是 `color_bake(底子条目, 原厂 04, 菜单, ctx, ring, {"step":0.375,"knobs":{levels, unit, slot}})`，和桌面 `CameraData.resolve` 一样每次从底子重算旋钮（默认档位也走一遍 `knobs.apply`）。缓存键是（单元、模型、底子 sha256、档位）。一张表约 3.8 MB，JS 里最多留 16 张；显卡里用 24 个固定的键轮流装（同一个键再装一次引擎会销毁旧的那份），舞台正在用的那张不让出去。这两个数等真机量过再调。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、带档位的用户配方）。
 
 点卡就把选择记进这张照片的编辑状态（`photo.choice`），和调整放在一起，换片、重新选同一张都留着。表已经在缓存里就当帧换上；还在做时照片留着上一张，做好了而且还是要它才换。长按看原图是中性转换、调整归零。
 

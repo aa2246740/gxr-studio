@@ -346,3 +346,5 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert "太大" in cases["oversized"]["error"]
     assert cases["inLimit"] == {"ok": True, "packFile": 1, "reads": 0, "sha": "OK"}
     assert cases["idb"] == {"afterLate": None, "afterNew": "b.zip", "cleared": None}
+    # 缓存上限：引擎里我们的表不超过 24 张，JS 不超过 16 张，舞台那张一直在。
+    assert cases["caps"] == {"engineKeys": 24, "js": 16, "stageKept": True, "stage": True}

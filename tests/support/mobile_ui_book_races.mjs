@@ -177,6 +177,27 @@ try {
       const ok = await run;
       result.inLimit = { ok, packFile: calls.packFile, reads: calls.read, sha: book.pack?.manifestSha256 ?? null };
     }
+    // 8. 缓存上限（Sol r1）：JS 16 张，显卡 24 张；舞台那张不会被挤掉。
+    {
+      const { book } = make();
+      const added = new Map();
+      const engine = {
+        hasBake: (k) => added.has(k),
+        addBake: (k, meta, data) => added.set(k, data),
+      };
+      book.attach(engine);
+      book.io.bake = async () => ({ meta: { nx: 1, ny: 1, origin: [0, 0], step: 0.375 }, data: new ArrayBuffer(16) });
+      book.dat = { name: 'GXRCE.DAT', read: { summary: '{}', menu: '{}', entries: new Uint8Array(24 * 552) }, summary: {}, menu: {} };
+      const pair = { ctx: 'c', ring: 'r' };
+      book.pack = { name: 'p', savedAt: 1, manifestSha256: 'x', units: [{ unit: 'jlaunch', stockSha256: '', models: { 200: pair, 1600: pair } }], files: new Map([['c', new Uint8Array(1)], ['r', new Uint8Array(1)]]) };
+      const card = (i) => ({ id: `builtin:${i}`, kind: 'builtin', name: String(i), desc: null, slot: 1, entrySha256: `e${i}`, levels: [i], error: null, pending: false });
+      const first = await book.bake(card(0), 'jlaunch', 200);
+      const stage = book.gpuKey(first);
+      book.pin(first);
+      for (let i = 1; i < 40; i++) book.gpuKey(await book.bake(card(i), 'jlaunch', 200));
+      const stillStage = book.gpuKey(first);
+      result.caps = { engineKeys: added.size, js: book.done.size, stageKept: stillStage === stage, stage: !!stage };
+    }
     // 7. IndexedDB：删除留下的时间比晚到的旧导入新，旧导入不写；更新的导入照常写。
     {
       const idb = await import('/src/lib/idb.ts');
