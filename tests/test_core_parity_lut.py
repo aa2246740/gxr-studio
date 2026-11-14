@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +35,19 @@ from gxr_studio.raw.dng import RawDecodeError
 from gxr_studio.render.params import EditError
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
-from support.lut_cases import IDENTIFY_CASES, space_depth_text
+from support.lut_cases import IDENTIFY_CASES, space_depth_text, write_wasm_lut_manifests
+from support.lut_cases import assert_meta_same as _assert_meta_same
+from support.lut_cases import assert_rel as _assert_rel
 from support.lut_cases import cube_text as _cube_text
-from support.lut_cases import write_huge_npy_header as _write_huge_npy_header
+from support.lut_oracle import (
+    GRADE_MUL,
+    GRADE_OFF,
+    THRESHOLD_OFF,
+    SeqTarget,
+    fma_render_display_px,
+    seq_apply,
+    seq_display_lut_u8,
+)
 from support.wasm_check import run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -62,35 +73,6 @@ REAL = _real_dngs()
 
 def _real_id(path: Path) -> str:
     return path.relative_to(CAPTURES).as_posix().replace("/", "_")
-
-
-def _assert_rel(python: np.ndarray, rust: np.ndarray, *, label: str = "value") -> None:
-    assert python.shape == rust.shape, f"{label}: shape {python.shape} != {rust.shape}"
-    assert python.dtype == np.float64 and rust.dtype == np.float64
-    py_nan = np.isnan(python)
-    rs_nan = np.isnan(rust)
-    one_nan = py_nan ^ rs_nan
-    inf_bad = (np.isinf(python) | np.isinf(rust)) & (python != rust)
-    finite = np.isfinite(python) & np.isfinite(rust)
-    limit = np.where(finite, 1e-12 * np.maximum(1.0, np.abs(python)), 0.0)
-    diff = np.zeros_like(python)
-    diff[finite] = np.abs(python[finite] - rust[finite])
-    bad = one_nan | inf_bad | (finite & ~(diff <= limit))
-    if np.any(bad):
-        idx = tuple(int(v) for v in np.argwhere(bad)[0])
-        pytest.fail(f"{label} differs at {idx}: python={python[idx]!r} rust={rust[idx]!r} diff={diff[idx]!r}")
-
-
-def _assert_meta_same(py_meta: dict[str, Any], rs_meta: dict[str, Any]) -> None:
-    assert set(py_meta) == set(rs_meta)
-    for key, py_val in py_meta.items():
-        rs_val = rs_meta[key]
-        if key in ("domain_min", "domain_max", "range3", "xyz_to_input", "out_to_srgb"):
-            py_arr = np.asarray(py_val, np.float64)
-            rs_arr = np.asarray(rs_val, np.float64)
-            _assert_rel(py_arr, rs_arr, label=f"meta.{key}")
-        else:
-            assert py_val == rs_val, f"meta.{key}: {py_val!r} != {rs_val!r}"
 
 
 def _write_cube(tmp_path: Path, name: str, text: str) -> Path:
@@ -312,37 +294,128 @@ def test_target_render_and_apply_u8_parity(
     }
     target = _python_target(py_cube, **spec)
 
+    oracle = SeqTarget(py_cube, **spec)
     rng = np.random.default_rng(42)
     rgb = rng.integers(0, 256, (12, 10, 3), dtype=np.uint8)
-    # gamma24 encode has infinite derivative at x=0 (|x|**(1/2.4)): Accelerate BLAS
-    # dgemm FMA residual (~1.5e-17) on rgb==0 turns into ~1e-7 in float64 Target.render,
-    # even though _apply uint8 and 256^3 display_lut_u8 match Python with 0 diffs.
-    rgb_f64_in = np.maximum(rgb, 1) if input_space == "gamma24" else rgb
-    rgb_f64_npy = tmp_path / "rgb_f64.npy"
-    np.save(rgb_f64_npy, rgb_f64_in)
     rgb_npy = tmp_path / "rgb.npy"
     np.save(rgb_npy, rgb)
 
     xyz = None
-    cli_f64_args = ["lut-apply", "--cube", str(cube_path), "--space", json.dumps(spec), "--rgb", str(rgb_f64_npy)]
-    cli_u8_args = ["lut-apply", "--cube", str(cube_path), "--space", json.dumps(spec), "--rgb", str(rgb_npy)]
+    cli_args = ["lut-apply", "--cube", str(cube_path), "--space", json.dumps(spec), "--rgb", str(rgb_npy)]
     if input_space not in spaces.DISPLAY:
         xyz = np.exp(rng.uniform(np.log(0.005), np.log(2.0), (12, 10, 3)))
         xyz_npy = tmp_path / "xyz.npy"
         np.save(xyz_npy, xyz)
-        cli_f64_args.extend(["--xyz", str(xyz_npy)])
-        cli_u8_args.extend(["--xyz", str(xyz_npy)])
+        cli_args.extend(["--xyz", str(xyz_npy)])
 
-    py_f64 = target.render(rgb_f64_in, xyz)
-    rs_f64 = run_npy(cli_f64_args, tmp_path / "out_f64.npy")
-    _assert_rel(py_f64, rs_f64, label=f"render-{input_space}->{output_space}")
+    or_f64 = oracle.render(rgb, xyz)
+    py_f64 = target.render(rgb, xyz)
+    rs_f64 = run_npy(cli_args, tmp_path / "out_f64.npy")
+    _assert_rel(or_f64, rs_f64, label=f"render-{input_space}->{output_space}")
+    if sys.platform == "darwin" and input_space == "gamma24":
+        # Exclude the documented BLAS FMA point [141, 136, 0] at (0, 8) checked by dedicated per-point test.
+        mask = np.ones_like(py_f64, dtype=bool)
+        mask[0, 8, :2] = False
+        _assert_rel(py_f64[mask], or_f64[mask], label=f"oracle-vs-py-{input_space}->{output_space}")
+    else:
+        _assert_rel(py_f64, or_f64, label=f"oracle-vs-py-{input_space}->{output_space}")
 
+    or_u8 = seq_apply(oracle, rgb, xyz)
     py_u8 = _apply(target, rgb, xyz)
-    rs_u8 = run_npy([*cli_u8_args, "--u8"], tmp_path / "out_u8.npy")
-    assert rs_u8.dtype == np.uint8 and py_u8.shape == rs_u8.shape
-    if not np.array_equal(py_u8, rs_u8):
-        idx = tuple(int(v) for v in np.argwhere(py_u8 != rs_u8)[0])
-        pytest.fail(f"u8 differs at {idx} ({input_space}->{output_space}): python={int(py_u8[idx])} rust={int(rs_u8[idx])} f64={py_f64[idx]!r}")
+    rs_u8 = run_npy([*cli_args, "--u8"], tmp_path / "out_u8.npy")
+    assert rs_u8.dtype == np.uint8 and or_u8.shape == rs_u8.shape
+    assert np.array_equal(or_u8, rs_u8), f"u8 differs vs oracle ({input_space}->{output_space})"
+    assert np.array_equal(py_u8, rs_u8), f"u8 differs vs python ({input_space}->{output_space})"
+
+
+def test_blas_gamma24_and_threshold_points(tmp_path: Path) -> None:
+    """PORT-WAVE-1 platform BLAS rule: gamma24 [141, 136, 0] float64 and threshold.cube CPU u8 points."""
+    require_cli()
+    rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
+    assert rgb[0, 8].tolist() == [141, 136, 0]
+    rgb_npy = tmp_path / "rgb.npy"
+    np.save(rgb_npy, rgb)
+    spec = {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"}
+
+    # 1) grade.cube float64 point at (0, 8, 0) (plus (0, 8, 1))
+    grade_cube = _write_cube(tmp_path, "grade.cube", _cube_text(lambda x: np.clip(x * GRADE_MUL + GRADE_OFF, 0, 1), size=9))
+    py_grade = Cube.read(grade_cube)
+    or_grade_f64 = SeqTarget(py_grade, **spec).render(rgb)
+    py_grade_f64 = _python_target(py_grade, **spec).render(rgb)
+    rs_grade_f64 = run_npy(["lut-apply", "--cube", str(grade_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy)], tmp_path / "grade.npy")
+    assert np.load(rgb_npy)[0, 8].tolist() == [141, 136, 0]
+    _assert_rel(or_grade_f64, rs_grade_f64, label="grade-vs-oracle")
+    if sys.platform == "darwin":
+        assert abs(float(py_grade_f64[0, 8, 0]) - float(or_grade_f64[0, 8, 0])) > 1e-7
+        fma_px = fma_render_display_px(py_grade, rgb[0, 8], **spec)
+        assert float(py_grade_f64[0, 8, 0]) == float(fma_px[0]) and float(py_grade_f64[0, 8, 1]) == float(fma_px[1])
+    one_grade = _python_target(py_grade, **spec).render(rgb[0:1, 8:9, :])
+    _assert_rel(or_grade_f64[0:1, 8:9, :], one_grade, label="grade-1px-vs-oracle")
+
+    # 2) threshold.cube CPU u8 point at (0, 8, 0): 188 (Accelerate batch) vs 189 (oracle & Rust)
+    thresh_cube = _write_cube(
+        tmp_path,
+        "threshold.cube",
+        _cube_text(lambda x: np.clip(x * GRADE_MUL + THRESHOLD_OFF, 0, 1), size=9, title="review threshold synthetic"),
+    )
+    py_thresh = Cube.read(thresh_cube)
+    or_t = SeqTarget(py_thresh, **spec)
+    py_t = _python_target(py_thresh, **spec)
+    or_t_f64 = or_t.render(rgb)
+    py_t_f64 = py_t.render(rgb)
+    rs_t_f64 = run_npy(["lut-apply", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy)], tmp_path / "t_f64.npy")
+    _assert_rel(or_t_f64, rs_t_f64, label="threshold-vs-oracle")
+    or_t_u8 = seq_apply(or_t, rgb)
+    py_t_u8 = _apply(py_t, rgb)
+    rs_t_u8 = run_npy(
+        ["lut-apply", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--rgb", str(rgb_npy), "--u8"], tmp_path / "t_u8.npy"
+    )
+    assert np.array_equal(or_t_u8, rs_t_u8)
+    assert int(rs_t_u8[0, 8, 0]) == int(or_t_u8[0, 8, 0]) == 189
+    if sys.platform == "darwin":
+        diff_idx = np.argwhere(py_t_u8 != rs_t_u8).tolist()
+        assert diff_idx == [[0, 8, 0]], diff_idx
+        assert int(py_t_u8[0, 8, 0]) == 188
+        fma_t = fma_render_display_px(py_thresh, rgb[0, 8], **spec)
+        assert float(py_t_f64[0, 8, 0]) == float(fma_t[0]) < 188.5 < float(rs_t_f64[0, 8, 0])
+    assert int(_apply(py_t, rgb[0:1, 8:9, :])[0, 0, 0]) == 189
+
+
+def test_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path) -> None:
+    """Full 256^3 GPU table for threshold.cube: exact vs oracle; sole Accelerate diff at byte 139828."""
+    require_cli()
+    thresh_cube = _write_cube(
+        tmp_path,
+        "threshold.cube",
+        _cube_text(lambda x: np.clip(x * GRADE_MUL + THRESHOLD_OFF, 0, 1), size=9, title="review threshold synthetic"),
+    )
+    py_thresh = Cube.read(thresh_cube)
+    spec = {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"}
+    or_bytes = seq_display_lut_u8(SeqTarget(py_thresh, **spec))
+    py_bytes, py_meta, py_reason = lut_bytes(_python_target(py_thresh, **spec))
+    assert py_reason is None and py_bytes is not None and py_meta is not None
+
+    out_bin, out_meta = tmp_path / "t256.bin", tmp_path / "t256.json"
+    code, payload = run_json(
+        ["lut-table", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--out", str(out_bin), "--meta", str(out_meta)]
+    )
+    assert error_of(code, payload) is None
+    assert json.loads(out_meta.read_text(encoding="utf-8")) == py_meta
+    rs_bytes = out_bin.read_bytes()
+    or_arr = np.frombuffer(or_bytes, np.uint8)
+    py_arr = np.frombuffer(py_bytes, np.uint8)
+    rs_arr = np.frombuffer(rs_bytes, np.uint8)
+    assert np.array_equal(or_arr, rs_arr)
+    byte_off = (0 * 256 * 256 + 136 * 256 + 141) * 4 + 0  # [b=0, g=136, r=141, c=0] == 139828
+    assert byte_off == 139828 and int(rs_arr[byte_off]) == int(or_arr[byte_off]) == 189
+    if sys.platform == "darwin":
+        diffs = np.flatnonzero(py_arr != rs_arr).tolist()
+        assert diffs == [byte_off], diffs
+        assert int(py_arr[byte_off]) == 188
+        fma_t = fma_render_display_px(py_thresh, np.array([141, 136, 0], np.uint8), **spec)
+        assert float(fma_t[0]) < 188.5
+    px1 = np.array([[[141, 136, 0]]], dtype=np.uint8)
+    assert int(_apply(_python_target(py_thresh, **spec), px1)[0, 0, 0]) == 189
 
 
 def test_apply_error_paths(tmp_path: Path) -> None:
@@ -626,7 +699,7 @@ def _check_scene_xyz(dng_path: Path, codes: np.ndarray, out_path: Path) -> None:
         assert payload["affine"] is not None
         _assert_rel(np.asarray(py_aff["A"], np.float64), np.asarray(payload["affine"]["A"], np.float64), label="affine.A")
         _assert_rel(np.asarray(py_aff["b"], np.float64), np.asarray(payload["affine"]["b"], np.float64), label="affine.b")
-        # Also verify affine_of matches xyz within a few ulps on the same codes
+        # Also verify affine_of matches xyz within 1e-12 relative (measured up to 44 ULP)
         aff_xyz = codes @ np.asarray(payload["affine"]["A"], np.float64).T + np.asarray(payload["affine"]["b"], np.float64)
         _assert_rel(rs_xyz, aff_xyz, label="affine_of vs xyz")
 
@@ -664,97 +737,7 @@ def test_scene_xyz_real_dngs(path: Path, tmp_path: Path) -> None:
 
 def test_wasm_matches_native_lut(tmp_path: Path) -> None:
     require_cli()
-    v = np.linspace(0, 1, 17)
-    nodes = np.clip(np.array([[r, g, b] for b in v for g in v for r in v]) * [0.86, 0.97, 1.05], 0, 1)
-    shaper_cube = tmp_path / "shaper17.cube"
-    shaper_cube.write_text(
-        "LUT_1D_SIZE 3\nLUT_3D_SIZE 17\n0 0 0\n0.6 0.55 0.5\n1 1 1\n" + "\n".join(" ".join(f"{c:.17g}" for c in row) for row in nodes) + "\n",
-        encoding="utf-8",
-    )
-    log_cube = tmp_path / "Leica_L-Log_warm.cube"
-    log_cube.write_text(_cube_text(lambda x: x * [0.95, 1.0, 1.05], size=5), encoding="utf-8")
-    bad_cube = tmp_path / "bad.cube"
-    bad_cube.write_text("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nLUT_3D_INPUT_RANGE 0 1\n" + "0 0 0\n" * 8, encoding="utf-8")
-
-    rgb_u8 = np.array([[[10, 20, 30], [128, 64, 32]], [[200, 150, 100], [255, 255, 255]]], dtype=np.uint8)
-    rgb_npy = tmp_path / "rgb_u8.npy"
-    np.save(rgb_npy, rgb_u8)
-    xyz_f64 = np.full((2, 2, 3), 0.18, dtype=np.float64)
-    xyz_npy = tmp_path / "xyz_f64.npy"
-    np.save(xyz_npy, xyz_f64)
-
-    manifests: list[Path] = [shaper_cube, log_cube, bad_cube]
-    cases_specs = [
-        {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "srgb", "output_space": "vlog"}},
-        {"kind": "table", "cube": str(log_cube), "space": {"input_space": "llog", "output_space": "gamma24"}},
-        {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "llog", "output_space": "srgb"}},
-        {
-            "kind": "apply_u8",
-            "cube": str(shaper_cube),
-            "space": {"input_space": "srgb", "output_space": "vlog"},
-            "rgb_npy": str(rgb_npy),
-            "height": 2,
-            "width": 2,
-        },
-        {
-            "kind": "apply_u8",
-            "cube": str(log_cube),
-            "space": {"input_space": "llog", "output_space": "srgb"},
-            "rgb_npy": str(rgb_npy),
-            "xyz_npy": str(xyz_npy),
-            "height": 2,
-            "width": 2,
-        },
-        {
-            "kind": "apply_u8",
-            "cube": str(log_cube),
-            "space": {"input_space": "llog", "output_space": "srgb"},
-            "rgb_npy": str(rgb_npy),
-            "height": 2,
-            "width": 2,
-        },
-    ]
-    huge1 = _write_huge_npy_header(tmp_path / "huge-4294967295.npy", 4294967295, 4294967295)
-    huge2 = _write_huge_npy_header(tmp_path / "huge-2147483648.npy", 2147483648, 1)
-    cases_specs.extend(
-        [
-            {
-                "kind": "apply_u8",
-                "cube": str(shaper_cube),
-                "space": {"input_space": "srgb", "output_space": "srgb"},
-                "rgb_npy": str(huge1),
-                "height": 4294967295,
-                "width": 4294967295,
-            },
-            {
-                "kind": "apply_u8",
-                "cube": str(shaper_cube),
-                "space": {"input_space": "srgb", "output_space": "srgb"},
-                "rgb_npy": str(huge2),
-                "height": 2147483648,
-                "width": 1,
-            },
-        ]
-    )
-    for kind in ("array", "object"):
-        for depth in (128, 129, 20_000):
-            sp = tmp_path / f"space-{kind}-{depth}.json"
-            sp.write_text(space_depth_text(kind, depth), encoding="utf-8")
-            cases_specs.append({"kind": "table", "cube": str(shaper_cube), "space_file": str(sp)})
-            cases_specs.append(
-                {"kind": "apply_u8", "cube": str(shaper_cube), "space_file": str(sp), "rgb_npy": str(rgb_npy), "height": 2, "width": 2}
-            )
-    for kind in ("bare_array", "bare_object"):
-        sp = tmp_path / f"space-{kind}-129.json"
-        sp.write_text(space_depth_text(kind, 129), encoding="utf-8")
-        cases_specs.append({"kind": "table", "cube": str(shaper_cube), "space_file": str(sp)})
-
-    for i, item in enumerate(cases_specs):
-        p = tmp_path / f"case-{i}.json"
-        p.write_text(json.dumps(item), encoding="utf-8")
-        manifests.append(p)
-
-    proc = run_area("lut", manifests, tmp_path)
+    proc = run_area("lut", write_wasm_lut_manifests(tmp_path), tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 

@@ -87,3 +87,128 @@ def write_huge_npy_header(path: Path, height: int, width: int) -> Path:
     header = body.encode("latin1") + b" " * pad + b"\n"
     path.write_bytes(b"\x93NUMPY\x01\x00" + len(header).to_bytes(2, "little") + header)
     return path
+
+
+def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
+    """Build synthetic cubes, npy inputs, depth-limit specs, and JSON manifests for `wasm_cases/lut.mjs`."""
+    import json
+
+    v = np.linspace(0, 1, 17)
+    nodes = np.clip(np.array([[r, g, b] for b in v for g in v for r in v]) * [0.86, 0.97, 1.05], 0, 1)
+    shaper_cube = tmp_path / "shaper17.cube"
+    shaper_cube.write_text(
+        "LUT_1D_SIZE 3\nLUT_3D_SIZE 17\n0 0 0\n0.6 0.55 0.5\n1 1 1\n" + "\n".join(" ".join(f"{c:.17g}" for c in row) for row in nodes) + "\n",
+        encoding="utf-8",
+    )
+    log_cube = tmp_path / "Leica_L-Log_warm.cube"
+    log_cube.write_text(cube_text(lambda x: x * [0.95, 1.0, 1.05], size=5), encoding="utf-8")
+    bad_cube = tmp_path / "bad.cube"
+    bad_cube.write_text("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nLUT_3D_INPUT_RANGE 0 1\n" + "0 0 0\n" * 8, encoding="utf-8")
+
+    rgb_u8 = np.array([[[10, 20, 30], [128, 64, 32]], [[200, 150, 100], [255, 255, 255]]], dtype=np.uint8)
+    rgb_npy = tmp_path / "rgb_u8.npy"
+    np.save(rgb_npy, rgb_u8)
+    xyz_f64 = np.full((2, 2, 3), 0.18, dtype=np.float64)
+    xyz_npy = tmp_path / "xyz_f64.npy"
+    np.save(xyz_npy, xyz_f64)
+
+    manifests: list[Path] = [shaper_cube, log_cube, bad_cube]
+    cases_specs: list[dict[str, Any]] = [
+        {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "srgb", "output_space": "vlog"}},
+        {"kind": "table", "cube": str(log_cube), "space": {"input_space": "llog", "output_space": "gamma24"}},
+        {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "llog", "output_space": "srgb"}},
+        {
+            "kind": "apply_u8",
+            "cube": str(shaper_cube),
+            "space": {"input_space": "srgb", "output_space": "vlog"},
+            "rgb_npy": str(rgb_npy),
+            "height": 2,
+            "width": 2,
+        },
+        {
+            "kind": "apply_u8",
+            "cube": str(log_cube),
+            "space": {"input_space": "llog", "output_space": "srgb"},
+            "rgb_npy": str(rgb_npy),
+            "xyz_npy": str(xyz_npy),
+            "height": 2,
+            "width": 2,
+        },
+        {
+            "kind": "apply_u8",
+            "cube": str(log_cube),
+            "space": {"input_space": "llog", "output_space": "srgb"},
+            "rgb_npy": str(rgb_npy),
+            "height": 2,
+            "width": 2,
+        },
+    ]
+    huge1 = write_huge_npy_header(tmp_path / "huge-4294967295.npy", 4294967295, 4294967295)
+    huge2 = write_huge_npy_header(tmp_path / "huge-2147483648.npy", 2147483648, 1)
+    cases_specs.extend(
+        [
+            {
+                "kind": "apply_u8",
+                "cube": str(shaper_cube),
+                "space": {"input_space": "srgb", "output_space": "srgb"},
+                "rgb_npy": str(huge1),
+                "height": 4294967295,
+                "width": 4294967295,
+            },
+            {
+                "kind": "apply_u8",
+                "cube": str(shaper_cube),
+                "space": {"input_space": "srgb", "output_space": "srgb"},
+                "rgb_npy": str(huge2),
+                "height": 2147483648,
+                "width": 1,
+            },
+        ]
+    )
+    for kind in ("array", "object"):
+        for depth in (128, 129, 20_000):
+            sp = tmp_path / f"space-{kind}-{depth}.json"
+            sp.write_text(space_depth_text(kind, depth), encoding="utf-8")
+            cases_specs.append({"kind": "table", "cube": str(shaper_cube), "space_file": str(sp)})
+            cases_specs.append(
+                {"kind": "apply_u8", "cube": str(shaper_cube), "space_file": str(sp), "rgb_npy": str(rgb_npy), "height": 2, "width": 2}
+            )
+    for kind in ("bare_array", "bare_object"):
+        sp = tmp_path / f"space-{kind}-129.json"
+        sp.write_text(space_depth_text(kind, 129), encoding="utf-8")
+        cases_specs.append({"kind": "table", "cube": str(shaper_cube), "space_file": str(sp)})
+
+    for i, item in enumerate(cases_specs):
+        p = tmp_path / f"case-{i}.json"
+        p.write_text(json.dumps(item), encoding="utf-8")
+        manifests.append(p)
+    return manifests
+
+
+def assert_rel(python: np.ndarray, rust: np.ndarray, *, label: str = "value") -> None:
+    import pytest
+
+    assert python.shape == rust.shape, f"{label}: shape {python.shape} != {rust.shape}"
+    assert python.dtype == np.float64 and rust.dtype == np.float64
+    py_nan = np.isnan(python)
+    rs_nan = np.isnan(rust)
+    one_nan = py_nan ^ rs_nan
+    inf_bad = (np.isinf(python) | np.isinf(rust)) & (python != rust)
+    finite = np.isfinite(python) & np.isfinite(rust)
+    limit = np.where(finite, 1e-12 * np.maximum(1.0, np.abs(python)), 0.0)
+    diff = np.zeros_like(python)
+    diff[finite] = np.abs(python[finite] - rust[finite])
+    bad = one_nan | inf_bad | (finite & ~(diff <= limit))
+    if np.any(bad):
+        idx = tuple(int(v) for v in np.argwhere(bad)[0])
+        pytest.fail(f"{label} differs at {idx}: python={python[idx]!r} rust={rust[idx]!r} diff={diff[idx]!r}")
+
+
+def assert_meta_same(py_meta: dict[str, Any], rs_meta: dict[str, Any]) -> None:
+    assert set(py_meta) == set(rs_meta)
+    for key, py_val in py_meta.items():
+        rs_val = rs_meta[key]
+        if key in ("domain_min", "domain_max", "range3", "xyz_to_input", "out_to_srgb"):
+            assert_rel(np.asarray(py_val, np.float64), np.asarray(rs_val, np.float64), label=f"meta.{key}")
+        else:
+            assert py_val == rs_val, f"meta.{key}: {py_val!r} != {rs_val!r}"
