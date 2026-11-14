@@ -425,3 +425,102 @@ def check_blas_gamma24_and_threshold_points(tmp_path: Path, py_target_fn: Callab
         fma_t = fma_render_display_px(py_thresh, rgb[0, 8], **spec)
         assert float(py_t_f64[0, 8, 0]) == float(fma_t[0]) < 188.5 < float(rs_t_f64[0, 8, 0])
     assert int(_apply_ref(py_t, rgb[0:1, 8:9, :])[0, 0, 0]) == 189
+
+
+def check_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path, py_target_fn: Callable[..., Any]) -> None:
+    """Full 256^3 GPU table for threshold.cube: exact vs oracle; sole Accelerate diff at byte 139828."""
+    from gxr_studio.gpu.tables import lut_bytes
+    from support.core_cli import error_of, run_json
+    from support.lut_cases import cube_text
+    from support.lut_oracle import SeqTarget, fma_render_display_px, seq_display_lut_u8
+
+    thresh_cube = tmp_path / "threshold.cube"
+    thresh_cube.write_text(
+        cube_text(lambda x: np.clip(x * GRADE_MUL + THRESHOLD_OFF, 0, 1), size=9, title="review threshold synthetic"), encoding="utf-8"
+    )
+    py_thresh = Cube.read(thresh_cube)
+    spec = {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"}
+    or_bytes = seq_display_lut_u8(SeqTarget(py_thresh, **spec))
+    py_bytes, py_meta, py_reason = lut_bytes(py_target_fn(py_thresh, **spec))
+    assert py_reason is None and py_bytes is not None and py_meta is not None
+
+    out_bin, out_meta = tmp_path / "t256.bin", tmp_path / "t256.json"
+    code, payload = run_json(
+        ["lut-table", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--out", str(out_bin), "--meta", str(out_meta)]
+    )
+    assert error_of(code, payload) is None and json.loads(out_meta.read_text(encoding="utf-8")) == py_meta
+    rs_bytes = out_bin.read_bytes()
+
+    _run_rs_px = make_rust_px_runner(tmp_path, thresh_cube, spec, "px_probe")
+    n_or = assert_table_u8_boundary_gate(
+        or_bytes, rs_bytes, ref_render_px=SeqTarget(py_thresh, **spec).render, rust_render_px=_run_rs_px, label="threshold-256-vs-oracle"
+    )
+    assert n_or == 0
+    byte_off = (0 * 256 * 256 + 136 * 256 + 141) * 4 + 0  # [b=0, g=136, r=141, c=0] == 139828
+    assert byte_off == 139828 and rs_bytes[byte_off] == or_bytes[byte_off] == 189
+    n_py = assert_table_u8_gate_b(
+        py_bytes,
+        rs_bytes,
+        or_bytes,
+        or_render_px=SeqTarget(py_thresh, **spec).render,
+        rust_render_px=_run_rs_px,
+        label="threshold-256-vs-python",
+        py_render_px=py_target_fn(py_thresh, **spec).render,
+    )
+    if sys.platform == "darwin":
+        assert n_py == 1 and py_bytes[byte_off] == 188
+        assert float(fma_render_display_px(py_thresh, np.array([141, 136, 0], np.uint8), **spec)[0]) < 188.5
+    else:
+        assert n_py == 0
+    assert int(_apply_ref(py_target_fn(py_thresh, **spec), np.array([[[141, 136, 0]]], dtype=np.uint8))[0, 0, 0]) == 189
+
+
+def check_shaper_zero_cases(tmp_path: Path, py_target_fn: Callable[..., Any]) -> None:
+    """Verify all 42 near-zero shaper constructions pass Gate A (1e-12) and Gate B (|diff| <= 1)."""
+    from support.lut_cases import SHAPER_APPLELOG_SPEC, shaper_applelog_rgb, shaper_zero_cases
+
+    rgb = shaper_applelog_rgb()
+    for label, cube_txt in shaper_zero_cases():
+        case_dir = tmp_path / label
+        case_dir.mkdir(exist_ok=True)
+        check_threshold_cpu_case(case_dir, label, cube_txt, SHAPER_APPLELOG_SPEC, py_target_fn, rgb_override=rgb, expect_or_diffs=0)
+
+
+def check_shaper_applelog_full_table(tmp_path: Path, py_target_fn: Callable[..., Any]) -> tuple[int, int]:
+    """Full 256^3 GPU display table for Sol r4 shaper-applelog.cube: Gate A=0, Gate B <= 1 code."""
+    from gxr_studio.gpu.tables import lut_bytes
+    from support.core_cli import error_of, run_json
+    from support.lut_cases import SHAPER_APPLELOG_CUBE, SHAPER_APPLELOG_SPEC
+    from support.lut_oracle import SeqTarget, seq_display_lut_u8
+
+    cube_path = tmp_path / "shaper-applelog.cube"
+    cube_path.write_text(SHAPER_APPLELOG_CUBE, encoding="utf-8")
+    py_cube = Cube.read(cube_path)
+    or_target = SeqTarget(py_cube, **SHAPER_APPLELOG_SPEC)
+    py_target = py_target_fn(py_cube, **SHAPER_APPLELOG_SPEC)
+    or_bytes = seq_display_lut_u8(or_target)
+    py_bytes, py_meta, py_reason = lut_bytes(py_target)
+    assert py_reason is None and py_bytes is not None and py_meta is not None
+
+    out_bin, out_meta = tmp_path / "sa256.bin", tmp_path / "sa256.json"
+    code, payload = run_json(
+        ["lut-table", "--cube", str(cube_path), "--space", json.dumps(SHAPER_APPLELOG_SPEC), "--out", str(out_bin), "--meta", str(out_meta)]
+    )
+    assert error_of(code, payload) is None and json.loads(out_meta.read_text(encoding="utf-8")) == py_meta
+    rs_bytes = out_bin.read_bytes()
+
+    _run_rs_px = make_rust_px_runner(tmp_path, cube_path, SHAPER_APPLELOG_SPEC, "sa_px")
+    n_or = assert_table_u8_boundary_gate(
+        or_bytes, rs_bytes, ref_render_px=or_target.render, rust_render_px=_run_rs_px, label="shaper-applelog-256-vs-oracle"
+    )
+    assert n_or == 0
+    n_py = assert_table_u8_gate_b(
+        py_bytes,
+        rs_bytes,
+        or_bytes,
+        or_render_px=or_target.render,
+        rust_render_px=_run_rs_px,
+        label="shaper-applelog-256-vs-python",
+        py_render_px=py_target.render,
+    )
+    return n_or, n_py

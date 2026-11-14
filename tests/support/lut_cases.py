@@ -305,6 +305,31 @@ AMPLIFIED_CASES: list[tuple[str, bool, float, dict[str, Any]]] = [
     ),
 ]
 
+SHAPER_APPLELOG_CUBE = "LUT_1D_SIZE 2\n-3.1415926535897931 0.19927806966646006 0.3\n2.7058973220700397 0.19927806966646006 0.3\n"
+SHAPER_APPLELOG_SPEC: dict[str, Any] = {"input_space": "srgb", "output_space": "applelog", "output_gamut": "rec2020"}
+
+
+def shaper_applelog_rgb() -> np.ndarray:
+    return np.array([[[137, 201, 83]]], dtype=np.uint8)
+
+
+def shaper_zero_cases() -> list[tuple[str, str]]:
+    """42 near-zero 1D shaper constructions around Apple Log's sqrt branch (Sol r4)."""
+    import math
+
+    from support.lut_oracle import inv_seq, matmul_t_seq, matrix_seq, seq_decode, seq_encode
+
+    lin = seq_decode(shaper_applelog_rgb() / 255.0, "srgb")
+    encoded = seq_encode(matmul_t_seq(matmul_t_seq(lin, matrix_seq("rec709")), inv_seq(matrix_seq("rec709"))), "srgb")
+    x = float(encoded[0, 0, 0])
+    cases: list[tuple[str, str]] = []
+    for number, first in enumerate([-0.1, -0.2, -0.3, -0.7, -1.0, -math.pi]):
+        second = first - first / x
+        for shift in (-8, -2, -1, 0, 1, 2, 8):
+            value = second + shift * abs(float(np.spacing(second)))
+            cases.append((f"shaper-zero-{number}-{shift + 8}", f"LUT_1D_SIZE 2\n{first:.17g} 0.2 0.3\n{value:.17g} 0.2 0.3\n"))
+    return cases
+
 
 _R3_THRESHOLD_RGB_HEX = (
     "0000008d8800ff00ffffffff00ff00010101808080160eb6481338fe80a90f651edd8923d3751b014acbaa6dc5dbdef1b79f95402f260ebc439bfc23"
@@ -410,9 +435,13 @@ def write_wasm_threshold_table_manifest(tmp_path: Path, label: str) -> list[Path
     """Build a single 256^3 threshold table manifest so each WASM run stays well under 180s."""
     import json
 
-    shaper, offset, space = next((sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES) if lbl == label)
     cube = tmp_path / f"{label}.cube"
-    cube.write_text(threshold_cube_text(offset, shaper), encoding="utf-8")
+    if label == "shaper-applelog":
+        cube.write_text(SHAPER_APPLELOG_CUBE, encoding="utf-8")
+        space = SHAPER_APPLELOG_SPEC
+    else:
+        shaper, offset, space = next((sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES) if lbl == label)
+        cube.write_text(threshold_cube_text(offset, shaper), encoding="utf-8")
     manifest = tmp_path / f"{label}-table.json"
     manifest.write_text(json.dumps({"kind": "table", "cube": str(cube), "space": space}), encoding="utf-8")
     return [manifest]
@@ -463,6 +492,10 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
     np.save(th_rgb_npy, th_rgb)
     r3_rgb_npy = tmp_path / "r3_rgb.npy"
     np.save(r3_rgb_npy, r3_threshold_rgb())
+    shaper_al_cube = tmp_path / "shaper-applelog.cube"
+    shaper_al_cube.write_text(SHAPER_APPLELOG_CUBE, encoding="utf-8")
+    shaper_al_rgb_npy = tmp_path / "shaper_al_rgb.npy"
+    np.save(shaper_al_rgb_npy, shaper_applelog_rgb())
     th_map = {lbl: (sh, off, sp) for lbl, sh, off, sp in (*THRESHOLD_CASES, *AMPLIFIED_CASES)}
     th_01_cube = tmp_path / "case-0-1.cube"
     th_01_cube.write_text(threshold_cube_text(th_map["case-0-1"][1], th_map["case-0-1"][0]), encoding="utf-8")
@@ -521,6 +554,14 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
             {"kind": "apply_u8", "cube": str(amp_p), "space": amp_sp, "rgb_npy": str(r3_rgb_npy), "height": 16, "width": 32}
             for _amp_lbl, amp_p, amp_sp in amp_cubes
         ),
+        {
+            "kind": "apply_u8",
+            "cube": str(shaper_al_cube),
+            "space": SHAPER_APPLELOG_SPEC,
+            "rgb_npy": str(shaper_al_rgb_npy),
+            "height": 1,
+            "width": 1,
+        },
         {
             "kind": "apply_u8",
             "cube": str(steep_cube),

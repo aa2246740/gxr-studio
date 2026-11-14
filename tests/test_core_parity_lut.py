@@ -36,8 +36,11 @@ from support.lut_cases import (
     AMPLIFIED_CASES,
     BAD_CUBE_CASES,
     IDENTIFY_CASES,
+    SHAPER_APPLELOG_CUBE,
+    SHAPER_APPLELOG_SPEC,
     THRESHOLD_CASES,
     r3_threshold_rgb,
+    shaper_applelog_rgb,
     space_depth_text,
     threshold_cube_text,
 )
@@ -47,8 +50,6 @@ from support.lut_cases import check_scene_xyz as _check_scene_xyz
 from support.lut_cases import cube_text as _cube_text
 from support.lut_cases import real_dngs as _real_dngs
 from support.lut_oracle import (
-    GRADE_MUL,
-    THRESHOLD_OFF,
     SeqTarget,
     assert_table_u8_boundary_gate,
     assert_table_u8_gate_b,
@@ -56,9 +57,11 @@ from support.lut_oracle import (
     assert_u8_gate_b,
     check_blas_gamma24_and_threshold_points,
     check_negative_control_case,
+    check_shaper_applelog_full_table,
+    check_shaper_zero_cases,
     check_threshold_cpu_case,
+    check_threshold_cube_full_256_gpu_table_and_blas_point,
     check_threshold_full_table_case,
-    fma_render_display_px,
     make_rust_px_runner,
     seq_apply,
     seq_display_lut_u8,
@@ -391,10 +394,40 @@ def test_gate_a_negative_control_host_pow(tmp_path: Path, label: str, want_px: t
 def test_gate_a_negative_control_host_interp(tmp_path: Path) -> None:
     """Negative control: Gate A passes with interp_1d_seq and fails when host np.interp is restored."""
     require_cli()
-    cube_txt = "LUT_1D_SIZE 2\n-3.1415926535897931 0.19927806966646006 0.3\n2.7058973220700397 0.19927806966646006 0.3\n"
-    spec = {"input_space": "srgb", "output_space": "applelog", "output_gamut": "rec2020"}
-    rgb = np.array([[[137, 201, 83]]], dtype=np.uint8)
-    check_negative_control_case(tmp_path, "shaper-applelog", cube_txt, spec, rgb, (0, 0), control="interp")
+    check_negative_control_case(
+        tmp_path, "shaper-applelog", SHAPER_APPLELOG_CUBE, SHAPER_APPLELOG_SPEC, shaper_applelog_rgb(), (0, 0), control="interp"
+    )
+
+
+def test_shaper_applelog_r4_cpu(tmp_path: Path) -> None:
+    """Sol r4 minimal shaper-applelog.cube with RGB [137, 201, 83]: Gate A=0, Gate B <= 1 code."""
+    require_cli()
+    n_or, n_py = check_threshold_cpu_case(
+        tmp_path,
+        "shaper-applelog",
+        SHAPER_APPLELOG_CUBE,
+        SHAPER_APPLELOG_SPEC,
+        _python_target,
+        rgb_override=shaper_applelog_rgb(),
+    )
+    assert n_or == 0
+    if sys.platform == "darwin":
+        assert n_py == 1
+
+
+def test_shaper_zero_42_constructions(tmp_path: Path) -> None:
+    """Sol r4 42 near-zero 1D shaper constructions: Gate A 1e-12 with no masks, Gate B <= 1 code."""
+    require_cli()
+    check_shaper_zero_cases(tmp_path, _python_target)
+
+
+def test_shaper_applelog_full_256_gpu_table(tmp_path: Path) -> None:
+    """Sol r4 full 256^3 GPU display table for shaper-applelog.cube: Gate A=0, every Gate B diff <= 1 code."""
+    require_cli()
+    n_or, n_py = check_shaper_applelog_full_table(tmp_path, _python_target)
+    assert n_or == 0
+    if sys.platform == "darwin":
+        assert n_py == 28820
 
 
 @pytest.mark.parametrize(
@@ -424,48 +457,7 @@ def test_blas_gamma24_and_threshold_points(tmp_path: Path) -> None:
 def test_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path) -> None:
     """Full 256^3 GPU table for threshold.cube: exact vs oracle; sole Accelerate diff at byte 139828."""
     require_cli()
-    thresh_cube = _write_cube(
-        tmp_path,
-        "threshold.cube",
-        _cube_text(lambda x: np.clip(x * GRADE_MUL + THRESHOLD_OFF, 0, 1), size=9, title="review threshold synthetic"),
-    )
-    py_thresh = Cube.read(thresh_cube)
-    spec = {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"}
-    or_bytes = seq_display_lut_u8(SeqTarget(py_thresh, **spec))
-    py_bytes, py_meta, py_reason = lut_bytes(_python_target(py_thresh, **spec))
-    assert py_reason is None and py_bytes is not None and py_meta is not None
-
-    out_bin, out_meta = tmp_path / "t256.bin", tmp_path / "t256.json"
-    code, payload = run_json(
-        ["lut-table", "--cube", str(thresh_cube), "--space", json.dumps(spec), "--out", str(out_bin), "--meta", str(out_meta)]
-    )
-    assert error_of(code, payload) is None
-    assert json.loads(out_meta.read_text(encoding="utf-8")) == py_meta
-    rs_bytes = out_bin.read_bytes()
-
-    _run_rs_px = make_rust_px_runner(tmp_path, thresh_cube, spec, "px_probe")
-
-    n_or = assert_table_u8_boundary_gate(
-        or_bytes, rs_bytes, ref_render_px=SeqTarget(py_thresh, **spec).render, rust_render_px=_run_rs_px, label="threshold-256-vs-oracle"
-    )
-    assert n_or == 0
-    byte_off = (0 * 256 * 256 + 136 * 256 + 141) * 4 + 0  # [b=0, g=136, r=141, c=0] == 139828
-    assert byte_off == 139828 and rs_bytes[byte_off] == or_bytes[byte_off] == 189
-    n_py = assert_table_u8_gate_b(
-        py_bytes,
-        rs_bytes,
-        or_bytes,
-        or_render_px=SeqTarget(py_thresh, **spec).render,
-        rust_render_px=_run_rs_px,
-        label="threshold-256-vs-python",
-        py_render_px=_python_target(py_thresh, **spec).render,
-    )
-    if sys.platform == "darwin":
-        assert n_py == 1 and py_bytes[byte_off] == 188
-        assert float(fma_render_display_px(py_thresh, np.array([141, 136, 0], np.uint8), **spec)[0]) < 188.5
-    else:
-        assert n_py == 0
-    assert int(_apply(_python_target(py_thresh, **spec), np.array([[[141, 136, 0]]], dtype=np.uint8))[0, 0, 0]) == 189
+    check_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path, _python_target)
 
 
 def test_apply_error_paths(tmp_path: Path) -> None:
@@ -746,7 +738,7 @@ def test_scene_xyz_real_dngs(path: Path, tmp_path: Path) -> None:
 # ---- WASM matches native ----
 
 
-@pytest.mark.parametrize("label", (None, "case-0-1", "case-1-0", "amplified-25"))
+@pytest.mark.parametrize("label", (None, "case-0-1", "case-1-0", "amplified-25", "shaper-applelog"))
 def test_wasm_matches_native_lut(tmp_path: Path, label: str | None) -> None:
     require_cli()
     inputs = lut_cases.write_wasm_lut_manifests(tmp_path) if label is None else lut_cases.write_wasm_threshold_table_manifest(tmp_path, label)

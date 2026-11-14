@@ -470,7 +470,10 @@ from support.lut_gates import (  # noqa: E402, F401
     assert_u8_gate_b,
     check_blas_gamma24_and_threshold_points,
     check_negative_control_case,
+    check_shaper_applelog_full_table,
+    check_shaper_zero_cases,
     check_threshold_cpu_case,
+    check_threshold_cube_full_256_gpu_table_and_blas_point,
     check_threshold_full_table_case,
     make_rust_px_runner,
 )
