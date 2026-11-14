@@ -4,10 +4,10 @@
 use gxr_raw::{CoreError, Json};
 
 use crate::geometry::bounds::{
-    bad_geometry, checked_mul_u64, checked_rgb_dims, checked_rgb_slice, fit_count, too_big,
-    try_vec_u8,
+    bad_geometry, checked_mul_u64, checked_rgb_slice, fit_count, too_big, try_vec_u8,
 };
 use crate::geometry::json::{JsonValue, parse_json};
+use crate::raster::bounds::checked_rgb_dims;
 
 const INVALID_LAYOUT: &str = "边框版面格式不对。";
 

@@ -259,7 +259,7 @@ pub fn srgb_to_linear(rgb: &[u8], w: u64, h: u64) -> Result<Vec<f32>, CoreError>
 
 /// Port of `gxr_studio/finish/pixels.py:19 _linear_to_srgb`.
 pub fn linear_to_srgb(lin: &[f32], w: u64, h: u64) -> Result<Vec<u8>, CoreError> {
-    let (_, _, pixels, rgb_len) = crate::geometry::bounds::checked_rgb_dims(w, h)?;
+    let (_, _, pixels, rgb_len) = crate::raster::bounds::checked_rgb_dims(w, h)?;
     let _ = checked_mul_u64(pixels, 3)?;
     let expected = fit_count(rgb_len, 4)?;
     if lin.len() != expected {

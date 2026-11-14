@@ -2,9 +2,9 @@
 //! raster operations for mobile export.
 //!
 //! Call existing ports in `crate::geometry`, `gxr_color`, `gxr_frame`, and `gxr_hdr`; never copy
-//! them. Note that `gxr_color::apply_table` and `gxr_frame::{aspect_mult, coverage_comp,
-//! fit_logo, pick_logo_mode, clogo_item}` are not currently re-exported by their crate roots.
+//! them.
 
+pub mod bounds;
 pub mod canvas;
 pub mod compose;
 pub mod logo;

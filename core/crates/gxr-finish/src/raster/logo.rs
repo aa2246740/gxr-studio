@@ -5,8 +5,9 @@ use gxr_frame::{LogoInfo, Val, aspect_mult, clogo_item, coverage_comp, fit_logo,
 use gxr_hdr::label;
 use gxr_raw::{CoreError, Json};
 
-use crate::geometry::bounds::{checked_rgba_slice, fit_count, too_big, try_vec_u8};
+use crate::geometry::bounds::{fit_count, too_big, try_vec_u8};
 use crate::geometry::json::{JsonValue, parse_json};
+use crate::raster::bounds::checked_rgba_slice;
 
 pub const WARN_OPAQUE: &str = "这张图是不透明的，标志可能带着背景。可以打开「去掉白底」。";
 
