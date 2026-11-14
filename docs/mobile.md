@@ -157,6 +157,78 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 - `identify` 对未声明且无法唯一确认输入空间的 `.cube` 保留 `input_space: null`，绝不把未知 `.cube` 默认当成 sRGB；`undeclared_choice` 只返回界面提示的默认选项与说明文本。
 - `scene-xyz` 复用 `gxr-raw` 已有的 `scene_colour` 与 `affine_of`，并把 `SceneError.code`（`no_neutral`、`no_matrix`、`bad_matrix`、`bad_colour`）原样作为 `CoreError.kind` 返回。
 
+## HDR（`gxr-hdr`，命令前缀 `hdr-`）
+
+移植的是 `hdr/gain.py`（对齐、曲线、增益平面）、`hdr/container.py`（ISO 21496-1 + Ultra HDR + MPF 封装）和 `hdr/capture.py` 的 `_capture`、`differs`。增益图 JPEG 的编码不在这里：这里给出 `encode_gainmap` 交给 Pillow 之前的 uint8 平面，封装时把编好的增益图 JPEG 当输入。`derived.py` 和 `finish/hdr_export.py` 是第二波。
+
+| 命令 | 输入 | 输出 |
+| --- | --- | --- |
+| `hdr-filter --op gaussian\|uniform\|minimum\|label\|dilate` | `--in` 平面，`--sigma` / `--size` / `--iterations` | `--out` 同 dtype（label 是 int32，另印 `count`） |
+| `hdr-map` | `--in` 平面，`--sy`、`--sx` float32 坐标 | `map_coordinates(order=1, mode="nearest")` |
+| `hdr-block-mean` | `--in`、`--factor` | 边缘补齐的块平均 |
+| `hdr-luma` | `--rgb` uint8 `(h, w, 3)`、`--factor` | `sdr_luma_grid` float32 |
+| `hdr-raw-luma DNG` | DNG 路径 | `--out` 亮度 float32，`--clip-out` 过曝掩码（都已转正） |
+| `hdr-phase` | `--a`、`--b` float32 | `_phase_shift` 的 `dy`、`dx` |
+| `hdr-fit` | `--x`、`--y` float32，`--valid` 掩码 | `fit_curve` 的 `cx`、`cy` |
+| `hdr-align` | `--sdr`、`--raw` float32 | `Alignment` 全部字段，`check` 是 `null` 或 `{kind, message}` |
+| `hdr-register` | `--raw`、`--clip`、`--align` JSON、`--shape H W`、`--grid H W` | 重采样后的亮度和掩码 |
+| `hdr-gain` | `--sdr`、`--raw`（NaN = 不是照片）、`--clip`、可选 `--params` JSON | `--out` uint8 码值；stdout 是 `meta`、`fractions`、`stats`；可选 `--delta-out` |
+| `hdr-segments` | `--in` JPEG | `jpeg_segments` |
+| `hdr-assemble` | `--primary`、`--gain` JPEG，`--meta` JSON | 文件字节，存成 uint8 `(1, N)` 的 `.npy` |
+| `hdr-capture` | `--raw`、`--jpeg` 两份 `{标签号: 值}` JSON | 两边的 `_capture` 和 `differs` |
+
+WASM：`hdr_align`、`hdr_gain`（`HdrGain` 有 `codes()` 和 `report`）、`hdr_assemble`。JSON 文本和 CLI 打印的逐字节相同。
+
+### 数值上照着 numpy 2.4.3 / scipy 1.17.1 做的事
+
+这些都在合成数组上实测过，`crates/gxr-hdr/src/np.rs` 和 `filter.rs` 的开头写着规则。
+
+- NEP 50：float32 数组旁边的 Python float 先变成 float32 再算，比较也一样。
+- 连续数组求和：从 0 开始加一次 numpy 的 pairwise 和。跨步视图：一次缓冲 `max(1, 8192 // 宽)` 整行，每块 pairwise，再依次相加。`mean`、`std` 除以 `np.intp(n)`，所以 float32 均值是 `f32(f64(和) / n)`。
+- `block_mean` 只有一列块时，numpy 把整块 f×f 合成一次 pairwise。
+- `percentile` 的插值在 float32 里做；`arange` 的长度在 float32 里算，第二个元素是 float32 的 `lo + step`。
+- scipy 的 `reflect` 重复边缘样本。偶数窗口从 `i - size/2` 开始。`uniform_filter` 是 float64 滑窗和除以 size。`label` 按每块第一个像素的光栅顺序编号。
+- FFT 按 numpy 2.4.3 的 pocketfft 路径逐位移植，见本文件末尾「hdr-fft」一节。
+
+### 不逐位相同的地方，以及为什么不追
+
+- scipy 在 arm64 上把短高斯核（sigma 0.5、0.6）的累加编成了 FMA；`np.convolve`（BLAS）和 `np.interp` 也会融合。CONVENTIONS 不许 FMA，所以这些 float64 中间量可能差最后一位，float64 滤波输出按 `1e-12` 相对比较。
+- numpy 的 float32 `log2`、`pow` 调的是 Apple 的 libm，它在少数输入上不是正确舍入。按 PORT-WAVE-1「平台 libm」那条规则，对照值是正确舍入的结果，不抄 Apple 的值。这里用「libm 的 float64 结果舍入一次」：sRGB 的 256 个码值全部等于 `decimal` 50 位算出、再舍入一次的 float32（`test_srgb_to_linear_is_correctly_rounded`）。本机 numpy 只在码值 71、180 上不同，所以 `sdr_luma_grid` 会差最后一位；测试同时断言 Python 的 `align` 在 Rust 的网格上给出和 Rust 一样的结果，uint8 增益码值不变。
+- 量化前的 float32 增益平面不设门槛：scipy 的 sigma 0.6 高斯在 arm64 上是 FMA，个别格子差 1 ulp；uint8 码值和元数据是精确的。
+
+### hdr-fft：和 numpy 逐位相同的相位相关（`crates/gxr-hdr/src/fft/`）
+
+`_phase_shift` 的 FFT 照 numpy 2.4.3 的 pocketfft 逐行移植（代码和 BSD-3 许可见 `fft/NOTICE`）。`fft2` 的 `fct=1` 是 Python int，numpy 因此走 complex128 循环：正变换在 double 里算，再舍入成 complex64；`ifft2` 走 complex64，在 float 里算并乘 float32 的 `1/n`。FMA 照 arm64 轮子的 `-ffp-contract=on` 来；`abs` 是 `simd_cabsolute_f32`，不是 `hypotf`；除法是 Smith 形式。twiddle 的 `cos`/`sin` 用正确舍入的值（PORT-WAVE-1 libm 规则），所以在 Apple `cos`/`sin` 不正确舍入的角上和本机 numpy 差最后一位，每个这样的角在 `tests/test_core_parity_hdr_fft.py` 里单独断言。
+
+| 命令 | 输入 | 输出 |
+|---|---|---|
+| `hdr-fft` | `--in` float32 `(n, 2)` 或 `(h, n, 2)`（complex64 的实部、虚部），`--inverse 0\|1`，可选 `--two-d`、`--in-shape H N` | `--out` 同形状：numpy `fft`/`ifft`（或 `fft2`/`ifft2`） |
+| `hdr-phase-plane` | `--a`、`--b` float32，可选 `--a-shape`/`--b-shape` | `--out` 整张 float32 相位相关平面；stdout 是 `dy`、`dx` |
+| `hdr-fft-twiddle` | `--n N`，`--kind float\|double\|tables` | `sincos_2pibyn` 的 twiddle；`tables` 是原始 `cos`/`sin` 表和角度 |
+
+三个命令都接受 `--trig host`（只在原生 CLI，诊断用）：用本机 `cos`/`sin` 建表，这时结果和本机 numpy 逐位相同。WASM：`hdr_fft`、`hdr_phase_plane`（`HdrPhasePlane` 有 `report` 和 `plane()`）。
+
+## 相机数据（`gxr-camdata`）
+
+`gxr-camdata` 移植了 `datcodec.parse`（含单文件 `pack` 往返校验、`refs` 别名解引用和 `_parse_looks`）、`r5.parse`（`GXRCE.DAT` + `GXRFX.BIN` 双文件）、`entries_from_dat`、`knob_table.read`、`recipe_tags.parse_recipe_tag` 和内嵌 `engine/data/final.json`。不把任何理光字节或表打进包。
+
+命令行子命令（`cmd_camdata.rs`）：
+
+- `camdata-parse --dat PATH [--library PATH] [--out-dir DIR]`：输出 `generation`、各单元 `slots` 与条目 `sha256`、`looks`、`recipes`、`users`、`has_kv2`、`kv2_sha256` 的 JSON；带 `--out-dir` 时另写出 24 × 552 字节条目到 `units/<unit>/recipes/<slot:02d>.entry`。
+- `camdata-entries --dat PATH [--library PATH] --out FILE.npy`：把 24 × 552 字节写成 `(24, 552)` `uint8` 的 `.npy`。
+- `camdata-menu [--dat PATH [--library PATH]]`：不带 `--dat` 返回内嵌 `final.json`；带 `--dat` 时按 `knob_table.read` 用文件内的 kv 块覆盖菜单。
+- `camdata-knob-table --kv PATH [--mount-50mm]`：只给原生对拍用，不导出到 WASM。对独立的 kv2/kv3 块执行 `knob_table.read`（覆盖内嵌 `final.json`）；WASM 侧经 `camdata_menu` 走同一段代码。
+- `camdata-parse-json --json PATH`：只给原生对拍用，不导出到 WASM。校验 JSON 输入：超过 4 MiB 报 `kind="json"` / `"JSON 文件过大"`，超过 128 层数组/对象嵌套报 `"JSON 嵌套太深"`。
+- `camdata-recipe-tag (--tag TEXT | --tag-hex HEX)`：返回 `{"tag": ...}` 解析结果。
+
+WASM 导出（`gxr-wasm/src/camdata.rs`）：
+
+- `camdata_parse(dat_bytes, library_bytes?) -> string`：返回与 `camdata-parse` 逐字节相同的 JSON（末尾带换行），只含摘要与 `sha256`，不含原始条目字节。
+- `camdata_entries(dat_bytes, library_bytes?) -> Uint8Array`：单独的字节读取接口，按 `(unit 0..2, slot 1..8)` 顺序返回连续的 `24 × 552 = 13248` 字节条目。
+- `camdata_menu(dat_bytes?, library_bytes?) -> string`：返回解析后的菜单 JSON（末尾带换行）。
+
+对拍在 `tests/test_core_parity_camdata.py` 与 `mobile/scripts/wasm_cases/camdata.mjs`；不把 `pack` 导出到 WASM。
+
 ## raw-render（全分辨率去马赛克与中性转换）
 
 `gxr-raw` 的 `demosaic.rs` 和 `render.rs` 分别对应 `gxr_studio/raw/demosaic.py` 与 `gxr_studio/raw/render.py` 的中性路径：
