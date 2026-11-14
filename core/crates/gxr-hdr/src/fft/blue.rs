@@ -3,6 +3,7 @@
 
 use gxr_raw::CoreError;
 
+use super::alloc;
 use super::cfftp::Cfftp;
 use super::cx::{Cx, Real, special_mul};
 use super::twiddle::{SinCos, Trig};
@@ -125,7 +126,7 @@ impl<T: Real> Blue<T> {
         let plan = Cfftp::new(n2, trig)?;
         // initialize b_k
         let tmp = SinCos::new(2 * n64, trig)?;
-        let mut bk = size::with_capacity(n)?;
+        let mut bk = alloc::with_capacity(n)?;
         bk.push(Cx::new(T::ONE, T::ZERO));
         let mut coeff = 0u64;
         for m in 1..n64 {
@@ -137,14 +138,14 @@ impl<T: Real> Blue<T> {
         }
         // initialize the zero-padded, Fourier transformed b_k. Add normalisation.
         let xn2 = T::recip_count(n2);
-        let mut tbkf = size::filled(n2, Cx::ZERO)?;
+        let mut tbkf = alloc::filled(n2, Cx::ZERO)?;
         tbkf[0] = bk[0].scale(xn2);
         for m in 1..n {
             let v = bk[m].scale(xn2);
             tbkf[m] = v;
             tbkf[n2 - m] = v;
         }
-        let mut scratch = size::filled(n2, Cx::ZERO)?;
+        let mut scratch = alloc::filled(n2, Cx::ZERO)?;
         plan.exec(&mut tbkf, &mut scratch, T::ONE, true);
         tbkf.truncate(n2 / 2 + 1);
         Ok(Self {

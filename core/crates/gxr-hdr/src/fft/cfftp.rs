@@ -6,6 +6,7 @@
 
 use gxr_raw::CoreError;
 
+use super::alloc;
 use super::cx::{Cx, Real};
 use super::twiddle::{SinCos, Trig};
 use super::{passes, passg};
@@ -25,8 +26,9 @@ pub struct Cfftp<T> {
 }
 
 /// `cfftp::factorize`.
-fn factorize(length: usize) -> Vec<usize> {
-    let mut fact = Vec::new();
+fn factorize(length: usize) -> Result<Vec<usize>, CoreError> {
+    // At most 64 factors of a usize; reserved once, so `push` never reallocates.
+    let mut fact = alloc::with_capacity(64)?;
     let mut len = length;
     while len & 7 == 0 {
         fact.push(8);
@@ -54,7 +56,7 @@ fn factorize(length: usize) -> Vec<usize> {
     if len > 1 {
         fact.push(len);
     }
-    fact
+    Ok(fact)
 }
 
 impl<T: Real> Cfftp<T> {
@@ -66,13 +68,13 @@ impl<T: Real> Cfftp<T> {
                 fact: Vec::new(),
             });
         }
-        let factors = factorize(length);
+        let factors = factorize(length)?;
         let twiddle = SinCos::new(size::dim(length), trig)?;
-        let mut fact = Vec::with_capacity(factors.len());
+        let mut fact = alloc::with_capacity(factors.len())?;
         let mut l1 = 1usize;
         for ip in factors {
             let ido = length / (l1 * ip);
-            let mut tw = size::with_capacity((ip - 1) * (ido - 1))?;
+            let mut tw = alloc::with_capacity((ip - 1) * (ido - 1))?;
             for j in 1..ip {
                 for i in 1..ido {
                     tw.push(twiddle.get(size::dim(j * l1 * i)));
@@ -80,7 +82,7 @@ impl<T: Real> Cfftp<T> {
             }
             let mut tws = Vec::new();
             if ip > 11 {
-                tws = size::with_capacity(ip)?;
+                tws = alloc::with_capacity(ip)?;
                 for j in 0..ip {
                     tws.push(twiddle.get(size::dim(j * l1 * ido)));
                 }
@@ -160,13 +162,13 @@ mod tests {
 
     #[test]
     fn factor_order_matches_pocketfft() {
-        assert_eq!(factorize(2), vec![2]);
-        assert_eq!(factorize(16), vec![2, 8]);
-        assert_eq!(factorize(32), vec![8, 4]);
-        assert_eq!(factorize(48), vec![2, 8, 3]);
-        assert_eq!(factorize(712), vec![8, 89]);
-        assert_eq!(factorize(1072), vec![2, 8, 67]);
-        assert_eq!(factorize(90), vec![2, 3, 3, 5]);
-        assert_eq!(factorize(97), vec![97]);
+        assert_eq!(factorize(2).unwrap(), [2]);
+        assert_eq!(factorize(16).unwrap(), [2, 8]);
+        assert_eq!(factorize(32).unwrap(), [8, 4]);
+        assert_eq!(factorize(48).unwrap(), [2, 8, 3]);
+        assert_eq!(factorize(712).unwrap(), [8, 89]);
+        assert_eq!(factorize(1072).unwrap(), [2, 8, 67]);
+        assert_eq!(factorize(90).unwrap(), [2, 3, 3, 5]);
+        assert_eq!(factorize(97).unwrap(), [97]);
     }
 }

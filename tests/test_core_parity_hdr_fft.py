@@ -18,6 +18,7 @@ numpy comparisons run only on the reference platform (macOS arm64 with the locke
 from __future__ import annotations
 
 import functools
+import os
 import platform
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ import numpy as np
 import pytest
 
 from gxr_studio.hdr import gain as g
+from support import hdr_fft_alloc as fa
 from support import hdr_fft_ref as fr
 from support import hdr_parity as hp
 from support.core_cli import require_cli
@@ -320,7 +322,8 @@ def test_empty_batch_matches_numpy(tmp_path: Path, inverse: bool) -> None:
     x = np.empty((0, 3), np.complex64)
     ref = fr.numpy_fft(x, inverse=inverse)
     got = fr.rust_fft(tmp_path, x, inverse=inverse)
-    assert (ref.dtype, ref.shape) == (got.dtype, got.shape) == (np.complex64, (0, 3))
+    assert ref.dtype == got.dtype == np.dtype(np.complex64)
+    assert ref.shape == got.shape == (0, 3)
     src = tmp_path / "e.npy"
     np.save(src, fr.as_pairs(x))
     assert np.load(src).shape == (0, 3, 2)
@@ -330,6 +333,28 @@ def test_empty_batch_matches_numpy(tmp_path: Path, inverse: bool) -> None:
     _, err = fr.call(args)
     assert err is not None and (err.kind, err.message) == ("value_error", str(exc.value))
     assert str(exc.value) == "Invalid number of FFT data points (0) specified."
+
+
+def test_allocation_failure_is_a_core_error(tmp_path: Path) -> None:
+    """Sol r2 P2-08: the n-th allocation inside an FFT entry point returns null, for every n.
+    The core must answer with its size error, never abort."""
+    binary = fa.build(tmp_path)
+    if binary is None:
+        if os.environ.get("GXR_REQUIRE_CORE") == "1":
+            pytest.fail("cargo is required to build the allocation-failure driver")
+        pytest.skip("cargo is not on PATH")
+    checked = {}
+    for op in fa.OPS:
+        base = fa.run(binary, op, 0)
+        assert base.returncode == 0 and base.stdout.startswith("ok "), (op, base.stdout, base.stderr)
+        count = int(base.stdout.split()[1])
+        assert count > 0
+        for nth in range(1, count + 1):
+            got = fa.run(binary, op, nth)
+            assert got.returncode == 0, f"{op} allocation {nth}: exit {got.returncode} {got.stderr.strip()}"
+            assert got.stdout.strip() == f"error value_error: {ARRAY_TOO_BIG}", (op, nth, got.stdout)
+        checked[op] = count
+    print("allocations failed one at a time:", checked)
 
 
 def test_wasm_matches_native(tmp_path: Path) -> None:

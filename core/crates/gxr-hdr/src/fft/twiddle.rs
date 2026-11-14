@@ -9,6 +9,7 @@
 
 use gxr_raw::CoreError;
 
+use super::alloc;
 use super::cx::{Cx, Real};
 use crate::size;
 
@@ -109,11 +110,11 @@ impl SinCos {
             a: 0.0,
         };
         let len1 = size::count(&[mask + 1])?;
-        let mut v1 = size::with_capacity(len1)?;
+        let mut v1 = alloc::with_capacity(len1)?;
         v1.push(one);
         v1.extend((1..=mask).map(|i| calc(i, n, ang, t)));
         let len2 = size::count(&[nval.div_ceil(mask + 1)])?;
-        let mut v2 = size::with_capacity(len2)?;
+        let mut v2 = alloc::with_capacity(len2)?;
         v2.push(one);
         v2.extend((1..len2 as u64).map(|i| calc(i * (mask + 1), n, ang, t)));
         Ok(Self {
@@ -126,14 +127,10 @@ impl SinCos {
     }
 
     /// The raw `v1` then `v2` tables as `(re, im, angle)`, and the length of `v1`.
-    pub fn tables(&self) -> (Vec<[f64; 3]>, usize) {
-        let rows = self
-            .v1
-            .iter()
-            .chain(&self.v2)
-            .map(|c| [c.r, c.i, c.a])
-            .collect();
-        (rows, self.v1.len())
+    pub fn tables(&self) -> Result<(Vec<[f64; 3]>, usize), CoreError> {
+        let mut rows = alloc::with_capacity(self.v1.len() + self.v2.len())?;
+        rows.extend(self.v1.iter().chain(&self.v2).map(|c| [c.r, c.i, c.a]));
+        Ok((rows, self.v1.len()))
     }
 
     /// `operator[](idx)` for `idx < n`.
