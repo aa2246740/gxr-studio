@@ -1,10 +1,18 @@
 //! `dng-*` subcommands. The names, arguments and output bytes stay as they were in `main`.
 
-use gxr_raw::{Dng, Json};
+use std::io::Write;
+
+use gxr_raw::{CoreError, Dng, Json};
 
 use crate::common::{self, Failure, Output};
 
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
+    if command == "dng-demosaic" || command == "dng-neutral" || command == "dng-srgb-pow" {
+        return run_render(command, args).map(|json| Output {
+            text: json.render(),
+            ok: true,
+        });
+    }
     let path = args
         .first()
         .ok_or_else(|| Failure::Usage("missing <path>".into()))?;
@@ -17,6 +25,94 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         text: json.render(),
         ok: true,
     })
+}
+
+fn parse_i64(args: &[String], name: &str) -> Result<i64, Failure> {
+    let raw = common::option(args, name)?;
+    raw.parse::<i64>()
+        .map_err(|_| Failure::Usage(format!("bad {name} {raw:?}, expected integer")))
+}
+
+fn write_u8_npy(out: &str, values: &[u8], shape: &[usize]) -> Result<Json, Failure> {
+    let dims_str: Vec<String> = shape.iter().map(ToString::to_string).collect();
+    let shape_text = if dims_str.len() == 1 {
+        format!("({},)", dims_str[0])
+    } else {
+        format!("({})", dims_str.join(", "))
+    };
+    let mut dict = format!("{{'descr': '|u1', 'fortran_order': False, 'shape': {shape_text}, }}");
+    let total = 10 + dict.len() + 1;
+    dict.push_str(&" ".repeat((64 - total % 64) % 64));
+    dict.push('\n');
+    let len = u16::try_from(dict.len()).unwrap_or(u16::MAX);
+    let mut file = std::fs::File::create(out)
+        .map_err(|e| Failure::Usage(format!("cannot write {out}: {e}")))?;
+    file.write_all(b"\x93NUMPY\x01\x00")
+        .and_then(|()| file.write_all(&len.to_le_bytes()))
+        .and_then(|()| file.write_all(dict.as_bytes()))
+        .and_then(|()| file.write_all(values))
+        .and_then(|()| file.flush())
+        .map_err(|e| Failure::Usage(format!("cannot write {out}: {e}")))?;
+    let mut dims = Vec::with_capacity(shape.len());
+    for &dim in shape {
+        let dim = i64::try_from(dim).map_err(|_| {
+            Failure::Core(CoreError::raw_decode(
+                "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
+            ))
+        })?;
+        dims.push(dim);
+    }
+    Ok(Json::object([
+        ("out", Json::str(out)),
+        ("dtype", Json::str("uint8")),
+        ("shape", Json::ints(&dims)),
+    ]))
+}
+
+fn run_render(command: &str, args: &[String]) -> Result<Json, Failure> {
+    match command {
+        "dng-demosaic" => {
+            let path = common::option(args, "--dng")?;
+            let y0 = parse_i64(args, "--y0")?;
+            let y1 = parse_i64(args, "--y1")?;
+            let out = common::option(args, "--out")?;
+            let data = common::read(path)?;
+            let dng = Dng::open(&data, &common::base_name(path))?;
+            let strip = gxr_raw::demosaic_strip(&dng, y0, y1)?;
+            common::write_npy(
+                out,
+                &strip.values,
+                &[strip.height, strip.width, 3],
+                "float32",
+            )
+        }
+        "dng-neutral" => {
+            let path = common::option(args, "--dng")?;
+            let out = common::option(args, "--out")?;
+            let data = common::read(path)?;
+            let dng = Dng::open(&data, &common::base_name(path))?;
+            let img = gxr_raw::render_full(&dng)?;
+            write_u8_npy(out, &img.values, &[img.height, img.width, 3])
+        }
+        "dng-srgb-pow" => {
+            let raw = common::option(args, "--bits")?;
+            let trimmed = raw
+                .strip_prefix("0x")
+                .or_else(|| raw.strip_prefix("0X"))
+                .unwrap_or(raw);
+            let bits = u32::from_str_radix(trimmed, 16)
+                .map_err(|_| Failure::Usage(format!("bad --bits {raw:?}, expected hex u32")))?;
+            let a = f32::from_bits(bits);
+            let pow = gxr_raw::srgb_gamma_pow(a);
+            let enc = gxr_raw::srgb_encode(a);
+            Ok(Json::object([
+                ("input_bits", Json::str(format!("0x{bits:08x}"))),
+                ("power_bits", Json::str(format!("0x{:08x}", pow.to_bits()))),
+                ("srgb_bits", Json::str(format!("0x{:08x}", enc.to_bits()))),
+            ]))
+        }
+        _ => Err(Failure::Usage(format!("unknown command {command:?}"))),
+    }
 }
 
 fn run_json(command: &str, path: &str, rest: &[String]) -> Result<Json, Failure> {
