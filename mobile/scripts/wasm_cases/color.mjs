@@ -63,6 +63,38 @@ export function cases(inputs) {
           return framed(codes.shape[0], codes.shape[1], rgb);
         },
       });
+    } else if (spec.kind === 'listing') {
+      const cliArgs = ['color-listing'];
+      if (spec.dat) cliArgs.push('--dat', spec.dat);
+      if (spec.library) cliArgs.push('--library', spec.library);
+      out.push({
+        label: `${file}::color_listing`,
+        cliArgs,
+        wasm: (mod) => mod.color_listing(spec.dat ? bytes(spec.dat) : undefined, spec.library ? bytes(spec.library) : undefined),
+      });
+    } else if (spec.kind === 'controls') {
+      const cliArgs = ['color-controls', '--unit', String(spec.unit), '--slot', String(spec.slot)];
+      if (spec.dat) cliArgs.push('--dat', spec.dat);
+      if (spec.library) cliArgs.push('--library', spec.library);
+      out.push({
+        label: `${file}::color_controls`,
+        cliArgs,
+        wasm: (mod) =>
+          mod.color_controls(
+            spec.dat ? bytes(spec.dat) : undefined,
+            spec.unit,
+            spec.slot,
+            spec.library ? bytes(spec.library) : undefined,
+          ),
+      });
+    } else if (spec.kind === 'resolve') {
+      const cliArgs = ['color-resolve', '--dat', spec.dat, '--recipe', spec.recipe];
+      if (spec.library) cliArgs.push('--library', spec.library);
+      out.push({
+        label: `${file}::color_resolve`,
+        cliArgs,
+        wasm: (mod) => mod.color_resolve(bytes(spec.dat), bytes(spec.recipe), spec.library ? bytes(spec.library) : undefined),
+      });
     } else {
       throw new Error(`unknown color case kind ${spec.kind}`);
     }

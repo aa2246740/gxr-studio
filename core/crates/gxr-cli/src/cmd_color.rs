@@ -1,7 +1,13 @@
 //! `color-*` commands. Owner: wave-1 unit color. Flags are documented in docs/mobile.md.
 
+use std::io::Read;
 use std::path::Path;
 
+use gxr_camdata::{MAX_DAT_BYTES, MAX_LIBRARY_BYTES};
+use gxr_color::resolve::{
+    MAX_JSON_BYTES, ResolveError, controls_json, listing_json, parse_edit_json,
+    resolve_default_json, resolve_recipe_json,
+};
 use gxr_color::{
     Codes, Flavour, Stats, Table, apply, apply_with_params, bake_summary, bake_with_params,
     channel_gains, context, decode_npy, display_table, encode_npy, knobs_request, model_for,
@@ -19,6 +25,10 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "color-bake" => bake_cmd(args),
         "color-apply" => apply_cmd(args),
         "color-tones" => tones_cmd(args),
+        "color-parse-edit" => parse_edit_cmd(args),
+        "color-listing" => listing_cmd(args),
+        "color-controls" => controls_cmd(args),
+        "color-resolve" => resolve_cmd(args),
         _ => Err(Failure::Usage(format!("unknown command {command:?}"))),
     }
 }
@@ -261,6 +271,84 @@ fn result_json(out: &str, stats: &Stats) -> Json {
             ]),
         ),
     ])
+}
+
+fn resolve_out(res: Result<String, ResolveError>) -> Result<Output, Failure> {
+    match res {
+        Ok(text) => Ok(Output { text, ok: true }),
+        Err(err) => Ok(Output {
+            text: err.to_json().render(),
+            ok: false,
+        }),
+    }
+}
+
+fn read_bounded(path: &str, limit: usize) -> Result<Vec<u8>, Failure> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| Failure::Usage(format!("cannot read {}: {e}", Path::new(path).display())))?;
+    let mut buf = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| Failure::Usage(format!("cannot read {}: {e}", Path::new(path).display())))?;
+    Ok(buf)
+}
+
+fn read_optional_library(args: &[String]) -> Result<Option<Vec<u8>>, Failure> {
+    match optional(args, "--library")? {
+        Some(path) => Ok(Some(read_bounded(path, MAX_LIBRARY_BYTES)?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_edit_cmd(args: &[String]) -> Result<Output, Failure> {
+    let raw = read_bounded(option(args, "--json")?, MAX_JSON_BYTES)?;
+    resolve_out(parse_edit_json(&raw))
+}
+
+fn listing_cmd(args: &[String]) -> Result<Output, Failure> {
+    let library = read_optional_library(args)?;
+    let dat = match optional(args, "--dat")? {
+        Some(path) => Some(read_bounded(path, MAX_DAT_BYTES)?),
+        None => None,
+    };
+    let dat_ref = dat.as_deref().map(|raw| (raw, library.as_deref()));
+    resolve_out(listing_json(dat_ref))
+}
+
+fn parse_unit_arg(s: &str) -> Result<i64, Failure> {
+    match s {
+        "jlaunch" => Ok(0),
+        "qlaunch" => Ok(1),
+        "l08firm" => Ok(2),
+        _ => s
+            .parse::<i64>()
+            .map_err(|_| Failure::Usage("--unit must be 0..2 or unit id".into())),
+    }
+}
+
+fn controls_cmd(args: &[String]) -> Result<Output, Failure> {
+    let library = read_optional_library(args)?;
+    let dat = match optional(args, "--dat")? {
+        Some(path) => Some(read_bounded(path, MAX_DAT_BYTES)?),
+        None => None,
+    };
+    let unit = parse_unit_arg(option(args, "--unit")?)?;
+    let slot: i64 = option(args, "--slot")?
+        .parse()
+        .map_err(|_| Failure::Usage("--slot must be an integer".into()))?;
+    let dat_ref = dat.as_deref().map(|raw| (raw, library.as_deref()));
+    resolve_out(controls_json(dat_ref, unit, slot))
+}
+
+fn resolve_cmd(args: &[String]) -> Result<Output, Failure> {
+    let dat = read_bounded(option(args, "--dat")?, MAX_DAT_BYTES)?;
+    let library = read_optional_library(args)?;
+    if args.iter().any(|a| a == "--default") {
+        let unit = option(args, "--unit")?;
+        return resolve_out(resolve_default_json(&dat, library.as_deref(), unit));
+    }
+    let recipe = read_bounded(option(args, "--recipe")?, MAX_JSON_BYTES)?;
+    resolve_out(resolve_recipe_json(&dat, library.as_deref(), &recipe))
 }
 
 fn optional<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Failure> {

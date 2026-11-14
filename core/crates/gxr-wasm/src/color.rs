@@ -11,6 +11,10 @@ fn rejected(err: gxr_raw::CoreError) -> JsValue {
     JsValue::from_str(&error_json(&err).render())
 }
 
+fn rejected_resolve(err: gxr_color::resolve::ResolveError) -> JsValue {
+    JsValue::from_str(&err.to_json().render())
+}
+
 /// A bake: the float32 table the shader reads, its meta JSON, and the summary
 /// `gxr-cli color-bake` prints.
 #[wasm_bindgen]
@@ -78,4 +82,46 @@ pub fn color_apply(
     params_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     gxr_color::apply_with_params(bake_bin, meta_json, codes_f32, params_json).map_err(rejected)
+}
+
+/// Recipe and knob listing (`{"units": [...]}`) from optional `GXRCE.DAT` (and optional `GXRFX.BIN`).
+#[wasm_bindgen]
+pub fn color_listing(
+    dat_bytes: Option<Vec<u8>>,
+    library_bytes: Option<Vec<u8>>,
+) -> Result<String, JsValue> {
+    let dat = dat_bytes
+        .as_deref()
+        .map(|raw| (raw, library_bytes.as_deref()));
+    let text = gxr_color::resolve::listing_json(dat).map_err(rejected_resolve)?;
+    Ok(format!("{text}\n"))
+}
+
+/// Knob controls (`{"controls": [...]}`) for `(unit, slot)` from optional `GXRCE.DAT` (and optional `GXRFX.BIN`).
+#[wasm_bindgen]
+pub fn color_controls(
+    dat_bytes: Option<Vec<u8>>,
+    unit: i32,
+    slot: i32,
+    library_bytes: Option<Vec<u8>>,
+) -> Result<String, JsValue> {
+    let dat = dat_bytes
+        .as_deref()
+        .map(|raw| (raw, library_bytes.as_deref()));
+    let text = gxr_color::resolve::controls_json(dat, i64::from(unit), i64::from(slot))
+        .map_err(rejected_resolve)?;
+    Ok(format!("{text}\n"))
+}
+
+/// Resolve a `recipe` JSON object against `GXRCE.DAT` (and optional `GXRFX.BIN`).
+#[wasm_bindgen]
+pub fn color_resolve(
+    dat_bytes: &[u8],
+    recipe_json: &[u8],
+    library_bytes: Option<Vec<u8>>,
+) -> Result<String, JsValue> {
+    let text =
+        gxr_color::resolve::resolve_recipe_json(dat_bytes, library_bytes.as_deref(), recipe_json)
+            .map_err(rejected_resolve)?;
+    Ok(format!("{text}\n"))
 }
