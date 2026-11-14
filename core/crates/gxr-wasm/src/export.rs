@@ -41,7 +41,8 @@ pub fn export_meta_photo(
     Ok(format!("{}\n", res.to_json().render()))
 }
 
-/// Find `{offset, length}` of the largest Pillow-decodable embedded JPEG preview in a DNG, or `null`.
+/// Find `{offset, length}` of the largest structurally selected embedded JPEG preview SubIFD in a DNG, or `null`.
+/// Decoding (and rejecting corrupt JPEG payloads) stays with the caller.
 #[wasm_bindgen]
 pub fn export_meta_preview(dng: &[u8]) -> Result<String, JsValue> {
     let json = dng_preview_location(dng).map_or(Json::Null, |r| r.to_json());

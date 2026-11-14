@@ -2,7 +2,6 @@
 
 use gxr_raw::Json;
 
-use super::jpeg_decode::is_pillow_decodable_jpeg;
 use super::tiff_exif::{ExifValue, load_ifd, parse_tiff};
 
 const MAX_PREVIEW_BYTES: usize = 32 * 1024 * 1024;
@@ -22,11 +21,12 @@ impl PreviewRange {
     }
 }
 
-/// Port of `gxr_studio/meta.py:181 dng_preview_image(embedded_only=True)`.
+/// Port of `gxr_studio/meta.py:181 dng_preview_image(embedded_only=True)` (structural selection).
 ///
-/// Finds `{offset, length}` of the largest embedded JPEG preview SubIFD (`Compression == 7`,
-/// `<= 32 MiB`) that Pillow's JPEG decoder can both open and `.load()` (valid tables, scan
-/// data, and EOI). Returns `None` if no valid embedded preview exists.
+/// Finds `{offset, length}` of the largest-area embedded JPEG preview SubIFD (`Compression == 7`,
+/// `0 < count <= 32 MiB`, all `count` bytes readable within bounds). Decoding and broken-JPEG
+/// rejection stay with the caller (browser on mobile, Pillow in parity tests), matching Python's
+/// single-candidate decode without fallback.
 pub fn dng_preview_location(bytes: &[u8]) -> Option<PreviewRange> {
     let tiff = parse_tiff(bytes).ok()?;
     let sub_offs = tiff.tag_v2.tags.get(&330).and_then(ExifValue::as_ints)?;
@@ -91,7 +91,5 @@ pub fn dng_preview_location(bytes: &[u8]) -> Option<PreviewRange> {
         best_area = area;
     }
 
-    let candidate = best?;
-    let slice = bytes.get(candidate.offset..candidate.offset + candidate.length)?;
-    is_pillow_decodable_jpeg(slice).then_some(candidate)
+    best
 }

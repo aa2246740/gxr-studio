@@ -3,7 +3,6 @@
 
 pub mod exif;
 pub mod exif_value;
-pub mod jpeg_decode;
 pub mod meta_text;
 pub mod photo_meta;
 pub mod preview;

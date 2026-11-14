@@ -321,7 +321,32 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
     Image.new("RGB", (12, 10), (30, 80, 140)).save(prog_buf, "JPEG", quality=85, progressive=True)
     prog_pv = prog_buf.getvalue()
 
+    def strip_jpeg_marker(raw: bytes, marker_byte: int) -> bytes:
+        out = bytearray(raw[:2])
+        pos = 2
+        while pos + 4 <= len(raw):
+            if raw[pos] != 0xFF:
+                out.extend(raw[pos:])
+                break
+            marker = raw[pos + 1]
+            if marker == 0xDA:
+                out.extend(raw[pos:])
+                break
+            seg_len = int.from_bytes(raw[pos + 2 : pos + 4], "big")
+            if marker != marker_byte:
+                out.extend(raw[pos : pos + 2 + seg_len])
+            pos += 2 + seg_len
+        return bytes(out)
+
+    sos_at = valid_pv.find(b"\xff\xda")
+    assert sos_at > 0
+    sos_hdr_len = int.from_bytes(valid_pv[sos_at + 2 : sos_at + 4], "big")
+    early_eoi_pv = valid_pv[: sos_at + 2 + sos_hdr_len] + b"\x00\xff\xd9"
+
     cases["preview-no-tables.dng"] = (build_preview_dng([(8, 6, 7, tableless, None)]), "dng")
+    cases["preview-no-dht.dng"] = (build_preview_dng([(8, 6, 7, strip_jpeg_marker(valid_pv, 0xC4), None)]), "dng")
+    cases["preview-no-dqt.dng"] = (build_preview_dng([(8, 6, 7, strip_jpeg_marker(valid_pv, 0xDB), None)]), "dng")
+    cases["preview-early-eoi.dng"] = (build_preview_dng([(8, 6, 7, early_eoi_pv, None)]), "dng")
     cases["preview-valid.dng"] = (build_preview_dng([(8, 6, 7, valid_pv, None)]), "dng")
     cases["preview-no-eoi.dng"] = (build_preview_dng([(8, 6, 7, valid_pv[:-2], None)]), "dng")
     cases["preview-progressive.dng"] = (build_preview_dng([(12, 10, 7, prog_pv, None)]), "dng")

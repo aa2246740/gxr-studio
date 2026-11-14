@@ -24,7 +24,7 @@ from PIL import Image, TiffImagePlugin
 
 from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
 from gxr_studio.finish.meta_text import photo_meta
-from gxr_studio.meta import dng_preview_image, read_dng_meta, read_jpeg_meta
+from gxr_studio.meta import _load_subifd, dng_preview_image, read_dng_meta, read_jpeg_meta
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
 from support.export_meta_cases import make_jpeg_bytes, make_tiff_doc, nonfinite_edge_cases, sol_mtime_tz_cases, synthetic_edge_cases
 from support.wasm_check import PKG, run_area
@@ -253,15 +253,57 @@ def _assert_no_core_error(code: int, payload: Any, label: str) -> None:
         pytest.fail(f"{label}: unexpected core error kind={err.kind} digest={_digest_value(err.message)}", pytrace=False)
 
 
-def _assert_preview_equal(got_pv: Any, py_pv: Image.Image | None, raw_bytes: bytes, label: str) -> bool:
-    if py_pv is None:
-        if got_pv is not None:
-            pytest.fail(f"{label}: preview expected None, got={_digest_value(got_pv)}", pytrace=False)
+def _py_select_preview_range(path: Path) -> dict[str, int] | None:
+    """Exact selection loop of `gxr_studio/meta.py:181 dng_preview_image` without decoding JPEG."""
+    try:
+        with Image.open(path) as im:
+            best: tuple[int, int] | None = None
+            best_area = 0
+            for off in im.tag_v2.get(330, ()) or ():  # type: ignore[attr-defined]
+                try:
+                    ifd = _load_subifd(im, int(off))
+                except Exception:
+                    continue
+                if ifd.get(259) != 7 or not ifd.get(273) or not ifd.get(279):
+                    continue
+                start, count = int(ifd[273][0]), int(ifd[279][0])
+                area = int(ifd.get(256, 0)) * int(ifd.get(257, 0))
+                if count <= 0 or count > 32 * 1024 * 1024 or area <= best_area:
+                    continue
+                im.fp.seek(start)  # type: ignore[union-attr]
+                data = im.fp.read(count)  # type: ignore[union-attr]
+                if len(data) == count:
+                    best, best_area = (start, count), area
+            return {"offset": best[0], "length": best[1]} if best is not None else None
+    except Exception:
+        return None
+
+
+def _assert_preview_equal(
+    got_pv: Any,
+    py_range: dict[str, int] | None,
+    py_pv: Image.Image | None,
+    raw_bytes: bytes,
+    label: str,
+) -> bool:
+    if not _values_equal(got_pv, py_range):
+        pytest.fail(
+            f"{label}: preview selection mismatch got={_digest_value(got_pv)} want={_digest_value(py_range)}",
+            pytrace=False,
+        )
+    if got_pv is None:
+        assert py_pv is None
         return False
-    if not isinstance(got_pv, dict) or set(got_pv) != {"offset", "length"}:
-        pytest.fail(f"{label}: preview invalid payload digest={_digest_value(got_pv)}", pytrace=False)
     off, length = got_pv["offset"], got_pv["length"]
-    with Image.open(io.BytesIO(raw_bytes[off : off + length])) as rs_pv:
+    payload = raw_bytes[off : off + length]
+    if py_pv is None:
+        # Broken-JPEG candidate selected structurally: caller Pillow decode fails -> end result None.
+        with pytest.raises(Exception):
+            with Image.open(io.BytesIO(payload)) as rs_pv:
+                rs_pv.load()
+        return False
+    with Image.open(io.BytesIO(payload)) as rs_pv:
+        rs_pv.load()
         rs_rgb = rs_pv.convert("RGB")
         if rs_rgb.size != py_pv.size:
             pytest.fail(f"{label}: preview size mismatch got={rs_rgb.size} want={py_pv.size}", pytrace=False)
@@ -410,8 +452,9 @@ def test_real_jpgs_and_dngs_exact_parity() -> None:
 
         code, got_pv = run_json(["export-meta-preview", "--dng", str(dng)])
         _assert_no_core_error(code, got_pv, f"{dng.name}::preview")
+        py_range = _py_select_preview_range(dng)
         py_pv = dng_preview_image(dng, embedded_only=True)
-        if _assert_preview_equal(got_pv, py_pv, dng.read_bytes(), dng.name):
+        if _assert_preview_equal(got_pv, py_range, py_pv, dng.read_bytes(), dng.name):
             preview_found += 1
         else:
             preview_none += 1
@@ -464,8 +507,9 @@ def test_synthetic_pillow_edges_and_damaged_files(tmp_path: Path) -> None:
         if is_dng:
             code, got_pv = run_json(["export-meta-preview", "--dng", str(path)])
             _assert_no_core_error(code, got_pv, f"{filename}::preview")
+            py_range = _py_select_preview_range(path)
             py_pv = dng_preview_image(path, embedded_only=True)
-            _assert_preview_equal(got_pv, py_pv, blob, filename)
+            _assert_preview_equal(got_pv, py_range, py_pv, blob, filename)
 
 
 def test_photo_prefers_jpg_when_both_present(tmp_path: Path) -> None:
@@ -587,7 +631,7 @@ def test_wasm_matches_native_export_meta(tmp_path: Path) -> None:
             }
         )
         if kind == "dng":
-            if dng_preview_image(p, embedded_only=True) is not None:
+            if _py_select_preview_range(p) is not None:
                 manifest_entries.append({"label": f"{name}::preview", "kind": "preview", "dng": str(p)})
             else:
                 null_preview_dngs.append(p)
@@ -608,7 +652,7 @@ def test_wasm_matches_native_export_meta(tmp_path: Path) -> None:
         )
     for dng in REAL_DNGS[:10]:
         manifest_entries.append({"label": f"{dng.name}::exif", "kind": "exif", "src": str(dng)})
-        if dng_preview_image(dng, embedded_only=True) is not None:
+        if _py_select_preview_range(dng) is not None:
             manifest_entries.append({"label": f"{dng.name}::preview", "kind": "preview", "dng": str(dng)})
         else:
             null_preview_dngs.append(dng)
