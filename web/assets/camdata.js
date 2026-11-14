@@ -1,10 +1,11 @@
 // 相机数据（装有配方程序的 GXRCE.DAT）和颜色标定的状态，以及"还没导入"时的引导。
 // 状态读 /api/camdata/status；万一这个接口不可用，退回 /api/render/status（只有 ready 和两项状态）。
 // 导入走 /api/camdata/import-card、/api/camdata/import-upload（选中的文件的原始字节）、/api/calibration/import（开发用）。
+// 「导出给 iPhone」走 /api/calibration/export-iphone：校准数据打成一个 zip，放进导出文件夹。
 
 import { api } from './api.js';
 import { state, emit } from './state.js';
-import { h, toast } from './dom.js';
+import { h, platform, toast } from './dom.js';
 
 // 第 135 代起的旋钮是新版（每项 ±9，Amount 0–150%）；更早的版本只认 ±5，Fade/Warm/Tint/Split/Filt 相机里没有
 const NEW_KNOBS_FROM = 135;
@@ -223,5 +224,50 @@ export function calibrationImportForm({ onDone } = {}) {
     input,
     h('div', { class: 'guide-actions' }, button),
     msg,
+    exportForIphone(),
   );
+}
+
+// 和导出用同一个文件夹（export_destination.js 记在 localStorage 里的那个；没有就用默认的导出文件夹）
+const DESTINATION_KEY = 'gxr-studio.export-destination';
+
+function exportFolder() {
+  try {
+    return localStorage.getItem(DESTINATION_KEY) || state.settings?.export_dir || null;
+  } catch {
+    return state.settings?.export_dir || null;
+  }
+}
+
+// 「导出给 iPhone」：校准数据打成一个 zip 放进导出文件夹，做好后和导出一样可以在访达中显示
+function exportForIphone() {
+  const msg = h('p', { class: 'small', role: 'status' });
+  const after = h('div', { class: 'guide-actions' });
+  const button = h('button', { class: 'btn', type: 'button', onclick: run }, '导出给 iPhone');
+  async function run() {
+    button.disabled = true;
+    after.replaceChildren();
+    msg.textContent = '正在导出…';
+    try {
+      const dest = exportFolder();
+      const r = await api('/api/calibration/export-iphone', { method: 'POST', body: dest ? { dest_dir: dest } : {} });
+      msg.textContent = `已导出「${r.name}」。${r.message}`;
+      if (platform() === 'mac' && r.export_id) {
+        const reveal = h('button', { class: 'btn sm', type: 'button' }, '在访达中显示');
+        reveal.addEventListener('click', async () => {
+          try {
+            await api(`/api/exports/${r.export_id}/reveal`, { method: 'POST' });
+          } catch (err) {
+            msg.textContent = err.message;
+          }
+        });
+        after.append(reveal);
+      }
+    } catch (err) {
+      msg.textContent = err.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+  return h('div', { class: 'calib-export', dataset: { section: 'calibration-export' } }, h('div', { class: 'guide-actions' }, button), msg, after);
 }
