@@ -16,8 +16,11 @@ from gxr_studio.finish.fonts import ASSETS, FONT_FILES
 from gxr_studio.finish.sfnt import _cmap, _tables, read_font
 from support.core_cli import error_of, run_json
 from support.frame_cases import (
+    CJK_GATE_PX,
     FIXTURE_CJK,
+    GXR_MAX_SOURCE,
     cjk_fonts,
+    cjk_sweep_cases,
     desktop_mark,
     font_args,
     font_pairs,
@@ -26,6 +29,7 @@ from support.frame_cases import (
     same,
     stamp_case,
     stamp_cases,
+    stamp_domain_cases,
     write_json,
 )
 from support.frame_font import empty_directory, font_without_unicode_cmap
@@ -383,6 +387,47 @@ def test_cjk_stamp_layouts_are_within_one_pixel(tmp_path: Path) -> None:
         differ += cjk_stamp_close(expected, value, f"cjk stamp #{i} {case['request']['w']}x{case['request']['h']}")
     print(f"CJK stamp layouts: {differ} of {len(cases)} differ by 1 px, the rest are exact")
     assert differ < len(cases)
+
+
+def test_gxr_sources_keep_stamps_inside_the_cjk_gate(tmp_path: Path) -> None:
+    """Domain of the 1-px CJK gate (manager decision, option a): every stamp a GXR source up to
+    4288x2848 can get, in every FRAME_STYLES entry and stamp size, is at most CJK_GATE_PX pixels.
+    Raising stamp sizes past the guaranteed domain makes this fail."""
+    from gxr_studio.finish.spec import FRAME_STYLES
+
+    cases = stamp_domain_cases()
+    got = _batch(tmp_path, [], cases)["stamps"]
+    assert len(got) == len(cases)
+    worst: dict[str, int] = {}
+    for case, layout in zip(cases, got, strict=True):
+        assert layout is None or "error" not in layout, (case, layout)
+        if layout is None:
+            continue
+        where = "border" if case["spec"].get("placement") == "border" else "photo"
+        worst[where] = max(worst.get(where, 0), layout["px"])
+        for op in layout["ops"]:
+            assert op.get("px", layout["px"]) <= CJK_GATE_PX, (case, op)
+        assert layout["px"] <= CJK_GATE_PX, (case["request"], case["spec"], layout["px"])
+    # compose.finish_array: instant takes the border stamp, every other style the photo stamp.
+    per_style = {style: worst["border" if style == "instant" else "photo"] for style in FRAME_STYLES}
+    print(f"largest stamp over {len(cases)} GXR cases up to {GXR_MAX_SOURCE}: {per_style}")
+    assert set(worst) == {"photo", "border"}
+
+
+def test_cjk_size_sweep_within_one_pixel_up_to_the_gate(tmp_path: Path) -> None:
+    """The size sweep at stamp sizes <= CJK_GATE_PX, photo and instant border, through the whitelist
+    comparator. Larger stamps differ by about px/1000 and are not gated (REPORT.md)."""
+    with cjk_fonts((FIXTURE_CJK,)):
+        cases, want, left_out = cjk_sweep_cases()
+    assert len(cases) > 300 and left_out > 0
+    styles = {"border" if c["spec"].get("placement") == "border" else "photo" for c in cases}
+    assert styles == {"photo", "border"}
+    assert any(c["spec"]["font"] == "seg7" and c["spec"]["size"] == "large" for c in cases)
+    got = _batch(tmp_path, [], cases)["stamps"]
+    differ = 0
+    for i, (case, expected, value) in enumerate(zip(cases, want, got, strict=True)):
+        differ += cjk_stamp_close(expected, value, f"sweep #{i} {case['request']['w']}x{case['request']['h']} {case['spec']['size']}")
+    print(f"CJK sweep: {len(cases)} cases at <= {CJK_GATE_PX} px, {differ} differ by 1 px; {left_out} larger cases not gated")
 
 
 def _json_depth_text(depth: int) -> str:
