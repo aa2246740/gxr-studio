@@ -7,6 +7,7 @@ use gxr_raw::sha256::sha256_hex;
 use gxr_raw::{CoreError, Json};
 
 use crate::bounds::{add_u64, fit_count_u64, mul_u64, try_vec_cap, try_vec_filled};
+use crate::py_num::{PySizeError, parse_py_float, parse_py_size, py_space};
 
 /// Port of gxr_studio/lut/cube.py:14 MAX_BYTES.
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -53,7 +54,7 @@ pub fn comment_start(line: &str) -> i64 {
 
 /// Internal byte-offset version of `comment_start` so slicing `line[idx + 1..]` is safe.
 fn comment_start_byte(line: &str) -> Option<usize> {
-    if !line.trim_start().starts_with("TITLE") {
+    if !line.trim_start_matches(py_space).starts_with("TITLE") {
         return line.find('#');
     }
     let mut quote: Option<char> = None;
@@ -200,14 +201,6 @@ fn is_known_header(key: &str) -> bool {
     )
 }
 
-fn parse_py_float(s: &str) -> Result<f64, ()> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        return Err(());
-    }
-    trimmed.parse::<f64>().map_err(|_| ())
-}
-
 #[derive(Default)]
 struct ParsedHeaders {
     n1: Option<usize>,
@@ -265,13 +258,16 @@ impl Cube {
         for (idx, line) in py_splitlines(text).into_iter().enumerate() {
             let no = idx + 1;
             if let Some(start) = comment_start_byte(line) {
-                comments.push(line[start + 1..].trim().to_string());
+                comments.push(line[start + 1..].trim_matches(py_space).to_string());
             }
-            let words: Vec<String> = if line.trim_start().starts_with("TITLE") {
+            let words: Vec<String> = if line.trim_start_matches(py_space).starts_with("TITLE") {
                 shlex_split_posix_comments(line)?
             } else {
                 let code = line.split('#').next().unwrap_or("");
-                code.split_whitespace().map(str::to_string).collect()
+                code.split(py_space)
+                    .filter(|w| !w.is_empty())
+                    .map(str::to_string)
+                    .collect()
             };
             if words.is_empty() {
                 continue;
@@ -303,21 +299,17 @@ impl Cube {
                                 format!("line {no}: invalid LUT size"),
                             ));
                         }
-                        let n: i64 = values[0].parse().map_err(|_| {
-                            CoreError::new(
+                        let max_n = if key == "LUT_1D_SIZE" { MAX_1D } else { MAX_3D };
+                        let nu = parse_py_size(&values[0], max_n).map_err(|err| match err {
+                            PySizeError::InvalidLiteral => CoreError::new(
                                 "value_error",
                                 format!("invalid literal for int() with base 10: {:?}", values[0]),
-                            )
-                        })?;
-                        let max_n = if key == "LUT_1D_SIZE" { MAX_1D } else { MAX_3D } as i64;
-                        if !(2..=max_n).contains(&n) {
-                            return Err(CoreError::new(
+                            ),
+                            PySizeError::OutOfRange => CoreError::new(
                                 "value_error",
                                 format!("line {no}: LUT size out of range"),
-                            ));
-                        }
-                        let nu = usize::try_from(n)
-                            .map_err(|_| CoreError::new("value_error", "LUT size out of range"))?;
+                            ),
+                        })?;
                         if key == "LUT_1D_SIZE" {
                             hdr.n1 = Some(nu);
                         } else {
@@ -333,7 +325,7 @@ impl Cube {
                         }
                         let mut arr = [0.0f64; 3];
                         for (i, s) in values.iter().enumerate() {
-                            let v = parse_py_float(s).map_err(|_| {
+                            let v = parse_py_float(s).ok_or_else(|| {
                                 CoreError::new(
                                     "value_error",
                                     format!("could not convert string to float: {s:?}"),
@@ -362,7 +354,7 @@ impl Cube {
                         }
                         let mut arr = [0.0f64; 2];
                         for (i, s) in values.iter().enumerate() {
-                            let v = parse_py_float(s).map_err(|_| {
+                            let v = parse_py_float(s).ok_or_else(|| {
                                 CoreError::new(
                                     "value_error",
                                     format!("could not convert string to float: {s:?}"),
@@ -389,7 +381,7 @@ impl Cube {
 
             let mut row = Vec::with_capacity(words.len());
             for s in &words {
-                let v = parse_py_float(s).map_err(|_| {
+                let v = parse_py_float(s).ok_or_else(|| {
                     CoreError::new(
                         "value_error",
                         format!("line {no}: unsupported directive {key}"),

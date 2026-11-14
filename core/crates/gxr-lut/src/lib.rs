@@ -8,6 +8,7 @@ pub mod identify;
 mod identify_scan;
 pub mod json_in;
 pub mod photo;
+mod py_num;
 pub mod scene;
 pub mod spaces;
 pub mod tables;

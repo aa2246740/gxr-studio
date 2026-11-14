@@ -177,6 +177,12 @@ def test_parse_variants_bom_cr_title_and_1d_shaper(tmp_path: Path) -> None:
         ("LUT_3D_SIZE 1\n0 0 0\n", "line 1: LUT size out of range"),
         ("LUT_3D_SIZE 130\n", "line 1: LUT size out of range"),
         ("LUT_1D_SIZE 65537\n", "line 1: LUT size out of range"),
+        ("LUT_3D_SIZE 18446744073709551615\n", "line 1: LUT size out of range"),
+        (f"LUT_3D_SIZE {'9' * 200}\n", "line 1: LUT size out of range"),
+        ("LUT_3D_SIZE -5\n", "line 1: LUT size out of range"),
+        ("LUT_3D_SIZE 1.5\n", "invalid literal for int()"),
+        ("LUT_3D_SIZE _2\n", "invalid literal for int()"),
+        ("LUT_3D_SIZE 2\n0 0 1_.0\n", "line 2: unsupported directive 0"),
         ("LUT_3D_SIZE 2\nLUT_3D_SIZE 2\n" + "0 0 0\n" * 8, "line 2: duplicate or late header"),
         ("LUT_3D_SIZE 2\n" + "0 0 nan\n" * 8, "line 2: expected three finite numbers"),
         ("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 inf\n" + "0 0 0\n" * 8, "line 2: non-finite header"),
@@ -198,6 +204,24 @@ def test_bad_cubes_match_errors(tmp_path: Path, text: str, expected_prefix: str)
     err = error_of(code, payload)
     assert err is not None
     assert expected_prefix in err.message
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("underscore-size", "LUT_3D_SIZE 0_2\n" + "0 0 0\n" * 8),
+        ("underscore-float", "LUT_3D_SIZE 2\n" + "0 0 0_0\n" * 8),
+        ("unicode-size", "LUT_3D_SIZE ２\n" + "0 0 0\n" * 8),
+        ("unicode-float-ws", "LUT_3D_SIZE +0_2\nLUT_3D_INPUT_RANGE 0_0 １.０\n" + "\x1f0\x1f 0 １_２e-１\n" * 8),
+    ],
+)
+def test_parse_python_numeric_syntax_and_unicode(tmp_path: Path, name: str, text: str) -> None:
+    require_cli()
+    p = _write_cube(tmp_path, f"{name}.cube", text)
+    py_cube = Cube.read(p)
+    code, payload = run_json(["lut-parse", "--cube", str(p)])
+    assert error_of(code, payload) is None
+    assert payload["size_3d"] == py_cube.table3.shape[0] and payload["sha256"] == py_cube.source_sha256
 
 
 @pytest.mark.parametrize("space", spaces.SPACES)

@@ -116,7 +116,16 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
     xyz_npy = tmp_path / "xyz_f64.npy"
     np.save(xyz_npy, xyz_f64)
 
-    manifests: list[Path] = [shaper_cube, log_cube, bad_cube]
+    u_size = tmp_path / "underscore-size.cube"
+    u_size.write_text("LUT_3D_SIZE 0_2\n" + "0 0 0\n" * 8, encoding="utf-8")
+    u_float = tmp_path / "underscore-float.cube"
+    u_float.write_text("LUT_3D_SIZE 2\n" + "0 0 0_0\n" * 8, encoding="utf-8")
+    uni_size = tmp_path / "unicode-size.cube"
+    uni_size.write_text("LUT_3D_SIZE ２\n" + "0 0 0\n" * 8, encoding="utf-8")
+    huge64 = tmp_path / "huge64.cube"
+    huge64.write_text("LUT_3D_SIZE 18446744073709551615\n", encoding="utf-8")
+
+    manifests: list[Path] = [shaper_cube, log_cube, bad_cube, u_size, u_float, uni_size, huge64]
     cases_specs: list[dict[str, Any]] = [
         {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "srgb", "output_space": "vlog"}},
         {"kind": "table", "cube": str(log_cube), "space": {"input_space": "llog", "output_space": "gamma24"}},
