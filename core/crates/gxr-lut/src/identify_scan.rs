@@ -448,8 +448,14 @@ pub fn search_explicit_input(text: &str) -> Option<&str> {
         while p < text.len() && b" :=_-".contains(&text.as_bytes()[p]) {
             p += 1;
         }
-        if p > sep_start && p < text.len() {
-            return Some(&text[p..]);
+        if p > sep_start {
+            let line_end = text[p..].find('\n').map_or(text.len(), |off| p + off);
+            if line_end > p {
+                return Some(&text[p..line_end]);
+            }
+            if p - 1 > sep_start {
+                return Some(&text[p - 1..p]);
+            }
         }
     }
     None
@@ -622,5 +628,10 @@ mod tests {
         assert!(spaces_in_text("linearK").is_empty());
         assert!(has_space_hint("ſlog_custom"));
         assert!(!has_space_hint("İlinear"));
+
+        assert_eq!(search_explicit_input("input_vlog\nto_srgb"), Some("vlog"));
+        assert_eq!(search_explicit_input("input_\nsrgb"), None);
+        assert_eq!(search_explicit_input("input_\ninput_vlog"), Some("vlog"));
+        assert_eq!(search_explicit_input("input_  \ninput_vlog"), Some(" "));
     }
 }

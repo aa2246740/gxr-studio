@@ -60,6 +60,10 @@ IDENTIFY_CASES: list[tuple[str, str, str, Any]] = [
     ("", "synthetic", "ſlog_custom.cube", lambda x: 1 - x),
     ("", "synthetic", "xİlinear.cube", lambda x: 1 - x),
     ("", "synthetic", "linearK.cube", lambda x: 1 - x),
+    ("", "synthetic", "input_vlog\nto_srgb.cube", lambda x: 1 - x),
+    ("", "synthetic", "input_vlog\nsrgb.cube", lambda x: 1 - x),
+    ("", "synthetic", "input_\nsrgb.cube", lambda x: 1 - x),
+    ("", "synthetic", "input_\ninput_vlog.cube", lambda x: 1 - x),
 ]
 
 
@@ -167,6 +171,8 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
         },
         {"kind": "identify", "cube": str(inv2), "name": "input_lİnear.cube"},
         {"kind": "identify", "cube": str(inv2), "name": "input_ſRGB.cube"},
+        {"kind": "identify", "cube": str(inv2), "name": "input_vlog\nto_srgb.cube"},
+        {"kind": "identify", "cube": str(inv2), "name": "input_vlog\nsrgb.cube"},
         {
             "kind": "apply_u8",
             "cube": str(steep_cube),
