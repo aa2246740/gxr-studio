@@ -294,7 +294,15 @@ pub fn photo_meta_from_bytes(
     let (sub, file_time): (BTreeMap<u16, ExifValue>, Option<NaiveDateTime>) =
         match open_image(bytes) {
             Ok(doc) => (load_image_exif(bytes, &doc).sub, mtime_dt),
-            Err(_) => (BTreeMap::new(), None),
+            Err(msg) => {
+                if let Some(detail) = msg.strip_prefix("DecompressionBombError:") {
+                    return Err(CoreError::new(
+                        "DecompressionBombError",
+                        detail.trim_start(),
+                    ));
+                }
+                (BTreeMap::new(), None)
+            }
         };
 
     let shutter = ratio(sub.get(&33434));

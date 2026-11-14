@@ -8,9 +8,7 @@ use gxr_raw::Json;
 
 use super::exif::clean_text;
 use super::exif_value::is_py_whitespace;
-use super::tiff_exif::{
-    EXIF_IFD_TAG, ExifValue, ImageDoc, load_ifd, load_image_exif, parse_jpeg, parse_tiff,
-};
+use super::tiff_exif::{EXIF_IFD_TAG, ExifValue, ImageDoc, load_ifd, load_image_exif, open_image};
 
 pub const MIN_YEAR: i32 = 1995;
 /// Default reference year for `plausible()` so Rust never reads the system clock.
@@ -410,17 +408,17 @@ fn strip_ricoh_ws_prefix(s: &str) -> String {
 
 /// Port of `gxr_studio/meta.py:102 read_jpeg_meta`.
 pub fn read_jpeg_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
-    let jpg = match parse_jpeg(bytes) {
-        Ok(j) => j,
-        Err(msg) => {
-            return PhotoMeta::from_error(format!(
-                "UnidentifiedImageError: cannot identify image file ({msg})"
-            ));
-        }
+    let doc = match open_image(bytes) {
+        Ok(d) => d,
+        Err(msg) => return PhotoMeta::from_error(msg),
     };
-    let exif = load_image_exif(bytes, &ImageDoc::Jpeg(jpg.clone()));
+    let exif = load_image_exif(bytes, &doc);
     let orientation = parse_orientation(exif.base.get(&274));
-    let (w, h) = oriented(jpg.width, jpg.height, orientation);
+    let (raw_w, raw_h) = match &doc {
+        ImageDoc::Jpeg(j) => (j.width, j.height),
+        ImageDoc::Tiff(t) => (t.width, t.height),
+    };
+    let (w, h) = oriented(raw_w, raw_h, orientation);
     let taken = parse_exif_datetime(exif.sub.get(&36867), now_year)
         .or_else(|| parse_exif_datetime(exif.base.get(&306), now_year));
     let iso = match parse_iso(exif.sub.get(&34855)) {
@@ -466,13 +464,14 @@ fn extract_crop_pair(val: Option<&ExifValue>) -> Result<Option<(u32, u32)>, &'st
 
 /// Port of `gxr_studio/meta.py:138 read_dng_meta`.
 pub fn read_dng_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
-    let tiff = match parse_tiff(bytes) {
-        Ok(t) => t,
-        Err(msg) => {
-            return PhotoMeta::from_error(format!(
-                "UnidentifiedImageError: cannot identify image file ({msg})"
-            ));
+    let tiff = match open_image(bytes) {
+        Ok(ImageDoc::Tiff(t)) => t,
+        Ok(ImageDoc::Jpeg(_)) => {
+            return PhotoMeta::from_error(
+                "AttributeError: 'JpegImageFile' object has no attribute 'tag_v2'",
+            );
         }
+        Err(msg) => return PhotoMeta::from_error(msg),
     };
     let tags = &tiff.tag_v2.tags;
     let orientation = parse_orientation(tags.get(&274));

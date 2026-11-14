@@ -4,7 +4,8 @@
 //! a bare SOI+SOF+SOS+EOI stub) that `JpegImageFile._open` accepts on open but `pv.load()` fails
 //! to decode in `libjpeg`.
 
-const HARD_MAX_IMAGE_PIXELS: u64 = 178_956_970;
+use super::tiff_exif::HARD_MAX_IMAGE_PIXELS;
+
 const MAX_PROGRESSIVE_BLOCKS: usize = 2_500_000;
 
 #[derive(Clone, Debug)]

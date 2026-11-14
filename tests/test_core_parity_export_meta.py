@@ -451,8 +451,14 @@ def test_synthetic_pillow_edges_and_damaged_files(tmp_path: Path) -> None:
         ]
         args += ["--jpg", str(path)] if not is_dng else ["--dng", str(path)]
         code, got_photo = run_json(args)
-        _assert_no_core_error(code, got_photo, f"{filename}::photo")
-        _assert_photo_equal(got_photo, _py_photo_meta_json(jpg_arg, dng_arg, f"R001_{path.stem}", 1700000000123.0, 480), filename)
+        if filename.startswith("huge-") and filename.endswith(("-dimensions.jpg", "-dimensions.dng")):
+            err = error_of(code, got_photo)
+            assert isinstance(err, CoreCliError) and err.kind == "DecompressionBombError", (filename, err)
+            with pytest.raises(Image.DecompressionBombError):
+                _py_photo_meta_json(jpg_arg, dng_arg, f"R001_{path.stem}", 1700000000123.0, 480)
+        else:
+            _assert_no_core_error(code, got_photo, f"{filename}::photo")
+            _assert_photo_equal(got_photo, _py_photo_meta_json(jpg_arg, dng_arg, f"R001_{path.stem}", 1700000000123.0, 480), filename)
 
         if is_dng:
             code, got_pv = run_json(["export-meta-preview", "--dng", str(path)])

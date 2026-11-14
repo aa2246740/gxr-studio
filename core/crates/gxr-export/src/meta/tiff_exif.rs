@@ -34,16 +34,40 @@ pub enum ImageDoc {
     Tiff(TiffDoc),
 }
 
+pub const HARD_MAX_IMAGE_PIXELS: u64 = 178_956_970;
+
+pub(crate) fn is_open_fallback_err(e: &str) -> bool {
+    e.starts_with("SyntaxError:")
+        || e.starts_with("IndexError:")
+        || e.starts_with("TypeError:")
+        || e.starts_with("UnidentifiedImageError:")
+}
+
+fn check_decompression_bomb(w: u32, h: u32) -> Result<(), String> {
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels > HARD_MAX_IMAGE_PIXELS {
+        return Err(format!(
+            "DecompressionBombError: Image size ({pixels} pixels) exceeds limit of {HARD_MAX_IMAGE_PIXELS} pixels, could be decompression bomb DOS attack."
+        ));
+    }
+    Ok(())
+}
+
 pub fn open_image(bytes: &[u8]) -> Result<ImageDoc, String> {
-    if bytes.starts_with(b"\xff\xd8\xff")
-        && let Ok(jpg) = parse_jpeg(bytes)
-    {
-        return Ok(ImageDoc::Jpeg(jpg));
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        match parse_jpeg(bytes) {
+            Ok(jpg) => return Ok(ImageDoc::Jpeg(jpg)),
+            Err(e) if is_open_fallback_err(&e) => {}
+            Err(e) => return Err(e),
+        }
     }
-    if let Ok(tiff) = parse_tiff(bytes) {
-        return Ok(ImageDoc::Tiff(tiff));
+    match parse_tiff(bytes) {
+        Ok(tiff) => Ok(ImageDoc::Tiff(tiff)),
+        Err(e) if is_open_fallback_err(&e) => {
+            Err("UnidentifiedImageError: cannot identify image file".to_string())
+        }
+        Err(e) => Err(e),
     }
-    Err("UnidentifiedImageError: cannot identify image file".to_string())
 }
 
 /// Port of `PIL.JpegImagePlugin.JpegImageFile._open`.
@@ -110,7 +134,7 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                 }
                 let payload_len = seg_len - 2;
                 let Some(payload) = bytes.get(pos..).and_then(|s| s.get(..payload_len)) else {
-                    break;
+                    return Err("OSError: Truncated File Read".to_string());
                 };
                 pos += payload_len;
                 if marker == 0xFFE1 {
@@ -138,7 +162,7 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                 }
                 let payload_len = seg_len - 2;
                 let Some(payload) = bytes.get(pos..).and_then(|s| s.get(..payload_len)) else {
-                    break;
+                    return Err("OSError: Truncated File Read".to_string());
                 };
                 pos += payload_len;
                 if payload.len() < 6 {
@@ -164,13 +188,15 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                 };
                 pos += 2;
                 let seg_len = usize::from(u16::from_be_bytes([len_bytes[0], len_bytes[1]]));
-                if seg_len < 2
-                    || bytes
-                        .get(pos..)
-                        .and_then(|s| s.get(..seg_len - 2))
-                        .is_none()
-                {
+                if seg_len < 2 {
                     break;
+                }
+                if bytes
+                    .get(pos..)
+                    .and_then(|s| s.get(..seg_len - 2))
+                    .is_none()
+                {
+                    return Err("OSError: Truncated File Read".to_string());
                 }
                 saw_sos = true;
                 break;
@@ -191,7 +217,7 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                     .and_then(|s| s.get(..payload_len))
                     .is_none()
                 {
-                    break;
+                    return Err("OSError: Truncated File Read".to_string());
                 }
                 pos += payload_len;
             }
@@ -213,6 +239,7 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
     let (Some(w), Some(h)) = (width, height) else {
         return Err("UnidentifiedImageError: missing SOF".to_string());
     };
+    check_decompression_bomb(w, h)?;
     Ok(JpegDoc {
         width: w,
         height: h,
@@ -359,6 +386,7 @@ pub fn parse_tiff(bytes: &[u8]) -> Result<TiffDoc, String> {
     } else {
         (xsize, ysize)
     };
+    check_decompression_bomb(width, height)?;
 
     Ok(TiffDoc {
         endian,
@@ -482,4 +510,24 @@ fn parse_xmp_orientation(xmp: &[u8]) -> Option<i64> {
         pos = after;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_image_preserves_truncated_oserror_and_decompression_bomb() {
+        let truncated_app1 = b"\xff\xd8\xff\xe1\x00\x80Exif\x00\x00II*\x00";
+        let err = open_image(truncated_app1).unwrap_err();
+        assert_eq!(err, "OSError: Truncated File Read");
+
+        let huge_jpg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x27\x10\x4e\x20\x01\x01\x11\x00\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xff\xd9";
+        let err = open_image(huge_jpg).unwrap_err();
+        assert!(err.starts_with("DecompressionBombError:"), "{err}");
+
+        let jfif_no_sof = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00";
+        let err = open_image(jfif_no_sof).unwrap_err();
+        assert!(err.starts_with("UnidentifiedImageError:"), "{err}");
+    }
 }

@@ -444,6 +444,64 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
                 ),
                 "jpg",
             )
+
+    # 11. Sol r1 open rejection, DecompressionBombError, EXIF truncation, & IFD edge cases
+    cases["damaged-0.jpg"] = (b"\xff\xd8\xff\xe1\x00\x80Exif\x00\x00II*\x00", "jpg")
+    cases["damaged-1.jpg"] = (b"not a photo", "jpg")
+    cases["damaged-2.jpg"] = (b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00", "jpg")
+
+    huge_w, huge_h = 20000, 10000
+    cases["huge-dng-dimensions.dng"] = (
+        make_tiff_doc(
+            [
+                (256, 4, 1, struct.pack("<I", huge_w)),
+                (257, 4, 1, struct.pack("<I", huge_h)),
+                (273, 4, 1, struct.pack("<I", 8)),
+                (279, 4, 1, struct.pack("<I", 16)),
+            ]
+        ),
+        "dng",
+    )
+    cases["huge-jpeg-dimensions.jpg"] = (
+        b"\xff\xd8\xff\xc0\x00\x0b\x08" + struct.pack(">HH", huge_h, huge_w) + b"\x01\x01\x11\x00\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xff\xd9",
+        "jpg",
+    )
+
+    bare_jpg = make_jpeg_bytes(8, 6)
+
+    def with_raw_app1(body: bytes) -> bytes:
+        seg = b"Exif\x00\x00" + body
+        return bare_jpg[:2] + b"\xff\xe1" + struct.pack(">H", len(seg) + 2) + seg + bare_jpg[2:]
+
+    cases["exif-empty.jpg"] = (with_raw_app1(b""), "jpg")
+    cases["exif-short.jpg"] = (with_raw_app1(b"II*\x00"), "jpg")
+    cases["exif-header-offset.jpg"] = (with_raw_app1(b"II*\x00\xff\xff\xff\xff"), "jpg")
+    cases["exif-truncated-dir.jpg"] = (with_raw_app1(b"II*\x00\x08\x00\x00\x00\xff\xff"), "jpg")
+    cases["exif-loop.jpg"] = (
+        make_jpeg_bytes(exif_payload=b"II*\x00\x08\x00\x00\x00" + pack_ifd(base_tiff("<") + [(0x8769, 4, 1, struct.pack("<I", 8))], 0, "<")),
+        "jpg",
+    )
+
+    cases["ifd-oob.dng"] = (
+        b"II*\x00\x08\x00\x00\x00" + pack_ifd([(271, 2, 2, b"OK"), (272, 2, 100, struct.pack("<I", 999999))] + base_tiff("<"), 0, "<"),
+        "dng",
+    )
+    cases["ifd-self.dng"] = (
+        b"II*\x00\x08\x00\x00\x00" + pack_ifd([(0x8769, 4, 1, struct.pack("<I", 8)), (272, 2, 4, b"SLF\x00")] + base_tiff("<"), 0, "<"),
+        "dng",
+    )
+    cases["huge-value-count.dng"] = (
+        b"II*\x00\x08\x00\x00\x00" + pack_ifd([(272, 4, 0xFFFFFFFF, struct.pack("<I", 8))] + base_tiff("<"), 0, "<"),
+        "dng",
+    )
+    ifd65535_entries = [
+        (256, 4, 1, struct.pack("<I", 16)),
+        (257, 4, 1, struct.pack("<I", 12)),
+        (273, 4, 1, struct.pack("<I", 8)),
+        (279, 4, 1, struct.pack("<I", 16)),
+    ]
+    ifd65535_entries.extend([(30000, 4, 1, struct.pack("<I", 1))] * (65535 - 4))
+    cases["ifd-65535.dng"] = (b"II*\x00\x08\x00\x00\x00" + pack_ifd(ifd65535_entries, 0, "<"), "dng")
     return cases
 
 
