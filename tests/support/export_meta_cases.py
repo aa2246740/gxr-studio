@@ -621,6 +621,31 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
                     "jpg",
                 )
                 t_idx += 1
+    # 14. Sol r2 arbitrary-precision integer crop (DOUBLE ±1e20, 1e25) and large ISO DOUBLE
+    for cname, cw, ch, orient in [
+        ("dng-crop-float-1e20.dng", 1e20, 100.0, 1),
+        ("dng-crop-float-neg1e20.dng", -1e20, 100.0, 1),
+        ("dng-crop-float-1e25-rot6.dng", 1e25, -0.9, 6),
+    ]:
+        cases[cname] = (
+            make_tiff_doc(
+                base_tiff("<") + [(274, 3, 1, struct.pack("<H", orient))],
+                subifd_list=[
+                    [
+                        (254, 4, 1, struct.pack("<I", 0)),
+                        (256, 4, 1, struct.pack("<I", 220)),
+                        (257, 4, 1, struct.pack("<I", 120)),
+                        (50720, 12, 2, struct.pack("<dd", cw, ch)),
+                    ]
+                ],
+                endian="<",
+            ),
+            "dng",
+        )
+    cases["iso-double-1e20.jpg"] = (
+        make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 12, 1, struct.pack("<d", 1e20))])),
+        "jpg",
+    )
     return cases
 
 

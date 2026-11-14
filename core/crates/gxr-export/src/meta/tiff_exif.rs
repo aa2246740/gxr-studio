@@ -428,7 +428,8 @@ fn load_jpeg_exif(jpg: &JpegDoc) -> LoadedExif {
             out.base = ifd0.tags;
             if let Some(sub_off_val) = out.base.get(&EXIF_IFD_TAG)
                 && let Ok(Some(sub_off)) = sub_off_val.to_python_int()
-                && let Ok(sub_off_u64) = u64::try_from(sub_off)
+                && let Some(sub_off_i64) = sub_off.as_i64()
+                && let Ok(sub_off_u64) = u64::try_from(sub_off_i64)
                 && let Ok(sub_ifd) = load_ifd(
                     slice,
                     endian,
@@ -464,7 +465,8 @@ fn load_tiff_exif(bytes: &[u8], tiff: &TiffDoc) -> LoadedExif {
         out.base = ifd0.tags;
         if let Some(sub_off_val) = out.base.get(&EXIF_IFD_TAG)
             && let Ok(Some(sub_off)) = sub_off_val.to_python_int()
-            && let Ok(sub_off_u64) = u64::try_from(sub_off)
+            && let Some(sub_off_i64) = sub_off.as_i64()
+            && let Ok(sub_off_u64) = u64::try_from(sub_off_i64)
             && let Ok(sub_ifd) = load_ifd(
                 bytes,
                 tiff.endian,

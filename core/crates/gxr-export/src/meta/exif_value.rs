@@ -79,6 +79,56 @@ pub enum ExifValue {
     Rationals(Vec<(i64, i64)>),
 }
 
+/// Canonical signed arbitrary-precision Python integer (`int(v)`), stored as decimal ASCII.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PyInt(String);
+
+impl PyInt {
+    pub fn from_i64(v: i64) -> Self {
+        Self(v.to_string())
+    }
+
+    pub fn from_i128(v: i128) -> Self {
+        Self(v.to_string())
+    }
+
+    pub fn from_f64_trunc(f: f64) -> Result<Self, &'static str> {
+        if f.is_nan() {
+            return Err("ValueError: cannot convert float NaN to integer");
+        }
+        if f.is_infinite() {
+            return Err("OverflowError: cannot convert float infinity to integer");
+        }
+        let t = f.trunc();
+        if t == 0.0 {
+            return Ok(Self("0".to_string()));
+        }
+        Ok(Self(format!("{t:.0}")))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.0 == "0"
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        self.0.parse::<i64>().ok()
+    }
+
+    pub fn as_i128(&self) -> Option<i128> {
+        self.0.parse::<i128>().ok()
+    }
+}
+
+impl std::fmt::Display for PyInt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 impl ExifValue {
     /// Encode as JSON for `export-meta-exif`: rational -> `{num, den}`, bytes -> `{hex}`.
     pub fn to_exif_json(&self) -> Json {
@@ -151,26 +201,13 @@ impl ExifValue {
         }
     }
 
-    /// Convert to integer the way Python `int(v)` does.
-    pub fn to_python_int(&self) -> Result<Option<i64>, &'static str> {
+    /// Convert to arbitrary-precision integer the way Python `int(v)` does.
+    pub fn to_python_int(&self) -> Result<Option<PyInt>, &'static str> {
         match self {
-            Self::Int(i) => Ok(Some(*i)),
-            Self::Float(f) => {
-                if f.is_nan() {
-                    return Err("ValueError: cannot convert float NaN to integer");
-                }
-                if f.is_infinite() {
-                    return Err("OverflowError: cannot convert float infinity to integer");
-                }
-                #[allow(clippy::cast_possible_truncation)]
-                Ok(Some(*f as i64))
-            }
+            Self::Int(i) => Ok(Some(PyInt::from_i64(*i))),
+            Self::Float(f) => PyInt::from_f64_trunc(*f).map(Some),
             Self::Rational(_, 0) => Err("ValueError: cannot convert float NaN to integer"),
-            Self::Rational(n, d) =>
-            {
-                #[allow(clippy::cast_possible_truncation)]
-                Ok(Some(((*n as f64) / (*d as f64)) as i64))
-            }
+            Self::Rational(n, d) => Ok(Some(PyInt::from_i128(i128::from(*n) / i128::from(*d)))),
             Self::Str(s) => match parse_py_int_str(s.trim()) {
                 Some(v) => Ok(Some(v)),
                 None => Err("ValueError: invalid literal for int() with base 10"),
@@ -314,14 +351,14 @@ pub(crate) fn trim_py_ascii_bytes_ws(s: &str) -> &str {
     s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
 }
 
-fn parse_py_int_str(s: &str) -> Option<i64> {
+fn parse_py_int_str(s: &str) -> Option<PyInt> {
     if s.is_empty() {
         return None;
     }
-    let (sign, rest) = match s.as_bytes()[0] {
-        b'+' => ("+", &s[1..]),
-        b'-' => ("-", &s[1..]),
-        _ => ("", s),
+    let (neg, rest) = match s.as_bytes()[0] {
+        b'+' => (false, &s[1..]),
+        b'-' => (true, &s[1..]),
+        _ => (false, s),
     };
     if rest.is_empty() || rest.starts_with('_') || rest.ends_with('_') || rest.contains("__") {
         return None;
@@ -329,15 +366,18 @@ fn parse_py_int_str(s: &str) -> Option<i64> {
     if !rest.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
         return None;
     }
-    let clean: String = rest
+    let digits: String = rest
         .bytes()
         .filter(|&b| b != b'_')
         .map(char::from)
         .collect();
-    if sign == "-" {
-        format!("-{clean}").parse::<i64>().ok()
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        Some(PyInt("0".to_string()))
+    } else if neg {
+        Some(PyInt(format!("-{trimmed}")))
     } else {
-        clean.parse::<i64>().ok()
+        Some(PyInt(trimmed.to_string()))
     }
 }
 

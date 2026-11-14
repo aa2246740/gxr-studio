@@ -345,7 +345,7 @@ pub fn photo_meta_from_bytes(
     let moment = taken.as_ref().or(file_time.as_ref());
     let date = moment.map(frame_date).unwrap_or_default();
     let iso = match parsed.iso {
-        Some(v) if v != 0 => format!("ISO {v}"),
+        Some(v) if !v.is_zero() => format!("ISO {v}"),
         _ => String::new(),
     };
     let lens_short = if lens.contains("50") {

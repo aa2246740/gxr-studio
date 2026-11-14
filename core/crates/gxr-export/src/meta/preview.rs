@@ -62,13 +62,15 @@ pub fn dng_preview_location(bytes: &[u8]) -> Option<PreviewRange> {
             .tags
             .get(&256)
             .and_then(|v| v.to_python_int().ok().flatten())
+            .and_then(|v| v.as_i128())
             .unwrap_or(0);
         let h = ifd
             .tags
             .get(&257)
             .and_then(|v| v.to_python_int().ok().flatten())
+            .and_then(|v| v.as_i128())
             .unwrap_or(0);
-        let area = i128::from(w) * i128::from(h);
+        let area = w * h;
         if area <= best_area {
             continue;
         }

@@ -11,6 +11,7 @@ pub mod tiff_exif;
 pub mod tiff_ifd;
 
 pub use exif::{SourceExif, clean_text, read_source_exif};
+pub use exif_value::PyInt;
 pub use meta_text::{
     PhotoTextResult, datetime_from_mtime_ms, format_py_g, frame_date, photo_meta_from_bytes, ratio,
     validate_tz_offset_min,

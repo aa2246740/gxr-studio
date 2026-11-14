@@ -9,10 +9,15 @@ use gxr_raw::Json;
 use crate::common::{self, Failure, Output};
 
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
+    if command == "export-meta-read" {
+        return Ok(Output {
+            text: cmd_read(args)?,
+            ok: true,
+        });
+    }
     let json = match command {
         "export-meta-exif" => cmd_exif(args)?,
         "export-meta-photo" => cmd_photo(args)?,
-        "export-meta-read" => cmd_read(args)?,
         "export-meta-preview" => cmd_preview(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
@@ -81,7 +86,7 @@ fn cmd_photo(args: &[String]) -> Result<Json, Failure> {
     Ok(res.to_json())
 }
 
-fn cmd_read(args: &[String]) -> Result<Json, Failure> {
+fn cmd_read(args: &[String]) -> Result<String, Failure> {
     let path = common::option(args, "--file")?;
     let bytes = common::read(path)?;
     let now_year = parse_now_year(args)?;
@@ -96,7 +101,7 @@ fn cmd_read(args: &[String]) -> Result<Json, Failure> {
     } else {
         read_jpeg_meta(&bytes, now_year)
     };
-    Ok(meta.to_json())
+    Ok(meta.to_json_string())
 }
 
 fn is_dng_path(path: &str) -> bool {

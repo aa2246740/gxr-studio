@@ -7,7 +7,7 @@ use gxr_camdata::{RecipeTag, parse_recipe_tag, parse_recipe_tag_bytes};
 use gxr_raw::Json;
 
 use super::exif::clean_text;
-use super::exif_value::is_py_whitespace;
+use super::exif_value::{PyInt, is_py_whitespace};
 use super::tiff_exif::{EXIF_IFD_TAG, ExifValue, ImageDoc, load_ifd, load_image_exif, open_image};
 
 pub const MIN_YEAR: i32 = 1995;
@@ -62,11 +62,11 @@ impl NaiveDateTime {
 /// Port of `gxr_studio/meta.py:28 PhotoMeta`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhotoMeta {
-    pub width: Option<i64>,
-    pub height: Option<i64>,
+    pub width: Option<PyInt>,
+    pub height: Option<PyInt>,
     pub orientation: i64,
     pub taken: Option<NaiveDateTime>,
-    pub iso: Option<i64>,
+    pub iso: Option<PyInt>,
     pub lens: Option<String>,
     pub model: Option<String>,
     pub error: Option<String>,
@@ -99,28 +99,23 @@ impl PhotoMeta {
         }
     }
 
-    pub fn to_json(&self) -> Json {
-        Json::object([
-            ("width", Json::opt(self.width.map(Json::Int))),
-            ("height", Json::opt(self.height.map(Json::Int))),
-            ("orientation", Json::Int(self.orientation)),
-            (
-                "taken",
-                Json::opt(self.taken.as_ref().map(|dt| Json::str(dt.to_iso_string()))),
-            ),
-            ("iso", Json::opt(self.iso.map(Json::Int))),
-            ("lens", Json::opt(self.lens.as_deref().map(Json::str))),
-            ("model", Json::opt(self.model.as_deref().map(Json::str))),
-            ("error", Json::opt(self.error.as_deref().map(Json::str))),
-            (
-                "copyright",
-                Json::opt(self.copyright.as_deref().map(Json::str)),
-            ),
-            (
-                "recipe_tag",
-                recipe_tag_inner_json(self.recipe_tag.as_ref()),
-            ),
-        ])
+    /// Render compact JSON with arbitrary-precision integers for `width`, `height`, and `iso`.
+    pub fn to_json_string(&self) -> String {
+        let opt_str = |s: Option<&str>| Json::opt(s.map(Json::str)).render();
+        let taken = self.taken.as_ref().map(NaiveDateTime::to_iso_string);
+        format!(
+            "{{\"width\":{},\"height\":{},\"orientation\":{},\"taken\":{},\"iso\":{},\"lens\":{},\"model\":{},\"error\":{},\"copyright\":{},\"recipe_tag\":{}}}",
+            self.width.as_ref().map_or("null", PyInt::as_str),
+            self.height.as_ref().map_or("null", PyInt::as_str),
+            self.orientation,
+            opt_str(taken.as_deref()),
+            self.iso.as_ref().map_or("null", PyInt::as_str),
+            opt_str(self.lens.as_deref()),
+            opt_str(self.model.as_deref()),
+            opt_str(self.error.as_deref()),
+            opt_str(self.copyright.as_deref()),
+            recipe_tag_inner_json(self.recipe_tag.as_ref()).render(),
+        )
     }
 }
 
@@ -313,7 +308,7 @@ pub fn clean_meta_str(value: Option<&ExifValue>) -> Option<String> {
 }
 
 /// Port of `gxr_studio/meta.py:81 _iso`.
-fn parse_iso(value: Option<&ExifValue>) -> Result<Option<i64>, &'static str> {
+fn parse_iso(value: Option<&ExifValue>) -> Result<Option<PyInt>, &'static str> {
     let Some(val) = value else {
         return Ok(None);
     };
@@ -350,7 +345,7 @@ fn parse_iso(value: Option<&ExifValue>) -> Result<Option<i64>, &'static str> {
 }
 
 /// Port of `gxr_studio/meta.py:90 _oriented`.
-pub fn oriented(w: i64, h: i64, orientation: i64) -> (i64, i64) {
+pub fn oriented<T>(w: T, h: T, orientation: i64) -> (T, T) {
     if matches!(orientation, 5..=8) {
         (h, w)
     } else {
@@ -364,7 +359,10 @@ pub fn parse_orientation(value: Option<&ExifValue>) -> i64 {
         return 1;
     };
     match val.to_python_int() {
-        Ok(Some(v)) if (1..=8).contains(&v) => v,
+        Ok(Some(v)) => match v.as_i64() {
+            Some(n) if (1..=8).contains(&n) => n,
+            _ => 1,
+        },
         _ => 1,
     }
 }
@@ -409,8 +407,14 @@ pub fn read_jpeg_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
     let exif = load_image_exif(bytes, &doc);
     let orientation = parse_orientation(exif.base.get(&274));
     let (raw_w, raw_h) = match &doc {
-        ImageDoc::Jpeg(j) => (i64::from(j.width), i64::from(j.height)),
-        ImageDoc::Tiff(t) => (i64::from(t.width), i64::from(t.height)),
+        ImageDoc::Jpeg(j) => (
+            PyInt::from_i64(i64::from(j.width)),
+            PyInt::from_i64(i64::from(j.height)),
+        ),
+        ImageDoc::Tiff(t) => (
+            PyInt::from_i64(i64::from(t.width)),
+            PyInt::from_i64(i64::from(t.height)),
+        ),
     };
     let (w, h) = oriented(raw_w, raw_h, orientation);
     let taken = parse_exif_datetime(exif.sub.get(&36867), now_year)
@@ -434,12 +438,14 @@ pub fn read_jpeg_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
     }
 }
 
-fn extract_crop_pair(val: Option<&ExifValue>) -> Result<Option<(i64, i64)>, &'static str> {
+fn extract_crop_pair(val: Option<&ExifValue>) -> Result<Option<(PyInt, PyInt)>, &'static str> {
     let Some(v) = val else {
         return Ok(None);
     };
     let pair = match v {
-        ExifValue::Ints(xs) if xs.len() == 2 => (Some(xs[0]), Some(xs[1])),
+        ExifValue::Ints(xs) if xs.len() == 2 => {
+            (Some(PyInt::from_i64(xs[0])), Some(PyInt::from_i64(xs[1])))
+        }
         ExifValue::Rationals(rs) if rs.len() == 2 => (
             ExifValue::Rational(rs[0].0, rs[0].1).to_python_int()?,
             ExifValue::Rational(rs[1].0, rs[1].1).to_python_int()?,
@@ -469,8 +475,8 @@ pub fn read_dng_meta(bytes: &[u8], now_year: i32) -> PhotoMeta {
     };
     let tags = &tiff.tag_v2.tags;
     let orientation = parse_orientation(tags.get(&274));
-    let mut width = i64::from(tiff.width);
-    let mut height = i64::from(tiff.height);
+    let mut width = PyInt::from_i64(i64::from(tiff.width));
+    let mut height = PyInt::from_i64(i64::from(tiff.height));
 
     if let Some(sub_offs) = tags.get(&330).and_then(ExifValue::as_ints) {
         for off in sub_offs {
@@ -629,7 +635,11 @@ mod tests {
         );
         assert_eq!(
             parse_iso(Some(&ExifValue::Str(" 800 ".to_string()))),
-            Ok(Some(800))
+            Ok(Some(PyInt::from_i64(800)))
+        );
+        assert_eq!(
+            parse_iso(Some(&ExifValue::Float(1e20))),
+            Ok(Some(PyInt::from_i128(100_000_000_000_000_000_000)))
         );
         assert_eq!(
             parse_iso(Some(&ExifValue::Str("abc".to_string()))),
@@ -642,15 +652,41 @@ mod tests {
     }
 
     #[test]
-    fn extract_crop_pair_preserves_negative_and_rational_truncation() {
+    fn extract_crop_pair_preserves_negative_rational_and_arbitrary_floats() {
         assert_eq!(
             extract_crop_pair(Some(&ExifValue::Ints(vec![-1, 100]))),
-            Ok(Some((-1, 100)))
+            Ok(Some((PyInt::from_i64(-1), PyInt::from_i64(100))))
         );
         assert_eq!(
             extract_crop_pair(Some(&ExifValue::Rationals(vec![(401, 2), (201, 2)]))),
-            Ok(Some((200, 100)))
+            Ok(Some((PyInt::from_i64(200), PyInt::from_i64(100))))
+        );
+        assert_eq!(
+            extract_crop_pair(Some(&ExifValue::Floats(vec![1e20, -1e20]))),
+            Ok(Some((
+                PyInt::from_i128(100_000_000_000_000_000_000),
+                PyInt::from_i128(-100_000_000_000_000_000_000),
+            )))
+        );
+        assert_eq!(
+            extract_crop_pair(Some(&ExifValue::Floats(vec![1e25, -0.9]))),
+            Ok(Some((
+                PyInt::from_i128(10_000_000_000_000_000_905_969_664),
+                PyInt::from_i64(0),
+            )))
         );
         assert_eq!(oriented(-1, 100, 6), (100, -1));
+
+        let meta = PhotoMeta {
+            width: Some(PyInt::from_i128(-100_000_000_000_000_000_000)),
+            height: Some(PyInt::from_i64(100)),
+            orientation: 1,
+            iso: Some(PyInt::from_i128(100_000_000_000_000_000_000)),
+            ..PhotoMeta::default()
+        };
+        assert_eq!(
+            meta.to_json_string(),
+            "{\"width\":-100000000000000000000,\"height\":100,\"orientation\":1,\"taken\":null,\"iso\":100000000000000000000,\"lens\":null,\"model\":null,\"error\":null,\"copyright\":null,\"recipe_tag\":null}"
+        );
     }
 }
