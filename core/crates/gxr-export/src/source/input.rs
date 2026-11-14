@@ -149,7 +149,7 @@ pub fn parse_edit(bytes: &[u8]) -> Result<Edit, CoreError> {
         Some(Value::Str(s)) => Some(s.clone()),
         Some(_) => return Err(bad("edit.lut must be a string or null")),
     };
-    let (adjust, curves) = tones_of(&v)?;
+    let (adjust, curves) = checked_tones(tones_of(&v)?)?;
     Ok(Edit {
         recipe,
         lut,
@@ -158,11 +158,36 @@ pub fn parse_edit(bytes: &[u8]) -> Result<Edit, CoreError> {
     })
 }
 
+/// `params.parse_adjust` / `_parse_points` refuse non-finite numbers (`math.isfinite`); the
+/// JSON reader accepts `NaN` and `Infinity`, so the parsed values are checked again here,
+/// before `channel_gains` and `display_table` see them.
+fn checked_tones(
+    (adjust, curves): (Adjust, Option<Curves>),
+) -> Result<(Adjust, Option<Curves>), CoreError> {
+    if !adjust.exposure_ev.is_finite() {
+        return Err(CoreError::new("bad_adjust", "请求无效。请刷新页面后重试。"));
+    }
+    if let Some(c) = &curves {
+        let finite = [&c.master, &c.r, &c.g, &c.b]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .all(|(x, y)| x.is_finite() && y.is_finite());
+        if !finite {
+            return Err(CoreError::new(
+                "bad_curve",
+                "曲线上的点须包含两个 0 到 255 之间的数值。",
+            ));
+        }
+    }
+    Ok((adjust, curves))
+}
+
 /// Parse a `{"adjust", "curves"}` JSON (the `color-apply` parameters). An empty input is
 /// `{}` (no adjustment), on the CLI and in WASM alike.
 pub fn parse_tones(bytes: &[u8]) -> Result<(Adjust, Option<Curves>), CoreError> {
     let bytes: &[u8] = if bytes.is_empty() { b"{}" } else { bytes };
-    tones_of(&parse_json(bytes)?)
+    checked_tones(tones_of(&parse_json(bytes)?)?)
 }
 
 #[cfg(test)]
@@ -194,5 +219,24 @@ mod tests {
         assert_eq!(e.lut.as_deref(), Some("x"));
         assert!(parse_edit(br#"{"recipe":{"unit":"x","slot":3}}"#).is_err());
         assert!(parse_edit(br#"{"recipe":{"unit":"jlaunch","slot":9}}"#).is_err());
+    }
+
+    #[test]
+    fn non_finite_tones_are_refused() {
+        for text in [
+            &br#"{"adjust":{"exposure_ev":NaN}}"#[..],
+            br#"{"adjust":{"exposure_ev":Infinity}}"#,
+            br#"{"adjust":{"exposure_ev":-Infinity}}"#,
+        ] {
+            let err = parse_tones(text).unwrap_err();
+            assert_eq!(
+                (err.kind, err.message.as_str()),
+                ("bad_adjust", "请求无效。请刷新页面后重试。")
+            );
+            assert_eq!(parse_edit(text).unwrap_err().kind, "bad_adjust");
+        }
+        let err = parse_tones(br#"{"curves":{"master":[[0,0],[NaN,255]]}}"#).unwrap_err();
+        assert_eq!(err.kind, "bad_curve");
+        assert_eq!(parse_tones(b"").unwrap(), parse_tones(b"{}").unwrap());
     }
 }

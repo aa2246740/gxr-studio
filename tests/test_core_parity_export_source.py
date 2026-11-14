@@ -479,7 +479,55 @@ def review_r1_specs(tmp: Path, edit: Path, base: dict[str, Any], render: dict[st
         out[f"r1-plan-entry-{n}"] = {"kind": "plan", "edit": str(edit), **{**base, "entry": str(e)}}
         out[f"r1-render-entry-{n}"] = {**ok, "entry": str(e), "out": str(tmp / f"r1-e{n}.npy")}
         out[f"r1-render-stock-{n}"] = {**ok, "stock": str(e), "out": str(tmp / f"r1-s{n}.npy")}
+    # 4. Non-finite exposure and curve points.
+    for name, text in NON_FINITE_TONES.items():
+        a = tmp / f"tones-{name}.json"
+        a.write_text(text, encoding="utf-8")
+        out[f"r1-render-tones-{name}"] = {**ok, "adjust": str(a), "out": str(tmp / f"r1-t-{name}.npy")}
     return out
+
+
+NON_FINITE_TONES = {
+    "nan": '{"adjust":{"exposure_ev":NaN}}',
+    "inf": '{"adjust":{"exposure_ev":Infinity}}',
+    "-inf": '{"adjust":{"exposure_ev":-Infinity}}',
+    "curve-nan": '{"curves":{"master":[[0,0],[NaN,255]]}}',
+    "curve-inf": '{"curves":{"g":[[0,Infinity],[255,255]]}}',
+}
+
+
+@needs_dat
+def test_non_finite_tones_are_refused(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    """r1 P2-4: Python's parser refuses NaN/Infinity exposure (bad_adjust) and curve points (bad_curve)."""
+    import json
+
+    from gxr_studio.render.params import EditError, parse_adjust, parse_curve
+
+    h = homes["all"]
+    entry, stock = tmp_path / "e.bin", tmp_path / "s.bin"
+    entry.write_bytes(h.entry(RecipeSel("jlaunch", 3)) or b"")
+    stock.write_bytes(h.entry(RecipeSel("jlaunch", 4)) or b"")
+    shot = xs.write_json(tmp_path / "shot.json", xs.shot_for(files["ok"], None, lens=LENSES[0], iso=200))
+    for name, text in NON_FINITE_TONES.items():
+        raw = json.loads(text)
+        with pytest.raises(EditError) as caught:
+            if "adjust" in raw:
+                parse_adjust(raw["adjust"])
+            else:
+                parse_curve(raw["curves"])
+        py = {"kind": caught.value.code, "message": caught.value.message}
+        a = tmp_path / f"{name}.json"
+        a.write_text(text, encoding="utf-8")
+        args = ["source-render", "--dng", str(files["ok"]), "--entry", str(entry), "--stock", str(stock), "--unit", "jlaunch"]
+        code, payload = run_json([*args, "--calib", str(h.calib), "--iso", "200", "--adjust", str(a), "--out", str(tmp_path / "o.npy")])
+        assert (code, payload) == (2, {"error": py}), (name, py, payload)
+        e = tmp_path / f"edit-{name}.json"
+        e.write_text(text, encoding="utf-8")
+        code, payload = run_json(
+            ["source-color-image", "--shot", str(shot), "--edit", str(e), "--base", "standard", "--dng", str(files["ok"])]
+            + ["--dat", str(h.dat), "--calib", str(h.calib), "--entry", str(stock), "--out", str(tmp_path / "c.npy")]
+        )
+        assert (code, payload) == (2, {"error": py}), (name, py, payload)
 
 
 @needs_dat
