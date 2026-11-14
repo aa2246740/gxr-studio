@@ -288,7 +288,7 @@ h1, h2, p { margin: 0; }
 .curves .col { display: flex; flex-direction: column; gap: 6px; width: 112px; flex: none; }
 .curve-btn { min-height: 44px; border-radius: 12px; background: var(--surface-control); box-shadow: inset 0 0 0 1px var(--line-subtle); font: 500 15px/1 var(--font-ui); text-align: center; }
 .curve-btn.on { box-shadow: inset 0 0 0 1.5px var(--accent-text); }
-.curves .btn { margin-top: 6px; padding: 0 6px; font-size: 14px; }
+.later-panel .curves .btn { margin: 6px 0 0; padding: 0 6px; font-size: 14px; }
 svg.curve { width: min(220px, 52vw); height: auto; flex: none; border-radius: 10px; background: #202020; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); }
 
 .scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 20; }
