@@ -535,8 +535,10 @@ pub fn capture_json(raw: &str, jpeg: &str) -> Result<Json, Failure> {
 //     --two-d runs fft2/ifft2 over (h, n). The output has the input's shape.
 // hdr-phase-plane --a A.npy --b B.npy --out PC.npy [--trig host] [--a-shape H W] [--b-shape H W]
 //     _phase_shift's float32 plane real(ifft2(f / (|f| + 1e-9))) and its peak (dy, dx).
-// hdr-fft-twiddle --n N --out T.npy [--trig host]
-//     sincos_2pibyn<float>(N)[idx] for idx < N, (N, 2) float32.
+// hdr-fft-twiddle --n N --out T.npy [--kind float|double|tables] [--trig host]
+//     sincos_2pibyn<T>(N)[idx] for idx < N, (N, 2) float32 or float64; `tables` writes the
+//     raw double tables v1 then v2 as (re, im, angle) rows (the cos/sin values and their
+//     argument) and reports len(v1) as "v1".
 // `--trig host` (native only, a diagnostic) builds the twiddles from the host's cos/sin
 // instead of the correctly rounded ones; it never reaches gxr-wasm.
 
@@ -599,6 +601,21 @@ fn phase_plane_cmd(args: &[String]) -> Result<Json, Failure> {
 
 fn fft_twiddle_cmd(args: &[String]) -> Result<Json, Failure> {
     let n: u64 = number(args, "--n")?;
-    let t = hdr::Plane32::fft_twiddles(n, host_trig(args)?)?;
-    write(args, "--out", "<f4", &[t.h, t.w], &le_f32(&t.v))
+    let kind = match common::option(args, "--kind").unwrap_or("float") {
+        "float" => 0,
+        "double" => 1,
+        "tables" => 2,
+        k => return Err(usage(format!("bad --kind {k:?}"))),
+    };
+    let (v, v1_len) = hdr::Plane32::fft_twiddles(n, kind, host_trig(args)?)?;
+    let cols = if kind == 2 { 3 } else { 2 };
+    let rows = v.len() / cols;
+    let file = if kind == 0 {
+        let f: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+        write(args, "--out", "<f4", &[rows, 2], &le_f32(&f))?
+    } else {
+        write(args, "--out", "<f8", &[rows, cols], &le_f64(&v))?
+    };
+    let v1_len = i64::try_from(v1_len).unwrap_or(i64::MAX);
+    Ok(Json::object([("table", file), ("v1", Json::Int(v1_len))]))
 }

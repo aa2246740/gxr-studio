@@ -350,20 +350,41 @@ impl Plane32 {
         ))
     }
 
-    /// `sincos_2pibyn<float>(n)[idx]` for every `idx < n`, as an `n × 2` plane.
-    pub fn fft_twiddles(n: u64, host: Option<HostTrig>) -> Result<Plane32, CoreError> {
+    /// `sincos_2pibyn(n)` as `(re, im)` pairs, and the length of `v1`. `kind` 0: every
+    /// `operator[](idx)` of the float table (widened exactly); 1: of the double table; 2: the
+    /// raw double tables `v1` then `v2` as `(re, im, angle)` triples: the `cos`/`sin` values
+    /// and the argument they were taken of.
+    pub fn fft_twiddles(
+        n: u64,
+        kind: u8,
+        host: Option<HostTrig>,
+    ) -> Result<(Vec<f64>, usize), CoreError> {
         let count = size::count(&[n, 2])?;
         if n == 0 {
             return Err(unsupported("bad_input", "FFT 形状对不上"));
         }
         let t = twiddle::SinCos::new(n, trig_of(host))?;
+        let (rows, v1_len) = t.tables();
+        if kind == 2 {
+            let mut v = size::with_capacity(3 * rows.len())?;
+            for row in &rows {
+                v.extend_from_slice(row);
+            }
+            return Ok((v, v1_len));
+        }
         let mut v = size::with_capacity(count)?;
         for idx in 0..n {
-            let c: Cx<f32> = t.get(idx);
-            v.push(c.r);
-            v.push(c.i);
+            let (r, i) = if kind == 0 {
+                let c: Cx<f32> = t.get(idx);
+                (f64::from(c.r), f64::from(c.i))
+            } else {
+                let c: Cx<f64> = t.get(idx);
+                (c.r, c.i)
+            };
+            v.push(r);
+            v.push(i);
         }
-        Plane32::new(v, n, 2)
+        Ok((v, v1_len))
     }
 }
 
@@ -384,6 +405,24 @@ mod tests {
             }
         }
         assert_eq!(phase_shift(&moved, &base, h, w).unwrap(), (2, -3));
+    }
+
+    #[test]
+    fn bluestein_padding_past_the_count_limit_is_refused() {
+        // 2**31 - 1 is prime: Bluestein, padded to good_size(2**32 - 3) > 2**32 - 1.
+        let n = 2_147_483_647usize;
+        assert!(blue::use_bluestein(n as u64));
+        assert!(blue::good_size_cmplx(2 * n as u64 - 1) > u64::from(u32::MAX));
+        for err in [
+            Plan::<f32>::new(n, Trig::CORRECT).err(),
+            Plan::<f64>::new(n, Trig::CORRECT).err(),
+        ] {
+            assert_eq!(
+                err.map(|e| e.message),
+                Some(size::ARRAY_TOO_BIG.to_string())
+            );
+        }
+        assert!(Plane32::fft_twiddles(u64::from(u32::MAX), 0, None).is_err());
     }
 
     #[test]

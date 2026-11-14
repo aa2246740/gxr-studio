@@ -144,5 +144,86 @@ export function cases(inputs) {
       }
     }
   }
+  out.push(...fftCases(inputs));
+  return out;
+}
+
+// ---- hdr-fft ----
+// Folders with fft.npy (float32 (h, n, 2) complex64 pairs) and/or pa.npy + pb.npy (float32
+// planes for hdr-phase-plane); fft0.npy is an empty (1, 0, 2) array for numpy's n = 0 error.
+export function fftCases(inputs) {
+  const out = [];
+  for (const folder of inputs) {
+    const has = (name) => existsSync(join(folder, name));
+    const path = (name) => join(folder, name);
+    if (has('fft.npy')) {
+      for (const inverse of [false, true]) {
+        for (const twoD of [false, true]) {
+          const args = ['hdr-fft', '--in', path('fft.npy'), '--inverse', inverse ? '1' : '0'];
+          if (twoD) args.push('--two-d');
+          out.push({
+            label: `${folder}::hdr_fft_${inverse ? 'inv' : 'fwd'}${twoD ? '_2d' : ''}`,
+            cliArgs: [...args, '--out', join(dir, `fft-${out.length}.npy`)],
+            wasm: (mod) => {
+              const x = readNpy(path('fft.npy'));
+              return framed(x.shape[0], x.shape[1], mod.hdr_fft(x.values, x.shape[0], x.shape[1], inverse, twoD));
+            },
+          });
+        }
+      }
+      for (const [h, n] of [
+        [4294967295, 4294967295],
+        [2147483648, 1],
+        [1, 2147483648],
+      ]) {
+        out.push({
+          label: `${folder}::hdr_fft_huge_${h}x${n}`,
+          cliArgs: ['hdr-fft', '--in', path('fft.npy'), '--inverse', '0', '--in-shape', String(h), String(n), '--out', join(dir, `fft-huge-${out.length}.npy`)],
+          wasm: (mod) => mod.hdr_fft(readNpy(path('fft.npy')).values, h, n, false, false),
+        });
+      }
+    }
+    if (has('fft0.npy')) {
+      out.push({
+        label: `${folder}::hdr_fft_zero`,
+        cliArgs: ['hdr-fft', '--in', path('fft0.npy'), '--inverse', '0', '--out', join(dir, `fft0-${out.length}.npy`)],
+        wasm: (mod) => mod.hdr_fft(new Float32Array(0), 1, 0, false, false),
+      });
+    }
+    if (has('pa.npy') && has('pb.npy')) {
+      const run = (mod) => {
+        const a = readNpy(path('pa.npy'));
+        const b = readNpy(path('pb.npy'));
+        return mod.hdr_phase_plane(a.values, b.values, a.shape[0], a.shape[1]);
+      };
+      out.push({
+        label: `${folder}::hdr_phase_plane_report`,
+        cliArgs: ['hdr-phase-plane', '--a', path('pa.npy'), '--b', path('pb.npy'), '--out', join(dir, `pc-r-${out.length}.npy`)],
+        wasm: (mod) => run(mod).report,
+      });
+      out.push({
+        label: `${folder}::hdr_phase_plane`,
+        cliArgs: ['hdr-phase-plane', '--a', path('pa.npy'), '--b', path('pb.npy'), '--out', join(dir, `pc-${out.length}.npy`)],
+        wasm: (mod) => {
+          const a = readNpy(path('pa.npy'));
+          return framed(a.shape[0], a.shape[1], run(mod).plane());
+        },
+      });
+      for (const [h, w] of [
+        [4294967295, 4294967295],
+        [2147483648, 1],
+      ]) {
+        const dims = ['--a-shape', String(h), String(w), '--b-shape', String(h), String(w)];
+        out.push({
+          label: `${folder}::hdr_phase_plane_huge_${h}x${w}`,
+          cliArgs: ['hdr-phase-plane', '--a', path('pa.npy'), '--b', path('pb.npy'), ...dims, '--out', join(dir, `pc-huge-${out.length}.npy`)],
+          wasm: (mod) => {
+            const a = readNpy(path('pa.npy'));
+            return mod.hdr_phase_plane(a.values, a.values, h, w).report;
+          },
+        });
+      }
+    }
+  }
   return out;
 }

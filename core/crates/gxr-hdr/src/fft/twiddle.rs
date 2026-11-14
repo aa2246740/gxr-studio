@@ -27,10 +27,12 @@ impl Trig {
     };
 }
 
+/// One table entry and the angle its `cos`/`sin` were taken of (0 for the exact `(1, 0)`).
 #[derive(Clone, Copy)]
 struct C64 {
     r: f64,
     i: f64,
+    a: f64,
 }
 
 pub struct SinCos {
@@ -41,42 +43,53 @@ pub struct SinCos {
     v2: Vec<C64>,
 }
 
-/// `sincos_2pibyn::calc(x, n, ang)`.
-fn calc(x: u64, n: u64, ang: f64, t: Trig) -> C64 {
-    let c = |r: f64, i: f64| C64 { r, i };
-    // Exact: every value here is below 2**53.
-    let f = |v: u64| v as f64;
-    let mut x = x << 3;
+/// `calc`'s octant folding of `x << 3`: the multiple `m` of `ang` passed to `cos`/`sin`,
+/// whether the real part is the `sin` (and the imaginary part the `cos`), and both signs.
+fn fold(x: u64, n: u64) -> (u64, bool, bool, bool) {
     if x < 4 * n {
         // first half
         if x < 2 * n {
             // first quadrant
             if x < n {
-                return c((t.cos)(f(x) * ang), (t.sin)(f(x) * ang));
+                return (x, false, false, false);
             }
-            return c((t.sin)(f(2 * n - x) * ang), (t.cos)(f(2 * n - x) * ang));
+            return (2 * n - x, true, false, false);
         }
         // second quadrant
-        x -= 2 * n;
+        let x = x - 2 * n;
         if x < n {
-            return c(-(t.sin)(f(x) * ang), (t.cos)(f(x) * ang));
+            return (x, true, true, false);
         }
-        return c(-(t.cos)(f(2 * n - x) * ang), (t.sin)(f(2 * n - x) * ang));
+        return (2 * n - x, false, true, false);
     }
-    x = 8 * n - x;
+    let x = 8 * n - x;
     if x < 2 * n {
         // third quadrant
         if x < n {
-            return c((t.cos)(f(x) * ang), -(t.sin)(f(x) * ang));
+            return (x, false, false, true);
         }
-        return c((t.sin)(f(2 * n - x) * ang), -(t.cos)(f(2 * n - x) * ang));
+        return (2 * n - x, true, false, true);
     }
     // fourth quadrant
-    x -= 2 * n;
+    let x = x - 2 * n;
     if x < n {
-        return c(-(t.sin)(f(x) * ang), -(t.cos)(f(x) * ang));
+        return (x, true, true, true);
     }
-    c(-(t.cos)(f(2 * n - x) * ang), -(t.sin)(f(2 * n - x) * ang))
+    (2 * n - x, false, true, true)
+}
+
+/// `sincos_2pibyn::calc(x, n, ang)`: `cos` and `sin` of `Thigh(m)*ang`, placed and signed.
+fn calc(x: u64, n: u64, ang: f64, t: Trig) -> C64 {
+    let (m, swap, neg_r, neg_i) = fold(x << 3, n);
+    // Exact: m <= 2n < 2**53.
+    let a = (m as f64) * ang;
+    let (c, s) = ((t.cos)(a), (t.sin)(a));
+    let (r, i) = if swap { (s, c) } else { (c, s) };
+    C64 {
+        r: if neg_r { -r } else { r },
+        i: if neg_i { -i } else { i },
+        a,
+    }
 }
 
 impl SinCos {
@@ -90,7 +103,11 @@ impl SinCos {
             shift += 1;
         }
         let mask = (1u64 << shift) - 1;
-        let one = C64 { r: 1.0, i: 0.0 };
+        let one = C64 {
+            r: 1.0,
+            i: 0.0,
+            a: 0.0,
+        };
         let len1 = size::count(&[mask + 1])?;
         let mut v1 = size::with_capacity(len1)?;
         v1.push(one);
@@ -106,6 +123,17 @@ impl SinCos {
             v1,
             v2,
         })
+    }
+
+    /// The raw `v1` then `v2` tables as `(re, im, angle)`, and the length of `v1`.
+    pub fn tables(&self) -> (Vec<[f64; 3]>, usize) {
+        let rows = self
+            .v1
+            .iter()
+            .chain(&self.v2)
+            .map(|c| [c.r, c.i, c.a])
+            .collect();
+        (rows, self.v1.len())
     }
 
     /// `operator[](idx)` for `idx < n`.
