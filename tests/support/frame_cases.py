@@ -208,33 +208,27 @@ def stamp_cases() -> tuple[list[dict[str, Any]], list[Any]]:
     return cases, want
 
 
-# CJK gate (manager decisions of 2026-11-14, UNIT-frame.md). Python scales Pillow's hinted 1000-px
-# CJK box to the stamp size, the port uses the unhinted outline, so each box-derived edge drifts by
-# about px/1000. CJK_MAX_STAMP_PX is the proven maximum a legal GXR input reaches through the real
-# geometry path (`frame_domain.py`); larger stamps are outside the domain and have no bound.
-CJK_MAX_STAMP_PX = 266
+# CJK gate (manager decision after Sol review r3, 2026-11-14, UNIT-frame.md): Python scales
+# Pillow's hinted 1000-px CJK box to the stamp size, the port the unhinted outline. Each box edge
+# then differs by at most px·δ/1000, where δ is the largest per-edge difference of the two boxes at
+# 1000 px over the glyphs used (measured by the test, never a constant). A derived field combines at
+# most two edges and then one rounding, hence the bound below. It holds at any stamp size.
 CJK_SWEEP_SHORTS = (600, 900, 1200, 1600, 2000, 2400, 3000, 4000, 6000, 8000, 12000, 16000, 24000, 32000, 48000, 65535)
 CJK_SWEEP_TEXTS = ("上海上海上海", "北京", "Hi 上")
 STAMP_SIZES = ("small", "medium", "large")
 STAMP_FONTS = ("seg7", "typewriter", "sans")
 
 
-def cjk_box_bound(px: int) -> int:
-    """How far a CJK-box-derived field may move for a stamp of `px` pixels: 1 up to 234, 2 up to M."""
-    if px <= 234:
-        return 1
-    if px <= CJK_MAX_STAMP_PX:
-        return 2
-    raise AssertionError(f"stamp of {px} px is above the proven GXR maximum {CJK_MAX_STAMP_PX}; no bound")
+def cjk_bound(px: int, delta: int) -> int:
+    """`ceil(2 · px · δ / 1000) + 1`: how far a CJK-box-derived field may move for a stamp of `px`."""
+    return -(-(2 * px * delta) // 1000) + 1
 
 
-def cjk_sweep_cases() -> tuple[list[dict[str, Any]], list[Any], int]:
-    """The worker's size sweep (`probe/cjk_size_sweep.py`), on the photo and on the instant border,
-    keeping every case whose Python stamp is at most CJK_MAX_STAMP_PX. Returns the gated cases,
-    Python's answers and how many larger, unreachable cases were left out."""
+def cjk_sweep_cases() -> tuple[list[dict[str, Any]], list[Any]]:
+    """The worker's size sweep (`probe/cjk_size_sweep.py`), on the photo and on the instant border:
+    short sides 600 to 65535, every size option, stamp font and text. All 864 cases are gated."""
     cases: list[dict[str, Any]] = []
     want: list[Any] = []
-    left_out = 0
     for short, size, font, text in itertools.product(
         CJK_SWEEP_SHORTS, ("small", "medium", "large"), ("seg7", "typewriter", "sans"), CJK_SWEEP_TEXTS
     ):
@@ -242,13 +236,9 @@ def cjk_sweep_cases() -> tuple[list[dict[str, Any]], list[Any], int]:
         for placement, frame in (("photo", None), ("border", FrameSpec(style="instant"))):
             spec = StampSpec(enabled=True, content="text", text=text, font=font, size=size, corner="tl", color="red", placement=placement)
             pair = stamp_case(w, short, spec, None, frame)
-            layout = pair[1]
-            if isinstance(layout, dict) and "px" in layout and layout["px"] > CJK_MAX_STAMP_PX:
-                left_out += 1
-                continue
             cases.append(pair[0])
-            want.append(layout)
-    return cases, want, left_out
+            want.append(pair[1])
+    return cases, want
 
 
 def cjk_band_cases(lo: int, hi: int) -> tuple[list[dict[str, Any]], list[Any]]:
@@ -300,9 +290,8 @@ def same(a: Any, b: Any, path: str = "") -> None:
 __all__ = [
     "FIXTURE_CJK",
     "OUTPUT_RATIOS",
-    "CJK_MAX_STAMP_PX",
     "cjk_band_cases",
-    "cjk_box_bound",
+    "cjk_bound",
     "cjk_fonts",
     "cjk_sweep_cases",
     "desktop_mark",
