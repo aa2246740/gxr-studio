@@ -390,6 +390,18 @@ def test_wasm_matches_native(tmp_path: Path) -> None:
             "options": {"from_raw": False},
         },
     )
+    add_case(
+        "arr_wb_false",
+        {"kind": "array", "rgbNpy": str(small_path), "w": 4, "h": 3, "edit": {"adjust": {"wb": False}}, "options": {"from_raw": False}},
+    )
+    add_case(
+        "arr_wb_zero_list",
+        {"kind": "array", "rgbNpy": str(small_path), "w": 4, "h": 3, "edit": {"adjust": {"wb": []}}, "options": {"from_raw": False}},
+    )
+    add_case(
+        "arr_wb_true_err",
+        {"kind": "array", "rgbNpy": str(small_path), "w": 4, "h": 3, "edit": {"adjust": {"wb": True}}, "options": {"from_raw": False}},
+    )
 
     # Frame canvas (solid, glow, blur -> needs_browser_backdrop)
     add_case(

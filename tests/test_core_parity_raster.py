@@ -297,6 +297,43 @@ def test_apply_base_bad_adjust_and_bad_curve_errors(tmp_path: Path) -> None:
         assert err is not None and err.kind == expected_kind, (tag, code, payload)
 
 
+def test_wb_falsy_and_truthy_non_object_parity(tmp_path: Path) -> None:
+    require_cli()
+    rgb = _synth_rgb(6, 5, seed=13)
+    for tag, wb_val in [
+        ("null", None),
+        ("false", False),
+        ("zero_int", 0),
+        ("zero_float", 0.0),
+        ("empty_str", ""),
+        ("empty_list", []),
+        ("empty_dict", {}),
+    ]:
+        adj = parse_adjust({"wb": wb_val})
+        py_out = apply_extra(apply_base(rgb, adj, None), adj)
+        assert np.array_equal(py_out, rgb), tag
+        code, payload, rs_out = _run_finish_array(
+            tmp_path,
+            rgb,
+            {"adjust": {"wb": wb_val}},
+            {"stage": "uncropped", "from_raw": False},
+            f"wb-falsy-{tag}",
+        )
+        assert code == 0, (tag, payload)
+        assert rs_out is not None and np.array_equal(rs_out, py_out), tag
+
+    for tag, wb_val in [("true", True), ("int_1", 1), ("float_neg", -0.5), ("str_x", "x"), ("list_1", [1]), ("bad_key", {"x": 0})]:
+        code, payload, _ = _run_finish_array(
+            tmp_path,
+            rgb,
+            {"adjust": {"wb": wb_val}},
+            {"stage": "uncropped", "from_raw": False},
+            f"wb-bad-{tag}",
+        )
+        err = error_of(code, payload)
+        assert err is not None and err.kind == "bad_adjust", (tag, code, payload)
+
+
 # ---- 2. Unframed finish (finish-array) ---------------------------------------
 
 

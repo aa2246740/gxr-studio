@@ -83,6 +83,18 @@ fn int_in(value: &JsonValue, lo: i64, hi: i64) -> Result<i64, CoreError> {
     Ok(f as i64)
 }
 
+fn is_python_falsy(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null => true,
+        JsonValue::Bool(b) => !*b,
+        JsonValue::Int(i) => *i == 0,
+        JsonValue::Float(f) => *f == 0.0,
+        JsonValue::Str(s) => s.is_empty(),
+        JsonValue::Array(items) => items.is_empty(),
+        JsonValue::Object(pairs) => pairs.is_empty(),
+    }
+}
+
 /// Port of `gxr_studio/render/params.py:142 parse_adjust` on a parsed `JsonValue`.
 pub fn parse_finish_adjust_value(val: &JsonValue) -> Result<FinishAdjust, CoreError> {
     if matches!(val, JsonValue::Null) {
@@ -118,7 +130,7 @@ pub fn parse_finish_adjust_value(val: &JsonValue) -> Result<FinishAdjust, CoreEr
         out.exposure_ev = round4(ev);
     }
     if let Some(wb_val) = val.get("wb")
-        && !matches!(wb_val, JsonValue::Null)
+        && !is_python_falsy(wb_val)
     {
         let JsonValue::Object(wb_pairs) = wb_val else {
             return Err(bad_adjust());
