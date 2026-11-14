@@ -54,6 +54,12 @@ STORED_RULES = (
 )
 
 
+# Variants allowed to differ from Python because of the shared size limit, with the reason.
+# The zipfile port refuses every huge declared size the way Python does (overlapped entries,
+# zip64 record checks, end of file), so there are none.
+SHARED_LIMIT_EXCEPTIONS: dict[str, str] = {}
+
+
 class _NotSeekable(io.BytesIO):
     """A stream `zipfile` and `np.savez` cannot seek, so they write data descriptors."""
 

@@ -351,6 +351,21 @@ def test_npz_stored_members_read_like_zipfile(tmp_path: Path) -> None:
     _check_bake(tmp_path, pack, cf.entry(words=2), params={"step": 16})
 
 
+def test_npz_corpus_matches_python(tmp_path: Path) -> None:
+    """Sol's 42-variant NPZ corpus (review r2): `color-calib-check` accepts or refuses each
+    archive exactly as `_context` does, with the same kind and message. The three runtime ctx
+    variants bake the same table as Python."""
+    require_cli()
+    corpus = nc.variants()
+    assert len(corpus) == 42
+    stock = nc.source_parts()[0]
+    differ = [(name, why) for name, data in corpus.items() if (why := _npz_same(tmp_path, name, data, stock)) is not None]
+    assert [d for d in differ if d[0] not in nc.SHARED_LIMIT_EXCEPTIONS] == [], differ
+    for name, ctx in nc.runtime_variants().items():
+        pack = cp.Pack(tmp_path / name, stock, ctx, json.dumps(cf.ring()).encode())
+        _check_bake(tmp_path, pack, cf.entry(words=2), params={"step": 16})
+
+
 def _write(path: Path, data: bytes) -> Path:
     path.write_bytes(data)
     return path
@@ -713,6 +728,9 @@ def test_wasm_matches_native(tmp_path: Path) -> None:
             deep.write_text(cf.deep_json(levels, kind), encoding="utf-8")
             specs[f"bake-deep-{kind}-{levels}"] = {**base, "params": str(deep)}
     specs["apply-deep-array-129"] = {**apply, "params": str(tmp_path / "wdeep-array-129.json"), "out": str(tmp_path / "wd.npy")}
+    # Sol r2's runtime ctx variants: valid, data descriptors, a duplicate d0.npy.
+    for name, ctx in nc.runtime_variants().items():
+        specs[f"bake-{name}"] = {**base, "ctx": str(_write(tmp_path / f"w{name}.npz", ctx))}
     # A pack ctx npz damaged the three ways Sol found.
     for name, damaged in cf.npz_damage(pack.ctx.read_bytes(), "d0.npy").items():
         specs[f"bake-ctx-{name}"] = {**base, "ctx": str(_write(tmp_path / f"wctx-{name}.npz", damaged))}
