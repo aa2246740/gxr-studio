@@ -158,13 +158,11 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 
 中文字体本来就两边不同：桌面的中文回退是 macOS 系统字体（`stamp.py` 的 `_CJK_FONTS` 第一个是 PingFang），手机读不到也不能带，只能收一份 OFL 中文字体的字节（`--font cjk=…`）。对拍两边都用测试夹具 `NotoSansSC-Shanghai.otf`，验证的是同一字体上的排版算法，不是用户看到的结果。所以没有去做随字体附带的微调框表（经理 2026-11-14 裁定）。
 
-门槛（经理在 Sol r3 之后裁定，2026-11-14）：只用于由中文墨迹框算出的字段——文字的 `x`、`y`、`xs`、`pts` 和按四条边比较的 `rect`：
+门槛（经理在 Sol r4 之后裁定，2026-11-14）：中文日期戳和 Rust 比的不是真实的 Python，而是「度量替换 oracle」——Python 真实的布局代码（`stamp_layout`、边框布局、缩字循环）原样运行，只把中文字形的度量（`FontMetrics.glyph` 里 CJK 的步进和框）换成 Rust 在 1000 像素下量出的值。替换在测试辅助 `tests/support/frame_oracle.py` 里，`src/` 不动。Rust 必须和这个 oracle 每个字段都精确相等：px、glow、rect、ops、颜色。原生和 WASM 也逐字节相同。
 
-```
-|Δ| ≤ ceil(2 · px · δ / 1000) + 1
-```
+为什么用 oracle：真实的中文印章两边本来就用不同字体（桌面是 PingFang，手机是 OFL 字体）；在同一个夹具字体上，两边唯一的差别是微调和不微调的度量。Rust 照 Python 的流程走：每个中文字在 `CJK_REFERENCE_PX = 1000` 下从 CFF 轮廓量框，按 FreeType 不微调的办法取整，然后走和 Python 一样的缩放取整。对真实的 Python，测试只断言 δ ≤ 1 并打印：δ 是同一组字形在 1000 像素下微调框和不微调框逐条边的最大差，夹具字体实测是 1（「上」826／825，「海」842／841）。
 
-px 是日期戳字号。δ 由测试实测：同一组字形，Pillow 在 1000 像素下微调后的框和 Rust 在 1000 像素下的框逐条边比，取最大差，不写死。夹具字体测出来 δ = 1（「上」826／825，「海」842／841，「北」「京」也各差 1）。每条边最多差 px·δ/1000，派生字段（原点 `y − box[1]`、底边 = 顶 + 高）最多合两条边再取整一次，所以是上式。它对任何字号都成立，不需要求最大日期戳。其余字段（每个 px、颜色、文字、字体名、发光、类型）全部精确。三个真实几何复现（3148²、3302²、3315² 的正方形裁切，seg7、large、「上海上海上海」）各有一条测试：底边差 2、原点 y 差 1，都来自最高的「海」（顶 842／841，底 −74／−73）。桌面导出照旧用 Pillow 的框。`glyf` 字体做回退时用字形头的框，FreeType 在 1000 像素上的 TrueType 微调没有移植。
+已知、已归因的差异：除了坐标差约 px·δ/1000（原来的公式 `ceil(2·px·δ/1000) + 1` 现在只打印统计），1 像素的框差还会翻转离散分支。例如拍立得 `instax_wide`、题字「海」、照片 282×212、印章「北」seg7 large 开 glow 放在边框上：14 px 时 Python 的框高 14、Rust 的框高 13，可用高度正好 13，Python 缩到 11 px，Rust 保持 14 px，于是 px、glow、rect 都不同。这类例子（Sol r4 的 30 例和每种拍立得格式的缩字临界点）都在 oracle 门槛里。桌面导出照旧用 Pillow 的框。`glyf` 字体做回退时用字形头的框，FreeType 在 1000 像素上的 TrueType 微调没有移植。
 
 内置标志：crate 里没有理光字标的任何数据，不读也不提 `ricoh.png`，也不带它的尺寸。Leica 样式画内置标志时，标志框的比例和墨迹行由请求里的 `mark` 给出：`{"w", "h", "ink_top", "ink_bottom"}`，单位是标志自己的像素。标志高 `lh = max(14, round(gxr_cap × 1.04 × h / (ink_bottom − ink_top + 1)))`，宽 `round(w × lh / h)`，竖直位置用墨迹行的中点 `lh × (ink_top + ink_bottom) / (2h)`。对拍测试从 Python 读桌面的 `frame_core.LOGO_SIZE`、`LOGO_INK_Y` 填进去；手机填它用 Atkinson 写的「GXR」的度量，再在这个框里写字。只有画内置标志时才需要 `mark`，缺了就是 `bad_request`；不显示标志或用自定义标志时不看它。
 

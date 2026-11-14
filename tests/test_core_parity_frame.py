@@ -33,6 +33,7 @@ from support.frame_cases import (
     write_json,
 )
 from support.frame_font import empty_directory, font_without_unicode_cmap
+from support.frame_oracle import oracle_and_real
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "NotoSansSC-Shanghai.otf"
 CHARS = " A0H!'."
@@ -202,11 +203,13 @@ def test_cff_fixture_fails_like_read_font() -> None:
 
 
 CJK_CHARS = "上海北京H A0'é字"
-CJK_PXS = [*range(1, 241), 255, 333, 512, 999, 1000, 1001, 2048, 4096]
-# Manager decision after Sol review r3 (UNIT-frame.md): Pillow measures CJK ink boxes after
-# FreeType's Adobe CFF hinter, gxr-frame uses the unhinted control box (FreeType
-# FT_LOAD_NO_HINTING, exactly). The hinter is not ported. Python scales the hinted 1000-px box to
-# the stamp size, so box-derived layout fields drift by about px·δ/1000; see `cjk_bound`.
+CJK_PXS = [*range(1, 241), 255, 290, 333, 512, 999, 1000, 1001, 2048, 4096, *range(4100, 5200, 50), 5112]
+# Manager decision after Sol review r4 (UNIT-frame.md): Pillow measures CJK ink boxes after
+# FreeType's Adobe CFF hinter, gxr-frame uses the unhinted control box at 1000 px (FreeType
+# FT_LOAD_NO_HINTING, exactly) and then the same scaling path as Python. CJK stamps are gated
+# exactly against a metric-substitution oracle (`support/frame_oracle.py`): Python's real layout
+# code with only the CJK glyph metrics replaced by Rust's. Against the real Python only δ ≤ 1 is
+# asserted; the old coordinate formula `cjk_bound` is kept as a printed statistic.
 
 
 def _cjk_python(chars: str = CJK_CHARS) -> tuple[list, list]:
@@ -247,11 +250,11 @@ def test_cjk_fallback_advances_and_ascents_match_pillow() -> None:
 
 
 def test_cjk_glyph_box_delta_is_measured() -> None:
-    """δ for the fixture font is measured, not assumed: 1 (上 826/825, 海 842/841)."""
+    """δ (hinted vs unhinted 1000-px box, largest per-edge difference) is measured: ≤ 1 for the
+    fixture font (上 826/825, 海 842/841)."""
     deltas = cjk_glyph_deltas(CJK_CHARS)
     print(f"CJK glyph box δ at 1000 px: {deltas}")
-    assert deltas["上"] == 1 and deltas["海"] == 1
-    assert max(deltas.values()) == 1
+    assert max(deltas.values()) <= 1
 
 
 def _batch(tmp_path: Path, frames: list, stamps: list, *, cjk: bool = True) -> dict:
@@ -356,19 +359,43 @@ def cjk_stamp_close(want: object, got: object, delta: int, path: str = "") -> fl
     return ratio
 
 
-def _gate(label: str, cases: list, want: list, got: list) -> tuple[int, float]:
-    """Check every case with its measured δ; print and return (cases that differ, largest ratio)."""
-    assert len(got) == len(want) == len(cases)
-    texts = "".join(op["text"] for layout in want if isinstance(layout, dict) and "ops" in layout for op in layout["ops"] if op["k"] == "text")
+def _formula_ratio(want: object, got: object, delta: int) -> float | None:
+    """The old coordinate formula as a statistic: |Δ| / bound, or None when the layouts differ
+    outside it (a discrete branch flip: another px, glow or structure)."""
+    try:
+        return cjk_stamp_close(want, got, delta)
+    except AssertionError:
+        return None
+
+
+def _oracle_gate(tmp_path: Path, label: str, cases: list, oracle: list, real: list) -> dict:
+    """Rust must equal the metric-substitution oracle exactly, every field. Against the real Python,
+    assert δ ≤ 1 and print the old formula's statistic and the discrete-branch count."""
+    assert len(cases) == len(oracle) == len(real)
+    got = _batch(tmp_path, [], cases)["stamps"]
+    for i, (case, expected, value) in enumerate(zip(cases, oracle, got, strict=True)):
+        same(expected, value, f"{label} #{i} {case['request']['w']}x{case['request']['h']} {case['spec'].get('size', '')}")
+    texts = "".join(op["text"] for layout in real if isinstance(layout, dict) and "ops" in layout for op in layout["ops"] if op["k"] == "text")
     deltas = cjk_glyph_deltas(texts) if texts else {}
-    differ, worst = 0, 0.0
-    for i, (case, expected, value) in enumerate(zip(cases, want, got, strict=True)):
-        where = f"{label} #{i} {case['request']['w']}x{case['request']['h']} {case['spec'].get('size', '')}"
-        ratio = cjk_stamp_close(expected, value, _layout_delta(expected, deltas), where)
-        differ += ratio > 0
-        worst = max(worst, ratio)
-    print(f"{label}: {len(cases)} cases, {differ} differ within ceil(2·px·δ/1000)+1, largest |Δ|/bound {worst:.3f}")
-    return differ, worst
+    delta = max(deltas.values(), default=0)
+    assert delta <= 1, deltas
+    differ = flips = 0
+    worst = 0.0
+    for expected, value in zip(real, got, strict=True):
+        if expected == value:
+            continue
+        differ += 1
+        ratio = _formula_ratio(expected, value, _layout_delta(expected, deltas))
+        if ratio is None:
+            flips += 1
+        else:
+            worst = max(worst, ratio)
+    stats = {"cases": len(cases), "delta": delta, "differ_from_real": differ, "discrete_flips": flips, "formula_ratio": worst}
+    print(
+        f"{label}: {len(cases)} cases equal the oracle; vs real Python δ={delta}, {differ} differ, "
+        f"{flips} discrete flips, largest formula |Δ|/bound {worst:.3f}"
+    )
+    return stats
 
 
 def test_cjk_bound_formula() -> None:
@@ -419,12 +446,21 @@ def test_cjk_comparator_rejects_corrupted_layouts() -> None:
     assert cjk_stamp_close(want, grown, delta) == 1.0
 
 
-def test_cjk_stamp_layouts_are_within_the_bound(tmp_path: Path) -> None:
-    """The stamp grid's cases that need a CJK ink box (621), with the root-cause bound."""
-    _plain, (cases, want) = _stamp_split()
-    got = _batch(tmp_path, [], cases)["stamps"]
-    differ, _worst = _gate("CJK stamp grid", cases, want, got)
-    assert differ < len(cases)
+def _cjk_subset(cases: list, oracle: list, real: list) -> tuple[list, list, list]:
+    """Keep the cases whose real-Python stamp draws a CJK-face text (any code point > 127)."""
+    keep = [
+        i
+        for i, layout in enumerate(real)
+        if isinstance(layout, dict) and "ops" in layout and any(ord(ch) > 127 for op in layout["ops"] if op["k"] == "text" for ch in op["text"])
+    ]
+    return [cases[i] for i in keep], [oracle[i] for i in keep], [real[i] for i in keep]
+
+
+def test_cjk_stamp_layouts_equal_the_oracle(tmp_path: Path) -> None:
+    """The stamp grid's cases that need a CJK ink box (621), against the oracle."""
+    cases, oracle, real = _cjk_subset(*oracle_and_real(stamp_cases))
+    assert len(cases) == 621
+    _oracle_gate(tmp_path, "CJK stamp grid", cases, oracle, real)
 
 
 def _stamp_px(tmp_path: Path, photos: list[tuple[int, int]]) -> list[dict]:
@@ -465,87 +501,107 @@ def test_geometry_path_stamp_sizes_are_recorded(tmp_path: Path) -> None:
         print(f"geometry path: {label}: photo {photo} (recorded {expected}), large stamp {large} px")
 
 
-def test_cjk_size_sweep_within_the_bound(tmp_path: Path) -> None:
-    """The whole size sweep (short sides 600..65535), photo and instant border, every case gated."""
-    with cjk_fonts((FIXTURE_CJK,)):
-        cases, want = cjk_sweep_cases()
+def test_cjk_size_sweep_equals_the_oracle(tmp_path: Path) -> None:
+    """The whole size sweep (short sides 600..65535, including the 65535 extremes), photo and
+    instant border."""
+    cases, oracle, real = oracle_and_real(cjk_sweep_cases)
     assert len(cases) == 864
     assert {c["spec"].get("placement", "photo") for c in cases} == {"photo", "border"}
-    assert max(w["px"] for w in want if isinstance(w, dict) and "px" in w) > 5000
-    got = _batch(tmp_path, [], cases)["stamps"]
-    _gate("CJK size sweep", cases, want, got)
+    assert max(w["px"] for w in real if isinstance(w, dict) and "px" in w) > 5000
+    _oracle_gate(tmp_path, "CJK size sweep", cases, oracle, real)
 
 
 def _bottom(layout: dict) -> int:
     return layout["rect"][1] + layout["rect"][3]
 
 
-def test_cjk_stamps_from_235_to_266_px_within_the_bound(tmp_path: Path) -> None:
+def test_cjk_stamps_from_235_to_266_px_equal_the_oracle(tmp_path: Path) -> None:
     """Every integer stamp size 235..266 with the sweep's combinations (1,728 cases)."""
-    with cjk_fonts((FIXTURE_CJK,)):
-        cases, want = cjk_band_cases(235, 266)
+    cases, oracle, real = oracle_and_real(lambda: cjk_band_cases(235, 266))
     assert len(cases) == 1728
-    got = _batch(tmp_path, [], cases)["stamps"]
-    _gate("CJK 235..266 px", cases, want, got)
-    two = sum(abs(_bottom(w) - _bottom(g)) == 2 for w, g in zip(want, got, strict=True))
-    print(f"CJK 235..266 px: {two} cases by 2 px on rect.bottom")
+    _oracle_gate(tmp_path, "CJK 235..266 px", cases, oracle, real)
 
 
-def test_cjk_sol_r3_thin_sources_within_the_bound(tmp_path: Path) -> None:
+def test_cjk_sol_r3_thin_sources_equal_the_oracle(tmp_path: Path) -> None:
     """Sol r3's 290 px inputs through the real geometry path: 4288x1 (straighten 40) and 1x4288
     (straighten -40), distortion -100, default crop, seg7, large, "上海上海上海", top-left."""
     from gxr_studio.finish.spec import StampSpec
     from support.frame_domain import finished_photo
 
-    spec = StampSpec(enabled=True, content="text", text="上海上海上海", font="seg7", size="large", corner="tl", color="red")
-    cases, want = [], []
+    photos = []
     for source, straighten, photo in (((4288, 1), 40, (4436, 3724)), ((1, 4288), -40, (3724, 4436))):
         assert finished_photo(source, {"distortion": -100, "straighten": straighten}, None) == photo
-        with cjk_fonts((FIXTURE_CJK,)):
-            case, layout = stamp_case(*photo, spec, None)
-        assert layout["px"] == 290
-        cases.append(case)
-        want.append(layout)
-    got = _batch(tmp_path, [], cases)["stamps"]
-    _gate("Sol r3 thin sources", cases, want, got)
+        photos.append(photo)
+    spec = StampSpec(enabled=True, content="text", text="上海上海上海", font="seg7", size="large", corner="tl", color="red")
+
+    def generate() -> tuple[list, list]:
+        pairs = [stamp_case(*photo, spec, None) for photo in photos]
+        return [p[0] for p in pairs], [p[1] for p in pairs]
+
+    cases, oracle, real = oracle_and_real(generate)
+    assert [w["px"] for w in real] == [290, 290]
+    _oracle_gate(tmp_path, "Sol r3 thin sources", cases, oracle, real)
+
+
+def test_cjk_sol_r4_fit_boundaries_equal_the_oracle(tmp_path: Path) -> None:
+    """Sol r4's 30 confirmed fit-boundary cases (and their transposes): instant border, "北" seg7
+    large with glow, instax_wide / instax_square, captions "海" / "北京海上". The real Python shrinks
+    to another size here (for example 11 px against 14 px at 282x212); the oracle must not."""
+    from support.frame_oracle import sol_r4_fit_cases
+
+    cases, oracle, real = oracle_and_real(sol_r4_fit_cases)
+    assert len(cases) == 30
+    stats = _oracle_gate(tmp_path, "Sol r4 fit boundaries", cases, oracle, real)
+    first = next(i for i, c in enumerate(cases) if (c["request"]["w"], c["request"]["h"]) == (282, 212))
+    print(f"Sol r4 282x212 instax_wide 海: real Python px {real[first]['px']}, oracle and Rust px {oracle[first]['px']}")
+    assert stats["discrete_flips"] == 30
+
+
+def test_cjk_fit_thresholds_for_every_instant_format_equal_the_oracle(tmp_path: Path) -> None:
+    """New: the border fit thresholds for every instant format with a caption and glow on (stamp
+    sizes where either metric set changes the chosen px, and where the two disagree)."""
+    from support.frame_oracle import INSTANT_FORMATS, fit_threshold_cases, fit_threshold_inputs
+
+    inputs = fit_threshold_inputs()
+    assert {row[2] for row in inputs} == set(INSTANT_FORMATS)
+    cases, oracle, real = oracle_and_real(lambda: fit_threshold_cases(inputs))
+    assert len(cases) > 1000
+    _oracle_gate(tmp_path, "instant fit thresholds", cases, oracle, real)
 
 
 def _repro_two_pixels(tmp_path: Path, side: int, px: int) -> None:
-    """A real geometry-path photo (free square crop after distortion -100, vertical +100) whose CJK
-    stamp differs by exactly 2 px on rect.bottom and by exactly 1 px on the text origin. Both come
-    from "海", the tallest glyph: hinted 842/841 on the top edge and -74/-73 on the bottom edge
-    (`box[1]` and the height both use them). Both are box fields within the bound; everything else
-    is exact."""
-    import copy
-
+    """A real geometry-path photo (free square crop after distortion -100, vertical +100). Rust
+    equals the oracle exactly. Against the real Python the stamp differs by 2 px on rect.bottom and
+    by 1 px on the text origin, both from "海" (hinted 842/841 top, -74/-73 bottom): printed."""
     from gxr_studio.finish.spec import StampSpec
     from support.frame_domain import repro_photo
 
     photo = repro_photo(side)
     assert photo == (side, side)
     spec = StampSpec(enabled=True, content="text", text="上海上海上海", font="seg7", size="large", corner="tl", color="red")
-    with cjk_fonts((FIXTURE_CJK,)):
-        case, want = stamp_case(*photo, spec, None)
-    got = _batch(tmp_path, [], [case])["stamps"][0]
-    assert want["px"] == got["px"] == px
-    assert _bottom(want) - _bottom(got) == 2, (want["rect"], got["rect"])
-    assert want["ops"][0]["y"] - got["ops"][0]["y"] == 1, (want["ops"][0]["y"], got["ops"][0]["y"])
-    assert cjk_stamp_close(want, got, _layout_delta(want, cjk_glyph_deltas("上海"))) == 1.0
-    expected = copy.deepcopy(want)
-    expected["rect"][3] = got["rect"][3]
-    expected["ops"][0]["y"] = got["ops"][0]["y"]
-    same(expected, got, f"repro {side}")
+
+    def generate() -> tuple[list, list]:
+        case, layout = stamp_case(*photo, spec, None)
+        return [case], [layout]
+
+    cases, oracle, real = oracle_and_real(generate)
+    assert real[0]["px"] == oracle[0]["px"] == px
+    _oracle_gate(tmp_path, f"repro {side}", cases, oracle, real)
+    print(
+        f"repro {side}: vs real Python rect.bottom {_bottom(real[0])}/{_bottom(oracle[0])}, "
+        f"origin y {real[0]['ops'][0]['y']}/{oracle[0]['ops'][0]['y']}"
+    )
 
 
-def test_cjk_repro_3148_square_is_two_pixels_on_the_bottom(tmp_path: Path) -> None:
+def test_cjk_repro_3148_square_equals_the_oracle(tmp_path: Path) -> None:
     _repro_two_pixels(tmp_path, 3148, 246)
 
 
-def test_cjk_repro_3302_square_is_two_pixels_on_the_bottom(tmp_path: Path) -> None:
+def test_cjk_repro_3302_square_equals_the_oracle(tmp_path: Path) -> None:
     _repro_two_pixels(tmp_path, 3302, 258)
 
 
-def test_cjk_repro_3315_square_is_two_pixels_on_the_bottom(tmp_path: Path) -> None:
+def test_cjk_repro_3315_square_equals_the_oracle(tmp_path: Path) -> None:
     _repro_two_pixels(tmp_path, 3315, 259)
 
 
@@ -681,6 +737,17 @@ def test_wasm_layouts_match_native(tmp_path: Path) -> None:
         {"w": 900, "h": 600, "taken": [2026, 10, 23, 17, 41], "frame": FrameSpec(style="instant").to_json()},
         StampSpec(enabled=True, placement="border").to_json(),
     )
+    # Fit thresholds (Sol r4 and one per remaining instant format): Rust native and WASM agree.
+    for w, h, fmt, caption in (
+        (282, 212, "instax_wide", "海"),
+        (212, 282, "instax_wide", "海"),
+        (290, 218, "instax_square", "海"),
+        (778, 584, "polaroid", "北京海上"),
+        (796, 597, "instax_mini", "北京海上"),
+    ):
+        frame = FrameSpec(style="instant", fmt=fmt, text=caption, output_ratio="original").to_json()
+        fit = StampSpec(enabled=True, content="text", text="北", font="seg7", size="large", corner="tl", glow=True, placement="border")
+        add(f"fit-{fmt}-{w}x{h}", "stamp", {"w": w, "h": h, "frame": frame}, fit.to_json())
     add("stamp-cjk", "stamp", {"w": 900, "h": 600}, StampSpec(enabled=True, content="text", text="上海", font="sans").to_json())
     add("missing-cjk", "stamp", {"w": 900, "h": 600}, StampSpec(enabled=True, content="text", text="上海").to_json(), cjk=False)
     add("bad-spec", "frame", {"w": 900, "h": 600}, {"style": "nope"})

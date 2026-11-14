@@ -25,6 +25,15 @@ from gxr_studio.render.params import EditError
 
 FIXTURE_CJK = Path(__file__).resolve().parents[1] / "fixtures" / "NotoSansSC-Shanghai.otf"
 
+# The metrics Python's layout code runs with. `frame_oracle.oracle_metrics()` swaps in the
+# metric-substitution oracle (Rust's CJK glyph metrics); the default is the real FontMetrics.
+METRICS_FACTORY: Any = FontMetrics
+
+
+def make_metrics() -> FontMetrics:
+    return METRICS_FACTORY()
+
+
 SAMPLE_LOGOS = [
     LogoInfo("wordmark", "Wordmark", 734, 120, 0.34, False, 24.0),
     LogoInfo("round_badge", "Round", 360, 360, 0.58, False, 232.0),
@@ -99,13 +108,13 @@ def frame_case(w: int, h: int, spec: FrameSpec, meta: dict[str, str], logos: boo
     request: dict[str, Any] = {"w": w, "h": h, "meta": meta, "mark": desktop_mark()}
     if logos:
         request["logos"] = LOGO_JSON
-    want = _outcome(lambda: frame_layout(w, h, spec, meta, FontMetrics(), logo_map))
+    want = _outcome(lambda: frame_layout(w, h, spec, meta, make_metrics(), logo_map))
     return {"request": request, "spec": spec.to_json()}, want
 
 
 def stamp_case(w: int, h: int, spec: StampSpec, taken: datetime | None, frame: FrameSpec | None = None) -> tuple[dict[str, Any], Any]:
     request: dict[str, Any] = {"w": w, "h": h, "taken": moment_json(taken), "file_time": None, "mark": desktop_mark()}
-    m = FontMetrics()
+    m = make_metrics()
 
     def run() -> Any:
         border = frame_layout(w, h, frame, {}, m) if frame is not None else None
@@ -295,6 +304,7 @@ __all__ = [
     "cjk_fonts",
     "cjk_sweep_cases",
     "desktop_mark",
+    "make_metrics",
     "font_args",
     "font_pairs",
     "frame_case",
