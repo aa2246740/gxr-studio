@@ -30,7 +30,7 @@ pub use cjk::CjkFont;
 pub use layout::{
     FrameLayout, StampLayout, fit_size, format_stamp, frame_layout, ratio_size, stamp_layout,
 };
-pub use logo::LogoInfo;
+pub use logo::{LogoInfo, aspect_mult, clogo_item, coverage_comp, fit_logo, pick_logo_mode};
 pub use metrics::{FONT_FILES, Fonts};
 pub use sfnt::{FontTable, Glyph, read_font};
 pub use spec::{
