@@ -24,6 +24,7 @@ from gxr_studio.camdata import calib, datcodec, store
 from gxr_studio.engine import knobs, menu
 from gxr_studio.render import tones
 from support import color_fixtures as cf
+from support import color_npz_corpus as nc
 from support import color_parity as cp
 from support.core_cli import CoreCliError, error_of, require_cli, run_json, run_npy
 
@@ -313,6 +314,37 @@ def test_context_matches_python(tmp_path: Path) -> None:
         ["color-calib-check", "--npz", _write(tmp_path / "z.npz", buf.getvalue()), "--entry", _write(tmp_path / "e.bin", entry)]
     )
     assert err is not None and err.kind == "zip", err
+
+
+DUPLICATES = (
+    "duplicate_good_then_nan",
+    "duplicate_nan_then_good",
+    "duplicate_identical",
+    "duplicate_good_then_crc_corrupt",
+    "bare_name_overrides_npy",
+)
+
+
+def _npz_same(tmp: Path, name: str, data: bytes, entry: bytes) -> str | None:
+    """None when `_context` and `color-calib-check` agree on this archive (both accept, or the
+    same kind and message)."""
+    py, err = _context_case(tmp, name, data, entry)
+    if py is None and err is None:
+        return None
+    return cp.same_error(py, err)
+
+
+def test_npz_duplicate_members_follow_numpy(tmp_path: Path) -> None:
+    """Duplicate names: the last central record wins (`NameToInfo`), and a key matches the full
+    name before `key + ".npy"` (`NpzFile`); the selected member is the one checked and read."""
+    require_cli()
+    corpus = nc.variants()
+    stock = nc.source_parts()[0]
+    for name in DUPLICATES:
+        assert _npz_same(tmp_path, name, corpus[name], stock) is None, (name, _npz_same(tmp_path, name, corpus[name], stock))
+    ctx = nc.runtime_variants()["runtime_duplicate"]
+    pack = cp.Pack(tmp_path / "runtime-duplicate", stock, ctx, json.dumps(cf.ring()).encode())
+    _check_bake(tmp_path, pack, cf.entry(words=2), params={"step": 16})
 
 
 def _write(path: Path, data: bytes) -> Path:

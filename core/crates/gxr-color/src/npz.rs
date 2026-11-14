@@ -40,6 +40,22 @@ pub struct Member {
     crc: u32,
 }
 
+/// `NpzFile.__getitem__(key)` then `ZipFile.open(name)`: `NpzFile._files` maps each name
+/// without `.npy` to its full name (a later member wins), then every full name to itself;
+/// `ZipFile.NameToInfo` keeps the last central record of a name. Returns that record.
+pub fn select<'a>(members: &'a [Member], key: &str) -> Option<&'a Member> {
+    let full = if members.iter().any(|m| m.name == key) {
+        key
+    } else {
+        members
+            .iter()
+            .rev()
+            .find(|m| m.key == key)
+            .map(|m| m.name.as_str())?
+    };
+    members.iter().rev().find(|m| m.name == full)
+}
+
 impl Member {
     /// The stored bytes, after the CRC-32 check `ZipExtFile` makes.
     pub fn payload(&self) -> Result<&[u8], CoreError> {
