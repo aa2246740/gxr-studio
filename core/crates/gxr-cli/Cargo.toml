@@ -11,7 +11,19 @@ name = "gxr-cli"
 path = "src/main.rs"
 
 [dependencies]
+gxr-math.workspace = true
 gxr-raw.workspace = true
+gxr-camdata.workspace = true
+gxr-color.workspace = true
+gxr-lut.workspace = true
+gxr-hdr.workspace = true
+gxr-finish.workspace = true
+gxr-frame.workspace = true
+gxr-jpeg.workspace = true
+gxr-export.workspace = true
+# Host build of the bindings, so this manifest already names every sibling crate.
+# gxr-wasm does not depend back on gxr-cli: that edge would be a cycle.
+gxr-wasm.workspace = true
 
 [lints]
 workspace = true

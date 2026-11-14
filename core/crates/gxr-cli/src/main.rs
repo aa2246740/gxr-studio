@@ -3,13 +3,27 @@
 //!
 //! Output is JSON on stdout. Array subcommands also write a `.npy` file and print its shape.
 //! A core error prints `{"error": {"kind", "message"}}` and exits 2; a usage error exits 1.
+//!
+//! `main` routes by command prefix. Each area implements `cmd_<area>::run`.
 #![forbid(unsafe_code)]
 
+mod cmd_camdata;
+mod cmd_color;
+mod cmd_export;
+mod cmd_frame;
+mod cmd_geometry;
+mod cmd_hdr;
+mod cmd_jpeg;
+mod cmd_lut;
+mod cmd_raw;
+mod common;
 mod npy;
 
 use std::process::ExitCode;
 
-use gxr_raw::{CoreError, Dng, Json, error_json};
+use gxr_raw::{Json, error_json};
+
+use common::{Failure, Output};
 
 const USAGE: &str = "usage: gxr-cli <command> [args]
   version
@@ -21,152 +35,60 @@ const USAGE: &str = "usage: gxr-cli <command> [args]
   dng-normalised-block <path> --rows Y0:Y1 --cols X0:X1 --out <file.npy>
   dng-wb-block <path> --rows Y0:Y1 --out <file.npy>";
 
-/// A failure: a usage problem (exit 1) or a core error (exit 2).
-enum Failure {
-    Usage(String),
-    Core(CoreError),
-}
-
-impl From<CoreError> for Failure {
-    fn from(e: CoreError) -> Self {
-        Self::Core(e)
-    }
-}
-
-/// `--name value` from the arguments after the path.
-fn option<'a>(args: &'a [String], name: &str) -> Result<&'a str, Failure> {
-    let at = args
-        .iter()
-        .position(|a| a == name)
-        .ok_or_else(|| Failure::Usage(format!("missing {name}")))?;
-    args.get(at + 1)
-        .map(String::as_str)
-        .ok_or_else(|| Failure::Usage(format!("{name} needs a value")))
-}
-
-/// `A:B` as two integers.
-fn range(text: &str) -> Result<(i64, i64), Failure> {
-    let bad = || Failure::Usage(format!("bad range {text:?}, expected A:B"));
-    let (a, b) = text.split_once(':').ok_or_else(bad)?;
-    Ok((a.parse().map_err(|_| bad())?, b.parse().map_err(|_| bad())?))
-}
-
-/// Python `Dng(path)` reads the file first; `open_dng` turns `OSError` into this text.
-fn read(path: &str) -> Result<Vec<u8>, Failure> {
-    std::fs::read(path).map_err(|e| {
-        let text = e.to_string();
-        let strerror = text.split(" (os error").next().unwrap_or(&text).to_string();
-        Failure::Core(CoreError::raw_decode(format!(
-            "读不了这个文件（{strerror}）"
-        )))
-    })
-}
-
-/// The file's base name, as `Path(path).name`.
-fn base_name(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-}
-
-fn write_npy<T: npy::NpyElement>(
-    out: &str,
-    values: &[T],
-    shape: &[usize],
-    dtype: &str,
-) -> Result<Json, Failure> {
-    npy::write(out, values, shape)
-        .map_err(|e| Failure::Usage(format!("cannot write {out}: {e}")))?;
-    let mut dims = Vec::with_capacity(shape.len());
-    for &dim in shape {
-        let dim = i64::try_from(dim).map_err(|_| {
-            Failure::Core(CoreError::raw_decode(
-                "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
-            ))
-        })?;
-        dims.push(dim);
-    }
-    Ok(Json::object([
-        ("out", Json::str(out)),
-        ("dtype", Json::str(dtype)),
-        ("shape", Json::ints(&dims)),
-    ]))
-}
-
-/// The JSON text to print, and whether the core succeeded.
-fn run(args: &[String]) -> Result<(String, bool), Failure> {
-    let command = args.first().map(String::as_str).unwrap_or("");
+fn dispatch(command: &str, rest: &[String]) -> Result<Output, Failure> {
     if command == "version" {
         let json = Json::object([("version", Json::str(env!("CARGO_PKG_VERSION")))]);
-        return Ok((json.render(), true));
+        return Ok(Output {
+            text: json.render(),
+            ok: true,
+        });
     }
-    let path = args
-        .get(1)
-        .ok_or_else(|| Failure::Usage("missing <path>".into()))?;
-    if command == "dng-describe" {
-        // the same function gxr-wasm calls, so both print the same bytes
-        let (ok, text) = gxr_raw::describe_json(&read(path)?, &base_name(path));
-        return Ok((text, ok));
+    if command.starts_with("dng-") {
+        return cmd_raw::run(command, rest);
     }
-    run_json(command, path, &args[2..]).map(|json| (json.render(), true))
+    if command.starts_with("camdata-") {
+        return cmd_camdata::run(command, rest);
+    }
+    if command.starts_with("color-") {
+        return cmd_color::run(command, rest);
+    }
+    if command.starts_with("lut-") || command.starts_with("scene-") {
+        return cmd_lut::run(command, rest);
+    }
+    if command.starts_with("hdr-") {
+        return cmd_hdr::run(command, rest);
+    }
+    if command.starts_with("geom-") {
+        return cmd_geometry::run(command, rest);
+    }
+    if command.starts_with("frame-") || command.starts_with("stamp-") {
+        return cmd_frame::run(command, rest);
+    }
+    if command.starts_with("jpeg-") {
+        return cmd_jpeg::run(command, rest);
+    }
+    if command.starts_with("export-") {
+        return cmd_export::run(command, rest);
+    }
+    // Commands that are not an area prefix keep the previous usage text.
+    if rest.is_empty() {
+        return Err(Failure::Usage("missing <path>".into()));
+    }
+    Err(Failure::Usage(format!("unknown command {command:?}")))
 }
 
-fn run_json(command: &str, path: &str, rest: &[String]) -> Result<Json, Failure> {
-    match command {
-        "dng-summary" => {
-            let data = read(path)?;
-            Ok(Dng::open(&data, &base_name(path))?.summary())
-        }
-        "dng-mosaic" | "dng-crop-mosaic" => {
-            let out = option(rest, "--out")?;
-            let data = read(path)?;
-            let dng = Dng::open(&data, &base_name(path))?;
-            let m = if command == "dng-mosaic" {
-                dng.mosaic()?.clone()
-            } else {
-                dng.crop_mosaic()?
-            };
-            write_npy(out, &m.values, &[m.height, m.width], "uint16")
-        }
-        "dng-half-codes" => {
-            let out = option(rest, "--out")?;
-            let data = read(path)?;
-            let dng = Dng::open(&data, &base_name(path))?;
-            let codes = gxr_raw::orient_array(&gxr_raw::half_res_codes(&dng)?, dng.orientation)?;
-            write_npy(
-                out,
-                &codes.values,
-                &[codes.height, codes.width, 3],
-                "float32",
-            )
-        }
-        "dng-normalised-block" => {
-            let out = option(rest, "--out")?;
-            let (y0, y1) = range(option(rest, "--rows")?)?;
-            let (x0, x1) = range(option(rest, "--cols")?)?;
-            let data = read(path)?;
-            let dng = Dng::open(&data, &base_name(path))?;
-            let block = dng.normalised_block(y0, y1, x0, x1)?;
-            write_npy(out, &block.values, &[block.rows, block.cols], "float64")
-        }
-        "dng-wb-block" => {
-            let out = option(rest, "--out")?;
-            let (y0, y1) = range(option(rest, "--rows")?)?;
-            let data = read(path)?;
-            let dng = Dng::open(&data, &base_name(path))?;
-            let block = gxr_raw::wb_mosaic_block(&dng, y0, y1)?;
-            write_npy(out, &block.values, &[block.height, block.width], "float32")
-        }
-        _ => Err(Failure::Usage(format!("unknown command {command:?}"))),
-    }
+fn run(args: &[String]) -> Result<Output, Failure> {
+    let command = args.first().map(String::as_str).unwrap_or("");
+    let rest = if args.is_empty() { &[] } else { &args[1..] };
+    dispatch(command, rest)
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
-        Ok((text, ok)) => {
-            println!("{text}");
-            if ok {
+        Ok(output) => {
+            println!("{}", output.text);
+            if output.ok {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(2)

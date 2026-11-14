@@ -10,8 +10,18 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+gxr-math.workspace = true
 gxr-raw.workspace = true
+gxr-camdata.workspace = true
+gxr-color.workspace = true
+gxr-lut.workspace = true
+gxr-hdr.workspace = true
+gxr-finish.workspace = true
+gxr-frame.workspace = true
+gxr-jpeg.workspace = true
+gxr-export.workspace = true
 wasm-bindgen.workspace = true
+# Not gxr-cli: that crate already depends on this one.
 
 [lints]
 workspace = true
