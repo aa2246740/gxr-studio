@@ -45,20 +45,20 @@ def test_quiet_gate_counts_checks_and_shares_one_budget(capsys: pytest.CaptureFi
     out = capsys.readouterr().out
     assert "等机器安静（phase）：等了 20 秒，问了 3 次，安静了，公开回退 load1=3.00，要 < 5" in out
     assert gate.remaining == 80.0
-    busy = q.QuietGate(lambda: (False, "loadgate busy"), fallback, budget=25.0, poll=10.0)
+    busy = q.QuietGate(lambda _limit: (False, "loadgate busy"), fallback, budget=25.0, poll=10.0)
     busy.wait("a", nap, clock=lambda: now[0])
     busy.wait("b", nap, clock=lambda: now[0])
     out = capsys.readouterr().out
     assert "机器一直没安静下来（a）：等了 20 秒，问了 3 次，最后一次 loadgate busy" in out
     assert "机器一直没安静下来（b）：等了 0 秒，问了 1 次" in out and busy.remaining == 5.0  # 剩下不够再等一轮
 
-    def broken() -> tuple[bool, str]:
+    def broken(_limit: float) -> tuple[bool, str]:
         raise OSError("iostat missing")
 
-    fixed = q.QuietGate(broken, lambda: (True, "fallback ok"), budget=5.0, poll=1.0)
+    fixed = q.QuietGate(broken, lambda _limit: (True, "fallback ok"), budget=5.0, poll=1.0)
     assert fixed.wait("c", nap, clock=lambda: now[0]) is True and fixed.primary is None
     assert "fallback ok" in capsys.readouterr().out
-    stopped = q.QuietGate(None, lambda: (False, "busy"), budget=100.0, poll=1.0)
+    stopped = q.QuietGate(None, lambda _limit: (False, "busy"), budget=100.0, poll=1.0)
     assert stopped.wait("d", lambda _s: False, clock=lambda: now[0]) is False
 
 

@@ -7,7 +7,7 @@
   （没有这个函数就用 `cap(0)` 的 admit）；没设置、文件不在、加载失败或调用出错时，改用公开的回退：
   1 分钟负载均值低于 CPU 数的一半。公共仓库不依赖那条私有路径。
 - 每 GXR_QUIET_POLL_S 秒（默认 10）问一次。一次 runner 里所有等待合计最多 GXR_QUIET_MAX_WAIT_S 秒
-  （默认 600），采样本身（一次最多 SAMPLE_S 秒）和休眠都算在内。剩下的不够再采一次就不再采样，照样跑，
+  （默认 600），采样本身（窗口 SAMPLE_S 秒，整次调用的期限是剩下的预算，超时停掉探针）和休眠都算在内。剩下的不够再采一次就不再采样，照样跑，
   并打印一行「一直没安静下来」和最近一次看到的负载。
 - 每次等待打印一行：等了多久、问了几次、最后看到的负载。
 - 速度断言抛 `SpeedBudgetExceeded`（类上 `gxr_speed_budget = True`，见 tests/support/speed.py）。
@@ -19,9 +19,11 @@
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import json
 import os
+import signal
+import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -40,7 +42,7 @@ DEFAULT_MAX_WAIT_S = 600.0
 DEFAULT_POLL_S = 10.0
 SAMPLE_S = 5.0  # 单次采样的上限：loadgate 按这个窗口采（它的默认也是 5 秒）；剩余预算不到它就不再采
 
-Probe = Callable[[], tuple[bool, str]]
+Probe = Callable[[float], tuple[bool, str] | None]  # 参数是这次调用的期限（秒）；超时返回 None
 Nap = Callable[[float], bool]
 
 
@@ -84,43 +86,67 @@ def _describe(info: object) -> str:
 
 def loadavg_probe(getloadavg: Callable[[], tuple[float, float, float]] = os.getloadavg, ncpu: int | None = None) -> Probe:
     cpus = ncpu or os.cpu_count() or 1
-    limit = cpus / 2
+    bound = cpus / 2
 
-    def probe() -> tuple[bool, str]:
+    def probe(deadline: float) -> tuple[bool, str]:
+        del deadline  # 读负载均值是瞬时的
         load1 = float(getloadavg()[0])
-        return load1 < limit, f"公开回退 load1={load1:.2f}，要 < {limit:g}（cpu {cpus}）"
+        return load1 < bound, f"公开回退 load1={load1:.2f}，要 < {bound:g}（cpu {cpus}）"
 
     return probe
 
 
-def _window(func: Callable[..., Any]) -> dict[str, float]:
-    """loadgate 的函数收 seconds 参数时，把采样窗口钉在 SAMPLE_S。"""
+# 在子进程里调 loadgate：整次调用（采样窗口加上 vm_stat、sysctl 这些附带命令）都受期限管，超时连进程组一起收掉。
+_PROBE_SCRIPT = """
+import importlib.util, inspect, json, sys
+path, name, window = sys.argv[1], sys.argv[2], float(sys.argv[3])
+spec = importlib.util.spec_from_file_location("gxr_loadgate_probe", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+func = getattr(module, name)
+kwargs = {"seconds": window} if "seconds" in inspect.signature(func).parameters else {}
+first, info = func(0, **kwargs) if name == "cap" else func(**kwargs)
+ok = info.get("admit") if name == "cap" else first
+print(json.dumps([bool(ok), info], default=str))
+"""
+
+
+def call_with_deadline(cmd: list[str], limit: float) -> str | None:
+    """跑 cmd，最多 limit 秒。超时返回 None，并把它的整个进程组杀掉、回收；失败抛 RuntimeError。"""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)  # noqa: S603
     try:
-        params = inspect.signature(func).parameters
-    except (TypeError, ValueError):
-        return {}
-    return {"seconds": SAMPLE_S} if "seconds" in params else {}
+        out, err = proc.communicate(timeout=max(0.0, limit))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        return None
+    if proc.returncode != 0:
+        raise RuntimeError((err or out).strip().splitlines()[-1] if (err or out).strip() else f"exit {proc.returncode}")
+    return out
 
 
 def gate_probe(module: Any) -> Probe | None:
-    """loadgate 的安静判断。模块里两样都没有时返回 None。"""
-    quiet = getattr(module, "quiet_for_timing", None)
-    if callable(quiet):
+    """loadgate 的安静判断（优先 quiet_for_timing，没有就 cap 的 admit）。模块里两样都没有时返回 None。
 
-        def by_quiet() -> tuple[bool, str]:
-            ok, info = quiet(**_window(quiet))
-            return bool(ok), f"loadgate.quiet_for_timing {_describe(info)}"
+    探针在子进程里跑，期限等于调用时剩下的等待预算；采样窗口钉在 SAMPLE_S（函数收 seconds 时）。
+    """
+    name = next((n for n in ("quiet_for_timing", "cap") if callable(getattr(module, n, None))), None)
+    path = getattr(module, "__file__", None)
+    if name is None or path is None:
+        return None
+    label = "loadgate.quiet_for_timing" if name == "quiet_for_timing" else "loadgate.cap admit"
 
-        return by_quiet
-    cap = getattr(module, "cap", None)
-    if callable(cap):
+    def probe(limit: float) -> tuple[bool, str] | None:
+        out = call_with_deadline([sys.executable, "-I", "-c", _PROBE_SCRIPT, str(path), name, str(SAMPLE_S)], limit)
+        if out is None:
+            return None
+        ok, info = json.loads(out.strip().splitlines()[-1])
+        return bool(ok), f"{label} {_describe(info)}"
 
-        def by_cap() -> tuple[bool, str]:
-            _cap, info = cap(0, **_window(cap))
-            return bool(info.get("admit")), f"loadgate.cap admit {_describe(info)}"
-
-        return by_cap
-    return None
+    return probe
 
 
 class QuietGate:
@@ -133,26 +159,34 @@ class QuietGate:
         self.poll = poll
         self.last_seen = ""
 
-    def check(self) -> tuple[bool, str]:
+    def check(self, limit: float) -> tuple[bool, str]:
+        """问一次。limit 是整次调用的期限；探针超时就算不安静，沿用最近一次看到的负载。"""
+        result: tuple[bool, str] | None = None
         if self.primary is not None:
             try:
-                return self.primary()
+                result = self.primary(limit)
             except Exception as exc:
                 print(f"{LOADGATE_ENV} 的安静判断出错（{exc!r}），这次 runner 改用公开回退。", flush=True)
                 self.primary = None
-        return self.fallback()
+        if self.primary is None:
+            result = self.fallback(limit)
+        if result is None:
+            print(f"安静判断在 {limit:.1f} 秒的期限内没有回来，已停掉，按不安静算。", flush=True)
+            return False, self.last_seen or "这个进程里还没采样过"
+        return result
 
     def wait(self, label: str, nap: Nap, clock: Callable[[], float] = time.monotonic) -> bool:
         """等到安静或预算用完。返回 False 表示等的时候收到了信号。
 
         采样本身（loadgate 一次要采 SAMPLE_S 秒）和中间的休眠都从同一份预算里扣：剩下的不够再采一次就不采了，
-        休眠也只睡到「还够采最后一次」为止。预算用完后的等待不再采样，只打印最近一次看到的负载。
+        休眠也只睡到「还够采最后一次」为止。每次探针调用的期限等于当时剩下的预算，超时就停掉探针、按不安静算，
+        所以附带命令拖慢的时间也超不出预算。预算用完后的等待不再采样，只打印最近一次看到的负载。
         """
         started = clock()
         checks = 0
         while self.remaining - (clock() - started) >= SAMPLE_S:
             checks += 1
-            quiet, self.last_seen = self.check()
+            quiet, self.last_seen = self.check(self.remaining - (clock() - started))
             spent = clock() - started
             if quiet:
                 self.remaining = max(0.0, self.remaining - spent)

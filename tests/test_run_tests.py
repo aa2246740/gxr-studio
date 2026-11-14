@@ -731,33 +731,61 @@ def test_speed_only_subtest_and_call_retry_leaves_only_the_second_run_in_junit(t
     assert all(case.find("failure") is None for case in suite.iter("testcase"))
 
 
-def test_sampling_time_counts_against_the_whole_wait_budget(capsys: pytest.CaptureFixture[str]) -> None:
-    """Sol r1 P2：总预算 600 秒、每 10 秒问一次、一直不安静、每次采样耗 5 秒（loadgate 的窗口），后面 10 个 exclusive 用例。
+@pytest.mark.parametrize(
+    ("budget", "cost", "tests"),
+    [(600.0, 5.0, 10), (600.0, 5.1, 10), (5.0, 5.25, 0)],
+    ids=["r1-5s-samples", "r2-5.1s-samples", "r2-5s-budget-5.25s-probe"],
+)
+def test_sampling_time_counts_against_the_whole_wait_budget(capsys: pytest.CaptureFixture[str], budget: float, cost: float, tests: int) -> None:
+    """Sol r1/r2 P2：每 10 秒问一次、一直不安静，每次探针调用耗 cost 秒（loadgate 的 5 秒窗口加上 vm_stat、sysctl 的开销），
+    阶段前 + tests 个 exclusive 用例 + 重试前。父进程、子进程、重试前共用一份预算。
 
-    原来阶段前等到 605 秒，之后每个用例还各采一次，合计 655 秒。现在父进程、exclusive 子进程、重试前三处共用一份预算，
-    采样和休眠都扣，总数不超过 600 秒；预算用完的那 10 次等待不再采样。
+    r1 时每个用例前还各采一次（655 秒）；r2 时窗口钉在 5 秒但整次调用没有期限（600.1 秒、5.25 秒）。
+    现在每次探针调用的期限是剩下的预算，超时就按不安静算（真探针在子进程里，连进程组收掉），合计不超过预算。
     """
     from test_run_tests_quiet import _quiet_module
 
     q: Any = _quiet_module()
     now = [0.0]
 
-    def busy() -> tuple[bool, str]:
-        now[0] += 5.0
-        return False, f"busy at {now[0]:.0f}"
+    def busy(limit: float) -> tuple[bool, str] | None:
+        if cost > limit:  # 期限到了：真探针的子进程在这里被杀掉
+            now[0] += max(0.0, limit)
+            return None
+        now[0] += cost
+        return False, f"busy at {now[0]:.1f}"
 
     def nap(seconds: float) -> bool:
         now[0] += seconds
         return True
 
-    parent = q.QuietGate(busy, busy, budget=600.0, poll=10.0)
+    parent = q.QuietGate(busy, busy, budget=budget, poll=10.0)
     parent.wait("exclusive 阶段开始前", nap, clock=lambda: now[0])
     child = q.QuietGate(busy, busy, budget=parent.remaining, poll=10.0)  # 父进程把剩下的交给子进程
-    for index in range(10):
+    for index in range(tests):
         child.wait(f"exclusive 用例之前：case {index}", nap, clock=lambda: now[0])
     used_by_child = parent.remaining - child.remaining  # 子进程写进结果文件，父进程扣掉
     parent.remaining -= used_by_child
     parent.wait("速度预算重试之前", nap, clock=lambda: now[0])
     out = capsys.readouterr().out
-    assert now[0] <= 600.0, now[0]
-    assert out.count("不再采样") == 11 and "最后一次 busy at" in out, out
+    assert now[0] <= budget, (now[0], out)
+    assert out.count("不再采样") == tests + 1, out
+
+
+def test_a_probe_without_seconds_is_stopped_at_the_deadline(tmp_path: Path) -> None:
+    """Sol r2 P2：不收 seconds 的 loadgate 函数也有期限。探针挂住 30 秒，期限 1 秒：期限一到就回来，子进程已经收掉。"""
+    from test_run_tests_quiet import _quiet_module
+
+    q: Any = _quiet_module()
+    pidfile = tmp_path / "probe.pid"
+    gate_file = tmp_path / "slow_gate.py"
+    gate_file.write_text(
+        f"import os, time\n\ndef quiet_for_timing():\n    open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n    time.sleep(30)\n"
+        "    return True, {}\n",
+        encoding="utf-8",
+    )
+    probe = q.gate_probe(q.load_gate(str(gate_file)))
+    assert probe(1.0) is None  # 正常跑完会返回 (True, …)；None 只能是期限到了
+    pid = int(pidfile.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # 子进程连进程组已经杀掉、回收
