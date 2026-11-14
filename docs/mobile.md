@@ -183,4 +183,14 @@ JSON 输入（请求、规格、字体索引）最多嵌套 128 层，数组和�
 
 WASM：`frame_layout(meta_json, spec_json, font_index_json, fonts)` 和 `stamp_layout(...)`。`gxr-wasm` 没有 `js-sys`，所以多个字体拼成一个字节数组，`font_index_json` 是 `[[名字, 字节数], …]`。返回值和命令行的 stdout 逐字节相同（含换行），错误抛出核心错误的 JSON。
 
-对拍在 `tests/test_core_parity_frame.py`（中文墨迹框的分档门槛见上）：`FRAME_STYLES` 的每一种，`test_frame_reference` 的全部认可组合，`test_finish_layout_parity` 的尺寸、选项、拍摄信息和日期戳组合，中文题字，五种自定义标志的每个选项，1×1 这样的极端尺寸，以及缺中文字体。整数、字符串、布尔、键的顺序都要相同，浮点数要相等（不是接近），int 和 float 的类型也和 Python 一样。
+对拍在 `tests/test_core_parity_frame.py`（中文墨迹框的门槛见上）：`FRAME_STYLES` 的每一种，`test_frame_reference` 的全部认可组合，`test_finish_layout_parity` 的尺寸、选项、拍摄信息和日期戳组合，中文题字，五种自定义标志的每个选项，1×1 这样的极端尺寸，以及缺中文字体。整数、字符串、布尔、键的顺序都要相同，浮点数要相等（不是接近），int 和 float 的类型也和 Python 一样。
+
+## raw-render（全分辨率去马赛克与中性转换）
+
+`gxr-raw` 的 `demosaic.rs` 和 `render.rs` 分别对应 `gxr_studio/raw/demosaic.py` 与 `gxr_studio/raw/render.py` 的中性路径：
+
+- `demosaic_strips` / `demosaic_block`：先做 `reflect` 镜像延拓（不重复边缘样本），再用 5×5 MHC 核做不翻转的 `correlate`，在 float64 中按行主序累加并存为 float32，按 `STRIP_ROWS = 256` 逐条带运行。
+- `render_full`：逐条带跑白平衡去马赛克、`srgb_encode` 与 `_neutral_display`（`np.rint` 一半向偶数，不同于 `pixels._linear_to_srgb` 的 `+0.5` 截断），最后按 `Orientation` 转正为 uint8 `(H, W, 3)`。`srgb_encode` 在 Rust 侧用 `gxr_math::powf(f64::from(a), f64::from(f32(1/2.4))) as f32` 计算正确舍入的幂；macOS `libSystem powf` 在个别 `.5` 边界（如 `0x3cc1c2a9`、`0x3da23384`、`0x3eadd76b`）会少 1 ULP，对拍测试通过 `dng-srgb-pow` 核对 Rust 幂的真实 float32 位型，并用 60 位 `Decimal` 独立核对正确舍入结果。
+- 分配前边界检查：`demosaic_full`、`demosaic_strips`、`demosaic_strip` 与 `render_full` 在分配任何输出或条带缓冲区前，先以 checked arithmetic 校验负 `DefaultCropOrigin`、超出 `ActiveArea` 与超出裸平面的裁切边界。
+- CLI 新增 `dng-demosaic --dng PATH --y0 A --y1 B --out OUT.npy`、`dng-neutral --dng PATH --out OUT.npy` 与 `dng-srgb-pow --bits HEX`；WASM 在 `gxr-wasm/src/raw.rs` 暴露 `dng_neutral` / `dng_neutral_named`。
+
