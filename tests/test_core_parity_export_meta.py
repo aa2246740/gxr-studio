@@ -6,12 +6,14 @@ Python + Pillow 12.2.0 is the oracle. Never log or print EXIF values from real p
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import io
 import json
+import math
 import os
 import shutil
-import struct
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
 from gxr_studio.finish.meta_text import photo_meta
 from gxr_studio.meta import dng_preview_image, read_dng_meta, read_jpeg_meta
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
+from support.export_meta_cases import make_jpeg_bytes, synthetic_edge_cases
 from support.wasm_check import PKG, run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -152,334 +155,192 @@ def _py_read_meta_json(path: Path, is_dng: bool) -> dict[str, Any]:
     return d
 
 
+def _digest_value(val: Any) -> str:
+    """Summarize any metadata value without exposing its contents."""
+    raw = json.dumps(val, sort_keys=True, ensure_ascii=False, allow_nan=True).encode("utf-8")
+    return f"{type(val).__name__}:{hashlib.sha256(raw).hexdigest()[:16]}"
+
+
+def _values_equal(got: Any, want: Any) -> bool:
+    if isinstance(got, float) and isinstance(want, float) and math.isnan(got) and math.isnan(want):
+        return True
+    if isinstance(got, dict) and isinstance(want, dict):
+        return got.keys() == want.keys() and all(_values_equal(got[k], want[k]) for k in got)
+    if isinstance(got, (list, tuple)) and isinstance(want, (list, tuple)):
+        return len(got) == len(want) and all(_values_equal(a, b) for a, b in zip(got, want))
+    return type(got) is type(want) and got == want
+
+
 def _assert_exif_equal(got: dict[str, Any], want: dict[str, Any], label: str) -> None:
-    assert set(got.keys()) == {"base", "sub"}, label
-    assert got["base"] == want["base"], f"{label}: base keys {sorted(got['base'])} vs {sorted(want['base'])}"
-    assert got["sub"] == want["sub"], f"{label}: sub keys {sorted(got['sub'])} vs {sorted(want['sub'])}"
+    if not isinstance(got, dict) or not isinstance(want, dict) or set(got.keys()) != {"base", "sub"} or set(want.keys()) != {"base", "sub"}:
+        got_keys = sorted(got.keys()) if isinstance(got, dict) else [type(got).__name__]
+        want_keys = sorted(want.keys()) if isinstance(want, dict) else [type(want).__name__]
+        pytest.fail(f"{label}: EXIF structure mismatch: got={got_keys} want={want_keys}", pytrace=False)
+    diffs: list[str] = []
+    for section in ("base", "sub"):
+        g_map = got[section]
+        w_map = want[section]
+        if not isinstance(g_map, dict) or not isinstance(w_map, dict):
+            diffs.append(f"{section}: type got={type(g_map).__name__} want={type(w_map).__name__}")
+            continue
+        g_keys = set(g_map.keys())
+        w_keys = set(w_map.keys())
+        if g_keys != w_keys:
+            diffs.append(f"{section} keys missing={sorted(w_keys - g_keys)} extra={sorted(g_keys - w_keys)}")
+        for k in sorted(g_keys & w_keys):
+            gv, wv = g_map[k], w_map[k]
+            if not _values_equal(gv, wv):
+                diffs.append(f"{section}[{k}]: got={_digest_value(gv)} want={_digest_value(wv)}")
+    if diffs:
+        pytest.fail(f"{label}: EXIF mismatch: " + "; ".join(diffs), pytrace=False)
 
 
 def _assert_read_meta_equal(got: dict[str, Any], want: dict[str, Any], label: str) -> None:
-    if want["error"] is not None:
-        assert got["error"] is not None, label
-        got_kind = got["error"].split(":", 1)[0]
-        want_kind = want["error"].split(":", 1)[0]
-        assert got_kind == want_kind, (label, got_kind, want_kind)
-    else:
-        assert got["error"] is None, (label, got["error"])
+    diffs: list[str] = []
+    g_err, w_err = got.get("error"), want.get("error")
+    if w_err is not None:
+        w_kind = str(w_err).split(":", 1)[0]
+        if g_err is None:
+            diffs.append(f"error: got=None want={w_kind} ({_digest_value(w_err)})")
+        else:
+            g_kind = str(g_err).split(":", 1)[0]
+            if g_kind != w_kind:
+                diffs.append(f"error: got={g_kind} ({_digest_value(g_err)}) want={w_kind} ({_digest_value(w_err)})")
+    elif g_err is not None:
+        g_kind = str(g_err).split(":", 1)[0]
+        diffs.append(f"error: got={g_kind} ({_digest_value(g_err)}) want=None")
     for key in ("width", "height", "orientation", "taken", "iso", "lens", "model", "copyright", "recipe_tag"):
-        assert got[key] == want[key], f"{label}: field {key} mismatch"
+        gv, wv = got.get(key), want.get(key)
+        if not _values_equal(gv, wv):
+            diffs.append(f"field {key}: got={_digest_value(gv)} want={_digest_value(wv)}")
+    if diffs:
+        pytest.fail(f"{label}: PhotoMeta mismatch: " + "; ".join(diffs), pytrace=False)
 
 
-# --------------------------------------------------------------------------- Synthetic TIFF/JPEG builders
+def _assert_photo_equal(got: dict[str, Any], want: dict[str, Any], label: str) -> None:
+    diffs: list[str] = []
+    if set(got.keys()) != set(want.keys()):
+        diffs.append(f"keys got={sorted(got.keys())} want={sorted(want.keys())}")
+    for key in ("taken", "file_time"):
+        if key in got and key in want and not _values_equal(got[key], want[key]):
+            diffs.append(f"{key}: got={_digest_value(got[key])} want={_digest_value(want[key])}")
+    g_frame, w_frame = got.get("frame"), want.get("frame")
+    if not isinstance(g_frame, dict) or not isinstance(w_frame, dict):
+        if not _values_equal(g_frame, w_frame):
+            diffs.append(f"frame: got={_digest_value(g_frame)} want={_digest_value(w_frame)}")
+    else:
+        if set(g_frame.keys()) != set(w_frame.keys()):
+            diffs.append(f"frame keys got={sorted(g_frame.keys())} want={sorted(w_frame.keys())}")
+        for fk in sorted(set(g_frame.keys()) & set(w_frame.keys())):
+            gv, wv = g_frame[fk], w_frame[fk]
+            if not _values_equal(gv, wv):
+                diffs.append(f"frame[{fk}]: got={_digest_value(gv)} want={_digest_value(wv)}")
+    if diffs:
+        pytest.fail(f"{label}: photo_meta mismatch: " + "; ".join(diffs), pytrace=False)
 
 
-def _pack_ifd(entries: list[tuple[int, int, int, bytes]], next_ifd: int = 0, endian: str = "<") -> bytes:
-    buf = bytearray(struct.pack(endian + "H", len(entries)))
-    for tag, typ, cnt, val4 in entries:
-        assert len(val4) <= 4
-        buf += struct.pack(endian + "HHI", tag, typ, cnt) + val4.ljust(4, b"\x00")
-    buf += struct.pack(endian + "I", next_ifd)
-    return bytes(buf)
-
-
-def _make_tiff_doc(
-    ifd0_specs: list[tuple[int, int, int, bytes]],
-    sub_specs: list[tuple[int, int, int, bytes]] | None = None,
-    *,
-    endian: str = "<",
-    subifd_list: list[list[tuple[int, int, int, bytes]]] | None = None,
-) -> bytes:
-    """Build a valid TIFF with optional EXIF SubIFD (`0x8769`) and TIFF SubIFDs (`330`)."""
-    magic = b"II*\x00" if endian == "<" else b"MM\x00*"
-    ifd0_offset = 8
-    # Reserve space for IFD0 (+ extra entries for 34665 and 330 if present)
-    extra_ifd0_count = int(sub_specs is not None) + int(subifd_list is not None)
-    ifd0_total_entries = len(ifd0_specs) + extra_ifd0_count
-    ifd0_size = 2 + ifd0_total_entries * 12 + 4
-    cursor = ifd0_offset + ifd0_size
-    blob = bytearray()
-
-    def alloc_extra(payload: bytes) -> bytes:
-        nonlocal cursor
-        if len(payload) <= 4:
-            return payload.ljust(4, b"\x00")
-        off = cursor
-        blob.extend(payload)
-        cursor += len(payload)
-        return struct.pack(endian + "I", off)
-
-    final_ifd0: list[tuple[int, int, int, bytes]] = []
-    for tag, typ, cnt, data in ifd0_specs:
-        final_ifd0.append((tag, typ, cnt, alloc_extra(data)))
-
-    if sub_specs is not None:
-        sub_offset = cursor
-        sub_size = 2 + len(sub_specs) * 12 + 4
-        cursor += sub_size
-        sub_blob = bytearray()
-        final_sub: list[tuple[int, int, int, bytes]] = []
-        for tag, typ, cnt, data in sub_specs:
-            if len(data) <= 4:
-                final_sub.append((tag, typ, cnt, data.ljust(4, b"\x00")))
-            else:
-                off = cursor
-                sub_blob.extend(data)
-                cursor += len(data)
-                final_sub.append((tag, typ, cnt, struct.pack(endian + "I", off)))
-        blob.extend(_pack_ifd(final_sub, 0, endian))
-        blob.extend(sub_blob)
-        final_ifd0.append((0x8769, 4, 1, struct.pack(endian + "I", sub_offset)))
-
-    if subifd_list is not None:
-        subifd_offsets: list[int] = []
-        for child_specs in subifd_list:
-            child_off = cursor
-            subifd_offsets.append(child_off)
-            child_size = 2 + len(child_specs) * 12 + 4
-            cursor += child_size
-            child_blob = bytearray()
-            final_child: list[tuple[int, int, int, bytes]] = []
-            for tag, typ, cnt, data in child_specs:
-                if len(data) <= 4:
-                    final_child.append((tag, typ, cnt, data.ljust(4, b"\x00")))
-                else:
-                    off = cursor
-                    child_blob.extend(data)
-                    cursor += len(data)
-                    final_child.append((tag, typ, cnt, struct.pack(endian + "I", off)))
-            blob.extend(_pack_ifd(final_child, 0, endian))
-            blob.extend(child_blob)
-        offs_bytes = b"".join(struct.pack(endian + "I", o) for o in subifd_offsets)
-        final_ifd0.append((330, 4, len(subifd_offsets), alloc_extra(offs_bytes)))
-
-    header = magic + struct.pack(endian + "I", ifd0_offset)
-    return header + _pack_ifd(final_ifd0, 0, endian) + bytes(blob)
-
-
-def _make_jpeg_bytes(w: int = 8, h: int = 6, *, exif_payload: bytes | None = None, xmp: bytes | None = None) -> bytes:
-    buf = io.BytesIO()
-    Image.new("RGB", (w, h), (10, 20, 30)).save(buf, "JPEG", quality=90)
-    raw = buf.getvalue()
-    if exif_payload is None and xmp is None:
-        return raw
-    inserts = bytearray()
-    if exif_payload is not None:
-        seg = b"Exif\x00\x00" + exif_payload
-        inserts += b"\xff\xe1" + struct.pack(">H", len(seg) + 2) + seg
-    if xmp is not None:
-        seg = b"http://ns.adobe.com/xap/1.0/\x00" + xmp
-        inserts += b"\xff\xe1" + struct.pack(">H", len(seg) + 2) + seg
-    return raw[:2] + bytes(inserts) + raw[2:]
-
-
-def _synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
-    """Build synthetic TIFF/JPEG buffers covering Pillow edge cases and damaged inputs."""
-    cases: dict[str, tuple[bytes, str]] = {}
-
-    def base_tiff(e: str) -> list[tuple[int, int, int, bytes]]:
-        return [
-            (256, 4, 1, struct.pack(e + "I", 16)),
-            (257, 4, 1, struct.pack(e + "I", 12)),
-            (273, 4, 1, struct.pack(e + "I", 8)),
-            (279, 4, 1, struct.pack(e + "I", 16)),
-        ]
-
-    # 1. Little-endian + ASCII NULs + odd length + latin1 + rationals (including 0 denom) + arrays + MakerNote + shared tag IDs
-    le_ifd0 = base_tiff("<") + [
-        (271, 2, 10, b"  RICOH \x00\x00"),
-        (272, 2, 5, b"GXR\x00 "),  # odd length, trailing space after NUL? keep raw NUL test
-        (306, 2, 20, b"2026:05:06 07:08:09\x00"),
-        (33432, 2, 9, b"\xa9 2026\x00\x00\x00"),  # latin-1 copyright with multiple NULs
-        (50708, 2, 26, b"RICOH GR LENS A12 50mm   \x00"),  # fallback lens
-        (274, 3, 1, struct.pack("<H", 6)),  # Orientation=6
-    ]
-    le_sub = [
-        (36867, 2, 20, b"2026:05:06 07:08:09\x00"),
-        (34855, 3, 1, struct.pack("<H", 400)),
-        (33434, 5, 1, struct.pack("<II", 1, 250)),
-        (33437, 5, 1, struct.pack("<II", 25, 10)),
-        (37386, 5, 1, struct.pack("<II", 5, 0)),  # IFDRational zero denominator!
-        (37380, 10, 1, struct.pack("<ii", -3, 0)),  # SRATIONAL negative + zero denom
-        (37396, 3, 4, struct.pack("<HHHH", 10, 20, 30, 40)),  # SubjectArea SHORT[4]
-        (42034, 5, 4, struct.pack("<IIIIIIII", 50, 1, 50, 1, 25, 10, 22, 1)),  # LensSpecification
-        (37500, 7, 6, b"MKNOTE"),  # MakerNote -> must be dropped by export-meta-exif
-        (36864, 7, 4, b"0230"),  # ExifVersion UNDEFINED
-        (41728, 7, 1, b"\x03"),  # 1-byte UNDEFINED
-        (271, 2, 8, b"SUB_TAG\x00"),  # Same tag ID as IFD0!
-        (42036, 2, 4, b"   \x00"),  # Whitespace LensModel -> triggers 50708 fallback
-    ]
-    cases["le_edges.dng"] = (_make_tiff_doc(le_ifd0, le_sub, endian="<"), "dng")
-
-    # 2. Big-endian + count=0 + unknown type + repeated tag (last wins) + float/double + sbyte/slong + 69-char GXR1 recipe tag
-    recipe_69 = b"GXR1 6a3a5a3c02 28 06 A8999B999-".ljust(69, b" ") + b"\x00"
-    be_ifd0 = base_tiff(">") + [
-        (271, 2, 6, b"RICOH\x00"),
-        (271, 2, 7, b"PENTAX\x00"),  # repeated tag -> last wins
-        (33432, 2, len(recipe_69), recipe_69),
-        (50708, 2, 17, b"RICOH A16 24-85\x00\x00"),
-        (40001, 3, 0, b"\x00\x00\x00\x00"),  # count == 0 -> skipped
-        (40002, 99, 1, b"\x00\x00\x00\x01"),  # unknown typ 99 -> ignored
-    ]
-    be_sub = [
-        (36867, 2, 20, b"2024-02-29 12:34:56\x00"),
-        (34855, 3, 2, struct.pack(">HH", 800, 1600)),  # ISO tuple -> _iso takes [0]
-        (33434, 5, 1, struct.pack(">II", 2, 5)),  # 0.4 -> 1/2s (round half-to-even of 2.5 is 2!)
-        (33437, 5, 1, struct.pack(">II", 0, 0)),  # 0/0 aperture -> ""
-        (40003, 9, 1, struct.pack(">i", -42)),  # SLONG
-        (40004, 12, 1, struct.pack(">d", 1.25)),  # DOUBLE
-    ]
-    cases["be_edges.dng"] = (_make_tiff_doc(be_ifd0, be_sub, endian=">"), "dng")
-
-    # 3. SubIFD crop size (50720) + preview SubIFD (largest JPEG wins, skip invalid SOF3 / >32MB)
-    small_jpg = _make_jpeg_bytes(4, 4)
-    big_jpg = _make_jpeg_bytes(16, 12)
-    # 12-bit SOF3 JPEG header (unopenable by Pillow) even larger dimensions:
-    sof3_jpg = b"\xff\xd8\xff\xc3\x00\x0b\x0c\x00\x64\x00\x64\x01\x01\x11\x00\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xff\xd9"
-    subifds = [
-        # Main SubIFD (254=0, 50720=[200, 100])
-        [
-            (254, 4, 1, struct.pack("<I", 0)),
-            (256, 4, 1, struct.pack("<I", 220)),
-            (257, 4, 1, struct.pack("<I", 120)),
-            (50720, 4, 2, struct.pack("<II", 200, 100)),
-        ],
-        # Smaller preview
-        [
-            (254, 4, 1, struct.pack("<I", 1)),
-            (256, 4, 1, struct.pack("<I", 4)),
-            (257, 4, 1, struct.pack("<I", 4)),
-            (259, 3, 1, struct.pack("<H", 7)),
-            (273, 4, 1, struct.pack("<I", 8 + 5000)),
-            (279, 4, 1, struct.pack("<I", len(small_jpg))),
-        ],
-        # Out-of-bounds offset
-        [
-            (254, 4, 1, struct.pack("<I", 1)),
-            (256, 4, 1, struct.pack("<I", 16)),
-            (257, 4, 1, struct.pack("<I", 12)),
-            (259, 3, 1, struct.pack("<H", 7)),
-            (273, 4, 1, struct.pack("<I", 999999)),
-            (279, 4, 1, struct.pack("<I", len(big_jpg))),
-        ],
-        # Too-large count (> 32 MiB) -> skipped
-        [
-            (254, 4, 1, struct.pack("<I", 1)),
-            (256, 4, 1, struct.pack("<I", 999)),
-            (257, 4, 1, struct.pack("<I", 999)),
-            (259, 3, 1, struct.pack("<H", 7)),
-            (273, 4, 1, struct.pack("<I", 999999)),
-            (279, 4, 1, struct.pack("<I", 33 * 1024 * 1024)),
-        ],
-    ]
-    dng_pv = bytearray(_make_tiff_doc(base_tiff("<") + [(274, 3, 1, struct.pack("<H", 6))], subifd_list=subifds))
-    dng_pv.extend(big_jpg)
-    cases["subifd_preview_oob.dng"] = (bytes(dng_pv), "dng")
-
-    # Clean preview DNG with exact known offset
-    p_hdr = b"II*\x00" + struct.pack("<I", 8)
-    # IFD0: 256,257,273,279,330(->off of 1 child)
-    # Put big_jpg right after IFD0 + SubIFD0
-    ifd0_sz = 2 + 5 * 12 + 4
-    sub_off = 8 + ifd0_sz
-    sub_sz = 2 + 6 * 12 + 4
-    jpg_off = sub_off + sub_sz
-    p_ifd0 = _pack_ifd(
-        base_tiff("<") + [(330, 4, 1, struct.pack("<I", sub_off))],
-        0,
-        "<",
-    )
-    p_sub = _pack_ifd(
-        [
-            (254, 4, 1, struct.pack("<I", 1)),
-            (256, 4, 1, struct.pack("<I", 16)),
-            (257, 4, 1, struct.pack("<I", 12)),
-            (259, 3, 1, struct.pack("<H", 7)),
-            (273, 4, 1, struct.pack("<I", jpg_off)),
-            (279, 4, 1, struct.pack("<I", len(big_jpg))),
-        ],
-        0,
-        "<",
-    )
-    cases["valid_preview.dng"] = (p_hdr + p_ifd0 + p_sub + big_jpg, "dng")
-
-    # Lossless SOF3 preview (unopenable by Pillow -> must return None / null)
-    jpg_off3 = sub_off + sub_sz
-    p_sub3 = _pack_ifd(
-        [
-            (254, 4, 1, struct.pack("<I", 1)),
-            (256, 4, 1, struct.pack("<I", 100)),
-            (257, 4, 1, struct.pack("<I", 100)),
-            (259, 3, 1, struct.pack("<H", 7)),
-            (273, 4, 1, struct.pack("<I", jpg_off3)),
-            (279, 4, 1, struct.pack("<I", len(sof3_jpg))),
-        ],
-        0,
-        "<",
-    )
-    cases["sof3_preview.dng"] = (p_hdr + p_ifd0 + p_sub3 + sof3_jpg, "dng")
-
-    # 4. JPEG with multi-APP1 concatenation + XMP orientation fallback + shutter >= 1s
-    exif_tiff = _make_tiff_doc(
-        [
-            (271, 2, 6, b"RICOH\x00"),
-            (306, 2, 17, b"2026:01:02 03:04\x00"),
-        ],
-        [
-            (34855, 3, 1, struct.pack("<H", 200)),
-            (33434, 5, 1, struct.pack("<II", 25, 10)),  # 2.5s
-            (33437, 5, 1, struct.pack("<II", 20, 10)),  # f/2
-        ],
-    )
-    xmp = b'<x:xmpmeta><rdf:RDF><rdf:Description tiff:Orientation="8"/></rdf:RDF></x:xmpmeta>'
-    cases["xmp_orient.jpg"] = (_make_jpeg_bytes(10, 6, exif_payload=exif_tiff, xmp=xmp), "jpg")
-    # Split exif_tiff across two APP1 Exif\x00\x00 segments + iso=0 + out-of-range taken date (1994)
-    split_exif = _make_tiff_doc(
-        [(271, 2, 6, b"RICOH\x00"), (306, 2, 20, b"1994:05:06 07:08:09\x00")],
-        [(34855, 3, 1, struct.pack("<H", 0))],
-    )
-    mid = len(split_exif) // 2
-    base_jpg = _make_jpeg_bytes(8, 6)
-    s1 = b"Exif\x00\x00" + split_exif[:mid]
-    s2 = b"Exif\x00\x00" + split_exif[mid:]
-    multi_app1 = (
-        base_jpg[:2] + b"\xff\xe1" + struct.pack(">H", len(s1) + 2) + s1 + b"\xff\xe1" + struct.pack(">H", len(s2) + 2) + s2 + base_jpg[2:]
-    )
-    cases["multi_app1_iso0.jpg"] = (multi_app1, "jpg")
-
-    # 5. Damaged / hostile files
-    # 5a. OOB tag value mid-IFD0 (271 kept, 272 OOB stops IFD0, 306 skipped)
-    oob_ifd0 = base_tiff("<") + [
-        (271, 2, 4, b"OK1\x00"),
-        (272, 2, 100, struct.pack("<I", 999999)),
-        (306, 2, 4, b"SKP\x00"),
-    ]
-    cases["oob_val.dng"] = (b"II*\x00" + struct.pack("<I", 8) + _pack_ifd(oob_ifd0, 0, "<"), "dng")
-
-    # 5b. 0x8769 self-loop pointing back to IFD0 (offset 8)
-    loop_ifd0 = base_tiff("<") + [
-        (271, 2, 4, b"LOP\x00"),
-        (0x8769, 4, 1, struct.pack("<I", 8)),
-    ]
-    cases["self_loop_0x8769.dng"] = (b"II*\x00" + struct.pack("<I", 8) + _pack_ifd(loop_ifd0, 0, "<"), "dng")
-
-    # 5c. Huge entry count 65535 in IFD0 -> truncated read -> UnidentifiedImageError in read_dng_meta
-    cases["huge_ifd_count.dng"] = (
-        b"II*\x00\x08\x00\x00\x00\xff\xff" + struct.pack("<HHI", 256, 4, 1) + struct.pack("<I", 4),
-        "dng",
-    )
-
-    # 5d. Huge tag count 0x4000_0000 -> u64 multiplication check, no OOM/panic
-    huge_val_cnt = base_tiff("<") + [(271, 5, 0x4000_0000, struct.pack("<I", 8))]
-    cases["huge_tag_count.dng"] = (b"II*\x00" + struct.pack("<I", 8) + _pack_ifd(huge_val_cnt, 0, "<"), "dng")
-
-    # 5e. Truncated JPEG (no SOS), non-image garbage, empty file
-    cases["no_sos.jpg"] = (b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x02\x00\x03\x01\x01\x11\x00\xff\xd9", "jpg")
-    cases["garbage.jpg"] = (b"NOT_AN_IMAGE_1234", "jpg")
-    cases["empty.dng"] = (b"", "dng")
-    return cases
+_make_jpeg_bytes = make_jpeg_bytes
+_synthetic_edge_cases = synthetic_edge_cases
 
 
 # --------------------------------------------------------------------------- Tests
+
+
+def _assert_no_core_error(code: int, payload: Any, label: str) -> None:
+    err = error_of(code, payload)
+    if err is not None:
+        pytest.fail(f"{label}: unexpected core error kind={err.kind} digest={_digest_value(err.message)}", pytrace=False)
+
+
+def _assert_preview_equal(got_pv: Any, py_pv: Image.Image | None, raw_bytes: bytes, label: str) -> bool:
+    if py_pv is None:
+        if got_pv is not None:
+            pytest.fail(f"{label}: preview expected None, got={_digest_value(got_pv)}", pytrace=False)
+        return False
+    if not isinstance(got_pv, dict) or set(got_pv) != {"offset", "length"}:
+        pytest.fail(f"{label}: preview invalid payload digest={_digest_value(got_pv)}", pytrace=False)
+    off, length = got_pv["offset"], got_pv["length"]
+    with Image.open(io.BytesIO(raw_bytes[off : off + length])) as rs_pv:
+        rs_rgb = rs_pv.convert("RGB")
+        if rs_rgb.size != py_pv.size:
+            pytest.fail(f"{label}: preview size mismatch got={rs_rgb.size} want={py_pv.size}", pytrace=False)
+        rs_hash = hashlib.sha256(rs_rgb.tobytes()).hexdigest()[:16]
+        py_hash = hashlib.sha256(py_pv.tobytes()).hexdigest()[:16]
+        if rs_hash != py_hash or rs_rgb.tobytes() != py_pv.tobytes():
+            pytest.fail(f"{label}: preview pixels mismatch got={rs_hash} want={py_hash}", pytrace=False)
+    return True
+
+
+def test_privacy_assertions_redact_sentinels(tmp_path: Path) -> None:
+    sentinel_a = "SYNTHETIC_OWNER_SENTINEL_A"
+    sentinel_b = "SYNTHETIC_OWNER_SENTINEL_B"
+    with pytest.raises(BaseException) as exc1:
+        _assert_exif_equal(
+            {"base": {"272": sentinel_a}, "sub": {"42033": sentinel_a}},
+            {"base": {"272": sentinel_b}, "sub": {"42033": sentinel_b}},
+            "synthetic-exif",
+        )
+    assert sentinel_a not in str(exc1.value) and sentinel_b not in str(exc1.value)
+    assert "42033" in str(exc1.value)
+
+    def read_payload(val: str) -> dict[str, Any]:
+        return {
+            "width": 8,
+            "height": 6,
+            "orientation": 1,
+            "taken": None,
+            "iso": None,
+            "lens": val,
+            "model": val,
+            "error": None,
+            "copyright": val,
+            "recipe_tag": None,
+        }
+
+    with pytest.raises(BaseException) as exc2:
+        _assert_read_meta_equal(read_payload(sentinel_a), read_payload(sentinel_b), "synthetic-read")
+    assert sentinel_a not in str(exc2.value) and sentinel_b not in str(exc2.value)
+
+    def photo_payload(val: str) -> dict[str, Any]:
+        return {
+            "frame": {
+                "lens": val,
+                "lens_short": val,
+                "aperture": "",
+                "shutter": "",
+                "iso": "",
+                "date": "",
+                "frame_no": "",
+            },
+            "taken": None,
+            "file_time": None,
+        }
+
+    with pytest.raises(BaseException) as exc3:
+        _assert_photo_equal(photo_payload(sentinel_a), photo_payload(sentinel_b), "synthetic-photo")
+    assert sentinel_a not in str(exc3.value) and sentinel_b not in str(exc3.value)
+
+    probe = tmp_path / "test_sentinel_probe.py"
+    probe.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n"
+        "from test_core_parity_export_meta import _assert_exif_equal\n"
+        "def test_sentinel():\n"
+        f"    left = {{'base': {{}}, 'sub': {{'42033': {sentinel_a!r}}}}}\n"
+        f"    right = {{'base': {{}}, 'sub': {{'42033': {sentinel_b!r}}}}}\n"
+        "    _assert_exif_equal(left, right, 'sentinel')\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--tb=short", "-p", "no:cacheprovider", str(probe)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    combined = proc.stdout + proc.stderr
+    assert sentinel_a not in combined and sentinel_b not in combined
+    assert "42033" in combined
 
 
 def test_real_jpgs_and_dngs_exact_parity() -> None:
@@ -494,11 +355,11 @@ def test_real_jpgs_and_dngs_exact_parity() -> None:
 
     for jpg in REAL_JPGS:
         code, got_exif = run_json(["export-meta-exif", "--src", str(jpg)])
-        assert error_of(code, got_exif) is None, jpg.name
+        _assert_no_core_error(code, got_exif, f"{jpg.name}::exif")
         _assert_exif_equal(got_exif, _py_source_exif(jpg), jpg.name)
 
         code, got_read = run_json(["export-meta-read", "--file", str(jpg), "--now-year", str(now_year)])
-        assert error_of(code, got_read) is None, jpg.name
+        _assert_no_core_error(code, got_read, f"{jpg.name}::read")
         _assert_read_meta_equal(got_read, _py_read_meta_json(jpg, is_dng=False), jpg.name)
 
         code, got_photo = run_json(
@@ -516,16 +377,16 @@ def test_real_jpgs_and_dngs_exact_parity() -> None:
                 str(now_year),
             ]
         )
-        assert error_of(code, got_photo) is None, jpg.name
-        assert got_photo == _py_photo_meta_json(jpg, None, jpg.stem, 1700000000123.0, 480), jpg.name
+        _assert_no_core_error(code, got_photo, f"{jpg.name}::photo")
+        _assert_photo_equal(got_photo, _py_photo_meta_json(jpg, None, jpg.stem, 1700000000123.0, 480), jpg.name)
 
     for dng in REAL_DNGS:
         code, got_exif = run_json(["export-meta-exif", "--src", str(dng)])
-        assert error_of(code, got_exif) is None, dng.name
+        _assert_no_core_error(code, got_exif, f"{dng.name}::exif")
         _assert_exif_equal(got_exif, _py_source_exif(dng), dng.name)
 
         code, got_read = run_json(["export-meta-read", "--file", str(dng), "--now-year", str(now_year)])
-        assert error_of(code, got_read) is None, dng.name
+        _assert_no_core_error(code, got_read, f"{dng.name}::read")
         _assert_read_meta_equal(got_read, _py_read_meta_json(dng, is_dng=True), dng.name)
 
         code, got_photo = run_json(
@@ -543,24 +404,16 @@ def test_real_jpgs_and_dngs_exact_parity() -> None:
                 str(now_year),
             ]
         )
-        assert error_of(code, got_photo) is None, dng.name
-        assert got_photo == _py_photo_meta_json(None, dng, dng.stem, 1700000000000.0, -300), dng.name
+        _assert_no_core_error(code, got_photo, f"{dng.name}::photo")
+        _assert_photo_equal(got_photo, _py_photo_meta_json(None, dng, dng.stem, 1700000000000.0, -300), dng.name)
 
         code, got_pv = run_json(["export-meta-preview", "--dng", str(dng)])
-        assert error_of(code, got_pv) is None, dng.name
+        _assert_no_core_error(code, got_pv, f"{dng.name}::preview")
         py_pv = dng_preview_image(dng, embedded_only=True)
-        if py_pv is None:
-            assert got_pv is None, dng.name
-            preview_none += 1
-        else:
-            assert isinstance(got_pv, dict) and set(got_pv) == {"offset", "length"}, dng.name
-            raw = dng.read_bytes()
-            off, length = got_pv["offset"], got_pv["length"]
-            with Image.open(io.BytesIO(raw[off : off + length])) as rs_pv:
-                rs_rgb = rs_pv.convert("RGB")
-                assert rs_rgb.size == py_pv.size, dng.name
-                assert rs_rgb.tobytes() == py_pv.tobytes(), dng.name
+        if _assert_preview_equal(got_pv, py_pv, dng.read_bytes(), dng.name):
             preview_found += 1
+        else:
+            preview_none += 1
 
     print(f"Real parity: {len(REAL_JPGS)} JPGs, {len(REAL_DNGS)} DNGs (preview found={preview_found}, none={preview_none})")
 
@@ -576,11 +429,11 @@ def test_synthetic_pillow_edges_and_damaged_files(tmp_path: Path) -> None:
         is_dng = kind == "dng"
 
         code, got_exif = run_json(["export-meta-exif", "--src", str(path)])
-        assert error_of(code, got_exif) is None, filename
+        _assert_no_core_error(code, got_exif, f"{filename}::exif")
         _assert_exif_equal(got_exif, _py_source_exif(path), filename)
 
         code, got_read = run_json(["export-meta-read", "--file", str(path), "--now-year", str(now_year)])
-        assert error_of(code, got_read) is None, filename
+        _assert_no_core_error(code, got_read, f"{filename}::read")
         _assert_read_meta_equal(got_read, _py_read_meta_json(path, is_dng=is_dng), filename)
 
         jpg_arg = path if not is_dng else None
@@ -598,20 +451,14 @@ def test_synthetic_pillow_edges_and_damaged_files(tmp_path: Path) -> None:
         ]
         args += ["--jpg", str(path)] if not is_dng else ["--dng", str(path)]
         code, got_photo = run_json(args)
-        assert error_of(code, got_photo) is None, filename
-        assert got_photo == _py_photo_meta_json(jpg_arg, dng_arg, f"R001_{path.stem}", 1700000000123.0, 480), filename
+        _assert_no_core_error(code, got_photo, f"{filename}::photo")
+        _assert_photo_equal(got_photo, _py_photo_meta_json(jpg_arg, dng_arg, f"R001_{path.stem}", 1700000000123.0, 480), filename)
 
         if is_dng:
             code, got_pv = run_json(["export-meta-preview", "--dng", str(path)])
-            assert error_of(code, got_pv) is None, filename
+            _assert_no_core_error(code, got_pv, f"{filename}::preview")
             py_pv = dng_preview_image(path, embedded_only=True)
-            if py_pv is None:
-                assert got_pv is None, filename
-            else:
-                assert isinstance(got_pv, dict)
-                off, length = got_pv["offset"], got_pv["length"]
-                with Image.open(io.BytesIO(blob[off : off + length])) as rs_pv:
-                    assert rs_pv.convert("RGB").tobytes() == py_pv.tobytes(), filename
+            _assert_preview_equal(got_pv, py_pv, blob, filename)
 
 
 def test_photo_prefers_jpg_when_both_present(tmp_path: Path) -> None:
@@ -640,7 +487,7 @@ def test_photo_prefers_jpg_when_both_present(tmp_path: Path) -> None:
         ]
     )
     assert error_of(code, got) is None
-    assert got == _py_photo_meta_json(jpg, dng, "IMGP0456", 1700000000500.0, 0)
+    _assert_photo_equal(got, _py_photo_meta_json(jpg, dng, "IMGP0456", 1700000000500.0, 0), "pair")
     assert got["frame"]["shutter"] == "2.5s"
 
 
