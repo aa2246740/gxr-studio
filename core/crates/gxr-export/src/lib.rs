@@ -1,5 +1,7 @@
-//! Placeholder: see docs/mobile.md
+//! Full-resolution export pipeline and source photo metadata reader (`docs/mobile.md`).
 //!
-//! Will receive the full-resolution pipeline of `gxr_studio/export.py`, `gxr_studio/raw/render.py`
-//! and `gxr_studio/raw/demosaic.py`.
+//! Currently provides [`meta`]: source EXIF extraction (`write_with_exif`), photo display text
+//! (`finish/meta_text.py`), JPEG/DNG metadata (`meta.py`), and embedded DNG preview location.
 #![forbid(unsafe_code)]
+
+pub mod meta;

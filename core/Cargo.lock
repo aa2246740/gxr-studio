@@ -49,6 +49,11 @@ dependencies = [
 [[package]]
 name = "gxr-export"
 version = "0.1.0"
+dependencies = [
+ "gxr-camdata",
+ "gxr-jpeg",
+ "gxr-raw",
+]
 
 [[package]]
 name = "gxr-finish"
