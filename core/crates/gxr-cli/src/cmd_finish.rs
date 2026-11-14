@@ -56,13 +56,8 @@ fn read_text_flag(
 
 fn parse_dim_u64(args: &[String], name: &str) -> Result<u64, Failure> {
     let raw = common::option(args, name)?;
-    let v: u64 = raw
-        .parse()
-        .map_err(|_| Failure::Usage(format!("bad integer for {name}: {raw:?}")))?;
-    if v == 0 {
-        return Err(Failure::Usage(format!("{name} must be > 0")));
-    }
-    Ok(v)
+    raw.parse()
+        .map_err(|_| Failure::Usage(format!("bad integer for {name}: {raw:?}")))
 }
 
 fn cmd_array(args: &[String]) -> Result<String, Failure> {

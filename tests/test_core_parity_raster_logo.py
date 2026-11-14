@@ -448,14 +448,15 @@ def test_wasm_matches_native(tmp_path: Path) -> None:
         },
     )
 
-    # Huge caller dimensions (UNIT-COMMON amendments)
-    for w, h in [(4_294_967_295, 4_294_967_295), (2_147_483_648, 1)]:
+    # Zero and huge caller dimensions (UNIT-COMMON / raster zero-dim parity)
+    logo_2x2 = _save_npy(tmp_path / "logo-dim-check.npy", np.zeros((2, 2, 4), dtype=np.uint8))
+    for w, h in [(0, 1), (1, 0), (4_294_967_295, 4_294_967_295), (2_147_483_648, 1)]:
         add_case(
-            f"arr_huge_{w}x{h}",
+            f"arr_dim_{w}x{h}",
             {"kind": "array", "rgbNpy": str(small_path), "w": w, "h": h, "overrideDims": True, "edit": {}, "options": {}},
         )
         add_case(
-            f"canvas_huge_{w}x{h}",
+            f"canvas_dim_{w}x{h}",
             {
                 "kind": "frame_canvas",
                 "rgbNpy": str(small_path),
@@ -465,8 +466,7 @@ def test_wasm_matches_native(tmp_path: Path) -> None:
                 "layout": {"width": 10, "height": 10, "bg": [0, 0, 0], "items": []},
             },
         )
-        lp = _save_npy(tmp_path / f"logo-huge-{w}.npy", np.zeros((2, 2, 4), dtype=np.uint8))
-        add_case(f"logo_huge_{w}x{h}", {"kind": "logo_key", "rgbaNpy": str(lp), "w": w, "h": h, "overrideDims": True})
+        add_case(f"logo_dim_{w}x{h}", {"kind": "logo_key", "rgbaNpy": str(logo_2x2), "w": w, "h": h, "overrideDims": True})
 
     # JSON nesting cap: 128, 129, 20000 for both arrays and objects
     for depth in (128, 129, 20_000):
