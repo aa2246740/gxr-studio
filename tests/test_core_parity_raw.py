@@ -20,10 +20,20 @@ import pytest
 
 from gxr_studio.gpu.source import describe
 from gxr_studio.raw.codes import half_res_codes, orient_array, wb_mosaic_block
+from gxr_studio.raw.demosaic import demosaic_full, demosaic_strips
 from gxr_studio.raw.dng import Dng, RawDecodeError, open_dng
 from gxr_studio.raw.tiff import Tiff
 from support.core_cli import CoreCliError, error_of, require_cli, run, run_json, run_npy
 from support.dng_writer import write_dng
+from support.raw_render_parity import (
+    assert_f32_exact,
+    expect_demosaic_error,
+    expect_demosaic_strip,
+    expect_neutral,
+    verify_demosaic_float_gate_nan_and_inf,
+    verify_negative_crop_origin_no_alloc,
+    verify_powf_boundary_counterexamples,
+)
 
 _STUDIO = Path(__file__).resolve().parents[1]
 _PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
@@ -646,3 +656,141 @@ def test_wb_block_uses_the_crop_row(tmp_path: Path) -> None:
     for path in REAL[:5]:
         for y0 in (0, 1, 17):
             _expect_wb(path, y0, y0 + 1, tmp_path)
+
+
+# ---- raw-render: demosaic strips & neutral full-size render ----------------
+
+
+def test_synthetic_demosaic_and_neutral_all_variants(tmp_path: Path) -> None:
+    """16/12-bit, both endians, ActiveArea/crop offsets, black deltas, linearization, orientations 1-8."""
+    require_cli()
+    rng = np.random.default_rng(42)
+    m16 = rng.integers(0, 65536, (12, 14), dtype=np.uint16)
+    for endian, tag in ((">", "be"), ("<", "le")):
+        for orientation in range(1, 9):
+            path = _write(
+                tmp_path,
+                f"n16-{tag}-o{orientation}",
+                m16,
+                endian=endian,
+                bps=16,
+                rows_per_strip=5,
+                pad_last=4,
+                orientation=orientation,
+            )
+            expect_neutral(path, tmp_path)
+            if orientation == 1:
+                for y0, y1 in ((0, 12), (0, 4), (4, 10), (1, 7)):
+                    expect_demosaic_strip(path, y0, y1, tmp_path)
+
+    m12 = rng.integers(0, 4096, (10, 12), dtype=np.uint16)
+    for endian, tag in ((">", "be"), ("<", "le")):
+        for origin in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            path = _write(
+                tmp_path,
+                f"n12-{tag}-{origin[0]}-{origin[1]}",
+                m12,
+                endian=endian,
+                bps=12,
+                active=(1, 1, 9, 11),
+                crop_origin=origin,
+                crop_size=(8, 6),
+                neutral=(0.645161, 1.0, 0.574712),
+            )
+            expect_neutral(path, tmp_path)
+            expect_demosaic_strip(path, 0, 6, tmp_path)
+            expect_demosaic_strip(path, 2, 5, tmp_path)
+
+    table = tuple(range(0, 4096, 16))
+    m_edge = np.array(
+        [
+            [0, 255, 0, 255, 128, 128],
+            [255, 0, 255, 0, 128, 128],
+            [0, 255, 0, 255, 64, 192],
+            [255, 0, 255, 0, 192, 64],
+            [10, 200, 30, 220, 0, 255],
+            [210, 20, 230, 40, 255, 0],
+        ],
+        dtype=np.uint16,
+    )
+    edge_path = _write(
+        tmp_path,
+        "edge-table",
+        m_edge,
+        black=(1.0, 2.0, 3.0, 4.5),
+        black_repeat=(2, 2),
+        black_dh=(0.0, 0.5, 1.0, 0.5, 0.0, 0.5),
+        black_dv=(0.0, 1.0, 0.0, 1.0, 0.0, 1.0),
+        linearization=table,
+        white=4095,
+    )
+    expect_demosaic_strip(edge_path, 0, 6, tmp_path)
+    expect_neutral(edge_path, tmp_path)
+
+    big = rng.integers(0, 4096, (262, 16), dtype=np.uint16)
+    big_path = _write(tmp_path, "multi-strip", big, bps=12, neutral=(0.55, 1.0, 0.65))
+    dng_big = open_dng(big_path)
+    s0 = run_npy(["dng-demosaic", "--dng", str(big_path), "--y0", "0", "--y1", "256"], tmp_path / "s0.npy")
+    s1 = run_npy(["dng-demosaic", "--dng", str(big_path), "--y0", "256", "--y1", "262"], tmp_path / "s1.npy")
+    assert_f32_exact(demosaic_full(dng_big), np.concatenate([s0, s1], axis=0))
+    expect_neutral(big_path, tmp_path)
+
+
+def test_synthetic_demosaic_and_neutral_errors(tmp_path: Path) -> None:
+    require_cli()
+    small = _write(tmp_path, "small", _pattern(6, 6, (100, 200, 300, 400)), crop_size=(3, 6))
+    expect_neutral(small, tmp_path)
+    expect_demosaic_error(small, 0, 3, tmp_path, "画面太小")
+
+    no_neutral = _write(tmp_path, "no-neutral", _pattern(6, 6, (100, 200, 300, 400)), neutral=None)
+    expect_neutral(no_neutral, tmp_path)
+
+    bad_orient = _write(tmp_path, "bad-orient", _pattern(6, 6, (100, 200, 300, 400)), orientation=9)
+    expect_neutral(bad_orient, tmp_path)
+
+    for name, payload_bytes in hostile_cases().items():
+        path = tmp_path / f"hostile-{name}.dng"
+        path.write_bytes(payload_bytes)
+        expect_neutral(path, tmp_path)
+
+
+_REAL_RENDER = REAL[::4] if len(REAL) >= 10 else REAL
+assert len([p for p in _REAL_RENDER if "contrib" not in p.as_posix()]) >= 10 or not REAL
+
+
+@pytest.mark.parametrize("path", _REAL_RENDER, ids=_real_id if _REAL_RENDER else None)
+def test_real_demosaic_strip_and_neutral_match_python(path: Path, tmp_path: Path) -> None:
+    require_cli()
+    expect_neutral(path, tmp_path)
+    try:
+        dng = open_dng(path)
+    except RawDecodeError:
+        return
+    h = dng.crop_size[1]
+    strips = list(demosaic_strips(dng))
+    first_y0, first_strip = strips[0]
+    rust_first = run_npy(
+        ["dng-demosaic", "--dng", str(path), "--y0", str(first_y0), "--y1", str(first_y0 + first_strip.shape[0])],
+        tmp_path / "first.npy",
+    )
+    assert_f32_exact(first_strip, rust_first)
+    last_y0, last_strip = strips[-1]
+    rust_last = run_npy(
+        ["dng-demosaic", "--dng", str(path), "--y0", str(last_y0), "--y1", str(min(h, last_y0 + last_strip.shape[0]))],
+        tmp_path / "last.npy",
+    )
+    assert_f32_exact(last_strip, rust_last)
+
+
+def test_negative_crop_origin_rejects_without_allocating(tmp_path: Path) -> None:
+    require_cli()
+    verify_negative_crop_origin_no_alloc(tmp_path, _patch)
+
+
+def test_synthetic_powf_boundary_counterexamples(tmp_path: Path) -> None:
+    require_cli()
+    verify_powf_boundary_counterexamples(tmp_path)
+
+
+def test_demosaic_float_gate_nan_and_inf_handling() -> None:
+    verify_demosaic_float_gate_nan_and_inf()
