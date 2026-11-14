@@ -113,7 +113,7 @@ Python 看起来算错了也先原样移植，把疑问写进报告，不要顺�
 
 没有 WebGPU 时（模拟器就是这样）仍会跑 WASM，并显示布局摘要，同时说明这个浏览器现在用不了显卡预览。
 
-`?autotest=1` 只在开发服务器里生效。它会拉 `GXR_MOBILE_SAMPLES` 里的第一张 DNG，跑描述和 5 秒自动拖动，再把结果写到 `mobile/.reports/`。这些路径不会出现在 `vite build` 的产物里。
+`?autotest=1` 只在开发服务器里生效。它会拉 `GXR_MOBILE_SAMPLES` 里的第一张 DNG，跑描述和 5 秒自动拖动，再把结果写到 `mobile/.reports/`。这些路径不会出现在 `vite build` 的产物里。开发壳的页面是 `dev.html`，`/?dev=1` 和 `/?autotest=1` 也会打开它，所以原来的自动测试地址不用改。
 
 ## 加一个领域
 
@@ -350,3 +350,20 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - CLI 子命令：`geom-crop-box`、`geom-final-box`、`geom-warp`、`geom-header`（另附 `geom-warp-valid`、`geom-fitted-crop`、`geom-clamp-rect`、`geom-fit-ratio` 供对拍）。
 - WASM 导出：`geom_final_box(w, h, geometry_json, crop_json)` 与 `geom_warp(rgb_u8, w, h, geometry_json)`（返回 `WarpedImage`，提供 `width`、`height`、`rgb()`、`mask()`）。
 
+## 第一版界面
+
+`mobile/index.html` 是给 iPhone Safari 的界面，不是开发壳。三屏都在内存里切换，不用浏览器的历史记录：起始、按拍摄时间分组的网格、编辑一张。
+
+选文件是一个没有 `accept` 的多选框，否则存储卡上的 `.DAT` 会变灰。`R*.DNG` 和 `R*.JPG` 按主文件名配成一张，`GXRCE.DAT` 先留着，这一版不解析。别的文件不计进网格，导航上会写有几个没放进来。文件字节在 Worker 里读，同时最多两个。缩略图好一张挂一张。拍摄时间优先用 JPG 前 128 KiB 里的 `DateTimeOriginal`（带亚秒）；只有 DNG 时用 TIFF IFD 里的同一组标签，没有就用文件修改时间。描述接口现在不带日期。只有 DNG 时，缩略图来自内嵌预览：GXR 把 640×480 的 JPEG 放在第二个 SubIFD 里，是一条缩小尺寸（NewSubFileType 1）、JPEG 压缩的条带，不在 `JPEGInterchangeFormat` 标签下；两处都找，取最大的那份。
+
+默认从早到晚，可以改成从晚到早，分组间隔是 1、3、5 或 10 分钟。这两项记在 `localStorage`（`gxr.mobile.order`、`gxr.mobile.gap`）。网格只挂看得见的行。点进一张后，DNG 原字节交给显卡引擎，配方键用开发壳那张中性烘焙表，画面上写着「开发用中性预览，不是配方」。拖滑块只调用 `setLook`。没有显卡时（模拟器）改显示相机 JPG 或内嵌预览，并写「这个浏览器现在用不了显卡预览」，滑块停用。`?perf=1` 在滚动和拖动时记下帧时间。
+
+坏掉的 DNG 用设计稿里「读不了」那一屏。Worker 先查完整的 TIFF 头和 IFD 结构（`checkDng`），点开时再用 WASM 描述；这两步都和有没有显卡无关。读到一半文件句柄失效，用「存储卡被拔出了」那一屏。
+
+整份 DNG 和下一张的预读也在 Worker 里读（`role: 'full'`，单独一个 Worker），主线程不调 `File.arrayBuffer`。每张照片有一个版本号，重新选同名照片就加一；缩略图、整份读取、清楚的大图回来时都先核对照片、版本和文件句柄，过期的结果丢掉，位图关掉。
+
+一张照片分三件事记：缩略图好没好（`status`）、这个版本的文件读不读得了（`gone`）、显卡里有没有这个版本的完整源（`cached`；没有显卡时是描述过的版本 `checked`）。卡拔了以后，只有完整源还在显卡里（同一版本）的照片不读卡也能打开、调整；只读过缩略图、还要原文件的照片都计入「没读完」，格子上标卡的图标，点开会提示重新选。同一张照片的显卡上传由 App 排成一队（`uploadRaw`），每次开始前再核对照片、File 和版本，旧版本的上传不会在新版本之后把源换回去。拔卡状态一直留着、写在导航副标题上，直到重新选照片后没有没读完的。每张照片在显卡里只有一个固定的键，再加一次会替换原来那份。
+
+有显卡时，配方卡是这张 RAW 的中性小图（`engine.thumb`，每个版本做一次）；没有显卡时卡片照实写「相机 JPG」或「内嵌预览」。直方图照设计稿的 `hist_svg`：红绿蓝和亮度、平方根纵轴、上限只看内部档位，两端三角在压死或溢出到 0.5% 时点亮；RAW 第一帧、换片和每次调整后数一次，按内容版本合并，静止时不读显卡。裁剪、边框、LUT、曲线四页按 03e–03h 摆好静态控件，全部停用，写「这项下一步做」。
+
+模拟器截图走开发服务器：`?shot=start|grid|editor|drag` 从样本端点读 DNG，摆好那一屏后 POST `/__dev/report/shot-<名字>`（写进不进仓库的 `mobile/.reports/`），截图脚本等这个文件出现再截。生产包里没有这段。

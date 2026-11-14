@@ -41,7 +41,7 @@ export class Pool {
   }
 
   /** 把 `buffer` 交给一个 Worker。`transfer` 里的东西发给对方之后这边就不能再用。 */
-  request(op: 'describe', buffer: ArrayBuffer, transfer: Transferable[]): Promise<string> {
+  request(op: 'describe' | 'ping', buffer: ArrayBuffer, transfer: Transferable[]): Promise<string> {
     const id = this.seq++;
     const worker = this.workers[this.next % this.workers.length];
     this.next += 1;

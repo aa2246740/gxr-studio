@@ -16,6 +16,16 @@ function workers(): Pool {
   return pool;
 }
 
+/**
+ * 打开页面就连上描述 Worker。
+ * 拖到第一次点开照片才连的话，开发服务器会在那时整页刷新，刚选的文件就没了。
+ */
+export function warmCore(): Promise<void> {
+  return workers()
+    .request('ping', new ArrayBuffer(0), [])
+    .then(() => undefined, () => undefined);
+}
+
 function isLayout(value: unknown): value is RawLayout {
   if (!value || typeof value !== 'object') return false;
   const row = value as Record<string, unknown>;

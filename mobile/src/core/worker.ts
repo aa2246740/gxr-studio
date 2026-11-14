@@ -5,7 +5,7 @@ import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 
 interface Request {
   id: number;
-  op: 'describe';
+  op: 'describe' | 'ping';
   buffer: ArrayBuffer;
 }
 
@@ -30,6 +30,11 @@ function load(): Promise<unknown> {
 
 self.onmessage = (event: MessageEvent<Request>) => {
   const { id, op, buffer } = event.data;
+  if (op === 'ping') {
+    const reply: Ok = { id, ok: true, json: '{}' };
+    self.postMessage(reply);
+    return;
+  }
   load()
     .then(() => {
       if (op !== 'describe') throw new Error('未知请求');
