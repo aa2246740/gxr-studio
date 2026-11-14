@@ -158,6 +158,36 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** F7：裁剪、边框、LUT、曲线四页有稿上的静态控件，全部停用，写「这项下一步做」。 */
+  async 'later-tabs'() {
+    const { page, context, errors } = await makePage({ gpu: false });
+    try {
+      await pick(page, [manifest.jpgs[0]]);
+      await page.locator('.cell').first().click();
+      await page.waitForSelector('[data-screen="editor"]');
+      const tabs = {};
+      for (const name of ['裁剪', '边框', 'LUT', '曲线']) {
+        await page.getByRole('tab', { name, exact: true }).click();
+        tabs[name] = await page.evaluate(() => {
+          const panel = [...document.querySelectorAll('.later-panel')].find((node) => !node.hidden);
+          if (!panel) return null;
+          const controls = [...panel.querySelectorAll('button, input')];
+          return {
+            text: panel.innerText,
+            buttons: panel.querySelectorAll('button').length,
+            inputs: panel.querySelectorAll('input').length,
+            svg: panel.querySelectorAll('svg').length,
+            enabled: controls.filter((node) => !node.disabled).length,
+            controls: controls.length,
+          };
+        });
+      }
+      return { tabs, errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** F6：RAW 第一帧就有直方图，静止时不读显卡，拖动后更新并点亮裁切三角，换片后重画。 */
   async 'histogram'() {
     const { page, context, errors } = await makePage({ gpu: true });

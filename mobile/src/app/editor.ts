@@ -6,6 +6,7 @@ import { NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
 import { button, el, icon, ICON } from './dom';
+import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
 
 const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
@@ -169,7 +170,7 @@ export class EditorView {
       });
       tabs.append(tab);
     });
-    panels.push(this.recipePanel(photo), this.adjustPanel(), this.later('裁剪', ['原始', '自由', '1:1', '4:5', '3:2', '16:9', 'XPan 65:24', '小红书 3:4']), this.later('边框', ['无', '徕卡水印', '模糊背景', '白边', '哈苏水印', '拍立得', '胶片', '极简细线']), this.later('LUT', ['不用 LUT', '胶片暖调', '青橙电影', '黑金']), this.later('曲线', ['主曲线', '红', '绿', '蓝']));
+    panels.push(this.recipePanel(photo), this.adjustPanel(), cropPanel(), framePanel(), lutPanel(), curvesPanel());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -270,19 +271,6 @@ export class EditorView {
       this.showKnob();
       this.push();
     });
-    return panel;
-  }
-
-  private later(title: string, names: string[]): HTMLElement {
-    const panel = el('div', 'panel');
-    panel.append(el('p', 'later', '这项下一步做'));
-    const chips = el('div', 'chips');
-    for (const name of names) {
-      const chip = button('chip', name);
-      chip.disabled = true;
-      chips.append(chip);
-    }
-    panel.append(chips, el('p', 'pad faint', title));
     return panel;
   }
 
