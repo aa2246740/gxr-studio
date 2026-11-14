@@ -298,15 +298,31 @@ impl Plane32 {
         two_d: bool,
         host: Option<HostTrig>,
     ) -> Result<Plane32, CoreError> {
-        let n = self.w / 2;
-        if n == 0 || self.h == 0 {
-            return Err(CoreError::new(
-                "value_error",
-                format!("Invalid number of FFT data points ({n}) specified."),
-            ));
-        }
         if !self.w.is_multiple_of(2) || self.v.len() != self.h * self.w {
             return Err(unsupported("bad_input", "FFT 形状对不上"));
+        }
+        let n = self.w / 2;
+        // numpy checks the length of the axis it transforms, never the batch: `_raw_fft`
+        // refuses `n < 1`; `fft2` transforms the last axis, then axis 0 (length `h`).
+        let points = |p: usize| {
+            CoreError::new(
+                "value_error",
+                format!("Invalid number of FFT data points ({p}) specified."),
+            )
+        };
+        if n == 0 {
+            return Err(points(0));
+        }
+        if self.h == 0 {
+            if two_d {
+                return Err(points(0));
+            }
+            // An empty batch: an empty array of the same shape.
+            return Ok(Plane32 {
+                h: 0,
+                w: self.w,
+                v: Vec::new(),
+            });
         }
         let mut data = size::with_capacity(self.h * n)?;
         data.extend(self.v.chunks_exact(2).map(|p| Cx::new(p[0], p[1])));

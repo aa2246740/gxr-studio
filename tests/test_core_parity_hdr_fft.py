@@ -314,6 +314,24 @@ def test_errors_match_numpy(tmp_path: Path) -> None:
     assert err is not None and err.message == ARRAY_TOO_BIG
 
 
+@pytest.mark.parametrize("inverse", [False, True])
+def test_empty_batch_matches_numpy(tmp_path: Path, inverse: bool) -> None:
+    """(0, 3): 1-D returns an empty (0, 3) array; 2-D reports axis 0's point count, 0."""
+    x = np.empty((0, 3), np.complex64)
+    ref = fr.numpy_fft(x, inverse=inverse)
+    got = fr.rust_fft(tmp_path, x, inverse=inverse)
+    assert (ref.dtype, ref.shape) == (got.dtype, got.shape) == (np.complex64, (0, 3))
+    src = tmp_path / "e.npy"
+    np.save(src, fr.as_pairs(x))
+    assert np.load(src).shape == (0, 3, 2)
+    with pytest.raises(ValueError) as exc:
+        fr.numpy_fft(x, inverse=inverse, two_d=True)
+    args = ["hdr-fft", "--in", str(src), "--inverse", "1" if inverse else "0", "--two-d", "--out", str(tmp_path / "o.npy")]
+    _, err = fr.call(args)
+    assert err is not None and (err.kind, err.message) == ("value_error", str(exc.value))
+    assert str(exc.value) == "Invalid number of FFT data points (0) specified."
+
+
 def test_wasm_matches_native(tmp_path: Path) -> None:
     rng = np.random.default_rng(SEED)
     folders = []
@@ -331,6 +349,7 @@ def test_wasm_matches_native(tmp_path: Path) -> None:
     np.save(d / "pa.npy", a)
     np.save(d / "pb.npy", b)
     np.save(d / "fft0.npy", np.zeros((1, 0, 2), np.float32))
+    np.save(d / "fft-empty.npy", np.zeros((0, 3, 2), np.float32))
     nan = a.copy()
     nan[1, 2] = np.nan
     d2 = tmp_path / "nan"
