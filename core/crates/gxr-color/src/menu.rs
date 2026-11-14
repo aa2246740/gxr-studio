@@ -25,6 +25,35 @@ struct Item {
     points: Vec<(i64, i64)>,
 }
 
+impl Menu {
+    /// Build a `Menu` from `gxr_camdata::MenuData` (embedded `final.json` or kv-overridden).
+    pub fn from_camdata(data: &gxr_camdata::MenuData) -> Self {
+        Self {
+            recipes: data
+                .recipes
+                .iter()
+                .map(|r| Recipe {
+                    first_item: i64::from(r.first_item),
+                    item_count: i64::from(r.item_count),
+                })
+                .collect(),
+            items: data
+                .items
+                .iter()
+                .map(|it| Item {
+                    control: i64::from(it.control),
+                    points: it
+                        .points
+                        .iter()
+                        .map(|p| (i64::from(p.level), i64::from(p.dose)))
+                        .collect(),
+                })
+                .collect(),
+            controls: data.controls.iter().map(|c| c.dose_index).collect(),
+        }
+    }
+}
+
 fn err(message: &str) -> CoreError {
     CoreError::new("value", message)
 }
