@@ -1,12 +1,26 @@
 The files in this directory (and `../fft.rs`) port pocketfft's C++ header
-`pocketfft_hdronly.h` as shipped in numpy 2.4.3 (`numpy/fft/pocketfft/`), plus the
-complex64 loops of numpy's `_pocketfft_umath.cpp`, `loops_arithm_fp.dispatch.c.src`,
-`loops_unary_complex.dispatch.c.src` and `loops.c.src` (numpy, BSD-3-Clause,
-Copyright (c) 2005-2025, NumPy Developers). pocketfft's licence follows.
+`pocketfft_hdronly.h` as shipped in numpy 2.4.3 (`numpy/fft/pocketfft/`, sdist
+SHA256 483a201202b73495f00dbc83796c6ae63137a9bdade074f7648b3e32613412dd, the
+version `uv.lock` pins), plus the complex64 loops of numpy's `_pocketfft_umath.cpp`,
+`loops_arithm_fp.dispatch.c.src`, `loops_unary_complex.dispatch.c.src` and
+`loops.c.src` (numpy, BSD-3-Clause, Copyright (c) 2005-2025, NumPy Developers).
 
-pocketfft (C++ header-only version), https://gitlab.mpcdf.mpg.de/mtr/pocketfft
+The notice below is the header of that `pocketfft_hdronly.h`, verbatim:
 
-Copyright (C) 2010-2018 Max-Planck-Society
+This file is part of pocketfft.
+
+Copyright (C) 2010-2022 Max-Planck-Society
+Copyright (C) 2019-2020 Peter Bell
+
+For the odd-sized DCT-IV transforms:
+  Copyright (C) 2003, 2007-14 Matteo Frigo
+  Copyright (C) 2003, 2007-14 Massachusetts Institute of Technology
+  
+For the prev_good_size search:
+  Copyright (C) 2024 Tan Ping Liang, Peter Bell
+
+Authors: Martin Reinecke, Peter Bell
+
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification,
@@ -31,3 +45,4 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
