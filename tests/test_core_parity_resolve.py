@@ -185,6 +185,14 @@ def test_edit_parsing_valid_cases_and_edge_numbers(tmp_path: Path) -> None:
             '"adjust": {"saturation": 9, "exposure_ev": 0.5}}'
         ),
         "unknown_top_level": '{"adjust": {"contrast": 3}, "geometry": {"straighten": 1.2}, "frame": {"style": "clean"}}',
+        "sol_surrogate_recipe_memory": r'{"recipe":{"unit":"jlaunch","slot":1,"memory":{"note":"\ud800"}}}',
+        "sol_surrogate_ignored_high": r'{"ignored":"\ud800"}',
+        "sol_surrogate_ignored_low": r'{"ignored":"\udfff"}',
+        "sol_surrogate_ignored_high_a": r'{"ignored":"\ud800A"}',
+        "sol_surrogate_ignored_high_u0041": r'{"ignored":"\ud800\u0041"}',
+        "sol_surrogate_key": r'{"\ud800":1}',
+        "surrogate_distinct_keys": r'{"\ud800":1,"\ud801":2,"adjust":{"contrast":4}}',
+        "surrogate_valid_pair": r'{"recipe":{"unit":"jlaunch","slot":1,"memory":{"note":"\ud83d\ude00"}}}',
     }
     for name, raw_text in cases.items():
         _assert_edit_matches(tmp_path, name, raw_text)
@@ -496,6 +504,18 @@ def test_wasm_matches_native_for_resolve_controls_and_listing(tmp_path: Path) ->
     specs["listing-oversized-dat"] = {"kind": "listing", "dat": str(oversized_dat)}
     specs["resolve-oversized-dat"] = {"kind": "resolve", "dat": str(oversized_dat), "recipe": str(valid_recipe)}
 
+    for sname, sbody in (
+        ("surrogate-memory-ud800", r'{"unit":"jlaunch","slot":1,"memory":{"note":"\ud800"}}'),
+        ("surrogate-ignored-ud800", r'{"ignored":"\ud800"}'),
+        ("surrogate-ignored-udfff", r'{"ignored":"\udfff"}'),
+        ("surrogate-ignored-ud800a", r'{"ignored":"\ud800A"}'),
+        ("surrogate-ignored-ud800u0041", r'{"ignored":"\ud800\u0041"}'),
+        ("surrogate-key-ud800", r'{"\ud800":1}'),
+    ):
+        srp = tmp_path / f"wr_{sname}.json"
+        srp.write_text(sbody, encoding="utf-8")
+        specs[f"resolve-empty-{sname}"] = {"kind": "resolve", "dat": str(empty_dat), "recipe": str(srp)}
+
     # Add real single-file and r5 DAT cases if available on this machine
     if SINGLE_DATS:
         by_s = dict(SINGLE_DATS)
@@ -521,6 +541,7 @@ def test_wasm_matches_native_for_resolve_controls_and_listing(tmp_path: Path) ->
         add_r("bad-kind", '{"kind": "nope", "unit": "jlaunch", "slot": 1}')
         add_r("local-404", json.dumps({"kind": "local", "id": HEX64, "unit": "jlaunch", "slot": 1}))
         add_r("dup-keys", '{"unit": "qlaunch", "unit": "jlaunch", "slot": 1, "levels": {"contrast": 1, "contrast": 2}}')
+        add_r("surrogate-memory", r'{"unit":"jlaunch","slot":1,"memory":{"note":"\ud800"}}')
         if lst[0]["looks"]:
             lk = lst[0]["looks"][0]
             add_r("look", json.dumps({"kind": "look", "id": lk["id"], "unit": "jlaunch", "slot": lk["slot"]}))

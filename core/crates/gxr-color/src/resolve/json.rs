@@ -4,12 +4,133 @@
 //! `int` from `float` (`1` vs `1.0`), deduplicates object keys keeping first-seen order and last
 //! value, accepts `NaN`/`Infinity`/`-Infinity`, and enforces `MAX_JSON_BYTES` and `MAX_DEPTH`.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use gxr_raw::CoreError;
 
 pub const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_DEPTH: usize = 128;
+
+/// Python `str`-compatible string that preserves unpaired UTF-16 surrogate code units
+/// (`0xD800..=0xDFFF`) instead of replacing them with U+FFFD.
+#[derive(Clone, Debug)]
+pub struct PyStr(PyStrRepr);
+
+#[derive(Clone, Debug)]
+enum PyStrRepr {
+    Utf8(String),
+    CodePoints(Vec<u32>),
+}
+
+impl PyStr {
+    pub fn as_str(&self) -> Option<&str> {
+        match &self.0 {
+            PyStrRepr::Utf8(s) => Some(s),
+            PyStrRepr::CodePoints(_) => None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match &self.0 {
+            PyStrRepr::Utf8(s) => s.is_empty(),
+            PyStrRepr::CodePoints(v) => v.is_empty(),
+        }
+    }
+
+    fn from_code_points(v: Vec<u32>) -> Self {
+        Self(PyStrRepr::CodePoints(v))
+    }
+
+    fn code_points(&self) -> Box<dyn Iterator<Item = u32> + '_> {
+        match &self.0 {
+            PyStrRepr::Utf8(s) => Box::new(s.chars().map(|c| c as u32)),
+            PyStrRepr::CodePoints(v) => Box::new(v.iter().copied()),
+        }
+    }
+
+    /// Write as a JSON string literal, escaping lone surrogates as `\uXXXX`.
+    pub fn write_json(&self, out: &mut String) {
+        out.push('"');
+        for cp in self.code_points() {
+            match char::from_u32(cp) {
+                Some('"') => out.push_str("\\\""),
+                Some('\\') => out.push_str("\\\\"),
+                Some('\n') => out.push_str("\\n"),
+                Some('\r') => out.push_str("\\r"),
+                Some('\t') => out.push_str("\\t"),
+                Some(c) if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                Some(c) => out.push(c),
+                None => out.push_str(&format!("\\u{cp:04x}")),
+            }
+        }
+        out.push('"');
+    }
+
+    /// Lossless UTF-8 text: valid scalar characters verbatim, lone surrogates as `\uXXXX`.
+    pub fn to_escaped_text(&self) -> String {
+        match &self.0 {
+            PyStrRepr::Utf8(s) => s.clone(),
+            PyStrRepr::CodePoints(v) => {
+                let mut out = String::new();
+                for &cp in v {
+                    match char::from_u32(cp) {
+                        Some(c) => out.push(c),
+                        None => out.push_str(&format!("\\u{cp:04x}")),
+                    }
+                }
+                out
+            }
+        }
+    }
+}
+
+impl From<String> for PyStr {
+    fn from(s: String) -> Self {
+        Self(PyStrRepr::Utf8(s))
+    }
+}
+
+impl From<&str> for PyStr {
+    fn from(s: &str) -> Self {
+        Self(PyStrRepr::Utf8(s.to_string()))
+    }
+}
+
+impl PartialEq for PyStr {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for PyStr {}
+
+impl PartialOrd for PyStr {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PyStr {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (&self.0, &other.0) {
+            (PyStrRepr::Utf8(a), PyStrRepr::Utf8(b)) => a.cmp(b),
+            _ => self.code_points().cmp(other.code_points()),
+        }
+    }
+}
+
+impl PartialEq<str> for PyStr {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == Some(other)
+    }
+}
+
+impl PartialEq<&str> for PyStr {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == Some(*other)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PyNum {
@@ -23,9 +144,9 @@ pub enum PyJson {
     Null,
     Bool(bool),
     Num(PyNum),
-    Str(String),
+    Str(PyStr),
     Array(Vec<PyJson>),
-    Object(Vec<(String, PyJson)>),
+    Object(Vec<(PyStr, PyJson)>),
 }
 
 impl PyJson {
@@ -38,12 +159,12 @@ impl PyJson {
 
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            PyJson::Str(s) => Some(s),
+            PyJson::Str(s) => s.as_str(),
             _ => None,
         }
     }
 
-    pub fn as_object(&self) -> Option<&[(String, PyJson)]> {
+    pub fn as_object(&self) -> Option<&[(PyStr, PyJson)]> {
         match self {
             PyJson::Object(pairs) => Some(pairs),
             _ => None,
@@ -68,6 +189,51 @@ impl PyJson {
             PyJson::Str(s) => !s.is_empty(),
             PyJson::Array(items) => !items.is_empty(),
             PyJson::Object(pairs) => !pairs.is_empty(),
+        }
+    }
+
+    /// Render as compact JSON text, escaping lone surrogates as `\uXXXX`.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        self.write_json(&mut out);
+        out
+    }
+
+    fn write_json(&self, out: &mut String) {
+        match self {
+            Self::Null => out.push_str("null"),
+            Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Self::Num(PyNum::Int(i)) => out.push_str(&i.to_string()),
+            Self::Num(PyNum::BigInt { neg, digits }) => {
+                if *neg {
+                    out.push('-');
+                }
+                out.push_str(digits);
+            }
+            Self::Num(PyNum::Float(f)) => out.push_str(&gxr_raw::json::float_text(*f)),
+            Self::Str(s) => s.write_json(out),
+            Self::Array(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    item.write_json(out);
+                }
+                out.push(']');
+            }
+            Self::Object(pairs) => {
+                out.push('{');
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    k.write_json(out);
+                    out.push(':');
+                    v.write_json(out);
+                }
+                out.push('}');
+            }
         }
     }
 }
@@ -184,8 +350,8 @@ impl<'a> Parser<'a> {
 
     fn object(&mut self) -> Result<PyJson, CoreError> {
         self.bump()?;
-        let mut pairs: Vec<(String, PyJson)> = Vec::new();
-        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        let mut pairs: Vec<(PyStr, PyJson)> = Vec::new();
+        let mut seen: BTreeMap<PyStr, usize> = BTreeMap::new();
         self.skip();
         if self.peek() == Some('}') {
             self.bump()?;
@@ -218,47 +384,55 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn string(&mut self) -> Result<String, CoreError> {
+    fn string(&mut self) -> Result<PyStr, CoreError> {
         self.bump()?;
-        let mut out = String::new();
+        let mut utf8 = String::new();
+        let mut units: Option<Vec<u32>> = None;
         loop {
             match self.bump()? {
-                '"' => return Ok(out),
-                '\\' => out.push(self.escape()?),
+                '"' => {
+                    return Ok(match units {
+                        Some(v) => PyStr::from_code_points(v),
+                        None => PyStr::from(utf8),
+                    });
+                }
+                '\\' => {
+                    let cp = self.escape_cp()?;
+                    push_cp(&mut utf8, &mut units, cp);
+                }
                 c if (c as u32) < 0x20 => return Err(bad("control character in string")),
-                c => out.push(c),
+                c => push_cp(&mut utf8, &mut units, c as u32),
             }
         }
     }
 
-    fn escape(&mut self) -> Result<char, CoreError> {
+    fn escape_cp(&mut self) -> Result<u32, CoreError> {
         match self.bump()? {
-            '"' => Ok('"'),
-            '\\' => Ok('\\'),
-            '/' => Ok('/'),
-            'b' => Ok('\u{0008}'),
-            'f' => Ok('\u{000c}'),
-            'n' => Ok('\n'),
-            'r' => Ok('\r'),
-            't' => Ok('\t'),
+            '"' => Ok('"' as u32),
+            '\\' => Ok('\\' as u32),
+            '/' => Ok('/' as u32),
+            'b' => Ok(0x0008),
+            'f' => Ok(0x000c),
+            'n' => Ok('\n' as u32),
+            'r' => Ok('\r' as u32),
+            't' => Ok('\t' as u32),
             'u' => self.unicode(),
             _ => Err(bad("bad escape")),
         }
     }
 
-    fn unicode(&mut self) -> Result<char, CoreError> {
+    fn unicode(&mut self) -> Result<u32, CoreError> {
         let first = self.hex4()?;
         if (0xD800..0xDC00).contains(&first) && self.text[self.i..].starts_with("\\u") {
             let save = self.i;
             self.i += 2;
             let second = self.hex4()?;
             if (0xDC00..0xE000).contains(&second) {
-                let code = 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
-                return char::from_u32(code).ok_or_else(|| bad("bad unicode escape"));
+                return Ok(0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00));
             }
             self.i = save;
         }
-        char::from_u32(first).ok_or_else(|| bad("bad unicode escape"))
+        Ok(first)
     }
 
     fn hex4(&mut self) -> Result<u32, CoreError> {
@@ -322,5 +496,18 @@ impl<'a> Parser<'a> {
             let digits = text.trim_start_matches('-').to_string();
             Ok(PyJson::Num(PyNum::BigInt { neg, digits }))
         }
+    }
+}
+
+fn push_cp(utf8: &mut String, units: &mut Option<Vec<u32>>, cp: u32) {
+    if let Some(v) = units.as_mut() {
+        v.push(cp);
+    } else if let Some(c) = char::from_u32(cp) {
+        utf8.push(c);
+    } else {
+        let mut v: Vec<u32> = utf8.chars().map(|ch| ch as u32).collect();
+        v.push(cp);
+        utf8.clear();
+        *units = Some(v);
     }
 }

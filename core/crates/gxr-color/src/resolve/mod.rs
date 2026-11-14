@@ -7,7 +7,7 @@ pub mod params;
 pub mod recipes;
 
 pub use error::{EditError, INVALID_REQUEST, ResolveError};
-pub use json::{MAX_DEPTH, MAX_JSON_BYTES, PyJson, PyNum, parse as parse_py_json};
+pub use json::{MAX_DEPTH, MAX_JSON_BYTES, PyJson, PyNum, PyStr, parse as parse_py_json};
 pub use params::{
     CURVE_CHANNELS, CURVE_MAX_POINTS, EXPOSURE_RANGE, EditAdjust, EditState, KNOB_NAMES,
     RecipeLevel, RecipeSel, SLIDER_RANGE, UNITS, int_in, parse_adjust, parse_curve,
@@ -168,5 +168,38 @@ mod tests {
         assert_eq!(listing.len(), 3);
         let c03 = menu.controls(0, 3).unwrap();
         assert_eq!(c03.len(), 5);
+    }
+
+    #[test]
+    fn lone_surrogates_preserve_code_units_and_separate_keys() {
+        let s1 =
+            parse_py_json(br#"{"recipe":{"unit":"jlaunch","slot":1,"memory":{"note":"\ud800"}}}"#)
+                .unwrap();
+        let st1 = parse_edit_state(&s1).unwrap();
+        assert_eq!(
+            st1.digest(),
+            "8509979ee8a685b8ba2663f66b1fb49e5c540dc253a7914065a5ad07167df599"
+        );
+        assert_eq!(
+            s1.render(),
+            r#"{"recipe":{"unit":"jlaunch","slot":1,"memory":{"note":"\ud800"}}}"#
+        );
+
+        let distinct = parse_py_json(br#"{"\ud800":1,"\ud801":2,"\udfff":"x\ud800A"}"#).unwrap();
+        let pairs = distinct.as_object().unwrap();
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(
+            distinct.render(),
+            r#"{"\ud800":1,"\ud801":2,"\udfff":"x\ud800A"}"#
+        );
+
+        let valid_pair = parse_py_json(br#"{"note":"\ud83d\ude00"}"#).unwrap();
+        assert_eq!(valid_pair.get("note").and_then(PyJson::as_str), Some("😀"));
+
+        let bad_unit = parse_py_json(br#"{"unit":"\ud800","slot":1}"#).unwrap();
+        assert_eq!(
+            parse_recipe(Some(&bad_unit)).unwrap_err().code,
+            "bad_recipe"
+        );
     }
 }

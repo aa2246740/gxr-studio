@@ -418,7 +418,7 @@ pub fn parse_adjust(raw: Option<&PyJson>) -> Result<EditAdjust, EditError> {
         ));
     };
     for (k, _) in pairs {
-        if !ADJUST_KEYS.contains(&k.as_str()) {
+        if !k.as_str().is_some_and(|s| ADJUST_KEYS.contains(&s)) {
             return Err(EditError::with_detail(
                 "bad_adjust",
                 INVALID_REQUEST,
@@ -449,7 +449,7 @@ pub fn parse_adjust(raw: Option<&PyJson>) -> Result<EditAdjust, EditError> {
         }
     };
     let wb_val = raw.get("wb");
-    let wb_pairs: &[(String, PyJson)] = match wb_val {
+    let wb_pairs: &[(super::json::PyStr, PyJson)] = match wb_val {
         None => &[],
         Some(v) if !v.is_truthy() => &[],
         Some(PyJson::Object(wb)) => {
@@ -539,7 +539,7 @@ pub fn parse_curve(raw: Option<&PyJson>) -> Result<Option<Curves>, EditError> {
         ));
     };
     for (k, _) in pairs {
-        if !CURVE_CHANNELS.contains(&k.as_str()) {
+        if !k.as_str().is_some_and(|s| CURVE_CHANNELS.contains(&s)) {
             return Err(EditError::new(
                 "bad_curve",
                 "曲线只能包含主曲线、红、绿、蓝四个通道。",
@@ -626,15 +626,12 @@ pub fn parse_recipe(raw: Option<&PyJson>) -> Result<Option<RecipeSel>, EditError
             "recipe 要是一个对象",
         ));
     }
-    let kind = match raw.get("kind") {
+    let kind = match raw.get("kind").map(|v| (v, v.as_str())) {
         None => "builtin",
-        Some(PyJson::Str(s))
-            if matches!(
-                s.as_str(),
-                "builtin" | "record" | "look" | "camera_user" | "local"
-            ) =>
+        Some((_, Some(s)))
+            if matches!(s, "builtin" | "record" | "look" | "camera_user" | "local") =>
         {
-            s.as_str()
+            s
         }
         Some(_) => {
             return Err(EditError::with_detail(
@@ -645,8 +642,8 @@ pub fn parse_recipe(raw: Option<&PyJson>) -> Result<Option<RecipeSel>, EditError
         }
     };
     let identity = if kind != "builtin" {
-        match raw.get("id") {
-            Some(PyJson::Str(s)) if is_hex64(s) => Some(s.clone()),
+        match raw.get("id").and_then(PyJson::as_str) {
+            Some(s) if is_hex64(s) => Some(s.to_string()),
             _ => {
                 return Err(EditError::with_detail(
                     "bad_recipe",
@@ -658,8 +655,8 @@ pub fn parse_recipe(raw: Option<&PyJson>) -> Result<Option<RecipeSel>, EditError
     } else {
         None
     };
-    let unit = match raw.get("unit") {
-        Some(PyJson::Str(u)) if UNITS.contains(&u.as_str()) => u.clone(),
+    let unit = match raw.get("unit").and_then(PyJson::as_str) {
+        Some(u) if UNITS.contains(&u) => u.to_string(),
         _ => {
             return Err(EditError::with_detail(
                 "bad_recipe",
@@ -683,14 +680,21 @@ pub fn parse_recipe(raw: Option<&PyJson>) -> Result<Option<RecipeSel>, EditError
         None => {}
         Some(v) if !v.is_truthy() => {}
         Some(PyJson::Object(pairs)) => {
-            let mut keys: Vec<&(String, PyJson)> = pairs.iter().collect();
+            let mut keys: Vec<&(super::json::PyStr, PyJson)> = pairs.iter().collect();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             for (name, v) in keys {
-                if !KNOB_NAMES.contains(&name.as_str()) {
+                let Some(name_str) = name.as_str() else {
                     return Err(EditError::with_detail(
                         "bad_recipe",
                         INVALID_REQUEST,
-                        format!("旋钮无法使用。{name}"),
+                        format!("旋钮无法使用。{}", name.to_escaped_text()),
+                    ));
+                };
+                if !KNOB_NAMES.contains(&name_str) {
+                    return Err(EditError::with_detail(
+                        "bad_recipe",
+                        INVALID_REQUEST,
+                        format!("旋钮无法使用。{name_str}"),
                     ));
                 }
                 let lv = match v {
@@ -703,11 +707,11 @@ pub fn parse_recipe(raw: Option<&PyJson>) -> Result<Option<RecipeSel>, EditError
                         return Err(EditError::with_detail(
                             "bad_recipe",
                             INVALID_REQUEST,
-                            format!("档位要是整数。{name}"),
+                            format!("档位要是整数。{name_str}"),
                         ));
                     }
                 };
-                sorted_levels.insert(name.clone(), lv);
+                sorted_levels.insert(name_str.to_string(), lv);
             }
         }
         Some(_) => {
