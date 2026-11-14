@@ -436,10 +436,8 @@ def _point_next_ifd_at_itself(data: bytes) -> bytes:
 
 
 def _message_ok(python: str, rust: str) -> bool:
-    if rust == python:
-        return True
-    prefix = "不是可识别的 GXR DNG（ValueError: "
-    return rust.startswith(prefix) and rust.endswith("）") and python.startswith(prefix)
+    """Open failures match Python character for character, reshape shape text included (r4)."""
+    return rust == python
 
 
 def _python_call(path: Path, command: str) -> tuple[Any, BaseException | None]:
@@ -514,6 +512,27 @@ def hostile_cases() -> dict[str, bytes]:
         "ifd-points-at-itself": _point_next_ifd_at_itself(base),
         "huge-black-repeat": _patch(base, 50713, 4, [2147483648, 2147483648]),
         "repeat-one-dimensional": _patch(base, 50713, 3, [1, 1, 1]),
+        # NumPy stops at 64 axes; the 100000-axis file once overflowed the Rust stack in summary.
+        "repeat-65-axes": _patch(base, 50713, 3, [1] * 65),
+        "repeat-100000-axes": _patch(base, 50713, 3, [1] * 100000),
+        # The CFA pattern is reshaped the same way (r3): 64 axes reach the 2×2 check, 65 stop in numpy,
+        # and one unknown axis resolves like numpy does.
+        "cfa-64-axes": _patch(base, 33421, 3, [2, 2] + [1] * 62),
+        "cfa-65-axes": _patch(base, 33421, 3, [2, 2] + [1] * 63),
+        "cfa-100000-axes": _patch(base, 33421, 3, [2, 2] + [1] * 99998),
+        "cfa-unknown-axis": _patch(base, 33421, 9, [-1, 2]),
+        "cfa-two-unknown-axes": _patch(base, 33421, 9, [-1, -1]),
+        # numpy leaves a leading unknown axis out of the message: "(3)", not "(newaxis,3)" (r4).
+        "cfa-unknown-axis-mismatch": _patch(base, 33421, 9, [-1, 3]),
+        "cfa-trailing-unknown-mismatch": _patch(base, 33421, 9, [3, -1]),
+        "cfa-unknown-next-to-zero": _patch(base, 33421, 9, [-1, 0]),
+        "black-unknown-next-to-zero": _patch(base, 50713, 9, [0, -1]),
+        # Empty black repeats whose other axes span more than 2**63 - 1 bytes: numpy says
+        # "array is too big" at reshape; [0, 2**32 - 1] still reshapes and fails later (r6).
+        "black-zero-large-strides": _patch(base, 50713, 4, [0, 4294967295, 4294967295]),
+        "black-middle-zero-large-strides": _patch(base, 50713, 4, [4294967295, 0, 4294967295]),
+        "black-zero-large-strides-i32": _patch(base, 50713, 4, [0, 2147483647, 2147483647]),
+        "black-zero-large-axis-control": _patch(base, 50713, 4, [0, 4294967295]),
         "bps-zero": _patch(base, 258, 3, [0]),
         "absurd-dimensions": _patch(_patch(base, 256, 4, [0xFFFFFFFF]), 257, 4, [0xFFFFFFFF]),
         "signed-negative-black-repeat": _patch(base, 50713, 9, [-1, -1]),
@@ -529,6 +548,19 @@ def hostile_cases() -> dict[str, bytes]:
     return cases
 
 
+def strips_over_the_limit() -> bytes:
+    """65536 strips that all point at the same 65536 bytes.
+
+    Each strip lies inside the file, but together they ask for 2**32 bytes, one past
+    the documented 2**32 - 1 limit (Sol review r4, R4-2).
+    """
+    image = (np.arange(24).reshape(4, 6) * 100 + 500).astype(np.uint16)
+    n = 65536
+    payload = _patch(_patch(write_dng(image), 273, 4, [0] * n), 279, 4, [n] * n)
+    assert len(payload) >= n
+    return payload
+
+
 def test_hostile_dimensions_do_not_panic(tmp_path: Path) -> None:
     require_cli()
     for name, payload in hostile_cases().items():
@@ -536,6 +568,42 @@ def test_hostile_dimensions_do_not_panic(tmp_path: Path) -> None:
         path.write_bytes(payload)
         for command in ("dng-describe", "dng-mosaic", "dng-half-codes"):
             _expect_command(path, command, tmp_path)
+
+
+def test_hostile_inputs_summary_matches_python_errors(tmp_path: Path) -> None:
+    require_cli()
+    for name, payload in hostile_cases().items():
+        path = tmp_path / f"{name}.dng"
+        path.write_bytes(payload)
+        try:
+            open_dng(path).summary()
+            py_err: BaseException | None = None
+        except Exception as exc:  # noqa: BLE001
+            py_err = exc
+        code, payload = run_json(["dng-summary", str(path)])
+        assert code in (0, 2), f"{name}: exit {code}"
+        rs_err = error_of(code, payload)
+        if isinstance(py_err, RawDecodeError):
+            assert rs_err is not None and rs_err.kind == "raw_decode", name
+            assert _message_ok(str(py_err), rs_err.message), f"{name}: {py_err} vs {rs_err.message}"
+        elif py_err is None:
+            assert rs_err is None, f"{name}: rust {rs_err}"
+        else:
+            assert rs_err is not None, f"{name}: python {type(py_err).__name__}: {py_err}"
+
+
+def test_strips_adding_up_past_the_limit_are_refused_before_allocating(tmp_path: Path) -> None:
+    """Python would build a 4 GiB buffer for this file, so only Rust runs it here.
+
+    The WASM side is compared with native in test_core_wasm_matches_native.
+    """
+    require_cli()
+    path = tmp_path / "strips-over-limit.dng"
+    path.write_bytes(strips_over_the_limit())
+    for command in ("dng-mosaic", "dng-half-codes"):
+        _, err = _rust_call(path, command, tmp_path)
+        assert err is not None and err.kind == "raw_decode", command
+        assert err.message.startswith("RAW 数据读不全（") and "array is too big" in err.message, err.message
 
 
 def _expect_wb(path: Path, y0: int, y1: int, tmp_path: Path) -> None:
