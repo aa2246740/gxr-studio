@@ -7,7 +7,7 @@ import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 import numpy as np
 
@@ -87,16 +87,8 @@ class SeqTarget:
 
 
 def seq_apply(target: SeqTarget, rgb: np.ndarray, xyz: np.ndarray | None = None) -> np.ndarray:
-    """Mirror of `gxr_studio.lut.photo._apply` evaluating through `SeqTarget`."""
-    shape = rgb.shape
-    flat = rgb.reshape(-1, 3)
-    scene = None if xyz is None else xyz.reshape(-1, 3)
-    result = np.empty(flat.shape, np.uint8)
-    for start in range(0, len(flat), 65536):
-        end = start + 65536
-        out = target.render(flat[start:end], None if scene is None else scene[start:end])
-        result[start:end] = np.floor(np.clip(out, 0, 255) + 0.5).astype(np.uint8)
-    return cast(np.ndarray, result.reshape(shape))
+    """Reuse `gxr_studio.lut.photo._apply` directly with `SeqTarget`."""
+    return _apply_ref(target, rgb, xyz)
 
 
 def seq_display_lut_u8(target: SeqTarget) -> bytes:

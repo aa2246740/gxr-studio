@@ -538,10 +538,13 @@ def test_apply_error_paths(tmp_path: Path) -> None:
     px64 = tmp_path / "px64.npy"
     px64_arr = np.full((1, 1, 3), 64, dtype=np.uint8)
     np.save(px64, px64_arr)
-    steep_target = _python_target(Cube.read(steep_cube), "srgb")
+    steep_py = Cube.read(steep_cube)
     with pytest.raises(EditError) as steep_exc:
-        _apply(steep_target, px64_arr)
+        _apply(_python_target(steep_py, "srgb"), px64_arr)
+    with pytest.raises(EditError) as seq_exc:
+        seq_apply(SeqTarget(steep_py, "srgb"), px64_arr)
     assert steep_exc.value.code == "lut_nonfinite"
+    assert (seq_exc.value.code, seq_exc.value.message) == (steep_exc.value.code, steep_exc.value.message)
     code, payload = run_json(
         [
             "lut-apply",
