@@ -148,6 +148,27 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 
 `run_area` 把路径写成 JSON，执行 `node mobile/scripts/wasm_vs_native.mjs --area <领域> --cli <gxr-cli> --inputs <json>`。驱动失败时，默认用驱动自己的输出让测试失败。WASM 包或 `node` 不在时跳过，除非 `GXR_REQUIRE_CORE=1`。`GXR_REQUIRE_GPU_TEST` 不会把缺包变成失败。
 
+## 相机数据（`gxr-camdata`）
+
+`gxr-camdata` 移植了 `datcodec.parse`（含单文件 `pack` 往返校验、`refs` 别名解引用和 `_parse_looks`）、`r5.parse`（`GXRCE.DAT` + `GXRFX.BIN` 双文件）、`entries_from_dat`、`knob_table.read`、`recipe_tags.parse_recipe_tag` 和内嵌 `engine/data/final.json`。不把任何理光字节或表打进包。
+
+命令行子命令（`cmd_camdata.rs`）：
+
+- `camdata-parse --dat PATH [--library PATH] [--out-dir DIR]`：输出 `generation`、各单元 `slots` 与条目 `sha256`、`looks`、`recipes`、`users`、`has_kv2`、`kv2_sha256` 的 JSON；带 `--out-dir` 时另写出 24 × 552 字节条目到 `units/<unit>/recipes/<slot:02d>.entry`。
+- `camdata-entries --dat PATH [--library PATH] --out FILE.npy`：把 24 × 552 字节写成 `(24, 552)` `uint8` 的 `.npy`。
+- `camdata-menu [--dat PATH [--library PATH]]`：不带 `--dat` 返回内嵌 `final.json`；带 `--dat` 时按 `knob_table.read` 用文件内的 kv 块覆盖菜单。
+- `camdata-knob-table --kv PATH [--mount-50mm]`：只给原生对拍用，不导出到 WASM。对独立的 kv2/kv3 块执行 `knob_table.read`（覆盖内嵌 `final.json`）；WASM 侧经 `camdata_menu` 走同一段代码。
+- `camdata-parse-json --json PATH`：只给原生对拍用，不导出到 WASM。校验 JSON 输入：超过 4 MiB 报 `kind="json"` / `"JSON 文件过大"`，超过 128 层数组/对象嵌套报 `"JSON 嵌套太深"`。
+- `camdata-recipe-tag (--tag TEXT | --tag-hex HEX)`：返回 `{"tag": ...}` 解析结果。
+
+WASM 导出（`gxr-wasm/src/camdata.rs`）：
+
+- `camdata_parse(dat_bytes, library_bytes?) -> string`：返回与 `camdata-parse` 逐字节相同的 JSON（末尾带换行），只含摘要与 `sha256`，不含原始条目字节。
+- `camdata_entries(dat_bytes, library_bytes?) -> Uint8Array`：单独的字节读取接口，按 `(unit 0..2, slot 1..8)` 顺序返回连续的 `24 × 552 = 13248` 字节条目。
+- `camdata_menu(dat_bytes?, library_bytes?) -> string`：返回解析后的菜单 JSON（末尾带换行）。
+
+对拍在 `tests/test_core_parity_camdata.py` 与 `mobile/scripts/wasm_cases/camdata.mjs`；不把 `pack` 导出到 WASM。
+
 ## raw-render（全分辨率去马赛克与中性转换）
 
 `gxr-raw` 的 `demosaic.rs` 和 `render.rs` 分别对应 `gxr_studio/raw/demosaic.py` 与 `gxr_studio/raw/render.py` 的中性路径：
