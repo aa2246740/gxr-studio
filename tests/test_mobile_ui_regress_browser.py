@@ -126,3 +126,11 @@ def test_bad_dngs_reach_unreadable_without_a_gpu(server: dict[str, Any]) -> None
     assert real["screen"] == "editor" and real["unreadable"] == "", real
     assert "这个浏览器现在用不了显卡预览" in real["label"], real
     assert len(data["left"]) == 1
+
+
+def test_full_dng_reads_happen_in_the_worker(server: dict[str, Any]) -> None:
+    data = run_case(server, "full-read-in-worker")
+    assert data["gpu"] == "1"
+    assert data["first"]["title"] != data["second"]["title"]
+    # 打开一张、预读下一张、滑过去：主线程一次 File.arrayBuffer 都没有。
+    assert data["mainReads"] == [], data["mainReads"]

@@ -8,7 +8,7 @@ import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui
 import { warmCore } from '../core/api';
 import { EditorView } from './editor';
 import { GridView } from './grid';
-import { photoMs, zeroKnobs, type AppApi, type Photo } from './model';
+import { photoMs, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -32,6 +32,8 @@ class App implements AppApi {
   private warm: { id: string; bytes: ArrayBuffer } | null = null;
   private interval = 16.7;
   private readonly queue = new ThumbQueue(2);
+  /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
+  private readonly reader = new ThumbQueue(1);
 
   constructor(
     private readonly shell: HTMLElement,
@@ -117,6 +119,12 @@ class App implements AppApi {
 
   gpu(): boolean {
     return this.engine !== null;
+  }
+
+  async readFull(photo: Photo): Promise<FullRead> {
+    if (!photo.dng) return { ok: false, gone: false };
+    const reply = await this.reader.read(photo.dng);
+    return reply.ok ? { ok: true, bytes: reply.bytes } : { ok: false, gone: reply.gone };
   }
 
   async still(photo: Photo, width: number): Promise<ImageBitmap | null> {

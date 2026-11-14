@@ -9,11 +9,14 @@ const THUMB = 360;
 export interface ThumbRequest {
   id: number;
   file: File;
-  role: 'jpg' | 'dng';
+  /** jpg / dng：缩略图和拍摄时间。full：整份文件的字节，转移回主线程（主线程不调 File.arrayBuffer）。 */
+  role: 'jpg' | 'dng' | 'full';
   width: number;
 }
 
 export interface ThumbOk {
+  kind: 'thumb';
+  name: string;
   id: number;
   ok: true;
   captureMs: number | null;
@@ -21,11 +24,23 @@ export interface ThumbOk {
   bad: boolean;
 }
 
+export interface FullOk {
+  kind: 'full';
+  name: string;
+  id: number;
+  ok: true;
+  bytes: ArrayBuffer;
+}
+
 export interface ThumbFail {
+  kind: 'thumb' | 'full';
+  name: string;
   id: number;
   ok: false;
   gone: boolean;
 }
+
+export type WorkerReply = ThumbOk | FullOk | ThumbFail;
 
 function gone(err: unknown): boolean {
   const name = err instanceof DOMException ? err.name : err instanceof Error ? err.name : '';
@@ -87,16 +102,30 @@ async function fromDng(file: File, width: number): Promise<{ captureMs: number |
 
 self.onmessage = (event: MessageEvent<ThumbRequest>) => {
   const { id, file, role, width } = event.data;
+  const name = file.name;
+  if (role === 'full') {
+    file
+      .arrayBuffer()
+      .then((bytes) => {
+        const reply: FullOk = { kind: 'full', name, id, ok: true, bytes };
+        self.postMessage(reply, { transfer: [bytes] });
+      })
+      .catch((err: unknown) => {
+        const reply: ThumbFail = { kind: 'full', name, id, ok: false, gone: gone(err) };
+        self.postMessage(reply);
+      });
+    return;
+  }
   const thumbWidth = width > 0 ? width : THUMB;
   const run = role === 'jpg' ? fromJpeg(file, thumbWidth).then((row) => ({ ...row, bad: row.bitmap === null && role === 'jpg' })) : fromDng(file, thumbWidth);
   run
     .then((row) => {
-      const reply: ThumbOk = { id, ok: true, captureMs: row.captureMs, bitmap: row.bitmap, bad: row.bad };
+      const reply: ThumbOk = { kind: 'thumb', name, id, ok: true, captureMs: row.captureMs, bitmap: row.bitmap, bad: row.bad };
       const transfer: Transferable[] = row.bitmap ? [row.bitmap] : [];
       self.postMessage(reply, { transfer });
     })
     .catch((err: unknown) => {
-      const reply: ThumbFail = { id, ok: false, gone: gone(err) };
+      const reply: ThumbFail = { kind: 'thumb', name, id, ok: false, gone: gone(err) };
       self.postMessage(reply);
     });
 };

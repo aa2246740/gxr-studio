@@ -155,6 +155,34 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** 规格第 2 项：整份 DNG 和邻居预读都在 Worker 里读，主线程不调 File.arrayBuffer。 */
+  async 'full-read-in-worker'() {
+    const { page, context, errors } = await makePage({ gpu: true });
+    try {
+      await page.evaluate(() => {
+        window.__mainReads = [];
+        const original = Blob.prototype.arrayBuffer;
+        Blob.prototype.arrayBuffer = function patched() {
+          if (this instanceof File) window.__mainReads.push(this.name);
+          return original.call(this);
+        };
+      });
+      await pick(page, manifest.pairs.slice(0, 4));
+      const gpu = await page.locator('.app').getAttribute('data-gpu');
+      await page.locator('.cell').first().click();
+      await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
+      const first = await editorState(page);
+      await page.waitForTimeout(1500);
+      await swipeLeft(page);
+      await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      const second = await editorState(page);
+      return { gpu, first, second, mainReads: await page.evaluate(() => window.__mainReads), errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** F5：没有显卡时，坏头、截断的 IFD、结构对但描述不了的 DNG 都走到 06b；真 DNG 照常打开。 */
   async 'no-gpu-bad-dng'() {
     const { page, context, errors } = await makePage({ gpu: false });

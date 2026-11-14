@@ -1,12 +1,12 @@
-// 同时最多两个 Worker 在读。滚动和点按留在主线程。
+// 同时最多两个 Worker 在读。滚动和点按留在主线程。整份 DNG 也在 Worker 里读（role 'full'）。
 
-import type { ThumbFail, ThumbOk, ThumbRequest } from '../workers/thumb';
+import type { FullOk, ThumbFail, ThumbOk, ThumbRequest, WorkerReply } from '../workers/thumb';
 
-type Reply = ThumbOk | ThumbFail;
+type Reply = WorkerReply;
 
 interface Job {
   file: File;
-  role: 'jpg' | 'dng';
+  role: ThumbRequest['role'];
   width: number;
   resolve: (reply: Reply) => void;
 }
@@ -14,7 +14,7 @@ interface Job {
 export class ThumbQueue {
   private readonly idle: Worker[] = [];
   private readonly jobs: Job[] = [];
-  private readonly pending = new Map<number, { worker: Worker; resolve: (reply: Reply) => void }>();
+  private readonly pending = new Map<number, { worker: Worker; job: Job }>();
   private seq = 1;
   private closed = false;
 
@@ -23,10 +23,20 @@ export class ThumbQueue {
   }
 
   /** `urgent` 插到队首：编辑器要的大图不排在缩略图后面。 */
-  run(file: File, role: 'jpg' | 'dng', width = 360, urgent = false): Promise<Reply> {
+  run(file: File, role: 'jpg' | 'dng', width = 360, urgent = false): Promise<ThumbOk | ThumbFail> {
+    return this.send(file, role, width, urgent) as Promise<ThumbOk | ThumbFail>;
+  }
+
+  /** 整份文件，Worker 里读完转移过来。 */
+  read(file: File): Promise<FullOk | ThumbFail> {
+    return this.send(file, 'full', 0, true) as Promise<FullOk | ThumbFail>;
+  }
+
+  private send(file: File, role: ThumbRequest['role'], width: number, urgent: boolean): Promise<Reply> {
+    const kind = role === 'full' ? 'full' : 'thumb';
     return new Promise((resolve) => {
       if (this.closed) {
-        resolve({ id: 0, ok: false, gone: false });
+        resolve({ kind, name: file.name, id: 0, ok: false, gone: false });
         return;
       }
       const job = { file, role, width, resolve };
@@ -39,7 +49,7 @@ export class ThumbQueue {
   /** 还没开始的丢掉。已经在读的那一两个让它读完。 */
   cancel(): void {
     const queued = this.jobs.splice(0);
-    for (const job of queued) job.resolve({ id: 0, ok: false, gone: true });
+    for (const job of queued) job.resolve({ kind: job.role === 'full' ? 'full' : 'thumb', name: job.file.name, id: 0, ok: false, gone: true });
   }
 
   stop(): void {
@@ -58,14 +68,14 @@ export class ThumbQueue {
       if (!pending) return;
       this.pending.delete(event.data.id);
       this.idle.push(pending.worker);
-      pending.resolve(event.data);
+      pending.job.resolve(event.data);
       this.pump();
     };
     worker.onerror = () => {
       for (const [id, pending] of this.pending) {
         if (pending.worker !== worker) continue;
         this.pending.delete(id);
-        pending.resolve({ id, ok: false, gone: false });
+        pending.job.resolve({ kind: pending.job.role === 'full' ? 'full' : 'thumb', name: pending.job.file.name, id, ok: false, gone: false });
       }
       if (!this.closed && !this.idle.includes(worker)) this.idle.push(worker);
       this.pump();
@@ -79,14 +89,14 @@ export class ThumbQueue {
       const job = this.jobs.shift();
       if (!worker || !job) return;
       const id = this.seq++;
-      this.pending.set(id, { worker, resolve: job.resolve });
+      this.pending.set(id, { worker, job });
       const message: ThumbRequest = { id, file: job.file, role: job.role, width: job.width };
       try {
         worker.postMessage(message);
       } catch {
         this.pending.delete(id);
         this.idle.push(worker);
-        job.resolve({ id, ok: false, gone: false });
+        job.resolve({ kind: job.role === 'full' ? 'full' : 'thumb', name: job.file.name, id, ok: false, gone: false });
       }
     }
   }

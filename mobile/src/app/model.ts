@@ -44,6 +44,8 @@ export interface Photo {
   knobs: Knobs;
 }
 
+export type FullRead = { ok: true; bytes: ArrayBuffer } | { ok: false; gone: boolean };
+
 export function photoMs(photo: Photo): number {
   return photo.captureMs ?? photo.lastModified;
 }
@@ -67,6 +69,8 @@ export interface AppApi {
   swipe(id: string, dir: -1 | 1): void;
   markBad(id: string): void;
   markGone(id: string): void;
+  /** 整份 DNG，在 Worker 里读完转移过来。主线程不调 File.arrayBuffer。 */
+  readFull(photo: Photo): Promise<FullRead>;
   /** 下一张的 DNG 字节。离开编辑器就丢掉，最多留一份。 */
   takeWarm(id: string): ArrayBuffer | null;
   keepWarm(id: string, bytes: ArrayBuffer): void;

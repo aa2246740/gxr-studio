@@ -433,7 +433,9 @@ export class EditorView {
     const warm = this.api.takeWarm(photo.id);
     if (warm) return warm;
     if (!photo.dng) throw new DOMException('没有 RAW', 'NotFoundError');
-    return photo.dng.arrayBuffer();
+    const reply = await this.api.readFull(photo);
+    if (reply.ok) return reply.bytes;
+    throw new DOMException('读不了', reply.gone ? 'NotReadableError' : 'EncodingError');
   }
 
   private prefetch(next: Photo | null): void {
@@ -442,13 +444,12 @@ export class EditorView {
       return;
     }
     const id = next.id;
-    const file = next.dng;
     const token = this.token;
     this.wantNeighbor = id;
-    void file.arrayBuffer().then((bytes) => {
-      if (this.token !== token || this.wantNeighbor !== id) return;
-      this.api.keepWarm(id, bytes);
-    }).catch(() => undefined);
+    void this.api.readFull(next).then((reply) => {
+      if (!reply.ok || this.token !== token || this.wantNeighbor !== id) return;
+      this.api.keepWarm(id, reply.bytes);
+    });
   }
 
   private async load(photo: Photo): Promise<void> {
