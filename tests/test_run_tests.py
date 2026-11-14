@@ -682,7 +682,7 @@ _SUBTEST_SPEED_AND_CALL_SPEED = (
 @pytest.mark.parametrize("reruns", ["--force-reruns=0", "--reruns=1"])
 def test_a_functional_subtest_failure_next_to_a_speed_overrun_is_not_retried(tmp_path: Path, scratch: Path, reruns: str) -> None:
     """Sol r1/r2 P1：第一次功能 subtest 失败 + 速度超限，第二次都会过。两种模式都只跑 1 次、退出 1：
-    安静重试不做，rerunfailures 也不许重跑这次尝试（r2 时 --reruns=1 曾跑 2 次并退出 0）。"""
+    安静重试不做；exclusive 阶段带 --force-reruns 0，外面给 --reruns=1 也不重跑（r2 时曾跑 2 次并退出 0）。"""
     tree = scratch / "tree"
     _exclusive_tree(tree, _SUBTEST_FUNCTIONAL_AND_SPEED)
     proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns=reruns)
