@@ -60,6 +60,9 @@ dependencies = [
 name = "gxr-finish"
 version = "0.1.0"
 dependencies = [
+ "gxr-color",
+ "gxr-frame",
+ "gxr-hdr",
  "gxr-math",
  "gxr-raw",
 ]
