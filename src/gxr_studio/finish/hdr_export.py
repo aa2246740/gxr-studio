@@ -7,12 +7,12 @@
 - 日期戳和边框：那里不是照片，数据层记为 NaN，增益为 0；
 - 曝光、曲线、配方：不需要单独处理。增益按最终成片的"RAW → SDR"关系重新拟合，本来就会适应。
 
-最后在导出文件（转正、方向为 1）上算增益图并封装；主图就是本来要写出的那份 JPEG，字节不变。
+最后在编码之前的成片像素（转正、已经缩到导出尺寸）上算增益图，和导出文件封装在一起；主图就是本来要写出的那份 JPEG，字节不变。
+导出只编码一次，所以增益拟合的就是用户编辑出来的那份像素，不是解码回来的 JPEG。
 """
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -144,14 +144,14 @@ def _to_grid(layer: np.ndarray, size: tuple[int, int], factor: int) -> tuple[np.
     return raw_y, (clip / np.maximum(w, 1e-6)) > 0.01
 
 
-def finish(payload: bytes, track: HdrTrack, fmt: str) -> tuple[bytes, dict[str, Any]]:
-    """导出文件 + 跟到最后的数据层 → (HDR JPEG, 说明)。做不了就原样返回 `payload`，说明里写原因。"""
+def finish(payload: bytes, track: HdrTrack, fmt: str, rgb: np.ndarray) -> tuple[bytes, dict[str, Any]]:
+    """导出文件 + 编码之前的成片像素 + 跟到最后的数据层 → (HDR JPEG, 说明)。做不了就原样返回 `payload`，说明里写原因。
+
+    `rgb` 是 `payload` 编码之前的那份 uint8 数组（转正、已经缩到导出尺寸）。增益在它上面拟合，不解码 `payload`。"""
     if fmt != "jpeg":
         return payload, {"hdr": False, "reason": NOT_JPEG}
     if track.layer is None:
         return payload, {"hdr": False, "reason": track.problem or NO_RAW}
-    with Image.open(io.BytesIO(payload)) as im:
-        rgb = np.asarray(im.convert("RGB"))
     p = track.params
     raw_y, clip = _to_grid(track.layer, (rgb.shape[1], rgb.shape[0]), p.map_factor)
     try:
