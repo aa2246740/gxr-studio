@@ -130,6 +130,14 @@ pub fn try_vec_i32(n: u64, value: i32) -> Result<Vec<i32>, CoreError> {
     Ok(out)
 }
 
+/// Fallibly reserve capacity for a `Vec<usize>` of up to `n` elements.
+pub(crate) fn try_vec_usize_with_capacity(n: u64) -> Result<Vec<usize>, CoreError> {
+    let cap = fit_count(n, std::mem::size_of::<usize>() as u64)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(cap).map_err(|_| too_big())?;
+    Ok(out)
+}
+
 /// Check `(w, h)` for mask allocation and convert to `usize`.
 pub fn checked_mask_dims(w: u64, h: u64) -> Result<(usize, usize, u64), CoreError> {
     if w == 0 || h == 0 {

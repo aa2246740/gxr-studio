@@ -7,7 +7,7 @@ use crate::crop::{MIN_SIDE_PX, RATIO_TOLERANCE, is_known_preset, ratio_off, targ
 use super::bounds::{
     bad_geometry, bad_rect, checked_add_u64, checked_integral_slice, checked_mask_dims,
     checked_mask_slice, checked_mul_u64, checked_rgb_slice, fit_count, rect_to_pixels, round_even,
-    too_big, try_vec_i32,
+    too_big, try_vec_i32, try_vec_u8, try_vec_usize_with_capacity,
 };
 use super::spec::Geometry;
 use super::warp::{needs_valid_crop, warp_valid};
@@ -51,18 +51,19 @@ pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> Result<[usize
     Ok(best)
 }
 
-fn linspace_indices(len: usize, count: usize) -> Vec<usize> {
+fn linspace_indices(len: usize, count: usize) -> Result<Vec<usize>, CoreError> {
+    let mut out = try_vec_usize_with_capacity(count as u64)?;
     if count <= 1 || len <= 1 {
-        return vec![0; count];
+        out.resize(count, 0);
+        return Ok(out);
     }
     let stop = (len - 1) as f64;
     let step = stop / ((count - 1) as f64);
-    let mut out = Vec::with_capacity(count);
     for i in 0..count - 1 {
         out.push(((i as f64) * step) as i32 as usize);
     }
     out.push(len - 1);
-    out
+    Ok(out)
 }
 
 /// Port of `gxr_studio/finish/geometry.py:224 normalized_valid_rect`
@@ -90,9 +91,10 @@ pub fn normalized_valid_rect(
                 .and_then(|v| usize::try_from(v).ok())
                 .unwrap_or(2),
         );
-        let ys = linspace_indices(height, sh);
-        let xs = linspace_indices(width, sw);
-        let mut sub = vec![0_u8; sh * sw];
+        let ys = linspace_indices(height, sh)?;
+        let xs = linspace_indices(width, sw)?;
+        let sub_pixels = checked_mul_u64(sh as u64, sw as u64)?;
+        let mut sub = try_vec_u8(sub_pixels, 0)?;
         for (sy_i, &y) in ys.iter().enumerate() {
             let row = &valid[y * width..(y + 1) * width];
             let dst = &mut sub[sy_i * sw..(sy_i + 1) * sw];

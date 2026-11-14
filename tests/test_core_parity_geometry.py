@@ -26,6 +26,7 @@ from gxr_studio.finish.spec import EditError, Geometry, parse_geometry
 from gxr_studio.gpu.box import final_box
 from gxr_studio.raw.dng import RawDecodeError, open_dng
 from support.core_cli import error_of, require_cli, run_json
+from support.geometry_alloc import run_rule2_oom_probe
 from support.wasm_check import run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -647,3 +648,7 @@ def test_wasm_matches_native_for_geometry(tmp_path: Path) -> None:
 
     proc = run_area("geometry", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_rule2_allocations_return_core_error_on_oom_injection(tmp_path: Path) -> None:
+    run_rule2_oom_probe(tmp_path)
