@@ -144,6 +144,15 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(huge_level.levels.len(), 1);
+        let sel_json = huge_level.to_json();
+        assert_eq!(
+            sel_json,
+            r#"{"kind":"builtin","unit":"jlaunch","slot":1,"levels":{"contrast":100000000000000000000}}"#
+        );
+        let reparsed = parse_recipe(Some(&parse_py_json(sel_json.as_bytes()).unwrap()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(reparsed, huge_level);
         let menu = MenuCatalog::embedded().unwrap();
         let err = menu.request_for(&huge_level).unwrap_err();
         assert_eq!(

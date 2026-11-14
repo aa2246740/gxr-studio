@@ -75,36 +75,10 @@ impl RecipeSel {
         UNITS.iter().position(|&u| u == self.unit)
     }
 
-    pub fn to_json(&self) -> Json {
-        let levels = Json::Object(
-            self.levels
-                .iter()
-                .map(|(k, v)| match v {
-                    RecipeLevel::Int(i) => (k.clone(), Json::Int(*i)),
-                    // BigInt cannot appear in normal recipes; fallback to string only if Json is called directly.
-                    RecipeLevel::BigInt { neg, digits } => (
-                        k.clone(),
-                        Json::Str(if *neg {
-                            format!("-{digits}")
-                        } else {
-                            digits.clone()
-                        }),
-                    ),
-                })
-                .collect(),
-        );
-        let mut pairs = vec![
-            ("kind", Json::str(&self.kind)),
-            ("unit", Json::str(&self.unit)),
-            ("slot", Json::Int(self.slot)),
-            ("levels", levels),
-        ];
-        if let Some(id) = &self.id
-            && !id.is_empty()
-        {
-            pairs.push(("id", Json::str(id)));
-        }
-        Json::object(pairs)
+    pub fn to_json(&self) -> String {
+        let mut out = String::new();
+        self.write_display_json(&mut out);
+        out
     }
 
     fn write_canonical(&self, out: &mut String) {
@@ -755,6 +729,9 @@ pub fn parse_lut(raw: Option<&PyJson>) -> Result<Option<String>, EditError> {
 }
 
 /// Parse `recipe`, `adjust`, `curve`, and optional `lut` from a JSON object.
+///
+/// Covers only the colour/recipe/tone fields (`EditState`); desktop `render/edits.py:parse_edit`
+/// additionally parses `geometry`, `border`/`frame`, and `stamp` (handled in `gxr-finish`/`gxr-frame`).
 pub fn parse_edit_state(raw: &PyJson) -> Result<EditState, super::error::ResolveError> {
     if raw.as_object().is_none() {
         return Err(gxr_raw::CoreError::new("json", "edit must be a JSON object").into());
