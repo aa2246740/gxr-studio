@@ -173,6 +173,25 @@ GUARD_BLOCKED = {
     "default_samples_import": ("test_probe.py", "from gxr_studio.devtools.synthetic_card import DEFAULT_SAMPLES as S\n"),
     "unrelated_samples_filename": ("fixtures/samples.py", 'ROOT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", "fallback"))\n'),
     "nested_samples_test_name": ("support/test_sample_paths.py", "ROOT = Path(__file__).parents[3]\n"),
+    # 作用域和接收者改成精确判断之后仍要拦住的
+    "inside_a_function": (
+        "test_probe.py",
+        'def test_x():\n    root = Path(__file__).resolve().parents[1]\n    return root.parent / "captures"\n',
+    ),
+    "module_name_read_in_a_function": ("test_probe.py", "REPO = Path(__file__).parents[1]\ndef f():\n    return REPO.parent\n"),
+    "closure_reads_enclosing_function": (
+        "test_probe.py",
+        "def f():\n    repo = Path(__file__).parents[1]\n    def g():\n        return repo.parent\n    return g\n",
+    ),
+    "reassigned_from_a_path": ("test_probe.py", "ROOT = tmp_path\nROOT = Path(__file__).parents[1]\nX = ROOT.parent\n"),
+    "walrus": ("test_probe.py", "if (repo := Path(__file__).parents[1]):\n    X = repo.parent\n"),
+    "os_alias": ("test_probe.py", 'import os as o\nX = o.environ.get("GXR_STUDIO_TEST_PARENT")\n'),
+    "environ_import": ("test_probe.py", 'from os import environ\nX = environ.get("GXR_STUDIO_TEST_PARENT")\n'),
+    "environ_import_alias": ("test_probe.py", 'from os import environ as e\nX = e["GXR_STUDIO_TEST_PARENT"]\n'),
+    "getenv_import_alias": ("test_probe.py", 'from os import getenv as g\nX = g("GXR_STUDIO_TEST_PARENT")\n'),
+    "environ_assigned_to_a_name": ("test_probe.py", 'env = os.environ\nX = env.setdefault("GXR_STUDIO_TEST_PARENT", "x")\n'),
+    "environ_pop": ("test_probe.py", 'X = os.environ.pop("GXR_STUDIO_TEST_PARENT", None)\n'),
+    "os_imported_in_a_function": ("test_probe.py", 'def f():\n    import os\n    return os.getenv("GXR_STUDIO_TEST_PARENT")\n'),
 }
 GUARD_ALLOWED = {
     "legitimate_support_imports": (
@@ -187,6 +206,36 @@ GUARD_ALLOWED = {
         'env["GXR_STUDIO_TEST_PARENT"] = str(parent)\nmonkeypatch.setenv("GXR_STUDIO_TEST_PARENT", "x")\n',
     ),
     "exempt_helper": ("support/samples.py", 'ROOT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", "fallback"))\n'),
+    # Sol r2（boundaries.json 的 guard_execution）：四条合法写法
+    "reassigned_name": ("test_probe.py", "ROOT = Path(__file__).resolve().parents[1]\nROOT = tmp_path\nSAMPLE = ROOT.parent\n"),
+    "local_scope_leak": (
+        "test_probe.py",
+        "def test_repository():\n"
+        "    root = Path(__file__).resolve().parents[1]\n"
+        '    assert (root / "web").is_dir()\n'
+        "def test_temporary(tmp_path):\n"
+        '    root = tmp_path / "child"\n'
+        "    assert root.parent == tmp_path\n",
+    ),
+    "parameter_shadow": ("test_probe.py", "root = Path(__file__).resolve().parents[1]\ndef temporary_parent(root):\n    return root.parent\n"),
+    "plain_dictionary_get": (
+        "test_probe.py",
+        'expected = {"GXR_STUDIO_TEST_PARENT": "x"}\nassert expected.get("GXR_STUDIO_TEST_PARENT") == "x"\n',
+    ),
+    # 同一类的几种变体
+    "local_before_assignment": ("test_probe.py", "root = Path(__file__).parents[1]\ndef f(tmp_path):\n    x = root\n    root = tmp_path\n"),
+    "class_body_not_seen_by_methods": (
+        "test_probe.py",
+        "class T:\n    ROOT = Path(__file__).parents[1]\n    def go(self, ROOT=None):\n        return ROOT.parent\n",
+    ),
+    "comprehension_variable": ("test_probe.py", "root = Path(__file__).parents[1]\nparents = [root.parent for root in tmp_dirs]\n"),
+    "tuple_rebinding": ("test_probe.py", "root = Path(__file__).parents[1]\nroot, other = tmp_path, 1\nx = root.parent\n"),
+    "for_rebinding": ("test_probe.py", "root = Path(__file__).parents[1]\nfor root in tmp_dirs:\n    x = root.parent\n"),
+    "plain_dictionary_pop_and_subscript": (
+        "test_probe.py",
+        'env = {}\nenv.pop("GXR_STUDIO_TEST_PARENT", None)\nx = expected["GXR_STUDIO_TEST_PARENT"]\n',
+    ),
+    "os_shadowed": ("test_probe.py", 'def f(os):\n    return os.environ.get("GXR_STUDIO_TEST_PARENT")\n'),
 }
 
 
