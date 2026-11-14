@@ -1,12 +1,13 @@
 [package]
 name = "gxr-camdata"
-description = "Placeholder for the port of gxr_studio/camdata/"
+description = "Port of gxr_studio/camdata/ (DAT codec, r5, knob table, recipe tags, menu)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+gxr-raw.workspace = true
 
 [lints]
 workspace = true
