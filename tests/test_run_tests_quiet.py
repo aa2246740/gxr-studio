@@ -106,27 +106,154 @@ def test_drop_junit_cases_keeps_the_suite_totals_consistent(tmp_path: Path) -> N
     assert suite is not None and (suite.attrib["tests"], suite.attrib["failures"]) == ("2", "0")
 
 
-def _uses_speed(tree: ast.Module) -> set[str]:
-    """模块里直接或经同模块的函数用到速度预算的函数名。"""
-    funcs = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-    calls = {name: {n.id for n in ast.walk(node) if isinstance(n, ast.Name)} for name, node in funcs.items()}
-    found = {name for name, names in calls.items() if names & {"assert_fast", "speed_budgets", "SpeedBudgets"}}
-    while grown := {name for name, names in calls.items() if name not in found and names & found}:
+SPEED_HELPERS = {"assert_fast", "speed_budgets", "SpeedBudgets"}
+TIMERS = {"perf_counter", "perf_counter_ns", "monotonic", "monotonic_ns", "time", "time_ns", "process_time", "process_time_ns"}
+Func = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
+    """速度助手的名字（含 as 别名）、time 模块的名字、从 time 直接导入的计时函数名。"""
+    helpers, time_modules, timers = set(SPEED_HELPERS), set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module is not None:
+            for alias in node.names:
+                if node.module.split(".")[-1] == "speed" and alias.name in SPEED_HELPERS:
+                    helpers.add(alias.asname or alias.name)
+                if node.module == "time" and alias.name in TIMERS:
+                    timers.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            time_modules |= {alias.asname or alias.name for alias in node.names if alias.name == "time"}
+    return helpers, time_modules, timers
+
+
+def _is_timer(node: ast.AST, time_modules: set[str], timers: set[str]) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return func.attr in TIMERS and func.value.id in time_modules
+    return isinstance(func, ast.Name) and func.id in timers
+
+
+def _bare_timing(func: Func, time_modules: set[str], timers: set[str]) -> list[int]:
+    """assert 里直接比较耗时的行号：两次计时相减（或由它算出来的变量）。速度断言要走 assert_fast。
+
+    只认「计时 − 计时」，所以 `before.st_ctime_ns - time.time_ns()` 这种拿时钟当参照的检查不算。
+    """
+    clocked: set[str] = set()  # 由计时读数得来的变量，比如 t0 = time.perf_counter()
+    elapsed_names: set[str] = set()  # 由耗时得来的变量，比如 dt = time.time() - t0
+
+    def clockish(expr: ast.AST) -> bool:
+        return any(_is_timer(n, time_modules, timers) or (isinstance(n, ast.Name) and n.id in clocked) for n in ast.walk(expr))
+
+    def elapsed(expr: ast.AST) -> bool:
+        subs = [n for n in ast.walk(expr) if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Sub)]
+        return any(clockish(n.left) and clockish(n.right) for n in subs) or any(
+            isinstance(n, ast.Name) and n.id in elapsed_names for n in ast.walk(expr)
+        )
+
+    assigns = [n for n in ast.walk(func) if isinstance(n, ast.Assign | ast.AnnAssign) and n.value is not None]
+    for node in sorted(assigns, key=lambda n: n.lineno):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names = {n.id for target in targets for n in ast.walk(target) if isinstance(n, ast.Name)}
+        assert node.value is not None
+        if elapsed(node.value):
+            elapsed_names |= names
+        if clockish(node.value):
+            clocked |= names
+    return sorted(node.lineno for node in ast.walk(func) if isinstance(node, ast.Assert) and elapsed(node.test))
+
+
+def _marked(decorators: list[ast.expr]) -> bool:
+    return any("mark.exclusive" in ast.unparse(d) for d in decorators)
+
+
+def _pytestmark(body: list[ast.stmt]) -> bool:
+    return any(
+        isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets)
+        and "mark.exclusive" in ast.unparse(node.value)
+        for node in body
+    )
+
+
+def speed_guard_problems(source: str, filename: str = "<src>") -> tuple[int, list[str]]:
+    """返回（用到速度预算的测试个数，问题列表）。
+
+    问题有两种：用到速度助手（含 as 别名、经同模块的函数或类方法）的测试没标 exclusive；
+    assert 里直接比较计时（time.perf_counter() - t0 < 3 这类）——这种要改成 assert_fast。
+    收集范围和 pytest 一样：模块里的 test_* 函数（含 async）、Test* 类里的 test_* 方法。
+    """
+    tree = ast.parse(source)
+    helpers, time_modules, timers = _aliases(tree)
+    funcs: list[tuple[str, Func, bool]] = []  # (名字, 节点, 外层类或模块已经标了 exclusive)
+    module_marked = _pytestmark(tree.body)
+    for node in tree.body:
+        if isinstance(node, Func):
+            funcs.append((node.name, node, module_marked))
+        elif isinstance(node, ast.ClassDef):
+            class_marked = module_marked or _marked(node.decorator_list) or _pytestmark(node.body)
+            funcs += [(f"{node.name}.{m.name}", m, class_marked) for m in node.body if isinstance(m, Func)]
+    refs = {
+        name: {n.id for n in ast.walk(f) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(f) if isinstance(n, ast.Attribute)}
+        for name, f, _marked_outer in funcs
+    }
+    found = {name for name, names in refs.items() if names & helpers}
+    short = lambda names: {name.rsplit(".", 1)[-1] for name in names}  # noqa: E731
+    while grown := {name for name, names in refs.items() if name not in found and names & short(found)}:
         found |= grown
-    return found
+    users, problems = 0, []
+    for name, func, outer in funcs:
+        problems += [f"{filename}:{line} {name}：裸计时断言，改用 assert_fast" for line in _bare_timing(func, time_modules, timers)]
+        owner = name.split(".")[0]
+        collected = func.name.startswith("test_") and ("." not in name or owner.startswith("Test"))
+        if collected and name in found:
+            users += 1
+            if not (outer or _marked(func.decorator_list)):
+                problems.append(f"{filename} {name}：用到速度预算，没标 exclusive")
+    return users, problems
 
 
 def test_every_speed_budget_runs_in_the_exclusive_phase() -> None:
-    """速度预算只在 exclusive 阶段量（安静门和安静重试只在那里）。新加的速度断言忘了标 exclusive 就在这里失败。"""
-    unmarked: list[str] = []
-    users = 0
+    """速度预算只在 exclusive 阶段量（安静门和安静重试只在那里）。新加的速度断言忘了标 exclusive、或者写成裸计时，就在这里失败。"""
+    users, problems = 0, []
     for path in sorted((ROOT / "tests").glob("test_*.py")):
         if path.name == Path(__file__).name:
             continue  # 这里只测助手本身，不量时间
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_") and node.name in _uses_speed(tree):
-                users += 1
-                if "pytest.mark.exclusive" not in {ast.unparse(d) for d in node.decorator_list}:
-                    unmarked.append(f"{path.name}::{node.name}")
-    assert users >= 9 and not unmarked, (users, unmarked)
+        found, issues = speed_guard_problems(path.read_text(encoding="utf-8"), path.name)
+        users += found
+        problems += issues
+    assert users >= 9 and not problems, (users, problems)
+
+
+# Sol r1 P3：原来的检查放过的三种写法（不标 exclusive），各自要被抓到；标上以后不再报。
+_BARE = "import time\n\ndef test_bare():\n    started = time.perf_counter()\n    assert time.perf_counter() - started < 3.0\n"
+_BARE_DERIVED = "from time import time as now\n\ndef test_derived():\n    t = now()\n    dt = now() - t\n    assert dt < 15\n"
+_ALIAS = "from support.speed import assert_fast as fast\n\n{mark}def test_alias():\n    fast(2, 1, 'latency')\n"
+_METHOD = (
+    "from support.speed import assert_fast\n\nclass TestSpeed:\n    {mark}def test_method(self):\n        self._check()\n\n"
+    "    def _check(self):\n        assert_fast(2, 1, 'latency')\n"
+)
+_ASYNC = "import support.speed as sp\n\n{mark}async def test_async():\n    sp.assert_fast(2, 1, 'latency')\n"
+_MARK = "@pytest.mark.exclusive\n"
+
+
+@pytest.mark.parametrize(
+    "source", [_BARE, _BARE_DERIVED, _BARE.replace("def test_bare", _MARK + "def test_bare")], ids=["bare", "derived", "bare-even-if-marked"]
+)
+def test_the_guard_rejects_bare_timing_asserts(source: str) -> None:
+    _users, problems = speed_guard_problems(source)
+    assert problems and "裸计时断言" in problems[0], problems
+
+
+@pytest.mark.parametrize("template", [_ALIAS, _METHOD, _ASYNC], ids=["helper-alias", "class-method", "async-module-alias"])
+def test_the_guard_follows_aliases_methods_and_async_tests(template: str) -> None:
+    clock_reference = "import time\n\ndef test_ctime(stat):\n    assert abs(stat.st_ctime_ns - time.time_ns()) < 10_000_000_000\n"
+    assert speed_guard_problems(clock_reference) == (0, [])  # 拿时钟当参照，不是耗时
+    indent = "    " if "class TestSpeed" in template else ""
+    users, problems = speed_guard_problems(template.format(mark=""))
+    assert users == 1 and len(problems) == 1 and "没标 exclusive" in problems[0], problems
+    users, problems = speed_guard_problems(template.format(mark=_MARK.replace("\n", "\n" + indent)))
+    assert users == 1 and not problems, problems
+    class_marked = "import pytest\n\npytestmark = pytest.mark.exclusive\n" + template.format(mark="")
+    assert speed_guard_problems(class_marked) == (1, [])
