@@ -20,6 +20,7 @@ function hooks({ noGpu }) {
   window.__held = [];
   window.__holdKinds = new Set();
   window.__rewrites = new Map();
+  window.__fullReads = [];
   const Native = Worker;
   window.Worker = class extends Native {
     constructor(url, options) {
@@ -30,11 +31,12 @@ function hooks({ noGpu }) {
         (event) => {
           if (event.__replayed) return;
           const kind = event.data && event.data.kind;
+          if (kind === 'full') window.__fullReads.push(event.data.name);
           const rewrite = window.__rewrites.get(kind);
-          if (rewrite) {
-            window.__rewrites.delete(kind);
+          if (rewrite && (!rewrite.name || rewrite.name === event.data.name)) {
+            if (!rewrite.sticky) window.__rewrites.delete(kind);
             event.stopImmediatePropagation();
-            const next = new MessageEvent('message', { data: { ...event.data, ...rewrite } });
+            const next = new MessageEvent('message', { data: { ...event.data, ...rewrite.data } });
             next.__replayed = true;
             this.dispatchEvent(next);
             return;
@@ -58,7 +60,8 @@ function hooks({ noGpu }) {
     for (const run of all) run(override);
     return all.length;
   };
-  window.__rewrite = (kind, data) => window.__rewrites.set(kind, data);
+  /** 改写下一条（sticky 时每一条）该类回复；给了 name 就只改这个文件的。 */
+  window.__rewrite = (kind, data, name, sticky) => window.__rewrites.set(kind, { data, name, sticky: !!sticky });
 }
 
 async function makePage({ gpu = true, width = 390, height = 844 } = {}) {
@@ -155,6 +158,65 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** F2：已渲染过的 RAW 在拔卡后照样打开、调整；真读不了的计入没读完；状态一直留着；重新选后恢复。 */
+  async 'card-removed'() {
+    const { page, context, errors } = await makePage({ gpu: true });
+    try {
+      await pick(page, manifest.pairs.slice(0, 4));
+      const ids = await gridIds(page);
+      const [a, b] = ids;
+      const bName = `${b.toUpperCase()}.DNG`;
+      const aName = `${a.toUpperCase()}.DNG`;
+      await page.locator(`.cell[data-id="${a}"]`).click();
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      const before = await page.evaluate(() => window.__gxrEngine.stats());
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      // 卡拔了：之后对这个文件的整份读取都报 NotReadableError 那一类（Worker 回 gone）。
+      await page.evaluate((name) => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, name, true), bName);
+      await page.evaluate(() => { window.__fullReads = []; });
+      await page.locator(`.cell[data-id="${b}"]`).click();
+      await page.waitForSelector('[data-state="card-removed"]', { timeout: 60_000 });
+      const dialog = await page.locator('[data-state="card-removed"]').innerText();
+      await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
+      const subtitle = await page.locator('.nav small').innerText();
+      // 普通刷新（换顺序）不能把拔卡状态盖掉。
+      await page.getByRole('button', { name: '从晚到早', exact: true }).click();
+      await page.getByRole('button', { name: '从早到晚', exact: true }).click();
+      const subtitleAfterRefresh = await page.locator('.nav small').innerText();
+      const bClass = await cellClass(page, b);
+      await page.locator(`.cell[data-id="${b}"]`).click();
+      const againDialog = await page.locator('[data-state="card-removed"]').count();
+      await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
+      // 已经在显卡里的那张：不读卡，直接打开、拖曝光。
+      await page.locator(`.cell[data-id="${a}"]`).click();
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 60_000 });
+      const slider = page.locator('input[data-key="exposure_ev"]');
+      const box = await slider.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2, { steps: 8 });
+      await page.mouse.up();
+      const exposure = await page.locator('.val').innerText();
+      const reopened = { screen: await page.locator('.app').getAttribute('data-screen'), disabled: await slider.isDisabled(), exposure };
+      const after = await page.evaluate(() => window.__gxrEngine.stats());
+      const readsAfterCard = await page.evaluate(() => window.__fullReads.slice());
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      // 插回卡、重新选同样的照片：拔卡状态清掉，那张能打开。
+      await page.evaluate(() => window.__rewrites.clear());
+      await pick(page, manifest.pairs.slice(2, 4));
+      const subtitleRepicked = await page.locator('.nav small').innerText();
+      const bClassRepicked = await cellClass(page, b);
+      await page.locator(`.cell[data-id="${b}"]`).click();
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      const repickedTitle = await page.locator('.editor .nav b').innerText();
+      return { a, b, aName, bName, before, after, dialog, subtitle, subtitleAfterRefresh, bClass, againDialog, reopened, readsAfterCard, subtitleRepicked, bClassRepicked, repickedTitle, errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** F1：旧的成功、旧的失败、旧的拔卡回复在重新选同名照片之后才到，都不能盖掉新结果。 */
   async 'repick-stale'() {
     const real = readFileSync(manifest.jpgs[0]);

@@ -1,6 +1,6 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type VRow } from '../lib/group';
 import { button, el } from './dom';
-import { photoMs, type AppApi, type Photo } from './model';
+import { openable, photoMs, unread, type AppApi, type Photo } from './model';
 
 const GAPS: GapMinutes[] = [1, 3, 5, 10];
 
@@ -39,9 +39,9 @@ export class GridView {
     this.openSheet(this.unreadable(photo));
   }
 
-  showCard(ready: number, unread: number): void {
-    this.openSheet(this.card(ready, unread));
-    if (this.sub) this.sub.textContent = `存储卡已拔出 · ${unread} 张没读完`;
+  showCard(ready: number, missing: number): void {
+    this.openSheet(this.card(ready, missing));
+    this.relayout();
   }
 
   private mount(): void {
@@ -131,6 +131,11 @@ export class GridView {
       return;
     }
     if (prog) prog.style.width = '0';
+    if (this.api.cardOut()) {
+      // 拔卡是持续的状态：顺序、缩略图刷新都不能把它盖掉。
+      this.sub.textContent = `存储卡已拔出 · ${this.goneCount()} 张没读完`;
+      return;
+    }
     const day = photos.length ? formatDay(photoMs(photos[0])) : '';
     const sameDay = photos.every((photo) => formatDay(photoMs(photo)) === day);
     const ignored = this.api.ignored();
@@ -199,12 +204,12 @@ export class GridView {
   private fill(cell: HTMLButtonElement, photo: Photo): void {
     cell.classList.toggle('skel', photo.status === 'pending');
     cell.classList.toggle('err', photo.status === 'bad');
-    cell.classList.toggle('gone', photo.status === 'gone');
+    cell.classList.toggle('gone', unread(photo));
     cell.classList.toggle('on', this.selected.has(photo.id));
     const raw = cell.querySelector('.raw');
     const bl = cell.querySelector('.bl');
     if (raw) {
-      raw.textContent = photo.status === 'bad' ? '读不了' : photo.status === 'gone' ? '卡' : !photo.bitmap && photo.status === 'ready' && !photo.jpg ? '只有 RAW' : '';
+      raw.textContent = photo.status === 'bad' ? '读不了' : unread(photo) ? '卡' : !photo.bitmap && photo.status === 'ready' && !photo.jpg ? '只有 RAW' : '';
     }
     if (bl) {
       bl.replaceChildren();
@@ -234,8 +239,8 @@ export class GridView {
       return;
     }
     if (photo.status === 'bad') this.showUnreadable(id);
-    else if (photo.status === 'gone') this.showCard(this.readyCount(), this.goneCount());
-    else if (photo.status === 'ready') this.api.open(id);
+    else if (unread(photo)) this.showCard(this.readyCount(), this.goneCount());
+    else if (openable(photo)) this.api.open(id);
   }
 
   private toggleSelect(on: boolean): void {
@@ -263,11 +268,11 @@ export class GridView {
   }
 
   private readyCount(): number {
-    return this.api.photos().filter((photo) => photo.status === 'ready').length;
+    return this.api.photos().filter((photo) => openable(photo)).length;
   }
 
   private goneCount(): number {
-    return this.api.photos().filter((photo) => photo.status === 'gone').length;
+    return this.api.photos().filter((photo) => unread(photo)).length;
   }
 
   private openSheet(node: HTMLElement): void {
@@ -311,13 +316,13 @@ export class GridView {
     return sheet;
   }
 
-  private card(ready: number, unread: number): HTMLElement {
+  private card(ready: number, missing: number): HTMLElement {
     const sheet = el('div', 'dlg');
     sheet.dataset.state = 'card-removed';
     sheet.append(
       el('h2', '', '存储卡被拔出了'),
       el('p', '', `已经读进来的 ${ready} 张照片不受影响，可以接着换配方、存到相册。`),
-      el('p', '', `还有 ${unread} 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。`),
+      el('p', '', `还有 ${missing} 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。`),
     );
     const acts = el('div', 'acts');
     acts.classList.add('col');

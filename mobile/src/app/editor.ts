@@ -473,6 +473,17 @@ export class EditorView {
       }
       return;
     }
+    // 这个版本的完整源已经在显卡里：不读卡，直接显示。卡被拔出后照样能开、能调。
+    const key = `raw:${photo.id}`;
+    if (this.engine && photo.cached === version && this.engine.hasSource(key)) {
+      this.showRaw(key);
+      return;
+    }
+    // 没有显卡、但这个版本描述过：直接放相机 JPG 或内嵌预览。
+    if (!this.engine && photo.checked === version) {
+      this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
+      return;
+    }
     let bytes: ArrayBuffer;
     try {
       bytes = await this.take(photo);
@@ -497,6 +508,7 @@ export class EditorView {
       this.api.markBad(photo.id, version);
       return;
     }
+    if (photo.version === version) photo.checked = version;
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
       if (this.input) this.input.disabled = true;
@@ -504,22 +516,29 @@ export class EditorView {
       return;
     }
     try {
-      const key = `raw:${photo.id}`;
+      // 每张照片一个固定的键：再加一次会替换（并销毁）原来那份纹理，不会同一张占两份。
       await this.engine.addRaw(key, described.layout, bytes, described.scene);
+      if (photo.version === version) photo.cached = version;
       if (token !== this.token) return;
-      this.engine.show(key);
-      this.mode = 'raw';
-      this.push();
-      const frame = this.engine.frame();
-      if (frame) this.shell.dataset.frame = '1';
-      this.setLabel('开发用中性预览，不是配方');
-      if (this.gpuCanvas) this.gpuCanvas.hidden = false;
-      if (this.still) this.still.hidden = true;
+      this.showRaw(key);
       this.prefetch(this.nextPhoto(1));
     } catch {
       if (token !== this.token) return;
       this.api.markBad(photo.id, version);
     }
+  }
+
+  private showRaw(key: string): void {
+    if (!this.engine) return;
+    this.engine.show(key);
+    this.mode = 'raw';
+    this.push();
+    const frame = this.engine.frame();
+    if (frame) this.shell.dataset.frame = '1';
+    this.setLabel('开发用中性预览，不是配方');
+    if (this.gpuCanvas) this.gpuCanvas.hidden = false;
+    if (this.still) this.still.hidden = true;
+    if (this.input) this.input.disabled = false;
   }
 
   private showStillPhoto(photo: Photo, label: string): void {

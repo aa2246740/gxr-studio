@@ -2,7 +2,8 @@
 
 import type { GapMinutes, Order } from '../lib/group';
 
-export type PhotoStatus = 'pending' | 'ready' | 'bad' | 'gone';
+/** 缩略图这一步的状态。文件读不读得了、显卡里有没有源，是另外两件事（gone、cached）。 */
+export type PhotoStatus = 'pending' | 'ready' | 'bad';
 
 export interface Knobs {
   exposure_ev: number;
@@ -42,12 +43,29 @@ export interface Photo {
   lastModified: number;
   captureMs: number | null;
   status: PhotoStatus;
+  /** 这个版本的文件读不了（卡拔了）。重新选同一张会换版本、清掉它。 */
+  gone: boolean;
+  /** 显卡里已有这张的完整源，是哪个版本。等于 version 时不用再读卡就能打开、调整。 */
+  cached: number | null;
+  /** WASM 描述通过的版本。没有显卡时，据此不用再读卡就能打开。 */
+  checked: number | null;
   bitmap: ImageBitmap | null;
   knobs: Knobs;
 }
 
 /** stale：读的时候照片被重新选过，结果作废。 */
 export type FullRead = { ok: true; bytes: ArrayBuffer } | { ok: false; gone: boolean; stale: boolean };
+
+/** 点得开：缩略图好了，并且文件还读得了，或者这个版本的完整源已经在手里。 */
+export function openable(photo: Photo): boolean {
+  if (photo.status !== 'ready') return false;
+  return !photo.gone || photo.cached === photo.version || photo.checked === photo.version;
+}
+
+/** 卡拔了、又没有缓存，真的没读完。 */
+export function unread(photo: Photo): boolean {
+  return photo.gone && !openable(photo);
+}
 
 export function photoMs(photo: Photo): number {
   return photo.captureMs ?? photo.lastModified;
@@ -78,6 +96,8 @@ export interface AppApi {
   takeWarm(id: string, version: number): ArrayBuffer | null;
   keepWarm(id: string, version: number, bytes: ArrayBuffer): void;
   gpu(): boolean;
+  /** 卡被拔出过、还有没读完的照片。导航副标题按它写，普通刷新不会盖掉。 */
+  cardOut(): boolean;
   /** 编辑器里没有显卡或只有 JPG 时，按屏幕宽度在 Worker 里解一张清楚的。 */
   still(photo: Photo, width: number): Promise<ImageBitmap | null>;
   watch(kind: 'scroll' | 'drag', on: boolean): void;

@@ -145,3 +145,24 @@ def test_late_old_results_do_not_overwrite_a_repicked_photo(server: dict[str, An
         # 旧回复放出来以后：格子、拍摄时间、副标题都还是新文件的，没有「读不了」也没有「拔卡」。
         assert after == fresh, (label, fresh, after)
         assert after["unreadable"] == 0 and after["card"] == 0, (label, after)
+
+
+def test_card_removed_keeps_cached_photos_and_counts_unread(server: dict[str, Any]) -> None:
+    data = run_case(server, "card-removed")
+    # 一张已在显卡里，一张读不了：读进来 1 张，没读完 1 张。
+    assert "已经读进来的 1 张" in data["dialog"], data["dialog"]
+    assert "还有 1 张没读完" in data["dialog"], data["dialog"]
+    assert data["subtitle"] == "存储卡已拔出 · 1 张没读完"
+    assert data["subtitleAfterRefresh"] == "存储卡已拔出 · 1 张没读完"
+    assert "gone" in data["bClass"].split()
+    assert data["againDialog"] == 1
+    # 缓存的那张：进了编辑器、滑块可用、曝光改了，没有再读卡，显卡里也没多出一份源。
+    assert data["reopened"]["screen"] == "editor" and not data["reopened"]["disabled"], data["reopened"]
+    assert data["reopened"]["exposure"] not in ("0.0", ""), data["reopened"]
+    assert data["aName"] not in data["readsAfterCard"], data["readsAfterCard"]
+    assert data["after"]["sources"] == data["before"]["sources"], (data["before"], data["after"])
+    assert data["after"]["sourceBytes"] == data["before"]["sourceBytes"], (data["before"], data["after"])
+    # 重新选：状态清掉，那张能开。
+    assert "存储卡已拔出" not in data["subtitleRepicked"], data["subtitleRepicked"]
+    assert "gone" not in data["bClassRepicked"].split()
+    assert data["repickedTitle"].lower() == data["b"]

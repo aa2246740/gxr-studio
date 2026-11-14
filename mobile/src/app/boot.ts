@@ -8,7 +8,7 @@ import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui
 import { warmCore } from '../core/api';
 import { EditorView } from './editor';
 import { GridView } from './grid';
-import { photoMs, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
+import { openable, photoMs, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -31,6 +31,7 @@ class App implements AppApi {
   private frameWatch: { stop: () => PerfStats } | null = null;
   private warm: { id: string; version: number; bytes: ArrayBuffer } | null = null;
   private interval = 16.7;
+  private cardIsOut = false;
   private readonly queue = new ThumbQueue(2);
   /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
   private readonly reader = new ThumbQueue(1);
@@ -113,12 +114,16 @@ class App implements AppApi {
 
   loading(): { done: number; total: number } {
     let done = 0;
-    for (const photo of this.byId.values()) if (photo.status !== 'pending') done += 1;
+    for (const photo of this.byId.values()) if (photo.status !== 'pending' || photo.gone) done += 1;
     return { done, total: this.byId.size };
   }
 
   gpu(): boolean {
     return this.engine !== null;
+  }
+
+  cardOut(): boolean {
+    return this.cardIsOut;
   }
 
   async readFull(photo: Photo): Promise<FullRead> {
@@ -165,7 +170,7 @@ class App implements AppApi {
 
   open(id: string): void {
     const photo = this.byId.get(id);
-    if (!photo || photo.status !== 'ready') return;
+    if (!photo || !openable(photo)) return;
     this.closeEditor();
     this.screen = 'editor';
     this.shell.dataset.screen = 'editor';
@@ -199,7 +204,7 @@ class App implements AppApi {
   }
 
   swipe(id: string, dir: -1 | 1): void {
-    const items = this.ordered().filter((photo) => photo.status === 'ready');
+    const items = this.ordered().filter((photo) => openable(photo));
     const index = items.findIndex((photo) => photo.id === id);
     const next = items[index + dir];
     if (next) this.open(next.id);
@@ -306,6 +311,9 @@ class App implements AppApi {
           lastModified: item.lastModified,
           captureMs: null,
           status: 'pending',
+          gone: false,
+          cached: null,
+          checked: null,
           bitmap: null,
           knobs: zeroKnobs(),
         };
@@ -318,6 +326,7 @@ class App implements AppApi {
       if (item.jpgIndex !== null) photo.jpg = files[item.jpgIndex];
       // 换了 File 就是新版本：之前在路上的读取结果回来时都作废。
       photo.version += 1;
+      photo.gone = false;
       photo.lastModified = Math.max(photo.lastModified, item.lastModified);
       if (photo.status !== 'pending') {
         photo.bitmap?.close();
@@ -327,6 +336,8 @@ class App implements AppApi {
       }
       void this.readPhoto(photo, photo.version, generation);
     }
+    // 重新选了照片：没有剩下没读完的，就不再算卡被拔出。
+    this.cardIsOut = [...this.byId.values()].some((photo) => unread(photo));
     if (this.byId.size) this.showGrid(this.screen !== 'grid');
     else this.showStart();
   }
@@ -380,23 +391,24 @@ class App implements AppApi {
     if (photo.status === 'bad' && this.screen === 'grid') this.grid?.showUnreadable(photo.id);
   }
 
+  /**
+   * 读的时候文件句柄失效：卡被拔出了。还在排队的、这次读失败的标成读不了；
+   * 已经在显卡里（或描述过）的同版本照片照常能开。这个状态一直留着，直到重新选照片。
+   */
   private failCard(trigger: Photo): void {
-    let ready = 0;
-    let unread = 0;
-    for (const photo of this.byId.values()) {
-      if (photo.status === 'pending' || photo.id === trigger.id) {
-        if (photo.status !== 'ready') {
-          photo.bitmap?.close();
-          photo.bitmap = null;
-          photo.status = 'gone';
-        }
-      }
-      if (photo.status === 'ready') ready += 1;
-      else if (photo.status === 'gone') unread += 1;
-    }
+    trigger.gone = true;
+    // 缩略图已经有的留着，只在格子上标卡的图标。
+    for (const photo of this.byId.values()) if (photo.status === 'pending') photo.gone = true;
+    this.cardIsOut = true;
     this.queue.cancel();
     if (this.screen === 'editor') this.showGrid(true);
-    this.grid?.showCard(ready, unread);
+    let ready = 0;
+    let missing = 0;
+    for (const photo of this.byId.values()) {
+      if (openable(photo)) ready += 1;
+      else if (unread(photo)) missing += 1;
+    }
+    this.grid?.showCard(ready, missing);
     this.grid?.refresh();
   }
 
@@ -460,6 +472,8 @@ export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<
     };
   }
   shell.dataset.gpu = engine ? '1' : '0';
+  // 只在开发服务器里：测试要看显卡里有几份源，确认重开同一张不会多出一份。
+  if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine;
   await coreReady;
   shell.dataset.core = '1';
   await app.start(engine);
