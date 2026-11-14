@@ -493,13 +493,13 @@ impl<W: JfifWrite> Encoder<W> {
             JpegColorType::Ycbcr => {
                 add_component!(
                     self.components,
-                    0,
+                    1,
                     0,
                     horizontal_sampling_factor,
                     vertical_sampling_factor
                 );
-                add_component!(self.components, 1, 1, 1, 1);
                 add_component!(self.components, 2, 1, 1, 1);
+                add_component!(self.components, 3, 1, 1, 1);
             }
             JpegColorType::Cmyk => {
                 add_component!(self.components, 0, 1, 1, 1);

@@ -23,7 +23,7 @@ pub fn rgb_to_ycbcr(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let cb = -11059 * r - 21709 * g + 32768 * b + (128 << 16);
     let cr = 32768 * r - 27439 * g - 5329 * b + (128 << 16);
 
-    let y = (y + 0x7FFF) >> 16;
+    let y = (y + 0x8000) >> 16;
     let cb = (cb + 0x7FFF) >> 16;
     let cr = (cr + 0x7FFF) >> 16;
 
@@ -383,5 +383,12 @@ mod tests {
         assert_rgb_to_ycbcr([49, 72, 25], [60, 108, 120]);
         assert_rgb_to_ycbcr([144, 193, 75], [165, 77, 113]);
         assert_rgb_to_ycbcr([49, 94, 1], [70, 89, 113]);
+        // libjpeg-turbo jccolor.c halfway & clamping checks:
+        // (0, 52, 184) has fractional 0x8000 on Y -> rounds up to 52
+        assert_rgb_to_ycbcr([0, 52, 184], [52, 203, 91]);
+        // Cb/Cr use ONE_HALF - 1 (0x7FFF): (0, 0, 1) stays at 128 rather than overflowing halfway
+        assert_rgb_to_ycbcr([0, 0, 1], [0, 128, 128]);
+        assert_rgb_to_ycbcr([0, 0, 255], [29, 255, 107]);
+        assert_rgb_to_ycbcr([255, 0, 0], [76, 85, 255]);
     }
 }

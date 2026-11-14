@@ -75,27 +75,47 @@ impl<W: JfifWrite> Encoder<W> {
                     prev_dc[3] = 0;
                 }
 
+                let valid_blocks_x = ceil_div(usize::from(width), 8);
+                let valid_blocks_y = ceil_div(usize::from(height), 8);
+                let max_strip_cy =
+                    (ceil_div(usize::from(height), 2) - 1).saturating_sub(block_y * 8);
+
                 for (i, component) in self.components.iter().enumerate() {
-                    for v_offset in 0..component.vertical_sampling_factor as usize {
-                        for h_offset in 0..component.horizontal_sampling_factor as usize {
-                            let mut block = get_block(
-                                &row[i],
-                                block_x * 8 * max_h_sampling + (h_offset * 8),
-                                v_offset * 8,
-                                max_h_sampling / component.horizontal_sampling_factor as usize,
-                                max_v_sampling / component.vertical_sampling_factor as usize,
-                                buffer_width,
-                            );
+                    let h_samp = component.horizontal_sampling_factor as usize;
+                    let v_samp = component.vertical_sampling_factor as usize;
+                    let h_scale = max_h_sampling / h_samp;
+                    let v_scale = max_v_sampling / v_samp;
+                    let valid_comp_x = ceil_div(valid_blocks_x, h_scale);
+                    let valid_comp_y = ceil_div(valid_blocks_y, v_scale);
 
-                            OP::fdct(&mut block);
-
+                    for v_offset in 0..v_samp {
+                        let by = block_y * v_samp + v_offset;
+                        for h_offset in 0..h_samp {
+                            let bx = block_x * h_samp + h_offset;
                             let mut q_block = [0i16; 64];
 
-                            OP::quantize_block(
-                                &block,
-                                &mut q_block,
-                                &q_tables[component.quantization_table as usize],
-                            );
+                            if bx >= valid_comp_x || by >= valid_comp_y {
+                                // libjpeg jccoefct.c dummy block: copy previous DC, zero ACs
+                                q_block[0] = prev_dc[i];
+                            } else {
+                                let mut block = get_block(
+                                    &row[i],
+                                    block_x * 8 * max_h_sampling + (h_offset * 8),
+                                    v_offset * 8,
+                                    h_scale,
+                                    v_scale,
+                                    buffer_width,
+                                    max_strip_cy,
+                                );
+
+                                OP::fdct(&mut block);
+
+                                OP::quantize_block(
+                                    &block,
+                                    &mut q_block,
+                                    &q_tables[component.quantization_table as usize],
+                                );
+                            }
 
                             self.writer.write_block(
                                 &q_block,
@@ -348,6 +368,7 @@ impl<W: JfifWrite> Encoder<W> {
 
             for block_y in 0..rows {
                 for block_x in 0..cols {
+                    let max_cy = ceil_div(usize::from(height), v_scale).saturating_sub(1);
                     let mut block = get_block(
                         &row[i],
                         block_x * 8 * h_scale,
@@ -355,6 +376,7 @@ impl<W: JfifWrite> Encoder<W> {
                         h_scale,
                         v_scale,
                         buffer_width,
+                        max_cy,
                     );
 
                     OP::fdct(&mut block);
@@ -544,8 +566,35 @@ fn get_block(
     col_stride: usize,
     row_stride: usize,
     width: usize,
+    max_cy: usize,
 ) -> [i16; 64] {
     let mut block = [0i16; 64];
+
+    if col_stride == 2 && row_stride == 2 {
+        // Match libjpeg-turbo h2v2_downsample on MCU-padded strip with alternating bias 1, 2, 1, 2...
+        // Vertically clamp chroma row to max_cy so expand_bottom_edge replicates the downsampled row.
+        let start_cy = start_y / 2;
+        for y in 0..8 {
+            let cy = (start_cy + y).min(max_cy);
+            let iy0 = cy * 2;
+            let iy1 = iy0 + 1;
+            let row0 = iy0 * width;
+            let row1 = iy1 * width;
+            let mut bias = 1i32;
+            for x in 0..8 {
+                let ix0 = start_x + x * 2;
+                let ix1 = ix0 + 1;
+                let sum = i32::from(data[row0 + ix0])
+                    + i32::from(data[row0 + ix1])
+                    + i32::from(data[row1 + ix0])
+                    + i32::from(data[row1 + ix1]);
+                let avg = (sum + bias) >> 2;
+                block[y * 8 + x] = (avg - 128) as i16;
+                bias ^= 3;
+            }
+        }
+        return block;
+    }
 
     for y in 0..8 {
         for x in 0..8 {

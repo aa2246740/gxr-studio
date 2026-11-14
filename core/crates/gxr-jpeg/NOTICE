@@ -7,6 +7,19 @@ Modifications relative to upstream jpeg-encoder 0.6.0:
   crate compiles purely as safe std Rust under workspace `#![forbid(unsafe_code)]`.
 - Split src/encoder.rs into encoder.rs and encoder_scans.rs to comply with the
   repository's 800-line source file limit (`scripts/large_files.py`).
+- Patched fixed-point arithmetic and 4:2:0 downsampling to match libjpeg-turbo
+  C reference (`optimize=False` single interleaved scan):
+  * `image_buffer.rs`: `rgb_to_ycbcr` adds `0x8000` (`ONE_HALF`) for Y and
+    `0x7FFF` (`ONE_HALF - 1`) for Cb/Cr (`jccolor.c`).
+  * `quantization.rs`: `QuantizationTable::quantize` uses exact integer
+    division `(|x| + (q >> 1)) / q` with sign restored instead of the
+    15-bit reciprocal approximation (`jcdctmgr.c`).
+  * `encoder.rs`: YCbCr component IDs use ITU-T T.81 / JFIF `1, 2, 3`.
+  * `encoder_scans.rs`: `get_block` with `2x2` sampling performs
+    `h2v2_downsample` box averaging with alternating `bias = 1, 2, 1, 2...`
+    across columns with vertical `expand_bottom_edge` clamping (`jcsample.c`),
+    and `encode_image_interleaved` emits `jccoefct.c` dummy MCU blocks
+    (`[prev_dc, 0, ...]`) past valid `ceil(width/8) x ceil(height/8)` bounds.
 
 -------------------------------------------------------------------------------
 IJG Acknowledgment (required by src/jpeg_enc/fdct.rs)

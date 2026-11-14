@@ -52,6 +52,11 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 相对上游 `jpeg-encoder 0.6.0` 的改动：
 - 移除 x86/x86_64 `avx2` SIMD 模块及 `no_std`/`alloc` 条件编译，以纯安全 Rust 满足工作区 `#![forbid(unsafe_code)]`；
 - 将 `encoder.rs` 拆分为 `encoder.rs` 与 `encoder_scans.rs`，满足 `scripts/large_files.py` 单文件不超过 800 行的规范。
+- 将定点算术与 4:2:0 下采样对齐 `libjpeg-turbo` C 参考实现（`optimize=False` 单扫描交错编码）：
+  - `image_buffer.rs`：`rgb_to_ycbcr` 对 `Y` 使用 `+ 0x8000`（`ONE_HALF`）、对 `Cb/Cr` 使用 `+ 0x7FFF`（`ONE_HALF - 1`）；
+  - `quantization.rs`：使用整数精确除法 `(|x| + (q >> 1)) / q`（保留符号）替代 15-bit 倒数近似；
+  - `encoder.rs`：YCbCr 分量 ID 对齐 ITU-T T.81 / JFIF（`1, 2, 3`）；
+  - `encoder_scans.rs`：`2x2` 子采样执行 `h2v2_downsample`（列偏置 `bias = 1, 2, 1, 2`、垂直钳位至有效色度末行），并对超出 `ceil(w/8) × ceil(h/8)` 的 MCU 填充块输出 `jccoefct.c` dummy 块（`[prev_dc, 0, ...]`）。
 
 不使用 serde。JSON 由 `gxr-raw` 里手写的写入器生成，命令行和 WASM 共用，所以两边的字节一样。`mobile/` 的开发依赖和 `frontend/` 是同一组精确版本（vite 8.3.5、typescript 7.0.2、`@webgpu/types` 0.1.74），锁在 `mobile/pnpm-lock.yaml`。
 

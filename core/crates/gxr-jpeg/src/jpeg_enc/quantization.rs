@@ -181,34 +181,8 @@ static DEFAULT_CHROMA_TABLES: [[u16; 64]; 9] = [
     ],
 ];
 
-const SHIFT: u32 = 2 * 8 - 1;
-
-fn compute_reciprocal(divisor: u32) -> (i32, i32) {
-    if divisor <= 1 {
-        return (1, 0);
-    }
-
-    let mut reciprocals = (1 << SHIFT) / divisor;
-    let fractional = (1 << SHIFT) % divisor;
-
-    // Correction for rounding errors in division
-    let mut correction = divisor / 2;
-
-    if fractional != 0 {
-        if fractional <= correction {
-            correction += 1;
-        } else {
-            reciprocals += 1;
-        }
-    }
-
-    (reciprocals as i32, correction as i32)
-}
-
 pub struct QuantizationTable {
     table: [NonZeroU16; 64],
-    reciprocals: [i32; 64],
-    corrections: [i32; 64],
 }
 
 impl QuantizationTable {
@@ -229,21 +203,7 @@ impl QuantizationTable {
             }
         };
 
-        let mut reciprocals = [0i32; 64];
-        let mut corrections = [0i32; 64];
-
-        for i in 0..64 {
-            let (reciprocal, correction) = compute_reciprocal(table[i].get() as u32);
-
-            reciprocals[i] = reciprocal;
-            corrections[i] = correction;
-        }
-
-        QuantizationTable {
-            table,
-            reciprocals,
-            corrections,
-        }
+        QuantizationTable { table }
     }
 
     fn get_user_table(table: &[u16; 64]) -> [NonZeroU16; 64] {
@@ -288,21 +248,11 @@ impl QuantizationTable {
 
     #[inline]
     pub fn quantize(&self, in_value: i16, index: usize) -> i16 {
-        let value = in_value as i32;
-
-        let reciprocal = self.reciprocals[index];
-        let corrections = self.corrections[index];
-
+        let value = i32::from(in_value);
+        let q = i32::from(self.table[index].get());
         let abs_value = value.abs();
-
-        let mut product = (abs_value + corrections) * reciprocal;
-        product >>= SHIFT;
-
-        if value != abs_value {
-            product *= -1;
-        }
-
-        product as i16
+        let mag = (abs_value + (q >> 1)) / q;
+        if value < 0 { -(mag as i16) } else { mag as i16 }
     }
 }
 
@@ -334,5 +284,16 @@ mod tests {
         for i in -255..255 {
             assert_eq!(i, q.quantize(i << 3, 0));
         }
+    }
+
+    #[test]
+    fn test_quantize_exact_halfway_libjpeg() {
+        // Default luma q_table[1] is 11; at q=50 scale=100 -> scaled table value 11 -> q = 88.
+        let q = QuantizationTable::new_with_quality(&QuantizationTableType::Default, 50, true);
+        assert_eq!(q.get(1), 11);
+        assert_eq!(q.quantize(43, 1), 0);
+        assert_eq!(q.quantize(44, 1), 1);
+        assert_eq!(q.quantize(-43, 1), 0);
+        assert_eq!(q.quantize(-44, 1), -1);
     }
 }
