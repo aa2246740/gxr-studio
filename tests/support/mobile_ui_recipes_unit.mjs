@@ -174,6 +174,10 @@ test('pack check uses the desktop wording for each failure', async () => {
   await bad(escape, {}, TEXT.badList);
   await bad(manifest, { 'manifest.json': new Uint8Array([0xff, 0xfe]) }, TEXT.unreadable);
   await bad(manifest, { 'manifest.json': null }, TEXT.missing);
+  // 清单外多出来的文件，不管大小（Sol r1 P2）。
+  await bad(manifest, { 'unlisted.bin': new Uint8Array([1, 2, 3]) }, TEXT.badList);
+  await bad(manifest, { 'unlisted-large.bin': new Uint8Array(4 << 20) }, TEXT.badList);
+  await bad(manifest, { 'constructor': new Uint8Array([1]) }, TEXT.badList);
 });
 
 test('lens unit and ISO model follow unit_of_lens and model_for', () => {

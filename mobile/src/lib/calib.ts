@@ -58,7 +58,7 @@ function bad(message: string, detail = ''): PackCheck {
 
 /**
  * `files` 是 zip 里的全部条目。核对 manifest 和它列出的每个文件（大小、SHA-256），以及每个单元两个 ISO 分支的文件名。
- * 多出来的、清单外的文件不收。
+ * 清单外的文件（哪怕结构和 SHA 都对）不收。
  */
 export async function checkPack(files: Map<string, Uint8Array>): Promise<PackCheck> {
   try {
@@ -76,6 +76,10 @@ export async function checkPack(files: Map<string, Uint8Array>): Promise<PackChe
     if (!m.units || typeof m.units !== 'object' || Array.isArray(m.units)) return bad(TEXT.badList, 'units');
     const listed = m.files as Record<string, unknown>;
     const unitRows = m.units as Record<string, unknown>;
+    // zip 里的条目必须正好是 manifest.json 加清单列出的文件：多一项、少一项都不收（Sol r1）。
+    for (const name of files.keys()) {
+      if (name !== 'manifest.json' && !Object.prototype.hasOwnProperty.call(listed, name)) return bad(TEXT.badList, name);
+    }
     const names = Object.keys(unitRows);
     if (!names.length || !names.every(isUnit)) return bad(TEXT.units);
     for (const [name, meta] of Object.entries(listed)) {
