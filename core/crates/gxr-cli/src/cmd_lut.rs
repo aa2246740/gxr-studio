@@ -1,6 +1,6 @@
 //! `lut-*` and `scene-*` commands. Owner: wave-1 unit lut.
 
-use std::io::Write;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use gxr_lut::{
@@ -19,6 +19,7 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "lut-encode" => run_encode(args)?,
         "lut-table" => run_table(args)?,
         "lut-identify" => run_identify(args)?,
+        "lut-libm" => run_libm(args)?,
         "scene-xyz" => run_scene_xyz(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
@@ -219,6 +220,119 @@ fn run_scene_xyz(args: &[String]) -> Result<Json, Failure> {
     ]))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibmOp {
+    Pow,
+    PowBase,
+    Log10,
+    Log2,
+}
+
+impl LibmOp {
+    fn from_name(name: &str) -> Result<Self, Failure> {
+        match name {
+            "pow" => Ok(Self::Pow),
+            "pow_base" => Ok(Self::PowBase),
+            "log10" => Ok(Self::Log10),
+            "log2" => Ok(Self::Log2),
+            _ => Err(Failure::Usage(format!("unknown --op {name:?}"))),
+        }
+    }
+
+    fn from_tag(tag: u8) -> Result<Self, Failure> {
+        match tag {
+            0 => Ok(Self::Pow),
+            1 => Ok(Self::PowBase),
+            2 => Ok(Self::Log10),
+            3 => Ok(Self::Log2),
+            _ => Err(Failure::Usage(format!("unknown libm stream op tag {tag}"))),
+        }
+    }
+}
+
+fn apply_libm_op(op: LibmOp, param: f64, values: &[f64]) -> Result<Vec<f64>, Failure> {
+    let mut out = try_vec_cap(values.len())?;
+    for &v in values {
+        let y = match op {
+            LibmOp::Pow => gxr_math::powf(v, param),
+            LibmOp::PowBase => gxr_math::powf(param, v),
+            LibmOp::Log10 => gxr_math::log10(v),
+            LibmOp::Log2 => gxr_math::log2(v),
+        };
+        out.push(y);
+    }
+    Ok(out)
+}
+
+fn run_libm(args: &[String]) -> Result<Json, Failure> {
+    if has_flag(args, "--stream") {
+        return run_libm_stream();
+    }
+    let op_name = common::option(args, "--op")?;
+    let op = LibmOp::from_name(op_name)?;
+    let param = match opt_maybe(args, "--param")? {
+        Some(raw) => raw
+            .parse::<f64>()
+            .map_err(|e| Failure::Usage(format!("invalid --param {raw:?}: {e}")))?,
+        None => 0.0,
+    };
+    let in_path = common::option(args, "--in")?;
+    let out_path = common::option(args, "--out")?;
+    let (shape, values) = read_npy_f64(in_path)?;
+    let out_vals = apply_libm_op(op, param, &values)?;
+    common::write_npy(out_path, &out_vals, &shape, "float64")
+}
+
+fn run_libm_stream() -> Result<Json, Failure> {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = BufReader::new(stdin.lock());
+    let mut writer = BufWriter::new(stdout.lock());
+    let mut hdr = [0u8; 17];
+    loop {
+        let mut first = [0u8; 1];
+        match reader.read(&mut first) {
+            Ok(0) => break,
+            Ok(1) => hdr[0] = first[0],
+            Ok(_) => unreachable!(),
+            Err(e) => return Err(Failure::Usage(format!("stream read error: {e}"))),
+        }
+        reader
+            .read_exact(&mut hdr[1..])
+            .map_err(|e| Failure::Usage(format!("stream header read error: {e}")))?;
+        let op = LibmOp::from_tag(hdr[0])?;
+        let param = f64::from_le_bytes([
+            hdr[1], hdr[2], hdr[3], hdr[4], hdr[5], hdr[6], hdr[7], hdr[8],
+        ]);
+        let count_u64 = u64::from_le_bytes([
+            hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15], hdr[16],
+        ]);
+        let count = fit_count_u64(count_u64)?;
+        let nbytes = fit_count_u64(mul_u64(count_u64, 8)?)?;
+        let mut buf = try_vec_cap(nbytes)?;
+        buf.resize(nbytes, 0);
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| Failure::Usage(format!("stream payload read error: {e}")))?;
+        let mut vals = try_vec_cap(count)?;
+        for chunk in buf.chunks_exact(8) {
+            vals.push(f64::from_le_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ]));
+        }
+        let out_vals = apply_libm_op(op, param, &vals)?;
+        for y in out_vals {
+            writer
+                .write_all(&y.to_le_bytes())
+                .map_err(|e| Failure::Usage(format!("stream write error: {e}")))?;
+        }
+        writer
+            .flush()
+            .map_err(|e| Failure::Usage(format!("stream flush error: {e}")))?;
+    }
+    Ok(Json::object([("ok", Json::Bool(true))]))
+}
+
 fn into_triples(shape: &[usize], flat: &[f64]) -> Result<Vec<[f64; 3]>, Failure> {
     if shape.last() != Some(&3) || !flat.len().is_multiple_of(3) {
         return Err(Failure::Core(CoreError::new(
@@ -388,4 +502,28 @@ fn extract_shape_u64(header: &str) -> Option<Vec<u64>> {
         dims.push(p.parse::<u64>().ok()?);
     }
     Some(dims)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn libm_ops_match_gxr_math_bits() {
+        let x = [0.684_044_233_807_267_1, 0.18, 2.5];
+        let got_pow = apply_libm_op(LibmOp::Pow, 2.4, &x).ok().expect("pow");
+        let got_base = apply_libm_op(LibmOp::PowBase, 10.0, &x)
+            .ok()
+            .expect("pow_base");
+        let got_l10 = apply_libm_op(LibmOp::Log10, 0.0, &x).ok().expect("log10");
+        let got_l2 = apply_libm_op(LibmOp::Log2, 0.0, &x).ok().expect("log2");
+        for (i, &v) in x.iter().enumerate() {
+            assert_eq!(got_pow[i].to_bits(), gxr_math::powf(v, 2.4).to_bits());
+            assert_eq!(got_base[i].to_bits(), gxr_math::powf(10.0, v).to_bits());
+            assert_eq!(got_l10[i].to_bits(), gxr_math::log10(v).to_bits());
+            assert_eq!(got_l2[i].to_bits(), gxr_math::log2(v).to_bits());
+        }
+        assert!(LibmOp::from_name("bad").is_err());
+        assert!(LibmOp::from_tag(9).is_err());
+    }
 }
