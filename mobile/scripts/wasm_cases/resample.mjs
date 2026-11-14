@@ -40,6 +40,10 @@ function framed(height, width, payload) {
   );
 }
 
+function toJsNum(v) {
+  return typeof v === 'string' ? Number(v) : v;
+}
+
 export function cases(inputs) {
   const out = [];
   for (const file of inputs) {
@@ -81,8 +85,17 @@ export function cases(inputs) {
         wasm: (mod) => {
           const npy = readNpy(spec.inNpy);
           const ch = spec.overrideChannels !== undefined ? spec.overrideChannels : channels;
-          const res = mod.resample_u8(npy.values, inW, inH, ch, mode, filter, outW, outH);
-          return framed(outH, outW, res);
+          const res = mod.resample_u8(
+            npy.values,
+            toJsNum(inW),
+            toJsNum(inH),
+            toJsNum(ch),
+            mode,
+            filter,
+            toJsNum(outW),
+            toJsNum(outH),
+          );
+          return framed(toJsNum(outH), toJsNum(outW), res);
         },
       });
     } else if (spec.kind === 'f32') {
@@ -107,9 +120,9 @@ export function cases(inputs) {
         cliArgs,
         wasm: (mod) => {
           const npy = readNpy(spec.inNpy);
-          const res = mod.resample_f32(npy.values, inW, inH, filter, outW, outH);
+          const res = mod.resample_f32(npy.values, toJsNum(inW), toJsNum(inH), filter, toJsNum(outW), toJsNum(outH));
           const bytes = new Uint8Array(res.buffer, res.byteOffset, res.byteLength);
-          return framed(outH, outW, bytes);
+          return framed(toJsNum(outH), toJsNum(outW), bytes);
         },
       });
     } else {

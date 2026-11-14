@@ -519,6 +519,17 @@ def test_rule2_resample_oom_probe(tmp_path: Path) -> None:
     run_resample_oom_probe(tmp_path)
 
 
+def _json_num(v: int | float) -> int | float | str:
+    if isinstance(v, float):
+        if np.isnan(v):
+            return "NaN"
+        if np.isposinf(v):
+            return "Infinity"
+        if np.isneginf(v):
+            return "-Infinity"
+    return v
+
+
 def test_wasm_matches_native_for_resample(tmp_path: Path) -> None:
     specs: list[Path] = []
 
@@ -527,12 +538,12 @@ def test_wasm_matches_native_for_resample(tmp_path: Path) -> None:
         arr: np.ndarray,
         mode: str,
         filt: str,
-        out_w: int,
-        out_h: int,
+        out_w: int | float,
+        out_h: int | float,
         *,
-        in_w: int | None = None,
-        in_h: int | None = None,
-        override_channels: int | None = None,
+        in_w: int | float | None = None,
+        in_h: int | float | None = None,
+        override_channels: int | float | None = None,
     ) -> None:
         npy = tmp_path / f"{name}.npy"
         np.save(npy, arr)
@@ -541,46 +552,46 @@ def test_wasm_matches_native_for_resample(tmp_path: Path) -> None:
         spec: dict[str, Any] = {
             "kind": "u8",
             "inNpy": str(npy),
-            "inW": in_w if in_w is not None else w,
-            "inH": in_h if in_h is not None else h,
+            "inW": _json_num(in_w) if in_w is not None else w,
+            "inH": _json_num(in_h) if in_h is not None else h,
             "channels": ch,
             "mode": mode,
             "filter": filt,
-            "outW": out_w,
-            "outH": out_h,
+            "outW": _json_num(out_w),
+            "outH": _json_num(out_h),
             "overrideInShape": in_w is not None or in_h is not None,
         }
         if override_channels is not None:
-            spec["overrideChannels"] = override_channels
+            spec["overrideChannels"] = _json_num(override_channels)
         p = tmp_path / f"{name}.json"
-        p.write_text(json.dumps(spec), encoding="utf-8")
+        p.write_text(json.dumps(spec, allow_nan=False), encoding="utf-8")
         specs.append(p)
 
     def add_f32(
         name: str,
         arr: np.ndarray,
         filt: str,
-        out_w: int,
-        out_h: int,
+        out_w: int | float,
+        out_h: int | float,
         *,
-        in_w: int | None = None,
-        in_h: int | None = None,
+        in_w: int | float | None = None,
+        in_h: int | float | None = None,
     ) -> None:
         npy = tmp_path / f"{name}.npy"
         np.save(npy, arr)
         h, w = arr.shape[:2]
-        spec = {
+        spec: dict[str, Any] = {
             "kind": "f32",
             "inNpy": str(npy),
-            "inW": in_w if in_w is not None else w,
-            "inH": in_h if in_h is not None else h,
+            "inW": _json_num(in_w) if in_w is not None else w,
+            "inH": _json_num(in_h) if in_h is not None else h,
             "filter": filt,
-            "outW": out_w,
-            "outH": out_h,
+            "outW": _json_num(out_w),
+            "outH": _json_num(out_h),
             "overrideInShape": in_w is not None or in_h is not None,
         }
         p = tmp_path / f"{name}.json"
-        p.write_text(json.dumps(spec), encoding="utf-8")
+        p.write_text(json.dumps(spec, allow_nan=False), encoding="utf-8")
         specs.append(p)
 
     add_u8("l-lanczos", _synth_u8(41, 33, "L", seed=1), "L", "lanczos", 19, 15)
@@ -618,6 +629,28 @@ def test_wasm_matches_native_for_resample(tmp_path: Path) -> None:
     add_f32("err-f32-mismatch", tiny_f32, "box", 2, 2, in_w=4, in_h=2)
     add_f32("err-f32-huge-1", tiny_f32, "box", 4294967295, 4294967295)
     add_f32("err-f32-huge-2", tiny_f32, "box", 2147483648, 1)
+
+    edge_numbers: list[tuple[str, int | float]] = [
+        ("u32-wrap", 2**32),
+        ("u32-wrap-p1", 2**32 + 1),
+        ("neg-one", -1),
+        ("max-safe-int", 2**53),
+        ("nan", float("nan")),
+        ("pos-inf", float("inf")),
+        ("neg-inf", float("-inf")),
+        ("frac", 1.5),
+    ]
+    for tag, val in edge_numbers:
+        add_u8(f"edge-u8-inw-{tag}", tiny_rgb, "RGB", "box", 2, 2, in_w=val, in_h=3)
+        add_u8(f"edge-u8-inh-{tag}", tiny_rgb, "RGB", "box", 2, 2, in_w=4, in_h=val)
+        add_u8(f"edge-u8-ch-{tag}", tiny_rgb, "RGB", "box", 2, 2, override_channels=val)
+        add_u8(f"edge-u8-outw-{tag}", tiny_rgb, "RGB", "box", val, 2)
+        add_u8(f"edge-u8-outh-{tag}", tiny_rgb, "RGB", "box", 2, val)
+
+        add_f32(f"edge-f32-inw-{tag}", tiny_f32, "box", 2, 2, in_w=val, in_h=3)
+        add_f32(f"edge-f32-inh-{tag}", tiny_f32, "box", 2, 2, in_w=4, in_h=val)
+        add_f32(f"edge-f32-outw-{tag}", tiny_f32, "box", val, 2)
+        add_f32(f"edge-f32-outh-{tag}", tiny_f32, "box", 2, val)
 
     proc = run_area("resample", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr

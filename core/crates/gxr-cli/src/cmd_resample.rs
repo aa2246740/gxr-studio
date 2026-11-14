@@ -5,7 +5,7 @@
 //! resample-f32 --in IN.npy --filter box|lanczos|bilinear|bicubic --width W --height H --out OUT.npy [--in-shape H W]
 //! ```
 
-use gxr_finish::geometry::bounds::{checked_mul_u64, fit_count};
+use gxr_finish::geometry::bounds::{checked_mul_u64, fit_count, too_big};
 use gxr_finish::resample::{Filter, Mode, resample_f32_u64, resample_u8_u64};
 use gxr_raw::{CoreError, Json};
 
@@ -27,22 +27,79 @@ fn usage(message: impl Into<String>) -> Failure {
     Failure::Usage(message.into())
 }
 
-fn parse_u64(args: &[String], name: &str) -> Result<u64, Failure> {
-    let raw = common::option(args, name)?;
-    raw.parse()
-        .map_err(|_| usage(format!("bad integer for {name}: {raw:?}")))
+fn dim_from_f64(v: f64) -> Result<u64, CoreError> {
+    if !v.is_finite() || v.fract() != 0.0 {
+        return Err(CoreError::new(
+            "value_error",
+            "dimensions must be finite integers",
+        ));
+    }
+    if v <= 0.0 {
+        return Err(CoreError::new(
+            "value_error",
+            "height and width must be > 0",
+        ));
+    }
+    if v > f64::from(i32::MAX) {
+        return Err(too_big());
+    }
+    Ok(v as u64)
 }
 
-fn opt_pair_u64(args: &[String], name: &str) -> Result<Option<(u64, u64)>, Failure> {
+fn parse_dim_str(raw: &str, name: &str) -> Result<u64, Failure> {
+    if let Ok(u) = raw.parse::<u64>() {
+        if u == 0 {
+            return Err(Failure::Core(CoreError::new(
+                "value_error",
+                "height and width must be > 0",
+            )));
+        }
+        if u > u64::from(i32::MAX as u32) {
+            return Err(Failure::Core(too_big()));
+        }
+        return Ok(u);
+    }
+    let v: f64 = raw
+        .parse()
+        .map_err(|_| usage(format!("bad integer for {name}: {raw:?}")))?;
+    dim_from_f64(v).map_err(Failure::Core)
+}
+
+fn parse_channels_str(raw: &str, name: &str) -> Result<u64, Failure> {
+    if let Ok(u) = raw.parse::<u64>() {
+        return Ok(u);
+    }
+    let v: f64 = raw
+        .parse()
+        .map_err(|_| usage(format!("bad integer for {name}: {raw:?}")))?;
+    if !v.is_finite() || v.fract() != 0.0 || v < 0.0 {
+        return Err(Failure::Core(CoreError::new(
+            "value_error",
+            "channel count must be a finite non-negative integer",
+        )));
+    }
+    if v > f64::from(u32::MAX) {
+        return Err(Failure::Core(CoreError::new(
+            "value_error",
+            "channel count does not match mode",
+        )));
+    }
+    Ok(v as u64)
+}
+
+fn opt_pair_raw<'a>(args: &'a [String], name: &str) -> Result<Option<(&'a str, &'a str)>, Failure> {
     let Some(at) = args.iter().position(|a| a == name) else {
         return Ok(None);
     };
-    let get = |k: usize| -> Result<u64, Failure> {
-        args.get(at + k)
-            .and_then(|v| v.parse().ok())
-            .ok_or_else(|| usage(format!("{name} needs two sizes")))
-    };
-    Ok(Some((get(1)?, get(2)?)))
+    let a = args
+        .get(at + 1)
+        .map(String::as_str)
+        .ok_or_else(|| usage(format!("{name} needs two sizes")))?;
+    let b = args
+        .get(at + 2)
+        .map(String::as_str)
+        .ok_or_else(|| usage(format!("{name} needs two sizes")))?;
+    Ok(Some((a, b)))
 }
 
 struct Npy {
@@ -151,31 +208,42 @@ fn cmd_resample_u8(args: &[String]) -> Result<Json, Failure> {
     }
     let mode_str = common::option(args, "--mode")?;
     let filter_str = common::option(args, "--filter")?;
-    let out_w = parse_u64(args, "--width")?;
-    let out_h = parse_u64(args, "--height")?;
-    let in_shape = opt_pair_u64(args, "--in-shape")?;
-    let ch_opt = if args.iter().any(|a| a == "--channels") {
-        Some(parse_u64(args, "--channels")?)
+    let out_w_str = common::option(args, "--width")?;
+    let out_h_str = common::option(args, "--height")?;
+    let in_shape_raw = opt_pair_raw(args, "--in-shape")?;
+    let ch_raw = if args.iter().any(|a| a == "--channels") {
+        Some(common::option(args, "--channels")?)
     } else {
         None
     };
 
-    let (w, h, shape_ch, is_3d) = match input.shape.as_slice() {
+    let (w0, h0, shape_ch, is_3d) = match input.shape.as_slice() {
         [ih, iw] => (*iw as u64, *ih as u64, 1_u64, false),
         [ih, iw, c] => (*iw as u64, *ih as u64, *c as u64, true),
         s => return Err(usage(format!("expected 2-D or 3-D array, got shape {s:?}"))),
     };
-    let (w, h) = in_shape.map_or((w, h), |(sh, sw)| (sw, sh));
-    let channels = ch_opt.unwrap_or(shape_ch);
 
     let mode = Mode::parse(mode_str)?;
     let filter = Filter::parse(filter_str)?;
+    let (w, h) = match in_shape_raw {
+        Some((sh_s, sw_s)) => (
+            parse_dim_str(sw_s, "--in-shape")?,
+            parse_dim_str(sh_s, "--in-shape")?,
+        ),
+        None => (w0, h0),
+    };
+    let channels = match ch_raw {
+        Some(s) => parse_channels_str(s, "--channels")?,
+        None => shape_ch,
+    };
     if channels != mode.channels() as u64 {
         return Err(Failure::Core(CoreError::new(
             "value_error",
             "channel count does not match mode",
         )));
     }
+    let out_w = parse_dim_str(out_w_str, "--width")?;
+    let out_h = parse_dim_str(out_h_str, "--height")?;
 
     let res = resample_u8_u64(&input.data, w, h, mode, filter, out_w, out_h)?;
     let ow = out_w as usize;
@@ -194,11 +262,11 @@ fn cmd_resample_f32(args: &[String]) -> Result<Json, Failure> {
         return Err(usage(format!("expected float32 npy, got {}", input.descr)));
     }
     let filter_str = common::option(args, "--filter")?;
-    let out_w = parse_u64(args, "--width")?;
-    let out_h = parse_u64(args, "--height")?;
-    let in_shape = opt_pair_u64(args, "--in-shape")?;
+    let out_w_str = common::option(args, "--width")?;
+    let out_h_str = common::option(args, "--height")?;
+    let in_shape_raw = opt_pair_raw(args, "--in-shape")?;
 
-    let (w, h, is_3d) = match input.shape.as_slice() {
+    let (w0, h0, is_3d) = match input.shape.as_slice() {
         [ih, iw] => (*iw as u64, *ih as u64, false),
         [ih, iw, 1] => (*iw as u64, *ih as u64, true),
         s => {
@@ -207,13 +275,22 @@ fn cmd_resample_f32(args: &[String]) -> Result<Json, Failure> {
             )));
         }
     };
-    let (w, h) = in_shape.map_or((w, h), |(sh, sw)| (sw, sh));
 
     let filter = Filter::parse(filter_str)?;
+    let (w, h) = match in_shape_raw {
+        Some((sh_s, sw_s)) => (
+            parse_dim_str(sw_s, "--in-shape")?,
+            parse_dim_str(sh_s, "--in-shape")?,
+        ),
+        None => (w0, h0),
+    };
+    let out_w = parse_dim_str(out_w_str, "--width")?;
+    let out_h = parse_dim_str(out_h_str, "--height")?;
+
     let mut floats = Vec::new();
     floats
         .try_reserve_exact(input.data.len() / 4)
-        .map_err(|_| Failure::Core(gxr_finish::geometry::bounds::too_big()))?;
+        .map_err(|_| Failure::Core(too_big()))?;
     for c in input.data.chunks_exact(4) {
         floats.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
     }
@@ -224,7 +301,7 @@ fn cmd_resample_f32(args: &[String]) -> Result<Json, Failure> {
     let byte_len_usize = fit_count(byte_len, 1)?;
     payload
         .try_reserve_exact(byte_len_usize)
-        .map_err(|_| Failure::Core(gxr_finish::geometry::bounds::too_big()))?;
+        .map_err(|_| Failure::Core(too_big()))?;
     for v in res {
         payload.extend_from_slice(&v.to_le_bytes());
     }
