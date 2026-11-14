@@ -48,7 +48,11 @@ pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> Result<[usize
                     best = [(left + 1) as usize, i + 1 - bar, rect_w, bar];
                 }
             }
-            stack.push(j as i32);
+            // The end column only flushes the stack; pushing it would need `width + 2` slots.
+            if j < width {
+                stack.push(j as i32);
+            }
+            debug_assert!(stack.len() <= stack_cap);
         }
     }
     Ok(best)

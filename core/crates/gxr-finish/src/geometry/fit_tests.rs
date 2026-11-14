@@ -101,3 +101,19 @@ fn max_area_rect_rejects_derived_buffer_byte_limit_before_allocating() {
         CoreError::new("bad_geometry", ARRAY_TOO_BIG)
     );
 }
+
+#[test]
+fn max_area_rect_stack_never_grows_past_its_reservation() {
+    // Sol geometry r4: a row of zeros after a valid row pushed `width + 2` entries into a stack
+    // reserved for `width + 1`, so the last push reallocated past the checked byte limit.
+    // The `debug_assert!` in `max_area_rect` fails on the old code in this (debug) test build.
+    let (width, height) = (8_usize, 2_usize);
+    let mut mask = vec![0_u8; width * height];
+    mask[0] = 1;
+    assert_eq!(max_area_rect(&mask, width, height).unwrap(), [0, 0, 1, 1]);
+    let full = vec![1_u8; width * height];
+    assert_eq!(
+        max_area_rect(&full, width, height).unwrap(),
+        [0, 0, width, height]
+    );
+}
