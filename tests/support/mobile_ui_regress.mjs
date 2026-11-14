@@ -270,13 +270,13 @@ const CASES = {
         });
         const waitCards = () =>
           page.waitForFunction(() => {
-            const thumbs = [...document.querySelectorAll('.strip .rc .th')];
+            const thumbs = [...document.querySelectorAll('.editor > .strip .rc .th')];
             return thumbs.length && thumbs.every((node) => node.dataset.source === '中性转换' && node.querySelector('canvas'));
           }, null, { timeout: 120_000 });
         await page.locator('.cell').first().click();
         await waitCards();
         const first = await editorState(page);
-        const labels = await page.locator('.strip .rc .sub').allInnerTexts();
+        const labels = await page.locator('.editor > .strip .rc .sub').allInnerTexts();
         // 卡片和同一个源用显卡现出的中性小图比，缩到 96×64 后逐通道平均差。
         const diff = await page.evaluate(async () => {
           const key = `raw:${document.querySelector('.editor').dataset.photo.toLowerCase()}`;
@@ -295,7 +295,7 @@ const CASES = {
           ref.width = out.w;
           ref.height = out.h;
           ref.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h), 0, 0);
-          const a = scale(document.querySelector('.strip .rc .th canvas'));
+          const a = scale(document.querySelector('.editor > .strip .rc .th canvas'));
           const b = scale(ref);
           let sum = 0;
           let n = 0;
@@ -332,8 +332,8 @@ const CASES = {
           await page.locator(`.cell[data-id="${id}"]`).click();
           await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent, null, { timeout: 60_000 });
           out[id] = {
-            labels: await page.locator('.strip .rc .sub').allInnerTexts(),
-            drawn: await page.locator('.strip .rc .th canvas').count(),
+            labels: await page.locator('.editor > .strip .rc .sub').allInnerTexts(),
+            drawn: await page.locator('.editor > .strip .rc .th canvas').count(),
           };
           await page.getByRole('button', { name: '照片', exact: true }).click();
           await page.waitForSelector('[data-screen="grid"]');
