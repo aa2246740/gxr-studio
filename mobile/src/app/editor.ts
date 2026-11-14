@@ -430,11 +430,12 @@ export class EditorView {
   }
 
   private async take(photo: Photo): Promise<ArrayBuffer> {
-    const warm = this.api.takeWarm(photo.id);
+    const warm = this.api.takeWarm(photo.id, photo.version);
     if (warm) return warm;
     if (!photo.dng) throw new DOMException('没有 RAW', 'NotFoundError');
     const reply = await this.api.readFull(photo);
     if (reply.ok) return reply.bytes;
+    if (reply.stale) throw new DOMException('重新选过', 'AbortError');
     throw new DOMException('读不了', reply.gone ? 'NotReadableError' : 'EncodingError');
   }
 
@@ -444,16 +445,18 @@ export class EditorView {
       return;
     }
     const id = next.id;
+    const version = next.version;
     const token = this.token;
     this.wantNeighbor = id;
     void this.api.readFull(next).then((reply) => {
       if (!reply.ok || this.token !== token || this.wantNeighbor !== id) return;
-      this.api.keepWarm(id, reply.bytes);
+      this.api.keepWarm(id, version, reply.bytes);
     });
   }
 
   private async load(photo: Photo): Promise<void> {
     const token = ++this.token;
+    const version = photo.version;
     if (!photo.dng) {
       this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW');
       if (this.engine && photo.bitmap) {
@@ -475,8 +478,9 @@ export class EditorView {
       bytes = await this.take(photo);
     } catch (err) {
       if (token !== this.token) return;
-      if (isGone(err)) this.api.markGone(photo.id);
-      else this.api.markBad(photo.id);
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (isGone(err)) this.api.markGone(photo.id, version);
+      else this.api.markBad(photo.id, version);
       return;
     }
     if (token !== this.token) return;
@@ -485,12 +489,12 @@ export class EditorView {
     try {
       described = await describeDng(bytes);
     } catch {
-      if (token === this.token) this.api.markBad(photo.id);
+      if (token === this.token) this.api.markBad(photo.id, version);
       return;
     }
     if (token !== this.token) return;
     if (!described.layout || described.reason) {
-      this.api.markBad(photo.id);
+      this.api.markBad(photo.id, version);
       return;
     }
     if (!this.engine) {
@@ -514,7 +518,7 @@ export class EditorView {
       this.prefetch(this.nextPhoto(1));
     } catch {
       if (token !== this.token) return;
-      this.api.markBad(photo.id);
+      this.api.markBad(photo.id, version);
     }
   }
 

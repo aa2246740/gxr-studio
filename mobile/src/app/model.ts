@@ -35,6 +35,8 @@ export function zeroKnobs(): Knobs {
 export interface Photo {
   id: string;
   stem: string;
+  /** 每换一次 File（重新选了同名照片）加一。异步结果回来时先核对它，过期的丢掉。 */
+  version: number;
   dng: File | null;
   jpg: File | null;
   lastModified: number;
@@ -44,7 +46,8 @@ export interface Photo {
   knobs: Knobs;
 }
 
-export type FullRead = { ok: true; bytes: ArrayBuffer } | { ok: false; gone: boolean };
+/** stale：读的时候照片被重新选过，结果作废。 */
+export type FullRead = { ok: true; bytes: ArrayBuffer } | { ok: false; gone: boolean; stale: boolean };
 
 export function photoMs(photo: Photo): number {
   return photo.captureMs ?? photo.lastModified;
@@ -67,13 +70,13 @@ export interface AppApi {
   showHelp(): void;
   back(): void;
   swipe(id: string, dir: -1 | 1): void;
-  markBad(id: string): void;
-  markGone(id: string): void;
+  markBad(id: string, version: number): void;
+  markGone(id: string, version: number): void;
   /** 整份 DNG，在 Worker 里读完转移过来。主线程不调 File.arrayBuffer。 */
   readFull(photo: Photo): Promise<FullRead>;
   /** 下一张的 DNG 字节。离开编辑器就丢掉，最多留一份。 */
-  takeWarm(id: string): ArrayBuffer | null;
-  keepWarm(id: string, bytes: ArrayBuffer): void;
+  takeWarm(id: string, version: number): ArrayBuffer | null;
+  keepWarm(id: string, version: number, bytes: ArrayBuffer): void;
   gpu(): boolean;
   /** 编辑器里没有显卡或只有 JPG 时，按屏幕宽度在 Worker 里解一张清楚的。 */
   still(photo: Photo, width: number): Promise<ImageBitmap | null>;

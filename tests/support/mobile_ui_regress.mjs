@@ -42,8 +42,8 @@ function hooks({ noGpu }) {
           if (!window.__holdKinds.has(kind)) return;
           window.__holdKinds.delete(kind);
           event.stopImmediatePropagation();
-          window.__held.push(() => {
-            const next = new MessageEvent('message', { data: event.data });
+          window.__held.push((override) => {
+            const next = new MessageEvent('message', { data: { ...event.data, ...(override || {}) } });
             next.__replayed = true;
             this.dispatchEvent(next);
           });
@@ -53,9 +53,9 @@ function hooks({ noGpu }) {
     }
   };
   window.__hold = (kind) => window.__holdKinds.add(kind);
-  window.__release = () => {
+  window.__release = (override) => {
     const all = window.__held.splice(0);
-    for (const run of all) run();
+    for (const run of all) run(override);
     return all.length;
   };
   window.__rewrite = (kind, data) => window.__rewrites.set(kind, data);
@@ -155,6 +155,45 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** F1：旧的成功、旧的失败、旧的拔卡回复在重新选同名照片之后才到，都不能盖掉新结果。 */
+  async 'repick-stale'() {
+    const real = readFileSync(manifest.jpgs[0]);
+    const other = readFileSync(manifest.jpgs[manifest.jpgs.length - 1]);
+    const name = 'R8051144.JPG';
+    const variants = {
+      'old-failure': { first: Buffer.from('corrupt old JPG'), override: null },
+      'old-success': { first: other, override: null },
+      'old-card-removed': { first: Buffer.from('corrupt old JPG'), override: { ok: false, gone: true } },
+    };
+    const results = {};
+    for (const [label, variant] of Object.entries(variants)) {
+      const { page, context, errors } = await makePage({ gpu: false });
+      try {
+        await page.evaluate(() => window.__hold('thumb'));
+        await page.locator('input[type=file]').setInputFiles({ name, mimeType: 'image/jpeg', buffer: variant.first });
+        await page.waitForFunction(() => window.__held.length === 1, null, { timeout: 30_000 });
+        await pick(page, [{ name, mimeType: 'image/jpeg', buffer: real }]);
+        const read = () =>
+          page.evaluate(() => ({
+            cls: document.querySelector('.cell')?.className ?? '',
+            canvas: !!document.querySelector('.cell canvas'),
+            header: document.querySelector('[data-kind="group"] .rng')?.textContent ?? '',
+            subtitle: document.querySelector('.nav small')?.textContent ?? '',
+            unreadable: document.querySelectorAll('[data-state="unreadable"]').length,
+            card: document.querySelectorAll('[data-state="card-removed"]').length,
+          }));
+        const fresh = await read();
+        const released = await page.evaluate((override) => window.__release(override || undefined), variant.override);
+        await page.waitForTimeout(1500);
+        const after = await read();
+        results[label] = { fresh, released, after, errors };
+      } finally {
+        await context.close();
+      }
+    }
+    return { results, errors: Object.values(results).flatMap((row) => row.errors) };
+  },
+
   /** 规格第 2 项：整份 DNG 和邻居预读都在 Worker 里读，主线程不调 File.arrayBuffer。 */
   async 'full-read-in-worker'() {
     const { page, context, errors } = await makePage({ gpu: true });

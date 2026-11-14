@@ -134,3 +134,14 @@ def test_full_dng_reads_happen_in_the_worker(server: dict[str, Any]) -> None:
     assert data["first"]["title"] != data["second"]["title"]
     # 打开一张、预读下一张、滑过去：主线程一次 File.arrayBuffer 都没有。
     assert data["mainReads"] == [], data["mainReads"]
+
+
+def test_late_old_results_do_not_overwrite_a_repicked_photo(server: dict[str, Any]) -> None:
+    data = run_case(server, "repick-stale")
+    for label, row in data["results"].items():
+        fresh, after = row["fresh"], row["after"]
+        assert row["released"] == 1, label
+        assert fresh["canvas"] and "err" not in fresh["cls"].split(), (label, fresh)
+        # 旧回复放出来以后：格子、拍摄时间、副标题都还是新文件的，没有「读不了」也没有「拔卡」。
+        assert after == fresh, (label, fresh, after)
+        assert after["unreadable"] == 0 and after["card"] == 0, (label, after)

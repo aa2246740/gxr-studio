@@ -29,7 +29,7 @@ class App implements AppApi {
   private editor: EditorView | null = null;
   private engine: Engine | null = null;
   private frameWatch: { stop: () => PerfStats } | null = null;
-  private warm: { id: string; bytes: ArrayBuffer } | null = null;
+  private warm: { id: string; version: number; bytes: ArrayBuffer } | null = null;
   private interval = 16.7;
   private readonly queue = new ThumbQueue(2);
   /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
@@ -122,16 +122,25 @@ class App implements AppApi {
   }
 
   async readFull(photo: Photo): Promise<FullRead> {
-    if (!photo.dng) return { ok: false, gone: false };
-    const reply = await this.reader.read(photo.dng);
-    return reply.ok ? { ok: true, bytes: reply.bytes } : { ok: false, gone: reply.gone };
+    const file = photo.dng;
+    const version = photo.version;
+    if (!file) return { ok: false, gone: false, stale: false };
+    const reply = await this.reader.read(file);
+    if (!this.current(photo.id, version, photo, file)) return { ok: false, gone: false, stale: true };
+    return reply.ok ? { ok: true, bytes: reply.bytes } : { ok: false, gone: reply.gone, stale: false };
   }
 
   async still(photo: Photo, width: number): Promise<ImageBitmap | null> {
     const file = photo.jpg ?? photo.dng;
+    const version = photo.version;
     if (!file) return null;
     const reply = await this.queue.run(file, photo.jpg ? 'jpg' : 'dng', width, true);
-    return reply.ok ? reply.bitmap : null;
+    if (!reply.ok) return null;
+    if (!this.current(photo.id, version, photo, file)) {
+      reply.bitmap?.close();
+      return null;
+    }
+    return reply.bitmap;
   }
 
   setOrder(order: Order): void {
@@ -170,14 +179,23 @@ class App implements AppApi {
     else this.showStart();
   }
 
-  takeWarm(id: string): ArrayBuffer | null {
+  takeWarm(id: string, version: number): ArrayBuffer | null {
     const warm = this.warm;
     this.warm = null;
-    return warm && warm.id === id ? warm.bytes : null;
+    return warm && warm.id === id && warm.version === version ? warm.bytes : null;
   }
 
-  keepWarm(id: string, bytes: ArrayBuffer): void {
-    this.warm = { id, bytes };
+  keepWarm(id: string, version: number, bytes: ArrayBuffer): void {
+    if (this.current(id, version)) this.warm = { id, version, bytes };
+  }
+
+  /** 这张照片还是同一个对象、同一个版本。重新选过、去掉了、清空了都算过期。 */
+  private current(id: string, version: number, photo?: Photo, file?: File | null): boolean {
+    const now = this.byId.get(id);
+    if (!now || now.version !== version) return false;
+    if (photo && now !== photo) return false;
+    if (file !== undefined && file !== now.jpg && file !== now.dng) return false;
+    return true;
   }
 
   swipe(id: string, dir: -1 | 1): void {
@@ -207,14 +225,16 @@ class App implements AppApi {
     this.showStart();
   }
 
-  markBad(id: string): void {
+  markBad(id: string, version: number): void {
+    if (!this.current(id, version)) return;
     const photo = this.byId.get(id);
     if (photo) photo.status = 'bad';
     this.showGrid(true);
     this.grid?.showUnreadable(id);
   }
 
-  markGone(id: string): void {
+  markGone(id: string, version: number): void {
+    if (!this.current(id, version)) return;
     const photo = this.byId.get(id);
     if (photo) this.failCard(photo);
   }
@@ -280,6 +300,7 @@ class App implements AppApi {
         photo = {
           id,
           stem: item.stem,
+          version: 0,
           dng: null,
           jpg: null,
           lastModified: item.lastModified,
@@ -295,6 +316,8 @@ class App implements AppApi {
         photo.stem = item.stem;
       }
       if (item.jpgIndex !== null) photo.jpg = files[item.jpgIndex];
+      // 换了 File 就是新版本：之前在路上的读取结果回来时都作废。
+      photo.version += 1;
       photo.lastModified = Math.max(photo.lastModified, item.lastModified);
       if (photo.status !== 'pending') {
         photo.bitmap?.close();
@@ -302,28 +325,30 @@ class App implements AppApi {
         photo.captureMs = null;
         photo.status = 'pending';
       }
-      void this.readPhoto(photo, generation);
+      void this.readPhoto(photo, photo.version, generation);
     }
     if (this.byId.size) this.showGrid(this.screen !== 'grid');
     else this.showStart();
   }
 
-  private async readPhoto(photo: Photo, generation: number): Promise<void> {
+  private async readPhoto(photo: Photo, version: number, generation: number): Promise<void> {
     const file = photo.jpg ?? photo.dng;
     if (!file) {
       photo.status = 'bad';
       this.afterRead(photo);
       return;
     }
+    const live = (handle: File | null) => generation === this.generation && this.current(photo.id, version, photo, handle);
     let reply = await this.queue.run(file, photo.jpg ? 'jpg' : 'dng');
-    if (generation !== this.generation) {
+    if (!live(file)) {
       this.drop(reply);
       return;
     }
     if (photo.jpg && photo.dng && reply.ok && reply.bitmap === null) {
       this.drop(reply);
-      reply = await this.queue.run(photo.dng, 'dng');
-      if (generation !== this.generation) {
+      const dng = photo.dng;
+      reply = await this.queue.run(dng, 'dng');
+      if (!live(dng)) {
         this.drop(reply);
         return;
       }
