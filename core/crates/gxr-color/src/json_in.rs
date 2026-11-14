@@ -50,7 +50,11 @@ impl Value {
 /// Parse one JSON value. Trailing whitespace is allowed; trailing junk is not.
 pub fn parse(bytes: &[u8]) -> Result<Value, CoreError> {
     let text = std::str::from_utf8(bytes).map_err(|_| bad("invalid utf-8"))?;
-    let mut p = Parser { text, i: 0 };
+    let mut p = Parser {
+        text,
+        i: 0,
+        depth: 0,
+    };
     p.skip();
     let value = p.value()?;
     p.skip();
@@ -64,9 +68,15 @@ fn bad(message: &str) -> CoreError {
     CoreError::new("json", message)
 }
 
+/// Deepest array/object nesting accepted (UNIT-COMMON amendment, 2026-11-14). The parser
+/// recurses once per level, so the cap is checked before descending; past it the input is
+/// refused the same way on native and WASM instead of exhausting the WASM stack.
+pub const MAX_DEPTH: usize = 128;
+
 struct Parser<'a> {
     text: &'a str,
     i: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -97,8 +107,8 @@ impl<'a> Parser<'a> {
             't' => self.literal("true", Value::Bool(true)),
             'f' => self.literal("false", Value::Bool(false)),
             '"' => Ok(Value::Str(self.string()?)),
-            '[' => self.array(),
-            '{' => self.object(),
+            '[' => self.nested(Self::array),
+            '{' => self.nested(Self::object),
             'N' => self.literal("NaN", Value::Float(f64::NAN)),
             'I' => self.literal("Infinity", Value::Float(f64::INFINITY)),
             '-' if self.text[self.i..].starts_with("-Infinity") => {
@@ -116,6 +126,17 @@ impl<'a> Parser<'a> {
         } else {
             Err(bad("bad literal"))
         }
+    }
+
+    /// One more container level, refused past `MAX_DEPTH` before any recursion.
+    fn nested(&mut self, f: fn(&mut Self) -> Result<Value, CoreError>) -> Result<Value, CoreError> {
+        if self.depth >= MAX_DEPTH {
+            return Err(CoreError::new("json", "JSON 嵌套太深"));
+        }
+        self.depth += 1;
+        let out = f(self);
+        self.depth -= 1;
+        out
     }
 
     fn array(&mut self) -> Result<Value, CoreError> {
@@ -272,7 +293,25 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, parse};
+    use super::{MAX_DEPTH, Value, parse};
+
+    #[test]
+    fn nesting_is_capped_before_descending() {
+        let deep =
+            |n: usize, open: &str, close: &str| format!("{}0{}", open.repeat(n), close.repeat(n));
+        assert!(parse(deep(MAX_DEPTH, "[", "]").as_bytes()).is_ok());
+        let err = parse(deep(MAX_DEPTH + 1, "[", "]").as_bytes()).unwrap_err();
+        assert_eq!((err.kind, err.message.as_str()), ("json", "JSON 嵌套太深"));
+        let objects = |n: usize| format!("{}0{}", "{\"a\":".repeat(n), "}".repeat(n));
+        assert!(parse(objects(MAX_DEPTH).as_bytes()).is_ok());
+        assert_eq!(
+            parse(objects(MAX_DEPTH + 1).as_bytes())
+                .unwrap_err()
+                .message,
+            "JSON 嵌套太深"
+        );
+        assert!(parse(deep(20_000, "[", "]").as_bytes()).is_err());
+    }
 
     #[test]
     fn reads_the_shapes_the_menu_uses() {

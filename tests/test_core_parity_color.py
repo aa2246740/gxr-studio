@@ -14,7 +14,7 @@ import json
 import os
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -301,6 +301,9 @@ def test_context_matches_python(tmp_path: Path) -> None:
         bad[f"missing-{missing}"] = {k: v for k, v in full.items() if k != missing}
     for name, arrays in bad.items():
         py, err = _context_case(tmp_path, name, npz(**arrays), entry)
+        assert cp.same_error(py, err) is None, (name, cp.same_error(py, err))
+    for name, damaged in cf.npz_damage(cf.source_npz(stock, d0, d1, coef), "input_coefficients.npy").items():
+        py, err = _context_case(tmp_path, name, damaged, entry)
         assert cp.same_error(py, err) is None, (name, cp.same_error(py, err))
     py, err = _context_case(tmp_path, "pickle", b"not an npz at all", entry)
     assert cp.same_error(py, err) is None, cp.same_error(py, err)
@@ -667,6 +670,16 @@ def test_wasm_matches_native(tmp_path: Path) -> None:
         huge = tmp_path / f"wmeta-{nx}-{ny}.json"
         huge.write_text(json.dumps({**meta, "nx": nx, "ny": ny}), encoding="utf-8")
         specs[f"apply-huge-{nx}x{ny}"] = {**apply, "meta": str(huge), "out": str(tmp_path / f"wh-{nx}-{ny}.npy")}
+    # JSON nesting on both sides of the 128 cap, as arrays and as objects.
+    for levels in (128, 129):
+        for kind in ("array", "object"):
+            deep = tmp_path / f"wdeep-{kind}-{levels}.json"
+            deep.write_text(cf.deep_json(levels, kind), encoding="utf-8")
+            specs[f"bake-deep-{kind}-{levels}"] = {**base, "params": str(deep)}
+    specs["apply-deep-array-129"] = {**apply, "params": str(tmp_path / "wdeep-array-129.json"), "out": str(tmp_path / "wd.npy")}
+    # A pack ctx npz damaged the three ways Sol found.
+    for name, damaged in cf.npz_damage(pack.ctx.read_bytes(), "d0.npy").items():
+        specs[f"bake-ctx-{name}"] = {**base, "ctx": str(_write(tmp_path / f"wctx-{name}.npz", damaged))}
     fine = tmp_path / "wstep.json"
     fine.write_text(json.dumps({"step": 1e-9}), encoding="utf-8")
     specs["bake-huge-grid"] = {**base, "params": str(fine)}
@@ -698,3 +711,32 @@ def test_huge_dimensions_are_refused(tmp_path: Path) -> None:
     codes = _write(tmp_path / "short.npy", _npy_header((1431655765, 1, 3)))
     _payload, err = cp.cli(["color-apply", "--bake", files[0], "--meta", files[1], "--codes", codes, "--out", tmp_path / "o.npy"])
     assert err is not None and err.kind == "npy", err
+
+
+def test_float_gates_handle_nan_and_inf() -> None:
+    """NaN meets NaN at the same position, NaN on one side fails, infinities compare exactly
+    (UNIT-COMMON amendment); injected at Sol's two positions."""
+    py = np.linspace(0.0, 255.0, 2958)
+    py[1208], py[2585] = 0.3509369663653672, 3.185835616366532
+    no_pack = cast(Any, None)
+    for at in (1208, 2585):
+        rs = py.copy()
+        rs[at] = np.nan
+        assert cp.float_gap(py, rs) is not None
+        gap, _ = cp.predict_gap(no_pack, b"", py.reshape(-1, 3), py, rs, half=0, base=False)
+        assert gap is not None and gap.startswith("NaN on one side") and str(at) in gap, gap
+    both = py.copy()
+    both[7] = np.nan
+    assert cp.float_gap(both, both.copy()) is None
+    assert cp.predict_gap(no_pack, b"", py.reshape(-1, 3), both, both.copy(), half=0, base=False)[0] is None
+    for left, right, ok in (
+        (np.inf, np.inf, True),
+        (-np.inf, -np.inf, True),
+        (np.inf, -np.inf, False),
+        (1.0, np.inf, False),
+        (np.inf, 1.0, False),
+    ):
+        a, b = py.copy(), py.copy()
+        a[11], b[11] = left, right
+        assert (cp.float_gap(a, b) is None) == ok, (left, right)
+        assert (cp.predict_gap(no_pack, b"", py.reshape(-1, 3), a, b, half=0, base=False)[0] is None) == ok, (left, right)

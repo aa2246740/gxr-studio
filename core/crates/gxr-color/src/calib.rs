@@ -8,7 +8,7 @@ use gxr_raw::CoreError;
 use crate::json_in::{Value, parse as parse_json};
 use crate::model::{Shaped, UnitModel, word_ratio};
 use crate::npy::{Npy, decode};
-use crate::npz::load;
+use crate::npz::{Member, load};
 
 pub const SCHEMA: &str = "gxr-studio/calib/2";
 pub const MODEL_ISOS: [i64; 2] = [200, 1600];
@@ -86,12 +86,12 @@ pub fn context(npz_bytes: &[u8], stock: &[[i64; 2]; 24]) -> Result<Context, Core
     })
 }
 
-fn find(arrays: &[(String, Vec<u8>)], name: &str) -> Result<Npy, CoreError> {
-    let (_, data) = arrays
+fn find(arrays: &[Member], name: &str) -> Result<Npy, CoreError> {
+    let member = arrays
         .iter()
-        .find(|(key, _)| key == name)
+        .find(|m| m.key == name)
         .ok_or_else(|| missing(name))?;
-    decode(data)
+    decode(member.payload()?)
 }
 
 fn all_finite(values: &[f64]) -> bool {

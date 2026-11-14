@@ -68,7 +68,7 @@ def python_error(fn: Any) -> BaseException | None:
     return None
 
 
-KINDS = {"ValueError": "value", "CalibError": "calib", "StockMismatch": "stock_mismatch", "KeyError": "key"}
+KINDS = {"ValueError": "value", "CalibError": "calib", "StockMismatch": "stock_mismatch", "KeyError": "key", "BadZipFile": "zip"}
 
 
 def same_error(py: BaseException | None, rs: CoreCliError | None) -> str | None:
@@ -98,11 +98,37 @@ def predict(tmp: Path, pack: Pack, entry: bytes, codes: np.ndarray, *, flt: bool
     return py, rust
 
 
+def nonfinite_gap(python: np.ndarray, rust: np.ndarray) -> tuple[str | None, np.ndarray]:
+    """The non-finite rule of every float gate (UNIT-COMMON amendment, 2026-11-14): NaN must
+    meet NaN at the same position, a NaN on one side fails, and infinities compare exactly.
+    Returns (failure or None, the mask of positions where both values are finite)."""
+    a, b = np.asarray(python).reshape(-1), np.asarray(rust).reshape(-1)
+    nan_a, nan_b = np.isnan(a), np.isnan(b)
+    for mask, what in ((nan_a != nan_b, "NaN on one side"), ((np.isinf(a) | np.isinf(b)) & ~nan_a & ~nan_b & (a != b), "infinity differs")):
+        hit = np.flatnonzero(mask)
+        if len(hit):
+            i = int(hit[0])
+            return f"{what}: {len(hit)} positions; first {i}: python {a[i]!r} rust {b[i]!r}", np.zeros(a.shape, bool)
+    return None, np.isfinite(a) & np.isfinite(b)
+
+
+def finite_gaps(a: np.ndarray, b: np.ndarray, finite: np.ndarray) -> np.ndarray:
+    """``|a - b|`` where both are finite, 0 elsewhere (the non-finite rule decides those)."""
+    out = np.zeros(a.shape)
+    out[finite] = np.abs(a[finite] - b[finite])
+    return out
+
+
 def float_gap(python: np.ndarray, rust: np.ndarray) -> str | None:
-    """The default float64 gate: ``|a - b| <= 1e-12 * max(1, |a|)``. None when it holds."""
+    """The default float64 gate: ``|a - b| <= 1e-12 * max(1, |a|)`` on finite values, after
+    the non-finite rule. None when it holds."""
     assert python.dtype == np.float64 and rust.dtype == np.float64, (python.dtype, rust.dtype)
     assert python.shape == rust.shape, (python.shape, rust.shape)
-    bad = np.flatnonzero((np.abs(python - rust) > 1e-12 * np.maximum(1.0, np.abs(python))).reshape(-1))
+    failure, finite = nonfinite_gap(python, rust)
+    if failure is not None:
+        return failure
+    a, b = python.reshape(-1), rust.reshape(-1)
+    bad = np.flatnonzero(finite & (finite_gaps(a, b, finite) > 1e-12 * np.maximum(1.0, np.abs(a))))
     if not len(bad):
         return None
     i = int(bad[0])
@@ -144,9 +170,14 @@ def predict_gap(
     """
     assert py.dtype == np.float64 and rust.dtype == np.float64, (py.dtype, rust.dtype)
     assert py.shape == rust.shape, (py.shape, rust.shape)
+    failure, finite = nonfinite_gap(py, rust)
+    if failure is not None:
+        return failure, []
     flat_py, flat_rs = py.reshape(-1), rust.reshape(-1)
-    over = np.flatnonzero(np.abs(flat_py - flat_rs) > 1e-12 * np.maximum(1.0, np.abs(flat_py)))
+    over = np.flatnonzero(finite & (finite_gaps(flat_py, flat_rs, finite) > 1e-12 * np.maximum(1.0, np.abs(flat_py))))
     decided: list[str] = []
+    if not len(over):
+        return None, decided
     model = pack.model()
     fn = Model.predict if base else UnitModel.predict
     for i in over:

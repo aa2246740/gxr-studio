@@ -191,9 +191,11 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 ### 错误
 
 - `_context`：色表行不一致 kind `stock_mismatch`；尺寸、非有限数、`S_eff` 还原失败 kind `calib`；缺数组 kind `key`，文案和 numpy 一样（`'名字 is not a file in the archive'`）。不是 zip 的文件走 numpy 的 pickle 文案（kind `value`）。压缩的 zip 成员拒绝，kind `zip`（Python 能读，这是有意的差别：不加解压依赖）。
+- npz 照 CPython `zipfile` 的顺序打开：先找结尾记录（含 ZIP64），再逐条核对中央目录，再核对每个成员的本地头（名字、方法、CRC、大小要和中央目录一致），读成员时校验 CRC-32。截断、缺中央目录、CRC 不对都是 kind `zip`，文案用 `BadZipFile` 的原文（例如 `File is not a zip file`、`Bad CRC-32 for file '…'`）。
 - `model_for`：版本、单元、清单、改动 kind `calib`，原厂 04 不匹配 kind `stock_mismatch`。包里缺文件 kind `file_not_found`，文案不和 Python 的 `FileNotFoundError` 逐字相同。
 - 预测和烘焙：`ValueError` 的文案相同（不对称色表行、系数字高位、色相环节点、输入映射尺寸、未知核类型、`需要 v2 pre-table 模型`），色相环缺键 kind `key`。
 - 不和 Python 逐字相同的：八个角张不成面积时 Qhull 报 `QhullError`，这里 kind `qhull`，文案只是一行；条目不是 552 字节（Python 的条目都来自 `datcodec`，永远是 552）；色相环里节点不是 24 个、`gain_per_sector` 不是 1 或 24 个（Python 到预测时才报 numpy 的广播错误，这里构造时就拒绝，文案用节点检查那句）；数字字段不是数字（kind `type`）；网格超过 2^24 格（kind `memory`）。
+- JSON：数组和对象最多嵌套 128 层，进入下一层之前就检查。超出时 kind `json`，文案 `JSON 嵌套太深`，原生和 WASM 一样（Python 的 `json` 会接受更深的输入，这是有意的差别）。
 - 尺寸：`.npy` 的形状、头部长度和烘焙网格（包括 meta 里的 `nx`、`ny`）都用带检查的 u64 相乘，元素数不超过 2^32−1，分配失败也不 panic。超出时原生和 WASM 给同一句 numpy 文案 `array is too big; …`（kind `value`）。
 
 ### WASM

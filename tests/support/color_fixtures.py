@@ -139,3 +139,29 @@ def first_difference(python: np.ndarray, rust: np.ndarray) -> str:
         return "no difference"
     i = int(bad[0])
     return f"{len(bad)} differ; first flat index {i}: python {a[i]!r} rust {b[i]!r}"
+
+
+def npz_damage(data: bytes, member: str) -> dict[str, bytes]:
+    """Sol's three damaged archives: cut before the central directory, the last 12 bytes
+    removed, and one low bit of `member`'s first array value flipped with the CRC kept."""
+    import zipfile
+
+    info = zipfile.ZipFile(io.BytesIO(data)).getinfo(member)
+    at = info.header_offset
+    name_len, extra_len = struct.unpack_from("<HH", data, at + 26)
+    payload = at + 30 + name_len + extra_len
+    header_len = struct.unpack_from("<H", data, payload + 8)[0]
+    flipped = bytearray(data)
+    flipped[payload + 10 + header_len] ^= 1
+    return {
+        "missing_central_directory": data[: data.index(b"PK\x01\x02")],
+        "truncated_central_directory": data[:-12],
+        "crc_corruption": bytes(flipped),
+    }
+
+
+def deep_json(levels: int, kind: str) -> str:
+    """A params object nested `levels` deep in total (the outer object counts as one)."""
+    if kind == "array":
+        return '{"ignored":' + "[" * (levels - 1) + "0" + "]" * (levels - 1) + "}"
+    return '{"a":' * levels + "0" + "}" * levels
