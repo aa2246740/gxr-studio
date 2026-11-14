@@ -93,6 +93,10 @@ fn main() {
     let sdr = Plane32::new(s.clone(), 32, 32).unwrap();
     let raw = Plane32::new(s.clone(), 32, 32).unwrap();
     let raw8 = Plane32::new(sol(64), 8, 8).unwrap();
+    // Sol r4: one-pixel inputs, so the sigma-sized Gaussian kernel exceeds 8x the input.
+    let one = [0.25f32];
+    let px = Plane32::new(vec![0.02], 1, 1).unwrap();
+    let px2 = Plane32::new(vec![0.02], 1, 1).unwrap();
     let al = Alignment {
         scale: 1.0,
         dy: 0,
@@ -109,6 +113,8 @@ fn main() {
         "block_mean" => 4 * 16,
         "luma" => 4 * 4 * 3,
         "fit_curve" => 160 * (4 + 4 + 1),
+        "gaussian_256" => 4,
+        "align_1x1" => 2 * 4,
         _ => panic!("op"),
     };
     LIMIT.store(8 * bytes, Ordering::SeqCst);
@@ -124,6 +130,8 @@ fn main() {
             .map_err(|e| (e.kind, e.message)),
         "block_mean" => gxr_hdr::block_mean(&tiny, 4, 4, 300).map(|_| ()).map_err(|e| (e.kind, e.message)),
         "luma" => gxr_hdr::sdr_luma_grid(&rgb, 4, 4, 300).map(|_| ()).map_err(|e| (e.kind, e.message)),
+        "gaussian_256" => gxr_hdr::gaussian_filter(&one, 1, 1, 256.0).map(|_| ()).map_err(|e| (e.kind, e.message)),
+        "align_1x1" => gxr_hdr::align(&px, &px2).map(|_| ()).map_err(|e| (e.kind, e.message)),
         _ => gxr_hdr::fit_curve(&xs, &ys, &valid).map(|_| ()).map_err(|e| (e.kind, e.message)),
     };
     ACTIVE.store(false, Ordering::SeqCst);
@@ -136,7 +144,7 @@ fn main() {
 """
 
 # rule 2: these paths size buffers from parameters, so an injected refusal must surface.
-RULE2_OPS = ["register", "block_mean", "luma", "fit_curve"]
+RULE2_OPS = ["register", "block_mean", "luma", "fit_curve", "gaussian_256", "align_1x1"]
 # no rule-2 allocation is reachable here with Sol's inputs: nothing above 8× the input.
 BOUNDED_OPS = ["align", "compute_gain"]
 

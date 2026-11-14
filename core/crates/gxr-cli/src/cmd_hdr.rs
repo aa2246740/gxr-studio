@@ -141,18 +141,27 @@ fn parse_npy(raw: &[u8]) -> Option<Npy> {
         .filter(|p| !p.is_empty())
         .map(|p| p.parse().ok())
         .collect::<Option<Vec<usize>>>()?;
-    let data = raw[at + len..].to_vec();
-    // Checked u64: the header's shape is untrusted input.
+    // Rule 1 (Sol r4): the header's shape is untrusted. Element and byte counts are computed in
+    // checked u64, pass the shared limit and must equal the *borrowed* payload length before
+    // the payload is copied.
+    let payload = raw.get(at.checked_add(len)?..)?;
     let n = shape
         .iter()
         .try_fold(1u64, |a, &d| a.checked_mul(u64::try_from(d).ok()?))?;
+    hdr::count(&[n]).ok()?;
     let size = match descr.as_str() {
         "<f8" | "<i8" => 8,
         "<f4" | "<i4" => 4,
         "|u1" | "|b1" => 1,
         _ => return None,
     };
-    (n.checked_mul(size)? == u64::try_from(data.len()).ok()?).then_some(Npy { descr, shape, data })
+    if n.checked_mul(size)? != u64::try_from(payload.len()).ok()? {
+        return None;
+    }
+    let mut data = Vec::new();
+    data.try_reserve_exact(payload.len()).ok()?;
+    data.extend_from_slice(payload);
+    Some(Npy { descr, shape, data })
 }
 
 fn hw(a: &Npy) -> Result<(usize, usize), Failure> {

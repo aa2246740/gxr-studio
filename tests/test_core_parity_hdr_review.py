@@ -300,3 +300,21 @@ def test_rule2_allocations_fail_as_core_errors(tmp_path: Path) -> None:
             assert got.stdout.strip().endswith(f"refused=1 value_error: {ARRAY_TOO_BIG}"), (op, k, got.stdout)
         seen[op] = above
     print("allocation rules (allocations above 8x the input, each refused once):", seen)
+
+
+def test_cli_npy_parser_validates_before_copying(tmp_path: Path) -> None:
+    """Sol r4 rule 1: the CLI's `.npy` parser checks the header's element and byte counts
+    against the borrowed payload before copying it. Invalid headers make no payload-sized
+    copy; a valid one is still accepted (and copied once)."""
+    from support import hdr_cli_npy_order as no
+
+    binary = no.build(tmp_path)
+    if binary is None:
+        if os.environ.get("GXR_REQUIRE_CORE") == "1":
+            pytest.fail("cargo is required to build the CLI order driver")
+        pytest.skip("cargo is not on PATH")
+    for case, accepted in no.CASES.items():
+        got = no.run(binary, case)
+        assert got.returncode == 0, (case, got.stderr)
+        copies = 1 if accepted else 0
+        assert got.stdout.strip() == f"{case} accepted={str(accepted).lower()} payload_copies={copies}", got.stdout

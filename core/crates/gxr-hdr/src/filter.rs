@@ -22,6 +22,7 @@ use gxr_raw::CoreError;
 use crate::error::unsupported;
 use crate::extend::reflect;
 use crate::np::{Real, count_f64, sum};
+use crate::size;
 
 /// Largest Gaussian radius and window this port accepts (scipy has no limit; a larger
 /// window only repeats the reflected line).
@@ -93,17 +94,27 @@ pub fn gaussian_kernel(sigma: f64) -> Result<Vec<f64>, CoreError> {
     // `int()` truncates toward zero; `raw` is positive here because sigma > 1e-15.
     #[allow(clippy::cast_possible_truncation)]
     let radius = raw.trunc() as i64;
+    // Rule 2 (UNIT-COMMON allocation amendment, Sol r4): the kernel length 2r + 1 comes from
+    // sigma, not from the plane, so it goes through checked u64, the shared limit and a
+    // fallible reservation. Normalising happens in place: one buffer, no second collect.
+    let r = u64::try_from(radius).map_err(|_| size::too_big())?;
+    let len = r
+        .checked_mul(2)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(size::too_big)?;
+    let mut phi: Vec<f64> = size::with_capacity(size::count(&[len])?)?;
     let sigma2 = sigma * sigma;
     let factor = -0.5 / sigma2;
-    let phi: Vec<f64> = (-radius..=radius)
-        .map(|x| {
-            #[allow(clippy::cast_precision_loss)]
-            let xx = (x * x) as f64;
-            exp(factor * xx)
-        })
-        .collect();
+    phi.extend((-radius..=radius).map(|x| {
+        #[allow(clippy::cast_precision_loss)]
+        let xx = (x * x) as f64;
+        exp(factor * xx)
+    }));
     let total = sum(&phi);
-    Ok(phi.iter().map(|v| v / total).collect())
+    for v in &mut phi {
+        *v /= total;
+    }
+    Ok(phi)
 }
 
 /// Port of `ndimage.gaussian_filter(plane, sigma)` (all other arguments default).
