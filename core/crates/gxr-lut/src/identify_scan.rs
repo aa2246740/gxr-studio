@@ -43,8 +43,19 @@ impl OrderedMap {
 }
 
 #[inline]
-pub fn is_ascii_alnum(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
+pub fn re_i_char(ch: char) -> char {
+    match ch {
+        '\u{0130}' | '\u{0131}' => 'i', // İ, ı
+        '\u{017f}' => 's',              // ſ
+        '\u{212a}' => 'k',              // K
+        _ => ch.to_ascii_lowercase(),
+    }
+}
+
+/// Python `re.I` semantics for `[a-z0-9]`.
+#[inline]
+pub fn is_re_i_alnum(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '\u{0130}' | '\u{0131}' | '\u{017f}' | '\u{212a}')
 }
 
 #[inline]
@@ -61,17 +72,33 @@ fn next_char(s: &str, byte_idx: usize) -> Option<char> {
 }
 
 pub fn starts_ci(s: &str, pat: &str) -> bool {
-    s.len() >= pat.len()
-        && s.is_char_boundary(pat.len())
-        && s[..pat.len()].eq_ignore_ascii_case(pat)
+    consume_ci(s, 0, pat).is_some()
 }
 
 pub fn consume_ci(s: &str, pos: usize, pat: &str) -> Option<usize> {
-    if starts_ci(&s[pos..], pat) {
-        Some(pos + pat.len())
-    } else {
-        None
+    let mut s_chars = s[pos..].char_indices();
+    let mut matched_end = 0usize;
+    for p_ch in pat.chars() {
+        let (off, s_ch) = s_chars.next()?;
+        if re_i_char(s_ch) != re_i_char(p_ch) {
+            return None;
+        }
+        matched_end = off + s_ch.len_utf8();
     }
+    Some(pos + matched_end)
+}
+
+pub fn find_ci(s: &str, pat: &str) -> Option<(usize, usize)> {
+    for (idx, _) in s.char_indices() {
+        if let Some(end) = consume_ci(s, idx, pat) {
+            return Some((idx, end));
+        }
+    }
+    None
+}
+
+pub fn contains_ci(s: &str, pat: &str) -> bool {
+    find_ci(s, pat).is_some()
 }
 
 fn consume_opt_sep(s: &str, pos: usize, seps: &[u8]) -> usize {
@@ -91,7 +118,7 @@ fn consume_many_bytes(s: &str, mut pos: usize, seps: &[u8]) -> usize {
 
 pub fn ws_end(s: &str, start: usize) -> usize {
     for (off, ch) in s[start..].char_indices() {
-        if !ch.is_whitespace() {
+        if !crate::py_num::py_space(ch) {
             return start + off;
         }
     }
@@ -235,7 +262,6 @@ const PATTERN_SPACES: [&str; 12] = [
 /// Port of gxr_studio/lut/identify.py:35 _spaces.
 pub fn spaces_in_text(raw_text: &str) -> OrderedMap {
     let text = strip_primaries_gamut(raw_text);
-    let b = text.as_bytes();
     let mut found = OrderedMap::default();
     let mut occupied: Vec<(usize, usize)> = Vec::new();
     for (pat_idx, &space) in PATTERN_SPACES.iter().enumerate() {
@@ -245,10 +271,10 @@ pub fn spaces_in_text(raw_text: &str) -> OrderedMap {
                 pos += 1;
                 continue;
             }
-            let prev_ok = pos == 0 || !is_ascii_alnum(b[pos - 1]);
+            let prev_ok = prev_char(&text, pos).is_none_or(|c| !is_re_i_alnum(c));
             if prev_ok
                 && let Some(end) = match_space_pattern(&text, pos, pat_idx)
-                && (end == text.len() || !is_ascii_alnum(b[end]))
+                && next_char(&text, end).is_none_or(|c| !is_re_i_alnum(c))
             {
                 if !occupied.iter().any(|&(s, e)| s <= pos && pos < e) {
                     found.insert(space, &text[pos..end]);
@@ -329,7 +355,7 @@ fn match_field_at(s: &str, pos: usize) -> Option<FieldMatch> {
     if end < s.len() && (s.as_bytes()[end] == b':' || s.as_bytes()[end] == b'=') {
         end = ws_end(s, end + 1);
     }
-    let has_gamma = s[pos..end].to_ascii_lowercase().contains("gamma");
+    let has_gamma = contains_ci(&s[pos..end], "gamma");
     Some(FieldMatch {
         start: pos,
         end,
@@ -370,17 +396,14 @@ pub fn posix_stem(filename: &str) -> String {
 }
 
 fn match_direction_at(s: &str, pos: usize) -> Option<(usize, usize)> {
-    if starts_ci(&s[pos..], "->") {
-        return Some((pos, pos + 2));
+    if let Some(end) = consume_ci(s, pos, "->").or_else(|| consume_ci(s, pos, "_to_")) {
+        return Some((pos, end));
     }
-    if starts_ci(&s[pos..], "_to_") {
-        return Some((pos, pos + 4));
-    }
-    if starts_ci(&s[pos..], "to")
+    if let Some(end) = consume_ci(s, pos, "to")
         && prev_char(s, pos).is_none_or(|c| !is_py_word_char(c))
-        && next_char(s, pos + 2).is_none_or(|c| !is_py_word_char(c))
+        && next_char(s, end).is_none_or(|c| !is_py_word_char(c))
     {
-        return Some((pos, pos + 2));
+        return Some((pos, end));
     }
     None
 }
@@ -437,7 +460,7 @@ pub fn split_domain_first(s: &str) -> &str {
         if ch == ';' || match_direction_at(s, idx).is_some() {
             return &s[..idx];
         }
-        if b"_ -".contains(&(ch as u8)) {
+        if matches!(ch, '_' | ' ' | '-') {
             let p = consume_many_bytes(s, idx, b"_ -");
             if p > idx
                 && let Some(q) = consume_ci(s, p, "style")
@@ -465,11 +488,11 @@ pub fn match_alchemy_suffix(dest: &str) -> Option<&str> {
             .map(|p| consume_opt_sep(dest, p, b"- "))
             .and_then(|p| consume_ci(dest, p, "log"))
             .or_else(|| {
-                let first = dest.as_bytes().get(log_start)?;
-                if !matches!(first.to_ascii_lowercase(), b'v' | b'f' | b'l' | b's') {
+                let first = dest[log_start..].chars().next()?;
+                if !matches!(re_i_char(first), 'v' | 'f' | 'l' | 's') {
                     return None;
                 }
-                let p = consume_opt_sep(dest, log_start + 1, b"- ");
+                let p = consume_opt_sep(dest, log_start + first.len_utf8(), b"- ");
                 let mut p = consume_ci(dest, p, "log")?;
                 if p < dest.len() && dest.as_bytes()[p].is_ascii_digit() {
                     p += 1;
@@ -512,14 +535,13 @@ pub fn match_alchemy_suffix(dest: &str) -> Option<&str> {
 }
 
 pub fn has_space_hint(text: &str) -> bool {
-    let b = text.as_bytes();
     let mut pos = 0;
     while pos < text.len() {
         if !text.is_char_boundary(pos) {
             pos += 1;
             continue;
         }
-        let prev_ok = pos == 0 || !is_ascii_alnum(b[pos - 1]);
+        let prev_ok = prev_char(text, pos).is_none_or(|c| !is_re_i_alnum(c));
         if prev_ok && match_space_hint_at(text, pos).is_some() {
             return true;
         }
@@ -529,17 +551,15 @@ pub fn has_space_hint(text: &str) -> bool {
 }
 
 fn match_space_hint_at(text: &str, pos: usize) -> Option<usize> {
-    let b = text.as_bytes();
     let mut candidates = [pos, pos];
     let mut count = 1usize;
     if let Some(p) = consume_ci(text, pos, "apple").or_else(|| consume_ci(text, pos, "red")) {
         candidates[count] = consume_opt_sep(text, p, b"-_ ");
         count += 1;
-    } else if matches!(
-        b.get(pos).map(u8::to_ascii_lowercase),
-        Some(b'a' | b'f' | b'v' | b's' | b'l' | b'c' | b'd')
-    ) {
-        candidates[count] = consume_opt_sep(text, pos + 1, b"-_ ");
+    } else if let Some(first) = text[pos..].chars().next()
+        && matches!(re_i_char(first), 'a' | 'f' | 'v' | 's' | 'l' | 'c' | 'd')
+    {
+        candidates[count] = consume_opt_sep(text, pos + first.len_utf8(), b"-_ ");
         count += 1;
     }
     for &start in &candidates[..count] {
@@ -547,19 +567,19 @@ fn match_space_hint_at(text: &str, pos: usize) -> Option<usize> {
             .or_else(|| consume_ci(text, start, "linear"))
             .or_else(|| consume_ci(text, start, "gamma"));
         if let Some(mut p) = end {
-            while p < text.len() && is_ascii_alnum(b[p]) {
-                p += 1;
+            while let Some(ch) = next_char(text, p)
+                && is_re_i_alnum(ch)
+            {
+                p += ch.len_utf8();
             }
-            if p == text.len() || !is_ascii_alnum(b[p]) {
-                return Some(p);
-            }
+            return Some(p);
         }
     }
     None
 }
 
 pub fn is_attribution_comment(text: &str) -> bool {
-    let trimmed = text.trim_start();
+    let trimmed = text.trim_start_matches(crate::py_num::py_space);
     let after = consume_ci(trimmed, 0, "source")
         .or_else(|| consume_ci(trimmed, 0, "author"))
         .or_else(|| consume_ci(trimmed, 0, "license"))
@@ -583,4 +603,24 @@ pub fn is_attribution_comment(text: &str) -> bool {
     };
     let p = ws_end(trimmed, p);
     trimmed.as_bytes().get(p) == Some(&b':')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn re_i_matches_unicode_letters_and_boundaries() {
+        let found = spaces_in_text("input_lİnear");
+        assert_eq!(found.0, vec![("linear".to_string(), "lİnear".to_string())]);
+
+        let found_s = spaces_in_text("input_ſRGB");
+        assert_eq!(found_s.0, vec![("srgb".to_string(), "ſRGB".to_string())]);
+
+        // Adjacent İ/ı/ſ/K counts as [a-z0-9] for boundaries and must block partial match.
+        assert!(spaces_in_text("xİlinear").is_empty());
+        assert!(spaces_in_text("linearK").is_empty());
+        assert!(has_space_hint("ſlog_custom"));
+        assert!(!has_space_hint("İlinear"));
+    }
 }

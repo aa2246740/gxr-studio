@@ -5,7 +5,7 @@ use gxr_raw::Json;
 
 use crate::cube::Cube;
 use crate::identify_scan::{
-    OrderedMap, consume_ci, find_field_matches, find_first_direction, has_space_hint,
+    OrderedMap, consume_ci, find_ci, find_field_matches, find_first_direction, has_space_hint,
     is_attribution_comment, match_alchemy_suffix, output_spaces, posix_stem, search_explicit_input,
     spaces_in_text, split_domain_first, split_last_direction, ws_end,
 };
@@ -140,9 +140,8 @@ fn named_input(name: &str, title: &str) -> OrderedMap {
             marked.extend_from(spaces_in_text(domain));
         }
     }
-    let lower_stem = stem.to_ascii_lowercase();
-    if let Some(idx) = lower_stem.find("_to_") {
-        let dest = &stem[idx + 4..];
+    if let Some((_, end)) = find_ci(&stem, "_to_") {
+        let dest = &stem[end..];
         if let Some(log_word) = match_alchemy_suffix(dest) {
             marked.extend_from(spaces_in_text(log_word));
         }

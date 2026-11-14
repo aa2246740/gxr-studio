@@ -52,6 +52,14 @@ IDENTIFY_CASES: list[tuple[str, str, str, Any]] = [
     ("# Output: Rec.709\n", "warm film", "warm_film.cube", lambda x: 1 - x),
     ("# sRGB look\n", "FLog2C style", "FLog2C.cube", lambda x: 1 - x),
     ("# Author: V-Log master\n", "film", "film.cube", lambda x: 1 - x),
+    ("", "synthetic", "input_lİnear.cube", lambda x: 1 - x),
+    ("# Output: Gamma 2.4\n", "synthetic", "input_lİnear.cube", lambda x: 1 - x),
+    ("", "synthetic", "input_ſRGB.cube", lambda x: 1 - x),
+    ("# inputtransferfunction: S-Log3\n", "synthetic", "input_ſRGB.cube", lambda x: 1 - x),
+    ("", "synthetic", "ſRGB_to_VLog.cube", lambda x: 1 - x),
+    ("", "synthetic", "ſlog_custom.cube", lambda x: 1 - x),
+    ("", "synthetic", "xİlinear.cube", lambda x: 1 - x),
+    ("", "synthetic", "linearK.cube", lambda x: 1 - x),
 ]
 
 
@@ -125,6 +133,8 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
     huge64 = tmp_path / "huge64.cube"
     huge64.write_text("LUT_3D_SIZE 18446744073709551615\n", encoding="utf-8")
 
+    inv2 = tmp_path / "inv2.cube"
+    inv2.write_text(cube_text(lambda x: 1 - x, size=2, title="synthetic"), encoding="utf-8")
     manifests: list[Path] = [shaper_cube, log_cube, bad_cube, u_size, u_float, uni_size, huge64]
     cases_specs: list[dict[str, Any]] = [
         {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "srgb", "output_space": "vlog"}},
@@ -155,6 +165,8 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
             "height": 2,
             "width": 2,
         },
+        {"kind": "identify", "cube": str(inv2), "name": "input_lİnear.cube"},
+        {"kind": "identify", "cube": str(inv2), "name": "input_ſRGB.cube"},
         {
             "kind": "apply_u8",
             "cube": str(steep_cube),
