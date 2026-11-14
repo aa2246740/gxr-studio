@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { captureMillis, captureTimeFromJpeg, captureTimeFromTiff, embeddedJpegRange } from '../../mobile/src/lib/exif.ts';
+import { captureMillis, captureTimeFromJpeg, captureTimeFromTiff, checkDng, embeddedJpegRange } from '../../mobile/src/lib/exif.ts';
 import { classify, groupByGap, groupCount, sortIds, visibleRange } from '../../mobile/src/lib/group.ts';
 
 function u16(value) {
@@ -135,6 +135,50 @@ test('dng preview in a reduced jpeg strip of a sub ifd', () => {
   rawOnly[subs + 4] = raw & 255;
   rawOnly[subs + 5] = (raw >> 8) & 255;
   assert.equal(embeddedJpegRange(rawOnly), null);
+});
+
+/** 最小的「像 DNG」的小端 TIFF：IFD0 里有 DNGVersion 和一个指向文件内的 StripOffsets。 */
+function tinyDng() {
+  const ifd = 8;
+  const end = ifd + 2 + 12 * 2 + 4;
+  return Uint8Array.from([
+    0x49, 0x49, 0x2a, 0x00,
+    ...u32(ifd),
+    ...u16(2),
+    ...entry(0x0111, 4, 1, end),
+    ...entry(0xc612, 1, 4, 0x00000401),
+    ...u32(0),
+    0, 0, 0, 0,
+  ]);
+}
+
+test('dng structure check in the worker', () => {
+  const good = tinyDng();
+  assert.equal(checkDng(good, good.length), null);
+  // 复审里的坏头：II 开头但不是 TIFF。
+  const text = Uint8Array.from([...'II-not-a-TIFF-header'].map((c) => c.charCodeAt(0)));
+  assert.equal(checkDng(text, text.length), 'magic');
+  assert.equal(checkDng(Uint8Array.from([0x49, 0x49]), 2), 'too short');
+  // IFD 说有 20 个条目，文件在第二个条目处就完了。
+  const cut = Uint8Array.from([0x49, 0x49, 0x2a, 0x00, ...u32(8), ...u16(20), ...entry(0xc612, 1, 4, 0x00000401)]);
+  assert.equal(checkDng(cut, cut.length), 'truncated ifd');
+  // IFD0 偏移在文件外。
+  const far = good.slice();
+  far.set(u32(900), 4);
+  assert.equal(checkDng(far, far.length), 'ifd0 offset');
+  // 不是 DNG：没有 DNGVersion。
+  const plain = good.slice();
+  plain.set(u16(0x0110), 8 + 2 + 12);
+  assert.equal(checkDng(plain, plain.length), 'no DNGVersion');
+  // 条目的值指到文件外面。
+  const outside = Uint8Array.from([0x49, 0x49, 0x2a, 0x00, ...u32(8), ...u16(2), ...entry(0x0111, 4, 4, 5000), ...entry(0xc612, 1, 4, 0x00000401), ...u32(0)]);
+  assert.equal(checkDng(outside, outside.length), 'value outside file');
+  // IFD 落在读到的这段之外、但没出文件：不下结论。
+  assert.equal(checkDng(good.subarray(0, 12), 4096), null);
+  for (const junk of [new Uint8Array(0), Uint8Array.from([0x4d, 0x4d, 0, 42, 255, 255, 255, 255])]) {
+    assert.doesNotThrow(() => checkDng(junk, junk.length));
+    assert.notEqual(checkDng(junk, junk.length), null);
+  }
 });
 
 test('pairing, dat and ignored files', () => {

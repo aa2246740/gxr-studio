@@ -1,7 +1,7 @@
 // 编辑一张。拖滑块时只改 setLook 和滑块上的数字，不重建页面。
 
 import { Engine, type Adjust } from '../../../frontend/src/index';
-import { describeDng } from '../core/api';
+import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
 import { formatClock } from '../lib/group';
 import { button, el, icon, ICON } from './dom';
@@ -479,6 +479,19 @@ export class EditorView {
       return;
     }
     if (token !== this.token) return;
+    // 先用 WASM 描述，坏文件的判断和有没有显卡无关。
+    let described: Described;
+    try {
+      described = await describeDng(bytes);
+    } catch {
+      if (token === this.token) this.api.markBad(photo.id);
+      return;
+    }
+    if (token !== this.token) return;
+    if (!described.layout || described.reason) {
+      this.api.markBad(photo.id);
+      return;
+    }
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
       if (this.input) this.input.disabled = true;
@@ -486,12 +499,6 @@ export class EditorView {
       return;
     }
     try {
-      const described = await describeDng(bytes);
-      if (token !== this.token) return;
-      if (!described.layout || described.reason) {
-        this.api.markBad(photo.id);
-        return;
-      }
       const key = `raw:${photo.id}`;
       await this.engine.addRaw(key, described.layout, bytes, described.scene);
       if (token !== this.token) return;

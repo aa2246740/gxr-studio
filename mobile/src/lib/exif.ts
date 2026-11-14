@@ -243,3 +243,67 @@ export function embeddedJpegRange(bytes: Uint8Array): ByteRange | null {
     return null;
   }
 }
+
+/**
+ * DNG 的结构检查，在 Worker 里做，不看有没有显卡。返回 null 表示结构可用，否则是原因（只给日志和测试看）。
+ * `bytes` 是文件开头一段，`fileSize` 是整个文件的大小。IFD 落在这一段之外、但没超出文件时不判坏：
+ * 读不到就不下结论，留给 WASM 的完整描述去判。
+ */
+export function checkDng(bytes: Uint8Array, fileSize: number): string | null {
+  try {
+    if (bytes.length < 8 || fileSize < 8) return 'too short';
+    const le = bytes[0] === 0x49 && bytes[1] === 0x49;
+    const be = bytes[0] === 0x4d && bytes[1] === 0x4d;
+    if (!le && !be) return 'byte order';
+    if (u16(bytes, 2, le) !== 42) return 'magic';
+    const first = u32(bytes, 4, le);
+    if (first === null || first < 8 || first + 2 > fileSize) return 'ifd0 offset';
+    const ifd0 = readIfd(bytes, fileSize, le, first);
+    if (typeof ifd0 === 'string') return ifd0;
+    if (!ifd0) return null;
+    if (!ifd0.tags.has(0xc612)) return 'no DNGVersion';
+    for (const sub of ifd0.subs) {
+      if (sub < 8 || sub + 2 > fileSize) return 'subifd offset';
+      const row = readIfd(bytes, fileSize, le, sub);
+      if (typeof row === 'string') return row;
+    }
+    return null;
+  } catch {
+    return 'unreadable';
+  }
+}
+
+/** 读一个 IFD 的条目。超出文件返回原因；落在开头这段之外返回 null（不下结论）。 */
+function readIfd(bytes: Uint8Array, fileSize: number, le: boolean, at: number): { tags: Set<number>; subs: number[] } | string | null {
+  if (at + 2 > bytes.length) return null;
+  const count = u16(bytes, at, le);
+  if (count === null || count === 0 || count > MAX_ENTRIES) return 'ifd entry count';
+  const end = at + 2 + count * 12 + 4;
+  if (end > fileSize) return 'truncated ifd';
+  if (end > bytes.length) return null;
+  const tags = new Set<number>();
+  const subs: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const entry = at + 2 + i * 12;
+    const tag = u16(bytes, entry, le);
+    const type = u16(bytes, entry + 2, le);
+    const n = u32(bytes, entry + 4, le);
+    if (tag === null || type === null || n === null) return 'truncated ifd';
+    const size = type === 13 ? 4 : typeSize(type);
+    if (size === null) return 'entry type';
+    const total = size * n;
+    if (total > 4) {
+      const pointed = u32(bytes, entry + 8, le);
+      if (pointed === null || pointed + total > fileSize) return 'value outside file';
+    }
+    tags.add(tag);
+    if (tag === 0x014a && (type === 4 || type === 13) && n >= 1 && n <= 8) {
+      const base = total > 4 ? u32(bytes, entry + 8, le) : entry + 8;
+      for (let k = 0; base !== null && k < n; k++) {
+        const sub = u32(bytes, base + k * 4, le);
+        if (sub !== null) subs.push(sub);
+      }
+    }
+  }
+  return { tags, subs };
+}

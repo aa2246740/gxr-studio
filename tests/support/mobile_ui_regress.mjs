@@ -76,8 +76,14 @@ async function makePage({ gpu = true, width = 390, height = 844 } = {}) {
   return { page, context, errors };
 }
 
+/** Playwright 不让路径和内存里的文件混着传：混着时把路径读成 buffer。 */
+function asFiles(files) {
+  if (files.every((file) => typeof file === 'string')) return files;
+  return files.map((file) => (typeof file === 'string' ? { name: file.split('/').pop(), mimeType: 'application/octet-stream', buffer: readFileSync(file) } : file));
+}
+
 async function pick(page, files) {
-  await page.locator('input[type=file]').setInputFiles(files);
+  await page.locator('input[type=file]').setInputFiles(asFiles(files));
   await page.waitForFunction(() => {
     const sub = document.querySelector('.nav small');
     return sub && !sub.textContent.includes('正在读取') && document.querySelectorAll('.cell').length > 0 && !document.querySelector('.cell.skel');
@@ -106,7 +112,74 @@ async function editorState(page) {
   }));
 }
 
+function le16(value) {
+  return [value & 255, (value >> 8) & 255];
+}
+
+function le32(value) {
+  return [value & 255, (value >> 8) & 255, (value >> 16) & 255, (value >> 24) & 255];
+}
+
+function ifdEntry(tag, type, count, value) {
+  return [...le16(tag), ...le16(type), ...le32(count), ...le32(value)];
+}
+
+/** 结构过得了 Worker 检查、但 WASM 描述不了的小 DNG（没有原始数据）。 */
+function tinyDng() {
+  const end = 8 + 2 + 12 * 2 + 4;
+  return Buffer.from([0x49, 0x49, 0x2a, 0x00, ...le32(8), ...le16(2), ...ifdEntry(0x0111, 4, 1, end), ...ifdEntry(0xc612, 1, 4, 0x00000401), ...le32(0), 0, 0, 0, 0]);
+}
+
+async function cellClass(page, id) {
+  return page.locator(`.cell[data-id="${id}"]`).getAttribute('class');
+}
+
+async function openAndRead(page, id) {
+  await page.locator(`.cell[data-id="${id}"]`).click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-state="unreadable"]') || document.querySelector('.editor .lbl')?.textContent,
+    null,
+    { timeout: 60_000 },
+  );
+  await page.waitForTimeout(500);
+  const sheet = await page.locator('[data-state="unreadable"]').count();
+  const out = {
+    screen: await page.locator('.app').getAttribute('data-screen'),
+    unreadable: sheet ? await page.locator('[data-state="unreadable"]').innerText() : '',
+    label: await page.locator('.editor .lbl').innerText().catch(() => ''),
+  };
+  if (sheet) await page.getByRole('button', { name: '从这次去掉', exact: true }).click();
+  else if (out.screen === 'editor') await page.getByRole('button', { name: '照片', exact: true }).click();
+  await page.waitForSelector('[data-screen="grid"]');
+  return out;
+}
+
 const CASES = {
+  /** F5：没有显卡时，坏头、截断的 IFD、结构对但描述不了的 DNG 都走到 06b；真 DNG 照常打开。 */
+  async 'no-gpu-bad-dng'() {
+    const { page, context, errors } = await makePage({ gpu: false });
+    try {
+      const truncated = Buffer.from([0x49, 0x49, 0x2a, 0x00, ...le32(8), ...le16(20), ...ifdEntry(0xc612, 1, 4, 0x00000401)]);
+      await pick(page, [
+        manifest.dng,
+        { name: 'R9990002.DNG', mimeType: 'application/octet-stream', buffer: Buffer.from('II-not-a-TIFF-header') },
+        { name: 'R9990003.DNG', mimeType: 'application/octet-stream', buffer: truncated },
+        { name: 'R9990004.DNG', mimeType: 'application/octet-stream', buffer: tinyDng() },
+      ]);
+      await page.locator('.scrim').click().catch(() => undefined);
+      const gpu = await page.locator('.app').getAttribute('data-gpu');
+      const classes = {};
+      for (const id of ['r9990002', 'r9990003', 'r9990004']) classes[id] = await cellClass(page, id);
+      const opened = {};
+      for (const id of ['r9990002', 'r9990003', 'r9990004']) opened[id] = await openAndRead(page, id);
+      const real = (await gridIds(page))[0];
+      opened.real = await openAndRead(page, real);
+      return { gpu, classes, opened, left: await gridIds(page), errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** F3：同一时间的三张，正序倒序下网格、序号、滑动一致。 */
   async 'equal-time-order'() {
     const { page, context, errors } = await makePage({ gpu: false });

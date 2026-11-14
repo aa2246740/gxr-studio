@@ -1,6 +1,6 @@
 // 缩略图和拍摄时间都在这个 Worker 里读。主线程只留着 File，不碰字节。
 
-import { captureTimeFromJpeg, captureTimeFromTiff, embeddedJpegRange } from '../lib/exif';
+import { captureTimeFromJpeg, captureTimeFromTiff, checkDng, embeddedJpegRange } from '../lib/exif';
 
 const PREFIX = 128 * 1024;
 const TIFF_PREFIX = 256 * 1024;
@@ -72,13 +72,14 @@ async function fromJpeg(file: File, width: number): Promise<{ captureMs: number 
 
 async function fromDng(file: File, width: number): Promise<{ captureMs: number | null; bitmap: ImageBitmap | null; bad: boolean }> {
   const head = await readRange(file, 0, TIFF_PREFIX);
-  if (!head || head.length < 8) return { captureMs: null, bitmap: null, bad: true };
-  const tiff = head[0] === 0x49 || head[0] === 0x4d;
-  let captureMs = tiff ? captureTimeFromTiff(head)?.ms ?? null : null;
-  const range = tiff ? embeddedJpegRange(head) : null;
-  if (!range) return { captureMs, bitmap: null, bad: !tiff };
+  // 只看第一个字节不够：「II」开头的坏文件也会被当成 RAW。先查完整的 TIFF 头和 IFD 结构。
+  if (!head || checkDng(head, file.size) !== null) return { captureMs: null, bitmap: null, bad: true };
+  let captureMs = captureTimeFromTiff(head)?.ms ?? null;
+  const range = embeddedJpegRange(head);
+  // 结构没问题但没有内嵌预览：合法的「只有 RAW」，不算坏。
+  if (!range || range.offset + range.length > file.size) return { captureMs, bitmap: null, bad: false };
   const jpeg = await readRange(file, range.offset, range.length);
-  if (!jpeg || jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return { captureMs, bitmap: null, bad: !tiff };
+  if (!jpeg || jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return { captureMs, bitmap: null, bad: false };
   if (captureMs === null) captureMs = captureTimeFromJpeg(jpeg)?.ms ?? null;
   const bitmap = await scaled(new Blob([jpeg.slice()], { type: 'image/jpeg' }), width);
   return { captureMs, bitmap, bad: false };

@@ -108,3 +108,21 @@ def test_equal_capture_times_share_one_order(server: dict[str, Any]) -> None:
         titles = [step["title"].lower() for step in run["seen"]]
         assert titles == expected, (order, run["seen"])
         assert [step["index"].split(" · ")[0] for step in run["seen"]] == ["1 / 3", "2 / 3", "3 / 3"], (order, run["seen"])
+
+
+def test_bad_dngs_reach_unreadable_without_a_gpu(server: dict[str, Any]) -> None:
+    data = run_case(server, "no-gpu-bad-dng")
+    assert data["gpu"] == "0"
+    # Worker 的结构检查直接标坏：坏头、截断的 IFD。
+    assert "err" in data["classes"]["r9990002"].split()
+    assert "err" in data["classes"]["r9990003"].split()
+    # 结构对、但没有原始数据：网格里先当「只有 RAW」，点开后 WASM 描述失败，同样是 06b。
+    assert "err" not in data["classes"]["r9990004"].split()
+    for name in ("r9990002", "r9990003", "r9990004"):
+        opened = data["opened"][name]
+        assert "读不了" in opened["unreadable"], (name, opened)
+        assert "从这次去掉" in opened["unreadable"], (name, opened)
+    real = data["opened"]["real"]
+    assert real["screen"] == "editor" and real["unreadable"] == "", real
+    assert "这个浏览器现在用不了显卡预览" in real["label"], real
+    assert len(data["left"]) == 1
