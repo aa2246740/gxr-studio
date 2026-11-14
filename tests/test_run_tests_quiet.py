@@ -93,10 +93,17 @@ def test_drop_junit_cases_keeps_the_suite_totals_consistent(tmp_path: Path) -> N
         "</testsuite></testsuites>",
         encoding="utf-8",
     )
-    assert q.drop_junit_cases(path, ["tests/test_viewer_browser.py::test_slow[a b]"]) == 1
+    original = path.read_text(encoding="utf-8")
+    assert q.drop_junit_cases(path, ["tests/test_viewer_browser.py::test_slow[a b]"], {}) == 1
     suite = ET.parse(path).getroot().find("testsuite")
     assert suite is not None and suite.attrib["tests"] == "2" and suite.attrib["failures"] == "0"
     assert [case.attrib["name"] for case in suite.iter("testcase")] == ["test_other", "test_slow[a b]"]
+    # 子进程记下的贡献优先：一个元素装着 subtest 和主 call 两个失败报告时扣 2（Sol r1 P2）
+    path.write_text(original.replace('tests="3" failures="1"', 'tests="4" failures="2"'), encoding="utf-8")
+    counts = {"tests/test_viewer_browser.py::test_slow[a b]": {"tests": 2, "failures": 2, "errors": 0, "skipped": 0}}
+    assert q.drop_junit_cases(path, ["tests/test_viewer_browser.py::test_slow[a b]"], counts) == 1
+    suite = ET.parse(path).getroot().find("testsuite")
+    assert suite is not None and (suite.attrib["tests"], suite.attrib["failures"]) == ("2", "0")
 
 
 def _uses_speed(tree: ast.Module) -> set[str]:

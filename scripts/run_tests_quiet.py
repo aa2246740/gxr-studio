@@ -23,11 +23,12 @@ import os
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _pytest.junitxml import xml_key as junit_xml_key  # pytest 钉死在 uv.lock；suite 计数只有它知道
 
 LOADGATE_ENV = "GXR_LOADGATE"
 MAX_WAIT_ENV = "GXR_QUIET_MAX_WAIT_S"
@@ -173,6 +174,15 @@ def _sleep(seconds: float) -> bool:
     return True
 
 
+def _junit_totals(xml: Any) -> dict[str, int] | None:
+    """和 pytest 的 LogXML.pytest_sessionfinish 写 suite 属性时的算法一样。没开 --junitxml 时返回 None。"""
+    if xml is None:
+        return None
+    stats = xml.stats
+    tests = stats["passed"] + stats["failure"] + stats["skipped"] + stats["error"] - xml.cnt_double_fail_tests
+    return {"tests": tests, "failures": stats["failure"], "errors": stats["error"], "skipped": stats["skipped"]}
+
+
 def _is_speed(kind: type[BaseException]) -> bool:
     return getattr(kind, "gxr_speed_budget", False) is True
 
@@ -184,13 +194,23 @@ class ExclusivePlugin:
         self.outcomes = outcomes
         self.gate = gate
         self.state: dict[str, str] = {}
+        self.junit: dict[str, dict[str, int]] = {}
         self.budget = gate.remaining if gate is not None else 0.0
 
-    @pytest.hookimpl(tryfirst=True)  # 等待排在 rerunfailures 的 protocol 之前
-    def pytest_runtest_protocol(self, item: Any, nextitem: Any) -> None:
+    @pytest.hookimpl(wrapper=True, tryfirst=True)  # 包在 rerunfailures 的 protocol 外面：等待在前，计数含它的每次重跑
+    def pytest_runtest_protocol(self, item: Any, nextitem: Any) -> Any:
+        """用例之前等安静；记下这个用例给 JUnit 计数添了多少（subtest、重跑、teardown 错误都按 pytest 自己的算法）。"""
         del nextitem
         if self.gate is not None:
             self.gate.wait(f"exclusive 用例之前：{item.nodeid}", _sleep)
+        xml = item.config.stash.get(junit_xml_key, None)
+        before = _junit_totals(xml)
+        try:
+            return (yield)
+        finally:
+            after = _junit_totals(xml)
+            if before is not None and after is not None:
+                self.junit[item.nodeid] = {key: after[key] - before[key] for key in after}
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_runtest_makereport(self, item: Any, call: Any) -> Any:
@@ -216,7 +236,7 @@ class ExclusivePlugin:
 
     def pytest_sessionfinish(self) -> None:
         used = self.budget - self.gate.remaining if self.gate is not None else 0.0
-        data = {"outcomes": self.state, "quiet_waited_s": max(0.0, used)}
+        data = {"outcomes": self.state, "junit": self.junit, "quiet_waited_s": max(0.0, used)}
         self.outcomes.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
@@ -230,6 +250,7 @@ def exclusive_plugin(plan_path: str) -> ExclusivePlugin:
 class StageResult:
     outcomes: dict[str, str]
     waited: float
+    junit: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def read_outcomes(plan: Path) -> StageResult | None:
@@ -237,7 +258,8 @@ def read_outcomes(plan: Path) -> StageResult | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         outcomes = {str(k): str(v) for k, v in data["outcomes"].items()}
-        return StageResult(outcomes, float(data.get("quiet_waited_s", 0.0)))
+        junit = {str(k): {str(n): int(c) for n, c in v.items()} for k, v in data.get("junit", {}).items()}
+        return StageResult(outcomes, float(data.get("quiet_waited_s", 0.0)), junit)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
@@ -261,28 +283,46 @@ def _case_key(nodeid: str) -> tuple[str, str]:
     return ".".join(names[:-1]), names[-1]
 
 
-def drop_junit_cases(path: Path, nodeids: list[str]) -> int:
-    """从第一次 exclusive 的 JUnit 里拿掉要重跑的用例（以第二次为准），同步改 suite 的计数。返回拿掉几个。"""
+def drop_junit_cases(path: Path, nodeids: list[str], counts: dict[str, dict[str, int]]) -> int:
+    """从第一次 exclusive 的 JUnit 里拿掉要重跑的用例（以第二次为准），返回拿掉几个 testcase 元素。
+
+    suite 的计数按子进程记下的每个用例的贡献扣（一个 testcase 元素可能装着好几个 subtest 报告，
+    或者 call 失败加 teardown 错误各开一个元素），不按元素个数扣。没有记录的用例才退回按元素里的
+    failure / error / skipped 各扣 1、tests 扣 1。
+    """
     if not path.is_file() or path.stat().st_size == 0:
         return 0
-    keys = [_case_key(nodeid) for nodeid in nodeids]
+    keys = {nodeid: _case_key(nodeid) for nodeid in nodeids}
     tree = ET.parse(path)
     root = tree.getroot()
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     dropped = 0
     for suite in suites:
-        for case in list(suite.findall("testcase")):
-            classname, name = case.attrib.get("classname", ""), case.attrib.get("name", "")
-            if not any(name == key_name and (classname == key_cls or classname.endswith("." + key_cls)) for key_cls, key_name in keys):
+        for nodeid, (key_cls, key_name) in keys.items():
+            cases = [
+                case
+                for case in suite.findall("testcase")
+                if case.attrib.get("name") == key_name
+                and (case.attrib.get("classname") == key_cls or case.attrib.get("classname", "").endswith("." + key_cls))
+            ]
+            if not cases:
                 continue
-            for tag, attr in (("failure", "failures"), ("error", "errors"), ("skipped", "skipped")):
-                if case.find(tag) is not None:
-                    suite.set(attr, str(max(0, int(suite.attrib.get(attr, "0")) - 1)))
-            suite.set("tests", str(max(0, int(suite.attrib.get("tests", "0")) - 1)))
-            suite.remove(case)
-            dropped += 1
+            minus = counts.get(nodeid) or _element_counts(cases)
+            for attr in ("tests", "failures", "errors", "skipped"):
+                suite.set(attr, str(max(0, int(suite.attrib.get(attr, "0")) - minus.get(attr, 0))))
+            for case in cases:
+                suite.remove(case)
+            dropped += len(cases)
     tree.write(path, encoding="utf-8", xml_declaration=True)
     return dropped
+
+
+def _element_counts(cases: list[ET.Element]) -> dict[str, int]:
+    found = {"tests": len(cases), "failures": 0, "errors": 0, "skipped": 0}
+    for case in cases:
+        for tag, attr in (("failure", "failures"), ("error", "errors"), ("skipped", "skipped")):
+            found[attr] += len(case.findall(tag))
+    return found
 
 
 def report_retry(first: StageResult, second: StageResult | None, retried: list[str]) -> None:
@@ -312,7 +352,7 @@ def run_exclusive(gate: QuietGate, work: Path, node_ids: list[str], launch: Laun
     print(f"exclusive 里 {len(retry)} 个用例只有墙钟预算没过，等机器安静后在 exclusive 阶段重跑一次：{', '.join(retry)}", flush=True)
     if not gate.wait("速度预算重试之前", nap):
         return stopped() or 143
-    drop_junit_cases(work / "exclusive" / "junit.xml", retry)
+    drop_junit_cases(work / "exclusive" / "junit.xml", retry, result.junit)
     code = launch("exclusive-retry", retry, gate.remaining, ("--force-reruns", "0"))
     report_retry(result, read_outcomes(work / "exclusive-retry" / "ids.txt"), retry)
     if "failed" in result.outcomes.values():
