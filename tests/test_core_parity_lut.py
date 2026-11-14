@@ -56,6 +56,7 @@ from support.lut_oracle import (
     assert_u8_boundary_gate,
     assert_u8_gate_b,
     check_blas_gamma24_and_threshold_points,
+    check_gate_b_classification_controls,
     check_negative_control_case,
     check_shaper_applelog_full_table,
     check_shaper_zero_cases,
@@ -366,6 +367,7 @@ def test_quantisation_boundary_gate_rejects_violations() -> None:
             rust_render_px=lambda px: np.full(px.shape, 11.5, dtype=np.float64),
             label="neg-tbl-step2",
         )
+    check_gate_b_classification_controls()
 
 
 @pytest.mark.parametrize(("label", "shaper", "offset", "spec"), THRESHOLD_CASES, ids=[c[0] for c in THRESHOLD_CASES])

@@ -97,7 +97,13 @@ def assert_u8_boundary_gate(
     return int(len(diffs))
 
 
-def assert_u8_gate_b(
+def cube_is_well_conditioned(cube: Cube) -> bool:
+    """Return True iff every 1D/3D table value is finite and within [-1.0, 2.0] (Amendment 4)."""
+    tables = [t for t in (cube.table1, cube.table3) if t is not None]
+    return all(bool(np.all((t >= -1.0) & (t <= 2.0))) for t in tables)
+
+
+def assert_u8_gate_b_detail(
     py_u8: np.ndarray,
     rust_u8: np.ndarray,
     or_u8: np.ndarray,
@@ -106,8 +112,9 @@ def assert_u8_gate_b(
     *,
     label: str,
     py_f64: np.ndarray | None = None,
-) -> int:
-    """Gate B: mechanical attribution for CPU uint8 differences vs real Python (allowed iff Gate A holds and |diff| <= 1)."""
+    well_conditioned: bool = True,
+) -> tuple[int, int]:
+    """Gate B: mechanical attribution vs real Python; returns (allowed_points, max_code_diff)."""
     assert py_u8.shape == rust_u8.shape == or_u8.shape
     assert py_u8.dtype == rust_u8.dtype == or_u8.dtype == np.uint8
     assert or_f64.shape == rust_f64.shape == py_u8.shape
@@ -121,12 +128,39 @@ def assert_u8_gate_b(
         diff_code = abs(pu8 - rsu8)
         if diff_code > max_diff:
             max_diff = diff_code
-        assert diff_code == 1, f"{label} Gate B diff > 1 at {idx}: py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}"
+        if well_conditioned:
+            assert diff_code == 1, f"{label} Gate B diff > 1 at {idx}: py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}"
         _assert_gate_a_elem(ov, rsv, ou8, rsu8, label=f"{label}-gate-a", idx=idx)
         extra = f" py_f64={float(py_f64[idx])!r}" if py_f64 is not None else ""
         print(f"[gate-b] {label} idx={idx} py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}{extra}")
-    print(f"[gate-b-count] {label}: allowed_points={len(diffs)} max_code_diff={max_diff}")
-    return int(len(diffs))
+    klass = "well-conditioned" if well_conditioned else "ill-conditioned"
+    print(f"[gate-b-count] {label}: class={klass} allowed_points={len(diffs)} max_code_diff={max_diff}")
+    return int(len(diffs)), int(max_diff)
+
+
+def assert_u8_gate_b(
+    py_u8: np.ndarray,
+    rust_u8: np.ndarray,
+    or_u8: np.ndarray,
+    or_f64: np.ndarray,
+    rust_f64: np.ndarray,
+    *,
+    label: str,
+    py_f64: np.ndarray | None = None,
+    well_conditioned: bool = True,
+) -> int:
+    """Gate B: mechanical attribution for CPU uint8 differences vs real Python."""
+    n_py, _max_diff = assert_u8_gate_b_detail(
+        py_u8,
+        rust_u8,
+        or_u8,
+        or_f64,
+        rust_f64,
+        label=label,
+        py_f64=py_f64,
+        well_conditioned=well_conditioned,
+    )
+    return n_py
 
 
 def _unique_diff_pixels(diffs: np.ndarray) -> tuple[dict[tuple[int, int, int], int], np.ndarray]:
@@ -179,7 +213,7 @@ def assert_table_u8_boundary_gate(
     return int(len(diffs))
 
 
-def assert_table_u8_gate_b(
+def assert_table_u8_gate_b_detail(
     py_bytes: bytes,
     rust_bytes: bytes,
     or_bytes: bytes,
@@ -188,8 +222,9 @@ def assert_table_u8_gate_b(
     rust_render_px: Callable[[np.ndarray], np.ndarray],
     label: str,
     py_render_px: Callable[[np.ndarray], np.ndarray] | None = None,
-) -> int:
-    """Gate B: mechanical attribution for full 256^3x4 RGBA GPU display tables vs real Python (|diff| <= 1)."""
+    well_conditioned: bool = True,
+) -> tuple[int, int]:
+    """Gate B: mechanical attribution for 256^3x4 GPU tables vs real Python; returns (allowed_points, max_code_diff)."""
     expected_len = 256**3 * 4
     assert len(py_bytes) == expected_len and len(rust_bytes) == expected_len and len(or_bytes) == expected_len
     py_arr = np.frombuffer(py_bytes, np.uint8).reshape(256, 256, 256, 4)
@@ -197,9 +232,10 @@ def assert_table_u8_gate_b(
     or_arr = np.frombuffer(or_bytes, np.uint8).reshape(256, 256, 256, 4)
     assert np.all(py_arr[..., 3] == 255) and np.all(rs_arr[..., 3] == 255) and np.all(or_arr[..., 3] == 255)
     diffs = np.argwhere(py_arr != rs_arr)
+    klass = "well-conditioned" if well_conditioned else "ill-conditioned"
     if len(diffs) == 0:
-        print(f"[gate-b-count] {label}: allowed_points=0 max_code_diff=0")
-        return 0
+        print(f"[gate-b-count] {label}: class={klass} allowed_points=0 max_code_diff=0")
+        return 0, 0
     bgr_row, px_u8 = _unique_diff_pixels(diffs)
     or_f64 = or_render_px(px_u8)
     rs_f64 = rust_render_px(px_u8)
@@ -214,17 +250,43 @@ def assert_table_u8_gate_b(
         diff_code = abs(pu8 - rsu8)
         if diff_code > max_diff:
             max_diff = diff_code
-        assert diff_code == 1, (
-            f"{label} Gate B diff > 1 at offset {offset} bgr=({b},{g},{r}) c={c}: "
-            f"py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}"
-        )
+        if well_conditioned:
+            assert diff_code == 1, (
+                f"{label} Gate B diff > 1 at offset {offset} bgr=({b},{g},{r}) c={c}: "
+                f"py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}"
+            )
         _assert_gate_a_elem(ov, rsv, ou8, rsu8, label=f"{label}@off={offset}-gate-a", idx=(b, g, r, c))
         extra = f" py_f64={float(py_f64[row, 0, c])!r}" if py_f64 is not None else ""
         print(
             f"[gate-b] {label} offset={offset} bgr=({b},{g},{r}) c={c} py_u8={pu8} rs_u8={rsu8} or_u8={ou8} or_f64={ov!r} rs_f64={rsv!r}{extra}"
         )
-    print(f"[gate-b-count] {label}: allowed_points={len(diffs)} max_code_diff={max_diff}")
-    return int(len(diffs))
+    print(f"[gate-b-count] {label}: class={klass} allowed_points={len(diffs)} max_code_diff={max_diff}")
+    return int(len(diffs)), int(max_diff)
+
+
+def assert_table_u8_gate_b(
+    py_bytes: bytes,
+    rust_bytes: bytes,
+    or_bytes: bytes,
+    *,
+    or_render_px: Callable[[np.ndarray], np.ndarray],
+    rust_render_px: Callable[[np.ndarray], np.ndarray],
+    label: str,
+    py_render_px: Callable[[np.ndarray], np.ndarray] | None = None,
+    well_conditioned: bool = True,
+) -> int:
+    """Gate B: mechanical attribution for full 256^3x4 RGBA GPU display tables vs real Python."""
+    n_py, _max_diff = assert_table_u8_gate_b_detail(
+        py_bytes,
+        rust_bytes,
+        or_bytes,
+        or_render_px=or_render_px,
+        rust_render_px=rust_render_px,
+        label=label,
+        py_render_px=py_render_px,
+        well_conditioned=well_conditioned,
+    )
+    return n_py
 
 
 def make_rust_px_runner(tmp_path: Path, cube_path: Path, spec: dict[str, Any], prefix: str = "px") -> Callable[[np.ndarray], np.ndarray]:
@@ -238,7 +300,7 @@ def make_rust_px_runner(tmp_path: Path, cube_path: Path, spec: dict[str, Any], p
     return _run
 
 
-def check_threshold_cpu_case(
+def check_threshold_cpu_case_detail(
     tmp_path: Path,
     label: str,
     cube_text_str: str,
@@ -247,7 +309,8 @@ def check_threshold_cpu_case(
     *,
     rgb_override: np.ndarray | None = None,
     expect_or_diffs: int = 0,
-) -> tuple[int, int]:
+    well_conditioned: bool | None = None,
+) -> tuple[int, int, int, bool]:
     from support.core_cli import run_npy
     from support.lut_cases import assert_rel
     from support.lut_oracle import SeqTarget, seq_apply
@@ -255,6 +318,7 @@ def check_threshold_cpu_case(
     cube_path = tmp_path / f"{label}.cube"
     cube_path.write_text(cube_text_str, encoding="utf-8")
     py_cube = Cube.read(cube_path)
+    wc = cube_is_well_conditioned(py_cube) if well_conditioned is None else well_conditioned
     rgb = rgb_override if rgb_override is not None else np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
     rgb_npy = tmp_path / "rgb.npy"
     np.save(rgb_npy, rgb)
@@ -278,7 +342,40 @@ def check_threshold_cpu_case(
     rs_u8 = run_npy([*cli_args, "--u8"], tmp_path / "out_u8.npy")
     n_or = assert_u8_boundary_gate(or_u8, rs_u8, or_f64, rs_f64, label=f"{label}-vs-oracle")
     assert n_or == expect_or_diffs, f"{label}: expected {expect_or_diffs} oracle u8 diffs, got {n_or}"
-    n_py = assert_u8_gate_b(py_u8, rs_u8, or_u8, or_f64, rs_f64, label=f"{label}-vs-python", py_f64=py_f64)
+    n_py, max_diff = assert_u8_gate_b_detail(
+        py_u8,
+        rs_u8,
+        or_u8,
+        or_f64,
+        rs_f64,
+        label=f"{label}-vs-python",
+        py_f64=py_f64,
+        well_conditioned=wc,
+    )
+    return n_or, n_py, max_diff, wc
+
+
+def check_threshold_cpu_case(
+    tmp_path: Path,
+    label: str,
+    cube_text_str: str,
+    spec: dict[str, Any],
+    py_target_fn: Callable[..., Any],
+    *,
+    rgb_override: np.ndarray | None = None,
+    expect_or_diffs: int = 0,
+    well_conditioned: bool | None = None,
+) -> tuple[int, int]:
+    n_or, n_py, _max_diff, _wc = check_threshold_cpu_case_detail(
+        tmp_path,
+        label,
+        cube_text_str,
+        spec,
+        py_target_fn,
+        rgb_override=rgb_override,
+        expect_or_diffs=expect_or_diffs,
+        well_conditioned=well_conditioned,
+    )
     return n_or, n_py
 
 
@@ -304,6 +401,8 @@ def check_threshold_full_table_case(
     cube_path = tmp_path / f"{label}.cube"
     cube_path.write_text(cube_text_str, encoding="utf-8")
     py_cube = Cube.read(cube_path)
+    wc = cube_is_well_conditioned(py_cube)
+    assert wc, f"{label}: expected well-conditioned threshold table"
     or_target = SeqTarget(py_cube, **spec)
     py_target = py_target_fn(py_cube, **spec)
     or_bytes = seq_display_lut_u8(or_target)
@@ -327,6 +426,7 @@ def check_threshold_full_table_case(
         rust_render_px=_run_rs_px,
         label=f"{label}-256-py",
         py_render_px=py_target.render,
+        well_conditioned=wc,
     )
     b, g, r, c = want_bgr
     assert ((b * 256 + g) * 256 + r) * 4 + c == want_offset
@@ -439,6 +539,7 @@ def check_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path, py_ta
         cube_text(lambda x: np.clip(x * GRADE_MUL + THRESHOLD_OFF, 0, 1), size=9, title="review threshold synthetic"), encoding="utf-8"
     )
     py_thresh = Cube.read(thresh_cube)
+    assert cube_is_well_conditioned(py_thresh)
     spec = {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"}
     or_bytes = seq_display_lut_u8(SeqTarget(py_thresh, **spec))
     py_bytes, py_meta, py_reason = lut_bytes(py_target_fn(py_thresh, **spec))
@@ -466,6 +567,7 @@ def check_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path, py_ta
         rust_render_px=_run_rs_px,
         label="threshold-256-vs-python",
         py_render_px=py_target_fn(py_thresh, **spec).render,
+        well_conditioned=True,
     )
     if sys.platform == "darwin":
         assert n_py == 1 and py_bytes[byte_off] == 188
@@ -476,18 +578,31 @@ def check_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path, py_ta
 
 
 def check_shaper_zero_cases(tmp_path: Path, py_target_fn: Callable[..., Any]) -> None:
-    """Verify all 42 near-zero shaper constructions pass Gate A (1e-12) and Gate B (|diff| <= 1)."""
+    """Verify all 42 near-zero shaper constructions pass Gate A (1e-12) and classified Gate B."""
     from support.lut_cases import SHAPER_APPLELOG_SPEC, shaper_applelog_rgb, shaper_zero_cases
 
     rgb = shaper_applelog_rgb()
+    wc_pts, wc_max, ill_pts, ill_max = 0, 0, 0, 0
     for label, cube_txt in shaper_zero_cases():
         case_dir = tmp_path / label
         case_dir.mkdir(exist_ok=True)
-        check_threshold_cpu_case(case_dir, label, cube_txt, SHAPER_APPLELOG_SPEC, py_target_fn, rgb_override=rgb, expect_or_diffs=0)
+        _n_or, n_py, max_diff, wc = check_threshold_cpu_case_detail(
+            case_dir, label, cube_txt, SHAPER_APPLELOG_SPEC, py_target_fn, rgb_override=rgb, expect_or_diffs=0
+        )
+        if wc:
+            wc_pts += n_py
+            wc_max = max(wc_max, max_diff)
+        else:
+            ill_pts += n_py
+            ill_max = max(ill_max, max_diff)
+    print(
+        f"[shaper-zero-summary] well_conditioned(points={wc_pts}, max_code_diff={wc_max}) "
+        f"ill_conditioned(points={ill_pts}, max_code_diff={ill_max})"
+    )
 
 
 def check_shaper_applelog_full_table(tmp_path: Path, py_target_fn: Callable[..., Any]) -> tuple[int, int]:
-    """Full 256^3 GPU display table for Sol r4 shaper-applelog.cube: Gate A=0, Gate B <= 1 code."""
+    """Full 256^3 GPU display table for Sol r4 shaper-applelog.cube: Gate A=0, classified Gate B."""
     from gxr_studio.gpu.tables import lut_bytes
     from support.core_cli import error_of, run_json
     from support.lut_cases import SHAPER_APPLELOG_CUBE, SHAPER_APPLELOG_SPEC
@@ -496,6 +611,7 @@ def check_shaper_applelog_full_table(tmp_path: Path, py_target_fn: Callable[...,
     cube_path = tmp_path / "shaper-applelog.cube"
     cube_path.write_text(SHAPER_APPLELOG_CUBE, encoding="utf-8")
     py_cube = Cube.read(cube_path)
+    wc = cube_is_well_conditioned(py_cube)
     or_target = SeqTarget(py_cube, **SHAPER_APPLELOG_SPEC)
     py_target = py_target_fn(py_cube, **SHAPER_APPLELOG_SPEC)
     or_bytes = seq_display_lut_u8(or_target)
@@ -514,7 +630,7 @@ def check_shaper_applelog_full_table(tmp_path: Path, py_target_fn: Callable[...,
         or_bytes, rs_bytes, ref_render_px=or_target.render, rust_render_px=_run_rs_px, label="shaper-applelog-256-vs-oracle"
     )
     assert n_or == 0
-    n_py = assert_table_u8_gate_b(
+    n_py, max_diff = assert_table_u8_gate_b_detail(
         py_bytes,
         rs_bytes,
         or_bytes,
@@ -522,5 +638,68 @@ def check_shaper_applelog_full_table(tmp_path: Path, py_target_fn: Callable[...,
         rust_render_px=_run_rs_px,
         label="shaper-applelog-256-vs-python",
         py_render_px=py_target.render,
+        well_conditioned=wc,
     )
+    assert not wc and max_diff <= 1
     return n_or, n_py
+
+
+def check_gate_b_classification_controls() -> None:
+    """Verify [-1, 2] classification and uncapped-vs-capped Gate B mechanical attribution controls."""
+    import pytest
+
+    def _cube(t1: np.ndarray | None = None, t3: np.ndarray | None = None) -> Cube:
+        return Cube(title="", domain_min=np.zeros(3), domain_max=np.ones(3), range1=(0.0, 1.0), range3=(0.0, 1.0), table1=t1, table3=t3)
+
+    assert cube_is_well_conditioned(_cube(t1=np.array([[-1.0, 0.0, 2.0]])))
+    assert not cube_is_well_conditioned(_cube(t1=np.array([[-1.0 - 1e-12, 0.0, 1.0]])))
+    assert not cube_is_well_conditioned(_cube(t1=np.array([[0.0, 2.0 + 1e-12, 1.0]])))
+    assert not cube_is_well_conditioned(_cube(t1=np.array([[0.0, 1.0, 0.5]]), t3=np.full((2, 2, 2, 3), np.nan)))
+    assert cube_is_well_conditioned(_cube(t1=np.array([[-1.0, 0.0, 2.0]]), t3=np.full((2, 2, 2, 3), 1.5)))
+
+    n_py, max_d = assert_u8_gate_b_detail(
+        np.array([33], np.uint8),
+        np.array([35], np.uint8),
+        np.array([35], np.uint8),
+        np.array([34.6]),
+        np.array([34.6]),
+        label="ctrl-ill-2",
+        well_conditioned=False,
+    )
+    assert n_py == 1 and max_d == 2
+    with pytest.raises(AssertionError, match="Gate A float64 diff exceeds 1e-12"):
+        assert_u8_gate_b(
+            np.array([33], np.uint8),
+            np.array([35], np.uint8),
+            np.array([35], np.uint8),
+            np.array([34.6]),
+            np.array([34.7]),
+            label="ctrl-ill-bad-a",
+            well_conditioned=False,
+        )
+    arr = np.zeros((256, 256, 256, 4), np.uint8)
+    arr[..., 3] = 255
+    arr[0, 0, 0, 0] = 33
+    pb = arr.tobytes()
+    arr[0, 0, 0, 0] = 35
+    rb = arr.tobytes()
+    n_tbl, max_tbl = assert_table_u8_gate_b_detail(
+        pb,
+        rb,
+        rb,
+        or_render_px=lambda px: np.full(px.shape, 34.6, dtype=np.float64),
+        rust_render_px=lambda px: np.full(px.shape, 34.6, dtype=np.float64),
+        label="ctrl-tbl-ill-2",
+        well_conditioned=False,
+    )
+    assert n_tbl == 1 and max_tbl == 2
+    with pytest.raises(AssertionError, match="Gate A float64 diff exceeds 1e-12"):
+        assert_table_u8_gate_b(
+            pb,
+            rb,
+            rb,
+            or_render_px=lambda px: np.full(px.shape, 34.6, dtype=np.float64),
+            rust_render_px=lambda px: np.full(px.shape, 34.7, dtype=np.float64),
+            label="ctrl-tbl-ill-bad-a",
+            well_conditioned=False,
+        )
