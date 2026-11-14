@@ -162,6 +162,35 @@ try {
       await restoring;
       result.lateRestore = { sha: book.pack?.manifestSha256 ?? null };
     }
+    // 6. 超过上限的文件一个字节都不读（P6）：直接给出「太大」那一行。
+    {
+      const { book, calls } = make();
+      const ok = await book.importPack(file('huge.zip', 4 * 2 ** 30));
+      result.oversized = { ok, reads: calls.read + calls.packFile + calls.calib, error: book.packError };
+    }
+    // 6b. 正常大小的包：File 直接交给 Worker 那一边，主线程一次 readFile 都没有（不在主线程复制整包）。
+    {
+      const { book, pending, calls } = make();
+      const run = book.importPack(file('GXR 校准数据.zip', 17350));
+      await tick();
+      pending.pack[0].resolve({ ...calibOk('OK'), saved: true });
+      const ok = await run;
+      result.inLimit = { ok, packFile: calls.packFile, reads: calls.read, sha: book.pack?.manifestSha256 ?? null };
+    }
+    // 7. IndexedDB：删除留下的时间比晚到的旧导入新，旧导入不写；更新的导入照常写。
+    {
+      const idb = await import('/src/lib/idb.ts');
+      const zip = (n) => new Uint8Array([n]).buffer;
+      await idb.savePack({ zip: zip(1), name: 'a.zip', savedAt: 5 });
+      await idb.deletePack(6);
+      await idb.savePack({ zip: zip(2), name: 'late.zip', savedAt: 5.5 });
+      const afterLate = await idb.loadPack();
+      await idb.savePack({ zip: zip(3), name: 'b.zip', savedAt: 7 });
+      const afterNew = await idb.loadPack();
+      await idb.deletePack(8);
+      result.idb = { afterLate, afterNew: afterNew?.name ?? null, cleared: await idb.loadPack() };
+    }
+
     return result;
   });
 } finally {

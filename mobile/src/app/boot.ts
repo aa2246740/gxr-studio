@@ -5,8 +5,8 @@ import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
-import { bakeIn, readCalib, readDat, warmCore } from '../core/api';
-import { deletePack, loadPack, savePack } from '../lib/idb';
+import { bakeIn, importCalib, readDat, restoreCalib, warmCore } from '../core/api';
+import { deletePack } from '../lib/idb';
 import { Book } from './book';
 import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
@@ -47,10 +47,9 @@ class App implements AppApi {
       return reply.ok ? reply.bytes : null;
     },
     readDat,
-    readCalib,
+    importCalib,
+    restoreCalib,
     bake: bakeIn,
-    loadPack,
-    savePack,
     deletePack,
   });
 

@@ -29,13 +29,19 @@ export class Pool {
   }
 
   /** 把 `buffer` 交给一个 Worker。`transfer` 里的东西发给对方之后这边就不能再用。 */
-  request(op: CoreOp, buffer: ArrayBuffer | null, transfer: Transferable[], args: BakeArgs | null = null): Promise<CoreResult> {
+  request(
+    op: CoreOp,
+    buffer: ArrayBuffer | null,
+    transfer: Transferable[],
+    args: BakeArgs | null = null,
+    extra: Pick<CoreRequest, 'file' | 'meta'> = {},
+  ): Promise<CoreResult> {
     const id = this.seq++;
     const worker = this.workers[this.next % this.workers.length];
     this.next += 1;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      const message: CoreRequest = { id, op, buffer, args };
+      const message: CoreRequest = { id, op, buffer, args, ...extra };
       worker.postMessage(message, transfer);
     });
   }

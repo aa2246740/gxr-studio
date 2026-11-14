@@ -36,23 +36,54 @@ async function run<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore) =>
   }
 }
 
+/** 删除也记一个时间（墓碑）。晚到的旧导入看见更新的记录就不写，删掉的包不会在下次打开时回来。 */
+interface Tomb {
+  zip: null;
+  name: '';
+  savedAt: number;
+}
+
 export async function loadPack(): Promise<StoredPack | null> {
   if (typeof indexedDB === 'undefined') return null;
   try {
-    const row = (await run('readonly', (store) => store.get(KEY))) as StoredPack | undefined;
-    return row && row.zip instanceof ArrayBuffer && typeof row.name === 'string' ? row : null;
+    const row = (await run('readonly', (store) => store.get(KEY))) as StoredPack | Tomb | undefined;
+    return row && row.zip instanceof ArrayBuffer && typeof row.name === 'string' ? (row as StoredPack) : null;
   } catch {
     return null;
   }
 }
 
+/** 同一个事务里先读再写：已经有更新的记录（后来的导入或删除）就什么都不做。 */
+async function putIfNewer(row: StoredPack | Tomb): Promise<boolean> {
+  const db = await open();
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      const store = tx.objectStore(STORE);
+      let wrote = false;
+      const read = store.get(KEY);
+      read.onsuccess = () => {
+        const now = read.result as { savedAt?: unknown } | undefined;
+        if (now && typeof now.savedAt === 'number' && now.savedAt >= row.savedAt) return;
+        store.put(row, KEY);
+        wrote = true;
+      };
+      tx.oncomplete = () => resolve(wrote);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
 export async function savePack(pack: StoredPack): Promise<void> {
-  await run('readwrite', (store) => store.put(pack, KEY));
+  await putIfNewer(pack);
   // 主屏幕网页的存储一般不会被清；再请求一次长期保留，被拒也没关系。
   void navigator.storage?.persist?.().catch(() => false);
 }
 
-export async function deletePack(): Promise<void> {
+export async function deletePack(at: number): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
-  await run('readwrite', (store) => store.delete(KEY));
+  await putIfNewer({ zip: null, name: '', savedAt: at });
 }

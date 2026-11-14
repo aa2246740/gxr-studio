@@ -80,12 +80,12 @@ export async function readDat(bytes: ArrayBuffer): Promise<DatRead> {
 }
 
 export type CalibRead =
-  | { ok: true; units: UnitPack[]; manifestSha256: string; files: Map<string, Uint8Array> }
+  | { ok: true; units: UnitPack[]; manifestSha256: string; files: Map<string, Uint8Array>; saved: boolean }
   | { ok: false; zip: ZipFail | null; message: string | null; detail: string };
 
-/** 读校准数据 zip 并核对清单和每个 SHA-256。`bytes` 交给 Worker。 */
-export async function readCalib(bytes: ArrayBuffer): Promise<CalibRead> {
-  const { json, buffers } = await workers().request('calib', bytes, [bytes]);
+export type CalibRestored = (CalibRead & { name: string; savedAt: number }) | null;
+
+function calibOf(json: string, buffers: ArrayBuffer[]): CalibRead & { name?: string; savedAt?: number; none?: boolean } {
   const data = JSON.parse(json) as {
     ok: boolean;
     zip?: ZipFail;
@@ -94,11 +94,33 @@ export async function readCalib(bytes: ArrayBuffer): Promise<CalibRead> {
     units?: UnitPack[];
     manifestSha256?: string;
     names?: string[];
+    saved?: boolean;
+    name?: string;
+    savedAt?: number;
+    none?: boolean;
   };
-  if (!data.ok) return { ok: false, zip: data.zip ?? null, message: data.message ?? null, detail: data.detail ?? '' };
+  const extra = { name: data.name, savedAt: data.savedAt, none: data.none };
+  if (!data.ok) return { ok: false, zip: data.zip ?? null, message: data.message ?? null, detail: data.detail ?? '', ...extra };
   const files = new Map<string, Uint8Array>();
   (data.names ?? []).forEach((name, i) => files.set(name, new Uint8Array(buffers[i] ?? new ArrayBuffer(0))));
-  return { ok: true, units: data.units ?? [], manifestSha256: data.manifestSha256 ?? '', files };
+  return { ok: true, units: data.units ?? [], manifestSha256: data.manifestSha256 ?? '', files, saved: data.saved !== false, ...extra };
+}
+
+/**
+ * 导入校准数据 zip：File 交给 Worker。Worker 先查大小，再读、核对清单和每个 SHA-256，通过后在 Worker 里存进 IndexedDB。
+ * 主线程不读也不复制整包。
+ */
+export async function importCalib(file: File, savedAt: number): Promise<CalibRead> {
+  const { json, buffers } = await workers().request('calib-file', null, [], null, { file, meta: { name: file.name, savedAt } });
+  return calibOf(json, buffers);
+}
+
+/** 打开页面时读回 IndexedDB 里的那份并重新核对（也在 Worker 里）。没有存过返回 null。 */
+export async function restoreCalib(): Promise<CalibRestored> {
+  const { json, buffers } = await workers().request('calib-restore', null, []);
+  const read = calibOf(json, buffers);
+  if (read.none) return null;
+  return { ...read, name: read.name ?? '', savedAt: read.savedAt ?? 0 };
 }
 
 export interface Bake {

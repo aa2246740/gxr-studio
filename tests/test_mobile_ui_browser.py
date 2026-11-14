@@ -341,3 +341,8 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     late = cases["removeThenLateImport"]
     assert late["pack"] is None and late["busy"] is False and late["error"] is None and late["deletes"] == 1
     assert cases["lateRestore"] == {"sha": "NEW"}
+    # Sol r1 P6：超过上限的文件零次读取；正常的包整份交给 Worker，主线程不读不复制。
+    assert cases["oversized"]["ok"] is False and cases["oversized"]["reads"] == 0
+    assert "太大" in cases["oversized"]["error"]
+    assert cases["inLimit"] == {"ok": True, "packFile": 1, "reads": 0, "sha": "OK"}
+    assert cases["idb"] == {"afterLate": None, "afterNew": "b.zip", "cleared": None}

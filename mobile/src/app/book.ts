@@ -2,12 +2,11 @@
 // 读文件、核对、烘焙都在 Worker 里；这里只排队、记结果、通知界面。
 
 import type { Engine } from '../../../frontend/src/index';
-import type { Bake, CalibRead, DatRead } from '../core/api';
+import type { Bake, CalibRead, CalibRestored, DatRead } from '../core/api';
 import type { BakeArgs } from '../core/protocol';
 import { modelIso, sha256, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
-import type { StoredPack } from '../lib/idb';
 import { bakeParams, unitIndex, type Card, type DatSummary, type Menu } from '../lib/recipes';
-import type { ZipFail } from '../lib/zip';
+import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
 
 /**
  * 做好的烘焙表在 JS 里最多留几张。一张约 3.8 MB（683×683 的增益网格），一个单元一个模型 8 个内置加几个用户配方，
@@ -37,6 +36,9 @@ export type UnitState =
   | { state: 'ready' }
   | { state: 'invalid'; message: string };
 
+/** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
+const MAX_DAT_BYTES = 16 << 20;
+
 const ZIP_TEXT: Record<ZipFail, string> = {
   not_zip: '这个文件不是校准数据。请选在 Mac 上导出的「GXR 校准数据」zip 文件。',
   compressed: '这个 zip 被压缩过，读不了。请直接用 Mac 上导出的原文件，不要重新压缩。',
@@ -52,11 +54,12 @@ export interface BookIo {
   /** 读文件字节（Worker 里读完转移过来；主线程不调 File.arrayBuffer）。 */
   readFile(file: File): Promise<ArrayBuffer | null>;
   readDat(bytes: ArrayBuffer): Promise<DatRead>;
-  readCalib(bytes: ArrayBuffer): Promise<CalibRead>;
+  /** 校准数据 zip：大小检查、读取、核对、存 IndexedDB 都在 Worker 里，主线程不碰整包。 */
+  importCalib(file: File, savedAt: number): Promise<CalibRead>;
+  restoreCalib(): Promise<CalibRestored>;
   bake(args: BakeArgs): Promise<Bake>;
-  loadPack(): Promise<StoredPack | null>;
-  savePack(pack: StoredPack): Promise<void>;
-  deletePack(): Promise<void>;
+  /** 记一个删除时间；比它早的导入不会再写进去。 */
+  deletePack(at: number): Promise<void>;
 }
 
 export class Book {
@@ -75,6 +78,8 @@ export class Book {
    */
   private datSeq = 0;
   private packSeq = 0;
+  /** 导入和删除的时间戳只增不减（IndexedDB 里按它判断谁更新）。 */
+  private stamp = 0;
   /** 相机配方文件和校准数据的组合；换了任何一个就加一，旧的检查和烘焙结果作废。 */
   private generation = 0;
   private readonly units = new Map<Unit, { generation: number; state: UnitState }>();
@@ -105,42 +110,45 @@ export class Book {
     this.done.clear();
   }
 
-  /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对。 */
+  private nextStamp(): number {
+    this.stamp = Math.max(Date.now(), this.stamp + 1);
+    return this.stamp;
+  }
+
+  /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对（在 Worker 里）。 */
   async restore(): Promise<void> {
     const seq = ++this.packSeq;
-    const stored = await this.io.loadPack();
-    if (!stored || seq !== this.packSeq) return;
-    const out = await this.check(stored.zip.slice(0), stored.name, stored.savedAt, seq);
-    if (seq !== this.packSeq) return;
-    if (!out.ok) this.packError = out.message;
+    const read = await this.io.restoreCalib();
+    if (!read || seq !== this.packSeq) return;
+    this.stamp = Math.max(this.stamp, read.savedAt);
+    if (read.ok) this.commit(read, read.name, read.savedAt);
+    else this.packError = this.failText(read);
     this.changed();
   }
 
   async importPack(file: File): Promise<boolean> {
+    // 先看大小：选错一个很大的文件，一个字节都不读（Sol r1）。
+    if (file.size > ZIP_LIMITS.bytes) {
+      this.packSeq += 1;
+      this.packBusy = false;
+      this.packError = ZIP_TEXT.too_big;
+      this.changed();
+      return false;
+    }
     const seq = ++this.packSeq;
+    const savedAt = this.nextStamp();
     this.packBusy = true;
     this.packError = null;
     this.changed();
     try {
-      const bytes = await this.io.readFile(file);
+      const read = await this.io.importCalib(file, savedAt);
       if (seq !== this.packSeq) return false;
-      if (!bytes) {
-        this.packError = '读不了这个文件。请重新选一次。';
+      if (!read.ok) {
+        this.packError = this.failText(read);
         return false;
       }
-      const keep = bytes.slice(0);
-      const savedAt = Date.now();
-      const out = await this.check(bytes, file.name, savedAt, seq);
-      if (seq !== this.packSeq) return false;
-      if (!out.ok) {
-        this.packError = out.message;
-        return false;
-      }
-      try {
-        await this.io.savePack({ zip: keep, name: file.name, savedAt });
-      } catch {
-        if (seq === this.packSeq) this.packError = '校准数据存不进这台 iPhone。请检查存储空间后再试。';
-      }
+      this.commit(read, file.name, savedAt);
+      if (!read.saved) this.packError = '校准数据存不进这台 iPhone。请检查存储空间后再试。';
       return true;
     } catch (err) {
       if (seq === this.packSeq) this.packError = err instanceof Error && err.message ? err.message : TEXT.unreadable;
@@ -160,27 +168,33 @@ export class Book {
     this.packError = null;
     this.bump();
     try {
-      await this.io.deletePack();
+      await this.io.deletePack(this.nextStamp());
     } finally {
       this.changed();
     }
   }
 
-  private async check(zip: ArrayBuffer, name: string, savedAt: number, seq: number): Promise<{ ok: true } | { ok: false; message: string }> {
-    const read = await this.io.readCalib(zip);
-    if (seq !== this.packSeq) return { ok: false, message: '' };
-    if (!read.ok) return { ok: false, message: read.zip ? ZIP_TEXT[read.zip] : read.message ?? TEXT.unreadable };
+  private failText(read: Extract<CalibRead, { ok: false }>): string {
+    return read.zip ? ZIP_TEXT[read.zip] : read.message ?? TEXT.unreadable;
+  }
+
+  private commit(read: Extract<CalibRead, { ok: true }>, name: string, savedAt: number): void {
     this.pack = { name, savedAt, units: read.units, manifestSha256: read.manifestSha256, files: read.files };
     this.bump();
-    return { ok: true };
   }
 
   /** 这次选上的 GXRCE.DAT（已经挑好最新的那个）。`count` 是一共选了几个。 */
   async setDat(file: File, count: number): Promise<void> {
     const seq = ++this.datSeq;
+    this.datNote = count > 1 ? `选了 ${count} 个 GXRCE.DAT，用的是修改时间最新的那个。` : null;
+    if (file.size > MAX_DAT_BYTES) {
+      this.datBusy = false;
+      this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRCE.DAT。';
+      this.changed();
+      return;
+    }
     this.datBusy = true;
     this.datError = null;
-    this.datNote = count > 1 ? `选了 ${count} 个 GXRCE.DAT，用的是修改时间最新的那个。` : null;
     this.changed();
     try {
       const bytes = await this.io.readFile(file);
