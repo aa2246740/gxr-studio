@@ -16,7 +16,7 @@ import pytest
 from PIL import Image, JpegImagePlugin
 
 import hdr_support as hs
-from gxr_studio.export import ExportOptions, _finish, source_exif, write_rgb_with_exif
+from gxr_studio.export import ExportError, ExportOptions, _finish, source_exif, write_rgb_with_exif
 from gxr_studio.finish import hdr_export
 from gxr_studio.finish.hdr_export import HdrTrack, _to_grid
 from gxr_studio.finish.serve import _fit, export_finish, render_stage, render_stage_rgb
@@ -383,3 +383,26 @@ def test_real_photo_preview_and_untouched_export_are_unchanged(lib, settings, re
     res = export_finish(render, lib, shot, plain, {}, settings.export_dir, [], quality=95, long_edge=None, fmt="jpeg")
     old, _labels, _info = legacy_export_payload(render, lib, shot, plain, {}, quality=95, long_edge=None, fmt="jpeg")
     assert res.path.read_bytes() == old
+
+
+# ---------------------------------------------------------------- 错误先后不变（Sol desktop-export r1 P2）
+
+
+@pytest.mark.parametrize("fmt", ["jpeg", "png"])
+def test_broken_untouched_jpg_and_bad_destination_still_report_the_destination(studio, fmt):
+    """没编辑的相机 JPG 坏了、目标目录又不能用：和以前一样先报目录（API 是 422 bad_destination），不是解码异常。"""
+    render, lib, shot, edit, side, base, _out = _case(studio, "camera-untouched")
+    lib.abspath(shot["files"]["jpg"]["relpath"]).write_bytes(b"not a jpeg")
+    with pytest.raises(ExportError) as err:
+        export_finish(render, lib, shot, edit, side, lib.root, [], quality=95, long_edge=None, fmt=fmt, base=base, hdr=False)
+    assert err.value.code == "bad_destination"
+
+
+def test_broken_untouched_jpg_with_a_good_destination_still_fails_to_decode(studio):
+    """目录没问题时，坏 JPG 照旧在解码时失败，而且不留下文件。"""
+    render, lib, shot, edit, side, base, out = _case(studio, "camera-untouched")
+    lib.abspath(shot["files"]["jpg"]["relpath"]).write_bytes(b"not a jpeg")
+    with pytest.raises(Exception) as err:
+        export_finish(render, lib, shot, edit, side, out, [], quality=95, long_edge=None, fmt="jpeg", base=base, hdr=False)
+    assert not isinstance(err.value, ExportError) or err.value.code != "bad_destination"
+    assert not out.exists() or not any(out.glob("PAIR0001*"))

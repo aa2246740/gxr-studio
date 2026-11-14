@@ -497,15 +497,22 @@ def export_finish(
         if hdr
         else None
     )
+    # 没有编辑的相机 JPG（不做 HDR、不缩长边）：和以前一样先只读字节，目标目录检查通过之后再解码，
+    # 这样损坏的 JPG 加上不能用的目录仍然先报目录错误（Sol desktop-export r1 P2）
+    original_bytes: bytes | None = None
+    rgb: np.ndarray | None = None
     try:
-        rgb, labels = render_stage_rgb(render, lib, shot, edit, side, stage="final", max_edge=None, quality=quality, base=base, track=track)
+        plan = _plan(render, lib, shot, edit, side, stage="final", base=base)
+        if plan[0] is not None and track is None and not long_edge:
+            original_bytes = plan[0].read_bytes()
+            labels = _original_labels(shot, None)
+        else:
+            rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage="final", max_edge=None, quality=quality, base=base, track=track)
     except RawDecodeError as exc:
         detail = f"没有全尺寸传感器数据，也没有更小的预览。{exc}"
         if "jpg" in shot["files"]:
             raise ExportError("raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。", detail) from exc
         raise ExportError("no_jpg_source", "无法读取 RAW 文件。这张照片没有相机 JPG。", detail) from exc
-    # 只在最后写文件时编码一次：长边直接在数组上缩，HDR 增益也在这份数组上拟合
-    rgb = _fit(rgb, long_edge)
     note = labels.get("description") or labels.get("text") or "原图"
     kind = labels.get("label") or labels.get("kind") or "original"
     ident = labels.get("id") or ("camera-jpg" if kind == "original" else "recipe-prediction")
@@ -517,6 +524,10 @@ def export_finish(
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
+    if rgb is None:
+        rgb = load_jpeg(io.BytesIO(original_bytes or b""), None)
+    # 只在最后写文件时编码一次：长边直接在数组上缩，HDR 增益也在这份数组上拟合
+    rgb = _fit(rgb, long_edge)
     ext = FORMATS[fmt][1]
     hdr_info: dict[str, Any] = {}
     payload = write_rgb_with_exif(rgb, _source_path(lib, shot), note, quality=quality, fmt=fmt)
