@@ -1,0 +1,419 @@
+//! Port of gxr_studio/camdata/knob_table.py and embedded `final.json` menu.
+
+use std::collections::BTreeMap;
+
+use gxr_raw::{CoreError, Json};
+
+use crate::bounds::{add_u64, fit_count, mul_u64, try_vec_with_capacity};
+use crate::crc32::{u16_be, u32_be};
+use crate::datcodec::{dat_error, parse, profile};
+use crate::json_parse::{Val, parse_json};
+
+const FINAL_JSON: &[u8] = include_bytes!("../../../../src/gxr_studio/engine/data/final.json");
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Control {
+    pub id: i64,
+    pub name: String,
+    pub label: String,
+    pub dose_index: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuRecipe {
+    pub unit: u8,
+    pub slot: u8,
+    pub first_item: u16,
+    pub item_count: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuPoint {
+    pub level: i32,
+    pub dose: i16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuItem {
+    pub control: u8,
+    pub point_count: u8,
+    pub min_level: i16,
+    pub max_level: i16,
+    pub default_level: i16,
+    pub cap_lower: u8,
+    pub cap_upper: u8,
+    pub amount_step: u8,
+    pub points: Vec<MenuPoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuData {
+    pub schema: String,
+    pub q: i64,
+    pub max_points: i64,
+    pub wb_method: i64,
+    pub split_method: i64,
+    pub units: Vec<String>,
+    pub controls: Vec<Control>,
+    pub recipes: Vec<MenuRecipe>,
+    pub items: Vec<MenuItem>,
+}
+
+fn i16_be(data: &[u8], at: usize) -> i16 {
+    i16::from_be_bytes([data[at], data[at + 1]])
+}
+
+fn req<'a>(v: &'a Val, key: &str) -> Result<&'a Val, CoreError> {
+    v.field(key)
+        .ok_or_else(|| CoreError::new("camdata", format!("final.json missing {key}")))
+}
+
+fn req_i64(v: &Val, key: &str) -> Result<i64, CoreError> {
+    req(v, key)?
+        .as_i64()
+        .ok_or_else(|| CoreError::new("camdata", format!("final.json {key} not int")))
+}
+
+fn req_str(v: &Val, key: &str) -> Result<String, CoreError> {
+    req(v, key)?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| CoreError::new("camdata", format!("final.json {key} not str")))
+}
+
+/// Port of gxr_studio/engine/menu.py:9 load.
+pub fn embedded_menu() -> Result<MenuData, CoreError> {
+    let root = parse_json(FINAL_JSON)?;
+    let schema = req_str(&root, "schema")?;
+    let q = req_i64(&root, "q")?;
+    let max_points = req_i64(&root, "max_points")?;
+    let wb_method = req_i64(&root, "wb_method")?;
+    let split_method = req_i64(&root, "split_method")?;
+    let units = req(&root, "units")?
+        .as_array()
+        .ok_or_else(|| CoreError::new("camdata", "final.json units not array"))?
+        .iter()
+        .map(|u| {
+            u.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| CoreError::new("camdata", "final.json unit not str"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let controls = req(&root, "controls")?
+        .as_array()
+        .ok_or_else(|| CoreError::new("camdata", "final.json controls not array"))?
+        .iter()
+        .map(|c| {
+            Ok(Control {
+                id: req_i64(c, "id")?,
+                name: req_str(c, "name")?,
+                label: req_str(c, "label")?,
+                dose_index: req_i64(c, "dose_index")?,
+            })
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+
+    let recipes = req(&root, "recipes")?
+        .as_array()
+        .ok_or_else(|| CoreError::new("camdata", "final.json recipes not array"))?
+        .iter()
+        .map(|r| {
+            Ok(MenuRecipe {
+                unit: req_i64(r, "unit")? as u8,
+                slot: req_i64(r, "slot")? as u8,
+                first_item: req_i64(r, "first_item")? as u16,
+                item_count: req_i64(r, "item_count")? as u8,
+            })
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+
+    let items = req(&root, "items")?
+        .as_array()
+        .ok_or_else(|| CoreError::new("camdata", "final.json items not array"))?
+        .iter()
+        .map(|it| {
+            let points = req(it, "points")?
+                .as_array()
+                .ok_or_else(|| CoreError::new("camdata", "final.json points not array"))?
+                .iter()
+                .map(|p| {
+                    let level = i32::try_from(req_i64(p, "level")?)
+                        .map_err(|_| CoreError::new("camdata", "final.json level out of range"))?;
+                    let dose = i16::try_from(req_i64(p, "dose")?)
+                        .map_err(|_| CoreError::new("camdata", "final.json dose out of range"))?;
+                    Ok(MenuPoint { level, dose })
+                })
+                .collect::<Result<Vec<_>, CoreError>>()?;
+            Ok(MenuItem {
+                control: req_i64(it, "control")? as u8,
+                point_count: req_i64(it, "point_count")? as u8,
+                min_level: req_i64(it, "min_level")? as i16,
+                max_level: req_i64(it, "max_level")? as i16,
+                default_level: req_i64(it, "default_level")? as i16,
+                cap_lower: req_i64(it, "cap_lower")? as u8,
+                cap_upper: req_i64(it, "cap_upper")? as u8,
+                amount_step: req_i64(it, "amount_step")? as u8,
+                points,
+            })
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+
+    Ok(MenuData {
+        schema,
+        q,
+        max_points,
+        wb_method,
+        split_method,
+        units,
+        controls,
+        recipes,
+        items,
+    })
+}
+
+/// Port of gxr_studio/camdata/knob_table.py:11 read.
+pub fn read(
+    block: &[u8],
+    menu: MenuData,
+    mount_knobs_from_50mm: bool,
+) -> Result<MenuData, CoreError> {
+    if block.len() < 44 {
+        return Err(dat_error("kv2 点表头长度不合格"));
+    }
+    let compact = &block[..8] == b"GXKV2R3\0";
+    let block_len_u64 = block.len() as u64;
+    let recipe_count_u64 = u64::from(u16_be(block, 22));
+    let recipe_base_u64 = u64::from(u32_be(block, 36));
+    let recipe_table_bytes = mul_u64(16, recipe_count_u64, "kv2 配方目录越界")?;
+    let recipe_table_end = add_u64(recipe_base_u64, recipe_table_bytes, "kv2 配方目录越界")?;
+    if recipe_table_end > block_len_u64 {
+        return Err(dat_error("kv2 配方目录越界"));
+    }
+    let recipe_count = fit_count(recipe_count_u64, "kv2 配方目录越界")?;
+    let recipe_base = fit_count(recipe_base_u64, "kv2 配方目录越界")?;
+    let mut recipes = try_vec_with_capacity(recipe_count, "kv2 配方目录越界")?;
+    for i in 0..recipe_count {
+        let at = recipe_base + 16 * i;
+        recipes.push(MenuRecipe {
+            unit: block[at],
+            slot: block[at + 1],
+            first_item: u16_be(block, at + 4),
+            item_count: block[at + 2],
+        });
+    }
+    if mount_knobs_from_50mm {
+        let mut source = BTreeMap::new();
+        for r in &recipes {
+            if r.unit == 0 {
+                source.insert(r.slot, r.clone());
+            }
+        }
+        for r in &mut recipes {
+            if r.unit == 2 && r.slot != 4 {
+                let src = source
+                    .get(&r.slot)
+                    .ok_or_else(|| dat_error("kv2 缺少 50mm 旋钮源条目"))?;
+                *r = MenuRecipe { unit: 2, ..*src };
+            }
+        }
+    }
+
+    let item_count_u64 = u64::from(u16_be(block, 24));
+    let item_base_u64 = u64::from(u32_be(block, 40));
+    let item_table_bytes = mul_u64(16, item_count_u64, "kv2 项目表越界")?;
+    let item_table_end = add_u64(item_base_u64, item_table_bytes, "kv2 项目表越界")?;
+    if item_table_end > block_len_u64 {
+        return Err(dat_error("kv2 项目表越界"));
+    }
+    let item_count = fit_count(item_count_u64, "kv2 项目表越界")?;
+    let item_base = fit_count(item_base_u64, "kv2 项目表越界")?;
+    let mut items = try_vec_with_capacity(item_count, "kv2 项目表越界")?;
+    for i in 0..item_count {
+        let at = item_base + 16 * i;
+        let control = block[at];
+        let count = block[at + 1];
+        let lo = i16_be(block, at + 2);
+        let hi = i16_be(block, at + 4);
+        let default = i16_be(block, at + 6);
+        let cap_lower = block[at + 8] & 1;
+        let cap_upper = (block[at + 8] >> 1) & 1;
+        let step = block[at + 9];
+        let points_at_u64 = u64::from(u32_be(block, at + 12));
+        let stride_u64 = if compact { 2u64 } else { 4u64 };
+        let points_bytes = mul_u64(u64::from(count), stride_u64, "kv2 点表越界")?;
+        let points_end = add_u64(points_at_u64, points_bytes, "kv2 点表越界")?;
+        if points_end > block_len_u64 {
+            return Err(dat_error("kv2 点表越界"));
+        }
+        let points_at = fit_count(points_at_u64, "kv2 点表越界")?;
+        let mut points = try_vec_with_capacity(usize::from(count), "kv2 点表越界")?;
+        for j in 0..usize::from(count) {
+            let (level, dose) = if compact {
+                let lv = if control == 0 {
+                    (j * usize::from(step)).min(150) as i32
+                } else {
+                    i32::from(lo) + (j as i32)
+                };
+                (lv, i16_be(block, points_at + 2 * j))
+            } else {
+                (
+                    i32::from(i16_be(block, points_at + 4 * j)),
+                    i16_be(block, points_at + 4 * j + 2),
+                )
+            };
+            points.push(MenuPoint { level, dose });
+        }
+        items.push(MenuItem {
+            control,
+            point_count: count,
+            min_level: lo,
+            max_level: hi,
+            default_level: default,
+            cap_lower,
+            cap_upper,
+            amount_step: step,
+            points,
+        });
+    }
+
+    Ok(MenuData {
+        recipes,
+        items,
+        ..menu
+    })
+}
+
+/// Port of gxr_studio/render/recipes.py:136-138 menu resolution with optional DAT override.
+pub fn resolve_menu(dat: Option<(&[u8], Option<&[u8]>)>) -> Result<MenuData, CoreError> {
+    let menu = embedded_menu()?;
+    let Some((raw, library)) = dat else {
+        return Ok(menu);
+    };
+    let parsed = parse(raw, library)?;
+    let Some(kv2) = parsed.kv2_block.as_deref() else {
+        return Ok(menu);
+    };
+    let mount_knobs_from_50mm = profile(parsed.generation)
+        .map(|p| p.mount_knobs_from_50mm)
+        .unwrap_or(false);
+    read(kv2, menu, mount_knobs_from_50mm)
+}
+
+pub fn menu_to_json(menu: &MenuData) -> Json {
+    let units: Vec<Json> = menu.units.iter().map(Json::str).collect();
+    let controls: Vec<Json> = menu
+        .controls
+        .iter()
+        .map(|c| {
+            Json::object([
+                ("id", Json::Int(c.id)),
+                ("name", Json::str(&c.name)),
+                ("label", Json::str(&c.label)),
+                ("dose_index", Json::Int(c.dose_index)),
+            ])
+        })
+        .collect();
+    let recipes: Vec<Json> = menu
+        .recipes
+        .iter()
+        .map(|r| {
+            Json::object([
+                ("unit", Json::Int(i64::from(r.unit))),
+                ("slot", Json::Int(i64::from(r.slot))),
+                ("first_item", Json::Int(i64::from(r.first_item))),
+                ("item_count", Json::Int(i64::from(r.item_count))),
+            ])
+        })
+        .collect();
+    let items: Vec<Json> = menu
+        .items
+        .iter()
+        .map(|it| {
+            let points: Vec<Json> = it
+                .points
+                .iter()
+                .map(|p| {
+                    Json::object([
+                        ("level", Json::Int(i64::from(p.level))),
+                        ("dose", Json::Int(i64::from(p.dose))),
+                    ])
+                })
+                .collect();
+            Json::object([
+                ("control", Json::Int(i64::from(it.control))),
+                ("point_count", Json::Int(i64::from(it.point_count))),
+                ("min_level", Json::Int(i64::from(it.min_level))),
+                ("max_level", Json::Int(i64::from(it.max_level))),
+                ("default_level", Json::Int(i64::from(it.default_level))),
+                ("cap_lower", Json::Int(i64::from(it.cap_lower))),
+                ("cap_upper", Json::Int(i64::from(it.cap_upper))),
+                ("amount_step", Json::Int(i64::from(it.amount_step))),
+                ("points", Json::Array(points)),
+            ])
+        })
+        .collect();
+
+    Json::object([
+        ("schema", Json::str(&menu.schema)),
+        ("q", Json::Int(menu.q)),
+        ("max_points", Json::Int(menu.max_points)),
+        ("wb_method", Json::Int(menu.wb_method)),
+        ("split_method", Json::Int(menu.split_method)),
+        ("units", Json::Array(units)),
+        ("controls", Json::Array(controls)),
+        ("recipes", Json::Array(recipes)),
+        ("items", Json::Array(items)),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_huge_counts_and_offsets_without_panicking() {
+        let base = embedded_menu().expect("embedded final.json");
+        let mut block = vec![0u8; 64];
+        block[..8].copy_from_slice(b"GXKV2R3\0");
+        block[22..24].copy_from_slice(&u16::MAX.to_be_bytes());
+        block[36..40].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(read(&block, base.clone(), false).is_err());
+
+        // recipe_count = 0, item_count = 1, control = 1, point_count = 2, min_level = 32767, doses = [-2, 3]
+        let mut r3_widen = vec![0u8; 64];
+        r3_widen[..8].copy_from_slice(b"GXKV2R3\0");
+        r3_widen[22..24].copy_from_slice(&0u16.to_be_bytes());
+        r3_widen[24..26].copy_from_slice(&1u16.to_be_bytes());
+        r3_widen[36..40].copy_from_slice(&44u32.to_be_bytes());
+        r3_widen[40..44].copy_from_slice(&44u32.to_be_bytes());
+        // item at 44..60
+        r3_widen[44] = 1; // control
+        r3_widen[45] = 2; // point_count
+        r3_widen[46..48].copy_from_slice(&i16::MAX.to_be_bytes());
+        r3_widen[56..60].copy_from_slice(&60u32.to_be_bytes());
+        // points at 60..64
+        r3_widen[60..62].copy_from_slice(&(-2i16).to_be_bytes());
+        r3_widen[62..64].copy_from_slice(&3i16.to_be_bytes());
+        let widened = read(&r3_widen, base.clone(), false).expect("r3 widening");
+        assert_eq!(widened.items.len(), 1);
+        assert_eq!(
+            widened.items[0].points,
+            vec![
+                MenuPoint {
+                    level: 32767,
+                    dose: -2
+                },
+                MenuPoint {
+                    level: 32768,
+                    dose: 3
+                },
+            ]
+        );
+
+        block[22..24].copy_from_slice(&0u16.to_be_bytes());
+        block[24..26].copy_from_slice(&u16::MAX.to_be_bytes());
+        block[40..44].copy_from_slice(&0x8000_0000u32.to_be_bytes());
+        assert!(read(&block, base, false).is_err());
+    }
+}
