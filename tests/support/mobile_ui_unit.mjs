@@ -178,6 +178,19 @@ test('three minute gap and order toggle', () => {
   assert.equal(groupCount(items.map((item) => item.ms), 10), 1);
 });
 
+test('equal capture times keep one order for grid, index and swipe', () => {
+  // 连拍没有亚秒时间：三张同一毫秒。网格分组摊平后的顺序必须和编辑器用的 sortIds 一样。
+  const ms = Date.parse('2026-10-24T10:00:00');
+  const items = [{ id: 'r9700002', ms }, { id: 'r9700001', ms }, { id: 'r9700003', ms }];
+  for (const order of ['oldest', 'newest']) {
+    const grid = groupByGap(items, 3, order).flatMap((group) => group.ids);
+    const editor = sortIds(items, order).map((item) => item.id);
+    assert.deepEqual(grid, editor, order);
+  }
+  assert.deepEqual(sortIds(items, 'oldest').map((item) => item.id), ['r9700001', 'r9700002', 'r9700003']);
+  assert.deepEqual(sortIds(items, 'newest').map((item) => item.id), ['r9700003', 'r9700002', 'r9700001']);
+});
+
 test('virtual window does not mount every row', () => {
   const heights = Array.from({ length: 500 }, () => 100);
   const range = visibleRange(heights, 10_000, 800, 200);

@@ -2,7 +2,7 @@
 
 import { Engine } from '../../../frontend/src/index';
 import { neutralBake, NEUTRAL_BAKE_KEY } from '../dev/neutral_bake';
-import { classify } from '../lib/group';
+import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
 import { warmCore } from '../core/api';
@@ -254,12 +254,10 @@ class App implements AppApi {
     this.shell.dataset.drag = '0';
   }
 
+  /** 网格、编辑器的「第几张」和左右滑都用这一份顺序：同一时间按 id 排，倒序时整份反过来。 */
   private ordered(): Photo[] {
-    return [...this.byId.values()].sort((a, b) => {
-      const delta = photoMs(a) - photoMs(b);
-      if (delta) return this.sortOrder === 'oldest' ? delta : -delta;
-      return a.stem < b.stem ? -1 : 1;
-    });
+    const items = [...this.byId.values()].map((photo) => ({ id: photo.id, ms: photoMs(photo), photo }));
+    return sortIds(items, this.sortOrder).map((item) => item.photo);
   }
 
   private ingest(files: File[]): void {

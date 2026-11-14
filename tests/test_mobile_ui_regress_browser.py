@@ -1,0 +1,110 @@
+"""复审 r1 的回归：每个 case 一个新的无头 Chrome，开发服务器整个模块共用一个。
+
+故障只在页面里注入（延迟或改写 Worker 回复、藏起 navigator.gpu），真实样本照常解码。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from conftest import REAL_HOME
+from test_mobile_ui_browser import MODULES, PKG, RUNTIME, SAMPLES, _free_port, _need, _pairs, _stop
+
+pytestmark = pytest.mark.browser_serial
+
+REPO = Path(__file__).resolve().parents[1]
+DRIVER = REPO / "tests" / "support" / "mobile_ui_regress.mjs"
+
+
+def _prerequisites(files: list[Path]) -> None:
+    _need(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
+    _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
+    _need(MODULES.is_dir(), "mobile/node_modules is missing")
+    _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
+
+
+@pytest.fixture(scope="module")
+def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
+    files = _pairs()
+    _prerequisites(files)
+    tmp = tmp_path_factory.mktemp("mobile-ui-regress")
+    dngs = [str(path) for path in files if path.suffix.upper() == ".DNG"]
+    jpgs = [str(path) for path in files if path.suffix.upper() == ".JPG"]
+    manifest = tmp / "files.json"
+    listing = {"pairs": [str(path) for path in files], "dngs": dngs, "jpgs": jpgs, "jpg": jpgs[0], "dng": dngs[0]}
+    manifest.write_text(json.dumps(listing), encoding="utf-8")
+    port = _free_port()
+    env = os.environ.copy()
+    env["GXR_MOBILE_SAMPLES"] = str(SAMPLES)
+    log = tmp / "vite.log"
+    vite: subprocess.Popen[str] | None = None
+    try:
+        with log.open("w", encoding="utf-8") as stream:
+            vite = subprocess.Popen(
+                ["node", str(MODULES / "vite" / "bin" / "vite.js"), "--host", "127.0.0.1", "--port", str(port), "--strictPort"],
+                cwd=REPO / "mobile",
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if vite.poll() is not None:
+                pytest.fail(f"vite exited {vite.returncode}\n{log.read_text(encoding='utf-8', errors='replace')[-2000:]}")
+            probe = subprocess.run(
+                [
+                    "node",
+                    "-e",
+                    "fetch(process.argv[1]).then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+                    f"http://127.0.0.1:{port}/",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if probe.returncode == 0:
+                break
+            time.sleep(0.4)
+        else:
+            pytest.fail("vite did not answer")
+        yield {"base": f"http://127.0.0.1:{port}", "manifest": manifest, "log": log}
+    finally:
+        _stop(vite)
+
+
+def run_case(server: dict[str, Any], name: str) -> dict[str, Any]:
+    result = subprocess.run(
+        ["node", str(DRIVER), str(RUNTIME), server["base"], str(server["manifest"]), name],
+        cwd=REPO,
+        env={**os.environ, "HOME": str(REAL_HOME)},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    out: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
+    assert out["ok"], out.get("error")
+    data: dict[str, Any] = out["result"]
+    assert data.get("errors", []) == [], data["errors"]
+    return data
+
+
+def test_equal_capture_times_share_one_order(server: dict[str, Any]) -> None:
+    data = run_case(server, "equal-time-order")
+    for order, expected in (("newest", ["r9700003", "r9700002", "r9700001"]), ("oldest", ["r9700001", "r9700002", "r9700003"])):
+        run = data["runs"][order]
+        assert run["ids"] == expected, order
+        titles = [step["title"].lower() for step in run["seen"]]
+        assert titles == expected, (order, run["seen"])
+        assert [step["index"].split(" · ")[0] for step in run["seen"]] == ["1 / 3", "2 / 3", "3 / 3"], (order, run["seen"])
