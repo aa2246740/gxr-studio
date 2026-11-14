@@ -442,14 +442,18 @@ export class EditorView {
         stage.removeEventListener('pointermove', move);
         stage.removeEventListener('pointerup', up);
         stage.removeEventListener('pointercancel', up);
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        // 松手的位置也算移动：页面忙的时候 pointermove 可能晚到，按住计时先到了，横着滑出去仍然算换片。
+        if (Math.hypot(dx, dy) > 12) moved = true;
+        const swiped = ev.type === 'pointerup' && moved && Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy);
         if (held) {
           this.holding = false;
           this.setLabel(this.restLabel);
           this.push();
-          return;
+          if (!swiped) return;
         }
-        const dx = ev.clientX - startX;
-        if (moved && Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(ev.clientY - startY) && this.photo) {
+        if (swiped && this.photo) {
           this.api.swipe(this.photo.id, dx < 0 ? 1 : -1);
         }
       };
