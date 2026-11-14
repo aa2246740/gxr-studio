@@ -25,10 +25,11 @@ from gxr_studio.export import (
 from gxr_studio.library.store import sha256_file
 from gxr_studio.raw import NEUTRAL, Renderer, open_dng, render_full
 from raw_support import bayer_scene, build_dng
+from support import samples
 from support.waiting import wait_job
 from test_api import find, import_all
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = samples.sample_parent()
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
 
 
@@ -218,7 +219,7 @@ def test_api_raw_only_exports_instead_of_409(client, card, settings):
 
 # ---- 真实样本 ---------------------------------------------------------------
 
-needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-50 样本不在本机")
+needs_sample = samples.needs(SAMPLE_DIR.is_dir(), "captures/a12-50 样本不在本机")
 
 
 @needs_sample

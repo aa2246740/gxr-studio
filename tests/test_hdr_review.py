@@ -20,6 +20,7 @@ from gxr_studio.hdr import derived
 from gxr_studio.hdr import gain as g
 from gxr_studio.raw import open_dng
 from raw_support import bayer_scene, build_dng
+from support import samples
 from support.fake_card import make_fake_card
 from test_api import import_all
 
@@ -132,7 +133,7 @@ def test_small_radial_correction_is_not_supported():
 
     dng = STREET / "dng/R8051530.DNG"
     if not dng.is_file():
-        pytest.skip("MOUNT 样本不在本机")
+        samples.missing("MOUNT 样本不在本机")
     raw = g.raw_luma(open_dng(dng))
     sdr = g.sdr_luma_grid(g.decode_rgb((STREET / "jpg/R8051530.JPG").read_bytes()), 4)
     h, w = sdr.shape

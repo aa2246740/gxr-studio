@@ -18,12 +18,13 @@ import pytest
 
 from conftest import REAL_HOME
 from gpu_support import find_chrome
+from support import samples
 from test_mobile_shell_browser import core_prerequisite
 
 pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
-PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(REPO.parent)))
+PARENT = samples.sample_parent()
 SAMPLES = PARENT / "captures/a12-50/2026-10-19/stage2c-first-run"
 PKG = REPO / "mobile" / "src" / "wasm-pkg" / "gxr_wasm.js"
 MODULES = REPO / "mobile" / "node_modules"

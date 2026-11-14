@@ -27,14 +27,15 @@ from gxr_studio.hdr import gain as g
 from gxr_studio.library.store import LibraryPathRefused, sha256_file
 from gxr_studio.privacy import PrivatePathError
 from gxr_studio.raw import open_dng
+from support import samples
 from support.fake_card import make_fake_card
 from support.waiting import wait_job
 
-CAPTURES = Path(__file__).resolve().parents[2] / "captures"
+CAPTURES = samples.captures()
 STREET = CAPTURES / "street-g137-20261031"
 A12_50 = CAPTURES / "a12-50" / "2026-10-24" / "stage2l-daily-R8051312-1473"
-needs_street = pytest.mark.skipif(not (STREET / "dng").is_dir(), reason="captures/street-g137-20261031 样本不在本机")
-needs_50mm = pytest.mark.skipif(not A12_50.is_dir(), reason="captures/a12-50 样本不在本机")
+needs_street = samples.needs((STREET / "dng").is_dir(), "captures/street-g137-20261031 样本不在本机")
+needs_50mm = samples.needs(A12_50.is_dir(), "captures/a12-50 样本不在本机")
 DONE = "已导入 5 张照片。现在可以推出存储卡了。"
 ENCODED_ZERO = (
     0.1  # 增益图按 JPEG 质量 90 存：亮区边上的振铃最多几个码值（< 0.1 档）。算出来的增益是 0，见 test_frame_and_stamp_gain_is_exactly_zero

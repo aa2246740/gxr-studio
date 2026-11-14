@@ -12,7 +12,6 @@ Gates (UNIT-lut.md / CONVENTIONS §5):
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,7 +28,7 @@ from gxr_studio.lut.page import input_choice
 from gxr_studio.lut.photo import _apply
 from gxr_studio.lut.service import LutService
 from gxr_studio.render.params import EditError
-from support import lut_cases
+from support import lut_cases, samples
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
 from support.lut_cases import (
@@ -71,8 +70,7 @@ from support.lut_oracle import (
 )
 from support.wasm_check import run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
+_PARENT = samples.sample_parent()
 CAPTURES = _PARENT / "captures"
 _CAP = 60
 

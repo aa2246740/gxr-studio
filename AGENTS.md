@@ -1,6 +1,6 @@
 # 给改 GXR 电脑工作室的 agent
 
-这是一个本地网页工具：FastAPI 提供接口，`web/` 是不打包的 ES 模块。大图的显卡预览引擎在 `frontend/`（TypeScript + WGSL，Vite + pnpm），构建产物 `web/assets/gpu/engine.js` 提交进仓库；改了 `frontend/` 要跑 `make web` 再提交，`make check` 会核对两者一致。图库、导出和应用数据都在仓库外面。样本 DNG 在上层 `../captures/a12-50`，测试自己去读，不要把它们复制进来。
+这是一个本地网页工具：FastAPI 提供接口，`web/` 是不打包的 ES 模块。大图的显卡预览引擎在 `frontend/`（TypeScript + WGSL，Vite + pnpm），构建产物 `web/assets/gpu/engine.js` 提交进仓库；改了 `frontend/` 要跑 `make web` 再提交，`make check` 会核对两者一致。图库、导出和应用数据都在仓库外面。样本 DNG 和研究代码在上层项目文件夹（`../captures/a12-50`、`../research`），测试一律经 `tests/support/samples.py` 去找，不要把它们复制进来。检出不在项目文件夹里时（比如 T3 工作树），设 `GXR_STUDIO_TEST_PARENT=<项目文件夹>`，不设这些测试照常跳过；设 `GXR_REQUIRE_SAMPLES=1` 时缺样本算失败。
 
 不要读 `/Volumes/RICOHDCX`，不要写 `~/Pictures/GXR Studio`、`~/Pictures/GXR 导出` 或 `~/Library/Application Support/GXR Studio`。测试已经把这些路径保护起来了。
 

@@ -38,12 +38,13 @@ from gxr_studio.render.params import (
 )
 from gxr_studio.render.recipes import CameraData, Menu, unit_of_lens
 from gxr_studio.render.service import PREVIEW_STEP, RenderService, RenderUnavailable, shrink_codes
+from support import samples
 from test_api import find, import_all
 from test_engine_render import models as models
 
 ROOT = t.REPO
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
-needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-50 样本不在本机")
+needs_sample = samples.needs(SAMPLE_DIR.is_dir(), "captures/a12-50 样本不在本机")
 
 
 # ---- 夹具 --------------------------------------------------------------------
@@ -53,7 +54,7 @@ needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-
 def real_card(volumes):
     """盖掉 conftest 的同名夹具，换成本文件的样本目录；找不到样本就跳过，和 conftest 一样。"""
     if not SAMPLE_DIR.is_dir():
-        pytest.skip("captures/a12-50 样本不在本机")
+        samples.missing("captures/a12-50 样本不在本机")
     return make_card(volumes, samples=SAMPLE_DIR)
 
 

@@ -23,6 +23,7 @@ from gxr_studio.raw.codes import half_res_codes, orient_array, wb_mosaic_block
 from gxr_studio.raw.demosaic import demosaic_full, demosaic_strips
 from gxr_studio.raw.dng import Dng, RawDecodeError, open_dng
 from gxr_studio.raw.tiff import Tiff
+from support import samples
 from support.core_cli import CoreCliError, error_of, require_cli, run, run_json, run_npy
 from support.dng_writer import write_dng
 from support.raw_render_parity import (
@@ -35,8 +36,7 @@ from support.raw_render_parity import (
     verify_powf_boundary_counterexamples,
 )
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
+_PARENT = samples.sample_parent()
 CAPTURES = _PARENT / "captures"
 _CAP = 60
 _FLOAT_AT = {("layout", "white"), ("scene", "b")}
@@ -169,7 +169,7 @@ def test_real_sample_set() -> None:
     if not REAL:
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail(f"no DNGs under {CAPTURES}")
-        pytest.skip(f"no DNGs under {CAPTURES}")
+        samples.missing(f"no DNGs under {CAPTURES}")
     units = Counter(path.relative_to(CAPTURES).parts[0] for path in REAL)
     print(f"real_dngs={len(REAL)} units={dict(sorted(units.items()))}")
     assert REAL

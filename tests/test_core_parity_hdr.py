@@ -23,6 +23,7 @@ from gxr_studio.hdr import container as c
 from gxr_studio.hdr import gain as g
 from gxr_studio.raw.tiff import Tiff
 from support import hdr_parity as hp
+from support import samples
 from support.core_cli import require_cli
 from support.wasm_check import run_area
 
@@ -615,7 +616,7 @@ def test_real_pair_set() -> None:
     from gxr_studio.raw.dng import RawDecodeError, open_dng
 
     if not REAL:
-        pytest.skip(f"no RAW+JPG pairs under {hp.CAPTURES}")
+        samples.missing(f"no RAW+JPG pairs under {hp.CAPTURES}")
     decodable = 0
     for _jpg, dng in REAL:
         try:
@@ -640,7 +641,7 @@ def test_real_r8052275_correlation_follows_the_grid(tmp_path: Path) -> None:
     found = [p for p in hp.CAPTURES.rglob("R8052275.DNG") if "backup" not in p.as_posix().lower()] if hp.CAPTURES.is_dir() else []
     jpg = found[0].with_suffix(".JPG") if found else None
     if jpg is None or not jpg.is_file():
-        pytest.skip("R8052275 is not under captures/")
+        samples.missing("R8052275 is not under captures/")
     result = hp.flow(tmp_path, jpg.read_bytes(), found[0], "R8052275")
     note = "e2e-align:correlation python=0.9247201681137085 rust=0.9247203469276428"
     assert note in result.stages and "e2e-gain-codes:0" in result.stages, result.stages

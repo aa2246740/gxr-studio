@@ -25,12 +25,13 @@ from gxr_studio import audit
 from gxr_studio.app import create_app
 from gxr_studio.camdata import calib, intake, store
 from gxr_studio.cards.discovery import CardReader
+from support import samples
 from test_api import find, import_all
 
 GENS = (127, 129, 131, 135)
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = samples.sample_parent()
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
-needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-50 样本不在本机")
+needs_sample = samples.needs(SAMPLE_DIR.is_dir(), "captures/a12-50 样本不在本机")
 
 
 def sha(b: bytes) -> str:

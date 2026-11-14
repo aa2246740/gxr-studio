@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -27,8 +26,9 @@ from gxr_studio.raw import (
 )
 from gxr_studio.raw.render import srgb_encode
 from raw_support import bayer_scene, build_dng
+from support import samples
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = samples.sample_parent()
 SAMPLE = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run/R8051144.DNG"
 SAMPLE_SHA = "c8b6fd6d2e1cf0705fa187251c0817ca36e2e705efa9411d93216060e7250476"
 RESEARCH_DNG = ROOT / "research/color_table_fit/dng_scene.py"
@@ -277,7 +277,7 @@ def test_renderer_interface_is_pluggable():
 
 # ---- 真实样本 ---------------------------------------------------------------
 
-needs_sample = pytest.mark.skipif(not SAMPLE.is_file(), reason="captures/a12-50 样本不在本机")
+needs_sample = samples.needs(SAMPLE.is_file(), "captures/a12-50 样本不在本机")
 
 
 @pytest.fixture(scope="module")
@@ -309,7 +309,7 @@ def test_real_sample_half_and_full_sizes(sample):
 
 
 @needs_sample
-@pytest.mark.skipif(not RESEARCH_DNG.is_file(), reason="研究代码不在本机")
+@samples.needs(RESEARCH_DNG.is_file(), "研究代码不在本机")
 def test_real_sample_matches_research_reader_and_half_res_arithmetic(sample):
     spec = importlib.util.spec_from_file_location("research_dng_scene", RESEARCH_DNG)
     mod = importlib.util.module_from_spec(spec)

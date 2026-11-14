@@ -25,6 +25,7 @@ from gxr_studio.cards.importer import ImportOptions
 from gxr_studio.devtools import synthetic_card as sy
 from gxr_studio.library.lock import BUSY_EXIT_CODE, LibraryBusy, LibraryLock
 from gxr_studio.library.store import SIDECAR_RESET_NOTE
+from support import samples
 from support.waiting import wait_job
 from test_api import find, import_all
 
@@ -348,11 +349,16 @@ def test_readme_explains_the_removable_volumes_permission():
 # ---- P2-6：标定路径预填 -----------------------------------------------------------------
 
 
-def test_status_offers_the_project_folder_and_the_ui_uses_it(client):
+def test_status_offers_the_project_folder_and_the_ui_uses_it(client, monkeypatch):
+    # _project_dir() 按模块文件的位置找上一级项目文件夹。T3 工作树不在项目文件夹里，
+    # 所以把模块位置换成 GXR_STUDIO_TEST_PARENT/studio 下的同一个文件；主检出里两者是同一路径。
+    from gxr_studio.api import camdata_routes
+
+    monkeypatch.setattr(camdata_routes, "__file__", str(samples.sample_parent() / "studio/src/gxr_studio/api/camdata_routes.py"))
     s = client.get("/api/camdata/status").json()
     project = s.get("project_dir")
     if not project or not (Path(project) / "research").is_dir() or not (Path(project) / "studio").is_dir():
-        pytest.skip("工作室旁边没有 research/ 和 studio/，跳过项目文件夹预填")
+        samples.missing("工作室旁边没有 research/ 和 studio/，跳过项目文件夹预填")
     assert (Path(project) / "research").is_dir()
     assert (Path(project) / "studio").is_dir()
     js = (WEB / "assets" / "camdata.js").read_text(encoding="utf-8")

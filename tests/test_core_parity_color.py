@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import struct
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +25,7 @@ from gxr_studio.render import tones
 from support import color_fixtures as cf
 from support import color_npz_corpus as nc
 from support import color_parity as cp
+from support import samples
 from support.core_cli import CoreCliError, error_of, require_cli, run_json, run_npy
 
 MENU = Path(__file__).resolve().parents[1] / "src/gxr_studio/engine/data/final.json"
@@ -558,7 +558,7 @@ def test_apply_and_tones_match_python(tmp_path: Path) -> None:
 
 # ---- real camera data and calibration, when this machine has them -----------------------
 
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(Path(__file__).resolve().parents[2])))
+_PARENT = samples.sample_parent()
 CAPTURES = _PARENT / "captures"
 
 
@@ -643,7 +643,7 @@ def test_real_dngs_apply_matches_python(real_home: Path, tmp_path: Path) -> None
     require_cli()
     dngs = _real_dngs()
     if len(dngs) < 5:
-        pytest.skip("captures/ 下的真实 DNG 少于 5 张")
+        samples.missing("captures/ 下的真实 DNG 少于 5 张")
     picked = [dngs[(i * len(dngs)) // 5] for i in range(5)]
     for i, dng in enumerate(picked):
         unit = datcodec.NAMES[i % 3]

@@ -9,7 +9,6 @@ index and both values.
 from __future__ import annotations
 
 import json
-import os
 import struct
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
@@ -21,10 +20,10 @@ import pytest
 
 from gxr_studio.hdr import gain as g
 from gxr_studio.hdr.container import ContainerError
+from support import samples
 from support.core_cli import CoreCliError, error_of, run_json
 
-_STUDIO = Path(__file__).resolve().parents[2]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
+_PARENT = samples.sample_parent()
 CAPTURES = _PARENT / "captures"
 
 
