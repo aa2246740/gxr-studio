@@ -305,9 +305,8 @@ pub struct RecipeDisplay {
     pub table: Option<Table>,
 }
 
-/// A recipe renderer: its plan, its labels and its `display`.
+/// A recipe renderer: its labels and its `display`.
 pub struct RecipeRenderer {
-    pub plan: Plan,
     pub info: RendererInfo,
     pub display: RecipeDisplay,
 }
@@ -356,11 +355,7 @@ pub fn renderer(shot: &Shot, edit: &Edit, ctx: &Context<'_>) -> Result<RecipeRen
         edit.curves.as_ref(),
     )?;
     let info = renderer_info(&plan);
-    Ok(RecipeRenderer {
-        plan,
-        info,
-        display,
-    })
+    Ok(RecipeRenderer { info, display })
 }
 
 #[cfg(test)]

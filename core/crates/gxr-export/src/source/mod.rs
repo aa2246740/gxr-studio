@@ -20,7 +20,6 @@ pub use fail::{Fail, Labels, NO_RAW};
 pub use input::{Edit, RecipeSel, Shot, parse_edit, parse_shot};
 pub use plan::{
     CALIBRATED_LABEL, CalibPack, Camera, Context, EXPORT_STEP, ISO_SPLIT, MODEL_NOTE, Plan,
-    RecipeDisplay, RecipeRenderer, UNCALIBRATED_LABEL, renderer, unit_of_lens,
+    UNCALIBRATED_LABEL, unit_of_lens,
 };
-pub use render::render_full_with;
 pub use select::{Picked, Sources, color_image};

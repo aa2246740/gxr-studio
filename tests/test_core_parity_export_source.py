@@ -539,3 +539,40 @@ def test_empty_inputs_mean_absent(homes: dict[str, xs.Home], files: dict[str, Pa
     )
     code, payload = run_json([*plan, "--dat", str(empty), "--entry", str(entry)])
     assert code == 2 and payload["error"]["kind"] == "camera_data_missing", payload
+
+
+def _npy_with(path: Path, shape: tuple[int, ...], payload: bytes) -> Path:
+    body = f"{{'descr': '|u1', 'fortran_order': False, 'shape': {shape}, }}"
+    pad = (64 - (10 + len(body) + 1) % 64) % 64
+    header = body.encode("latin1") + b" " * pad + b"\n"
+    path.write_bytes(b"\x93NUMPY\x01\x00" + len(header).to_bytes(2, "little") + header + payload)
+    return path
+
+
+@needs_dat
+def test_decoded_pictures_are_checked(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    """r1 P2-3: camera JPG and preview arrays with a bad size, channel count or length are refused."""
+    h = homes["all"]
+    too_big = {"kind": "value", "message": "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size."}
+    cases = [
+        ((1, 2, 3), bytes(3), {"kind": "bad_request", "message": "{}的像素字节数和宽高不符"}),
+        ((4, 4, 3), bytes(10), {"kind": "bad_request", "message": "{}的像素字节数和宽高不符"}),
+        ((4294967295, 4294967295, 3), bytes(3), too_big),
+        ((65536, 65536, 3), b"", too_big),
+        ((2, 2, 4), bytes(16), {"kind": "bad_request", "message": "{}要是 RGB 三通道"}),
+        ((0, 4, 3), b"", {"kind": "bad_request", "message": "{}的宽高要大于 0"}),
+        ((4, 0, 3), b"", {"kind": "bad_request", "message": "{}的宽高要大于 0"}),
+    ]
+    shot = xs.write_json(tmp_path / "shot.json", xs.shot_for(files["unreadable"], files["jpg"], lens=LENSES[0], iso=200))
+    edit = xs.write_json(tmp_path / "edit.json", xs.edit_json(EditState()))
+    good = xs.save_rgb(tmp_path / "good.npy", xs.decoded_jpg(files["jpg"]))
+    args = ["source-color-image", "--shot", str(shot), "--edit", str(edit), "--dng", str(files["unreadable"]), "--dat", str(h.dat)]
+    for i, (shape, payload, err) in enumerate(cases):
+        bad = _npy_with(tmp_path / f"bad{i}.npy", shape, payload)
+        for flag, what, base in (("--jpg", "相机 JPG", "camera-jpg"), ("--preview", "内嵌预览", "neutral")):
+            pics = ["--jpg", str(bad)] if flag == "--jpg" else ["--jpg", str(good), "--preview", str(bad)]
+            code, payload_out = run_json([*args, "--base", base, *pics, "--out", str(tmp_path / "o.npy")])
+            want = {"error": {**err, "message": err["message"].format(what)}}
+            assert (code, payload_out) == (2, want), (shape, flag, payload_out)
+    code, ok = run_json([*args, "--base", "camera-jpg", "--jpg", str(good), "--out", str(tmp_path / "o.npy")])
+    assert code == 0 and ok["path"] == "camera-jpg", ok

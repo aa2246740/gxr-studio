@@ -143,8 +143,58 @@ fn camera_labels(detail: &str) -> Labels {
     ])
 }
 
+/// A decoded camera JPG or DNG preview, checked before anything copies or reads it: both
+/// sides positive, three channels, `h * w * 3` (checked `u64`) within the shared count limit,
+/// and exactly that many bytes.
+pub(crate) fn check_rgb(img: &Image<u8>, what: &str) -> Result<(), CoreError> {
+    if img.height == 0 || img.width == 0 {
+        return Err(CoreError::new(
+            "bad_request",
+            format!("{what}的宽高要大于 0"),
+        ));
+    }
+    if img.channels != 3 {
+        return Err(CoreError::new(
+            "bad_request",
+            format!("{what}要是 RGB 三通道"),
+        ));
+    }
+    let too_big = || CoreError::new("value", gxr_color::ARRAY_TOO_BIG);
+    let count = u64::try_from(img.height)
+        .ok()
+        .zip(u64::try_from(img.width).ok())
+        .and_then(|(h, w)| h.checked_mul(w))
+        .and_then(|n| n.checked_mul(3))
+        .filter(|&n| n <= u64::from(u32::MAX))
+        .ok_or_else(too_big)?;
+    if u64::try_from(img.values.len()).ok() != Some(count) {
+        return Err(CoreError::new(
+            "bad_request",
+            format!("{what}的像素字节数和宽高不符"),
+        ));
+    }
+    Ok(())
+}
+
 /// Port of gxr_studio/finish/serve.py:189 color_image with `full=True` (`max_edge` unused).
+///
+/// The public entry: the decoded pictures are checked first (`check_rgb`).
 pub fn color_image(src: &Sources<'_>, edit: &Edit, base: &str) -> Result<Picked, Fail> {
+    if let Some(jpg) = src.jpg {
+        check_rgb(jpg, "相机 JPG")?;
+    }
+    if let Some(preview) = src.preview {
+        check_rgb(preview, "内嵌预览")?;
+    }
+    color_image_checked(src, edit, base)
+}
+
+/// `color_image` on pictures `check_rgb` has passed (the LUT path re-enters here).
+pub(crate) fn color_image_checked(
+    src: &Sources<'_>,
+    edit: &Edit,
+    base: &str,
+) -> Result<Picked, Fail> {
     if edit.lut.is_some() {
         return lut_image(src, edit, base);
     }
@@ -243,4 +293,80 @@ pub fn color_image(src: &Sources<'_>, edit: &Edit, base: &str) -> Result<Picked,
         labels,
         path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::input::parse_shot;
+    use crate::source::plan::Camera;
+
+    fn img(height: usize, width: usize, channels: usize, len: usize) -> Image<u8> {
+        Image {
+            height,
+            width,
+            channels,
+            values: vec![10; len],
+        }
+    }
+
+    /// Sol r1 P2-3: the public entry refuses inconsistent pictures before it copies them.
+    #[test]
+    fn decoded_pictures_are_checked_first() {
+        let shot =
+            parse_shot(br#"{"files":{"jpg":{"relpath":"R1.JPG"}},"lens":null,"iso":200}"#).unwrap();
+        let camera = Camera::Missing;
+        let ctx = Context {
+            camera: &camera,
+            pack: None,
+            entry: None,
+            binding: "",
+        };
+        let big = 4_294_967_295;
+        let cases = [
+            (
+                img(1, 2, 3, 3),
+                "bad_request",
+                "相机 JPG的像素字节数和宽高不符",
+            ),
+            (img(big, big, 3, 3), "value", gxr_color::ARRAY_TOO_BIG),
+            (img(1, 2, 4, 8), "bad_request", "相机 JPG要是 RGB 三通道"),
+            (img(0, 2, 3, 0), "bad_request", "相机 JPG的宽高要大于 0"),
+            (img(2, 0, 3, 0), "bad_request", "相机 JPG的宽高要大于 0"),
+        ];
+        for (jpg, kind, message) in &cases {
+            let src = Sources {
+                shot: &shot,
+                dng: None,
+                jpg: Some(jpg),
+                preview: None,
+                ctx,
+                lut: None,
+            };
+            let Err(Fail::Core(e)) = color_image(&src, &Edit::empty(), "camera-jpg") else {
+                panic!("{}×{}×{} accepted", jpg.height, jpg.width, jpg.channels);
+            };
+            assert_eq!((e.kind, e.message.as_str()), (*kind, *message));
+        }
+        let good = img(1, 2, 3, 6);
+        let bad_preview = img(1, 2, 3, 5);
+        let src = Sources {
+            shot: &shot,
+            dng: None,
+            jpg: Some(&good),
+            preview: Some(&bad_preview),
+            ctx,
+            lut: None,
+        };
+        let Err(Fail::Core(e)) = color_image(&src, &Edit::empty(), "camera-jpg") else {
+            panic!("bad preview accepted");
+        };
+        assert_eq!(e.message, "内嵌预览的像素字节数和宽高不符");
+        let src = Sources {
+            preview: None,
+            ..src
+        };
+        let picked = color_image(&src, &Edit::empty(), "camera-jpg").unwrap();
+        assert_eq!((picked.path, picked.rgb.values.len()), ("camera-jpg", 6));
+    }
 }

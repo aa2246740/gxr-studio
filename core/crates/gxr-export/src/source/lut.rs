@@ -12,7 +12,7 @@ use gxr_raw::{CoreError, Image};
 use super::fail::{Fail, Labels};
 use super::input::Edit;
 use super::render::render_full_with;
-use super::select::{Picked, Sources, color_image, open_dng};
+use super::select::{Picked, Sources, color_image_checked, open_dng};
 
 /// `lut/photo.py:82`: `_apply` renders this many pixels at a time.
 const CHUNK: usize = 65536;
@@ -136,7 +136,7 @@ pub fn lut_image(src: &Sources<'_>, edit: &Edit, base: &str) -> Result<Picked, F
             recipe: edit.recipe.clone(),
             ..Edit::empty()
         };
-        let rgb = match color_image(src, &stripped, base) {
+        let rgb = match color_image_checked(src, &stripped, base) {
             Ok(picked) => picked.rgb,
             // Unreachable today: `color_image` only lets `RenderUnavailable` out with a recipe.
             Err(Fail::Unavailable { .. }) if edit.recipe.is_none() => {

@@ -67,9 +67,9 @@ fn maybe_pack(args: &[String]) -> Result<Option<CalibPack>, Failure> {
     maybe(args, "--calib")?.map(read_pack).transpose()
 }
 
-/// A `(h, w, 3)` uint8 `.npy` (version 1 or 2 header, C order), as `np.save` writes it.
+/// A 3-axis uint8 `.npy` (version 1 or 2 header, C order), as `np.save` writes it.
 fn read_rgb(path: &str) -> Result<Image<u8>, Failure> {
-    let bad = || Failure::Usage(format!("{path} must be a (h, w, 3) uint8 .npy"));
+    let bad = || Failure::Usage(format!("{path} must be a 3-axis uint8 .npy"));
     let data = bytes_of(path)?;
     if data.len() < 10 || &data[..6] != b"\x93NUMPY" {
         return Err(bad());
@@ -99,20 +99,15 @@ fn read_rgb(path: &str) -> Result<Image<u8>, Failure> {
         .filter(|d| !d.is_empty())
         .map(|d| d.parse::<usize>().map_err(|_| bad()))
         .collect::<Result<_, _>>()?;
-    let [h, w, 3] = dims[..] else {
+    // Any (h, w, c) array is passed on as it is: the shared `color_image` entry checks the
+    // dimensions, channels, count limit and length, with the same errors as for WASM callers.
+    let [h, w, c] = dims[..] else {
         return Err(bad());
     };
-    let n = h
-        .checked_mul(w)
-        .and_then(|v| v.checked_mul(3))
-        .ok_or_else(bad)?;
-    if data.len() - end != n {
-        return Err(bad());
-    }
     Ok(Image {
         height: h,
         width: w,
-        channels: 3,
+        channels: c,
         values: data[end..].to_vec(),
     })
 }
