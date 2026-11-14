@@ -128,7 +128,12 @@ impl ExifValue {
             Self::Rational(n, d) => Some((*n as f64) / (*d as f64)),
             Self::Int(i) => Some(*i as f64),
             Self::Float(f) => Some(*f),
-            _ => None,
+            Self::Str(s) => parse_py_float_str(s.trim()),
+            Self::Bytes(b) => std::str::from_utf8(b)
+                .ok()
+                .map(trim_py_ascii_bytes_ws)
+                .and_then(parse_py_float_str),
+            Self::Ints(_) | Self::Floats(_) | Self::Rationals(_) => None,
         }
     }
 
@@ -280,6 +285,26 @@ fn parse_py_int_str(s: &str) -> Option<i64> {
     } else {
         clean.parse::<i64>().ok()
     }
+}
+
+fn parse_py_float_str(s: &str) -> Option<f64> {
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut clean = String::with_capacity(bytes.len());
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'_' {
+            let prev_ok = i > 0 && bytes[i - 1].is_ascii_digit();
+            let next_ok = i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit();
+            if !prev_ok || !next_ok {
+                return None;
+            }
+            continue;
+        }
+        clean.push(char::from(b));
+    }
+    clean.parse::<f64>().ok()
 }
 
 pub fn bytes_to_hex(bytes: &[u8]) -> String {

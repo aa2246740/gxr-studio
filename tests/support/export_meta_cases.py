@@ -360,6 +360,32 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
         make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 2, 3, b"8\x1c\x00")])),
         "jpg",
     )
+
+    # 8. Sol r1 numeric ASCII shutter (33434) & aperture (33437)
+    cases["numeric-ascii-33434.jpg"] = (
+        make_jpeg_bytes(exif_payload=make_tiff_doc([], [(33434, 2, 6, b"0.004\x00")])),
+        "jpg",
+    )
+    cases["numeric-ascii-33437.jpg"] = (
+        make_jpeg_bytes(exif_payload=make_tiff_doc([], [(33437, 2, 4, b"2.8\x00")])),
+        "jpg",
+    )
+    cases["ratio-ascii-ws-bytes.jpg"] = (
+        make_jpeg_bytes(
+            exif_payload=make_tiff_doc(
+                [],
+                [
+                    (33434, 2, 8, b" 1_0e-2\x00"),
+                    (33437, 7, 5, b"\x0b2.8\x0c"),
+                ],
+            )
+        ),
+        "jpg",
+    )
+    cases["ratio-ascii-bad-1c.jpg"] = (
+        make_jpeg_bytes(exif_payload=make_tiff_doc([], [(33434, 2, 7, b"0.004\x1c\x00"), (33437, 7, 4, b"\xa02.8")])),
+        "jpg",
+    )
     return cases
 
 

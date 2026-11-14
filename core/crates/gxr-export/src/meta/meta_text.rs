@@ -387,5 +387,26 @@ mod tests {
         assert_eq!(ratio(Some(&ExifValue::Rational(28, 10))), Some(2.8));
         assert_eq!(ratio(Some(&ExifValue::Int(4))), Some(4.0));
         assert_eq!(ratio(Some(&ExifValue::Float(f64::NAN))), None);
+        assert_eq!(
+            ratio(Some(&ExifValue::Str("0.004".to_string()))),
+            Some(0.004)
+        );
+        assert_eq!(ratio(Some(&ExifValue::Str(" 2.8 ".to_string()))), Some(2.8));
+        assert_eq!(
+            ratio(Some(&ExifValue::Str("1_000e-3".to_string()))),
+            Some(1.0)
+        );
+        assert_eq!(ratio(Some(&ExifValue::Str("0.004\x1c".to_string()))), None);
+        assert_eq!(ratio(Some(&ExifValue::Str("-0.5".to_string()))), None);
+        assert_eq!(ratio(Some(&ExifValue::Str("abc".to_string()))), None);
+        assert_eq!(
+            ratio(Some(&ExifValue::Bytes(b"0.004".to_vec()))),
+            Some(0.004)
+        );
+        assert_eq!(
+            ratio(Some(&ExifValue::Bytes(b"\x0b2.8\x0c".to_vec()))),
+            Some(2.8)
+        );
+        assert_eq!(ratio(Some(&ExifValue::Bytes(b"\xa02.8".to_vec()))), None);
     }
 }
