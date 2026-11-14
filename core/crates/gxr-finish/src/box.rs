@@ -44,12 +44,12 @@ pub fn final_box_u64(
             Some(r) if r == FULL => valid_rect,
             Some(r) => clamp_norm_rect(&valid, vw, vh, r, None)?,
         };
-        return Ok((crop_box(vw, vh, rect), valid_rect));
+        return Ok((crop_box(vw, vh, rect)?, valid_rect));
     }
     if let Some(r) = crop_rect
         && r != FULL
     {
-        return Ok((crop_box(vw, vh, r), valid_rect));
+        return Ok((crop_box(vw, vh, r)?, valid_rect));
     }
     let (ow, oh) = output_size(wu, hu, geom)?;
     Ok(([0, 0, ow, oh], valid_rect))
@@ -150,4 +150,48 @@ pub fn final_box_json(
     crop_json: &str,
 ) -> Result<Json, CoreError> {
     final_box_json_u64(width as u64, height as u64, geometry_json, crop_json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unrepresentable_crop_rect_coordinates_without_panicking() {
+        let geom = parse_geometry(r#"{"straighten":5}"#).unwrap();
+        for crop_str in [
+            r#"{"rect":[1e18,0,1e18,0.5]}"#,
+            r#"{"rect":[0,1e18,0.5,1e18]}"#,
+            r#"{"rect":[1e308,0,1e308,0.5]}"#,
+            r#"{"rect":[1e18,0,1e18,0.5],"preset":"16:9"}"#,
+        ] {
+            for g in [Geometry::default(), geom] {
+                let err = final_box_json(32, 24, &g.to_json().render(), crop_str).unwrap_err();
+                assert_eq!(
+                    err,
+                    CoreError::new("bad_rect", "裁剪框超出画面范围"),
+                    "{crop_str}"
+                );
+            }
+        }
+        // Normal out-of-range rect still clamps safely.
+        let ok = final_box(
+            32,
+            24,
+            &Geometry::default(),
+            Some([-0.2, 0.1, 0.5, 0.5]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ok.0, [0, 2, 16, 12]);
+        let ok_clamp = final_box(
+            32,
+            24,
+            &Geometry::default(),
+            Some([2.0, 0.0, 0.5, 0.5]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ok_clamp.0, [31, 0, 1, 12]);
+    }
 }

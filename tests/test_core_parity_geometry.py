@@ -471,6 +471,36 @@ def test_final_box_matches_python_exact(
     }
 
 
+def test_final_box_rejects_unrepresentable_crop_coords_and_preserves_clamp() -> None:
+    require_cli()
+    for rect_json in ('{"rect":[1e18,0,1e18,0.5]}', '{"rect":[0,1e18,0.5,1e18]}', '{"rect":[1e308,0,1e308,0.5]}'):
+        for geom_json in ("{}", '{"straighten":5}'):
+            code, payload = run_json(["geom-final-box", "--w", "32", "--h", "24", "--geometry", geom_json, "--crop", rect_json])
+            err = error_of(code, payload)
+            assert err is not None and err.kind == "bad_rect"
+            assert err.message == "裁剪框超出画面范围"
+
+    for geom_dict in ({}, {"straighten": 5.0}):
+        geom = parse_geometry(geom_dict)
+        for rect in ((-0.2, 0.1, 0.5, 0.5), (0.8, 0.8, 0.5, 0.5), (2.0, 0.0, 0.5, 0.5)):
+            py_box, py_valid = final_box(32, 24, geom, rect, None)
+            code, payload = run_json(
+                [
+                    "geom-final-box",
+                    "--w",
+                    "32",
+                    "--h",
+                    "24",
+                    "--geometry",
+                    json.dumps(geom_dict),
+                    "--crop",
+                    json.dumps({"rect": list(rect)}),
+                ]
+            )
+            assert code == 0, payload
+            assert payload == {"box": list(py_box), "valid": list(py_valid), "header": header_value(py_valid)}
+
+
 def test_final_box_rejects_oversized_dimensions() -> None:
     require_cli()
     for bad_w, bad_h, geom_dict in (
@@ -610,6 +640,10 @@ def test_wasm_matches_native_for_geometry(tmp_path: Path) -> None:
     add_case("huge-expand-4294967295", 4294967295, 4294967295, {"vertical": 40}, None, expect_error=True)
     add_case("mismatch-warp", 97, 64, {}, None, rgb=img_small, expect_error=True, check_final_box=False, override_dims=True)
     add_case("huge-warp-dims", 4294967295, 4294967295, {}, None, rgb=img_small, expect_error=True, override_dims=True)
+    add_case("overflow-crop-x", 32, 24, {"straighten": 5}, '{"rect":[1e18,0,1e18,0.5]}', expect_error=True)
+    add_case("overflow-crop-y", 32, 24, {"straighten": 5}, '{"rect":[0,1e18,0.5,1e18]}', expect_error=True)
+    add_case("overflow-crop-1e308", 32, 24, {}, '{"rect":[1e308,0,1e308,0.5]}', expect_error=True)
+    add_case("clamp-negative-crop", 32, 24, {"straighten": 5}, {"rect": [-0.2, 0.1, 0.5, 0.5]})
 
     proc = run_area("geometry", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr

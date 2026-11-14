@@ -4,14 +4,12 @@ use gxr_raw::CoreError;
 
 use crate::crop::{MIN_SIDE_PX, RATIO_TOLERANCE, is_known_preset, ratio_off, target_ratio};
 
-use super::bounds::{checked_add_u64, checked_mul_u64, fit_count, too_big, try_vec_i32};
+use super::bounds::{
+    bad_rect, checked_add_u64, checked_mask_dims, checked_mul_u64, fit_count, rect_to_pixels,
+    round_even, too_big, try_vec_i32,
+};
 use super::spec::Geometry;
 use super::warp::{needs_valid_crop, warp_valid};
-
-#[inline]
-fn round_even(v: f64) -> i64 {
-    v.round_ties_even() as i64
-}
 
 /// Port of `gxr_studio/finish/geometry.py:199 max_area_rect`
 pub fn max_area_rect(valid: &[u8], width: usize, height: usize) -> [usize; 4] {
@@ -76,8 +74,18 @@ pub fn normalized_valid_rect(valid: &[u8], width: usize, height: usize) -> [f64;
     let long_edge = height.max(width);
     if long_edge > 240 {
         let scale = 240.0 / long_edge as f64;
-        let sh = 2.max(round_even(height as f64 * scale) as usize);
-        let sw = 2.max(round_even(width as f64 * scale) as usize);
+        let sh = 2_usize.max(
+            round_even(height as f64 * scale)
+                .ok()
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or(2),
+        );
+        let sw = 2_usize.max(
+            round_even(width as f64 * scale)
+                .ok()
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or(2),
+        );
         let ys = linspace_indices(height, sh);
         let xs = linspace_indices(width, sw);
         let mut sub = vec![0_u8; sh * sw];
@@ -240,19 +248,23 @@ fn place_ratio(
     cy: f64,
     width: usize,
     height: usize,
-) -> Option<[usize; 4]> {
-    let tw = k.checked_mul(numer)?;
-    let th = k.checked_mul(denom)?;
+) -> Result<Option<[usize; 4]>, CoreError> {
+    let Some(tw) = k.checked_mul(numer) else {
+        return Ok(None);
+    };
+    let Some(th) = k.checked_mul(denom) else {
+        return Ok(None);
+    };
     if tw < 1 || th < 1 || tw > width || th > height {
-        return None;
+        return Ok(None);
     }
-    let tx = round_even(cx - tw as f64 / 2.0)
-        .max(0)
-        .min((width - tw) as i64) as usize;
-    let ty = round_even(cy - th as f64 / 2.0)
-        .max(0)
-        .min((height - th) as i64) as usize;
-    Some([tx, ty, tw, th])
+    let max_x = i64::try_from(width - tw).map_err(|_| bad_rect())?;
+    let max_y = i64::try_from(height - th).map_err(|_| bad_rect())?;
+    let tx_i = round_even(cx - tw as f64 / 2.0)?.max(0).min(max_x);
+    let ty_i = round_even(cy - th as f64 / 2.0)?.max(0).min(max_y);
+    let tx = usize::try_from(tx_i).map_err(|_| bad_rect())?;
+    let ty = usize::try_from(ty_i).map_err(|_| bad_rect())?;
+    Ok(Some([tx, ty, tw, th]))
 }
 
 /// Port of `gxr_studio/finish/geometry.py:327 _ratio_in_box`
@@ -262,21 +274,23 @@ fn ratio_in_box(
     denom: usize,
     width: usize,
     height: usize,
-) -> [usize; 4] {
+) -> Result<[usize; 4], CoreError> {
     let [x, y, box_w, box_h] = box_rect;
     let bw = 1.max(box_w.min(width - x));
     let bh = 1.max(box_h.min(height - y));
     if numer == denom {
         let side = bw.min(bh);
-        return [x, y, side, side];
+        return Ok([x, y, side, side]);
     }
     let mut tw = bw;
-    let mut th = 1_i64.max(round_even(tw as f64 * denom as f64 / numer as f64)) as usize;
+    let mut th = usize::try_from(1_i64.max(round_even(tw as f64 * denom as f64 / numer as f64)?))
+        .map_err(|_| bad_rect())?;
     if th > bh {
         th = bh;
-        tw = 1_i64.max(round_even(th as f64 * numer as f64 / denom as f64)) as usize;
+        tw = usize::try_from(1_i64.max(round_even(th as f64 * numer as f64 / denom as f64)?))
+            .map_err(|_| bad_rect())?;
     }
-    [x, y, tw.min(bw), th.min(bh)]
+    Ok([x, y, tw.min(bw), th.min(bh)])
 }
 
 /// Port of `gxr_studio/finish/geometry.py:343 fit_ratio_in_valid`
@@ -288,11 +302,12 @@ pub fn fit_ratio_in_valid(
     numer: usize,
     denom: usize,
 ) -> Result<[usize; 4], CoreError> {
+    let (_px, _py, limit_w_i64, limit_h_i64) = rect_to_pixels(rect, width, height)?;
     let [x, y, rw, rh] = rect;
     let cx = (x + rw / 2.0) * width as f64;
     let cy = (y + rh / 2.0) * height as f64;
-    let limit_w = width.min(1_i64.max(round_even(rw * width as f64)) as usize);
-    let limit_h = height.min(1_i64.max(round_even(rh * height as f64)) as usize);
+    let limit_w = width.min(usize::try_from(limit_w_i64).map_err(|_| bad_rect())?);
+    let limit_h = height.min(usize::try_from(limit_h_i64).map_err(|_| bad_rect())?);
     let max_k = if numer > 0 && denom > 0 {
         (limit_w / numer).min(limit_h / denom)
     } else {
@@ -303,7 +318,7 @@ pub fn fit_ratio_in_valid(
     let mut centred: Option<[usize; 4]> = None;
     let mut centred_k = 0_usize;
     for k in (1..=max_k).rev() {
-        if let Some(b) = place_ratio(k, numer, denom, cx, cy, width, height)
+        if let Some(b) = place_ratio(k, numer, denom, cx, cy, width, height)?
             && covered(&sheet, stride, b[0], b[1], b[2], b[3])
         {
             centred = Some(b);
@@ -353,22 +368,18 @@ pub fn fit_ratio_in_valid(
         0
     };
     if k < 1 {
-        return Ok(ratio_in_box(
-            [fx, fy, fw.max(1), fh.max(1)],
-            numer,
-            denom,
-            width,
-            height,
-        ));
+        return ratio_in_box([fx, fy, fw.max(1), fh.max(1)], numer, denom, width, height);
     }
     let tw = k * numer;
     let th = k * denom;
-    let tx = round_even(cx - tw as f64 / 2.0)
-        .max(fx as i64)
-        .min((fx + fw - tw) as i64) as usize;
-    let ty = round_even(cy - th as f64 / 2.0)
-        .max(fy as i64)
-        .min((fy + fh - th) as i64) as usize;
+    let fx_i = i64::try_from(fx).map_err(|_| bad_rect())?;
+    let fy_i = i64::try_from(fy).map_err(|_| bad_rect())?;
+    let max_x = i64::try_from(fx + fw - tw).map_err(|_| bad_rect())?;
+    let max_y = i64::try_from(fy + fh - th).map_err(|_| bad_rect())?;
+    let tx = usize::try_from(round_even(cx - tw as f64 / 2.0)?.max(fx_i).min(max_x))
+        .map_err(|_| bad_rect())?;
+    let ty = usize::try_from(round_even(cy - th as f64 / 2.0)?.max(fy_i).min(max_y))
+        .map_err(|_| bad_rect())?;
     Ok([tx, ty, tw, th])
 }
 
@@ -416,15 +427,43 @@ pub fn window_full(
     rw: i64,
     rh: i64,
 ) -> bool {
-    if rw < 1 || rh < 1 || x < 0 || y < 0 || x + rw > width as i64 || y + rh > height as i64 {
+    if width == 0 || height == 0 || rw < 1 || rh < 1 || x < 0 || y < 0 {
         return false;
     }
-    let ux = x as usize;
-    let uy = y as usize;
-    let urw = rw as usize;
-    let urh = rh as usize;
+    let Some(expected_len) = width.checked_mul(height) else {
+        return false;
+    };
+    if valid.len() != expected_len {
+        return false;
+    }
+    let (Ok(w_i64), Ok(h_i64)) = (i64::try_from(width), i64::try_from(height)) else {
+        return false;
+    };
+    let Some(x_end) = x.checked_add(rw) else {
+        return false;
+    };
+    let Some(y_end) = y.checked_add(rh) else {
+        return false;
+    };
+    if x_end > w_i64 || y_end > h_i64 {
+        return false;
+    }
+    let (Ok(ux), Ok(uy), Ok(urw), Ok(urh)) = (
+        usize::try_from(x),
+        usize::try_from(y),
+        usize::try_from(rw),
+        usize::try_from(rh),
+    ) else {
+        return false;
+    };
     for row in uy..uy + urh {
-        if valid[row * width + ux..row * width + ux + urw].contains(&0) {
+        let Some(start) = row.checked_mul(width).and_then(|base| base.checked_add(ux)) else {
+            return false;
+        };
+        let Some(end) = start.checked_add(urw) else {
+            return false;
+        };
+        if valid.get(start..end).is_none_or(|s| s.contains(&0)) {
             return false;
         }
     }
@@ -432,30 +471,36 @@ pub fn window_full(
 }
 
 /// Port of `gxr_studio/finish/geometry.py:428 _snap_to_aspect`
-fn snap_to_aspect(th: i64, aspect: f64, tolerance: f64, floor: i64) -> (i64, i64) {
-    let fits = |t: i64| -> Option<(i64, i64)> {
+fn snap_to_aspect(
+    th: i64,
+    aspect: f64,
+    tolerance: f64,
+    floor: i64,
+) -> Result<(i64, i64), CoreError> {
+    let fits = |t: i64| -> Result<Option<(i64, i64)>, CoreError> {
         if t < 1 {
-            return None;
+            return Ok(None);
         }
-        let w = round_even(t as f64 * aspect);
+        let w = round_even(t as f64 * aspect)?;
         if w >= 1 && ((w as f64 / t as f64) - aspect).abs() / aspect <= tolerance {
-            Some((w, t))
+            Ok(Some((w, t)))
         } else {
-            None
+            Ok(None)
         }
     };
-    let start_down = floor.max(th - 40);
+    let start_down = floor.max(th.saturating_sub(40));
     for t in (start_down..=th).rev() {
-        if let Some(hit) = fits(t) {
-            return hit;
+        if let Some(hit) = fits(t)? {
+            return Ok(hit);
         }
     }
-    for t in (th + 1)..(th + 40) {
-        if let Some(hit) = fits(t) {
-            return hit;
+    let end_up = th.saturating_add(40);
+    for t in th.saturating_add(1)..end_up {
+        if let Some(hit) = fits(t)? {
+            return Ok(hit);
         }
     }
-    (1.max(round_even(th as f64 * aspect)), th)
+    Ok((1_i64.max(round_even(th as f64 * aspect)?), th))
 }
 
 /// Port of `gxr_studio/finish/geometry.py:447 clamp_norm_rect`
@@ -468,13 +513,17 @@ pub fn clamp_norm_rect(
 ) -> Result<[f64; 4], CoreError> {
     let wf = width as f64;
     let hf = height as f64;
-    let [x, y, rw, rh] = rect;
-    let mut px = round_even(x * wf);
-    let mut py = round_even(y * hf);
-    let mut pw = 1.max(round_even(rw * wf));
-    let mut ph = 1.max(round_even(rh * hf));
+    let (mut px, mut py, mut pw, mut ph) = rect_to_pixels(rect, width, height)?;
+    let w_i64 = i64::try_from(width).map_err(|_| bad_rect())?;
+    let h_i64 = i64::try_from(height).map_err(|_| bad_rect())?;
     let min_h = match aspect {
-        Some(a) => 2.max((16.0 * 1.0_f64.max(1.0 / a)).ceil() as i64),
+        Some(a) => {
+            if !a.is_finite() || a <= 0.0 {
+                return Err(bad_rect());
+            }
+            let min_f = (16.0 * 1.0_f64.max(1.0 / a)).ceil();
+            2.max(round_even(min_f)?)
+        }
         None => 2,
     };
     if let Some(a) = aspect
@@ -483,12 +532,14 @@ pub fn clamp_norm_rect(
         let cx0 = px as f64 + pw as f64 / 2.0;
         let cy0 = py as f64 + ph as f64 / 2.0;
         let bw = (pw as f64).min(ph as f64 * a);
-        ph = min_h.max(round_even(bw / a));
-        let snapped = snap_to_aspect(ph, a, 0.009, min_h);
+        ph = min_h.max(round_even(bw / a)?);
+        let snapped = snap_to_aspect(ph, a, 0.009, min_h)?;
         pw = snapped.0;
         ph = snapped.1;
-        px = round_even(cx0 - pw as f64 / 2.0);
-        py = round_even(cy0 - ph as f64 / 2.0);
+        px = round_even(cx0 - pw as f64 / 2.0)?;
+        py = round_even(cy0 - ph as f64 / 2.0)?;
+        let _ = px.checked_add(pw).ok_or_else(bad_rect)?;
+        let _ = py.checked_add(ph).ok_or_else(bad_rect)?;
         rect = [
             px as f64 / wf,
             py as f64 / hf,
@@ -507,19 +558,22 @@ pub fn clamp_norm_rect(
     let mut best: Option<[usize; 4]> = None;
     for _ in 0..18 {
         let mid = (lo + hi) / 2.0;
-        let mut th = min_h.max(round_even(ph as f64 * mid));
-        let mut tw = 2.max(round_even(th as f64 * eff_aspect));
+        let mut th = min_h.max(round_even(ph as f64 * mid)?);
+        let mut tw = 2.max(round_even(th as f64 * eff_aspect)?);
         if min_h > 2 {
-            (tw, th) = snap_to_aspect(th, eff_aspect, 0.009, min_h);
+            (tw, th) = snap_to_aspect(th, eff_aspect, 0.009, min_h)?;
         }
-        let tx = round_even(cx - tw as f64 / 2.0)
-            .max(0)
-            .min(0.max(width as i64 - tw));
-        let ty = round_even(cy - th as f64 / 2.0)
-            .max(0)
-            .min(0.max(height as i64 - th));
+        let max_tx = w_i64.checked_sub(tw).unwrap_or(0).max(0);
+        let max_ty = h_i64.checked_sub(th).unwrap_or(0).max(0);
+        let tx = round_even(cx - tw as f64 / 2.0)?.max(0).min(max_tx);
+        let ty = round_even(cy - th as f64 / 2.0)?.max(0).min(max_ty);
         if window_full(valid, width, height, tx, ty, tw, th) {
-            best = Some([tx as usize, ty as usize, tw as usize, th as usize]);
+            best = Some([
+                usize::try_from(tx).map_err(|_| bad_rect())?,
+                usize::try_from(ty).map_err(|_| bad_rect())?,
+                usize::try_from(tw).map_err(|_| bad_rect())?,
+                usize::try_from(th).map_err(|_| bad_rect())?,
+            ]);
             lo = mid;
         } else {
             hi = mid;
@@ -533,13 +587,17 @@ pub fn clamp_norm_rect(
         let mut found_size: Option<(usize, usize)> = None;
         for _ in 0..14 {
             let mid = (lo2 + hi2) / 2.0;
-            let mut th = min_h.max(round_even(ph as f64 * mid));
-            let mut tw = 2.max(round_even(th as f64 * eff_aspect));
+            let mut th = min_h.max(round_even(ph as f64 * mid)?);
+            let mut tw = 2.max(round_even(th as f64 * eff_aspect)?);
             if min_h > 2 {
-                (tw, th) = snap_to_aspect(th, eff_aspect, 0.009, min_h);
+                (tw, th) = snap_to_aspect(th, eff_aspect, 0.009, min_h)?;
             }
-            if tw >= 1 && th >= 1 && has_window(&sheet, width, height, tw as usize, th as usize) {
-                found_size = Some((tw as usize, th as usize));
+            if let (Ok(utw), Ok(uth)) = (usize::try_from(tw), usize::try_from(th))
+                && utw >= 1
+                && uth >= 1
+                && has_window(&sheet, width, height, utw, uth)
+            {
+                found_size = Some((utw, uth));
                 lo2 = mid;
             } else {
                 hi2 = mid;
@@ -608,8 +666,14 @@ fn fit_in_valid(
 
 /// Port of `gxr_studio/finish/geometry.py:577 _usable`
 fn usable(vw: usize, vh: usize, preset: Option<&str>, rect: [f64; 4]) -> bool {
-    let w_px = 1_i64.max(round_even(rect[2] * vw as f64));
-    let h_px = 1_i64.max(round_even(rect[3] * vh as f64));
+    let Ok(w_raw) = round_even(rect[2] * vw as f64) else {
+        return false;
+    };
+    let Ok(h_raw) = round_even(rect[3] * vh as f64) else {
+        return false;
+    };
+    let w_px = 1_i64.max(w_raw);
+    let h_px = 1_i64.max(h_raw);
     if w_px.min(h_px) < MIN_SIDE_PX {
         return false;
     }
@@ -657,14 +721,23 @@ pub fn fitted_crop(
 }
 
 /// Port of `gxr_studio/finish/geometry.py:587 crop_box`
-pub fn crop_box(width: usize, height: usize, rect: [f64; 4]) -> [usize; 4] {
-    let wf = width as f64;
-    let hf = height as f64;
-    let x = round_even(rect[0] * wf).max(0).min((width as i64) - 1) as usize;
-    let y = round_even(rect[1] * hf).max(0).min((height as i64) - 1) as usize;
-    let rw = 1.max(round_even(rect[2] * wf)) as usize;
-    let rh = 1.max(round_even(rect[3] * hf)) as usize;
-    [x, y, rw.min(width - x), rh.min(height - y)]
+pub fn crop_box(width: usize, height: usize, rect: [f64; 4]) -> Result<[usize; 4], CoreError> {
+    if width == 0 || height == 0 {
+        return Err(bad_rect());
+    }
+    let (wu, hu, _) = checked_mask_dims(width as u64, height as u64)?;
+    let (px, py, pw, ph) = rect_to_pixels(rect, wu, hu)?;
+    let w_i64 = i64::try_from(wu).map_err(|_| bad_rect())?;
+    let h_i64 = i64::try_from(hu).map_err(|_| bad_rect())?;
+    let x_i64 = px.max(0).min(w_i64 - 1);
+    let y_i64 = py.max(0).min(h_i64 - 1);
+    let rw_i64 = pw.min(w_i64 - x_i64);
+    let rh_i64 = ph.min(h_i64 - y_i64);
+    let x = usize::try_from(x_i64).map_err(|_| bad_rect())?;
+    let y = usize::try_from(y_i64).map_err(|_| bad_rect())?;
+    let rw = usize::try_from(rw_i64).map_err(|_| bad_rect())?;
+    let rh = usize::try_from(rh_i64).map_err(|_| bad_rect())?;
+    Ok([x, y, rw, rh])
 }
 
 /// Port of `gxr_studio/finish/geometry.py:596 crop_valid`
@@ -674,7 +747,7 @@ pub fn crop_valid(
     height: usize,
     rect: [f64; 4],
 ) -> Result<(usize, usize, Vec<u8>), CoreError> {
-    let [x, y, rw, rh] = crop_box(width, height, rect);
+    let [x, y, rw, rh] = crop_box(width, height, rect)?;
     let bytes = checked_mul_u64(checked_mul_u64(rw as u64, rh as u64)?, 3)?;
     let cap = fit_count(bytes, 1)?;
     let mut out = Vec::new();

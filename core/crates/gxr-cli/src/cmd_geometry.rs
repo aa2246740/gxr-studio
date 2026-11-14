@@ -186,9 +186,13 @@ fn parse_rect4(val: &JsonValue) -> Result<[f64; 4], CoreError> {
     }
     let mut out = [0.0; 4];
     for (i, item) in arr.iter().enumerate() {
-        out[i] = item
+        let f = item
             .as_f64()
             .ok_or_else(|| CoreError::new("bad_rect", "裁剪框超出画面范围"))?;
+        if !f.is_finite() {
+            return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+        }
+        out[i] = f;
     }
     Ok(out)
 }

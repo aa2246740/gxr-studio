@@ -21,6 +21,77 @@ pub fn too_big() -> CoreError {
     CoreError::new("bad_geometry", ARRAY_TOO_BIG)
 }
 
+pub fn bad_geometry() -> CoreError {
+    CoreError::new(
+        "bad_geometry",
+        "纠正参数格式不对。请重新打开这张照片后再试。",
+    )
+}
+
+pub fn bad_rect() -> CoreError {
+    CoreError::new("bad_rect", "裁剪框超出画面范围")
+}
+
+const I64_MIN_F64: f64 = -9_223_372_036_854_775_808.0;
+const I64_UPPER_BOUND_F64: f64 = 9_223_372_036_854_775_808.0;
+
+#[inline]
+pub(crate) fn round_even(v: f64) -> Result<i64, CoreError> {
+    if !v.is_finite() {
+        return Err(bad_rect());
+    }
+    let r = v.round_ties_even();
+    if !r.is_finite() || !(I64_MIN_F64..I64_UPPER_BOUND_F64).contains(&r) {
+        return Err(bad_rect());
+    }
+    Ok(r as i64)
+}
+
+/// Validate normalized rect against `(width, height)` pixel bounds and return `(px, py, pw, ph)`.
+pub(crate) fn rect_to_pixels(
+    rect: [f64; 4],
+    width: usize,
+    height: usize,
+) -> Result<(i64, i64, i64, i64), CoreError> {
+    if width == 0 || height == 0 {
+        return Err(bad_rect());
+    }
+    let _ = i64::try_from(width).map_err(|_| bad_rect())?;
+    let _ = i64::try_from(height).map_err(|_| bad_rect())?;
+    let [x, y, rw, rh] = rect;
+    if !x.is_finite() || !y.is_finite() || !rw.is_finite() || !rh.is_finite() {
+        return Err(bad_rect());
+    }
+    let wf = width as f64;
+    let hf = height as f64;
+    let xw = x * wf;
+    let yh = y * hf;
+    let rww = rw * wf;
+    let rhh = rh * hf;
+    let cxw = (x + rw / 2.0) * wf;
+    let cyh = (y + rh / 2.0) * hf;
+    if !xw.is_finite()
+        || !yh.is_finite()
+        || !rww.is_finite()
+        || !rhh.is_finite()
+        || !cxw.is_finite()
+        || !cyh.is_finite()
+    {
+        return Err(bad_rect());
+    }
+    let px = round_even(xw)?;
+    let py = round_even(yh)?;
+    let pw_raw = round_even(rww)?;
+    let ph_raw = round_even(rhh)?;
+    let pw = 1_i64.max(pw_raw);
+    let ph = 1_i64.max(ph_raw);
+    let _ = px.checked_add(pw_raw).ok_or_else(bad_rect)?;
+    let _ = py.checked_add(ph_raw).ok_or_else(bad_rect)?;
+    let _ = px.checked_add(pw).ok_or_else(bad_rect)?;
+    let _ = py.checked_add(ph).ok_or_else(bad_rect)?;
+    Ok((px, py, pw, ph))
+}
+
 pub fn checked_mul_u64(a: u64, b: u64) -> Result<u64, CoreError> {
     a.checked_mul(b).ok_or_else(too_big)
 }
