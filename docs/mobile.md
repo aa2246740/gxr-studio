@@ -203,6 +203,41 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 
 `color_bake(entry, stock, menu_json, ctx_npz, ring_json, params_json)` 返回 `ColorBake`（`bytes()`、`meta`、`summary`），`color_apply(bake_bin, meta_json, codes_f32, params_json)` 返回 uint8。两者和 CLI 走同一段 `gxr-color` 代码。比较用例在 `mobile/scripts/wasm_cases/color.mjs`，每个输入是一份列出文件的 JSON。
 
+## 边框和日期戳（frame）
+
+`gxr-frame` 移植 `finish/sfnt.py`、`spec.py` 的解析、`layout.py`、`fonts.py` 的度量一半、`frame_core.py` 和三份样式（`frame_styles.py`、`frame_objects.py`、`frame_new.py`），以及 `logo_math.py` 里算尺寸的部分和 `stamp.format_stamp`。Rust 只出版面 JSON：每个框、每行字、每个字的列、颜色。字和形状由浏览器画，墨迹、发光、颗粒、纹理的像素不在对拍里，参数在 JSON 里，要相同。
+
+字体都按字节传进来，crate 里不嵌字体文件。命令行写 `--font 名字=路径`，名字是 `atkinson`、`inter`、`inter_sb`、`courier`、`patrick`、`dseg`，中文回退字体叫 `cjk`。没给 `cjk` 而文字要中文字形时，错误是 `missing_cjk`（「无法显示中文。请改用英文或数字。」），和 Python 找不到系统字体时一样。不去看 macOS 的系统字体路径。
+
+中文度量：Python 用 Pillow（FreeType，BASIC）在 1000 像素上量中文字，上沿按字号量。Rust 读回退字体的 CFF 字形程序取控制框，按 FreeType 的定点算法缩放、取整：`y_scale = FT_DivFix(px*64, upm)`，上沿 `FT_PIX_CEIL(FT_MulFix(ascender, y_scale))`，步进取整到像素，框包含原点和步进（Pillow 的 textbbox 从零开始）。测试拿 `tests/fixtures/NotoSansSC-Shanghai.otf` 和 Pillow 比：步进和上沿逐个相同。墨迹框不一样：Pillow 量之前 FreeType 先做 CFF 微调，Rust 用的是不微调的框（和 FreeType 的 `FT_LOAD_NO_HINTING` 相同），1000 像素上框的边差 1 个单位。Python 再把这个取整过的微调框按字号放大，所以日期戳上的差约为 px/1000。
+
+中文字体本来就两边不同：桌面的中文回退是 macOS 系统字体（`stamp.py` 的 `_CJK_FONTS` 第一个是 PingFang），手机读不到也不能带，只能收一份 OFL 中文字体的字节（`--font cjk=…`）。对拍两边都用测试夹具 `NotoSansSC-Shanghai.otf`，验证的是同一字体上的排版算法，不是用户看到的结果。所以没有去做随字体附带的微调框表（经理 2026-11-14 裁定）。
+
+门槛（经理在 Sol r4 之后裁定，2026-11-14）：中文日期戳和 Rust 比的不是真实的 Python，而是「度量替换 oracle」——Python 真实的布局代码（`stamp_layout`、边框布局、缩字循环）原样运行，只把中文字形的度量（`FontMetrics.glyph` 里 CJK 的步进和框）换成 Rust 在 1000 像素下量出的值。替换在测试辅助 `tests/support/frame_oracle.py` 里，`src/` 不动。Rust 必须和这个 oracle 每个字段都精确相等：px、glow、rect、ops、颜色。原生和 WASM 也逐字节相同。
+
+为什么用 oracle：真实的中文印章两边本来就用不同字体（桌面是 PingFang，手机是 OFL 字体）；在同一个夹具字体上，两边唯一的差别是微调和不微调的度量。Rust 照 Python 的流程走：每个中文字在 `CJK_REFERENCE_PX = 1000` 下从 CFF 轮廓量框，按 FreeType 不微调的办法取整，然后走和 Python 一样的缩放取整。对真实的 Python，测试只断言 δ ≤ 1 并打印：δ 是同一组字形在 1000 像素下微调框和不微调框逐条边的最大差，夹具字体实测是 1（「上」826／825，「海」842／841）。
+
+已知、已归因的差异：除了坐标差约 px·δ/1000（原来的公式 `ceil(2·px·δ/1000) + 1` 现在只打印统计），1 像素的框差还会翻转离散分支。例如拍立得 `instax_wide`、题字「海」、照片 282×212、印章「北」seg7 large 开 glow 放在边框上：14 px 时 Python 的框高 14、Rust 的框高 13，可用高度正好 13，Python 缩到 11 px，Rust 保持 14 px，于是 px、glow、rect 都不同。这类例子（Sol r4 的 30 例和每种拍立得格式的缩字临界点）都在 oracle 门槛里。桌面导出照旧用 Pillow 的框。`glyf` 字体做回退时用字形头的框，FreeType 在 1000 像素上的 TrueType 微调没有移植。
+
+内置标志：crate 里没有理光字标的任何数据，不读也不提 `ricoh.png`，也不带它的尺寸。Leica 样式画内置标志时，标志框的比例和墨迹行由请求里的 `mark` 给出：`{"w", "h", "ink_top", "ink_bottom"}`，单位是标志自己的像素。标志高 `lh = max(14, round(gxr_cap × 1.04 × h / (ink_bottom − ink_top + 1)))`，宽 `round(w × lh / h)`，竖直位置用墨迹行的中点 `lh × (ink_top + ink_bottom) / (2h)`。对拍测试从 Python 读桌面的 `frame_core.LOGO_SIZE`、`LOGO_INK_Y` 填进去；手机填它用 Atkinson 写的「GXR」的度量，再在这个框里写字。只有画内置标志时才需要 `mark`，缺了就是 `bad_request`；不显示标志或用自定义标志时不看它。
+
+| 命令 | 输入 | 输出 |
+| --- | --- | --- |
+| `frame-layout --meta M.json --spec S.json --font …` | `{"w","h","meta":{…},"logos":[LogoInfo…],"mark":{…}}` 和边框规格 | `FrameLayout.to_json()`，无边框时 `null` |
+| `stamp-layout --meta M.json --spec S.json --font …` | 同上，另有 `"taken"`、`"file_time"`（`[年,月,日,时,分]` 或 `null`）、`"frame"`（边框规格，排在拍立得底边） | `StampLayout.to_json()`，没有可画的字时 `null` |
+| `frame-batch --cases C.json --font …` | `{"frames":[{"request","spec"}…],"stamps":[…]}` | 同样形状的结果，单项出错写成 `{"error":…}` |
+| `frame-sfnt --font PATH --chars TEXT` | 一个 TrueType 文件 | `read_font` 的表，加字形号 |
+| `frame-cjk --font PATH --chars TEXT --px 1,2,…` | 中文回退字体 | 每个字的 `[步进, 框]` 和每个字号的上沿 |
+| `frame-spec` / `frame-stored` / `stamp-spec --spec S.json` | 规格 JSON | 解析后的规格，或 Python 的错误 |
+
+`stamp_layout` 不看 `enabled`，`apply_stamp` 才看；调用方照 `compose.finish_array` 自己决定什么时候用边框版本。`w`、`h` 限 1 到 65535（JPEG 的最大边长，手机导出 JPEG），Python 没有这个检查。超出时原生和 WASM 给同一个 `bad_request`；这个上限也让版面里的整数乘积远在 `i64` 以内，并限制样式能产生的项数（胶片的齿孔数随长边增长），不会在 wasm32 上耗尽内存。字体包的长度先按 u64 和剩余字节比，CFF 的 INDEX 偏移用检查过的加法，两边报同样的错。
+
+JSON 输入（请求、规格、字体索引）最多嵌套 128 层，数组和对象一起算，最外层算第 1 层。每次进入下一层之前检查，超出时原生和 WASM 都报 `json`／「JSON 嵌套太深」，不会把 WASM 的栈用完。
+
+WASM：`frame_layout(meta_json, spec_json, font_index_json, fonts)` 和 `stamp_layout(...)`。`gxr-wasm` 没有 `js-sys`，所以多个字体拼成一个字节数组，`font_index_json` 是 `[[名字, 字节数], …]`。返回值和命令行的 stdout 逐字节相同（含换行），错误抛出核心错误的 JSON。
+
+对拍在 `tests/test_core_parity_frame.py`（中文墨迹框的门槛见上）：`FRAME_STYLES` 的每一种，`test_frame_reference` 的全部认可组合，`test_finish_layout_parity` 的尺寸、选项、拍摄信息和日期戳组合，中文题字，五种自定义标志的每个选项，1×1 这样的极端尺寸，以及缺中文字体。整数、字符串、布尔、键的顺序都要相同，浮点数要相等（不是接近），int 和 float 的类型也和 Python 一样。
+
 ## HDR（`gxr-hdr`，命令前缀 `hdr-`）
 
 移植的是 `hdr/gain.py`（对齐、曲线、增益平面）、`hdr/container.py`（ISO 21496-1 + Ultra HDR + MPF 封装）和 `hdr/capture.py` 的 `_capture`、`differs`。增益图 JPEG 的编码不在这里：这里给出 `encode_gainmap` 交给 Pillow 之前的 uint8 平面，封装时把编好的增益图 JPEG 当输入。`derived.py` 和 `finish/hdr_export.py` 是第二波。
@@ -283,4 +318,14 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - `render_full`：逐条带跑白平衡去马赛克、`srgb_encode` 与 `_neutral_display`（`np.rint` 一半向偶数，不同于 `pixels._linear_to_srgb` 的 `+0.5` 截断），最后按 `Orientation` 转正为 uint8 `(H, W, 3)`。`srgb_encode` 在 Rust 侧用 `gxr_math::powf(f64::from(a), f64::from(f32(1/2.4))) as f32` 计算正确舍入的幂；macOS `libSystem powf` 在个别 `.5` 边界（如 `0x3cc1c2a9`、`0x3da23384`、`0x3eadd76b`）会少 1 ULP，对拍测试通过 `dng-srgb-pow` 核对 Rust 幂的真实 float32 位型，并用 60 位 `Decimal` 独立核对正确舍入结果。
 - 分配前边界检查：`demosaic_full`、`demosaic_strips`、`demosaic_strip` 与 `render_full` 在分配任何输出或条带缓冲区前，先以 checked arithmetic 校验负 `DefaultCropOrigin`、超出 `ActiveArea` 与超出裸平面的裁切边界。
 - CLI 新增 `dng-demosaic --dng PATH --y0 A --y1 B --out OUT.npy`、`dng-neutral --dng PATH --out OUT.npy` 与 `dng-srgb-pow --bits HEX`；WASM 在 `gxr-wasm/src/raw.rs` 暴露 `dng_neutral` / `dng_neutral_named`。
+
+## 几何（`gxr-finish`）
+
+`gxr-finish` 现阶段包含裁剪预设与校验（`crop.py`）、纠正与有效区收框（`finish/geometry.py`）、以及显卡预览裁切框（`gpu/box.py`）。
+
+- 两种取整：`crop::crop_box` 用 `floor(v + 0.5)`（与 `crop.py` 一致），而 `geometry::crop_box` 与 `final_box` 用一半向偶数（与 Python `round` 一致）。
+- 拉直中心：`warp` 围绕 `(w - 1) / 2` 旋转并双线性采样，`crop::box_inside` 围绕 `w / 2`；水平翻转在 `rotate90` 之后执行，`validate_crop(..., mirrored=true)` 按 `-angle` 检查。
+- 大图有效区：长边超过 240 时 `normalized_valid_rect` 先抽样求最大内接矩形并向内缩 1 像素；`fit_ratio_in_valid` 的最近位置在全像素格点上逐个查找，不抽样。
+- CLI 子命令：`geom-crop-box`、`geom-final-box`、`geom-warp`、`geom-header`（另附 `geom-warp-valid`、`geom-fitted-crop`、`geom-clamp-rect`、`geom-fit-ratio` 供对拍）。
+- WASM 导出：`geom_final_box(w, h, geometry_json, crop_json)` 与 `geom_warp(rgb_u8, w, h, geometry_json)`（返回 `WarpedImage`，提供 `width`、`height`、`rgb()`、`mask()`）。
 
