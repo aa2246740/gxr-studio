@@ -30,7 +30,13 @@ function storedZip(files, opts = {}) {
     const crc = opts.badCrc === name ? (crc32(data) ^ 1) >>> 0 : crc32(data);
     const method = opts.method?.[name] ?? 0;
     const size = opts.zip64 === name ? 0xffffffff : data.length;
-    const local = [...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(method), ...u16(0), ...u16(0), ...u32(crc), ...u32(size), ...u32(size), ...u16(nameBytes.length), ...u16(0), ...nameBytes, ...data];
+    // opts.local：只改本地头（中央目录保持合法），用来造两边不一致的归档。
+    const lo = opts.local?.[name] ?? {};
+    const localName = lo.name ? enc.encode(lo.name) : nameBytes;
+    const local = [
+      ...u32(0x04034b50), ...u16(20), ...u16(lo.flags ?? 0), ...u16(method), ...u16(0), ...u16(0), ...u32(lo.crc ?? crc), ...u32(lo.packed ?? size), ...u32(lo.size ?? size),
+      ...u16(localName.length), ...u16(0), ...localName, ...data,
+    ];
     const central = [
       ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(method), ...u16(0), ...u16(0), ...u32(crc), ...u32(size), ...u32(size),
       ...u16(nameBytes.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...nameBytes,
@@ -84,6 +90,32 @@ test('stored zip reads entries and rejects bad data without throwing', () => {
   assert.equal(readStoredZip(whole, { bytes: 1 << 20, entries: 64, entry: 4 }).reason, 'too_big');
   assert.equal(plainName('ctx_jlaunch_200.npz'), true);
   for (const name of ['', '.', '..', 'a/b', 'a\\b', 'x\u0000y']) assert.equal(plainName(name), false);
+});
+
+test('local headers that disagree with the central directory are rejected (Sol r1)', () => {
+  const data = enc.encode('{"schema":"x"}');
+  const conflicts = {
+    name: { name: '../escape.bin' },
+    size: { size: 0xffffffff },
+    crc: { crc: 0 },
+    packed: { packed: 100000 },
+    encrypted: { flags: 1 },
+    descriptor: { flags: 8 },
+  };
+  for (const [label, local] of Object.entries(conflicts)) {
+    const out = readStoredZip(storedZip([['manifest.json', data]], { local: { 'manifest.json': local } }));
+    assert.equal(out.ok, false, label);
+    assert.equal(out.reason, 'broken', `${label}: ${out.detail}`);
+  }
+  // 一样长但不同的名字也拒绝。
+  const same = readStoredZip(storedZip([['manifest.json', data]], { local: { 'manifest.json': { name: 'manifest.jsoN' } } }));
+  assert.equal(same.ok, false);
+  // 中央目录声明的长度比实际条目多出来，也拒绝。
+  const whole = storedZip([['manifest.json', data]]);
+  const end = whole.length - 22;
+  const padded = whole.slice();
+  padded[end + 12] += 4;
+  assert.equal(readStoredZip(padded).ok, false);
 });
 
 test('the zip the desktop writes, and the same pack compressed', async () => {

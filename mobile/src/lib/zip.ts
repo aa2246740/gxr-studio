@@ -119,15 +119,33 @@ export function readStoredZip(bytes: Uint8Array, limits: { bytes: number; entrie
       if (packed !== size) return fail('broken', `size ${name}`);
       if (size > limits.entry) return fail('too_big', name);
       if (entries.has(name)) return fail('broken', `duplicate ${name}`);
+      if (flags & 0x08) return fail('broken', `data descriptor ${name}`);
       if (localAt + LOCAL_SIZE > cdAt || u32(bytes, localAt) !== LOCAL) return fail('broken', `local header ${name}`);
-      if (u16(bytes, localAt + 8) !== 0) return fail('compressed', name);
-      const dataAt = localAt + LOCAL_SIZE + u16(bytes, localAt + 26) + u16(bytes, localAt + 28);
+      // 本地头必须和中央目录说的是同一个文件：标志、方法、CRC、两个长度、名字一字不差（Sol r1）。
+      const localFlags = u16(bytes, localAt + 6);
+      const localMethod = u16(bytes, localAt + 8);
+      const localCrc = u32(bytes, localAt + 14);
+      const localPacked = u32(bytes, localAt + 18);
+      const localSize = u32(bytes, localAt + 22);
+      const localNameLen = u16(bytes, localAt + 26);
+      const localExtraLen = u16(bytes, localAt + 28);
+      if (localMethod !== 0) return fail('compressed', name);
+      if (localFlags !== flags) return fail('broken', `local flags ${name}`);
+      if (localCrc !== crc || localPacked !== packed || localSize !== size) return fail('broken', `local sizes ${name}`);
+      const nameAt = localAt + LOCAL_SIZE;
+      if (localNameLen !== nameLen || nameAt + localNameLen + localExtraLen > cdAt) return fail('broken', `local name ${name}`);
+      for (let k = 0; k < nameLen; k++) {
+        if (bytes[nameAt + k] !== bytes[at + CENTRAL_SIZE + k]) return fail('broken', `local name ${name}`);
+      }
+      const dataAt = nameAt + localNameLen + localExtraLen;
       if (dataAt + size > cdAt) return fail('broken', `data ${name}`);
       const data = bytes.subarray(dataAt, dataAt + size);
       if (crc32(data) !== crc) return fail('broken', `crc ${name}`);
       entries.set(name, data);
       at = next;
     }
+    // 中央目录必须正好用完它声明的长度。
+    if (at !== cdAt + cdSize) return fail('broken', 'central directory length');
     return { ok: true, entries };
   } catch {
     return fail('broken', 'unreadable');

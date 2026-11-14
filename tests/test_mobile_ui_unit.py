@@ -59,4 +59,4 @@ def test_mobile_ui_zip_pack_unit_and_iso(tmp_path: Path) -> None:
         env={**os.environ, "GXR_M2_STORED_ZIP": str(stored), "GXR_M2_DEFLATED_ZIP": str(deflated)},
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "# pass 8" in result.stdout or "ℹ pass 8" in result.stdout, result.stdout
+    assert "ℹ fail 0" in result.stdout or "# fail 0" in result.stdout, result.stdout
