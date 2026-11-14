@@ -5,9 +5,9 @@ use gxr_raw::Json;
 
 use crate::cube::Cube;
 use crate::identify_scan::{
-    FieldDir, OrderedMap, consume_ci, find_ci, find_field_matches, find_first_direction, has_space_hint,
-    is_attribution_comment, match_alchemy_suffix, output_spaces, posix_stem, search_explicit_input,
-    spaces_in_text, split_domain_first, split_last_direction, ws_end,
+    FieldDir, OrderedMap, consume_ci, find_ci, find_field_matches, find_first_direction,
+    has_space_hint, is_attribution_comment, match_alchemy_suffix, output_spaces, posix_stem,
+    search_explicit_input, spaces_in_text, split_domain_first, split_last_direction, ws_end,
 };
 use crate::spaces::is_display;
 
@@ -400,7 +400,10 @@ pub fn undeclared_choice(
         .iter()
         .map(String::as_str)
         .filter(|text| {
-            !find_field_matches(text).iter().any(|m| m.dir == FieldDir::Output) && !is_attribution_comment(text)
+            !find_field_matches(text)
+                .iter()
+                .any(|m| m.dir == FieldDir::Output)
+                && !is_attribution_comment(text)
         })
         .collect();
     let mut guesses: Vec<String> = Vec::new();
