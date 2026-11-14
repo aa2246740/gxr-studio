@@ -10,7 +10,8 @@ use super::plan::{CalibPack, Camera, Context, plan, recipe_display, renderer_inf
 use super::render::render_recipe;
 use super::select::{Sources, color_image};
 
-/// The raw inputs of one source command, as bytes.
+/// The raw inputs of one source command, as bytes. An empty `dat`, `library` or `entry`
+/// means "not given", the same on the CLI (an empty file) and in WASM (an empty array).
 #[derive(Default)]
 pub struct Request<'a> {
     pub shot: &'a [u8],
@@ -57,6 +58,26 @@ pub fn pack_from_index(index_json: &[u8], blob: &[u8]) -> Result<CalibPack, Core
     Ok(CalibPack { files })
 }
 
+/// The empty-input convention: zero bytes is the same as absent.
+fn given(bytes: Option<&[u8]>) -> Option<&[u8]> {
+    bytes.filter(|b| !b.is_empty())
+}
+
+impl<'a> Request<'a> {
+    fn camera(&self) -> Camera {
+        Camera::from_dat(given(self.dat), given(self.library))
+    }
+
+    fn context<'c>(&'c self, camera: &'c Camera) -> Context<'c> {
+        Context {
+            camera,
+            pack: self.pack,
+            entry: given(self.entry),
+            binding: self.binding,
+        }
+    }
+}
+
 fn sel_json(sel: &super::input::RecipeSel, defaulted: bool) -> Json {
     Json::object([
         ("kind", Json::str(sel.kind.clone())),
@@ -78,13 +99,8 @@ pub fn plan_json(req: &Request<'_>) -> (bool, String) {
 fn plan_inner(req: &Request<'_>) -> Result<Json, Fail> {
     let shot = parse_shot(req.shot)?;
     let edit = parse_edit(req.edit)?;
-    let camera = Camera::from_dat(req.dat, req.library);
-    let ctx = Context {
-        camera: &camera,
-        pack: req.pack,
-        entry: req.entry,
-        binding: req.binding,
-    };
+    let camera = req.camera();
+    let ctx = req.context(&camera);
     let (sel, defaulted) = selection(&shot, edit.recipe.as_ref());
     let p = plan(&shot, edit.recipe.as_ref(), &ctx)?;
     let info = renderer_info(&p);
@@ -213,7 +229,7 @@ fn color_image_inner(
     pics: &Pictures<'_>,
 ) -> Result<(String, Image<u8>), Fail> {
     let edit = parse_edit(req.edit)?;
-    let camera = Camera::from_dat(req.dat, req.library);
+    let camera = req.camera();
     let lut = match (edit.lut.as_ref(), pics.cube) {
         (Some(_), Some(cube)) => Some(LutSource {
             cube: Cube::read_bytes(cube),
@@ -226,12 +242,7 @@ fn color_image_inner(
         dng: pics.dng,
         jpg: pics.jpg,
         preview: pics.preview,
-        ctx: Context {
-            camera: &camera,
-            pack: req.pack,
-            entry: req.entry,
-            binding: req.binding,
-        },
+        ctx: req.context(&camera),
         lut: lut.as_ref(),
     };
     let picked = color_image(&src, &edit, base)?;

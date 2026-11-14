@@ -14,12 +14,9 @@ fn rejected(err: &CoreError) -> JsValue {
     JsValue::from_str(&error_json(err).render())
 }
 
-fn some(bytes: &[u8]) -> Option<&[u8]> {
-    if bytes.is_empty() { None } else { Some(bytes) }
-}
-
 /// `RenderService.plan` plus the renderer's labels: the `source-plan` stdout (with the
-/// newline `println!` adds). An empty `dat`, `library` or `entry` means "not given".
+/// newline `println!` adds). An empty `dat`, `library`, `entry` or `adjust_json` means
+/// "not given", exactly as an empty file does on the CLI.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn source_plan(
@@ -36,9 +33,9 @@ pub fn source_plan(
     let req = Request {
         shot: shot_json,
         edit: edit_json,
-        dat: some(dat),
-        library: some(library),
-        entry: some(entry),
+        dat: Some(dat),
+        library: Some(library),
+        entry: Some(entry),
         pack: Some(&pack),
         binding,
     };
@@ -66,11 +63,6 @@ pub fn source_render(
     adjust_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     let pack = pack_from_index(calib_index_json, calib_bytes).map_err(|e| rejected(&e))?;
-    let tones: &[u8] = if adjust_json.is_empty() {
-        b"{}"
-    } else {
-        adjust_json
-    };
     let rgb = render(
         dng,
         name,
@@ -79,7 +71,7 @@ pub fn source_render(
         unit,
         &pack,
         i64::from(iso),
-        tones,
+        adjust_json,
     )
     .map_err(|e| rejected(&e))?;
     let too_big = || {

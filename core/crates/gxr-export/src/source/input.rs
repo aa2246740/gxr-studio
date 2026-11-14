@@ -158,8 +158,10 @@ pub fn parse_edit(bytes: &[u8]) -> Result<Edit, CoreError> {
     })
 }
 
-/// Parse a `{"adjust", "curves"}` JSON (the `color-apply` parameters).
+/// Parse a `{"adjust", "curves"}` JSON (the `color-apply` parameters). An empty input is
+/// `{}` (no adjustment), on the CLI and in WASM alike.
 pub fn parse_tones(bytes: &[u8]) -> Result<(Adjust, Option<Curves>), CoreError> {
+    let bytes: &[u8] = if bytes.is_empty() { b"{}" } else { bytes };
     tones_of(&parse_json(bytes)?)
 }
 

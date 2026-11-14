@@ -447,8 +447,58 @@ def test_wasm_matches_native_source(homes: dict[str, xs.Home], files: dict[str, 
         p = tmp_path / f"hostile-{name}.DNG"
         p.write_bytes(payload)
         spec(f"render-hostile-{name}", {"kind": "render", "dng": str(p), "out": str(tmp_path / f"h-{name}.npy"), **render})
+    for name, value in review_r1_specs(tmp_path, recipe, base, render, files).items():
+        spec(name, value)
     if REAL:
         spec("render-real", {"kind": "render", "dng": str(REAL[0][0]), "out": str(tmp_path / "real.npy"), "timing": True, **render})
     proc = run_area("source", specs, tmp_path)
     print(proc.stdout.strip())
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# ---- Sol review r1: input checks ---------------------------------------------------------
+
+
+def review_r1_specs(tmp: Path, edit: Path, base: dict[str, Any], render: dict[str, Any], files: dict[str, Path]) -> dict[str, dict[str, Any]]:
+    """The reviewer's counterexamples, as native/WASM comparison inputs."""
+    empty = tmp / "empty.bin"
+    empty.write_bytes(b"")
+    ok = {"kind": "render", "dng": str(files["ok"]), **render}
+    out: dict[str, dict[str, Any]] = {
+        # 1. Zero bytes means "not given" on both sides.
+        "r1-render-empty-adjust": {**ok, "adjust": str(empty), "out": str(tmp / "r1-ea.npy")},
+        "r1-plan-empty-entry": {"kind": "plan", "edit": str(edit), **{**base, "entry": str(empty)}},
+        "r1-plan-empty-dat": {"kind": "plan", "edit": str(edit), **{**base, "dat": str(empty)}},
+        "r1-plan-empty-library": {"kind": "plan", "edit": str(edit), **{**base, "library": str(empty)}},
+    }
+    return out
+
+
+@needs_dat
+def test_empty_inputs_mean_absent(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    """r1 P2-1: an empty adjust file is `{}`; an empty DAT, library or entry is not given."""
+    h = homes["all"]
+    empty = tmp_path / "empty.bin"
+    empty.write_bytes(b"")
+    braces = xs.write_json(tmp_path / "braces.json", {})
+    entry, stock = tmp_path / "e.bin", tmp_path / "s.bin"
+    entry.write_bytes(h.entry(RecipeSel("jlaunch", 3)) or b"")
+    stock.write_bytes(h.entry(RecipeSel("jlaunch", 4)) or b"")
+    pics = []
+    for adjust in (empty, braces):
+        out = tmp_path / f"{adjust.stem}.npy"
+        args = ["source-render", "--dng", str(files["ok"]), "--entry", str(entry), "--stock", str(stock), "--unit", "jlaunch"]
+        code, payload = run_json([*args, "--calib", str(h.calib), "--iso", "200", "--adjust", str(adjust), "--out", str(out)])
+        assert code == 0, payload
+        pics.append(np.load(out))
+    assert np.array_equal(pics[0], pics[1])
+    shot = xs.write_json(tmp_path / "shot.json", xs.shot_for(files["ok"], None, lens=LENSES[0], iso=200))
+    edit = xs.write_json(tmp_path / "edit.json", xs.edit_json(EditState(recipe=RecipeSel("jlaunch", 3))))
+    plan = ["source-plan", "--shot", str(shot), "--edit", str(edit), "--calib", str(h.calib), "--binding", "b"]
+    assert run_json([*plan, "--dat", str(h.dat), "--entry", str(empty)]) == run_json([*plan, "--dat", str(h.dat)])
+    assert run_json([*plan, "--dat", str(empty), "--entry", str(entry)]) == run_json([*plan, "--entry", str(entry)])
+    assert run_json([*plan, "--dat", str(h.dat), "--library", str(empty), "--entry", str(entry)]) == run_json(
+        [*plan, "--dat", str(h.dat), "--entry", str(entry)]
+    )
+    code, payload = run_json([*plan, "--dat", str(empty), "--entry", str(entry)])
+    assert code == 2 and payload["error"]["kind"] == "camera_data_missing", payload
