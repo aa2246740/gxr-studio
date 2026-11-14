@@ -19,6 +19,7 @@ import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -584,12 +585,12 @@ def test_quiet_after_three_busy_checks(tmp_path: Path, scratch: Path) -> None:
 def test_never_quiet_times_out_and_runs_anyway(tmp_path: Path, scratch: Path) -> None:
     tree = scratch / "tree"
     _exclusive_tree(tree, "    assert runs == 1\n")
-    env = _quiet_env(tmp_path, _COUNTING_GATE.format(busy=10**9), budget=0.4, poll=0.1)
+    env = _quiet_env(tmp_path, _COUNTING_GATE.format(busy=10**9), budget=5.5, poll=0.1)  # 够采几次，不到 1 秒
     proc = _run_quiet(tmp_path, tree, env)
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out
     assert "机器一直没安静下来（exclusive 阶段开始前）" in out and "照样跑" in out and "idle_cores" in out, out
-    assert "机器一直没安静下来（exclusive 用例之前：" in out  # 预算用完以后每个用例只问一次
+    assert "机器一直没安静下来（exclusive 用例之前：" in out and "不再采样" in out  # 预算用完以后不再采样
     assert _hits(tmp_path)["speed"] == 1
 
 
@@ -608,8 +609,8 @@ def test_loadgate_when_usable_and_the_public_fallback_otherwise(
 ) -> None:
     tree = scratch / "tree"
     _exclusive_tree(tree, "    assert runs == 1\n")
-    # 回退看的是真机器的 load1：预算给得很短，忙也只等一下。
-    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, gate_body, budget=0.3, poll=0.1), unset_gate=unset)
+    # 回退看的是真机器的 load1：预算只比一次采样窗口（5 秒）多一点，忙也只等一下。
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, gate_body, budget=5.3, poll=0.1), unset_gate=unset)
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out
     for text in expect:
@@ -708,3 +709,35 @@ def test_speed_only_subtest_and_call_retry_leaves_only_the_second_run_in_junit(t
     # alpha、beta 各 1，加上第二次的 subtest 通过和主 call 通过各 1
     assert (suite.attrib["tests"], suite.attrib["failures"], suite.attrib["errors"]) == ("4", "0", "0"), ET.tostring(suite)
     assert all(case.find("failure") is None for case in suite.iter("testcase"))
+
+
+def test_sampling_time_counts_against_the_whole_wait_budget(capsys: pytest.CaptureFixture[str]) -> None:
+    """Sol r1 P2：总预算 600 秒、每 10 秒问一次、一直不安静、每次采样耗 5 秒（loadgate 的窗口），后面 10 个 exclusive 用例。
+
+    原来阶段前等到 605 秒，之后每个用例还各采一次，合计 655 秒。现在父进程、exclusive 子进程、重试前三处共用一份预算，
+    采样和休眠都扣，总数不超过 600 秒；预算用完的那 10 次等待不再采样。
+    """
+    from test_run_tests_quiet import _quiet_module
+
+    q: Any = _quiet_module()
+    now = [0.0]
+
+    def busy() -> tuple[bool, str]:
+        now[0] += 5.0
+        return False, f"busy at {now[0]:.0f}"
+
+    def nap(seconds: float) -> bool:
+        now[0] += seconds
+        return True
+
+    parent = q.QuietGate(busy, busy, budget=600.0, poll=10.0)
+    parent.wait("exclusive 阶段开始前", nap, clock=lambda: now[0])
+    child = q.QuietGate(busy, busy, budget=parent.remaining, poll=10.0)  # 父进程把剩下的交给子进程
+    for index in range(10):
+        child.wait(f"exclusive 用例之前：case {index}", nap, clock=lambda: now[0])
+    used_by_child = parent.remaining - child.remaining  # 子进程写进结果文件，父进程扣掉
+    parent.remaining -= used_by_child
+    parent.wait("速度预算重试之前", nap, clock=lambda: now[0])
+    out = capsys.readouterr().out
+    assert now[0] <= 600.0, now[0]
+    assert out.count("不再采样") == 11 and "最后一次 busy at" in out, out

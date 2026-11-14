@@ -7,10 +7,11 @@
   （没有这个函数就用 `cap(0)` 的 admit）；没设置、文件不在、加载失败或调用出错时，改用公开的回退：
   1 分钟负载均值低于 CPU 数的一半。公共仓库不依赖那条私有路径。
 - 每 GXR_QUIET_POLL_S 秒（默认 10）问一次。一次 runner 里所有等待合计最多 GXR_QUIET_MAX_WAIT_S 秒
-  （默认 600）。用完以后照样跑，每次只再问一次，并打印一行「一直没安静下来」和当时的负载。
+  （默认 600），采样本身（一次最多 SAMPLE_S 秒）和休眠都算在内。剩下的不够再采一次就不再采样，照样跑，
+  并打印一行「一直没安静下来」和最近一次看到的负载。
 - 每次等待打印一行：等了多久、问了几次、最后看到的负载。
 - 速度断言抛 `SpeedBudgetExceeded`（类上 `gxr_speed_budget = True`，见 tests/support/speed.py）。
-  exclusive 用例最后一次尝试只因它失败（setup、teardown 都没出错）时，记成 speed，父进程等安静后在
+  exclusive 用例最后一次尝试的所有失败（含原生 subtest）都是它、setup 和 teardown 都没出错时，记成 speed，父进程等安静后在
   exclusive 阶段把这些用例重跑一次，以第二次为准。别的失败一律不重跑。不解析断言文字。
   这是和 pytest-rerunfailures 分开的机制，`--force-reruns=0` 时照样生效。
 """
@@ -18,6 +19,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import time
@@ -36,6 +38,7 @@ POLL_ENV = "GXR_QUIET_POLL_S"
 BUDGET_ENV = "GXR_RUN_TESTS_QUIET_BUDGET"
 DEFAULT_MAX_WAIT_S = 600.0
 DEFAULT_POLL_S = 10.0
+SAMPLE_S = 5.0  # 单次采样的上限：loadgate 按这个窗口采（它的默认也是 5 秒）；剩余预算不到它就不再采
 
 Probe = Callable[[], tuple[bool, str]]
 Nap = Callable[[float], bool]
@@ -90,13 +93,22 @@ def loadavg_probe(getloadavg: Callable[[], tuple[float, float, float]] = os.getl
     return probe
 
 
+def _window(func: Callable[..., Any]) -> dict[str, float]:
+    """loadgate 的函数收 seconds 参数时，把采样窗口钉在 SAMPLE_S。"""
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {"seconds": SAMPLE_S} if "seconds" in params else {}
+
+
 def gate_probe(module: Any) -> Probe | None:
     """loadgate 的安静判断。模块里两样都没有时返回 None。"""
     quiet = getattr(module, "quiet_for_timing", None)
     if callable(quiet):
 
         def by_quiet() -> tuple[bool, str]:
-            ok, info = quiet()
+            ok, info = quiet(**_window(quiet))
             return bool(ok), f"loadgate.quiet_for_timing {_describe(info)}"
 
         return by_quiet
@@ -104,7 +116,7 @@ def gate_probe(module: Any) -> Probe | None:
     if callable(cap):
 
         def by_cap() -> tuple[bool, str]:
-            _cap, info = cap(0)
+            _cap, info = cap(0, **_window(cap))
             return bool(info.get("admit")), f"loadgate.cap admit {_describe(info)}"
 
         return by_cap
@@ -119,6 +131,7 @@ class QuietGate:
         self.fallback = fallback
         self.remaining = budget
         self.poll = poll
+        self.last_seen = ""
 
     def check(self) -> tuple[bool, str]:
         if self.primary is not None:
@@ -130,28 +143,36 @@ class QuietGate:
         return self.fallback()
 
     def wait(self, label: str, nap: Nap, clock: Callable[[], float] = time.monotonic) -> bool:
-        """等到安静或预算用完。返回 False 表示等的时候收到了信号。"""
+        """等到安静或预算用完。返回 False 表示等的时候收到了信号。
+
+        采样本身（loadgate 一次要采 SAMPLE_S 秒）和中间的休眠都从同一份预算里扣：剩下的不够再采一次就不采了，
+        休眠也只睡到「还够采最后一次」为止。预算用完后的等待不再采样，只打印最近一次看到的负载。
+        """
         started = clock()
         checks = 0
-        while True:
+        while self.remaining - (clock() - started) >= SAMPLE_S:
             checks += 1
-            quiet, seen = self.check()
-            waited = clock() - started
+            quiet, self.last_seen = self.check()
+            spent = clock() - started
             if quiet:
-                self.remaining = max(0.0, self.remaining - waited)
-                print(f"等机器安静（{label}）：等了 {waited:.0f} 秒，问了 {checks} 次，安静了，{seen}。", flush=True)
+                self.remaining = max(0.0, self.remaining - spent)
+                print(f"等机器安静（{label}）：等了 {spent:.0f} 秒，问了 {checks} 次，安静了，{self.last_seen}。", flush=True)
                 return True
-            if waited + self.poll > self.remaining:
-                self.remaining = max(0.0, self.remaining - waited)
-                print(
-                    f"机器一直没安静下来（{label}）：等了 {waited:.0f} 秒，问了 {checks} 次，最后一次 {seen}；"
-                    f"等待预算用完（合计 {MAX_WAIT_ENV}），照样跑，墙钟结果可能偏慢。",
-                    flush=True,
-                )
-                return True
-            if not nap(self.poll):
+            pause = min(self.poll, self.remaining - spent - SAMPLE_S)
+            if pause <= 0:
+                break
+            if not nap(pause):
                 self.remaining = max(0.0, self.remaining - (clock() - started))
                 return False
+        spent = clock() - started
+        self.remaining = max(0.0, self.remaining - spent)
+        last = self.last_seen or "这个进程里还没采样过"
+        print(
+            f"机器一直没安静下来（{label}）：等了 {spent:.0f} 秒，问了 {checks} 次，最后一次 {last}；"
+            f"等待预算用完（合计 {MAX_WAIT_ENV}），{'不再采样，' if checks == 0 else ''}照样跑，墙钟结果可能偏慢。",
+            flush=True,
+        )
+        return True
 
 
 def env_gate() -> Any | None:
