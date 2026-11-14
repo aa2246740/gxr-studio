@@ -97,19 +97,32 @@ pub fn color_listing(
     Ok(format!("{text}\n"))
 }
 
+fn checked_unit_slot(unit: f64, slot: f64) -> Option<(i64, i64)> {
+    if !unit.is_finite()
+        || !slot.is_finite()
+        || unit.fract() != 0.0
+        || slot.fract() != 0.0
+        || !(0.0..=2.0).contains(&unit)
+        || !(1.0..=8.0).contains(&slot)
+    {
+        return None;
+    }
+    Some((unit as i64, slot as i64))
+}
+
 /// Knob controls (`{"controls": [...]}`) for `(unit, slot)` from optional `GXRCE.DAT` (and optional `GXRFX.BIN`).
 #[wasm_bindgen]
 pub fn color_controls(
     dat_bytes: Option<Vec<u8>>,
-    unit: i32,
-    slot: i32,
+    unit: f64,
+    slot: f64,
     library_bytes: Option<Vec<u8>>,
 ) -> Result<String, JsValue> {
     let dat = dat_bytes
         .as_deref()
         .map(|raw| (raw, library_bytes.as_deref()));
-    let text = gxr_color::resolve::controls_json(dat, i64::from(unit), i64::from(slot))
-        .map_err(rejected_resolve)?;
+    let (u, s) = checked_unit_slot(unit, slot).unwrap_or((-1, -1));
+    let text = gxr_color::resolve::controls_json(dat, u, s).map_err(rejected_resolve)?;
     Ok(format!("{text}\n"))
 }
 

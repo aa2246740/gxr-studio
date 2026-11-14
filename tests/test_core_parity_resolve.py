@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import intake, store
 from gxr_studio.render import params as py_params
 from gxr_studio.render.recipes import CameraData, Menu
+from support import wasm_check
 from support.core_cli import error_of, require_cli, run_json
 from support.fake_card import fake_dat
 from support.wasm_check import run_area
@@ -488,6 +491,14 @@ def test_wasm_matches_native_for_resolve_controls_and_listing(tmp_path: Path) ->
         "controls-embedded": {"kind": "controls", "unit": 0, "slot": 3},
         "controls-bad-unit": {"kind": "controls", "unit": 3, "slot": 1},
         "controls-bad-slot": {"kind": "controls", "unit": 0, "slot": 9},
+        "controls-wrap-unit-pos": {"kind": "controls", "unit": 4294967296, "slot": 1},
+        "controls-wrap-unit-pos1": {"kind": "controls", "unit": 4294967297, "slot": 1},
+        "controls-wrap-unit-neg": {"kind": "controls", "unit": -4294967296, "slot": 1},
+        "controls-wrap-unit-neg1": {"kind": "controls", "unit": -4294967295, "slot": 1},
+        "controls-wrap-slot-pos": {"kind": "controls", "unit": 0, "slot": 4294967296},
+        "controls-wrap-slot-pos1": {"kind": "controls", "unit": 0, "slot": 4294967297},
+        "controls-wrap-slot-neg": {"kind": "controls", "unit": 0, "slot": -4294967296},
+        "controls-wrap-slot-neg1": {"kind": "controls", "unit": 0, "slot": -4294967295},
     }
 
     bad_dat = tmp_path / "fake.dat"
@@ -587,3 +598,125 @@ def test_wasm_matches_native_for_resolve_controls_and_listing(tmp_path: Path) ->
         path.write_text(json.dumps(spec), encoding="utf-8")
         inputs.append(path)
     run_area("color", inputs, tmp_path)
+
+
+def test_wasm_full_error_json_and_nonfinite_controls_parity(tmp_path: Path) -> None:
+    """wasm_vs_native.mjs only checks error.kind/message; verify full JSON including detail
+    and non-finite/fractional JS Number bounds in color_controls."""
+    require_cli()
+    if shutil.which("node") is None:
+        wasm_check._missing("node is not on PATH")
+    if not wasm_check.PKG.is_file():
+        wasm_check._missing(f"need {wasm_check.PKG.name}; run make core-wasm")
+
+    cases: list[dict[str, Any]] = []
+    for label, unit, slot in (
+        ("unit-4294967296", 4294967296, 1),
+        ("unit-4294967297", 4294967297, 1),
+        ("unit-neg-4294967296", -4294967296, 1),
+        ("unit-neg-4294967295", -4294967295, 1),
+        ("slot-4294967296", 0, 4294967296),
+        ("slot-4294967297", 0, 4294967297),
+        ("slot-neg-4294967296", 0, -4294967296),
+        ("slot-neg-4294967295", 0, -4294967295),
+        ("unit-3", 3, 1),
+        ("slot-9", 0, 9),
+    ):
+        cases.append({"kind": "controls", "label": label, "unit": unit, "slot": slot})
+
+    if SINGLE_DATS:
+        by_s = dict(SINGLE_DATS)
+        s_dat = by_s.get("g158_test", SINGLE_DATS[-1][1])
+        for rname, body in (
+            ("bad-level", '{"unit": "jlaunch", "slot": 1, "levels": {"contrast": 999}}'),
+            ("huge-level", f'{{"unit": "jlaunch", "slot": 1, "levels": {{"contrast": {10**20}}}}}'),
+            ("bad-slot-float", '{"unit": "jlaunch", "slot": 1.0}'),
+            ("bad-kind", '{"kind": "nope", "unit": "jlaunch", "slot": 1}'),
+            ("local-404", json.dumps({"kind": "local", "id": HEX64, "unit": "jlaunch", "slot": 1})),
+            ("bad-knob-surrogate", r'{"unit": "jlaunch", "slot": 1, "levels": {"\ud800": 1}}'),
+            ("deep-129", _deep_json(129, "object")),
+        ):
+            rp = tmp_path / f"err_{rname}.json"
+            rp.write_text(body, encoding="utf-8")
+            cases.append({"kind": "resolve", "label": rname, "dat": str(s_dat), "recipe": str(rp)})
+
+    cases_path = tmp_path / "full_error_cases.json"
+    cases_path.write_text(json.dumps(cases), encoding="utf-8")
+
+    js = r"""
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
+const [pkgPath, wasmPath, casesPath] = process.argv.slice(1);
+const wasm = await import(pathToFileURL(pkgPath).href);
+wasm.initSync({ module: readFileSync(wasmPath) });
+
+const out = [];
+for (const c of JSON.parse(readFileSync(casesPath, 'utf8'))) {
+  try {
+    if (c.kind === 'controls') {
+      wasm.color_controls(undefined, c.unit, c.slot, undefined);
+    } else if (c.kind === 'resolve') {
+      wasm.color_resolve(new Uint8Array(readFileSync(c.dat)), new Uint8Array(readFileSync(c.recipe)), undefined);
+    }
+    throw new Error(`expected failure for ${c.label}`);
+  } catch (err) {
+    out.push({ label: c.label, errorText: err instanceof Error ? err.message : String(err) });
+  }
+}
+for (const [label, u, s] of [
+  ['nan-unit', NaN, 1],
+  ['inf-unit', Infinity, 1],
+  ['ninf-unit', -Infinity, 1],
+  ['frac-unit', 1.5, 1],
+  ['nan-slot', 0, NaN],
+  ['inf-slot', 0, Infinity],
+  ['ninf-slot', 0, -Infinity],
+  ['frac-slot', 0, 1.5],
+]) {
+  let caught = null;
+  try {
+    wasm.color_controls(undefined, u, s, undefined);
+  } catch (err) {
+    caught = err instanceof Error ? err.message : String(err);
+  }
+  if (caught !== '{"error":{"kind":"value","message":"unit/slot"}}') {
+    throw new Error(`unexpected ${label} outcome: ${caught}`);
+  }
+}
+process.stdout.write(JSON.stringify(out));
+"""
+    proc = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            js,
+            str(wasm_check.PKG),
+            str(wasm_check.PKG.with_name("gxr_wasm_bg.wasm")),
+            str(cases_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    wasm_results = {row["label"]: row["errorText"] for row in json.loads(proc.stdout)}
+
+    for c in cases:
+        if c["kind"] == "controls":
+            args = ["color-controls", "--unit", str(c["unit"]), "--slot", str(c["slot"])]
+        else:
+            args = ["color-resolve", "--dat", c["dat"], "--recipe", c["recipe"]]
+        cli_proc = subprocess.run(
+            [str(wasm_check.CLI), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert cli_proc.returncode == 2, f"{c['label']}: expected exit 2, got {cli_proc.returncode}: {cli_proc.stderr}"
+        wasm_text = wasm_results[c["label"]]
+        cli_text = cli_proc.stdout.rstrip("\n")
+        assert wasm_text == cli_text, f"{c['label']}: {wasm_text!r} != {cli_text!r}"
+        assert json.loads(wasm_text) == json.loads(cli_text)
