@@ -115,6 +115,8 @@ export interface AppApi {
   takeWarm(id: string, version: number): ArrayBuffer | null;
   keepWarm(id: string, version: number, bytes: ArrayBuffer): void;
   gpu(): boolean;
+  /** 这次会话的编号。清空照片就换一个；异步结果据此判断还是不是这次的。 */
+  session(): number;
   /** 卡被拔出过、还有没读完的照片。导航副标题按它写，普通刷新不会盖掉。 */
   cardOut(): boolean;
   /** 编辑器里没有显卡或只有 JPG 时，按屏幕宽度在 Worker 里解一张清楚的。 */

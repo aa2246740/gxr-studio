@@ -175,6 +175,50 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** R2-3：中性小图在清空照片之后才回来：不再造位图挂到已经去掉的照片上，造了的要 close。 */
+  async 'neutral-after-clear'() {
+    const { page, context, errors } = await makePage({ gpu: true });
+    try {
+      await pick(page, manifest.pairs.slice(0, 2));
+      await page.evaluate(() => {
+        const engine = window.__gxrEngine;
+        window.__thumbHeld = [];
+        const original = engine.thumb.bind(engine);
+        engine.thumb = (opts) => original(opts).then((out) => new Promise((resolve) => window.__thumbHeld.push(() => resolve(out))));
+        window.__made = [];
+        const native = window.createImageBitmap.bind(window);
+        window.createImageBitmap = (...args) =>
+          native(...args).then((bitmap) => {
+            window.__made.push(bitmap);
+            return bitmap;
+          });
+        const close = ImageBitmap.prototype.close;
+        ImageBitmap.prototype.close = function closed() {
+          this.__closed = true;
+          return close.call(this);
+        };
+      });
+      await page.locator('.cell').first().click();
+      await page.waitForFunction(() => window.__thumbHeld.length === 1, null, { timeout: 120_000 });
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      await page.getByRole('button', { name: '更多', exact: true }).click();
+      await page.getByRole('button', { name: /清空照片，重新选/ }).click();
+      await page.waitForSelector('[data-screen="start"]');
+      const mark = await page.evaluate(() => window.__made.length);
+      await page.evaluate(() => window.__thumbHeld.splice(0).forEach((run) => run()));
+      await page.waitForTimeout(1500);
+      const after = await page.evaluate((from) => {
+        const made = window.__made.slice(from);
+        return { made: made.length, open: made.filter((bitmap) => !bitmap.__closed && bitmap.width > 0).length };
+      }, mark);
+      const screen = await page.locator('.app').getAttribute('data-screen');
+      return { after, screen, errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** R2-2：三张里一张已在显卡、两张只有缩略图。拔卡后只有那一张算能接着用，另外两张算没读完、点开要重选。 */
   async 'card-removed-three'() {
     const { page, context, errors } = await makePage({ gpu: true });

@@ -606,12 +606,15 @@ export class EditorView {
       return;
     }
     const token = this.token;
+    const session = this.api.session();
+    // 照片还是这次会话里的同一张、同一个版本：清空、去掉、重新选过都算过期。
+    const alive = () => this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
     const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
     const geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
     const out = await this.engine.thumb({ source: key, look, geometry, aspect: null, maxEdge: 192 });
-    if (!out || photo.version !== version) return;
+    if (!out || !alive()) return;
     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
-    if (photo.version !== version) {
+    if (!alive()) {
       bitmap.close();
       return;
     }

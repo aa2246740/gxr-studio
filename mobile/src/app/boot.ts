@@ -145,6 +145,10 @@ class App implements AppApi {
     return this.engine !== null;
   }
 
+  session(): number {
+    return this.generation;
+  }
+
   cardOut(): boolean {
     return this.cardIsOut;
   }

@@ -264,3 +264,10 @@ def test_card_removed_counts_only_cached_sources_as_usable(server: dict[str, Any
     assert data["screenAfterC"] == "grid"
     assert "已经读进来的 1 张" in data["againDialog"] and "还有 2 张没读完" in data["againDialog"]
     assert data["reopened"] == "editor"
+
+
+def test_late_neutral_thumbnail_after_clear_is_dropped(server: dict[str, Any]) -> None:
+    data = run_case(server, "neutral-after-clear")
+    assert data["screen"] == "start"
+    # 清空之后才回来的中性小图：没有留下一个没 close 的位图。
+    assert data["after"]["open"] == 0, data["after"]
