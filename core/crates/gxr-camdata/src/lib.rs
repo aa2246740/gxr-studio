@@ -115,3 +115,9 @@ pub fn knob_table_json(block: &[u8], mount_knobs_from_50mm: bool) -> Result<Stri
     let menu = read_knob_table(block, base, mount_knobs_from_50mm)?;
     Ok(menu_to_json(&menu).render())
 }
+
+/// Parse JSON with `json_parse::parse_json` (enforcing the 128-level nesting limit) and return `{"ok":true}`.
+pub fn check_json_depth(bytes: &[u8]) -> Result<String, CoreError> {
+    json_parse::parse_json(bytes)?;
+    Ok(Json::object([("ok", Json::Bool(true))]).render())
+}

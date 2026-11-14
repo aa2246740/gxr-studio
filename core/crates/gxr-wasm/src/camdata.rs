@@ -2,7 +2,9 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_camdata::{ENTRY_BYTES, entries_from_dat, knob_table_json, menu_json, parse_json};
+use gxr_camdata::{
+    ENTRY_BYTES, check_json_depth, entries_from_dat, knob_table_json, menu_json, parse_json,
+};
 use gxr_raw::error_json;
 
 fn rejected(err: gxr_raw::CoreError) -> JsValue {
@@ -57,5 +59,12 @@ pub fn camdata_knob_table(
     mount_knobs_from_50mm: bool,
 ) -> Result<String, JsValue> {
     let text = knob_table_json(block_bytes, mount_knobs_from_50mm).map_err(rejected)?;
+    Ok(format!("{text}\n"))
+}
+
+/// Validate JSON input (including the 128-level nesting limit) and return `{"ok":true}` + newline.
+#[wasm_bindgen]
+pub fn camdata_parse_json(json_bytes: &[u8]) -> Result<String, JsValue> {
+    let text = check_json_depth(json_bytes).map_err(rejected)?;
     Ok(format!("{text}\n"))
 }

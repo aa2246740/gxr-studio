@@ -485,3 +485,40 @@ def test_wasm_camdata_matches_native_on_real_dats(tmp_path: Path) -> None:
         pytest.skip("no real DAT fixtures on this machine")
     proc = run_area("camdata", all_paths, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_json_nesting_depth_matches_wasm_and_native(tmp_path: Path) -> None:
+    require_cli()
+    ok_cases = {
+        "arr_128_scalar.json": "[" * 128 + "0" + "]" * 128,
+        "arr_128_empty.json": "[" * 128 + "]" * 128,
+        "obj_128_scalar.json": '{"a":' * 128 + "0" + "}" * 128,
+        "obj_128_empty.json": '{"a":' * 127 + "{}" + "}" * 127,
+    }
+    deep_cases = {
+        "arr_129_scalar.json": "[" * 129 + "0" + "]" * 129,
+        "arr_129_empty.json": "[" * 129 + "]" * 129,
+        "arr_20000.json": "[" * 20_000 + "0" + "]" * 20_000,
+        "obj_129_scalar.json": '{"a":' * 129 + "0" + "}" * 129,
+        "obj_129_empty.json": '{"a":' * 128 + "{}" + "}" * 128,
+        "obj_20000.json": '{"a":' * 20_000 + "0" + "}" * 20_000,
+    }
+    paths: list[Path] = []
+    for name, text in ok_cases.items():
+        p = tmp_path / name
+        p.write_text(text, encoding="utf-8")
+        code, payload = run_json(["camdata-parse-json", "--json", str(p)])
+        assert error_of(code, payload) is None, name
+        assert payload == {"ok": True}, name
+        paths.append(p)
+    for name, text in deep_cases.items():
+        p = tmp_path / name
+        p.write_text(text, encoding="utf-8")
+        code, payload = run_json(["camdata-parse-json", "--json", str(p)])
+        err = error_of(code, payload)
+        assert err is not None, name
+        assert err.kind == "json", (name, err)
+        assert err.message == "JSON 嵌套太深", (name, err)
+        paths.append(p)
+    proc = run_area("camdata", paths, tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

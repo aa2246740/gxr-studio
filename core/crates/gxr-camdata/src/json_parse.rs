@@ -2,6 +2,8 @@
 
 use gxr_raw::CoreError;
 
+pub const MAX_JSON_DEPTH: usize = 128;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Val {
     Null,
@@ -84,9 +86,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_val(&mut self, depth: usize) -> Result<Val, CoreError> {
-        if depth > 64 {
-            return Err(self.err("nesting too deep"));
-        }
         match self.peek()? {
             b'n' => {
                 if self.bytes.get(self.pos..self.pos + 4) == Some(b"null") {
@@ -113,8 +112,18 @@ impl<'a> Parser<'a> {
                 }
             }
             b'"' => self.parse_str().map(Val::Str),
-            b'[' => self.parse_array(depth + 1),
-            b'{' => self.parse_object(depth + 1),
+            b'[' => {
+                if depth >= MAX_JSON_DEPTH {
+                    return Err(CoreError::new("json", "JSON 嵌套太深"));
+                }
+                self.parse_array(depth + 1)
+            }
+            b'{' => {
+                if depth >= MAX_JSON_DEPTH {
+                    return Err(CoreError::new("json", "JSON 嵌套太深"));
+                }
+                self.parse_object(depth + 1)
+            }
             b'-' | b'0'..=b'9' => self.parse_num(),
             _ => Err(self.err("unexpected token")),
         }
@@ -282,4 +291,42 @@ pub fn parse_json(bytes: &[u8]) -> Result<Val, CoreError> {
         return Err(p.err("trailing data"));
     }
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deep_array(depth: usize, leaf: &str) -> String {
+        format!("{}{leaf}{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    fn deep_object(depth: usize, leaf: &str) -> String {
+        format!("{}{leaf}{}", r#"{"a":"#.repeat(depth), "}".repeat(depth))
+    }
+
+    #[test]
+    fn nesting_cap_allows_128_and_rejects_129_and_20000() {
+        for input in [
+            deep_array(128, "0"),
+            deep_array(128, ""),
+            deep_object(128, "0"),
+            deep_object(127, "{}"),
+        ] {
+            parse_json(input.as_bytes()).expect("depth 128 must parse");
+        }
+
+        for input in [
+            deep_array(129, "0"),
+            deep_array(129, ""),
+            deep_array(20_000, "0"),
+            deep_object(129, "0"),
+            deep_object(128, "{}"),
+            deep_object(20_000, "0"),
+        ] {
+            let err = parse_json(input.as_bytes()).unwrap_err();
+            assert_eq!(err.kind, "json");
+            assert_eq!(err.message, "JSON 嵌套太深");
+        }
+    }
 }

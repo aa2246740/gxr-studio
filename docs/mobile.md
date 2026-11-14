@@ -158,6 +158,7 @@ assert proc.returncode == 0, proc.stdout + proc.stderr
 - `camdata-entries --dat PATH [--library PATH] --out FILE.npy`：把 24 × 552 字节写成 `(24, 552)` `uint8` 的 `.npy`。
 - `camdata-menu [--dat PATH [--library PATH]]`：不带 `--dat` 返回内嵌 `final.json`；带 `--dat` 时按 `knob_table.read` 用文件内的 kv 块覆盖菜单。
 - `camdata-knob-table --kv PATH [--mount-50mm]`：对独立的 kv2/kv3 块执行 `knob_table.read`（覆盖内嵌 `final.json`）。
+- `camdata-parse-json --json PATH`：校验 JSON 输入（含 128 层数组/对象嵌套上限，`kind="json"` / `"JSON 嵌套太深"`）。
 - `camdata-recipe-tag (--tag TEXT | --tag-hex HEX)`：返回 `{"tag": ...}` 解析结果。
 
 WASM 导出（`gxr-wasm/src/camdata.rs`）：
@@ -166,6 +167,7 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - `camdata_entries(dat_bytes, library_bytes?) -> Uint8Array`：单独的字节读取接口，按 `(unit 0..2, slot 1..8)` 顺序返回连续的 `24 × 552 = 13248` 字节条目。
 - `camdata_menu(dat_bytes?, library_bytes?) -> string`：返回解析后的菜单 JSON（末尾带换行）。
 - `camdata_knob_table(block_bytes, mount_knobs_from_50mm) -> string`：在嵌入式 `final.json` 上直接运行 `knob_table.read`（末尾带换行）。
+- `camdata_parse_json(json_bytes) -> string`：校验 JSON 输入与 128 层嵌套上限，返回 `{"ok":true}`（末尾带换行）。
 
 对拍在 `tests/test_core_parity_camdata.py` 与 `mobile/scripts/wasm_cases/camdata.mjs`；不把 `pack` 导出到 WASM。
 

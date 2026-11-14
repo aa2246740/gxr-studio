@@ -4,8 +4,9 @@ use std::io::Read;
 use std::path::Path;
 
 use gxr_camdata::{
-    ENTRY_BYTES, MAX_DAT_BYTES, MAX_LIBRARY_BYTES, NAMES, SLOTS, entries_from_dat, knob_table_json,
-    menu_json, parse_json, parse_recipe_tag, parse_recipe_tag_bytes, recipe_tag_to_json,
+    ENTRY_BYTES, MAX_DAT_BYTES, MAX_LIBRARY_BYTES, NAMES, SLOTS, check_json_depth,
+    entries_from_dat, knob_table_json, menu_json, parse_json, parse_recipe_tag,
+    parse_recipe_tag_bytes, recipe_tag_to_json,
 };
 use gxr_raw::{CoreError, Json};
 
@@ -143,6 +144,16 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
             let mount_50mm = args.iter().any(|a| a == "--mount-50mm");
             let block = read_bounded(kv_path, MAX_DAT_BYTES)?;
             let text = knob_table_json(&block, mount_50mm)?;
+            Ok(Output { text, ok: true })
+        }
+        "camdata-parse-json" => {
+            let json_path = common::option(args, "--json")?;
+            const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+            let raw = read_bounded(json_path, MAX_JSON_BYTES)?;
+            if raw.len() > MAX_JSON_BYTES {
+                return Err(Failure::Core(CoreError::new("json", "JSON 文件过大")));
+            }
+            let text = check_json_depth(&raw)?;
             Ok(Output { text, ok: true })
         }
         "camdata-recipe-tag" => {
