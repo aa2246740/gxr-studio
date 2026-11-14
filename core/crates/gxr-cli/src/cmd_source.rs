@@ -11,7 +11,7 @@
 //!               [--entry ...] [--calib DIR] [--binding TEXT] [--cube C.cube --space SPACE.json]
 //! ```
 
-use gxr_color::{decode_npy, encode_npy};
+use gxr_color::encode_npy;
 use gxr_export::source::{
     CalibPack, Pictures, Request, color_image_json, plan_json, render, selection_json,
 };
@@ -67,19 +67,53 @@ fn maybe_pack(args: &[String]) -> Result<Option<CalibPack>, Failure> {
     maybe(args, "--calib")?.map(read_pack).transpose()
 }
 
-/// A `(h, w, 3)` uint8 `.npy`.
+/// A `(h, w, 3)` uint8 `.npy` (version 1 or 2 header, C order), as `np.save` writes it.
 fn read_rgb(path: &str) -> Result<Image<u8>, Failure> {
-    let npy = decode_npy(&bytes_of(path)?)?;
-    if npy.descr != "|u1" || npy.shape.len() != 3 || npy.shape[2] != 3 {
-        return Err(Failure::Usage(format!(
-            "{path} must be a (h, w, 3) uint8 array"
-        )));
+    let bad = || Failure::Usage(format!("{path} must be a (h, w, 3) uint8 .npy"));
+    let data = bytes_of(path)?;
+    if data.len() < 10 || &data[..6] != b"\x93NUMPY" {
+        return Err(bad());
+    }
+    let (len, at): (usize, usize) = match data[6] {
+        1 => (usize::from(u16::from_le_bytes([data[8], data[9]])), 10),
+        2 | 3 if data.len() >= 12 => (
+            usize::try_from(u32::from_le_bytes([data[8], data[9], data[10], data[11]]))
+                .map_err(|_| bad())?,
+            12,
+        ),
+        _ => return Err(bad()),
+    };
+    let end = at
+        .checked_add(len)
+        .filter(|&e| e <= data.len())
+        .ok_or_else(bad)?;
+    let header = std::str::from_utf8(&data[at..end]).map_err(|_| bad())?;
+    if !header.contains("'descr': '|u1'") || !header.contains("'fortran_order': False") {
+        return Err(bad());
+    }
+    let shape_at = header.find("'shape': (").ok_or_else(bad)? + "'shape': (".len();
+    let shape_end = header[shape_at..].find(')').ok_or_else(bad)? + shape_at;
+    let dims: Vec<usize> = header[shape_at..shape_end]
+        .split(',')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| d.parse::<usize>().map_err(|_| bad()))
+        .collect::<Result<_, _>>()?;
+    let [h, w, 3] = dims[..] else {
+        return Err(bad());
+    };
+    let n = h
+        .checked_mul(w)
+        .and_then(|v| v.checked_mul(3))
+        .ok_or_else(bad)?;
+    if data.len() - end != n {
+        return Err(bad());
     }
     Ok(Image {
-        height: npy.shape[0],
-        width: npy.shape[1],
+        height: h,
+        width: w,
         channels: 3,
-        values: npy.values,
+        values: data[end..].to_vec(),
     })
 }
 
