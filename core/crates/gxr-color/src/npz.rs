@@ -127,11 +127,119 @@ fn py_repr_bytes(b: &[u8]) -> String {
     out
 }
 
+const INVALID_START: &str = "invalid start byte";
+const INVALID_CONTINUATION: &str = "invalid continuation byte";
+const UNEXPECTED_END: &str = "unexpected end of data";
+
+fn is_continuation(b: u8) -> bool {
+    (0x80..=0xBF).contains(&b)
+}
+
+/// The first error of a strict UTF-8 decode, as CPython's decoder reports it
+/// (`stringlib/codecs.h` `utf8_decode`, then `unicode_decode_utf8`): the error range
+/// `[start, end)` and its reason. `None` when the bytes are valid UTF-8.
+fn utf8_error(raw: &[u8]) -> Option<(usize, usize, &'static str)> {
+    let n = raw.len();
+    let mut s = 0;
+    while s < n {
+        let ch = raw[s];
+        if ch < 0x80 {
+            s += 1;
+            continue;
+        }
+        let left = n - s;
+        let start = Some((s, s + 1, INVALID_START));
+        let cont = |len: usize| Some((s, s + len, INVALID_CONTINUATION));
+        let end = Some((s, n, UNEXPECTED_END));
+        if ch < 0xE0 {
+            if ch < 0xC2 {
+                return start;
+            }
+            if left < 2 {
+                return end;
+            }
+            if !is_continuation(raw[s + 1]) {
+                return cont(1);
+            }
+            s += 2;
+        } else if ch < 0xF0 {
+            if left < 3 {
+                if left < 2 {
+                    return end;
+                }
+                let ch2 = raw[s + 1];
+                if !is_continuation(ch2) || (if ch2 < 0xA0 { ch == 0xE0 } else { ch == 0xED }) {
+                    return cont(1);
+                }
+                return end;
+            }
+            let (ch2, ch3) = (raw[s + 1], raw[s + 2]);
+            if !is_continuation(ch2) || (ch == 0xE0 && ch2 < 0xA0) || (ch == 0xED && ch2 >= 0xA0) {
+                return cont(1);
+            }
+            if !is_continuation(ch3) {
+                return cont(2);
+            }
+            s += 3;
+        } else if ch < 0xF5 {
+            if left < 4 {
+                if left < 2 {
+                    return end;
+                }
+                let ch2 = raw[s + 1];
+                if !is_continuation(ch2) || (if ch2 < 0x90 { ch == 0xF0 } else { ch == 0xF4 }) {
+                    return cont(1);
+                }
+                if left < 3 {
+                    return end;
+                }
+                if !is_continuation(raw[s + 2]) {
+                    return cont(2);
+                }
+                return end;
+            }
+            let (ch2, ch3, ch4) = (raw[s + 1], raw[s + 2], raw[s + 3]);
+            if !is_continuation(ch2) || (ch == 0xF0 && ch2 < 0x90) || (ch == 0xF4 && ch2 >= 0x90) {
+                return cont(1);
+            }
+            if !is_continuation(ch3) {
+                return cont(2);
+            }
+            if !is_continuation(ch4) {
+                return cont(3);
+            }
+            s += 4;
+        } else {
+            return start;
+        }
+    }
+    None
+}
+
+/// `bytes.decode("utf-8")`, failing with `UnicodeDecodeError.__str__`'s text.
+fn decode_utf8(raw: &[u8]) -> Result<String, CoreError> {
+    if let Some((start, end, reason)) = utf8_error(raw) {
+        let message = if end == start + 1 {
+            format!(
+                "'utf-8' codec can't decode byte 0x{:02x} in position {start}: {reason}",
+                raw[start]
+            )
+        } else {
+            format!(
+                "'utf-8' codec can't decode bytes in position {start}-{}: {reason}",
+                end - 1
+            )
+        };
+        return Err(CoreError::new("unicode", message));
+    }
+    String::from_utf8(raw.to_vec())
+        .map_err(|_| CoreError::new("unicode", "'utf-8' codec can't decode bytes"))
+}
+
 /// A name decoded the way `zipfile` does: UTF-8 with flag bit 11, else cp437.
 fn decode_name(raw: &[u8], flags: u16) -> Result<String, CoreError> {
     if flags & MASK_UTF_FILENAME != 0 {
-        return String::from_utf8(raw.to_vec())
-            .map_err(|_| CoreError::new("unicode", "zip member name is not valid UTF-8"));
+        return decode_utf8(raw);
     }
     let high: Vec<char> = CP437_HIGH.chars().collect();
     Ok(raw
@@ -518,6 +626,39 @@ mod tests {
             "File is not a zip file"
         );
         assert_eq!(load(b"hello").unwrap_err().kind, "value");
+    }
+
+    #[test]
+    fn utf8_errors_read_like_python() {
+        let msg = |b: &[u8]| super::decode_utf8(b).unwrap_err().message;
+        assert_eq!(
+            msg(b"ignored-\xff.npy"),
+            "'utf-8' codec can't decode byte 0xff in position 8: invalid start byte"
+        );
+        assert_eq!(
+            msg(b"\xc0\xaf"),
+            "'utf-8' codec can't decode byte 0xc0 in position 0: invalid start byte"
+        );
+        assert_eq!(
+            msg(b"ab\xe2\x82."),
+            "'utf-8' codec can't decode bytes in position 2-3: invalid continuation byte"
+        );
+        assert_eq!(
+            msg(b"\xed\xa0\x80"),
+            "'utf-8' codec can't decode byte 0xed in position 0: invalid continuation byte"
+        );
+        assert_eq!(
+            msg(b"x\xe2\x82"),
+            "'utf-8' codec can't decode bytes in position 1-2: unexpected end of data"
+        );
+        assert_eq!(
+            msg(b"x\xf0\x9f\x98"),
+            "'utf-8' codec can't decode bytes in position 1-3: unexpected end of data"
+        );
+        assert_eq!(
+            super::decode_utf8("caf\u{e9}".as_bytes()).unwrap(),
+            "caf\u{e9}"
+        );
     }
 
     #[test]

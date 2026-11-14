@@ -266,3 +266,22 @@ def runtime_npz() -> bytes:
 def flip_array_byte(data: bytes, member: str) -> bytes:
     """One bit flipped inside `member`'s array bytes, CRC kept."""
     return _flip_first_value(data, member)
+
+
+# Sol r3's four bad UTF-8 sequences, plus a name cut off inside a sequence.
+UTF8_BAD = (b"\xff", b"\xc0\xaf", b"\xe2\x82", b"\xed\xa0\x80")
+
+
+def utf8_central(data: bytes, raw: bytes, *, suffix: bytes = b".npy") -> bytes:
+    """An extra first member named `ignored-<raw><suffix>`, all names flagged UTF-8, so the
+    central directory decodes the bad bytes when the archive is opened."""
+    return raw_archive([(b"ignored-" + raw + suffix, b"ignored"), *_members(data)], flags=0x800)
+
+
+def utf8_local(data: bytes, raw: bytes, *, at: int = 0) -> bytes:
+    """The first member's local header flagged UTF-8 with name byte `at` replaced by
+    `raw[0]`, so decoding fails only when that member is read."""
+    b = bytearray(data)
+    struct.pack_into("<H", b, 6, 0x800)
+    b[30 + at] = raw[0]
+    return bytes(b)

@@ -370,9 +370,27 @@ def test_npz_crc_covers_bytes_numpy_never_reads(tmp_path: Path) -> None:
         py, rust = cp.bake(tmp_path, pack, entry, params={"step": 16})
         assert isinstance(rust, CoreCliError) and (rust.kind, rust.message) == ("zip", "Bad CRC-32 for file 'd0.npy'"), rust
         assert isinstance(py, BaseException) != python_accepts, (name, py)
-        e = _write(tmp_path / f"rt-{name}-entry.bin", entry)
-        spec = {"kind": "bake", "entry": str(e), "stock": str(pack.stock), "ctx": str(pack.ctx), "ring": str(pack.ring)}
-        specs.append(_write(tmp_path / f"rt-{name}.json", json.dumps(spec).encode()))
+        specs.append(cp.bake_spec(tmp_path, f"rt-{name}", pack, entry))
+    run_area("color", specs, tmp_path)
+
+
+def test_npz_utf8_name_errors_match_python(tmp_path: Path) -> None:
+    """Bad UTF-8 member names give Python's `UnicodeDecodeError` text, on the central path
+    (decoded when the archive opens) and the local path (decoded when the member is read)."""
+    require_cli()
+    from support.wasm_check import run_area
+
+    stock, source, runtime = nc.source_parts()[0], nc.source_npz(), nc.runtime_npz()
+    cases = {f"central-{raw.hex()}": nc.utf8_central(source, raw) for raw in nc.UTF8_BAD}
+    cases |= {f"local-{raw.hex()}": nc.utf8_local(source, raw) for raw in nc.UTF8_BAD}
+    cases["central-end"] = nc.utf8_central(source, b"\xe2", suffix=b"")
+    cases["local-end"] = nc.utf8_local(source, b"\xe2", at=8)
+    bad = [(name, why) for name, data in cases.items() if (why := cp.npz_same(tmp_path, name, data, stock)) is not None]
+    assert bad == [], bad
+    specs = []
+    for name, ctx in (("central", nc.utf8_central(runtime, b"\xe2\x82")), ("local", nc.utf8_local(runtime, b"\xff"))):
+        pack = cp.Pack(tmp_path / f"u8-{name}", stock, ctx, json.dumps(cf.ring()).encode())
+        specs.append(cp.bake_spec(tmp_path, f"u8-{name}", pack, cf.entry(words=2)))
     run_area("color", specs, tmp_path)
 
 
@@ -381,57 +399,29 @@ def _write(path: Path, data: bytes) -> Path:
     return path
 
 
-def _pack_home(tmp: Path, stock04: bytes, unit: str = "jlaunch") -> Path:
-    """A home with this unit's stock entry and a synthetic pack written by `import_calibration`."""
-    home = tmp / "home"
-    units = store.camera_data_dir(home) / "units" / unit
-    units.mkdir(parents=True)
-    (units / "stock04.entry").write_bytes(stock04)
-    words = calib.stock_words_of_entry(stock04)
-    sources = {}
-    for iso, rows in ((200, 4), (1600, 10)):
-        d0, d1, coef = cf.arrays(rows, seed=iso)
-        ring = json.dumps(cf.ring(kernel="hard" if iso == 1600 else "linear")).encode()
-        sources[iso] = ((f"src{iso}.npz", cf.source_npz(words, d0, d1, coef)), (f"ring{iso}.json", ring))
-    calib.import_calibration(home, {unit: sources})
-    return home
-
-
-def _pick(home: Path, iso: int, unit: str, stock: Path) -> tuple[Any, Any]:
-    payload, err = cp.cli(["color-calib-check", "--dir", calib.calib_dir(home), "--unit", unit, "--iso", iso, "--stock", stock])
-    try:
-        _model, info = calib.model_for(home, iso, unit=unit)
-        manifest = json.loads((calib.calib_dir(home) / "manifest.json").read_text(encoding="utf-8"))
-        pair = manifest["units"][unit]["models"][str(info["model_iso"])]
-        py: Any = {**info, "ctx": pair["ctx"], "ring": pair["ring"], "rows": len(_model.input_coefficients)}
-    except Exception as exc:  # noqa: BLE001
-        py = exc
-    return py, (err if err is not None else payload)
-
-
 def test_pack_model_for_matches_python(tmp_path: Path) -> None:
     """`model_for` on a pack: the ISO split, and the manifest checks."""
     require_cli()
     stock04 = cf.entry()
-    home = _pack_home(tmp_path, stock04)
+    home = cp.pack_home(tmp_path, stock04)
     stock = _write(tmp_path / "stock.bin", stock04)
     for iso in (100, 200, 565, 566, 800, 1600, 3200):
-        py, rust = _pick(home, iso, "jlaunch", stock)
+        py, rust = cp.pick(home, iso, "jlaunch", stock)
         assert py == rust, (iso, py, rust)
-    py, rust = _pick(home, 200, "qlaunch", stock)
+    py, rust = cp.pick(home, 200, "qlaunch", stock)
     assert cp.same_error(py, rust) is None
-    py, rust = _pick(home, 200, "nounit", stock)
+    py, rust = cp.pick(home, 200, "nounit", stock)
     assert cp.same_error(py, rust) is None
     other = _write(tmp_path / "other.bin", cf.entry(words=1))
     _payload, err = cp.cli(["color-calib-check", "--dir", calib.calib_dir(home), "--unit", "jlaunch", "--iso", 200, "--stock", other])
     assert err is not None and (err.kind, err.message) == ("stock_mismatch", "校准数据与这个单元的原厂 04 不匹配，请重新导入")
     target = calib.calib_dir(home) / "ring_jlaunch_1600.json"
     target.write_bytes(target.read_bytes() + b" ")
-    py, rust = _pick(home, 200, "jlaunch", stock)
+    py, rust = cp.pick(home, 200, "jlaunch", stock)
     assert cp.same_error(py, rust) is None
     manifest = calib.calib_dir(home) / "manifest.json"
     manifest.write_text(manifest.read_text(encoding="utf-8").replace("calib/2", "calib/1"), encoding="utf-8")
-    py, rust = _pick(home, 200, "jlaunch", stock)
+    py, rust = cp.pick(home, 200, "jlaunch", stock)
     assert cp.same_error(py, rust) is None
 
 
@@ -612,7 +602,7 @@ def test_real_packs_and_bakes_match_python(real_home: Path, tmp_path: Path) -> N
     for unit in datcodec.NAMES:
         stock = _write(tmp_path / f"{unit}-stock.bin", store.load_stock04(real_home, unit))
         for iso in (100, 200, 566, 1600):
-            py, rust = _pick(real_home, iso, unit, stock)
+            py, rust = cp.pick(real_home, iso, unit, stock)
             assert py == rust, (unit, iso, py, rust)
             picks += 1
         for iso in (200, 1600):

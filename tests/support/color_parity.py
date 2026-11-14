@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from gxr_studio.camdata import calib
+from gxr_studio.camdata import calib, store
 from gxr_studio.camdata.unit_model import UnitModel, input_codes
 from gxr_studio.engine import knobs, menu
 from gxr_studio.engine.model import Model
@@ -77,6 +77,7 @@ KINDS = {
     "NotImplementedError": "not_implemented",
     "RuntimeError": "runtime",
     "EOFError": "eof",
+    "UnicodeDecodeError": "unicode",
 }
 
 
@@ -394,3 +395,42 @@ def npz_same(tmp: Path, name: str, data: bytes, entry: bytes) -> str | None:
     if py is None and err is None:
         return None
     return same_error(py, err)
+
+
+def pack_home(tmp: Path, stock04: bytes, unit: str = "jlaunch") -> Path:
+    """A home with this unit's stock entry and a synthetic pack written by `import_calibration`."""
+    home = tmp / "home"
+    units = store.camera_data_dir(home) / "units" / unit
+    units.mkdir(parents=True)
+    (units / "stock04.entry").write_bytes(stock04)
+    words = calib.stock_words_of_entry(stock04)
+    sources = {}
+    for iso, rows in ((200, 4), (1600, 10)):
+        d0, d1, coef = cf.arrays(rows, seed=iso)
+        ring = json.dumps(cf.ring(kernel="hard" if iso == 1600 else "linear")).encode()
+        sources[iso] = ((f"src{iso}.npz", cf.source_npz(words, d0, d1, coef)), (f"ring{iso}.json", ring))
+    calib.import_calibration(home, {unit: sources})
+    return home
+
+
+def pick(home: Path, iso: int, unit: str, stock: Path) -> tuple[Any, Any]:
+    """`model_for` and `color-calib-check --dir` on the same pack: (Python result, CLI result)."""
+    payload, err = cli(["color-calib-check", "--dir", calib.calib_dir(home), "--unit", unit, "--iso", iso, "--stock", stock])
+    try:
+        _model, info = calib.model_for(home, iso, unit=unit)
+        manifest = json.loads((calib.calib_dir(home) / "manifest.json").read_text(encoding="utf-8"))
+        pair = manifest["units"][unit]["models"][str(info["model_iso"])]
+        py: Any = {**info, "ctx": pair["ctx"], "ring": pair["ring"], "rows": len(_model.input_coefficients)}
+    except Exception as exc:  # noqa: BLE001
+        py = exc
+    return py, (err if err is not None else payload)
+
+
+def bake_spec(tmp: Path, name: str, pack: Pack, entry: bytes) -> Path:
+    """A `wasm_cases/color.mjs` bake case for `pack` and `entry`, written as JSON."""
+    e = tmp / f"{name}-entry.bin"
+    e.write_bytes(entry)
+    spec = {"kind": "bake", "entry": str(e), "stock": str(pack.stock), "ctx": str(pack.ctx), "ring": str(pack.ring)}
+    path = tmp / f"{name}.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    return path
