@@ -175,6 +175,12 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
+    rollupOptions: {
+      input: {
+        main: path.resolve(root, 'index.html'),
+        dev: path.resolve(root, 'dev.html'),
+      },
+    },
   },
   plugins: [devSamples()],
 });
