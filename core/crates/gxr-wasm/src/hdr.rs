@@ -102,3 +102,71 @@ pub fn hdr_assemble(primary: &[u8], gain_jpeg: &[u8], meta_json: &str) -> Result
     let meta = hdr::meta_from_json(meta_json).map_err(rejected)?;
     hdr::assemble(primary, gain_jpeg, &meta).map_err(rejected)
 }
+
+// ---- hdr-fft ----
+
+/// numpy `fft` / `ifft` along the last axis (or `fft2` / `ifft2` when `two_d`) of complex64
+/// data given as `(re, im)` float32 pairs, `rows × n`; the bytes `gxr-cli hdr-fft` writes.
+#[wasm_bindgen]
+pub fn hdr_fft(
+    values: &[f32],
+    rows: u32,
+    n: u32,
+    inverse: bool,
+    two_d: bool,
+) -> Result<Vec<u8>, JsValue> {
+    let w = hdr::count(&[u64::from(n), 2]).map_err(rejected)?;
+    let w = u64::try_from(w).unwrap_or(u64::MAX);
+    let data = hdr::Plane32::new(values.to_vec(), u64::from(rows), w).map_err(rejected)?;
+    let out = data.fft_complex(inverse, two_d, None).map_err(rejected)?;
+    Ok(out.v.iter().flat_map(|v| v.to_le_bytes()).collect())
+}
+
+/// `_phase_shift`'s float32 plane and its peak.
+#[wasm_bindgen]
+pub struct HdrPhasePlane {
+    report: String,
+    plane: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl HdrPhasePlane {
+    /// `{"dy", "dx", "plane": {"dtype", "shape"}}`, as `gxr-cli hdr-phase-plane` prints it.
+    #[wasm_bindgen(getter)]
+    pub fn report(&self) -> String {
+        self.report.clone()
+    }
+
+    /// The row-major float32 plane, little-endian. Consumes the object.
+    pub fn plane(self) -> Vec<u8> {
+        self.plane
+    }
+}
+
+/// `gxr-cli hdr-phase-plane` on two `height × width` float32 planes.
+#[wasm_bindgen]
+pub fn hdr_phase_plane(
+    a: &[f32],
+    b: &[f32],
+    height: u32,
+    width: u32,
+) -> Result<HdrPhasePlane, JsValue> {
+    let (pa, pb) = (plane(a, height, width)?, plane(b, height, width)?);
+    let (pc, (dy, dx)) = pa.phase_plane(&pb, None).map_err(rejected)?;
+    let dims = [pc.h, pc.w].map(|d| i64::try_from(d).unwrap_or(i64::MAX));
+    let report = gxr_raw::Json::object([
+        ("dy", gxr_raw::Json::Int(dy)),
+        ("dx", gxr_raw::Json::Int(dx)),
+        (
+            "plane",
+            gxr_raw::Json::object([
+                ("dtype", gxr_raw::Json::str("<f4")),
+                ("shape", gxr_raw::Json::ints(&dims)),
+            ]),
+        ),
+    ]);
+    Ok(HdrPhasePlane {
+        report: format!("{}\n", report.render()),
+        plane: pc.v.iter().flat_map(|v| v.to_le_bytes()).collect(),
+    })
+}

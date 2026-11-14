@@ -52,6 +52,9 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "hdr-segments" => segments_cmd(args)?,
         "hdr-assemble" => assemble_cmd(args)?,
         "hdr-capture" => capture_json(&text(args, "--raw")?, &text(args, "--jpeg")?)?,
+        "hdr-fft" => fft_cmd(args)?,
+        "hdr-phase-plane" => phase_plane_cmd(args)?,
+        "hdr-fft-twiddle" => fft_twiddle_cmd(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
     // Every hdr JSON goes through the same non-finite check as the WASM reports.
@@ -532,4 +535,96 @@ pub fn capture_json(raw: &str, jpeg: &str) -> Result<Json, Failure> {
         ("jpeg", hdr::field_json(&j)),
         ("differs", Json::Bool(hdr::differs(&r, &j))),
     ]))
+}
+
+// ---- hdr-fft (unit hdr-fft): numpy-exact complex64 FFT diagnostics ----
+//
+// hdr-fft --in X.npy --inverse 0|1 [--two-d] [--trig host] [--in-shape H N] --out Y.npy
+//     numpy fft/ifft along the last axis of complex64 data stored as float32 (..., n, 2);
+//     --two-d runs fft2/ifft2 over (h, n). The output has the input's shape.
+// hdr-phase-plane --a A.npy --b B.npy --out PC.npy [--trig host] [--a-shape H W] [--b-shape H W]
+//     _phase_shift's float32 plane real(ifft2(f / (|f| + 1e-9))) and its peak (dy, dx).
+// hdr-fft-twiddle --n N --out T.npy [--kind float|double|tables] [--trig host]
+//     sincos_2pibyn<T>(N)[idx] for idx < N, (N, 2) float32 or float64; `tables` writes the
+//     raw double tables v1 then v2 as (re, im, angle) rows (the cos/sin values and their
+//     argument) and reports len(v1) as "v1".
+// `--trig host` (native only, a diagnostic) builds the twiddles from the host's cos/sin
+// instead of the correctly rounded ones; it never reaches gxr-wasm.
+
+/// `(cos, sin)` for `--trig host`.
+type HostTrig = (fn(f64) -> f64, fn(f64) -> f64);
+
+fn host_trig(args: &[String]) -> Result<Option<HostTrig>, Failure> {
+    match common::option(args, "--trig") {
+        Err(_) => Ok(None),
+        Ok("correct") => Ok(None),
+        #[allow(clippy::disallowed_methods)] // the point of this flag is the host libm
+        Ok("host") => Ok(Some((f64::cos, f64::sin))),
+        Ok(t) => Err(usage(format!("bad --trig {t:?}"))),
+    }
+}
+
+fn fft_cmd(args: &[String]) -> Result<Json, Failure> {
+    let a = npy(args, "--in")?;
+    let inverse = match common::option(args, "--inverse")? {
+        "0" => false,
+        "1" => true,
+        v => return Err(usage(format!("bad --inverse {v:?}"))),
+    };
+    let two_d = args.iter().any(|x| x == "--two-d");
+    let values = f32s(&a)?;
+    let (h, n) = match a.shape.as_slice() {
+        [n, 2] => (1, *n),
+        [h, n, 2] => (*h, *n),
+        s => {
+            return Err(usage(format!(
+                "expected (n, 2) or (h, n, 2), got shape {s:?}"
+            )));
+        }
+    };
+    let mut shape = a.shape.clone();
+    let (h, n) = if args.iter().any(|x| x == "--in-shape") {
+        let (sh, sn) = pair(args, "--in-shape")?;
+        shape = vec![sh, sn, 2];
+        (sh, sn)
+    } else {
+        (h, n)
+    };
+    let dim = |v: usize| u64::try_from(v).map_err(|_| usage("size does not fit u64"));
+    let w = hdr::count(&[dim(n)?, 2])?;
+    let plane = hdr::Plane32::new(values, dim(h)?, dim(w)?)?;
+    let out = plane.fft_complex(inverse, two_d, host_trig(args)?)?;
+    write(args, "--out", "<f4", &shape, &le_f32(&out.v))
+}
+
+fn phase_plane_cmd(args: &[String]) -> Result<Json, Failure> {
+    let (a, b) = (plane_arg(args, "--a")?, plane_arg(args, "--b")?);
+    let (pc, (dy, dx)) = a.phase_plane(&b, host_trig(args)?)?;
+    let file = write(args, "--out", "<f4", &[pc.h, pc.w], &le_f32(&pc.v))?;
+    Ok(Json::object([
+        ("dy", Json::Int(dy)),
+        ("dx", Json::Int(dx)),
+        ("plane", file),
+    ]))
+}
+
+fn fft_twiddle_cmd(args: &[String]) -> Result<Json, Failure> {
+    let n: u64 = number(args, "--n")?;
+    let kind = match common::option(args, "--kind").unwrap_or("float") {
+        "float" => 0,
+        "double" => 1,
+        "tables" => 2,
+        k => return Err(usage(format!("bad --kind {k:?}"))),
+    };
+    let (v, v1_len) = hdr::Plane32::fft_twiddles(n, kind, host_trig(args)?)?;
+    let cols = if kind == 2 { 3 } else { 2 };
+    let rows = v.len() / cols;
+    let file = if kind == 0 {
+        let f: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+        write(args, "--out", "<f4", &[rows, 2], &le_f32(&f))?
+    } else {
+        write(args, "--out", "<f8", &[rows, cols], &le_f64(&v))?
+    };
+    let v1_len = i64::try_from(v1_len).unwrap_or(i64::MAX);
+    Ok(Json::object([("table", file), ("v1", Json::Int(v1_len))]))
 }
