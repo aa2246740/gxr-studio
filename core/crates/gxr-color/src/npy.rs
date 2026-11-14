@@ -1,0 +1,227 @@
+//! A `.npy` reader for format 1.0 and 2.0, little-endian, C order.
+//!
+//! `np.savez` stores each array as one of these. Fortran order and unknown dtypes are rejected.
+
+use gxr_raw::CoreError;
+
+/// One parsed array. `values` is the raw little-endian payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Npy {
+    pub descr: String,
+    pub shape: Vec<usize>,
+    pub values: Vec<u8>,
+}
+
+fn bad(message: impl Into<String>) -> CoreError {
+    CoreError::new("npy", message)
+}
+
+/// The header and payload `np.load` reads from a calibration array.
+pub fn decode(bytes: &[u8]) -> Result<Npy, CoreError> {
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return Err(bad("not an npy file"));
+    }
+    let (header, data_at) = match bytes[6] {
+        1 => {
+            let len = usize::from(u16::from_le_bytes(read_n(bytes, 8)?));
+            (header_text(bytes, 10, len)?, 10 + len)
+        }
+        2 | 3 => {
+            let len = crate::size::fit(u64::from(u32::from_le_bytes(read4(bytes, 8)?)))
+                .map_err(|_| bad("npy header is short"))?;
+            let text = header_text(bytes, 12, len)?;
+            (text, 12 + len)
+        }
+        _ => return Err(bad("unsupported npy version")),
+    };
+    if header.contains("'fortran_order': True") {
+        return Err(bad("fortran order arrays are not supported"));
+    }
+    let descr = quoted_field(&header, "descr")?;
+    let dims = shape_of(&header)?;
+    let width = width_of(&descr)?;
+    // Sizes from the header: checked u64, the shared count limit, then a fallible copy.
+    let count = crate::size::count(&dims)?;
+    let nbytes = count.checked_mul(width).ok_or_else(crate::size::too_big)?;
+    let end = u64::try_from(data_at)
+        .ok()
+        .and_then(|at| at.checked_add(nbytes))
+        .ok_or_else(crate::size::too_big)?;
+    if end > u64::try_from(bytes.len()).map_err(|_| crate::size::too_big())? {
+        return Err(bad("npy data is short"));
+    }
+    // `end <= bytes.len()`, so it is a valid index on this target.
+    let end = usize::try_from(end).map_err(|_| crate::size::too_big())?;
+    let values = crate::size::try_copy(&bytes[data_at..end])?;
+    let mut shape = Vec::with_capacity(dims.len());
+    for d in dims {
+        shape.push(crate::size::fit(d)?);
+    }
+    Ok(Npy {
+        descr,
+        shape,
+        values,
+    })
+}
+
+fn read_n(bytes: &[u8], at: usize) -> Result<[u8; 2], CoreError> {
+    let s = bytes
+        .get(at..at + 2)
+        .ok_or_else(|| bad("npy header is short"))?;
+    Ok([s[0], s[1]])
+}
+
+fn read4(bytes: &[u8], at: usize) -> Result<[u8; 4], CoreError> {
+    let s = bytes
+        .get(at..at + 4)
+        .ok_or_else(|| bad("npy header is short"))?;
+    Ok([s[0], s[1], s[2], s[3]])
+}
+
+fn header_text(bytes: &[u8], at: usize, len: usize) -> Result<String, CoreError> {
+    let end = at
+        .checked_add(len)
+        .ok_or_else(|| bad("npy header is short"))?;
+    let raw = bytes
+        .get(at..end)
+        .ok_or_else(|| bad("npy header is short"))?;
+    String::from_utf8(raw.to_vec()).map_err(|_| bad("npy header is not utf-8"))
+}
+
+fn quoted_field(header: &str, key: &str) -> Result<String, CoreError> {
+    let needle = format!("'{key}': '");
+    let start = header
+        .find(&needle)
+        .ok_or_else(|| bad(format!("npy header has no {key}")))?
+        + needle.len();
+    let rest = &header[start..];
+    let end = rest
+        .find('\'')
+        .ok_or_else(|| bad(format!("npy header has no {key}")))?;
+    Ok(rest[..end].to_string())
+}
+
+fn shape_of(header: &str) -> Result<Vec<u64>, CoreError> {
+    let needle = "'shape': (";
+    let start = header
+        .find(needle)
+        .ok_or_else(|| bad("npy header has no shape"))?
+        + needle.len();
+    let rest = &header[start..];
+    let end = rest
+        .find(')')
+        .ok_or_else(|| bad("npy header has no shape"))?;
+    let mut shape = Vec::new();
+    for part in rest[..end].split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if !part.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad("npy header has no shape"));
+        }
+        // All digits: a value past u64 is a size no target can hold.
+        shape.push(part.parse::<u64>().map_err(|_| crate::size::too_big())?);
+    }
+    Ok(shape)
+}
+
+fn width_of(descr: &str) -> Result<u64, CoreError> {
+    match descr {
+        "<i4" | "<f4" => Ok(4),
+        "<i8" | "<f8" => Ok(8),
+        "<c16" => Ok(16),
+        other => Err(bad(format!("unsupported dtype {other}"))),
+    }
+}
+
+fn take<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], CoreError> {
+    let s = bytes
+        .get(at..at + N)
+        .ok_or_else(|| bad("npy data is short"))?;
+    let mut buf = [0u8; N];
+    buf.copy_from_slice(s);
+    Ok(buf)
+}
+
+impl Npy {
+    /// `ndarray.astype(float)`, which is float64.
+    pub fn f64s(&self) -> Result<Vec<f64>, CoreError> {
+        match self.descr.as_str() {
+            "<f8" => {
+                let mut out = Vec::with_capacity(self.values.len() / 8);
+                for at in (0..self.values.len()).step_by(8) {
+                    out.push(f64::from_le_bytes(take(&self.values, at)?));
+                }
+                Ok(out)
+            }
+            "<f4" => {
+                let mut out = Vec::with_capacity(self.values.len() / 4);
+                for at in (0..self.values.len()).step_by(4) {
+                    let bits: [u8; 4] = take(&self.values, at)?;
+                    out.push(f64::from(f32::from_le_bytes(bits)));
+                }
+                Ok(out)
+            }
+            _ => Err(bad(format!("expected a float array, got {}", self.descr))),
+        }
+    }
+
+    pub fn i64s(&self) -> Result<Vec<i64>, CoreError> {
+        match self.descr.as_str() {
+            "<i8" => {
+                let mut out = Vec::with_capacity(self.values.len() / 8);
+                for at in (0..self.values.len()).step_by(8) {
+                    out.push(i64::from_le_bytes(take(&self.values, at)?));
+                }
+                Ok(out)
+            }
+            "<i4" => {
+                let mut out = Vec::with_capacity(self.values.len() / 4);
+                for at in (0..self.values.len()).step_by(4) {
+                    let bits: [u8; 4] = take(&self.values, at)?;
+                    out.push(i64::from(i32::from_le_bytes(bits)));
+                }
+                Ok(out)
+            }
+            _ => Err(bad(format!("expected an int array, got {}", self.descr))),
+        }
+    }
+
+    /// `<c16`: real then imag, each little-endian f64.
+    pub fn complexes(&self) -> Result<Vec<(f64, f64)>, CoreError> {
+        if self.descr != "<c16" {
+            return Err(bad(format!("expected complex128, got {}", self.descr)));
+        }
+        let mut out = Vec::with_capacity(self.values.len() / 16);
+        for at in (0..self.values.len()).step_by(16) {
+            let re = f64::from_le_bytes(take(&self.values, at)?);
+            let im = f64::from_le_bytes(take(&self.values, at + 8)?);
+            out.push((re, im));
+        }
+        Ok(out)
+    }
+}
+
+/// A `.npy` file (format 1.0) the way `np.save` writes it: the header dict padded with spaces
+/// and a newline so the payload starts on a 64-byte boundary. `payload` is already
+/// little-endian in C order.
+pub fn encode(descr: &str, shape: &[usize], payload: &[u8]) -> Vec<u8> {
+    let dims: Vec<String> = shape.iter().map(ToString::to_string).collect();
+    let shape_text = if dims.len() == 1 {
+        format!("({},)", dims[0])
+    } else {
+        format!("({})", dims.join(", "))
+    };
+    let mut dict =
+        format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_text}, }}");
+    let total = 10 + dict.len() + 1;
+    dict.push_str(&" ".repeat((64 - total % 64) % 64));
+    dict.push('\n');
+    let mut out = b"\x93NUMPY\x01\x00".to_vec();
+    let len = u16::try_from(dict.len()).map_or(u16::MAX, |v| v);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(dict.as_bytes());
+    out.extend_from_slice(payload);
+    out
+}
