@@ -285,4 +285,56 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
     cases["no_sos.jpg"] = (b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x02\x00\x03\x01\x01\x11\x00\xff\xd9", "jpg")
     cases["garbage.jpg"] = (b"NOT_AN_IMAGE_1234", "jpg")
     cases["empty.dng"] = (b"", "dng")
+
+    # 6. Sol r1 preview validation & candidate selection cases
+    def build_preview_dng(subifds_and_payloads: list[tuple[int, int, int, bytes, int | None]]) -> bytes:
+        hdr_size = 8
+        child_specs: list[list[tuple[int, int, int, bytes]]] = []
+        ifd0_specs = base_tiff("<")
+        ifd0_sz = 2 + (len(ifd0_specs) + 1) * 12 + 4
+        offs_area_sz = 4 * len(subifds_and_payloads) if len(subifds_and_payloads) > 1 else 0
+        children_start = hdr_size + ifd0_sz + offs_area_sz
+        child_sz = 2 + 6 * 12 + 4
+        payload_cursor = children_start + len(subifds_and_payloads) * child_sz
+        payload_blobs = bytearray()
+        for w, h, comp, blob, forced_off in subifds_and_payloads:
+            off = payload_cursor if forced_off is None else forced_off
+            child_specs.append(
+                [
+                    (254, 4, 1, struct.pack("<I", 1)),
+                    (256, 4, 1, struct.pack("<I", w)),
+                    (257, 4, 1, struct.pack("<I", h)),
+                    (259, 3, 1, struct.pack("<H", comp)),
+                    (273, 4, 1, struct.pack("<I", off)),
+                    (279, 4, 1, struct.pack("<I", len(blob))),
+                ]
+            )
+            if forced_off is None:
+                payload_blobs.extend(blob)
+                payload_cursor += len(blob)
+        return make_tiff_doc(ifd0_specs, subifd_list=child_specs) + bytes(payload_blobs)
+
+    tableless = b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x06\x00\x08\x01\x01\x11\x00\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\xff\xd9"
+    valid_pv = make_jpeg_bytes(8, 6)
+    small_pv = make_jpeg_bytes(4, 4)
+    prog_buf = io.BytesIO()
+    Image.new("RGB", (12, 10), (30, 80, 140)).save(prog_buf, "JPEG", quality=85, progressive=True)
+    prog_pv = prog_buf.getvalue()
+
+    cases["preview-no-tables.dng"] = (build_preview_dng([(8, 6, 7, tableless, None)]), "dng")
+    cases["preview-valid.dng"] = (build_preview_dng([(8, 6, 7, valid_pv, None)]), "dng")
+    cases["preview-no-eoi.dng"] = (build_preview_dng([(8, 6, 7, valid_pv[:-2], None)]), "dng")
+    cases["preview-progressive.dng"] = (build_preview_dng([(12, 10, 7, prog_pv, None)]), "dng")
+    cases["preview-choice-largest.dng"] = (
+        build_preview_dng([(4, 4, 7, small_pv, None), (8, 6, 7, valid_pv, None)]),
+        "dng",
+    )
+    cases["preview-choice-tie-first.dng"] = (
+        build_preview_dng([(8, 6, 7, valid_pv, None), (8, 6, 7, small_pv, None)]),
+        "dng",
+    )
+    cases["preview-choice-skip-oob.dng"] = (
+        build_preview_dng([(100, 100, 7, valid_pv, 999999), (4, 4, 7, small_pv, None)]),
+        "dng",
+    )
     return cases
