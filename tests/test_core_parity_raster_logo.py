@@ -12,6 +12,7 @@ from PIL import Image
 from gxr_studio.finish.logo_math import LogoInfo, _alpha_luma, aspect_mult, clogo_item, coverage_comp, fit_logo, pick_logo_mode
 from gxr_studio.finish.logo_store import WARN_OPAQUE, _stats_of, has_white_background, key_white, trim_ink
 from support.core_cli import error_of, require_cli, run_json
+from support.lut_oracle import _libm_pow
 from support.wasm_check import run_area
 
 
@@ -254,6 +255,45 @@ def _logo_fit_cases() -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
     ]
 
 
+def _coverage_comp_oracle(cov: float, *, use_libm: bool) -> float:
+    base = np.array([0.35 / max(cov, 0.02)], dtype=np.float64)
+    return float(min(1.25, max(0.90, float(_libm_pow(base, 0.25, use_libm=use_libm)[0]))))
+
+
+def _expected_logo_fit(info_dict: dict[str, Any], req_dict: dict[str, Any], *, use_libm: bool) -> dict[str, Any]:
+    logo = LogoInfo(
+        id=str(info_dict["id"]),
+        name=str(info_dict.get("name", "")),
+        w=int(info_dict["w"]),
+        h=int(info_dict["h"]),
+        coverage=float(info_dict["coverage"]),
+        opaque=bool(info_dict["opaque"]),
+        lum=float(info_dict["lum"]),
+    )
+    fw, fh = fit_logo(logo, int(req_dict["cap"]), int(req_dict["max_h"]), int(req_dict["max_w"]), str(req_dict.get("size", "medium")))
+    mode = pick_logo_mode(logo, str(req_dict.get("mode", "auto")), float(req_dict.get("bg_lum", 255.0)))
+    ink_raw = req_dict.get("ink", [0, 0, 0])
+    ink = (int(ink_raw[0]), int(ink_raw[1]), int(ink_raw[2]))
+    item = clogo_item(
+        logo,
+        int(req_dict.get("x", 0)),
+        int(req_dict.get("y", 0)),
+        fw,
+        fh,
+        str(req_dict.get("mode", "auto")),
+        ink,
+        float(req_dict.get("bg_lum", 255.0)),
+    )
+    return {
+        "w": fw,
+        "h": fh,
+        "mode": mode,
+        "aspect_mult": aspect_mult(logo.aspect),
+        "coverage_comp": _coverage_comp_oracle(logo.coverage, use_libm=use_libm),
+        "item": item,
+    }
+
+
 def test_logo_fit_matches_python() -> None:
     require_cli()
     for tag, info_dict, req_dict in _logo_fit_cases():
@@ -267,38 +307,164 @@ def test_logo_fit_matches_python() -> None:
             ]
         )
         assert code == 0, (tag, payload)
-        logo = LogoInfo(
-            id=str(info_dict["id"]),
-            name=str(info_dict.get("name", "")),
-            w=int(info_dict["w"]),
-            h=int(info_dict["h"]),
-            coverage=float(info_dict["coverage"]),
-            opaque=bool(info_dict["opaque"]),
-            lum=float(info_dict["lum"]),
-        )
-        fw, fh = fit_logo(logo, int(req_dict["cap"]), int(req_dict["max_h"]), int(req_dict["max_w"]), str(req_dict.get("size", "medium")))
-        mode = pick_logo_mode(logo, str(req_dict.get("mode", "auto")), float(req_dict.get("bg_lum", 255.0)))
-        ink_raw = req_dict.get("ink", [0, 0, 0])
-        ink = (int(ink_raw[0]), int(ink_raw[1]), int(ink_raw[2]))
-        item = clogo_item(
-            logo,
-            int(req_dict.get("x", 0)),
-            int(req_dict.get("y", 0)),
-            fw,
-            fh,
-            str(req_dict.get("mode", "auto")),
-            ink,
-            float(req_dict.get("bg_lum", 255.0)),
-        )
-        expected = {
-            "w": fw,
-            "h": fh,
-            "mode": mode,
-            "aspect_mult": aspect_mult(logo.aspect),
-            "coverage_comp": coverage_comp(logo.coverage),
-            "item": item,
-        }
+        expected = _expected_logo_fit(info_dict, req_dict, use_libm=True)
         assert payload == expected, tag
+        assert int(np.float64(payload["coverage_comp"]).view(np.uint64)) == int(np.float64(expected["coverage_comp"]).view(np.uint64)), tag
+
+
+# PORT-WAVE-1 Amendment 2 Gate B points from 512-case coverage_comp scan (1 f64 ULP between
+# pinned libm::pow and Apple host pow; integers fw/fh, mode, aspect_mult, and item remain exact).
+_COVERAGE_COMP_GATE_B_POINTS: list[tuple[dict[str, Any], dict[str, Any], float, int, float, int]] = [
+    (
+        {"id": "synthetic", "name": "", "w": 1663, "h": 4954, "coverage": 0.182089, "opaque": False, "lum": 14.065},
+        {"cap": 187, "max_h": 1635, "max_w": 1189, "size": "large"},
+        1.1774597856207203,
+        0x3FF2D6E0127989E4,
+        1.1774597856207205,
+        0x3FF2D6E0127989E5,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 3957, "h": 3233, "coverage": 0.296059, "opaque": False, "lum": 52.802},
+        {"cap": 10, "max_h": 3544, "max_w": 642, "size": "small"},
+        1.0427313816871413,
+        0x3FF0AF0719EDBF24,
+        1.042731381687141,
+        0x3FF0AF0719EDBF23,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 1723, "h": 400, "coverage": 0.193075, "opaque": False, "lum": 212.988},
+        {"cap": 116, "max_h": 643, "max_w": 2156, "size": "large"},
+        1.1603406316740768,
+        0x3FF290C15694298A,
+        1.1603406316740765,
+        0x3FF290C156942989,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 4399, "h": 2130, "coverage": 0.523735, "opaque": True, "lum": 163.737},
+        {"cap": 144, "max_h": 1954, "max_w": 3353, "size": "medium"},
+        0.9041471374384993,
+        0x3FECEEC5FA42407C,
+        0.9041471374384992,
+        0x3FECEEC5FA42407B,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 4342, "h": 4143, "coverage": 0.230441, "opaque": False, "lum": 107.405},
+        {"cap": 1, "max_h": 4295, "max_w": 2158, "size": "large"},
+        1.1101382671049382,
+        0x3FF1C32057F40FA8,
+        1.110138267104938,
+        0x3FF1C32057F40FA7,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 425, "h": 2356, "coverage": 0.525875, "opaque": False, "lum": 44.372},
+        {"cap": 95, "max_h": 439, "max_w": 1717, "size": "medium"},
+        0.9032258944738045,
+        0x3FECE739FDB54A72,
+        0.9032258944738044,
+        0x3FECE739FDB54A71,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 971, "h": 1396, "coverage": 0.258338, "opaque": True, "lum": 165.143},
+        {"cap": 177, "max_h": 1498, "max_w": 2869, "size": "small"},
+        1.0788720393592026,
+        0x3FF1430F53D9DD98,
+        1.0788720393592024,
+        0x3FF1430F53D9DD97,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 844, "h": 2480, "coverage": 0.49153, "opaque": True, "lum": 86.013},
+        {"cap": 192, "max_h": 2798, "max_w": 2240, "size": "small"},
+        0.9186064778708194,
+        0x3FED6539698B2A54,
+        0.9186064778708193,
+        0x3FED6539698B2A53,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 980, "h": 1222, "coverage": 0.416654, "opaque": True, "lum": 229.777},
+        {"cap": 111, "max_h": 733, "max_w": 3668, "size": "medium"},
+        0.957355247720989,
+        0x3FEEA2A778F3B336,
+        0.9573552477209889,
+        0x3FEEA2A778F3B335,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 4091, "h": 3078, "coverage": 0.146365, "opaque": False, "lum": 95.343},
+        {"cap": 21, "max_h": 3982, "max_w": 883, "size": "large"},
+        1.24353410828355,
+        0x3FF3E58405689D2A,
+        1.2435341082835503,
+        0x3FF3E58405689D2B,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 321, "h": 521, "coverage": 0.246543, "opaque": False, "lum": 188.332},
+        {"cap": 177, "max_h": 413, "max_w": 4549, "size": "large"},
+        1.0915505228817857,
+        0x3FF176FDAE5B57F0,
+        1.091550522881786,
+        0x3FF176FDAE5B57F1,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 1236, "h": 1525, "coverage": 0.152249, "opaque": False, "lum": 218.502},
+        {"cap": 138, "max_h": 1920, "max_w": 3981, "size": "medium"},
+        1.2313411657537605,
+        0x3FF3B392CB52183C,
+        1.2313411657537607,
+        0x3FF3B392CB52183D,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 333, "h": 4059, "coverage": 0.407699, "opaque": True, "lum": 189.451},
+        {"cap": 60, "max_h": 2392, "max_w": 3873, "size": "small"},
+        0.9625695067342706,
+        0x3FEECD5E90F19E0E,
+        0.9625695067342704,
+        0x3FEECD5E90F19E0D,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 593, "h": 2426, "coverage": 0.215431, "opaque": False, "lum": 113.078},
+        {"cap": 30, "max_h": 4238, "max_w": 670, "size": "large"},
+        1.1289896530883454,
+        0x3FF21057745896DA,
+        1.1289896530883456,
+        0x3FF21057745896DB,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 613, "h": 2417, "coverage": 0.410368, "opaque": True, "lum": 191.794},
+        {"cap": 125, "max_h": 1508, "max_w": 3819, "size": "large"},
+        0.9610005565209934,
+        0x3FEEC0843D364142,
+        0.9610005565209933,
+        0x3FEEC0843D364141,
+    ),
+    (
+        {"id": "synthetic", "name": "", "w": 2413, "h": 1807, "coverage": 0.500379, "opaque": True, "lum": 44.73},
+        {"cap": 122, "max_h": 1920, "max_w": 3246, "size": "small"},
+        0.9145179673129717,
+        0x3FED43BB2F26D5E6,
+        0.9145179673129716,
+        0x3FED43BB2F26D5E5,
+    ),
+]
+
+
+def test_logo_fit_coverage_comp_gate_a_and_listed_gate_b_points() -> None:
+    require_cli()
+    for idx, (info_dict, req_dict, rs_val, rs_bits, py_val, py_bits) in enumerate(_COVERAGE_COMP_GATE_B_POINTS):
+        code, payload = run_json(["finish-logo-fit", "--info-json", json.dumps(info_dict), "--request-json", json.dumps(req_dict)])
+        assert code == 0, (idx, payload)
+        expected_libm = _expected_logo_fit(info_dict, req_dict, use_libm=True)
+        expected_host = _expected_logo_fit(info_dict, req_dict, use_libm=False)
+        # Non-pow fields remain identical to host Python across all 16 points.
+        for key in ("w", "h", "mode", "aspect_mult", "item"):
+            assert payload[key] == expected_host[key], (idx, key, payload[key], expected_host[key])
+        # Gate A: bit-exact match against pinned libm oracle and recorded Rust float64 bits.
+        got_bits = int(np.float64(payload["coverage_comp"]).view(np.uint64))
+        assert got_bits == int(np.float64(expected_libm["coverage_comp"]).view(np.uint64)) == rs_bits, idx
+        assert payload["coverage_comp"] == rs_val, idx
+        # Negative control: host pow oracle fails bit-exact match and reproduces real Python.
+        host_bits = int(np.float64(coverage_comp(float(info_dict["coverage"]))).view(np.uint64))
+        assert host_bits == int(np.float64(expected_host["coverage_comp"]).view(np.uint64)) == py_bits, idx
+        assert coverage_comp(float(info_dict["coverage"])) == py_val, idx
+        assert got_bits != host_bits and abs(got_bits - host_bits) == 1, idx
 
 
 def test_logo_fit_invalid_inputs() -> None:
