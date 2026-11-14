@@ -7,6 +7,8 @@
 use gxr_raw::Json;
 use gxr_raw::pyrepr::py_float_repr;
 
+use crate::unicode_tables::{DECIMAL_ZERO, FOLD1_KEY, FOLD1_VAL, FOLDN_KEY, FOLDN_VAL, PY_SPACE};
+
 /// A tag value as `_capture` sees it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TagValue {
@@ -46,7 +48,15 @@ pub const MISMATCH: &str = "RAW 与 JPG 不是同一次拍摄";
 
 /// Python `str.isspace` for one character.
 fn py_space(c: char) -> bool {
-    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
+    PY_SPACE.binary_search(&u32::from(c)).is_ok()
+}
+
+/// `unicodedata.decimal(c)` for a Unicode decimal digit (category Nd), else `None`.
+fn decimal_digit(c: char) -> Option<u32> {
+    let cp = u32::from(c);
+    let at = DECIMAL_ZERO.partition_point(|&z| z <= cp);
+    let zero = *DECIMAL_ZERO.get(at.checked_sub(1)?)?;
+    (cp - zero < 10).then_some(cp - zero)
 }
 
 /// `str(value)` for the scalar types a text tag can hold. Lists are refused by the caller.
@@ -77,45 +87,69 @@ fn text(v: Option<&TagValue>) -> Option<String> {
     )
 }
 
-/// `str.casefold`: lower case plus the full case-folding mappings that differ from it
-/// for Latin and Greek letters. Camera EXIF text is ASCII in practice.
+/// `str.casefold`: Python's full case folding, code point by code point, from the generated
+/// Unicode 16.0 table (Sol r1 P3-06).
 fn casefold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        match c {
-            'ß' | 'ẞ' => out.push_str("ss"),
-            'µ' => out.push('μ'),
-            'ς' => out.push('σ'),
-            'ſ' => out.push('s'),
-            'ϐ' => out.push('β'),
-            'ϑ' => out.push('θ'),
-            'ϕ' => out.push('φ'),
-            'ϖ' => out.push('π'),
-            'ϰ' => out.push('κ'),
-            'ϱ' => out.push('ρ'),
-            'ϵ' => out.push('ε'),
-            'ﬀ' => out.push_str("ff"),
-            'ﬁ' => out.push_str("fi"),
-            'ﬂ' => out.push_str("fl"),
-            'ﬃ' => out.push_str("ffi"),
-            'ﬄ' => out.push_str("ffl"),
-            'ﬅ' | 'ﬆ' => out.push_str("st"),
-            _ => out.extend(c.to_lowercase()),
+        let cp = u32::from(c);
+        if let Ok(i) = FOLD1_KEY.binary_search(&cp) {
+            out.extend(char::from_u32(FOLD1_VAL[i]));
+        } else if let Ok(i) = FOLDN_KEY.binary_search(&cp) {
+            out.extend(
+                FOLDN_VAL[3 * i..3 * i + 3]
+                    .iter()
+                    .filter(|&&v| v != 0)
+                    .filter_map(|&v| char::from_u32(v)),
+            );
+        } else {
+            out.push(c);
         }
     }
     out
 }
 
-/// Python `float(str)` for decimal text: optional sign, digits with single underscores
-/// between them, an optional fraction and exponent, or `inf`/`infinity`/`nan`.
+/// Python `float(str)` (`PyFloat_FromString`), for the decimal text a tag can hold (Sol r1
+/// P2-05). Non-ASCII whitespace becomes a space and each Unicode decimal digit its ASCII digit
+/// (`_PyUnicode_TransformDecimalAndSpaceToASCII`); any other character from U+007F up is invalid.
+/// Then PEP 515 underscores (only between digits), surrounding whitespace, an optional sign,
+/// `inf`/`infinity`/`nan`, or digits with an optional point and exponent.
 fn py_float_text(s: &str) -> Option<f64> {
-    let t = s.trim_matches(py_space);
-    let lower = t.to_ascii_lowercase();
-    let body = lower.trim_start_matches(['+', '-']);
-    if lower.len() - body.len() > 1 {
-        return None;
+    let mut ascii = String::with_capacity(s.len());
+    for c in s.chars() {
+        // Below U+007F a character passes through unchanged (so U+001C..U+001F stay and make
+        // the text invalid); above it, whitespace becomes a space and a decimal digit its
+        // ASCII digit; anything else is invalid.
+        if u32::from(c) < 0x7f {
+            ascii.push(c);
+        } else if py_space(c) {
+            ascii.push(' ');
+        } else if let Some(d) = decimal_digit(c) {
+            ascii.push(char::from_digit(d, 10)?);
+        } else {
+            return None;
+        }
     }
-    let neg = lower.starts_with('-');
+    let bytes = ascii.as_bytes();
+    let mut plain = String::with_capacity(ascii.len());
+    let mut prev = b'\0';
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'_' {
+            let next_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
+            if !(prev.is_ascii_digit() && next_digit) {
+                return None;
+            }
+        } else {
+            plain.push(char::from(b));
+        }
+        prev = b;
+    }
+    let t = plain.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r'));
+    let lower = t.to_ascii_lowercase();
+    let (neg, body) = match lower.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, lower.strip_prefix('+').unwrap_or(&lower)),
+    };
     let special = match body {
         "inf" | "infinity" => Some(f64::INFINITY),
         "nan" => Some(f64::NAN),
@@ -124,22 +158,23 @@ fn py_float_text(s: &str) -> Option<f64> {
     if let Some(v) = special {
         return Some(if neg { -v } else { v });
     }
-    let bytes = body.as_bytes();
-    let mut prev_digit = false;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'_' {
-            let next_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
-            if !(prev_digit && next_digit) {
-                return None;
-            }
-        }
-        prev_digit = b.is_ascii_digit();
-    }
-    let plain: String = t.chars().filter(|&c| c != '_').collect();
-    if plain.is_empty() || plain.contains(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c))) {
+    // Digits, at most one point, at least one digit, then an optional exponent.
+    let (mant, exp) = match body.find('e') {
+        Some(at) => (&body[..at], Some(&body[at + 1..])),
+        None => (body, None),
+    };
+    let digits = mant.bytes().filter(u8::is_ascii_digit).count();
+    let points = mant.bytes().filter(|&b| b == b'.').count();
+    if digits == 0 || points > 1 || digits + points != mant.len() {
         return None;
     }
-    plain.parse::<f64>().ok()
+    if let Some(e) = exp {
+        let e = e.strip_prefix(['+', '-']).unwrap_or(e);
+        if e.is_empty() || !e.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    t.parse::<f64>().ok()
 }
 
 /// `float(raw_value)` after the one-element unwrap; `None` when Python skips the tag.

@@ -9,6 +9,7 @@
 //! hdr-block-mean --in A.npy --factor F --out B.npy
 //! hdr-luma --rgb RGB.npy --factor F --out Y.npy               sdr_luma_grid (uint8 (h, w, 3))
 //! hdr-srgb --out L.npy                                       srgb_to_linear of codes 0..=255 (float32)
+//! hdr-log2 --in X.npy --out Y.npy                            np.log2 on float32, as the port computes it
 //! hdr-raw-luma DNG --out Y.npy --clip-out C.npy               raw_luma without the metadata
 //! hdr-phase --a A.npy --b B.npy                               _phase_shift
 //! hdr-fit --x X.npy --y Y.npy --valid V.npy                   fit_curve
@@ -36,6 +37,12 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
             let lin: Vec<f32> = (0..=255u8).map(hdr::srgb_to_linear).collect();
             write(args, "--out", "<f4", &[256], &le_f32(&lin))?
         }
+        "hdr-log2" => {
+            let a = npy(args, "--in")?;
+            let y: Vec<f32> = f32s(&a)?.into_iter().map(hdr::log2f).collect();
+            let shape = a.shape.clone();
+            write(args, "--out", "<f4", &shape, &le_f32(&y))?
+        }
         "hdr-raw-luma" => raw_luma_cmd(args)?,
         "hdr-phase" => phase_cmd(args)?,
         "hdr-fit" => fit_cmd(args)?,
@@ -47,6 +54,8 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "hdr-capture" => capture_json(&text(args, "--raw")?, &text(args, "--jpeg")?)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
+    // Every hdr JSON goes through the same non-finite check as the WASM reports.
+    hdr::ensure_finite(&json)?;
     Ok(Output {
         text: json.render(),
         ok: true,

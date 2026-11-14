@@ -22,6 +22,7 @@ mod report;
 mod residual;
 mod sample;
 mod size;
+mod unicode_tables;
 
 pub use capture::{Field, MISMATCH, TagValue, capture_of, differs, field_json};
 pub use container::{
@@ -40,7 +41,7 @@ pub use gain::{
 pub use input::{Value, meta_from_json, params_from_json, parse as parse_json, tags_from_json};
 pub use label::{binary_dilation, label};
 pub use number::{fmt_g7, limit_65536, py_round};
-pub use report::{align_report, gain_report};
+pub use report::{align_report, ensure_finite, gain_report};
 pub use residual::local_residual;
 pub use sample::map_coordinates;
 pub use size::{ARRAY_TOO_BIG, count};

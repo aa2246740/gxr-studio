@@ -120,6 +120,11 @@ pub fn gaussian_filter<T: Real>(
         return Ok(src.to_vec());
     }
     let k = gaussian_kernel(sigma)?;
+    // SciPy builds the kernel (and raises for an infinite sigma) before it looks at the data;
+    // an empty plane then comes back empty. Lines of length 0 have no `out[0]`.
+    if src.is_empty() {
+        return Ok(Vec::new());
+    }
     let r = k.len() / 2;
     let run = |line: &[f64], out: &mut [f64]| {
         for (i, slot) in out.iter_mut().enumerate() {
@@ -156,7 +161,8 @@ pub fn uniform_filter<T: Real>(
 ) -> Result<Vec<T>, CoreError> {
     check_shape(h, w, src.len())?;
     let size_u = check_size(size)?;
-    if size_u == 1 {
+    // An empty plane comes back empty, as in SciPy (Sol r1 P2-02: `out[0]` on an empty line).
+    if size_u == 1 || src.is_empty() {
         return Ok(src.to_vec());
     }
     let start = -(size / 2);
