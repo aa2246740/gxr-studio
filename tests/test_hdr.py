@@ -279,7 +279,7 @@ def test_track_without_raw_or_with_unknown_frame_layout():
     track = HdrTrack(None)
     track.begin(np.zeros((8, 8, 3), np.uint8))
     assert track.problem == NO_RAW and not track.active
-    assert finish(b"x", track, "jpeg") == (b"x", {"hdr": False, "reason": NO_RAW})
+    assert finish(b"x", track, "jpeg", np.zeros((8, 8, 3), np.uint8)) == (b"x", {"hdr": False, "reason": NO_RAW})
     track.layer = np.zeros((8, 8, 2), np.float32)
     import gxr_studio.finish.hdr_export as he
 
