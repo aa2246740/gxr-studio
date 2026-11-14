@@ -364,6 +364,15 @@ def test_gate_a_negative_control_host_pow(tmp_path: Path, label: str, want_px: t
     check_negative_control_case(tmp_path, label, threshold_cube_text(offset, shaper), spec, rgb, want_px)
 
 
+def test_gate_a_negative_control_host_interp(tmp_path: Path) -> None:
+    """Negative control: Gate A passes with interp_1d_seq and fails when host np.interp is restored."""
+    require_cli()
+    cube_txt = "LUT_1D_SIZE 2\n-3.1415926535897931 0.19927806966646006 0.3\n2.7058973220700397 0.19927806966646006 0.3\n"
+    spec = {"input_space": "srgb", "output_space": "applelog", "output_gamut": "rec2020"}
+    rgb = np.array([[[137, 201, 83]]], dtype=np.uint8)
+    check_negative_control_case(tmp_path, "shaper-applelog", cube_txt, spec, rgb, (0, 0), control="interp")
+
+
 @pytest.mark.parametrize(
     ("label", "want_offset", "want_bgr", "want_or_u8", "want_py_u8", "want_rs_u8"),
     [
