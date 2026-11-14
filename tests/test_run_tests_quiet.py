@@ -8,12 +8,17 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import signal
+import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from test_run_tests import scratch as scratch  # 夹具
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_tests.py"
@@ -314,3 +319,90 @@ def test_a_probe_without_seconds_is_stopped_at_the_deadline(tmp_path: Path) -> N
     pid = int(pidfile.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)  # 子进程连进程组已经杀掉、回收
+
+
+_HANGING_GATE = """import os, subprocess, time
+
+def workers():
+    return 1, {'fake': True}
+
+def quiet_for_timing():
+    kid = subprocess.Popen(['/bin/sleep', '30'])
+    ready = os.environ['PROBE_READY']
+    with open(ready + '.tmp', 'w') as handle:
+        handle.write(f'{os.getpid()} {kid.pid}')
+    os.replace(ready + '.tmp', ready)
+    time.sleep(30)
+    return True, {}
+"""
+
+
+@pytest.mark.skipif(os.environ.get("GXR_RUN_TESTS_INNER") == "1", reason="inner runner")
+@pytest.mark.parametrize(("signum", "expected"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)], ids=["SIGINT", "SIGTERM"])
+def test_a_signal_during_a_hanging_probe_exits_at_once_and_leaves_no_process(
+    tmp_path: Path,
+    scratch: Path,
+    signum: int,
+    expected: int,  # noqa: F811
+) -> None:
+    """Sol r3 P2：exclusive 阶段开始前的探针挂 30 秒（不收 seconds，还另起一个同进程组的 sleep 孙进程），预算 600 秒。
+    这时给 runner 发 SIGINT / SIGTERM：1 秒内退出 130 / 143，探针和孙进程都不在了，exclusive 测试没有开始。"""
+    from test_run_tests import _alive, _base_opts, _hits, _rcfile, _runner_env, _stop_pid, _write_tree
+
+    tree = scratch / "tree"
+    _write_tree(tree)
+    _rcfile(tmp_path / "coveragerc")
+    env = _runner_env(tmp_path, _base_opts(tree, tmp_path / "junit.xml"), workers=1)
+    gate = tmp_path / "hanging_gate.py"
+    gate.write_text(_HANGING_GATE, encoding="utf-8")
+    ready = tmp_path / "probe.ready"
+    env.update({"GXR_LOADGATE": str(gate), "GXR_QUIET_MAX_WAIT_S": "600", "PROBE_READY": str(ready)})
+    proc = subprocess.Popen([sys.executable, "-I", str(RUNNER)], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    pids: list[int] = []
+    try:
+        deadline = time.monotonic() + 60
+        while not ready.is_file() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.is_file(), proc.stdout.read() if proc.poll() is not None and proc.stdout else "探针没有起来"
+        pids = [int(pid) for pid in ready.read_text(encoding="utf-8").split()]
+        proc.send_signal(signum)
+        out, _err = proc.communicate(timeout=1.0)  # 1 秒内退出；慢了这里抛 TimeoutExpired
+        assert proc.returncode == expected, out
+        gone = time.monotonic() + 1.0
+        while any(_alive(pid) for pid in pids) and time.monotonic() < gone:  # 孙进程交给 launchd 回收要一点时间
+            time.sleep(0.05)
+        assert not any(_alive(pid) for pid in pids), (pids, out)
+        assert "exclusive" not in _hits(tmp_path) and "[exclusive]" not in out
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        for pid in pids:
+            _stop_pid(pid)
+
+
+def test_call_with_deadline_stops_and_reaps_the_probe_group_when_told_to(tmp_path: Path) -> None:
+    """停止状态变真以后（≤ 0.2 秒一看），探针和它的孙进程马上被杀掉回收，抛 ProbeStopped，不等 30 秒的探针也不等期限。"""
+    from test_run_tests import _alive
+
+    q: Any = _quiet_module()
+    ready = tmp_path / "pids"
+    script = (
+        "import os, subprocess, sys, time\n"
+        "kid = subprocess.Popen(['/bin/sleep', '30'])\n"
+        f"open({str(ready)!r}, 'w').write(f'{{os.getpid()}} {{kid.pid}}')\n"
+        "time.sleep(30)\n"
+    )
+    asked = []
+
+    def stopped() -> bool:
+        asked.append(1)
+        return ready.is_file() and len(asked) > 3
+
+    with pytest.raises(q.ProbeStopped):
+        q.call_with_deadline([sys.executable, "-I", "-c", script], 600.0, stopped)
+    pids = [int(pid) for pid in ready.read_text(encoding="utf-8").split()]
+    gone = time.monotonic() + 1.0
+    while any(_alive(pid) for pid in pids) and time.monotonic() < gone:
+        time.sleep(0.05)
+    assert not any(_alive(pid) for pid in pids), pids

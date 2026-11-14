@@ -692,7 +692,7 @@ def _exclusive(work: Path, ids: list[str], env: dict[str, str], junit: list[Path
         return _launch_ids(prefix, work, node_ids, {**env, BUDGET_ENV: str(budget)}, junit, cov, lock, extra)
 
     print(f"exclusive 阶段：lockf -t 3600 -k {LOCK_PATH}，{len(ids)} 个用例。", flush=True)
-    return run_exclusive(make_gate(_gate_module), work, ids, launch, _nap, _stopped)
+    return run_exclusive(make_gate(_gate_module, stopped=lambda: _shutdown is not None), work, ids, launch, _nap, _stopped)
 
 
 def _run(parsed: Addopts) -> int:

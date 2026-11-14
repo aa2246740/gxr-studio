@@ -114,24 +114,50 @@ print(json.dumps([bool(ok), info], default=str))
 """
 
 
-def call_with_deadline(cmd: list[str], limit: float) -> str | None:
-    """跑 cmd，最多 limit 秒。超时返回 None，并把它的整个进程组杀掉、回收；失败抛 RuntimeError。"""
+class ProbeStopped(Exception):
+    """等探针的时候收到了停止信号（SIGINT / SIGTERM）。探针的进程组已经杀掉、回收。"""
+
+
+POLL_STEP_S = 0.2  # 等探针时多久看一次停止状态和期限
+
+
+def _never() -> bool:
+    return False
+
+
+def call_with_deadline(cmd: list[str], limit: float, stopped: Callable[[], bool] = _never) -> str | None:
+    """跑 cmd，最多 limit 秒。超时返回 None；等的时候每 POLL_STEP_S 秒看一次 stopped()，为真就抛 ProbeStopped。
+
+    超时、停止或等待中出异常时，都把它的整个进程组杀掉并回收（finally）。只在进程组长还没被回收时 killpg，
+    这时它的 pid 还占着，进程组号不会被别的进程复用。正常结束的失败抛 RuntimeError。
+    """
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)  # noqa: S603
+    deadline = time.monotonic() + max(0.0, limit)
     try:
-        out, err = proc.communicate(timeout=max(0.0, limit))
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        proc.communicate()
-        return None
+        while True:
+            if stopped():
+                raise ProbeStopped
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            try:
+                out, err = proc.communicate(timeout=min(POLL_STEP_S, left))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.communicate()
     if proc.returncode != 0:
         raise RuntimeError((err or out).strip().splitlines()[-1] if (err or out).strip() else f"exit {proc.returncode}")
     return out
 
 
-def gate_probe(module: Any) -> Probe | None:
+def gate_probe(module: Any, stopped: Callable[[], bool] = _never) -> Probe | None:
     """loadgate 的安静判断（优先 quiet_for_timing，没有就 cap 的 admit）。模块里两样都没有时返回 None。
 
     探针在子进程里跑，期限等于调用时剩下的等待预算；采样窗口钉在 SAMPLE_S（函数收 seconds 时）。
@@ -143,7 +169,7 @@ def gate_probe(module: Any) -> Probe | None:
     label = "loadgate.quiet_for_timing" if name == "quiet_for_timing" else "loadgate.cap admit"
 
     def probe(limit: float) -> tuple[bool, str] | None:
-        out = call_with_deadline([sys.executable, "-I", "-c", _PROBE_SCRIPT, str(path), name, str(SAMPLE_S)], limit)
+        out = call_with_deadline([sys.executable, "-I", "-c", _PROBE_SCRIPT, str(path), name, str(SAMPLE_S)], limit, stopped)
         if out is None:
             return None
         ok, info = json.loads(out.strip().splitlines()[-1])
@@ -168,6 +194,8 @@ class QuietGate:
         if self.primary is not None:
             try:
                 result = self.primary(limit)
+            except ProbeStopped:
+                raise
             except Exception as exc:
                 print(f"{LOADGATE_ENV} 的安静判断出错（{exc!r}），这次 runner 改用公开回退。", flush=True)
                 self.primary = None
@@ -189,7 +217,11 @@ class QuietGate:
         checks = 0
         while self.remaining - (clock() - started) >= SAMPLE_S:
             checks += 1
-            quiet, self.last_seen = self.check(self.remaining - (clock() - started))
+            try:
+                quiet, self.last_seen = self.check(self.remaining - (clock() - started))
+            except ProbeStopped:
+                self.remaining = max(0.0, self.remaining - (clock() - started))
+                return False
             spent = clock() - started
             if quiet:
                 self.remaining = max(0.0, self.remaining - spent)
@@ -217,9 +249,12 @@ def env_gate() -> Any | None:
     return load_gate(path) if path else None
 
 
-def make_gate(module: Any | None, *, budget: float | None = None) -> QuietGate:
-    """module 是已经加载的 loadgate，None 表示没有，用公开回退。budget 默认读 GXR_QUIET_MAX_WAIT_S。"""
-    primary = gate_probe(module) if module is not None else None
+def make_gate(module: Any | None, *, budget: float | None = None, stopped: Callable[[], bool] = _never) -> QuietGate:
+    """module 是已经加载的 loadgate，None 表示没有，用公开回退。budget 默认读 GXR_QUIET_MAX_WAIT_S。
+
+    stopped 是 runner 的停止状态：探针跑着的时候收到 SIGINT / SIGTERM，马上杀掉探针、wait() 返回 False。
+    """
+    primary = gate_probe(module, stopped) if module is not None else None
     if module is not None and primary is None:
         print(f"{LOADGATE_ENV} 里没有 quiet_for_timing 或 cap，安静判断改用公开回退。", flush=True)
     if budget is None:
