@@ -249,6 +249,28 @@ pub fn format_py_g(x: f64) -> String {
     out
 }
 
+pub fn format_shutter_text(shutter: Option<f64>) -> Result<String, CoreError> {
+    match shutter {
+        None => Ok(String::new()),
+        Some(s) if s >= 1.0 => Ok(format!("{}s", format_py_g(s))),
+        Some(s) => {
+            let inv = 1.0 / s;
+            if !inv.is_finite() {
+                return Err(CoreError::new(
+                    "OverflowError",
+                    "cannot convert float infinity to integer",
+                ));
+            }
+            let denom = inv.round_ties_even();
+            if denom < 1.0 {
+                Ok("1/1s".to_string())
+            } else {
+                Ok(format!("1/{denom:.0}s"))
+            }
+        }
+    }
+}
+
 /// Port of `gxr_studio/finish/meta_text.py:44 photo_meta`.
 ///
 /// Mirrors `meta_text._exif` behavior on corrupt inputs: if `open_image` fails, `sub` is empty and
@@ -307,24 +329,7 @@ pub fn photo_meta_from_bytes(
 
     let shutter = ratio(sub.get(&33434));
     let aperture = ratio(sub.get(&33437));
-    let shutter_text = match shutter {
-        None => String::new(),
-        Some(s) if s >= 1.0 => format!("{}s", format_py_g(s)),
-        Some(s) => {
-            let denom = (1.0 / s).round_ties_even();
-            #[allow(clippy::cast_possible_truncation)]
-            let denom_i = if denom.is_finite() && denom >= 1.0 {
-                if denom > (i64::MAX as f64) {
-                    i64::MAX
-                } else {
-                    denom as i64
-                }
-            } else {
-                1
-            };
-            format!("1/{denom_i}s")
-        }
-    };
+    let shutter_text = format_shutter_text(shutter)?;
 
     let raw_lens = parsed.lens.unwrap_or_default();
     let lens = py_strip(raw_lens.strip_prefix("RICOH ").unwrap_or(&raw_lens)).to_string();
@@ -454,5 +459,26 @@ mod tests {
             Some(2.8)
         );
         assert_eq!(ratio(Some(&ExifValue::Bytes(b"\xa02.8".to_vec()))), None);
+    }
+
+    #[test]
+    fn format_shutter_text_handles_large_denominators_and_overflow() {
+        assert_eq!(format_shutter_text(None).unwrap(), "");
+        assert_eq!(format_shutter_text(Some(2.5)).unwrap(), "2.5s");
+        assert_eq!(format_shutter_text(Some(0.4)).unwrap(), "1/2s");
+        assert_eq!(format_shutter_text(Some(0.004)).unwrap(), "1/250s");
+        assert_eq!(
+            format_shutter_text(Some(1e-20)).unwrap(),
+            "1/100000000000000000000s"
+        );
+        let s300 = format_shutter_text(Some(1e-300)).unwrap();
+        assert_eq!(
+            s300,
+            "1/999999999999999903803069407426113968898218766118103141789833949572356552411722264192305659040010509526872994217248819197070144216063125530186267630296136203765329090687113225440746189048800695790727969805197112921161540803823920273299782054992133678869364753954248541633605124057805104488924519071744s"
+        );
+        assert_eq!(
+            format_shutter_text(Some(1e-320)).unwrap_err().kind,
+            "OverflowError"
+        );
     }
 }

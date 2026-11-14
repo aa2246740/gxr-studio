@@ -12,6 +12,7 @@ import json
 import math
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,7 @@ from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
 from gxr_studio.finish.meta_text import photo_meta
 from gxr_studio.meta import dng_preview_image, read_dng_meta, read_jpeg_meta
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
-from support.export_meta_cases import make_jpeg_bytes, nonfinite_edge_cases, sol_mtime_tz_cases, synthetic_edge_cases
+from support.export_meta_cases import make_jpeg_bytes, make_tiff_doc, nonfinite_edge_cases, sol_mtime_tz_cases, synthetic_edge_cases
 from support.wasm_check import PKG, run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
@@ -515,6 +516,12 @@ def test_errors_match_core_error_kinds(tmp_path: Path) -> None:
         code, payload = run_json(bad_args)
         err = error_of(code, payload)
         assert isinstance(err, CoreCliError) and err.kind == expected_kind, (bad_args, err)
+
+    subnormal_shutter = tmp_path / "shutter_inf.jpg"
+    subnormal_shutter.write_bytes(_make_jpeg_bytes(exif_payload=make_tiff_doc([], [(33434, 12, 1, struct.pack("<d", 1e-320))])))
+    code, payload = run_json(["export-meta-photo", "--jpg", str(subnormal_shutter), "--name", "ovf"])
+    err = error_of(code, payload)
+    assert isinstance(err, CoreCliError) and err.kind == "OverflowError", err
 
 
 def test_mtime_rounding_sol_cases(tmp_path: Path) -> None:

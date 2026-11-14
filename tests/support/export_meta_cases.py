@@ -502,6 +502,13 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
     ]
     ifd65535_entries.extend([(30000, 4, 1, struct.pack("<I", 1))] * (65535 - 4))
     cases["ifd-65535.dng"] = (b"II*\x00\x08\x00\x00\x00" + pack_ifd(ifd65535_entries, 0, "<"), "dng")
+
+    # 12. Sol r1 huge double shutter denominators (> i64::MAX)
+    for idx, val in enumerate((1e-20, 1e-300, 0.004, 0.4, 2.5), start=105):
+        cases[f"shutter-double-{idx}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(33434, 12, 1, struct.pack("<d", val))])),
+            "jpg",
+        )
     return cases
 
 
