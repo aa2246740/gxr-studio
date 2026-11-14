@@ -185,6 +185,24 @@ pub fn render(
     render_recipe(&dng, &display)
 }
 
+/// The largest integer every caller can pass exactly: a JavaScript number is an f64.
+const MAX_EXACT: f64 = 9_007_199_254_740_992.0;
+
+/// The model ISO as a number, from the CLI's text or a JavaScript number: finite, an
+/// integer, and within ±2**53, checked before it is narrowed to `i64` (UNIT-COMMON
+/// "WASM number parameters").
+pub fn iso_from_number(value: f64) -> Result<i64, CoreError> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(CoreError::new("bad_request", "iso 要是整数"));
+    }
+    if value.abs() > MAX_EXACT {
+        return Err(CoreError::new("bad_request", "iso 超出范围"));
+    }
+    // An integer of magnitude at most 2**53 converts to i64 exactly.
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(value as i64)
+}
+
 /// The decoded pictures and the LUT `source-color-image` may need.
 #[derive(Default)]
 pub struct Pictures<'a> {
@@ -291,6 +309,24 @@ mod tests {
         let deep = format!("{}{}", "[".repeat(129), "]".repeat(129));
         let err = pack_from_index(deep.as_bytes(), b"").unwrap_err();
         assert_eq!((err.kind, err.message.as_str()), ("json", "JSON 嵌套太深"));
+    }
+
+    #[test]
+    fn iso_numbers_are_checked_before_narrowing() {
+        for (v, want) in [
+            (4_294_967_297.0, Ok(4_294_967_297)),
+            (-1.0, Ok(-1)),
+            (9_007_199_254_740_992.0, Ok(9_007_199_254_740_992)),
+            (200.0, Ok(200)),
+            (9_007_199_254_740_994.0, Err("iso 超出范围")),
+            (f64::NAN, Err("iso 要是整数")),
+            (f64::INFINITY, Err("iso 要是整数")),
+            (f64::NEG_INFINITY, Err("iso 要是整数")),
+            (1.5, Err("iso 要是整数")),
+        ] {
+            let got = iso_from_number(v).map_err(|e| e.message);
+            assert_eq!(got, want.map_err(str::to_string), "{v}");
+        }
     }
 
     #[test]

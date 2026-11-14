@@ -13,7 +13,8 @@
 
 use gxr_color::encode_npy;
 use gxr_export::source::{
-    CalibPack, Pictures, Request, color_image_json, plan_json, render, selection_json,
+    CalibPack, Pictures, Request, color_image_json, iso_from_number, plan_json, render,
+    selection_json,
 };
 use gxr_raw::{CoreError, Image, Json};
 
@@ -152,9 +153,11 @@ fn run_render(args: &[String]) -> Result<Output, Failure> {
     let unit = option(args, "--unit")?;
     let pack = read_pack(option(args, "--calib")?)?;
     let iso_text = option(args, "--iso")?;
-    let iso: i64 = iso_text
+    // Read as a number, then the same check WASM applies to a JavaScript number.
+    let iso_number: f64 = iso_text
         .parse()
         .map_err(|_| Failure::Usage(format!("bad --iso {iso_text:?}")))?;
+    let iso = iso_from_number(iso_number)?;
     let tones = maybe_bytes(args, "--adjust")?.unwrap_or_else(|| b"{}".to_vec());
     let out = option(args, "--out")?;
     let data = read(path)?;

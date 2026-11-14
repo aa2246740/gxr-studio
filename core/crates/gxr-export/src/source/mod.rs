@@ -14,7 +14,8 @@ mod render;
 mod select;
 
 pub use api::{
-    Pictures, Request, color_image_json, pack_from_index, plan_json, render, selection_json,
+    Pictures, Request, color_image_json, iso_from_number, pack_from_index, plan_json, render,
+    selection_json,
 };
 pub use fail::{Fail, Labels, NO_RAW};
 pub use input::{Edit, RecipeSel, Shot, parse_edit, parse_shot};

@@ -7,7 +7,7 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_export::source::{Request, pack_from_index, plan_json, render};
+use gxr_export::source::{Request, iso_from_number, pack_from_index, plan_json, render};
 use gxr_raw::{CoreError, error_json};
 
 fn rejected(err: &CoreError) -> JsValue {
@@ -59,21 +59,14 @@ pub fn source_render(
     unit: &str,
     calib_index_json: &[u8],
     calib_bytes: &[u8],
-    iso: i32,
+    iso: f64,
     adjust_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
+    // A JavaScript number arrives as f64 and is checked before narrowing, like the CLI's text.
+    let iso = iso_from_number(iso).map_err(|e| rejected(&e))?;
     let pack = pack_from_index(calib_index_json, calib_bytes).map_err(|e| rejected(&e))?;
-    let rgb = render(
-        dng,
-        name,
-        entry,
-        stock04,
-        unit,
-        &pack,
-        i64::from(iso),
-        adjust_json,
-    )
-    .map_err(|e| rejected(&e))?;
+    let rgb = render(dng, name, entry, stock04, unit, &pack, iso, adjust_json)
+        .map_err(|e| rejected(&e))?;
     let too_big = || {
         rejected(&CoreError::raw_decode(
             "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",

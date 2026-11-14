@@ -1,6 +1,7 @@
 // 导出底图：source_plan 和 source_render。每个输入是一份 JSON，列出这一例要用的文件（测试现场生成）。
 // plan:   {"kind": "plan", "shot", "edit", "dat"?, "library"?, "entry"?, "calib"?, "binding"?}
 // render: {"kind": "render", "dng", "entry", "stock", "unit", "calib", "iso", "adjust"?, "out"}
+// iso 可以写成字符串（"NaN"、"Infinity"、"4294967297"）：CLI 收到原文，WASM 收到 Number(原文)。
 // calib 是一个文件夹：CLI 读里面每个文件，WASM 按文件名排序后拼成一段字节加清单。
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -66,7 +67,7 @@ export function cases(inputs) {
             spec.unit,
             index,
             blob,
-            spec.iso,
+            typeof spec.iso === 'string' ? Number(spec.iso) : spec.iso,
             spec.adjust ? bytes(spec.adjust) : empty,
           );
           if (spec.timing) console.log(`source_render ${basename(spec.dng)} ${(performance.now() - started).toFixed(0)} ms`);

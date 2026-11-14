@@ -389,6 +389,14 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - 错误：`NoRaw` 报 `no_raw`；`RenderUnavailable` 带 `state`；`EditError` 带 `detail`；`RawDecodeError` 按 `export_finish` 改成 `raw_unreadable`（有 JPG）或 `no_jpg_source`，`detail` 是「没有全尺寸传感器数据，也没有更小的预览。」加原因。
 - `render_full` 在分配输出之前做和 `gxr_raw::render_full` 一样的裁切窗口、白平衡和马赛克检查（`check_crop_window` 在 `gxr-raw` 里是私有的，这里照抄了同样的判断和文案），所以坏文件在配方渲染和中性渲染上报同一个错。尺寸用带检查的 u64，元素数不超过 2^32−1，输出缓冲区可失败地申请。
 
-WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_bytes, binding)` 返回和 CLI 一样的 JSON（带换行）；`source_render(dng, name, entry, stock04, unit, calib_index_json, calib_bytes, iso, adjust_json)` 返回 `[h u32][w u32][rgb]`。校准包的格式照 `frame_layout` 的字体：`[[名字, 字节数], …]` 加拼在一起的文件。空的 `dat`、`library`、`entry` 表示没给。比较用例在 `mobile/scripts/wasm_cases/source.mjs`。
+WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_bytes, binding)` 返回和 CLI 一样的 JSON（带换行）；`source_render(dng, name, entry, stock04, unit, calib_index_json, calib_bytes, iso, adjust_json)` 返回 `[h u32][w u32][rgb]`。校准包的格式照 `frame_layout` 的字体：`[[名字, 字节数], …]` 加拼在一起的文件。比较用例在 `mobile/scripts/wasm_cases/source.mjs`。
+
+输入检查（Sol r1 之后），CLI 和 WASM 走同一段代码：
+
+- 0 字节就是没给：空的 `dat`、`library`、`entry` 当作缺省，空的调整当作 `{}`。CLI 的空文件和 WASM 的空数组结果一样。
+- 条目和原厂 04 必须正好 552 字节，在求哈希、规划或渲染之前检查，错误是 `value`／`entry must be 552 bytes`。
+- 解码好的相机 JPG 和内嵌预览在公共 `color_image` 入口先查：宽高大于 0、3 个通道、`h*w*3` 用带检查的 u64 算且不超过 2^32−1、字节数正好相符，然后才复制或套 LUT。
+- 调整解析之后再查有限值：曝光是 NaN 或 ±Infinity 时报 `bad_adjust`／「请求无效。请刷新页面后重试。」，曲线点非有限时报 `bad_curve`，文案和 Python 的 `parse_adjust`、`_parse_points` 一样。
+- WASM 的 `iso` 按 f64 接收（CLI 把文本读成同一个数），先查有限、是整数、绝对值不超过 2^53，再变成整数；`NaN`、`Infinity`、`1.5` 报 `bad_request`／`iso 要是整数`，超过 2^53 报 `iso 超出范围`。
 
 对拍在 `tests/test_core_parity_export_source.py`：相机数据用上层项目的 g127 DAT（`GXR_STUDIO_TEST_PARENT`），校准包是合成的（`color_fixtures` 生成，用 `import_calibration` 写），机主的校准来源在本机时另跑 3 张，不打印内容。配方渲染、标签、`from_raw`、错误都要求完全相同；LUT 照 lut 单元的 Gate A / Gate B（顺序 oracle、边界点、机械归因）。

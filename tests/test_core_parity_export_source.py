@@ -484,7 +484,48 @@ def review_r1_specs(tmp: Path, edit: Path, base: dict[str, Any], render: dict[st
         a = tmp / f"tones-{name}.json"
         a.write_text(text, encoding="utf-8")
         out[f"r1-render-tones-{name}"] = {**ok, "adjust": str(a), "out": str(tmp / f"r1-t-{name}.npy")}
+    # 5. WASM number parameters: iso arrives as an f64 and is checked before narrowing.
+    for text in ISO_NUMBERS:
+        out[f"r1-render-iso-{text}"] = {**ok, "iso": text, "out": str(tmp / f"r1-iso-{text}.npy")}
     return out
+
+
+ISO_NUMBERS = ("4294967297", "-1", "9007199254740992", "NaN", "Infinity", "-Infinity", "1.5")
+
+
+@needs_dat
+def test_iso_numbers(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    """UNIT-COMMON "WASM number parameters": 2**32+1, -1 and 2**53 pick a model; NaN, ±Infinity, 1.5 fail."""
+    h = homes["all"]
+    entry, stock = tmp_path / "e.bin", tmp_path / "s.bin"
+    entry.write_bytes(h.entry(RecipeSel("jlaunch", 3)) or b"")
+    stock.write_bytes(h.entry(RecipeSel("jlaunch", 4)) or b"")
+    args = [
+        "source-render",
+        "--dng",
+        str(files["ok"]),
+        "--entry",
+        str(entry),
+        "--stock",
+        str(stock),
+        "--unit",
+        "jlaunch",
+        "--calib",
+        str(h.calib),
+    ]
+    pics: dict[str, np.ndarray] = {}
+    for text in ("200", "1600", *ISO_NUMBERS):
+        out = tmp_path / "o.npy"
+        code, payload = run_json([*args, "--iso", text, "--out", str(out)])
+        if text in ("NaN", "Infinity", "-Infinity", "1.5"):
+            assert (code, payload) == (2, {"error": {"kind": "bad_request", "message": "iso 要是整数"}}), (text, payload)
+        else:
+            assert code == 0, (text, payload)
+            pics[text] = np.load(out)
+    assert np.array_equal(pics["4294967297"], pics["1600"]) and np.array_equal(pics["9007199254740992"], pics["1600"])
+    assert np.array_equal(pics["-1"], pics["200"])
+    code, payload = run_json([*args, "--iso", "9007199254740994", "--out", str(tmp_path / "o.npy")])
+    assert (code, payload) == (2, {"error": {"kind": "bad_request", "message": "iso 超出范围"}}), payload
 
 
 NON_FINITE_TONES = {
