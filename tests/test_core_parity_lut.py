@@ -743,7 +743,7 @@ def test_scene_xyz_synthetic_and_errors(tmp_path: Path) -> None:
     _check_scene_xyz(tmp_path / "valid.dng", bad_codes, tmp_path / "bad-colour.npy")
 
 
-@pytest.mark.parametrize("path", REAL, ids=_real_id if REAL else None)
+@pytest.mark.parametrize("path", samples.real_params(REAL, f"no DNGs under {CAPTURES}"), ids=_real_id if REAL else None)
 def test_scene_xyz_real_dngs(path: Path, tmp_path: Path) -> None:
     require_cli()
     codes = np.array([[100.0, 2000.0, 500.0], [420.0, 420.0, 420.0], [4095.0, 4095.0, 4095.0]], dtype=np.float64)

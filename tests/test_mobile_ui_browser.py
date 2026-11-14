@@ -79,6 +79,7 @@ def _pairs() -> list[Path]:
 def test_mobile_ui_pick_grid_edit_and_bad_file(tmp_path: Path) -> None:
     files = _pairs()
     # 地基用的那份样本只有 4 对。够 6 对就取 6 对，不够就用现有的。
+    samples.need_sample(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
     _need(MODULES.is_dir(), "mobile/node_modules is missing")

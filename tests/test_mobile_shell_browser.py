@@ -113,6 +113,7 @@ def _wait_http(port: int, proc: subprocess.Popen[str]) -> None:
 
 def test_mobile_shell_autotest(tmp_path: Path) -> None:
     dngs = sorted(path for path in SAMPLES.iterdir() if path.is_file() and path.suffix.upper() == ".DNG") if SAMPLES.is_dir() else []
+    samples.need_sample(bool(dngs), f"no DNGs in {SAMPLES}")
     _need(bool(dngs), f"no DNGs in {SAMPLES}")
     _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
     _need(shutil.which("pnpm") is not None and shutil.which("node") is not None, "pnpm and node are required")

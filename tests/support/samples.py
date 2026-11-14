@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 
@@ -67,3 +67,22 @@ def fail_if_marked(item: pytest.Item) -> None:
     mark = item.get_closest_marker(REQUIRED_MARK)
     if mark is not None:
         missing(str(mark.kwargs["reason"]))
+
+
+def need_sample(present: bool, reason: str) -> None:
+    """Inside a test: under ``GXR_REQUIRE_SAMPLES=1`` a missing sample fails; otherwise nothing changes.
+
+    Callers keep their own skip or ``GXR_REQUIRE_CORE`` logic after this call.
+    """
+    if not present and samples_required():
+        missing(reason)
+
+
+def real_params(values: list[Any], reason: str) -> list[Any]:
+    """Parametrize values found on disk. An empty list stays empty by default (pytest's ``NOTSET`` skip).
+
+    Under ``GXR_REQUIRE_SAMPLES=1`` an empty list becomes one ``NOTSET`` case that fails at setup with ``reason``.
+    """
+    if values or not samples_required():
+        return values
+    return [pytest.param(None, marks=needs(False, reason), id="NOTSET")]

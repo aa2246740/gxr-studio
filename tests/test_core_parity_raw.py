@@ -175,7 +175,7 @@ def test_real_sample_set() -> None:
     assert REAL
 
 
-@pytest.mark.parametrize("path", REAL, ids=_real_id if REAL else None)
+@pytest.mark.parametrize("path", samples.real_params(REAL, f"no DNGs under {CAPTURES}"), ids=_real_id if REAL else None)
 def test_real_describe_summary_mosaic_and_half(path: Path, tmp_path: Path) -> None:
     require_cli()
     py_desc, py_err = _python_describe(path)
@@ -758,7 +758,7 @@ _REAL_RENDER = REAL[::4] if len(REAL) >= 10 else REAL
 assert len([p for p in _REAL_RENDER if "contrib" not in p.as_posix()]) >= 10 or not REAL
 
 
-@pytest.mark.parametrize("path", _REAL_RENDER, ids=_real_id if _REAL_RENDER else None)
+@pytest.mark.parametrize("path", samples.real_params(_REAL_RENDER, f"no DNGs under {CAPTURES}"), ids=_real_id if _REAL_RENDER else None)
 def test_real_demosaic_strip_and_neutral_match_python(path: Path, tmp_path: Path) -> None:
     require_cli()
     expect_neutral(path, tmp_path)

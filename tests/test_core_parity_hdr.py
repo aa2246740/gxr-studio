@@ -627,7 +627,7 @@ def test_real_pair_set() -> None:
     assert decodable >= 5
 
 
-@pytest.mark.parametrize("pair", REAL, ids=[p[1].name for p in REAL])
+@pytest.mark.parametrize("pair", samples.real_params(REAL, f"no RAW+JPG pairs under {hp.CAPTURES}"), ids=[p[1].name for p in REAL] or None)
 def test_real_pair_flow(tmp_path: Path, pair: tuple[Path, Path]) -> None:
     jpg, dng = pair
     result = hp.flow(tmp_path, jpg.read_bytes(), dng, dng.stem)

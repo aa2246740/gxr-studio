@@ -19,6 +19,7 @@ import e0_support as t
 from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import store
 from gxr_studio.engine import knobs, menu
+from support import samples
 
 ENGINE = t.STUDIO / "src/gxr_studio/engine"
 
@@ -84,7 +85,7 @@ def test_the_golden_list_notices_a_one_step_change(dat, data, cases, monkeypatch
 
 def test_studio_engine_matches_the_research_code_byte_for_byte(dat, data, cases):
     if not (t.KNOBS_SRC / "knobs.py").is_file():
-        pytest.skip("研究代码不在本机")
+        samples.missing("研究代码不在本机")
     r_knobs, r_menu = t.research_knobs_and_menu()
     r_data = r_menu.load()
     assert r_data == data
@@ -103,7 +104,7 @@ def test_studio_engine_matches_the_research_code_byte_for_byte(dat, data, cases)
 
 def test_menu_requests_equal_the_research_menu(data, cases):
     if not (t.KNOBS_SRC / "menu.py").is_file():
-        pytest.skip("研究代码不在本机")
+        samples.missing("研究代码不在本机")
     r_knobs, r_menu = t.research_knobs_and_menu()
     for c in (c for c in cases if c["kind"] == "menu"):
         a = menu.request(data, c["unit"], c["slot"], c["levels"])
@@ -177,7 +178,7 @@ def test_copies_equal_the_research_sources():
     for rel, meta in prov["files"].items():
         src = t.REPO / meta["source"]
         if not src.is_file():
-            pytest.skip("研究目录不在本机")
+            samples.missing("研究目录不在本机")
         assert hashlib.sha256(src.read_bytes()).hexdigest() == meta["source_sha256"], f"{meta['source']} 已变动"
         if meta["kind"] == "byte-identical copy":
             assert (ENGINE / rel).read_bytes() == src.read_bytes()
@@ -204,7 +205,7 @@ def test_ast_segments_equal_the_originals():
         meta = prov["files"][rel]
         src = t.REPO / meta["source"]
         if not src.is_file():
-            pytest.skip("研究目录不在本机")
+            samples.missing("研究目录不在本机")
         original = nodes(src)
         for name, dump in nodes(ENGINE / rel).items():
             if name in original:
