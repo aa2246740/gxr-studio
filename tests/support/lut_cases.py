@@ -67,6 +67,223 @@ IDENTIFY_CASES: list[tuple[str, str, str, Any]] = [
 ]
 
 
+THRESHOLD_CASES: list[tuple[str, bool, float, dict[str, Any]]] = [
+    (
+        "case-0-1",
+        False,
+        0.000859710772678478,
+        {
+            "input_space": "rec709",
+            "output_space": "gamma24",
+            "input_gamut": "vgamut",
+            "output_gamut": "rec2020",
+            "input_range": "legal",
+            "output_range": "full",
+        },
+    ),
+    (
+        "case-0-3",
+        False,
+        -0.0006469059803890353,
+        {
+            "input_space": "srgb",
+            "output_space": "rec709",
+            "input_gamut": "sgamut3",
+            "output_gamut": "sgamut3cine",
+            "input_range": "legal",
+            "output_range": "legal",
+        },
+    ),
+    (
+        "case-0-5",
+        False,
+        0.0010696582373039426,
+        {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"},
+    ),
+    (
+        "case-0-7",
+        False,
+        8.436415748521388e-05,
+        {
+            "input_space": "vlog",
+            "output_space": "rec709",
+            "input_gamut": "vgamut",
+            "output_gamut": "sgamut3",
+            "input_range": "legal",
+            "output_range": "legal",
+        },
+    ),
+    (
+        "case-0-8",
+        False,
+        -0.001055648360661672,
+        {
+            "input_space": "slog3",
+            "output_space": "gamma24",
+            "input_gamut": "sgamut3cine",
+            "output_gamut": "rec2020",
+            "input_range": "full",
+            "output_range": "legal",
+        },
+    ),
+    (
+        "case-0-9",
+        False,
+        -0.001037939657389417,
+        {
+            "input_space": "applelog",
+            "output_space": "linear",
+            "input_gamut": "rec2020",
+            "output_gamut": "vgamut",
+            "input_range": "legal",
+            "output_range": "full",
+        },
+    ),
+    (
+        "case-1-0",
+        True,
+        -0.0015950376688570868,
+        {
+            "input_space": "srgb",
+            "output_space": "srgb",
+            "input_gamut": "rec2020",
+            "output_gamut": "rec709",
+            "input_range": "full",
+            "output_range": "full",
+        },
+    ),
+    (
+        "case-1-1",
+        True,
+        -0.0007597779766745206,
+        {
+            "input_space": "rec709",
+            "output_space": "gamma24",
+            "input_gamut": "vgamut",
+            "output_gamut": "rec2020",
+            "input_range": "legal",
+            "output_range": "full",
+        },
+    ),
+    (
+        "case-1-2",
+        True,
+        -0.000382188103990858,
+        {
+            "input_space": "gamma24",
+            "output_space": "srgb",
+            "input_gamut": "sgamut3cine",
+            "output_gamut": "vgamut",
+            "input_range": "full",
+            "output_range": "legal",
+        },
+    ),
+    (
+        "case-1-3",
+        True,
+        -3.511699036318982e-05,
+        {
+            "input_space": "srgb",
+            "output_space": "rec709",
+            "input_gamut": "sgamut3",
+            "output_gamut": "sgamut3cine",
+            "input_range": "legal",
+            "output_range": "legal",
+        },
+    ),
+    (
+        "case-1-4",
+        True,
+        -5.111796098881682e-05,
+        {
+            "input_space": "rec709",
+            "output_space": "linear",
+            "input_gamut": "rec709",
+            "output_gamut": "rec2020",
+            "input_range": "full",
+            "output_range": "legal",
+        },
+    ),
+    (
+        "case-1-5",
+        True,
+        -0.0006887639229434095,
+        {"input_space": "gamma24", "output_space": "rec709", "input_range": "legal", "output_range": "legal", "output_gamut": "rec2020"},
+    ),
+    (
+        "case-1-6",
+        True,
+        0.00015799218710662035,
+        {
+            "input_space": "llog",
+            "output_space": "srgb",
+            "input_gamut": "rec2020",
+            "output_gamut": "rec709",
+            "input_range": "full",
+            "output_range": "full",
+        },
+    ),
+    (
+        "case-1-7",
+        True,
+        0.00048005859595542043,
+        {
+            "input_space": "vlog",
+            "output_space": "rec709",
+            "input_gamut": "vgamut",
+            "output_gamut": "sgamut3",
+            "input_range": "legal",
+            "output_range": "legal",
+        },
+    ),
+    (
+        "case-1-9",
+        True,
+        0.0009581451846035673,
+        {
+            "input_space": "applelog",
+            "output_space": "linear",
+            "input_gamut": "rec2020",
+            "output_gamut": "vgamut",
+            "input_range": "legal",
+            "output_range": "full",
+        },
+    ),
+]
+
+
+BAD_CUBE_CASES: list[tuple[str, str]] = [
+    ("hello\n", "line 1: unsupported directive hello"),
+    ("LUT_3D_SIZE 2\n0 0 0\n", "LUT 数据行数与声明不符"),
+    ("LUT_3D_SIZE 1\n0 0 0\n", "line 1: LUT size out of range"),
+    ("LUT_3D_SIZE 130\n", "line 1: LUT size out of range"),
+    ("LUT_1D_SIZE 65537\n", "line 1: LUT size out of range"),
+    ("LUT_3D_SIZE 18446744073709551615\n", "line 1: LUT size out of range"),
+    (f"LUT_3D_SIZE {'9' * 200}\n", "line 1: LUT size out of range"),
+    ("LUT_3D_SIZE -5\n", "line 1: LUT size out of range"),
+    ("LUT_3D_SIZE 1.5\n", "invalid literal for int()"),
+    ("LUT_3D_SIZE _2\n", "invalid literal for int()"),
+    ("LUT_3D_SIZE 2\n0 0 1_.0\n", "line 2: unsupported directive 0"),
+    ("LUT_3D_SIZE 2\nLUT_3D_SIZE 2\n" + "0 0 0\n" * 8, "line 2: duplicate or late header"),
+    ("LUT_3D_SIZE 2\n" + "0 0 nan\n" * 8, "line 2: expected three finite numbers"),
+    ("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 inf\n" + "0 0 0\n" * 8, "line 2: non-finite header"),
+    ("LUT_3D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n" + "0 0 0\n" * 8, "DOMAIN_MAX"),
+    ("LUT_3D_SIZE 2\nLUT_3D_INPUT_RANGE 1 0\n" + "0 0 0\n" * 8, "INPUT_RANGE"),
+    ("LUT_3D_SIZE 2\nLUT_1D_INPUT_RANGE 0.5 0.5\n" + "0 0 0\n" * 8, "INPUT_RANGE"),
+    ("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nLUT_3D_INPUT_RANGE 0 1\n" + "0 0 0\n" * 8, "DOMAIN"),
+    ('TITLE "unclosed\nLUT_3D_SIZE 2\n' + "0 0 0\n" * 8, "No closing quotation"),
+]
+
+
+def threshold_cube_text(offset: float, shaper: bool) -> str:
+    ramps = np.linspace(0, 1, 9)
+    nodes = np.array([[r, g, b] for b in ramps for g in ramps for r in ramps])
+    rows = np.clip(nodes * [1.05, 0.96, 0.91] + [0.02 + offset, -0.01, 0.03], 0, 1)
+    header = "LUT_1D_SIZE 5\nLUT_3D_SIZE 9\n" if shaper else "LUT_3D_SIZE 9\n"
+    shape = "0 0 0\n0.20 0.22 0.24\n0.47 0.50 0.53\n0.76 0.78 0.80\n1 1 1\n" if shaper else ""
+    return header + shape + "\n".join(" ".join(format(float(x), ".17g") for x in row) for row in rows) + "\n"
+
+
 def space_depth_text(kind: str, depth: int) -> str:
     """Build a RenderSpec JSON with `extra` nested to `depth` levels (root object is level 1)."""
     if kind == "array":
@@ -139,6 +356,16 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
 
     inv2 = tmp_path / "inv2.cube"
     inv2.write_text(cube_text(lambda x: 1 - x, size=2, title="synthetic"), encoding="utf-8")
+    th_rgb_npy = tmp_path / "th_rgb.npy"
+    th_rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
+    np.save(th_rgb_npy, th_rgb)
+    th_map = {lbl: (sh, off, sp) for lbl, sh, off, sp in THRESHOLD_CASES}
+    th_01_cube = tmp_path / "case-0-1.cube"
+    th_01_cube.write_text(threshold_cube_text(th_map["case-0-1"][1], th_map["case-0-1"][0]), encoding="utf-8")
+    th_10_cube = tmp_path / "case-1-0.cube"
+    th_10_cube.write_text(threshold_cube_text(th_map["case-1-0"][1], th_map["case-1-0"][0]), encoding="utf-8")
+    th_14_cube = tmp_path / "case-1-4.cube"
+    th_14_cube.write_text(threshold_cube_text(th_map["case-1-4"][1], th_map["case-1-4"][0]), encoding="utf-8")
     manifests: list[Path] = [shaper_cube, log_cube, bad_cube, u_size, u_float, uni_size, huge64]
     cases_specs: list[dict[str, Any]] = [
         {"kind": "table", "cube": str(shaper_cube), "space": {"input_space": "srgb", "output_space": "vlog"}},
@@ -173,6 +400,11 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
         {"kind": "identify", "cube": str(inv2), "name": "input_ſRGB.cube"},
         {"kind": "identify", "cube": str(inv2), "name": "input_vlog\nto_srgb.cube"},
         {"kind": "identify", "cube": str(inv2), "name": "input_vlog\nsrgb.cube"},
+        {"kind": "apply_u8", "cube": str(th_01_cube), "space": th_map["case-0-1"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
+        {"kind": "apply_u8", "cube": str(th_10_cube), "space": th_map["case-1-0"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
+        {"kind": "apply_u8", "cube": str(th_14_cube), "space": th_map["case-1-4"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
+        {"kind": "table", "cube": str(th_01_cube), "space": th_map["case-0-1"][2]},
+        {"kind": "table", "cube": str(th_10_cube), "space": th_map["case-1-0"][2]},
         {
             "kind": "apply_u8",
             "cube": str(steep_cube),

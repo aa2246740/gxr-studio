@@ -4,7 +4,7 @@ Gates (UNIT-lut.md / CONVENTIONS §5):
 - errors, sizes, SPACE_IDS, legal flags, identify dicts, _undeclared_choice: exact;
 - float64 outputs (Cube.apply, encode/decode, Target.render, meta floats, scene xyz):
   |a - b| <= 1e-12 * max(1, |a|);
-- uint8 outputs (_apply, display_lut_u8): 0 difference (np.array_equal);
+- uint8 outputs (_apply, display_lut_u8): exact or PORT-WAVE-1 quantisation boundary / platform BLAS rules;
 - log table float32 lattice: exact bits (np.array_equal after dtype assert);
 - scene-xyz: all real DNGs via GXR_STUDIO_TEST_PARENT/captures/, plus synthetic errors.
 """
@@ -31,7 +31,7 @@ from gxr_studio.lut.service import LutService
 from gxr_studio.render.params import EditError
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
-from support.lut_cases import IDENTIFY_CASES, space_depth_text, write_wasm_lut_manifests
+from support.lut_cases import BAD_CUBE_CASES, IDENTIFY_CASES, THRESHOLD_CASES, space_depth_text, threshold_cube_text, write_wasm_lut_manifests
 from support.lut_cases import assert_meta_same as _assert_meta_same
 from support.lut_cases import assert_rel as _assert_rel
 from support.lut_cases import check_scene_xyz as _check_scene_xyz
@@ -42,7 +42,12 @@ from support.lut_oracle import (
     GRADE_OFF,
     THRESHOLD_OFF,
     SeqTarget,
+    assert_table_u8_boundary_gate,
+    assert_u8_boundary_gate,
+    check_threshold_cpu_case,
+    check_threshold_full_table_case,
     fma_render_display_px,
+    make_rust_px_runner,
     seq_apply,
     seq_display_lut_u8,
 )
@@ -169,30 +174,7 @@ def test_parse_variants_bom_cr_title_and_1d_shaper(tmp_path: Path) -> None:
     _assert_rel(py_out, rs_out, label="shaper-tie")
 
 
-@pytest.mark.parametrize(
-    ("text", "expected_prefix"),
-    [
-        ("hello\n", "line 1: unsupported directive hello"),
-        ("LUT_3D_SIZE 2\n0 0 0\n", "LUT 数据行数与声明不符"),
-        ("LUT_3D_SIZE 1\n0 0 0\n", "line 1: LUT size out of range"),
-        ("LUT_3D_SIZE 130\n", "line 1: LUT size out of range"),
-        ("LUT_1D_SIZE 65537\n", "line 1: LUT size out of range"),
-        ("LUT_3D_SIZE 18446744073709551615\n", "line 1: LUT size out of range"),
-        (f"LUT_3D_SIZE {'9' * 200}\n", "line 1: LUT size out of range"),
-        ("LUT_3D_SIZE -5\n", "line 1: LUT size out of range"),
-        ("LUT_3D_SIZE 1.5\n", "invalid literal for int()"),
-        ("LUT_3D_SIZE _2\n", "invalid literal for int()"),
-        ("LUT_3D_SIZE 2\n0 0 1_.0\n", "line 2: unsupported directive 0"),
-        ("LUT_3D_SIZE 2\nLUT_3D_SIZE 2\n" + "0 0 0\n" * 8, "line 2: duplicate or late header"),
-        ("LUT_3D_SIZE 2\n" + "0 0 nan\n" * 8, "line 2: expected three finite numbers"),
-        ("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 inf\n" + "0 0 0\n" * 8, "line 2: non-finite header"),
-        ("LUT_3D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n" + "0 0 0\n" * 8, "DOMAIN_MAX"),
-        ("LUT_3D_SIZE 2\nLUT_3D_INPUT_RANGE 1 0\n" + "0 0 0\n" * 8, "INPUT_RANGE"),
-        ("LUT_3D_SIZE 2\nLUT_1D_INPUT_RANGE 0.5 0.5\n" + "0 0 0\n" * 8, "INPUT_RANGE"),
-        ("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nLUT_3D_INPUT_RANGE 0 1\n" + "0 0 0\n" * 8, "DOMAIN"),
-        ('TITLE "unclosed\nLUT_3D_SIZE 2\n' + "0 0 0\n" * 8, "No closing quotation"),
-    ],
-)
+@pytest.mark.parametrize(("text", "expected_prefix"), BAD_CUBE_CASES)
 def test_bad_cubes_match_errors(tmp_path: Path, text: str, expected_prefix: str) -> None:
     require_cli()
     p = _write_cube(tmp_path, "bad.cube", text)
@@ -333,9 +315,41 @@ def test_target_render_and_apply_u8_parity(
     or_u8 = seq_apply(oracle, rgb, xyz)
     py_u8 = _apply(target, rgb, xyz)
     rs_u8 = run_npy([*cli_args, "--u8"], tmp_path / "out_u8.npy")
-    assert rs_u8.dtype == np.uint8 and or_u8.shape == rs_u8.shape
-    assert np.array_equal(or_u8, rs_u8), f"u8 differs vs oracle ({input_space}->{output_space})"
-    assert np.array_equal(py_u8, rs_u8), f"u8 differs vs python ({input_space}->{output_space})"
+    n_or = assert_u8_boundary_gate(or_u8, rs_u8, or_f64, rs_f64, label=f"or-{input_space}->{output_space}")
+    n_py = assert_u8_boundary_gate(py_u8, rs_u8, py_f64, rs_f64, label=f"py-{input_space}->{output_space}")
+    assert n_or == 0 and n_py == 0
+
+
+def test_quantisation_boundary_gate_rejects_violations() -> None:
+    # 1) diff > 1 rejected; 2) float gap > 1e-12 rejected; 3) adjacent codes away from k+0.5 rejected.
+    with pytest.raises(AssertionError, match="u8 diff > 1"):
+        assert_u8_boundary_gate(np.array([10], np.uint8), np.array([12], np.uint8), np.array([10.5]), np.array([11.5]), label="neg-step2")
+    with pytest.raises(AssertionError, match="1e-12 gate"):
+        assert_u8_boundary_gate(np.array([46], np.uint8), np.array([47], np.uint8), np.array([46.499]), np.array([46.501]), label="neg-gap")
+    with pytest.raises(AssertionError, match="rounded code mismatch"):
+        assert_u8_boundary_gate(
+            np.array([46], np.uint8), np.array([47], np.uint8), np.array([46.4]), np.array([46.4 + 1e-13]), label="neg-nonbound"
+        )
+
+
+@pytest.mark.parametrize(("label", "shaper", "offset", "spec"), THRESHOLD_CASES, ids=[c[0] for c in THRESHOLD_CASES])
+def test_threshold_15_cpu_quantisation_boundary(tmp_path: Path, label: str, shaper: bool, offset: float, spec: dict[str, Any]) -> None:
+    require_cli()
+    check_threshold_cpu_case(tmp_path, label, threshold_cube_text(offset, shaper), spec, _python_target)
+
+
+@pytest.mark.parametrize(
+    ("label", "want_offset", "want_bgr", "want_or_u8", "want_rs_u8"),
+    [("case-0-1", 47724632, (182, 14, 22, 0), 46, 47), ("case-1-0", 139828, (0, 136, 141, 0), 141, 142)],
+)
+def test_threshold_full_256_gpu_tables(
+    tmp_path: Path, label: str, want_offset: int, want_bgr: tuple[int, int, int, int], want_or_u8: int, want_rs_u8: int
+) -> None:
+    require_cli()
+    shaper, offset, spec = next((sh, off, sp) for lbl, sh, off, sp in THRESHOLD_CASES if lbl == label)
+    check_threshold_full_table_case(
+        tmp_path, label, threshold_cube_text(offset, shaper), spec, want_offset, want_bgr, want_or_u8, want_rs_u8, _python_target
+    )
 
 
 def test_blas_gamma24_and_threshold_points(tmp_path: Path) -> None:
@@ -412,18 +426,30 @@ def test_threshold_cube_full_256_gpu_table_and_blas_point(tmp_path: Path) -> Non
     assert error_of(code, payload) is None
     assert json.loads(out_meta.read_text(encoding="utf-8")) == py_meta
     rs_bytes = out_bin.read_bytes()
-    or_arr = np.frombuffer(or_bytes, np.uint8)
-    py_arr = np.frombuffer(py_bytes, np.uint8)
-    rs_arr = np.frombuffer(rs_bytes, np.uint8)
-    assert np.array_equal(or_arr, rs_arr)
+
+    _run_rs_px = make_rust_px_runner(tmp_path, thresh_cube, spec, "px_probe")
+
+    n_or = assert_table_u8_boundary_gate(
+        or_bytes, rs_bytes, ref_render_px=SeqTarget(py_thresh, **spec).render, rust_render_px=_run_rs_px, label="threshold-256-vs-oracle"
+    )
+    assert n_or == 0
     byte_off = (0 * 256 * 256 + 136 * 256 + 141) * 4 + 0  # [b=0, g=136, r=141, c=0] == 139828
-    assert byte_off == 139828 and int(rs_arr[byte_off]) == int(or_arr[byte_off]) == 189
+    assert byte_off == 139828 and rs_bytes[byte_off] == or_bytes[byte_off] == 189
+    blas = frozenset({byte_off}) if sys.platform == "darwin" else frozenset()
+    n_py = assert_table_u8_boundary_gate(
+        py_bytes,
+        rs_bytes,
+        ref_render_px=_python_target(py_thresh, **spec).render,
+        rust_render_px=_run_rs_px,
+        label="threshold-256-vs-python",
+        blas_offsets=blas,
+    )
     if sys.platform == "darwin":
-        diffs = np.flatnonzero(py_arr != rs_arr).tolist()
-        assert diffs == [byte_off], diffs
-        assert int(py_arr[byte_off]) == 188
+        assert n_py == 1 and py_bytes[byte_off] == 188
         fma_t = fma_render_display_px(py_thresh, np.array([141, 136, 0], np.uint8), **spec)
         assert float(fma_t[0]) < 188.5
+    else:
+        assert n_py == 0
     px1 = np.array([[[141, 136, 0]]], dtype=np.uint8)
     assert int(_apply(_python_target(py_thresh, **spec), px1)[0, 0, 0]) == 189
 
@@ -567,12 +593,13 @@ def test_gpu_display_table_with_shaper_matches_python_bytes(tmp_path: Path) -> N
     rs_meta = json.loads(out_meta.read_text(encoding="utf-8"))
     assert rs_meta == py_meta
     rs_bytes = out_bin.read_bytes()
-    assert len(rs_bytes) == 256**3 * 4
-    py_arr = np.frombuffer(py_bytes, np.uint8)
-    rs_arr = np.frombuffer(rs_bytes, np.uint8)
-    if not np.array_equal(py_arr, rs_arr):
-        idx = int(np.flatnonzero(py_arr != rs_arr)[0])
-        pytest.fail(f"display table differs at byte {idx}: python={int(py_arr[idx])} rust={int(rs_arr[idx])}")
+
+    _run_rs_px = make_rust_px_runner(tmp_path, cube_path, spec, "sh_px")
+
+    n_py = assert_table_u8_boundary_gate(
+        py_bytes, rs_bytes, ref_render_px=_python_target(py_cube, **spec).render, rust_render_px=_run_rs_px, label="shaper17-256"
+    )
+    assert n_py == 0
 
 
 @pytest.mark.parametrize(
