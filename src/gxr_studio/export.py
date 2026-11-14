@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image, ImageCms, ImageOps
 
 from . import crop as cropmod
@@ -292,10 +293,8 @@ def _finish(
     raise ExportError("encode_failed", "无法导出。请重试。", str(last))
 
 
-def write_with_exif(data: bytes, source: Path, note: str, *, quality: int, fmt: str) -> bytes:
-    """把成片像素和源照片里能搬走的 EXIF 写在一起。先按方向转正，再写 Orientation=1。"""
-    with Image.open(io.BytesIO(data)) as raw:
-        im = ImageOps.exif_transpose(raw).convert("RGB")
+def source_exif(source: Path, note: str) -> tuple[dict[Any, Any], dict[Any, Any]]:
+    """源照片里能搬走的 EXIF：(主目录 base, EXIF 子目录 sub)。ImageDescription 写成 `note`。读不出来就只带 `note`。"""
     base: dict[Any, Any] = {}
     sub: dict[Any, Any] = {}
     try:
@@ -315,6 +314,22 @@ def write_with_exif(data: bytes, source: Path, note: str, *, quality: int, fmt: 
     except Exception:  # nosec B110  元数据读不出来不挡导出
         pass
     base[270] = note
+    return base, sub
+
+
+def write_rgb_with_exif(rgb: np.ndarray, source: Path, note: str, *, quality: int, fmt: str) -> bytes:
+    """成片像素（已经转正的 uint8 RGB 数组）和源照片的 EXIF 一起编码，只编码这一次。Orientation 写 1。"""
+    base, sub = source_exif(source, note)
+    im = Image.fromarray(np.ascontiguousarray(rgb), "RGB")
+    payload, _size = _finish(im, base, sub, None, ExportOptions(None, quality, fmt))
+    return payload
+
+
+def write_with_exif(data: bytes, source: Path, note: str, *, quality: int, fmt: str) -> bytes:
+    """已经编码好的成片：按它自己的方向转正、解码，再交给 `write_rgb_with_exif`。导出不再走这里（会多编码一次）。"""
+    with Image.open(io.BytesIO(data)) as raw:
+        im = ImageOps.exif_transpose(raw).convert("RGB")
+    base, sub = source_exif(source, note)
     payload, _size = _finish(im, base, sub, None, ExportOptions(None, quality, fmt))
     return payload
 

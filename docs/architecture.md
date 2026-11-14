@@ -39,7 +39,9 @@ LUT 库沿用 `lut.cube` 和 `lut.spaces`，用 `PrivateDir` 和 `durable_write`
 
 预览按导出时的像素算版面：照片的导出尺寸由显卡路径的颜色层换算（`view.gpuExport`），或由服务器出图的 `X-GXR-Scale`（导出的长边是响应里这张图的几倍）换算，边框的最小像素（徕卡水印条至少 64 像素等）因此和导出一致。服务器出图时草稿里的边框、时间戳一律是「没有」，只出照片；`web/assets/stage_finish.js` 把照片放进边框、在叠加的 canvas 上画字、线、标志和日期戳。边框标签的样式卡片同样在浏览器里画（`finish_cards.js`）：底图是舞台上正在显示的画面（显卡读回，或服务器出的图），都没有时才请求一张长边 480 的小图。`finish.compose.finish_unframed` 是 `finish_array` 的前半段；大图和导出走 `finish_array`，除了画布，各样式的导出字节和重构之前相同（`tests/test_finish_compose.py` 核对拆分，重构前后用 10080 种边框和日期戳输入逐字节对过，只有画布不同）。所有边框使用独立的 `output_ratio`，默认 3:4；照片与字幕块按固定方向居中补到所选比例。画布样式与「白边 · 中」重复，已移除。详见 `docs/output-ratio.md`。
 
-HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`container` 按 ISO 21496-1 + Ultra HDR 封装，主图字节不动。导入结束后另起一个 `hdr` 任务生成图库里的 HDR 版本；导出勾选 HDR 时由 `finish.hdr_export` 让 RAW 亮度跟着成片的几何、日期戳和边框走，在导出的 JPEG 上重新算。
+HDR 在 `hdr`：`gain` 从同一张 DNG 算增益图（对不齐就不做），`container` 按 ISO 21496-1 + Ultra HDR 封装，主图字节不动。导入结束后另起一个 `hdr` 任务生成图库里的 HDR 版本；导出勾选 HDR 时由 `finish.hdr_export` 让 RAW 亮度跟着成片的几何、日期戳和边框走，在编码之前的成片像素上重新算。
+
+成片导出只编码一次（`finish.serve.export_finish`）：`render_stage_rgb` 给出转正的 uint8 数组（没有编辑的相机 JPG 是 `load_jpeg` 解码出来的那份），有长边就在数组上 `_fit`（Lanczos），然后 `export.write_rgb_with_exif` 用 `_finish` 的参数写一次 JPEG 或 PNG（质量 ≥ 90 用 4:4:4，否则 4:2:0；优化霍夫曼表；sRGB ICC；源照片能搬走的 EXIF，方向写 1，尺寸写输出尺寸）。HDR 的增益在同一份数组上拟合，不再解码刚写好的 JPEG。以前要先 `encode_jpeg`（4:2:0）、有长边再解码编码一次、最后又解码编码一次，PNG 也先过一遍 JPEG。预览和接口的 `render_stage` 还是对同一份数组 `encode_jpeg` 一次，字节没有变（`tests/test_export_once.py` 拿旧代码的冻结副本 `tests/support/export_once_legacy.py` 逐字节对照）；没有编辑的相机 JPG 原尺寸导出也和以前逐字节相同。
 
 生成前，`hdr.capture` 核对原始文件中双方都有的拍摄时间、秒的小数部分、曝光时间、光圈、ISO、相机型号、镜头和图像唯一 ID。已知字段冲突就记为 `capture_mismatch`，原因 JSON 和导出提示均为“RAW 与 JPG 不是同一次拍摄”。缺失、空白或未知数值不表示相同，仍须通过图像检查；不以文件名、文件修改时间或当前日期补全。相机时钟一致地设在 2000 年也可以正常配对。
 

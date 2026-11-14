@@ -319,7 +319,38 @@ def _scale(shot: dict[str, Any], base_edge: int, made_edge: int | None = None, o
     return f"{full / base_edge * (made_edge or 1) / (out_edge or made_edge or 1):.4f}"
 
 
-def render_stage(
+def _original_labels(shot: dict[str, Any], max_edge: int | None) -> dict[str, str]:
+    return {
+        "kind": "original",
+        "label": "original",
+        "text": "原图",
+        "id": "camera-jpg",
+        "tag": "",
+        "description": "原图",
+        "detail": "",
+        "valid": "",
+        "calibrated": "0",
+        "cache": "miss",
+        "key": "",
+        "scale": _scale(shot, min(full_edge(shot), max_edge or full_edge(shot))),
+    }
+
+
+def _plan(
+    render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, side: dict[str, Any], *, stage: str, base: str
+) -> tuple[Path | None, Any, Any, EditState]:
+    """(成片就是相机 JPG 时它的路径, 边框, 日期戳, 要用的编辑)。没有看得见的编辑、有相机 JPG、底图是自动或相机 JPG，成片就是那张 JPG。"""
+    frame_default, stamp_default = load_defaults(render.home)
+    bare = stage == "original"
+    frame = factory_frame() if bare else resolved_frame(edit.frame, frame_default)
+    stamp = factory_stamp() if bare else resolved_stamp(edit.stamp, stamp_default)
+    bare_edit = EditState() if bare else edit
+    untouched = bare or not has_visible_edit(bare_edit, {} if bare else side, frame, stamp)
+    original = _source_path(lib, shot) if untouched and "jpg" in shot["files"] and base in ("auto", "camera-jpg") else None
+    return original, frame, stamp, bare_edit
+
+
+def render_stage_rgb(
     render: RenderService,
     lib: Library,
     shot: dict[str, Any],
@@ -331,35 +362,35 @@ def render_stage(
     quality: int,
     base: str = "auto",
     track: HdrTrack | None = None,
-) -> tuple[bytes, dict[str, str]]:
-    """`track`：导出 HDR 时跟着成片走的 RAW 亮度层（`hdr_export`），底图一定下来就开始。"""
-    frame_default, stamp_default = load_defaults(render.home)
-    bare = stage == "original"
-    frame = factory_frame() if bare else resolved_frame(edit.frame, frame_default)
-    stamp = factory_stamp() if bare else resolved_stamp(edit.stamp, stamp_default)
-    bare_edit = EditState() if bare else edit
-    untouched = bare or not has_visible_edit(bare_edit, {} if bare else side, frame, stamp)
-    if untouched and "jpg" in shot["files"] and base in ("auto", "camera-jpg"):
-        raw = _source_path(lib, shot).read_bytes()
-        labels = {
-            "kind": "original",
-            "label": "original",
-            "text": "原图",
-            "id": "camera-jpg",
-            "tag": "",
-            "description": "原图",
-            "detail": "",
-            "valid": "",
-            "calibrated": "0",
-            "cache": "miss",
-            "key": "",
-            "scale": _scale(shot, min(full_edge(shot), max_edge or full_edge(shot))),
-        }
+) -> tuple[np.ndarray, dict[str, str]]:
+    """成片像素：转正的 uint8 RGB，已经按 `max_edge` 缩好（`max_edge` 为 None 时是全尺寸），还没有编码。
+
+    `render_stage` 就是把这份数组 `encode_jpeg` 一次；导出直接拿它写文件，也只编码一次。
+    `track`：导出 HDR 时跟着成片走的 RAW 亮度层（`hdr_export`），底图一定下来就开始。"""
+    plan = _plan(render, lib, shot, edit, side, stage=stage, base=base)
+    return _stage_rgb(render, lib, shot, side, plan, stage=stage, max_edge=max_edge, quality=quality, base=base, track=track)
+
+
+def _stage_rgb(
+    render: RenderService,
+    lib: Library,
+    shot: dict[str, Any],
+    side: dict[str, Any],
+    plan: tuple[Path | None, Any, Any, EditState],
+    *,
+    stage: str,
+    max_edge: int | None,
+    quality: int,
+    base: str,
+    track: HdrTrack | None,
+) -> tuple[np.ndarray, dict[str, str]]:
+    original, frame, stamp, bare_edit = plan
+    if original is not None:
+        rgb = load_jpeg(original, None)
         if track is not None:
-            track.begin(load_jpeg(_source_path(lib, shot), None))
-        if max_edge is None:
-            return raw, labels
-        return encode_jpeg(_fit(load_jpeg(_source_path(lib, shot), None), max_edge), quality), labels
+            track.begin(rgb)
+        return _fit(rgb, max_edge), _original_labels(shot, max_edge)
+    bare = stage == "original"
     full = max_edge is None
     rgb, from_raw, labels = color_image(
         render, shot, bare_edit, max_edge=max_edge, quality=quality, lib=lib, base="standard" if bare else base, full=full
@@ -372,7 +403,7 @@ def render_stage(
             "id": labels.get("id") or "camera-jpg",
             "detail": labels.get("detail") or "",
         }
-        return encode_jpeg(_fit(rgb, max_edge), quality), {**labels, "valid": ""}
+        return _fit(rgb, max_edge), {**labels, "valid": ""}
     base_edge = max(rgb.shape[:2])
     if track is not None:
         track.begin(rgb)
@@ -407,7 +438,32 @@ def render_stage(
     labels.setdefault("text", "原图")
     fitted = _fit(rgb, max_edge)
     labels["scale"] = _scale(shot, base_edge, max(rgb.shape[:2]), max(fitted.shape[:2]))
-    return encode_jpeg(fitted, quality), labels
+    return fitted, labels
+
+
+def render_stage(
+    render: RenderService,
+    lib: Library,
+    shot: dict[str, Any],
+    edit: EditState,
+    side: dict[str, Any],
+    *,
+    stage: str,
+    max_edge: int | None,
+    quality: int,
+    base: str = "auto",
+    track: HdrTrack | None = None,
+) -> tuple[bytes, dict[str, str]]:
+    """预览和接口用的成片 JPEG。没有编辑的相机 JPG 在全尺寸时原样返回文件字节，其余是 `render_stage_rgb` 编码一次。"""
+    plan = _plan(render, lib, shot, edit, side, stage=stage, base=base)
+    original = plan[0]
+    if original is not None and max_edge is None:
+        raw = original.read_bytes()
+        if track is not None:
+            track.begin(load_jpeg(original, None))
+        return raw, _original_labels(shot, None)
+    rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage=stage, max_edge=max_edge, quality=quality, base=base, track=track)
+    return encode_jpeg(rgb, quality), labels  # rgb 已经按 max_edge 缩好
 
 
 def export_finish(
@@ -426,10 +482,10 @@ def export_finish(
     hdr: bool = False,
 ) -> Any:
     """成片导出。长边按加上边框之后的最终尺寸计算。机器值与显示文字分开。
-    `hdr`：在导出的 JPEG 上按成片重新算增益图（`hdr_export`）；做不了就照常导出，结果里写原因。"""
+    `hdr`：在编码之前的成片像素上重新算增益图（`hdr_export`）；做不了就照常导出，结果里写原因。"""
     import os
 
-    from ..export import FORMATS, ExportError, ExportOptions, ExportResult, check_destination, claim_path, write_with_exif
+    from ..export import FORMATS, ExportError, ExportOptions, ExportResult, check_destination, claim_path, write_rgb_with_exif
 
     ExportOptions(long_edge, quality, fmt).validate()
     files = shot["files"]
@@ -442,15 +498,14 @@ def export_finish(
         else None
     )
     try:
-        data, labels = render_stage(render, lib, shot, edit, side, stage="final", max_edge=None, quality=quality, base=base, track=track)
+        rgb, labels = render_stage_rgb(render, lib, shot, edit, side, stage="final", max_edge=None, quality=quality, base=base, track=track)
     except RawDecodeError as exc:
         detail = f"没有全尺寸传感器数据，也没有更小的预览。{exc}"
         if "jpg" in shot["files"]:
             raise ExportError("raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。", detail) from exc
         raise ExportError("no_jpg_source", "无法读取 RAW 文件。这张照片没有相机 JPG。", detail) from exc
-    if long_edge:
-        fitted = _fit(_decode(data), long_edge)
-        data = encode_jpeg(fitted, quality)
+    # 只在最后写文件时编码一次：长边直接在数组上缩，HDR 增益也在这份数组上拟合
+    rgb = _fit(rgb, long_edge)
     note = labels.get("description") or labels.get("text") or "原图"
     kind = labels.get("label") or labels.get("kind") or "original"
     ident = labels.get("id") or ("camera-jpg" if kind == "original" else "recipe-prediction")
@@ -464,9 +519,9 @@ def export_finish(
         raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
     ext = FORMATS[fmt][1]
     hdr_info: dict[str, Any] = {}
-    payload = write_with_exif(data, _source_path(lib, shot), note, quality=quality, fmt=fmt)
+    payload = write_rgb_with_exif(rgb, _source_path(lib, shot), note, quality=quality, fmt=fmt)
     if track is not None:
-        payload, hdr_info = finish_hdr(payload, track, fmt)
+        payload, hdr_info = finish_hdr(payload, track, fmt, rgb)
     # 文件名在知道有没有做成 HDR 之后再占：做成的叫 `原名_gxr_hdr.jpg`，没做成的和普通导出一样
     if hdr_info.get("hdr") is True:
         tag += "_hdr"
