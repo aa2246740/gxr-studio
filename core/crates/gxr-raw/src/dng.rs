@@ -203,7 +203,7 @@ fn black_grid(bdim: &[i64], mut bl: Vec<f64>) -> PyResult<Grid> {
             py_int_list_repr(bdim)
         )));
     }
-    let shape = crate::bounds::numpy_reshape(bl_size, bdim)?;
+    let shape = crate::bounds::numpy_reshape(bl_size, bdim, 8)?;
     let (rows, cols) = match shape.as_slice() {
         [r, c, ..] => (*r, *c),
         // `bdim[1]` was required above, and reshape keeps every axis, so this is unreachable.
@@ -306,7 +306,7 @@ impl<'a> Dng<'a> {
         // `np.array(pat, int).reshape(dim)`: the same checks in numpy's order (at most 64 axes,
         // one unknown axis, size), and the shape numpy resolves is the one kept.
         let size = i128::try_from(pat.len()).map_err(|_| crate::bounds::too_big())?;
-        let dim: Vec<i64> = crate::bounds::numpy_reshape(size, &dim)?
+        let dim: Vec<i64> = crate::bounds::numpy_reshape(size, &dim, 8)?
             .into_iter()
             .map(|d| i64::try_from(d).map_err(|_| crate::bounds::too_big()))
             .collect::<PyResult<_>>()?;
