@@ -1,12 +1,15 @@
 [package]
 name = "gxr-hdr"
-description = "Placeholder for the port of gxr_studio/hdr/"
+description = "HDR gain map and Ultra HDR container, ported from gxr_studio/hdr/"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+gxr-math.workspace = true
+gxr-raw.workspace = true
+libm.workspace = true
 
 [lints]
 workspace = true
