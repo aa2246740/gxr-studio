@@ -1,6 +1,6 @@
 //! Port of `gxr_studio/export.py:245 _finish` JPEG encoding (single encode with EXIF + sRGB ICC).
 
-use jpeg_encoder::{ColorType, Encoder, SamplingFactor, rgb_to_ycbcr};
+use crate::jpeg_enc::{ColorType, Encoder, SamplingFactor, rgb_to_ycbcr};
 
 use gxr_raw::CoreError;
 

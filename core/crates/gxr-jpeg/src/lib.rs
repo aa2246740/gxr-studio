@@ -9,6 +9,7 @@ pub mod encode;
 pub mod exif;
 mod exif_tiff;
 pub mod icc;
+mod jpeg_enc;
 pub mod json_parse;
 pub mod segments;
 

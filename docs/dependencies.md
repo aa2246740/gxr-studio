@@ -43,11 +43,17 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 | `libm` | 0.2.16 | MIT | `gxr-math` 的数学函数。原生和 WASM 走同一份，避免两边的 `sin`/`exp` 差一位 |
 | `wasm-bindgen` | 0.2.130 | MIT OR Apache-2.0 | 只在 `gxr-wasm` 里用，把描述和半分辨率码值导出给网页 |
 | `wasm-bindgen-cli` | 0.2.130 | MIT OR Apache-2.0 | 构建机上的命令，和库同一个版本：`cargo install --locked wasm-bindgen-cli --version 0.2.130` |
-| `jpeg-encoder` | 0.6.0 | `(MIT OR Apache-2.0)`，且默认编译的 `src/fdct.rs` 含 IJG 派生代码 | 给 `gxr-jpeg` 使用；已锁定进 `core/Cargo.lock`。this software is based in part on the work of the Independent JPEG Group |
+核心 crate 之间只能互相依赖，再加 `libm`（`jpeg-encoder` 外部包已移除，不再出现在 `core/Cargo.lock`）。
 
-`jpeg-encoder` 0.6.0 于 2023-10-09 发布。crates.io 没有写 `rust-version`，包里的 README 写最低 Rust 是 1.61，低于工具链 1.93.1。虽然其 Cargo 元数据为 `MIT OR Apache-2.0`，但默认 `std` 路径无条件编译和调用带有 IJG 许可头的标量 `src/fdct.rs`（`core/crates/gxr-jpeg/NOTICE` 与本文件按该许可要求保留声明："this software is based in part on the work of the Independent JPEG Group"）。更新的 0.6.1（2025-03-23）、0.7.0（2026-01-20）和 0.7.1（2026-07-27）进一步把包级许可写为 `(MIT OR Apache-2.0) AND IJG`，因此继续锁定 `=0.6.0` 并附带上述声明。
+### 内部移植的 JPEG 编码器（`gxr-jpeg`，原 `jpeg-encoder 0.6.0`）
 
-核心 crate 之间只能互相依赖，再加 `libm`。`gxr-jpeg` 以后可以再依赖 `jpeg-encoder`（见 `docs/mobile.md`）。不使用 serde。JSON 由 `gxr-raw` 里手写的写入器生成，命令行和 WASM 共用，所以两边的字节一样。`mobile/` 的开发依赖和 `frontend/` 是同一组精确版本（vite 8.3.5、typescript 7.0.2、`@webgpu/types` 0.1.74），锁在 `mobile/pnpm-lock.yaml`。
+`core/crates/gxr-jpeg/src/jpeg_enc/` 将 `jpeg-encoder 0.6.0`（2023-10-09 发布，MIT OR Apache-2.0；其中 `fdct.rs` 派生自 IJG 软件）源码直接收编为仓库内部模块，并移除了外部 `jpeg-encoder` 依赖。MIT、Apache-2.0 许可原文与 IJG 致谢（"this software is based in part on the work of the Independent JPEG Group"）均保存在 `core/crates/gxr-jpeg/NOTICE`。
+
+相对上游 `jpeg-encoder 0.6.0` 的改动：
+- 移除 x86/x86_64 `avx2` SIMD 模块及 `no_std`/`alloc` 条件编译，以纯安全 Rust 满足工作区 `#![forbid(unsafe_code)]`；
+- 将 `encoder.rs` 拆分为 `encoder.rs` 与 `encoder_scans.rs`，满足 `scripts/large_files.py` 单文件不超过 800 行的规范。
+
+不使用 serde。JSON 由 `gxr-raw` 里手写的写入器生成，命令行和 WASM 共用，所以两边的字节一样。`mobile/` 的开发依赖和 `frontend/` 是同一组精确版本（vite 8.3.5、typescript 7.0.2、`@webgpu/types` 0.1.74），锁在 `mobile/pnpm-lock.yaml`。
 
 ### 生成的 Unicode 表（`gxr-hdr`）
 

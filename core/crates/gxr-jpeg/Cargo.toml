@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 gxr-raw.workspace = true
-jpeg-encoder.workspace = true
 
 [lints]
 workspace = true
