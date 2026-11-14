@@ -64,6 +64,10 @@ IDENTIFY_CASES: list[tuple[str, str, str, Any]] = [
     ("", "synthetic", "input_vlog\nsrgb.cube", lambda x: 1 - x),
     ("", "synthetic", "input_\nsrgb.cube", lambda x: 1 - x),
     ("", "synthetic", "input_\ninput_vlog.cube", lambda x: 1 - x),
+    ("# İnput: linear\n", "synthetic", "plain.cube", lambda x: 1 - x),
+    ("# ınput: sRGB\n", "synthetic", "plain.cube", lambda x: 1 - x),
+    ("# İnput: V-Log\n", "synthetic", "plain.cube", lambda x: 1 - x),
+    ("# İnput: linear; Output: sRGB\n", "synthetic", "plain.cube", lambda x: 1 - x),
 ]
 
 
@@ -356,6 +360,8 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
 
     inv2 = tmp_path / "inv2.cube"
     inv2.write_text(cube_text(lambda x: 1 - x, size=2, title="synthetic"), encoding="utf-8")
+    id_dotted = tmp_path / "id-dotted.cube"
+    id_dotted.write_text(cube_text(lambda x: 1 - x, size=2, title="synthetic", comments="# İnput: linear\n"), encoding="utf-8")
     th_rgb_npy = tmp_path / "th_rgb.npy"
     th_rgb = np.random.default_rng(42).integers(0, 256, (12, 10, 3), dtype=np.uint8)
     np.save(th_rgb_npy, th_rgb)
@@ -400,6 +406,7 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
         {"kind": "identify", "cube": str(inv2), "name": "input_ſRGB.cube"},
         {"kind": "identify", "cube": str(inv2), "name": "input_vlog\nto_srgb.cube"},
         {"kind": "identify", "cube": str(inv2), "name": "input_vlog\nsrgb.cube"},
+        {"kind": "identify", "cube": str(id_dotted), "name": "plain.cube"},
         {"kind": "apply_u8", "cube": str(th_01_cube), "space": th_map["case-0-1"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
         {"kind": "apply_u8", "cube": str(th_10_cube), "space": th_map["case-1-0"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
         {"kind": "apply_u8", "cube": str(th_14_cube), "space": th_map["case-1-4"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},

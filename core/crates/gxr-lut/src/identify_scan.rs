@@ -58,6 +58,27 @@ pub fn is_re_i_alnum(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '\u{0130}' | '\u{0131}' | '\u{017f}' | '\u{212a}')
 }
 
+/// Python `str.lower() == target_lower_ascii` without allocating (`target_lower_ascii` is ASCII lowercase).
+/// Across Unicode 16.0, only ASCII letters and `\u{212a}` (`K` -> `'k'`) lowercase to a single ASCII byte.
+#[inline]
+fn py_lower_eq_ascii(s: &str, target_lower_ascii: &str) -> bool {
+    let mut s_chars = s.chars();
+    for t_ch in target_lower_ascii.bytes() {
+        let Some(ch) = s_chars.next() else {
+            return false;
+        };
+        let lower_byte = match ch {
+            '\u{212a}' => b'k',
+            c if c.is_ascii() => c.to_ascii_lowercase() as u8,
+            _ => return false,
+        };
+        if lower_byte != t_ch {
+            return false;
+        }
+    }
+    s_chars.next().is_none()
+}
+
 #[inline]
 pub fn is_py_word_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
@@ -303,10 +324,17 @@ pub fn output_spaces(text: &str) -> OrderedMap {
     found
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldDir {
+    Input,
+    Output,
+    Other,
+}
+
 pub struct FieldMatch {
     pub start: usize,
     pub end: usize,
-    pub is_input: bool,
+    pub dir: FieldDir,
     pub has_gamma: bool,
 }
 
@@ -319,12 +347,19 @@ fn match_field_at(s: &str, pos: usize) -> Option<FieldMatch> {
         return None;
     };
     p = ws_end(s, p);
-    let (is_input, after_io) = if let Some(next) = consume_ci(s, p, "input") {
-        (true, next)
+    let (matched_io, after_io) = if let Some(next) = consume_ci(s, p, "input") {
+        (&s[p..next], next)
     } else if let Some(next) = consume_ci(s, p, "output") {
-        (false, next)
+        (&s[p..next], next)
     } else {
         return None;
+    };
+    let dir = if py_lower_eq_ascii(matched_io, "input") {
+        FieldDir::Input
+    } else if py_lower_eq_ascii(matched_io, "output") {
+        FieldDir::Output
+    } else {
+        FieldDir::Other
     };
 
     let mut after_main = after_io;
@@ -359,7 +394,7 @@ fn match_field_at(s: &str, pos: usize) -> Option<FieldMatch> {
     Some(FieldMatch {
         start: pos,
         end,
-        is_input,
+        dir,
         has_gamma,
     })
 }
@@ -633,5 +668,21 @@ mod tests {
         assert_eq!(search_explicit_input("input_\nsrgb"), None);
         assert_eq!(search_explicit_input("input_\ninput_vlog"), Some("vlog"));
         assert_eq!(search_explicit_input("input_  \ninput_vlog"), Some(" "));
+    }
+
+    #[test]
+    fn field_direction_uses_python_lower_not_re_i_branch() {
+        for (comment, want_dir) in [
+            ("Input: linear", FieldDir::Input),
+            ("INPUT: sRGB", FieldDir::Input),
+            ("İnput: linear", FieldDir::Other),
+            ("ınput: sRGB", FieldDir::Other),
+            ("İnput: V-Log", FieldDir::Other),
+            ("Output: sRGB", FieldDir::Output),
+        ] {
+            let matches = find_field_matches(comment);
+            assert_eq!(matches.len(), 1, "{comment}");
+            assert_eq!(matches[0].dir, want_dir, "{comment}");
+        }
     }
 }
