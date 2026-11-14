@@ -249,3 +249,18 @@ def test_old_gpu_upload_cannot_replace_a_newer_version(server: dict[str, Any]) -
     assert after["installedFrom"] == 1, after
     assert after["currentMatches"] is True, after
     assert after["sources"] == 1, after
+
+
+def test_card_removed_counts_only_cached_sources_as_usable(server: dict[str, Any]) -> None:
+    data = run_case(server, "card-removed-three")
+    assert len(data["ids"]) == 3
+    # 一张在显卡里，两张只有缩略图：能接着用 1 张，没读完 2 张。
+    assert "已经读进来的 1 张" in data["dialog"], data["dialog"]
+    assert "还有 2 张没读完" in data["dialog"], data["dialog"]
+    assert data["subtitle"] == "存储卡已拔出 · 2 张没读完"
+    assert "gone" not in data["classes"]["a"].split()
+    assert "gone" in data["classes"]["b"].split() and "gone" in data["classes"]["c"].split(), data["classes"]
+    # 只有缩略图的那张点开：不进编辑器，弹同样的提示和数字。
+    assert data["screenAfterC"] == "grid"
+    assert "已经读进来的 1 张" in data["againDialog"] and "还有 2 张没读完" in data["againDialog"]
+    assert data["reopened"] == "editor"

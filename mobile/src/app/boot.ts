@@ -423,8 +423,15 @@ class App implements AppApi {
    */
   private failCard(trigger: Photo): void {
     trigger.gone = true;
-    // 缩略图已经有的留着，只在格子上标卡的图标。
-    for (const photo of this.byId.values()) if (photo.status === 'pending') photo.gone = true;
+    // 卡拔了：只有完整源还在显卡里（同一版本）的照片能接着用。只读过缩略图的也要原文件，
+    // 一律标成没读完、需要重新选；缩略图留着，格子上标卡的图标。
+    for (const photo of this.byId.values()) {
+      const live = this.engine !== null && photo.cached === photo.version && this.engine.hasSource(`raw:${photo.id}`);
+      if (!live) {
+        photo.gone = true;
+        if (photo.cached !== null && photo.cached === photo.version) photo.cached = null;
+      }
+    }
     this.cardIsOut = true;
     this.queue.cancel();
     if (this.screen === 'editor') this.showGrid(true);

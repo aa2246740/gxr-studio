@@ -59,10 +59,13 @@ export interface Photo {
 /** stale：读的时候照片被重新选过，结果作废。 */
 export type FullRead = { ok: true; bytes: ArrayBuffer } | { ok: false; gone: boolean; stale: boolean };
 
-/** 点得开：缩略图好了，并且文件还读得了，或者这个版本的完整源已经在手里。 */
+/**
+ * 点得开：缩略图好了，并且文件还读得了，或者这个版本的完整源还在显卡里。
+ * 卡拔了以后，只有缩略图、还要原文件的照片不算：换配方、导出都得先重新选。
+ */
 export function openable(photo: Photo): boolean {
   if (photo.status !== 'ready') return false;
-  return !photo.gone || photo.cached === photo.version || photo.checked === photo.version;
+  return !photo.gone || photo.cached === photo.version;
 }
 
 /** 卡拔了、又没有缓存，真的没读完。 */

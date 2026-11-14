@@ -175,6 +175,40 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** R2-2：三张里一张已在显卡、两张只有缩略图。拔卡后只有那一张算能接着用，另外两张算没读完、点开要重选。 */
+  async 'card-removed-three'() {
+    const { page, context, errors } = await makePage({ gpu: true });
+    try {
+      await pick(page, manifest.pairs.slice(0, 6));
+      const ids = await gridIds(page);
+      const [a, b, c] = ids;
+      await page.locator(`.cell[data-id="${a}"]`).click();
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      // 卡拔了：之后所有整份读取都回 gone。
+      await page.evaluate(() => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, undefined, true));
+      await page.locator(`.cell[data-id="${b}"]`).click();
+      await page.waitForSelector('[data-state="card-removed"]', { timeout: 60_000 });
+      const dialog = await page.locator('[data-state="card-removed"]').innerText();
+      await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
+      const subtitle = await page.locator('.nav small').innerText();
+      const classes = { a: await cellClass(page, a), b: await cellClass(page, b), c: await cellClass(page, c) };
+      // 只有缩略图的那张：点开不进编辑器，直接告诉要重新选，数字不变。
+      await page.locator(`.cell[data-id="${c}"]`).click();
+      await page.waitForSelector('[data-state="card-removed"]', { timeout: 10_000 });
+      const againDialog = await page.locator('[data-state="card-removed"]').innerText();
+      const screenAfterC = await page.locator('.app').getAttribute('data-screen');
+      await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
+      await page.locator(`.cell[data-id="${a}"]`).click();
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 60_000 });
+      const reopened = await page.locator('.app').getAttribute('data-screen');
+      return { ids, dialog, subtitle, classes, againDialog, screenAfterC, reopened, errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** R2-1：同一张照片（同一个源键）新旧两次上传按相反顺序完成，最后装着的必须是新版本。 */
   async 'upload-race'() {
     const { page, context, errors } = await makePage({ gpu: true });
