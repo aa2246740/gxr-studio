@@ -193,7 +193,15 @@ def twiddle_tables(n: int) -> list[int]:
 
 def fma(a: float, b: float, c: float) -> float:
     """``a*b + c`` rounded once (``math.fma`` needs Python 3.13; Fraction to float rounds to nearest)."""
-    return float(Fraction(a) * Fraction(b) + Fraction(c))
+    if not all(math.isfinite(v) for v in (a, b, c)):
+        return a * b + c
+    exact = Fraction(a) * Fraction(b) + Fraction(c)
+    if exact == 0:
+        # IEEE: an exact zero sum is -0 only when both addends are -0 (round to nearest).
+        product_negative = math.copysign(1.0, a) * math.copysign(1.0, b) < 0
+        both_zero = (a == 0 or b == 0) and c == 0
+        return -0.0 if both_zero and product_negative and math.copysign(1.0, c) < 0 else 0.0
+    return float(exact)
 
 
 def _bits(v: float) -> int:
