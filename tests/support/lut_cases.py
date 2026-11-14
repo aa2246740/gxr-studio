@@ -104,6 +104,10 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
     log_cube.write_text(cube_text(lambda x: x * [0.95, 1.0, 1.05], size=5), encoding="utf-8")
     bad_cube = tmp_path / "bad.cube"
     bad_cube.write_text("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nLUT_3D_INPUT_RANGE 0 1\n" + "0 0 0\n" * 8, encoding="utf-8")
+    steep_cube = tmp_path / "finite-steep.cube"
+    steep_cube.write_text("LUT_1D_SIZE 3\n0 0 0\n1e308 1e308 1e308\n1e308 1e308 1e308\n", encoding="utf-8")
+    px64_npy = tmp_path / "px64_u8.npy"
+    np.save(px64_npy, np.full((1, 1, 3), 64, dtype=np.uint8))
 
     rgb_u8 = np.array([[[10, 20, 30], [128, 64, 32]], [[200, 150, 100], [255, 255, 255]]], dtype=np.uint8)
     rgb_npy = tmp_path / "rgb_u8.npy"
@@ -141,6 +145,14 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
             "rgb_npy": str(rgb_npy),
             "height": 2,
             "width": 2,
+        },
+        {
+            "kind": "apply_u8",
+            "cube": str(steep_cube),
+            "space": {"input_space": "srgb"},
+            "rgb_npy": str(px64_npy),
+            "height": 1,
+            "width": 1,
         },
     ]
     huge1 = write_huge_npy_header(tmp_path / "huge-4294967295.npy", 4294967295, 4294967295)
@@ -212,3 +224,62 @@ def assert_meta_same(py_meta: dict[str, Any], rs_meta: dict[str, Any]) -> None:
             assert_rel(np.asarray(py_val, np.float64), np.asarray(rs_val, np.float64), label=f"meta.{key}")
         else:
             assert py_val == rs_val, f"meta.{key}: {py_val!r} != {rs_val!r}"
+
+
+def real_dngs(captures_dir: Path, cap: int = 60) -> list[Path]:
+    if not captures_dir.is_dir():
+        return []
+    found = [
+        path for path in captures_dir.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower()
+    ]
+    found.sort(key=lambda path: path.as_posix())
+    if len(found) <= cap:
+        return found
+    return [found[(i * len(found)) // cap] for i in range(cap)]
+
+
+def check_scene_xyz(dng_path: Path, codes: np.ndarray, out_path: Path) -> None:
+    from gxr_studio.gpu.source import affine_of
+    from gxr_studio.lut.scene import SceneError, scene_colour
+    from gxr_studio.raw import open_dng
+    from gxr_studio.raw.dng import RawDecodeError
+    from support.core_cli import error_of, run_json
+
+    py_raw_err: RawDecodeError | None = None
+    try:
+        dng = open_dng(dng_path)
+        try:
+            col = scene_colour(dng)
+            py_xyz = col.xyz(codes)
+            py_aff = affine_of(col)
+            py_err: SceneError | None = None
+        finally:
+            dng.release()
+    except RawDecodeError as exc:
+        py_xyz, py_aff, py_err, py_raw_err = None, None, None, exc
+    except SceneError as exc:
+        py_xyz, py_aff, py_err = None, None, exc
+
+    codes_npy = out_path.with_name("codes.npy")
+    np.save(codes_npy, codes)
+    code, payload = run_json(["scene-xyz", "--dng", str(dng_path), "--codes", str(codes_npy), "--out", str(out_path)])
+    rs_err = error_of(code, payload)
+
+    if py_raw_err is not None:
+        assert rs_err is not None and rs_err.kind == "raw_decode" and rs_err.message == str(py_raw_err)
+        return
+    if py_err is not None:
+        assert rs_err is not None and rs_err.kind == py_err.code and rs_err.message == py_err.message
+        return
+
+    assert rs_err is None and py_xyz is not None
+    rs_xyz = np.load(out_path)
+    assert_rel(py_xyz, rs_xyz, label=f"scene-xyz({dng_path.name})")
+
+    if py_aff is not None:
+        assert payload["affine"] is not None
+        assert_rel(np.asarray(py_aff["A"], np.float64), np.asarray(payload["affine"]["A"], np.float64), label="affine.A")
+        assert_rel(np.asarray(py_aff["b"], np.float64), np.asarray(payload["affine"]["b"], np.float64), label="affine.b")
+        # Also verify affine_of matches xyz within 1e-12 relative (measured up to 44 ULP)
+        aff_xyz = codes @ np.asarray(payload["affine"]["A"], np.float64).T + np.asarray(payload["affine"]["b"], np.float64)
+        assert_rel(rs_xyz, aff_xyz, label="affine_of vs xyz")

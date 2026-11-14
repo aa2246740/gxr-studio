@@ -20,7 +20,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from gxr_studio.gpu.source import affine_of
 from gxr_studio.gpu.tables import lut_bytes
 from gxr_studio.lut import spaces
 from gxr_studio.lut.cube import Cube
@@ -28,17 +27,16 @@ from gxr_studio.lut.errors import LutError
 from gxr_studio.lut.identify import identify
 from gxr_studio.lut.page import input_choice
 from gxr_studio.lut.photo import _apply
-from gxr_studio.lut.scene import SceneError, scene_colour
 from gxr_studio.lut.service import LutService
-from gxr_studio.raw import open_dng
-from gxr_studio.raw.dng import RawDecodeError
 from gxr_studio.render.params import EditError
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
 from support.lut_cases import IDENTIFY_CASES, space_depth_text, write_wasm_lut_manifests
 from support.lut_cases import assert_meta_same as _assert_meta_same
 from support.lut_cases import assert_rel as _assert_rel
+from support.lut_cases import check_scene_xyz as _check_scene_xyz
 from support.lut_cases import cube_text as _cube_text
+from support.lut_cases import real_dngs as _real_dngs
 from support.lut_oracle import (
     GRADE_MUL,
     GRADE_OFF,
@@ -56,19 +54,7 @@ CAPTURES = _PARENT / "captures"
 _CAP = 60
 
 
-def _real_dngs() -> list[Path]:
-    if not CAPTURES.is_dir():
-        return []
-    found = [
-        path for path in CAPTURES.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower()
-    ]
-    found.sort(key=lambda path: path.as_posix())
-    if len(found) <= _CAP:
-        return found
-    return [found[(i * len(found)) // _CAP] for i in range(_CAP)]
-
-
-REAL = _real_dngs()
+REAL = _real_dngs(CAPTURES, _CAP)
 
 
 def _real_id(path: Path) -> str:
@@ -497,6 +483,32 @@ def test_apply_error_paths(tmp_path: Path) -> None:
     err = error_of(code, payload)
     assert err is not None and err.kind == "lut_nonfinite"
 
+    # Finite 1D table with slope overflow -> Inf (not endpoint fallback) -> lut_nonfinite
+    steep_cube = _write_cube(tmp_path, "finite-steep.cube", "LUT_1D_SIZE 3\n0 0 0\n1e308 1e308 1e308\n1e308 1e308 1e308\n")
+    px64 = tmp_path / "px64.npy"
+    px64_arr = np.full((1, 1, 3), 64, dtype=np.uint8)
+    np.save(px64, px64_arr)
+    steep_target = _python_target(Cube.read(steep_cube), "srgb")
+    with pytest.raises(EditError) as steep_exc:
+        _apply(steep_target, px64_arr)
+    assert steep_exc.value.code == "lut_nonfinite"
+    code, payload = run_json(
+        [
+            "lut-apply",
+            "--cube",
+            str(steep_cube),
+            "--space",
+            '{"input_space":"srgb"}',
+            "--rgb",
+            str(px64),
+            "--out",
+            str(tmp_path / "o4.npy"),
+            "--u8",
+        ]
+    )
+    err = error_of(code, payload)
+    assert err is not None and (err.kind, err.message) == (steep_exc.value.code, steep_exc.value.message)
+
 
 # ---- Unit B part 2: gpu/tables.py display_lut_u8 and lut_bytes ----
 
@@ -656,52 +668,6 @@ def test_identify_and_undeclared_choice_parity(tmp_path: Path, comments: str, ti
 
 
 # ---- Unit C: scene-xyz ----
-
-
-def _check_scene_xyz(dng_path: Path, codes: np.ndarray, out_path: Path) -> None:
-    py_raw_err: RawDecodeError | None = None
-    try:
-        dng = open_dng(dng_path)
-        try:
-            col = scene_colour(dng)
-            py_xyz = col.xyz(codes)
-            py_aff = affine_of(col)
-            py_err: SceneError | None = None
-        finally:
-            dng.release()
-    except RawDecodeError as exc:
-        py_xyz, py_aff, py_err, py_raw_err = None, None, None, exc
-    except SceneError as exc:
-        py_xyz, py_aff, py_err = None, None, exc
-
-    codes_npy = out_path.with_name("codes.npy")
-    np.save(codes_npy, codes)
-    code, payload = run_json(["scene-xyz", "--dng", str(dng_path), "--codes", str(codes_npy), "--out", str(out_path)])
-    rs_err = error_of(code, payload)
-
-    if py_raw_err is not None:
-        assert rs_err is not None
-        assert rs_err.kind == "raw_decode"
-        assert rs_err.message == str(py_raw_err)
-        return
-
-    if py_err is not None:
-        assert rs_err is not None
-        assert rs_err.kind == py_err.code
-        assert rs_err.message == py_err.message
-        return
-
-    assert rs_err is None and py_xyz is not None
-    rs_xyz = np.load(out_path)
-    _assert_rel(py_xyz, rs_xyz, label=f"scene-xyz({dng_path.name})")
-
-    if py_aff is not None:
-        assert payload["affine"] is not None
-        _assert_rel(np.asarray(py_aff["A"], np.float64), np.asarray(payload["affine"]["A"], np.float64), label="affine.A")
-        _assert_rel(np.asarray(py_aff["b"], np.float64), np.asarray(payload["affine"]["b"], np.float64), label="affine.b")
-        # Also verify affine_of matches xyz within 1e-12 relative (measured up to 44 ULP)
-        aff_xyz = codes @ np.asarray(payload["affine"]["A"], np.float64).T + np.asarray(payload["affine"]["b"], np.float64)
-        _assert_rel(rs_xyz, aff_xyz, label="affine_of vs xyz")
 
 
 def test_scene_xyz_synthetic_and_errors(tmp_path: Path) -> None:

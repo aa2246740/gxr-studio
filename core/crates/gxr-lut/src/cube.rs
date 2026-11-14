@@ -681,11 +681,29 @@ fn interp_1d(x: f64, xp: &[f64], fp: &[[f64; 3]], channel: usize) -> f64 {
         return fp[j][channel];
     }
     let slope = (fp[j + 1][channel] - fp[j][channel]) / (xp[j + 1] - xp[j]);
-    let val = slope * (x - xp[j]) + fp[j][channel];
-    if val.is_finite() {
-        val
-    } else {
-        let alt = slope * (x - xp[j + 1]) + fp[j + 1][channel];
-        if alt.is_finite() { alt } else { fp[j][channel] }
+    let mut val = slope * (x - xp[j]) + fp[j][channel];
+    if val.is_nan() {
+        val = slope * (x - xp[j + 1]) + fp[j + 1][channel];
+        if val.is_nan() && fp[j][channel] == fp[j + 1][channel] {
+            val = fp[j][channel];
+        }
+    }
+    val
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interp_1d_preserves_inf_and_uses_nan_only_fallback() {
+        let xp = linspace_0_1(3);
+        let fp = [
+            [0.0, 0.0, 0.0],
+            [1e308, 1e308, 1e308],
+            [1e308, 1e308, 1e308],
+        ];
+        assert!(interp_1d(0.25, &xp, &fp, 0).is_infinite());
+        assert_eq!(interp_1d(0.75, &xp, &fp, 0), 1e308);
     }
 }
