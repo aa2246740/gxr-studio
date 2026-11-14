@@ -30,6 +30,7 @@ from support.raw_render_parity import (
     expect_demosaic_error,
     expect_demosaic_strip,
     expect_neutral,
+    verify_demosaic_float_gate_nan_and_inf,
     verify_negative_crop_origin_no_alloc,
     verify_powf_boundary_counterexamples,
 )
@@ -789,3 +790,7 @@ def test_negative_crop_origin_rejects_without_allocating(tmp_path: Path) -> None
 def test_synthetic_powf_boundary_counterexamples(tmp_path: Path) -> None:
     require_cli()
     verify_powf_boundary_counterexamples(tmp_path)
+
+
+def test_demosaic_float_gate_nan_and_inf_handling() -> None:
+    verify_demosaic_float_gate_nan_and_inf()

@@ -25,10 +25,18 @@ from support.wasm_check import PKG, run_area
 def assert_f32_exact(python: np.ndarray, rust: np.ndarray) -> None:
     assert python.dtype == np.float32 and rust.dtype == np.float32
     assert python.shape == rust.shape
-    if np.array_equal(python, rust):
+    py_c = np.ascontiguousarray(python)
+    rs_c = np.ascontiguousarray(rust)
+    both_nan = np.isnan(py_c) & np.isnan(rs_c)
+    same_bits = py_c.view(np.uint32) == rs_c.view(np.uint32)
+    mismatch = ~(same_bits | both_nan)
+    if not np.any(mismatch):
         return
-    index = tuple(int(v) for v in np.argwhere(python != rust)[0])
-    pytest.fail(f"float32 differ at {index}: python={python[index]!r} rust={rust[index]!r}")
+    index = tuple(int(v) for v in np.argwhere(mismatch)[0])
+    pytest.fail(
+        f"float32 differ at {index}: python={py_c[index]!r} (0x{int(py_c.view(np.uint32)[index]):08x}) "
+        f"rust={rs_c[index]!r} (0x{int(rs_c.view(np.uint32)[index]):08x})"
+    )
 
 
 def _decimal_to_f32_round_half_even(value: Decimal) -> np.float32:
@@ -320,3 +328,27 @@ def verify_powf_boundary_counterexamples(tmp_path: Path) -> None:
         rc, pow_json = run_json(["dng-srgb-pow", "--bits", f"0x{input_bits:08x}"])
         assert rc == 0 and pow_json["power_bits"] == f"0x{pow_bits:08x}"
         assert_u8_exact(py, rs, dng=dng, path=path, tmp_path=tmp_path)
+
+
+def verify_demosaic_float_gate_nan_and_inf() -> None:
+    """Float gate treats matching NaNs as equal, rejects one-sided NaN, and compares inf/bits exactly."""
+    base = np.array([[[0.0, np.inf, -np.inf], [1.0, np.nan, -0.0]]], dtype=np.float32)
+    same = np.array([[[0.0, np.inf, -np.inf], [1.0, np.nan, -0.0]]], dtype=np.float32)
+    assert_f32_exact(base, same)
+
+    one_nan = base.copy()
+    one_nan[0, 0, 0] = np.nan
+    with pytest.raises(pytest.fail.Exception):
+        assert_f32_exact(base, one_nan)
+    with pytest.raises(pytest.fail.Exception):
+        assert_f32_exact(one_nan, base)
+
+    flipped_inf = base.copy()
+    flipped_inf[0, 0, 1] = -np.inf
+    with pytest.raises(pytest.fail.Exception):
+        assert_f32_exact(base, flipped_inf)
+
+    one_ulp = base.copy()
+    one_ulp[0, 1, 0] = np.nextafter(np.float32(1.0), np.float32(2.0))
+    with pytest.raises(pytest.fail.Exception):
+        assert_f32_exact(base, one_ulp)
