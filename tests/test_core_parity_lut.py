@@ -29,9 +29,10 @@ from gxr_studio.lut.page import input_choice
 from gxr_studio.lut.photo import _apply
 from gxr_studio.lut.service import LutService
 from gxr_studio.render.params import EditError
+from support import lut_cases
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.dng_writer import write_dng
-from support.lut_cases import BAD_CUBE_CASES, IDENTIFY_CASES, THRESHOLD_CASES, space_depth_text, threshold_cube_text, write_wasm_lut_manifests
+from support.lut_cases import BAD_CUBE_CASES, IDENTIFY_CASES, THRESHOLD_CASES, space_depth_text, threshold_cube_text
 from support.lut_cases import assert_meta_same as _assert_meta_same
 from support.lut_cases import assert_rel as _assert_rel
 from support.lut_cases import check_scene_xyz as _check_scene_xyz
@@ -755,9 +756,11 @@ def test_scene_xyz_real_dngs(path: Path, tmp_path: Path) -> None:
 # ---- WASM matches native ----
 
 
-def test_wasm_matches_native_lut(tmp_path: Path) -> None:
+@pytest.mark.parametrize("label", (None, "case-0-1", "case-1-0"))
+def test_wasm_matches_native_lut(tmp_path: Path, label: str | None) -> None:
     require_cli()
-    proc = run_area("lut", write_wasm_lut_manifests(tmp_path), tmp_path)
+    inputs = lut_cases.write_wasm_lut_manifests(tmp_path) if label is None else lut_cases.write_wasm_threshold_table_manifest(tmp_path, label)
+    proc = run_area("lut", inputs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 

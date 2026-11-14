@@ -329,6 +329,18 @@ def write_huge_npy_header(path: Path, height: int, width: int) -> Path:
     return path
 
 
+def write_wasm_threshold_table_manifest(tmp_path: Path, label: str) -> list[Path]:
+    """Build a single 256^3 threshold table manifest so each WASM run stays well under 180s."""
+    import json
+
+    shaper, offset, space = next((sh, off, sp) for lbl, sh, off, sp in THRESHOLD_CASES if lbl == label)
+    cube = tmp_path / f"{label}.cube"
+    cube.write_text(threshold_cube_text(offset, shaper), encoding="utf-8")
+    manifest = tmp_path / f"{label}-table.json"
+    manifest.write_text(json.dumps({"kind": "table", "cube": str(cube), "space": space}), encoding="utf-8")
+    return [manifest]
+
+
 def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
     """Build synthetic cubes, npy inputs, depth-limit specs, and JSON manifests for `wasm_cases/lut.mjs`."""
     import json
@@ -420,8 +432,6 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
         {"kind": "apply_u8", "cube": str(th_01_cube), "space": th_map["case-0-1"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
         {"kind": "apply_u8", "cube": str(th_10_cube), "space": th_map["case-1-0"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
         {"kind": "apply_u8", "cube": str(th_14_cube), "space": th_map["case-1-4"][2], "rgb_npy": str(th_rgb_npy), "height": 12, "width": 10},
-        {"kind": "table", "cube": str(th_01_cube), "space": th_map["case-0-1"][2]},
-        {"kind": "table", "cube": str(th_10_cube), "space": th_map["case-1-0"][2]},
         {
             "kind": "apply_u8",
             "cube": str(steep_cube),
@@ -457,7 +467,7 @@ def write_wasm_lut_manifests(tmp_path: Path) -> list[Path]:
         for depth in (128, 129, 20_000):
             sp = tmp_path / f"space-{kind}-{depth}.json"
             sp.write_text(space_depth_text(kind, depth), encoding="utf-8")
-            cases_specs.append({"kind": "table", "cube": str(shaper_cube), "space_file": str(sp)})
+            cases_specs.append({"kind": "table", "cube": str(log_cube), "space_file": str(sp)})
             cases_specs.append(
                 {"kind": "apply_u8", "cube": str(shaper_cube), "space_file": str(sp), "rgb_npy": str(rgb_npy), "height": 2, "width": 2}
             )
