@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ from gxr_studio.raw import NEUTRAL, RawDecodeError, open_dng, render_full
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.resample_alloc import run_resample_oom_probe
 from support.resample_oracle import oracle_pixel_f32, oracle_resample_f32, precompute_coeffs_seq
-from support.wasm_check import run_area
+from support.wasm_check import CLI, PKG, run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
 _PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
@@ -652,5 +654,115 @@ def test_wasm_matches_native_for_resample(tmp_path: Path) -> None:
         add_f32(f"edge-f32-outw-{tag}", tiny_f32, "box", val, 2)
         add_f32(f"edge-f32-outh-{tag}", tiny_f32, "box", 2, val)
 
+    # Compound empty-NPY cases without --in-shape (Sol r2 P2): NPY width/height must be validated before channels and output dims
+    empty_u8_01 = np.empty((0, 1), dtype=np.uint8)
+    empty_f32_01 = np.empty((0, 1), dtype=np.float32)
+    empty_u8_10 = np.empty((1, 0), dtype=np.uint8)
+    empty_f32_10 = np.empty((1, 0), dtype=np.float32)
+    add_u8("compound-u8-h0-outw", empty_u8_01, "L", "box", 4294967297, 1, override_channels=1)
+    add_f32("compound-f32-h0-outw", empty_f32_01, "box", 4294967297, 1)
+    add_u8("compound-u8-w0-outh-nan", empty_u8_10, "L", "box", 1, float("nan"), override_channels=1)
+    add_f32("compound-f32-w0-outh-nan", empty_f32_10, "box", 1, float("nan"))
+    add_u8("compound-u8-h0-ch-neg", empty_u8_01, "L", "box", 1, 1, override_channels=-1)
+    add_u8("compound-u8-h0-ch-2", empty_u8_01, "L", "box", 1, 1, override_channels=2)
+
     proc = run_area("resample", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_compound_empty_npy_errors_match_wasm_json_exactly(tmp_path: Path) -> None:
+    require_cli()
+    if shutil.which("node") is None or not PKG.is_file():
+        if os.environ.get("GXR_REQUIRE_CORE") == "1":
+            pytest.fail("node or gxr_wasm pkg missing; run make core-wasm")
+        pytest.skip("node or gxr_wasm pkg missing")
+
+    compound_cases: list[dict[str, Any]] = [
+        {"name": "u8-h0-outw", "kind": "u8", "shape": (0, 1), "channels": 1, "outW": 4294967297, "outH": 1},
+        {"name": "f32-h0-outw", "kind": "f32", "shape": (0, 1), "channels": 1, "outW": 4294967297, "outH": 1},
+        {"name": "u8-w0-outh-nan", "kind": "u8", "shape": (1, 0), "channels": 1, "outW": 1, "outH": "NaN"},
+        {"name": "f32-w0-outh-nan", "kind": "f32", "shape": (1, 0), "channels": 1, "outW": 1, "outH": "NaN"},
+        {"name": "u8-h0-ch-neg", "kind": "u8", "shape": (0, 1), "channels": -1, "outW": 1, "outH": 1},
+        {"name": "u8-h0-ch-2", "kind": "u8", "shape": (0, 1), "channels": 2, "outW": 1, "outH": 1},
+    ]
+
+    cli_outputs: dict[str, str] = {}
+    for case in compound_cases:
+        name = str(case["name"])
+        npy = tmp_path / f"{name}.npy"
+        out_npy = tmp_path / f"{name}_out.npy"
+        dtype = np.uint8 if case["kind"] == "u8" else np.float32
+        np.save(npy, np.empty(case["shape"], dtype=dtype))
+        if case["kind"] == "u8":
+            args = [
+                str(CLI),
+                "resample-u8",
+                "--in",
+                str(npy),
+                "--mode",
+                "L",
+                "--filter",
+                "box",
+                "--width",
+                str(case["outW"]),
+                "--height",
+                str(case["outH"]),
+                "--channels",
+                str(case["channels"]),
+                "--out",
+                str(out_npy),
+            ]
+        else:
+            args = [
+                str(CLI),
+                "resample-f32",
+                "--in",
+                str(npy),
+                "--filter",
+                "box",
+                "--width",
+                str(case["outW"]),
+                "--height",
+                str(case["outH"]),
+                "--out",
+                str(out_npy),
+            ]
+        proc = subprocess.run(args, check=False, capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 2, f"{name}: exit={proc.returncode} stderr={proc.stderr!r} stdout={proc.stdout!r}"
+        assert proc.stderr == "", f"{name}: unexpected stderr={proc.stderr!r}"
+        assert not out_npy.exists(), f"{name}: unexpected output file written"
+        cli_outputs[name] = proc.stdout.rstrip("\n")
+
+    node_script = f"""
+import {{ readFileSync }} from 'node:fs';
+const wasm = await import({json.dumps(PKG.as_uri())});
+const wasmBytes = readFileSync({json.dumps(str(PKG.parent / "gxr_wasm_bg.wasm"))});
+wasm.initSync({{ module: wasmBytes }});
+const cases = {json.dumps(compound_cases)};
+const out = {{}};
+for (const c of cases) {{
+  const [h, w] = c.shape;
+  const outW = typeof c.outW === 'string' ? Number(c.outW) : c.outW;
+  const outH = typeof c.outH === 'string' ? Number(c.outH) : c.outH;
+  try {{
+    if (c.kind === 'u8') {{
+      wasm.resample_u8(new Uint8Array([]), w, h, c.channels, 'L', 'box', outW, outH);
+    }} else {{
+      wasm.resample_f32(new Float32Array([]), w, h, 'box', outW, outH);
+    }}
+    throw new Error(`unexpected success for ${{c.name}}`);
+  }} catch (err) {{
+    out[c.name] = err instanceof Error ? err.message : String(err);
+  }}
+}}
+console.log(JSON.stringify(out));
+"""
+    node_path = tmp_path / "check_compound.mjs"
+    node_path.write_text(node_script, encoding="utf-8")
+    node_proc = subprocess.run(["node", str(node_path)], check=False, capture_output=True, text=True, timeout=60)
+    assert node_proc.returncode == 0, node_proc.stdout + node_proc.stderr
+    wasm_outputs = json.loads(node_proc.stdout)
+    expected_json = '{"error":{"kind":"value_error","message":"height and width must be > 0"}}'
+    for case in compound_cases:
+        name = str(case["name"])
+        assert cli_outputs[name] == wasm_outputs[name] == expected_json, (name, cli_outputs[name], wasm_outputs[name])

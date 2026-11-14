@@ -46,18 +46,20 @@ fn dim_from_f64(v: f64) -> Result<u64, CoreError> {
     Ok(v as u64)
 }
 
+fn dim_from_u64(v: u64) -> Result<u64, CoreError> {
+    if v == 0 {
+        return Err(CoreError::new(
+            "value_error",
+            "height and width must be > 0",
+        ));
+    }
+    let _ = fit_count(v, 1)?;
+    Ok(v)
+}
+
 fn parse_dim_str(raw: &str, name: &str) -> Result<u64, Failure> {
     if let Ok(u) = raw.parse::<u64>() {
-        if u == 0 {
-            return Err(Failure::Core(CoreError::new(
-                "value_error",
-                "height and width must be > 0",
-            )));
-        }
-        if u > u64::from(i32::MAX as u32) {
-            return Err(Failure::Core(too_big()));
-        }
-        return Ok(u);
+        return dim_from_u64(u).map_err(Failure::Core);
     }
     let v: f64 = raw
         .parse()
@@ -230,7 +232,10 @@ fn cmd_resample_u8(args: &[String]) -> Result<Json, Failure> {
             parse_dim_str(sw_s, "--in-shape")?,
             parse_dim_str(sh_s, "--in-shape")?,
         ),
-        None => (w0, h0),
+        None => (
+            dim_from_u64(w0).map_err(Failure::Core)?,
+            dim_from_u64(h0).map_err(Failure::Core)?,
+        ),
     };
     let channels = match ch_raw {
         Some(s) => parse_channels_str(s, "--channels")?,
@@ -282,7 +287,10 @@ fn cmd_resample_f32(args: &[String]) -> Result<Json, Failure> {
             parse_dim_str(sw_s, "--in-shape")?,
             parse_dim_str(sh_s, "--in-shape")?,
         ),
-        None => (w0, h0),
+        None => (
+            dim_from_u64(w0).map_err(Failure::Core)?,
+            dim_from_u64(h0).map_err(Failure::Core)?,
+        ),
     };
     let out_w = parse_dim_str(out_w_str, "--width")?;
     let out_h = parse_dim_str(out_h_str, "--height")?;
