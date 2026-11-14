@@ -256,6 +256,10 @@ fn rational_json(num: i64, den: i64) -> Json {
     Json::object([("num", Json::Int(num)), ("den", Json::Int(den))])
 }
 
+pub fn is_py_whitespace(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\x1c'..='\x1f')
+}
+
 pub(crate) fn trim_py_ascii_bytes_ws(s: &str) -> &str {
     s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
 }

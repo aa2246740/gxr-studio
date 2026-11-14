@@ -7,6 +7,7 @@ use gxr_camdata::{RecipeTag, parse_recipe_tag, parse_recipe_tag_bytes};
 use gxr_raw::Json;
 
 use super::exif::clean_text;
+use super::exif_value::is_py_whitespace;
 use super::tiff_exif::{
     EXIF_IFD_TAG, ExifValue, ImageDoc, load_ifd, load_image_exif, parse_jpeg, parse_tiff,
 };
@@ -207,7 +208,12 @@ fn parse_strptime_like(s: &str, fmt: DateFmt) -> Option<NaiveDateTime> {
     let sep = match fmt {
         DateFmt::YmdHms(c) | DateFmt::YmdHm(c) => c,
     };
-    let (date_part, time_part) = s.split_once(' ')?;
+    let ws_at = s.find(is_py_whitespace)?;
+    let date_part = &s[..ws_at];
+    let time_part = s[ws_at..].trim_start_matches(is_py_whitespace);
+    if time_part.is_empty() {
+        return None;
+    }
     let mut d_parts = date_part.split(sep);
     let y_str = d_parts.next()?;
     let m_str = d_parts.next()?;
@@ -570,10 +576,21 @@ mod tests {
             "2024-02-29 12:30:45",
             "2024:02:29 12:30",
             "2024/02/29 12:30:45",
+            "2024:2:9 1:2:3",
+            "2024:02:29  12:34:5",
+            "2024:02:29\t12:34:56",
+            "2024:02:29\x1c12:34:56",
         ] {
             let parsed = parse_exif_datetime(Some(&ExifValue::Str(raw.to_string())), 2026);
             assert!(parsed.is_some(), "failed on {raw}");
         }
+        assert_eq!(
+            parse_exif_datetime(
+                Some(&ExifValue::Str("2024:02:29   12:34:56".to_string())),
+                2026
+            ),
+            None
+        );
         assert_eq!(
             parse_exif_datetime(
                 Some(&ExifValue::Str("2024-02-29T12:30:45".to_string())),

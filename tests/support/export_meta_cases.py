@@ -386,6 +386,23 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
         make_jpeg_bytes(exif_payload=make_tiff_doc([], [(33434, 2, 7, b"0.004\x1c\x00"), (33437, 7, 4, b"\xa02.8")])),
         "jpg",
     )
+
+    # 9. Sol r1 date whitespace/tab/19-char cases
+    for idx, raw in enumerate(
+        [
+            b"2024:2:9 1:2:3",
+            b"2024:02:29  12:34:5",
+            b"2024:02:29\t12:34:56",
+            b"2024:02:29   12:34:56",
+            b"2024:02:29 12:34:56",
+            b"2026:11:01 01:30:00",
+        ],
+        start=97,
+    ):
+        cases[f"date-{idx}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(36867, 2, len(raw) + 1, raw + b"\x00")])),
+            "jpg",
+        )
     return cases
 
 
