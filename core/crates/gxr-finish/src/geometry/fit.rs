@@ -295,15 +295,17 @@ fn ratio_in_box(
         let side = bw.min(bh);
         return Ok([x, y, side, side]);
     }
-    let mut tw = bw;
-    let mut th = usize::try_from(1_i64.max(round_even(tw as f64 * denom as f64 / numer as f64)?))
-        .map_err(|_| bad_rect())?;
-    if th > bh {
-        th = bh;
-        tw = usize::try_from(1_i64.max(round_even(th as f64 * numer as f64 / denom as f64)?))
-            .map_err(|_| bad_rect())?;
+    let bw_i64 = i64::try_from(bw).map_err(|_| bad_rect())?;
+    let bh_i64 = i64::try_from(bh).map_err(|_| bad_rect())?;
+    let mut tw_i64 = bw_i64;
+    let mut th_i64 = 1_i64.max(round_even(tw_i64 as f64 * denom as f64 / numer as f64)?);
+    if th_i64 > bh_i64 {
+        th_i64 = bh_i64;
+        tw_i64 = 1_i64.max(round_even(th_i64 as f64 * numer as f64 / denom as f64)?);
     }
-    Ok([x, y, tw.min(bw), th.min(bh)])
+    let tw = usize::try_from(tw_i64.min(bw_i64).max(1)).map_err(|_| bad_rect())?;
+    let th = usize::try_from(th_i64.min(bh_i64).max(1)).map_err(|_| bad_rect())?;
+    Ok([x, y, tw, th])
 }
 
 /// Port of `gxr_studio/finish/geometry.py:343 fit_ratio_in_valid`
@@ -320,8 +322,10 @@ pub fn fit_ratio_in_valid(
     let [x, y, rw, rh] = rect;
     let cx = (x + rw / 2.0) * width as f64;
     let cy = (y + rh / 2.0) * height as f64;
-    let limit_w = width.min(usize::try_from(limit_w_i64).map_err(|_| bad_rect())?);
-    let limit_h = height.min(usize::try_from(limit_h_i64).map_err(|_| bad_rect())?);
+    let w_i64 = i64::try_from(width).map_err(|_| bad_rect())?;
+    let h_i64 = i64::try_from(height).map_err(|_| bad_rect())?;
+    let limit_w = usize::try_from(limit_w_i64.min(w_i64).max(1)).map_err(|_| bad_rect())?;
+    let limit_h = usize::try_from(limit_h_i64.min(h_i64).max(1)).map_err(|_| bad_rect())?;
     let max_k = if numer > 0 && denom > 0 {
         (limit_w / numer).min(limit_h / denom)
     } else {
@@ -604,7 +608,9 @@ pub fn clamp_norm_rect(
             if min_h > 2 {
                 (tw, th) = snap_to_aspect(th, eff_aspect, 0.009, min_h)?;
             }
-            if let (Ok(utw), Ok(uth)) = (usize::try_from(tw), usize::try_from(th))
+            if tw <= w_i64
+                && th <= h_i64
+                && let (Ok(utw), Ok(uth)) = (usize::try_from(tw), usize::try_from(th))
                 && utw >= 1
                 && uth >= 1
                 && has_window(&sheet, width, height, utw, uth)?

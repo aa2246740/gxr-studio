@@ -70,3 +70,18 @@ fn mask_helpers_reject_short_zero_and_oversized_shapes() {
         bad_geometry()
     );
 }
+
+#[test]
+fn fit_ratio_clamps_oversized_rect_before_usize_conversion() {
+    let valid = vec![1_u8; 32 * 24];
+    for px in [4_294_967_295_u64, 4_294_967_296, 4_294_967_297] {
+        assert_eq!(
+            fit_ratio_in_valid(&valid, 32, 24, [0.0, 0.0, px as f64 / 32.0, 0.5], 16, 9).unwrap(),
+            [16, 2, 16, 9]
+        );
+        assert_eq!(
+            fit_ratio_in_valid(&valid, 32, 24, [0.0, 0.0, 0.5, px as f64 / 24.0], 9, 16).unwrap(),
+            [4, 8, 9, 16]
+        );
+    }
+}

@@ -508,25 +508,32 @@ def test_final_box_rejects_unrepresentable_crop_coords_and_preserves_clamp() -> 
             assert err is not None and err.kind == "bad_rect"
             assert err.message == "裁剪框超出画面范围"
 
+    u32_edge_rects: list[tuple[float, float, float, float]] = []
+    for px in (2**32 - 1, 2**32, 2**32 + 1):
+        u32_edge_rects.append((0.0, 0.0, px / 32.0, 0.5))
+        u32_edge_rects.append((0.0, 0.0, 0.5, px / 24.0))
+    u32_edge_rects.append((0.0, 0.0, math.nextafter(float(2**63), 0.0) / 32.0, 0.5))
+
     for geom_dict in ({}, {"straighten": 5.0}):
         geom = parse_geometry(geom_dict)
-        for rect in ((-0.2, 0.1, 0.5, 0.5), (0.8, 0.8, 0.5, 0.5), (2.0, 0.0, 0.5, 0.5)):
-            py_box, py_valid = final_box(32, 24, geom, rect, None)
-            code, payload = run_json(
-                [
-                    "geom-final-box",
-                    "--w",
-                    "32",
-                    "--h",
-                    "24",
-                    "--geometry",
-                    json.dumps(geom_dict),
-                    "--crop",
-                    json.dumps({"rect": list(rect)}),
-                ]
-            )
-            assert code == 0, payload
-            assert payload == {"box": list(py_box), "valid": list(py_valid), "header": header_value(py_valid)}
+        for preset in (None, "16:9", "3:2"):
+            for rect in ((-0.2, 0.1, 0.5, 0.5), (0.8, 0.8, 0.5, 0.5), (2.0, 0.0, 0.5, 0.5), *u32_edge_rects):
+                py_box, py_valid = final_box(32, 24, geom, rect, preset)
+                code, payload = run_json(
+                    [
+                        "geom-final-box",
+                        "--w",
+                        "32",
+                        "--h",
+                        "24",
+                        "--geometry",
+                        json.dumps(geom_dict),
+                        "--crop",
+                        json.dumps({"rect": list(rect), **({"preset": preset} if preset else {})}),
+                    ]
+                )
+                assert code == 0, (geom_dict, preset, rect, payload)
+                assert payload == {"box": list(py_box), "valid": list(py_valid), "header": header_value(py_valid)}
 
 
 def test_final_box_rejects_oversized_dimensions() -> None:
@@ -672,6 +679,13 @@ def test_wasm_matches_native_for_geometry(tmp_path: Path) -> None:
     add_case("overflow-crop-y", 32, 24, {"straighten": 5}, '{"rect":[0,1e18,0.5,1e18]}', expect_error=True)
     add_case("overflow-crop-1e308", 32, 24, {}, '{"rect":[1e308,0,1e308,0.5]}', expect_error=True)
     add_case("clamp-negative-crop", 32, 24, {"straighten": 5}, {"rect": [-0.2, 0.1, 0.5, 0.5]})
+    for px in (2**32 - 1, 2**32, 2**32 + 1):
+        for preset in ("16:9", "3:2"):
+            add_case(f"u32-edge-w-{px}-{preset}", 32, 24, {"straighten": 5}, {"rect": [0.0, 0.0, px / 32.0, 0.5], "preset": preset})
+            add_case(f"u32-edge-h-{px}-{preset}", 32, 24, {"straighten": 5}, {"rect": [0.0, 0.0, 0.5, px / 24.0], "preset": preset})
+    add_case(
+        "i64-edge-w-16-9", 32, 24, {"straighten": 5}, {"rect": [0.0, 0.0, math.nextafter(float(2**63), 0.0) / 32.0, 0.5], "preset": "16:9"}
+    )
 
     def nest_arr(depth: int, inner: str = "0") -> str:
         return ("[" * depth) + inner + ("]" * depth)
