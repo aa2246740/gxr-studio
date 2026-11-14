@@ -148,11 +148,8 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         }
         "camdata-parse-json" => {
             let json_path = common::option(args, "--json")?;
-            const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
-            let raw = read_bounded(json_path, MAX_JSON_BYTES)?;
-            if raw.len() > MAX_JSON_BYTES {
-                return Err(Failure::Core(CoreError::new("json", "JSON 文件过大")));
-            }
+            // Reads at most MAX_JSON_BYTES + 1 bytes; check_json_depth rejects the extra byte.
+            let raw = read_bounded(json_path, gxr_camdata::MAX_JSON_BYTES)?;
             let text = check_json_depth(&raw)?;
             Ok(Output { text, ok: true })
         }

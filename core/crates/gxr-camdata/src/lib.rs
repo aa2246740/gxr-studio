@@ -116,8 +116,15 @@ pub fn knob_table_json(block: &[u8], mount_knobs_from_50mm: bool) -> Result<Stri
     Ok(menu_to_json(&menu).render())
 }
 
+/// Largest JSON input `check_json_depth` accepts (4 MiB).
+pub const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+
 /// Parse JSON with `json_parse::parse_json` (enforcing the 128-level nesting limit) and return `{"ok":true}`.
+/// Native parity tool only (`gxr-cli camdata-parse-json`); not exported to WASM.
 pub fn check_json_depth(bytes: &[u8]) -> Result<String, CoreError> {
+    if bytes.len() > MAX_JSON_BYTES {
+        return Err(CoreError::new("json", "JSON 文件过大"));
+    }
     json_parse::parse_json(bytes)?;
     Ok(Json::object([("ok", Json::Bool(true))]).render())
 }

@@ -29,24 +29,6 @@ export function cases(inputs) {
   });
 
   for (const file of inputs) {
-    if (file.endsWith('.kv')) {
-      const kvBytes = () => readBytes(file);
-      out.push({
-        label: `${file}::camdata_knob_table`,
-        cliArgs: ['camdata-knob-table', '--kv', file],
-        wasm: (mod) => mod.camdata_knob_table(kvBytes(), false),
-      });
-      continue;
-    }
-    if (file.endsWith('.json')) {
-      const jsonBytes = () => readBytes(file);
-      out.push({
-        label: `${file}::camdata_parse_json`,
-        cliArgs: ['camdata-parse-json', '--json', file],
-        wasm: (mod) => mod.camdata_parse_json(jsonBytes()),
-      });
-      continue;
-    }
     const datBytes = () => readBytes(file);
     const fxPath = join(dirname(file), 'GXRFX.BIN');
     const hasFx = existsSync(fxPath);

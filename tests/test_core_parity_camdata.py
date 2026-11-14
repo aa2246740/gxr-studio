@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import struct
 import zlib
 from pathlib import Path
@@ -18,7 +19,7 @@ from gxr_studio.camdata.recipe_tags import parse_recipe_tag
 from gxr_studio.engine import menu as py_menu
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.fake_card import fake_dat, fake_gxrfx
-from support.wasm_check import run_area
+from support.wasm_check import PKG, run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
 _PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent))).resolve()
@@ -378,9 +379,7 @@ def test_knob_table_r3_level_widening_matches_python(tmp_path: Path) -> None:
     code, payload = run_json(["camdata-knob-table", "--kv", str(kv_path)])
     assert error_of(code, payload) is None
     assert payload == expected
-
-    proc = run_area("camdata", [kv_path], tmp_path)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # WASM has no standalone knob-table export (spec: parse, entries, menu); `camdata_menu` runs the same code.
 
 
 # --------------------------------------------------------------------------- Recipe tags
@@ -487,7 +486,7 @@ def test_wasm_camdata_matches_native_on_real_dats(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def test_json_nesting_depth_matches_wasm_and_native(tmp_path: Path) -> None:
+def test_json_nesting_depth_native(tmp_path: Path) -> None:
     require_cli()
     ok_cases = {
         "arr_128_scalar.json": "[" * 128 + "0" + "]" * 128,
@@ -520,5 +519,32 @@ def test_json_nesting_depth_matches_wasm_and_native(tmp_path: Path) -> None:
         assert err.kind == "json", (name, err)
         assert err.message == "JSON 嵌套太深", (name, err)
         paths.append(p)
-    proc = run_area("camdata", paths, tmp_path)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_json_size_limit_native(tmp_path: Path) -> None:
+    """4 MiB is accepted and one byte more is rejected (Sol camdata r2 P2: the limit lives in the shared function)."""
+    require_cli()
+    limit = 4 * 1024 * 1024
+    at_limit = tmp_path / "at_limit.json"
+    at_limit.write_bytes(b'"' + b"x" * (limit - 2) + b'"')
+    over = tmp_path / "over_limit.json"
+    over.write_bytes(b'"' + b"x" * (limit - 1) + b'"')
+    assert at_limit.stat().st_size == limit and over.stat().st_size == limit + 1
+    code, payload = run_json(["camdata-parse-json", "--json", str(at_limit)])
+    assert error_of(code, payload) is None
+    assert payload == {"ok": True}
+    code, payload = run_json(["camdata-parse-json", "--json", str(over)])
+    err = error_of(code, payload)
+    assert err is not None
+    assert (err.kind, err.message) == ("json", "JSON 文件过大")
+
+
+def test_wasm_exports_only_the_spec_listed_camdata_functions() -> None:
+    """UNIT-COMMON: bind only what the spec lists (Sol camdata r2 P2)."""
+    if not PKG.is_file():
+        if os.environ.get("GXR_REQUIRE_CORE") == "1":
+            pytest.fail(f"WASM package is required but not built at {PKG}")
+        pytest.skip("WASM package not built; run make core-wasm")
+    dts = PKG.with_suffix(".d.ts").read_text(encoding="utf-8")
+    exported = set(re.findall(r"export function (camdata_\w+)\(", dts))
+    assert exported == {"camdata_parse", "camdata_entries", "camdata_menu"}
