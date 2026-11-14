@@ -7,6 +7,7 @@ on both sides (Python through ``stamp._CJK_FONTS``, Rust through ``--font cjk=..
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 
@@ -16,9 +17,10 @@ from gxr_studio.finish.fonts import ASSETS, FONT_FILES
 from gxr_studio.finish.sfnt import _cmap, _tables, read_font
 from support.core_cli import error_of, run_json
 from support.frame_cases import (
-    CJK_GATE_PX,
+    CJK_MAX_STAMP_PX,
     FIXTURE_CJK,
-    GXR_MAX_SOURCE,
+    cjk_band_cases,
+    cjk_box_bound,
     cjk_fonts,
     cjk_sweep_cases,
     desktop_mark,
@@ -29,7 +31,6 @@ from support.frame_cases import (
     same,
     stamp_case,
     stamp_cases,
-    stamp_domain_cases,
     write_json,
 )
 from support.frame_font import empty_directory, font_without_unicode_cmap
@@ -208,7 +209,8 @@ CJK_PXS = [*range(1, 241), 255, 333, 512, 999, 1000, 1001, 2048, 4096]
 # Example: 上 top 825 (Rust) vs 825.421875 hinted → 826 (Pillow). The hinter is not ported. Where a
 # layout needs a CJK ink box, each box edge and each derived position may differ by at most 1 px;
 # everything else stays exact. The desktop keeps Pillow's box; the phone accepts the 1-px difference.
-CJK_BOX_PX = 1
+# Per-glyph CJK boxes at 1000 px (font units): unhinted vs hinted differ by at most one unit.
+CJK_GLYPH_BOX_UNITS = 1
 
 
 def _cjk_python() -> tuple[list, list]:
@@ -236,7 +238,7 @@ def test_cjk_fallback_advances_and_ascents_match_pillow() -> None:
 
 
 def test_cjk_fallback_ink_boxes_are_within_one_pixel_of_pillow() -> None:
-    """Each CJK box edge: Rust (unhinted) and Pillow (hinted) differ by at most CJK_BOX_PX."""
+    """Each CJK box edge: Rust (unhinted) and Pillow (hinted) differ by at most CJK_GLYPH_BOX_UNITS."""
     glyphs, _ascents = _cjk_python()
     got = _cjk_rust()
     differ = []
@@ -245,10 +247,10 @@ def test_cjk_fallback_ink_boxes_are_within_one_pixel_of_pillow() -> None:
         if box is None:
             continue
         for edge, (a, b) in enumerate(zip(box, gbox, strict=True)):
-            assert abs(a - b) <= CJK_BOX_PX, (ch, edge, a, b)
+            assert abs(a - b) <= CJK_GLYPH_BOX_UNITS, (ch, edge, a, b)
         if list(box) != gbox:
             differ.append((ch, list(box), gbox))
-    print(f"CJK ink boxes within {CJK_BOX_PX} px of Pillow: {len(differ)} of {len(CJK_CHARS)} glyph boxes differ: {differ}")
+    print(f"CJK ink boxes within {CJK_GLYPH_BOX_UNITS} unit of Pillow: {len(differ)} of {len(CJK_CHARS)} glyph boxes differ: {differ}")
 
 
 def _batch(tmp_path: Path, frames: list, stamps: list, *, cjk: bool = True) -> dict:
@@ -303,23 +305,27 @@ def test_stamp_layouts_match_python(tmp_path: Path) -> None:
 CJK_OP_FIELDS = {"x", "y", "xs", "pts"}
 
 
-def _px_close(a: object, b: object, path: str) -> bool:
-    """Ints (or nested lists of ints) within CJK_BOX_PX, same types. Returns whether they differ."""
+def _px_close(a: object, b: object, path: str, bound: int) -> bool:
+    """Ints (or nested lists of ints) within `bound`, same types. Returns whether they differ."""
     if isinstance(a, list):
         assert isinstance(b, list) and len(a) == len(b), (path, a, b)
-        return any([_px_close(x, y, f"{path}[{i}]") for i, (x, y) in enumerate(zip(a, b, strict=True))])
+        return any([_px_close(x, y, f"{path}[{i}]", bound) for i, (x, y) in enumerate(zip(a, b, strict=True))])
     assert type(a) is int and type(b) is int, (path, a, b)
-    assert abs(a - b) <= CJK_BOX_PX, (path, a, b)
+    assert abs(a - b) <= bound, (path, a, b, bound)
     return a != b
 
 
 def cjk_stamp_close(want: object, got: object, path: str = "") -> bool:
     """`same`, except the CJK-box-derived fields in CJK_OP_FIELDS and the four rect edges
-    (x, y, x+width, y+height) may each differ by CJK_BOX_PX. Returns whether anything differed."""
+    (x, y, x+width, y+height) may each differ by `cjk_box_bound(px)`: 1 up to 234 px, 2 up to
+    CJK_MAX_STAMP_PX. Every px, colour, text, font, glow and type is exact. Returns whether anything
+    differed."""
     if not (isinstance(want, dict) and "ops" in want):
         same(want, got, path)
         return False
     assert isinstance(got, dict) and list(want) == list(got), (path, want, got)
+    same(want["px"], got["px"], f"{path}.px")
+    bound = cjk_box_bound(want["px"])
     differ = False
     for key in want:
         if key == "rect":
@@ -327,7 +333,7 @@ def cjk_stamp_close(want: object, got: object, path: str = "") -> bool:
             for t in (gw, gh, gx, gy):
                 assert type(t) is int, (path, got["rect"])
             edges = zip(("left", "top", "right", "bottom"), (x, y, x + w, y + h), (gx, gy, gx + gw, gy + gh), strict=True)
-            differ |= any([_px_close(a, b, f"{path}.rect.{name}") for name, a, b in edges])
+            differ |= any([_px_close(a, b, f"{path}.rect.{name}", bound) for name, a, b in edges])
         elif key == "ops":
             assert isinstance(got["ops"], list) and len(want["ops"]) == len(got["ops"]), (path, want["ops"], got["ops"])
             for n, (op, gop) in enumerate(zip(want["ops"], got["ops"], strict=True)):
@@ -335,12 +341,18 @@ def cjk_stamp_close(want: object, got: object, path: str = "") -> bool:
                 for k in op:
                     where = f"{path}.ops[{n}].{k}"
                     if k in CJK_OP_FIELDS:
-                        differ |= _px_close(op[k], gop[k], where)
+                        differ |= _px_close(op[k], gop[k], where, bound)
                     else:
                         same(op[k], gop[k], where)
         else:
             same(want[key], got[key], f"{path}.{key}")
     return differ
+
+
+def test_cjk_box_bound_follows_the_bands() -> None:
+    assert [cjk_box_bound(px) for px in (12, 234, 235, 246, 266)] == [1, 1, 2, 2, 2]
+    with pytest.raises(AssertionError):
+        cjk_box_bound(CJK_MAX_STAMP_PX + 1)
 
 
 def test_cjk_comparator_rejects_corrupted_layouts() -> None:
@@ -374,60 +386,153 @@ def test_cjk_comparator_rejects_corrupted_layouts() -> None:
             cjk_stamp_close(want, corrupt)
     shifted = mutated(lambda o: o["ops"][0].__setitem__("y", o["ops"][0]["y"] + 1))
     assert cjk_stamp_close(want, shifted) is True
+    two = mutated(lambda o: o["rect"].__setitem__(3, o["rect"][3] + 2))
+    with pytest.raises(AssertionError):
+        cjk_stamp_close(want, two)  # a small stamp gets 1 px, not 2
+
+    with cjk_fonts((FIXTURE_CJK,)):
+        _case, big = stamp_case(4197, 3148, StampSpec(enabled=True, content="text", text="上海上海上海", size="large"), None)
+    assert big["px"] == 246
+
+    def grown(n: int) -> dict:
+        out = copy.deepcopy(big)
+        out["rect"][3] += n
+        return out
+
+    assert cjk_stamp_close(big, grown(2)) is True  # 235..266 px gets 2
+    with pytest.raises(AssertionError):
+        cjk_stamp_close(big, grown(3))
+    wrong_px = copy.deepcopy(big)
+    wrong_px["px"] += 1
+    with pytest.raises(AssertionError):
+        cjk_stamp_close(big, wrong_px)
 
 
-def test_cjk_stamp_layouts_are_within_one_pixel(tmp_path: Path) -> None:
+def test_cjk_stamp_layouts_are_within_the_bound(tmp_path: Path) -> None:
     """Stamps that need a CJK ink box: only the box-derived fields (CJK_OP_FIELDS, rect edges) may
-    move by 1 px; every px, colour, text, font, glow and type is exact. Prints how many differ."""
+    move, by `cjk_box_bound(px)`; every px, colour, text, font, glow and type is exact."""
     _plain, (cases, want) = _stamp_split()
     got = _batch(tmp_path, [], cases)["stamps"]
     assert len(got) == len(want) == len(cases)
     differ = 0
     for i, (case, expected, value) in enumerate(zip(cases, want, got, strict=True)):
         differ += cjk_stamp_close(expected, value, f"cjk stamp #{i} {case['request']['w']}x{case['request']['h']}")
-    print(f"CJK stamp layouts: {differ} of {len(cases)} differ by 1 px, the rest are exact")
+    print(f"CJK stamp layouts: {differ} of {len(cases)} differ within the bound, the rest are exact")
     assert differ < len(cases)
 
 
-def test_gxr_sources_keep_stamps_inside_the_cjk_gate(tmp_path: Path) -> None:
-    """Domain of the 1-px CJK gate (manager decision, option a): every stamp a GXR source up to
-    4288x2848 can get, in every FRAME_STYLES entry and stamp size, is at most CJK_GATE_PX pixels.
-    Raising stamp sizes past the guaranteed domain makes this fail."""
-    from gxr_studio.finish.spec import FRAME_STYLES
+def _stamp_px(tmp_path: Path, photos: list[tuple[int, int]]) -> list[dict]:
+    """Rust stamp layouts on each photo: every size option, both placements (instant takes the
+    border stamp, every other FRAME_STYLES entry the photo stamp, as in compose.finish_array)."""
+    from gxr_studio.finish.spec import FrameSpec, StampSpec
 
-    cases = stamp_domain_cases()
+    cases = []
+    for (w, h), size, placement in itertools.product(photos, ("small", "medium", "large"), ("photo", "border")):
+        request: dict = {"w": w, "h": h, "taken": [2026, 12, 31, 23, 59], "file_time": None}
+        if placement == "border":
+            request["frame"] = FrameSpec(style="instant").to_json()
+        spec = StampSpec(enabled=True, content="date", show_time=True, size=size, placement=placement)
+        cases.append({"request": request, "spec": spec.to_json()})
     got = _batch(tmp_path, [], cases)["stamps"]
-    assert len(got) == len(cases)
-    worst: dict[str, int] = {}
-    for case, layout in zip(cases, got, strict=True):
-        assert layout is None or "error" not in layout, (case, layout)
-        if layout is None:
-            continue
-        where = "border" if case["spec"].get("placement") == "border" else "photo"
-        worst[where] = max(worst.get(where, 0), layout["px"])
-        for op in layout["ops"]:
-            assert op.get("px", layout["px"]) <= CJK_GATE_PX, (case, op)
-        assert layout["px"] <= CJK_GATE_PX, (case["request"], case["spec"], layout["px"])
-    # compose.finish_array: instant takes the border stamp, every other style the photo stamp.
-    per_style = {style: worst["border" if style == "instant" else "photo"] for style in FRAME_STYLES}
-    print(f"largest stamp over {len(cases)} GXR cases up to {GXR_MAX_SOURCE}: {per_style}")
-    assert set(worst) == {"photo", "border"}
+    return [{"photo": [c["request"]["w"], c["request"]["h"]], "spec": c["spec"], "px": g["px"]} for c, g in zip(cases, got, strict=True) if g]
 
 
-def test_cjk_size_sweep_within_one_pixel_up_to_the_gate(tmp_path: Path) -> None:
-    """The size sweep at stamp sizes <= CJK_GATE_PX, photo and instant border, through the whitelist
-    comparator. Larger stamps differ by about px/1000 and are not gated (REPORT.md)."""
+def test_stamp_domain_through_the_geometry_path(tmp_path: Path) -> None:
+    """The proven maximum M = CJK_MAX_STAMP_PX: no legal GXR input stamps above it, and the analytic
+    extreme reaches it. Photos come from the real finish_unframed / final_box path: Sol r2's
+    distortion -100 (243 px), the extreme (3021x2848, -100, +/-100, 1:1, 266 px), its transpose,
+    the full-resolution neighbourhood of the extreme, and a coarse grid over the whole space."""
+    from gxr_studio.finish.layout import STAMP_SIZE
+    from support.frame_domain import NAMED_INPUTS, coarse_grid, finished_photo, neighbourhood, neighbourhood_square
+
+    photos = []
+    for label, source, geometry, preset, expected in NAMED_INPUTS:
+        photo = finished_photo(source, geometry, preset)
+        assert photo == expected, (label, photo)
+        photos.append(photo)
+    layouts = _stamp_px(tmp_path, photos)
+    worst = max(layouts, key=lambda row: row["px"])
+    assert worst["px"] == CJK_MAX_STAMP_PX == 266, worst
+    sol = [row["px"] for row in layouts if row["photo"] == [5305, 3119] and row["spec"]["size"] == "large"]
+    assert max(sol) == 243, sol
+    # 267 px needs a short side of 3417 (round(s * 0.078) >= 266.5).
+    first_over = next(s for s in range(3000, 4000) if round(s * STAMP_SIZE["large"]) > CJK_MAX_STAMP_PX)
+    for source, geometry in neighbourhood():
+        side = neighbourhood_square(source, geometry)
+        assert side < first_over, (source, geometry, side)
+        assert side <= 3404, (source, geometry, side)
+    grid = coarse_grid()
+    assert grid[0][0] < first_over, grid[:3]
+    print(f"stamp domain: max {worst['px']} px at {worst['photo']}; coarse grid best {grid[0]}")
+
+
+def test_cjk_size_sweep_within_the_bound(tmp_path: Path) -> None:
+    """The size sweep up to M, photo and instant border, through the banded comparator. Larger
+    stamps can't come from a legal GXR input and are left out."""
     with cjk_fonts((FIXTURE_CJK,)):
         cases, want, left_out = cjk_sweep_cases()
-    assert len(cases) > 300 and left_out > 0
-    styles = {"border" if c["spec"].get("placement") == "border" else "photo" for c in cases}
-    assert styles == {"photo", "border"}
+    assert len(cases) > 400 and left_out > 0
+    assert {c["spec"].get("placement", "photo") for c in cases} == {"photo", "border"}
     assert any(c["spec"]["font"] == "seg7" and c["spec"]["size"] == "large" for c in cases)
     got = _batch(tmp_path, [], cases)["stamps"]
     differ = 0
     for i, (case, expected, value) in enumerate(zip(cases, want, got, strict=True)):
         differ += cjk_stamp_close(expected, value, f"sweep #{i} {case['request']['w']}x{case['request']['h']} {case['spec']['size']}")
-    print(f"CJK sweep: {len(cases)} cases at <= {CJK_GATE_PX} px, {differ} differ by 1 px; {left_out} larger cases not gated")
+    print(f"CJK sweep: {len(cases)} cases at <= {CJK_MAX_STAMP_PX} px, {differ} differ within the bound; {left_out} larger cases left out")
+
+
+def _bottom(layout: dict) -> int:
+    return layout["rect"][1] + layout["rect"][3]
+
+
+def test_cjk_stamps_from_235_to_m_px_within_two_pixels(tmp_path: Path) -> None:
+    """Every integer stamp size 235..M with the sweep's combinations (1,728 cases), banded bound."""
+    with cjk_fonts((FIXTURE_CJK,)):
+        cases, want = cjk_band_cases(235, CJK_MAX_STAMP_PX)
+    assert len(cases) == 1728
+    got = _batch(tmp_path, [], cases)["stamps"]
+    differ = two = 0
+    for i, (case, expected, value) in enumerate(zip(cases, want, got, strict=True)):
+        assert 235 <= expected["px"] <= CJK_MAX_STAMP_PX, (i, expected["px"])
+        differ += cjk_stamp_close(expected, value, f"band #{i} px {expected['px']} {case['spec']['size']}")
+        two += abs(_bottom(expected) - _bottom(value)) == 2
+    print(f"CJK 235..{CJK_MAX_STAMP_PX} px: {len(cases)} cases, {differ} differ, {two} by 2 px on rect.bottom")
+
+
+def _repro_two_pixels(tmp_path: Path, side: int, px: int) -> None:
+    """A real geometry-path photo (free square crop after distortion -100, vertical +100) whose CJK
+    stamp differs by exactly 2 px on rect.bottom. The hinted top edge also moves the text origin
+    (`y - box[1]`) by exactly 1 px; both are whitelisted box fields. Everything else is exact."""
+    import copy
+
+    from gxr_studio.finish.spec import StampSpec
+    from support.frame_domain import repro_photo
+
+    photo = repro_photo(side)
+    assert photo == (side, side)
+    spec = StampSpec(enabled=True, content="text", text="上海上海上海", font="seg7", size="large", corner="tl", color="red")
+    with cjk_fonts((FIXTURE_CJK,)):
+        case, want = stamp_case(*photo, spec, None)
+    got = _batch(tmp_path, [], [case])["stamps"][0]
+    assert want["px"] == got["px"] == px
+    assert _bottom(want) - _bottom(got) == 2, (want["rect"], got["rect"])
+    assert want["ops"][0]["y"] - got["ops"][0]["y"] == 1, (want["ops"][0]["y"], got["ops"][0]["y"])
+    expected = copy.deepcopy(want)
+    expected["rect"][3] = got["rect"][3]
+    expected["ops"][0]["y"] = got["ops"][0]["y"]
+    same(expected, got, f"repro {side}")
+
+
+def test_cjk_repro_3148_square_is_two_pixels_on_the_bottom(tmp_path: Path) -> None:
+    _repro_two_pixels(tmp_path, 3148, 246)
+
+
+def test_cjk_repro_3302_square_is_two_pixels_on_the_bottom(tmp_path: Path) -> None:
+    _repro_two_pixels(tmp_path, 3302, 258)
+
+
+def test_cjk_repro_3315_square_is_two_pixels_on_the_bottom(tmp_path: Path) -> None:
+    _repro_two_pixels(tmp_path, 3315, 259)
 
 
 def _json_depth_text(depth: int) -> str:

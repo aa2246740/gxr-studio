@@ -208,18 +208,30 @@ def stamp_cases() -> tuple[list[dict[str, Any]], list[Any]]:
     return cases, want
 
 
-# Manager decision on the CJK size limit (UNIT-frame.md, 2026-11-14): the 1-px CJK gate holds for
-# stamps of at most CJK_GATE_PX pixels, which covers every GXR source up to GXR_MAX_SOURCE.
-CJK_GATE_PX = 234
-GXR_MAX_SOURCE = (4288, 2848)
+# CJK gate (manager decisions of 2026-11-14, UNIT-frame.md). Python scales Pillow's hinted 1000-px
+# CJK box to the stamp size, the port uses the unhinted outline, so each box-derived edge drifts by
+# about px/1000. CJK_MAX_STAMP_PX is the proven maximum a legal GXR input reaches through the real
+# geometry path (`frame_domain.py`); larger stamps are outside the domain and have no bound.
+CJK_MAX_STAMP_PX = 266
 CJK_SWEEP_SHORTS = (600, 900, 1200, 1600, 2000, 2400, 3000, 4000, 6000, 8000, 12000, 16000, 24000, 32000, 48000, 65535)
 CJK_SWEEP_TEXTS = ("上海上海上海", "北京", "Hi 上")
+STAMP_SIZES = ("small", "medium", "large")
+STAMP_FONTS = ("seg7", "typewriter", "sans")
+
+
+def cjk_box_bound(px: int) -> int:
+    """How far a CJK-box-derived field may move for a stamp of `px` pixels: 1 up to 234, 2 up to M."""
+    if px <= 234:
+        return 1
+    if px <= CJK_MAX_STAMP_PX:
+        return 2
+    raise AssertionError(f"stamp of {px} px is above the proven GXR maximum {CJK_MAX_STAMP_PX}; no bound")
 
 
 def cjk_sweep_cases() -> tuple[list[dict[str, Any]], list[Any], int]:
-    """The size sweep from the worker's probe (`probe/cjk_size_sweep.py`), on the photo and on the
-    instant border, keeping only the cases whose Python stamp is at most CJK_GATE_PX pixels.
-    Returns the gated cases, Python's answers and how many larger cases were left out."""
+    """The worker's size sweep (`probe/cjk_size_sweep.py`), on the photo and on the instant border,
+    keeping every case whose Python stamp is at most CJK_MAX_STAMP_PX. Returns the gated cases,
+    Python's answers and how many larger, unreachable cases were left out."""
     cases: list[dict[str, Any]] = []
     want: list[Any] = []
     left_out = 0
@@ -231,7 +243,7 @@ def cjk_sweep_cases() -> tuple[list[dict[str, Any]], list[Any], int]:
             spec = StampSpec(enabled=True, content="text", text=text, font=font, size=size, corner="tl", color="red", placement=placement)
             pair = stamp_case(w, short, spec, None, frame)
             layout = pair[1]
-            if isinstance(layout, dict) and "px" in layout and layout["px"] > CJK_GATE_PX:
+            if isinstance(layout, dict) and "px" in layout and layout["px"] > CJK_MAX_STAMP_PX:
                 left_out += 1
                 continue
             cases.append(pair[0])
@@ -239,25 +251,25 @@ def cjk_sweep_cases() -> tuple[list[dict[str, Any]], list[Any], int]:
     return cases, want, left_out
 
 
-def stamp_domain_cases() -> list[dict[str, Any]]:
-    """Every stamp a GXR source can get, for the domain proof. The stamp's size depends only on the
-    photo's short side (then it can only shrink), so walk every short side 1..2848 with the long
-    side at 4288, landscape and portrait, for every size option and stamp font. Each FRAME_STYLES
-    entry maps to what `compose.finish_array` does: instant takes the border stamp, the others the
-    photo stamp, so the photo cases stand for every other style."""
-    long_side, max_short = max(GXR_MAX_SOURCE), min(GXR_MAX_SOURCE)
-    out: list[dict[str, Any]] = []
-    for short in range(1, max_short + 1):
-        for w, h in ((long_side, short), (short, long_side)):
-            for size in ("small", "medium", "large"):
-                for font in ("seg7", "typewriter", "sans"):
-                    for placement in ("photo", "border"):
-                        spec = StampSpec(enabled=True, content="date", show_time=True, font=font, size=size, placement=placement)
-                        request: dict[str, Any] = {"w": w, "h": h, "taken": [2026, 12, 31, 23, 59], "file_time": None}
-                        if placement == "border":
-                            request["frame"] = FrameSpec(style="instant").to_json()
-                        out.append({"request": request, "spec": spec.to_json()})
-    return out
+def cjk_band_cases(lo: int, hi: int) -> tuple[list[dict[str, Any]], list[Any]]:
+    """CJK stamps at every integer stamp size lo..hi with the sweep's combinations: every size
+    option (the short side is chosen so `round(short * STAMP_SIZE)` is the target), stamp font,
+    text, and both placements (photo, instant border). Landscape 4:3 photos."""
+    from gxr_studio.finish.layout import STAMP_SIZE
+
+    cases: list[dict[str, Any]] = []
+    want: list[Any] = []
+    for target, size, font, text in itertools.product(
+        range(lo, hi + 1), ("small", "medium", "large"), ("seg7", "typewriter", "sans"), CJK_SWEEP_TEXTS
+    ):
+        k = STAMP_SIZE[size]
+        short = next(s for s in range(int((target - 0.5) / k), int((target + 0.5) / k) + 2) if round(s * k) == target)
+        for placement, frame in (("photo", None), ("border", FrameSpec(style="instant"))):
+            spec = StampSpec(enabled=True, content="text", text=text, font=font, size=size, corner="tl", color="red", placement=placement)
+            pair = stamp_case((short * 4) // 3, short, spec, None, frame)
+            cases.append(pair[0])
+            want.append(pair[1])
+    return cases, want
 
 
 def write_json(path: Path, value: Any) -> Path:
@@ -288,11 +300,11 @@ def same(a: Any, b: Any, path: str = "") -> None:
 __all__ = [
     "FIXTURE_CJK",
     "OUTPUT_RATIOS",
-    "CJK_GATE_PX",
-    "GXR_MAX_SOURCE",
+    "CJK_MAX_STAMP_PX",
+    "cjk_band_cases",
+    "cjk_box_bound",
     "cjk_fonts",
     "cjk_sweep_cases",
-    "stamp_domain_cases",
     "desktop_mark",
     "font_args",
     "font_pairs",
