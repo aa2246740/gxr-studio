@@ -5,6 +5,7 @@ import type { PhotoMeta } from '../lib/exif';
 import type { GapMinutes, Order } from '../lib/group';
 import type { Choice } from '../lib/recipes';
 import type { Book } from './book';
+import { lookCache } from './looks';
 
 /** 缩略图这一步的状态。文件读不读得了、显卡里有没有源，是另外两件事（gone、cached）。 */
 export type PhotoStatus = 'pending' | 'ready' | 'bad';
@@ -94,8 +95,7 @@ export function releaseBitmaps(photo: Photo): void {
 
 /** 放掉配方卡的小图（换版本、清空时）。 */
 export function releaseLooks(photo: Photo): void {
-  for (const look of photo.looks.values()) look.bitmap.close();
-  photo.looks.clear();
+  lookCache.forget(photo);
 }
 
 export function photoMs(photo: Photo): number {

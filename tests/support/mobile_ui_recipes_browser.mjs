@@ -189,6 +189,27 @@ try {
   await page.waitForFunction((want) => document.querySelector('.app')?.dataset.recipeKey === want, chosenKey, { timeout: 60_000 });
   step('swipe', { second, backOn: await page.locator('.editor .strip[data-recipes] .rc.on').getAttribute('data-card'), backKey: await recipeKey(page) });
 
+  // 换校准数据、换相机配方文件：旧表画的配方卡小图全部放掉（位图已关闭）。
+  const remember = () =>
+    page.evaluate(() => {
+      const looks = window.__gxrLooks;
+      window.__oldLooks = [...looks.entries.values()].map((entry) => entry.bitmap);
+      return { count: window.__oldLooks.length, clears: looks.stats().clears };
+    });
+  const released = (before) =>
+    page.waitForFunction((n) => window.__gxrLooks.stats().clears > n, before.clears, { timeout: 60_000 }).then(() =>
+      page.evaluate(() => ({ closed: window.__oldLooks.every((bitmap) => bitmap.width === 0), stats: window.__gxrLooks.stats() })),
+    );
+  const beforeCalib = await remember();
+  await page.locator('input.calibpick').setInputFiles(manifest.pack);
+  const afterCalib = await released(beforeCalib);
+  await waitCards(page);
+  const beforeDat = await remember();
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.dat);
+  const afterDat = await released(beforeDat);
+  await waitCards(page);
+  step('looks-cleared', { beforeCalib, afterCalib, beforeDat, afterDat });
+
   // 06c：删掉校准数据，配方还能选，但卡片和照片都是中性转换。
   await backToGrid(page);
   await page.getByRole('button', { name: '更多' }).click();

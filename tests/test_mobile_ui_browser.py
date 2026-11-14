@@ -307,6 +307,11 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     assert swipe["second"]["stem"] != stem and swipe["second"]["on"] == 0
     assert swipe["backOn"] == "builtin:1" and swipe["backKey"] == chosen["key"]
 
+    cleared = steps["looks-cleared"]
+    assert cleared["beforeCalib"]["count"] > 0 and cleared["afterCalib"]["closed"]
+    assert cleared["beforeDat"]["count"] > 0 and cleared["afterDat"]["closed"]
+    assert cleared["afterDat"]["stats"]["clears"] > cleared["afterCalib"]["stats"]["clears"]
+
     nocal = steps["no-calibration"]
     assert nocal["label"] == "中性转换" and nocal["key"] == "dev-neutral"
     assert set(nocal["subs"][:8]) == {"中性转换"}
@@ -348,3 +353,10 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert cases["idb"] == {"afterLate": None, "afterNew": "b.zip", "cleared": None}
     # 缓存上限：引擎里我们的表不超过 24 张，JS 不超过 16 张，舞台那张一直在。
     assert cases["caps"] == {"engineKeys": 24, "js": 16, "stageKept": True, "stage": True}
+    # 配方卡小图：40 张照片之后仍在 32 MiB 以内，打开的那张 11 张都在，挤掉的都关了，清空后一张不剩。
+    looks = cases["looks"]
+    assert looks["limit"] == 32 << 20 and looks["bytes"] <= looks["limit"], looks
+    assert looks["entries"] == looks["bytes"] // (192 * 128 * 4) and looks["evicted"] == 440 - looks["entries"] > 0
+    assert looks["openKept"] == 11 and looks["newest"] == 11
+    assert looks["evictedClosed"] and not looks["closedButListed"]
+    assert looks["afterClear"] == 0 and looks["allClosed"] and looks["mapsEmpty"]

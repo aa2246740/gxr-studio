@@ -98,6 +98,11 @@ export class Book {
 
   constructor(private readonly io: BookIo) {}
 
+  /** 相机配方文件和校准数据的组合版本；变了就说明旧的烘焙表（和用它画的小图）都作废了。 */
+  generationId(): number {
+    return this.generation;
+  }
+
   attach(engine: Engine | null): void {
     this.engine = engine;
   }

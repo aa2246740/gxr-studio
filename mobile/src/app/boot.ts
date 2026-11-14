@@ -8,6 +8,7 @@ import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui
 import { bakeIn, importCalib, readDat, restoreCalib, warmCore } from '../core/api';
 import { deletePack } from '../lib/idb';
 import { Book } from './book';
+import { lookCache } from './looks';
 import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
 import { GridView } from './grid';
@@ -67,7 +68,13 @@ class App implements AppApi {
     this.engine = engine;
     this.recipeBook.attach(engine);
     // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
+    let generation = this.recipeBook.generationId();
     this.recipeBook.onChange(() => {
+      // 换了相机配方文件或校准数据：旧表画的配方卡小图全部放掉。
+      if (this.recipeBook.generationId() !== generation) {
+        generation = this.recipeBook.generationId();
+        lookCache.clear();
+      }
       if (this.screen === 'grid') this.grid?.refresh();
     });
     const restored = this.recipeBook.restore().catch(() => undefined);
@@ -80,6 +87,7 @@ class App implements AppApi {
     this.showStart();
     if (!import.meta.env.DEV) return;
     (window as unknown as { __gxrBook?: Book }).__gxrBook = this.recipeBook;
+    (window as unknown as { __gxrLooks?: typeof lookCache }).__gxrLooks = lookCache;
     await restored;
     const shot = new URLSearchParams(location.search).get('shot');
     if (!shot) return;

@@ -8,6 +8,7 @@ import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { cardTag, listing, namesOnly, shelf, type Card, type Listing, type Shelf } from '../lib/recipes';
 import type { UnitState } from './book';
 import { button, el, icon } from './dom';
+import { lookCache } from './looks';
 import type { AppApi, Photo } from './model';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
@@ -239,9 +240,9 @@ export class RecipeView {
         source = text = NEUTRAL_LABEL;
       } else {
         const key = this.api.book().bakeKey(card, scene.unit, scene.iso);
-        const look = key ? this.photo.looks.get(key) : undefined;
-        if (look && look.version === this.photo.version) {
-          bitmap = look.bitmap;
+        const look = key ? lookCache.get(this.photo, key) : null;
+        if (look) {
+          bitmap = look;
           source = PREDICTED_LABEL;
         }
         text = card.desc ?? '';
@@ -443,8 +444,7 @@ export class RecipeView {
       const key = book.bakeKey(card, scene.unit, scene.iso);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      const cached = photo.looks.get(key);
-      if (cached && cached.version === version) continue;
+      if (lookCache.get(photo, key)) continue;
       const bake = book.bake(card, scene.unit, scene.iso);
       bake.catch(() => undefined);
       jobs.push({ card, key, bake });
@@ -484,8 +484,7 @@ export class RecipeView {
         bitmap.close();
         return;
       }
-      photo.looks.get(key)?.bitmap.close();
-      photo.looks.set(key, { version, bitmap });
+      lookCache.put(photo, key, version, bitmap);
       this.paintThumbs();
     }
   }

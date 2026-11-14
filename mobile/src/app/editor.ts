@@ -8,6 +8,7 @@ import { histPoint, histShape } from '../lib/hist';
 import { button, el, icon, ICON } from './dom';
 import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
+import { lookCache } from './looks';
 import { RecipeView } from './recipe_view';
 
 const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
@@ -92,6 +93,8 @@ export class EditorView {
 
   open(photo: Photo): void {
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
+    // 正在看的这张的配方卡小图不会被全局上限挤掉。
+    lookCache.setOpen(photo);
     this.build(photo, index);
     this.settled = this.load(photo).then(() => this.sharpening);
   }
@@ -103,6 +106,7 @@ export class EditorView {
 
   destroy(): void {
     this.token += 1;
+    lookCache.setOpen(null);
     this.dragging = false;
     this.holding = false;
     this.wantNeighbor = '';

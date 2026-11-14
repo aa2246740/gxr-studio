@@ -198,6 +198,42 @@ try {
       const stillStage = book.gpuKey(first);
       result.caps = { engineKeys: added.size, js: book.done.size, stageKept: stillStage === stage, stage: !!stage };
     }
+    // 9. 配方卡小图的全局上限：40 张照片、每张 11 张卡之后不超过上限，打开的那张一张不少，挤掉的位图已关闭；清空全部关闭。
+    {
+      const { LookCache } = await import('/src/app/looks.ts');
+      const cache = new LookCache();
+      const blank = new ImageData(192, 128);
+      const photos = Array.from({ length: 40 }, (_, i) => ({ id: `r${i}`, version: 1, looks: new Map() }));
+      const all = [];
+      cache.setOpen(photos[0]);
+      for (const photo of photos) {
+        for (let k = 0; k < 11; k++) {
+          const bitmap = await createImageBitmap(blank);
+          all.push({ photo, bitmap });
+          cache.put(photo, `bake:${k}`, 1, bitmap);
+        }
+      }
+      const stats = cache.stats();
+      const openKept = [...photos[0].looks.values()].filter((look) => look.bitmap.width === 192).length;
+      const closedButListed = photos.some((photo) => [...photo.looks.values()].some((look) => look.bitmap.width === 0));
+      const evicted = all.filter(({ photo, bitmap }) => ![...photo.looks.values()].some((look) => look.bitmap === bitmap));
+      const evictedClosed = evicted.every(({ bitmap }) => bitmap.width === 0);
+      const newest = [...photos[39].looks.keys()].length;
+      cache.clear();
+      result.looks = {
+        bytes: stats.bytes,
+        limit: stats.limit,
+        entries: stats.entries,
+        openKept,
+        closedButListed,
+        evicted: evicted.length,
+        evictedClosed,
+        newest,
+        afterClear: cache.stats().entries,
+        allClosed: all.every(({ bitmap }) => bitmap.width === 0),
+        mapsEmpty: photos.every((photo) => photo.looks.size === 0),
+      };
+    }
     // 7. IndexedDB：删除留下的时间比晚到的旧导入新，旧导入不写；更新的导入照常写。
     {
       const idb = await import('/src/lib/idb.ts');
