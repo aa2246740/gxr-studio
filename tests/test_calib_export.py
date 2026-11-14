@@ -15,8 +15,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import PORT
+from gxr_studio import privacy
 from gxr_studio.app import create_app
-from gxr_studio.camdata import calib, calib_export
+from gxr_studio.camdata import calib, calib_export, store
 from support.color_fixtures import entry
 from support.mobile_ui_calib import pack_files, write_pack
 
@@ -24,9 +25,18 @@ STOCK = {"jlaunch": entry(words=0), "qlaunch": entry(words=1), "l08firm": entry(
 NOON = 1763175600.0  # 2025-11-15 12:00 +09:00 左右；文件名里只用本地日期
 
 
-def _pack(home: Path) -> dict[str, bytes]:
-    files = pack_files(STOCK)
+def _camera(home: Path, stock: dict[str, bytes]) -> None:
+    """`model_for` 只从相机数据里读每个单元的原厂 04：测试直接放合成条目。"""
+    for unit, blob in stock.items():
+        path = store.camera_data_dir(home) / "units" / unit / "stock04.entry"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+
+
+def _pack(home: Path, units: tuple[str, ...] = ("jlaunch", "qlaunch", "l08firm")) -> dict[str, bytes]:
+    files = pack_files({unit: STOCK[unit] for unit in units})
     write_pack(calib.calib_dir(home), files)
+    _camera(home, STOCK)
     return files
 
 
@@ -153,3 +163,75 @@ def test_api_refuses_missing_pack_and_card_destination(client, settings, volumes
     assert r.status_code == 422 and r.json()["error"] == "bad_destination"
     r = client.post("/api/calibration/export-iphone", json={"dest_dir": str(settings.library_dir / "x")})
     assert r.status_code == 422 and r.json()["error"] == "bad_destination"
+
+
+def test_a_partial_pack_still_exports(tmp_path: Path) -> None:
+    home = tmp_path / "app"
+    files = _pack(home, ("jlaunch",))
+    path = calib_export.export_for_iphone(home, tmp_path / "out", [], now=NOON)
+    with zipfile.ZipFile(path) as archive:
+        assert sorted(archive.namelist()) == sorted(files) and len(files) == 5
+
+
+def test_a_destination_swapped_for_a_link_after_the_check_is_not_written(tmp_path: Path, monkeypatch) -> None:
+    """检查之后、写之前，选定的目录被换成指向禁止目录的链接（Sol r1 P1）：不写进去，原目录也没有文件。"""
+    home = tmp_path / "app"
+    _pack(home)
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    banned = tmp_path / "banned"
+    (banned / ".git").mkdir(parents=True)
+    real_collect = calib_export.collect
+
+    def swap(target: Path):
+        out = real_collect(target)
+        chosen.rename(tmp_path / "chosen-was")
+        chosen.symlink_to(banned, target_is_directory=True)
+        return out
+
+    monkeypatch.setattr(calib_export, "collect", swap)
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, chosen, [])
+    assert err.value.code == "bad_destination"
+    assert sorted(p.name for p in banned.iterdir()) == [".git"]
+    assert not any((tmp_path / "chosen-was").iterdir())
+
+    # 链接到禁止列表里的目录（卡根），也一样。
+    card = tmp_path / "volumes" / "CARD"
+    card.mkdir(parents=True)
+    chosen.unlink()
+    chosen.mkdir()
+
+    def swap_to_card(target: Path):
+        out = real_collect(target)
+        chosen.rmdir()
+        chosen.symlink_to(card, target_is_directory=True)
+        return out
+
+    monkeypatch.setattr(calib_export, "collect", swap_to_card)
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, chosen, [card])
+    assert err.value.code == "bad_destination" and not any(card.iterdir())
+
+
+def test_a_destination_moved_while_writing_is_not_cleaned_up_by_path(tmp_path: Path, monkeypatch) -> None:
+    """写的时候整个目录被移进 Git 工作区（Sol r1 P1）：报错；写进去的字节被清空，不按路径去别处删东西。"""
+    home = tmp_path / "app"
+    _pack(home)
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    real_write = privacy.PrivateDir.write
+
+    def moving(self, rel: str, data: bytes) -> None:
+        chosen.rename(repo / "moved")
+        real_write(self, rel, data)
+
+    monkeypatch.setattr(privacy.PrivateDir, "write", moving)
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, chosen, [])
+    assert err.value.code == "bad_destination"
+    left = [p for p in (repo / "moved").iterdir()]
+    assert all(p.stat().st_size == 0 for p in left), left
+    assert not chosen.exists()

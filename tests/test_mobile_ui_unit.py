@@ -44,7 +44,7 @@ def test_mobile_ui_zip_pack_unit_and_iso(tmp_path: Path) -> None:
         pytest.skip("node is required")
     files = pack_files({"jlaunch": entry(words=0), "qlaunch": entry(words=1), "l08firm": entry(words=2)})
     stored = tmp_path / "GXR 校准数据 2026-11-15.zip"
-    calib_export.write_zip(files, os.open(stored, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), (2026, 11, 15, 9, 0, 0))
+    stored.write_bytes(calib_export.zip_bytes(files, (2026, 11, 15, 9, 0, 0)))
     deflated = tmp_path / "deflated.zip"
     with zipfile.ZipFile(deflated, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, blob in files.items():

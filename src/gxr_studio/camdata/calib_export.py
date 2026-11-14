@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import stat
@@ -107,26 +108,36 @@ def zip_name(day: str) -> str:
     return f"{ZIP_PREFIX} {day}.zip"
 
 
-def _claim(dest: Path, day: str) -> tuple[Path, int]:
-    """原子地占一个不重名的文件名：`GXR 校准数据 日期.zip`、`… 日期-2.zip`…"""
-    for n in range(1, 1000):
-        name = zip_name(day) if n == 1 else f"{ZIP_PREFIX} {day}-{n}.zip"
-        path = dest / name
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        except FileExistsError:
-            continue
-        return path, fd
-    raise CalibExportError(422, "too_many_names", "无法导出。同名文件太多了。")
-
-
-def write_zip(files: dict[str, bytes], fd: int, when: tuple[int, int, int, int, int, int]) -> None:
-    with os.fdopen(fd, "wb") as handle, zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
+def zip_bytes(files: dict[str, bytes], when: tuple[int, int, int, int, int, int]) -> bytes:
+    """整个 zip 先在内存里做好（校准包只有几十 KB），再一次写进已核对的目录句柄。"""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in ["manifest.json", *sorted(n for n in files if n != "manifest.json")]:
             info = zipfile.ZipInfo(name, date_time=when)
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = 0o600 << 16
             archive.writestr(info, files[name])
+    return buffer.getvalue()
+
+
+def _write_claimed(folder: privacy.PrivateDir, day: str, data: bytes) -> str:
+    """在已核对的目录句柄里排他地占一个不重名的文件名并写入：`GXR 校准数据 日期.zip`、`… 日期-2.zip`…
+    写到一半失败，只按这个句柄删掉自己的文件。"""
+    for n in range(1, 1000):
+        name = zip_name(day) if n == 1 else f"{ZIP_PREFIX} {day}-{n}.zip"
+        if folder.exists(name):
+            continue
+        try:
+            folder.write(name, data)
+        except FileExistsError:
+            continue
+        except privacy.PrivatePathError:
+            raise  # 目录在写的时候被移走：write 已把写进去的字节清空，不再对移走的目录做删除
+        except BaseException:
+            folder.remove(name)
+            raise
+        return name
+    raise CalibExportError(422, "too_many_names", "无法导出。同名文件太多了。")
 
 
 def export_for_iphone(
@@ -136,7 +147,10 @@ def export_for_iphone(
     *,
     now: float | None = None,
 ) -> Path:
-    """核对后写 `GXR 校准数据 YYYY-MM-DD.zip` 到 `dest_dir`，返回它的路径。写坏了不留半个文件。"""
+    """核对后写 `GXR 校准数据 YYYY-MM-DD.zip` 到 `dest_dir`，返回它的路径。
+
+    目标目录核对之后只打开一次（`privacy.PrivateDir`，不跟随链接），之后写入、占名字和失败清理都通过这个句柄；
+    核对之后路径被换成指向别处的链接，或者写的时候目录被移走，都不会写到别的地方去。"""
     from ..export import ExportError, check_destination
 
     blocked = list(forbidden)
@@ -151,15 +165,18 @@ def export_for_iphone(
     except privacy.PrivatePathError as exc:
         raise CalibExportError(422, "bad_destination", "无法导出到这个位置。请换一个文件夹。", exc.detail) from exc
     _manifest, files = collect(home)
+    local = time.localtime(time.time() if now is None else now)
+    data = zip_bytes(files, (max(1980, local.tm_year), local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec))
     try:
-        dest.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            dest.mkdir(parents=True)
     except OSError as exc:
         raise CalibExportError(422, "export_failed", "无法导出。请检查导出文件夹能不能写入。") from exc
-    local = time.localtime(time.time() if now is None else now)
-    path, fd = _claim(dest, time.strftime("%Y-%m-%d", local))
     try:
-        write_zip(files, fd, (max(1980, local.tm_year), local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec))
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-    return path
+        with privacy.PrivateDir(dest, "calibration_export", blocked) as folder:
+            name = _write_claimed(folder, time.strftime("%Y-%m-%d", local), data)
+            return folder.real / name
+    except privacy.PrivatePathError as exc:
+        raise CalibExportError(422, "bad_destination", "无法导出到这个位置。请换一个文件夹。", exc.detail) from exc
+    except OSError as exc:
+        raise CalibExportError(422, "export_failed", "无法导出。请检查导出文件夹能不能写入。") from exc

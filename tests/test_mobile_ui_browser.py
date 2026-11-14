@@ -236,7 +236,7 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     # 合成的校准包：只有原厂 04 的指纹跟着这份 DAT 走，数组和色相环都是生成的。
     pack = pack_files({name: entries[(unit, 4)] for unit, name in enumerate(("jlaunch", "qlaunch", "l08firm"))})
     zip_path = tmp_path / "GXR 校准数据 2026-11-15.zip"
-    calib_export.write_zip(pack, os.open(zip_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), (2026, 11, 15, 9, 0, 0))
+    zip_path.write_bytes(calib_export.zip_bytes(pack, (2026, 11, 15, 9, 0, 0)))
     deflated = tmp_path / "squeezed.zip"
     with zipfile.ZipFile(deflated, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, blob in pack.items():
