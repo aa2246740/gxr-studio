@@ -395,7 +395,7 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 
 - 0 字节就是没给：空的 `dat`、`library`、`entry` 当作缺省，空的调整当作 `{}`。CLI 的空文件和 WASM 的空数组结果一样。
 - 条目和原厂 04 必须正好 552 字节，在求哈希、规划或渲染之前检查，错误是 `value`／`entry must be 552 bytes`。
-- 解码好的相机 JPG 和内嵌预览在公共 `color_image` 入口先查：宽高大于 0、3 个通道、`h*w*3` 用带检查的 u64 算且不超过 2^32−1、字节数正好相符，然后才复制或套 LUT。
+- 解码好的相机 JPG 和内嵌预览在公共 `color_image` 入口先查：宽高大于 0、3 个通道、`h*w*3` 用带检查的 u64 算且不超过 2^32−1、字节数正好相符，然后才复制或套 LUT。CLI 读 `--jpg`/`--preview` 的 `.npy` 时，解析完头就用同一个 `check_rgb_shape` 查声明的形状和 payload 长度，不通过就报错，不复制像素；通过的像素留在读文件的那块缓冲里。
 - 调整解析之后再查有限值：曝光是 NaN 或 ±Infinity 时报 `bad_adjust`／「请求无效。请刷新页面后重试。」，曲线点非有限时报 `bad_curve`，文案和 Python 的 `parse_adjust`、`_parse_points` 一样。
 - WASM 的 `iso` 按 f64 接收（CLI 把文本读成同一个数），先查有限、是整数、绝对值不超过 2^53，再变成整数；`NaN`、`Infinity`、`1.5` 报 `bad_request`／`iso 要是整数`，超过 2^53 报 `iso 超出范围`。
 

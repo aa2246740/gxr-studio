@@ -665,3 +665,73 @@ def test_decoded_pictures_are_checked(homes: dict[str, xs.Home], files: dict[str
             assert (code, payload_out) == (2, want), (shape, flag, payload_out)
     code, ok = run_json([*args, "--base", "camera-jpg", "--jpg", str(good), "--out", str(tmp_path / "o.npy")])
     assert code == 0 and ok["path"] == "camera-jpg", ok
+
+
+def _peak_rss(args: list[str]) -> tuple[int, str, int]:
+    """Exit code, stdout and the peak resident set size in bytes (`/usr/bin/time -l`, macOS)."""
+    import re
+    import subprocess  # nosec B404
+
+    from support.core_cli import CLI
+
+    proc = subprocess.run(["/usr/bin/time", "-l", str(CLI), *args], capture_output=True, text=True, check=False)  # noqa: S603  # nosec B603
+    found = re.search(r"(\d+)\s+maximum resident set size", proc.stderr)
+    assert found, proc.stderr
+    return proc.returncode, proc.stdout, int(found.group(1))
+
+
+@needs_dat
+@pytest.mark.skipif(not Path("/usr/bin/time").is_file(), reason="需要 /usr/bin/time -l")
+def test_bad_picture_npy_is_refused_without_copying(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    """r2 P2: a .npy whose payload does not fit its header is refused before the pixels are copied.
+
+    The reviewer's inputs (shape (1,2,3), (4294967295,4294967295,3) and (1,2,4) with 8,388,611
+    payload bytes, plus too short) fail with the fixed errors, and a 64 MiB payload adds no
+    second payload-sized buffer to the process's peak memory."""
+    import json
+
+    h = homes["all"]
+    shot = xs.write_json(tmp_path / "shot.json", xs.shot_for(None, files["jpg"], lens=LENSES[0], iso=200))
+    edit = xs.write_json(tmp_path / "edit.json", xs.edit_json(EditState()))
+    base = [
+        "source-color-image",
+        "--shot",
+        str(shot),
+        "--edit",
+        str(edit),
+        "--dat",
+        str(h.dat),
+        "--base",
+        "camera-jpg",
+        "--out",
+        str(tmp_path / "o.npy"),
+    ]
+    length = {"kind": "bad_request", "message": "相机 JPG的像素字节数和宽高不符"}
+    cases = [
+        ((1, 2, 3), 8_388_611, length),
+        ((1, 2, 3), 2, length),
+        ((1, 2, 3), 7, length),
+        (
+            (4294967295, 4294967295, 3),
+            8_388_611,
+            {"kind": "value", "message": "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size."},
+        ),
+        ((1, 2, 4), 8_388_611, {"kind": "bad_request", "message": "相机 JPG要是 RGB 三通道"}),
+        ((1, 2, 1), 2, {"kind": "bad_request", "message": "相机 JPG要是 RGB 三通道"}),
+    ]
+    for i, (shape, n, want) in enumerate(cases):
+        bad = _npy_with(tmp_path / f"r2-{i}.npy", shape, bytes(n))
+        code, payload = run_json([*base, "--jpg", str(bad)])
+        assert (code, payload) == (2, {"error": want}), (shape, n, payload)
+    small = _npy_with(tmp_path / "small.npy", (1, 2, 3), bytes(7))
+    big_n = 64 << 20
+    big = _npy_with(tmp_path / "big.npy", (1, 2, 3), bytes(big_n))
+    rows = []
+    for path in (small, big):
+        code, out, rss = _peak_rss([*base, "--jpg", str(path)])
+        assert code == 2 and json.loads(out) == {"error": length}, out
+        rows.append(rss)
+    extra = rows[1] - rows[0]
+    print(f"peak RSS: 7-byte payload {rows[0]} B, 64 MiB payload {rows[1]} B, extra {extra} B ({extra / big_n:.2f}x the payload)")
+    # Reading the file costs one payload; a copy before the check would cost a second one.
+    assert extra < 1.5 * big_n, (rows, big_n)

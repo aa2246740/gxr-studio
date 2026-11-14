@@ -143,31 +143,38 @@ fn camera_labels(detail: &str) -> Labels {
     ])
 }
 
-/// A decoded camera JPG or DNG preview, checked before anything copies or reads it: both
-/// sides positive, three channels, `h * w * 3` (checked `u64`) within the shared count limit,
-/// and exactly that many bytes.
-pub(crate) fn check_rgb(img: &Image<u8>, what: &str) -> Result<(), CoreError> {
-    if img.height == 0 || img.width == 0 {
+/// The checks a decoded camera JPG or DNG preview must pass, on its declared shape and its
+/// payload length alone, so a caller can run them before it copies any pixel: both sides
+/// positive, three channels, `h * w * 3` (checked `u64`) within the shared count limit, and
+/// exactly that many bytes. `what` names the picture in the error.
+pub fn check_rgb_shape(
+    height: usize,
+    width: usize,
+    channels: usize,
+    len: usize,
+    what: &str,
+) -> Result<(), CoreError> {
+    if height == 0 || width == 0 {
         return Err(CoreError::new(
             "bad_request",
             format!("{what}的宽高要大于 0"),
         ));
     }
-    if img.channels != 3 {
+    if channels != 3 {
         return Err(CoreError::new(
             "bad_request",
             format!("{what}要是 RGB 三通道"),
         ));
     }
     let too_big = || CoreError::new("value", gxr_color::ARRAY_TOO_BIG);
-    let count = u64::try_from(img.height)
+    let count = u64::try_from(height)
         .ok()
-        .zip(u64::try_from(img.width).ok())
+        .zip(u64::try_from(width).ok())
         .and_then(|(h, w)| h.checked_mul(w))
         .and_then(|n| n.checked_mul(3))
         .filter(|&n| n <= u64::from(u32::MAX))
         .ok_or_else(too_big)?;
-    if u64::try_from(img.values.len()).ok() != Some(count) {
+    if u64::try_from(len).ok() != Some(count) {
         return Err(CoreError::new(
             "bad_request",
             format!("{what}的像素字节数和宽高不符"),
@@ -176,15 +183,24 @@ pub(crate) fn check_rgb(img: &Image<u8>, what: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// `check_rgb_shape` on a decoded picture.
+pub(crate) fn check_rgb(img: &Image<u8>, what: &str) -> Result<(), CoreError> {
+    check_rgb_shape(img.height, img.width, img.channels, img.values.len(), what)
+}
+
+/// The names the pictures carry in their errors.
+pub const CAMERA_JPG: &str = "相机 JPG";
+pub const PREVIEW: &str = "内嵌预览";
+
 /// Port of gxr_studio/finish/serve.py:189 color_image with `full=True` (`max_edge` unused).
 ///
 /// The public entry: the decoded pictures are checked first (`check_rgb`).
 pub fn color_image(src: &Sources<'_>, edit: &Edit, base: &str) -> Result<Picked, Fail> {
     if let Some(jpg) = src.jpg {
-        check_rgb(jpg, "相机 JPG")?;
+        check_rgb(jpg, CAMERA_JPG)?;
     }
     if let Some(preview) = src.preview {
-        check_rgb(preview, "内嵌预览")?;
+        check_rgb(preview, PREVIEW)?;
     }
     color_image_checked(src, edit, base)
 }

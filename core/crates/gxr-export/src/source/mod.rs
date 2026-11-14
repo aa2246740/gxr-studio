@@ -23,4 +23,4 @@ pub use plan::{
     CALIBRATED_LABEL, CalibPack, Camera, Context, EXPORT_STEP, ISO_SPLIT, MODEL_NOTE, Plan,
     UNCALIBRATED_LABEL, unit_of_lens,
 };
-pub use select::{Picked, Sources, color_image};
+pub use select::{CAMERA_JPG, PREVIEW, Picked, Sources, check_rgb_shape, color_image};

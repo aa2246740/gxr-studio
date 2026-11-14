@@ -13,8 +13,8 @@
 
 use gxr_color::encode_npy;
 use gxr_export::source::{
-    CalibPack, Pictures, Request, color_image_json, iso_from_number, plan_json, render,
-    selection_json,
+    CAMERA_JPG, CalibPack, PREVIEW, Pictures, Request, check_rgb_shape, color_image_json,
+    iso_from_number, plan_json, render, selection_json,
 };
 use gxr_raw::{CoreError, Image, Json};
 
@@ -69,9 +69,15 @@ fn maybe_pack(args: &[String]) -> Result<Option<CalibPack>, Failure> {
 }
 
 /// A 3-axis uint8 `.npy` (version 1 or 2 header, C order), as `np.save` writes it.
-fn read_rgb(path: &str) -> Result<Image<u8>, Failure> {
+fn read_rgb(path: &str, what: &str) -> Result<Image<u8>, Failure> {
+    parse_rgb(bytes_of(path)?, path, what)
+}
+
+/// The header is parsed, then the declared shape and the payload length go through the
+/// shared `check_rgb_shape` before any pixel is copied (UNIT-COMMON "validate before anything
+/// else"); the payload then stays in the buffer the file was read into.
+fn parse_rgb(mut data: Vec<u8>, path: &str, what: &str) -> Result<Image<u8>, Failure> {
     let bad = || Failure::Usage(format!("{path} must be a 3-axis uint8 .npy"));
-    let data = bytes_of(path)?;
     if data.len() < 10 || &data[..6] != b"\x93NUMPY" {
         return Err(bad());
     }
@@ -100,16 +106,17 @@ fn read_rgb(path: &str) -> Result<Image<u8>, Failure> {
         .filter(|d| !d.is_empty())
         .map(|d| d.parse::<usize>().map_err(|_| bad()))
         .collect::<Result<_, _>>()?;
-    // Any (h, w, c) array is passed on as it is: the shared `color_image` entry checks the
-    // dimensions, channels, count limit and length, with the same errors as for WASM callers.
     let [h, w, c] = dims[..] else {
         return Err(bad());
     };
+    check_rgb_shape(h, w, c, data.len() - end, what)?;
+    // Drop the header in place: no second payload-sized buffer.
+    data.drain(..end);
     Ok(Image {
         height: h,
         width: w,
         channels: c,
-        values: data[end..].to_vec(),
+        values: data,
     })
 }
 
@@ -205,8 +212,12 @@ fn run_color_image(args: &[String]) -> Result<Output, Failure> {
     let pack = maybe_pack(args)?;
     let binding = maybe(args, "--binding")?.unwrap_or("");
     let dng = maybe_bytes(args, "--dng")?;
-    let jpg = maybe(args, "--jpg")?.map(read_rgb).transpose()?;
-    let preview = maybe(args, "--preview")?.map(read_rgb).transpose()?;
+    let jpg = maybe(args, "--jpg")?
+        .map(|p| read_rgb(p, CAMERA_JPG))
+        .transpose()?;
+    let preview = maybe(args, "--preview")?
+        .map(|p| read_rgb(p, PREVIEW))
+        .transpose()?;
     let cube = maybe_bytes(args, "--cube")?;
     let space = maybe_bytes(args, "--space")?
         .map(|b| String::from_utf8(b).map_err(|_| Failure::Usage("--space is not UTF-8".into())))
@@ -233,5 +244,61 @@ fn run_color_image(args: &[String]) -> Result<Output, Failure> {
             Ok(Output { text, ok: true })
         }
         Err(text) => Ok(Output { text, ok: false }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn npy(shape: &str, payload: usize) -> Vec<u8> {
+        let body = format!("{{'descr': '|u1', 'fortran_order': False, 'shape': {shape}, }}");
+        let pad = (64 - (10 + body.len() + 1) % 64) % 64;
+        let mut header = body.into_bytes();
+        header.extend(std::iter::repeat_n(b' ', pad));
+        header.push(b'\n');
+        let mut out = b"\x93NUMPY\x01\x00".to_vec();
+        out.extend_from_slice(&u16::try_from(header.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&header);
+        out.resize(out.len() + payload, 7);
+        out
+    }
+
+    fn refused(data: Vec<u8>) -> CoreError {
+        match parse_rgb(data, "x.npy", CAMERA_JPG) {
+            Err(Failure::Core(e)) => e,
+            Err(Failure::Usage(u)) => panic!("usage error {u}"),
+            Ok(_) => panic!("accepted"),
+        }
+    }
+
+    /// Sol r2 P2: bad shapes are refused on the header and the payload length, before any copy.
+    #[test]
+    fn bad_pictures_are_refused_before_any_copy() {
+        let big = 8_388_611;
+        let e = refused(npy("(1, 2, 3)", big));
+        assert_eq!(e.message, "相机 JPG的像素字节数和宽高不符");
+        let e = refused(npy("(1, 2, 3)", 2));
+        assert_eq!(e.message, "相机 JPG的像素字节数和宽高不符");
+        let e = refused(npy("(4294967295, 4294967295, 3)", big));
+        assert_eq!(
+            (e.kind, e.message.as_str()),
+            ("value", gxr_color::ARRAY_TOO_BIG)
+        );
+        let e = refused(npy("(1, 2, 4)", big));
+        assert_eq!(e.message, "相机 JPG要是 RGB 三通道");
+        let e = refused(npy("(0, 2, 3)", 0));
+        assert_eq!(e.message, "相机 JPG的宽高要大于 0");
+    }
+
+    /// A good picture keeps the file's buffer: the payload is not copied into a new one.
+    #[test]
+    fn good_pictures_keep_the_read_buffer() {
+        let data = npy("(2, 4, 3)", 24);
+        let start = data.as_ptr();
+        let img = parse_rgb(data, "x.npy", PREVIEW).unwrap_or_else(|_| panic!("refused"));
+        assert_eq!((img.height, img.width, img.values.len()), (2, 4, 24));
+        assert_eq!(img.values.as_ptr(), start);
+        assert!(img.values.iter().all(|&v| v == 7));
     }
 }
