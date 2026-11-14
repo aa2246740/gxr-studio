@@ -6,7 +6,9 @@ use gxr_raw::{CoreError, Dng, Image, Json};
 use super::fail::Fail;
 use super::input::{Shot, parse_edit, parse_shot, parse_tones};
 use super::lut::LutSource;
-use super::plan::{CalibPack, Camera, Context, plan, recipe_display, renderer_info, selection};
+use super::plan::{
+    CalibPack, Camera, Context, check_entry, plan, recipe_display, renderer_info, selection,
+};
 use super::render::render_recipe;
 use super::select::{Sources, color_image};
 
@@ -175,6 +177,8 @@ pub fn render(
     iso: i64,
     tones: &[u8],
 ) -> Result<Image<u8>, CoreError> {
+    check_entry(entry)?;
+    check_entry(stock04)?;
     let (adjust, curves) = parse_tones(tones)?;
     let display = recipe_display(pack, stock04, unit, iso, entry, &adjust, curves.as_ref())?;
     let dng = Dng::open(dng, name)?;

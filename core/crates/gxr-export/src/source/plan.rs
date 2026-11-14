@@ -183,6 +183,16 @@ pub fn selection(shot: &Shot, recipe: Option<&RecipeSel>) -> (RecipeSel, bool) {
     }
 }
 
+/// Entries come from `datcodec`, which always assembles 552 bytes; anything else is refused
+/// before it is hashed or planned, with the text `bake_chroma` would give later.
+pub(crate) fn check_entry(entry: &[u8]) -> Result<(), CoreError> {
+    if entry.len() == gxr_camdata::ENTRY_BYTES {
+        Ok(())
+    } else {
+        Err(CoreError::new("value", "entry must be 552 bytes"))
+    }
+}
+
 /// Port of gxr_studio/render/service.py:340 RenderService.plan.
 ///
 /// Local recipes live in the desktop library (`recipes/repository.py`), which the phone does
@@ -211,6 +221,7 @@ pub fn plan(shot: &Shot, recipe: Option<&RecipeSel>, ctx: &Context<'_>) -> Resul
             "需要这个配方解析后的条目（entry）",
         ))
     })?;
+    check_entry(entry)?;
     let entry_sha256 = sha256_hex(entry);
     let iso = shot.iso;
     let model_iso = if iso.is_some_and(|i| i != 0 && i >= ISO_SPLIT) {
@@ -369,6 +380,18 @@ mod tests {
         assert_eq!(unit_of_lens(Some("GXR MOUNT A12"), None), Some("l08firm"));
         assert_eq!(unit_of_lens(Some("S10 24-72mm"), None), None);
         assert_eq!(unit_of_lens(None, None), None);
+    }
+
+    #[test]
+    fn entries_must_be_552_bytes() {
+        for n in [0, 1, 551, 553] {
+            let err = check_entry(&vec![0; n]).unwrap_err();
+            assert_eq!(
+                (err.kind, err.message.as_str()),
+                ("value", "entry must be 552 bytes")
+            );
+        }
+        assert!(check_entry(&[0; 552]).is_ok());
     }
 
     #[test]

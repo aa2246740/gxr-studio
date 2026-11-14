@@ -471,7 +471,44 @@ def review_r1_specs(tmp: Path, edit: Path, base: dict[str, Any], render: dict[st
         "r1-plan-empty-dat": {"kind": "plan", "edit": str(edit), **{**base, "dat": str(empty)}},
         "r1-plan-empty-library": {"kind": "plan", "edit": str(edit), **{**base, "library": str(empty)}},
     }
+    # 2. Entries are exactly 552 bytes, checked before planning or rendering.
+    good = Path(base["entry"]).read_bytes()
+    for n in (1, 551, 553):
+        e = tmp / f"entry-{n}.bin"
+        e.write_bytes((good + b"\x00")[:n])
+        out[f"r1-plan-entry-{n}"] = {"kind": "plan", "edit": str(edit), **{**base, "entry": str(e)}}
+        out[f"r1-render-entry-{n}"] = {**ok, "entry": str(e), "out": str(tmp / f"r1-e{n}.npy")}
+        out[f"r1-render-stock-{n}"] = {**ok, "stock": str(e), "out": str(tmp / f"r1-s{n}.npy")}
     return out
+
+
+@needs_dat
+def test_entry_must_be_552_bytes(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    """r1 P2-2: plan and render refuse 1, 551 and 553 bytes with `bake_chroma`'s text; 552 plans."""
+    h = homes["all"]
+    good = h.entry(RecipeSel("jlaunch", 3)) or b""
+    assert len(good) == 552
+    shot = xs.write_json(tmp_path / "shot.json", xs.shot_for(files["ok"], None, lens=LENSES[0], iso=200))
+    edit = xs.write_json(tmp_path / "edit.json", xs.edit_json(EditState(recipe=RecipeSel("jlaunch", 3))))
+    stock = tmp_path / "stock.bin"
+    stock.write_bytes(h.entry(RecipeSel("jlaunch", 4)) or b"")
+    for n in (1, 551, 552, 553):
+        e = tmp_path / f"e{n}.bin"
+        e.write_bytes((good + b"\x00")[:n])
+        code, payload = run_json(
+            ["source-plan", "--shot", str(shot), "--edit", str(edit), "--dat", str(h.dat), "--calib", str(h.calib), "--entry", str(e)]
+        )
+        r_code, r_payload = run_json(
+            ["source-render", "--dng", str(files["ok"]), "--entry", str(e), "--stock", str(stock), "--unit", "jlaunch"]
+            + ["--calib", str(h.calib), "--iso", "200", "--out", str(tmp_path / "o.npy")]
+        )
+        if n == 552:
+            assert code == 0 and payload["plan"]["calibrated"] is True, payload
+            assert r_code == 0, r_payload
+        else:
+            want = {"error": {"kind": "value", "message": "entry must be 552 bytes"}}
+            assert (code, payload) == (2, want), (n, payload)
+            assert (r_code, r_payload) == (2, want), (n, r_payload)
 
 
 @needs_dat
