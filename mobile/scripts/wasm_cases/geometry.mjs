@@ -22,24 +22,33 @@ function framed(height, width, payload) {
   return new Uint8Array(Buffer.concat([header, Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength)]));
 }
 
+function jsNum(v) {
+  if (v === 'NaN') return Number.NaN;
+  if (v === 'Infinity') return Number.POSITIVE_INFINITY;
+  if (v === '-Infinity') return Number.NEGATIVE_INFINITY;
+  return v;
+}
+
 export function cases(inputs) {
   const out = [];
   for (const file of inputs) {
     const spec = JSON.parse(readFileSync(file, 'utf8'));
-    const w = spec.w;
-    const h = spec.h;
+    const w = jsNum(spec.w);
+    const h = jsNum(spec.h);
+    const cliW = spec.cliW ?? w;
+    const cliH = spec.cliH ?? h;
     const geomJson = typeof spec.geometry === 'string' ? spec.geometry : JSON.stringify(spec.geometry ?? {});
     const cropJson = typeof spec.crop === 'string' ? spec.crop : JSON.stringify(spec.crop ?? null);
 
     if (spec.checkFinalBox !== false) {
       out.push({
         label: `${file}::geom_final_box`,
-        cliArgs: ['geom-final-box', '--w', String(w), '--h', String(h), '--geometry', geomJson, '--crop', cropJson],
+        cliArgs: ['geom-final-box', '--w', String(cliW), '--h', String(cliH), '--geometry', geomJson, '--crop', cropJson],
         wasm: (mod) => `${mod.geom_final_box(w, h, geomJson, cropJson)}\n`,
       });
     }
 
-    if (spec.rgbNpy) {
+    if (spec.rgbNpy && spec.checkWarp !== false) {
       const idx = out.length;
       const outNpy = join(dir, `warp-${idx}.npy`);
       const maskNpy = join(dir, `mask-${idx}.npy`);
@@ -56,7 +65,7 @@ export function cases(inputs) {
           outNpy,
           '--mask',
           maskNpy,
-          ...(spec.overrideDims ? ['--w', String(w), '--h', String(h)] : []),
+          ...(spec.overrideDims ? ['--w', String(cliW), '--h', String(cliH)] : []),
         ],
         wasm: (mod) => {
           const rgbBytes = npyPayload(readFileSync(spec.rgbNpy));

@@ -188,6 +188,129 @@ export function cases(inputs) {
         });
       }
     }
+    if (has('numeric_cases.json')) {
+      const jsNum = (v) => {
+        if (v === 'NaN') return Number.NaN;
+        if (v === 'Infinity') return Number.POSITIVE_INFINITY;
+        if (v === '-Infinity') return Number.NEGATIVE_INFINITY;
+        return v;
+      };
+      const specs = JSON.parse(readFileSync(path('numeric_cases.json'), 'utf8'));
+      for (const spec of specs) {
+        if (spec.fn === 'hdr_align') {
+          const sh = jsNum(spec.sdr_h);
+          const sw = jsNum(spec.sdr_w);
+          const rh = jsNum(spec.raw_h);
+          const rw = jsNum(spec.raw_w);
+          const csh = spec.cli_sdr_h ?? sh;
+          const csw = spec.cli_sdr_w ?? sw;
+          const crh = spec.cli_raw_h ?? rh;
+          const crw = spec.cli_raw_w ?? rw;
+          out.push({
+            label: `${folder}::num_${spec.label}`,
+            cliArgs: [
+              'hdr-align',
+              '--sdr',
+              path(spec.sdr),
+              '--raw',
+              path(spec.raw),
+              '--sdr-shape',
+              String(csh),
+              String(csw),
+              '--raw-shape',
+              String(crh),
+              String(crw),
+            ],
+            wasm: (mod) =>
+              mod.hdr_align(readNpy(path(spec.sdr)).values, sh, sw, readNpy(path(spec.raw)).values, rh, rw),
+          });
+        } else if (spec.fn === 'hdr_gain') {
+          const h = jsNum(spec.h);
+          const w = jsNum(spec.w);
+          const ch = spec.cli_h ?? h;
+          const cw = spec.cli_w ?? w;
+          out.push({
+            label: `${folder}::num_${spec.label}`,
+            cliArgs: [
+              'hdr-gain',
+              '--sdr',
+              path(spec.sdr),
+              '--raw',
+              path(spec.raw),
+              '--clip',
+              path(spec.clip),
+              '--sdr-shape',
+              String(ch),
+              String(cw),
+              '--raw-shape',
+              String(ch),
+              String(cw),
+              '--out',
+              join(dir, `num-gain-${out.length}.npy`),
+            ],
+            wasm: (mod) => {
+              const g = mod.hdr_gain(
+                readNpy(path(spec.sdr)).values,
+                readNpy(path(spec.raw)).values,
+                readNpy(path(spec.clip)).values,
+                h,
+                w,
+                spec.params ?? '',
+              );
+              return spec.check_codes ? framed(g.height, g.width, g.codes()) : g.report;
+            },
+          });
+        } else if (spec.fn === 'hdr_fft') {
+          const rows = jsNum(spec.rows);
+          const n = jsNum(spec.n);
+          const crows = spec.cli_rows ?? rows;
+          const cn = spec.cli_n ?? n;
+          out.push({
+            label: `${folder}::num_${spec.label}`,
+            cliArgs: [
+              'hdr-fft',
+              '--in',
+              path(spec.input),
+              '--inverse',
+              '0',
+              '--in-shape',
+              String(crows),
+              String(cn),
+              '--out',
+              join(dir, `num-fft-${out.length}.npy`),
+            ],
+            wasm: (mod) => framed(rows, n, mod.hdr_fft(readNpy(path(spec.input)).values, rows, n, false, false)),
+          });
+        } else if (spec.fn === 'hdr_phase_plane') {
+          const h = jsNum(spec.h);
+          const w = jsNum(spec.w);
+          const ch = spec.cli_h ?? h;
+          const cw = spec.cli_w ?? w;
+          out.push({
+            label: `${folder}::num_${spec.label}`,
+            cliArgs: [
+              'hdr-phase-plane',
+              '--a',
+              path(spec.a),
+              '--b',
+              path(spec.b),
+              '--a-shape',
+              String(ch),
+              String(cw),
+              '--b-shape',
+              String(ch),
+              String(cw),
+              '--out',
+              join(dir, `num-pc-${out.length}.npy`),
+            ],
+            wasm: (mod) => {
+              const pc = mod.hdr_phase_plane(readNpy(path(spec.a)).values, readNpy(path(spec.b)).values, h, w);
+              return spec.check_plane ? framed(h, w, pc.plane()) : pc.report;
+            },
+          });
+        }
+      }
+    }
   }
   out.push(...fftCases(inputs));
   return out;

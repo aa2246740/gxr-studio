@@ -7,25 +7,42 @@ use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 use gxr_hdr as hdr;
 use gxr_raw::{CoreError, error_json};
 
+const U64_UPPER_BOUND_F64: f64 = 18_446_744_073_709_551_616.0;
+
 fn rejected(err: CoreError) -> JsValue {
     JsValue::from_str(&error_json(&err).render())
 }
 
+fn checked_dim_u64(v: f64) -> Result<u64, CoreError> {
+    if v.is_finite() && v.fract() == 0.0 && v >= 0.0 {
+        if v < U64_UPPER_BOUND_F64 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(v as u64)
+        } else {
+            Ok(u64::MAX)
+        }
+    } else {
+        Err(hdr::unsupported("bad_input", "数组长度和形状对不上"))
+    }
+}
+
 /// The caller's dimensions go through the shared count limit and are compared with the slice
 /// length before anything is copied (`Plane32::from_slice`, UNIT-COMMON allocation rule 1).
-fn plane(values: &[f32], height: u32, width: u32) -> Result<hdr::Plane32, JsValue> {
-    hdr::Plane32::from_slice(values, u64::from(height), u64::from(width)).map_err(rejected)
+fn plane(values: &[f32], height: f64, width: f64) -> Result<hdr::Plane32, JsValue> {
+    let h = checked_dim_u64(height).map_err(rejected)?;
+    let w = checked_dim_u64(width).map_err(rejected)?;
+    hdr::Plane32::from_slice(values, h, w).map_err(rejected)
 }
 
 /// `align(sdr_y, raw_y)` and `check_alignment`, as `gxr-cli hdr-align` prints them.
 #[wasm_bindgen]
 pub fn hdr_align(
     sdr: &[f32],
-    sdr_height: u32,
-    sdr_width: u32,
+    sdr_height: f64,
+    sdr_width: f64,
     raw: &[f32],
-    raw_height: u32,
-    raw_width: u32,
+    raw_height: f64,
+    raw_width: f64,
 ) -> Result<String, JsValue> {
     let report = hdr::align_report(
         &plane(sdr, sdr_height, sdr_width)?,
@@ -75,8 +92,8 @@ pub fn hdr_gain(
     sdr: &[f32],
     raw: &[f32],
     clip: &[u8],
-    height: u32,
-    width: u32,
+    height: f64,
+    width: f64,
     params_json: &str,
 ) -> Result<HdrGain, JsValue> {
     let s = plane(sdr, height, width)?;
@@ -90,9 +107,13 @@ pub fn hdr_gain(
     let mask = hdr::clip_mask(clip, s.h, s.w).map_err(rejected)?;
     let result = hdr::compute_gain(&s.v, &r.v, &mask, s.h, s.w, &params).map_err(rejected)?;
     let report = hdr::gain_report(&result).map_err(rejected)?;
+    let out_h = u32::try_from(s.h)
+        .map_err(|_| rejected(CoreError::new("value_error", hdr::ARRAY_TOO_BIG)))?;
+    let out_w = u32::try_from(s.w)
+        .map_err(|_| rejected(CoreError::new("value_error", hdr::ARRAY_TOO_BIG)))?;
     Ok(HdrGain {
-        height,
-        width,
+        height: out_h,
+        width: out_w,
         codes: hdr::quantise_gain(&result.delta, &result.meta),
         report: format!("{}\n", report.render()),
     })
@@ -112,14 +133,16 @@ pub fn hdr_assemble(primary: &[u8], gain_jpeg: &[u8], meta_json: &str) -> Result
 #[wasm_bindgen]
 pub fn hdr_fft(
     values: &[f32],
-    rows: u32,
-    n: u32,
+    rows: f64,
+    n: f64,
     inverse: bool,
     two_d: bool,
 ) -> Result<Vec<u8>, JsValue> {
-    let w = hdr::count(&[u64::from(n), 2]).map_err(rejected)?;
+    let rows_u64 = checked_dim_u64(rows).map_err(rejected)?;
+    let n_u64 = checked_dim_u64(n).map_err(rejected)?;
+    let w = hdr::count(&[n_u64, 2]).map_err(rejected)?;
     let w = u64::try_from(w).unwrap_or(u64::MAX);
-    let data = hdr::Plane32::from_slice(values, u64::from(rows), w).map_err(rejected)?;
+    let data = hdr::Plane32::from_slice(values, rows_u64, w).map_err(rejected)?;
     let out = data.fft_complex(inverse, two_d, None).map_err(rejected)?;
     hdr::f32_le_bytes(&out.v).map_err(rejected)
 }
@@ -150,8 +173,8 @@ impl HdrPhasePlane {
 pub fn hdr_phase_plane(
     a: &[f32],
     b: &[f32],
-    height: u32,
-    width: u32,
+    height: f64,
+    width: f64,
 ) -> Result<HdrPhasePlane, JsValue> {
     let (pa, pb) = (plane(a, height, width)?, plane(b, height, width)?);
     let (pc, (dy, dx)) = pa.phase_plane(&pb, None).map_err(rejected)?;
@@ -171,4 +194,26 @@ pub fn hdr_phase_plane(
         report: format!("{}\n", report.render()),
         plane: hdr::f32_le_bytes(&pc.v).map_err(rejected)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdr_dim_validation_rejects_bad_floats_and_preserves_large_u64() {
+        assert_eq!(checked_dim_u64(0.0).unwrap(), 0);
+        assert_eq!(checked_dim_u64(32.0).unwrap(), 32);
+        assert_eq!(checked_dim_u64(4_294_967_297.0).unwrap(), 4_294_967_297);
+        assert_eq!(
+            checked_dim_u64(9_007_199_254_740_992.0).unwrap(),
+            9_007_199_254_740_992
+        );
+        assert_eq!(checked_dim_u64(U64_UPPER_BOUND_F64).unwrap(), u64::MAX);
+        for bad in [-1.0, 1.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = checked_dim_u64(bad).unwrap_err();
+            assert_eq!(err.kind, "bad_input");
+            assert_eq!(err.message, "数组长度和形状对不上");
+        }
+    }
 }
