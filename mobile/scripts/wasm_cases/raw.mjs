@@ -23,6 +23,14 @@ function floatBytes(block) {
   return new Uint8Array(framed(height, width, raw));
 }
 
+function neutralBytes(img) {
+  const height = img.height;
+  const width = img.width;
+  const values = img.values();
+  const raw = Buffer.from(values.buffer, values.byteOffset, values.byteLength);
+  return new Uint8Array(framed(height, width, raw));
+}
+
 export function cases(inputs) {
   const out = [];
   for (const file of inputs) {
@@ -49,6 +57,20 @@ export function cases(inputs) {
       label: `${file}::wb-block`,
       cliArgs: ['dng-wb-block', file, '--rows', '0:1', '--out', wbOut],
       wasm: (mod) => floatBytes(mod.dng_wb_block_named(bytes(), name, 0, 1)),
+    });
+  }
+
+  // Wave-1 raw-render: full-resolution neutral render (sampled when many files are passed so
+  // wasm_vs_native completes well inside the 180s subprocess budget).
+  const neutralInputs = inputs.length <= 12 ? inputs : inputs.filter((_, idx) => idx % 8 === 0);
+  for (const file of neutralInputs) {
+    const name = basename(file);
+    const bytes = () => new Uint8Array(readFileSync(file));
+    const neutralOut = join(dir, `neutral-${out.length}.npy`);
+    out.push({
+      label: `${file}::neutral`,
+      cliArgs: ['dng-neutral', '--dng', file, '--out', neutralOut],
+      wasm: (mod) => neutralBytes(mod.dng_neutral_named(bytes(), name)),
     });
   }
   return out;
