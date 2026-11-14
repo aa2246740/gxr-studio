@@ -1,11 +1,7 @@
 //! Port of `gxr_studio/finish/logo_store.py` (keying + trimming + stats) and
-//! `gxr_studio/finish/logo_math.py:_alpha_luma` / `finish-logo-fit` dispatch.
-//!
-//! Note: `gxr_frame::{aspect_mult, coverage_comp, fit_logo, pick_logo_mode, clogo_item}` are
-//! implemented in `gxr-frame/src/logo.rs` but not currently re-exported by `gxr-frame/src/lib.rs`,
-//! so `fit_logo_json` returns an explicit `unsupported` `CoreError` without copying that module.
+//! `gxr_studio/finish/logo_math.py:_alpha_luma` / `finish-logo-fit` (via `gxr-frame`).
 
-use gxr_frame::LogoInfo;
+use gxr_frame::{LogoInfo, Val, aspect_mult, clogo_item, coverage_comp, fit_logo, pick_logo_mode};
 use gxr_hdr::label;
 use gxr_raw::{CoreError, Json};
 
@@ -351,22 +347,157 @@ pub fn prepare_logo_key(
     })
 }
 
-/// Validates JSON depth/syntax for `finish-logo-fit` and reports the missing `gxr-frame` exports.
-///
-/// `gxr_frame` does not re-export `aspect_mult`, `coverage_comp`, `fit_logo`, `pick_logo_mode`, or
-/// `clogo_item` from `core/crates/gxr-frame/src/lib.rs`, so this returns `unsupported` rather than
-/// duplicating `gxr-frame/src/logo.rs`.
+fn bad_logo_request(msg: &str) -> CoreError {
+    CoreError::new("bad_request", msg)
+}
+
+fn req_str<'a>(obj: &'a JsonValue, key: &str, msg: &str) -> Result<&'a str, CoreError> {
+    obj.get(key)
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| bad_logo_request(msg))
+}
+
+fn opt_str<'a>(
+    obj: &'a JsonValue,
+    key: &str,
+    default: &'a str,
+    msg: &str,
+) -> Result<&'a str, CoreError> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(default),
+        Some(v) => v.as_str().ok_or_else(|| bad_logo_request(msg)),
+    }
+}
+
+fn req_int(obj: &JsonValue, key: &str, msg: &str) -> Result<i64, CoreError> {
+    obj.get(key)
+        .and_then(JsonValue::as_strict_int)
+        .ok_or_else(|| bad_logo_request(msg))
+}
+
+fn opt_int(obj: &JsonValue, key: &str, default: i64, msg: &str) -> Result<i64, CoreError> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(default),
+        Some(v) => v.as_strict_int().ok_or_else(|| bad_logo_request(msg)),
+    }
+}
+
+fn req_f64(obj: &JsonValue, key: &str, msg: &str) -> Result<f64, CoreError> {
+    let Some(v) = obj.get(key).and_then(JsonValue::as_f64) else {
+        return Err(bad_logo_request(msg));
+    };
+    if !v.is_finite() {
+        return Err(bad_logo_request(msg));
+    }
+    Ok(v)
+}
+
+fn opt_f64(obj: &JsonValue, key: &str, default: f64, msg: &str) -> Result<f64, CoreError> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(default),
+        Some(raw) => {
+            let Some(v) = raw.as_f64() else {
+                return Err(bad_logo_request(msg));
+            };
+            if !v.is_finite() {
+                return Err(bad_logo_request(msg));
+            }
+            Ok(v)
+        }
+    }
+}
+
+fn val_to_json(v: &Val) -> Json {
+    match v {
+        Val::Null => Json::Null,
+        Val::Bool(b) => Json::Bool(*b),
+        Val::Int(n) => Json::Int(*n),
+        Val::Float(f) => Json::Float(*f),
+        Val::Str(s) => Json::Str(s.clone()),
+        Val::Arr(items) => Json::Array(items.iter().map(val_to_json).collect()),
+        Val::Obj(pairs) => Json::Object(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.clone(), val_to_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Calls `gxr_frame::{fit_logo, pick_logo_mode, aspect_mult, coverage_comp, clogo_item}` for
+/// `finish-logo-fit` / `finish_logo_fit`.
 pub fn fit_logo_json(info_json: &str, request_json: &str) -> Result<String, CoreError> {
     let info_val = parse_json(info_json, "bad_request", "标志信息格式不对。")?;
     let req_val = parse_json(request_json, "bad_request", "标志排版请求格式不对。")?;
     if !matches!(info_val, JsonValue::Object(_)) || !matches!(req_val, JsonValue::Object(_)) {
-        return Err(CoreError::new(
-            "bad_request",
-            "请求无效。请刷新页面后重试。",
-        ));
+        return Err(bad_logo_request("请求无效。请刷新页面后重试。"));
     }
-    Err(CoreError::new(
-        "unsupported",
-        "gxr_frame::{aspect_mult, coverage_comp, fit_logo, pick_logo_mode, clogo_item} 未在 gxr-frame/src/lib.rs 导出",
-    ))
+
+    let id = req_str(&info_val, "id", "标志的 id 要是字符串")?;
+    let name = opt_str(&info_val, "name", "", "标志的 name 要是字符串")?;
+    let w = req_int(&info_val, "w", "标志的 w 要是整数")?;
+    let h = req_int(&info_val, "h", "标志的 h 要是整数")?;
+    if w < 0 || h < 0 {
+        return Err(bad_logo_request("标志的宽高不能为负数"));
+    }
+    let coverage = req_f64(&info_val, "coverage", "标志的 coverage 要是数字")?;
+    let lum = req_f64(&info_val, "lum", "标志的 lum 要是数字")?;
+    let Some(JsonValue::Bool(opaque)) = info_val.get("opaque") else {
+        return Err(bad_logo_request("标志的 opaque 要是布尔值"));
+    };
+    let logo = LogoInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        w,
+        h,
+        coverage,
+        opaque: *opaque,
+        lum,
+    };
+
+    let cap = req_int(&req_val, "cap", "标志的 cap 要是整数")?;
+    let max_h = req_int(&req_val, "max_h", "标志的 max_h 要是整数")?;
+    let max_w = req_int(&req_val, "max_w", "标志的 max_w 要是整数")?;
+    let size = opt_str(&req_val, "size", "medium", "标志的 size 要是字符串")?;
+    let x = opt_int(&req_val, "x", 0, "标志的 x 要是整数")?;
+    let y = opt_int(&req_val, "y", 0, "标志的 y 要是整数")?;
+    let mode = opt_str(&req_val, "mode", "auto", "标志的 mode 要是字符串")?;
+    let bg_lum = opt_f64(&req_val, "bg_lum", 255.0, "标志的 bg_lum 要是数字")?;
+    let ink = match req_val.get("ink") {
+        None | Some(JsonValue::Null) => [0_i64, 0, 0],
+        Some(v) => {
+            let Some(arr) = v.as_array() else {
+                return Err(bad_logo_request("标志的 ink 要是 3 个整数"));
+            };
+            if arr.len() != 3 {
+                return Err(bad_logo_request("标志的 ink 要是 3 个整数"));
+            }
+            [
+                arr[0]
+                    .as_strict_int()
+                    .ok_or_else(|| bad_logo_request("标志的 ink 要是 3 个整数"))?,
+                arr[1]
+                    .as_strict_int()
+                    .ok_or_else(|| bad_logo_request("标志的 ink 要是 3 个整数"))?,
+                arr[2]
+                    .as_strict_int()
+                    .ok_or_else(|| bad_logo_request("标志的 ink 要是 3 个整数"))?,
+            ]
+        }
+    };
+
+    let (fw, fh) = fit_logo(&logo, cap, max_h, max_w, size)?;
+    let picked_mode = pick_logo_mode(&logo, mode, bg_lum);
+    let a_mult = aspect_mult(logo.aspect());
+    let c_comp = coverage_comp(logo.coverage);
+    let item = clogo_item(&logo, x, y, fw, fh, mode, ink, bg_lum);
+    Ok(Json::object([
+        ("w", Json::Int(fw)),
+        ("h", Json::Int(fh)),
+        ("mode", Json::str(&picked_mode)),
+        ("aspect_mult", Json::Float(a_mult)),
+        ("coverage_comp", Json::Float(c_comp)),
+        ("item", val_to_json(&item)),
+    ])
+    .render())
 }

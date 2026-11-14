@@ -42,4 +42,4 @@ pub use model::{
 pub use npy::{Npy, decode as decode_npy, encode as encode_npy};
 pub use params::{bake_meta, knobs_request, meta_of, tones_of};
 pub use size::ARRAY_TOO_BIG;
-pub use tones::{Adjust, Curves, Table, channel_gains, display_table};
+pub use tones::{Adjust, Curves, Table, apply_table, channel_gains, display_table};

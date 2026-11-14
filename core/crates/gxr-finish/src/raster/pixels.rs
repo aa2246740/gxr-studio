@@ -1,7 +1,7 @@
 //! Port of `gxr_studio/finish/pixels.py` and the `Adjust` / `Curves` parsing in
 //! `gxr_studio/render/params.py`.
 
-use gxr_color::{Adjust as ColorAdjust, Curves, channel_gains, display_table};
+use gxr_color::{Adjust as ColorAdjust, Curves, apply_table, channel_gains, display_table};
 use gxr_raw::CoreError;
 
 use crate::geometry::bounds::{checked_mul_u64, checked_rgb_slice, fit_count, try_vec_u8};
@@ -273,9 +273,6 @@ pub fn linear_to_srgb(lin: &[f32], w: u64, h: u64) -> Result<Vec<u8>, CoreError>
 }
 
 /// Port of `gxr_studio/finish/pixels.py:25 apply_base`.
-///
-/// Note: `gxr_color::apply_table` is not re-exported by `gxr-color`'s crate root yet, so when
-/// `display_table` returns `Some(_)`, this returns an explicit `unsupported` `CoreError`.
 pub fn apply_base(
     rgb: &[u8],
     w: u64,
@@ -290,12 +287,6 @@ pub fn apply_base(
         out.copy_from_slice(rgb);
         return Ok(out);
     }
-    if display_table(&color_adjust, curves)?.is_some() {
-        return Err(CoreError::new(
-            "unsupported",
-            "gxr_color::apply_table 未在 gxr-color/src/lib.rs 导出",
-        ));
-    }
     let gains = channel_gains(&color_adjust).map(|g| [g[0] as f32, g[1] as f32, g[2] as f32]);
     let mut out = try_vec_u8(rgb_len, 0)?;
     if let Some([gr, gg, gb]) = gains {
@@ -309,6 +300,14 @@ pub fn apply_base(
             dst[0] = linear_to_srgb_f32(srgb_to_linear_u8(src[0]));
             dst[1] = linear_to_srgb_f32(srgb_to_linear_u8(src[1]));
             dst[2] = linear_to_srgb_f32(srgb_to_linear_u8(src[2]));
+        }
+    }
+    if let Some(table) = display_table(&color_adjust, curves)? {
+        for dst in out.chunks_exact_mut(3) {
+            for (c, slot) in dst.iter_mut().enumerate() {
+                let flat = apply_table(f32::from(*slot), &table, c);
+                *slot = (flat + 0.5_f32).clamp(0.0_f32, 255.0_f32) as u8;
+            }
         }
     }
     Ok(out)

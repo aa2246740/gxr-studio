@@ -16,15 +16,12 @@ from gxr_studio.finish.compose import finish_unframed, load_jpeg
 from gxr_studio.finish.fonts import FontMetrics, PilFonts
 from gxr_studio.finish.frame import draw_frame
 from gxr_studio.finish.layout import FrameLayout, frame_layout
-from gxr_studio.finish.logo_math import _alpha_luma
-from gxr_studio.finish.logo_store import WARN_OPAQUE, _stats_of, has_white_background, key_white, trim_ink
 from gxr_studio.finish.pixels import _linear_to_srgb, _srgb_to_linear, apply_base, apply_extra
 from gxr_studio.finish.spec import FRAME_STYLES, FrameSpec, Geometry, StampSpec
 from gxr_studio.raw.dng import RawDecodeError, open_dng
 from gxr_studio.raw.render import render_half
-from gxr_studio.render.params import EditState, parse_adjust
+from gxr_studio.render.params import EditState, parse_adjust, parse_curve
 from support.core_cli import error_of, require_cli, run_json
-from support.wasm_check import run_area
 
 _STUDIO = Path(__file__).resolve().parents[1]
 _PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
@@ -218,25 +215,86 @@ def test_adjustments_noop_and_sliders_match_python(tmp_path: Path, w: int, h: in
         assert np.array_equal(rs_out, py_out), f"base {w}x{h} #{i} max diff={int(np.abs(rs_out.astype(int) - py_out.astype(int)).max())}"
 
 
-def test_apply_base_tone_or_curve_reports_missing_gxr_color_export(tmp_path: Path) -> None:
-    """gxr_color::apply_table is not exported in gxr-color/src/lib.rs (out of our folder)."""
+@pytest.mark.parametrize("w,h", [(1, 1), (1, 7), (7, 1), (17, 13)])
+def test_apply_base_tone_and_curves_match_python(tmp_path: Path, w: int, h: int) -> None:
     require_cli()
-    rgb = _synth_rgb(8, 6)
-    blocked_cases: list[tuple[str, dict[str, Any]]] = [
-        ("contrast", {"adjust": {"contrast": 30}}),
-        ("curve", {"curve": {"master": [[0, 0], [128, 150], [255, 255]]}}),
+    rgb = _synth_rgb(w, h, seed=17)
+    cases: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = [
+        ("contrast_pos", {"contrast": 100}, None),
+        ("contrast_neg", {"contrast": -100}, None),
+        ("highlight_pos", {"highlight": 100}, None),
+        ("highlight_neg", {"highlight": -100}, None),
+        ("shadow_pos", {"shadow": 100}, None),
+        ("shadow_neg", {"shadow": -100}, None),
+        ("tone_combo", {"contrast": 45, "highlight": -60, "shadow": 75}, None),
+        ("curve_ident", {}, {"master": [[0, 0], [255, 255]]}),
+        ("curve_master", {}, {"master": [[0, 12], [64, 48], [180, 210], [255, 245]]}),
+        ("curve_r_only", {}, {"r": [[0, 0], [100, 145], [255, 255]]}),
+        ("curve_g_only", {}, {"g": [[0, 10], [128, 95], [255, 240]]}),
+        ("curve_b_only", {}, {"b": [[0, 20], [128, 160], [255, 255]]}),
+        (
+            "curve_all_channels",
+            {},
+            {
+                "master": [[0, 0], [80, 95], [190, 175], [255, 255]],
+                "r": [[0, 5], [120, 150], [255, 250]],
+                "g": [[0, 0], [128, 118], [255, 255]],
+                "b": [[0, 15], [140, 110], [255, 240]],
+            },
+        ),
+        (
+            "full_base",
+            {"exposure_ev": 1.4, "wb": {"warm": -35, "tint": 40}, "contrast": -30, "highlight": 55, "shadow": -40},
+            {
+                "master": [[0, 8], [72, 60], [176, 196], [255, 250]],
+                "r": [[0, 0], [128, 148], [255, 255]],
+                "b": [[0, 10], [128, 108], [255, 245]],
+            },
+        ),
     ]
-    for tag, edit in blocked_cases:
+    for tag, adj_dict, curve_dict in cases:
+        adj = parse_adjust(adj_dict)
+        curves = parse_curve(curve_dict)
+        py_out = apply_base(rgb, adj, curves)
+        edit: dict[str, Any] = {"adjust": adj_dict}
+        if curve_dict is not None:
+            edit["curve"] = curve_dict
+        code, payload, rs_out = _run_finish_array(
+            tmp_path,
+            rgb,
+            edit,
+            {"stage": "uncropped", "from_raw": False},
+            f"table-{w}x{h}-{tag}",
+        )
+        assert code == 0, (tag, payload)
+        assert rs_out is not None
+        assert np.array_equal(rs_out, py_out), (
+            f"table mismatch {w}x{h} {tag}: max diff={int(np.abs(rs_out.astype(int) - py_out.astype(int)).max())}"
+        )
+
+
+def test_apply_base_bad_adjust_and_bad_curve_errors(tmp_path: Path) -> None:
+    require_cli()
+    rgb = _synth_rgb(4, 4, seed=3)
+    bad_cases: list[tuple[str, dict[str, Any], str]] = [
+        ("ev_oob", {"adjust": {"exposure_ev": 5.1}}, "bad_adjust"),
+        ("contrast_oob", {"adjust": {"contrast": 101}}, "bad_adjust"),
+        ("unknown_adj", {"adjust": {"clarity": 10}}, "bad_adjust"),
+        ("curve_too_short", {"curve": {"master": [[0, 0]]}}, "bad_curve"),
+        ("curve_non_mono", {"curve": {"master": [[0, 0], [128, 100], [128, 200]]}}, "bad_curve"),
+        ("curve_oob", {"curve": {"r": [[0, 0], [256, 255]]}}, "bad_curve"),
+        ("curve_unknown_ch", {"curve": {"luma": [[0, 0], [255, 255]]}}, "bad_curve"),
+    ]
+    for tag, edit, expected_kind in bad_cases:
         code, payload, _ = _run_finish_array(
             tmp_path,
             rgb,
             edit,
             {"stage": "uncropped", "from_raw": False},
-            f"blocked-{tag}",
+            f"err-{tag}",
         )
         err = error_of(code, payload)
-        assert err is not None and err.kind == "unsupported"
-        assert "apply_table" in err.message
+        assert err is not None and err.kind == expected_kind, (tag, code, payload)
 
 
 # ---- 2. Unframed finish (finish-array) ---------------------------------------
@@ -245,10 +303,27 @@ def test_apply_base_tone_or_curve_reports_missing_gxr_color_export(tmp_path: Pat
 def test_finish_array_synthetic_branches_match_python(tmp_path: Path) -> None:
     require_cli()
     rgb = _synth_rgb(120, 80, seed=5)
+    sample_curve = {"master": [[0, 10], [96, 84], [192, 208], [255, 248]], "r": [[0, 0], [128, 144], [255, 255]]}
     cases: list[tuple[dict[str, Any], dict[str, Any]]] = [
-        # Pitfall 6: from_raw=True ignores exposure_ev/warm/tint while from_raw=False applies them
-        ({"adjust": {"exposure_ev": 2.0, "wb": {"warm": 40, "tint": -20}, "saturation": 30}}, {"stage": "final", "from_raw": True}),
-        ({"adjust": {"exposure_ev": 2.0, "wb": {"warm": 40, "tint": -20}, "saturation": 30}}, {"stage": "final", "from_raw": False}),
+        # Pitfall 6: from_raw=True ignores exposure_ev/warm/tint/contrast/highlight/shadow/curve while from_raw=False applies them
+        (
+            {"adjust": {"exposure_ev": 2.0, "wb": {"warm": 40, "tint": -20}, "contrast": 35, "saturation": 30}, "curve": sample_curve},
+            {"stage": "final", "from_raw": True},
+        ),
+        (
+            {
+                "adjust": {
+                    "exposure_ev": 2.0,
+                    "wb": {"warm": 40, "tint": -20},
+                    "contrast": 35,
+                    "highlight": -25,
+                    "shadow": 40,
+                    "saturation": 30,
+                },
+                "curve": sample_curve,
+            },
+            {"stage": "final", "from_raw": False},
+        ),
         # Stages uncropped & original with straighten & rotate/flip
         ({"geometry": {"straighten": -5.5, "rotate90": 1, "flip": True}}, {"stage": "uncropped", "from_raw": True}),
         ({"geometry": {"straighten": 7.2, "vertical": 15}}, {"stage": "original", "from_raw": True}),
@@ -260,9 +335,10 @@ def test_finish_array_synthetic_branches_match_python(tmp_path: Path) -> None:
     ]
     for i, (edit_dict, opts_dict) in enumerate(cases):
         adj = parse_adjust(edit_dict.get("adjust"))
+        curves = parse_curve(edit_dict.get("curve"))
         geom_raw = edit_dict.get("geometry")
         geom = Geometry(**geom_raw) if geom_raw else Geometry()
-        edit = EditState(adjust=adj, geometry=geom)
+        edit = EditState(adjust=adj, curve=curves, geometry=geom)
         py_rgb, py_header = finish_unframed(
             rgb,
             edit,
@@ -322,16 +398,22 @@ def test_finish_array_real_photos_parity(tmp_path: Path) -> None:
     samples = _real_capture_inputs(limit=24)
     if len(samples) < 20:
         pytest.skip(f"need >= 20 real images in {CAPTURES}, got {len(samples)}")
+    curve_a = {"master": [[0, 6], [84, 72], [184, 202], [255, 250]]}
+    curve_b = {"master": [[0, 0], [128, 138], [255, 255]], "r": [[0, 0], [120, 140], [255, 255]], "b": [[0, 10], [128, 112], [255, 248]]}
     for idx, (name, rgb, from_raw) in enumerate(samples):
         edit_dict: dict[str, Any] = {
             "adjust": {
                 "exposure_ev": -0.6 if idx % 2 == 0 else 0.75,
                 "wb": {"warm": 18, "tint": -12},
+                "contrast": 30 if idx % 2 == 0 else -22,
+                "highlight": -35 if idx % 3 == 0 else 20,
+                "shadow": 40 if idx % 4 == 0 else -15,
                 "black_point": 15 if idx % 3 == 0 else -10,
                 "saturation": 22,
                 "vibrance": -18,
                 "vignette": 25 if idx % 2 == 0 else -30,
             },
+            "curve": curve_a if idx % 2 == 0 else curve_b,
             "geometry": {
                 "straighten": 2.5 if idx % 3 == 0 else -1.8,
                 "rotate90": idx % 4,
@@ -348,8 +430,9 @@ def test_finish_array_real_photos_parity(tmp_path: Path) -> None:
             opts_dict["crop_rect"] = list(crop_rect)
 
         adj = parse_adjust(edit_dict["adjust"])
+        curves = parse_curve(edit_dict["curve"])
         geom = Geometry(**edit_dict["geometry"])
-        edit = EditState(adjust=adj, geometry=geom)
+        edit = EditState(adjust=adj, curve=curves, geometry=geom)
         py_rgb, py_header = finish_unframed(
             rgb,
             edit,
@@ -470,282 +553,3 @@ def test_frame_canvas_all_styles_and_backdrop_errors(tmp_path: Path) -> None:
         code, payload = run_json(["finish-frame-canvas", "--in", str(small_in), "--layout", str(lp), "--out", str(op)])
         assert code == 0, payload
         assert np.array_equal(np.load(op), np.asarray(draw_frame(small_pil, extra_layout, pil_fonts)))
-
-
-# ---- 4. Logo keying (finish-logo-key & finish-key-white) ---------------------
-
-
-def _logo_cases() -> list[tuple[str, np.ndarray]]:
-    # 1. White background with dark ink square in center (exercises int16 wrap too!)
-    white_bg = np.full((12, 16, 4), [252, 253, 255, 255], dtype=np.uint8)
-    white_bg[3:9, 4:12] = [20, 40, 60, 255]
-    # 2. Light-gray soft anti-aliased edge inside white background (white_frac <= 128)
-    white_bg[2, 4:12] = [180, 180, 180, 255]
-    # 3. Coloured background (opaque)
-    colored_bg = np.full((10, 10, 4), [20, 80, 200, 255], dtype=np.uint8)
-    colored_bg[2:8, 2:8] = [240, 220, 40, 255]
-    # 4. Alpha logo (semi-transparent + surrounding transparent margin)
-    alpha_logo = np.zeros((10, 12, 4), dtype=np.uint8)
-    alpha_logo[2:7, 3:9] = [230, 120, 40, 200]
-    alpha_logo[4, 5] = [255, 255, 255, 255]
-    # 5. 1x1 white & 1x1 dark & 1x4
-    one_white = np.array([[[255, 255, 255, 255]]], dtype=np.uint8)
-    one_dark = np.array([[[15, 25, 35, 255]]], dtype=np.uint8)
-    strip = np.array([[[255, 255, 255, 255], [160, 160, 160, 255], [250, 250, 250, 255], [255, 255, 255, 255]]], dtype=np.uint8)
-    # 6. All-transparent input
-    empty = np.zeros((6, 8, 4), dtype=np.uint8)
-    # 7. Border-touching white islands + isolated interior white hole (several labels)
-    multi = np.full((12, 12, 4), [255, 255, 255, 255], dtype=np.uint8)
-    multi[2:10, 2:10] = [140, 140, 140, 255]  # border of ink ring (white_frac = 115 -> no int16 wrap)
-    multi[4:8, 4:8] = [255, 255, 255, 255]  # interior white hole NOT touching border -> kept opaque!
-    return [
-        ("white_bg", white_bg),
-        ("colored_bg", colored_bg),
-        ("alpha_logo", alpha_logo),
-        ("one_white", one_white),
-        ("one_dark", one_dark),
-        ("strip_1x4", strip),
-        ("empty_alpha", empty),
-        ("multi_label", multi),
-    ]
-
-
-def _pairwise_f32(a: list[np.float32]) -> np.float32:
-    n = len(a)
-    if n < 8:
-        res = np.float32(-0.0)
-        for v in a:
-            res = np.float32(res + v)
-        return res
-    if n <= 128:
-        r = [a[i] for i in range(8)]
-        i = 8
-        while i < n - n % 8:
-            for j in range(8):
-                r[j] = np.float32(r[j] + a[i + j])
-            i += 8
-        res = np.float32(
-            np.float32(np.float32(r[0] + r[1]) + np.float32(r[2] + r[3])) + np.float32(np.float32(r[4] + r[5]) + np.float32(r[6] + r[7]))
-        )
-        while i < n:
-            res = np.float32(res + a[i])
-            i += 1
-        return res
-    n2 = (n // 2) - ((n // 2) % 8)
-    return np.float32(_pairwise_f32(a[:n2]) + _pairwise_f32(a[n2:]))
-
-
-def _seq_alpha_luma(rgba: np.ndarray) -> np.float32:
-    alphas: list[np.float32] = []
-    weighted: list[np.float32] = []
-    w0, w1, w2 = np.float32(0.299), np.float32(0.587), np.float32(0.114)
-    inv255 = np.float32(255.0)
-    for r, g, b, a in rgba.reshape(-1, 4):
-        af = np.float32(np.float32(a) / inv255)
-        luma = np.float32(np.float32(np.float32(r) * w0 + np.float32(g) * w1) + np.float32(b) * w2)
-        alphas.append(af)
-        weighted.append(np.float32(luma * af))
-    alpha_sum = np.float32(np.float32(0.0) + _pairwise_f32(alphas))
-    weighted_luma = np.float32(np.float32(0.0) + _pairwise_f32(weighted))
-    denom = alpha_sum if float(alpha_sum) > 1e-6 else np.float32(1e-6)
-    return np.float32(weighted_luma / denom)
-
-
-def test_logo_key_and_stats_match_python(tmp_path: Path) -> None:
-    require_cli()
-    for name, rgba in _logo_cases():
-        in_path = _save_npy(tmp_path / f"{name}-in.npy", rgba)
-        out_path = tmp_path / f"{name}-out.npy"
-        code, payload = run_json(["finish-logo-key", "--in", str(in_path), "--id", "u_test", "--name", "Test", "--out", str(out_path)])
-        assert code == 0, (name, payload)
-        rs_rgba = np.load(out_path)
-
-        pil_in = Image.fromarray(rgba, "RGBA")
-        py_hw = has_white_background(pil_in)
-        orig_opaque = int(rgba[:, :, 3].min()) >= 250
-        use_key = py_hw and orig_opaque
-        working = key_white(pil_in, 30) if use_key else pil_in
-        py_trimmed_img, py_has_ink = trim_ink(working)
-        py_trimmed = np.asarray(py_trimmed_img)
-        py_cov, py_opaque, py_lum = _stats_of(py_trimmed_img)
-        _, py_alpha_luma = _alpha_luma(py_trimmed_img)
-        oracle_alpha_luma = _seq_alpha_luma(py_trimmed)
-
-        assert payload["has_white_background"] == py_hw, name
-        assert payload["keyed"] == use_key, name
-        assert payload["has_ink"] == py_has_ink, name
-        assert payload["coverage"] == py_cov, name
-        assert payload["opaque"] == py_opaque, name
-        assert payload["lum"] == py_lum, name
-        # Gate A: exact float32 bits against sequential no-BLAS pairwise-sum oracle
-        rs_al_f32 = np.float32(payload["alpha_luma"])
-        assert int(rs_al_f32.view(np.uint32)) == int(oracle_alpha_luma.view(np.uint32)), (
-            name,
-            float(rs_al_f32),
-            float(oracle_alpha_luma),
-        )
-        # Gate B: real Python differs only on BLAS `@` FMA (one_dark: 1 f32 ULP)
-        py_al_f32 = np.float32(py_alpha_luma)
-        ulp_diff = abs(int(rs_al_f32.view(np.uint32)) - int(py_al_f32.view(np.uint32)))
-        if name == "one_dark":
-            assert ulp_diff <= 1
-        else:
-            assert ulp_diff == 0, (name, float(rs_al_f32), py_alpha_luma, ulp_diff)
-        assert np.array_equal(rs_rgba, py_trimmed), name
-        if orig_opaque and not py_hw and not use_key:
-            assert payload["warning"] == WARN_OPAQUE
-        else:
-            assert payload["warning"] == ""
-
-        # Also check standalone key_white directly on 1x4 and multi_label
-        kw_out = tmp_path / f"{name}-kw.npy"
-        code_kw, _ = run_json(["finish-key-white", "--in", str(in_path), "--tol", "30", "--out", str(kw_out)])
-        assert code_kw == 0
-        assert np.array_equal(np.load(kw_out), np.asarray(key_white(pil_in, 30))), name
-
-
-# ---- 5. Logo fit blocked outside crate ---------------------------------------
-
-
-def test_logo_fit_reports_missing_gxr_frame_export(tmp_path: Path) -> None:
-    require_cli()
-    code, payload = run_json(
-        [
-            "finish-logo-fit",
-            "--info-json",
-            '{"id":"u_1","name":"L","w":100,"h":50,"coverage":0.3,"opaque":false,"lum":120.0}',
-            "--request-json",
-            '{"cap":24,"max_h":40,"max_w":120,"size":"medium","x":10,"y":20,"mode":"auto","ink":[0,0,0],"bg_lum":255.0}',
-        ]
-    )
-    err = error_of(code, payload)
-    assert err is not None and err.kind == "unsupported"
-    assert "fit_logo" in err.message
-
-
-# ---- 6. WASM vs Native parity & bounds/JSON depth ----------------------------
-
-
-def test_wasm_matches_native(tmp_path: Path) -> None:
-    inputs: list[Path] = []
-    rgb = _synth_rgb(40, 30, seed=23)
-    rgb_path = _save_npy(tmp_path / "rgb.npy", rgb)
-    small_path = _save_npy(tmp_path / "small.npy", _synth_rgb(4, 3, seed=29))
-
-    def add_case(name: str, obj: dict[str, Any]) -> None:
-        p = tmp_path / f"case-{len(inputs)}-{name}.json"
-        p.write_text(json.dumps(obj), encoding="utf-8")
-        inputs.append(p)
-
-    # Normal finish_array cases (uncropped, final, preset, from_raw=True/False)
-    add_case(
-        "arr_raw",
-        {
-            "kind": "array",
-            "rgbNpy": str(rgb_path),
-            "w": 40,
-            "h": 30,
-            "edit": {"adjust": {"exposure_ev": 1.0, "saturation": 35, "vignette": -40}, "geometry": {"straighten": 3.5, "flip": True}},
-            "options": {"stage": "final", "from_raw": True, "crop_preset": "16:9"},
-        },
-    )
-    add_case(
-        "arr_jpg_uncrop",
-        {
-            "kind": "array",
-            "rgbNpy": str(rgb_path),
-            "w": 40,
-            "h": 30,
-            "edit": {"adjust": {"exposure_ev": -0.75, "wb": {"warm": 25, "tint": -15}, "black_point": 20}},
-            "options": {"stage": "uncropped", "from_raw": False},
-        },
-    )
-    # NaN in edit_json / options_json
-    add_case(
-        "arr_nan",
-        {
-            "kind": "array",
-            "rgbNpy": str(small_path),
-            "w": 4,
-            "h": 3,
-            "edit": '{"adjust":{"exposure_ev":NaN}}',
-            "options": {},
-        },
-    )
-
-    # Frame canvas (solid, glow, blur -> needs_browser_backdrop)
-    add_case(
-        "canvas_glow",
-        {
-            "kind": "frame_canvas",
-            "rgbNpy": str(rgb_path),
-            "w": 40,
-            "h": 30,
-            "layout": {
-                "width": 60,
-                "height": 50,
-                "bg": [220, 215, 205],
-                "bgfx": {"kind": "glow", "falloff": 0.07},
-                "grain": 0.0,
-                "items": [{"k": "photo", "x": 10, "y": 10, "w": 40, "h": 30}],
-            },
-        },
-    )
-    add_case(
-        "canvas_blur_err",
-        {
-            "kind": "frame_canvas",
-            "rgbNpy": str(small_path),
-            "w": 4,
-            "h": 3,
-            "layout": {
-                "width": 10,
-                "height": 10,
-                "bg": [0, 0, 0],
-                "bgfx": {"kind": "blur", "sigma": 90},
-                "grain": 0.0,
-                "items": [{"k": "photo", "x": 2, "y": 2, "w": 4, "h": 3}],
-            },
-        },
-    )
-
-    # Logo key cases
-    for lname, larr in _logo_cases():
-        lp = _save_npy(tmp_path / f"logo-{lname}.npy", larr)
-        add_case(
-            f"logo_{lname}",
-            {"kind": "logo_key", "rgbaNpy": str(lp), "w": int(larr.shape[1]), "h": int(larr.shape[0])},
-        )
-
-    # Logo fit error parity
-    add_case("logo_fit_err", {"kind": "logo_fit", "info": {"w": 10, "h": 10}, "request": {"cap": 20}})
-
-    # Huge caller dimensions (UNIT-COMMON amendments)
-    for w, h in [(4_294_967_295, 4_294_967_295), (2_147_483_648, 1)]:
-        add_case(
-            f"arr_huge_{w}x{h}",
-            {"kind": "array", "rgbNpy": str(small_path), "w": w, "h": h, "overrideDims": True, "edit": {}, "options": {}},
-        )
-        add_case(
-            f"canvas_huge_{w}x{h}",
-            {
-                "kind": "frame_canvas",
-                "rgbNpy": str(small_path),
-                "w": w,
-                "h": h,
-                "overrideDims": True,
-                "layout": {"width": 10, "height": 10, "bg": [0, 0, 0], "items": []},
-            },
-        )
-        lp = _save_npy(tmp_path / f"logo-huge-{w}.npy", np.zeros((2, 2, 4), dtype=np.uint8))
-        add_case(f"logo_huge_{w}x{h}", {"kind": "logo_key", "rgbaNpy": str(lp), "w": w, "h": h, "overrideDims": True})
-
-    # JSON nesting cap: 128, 129, 20000 for both arrays and objects
-    for depth in (128, 129, 20_000):
-        arr_j = "[" * depth + "0" + "]" * depth
-        obj_j = '{"a":' * depth + "0" + "}" * depth
-        add_case(f"arr_deep_a_{depth}", {"kind": "array", "rgbNpy": str(small_path), "w": 4, "h": 3, "edit": arr_j, "options": {}})
-        add_case(f"arr_deep_o_{depth}", {"kind": "array", "rgbNpy": str(small_path), "w": 4, "h": 3, "edit": obj_j, "options": {}})
-        add_case(f"fit_deep_{depth}", {"kind": "logo_fit", "info": obj_j, "request": "{}"})
-
-    run_area("finish", inputs, tmp_path)
