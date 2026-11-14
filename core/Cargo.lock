@@ -41,6 +41,10 @@ dependencies = [
 [[package]]
 name = "gxr-color"
 version = "0.1.0"
+dependencies = [
+ "gxr-math",
+ "gxr-raw",
+]
 
 [[package]]
 name = "gxr-export"
@@ -74,6 +78,9 @@ dependencies = [
 [[package]]
 name = "gxr-jpeg"
 version = "0.1.0"
+dependencies = [
+ "gxr-raw",
+]
 
 [[package]]
 name = "gxr-lut"
