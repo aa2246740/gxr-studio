@@ -673,9 +673,78 @@ def test_wasm_matches_native_for_geometry(tmp_path: Path) -> None:
     add_case("overflow-crop-1e308", 32, 24, {}, '{"rect":[1e308,0,1e308,0.5]}', expect_error=True)
     add_case("clamp-negative-crop", 32, 24, {"straighten": 5}, {"rect": [-0.2, 0.1, 0.5, 0.5]})
 
+    def nest_arr(depth: int, inner: str = "0") -> str:
+        return ("[" * depth) + inner + ("]" * depth)
+
+    def nest_obj(depth: int, inner: str = "0") -> str:
+        return ('{"a":' * depth) + inner + ("}" * depth)
+
+    add_case("depth-128-crop-arr", 32, 24, {}, '{"ignored":' + nest_arr(127) + "}")
+    add_case("depth-128-crop-obj", 32, 24, {}, '{"ignored":' + nest_obj(127) + "}")
+    add_case("depth-128-geom-arr", 32, 24, nest_arr(128), None, rgb=img_small, expect_error=True)
+    add_case("depth-128-geom-obj", 32, 24, nest_obj(128), None, rgb=img_small, expect_error=True)
+    for depth in (129, 20_000):
+        add_case(f"depth-{depth}-geom-arr", 32, 24, nest_arr(depth), None, rgb=img_small, expect_error=True)
+        add_case(f"depth-{depth}-geom-obj", 32, 24, nest_obj(depth), None, rgb=img_small, expect_error=True)
+        add_case(f"depth-{depth}-crop-arr", 32, 24, {}, nest_arr(depth), expect_error=True)
+        add_case(f"depth-{depth}-crop-obj", 32, 24, {}, nest_obj(depth), expect_error=True)
+
     proc = run_area("geometry", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def test_rule2_allocations_return_core_error_on_oom_injection(tmp_path: Path) -> None:
     run_rule2_oom_probe(tmp_path)
+
+
+def test_json_nesting_limit_128_across_all_cli_entry_points(tmp_path: Path) -> None:
+    require_cli()
+
+    def arr(d: int, inner: str = "0") -> str:
+        return ("[" * d) + inner + ("]" * d)
+
+    def obj(d: int, inner: str = "0") -> str:
+        return ('{"a":' * d) + inner + ("}" * d)
+
+    in_npy = tmp_path / "tiny.npy"
+    out_npy = tmp_path / "out.npy"
+    mask_npy = tmp_path / "mask.npy"
+    np.save(in_npy, _synth_rgb(8, 8, seed=1))
+
+    def cmds(raw: str, is_crop_or_rect: bool) -> list[list[str]]:
+        if is_crop_or_rect:
+            return [
+                ["geom-crop-box", "--w", "32", "--h", "24", "--crop", raw],
+                ["geom-final-box", "--w", "32", "--h", "24", "--geometry", "{}", "--crop", raw],
+                ["geom-fitted-crop", "--w", "32", "--h", "24", "--geometry", "{}", "--crop", raw],
+                ["geom-clamp-rect", "--w", "32", "--h", "24", "--geometry", "{}", "--rect", raw],
+                ["geom-fit-ratio", "--w", "32", "--h", "24", "--geometry", "{}", "--rect", raw, "--numer", "1", "--denom", "1"],
+            ]
+        return [
+            ["geom-final-box", "--w", "32", "--h", "24", "--geometry", raw, "--crop", "null"],
+            ["geom-warp", "--in", str(in_npy), "--geometry", raw, "--out", str(out_npy), "--mask", str(mask_npy)],
+            ["geom-warp-valid", "--w", "32", "--h", "24", "--geometry", raw, "--out", str(mask_npy)],
+            ["geom-header", "--geometry", raw],
+            ["geom-fitted-crop", "--geometry", raw],
+            ["geom-clamp-rect", "--w", "32", "--h", "24", "--geometry", raw, "--rect", "[0,0,1,1]"],
+            ["geom-fit-ratio", "--w", "32", "--h", "24", "--geometry", raw, "--rect", "[0,0,1,1]", "--numer", "1", "--denom", "1"],
+        ]
+
+    for is_crop in (False, True):
+        for raw128 in (arr(128, ""), obj(128, "0")):
+            for cmd in cmds(raw128, is_crop):
+                code, payload = run_json(cmd)
+                err = error_of(code, payload)
+                assert err is None or err.kind != "json", (cmd, payload)
+        for cmd in cmds('{"ignored":' + arr(127, "") + "}", True)[:3]:
+            code, payload = run_json(cmd)
+            assert code == 0, (cmd, payload)
+        for cmd in cmds('{"ignored":' + obj(127, "0") + "}", True)[:3]:
+            code, payload = run_json(cmd)
+            assert code == 0, (cmd, payload)
+        for depth in (129, 20_000):
+            for bad in (arr(depth, ""), obj(depth, "0")):
+                for cmd in cmds(bad, is_crop):
+                    code, payload = run_json(cmd)
+                    err = error_of(code, payload)
+                    assert err is not None and err.kind == "json" and err.message == "JSON 嵌套太深", (cmd[0], depth, payload)

@@ -5,7 +5,7 @@
 
 use gxr_raw::CoreError;
 
-const MAX_DEPTH: usize = 64;
+const MAX_DEPTH: usize = 128;
 
 /// A parsed JSON value.
 #[derive(Clone, Debug, PartialEq)]
@@ -78,14 +78,21 @@ pub fn parse_json(
         pos: 0,
     };
     parser.skip_ws();
-    let value = parser
-        .parse_value(0)
-        .map_err(|_| CoreError::new(err_kind, err_msg))?;
+    let value = parser.parse_value(0).map_err(|err| match err {
+        ParseErr::TooDeep => CoreError::new("json", "JSON 嵌套太深"),
+        ParseErr::Syntax => CoreError::new(err_kind, err_msg),
+    })?;
     parser.skip_ws();
     if parser.pos != parser.bytes.len() {
         return Err(CoreError::new(err_kind, err_msg));
     }
     Ok(value)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParseErr {
+    Syntax,
+    TooDeep,
 }
 
 struct Parser<'a> {
@@ -112,19 +119,16 @@ impl<'a> Parser<'a> {
         self.bytes.get(self.pos..self.pos + lit.len()) == Some(lit)
     }
 
-    fn parse_value(&mut self, depth: usize) -> Result<JsonValue, ()> {
-        if depth > MAX_DEPTH {
-            return Err(());
-        }
+    fn parse_value(&mut self, depth: usize) -> Result<JsonValue, ParseErr> {
         self.skip_ws();
-        let b = self.peek().ok_or(())?;
+        let b = self.peek().ok_or(ParseErr::Syntax)?;
         match b {
             b'n' => {
                 if self.starts_with(b"null") {
                     self.pos += 4;
                     Ok(JsonValue::Null)
                 } else {
-                    Err(())
+                    Err(ParseErr::Syntax)
                 }
             }
             b't' => {
@@ -132,7 +136,7 @@ impl<'a> Parser<'a> {
                     self.pos += 4;
                     Ok(JsonValue::Bool(true))
                 } else {
-                    Err(())
+                    Err(ParseErr::Syntax)
                 }
             }
             b'f' => {
@@ -140,18 +144,28 @@ impl<'a> Parser<'a> {
                     self.pos += 5;
                     Ok(JsonValue::Bool(false))
                 } else {
-                    Err(())
+                    Err(ParseErr::Syntax)
                 }
             }
             b'"' => self.parse_string().map(JsonValue::Str),
-            b'[' => self.parse_array(depth + 1),
-            b'{' => self.parse_object(depth + 1),
+            b'[' => {
+                if depth >= MAX_DEPTH {
+                    return Err(ParseErr::TooDeep);
+                }
+                self.parse_array(depth + 1)
+            }
+            b'{' => {
+                if depth >= MAX_DEPTH {
+                    return Err(ParseErr::TooDeep);
+                }
+                self.parse_object(depth + 1)
+            }
             b'N' => {
                 if self.starts_with(b"NaN") {
                     self.pos += 3;
                     Ok(JsonValue::Float(f64::NAN))
                 } else {
-                    Err(())
+                    Err(ParseErr::Syntax)
                 }
             }
             b'I' => {
@@ -159,17 +173,17 @@ impl<'a> Parser<'a> {
                     self.pos += 8;
                     Ok(JsonValue::Float(f64::INFINITY))
                 } else {
-                    Err(())
+                    Err(ParseErr::Syntax)
                 }
             }
             b'-' | b'0'..=b'9' => self.parse_number(),
-            _ => Err(()),
+            _ => Err(ParseErr::Syntax),
         }
     }
 
-    fn parse_string(&mut self) -> Result<String, ()> {
+    fn parse_string(&mut self) -> Result<String, ParseErr> {
         if self.peek() != Some(b'"') {
-            return Err(());
+            return Err(ParseErr::Syntax);
         }
         self.pos += 1;
         let mut out = String::new();
@@ -179,11 +193,11 @@ impl<'a> Parser<'a> {
                 return Ok(out);
             }
             if b < 0x20 {
-                return Err(());
+                return Err(ParseErr::Syntax);
             }
             if b == b'\\' {
                 self.pos += 1;
-                let esc = self.peek().ok_or(())?;
+                let esc = self.peek().ok_or(ParseErr::Syntax)?;
                 self.pos += 1;
                 match esc {
                     b'"' => out.push('"'),
@@ -198,26 +212,26 @@ impl<'a> Parser<'a> {
                         let code = self.parse_hex4()?;
                         if (0xD800..=0xDBFF).contains(&code) {
                             if !self.starts_with(b"\\u") {
-                                return Err(());
+                                return Err(ParseErr::Syntax);
                             }
                             self.pos += 2;
                             let low = self.parse_hex4()?;
                             if !(0xDC00..=0xDFFF).contains(&low) {
-                                return Err(());
+                                return Err(ParseErr::Syntax);
                             }
                             let cp = 0x10000
                                 + ((u32::from(code) - 0xD800) << 10)
                                 + (u32::from(low) - 0xDC00);
-                            let ch = char::from_u32(cp).ok_or(())?;
+                            let ch = char::from_u32(cp).ok_or(ParseErr::Syntax)?;
                             out.push(ch);
                         } else if (0xDC00..=0xDFFF).contains(&code) {
-                            return Err(());
+                            return Err(ParseErr::Syntax);
                         } else {
-                            let ch = char::from_u32(u32::from(code)).ok_or(())?;
+                            let ch = char::from_u32(u32::from(code)).ok_or(ParseErr::Syntax)?;
                             out.push(ch);
                         }
                     }
-                    _ => return Err(()),
+                    _ => return Err(ParseErr::Syntax),
                 }
             } else {
                 let start = self.pos;
@@ -227,21 +241,25 @@ impl<'a> Parser<'a> {
                     }
                     self.pos += 1;
                 }
-                let slice = std::str::from_utf8(&self.bytes[start..self.pos]).map_err(|_| ())?;
+                let slice = std::str::from_utf8(&self.bytes[start..self.pos])
+                    .map_err(|_| ParseErr::Syntax)?;
                 out.push_str(slice);
             }
         }
-        Err(())
+        Err(ParseErr::Syntax)
     }
 
-    fn parse_hex4(&mut self) -> Result<u16, ()> {
-        let slice = self.bytes.get(self.pos..self.pos + 4).ok_or(())?;
+    fn parse_hex4(&mut self) -> Result<u16, ParseErr> {
+        let slice = self
+            .bytes
+            .get(self.pos..self.pos + 4)
+            .ok_or(ParseErr::Syntax)?;
         self.pos += 4;
-        let text = std::str::from_utf8(slice).map_err(|_| ())?;
-        u16::from_str_radix(text, 16).map_err(|_| ())
+        let text = std::str::from_utf8(slice).map_err(|_| ParseErr::Syntax)?;
+        u16::from_str_radix(text, 16).map_err(|_| ParseErr::Syntax)
     }
 
-    fn parse_number(&mut self) -> Result<JsonValue, ()> {
+    fn parse_number(&mut self) -> Result<JsonValue, ParseErr> {
         if self.starts_with(b"-Infinity") {
             self.pos += 9;
             return Ok(JsonValue::Float(f64::NEG_INFINITY));
@@ -254,7 +272,7 @@ impl<'a> Parser<'a> {
             Some(b'0') => {
                 self.pos += 1;
                 if matches!(self.peek(), Some(b'0'..=b'9')) {
-                    return Err(());
+                    return Err(ParseErr::Syntax);
                 }
             }
             Some(b'1'..=b'9') => {
@@ -263,14 +281,14 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                 }
             }
-            _ => return Err(()),
+            _ => return Err(ParseErr::Syntax),
         }
         let mut is_float = false;
         if self.peek() == Some(b'.') {
             is_float = true;
             self.pos += 1;
             if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(());
+                return Err(ParseErr::Syntax);
             }
             while matches!(self.peek(), Some(b'0'..=b'9')) {
                 self.pos += 1;
@@ -283,21 +301,22 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             if !matches!(self.peek(), Some(b'0'..=b'9')) {
-                return Err(());
+                return Err(ParseErr::Syntax);
             }
             while matches!(self.peek(), Some(b'0'..=b'9')) {
                 self.pos += 1;
             }
         }
-        let text = std::str::from_utf8(&self.bytes[start..self.pos]).map_err(|_| ())?;
+        let text =
+            std::str::from_utf8(&self.bytes[start..self.pos]).map_err(|_| ParseErr::Syntax)?;
         if !is_float && let Ok(i) = text.parse::<i64>() {
             return Ok(JsonValue::Int(i));
         }
-        let f = text.parse::<f64>().map_err(|_| ())?;
+        let f = text.parse::<f64>().map_err(|_| ParseErr::Syntax)?;
         Ok(JsonValue::Float(f))
     }
 
-    fn parse_array(&mut self, depth: usize) -> Result<JsonValue, ()> {
+    fn parse_array(&mut self, depth: usize) -> Result<JsonValue, ParseErr> {
         self.pos += 1; // '['
         self.skip_ws();
         let mut items = Vec::new();
@@ -316,12 +335,12 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     return Ok(JsonValue::Array(items));
                 }
-                _ => return Err(()),
+                _ => return Err(ParseErr::Syntax),
             }
         }
     }
 
-    fn parse_object(&mut self, depth: usize) -> Result<JsonValue, ()> {
+    fn parse_object(&mut self, depth: usize) -> Result<JsonValue, ParseErr> {
         self.pos += 1; // '{'
         self.skip_ws();
         let mut pairs = Vec::new();
@@ -334,7 +353,7 @@ impl<'a> Parser<'a> {
             let key = self.parse_string()?;
             self.skip_ws();
             if self.peek() != Some(b':') {
-                return Err(());
+                return Err(ParseErr::Syntax);
             }
             self.pos += 1;
             let val = self.parse_value(depth)?;
@@ -352,8 +371,41 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     return Ok(JsonValue::Object(pairs));
                 }
-                _ => return Err(()),
+                _ => return Err(ParseErr::Syntax),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deep_array(depth: usize, inner: &str) -> String {
+        format!("{}{inner}{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    fn deep_object(depth: usize, inner: &str) -> String {
+        format!("{}{inner}{}", r#"{"a":"#.repeat(depth), "}".repeat(depth))
+    }
+
+    #[test]
+    fn json_nesting_cap_is_128_checked_before_descending() {
+        assert!(parse_json(&deep_array(128, ""), "bad", "msg").is_ok());
+        assert!(parse_json(&deep_array(128, "0"), "bad", "msg").is_ok());
+        assert!(parse_json(&deep_object(127, "{}"), "bad", "msg").is_ok());
+        assert!(parse_json(&deep_object(128, "0"), "bad", "msg").is_ok());
+
+        let too_deep = CoreError::new("json", "JSON 嵌套太深");
+        for bad in [
+            deep_array(129, ""),
+            deep_array(129, "0"),
+            deep_object(128, "{}"),
+            deep_object(129, "0"),
+            deep_array(20_000, "0"),
+            deep_object(20_000, "0"),
+        ] {
+            assert_eq!(parse_json(&bad, "bad", "msg").unwrap_err(), too_deep);
         }
     }
 }
