@@ -629,7 +629,7 @@ def test_a_speed_failure_is_retried_once_when_quiet_and_the_second_run_counts(tm
     assert _hits(tmp_path)["speed"] == 2
     assert "[exclusive] " in out and "[exclusive-retry] " in out  # 两次的输出都在
     assert "等机器安静（速度预算重试之前）" in out
-    assert "test_speed_probe 第一次只有墙钟预算没过（speed），安静后第二次通过，以第二次为准" in out
+    assert "test_speed_probe 第一次只有墙钟预算没过（speed），等安静（或等待预算用完）后重跑，第二次通过，以第二次为准" in out
     cases = _junit_case(tmp_path / "junit.xml", "test_speed_probe")
     assert len(cases) == 1 and cases[0].find("failure") is None
     suite = ET.parse(tmp_path / "junit.xml").getroot().find("testsuite")
@@ -654,7 +654,7 @@ def test_a_speed_failure_that_fails_twice_stays_failed(tmp_path: Path, scratch: 
     out = proc.stdout + proc.stderr
     assert proc.returncode == 1, out
     assert _hits(tmp_path)["speed"] == 2
-    assert "安静后第二次仍然失败（speed）" in out and "(run 2)" in out
+    assert "等安静（或等待预算用完）后重跑，第二次仍然失败（speed）" in out and "(run 2)" in out
     cases = _junit_case(tmp_path / "junit.xml", "test_speed_probe")
     assert len(cases) == 1 and cases[0].find("failure") is not None
 

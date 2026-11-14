@@ -286,7 +286,11 @@ def report_retry(first: StageResult, second: StageResult | None, retried: list[s
     for nodeid in retried:
         again = second.outcomes.get(nodeid, "没有结果") if second is not None else "没有结果"
         verdict = "通过" if again == "passed" else f"仍然失败（{again}）"
-        print(f"速度预算重试：{nodeid} 第一次只有墙钟预算没过（{first.outcomes[nodeid]}），安静后第二次{verdict}，以第二次为准。", flush=True)
+        print(
+            f"速度预算重试：{nodeid} 第一次只有墙钟预算没过（{first.outcomes[nodeid]}），"
+            f"等安静（或等待预算用完）后重跑，第二次{verdict}，以第二次为准。",
+            flush=True,
+        )
 
 
 Launch = Callable[[str, list[str], float, tuple[str, ...]], int]
