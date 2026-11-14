@@ -13,7 +13,6 @@ pub const SLIDER_RANGE: i64 = 100;
 pub const CURVE_MAX_POINTS: usize = 16;
 
 const INVALID_REQUEST: &str = "请求无效。请刷新页面后重试。";
-const INV_2_4_F32: f32 = (1.0_f64 / 2.4_f64) as f32;
 
 /// Full finish adjustment sliders (`render/params.py:60 Adjust`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -240,7 +239,7 @@ pub(crate) fn srgb_to_linear_u8(v: u8) -> f32 {
     if x <= 0.04045_f32 {
         x / 12.92_f32
     } else {
-        gxr_math::powf(f64::from((x + 0.055_f32) / 1.055_f32), f64::from(2.4_f32)) as f32
+        gxr_math::powf(f64::from((x + 0.055_f32) / 1.055_f32), 2.4_f64) as f32
     }
 }
 
@@ -251,7 +250,7 @@ pub(crate) fn linear_to_srgb_f32(lin: f32) -> u8 {
     let encoded = if x <= 0.0031308_f32 {
         x * 12.92_f32
     } else {
-        1.055_f32 * (gxr_math::powf(f64::from(x), f64::from(INV_2_4_F32)) as f32) - 0.055_f32
+        1.055_f32 * (gxr_math::powf(f64::from(x), 1.0_f64 / 2.4_f64) as f32) - 0.055_f32
     };
     (encoded * 255.0_f32 + 0.5_f32).clamp(0.0_f32, 255.0_f32) as u8
 }

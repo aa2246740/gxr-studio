@@ -119,7 +119,7 @@ def _srgb_to_linear_oracle_table() -> np.ndarray:
                 out[c] = _f32_round_decimal(dv / _dec32(12.92))
             else:
                 base = _f32_round_decimal(Decimal(float(_f32_round_decimal(dv + _dec32(0.055)))) / _dec32(1.055))
-                out[c] = _f32_round_decimal(Decimal(float(base)) ** _dec32(2.4))
+                out[c] = _f32_round_decimal(Decimal(float(base)) ** Decimal(2.4))
     return out
 
 
@@ -135,11 +135,7 @@ def test_srgb_and_linear_roundtrip_and_edge_values(tmp_path: Path) -> None:
     oracle_lin = _srgb_to_linear_oracle_table()[rgb]
     assert np.array_equal(rs_lin.view(np.uint32), oracle_lin.view(np.uint32))
     py_lin = _srgb_to_linear(rgb)
-    # Any difference from real Python is Apple libm powff being 1 ULP off the correctly rounded f32 value.
-    rs_u32 = rs_lin[:, :, 0].ravel().view(np.uint32)
-    py_u32 = py_lin[:, :, 0].ravel().view(np.uint32)
-    ulp_diff = np.abs(rs_u32.astype(np.int64) - py_u32.astype(np.int64))
-    assert int(ulp_diff.max()) <= 1
+    assert np.array_equal(rs_lin.view(np.uint32), py_lin.view(np.uint32))
 
     lin_probe = np.array(
         [[[-0.5, 0.0, 0.003], [0.0031308, 0.0031309, 0.25], [0.5, 1.0, 1.5], [math.nan, 0.123456, 0.999]]],
@@ -271,6 +267,39 @@ def test_apply_base_tone_and_curves_match_python(tmp_path: Path, w: int, h: int)
         assert np.array_equal(rs_out, py_out), (
             f"table mismatch {w}x{h} {tag}: max diff={int(np.abs(rs_out.astype(int) - py_out.astype(int)).max())}"
         )
+
+
+def test_srgb_pow_sol_ev_and_108_tone_curve_chains(tmp_path: Path) -> None:
+    require_cli()
+    steep_curve = {"master": [[0, 0], [128, 0], [180, 255], [255, 255]]}
+    for code_val, ev in ((120, 0.8542), (60, 3.0481)):
+        rgb = np.full((1, 1, 3), code_val, dtype=np.uint8)
+        for contrast in (-100, 0, 100):
+            for highlight in (-100, 0, 100):
+                for shadow in (-100, 0, 100):
+                    for has_curve, curve_dict in ((False, None), (True, steep_curve)):
+                        adj_dict: dict[str, Any] = {
+                            "exposure_ev": ev,
+                            "contrast": contrast,
+                            "highlight": highlight,
+                            "shadow": shadow,
+                        }
+                        adj = parse_adjust(adj_dict)
+                        curves = parse_curve(curve_dict)
+                        py_out = apply_base(rgb, adj, curves)
+                        edit: dict[str, Any] = {"adjust": adj_dict}
+                        if curve_dict is not None:
+                            edit["curve"] = curve_dict
+                        tag = f"sol-{code_val}-{ev}-{contrast}-{highlight}-{shadow}-{int(has_curve)}"
+                        code, payload, rs_out = _run_finish_array(
+                            tmp_path,
+                            rgb,
+                            edit,
+                            {"stage": "uncropped", "from_raw": False},
+                            tag,
+                        )
+                        assert code == 0, (tag, payload)
+                        assert rs_out is not None and np.array_equal(rs_out, py_out), (tag, rs_out, py_out)
 
 
 def test_apply_base_bad_adjust_and_bad_curve_errors(tmp_path: Path) -> None:
