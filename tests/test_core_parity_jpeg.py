@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -287,7 +288,7 @@ def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
                 f"real[{idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
                 f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
             )
-            assert all(m <= 0.5 for m in mean_ch), f"{label} q={quality}: channel mean abs diff {mean_ch} > 0.5"
+            _assert_mean_within_bound(mean_ch, 0.5, label, quality)
             if quality >= 85:
                 assert max(max_ch) <= 4, f"{label} q={quality}: channel max abs diff {max_ch} > 4"
             else:
@@ -328,12 +329,18 @@ def test_real_cropped_non16_arrays_gate_a_and_b(tmp_path: Path) -> None:
                 f"real_crop[{dng_idx}] {label} q={quality}: mean={[round(m, 5) for m in mean_ch]} "
                 f"max={max_ch} gt4={gt4_count}/{total_px} ({gt4_frac:.6e})"
             )
-            assert all(m <= 0.5 for m in mean_ch), f"{label} q={quality}: channel mean abs diff {mean_ch} > 0.5"
+            _assert_mean_within_bound(mean_ch, 0.5, label, quality)
             if quality >= 85:
                 assert max(max_ch) <= 4, f"{label} q={quality}: channel max abs diff {max_ch} > 4"
             else:
                 assert gt4_frac <= 1e-4, f"{label} q={quality}: fraction > 4 ({gt4_frac:.6e}) > 1e-4"
                 assert max(max_ch) <= 16, f"{label} q={quality}: channel max abs diff {max_ch} > 16"
+
+
+def _assert_mean_within_bound(mean_ch: list[float], bound: float, label: str, quality: int) -> None:
+    for ch, m in enumerate(mean_ch):
+        assert math.isfinite(m), f"{label} q={quality}: channel {ch} mean abs diff is non-finite ({m})"
+        assert m <= bound, f"{label} q={quality}: channel {ch} mean abs diff {m} > {bound}"
 
 
 def _assert_exif_identical(rust_jpg: bytes, py_jpg: bytes) -> None:
@@ -487,7 +494,7 @@ def test_error_paths(tmp_path: Path) -> None:
             _cli_encode(rgb, bad_q, {}, {}, tmp_path, f"badq_{bad_q}")
         assert exc.value.kind == "bad_quality"
 
-    # Bad EXIF JSON
+    # Bad EXIF JSON + JSON nesting depth cap (128 allowed, 129+ -> json / "JSON 嵌套太深")
     npy = tmp_path / "e.npy"
     np.save(npy, rgb)
     bad_exif = tmp_path / "bad.json"
@@ -495,6 +502,20 @@ def test_error_paths(tmp_path: Path) -> None:
     code, payload = run_json(["jpeg-encode", "--in", str(npy), "--quality", "90", "--exif", str(bad_exif), "--out", str(tmp_path / "o.jpg")])
     err = error_of(code, payload)
     assert err is not None and err.kind == "bad_exif"
+
+    for tag, json_text in (
+        ("arr_129", "[" * 129 + "]" * 129),
+        ("obj_129", '{"a":' * 128 + "{}" + "}" * 128),
+        ("arr_20000", "[" * 20_000 + "]" * 20_000),
+        ("obj_20000", '{"a":' * 20_000 + "{}" + "}" * 20_000),
+    ):
+        deep_path = tmp_path / f"{tag}.json"
+        deep_path.write_text(json_text, encoding="utf-8")
+        code, payload = run_json(
+            ["jpeg-encode", "--in", str(npy), "--quality", "90", "--exif", str(deep_path), "--out", str(tmp_path / f"{tag}.jpg")]
+        )
+        err = error_of(code, payload)
+        assert err is not None and err.kind == "json" and err.message == "JSON 嵌套太深", f"{tag}: got {payload}"
 
     # Non-latin1 copyright when reduced fallback also has it
     with pytest.raises(CoreCliError) as exc:
@@ -579,5 +600,31 @@ def test_wasm_matches_native_jpeg(tmp_path: Path) -> None:
         )
         specs.append(spec)
 
+    # JSON nesting depth cases on both sides of the 128 limit (arrays and objects)
+    json_depth_cases = [
+        ("depth_arr_128", "[" * 128 + "1" + "]" * 128),
+        ("depth_arr_129", "[" * 129 + "]" * 129),
+        ("depth_arr_20000", "[" * 20_000 + "]" * 20_000),
+        ("depth_obj_128", '{"a":' * 127 + '{"b":1}' + "}" * 127),
+        ("depth_obj_129", '{"a":' * 128 + "{}" + "}" * 128),
+        ("depth_obj_20000", '{"a":' * 20_000 + "{}" + "}" * 20_000),
+    ]
+    for tag, json_text in json_depth_cases:
+        ex_path = tmp_path / f"{tag}.exif.json"
+        ex_path.write_text(json_text, encoding="utf-8")
+        spec = tmp_path / f"spec_{tag}.json"
+        spec.write_text(
+            json.dumps({"npy": str(tmp_path / "w_0.npy"), "exif": str(ex_path), "quality": 85, "out": str(tmp_path / f"out_{tag}.jpg")}),
+            encoding="utf-8",
+        )
+        specs.append(spec)
+
     proc = run_area("jpeg", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_mean_bound_rejects_nan_and_inf() -> None:
+    _assert_mean_within_bound([0.0, 0.25, 0.5], 0.5, "ok", 95)
+    for bad in ([0.0, float("nan"), 0.0], [float("inf"), 0.0, 0.0], [0.0, 0.0, float("-inf")]):
+        with pytest.raises(AssertionError):
+            _assert_mean_within_bound(bad, 0.5, "injected", 95)

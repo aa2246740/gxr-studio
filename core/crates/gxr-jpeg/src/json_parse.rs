@@ -13,7 +13,7 @@ pub enum Value {
     Object(Vec<(String, Value)>),
 }
 
-const MAX_DEPTH: usize = 32;
+const MAX_DEPTH: usize = 128;
 
 pub fn parse(input: &str) -> Result<Value, CoreError> {
     let mut p = Parser {
@@ -65,9 +65,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_value(&mut self, depth: usize) -> Result<Value, CoreError> {
-        if depth > MAX_DEPTH {
-            return Err(self.err("JSON nesting too deep"));
-        }
         self.skip_ws();
         let b = self
             .peek()
@@ -77,8 +74,18 @@ impl<'a> Parser<'a> {
             b't' => self.parse_lit(b"true", Value::Bool(true)),
             b'f' => self.parse_lit(b"false", Value::Bool(false)),
             b'"' => self.parse_string().map(Value::Str),
-            b'[' => self.parse_array(depth + 1),
-            b'{' => self.parse_object(depth + 1),
+            b'[' => {
+                if depth >= MAX_DEPTH {
+                    return Err(CoreError::new("json", "JSON 嵌套太深"));
+                }
+                self.parse_array(depth + 1)
+            }
+            b'{' => {
+                if depth >= MAX_DEPTH {
+                    return Err(CoreError::new("json", "JSON 嵌套太深"));
+                }
+                self.parse_object(depth + 1)
+            }
             b'-' | b'0'..=b'9' => self.parse_number(),
             _ => Err(self.err(format!("unexpected JSON byte at {}", self.pos))),
         }
@@ -290,5 +297,43 @@ fn utf8_width(first: u8) -> Option<usize> {
         Some(4)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_nesting_depth_caps_at_128() {
+        let arr_ok = format!("{}1{}", "[".repeat(128), "]".repeat(128));
+        assert!(parse(&arr_ok).is_ok());
+
+        let arr_empty_ok = format!("{}{}", "[".repeat(128), "]".repeat(128));
+        assert!(parse(&arr_empty_ok).is_ok());
+
+        let arr_over = format!("{}{}", "[".repeat(129), "]".repeat(129));
+        assert_eq!(
+            parse(&arr_over),
+            Err(CoreError::new("json", "JSON 嵌套太深"))
+        );
+
+        let obj_ok = format!("{}{{}}{}", "{\"a\":".repeat(127), "}".repeat(127));
+        assert!(parse(&obj_ok).is_ok());
+
+        let obj_val_ok = format!("{}{{\"b\":1}}{}", "{\"a\":".repeat(127), "}".repeat(127));
+        assert!(parse(&obj_val_ok).is_ok());
+
+        let obj_over = format!("{}{{}}{}", "{\"a\":".repeat(128), "}".repeat(128));
+        assert_eq!(
+            parse(&obj_over),
+            Err(CoreError::new("json", "JSON 嵌套太深"))
+        );
+
+        let huge_arr = format!("{}{}", "[".repeat(20_000), "]".repeat(20_000));
+        assert_eq!(
+            parse(&huge_arr),
+            Err(CoreError::new("json", "JSON 嵌套太深"))
+        );
     }
 }
