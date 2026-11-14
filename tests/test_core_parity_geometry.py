@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -58,8 +59,34 @@ def _real_dng_sizes() -> list[tuple[str, int, int]]:
 def _assert_close_rect(py_rect: tuple[float, float, float, float], rs_rect: list[float], label: str = "") -> None:
     assert len(rs_rect) == 4, label
     for i, (a, b) in enumerate(zip(py_rect, rs_rect, strict=True)):
-        limit = 1e-12 * max(1.0, abs(float(a)))
-        assert abs(float(a) - float(b)) <= limit, f"{label}[{i}]: python={a!r} rust={b!r}"
+        fa = float(a)
+        fb = float(b)
+        if math.isnan(fa) or math.isnan(fb):
+            assert math.isnan(fa) and math.isnan(fb), f"{label}[{i}]: python={a!r} rust={b!r}"
+            continue
+        if math.isinf(fa) or math.isinf(fb):
+            assert fa == fb, f"{label}[{i}]: python={a!r} rust={b!r}"
+            continue
+        limit = 1e-12 * max(1.0, abs(fa))
+        assert abs(fa - fb) <= limit, f"{label}[{i}]: python={a!r} rust={b!r}"
+
+
+def test_float_rect_gate_enforces_nan_and_inf_rules() -> None:
+    _assert_close_rect((math.nan, 0.0, 1.0, 1.0), [math.nan, 0.0, 1.0, 1.0], "both-nan")
+    _assert_close_rect((math.inf, 0.0, 1.0, 1.0), [math.inf, 0.0, 1.0, 1.0], "same-pos-inf")
+    _assert_close_rect((-math.inf, 0.0, 1.0, 1.0), [-math.inf, 0.0, 1.0, 1.0], "same-neg-inf")
+    _assert_close_rect((2.0, 0.0, 1.0, 1.0), [2.0 + 1e-12, 0.0, 1.0, 1.0], "within-bound")
+
+    for py_v, rs_v, tag in (
+        (math.nan, 0.0, "python-nan"),
+        (0.0, math.nan, "rust-nan"),
+        (math.inf, -math.inf, "opposite-inf"),
+        (math.inf, 1.0, "python-inf-rust-finite"),
+        (1.0, math.inf, "python-finite-rust-inf"),
+        (2.0, 2.0 + 1e-11, "over-bound"),
+    ):
+        with pytest.raises(AssertionError):
+            _assert_close_rect((py_v, 0.0, 1.0, 1.0), [rs_v, 0.0, 1.0, 1.0], tag)
 
 
 def _synth_rgb(width: int, height: int, seed: int = 1) -> np.ndarray:
