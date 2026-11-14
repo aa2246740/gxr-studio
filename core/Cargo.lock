@@ -78,6 +78,9 @@ dependencies = [
 [[package]]
 name = "gxr-jpeg"
 version = "0.1.0"
+dependencies = [
+ "gxr-raw",
+]
 
 [[package]]
 name = "gxr-lut"
