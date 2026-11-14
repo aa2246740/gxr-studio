@@ -2,9 +2,10 @@
 // 读文件、核对、烘焙都在 Worker 里；这里只排队、记结果、通知界面。
 
 import type { Engine } from '../../../frontend/src/index';
-import { bakeIn, readCalib, readDat, type Bake, type DatRead } from '../core/api';
+import type { Bake, CalibRead, DatRead } from '../core/api';
+import type { BakeArgs } from '../core/protocol';
 import { modelIso, sha256, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
-import { deletePack, loadPack, savePack } from '../lib/idb';
+import type { StoredPack } from '../lib/idb';
 import { bakeParams, unitIndex, type Card, type DatSummary, type Menu } from '../lib/recipes';
 import type { ZipFail } from '../lib/zip';
 
@@ -43,8 +44,20 @@ const ZIP_TEXT: Record<ZipFail, string> = {
   broken: TEXT.unreadable,
 };
 
-/** 读文件字节的办法（Worker 里读完转移过来；主线程不调 File.arrayBuffer）。 */
-export type ReadFile = (file: File) => Promise<ArrayBuffer | null>;
+/**
+ * Book 碰到的所有异步边界：读文件、Worker 里的解析和核对、烘焙、IndexedDB。App 传真的进来；
+ * 测试换成可控的回复，专门造晚到、乱序的时序。
+ */
+export interface BookIo {
+  /** 读文件字节（Worker 里读完转移过来；主线程不调 File.arrayBuffer）。 */
+  readFile(file: File): Promise<ArrayBuffer | null>;
+  readDat(bytes: ArrayBuffer): Promise<DatRead>;
+  readCalib(bytes: ArrayBuffer): Promise<CalibRead>;
+  bake(args: BakeArgs): Promise<Bake>;
+  loadPack(): Promise<StoredPack | null>;
+  savePack(pack: StoredPack): Promise<void>;
+  deletePack(): Promise<void>;
+}
 
 export class Book {
   pack: Pack | null = null;
@@ -56,6 +69,12 @@ export class Book {
   /** 选了几个 GXRCE.DAT 时说明用的是哪个。 */
   datNote: string | null = null;
   datBusy = false;
+  /**
+   * 每个异步操作提交前核对自己的版本（Sol r1）：选新的 DAT、清空都让 DAT 的版本加一；导入、替换、删除、恢复校准数据
+   * 让校准的版本加一。晚到的结果只丢掉，不会把清空的状态复活，也不会盖掉后来的选择。
+   */
+  private datSeq = 0;
+  private packSeq = 0;
   /** 相机配方文件和校准数据的组合；换了任何一个就加一，旧的检查和烘焙结果作废。 */
   private generation = 0;
   private readonly units = new Map<Unit, { generation: number; state: UnitState }>();
@@ -64,7 +83,7 @@ export class Book {
   private readonly listeners = new Set<() => void>();
   private engine: Engine | null = null;
 
-  constructor(private readonly readFile: ReadFile) {}
+  constructor(private readonly io: BookIo) {}
 
   attach(engine: Engine | null): void {
     this.engine = engine;
@@ -88,58 +107,68 @@ export class Book {
 
   /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对。 */
   async restore(): Promise<void> {
-    const stored = await loadPack();
-    if (!stored) return;
-    const out = await this.check(stored.zip.slice(0), stored.name, stored.savedAt);
+    const seq = ++this.packSeq;
+    const stored = await this.io.loadPack();
+    if (!stored || seq !== this.packSeq) return;
+    const out = await this.check(stored.zip.slice(0), stored.name, stored.savedAt, seq);
+    if (seq !== this.packSeq) return;
     if (!out.ok) this.packError = out.message;
     this.changed();
   }
 
   async importPack(file: File): Promise<boolean> {
+    const seq = ++this.packSeq;
     this.packBusy = true;
     this.packError = null;
     this.changed();
     try {
-      const bytes = await this.readFile(file);
+      const bytes = await this.io.readFile(file);
+      if (seq !== this.packSeq) return false;
       if (!bytes) {
         this.packError = '读不了这个文件。请重新选一次。';
         return false;
       }
       const keep = bytes.slice(0);
       const savedAt = Date.now();
-      const out = await this.check(bytes, file.name, savedAt);
+      const out = await this.check(bytes, file.name, savedAt, seq);
+      if (seq !== this.packSeq) return false;
       if (!out.ok) {
         this.packError = out.message;
         return false;
       }
       try {
-        await savePack({ zip: keep, name: file.name, savedAt });
+        await this.io.savePack({ zip: keep, name: file.name, savedAt });
       } catch {
-        this.packError = '校准数据存不进这台 iPhone。请检查存储空间后再试。';
+        if (seq === this.packSeq) this.packError = '校准数据存不进这台 iPhone。请检查存储空间后再试。';
       }
       return true;
     } catch (err) {
-      this.packError = err instanceof Error && err.message ? err.message : TEXT.unreadable;
+      if (seq === this.packSeq) this.packError = err instanceof Error && err.message ? err.message : TEXT.unreadable;
       return false;
     } finally {
-      this.packBusy = false;
-      this.changed();
+      if (seq === this.packSeq) {
+        this.packBusy = false;
+        this.changed();
+      }
     }
   }
 
   async removePack(): Promise<void> {
+    this.packSeq += 1;
+    this.packBusy = false;
     this.pack = null;
     this.packError = null;
     this.bump();
     try {
-      await deletePack();
+      await this.io.deletePack();
     } finally {
       this.changed();
     }
   }
 
-  private async check(zip: ArrayBuffer, name: string, savedAt: number): Promise<{ ok: true } | { ok: false; message: string }> {
-    const read = await readCalib(zip);
+  private async check(zip: ArrayBuffer, name: string, savedAt: number, seq: number): Promise<{ ok: true } | { ok: false; message: string }> {
+    const read = await this.io.readCalib(zip);
+    if (seq !== this.packSeq) return { ok: false, message: '' };
     if (!read.ok) return { ok: false, message: read.zip ? ZIP_TEXT[read.zip] : read.message ?? TEXT.unreadable };
     this.pack = { name, savedAt, units: read.units, manifestSha256: read.manifestSha256, files: read.files };
     this.bump();
@@ -148,31 +177,38 @@ export class Book {
 
   /** 这次选上的 GXRCE.DAT（已经挑好最新的那个）。`count` 是一共选了几个。 */
   async setDat(file: File, count: number): Promise<void> {
+    const seq = ++this.datSeq;
     this.datBusy = true;
     this.datError = null;
     this.datNote = count > 1 ? `选了 ${count} 个 GXRCE.DAT，用的是修改时间最新的那个。` : null;
     this.changed();
     try {
-      const bytes = await this.readFile(file);
+      const bytes = await this.io.readFile(file);
+      if (seq !== this.datSeq) return;
       if (!bytes) {
         this.datError = '读不了这个相机配方文件。请重新选一次 GXRCE.DAT。';
         return;
       }
-      const read = await readDat(bytes);
+      const read = await this.io.readDat(bytes);
+      if (seq !== this.datSeq) return;
       const summary = JSON.parse(read.summary) as DatSummary;
       const menu = JSON.parse(read.menu) as Menu;
       if (read.entries.length !== 24 * 552) throw new Error('条目长度不合格');
       this.dat = { name: file.name, read, summary, menu };
       this.bump();
     } catch (err) {
-      this.datError = `无法读取相机配方文件：${err instanceof Error ? err.message : String(err)}`;
+      if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${err instanceof Error ? err.message : String(err)}`;
     } finally {
-      this.datBusy = false;
-      this.changed();
+      if (seq === this.datSeq) {
+        this.datBusy = false;
+        this.changed();
+      }
     }
   }
 
   clearDat(): void {
+    this.datSeq += 1;
+    this.datBusy = false;
     this.dat = null;
     this.datError = null;
     this.datNote = null;
@@ -223,7 +259,7 @@ export class Book {
       const files = this.files(unit, iso);
       if (!files || generation !== this.generation) return { state: 'invalid', message: TEXT.filesMissing };
       try {
-        await bakeIn({ entry: copy(stock), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{}' });
+        await this.io.bake({ entry: copy(stock), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{}' });
       } catch {
         return { state: 'invalid', message: TEXT.unreadable };
       }
@@ -253,7 +289,7 @@ export class Book {
       const stock = this.entry(unit, 4);
       const files = this.files(unit, modelIso(iso));
       if (!base || !stock || !files) throw new Error(TEXT.filesMissing);
-      job = bakeIn({ entry: copy(base), stock: copy(stock), menu: this.dat.read.menu, ctx: copy(files.ctx), ring: copy(files.ring), params });
+      job = this.io.bake({ entry: copy(base), stock: copy(stock), menu: this.dat.read.menu, ctx: copy(files.ctx), ring: copy(files.ring), params });
       this.bakes.set(key, job);
       job.then(
         (made) => {

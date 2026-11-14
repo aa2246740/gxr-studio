@@ -101,7 +101,7 @@ export async function checkPack(files: Map<string, Uint8Array>): Promise<PackChe
       for (const branch of MODEL_ISOS) {
         const pair = models[String(branch)] as { ctx?: unknown; ring?: unknown } | undefined;
         if (!pair || typeof pair !== 'object' || !plain(pair.ctx) || !plain(pair.ring)) return bad(TEXT.badList, `${unit}/${branch}`);
-        if (!(pair.ctx in listed) || !(pair.ring in listed)) return bad(TEXT.badList, `${unit}/${branch}`);
+        if (!Object.prototype.hasOwnProperty.call(listed, pair.ctx) || !Object.prototype.hasOwnProperty.call(listed, pair.ring)) return bad(TEXT.badList, `${unit}/${branch}`);
         out[String(branch)] = { ctx: pair.ctx, ring: pair.ring };
       }
       units.push({ unit, stockSha256: meta.camera_stock_sha256, models: out });

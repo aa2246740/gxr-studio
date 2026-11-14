@@ -5,7 +5,8 @@ import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
-import { warmCore } from '../core/api';
+import { bakeIn, readCalib, readDat, warmCore } from '../core/api';
+import { deletePack, loadPack, savePack } from '../lib/idb';
 import { Book } from './book';
 import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
@@ -40,9 +41,17 @@ class App implements AppApi {
   /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
   private readonly reader = new ThumbQueue(1);
   /** 相机配方文件、校准数据和烘焙表。文件字节都由上面那个 Worker 读。 */
-  private readonly recipeBook = new Book(async (file) => {
-    const reply = await this.reader.read(file);
-    return reply.ok ? reply.bytes : null;
+  private readonly recipeBook = new Book({
+    readFile: async (file) => {
+      const reply = await this.reader.read(file);
+      return reply.ok ? reply.bytes : null;
+    },
+    readDat,
+    readCalib,
+    bake: bakeIn,
+    loadPack,
+    savePack,
+    deletePack,
   });
 
   constructor(

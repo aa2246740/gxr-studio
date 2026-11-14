@@ -317,3 +317,27 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     assert jpg["label"] == "相机 JPG" and jpg["disabled"] == jpg["cards"] > 0
     assert "配方需要 RAW 文件" in jpg["panel"] and "拍摄时将画质设为 RAW+JPEG" in jpg["panel"]
     assert "HDR 需要 RAW 文件" in jpg["panel"]
+
+
+BOOK_DRIVER = REPO / "tests" / "support" / "mobile_ui_book_races.mjs"
+
+
+def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
+    """Sol r1：清空后晚到的 DAT、旧的比新的晚到、删除后晚到的校准数据，都不能盖掉现在的状态。真的 Book，假的异步边界。"""
+    _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
+    _need(MODULES.is_dir(), "mobile/node_modules is missing")
+    _need(shutil.which("node") is not None, "node is required")
+    _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
+    manifest = tmp_path / "none.json"
+    manifest.write_text("{}", encoding="utf-8")
+    result = _drive(BOOK_DRIVER, manifest, tmp_path, "", timeout=180)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["pageErrors"] == []
+    cases = report["cases"]
+    assert cases["clearThenLateSuccess"] == {"dat": None, "busy": False, "error": None}
+    assert cases["clearThenLateFailure"] == {"dat": None, "busy": False, "error": None}
+    assert cases["olderLate"] == {"name": "B", "busy": False}
+    late = cases["removeThenLateImport"]
+    assert late["pack"] is None and late["busy"] is False and late["error"] is None and late["deletes"] == 1
+    assert cases["lateRestore"] == {"sha": "NEW"}
