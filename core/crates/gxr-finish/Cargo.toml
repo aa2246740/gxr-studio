@@ -7,6 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+gxr-color.workspace = true
+gxr-frame.workspace = true
+gxr-hdr.workspace = true
 gxr-math.workspace = true
 gxr-raw.workspace = true
 

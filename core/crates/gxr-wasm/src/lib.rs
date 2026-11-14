@@ -7,6 +7,7 @@
 mod camdata;
 mod color;
 mod export;
+mod finish;
 mod frame;
 mod geometry;
 mod hdr;
