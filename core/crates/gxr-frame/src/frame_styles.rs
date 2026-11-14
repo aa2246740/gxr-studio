@@ -3,11 +3,9 @@
 use gxr_raw::CoreError;
 
 use crate::Meta;
-use crate::frame_core::{
-    Anchor, LOGO_INK_Y, LOGO_SIZE, Solve, Type, Unit, color, join, make_unit, meta_get, solve,
-};
+use crate::frame_core::{Anchor, Solve, Type, Unit, color, join, make_unit, meta_get, solve};
 use crate::item::{Num, int, obj, rgb, text};
-use crate::layout::{FrameLayout, LogoKw};
+use crate::layout::{FrameLayout, LogoKw, Mark};
 use crate::logo::{LogoInfo, clogo_item, fit_logo};
 use crate::metrics::Fonts;
 use crate::py::{f, round};
@@ -92,6 +90,7 @@ fn leica_left(
     custom: Option<&LogoInfo>,
     logo_size: &str,
     model: bool,
+    mark: Option<Mark>,
 ) -> Result<(i64, i64, &'static str, i64, f64), CoreError> {
     let (lw, lh) = match (kind, custom) {
         ("custom", Some(c)) => fit_logo(
@@ -101,9 +100,14 @@ fn leica_left(
             round(0.34 * f(w))?,
             logo_size,
         )?,
+        // Python computes this box even with no logo, but only reads it when one is drawn.
+        ("none", _) => (0, 0),
         _ => {
-            let lh = 14.max(round(f(gxr_cap) * 1.04 * 433.0 / 412.0)?);
-            (round(f(LOGO_SIZE.0 * lh) / f(LOGO_SIZE.1))?, lh)
+            // Python writes the desktop mark's height over its ink height, then its width over its
+            // height, as literals; here both come from the `mark` input.
+            let mk = mark.ok_or_else(Mark::missing)?;
+            let lh = 14.max(round(f(gxr_cap) * 1.04 * f(mk.h) / f(mk.ink_height()))?);
+            (round(f(mk.w * lh) / f(mk.h))?, lh)
         }
     };
     let model_txt = if model { "GXR" } else { "" };
@@ -183,7 +187,7 @@ pub fn leica(
         }
         let gxr_cap = t.cap_h("inter_sb", gxr_px)?;
         let (lw, lh, model_txt, gap_logo, left_w) = leica_left(
-            &t, w, type_bar, gxr_px, gxr_cap, kind, kw.custom, kw.size, model,
+            &t, w, type_bar, gxr_px, gxr_cap, kind, kw.custom, kw.size, model, kw.mark,
         )?;
         let rule_gap = 12.max(round(0.9 * f(cap1))?);
         let widths = |a: &str, b: &str| -> Result<f64, CoreError> {
@@ -246,7 +250,8 @@ pub fn leica(
                     ));
                 }
                 _ => {
-                    let logo_mid = f(lh * (LOGO_INK_Y.0 + LOGO_INK_Y.1)) / (2.0 * f(LOGO_SIZE.1));
+                    let mk = kw.mark.ok_or_else(Mark::missing)?;
+                    let logo_mid = f(lh * (mk.ink_top + mk.ink_bottom)) / (2.0 * f(mk.h));
                     items.push(obj(vec![
                         ("k", text("logo")),
                         ("x", int(0)),

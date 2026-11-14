@@ -86,10 +86,17 @@ def _outcome(fn: Any) -> Any:
     return None if got is None else got.to_json()
 
 
+def desktop_mark() -> dict[str, int]:
+    """The desktop wordmark's box and inked rows, read from Python (the crate holds no copy)."""
+    from gxr_studio.finish.frame_core import LOGO_INK_Y, LOGO_SIZE
+
+    return {"w": LOGO_SIZE[0], "h": LOGO_SIZE[1], "ink_top": LOGO_INK_Y[0], "ink_bottom": LOGO_INK_Y[1]}
+
+
 def frame_case(w: int, h: int, spec: FrameSpec, meta: dict[str, str], logos: bool = False) -> tuple[dict[str, Any], Any]:
     """One frame case and Python's answer (run inside ``cjk_fonts``)."""
     logo_map = {lg.id: lg for lg in SAMPLE_LOGOS} if logos else None
-    request: dict[str, Any] = {"w": w, "h": h, "meta": meta}
+    request: dict[str, Any] = {"w": w, "h": h, "meta": meta, "mark": desktop_mark()}
     if logos:
         request["logos"] = LOGO_JSON
     want = _outcome(lambda: frame_layout(w, h, spec, meta, FontMetrics(), logo_map))
@@ -97,7 +104,7 @@ def frame_case(w: int, h: int, spec: FrameSpec, meta: dict[str, str], logos: boo
 
 
 def stamp_case(w: int, h: int, spec: StampSpec, taken: datetime | None, frame: FrameSpec | None = None) -> tuple[dict[str, Any], Any]:
-    request: dict[str, Any] = {"w": w, "h": h, "taken": moment_json(taken), "file_time": None}
+    request: dict[str, Any] = {"w": w, "h": h, "taken": moment_json(taken), "file_time": None, "mark": desktop_mark()}
     m = FontMetrics()
 
     def run() -> Any:
@@ -230,6 +237,7 @@ __all__ = [
     "FIXTURE_CJK",
     "OUTPUT_RATIOS",
     "cjk_fonts",
+    "desktop_mark",
     "font_args",
     "font_pairs",
     "frame_case",

@@ -237,6 +237,31 @@ pub struct LogoKw<'a> {
     pub custom: Option<&'a LogoInfo>,
     pub mode: &'a str,
     pub size: &'a str,
+    pub mark: Option<Mark>,
+}
+
+/// The built-in mark's pixel box and the rows its ink spans, an input to the layout.
+///
+/// Python hard-codes the desktop wordmark's size and ink rows (`frame_core.LOGO_SIZE`,
+/// `LOGO_INK_Y`); this crate holds no wordmark data. The parity test passes those desktop numbers; the phone
+/// passes the metrics of the word "GXR" set in Atkinson, which it draws in that box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub w: i64,
+    pub h: i64,
+    pub ink_top: i64,
+    pub ink_bottom: i64,
+}
+
+impl Mark {
+    /// Rows from the first to the last inked row, inclusive.
+    pub fn ink_height(self) -> i64 {
+        self.ink_bottom - self.ink_top + 1
+    }
+
+    pub fn missing() -> CoreError {
+        CoreError::new("bad_request", "画内置标志要先给出 mark 的尺寸和墨迹行")
+    }
 }
 
 /// Port of gxr_studio/finish/layout.py:92 FrameLayout
@@ -281,6 +306,7 @@ pub fn frame_layout(
     meta: &crate::Meta,
     m: &Fonts,
     logos: &Logos,
+    mark: Option<Mark>,
 ) -> Result<Option<FrameLayout>, CoreError> {
     let ratio = output_ratio(&spec.output_ratio);
     if spec.style == "none" {
@@ -292,6 +318,7 @@ pub fn frame_layout(
         custom,
         mode: &spec.logo_mode,
         size: &spec.logo_size,
+        mark,
     };
     let raw = match spec.style.as_str() {
         "gallery" => frame_styles::gallery(w, h, ratio, &spec.color, &spec.weight)?,

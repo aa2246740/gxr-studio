@@ -18,6 +18,7 @@ from support.core_cli import error_of, run_json
 from support.frame_cases import (
     FIXTURE_CJK,
     cjk_fonts,
+    desktop_mark,
     font_args,
     font_pairs,
     frame_case,
@@ -293,34 +294,139 @@ def test_stamp_layouts_match_python(tmp_path: Path) -> None:
     _compare("stamp", cases, want, got["stamps"])
 
 
-def _near(a: object, b: object, path: str) -> bool:
-    """Like `same`, but ints may differ by CJK_BOX_PX. Returns whether anything differed."""
-    if isinstance(a, bool) or isinstance(b, bool) or not (isinstance(a, int) and isinstance(b, int)):
-        if isinstance(a, dict):
-            assert isinstance(b, dict) and list(a) == list(b), (path, a, b)
-            return any([_near(a[k], b[k], f"{path}.{k}") for k in a])
-        if isinstance(a, list):
-            assert isinstance(b, list) and len(a) == len(b), (path, a, b)
-            return any([_near(x, y, f"{path}[{i}]") for i, (x, y) in enumerate(zip(a, b, strict=True))])
-        same(a, b, path)
-        return False
+# Fields of a StampLayout that come from the CJK ink box (manager decision after Sol r1): the text
+# origin and row, the glyph columns, tick points, and the rect edges. Everything else is exact.
+CJK_OP_FIELDS = {"x", "y", "xs", "pts"}
+
+
+def _px_close(a: object, b: object, path: str) -> bool:
+    """Ints (or nested lists of ints) within CJK_BOX_PX, same types. Returns whether they differ."""
+    if isinstance(a, list):
+        assert isinstance(b, list) and len(a) == len(b), (path, a, b)
+        return any([_px_close(x, y, f"{path}[{i}]") for i, (x, y) in enumerate(zip(a, b, strict=True))])
+    assert type(a) is int and type(b) is int, (path, a, b)
     assert abs(a - b) <= CJK_BOX_PX, (path, a, b)
     return a != b
 
 
+def cjk_stamp_close(want: object, got: object, path: str = "") -> bool:
+    """`same`, except the CJK-box-derived fields in CJK_OP_FIELDS and the four rect edges
+    (x, y, x+width, y+height) may each differ by CJK_BOX_PX. Returns whether anything differed."""
+    if not (isinstance(want, dict) and "ops" in want):
+        same(want, got, path)
+        return False
+    assert isinstance(got, dict) and list(want) == list(got), (path, want, got)
+    differ = False
+    for key in want:
+        if key == "rect":
+            (x, y, w, h), (gx, gy, gw, gh) = want["rect"], got["rect"]
+            for t in (gw, gh, gx, gy):
+                assert type(t) is int, (path, got["rect"])
+            edges = zip(("left", "top", "right", "bottom"), (x, y, x + w, y + h), (gx, gy, gx + gw, gy + gh), strict=True)
+            differ |= any([_px_close(a, b, f"{path}.rect.{name}") for name, a, b in edges])
+        elif key == "ops":
+            assert isinstance(got["ops"], list) and len(want["ops"]) == len(got["ops"]), (path, want["ops"], got["ops"])
+            for n, (op, gop) in enumerate(zip(want["ops"], got["ops"], strict=True)):
+                assert isinstance(gop, dict) and list(op) == list(gop), (path, n, op, gop)
+                for k in op:
+                    where = f"{path}.ops[{n}].{k}"
+                    if k in CJK_OP_FIELDS:
+                        differ |= _px_close(op[k], gop[k], where)
+                    else:
+                        same(op[k], gop[k], where)
+        else:
+            same(want[key], got[key], f"{path}.{key}")
+    return differ
+
+
+def test_cjk_comparator_rejects_corrupted_layouts() -> None:
+    """Sol r1's mutations of a real CJK stamp must fail: colour, fill, op size, rect right edge."""
+    import copy
+
+    from gxr_studio.finish.spec import StampSpec
+
+    with cjk_fonts((FIXTURE_CJK,)):
+        _case, want = stamp_case(900, 600, StampSpec(enabled=True, content="text", text="上海上海上海", font="sans"), None)
+    assert isinstance(want, dict) and want["ops"]
+    assert cjk_stamp_close(want, copy.deepcopy(want)) is False
+
+    def mutated(fn) -> dict:
+        out = copy.deepcopy(want)
+        fn(out)
+        return out
+
+    def bump_rect(o: dict) -> None:
+        o["rect"][0] += 1
+        o["rect"][2] += 1
+
+    bad = [
+        mutated(lambda o: o["ink"].__setitem__(0, o["ink"][0] + 1)),
+        mutated(lambda o: o["ops"][0]["fill"].__setitem__(0, o["ops"][0]["fill"][0] + 1)),
+        mutated(lambda o: o["ops"][0].__setitem__("px", o["ops"][0]["px"] + 1)),
+        mutated(bump_rect),
+    ]
+    for corrupt in bad:
+        with pytest.raises(AssertionError):
+            cjk_stamp_close(want, corrupt)
+    shifted = mutated(lambda o: o["ops"][0].__setitem__("y", o["ops"][0]["y"] + 1))
+    assert cjk_stamp_close(want, shifted) is True
+
+
 def test_cjk_stamp_layouts_are_within_one_pixel(tmp_path: Path) -> None:
-    """Stamps that need a CJK ink box: every int (box edge, rect, column, row, point) within 1 px;
-    text, font, size, colours, glow and types exact. Counts the cases that differ at all."""
+    """Stamps that need a CJK ink box: only the box-derived fields (CJK_OP_FIELDS, rect edges) may
+    move by 1 px; every px, colour, text, font, glow and type is exact. Prints how many differ."""
     _plain, (cases, want) = _stamp_split()
     got = _batch(tmp_path, [], cases)["stamps"]
     assert len(got) == len(want) == len(cases)
     differ = 0
     for i, (case, expected, value) in enumerate(zip(cases, want, got, strict=True)):
-        if isinstance(expected, dict) and "ops" in expected:
-            assert isinstance(value, dict) and value.get("px") == expected["px"], (i, case, value)
-        differ += _near(expected, value, f"cjk stamp #{i} {case['request']['w']}x{case['request']['h']}")
+        differ += cjk_stamp_close(expected, value, f"cjk stamp #{i} {case['request']['w']}x{case['request']['h']}")
     print(f"CJK stamp layouts: {differ} of {len(cases)} differ by 1 px, the rest are exact")
     assert differ < len(cases)
+
+
+def _json_depth_text(depth: int) -> str:
+    """A frame request whose ignored `extra` key nests to `depth` levels, counting the request
+    object itself. Written as text: `json.dumps` would hit Python's own recursion limit."""
+    return '{"w": 800, "h": 600, "extra": ' + "[" * (depth - 1) + "]" * (depth - 1) + "}"
+
+
+def test_json_nesting_limit(tmp_path: Path) -> None:
+    """Arrays and objects nest at most 128 deep (Sol r1: 20,000 levels returned null natively and
+    overflowed the WASM stack). The request object is level 1."""
+    from gxr_studio.finish.spec import FrameSpec
+
+    spec = write_json(tmp_path / "spec.json", FrameSpec(style="gallery").to_json())
+    for depth, ok in ((128, True), (129, False), (20_000, False)):
+        meta = tmp_path / f"deep-{depth}.json"
+        meta.write_text(_json_depth_text(depth), encoding="utf-8")
+        code, got = run_json(["frame-layout", "--meta", str(meta), "--spec", str(spec)])
+        err = error_of(code, got)
+        if ok:
+            assert err is None and got["width"] > 800, (depth, got)
+        else:
+            assert err is not None and (err.kind, err.message) == ("json", "JSON 嵌套太深"), depth
+
+
+def test_built_in_mark_is_an_input(tmp_path: Path) -> None:
+    """The crate holds no wordmark geometry: Leica's built-in logo needs `mark`, and its box follows it."""
+    from gxr_studio.finish.spec import FrameSpec
+
+    spec = write_json(tmp_path / "spec.json", FrameSpec(style="leica").to_json())
+    base = {"w": 1200, "h": 800, "meta": {"date": "2026.10.24"}}
+    meta = write_json(tmp_path / "no-mark.json", base)
+    code, got = run_json(["frame-layout", "--meta", str(meta), "--spec", str(spec), *font_args()])
+    err = error_of(code, got)
+    assert err is not None and err.kind == "bad_request" and "mark" in err.message
+    plain = write_json(tmp_path / "no-logo.json", base)
+    no_logo = write_json(tmp_path / "no-logo-spec.json", FrameSpec(style="leica", show_logo=False).to_json())
+    code, got = run_json(["frame-layout", "--meta", str(plain), "--spec", str(no_logo), *font_args()])
+    assert error_of(code, got) is None
+    wide = write_json(tmp_path / "wide-mark.json", {**base, "mark": {"w": 900, "h": 300, "ink_top": 40, "ink_bottom": 259}})
+    code, got = run_json(["frame-layout", "--meta", str(wide), "--spec", str(spec), *font_args()])
+    assert error_of(code, got) is None
+    logo = next(item for item in got["items"] if item["k"] == "logo")
+    assert logo["w"] == round(900 * logo["h"] / 300)
 
 
 def test_missing_cjk_face_is_the_python_error(tmp_path: Path) -> None:
@@ -375,8 +481,12 @@ def test_wasm_layouts_match_native(tmp_path: Path) -> None:
 
     entries = []
 
-    def add(label: str, kind: str, request: dict, spec: dict, *, cjk: bool = True) -> None:
-        meta = write_json(tmp_path / f"{label}-meta.json", request)
+    def add(label: str, kind: str, request: dict | str, spec: dict, *, cjk: bool = True, mark: bool = True) -> None:
+        if isinstance(request, str):
+            meta = tmp_path / f"{label}-meta.json"
+            meta.write_text(request, encoding="utf-8")
+        else:
+            meta = write_json(tmp_path / f"{label}-meta.json", {**request, "mark": desktop_mark()} if mark else request)
         spec_path = write_json(tmp_path / f"{label}-spec.json", spec)
         entries.append({"label": label, "kind": kind, "meta": str(meta), "spec": str(spec_path), "fonts": font_pairs(cjk=cjk)})
 
@@ -384,6 +494,11 @@ def test_wasm_layouts_match_native(tmp_path: Path) -> None:
     for style in sorted(FRAME_STYLES - {"none"}):
         add(f"{style}-wide", "frame", {"w": 1200, "h": 800, "meta": meta}, FrameSpec(style=style, text="上海").to_json())
         add(f"{style}-tall", "frame", {"w": 600, "h": 900, "meta": meta}, FrameSpec(style=style, output_ratio="original").to_json())
+    add("leica-no-mark", "frame", {"w": 900, "h": 600, "meta": meta}, FrameSpec(style="leica").to_json(), mark=False)
+    gxr_mark = {"w": 860, "h": 300, "ink_top": 52, "ink_bottom": 247}
+    add("leica-gxr-mark", "frame", {"w": 900, "h": 600, "meta": meta, "mark": gxr_mark}, FrameSpec(style="leica").to_json(), mark=False)
+    for depth in (128, 129, 20_000):
+        add(f"json-depth-{depth}", "frame", _json_depth_text(depth), FrameSpec(style="gallery").to_json())
     add(
         "leica-logo",
         "frame",
@@ -420,4 +535,11 @@ def test_crate_never_references_the_ricoh_wordmark() -> None:
     root = Path(__file__).resolve().parents[1] / "core" / "crates"
     for folder in ("gxr-frame", "gxr-wasm", "gxr-cli"):
         for path in (root / folder).rglob("*.rs"):
-            assert "ricoh.png" not in path.read_text(encoding="utf-8"), path
+            body = path.read_text(encoding="utf-8")
+            assert "ricoh.png" not in body, path
+            if folder == "gxr-frame":
+                # Sol r1: no built-in wordmark geometry either (desktop LOGO_SIZE / LOGO_INK_Y).
+                from gxr_studio.finish.frame_core import LOGO_INK_Y, LOGO_SIZE
+
+                for number in (*LOGO_SIZE, *LOGO_INK_Y[1:]):
+                    assert str(number) not in body, (path, number)

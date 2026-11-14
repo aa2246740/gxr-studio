@@ -1,6 +1,8 @@
 //! The request format the CLI and the WASM bindings share.
 //!
-//! Frame request: `{"w": int, "h": int, "meta": {str: str}, "logos": [LogoInfo...]}`.
+//! Frame request: `{"w": int, "h": int, "meta": {str: str}, "logos": [LogoInfo...],
+//! "mark": {"w", "h", "ink_top", "ink_bottom"}}`. `mark` is the built-in mark's box (see
+//! `layout::Mark`); only the Leica style's built-in logo reads it.
 //! Stamp request: the same plus `"taken"` and `"file_time"` (`[year, month, day, hour, minute]`
 //! or `null`) and `"frame"` (a frame spec, or `null`). The stamp text is `format_stamp(spec,
 //! taken, file_time)`; with a frame spec, the stamp is laid out on that frame's border (the
@@ -22,7 +24,7 @@
 use gxr_raw::{CoreError, Json, error_json};
 
 use crate::Meta;
-use crate::layout::{FrameLayout, Logos, Moment, format_stamp, frame_layout, stamp_layout};
+use crate::layout::{FrameLayout, Logos, Mark, Moment, format_stamp, frame_layout, stamp_layout};
 use crate::logo::LogoInfo;
 use crate::metrics::Fonts;
 use crate::spec::{frame_spec_from_fields, stamp_spec_from_fields};
@@ -96,6 +98,30 @@ fn logos_of(request: &Val) -> Result<Logos, CoreError> {
     Ok(out)
 }
 
+/// `"mark": {"w", "h", "ink_top", "ink_bottom"}`: the built-in mark's box and inked rows.
+/// Optional; a layout that draws the built-in mark without it fails with `Mark::missing`.
+fn mark_of(request: &Val) -> Result<Option<Mark>, CoreError> {
+    let raw = match request.get("mark") {
+        None | Some(Val::Null) => return Ok(None),
+        Some(raw @ Val::Obj(_)) => raw,
+        Some(_) => return Err(bad("mark 要是对象")),
+    };
+    let field = |k: &str| match raw.get(k) {
+        Some(Val::Int(n)) if (0..=MAX_SIDE).contains(n) => Ok(*n),
+        _ => Err(bad(format!("mark 的 {k} 要是 0 到 {MAX_SIDE} 的整数"))),
+    };
+    let mark = Mark {
+        w: field("w")?,
+        h: field("h")?,
+        ink_top: field("ink_top")?,
+        ink_bottom: field("ink_bottom")?,
+    };
+    if mark.w < 1 || mark.h < 1 || mark.ink_bottom < mark.ink_top {
+        return Err(bad("mark 的尺寸要大于 0，墨迹行要从上到下"));
+    }
+    Ok(Some(mark))
+}
+
 fn moment_of(request: &Val, key: &str) -> Result<Option<Moment>, CoreError> {
     match request.get(key) {
         None | Some(Val::Null) => Ok(None),
@@ -120,7 +146,15 @@ fn frame_for(
 ) -> Result<Option<FrameLayout>, CoreError> {
     let (w, h) = (side(request, "w")?, side(request, "h")?);
     let spec = frame_spec_from_fields(spec_raw)?;
-    frame_layout(w, h, &spec, &meta_of(request)?, fonts, &logos_of(request)?)
+    frame_layout(
+        w,
+        h,
+        &spec,
+        &meta_of(request)?,
+        fonts,
+        &logos_of(request)?,
+        mark_of(request)?,
+    )
 }
 
 /// `frame_layout(...).to_json()`, or `null` for style `none`.

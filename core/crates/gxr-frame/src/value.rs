@@ -60,7 +60,11 @@ impl Val {
 /// `json.loads` of `bytes`, as UTF-8.
 pub fn parse_json(bytes: &[u8]) -> Result<Val, CoreError> {
     let text = std::str::from_utf8(bytes).map_err(|_| json_err("JSON 不是 UTF-8"))?;
-    let mut p = Parser { text, i: 0 };
+    let mut p = Parser {
+        text,
+        i: 0,
+        depth: 0,
+    };
     p.skip();
     let value = p.value()?;
     p.skip();
@@ -70,7 +74,12 @@ pub fn parse_json(bytes: &[u8]) -> Result<Val, CoreError> {
     Ok(value)
 }
 
+/// Deepest array/object nesting accepted. Checked before each descent, so a hostile input gives
+/// this one error on native and WASM instead of exhausting the stack (WASM's is much smaller).
+pub const MAX_DEPTH: usize = 128;
+
 struct Parser<'a> {
+    depth: usize,
     text: &'a str,
     i: usize,
 }
@@ -119,13 +128,24 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Enter one array or object level.
+    fn descend(&mut self) -> Result<(), CoreError> {
+        if self.depth >= MAX_DEPTH {
+            return Err(json_err("JSON 嵌套太深"));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
     fn array(&mut self) -> Result<Val, CoreError> {
+        self.descend()?;
         self.bump()?;
         let mut items = Vec::new();
         loop {
             self.skip();
             if self.peek() == Some(']') {
                 self.bump()?;
+                self.depth -= 1;
                 return Ok(Val::Arr(items));
             }
             if !items.is_empty() {
@@ -136,12 +156,14 @@ impl<'a> Parser<'a> {
     }
 
     fn object(&mut self) -> Result<Val, CoreError> {
+        self.descend()?;
         self.bump()?;
         let mut pairs = Vec::new();
         loop {
             self.skip();
             if self.peek() == Some('}') {
                 self.bump()?;
+                self.depth -= 1;
                 return Ok(Val::Obj(pairs));
             }
             if !pairs.is_empty() {
@@ -292,4 +314,29 @@ impl<'a> Parser<'a> {
 
 fn json_err(message: &str) -> CoreError {
     CoreError::new("json", message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested(depth: usize) -> String {
+        "[".repeat(depth) + &"]".repeat(depth)
+    }
+
+    #[test]
+    fn nesting_stops_at_the_limit() {
+        assert!(parse_json(nested(MAX_DEPTH).as_bytes()).is_ok());
+        let err = parse_json(nested(MAX_DEPTH + 1).as_bytes()).unwrap_err();
+        assert_eq!((err.kind, err.message.as_str()), ("json", "JSON 嵌套太深"));
+        let deep_obj = "{\"a\":".repeat(20_000) + "1" + &"}".repeat(20_000);
+        assert_eq!(
+            parse_json(deep_obj.as_bytes()).unwrap_err().message,
+            "JSON 嵌套太深"
+        );
+        assert_eq!(
+            parse_json(nested(20_000).as_bytes()).unwrap_err().message,
+            "JSON 嵌套太深"
+        );
+    }
 }

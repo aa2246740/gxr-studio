@@ -2,7 +2,7 @@
 //!
 //! Rust computes every box, text run, glyph column and colour; the browser paints them. No font
 //! file and no logo image is embedded: fonts arrive as bytes, and the built-in wordmark is only
-//! a box of `LOGO_SIZE` proportions (the phone draws the word "GXR" in Atkinson there).
+//! a box whose proportions come in as `mark` (the phone draws the word "GXR" in Atkinson there).
 #![forbid(unsafe_code)]
 
 mod api;

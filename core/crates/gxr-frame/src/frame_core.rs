@@ -19,12 +19,6 @@ pub fn color(name: &str) -> Result<[i64; 3], CoreError> {
     }
 }
 
-/// `frame_core.LOGO_SIZE`: the pixel size of the built-in wordmark Python paints. The layout
-/// only uses the ratio; this crate never opens or ships that image.
-pub const LOGO_SIZE: (i64, i64) = (2400, 433);
-/// `frame_core.LOGO_INK_Y`.
-pub const LOGO_INK_Y: (i64, i64) = (9, 420);
-
 /// `meta.get(key, "")`.
 pub fn meta_get<'a>(meta: &'a Meta, key: &str) -> &'a str {
     meta.get(key).map_or("", String::as_str)
