@@ -68,7 +68,16 @@ def python_error(fn: Any) -> BaseException | None:
     return None
 
 
-KINDS = {"ValueError": "value", "CalibError": "calib", "StockMismatch": "stock_mismatch", "KeyError": "key", "BadZipFile": "zip"}
+KINDS = {
+    "ValueError": "value",
+    "CalibError": "calib",
+    "StockMismatch": "stock_mismatch",
+    "KeyError": "key",
+    "BadZipFile": "zip",
+    "NotImplementedError": "not_implemented",
+    "RuntimeError": "runtime",
+    "EOFError": "eof",
+}
 
 
 def same_error(py: BaseException | None, rs: CoreCliError | None) -> str | None:

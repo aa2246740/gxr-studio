@@ -8,7 +8,7 @@ use gxr_raw::CoreError;
 use crate::json_in::{Value, parse as parse_json};
 use crate::model::{Shaped, UnitModel, word_ratio};
 use crate::npy::{Npy, decode};
-use crate::npz::{Member, load, select};
+use crate::npz::{Archive, load};
 
 pub const SCHEMA: &str = "gxr-studio/calib/2";
 pub const MODEL_ISOS: [i64; 2] = [200, 1600];
@@ -30,11 +30,6 @@ fn stock_mismatch(message: &str) -> CoreError {
 
 fn calib(message: &str) -> CoreError {
     CoreError::new("calib", message)
-}
-
-/// `NpzFile.__getitem__` for a name that is not in the archive.
-fn missing(name: &str) -> CoreError {
-    CoreError::new("key", format!("'{name} is not a file in the archive'"))
 }
 
 /// `KeyError(name)` from a dict lookup.
@@ -86,9 +81,9 @@ pub fn context(npz_bytes: &[u8], stock: &[[i64; 2]; 24]) -> Result<Context, Core
     })
 }
 
-fn find(arrays: &[Member], name: &str) -> Result<Npy, CoreError> {
-    let member = select(arrays, name).ok_or_else(|| missing(name))?;
-    decode(member.payload()?)
+/// `z[name]` on the archive `np.load` opened.
+fn find(archive: &Archive, name: &str) -> Result<Npy, CoreError> {
+    decode(&archive.read(name)?)
 }
 
 fn all_finite(values: &[f64]) -> bool {

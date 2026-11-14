@@ -316,15 +316,6 @@ def test_context_matches_python(tmp_path: Path) -> None:
     assert err is not None and err.kind == "zip", err
 
 
-DUPLICATES = (
-    "duplicate_good_then_nan",
-    "duplicate_nan_then_good",
-    "duplicate_identical",
-    "duplicate_good_then_crc_corrupt",
-    "bare_name_overrides_npy",
-)
-
-
 def _npz_same(tmp: Path, name: str, data: bytes, entry: bytes) -> str | None:
     """None when `_context` and `color-calib-check` agree on this archive (both accept, or the
     same kind and message)."""
@@ -340,10 +331,23 @@ def test_npz_duplicate_members_follow_numpy(tmp_path: Path) -> None:
     require_cli()
     corpus = nc.variants()
     stock = nc.source_parts()[0]
-    for name in DUPLICATES:
+    for name in nc.DUPLICATES:
         assert _npz_same(tmp_path, name, corpus[name], stock) is None, (name, _npz_same(tmp_path, name, corpus[name], stock))
     ctx = nc.runtime_variants()["runtime_duplicate"]
     pack = cp.Pack(tmp_path / "runtime-duplicate", stock, ctx, json.dumps(cf.ring()).encode())
+    _check_bake(tmp_path, pack, cf.entry(words=2), params={"step": 16})
+
+
+def test_npz_stored_members_read_like_zipfile(tmp_path: Path) -> None:
+    """Payload size and CRC come from the central directory, data descriptors are accepted, and
+    a local header is checked only when its member is read, in zipfile's order and text."""
+    require_cli()
+    corpus = nc.variants()
+    stock = nc.source_parts()[0]
+    bad = [(name, why) for name in nc.STORED_RULES if (why := _npz_same(tmp_path, name, corpus[name], stock)) is not None]
+    assert bad == [], bad
+    ctx = nc.runtime_variants()["runtime_descriptor"]
+    pack = cp.Pack(tmp_path / "runtime-descriptor", stock, ctx, json.dumps(cf.ring()).encode())
     _check_bake(tmp_path, pack, cf.entry(words=2), params={"step": 16})
 
 

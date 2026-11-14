@@ -19,6 +19,40 @@ import numpy as np
 from gxr_studio.camdata import calib
 from support import color_fixtures as cf
 
+# Variants the duplicate-member and stored-member parity tests name; the corpus test runs all.
+DUPLICATES = (
+    "duplicate_good_then_nan",
+    "duplicate_nan_then_good",
+    "duplicate_identical",
+    "duplicate_good_then_crc_corrupt",
+    "bare_name_overrides_npy",
+)
+
+
+STORED_RULES = (
+    "descriptor_stored",
+    "np_savez_nonseekable",
+    "local_crc",
+    "local_uncompressed_size",
+    "local_compressed_size",
+    "local_method",
+    "local_descriptor_flag",
+    "central_crc",
+    "central_uncompressed_size",
+    "central_compressed_size",
+    "central_descriptor_flag",
+    "unused_local_bad_magic",
+    "unused_local_bad_crc",
+    "local_zip64_file_huge",
+    "local_zip64_compressed_huge",
+    "local_zip64_short",
+    "local_zip64_missing",
+    "central_extra_overflow",
+    "zip64_extra_truncated",
+    "central_both_sizes_huge",
+    "central_zip64_huge",
+)
+
 
 class _NotSeekable(io.BytesIO):
     """A stream `zipfile` and `np.savez` cannot seek, so they write data descriptors."""
