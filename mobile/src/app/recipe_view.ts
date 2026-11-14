@@ -302,7 +302,8 @@ export class RecipeView {
     this.panel.append(head);
     this.panel.append(this.statusBlock(scene, off));
     if (book.datNote) this.panel.append(el('p', 'pad faint small', book.datNote));
-    this.panel.append(this.chips(scene));
+    // 设计稿上只有已校准（03a）才有分组；没校准（06c）的面板留给导入的说明。
+    if (calibrated) this.panel.append(this.chips(scene));
   }
 
   private statusBlock(scene: Scene, off: boolean): HTMLElement {
@@ -311,7 +312,9 @@ export class RecipeView {
       const line = el('div', 'pad hdr-note');
       line.dataset.state = off ? 'uncalibrated' : 'calibrated';
       if (off) {
-        line.append(el('span', 'warn', '未校准：'), el('span', 'dim', uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
+        const why = el('span', 'why');
+        why.append(el('b', '', '未校准：'), document.createTextNode(uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
+        line.append(why);
       } else {
         const ok = el('span', 'ok');
         ok.append(icon(CHECK));

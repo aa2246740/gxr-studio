@@ -342,7 +342,8 @@ svg.curve { width: min(220px, 52vw); height: auto; flex: none; border-radius: 10
 .rc .th { position: relative; }
 .rc .ckk { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); display: grid; place-items: center; }
 .rc .ckk .ico { width: 15px; height: 15px; stroke: #fff; stroke-width: 2.5; }
-.rc.lockd .th { opacity: 0.38; }
+.rc .nm, .rc .sub { display: block; }
+.rc.lockd .th canvas { opacity: 0.38; }
 .rc.lockd .nm { color: var(--text-3); }
 .rc:disabled { opacity: 1; }
 .strip .empty { align-self: center; padding: 0 4px; font-size: 14px; line-height: 20px; }
@@ -356,6 +357,9 @@ svg.curve { width: min(220px, 52vw); height: auto; flex: none; border-radius: 10
 .bn .warn .ico { width: 20px; height: 20px; }
 .panel.recipe .chips { margin-top: 10px; }
 .panel.recipe .btn.block { margin-top: 10px; }
+.panel.recipe p.faint { margin-top: 8px; }
+.hdr-note .why { flex: 1; color: var(--text-2); }
+.hdr-note .why b { color: var(--warn-text); font-weight: 500; }
 .small { font-size: 13px; line-height: 18px; }
 .path { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-panel); box-shadow: inset 0 0 0 1px var(--line-subtle); font-size: 15px; }
 .path .fic { color: var(--accent-text); display: inline-flex; }

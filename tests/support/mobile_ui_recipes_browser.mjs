@@ -49,6 +49,11 @@ async function stageSum(page) {
   });
 }
 
+/** 只在手动截图时：manifest.shots 给了文件夹就把这一屏存下来（不进仓库）。 */
+async function snap(page, name) {
+  if (manifest.shots) await page.screenshot({ path: `${manifest.shots}/chrome-${name}.png` });
+}
+
 const recipeKey = (page) => page.locator('.app').getAttribute('data-recipe-key');
 const label = (page) => page.locator('.editor .lbl').innerText();
 
@@ -87,6 +92,7 @@ try {
   const refused = await page.locator('.calib [data-state="calib-error"]').innerText();
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
   await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
+  await snap(page, '01-calibrated');
   step('calibration', { refused, card: await page.locator('.calib').innerText() });
 
   // 02 → 03，没有相机配方文件（06d）。
@@ -105,6 +111,7 @@ try {
   await page.locator('.editor .strip[data-recipes] .rc').first().click();
   await page.waitForSelector('.ask-sheet[data-state="no-recipe-file"]');
   noDat.sheet = await page.locator('.ask-sheet').innerText();
+  await snap(page, '06d');
   await page.getByRole('button', { name: '先不用，只看中性转换' }).click();
   noDat.closed = (await page.locator('.ask-sheet').count()) === 0;
   step('no-recipe-file', noDat);
@@ -132,6 +139,8 @@ try {
   }, defaultKey, { timeout: 60_000 });
   const chosenKey = await recipeKey(page);
   await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+  await page.waitForTimeout(300);
+  await snap(page, '03a');
   step('chosen', {
     key: chosenKey,
     bake: await bakeOf(page, chosenKey),
@@ -191,6 +200,7 @@ try {
   await openFirst(page);
   await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'uncalibrated', null, { timeout: 60_000 });
   await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+  await snap(page, '06c');
   step('no-calibration', {
     label: await label(page),
     subs: await page.locator('.editor .strip[data-recipes] .rc .sub').allInnerTexts(),
@@ -208,6 +218,7 @@ try {
   await page.locator(`.cell[data-id="${jpgId}"]`).click();
   await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'jpg-only', null, { timeout: 60_000 });
   await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+  await snap(page, '06e');
   step('jpg-only', {
     label: await label(page),
     disabled: await page.locator('.editor .strip[data-recipes] .rc:disabled').count(),

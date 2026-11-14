@@ -253,6 +253,8 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
                 "deflated": str(deflated),
                 "jpgOnly": str(lone),
                 "jpgOnlyStem": lone.stem,
+                # 手动截图时给一个文件夹（不进仓库）；平时不截。
+                **({"shots": os.environ["GXR_M2_SHOTS"]} if os.environ.get("GXR_M2_SHOTS") else {}),
             }
         ),
         encoding="utf-8",

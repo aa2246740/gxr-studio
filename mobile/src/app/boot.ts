@@ -75,19 +75,34 @@ class App implements AppApi {
     await restored;
     const shot = new URLSearchParams(location.search).get('shot');
     if (!shot) return;
-    const { sampleFiles, reportShot } = await import('./shots');
-    if (shot !== 'start') {
-      const files = await sampleFiles();
+    const { sampleFiles, reportShot, aliasFile } = await import('./shots');
+    // UI-M2 的几屏：校准数据和相机配方文件也走样本端点（截图用的临时样本目录里起了 zz- 开头的别名）。
+    const recipeShot = ['recipe', 'nocal', 'nodat', 'jpg'].includes(shot);
+    if (shot === 'calib' || shot === 'recipe') {
+      const pack = await aliasFile('zz-calib.dng', 'GXR 校准数据.zip');
+      if (pack) await this.recipeBook.importPack(pack);
+    } else if (recipeShot) await this.recipeBook.removePack();
+    if (shot !== 'start' && shot !== 'calib') {
+      let files = shot === 'jpg' ? [] : await sampleFiles();
+      const extra = shot === 'jpg' ? await aliasFile('zz-jpg.dng', 'R9990002.JPG') : shot === 'recipe' || shot === 'nocal' ? await aliasFile('zz-dat.dng', 'GXRCE.DAT') : null;
+      if (extra) files = [...files, extra];
       if (files.length) {
         this.ingest(files);
         await this.settle();
       }
+      for (let i = 0; i < 100 && (this.recipeBook.datBusy || this.recipeBook.packBusy); i++) await new Promise((done) => setTimeout(done, 100));
     }
-    if ((shot === 'editor' || shot === 'drag') && this.byId.size) {
+    if ((shot === 'editor' || shot === 'drag' || recipeShot) && this.byId.size) {
       const first = this.ordered()[0];
       if (first) this.open(first.id);
       await this.editor?.settled;
       if (shot === 'drag') this.editor?.forceDrag();
+      if (recipeShot) {
+        this.view.querySelector<HTMLButtonElement>('.tabs button')?.click();
+        await new Promise((done) => setTimeout(done, 1500));
+        if (shot === 'recipe') this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
+        await new Promise((done) => setTimeout(done, 800));
+      }
     }
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     this.shell.dataset.shot = shot;
