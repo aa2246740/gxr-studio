@@ -131,6 +131,8 @@ class App implements AppApi {
       await engine.addRaw(`raw:${photo.id}`, layout, bytes, scene);
       if (!this.current(photo.id, version, photo, file)) return false;
       photo.cached = version;
+      // 卡已经拔了、这次上传才落地：这张现在能接着用，数字要跟着变。
+      if (this.cardIsOut) this.cardChanged();
       return true;
     });
     const tail = run.catch(() => false);
@@ -439,13 +441,28 @@ class App implements AppApi {
     this.cardIsOut = true;
     this.queue.cancel();
     if (this.screen === 'editor') this.showGrid(true);
+    const { ready, missing } = this.cardCounts();
+    this.grid?.showCard(ready, missing);
+    this.grid?.refresh();
+  }
+
+  /** 能接着用的（同版本、源还在显卡里）和没读完的。 */
+  private cardCounts(): { ready: number; missing: number } {
     let ready = 0;
     let missing = 0;
     for (const photo of this.byId.values()) {
+      if (photo.cached !== null && this.engine && !this.engine.hasSource(`raw:${photo.id}`)) photo.cached = null;
       if (openable(photo)) ready += 1;
       else if (unread(photo)) missing += 1;
     }
-    this.grid?.showCard(ready, missing);
+    return { ready, missing };
+  }
+
+  /** 拔卡期间缓存变了：重算，刷新格子和副标题；还开着的拔卡提示改数字，关掉了的不再弹。 */
+  private cardChanged(): void {
+    const { ready, missing } = this.cardCounts();
+    if (this.screen !== 'grid') return;
+    this.grid?.updateCard(ready, missing);
     this.grid?.refresh();
   }
 

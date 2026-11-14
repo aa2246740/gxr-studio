@@ -321,9 +321,10 @@ export class GridView {
     sheet.dataset.state = 'card-removed';
     sheet.append(
       el('h2', '', '存储卡被拔出了'),
-      el('p', '', `已经读进来的 ${ready} 张照片不受影响，可以接着换配方、存到相册。`),
-      el('p', '', `还有 ${missing} 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。`),
+      el('p', 'ready', ''),
+      el('p', 'missing', ''),
     );
+    this.cardText(sheet, ready, missing);
     const acts = el('div', 'acts');
     acts.classList.add('col');
     const again = button('btn primary lg', '重新选照片');
@@ -336,6 +337,18 @@ export class GridView {
     acts.append(again, keep);
     sheet.append(acts);
     return sheet;
+  }
+
+  private cardText(sheet: HTMLElement, ready: number, missing: number): void {
+    const first = sheet.querySelector('p.ready');
+    const second = sheet.querySelector('p.missing');
+    if (first) first.textContent = `已经读进来的 ${ready} 张照片不受影响，可以接着换配方、存到相册。`;
+    if (second) second.textContent = `还有 ${missing} 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。`;
+  }
+
+  /** 拔卡提示还开着就改上面的数字；已经关掉的不重新打开。 */
+  updateCard(ready: number, missing: number): void {
+    if (this.sheet?.dataset.state === 'card-removed' && this.sheet.isConnected) this.cardText(this.sheet, ready, missing);
   }
 
   private menu(): void {

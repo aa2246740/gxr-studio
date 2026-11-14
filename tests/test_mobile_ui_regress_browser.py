@@ -271,3 +271,21 @@ def test_late_neutral_thumbnail_after_clear_is_dropped(server: dict[str, Any]) -
     assert data["screen"] == "start"
     # 清空之后才回来的中性小图：没有留下一个没 close 的位图。
     assert data["after"]["open"] == 0, data["after"]
+
+
+def test_queued_upload_after_card_removed_updates_counts(server: dict[str, Any]) -> None:
+    data = run_case(server, "card-removed-queued-upload")
+    assert data["queued"] == 1, data
+    # 拔卡那一刻还没有显卡源：0 / 2。
+    assert "已经读进来的 0 张" in data["before"]["dialog"] and "还有 2 张没读完" in data["before"]["dialog"], data["before"]
+    assert data["before"]["subtitle"] == "存储卡已拔出 · 2 张没读完"
+    # 排队的上传落地以后：还开着的提示和副标题都变成 1 / 1，那张不再标卡。
+    after = data["after"]
+    assert after["dialogs"] == 1
+    assert "已经读进来的 1 张" in after["dialog"] and "还有 1 张没读完" in after["dialog"], after
+    assert after["subtitle"] == "存储卡已拔出 · 1 张没读完", after
+    assert "gone" not in after["aClass"].split(), after
+    # 那张能直接打开、调整，不再上传。
+    assert data["adjusted"]["exposure"] not in ("0.0", ""), data["adjusted"]
+    assert data["adjusted"]["uploads"] == 2, data["adjusted"]
+    assert data["reopenedDialogs"] == 0

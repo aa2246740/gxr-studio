@@ -175,6 +175,73 @@ async function openAndRead(page, id) {
 }
 
 const CASES = {
+  /** r3：上传在排队时卡被拔了（0 / 2），之后上传落地：还开着的提示和副标题都变成 1 / 1，那张能调。 */
+  async 'card-removed-queued-upload'() {
+    const { page, context, errors } = await makePage({ gpu: true });
+    try {
+      await pick(page, manifest.pairs.slice(0, 4));
+      const [a, b] = await gridIds(page);
+      const aName = `${a.toUpperCase()}.DNG`;
+      const bName = `${b.toUpperCase()}.DNG`;
+      await page.evaluate(() => {
+        const engine = window.__gxrEngine;
+        window.__uploads = [];
+        const original = engine.addRaw.bind(engine);
+        engine.addRaw = async (key, layout, dng, scene) => {
+          const row = { key, done: false };
+          window.__uploads.push(row);
+          await original(key, layout, dng, scene);
+          row.done = true;
+        };
+        window.__gpuHold = true;
+      });
+      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      // 第一次上传扣住；同名重选第三张真 DNG 再打开，第二次上传排在后面。
+      await page.locator(`.cell[data-id="${a}"]`).click();
+      await page.waitForFunction(() => window.__uploads.length === 1 && window.__gpuHeld.length === 1, null, { timeout: 120_000 });
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      await pick(page, [{ name: aName, mimeType: 'application/octet-stream', buffer: readFileSync(manifest.dngs[2]) }]);
+      await page.locator(`.cell[data-id="${a}"]`).click();
+      await page.waitForTimeout(3000);
+      const queued = await page.evaluate(() => window.__uploads.length);
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      // 卡拔了：b 的整份读取回 gone。
+      await page.evaluate((name) => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, name, true), bName);
+      await page.locator(`.cell[data-id="${b}"]`).click();
+      await page.waitForSelector('[data-state="card-removed"]', { timeout: 60_000 });
+      const before = { dialog: await page.locator('[data-state="card-removed"]').innerText(), subtitle: await page.locator('.nav small').innerText() };
+      // 放行：旧上传过期不记，排队的新版本落地。提示还开着。
+      await page.evaluate(() => window.__gpuRelease());
+      await page.waitForFunction(() => window.__uploads.length === 2 && window.__uploads.every((row) => row.done), null, { timeout: 120_000 });
+      await page.waitForTimeout(1000);
+      const after = {
+        dialog: await page.locator('[data-state="card-removed"]').innerText(),
+        subtitle: await page.locator('.nav small').innerText(),
+        aClass: await cellClass(page, a),
+        dialogs: await page.locator('[data-state="card-removed"]').count(),
+      };
+      await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
+      await page.locator(`.cell[data-id="${a}"]`).click();
+      await label();
+      const slider = page.locator('input[data-key="exposure_ev"]');
+      const box = await slider.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2, { steps: 8 });
+      await page.mouse.up();
+      const adjusted = { exposure: await page.locator('.val').innerText(), uploads: await page.evaluate(() => window.__uploads.length) };
+      // 用户关掉的提示，后面缓存再变也不重新弹出来。
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
+      const reopenedDialogs = await page.locator('[data-state="card-removed"]').count();
+      return { queued, before, after, adjusted, reopenedDialogs, errors };
+    } finally {
+      await context.close();
+    }
+  },
+
   /** R2-3：中性小图在清空照片之后才回来：不再造位图挂到已经去掉的照片上，造了的要 close。 */
   async 'neutral-after-clear'() {
     const { page, context, errors } = await makePage({ gpu: true });
