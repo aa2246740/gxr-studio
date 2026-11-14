@@ -25,6 +25,7 @@
 //! `CFLOAT_divide` (Smith's form, fused) with the float32 divisor promoted to `(d, +0)`.
 //! pocketfft code is BSD-3-Clause (see `fft/NOTICE`).
 
+mod alloc;
 mod blue;
 mod cfftp;
 mod cx;
@@ -71,15 +72,15 @@ impl<T: Real> Plan<T> {
             let n2 = b.n2();
             return Ok(Self {
                 kind: Kind::Blue(b),
-                ch: size::filled(n2, Cx::ZERO)?,
-                akf: size::filled(n2, Cx::ZERO)?,
+                ch: alloc::filled(n2, Cx::ZERO)?,
+                akf: alloc::filled(n2, Cx::ZERO)?,
             });
         }
         let p = cfftp::Cfftp::new(n, trig)?;
         let len = p.len();
         Ok(Self {
             kind: Kind::Pack(p),
-            ch: size::filled(len, Cx::ZERO)?,
+            ch: alloc::filled(len, Cx::ZERO)?,
             akf: Vec::new(),
         })
     }
@@ -107,7 +108,7 @@ impl Line {
         } else {
             Ok(Line::Forward(
                 Plan::new(n, trig)?,
-                size::filled(n, Cx::ZERO)?,
+                alloc::filled(n, Cx::ZERO)?,
             ))
         }
     }
@@ -147,7 +148,7 @@ fn along_columns(
     trig: Trig,
 ) -> Result<(), CoreError> {
     let mut line = Line::new(h, inverse, trig)?;
-    let mut col = size::filled(h, Cx::ZERO)?;
+    let mut col = alloc::filled(h, Cx::ZERO)?;
     for c in 0..w {
         for (r, v) in col.iter_mut().enumerate() {
             *v = a[r * w + c];
@@ -216,7 +217,7 @@ fn cdiv(in1: Cx<f32>, in2r: f32, in2i: f32) -> Cx<f32> {
 }
 
 fn complex(values: &[f32]) -> Result<Vec<Cx<f32>>, CoreError> {
-    let mut out = size::with_capacity(values.len())?;
+    let mut out = alloc::with_capacity(values.len())?;
     out.extend(values.iter().map(|&v| Cx::new(v, 0.0)));
     Ok(out)
 }
@@ -247,7 +248,7 @@ fn plane(a: &[f32], b: &[f32], h: usize, w: usize, trig: Trig) -> Result<Vec<f32
         *x = cdiv(f, cabs(f) + eps, 0.0);
     }
     fft2(&mut fa, h, w, true, trig)?;
-    let mut out = size::with_capacity(fa.len())?;
+    let mut out = alloc::with_capacity(fa.len())?;
     out.extend(fa.iter().map(|v| v.r));
     Ok(out)
 }
@@ -298,17 +299,33 @@ impl Plane32 {
         two_d: bool,
         host: Option<HostTrig>,
     ) -> Result<Plane32, CoreError> {
-        let n = self.w / 2;
-        if n == 0 || self.h == 0 {
-            return Err(CoreError::new(
-                "value_error",
-                format!("Invalid number of FFT data points ({n}) specified."),
-            ));
-        }
         if !self.w.is_multiple_of(2) || self.v.len() != self.h * self.w {
             return Err(unsupported("bad_input", "FFT 形状对不上"));
         }
-        let mut data = size::with_capacity(self.h * n)?;
+        let n = self.w / 2;
+        // numpy checks the length of the axis it transforms, never the batch: `_raw_fft`
+        // refuses `n < 1`; `fft2` transforms the last axis, then axis 0 (length `h`).
+        let points = |p: usize| {
+            CoreError::new(
+                "value_error",
+                format!("Invalid number of FFT data points ({p}) specified."),
+            )
+        };
+        if n == 0 {
+            return Err(points(0));
+        }
+        if self.h == 0 {
+            if two_d {
+                return Err(points(0));
+            }
+            // An empty batch: an empty array of the same shape.
+            return Ok(Plane32 {
+                h: 0,
+                w: self.w,
+                v: Vec::new(),
+            });
+        }
+        let mut data = alloc::with_capacity(self.h * n)?;
         data.extend(self.v.chunks_exact(2).map(|p| Cx::new(p[0], p[1])));
         let trig = trig_of(host);
         if two_d {
@@ -316,7 +333,7 @@ impl Plane32 {
         } else {
             along_rows(&mut data, n, inverse, trig)?;
         }
-        let mut v = size::with_capacity(self.v.len())?;
+        let mut v = alloc::with_capacity(self.v.len())?;
         for c in &data {
             v.push(canonical(c.r));
             v.push(canonical(c.i));
@@ -339,7 +356,10 @@ impl Plane32 {
         }
         let pc = plane(&self.v, &other.v, self.h, self.w, trig_of(host))?;
         let shift = peak(&pc, self.h, self.w);
-        let v = pc.into_iter().map(canonical).collect();
+        let mut v = pc;
+        for x in &mut v {
+            *x = canonical(*x);
+        }
         Ok((
             Plane32 {
                 h: self.h,
@@ -364,15 +384,15 @@ impl Plane32 {
             return Err(unsupported("bad_input", "FFT 形状对不上"));
         }
         let t = twiddle::SinCos::new(n, trig_of(host))?;
-        let (rows, v1_len) = t.tables();
+        let (rows, v1_len) = t.tables()?;
         if kind == 2 {
-            let mut v = size::with_capacity(3 * rows.len())?;
+            let mut v = alloc::with_capacity(3 * rows.len())?;
             for row in &rows {
                 v.extend_from_slice(row);
             }
             return Ok((v, v1_len));
         }
-        let mut v = size::with_capacity(count)?;
+        let mut v = alloc::with_capacity(count)?;
         for idx in 0..n {
             let (r, i) = if kind == 0 {
                 let c: Cx<f32> = t.get(idx);
@@ -423,6 +443,61 @@ mod tests {
             );
         }
         assert!(Plane32::fft_twiddles(u64::from(u32::MAX), 0, None).is_err());
+    }
+
+    /// Sol r2 P2-08: fail each allocation of an FFT entry point in turn (13 points go through
+    /// `passg`, 89 through Bluestein); every failure must be the shared size error.
+    #[test]
+    fn every_allocation_failure_is_a_core_error() {
+        let pairs = |h: usize, n: usize| {
+            let v: Vec<f32> = (0..h * n * 2).map(|i| i as f32 * 0.125 - 1.0).collect();
+            Plane32::new(v, h as u64, (n * 2) as u64).unwrap()
+        };
+        let real = |h: usize, w: usize, k: f32| {
+            let v: Vec<f32> = (0..h * w).map(|i| ((i * 7 + 3) % 17) as f32 * k).collect();
+            Plane32::new(v, h as u64, w as u64).unwrap()
+        };
+        type Op = Box<dyn Fn() -> Result<(), CoreError>>;
+        let mut ops: Vec<(&str, Op)> = Vec::new();
+        for (h, n) in [(1, 13), (4, 89), (3, 26)] {
+            for inverse in [false, true] {
+                for two_d in [false, true] {
+                    let p = pairs(h, n);
+                    ops.push((
+                        "fft_complex",
+                        Box::new(move || p.fft_complex(inverse, two_d, None).map(|_| ())),
+                    ));
+                }
+            }
+        }
+        for (h, w) in [(8, 89), (13, 5), (3, 5)] {
+            let (a, b) = (real(h, w, 0.25), real(h, w, -0.5));
+            ops.push((
+                "phase_plane",
+                Box::new(move || a.phase_plane(&b, None).map(|_| ())),
+            ));
+        }
+        for kind in 0..3 {
+            ops.push((
+                "fft_twiddles",
+                Box::new(move || Plane32::fft_twiddles(13, kind, None).map(|_| ())),
+            ));
+        }
+        for (name, op) in &ops {
+            alloc::fail_nth(0);
+            op().unwrap();
+            let count = alloc::fail_nth(0);
+            assert!(count > 0, "{name}");
+            for nth in 1..=count {
+                alloc::fail_nth(nth);
+                let err = op().expect_err(name);
+                assert_eq!(
+                    (err.kind, err.message.as_str()),
+                    ("value_error", size::ARRAY_TOO_BIG)
+                );
+            }
+            alloc::fail_nth(0);
+        }
     }
 
     #[test]

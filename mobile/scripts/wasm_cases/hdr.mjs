@@ -183,6 +183,23 @@ export function fftCases(inputs) {
         });
       }
     }
+    if (has('fft-empty.npy')) {
+      // An empty batch (0, n, 2): 1-D returns the same empty shape; 2-D refuses axis 0.
+      for (const inverse of [false, true]) {
+        for (const twoD of [false, true]) {
+          const args = ['hdr-fft', '--in', path('fft-empty.npy'), '--inverse', inverse ? '1' : '0'];
+          if (twoD) args.push('--two-d');
+          out.push({
+            label: `${folder}::hdr_fft_empty_batch_${inverse ? 'inv' : 'fwd'}${twoD ? '_2d' : ''}`,
+            cliArgs: [...args, '--out', join(dir, `fft-empty-${out.length}.npy`)],
+            wasm: (mod) => {
+              const x = readNpy(path('fft-empty.npy'));
+              return framed(x.shape[0], x.shape[1], mod.hdr_fft(x.values, x.shape[0], x.shape[1], inverse, twoD));
+            },
+          });
+        }
+      }
+    }
     if (has('fft0.npy')) {
       out.push({
         label: `${folder}::hdr_fft_zero`,

@@ -26,11 +26,12 @@ pub fn passg<const F: bool, T: Real>(
     let cxi = chi; // CX and CH share the layout
     let x2 = |a: usize, b: usize| a + idl1 * b; // CX2 and CH2
 
-    let mut wal = Vec::with_capacity(ip);
-    wal.push(Cx::new(T::ONE, T::ZERO));
-    for c in &csarr[1..ip] {
-        wal.push(Cx::new(c.r, if F { -c.i } else { c.i }));
-    }
+    // `wal[i] = (csarr[i].r, fwd ? -csarr[i].i : csarr[i].i)` for `0 < i < ip`, read in place
+    // so the pass allocates nothing (`wal[0]` is never read: `iwal` stays in `1..ip`).
+    let wal = |i: usize| {
+        let c = csarr[i];
+        Cx::new(c.r, if F { -c.i } else { c.i })
+    };
 
     for k in 0..l1 {
         for i in 0..ido {
@@ -58,7 +59,7 @@ pub fn passg<const F: bool, T: Real>(
     }
     for l in 1..ipph {
         let lc = ip - l;
-        let (w1, w2) = (wal[l], wal[2 * l]);
+        let (w1, w2) = (wal(l), wal(2 * l));
         // j = 0
         for ik in 0..idl1 {
             let (h0, h1, h2) = (ch[x2(ik, 0)], ch[x2(ik, 1)], ch[x2(ik, 2)]);
@@ -81,12 +82,12 @@ pub fn passg<const F: bool, T: Real>(
             if iwal > ip {
                 iwal -= ip;
             }
-            let xwal = wal[iwal];
+            let xwal = wal(iwal);
             iwal += l;
             if iwal > ip {
                 iwal -= ip;
             }
-            let xwal2 = wal[iwal];
+            let xwal2 = wal(iwal);
             for ik in 0..idl1 {
                 let (a, b) = (ch[x2(ik, j)], ch[x2(ik, j + 1)]);
                 let (c, d) = (ch[x2(ik, jc)], ch[x2(ik, jc - 1)]);
@@ -109,7 +110,7 @@ pub fn passg<const F: bool, T: Real>(
             if iwal > ip {
                 iwal -= ip;
             }
-            let xwal = wal[iwal];
+            let xwal = wal(iwal);
             for ik in 0..idl1 {
                 let (a, c) = (ch[x2(ik, j)], ch[x2(ik, jc)]);
                 let v = cc[x2(ik, l)];
