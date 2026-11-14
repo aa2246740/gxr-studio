@@ -682,18 +682,38 @@ _SUBTEST_SPEED_AND_CALL_SPEED = (
 
 @pytest.mark.parametrize("reruns", ["--force-reruns=0", "--reruns=1"])
 def test_a_functional_subtest_failure_next_to_a_speed_overrun_is_not_retried(tmp_path: Path, scratch: Path, reruns: str) -> None:
-    """Sol r1 P1：第一次功能 subtest 失败 + 速度超限，第二次都会过；不能重跑，更不能退出 0。"""
+    """Sol r1/r2 P1：第一次功能 subtest 失败 + 速度超限，第二次都会过。两种模式都只跑 1 次、退出 1：
+    安静重试不做，rerunfailures 也不许重跑这次尝试（r2 时 --reruns=1 曾跑 2 次并退出 0）。"""
     tree = scratch / "tree"
     _exclusive_tree(tree, _SUBTEST_FUNCTIONAL_AND_SPEED)
     proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns=reruns)
     out = proc.stdout + proc.stderr
     assert "[exclusive-retry]" not in out and "速度预算重试" not in out, out
-    if reruns == "--force-reruns=0":
-        assert proc.returncode == 1 and "functional fault" in out, out
-        assert _hits(tmp_path)["speed"] == 1
-    else:
-        # rerunfailures 自己的重跑（不等安静）第二次全过，这是 --reruns 原来的行为；安静重试不插手
-        assert _hits(tmp_path)["speed"] == 2
+    assert proc.returncode == 1 and "functional fault" in out, out
+    assert _hits(tmp_path)["speed"] == 1
+    suite = ET.parse(tmp_path / "junit.xml").getroot().find("testsuite")
+    assert suite is not None and int(suite.attrib["failures"]) >= 1, ET.tostring(suite)
+
+
+_FUNCTIONAL_THEN_PASS = "    assert runs > 1, 'functional fault'\n"
+_FUNCTIONAL_THEN_SPEED = "    assert runs != 1, 'functional fault'\n    if runs == 2:\n        raise SpeedBudgetExceeded('latency 2 > 1')\n"
+
+
+def test_reruns_keeps_its_own_rules_and_any_functional_attempt_blocks_the_quiet_retry(tmp_path: Path, scratch: Path) -> None:
+    """--reruns 1 照原来的定义：纯功能失败照样重跑，第二次过就过（跑 2 次、退出 0）。
+    但第一次功能失败、第二次只差速度时，不做安静重试：每次尝试都看，有过功能失败就保留失败（跑 2 次、退出 1）。"""
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _FUNCTIONAL_THEN_PASS)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns="--reruns=1")
+    assert proc.returncode == 0 and _hits(tmp_path)["speed"] == 2, proc.stdout + proc.stderr
+    second = tmp_path / "second"
+    second.mkdir()
+    tree2 = scratch / "tree2"
+    _exclusive_tree(tree2, _FUNCTIONAL_THEN_SPEED)
+    proc = _run_quiet(second, tree2, _quiet_env(second, _COUNTING_GATE.format(busy=0)), reruns="--reruns=1")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1 and _hits(second)["speed"] == 2, out
+    assert "[exclusive-retry]" not in out and "速度预算重试" not in out, out
 
 
 def test_speed_only_subtest_and_call_retry_leaves_only_the_second_run_in_junit(tmp_path: Path, scratch: Path) -> None:

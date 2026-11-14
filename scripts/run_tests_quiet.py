@@ -215,6 +215,8 @@ class ExclusivePlugin:
         self.outcomes = outcomes
         self.gate = gate
         self.state: dict[str, str] = {}
+        self.attempt: dict[str, set[str]] = {}  # 这次尝试里出现过的失败种类：speed / other
+        self.tainted: set[str] = set()  # 任何一次尝试里有过非速度失败的用例
         self.junit: dict[str, dict[str, int]] = {}
         self.budget = gate.remaining if gate is not None else 0.0
 
@@ -242,22 +244,36 @@ class ExclusivePlugin:
         每次尝试先生成 setup 报告，subtest 报告在 call 期间生成（也走这个钩子），最后是 call 和 teardown。
         一次尝试里的失败全部累积：只有全是 SpeedBudgetExceeded 才记 speed，出现过别的失败就一直是 failed。
         外层包装（tryfirst），看到的是 xfail 之类改写之后的结果。
+
+        安静重试看这个用例的每一次尝试（含 rerunfailures 的重跑）：只要有一次出现过非速度失败，就记进 tainted，
+        最后不会是 speed。同一次尝试里速度失败和别的失败并存时，还告诉 rerunfailures 这次不许重跑
+        （它在每次 setup 时重建 item._terminal_errors，只要里面有一项为真就不重跑），失败原样留下；
+        纯功能失败照 --reruns 原来的规矩重跑。
         """
         report = yield
         nodeid = item.nodeid
         if call.when == "setup":
             self.state[nodeid] = "passed"
+            self.attempt[nodeid] = set()
         current = self.state.get(nodeid, "passed")
         if report.skipped and current == "passed":
             self.state[nodeid] = "skipped"
         elif report.failed:
             speed = call.when == "call" and call.excinfo is not None and _is_speed(call.excinfo.type)
             self.state[nodeid] = "speed" if speed and current in ("passed", "speed") else "failed"
+            kinds = self.attempt.setdefault(nodeid, set())
+            kinds.add("speed" if speed else "other")
+            if not speed:
+                self.tainted.add(nodeid)
+            terminal = getattr(item, "_terminal_errors", None)
+            if kinds == {"speed", "other"} and isinstance(terminal, dict):
+                terminal["gxr_speed_with_other_failure"] = True
         return report
 
     def pytest_sessionfinish(self) -> None:
         used = self.budget - self.gate.remaining if self.gate is not None else 0.0
-        data = {"outcomes": self.state, "junit": self.junit, "quiet_waited_s": max(0.0, used)}
+        outcomes = {nodeid: "failed" if value == "speed" and nodeid in self.tainted else value for nodeid, value in self.state.items()}
+        data = {"outcomes": outcomes, "junit": self.junit, "quiet_waited_s": max(0.0, used)}
         self.outcomes.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
