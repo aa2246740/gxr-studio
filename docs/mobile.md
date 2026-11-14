@@ -191,6 +191,7 @@ WASM：`frame_layout(meta_json, spec_json, font_index_json, fonts)` 和 `stamp_l
 - WASM 导出在 `core/crates/gxr-wasm/src/lut.rs`：`lut_parse`、`lut_identify`、`lut_table`、`lut_apply_u8`。
 - `identify` 对未声明且无法唯一确认输入空间的 `.cube` 保留 `input_space: null`，绝不把未知 `.cube` 默认当成 sRGB；`undeclared_choice` 只返回界面提示的默认选项与说明文本。
 - `scene-xyz` 复用 `gxr-raw` 已有的 `scene_colour` 与 `affine_of`，并把 `SceneError.code`（`no_neutral`、`no_matrix`、`bad_matrix`、`bad_colour`）原样作为 `CoreError.kind` 返回。
+- 接受与拒绝边界和 Python 一致，不在解析端拦截极端有限值 LUT；表值都在 `[-1, 2]` 内的良态用例保持 Gate B `<= 1` 码上限，而表值极端的 LUT，在两边结果都是浮点噪声的像素上，手机和桌面可能差几个码值（仍须通过 Gate A `1e-12` 无掩码与机械归因）。
 
 ## HDR（`gxr-hdr`，命令前缀 `hdr-`）
 
