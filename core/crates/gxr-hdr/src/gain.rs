@@ -85,6 +85,42 @@ impl Plane32 {
         let w = usize::try_from(w).map_err(|_| size::too_big())?;
         Ok(Self { h, w, v })
     }
+
+    /// A plane copied from a borrowed slice (a WASM argument). The dimensions are checked
+    /// against the shared limit and the slice length *before* anything is copied, and the copy
+    /// is fallible (UNIT-COMMON allocation rule 1).
+    pub fn from_slice(values: &[f32], h: u64, w: u64) -> Result<Self, CoreError> {
+        let n = size::count(&[h, w])?;
+        if n != values.len() {
+            return Err(bad("数组长度和形状对不上"));
+        }
+        let mut v = size::with_capacity(n)?;
+        v.extend_from_slice(values);
+        Self::new(v, h, w)
+    }
+}
+
+/// A clip mask from one byte per pixel (non-zero = clipped), its length checked against
+/// `h × w` before it is converted.
+pub fn clip_mask(clip: &[u8], h: usize, w: usize) -> Result<Vec<bool>, CoreError> {
+    if size::count(&[dim(h), dim(w)])? != clip.len() {
+        return Err(bad("数组长度和形状对不上"));
+    }
+    let mut out = size::with_capacity(clip.len())?;
+    out.extend(clip.iter().map(|&b| b != 0));
+    Ok(out)
+}
+
+/// Little-endian bytes of a float32 array: `count × 4` is checked in u64 and the buffer is
+/// reserved fallibly before it is filled.
+pub fn f32_le_bytes(values: &[f32]) -> Result<Vec<u8>, CoreError> {
+    let bytes = dim(values.len()).checked_mul(4).ok_or_else(size::too_big)?;
+    let bytes = usize::try_from(bytes).map_err(|_| size::too_big())?;
+    let mut out = size::with_capacity(bytes)?;
+    for v in values {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    Ok(out)
 }
 
 fn bad(message: &str) -> CoreError {
@@ -165,7 +201,11 @@ pub fn sdr_luma_grid(rgb: &[u8], h: usize, w: usize, factor: usize) -> Result<Pl
     if size::count(&[dim(h), dim(w), 3])? != rgb.len() {
         return Err(bad("RGB 长度和形状对不上"));
     }
-    let lut: Vec<f32> = (0..=255u8).map(srgb_to_linear).collect();
+    // A fixed 256-entry table on the stack: no heap buffer that is not sized by the input.
+    let mut lut = [0.0f32; 256];
+    for (c, slot) in (0..=255u8).zip(lut.iter_mut()) {
+        *slot = srgb_to_linear(c);
+    }
     let y: Vec<f32> = rgb
         .chunks_exact(3)
         .map(|p| {
@@ -578,6 +618,9 @@ pub fn register(
     al: &Alignment,
     grid: (usize, usize),
 ) -> Result<(Vec<f32>, Vec<bool>), CoreError> {
+    // Rule 1: the output shape comes from the caller and is checked before any buffer.
+    size::count(&[dim(shape.0), dim(shape.1)])?;
+    check_shape(raw.h, raw.w, raw.v.len())?;
     check_shape(raw.h, raw.w, clip.len())?;
     if grid.0 == 0 || grid.1 == 0 {
         return Err(bad("division by zero"));
@@ -586,18 +629,19 @@ pub fn register(
     let kx = count_f64(shape.1) / count_f64(grid.1);
     #[allow(clippy::cast_precision_loss)]
     let (dy, dx) = (al.dy as f64 * ky, al.dx as f64 * kx);
-    let y: Vec<f32> = warp(raw, shape, al.scale, dy, dx)?
-        .into_iter()
-        .map(|v| maximum(v, f32_of(1e-6)))
-        .collect();
+    // Rule 2: the warped planes are sized by `shape`, not by the input, so every buffer of
+    // that size is reserved fallibly (warp's coordinates and output, and the clip result).
+    let mut y = warp(raw, shape, al.scale, dy, dx)?;
+    for v in &mut y {
+        *v = maximum(*v, f32_of(1e-6));
+    }
     let clip_plane = Plane32 {
         h: raw.h,
         w: raw.w,
         v: clip.iter().map(|&c| if c { 1.0 } else { 0.0 }).collect(),
     };
-    let c: Vec<bool> = warp(&clip_plane, shape, al.scale, dy, dx)?
-        .into_iter()
-        .map(|v| v > f32_of(0.01))
-        .collect();
+    let warped = warp(&clip_plane, shape, al.scale, dy, dx)?;
+    let mut c = size::with_capacity(warped.len())?;
+    c.extend(warped.iter().map(|&v| v > f32_of(0.01)));
     Ok((y, c))
 }

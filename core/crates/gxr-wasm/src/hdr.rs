@@ -11,9 +11,10 @@ fn rejected(err: CoreError) -> JsValue {
     JsValue::from_str(&error_json(&err).render())
 }
 
-/// The caller's dimensions go through the shared count limit (`Plane32::new`), as in the CLI.
+/// The caller's dimensions go through the shared count limit and are compared with the slice
+/// length before anything is copied (`Plane32::from_slice`, UNIT-COMMON allocation rule 1).
 fn plane(values: &[f32], height: u32, width: u32) -> Result<hdr::Plane32, JsValue> {
-    hdr::Plane32::new(values.to_vec(), u64::from(height), u64::from(width)).map_err(rejected)
+    hdr::Plane32::from_slice(values, u64::from(height), u64::from(width)).map_err(rejected)
 }
 
 /// `align(sdr_y, raw_y)` and `check_alignment`, as `gxr-cli hdr-align` prints them.
@@ -80,12 +81,13 @@ pub fn hdr_gain(
 ) -> Result<HdrGain, JsValue> {
     let s = plane(sdr, height, width)?;
     let r = plane(raw, height, width)?;
-    let mask: Vec<bool> = clip.iter().map(|&b| b != 0).collect();
+    // Same order as `gxr-cli hdr-gain`: Params are read before the clip length is checked.
     let params = if params_json.is_empty() {
         hdr::Params::default()
     } else {
         hdr::params_from_json(params_json).map_err(rejected)?
     };
+    let mask = hdr::clip_mask(clip, s.h, s.w).map_err(rejected)?;
     let result = hdr::compute_gain(&s.v, &r.v, &mask, s.h, s.w, &params).map_err(rejected)?;
     let report = hdr::gain_report(&result).map_err(rejected)?;
     Ok(HdrGain {
@@ -117,9 +119,9 @@ pub fn hdr_fft(
 ) -> Result<Vec<u8>, JsValue> {
     let w = hdr::count(&[u64::from(n), 2]).map_err(rejected)?;
     let w = u64::try_from(w).unwrap_or(u64::MAX);
-    let data = hdr::Plane32::new(values.to_vec(), u64::from(rows), w).map_err(rejected)?;
+    let data = hdr::Plane32::from_slice(values, u64::from(rows), w).map_err(rejected)?;
     let out = data.fft_complex(inverse, two_d, None).map_err(rejected)?;
-    Ok(out.v.iter().flat_map(|v| v.to_le_bytes()).collect())
+    hdr::f32_le_bytes(&out.v).map_err(rejected)
 }
 
 /// `_phase_shift`'s float32 plane and its peak.
@@ -167,6 +169,6 @@ pub fn hdr_phase_plane(
     ]);
     Ok(HdrPhasePlane {
         report: format!("{}\n", report.render()),
-        plane: pc.v.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        plane: hdr::f32_le_bytes(&pc.v).map_err(rejected)?,
     })
 }

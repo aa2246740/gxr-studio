@@ -355,7 +355,8 @@ pub fn arange_f32(lo: f32, stop: f32, step: f64) -> Result<Vec<f64>, CoreError> 
     let start = f64::from(lo);
     let second = f64::from(lo + step32);
     let delta = second - start;
-    let mut out = Vec::with_capacity(n);
+    // The length comes from the data range, not the input size: fallible (rule 2).
+    let mut out = crate::size::with_capacity(n)?;
     for i in 0..n {
         out.push(match i {
             0 => start,

@@ -143,6 +143,51 @@ export function cases(inputs) {
         });
       }
     }
+    if (has('r1-s.npy') && has('r1-raw.npy') && has('r1-clip.npy') && has('r1-clip-short.npy') && has('r1-fft.npy')) {
+      // UNIT-COMMON allocation rule 1 (Sol r3 P2-10): Sol's small inputs, with the right
+      // dimensions and with same-size mismatched dimensions or a short clip mask. Both sides
+      // check before copying and give the same result or error.
+      const s = () => readNpy(path('r1-s.npy'));
+      for (const [h, w] of [
+        [32, 32],
+        [31, 32],
+        [32, 33],
+        [16, 64],
+      ]) {
+        out.push({
+          label: `${folder}::rule1_align_${h}x${w}`,
+          cliArgs: ['hdr-align', '--sdr', path('r1-s.npy'), '--raw', path('r1-s.npy'), '--sdr-shape', String(h), String(w), '--raw-shape', String(h), String(w)],
+          wasm: (mod) => mod.hdr_align(s().values, h, w, s().values, h, w),
+        });
+        out.push({
+          label: `${folder}::rule1_phase_plane_${h}x${w}`,
+          cliArgs: ['hdr-phase-plane', '--a', path('r1-s.npy'), '--b', path('r1-raw.npy'), '--a-shape', String(h), String(w), '--b-shape', String(h), String(w), '--out', join(dir, `r1pc-${out.length}.npy`)],
+          wasm: (mod) => mod.hdr_phase_plane(s().values, readNpy(path('r1-raw.npy')).values, h, w).report,
+        });
+      }
+      for (const [h, w, clip] of [
+        [32, 32, 'r1-clip.npy'],
+        [32, 32, 'r1-clip-short.npy'],
+        [31, 32, 'r1-clip.npy'],
+      ]) {
+        out.push({
+          label: `${folder}::rule1_gain_${h}x${w}_${clip}`,
+          cliArgs: ['hdr-gain', '--sdr', path('r1-s.npy'), '--raw', path('r1-raw.npy'), '--clip', path(clip), '--sdr-shape', String(h), String(w), '--raw-shape', String(h), String(w), '--out', join(dir, `r1g-${out.length}.npy`)],
+          wasm: (mod) => mod.hdr_gain(s().values, readNpy(path('r1-raw.npy')).values, readNpy(path(clip)).values, h, w, '').report,
+        });
+      }
+      for (const [rows, n] of [
+        [1, 13],
+        [1, 12],
+        [2, 13],
+      ]) {
+        out.push({
+          label: `${folder}::rule1_fft_${rows}x${n}`,
+          cliArgs: ['hdr-fft', '--in', path('r1-fft.npy'), '--inverse', '0', '--in-shape', String(rows), String(n), '--out', join(dir, `r1fft-${out.length}.npy`)],
+          wasm: (mod) => framed(rows, n, mod.hdr_fft(readNpy(path('r1-fft.npy')).values, rows, n, false, false)),
+        });
+      }
+    }
   }
   out.push(...fftCases(inputs));
   return out;

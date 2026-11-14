@@ -35,8 +35,9 @@ pub use error::unsupported;
 pub use fft::phase_shift;
 pub use filter::{gaussian_filter, gaussian_kernel, minimum_filter, uniform_filter};
 pub use gain::{
-    Alignment, LUMA, Plane32, RAW_WEIGHTS, align, block_mean, check_alignment, grid_shape, hp32,
-    is_unsupported, norm, raw_luma, register, sdr_luma_grid, srgb_to_linear, warp,
+    Alignment, LUMA, Plane32, RAW_WEIGHTS, align, block_mean, check_alignment, clip_mask,
+    f32_le_bytes, grid_shape, hp32, is_unsupported, norm, raw_luma, register, sdr_luma_grid,
+    srgb_to_linear, warp,
 };
 pub use input::{Value, meta_from_json, params_from_json, parse as parse_json, tags_from_json};
 pub use label::{binary_dilation, label};

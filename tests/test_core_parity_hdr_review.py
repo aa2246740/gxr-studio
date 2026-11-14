@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sys
 import unicodedata
@@ -233,3 +234,69 @@ def test_unicode_tables_match_the_reference_python() -> None:
     assert _table("DECIMAL_ZERO") == zeros
     assert (_table("FOLD1_KEY"), _table("FOLD1_VAL")) == (k1, v1)
     assert (_table("FOLDN_KEY"), _table("FOLDN_VAL")) == (kn, vn)
+
+
+# ---------------------------------------------------------------- P2-10 allocation rules (Sol r3)
+
+ARRAY_TOO_BIG = "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size."
+
+
+def _sol_r3_inputs(d: Path) -> None:
+    """Sol's r3 inputs (`alloc_entrypoints.rs`): s[i] = 0.02 + 0.90*i/1023 on 32×32, RAW = 2s,
+    clip all false; FFT: 13 complex values whose 26 float32 parts are i*0.125 - 1."""
+    s = (np.float32(0.02) + np.float32(0.90) * np.arange(1024, dtype=np.float32) / np.float32(1023.0)).reshape(32, 32)
+    hp.save(d / "r1-s.npy", s)
+    hp.save(d / "r1-raw.npy", (np.float32(2.0) * s).astype(np.float32))
+    hp.save(d / "r1-clip.npy", np.zeros(1024, bool))
+    hp.save(d / "r1-clip-short.npy", np.zeros(1000, bool))
+    hp.save(d / "r1-fft.npy", (np.arange(26, dtype=np.float32) * np.float32(0.125) - np.float32(1.0)).reshape(13, 2))
+
+
+def test_rule1_entry_points_check_before_copying(tmp_path: Path) -> None:
+    """Rule 1 at `hdr_align`, `hdr_gain` (dimensions and clip length), `hdr_fft` and
+    `hdr_phase_plane`: right and same-size mismatched dimensions give the same success bytes
+    or the same core error from native and WASM (cases in `wasm_cases/hdr.mjs`)."""
+    d = tmp_path / "rule1"
+    d.mkdir()
+    _sol_r3_inputs(d)
+    proc = run_area("hdr", [str(d)], tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # The CLI half of the same cases: the mismatches are core errors, not usage errors.
+    for args in (
+        ["hdr-align", "--sdr", str(d / "r1-s.npy"), "--raw", str(d / "r1-s.npy"), "--sdr-shape", "31", "32"],
+        ["hdr-fft", "--in", str(d / "r1-fft.npy"), "--inverse", "0", "--in-shape", "1", "12", "--out", str(tmp_path / "f.npy")],
+        ["hdr-gain", "--sdr", str(d / "r1-s.npy"), "--raw", str(d / "r1-raw.npy"), "--clip", str(d / "r1-clip-short.npy")]
+        + ["--sdr-shape", "32", "32", "--raw-shape", "32", "32", "--out", str(tmp_path / "g.npy")],
+    ):
+        _, err = hp.call(args)
+        assert err is not None and (err.kind, err.message) == ("bad_input", "数组长度和形状对不上"), args[0]
+
+
+def test_rule2_allocations_fail_as_core_errors(tmp_path: Path) -> None:
+    """Rule 2: every allocation above 8× the validated input bytes is refused while one entry
+    point runs. Paths that size buffers from parameters (`register`'s output shape,
+    `block_mean` / `sdr_luma_grid` padding, `fit_curve`'s edge range) must return the size
+    error; `align` and `compute_gain` on Sol's inputs have no such allocation and succeed."""
+    from support import hdr_alloc_rules as ar
+
+    binary = ar.build(tmp_path)
+    if binary is None:
+        if os.environ.get("GXR_REQUIRE_CORE") == "1":
+            pytest.fail("cargo is required to build the allocation-rule driver")
+        pytest.skip("cargo is not on PATH")
+    seen = {}
+    for op in ar.RULE2_OPS + ar.BOUNDED_OPS:
+        base = ar.run(binary, op, "count")
+        assert base.returncode == 0 and base.stdout.startswith("ok above="), (op, base.stdout, base.stderr)
+        above = int(base.stdout.split()[1].split("=")[1])
+        if op in ar.BOUNDED_OPS:
+            assert above == 0, f"{op}: {above} allocations above 8x the input"
+        else:
+            assert above > 0, f"{op}: expected a rule-2 allocation"
+        # Refuse each rule-2 allocation in turn: every one must come back as the size error.
+        for k in range(1, above + 1):
+            got = ar.run(binary, op, str(k))
+            assert got.returncode == 0, f"{op} allocation {k}: exit {got.returncode} {got.stderr.strip()}"
+            assert got.stdout.strip().endswith(f"refused=1 value_error: {ARRAY_TOO_BIG}"), (op, k, got.stdout)
+        seen[op] = above
+    print("allocation rules (allocations above 8x the input, each refused once):", seen)

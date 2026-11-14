@@ -66,7 +66,15 @@ pub fn fit_curve(x: &[f32], y: &[f32], valid: &[bool]) -> Result<(Vec<f64>, Vec<
     let lo = percentile(&xs, 0.5);
     let hi = percentile(&xs, 99.95);
     let edges = arange_f32(lo, hi + f32_of(step), step)?;
-    let mut bins: Vec<Vec<f32>> = vec![Vec::new(); edges.len() + 1];
+    // One bin per edge, sized from the data range (rule 2); the bins' contents are bounded by
+    // the validated samples.
+    let mut bins: Vec<Vec<f32>> = crate::size::filled(
+        edges
+            .len()
+            .checked_add(1)
+            .ok_or_else(crate::size::too_big)?,
+        Vec::new(),
+    )?;
     for (&a, &b) in xs.iter().zip(&ys) {
         bins[digitize(f64::from(a), &edges)].push(b);
     }

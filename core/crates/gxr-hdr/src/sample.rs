@@ -57,7 +57,8 @@ pub fn map_coordinates<T: Real>(
         i64::try_from(h).unwrap_or(i64::MAX),
         i64::try_from(w).unwrap_or(i64::MAX),
     );
-    let mut out = Vec::with_capacity(sy.len());
+    // Sized by the coordinates, which `warp` builds from a caller shape: fallible (rule 2).
+    let mut out = crate::size::with_capacity(sy.len())?;
     for (&y, &x) in sy.iter().zip(sx) {
         let (y0, wy) = axis_weights(f64::from(y), h);
         let (x0, wx) = axis_weights(f64::from(x), w);
