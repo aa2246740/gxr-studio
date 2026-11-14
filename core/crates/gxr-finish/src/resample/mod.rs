@@ -3,14 +3,15 @@
 //! Supports `L` (1ch), `RGB` (3ch), `RGBA` (4ch via premultiplied `RGBa`), and `F` (1ch `f32`),
 //! using `gxr_math::sin` for Lanczos and sequential IEEE `f64` arithmetic without FMA.
 
-pub mod filters;
-pub mod passes;
+pub(crate) mod filters;
+pub(crate) mod passes;
 
 use gxr_raw::CoreError;
 
 use crate::geometry::bounds::{checked_mul_u64, fit_count, too_big};
 
-pub use filters::{Coeffs, Filter, PRECISION_BITS, normalize_coeffs_8bpc, precompute_coeffs};
+pub use filters::Filter;
+use filters::{normalize_coeffs_8bpc, precompute_coeffs};
 use passes::{
     premul_to_rgba, resample_horizontal_8bpc, resample_horizontal_32bpc, resample_vertical_8bpc,
     resample_vertical_32bpc, rgba_to_premul,

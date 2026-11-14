@@ -99,6 +99,36 @@ fn rejects_zero_mismatch_and_oversized_dims() {
     let e_in = resample_u8_u64(&[], 2_147_483_648, 1, Mode::L, Filter::Box, 1, 1).unwrap_err();
     assert_eq!(e_in.kind, "bad_geometry");
     assert_eq!(e_in.message, ARRAY_TOO_BIG);
+
+    // Empty buffers and 1x1 inputs through public entry points never panic.
+    assert_eq!(
+        resample_u8(&[], 1, 1, Mode::L, Filter::Box, 1, 1)
+            .unwrap_err()
+            .kind,
+        "value_error"
+    );
+    assert_eq!(
+        resample_u8(&[], 0, 0, Mode::L, Filter::Box, 1, 1)
+            .unwrap_err()
+            .kind,
+        "value_error"
+    );
+    assert_eq!(
+        resample_f32(&[], 1, 1, Filter::Box, 1, 1).unwrap_err().kind,
+        "value_error"
+    );
+    assert_eq!(
+        resample_u8(&[42], 1, 1, Mode::L, Filter::Lanczos, 1, 1).unwrap(),
+        vec![42]
+    );
+    assert_eq!(
+        resample_u8(&[42], 1, 1, Mode::L, Filter::Lanczos, 3, 2).unwrap(),
+        vec![42; 6]
+    );
+    assert_eq!(
+        resample_f32(&[0.5], 1, 1, Filter::Box, 2, 2).unwrap(),
+        vec![0.5; 4]
+    );
 }
 
 #[test]

@@ -11,7 +11,7 @@ _PROBE_RS = """use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gxr_finish::geometry::bounds::ARRAY_TOO_BIG;
-use gxr_finish::resample::{Filter, Mode, precompute_coeffs, resample_f32, resample_u8};
+use gxr_finish::resample::{Filter, Mode, resample_f32, resample_u8};
 
 static FAIL_SIZE: AtomicUsize = AtomicUsize::new(0);
 
@@ -51,9 +51,11 @@ fn main() {
     let rgba = vec![128_u8; 20 * 20 * 4];
     let f32_img = vec![0.5_f32; 20 * 20];
 
-    let c = precompute_coeffs(20, 0.0, 20.0, 10, Filter::Lanczos).unwrap();
-    let kk_bytes = c.kk.len() * std::mem::size_of::<f64>();
-    let bounds_bytes = c.bounds.len() * std::mem::size_of::<u32>();
+    // For 20 -> 10 with Filter::Lanczos (support 3.0, scale 2.0):
+    // ceil(3.0 * 2.0) * 2 + 1 = 13 taps -> kk: 10 * 13 * 8 = 1040 bytes, bounds: 10 * 2 * 4 = 80 bytes.
+    let kk_bytes = 10 * 13 * std::mem::size_of::<f64>();
+    let bounds_bytes = 10 * 2 * std::mem::size_of::<u32>();
+    let kk_i32_bytes = 10 * 13 * std::mem::size_of::<i32>();
 
     // 1. Identity copy allocation failure
     FAIL_SIZE.store(rgb.len(), Ordering::Relaxed);
@@ -73,19 +75,25 @@ fn main() {
     FAIL_SIZE.store(0, Ordering::Relaxed);
     assert_too_big(r_bd, "coeffs_bounds");
 
-    // 4. RGBA premultiply buffer allocation failure
+    // 4. Normalized 8-bpc coefficient table allocation failure
+    FAIL_SIZE.store(kk_i32_bytes, Ordering::Relaxed);
+    let r_nq = resample_u8(&rgb, 20, 20, Mode::Rgb, Filter::Lanczos, 10, 10);
+    FAIL_SIZE.store(0, Ordering::Relaxed);
+    assert_too_big(r_nq, "coeffs_norm_i32");
+
+    // 5. RGBA premultiply buffer allocation failure
     FAIL_SIZE.store(rgba.len(), Ordering::Relaxed);
     let r_pre = resample_u8(&rgba, 20, 20, Mode::Rgba, Filter::Lanczos, 10, 10);
     FAIL_SIZE.store(0, Ordering::Relaxed);
     assert_too_big(r_pre, "rgba_premul");
 
-    // 5. Final output buffer allocation failure (10x10x3 = 300)
+    // 6. Final output buffer allocation failure (10x10x3 = 300)
     FAIL_SIZE.store(10 * 10 * 3, Ordering::Relaxed);
     let r_out = resample_u8(&rgb, 20, 20, Mode::Rgb, Filter::Lanczos, 10, 10);
     FAIL_SIZE.store(0, Ordering::Relaxed);
     assert_too_big(r_out, "u8_out");
 
-    // 6. Float32 output buffer allocation failure (10x10x4 = 400)
+    // 7. Float32 output buffer allocation failure (10x10x4 = 400)
     FAIL_SIZE.store(10 * 10 * 4, Ordering::Relaxed);
     let r_f32 = resample_f32(&f32_img, 20, 20, Filter::Box, 10, 10);
     FAIL_SIZE.store(0, Ordering::Relaxed);
