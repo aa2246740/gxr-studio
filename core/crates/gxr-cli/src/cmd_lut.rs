@@ -243,8 +243,6 @@ impl LibmOp {
             "exp" => Ok(Self::Exp),
             "sin" => Ok(Self::Sin),
             "cos" => Ok(Self::Cos),
-            "atan2" => Ok(Self::Atan2),
-            "hypot" => Ok(Self::Hypot),
             _ => Err(Failure::Usage(format!("unknown --op {name:?}"))),
         }
     }
@@ -591,6 +589,11 @@ mod tests {
         assert_eq!(LibmOp::from_tag(8).ok(), Some(LibmOp::Hypot));
         assert!(apply_libm_op(LibmOp::Atan2, 0.0, &[1.0]).is_err());
         assert!(apply_libm_op(LibmOp::Hypot, 0.0, &[1.0]).is_err());
+        assert_eq!(LibmOp::from_name("exp").ok(), Some(LibmOp::Exp));
+        assert_eq!(LibmOp::from_name("sin").ok(), Some(LibmOp::Sin));
+        assert_eq!(LibmOp::from_name("cos").ok(), Some(LibmOp::Cos));
+        assert!(LibmOp::from_name("atan2").is_err());
+        assert!(LibmOp::from_name("hypot").is_err());
         assert!(LibmOp::from_name("bad").is_err());
         assert!(LibmOp::from_tag(9).is_err());
     }

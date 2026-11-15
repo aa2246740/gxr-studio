@@ -331,3 +331,19 @@ def test_lut_libm_supports_color_ops() -> None:
     require_cli()
     assert color_libm_available()
     assert libm_backend() == "lut-libm"
+
+
+def test_lut_libm_file_mode_rejects_binary_ops(tmp_path: Path) -> None:
+    """File mode (`--op`) must reject binary `atan2` and `hypot` and write no output file (Sol r1 P2)."""
+    from support import core_cli
+
+    require_cli()
+    in_path = tmp_path / "pairs.npy"
+    np.save(in_path, np.array([[1.0, 0.0], [3.0, 4.0]], dtype=np.float64))
+    for op in ("atan2", "hypot"):
+        out_path = tmp_path / f"{op}.npy"
+        proc = core_cli.run(["lut-libm", "--op", op, "--in", str(in_path), "--out", str(out_path)])
+        assert proc.returncode == 1, (op, proc.returncode, proc.stdout, proc.stderr)
+        assert f'unknown --op "{op}"' in proc.stderr, (op, proc.stderr)
+        assert proc.stdout == "", (op, proc.stdout)
+        assert not out_path.exists(), f"{op} should not write output file {out_path}"
