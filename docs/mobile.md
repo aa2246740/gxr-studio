@@ -377,9 +377,12 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
   - 源文件输入照 export-source 的约定，空字节等于没给：DAT、resolve 给出的配方条目、校准包（`calib_index` + `calib_blob`）、写进 EXIF 描述的 `binding`、DNG 字节、相机 JPG 解码后的像素和**原始字节**（hdr-track 的拍摄核对要用）、内嵌预览像素、LUT（`.cube` 和空间 JSON）。sidecar 的颜色部分按 resolve 解析后的值交给 export-source；export-source 的错误（`raw_unreadable`、`no_jpg_source`、带 `state` 的 `RenderUnavailable`）原样返回。
   - 边框和日期戳的文字（`serve._meta`）：有源文件字节时，Rust 用 export-meta 的 `photo_meta` 算出 `meta`、`taken` 和 `file_time`，有相机 JPG 时读 JPG，否则读 DNG，和桌面一样。`file_time` 来自调用方传的 `mtime_ms`（`File.lastModified`）和当时的时区偏移 `tz_offset_min`，Rust 不读时钟和时区。这时 `layout` 只提供 `logos` 和 `mark`。
   - 日期戳画在哪：`stamp_on == "photo"` 时画在照片上，坐标相对照片。浏览器必须按 `photo` 矩形裁剪着画，光晕不能越出照片，因为桌面是在加边框之前把日期戳画进照片的。即时成像边框加 `placement == "border"` 时是 `"canvas"`，在边框画好之后画在整张画布上。
+  - `canvas`：`"full"` 时返回的就是整张画布（有边框时是背景加照片，没边框时就是照片）。`"photo"` 表示这是模糊背景或纸张颗粒（PORT-WAVE-1 决定 3，raster 不画）：返回的只是成片照片，浏览器画好背景后把它贴在 `photo` 的位置，再画墨迹。
   - `labels` 和桌面 `_stage_rgb` / `_original_labels` 写出的字典逐项相同，顺序也相同。
+  - HDR（`hdr` 为真时）：在底图上跑 hdr-track 的 `begin`（DNG 加相机 JPG 的原始字节；没有 DNG 是 `no_raw`），再按照片实际走的分支做 `warp` / `box` / `crop`（和 `finish_unframed` 一样用 `warp_valid`、`fit_preset_in_valid`、`normalized_valid_rect`、`clamp_norm_rect` 判断）。数据层以 float32 `(h, w, 2)` 单独返回（WASM 的 `hdr_layer()`，CLI 的 `--hdr-out`），`state.hdr` 里是它的 `active` / `shape` / `problem` 和边框版面。
   - `state` 是交给下一步的小 JSON（名字、品质、长边、标签、HDR），调用方原样传回。
-- **`export_complete(canvas, w, h, state, source)`**：`source` 是 `state.source` 指的那个文件（有相机 JPG 时是 JPG，否则是 DNG，即 `serve._source_path`）的字节。export-meta 按 `export.source_exif` 读出 `base` / `sub`，`pipeline` 写上 `270` 描述并按 Pillow 约分有理数，再交给 gxr-jpeg 的 `build_exif`。画好墨迹的画布先 `_fit` 到长边（gxr-finish resample 的 LANCZOS），再按 `_finish` 的参数编码一次。返回文件字节，以及 `ExportResult` 的字段（`width`、`height`、`bytes`、`render`、`render_label`、`format`、`render_kind`、`calibrated`、`detail`、`hdr`、`hdr_reason`、`recipe_binding`）和文件名 `file_name` / `tag`（`原名_gxr{tag}.jpg`，做成 HDR 时 tag 加 `_hdr`）。
+- **`export_complete(canvas, w, h, state, source, hdr_layer, stamp_mask, mask_w, mask_h)`**：HDR 时先用浏览器给的日期戳掩码跑 `stamp`（只有画在照片上的日期戳才有掩码：照片大小，日期戳在黑底和白底上各画一次，变了的像素非 0；边框上的日期戳不碰数据层，和桌面一样），再用版面跑 `frame`，最后 `finish`：payload 是本单元那一次编码的结果，rgb 是缩放后的数组。`hdr`、`hdr_reason` 和文件名里的 `_hdr` 跟着它，和桌面一致。手机只导出 JPEG，所以 `not_jpeg` 走不到；`container` 只在 payload 不是合格 JPEG 时出现，本单元自己的编码结果不会触发（hdr-track 自己的测试覆盖这两个理由）。像素超过 Pillow 上限的相机 JPG 是已接受的偏差：桌面直接抛 `DecompressionBombError`，手机在原样导出时 `begin` 报 `metadata_unreadable`、照常导出不带 HDR；编辑过的照片在 `photo_meta` 那一步两边都失败。
+  - `source` 等参数：`source` 是 `state.source` 指的那个文件（有相机 JPG 时是 JPG，否则是 DNG，即 `serve._source_path`）的字节。export-meta 按 `export.source_exif` 读出 `base` / `sub`，`pipeline` 写上 `270` 描述并按 Pillow 约分有理数，再交给 gxr-jpeg 的 `build_exif`。画好墨迹的画布先 `_fit` 到长边（gxr-finish resample 的 LANCZOS），再按 `_finish` 的参数编码一次。返回文件字节，以及 `ExportResult` 的字段（`width`、`height`、`bytes`、`render`、`render_label`、`format`、`render_kind`、`calibrated`、`detail`、`hdr`、`hdr_reason`、`recipe_binding`）和文件名 `file_name` / `tag`（`原名_gxr{tag}.jpg`，做成 HDR 时 tag 加 `_hdr`）。
 - **`export_output_sizes(w, h, side, defaults, layout, rect, preset, fonts)`**：`finish/sizes.output_sizes`。`w × h` 是源尺寸（相机 JPG 转正后的尺寸、DNG 裁切窗口或内嵌预览尺寸），由调用方从文件头得到。
 - 版面输入 `layout` 用 gxr-frame 的请求格式，去掉 `w`、`h`：`meta`、`logos`、`mark`、`taken`、`file_time`。字体和 `frame_layout` 一样，用字体包（`font_index` + `font_pack`）。
 - CLI：`export-run-plan`、`export-run-prepare`、`export-run-complete`、`export-run-sizes`，以及只做霍夫曼重编码的 `export-run-huffopt`。CLI 和 WASM 都调用 `pipeline::api`，同样的输入给出同样的字节。尺寸、品质和长边都按 f64 传入，先检查再收窄。
@@ -404,7 +407,9 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 - 4288×2848 真 DNG，配方渲染（合成校准包）+ 拉直 + 画廊边框 + 日期戳：prepare 2678 ms，complete 519 ms，峰值 191.8 MiB（`mobile-export-pipeline/report/wasm-measure-raw.json`）；
 - 合成的 4288×2848 底图走同样的成片，再在同一个实例里做一张长边 2048 的无边框导出：峰值 257.6 MiB（`report/wasm-measure.json`）。
 
-都远低于页面约 2 GiB 的上限。HDR 接上后再测。
+- 4288×2848 真 DNG，中性渲染 + 拉直 + 画廊边框 + 日期戳 + HDR（数据层有效，带日期戳掩码）：prepare 6464 ms，complete 1222 ms，峰值 471.5 MiB（`report/wasm-measure-hdr.json`）。
+
+都远低于页面约 2 GiB 的上限。
 
 ## 第一版界面
 

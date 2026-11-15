@@ -293,3 +293,44 @@ def test_hdr_reasons_on_crafted_shots(tmp_path: Path, monkeypatch: pytest.Monkey
     print("export-pipeline hdr reasons:", reasons)
     assert reasons["no_raw"] == "no_raw" and reasons["raw_unreadable"] == "raw_unreadable", reasons
     assert reasons.get("blur") == "frame_layout", reasons
+
+
+def _bomb_jpeg(path: Path) -> Path:
+    """A small real JPEG whose SOF0 claims 65000×65000, over Pillow's pixel limit (2 × 89,478,485)."""
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), (90, 100, 110)).save(buf, "JPEG", quality=90)
+    data = bytearray(buf.getvalue())
+    at = data.index(b"\xff\xc0")
+    data[at + 5 : at + 9] = (65000).to_bytes(2, "big") + (65000).to_bytes(2, "big")
+    path.write_bytes(bytes(data))
+    return path
+
+
+@pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
+def test_hdr_pixel_limit_deviation(tmp_path: Path) -> None:
+    """The accepted deviation (hdr-track r4, docs/mobile.md): a camera JPG over Pillow's pixel
+    limit. The desktop raises ``DecompressionBombError`` (uncaught in ``load_jpeg`` /
+    ``HdrTrack.begin``). The phone decodes pixels in the browser; for an untouched export its
+    ``begin`` reports ``metadata_unreadable`` and the export continues without HDR. For an edited
+    shot, export-meta's ``photo_meta`` raises the same Pillow error class, so both sides fail."""
+    from PIL import Image as PILImage
+
+    h = xs.make_home(tmp_path / "home", DAT)
+    (dng, _jpg), *_ = _pairs(1)
+    bomb = _bomb_jpeg(tmp_path / "R0500.JPG")
+    shot = xs.shot_for(dng, bomb, lens=None, iso=None)
+    shot.update({"name": "R0500", "shot_id": "R0500", "width": 16, "height": 16})
+    with pytest.raises(PILImage.DecompressionBombError):
+        export_finish(h.render, h.lib, shot, parse_edit({}), {}, tmp_path / "out", [], quality=95, long_edge=None, fmt="jpeg", hdr=True)
+    np.save(tmp_path / "px.npy", np.full((16, 16, 3), 100, np.uint8))
+    common = ["--shot", _w(tmp_path, "shot.json", shot), "--quality", "95", "--hdr", "--dng", str(dng)]
+    common += ["--jpg", str(tmp_path / "px.npy"), "--jpg-bytes", str(bomb), *font_args()]
+    code, payload = run_json(["export-run-prepare", *common, "--side", _w(tmp_path, "s0.json", {}), "--out", str(tmp_path / "c0.npy")])
+    assert code == 0 and payload["original"] is True, payload
+    assert payload["prepared"]["state"]["hdr"]["problem"] == "metadata_unreadable", payload["prepared"]["state"]["hdr"]
+    code, payload = run_json(
+        ["export-run-prepare", *common, "--side", _w(tmp_path, "s1.json", {"adjust": {"contrast": 5}}), "--out", str(tmp_path / "c1.npy")]
+    )
+    assert code == 2 and "Bomb" in json.dumps(payload["error"]), payload
