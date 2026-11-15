@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -164,8 +165,9 @@ def export_for_iphone(
 ) -> Path:
     """核对后写 `GXR 校准数据 YYYY-MM-DD.zip` 到 `dest_dir`，返回它的路径。
 
-    目标目录核对之后只打开一次（`privacy.PrivateDir`，不跟随链接），之后写入、占名字和失败清理都通过这个句柄；
-    核对之后路径被换成指向别处的链接，或者写的时候目录被移走，都不会写到别的地方去。"""
+    目标核对之后立刻钉成目录句柄（`privacy.PrivateDir`，不跟随链接）：已存在的目标钉它本身，不存在的钉最近的上级，
+    再通过句柄逐级建出来。之后写入、占名字和失败清理都通过这个句柄；核对之后路径被换成指向别处（哪怕是另一个允许的
+    文件夹）的链接，或者写的时候目录被移走，都不会写到别的地方去。"""
     from ..export import ExportError, check_destination
 
     blocked = list(forbidden)
@@ -179,19 +181,25 @@ def export_for_iphone(
         raise CalibExportError(422, exc.code, exc.message, exc.detail) from exc
     except privacy.PrivatePathError as exc:
         raise CalibExportError(422, "bad_destination", "无法导出到这个位置。请换一个文件夹。", exc.detail) from exc
-    manifest, files = collect(home)
-    check_models(home, manifest)
+    # 检查通过后马上把目标钉成目录句柄：目标已存在就钉它本身，不存在就钉最近的已存在上级，
+    # 之后建目录、写入、清理都只通过句柄，不再按路径重新解释（Sol r2）。
+    anchor, missing = dest, []
+    while not os.path.lexists(anchor) and anchor.parent != anchor:
+        missing.insert(0, anchor.name)
+        anchor = anchor.parent
     local = time.localtime(time.time() if now is None else now)
-    data = zip_bytes(files, (max(1980, local.tm_year), local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec))
     try:
-        if not dest.exists():
-            dest.mkdir(parents=True)
-    except OSError as exc:
-        raise CalibExportError(422, "export_failed", "无法导出。请检查导出文件夹能不能写入。") from exc
-    try:
-        with privacy.PrivateDir(dest, "calibration_export", blocked) as folder:
-            name = _write_claimed(folder, time.strftime("%Y-%m-%d", local), data)
-            return folder.real / name
+        with privacy.PrivateDir(anchor, "calibration_export", blocked) as base:
+            manifest, files = collect(home)
+            check_models(home, manifest)
+            data = zip_bytes(files, (max(1980, local.tm_year), local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec))
+            base.verify()
+            with contextlib.ExitStack() as stack:
+                folder = base
+                for part in missing:
+                    folder = stack.enter_context(folder.child(part))
+                name = _write_claimed(folder, time.strftime("%Y-%m-%d", local), data)
+                return folder.real / name
     except privacy.PrivatePathError as exc:
         raise CalibExportError(422, "bad_destination", "无法导出到这个位置。请换一个文件夹。", exc.detail) from exc
     except OSError as exc:

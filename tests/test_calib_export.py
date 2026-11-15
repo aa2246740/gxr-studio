@@ -272,3 +272,53 @@ def test_a_destination_moved_while_writing_is_not_cleaned_up_by_path(tmp_path: P
     left = [p for p in (repo / "moved").iterdir()]
     assert all(p.stat().st_size == 0 for p in left), left
     assert not chosen.exists()
+
+
+def test_a_destination_swapped_for_a_link_to_another_allowed_folder_is_not_written(tmp_path: Path, monkeypatch) -> None:
+    """检查之后把 A 换成指向另一个普通允许目录 B 的链接（Sol r2）：不写进 B，A 原来那个目录里也没有文件。"""
+    home = tmp_path / "app"
+    _pack(home, ("jlaunch",))
+    chosen = tmp_path / "A"
+    chosen.mkdir()
+    other = tmp_path / "B"
+    other.mkdir()
+    real_collect = calib_export.collect
+
+    def swap(target: Path):
+        out = real_collect(target)
+        chosen.rename(tmp_path / "A-was")
+        chosen.symlink_to(other, target_is_directory=True)
+        return out
+
+    monkeypatch.setattr(calib_export, "collect", swap)
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, chosen, [])
+    assert err.value.code == "bad_destination"
+    assert not any(other.iterdir()) and not any((tmp_path / "A-was").iterdir())
+
+
+def test_a_missing_destination_is_created_through_the_pinned_parent(tmp_path: Path, monkeypatch) -> None:
+    """目标还不存在：检查之后把它的上级换成指向禁止目录的链接（Sol r2），不在禁止目录里建任何东西；不换时正常建出来。"""
+    home = tmp_path / "app"
+    _pack(home, ("jlaunch",))
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    banned = tmp_path / "banned"
+    (banned / ".git").mkdir(parents=True)
+    real_collect = calib_export.collect
+
+    def swap(target: Path):
+        out = real_collect(target)
+        parent.rename(tmp_path / "parent-was")
+        parent.symlink_to(banned, target_is_directory=True)
+        return out
+
+    monkeypatch.setattr(calib_export, "collect", swap)
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, parent / "new-export" / "deeper", [])
+    assert err.value.code == "bad_destination"
+    assert sorted(p.name for p in banned.iterdir()) == [".git"]
+    assert not any((tmp_path / "parent-was").iterdir())
+    monkeypatch.setattr(calib_export, "collect", real_collect)
+    made = calib_export.export_for_iphone(home, tmp_path / "fresh" / "a" / "b", [], now=NOON)
+    assert made.parent == (tmp_path / "fresh" / "a" / "b").resolve() and made.is_file()
