@@ -366,6 +366,13 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert failed["failed"]["pack"] == "A.zip" and "删除没有成功" in failed["failed"]["error"] and failed["failed"]["busy"] is False
     assert failed["failed"]["reopened"] == "A.zip"
     assert failed["retried"] == {"pack": None, "error": None, "busy": False, "reopened": None}
+    # Sol r2：版本水位存下来，时钟回拨后新会话的导入仍排在墓碑之后；没存上的导入照实说。
+    roll = cases["clockRollback"]
+    assert roll["a"] is True and roll["markAfterDelete"] == 1001 and roll["restoredTomb"] is None
+    assert roll["b"] == {"ok": True, "error": None, "savedAt": 1002}
+    assert roll["reopenedB"] == "B.zip"
+    assert roll["c"]["ok"] is False and "没有存进这台 iPhone" in roll["c"]["error"] and roll["c"]["pack"] == "C.zip"
+    assert roll["reopenedAfterC"] == "B.zip"
     # 配方卡小图：40 张照片之后仍在 32 MiB 以内，打开的那张 11 张都在，挤掉的都关了，清空后一张不剩。
     looks = cases["looks"]
     assert looks["limit"] == 32 << 20 and looks["bytes"] <= looks["limit"], looks

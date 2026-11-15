@@ -91,6 +91,7 @@ try {
           calls.del += 1;
           return true;
         },
+        watermark: async () => 0,
       };
       return { book: new Book(io), pending, calls };
     }
@@ -268,6 +269,52 @@ try {
       await book.removePack();
       const retried = { pack: book.pack, error: book.packError, busy: book.packBusy, reopened: await fresh() };
       result.failedDelete = { imported, failed, retried };
+    }
+    // 11. 版本水位（Sol r2）：时钟固定在 1000，导入 A 再删除（墓碑 1001）；新会话导入 B 要排在墓碑之后、真的存下来；
+    //     读不到水位的会话导入 C 会被拒绝写入，界面要照实说没存上，重开仍是 B。
+    if (packB64) {
+      const api = await import('/src/core/api.ts');
+      const idb = await import('/src/lib/idb.ts');
+      const bytes = Uint8Array.from(atob(packB64), (c) => c.charCodeAt(0));
+      await new Promise((done, fail) => {
+        const req = indexedDB.deleteDatabase('gxr-mobile');
+        req.onsuccess = done;
+        req.onerror = fail;
+        req.onblocked = done;
+      });
+      const real = () => ({
+        readFile: async () => null,
+        readDat: api.readDat,
+        importCalib: api.importCalib,
+        restoreCalib: api.restoreCalib,
+        bake: api.bakeIn,
+        deletePack: idb.deletePack,
+        watermark: idb.loadWatermark,
+      });
+      const zipFile = (name) => new File([bytes], name, { lastModified: 1 });
+      const realNow = Date.now;
+      try {
+        Date.now = () => 1000;
+        const first = new Book(real());
+        const a = await first.importPack(zipFile('A.zip'));
+        await first.removePack();
+        const markAfterDelete = await idb.loadWatermark();
+        const second = new Book(real());
+        await second.restore();
+        const restoredTomb = second.pack;
+        const b = await second.importPack(zipFile('B.zip'));
+        const bState = { ok: b, error: second.packError, savedAt: second.pack?.savedAt ?? null };
+        const third = new Book(real());
+        await third.restore();
+        const blind = new Book({ ...real(), watermark: () => Promise.reject(new Error('unreadable')) });
+        const c = await blind.importPack(zipFile('C.zip'));
+        const cState = { ok: c, error: blind.packError, pack: blind.pack?.name ?? null };
+        const fourth = new Book(real());
+        await fourth.restore();
+        result.clockRollback = { a, markAfterDelete, restoredTomb, b: bState, reopenedB: third.pack?.name ?? null, c: cState, reopenedAfterC: fourth.pack?.name ?? null };
+      } finally {
+        Date.now = realNow;
+      }
     }
     // 7. IndexedDB：删除留下的时间比晚到的旧导入新，旧导入不写；更新的导入照常写。
     {

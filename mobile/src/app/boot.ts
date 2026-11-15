@@ -6,7 +6,7 @@ import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
 import { bakeIn, importCalib, readDat, restoreCalib, warmCore } from '../core/api';
-import { deletePack } from '../lib/idb';
+import { deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
 import { showCalibSheet } from './calib_ui';
@@ -52,6 +52,7 @@ class App implements AppApi {
     restoreCalib,
     bake: bakeIn,
     deletePack,
+    watermark: loadWatermark,
   });
 
   constructor(

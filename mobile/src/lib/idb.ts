@@ -53,7 +53,17 @@ export async function loadPack(): Promise<StoredPack | null> {
   }
 }
 
-/** 同一个事务里先读再写：已经有更新的记录（后来的导入或删除）就什么都不做。 */
+/**
+ * 版本水位：见过的最高版本（导入和删除墓碑都算）单独存一个键。新会话从它之上开始编号，
+ * 时钟回拨或者墓碑比现在的时钟还新，都不会让新的导入被当成旧的（Sol r2）。
+ */
+const WATERMARK = 'watermark';
+
+function watermarkOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** 同一个事务里先读再写：水位（或者记录本身）已经不比它旧，就什么都不做。写了返回 true。 */
 async function putIfNewer(row: StoredPack | Tomb): Promise<boolean> {
   const db = await open();
   try {
@@ -61,12 +71,17 @@ async function putIfNewer(row: StoredPack | Tomb): Promise<boolean> {
       const tx = db.transaction(STORE, 'readwrite');
       const store = tx.objectStore(STORE);
       let wrote = false;
-      const read = store.get(KEY);
-      read.onsuccess = () => {
-        const now = read.result as { savedAt?: unknown } | undefined;
-        if (now && typeof now.savedAt === 'number' && now.savedAt >= row.savedAt) return;
-        store.put(row, KEY);
-        wrote = true;
+      const mark = store.get(WATERMARK);
+      mark.onsuccess = () => {
+        const record = store.get(KEY);
+        record.onsuccess = () => {
+          const now = record.result as { savedAt?: unknown } | undefined;
+          const high = Math.max(watermarkOf(mark.result), watermarkOf(now?.savedAt));
+          if (high >= row.savedAt) return;
+          store.put(row, KEY);
+          store.put(row.savedAt, WATERMARK);
+          wrote = true;
+        };
       };
       tx.oncomplete = () => resolve(wrote);
       tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
@@ -77,10 +92,18 @@ async function putIfNewer(row: StoredPack | Tomb): Promise<boolean> {
   }
 }
 
-export async function savePack(pack: StoredPack): Promise<void> {
-  await putIfNewer(pack);
+/** 已经存下来的最高版本；没有存过是 0。只读这个数字，不把整个 zip 读进主线程。 */
+export async function loadWatermark(): Promise<number> {
+  if (typeof indexedDB === 'undefined') return 0;
+  return watermarkOf(await run('readonly', (store) => store.get(WATERMARK)));
+}
+
+/** 写进去返回 true；水位已经不比它旧、没写返回 false；事务失败抛错。 */
+export async function savePack(pack: StoredPack): Promise<boolean> {
+  const wrote = await putIfNewer(pack);
   // 主屏幕网页的存储一般不会被清；再请求一次长期保留，被拒也没关系。
   void navigator.storage?.persist?.().catch(() => false);
+  return wrote;
 }
 
 /** 写进墓碑返回 true；已经有更新的记录（没写）返回 false；事务失败抛错。 */

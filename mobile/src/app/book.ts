@@ -38,6 +38,7 @@ export type UnitState =
   | { state: 'ready' }
   | { state: 'invalid'; message: string };
 
+const NOT_SAVED = '校准数据没有存进这台 iPhone：这次能用，下次打开要重新导入。';
 const DELETE_FAILED = '删除没有成功，校准数据还在。请再试一次。';
 
 /** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
@@ -65,6 +66,8 @@ export interface BookIo {
   /** 记一个删除时间；比它早的导入不会再写进去。 */
   /** 写成功返回 true；已经有更新的记录、没写进去返回 false；事务失败抛错。 */
   deletePack(at: number): Promise<boolean>;
+  /** IndexedDB 里存下的最高版本（导入和删除都算）。新会话的版本从它之上开始。 */
+  watermark(): Promise<number>;
 }
 
 export class Book {
@@ -140,6 +143,20 @@ export class Book {
     return this.stamp;
   }
 
+  /** 第一次要版本号时先读一次存下的水位，之后的版本都比它大（时钟回拨也一样）。读不到就按 0。 */
+  private floor: Promise<void> | null = null;
+
+  private async stampAbove(): Promise<number> {
+    this.floor ??= this.io.watermark().then(
+      (mark) => {
+        this.stamp = Math.max(this.stamp, mark);
+      },
+      () => undefined,
+    );
+    await this.floor;
+    return this.nextStamp();
+  }
+
   /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对（在 Worker 里）。 */
   async restore(): Promise<void> {
     const seq = ++this.packSeq;
@@ -161,19 +178,24 @@ export class Book {
       return false;
     }
     const seq = ++this.packSeq;
-    const savedAt = this.nextStamp();
     this.packBusy = true;
     this.packError = null;
     this.changed();
     try {
+      const savedAt = await this.stampAbove();
+      if (seq !== this.packSeq) return false;
       const read = await this.io.importCalib(file, savedAt);
       if (seq !== this.packSeq) return false;
       if (!read.ok) {
         this.packError = this.failText(read);
         return false;
       }
+      // 核对过了，这次会话里能用；但只有真的存进去了才算导入成功，否则照实说（Sol r2）。
       this.commit(read, file.name, savedAt);
-      if (!read.saved) this.packError = '校准数据存不进这台 iPhone。请检查存储空间后再试。';
+      if (!read.saved) {
+        this.packError = NOT_SAVED;
+        return false;
+      }
       return true;
     } catch (err) {
       if (seq === this.packSeq) this.packError = err instanceof Error && err.message ? err.message : TEXT.unreadable;
@@ -196,7 +218,7 @@ export class Book {
     this.packError = null;
     this.changed();
     try {
-      const wrote = await this.io.deletePack(this.nextStamp());
+      const wrote = await this.io.deletePack(await this.stampAbove());
       if (seq !== this.packSeq) return;
       if (!wrote) throw new Error('tombstone not written');
       this.pack = null;

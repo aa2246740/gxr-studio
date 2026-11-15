@@ -80,10 +80,11 @@ async function checkZip(id: number, buffer: ArrayBuffer, extra: Record<string, u
     ok(id, JSON.stringify({ ok: false, message: checked.message, detail: checked.detail }));
     return;
   }
+  // 只有真的写进 IndexedDB 才算存下了：事务失败、或者已经有更新的版本都不算（Sol r2）。
   let saved = true;
   if (save) {
     try {
-      await savePack({ zip: buffer, name: save.name, savedAt: save.savedAt });
+      saved = await savePack({ zip: buffer, name: save.name, savedAt: save.savedAt });
     } catch {
       saved = false;
     }
