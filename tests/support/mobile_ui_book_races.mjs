@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = manifestPath ? JSON.parse(readFileSync(manifestPath, 'utf8')) : {};
 const packB64 = manifest.pack ? readFileSync(manifest.pack).toString('base64') : null;
+const badB64 = Object.fromEntries(Object.entries(manifest.bad ?? {}).map(([name, path]) => [name, readFileSync(path).toString('base64')]));
 const { launchPinnedChromium, verifyPinnedRuntime } = await import(pathToFileURL(runtime).href);
 verifyPinnedRuntime();
 const browser = await launchPinnedChromium({ args: [] });
@@ -24,7 +25,7 @@ try {
     const reloaded = await page.waitForEvent('framenavigated', { timeout: 4_000 }).then(() => true).catch(() => false);
     if (!reloaded) break;
   }
-  out.cases = await page.evaluate(async (packB64) => {
+  out.cases = await page.evaluate(async ({ packB64, badB64 }) => {
     const { Book } = await import('/src/app/book.ts');
     const tick = () => new Promise((done) => setTimeout(done, 0));
     const deferred = () => {
@@ -329,6 +330,34 @@ try {
         Date.now = realNow;
       }
     }
+    // 12. 核心的包级检查在存之前（Sol r3）：旧版本、单元为空、单元不认得的包，真的 Worker 拒收、不存，
+    //     界面写桌面的原话；重开还是之前那份好的。
+    if (packB64 && Object.keys(badB64).length) {
+      const api = await import('/src/core/api.ts');
+      const idb = await import('/src/lib/idb.ts');
+      const real = () => ({
+        readFile: async () => null,
+        readDat: api.readDat,
+        importCalib: api.importCalib,
+        restoreCalib: api.restoreCalib,
+        bake: api.bakeIn,
+        resolve: api.resolveRecipe,
+        calibCheck: api.calibCheck,
+        deletePack: idb.deletePack,
+        watermark: idb.loadWatermark,
+      });
+      const file = (b64, name) => new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], name, { lastModified: 1 });
+      const book = new Book(real());
+      const good = await book.importPack(file(packB64, 'good.zip'));
+      const bad = {};
+      for (const [name, b64] of Object.entries(badB64)) {
+        const accepted = await book.importPack(file(b64, `${name}.zip`));
+        bad[name] = { accepted, error: book.packError, pack: book.pack?.name ?? null };
+      }
+      const reopened = new Book(real());
+      await reopened.restore();
+      result.invalidImports = { good, bad, reopened: reopened.pack?.name ?? null };
+    }
     // 7. IndexedDB：删除留下的时间比晚到的旧导入新，旧导入不写；更新的导入照常写。
     {
       const idb = await import('/src/lib/idb.ts');
@@ -346,7 +375,7 @@ try {
     }
 
     return result;
-  }, packB64);
+  }, { packB64, badB64 });
 } finally {
   await browser.close();
 }

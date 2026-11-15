@@ -1,7 +1,7 @@
 // 模块 Worker：WASM 只在这里加载。主线程把 DNG 的一份拷贝传进来，原件留给显卡引擎。
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
-import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_listing, color_resolve, dng_describe } from '../wasm-pkg/gxr_wasm.js';
+import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_calib_pack, color_listing, color_resolve, dng_describe } from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
@@ -97,6 +97,20 @@ function calibCheck(id: number, args: CalibCheckArgs): void {
   ok(id, text);
 }
 
+/** manifest 单独，其余文件拼成一块，加 `{名字: [偏移, 长度]}` 索引（color_calib_pack 的输入）。 */
+function packBlob(entries: Map<string, Uint8Array>): { manifest: Uint8Array; index: Uint8Array; blob: Uint8Array } {
+  const index: Record<string, [number, number]> = {};
+  let size = 0;
+  for (const [name, data] of entries) {
+    if (name === 'manifest.json') continue;
+    index[name] = [size, data.length];
+    size += data.length;
+  }
+  const blob = new Uint8Array(size);
+  for (const [name, data] of entries) if (name !== 'manifest.json') blob.set(data, index[name][0]);
+  return { manifest: entries.get('manifest.json') ?? new Uint8Array(), index: new TextEncoder().encode(JSON.stringify(index)), blob };
+}
+
 /** 核对一份 zip；`save` 给了就在这里（Worker 里）存进 IndexedDB，主线程不复制整包。 */
 async function checkZip(id: number, buffer: ArrayBuffer, extra: Record<string, unknown>, save: { name: string; savedAt: number } | null): Promise<void> {
   const zip = readStoredZip(new Uint8Array(buffer));
@@ -107,6 +121,17 @@ async function checkZip(id: number, buffer: ArrayBuffer, extra: Record<string, u
   const checked = await checkPack(zip.entries);
   if (!checked.ok) {
     ok(id, JSON.stringify({ ok: false, message: checked.message, detail: checked.detail }));
+    return;
+  }
+  // 存之前先跑核心的包级检查（gxr-cli color-calib-check --dir 不带 --unit 的同一段代码）：版本、单元、每个单元
+  // 的文件清单和 SHA-256。旧版本、单元为空或不认得的包在这里就拒收，不会存下来再显示「已导入」（Sol r3）。
+  let units: Array<{ unit: string }>;
+  try {
+    const { manifest, index, blob } = packBlob(zip.entries);
+    const reply = JSON.parse(color_calib_pack(manifest, index, blob)) as { units: string[] };
+    units = reply.units.map((unit) => ({ unit }));
+  } catch (err) {
+    ok(id, JSON.stringify({ ok: false, message: coreMessage(err), detail: 'pack' }));
     return;
   }
   // 只有真的写进 IndexedDB 才算存下了：事务失败、或者已经有更新的版本都不算（Sol r2）。
@@ -121,7 +146,7 @@ async function checkZip(id: number, buffer: ArrayBuffer, extra: Record<string, u
   const names = [...zip.entries.keys()];
   ok(
     id,
-    JSON.stringify({ ok: true, units: checked.units, manifestSha256: checked.manifestSha256, names, saved, ...extra }),
+    JSON.stringify({ ok: true, units, manifestSha256: checked.manifestSha256, names, saved, ...extra }),
     names.map((name) => own(zip.entries.get(name) ?? new Uint8Array())),
   );
 }

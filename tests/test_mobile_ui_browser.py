@@ -387,8 +387,22 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     # 合成的校准包（只走清单和 SHA-256 的核对，用不到相机数据）。
     pack = tmp_path / "A.zip"
     pack.write_bytes(calib_export.zip_bytes(pack_files({"jlaunch": entry(words=0)}), (2026, 11, 15, 9, 0, 0)))
+    # Sol r3：清单和 SHA-256 都对、但旧版本或单元为空 / 不认得的包。
+    bad: dict[str, str] = {}
+    for name, change in {
+        "old-schema": {"schema": "gxr-studio/calib/1"},
+        "empty-units": {"units": {}},
+        "unknown-unit": {"units": {"nounit": {}}},
+    }.items():
+        files = pack_files({"jlaunch": entry(words=0)})
+        listed = json.loads(files["manifest.json"])
+        listed.update(change)
+        files["manifest.json"] = json.dumps(listed).encode()
+        path = tmp_path / f"{name}.zip"
+        path.write_bytes(calib_export.zip_bytes(files, (2026, 11, 15, 9, 0, 0)))
+        bad[name] = str(path)
     manifest = tmp_path / "book.json"
-    manifest.write_text(json.dumps({"pack": str(pack)}), encoding="utf-8")
+    manifest.write_text(json.dumps({"pack": str(pack), "bad": bad}), encoding="utf-8")
     result = _drive(BOOK_DRIVER, manifest, tmp_path, "", timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])
@@ -420,6 +434,12 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert roll["reopenedB"] == "B.zip"
     assert roll["c"]["ok"] is False and "没有存进这台 iPhone" in roll["c"]["error"] and roll["c"]["pack"] == "C.zip"
     assert roll["reopenedAfterC"] == "B.zip"
+    # Sol r3：核心的包级检查在存之前，坏包不存、不显示已导入，重开还是那份好的。
+    invalid = cases["invalidImports"]
+    assert invalid["good"] is True and invalid["reopened"] == "good.zip"
+    assert invalid["bad"]["old-schema"] == {"accepted": False, "error": "校准数据版本已更新，请重新导入", "pack": "good.zip"}
+    assert invalid["bad"]["empty-units"] == {"accepted": False, "error": "校准数据的单元不正确", "pack": "good.zip"}
+    assert invalid["bad"]["unknown-unit"] == {"accepted": False, "error": "校准数据的单元不正确", "pack": "good.zip"}
     # 配方卡小图：40 张照片之后仍在 32 MiB 以内，打开的那张 11 张都在，挤掉的都关了，清空后一张不剩。
     looks = cases["looks"]
     assert looks["limit"] == 32 << 20 and looks["bytes"] <= looks["limit"], looks
