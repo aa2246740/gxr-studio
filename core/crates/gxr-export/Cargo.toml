@@ -1,12 +1,16 @@
 [package]
 name = "gxr-export"
-description = "Placeholder for the full-resolution export pipeline"
+description = "Full-resolution export pipeline"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+gxr-finish.workspace = true
+gxr-frame.workspace = true
+gxr-jpeg.workspace = true
+gxr-raw.workspace = true
 
 [lints]
 workspace = true
