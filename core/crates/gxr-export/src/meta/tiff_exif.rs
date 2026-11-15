@@ -132,7 +132,7 @@ fn validate_mpf(mp_bytes: &[u8]) -> Result<(), String> {
     let Some(hdr) = mp_bytes.get(..8) else {
         return Ok(());
     };
-    let Ok((endian, bigtiff, ifd0_off)) = parse_tiff_header(hdr, mp_bytes) else {
+    let Ok((endian, bigtiff, ifd0_off)) = parse_tiff_header(hdr, hdr) else {
         return Ok(());
     };
     let Ok(ifd0) = load_ifd(mp_bytes, endian, bigtiff, ifd0_off, None, false) else {
@@ -225,13 +225,8 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
         }
 
         match marker {
-            // Markers with no payload length (JPG, RST0..RST7, SOI, EOI, JPG0..JPG13, TEM)
-            0xFFC8 | 0xFFD0..=0xFFD9 | 0xFFF0..=0xFFFD | 0xFF01 => {
-                if marker == 0xFFD9 {
-                    // EOI reached without SOS
-                    break;
-                }
-            }
+            // Markers with no payload length (JPG, RST0..RST7, SOI, EOI, JPG0..JPG13)
+            0xFFC8 | 0xFFD0..=0xFFD9 | 0xFFF0..=0xFFFD => {}
             // APP0..APP15
             0xFFE0..=0xFFEF => {
                 let Some(len_bytes) = bytes.get(pos..).and_then(|s| s.get(..2)) else {
@@ -415,10 +410,10 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
     if !has_mode || w == 0 || h == 0 {
         return Err("SyntaxError: not identified by this driver".to_string());
     }
-    check_decompression_bomb(w, h)?;
     if let Some(mp) = mp_bytes {
         validate_mpf(mp)?;
     }
+    check_decompression_bomb(w, h)?;
     Ok(JpegDoc {
         width: w,
         height: h,

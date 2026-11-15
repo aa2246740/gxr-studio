@@ -13,6 +13,12 @@ use gxr_raw::Json;
 use crate::common::{self, Failure, Output};
 
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
+    if command == "hdrtrack-begin-batch" {
+        return Ok(Output {
+            text: begin_batch_cmd(args)?,
+            ok: true,
+        });
+    }
     let json = match command {
         "hdrtrack-warp-float" => warp_float_cmd(args)?,
         "hdrtrack-crop-valid" => crop_valid_cmd(args)?,
@@ -392,4 +398,42 @@ fn finish_cmd(args: &[String]) -> Result<Json, Failure> {
     let bytes = out.bytes();
     write_npy(args, "--out", "|u1", &[1, bytes.len()], bytes)?;
     Ok(out.report_json()?)
+}
+
+fn begin_batch_cmd(args: &[String]) -> Result<String, Failure> {
+    let rgb_npy = npy(args, "--rgb")?;
+    let (h_def, w_def) = rgb_dims_of(&rgb_npy)?;
+    let rgb = u8_bytes(&rgb_npy)?;
+    let w = checked_dim_f64(f64_or(args, "--w", w_def)?)?;
+    let h = checked_dim_f64(f64_or(args, "--h", h_def)?)?;
+    let params_json = read_text_flag(args, "--params", "--params-json", Some(""))?;
+    let params = parse_params_opt(&params_json)?;
+    let dng_path = common::option(args, "--dng")?;
+    let dng_bytes =
+        std::fs::read(dng_path).map_err(|e| usage(format!("cannot read {dng_path}: {e}")))?;
+    let dng_name = opt_str(args, "--dng-name")?.unwrap_or("<bytes>");
+    let manifest_path = common::option(args, "--manifest")?;
+    let manifest = std::fs::read_to_string(manifest_path)
+        .map_err(|e| usage(format!("cannot read {manifest_path}: {e}")))?;
+
+    let mut lines = Vec::new();
+    for raw_line in manifest.lines() {
+        let path = raw_line.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let jpg_bytes =
+            std::fs::read(path).map_err(|e| usage(format!("cannot read {path}: {e}")))?;
+        let state = begin(
+            &rgb,
+            w,
+            h,
+            Some(&dng_bytes),
+            dng_name,
+            Some(&jpg_bytes),
+            &params,
+        )?;
+        lines.push(state.to_meta_json().render());
+    }
+    Ok(lines.join("\n"))
 }
