@@ -356,6 +356,13 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - CLI 子命令：`geom-crop-box`、`geom-final-box`、`geom-warp`、`geom-header`（另附 `geom-warp-valid`、`geom-fitted-crop`、`geom-clamp-rect`、`geom-fit-ratio` 供对拍）。
 - WASM 导出：`geom_final_box(w, h, geometry_json, crop_json)` 与 `geom_warp(rgb_u8, w, h, geometry_json)`（返回 `WarpedImage`，提供 `width`、`height`、`rgb()`、`mask()`）。
 
+## 导出元数据（`gxr-export::meta`）
+
+`gxr-export` 的 `meta` 模块移植 `export.py` 的源 EXIF 提取、`finish/meta_text.py` 的边框/日期文字生成、`meta.py` 的 `read_jpeg_meta` / `read_dng_meta` 以及 `dng_preview_image(embedded_only=True)` 的内嵌预览定位。
+
+- **预览定位与解码边界**：`dng_preview_location`、`export-meta-preview` 与 `export_meta_preview` 只做结构挑选，返回 `dng_preview_image` 在不解码之前选中的唯一最大候选 `{offset, length}`（SubIFD `330`、`Compression == 7`、`0 < 条带字节数 <= 32 MiB`、可读且 `width * height` 严格最大），或 `null`。不在核心里复制 libjpeg 解码或表/扫描验证。JPEG 解码与坏图拒收由调用方负责（手机端由浏览器解码，对拍测试由 Pillow 解码）；若这个唯一候选解码失败，调用方视为无预览（`None`），不再尝试次大候选，与桌面 Python 一致。
+- **WASM 参数与时间**：`export_meta_photo` 从浏览器显式接收 `mtime_ms` 与 `tz_offset_min`（`Option<f64>`），不读系统时钟或时区；`tz_offset_min` 在窄化之前先校验有限、整数且位于 `-1439..=1439`，与原生 CLI 给出相同的 `CoreError`。
+
 ## 第一版界面
 
 `mobile/index.html` 是给 iPhone Safari 的界面，不是开发壳。三屏都在内存里切换，不用浏览器的历史记录：起始、按拍摄时间分组的网格、编辑一张。
