@@ -372,9 +372,9 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 ### 校准数据：Mac 导出，iPhone 导入
 
-桌面「设置 → 校准数据」多了「导出给 iPhone」（`POST /api/calibration/export-iphone`，`camdata/calib_export.py`）。它把 `calib_dir(home)` 里的 `manifest.json` 和清单列出的每个文件打成一个**不压缩**（stored）的 `GXR 校准数据 YYYY-MM-DD.zip`，放进导出文件夹，重名时加 `-2`、`-3`。写之前逐个核对大小和 SHA-256，再对包里每个单元、两个 ISO 分支跑一次 `model_for`（原厂 04 指纹要对上当前的相机数据）；缺包、改过、清单不对、模型用不了就拒绝，文案和 `model_for` / `unit_status` 一样。目标文件夹走导出的检查（卡卷、图库），也不能在 Git 工作区里；检查之后只打开一次（`privacy.PrivateDir`），写入、占名字和失败清理都通过这个目录句柄，之后路径被换成链接或目录被移走都不会写到别处。做好后可以和导出一样「在访达中显示」。
+桌面「设置 → 校准数据」多了「导出给 iPhone」（`POST /api/calibration/export-iphone`，`camdata/calib_export.py`）。它把 `calib_dir(home)` 里的 `manifest.json` 和清单列出的每个文件打成一个**不压缩**（stored）的 `GXR 校准数据 YYYY-MM-DD.zip`，放进导出文件夹，重名时加 `-2`、`-3`。写之前逐个核对大小和 SHA-256，再对包里每个单元、两个 ISO 分支跑一次 `model_for`（原厂 04 指纹要对上当前的相机数据）；缺包、改过、清单不对、模型用不了就拒绝，文案和 `model_for` / `unit_status` 一样。目标文件夹走导出的检查（卡卷、图库），也不能在 Git 工作区里；检查之后马上钉成目录句柄（`privacy.PrivateDir`；目标还不存在时钉最近的已存在上级，再通过句柄逐级建出来），写入、占名字和失败清理都只通过句柄，之后路径被换成指向别处（哪怕是另一个允许的文件夹）的链接或目录被移走都不会写到别处。包只收集一次：校验的模型（和 `model_for` 共用 `calib.build_model`）和写进 zip 的是同一份内存快照。做好后可以和导出一样「在访达中显示」。
 
-手机上在起始页的校准卡或「更多 → 校准数据」里选这个 zip。字节在 Worker 里读：`lib/zip.ts` 只认 stored 条目，压缩、加密、ZIP64、带路径的名字、重名、CRC 不对都拒绝，所有偏移先查边界，坏数据只给原因不抛。`lib/calib.ts` 照 `model_for` 核对版本、单元、文件清单和每个 SHA-256。zip 条目必须正好是 `manifest.json` 加清单列的文件，每个本地头都要和中央目录的名字、标志、长度、CRC 一致。File 直接交给 Worker：先看大小，超过 64 MiB 一个字节都不读；核对通过后由 Worker 原样存进 IndexedDB（`gxr-mobile` / `calib`），主线程不读也不复制整包。删除留一个时间戳，晚到的旧导入不会把删掉的包写回去。每次打开页面也在 Worker 里重新核对一遍。原厂 04 的指纹要等选了 `GXRCE.DAT` 才查：拿 DAT 里这个单元的 04 条目，`sha256(entry[115:211])` 对上 `camera_stock_sha256`，再用两个 ISO 分支各跑一次 `color_bake`（就是建模型那一步）。哪一步不过，这个单元就按没校准处理，校准卡上写桌面的原话。
+手机上在起始页的校准卡或「更多 → 校准数据」里选这个 zip。字节在 Worker 里读：`lib/zip.ts` 只认 stored 条目，压缩、加密、ZIP64、带路径的名字、重名、CRC 不对都拒绝，所有偏移先查边界，坏数据只给原因不抛。`lib/calib.ts` 照 `model_for` 核对版本、单元、文件清单和每个 SHA-256。zip 条目必须正好是 `manifest.json` 加清单列的文件，每个本地头都要和中央目录的名字、标志、长度、CRC 一致。File 直接交给 Worker：先看大小，超过 64 MiB 一个字节都不读；核对通过后由 Worker 原样存进 IndexedDB（`gxr-mobile` / `calib`），主线程不读也不复制整包。删除留一个时间戳，晚到的旧导入不会把删掉的包写回去；IndexedDB 另存见过的最高版本（墓碑也算），新会话从它之上编号，时钟回拨也不会把新导入当成旧的。删除要等 IndexedDB 确认才清空，失败就保留原来的包并写一行；导入没真正存进去时也照实说。每次打开页面也在 Worker 里重新核对一遍。原厂 04 的指纹要等选了 `GXRCE.DAT` 才查：拿 DAT 里这个单元的 04 条目，`sha256(entry[115:211])` 对上 `camera_stock_sha256`，再用两个 ISO 分支各跑一次 `color_bake`（就是建模型那一步）。哪一步不过，这个单元就按没校准处理，校准卡上写桌面的原话。
 
 ### 相机配方文件和配方卡
 
