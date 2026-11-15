@@ -361,8 +361,9 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 手机的整张导出拆成两次 Rust 调用，中间由浏览器画墨迹（文字、线条、标志、日期戳和光晕；PORT-WAVE-1「成片与导出 2–4」）。结果对齐桌面 1.0.1 的 `finish/serve.export_finish`。手机只导出 JPEG，不做 PNG。台账、目标文件夹、`claim_path` 的文件系统部分、本机配方和精确导出都不在手机上。
 
 - **`export_plan(shot, side, defaults, base)`**：`serve._plan`。返回 `original`（没有可见编辑、有相机 JPG、底图是自动或相机 JPG 时为真）和解析后的边框、日期戳。为真时调用方把解码后的相机 JPG 交给下一步，否则交 `color_image` 的结果。
-- **`export_prepare(...)`**：先校验品质和长边（`ExportOptions.validate`），再跑 `render.params.parse_edit` 里成片要用的部分，然后是调整、几何、裁剪（raster `finish_array`，不画日期戳）、日期戳版面、边框版面，以及只有背景和照片的画布（raster `draw_frame_canvas`）。返回画布（uint8）和 JSON：`frame`、`stamp`、`stamp_on`、`photo`、`labels`、`state`。
-  - 日期戳画在哪：`stamp_on == "photo"` 时画在照片上（坐标相对照片，`photo` 给出照片在画布上的位置，光晕不越出照片）。即时成像边框加 `placement == "border"` 时是 `"canvas"`，在边框画好之后画在画布上。
+- **`export_prepare(...)`**：先校验品质和长边（`ExportOptions.validate`），再跑 `render.params.parse_edit` 里成片要用的部分。底图有两种：原样相机 JPG（`_plan` 为真时），否则调用 export-source 的 `color_image`（RAW 配方、中性 RAW、`standard` 的 04 模拟、内嵌预览回退、LUT、编辑过的相机 JPG）。之后是调整、几何、裁剪（raster `finish_array`，不画日期戳）、日期戳版面、边框版面，以及只有背景和照片的画布（raster `draw_frame_canvas`）。返回画布（uint8）和 JSON：`frame`、`stamp`、`stamp_on`、`photo`、`labels`、`state`。
+  - 源文件输入照 export-source 的约定，空字节等于没给：DAT、resolve 给出的配方条目、校准包（`calib_index` + `calib_blob`）、写进 EXIF 描述的 `binding`、DNG 字节、相机 JPG 解码后的像素和**原始字节**（hdr-track 的拍摄核对要用）、内嵌预览像素、LUT（`.cube` 和空间 JSON）。sidecar 的颜色部分按 resolve 解析后的值交给 export-source；export-source 的错误（`raw_unreadable`、`no_jpg_source`、带 `state` 的 `RenderUnavailable`）原样返回。
+  - 日期戳画在哪：`stamp_on == "photo"` 时画在照片上，坐标相对照片。浏览器必须按 `photo` 矩形裁剪着画，光晕不能越出照片，因为桌面是在加边框之前把日期戳画进照片的。即时成像边框加 `placement == "border"` 时是 `"canvas"`，在边框画好之后画在整张画布上。
   - `labels` 和桌面 `_stage_rgb` / `_original_labels` 写出的字典逐项相同，顺序也相同。
   - `state` 是交给下一步的小 JSON（名字、品质、长边、标签、HDR），调用方原样传回。
 - **`export_complete(canvas, w, h, state, exif_json)`**：画好墨迹的画布先 `_fit` 到长边（gxr-finish resample 的 LANCZOS），再按 `_finish` 的参数编码一次。返回文件字节，以及 `ExportResult` 的字段（`width`、`height`、`bytes`、`render`、`render_label`、`format`、`render_kind`、`calibrated`、`detail`、`hdr`、`hdr_reason`、`recipe_binding`）和文件名 `file_name` / `tag`（`原名_gxr{tag}.jpg`，做成 HDR 时 tag 加 `_hdr`）。
@@ -380,9 +381,17 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - **有理数。** Pillow 写 RATIONAL 时都经过 `_limit_rational(值, 2**32-1)`：分数约分，大于 1 时通过倒数限制（例如 28/10 写成 14/5）。gxr-jpeg 原样写分子分母，所以 `pipeline` 在交给 gxr-jpeg 之前先按 Pillow 的规则约分。带符号的有理数（SRATIONAL）在范围内时 Pillow 原样写，这里也不动。分母为 0 的值两边都原样写，但 Pillow 推断的类型是 SRATIONAL（NaN 不 ≥ 0），gxr-jpeg 推断的是 RATIONAL；真实照片里还没遇到。
 - **EXIF 描述里的 `binding`。** 桌面写 `engine_pin()`，手机无法得到同样的值。描述由 export-source 的 `Request.binding` 决定，界面传 `gxr-core <构建号>`；测试传桌面的值，描述就逐字节相同。
 
+### LUT 底图不逐字节
+
+export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩阵乘经过 Accelerate，Rust 用顺序的 IEEE 运算。它的 Gate A（对顺序 oracle）为 0 点，Gate B 的差点逐点归因到主机 BLAS（PORT-WAVE-1 的平台规则）。所以带显示域 LUT 的导出在这些像素上和桌面不同。测试分三步证明其余部分一致：Rust 的底图和 Python 的底图过 export-source 自己的 Gate A/B；Rust 的画布等于 Python 用 **Rust 的底图**做成片的结果；把 Python 自己的成片数组交给 `export_complete`，文件和桌面逐字节相同。Log LUT 走 float64 路径，真照片上 0 差。
+
 ### 内存
 
-4288×2848 一次导出（拉直 + 画廊边框 + 日期戳，再加一张长边 2048 的无边框导出），WASM 线性内存峰值 257.6 MiB（`mobile-export-pipeline/report/wasm-measure.json`）。离页面约 2 GiB 的上限很远。
+两次测量都在 Node 里用同一个 WASM 包，线性内存只增不减，所以结束时的大小就是峰值：
+- 4288×2848 真 DNG，配方渲染（合成校准包）+ 拉直 + 画廊边框 + 日期戳：prepare 2678 ms，complete 519 ms，峰值 191.8 MiB（`mobile-export-pipeline/report/wasm-measure-raw.json`）；
+- 合成的 4288×2848 底图走同样的成片，再在同一个实例里做一张长边 2048 的无边框导出：峰值 257.6 MiB（`report/wasm-measure.json`）。
+
+都远低于页面约 2 GiB 的上限。HDR 接上后再测。
 
 ## 第一版界面
 
