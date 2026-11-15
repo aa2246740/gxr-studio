@@ -512,12 +512,11 @@ def test_mobile_ui_hist_retry_yields(tmp_path: Path) -> None:
     _need(MODULES.is_dir(), "mobile/node_modules is missing")
     _need(shutil.which("node") is not None, "node is required")
     _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
-    manifest = tmp_path / "none.json"
-    manifest.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "hist.json"
+    manifest.write_text(json.dumps({"repo": str(REPO)}), encoding="utf-8")
     result = _drive(HIST_DRIVER, manifest, tmp_path, "", timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])
-    assert report["pageErrors"] == []
     cases = report["cases"]
     # Sol 的 hist-scheduler 探针：修好以前 5000 次重试里定时器一次都没轮到。
     first = cases["busyThenFree"]
@@ -531,10 +530,37 @@ def test_mobile_ui_hist_retry_yields(tmp_path: Path) -> None:
     assert busy["calls"] <= busy["frames"] + 1 and busy["ticks"] > 0, busy
     # 换片以后排着的那次取消了。
     assert cases["afterDestroy"] == {"more": 0}
-    # 经理 r6 裁定：忙超过 300 帧以后放慢到每 250 ms 一次，不停；空下来后不用新的调整就自己画上。
-    back = cases["backoff"]
-    assert back["guardHit"] is False and back["fastCalls"] == 301, back
-    assert 2 <= back["slowCalls"] <= 6 and back["minGap"] >= 200, back
-    assert back["ticks"] > 0, back
-    assert back["histDrawn"] == 1 and back["drawnAfterMs"] <= 1000, back
-    assert back["afterDrawn"] == 0 and back["afterDestroySlow"] == 0, back
+    # 下面都是受控的帧队列和定时器，按帧数和毫秒推进，不看页面跑多少 fps（Sol r7）。
+    # 经理 r6 裁定：300 次没拿到以后只剩一个 250 ms 定时器，不停；空下来后不用新的调整就自己画上。
+    assert cases["threshold"] == {"calls": 300, "frames": 0, "timers": 1, "delay": 250}
+    assert cases["before250"] == 300 and cases["at250"] == 301
+    assert cases["fourSlowTicks"] == {"calls": 305, "frames": 0, "timers": 1}
+    assert cases["freeWithoutInput"] == {"calls": 306, "histDrawn": 1, "frames": 0, "timers": 0}
+    # 新的调整取消慢重试，重新按帧试；换片后排着的和晚到的旧回调都不再问。
+    assert cases["newAdjustment"] == {"calls": 1, "misses": 1, "frames": 1, "timers": 0}
+    assert cases["destroyAndStale"] == {"more": 0, "frames": 0, "timers": 0}
+    assert cases["destroySlow"] == {"calls": 300, "frames": 0, "timers": 0}
+    # reject 也只是每帧一次；读回晚到不画也不排。
+    assert cases["rejected"] == {"calls": 11, "frames": 1, "timers": 0}
+    assert cases["lateReadback"] == {"histDrawn": -1, "frames": 0, "timers": 0}
+    # Sol r7：显卡丢了、pending 一直 true（真的 Engine 原型）。每次调度只看一次 pending，不去读回；
+    # 300 次后每 250 ms 看一次，不排帧；关掉以后什么都不剩。
+    assert cases["lostAt300"] == {"isLost": True, "pendingReads": 300, "histogramCalls": 0, "misses": 300, "frames": 0, "timers": 1}
+    assert cases["lostSlow"] == {
+        "afterTimer": {"pendingReads": 1, "frames": 0, "timers": 1},
+        "pendingReads": 4,
+        "histogramCalls": 0,
+        "frames": 0,
+        "timers": 1,
+    }
+    assert cases["lostDestroyed"] == {"frames": 0, "timers": 0}
+    # pending 超过 300 次后这一帧画完了：下一个慢周期自己画上。
+    assert cases["pendingThenReady"] == {
+        "whilePending": {"calls": 0, "frames": 0, "timers": 1},
+        "calls": 1,
+        "histDrawn": 1,
+        "frames": 0,
+        "timers": 0,
+    }
+    # 放在最后：旧代码的 reject 没人接会进这里，先让上面那些说明问题的断言报出来。
+    assert report["pageErrors"] == []

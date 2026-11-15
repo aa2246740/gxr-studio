@@ -381,7 +381,8 @@ export class EditorView {
         if (token !== this.token) return;
         this.histMisses = drawn ? 0 : this.histMisses + 1;
         const engine = this.engine;
-        if (!this.histAgain && !(engine && engine.contentVersion !== this.histDrawn)) return;
+        // 只有画上了、而且没有更新的版本才停；没画上（忙、这一帧还没画完、显卡丢了）都接着按预算重试。
+        if (drawn && !this.histAgain && !(engine && engine.contentVersion !== this.histDrawn)) return;
         // 排到下一帧（连着拿不到太久就排到慢定时器）再数。不能在这里直接再调：显卡忙时 histogram() 马上给 null，
         // 一串微任务接着跑，页面的定时器、显卡回调和手势都轮不到，换片时整页就卡死了。
         this.cancelHistRetry();
@@ -402,13 +403,12 @@ export class EditorView {
     this.histTimer = 0;
   }
 
-  /** 数到并画上了才是 true；显卡在忙、换了片都是 false。 */
+  /** 数到并画上了才是 true；显卡在忙、这一帧还没画完、换了片都是 false。 */
   private async countHist(token: number): Promise<boolean> {
     const engine = this.engine;
-    if (!engine) return false;
-    // 等这一帧画完，成片纹理才是新的。
-    for (let i = 0; i < 30 && engine.pending; i++) await new Promise((done) => requestAnimationFrame(done));
-    if (token !== this.token) return false;
+    // 这一帧还没画完（pending）成片纹理就不是新的：这次算没拿到，和显卡忙一样占同一个重试预算，
+    // 每次调度只看一次。显卡丢了时 pending 可能一直是 true，这样 300 帧后也只是每 250 ms 看一次。
+    if (!engine || token !== this.token || engine.pending) return false;
     const data = await engine.histogram();
     if (!data || token !== this.token) return false;
     this.histDrawn = data.version;
