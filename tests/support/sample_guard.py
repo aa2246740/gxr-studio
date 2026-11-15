@@ -17,6 +17,12 @@ parameters and local assignments shadow outer names, class bodies are not visibl
 and assigning a value the scan cannot follow forgets the old path.
 
 Only the exact files in ``EXEMPT`` (paths relative to ``tests/``) are skipped.
+
+The scan is deliberately conservative. Known false positives, all unusual in tests: a name rebound
+after a function that closes over it was defined, a name rebound through ``global``, a parameter
+called ``__file__``, an ``except ... as`` target reusing an environment alias, and a ``getenv``
+method on an attribute chain ending in ``os``. If it flags such code, find the samples through
+``support/samples.py`` instead, which is the point of the check.
 """
 
 from __future__ import annotations
