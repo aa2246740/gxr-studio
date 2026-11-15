@@ -166,7 +166,8 @@ fn picture(p: Option<&RgbNpy>) -> Option<Picture<'_>> {
     })
 }
 
-/// `export-run-complete --canvas RGB.npy [--w W --h H] --state S (--src SOURCE | --exif EXIF.json) --out OUT.jpg`
+/// `export-run-complete --canvas RGB.npy [--w W --h H] --state S (--src SOURCE | --exif EXIF.json)
+/// [--hdr-layer LAYER.npy] [--stamp-mask MASK.npy [--mask-w W --mask-h H]] --out OUT.jpg`
 /// (`--w` / `--h` override the array's size, as numbers, for the size-check cases).
 fn cmd_complete(args: &[String]) -> Ran {
     let (w, h, canvas) = read_rgb_npy(common::option(args, "--canvas")?)?;
@@ -193,7 +194,20 @@ fn cmd_complete(args: &[String]) -> Ran {
         Some(text) => api::ExifSource::Json(text),
         None => api::ExifSource::File(&src),
     };
-    match api::complete(picture, &state, source) {
+    let layer = opt(args, "--hdr-layer")?.map(read_f32_npy).transpose()?;
+    let mask = opt(args, "--stamp-mask")?.map(read_mask_npy).transpose()?;
+    let (mw, mh, mask_bytes) = mask.unwrap_or((0.0, 0.0, Vec::new()));
+    let (mw, mh) = (
+        num_arg(args, "--mask-w")?.unwrap_or(mw),
+        num_arg(args, "--mask-h")?.unwrap_or(mh),
+    );
+    let hdr = (layer.is_some() || !mask_bytes.is_empty()).then(|| api::HdrArgs {
+        layer: layer.as_deref().unwrap_or(&[]),
+        mask: &mask_bytes,
+        mask_width: mw,
+        mask_height: mh,
+    });
+    match api::complete(picture, &state, source, hdr) {
         Ok(done) => {
             write(out, &done.file)?;
             Ok(Ok(Json::object([
@@ -227,7 +241,8 @@ fn cmd_huffopt(args: &[String]) -> Ran {
 /// `export-run-prepare --shot S [--side E] [--defaults D] [--layout L] [--base MODE]
 /// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...] [--dat DAT] [--entry ENTRY.bin]
 /// [--calib DIR] [--binding TEXT] [--dng DNG] [--jpg RGB.npy] [--jpg-bytes JPG] [--preview RGB.npy]
-/// [--cube C.cube --space SPACE.json] [--mtime-ms MS --tz-offset-min M] [--w W --h H] --out CANVAS.npy`.
+/// [--cube C.cube --space SPACE.json] [--mtime-ms MS --tz-offset-min M] [--w W --h H]
+/// [--hdr-out LAYER.npy] --out CANVAS.npy`.
 fn cmd_prepare(args: &[String]) -> Ran {
     let shot = common::read(common::option(args, "--shot")?)?;
     let side = read_or_empty(args, "--side")?;
@@ -282,15 +297,114 @@ fn cmd_prepare(args: &[String]) -> Ran {
         &fonts,
     );
     match result {
-        Ok((canvas, json, original)) => {
-            write_rgb_npy(out, canvas.width, canvas.height, &canvas.data)?;
+        Ok(p) => {
+            write_rgb_npy(out, p.canvas.width, p.canvas.height, &p.canvas.data)?;
+            if let Some(path) = opt(args, "--hdr-out")? {
+                let layer = p.hdr_layer.unwrap_or_default();
+                let (h, w) = hdr_shape(&p.json);
+                write(path, &crate::npy::encode(&layer, &[h, w, 2]))?;
+            }
             Ok(Ok(Json::object([
-                ("original", Json::Bool(original)),
-                ("prepared", json),
+                ("original", Json::Bool(p.original)),
+                ("prepared", p.json),
             ])))
         }
         Err(e) => Ok(Err(e)),
     }
+}
+
+/// `prepared.state.hdr.shape` as `(h, w)`; `(0, 0)` when the track is inactive.
+fn hdr_shape(json: &Json) -> (usize, usize) {
+    let get = |j: &Json, k: &str| match j {
+        Json::Object(p) => p.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()),
+        _ => None,
+    };
+    let shape = get(json, "state")
+        .and_then(|s| get(&s, "hdr"))
+        .and_then(|h| get(&h, "shape"));
+    match shape {
+        Some(Json::Array(v)) => match v.as_slice() {
+            [Json::Int(h), Json::Int(w), _] => (
+                usize::try_from(*h).unwrap_or(0),
+                usize::try_from(*w).unwrap_or(0),
+            ),
+            _ => (0, 0),
+        },
+        _ => (0, 0),
+    }
+}
+
+/// A little-endian float32 `.npy` (`<f4`, C order) → its values (any shape).
+fn read_f32_npy(path: &str) -> Result<Vec<f32>, Failure> {
+    let bytes = common::read(path)?;
+    let bad = |m: &str| Failure::Usage(format!("{path}: {m}"));
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return Err(bad("not an .npy file"));
+    }
+    let (at, len) = match bytes[6] {
+        1 => (
+            10usize,
+            usize::from(u16::from_le_bytes([bytes[8], bytes[9]])),
+        ),
+        2 | 3 if bytes.len() >= 12 => (
+            12usize,
+            u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+        ),
+        _ => return Err(bad("unsupported .npy version")),
+    };
+    let header = bytes
+        .get(at..at.saturating_add(len))
+        .ok_or_else(|| bad("short header"))?;
+    let header = String::from_utf8_lossy(header);
+    if !header.contains("'<f4'") || header.contains("'fortran_order': True") {
+        return Err(bad("want a C-order <f4 array"));
+    }
+    let body = &bytes[at + len..];
+    if body.len() % 4 != 0 {
+        return Err(bad("payload is not whole float32s"));
+    }
+    Ok(body
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
+}
+
+/// A 2-D uint8 or bool `.npy` `(H, W)` → `(w, h, bytes)`.
+fn read_mask_npy(path: &str) -> Result<RgbNpy, Failure> {
+    let bytes = common::read(path)?;
+    let bad = |m: &str| Failure::Usage(format!("{path}: {m}"));
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return Err(bad("not an .npy file"));
+    }
+    let (at, len) = match bytes[6] {
+        1 => (
+            10usize,
+            usize::from(u16::from_le_bytes([bytes[8], bytes[9]])),
+        ),
+        _ => return Err(bad("unsupported .npy version")),
+    };
+    let header = bytes
+        .get(at..at.saturating_add(len))
+        .ok_or_else(|| bad("short header"))?;
+    let header = String::from_utf8_lossy(header);
+    if !(header.contains("'|u1'") || header.contains("'|b1'"))
+        || header.contains("'fortran_order': True")
+    {
+        return Err(bad("want a C-order uint8 or bool array"));
+    }
+    let open = header.find("'shape': (").ok_or_else(|| bad("no shape"))?;
+    let rest = &header[open + 10..];
+    let close = rest.find(')').ok_or_else(|| bad("no shape"))?;
+    let dims: Vec<f64> = rest[..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let [h, w] = dims.as_slice() else {
+        return Err(bad("want shape (H, W)"));
+    };
+    Ok((*w, *h, bytes[at + len..].to_vec()))
 }
 
 /// A calibration folder as export-source's `CalibPack` (files sorted by name, as `source-*`).

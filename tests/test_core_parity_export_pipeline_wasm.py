@@ -118,6 +118,100 @@ def _raw_cases(tmp: Path, base: dict[str, Any], side_paths: dict[str, str]) -> l
     return out
 
 
+def _hdr_cases(tmp: Path, base: dict[str, Any], side_paths: dict[str, str], pic: str, src: Path) -> list[dict[str, Any]]:
+    """HDR: prepare with ``hdr`` (JPG only: ``no_raw``; synthetic DNG: begin's reasons; JSON, canvas
+    and layer), and complete with inactive and active synthetic tracks, stamp masks, frame
+    layouts and hostile mask sizes."""
+    from support.dng_writer import write_dng
+    from test_core_parity_export_source import _mosaic
+
+    out: list[dict[str, Any]] = []
+    ok = tmp / "R0020.DNG"
+    ok.write_bytes(write_dng(_mosaic(48, 64, 1), white=4095, orientation=6))
+    raw_shot = _w(tmp, "hdr-raw-shot.json", {"name": "R0020", "width": 48, "height": 64, "files": {"dng": {"relpath": str(ok)}, "jpg": {}}})
+    raw = {k: v for k, v in base.items() if k != "jpg"}
+    for key in ("empty", "adjust-crop", "gallery-stamp", "blur"):
+        out.append({**base, "label": f"hdr-jpg-{key}", "hdr": True, "side": side_paths[key], "out": str(tmp / f"h-jpg-{key}")})
+        out.append(
+            {
+                **raw,
+                "label": f"hdr-raw-{key}",
+                "hdr": True,
+                "shot": raw_shot,
+                "dng": str(ok),
+                "jpg": pic,
+                "jpg_bytes": str(src),
+                "base": "neutral",
+                "side": side_paths[key],
+                "out": str(tmp / f"h-raw-{key}"),
+            }
+        )
+    rng = np.random.default_rng(5)
+    layer = rng.random((48, 64, 2), dtype=np.float32) * np.float32(2.0)
+    layer[:4, :4] = np.nan
+    np.save(tmp / "layer.npy", layer)
+    np.save(tmp / "layer-bad.npy", layer[:10])
+    mask = np.zeros((48, 64), np.uint8)
+    mask[40:46, 50:62] = 1
+    np.save(tmp / "mask.npy", mask)
+    hdr_on = {"asked": True, "active": True, "shape": [48, 64, 2], "problem": None, "frame": None}
+    st = {"name": "R0021", "quality": 92, "long_edge": None, "labels": {"text": "原图"}}
+    gallery = {
+        "width": 80,
+        "height": 70,
+        "photo": [8, 11],
+        "bg": [255, 255, 255],
+        "items": [{"k": "photo", "x": 8, "y": 11, "w": 64, "h": 48}],
+        "bgfx": None,
+        "unit_box": [0, 0, 0, 0],
+        "fixed": False,
+        "grain": 0.0,
+    }
+    states = {
+        "inactive": {**st, "hdr": {"asked": True, "active": False, "shape": None, "problem": "no_raw", "frame": None}},
+        "active": {**st, "hdr": hdr_on},
+        "active-edge": {**st, "long_edge": 64, "hdr": hdr_on},
+        "frame": {**st, "hdr": {**hdr_on, "frame": gallery}},
+        "blur": {**st, "hdr": {**hdr_on, "frame": {**gallery, "bgfx": {"kind": "blur"}}}},
+        "bad-shape": {**st, "hdr": {**hdr_on, "shape": [47, 64, 2]}},
+    }
+    for key, value in states.items():
+        sp = _w(tmp, f"hst-{key}.json", value)
+        c = {"kind": "complete", "canvas": pic, "state": sp, "src": str(src), "layer": str(tmp / "layer.npy")}
+        if key == "inactive":
+            c.pop("layer")
+        out.append({**c, "label": f"hdone-{key}", "out": str(tmp / f"hd-{key}.jpg")})
+        out.append({**c, "label": f"hdone-{key}-mask", "mask": str(tmp / "mask.npy"), "out": str(tmp / f"hdm-{key}.jpg")})
+    act = _w(tmp, "hst-act2.json", states["active"])
+    out.append(
+        {
+            "kind": "complete",
+            "canvas": pic,
+            "state": act,
+            "src": str(src),
+            "layer": str(tmp / "layer-bad.npy"),
+            "label": "hdone-short-layer",
+            "out": str(tmp / "hd-sl.jpg"),
+        }
+    )
+    for i, v in enumerate(HOSTILE):
+        for dim in ("mask_w", "mask_h"):
+            out.append(
+                {
+                    "kind": "complete",
+                    "canvas": pic,
+                    "state": act,
+                    "src": str(src),
+                    "layer": str(tmp / "layer.npy"),
+                    "mask": str(tmp / "mask.npy"),
+                    dim: _num(v),
+                    "label": f"hdone-{dim}-{i}",
+                    "out": str(tmp / f"hd-{dim}{i}.jpg"),
+                }
+            )
+    return out
+
+
 def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     fonts = font_pairs()
     rng = np.random.default_rng(7)
@@ -241,6 +335,7 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     )
     deep_state = _w(tmp_path, "st-deep.json", '{"name":"R","quality":95,"labels":{},"x":' + _deep(129, "array") + "}")
     cases.append({"label": "done-deep", "kind": "complete", "canvas": str(pic), "state": deep_state, "out": str(tmp_path / "d-deep.jpg")})
+    cases += _hdr_cases(tmp_path, base, side_paths, str(pic), src)
 
     sizes_base = {"kind": "sizes", "width": 4288, "height": 2848, "layout": layout, "fonts": fonts}
     for key in ("empty", "gallery-stamp", "instant-border", "leica", "bad-adjust", "deep-129"):

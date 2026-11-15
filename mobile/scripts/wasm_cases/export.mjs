@@ -28,6 +28,26 @@ function npy(path) {
 
 // Non-finite numbers come as strings ("NaN", "Infinity"); everything else as JSON numbers.
 const num = (v) => (typeof v === 'string' ? Number(v) : v);
+// A little-endian float32 .npy (the HDR layer) and a 2-D uint8 .npy (the stamp mask).
+function f32(path) {
+  const buf = readFileSync(path);
+  const headerLen = buf[6] === 1 ? buf.readUInt16LE(8) : buf.readUInt32LE(8);
+  const at = buf[6] === 1 ? 10 : 12;
+  const body = buf.subarray(at + headerLen);
+  const copy = new Uint8Array(body.byteLength);
+  copy.set(body);
+  return new Float32Array(copy.buffer);
+}
+
+function npy2(path) {
+  const buf = readFileSync(path);
+  const headerLen = buf.readUInt16LE(8);
+  const header = buf.subarray(10, 10 + headerLen).toString('latin1');
+  const shape = header.match(/'shape': \(([^)]*)\)/)[1].split(',').map((p) => p.trim()).filter(Boolean).map(Number);
+  const data = buf.subarray(10 + headerLen);
+  return { h: shape[0], w: shape[1], data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength) };
+}
+
 const text = (path) => (path ? readFileSync(path, 'utf8') : '');
 const fontArgs = (fonts) => (fonts || []).flatMap(([name, path]) => ['--font', `${name}=${path}`]);
 const sizeArgs = (c) => [...(c.w !== undefined ? ['--w', String(num(c.w))] : []), ...(c.h !== undefined ? ['--h', String(num(c.h))] : [])];
@@ -79,6 +99,7 @@ function prepareArgs(c) {
   if (c.tz_offset_min !== undefined) args.push('--tz-offset-min', String(num(c.tz_offset_min)));
   if (c.long_edge !== null && c.long_edge !== undefined) args.push('--long-edge', String(num(c.long_edge)));
   if (c.hdr) args.push('--hdr');
+  if (c.hdr_out) args.push('--hdr-out', c.hdr_out);
   args.push(...sizeArgs(c), ...fontArgs(c.fonts));
   return args;
 }
@@ -107,16 +128,40 @@ function pipelineCases(inputs) {
             return framed(p.height, p.width, p.canvas());
           },
         });
+        if (c.hdr) {
+          // The HDR layer: gxr-cli reads the first --out (the canvas) and writes the layer to
+          // --hdr-out; the driver compares the last --out, which names that same layer file.
+          const layerPath = `${c.out}.layer.npy`;
+          out.push({
+            label: `${label}-layer`,
+            cliArgs: [...prepareArgs({ ...c, hdr_out: layerPath }), '--out', `${c.out}.lc.npy`, '--out', layerPath],
+            wasm: (mod) => {
+              const p = prepareCall(mod, c);
+              const layer = p.hdr_layer();
+              const shape = JSON.parse(p.json()).prepared.state.hdr.shape || [0, 0, 2];
+              return framed(shape[0], shape[1], new Uint8Array(layer.buffer, layer.byteOffset, layer.byteLength));
+            },
+          });
+        }
       } else if (c.kind === 'complete') {
         const args = ['export-run-complete', '--canvas', c.canvas, '--state', c.state, ...sizeArgs(c), '--out', c.out];
         if (c.src) args.push('--src', c.src);
+        if (c.layer) args.push('--hdr-layer', c.layer);
+        if (c.mask) args.push('--stamp-mask', c.mask);
+        if (c.mask_w !== undefined) args.push('--mask-w', String(num(c.mask_w)));
+        if (c.mask_h !== undefined) args.push('--mask-h', String(num(c.mask_h)));
         out.push({
           label,
           cliArgs: args,
           wasm: (mod) => {
             const pic = npy(c.canvas);
+            const mask = c.mask ? npy2(c.mask) : { w: 0, h: 0, data: new Uint8Array(0) };
             return mod
-              .export_complete(pic.data, c.w !== undefined ? num(c.w) : pic.w, c.h !== undefined ? num(c.h) : pic.h, text(c.state), bytes(c.src))
+              .export_complete(
+                pic.data, c.w !== undefined ? num(c.w) : pic.w, c.h !== undefined ? num(c.h) : pic.h, text(c.state), bytes(c.src),
+                c.layer ? f32(c.layer) : new Float32Array(0), mask.data,
+                c.mask_w !== undefined ? num(c.mask_w) : mask.w, c.mask_h !== undefined ? num(c.mask_h) : mask.h,
+              )
               .json();
           },
         });

@@ -35,6 +35,7 @@ pub struct ExportPrepared {
     height: f64,
     canvas: Vec<u8>,
     json: String,
+    hdr_layer: Vec<f32>,
 }
 
 #[wasm_bindgen]
@@ -54,9 +55,15 @@ impl ExportPrepared {
         self.canvas.clone()
     }
 
-    /// `{"original", "prepared": {"frame", "stamp", "stamp_on", "photo", "labels", "state"}}`.
+    /// `{"original", "prepared": {"canvas", "frame", "stamp", "stamp_on", "photo", "labels", "state"}}`.
     pub fn json(&self) -> String {
         self.json.clone()
+    }
+
+    /// The HDR track's float32 `(h, w, 2)` layer (`state.hdr.shape`), empty when HDR was not
+    /// asked for or the track is inactive. Pass it back to `export_complete`.
+    pub fn hdr_layer(&self) -> Vec<f32> {
+        self.hdr_layer.clone()
     }
 }
 
@@ -165,7 +172,7 @@ pub fn export_prepare(
             hdr,
         },
     };
-    let (canvas, json, original) = api::prepare(
+    let out = api::prepare(
         &args,
         &files,
         pic(jpg, jpg_width, jpg_height),
@@ -176,33 +183,56 @@ pub fn export_prepare(
     // The CLI prints the same text with `println!`.
     let json = format!(
         "{}\n",
-        Json::object([("original", Json::Bool(original)), ("prepared", json)]).render()
+        Json::object([
+            ("original", Json::Bool(out.original)),
+            ("prepared", out.json)
+        ])
+        .render()
     );
     Ok(ExportPrepared {
-        width: canvas.width as f64,
-        height: canvas.height as f64,
-        canvas: canvas.data,
+        width: out.canvas.width as f64,
+        height: out.canvas.height as f64,
+        canvas: out.canvas.data,
         json,
+        hdr_layer: out.hdr_layer.unwrap_or_default(),
     })
 }
 
 /// `export_complete` (SDR): the inked canvas, `prepared.state` and the bytes of the source file
-/// `state.source` names (the camera JPG, or the DNG), whose EXIF export-meta reads.
+/// `state.source` names (the camera JPG, or the DNG), whose EXIF export-meta reads. With HDR:
+/// `hdr_layer` from `export_prepare` and the browser's stamp mask (`mask_width × mask_height`
+/// bytes, non-zero where the stamp changed a black or white photo; empty when no stamp is on the
+/// photo).
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
 pub fn export_complete(
     canvas: &[u8],
     width: f64,
     height: f64,
     state: &str,
     source: &[u8],
+    hdr_layer: &[f32],
+    stamp_mask: &[u8],
+    mask_width: f64,
+    mask_height: f64,
 ) -> Result<ExportCompleted, JsValue> {
     let picture = Picture {
         data: canvas,
         width,
         height,
     };
-    let done = api::complete(picture, state.as_bytes(), api::ExifSource::File(source))
-        .map_err(rejected)?;
+    let done = api::complete(
+        picture,
+        state.as_bytes(),
+        api::ExifSource::File(source),
+        Some(api::HdrArgs {
+            layer: hdr_layer,
+            mask: stamp_mask,
+            mask_width,
+            mask_height,
+        }),
+    )
+    .map_err(rejected)?;
     let json = format!(
         "{}\n",
         Json::object([

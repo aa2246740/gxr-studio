@@ -5,8 +5,10 @@
 use gxr_frame::{Fonts, Val, parse_json};
 use gxr_raw::{CoreError, Json};
 
-use super::complete::{Completed, State, checked_rgb, complete_sdr};
+use super::complete::{Completed, HdrInputs, State, checked_rgb, complete_export};
 use super::encode::Rgb;
+use super::hdr::{StampMask, begin_track, hdr_state_json, track_geometry};
+use crate::hdr_track::HdrTrackState;
 use gxr_raw::Image;
 
 use crate::source::{
@@ -14,7 +16,7 @@ use crate::source::{
 };
 
 use super::prepare::{
-    ExportOpts, FinishEdit, LayoutFacts, Picked, ShotFacts, parse_finish_edit, plan,
+    ExportOpts, FinishEdit, LayoutFacts, Picked, ShotFacts, crop_of, parse_finish_edit, plan,
     prepare_original, prepare_picked, val_json,
 };
 use super::result::{ExportFail, Labels, validate_options};
@@ -205,13 +207,44 @@ fn rendered(text: &str) -> ExportFail {
 /// `color_image` (RAW recipe, neutral RAW, embedded preview, LUT, edited camera JPG), then
 /// the finish without ink. Returns the canvas, the prepared JSON, and whether the untouched
 /// camera JPG branch was taken.
+/// What `export_prepare` returns: the canvas, the prepared JSON, whether the untouched camera
+/// JPG branch was taken, and, when HDR was asked for and the track is active, its float32
+/// `(h, w, 2)` layer for `export_complete`.
+pub struct PrepareOut {
+    pub canvas: Rgb,
+    pub json: Json,
+    pub original: bool,
+    pub hdr_layer: Option<Vec<f32>>,
+}
+
+/// `HdrTrack.begin` on the base picture, then the photo's geometry; `state.hdr` in `json` is
+/// replaced by the track's meta and the frame layout.
+fn with_hdr(mut json: Json, track: HdrTrackState) -> (Json, Option<Vec<f32>>) {
+    let frame = match &json {
+        Json::Object(p) => p
+            .iter()
+            .find(|(k, _)| k == "frame")
+            .map_or(Json::Null, |(_, v)| v.clone()),
+        _ => Json::Null,
+    };
+    let hdr_json = hdr_state_json(&track, &frame);
+    if let Json::Object(pairs) = &mut json
+        && let Some((_, Json::Object(state))) = pairs.iter_mut().find(|(k, _)| k == "state")
+        && let Some(slot) = state.iter_mut().find(|(k, _)| k == "hdr")
+    {
+        slot.1 = hdr_json;
+    }
+    let layer = track.active.then_some(track.layer);
+    (json, layer)
+}
+
 pub fn prepare(
     args: &PrepareArgs<'_>,
     files: &SourceFiles<'_>,
     jpg: Option<Picture<'_>>,
     preview: Option<Picture<'_>>,
     fonts: &Fonts,
-) -> Result<(Rgb, Json, bool), ExportFail> {
+) -> Result<PrepareOut, ExportFail> {
     validate_options(args.opts.quality, args.opts.long_edge)?;
     let shot = ShotFacts::parse(&parse_json(args.shot)?)?;
     let (plan, side) = plan(&shot, args.side, args.defaults, args.base)?;
@@ -223,8 +256,27 @@ pub fn prepare(
             height: jpg.height,
             data: jpg.values,
         };
+        let track = if args.opts.hdr {
+            Some(begin_track(
+                &rgb,
+                hdr_dng(&shot, files),
+                &dng_name(args.shot)?,
+                hdr_jpeg(&shot, files),
+            )?)
+        } else {
+            None
+        };
         let p = prepare_original(&shot, rgb, args.opts)?;
-        return Ok((p.canvas, p.json, true));
+        let (json, hdr_layer) = match track {
+            Some(t) => with_hdr(p.json, t),
+            None => (p.json, None),
+        };
+        return Ok(PrepareOut {
+            canvas: p.canvas,
+            json,
+            original: true,
+            hdr_layer,
+        });
     }
     let preview = preview.map(|p| image_of(&p, PREVIEW)).transpose()?;
     let edit_text = source_edit(&plan.edit);
@@ -259,10 +311,53 @@ pub fn prepare(
         from_raw,
         labels,
     };
+    let track = if args.opts.hdr {
+        let t = begin_track(
+            &picked.rgb,
+            hdr_dng(&shot, files),
+            &dng_name(args.shot)?,
+            hdr_jpeg(&shot, files),
+        )?;
+        let (rect, preset) = crop_of(&side)?;
+        Some(track_geometry(
+            t,
+            picked.rgb.width,
+            picked.rgb.height,
+            &plan.edit.geometry,
+            rect,
+            preset.as_deref(),
+        )?)
+    } else {
+        None
+    };
     let layout = LayoutFacts::parse(args.layout)?;
     let layout = with_photo_meta(layout, &shot, files)?;
     let p = prepare_picked(&shot, &plan, &side, picked, &layout, fonts, args.opts)?;
-    Ok((p.canvas, p.json, false))
+    let (json, hdr_layer) = match track {
+        Some(t) => with_hdr(p.json, t),
+        None => (p.json, None),
+    };
+    Ok(PrepareOut {
+        canvas: p.canvas,
+        json,
+        original: false,
+        hdr_layer,
+    })
+}
+
+/// `HdrTrack(dng=...)`: the DNG when the shot has one and its bytes were given.
+fn hdr_dng<'a>(shot: &ShotFacts, files: &SourceFiles<'a>) -> Option<&'a [u8]> {
+    given(files.dng).filter(|_| shot.has_dng)
+}
+
+/// `HdrTrack(jpeg=...)`: the camera JPG's original bytes when the shot has one.
+fn hdr_jpeg<'a>(shot: &ShotFacts, files: &SourceFiles<'a>) -> Option<&'a [u8]> {
+    given(files.jpg_bytes).filter(|_| shot.has_jpg)
+}
+
+/// `Path(files["dng"]["relpath"]).name`, the name `open_dng` puts in its errors.
+fn dng_name(shot: &[u8]) -> Result<String, CoreError> {
+    Ok(crate::source::parse_shot(shot)?.dng_name)
 }
 
 /// `serve._plan` as `{"original", "frame", "stamp"}`.
@@ -292,11 +387,40 @@ pub enum ExifSource<'a> {
 
 /// `export_complete` without HDR: the inked canvas, the state JSON from `prepare` and the source
 /// EXIF.
+/// The HDR inputs of `export_complete` as the caller gives them: the layer from `prepare`
+/// (empty when the track is inactive) and the stamp mask with its size as JS numbers (an empty
+/// mask means no stamp on the photo).
+pub struct HdrArgs<'a> {
+    pub layer: &'a [f32],
+    pub mask: &'a [u8],
+    pub mask_width: f64,
+    pub mask_height: f64,
+}
+
 pub fn complete(
     canvas: Picture<'_>,
     state: &[u8],
     exif: ExifSource<'_>,
+    hdr: Option<HdrArgs<'_>>,
 ) -> Result<Completed, ExportFail> {
+    let hdr = match hdr {
+        None => None,
+        Some(a) => {
+            let mask = if a.mask.is_empty() {
+                None
+            } else {
+                Some(StampMask {
+                    data: a.mask,
+                    width: dim_from_f64(a.mask_width, "掩码宽")?,
+                    height: dim_from_f64(a.mask_height, "掩码高")?,
+                })
+            };
+            Some(HdrInputs {
+                layer: a.layer,
+                mask,
+            })
+        }
+    };
     let w = dim_from_f64(canvas.width, "宽")?;
     let h = dim_from_f64(canvas.height, "高")?;
     checked_rgb(canvas.data, w, h)?;
@@ -305,7 +429,7 @@ pub fn complete(
         ExifSource::File(bytes) => crate::meta::read_source_exif(bytes).to_jpeg_exif_spec(),
         ExifSource::Json(text) => gxr_jpeg::parse_exif_json(text)?,
     };
-    let (done, _rgb) = complete_sdr(canvas.data, w, h, &state, &source)?;
+    let (done, _rgb) = complete_export(canvas.data, w, h, &state, &source, hdr)?;
     Ok(done)
 }
 

@@ -9,7 +9,8 @@ use gxr_jpeg::ExifSpec;
 use gxr_raw::{CoreError, Json};
 
 use super::encode::{Rgb, fit, write_rgb_with_exif};
-use super::result::{ExportFail, HdrOutcome, Labels, result_json, result_labels, validate_options};
+use super::hdr::{StampMask, finish_hdr};
+use super::result::{ExportFail, Labels, result_json, result_labels, validate_options};
 
 /// Largest pixel count any image input may have (`gxr-raw`'s shared limit, 2**32 − 1 elements).
 const MAX_ELEMENTS: u64 = u32::MAX as u64;
@@ -97,29 +98,49 @@ pub struct Completed {
     pub result: Json,
 }
 
-/// `export_complete` without HDR: the inked canvas, the state and the source EXIF (export-meta's
-/// `base` / `sub`, without 270) → the file and the result.
-pub fn complete_sdr(
+/// HDR inputs `export_complete` needs when `state.hdr` is set: the track's float32 layer from
+/// `export_prepare` and the browser's stamp mask (absent when no stamp is on the photo).
+pub struct HdrInputs<'a> {
+    pub layer: &'a [f32],
+    pub mask: Option<StampMask<'a>>,
+}
+
+/// `export_complete`: the inked canvas, the state and the source EXIF (export-meta's `base` /
+/// `sub`, without 270) → `_fit`, one encode, then, when `state.hdr` is set,
+/// `hdr_export.finish` → the file and the result.
+pub fn complete_export(
     canvas: &[u8],
     w: u64,
     h: u64,
     state: &State,
     source: &ExifSpec,
+    hdr_in: Option<HdrInputs<'_>>,
 ) -> Result<(Completed, Rgb), ExportFail> {
     let (wu, hu) = checked_rgb(canvas, w, h)?;
+    let mut data = Vec::new();
+    data.try_reserve_exact(canvas.len())
+        .map_err(|_| CoreError::new("too_big", "图像太大"))?;
+    data.extend_from_slice(canvas);
     let rgb = Rgb {
         width: wu,
         height: hu,
-        data: canvas.to_vec(),
+        data,
     };
     let rgb = fit(rgb, state.long_edge)?;
     let note = state.labels.note().to_string();
-    let file = write_rgb_with_exif(&rgb, source, &note, state.quality)?;
+    let payload = write_rgb_with_exif(&rgb, source, &note, state.quality)?;
     let rl = result_labels(&state.labels);
-    let hdr = state.hdr.as_ref().map(|_| HdrOutcome {
-        hdr: false,
-        reason: None,
-    });
+    let (file, hdr) = match &state.hdr {
+        None => (payload, None),
+        Some(h) => {
+            let (layer, mask) = match hdr_in {
+                Some(i) => (i.layer, i.mask),
+                None => (&[][..], None),
+            };
+            let (bytes, outcome) = finish_hdr(h, layer, mask, payload, &rgb)?;
+            (bytes, Some(outcome))
+        }
+    };
     let result = result_json(
         &state.name,
         rgb.width,

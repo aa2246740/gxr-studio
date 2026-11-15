@@ -412,6 +412,7 @@ pub fn prepare_original(
         .hdr
         .then(|| Json::object([("asked", Json::Bool(true))]));
     let json = Json::object([
+        ("canvas", Json::str("full")),
         ("frame", Json::Null),
         ("stamp", Json::Null),
         ("stamp_on", Json::Null),
@@ -429,6 +430,39 @@ fn photo_rect(x: i64, y: i64, w: usize, h: usize) -> Json {
         ("w", Json::Int(w as i64)),
         ("h", Json::Int(h as i64)),
     ])
+}
+
+/// `_stage_rgb`'s crop: `side.get("crop")` when it is a dict; `rect` when a list of 4 numbers,
+/// `preset` when a string. (Python's `float(x)` also takes numeric strings; the phone writes its
+/// own sidecar with numbers, so anything else is `bad_request`.)
+pub fn crop_of(side: &Val) -> Result<(Option<[f64; 4]>, Option<String>), ExportFail> {
+    let crop = side.get("crop").filter(|c| c.as_object().is_some());
+    let rect = match crop.and_then(|c| c.get("rect")) {
+        Some(Val::Arr(items)) if items.len() == 4 => {
+            let mut out = [0.0_f64; 4];
+            for (slot, it) in out.iter_mut().zip(items.iter()) {
+                *slot = match it {
+                    Val::Int(n) => *n as f64,
+                    Val::Float(f) => *f,
+                    Val::Bool(b) => {
+                        if *b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    _ => return Err(bad("crop.rect").into()),
+                };
+            }
+            Some(out)
+        }
+        _ => None,
+    };
+    let preset = match crop.and_then(|c| c.get("preset")) {
+        Some(Val::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    Ok((rect, preset))
 }
 
 /// The base picture `color_image` chose (`from_raw`, labels), through the finish.
@@ -456,27 +490,9 @@ pub fn prepare_picked(
         mut labels,
     } = picked;
     let base_edge = rgb.width.max(rgb.height) as i64;
-    // crop: `side.get("crop") if isinstance(dict) else {}`; rect a list of 4, preset a str.
-    let crop = side.get("crop").filter(|c| c.as_object().is_some());
-    let rect = match crop.and_then(|c| c.get("rect")) {
-        Some(Val::Arr(items)) if items.len() == 4 => {
-            let mut out = Vec::new();
-            for it in items {
-                out.push(match it {
-                    Val::Int(n) => Json::Float(*n as f64),
-                    Val::Float(f) => Json::Float(*f),
-                    Val::Bool(b) => Json::Float(if *b { 1.0 } else { 0.0 }),
-                    _ => return Err(bad("crop.rect").into()),
-                });
-            }
-            Json::Array(out)
-        }
-        _ => Json::Null,
-    };
-    let preset = match crop.and_then(|c| c.get("preset")) {
-        Some(Val::Str(s)) => Json::str(s.clone()),
-        _ => Json::Null,
-    };
+    let (crop_rect, crop_preset) = crop_of(side)?;
+    let rect = crop_rect.map_or(Json::Null, |r| Json::floats(&r));
+    let preset = crop_preset.map_or(Json::Null, Json::Str);
     let frame = &plan.frame;
     let stamp = &plan.stamp;
     let border_stamp = stamp.enabled && stamp.placement == "border" && frame.style == "instant";
@@ -525,7 +541,11 @@ pub fn prepare_picked(
             fonts,
         )?
     };
-    let (canvas, photo) = match &frame_layout {
+    // `canvas`: "full" when the returned picture is the whole canvas (background and photo, or
+    // the photo when there is no frame); "photo" for a blur backdrop or paper grain, which the
+    // browser paints (PORT-WAVE-1 decision 3): it then draws the backdrop and pastes the photo
+    // at `photo`.
+    let (canvas, photo, canvas_kind) = match &frame_layout {
         Json::Null => (
             Rgb {
                 width: fin.width,
@@ -533,15 +553,10 @@ pub fn prepare_picked(
                 data: fin.rgb,
             },
             photo_rect(0, 0, fin.width, fin.height),
+            "full",
         ),
         lay => {
             let text = lay.render();
-            let c = gxr_finish::draw_frame_canvas_u64(
-                &fin.rgb,
-                fin.width as u64,
-                fin.height as u64,
-                &text,
-            )?;
             let v = parse_json(text.as_bytes())?;
             let (x, y) = match v.get("photo") {
                 Some(Val::Arr(p)) => match p.as_slice() {
@@ -550,14 +565,32 @@ pub fn prepare_picked(
                 },
                 _ => (0, 0),
             };
-            (
-                Rgb {
-                    width: c.width,
-                    height: c.height,
-                    data: c.rgb,
-                },
-                photo_rect(x, y, fin.width, fin.height),
-            )
+            match gxr_finish::draw_frame_canvas_u64(
+                &fin.rgb,
+                fin.width as u64,
+                fin.height as u64,
+                &text,
+            ) {
+                Ok(c) => (
+                    Rgb {
+                        width: c.width,
+                        height: c.height,
+                        data: c.rgb,
+                    },
+                    photo_rect(x, y, fin.width, fin.height),
+                    "full",
+                ),
+                Err(e) if e.kind == "needs_browser_backdrop" => (
+                    Rgb {
+                        width: fin.width,
+                        height: fin.height,
+                        data: fin.rgb,
+                    },
+                    photo_rect(x, y, fin.width, fin.height),
+                    "photo",
+                ),
+                Err(e) => return Err(e.into()),
+            }
         }
     };
     let border = if border_stamp && !matches!(frame_layout, Json::Null) && !stamp_text.is_empty() {
@@ -589,6 +622,7 @@ pub fn prepare_picked(
         .hdr
         .then(|| Json::object([("asked", Json::Bool(true))]));
     let json = Json::object([
+        ("canvas", Json::str(canvas_kind)),
         ("frame", frame_layout),
         ("stamp", stamp_out),
         ("stamp_on", stamp_on),

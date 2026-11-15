@@ -5,13 +5,15 @@
 pub mod api;
 pub mod complete;
 pub mod encode;
+pub mod hdr;
 pub mod huffopt;
 pub mod prepare;
 pub mod result;
 pub mod sizes;
 
-pub use complete::{Completed, State, checked_rgb, complete_sdr};
+pub use complete::{Completed, HdrInputs, State, checked_rgb, complete_export};
 pub use encode::{Rgb, exif_spec_json, fit, with_note, write_rgb_with_exif};
+pub use hdr::StampMask;
 pub use huffopt::optimize_huffman;
 pub use prepare::{
     ExportOpts, FinishEdit, LayoutFacts, Picked, Plan, Prepared, ShotFacts, load_defaults,
