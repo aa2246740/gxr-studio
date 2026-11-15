@@ -59,6 +59,10 @@ pub struct SourceFiles<'a> {
     pub jpg_bytes: &'a [u8],
     pub cube: &'a [u8],
     pub space: &'a str,
+    /// The source file's `lastModified` in ms (`photo_meta`'s `file_time`), and the time zone
+    /// offset in minutes east of UTC at that moment. Rust never reads the clock or the zone.
+    pub mtime_ms: Option<f64>,
+    pub tz_offset_min: f64,
 }
 
 fn given(b: &[u8]) -> Option<&[u8]> {
@@ -121,6 +125,63 @@ fn source_edit(edit: &FinishEdit) -> String {
         adjust.render(),
         curves.render()
     )
+}
+
+/// `serve._meta(shot, lib)`: `photo_meta` from the shot's own files (the camera JPG when the
+/// shot has one, else the DNG; export-meta). Without any source bytes (synthetic callers) the
+/// layout's own `meta`, `taken` and `file_time` stay.
+fn with_photo_meta(
+    layout: LayoutFacts,
+    shot: &ShotFacts,
+    files: &SourceFiles<'_>,
+) -> Result<LayoutFacts, ExportFail> {
+    let jpg = given(files.jpg_bytes).filter(|_| shot.has_jpg);
+    let dng = given(files.dng).filter(|_| shot.has_dng);
+    if jpg.is_none() && dng.is_none() {
+        return Ok(layout);
+    }
+    let pm = crate::meta::photo_meta_from_bytes(
+        jpg,
+        dng,
+        &shot.name,
+        files.mtime_ms,
+        files.tz_offset_min,
+        crate::meta::DEFAULT_NOW_YEAR,
+    )?;
+    let moment = |d: &Option<crate::meta::NaiveDateTime>| match d {
+        None => Val::Null,
+        Some(d) => Val::Arr(vec![
+            Val::Int(i64::from(d.year)),
+            Val::Int(i64::from(d.month)),
+            Val::Int(i64::from(d.day)),
+            Val::Int(i64::from(d.hour)),
+            Val::Int(i64::from(d.minute)),
+        ]),
+    };
+    let s = |t: &str| Val::Str(t.to_string());
+    let meta = Val::Obj(vec![
+        ("lens".into(), s(&pm.lens)),
+        ("lens_short".into(), s(&pm.lens_short)),
+        ("aperture".into(), s(&pm.aperture)),
+        ("shutter".into(), s(&pm.shutter)),
+        ("iso".into(), s(&pm.iso)),
+        ("date".into(), s(&pm.date)),
+        ("frame_no".into(), s(&pm.frame_no)),
+    ]);
+    let mut pairs: Vec<(String, Val)> = layout
+        .request
+        .as_object()
+        .unwrap_or(&[])
+        .iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "meta" | "taken" | "file_time"))
+        .cloned()
+        .collect();
+    pairs.push(("meta".into(), meta));
+    pairs.push(("taken".into(), moment(&pm.taken)));
+    pairs.push(("file_time".into(), moment(&pm.file_time)));
+    Ok(LayoutFacts {
+        request: Val::Obj(pairs),
+    })
 }
 
 /// An error JSON text from export-source, kept as it is.
@@ -199,6 +260,7 @@ pub fn prepare(
         labels,
     };
     let layout = LayoutFacts::parse(args.layout)?;
+    let layout = with_photo_meta(layout, &shot, files)?;
     let p = prepare_picked(&shot, &plan, &side, picked, &layout, fonts, args.opts)?;
     Ok((p.canvas, p.json, false))
 }
@@ -219,18 +281,30 @@ pub fn plan_json(
     ]))
 }
 
+/// Where `export_complete` gets the source photo's EXIF.
+pub enum ExifSource<'a> {
+    /// The source file's bytes (`serve._source_path`: the camera JPG when the shot has one,
+    /// else the DNG), read by export-meta exactly as `export.source_exif` reads them.
+    File(&'a [u8]),
+    /// Already as gxr-jpeg JSON (`base` / `exif`, without 270), for unit tests.
+    Json(&'a str),
+}
+
 /// `export_complete` without HDR: the inked canvas, the state JSON from `prepare` and the source
-/// EXIF as gxr-jpeg JSON (`base` / `exif`, without 270).
+/// EXIF.
 pub fn complete(
     canvas: Picture<'_>,
     state: &[u8],
-    exif_json: &str,
+    exif: ExifSource<'_>,
 ) -> Result<Completed, ExportFail> {
     let w = dim_from_f64(canvas.width, "宽")?;
     let h = dim_from_f64(canvas.height, "高")?;
     checked_rgb(canvas.data, w, h)?;
     let state = State::parse(state)?;
-    let source = gxr_jpeg::parse_exif_json(exif_json)?;
+    let source = match exif {
+        ExifSource::File(bytes) => crate::meta::read_source_exif(bytes).to_jpeg_exif_spec(),
+        ExifSource::Json(text) => gxr_jpeg::parse_exif_json(text)?,
+    };
     let (done, _rgb) = complete_sdr(canvas.data, w, h, &state, &source)?;
     Ok(done)
 }

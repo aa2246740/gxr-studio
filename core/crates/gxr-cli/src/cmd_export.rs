@@ -166,7 +166,7 @@ fn picture(p: Option<&RgbNpy>) -> Option<Picture<'_>> {
     })
 }
 
-/// `export-run-complete --canvas RGB.npy [--w W --h H] --state S [--exif EXIF.json] --out OUT.jpg`
+/// `export-run-complete --canvas RGB.npy [--w W --h H] --state S (--src SOURCE | --exif EXIF.json) --out OUT.jpg`
 /// (`--w` / `--h` override the array's size, as numbers, for the size-check cases).
 fn cmd_complete(args: &[String]) -> Ran {
     let (w, h, canvas) = read_rgb_npy(common::option(args, "--canvas")?)?;
@@ -176,14 +176,24 @@ fn cmd_complete(args: &[String]) -> Ran {
     );
     let state = common::read(common::option(args, "--state")?)?;
     let out = common::option(args, "--out")?;
-    let exif = String::from_utf8(read_or_empty(args, "--exif")?)
-        .map_err(|_| Failure::Usage("--exif is not UTF-8".into()))?;
+    let exif = opt(args, "--exif")?
+        .map(|p| {
+            String::from_utf8(common::read(p)?)
+                .map_err(|_| Failure::Usage("--exif is not UTF-8".into()))
+        })
+        .transpose()?;
+    let src = read_or_empty(args, "--src")?;
     let picture = Picture {
         data: &canvas,
         width: w,
         height: h,
     };
-    match api::complete(picture, &state, &exif) {
+    // No `--exif`: the source file's bytes (none given = no EXIF), the same path as WASM.
+    let source = match &exif {
+        Some(text) => api::ExifSource::Json(text),
+        None => api::ExifSource::File(&src),
+    };
+    match api::complete(picture, &state, source) {
         Ok(done) => {
             write(out, &done.file)?;
             Ok(Ok(Json::object([
@@ -217,7 +227,7 @@ fn cmd_huffopt(args: &[String]) -> Ran {
 /// `export-run-prepare --shot S [--side E] [--defaults D] [--layout L] [--base MODE]
 /// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...] [--dat DAT] [--entry ENTRY.bin]
 /// [--calib DIR] [--binding TEXT] [--dng DNG] [--jpg RGB.npy] [--jpg-bytes JPG] [--preview RGB.npy]
-/// [--cube C.cube --space SPACE.json] [--w W --h H] --out CANVAS.npy`.
+/// [--cube C.cube --space SPACE.json] [--mtime-ms MS --tz-offset-min M] [--w W --h H] --out CANVAS.npy`.
 fn cmd_prepare(args: &[String]) -> Ran {
     let shot = common::read(common::option(args, "--shot")?)?;
     let side = read_or_empty(args, "--side")?;
@@ -253,6 +263,8 @@ fn cmd_prepare(args: &[String]) -> Ran {
         jpg_bytes: &jpg_bytes,
         cube: &cube,
         space: &space,
+        mtime_ms: num_arg(args, "--mtime-ms")?,
+        tz_offset_min: num_arg(args, "--tz-offset-min")?.unwrap_or(0.0),
     };
     let pargs = PrepareArgs {
         shot: &shot,

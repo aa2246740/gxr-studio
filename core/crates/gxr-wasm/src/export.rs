@@ -102,7 +102,8 @@ fn pic(data: &[u8], width: f64, height: f64) -> Option<Picture<'_>> {
 /// `jpg` is the decoded camera JPG (`createImageBitmap`) and `jpg_bytes` its original file
 /// (hdr-track's capture check); `preview` the decoded embedded preview. The calibration pack is
 /// `calib_index` (`[[name, bytes], ...]`) over `calib_blob`. `long_edge` is `undefined` for
-/// the original size.
+/// the original size. `mtime_ms` is the source file's `lastModified` (`undefined` if unknown) and
+/// `tz_offset_min` the zone offset east of UTC at that moment.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn export_prepare(
@@ -131,6 +132,8 @@ pub fn export_prepare(
     preview: &[u8],
     preview_width: f64,
     preview_height: f64,
+    mtime_ms: Option<f64>,
+    tz_offset_min: f64,
 ) -> Result<ExportPrepared, JsValue> {
     let fonts = fonts(font_index, font_pack)?;
     let pack = if calib_index.trim().is_empty() && calib_blob.is_empty() {
@@ -147,6 +150,8 @@ pub fn export_prepare(
         jpg_bytes,
         cube,
         space,
+        mtime_ms,
+        tz_offset_min,
     };
     let args = PrepareArgs {
         shot: shot.as_bytes(),
@@ -181,21 +186,23 @@ pub fn export_prepare(
     })
 }
 
-/// `export_complete` (SDR): the inked canvas, `prepared.state` and the source EXIF JSON.
+/// `export_complete` (SDR): the inked canvas, `prepared.state` and the bytes of the source file
+/// `state.source` names (the camera JPG, or the DNG), whose EXIF export-meta reads.
 #[wasm_bindgen]
 pub fn export_complete(
     canvas: &[u8],
     width: f64,
     height: f64,
     state: &str,
-    exif_json: &str,
+    source: &[u8],
 ) -> Result<ExportCompleted, JsValue> {
     let picture = Picture {
         data: canvas,
         width,
         height,
     };
-    let done = api::complete(picture, state.as_bytes(), exif_json).map_err(rejected)?;
+    let done = api::complete(picture, state.as_bytes(), api::ExifSource::File(source))
+        .map_err(rejected)?;
     let json = format!(
         "{}\n",
         Json::object([

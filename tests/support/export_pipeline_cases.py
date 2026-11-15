@@ -114,3 +114,15 @@ def synthetic_images() -> list[tuple[str, np.ndarray]]:
     out.append(("black9x9", np.zeros((9, 9, 3), dtype=np.uint8)))
     out.append(("white9x9", np.full((9, 9, 3), 255, dtype=np.uint8)))
     return out
+
+
+def mtime_args(path: Path) -> list[str]:
+    """``--mtime-ms`` / ``--tz-offset-min`` as the phone would pass them for ``path``: the file's
+    modification time (``File.lastModified``) and the local zone offset at that moment, which is
+    what ``datetime.fromtimestamp(path.stat().st_mtime)`` uses on the desktop."""
+    from datetime import datetime
+
+    st = path.stat().st_mtime
+    offset = datetime.fromtimestamp(st).astimezone().utcoffset()
+    minutes = 0 if offset is None else int(offset.total_seconds() // 60)
+    return ["--mtime-ms", repr(st * 1000.0), "--tz-offset-min", str(minutes)]

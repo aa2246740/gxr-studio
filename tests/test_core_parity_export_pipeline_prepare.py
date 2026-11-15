@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +36,7 @@ from gxr_studio.finish.stamp import format_stamp
 from gxr_studio.render.params import parse_edit
 from gxr_studio.render.service import RenderService
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, real_pairs
+from support.export_pipeline_cases import first_difference, mtime_args, real_pairs
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -59,10 +58,6 @@ def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     assert len(rs) == len(py) == 588 and rs[:24] == py[:24] and rs[36:] == py[36:]
     monkeypatch.setattr(export_mod, "_ICC", rs)
     return rs
-
-
-def _moment(m: datetime | None) -> list[int] | None:
-    return None if m is None else [m.year, m.month, m.day, m.hour, m.minute]
 
 
 GALLERY = FrameSpec(style="gallery", output_ratio="original").to_json()
@@ -119,12 +114,12 @@ def _prepare(tmp: Path, tag: str, args: list[str]) -> tuple[np.ndarray | None, A
     return np.load(out), payload
 
 
-def _complete(tmp: Path, tag: str, canvas: np.ndarray, state: dict[str, Any], exif_json: str) -> tuple[bytes | None, Any]:
-    c, s, e, o = (tmp / f"{tag}.{x}" for x in ("c.npy", "state.json", "exif.json", "jpg"))
+def _complete(tmp: Path, tag: str, canvas: np.ndarray, state: dict[str, Any], src: Path) -> tuple[bytes | None, Any]:
+    """``export-run-complete`` with the source photo's own bytes (export-meta reads its EXIF)."""
+    c, s, o = (tmp / f"{tag}.{x}" for x in ("c.npy", "state.json", "jpg"))
     np.save(c, np.ascontiguousarray(canvas, dtype=np.uint8))
     s.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    e.write_text(exif_json, encoding="utf-8")
-    code, payload = run_json(["export-run-complete", "--canvas", str(c), "--state", str(s), "--exif", str(e), "--out", str(o)])
+    code, payload = run_json(["export-run-complete", "--canvas", str(c), "--state", str(s), "--src", str(src), "--out", str(o)])
     return (o.read_bytes() if code == 0 else None), payload
 
 
@@ -140,8 +135,6 @@ def _write(tmp: Path, name: str, obj: Any) -> str:
 
 
 def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, settings: Any, pinned_icc: bytes) -> None:
-    from support.export_pipeline_cases import source_exif_json
-
     pairs = real_pairs(18)
     if not pairs:
         missing("captures/ 真实样本不在本机（export-pipeline）")
@@ -160,7 +153,9 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             py_file = res.path.read_bytes()
             py_rgb, py_labels = render_stage_rgb(render, lib, shot, edit, side, stage="final", max_edge=None, quality=quality)
             meta, taken, file_time = serve_mod._meta(shot, lib)
-            layout_req = {"meta": meta, "mark": desktop_mark(), "taken": _moment(taken), "file_time": _moment(file_time)}
+            # Rust computes meta, taken and file_time itself (export-meta photo_meta) from the JPG's
+            # bytes and the file time the phone passes; the layout only carries the mark.
+            layout_req = {"mark": desktop_mark()}
             args = [
                 "--shot",
                 _write(tmp_path, f"{stem}-shot.json", {k: shot[k] for k in ("name", "width", "height", "files")}),
@@ -171,6 +166,7 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
                 "--quality",
                 str(quality),
                 *(["--long-edge", str(long_edge)] if long_edge else []),
+                *mtime_args(jpg),
             ]
             rgb0, from_raw, _labels0 = color_image(render, shot, edit, max_edge=None, quality=quality, lib=lib, full=True)
             np.save(tmp_path / f"{stem}-jpg.npy", load_jpeg(jpg, None))
@@ -215,9 +211,9 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
                 assert np.array_equal(canvas, want_canvas), stem
                 if no_ink:
                     assert np.array_equal(canvas, py_rgb), stem
-            exif_json = source_exif_json(jpg)
             fed = canvas if no_ink else py_rgb
-            got, done = _complete(tmp_path, stem, fed, prepared["state"], exif_json)
+            assert prepared["state"]["source"] == "jpg"
+            got, done = _complete(tmp_path, stem, fed, prepared["state"], jpg)
             assert got is not None, (stem, done)
             assert got == py_file, f"{stem}: {first_difference(got, py_file)}"
             assert done["result"]["file_name"] == res.path.name

@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from gxr_studio.finish.spec import FrameSpec, StampSpec
-from support.export_pipeline_cases import source_exif_json, synthetic_source
+from support.export_pipeline_cases import synthetic_source
 from support.frame_cases import FIXTURE_CJK, desktop_mark, font_pairs
 from support.wasm_check import run_area
 
@@ -175,7 +175,15 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
         cases.append({**base, "label": f"prep-e-{i}", "side": side_paths["empty"], "long_edge": _num(v), "out": str(tmp_path / f"p-e{i}")})
 
     src = synthetic_source(tmp_path / "src.jpg")
-    exif = _w(tmp_path, "exif.json", source_exif_json(src))
+    # A camera-like JPG shot: photo_meta from its bytes (with mtime and zone), EXIF from its bytes.
+    shot_src = _w(tmp_path, "shot-src.json", {"name": "R0104", "width": 8, "height": 6, "files": {"jpg": {}}})
+    meta_base = {**base, "shot": shot_src, "jpg_bytes": str(src), "side": side_paths["gallery-stamp"]}
+    for i, (mt, tz) in enumerate(
+        [(1763170000123.0, 480), (None, 0), (1763170000000.5, -300), (0, 1439)]
+        + [(1763170000000.0, _num(v)) for v in HOSTILE]
+        + [(_num(v), 0) for v in HOSTILE]
+    ):
+        cases.append({**meta_base, "label": f"prep-meta-{i}", "mtime_ms": mt, "tz_offset_min": tz, "out": str(tmp_path / f"p-meta{i}")})
     state = {"name": "R0001", "quality": 95, "long_edge": None, "labels": {"text": "原图"}, "hdr": None}
     states = {
         "q95": state,
@@ -192,7 +200,7 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
                 "kind": "complete",
                 "canvas": str(pic),
                 "state": _w(tmp_path, f"st-{key}.json", st),
-                "exif": exif,
+                "src": str(src),
                 "out": str(tmp_path / f"d-{key}.jpg"),
             }
         )

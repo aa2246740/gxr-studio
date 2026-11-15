@@ -44,7 +44,7 @@ from gxr_studio.render.params import RecipeSel, parse_edit
 from support import export_source_cases as xs
 from support import export_source_run as xr
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, source_exif_json
+from support.export_pipeline_cases import first_difference, mtime_args
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -67,10 +67,6 @@ def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     assert len(rs) == len(py) == 588 and rs[:24] == py[:24] and rs[36:] == py[36:]
     monkeypatch.setattr(export_mod, "_ICC", rs)
     return rs
-
-
-def _moment(m: Any) -> list[int] | None:
-    return None if m is None else [m.year, m.month, m.day, m.hour, m.minute]
 
 
 def _w(tmp: Path, name: str, obj: Any) -> str:
@@ -168,12 +164,14 @@ def run_case(
     py_file = res.path.read_bytes()
     assert spy.stage is not None
     py_rgb, py_labels = spy.stage
-    layout = {"meta": meta, "mark": desktop_mark(), "taken": _moment(taken), "file_time": _moment(file_time)}
+    # meta, taken and file_time come from export-meta in Rust (the shot's own files).
+    layout = {"mark": desktop_mark()}
+    source = jpg if jpg is not None else dng
     args = [
         "--shot", _w(tmp, f"{stem}-shot.json", shot), "--side", _w(tmp, f"{stem}-side.json", side), "--base", base,
         "--layout", _w(tmp, f"{stem}-layout.json", layout),
         "--quality", str(quality), *(["--long-edge", str(long_edge)] if long_edge else []),
-        "--dat", str(h.dat), "--calib", str(h.calib), "--binding", h.binding(), "--dng", str(dng),
+        "--dat", str(h.dat), "--calib", str(h.calib), "--binding", h.binding(), "--dng", str(dng), *mtime_args(source),
         *_entry_for(h, tmp, shot, side, base),
     ]  # fmt: skip
     if jpg is not None:
@@ -209,16 +207,19 @@ def run_case(
     base_diff = int(np.count_nonzero(rs_base != rgb0)) if rs_base.shape == rgb0.shape else -1
     if lut is None:
         assert base_diff == 0, (stem, base_diff)
-    exif = source_exif_json(jpg if jpg is not None else dng)
     fed = canvas if (no_ink and base_diff == 0) else py_rgb
-    s, e, c, o = (tmp / f"{stem}.{x}" for x in ("state.json", "exif.json", "fed.npy", "jpg"))
+    assert prepared["state"]["source"] == ("jpg" if jpg is not None else "dng"), stem
+    s, c, o = (tmp / f"{stem}.{x}" for x in ("state.json", "fed.npy", "jpg"))
     s.write_text(json.dumps(prepared["state"], ensure_ascii=False), encoding="utf-8")
-    e.write_text(exif, encoding="utf-8")
     np.save(c, fed)
-    code, done = run_json(["export-run-complete", "--canvas", str(c), "--state", str(s), "--exif", str(e), "--out", str(o)])
+    code, done = run_json(["export-run-complete", "--canvas", str(c), "--state", str(s), "--src", str(source), "--out", str(o)])
     assert code == 0, (stem, done)
     got = o.read_bytes()
     assert got == py_file, f"{stem}: {first_difference(got, py_file)}"
+    # The source EXIF really travelled (tag ids counted, values never printed).
+    with Image.open(o) as im:
+        exif = im.getexif()
+        assert 271 in exif and len(exif.get_ifd(0x8769)) >= 4, (stem, sorted(exif), len(exif.get_ifd(0x8769)))
     assert done["result"]["file_name"] == res.path.name, stem
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
         assert done["result"][key] == getattr(res, key), (stem, key)

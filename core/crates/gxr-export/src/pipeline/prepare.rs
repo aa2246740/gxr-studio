@@ -387,6 +387,11 @@ fn state_json(
 ) -> Json {
     Json::object([
         ("name", Json::str(shot.name.clone())),
+        // `serve._source_path`: which file the caller passes to `export_complete` for EXIF.
+        (
+            "source",
+            Json::str(if shot.has_jpg { "jpg" } else { "dng" }),
+        ),
         ("quality", Json::Int(q)),
         ("long_edge", edge.map_or(Json::Null, Json::Int)),
         ("labels", labels.to_json()),

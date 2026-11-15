@@ -60,6 +60,8 @@ function prepareCall(mod, c) {
     bytes(c.dng), bytes(c.jpg_bytes), bytes(c.cube), text(c.space),
     jpg.data, c.w !== undefined ? num(c.w) : jpg.w, c.h !== undefined ? num(c.h) : jpg.h,
     prev.data, prev.w, prev.h,
+    c.mtime_ms === null || c.mtime_ms === undefined ? undefined : num(c.mtime_ms),
+    c.tz_offset_min === undefined ? 0 : num(c.tz_offset_min),
   );
 }
 
@@ -73,6 +75,8 @@ function prepareArgs(c) {
     if (c[key]) args.push(flag, c[key]);
   }
   if (c.binding) args.push('--binding', c.binding);
+  if (c.mtime_ms !== null && c.mtime_ms !== undefined) args.push('--mtime-ms', String(num(c.mtime_ms)));
+  if (c.tz_offset_min !== undefined) args.push('--tz-offset-min', String(num(c.tz_offset_min)));
   if (c.long_edge !== null && c.long_edge !== undefined) args.push('--long-edge', String(num(c.long_edge)));
   if (c.hdr) args.push('--hdr');
   args.push(...sizeArgs(c), ...fontArgs(c.fonts));
@@ -105,14 +109,14 @@ function pipelineCases(inputs) {
         });
       } else if (c.kind === 'complete') {
         const args = ['export-run-complete', '--canvas', c.canvas, '--state', c.state, ...sizeArgs(c), '--out', c.out];
-        if (c.exif) args.push('--exif', c.exif);
+        if (c.src) args.push('--src', c.src);
         out.push({
           label,
           cliArgs: args,
           wasm: (mod) => {
             const pic = npy(c.canvas);
             return mod
-              .export_complete(pic.data, c.w !== undefined ? num(c.w) : pic.w, c.h !== undefined ? num(c.h) : pic.h, text(c.state), text(c.exif))
+              .export_complete(pic.data, c.w !== undefined ? num(c.w) : pic.w, c.h !== undefined ? num(c.h) : pic.h, text(c.state), bytes(c.src))
               .json();
           },
         });
