@@ -11,6 +11,7 @@ mod finish;
 mod frame;
 mod geometry;
 mod hdr;
+mod hdrtrack;
 mod jpeg;
 mod lut;
 mod raw;

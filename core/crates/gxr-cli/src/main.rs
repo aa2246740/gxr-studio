@@ -14,6 +14,7 @@ mod cmd_finish;
 mod cmd_frame;
 mod cmd_geometry;
 mod cmd_hdr;
+mod cmd_hdrtrack;
 mod cmd_jpeg;
 mod cmd_lut;
 mod cmd_raw;
@@ -57,6 +58,9 @@ fn dispatch(command: &str, rest: &[String]) -> Result<Output, Failure> {
     }
     if command.starts_with("lut-") || command.starts_with("scene-") {
         return cmd_lut::run(command, rest);
+    }
+    if command.starts_with("hdrtrack-") {
+        return cmd_hdrtrack::run(command, rest);
     }
     if command.starts_with("hdr-") {
         return cmd_hdr::run(command, rest);

@@ -20,6 +20,9 @@ Modifications relative to upstream jpeg-encoder 0.6.0:
     across columns with vertical `expand_bottom_edge` clamping (`jcsample.c`),
     and `encode_image_interleaved` emits `jccoefct.c` dummy MCU blocks
     (`[prev_dc, 0, ...]`) past valid `ceil(width/8) x ceil(height/8)` bounds.
+  * `writer.rs` & `encoder.rs`: `JpegColorType::Luma` writes JFIF 1.01, places
+    single DQT(0) before SOF0, omits chroma DQT(1), and uses component ID `1`
+    matching libjpeg-turbo `JCS_GRAYSCALE`.
 
 -------------------------------------------------------------------------------
 IJG Acknowledgment (required by src/jpeg_enc/fdct.rs)
