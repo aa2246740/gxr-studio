@@ -177,16 +177,27 @@ try {
     const row = page.locator(`.editor .knobs[data-card="${id}"] .krow:not([data-knob="amount"])`).first();
     const knobName = await row.getAttribute('data-knob');
     const keysBefore = await page.evaluate(() => [...(window.__gxrBakes?.keys() ?? [])].length);
+    // 记下这一张 Look 的 resolve 次数（别的卡在后台画小图会装别的表，所以不能数装了几张表）。
+    await page.evaluate((recipeId) => {
+      const book = window.__gxrBook;
+      const original = book.io.resolve;
+      window.__lookResolves = 0;
+      book.io.resolve = (dat, recipe) => {
+        if (JSON.parse(recipe).id === recipeId) window.__lookResolves += 1;
+        return original(dat, recipe);
+      };
+    }, id.slice('look:'.length));
     await row.locator('input').evaluate((input) => {
       input.value = String(Math.min(Number(input.max), Number(input.value) + 2));
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     // 只发 input（拖动中）：不重新烘焙，舞台不换。
     await page.waitForTimeout(800);
-    const duringDrag = { key: await recipeKey(page), bakes: await page.evaluate(() => [...(window.__gxrBakes?.keys() ?? [])].length) };
+    const duringDrag = { key: await recipeKey(page), resolves: await page.evaluate(() => window.__lookResolves) };
     await row.locator('input').evaluate((input) => input.dispatchEvent(new Event('change', { bubbles: true })));
     await page.waitForFunction((prev) => document.querySelector('.app')?.dataset.recipeKey !== prev, lookKey, { timeout: 90_000 });
     const knobKey = await recipeKey(page);
+    const afterRelease = await page.evaluate(() => window.__lookResolves);
     const level = Number(await row.locator('.val').innerText());
     step('look', {
       id,
@@ -194,7 +205,7 @@ try {
       bake: await bakeOf(page, lookKey),
       drawn,
       panel: panelText,
-      knob: { name: knobName, level, key: knobKey, bake: await bakeOf(page, knobKey), keysBefore, duringDrag },
+      knob: { name: knobName, level, key: knobKey, bake: await bakeOf(page, knobKey), keysBefore, duringDrag, afterRelease },
     });
     await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').scrollIntoViewIfNeeded();
     await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').click();

@@ -359,7 +359,9 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     knob = look["knob"]
     assert knob["key"] != look["key"] and knob["bake"]["sha256"] != look["bake"]["sha256"]
     # 拖动中（只有 input）不重新烘焙，舞台不换；松手才换。
-    assert knob["duringDrag"]["key"] == look["key"] and knob["duringDrag"]["bakes"] == knob["keysBefore"]
+    # 只看这张 Look 的 resolve：别的卡在后台画小图会装别的表，数表的张数会被它们带上。
+    assert knob["duringDrag"]["key"] == look["key"] and knob["duringDrag"]["resolves"] == 0
+    assert knob["afterRelease"] >= 1
     # UI 这一边：交给引擎的是和桌面同一个条目（旋钮已经套上）的表，而且和原生 gxr-cli 烘出来的逐字节相同。
     assert look["key"].endswith(":" + desktop["look"]["entry_sha256"]), (look["key"], desktop["look"])
     assert knob["key"].endswith(":" + desktop["knob"]["entry_sha256"]), (knob["key"], desktop["knob"])

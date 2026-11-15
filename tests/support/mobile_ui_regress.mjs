@@ -471,10 +471,14 @@ const CASES = {
 
   /** F4：有显卡时配方卡是这张的中性小图，只做一次；没显卡时如实写相机 JPG / 内嵌预览。 */
   async 'recipe-cards'() {
+    // 只为诊断：每一步往 stderr 印一行用了多久，整个驱动超时时 pytest 会把它们带出来。
+    const started = Date.now();
+    const stage = (label) => process.stderr.write(`recipe-cards ${label} +${Date.now() - started}ms\n`);
     const gpuRun = await (async () => {
       const { page, context, errors } = await makePage({ gpu: true });
       try {
         await pick(page, manifest.pairs.slice(0, 4));
+        stage('gpu: picked');
         await page.evaluate(() => {
           window.__thumbCalls = 0;
           const engine = window.__gxrEngine;
@@ -492,6 +496,7 @@ const CASES = {
           }, null, { timeout: 120_000 });
         await page.locator('.cell').first().click();
         await waitCards();
+        stage('gpu: first cards');
         const first = await editorState(page);
         const labels = await page.locator('.editor > .strip .rc .sub').allInnerTexts();
         // 卡片和同一个源用显卡现出的中性小图比，缩到 96×64 后逐通道平均差。
@@ -520,9 +525,11 @@ const CASES = {
           return sum / n;
         });
         const callsAfterFirst = await page.evaluate(() => window.__thumbCalls);
+        stage('gpu: diff done');
         await swipeLeft(page);
         await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
         await waitCards();
+        stage('gpu: second cards');
         const swipeBack = async () => {
           const box = await page.locator('.stage').boundingBox();
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -531,6 +538,7 @@ const CASES = {
           await page.mouse.up();
         };
         const second = await editorState(page);
+        stage('gpu: swipe back');
         await swipeBack();
         await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 }).catch(async (err) => {
           const state = await page.evaluate(() => ({
@@ -544,12 +552,14 @@ const CASES = {
         });
         await waitCards();
         const calls = await page.evaluate(() => window.__thumbCalls);
+        stage('gpu: back on first');
         return { labels, diff, callsAfterFirst, calls, first, second, errors };
       } finally {
         await context.close();
       }
     })();
     const fallback = await (async () => {
+      stage('fallback: start');
       const { page, context, errors } = await makePage({ gpu: false });
       try {
         await pick(page, [manifest.dngs[0], ...manifest.pairs.slice(2, 4)]);

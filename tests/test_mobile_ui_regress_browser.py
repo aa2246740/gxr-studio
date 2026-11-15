@@ -85,15 +85,20 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]
 
 
 def run_case(server: dict[str, Any], name: str) -> dict[str, Any]:
-    result = subprocess.run(
-        ["node", str(DRIVER), str(RUNTIME), server["base"], str(server["manifest"]), name],
-        cwd=REPO,
-        env={**os.environ, "HOME": str(REAL_HOME)},
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    try:
+        result = subprocess.run(
+            ["node", str(DRIVER), str(RUNTIME), server["base"], str(server["manifest"]), name],
+            cwd=REPO,
+            env={**os.environ, "HOME": str(REAL_HOME)},
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # 只为诊断：驱动在 stderr 上印每一步的时间，超时时把已经印出来的带上，看停在哪一步。
+        partial = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        pytest.fail(f"{name}: driver timed out after 300 s; stages so far:\n{partial[-4000:]}")
     assert result.returncode == 0, result.stdout + result.stderr
     out: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
     assert out["ok"], out.get("error")
