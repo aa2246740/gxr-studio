@@ -1,8 +1,9 @@
 //! `export-*` commands. Owner: wave-2 export (export-meta: `export-meta-*`; export-pipeline:
 //! `export-run-*`, thin wrappers over `gxr_export::pipeline::api`, which `gxr-wasm` calls too).
 
-use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs};
+use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs, SourceFiles};
 use gxr_export::pipeline::{ExportFail, ExportOpts, optimize_huffman};
+use gxr_export::source::CalibPack;
 use gxr_frame::Fonts;
 use gxr_raw::Json;
 use gxr_raw::sha256::sha256_hex;
@@ -210,14 +211,14 @@ fn cmd_huffopt(args: &[String]) -> Ran {
 }
 
 /// `export-run-prepare --shot S [--side E] [--defaults D] [--layout L] [--base MODE]
-/// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...]
-/// [--picked RGB.npy --from-raw 0|1 --labels J] [--jpg RGB.npy] --out CANVAS.npy`.
+/// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...] [--dat DAT] [--entry ENTRY.bin]
+/// [--calib DIR] [--binding TEXT] [--dng DNG] [--jpg RGB.npy] [--jpg-bytes JPG] [--preview RGB.npy]
+/// [--cube C.cube --space SPACE.json] [--w W --h H] --out CANVAS.npy`.
 fn cmd_prepare(args: &[String]) -> Ran {
     let shot = common::read(common::option(args, "--shot")?)?;
     let side = read_or_empty(args, "--side")?;
     let defaults = read_or_empty(args, "--defaults")?;
     let layout = read_or_empty(args, "--layout")?;
-    let labels = read_or_empty(args, "--labels")?;
     let base = opt(args, "--base")?.unwrap_or("auto").to_string();
     let out = common::option(args, "--out")?;
     let opts = ExportOpts {
@@ -228,27 +229,43 @@ fn cmd_prepare(args: &[String]) -> Ran {
     let fonts = fonts(args)?;
     let (ow, oh) = (num_arg(args, "--w")?, num_arg(args, "--h")?);
     let size = |(w, h, d): RgbNpy| (ow.unwrap_or(w), oh.unwrap_or(h), d);
-    let picked = opt(args, "--picked")?
-        .map(read_rgb_npy)
-        .transpose()?
-        .map(size);
     let jpg = opt(args, "--jpg")?.map(read_rgb_npy).transpose()?.map(size);
+    let preview = opt(args, "--preview")?.map(read_rgb_npy).transpose()?;
+    let pack = opt(args, "--calib")?.map(read_pack).transpose()?;
+    let dat = read_or_empty(args, "--dat")?;
+    let entry = read_or_empty(args, "--entry")?;
+    let dng = read_or_empty(args, "--dng")?;
+    let jpg_bytes = read_or_empty(args, "--jpg-bytes")?;
+    let cube = read_or_empty(args, "--cube")?;
+    let space = String::from_utf8(read_or_empty(args, "--space")?)
+        .map_err(|_| Failure::Usage("--space is not UTF-8".into()))?;
+    let binding = opt(args, "--binding")?.unwrap_or("").to_string();
+    let files = SourceFiles {
+        dat: &dat,
+        entry: &entry,
+        pack: pack.as_ref(),
+        binding: &binding,
+        dng: &dng,
+        jpg_bytes: &jpg_bytes,
+        cube: &cube,
+        space: &space,
+    };
     let pargs = PrepareArgs {
         shot: &shot,
         side: &side,
         defaults: &defaults,
         layout: &layout,
         base: &base,
-        labels: &labels,
-        from_raw: opt(args, "--from-raw")? == Some("1"),
         opts,
     };
-    match api::prepare(
+    let result = api::prepare(
         &pargs,
-        picture(picked.as_ref()),
+        &files,
         picture(jpg.as_ref()),
+        picture(preview.as_ref()),
         &fonts,
-    ) {
+    );
+    match result {
         Ok((canvas, json, original)) => {
             write_rgb_npy(out, canvas.width, canvas.height, &canvas.data)?;
             Ok(Ok(Json::object([
@@ -258,6 +275,23 @@ fn cmd_prepare(args: &[String]) -> Ran {
         }
         Err(e) => Ok(Err(e)),
     }
+}
+
+/// A calibration folder as export-source's `CalibPack` (files sorted by name, as `source-*`).
+fn read_pack(dir: &str) -> Result<CalibPack, Failure> {
+    let list =
+        std::fs::read_dir(dir).map_err(|e| Failure::Usage(format!("cannot list {dir}: {e}")))?;
+    let mut files = Vec::new();
+    for entry in list {
+        let entry = entry.map_err(|e| Failure::Usage(format!("cannot list {dir}: {e}")))?;
+        let path = entry.path();
+        if path.is_file() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            files.push((name, common::read(&path.to_string_lossy())?));
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(CalibPack { files })
 }
 
 /// `export-run-sizes --width W --height H [--side E] [--defaults D] [--layout L] [--rect JSON]

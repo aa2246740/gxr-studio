@@ -4,7 +4,7 @@
 use gxr_raw::{CoreError, Json};
 
 /// `export.py ExportError(code, message, detail)`, or a core error passed through.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ExportFail {
     Export {
         code: String,
@@ -12,6 +12,12 @@ pub enum ExportFail {
         detail: String,
     },
     Core(CoreError),
+    /// An error JSON another unit already rendered (export-source's `{"error": {...}}`, with
+    /// its `state` or `detail`), passed through unchanged.
+    Rendered {
+        kind: String,
+        json: Json,
+    },
 }
 
 impl From<CoreError> for ExportFail {
@@ -35,11 +41,15 @@ impl ExportFail {
         match self {
             Self::Export { code, .. } => code,
             Self::Core(e) => e.kind,
+            Self::Rendered { kind, .. } => kind,
         }
     }
 
     /// `{"error": {"kind", "message"[, "detail"]}}`.
     pub fn to_json(&self) -> Json {
+        if let Self::Rendered { json, .. } = self {
+            return json.clone();
+        }
         let body = match self {
             Self::Export {
                 code,
@@ -54,6 +64,7 @@ impl ExportFail {
                 ("kind", Json::str(e.kind)),
                 ("message", Json::str(e.message.clone())),
             ]),
+            Self::Rendered { json, .. } => return json.clone(),
         };
         Json::object([("error", body)])
     }

@@ -39,6 +39,85 @@ def _num(v: float) -> Any:
     return v if math.isfinite(v) else repr(v).replace("nan", "NaN").replace("inf", "Infinity")
 
 
+def _raw_cases(tmp: Path, base: dict[str, Any], side_paths: dict[str, str]) -> list[dict[str, Any]]:
+    """RAW branches through export-source: neutral and standard renders of synthetic DNGs, the
+    embedded-preview fallback, unreadable files, and (with the real DAT) a recipe render on a
+    synthetic calibration pack."""
+    from support import export_source_cases as xs
+    from support.dng_writer import write_dng
+    from test_core_parity_export_source import _mosaic
+
+    ok, bad = tmp / "R0010.DNG", tmp / "R0011.DNG"
+    ok.write_bytes(write_dng(_mosaic(48, 64, 1), white=4095, orientation=6))
+    bad.write_bytes(write_dng(_mosaic(16, 16, 3), compression=7))
+    preview = tmp / "preview.npy"
+    np.save(preview, np.random.default_rng(11).integers(0, 256, (30, 40, 3), dtype=np.uint8))
+    out: list[dict[str, Any]] = []
+
+    def shot(name: str, dng: Path) -> str:
+        return _w(
+            tmp,
+            f"{name}-shot.json",
+            {"name": name, "width": 48, "height": 64, "files": {"dng": {"relpath": str(dng)}}, "lens": None, "iso": 200},
+        )
+
+    raw = {k: v for k, v in base.items() if k != "jpg"}
+    for key in ("adjust-crop", "gallery-stamp", "instant-border"):
+        for mode in ("neutral", "standard"):
+            out.append(
+                {
+                    **raw,
+                    "label": f"raw-{mode}-{key}",
+                    "shot": shot("R0010", ok),
+                    "dng": str(ok),
+                    "base": mode,
+                    "side": side_paths[key],
+                    "out": str(tmp / f"r-{mode}-{key}"),
+                }
+            )
+    out.append(
+        {
+            **raw,
+            "label": "raw-preview",
+            "shot": shot("R0011", bad),
+            "dng": str(bad),
+            "preview": str(preview),
+            "base": "standard",
+            "side": side_paths["adjust-crop"],
+            "out": str(tmp / "r-prev"),
+        }
+    )
+    out.append(
+        {
+            **raw,
+            "label": "raw-unreadable",
+            "shot": shot("R0011", bad),
+            "dng": str(bad),
+            "base": "standard",
+            "side": side_paths["adjust-crop"],
+            "out": str(tmp / "r-bad"),
+        }
+    )
+    dat = xs.real_dat()
+    if dat is not None:
+        h = xs.make_home(tmp / "home-wasm", dat, units=("jlaunch",))
+        from gxr_studio.render.params import RecipeSel
+
+        entry = tmp / "entry.bin"
+        entry.write_bytes(h.entry(RecipeSel("jlaunch", 3)) or b"")
+        recipe_side = _w(tmp, "side-recipe.json", {"recipe": {"unit": "jlaunch", "slot": 3}, "adjust": {"contrast": 8}})
+        common = {"dat": str(h.dat), "entry": str(entry), "calib": str(h.calib), "binding": h.binding(), "dng": str(ok)}
+        for lens, iso in (("GR LENS A12 50mm F2.5 MACRO", 200), ("GR LENS A12 50mm F2.5 MACRO", 1600), (None, 400)):
+            name = f"R0012-{iso}"
+            s = _w(
+                tmp, f"{name}.json", {"name": name, "width": 48, "height": 64, "files": {"dng": {"relpath": str(ok)}}, "lens": lens, "iso": iso}
+            )
+            out.append(
+                {**raw, **common, "label": f"raw-recipe-{iso}-{lens is None}", "shot": s, "side": recipe_side, "out": str(tmp / f"r-rec-{iso}")}
+            )
+    return out
+
+
 def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     fonts = font_pairs()
     rng = np.random.default_rng(7)
@@ -55,9 +134,7 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
             "taken": [2026, 11, 15, 10, 30],
         },
     )
-    labels = _w(
-        tmp_path, "labels.json", {"kind": "prediction", "label": "prediction", "text": "电脑预测", "id": "recipe-prediction", "tag": ""}
-    )
+    shot_jpg = _w(tmp_path, "shot-jpg.json", {"name": "R0003", "width": 64, "height": 48, "files": {"jpg": {}}})
     sides = {
         "empty": {},
         "adjust-crop": {"adjust": {"exposure_ev": 0.3, "contrast": 12}, "crop": {"rect": [0.1, 0.1, 0.8, 0.8], "preset": "free"}},
@@ -83,14 +160,14 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     for key, path in side_paths.items():
         cases.append({"label": f"plan-{key}", "kind": "plan", "shot": shot, "side": path})
         cases.append({"label": f"plan-dng-{key}", "kind": "plan", "shot": shot_dng, "side": path, "base": "camera-jpg"})
-    base = {"kind": "prepare", "shot": shot_dng, "layout": layout, "labels": labels, "picture": str(pic), "fonts": fonts, "quality": 95}
+    base = {"kind": "prepare", "shot": shot_jpg, "layout": layout, "jpg": str(pic), "fonts": fonts, "quality": 95}
     for key, path in side_paths.items():
         for q, edge in [(95, None), (85, 64), (70, 30000)]:
             cases.append(
                 {**base, "label": f"prep-{key}-{q}", "side": path, "quality": q, "long_edge": edge, "out": str(tmp_path / f"p-{key}-{q}")}
             )
     cases.append({**base, "label": "prep-original", "shot": shot, "side": side_paths["empty"], "out": str(tmp_path / "p-orig")})
-    cases.append({**base, "label": "prep-from-raw", "side": side_paths["adjust-crop"], "from_raw": True, "out": str(tmp_path / "p-raw")})
+    cases += _raw_cases(tmp_path, base, side_paths)
     for i, v in enumerate(HOSTILE):
         cases.append({**base, "label": f"prep-w-{i}", "side": side_paths["empty"], "w": _num(v), "out": str(tmp_path / f"p-w{i}")})
         cases.append({**base, "label": f"prep-h-{i}", "side": side_paths["empty"], "h": _num(v), "out": str(tmp_path / f"p-h{i}")})

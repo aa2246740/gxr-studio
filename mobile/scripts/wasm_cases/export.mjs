@@ -2,7 +2,8 @@
 // export_output_sizes against gxr-cli export-run-*).
 // 输入是清单 JSON 的路径，每个清单是 [{label, kind, ...}]；同一份输入，WASM 的 JSON 和 gxr-cli 的 stdout
 // 逐字节相同，画布字节和 --out 的 npy 相同，错误的 kind 和 message 也相同。
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
 function pack(fonts) {
   const index = [];
@@ -38,24 +39,43 @@ function framed(h, w, payload) {
   return new Uint8Array(Buffer.concat([header, Buffer.from(payload)]));
 }
 
+const bytes = (path) => (path ? new Uint8Array(readFileSync(path)) : new Uint8Array(0));
+
+// A calibration folder as gxr-cli reads it: files sorted by name, packed as [[name, length], ...].
+function calibPack(dir) {
+  if (!dir) return { index: '', bytes: new Uint8Array(0) };
+  const names = readdirSync(dir).filter((n) => statSync(join(dir, n)).isFile()).sort();
+  return pack(names.map((n) => [n, join(dir, n)]));
+}
+
 function prepareCall(mod, c) {
-  const pic = npy(c.picture);
+  const jpg = c.jpg ? npy(c.jpg) : { w: 0, h: 0, data: new Uint8Array(0) };
+  const prev = c.preview ? npy(c.preview) : { w: 0, h: 0, data: new Uint8Array(0) };
   const faces = pack(c.fonts);
+  const calib = calibPack(c.calib);
   return mod.export_prepare(
-    text(c.shot), text(c.side), text(c.defaults), text(c.layout), c.base || 'auto', text(c.labels),
-    Boolean(c.from_raw), num(c.quality), c.long_edge === null || c.long_edge === undefined ? undefined : num(c.long_edge),
-    Boolean(c.hdr), faces.index, faces.bytes, pic.data, c.w !== undefined ? num(c.w) : pic.w, c.h !== undefined ? num(c.h) : pic.h,
+    text(c.shot), text(c.side), text(c.defaults), text(c.layout), c.base || 'auto',
+    num(c.quality), c.long_edge === null || c.long_edge === undefined ? undefined : num(c.long_edge), Boolean(c.hdr),
+    faces.index, faces.bytes, bytes(c.dat), bytes(c.entry), calib.index, calib.bytes, c.binding || '',
+    bytes(c.dng), bytes(c.jpg_bytes), bytes(c.cube), text(c.space),
+    jpg.data, c.w !== undefined ? num(c.w) : jpg.w, c.h !== undefined ? num(c.h) : jpg.h,
+    prev.data, prev.w, prev.h,
   );
 }
 
 function prepareArgs(c) {
   const args = ['export-run-prepare', '--shot', c.shot, '--quality', String(num(c.quality)), '--base', c.base || 'auto'];
-  for (const [flag, key] of [['--side', 'side'], ['--defaults', 'defaults'], ['--layout', 'layout'], ['--labels', 'labels']]) {
+  for (const [flag, key] of [
+    ['--side', 'side'], ['--defaults', 'defaults'], ['--layout', 'layout'], ['--dat', 'dat'], ['--entry', 'entry'],
+    ['--calib', 'calib'], ['--dng', 'dng'], ['--jpg', 'jpg'], ['--jpg-bytes', 'jpg_bytes'], ['--preview', 'preview'],
+    ['--cube', 'cube'], ['--space', 'space'],
+  ]) {
     if (c[key]) args.push(flag, c[key]);
   }
+  if (c.binding) args.push('--binding', c.binding);
   if (c.long_edge !== null && c.long_edge !== undefined) args.push('--long-edge', String(num(c.long_edge)));
   if (c.hdr) args.push('--hdr');
-  args.push('--from-raw', c.from_raw ? '1' : '0', '--picked', c.picture, '--jpg', c.picture, ...sizeArgs(c), ...fontArgs(c.fonts));
+  args.push(...sizeArgs(c), ...fontArgs(c.fonts));
   return args;
 }
 

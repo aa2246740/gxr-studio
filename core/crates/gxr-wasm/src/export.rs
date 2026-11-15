@@ -7,8 +7,9 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs};
+use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs, SourceFiles};
 use gxr_export::pipeline::{ExportFail, ExportOpts};
+use gxr_export::source::pack_from_index;
 use gxr_frame::{Fonts, fonts_from_pack};
 use gxr_raw::Json;
 use gxr_raw::sha256::sha256_hex;
@@ -85,8 +86,20 @@ pub fn export_plan(shot: &str, side: &str, defaults: &str, base: &str) -> Result
         .map_err(rejected)
 }
 
-/// `export_prepare`. `picture` is `color_image`'s uint8 RGB, or the decoded camera JPG when
-/// `export_plan` says `original`. `long_edge` is `undefined` for the original size.
+/// An empty picture means "not given".
+fn pic(data: &[u8], width: f64, height: f64) -> Option<Picture<'_>> {
+    (!data.is_empty()).then_some(Picture {
+        data,
+        width,
+        height,
+    })
+}
+
+/// `export_prepare`. Source inputs follow export-source: empty bytes mean "not given".
+/// `jpg` is the decoded camera JPG (`createImageBitmap`) and `jpg_bytes` its original file
+/// (hdr-track's capture check); `preview` the decoded embedded preview. The calibration pack is
+/// `calib_index` (`[[name, bytes], ...]`) over `calib_blob`. `long_edge` is `undefined` for
+/// the original size.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn export_prepare(
@@ -95,39 +108,63 @@ pub fn export_prepare(
     defaults: &str,
     layout: &str,
     base: &str,
-    labels: &str,
-    from_raw: bool,
     quality: f64,
     long_edge: Option<f64>,
     hdr: bool,
     font_index: &str,
     font_pack: &[u8],
-    picture: &[u8],
-    width: f64,
-    height: f64,
+    dat: &[u8],
+    entry: &[u8],
+    calib_index: &str,
+    calib_blob: &[u8],
+    binding: &str,
+    dng: &[u8],
+    jpg_bytes: &[u8],
+    cube: &[u8],
+    space: &str,
+    jpg: &[u8],
+    jpg_width: f64,
+    jpg_height: f64,
+    preview: &[u8],
+    preview_width: f64,
+    preview_height: f64,
 ) -> Result<ExportPrepared, JsValue> {
     let fonts = fonts(font_index, font_pack)?;
+    let pack = if calib_index.trim().is_empty() && calib_blob.is_empty() {
+        None
+    } else {
+        Some(pack_from_index(calib_index.as_bytes(), calib_blob).map_err(|e| rejected(e.into()))?)
+    };
+    let files = SourceFiles {
+        dat,
+        entry,
+        pack: pack.as_ref(),
+        binding,
+        dng,
+        jpg_bytes,
+        cube,
+        space,
+    };
     let args = PrepareArgs {
         shot: shot.as_bytes(),
         side: side.as_bytes(),
         defaults: defaults.as_bytes(),
         layout: layout.as_bytes(),
         base,
-        labels: labels.as_bytes(),
-        from_raw,
         opts: ExportOpts {
             quality,
             long_edge,
             hdr,
         },
     };
-    let pic = || Picture {
-        data: picture,
-        width,
-        height,
-    };
-    let (canvas, json, original) =
-        api::prepare(&args, Some(pic()), Some(pic()), &fonts).map_err(rejected)?;
+    let (canvas, json, original) = api::prepare(
+        &args,
+        &files,
+        pic(jpg, jpg_width, jpg_height),
+        pic(preview, preview_width, preview_height),
+        &fonts,
+    )
+    .map_err(rejected)?;
     // The CLI prints the same text with `println!`.
     let json = format!(
         "{}\n",

@@ -172,11 +172,10 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
                 str(quality),
                 *(["--long-edge", str(long_edge)] if long_edge else []),
             ]
-            rgb0, from_raw, labels0 = color_image(render, shot, edit, max_edge=None, quality=quality, lib=lib, full=True)
-            np.save(tmp_path / f"{stem}-picked.npy", rgb0)
+            rgb0, from_raw, _labels0 = color_image(render, shot, edit, max_edge=None, quality=quality, lib=lib, full=True)
             np.save(tmp_path / f"{stem}-jpg.npy", load_jpeg(jpg, None))
-            args += ["--picked", str(tmp_path / f"{stem}-picked.npy"), "--from-raw", "1" if from_raw else "0"]
-            args += ["--labels", _write(tmp_path, f"{stem}-labels.json", labels0), "--jpg", str(tmp_path / f"{stem}-jpg.npy")]
+            # Rust runs export-source's color_image itself: here the camera-JPG branch.
+            args += ["--jpg", str(tmp_path / f"{stem}-jpg.npy"), "--jpg-bytes", str(jpg)]
             canvas, payload = _prepare(tmp_path, stem, args)
             assert canvas is not None, (stem, payload)
             prepared = payload["prepared"]
@@ -231,8 +230,8 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
 
 def test_prepare_errors(tmp_path: Path) -> None:
     np.save(tmp_path / "p.npy", np.zeros((4, 4, 3), dtype=np.uint8))
-    shot = _write(tmp_path, "shot.json", {"name": "R", "width": 4, "height": 4, "files": {"dng": {}}})
-    base = ["--shot", shot, "--picked", str(tmp_path / "p.npy"), "--labels", _write(tmp_path, "l.json", {})]
+    shot = _write(tmp_path, "shot.json", {"name": "R", "width": 4, "height": 4, "files": {"jpg": {}}})
+    base = ["--shot", shot, "--jpg", str(tmp_path / "p.npy")]
     cases = [
         (["--side", _write(tmp_path, "s1.json", {"adjust": {"contrast": "x"}}), "--quality", "95"], "bad_adjust"),
         (["--side", _write(tmp_path, "s2.json", {"stamp": "x"}), "--quality", "95"], "bad_stamp"),
@@ -257,15 +256,13 @@ def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
         np.save(tmp_path / "p.npy", np.full((20, 30, 3), 90, dtype=np.uint8))
         args = [
             "--shot",
-            _write(tmp_path, "shot.json", {"name": "R", "width": 30, "height": 20, "files": {"dng": {}}}),
+            _write(tmp_path, "shot.json", {"name": "R", "width": 30, "height": 20, "files": {"jpg": {}}}),
             "--side",
             _write(tmp_path, "side.json", {"adjust": {"contrast": 5}}),
             "--defaults",
             str(defaults_path(home)),
-            "--picked",
+            "--jpg",
             str(tmp_path / "p.npy"),
-            "--labels",
-            _write(tmp_path, "l.json", {"kind": "original"}),
             "--quality",
             "95",
         ]

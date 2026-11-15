@@ -7,11 +7,17 @@ use gxr_raw::{CoreError, Json};
 
 use super::complete::{Completed, State, checked_rgb, complete_sdr};
 use super::encode::Rgb;
-use super::prepare::{
-    ExportOpts, LayoutFacts, Picked, ShotFacts, parse_finish_edit, plan, prepare_original,
-    prepare_picked,
+use gxr_raw::Image;
+
+use crate::source::{
+    CAMERA_JPG, CalibPack, PREVIEW, Pictures, Request, check_rgb_shape, color_image_json,
 };
-use super::result::{ExportFail, Labels};
+
+use super::prepare::{
+    ExportOpts, FinishEdit, LayoutFacts, Picked, ShotFacts, parse_finish_edit, plan,
+    prepare_original, prepare_picked, val_json,
+};
+use super::result::{ExportFail, Labels, validate_options};
 use super::sizes::output_sizes;
 
 /// A JS number that must be a whole, finite, non-negative size (`u64`).
@@ -29,63 +35,170 @@ pub struct Picture<'a> {
     pub height: f64,
 }
 
-impl Picture<'_> {
-    fn to_rgb(&self) -> Result<Rgb, CoreError> {
-        let w = dim_from_f64(self.width, "宽")?;
-        let h = dim_from_f64(self.height, "高")?;
-        let (wu, hu) = checked_rgb(self.data, w, h)?;
-        let mut data = Vec::new();
-        data.try_reserve_exact(self.data.len())
-            .map_err(|_| CoreError::new("too_big", "图像太大"))?;
-        data.extend_from_slice(self.data);
-        Ok(Rgb {
-            width: wu,
-            height: hu,
-            data,
-        })
-    }
-}
-
-/// Everything `export_prepare` reads besides the pictures.
+/// Everything `export_prepare` reads besides the pictures and the source files.
 pub struct PrepareArgs<'a> {
     pub shot: &'a [u8],
     pub side: &'a [u8],
     pub defaults: &'a [u8],
     pub layout: &'a [u8],
     pub base: &'a str,
-    pub labels: &'a [u8],
-    pub from_raw: bool,
     pub opts: ExportOpts,
 }
 
-/// `export_prepare` for a chosen base picture (`picked`, with `from_raw` and the labels
-/// `color_image` gave) or the untouched camera JPG (`jpg`). Returns the canvas, the prepared
-/// JSON, and whether the untouched camera JPG branch was taken.
+/// What `color_image` (export-source) reads: the camera data, the calibration pack, the
+/// recipe entry the resolve unit gave, the engine binding for the EXIF description, the DNG
+/// bytes, the camera JPG's original bytes (hdr-track's capture check) and a LUT. Empty bytes
+/// mean "not given", as in export-source.
+#[derive(Default)]
+pub struct SourceFiles<'a> {
+    pub dat: &'a [u8],
+    pub entry: &'a [u8],
+    pub pack: Option<&'a CalibPack>,
+    pub binding: &'a str,
+    pub dng: &'a [u8],
+    pub jpg_bytes: &'a [u8],
+    pub cube: &'a [u8],
+    pub space: &'a str,
+}
+
+fn given(b: &[u8]) -> Option<&[u8]> {
+    (!b.is_empty()).then_some(b)
+}
+
+/// A caller's picture as gxr-raw's `Image`, checked with export-source's own shape rule.
+fn image_of(p: &Picture<'_>, what: &str) -> Result<Image<u8>, CoreError> {
+    let w = dim_from_f64(p.width, "宽")?;
+    let h = dim_from_f64(p.height, "高")?;
+    let (wu, hu) = checked_rgb(p.data, w, h)?;
+    check_rgb_shape(hu, wu, 3, p.data.len(), what)?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(p.data.len())
+        .map_err(|_| CoreError::new("too_big", "图像太大"))?;
+    values.extend_from_slice(p.data);
+    Ok(Image {
+        height: hu,
+        width: wu,
+        channels: 3,
+        values,
+    })
+}
+
+/// The edit as export-source reads it (`recipe`, `lut`, the tone fields of `adjust`,
+/// `curves`), from the sidecar `render.params.parse_edit` already validated.
+fn source_edit(edit: &FinishEdit) -> String {
+    let c = &edit.colour;
+    let a = &c.adjust;
+    let adjust = Json::object([
+        ("exposure_ev", Json::Float(a.exposure_ev)),
+        ("warm", Json::Int(a.warm)),
+        ("tint", Json::Int(a.tint)),
+        ("contrast", Json::Int(a.contrast)),
+        ("highlight", Json::Int(a.highlight)),
+        ("shadow", Json::Int(a.shadow)),
+    ]);
+    let pts = |p: &Option<Vec<(f64, f64)>>| match p {
+        None => Json::Null,
+        Some(v) => Json::Array(v.iter().map(|&(x, y)| Json::floats(&[x, y])).collect()),
+    };
+    let curves = match &c.curve {
+        None => Json::Null,
+        Some(cv) => Json::object([
+            ("master", pts(&cv.master)),
+            ("r", pts(&cv.r)),
+            ("g", pts(&cv.g)),
+            ("b", pts(&cv.b)),
+        ]),
+    };
+    let recipe = c
+        .recipe
+        .as_ref()
+        .map_or_else(|| "null".to_string(), |r| r.to_json());
+    let lut = c.lut.as_ref().map_or(Json::Null, |l| Json::str(l.clone()));
+    format!(
+        "{{\"recipe\":{recipe},\"lut\":{},\"adjust\":{},\"curves\":{}}}",
+        lut.render(),
+        adjust.render(),
+        curves.render()
+    )
+}
+
+/// An error JSON text from export-source, kept as it is.
+fn rendered(text: &str) -> ExportFail {
+    match parse_json(text.as_bytes()) {
+        Ok(v) => {
+            let kind = match v.get("error").and_then(|e| e.get("kind")) {
+                Some(Val::Str(k)) => k.clone(),
+                _ => String::new(),
+            };
+            ExportFail::Rendered {
+                kind,
+                json: val_json(&v),
+            }
+        }
+        Err(e) => ExportFail::Core(e),
+    }
+}
+
+/// `export_prepare`: `_plan`, then the untouched camera JPG (`jpg`) or export-source's
+/// `color_image` (RAW recipe, neutral RAW, embedded preview, LUT, edited camera JPG), then
+/// the finish without ink. Returns the canvas, the prepared JSON, and whether the untouched
+/// camera JPG branch was taken.
 pub fn prepare(
     args: &PrepareArgs<'_>,
-    picked: Option<Picture<'_>>,
+    files: &SourceFiles<'_>,
     jpg: Option<Picture<'_>>,
+    preview: Option<Picture<'_>>,
     fonts: &Fonts,
 ) -> Result<(Rgb, Json, bool), ExportFail> {
+    validate_options(args.opts.quality, args.opts.long_edge)?;
     let shot = ShotFacts::parse(&parse_json(args.shot)?)?;
     let (plan, side) = plan(&shot, args.side, args.defaults, args.base)?;
+    let jpg = jpg.map(|p| image_of(&p, CAMERA_JPG)).transpose()?;
     if plan.original {
-        let jpg = jpg.ok_or_else(|| CoreError::new("bad_request", "缺相机 JPG"))?;
-        let p = prepare_original(&shot, jpg.to_rgb()?, args.opts)?;
+        let jpg = jpg.ok_or_else(|| CoreError::new("bad_request", "需要相机 JPG 的像素"))?;
+        let rgb = Rgb {
+            width: jpg.width,
+            height: jpg.height,
+            data: jpg.values,
+        };
+        let p = prepare_original(&shot, rgb, args.opts)?;
         return Ok((p.canvas, p.json, true));
     }
-    let picked = picked.ok_or_else(|| CoreError::new("bad_request", "缺底图"))?;
-    let labels = if args.labels.iter().all(u8::is_ascii_whitespace) {
-        Labels::default()
-    } else {
-        Labels::from_val(&parse_json(args.labels)?)?
+    let preview = preview.map(|p| image_of(&p, PREVIEW)).transpose()?;
+    let edit_text = source_edit(&plan.edit);
+    let req = Request {
+        shot: args.shot,
+        edit: edit_text.as_bytes(),
+        dat: given(files.dat),
+        library: None,
+        entry: given(files.entry),
+        pack: files.pack,
+        binding: files.binding,
     };
-    let layout = LayoutFacts::parse(args.layout)?;
+    let pics = Pictures {
+        dng: given(files.dng),
+        jpg: jpg.as_ref(),
+        preview: preview.as_ref(),
+        cube: given(files.cube),
+        space: (!files.space.is_empty()).then_some(files.space),
+    };
+    let (json, image) = color_image_json(&req, args.base, &pics).map_err(|t| rendered(&t))?;
+    drop(jpg);
+    drop(preview);
+    let v = parse_json(json.as_bytes())?;
+    let from_raw = matches!(v.get("from_raw"), Some(Val::Bool(true)));
+    let labels = Labels::from_val(v.get("labels").unwrap_or(&Val::Obj(Vec::new())))?;
     let picked = Picked {
-        rgb: picked.to_rgb()?,
-        from_raw: args.from_raw,
+        rgb: Rgb {
+            width: image.width,
+            height: image.height,
+            data: image.values,
+        },
+        from_raw,
         labels,
     };
+    let layout = LayoutFacts::parse(args.layout)?;
     let p = prepare_picked(&shot, &plan, &side, picked, &layout, fonts, args.opts)?;
     Ok((p.canvas, p.json, false))
 }
