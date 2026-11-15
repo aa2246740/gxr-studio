@@ -327,10 +327,15 @@ def workers():
     return 1, {'fake': True}
 
 def quiet_for_timing():
+    count = os.environ['PROBE_READY'] + '.calls'
+    calls = (int(open(count).read()) if os.path.exists(count) else 0) + 1
+    open(count, 'w').write(str(calls))
+    if calls <= int(os.environ['HANG_AFTER']):
+        return True, {'idle_cores': 9.0}
     kid = subprocess.Popen(['/bin/sleep', '30'])
     ready = os.environ['PROBE_READY']
     with open(ready + '.tmp', 'w') as handle:
-        handle.write(f'{os.getpid()} {kid.pid}')
+        handle.write(f'{os.getpid()} {kid.pid} {os.getppid()}')
     os.replace(ready + '.tmp', ready)
     time.sleep(30)
     return True, {}
@@ -339,14 +344,19 @@ def quiet_for_timing():
 
 @pytest.mark.skipif(os.environ.get("GXR_RUN_TESTS_INNER") == "1", reason="inner runner")
 @pytest.mark.parametrize(("signum", "expected"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)], ids=["SIGINT", "SIGTERM"])
+@pytest.mark.parametrize("hang_after", [0, 1], ids=["parent-phase", "exclusive-child"])
 def test_a_signal_during_a_hanging_probe_exits_at_once_and_leaves_no_process(
     tmp_path: Path,
-    scratch: Path,
+    scratch: Path,  # noqa: F811
     signum: int,
-    expected: int,  # noqa: F811
+    expected: int,
+    hang_after: int,
 ) -> None:
-    """Sol r3 P2：exclusive 阶段开始前的探针挂 30 秒（不收 seconds，还另起一个同进程组的 sleep 孙进程），预算 600 秒。
-    这时给 runner 发 SIGINT / SIGTERM：1 秒内退出 130 / 143，探针和孙进程都不在了，exclusive 测试没有开始。"""
+    """Sol r3 / r4 P2：探针挂 30 秒（不收 seconds，还另起一个同进程组的 sleep 孙进程），预算 600 秒，这时给 runner 发 SIGINT / SIGTERM。
+
+    parent-phase：exclusive 阶段开始前父进程自己的探针挂住（r3）。exclusive-child：第一次问安静了，exclusive 子进程在用例之前的探针挂住（r4：
+    原来 _reap 要等僵尸的 lockf 等满 1 秒 grace，约 1.3–1.4 秒才退出）。两种都要 1 秒内退出 130 / 143，记下的进程（探针、孙进程、
+    调探针的进程）都不在了，exclusive 测试体没有开始。"""
     from test_run_tests import _alive, _base_opts, _hits, _rcfile, _runner_env, _stop_pid, _write_tree
 
     tree = scratch / "tree"
@@ -356,7 +366,7 @@ def test_a_signal_during_a_hanging_probe_exits_at_once_and_leaves_no_process(
     gate = tmp_path / "hanging_gate.py"
     gate.write_text(_HANGING_GATE, encoding="utf-8")
     ready = tmp_path / "probe.ready"
-    env.update({"GXR_LOADGATE": str(gate), "GXR_QUIET_MAX_WAIT_S": "600", "PROBE_READY": str(ready)})
+    env.update({"GXR_LOADGATE": str(gate), "GXR_QUIET_MAX_WAIT_S": "600", "PROBE_READY": str(ready), "HANG_AFTER": str(hang_after)})
     proc = subprocess.Popen([sys.executable, "-I", str(RUNNER)], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     pids: list[int] = []
     try:
@@ -372,7 +382,9 @@ def test_a_signal_during_a_hanging_probe_exits_at_once_and_leaves_no_process(
         while any(_alive(pid) for pid in pids) and time.monotonic() < gone:  # 孙进程交给 launchd 回收要一点时间
             time.sleep(0.05)
         assert not any(_alive(pid) for pid in pids), (pids, out)
-        assert "exclusive" not in _hits(tmp_path) and "[exclusive]" not in out
+        assert "exclusive" not in _hits(tmp_path)
+        if hang_after:
+            assert "[exclusive] 等机器安静（exclusive 阶段开始前）" not in out and "等机器安静（exclusive 阶段开始前）" in out
     finally:
         if proc.poll() is None:
             proc.kill()

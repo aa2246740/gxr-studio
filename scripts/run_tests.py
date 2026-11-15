@@ -443,6 +443,8 @@ def _reap() -> None:
     deadline = time.monotonic() + _GRACE_S
     pending = [pid for pid, _comm_name in targets] + roots
     while time.monotonic() < deadline and any(_comm(pid) for pid in pending):
+        for child in _children:
+            child.proc.poll()  # 自己的 Popen 退出了就马上回收，不然僵尸会被 _comm 当成还活着，白等满 grace
         time.sleep(0.05)
     for pid, comm in targets:
         if _comm(pid) == comm:
