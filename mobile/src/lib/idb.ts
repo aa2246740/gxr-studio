@@ -83,7 +83,8 @@ export async function savePack(pack: StoredPack): Promise<void> {
   void navigator.storage?.persist?.().catch(() => false);
 }
 
-export async function deletePack(at: number): Promise<void> {
-  if (typeof indexedDB === 'undefined') return;
-  await putIfNewer({ zip: null, name: '', savedAt: at });
+/** 写进墓碑返回 true；已经有更新的记录（没写）返回 false；事务失败抛错。 */
+export async function deletePack(at: number): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return true;
+  return putIfNewer({ zip: null, name: '', savedAt: at });
 }

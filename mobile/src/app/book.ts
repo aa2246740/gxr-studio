@@ -38,6 +38,8 @@ export type UnitState =
   | { state: 'ready' }
   | { state: 'invalid'; message: string };
 
+const DELETE_FAILED = '删除没有成功，校准数据还在。请再试一次。';
+
 /** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
 const MAX_DAT_BYTES = 16 << 20;
 
@@ -61,7 +63,8 @@ export interface BookIo {
   restoreCalib(): Promise<CalibRestored>;
   bake(args: BakeArgs): Promise<Bake>;
   /** 记一个删除时间；比它早的导入不会再写进去。 */
-  deletePack(at: number): Promise<void>;
+  /** 写成功返回 true；已经有更新的记录、没写进去返回 false；事务失败抛错。 */
+  deletePack(at: number): Promise<boolean>;
 }
 
 export class Book {
@@ -183,16 +186,29 @@ export class Book {
     }
   }
 
+  /**
+   * 删除：先让校准的版本加一（取消还在路上的导入），等 IndexedDB 确认墓碑写进去了才清空；
+   * 失败（AbortError 之类，或者已经有更新的记录）就保留原来的包，写一行「删除没有成功」，可以再点一次（Sol r2）。
+   */
   async removePack(): Promise<void> {
-    this.packSeq += 1;
-    this.packBusy = false;
-    this.pack = null;
+    const seq = ++this.packSeq;
+    this.packBusy = true;
     this.packError = null;
-    this.bump();
+    this.changed();
     try {
-      await this.io.deletePack(this.nextStamp());
+      const wrote = await this.io.deletePack(this.nextStamp());
+      if (seq !== this.packSeq) return;
+      if (!wrote) throw new Error('tombstone not written');
+      this.pack = null;
+      this.packError = null;
+      this.bump();
+    } catch {
+      if (seq === this.packSeq) this.packError = DELETE_FAILED;
     } finally {
-      this.changed();
+      if (seq === this.packSeq) {
+        this.packBusy = false;
+        this.changed();
+      }
     }
   }
 

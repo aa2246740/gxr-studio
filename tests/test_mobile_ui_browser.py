@@ -333,8 +333,15 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     _need(MODULES.is_dir(), "mobile/node_modules is missing")
     _need(shutil.which("node") is not None, "node is required")
     _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
-    manifest = tmp_path / "none.json"
-    manifest.write_text("{}", encoding="utf-8")
+    from gxr_studio.camdata import calib_export
+    from support.color_fixtures import entry
+    from support.mobile_ui_calib import pack_files
+
+    # 合成的校准包（只走清单和 SHA-256 的核对，用不到相机数据）。
+    pack = tmp_path / "A.zip"
+    pack.write_bytes(calib_export.zip_bytes(pack_files({"jlaunch": entry(words=0)}), (2026, 11, 15, 9, 0, 0)))
+    manifest = tmp_path / "book.json"
+    manifest.write_text(json.dumps({"pack": str(pack)}), encoding="utf-8")
     result = _drive(BOOK_DRIVER, manifest, tmp_path, "", timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])
@@ -353,6 +360,12 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert cases["idb"] == {"afterLate": None, "afterNew": "b.zip", "cleared": None}
     # 缓存上限：引擎里我们的表不超过 24 张，JS 不超过 16 张，舞台那张一直在。
     assert cases["caps"] == {"engineKeys": 24, "js": 16, "stageKept": True, "stage": True}
+    # Sol r2：删除事务失败时保留校准包、写一行，重开还在；再删一次成功，重开也没了。
+    failed = cases["failedDelete"]
+    assert failed["imported"] is True
+    assert failed["failed"]["pack"] == "A.zip" and "删除没有成功" in failed["failed"]["error"] and failed["failed"]["busy"] is False
+    assert failed["failed"]["reopened"] == "A.zip"
+    assert failed["retried"] == {"pack": None, "error": None, "busy": False, "reopened": None}
     # 配方卡小图：40 张照片之后仍在 32 MiB 以内，打开的那张 11 张都在，挤掉的都关了，清空后一张不剩。
     looks = cases["looks"]
     assert looks["limit"] == 32 << 20 and looks["bytes"] <= looks["limit"], looks

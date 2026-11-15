@@ -3,7 +3,11 @@
 
 import { pathToFileURL } from 'node:url';
 
-const [runtime, url] = process.argv.slice(2);
+import { readFileSync } from 'node:fs';
+
+const [runtime, url, manifestPath] = process.argv.slice(2);
+const manifest = manifestPath ? JSON.parse(readFileSync(manifestPath, 'utf8')) : {};
+const packB64 = manifest.pack ? readFileSync(manifest.pack).toString('base64') : null;
 const { launchPinnedChromium, verifyPinnedRuntime } = await import(pathToFileURL(runtime).href);
 verifyPinnedRuntime();
 const browser = await launchPinnedChromium({ args: [] });
@@ -20,7 +24,7 @@ try {
     const reloaded = await page.waitForEvent('framenavigated', { timeout: 4_000 }).then(() => true).catch(() => false);
     if (!reloaded) break;
   }
-  out.cases = await page.evaluate(async () => {
+  out.cases = await page.evaluate(async (packB64) => {
     const { Book } = await import('/src/app/book.ts');
     const tick = () => new Promise((done) => setTimeout(done, 0));
     const deferred = () => {
@@ -85,6 +89,7 @@ try {
         },
         deletePack: async () => {
           calls.del += 1;
+          return true;
         },
       };
       return { book: new Book(io), pending, calls };
@@ -234,22 +239,54 @@ try {
         mapsEmpty: photos.every((photo) => photo.looks.size === 0),
       };
     }
+    // 10. 真的 Worker 和 IndexedDB：删除事务失败时保留校准包、写一行，重开还在；再点一次删除成功，重开也没了（Sol r2）。
+    if (packB64) {
+      const api = await import('/src/core/api.ts');
+      const idb = await import('/src/lib/idb.ts');
+      const bytes = Uint8Array.from(atob(packB64), (c) => c.charCodeAt(0));
+      const real = () => ({
+        readFile: async () => null,
+        readDat: api.readDat,
+        importCalib: api.importCalib,
+        restoreCalib: api.restoreCalib,
+        bake: api.bakeIn,
+        deletePack: idb.deletePack,
+        watermark: idb.loadWatermark,
+      });
+      const zipFile = (name) => new File([bytes], name, { lastModified: 1 });
+      const fresh = async () => {
+        const book = new Book(real());
+        await book.restore();
+        return book.pack?.name ?? null;
+      };
+      const book = new Book(real());
+      const imported = await book.importPack(zipFile('A.zip'));
+      book.io.deletePack = () => Promise.reject(new DOMException('the transaction was aborted', 'AbortError'));
+      await book.removePack();
+      const failed = { pack: book.pack?.name ?? null, error: book.packError, busy: book.packBusy, reopened: await fresh() };
+      book.io.deletePack = idb.deletePack;
+      await book.removePack();
+      const retried = { pack: book.pack, error: book.packError, busy: book.packBusy, reopened: await fresh() };
+      result.failedDelete = { imported, failed, retried };
+    }
     // 7. IndexedDB：删除留下的时间比晚到的旧导入新，旧导入不写；更新的导入照常写。
     {
       const idb = await import('/src/lib/idb.ts');
       const zip = (n) => new Uint8Array([n]).buffer;
-      await idb.savePack({ zip: zip(1), name: 'a.zip', savedAt: 5 });
-      await idb.deletePack(6);
-      await idb.savePack({ zip: zip(2), name: 'late.zip', savedAt: 5.5 });
+      // 比前面的真实存储场景留下的时间都新（它们用的是 Date.now()）。
+      const t = Date.now() + 1e6;
+      await idb.savePack({ zip: zip(1), name: 'a.zip', savedAt: t + 5 });
+      await idb.deletePack(t + 6);
+      await idb.savePack({ zip: zip(2), name: 'late.zip', savedAt: t + 5.5 });
       const afterLate = await idb.loadPack();
-      await idb.savePack({ zip: zip(3), name: 'b.zip', savedAt: 7 });
+      await idb.savePack({ zip: zip(3), name: 'b.zip', savedAt: t + 7 });
       const afterNew = await idb.loadPack();
-      await idb.deletePack(8);
+      await idb.deletePack(t + 8);
       result.idb = { afterLate, afterNew: afterNew?.name ?? null, cleared: await idb.loadPack() };
     }
 
     return result;
-  });
+  }, packB64);
 } finally {
   await browser.close();
 }
