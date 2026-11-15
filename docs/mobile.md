@@ -185,13 +185,18 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 ### 精度
 
 - 整数、字符串、错误种类和文案：一样。
-- 烘焙表：float32 逐字节相同。套用和 `predict(quantize=True)`：uint8 一样，没有 ±1 余量。
+- 烘焙表（Gate A / Gate B，PORT-WAVE-1 Amendments 1–3）：Python 参考侧通过唯一入口 `color_parity.capture_bake_chroma`（`tests/support/color_oracle_gates.py`）只运行一次生产 `chain.bake_chroma`，在最终 `.astype(np.float32)` cast 前捕获完整 `(ny, nx, 2)` float64 增益网格并返回冻结对象 `CapturedBake`（含 `bk`、`data`、`meta` 与只读 `witness`，涵盖彩色凸包内、凸包外与 `entry[0]==3` 黑白路径；仅对属主线程拦截 `stack`，其他线程直通原生 numpy，同线程嵌套捕获在修改 `chain.np` 前即拒绝，钩子未恰好触发 1 次则失败）；`color_parity.bake_gate(py, rust, model, entry, *, grid_cache=..., host_cache=...)` 只接收 `CapturedBake` 作为 `py`（普通元组/ndarray/异常或错配均直接报错，绝不跳过；无独立 `witness=` 参数，杜绝旧见证配新烘焙），不再重跑 `chain.bake_chroma`，保留字节、`meta`、`ChromaBake` 与整张 float64 见证对顺序 oracle 的 `<= 1e-12·max(1,|a|)` 校验（含 NaN/inf 规则，并覆盖参考运行后恢复 `table.forward` 的 `1e-10` 注入、持续 `table.forward` `1e-10` 注入、黑白/凸包外 `np.ones` `1e-10` 注入、旧捕获配新 Rust 结果、普通元组拒绝与并发 `bake_chroma`/`bake_model` 隔离用例）；**Gate A** 要求 Rust 与顺序 oracle 的 float32 字节**逐位相等**，无掩码；**Gate B** 只允许真实 Python 与 Rust 在 Gate A 通过的格点上差值，并机械归因（oracle 与 Python 批量/单格 float64 值、各自落在 float32 舍入中点的哪一侧、以及恢复宿主 BLAS/FMA/libm 路径后精确复现 Python float32 的负对照；虚部极小近零分量 `|py| < 1e-4` 须满足 float64 `1e-12` 门限且负对照复现 Python）。套用和 `predict(quantize=True)`：uint8 一样，没有 ±1 余量。
+- 覆盖范围（`tests/test_core_parity_color_looks.py`）：日常对拍（`make check` / 默认 pytest）运行合成烘焙对拍、负对照（恢复宿主核与 `1e-10` 注入）、`lut-libm` 边界检查（`atan2`/`hypot` 仅限 `--stream` tag 7/8，文件模式 `--op` 拒绝）以及 3 个回归 Looks（`g158` `M9 STD`、`instax mini`、`QianXi A`，`step=0.375` 默认与各旋钮 ±max）。全量 26 份真实 DAT 扫描（`test_all_real_dats_base_recipes_step_0375` 与 `test_all_real_dats_knobs_minmax_step_2`，在 `jlaunch` ISO 200/1600、`qlaunch` ISO 200、`l08firm` ISO 200 上测全部 builtin、Look、record 与 user 默认与 ±max，约 1 小时）仅在 `GXR_COLOR_DAT_SWEEP=1` 时执行；未设该变量时即使 `GXR_REQUIRE_SAMPLES=1` 也直接跳过。触及 `gxr-color` 或色彩测试的合并门槛显式运行：
+
+```sh
+GXR_COLOR_DAT_SWEEP=1 GXR_REQUIRE_CORE=1 GXR_REQUIRE_SAMPLES=1 uv run --frozen python -I -m pytest -q tests/test_core_parity_color.py tests/test_core_parity_color_looks.py
+```
 - 未量化的 `predict` 和增益：`|a−b| ≤ 1e-12·max(1,|a|)`。
-- 运算都是顺序的乘加，不融合。numpy 在这台机器上会融合，也会用分块的 BLAS；这些差在 float64 的末位，存成 float32 或量化以后不见了（PORT-NOTES §2b）。
+- 运算都是顺序的乘加，不融合。numpy 在这台机器上会融合，也会用分块的 BLAS；这些差在 float64 的末位，跨过 float32 舍入中点时由上面的 Gate B 机械归因（PORT-NOTES §2b）。
 - 复数除法照 numpy 的写法：先选分支，再乘倒数 `1/(br + bi·rat)`，不是直接除。
 - `np.sum` 沿 24 个扇区是成对求和（8 路累加再成树）。
 - `np.interp` 照 numpy 的二分查找（带上一次的猜测）和斜率公式。
-- PCHIP 用 scipy 的导数和幂次求值（不是 Horner）。`ndtr` 是 Cephes，`exp` 等走 `gxr_math`。
+- PCHIP 用 scipy 的导数和幂次求值（不是 Horner）。`ndtr` 是 Cephes，`exp`、`sin`、`cos`、`atan2`、`hypot` 等走 `gxr_math`。
 - 凸包用单调链代替 Qhull。法向量和 Qhull 逐位相同；偏移量 Qhull 用了融合乘加，这里是普通乘加。
 
 ### 错误
