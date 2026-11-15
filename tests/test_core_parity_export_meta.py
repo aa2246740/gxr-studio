@@ -25,6 +25,7 @@ from PIL import Image, TiffImagePlugin
 from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
 from gxr_studio.finish.meta_text import photo_meta
 from gxr_studio.meta import _load_subifd, dng_preview_image, read_dng_meta, read_jpeg_meta
+from support import samples as sample_files
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
 from support.export_meta_cases import (
     make_jpeg_bytes,
@@ -36,9 +37,7 @@ from support.export_meta_cases import (
 )
 from support.wasm_check import PKG, run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
-CAPTURES = _PARENT / "captures"
+CAPTURES = sample_files.captures()
 _CAP = 60
 
 
@@ -59,7 +58,7 @@ REAL_JPGS = _real_files((".JPG", ".JPEG"))
 def _missing(msg: str) -> None:
     if os.environ.get("GXR_REQUIRE_CORE") == "1":
         pytest.fail(msg)
-    pytest.skip(msg)
+    sample_files.missing(msg)
 
 
 # --------------------------------------------------------------------------- Python oracles

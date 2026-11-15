@@ -25,10 +25,12 @@ from gxr_studio.export import (
 from gxr_studio.library.store import sha256_file
 from gxr_studio.raw import NEUTRAL, Renderer, open_dng, render_full
 from raw_support import bayer_scene, build_dng
+from support import samples
+from support.speed import assert_fast
 from support.waiting import wait_job
 from test_api import find, import_all
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = samples.sample_parent()
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
 
 
@@ -218,7 +220,7 @@ def test_api_raw_only_exports_instead_of_409(client, card, settings):
 
 # ---- 真实样本 ---------------------------------------------------------------
 
-needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-50 样本不在本机")
+needs_sample = samples.needs(SAMPLE_DIR.is_dir(), "captures/a12-50 样本不在本机")
 
 
 @needs_sample
@@ -231,7 +233,8 @@ def test_real_raw_only_xpan_export_jpeg_and_png(lib, tmp_path):
     xpan = default_crop("xpan-65-24", 4288, 2848)
     t = time.time()
     res = export_shot(lib, shot, xpan, tmp_path / "o", ExportOptions(None, 90), [])
-    assert (res.width, res.height) == (4288, 1583) and time.time() - t < 15
+    elapsed = time.time() - t
+    assert (res.width, res.height) == (4288, 1583)
     im = Image.open(res.path)
     assert im.size == (4288, 1583) and im.info.get("icc_profile")
     assert im.getexif().get_ifd(0x8769)[34855] == 400
@@ -249,6 +252,7 @@ def test_real_raw_only_xpan_export_jpeg_and_png(lib, tmp_path):
     mine = Image.open(export_shot(lib, shot, None, tmp_path / "o", ExportOptions(800, 90), []).path).convert("L")
     mean_mine, mean_cam = np.asarray(mine.resize((200, 133))).mean(), np.asarray(cam).mean()
     assert 60 < mean_mine < mean_cam
+    assert_fast(elapsed, 15, "全尺寸 RAW 导出 XPAN JPEG（秒）")
 
 
 @needs_sample

@@ -24,6 +24,7 @@ from gxr_studio.devtools import synthetic_card as sy
 from gxr_studio.library import edits, thumbs
 from gxr_studio.library import sidecar as sc
 from gxr_studio.library.store import Library
+from support import samples
 from support.waiting import wait_job, wait_until
 from test_api import find, import_all
 from test_fix_review import assert_plain, make_client, sidecar_of
@@ -79,10 +80,11 @@ def test_thumb_stress_while_camera_data_is_purged_never_500(settings, volumes):
     """3 个线程不停取只有 DNG 的缩略图，另一个线程不停 purge_variants（导入相机数据/标定包时会做）：0 次 500。"""
     import shutil
 
-    if not sy.DEFAULT_SAMPLES.is_dir():
-        pytest.skip("captures/a12-50 样本不在本机")
+    folder = samples.a12_50_samples()
+    if not folder.is_dir():
+        samples.missing("captures/a12-50 样本不在本机")
     card = sy.make_card(volumes, "C", samples=None)
-    for i, dng in enumerate(sorted(sy.DEFAULT_SAMPLES.glob("*.DNG"))[:2]):
+    for i, dng in enumerate(sorted(folder.glob("*.DNG"))[:2]):
         shutil.copy2(dng, card.root / "DCIM/100RICOH" / f"R000090{i}.DNG")  # 只有 DNG 的真实照片
     app = create_app(settings)
     stop = threading.Event()
