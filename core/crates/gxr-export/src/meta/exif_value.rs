@@ -121,6 +121,100 @@ impl PyInt {
     pub fn as_i128(&self) -> Option<i128> {
         self.0.parse::<i128>().ok()
     }
+
+    fn sign_and_abs(&self) -> (bool, &str) {
+        match self.0.strip_prefix('-') {
+            Some(abs) => (true, abs),
+            None => (false, self.0.as_str()),
+        }
+    }
+
+    /// Exact arbitrary-precision integer multiplication (`self * other`) matching Python `int * int`.
+    pub fn try_mul(&self, other: &Self) -> Option<Self> {
+        use std::fmt::Write;
+
+        if self.is_zero() || other.is_zero() {
+            return Some(Self::from_i64(0));
+        }
+        let (neg_a, abs_a) = self.sign_and_abs();
+        let (neg_b, abs_b) = other.sign_and_abs();
+        let limbs_a = decimal_to_base1e9(abs_a)?;
+        let limbs_b = decimal_to_base1e9(abs_b)?;
+        let res_len = limbs_a.len().checked_add(limbs_b.len())?;
+        let mut res = Vec::new();
+        res.try_reserve_exact(res_len).ok()?;
+        res.resize(res_len, 0u32);
+
+        const BASE: u64 = 1_000_000_000;
+        for (i, &ai) in limbs_a.iter().enumerate() {
+            let mut carry: u64 = 0;
+            let a64 = u64::from(ai);
+            for (j, &bj) in limbs_b.iter().enumerate() {
+                let prod = a64 * u64::from(bj) + u64::from(res[i + j]) + carry;
+                res[i + j] = (prod % BASE) as u32;
+                carry = prod / BASE;
+            }
+            if carry != 0 {
+                let sum = u64::from(res[i + limbs_b.len()]) + carry;
+                res[i + limbs_b.len()] = u32::try_from(sum).ok()?;
+            }
+        }
+        while res.last() == Some(&0) {
+            res.pop();
+        }
+        let Some(top) = res.pop() else {
+            return Some(Self::from_i64(0));
+        };
+        let neg = neg_a ^ neg_b;
+        let top_str = top.to_string();
+        let extra = res.len().checked_mul(9)?;
+        let cap = usize::from(neg)
+            .checked_add(top_str.len())?
+            .checked_add(extra)?;
+        let mut out = String::new();
+        out.try_reserve_exact(cap).ok()?;
+        if neg {
+            out.push('-');
+        }
+        out.push_str(&top_str);
+        for &limb in res.iter().rev() {
+            let _ = write!(&mut out, "{limb:09}");
+        }
+        Some(Self(out))
+    }
+}
+
+fn decimal_to_base1e9(abs: &str) -> Option<Vec<u32>> {
+    let n_limbs = abs.len().div_ceil(9);
+    let mut limbs = Vec::new();
+    limbs.try_reserve_exact(n_limbs).ok()?;
+    let mut end = abs.len();
+    while end > 0 {
+        let start = end.saturating_sub(9);
+        let chunk = abs[start..end].parse::<u32>().ok()?;
+        limbs.push(chunk);
+        end = start;
+    }
+    Some(limbs)
+}
+
+impl Ord for PyInt {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (neg_a, abs_a) = self.sign_and_abs();
+        let (neg_b, abs_b) = other.sign_and_abs();
+        match (neg_a, neg_b) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => abs_a.len().cmp(&abs_b.len()).then_with(|| abs_a.cmp(abs_b)),
+            (true, true) => abs_b.len().cmp(&abs_a.len()).then_with(|| abs_b.cmp(abs_a)),
+        }
+    }
+}
+
+impl PartialOrd for PyInt {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl std::fmt::Display for PyInt {
@@ -511,5 +605,26 @@ mod tests {
             Some("007fff")
         );
         assert_eq!(bytes_to_hex(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+    }
+
+    #[test]
+    fn pyint_ordering_and_arbitrary_precision_mul() {
+        let p2_64 = PyInt::from_f64_trunc(18_446_744_073_709_551_616.0).unwrap();
+        let neg_2_64 = PyInt::from_f64_trunc(-18_446_744_073_709_551_616.0).unwrap();
+        let p2_128 = p2_64.try_mul(&p2_64).unwrap();
+        assert_eq!(p2_128.as_str(), "340282366920938463463374607431768211456");
+        assert_eq!(neg_2_64.try_mul(&neg_2_64).unwrap(), p2_128);
+        assert_eq!(
+            neg_2_64.try_mul(&PyInt::from_i64(2)).unwrap().as_str(),
+            "-36893488147419103232"
+        );
+        assert_eq!(
+            p2_64.try_mul(&PyInt::from_i64(0)).unwrap(),
+            PyInt::from_i64(0)
+        );
+        assert!(p2_128 > p2_64);
+        assert!(p2_64 > PyInt::from_i64(0));
+        assert!(PyInt::from_i64(0) > neg_2_64);
+        assert!(neg_2_64 < PyInt::from_i64(-10));
     }
 }

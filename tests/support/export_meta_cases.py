@@ -646,7 +646,46 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
         make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 12, 1, struct.pack("<d", 1e20))])),
         "jpg",
     )
+
+    # 15. Sol r3 arbitrary-precision preview SubIFD area (2^64 * 2^64, 1e100 * 1, (-2^64)^2, 8 * 6)
+    for pv_name, dims in [
+        ("preview-area-2p64.dng", [(float(2**64), float(2**64))]),
+        ("preview-area-1e100.dng", [(1e100, 1.0)]),
+        ("preview-area-neg2p64.dng", [(-float(2**64), -float(2**64))]),
+        ("preview-area-8x6.dng", [(8.0, 6.0)]),
+        ("preview-area-neg-pos.dng", [(-float(2**64), 2.0)]),
+        ("preview-area-2p64-over-huge.dng", [(float(2**64), 1.0), (float(2**64), float(2**64))]),
+    ]:
+        cases[pv_name] = (_build_double_area_preview_dng(base_tiff("<"), valid_pv, dims), "dng")
     return cases
+
+
+def _build_double_area_preview_dng(
+    ifd0_base: list[tuple[int, int, int, bytes]],
+    pv_bytes: bytes,
+    sub_dims: list[tuple[float, float]],
+) -> bytes:
+    def make_specs(off: int) -> list[list[tuple[int, int, int, bytes]]]:
+        specs = []
+        cur_off = off
+        for dw, dh in sub_dims:
+            specs.append(
+                [
+                    (254, 4, 1, struct.pack("<I", 1)),
+                    (256, 12, 1, struct.pack("<d", dw)),
+                    (257, 12, 1, struct.pack("<d", dh)),
+                    (259, 3, 1, struct.pack("<H", 7)),
+                    (273, 4, 1, struct.pack("<I", cur_off)),
+                    (279, 4, 1, struct.pack("<I", len(pv_bytes))),
+                ]
+            )
+            cur_off += len(pv_bytes)
+        return specs
+
+    stub = make_tiff_doc(ifd0_base, subifd_list=make_specs(0))
+    doc = make_tiff_doc(ifd0_base, subifd_list=make_specs(len(stub)))
+    assert len(doc) == len(stub)
+    return doc + pv_bytes * len(sub_dims)
 
 
 def nonfinite_edge_cases() -> dict[str, tuple[bytes, str]]:

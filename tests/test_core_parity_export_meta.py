@@ -516,7 +516,9 @@ def test_synthetic_pillow_edges_and_damaged_files(tmp_path: Path) -> None:
             _assert_no_core_error(code, got_pv, f"{filename}::preview")
             py_range = _py_select_preview_range(path)
             py_pv = dng_preview_image(path, embedded_only=True)
-            _assert_preview_equal(got_pv, py_range, py_pv, blob, filename)
+            picked = _assert_preview_equal(got_pv, py_range, py_pv, blob, filename)
+            if filename.startswith("preview-area-") and filename != "preview-area-neg-pos.dng":
+                assert picked, filename
 
 
 def test_photo_prefers_jpg_when_both_present(tmp_path: Path) -> None:
