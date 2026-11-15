@@ -501,3 +501,36 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert looks["openKept"] == 11 and looks["newest"] == 11
     assert looks["evictedClosed"] and not looks["closedButListed"]
     assert looks["afterClear"] == 0 and looks["allClosed"] and looks["mapsEmpty"]
+
+
+HIST_DRIVER = REPO / "tests" / "support" / "mobile_ui_hist_retry.mjs"
+
+
+def test_mobile_ui_hist_retry_yields(tmp_path: Path) -> None:
+    """Sol r6 P1：换片时上一张的直方图还在读回，histogram() 给 null。重试排到下一帧，页面定时器照常跑，几帧内画上。"""
+    _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
+    _need(MODULES.is_dir(), "mobile/node_modules is missing")
+    _need(shutil.which("node") is not None, "node is required")
+    _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
+    manifest = tmp_path / "none.json"
+    manifest.write_text("{}", encoding="utf-8")
+    result = _drive(HIST_DRIVER, manifest, tmp_path, "", timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["pageErrors"] == []
+    cases = report["cases"]
+    # Sol 的 hist-scheduler 探针：修好以前 5000 次重试里定时器一次都没轮到。
+    first = cases["busyThenFree"]
+    assert first["guardHit"] is False and first["histDrawn"] == 1, first
+    # 定时器和下一帧谁先由浏览器排，所以是「一两次以内」，不是恰好第一次。
+    assert first["timerAtCalls"] is not None and first["timerAtCalls"] <= 2, first
+    assert first["calls"] <= 4 and first["drawnAtFrame"] is not None and first["drawnAtFrame"] <= 5, first
+    # 一直忙：每帧最多问一次，定时器照常跑。
+    busy = cases["alwaysBusy"]
+    assert busy["guardHit"] is False and busy["maxPerFrame"] <= 1, busy
+    assert busy["calls"] <= busy["frames"] + 1 and busy["ticks"] > 0, busy
+    # 换片以后排着的那次取消了。
+    assert cases["afterDestroy"] == {"more": 0}
+    # 连着拿不到 300 帧就停；下一次调整重新开始并画上。
+    capped = cases["capped"]
+    assert capped == {"stoppedAt": 300, "histDrawn": 1, "guardHit": False}, capped

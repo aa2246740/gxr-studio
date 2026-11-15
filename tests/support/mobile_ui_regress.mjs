@@ -553,21 +553,36 @@ const CASES = {
           ]).then((text) => stage(`gpu: watchdog ${text}`), (err) => stage(`gpu: watchdog error ${err?.message ?? err}`));
         }, 20_000);
         watchdog.unref(); // 测试失败抛出时不让它拖住驱动退出
-        await swipeBack();
-        stage('gpu: swipe gesture sent');
-        await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 }).catch(async (err) => {
-          const state = await page.evaluate(() => ({
-            title: document.querySelector('.editor .nav b')?.textContent,
-            screen: document.querySelector('.app')?.dataset.screen,
-            label: document.querySelector('.editor .lbl')?.textContent,
-            overlays: [...document.querySelectorAll('.scrim, .ms, .dlg')].map((n) => n.className),
-            cells: [...document.querySelectorAll('.cell')].map((n) => n.dataset.id),
-          }));
-          throw new Error(`${err.message}\nwant=${first.title} second=${second.title}\n${JSON.stringify(state)}`);
-        });
-        stage('gpu: title is first again');
-        await waitCards();
-        clearInterval(watchdog);
+        try {
+          await swipeBack();
+          stage('gpu: swipe gesture sent');
+          await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 }).catch(async (err) => {
+            // Sol r6 P2：页面卡死时诊断的 evaluate 也不会回来。Node 这边单独给 5 秒，读不到就写「页面无回应」，
+            // 照样抛出原来那个 30 秒超时，不让诊断把最初的失败吞掉。
+            let late;
+            const state = await Promise.race([
+              page.evaluate(() => ({
+                title: document.querySelector('.editor .nav b')?.textContent,
+                screen: document.querySelector('.app')?.dataset.screen,
+                label: document.querySelector('.editor .lbl')?.textContent,
+                overlays: [...document.querySelectorAll('.scrim, .ms, .dlg')].map((n) => n.className),
+                cells: [...document.querySelectorAll('.cell')].map((n) => n.dataset.id),
+              })),
+              new Promise((done) => {
+                late = setTimeout(() => done('页面无回应'), 5000);
+              }),
+            ])
+              .catch((probe) => `页面状态读不到：${probe?.message ?? probe}`)
+              .finally(() => clearTimeout(late));
+            err.message = `${err.message}\nwant=${first.title} second=${second.title}\n${typeof state === 'string' ? state : JSON.stringify(state)}`;
+            stage(`gpu: title wait failed ${typeof state === 'string' ? state : 'state read'}`);
+            throw err;
+          });
+          stage('gpu: title is first again');
+          await waitCards();
+        } finally {
+          clearInterval(watchdog);
+        }
         const calls = await page.evaluate(() => window.__thumbCalls);
         stage('gpu: back on first');
         return { labels, diff, callsAfterFirst, calls, first, second, errors };

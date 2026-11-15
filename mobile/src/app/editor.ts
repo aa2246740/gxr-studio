@@ -24,6 +24,12 @@ const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number
   { key: 'vignette', label: '暗角', min: -100, max: 100, step: 1 },
 ];
 
+/**
+ * 显卡在忙（上一张的直方图还在读回）时 `histogram()` 立刻给 null，于是每帧再试一次。
+ * 连着这么多帧都拿不到（显卡丢了之类）就停，下一次调整再开始，免得一直每帧去问。
+ */
+const HIST_MAX_MISSES = 300;
+
 const TABS = ['配方', '调整', '裁剪', '边框', 'LUT', '曲线'] as const;
 
 function formatKnob(key: keyof Knobs, value: number): string {
@@ -63,6 +69,9 @@ export class EditorView {
   private histBusy = false;
   private histAgain = false;
   private histDrawn = -1;
+  /** 排在下一帧的重试和连着拿不到的次数。 */
+  private histFrame = 0;
+  private histMisses = 0;
   private clipLow: HTMLElement | null = null;
   private clipHigh: HTMLElement | null = null;
   private input: HTMLInputElement | null = null;
@@ -111,6 +120,8 @@ export class EditorView {
     this.holding = false;
     this.wantNeighbor = '';
     this.histAgain = false;
+    if (this.histFrame) cancelAnimationFrame(this.histFrame);
+    this.histFrame = 0;
     this.shell.dataset.drag = '0';
     this.sharp?.close();
     this.sharp = null;
@@ -347,8 +358,9 @@ export class EditorView {
    * 要一次直方图：RAW 第一帧、换片、每次调整之后。正在数就只记一笔，数完看内容版本变没变再补一次，
    * 所以拖滑块时自然合并，停下来以后不会一直读显卡。
    */
-  private requestHist(): void {
+  private requestHist(retry = false): void {
     if (!this.engine || this.mode === 'still') return;
+    if (!retry) this.histMisses = 0;
     if (this.histBusy) {
       this.histAgain = true;
       return;
@@ -356,24 +368,37 @@ export class EditorView {
     this.histBusy = true;
     this.histAgain = false;
     const token = this.token;
-    void this.countHist(token).finally(() => {
-      this.histBusy = false;
-      if (token !== this.token) return;
-      const engine = this.engine;
-      if (this.histAgain || (engine && engine.contentVersion !== this.histDrawn)) this.requestHist();
-    });
+    void this.countHist(token)
+      .catch(() => false)
+      .then((drawn) => {
+        this.histBusy = false;
+        if (token !== this.token) return;
+        this.histMisses = drawn ? 0 : this.histMisses + 1;
+        const engine = this.engine;
+        if (!this.histAgain && !(engine && engine.contentVersion !== this.histDrawn)) return;
+        if (this.histMisses >= HIST_MAX_MISSES) return;
+        // 排到下一帧再数。不能在这里直接再调：显卡忙时 histogram() 马上给 null，一串微任务接着跑，
+        // 页面的定时器、显卡回调和手势都轮不到，换片时整页就卡死了。
+        if (this.histFrame) cancelAnimationFrame(this.histFrame);
+        this.histFrame = requestAnimationFrame(() => {
+          this.histFrame = 0;
+          if (token === this.token) this.requestHist(true);
+        });
+      });
   }
 
-  private async countHist(token: number): Promise<void> {
+  /** 数到并画上了才是 true；显卡在忙、换了片都是 false。 */
+  private async countHist(token: number): Promise<boolean> {
     const engine = this.engine;
-    if (!engine) return;
+    if (!engine) return false;
     // 等这一帧画完，成片纹理才是新的。
     for (let i = 0; i < 30 && engine.pending; i++) await new Promise((done) => requestAnimationFrame(done));
-    if (token !== this.token) return;
+    if (token !== this.token) return false;
     const data = await engine.histogram();
-    if (!data || token !== this.token) return;
+    if (!data || token !== this.token) return false;
     this.histDrawn = data.version;
     this.drawHist(data.counts, data.samples, data.version);
+    return true;
   }
 
   private drawHist(counts: Uint32Array, samples: number, version: number): void {
