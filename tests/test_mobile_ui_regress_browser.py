@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from conftest import REAL_HOME
+from support import samples
 from test_mobile_ui_browser import MODULES, PKG, RUNTIME, SAMPLES, _free_port, _need, _pairs, _stop
 
 pytestmark = pytest.mark.browser_serial
@@ -25,6 +26,7 @@ DRIVER = REPO / "tests" / "support" / "mobile_ui_regress.mjs"
 
 
 def _prerequisites(files: list[Path]) -> None:
+    samples.need_sample(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
     _need(MODULES.is_dir(), "mobile/node_modules is missing")

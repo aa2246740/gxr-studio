@@ -18,12 +18,13 @@ import pytest
 
 from conftest import REAL_HOME
 from gpu_support import find_chrome
+from support import samples
 from test_mobile_shell_browser import core_prerequisite
 
 pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
-PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(REPO.parent)))
+PARENT = samples.sample_parent()
 SAMPLES = PARENT / "captures/a12-50/2026-10-19/stage2c-first-run"
 PKG = REPO / "mobile" / "src" / "wasm-pkg" / "gxr_wasm.js"
 MODULES = REPO / "mobile" / "node_modules"
@@ -133,6 +134,7 @@ def _drive(driver: Path, manifest: Path, tmp_path: Path, query: str, timeout: in
 def test_mobile_ui_pick_grid_edit_and_bad_file(tmp_path: Path) -> None:
     files = _pairs()
     # 地基用的那份样本只有 4 对。够 6 对就取 6 对，不够就用现有的。
+    samples.need_sample(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
     _need(MODULES.is_dir(), "mobile/node_modules is missing")
@@ -162,8 +164,8 @@ def test_mobile_ui_pick_grid_edit_and_bad_file(tmp_path: Path) -> None:
 RECIPES_DRIVER = REPO / "tests" / "support" / "mobile_ui_recipes_browser.mjs"
 # 相机配方文件用本机已有的夹具（和 camdata 的对拍一样从上层项目读，不进仓库）：有 Looks 和用户配方的 g158 优先。
 DATS = (
-    PARENT / "firmware/package_v310_g158/local/SD_ROOT/GXRCE.DAT",
-    PARENT / "firmware/package_v36_g127/local/SD_ROOT/GXRCE.DAT",
+    samples.sample_parent() / "firmware/package_v310_g158/local/SD_ROOT/GXRCE.DAT",
+    samples.sample_parent() / "firmware/package_v36_g127/local/SD_ROOT/GXRCE.DAT",
 )
 
 
@@ -250,8 +252,10 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
 
     files = _pairs()
     dat = next((path for path in DATS if path.is_file()), None)
-    _need(len(files) >= 4, f"need two DNG+JPG pairs in {SAMPLES}")
-    _need(dat is not None, "no local GXRCE.DAT fixture (GXR_STUDIO_TEST_PARENT)")
+    if len(files) < 4:
+        samples.missing(f"need two DNG+JPG pairs in {SAMPLES}")
+    if dat is None:
+        samples.missing("no local GXRCE.DAT fixture (GXR_STUDIO_TEST_PARENT)")
     _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
     _need(MODULES.is_dir(), "mobile/node_modules is missing")
     _need(shutil.which("node") is not None, "node is required")

@@ -28,12 +28,13 @@ from gxr_studio.lut import fit, scene, spaces
 from gxr_studio.lut.cube import Cube, write_cube
 from gxr_studio.render.params import RecipeSel
 from gxr_studio.render.recipes import CameraData
+from support import samples as sample_files
 from support.waiting import wait_until
 from test_api import find, import_all
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = sample_files.sample_parent()
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
-needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-50 样本不在本机")
+needs_sample = sample_files.needs(SAMPLE_DIR.is_dir(), "captures/a12-50 样本不在本机")
 LUT_PKG = Path(__file__).resolve().parents[1] / "src/gxr_studio/lut"
 
 
@@ -227,7 +228,7 @@ def test_scene_colour_matches_research_dng_colour():
 
     src = ROOT / "research/color_table_fit/dng_scene.py"
     if not src.is_file():
-        pytest.skip("研究目录不在本机")
+        sample_files.missing("研究目录不在本机")
     spec = importlib.util.spec_from_file_location("research_dng_scene", src)
     mod = importlib.util.module_from_spec(spec)
     import sys

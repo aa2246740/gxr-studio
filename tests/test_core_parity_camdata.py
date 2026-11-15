@@ -17,12 +17,12 @@ from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import intake, knob_table, store
 from gxr_studio.camdata.recipe_tags import parse_recipe_tag
 from gxr_studio.engine import menu as py_menu
+from support import samples
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.fake_card import fake_dat, fake_gxrfx
 from support.wasm_check import PKG, run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent))).resolve()
+_PARENT = samples.sample_parent()
 
 
 def _reseal(blob: bytes) -> bytes:
