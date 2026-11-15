@@ -332,6 +332,136 @@ def test_wasm_numbers_hdr_exports(tmp_path: Path) -> None:
             c[f"cli_{field}"] = cli_dim(v)
             cases.append(c)
 
+    # Empty shapes where one axis is 0 and the other is small or >= 2**32:
+    # WASM must follow the exact native CoreError order instead of failing early on wasm32 usize conversion.
+    empty_plane = np.zeros((0, 0), dtype=np.float32)
+    empty_mask = np.zeros((0, 0), dtype=np.uint8)
+    empty_fft = np.zeros((0, 4, 2), dtype=np.float32)
+    np.save(folder / "empty_plane.npy", empty_plane)
+    np.save(folder / "empty_mask.npy", empty_mask)
+    np.save(folder / "empty_fft.npy", empty_fft)
+
+    zero_shapes: tuple[tuple[int, int], ...] = (
+        (0, 0),
+        (0, 32),
+        (32, 0),
+        (U32_WRAP - 1, 0),
+        (U32_WRAP, 0),
+        (U32_WRAP + 1, 0),
+        (2**53, 0),
+        (0, U32_WRAP - 1),
+        (0, U32_WRAP),
+        (0, U32_WRAP + 1),
+        (0, 2**53),
+    )
+    for idx, (h, w) in enumerate(zero_shapes):
+        cases.append(
+            {
+                "fn": "hdr_align",
+                "label": f"align_empty_{idx}_{h}x{w}",
+                "sdr": "empty_plane.npy",
+                "raw": "empty_plane.npy",
+                "sdr_h": h,
+                "sdr_w": w,
+                "raw_h": h,
+                "raw_w": w,
+            }
+        )
+        for p_tag, params in (("default", ""), ("bad_params", "[]")):
+            cases.append(
+                {
+                    "fn": "hdr_gain",
+                    "label": f"gain_empty_{p_tag}_{idx}_{h}x{w}",
+                    "sdr": "empty_plane.npy",
+                    "raw": "empty_plane.npy",
+                    "clip": "empty_mask.npy",
+                    "h": h,
+                    "w": w,
+                    "params": params,
+                }
+            )
+        cases.append(
+            {
+                "fn": "hdr_phase_plane",
+                "label": f"pc_empty_{idx}_{h}x{w}",
+                "a": "empty_plane.npy",
+                "b": "empty_plane.npy",
+                "h": h,
+                "w": w,
+            }
+        )
+    cases.append(
+        {
+            "fn": "hdr_align",
+            "label": "align_mixed_empty_right",
+            "sdr": "plane.npy",
+            "raw": "empty_plane.npy",
+            "sdr_h": 32,
+            "sdr_w": 32,
+            "raw_h": U32_WRAP + 1,
+            "raw_w": 0,
+        }
+    )
+    cases.append(
+        {
+            "fn": "hdr_align",
+            "label": "align_mixed_empty_left",
+            "sdr": "empty_plane.npy",
+            "raw": "plane.npy",
+            "sdr_h": 0,
+            "sdr_w": U32_WRAP + 1,
+            "raw_h": 32,
+            "raw_w": 32,
+        }
+    )
+    cases.append(
+        {
+            "fn": "hdr_gain",
+            "label": "gain_empty_bad_clip_len",
+            "sdr": "empty_plane.npy",
+            "raw": "empty_plane.npy",
+            "clip": "mask.npy",
+            "h": U32_WRAP + 1,
+            "w": 0,
+        }
+    )
+    for inverse in (False, True):
+        for two_d in (False, True):
+            for idx, rows in enumerate((0, 1, U32_WRAP - 1, U32_WRAP, U32_WRAP + 1, 2**53)):
+                cases.append(
+                    {
+                        "fn": "hdr_fft",
+                        "label": f"fft_empty_n0_inv{int(inverse)}_2d{int(two_d)}_{idx}",
+                        "input": "empty_fft.npy",
+                        "rows": rows,
+                        "n": 0,
+                        "inverse": inverse,
+                        "two_d": two_d,
+                    }
+                )
+            cases.append(
+                {
+                    "fn": "hdr_fft",
+                    "label": f"fft_empty_rows0_n4_inv{int(inverse)}_2d{int(two_d)}",
+                    "input": "empty_fft.npy",
+                    "rows": 0,
+                    "n": 4,
+                    "inverse": inverse,
+                    "two_d": two_d,
+                }
+            )
+            cases.append(
+                {
+                    "fn": "hdr_fft",
+                    "label": f"fft_empty_rows0_nbig_inv{int(inverse)}_2d{int(two_d)}",
+                    "input": "empty_fft.npy",
+                    "rows": 0,
+                    "n": U32_WRAP + 1,
+                    "inverse": inverse,
+                    "two_d": two_d,
+                }
+            )
+
     (folder / "numeric_cases.json").write_text(json.dumps(cases), encoding="utf-8")
     proc = run_area("hdr", [folder], tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr

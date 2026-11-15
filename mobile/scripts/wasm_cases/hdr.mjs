@@ -229,25 +229,31 @@ export function cases(inputs) {
           const w = jsNum(spec.w);
           const ch = spec.cli_h ?? h;
           const cw = spec.cli_w ?? w;
+          const cliArgs = [
+            'hdr-gain',
+            '--sdr',
+            path(spec.sdr),
+            '--raw',
+            path(spec.raw),
+            '--clip',
+            path(spec.clip),
+            '--sdr-shape',
+            String(ch),
+            String(cw),
+            '--raw-shape',
+            String(ch),
+            String(cw),
+            '--out',
+            join(dir, `num-gain-${out.length}.npy`),
+          ];
+          if (spec.params !== undefined && spec.params !== '') {
+            const paramsPath = join(dir, `num-params-${out.length}.json`);
+            writeFileSync(paramsPath, spec.params);
+            cliArgs.push('--params', paramsPath);
+          }
           out.push({
             label: `${folder}::num_${spec.label}`,
-            cliArgs: [
-              'hdr-gain',
-              '--sdr',
-              path(spec.sdr),
-              '--raw',
-              path(spec.raw),
-              '--clip',
-              path(spec.clip),
-              '--sdr-shape',
-              String(ch),
-              String(cw),
-              '--raw-shape',
-              String(ch),
-              String(cw),
-              '--out',
-              join(dir, `num-gain-${out.length}.npy`),
-            ],
+            cliArgs,
             wasm: (mod) => {
               const g = mod.hdr_gain(
                 readNpy(path(spec.sdr)).values,
@@ -265,21 +271,25 @@ export function cases(inputs) {
           const n = jsNum(spec.n);
           const crows = spec.cli_rows ?? rows;
           const cn = spec.cli_n ?? n;
+          const inverse = Boolean(spec.inverse);
+          const twoD = Boolean(spec.two_d);
+          const cliArgs = [
+            'hdr-fft',
+            '--in',
+            path(spec.input),
+            '--inverse',
+            inverse ? '1' : '0',
+            '--in-shape',
+            String(crows),
+            String(cn),
+            '--out',
+            join(dir, `num-fft-${out.length}.npy`),
+          ];
+          if (twoD) cliArgs.push('--two-d');
           out.push({
             label: `${folder}::num_${spec.label}`,
-            cliArgs: [
-              'hdr-fft',
-              '--in',
-              path(spec.input),
-              '--inverse',
-              '0',
-              '--in-shape',
-              String(crows),
-              String(cn),
-              '--out',
-              join(dir, `num-fft-${out.length}.npy`),
-            ],
-            wasm: (mod) => framed(rows, n, mod.hdr_fft(readNpy(path(spec.input)).values, rows, n, false, false)),
+            cliArgs,
+            wasm: (mod) => framed(rows, n, mod.hdr_fft(readNpy(path(spec.input)).values, rows, n, inverse, twoD)),
           });
         } else if (spec.fn === 'hdr_phase_plane') {
           const h = jsNum(spec.h);
