@@ -39,12 +39,12 @@ from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import (
     check,
     cli_ok,
-    error_kind,
     mtime_args,
     note,
+    produced,
     real_pairs,
-    redact_failures,
     same_file_redacted,
+    same_kind,
     same_pixels,
     same_redacted,
 )
@@ -53,13 +53,11 @@ from support.samples import missing
 
 
 @pytest.fixture(autouse=True)
-@redact_failures
 def _cli() -> None:
     require_cli()
 
 
 @pytest.fixture
-@redact_failures
 def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     """See ``test_core_parity_export_pipeline.pinned_icc``: only header bytes 24..36 differ."""
     np.save(tmp_path / "icc.npy", np.zeros((8, 8, 3), dtype=np.uint8))
@@ -147,7 +145,6 @@ def _write(tmp: Path, name: str, obj: Any) -> str:
     return str(path)
 
 
-@redact_failures
 def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, settings: Any, pinned_icc: bytes) -> None:
     pairs = real_pairs(18)
     if not pairs:
@@ -187,7 +184,7 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             # Rust runs export-source's color_image itself: here the camera-JPG branch.
             args += ["--jpg", str(tmp_path / f"{stem}-jpg.npy"), "--jpg-bytes", str(jpg)]
             canvas, payload = _prepare(tmp_path, stem, args)
-            check(canvas is not None, f"{stem}: prepare failed: {error_kind(payload)}")
+            produced(canvas, payload, "prepare")
             prepared = payload["prepared"]
             same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
 
@@ -232,17 +229,16 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             fed = canvas if no_ink else py_rgb
             same_redacted(prepared["state"]["source"], "jpg", f"{stem} source")
             got, done = _complete(tmp_path, stem, fed, prepared["state"], jpg)
-            check(got is not None, f"{stem}: complete failed: {error_kind(done)}")
+            produced(got, done, "complete")
             same_file_redacted(got, py_file, stem)
             same_redacted(done["result"]["file_name"], res.path.name, f"{stem} file name")
             for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
                 same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
             tally["no_ink" if no_ink else "ink"] += 1
     note("e2e camera-jpg", tally)
-    check(tally["original"] >= 1 and tally["ink"] >= 3 and tally["no_ink"] >= 3, f"too few cases: {tally}")
+    check(tally["original"] >= 1 and tally["ink"] >= 3 and tally["no_ink"] >= 3, "too few cases")
 
 
-@redact_failures
 def test_prepare_errors(tmp_path: Path) -> None:
     np.save(tmp_path / "p.npy", np.zeros((4, 4, 3), dtype=np.uint8))
     shot = _write(tmp_path, "shot.json", {"name": "R", "width": 4, "height": 4, "files": {"jpg": {}}})
@@ -256,10 +252,10 @@ def test_prepare_errors(tmp_path: Path) -> None:
     ]
     for extra, kind in cases:
         canvas, payload = _prepare(tmp_path, kind, base + extra)
-        check(canvas is None and payload["error"]["kind"] == kind, f"expected {kind}, got {error_kind(payload)}")
+        check(canvas is None, "expected an error")
+        same_kind(payload, kind, "prepare error")
 
 
-@redact_failures
 def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
     """Broken stored defaults give the factory frame and stamp, as ``serve.load_defaults`` does."""
     from gxr_studio.finish.serve import defaults_path
@@ -283,7 +279,7 @@ def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
             "95",
         ]
         canvas, payload = _prepare(tmp_path, f"d{i}", args)
-        check(canvas is not None, f"prepare failed: {error_kind(payload)}")
+        produced(canvas, payload, "prepare")
         want_frame = None if frame.style == "none" else frame_layout(30, 20, frame, {}, FontMetrics(PilFonts()))
         got_frame = payload["prepared"]["frame"]
         same_redacted(got_frame, None if want_frame is None else json.loads(json.dumps(want_frame.to_json())), f"defaults {i} frame layout")
@@ -292,7 +288,6 @@ def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
         check(payload["prepared"]["stamp"] is None, "a stamp was laid out")
 
 
-@redact_failures
 def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> None:
     from gxr_studio.finish.sizes import output_sizes, source_size
 
@@ -337,84 +332,63 @@ def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> 
                 cli_ok(code, got, f"{stem} sizes {j}")
                 same_redacted(got, json.loads(json.dumps(want)), f"{stem} sizes {j}")
                 compared += 1
-    check(compared >= 30, f"only {compared} sizes cases")
+    check(compared >= 30, "too few sizes cases")
 
 
-# target: (child pytest node, plugin target or None for a probe module, failures expected,
-# the failure sites as (file, a needle on the failing statement, a word of the helper's detail)).
-CANARY_TARGETS: dict[str, tuple[str, str | None, int, list[tuple[str, str, str]]]] = {
+# target: (child pytest node, plugin target or None for a probe module, failures expected, the
+# helper messages each failure must show, so a failure stays diagnosable without the data).
+CANARY_TARGETS: dict[str, tuple[str, str | None, int, list[str]]] = {
     "sizes": (
         "test_core_parity_export_pipeline_prepare.py::test_output_sizes_match_desktop",
         "sizes",
         1,
-        [("test_core_parity_export_pipeline_prepare.py", "same_redacted(got, json.loads(json.dumps(want))", "mismatch")],
+        ["S000 sizes 0: mismatch: $.meta.lens: got="],
     ),
     "bytes": (
         "test_core_parity_export_pipeline_prepare.py::test_e2e_camera_jpg_shots_match_export_finish",
         "bytes",
         1,
-        [("test_core_parity_export_pipeline_prepare.py", "same_file_redacted(got, py_file, stem)", "lengths")],
+        ["P000: lengths ", ", first difference at byte "],
     ),
     "raw": (
         "test_core_parity_export_pipeline_raw.py::test_raw_branches_real_pairs_match_export_finish",
         "raw",
         1,
-        [("test_core_parity_export_pipeline_raw.py", "same_file_redacted(got, py_file, stem)", "lengths")],
+        [": lengths ", ", first difference at byte "],
     ),
-    "hdr": (
+    "probe": (
         "support/export_pipeline_canary_probe.py",
         None,
-        3,
+        7,
         [
-            ("test_core_parity_export_pipeline_hdr.py", 'f"{label}: Gate A"', "lengths"),
-            ("test_core_parity_export_pipeline_hdr.py", 'f"{label}: Gate B"', "lengths"),
-            ("export_pipeline_canary_probe.py", '"SYNTHETIC hdr state"', "mismatch"),
-        ],
-    ),
-    "mutants": (
-        "support/export_pipeline_mutants.py",
-        None,
-        10,
-        [
-            ("export_pipeline_mutants.py", f"# MUTANT {m}", "redacted")
-            for m in ("len_str", "len_dict", "format_spec", "raise", "check_label", "print", "logging", "warning", "pytest_fail", "np_testing")
+            "SYNTHETIC HDR: Gate A: lengths ",
+            "SYNTHETIC HDR: Gate B: lengths ",
+            "SYNTHETIC hdr state: mismatch: $.problem: got=",
+            "SYNTHETIC pixels: 1 values differ, first at (2, 1, 0)",
+            "SYNTHETIC field: mismatch: $.meta.#",
+            "SYNTHETIC kind: kind unknown#",
+            "SYNTHETIC dtype: shape/dtype (2,) dtype#",
         ],
     ),
 }
 
 
-def _statement_lines(path: Path, needle: str) -> set[int]:
-    """The lines of the innermost simple statement containing ``needle``."""
-    import ast
-
-    src = path.read_text(encoding="utf-8")
-    hit = next(i for i, line in enumerate(src.split("\n"), 1) if needle in line)
-    compound = (ast.FunctionDef, ast.If, ast.For, ast.While, ast.With, ast.Try)
-    spans = [
-        (n.lineno, n.end_lineno or n.lineno)
-        for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.stmt) and not isinstance(n, compound) and n.lineno <= hit <= (n.end_lineno or n.lineno)
-    ]
-    lo, hi = min(spans, key=lambda s: s[1] - s[0])
-    return set(range(lo, hi + 1))
-
-
 @pytest.mark.parametrize("verbosity", ["-q", "-vv"])
-@pytest.mark.parametrize("target", ["bytes", "hdr", "mutants", "raw", "sizes"])
-@redact_failures
+@pytest.mark.parametrize("target", ["bytes", "probe", "raw", "sizes"])
 def test_failed_real_comparison_prints_no_exif(target: str, verbosity: str, tmp_path: Path) -> None:
-    """Sol r1–r3 P1: force failures on a synthetic EXIF canary through the real comparison code
-    (meta, finished file bytes, the RAW/LUT ``run_case``, HDR Gate A and B, HDR state) and through
-    Sol's r3 mutants, under ``-q`` and ``-vv``. Every child test must fail, name the right file and
-    line, and the canary must not reach stdout, stderr or the JUnit file."""
+    """Sol r1–r4 P1: force failures on a synthetic EXIF canary through the real comparison code
+    (meta, finished file bytes, the RAW/LUT ``run_case``, HDR Gate A and B, HDR state, pixels) and
+    through the helpers' fixed vocabularies, under ``-q`` and ``-vv``. Every child test must fail
+    with its helper message, and neither the canary nor the pixel values may reach stdout, stderr
+    or the JUnit file (threat model in docs/mobile.md)."""
     import os
-    import re
     import subprocess
     import sys
 
     from support.export_pipeline_canary import CANARY
+    from support.export_pipeline_canary_probe import SECRETS
 
-    node, plugin, failures, sites = CANARY_TARGETS[target]
+    node, plugin, failures, messages = CANARY_TARGETS[target]
     if target == "raw":
         from support.export_source_cases import real_dat
 
@@ -432,20 +406,39 @@ def test_failed_real_comparison_prints_no_exif(target: str, verbosity: str, tmp_
     args = [sys.executable, "-m", "pytest", verbosity, "-p", "no:randomly", node, f"--basetemp={tmp_path / 'child'}", f"--junitxml={junit}"]
     args[3:3] = ["-p", "support.export_pipeline_canary"] if plugin is not None else ["-o", "python_files=*.py"]
     proc = subprocess.run(args, cwd=repo / "tests", env=env, capture_output=True, text=True, timeout=900, check=False)  # noqa: S603  # nosec B603
-    check(proc.returncode == 1, f"{target} {verbosity}: the forced failure did not fail the child (exit {proc.returncode})")
-    check(f"{failures} failed" in proc.stdout, f"{target} {verbosity}: expected {failures} failures")
-    for fname, needle, word in sites:
-        where = repo / "tests" / fname if (repo / "tests" / fname).is_file() else repo / "tests" / "support" / fname
-        lines = _statement_lines(where, needle)
-        named = {int(n) for n in re.findall(re.escape(fname) + r":(\d+)", proc.stdout)}
-        check(bool(named & lines), f"{target} {verbosity}: no failure names {fname} at {sorted(lines)}")
-        check(word in proc.stdout, f"{target} {verbosity}: no {word!r} detail")
-    for name, text in (("stdout", proc.stdout), ("stderr", proc.stderr), ("junit", junit.read_text(encoding="utf-8"))):
-        check(CANARY not in text, f"{target} {verbosity}: the canary reached {name}")
+    check(proc.returncode == 1, "the forced failure did not fail the child")
+    check(f"{failures} failed" in proc.stdout, "wrong number of child failures")
+    for message in messages:
+        check(message in proc.stdout, "a child failure lacks its helper message")
+    for text in (proc.stdout, proc.stderr, junit.read_text(encoding="utf-8")):
+        check(CANARY not in text, "the canary reached the output")
+        check(not any(secret in text for secret in SECRETS), "pixel values reached the output")
+
+
+@pytest.mark.parametrize("warnings_as_errors", [True, False])
+def test_teardown_errors_and_warning_errors_still_fail(warnings_as_errors: bool, tmp_path: Path) -> None:
+    """Sol r4 P1-01 / P2-03: nothing in these tests swallows pytest's own outcomes. A failing
+    yield-fixture teardown is an error, and ``-W error`` turns a warning into a failure."""
+    import os
+    import subprocess
+    import sys
+
+    repo = Path(__file__).resolve().parents[1]
+    args = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", "-o", "python_files=*.py"]
+    args += ["-W", "error::UserWarning"] if warnings_as_errors else []
+    args += ["support/export_pipeline_semantics_probe.py", f"--basetemp={tmp_path / 'child'}"]
+    env = {**os.environ, "PYTHONPATH": str(repo / "tests")}
+    proc = subprocess.run(args, cwd=repo / "tests", env=env, capture_output=True, text=True, timeout=300, check=False)  # noqa: S603  # nosec B603
+    check(proc.returncode == 1, "the child did not fail")
+    check("1 error" in proc.stdout and "SEMANTICS teardown failed" in proc.stdout, "the teardown error was not reported")
+    check("UserWarning: SEMANTICS warning" in proc.stdout, "the warning was not shown")
+    if warnings_as_errors:
+        check("1 failed, 1 passed, 1 error" in proc.stdout, "-W error did not fail on the warning")
+    else:
+        check("2 passed, 1 warning, 1 error" in proc.stdout, "the warning was not shown as a warning")
 
 
 @pytest.mark.parametrize("command", ["export-run-plan", "export-run-prepare"])
-@redact_failures
 def test_blank_sidecar_is_an_empty_object(command: str, tmp_path: Path) -> None:
     """Sol r1 P2-01: an omitted, empty or whitespace-only sidecar gives exactly what ``{}`` gives."""
     np.save(tmp_path / "px.npy", np.arange(18, dtype=np.uint8).reshape(2, 3, 3))

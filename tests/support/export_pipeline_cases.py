@@ -6,17 +6,11 @@ from real photos are compared without printing them: a mismatch reports tag ids 
 
 from __future__ import annotations
 
-import contextlib
-import functools
 import hashlib
 import io
 import json
-import logging
 import os
 import re
-import traceback
-import warnings
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -136,38 +130,65 @@ def mtime_args(path: Path) -> list[str]:
     return ["--mtime-ms", repr(st * 1000.0), "--tz-offset-min", str(minutes)]
 
 
-# ---- Redaction at the exit (Sol r1–r3 P1) -------------------------------------------------
+# ---- Redacted comparisons (threat model: docs/mobile.md, export pipeline) --------------------
 #
-# Every test and fixture in tests/test_core_parity_export_pipeline*.py carries @redact_failures
-# (the AST guard checks it). Whatever a test raises, the report shows only the exception type, the
-# innermost file:line in this unit's files and a SHA-256 prefix of the original message, plus the
-# detail a redaction helper built itself (lengths, offsets, shapes, counts, identifier-only field
-# paths, error kinds). Labels and messages are never shown, only hashed.
+# These helpers compare with a plain ``if`` and fail with ``pytest.fail(..., pytrace=False)``, so
+# pytest never expands the compared values. Their messages are built only from fixed vocabularies:
+# field names from a fixed schema (the JSON keys this pipeline's Rust and Python code write), error
+# kinds from the core's known error kinds, dtype names from a fixed set, plus lengths, offsets,
+# shapes, counts and SHA-256 prefixes. Anything outside a vocabulary is shown only as a hash.
 
-_SAFE_SEGMENT = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]{0,40}|\[[0-9]{1,9}\])$")
-_SAFE_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,40}$")
-_HELPERS = {"_fail", "check", "same_redacted", "same_file_redacted", "same_pixels", "cli_ok", "_diffs"}
+_REPO = Path(__file__).resolve().parents[2]
+_FIXED_KEYS = {
+    # labels (serve._stage_rgb / _original_labels / color_image)
+    *("kind", "label", "text", "id", "tag", "description", "detail", "valid", "calibrated", "cache", "key", "scale", "limited"),
+    # photo_meta and the layout request
+    *("lens", "lens_short", "aperture", "shutter", "iso", "date", "frame_no", "meta", "mark", "taken", "file_time", "logos"),
+    # export_prepare / export_complete / output_sizes / state
+    *("canvas", "frame", "stamp", "stamp_on", "photo", "labels", "state", "name", "source", "quality", "long_edge", "hdr"),
+    *("result", "sha256", "width", "height", "bytes", "render", "render_label", "format", "render_kind", "hdr_reason"),
+    *("recipe_binding", "file_name", "original", "prepared", "sizes", "ratio", "crop_preset", "small", "medium", "large"),
+    *("asked", "active", "shape", "problem", "error", "message"),
+    # frame and stamp layout items
+    *("k", "x", "y", "w", "h", "xs", "xs0", "glow", "rot", "gx", "gy", "tw", "pts", "px", "fill", "font", "ops", "rect", "ink"),
+}
+
+
+def _rust_names(pattern: str) -> set[str]:
+    out: set[str] = set()
+    for rs in (_REPO / "core" / "crates").glob("gxr-*/src/**/*.rs"):
+        out |= set(re.findall(pattern, rs.read_text(encoding="utf-8")))
+    return out
+
+
+# JSON keys the frame and export crates write (`("key", Json…)` / `"key" =>`), and the core error kinds.
+_KNOWN_KEYS = frozenset(_FIXED_KEYS | _rust_names(r'\(\s*"([a-z_][a-z0-9_]{0,30})",\s*(?:Json|crate::item|Val|item|v|json)'))
+_KNOWN_KINDS = frozenset(
+    _rust_names(
+        r'(?:CoreError::new|ExportFail::export|Fail::unavailable|Fail::edit|EditError::new|EditError::with_detail)\(\s*"([a-z_][a-z0-9_]*)"'
+    )
+    | {"raw_decode", "json", "unknown"}
+)
+_KNOWN_DTYPES = frozenset({"uint8", "uint16", "int16", "int32", "int64", "float32", "float64", "bool"})
 
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
-class RedactedMismatch(Exception):  # noqa: N818  the name reads as what failed
-    """A failed comparison: ``detail`` is built by the helper from safe facts only; ``label``
-    (caller text, possibly holding photo data) is kept only as a hash."""
-
-    def __init__(self, detail: str, label: str) -> None:
-        super().__init__(detail)
-        self.detail = detail
-        self.label_sha = _sha(label)
-
-    def __str__(self) -> str:
-        return f"{self.detail} (label sha256 {self.label_sha})"
+def _key(segment: str) -> str:
+    return segment if segment in _KNOWN_KEYS else f"#{_sha(segment)}"
 
 
-def _path_join(path: str, segment: str) -> str:
-    return f"{path}.{segment}" if _SAFE_SEGMENT.match(segment) else f"{path}.?"
+def _dtype(d: Any) -> str:
+    name = str(d)
+    return name if name in _KNOWN_DTYPES and getattr(d, "names", None) is None else f"dtype#{_sha(name)}"
+
+
+def _fail(message: str) -> None:
+    import pytest
+
+    pytest.fail(message, pytrace=False)
 
 
 def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
@@ -177,7 +198,7 @@ def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
         if list(got.keys()) != list(want.keys()):
             out.append(f"{path}: keys or key order differ ({len(got)} vs {len(want)} keys)")
         for k in [k for k in got if k in want]:
-            _diffs(got[k], want[k], _path_join(path, str(k)), out)
+            _diffs(got[k], want[k], f"{path}.{_key(str(k))}", out)
         return
     if isinstance(got, (list, tuple)) and isinstance(want, (list, tuple)):
         if len(got) != len(want):
@@ -191,119 +212,87 @@ def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
 
 def same_redacted(got: Any, want: Any, label: str) -> None:
     """Exact equality of values that may hold real-photo text (``meta``, layouts, labels, state,
-    result fields): a mismatch reports field paths (identifier keys only), types and SHA-256
-    prefixes (export-meta's ``_digest_value``)."""
+    result fields): field paths (fixed schema; other keys hashed), types, SHA-256 prefixes."""
     out: list[str] = []
     _diffs(got, want, "$", out)
     if out:
-        raise RedactedMismatch("mismatch: " + "; ".join(out[:20]), label)
+        _fail(f"{label}: mismatch: " + "; ".join(out[:20]))
 
 
 def check(ok: bool, label: str) -> None:
-    """A plain ``if`` in place of a bare ``assert``; the label is only hashed."""
+    """A plain ``if`` in place of a bare ``assert``. ``label`` is a literal (the lint checks it)."""
     if not ok:
-        raise RedactedMismatch("check failed", label)
+        _fail(f"{label}: check failed")
 
 
 def same_file_redacted(got: bytes | None, want: bytes, label: str) -> None:
     """Whole-file byte equality: lengths, the first differing byte and SHA-256 prefixes only."""
     if got is None:
-        raise RedactedMismatch(f"no file (expected {len(want)} bytes, sha {digest(want)})", label)
-    if got != want:
-        raise RedactedMismatch(first_difference(got, want), label)
+        _fail(f"{label}: no file (expected {len(want)} bytes, sha {digest(want)})")
+    elif got != want:
+        _fail(f"{label}: {first_difference(got, want)}")
 
 
 def same_pixels(got: Any, want: Any, label: str) -> None:
-    """Exact array equality: shapes, dtypes, the count of differing elements and the first index."""
+    """Exact array equality: shapes, dtypes (fixed set), the count of differing elements and the
+    first index, never the values."""
     if got.shape != want.shape or got.dtype != want.dtype:
-        raise RedactedMismatch(f"shape/dtype {got.shape} {got.dtype} vs {want.shape} {want.dtype}", label)
+        got_shape, want_shape = tuple(int(v) for v in got.shape), tuple(int(v) for v in want.shape)
+        _fail(f"{label}: shape/dtype {got_shape} {_dtype(got.dtype)} vs {want_shape} {_dtype(want.dtype)}")
+        return
     bad = np.argwhere(got != want)
     if len(bad):
-        raise RedactedMismatch(f"{len(bad)} values differ, first at {tuple(int(v) for v in bad[0])}", label)
+        _fail(f"{label}: {len(bad)} values differ, first at {tuple(int(v) for v in bad[0])}")
 
 
 def error_kind(payload: Any) -> str:
-    """The core error kind of a CLI payload, if it is an identifier (never the message)."""
+    """The core error kind of a CLI payload when it is a known kind; any other is a hash."""
     if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
         kind = str(payload["error"].get("kind"))
-        return kind if _SAFE_WORD.match(kind) else "?"
+        return kind if kind in _KNOWN_KINDS else f"unknown#{_sha(kind)}"
     return "-"
 
 
 def cli_ok(code: int, payload: Any, label: str) -> None:
-    """A CLI call that must succeed: the exit code and error kind only."""
+    """A CLI call that must succeed: the exit code and the (known) error kind only."""
     if code != 0:
-        raise RedactedMismatch(f"exit {int(code)}, kind {error_kind(payload)}", label)
+        _fail(f"{label}: exit {int(code)}, kind {error_kind(payload)}")
 
 
-def _ours(filename: str) -> bool:
-    p = Path(filename)
-    return p.name.startswith("test_core_parity_export_pipeline") or (p.parent.name == "support" and p.name.startswith("export_pipeline_"))
+def produced(got: Any, payload: Any, label: str) -> None:
+    """A CLI call that must have written its output (``got`` not None): the known error kind only."""
+    if got is None:
+        _fail(f"{label}: no output, kind {error_kind(payload)}")
 
 
-def _site(exc: BaseException) -> str:
-    """The innermost frame in this unit's files, skipping the redaction helpers themselves."""
-    site = "?"
-    for frame, line in traceback.walk_tb(exc.__traceback__):
-        code = frame.f_code
-        if not _ours(code.co_filename):
-            continue
-        if Path(code.co_filename).name == "export_pipeline_cases.py" and code.co_name in _HELPERS | {"wrapper"}:
-            continue
-        site = f"{Path(code.co_filename).name}:{line}"
-    return site
+def same_kind(payload: Any, want: str, label: str) -> None:
+    """A CLI error payload of kind ``want`` (a literal): known kinds only, others hashed."""
+    got = error_kind(payload)
+    if got != want:
+        _fail(f"{label}: kind {got} vs {want if want in _KNOWN_KINDS else _sha(want)}")
 
 
-def _summary(exc: BaseException) -> str:
-    kind = type(exc).__name__
-    if isinstance(exc, RedactedMismatch):
-        return f"redacted {kind} at {_site(exc)}: {exc.detail}; label sha256 {exc.label_sha}"
-    try:
-        text = str(exc)
-    except Exception:  # noqa: BLE001  an exception whose str() fails still gets reported
-        text = "<unprintable>"
-    return f"redacted {kind} at {_site(exc)}; message sha256 {_sha(text)}"
+def synthetic_failure(ok: bool, text: str, label: str) -> None:
+    """For runs on synthetic inputs only (the WASM comparison reads no real photo, DAT or
+    calibration): fail with the run's own output, which names the differing synthetic cases."""
+    if not ok:
+        _fail(f"{label}: {text}")
 
 
-def redact_failures(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Wrap a test or fixture so that no failure can carry photo data to stdout, stderr or JUnit.
-
-    - pytest's skip, xfail and exit outcomes pass through unchanged;
-    - any other exception becomes ``pytest.fail(summary, pytrace=False)``, raised after the
-      ``except`` block so neither ``__cause__`` nor ``__context__`` holds the original;
-    - while the test runs, ``sys.stdout`` / ``sys.stderr`` writes, logging and warnings are
-      swallowed, so captured-output and warning sections cannot carry data either.
-    """
-    import pytest
-
-    passthrough = (pytest.skip.Exception, pytest.xfail.Exception, pytest.exit.Exception, KeyboardInterrupt)
-
-    @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        summary: str | None = None
-        sink = io.StringIO()
-        previous = logging.root.manager.disable
-        logging.disable(logging.CRITICAL)
-        try:
-            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink), warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                try:
-                    return fn(*args, **kwargs)
-                except passthrough:
-                    raise
-                except BaseException as exc:  # noqa: BLE001  every failure is redacted here
-                    summary = _summary(exc)
-                    del exc
-        finally:
-            logging.disable(previous)
-        pytest.fail(summary or "redacted failure", pytrace=False)
-
-    return wrapper
+_LINT = re.compile(
+    r"^E_[A-Z_]{2,20} test_core_parity_export_pipeline[a-z_]*\.py:[0-9]{1,6}$|^E_[A-Z_]{2,20} export_pipeline_[a-z_]+\.py:[0-9]{1,6}$"
+)
 
 
-def anon_ids(prefix: str, values: Any) -> list[str]:
-    """Anonymous parametrize ids (``P000``, ``P001``, …), so no value reaches a test id."""
-    return [f"{prefix}{i:03d}" for i in range(len(values))]
+def lint_report(violations: list[str]) -> None:
+    """The guard's report: each entry is a rule code plus file:line (anything else is hashed)."""
+    if violations:
+        _fail("lint: " + ", ".join(v if _LINT.match(v) else f"#{_sha(v)}" for v in violations))
+
+
+def anon_ids(count: int) -> list[str]:
+    """Anonymous parametrize ids (``P000``, ``P001``, …) from a count, so no value reaches a test id."""
+    return [f"P{i:03d}" for i in range(int(count))]
 
 
 def note(name: str, value: Any) -> None:

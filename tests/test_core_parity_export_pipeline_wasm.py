@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from gxr_studio.finish.spec import FrameSpec, StampSpec
-from support.export_pipeline_cases import check, redact_failures, synthetic_source
+from support.export_pipeline_cases import check, synthetic_failure, synthetic_source
 from support.frame_cases import FIXTURE_CJK, desktop_mark, font_pairs
 from support.wasm_check import run_area
 
@@ -218,7 +218,6 @@ def _hdr_cases(tmp: Path, base: dict[str, Any], side_paths: dict[str, str], pic:
     return out
 
 
-@redact_failures
 def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     fonts = font_pairs()
     rng = np.random.default_rng(7)
@@ -371,4 +370,4 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     manifest = _w(tmp_path, "export-cases.json", json.dumps(cases, ensure_ascii=False, allow_nan=True))
     check(FIXTURE_CJK.is_file(), "CJK fixture font missing")
     proc = run_area("export", [Path(manifest)], tmp_path)
-    check(proc.returncode == 0, proc.stdout + proc.stderr)
+    synthetic_failure(proc.returncode == 0, proc.stdout + proc.stderr, "wasm vs native")

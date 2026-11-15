@@ -41,11 +41,9 @@ from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import (
     check,
     cli_ok,
-    error_kind,
     first_difference,
     mtime_args,
     note,
-    redact_failures,
     same_file_redacted,
     same_pixels,
     same_redacted,
@@ -81,7 +79,6 @@ CASES: list[tuple[dict[str, Any], str, bool, int]] = [
 
 
 @pytest.fixture(autouse=True)
-@redact_failures
 def _cli() -> None:
     require_cli()
 
@@ -121,7 +118,7 @@ def _attribute(rs_file: bytes, py_file: bytes, fin: dict[str, Any], label: str) 
     from gxr_studio.hdr import container as hc
     from gxr_studio.hdr import gain as hg
 
-    check(fin["layer"] is not None, f"{label}: no layer at finish")
+    check(fin["layer"] is not None, "no layer at finish")
     pre_rgb = fin["rgb"]
     size = (pre_rgb.shape[1], pre_rgb.shape[0])
     or_ry, or_rc = _oracle_to_grid(fin["layer"], size, 4, use_fma=False)
@@ -170,10 +167,10 @@ def run_hdr_case(
         )
         meta, taken, file_time = serve_mod._meta(shot, h.lib)
     py_file = res.path.read_bytes()
-    check(spy.stage is not None, f"{stem}: _stage_rgb not reached")
+    check(spy.stage is not None, "_stage_rgb not reached")
     py_rgb, py_labels = spy.stage
     source = cam if cam is not None else dng
-    check(source is not None, f"{stem}: no source file")
+    check(source is not None, "no source file")
     args = [
         "--shot", _w(tmp, f"{stem}-shot.json", shot), "--side", _w(tmp, f"{stem}-side.json", side), "--base", base,
         "--layout", _w(tmp, f"{stem}-layout.json", {"mark": desktop_mark()}), "--quality", str(quality),
@@ -209,7 +206,7 @@ def run_hdr_case(
     if no_ink:
         same_pixels(canvas, py_rgb, f"{stem} canvas")
     elif prepared["frame"] is not None and prepared["canvas"] == "full":
-        check(spy.base is not None, f"{stem}: finish_array not reached")
+        check(spy.base is not None, "finish_array not reached")
         rgb0, _from_raw, kw = spy.base
         photo, _ = real_finish_array(
             rgb0, edit, **{**kw, "frame": FrameSpec(style="none"), "stamp": replace(stamp, enabled=False), "track": None}
@@ -218,7 +215,7 @@ def run_hdr_case(
         from gxr_studio.finish.layout import frame_layout
 
         lay = frame_layout(photo.shape[1], photo.shape[0], frame, meta, FontMetrics(PilFonts()))
-        check(lay is not None, f"{stem}: no frame layout")
+        check(lay is not None, "no frame layout")
         same_pixels(canvas, _photo_only(photo, lay), f"{stem} framed canvas")
     fed = canvas if no_ink else py_rgb
     np.save(tmp / f"{stem}-fed.npy", fed)
@@ -255,7 +252,6 @@ def _pairs(n: int) -> list[tuple[Path, Path]]:
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
 @pytest.mark.parametrize("long_edge", [None, 1600])
-@redact_failures
 def test_hdr_real_pairs_match_export_finish(long_edge: int | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:  # noqa: F811
     h = xs.make_home(tmp_path / "home", DAT)
     tally: dict[str, int] = {}
@@ -271,7 +267,6 @@ def test_hdr_real_pairs_match_export_finish(long_edge: int | None, tmp_path: Pat
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
-@redact_failures
 def test_hdr_reasons_on_crafted_shots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:  # noqa: F811
     """``no_raw`` (JPG only), ``raw_unreadable`` (a DNG neither side can open), a camera JPG that is
     not this DNG's (``capture_mismatch`` / ``not_aligned``), a JPG without capture EXIF, and
@@ -323,7 +318,6 @@ def _bomb_jpeg(path: Path) -> Path:
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
-@redact_failures
 def test_hdr_pixel_limit_deviation(tmp_path: Path) -> None:
     """The accepted deviation (hdr-track r4, docs/mobile.md): a camera JPG over Pillow's pixel
     limit. The desktop raises ``DecompressionBombError`` (uncaught in ``load_jpeg`` /
@@ -343,9 +337,11 @@ def test_hdr_pixel_limit_deviation(tmp_path: Path) -> None:
     common = ["--shot", _w(tmp_path, "shot.json", shot), "--quality", "95", "--hdr", "--dng", str(dng)]
     common += ["--jpg", str(tmp_path / "px.npy"), "--jpg-bytes", str(bomb), *font_args()]
     code, payload = run_json(["export-run-prepare", *common, "--side", _w(tmp_path, "s0.json", {}), "--out", str(tmp_path / "c0.npy")])
-    check(code == 0 and payload["original"] is True, f"pixel-limit original: exit {code}, kind {error_kind(payload)}")
+    cli_ok(code, payload, "pixel-limit original")
+    check(payload["original"] is True, "pixel-limit: not the original branch")
     same_redacted(payload["prepared"]["state"]["hdr"]["problem"], "metadata_unreadable", "pixel-limit hdr problem")
     code, payload = run_json(
         ["export-run-prepare", *common, "--side", _w(tmp_path, "s1.json", {"adjust": {"contrast": 5}}), "--out", str(tmp_path / "c1.npy")]
     )
-    check(code == 2 and "Bomb" in json.dumps(payload["error"]), f"pixel-limit edited: exit {code}, kind {error_kind(payload)}")
+    check(code == 2, "pixel-limit edited: expected exit 2")
+    check("Bomb" in json.dumps(payload["error"]), "pixel-limit edited: not a decompression-bomb error")

@@ -411,6 +411,15 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 都远低于页面约 2 GiB 的上限。
 
+### 测试输出里不出现照片数据
+
+对拍用实拍照片（EXIF、像素、元数据），测试失败时不能把这些内容打出来。威胁模型是：按本仓库平常写法写的测试，用 `make test`、`make check` 或 pytest 的 `-q`、`-v`、`-vv` 跑，不会无意中把照片派生的数据打进输出或 JUnit。故意绕过的测试代码不在范围内，那归代码评审管。
+
+- 比较走 `tests/support/export_pipeline_cases.py` 的脱敏函数：`same_redacted`（字段路径只用固定词表里的键，别的键打哈希）、`same_file_redacted`（长度、第一个不同的字节、SHA-256 前缀）、`same_pixels`（形状、固定集合里的 dtype、不同元素的个数和第一个位置，不打数值）、`cli_ok`、`check`（标签是字面量）。错误只报已知的 CoreError 种类，别的打哈希。失败用 `pytest.fail(..., pytrace=False)`，不带回溯。
+- `tests/test_core_parity_export_pipeline_guard.py` 是一个 lint，只抓常见的失手：裸 `assert` 比较非标量（含对非字面量取 `len`、动态的 f-string 格式说明）、非字面量的 `raise AssertionError` / `pytest.fail`、`print`、`logging`、`sys.stdout` / `sys.stderr`、`warnings.warn`、不是字面量或 `anon_ids(<个数>)` 的参数化 id。每条报规则代码加文件和行号（如 `E_ASSERT test_core_parity_export_pipeline_x.py:12`）。它不解析别名，也不是边界。
+- 金丝雀测试在 `-q` 和 `-vv` 下让真实的比较代码在合成照片上失败（文件字节、元数据、HDR 状态和 Gate A/B、像素、RAW/LUT 共用路径、未知键、未知错误种类、结构 dtype），检查失败信息还在、金丝雀和像素值不出现在 stdout、stderr 和 JUnit 里。另有测试确认 yield fixture 的 teardown 出错照常报错，`-W error` 照常把警告变成失败：测试不吞 pytest 自己的结果。
+- **`-l` / `--showlocals` 不支持用在实拍测试上**：它会把回溯里的局部变量打出来，局部变量里有照片数据。
+
 ## 第一版界面
 
 `mobile/index.html` 是给 iPhone Safari 的界面，不是开发壳。三屏都在内存里切换，不用浏览器的历史记录：起始、按拍摄时间分组的网格、编辑一张。

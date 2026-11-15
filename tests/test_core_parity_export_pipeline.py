@@ -26,10 +26,10 @@ from support.export_pipeline_cases import (
     anon_ids,
     check,
     cli_ok,
-    error_kind,
+    produced,
     real_pairs,
-    redact_failures,
     same_file_redacted,
+    same_kind,
     same_redacted,
     source_exif_json,
     synthetic_images,
@@ -41,13 +41,11 @@ QUALITIES = (95, 85, 70)
 
 
 @pytest.fixture(autouse=True)
-@redact_failures
 def _cli() -> None:
     require_cli()
 
 
 @pytest.fixture
-@redact_failures
 def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     """Python's ``srgb_icc()`` is made by LittleCMS at run time, with the creation time in header
     bytes 24..36, so no two desktop runs write the same file. gxr-jpeg fixes those bytes. Assert
@@ -85,8 +83,7 @@ def _huffopt(data: bytes, tmp: Path, tag: str) -> bytes:
     return out.read_bytes()
 
 
-@pytest.mark.parametrize("quality", QUALITIES + (100, 90, 89, 1), ids=anon_ids("Q", QUALITIES + (100, 90, 89, 1)))
-@redact_failures
+@pytest.mark.parametrize("quality", QUALITIES + (100, 90, 89, 1), ids=anon_ids(len(QUALITIES) + 4))
 def test_huffopt_equals_pillow_optimize(quality: int, tmp_path: Path) -> None:
     for name, rgb in synthetic_images():
         plain = _pillow(rgb, quality, False)
@@ -95,7 +92,6 @@ def test_huffopt_equals_pillow_optimize(quality: int, tmp_path: Path) -> None:
         same_file_redacted(got, want, f"{name} q{quality}")
 
 
-@redact_failures
 def test_huffopt_real_arrays(tmp_path: Path) -> None:
     pairs = real_pairs(6)
     if not pairs:
@@ -108,7 +104,6 @@ def test_huffopt_real_arrays(tmp_path: Path) -> None:
             same_file_redacted(got, want, f"real {i} q{quality}")
 
 
-@redact_failures
 def test_huffopt_rejects_damaged_input(tmp_path: Path) -> None:
     good = _pillow(np.zeros((16, 16, 3), dtype=np.uint8), 95, False)
     for tag, data in [("empty", b""), ("text", b"not a jpeg"), ("truncated", good[: len(good) - 40]), ("no-eoi", good[:-2])]:
@@ -116,7 +111,7 @@ def test_huffopt_rejects_damaged_input(tmp_path: Path) -> None:
         src.write_bytes(data)
         code, payload = run_json(["export-run-huffopt", "--in", str(src), "--out", str(out)])
         err = error_of(code, payload)
-        check(err is not None and err.kind == "encode_failed", f"{tag}: expected encode_failed")
+        check(err is not None and err.kind == "encode_failed", "expected encode_failed")
 
 
 def _state(name: str, quality: Any, long_edge: Any, labels: dict[str, Any], hdr: Any = None) -> dict[str, Any]:
@@ -195,9 +190,8 @@ def _expected_result(name: str, rgb: np.ndarray, data: bytes, labels: dict[str, 
     }
 
 
-@pytest.mark.parametrize("quality", QUALITIES, ids=anon_ids("Q", QUALITIES))
+@pytest.mark.parametrize("quality", QUALITIES, ids=anon_ids(len(QUALITIES)))
 @pytest.mark.parametrize("long_edge", [None, 64])
-@redact_failures
 def test_complete_synthetic_equals_write_rgb_with_exif(quality: int, long_edge: int | None, tmp_path: Path, pinned_icc: bytes) -> None:
     src = synthetic_source(tmp_path / "src.jpg")
     exif_json = source_exif_json(src)
@@ -207,12 +201,11 @@ def test_complete_synthetic_equals_write_rgb_with_exif(quality: int, long_edge: 
         fitted = _fit(rgb, long_edge)
         want = write_rgb_with_exif(fitted, src, note, quality=quality, fmt="jpeg")
         got, payload = _complete(tmp_path, f"{name}", rgb, _state("R0001", quality, long_edge, labels), exif_json)
-        check(got is not None, f"complete failed: {error_kind(payload)}")
+        produced(got, payload, "complete")
         same_file_redacted(got, want, name)
         same_redacted(payload["result"], _expected_result("R0001", fitted, want, labels), f"{name} result")
 
 
-@redact_failures
 def test_complete_real_arrays(tmp_path: Path, pinned_icc: bytes) -> None:
     pairs = real_pairs(8)
     if not pairs:
@@ -227,9 +220,9 @@ def test_complete_real_arrays(tmp_path: Path, pinned_icc: bytes) -> None:
         fitted = _fit(rgb, long_edge)
         want = write_rgb_with_exif(fitted, source, "原图", quality=quality, fmt="jpeg")
         got, payload = _complete(tmp_path, f"real{i}", rgb, _state(f"R{i:04d}", quality, long_edge, labels), exif_json)
-        check(got is not None, f"real {i}: complete failed: {error_kind(payload)}")
+        produced(got, payload, "complete on a real array")
         same_file_redacted(got, want, f"real {i}")
-        check(payload["result"]["width"] == fitted.shape[1] and payload["result"]["height"] == fitted.shape[0], f"real {i}: result size")
+        check(payload["result"]["width"] == fitted.shape[1] and payload["result"]["height"] == fitted.shape[0], "result size")
 
 
 OPTION_ERRORS: list[tuple[dict[str, Any], str]] = [
@@ -245,11 +238,11 @@ OPTION_ERRORS: list[tuple[dict[str, Any], str]] = [
 ]
 
 
-@pytest.mark.parametrize(("state", "kind"), OPTION_ERRORS, ids=anon_ids("O", OPTION_ERRORS))
-@redact_failures
+@pytest.mark.parametrize(("state", "kind"), OPTION_ERRORS, ids=anon_ids(len(OPTION_ERRORS)))
 def test_complete_option_errors(state: dict[str, Any], kind: str, tmp_path: Path) -> None:
     got, payload = _complete(tmp_path, "err", np.zeros((4, 4, 3), dtype=np.uint8), state, "")
-    check(got is None and payload["error"]["kind"] == kind, f"expected error {kind}, got {error_kind(payload)}")
+    check(got is None, "expected an error")
+    same_kind(payload, kind, "option error")
 
 
 def _with_unused_table(jpeg: bytes, cls: int) -> bytes:
@@ -269,7 +262,6 @@ def _with_unused_table(jpeg: bytes, cls: int) -> bytes:
 
 
 @pytest.mark.parametrize("cls", [0, 1])
-@redact_failures
 def test_huffopt_unused_table_is_an_error(cls: int, tmp_path: Path) -> None:
     plain = _pillow(np.full((1, 1, 3), 120, dtype=np.uint8), 95, False)
     data = _with_unused_table(plain, cls)
@@ -295,18 +287,16 @@ BAD_HDR_STATES: list[Any] = [
 ]
 
 
-@pytest.mark.parametrize("hdr", BAD_HDR_STATES, ids=anon_ids("H", BAD_HDR_STATES))
-@redact_failures
+@pytest.mark.parametrize("hdr", BAD_HDR_STATES, ids=anon_ids(len(BAD_HDR_STATES)))
 def test_complete_rejects_malformed_hdr_state(hdr: Any, tmp_path: Path) -> None:
     """Sol r1 P2-02: a malformed ``state.hdr`` is hdr-track's state error, never a ``no_raw`` export."""
     got, payload = _complete(tmp_path, "badhdr", np.zeros((2, 3, 3), dtype=np.uint8), _state("R", 95, None, {}, hdr), "")
-    check(got is None, f"expected an error, got {error_kind(payload)}")
-    check(payload["error"]["kind"] in ("bad_input", "bad_state", "bad_geometry"), f"unexpected kind {error_kind(payload)}")
+    check(got is None, "expected an error")
+    same_kind(payload, "bad_input", "malformed hdr state")
 
 
-@redact_failures
 def test_complete_valid_inactive_hdr_is_no_raw(tmp_path: Path) -> None:
     hdr = {"asked": True, "active": False, "shape": None, "problem": "no_raw", "frame": None}
     got, payload = _complete(tmp_path, "inact", np.zeros((2, 3, 3), dtype=np.uint8), _state("R", 95, None, {}, hdr), "")
-    check(got is not None, f"complete failed: {error_kind(payload)}")
+    produced(got, payload, "complete")
     same_redacted([payload["result"]["hdr"], payload["result"]["hdr_reason"]], [False, "no_raw"], "inactive hdr result")

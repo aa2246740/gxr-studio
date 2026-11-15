@@ -44,7 +44,7 @@ from gxr_studio.render.params import RecipeSel, parse_edit
 from support import export_source_cases as xs
 from support import export_source_run as xr
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import check, cli_ok, mtime_args, note, redact_failures, same_file_redacted, same_pixels, same_redacted
+from support.export_pipeline_cases import check, cli_ok, mtime_args, note, same_file_redacted, same_pixels, same_redacted
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -52,13 +52,11 @@ DAT = xs.real_dat()
 
 
 @pytest.fixture(autouse=True)
-@redact_failures
 def _cli() -> None:
     require_cli()
 
 
 @pytest.fixture
-@redact_failures
 def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     np.save(tmp_path / "icc.npy", np.zeros((8, 8, 3), dtype=np.uint8))
     code, payload = run_json(["jpeg-encode", "--in", str(tmp_path / "icc.npy"), "--quality", "95", "--out", str(tmp_path / "icc.jpg")])
@@ -164,7 +162,7 @@ def run_case(
         res = export_finish(h.render, h.lib, shot, edit, side, dest, [], quality=quality, long_edge=long_edge, fmt="jpeg", base=base)
         meta, taken, file_time = serve_mod._meta(shot, h.lib)
     py_file = res.path.read_bytes()
-    check(spy.stage is not None, f"{stem}: _stage_rgb not reached")
+    check(spy.stage is not None, "_stage_rgb not reached")
     py_rgb, py_labels = spy.stage
     # meta, taken and file_time come from export-meta in Rust (the shot's own files).
     layout = {"mark": desktop_mark()}
@@ -191,7 +189,7 @@ def run_case(
     frame_def, stamp_def = load_defaults(h.render.home)
     frame = resolved_frame(edit.frame, frame_def)
     stamp = resolved_stamp(edit.stamp, stamp_def)
-    check(spy.base is not None, f"{stem}: finish_array not reached")
+    check(spy.base is not None, "finish_array not reached")
     rgb0, from_raw, kw = spy.base
     rs_base = _rust_base(tmp, stem, args, side, base) if lut is not None else rgb0
     photo, _hdr = real_finish_array(rs_base, edit, **{**kw, "frame": FrameSpec(style="none"), "stamp": replace(stamp, enabled=False)})
@@ -221,7 +219,7 @@ def run_case(
     # The source EXIF really travelled (tag ids counted, values never printed).
     with Image.open(o) as im:
         exif = im.getexif()
-        check(271 in exif and len(exif.get_ifd(0x8769)) >= 4, f"{stem}: Make or EXIF sub-IFD missing ({len(exif)} root tags)")
+        check(271 in exif and len(exif.get_ifd(0x8769)) >= 4, "Make or EXIF sub-IFD missing")
     same_redacted(done["result"]["file_name"], res.path.name, f"{stem} file name")
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
         same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
@@ -229,7 +227,6 @@ def run_case(
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
-@redact_failures
 def test_raw_branches_real_pairs_match_export_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:
     pairs = [(d, j) for d, j in xs.real_pairs(60) if j is not None]
     if len(pairs) < 20:
@@ -271,7 +268,6 @@ SPECS = {
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
-@redact_failures
 def test_lut_branches_real_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:
     from support import export_source_lut as gates
     from support.lut_cases import cube_text
