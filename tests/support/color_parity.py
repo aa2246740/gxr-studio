@@ -20,6 +20,7 @@ from gxr_studio.gpu import tables
 from gxr_studio.render import chain, tones
 from gxr_studio.render.params import Adjust, Curves
 from support import color_fixtures as cf
+from support.color_oracle_gates import bake_gate  # noqa: F401
 from support.core_cli import CoreCliError, error_of, run_json
 
 
@@ -230,101 +231,6 @@ def bake(tmp: Path, pack: Pack, entry: bytes, *, params: dict[str, Any] | None =
     except Exception as exc:  # noqa: BLE001
         py = exc
     return py, rust
-
-
-def _midpoint_ulps(v: float) -> float:
-    """How many float64 ulps `v` sits from the nearest float32 rounding midpoint."""
-    f = np.float32(v)
-    lo = f if float(f) <= v else np.nextafter(f, np.float32(-np.inf))
-    hi = np.nextafter(lo, np.float32(np.inf))
-    mid = (float(lo) + float(hi)) / 2.0
-    return abs(v - mid) / float(np.spacing(abs(v)))
-
-
-def _gains(model: UnitModel, entry: bytes, bk: Any, nx: int, cell: int) -> tuple[complex, complex, complex]:
-    """Python's float64 gain at `cell`: as the bake computed it (the same 4096-cell chunk of
-    `todo`), alone (P=1), and the value the bake stored, re-read as float32."""
-    from scipy.spatial import ConvexHull
-
-    ny = bk.gain.shape[0]
-    cb = bk.origin[0] + bk.step * np.arange(nx)
-    cr = bk.origin[1] + bk.step * np.arange(ny)
-    c = (cb[None, :] + 1j * cr[:, None]).reshape(-1)
-    probe = np.where(np.abs(c) < 1e-9, 1e-3 + 0j, c)
-    lookup = model.mm.MatrixRow.from_bytes(model.factory[216:244])
-    lm = lookup.effective(100.0)
-    lo = lookup.offsets - np.array([0.0, 128.0, 128.0])
-    corners = np.array([[r, g, b] for r in (0, 255) for g in (0, 255) for b in (0, 255)], np.float64) @ lm.T + lo
-    hull = ConvexHull(corners[:, 1:])
-    near = np.all(hull.equations[:, :2] @ np.column_stack([c.real, c.imag]).T + hull.equations[:, 2:3] <= 2.0 * bk.step * np.sqrt(2.0), axis=0)
-    todo = np.flatnonzero(near)
-    pos = int(np.searchsorted(todo, cell))
-    assert pos < len(todo) and todo[pos] == cell, f"cell {cell} was not computed by the bake"
-    start = (pos // 4096) * 4096
-    sel = todo[start : start + 4096]
-    z = chain._sector_z(model, entry)
-    table = model.engine.table
-    batched = complex((table.forward(probe[sel], z)[0] / probe[sel])[pos - start])
-    single = complex(table.forward(probe[[cell]], z)[0][0] / probe[cell])
-    stored = complex(float(bk.gain[cell // nx, cell % nx, 0]), float(bk.gain[cell // nx, cell % nx, 1]))
-    return batched, single, stored
-
-
-def bake_gap(
-    py: tuple[bytes, dict[str, Any], Any], rust: tuple[bytes, dict[str, Any], Any], model: UnitModel, entry: bytes
-) -> tuple[str | None, list[str]]:
-    """The bake gate (UNIT-color manager amendments 1 and 2, 2026-11-13).
-
-    Every float32 byte is exact, except a gain component where either
-    (a) Python's own float64 value, batched or single-cell, lies within 4 float64 ulp of a
-        float32 rounding midpoint and the Rust float32 is the neighbouring float32, or
-    (b) ``|rs - py| <= 8 * ulp_f64(|g_py|)``, with ``g_py`` Python's float64 gain at the cell as
-        the bake computed it (batched) and ``py`` its component.
-    Returns (failure or None, the allowed cells with their rule).
-    """
-    data, meta, bk = py
-    r_data, r_meta, summary = rust
-    if summary["bytes"] != len(r_data):
-        return "summary byte count", []
-    for key in ("nx", "ny", "origin", "step"):
-        if meta[key] != r_meta[key]:
-            return f"meta {key}: python {meta[key]!r} rust {r_meta[key]!r}", []
-    coef = np.asarray(r_meta["input_coefficients"], np.float64)
-    if not np.array_equal(coef, np.asarray(bk.input_coefficients, np.float64)):
-        return "input_coefficients differ", []
-    if data == r_data:
-        return None, []
-    a, b = np.frombuffer(data, "<f4"), np.frombuffer(r_data, "<f4")
-    if a.shape != b.shape:
-        return f"table sizes differ: {a.size} vs {b.size}", []
-    head = tables.PRE_FLOATS + 9 + 3 + 30 + 12
-    allowed: list[str] = []
-    for i in np.flatnonzero(a.view(np.uint32) != b.view(np.uint32)):
-        i = int(i)
-        text = f"float {i}: python {a[i]!r} rust {b[i]!r}"
-        if i < head:
-            return text + " (outside the gain grid)", allowed
-        cell, part = divmod(i - head, 2)
-        batched, single, stored = _gains(model, entry, bk, meta["nx"], cell)
-        pick = (lambda v: v.imag) if part else (lambda v: v.real)
-        text += f"; cell {cell} {'imag' if part else 'real'}: python f64 batched {pick(batched)!r} single {pick(single)!r}"
-        if np.float32(pick(batched)) != np.float32(pick(stored)):
-            return text + "; the recomputed batch does not reproduce the stored value", allowed
-        neighbour = b[i] in (np.nextafter(a[i], np.float32(np.inf)), np.nextafter(a[i], np.float32(-np.inf)))
-        ulps = min(_midpoint_ulps(pick(batched)), _midpoint_ulps(pick(single)))
-        if neighbour and ulps <= 4.0:
-            allowed.append(text + f"; rule (a): midpoint distance {ulps:.2f} f64 ulp")
-            continue
-        gap = abs(float(b[i]) - pick(batched))
-        scale = 8.0 * float(np.spacing(abs(batched)))
-        if gap <= scale:
-            allowed.append(text + f"; rule (b): |rs - py| {gap:.3e} <= 8 ulp_f64(|g| = {abs(batched)!r}) = {scale:.3e}")
-            continue
-        return (
-            text + f"; midpoint distance {ulps:.2f} f64 ulp (neighbour={neighbour}); |rs - py| {gap:.3e} > 8 ulp_f64(|g|) {scale:.3e}",
-            allowed,
-        )
-    return None, allowed
 
 
 def knob_request(params: dict[str, Any]) -> knobs.Request:

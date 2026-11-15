@@ -185,13 +185,14 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 ### 精度
 
 - 整数、字符串、错误种类和文案：一样。
-- 烘焙表：float32 逐字节相同。套用和 `predict(quantize=True)`：uint8 一样，没有 ±1 余量。
+- 烘焙表（Gate A / Gate B，PORT-WAVE-1 Amendments 1–3）：`color_parity.bake_gate`（基于 `tests/support/color_oracle*.py` 的无 BLAS/LAPACK/FMA 顺序 Python oracle，初等函数经 `gxr_math`/libm、`np.interp` 走 `interp_1d_seq`）校验 float64 全网格相对误差 `<= 1e-12·max(1,|a|)`；**Gate A** 要求 Rust 与顺序 oracle 的 float32 字节**逐位相等**，无掩码；**Gate B** 只允许真实 Python 与 Rust 在 Gate A 通过的格点上差值，并机械归因（oracle 与 Python 批量/单格 float64 值、各自落在 float32 舍入中点的哪一侧、以及恢复宿主 BLAS/FMA/libm 路径后精确复现 Python float32 的负对照；虚部极小近零分量 `|py| < 1e-4` 须满足 float64 `1e-12` 门限且负对照复现 Python）。套用和 `predict(quantize=True)`：uint8 一样，没有 ±1 余量。
+- 覆盖范围（`tests/test_core_parity_color_looks.py`）：对 `GXR_STUDIO_TEST_PARENT` 下全部 26 份真实 DAT 的每个 builtin、Look、record 与 user 配方，在 `jlaunch`（ISO 200 与 1600）、`qlaunch`（ISO 200）和 `l08firm`（ISO 200）合成校准包上测试默认（`step=0.375`）与各旋钮 ±max 极值（`step=2.0`），并显式校验原失败 Looks（`g158` `M9 STD`、`instax mini`、`QianXi A`）。
 - 未量化的 `predict` 和增益：`|a−b| ≤ 1e-12·max(1,|a|)`。
-- 运算都是顺序的乘加，不融合。numpy 在这台机器上会融合，也会用分块的 BLAS；这些差在 float64 的末位，存成 float32 或量化以后不见了（PORT-NOTES §2b）。
+- 运算都是顺序的乘加，不融合。numpy 在这台机器上会融合，也会用分块的 BLAS；这些差在 float64 的末位，跨过 float32 舍入中点时由上面的 Gate B 机械归因（PORT-NOTES §2b）。
 - 复数除法照 numpy 的写法：先选分支，再乘倒数 `1/(br + bi·rat)`，不是直接除。
 - `np.sum` 沿 24 个扇区是成对求和（8 路累加再成树）。
 - `np.interp` 照 numpy 的二分查找（带上一次的猜测）和斜率公式。
-- PCHIP 用 scipy 的导数和幂次求值（不是 Horner）。`ndtr` 是 Cephes，`exp` 等走 `gxr_math`。
+- PCHIP 用 scipy 的导数和幂次求值（不是 Horner）。`ndtr` 是 Cephes，`exp`、`sin`、`cos`、`atan2`、`hypot` 等走 `gxr_math`。
 - 凸包用单调链代替 Qhull。法向量和 Qhull 逐位相同；偏移量 Qhull 用了融合乘加，这里是普通乘加。
 
 ### 错误
