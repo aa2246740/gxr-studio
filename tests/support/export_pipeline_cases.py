@@ -187,10 +187,26 @@ def _dtype(d: Any) -> str:
     return name if name in _KNOWN_DTYPES and getattr(d, "names", None) is None else f"dtype#{_sha(name)}"
 
 
-def _fail(message: str) -> None:
+_HERE = Path(__file__).resolve()
+
+
+def _caller() -> str:
+    """The file name and line of the first frame outside this module (frame data only, no
+    traceback, no locals), so a failure stays locatable while its label is hashed."""
+    import sys
+
+    frame = sys._getframe(1)
+    while frame is not None and Path(frame.f_code.co_filename).resolve() == _HERE:
+        frame = frame.f_back
+    return "?:0" if frame is None else f"{Path(frame.f_code.co_filename).name}:{int(frame.f_lineno or 0)}"
+
+
+def _fail(label: str, detail: str) -> None:
+    """Fail with the label's hash prefix (the label may name a photo), the caller's file:line and
+    the helper's own redacted detail."""
     import pytest
 
-    pytest.fail(message, pytrace=False)
+    pytest.fail(f"label sha256 {_sha(str(label))} at {_caller()}: {detail}", pytrace=False)
 
 
 def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
@@ -218,21 +234,22 @@ def same_redacted(got: Any, want: Any, label: str) -> None:
     out: list[str] = []
     _diffs(got, want, "$", out)
     if out:
-        _fail(f"{label}: mismatch: " + "; ".join(out[:20]))
+        _fail(label, "mismatch: " + "; ".join(out[:20]))
 
 
 def check(ok: bool, label: str) -> None:
-    """A plain ``if`` in place of a bare ``assert``. ``label`` is a literal (the lint checks it)."""
+    """A plain ``if`` in place of a bare ``assert``. ``label`` is a literal (the lint checks it,
+    positional or ``label=``); like every helper here it is printed only as a hash."""
     if not ok:
-        _fail(f"{label}: check failed")
+        _fail(label, "check failed")
 
 
 def same_file_redacted(got: bytes | None, want: bytes, label: str) -> None:
     """Whole-file byte equality: lengths, the first differing byte and SHA-256 prefixes only."""
     if got is None:
-        _fail(f"{label}: no file (expected {len(want)} bytes, sha {digest(want)})")
+        _fail(label, f"no file (expected {len(want)} bytes, sha {digest(want)})")
     elif got != want:
-        _fail(f"{label}: {first_difference(got, want)}")
+        _fail(label, first_difference(got, want))
 
 
 def same_pixels(got: Any, want: Any, label: str) -> None:
@@ -240,11 +257,11 @@ def same_pixels(got: Any, want: Any, label: str) -> None:
     first index, never the values."""
     if got.shape != want.shape or got.dtype != want.dtype:
         got_shape, want_shape = tuple(int(v) for v in got.shape), tuple(int(v) for v in want.shape)
-        _fail(f"{label}: shape/dtype {got_shape} {_dtype(got.dtype)} vs {want_shape} {_dtype(want.dtype)}")
+        _fail(label, f"shape/dtype {got_shape} {_dtype(got.dtype)} vs {want_shape} {_dtype(want.dtype)}")
         return
     bad = np.argwhere(got != want)
     if len(bad):
-        _fail(f"{label}: {len(bad)} values differ, first at {tuple(int(v) for v in bad[0])}")
+        _fail(label, f"{len(bad)} values differ, first at {tuple(int(v) for v in bad[0])}")
 
 
 def error_kind(payload: Any) -> str:
@@ -258,27 +275,27 @@ def error_kind(payload: Any) -> str:
 def cli_ok(code: int, payload: Any, label: str) -> None:
     """A CLI call that must succeed: the exit code and the (known) error kind only."""
     if code != 0:
-        _fail(f"{label}: exit {int(code)}, kind {error_kind(payload)}")
+        _fail(label, f"exit {int(code)}, kind {error_kind(payload)}")
 
 
 def produced(got: Any, payload: Any, label: str) -> None:
     """A CLI call that must have written its output (``got`` not None): the known error kind only."""
     if got is None:
-        _fail(f"{label}: no output, kind {error_kind(payload)}")
+        _fail(label, f"no output, kind {error_kind(payload)}")
 
 
 def same_kind(payload: Any, want: str, label: str) -> None:
     """A CLI error payload of kind ``want`` (a literal): known kinds only, others hashed."""
     got = error_kind(payload)
     if got != want:
-        _fail(f"{label}: kind {got} vs {want if want in _KNOWN_KINDS else _sha(want)}")
+        _fail(label, f"kind {got} vs {want if want in _KNOWN_KINDS else _sha(want)}")
 
 
 def synthetic_failure(ok: bool, text: str, label: str) -> None:
     """For runs on synthetic inputs only (the WASM comparison reads no real photo, DAT or
     calibration): fail with the run's own output, which names the differing synthetic cases."""
     if not ok:
-        _fail(f"{label}: {text}")
+        _fail(label, text)
 
 
 _LINT = re.compile(
@@ -286,10 +303,25 @@ _LINT = re.compile(
 )
 
 
+# What to do about each lint rule (fixed text, printed with the report).
+LINT_HINTS = {
+    "E_ASSERT": "compare with same_redacted / same_file_redacted / same_pixels, or check() on a plain scalar",
+    "E_RAISE": "fail with a literal message, or use check()",
+    "E_OUTPUT": "record counts with note()",
+    "E_IDS": "use literal ids or anon_ids(<count>)",
+    "E_LABEL": "give check() a literal label",
+    "E_NPTEST": "compare arrays with same_pixels (np.testing prints the values)",
+    "E_SYNTHETIC": "synthetic_failure prints its text; use it only in the WASM test on synthetic inputs",
+}
+
+
 def lint_report(violations: list[str]) -> None:
-    """The guard's report: each entry is a rule code plus file:line (anything else is hashed)."""
+    """The guard's report: each entry is a rule code plus file:line (anything else is hashed),
+    followed by the fixed hint for each rule that fired."""
     if violations:
-        _fail("lint: " + ", ".join(v if _LINT.match(v) else f"#{_sha(v)}" for v in violations))
+        shown = [v if _LINT.match(v) else f"#{_sha(v)}" for v in violations]
+        hints = [f"{code}: {LINT_HINTS[code]}" for code in sorted({v.split()[0] for v in shown}) if code in LINT_HINTS]
+        _fail("lint", ", ".join(shown) + " | " + "; ".join(hints))
 
 
 def anon_ids(count: int) -> list[str]:

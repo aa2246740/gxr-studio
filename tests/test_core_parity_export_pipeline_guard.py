@@ -9,11 +9,19 @@ the export-pipeline canary support files. It does not try to resolve aliases or 
 
 - ``E_ASSERT``: a bare ``assert`` comparing anything but plain scalars (including ``len`` of a
   non-literal, and dynamic f-string format specs);
-- ``E_RAISE``: ``raise AssertionError(...)`` or ``pytest.fail(...)`` with non-literal content;
+- ``E_RAISE``: ``raise AssertionError(...)`` or ``pytest.fail(...)`` with non-literal content
+  (the message positional or as ``reason=`` / ``msg=``);
 - ``E_OUTPUT``: ``print``, ``logging``, ``sys.stdout`` / ``sys.stderr`` or ``warnings.warn``;
 - ``E_IDS``: parametrize ids that are not literals or ``anon_ids(<count>)``, a non-literal
   ``pytest.param(id=...)``, or fixture ``params`` / ``ids`` that are not literals;
-- ``E_LABEL``: ``check(...)`` with a label that is not a literal string.
+- ``E_LABEL``: ``check(...)`` with a label that is not a literal string (positional or ``label=``);
+- ``E_NPTEST``: any ``np.testing`` / ``numpy.testing`` use, or an ``assert_array_*`` /
+  ``assert_allclose`` call: they print the array values; use ``same_pixels``;
+- ``E_SYNTHETIC``: ``synthetic_failure`` (which prints its text) outside the WASM test.
+
+Arguments are looked up the same way for every call: the positional slot first, then the keyword;
+``*args`` / ``**kwargs`` count as non-literal. The other helpers print their label only as a hash
+(with the caller's file:line), so their labels need no rule. The report adds a fixed hint per rule.
 """
 
 from __future__ import annotations
@@ -127,6 +135,37 @@ def _ids_ok(ids: ast.expr | None) -> bool:
     return _anon_ids_ok(ids)
 
 
+_UNKNOWN = ast.Constant(value=None)  # stands for an argument hidden behind *args / **kwargs
+SYNTHETIC_OK = "test_core_parity_export_pipeline_wasm.py"
+
+
+def _arg(node: ast.Call, pos: int, *names: str) -> ast.expr | None:
+    """The argument in positional slot ``pos`` or under one of ``names``; ``_UNKNOWN`` when
+    ``*args`` / ``**kwargs`` could hold it; ``None`` when it is not given."""
+    for i, a in enumerate(node.args):
+        if isinstance(a, ast.Starred):
+            return _UNKNOWN
+        if i == pos:
+            return a
+    for k in node.keywords:
+        if k.arg is None:
+            return _UNKNOWN
+        if k.arg in names:
+            return k.value
+    return None
+
+
+def _nptest(node: ast.AST) -> bool:
+    if isinstance(node, ast.Attribute) and node.attr == "testing" and ast.unparse(node.value) in ("np", "numpy"):
+        return True
+    if isinstance(node, ast.Call):
+        last = ast.unparse(node.func).rsplit(".", 1)[-1]
+        return last.startswith("assert_array_") or last == "assert_allclose"
+    if isinstance(node, ast.ImportFrom):
+        return (node.module or "").startswith("numpy.testing") or (node.module == "numpy" and any(a.name == "testing" for a in node.names))
+    return isinstance(node, ast.Import) and any(a.name.startswith("numpy.testing") for a in node.names)
+
+
 def lint(source: str, name: str) -> list[str]:
     """Each accidental-leak pattern in ``source`` as ``E_RULE name:line``."""
     out: list[str] = []
@@ -139,8 +178,10 @@ def lint(source: str, name: str) -> list[str]:
                 out.append(f"E_RAISE {name}:{at}")
         if isinstance(node, ast.Call):
             func = ast.unparse(node.func)
-            if func == "pytest.fail" and node.args and not _literal_str(node.args[0]):
-                out.append(f"E_RAISE {name}:{at}")
+            if func == "pytest.fail":
+                message = _arg(node, 0, "reason", "msg")
+                if message is not None and not _literal_str(message):
+                    out.append(f"E_RAISE {name}:{at}")
             if func == "print" or func.startswith("logging.") or func in ("warnings.warn", "sys.stdout.write", "sys.stderr.write"):
                 out.append(f"E_OUTPUT {name}:{at}")
             if func.endswith("parametrize"):
@@ -152,8 +193,12 @@ def lint(source: str, name: str) -> list[str]:
                 out.append(f"E_IDS {name}:{at}")
             if func.endswith("fixture") and any(k.arg in ("params", "ids") and not _literal(k.value) for k in node.keywords):
                 out.append(f"E_IDS {name}:{at}")
-            if func == "check" and len(node.args) >= 2 and not _literal_str(node.args[1]):
+            if func == "check" and not _literal_str(_arg(node, 1, "label")):
                 out.append(f"E_LABEL {name}:{at}")
+            if func == "synthetic_failure" and name != SYNTHETIC_OK:
+                out.append(f"E_SYNTHETIC {name}:{at}")
+        if _nptest(node):
+            out.append(f"E_NPTEST {name}:{at}")
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             mods = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
             if any(m == "logging" or m.startswith("logging.") for m in mods):
@@ -168,10 +213,30 @@ def lint(source: str, name: str) -> list[str]:
     return sorted(set(out), key=lambda v: (v.split()[1], v))
 
 
+PROBE = "export_pipeline_canary_probe.py"
+SLIP_MARK = "# canary slip"
+
+
+def _deliberate(f: Path, violation: str) -> bool:
+    """A slip the canary probe makes on purpose: only in that file, only on a line ending in the marker."""
+    if f.name != PROBE:
+        return False
+    line = int(violation.rsplit(":", 1)[1])
+    return f.read_text(encoding="utf-8").split("\n")[line - 1].rstrip().endswith(SLIP_MARK)
+
+
 def test_export_pipeline_tests_pass_the_lint() -> None:
     files = _files()
     check(len(files) >= 7, "export-pipeline test files are missing")
-    lint_report([v for f in files for v in lint(f.read_text(encoding="utf-8"), f.name)])
+    found = [(f, v) for f in files for v in lint(f.read_text(encoding="utf-8"), f.name)]
+    lint_report([v for f, v in found if not _deliberate(f, v)])
+    marked = [v for f, v in found if _deliberate(f, v)]
+    check(marked == [f"E_LABEL {PROBE}:{_marked_line()}"], "the probe's marked slip is not exactly one E_LABEL")
+
+
+def _marked_line() -> int:
+    lines = (TESTS / "support" / PROBE).read_text(encoding="utf-8").split("\n")
+    return next(i for i, line in enumerate(lines, 1) if line.rstrip().endswith(SLIP_MARK))
 
 
 def test_lint_catches_the_known_patterns() -> None:
@@ -193,6 +258,23 @@ def test_lint_catches_the_known_patterns() -> None:
         "@pytest.mark.parametrize('c', [pytest.param(0, id=lens)], ids=['safe'])\ndef test_x(c):\n    pass\n": "E_IDS",
         "@pytest.fixture(params=[lens])\ndef f(request):\n    return 1\n": "E_IDS",
         'check(False, f"{lens}")': "E_LABEL",
+        # Sol r5 P2-01: keyword forms follow the positional rule.
+        'pytest.fail(reason=f"{lens} metadata mismatch", pytrace=False)': "E_RAISE",
+        "pytest.fail(msg=lens)": "E_RAISE",
+        "pytest.fail(*parts)": "E_RAISE",
+        'check(ok=False, label=f"{lens} metadata")': "E_LABEL",
+        "check(False, **opts)": "E_LABEL",
+        # Sol r5 P2-02: numpy.testing prints the arrays.
+        "np.testing.assert_array_equal(got, want)": "E_NPTEST",
+        "np.testing.assert_allclose(got, want)": "E_NPTEST",
+        "numpy.testing.assert_equal(got, want)": "E_NPTEST",
+        "assert_allclose(got, want)": "E_NPTEST",
+        "npt.assert_array_almost_equal(got, want)": "E_NPTEST",
+        "from numpy.testing import assert_equal": "E_NPTEST",
+        "from numpy import testing": "E_NPTEST",
+        "import numpy.testing": "E_NPTEST",
+        "t = np.testing": "E_NPTEST",
+        'synthetic_failure(ok, text, "x")': "E_SYNTHETIC",
     }
     for src, rule in bad.items():
         found = lint(src, "probe.py")
@@ -204,6 +286,11 @@ def test_lint_catches_the_known_patterns() -> None:
         'check(ok, "literal label")',
         'raise AssertionError("literal")',
         'pytest.fail("literal", pytrace=False)',
+        'pytest.fail(reason="literal", pytrace=False)',
+        'check(ok=False, label="literal")',
+        'same_redacted(got, want, f"{stem} labels")',
+        'same_pixels(got, want, label=f"{stem} canvas")',
+        "np.argwhere(got != want)",
         "@pytest.mark.parametrize('c', [0, 1])\ndef test_x(c):\n    pass\n",
         "@pytest.mark.parametrize('c', CASES, ids=anon_ids(len(CASES)))\ndef test_x(c):\n    pass\n",
         "@pytest.mark.parametrize('c', CASES, ids=['a', 'b'])\ndef test_x(c):\n    pass\n",
@@ -213,16 +300,50 @@ def test_lint_catches_the_known_patterns() -> None:
         check(len(lint(src, "probe.py")) == 0, "the lint flags a plain pattern")
 
 
+# Sol r5's ten slips (its probes/test_core_parity_export_pipeline_slips.py, inputs unchanged). The
+# six helper calls are safe now (labels hashed; the canary probe runs them); the other four fail.
+SOL_R5_SLIPS = """
+def test_metadata_label(photo):
+    same_redacted({"lens": photo}, {"lens": "expected"}, f"{photo} metadata")
+def test_file_label(photo):
+    same_file_redacted(photo.encode(), b"expected", f"{photo} export")
+def test_pixels_label(photo):
+    same_pixels(np.zeros(1, np.uint8), np.ones(1, np.uint8), f"{photo} canvas")
+def test_cli_label(photo):
+    cli_ok(2, {"error": {"kind": "bad_input", "message": photo}}, f"{photo} prepare")
+def test_missing_output_label(photo):
+    produced(None, {"error": {"kind": "bad_input"}}, f"{photo} complete")
+def test_error_kind_label(photo):
+    same_kind({"error": {"kind": "bad_input"}}, "json", f"{photo} kind")
+def test_check_keyword_label(photo):
+    check(ok=False, label=f"{photo} metadata")
+def test_pytest_fail_keyword(photo):
+    pytest.fail(reason=f"{photo} metadata mismatch", pytrace=False)
+def test_numpy_pixels():
+    np.testing.assert_array_equal(got, want)
+def test_numpy_allclose():
+    np.testing.assert_allclose(got, want)
+"""
+
+
+def test_lint_flags_sol_r5_slips() -> None:
+    want = ["E_LABEL slips.py:15", "E_RAISE slips.py:17", "E_NPTEST slips.py:19", "E_NPTEST slips.py:21"]
+    check(lint(SOL_R5_SLIPS, "slips.py") == sorted(want, key=lambda v: (v.split()[1], v)), "the lint misses a Sol r5 slip")
+
+
 def test_lint_report_names_the_rule_file_and_line(tmp_path: Path) -> None:
     """P3-01: a violation is reported as its rule code and file:line, so it can be fixed."""
     import subprocess
     import sys
 
     bad = tmp_path / "test_core_parity_export_pipeline_bad.py"
-    bad.write_text("def test_missing():\n    assert got == want\n", encoding="utf-8")
+    bad.write_text("def test_missing():\n    assert got == want\n    np.testing.assert_allclose(got, want)\n", encoding="utf-8")
     code = "import sys; sys.path[:0] = ['%s']; from support.export_pipeline_cases import lint_report; " % TESTS
     code += "from test_core_parity_export_pipeline_guard import lint; from pathlib import Path; "
     code += "p = Path('%s'); lint_report(lint(p.read_text(), p.name))" % bad
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False, timeout=60)  # noqa: S603  # nosec B603
     check(proc.returncode != 0, "a violation did not fail the lint")
-    check("E_ASSERT test_core_parity_export_pipeline_bad.py:2" in proc.stdout + proc.stderr, "the report lacks the rule, file and line")
+    out = proc.stdout + proc.stderr
+    check("E_ASSERT test_core_parity_export_pipeline_bad.py:2" in out, "the report lacks the rule, file and line")
+    check("E_NPTEST test_core_parity_export_pipeline_bad.py:3" in out, "the report lacks the numpy.testing rule")
+    check("E_NPTEST: compare arrays with same_pixels" in out, "the report lacks the same_pixels hint")

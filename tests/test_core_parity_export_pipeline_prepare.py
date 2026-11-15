@@ -335,59 +335,90 @@ def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> 
     check(compared >= 30, "too few sizes cases")
 
 
-# target: (child pytest node, plugin target or None for a probe module, failures expected, the
-# helper messages each failure must show, so a failure stays diagnosable without the data).
-CANARY_TARGETS: dict[str, tuple[str, str | None, int, list[str]]] = {
+# target: (child pytest node, plugin target or None for a probe module, failures expected, each
+# failure's message as (label or None for any, file of the failing call, a needle on that line,
+# the helper's detail)). Labels are printed only as a hash, followed by the caller's file:line.
+Site = tuple[str | None, str, str, str]
+_PROBE = "export_pipeline_canary_probe.py"
+_HDR = "test_core_parity_export_pipeline_hdr.py"
+_SLIP = "EXPORT_PIPELINE_EXIF_REDACTION_CANARY"
+CANARY_TARGETS: dict[str, tuple[str, str | None, int, list[Site]]] = {
     "sizes": (
         "test_core_parity_export_pipeline_prepare.py::test_output_sizes_match_desktop",
         "sizes",
         1,
-        ["S000 sizes 0: mismatch: $.meta.lens: got="],
+        [("S000 sizes 0", "test_core_parity_export_pipeline_prepare.py", "same_redacted(got, json.loads", "mismatch: $.meta.lens: got=")],
     ),
     "bytes": (
         "test_core_parity_export_pipeline_prepare.py::test_e2e_camera_jpg_shots_match_export_finish",
         "bytes",
         1,
-        ["P000: lengths ", ", first difference at byte "],
+        [("P000", "test_core_parity_export_pipeline_prepare.py", "same_file_redacted(got, py_file, stem)", "lengths ")],
     ),
     "raw": (
         "test_core_parity_export_pipeline_raw.py::test_raw_branches_real_pairs_match_export_finish",
         "raw",
         1,
-        [": lengths ", ", first difference at byte "],
+        [(None, "test_core_parity_export_pipeline_raw.py", "same_file_redacted(got, py_file, stem)", "lengths ")],
     ),
     "probe": (
-        "support/export_pipeline_canary_probe.py",
+        f"support/{_PROBE}",
         None,
-        7,
+        14,
         [
-            "SYNTHETIC HDR: Gate A: lengths ",
-            "SYNTHETIC HDR: Gate B: lengths ",
-            "SYNTHETIC hdr state: mismatch: $.problem: got=",
-            "SYNTHETIC pixels: 1 values differ, first at (2, 1, 0)",
-            "SYNTHETIC field: mismatch: $.meta.#",
-            "SYNTHETIC kind: kind unknown#",
-            "SYNTHETIC dtype: shape/dtype (2,) dtype#",
+            ("SYNTHETIC HDR: Gate A", _HDR, ': Gate A")', "lengths "),
+            ("SYNTHETIC HDR: Gate B", _HDR, ': Gate B")', "lengths "),
+            ("SYNTHETIC hdr state", _PROBE, '"SYNTHETIC hdr state")', "mismatch: $.problem: got="),
+            ("SYNTHETIC pixels", _PROBE, '"SYNTHETIC pixels")', "1 values differ, first at (2, 1, 0)"),
+            ("SYNTHETIC field", _PROBE, '"SYNTHETIC field")', "mismatch: $.meta.#"),
+            ("SYNTHETIC kind", _PROBE, '"SYNTHETIC kind")', "kind unknown#"),
+            ("SYNTHETIC dtype", _PROBE, '"SYNTHETIC dtype")', "shape/dtype (2,) dtype#"),
+            # Sol r5's slips: labels built from the photo's LensModel (the canary).
+            (f"{_SLIP} metadata", _PROBE, 'f"{photo} metadata")\n', "mismatch: $.lens: got="),
+            (f"{_SLIP} export", _PROBE, 'f"{photo} export")', "lengths "),
+            (f"{_SLIP} canvas", _PROBE, 'f"{photo} canvas")', "1 values differ, first at (0,)"),
+            (f"{_SLIP} prepare", _PROBE, 'f"{photo} prepare")', "exit 2, kind bad_input"),
+            (f"{_SLIP} complete", _PROBE, 'f"{photo} complete")', "no output, kind bad_input"),
+            (f"{_SLIP} kind", _PROBE, 'f"{photo} kind")', "kind bad_input vs json"),
+            (f"{_SLIP} metadata", _PROBE, "# canary slip", "check failed"),
         ],
     ),
 }
 
 
-@pytest.mark.parametrize("verbosity", ["-q", "-vv"])
+def _site_pattern(site: Site, repo: Path) -> str:
+    """The expected failure message: the label's hash, the caller's file:line, the helper detail."""
+    import re
+
+    from support.export_pipeline_cases import _sha
+
+    label, fname, needle, detail = site
+    where = repo / "tests" / fname if (repo / "tests" / fname).is_file() else repo / "tests" / "support" / fname
+    text = where.read_text(encoding="utf-8")
+    line = text[: text.index(needle)].count("\n") + 1
+    digest = re.escape(_sha(label)) if label is not None else "[0-9a-f]{16}"
+    return f"label sha256 {digest} at {re.escape(fname)}:{line}: {re.escape(detail)}"
+
+
+@pytest.mark.parametrize("verbosity", ["-q", "-v", "-vv"])
 @pytest.mark.parametrize("target", ["bytes", "probe", "raw", "sizes"])
 def test_failed_real_comparison_prints_no_exif(target: str, verbosity: str, tmp_path: Path) -> None:
-    """Sol r1–r4 P1: force failures on a synthetic EXIF canary through the real comparison code
-    (meta, finished file bytes, the RAW/LUT ``run_case``, HDR Gate A and B, HDR state, pixels) and
-    through the helpers' fixed vocabularies, under ``-q`` and ``-vv``. Every child test must fail
-    with its helper message, and neither the canary nor the pixel values may reach stdout, stderr
-    or the JUnit file (threat model in docs/mobile.md)."""
+    """Sol r1–r5 P1: force failures on a synthetic EXIF canary through the real comparison code
+    (meta, finished file bytes, the RAW/LUT ``run_case``, HDR Gate A and B, HDR state, pixels),
+    through the helpers' fixed vocabularies and through Sol r5's slips (labels made from the
+    photo's LensModel, ``check(label=...)``), under ``-q``, ``-v`` and ``-vv``. Every child test must
+    fail with the label's hash, the caller's file:line and the helper's detail, and neither the
+    canary nor the pixel values may reach stdout, stderr or the JUnit file (threat model in
+    docs/mobile.md)."""
     import os
+    import re
     import subprocess
     import sys
 
     from support.export_pipeline_canary import CANARY
     from support.export_pipeline_canary_probe import SECRETS
 
+    check(_SLIP == CANARY, "the slip labels use another canary")
     node, plugin, failures, messages = CANARY_TARGETS[target]
     if target == "raw":
         from support.export_source_cases import real_dat
@@ -408,8 +439,8 @@ def test_failed_real_comparison_prints_no_exif(target: str, verbosity: str, tmp_
     proc = subprocess.run(args, cwd=repo / "tests", env=env, capture_output=True, text=True, timeout=900, check=False)  # noqa: S603  # nosec B603
     check(proc.returncode == 1, "the forced failure did not fail the child")
     check(f"{failures} failed" in proc.stdout, "wrong number of child failures")
-    for message in messages:
-        check(message in proc.stdout, "a child failure lacks its helper message")
+    for site in messages:
+        check(re.search(_site_pattern(site, repo), proc.stdout) is not None, "a child failure lacks its hashed label, location or detail")
     for text in (proc.stdout, proc.stderr, junit.read_text(encoding="utf-8")):
         check(CANARY not in text, "the canary reached the output")
         check(not any(secret in text for secret in SECRETS), "pixel values reached the output")
