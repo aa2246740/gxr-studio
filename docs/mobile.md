@@ -356,6 +356,34 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - CLI 子命令：`geom-crop-box`、`geom-final-box`、`geom-warp`、`geom-header`（另附 `geom-warp-valid`、`geom-fitted-crop`、`geom-clamp-rect`、`geom-fit-ratio` 供对拍）。
 - WASM 导出：`geom_final_box(w, h, geometry_json, crop_json)` 与 `geom_warp(rgb_u8, w, h, geometry_json)`（返回 `WarpedImage`，提供 `width`、`height`、`rgb()`、`mask()`）。
 
+## 导出管线（`gxr-export` 的 `pipeline/`，命令前缀 `export-run-`）
+
+手机的整张导出拆成两次 Rust 调用，中间由浏览器画墨迹（文字、线条、标志、日期戳和光晕；PORT-WAVE-1「成片与导出 2–4」）。结果对齐桌面 1.0.1 的 `finish/serve.export_finish`。手机只导出 JPEG，不做 PNG。台账、目标文件夹、`claim_path` 的文件系统部分、本机配方和精确导出都不在手机上。
+
+- **`export_plan(shot, side, defaults, base)`**：`serve._plan`。返回 `original`（没有可见编辑、有相机 JPG、底图是自动或相机 JPG 时为真）和解析后的边框、日期戳。为真时调用方把解码后的相机 JPG 交给下一步，否则交 `color_image` 的结果。
+- **`export_prepare(...)`**：先校验品质和长边（`ExportOptions.validate`），再跑 `render.params.parse_edit` 里成片要用的部分，然后是调整、几何、裁剪（raster `finish_array`，不画日期戳）、日期戳版面、边框版面，以及只有背景和照片的画布（raster `draw_frame_canvas`）。返回画布（uint8）和 JSON：`frame`、`stamp`、`stamp_on`、`photo`、`labels`、`state`。
+  - 日期戳画在哪：`stamp_on == "photo"` 时画在照片上（坐标相对照片，`photo` 给出照片在画布上的位置，光晕不越出照片）。即时成像边框加 `placement == "border"` 时是 `"canvas"`，在边框画好之后画在画布上。
+  - `labels` 和桌面 `_stage_rgb` / `_original_labels` 写出的字典逐项相同，顺序也相同。
+  - `state` 是交给下一步的小 JSON（名字、品质、长边、标签、HDR），调用方原样传回。
+- **`export_complete(canvas, w, h, state, exif_json)`**：画好墨迹的画布先 `_fit` 到长边（gxr-finish resample 的 LANCZOS），再按 `_finish` 的参数编码一次。返回文件字节，以及 `ExportResult` 的字段（`width`、`height`、`bytes`、`render`、`render_label`、`format`、`render_kind`、`calibrated`、`detail`、`hdr`、`hdr_reason`、`recipe_binding`）和文件名 `file_name` / `tag`（`原名_gxr{tag}.jpg`，做成 HDR 时 tag 加 `_hdr`）。
+- **`export_output_sizes(w, h, side, defaults, layout, rect, preset, fonts)`**：`finish/sizes.output_sizes`。`w × h` 是源尺寸（相机 JPG 转正后的尺寸、DNG 裁切窗口或内嵌预览尺寸），由调用方从文件头得到。
+- 版面输入 `layout` 用 gxr-frame 的请求格式，去掉 `w`、`h`：`meta`、`logos`、`mark`、`taken`、`file_time`。字体和 `frame_layout` 一样，用字体包（`font_index` + `font_pack`）。
+- CLI：`export-run-plan`、`export-run-prepare`、`export-run-complete`、`export-run-sizes`，以及只做霍夫曼重编码的 `export-run-huffopt`。CLI 和 WASM 都调用 `pipeline::api`，同样的输入给出同样的字节。尺寸、品质和长边都按 f64 传入，先检查再收窄。
+
+### 为什么编码后还有一步重编码
+
+桌面 `_finish` 用 Pillow `optimize=True`，也就是 libjpeg-turbo 按这张图自己的符号统计重建霍夫曼表，仍是一次交错扫描。gxr-jpeg 的编码和 Pillow `optimize=False` 逐字节相同（Annex K 标准表）。量化后的系数两者一样，只有霍夫曼码不同。所以 `pipeline/huffopt.rs` 把 gxr-jpeg 的输出无损重编码：先用原表解出每个符号并计数，按 `jchuff.c` 的 `jpeg_gen_optimal_table`（平局取较大的符号，保留 256 号）建表，再用新表写出同样的符号和附加位。字节填充和末尾补 1 位都照 libjpeg 做。同一步还把段顺序改成 libjpeg 的写法（DQT 在 SOF0 前），JFIF 版本写 1.01。gxr-jpeg 写的是 SOF0 在前、JFIF 1.02。
+
+### 和桌面字节相同的前提
+
+- **ICC 时间戳。** Python 的 `srgb_icc()` 是 LittleCMS 运行时生成的，头里第 24–36 字节是生成时间，所以桌面每次运行写出的文件都不一样。gxr-jpeg 把这 12 字节固定了。测试先断言两份 588 字节的配置只有这 12 字节不同，再让 Python 用固定的那份。
+- **有理数。** Pillow 写 RATIONAL 时都经过 `_limit_rational(值, 2**32-1)`：分数约分，大于 1 时通过倒数限制（例如 28/10 写成 14/5）。gxr-jpeg 原样写分子分母，所以 `pipeline` 在交给 gxr-jpeg 之前先按 Pillow 的规则约分。带符号的有理数（SRATIONAL）在范围内时 Pillow 原样写，这里也不动。分母为 0 的值两边都原样写，但 Pillow 推断的类型是 SRATIONAL（NaN 不 ≥ 0），gxr-jpeg 推断的是 RATIONAL；真实照片里还没遇到。
+- **EXIF 描述里的 `binding`。** 桌面写 `engine_pin()`，手机无法得到同样的值。描述由 export-source 的 `Request.binding` 决定，界面传 `gxr-core <构建号>`；测试传桌面的值，描述就逐字节相同。
+
+### 内存
+
+4288×2848 一次导出（拉直 + 画廊边框 + 日期戳，再加一张长边 2048 的无边框导出），WASM 线性内存峰值 257.6 MiB（`mobile-export-pipeline/report/wasm-measure.json`）。离页面约 2 GiB 的上限很远。
+
 ## 第一版界面
 
 `mobile/index.html` 是给 iPhone Safari 的界面，不是开发壳。三屏都在内存里切换，不用浏览器的历史记录：起始、按拍摄时间分组的网格、编辑一张。
