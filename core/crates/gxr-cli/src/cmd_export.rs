@@ -25,6 +25,8 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "export-meta-exif" => cmd_exif(args)?,
         "export-meta-photo" => cmd_photo(args)?,
         "export-meta-preview" => cmd_preview(args)?,
+        "export-meta-tiff-tags" => cmd_tiff_tags(args)?,
+        "export-meta-ifd" => cmd_ifd(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
     Ok(Output {
@@ -170,24 +172,83 @@ fn cmd_batch(args: &[String]) -> Result<String, Failure> {
             continue;
         }
         let (path, name) = trimmed.split_once('\t').unwrap_or((trimmed, ""));
-        let bytes = common::read(path)?;
-        let open = open_json(&bytes).render();
-        let read = read_jpeg_meta(&bytes, now_year).to_json_string();
-        let photo = match photo_meta_from_bytes(
-            Some(&bytes),
-            None,
-            name,
-            mtime_ms,
-            tz_offset_min,
-            now_year,
-        ) {
-            Ok(res) => Json::object([("ok", res.to_json())]).render(),
-            Err(e) => gxr_raw::error_json(&e).render(),
-        };
-        let exif = read_source_exif(&bytes).to_json().render();
-        lines.push(format!(
-            "{{\"open\":{open},\"read\":{read},\"photo\":{photo},\"exif\":{exif}}}"
-        ));
+        let row_res: Result<String, Failure> = (|| {
+            let bytes = common::read(path)?;
+            let open = open_json(&bytes).render();
+            let read = read_jpeg_meta(&bytes, now_year).to_json_string();
+            let photo = match photo_meta_from_bytes(
+                Some(&bytes),
+                None,
+                name,
+                mtime_ms,
+                tz_offset_min,
+                now_year,
+            ) {
+                Ok(res) => Json::object([("ok", res.to_json())]).render(),
+                Err(e) => gxr_raw::error_json(&e).render(),
+            };
+            let exif = read_source_exif(&bytes).to_json().render();
+            Ok(format!(
+                "{{\"exit\":0,\"open\":{open},\"read\":{read},\"photo\":{photo},\"exif\":{exif}}}"
+            ))
+        })();
+        match row_res {
+            Ok(line) => lines.push(line),
+            Err(err) => lines.push(common::failure_row_json(&err).render()),
+        }
     }
     Ok(lines.join("\n"))
+}
+
+fn parse_group(args: &[String]) -> Result<Option<u16>, Failure> {
+    match opt_option(args, "--group")? {
+        Some(s) => s
+            .parse::<u16>()
+            .map(Some)
+            .map_err(|_| Failure::Usage(format!("bad --group {s:?}"))),
+        None => Ok(None),
+    }
+}
+
+fn cmd_tiff_tags(args: &[String]) -> Result<Json, Failure> {
+    let group = parse_group(args)?;
+    let mut entries = Vec::new();
+    for tag in 0..=u16::MAX {
+        if let Some(len) = gxr_export::meta::tiff_ifd::tiff_tag_length(tag, group) {
+            entries.push((tag.to_string(), Json::Int(i64::try_from(len).unwrap_or(-1))));
+        }
+    }
+    Ok(Json::object([
+        (
+            "group",
+            group.map_or(Json::Null, |g| Json::Int(i64::from(g))),
+        ),
+        ("lengths", Json::object(entries)),
+    ]))
+}
+
+fn cmd_ifd(args: &[String]) -> Result<Json, Failure> {
+    let path = common::option(args, "--file")?;
+    let group = parse_group(args)?;
+    let fixup = args.iter().any(|a| a == "--fixup");
+    let bytes = common::read(path)?;
+    let hdr = bytes
+        .get(..8)
+        .ok_or_else(|| gxr_raw::CoreError::raw_decode("SyntaxError: not a TIFF file"))?;
+    let (endian, bigtiff, off) = gxr_export::meta::tiff_ifd::parse_tiff_header(hdr, &bytes)
+        .map_err(gxr_raw::CoreError::raw_decode)?;
+    let ifd = gxr_export::meta::tiff_ifd::load_ifd(&bytes, endian, bigtiff, off, group, fixup)
+        .map_err(gxr_raw::CoreError::raw_decode)?;
+    let tags: Vec<(String, Json)> = ifd
+        .tags
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_exif_json()))
+        .collect();
+    Ok(Json::object([
+        ("tags", Json::object(tags)),
+        (
+            "next",
+            Json::Int(i64::try_from(ifd.next).unwrap_or(i64::MAX)),
+        ),
+    ]))
 }

@@ -25,6 +25,23 @@ pub struct Output {
     pub ok: bool,
 }
 
+/// JSON line payload for a failed batch row, preserving the single-file CLI exit code & error body.
+pub fn failure_row_json(err: &Failure) -> Json {
+    match err {
+        Failure::Core(e) => {
+            let err_obj = Json::object([
+                ("kind", Json::str(e.kind)),
+                ("message", Json::str(&e.message)),
+            ]);
+            Json::object([("exit", Json::Int(2)), ("error", err_obj)])
+        }
+        Failure::Usage(msg) => Json::object([
+            ("exit", Json::Int(1)),
+            ("stderr", Json::str(crate::format_usage_stderr(msg))),
+        ]),
+    }
+}
+
 /// `--name value` from the arguments after the path.
 pub fn option<'a>(args: &'a [String], name: &str) -> Result<&'a str, Failure> {
     let at = args

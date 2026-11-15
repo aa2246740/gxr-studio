@@ -422,18 +422,27 @@ fn begin_batch_cmd(args: &[String]) -> Result<String, Failure> {
         if path.is_empty() {
             continue;
         }
-        let jpg_bytes =
-            std::fs::read(path).map_err(|e| usage(format!("cannot read {path}: {e}")))?;
-        let state = begin(
-            &rgb,
-            w,
-            h,
-            Some(&dng_bytes),
-            dng_name,
-            Some(&jpg_bytes),
-            &params,
-        )?;
-        lines.push(state.to_meta_json().render());
+        let row_res: Result<Json, Failure> = (|| {
+            let jpg_bytes =
+                std::fs::read(path).map_err(|e| usage(format!("cannot read {path}: {e}")))?;
+            let state = begin(
+                &rgb,
+                w,
+                h,
+                Some(&dng_bytes),
+                dng_name,
+                Some(&jpg_bytes),
+                &params,
+            )?;
+            let meta = state.to_meta_json();
+            ensure_finite(&meta)?;
+            Ok(meta)
+        })();
+        let row_json = match row_res {
+            Ok(state) => Json::object([("exit", Json::Int(0)), ("state", state)]),
+            Err(err) => common::failure_row_json(&err),
+        };
+        lines.push(row_json.render());
     }
     Ok(lines.join("\n"))
 }

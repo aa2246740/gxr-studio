@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import struct
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
-from PIL import Image, TiffImagePlugin
+from PIL import Image, TiffImagePlugin, TiffTags
 
 import hdr_support as hs
 from gxr_studio.export import _DROP_EXIF_TAGS, _clean_text
@@ -34,6 +35,17 @@ from support.wasm_check import PKG
 MTIME_MS = 1_761_900_000_000.0
 TZ_OFFSET_MIN = 480
 NOW_YEAR = 2026
+# Documented mobile deviation: for JPEGs exceeding Pillow's pixel limit, desktop HdrTrack.begin
+# leaves DecompressionBombError uncaught, whereas mobile capture.rs reports metadata_unreadable.
+_ACCEPTED_BOMB_BEGIN_CASES = frozenset(
+    {
+        "ord_mp_big_bomb_sof",
+        "ord_mp_no_b002_bomb_sof",
+        "ord_bomb_solo",
+        "ord_zero_then_bomb",
+        "ord_ok_then_bomb",
+    }
+)
 
 
 @pytest.fixture(autouse=True)
@@ -230,11 +242,15 @@ def _run_sweep(tmp_path: Path, cases: list[SweepCase]) -> None:
     assert len(rs_begin) == len(cases)
 
     diffs: list[str] = []
+    bomb_cases_seen: set[str] = set()
     for idx, case in enumerate(cases):
         path = paths[idx]
         name = f"IMG_{idx:04d}.JPG"
         rm = rs_meta[idx]
         rb = rs_begin[idx]
+        assert rm["exit"] == 0, f"{case.name}: unexpected meta exit {rm}"
+        assert rb["exit"] == 0, f"{case.name}: unexpected begin exit {rb}"
+        rb_state = rb["state"]
 
         po = _py_open(path)
         ro = _norm_open(rm["open"])
@@ -257,18 +273,21 @@ def _run_sweep(tmp_path: Path, cases: list[SweepCase]) -> None:
             diffs.append(f"{case.name} ({case.family}) exif: rust={re} py={pe}")
 
         pb = _py_begin(path, dng_path, rgb)
-        # Documented boundary: Python HdrTrack.begin does not catch DecompressionBombError,
-        # while Rust capture.rs reports it as metadata_unreadable.
-        if pb == {"exception": "DecompressionBombError"} and rb == {
-            "active": False,
-            "shape": None,
-            "problem": "metadata_unreadable",
-        }:
+        # Accepted deviation: Python HdrTrack.begin raises DecompressionBombError uncaught,
+        # while Rust capture.rs reports it as metadata_unreadable on these 5 named cases.
+        if (
+            case.name in _ACCEPTED_BOMB_BEGIN_CASES
+            and pb == {"exception": "DecompressionBombError"}
+            and rb_state == {"active": False, "shape": None, "problem": "metadata_unreadable"}
+        ):
+            bomb_cases_seen.add(case.name)
             continue
-        if rb != pb:
-            diffs.append(f"{case.name} ({case.family}) begin: rust={rb} py={pb}")
+        if rb_state != pb:
+            diffs.append(f"{case.name} ({case.family}) begin: rust={rb_state} py={pb}")
 
     assert not diffs, f"{len(diffs)} parity differences (showing first 10):\n" + "\n".join(diffs[:10])
+    if any(c.name in _ACCEPTED_BOMB_BEGIN_CASES for c in cases):
+        assert bomb_cases_seen == _ACCEPTED_BOMB_BEGIN_CASES
 
 
 def test_sol_r3_jpeg_edge_cases_match_pillow_and_wasm(tmp_path: Path) -> None:
@@ -375,9 +394,227 @@ process.stdout.write(JSON.stringify(out));
         if line.strip()
     ]
     for case, w, rm, rb in zip(cases, wasm_rows, meta_rows, begin_rows, strict=True):
+        assert rm["exit"] == 0, case.name
+        assert rb["exit"] == 0, case.name
         assert w["exif"] == rm["exif"], case.name
         assert w["photo"] == rm["photo"], case.name
-        assert w["begin"] == rb, case.name
+        assert w["begin"] == rb["state"], case.name
+
+
+def _minimal_le_tiff(tag: int, typ: int, count: int, raw: bytes) -> bytes:
+    hdr = b"II*\x00\x08\x00\x00\x00"
+    n = struct.pack("<H", 1)
+    if len(raw) <= 4:
+        val_field = raw.ljust(4, b"\x00")
+        extra = b""
+    else:
+        val_field = struct.pack("<I", 26)
+        extra = raw
+    entry = struct.pack("<HHI", tag, typ, count) + val_field
+    return hdr + n + entry + b"\x00\x00\x00\x00" + extra
+
+
+def _py_ifd(tiff_bytes: bytes, group: int | None) -> dict[str, Any]:
+    bio = io.BytesIO(tiff_bytes)
+    hdr = bio.read(8)
+    ifd = TiffImagePlugin.ImageFileDirectory_v2(ifh=hdr, group=group)
+    ifd.load(bio)
+    return {str(k): _py_val_to_json(v) for k, v in ifd.items()}
+
+
+def test_tiff_tag_length_matches_pillow_groups(tmp_path: Path) -> None:
+    cli = require_cli()
+    groups: list[int | None] = [None, *sorted(TiffTags.TAGS_V2_GROUPS.keys()), 60000]
+    for group in groups:
+        cmd = [str(cli), "export-meta-tiff-tags"]
+        if group is not None:
+            cmd.extend(["--group", str(group)])
+        rust_data = json.loads(subprocess.check_output(cmd, text=True))
+        assert rust_data["group"] == group
+        py_lengths = {str(tag): length for tag in range(65536) if (length := TiffTags.lookup(tag, group).length) is not None}
+        assert rust_data["lengths"] == py_lengths, f"group={group}"
+
+    # Sol r4 four count=2 counterexamples + Exif/root/unknown-group controls + all 22 GPS non-1 tags
+    gps_non_scalar = [0, 1, 2, 3, 4, 7, 8, 9, 10, 12, 14, 16, 18, 19, 20, 21, 22, 23, 25, 27, 28, 29]
+    cases: list[tuple[str, int | None, bytes]] = [
+        ("gps_30_cnt2", 34853, _minimal_le_tiff(30, 3, 2, struct.pack("<HH", 0, 1))),
+        ("unknown_grp_30_cnt2", 60000, _minimal_le_tiff(30, 3, 2, struct.pack("<HH", 0, 1))),
+        ("interop_1_cnt2", 40965, _minimal_le_tiff(1, 3, 2, struct.pack("<HH", 1, 2))),
+        ("root_1_cnt2", None, _minimal_le_tiff(1, 3, 2, struct.pack("<HH", 1, 2))),
+        ("root_326_cnt2", None, _minimal_le_tiff(326, 3, 2, struct.pack("<HH", 2, 3))),
+        ("exif_326_cnt2", 34665, _minimal_le_tiff(326, 3, 2, struct.pack("<HH", 2, 3))),
+        ("root_327_cnt2", None, _minimal_le_tiff(327, 3, 2, struct.pack("<HH", 2, 3))),
+        ("exif_327_cnt2", 34665, _minimal_le_tiff(327, 3, 2, struct.pack("<HH", 2, 3))),
+    ]
+    for tag in gps_non_scalar:
+        cases.append((f"gps_{tag}_cnt1", 34853, _minimal_le_tiff(tag, 3, 1, struct.pack("<H", 7))))
+
+    for idx, (label, group, blob) in enumerate(cases):
+        tif_path = tmp_path / f"ifd_{idx:02d}.tif"
+        tif_path.write_bytes(blob)
+        cmd = [str(cli), "export-meta-ifd", "--file", str(tif_path)]
+        if group is not None:
+            cmd.extend(["--group", str(group)])
+        rust_tags = json.loads(subprocess.check_output(cmd, text=True))["tags"]
+        py_tags = _py_ifd(blob, group)
+        assert rust_tags == py_tags, f"{label}: rust={rust_tags} py={py_tags}"
+
+
+def test_batch_row_isolation(tmp_path: Path) -> None:
+    cli = require_cli()
+    jpg_bytes, dng_bytes = hs.pair(0, orientation=1, h=128, w=192)
+    dng_path = tmp_path / "ref.dng"
+    dng_path.write_bytes(dng_bytes)
+    rgb = load_jpeg(io.BytesIO(jpg_bytes), None)
+    rgb_path = tmp_path / "rgb.npy"
+    np.save(rgb_path, np.ascontiguousarray(rgb))
+
+    valid_jpg = tmp_path / "valid.jpg"
+    after_jpg = tmp_path / "after.jpg"
+    malformed_jpg = tmp_path / "malformed.jpg"
+    missing_jpg = tmp_path / "missing.jpg"
+    valid_jpg.write_bytes(jpg_bytes)
+    after_jpg.write_bytes(jpg_bytes)
+    malformed_jpg.write_bytes(b"\xff\xd8\xff\xc0\x00\x03\x08\xff\xd9")
+
+    for seq_name, items in [
+        ("missing", [("valid.jpg", valid_jpg), ("missing.jpg", missing_jpg), ("after.jpg", after_jpg)]),
+        ("malformed", [("valid.jpg", valid_jpg), ("malformed.jpg", malformed_jpg), ("after.jpg", after_jpg)]),
+    ]:
+        meta_manifest = tmp_path / f"meta_{seq_name}.tsv"
+        begin_manifest = tmp_path / f"begin_{seq_name}.txt"
+        meta_manifest.write_text("\n".join(f"{p}\t{name}" for name, p in items) + "\n", encoding="utf-8")
+        begin_manifest.write_text("\n".join(str(p) for _, p in items) + "\n", encoding="utf-8")
+
+        meta_batch = subprocess.run(
+            [
+                str(cli),
+                "export-meta-batch",
+                "--manifest",
+                str(meta_manifest),
+                "--mtime-ms",
+                str(int(MTIME_MS)),
+                "--tz-offset-min",
+                str(TZ_OFFSET_MIN),
+                "--now-year",
+                str(NOW_YEAR),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        begin_batch = subprocess.run(
+            [
+                str(cli),
+                "hdrtrack-begin-batch",
+                "--rgb",
+                str(rgb_path),
+                "--dng",
+                str(dng_path),
+                "--dng-name",
+                "ref.dng",
+                "--manifest",
+                str(begin_manifest),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        meta_rows = [json.loads(line) for line in meta_batch.stdout.splitlines() if line.strip()]
+        begin_rows = [json.loads(line) for line in begin_batch.stdout.splitlines() if line.strip()]
+        assert len(meta_rows) == 3, seq_name
+        assert len(begin_rows) == 3, seq_name
+
+        for row_idx, ((name, path), rm, rb) in enumerate(zip(items, meta_rows, begin_rows, strict=True)):
+            read_p = subprocess.run(
+                [str(cli), "export-meta-read", "--file", str(path), "--now-year", str(NOW_YEAR)],
+                capture_output=True,
+                text=True,
+            )
+            photo_p = subprocess.run(
+                [
+                    str(cli),
+                    "export-meta-photo",
+                    "--jpg",
+                    str(path),
+                    "--name",
+                    name,
+                    "--mtime-ms",
+                    str(int(MTIME_MS)),
+                    "--tz-offset-min",
+                    str(TZ_OFFSET_MIN),
+                    "--now-year",
+                    str(NOW_YEAR),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            exif_p = subprocess.run(
+                [str(cli), "export-meta-exif", "--src", str(path)],
+                capture_output=True,
+                text=True,
+            )
+            if rm["exit"] == 0:
+                assert read_p.returncode == 0 and photo_p.returncode == 0 and exif_p.returncode == 0
+                assert rm["read"] == json.loads(read_p.stdout)
+                assert rm["photo"] == {"ok": json.loads(photo_p.stdout)}
+                assert rm["exif"] == json.loads(exif_p.stdout)
+                assert _norm_open(rm["open"]) == _py_open(path)
+            else:
+                assert rm["exit"] == read_p.returncode == photo_p.returncode == exif_p.returncode == 2
+                assert rm == {"exit": 2, "error": json.loads(read_p.stdout)["error"]}
+                assert rm["error"] == json.loads(photo_p.stdout)["error"] == json.loads(exif_p.stdout)["error"]
+
+            begin_p = subprocess.run(
+                [
+                    str(cli),
+                    "hdrtrack-begin",
+                    "--rgb",
+                    str(rgb_path),
+                    "--dng",
+                    str(dng_path),
+                    "--dng-name",
+                    "ref.dng",
+                    "--jpeg",
+                    str(path),
+                    "--out",
+                    str(tmp_path / f"single_{seq_name}_{row_idx}.npy"),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if rb["exit"] == 0:
+                assert begin_p.returncode == 0
+                assert rb["state"] == json.loads(begin_p.stdout)
+            else:
+                assert rb["exit"] == begin_p.returncode == 1
+                assert rb == {"exit": 1, "stderr": begin_p.stderr}
+
+        assert meta_rows[0]["exit"] == 0 and meta_rows[2]["exit"] == 0
+        assert begin_rows[0]["exit"] == 0 and begin_rows[2]["exit"] == 0
+
+    # Global manifest/option/shared-input failure still aborts the whole batch
+    bad_meta = subprocess.run(
+        [str(cli), "export-meta-batch", "--manifest", str(tmp_path / "no_such_manifest.txt")],
+        capture_output=True,
+        text=True,
+    )
+    bad_begin = subprocess.run(
+        [
+            str(cli),
+            "hdrtrack-begin-batch",
+            "--rgb",
+            str(rgb_path),
+            "--dng",
+            str(tmp_path / "no_such.dng"),
+            "--manifest",
+            str(tmp_path / "begin_missing.txt"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert bad_meta.returncode != 0
+    assert bad_begin.returncode != 0
 
 
 def test_jpeg_header_differential_sweep_fast(tmp_path: Path) -> None:
