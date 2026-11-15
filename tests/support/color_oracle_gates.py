@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import numpy as np
@@ -143,14 +144,126 @@ def _midpoint_side(v: float, shared_mid: float | None = None) -> tuple[str, floa
     return side, mid, (v - mid) / float(np.spacing(abs(v)))
 
 
-def _unpack_bake(res: tuple[Any, ...]) -> tuple[bytes, dict[str, Any], Any | None]:
+def _unpack_rust_bake(res: tuple[Any, ...]) -> tuple[bytes, dict[str, Any], Any | None]:
     if len(res) == 2:
         return res[0], res[1], None
     return res[0], res[1], res[2]
 
 
+def _unpack_py_bake(
+    py: Any, witness_arg: np.ndarray | None
+) -> tuple[bytes, dict[str, Any], chain.ChromaBake | None, np.ndarray | None, str | None]:
+    if not isinstance(py, tuple):
+        return b"", {}, None, None, f"py must be a tuple, got {type(py).__name__}"
+    if len(py) == 2:
+        data, meta = py
+        bk = None
+        py_witness = None
+    elif len(py) == 3:
+        data, meta, bk = py
+        py_witness = None
+    elif len(py) == 4:
+        data, meta, bk, py_witness = py
+    else:
+        return b"", {}, None, None, f"expected py tuple of length 2..4, got {len(py)}"
+    if py_witness is not None and witness_arg is not None and py_witness is not witness_arg:
+        if not (
+            isinstance(py_witness, np.ndarray)
+            and isinstance(witness_arg, np.ndarray)
+            and py_witness.dtype == witness_arg.dtype
+            and np.array_equal(py_witness, witness_arg, equal_nan=True)
+        ):
+            return b"", {}, None, None, "conflicting float64 gain witnesses provided in py and witness="
+    use_witness = witness_arg if witness_arg is not None else py_witness
+    if use_witness is None:
+        return (
+            b"",
+            {},
+            None,
+            None,
+            "missing float64 gain witness: generate py via capture_bake_chroma and pass (bytes, meta, bk, witness) or witness=",
+        )
+    if not isinstance(use_witness, np.ndarray) or use_witness.dtype != np.float64:
+        got_type = type(use_witness).__name__
+        got_dtype = getattr(use_witness, "dtype", None)
+        return (
+            b"",
+            {},
+            None,
+            None,
+            f"float64 gain witness must be np.ndarray(dtype=float64), got {got_type}({got_dtype!r})",
+        )
+    return data, meta, bk, use_witness, None
+
+
 _GRID_CACHE: dict[tuple[Any, ...], OracleGridCache] = {}
-_TODO_CACHE: dict[tuple[bytes, float], tuple[int, int, tuple[float, float], np.ndarray]] = {}
+_CAPTURE_LOCK = threading.RLock()
+
+
+class _ReshapeCapture:
+    def __init__(self, arr: np.ndarray, captured: list[np.ndarray]) -> None:
+        self._arr = arr
+        self._captured = captured
+
+    def astype(self, dtype: Any, *args: Any, **kwargs: Any) -> np.ndarray:
+        if np.dtype(dtype) == np.dtype(np.float32):
+            if self._arr.dtype != np.dtype(np.float64):
+                raise RuntimeError(f"expected float64 gain grid before float32 cast, got {self._arr.dtype}")
+            self._captured.append(np.array(self._arr, dtype=np.float64, copy=True))
+        return self._arr.astype(dtype, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._arr, name)
+
+
+class _StackCapture:
+    def __init__(self, arr: np.ndarray, captured: list[np.ndarray]) -> None:
+        self._arr = arr
+        self._captured = captured
+
+    def reshape(self, *shape: Any, **kwargs: Any) -> _ReshapeCapture:
+        return _ReshapeCapture(self._arr.reshape(*shape, **kwargs), self._captured)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._arr, name)
+
+
+class _NumpyCaptureProxy:
+    def __init__(self, orig_np: Any, captured: list[np.ndarray]) -> None:
+        self._orig_np = orig_np
+        self._captured = captured
+
+    def stack(self, *args: Any, **kwargs: Any) -> _StackCapture:
+        return _StackCapture(self._orig_np.stack(*args, **kwargs), self._captured)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._orig_np, name)
+
+
+def capture_bake_chroma(
+    model: UnitModel,
+    entry: bytes,
+    step: float = chain.CHROMA_STEP,
+    *,
+    workers: int = 1,
+) -> tuple[chain.ChromaBake, np.ndarray]:
+    """Run production `chain.bake_chroma` once and capture the pre-float32 float64 gain grid `(ny, nx, 2)`."""
+    captured: list[np.ndarray] = []
+    with _CAPTURE_LOCK:
+        orig_np = chain.np
+        chain.np = _NumpyCaptureProxy(orig_np, captured)
+        try:
+            bk = chain.bake_chroma(model, entry, step, workers=workers)
+        finally:
+            chain.np = orig_np
+    if len(captured) != 1:
+        raise RuntimeError(f"chain.bake_chroma gain witness hook fired {len(captured)} times, expected 1")
+    witness = captured[0]
+    if witness.dtype != np.float64 or witness.shape != bk.gain.shape or witness.ndim != 3 or witness.shape[2] != 2:
+        raise RuntimeError(f"captured gain witness shape/dtype mismatch: {(witness.shape, witness.dtype)} vs {bk.gain.shape}")
+    if not np.array_equal(witness.astype(np.float32), bk.gain, equal_nan=True):
+        raise RuntimeError("captured float64 witness cast to float32 does not match ChromaBake.gain")
+    return bk, witness
 
 
 def _cache_key(model: UnitModel, step: float, backend: str) -> tuple[Any, ...]:
@@ -182,72 +295,103 @@ def _cached_grid(model: UnitModel, step: float) -> OracleGridCache:
     return seq_c
 
 
-def _production_todo(model: UnitModel, entry: bytes, step: float) -> tuple[int, int, tuple[float, float], np.ndarray]:
-    from scipy.spatial import ConvexHull
+def _validate_witness_and_meta(
+    data: bytes,
+    meta: dict[str, Any],
+    bk: chain.ChromaBake | None,
+    real_gain_f64: np.ndarray,
+    r_data: bytes,
+    r_meta: dict[str, Any],
+    summary: Any,
+    model: UnitModel,
+) -> str | None:
+    if isinstance(summary, dict) and "bytes" in summary and summary["bytes"] != len(r_data):
+        return f"summary byte count: {summary['bytes']} != {len(r_data)}"
+    for key in ("nx", "ny", "origin", "step"):
+        if meta[key] != r_meta[key]:
+            return f"meta {key}: python {meta[key]!r} rust {r_meta[key]!r}"
+    coef = np.asarray(r_meta["input_coefficients"], np.float64)
+    if not np.array_equal(coef, np.asarray(model.input_coefficients, np.float64)):
+        return "input_coefficients differ"
 
-    factory = getattr(model, "factory", entry)
-    key = (bytes(factory[216:244]), float(step))
-    cached = _TODO_CACHE.get(key)
-    if cached is not None:
-        return cached
-    lookup = model.mm.MatrixRow.from_bytes(factory[216:244])
-    lm = lookup.effective(100.0)
-    lo_off = lookup.offsets - np.array([0.0, 128.0, 128.0])
-    corners = np.array([[r, g, b] for r in (0, 255) for g in (0, 255) for b in (0, 255)], np.float64) @ lm.T + lo_off
-    lo = np.floor(corners[:, 1:].min(axis=0) / step) * step - step
-    hi = np.ceil(corners[:, 1:].max(axis=0) / step) * step + step
-    nx, ny = int(round((hi[0] - lo[0]) / step)) + 1, int(round((hi[1] - lo[1]) / step)) + 1
-    cb = lo[0] + step * np.arange(nx)
-    cr = lo[1] + step * np.arange(ny)
-    c = (cb[None, :] + 1j * cr[:, None]).reshape(-1)
-    hull = ConvexHull(corners[:, 1:])
-    near = np.all(
-        hull.equations[:, :2] @ np.column_stack([c.real, c.imag]).T + hull.equations[:, 2:3] <= 2.0 * step * np.sqrt(2.0),
-        axis=0,
-    )
-    val = (nx, ny, (float(lo[0]), float(lo[1])), np.flatnonzero(near))
-    if len(_TODO_CACHE) >= 16:
-        _TODO_CACHE.pop(next(iter(_TODO_CACHE)))
-    _TODO_CACHE[key] = val
-    return val
+    nx, ny = int(meta["nx"]), int(meta["ny"])
+    if real_gain_f64.shape != (ny, nx, 2):
+        return f"witness shape {real_gain_f64.shape} != expected {(ny, nx, 2)}"
+    head = tables.PRE_FLOATS + 9 + 3 + 30 + 12
+    expected_bytes = (head + ny * nx * 2) * 4
+    if len(data) != expected_bytes:
+        return f"py byte length {len(data)} != expected {expected_bytes}"
+    if bk is not None:
+        if bk.gain.shape != (ny, nx, 2):
+            return f"ChromaBake.gain shape {bk.gain.shape} != meta {(ny, nx, 2)}"
+        if [float(bk.origin[0]), float(bk.origin[1])] != [float(meta["origin"][0]), float(meta["origin"][1])]:
+            return f"ChromaBake.origin {bk.origin!r} != meta {meta['origin']!r}"
+        if float(bk.step) != float(meta["step"]):
+            return f"ChromaBake.step {bk.step!r} != meta {meta['step']!r}"
+        if np.ascontiguousarray(bk.gain, "<f4").tobytes() != data[head * 4 :]:
+            return "ChromaBake.gain bytes differ from py bake bytes"
+
+    witness_f32_bytes = np.ascontiguousarray(real_gain_f64.astype(np.float32), "<f4").tobytes()
+    if witness_f32_bytes != data[head * 4 :]:
+        w_f32 = np.frombuffer(witness_f32_bytes, "<f4")
+        p_gain_f32 = np.frombuffer(data[head * 4 :], "<f4")
+        mismatch = np.flatnonzero(w_f32.view(np.uint32) != p_gain_f32.view(np.uint32))
+        i = int(mismatch[0])
+        return f"witness.astype(float32) differs from py at gain float {i}: witness {w_f32[i]!r} vs py {p_gain_f32[i]!r}"
+    return None
 
 
-def _real_python_bake_f64(model: UnitModel, entry: bytes, step: float) -> tuple[chain.ChromaBake, np.ndarray]:
-    """Run production `chain.bake_chroma` (4096-cell batched `table.forward`) and capture float64 gains before float32 cast."""
-    table = model.engine.table
-    orig_forward = table.forward
-    batch_gains: list[np.ndarray] = []
-
-    def capturing_forward(probes: np.ndarray, z: Any) -> Any:
-        res = orig_forward(probes, z)
-        batch_gains.append(res[0] / probes)
-        return res
-
-    table.forward = capturing_forward
-    try:
-        bk = chain.bake_chroma(model, entry, step, workers=1)
-    finally:
-        table.forward = orig_forward
-
-    ny, nx = bk.gain.shape[:2]
-    if entry[0] == 3:
-        gain_f64 = np.empty((ny, nx, 2), dtype=np.float64)
-        gain_f64[..., 0] = 1.0
-        gain_f64[..., 1] = 0.0
-        return bk, gain_f64
-
-    p_nx, p_ny, p_origin, todo = _production_todo(model, entry, step)
-    if (p_nx, p_ny) != (nx, ny) or p_origin != bk.origin:
-        raise RuntimeError(f"production grid mismatch: {(p_nx, p_ny, p_origin)} vs {(nx, ny, bk.origin)}")
-    cat = np.concatenate(batch_gains) if batch_gains else np.empty(0, dtype=np.complex128)
-    if len(cat) != len(todo):
-        raise RuntimeError(f"captured {len(cat)} forward gains != {len(todo)} todo cells")
-    gain_c = np.ones(nx * ny, dtype=np.complex128)
-    gain_c[todo] = cat
-    gain_f64 = np.stack([gain_c.real, gain_c.imag], axis=-1).reshape(ny, nx, 2)
-    if not np.array_equal(gain_f64.astype(np.float32), bk.gain, equal_nan=True):
-        raise RuntimeError("captured float64 gain grid cast to float32 does not match ChromaBake.gain")
-    return bk, gain_f64
+def _attribute_gate_b(
+    diffs: np.ndarray,
+    py_f32: np.ndarray,
+    rs_f32: np.ndarray,
+    model: UnitModel,
+    entry: bytes,
+    bk: chain.ChromaBake | None,
+    or_bk: chain.ChromaBake,
+    nx: int,
+    head: int,
+    backend: str,
+) -> tuple[str | None, list[str]]:
+    allowed: list[str] = []
+    use_bk = bk if bk is not None else or_bk
+    for idx in diffs:
+        i = int(idx)
+        text = f"float {i}: python {py_f32[i]!r} rust {rs_f32[i]!r}"
+        if i < head:
+            return text + " (outside the gain grid)", allowed
+        cell, part = divmod(i - head, 2)
+        pick = (lambda c: c.imag) if part else (lambda c: c.real)
+        batched, single, stored, or_c = _cell_gains(model, entry, use_bk, nx, cell, use_libm=True, use_seq_matmul=True, use_seq_cplx=True)
+        _b2, _s2, _st2, host_ctrl = _cell_gains(model, entry, use_bk, nx, cell, use_libm=False, use_seq_matmul=False, use_seq_cplx=False)
+        or_v, py_v, single_v, host_v = pick(or_c), pick(batched), pick(single), pick(host_ctrl)
+        if np.float32(or_v) != rs_f32[i]:
+            return text + f"; cell {cell} Gate A consistency mismatch: np.float32({or_v!r}) != {rs_f32[i]!r}", allowed
+        if bk is not None and np.float32(py_v) != np.float32(pick(stored)):
+            return text + f"; cell {cell} recomputed Python batch ({py_v!r}) != stored ({pick(stored)!r})", allowed
+        rel_gap = abs(or_v - py_v)
+        rel_lim = 1e-12 * max(1.0, abs(py_v))
+        if rel_gap > rel_lim:
+            return text + f"; cell {cell} |or_f64 - py_f64| {rel_gap:.3e} > 1e-12 rel {rel_lim:.3e}", allowed
+        if np.float32(host_v) != py_f32[i]:
+            return (
+                text + f"; cell {cell} negative control failed: host_f64 {host_v!r} -> {np.float32(host_v)!r} != py {py_f32[i]!r}",
+                allowed,
+            )
+        neighbour = rs_f32[i] in (np.nextafter(py_f32[i], np.float32(np.inf)), np.nextafter(py_f32[i], np.float32(-np.inf)))
+        if not neighbour and abs(py_v) >= 1e-4:
+            return text + f"; cell {cell} Gate B diff exceeds 1 float32 ULP (or_f64={or_v!r}, py_f64={py_v!r})", allowed
+        shared_mid = (float(py_f32[i]) + float(rs_f32[i])) / 2.0 if neighbour else None
+        or_side, mid, or_ulp = _midpoint_side(or_v, shared_mid)
+        py_side, _mid, py_ulp = _midpoint_side(py_v, shared_mid)
+        span_note = "" if neighbour else f" [near-zero gap {rel_gap:.3e} <= 1e-12]"
+        allowed.append(
+            f"{text}; cell {cell} {'imag' if part else 'real'}: "
+            f"or_f64={or_v!r} ({or_side} mid {mid!r} by {or_ulp:+.1f} ulp), "
+            f"py_f64 batched={py_v!r} single={single_v!r} ({py_side} mid by {py_ulp:+.1f} ulp), "
+            f"neg_ctrl_host={host_v!r} -> {np.float32(host_v)!r} (Gate A exact via {backend}){span_note}"
+        )
+    return None, allowed
 
 
 def bake_gate(
@@ -256,21 +400,19 @@ def bake_gate(
     model: UnitModel,
     entry: bytes,
     *,
+    witness: np.ndarray | None = None,
     grid_cache: OracleGridCache | None = None,
     host_cache: OracleGridCache | None = None,
 ) -> tuple[str | None, list[str]]:
     """Gate A (Rust == sequential oracle exact, zero masks) and Gate B (mechanical host attribution vs Python)."""
-    _ = host_cache  # kept for caller signature compatibility; real Python f64 check always runs via chain.bake_chroma
-    data, meta, bk = _unpack_bake(py)
-    r_data, r_meta, summary = _unpack_bake(rust)
-    if isinstance(summary, dict) and "bytes" in summary and summary["bytes"] != len(r_data):
-        return f"summary byte count: {summary['bytes']} != {len(r_data)}", []
-    for key in ("nx", "ny", "origin", "step"):
-        if meta[key] != r_meta[key]:
-            return f"meta {key}: python {meta[key]!r} rust {r_meta[key]!r}", []
-    coef = np.asarray(r_meta["input_coefficients"], np.float64)
-    if not np.array_equal(coef, np.asarray(model.input_coefficients, np.float64)):
-        return "input_coefficients differ", []
+    _ = host_cache  # kept for caller signature compatibility; host check runs only on Gate B float32 diffs
+    data, meta, bk, real_gain_f64, unpack_err = _unpack_py_bake(py, witness)
+    if unpack_err is not None or real_gain_f64 is None:
+        return unpack_err or "missing float64 gain witness", []
+    r_data, r_meta, summary = _unpack_rust_bake(rust)
+    val_err = _validate_witness_and_meta(data, meta, bk, real_gain_f64, r_data, r_meta, summary, model)
+    if val_err is not None:
+        return val_err, []
 
     step = float(meta["step"])
     if grid_cache is None:
@@ -280,7 +422,6 @@ def bake_gate(
         if or_meta[key] != r_meta[key]:
             return f"Gate A oracle meta {key}: oracle {or_meta[key]!r} rust {r_meta[key]!r}", []
 
-    _real_bk, real_gain_f64 = _real_python_bake_f64(model, entry, step)
     rel_err = float64_rel_gap(real_gain_f64, or_gain_f64)
     if rel_err is not None:
         return f"Real Python vs Oracle float64 > 1e-12 rel: {rel_err}", []
@@ -312,49 +453,4 @@ def bake_gate(
     diffs = np.flatnonzero(py_f32.view(np.uint32) != rs_f32.view(np.uint32))
     if not len(diffs):
         return None, []
-    allowed: list[str] = []
-    use_bk = bk if bk is not None else or_bk
-    for idx in diffs:
-        i = int(idx)
-        text = f"float {i}: python {py_f32[i]!r} rust {rs_f32[i]!r}"
-        if i < head:
-            return text + " (outside the gain grid)", allowed
-        cell, part = divmod(i - head, 2)
-        pick = (lambda c: c.imag) if part else (lambda c: c.real)
-        batched, single, stored, or_c = _cell_gains(
-            model, entry, use_bk, meta["nx"], cell, use_libm=True, use_seq_matmul=True, use_seq_cplx=True
-        )
-        _b2, _s2, _st2, host_ctrl = _cell_gains(
-            model, entry, use_bk, meta["nx"], cell, use_libm=False, use_seq_matmul=False, use_seq_cplx=False
-        )
-        or_v = pick(or_c)
-        py_v = pick(batched)
-        single_v = pick(single)
-        host_v = pick(host_ctrl)
-        if np.float32(or_v) != rs_f32[i]:
-            return text + f"; cell {cell} Gate A consistency mismatch: np.float32({or_v!r}) != {rs_f32[i]!r}", allowed
-        if bk is not None and np.float32(py_v) != np.float32(pick(stored)):
-            return text + f"; cell {cell} recomputed Python batch ({py_v!r}) != stored ({pick(stored)!r})", allowed
-        rel_gap = abs(or_v - py_v)
-        rel_lim = 1e-12 * max(1.0, abs(py_v))
-        if rel_gap > rel_lim:
-            return text + f"; cell {cell} |or_f64 - py_f64| {rel_gap:.3e} > 1e-12 rel {rel_lim:.3e}", allowed
-        if np.float32(host_v) != py_f32[i]:
-            return (
-                text + f"; cell {cell} negative control failed: host_f64 {host_v!r} -> {np.float32(host_v)!r} != py {py_f32[i]!r}",
-                allowed,
-            )
-        neighbour = rs_f32[i] in (np.nextafter(py_f32[i], np.float32(np.inf)), np.nextafter(py_f32[i], np.float32(-np.inf)))
-        if not neighbour and abs(py_v) >= 1e-4:
-            return text + f"; cell {cell} Gate B diff exceeds 1 float32 ULP (or_f64={or_v!r}, py_f64={py_v!r})", allowed
-        shared_mid = (float(py_f32[i]) + float(rs_f32[i])) / 2.0 if neighbour else None
-        or_side, mid, or_ulp = _midpoint_side(or_v, shared_mid)
-        py_side, _mid, py_ulp = _midpoint_side(py_v, shared_mid)
-        span_note = "" if neighbour else f" [near-zero gap {rel_gap:.3e} <= 1e-12]"
-        allowed.append(
-            f"{text}; cell {cell} {'imag' if part else 'real'}: "
-            f"or_f64={or_v!r} ({or_side} mid {mid!r} by {or_ulp:+.1f} ulp), "
-            f"py_f64 batched={py_v!r} single={single_v!r} ({py_side} mid by {py_ulp:+.1f} ulp), "
-            f"neg_ctrl_host={host_v!r} -> {np.float32(host_v)!r} (Gate A exact via {backend}){span_note}"
-        )
-    return None, allowed
+    return _attribute_gate_b(diffs, py_f32, rs_f32, model, entry, bk, or_bk, int(meta["nx"]), head, backend)

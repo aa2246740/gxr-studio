@@ -203,10 +203,10 @@ def test_oracle_negative_controls_restoring_host_kernels_fail(tmp_path: Path) ->
     assert np.array_equal(p_seq[:, 0], interp_1d_seq(np.arange(4096, dtype=np.float64), xs, ys))
 
 
-def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path) -> None:
-    """Injecting 1e-10 into real `table.forward` (with float32 unchanged) must fail `bake_gate` (Sol r1 P1)."""
+def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reference-run 1e-10 injection (restored before `bake_gate`), persistent injection, and monochrome/outside-hull
+    `np.ones` 1e-10 injection (all with float32 unchanged) must fail `bake_gate` (Sol r1 P1 & Sol r2 P1/P2)."""
     from gxr_studio.gpu import tables
-    from gxr_studio.render import chain
 
     require_cli()
     pack = cp.synthetic_pack(tmp_path / "pk", rows=4)
@@ -220,6 +220,9 @@ def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path) -> 
     host_cache = co.build_grid_cache(model, 2.0, use_libm=False, use_seq_matmul=False, use_seq_cplx=False)
     ok_err, _ok_allowed = cp.bake_gate(py, rust, model, entry, grid_cache=cache, host_cache=host_cache)
     assert ok_err is None, ok_err
+    # Also accept 2-tuple (data, meta) with explicit `witness=` kwarg (ui-m2 reference caller pattern).
+    ok_err_kw, _ = cp.bake_gate((py[0], py[1]), rust, model, entry, witness=py[3], grid_cache=cache)
+    assert ok_err_kw is None, ok_err_kw
 
     original_forward = model.engine.table.forward
     calls = 0
@@ -241,22 +244,131 @@ def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path) -> 
         injected += int(np.count_nonzero(chosen))
         return (np.where(chosen, candidate, result[0]), *result[1:])
 
+    def counting_forward(probes: np.ndarray, z: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original_forward(probes, z)
+
+    # 1) Persistent injection (Sol r1): table.forward mutated during capture and left in place.
     model.engine.table.forward = capturing_forward
     try:
-        mutated_bk = chain.bake_chroma(model, entry, 2.0, workers=1)
+        mutated_bk, mutated_witness = cp.capture_bake_chroma(model, entry, 2.0, workers=1)
         mutated_data, mutated_meta = tables.bake_bytes(mutated_bk)
         assert injected > 0 and mutated_data == py[0], "negative control must keep float32 bytes unchanged"
-        calls_before = calls
-        err_cached, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk), rust, model, entry, grid_cache=cache, host_cache=host_cache)
-        calls_after_cached = calls
-        err_auto, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk), rust, model, entry)
-        calls_after_auto = calls
-        assert calls_after_cached > calls_before, "cached bake_gate must invoke production table.forward"
-        assert calls_after_auto > calls_after_cached, "auto-cache bake_gate must invoke production table.forward"
-        assert err_cached is not None and "1e-12" in err_cached, err_cached
-        assert err_auto is not None and "1e-12" in err_auto, err_auto
+        err_persist_cached, _ = cp.bake_gate(
+            (mutated_data, mutated_meta, mutated_bk, mutated_witness),
+            rust,
+            model,
+            entry,
+            grid_cache=cache,
+            host_cache=host_cache,
+        )
+        err_persist_auto, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk, mutated_witness), rust, model, entry)
+        assert err_persist_cached is not None and "1e-12" in err_persist_cached, err_persist_cached
+        assert err_persist_auto is not None and "1e-12" in err_persist_auto, err_persist_auto
     finally:
         model.engine.table.forward = original_forward
+
+    # 2) Reference-run restored injection (Sol r2 #1): restore table.forward BEFORE calling bake_gate,
+    #    and verify bake_gate does NOT re-invoke table.forward when validating the captured witness.
+    model.engine.table.forward = counting_forward
+    try:
+        calls_before = calls
+        err_restored_cached, _ = cp.bake_gate(
+            (mutated_data, mutated_meta, mutated_bk, mutated_witness),
+            rust,
+            model,
+            entry,
+            grid_cache=cache,
+            host_cache=host_cache,
+        )
+        err_restored_auto, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk, mutated_witness), rust, model, entry)
+        err_restored_kw, _ = cp.bake_gate((mutated_data, mutated_meta), rust, model, entry, witness=mutated_witness, grid_cache=cache)
+        assert calls == calls_before, "bake_gate must validate the captured witness without re-running chain.bake_chroma"
+        assert err_restored_cached is not None and "1e-12" in err_restored_cached, err_restored_cached
+        assert err_restored_auto is not None and "1e-12" in err_restored_auto, err_restored_auto
+        assert err_restored_kw is not None and "1e-12" in err_restored_kw, err_restored_kw
+    finally:
+        model.engine.table.forward = original_forward
+
+    # 3) Monochrome & outside-hull identity-fill injection via np.ones (Sol r2 #2).
+    bw_entry = cf.entry(kind=3)
+    bw_py, bw_rust = cp.bake(work, pack, bw_entry, params={"step": 2.0})
+    assert not isinstance(bw_py, BaseException) and not isinstance(bw_rust, cp.CoreCliError)
+    assert cp.bake_gate(bw_py, bw_rust, model, bw_entry, grid_cache=cache)[0] is None
+
+    orig_ones = np.ones
+
+    def poisoned_ones(shape: Any, dtype: Any = float, *args: Any, **kwargs: Any) -> np.ndarray:
+        arr = orig_ones(shape, dtype, *args, **kwargs)
+        if np.dtype(dtype) == np.dtype(complex):
+            return arr + 1e-10
+        return arr
+
+    monkeypatch.setattr(np, "ones", poisoned_ones)
+    bw_bad_bk, bw_bad_witness = cp.capture_bake_chroma(model, bw_entry, 2.0, workers=1)
+    bw_bad_data, bw_bad_meta = tables.bake_bytes(bw_bad_bk)
+    assert bw_bad_data == bw_py[0], "monochrome negative control must keep float32 bytes unchanged"
+    err_bw_cached, _ = cp.bake_gate((bw_bad_data, bw_bad_meta, bw_bad_bk, bw_bad_witness), bw_rust, model, bw_entry, grid_cache=cache)
+    err_bw_auto, _ = cp.bake_gate((bw_bad_data, bw_bad_meta, bw_bad_bk, bw_bad_witness), bw_rust, model, bw_entry)
+    assert err_bw_cached is not None and "1e-12" in err_bw_cached, err_bw_cached
+    assert err_bw_auto is not None and "1e-12" in err_bw_auto, err_bw_auto
+
+    # Also catches outside-hull (~near) 1e-10 drift on colour entries (where table.forward only fills `near`).
+    hull_bad_bk, hull_bad_witness = cp.capture_bake_chroma(model, entry, 2.0, workers=1)
+    hull_bad_data, hull_bad_meta = tables.bake_bytes(hull_bad_bk)
+    assert hull_bad_data == py[0], "outside-hull negative control must keep float32 bytes unchanged"
+    err_hull, _ = cp.bake_gate((hull_bad_data, hull_bad_meta, hull_bad_bk, hull_bad_witness), rust, model, entry, grid_cache=cache)
+    assert err_hull is not None and "1e-12" in err_hull, err_hull
+
+
+def test_oracle_witness_validation_and_hook_errors_fail_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing, non-float64, tampered, mismatched, or hook-bypassed witnesses must fail loudly (never skip)."""
+    from gxr_studio.render import chain
+
+    require_cli()
+    pack = cp.synthetic_pack(tmp_path / "pk", rows=4)
+    model = pack.model()
+    entry = cf.entry(words=2, tilt=5)
+    work = tmp_path / "w"
+    work.mkdir()
+    py, rust = cp.bake(work, pack, entry, params={"step": 2.0})
+    assert not isinstance(py, BaseException) and not isinstance(rust, cp.CoreCliError)
+    data, meta, bk, witness = py
+    cache = co.build_grid_cache(model, 2.0)
+
+    for bad_py, kw, needle in (
+        ((data, meta), {}, "missing float64 gain witness"),
+        ((data, meta, bk), {}, "missing float64 gain witness"),
+        ((data, meta, bk), {"witness": witness.astype(np.float32)}, "float64"),
+        ((data, meta, bk), {"witness": witness[:, :, :1]}, "witness shape"),
+        ((data, meta, bk, witness), {"witness": witness + 1.0}, "conflicting"),
+        ((data, meta, bk, witness + 1.0), {}, "witness.astype(float32) differs from py"),
+    ):
+        err, _ = cp.bake_gate(bad_py, rust, model, entry, grid_cache=cache, **kw)
+        assert err is not None and needle in err, (needle, err)
+
+    # Hook firing 0 times or 2 times must raise RuntimeError and still restore chain.np.
+    orig_bake_chroma = chain.bake_chroma
+    orig_np = chain.np
+
+    def bypass_hook(mdl: Any, ent: bytes, step: float = chain.CHROMA_STEP, *, workers: int = 1) -> Any:
+        _ = workers
+        return bk
+
+    def double_hook(mdl: Any, ent: bytes, step: float = chain.CHROMA_STEP, *, workers: int = 1) -> Any:
+        _ = orig_bake_chroma(mdl, ent, step, workers=workers)
+        return orig_bake_chroma(mdl, ent, step, workers=workers)
+
+    monkeypatch.setattr(chain, "bake_chroma", bypass_hook)
+    with pytest.raises(RuntimeError, match="fired 0 times"):
+        cp.capture_bake_chroma(model, entry, 2.0)
+    assert chain.np is orig_np
+
+    monkeypatch.setattr(chain, "bake_chroma", double_hook)
+    with pytest.raises(RuntimeError, match="fired 2 times"):
+        cp.capture_bake_chroma(model, entry, 2.0)
+    assert chain.np is orig_np
 
 
 @pytest.mark.parametrize("look_name", ["instax mini", "QianXi A", "M9 STD"])
