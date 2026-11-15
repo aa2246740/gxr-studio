@@ -1,5 +1,5 @@
-//! Export exports. Owner: wave-2 export (export-pipeline: `export_plan`, `export_prepare`,
-//! `export_complete`, `export_output_sizes`).
+//! Export exports. Owner: wave-2 export (export-meta: `export_meta_*`; export-pipeline:
+//! `export_plan`, `export_prepare`, `export_complete`, `export_output_sizes`).
 //!
 //! Each export calls `gxr_export::pipeline::api`, the same code `gxr-cli export-run-*` runs, and
 //! returns the same JSON text the CLI prints. Sizes and options arrive as `f64` and are checked
@@ -7,12 +7,15 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
+use gxr_export::meta::{
+    DEFAULT_NOW_YEAR, dng_preview_location, photo_meta_from_bytes, read_source_exif,
+};
 use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs, SourceFiles};
 use gxr_export::pipeline::{ExportFail, ExportOpts};
 use gxr_export::source::pack_from_index;
 use gxr_frame::{Fonts, fonts_from_pack};
-use gxr_raw::Json;
 use gxr_raw::sha256::sha256_hex;
+use gxr_raw::{Json, error_json};
 
 fn rejected(fail: ExportFail) -> JsValue {
     JsValue::from_str(&fail.to_json().render())
@@ -234,4 +237,48 @@ pub fn export_output_sizes(
     api::sizes(&args, &fonts)
         .map(|j| format!("{}\n", j.render()))
         .map_err(rejected)
+}
+
+// ---- export-meta
+
+fn meta_rejected(err: &gxr_raw::CoreError) -> JsValue {
+    JsValue::from_str(&error_json(err).render())
+}
+
+/// Extract source EXIF `{base, sub}` JSON matching `gxr_studio/export.py:write_with_exif`.
+#[wasm_bindgen]
+pub fn export_meta_exif(bytes: &[u8]) -> Result<String, JsValue> {
+    let text = read_source_exif(bytes).to_json().render();
+    Ok(format!("{text}\n"))
+}
+
+/// Format frame metadata strings and ISO `taken` / `file_time` from JPG and/or DNG bytes.
+///
+/// `tz_offset_min` is minutes east of UTC (`local = UTC + tz_offset_min`).
+#[wasm_bindgen]
+pub fn export_meta_photo(
+    jpg_or_null: Option<Vec<u8>>,
+    dng_or_null: Option<Vec<u8>>,
+    name: &str,
+    mtime_ms: Option<f64>,
+    tz_offset_min: Option<f64>,
+) -> Result<String, JsValue> {
+    let res = photo_meta_from_bytes(
+        jpg_or_null.as_deref(),
+        dng_or_null.as_deref(),
+        name,
+        mtime_ms,
+        tz_offset_min.unwrap_or(0.0),
+        DEFAULT_NOW_YEAR,
+    )
+    .map_err(|e| meta_rejected(&e))?;
+    Ok(format!("{}\n", res.to_json().render()))
+}
+
+/// Find `{offset, length}` of the largest structurally selected embedded JPEG preview SubIFD in a DNG, or `null`.
+/// Decoding (and rejecting corrupt JPEG payloads) stays with the caller.
+#[wasm_bindgen]
+pub fn export_meta_preview(dng: &[u8]) -> Result<String, JsValue> {
+    let json = dng_preview_location(dng).map_or(Json::Null, |r| r.to_json());
+    Ok(format!("{}\n", json.render()))
 }

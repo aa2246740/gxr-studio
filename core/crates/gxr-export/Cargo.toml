@@ -1,6 +1,6 @@
 [package]
 name = "gxr-export"
-description = "Full-resolution export pipeline"
+description = "Source photo metadata, the export base picture and the full-resolution export pipeline"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
