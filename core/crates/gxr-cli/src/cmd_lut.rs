@@ -226,6 +226,11 @@ enum LibmOp {
     PowBase,
     Log10,
     Log2,
+    Exp,
+    Sin,
+    Cos,
+    Atan2,
+    Hypot,
 }
 
 impl LibmOp {
@@ -235,6 +240,11 @@ impl LibmOp {
             "pow_base" => Ok(Self::PowBase),
             "log10" => Ok(Self::Log10),
             "log2" => Ok(Self::Log2),
+            "exp" => Ok(Self::Exp),
+            "sin" => Ok(Self::Sin),
+            "cos" => Ok(Self::Cos),
+            "atan2" => Ok(Self::Atan2),
+            "hypot" => Ok(Self::Hypot),
             _ => Err(Failure::Usage(format!("unknown --op {name:?}"))),
         }
     }
@@ -245,12 +255,34 @@ impl LibmOp {
             1 => Ok(Self::PowBase),
             2 => Ok(Self::Log10),
             3 => Ok(Self::Log2),
+            4 => Ok(Self::Exp),
+            5 => Ok(Self::Sin),
+            6 => Ok(Self::Cos),
+            7 => Ok(Self::Atan2),
+            8 => Ok(Self::Hypot),
             _ => Err(Failure::Usage(format!("unknown libm stream op tag {tag}"))),
         }
     }
 }
 
 fn apply_libm_op(op: LibmOp, param: f64, values: &[f64]) -> Result<Vec<f64>, Failure> {
+    if matches!(op, LibmOp::Atan2 | LibmOp::Hypot) {
+        if !values.len().is_multiple_of(2) {
+            return Err(Failure::Usage(
+                "binary libm op requires an even number of values".into(),
+            ));
+        }
+        let mut out = try_vec_cap(values.len() / 2)?;
+        for pair in values.chunks_exact(2) {
+            let y = match op {
+                LibmOp::Atan2 => gxr_math::atan2(pair[0], pair[1]),
+                LibmOp::Hypot => gxr_math::hypot(pair[0], pair[1]),
+                _ => unreachable!(),
+            };
+            out.push(y);
+        }
+        return Ok(out);
+    }
     let mut out = try_vec_cap(values.len())?;
     for &v in values {
         let y = match op {
@@ -258,6 +290,10 @@ fn apply_libm_op(op: LibmOp, param: f64, values: &[f64]) -> Result<Vec<f64>, Fai
             LibmOp::PowBase => gxr_math::powf(param, v),
             LibmOp::Log10 => gxr_math::log10(v),
             LibmOp::Log2 => gxr_math::log2(v),
+            LibmOp::Exp => gxr_math::exp(v),
+            LibmOp::Sin => gxr_math::sin(v),
+            LibmOp::Cos => gxr_math::cos(v),
+            LibmOp::Atan2 | LibmOp::Hypot => unreachable!(),
         };
         out.push(y);
     }
@@ -523,6 +559,38 @@ mod tests {
             assert_eq!(got_l10[i].to_bits(), gxr_math::log10(v).to_bits());
             assert_eq!(got_l2[i].to_bits(), gxr_math::log2(v).to_bits());
         }
+        let got_exp = apply_libm_op(LibmOp::Exp, 0.0, &x).ok().expect("exp");
+        let got_sin = apply_libm_op(LibmOp::Sin, 0.0, &x).ok().expect("sin");
+        let got_cos = apply_libm_op(LibmOp::Cos, 0.0, &x).ok().expect("cos");
+        for (i, &v) in x.iter().enumerate() {
+            assert_eq!(got_exp[i].to_bits(), gxr_math::exp(v).to_bits());
+            assert_eq!(got_sin[i].to_bits(), gxr_math::sin(v).to_bits());
+            assert_eq!(got_cos[i].to_bits(), gxr_math::cos(v).to_bits());
+        }
+        let pairs = [-67.875, 64.5, 1.0, 0.0, 3.0, -4.0];
+        let got_atan2 = apply_libm_op(LibmOp::Atan2, 0.0, &pairs)
+            .ok()
+            .expect("atan2");
+        let got_hypot = apply_libm_op(LibmOp::Hypot, 0.0, &pairs)
+            .ok()
+            .expect("hypot");
+        for (i, pair) in pairs.chunks_exact(2).enumerate() {
+            assert_eq!(
+                got_atan2[i].to_bits(),
+                gxr_math::atan2(pair[0], pair[1]).to_bits()
+            );
+            assert_eq!(
+                got_hypot[i].to_bits(),
+                gxr_math::hypot(pair[0], pair[1]).to_bits()
+            );
+        }
+        assert_eq!(LibmOp::from_tag(4).ok(), Some(LibmOp::Exp));
+        assert_eq!(LibmOp::from_tag(5).ok(), Some(LibmOp::Sin));
+        assert_eq!(LibmOp::from_tag(6).ok(), Some(LibmOp::Cos));
+        assert_eq!(LibmOp::from_tag(7).ok(), Some(LibmOp::Atan2));
+        assert_eq!(LibmOp::from_tag(8).ok(), Some(LibmOp::Hypot));
+        assert!(apply_libm_op(LibmOp::Atan2, 0.0, &[1.0]).is_err());
+        assert!(apply_libm_op(LibmOp::Hypot, 0.0, &[1.0]).is_err());
         assert!(LibmOp::from_name("bad").is_err());
         assert!(LibmOp::from_tag(9).is_err());
     }

@@ -25,6 +25,7 @@ from gxr_studio.engine import menu as eng_menu
 from support import color_fixtures as cf
 from support import color_oracle as co
 from support import color_parity as cp
+from support import samples
 from support.color_oracle_libm import color_libm_available, libm_backend
 from support.core_cli import require_cli
 from support.lut_oracle import interp_1d_seq
@@ -119,7 +120,7 @@ def _run_bake_cases(
     step: float,
 ) -> None:
     if not cases:
-        pytest.skip("GXR_STUDIO_TEST_PARENT 下未找到真实 DAT 夹具")
+        samples.missing("GXR_STUDIO_TEST_PARENT 下未找到真实 DAT 夹具")
     pack_map: dict[bytes, tuple[cp.Pack, Any, co.OracleGridCache, co.OracleGridCache]] = {}
     fam_total: dict[str, int] = {}
     fam_gate_b_cases: dict[str, int] = {}
@@ -163,7 +164,7 @@ def test_oracle_negative_controls_restoring_host_kernels_fail(tmp_path: Path) ->
     require_cli()
     g158 = dict(SINGLE_DATS).get("g158")
     if g158 is None:
-        pytest.skip("g158 fixture DAT not on this machine")
+        samples.missing("g158 fixture DAT not on this machine")
     dat = datcodec.parse(g158.read_bytes())
     stock04 = dat.entry_of(0, 4)
     pack, model = _make_pack(tmp_path / "pk", stock04, 0, 200, seed=3)
@@ -207,7 +208,7 @@ def test_g158_reported_looks_default_and_minmax(tmp_path: Path, look_name: str) 
     require_cli()
     g158 = dict(SINGLE_DATS).get("g158")
     if g158 is None:
-        pytest.skip("g158 fixture DAT not on this machine")
+        samples.missing("g158 fixture DAT not on this machine")
     dat = datcodec.parse(g158.read_bytes())
     emb_menu = eng_menu.load()
     menu_data, by_slot, ctrls = _menu_for(dat, emb_menu)
@@ -272,11 +273,7 @@ def test_all_real_dats_knobs_minmax_step_2(tmp_path: Path, unit_name: str, u: in
 
 
 def test_lut_libm_supports_color_ops() -> None:
-    """`gxr-cli` (`color-libm` or `lut-libm --stream`) must expose exp/sin/cos/atan2/hypot from `gxr_math`/libm."""
+    """`gxr-cli lut-libm --stream` must expose exp/sin/cos/atan2/hypot (tags 4-8) from `gxr_math`/libm."""
     require_cli()
-    assert color_libm_available(), (
-        f"color oracle active backend is {libm_backend()!r}; `gxr-cli` needs exp/sin/cos/atan2/hypot "
-        "in `core/crates/gxr-cli/src/cmd_lut.rs` (`LibmOp`) or `cmd_color.rs` (`color-libm`) "
-        "for 100% Gate A parity on host-libm ULP boundary cases (e.g. g158 M9 STD cell 109793, "
-        "g127 jlaunch ISO 1600 slot 4 cell 92428)."
-    )
+    assert color_libm_available()
+    assert libm_backend() == "lut-libm"
