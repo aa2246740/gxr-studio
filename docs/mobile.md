@@ -356,6 +356,13 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - CLI 子命令：`geom-crop-box`、`geom-final-box`、`geom-warp`、`geom-header`（另附 `geom-warp-valid`、`geom-fitted-crop`、`geom-clamp-rect`、`geom-fit-ratio` 供对拍）。
 - WASM 导出：`geom_final_box(w, h, geometry_json, crop_json)` 与 `geom_warp(rgb_u8, w, h, geometry_json)`（返回 `WarpedImage`，提供 `width`、`height`、`rgb()`、`mask()`）。
 
+## 导出元数据（`gxr-export::meta`）
+
+`gxr-export` 的 `meta` 模块移植 `export.py` 的源 EXIF 提取、`finish/meta_text.py` 的边框/日期文字生成、`meta.py` 的 `read_jpeg_meta` / `read_dng_meta` 以及 `dng_preview_image(embedded_only=True)` 的内嵌预览定位。
+
+- **预览定位与解码边界**：`dng_preview_location`、`export-meta-preview` 与 `export_meta_preview` 只做结构挑选，返回 `dng_preview_image` 在不解码之前选中的唯一最大候选 `{offset, length}`（SubIFD `330`、`Compression == 7`、`0 < 条带字节数 <= 32 MiB`、可读且 `width * height` 严格最大），或 `null`。不在核心里复制 libjpeg 解码或表/扫描验证。JPEG 解码与坏图拒收由调用方负责（手机端由浏览器解码，对拍测试由 Pillow 解码）；若这个唯一候选解码失败，调用方视为无预览（`None`），不再尝试次大候选，与桌面 Python 一致。
+- **WASM 参数与时间**：`export_meta_photo` 从浏览器显式接收 `mtime_ms` 与 `tz_offset_min`（`Option<f64>`），不读系统时钟或时区；`tz_offset_min` 在窄化之前先校验有限、整数且位于 `-1439..=1439`，与原生 CLI 给出相同的 `CoreError`。
+
 ## 第一版界面
 
 `mobile/index.html` 是给 iPhone Safari 的界面，不是开发壳。三屏都在内存里切换，不用浏览器的历史记录：起始、按拍摄时间分组的网格、编辑一张。
@@ -373,3 +380,36 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 有显卡时，配方卡是这张 RAW 的中性小图（`engine.thumb`，每个版本做一次）；没有显卡时卡片照实写「相机 JPG」或「内嵌预览」。直方图照设计稿的 `hist_svg`：红绿蓝和亮度、平方根纵轴、上限只看内部档位，两端三角在压死或溢出到 0.5% 时点亮；RAW 第一帧、换片和每次调整后数一次，按内容版本合并，静止时不读显卡。裁剪、边框、LUT、曲线四页按 03e–03h 摆好静态控件，全部停用，写「这项下一步做」。
 
 模拟器截图走开发服务器：`?shot=start|grid|editor|drag` 从样本端点读 DNG，摆好那一屏后 POST `/__dev/report/shot-<名字>`（写进不进仓库的 `mobile/.reports/`），截图脚本等这个文件出现再截。生产包里没有这段。
+
+## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
+
+移植的是导出时「从哪张图开始」：`finish/serve.py` 的 `color_image` 和 `_raw_rgb`（只有 `full=True`）、`render/service.py` 的 `plan` 和不精确的 `renderer`、`raw/render.py` 的 `render_full`（任意渲染器）、`lut/photo.py` 的 `color_image`。不移植 `exact_u8`（精确导出）、电脑图库里的本机配方、近似配方（`approx.ENABLED` 是 False）和预览路径。
+
+桌面版从应用数据目录读相机数据和校准包，手机直接拿用户选的文件：DAT（r5 卡另带 GXRFX.BIN）、校准包里的每个文件、相机 JPG 和内嵌预览（浏览器解码好的 uint8，JPG 已按 EXIF 转正），以及解析后的配方条目（编辑解析那一单元的输出）。
+
+| 命令 | 输入 | 输出 |
+| --- | --- | --- |
+| `source-plan` | `--shot`、`--edit`，可选 `--dat`/`--library`、`--entry`、`--calib DIR`、`--binding` | `selection`、`plan`（单元、槽、`model_iso`、`calibrated`、`defaulted`、标签、条目 sha256）和 `renderer`（id、标签、写进 EXIF 270 的 `description`） |
+| `source-selection` | `--shot`、`--edit`、`--base` | 这个底图模式会规划哪个配方，调用方据此去解析条目；相机 JPG 时是 `null` |
+| `source-render` | `--dng`、`--entry`、`--stock`、`--unit`、`--calib`、`--iso`、可选 `--adjust` | 全尺寸 uint8 `(H, W, 3)`，已转正 |
+| `source-color-image` | 同上，再加 `--base`、`--jpg`/`--preview`（uint8 `.npy`）、`--cube`/`--space` | `path`（走了哪条路）、`from_raw`、`labels`，图写到 `--out` |
+
+- shot 是 `{"files": {"dng": {"relpath"}, "jpg": {...}}, "lens", "iso"}`，只看有哪些文件、DNG 的文件名、镜头和 ISO。edit 是 `RecipeSel.to_json()`、LUT 的 id，加上 `color-apply` 读的 `adjust`、`curves`。
+- `binding` 是桌面的 `engine_pin()`。它来自应用数据目录里文件的哈希和修改时间，手机没法算出同一个值，所以由调用方给；描述里的这一段因此和桌面不会逐字节相同，除非调用方给的就是桌面那份。
+- 配方渲染按条带走：每次 256 行去马赛克（float32），交给 `chroma_u8`，量化后写进 uint8 输出，没有整幅的浮点数组。LUT 的 Log 路径也按条带：先算这一条带的场景 XYZ（`colour.xyz` 整条带先核对有限），再按 65536 像素一块套 LUT，和 Python 的分块一样。显示域 LUT 对整张 uint8 底图按 65536 像素一块套。
+- 本机配方：Python 先查 RAW+JPG 是否成对（`local_recipe_needs_pair`），再去电脑图库解析。手机没有那个图库，成对时报 `local_recipe_unsupported`（`RenderUnavailable`，state 仍是 `local_recipe`），这是有意的差别。
+- 照搬的 Python 行为：底图模式 `neutral` 在有相机数据和校准时画的是这个单元的原厂 04（电脑模拟），标签却写中性转换，描述是配方的那句英文；没有校准时才是真正的中性转换。`standard` 退回中性转换时不套调整（`from_raw` 为真，后面只做 `apply_extra`）。
+- 错误：`NoRaw` 报 `no_raw`；`RenderUnavailable` 带 `state`；`EditError` 带 `detail`；`RawDecodeError` 按 `export_finish` 改成 `raw_unreadable`（有 JPG）或 `no_jpg_source`，`detail` 是「没有全尺寸传感器数据，也没有更小的预览。」加原因。
+- `render_full` 在分配输出之前做和 `gxr_raw::render_full` 一样的裁切窗口、白平衡和马赛克检查（`check_crop_window` 在 `gxr-raw` 里是私有的，这里照抄了同样的判断和文案），所以坏文件在配方渲染和中性渲染上报同一个错。尺寸用带检查的 u64，元素数不超过 2^32−1，输出缓冲区可失败地申请。
+
+WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_bytes, binding)` 返回和 CLI 一样的 JSON（带换行）；`source_render(dng, name, entry, stock04, unit, calib_index_json, calib_bytes, iso, adjust_json)` 返回 `[h u32][w u32][rgb]`。校准包的格式照 `frame_layout` 的字体：`[[名字, 字节数], …]` 加拼在一起的文件。比较用例在 `mobile/scripts/wasm_cases/source.mjs`。
+
+输入检查（Sol r1 之后），CLI 和 WASM 走同一段代码：
+
+- 0 字节就是没给：空的 `dat`、`library`、`entry` 当作缺省，空的调整当作 `{}`。CLI 的空文件和 WASM 的空数组结果一样。
+- 条目和原厂 04 必须正好 552 字节，在求哈希、规划或渲染之前检查，错误是 `value`／`entry must be 552 bytes`。
+- 解码好的相机 JPG 和内嵌预览在公共 `color_image` 入口先查：宽高大于 0、3 个通道、`h*w*3` 用带检查的 u64 算且不超过 2^32−1、字节数正好相符，然后才复制或套 LUT。CLI 读 `--jpg`/`--preview` 的 `.npy` 时，解析完头就用同一个 `check_rgb_shape` 查声明的形状和 payload 长度，不通过就报错，不复制像素；通过的像素留在读文件的那块缓冲里。
+- 调整解析之后再查有限值：曝光是 NaN 或 ±Infinity 时报 `bad_adjust`／「请求无效。请刷新页面后重试。」，曲线点非有限时报 `bad_curve`，文案和 Python 的 `parse_adjust`、`_parse_points` 一样。
+- WASM 的 `iso` 按 f64 接收（CLI 把文本读成同一个数），先查有限、是整数、绝对值不超过 2^53，再变成整数；`NaN`、`Infinity`、`1.5` 报 `bad_request`／`iso 要是整数`，超过 2^53 报 `iso 超出范围`。
+
+对拍在 `tests/test_core_parity_export_source.py`：相机数据用上层项目的 g127 DAT（`GXR_STUDIO_TEST_PARENT`），校准包是合成的（`color_fixtures` 生成，用 `import_calibration` 写），机主的校准来源在本机时另跑 3 张，不打印内容。配方渲染、标签、`from_raw`、错误都要求完全相同；LUT 照 lut 单元的 Gate A / Gate B（顺序 oracle、边界点、机械归因）。

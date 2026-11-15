@@ -19,6 +19,7 @@ mod cmd_jpeg;
 mod cmd_lut;
 mod cmd_raw;
 mod cmd_resample;
+mod cmd_source;
 mod common;
 mod npy;
 
@@ -81,6 +82,9 @@ fn dispatch(command: &str, rest: &[String]) -> Result<Output, Failure> {
     }
     if command.starts_with("resample-") {
         return cmd_resample::run(command, rest);
+    }
+    if command.starts_with("source-") {
+        return cmd_source::run(command, rest);
     }
     // Commands that are not an area prefix keep the previous usage text.
     if rest.is_empty() {

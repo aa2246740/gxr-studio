@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import struct
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,12 +23,11 @@ from gxr_studio.finish.geometry import crop_valid, warp_float
 from gxr_studio.finish.hdr_export import HdrTrack
 from gxr_studio.finish.spec import FRAME_STYLES, FrameSpec, Geometry, StampSpec
 from support import hdr_parity as hp
+from support import samples
 from support.core_cli import require_cli
 from support.frame_cases import FIXTURE_CJK, LOGO_JSON, SAMPLE_LOGOS, cjk_fonts, desktop_mark, font_args
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
-CAPTURES = _PARENT / "captures"
+CAPTURES = samples.captures()
 RNG_SEED = 20261115
 
 
@@ -179,6 +179,7 @@ def test_warp_float_2d_and_crop_valid_f32_parity(tmp_path: Path) -> None:
 
 def test_begin_on_real_pairs_matches_python_bit_for_bit(tmp_path: Path) -> None:
     pairs = _spread_pairs(20)
+    samples.need_sample(CAPTURES.is_dir(), f"no {CAPTURES} directory on this host")
     if CAPTURES.is_dir():
         assert len(pairs) >= 20, f"expected >= 20 real pairs in {CAPTURES}, got {len(pairs)}"
     else:
@@ -403,8 +404,126 @@ def _jpeg_header_variants(jpg: bytes) -> tuple[list[tuple[str, bytes]], bytes | 
     return variants, stripped_sof
 
 
+def _sol_r2_jpeg_edge_cases(valid_jpg: bytes) -> list[tuple[str, bytes, bool]]:
+    """Build synthetic Sol r2 JPEG container edge cases around ``valid_jpg`` with expected validity."""
+    # Locate first SOF and SOS spans in valid_jpg so we can inject before/after SOF or replace SOF cleanly.
+    sof_markers = (*range(0xC0, 0xC4), *range(0xC5, 0xC8), *range(0xC9, 0xCC), *range(0xCD, 0xD0), 0xDE)
+    pos = 2
+    sof_span: tuple[int, int] | None = None
+    sos_span: tuple[int, int] | None = None
+    while pos + 4 <= len(valid_jpg):
+        if valid_jpg[pos] != 0xFF:
+            break
+        marker = valid_jpg[pos + 1]
+        if marker in (0xD8, 0xD9):
+            pos += 2
+            continue
+        seg_len = int.from_bytes(valid_jpg[pos + 2 : pos + 4], "big")
+        seg_end = pos + 2 + seg_len
+        if marker in sof_markers and sof_span is None:
+            sof_span = (pos, seg_end)
+        if marker == 0xDA:
+            sos_span = (pos, seg_end)
+            break
+        pos = seg_end
+    assert sof_span is not None and sos_span is not None
+    sof_start, sof_end = sof_span
+    sos_start, sos_end = sos_span
+    sof_bytes = valid_jpg[sof_start:sof_end]
+    h_val = int.from_bytes(sof_bytes[5:7], "big")
+    w_val = int.from_bytes(sof_bytes[7:9], "big")
+
+    def seg(marker: int, payload: bytes) -> bytes:
+        return b"\xff" + bytes([marker]) + struct.pack(">H", len(payload) + 2) + payload
+
+    def sof_seg(marker: int, bits: int, h: int, w: int, ncomp: int, tail: bytes | None = None) -> bytes:
+        if tail is None:
+            tail = b"".join(bytes([i + 1, 0x11, 0]) for i in range(ncomp))
+        return seg(marker, struct.pack(">BHHB", bits, h, w, ncomp) + tail)
+
+    def before_sof(extra: bytes) -> bytes:
+        return valid_jpg[:sof_start] + extra + valid_jpg[sof_start:]
+
+    def after_sof(extra: bytes) -> bytes:
+        return valid_jpg[:sof_end] + extra + valid_jpg[sof_end:]
+
+    def after_sos(extra: bytes) -> bytes:
+        return valid_jpg[:sos_end] + extra + valid_jpg[sos_end:]
+
+    def replace_sof(new_sof: bytes) -> bytes:
+        return valid_jpg[:sof_start] + new_sof + valid_jpg[sof_end:]
+
+    cases: list[tuple[str, bytes, bool]] = []
+
+    # P2-01: All 14 SOF markers (including DHP 0xDE) with incomplete component tails, invalid bits/comps, and valid shapes
+    for marker in sof_markers:
+        for tail_len in (1, 2):
+            cases.append((f"sof_{marker:02x}_tail{tail_len}", replace_sof(sof_seg(marker, 8, h_val, w_val, 1, b"\x01" * tail_len)), False))
+        cases.append((f"sof_{marker:02x}_valid_1c", replace_sof(sof_seg(marker, 8, h_val, w_val, 1)), True))
+    for bad_bits in (0, 12):
+        cases.append((f"sof_bits_{bad_bits}", replace_sof(sof_seg(0xC0, bad_bits, h_val, w_val, 1)), False))
+    for bad_comp in (0, 2, 5):
+        cases.append((f"sof_comp_{bad_comp}", replace_sof(sof_seg(0xC0, 8, h_val, w_val, bad_comp)), False))
+    for ok_comp in (1, 3, 4):
+        cases.append((f"sof_comp_{ok_comp}", replace_sof(sof_seg(0xC0, 8, h_val, w_val, ok_comp)), True))
+
+    # P2-02: APP0 JFIF / APP14 Adobe / APP2 ICC_PROFILE / APP13 Photoshop 3.0 / APP2 MPF
+    cases.append(("jfif_short_before_sof", before_sof(seg(0xE0, b"JFIF\x00\x01")), False))
+    cases.append(("jfif_short_after_sof", after_sof(seg(0xE0, b"JFIF\x00\x01")), False))
+    cases.append(("adobe_short_before_sof", before_sof(seg(0xEE, b"Adobe\x00")), False))
+    cases.append(("adobe_short_after_sof", after_sof(seg(0xEE, b"Adobe\x00")), False))
+    cases.append(("icc_short_before_sof", before_sof(seg(0xE2, b"ICC_PROFILE\x00")), False))
+    cases.append(("icc_short13_before_sof", before_sof(seg(0xE2, b"ICC_PROFILE\x00\x01")), False))
+    cases.append(("icc_short_after_last_sof", after_sof(seg(0xE2, b"ICC_PROFILE\x00")), True))
+
+    ps_hdr = b"Photoshop 3.0\x00"
+    ps_ok = ps_hdr + b"8BIM\x03\xed\x00\x00" + struct.pack(">I", 16) + b"\x00" * 16
+    ps_miss_nl = ps_hdr + b"8BIM\x03\xed"
+    ps_trunc_sz = ps_hdr + b"8BIM\x03\xed\x00\x00\x00\x01"
+    ps_short_03ed_then_miss = ps_hdr + b"8BIM\x03\xed\x00\x00" + struct.pack(">I", 2) + b"\xaa\xbb8BIM\x03\xed"
+    cases.append(("ps_miss_namelen_before_sof", before_sof(seg(0xED, ps_miss_nl)), False))
+    cases.append(("ps_miss_namelen_after_sof", after_sof(seg(0xED, ps_miss_nl)), False))
+    cases.append(("ps_miss_namelen_after_sos", after_sos(seg(0xED, ps_miss_nl)), True))
+    cases.append(("ps_trunc_size_before_sof", before_sof(seg(0xED, ps_trunc_sz)), True))
+    cases.append(("ps_short_03ed_breaks_cleanly", before_sof(seg(0xED, ps_short_03ed_then_miss)), True))
+    cases.append(("ps_valid_03ed", before_sof(seg(0xED, ps_ok)), True))
+
+    def build_mpf(quant: int, b002_bytes: bytes) -> bytes:
+        val4 = b002_bytes.ljust(4, b"\x00") if len(b002_bytes) <= 4 else struct.pack("<I", 8 + 2 + 2 * 12 + 4)
+        ifd = (
+            struct.pack("<H", 2)
+            + struct.pack("<HHII", 0xB001, 4, 1, quant)
+            + struct.pack("<HHI", 0xB002, 7, len(b002_bytes))
+            + val4
+            + struct.pack("<I", 0)
+        )
+        extra = b"" if len(b002_bytes) <= 4 else b002_bytes
+        return b"MPF\x00II*\x00\x08\x00\x00\x00" + ifd + extra
+
+    cases.append(("mpf_b002_cnt1_1byte", before_sof(seg(0xE2, build_mpf(1, b"\x00"))), False))
+    cases.append(("mpf_b002_cnt2_16bytes", before_sof(seg(0xE2, build_mpf(2, b"\x00" * 16))), False))
+    cases.append(("mpf_b002_cnt0", before_sof(seg(0xE2, build_mpf(0, b""))), True))
+    cases.append(("mpf_bad_header_fallback", before_sof(seg(0xE2, b"MPF\x00BAD")), True))
+    cases.append(("mpf_non_zero_fmt_fallback", before_sof(seg(0xE2, build_mpf(1, struct.pack("<I", 1 << 24) + b"\x00" * 12))), True))
+    cases.append(("mpf_bad_then_good", before_sof(seg(0xE2, build_mpf(1, b"\x00")) + seg(0xE2, build_mpf(0, b""))), True))
+    cases.append(("mpf_good_then_bad", before_sof(seg(0xE2, build_mpf(0, b"")) + seg(0xE2, build_mpf(1, b"\x00"))), False))
+
+    # P2-03: Zero-width / zero-height SOF, DQT errors, standalone markers, SOS len < 2
+    cases.append(("sof_0w_alone", replace_sof(sof_seg(0xC0, 8, h_val, 0, 1)), False))
+    cases.append(("sof_0h_alone", replace_sof(sof_seg(0xC0, 8, 0, w_val, 1)), False))
+    cases.append(("sof_0x0_alone", replace_sof(sof_seg(0xC0, 8, 0, 0, 1)), False))
+    cases.append(("sof_0w_then_valid", replace_sof(sof_seg(0xC0, 8, h_val, 0, 1) + sof_bytes), True))
+    cases.append(("sof_valid_then_0h", replace_sof(sof_bytes + sof_seg(0xC0, 8, 0, w_val, 1)), False))
+    cases.append(("dqt_bad_len", before_sof(seg(0xDB, b"\x00\x00")), False))
+    cases.append(("dqt_16bit_short", before_sof(seg(0xDB, b"\x10" + b"\x00" * 64)), False))
+    cases.append(("no_len_0xc8_0xf0_0xfd", before_sof(b"\xff\xc8\xff\xf0\xff\xfd"), True))
+    cases.append(("sos_len_0", valid_jpg[: sos_start + 2] + b"\x00\x00" + b"\xff\xd9", True))
+    cases.append(("sos_len_1", valid_jpg[: sos_start + 2] + b"\x00\x01" + b"\xff\xd9", True))
+    return cases
+
+
 def test_begin_jpeg_header_validation_matches_python(tmp_path: Path) -> None:
-    # 1. Sol's five inputs plus every segment boundary on hs.pair(9)
+    # 1. Sol r1 segment boundaries + Sol r2 header/APP/MPF/DQT/zero-SOF edge cases on hs.pair(9)
     jpg_bytes, dng_bytes = hs.pair(9, orientation=1)
     rgb = load_jpeg(io.BytesIO(jpg_bytes), None)
     rgb_path = _save(tmp_path / "rgb9.npy", rgb)
@@ -415,6 +534,12 @@ def test_begin_jpeg_header_validation_matches_python(tmp_path: Path) -> None:
     assert stripped_sof is not None
     variants.append(("no_sof0", stripped_sof))
     variants.append(("minimal_sos_eoi", bytes.fromhex("ff d8 ff da 00 08 01 01 00 00 3f 00 ff d9")))
+
+    r2_cases = _sol_r2_jpeg_edge_cases(jpg_bytes)
+    expected_ok: dict[str, bool] = {}
+    for name, blob, should_ok in r2_cases:
+        variants.append((name, blob))
+        expected_ok[name] = should_ok
 
     saw_active = False
     saw_bad_meta = False
@@ -439,6 +564,11 @@ def test_begin_jpeg_header_validation_matches_python(tmp_path: Path) -> None:
             ]
         )
         assert meta == _state_of(py_track), f"pair(9) {name}: python={_state_of(py_track)} rust={meta}"
+        if name in expected_ok:
+            if expected_ok[name]:
+                assert meta["active"] is True, f"{name}: expected active=True, got {meta}"
+            else:
+                assert meta["problem"] == "metadata_unreadable", f"{name}: expected metadata_unreadable, got {meta}"
         saw_active |= meta["active"] is True
         saw_bad_meta |= meta["problem"] == "metadata_unreadable"
     assert saw_active and saw_bad_meta

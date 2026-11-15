@@ -259,173 +259,91 @@ fn capture_from_tiff(tiff: &TiffReader<'_>) -> Result<Vec<(String, Field)>, ()> 
     capture_of(&tags).ok_or(())
 }
 
+use crate::meta::tiff_exif::{ExifValue, load_image_exif, open_image};
+
 /// Port of `gxr_studio/hdr/capture.py:56 from_dng`.
 pub fn from_dng(data: &[u8]) -> Result<Vec<(String, Field)>, CoreError> {
     let tiff = TiffReader::new(data).map_err(|()| raw_meta_err())?;
     capture_from_tiff(&tiff).map_err(|()| raw_meta_err())
 }
 
-fn is_sof_marker(marker: u8) -> bool {
-    matches!(
-        marker,
-        0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf | 0xde
-    )
-}
-
-fn marker_has_no_length(marker: u8) -> bool {
-    matches!(marker, 0xc8 | 0xd0..=0xd9 | 0xf0..=0xfd)
-}
-
-fn validate_sof(payload: &[u8]) -> Result<(), ()> {
-    if payload.len() < 6 {
-        return Err(());
-    }
-    let bits = payload[0];
-    let height = u16::from_be_bytes([payload[1], payload[2]]);
-    let width = u16::from_be_bytes([payload[3], payload[4]]);
-    let layers = payload[5];
-    if bits != 8 || height == 0 || width == 0 || !matches!(layers, 1 | 3 | 4) {
-        return Err(());
-    }
-    Ok(())
-}
-
-fn validate_dqt(mut rest: &[u8]) -> Result<(), ()> {
-    while !rest.is_empty() {
-        let prec = if (rest[0] >> 4) == 0 { 1 } else { 2 };
-        let qt_len = 1 + prec * 64;
-        if rest.len() < qt_len {
-            return Err(());
-        }
-        rest = &rest[qt_len..];
-    }
-    Ok(())
-}
-
-/// Port of Pillow `JpegImageFile._open` + `ImageFile.__init__` header validation as reached by
-/// `capture.from_jpeg` / `meta.read_jpeg_meta`: reads markers and APP/DQT/SOF segments up to SOS
-/// (`0xFFDA`) without scanning entropy data or requiring EOI (`0xFFD9`).
-fn read_jpeg_exif_blob(data: &[u8]) -> Result<Option<Vec<u8>>, ()> {
-    if !data.starts_with(b"\xff\xd8\xff") {
-        return Err(());
-    }
-    let mut pos = 3usize;
-    let mut cur = 0xff_u8;
-    let mut has_valid_sof = false;
-    let mut exif: Option<Vec<u8>> = None;
-
-    loop {
-        if cur != 0xff {
-            let Some(&b) = data.get(pos) else {
-                return Err(());
-            };
-            pos += 1;
-            cur = b;
-            continue;
-        }
-        let Some(&nxt) = data.get(pos) else {
-            return Err(());
-        };
-        pos += 1;
-
-        if nxt == 0xff {
-            cur = 0xff;
-            continue;
-        }
-        if nxt == 0x00 {
-            let Some(&b) = data.get(pos) else {
-                return Err(());
-            };
-            pos += 1;
-            cur = b;
-            continue;
-        }
-        if nxt < 0xc0 {
-            return Err(());
-        }
-
-        if !marker_has_no_length(nxt) {
-            if pos + 2 > data.len() {
-                return Err(());
-            }
-            let seg_len = usize::from(u16::from_be_bytes([data[pos], data[pos + 1]]));
-            pos += 2;
-            let payload = if seg_len <= 2 {
-                &[][..]
+#[allow(clippy::cast_precision_loss)]
+fn exif_val_to_tag_value(tag: u16, val: &ExifValue) -> TagValue {
+    match val {
+        ExifValue::Str(s) => TagValue::Text(s.clone()),
+        ExifValue::Bytes(b) => TagValue::Text(bytes_ascii_replace(b)),
+        ExifValue::Int(n) => {
+            if TEXT_TAGS.contains(&tag) {
+                TagValue::Text(n.to_string())
             } else {
-                let n = seg_len - 2;
-                if pos + n > data.len() {
-                    return Err(());
-                }
-                let s = &data[pos..pos + n];
-                pos += n;
-                s
-            };
-
-            if is_sof_marker(nxt) {
-                validate_sof(payload)?;
-                has_valid_sof = true;
-            } else if nxt == 0xdb {
-                validate_dqt(payload)?;
-            } else if nxt == 0xe1
-                && let Some(rest) = payload.strip_prefix(b"Exif\x00\x00")
-            {
-                if let Some(buf) = &mut exif {
-                    buf.extend_from_slice(rest);
-                } else {
-                    exif = Some(payload.to_vec());
-                }
+                TagValue::Int(*n)
             }
         }
-
-        if nxt == 0xda {
-            break;
+        ExifValue::Ints(v) => {
+            if TEXT_TAGS.contains(&tag) {
+                TagValue::Text(val.to_python_str())
+            } else {
+                TagValue::List(v.iter().map(|&n| TagValue::Int(n)).collect())
+            }
         }
-        let Some(&b) = data.get(pos) else {
-            return Err(());
-        };
-        pos += 1;
-        cur = b;
+        ExifValue::Float(f) => {
+            if TEXT_TAGS.contains(&tag) {
+                TagValue::Text(val.to_python_str())
+            } else {
+                TagValue::Float(*f)
+            }
+        }
+        ExifValue::Floats(v) => {
+            if TEXT_TAGS.contains(&tag) {
+                TagValue::Text(val.to_python_str())
+            } else {
+                TagValue::List(v.iter().map(|&f| TagValue::Float(f)).collect())
+            }
+        }
+        ExifValue::Rational(n, d) => {
+            if TEXT_TAGS.contains(&tag) {
+                TagValue::Text(val.to_python_str())
+            } else {
+                let f = if *d == 0 {
+                    f64::NAN
+                } else {
+                    (*n as f64) / (*d as f64)
+                };
+                TagValue::Float(f)
+            }
+        }
+        ExifValue::Rationals(v) => {
+            if TEXT_TAGS.contains(&tag) {
+                TagValue::Text(val.to_python_str())
+            } else {
+                TagValue::List(
+                    v.iter()
+                        .map(|&(n, d)| {
+                            TagValue::Float(if d == 0 {
+                                f64::NAN
+                            } else {
+                                (n as f64) / (d as f64)
+                            })
+                        })
+                        .collect(),
+                )
+            }
+        }
     }
-
-    if !has_valid_sof {
-        return Err(());
-    }
-    Ok(exif)
 }
 
-/// Port of `gxr_studio/hdr/capture.py:65 from_jpeg`.
+/// Port of `gxr_studio/hdr/capture.py:65 from_jpeg` via shared `gxr-export::meta` reader.
 pub fn from_jpeg(data: &[u8]) -> Result<Vec<(String, Field)>, CoreError> {
-    let exif_blob = read_jpeg_exif_blob(data).map_err(|()| jpg_meta_err())?;
-    let Some(blob) = exif_blob else {
-        return Ok(Vec::new());
-    };
-    let mut tiff_bytes = blob.as_slice();
-    while let Some(rest) = tiff_bytes.strip_prefix(b"Exif\x00\x00") {
-        tiff_bytes = rest;
+    let doc = open_image(data).map_err(|_| jpg_meta_err())?;
+    let exif = load_image_exif(data, &doc);
+    let mut tags = Vec::with_capacity(exif.base.len() + exif.sub.len());
+    for (&tag, val) in &exif.base {
+        tags.push((u32::from(tag), exif_val_to_tag_value(tag, val)));
     }
-    if tiff_bytes.is_empty() {
-        return Ok(Vec::new());
+    for (&tag, val) in &exif.sub {
+        tags.push((u32::from(tag), exif_val_to_tag_value(tag, val)));
     }
-    if let Ok(tiff) = TiffReader::new(tiff_bytes)
-        && let Ok(cap) = capture_from_tiff(&tiff)
-    {
-        return Ok(cap);
-    }
-    // Match Pillow `Image.getexif()` when EXIF IFD is corrupt vs absent: try root IFD only
-    // if sub-IFD failed; if root itself isn't valid TIFF, fall back to empty `{}`.
-    if let Ok(tiff) = TiffReader::new(tiff_bytes)
-        && let Ok(root) = tiff.ifd(i64::from(tiff.root))
-    {
-        let tags: Vec<(u32, TagValue)> = root
-            .iter()
-            .map(|(&tag, val)| (u32::from(tag), tiff_val_to_tag_value(tag, val)))
-            .collect();
-        if let Some(cap) = capture_of(&tags) {
-            return Ok(cap);
-        }
-    }
-    Ok(Vec::new())
+    capture_of(&tags).ok_or_else(jpg_meta_err)
 }
 
 /// Port of `gxr_studio/hdr/gain.py:119 check_capture`.

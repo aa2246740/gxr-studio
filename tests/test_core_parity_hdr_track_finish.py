@@ -24,13 +24,12 @@ from gxr_studio.finish.spec import FrameSpec, Geometry, StampSpec
 from gxr_studio.render.params import Adjust, EditState
 from gxr_studio.render.service import RenderService
 from support import hdr_parity as hp
+from support import samples
 from support.core_cli import require_cli
 from support.frame_cases import desktop_mark, font_args
 from support.wasm_check import run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
-CAPTURES = _PARENT / "captures"
+CAPTURES = samples.captures()
 RNG_SEED = 20261115
 
 
@@ -573,6 +572,7 @@ def test_e2e_real_pairs_match_export_finish(
     long_edge: int | None, tmp_path: Path, lib: Any, settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pairs = _spread_pairs(16)
+    samples.need_sample(bool(pairs), f"no real pairs under {CAPTURES}")
     if not pairs:
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.skip(f"no {CAPTURES} directory on this host")

@@ -30,11 +30,11 @@ from PIL.TiffImagePlugin import IFDRational
 from gxr_studio.export import QUALITY_TIERS, SOFTWARE, srgb_icc
 from gxr_studio.hdr import container
 from gxr_studio.raw import NEUTRAL, open_dng, render_full
+from support import samples
 from support.core_cli import CoreCliError, error_of, require_cli, run_json
 from support.wasm_check import run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
+_PARENT = samples.sample_parent()
 CAPTURES = _PARENT / "captures"
 # Fixed, explicit named list (>= 10 DNGs, must include R8051401 and R8052220) so captures/ growth cannot shift selection.
 _NAMED_REAL_REL_PATHS = (
@@ -279,7 +279,7 @@ def test_real_exported_arrays_gate_a_and_b(tmp_path: Path) -> None:
         missing = [rel for rel in _NAMED_REAL_REL_PATHS if not (CAPTURES / rel).is_file()]
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail(f"missing {len(missing)} named real DNGs under {CAPTURES}: {missing[:3]}")
-        pytest.skip(f"missing named real DNGs under {CAPTURES}")
+        samples.missing(f"missing named real DNGs under {CAPTURES}")
 
     for idx, dng_path in enumerate(REAL_DNGS):
         dng = open_dng(dng_path)
@@ -307,7 +307,7 @@ def test_real_cropped_non16_arrays_gate_a_and_b(tmp_path: Path) -> None:
     if len(REAL_DNGS) < len(_NAMED_REAL_REL_PATHS):
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail(f"need all {len(_NAMED_REAL_REL_PATHS)} named real DNGs under {CAPTURES}, found {len(REAL_DNGS)}")
-        pytest.skip(f"need named real DNGs under {CAPTURES}")
+        samples.missing(f"need named real DNGs under {CAPTURES}")
 
     crop_specs = [
         (0, 286, 430),  # R8051129: even, non-16-aligned

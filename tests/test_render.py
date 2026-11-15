@@ -38,12 +38,14 @@ from gxr_studio.render.params import (
 )
 from gxr_studio.render.recipes import CameraData, Menu, unit_of_lens
 from gxr_studio.render.service import PREVIEW_STEP, RenderService, RenderUnavailable, shrink_codes
+from support import samples
+from support.speed import assert_fast
 from test_api import find, import_all
 from test_engine_render import models as models
 
 ROOT = t.REPO
 SAMPLE_DIR = ROOT / "captures/a12-50/2026-10-19/stage2c-first-run"
-needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-50 样本不在本机")
+needs_sample = samples.needs(SAMPLE_DIR.is_dir(), "captures/a12-50 样本不在本机")
 
 
 # ---- 夹具 --------------------------------------------------------------------
@@ -53,7 +55,7 @@ needs_sample = pytest.mark.skipif(not SAMPLE_DIR.is_dir(), reason="captures/a12-
 def real_card(volumes):
     """盖掉 conftest 的同名夹具，换成本文件的样本目录；找不到样本就跳过，和 conftest 一样。"""
     if not SAMPLE_DIR.is_dir():
-        pytest.skip("captures/a12-50 样本不在本机")
+        samples.missing("captures/a12-50 样本不在本机")
     return make_card(volumes, samples=SAMPLE_DIR)
 
 
@@ -635,8 +637,8 @@ def test_api_dng_only_exports_default_look_and_full_res_is_fast(data_client, rea
     out = c.post(f"/api/photos/{p['id']}/export", json={"size": "original"}).json()
     dt = time.time() - t0
     assert out["prediction"] is True and out["render"].startswith("recipe-prediction") and (out["width"], out["height"]) == (4288, 2848)
-    assert dt < 15, f"全分辨率导出 {dt:.1f}s"
     assert "stock 04 simulation" in Image.open(out["path"]).getexif()[270]
+    assert_fast(dt, 15, "全分辨率导出（秒）")
 
 
 @needs_sample

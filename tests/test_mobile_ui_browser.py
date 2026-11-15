@@ -18,12 +18,13 @@ import pytest
 
 from conftest import REAL_HOME
 from gpu_support import find_chrome
+from support import samples
 from test_mobile_shell_browser import core_prerequisite
 
 pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
-PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(REPO.parent)))
+PARENT = samples.sample_parent()
 SAMPLES = PARENT / "captures/a12-50/2026-10-19/stage2c-first-run"
 PKG = REPO / "mobile" / "src" / "wasm-pkg" / "gxr_wasm.js"
 MODULES = REPO / "mobile" / "node_modules"
@@ -78,6 +79,7 @@ def _pairs() -> list[Path]:
 def test_mobile_ui_pick_grid_edit_and_bad_file(tmp_path: Path) -> None:
     files = _pairs()
     # 地基用的那份样本只有 4 对。够 6 对就取 6 对，不够就用现有的。
+    samples.need_sample(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(len(files) >= 2, f"need a DNG+JPG pair in {SAMPLES}")
     _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
     _need(MODULES.is_dir(), "mobile/node_modules is missing")
