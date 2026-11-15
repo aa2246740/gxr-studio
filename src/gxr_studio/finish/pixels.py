@@ -13,12 +13,14 @@ from ..render.tones import channel_gains, display_table
 
 def _srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
     x = rgb.astype(np.float32) / np.float32(255.0)
-    return np.where(x <= 0.04045, x / np.float32(12.92), ((x + 0.055) / 1.055) ** 2.4).astype(np.float32)
+    lin = (((x + 0.055) / 1.055).astype(np.float64) ** 2.4).astype(np.float32)
+    return np.where(x <= 0.04045, x / np.float32(12.92), lin).astype(np.float32)
 
 
 def _linear_to_srgb(lin: np.ndarray) -> np.ndarray:
     x = np.clip(lin, 0.0, None)
-    encoded = np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1.0 / 2.4) - 0.055)
+    gamma = np.power(x.astype(np.float64), 1.0 / 2.4).astype(np.float32)
+    encoded = np.where(x <= 0.0031308, x * 12.92, 1.055 * gamma - 0.055)
     return cast(np.ndarray, np.clip(encoded * 255.0 + 0.5, 0, 255).astype(np.uint8))
 
 
