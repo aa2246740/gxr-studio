@@ -369,6 +369,23 @@ def test_oracle_witness_validation_and_hook_errors_fail_loudly(tmp_path: Path, m
         err, _ = cp.bake_gate(bad_captured, rust, model, entry, grid_cache=cache)
         assert err is not None and needle in err, (needle, err)
 
+    # In-place edits to the captured ChromaBake through an ordinary NumPy alias must fail (Sol r4 P2),
+    # for example normalizing the curve for a preview without copying it first.
+    for field in ("pre", "matrix", "offset", "input_coefficients", "lookup_matrix", "lookup_offset"):
+        fresh, _rust = cp.bake(work, pack, entry, params={"step": 2.0})
+        assert isinstance(fresh, cp.CapturedBake)
+        assert cp.bake_gate(fresh, rust, model, entry, grid_cache=cache)[0] is None
+        value = getattr(fresh.bk, field)
+        if value is None:
+            continue
+        alias = np.asarray(value)
+        if field == "pre":
+            alias /= np.float32(255.0)
+        else:
+            alias.flat[0] += alias.dtype.type(1.0)
+        err, _ = cp.bake_gate(fresh, rust, model, entry, grid_cache=cache)
+        assert err is not None and "captured snapshot" in err, (field, err)
+
     # Hook firing 0 times or 2 times must raise RuntimeError and still restore chain.np.
     orig_bake_chroma = chain.bake_chroma
     orig_np = chain.np

@@ -325,6 +325,11 @@ def _validate_witness_and_meta(
             return f"ChromaBake.step {bk.step!r} != meta {meta['step']!r}"
         if np.ascontiguousarray(bk.gain, "<f4").tobytes() != data[head * 4 :]:
             return "ChromaBake.gain bytes differ from py bake bytes"
+        # Sol r4: every serialized field (pre, matrix, offset, input_coefficients, lookup_*) must still be
+        # the captured bake; an in-place edit through a NumPy alias would otherwise pass unnoticed.
+        cur_data, cur_meta = tables.bake_bytes(bk)
+        if cur_data != data or cur_meta != meta:
+            return "ChromaBake bytes/meta differ from the captured snapshot (bk changed after capture)"
 
     witness_f32_bytes = np.ascontiguousarray(real_gain_f64.astype(np.float32), "<f4").tobytes()
     if witness_f32_bytes != data[head * 4 :]:
