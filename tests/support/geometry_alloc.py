@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import os
-import re
-import shutil
-import subprocess
 from pathlib import Path
 
-import pytest
-
-from support.core_cli import CLI, REPO
+from support.core_rlibs import compile_and_run_probe
 
 _PROBE_RS = """use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -90,80 +84,6 @@ fn main() {
 """
 
 
-def _skip_or_fail(msg: str) -> None:
-    if os.environ.get("GXR_REQUIRE_CORE") == "1":
-        pytest.fail(msg)
-    pytest.skip(msg)
-
-
-def _real_home() -> Path:
-    if os.name == "posix":
-        import pwd
-
-        return Path(pwd.getpwuid(os.getuid()).pw_dir)
-    return Path(os.environ.get("USERPROFILE") or Path.home())
-
-
-def _find_rustc() -> str:
-    toolchain_toml = REPO / "core" / "rust-toolchain.toml"
-    channel = "stable"
-    if toolchain_toml.is_file():
-        m = re.search(r'channel\s*=\s*"([^"]+)"', toolchain_toml.read_text(encoding="utf-8"))
-        if m:
-            channel = m.group(1)
-    exe = "rustc.exe" if os.name == "nt" else "rustc"
-    rustup_home = Path(os.environ.get("RUSTUP_HOME") or (_real_home() / ".rustup"))
-    toolchains_dir = rustup_home / "toolchains"
-    if toolchains_dir.is_dir():
-        for tc in sorted(toolchains_dir.iterdir()):
-            if tc.name == channel or tc.name.startswith(f"{channel}-"):
-                cand = tc / "bin" / exe
-                if cand.is_file():
-                    return str(cand)
-    found = shutil.which("rustc")
-    if found is not None:
-        return str(found)
-    _skip_or_fail("rustc is not available for Rule 2 OOM probe")
-    raise AssertionError("unreachable")
-
-
 def run_rule2_oom_probe(tmp_path: Path) -> None:
-    """Compile and execute the OOM probe against the built release ``libgxr_finish`` rlib."""
-    if not CLI.is_file():
-        _skip_or_fail(f"need {CLI}; run make core")
-    deps = REPO / "core" / "target" / "release" / "deps"
-    finish_rlibs = sorted(deps.glob("libgxr_finish-*.rlib"), key=lambda p: p.stat().st_mtime, reverse=True)
-    raw_rlibs = sorted(deps.glob("libgxr_raw-*.rlib"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not finish_rlibs or not raw_rlibs:
-        _skip_or_fail(f"missing release rlibs under {deps}; run make core")
-
-    rustc = _find_rustc()
-    src_path = tmp_path / "rule2_oom_probe.rs"
-    bin_path = tmp_path / "rule2_oom_probe"
-    src_path.write_text(_PROBE_RS, encoding="utf-8")
-    compile_proc = subprocess.run(
-        [
-            rustc,
-            "--edition=2024",
-            "-C",
-            "opt-level=2",
-            "-C",
-            "panic=abort",
-            "-L",
-            f"dependency={deps}",
-            "--extern",
-            f"gxr_finish={finish_rlibs[0]}",
-            "--extern",
-            f"gxr_raw={raw_rlibs[0]}",
-            str(src_path),
-            "-o",
-            str(bin_path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert compile_proc.returncode == 0, compile_proc.stdout + compile_proc.stderr
-    run_proc = subprocess.run([str(bin_path)], check=False, capture_output=True, text=True, timeout=60)
-    assert run_proc.returncode == 0, run_proc.stdout + run_proc.stderr
+    """Compile and execute the OOM probe against the release rlibs cargo reports for gxr-finish and gxr-raw."""
+    compile_and_run_probe(tmp_path, "rule2_oom_probe", _PROBE_RS)
