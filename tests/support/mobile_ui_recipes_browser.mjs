@@ -3,7 +3,7 @@
 // 输出一行 JSON，里面有 UI 交给显卡的烘焙表的 sha256，Python 那边和桌面的逐字节比。
 
 import { pathToFileURL } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -26,15 +26,33 @@ async function settle(page) {
   throw new Error('page kept reloading');
 }
 
-/** UI 交给显卡的那张表：sha256、字节数和 meta。 */
-async function bakeOf(page, key) {
-  return page.evaluate(async (want) => {
+/**
+ * UI 交给显卡的那张表：sha256、字节数和 meta。给了 `saveAs` 就把字节和核心的整份 meta（带 input_coefficients）
+ * 写到 manifest.outDir，Python 那边交给 color-oracle 的 bake_gate。
+ */
+async function bakeOf(page, key, saveAs = null) {
+  const got = await page.evaluate(async ({ want, keep }) => {
     const made = window.__gxrBakes?.get(want);
     if (!made) return null;
     const digest = await crypto.subtle.digest('SHA-256', made.data);
     const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    return { sha256, bytes: made.data.byteLength, meta: made.meta };
-  }, key);
+    let b64 = null;
+    if (keep) {
+      const bytes = new Uint8Array(made.data);
+      let text = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      b64 = btoa(text);
+    }
+    return { sha256, bytes: made.data.byteLength, meta: made.meta, fullMeta: made.fullMeta, b64 };
+  }, { want: key, keep: saveAs !== null });
+  if (!got) return null;
+  const { b64, fullMeta, ...summary } = got;
+  if (saveAs !== null && manifest.outDir) {
+    writeFileSync(`${manifest.outDir}/${saveAs}.bin`, Buffer.from(b64, 'base64'));
+    writeFileSync(`${manifest.outDir}/${saveAs}.meta.json`, JSON.stringify(fullMeta));
+    summary.saved = saveAs;
+  }
+  return summary;
 }
 
 /** 舞台的像素摘要（显卡读回，缩小后求和），用来确认照片真的换了。 */
@@ -202,10 +220,10 @@ try {
     step('look', {
       id,
       key: lookKey,
-      bake: await bakeOf(page, lookKey),
+      bake: await bakeOf(page, lookKey, 'phone-look'),
       drawn,
       panel: panelText,
-      knob: { name: knobName, level, key: knobKey, bake: await bakeOf(page, knobKey), keysBefore, duringDrag, afterRelease },
+      knob: { name: knobName, level, key: knobKey, bake: await bakeOf(page, knobKey, 'phone-knob'), keysBefore, duringDrag, afterRelease },
     });
     await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').scrollIntoViewIfNeeded();
     await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').click();

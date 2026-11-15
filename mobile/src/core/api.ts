@@ -170,12 +170,18 @@ export async function restoreCalib(): Promise<CalibRestored> {
 export interface Bake {
   meta: BakeMeta;
   data: ArrayBuffer;
+  /** 核心给的整份 meta（多一个 `input_coefficients`）。引擎只看 `meta`；对拍要拿整份。 */
+  fullMeta: Record<string, unknown>;
 }
 
 /** 在 Worker 里跑 color_bake。失败抛核心的原话。 */
 export async function bakeIn(args: BakeArgs): Promise<Bake> {
   const transfer = [args.entry, args.stock, args.ctx, args.ring];
   const { json, buffers } = await workers().request('bake', null, transfer, args);
-  const meta = JSON.parse(json) as BakeMeta;
-  return { meta: { nx: meta.nx, ny: meta.ny, origin: meta.origin, step: meta.step }, data: buffers[0] ?? new ArrayBuffer(0) };
+  const fullMeta = JSON.parse(json) as BakeMeta & Record<string, unknown>;
+  return {
+    meta: { nx: fullMeta.nx, ny: fullMeta.ny, origin: fullMeta.origin, step: fullMeta.step },
+    data: buffers[0] ?? new ArrayBuffer(0),
+    fullMeta,
+  };
 }

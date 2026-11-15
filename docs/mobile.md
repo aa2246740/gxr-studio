@@ -400,7 +400,7 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 配方卡照桌面 `CameraData.listing` 和 `recipes.js`：这张照片所在单元的内置 8 个（`BASE_NAMES`，说明用 `look_model.js` 的表），文件里对这个单元开放的 Looks，相机里的用户配方。镜头单元按 `unit_of_lens`（镜头名先取相机 JPG 的 `LensModel`，没有再取 DNG 的，再没有用 `UniqueCameraModel` 去掉「RICOH 」），认不出用 50mm。模型按 `model_for`：ISO ≥ 566 用 1600，否则用 200。「未校准」照 `RenderService.plan`：认不出单元、ISO 不在实拍校准范围、配方单元不是照片的单元，原因用 `calibration_note.js` 的句子。
 
-每张卡的烘焙表见下面「旋钮、Looks 和校准核对」：`color_resolve` 出条目，再 `color_bake`。一张表约 3.8 MB，JS 里最多留 16 张；显卡里用 24 个固定的键轮流装（同一个键再装一次引擎会销毁旧的那份），舞台正在用的那张不让出去。这两个数等真机量过再调。配方卡小图（`app/looks.ts`）全局最多 32 MiB（一张约 96 KiB，约 340 张），每张卡只留现在用的那一张（动旋钮换上新的，旧的立刻关掉），按最近最少使用放掉，先放别的照片，上限任何时候都成立；换相机配方文件或校准数据时全部放掉。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、相机里的用户配方）；Look 和动过旋钮的 Look 见下面「还没做的」。
+每张卡的烘焙表见下面「旋钮、Looks 和校准核对」：`color_resolve` 出条目，再 `color_bake`。一张表约 3.8 MB，JS 里最多留 16 张；显卡里用 24 个固定的键轮流装（同一个键再装一次引擎会销毁旧的那份），舞台正在用的那张不让出去。这两个数等真机量过再调。配方卡小图（`app/looks.ts`）全局最多 32 MiB（一张约 96 KiB，约 340 张），每张卡只留现在用的那一张（动旋钮换上新的，旧的立刻关掉），按最近最少使用放掉，先放别的照片，上限任何时候都成立；换相机配方文件或校准数据时全部放掉。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、相机里的用户配方）；Look 和动过旋钮的 Look 走 color-oracle 的门禁：Python 参考在测试进程里用 `capture_bake_chroma` 跑一次生产 bake（抓下转 float32 之前的 float64 见证），手机交给引擎的表交给 `bake_gate`，Gate A（手机 == 顺序 oracle）逐位相同，Gate B（手机和 numpy 不同的点）由门禁逐点归因。
 
 点卡就把选择记进这张照片的编辑状态（`photo.choice`），和调整放在一起，换片、重新选同一张都留着。表已经在缓存里就当帧换上；还在做时照片留着上一张，做好了而且还是要它才换。长按看原图是中性转换、调整归零。
 
@@ -418,7 +418,6 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 - 卡片画的是调整归零的样子，不跟着调整变。
 - r5（`GXRFX.BIN`）还不能选。
-- 浏览器测试里，这份 DAT 的第一个 Look 在合成校准包上，`gxr-color` 的 `color_bake` 和桌面 numpy 有一个 float32 不同（gain 格 109793 的虚部），color 单元的 `bake_gap` 也解释不了。手机和原生 `gxr-cli` 逐字节相同，条目和桌面相同。这一句断言照旧，等 `gxr-color` 修好。
 
 ## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
 

@@ -13,6 +13,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -172,8 +173,13 @@ DATS = (
 Picks = dict[str, object]
 
 
-def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jpg: Path, picks: Picks) -> dict[str, dict[str, object]]:
-    """桌面那条路：导入同一份相机配方文件和合成校准包，按导出用的 RenderService.plan → preview_bake → bake_bytes 出表。"""
+def _desktop_bakes(
+    home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jpg: Path, picks: Picks, gated: frozenset[str] = frozenset()
+) -> tuple[dict[str, dict[str, object]], dict[str, tuple[Any, Any, bytes]]]:
+    """桌面那条路：导入同一份相机配方文件和合成校准包，按导出用的 RenderService.plan → preview_bake → bake_bytes 出表。
+
+    `gated` 里的选择另外在本进程用 color-oracle 的 `capture_bake_chroma` 跑一次生产 bake（转 float32 之前抓下
+    float64 见证），返回 (CapturedBake, 模型, 条目)，交给 `bake_gate`。"""
     import hashlib
 
     from gxr_studio.camdata import calib, store
@@ -182,6 +188,7 @@ def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jp
     from gxr_studio.meta import read_dng_meta, read_jpeg_meta
     from gxr_studio.render.params import EditState, RecipeSel
     from gxr_studio.render.service import RenderService
+    from support.color_oracle_gates import capture_bake_chroma
     from support.core_cli import CLI as CORE_CLI
     from support.mobile_ui_calib import write_pack
 
@@ -199,6 +206,7 @@ def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jp
         unit = render.photo_unit(shot) or "jlaunch"
         listed = render.recipe_menu().listing()[["jlaunch", "qlaunch", "l08firm"].index(unit)]
         out: dict[str, dict[str, object]] = {}
+        captures: dict[str, tuple[Any, Any, bytes]] = {}
         for name, pick in picks.items():
             card, levels = pick if isinstance(pick, tuple) else (pick, {})
             if card is None:
@@ -211,6 +219,12 @@ def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jp
                 sel = RecipeSel(unit, int(info["slot"]), levels=tuple(levels.items()), kind=kind, id=ident)
             plan = render.plan(shot, EditState(recipe=sel))
             data, meta = bake_bytes(render.preview_bake(plan))
+            if name in gated:
+                model = render.model(plan.model_iso, plan.unit)
+                captured = capture_bake_chroma(model, plan.entry, float(meta["step"]), workers=1)
+                # 同一个生产 bake：和服务路径（preview_bake → bake_bytes）出的字节一样。
+                assert captured.data == data and captured.meta == meta, name
+                captures[name] = (captured, model, plan.entry)
             # 同一个条目、同一个模型交给原生 gxr-cli color-bake：手机（WASM）必须和它逐字节相同。
             manifest = json.loads((calib.calib_dir(home) / "manifest.json").read_text(encoding="utf-8"))
             branch = manifest["units"][unit]["models"][str(plan.model_iso)]
@@ -238,7 +252,7 @@ def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jp
                 "unit": unit,
                 "entry_sha256": plan.entry_sha256,
             }
-        return out
+        return out, captures
     finally:
         lib.close()
 
@@ -271,6 +285,8 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     with zipfile.ZipFile(deflated, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, blob in pack.items():
             archive.writestr(name, blob)
+    phone_dir = tmp_path / "phone"
+    phone_dir.mkdir()
     lone = tmp_path / "R9990002.JPG"
     lone.write_bytes(files[1].read_bytes())
     manifest = tmp_path / "recipes.json"
@@ -283,6 +299,8 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
                 "deflated": str(deflated),
                 "jpgOnly": str(lone),
                 "jpgOnlyStem": lone.stem,
+                # 手机交给引擎的 Look 和旋钮 Look 的表写到这里，交给 color-oracle 的 bake_gate。
+                "outDir": str(phone_dir),
                 # 手动截图时给一个文件夹（不进仓库）；平时不截。
                 **({"shots": os.environ["GXR_M2_SHOTS"]} if os.environ.get("GXR_M2_SHOTS") else {}),
             }
@@ -324,7 +342,7 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     look = steps["look"]
     picks["look"] = look["id"]
     picks["knob"] = (look["id"], {look["knob"]["name"]: look["knob"]["level"]})
-    desktop = _desktop_bakes(tmp_path / "app", raw, pack, files[pair], files[pair + 1], picks)
+    desktop, captures = _desktop_bakes(tmp_path / "app", raw, pack, files[pair], files[pair + 1], picks, frozenset({"look", "knob"}))
     for name, key in (("default", "defaultBake"), ("chosen", "bake")):
         phone = cards[key] if name == "default" else chosen[key]
         assert phone is not None, name
@@ -368,13 +386,20 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     assert look["bake"]["sha256"] == desktop["look"]["native_sha256"], (look["bake"], desktop["look"])
     assert knob["bake"]["sha256"] == desktop["knob"]["native_sha256"], (knob["bake"], desktop["knob"])
     assert knob["bake"]["meta"] == desktop["knob"]["meta"]
-    parity = {"phone": report["steps"], "desktop": desktop}
+    # Looks 用 color-oracle 的门禁：Gate A 手机 == 顺序 oracle 逐位相同；Gate B 手机和桌面 numpy 不同的点由门禁逐点归因。
+    from support.color_oracle_gates import bake_gate
+
+    gate_b: dict[str, int] = {}
+    for name, saved in (("look", "phone-look"), ("knob", "phone-knob")):
+        captured, model, entry_bytes = captures[name]
+        phone_bytes = (phone_dir / f"{saved}.bin").read_bytes()
+        phone_meta = json.loads((phone_dir / f"{saved}.meta.json").read_text(encoding="utf-8"))
+        gap, allowed = bake_gate(captured, (phone_bytes, phone_meta), model, entry_bytes)
+        assert gap is None, (name, gap)
+        gate_b[name] = len(allowed)
+    parity = {"phone": report["steps"], "desktop": desktop, "gate_b_points": gate_b}
     (tmp_path / "bake-parity.json").write_text(json.dumps(parity, ensure_ascii=False, indent=1), encoding="utf-8")
-    # 最后和桌面 numpy 的 bake_bytes 逐字节比。这份 DAT 的第一个 Look（M9 STD）在合成校准包上，gxr-color 的 color_bake
-    # 有一个 float32 和 numpy 不同，color 单元自己的 bake_gap 也解释不了（gain 格 109793 的虚部，见 REPORT.md）。
-    # 门槛不放宽：这两句现在失败，等 gxr-color 修好。
-    assert look["bake"]["sha256"] == desktop["look"]["sha256"], (look["key"], desktop["look"])
-    assert knob["bake"]["sha256"] == desktop["knob"]["sha256"], (knob["key"], desktop["knob"])
+    print(f"Looks bake_gate Gate B points: {gate_b}")
 
 
 BOOK_DRIVER = REPO / "tests" / "support" / "mobile_ui_book_races.mjs"
