@@ -22,6 +22,7 @@ from gxr_studio.camdata import calib, store
 from gxr_studio.camdata import datcodec as dc
 from gxr_studio.engine import knobs, menu
 from gxr_studio.engine.model import Model
+from support import samples
 
 TOOLS = t.RESEARCH / "studio_engine_e0/tools"
 
@@ -151,7 +152,7 @@ def pythons():
 @pytest.mark.parametrize("python", pythons())
 def test_render_equals_the_research_model_pixel_for_pixel(home, models, inputs, data, tmp_path, python):
     if not (t.KNOBS_SRC / "model_adapter.py").is_file() or not (t.RESEARCH / "closed_loop/model.py").is_file():
-        pytest.skip("研究代码不在本机")
+        samples.missing("研究代码不在本机")
     entries, cases = reference_cases(home, data)
     ref, banner = run_reference(python, entries, cases, tmp_path)
     worst = 0
@@ -173,7 +174,7 @@ def test_render_equals_the_research_model_pixel_for_pixel(home, models, inputs, 
 def test_unclipped_float_output_is_also_identical(home, models, inputs, data, tmp_path):
     """不量化的浮点输出同样相同：量化不会把差异藏起来。"""
     if not (t.KNOBS_SRC / "model_adapter.py").is_file():
-        pytest.skip("研究代码不在本机")
+        samples.missing("研究代码不在本机")
     script = tmp_path / "float_ref.py"
     script.write_text(
         "import sys, json, numpy as np\n"

@@ -9,6 +9,7 @@ import pytest
 
 import e0_support as t
 from gxr_studio.camdata import datcodec as dc
+from support import samples
 
 GENS = (127, 129, 131, 135)
 
@@ -103,7 +104,9 @@ def test_entries_match_the_research_parser_on_the_g123_dat(tmp_path):
 
     g123 = t.REPO / "firmware/package_v36_g123/SD_ROOT/GXRCE.DAT"
     pack_py = t.REPO / "firmware/engine_v45_verify/candidate/containers/product/pack.py"
-    if not (g123.is_file() and pack_py.is_file() and (t.KNOBS_SRC / "support.py").is_file()):
+    if not (pack_py.is_file() and (t.KNOBS_SRC / "support.py").is_file()):
+        samples.missing("研究代码或 g123 DAT 不在本机")
+    if not g123.is_file():
         pytest.skip("研究代码或 g123 DAT 不在本机")
     script = tmp_path / "parse_ref.py"
     script.write_text(
@@ -135,7 +138,7 @@ def test_gxui_matches_the_research_ui_data_on_g127():
     """用户条目：研究 ui_data.parse_dat / replace_users 与本编解码器逐字节一致。"""
     ui_path = t.REPO / "firmware/engine_v53_g135/candidate/ui_data.py"
     if not ui_path.is_file():
-        pytest.skip("研究代码不在本机")
+        samples.missing("研究代码不在本机")
     ui = t.load_by_path("research_ui_data", ui_path)
     raw = need(127)
     meta, ext, banks, users = ui.parse_dat(raw)
