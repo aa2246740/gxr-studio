@@ -82,9 +82,30 @@ pub fn dng_half_codes_named(bytes: &[u8], name: &str) -> Result<HalfCodes, JsVal
     })
 }
 
+const I64_MIN_F64: f64 = -9_223_372_036_854_775_808.0;
+const I64_UPPER_BOUND_F64: f64 = 9_223_372_036_854_775_808.0;
+
+fn checked_row_i64(v: f64) -> Option<i64> {
+    if v.is_finite() && v.fract() == 0.0 && (I64_MIN_F64..I64_UPPER_BOUND_F64).contains(&v) {
+        #[allow(clippy::cast_possible_truncation)]
+        Some(v as i64)
+    } else {
+        None
+    }
+}
+
+fn resolve_row_i64(v: f64, crop_y0: i64) -> Result<i64, gxr_raw::CoreError> {
+    if let Some(row) = checked_row_i64(v) {
+        return Ok(row);
+    }
+    (-1_i64)
+        .checked_sub(crop_y0)
+        .ok_or_else(|| gxr_raw::CoreError::new("index_error", "block outside the raw plane"))
+}
+
 /// White-balanced crop rows `[y0, y1)`, the same array as `gxr-cli dng-wb-block`.
 #[wasm_bindgen]
-pub fn dng_wb_block(bytes: &[u8], y0: i32, y1: i32) -> Result<HalfCodes, JsValue> {
+pub fn dng_wb_block(bytes: &[u8], y0: f64, y1: f64) -> Result<HalfCodes, JsValue> {
     dng_wb_block_named(bytes, "<bytes>", y0, y1)
 }
 
@@ -93,11 +114,14 @@ pub fn dng_wb_block(bytes: &[u8], y0: i32, y1: i32) -> Result<HalfCodes, JsValue
 pub fn dng_wb_block_named(
     bytes: &[u8],
     name: &str,
-    y0: i32,
-    y1: i32,
+    y0: f64,
+    y1: f64,
 ) -> Result<HalfCodes, JsValue> {
     let dng = Dng::open(bytes, name).map_err(rejected)?;
-    let block = gxr_raw::wb_mosaic_block(&dng, i64::from(y0), i64::from(y1)).map_err(rejected)?;
+    let (cy0, _, _, _) = dng.crop_window();
+    let y0_i64 = resolve_row_i64(y0, cy0).map_err(rejected)?;
+    let y1_i64 = resolve_row_i64(y1, cy0).map_err(rejected)?;
+    let block = gxr_raw::wb_mosaic_block(&dng, y0_i64, y1_i64).map_err(rejected)?;
     let height = u32::try_from(block.height).map_err(|_| {
         rejected(gxr_raw::CoreError::raw_decode(
             "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.",
@@ -169,4 +193,31 @@ pub fn dng_neutral_named(bytes: &[u8], name: &str) -> Result<NeutralImage, JsVal
         width,
         values: img.values,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_validation_preserves_i64_and_rejects_bad_floats() {
+        assert_eq!(checked_row_i64(0.0), Some(0));
+        assert_eq!(checked_row_i64(-0.0), Some(0));
+        assert_eq!(checked_row_i64(-1.0), Some(-1));
+        assert_eq!(checked_row_i64(4_294_967_297.0), Some(4_294_967_297));
+        assert_eq!(
+            checked_row_i64(9_007_199_254_740_992.0),
+            Some(9_007_199_254_740_992)
+        );
+        assert_eq!(checked_row_i64(1.5), None);
+        assert_eq!(checked_row_i64(f64::NAN), None);
+        assert_eq!(checked_row_i64(f64::INFINITY), None);
+        assert_eq!(checked_row_i64(f64::NEG_INFINITY), None);
+        assert_eq!(checked_row_i64(I64_UPPER_BOUND_F64), None);
+
+        assert_eq!(resolve_row_i64(4_294_967_296.0, 0).unwrap(), 4_294_967_296);
+        assert_eq!(resolve_row_i64(f64::NAN, 0).unwrap(), -1);
+        assert_eq!(resolve_row_i64(f64::INFINITY, 5).unwrap(), -6);
+        assert_eq!(resolve_row_i64(1.5, i64::MIN).unwrap(), i64::MAX);
+    }
 }

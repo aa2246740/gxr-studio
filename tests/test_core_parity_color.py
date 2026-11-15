@@ -1,10 +1,11 @@
 """Parity: the color-* commands against engine.knobs, engine.menu, camdata.calib,
 the frozen engine's predict, render.chain's bake and apply, and render.tones.
 
-Gates: knob bytes, stats, uint8 codes, error kinds and messages are exact; the bake
-table is float32 bytes exact; float64 predict is within ``1e-12 * max(1, |a|)``.
-A miss reports the first index and both values. ``GXR_REQUIRE_GPU_TEST`` does not
-make the CLI required.
+Gates: knob bytes, stats, uint8 codes, error kinds and messages are exact; the bake table
+uses `color_parity.bake_gate` (Gate A float32 exact vs sequential oracle, zero masks; Gate B
+mechanical host BLAS/libm attribution vs real Python); float64 predict is within
+``1e-12 * max(1, |a|)``. A miss reports the first index and both values. ``GXR_REQUIRE_GPU_TEST``
+does not make the CLI required.
 """
 
 from __future__ import annotations
@@ -495,11 +496,14 @@ def _check_bake(tmp: Path, pack: Any, entry: bytes, **kw: Any) -> Any:
     if isinstance(py, BaseException) or isinstance(rust, CoreCliError):
         assert cp.same_error(py, rust) is None, cp.same_error(py, rust)
         return None
-    gap, allowed = cp.bake_gap(py, rust, pack.model(), entry)
+    params = kw.get("params") or {}
+    knob = params.get("knobs")
+    resolved = knobs.apply(pack.stock04, entry, cp.knob_request(knob))[0] if knob is not None else entry
+    gap, allowed = cp.bake_gate(py, rust, pack.model(), resolved)
     for line in allowed:
         print(f"bake float32 allowed: {line}")
     assert gap is None, gap
-    return py[2]
+    return py.bk
 
 
 def test_bake_matches_python_on_synthetic_models(tmp_path: Path) -> None:

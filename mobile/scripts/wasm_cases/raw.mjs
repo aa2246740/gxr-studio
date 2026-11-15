@@ -31,9 +31,34 @@ function neutralBytes(img) {
   return new Uint8Array(framed(height, width, raw));
 }
 
+function jsNum(v) {
+  if (v === 'NaN') return Number.NaN;
+  if (v === 'Infinity') return Number.POSITIVE_INFINITY;
+  if (v === '-Infinity') return Number.NEGATIVE_INFINITY;
+  return v;
+}
+
 export function cases(inputs) {
   const out = [];
   for (const file of inputs) {
+    if (file.endsWith('.json')) {
+      const spec = JSON.parse(readFileSync(file, 'utf8'));
+      const dngPath = spec.dng;
+      const name = spec.name ?? basename(dngPath);
+      const y0 = jsNum(spec.y0);
+      const y1 = jsNum(spec.y1);
+      const cliY0 = spec.cliY0 ?? y0;
+      const cliY1 = spec.cliY1 ?? y1;
+      const wbOut = join(dir, `wb-num-${out.length}.npy`);
+      const bytes = () => new Uint8Array(readFileSync(dngPath));
+      out.push({
+        label: `${file}::${spec.named ? 'dng_wb_block_named' : 'dng_wb_block'}`,
+        cliArgs: ['dng-wb-block', dngPath, '--rows', `${cliY0}:${cliY1}`, '--out', wbOut],
+        wasm: (mod) =>
+          floatBytes(spec.named ? mod.dng_wb_block_named(bytes(), name, y0, y1) : mod.dng_wb_block(bytes(), y0, y1)),
+      });
+      continue;
+    }
     const name = basename(file);
     const bytes = () => new Uint8Array(readFileSync(file));
     out.push({

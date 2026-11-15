@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""exclusive 阶段：先等机器安静再量墙钟，速度预算没过的用例安静后重跑一次。
+
+速度预算本身不放宽。这里只管量的时候机器够不够安静：
+
+- 安静的判断：环境变量 GXR_LOADGATE 指向的 loadgate.py 可用时，用它的 `quiet_for_timing()`
+  （没有这个函数就用 `cap(0)` 的 admit）；没设置、文件不在、加载失败或调用出错时，改用公开的回退：
+  1 分钟负载均值低于 CPU 数的一半。公共仓库不依赖那条私有路径。
+- 每 GXR_QUIET_POLL_S 秒（默认 10）问一次。一次 runner 里所有等待合计最多 GXR_QUIET_MAX_WAIT_S 秒
+  （默认 600），采样本身（窗口 SAMPLE_S 秒，整次调用的期限是剩下的预算，超时停掉探针）和休眠都算在内。剩下的不够再采一次就不再采样，照样跑，
+  并打印一行「一直没安静下来」和最近一次看到的负载。
+- 每次等待打印一行：等了多久、问了几次、最后看到的负载。
+- 速度断言抛 `SpeedBudgetExceeded`（类上 `gxr_speed_budget = True`，见 tests/support/speed.py）。
+  exclusive 阶段的子进程带 `--force-reruns 0`，不用 rerunfailures 重跑，每个用例只跑一次。这次尝试的所有失败
+  （含原生 subtest）都是它、setup 和 teardown 都没出错时，记成 speed，父进程等安静后在 exclusive 阶段把这些用例
+  重跑一次，以第二次为准。别的失败一律不重跑（exclusive 用例的功能失败也不靠 --reruns 重跑）。不解析断言文字。
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import xml.etree.ElementTree as ET
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pytest
+from _pytest.junitxml import xml_key as junit_xml_key  # pytest 钉死在 uv.lock；suite 计数只有它知道
+
+LOADGATE_ENV = "GXR_LOADGATE"
+MAX_WAIT_ENV = "GXR_QUIET_MAX_WAIT_S"
+POLL_ENV = "GXR_QUIET_POLL_S"
+BUDGET_ENV = "GXR_RUN_TESTS_QUIET_BUDGET"
+DEFAULT_MAX_WAIT_S = 600.0
+DEFAULT_POLL_S = 10.0
+# exclusive 阶段（第一次和安静重试）都关掉 rerunfailures 的重跑：命令行在 PYTEST_ADDOPTS 之后，盖过用户的 --reruns、
+# --force-reruns 和 flaky 标记。这样那个阶段唯一的重试就是安静重试。计算分片和 browser_serial 阶段的 --reruns 1 不动。
+NO_PLUGIN_RERUNS = ("--force-reruns", "0")
+SAMPLE_S = 5.0  # 单次采样的上限：loadgate 按这个窗口采（它的默认也是 5 秒）；剩余预算不到它就不再采
+
+Probe = Callable[[float], tuple[bool, str] | None]  # 参数是这次调用的期限（秒）；超时返回 None
+Nap = Callable[[float], bool]
+
+
+def load_gate(path: str) -> Any | None:
+    source = Path(path)
+    if not source.is_file():
+        print(f"{LOADGATE_ENV} 指向的文件不存在：{path}。", flush=True)
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("gxr_loadgate", source)
+        if spec is None or spec.loader is None:
+            print(f"{LOADGATE_ENV} 无法加载：{path}。", flush=True)
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        print(f"{LOADGATE_ENV} 加载失败（{exc}）。", flush=True)
+        return None
+    return module
+
+
+def _seconds(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"{name}={raw!r} 不是数字，按 {default:g} 秒。", flush=True)
+        return default
+    return max(0.0, value)
+
+
+def _describe(info: object) -> str:
+    if not isinstance(info, dict):
+        return repr(info)[:200]
+    keys = ("idle_cores", "ncpu", "load1", "mem_free", "mem_pressure", "spare")
+    picked = {key: info[key] for key in keys if key in info}
+    return json.dumps(picked or info, ensure_ascii=False, default=str)[:200]
+
+
+def loadavg_probe(getloadavg: Callable[[], tuple[float, float, float]] = os.getloadavg, ncpu: int | None = None) -> Probe:
+    cpus = ncpu or os.cpu_count() or 1
+    bound = cpus / 2
+
+    def probe(deadline: float) -> tuple[bool, str]:
+        del deadline  # 读负载均值是瞬时的
+        load1 = float(getloadavg()[0])
+        return load1 < bound, f"公开回退 load1={load1:.2f}，要 < {bound:g}（cpu {cpus}）"
+
+    return probe
+
+
+# 在子进程里调 loadgate：整次调用（采样窗口加上 vm_stat、sysctl 这些附带命令）都受期限管，超时连进程组一起收掉。
+_PROBE_SCRIPT = """
+import importlib.util, inspect, json, sys
+path, name, window = sys.argv[1], sys.argv[2], float(sys.argv[3])
+spec = importlib.util.spec_from_file_location("gxr_loadgate_probe", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+func = getattr(module, name)
+kwargs = {"seconds": window} if "seconds" in inspect.signature(func).parameters else {}
+first, info = func(0, **kwargs) if name == "cap" else func(**kwargs)
+ok = info.get("admit") if name == "cap" else first
+print(json.dumps([bool(ok), info], default=str))
+"""
+
+
+class ProbeStopped(Exception):
+    """等探针的时候收到了停止信号（SIGINT / SIGTERM）。探针的进程组已经杀掉、回收。"""
+
+
+POLL_STEP_S = 0.2  # 等探针时多久看一次停止状态和期限
+
+
+def _never() -> bool:
+    return False
+
+
+def call_with_deadline(cmd: list[str], limit: float, stopped: Callable[[], bool] = _never) -> str | None:
+    """跑 cmd，最多 limit 秒。超时返回 None；等的时候每 POLL_STEP_S 秒看一次 stopped()，为真就抛 ProbeStopped。
+
+    超时、停止或等待中出异常时，都把它的整个进程组杀掉并回收（finally）。只在进程组长还没被回收时 killpg，
+    这时它的 pid 还占着，进程组号不会被别的进程复用。正常结束的失败抛 RuntimeError。
+    """
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)  # noqa: S603
+    deadline = time.monotonic() + max(0.0, limit)
+    try:
+        while True:
+            if stopped():
+                raise ProbeStopped
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            try:
+                out, err = proc.communicate(timeout=min(POLL_STEP_S, left))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError((err or out).strip().splitlines()[-1] if (err or out).strip() else f"exit {proc.returncode}")
+    return out
+
+
+def gate_probe(module: Any, stopped: Callable[[], bool] = _never) -> Probe | None:
+    """loadgate 的安静判断（优先 quiet_for_timing，没有就 cap 的 admit）。模块里两样都没有时返回 None。
+
+    探针在子进程里跑，期限等于调用时剩下的等待预算；采样窗口钉在 SAMPLE_S（函数收 seconds 时）。
+    """
+    name = next((n for n in ("quiet_for_timing", "cap") if callable(getattr(module, n, None))), None)
+    path = getattr(module, "__file__", None)
+    if name is None or path is None:
+        return None
+    label = "loadgate.quiet_for_timing" if name == "quiet_for_timing" else "loadgate.cap admit"
+
+    def probe(limit: float) -> tuple[bool, str] | None:
+        out = call_with_deadline([sys.executable, "-I", "-c", _PROBE_SCRIPT, str(path), name, str(SAMPLE_S)], limit, stopped)
+        if out is None:
+            return None
+        ok, info = json.loads(out.strip().splitlines()[-1])
+        return bool(ok), f"{label} {_describe(info)}"
+
+    return probe
+
+
+class QuietGate:
+    """一次 runner 里共用的安静门。等待时间合计不超过 budget 秒。"""
+
+    def __init__(self, primary: Probe | None, fallback: Probe, *, budget: float, poll: float) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.remaining = budget
+        self.poll = poll
+        self.last_seen = ""
+
+    def check(self, limit: float) -> tuple[bool, str]:
+        """问一次。limit 是整次调用的期限；探针超时就算不安静，沿用最近一次看到的负载。"""
+        result: tuple[bool, str] | None = None
+        if self.primary is not None:
+            try:
+                result = self.primary(limit)
+            except ProbeStopped:
+                raise
+            except Exception as exc:
+                print(f"{LOADGATE_ENV} 的安静判断出错（{exc!r}），这次 runner 改用公开回退。", flush=True)
+                self.primary = None
+        if self.primary is None:
+            result = self.fallback(limit)
+        if result is None:
+            print(f"安静判断在 {limit:.1f} 秒的期限内没有回来，已停掉，按不安静算。", flush=True)
+            return False, self.last_seen or "这个进程里还没采样过"
+        return result
+
+    def wait(self, label: str, nap: Nap, clock: Callable[[], float] = time.monotonic) -> bool:
+        """等到安静或预算用完。返回 False 表示等的时候收到了信号。
+
+        采样本身（loadgate 一次要采 SAMPLE_S 秒）和中间的休眠都从同一份预算里扣：剩下的不够再采一次就不采了，
+        休眠也只睡到「还够采最后一次」为止。每次探针调用的期限等于当时剩下的预算，超时就停掉探针、按不安静算，
+        所以附带命令拖慢的时间也超不出预算。预算用完后的等待不再采样，只打印最近一次看到的负载。
+        """
+        started = clock()
+        checks = 0
+        while self.remaining - (clock() - started) >= SAMPLE_S:
+            checks += 1
+            try:
+                quiet, self.last_seen = self.check(self.remaining - (clock() - started))
+            except ProbeStopped:
+                self.remaining = max(0.0, self.remaining - (clock() - started))
+                return False
+            spent = clock() - started
+            if quiet:
+                self.remaining = max(0.0, self.remaining - spent)
+                print(f"等机器安静（{label}）：等了 {spent:.0f} 秒，问了 {checks} 次，安静了，{self.last_seen}。", flush=True)
+                return True
+            pause = min(self.poll, self.remaining - spent - SAMPLE_S)
+            if pause <= 0:
+                break
+            if not nap(pause):
+                self.remaining = max(0.0, self.remaining - (clock() - started))
+                return False
+        spent = clock() - started
+        self.remaining = max(0.0, self.remaining - spent)
+        last = self.last_seen or "这个进程里还没采样过"
+        print(
+            f"机器一直没安静下来（{label}）：等了 {spent:.0f} 秒，问了 {checks} 次，最后一次 {last}；"
+            f"等待预算用完（合计 {MAX_WAIT_ENV}），{'不再采样，' if checks == 0 else ''}照样跑，墙钟结果可能偏慢。",
+            flush=True,
+        )
+        return True
+
+
+def env_gate() -> Any | None:
+    path = os.environ.get(LOADGATE_ENV, "").strip()
+    return load_gate(path) if path else None
+
+
+def make_gate(module: Any | None, *, budget: float | None = None, stopped: Callable[[], bool] = _never) -> QuietGate:
+    """module 是已经加载的 loadgate，None 表示没有，用公开回退。budget 默认读 GXR_QUIET_MAX_WAIT_S。
+
+    stopped 是 runner 的停止状态：探针跑着的时候收到 SIGINT / SIGTERM，马上杀掉探针、wait() 返回 False。
+    """
+    primary = gate_probe(module, stopped) if module is not None else None
+    if module is not None and primary is None:
+        print(f"{LOADGATE_ENV} 里没有 quiet_for_timing 或 cap，安静判断改用公开回退。", flush=True)
+    if budget is None:
+        budget = _seconds(MAX_WAIT_ENV, DEFAULT_MAX_WAIT_S)
+    return QuietGate(primary, loadavg_probe(), budget=budget, poll=_seconds(POLL_ENV, DEFAULT_POLL_S) or DEFAULT_POLL_S)
+
+
+def _sleep(seconds: float) -> bool:
+    time.sleep(seconds)
+    return True
+
+
+def _junit_totals(xml: Any) -> dict[str, int] | None:
+    """和 pytest 的 LogXML.pytest_sessionfinish 写 suite 属性时的算法一样。没开 --junitxml 时返回 None。"""
+    if xml is None:
+        return None
+    stats = xml.stats
+    tests = stats["passed"] + stats["failure"] + stats["skipped"] + stats["error"] - xml.cnt_double_fail_tests
+    return {"tests": tests, "failures": stats["failure"], "errors": stats["error"], "skipped": stats["skipped"]}
+
+
+def _is_speed(kind: type[BaseException]) -> bool:
+    return getattr(kind, "gxr_speed_budget", False) is True
+
+
+class ExclusivePlugin:
+    """exclusive 子进程里：每个用例之前等安静；结束时按 node id 写下 passed / speed / failed。"""
+
+    def __init__(self, outcomes: Path, gate: QuietGate | None) -> None:
+        self.outcomes = outcomes
+        self.gate = gate
+        self.state: dict[str, str] = {}
+        self.junit: dict[str, dict[str, int]] = {}
+        self.budget = gate.remaining if gate is not None else 0.0
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)  # 包在 rerunfailures 的 protocol 外面：等待在前，计数含它的每次重跑
+    def pytest_runtest_protocol(self, item: Any, nextitem: Any) -> Any:
+        """用例之前等安静；记下这个用例给 JUnit 计数添了多少（subtest、重跑、teardown 错误都按 pytest 自己的算法）。"""
+        del nextitem
+        if self.gate is not None:
+            self.gate.wait(f"exclusive 用例之前：{item.nodeid}", _sleep)
+        xml = item.config.stash.get(junit_xml_key, None)
+        before = _junit_totals(xml)
+        try:
+            return (yield)
+        finally:
+            after = _junit_totals(xml)
+            if before is not None and after is not None:
+                self.junit[item.nodeid] = {key: after[key] - before[key] for key in after}
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_runtest_makereport(self, item: Any, call: Any) -> Any:
+        """在报告生成时分类，不等它被记下来。
+
+        rerunfailures 会把 setup、call、teardown 报告攒到一次尝试结束才发，原生 subtest 的报告却当场就发；
+        按 logreport 的顺序在 setup 那里重置，会把同一次尝试里先到的 subtest 失败清掉。生成报告的顺序没有这个问题：
+        每次尝试先生成 setup 报告，subtest 报告在 call 期间生成（也走这个钩子），最后是 call 和 teardown。
+        一次尝试里的失败全部累积：只有全是 SpeedBudgetExceeded 才记 speed，出现过别的失败就一直是 failed。
+        外层包装（tryfirst），看到的是 xfail 之类改写之后的结果。
+        exclusive 子进程带 --force-reruns 0 跑，每个用例只有一次尝试；这里不碰 rerunfailures 的任何内部状态。
+        """
+        report = yield
+        nodeid = item.nodeid
+        if call.when == "setup":
+            self.state[nodeid] = "passed"
+        current = self.state.get(nodeid, "passed")
+        if report.skipped and current == "passed":
+            self.state[nodeid] = "skipped"
+        elif report.failed:
+            speed = call.when == "call" and call.excinfo is not None and _is_speed(call.excinfo.type)
+            self.state[nodeid] = "speed" if speed and current in ("passed", "speed") else "failed"
+        return report
+
+    def pytest_sessionfinish(self) -> None:
+        used = self.budget - self.gate.remaining if self.gate is not None else 0.0
+        data = {"outcomes": self.state, "junit": self.junit, "quiet_waited_s": max(0.0, used)}
+        self.outcomes.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def exclusive_plugin(plan_path: str) -> ExclusivePlugin:
+    budget = os.environ.get(BUDGET_ENV)
+    gate = make_gate(env_gate(), budget=_seconds(BUDGET_ENV, 0.0)) if budget is not None else None
+    return ExclusivePlugin(Path(plan_path).with_suffix(".outcomes.json"), gate)
+
+
+@dataclass(frozen=True)
+class StageResult:
+    outcomes: dict[str, str]
+    waited: float
+    junit: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+def read_outcomes(plan: Path) -> StageResult | None:
+    path = plan.with_suffix(".outcomes.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        outcomes = {str(k): str(v) for k, v in data["outcomes"].items()}
+        junit = {str(k): {str(n): int(c) for n, c in v.items()} for k, v in data.get("junit", {}).items()}
+        return StageResult(outcomes, float(data.get("quiet_waited_s", 0.0)), junit)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def speed_only(code: int, result: StageResult | None, node_ids: list[str]) -> list[str]:
+    """第一次 exclusive 里只因速度预算失败的用例，安静后要重跑的 node id。
+
+    退出码不是「有用例失败」(1)、或者计划里有用例没跑到（比如 -x 提前停了）时返回空，不重跑。
+    别的用例的普通失败不重跑，也不影响这里：它们照样让这一阶段失败。
+    """
+    if code != 1 or result is None or set(result.outcomes) != set(node_ids):
+        return []
+    return [nodeid for nodeid, value in result.outcomes.items() if value == "speed"]
+
+
+def _case_key(nodeid: str) -> tuple[str, str]:
+    path, bracket, params = nodeid.partition("[")
+    names = path.split("::")
+    names[0] = names[0].replace("/", ".").removesuffix(".py")
+    names[-1] += bracket + params
+    return ".".join(names[:-1]), names[-1]
+
+
+def drop_junit_cases(path: Path, nodeids: list[str], counts: dict[str, dict[str, int]]) -> int:
+    """从第一次 exclusive 的 JUnit 里拿掉要重跑的用例（以第二次为准），返回拿掉几个 testcase 元素。
+
+    suite 的计数按子进程记下的每个用例的贡献扣（一个 testcase 元素可能装着好几个 subtest 报告，
+    或者 call 失败加 teardown 错误各开一个元素），不按元素个数扣。没有记录的用例才退回按元素里的
+    failure / error / skipped 各扣 1、tests 扣 1。
+    """
+    if not path.is_file() or path.stat().st_size == 0:
+        return 0
+    keys = {nodeid: _case_key(nodeid) for nodeid in nodeids}
+    tree = ET.parse(path)
+    root = tree.getroot()
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    dropped = 0
+    for suite in suites:
+        for nodeid, (key_cls, key_name) in keys.items():
+            cases = [
+                case
+                for case in suite.findall("testcase")
+                if case.attrib.get("name") == key_name
+                and (case.attrib.get("classname") == key_cls or case.attrib.get("classname", "").endswith("." + key_cls))
+            ]
+            if not cases:
+                continue
+            minus = counts.get(nodeid) or _element_counts(cases)
+            for attr in ("tests", "failures", "errors", "skipped"):
+                suite.set(attr, str(max(0, int(suite.attrib.get(attr, "0")) - minus.get(attr, 0))))
+            for case in cases:
+                suite.remove(case)
+            dropped += len(cases)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+    return dropped
+
+
+def _element_counts(cases: list[ET.Element]) -> dict[str, int]:
+    found = {"tests": len(cases), "failures": 0, "errors": 0, "skipped": 0}
+    for case in cases:
+        for tag, attr in (("failure", "failures"), ("error", "errors"), ("skipped", "skipped")):
+            found[attr] += len(case.findall(tag))
+    return found
+
+
+def report_retry(first: StageResult, second: StageResult | None, retried: list[str]) -> None:
+    for nodeid in retried:
+        again = second.outcomes.get(nodeid, "没有结果") if second is not None else "没有结果"
+        verdict = "通过" if again == "passed" else f"仍然失败（{again}）"
+        print(
+            f"速度预算重试：{nodeid} 第一次只有墙钟预算没过（{first.outcomes[nodeid]}），"
+            f"等安静（或等待预算用完）后重跑，第二次{verdict}，以第二次为准。",
+            flush=True,
+        )
+
+
+Launch = Callable[[str, list[str], float, tuple[str, ...]], int]
+
+
+def run_exclusive(gate: QuietGate, work: Path, node_ids: list[str], launch: Launch, nap: Nap, stopped: Callable[[], int | None]) -> int:
+    """exclusive 阶段：等安静，跑一次；只有速度预算没过时，再等安静、把那几个用例重跑一次，返回第二次的结果。"""
+    if not gate.wait("exclusive 阶段开始前", nap):
+        return stopped() or 143
+    first = launch("exclusive", node_ids, gate.remaining, NO_PLUGIN_RERUNS)
+    result = read_outcomes(work / "exclusive" / "ids.txt")
+    retry = speed_only(first, result, node_ids)
+    if not retry or result is None or stopped() is not None:
+        return first
+    gate.remaining = max(0.0, gate.remaining - result.waited)
+    print(f"exclusive 里 {len(retry)} 个用例只有墙钟预算没过，等机器安静后在 exclusive 阶段重跑一次：{', '.join(retry)}", flush=True)
+    if not gate.wait("速度预算重试之前", nap):
+        return stopped() or 143
+    drop_junit_cases(work / "exclusive" / "junit.xml", retry, result.junit)
+    code = launch("exclusive-retry", retry, gate.remaining, NO_PLUGIN_RERUNS)
+    report_retry(result, read_outcomes(work / "exclusive-retry" / "ids.txt"), retry)
+    if "failed" in result.outcomes.values():
+        print("exclusive 第一次里还有不是墙钟预算的失败，不重跑，这一阶段照样失败。", flush=True)
+        return first
+    return code

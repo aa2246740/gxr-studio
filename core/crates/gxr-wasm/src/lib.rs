@@ -15,6 +15,7 @@ mod jpeg;
 mod lut;
 mod raw;
 mod resample;
+mod source;
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
