@@ -20,6 +20,7 @@ fn run_pipeline(command: &str, args: &[String]) -> Result<Output, Failure> {
     let result = match command {
         "export-run-complete" => cmd_complete(args)?,
         "export-run-huffopt" => cmd_huffopt(args)?,
+        "export-run-plan" => cmd_plan(args)?,
         "export-run-prepare" => cmd_prepare(args)?,
         "export-run-sizes" => cmd_sizes(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
@@ -160,9 +161,14 @@ fn picture(p: Option<&RgbNpy>) -> Option<Picture<'_>> {
     })
 }
 
-/// `export-run-complete --canvas RGB.npy --state S [--exif EXIF.json] --out OUT.jpg`.
+/// `export-run-complete --canvas RGB.npy [--w W --h H] --state S [--exif EXIF.json] --out OUT.jpg`
+/// (`--w` / `--h` override the array's size, as numbers, for the size-check cases).
 fn cmd_complete(args: &[String]) -> Ran {
     let (w, h, canvas) = read_rgb_npy(common::option(args, "--canvas")?)?;
+    let (w, h) = (
+        num_arg(args, "--w")?.unwrap_or(w),
+        num_arg(args, "--h")?.unwrap_or(h),
+    );
     let state = common::read(common::option(args, "--state")?)?;
     let out = common::option(args, "--out")?;
     let exif = String::from_utf8(read_or_empty(args, "--exif")?)
@@ -220,8 +226,13 @@ fn cmd_prepare(args: &[String]) -> Ran {
         hdr: args.iter().any(|a| a == "--hdr"),
     };
     let fonts = fonts(args)?;
-    let picked = opt(args, "--picked")?.map(read_rgb_npy).transpose()?;
-    let jpg = opt(args, "--jpg")?.map(read_rgb_npy).transpose()?;
+    let (ow, oh) = (num_arg(args, "--w")?, num_arg(args, "--h")?);
+    let size = |(w, h, d): RgbNpy| (ow.unwrap_or(w), oh.unwrap_or(h), d);
+    let picked = opt(args, "--picked")?
+        .map(read_rgb_npy)
+        .transpose()?
+        .map(size);
+    let jpg = opt(args, "--jpg")?.map(read_rgb_npy).transpose()?.map(size);
     let pargs = PrepareArgs {
         shot: &shot,
         side: &side,
@@ -272,4 +283,13 @@ fn cmd_sizes(args: &[String]) -> Ran {
         preset,
     };
     Ok(api::sizes(&sargs, &fonts))
+}
+
+/// `export-run-plan --shot S [--side E] [--defaults D] [--base MODE]`: `serve._plan`.
+fn cmd_plan(args: &[String]) -> Ran {
+    let shot = common::read(common::option(args, "--shot")?)?;
+    let side = read_or_empty(args, "--side")?;
+    let defaults = read_or_empty(args, "--defaults")?;
+    let base = opt(args, "--base")?.unwrap_or("auto").to_string();
+    Ok(api::plan_json(&shot, &side, &defaults, &base))
 }

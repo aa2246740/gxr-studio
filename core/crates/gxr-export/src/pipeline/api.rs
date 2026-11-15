@@ -90,6 +90,22 @@ pub fn prepare(
     Ok((p.canvas, p.json, false))
 }
 
+/// `serve._plan` as `{"original", "frame", "stamp"}`.
+pub fn plan_json(
+    shot: &[u8],
+    side: &[u8],
+    defaults: &[u8],
+    base: &str,
+) -> Result<Json, ExportFail> {
+    let facts = ShotFacts::parse(&parse_json(shot)?)?;
+    let (p, _side) = plan(&facts, side, defaults, base)?;
+    Ok(Json::object([
+        ("original", Json::Bool(p.original)),
+        ("frame", p.frame.to_json()),
+        ("stamp", p.stamp.to_json()),
+    ]))
+}
+
 /// `export_complete` without HDR: the inked canvas, the state JSON from `prepare` and the source
 /// EXIF as gxr-jpeg JSON (`base` / `exif`, without 270).
 pub fn complete(
