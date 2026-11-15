@@ -22,6 +22,13 @@ function npyPayload(buf) {
   return buf.subarray(headerAt + headerLen);
 }
 
+function jsNum(v) {
+  if (v === 'NaN') return Number.NaN;
+  if (v === 'Infinity') return Number.POSITIVE_INFINITY;
+  if (v === '-Infinity') return Number.NEGATIVE_INFINITY;
+  return v;
+}
+
 export function cases(inputs) {
   const out = [];
   for (const file of inputs) {
@@ -54,11 +61,14 @@ export function cases(inputs) {
         const spaceJson = spec.space_file !== undefined ? readFileSync(spec.space_file, 'utf8') : JSON.stringify(spec.space);
         const spaceCliArg = spec.space_file !== undefined ? spec.space_file : spaceJson;
         const outNpy = join(dir, `apply-${out.length}.npy`);
-        const cliArgs = ['lut-apply', '--cube', spec.cube, '--space', spaceCliArg, '--rgb', spec.rgb_npy, '--out', outNpy, '--u8'];
+        const cliRgb = spec.cli_rgb_npy ?? spec.rgb_npy;
+        const cliArgs = ['lut-apply', '--cube', spec.cube, '--space', spaceCliArg, '--rgb', cliRgb, '--out', outNpy, '--u8'];
         if (spec.xyz_npy) {
           cliArgs.push('--xyz', spec.xyz_npy);
         }
         const rgbRaw = new Uint8Array(npyPayload(readFileSync(spec.rgb_npy)));
+        const h = jsNum(spec.height);
+        const w = jsNum(spec.width);
         let xyzArr = undefined;
         if (spec.xyz_npy) {
           const xyzBuf = npyPayload(readFileSync(spec.xyz_npy));
@@ -70,7 +80,7 @@ export function cases(inputs) {
           label: `${file}::lut_apply_u8`,
           cliArgs,
           wasm: (mod) => {
-            const img = mod.lut_apply_u8(cubeBytes(), spaceJson, rgbRaw, spec.height, spec.width, xyzArr);
+            const img = mod.lut_apply_u8(cubeBytes(), spaceJson, rgbRaw, h, w, xyzArr);
             const height = img.height;
             const width = img.width;
             const raw = Buffer.from(img.values());

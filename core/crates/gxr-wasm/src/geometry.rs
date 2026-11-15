@@ -9,15 +9,32 @@ fn rejected(err: CoreError) -> JsValue {
     JsValue::from_str(&error_json(&err).render())
 }
 
+const U64_UPPER_BOUND_F64: f64 = 18_446_744_073_709_551_616.0;
+
+fn checked_dim_u64(v: f64) -> Option<u64> {
+    if v.is_finite() && v.fract() == 0.0 && v >= 0.0 {
+        if v < U64_UPPER_BOUND_F64 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some(v as u64)
+        } else {
+            Some(u64::MAX)
+        }
+    } else {
+        None
+    }
+}
+
 /// Port of `gpu/box.py:final_box` returning `{"box":[x,y,w,h],"valid":[vx,vy,vw,vh],"header":"..."}`.
 #[wasm_bindgen]
 pub fn geom_final_box(
-    w: u32,
-    h: u32,
+    w: f64,
+    h: f64,
     geometry_json: &str,
     crop_json: &str,
 ) -> Result<String, JsValue> {
-    final_box_json_u64(u64::from(w), u64::from(h), geometry_json, crop_json)
+    let w_u64 = checked_dim_u64(w).unwrap_or(u64::MAX);
+    let h_u64 = checked_dim_u64(h).unwrap_or(u64::MAX);
+    final_box_json_u64(w_u64, h_u64, geometry_json, crop_json)
         .map(|json| json.render())
         .map_err(rejected)
 }
@@ -58,12 +75,14 @@ impl WarpedImage {
 #[wasm_bindgen]
 pub fn geom_warp(
     rgb_u8: &[u8],
-    w: u32,
-    h: u32,
+    w: f64,
+    h: f64,
     geometry_json: &str,
 ) -> Result<WarpedImage, JsValue> {
     let geom = parse_geometry(geometry_json).map_err(rejected)?;
-    let warped = warp_u64(rgb_u8, u64::from(w), u64::from(h), &geom).map_err(rejected)?;
+    let w_u64 = checked_dim_u64(w).unwrap_or(0);
+    let h_u64 = checked_dim_u64(h).unwrap_or(0);
+    let warped = warp_u64(rgb_u8, w_u64, h_u64, &geom).map_err(rejected)?;
     let height = u32::try_from(warped.height)
         .map_err(|_| rejected(gxr_finish::geometry::bounds::too_big()))?;
     let width = u32::try_from(warped.width)
@@ -74,4 +93,26 @@ pub fn geom_warp(
         rgb: warped.rgb,
         mask: warped.valid,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dim_validation_rejects_negative_fractional_and_nonfinite() {
+        assert_eq!(checked_dim_u64(0.0), Some(0));
+        assert_eq!(checked_dim_u64(2.0), Some(2));
+        assert_eq!(checked_dim_u64(4_294_967_298.0), Some(4_294_967_298));
+        assert_eq!(
+            checked_dim_u64(9_007_199_254_740_992.0),
+            Some(9_007_199_254_740_992)
+        );
+        assert_eq!(checked_dim_u64(U64_UPPER_BOUND_F64), Some(u64::MAX));
+        assert_eq!(checked_dim_u64(-1.0), None);
+        assert_eq!(checked_dim_u64(1.5), None);
+        assert_eq!(checked_dim_u64(f64::NAN), None);
+        assert_eq!(checked_dim_u64(f64::INFINITY), None);
+        assert_eq!(checked_dim_u64(f64::NEG_INFINITY), None);
+    }
 }
