@@ -10,6 +10,7 @@
 mod cmd_camdata;
 mod cmd_color;
 mod cmd_export;
+mod cmd_finish;
 mod cmd_frame;
 mod cmd_geometry;
 mod cmd_hdr;
@@ -60,6 +61,9 @@ fn dispatch(command: &str, rest: &[String]) -> Result<Output, Failure> {
     }
     if command.starts_with("geom-") {
         return cmd_geometry::run(command, rest);
+    }
+    if command.starts_with("finish-") {
+        return cmd_finish::run(command, rest);
     }
     if command.starts_with("frame-") || command.starts_with("stamp-") {
         return cmd_frame::run(command, rest);
