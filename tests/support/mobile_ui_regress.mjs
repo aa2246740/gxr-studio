@@ -532,7 +532,16 @@ const CASES = {
         };
         const second = await editorState(page);
         await swipeBack();
-        await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 });
+        await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 }).catch(async (err) => {
+          const state = await page.evaluate(() => ({
+            title: document.querySelector('.editor .nav b')?.textContent,
+            screen: document.querySelector('.app')?.dataset.screen,
+            label: document.querySelector('.editor .lbl')?.textContent,
+            overlays: [...document.querySelectorAll('.scrim, .ms, .dlg')].map((n) => n.className),
+            cells: [...document.querySelectorAll('.cell')].map((n) => n.dataset.id),
+          }));
+          throw new Error(`${err.message}\nwant=${first.title} second=${second.title}\n${JSON.stringify(state)}`);
+        });
         await waitCards();
         const calls = await page.evaluate(() => window.__thumbCalls);
         return { labels, diff, callsAfterFirst, calls, first, second, errors };
