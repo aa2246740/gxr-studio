@@ -358,6 +358,49 @@ try {
       await reopened.restore();
       result.invalidImports = { good, bad, reopened: reopened.pack?.name ?? null };
     }
+    // 9b. Sol r3：同一张打开的照片反复调旋钮。每张卡只留现在那张，换下来的位图立刻关掉；上限任何时候都成立。
+    {
+      const { LookCache } = await import('/src/app/looks.ts');
+      const cache = new LookCache();
+      const blank = new ImageData(192, 128);
+      const open = { id: 'open', version: 1, looks: new Map() };
+      cache.setOpen(open);
+      const knobs = [];
+      for (let k = 0; k < 361; k++) {
+        const bitmap = await createImageBitmap(blank);
+        knobs.push(bitmap);
+        cache.put(open, `bake:${k}`, 1, bitmap, 'builtin:1');
+      }
+      const oneCard = { entries: cache.stats().entries, bytes: cache.stats().bytes, live: knobs.filter((b) => b.width > 0).length, lastLive: knobs[360].width > 0 };
+      // 11 张卡、每张调 40 次，同时别的 40 张照片各 11 张卡把缓存塞满。
+      const many = new LookCache();
+      const shown = { id: 'shown', version: 1, looks: new Map() };
+      many.setOpen(shown);
+      const all = [];
+      for (let p = 0; p < 40; p++) {
+        const photo = { id: `p${p}`, version: 1, looks: new Map() };
+        for (let c = 0; c < 11; c++) {
+          const bitmap = await createImageBitmap(blank);
+          all.push(bitmap);
+          many.put(photo, `bake:${c}`, 1, bitmap, `card:${c}`);
+        }
+        for (let c = 0; c < 11; c++) {
+          const bitmap = await createImageBitmap(blank);
+          all.push(bitmap);
+          many.put(shown, `bake:${c}:${p}`, 1, bitmap, `card:${c}`);
+        }
+      }
+      const stats = many.stats();
+      result.knobThumbs = {
+        oneCard,
+        limit: stats.limit,
+        bytes: stats.bytes,
+        shownKept: [...shown.looks.values()].filter((look) => look.bitmap.width > 0).length,
+        shownKeys: [...shown.looks.keys()].sort(),
+        live: all.filter((b) => b.width > 0).length,
+        entries: stats.entries,
+      };
+    }
     // 7. IndexedDB：删除留下的时间比晚到的旧导入新，旧导入不写；更新的导入照常写。
     {
       const idb = await import('/src/lib/idb.ts');

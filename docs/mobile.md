@@ -388,7 +388,7 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 配方卡照桌面 `CameraData.listing` 和 `recipes.js`：这张照片所在单元的内置 8 个（`BASE_NAMES`，说明用 `look_model.js` 的表），文件里对这个单元开放的 Looks，相机里的用户配方。镜头单元按 `unit_of_lens`（镜头名先取相机 JPG 的 `LensModel`，没有再取 DNG 的，再没有用 `UniqueCameraModel` 去掉「RICOH 」），认不出用 50mm。模型按 `model_for`：ISO ≥ 566 用 1600，否则用 200。「未校准」照 `RenderService.plan`：认不出单元、ISO 不在实拍校准范围、配方单元不是照片的单元，原因用 `calibration_note.js` 的句子。
 
-每张卡的烘焙表见下面「旋钮、Looks 和校准核对」：`color_resolve` 出条目，再 `color_bake`。一张表约 3.8 MB，JS 里最多留 16 张；显卡里用 24 个固定的键轮流装（同一个键再装一次引擎会销毁旧的那份），舞台正在用的那张不让出去。这两个数等真机量过再调。配方卡小图（`app/looks.ts`）全局最多 32 MiB（一张约 96 KiB，约 340 张），按最近最少使用放掉，正在打开的那张照片的卡不放；换相机配方文件或校准数据时全部放掉。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、相机里的用户配方）；Look 和动过旋钮的 Look 见下面「还没做的」。
+每张卡的烘焙表见下面「旋钮、Looks 和校准核对」：`color_resolve` 出条目，再 `color_bake`。一张表约 3.8 MB，JS 里最多留 16 张；显卡里用 24 个固定的键轮流装（同一个键再装一次引擎会销毁旧的那份），舞台正在用的那张不让出去。这两个数等真机量过再调。配方卡小图（`app/looks.ts`）全局最多 32 MiB（一张约 96 KiB，约 340 张），每张卡只留现在用的那一张（动旋钮换上新的，旧的立刻关掉），按最近最少使用放掉，先放别的照片，上限任何时候都成立；换相机配方文件或校准数据时全部放掉。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、相机里的用户配方）；Look 和动过旋钮的 Look 见下面「还没做的」。
 
 点卡就把选择记进这张照片的编辑状态（`photo.choice`），和调整放在一起，换片、重新选同一张都留着。表已经在缓存里就当帧换上；还在做时照片留着上一张，做好了而且还是要它才换。长按看原图是中性转换、调整归零。
 
@@ -400,7 +400,7 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 「配方」页在已校准时列出这个配方的全部旋钮（`KNOB_NAMES`，强度在最前），滑块的位置是档位的序号，旧版相机（第 135 代以前）对比度、高光、阴影、饱和度只到 ±5。拖动时只改右边的数字；松手（`change`）才记下档位、重新 resolve 和烘焙。新表做好之前照片留着上一张。每个配方各记各的档位（`photo.levels`），没选配方时动旋钮就选上现在显示的这个。
 
-单元能不能用交给核心的 `color_calib_check`（`gxr-cli color-calib-check --dir` 背后的 `model_for` 检查：版本、单元、原厂 04 指纹、文件清单、SHA-256、按 ISO 选模型并建模型），两个 ISO 分支各调一次，选出来的 ctx、ring 文件名就是烘焙用的。TS 里只剩 zip 这一层的完整性检查。`color_calib_check(manifest, index_json, blob, stock04, unit, iso)`：manifest 之外的文件拼成一块 `blob`，`index_json` 是 `{"名字": [偏移, 长度]}`，每段先查边界；`iso` 是 f64，必须是有限的整数。和 CLI 的比较用例在 `wasm_cases/color.mjs` 的 `calib`。
+导入和打开页面恢复时，存之前先跑核心的包级检查 `color_calib_pack`（`gxr-cli color-calib-check --dir` 不带 `--unit`：版本、单元集合、每个单元的文件清单和 SHA-256），旧版本、单元为空或不认得的包不存。`iso` 两边都用 `gxr_color::checked_iso`（f64，有限整数，±(2**53−1) 以内）。单元能不能用交给核心的 `color_calib_check`（`gxr-cli color-calib-check --dir` 背后的 `model_for` 检查：版本、单元、原厂 04 指纹、文件清单、SHA-256、按 ISO 选模型并建模型），两个 ISO 分支各调一次，选出来的 ctx、ring 文件名就是烘焙用的。TS 里只剩 zip 这一层的完整性检查。`color_calib_check(manifest, index_json, blob, stock04, unit, iso)`：manifest 之外的文件拼成一块 `blob`，`index_json` 是 `{"名字": [偏移, 长度]}`，每段先查边界；`iso` 是 f64，必须是有限的整数。和 CLI 的比较用例在 `wasm_cases/color.mjs` 的 `calib`。
 
 ### 还没做的
 

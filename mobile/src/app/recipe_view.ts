@@ -562,7 +562,7 @@ export class RecipeView {
         bitmap.close();
         continue;
       }
-      lookCache.put(photo, key, version, bitmap);
+      lookCache.put(photo, key, version, bitmap, job.card.id);
       this.paintThumbs();
     }
   }

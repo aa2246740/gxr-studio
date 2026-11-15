@@ -440,6 +440,12 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert invalid["bad"]["old-schema"] == {"accepted": False, "error": "校准数据版本已更新，请重新导入", "pack": "good.zip"}
     assert invalid["bad"]["empty-units"] == {"accepted": False, "error": "校准数据的单元不正确", "pack": "good.zip"}
     assert invalid["bad"]["unknown-unit"] == {"accepted": False, "error": "校准数据的单元不正确", "pack": "good.zip"}
+    # Sol r3：同一张打开的照片反复调旋钮，每张卡只留现在那张，旧的关掉；上限任何时候都成立。
+    knob_thumbs = cases["knobThumbs"]
+    assert knob_thumbs["oneCard"] == {"entries": 1, "bytes": 192 * 128 * 4, "live": 1, "lastLive": True}
+    assert knob_thumbs["bytes"] <= knob_thumbs["limit"] == 32 << 20
+    assert knob_thumbs["shownKept"] == 11 and knob_thumbs["shownKeys"] == sorted(f"bake:{c}:39" for c in range(11))
+    assert knob_thumbs["live"] == knob_thumbs["entries"] == knob_thumbs["bytes"] // (192 * 128 * 4)
     # 配方卡小图：40 张照片之后仍在 32 MiB 以内，打开的那张 11 张都在，挤掉的都关了，清空后一张不剩。
     looks = cases["looks"]
     assert looks["limit"] == 32 << 20 and looks["bytes"] <= looks["limit"], looks

@@ -1,4 +1,5 @@
-// 配方卡小图（photo.looks）的全局上限：按字节记，最近最少用的先放掉，正在打开的那张照片的卡不放。
+// 配方卡小图（photo.looks）的全局上限：按字节记，最近最少用的先放掉，正在打开的那张照片的卡先不放。
+// 每张卡只留现在用的那一张：动旋钮装上新的，旧的立刻关掉。
 // 换相机配方文件或校准数据时全部清掉（旧的烘焙表画出来的小图不能再用）。
 //
 // 上限怎么定的（HOW.md：页面约 2 GiB 就会被系统刷新，一次只处理一张全尺寸 DNG 加一张相邻的）：
@@ -13,6 +14,8 @@ export const LOOK_CACHE_BYTES = 32 << 20;
 interface Entry {
   photo: Photo;
   key: string;
+  /** 哪张卡的小图（同一张卡换了旋钮，旧的那张就关掉）。 */
+  card: string | null;
   bitmap: ImageBitmap;
   bytes: number;
 }
@@ -26,6 +29,8 @@ export class LookCache {
   private readonly entries = new Map<string, Entry>();
   private total = 0;
   private open: Photo | null = null;
+  /** 每张照片每张卡现在用的那一张（键）。动旋钮装上新的，旧的立刻关掉，历史档位不会越攒越多（Sol r3）。 */
+  private readonly current = new Map<string, string>();
   private clears = 0;
 
   constructor(private readonly limit = LOOK_CACHE_BYTES) {}
@@ -53,10 +58,16 @@ export class LookCache {
     return look.bitmap;
   }
 
-  put(photo: Photo, key: string, version: number, bitmap: ImageBitmap): void {
+  put(photo: Photo, key: string, version: number, bitmap: ImageBitmap, card: string | null = null): void {
     this.remove(photo, key);
+    if (card !== null) {
+      const slot = this.id(photo, card);
+      const old = this.current.get(slot);
+      if (old !== undefined && old !== key) this.remove(photo, old);
+      this.current.set(slot, key);
+    }
     photo.looks.set(key, { version, bitmap });
-    const entry: Entry = { photo, key, bitmap, bytes: sizeOf(bitmap) };
+    const entry: Entry = { photo, key, card, bitmap, bytes: sizeOf(bitmap) };
     this.entries.set(this.id(photo, key), entry);
     this.total += entry.bytes;
     this.trim();
@@ -68,6 +79,7 @@ export class LookCache {
     if (entry) {
       this.entries.delete(id);
       this.total -= entry.bytes;
+      if (entry.card !== null && this.current.get(this.id(photo, entry.card)) === key) this.current.delete(this.id(photo, entry.card));
     }
     const look = photo.looks.get(key);
     if (look) {
@@ -85,15 +97,23 @@ export class LookCache {
   clear(): void {
     for (const entry of [...this.entries.values()]) this.remove(entry.photo, entry.key);
     this.entries.clear();
+    this.current.clear();
     this.total = 0;
     this.clears += 1;
   }
 
+  /**
+   * 先放别的照片最久没用的；还超就连打开那张也放（每张卡最多一张，正常远到不了上限）。上限任何时候都成立。
+   */
   private trim(): void {
     if (this.total <= this.limit) return;
     for (const entry of [...this.entries.values()]) {
       if (this.total <= this.limit) return;
       if (this.open && entry.photo === this.open) continue;
+      this.remove(entry.photo, entry.key);
+    }
+    for (const entry of [...this.entries.values()]) {
+      if (this.total <= this.limit) return;
       this.remove(entry.photo, entry.key);
     }
   }
