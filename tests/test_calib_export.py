@@ -357,3 +357,32 @@ def test_the_validated_snapshot_is_what_gets_written(tmp_path: Path, monkeypatch
         assert {name: archive.read(name) for name in archive.namelist()} == seen == good
         ring = json.loads(archive.read("ring_jlaunch_200.json"))
     assert "nodes_unwrapped_deg" in ring  # 写进去的模型是好的那份
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_a_swap_right_after_the_first_check_cannot_redirect(tmp_path: Path, monkeypatch, missing: bool) -> None:
+    """Sol r3：第一次检查刚通过、句柄还没打开时，把目标（或缺失目标的上级）换成指向另一个允许目录 B 的链接：
+    句柄打不开，拒绝；B 里什么都没有，原来那个目录也没有文件。"""
+    home = tmp_path / "app"
+    _pack(home, ("jlaunch",))
+    chosen = tmp_path / "A"
+    chosen.mkdir()
+    other = tmp_path / "B"
+    other.mkdir()
+    real_check = privacy.check_private_dir
+    swapped: list[bool] = []
+
+    def check_then_swap(path, purpose, forbidden=()):
+        out = real_check(path, purpose, forbidden)
+        if purpose == "calibration_export" and not swapped:
+            swapped.append(True)
+            chosen.rename(tmp_path / "A-was")
+            chosen.symlink_to(other, target_is_directory=True)
+        return out
+
+    monkeypatch.setattr(privacy, "check_private_dir", check_then_swap)
+    target = chosen / "new-export" if missing else chosen
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, target, [])
+    assert swapped and err.value.code == "bad_destination"
+    assert not any(other.iterdir()) and not any((tmp_path / "A-was").iterdir())

@@ -181,15 +181,10 @@ def export_for_iphone(
     dest = Path(dest_dir).expanduser()
     if not dest.is_absolute():
         raise CalibExportError(422, "bad_destination", "无法导出。请填写导出到的完整路径。")
-    try:
-        dest = check_destination(dest, blocked)
-        privacy.check_private_dir(dest, "calibration_export", blocked)
-    except ExportError as exc:
-        raise CalibExportError(422, exc.code, exc.message, exc.detail) from exc
-    except privacy.PrivatePathError as exc:
-        raise CalibExportError(422, "bad_destination", "无法导出到这个位置。请换一个文件夹。", exc.detail) from exc
-    # 检查通过后马上把目标钉成目录句柄：目标已存在就钉它本身，不存在就钉最近的已存在上级，
-    # 之后建目录、写入、清理都只通过句柄，不再按路径重新解释（Sol r2）。
+    dest = Path(os.path.abspath(dest))
+    # 第一次检查就在句柄上做（Sol r3）：目标已存在就打开它本身，不存在就打开最近的已存在上级。`PrivateDir` 取一次
+    # realpath、核对，再从根逐级不跟随链接地打开；这一步之后路径哪一级被换成链接，打开就失败，不会被带到别处。
+    # 禁止目录的检查也对句柄的实际位置做，之后建目录、写入、清理都只通过句柄，不再按路径重新解释。
     anchor: Path = dest
     missing: list[str] = []
     while not os.path.lexists(anchor) and anchor.parent != anchor:
@@ -198,6 +193,11 @@ def export_for_iphone(
     local = time.localtime(time.time() if now is None else now)
     try:
         with privacy.PrivateDir(anchor, "calibration_export", blocked) as base:
+            try:
+                check_destination(base.real.joinpath(*missing), blocked)
+            except ExportError as exc:
+                raise CalibExportError(422, exc.code, exc.message, exc.detail) from exc
+            base.verify()
             manifest, files = collect(home)
             check_models(home, manifest, files)
             data = zip_bytes(files, (max(1980, local.tm_year), local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec))
