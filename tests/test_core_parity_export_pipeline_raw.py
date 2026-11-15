@@ -44,7 +44,7 @@ from gxr_studio.render.params import RecipeSel, parse_edit
 from support import export_source_cases as xs
 from support import export_source_run as xr
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, mtime_args, same_redacted
+from support.export_pipeline_cases import check, cli_ok, mtime_args, same_file_redacted, same_pixels, same_redacted
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -60,11 +60,11 @@ def _cli() -> None:
 def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     np.save(tmp_path / "icc.npy", np.zeros((8, 8, 3), dtype=np.uint8))
     code, payload = run_json(["jpeg-encode", "--in", str(tmp_path / "icc.npy"), "--quality", "95", "--out", str(tmp_path / "icc.jpg")])
-    assert code == 0, payload
+    cli_ok(code, payload, "jpeg-encode for the ICC pin")
     with Image.open(tmp_path / "icc.jpg") as im:
         rs = bytes(im.info["icc_profile"])
     py = srgb_icc()
-    assert len(rs) == len(py) == 588 and rs[:24] == py[:24] and rs[36:] == py[36:]
+    check(len(rs) == len(py) == 588 and rs[:24] == py[:24] and rs[36:] == py[36:], "ICC profiles differ outside bytes 24..36")
     monkeypatch.setattr(export_mod, "_ICC", rs)
     return rs
 
@@ -162,7 +162,7 @@ def run_case(
         res = export_finish(h.render, h.lib, shot, edit, side, dest, [], quality=quality, long_edge=long_edge, fmt="jpeg", base=base)
         meta, taken, file_time = serve_mod._meta(shot, h.lib)
     py_file = res.path.read_bytes()
-    assert spy.stage is not None
+    check(spy.stage is not None, f"{stem}: _stage_rgb not reached")
     py_rgb, py_labels = spy.stage
     # meta, taken and file_time come from export-meta in Rust (the shot's own files).
     layout = {"mark": desktop_mark()}
@@ -181,7 +181,7 @@ def run_case(
         args += ["--cube", str(lut.cube), "--space", str(lut.spec_path)]
     out = tmp / f"{stem}-canvas.npy"
     code, payload = run_json(["export-run-prepare", *args, *font_args(), "--out", str(out)], timeout=600)
-    assert code == 0, (stem, payload.get("error", {}).get("kind"), payload.get("error", {}).get("message"))
+    cli_ok(code, payload, f"{stem} prepare")
     canvas = np.load(out)
     prepared = payload["prepared"]
     same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
@@ -189,7 +189,7 @@ def run_case(
     frame_def, stamp_def = load_defaults(h.render.home)
     frame = resolved_frame(edit.frame, frame_def)
     stamp = resolved_stamp(edit.stamp, stamp_def)
-    assert spy.base is not None
+    check(spy.base is not None, f"{stem}: finish_array not reached")
     rgb0, from_raw, kw = spy.base
     rs_base = _rust_base(tmp, stem, args, side, base) if lut is not None else rgb0
     photo, _hdr = real_finish_array(rs_base, edit, **{**kw, "frame": FrameSpec(style="none"), "stamp": replace(stamp, enabled=False)})
@@ -203,23 +203,23 @@ def run_case(
     same_redacted(prepared["stamp"], None if py_stamp is None else json.loads(json.dumps(py_stamp.to_json())), f"{stem} stamp layout")
     want_canvas = photo if py_frame is None else _photo_only(photo, py_frame)
     no_ink = py_frame is None and py_stamp is None
-    assert canvas.shape == want_canvas.shape and np.array_equal(canvas, want_canvas), (stem, int(np.count_nonzero(canvas != want_canvas)))
+    same_pixels(canvas, want_canvas, f"{stem} canvas")
     base_diff = int(np.count_nonzero(rs_base != rgb0)) if rs_base.shape == rgb0.shape else -1
     if lut is None:
-        assert base_diff == 0, (stem, base_diff)
+        same_redacted(base_diff, 0, f"{stem} base picture differences")
     fed = canvas if (no_ink and base_diff == 0) else py_rgb
-    assert prepared["state"]["source"] == ("jpg" if jpg is not None else "dng"), stem
+    same_redacted(prepared["state"]["source"], "jpg" if jpg is not None else "dng", f"{stem} source")
     s, c, o = (tmp / f"{stem}.{x}" for x in ("state.json", "fed.npy", "jpg"))
     s.write_text(json.dumps(prepared["state"], ensure_ascii=False), encoding="utf-8")
     np.save(c, fed)
     code, done = run_json(["export-run-complete", "--canvas", str(c), "--state", str(s), "--src", str(source), "--out", str(o)])
-    assert code == 0, (stem, done)
+    cli_ok(code, done, f"{stem} complete")
     got = o.read_bytes()
-    assert got == py_file, f"{stem}: {first_difference(got, py_file)}"
+    same_file_redacted(got, py_file, stem)
     # The source EXIF really travelled (tag ids counted, values never printed).
     with Image.open(o) as im:
         exif = im.getexif()
-        assert 271 in exif and len(exif.get_ifd(0x8769)) >= 4, (stem, sorted(exif), len(exif.get_ifd(0x8769)))
+        check(271 in exif and len(exif.get_ifd(0x8769)) >= 4, f"{stem}: Make or EXIF sub-IFD missing ({len(exif)} root tags)")
     same_redacted(done["result"]["file_name"], res.path.name, f"{stem} file name")
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
         same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
@@ -242,8 +242,8 @@ def test_raw_branches_real_pairs_match_export_finish(tmp_path: Path, monkeypatch
             key = f"{out['render']}/{'no-ink' if out['no_ink'] else 'ink'}/{'pair' if keep_jpg else 'dng-only'}"
             tally[key] = tally.get(key, 0) + 1
     print("export-pipeline e2e raw:", json.dumps(tally, ensure_ascii=False, sort_keys=True))
-    assert sum(tally.values()) == 20
-    assert any(k.startswith("recipe-prediction") for k in tally) and any(k.startswith("neutral-preview") for k in tally)
+    check(sum(tally.values()) == 20, "expected 20 exports")
+    check(any(k.startswith("recipe-prediction") for k in tally) and any(k.startswith("neutral-preview") for k in tally), "branches missing")
 
 
 GRADE = (np.array([1.05, 0.96, 0.91]), np.array([0.02, -0.01, 0.03]))
@@ -309,7 +309,7 @@ def test_lut_branches_real_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
                 points["a"] += n_a
                 points["b"] += n_b
     print("export-pipeline e2e lut:", points)
-    assert points["cases"] == 3 * len(pairs)
+    check(points["cases"] == 3 * len(pairs), "LUT case count")
 
 
 def _rust_base(tmp: Path, stem: str, prepare_args: list[str], side: dict[str, Any], base: str) -> np.ndarray:
@@ -322,5 +322,5 @@ def _rust_base(tmp: Path, stem: str, prepare_args: list[str], side: dict[str, An
             args += [a, prepare_args[i + 1]]
     out = tmp / f"{stem}-rsbase.npy"
     code, payload = run_json([*args, "--out", str(out)], timeout=600)
-    assert code == 0, (stem, payload)
+    cli_ok(code, payload, f"{stem} source-color-image")
     return np.load(out)

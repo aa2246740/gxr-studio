@@ -38,7 +38,16 @@ from support import export_source_cases as xs
 from support import export_source_run as xr
 from support import hdr_parity as hp
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, mtime_args, same_redacted
+from support.export_pipeline_cases import (
+    check,
+    cli_ok,
+    error_kind,
+    first_difference,
+    mtime_args,
+    same_file_redacted,
+    same_pixels,
+    same_redacted,
+)
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 from test_core_parity_export_pipeline_raw import Spy, _entry_for, _photo_only, _w, pinned_icc  # noqa: F401
@@ -109,17 +118,17 @@ def _attribute(rs_file: bytes, py_file: bytes, fin: dict[str, Any], label: str) 
     from gxr_studio.hdr import container as hc
     from gxr_studio.hdr import gain as hg
 
-    assert fin["layer"] is not None, label
+    check(fin["layer"] is not None, f"{label}: no layer at finish")
     pre_rgb = fin["rgb"]
     size = (pre_rgb.shape[1], pre_rgb.shape[0])
     or_ry, or_rc = _oracle_to_grid(fin["layer"], size, 4, use_fma=False)
     or_res = hg.compute_gain(hg.block_mean(hp._ORACLE[0][pre_rgb] @ hg.LUMA, 4), or_ry, or_rc, hg.Params())
     or_gain = _encode_gain_jpeg(hp.codes_of(or_res), 90)
-    assert _extract_gain_jpeg(rs_file) == or_gain, f"{label}: gain map differs from the sequential oracle"
-    assert rs_file == hc.assemble(fin["payload"], or_gain, or_res.meta), f"{label}: Gate A fails"
+    same_file_redacted(_extract_gain_jpeg(rs_file), or_gain, f"{label}: gain map vs the sequential oracle")
+    same_file_redacted(rs_file, hc.assemble(fin["payload"], or_gain, or_res.meta), f"{label}: Gate A")
     fma_ry, fma_rc = _oracle_to_grid(fin["layer"], size, 4, use_fma=True)
     fma_res = hg.compute_gain(hg.sdr_luma_grid(pre_rgb, 4), fma_ry, fma_rc, hg.Params())
-    assert py_file == hc.assemble(fin["payload"], _encode_gain_jpeg(hp.codes_of(fma_res), 90), fma_res.meta), f"{label}: Gate B fails"
+    same_file_redacted(py_file, hc.assemble(fin["payload"], _encode_gain_jpeg(hp.codes_of(fma_res), 90), fma_res.meta), f"{label}: Gate B")
     return "gate-ab"
 
 
@@ -158,10 +167,10 @@ def run_hdr_case(
         )
         meta, taken, file_time = serve_mod._meta(shot, h.lib)
     py_file = res.path.read_bytes()
-    assert spy.stage is not None
+    check(spy.stage is not None, f"{stem}: _stage_rgb not reached")
     py_rgb, py_labels = spy.stage
     source = cam if cam is not None else dng
-    assert source is not None
+    check(source is not None, f"{stem}: no source file")
     args = [
         "--shot", _w(tmp, f"{stem}-shot.json", shot), "--side", _w(tmp, f"{stem}-side.json", side), "--base", base,
         "--layout", _w(tmp, f"{stem}-layout.json", {"mark": desktop_mark()}), "--quality", str(quality),
@@ -174,7 +183,7 @@ def run_hdr_case(
         np.save(tmp / f"{stem}-jpg.npy", xs.decoded_jpg(cam))
         args += ["--jpg", str(tmp / f"{stem}-jpg.npy"), "--jpg-bytes", str(cam)]
     code, payload = run_json(["export-run-prepare", *args, *font_args(), "--out", str(tmp / f"{stem}-canvas.npy")], timeout=600)
-    assert code == 0, (stem, payload.get("error", {}).get("kind"), payload.get("error", {}).get("message"))
+    cli_ok(code, payload, f"{stem} prepare")
     canvas = np.load(tmp / f"{stem}-canvas.npy")
     prepared = payload["prepared"]
     same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
@@ -182,9 +191,9 @@ def run_hdr_case(
     rs_layer = np.load(tmp / f"{stem}-layer.npy")
     # The track after begin and the photo's geometry.
     if hspy.pre_stamp is None:
-        assert hdr_state["active"] is False and rs_layer.size == 0, (stem, hdr_state)
+        same_redacted([hdr_state["active"], int(rs_layer.size)], [False, 0], f"{stem} inactive hdr state")
     else:
-        assert hdr_state["active"] is True, (stem, hdr_state)
+        same_redacted(hdr_state["active"], True, f"{stem} active hdr state")
         _same_f32_nan(hspy.pre_stamp, rs_layer, f"{stem} layer before stamp")
 
     frame_def, stamp_def = load_defaults(h.render.home)
@@ -195,9 +204,9 @@ def run_hdr_case(
     if prepared["canvas"] == "photo":
         no_ink = False  # the browser paints the blur backdrop
     if no_ink:
-        assert np.array_equal(canvas, py_rgb), stem
+        same_pixels(canvas, py_rgb, f"{stem} canvas")
     elif prepared["frame"] is not None and prepared["canvas"] == "full":
-        assert spy.base is not None
+        check(spy.base is not None, f"{stem}: finish_array not reached")
         rgb0, _from_raw, kw = spy.base
         photo, _ = real_finish_array(
             rgb0, edit, **{**kw, "frame": FrameSpec(style="none"), "stamp": replace(stamp, enabled=False), "track": None}
@@ -206,8 +215,8 @@ def run_hdr_case(
         from gxr_studio.finish.layout import frame_layout
 
         lay = frame_layout(photo.shape[1], photo.shape[0], frame, meta, FontMetrics(PilFonts()))
-        assert lay is not None
-        assert np.array_equal(canvas, _photo_only(photo, lay)), stem
+        check(lay is not None, f"{stem}: no frame layout")
+        same_pixels(canvas, _photo_only(photo, lay), f"{stem} framed canvas")
     fed = canvas if no_ink else py_rgb
     np.save(tmp / f"{stem}-fed.npy", fed)
     s = tmp / f"{stem}-state.json"
@@ -221,14 +230,14 @@ def run_hdr_case(
         np.save(tmp / f"{stem}-mask.npy", mask.astype(np.uint8))
         cargs += ["--stamp-mask", str(tmp / f"{stem}-mask.npy")]
     code, done = run_json([*cargs, "--out", str(tmp / f"{stem}.jpg")], timeout=600)
-    assert code == 0, (stem, done)
+    cli_ok(code, done, f"{stem} complete")
     rs_file = (tmp / f"{stem}.jpg").read_bytes()
     how = "equal"
     if rs_file != py_file:
         how = _attribute(rs_file, py_file, hspy.finish, f"{stem}: {first_difference(rs_file, py_file)}")
     r = done["result"]
-    assert r["hdr"] == res.hdr and r["hdr_reason"] == res.hdr_reason, (stem, r["hdr"], r["hdr_reason"], res.hdr, res.hdr_reason)
-    assert r["file_name"] == res.path.name and r["tag"].endswith("_hdr") == bool(res.hdr), stem
+    same_redacted([r["hdr"], r["hdr_reason"]], [res.hdr, res.hdr_reason], f"{stem} hdr outcome")
+    same_redacted([r["file_name"], r["tag"].endswith("_hdr")], [res.path.name, bool(res.hdr)], f"{stem} file name")
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail"):
         same_redacted(r[key], getattr(res, key), f"{stem} result.{key}")
     return {"hdr": res.hdr, "reason": res.hdr_reason, "how": how, "ink": not no_ink}
@@ -253,8 +262,8 @@ def test_hdr_real_pairs_match_export_finish(long_edge: int | None, tmp_path: Pat
             key = f"hdr={out['hdr']}/{out['reason']}/{'ink' if out['ink'] else 'no-ink'}/{out['how']}"
             tally[key] = tally.get(key, 0) + 1
     print(f"export-pipeline e2e hdr long_edge={long_edge}:", json.dumps(tally, sort_keys=True))
-    assert sum(tally.values()) == 10
-    assert any(k.startswith("hdr=True") for k in tally), tally
+    check(sum(tally.values()) == 10, "expected 10 exports")
+    check(any(k.startswith("hdr=True") for k in tally), "no export made HDR")
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
@@ -291,8 +300,8 @@ def test_hdr_reasons_on_crafted_shots(tmp_path: Path, monkeypatch: pytest.Monkey
                 reasons["blur"] = "frame_layout"
                 break
     print("export-pipeline hdr reasons:", reasons)
-    assert reasons["no_raw"] == "no_raw" and reasons["raw_unreadable"] == "raw_unreadable", reasons
-    assert reasons.get("blur") == "frame_layout", reasons
+    same_redacted([reasons["no_raw"], reasons["raw_unreadable"]], ["no_raw", "raw_unreadable"], "crafted reasons")
+    same_redacted(reasons.get("blur"), "frame_layout", "blur reason")
 
 
 def _bomb_jpeg(path: Path) -> Path:
@@ -328,9 +337,9 @@ def test_hdr_pixel_limit_deviation(tmp_path: Path) -> None:
     common = ["--shot", _w(tmp_path, "shot.json", shot), "--quality", "95", "--hdr", "--dng", str(dng)]
     common += ["--jpg", str(tmp_path / "px.npy"), "--jpg-bytes", str(bomb), *font_args()]
     code, payload = run_json(["export-run-prepare", *common, "--side", _w(tmp_path, "s0.json", {}), "--out", str(tmp_path / "c0.npy")])
-    assert code == 0 and payload["original"] is True, payload
-    assert payload["prepared"]["state"]["hdr"]["problem"] == "metadata_unreadable", payload["prepared"]["state"]["hdr"]
+    check(code == 0 and payload["original"] is True, f"pixel-limit original: exit {code}, kind {error_kind(payload)}")
+    same_redacted(payload["prepared"]["state"]["hdr"]["problem"], "metadata_unreadable", "pixel-limit hdr problem")
     code, payload = run_json(
         ["export-run-prepare", *common, "--side", _w(tmp_path, "s1.json", {"adjust": {"contrast": 5}}), "--out", str(tmp_path / "c1.npy")]
     )
-    assert code == 2 and "Bomb" in json.dumps(payload["error"]), payload
+    check(code == 2 and "Bomb" in json.dumps(payload["error"]), f"pixel-limit edited: exit {code}, kind {error_kind(payload)}")

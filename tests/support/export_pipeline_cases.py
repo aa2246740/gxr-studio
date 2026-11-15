@@ -158,3 +158,49 @@ def same_redacted(got: Any, want: Any, label: str) -> None:
     _diffs(got, want, "$", out)
     if out:
         pytest.fail(f"{label}: mismatch: " + "; ".join(out[:20]), pytrace=False)
+
+
+def _fail(label: str) -> None:
+    import pytest
+
+    pytest.fail(label, pytrace=False)
+
+
+def check(ok: bool, label: str) -> None:
+    """A plain ``if`` in place of a bare ``assert``: pytest never expands the operands, only
+    ``label`` (which callers keep to synthetic ids and counts) reaches the log (Sol r2 P1)."""
+    if not ok:
+        _fail(label)
+
+
+def same_file_redacted(got: bytes | None, want: bytes, label: str) -> None:
+    """Whole-file byte equality. A mismatch reports only the lengths, the first differing byte
+    and SHA-256 prefixes; the bytes (which carry the source EXIF) never reach the log."""
+    if got is None:
+        _fail(f"{label}: no file (expected {len(want)} bytes, sha {digest(want)})")
+    elif got != want:
+        _fail(f"{label}: {first_difference(got, want)}")
+
+
+def same_pixels(got: Any, want: Any, label: str) -> None:
+    """Exact array equality, reporting shapes, the count of differing elements and the first
+    index only, never the values."""
+    if got.shape != want.shape or got.dtype != want.dtype:
+        _fail(f"{label}: shape/dtype {got.shape} {got.dtype} vs {want.shape} {want.dtype}")
+        return
+    bad = np.argwhere(got != want)
+    if len(bad):
+        _fail(f"{label}: {len(bad)} values differ, first at {tuple(int(v) for v in bad[0])}")
+
+
+def error_kind(payload: Any) -> str:
+    """The core error kind of a CLI payload (never its message)."""
+    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+        return str(payload["error"].get("kind"))
+    return "-"
+
+
+def cli_ok(code: int, payload: Any, label: str) -> None:
+    """A CLI call that must succeed; a failure reports the exit code and error kind only."""
+    if code != 0:
+        _fail(f"{label}: exit {code}, kind {error_kind(payload)}")

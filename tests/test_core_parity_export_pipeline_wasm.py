@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from gxr_studio.finish.spec import FrameSpec, StampSpec
-from support.export_pipeline_cases import synthetic_source
+from support.export_pipeline_cases import check, synthetic_source
 from support.frame_cases import FIXTURE_CJK, desktop_mark, font_pairs
 from support.wasm_check import run_area
 
@@ -368,6 +368,6 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
         cases.append({**sizes_base, "label": f"sizes-w-{i}", "side": side_paths["empty"], "width": _num(v)})
 
     manifest = _w(tmp_path, "export-cases.json", json.dumps(cases, ensure_ascii=False, allow_nan=True))
-    assert FIXTURE_CJK.is_file()
+    check(FIXTURE_CJK.is_file(), "CJK fixture font missing")
     proc = run_area("export", [Path(manifest)], tmp_path)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    check(proc.returncode == 0, proc.stdout + proc.stderr)

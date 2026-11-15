@@ -36,7 +36,16 @@ from gxr_studio.finish.stamp import format_stamp
 from gxr_studio.render.params import parse_edit
 from gxr_studio.render.service import RenderService
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, mtime_args, real_pairs, same_redacted
+from support.export_pipeline_cases import (
+    check,
+    cli_ok,
+    error_kind,
+    mtime_args,
+    real_pairs,
+    same_file_redacted,
+    same_pixels,
+    same_redacted,
+)
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -51,11 +60,11 @@ def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     """See ``test_core_parity_export_pipeline.pinned_icc``: only header bytes 24..36 differ."""
     np.save(tmp_path / "icc.npy", np.zeros((8, 8, 3), dtype=np.uint8))
     code, payload = run_json(["jpeg-encode", "--in", str(tmp_path / "icc.npy"), "--quality", "95", "--out", str(tmp_path / "icc.jpg")])
-    assert code == 0, payload
+    cli_ok(code, payload, "jpeg-encode for the ICC pin")
     with Image.open(tmp_path / "icc.jpg") as im:
         rs = bytes(im.info["icc_profile"])
     py = srgb_icc()
-    assert len(rs) == len(py) == 588 and rs[:24] == py[:24] and rs[36:] == py[36:]
+    check(len(rs) == len(py) == 588 and rs[:24] == py[:24] and rs[36:] == py[36:], "ICC profiles differ outside bytes 24..36")
     monkeypatch.setattr(export_mod, "_ICC", rs)
     return rs
 
@@ -173,7 +182,7 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             # Rust runs export-source's color_image itself: here the camera-JPG branch.
             args += ["--jpg", str(tmp_path / f"{stem}-jpg.npy"), "--jpg-bytes", str(jpg)]
             canvas, payload = _prepare(tmp_path, stem, args)
-            assert canvas is not None, (stem, payload)
+            check(canvas is not None, f"{stem}: prepare failed: {error_kind(payload)}")
             prepared = payload["prepared"]
             same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
 
@@ -183,7 +192,7 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             no_ink = original or (frame.style == "none" and prepared["stamp"] is None)
             if original:
                 tally["original"] += 1
-                assert np.array_equal(canvas, py_rgb), stem
+                same_pixels(canvas, py_rgb, f"{stem} canvas")
             else:
                 # The photo before ink: the same finish with the stamp off and no frame.
                 photo, _hdr = finish_array(
@@ -212,20 +221,20 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
                     prepared["stamp"], None if py_stamp is None else json.loads(json.dumps(py_stamp.to_json())), f"{stem} stamp layout"
                 )
                 want_canvas = photo if py_frame is None else _photo_only(photo, py_frame)
-                assert np.array_equal(canvas, want_canvas), stem
+                same_pixels(canvas, want_canvas, f"{stem} canvas")
                 if no_ink:
-                    assert np.array_equal(canvas, py_rgb), stem
+                    same_pixels(canvas, py_rgb, f"{stem} canvas")
             fed = canvas if no_ink else py_rgb
-            assert prepared["state"]["source"] == "jpg"
+            same_redacted(prepared["state"]["source"], "jpg", f"{stem} source")
             got, done = _complete(tmp_path, stem, fed, prepared["state"], jpg)
-            assert got is not None, (stem, done)
-            assert got == py_file, f"{stem}: {first_difference(got, py_file)}"
+            check(got is not None, f"{stem}: complete failed: {error_kind(done)}")
+            same_file_redacted(got, py_file, stem)
             same_redacted(done["result"]["file_name"], res.path.name, f"{stem} file name")
             for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
                 same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
             tally["no_ink" if no_ink else "ink"] += 1
     print("export-pipeline e2e camera-jpg:", tally)
-    assert tally["original"] >= 1 and tally["ink"] >= 3 and tally["no_ink"] >= 3
+    check(tally["original"] >= 1 and tally["ink"] >= 3 and tally["no_ink"] >= 3, f"too few cases: {tally}")
 
 
 def test_prepare_errors(tmp_path: Path) -> None:
@@ -241,7 +250,7 @@ def test_prepare_errors(tmp_path: Path) -> None:
     ]
     for extra, kind in cases:
         canvas, payload = _prepare(tmp_path, kind, base + extra)
-        assert canvas is None and payload["error"]["kind"] == kind, (kind, payload)
+        check(canvas is None and payload["error"]["kind"] == kind, f"expected {kind}, got {error_kind(payload)}")
 
 
 def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
@@ -267,13 +276,13 @@ def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
             "95",
         ]
         canvas, payload = _prepare(tmp_path, f"d{i}", args)
-        assert canvas is not None, payload
+        check(canvas is not None, f"prepare failed: {error_kind(payload)}")
         want_frame = None if frame.style == "none" else frame_layout(30, 20, frame, {}, FontMetrics(PilFonts()))
         got_frame = payload["prepared"]["frame"]
         same_redacted(got_frame, None if want_frame is None else json.loads(json.dumps(want_frame.to_json())), f"defaults {i} frame layout")
         # No capture time and no override: the stamp text is empty, so nothing is drawn.
-        assert format_stamp(stamp, None, None) == "" or stamp.date_override
-        assert payload["prepared"]["stamp"] is None
+        check(format_stamp(stamp, None, None) == "" or bool(stamp.date_override), "stamp text without a date")
+        check(payload["prepared"]["stamp"] is None, "a stamp was laid out")
 
 
 def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> None:
@@ -317,47 +326,60 @@ def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> 
                 if preset is not None:
                     args += ["--preset", preset]
                 code, got = run_json(args)
-                assert code == 0, (stem, j, got)
+                cli_ok(code, got, f"{stem} sizes {j}")
                 same_redacted(got, json.loads(json.dumps(want)), f"{stem} sizes {j}")
                 compared += 1
-    assert compared >= 30
+    check(compared >= 30, f"only {compared} sizes cases")
 
 
-def test_failed_real_comparison_prints_no_exif(tmp_path: Path) -> None:
-    """Sol r1 P1: force a mismatch on a synthetic EXIF canary through the real comparison code;
-    the canary must not reach stdout, stderr or the JUnit file."""
+CANARY_TARGETS: dict[str, tuple[str, str | None, int, tuple[str, ...]]] = {
+    # target: (child pytest node, plugin target or None for the HDR probe module, failures
+    # expected, the failure sites the child must name)
+    "sizes": ("test_core_parity_export_pipeline_prepare.py::test_output_sizes_match_desktop", "sizes", 1, ("S000 sizes 0: mismatch",)),
+    "bytes": ("test_core_parity_export_pipeline_prepare.py::test_e2e_camera_jpg_shots_match_export_finish", "bytes", 1, ("P000: lengths",)),
+    "raw": ("test_core_parity_export_pipeline_raw.py::test_raw_branches_real_pairs_match_export_finish", "raw", 1, ("W000: lengths",)),
+    "hdr": ("support/export_pipeline_canary_probe.py", None, 3, ("Gate A: lengths", "Gate B: lengths", "SYNTHETIC hdr state: mismatch")),
+}
+
+
+@pytest.mark.parametrize("verbosity", ["-q", "-vv"])
+@pytest.mark.parametrize("target", sorted(CANARY_TARGETS))
+def test_failed_real_comparison_prints_no_exif(target: str, verbosity: str, tmp_path: Path) -> None:
+    """Sol r1/r2 P1: force a mismatch on a synthetic EXIF canary through the real comparison code
+    (meta, finished file bytes, the RAW/LUT ``run_case``, HDR Gate A and B, HDR state), under
+    ``-q`` and ``-vv``; the canary must not reach stdout, stderr or the JUnit file."""
     import os
     import subprocess
     import sys
 
     from support.export_pipeline_canary import CANARY
 
+    node, plugin, failures, sites = CANARY_TARGETS[target]
+    if target == "raw":
+        from support.export_source_cases import real_dat
+
+        if real_dat() is None:
+            pytest.skip("the RAW path needs the DAT")
     repo = Path(__file__).resolve().parents[1]
     junit = tmp_path / "canary.xml"
-    env = {**os.environ, "EXPORT_PIPELINE_CANARY_DIR": str(tmp_path / "canary-input")}
-    proc = subprocess.run(  # noqa: S603  # nosec B603
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "-p",
-            "support.export_pipeline_canary",
-            f"{Path(__file__).name}::test_output_sizes_match_desktop",
-            f"--basetemp={tmp_path / 'child'}",
-            f"--junitxml={junit}",
-        ],
-        cwd=repo / "tests",
-        env={**env, "PYTHONPATH": str(repo / "tests")},
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
-    assert proc.returncode == 1, f"the forced mismatch did not fail the child (exit {proc.returncode})"
-    assert "mismatch" in proc.stdout, "the child failed for another reason"
+    env = {
+        **os.environ,
+        "EXPORT_PIPELINE_CANARY_DIR": str(tmp_path / "canary-input"),
+        "EXPORT_PIPELINE_CANARY_TARGET": plugin or "",
+        "PYTHONPATH": str(repo / "tests"),
+    }
+    args = [sys.executable, "-m", "pytest", verbosity, "-p", "no:randomly", node, f"--basetemp={tmp_path / 'child'}", f"--junitxml={junit}"]
+    if plugin is not None:
+        args[3:3] = ["-p", "support.export_pipeline_canary"]
+    else:
+        args[3:3] = ["-o", "python_files=*.py"]
+    proc = subprocess.run(args, cwd=repo / "tests", env=env, capture_output=True, text=True, timeout=900, check=False)  # noqa: S603  # nosec B603
+    check(proc.returncode == 1, f"{target} {verbosity}: the forced mismatch did not fail the child (exit {proc.returncode})")
+    check(f"{failures} failed" in proc.stdout, f"{target} {verbosity}: expected {failures} failures")
+    for site in sites:
+        check(site in proc.stdout, f"{target} {verbosity}: did not fail at {site!r}")
     for name, text in (("stdout", proc.stdout), ("stderr", proc.stderr), ("junit", junit.read_text(encoding="utf-8"))):
-        assert CANARY not in text, f"the canary reached {name}"
+        check(CANARY not in text, f"{target} {verbosity}: the canary reached {name}")
 
 
 @pytest.mark.parametrize("command", ["export-run-plan", "export-run-prepare"])
@@ -376,6 +398,6 @@ def test_blank_sidecar_is_an_empty_object(command: str, tmp_path: Path) -> None:
         if command == "export-run-prepare":
             args += ["--jpg", str(tmp_path / "px.npy"), "--out", str(tmp_path / f"c-{side}.npy")]
         code, payload = run_json(args)
-        assert code == 0, (side, payload)
+        cli_ok(code, payload, f"blank sidecar {side}")
         outs.append(payload)
-    assert outs[0] == outs[1] == outs[2] == outs[3]
+    same_redacted(outs[1:], [outs[0]] * 3, "blank sidecars vs omitted")
