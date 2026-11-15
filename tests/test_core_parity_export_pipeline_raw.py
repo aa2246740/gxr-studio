@@ -18,6 +18,7 @@ runs export-source's ``color_image`` itself) then ``export-run-complete``. Gates
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -274,7 +275,11 @@ def test_lut_branches_real_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     if not pairs:
         missing("captures/ 真实样本不在本机（export-pipeline）")
     h = xs.make_home(tmp_path / "home", DAT)
-    luts = {k: xr.Lut(tmp_path, cube_text(lambda x: np.clip(x * GRADE[0] + GRADE[1], 0, 1), size=17), spec, k) for k, spec in SPECS.items()}
+    # Sidecar LUT ids are 64 hex digits (`parse_lut`).
+    ids = {k: hashlib.sha256(k.encode()).hexdigest() for k in SPECS}
+    luts = {
+        k: xr.Lut(tmp_path, cube_text(lambda x: np.clip(x * GRADE[0] + GRADE[1], 0, 1), size=17), spec, ids[k]) for k, spec in SPECS.items()
+    }
     cases: list[tuple[str, tuple[Any, ...]]] = [
         ("disp", ({"lut": None}, "camera-jpg", True, 95, None)),
         ("disp", ({"lut": None, "recipe": {"unit": "jlaunch", "slot": 2}}, "auto", True, 85, 1600)),
