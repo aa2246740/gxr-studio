@@ -510,6 +510,10 @@ def test_synthetic_pillow_edges_and_damaged_files(tmp_path: Path) -> None:
         else:
             _assert_no_core_error(code, got_photo, f"{filename}::photo")
             _assert_photo_equal(got_photo, _py_photo_meta_json(jpg_arg, dng_arg, f"R001_{path.stem}", 1700000000123.0, 480), filename)
+            if filename == "iso-ascii-digits-4300.jpg":
+                assert len(str(got_read["iso"])) == 4300 and got_photo["frame"]["iso"] == f"ISO {'7' * 4300}"
+            elif filename in {"iso-ascii-digits-4301.jpg", "iso-ascii-digits-5000.jpg"}:
+                assert got_read["iso"] is None and got_read["error"] is None and got_photo["frame"]["iso"] == ""
 
         if is_dng:
             code, got_pv = run_json(["export-meta-preview", "--dng", str(path)])

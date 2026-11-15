@@ -445,6 +445,9 @@ pub(crate) fn trim_py_ascii_bytes_ws(s: &str) -> &str {
     s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
 }
 
+/// CPython's `sys.int_info.default_max_str_digits` limit on base-10 string -> integer parsing.
+pub const PY_INT_MAX_STR_DIGITS: usize = 4300;
+
 fn parse_py_int_str(s: &str) -> Option<PyInt> {
     if s.is_empty() {
         return None;
@@ -457,21 +460,38 @@ fn parse_py_int_str(s: &str) -> Option<PyInt> {
     if rest.is_empty() || rest.starts_with('_') || rest.ends_with('_') || rest.contains("__") {
         return None;
     }
-    if !rest.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
-        return None;
+    let mut digit_count = 0usize;
+    for b in rest.bytes() {
+        if b.is_ascii_digit() {
+            digit_count += 1;
+            if digit_count > PY_INT_MAX_STR_DIGITS {
+                return None;
+            }
+        } else if b != b'_' {
+            return None;
+        }
     }
-    let digits: String = rest
-        .bytes()
-        .filter(|&b| b != b'_')
-        .map(char::from)
-        .collect();
+    let mut digits = String::new();
+    digits.try_reserve_exact(digit_count).ok()?;
+    for b in rest.bytes().filter(|&b| b != b'_') {
+        digits.push(char::from(b));
+    }
     let trimmed = digits.trim_start_matches('0');
     if trimmed.is_empty() {
         Some(PyInt("0".to_string()))
     } else if neg {
-        Some(PyInt(format!("-{trimmed}")))
+        let mut out = String::new();
+        out.try_reserve_exact(trimmed.len().checked_add(1)?).ok()?;
+        out.push('-');
+        out.push_str(trimmed);
+        Some(PyInt(out))
+    } else if trimmed.len() == digits.len() {
+        Some(PyInt(digits))
     } else {
-        Some(PyInt(trimmed.to_string()))
+        let mut out = String::new();
+        out.try_reserve_exact(trimmed.len()).ok()?;
+        out.push_str(trimmed);
+        Some(PyInt(out))
     }
 }
 
@@ -626,5 +646,49 @@ mod tests {
         assert!(p2_64 > PyInt::from_i64(0));
         assert!(PyInt::from_i64(0) > neg_2_64);
         assert!(neg_2_64 < PyInt::from_i64(-10));
+    }
+
+    #[test]
+    fn to_python_int_enforces_4300_str_digit_limit_but_not_float() {
+        let zeros_4300 = format!("-{}_{}", "0".repeat(4299), "5");
+        assert_eq!(
+            ExifValue::Str(zeros_4300)
+                .to_python_int()
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "-5"
+        );
+        let zeros_4301 = format!("+{}_{}", "0".repeat(4300), "5");
+        assert!(ExifValue::Str(zeros_4301).to_python_int().is_err());
+
+        let exact_4300 = "7".repeat(4300).into_bytes();
+        assert_eq!(
+            ExifValue::Bytes(exact_4300)
+                .to_python_int()
+                .unwrap()
+                .unwrap()
+                .as_str()
+                .len(),
+            4300
+        );
+        let over_4300 = "7".repeat(4301).into_bytes();
+        assert!(ExifValue::Bytes(over_4300).to_python_int().is_err());
+
+        assert_eq!(
+            ExifValue::Float(1e100)
+                .to_python_int()
+                .unwrap()
+                .unwrap()
+                .as_str()
+                .len(),
+            101
+        );
+        assert!(
+            ExifValue::Float(f64::MAX)
+                .to_python_int()
+                .unwrap()
+                .is_some()
+        );
     }
 }

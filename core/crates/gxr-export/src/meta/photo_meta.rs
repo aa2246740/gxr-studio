@@ -649,6 +649,21 @@ mod tests {
             parse_iso(Some(&ExifValue::Str("8\x1c".to_string()))),
             Ok(None)
         );
+        let d4300 = "7".repeat(4300);
+        let d4301 = "7".repeat(4301);
+        assert_eq!(
+            parse_iso(Some(&ExifValue::Str(d4300.clone())))
+                .unwrap()
+                .map(|v| v.as_str().len()),
+            Some(4300)
+        );
+        assert_eq!(parse_iso(Some(&ExifValue::Str(d4301))), Ok(None));
+        assert_eq!(
+            parse_iso(Some(&ExifValue::Float(1e100)))
+                .unwrap()
+                .map(|v| v.as_str().len()),
+            Some(101)
+        );
     }
 
     #[test]

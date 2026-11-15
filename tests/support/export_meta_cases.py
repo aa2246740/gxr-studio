@@ -646,6 +646,16 @@ def synthetic_edge_cases() -> dict[str, tuple[bytes, str]]:
         make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 12, 1, struct.pack("<d", 1e20))])),
         "jpg",
     )
+    cases["iso-double-1e100.jpg"] = (
+        make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 12, 1, struct.pack("<d", 1e100))])),
+        "jpg",
+    )
+    for n_digits in (4300, 4301, 5000):
+        ascii_digits = b"7" * n_digits + b"\x00"
+        cases[f"iso-ascii-digits-{n_digits}.jpg"] = (
+            make_jpeg_bytes(exif_payload=make_tiff_doc([], [(34855, 2, len(ascii_digits), ascii_digits)])),
+            "jpg",
+        )
 
     # 15. Sol r3 arbitrary-precision preview SubIFD area (2^64 * 2^64, 1e100 * 1, (-2^64)^2, 8 * 6)
     for pv_name, dims in [
