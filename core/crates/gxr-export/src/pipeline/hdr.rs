@@ -103,32 +103,17 @@ pub struct StampMask<'a> {
     pub height: u64,
 }
 
-/// `track.stamp` (mask), `track.frame`, `hdr_export.finish(payload, track, "jpeg", rgb)`.
-/// Returns the file and the outcome (`hdr`, `reason`).
-pub fn finish_hdr(
+/// `track.stamp` (mask) and `track.frame` on the state `export_prepare` wrote. `state.hdr` goes
+/// unchanged to hdr-track's strict reader (`HdrTrackState::from_json_and_slice`), so a malformed
+/// state (`42`, `{}`, `"active": "true"`, …) is its `bad_input` error, never an `no_raw` export
+/// (Sol r1 P2-02). Neither step needs the pixels, so `export_complete` runs this first, before any
+/// copy, fit or encode.
+pub fn track_final(
     hdr: &Val,
     layer: &[f32],
     mask: Option<StampMask<'_>>,
-    payload: Vec<u8>,
-    rgb: &Rgb,
-) -> Result<(Vec<u8>, HdrOutcome), CoreError> {
-    let meta = Json::object([
-        (
-            "active",
-            Json::Bool(matches!(hdr.get("active"), Some(Val::Bool(true)))),
-        ),
-        (
-            "shape",
-            hdr.get("shape")
-                .map_or(Json::Null, super::prepare::val_json),
-        ),
-        (
-            "problem",
-            hdr.get("problem")
-                .map_or(Json::Null, super::prepare::val_json),
-        ),
-    ]);
-    let mut state = HdrTrackState::from_json_and_slice(layer, &meta.render())?;
+) -> Result<HdrTrackState, CoreError> {
+    let mut state = HdrTrackState::from_json_and_slice(layer, &render_val(hdr))?;
     if let Some(m) = mask
         && !m.data.is_empty()
     {
@@ -137,11 +122,19 @@ pub fn finish_hdr(
     let frame = hdr
         .get("frame")
         .map_or_else(|| "null".to_string(), render_val);
-    state = frame_track(&state, &frame)?;
+    frame_track(&state, &frame)
+}
+
+/// `hdr_export.finish(payload, track, "jpeg", rgb)`: the file and the outcome (`hdr`, `reason`).
+pub fn finish_hdr(
+    state: &HdrTrackState,
+    payload: Vec<u8>,
+    rgb: &Rgb,
+) -> Result<(Vec<u8>, HdrOutcome), CoreError> {
     let params = parse_params_opt("")?;
     let out = finish(
         &payload,
-        &state,
+        state,
         "jpeg",
         &rgb.data,
         rgb.width as u64,

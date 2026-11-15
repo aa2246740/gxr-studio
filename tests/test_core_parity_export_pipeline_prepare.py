@@ -36,7 +36,7 @@ from gxr_studio.finish.stamp import format_stamp
 from gxr_studio.render.params import parse_edit
 from gxr_studio.render.service import RenderService
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, mtime_args, real_pairs
+from support.export_pipeline_cases import first_difference, mtime_args, real_pairs, same_redacted
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -175,7 +175,7 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             canvas, payload = _prepare(tmp_path, stem, args)
             assert canvas is not None, (stem, payload)
             prepared = payload["prepared"]
-            assert list(prepared["labels"].items()) == list(py_labels.items()), stem
+            same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
 
             frame = resolved_frame(edit.frame, frame_def)
             stamp = resolved_stamp(edit.stamp, stamp_def)
@@ -205,8 +205,12 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
                 border = frame.style == "instant" and stamp.enabled and stamp.placement == "border"
                 text = format_stamp(stamp, taken, file_time)
                 py_stamp = stamp_layout(w, h, stamp, text, m, py_frame if border else None) if stamp.enabled and text else None
-                assert prepared["frame"] == (None if py_frame is None else json.loads(json.dumps(py_frame.to_json()))), stem
-                assert prepared["stamp"] == (None if py_stamp is None else json.loads(json.dumps(py_stamp.to_json()))), stem
+                same_redacted(
+                    prepared["frame"], None if py_frame is None else json.loads(json.dumps(py_frame.to_json())), f"{stem} frame layout"
+                )
+                same_redacted(
+                    prepared["stamp"], None if py_stamp is None else json.loads(json.dumps(py_stamp.to_json())), f"{stem} stamp layout"
+                )
                 want_canvas = photo if py_frame is None else _photo_only(photo, py_frame)
                 assert np.array_equal(canvas, want_canvas), stem
                 if no_ink:
@@ -216,9 +220,9 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             got, done = _complete(tmp_path, stem, fed, prepared["state"], jpg)
             assert got is not None, (stem, done)
             assert got == py_file, f"{stem}: {first_difference(got, py_file)}"
-            assert done["result"]["file_name"] == res.path.name
+            same_redacted(done["result"]["file_name"], res.path.name, f"{stem} file name")
             for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
-                assert done["result"][key] == getattr(res, key), (stem, key)
+                same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
             tally["no_ink" if no_ink else "ink"] += 1
     print("export-pipeline e2e camera-jpg:", tally)
     assert tally["original"] >= 1 and tally["ink"] >= 3 and tally["no_ink"] >= 3
@@ -266,7 +270,7 @@ def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
         assert canvas is not None, payload
         want_frame = None if frame.style == "none" else frame_layout(30, 20, frame, {}, FontMetrics(PilFonts()))
         got_frame = payload["prepared"]["frame"]
-        assert got_frame == (None if want_frame is None else json.loads(json.dumps(want_frame.to_json()))), raw
+        same_redacted(got_frame, None if want_frame is None else json.loads(json.dumps(want_frame.to_json())), f"defaults {i} frame layout")
         # No capture time and no override: the stamp text is empty, so nothing is drawn.
         assert format_stamp(stamp, None, None) == "" or stamp.date_override
         assert payload["prepared"]["stamp"] is None
@@ -314,6 +318,64 @@ def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> 
                     args += ["--preset", preset]
                 code, got = run_json(args)
                 assert code == 0, (stem, j, got)
-                assert got == json.loads(json.dumps(want)), (stem, j)
+                same_redacted(got, json.loads(json.dumps(want)), f"{stem} sizes {j}")
                 compared += 1
     assert compared >= 30
+
+
+def test_failed_real_comparison_prints_no_exif(tmp_path: Path) -> None:
+    """Sol r1 P1: force a mismatch on a synthetic EXIF canary through the real comparison code;
+    the canary must not reach stdout, stderr or the JUnit file."""
+    import os
+    import subprocess
+    import sys
+
+    from support.export_pipeline_canary import CANARY
+
+    repo = Path(__file__).resolve().parents[1]
+    junit = tmp_path / "canary.xml"
+    env = {**os.environ, "EXPORT_PIPELINE_CANARY_DIR": str(tmp_path / "canary-input")}
+    proc = subprocess.run(  # noqa: S603  # nosec B603
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "support.export_pipeline_canary",
+            f"{Path(__file__).name}::test_output_sizes_match_desktop",
+            f"--basetemp={tmp_path / 'child'}",
+            f"--junitxml={junit}",
+        ],
+        cwd=repo / "tests",
+        env={**env, "PYTHONPATH": str(repo / "tests")},
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    assert proc.returncode == 1, f"the forced mismatch did not fail the child (exit {proc.returncode})"
+    assert "mismatch" in proc.stdout, "the child failed for another reason"
+    for name, text in (("stdout", proc.stdout), ("stderr", proc.stderr), ("junit", junit.read_text(encoding="utf-8"))):
+        assert CANARY not in text, f"the canary reached {name}"
+
+
+@pytest.mark.parametrize("command", ["export-run-plan", "export-run-prepare"])
+def test_blank_sidecar_is_an_empty_object(command: str, tmp_path: Path) -> None:
+    """Sol r1 P2-01: an omitted, empty or whitespace-only sidecar gives exactly what ``{}`` gives."""
+    np.save(tmp_path / "px.npy", np.arange(18, dtype=np.uint8).reshape(2, 3, 3))
+    shot = _write(tmp_path, "shot.json", {"name": "SYNTHETIC", "width": 3, "height": 2, "files": {"jpg": {}}})
+    (tmp_path / "empty.json").write_text("", encoding="utf-8")
+    (tmp_path / "blank.json").write_text(" \n\t", encoding="utf-8")
+    (tmp_path / "obj.json").write_text("{}", encoding="utf-8")
+    outs = []
+    for side in (None, "empty.json", "blank.json", "obj.json"):
+        args = [command, "--shot", shot]
+        if side is not None:
+            args += ["--side", str(tmp_path / side)]
+        if command == "export-run-prepare":
+            args += ["--jpg", str(tmp_path / "px.npy"), "--out", str(tmp_path / f"c-{side}.npy")]
+        code, payload = run_json(args)
+        assert code == 0, (side, payload)
+        outs.append(payload)
+    assert outs[0] == outs[1] == outs[2] == outs[3]

@@ -197,6 +197,11 @@ impl BitWriter {
 /// Port of libjpeg-turbo `jchuff.c jpeg_gen_optimal_table`, with its tie rules (the larger
 /// symbol wins a tie) and its `1000000000L` search bound.
 fn gen_optimal_table(freq_in: &[i64; 257]) -> Result<HuffTable, CoreError> {
+    // A table no symbol uses (an extra DHT our encoder never writes) would leave no code
+    // length to remove below; refuse it (Sol r1 P2-03).
+    if freq_in[..256].iter().all(|&f| f == 0) {
+        return Err(bad("未使用的霍夫曼表"));
+    }
     let mut freq = *freq_in;
     let mut bits = [0_u8; MAX_CLEN + 1];
     let mut codesize = [0_i32; 257];
@@ -628,6 +633,12 @@ mod tests {
         // and is dropped from the counts.
         assert_eq!(&t.bits[1..4], &[1, 1, 1]);
         assert_eq!(t.vals, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn unused_table_is_an_error_not_a_panic() {
+        let err = gen_optimal_table(&[0_i64; 257]).unwrap_err();
+        assert_eq!(err.kind, "encode_failed");
     }
 
     #[test]

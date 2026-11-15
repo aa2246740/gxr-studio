@@ -44,7 +44,7 @@ from gxr_studio.render.params import RecipeSel, parse_edit
 from support import export_source_cases as xs
 from support import export_source_run as xr
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, mtime_args
+from support.export_pipeline_cases import first_difference, mtime_args, same_redacted
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -184,7 +184,7 @@ def run_case(
     assert code == 0, (stem, payload.get("error", {}).get("kind"), payload.get("error", {}).get("message"))
     canvas = np.load(out)
     prepared = payload["prepared"]
-    assert list(prepared["labels"].items()) == list(py_labels.items()), stem
+    same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
 
     frame_def, stamp_def = load_defaults(h.render.home)
     frame = resolved_frame(edit.frame, frame_def)
@@ -199,8 +199,8 @@ def run_case(
     border = frame.style == "instant" and stamp.enabled and stamp.placement == "border"
     text = format_stamp(stamp, taken, file_time)
     py_stamp = stamp_layout(pw, ph, stamp, text, m, py_frame if border else None) if stamp.enabled and text else None
-    assert prepared["frame"] == (None if py_frame is None else json.loads(json.dumps(py_frame.to_json()))), stem
-    assert prepared["stamp"] == (None if py_stamp is None else json.loads(json.dumps(py_stamp.to_json()))), stem
+    same_redacted(prepared["frame"], None if py_frame is None else json.loads(json.dumps(py_frame.to_json())), f"{stem} frame layout")
+    same_redacted(prepared["stamp"], None if py_stamp is None else json.loads(json.dumps(py_stamp.to_json())), f"{stem} stamp layout")
     want_canvas = photo if py_frame is None else _photo_only(photo, py_frame)
     no_ink = py_frame is None and py_stamp is None
     assert canvas.shape == want_canvas.shape and np.array_equal(canvas, want_canvas), (stem, int(np.count_nonzero(canvas != want_canvas)))
@@ -220,9 +220,9 @@ def run_case(
     with Image.open(o) as im:
         exif = im.getexif()
         assert 271 in exif and len(exif.get_ifd(0x8769)) >= 4, (stem, sorted(exif), len(exif.get_ifd(0x8769)))
-    assert done["result"]["file_name"] == res.path.name, stem
+    same_redacted(done["result"]["file_name"], res.path.name, f"{stem} file name")
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
-        assert done["result"][key] == getattr(res, key), (stem, key)
+        same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
     return {"no_ink": no_ink, "base_diff": base_diff, "rgb0": rgb0, "rs_base": rs_base, "shot": shot, "render": res.render}
 
 

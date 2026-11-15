@@ -9,7 +9,7 @@ use gxr_jpeg::ExifSpec;
 use gxr_raw::{CoreError, Json};
 
 use super::encode::{Rgb, fit, write_rgb_with_exif};
-use super::hdr::{StampMask, finish_hdr};
+use super::hdr::{StampMask, finish_hdr, track_final};
 use super::result::{ExportFail, Labels, result_json, result_labels, validate_options};
 
 /// Largest pixel count any image input may have (`gxr-raw`'s shared limit, 2**32 − 1 elements).
@@ -117,6 +117,17 @@ pub fn complete_export(
     hdr_in: Option<HdrInputs<'_>>,
 ) -> Result<(Completed, Rgb), ExportFail> {
     let (wu, hu) = checked_rgb(canvas, w, h)?;
+    // Validate the HDR state, layer, mask and layout first (Sol r1 P2-02).
+    let track = match &state.hdr {
+        None => None,
+        Some(h) => {
+            let (layer, mask) = match hdr_in {
+                Some(i) => (i.layer, i.mask),
+                None => (&[][..], None),
+            };
+            Some(track_final(h, layer, mask)?)
+        }
+    };
     let mut data = Vec::new();
     data.try_reserve_exact(canvas.len())
         .map_err(|_| CoreError::new("too_big", "图像太大"))?;
@@ -130,14 +141,10 @@ pub fn complete_export(
     let note = state.labels.note().to_string();
     let payload = write_rgb_with_exif(&rgb, source, &note, state.quality)?;
     let rl = result_labels(&state.labels);
-    let (file, hdr) = match &state.hdr {
+    let (file, hdr) = match &track {
         None => (payload, None),
-        Some(h) => {
-            let (layer, mask) = match hdr_in {
-                Some(i) => (i.layer, i.mask),
-                None => (&[][..], None),
-            };
-            let (bytes, outcome) = finish_hdr(h, layer, mask, payload, &rgb)?;
+        Some(t) => {
+            let (bytes, outcome) = finish_hdr(t, payload, &rgb)?;
             (bytes, Some(outcome))
         }
     };

@@ -126,3 +126,35 @@ def mtime_args(path: Path) -> list[str]:
     offset = datetime.fromtimestamp(st).astimezone().utcoffset()
     minutes = 0 if offset is None else int(offset.total_seconds() // 60)
     return ["--mtime-ms", repr(st * 1000.0), "--tz-offset-min", str(minutes)]
+
+
+def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
+    from test_core_parity_export_meta import _digest_value, _values_equal
+
+    if isinstance(got, dict) and isinstance(want, dict):
+        if list(got.keys()) != list(want.keys()):
+            out.append(f"{path}: keys or key order differ ({len(got)} vs {len(want)} keys)")
+        for k in [k for k in got if k in want]:
+            _diffs(got[k], want[k], f"{path}.{k}", out)
+        return
+    if isinstance(got, (list, tuple)) and isinstance(want, (list, tuple)):
+        if len(got) != len(want):
+            out.append(f"{path}: length {len(got)} vs {len(want)}")
+        for i, (a, b) in enumerate(zip(got, want, strict=False)):
+            _diffs(a, b, f"{path}[{i}]", out)
+        return
+    if not _values_equal(got, want):
+        out.append(f"{path}: got={_digest_value(got)} want={_digest_value(want)}")
+
+
+def same_redacted(got: Any, want: Any, label: str) -> None:
+    """Exact equality of values that may hold real-photo text (``meta``, frame and stamp layouts,
+    labels, state, result fields). A mismatch reports only the field path, the type and a SHA-256
+    prefix of each side (export-meta's ``_digest_value``) and fails with ``pytrace=False``, so
+    pytest never expands the values into the log (Sol r1 P1)."""
+    import pytest
+
+    out: list[str] = []
+    _diffs(got, want, "$", out)
+    if out:
+        pytest.fail(f"{label}: mismatch: " + "; ".join(out[:20]), pytrace=False)

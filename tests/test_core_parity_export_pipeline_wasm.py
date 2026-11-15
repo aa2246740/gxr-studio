@@ -182,6 +182,12 @@ def _hdr_cases(tmp: Path, base: dict[str, Any], side_paths: dict[str, str], pic:
             c.pop("layer")
         out.append({**c, "label": f"hdone-{key}", "out": str(tmp / f"hd-{key}.jpg")})
         out.append({**c, "label": f"hdone-{key}-mask", "mask": str(tmp / "mask.npy"), "out": str(tmp / f"hdm-{key}.jpg")})
+    # Sol r1 P2-02: malformed state.hdr values are errors on both sides.
+    for i, bad in enumerate([42, True, [], "x", {}, {"active": "true", "shape": None, "problem": None, "frame": None}]):
+        sp = _w(tmp, f"hst-bad{i}.json", {**st, "hdr": bad})
+        out.append(
+            {"kind": "complete", "canvas": pic, "state": sp, "src": str(src), "label": f"hdone-bad-{i}", "out": str(tmp / f"hd-bad{i}.jpg")}
+        )
     act = _w(tmp, "hst-act2.json", states["active"])
     out.append(
         {
@@ -250,7 +256,22 @@ def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     side_paths["deep-129"] = _w(tmp_path, "side-deep129.json", '{"x":' + _deep(129, "array") + "}")
     side_paths["deep-obj"] = _w(tmp_path, "side-deepobj.json", _deep(200, "object"))
     side_paths["not-json"] = _w(tmp_path, "side-bad.json", "{")
-    cases: list[dict[str, Any]] = []
+    # Sol r1 P2-01: omitted, empty and whitespace sidecars, against {}.
+    side_paths["zero-bytes"] = _w(tmp_path, "side-zero.json", "")
+    side_paths["whitespace"] = _w(tmp_path, "side-ws.json", " \n\t")
+    cases: list[dict[str, Any]] = [{"label": "plan-omitted", "kind": "plan", "shot": shot}]
+    cases.append(
+        {
+            "kind": "prepare",
+            "shot": shot_jpg,
+            "layout": layout,
+            "jpg": str(pic),
+            "fonts": fonts,
+            "quality": 95,
+            "label": "prep-omitted",
+            "out": str(tmp_path / "p-omit"),
+        }
+    )
     for key, path in side_paths.items():
         cases.append({"label": f"plan-{key}", "kind": "plan", "shot": shot, "side": path})
         cases.append({"label": f"plan-dng-{key}", "kind": "plan", "shot": shot_dng, "side": path, "base": "camera-jpg"})

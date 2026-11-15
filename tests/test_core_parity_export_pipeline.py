@@ -230,3 +230,60 @@ def test_complete_real_arrays(tmp_path: Path, pinned_icc: bytes) -> None:
 def test_complete_option_errors(state: dict[str, Any], kind: str, tmp_path: Path) -> None:
     got, payload = _complete(tmp_path, "err", np.zeros((4, 4, 3), dtype=np.uint8), state, "")
     assert got is None and payload["error"]["kind"] == kind
+
+
+def _with_unused_table(jpeg: bytes, cls: int) -> bytes:
+    """Copy the first DHT of class ``cls`` (0 = DC, 1 = AC) as table id 2 and insert it before SOS;
+    the scan never uses it (Sol r1 P2-03)."""
+    at = 2
+    while True:
+        assert jpeg[at] == 0xFF
+        marker, length = jpeg[at + 1], int.from_bytes(jpeg[at + 2 : at + 4], "big")
+        if marker == 0xC4 and jpeg[at + 4] >> 4 == cls:
+            seg = bytearray(jpeg[at : at + 2 + length])
+            seg[4] = (cls << 4) | 2
+            break
+        at += 2 + length
+    sos = jpeg.index(b"\xff\xda")
+    return jpeg[:sos] + bytes(seg) + jpeg[sos:]
+
+
+@pytest.mark.parametrize("cls", [0, 1])
+def test_huffopt_unused_table_is_an_error(cls: int, tmp_path: Path) -> None:
+    plain = _pillow(np.full((1, 1, 3), 120, dtype=np.uint8), 95, False)
+    data = _with_unused_table(plain, cls)
+    with Image.open(io.BytesIO(data)) as im:
+        im.load()  # Pillow decodes it
+    src, out = tmp_path / "unused.jpg", tmp_path / "unused.out.jpg"
+    src.write_bytes(data)
+    code, payload = run_json(["export-run-huffopt", "--in", str(src), "--out", str(out)])
+    err = error_of(code, payload)
+    assert err is not None and err.kind == "encode_failed", payload
+    # The ordinary file still re-codes to Pillow optimize=True exactly.
+    assert _huffopt(plain, tmp_path, f"plain{cls}") == _pillow(np.full((1, 1, 3), 120, dtype=np.uint8), 95, True)
+
+
+BAD_HDR_STATES: list[Any] = [
+    42,
+    True,
+    [],
+    "x",
+    {},
+    {"active": "true", "shape": None, "problem": None, "frame": None},
+    {"active": True, "shape": None, "problem": None, "frame": None},
+]
+
+
+@pytest.mark.parametrize("hdr", BAD_HDR_STATES)
+def test_complete_rejects_malformed_hdr_state(hdr: Any, tmp_path: Path) -> None:
+    """Sol r1 P2-02: a malformed ``state.hdr`` is hdr-track's state error, never a ``no_raw`` export."""
+    got, payload = _complete(tmp_path, "badhdr", np.zeros((2, 3, 3), dtype=np.uint8), _state("R", 95, None, {}, hdr), "")
+    assert got is None, payload
+    assert payload["error"]["kind"] in ("bad_input", "bad_state", "bad_geometry"), payload
+
+
+def test_complete_valid_inactive_hdr_is_no_raw(tmp_path: Path) -> None:
+    hdr = {"asked": True, "active": False, "shape": None, "problem": "no_raw", "frame": None}
+    got, payload = _complete(tmp_path, "inact", np.zeros((2, 3, 3), dtype=np.uint8), _state("R", 95, None, {}, hdr), "")
+    assert got is not None, payload
+    assert payload["result"]["hdr"] is False and payload["result"]["hdr_reason"] == "no_raw"

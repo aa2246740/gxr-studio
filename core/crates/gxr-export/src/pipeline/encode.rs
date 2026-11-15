@@ -18,6 +18,12 @@ pub struct Rgb {
 /// Port of `gxr_studio/finish/serve.py:94 _fit`: `Image.resize(fit_size(w, h, max_edge),
 /// LANCZOS)` when the long side is over `max_edge`, else the array itself.
 pub fn fit(rgb: Rgb, max_edge: Option<i64>) -> Result<Rgb, CoreError> {
+    // A public entry: check the picture before the no-resize return (Sol r1 P2-04).
+    super::complete::checked_rgb(
+        &rgb.data,
+        super::prepare::dim_u64(rgb.width)?,
+        super::prepare::dim_u64(rgb.height)?,
+    )?;
     let Some(edge) = max_edge.filter(|&e| e != 0) else {
         return Ok(rgb);
     };
@@ -227,6 +233,18 @@ mod tests {
             pillow_rational((1 << 40) + 1, (1 << 33) + 7),
             (3685513853, 28793077)
         );
+    }
+
+    #[test]
+    fn fit_rejects_mismatched_pictures() {
+        for (w, h, n) in [(2, 1, 3), (0, 1, 0), (usize::MAX, 1, 0)] {
+            let rgb = Rgb {
+                width: w,
+                height: h,
+                data: vec![7; n],
+            };
+            assert!(fit(rgb, None).is_err(), "{w}x{h} with {n} bytes");
+        }
     }
 
     #[test]

@@ -35,6 +35,11 @@ fn bad(what: &str) -> CoreError {
     CoreError::new("bad_request", format!("请求无效：{what}"))
 }
 
+/// A `usize` dimension as `u64` for the shared size checks.
+pub(crate) fn dim_u64(n: usize) -> Result<u64, CoreError> {
+    u64::try_from(n).map_err(|_| CoreError::new("too_big", "图像太大"))
+}
+
 /// Python truthiness of a JSON value.
 pub(crate) fn truthy(v: Option<&Val>) -> bool {
     match v {
@@ -247,11 +252,13 @@ pub fn plan(
     defaults: &[u8],
     base: &str,
 ) -> Result<(Plan, Val), ExportFail> {
-    let side = if side_text.iter().all(u8::is_ascii_whitespace) {
-        Val::Obj(Vec::new())
+    // An omitted, empty or blank sidecar is `{}`, for both parses (Sol r1 P2-01).
+    let side_text: &[u8] = if side_text.iter().all(u8::is_ascii_whitespace) {
+        b"{}"
     } else {
-        parse_json(side_text)?
+        side_text
     };
+    let side = parse_json(side_text)?;
     if side.as_object().is_none() {
         return Err(bad("sidecar 要是对象").into());
     }
@@ -405,6 +412,8 @@ pub fn prepare_original(
     jpg: Rgb,
     opts: ExportOpts,
 ) -> Result<Prepared, ExportFail> {
+    // A public entry: check the picture before anything else (Sol r1 P2-04).
+    super::complete::checked_rgb(&jpg.data, dim_u64(jpg.width)?, dim_u64(jpg.height)?)?;
     let (q, edge) = validate_options(opts.quality, opts.long_edge)?;
     let labels = original_labels(shot);
     let photo = photo_rect(0, 0, jpg.width, jpg.height);

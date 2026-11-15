@@ -38,7 +38,7 @@ from support import export_source_cases as xs
 from support import export_source_run as xr
 from support import hdr_parity as hp
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import first_difference, mtime_args
+from support.export_pipeline_cases import first_difference, mtime_args, same_redacted
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 from test_core_parity_export_pipeline_raw import Spy, _entry_for, _photo_only, _w, pinned_icc  # noqa: F401
@@ -177,7 +177,7 @@ def run_hdr_case(
     assert code == 0, (stem, payload.get("error", {}).get("kind"), payload.get("error", {}).get("message"))
     canvas = np.load(tmp / f"{stem}-canvas.npy")
     prepared = payload["prepared"]
-    assert list(prepared["labels"].items()) == list(py_labels.items()), stem
+    same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
     hdr_state = prepared["state"]["hdr"]
     rs_layer = np.load(tmp / f"{stem}-layer.npy")
     # The track after begin and the photo's geometry.
@@ -230,7 +230,7 @@ def run_hdr_case(
     assert r["hdr"] == res.hdr and r["hdr_reason"] == res.hdr_reason, (stem, r["hdr"], r["hdr_reason"], res.hdr, res.hdr_reason)
     assert r["file_name"] == res.path.name and r["tag"].endswith("_hdr") == bool(res.hdr), stem
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail"):
-        assert r[key] == getattr(res, key), (stem, key)
+        same_redacted(r[key], getattr(res, key), f"{stem} result.{key}")
     return {"hdr": res.hdr, "reason": res.hdr_reason, "how": how, "ink": not no_ink}
 
 
