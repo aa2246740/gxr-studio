@@ -2,12 +2,12 @@
 //! stdout never contains a path, so `gxr-wasm` prints identical JSON and bytes.
 
 use gxr_export::{
-    FinishPrepared, HdrTrackState, begin, box_track, checked_box_dim_f64, checked_box_offset_f64,
-    checked_dim_f64, checked_factor_f64, checked_nonneg_u64_f64, crop_track, finish_prepare,
-    finish_wrap, frame_track, parse_params_opt, parse_rect4_json, stamp_track, to_grid, warp_track,
+    HdrTrackState, begin, box_track, checked_box_dim_f64, checked_box_offset_f64, checked_dim_f64,
+    checked_factor_f64, checked_nonneg_u64_f64, crop_track, finish, frame_track, parse_params_opt,
+    parse_rect4_json, stamp_track, to_grid, warp_track,
 };
 use gxr_finish::geometry::{crop_valid_f32_u64, parse_geometry, warp_float_u64};
-use gxr_hdr::{count, ensure_finite, f32_le_bytes, meta_from_json};
+use gxr_hdr::{count, ensure_finite, f32_le_bytes};
 use gxr_raw::Json;
 
 use crate::common::{self, Failure, Output};
@@ -23,8 +23,7 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "hdrtrack-stamp" => stamp_cmd(args)?,
         "hdrtrack-frame" => frame_cmd(args)?,
         "hdrtrack-to-grid" => to_grid_cmd(args)?,
-        "hdrtrack-finish-prepare" => finish_prepare_cmd(args)?,
-        "hdrtrack-finish-wrap" => finish_wrap_cmd(args)?,
+        "hdrtrack-finish" => finish_cmd(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
     ensure_finite(&json)?;
@@ -375,7 +374,10 @@ fn to_grid_cmd(args: &[String]) -> Result<Json, Failure> {
     Ok(y_desc)
 }
 
-fn finish_prepare_cmd(args: &[String]) -> Result<Json, Failure> {
+fn finish_cmd(args: &[String]) -> Result<Json, Failure> {
+    let payload_path = common::option(args, "--payload")?;
+    let payload = std::fs::read(payload_path)
+        .map_err(|e| usage(format!("cannot read {payload_path}: {e}")))?;
     let state = read_state(args)?;
     let fmt = common::option(args, "--fmt")?;
     let rgb_npy = npy(args, "--rgb")?;
@@ -386,32 +388,8 @@ fn finish_prepare_cmd(args: &[String]) -> Result<Json, Failure> {
     let params_json = read_text_flag(args, "--params", "--params-json", Some(""))?;
     let params = parse_params_opt(&params_json)?;
 
-    let prep = finish_prepare(&state, fmt, &rgb, w, h, &params)?;
-    match &prep {
-        FinishPrepared::Skipped { .. } => {
-            write_npy(args, "--out", "|u1", &[0, 0], &[])?;
-        }
-        FinishPrepared::Ready { codes, gh, gw, .. } => {
-            write_npy(args, "--out", "|u1", &[*gh, *gw], codes)?;
-        }
-    }
-    Ok(prep.report_json()?)
-}
-
-fn finish_wrap_cmd(args: &[String]) -> Result<Json, Failure> {
-    let payload_path = common::option(args, "--payload")?;
-    let payload = std::fs::read(payload_path)
-        .map_err(|e| usage(format!("cannot read {payload_path}: {e}")))?;
-    let gain_jpeg = if let Some(gain_path) = opt_str(args, "--gain")? {
-        std::fs::read(gain_path).map_err(|e| usage(format!("cannot read {gain_path}: {e}")))?
-    } else {
-        Vec::new()
-    };
-    let meta_json = read_text_flag(args, "--meta", "--meta-json", None)?;
-    let meta = meta_from_json(&meta_json)?;
-    let gain_max_stops = f64_flag(args, "--gain-max-stops")?;
-    let wrapped = finish_wrap(&payload, &gain_jpeg, &meta, gain_max_stops)?;
-    let bytes = wrapped.bytes();
+    let out = finish(&payload, &state, fmt, &rgb, w, h, &params)?;
+    let bytes = out.bytes();
     write_npy(args, "--out", "|u1", &[1, bytes.len()], bytes)?;
-    Ok(wrapped.report_json()?)
+    Ok(out.report_json()?)
 }

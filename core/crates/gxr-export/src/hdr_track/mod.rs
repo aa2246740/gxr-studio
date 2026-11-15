@@ -6,9 +6,7 @@ pub mod finish;
 pub mod frame;
 pub mod track;
 
-pub use finish::{
-    FinishPrepared, FinishWrapped, NOT_JPEG, ToGridOutput, finish_prepare, finish_wrap, to_grid,
-};
+pub use finish::{FinishOutput, NOT_JPEG, ToGridOutput, finish, to_grid};
 pub use frame::frame_track;
 pub use track::{
     HdrTrackState, NO_RAW, begin, box_track, checked_box_dim_f64, checked_box_offset_f64,

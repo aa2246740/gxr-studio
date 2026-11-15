@@ -5,14 +5,13 @@
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
 use gxr_export::{
-    FinishPrepared, FinishWrapped, HdrTrackState, begin, box_track, checked_box_dim_f64,
-    checked_box_offset_f64, checked_dim_f64, checked_factor_f64, checked_nonneg_u64_f64,
-    crop_track, finish_prepare, finish_wrap, frame_track, parse_params_opt, parse_rect4_json,
-    stamp_track, to_grid, warp_track,
+    FinishOutput, HdrTrackState, begin, box_track, checked_box_dim_f64, checked_box_offset_f64,
+    checked_dim_f64, checked_factor_f64, checked_nonneg_u64_f64, crop_track, finish, frame_track,
+    parse_params_opt, parse_rect4_json, stamp_track, to_grid, warp_track,
 };
 use gxr_finish::geometry::bounds::too_big;
 use gxr_finish::geometry::{crop_valid_f32_u64, parse_geometry, warp_float_u64};
-use gxr_hdr::{ensure_finite, f32_le_bytes, meta_from_json};
+use gxr_hdr::{ensure_finite, f32_le_bytes};
 use gxr_raw::{CoreError, Json, error_json};
 
 fn rejected(err: CoreError) -> JsValue {
@@ -152,53 +151,16 @@ impl HdrToGridResult {
     }
 }
 
-/// Output of `hdrtrack_finish_prepare`.
+/// Output of `hdrtrack_finish`.
 #[wasm_bindgen]
-pub struct HdrFinishPrepareResult {
-    hdr: bool,
-    height: u32,
-    width: u32,
-    report: String,
-    codes: Vec<u8>,
-}
-
-#[wasm_bindgen]
-impl HdrFinishPrepareResult {
-    #[wasm_bindgen(getter)]
-    pub fn hdr(&self) -> bool {
-        self.hdr
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn report(&self) -> String {
-        self.report.clone()
-    }
-
-    pub fn codes(self) -> Vec<u8> {
-        self.codes
-    }
-}
-
-/// Output of `hdrtrack_finish_wrap`.
-#[wasm_bindgen]
-pub struct HdrFinishWrapResult {
+pub struct HdrFinishResult {
     hdr: bool,
     report: String,
     bytes: Vec<u8>,
 }
 
 #[wasm_bindgen]
-impl HdrFinishWrapResult {
+impl HdrFinishResult {
     #[wasm_bindgen(getter)]
     pub fn hdr(&self) -> bool {
         self.hdr
@@ -411,9 +373,11 @@ pub fn hdrtrack_to_grid(
     })
 }
 
-/// First half of `hdr_export.finish`: computes uint8 gain codes + `GainMeta`.
+/// Unified `hdr_export.finish`: computes gainmap, encodes grayscale JPEG, and wraps `payload`.
 #[wasm_bindgen]
-pub fn hdrtrack_finish_prepare(
+#[allow(clippy::too_many_arguments)]
+pub fn hdrtrack_finish(
+    payload: &[u8],
     layer: &[f32],
     state_json: &str,
     fmt: &str,
@@ -421,42 +385,18 @@ pub fn hdrtrack_finish_prepare(
     w: f64,
     h: f64,
     params_json: &str,
-) -> Result<HdrFinishPrepareResult, JsValue> {
+) -> Result<HdrFinishResult, JsValue> {
     let state = HdrTrackState::from_json_and_slice(layer, state_json).map_err(rejected)?;
     let wu = checked_dim_f64(w).map_err(rejected)?;
     let hu = checked_dim_f64(h).map_err(rejected)?;
     let params = parse_params_opt(params_json).map_err(rejected)?;
-    let prep = finish_prepare(&state, fmt, rgb, wu, hu, &params).map_err(rejected)?;
-    let report = prep.report_json().map_err(rejected)?;
-    let (hdr, height, width, codes) = match prep {
-        FinishPrepared::Skipped { .. } => (false, 0, 0, Vec::new()),
-        FinishPrepared::Ready { codes, gh, gw, .. } => (true, to_u32(gh)?, to_u32(gw)?, codes),
+    let out = finish(payload, &state, fmt, rgb, wu, hu, &params).map_err(rejected)?;
+    let report = out.report_json().map_err(rejected)?;
+    let (hdr, bytes) = match out {
+        FinishOutput::Skipped { bytes, .. } => (false, bytes),
+        FinishOutput::Hdr { bytes, .. } => (true, bytes),
     };
-    Ok(HdrFinishPrepareResult {
-        hdr,
-        height,
-        width,
-        report: format!("{}\n", report.render()),
-        codes,
-    })
-}
-
-/// Second half of `hdr_export.finish`: wraps `payload` and `gain_jpeg` via `gxr_hdr::assemble`.
-#[wasm_bindgen]
-pub fn hdrtrack_finish_wrap(
-    payload: &[u8],
-    gain_jpeg: &[u8],
-    meta_json: &str,
-    gain_max_stops: f64,
-) -> Result<HdrFinishWrapResult, JsValue> {
-    let meta = meta_from_json(meta_json).map_err(rejected)?;
-    let wrapped = finish_wrap(payload, gain_jpeg, &meta, gain_max_stops).map_err(rejected)?;
-    let report = wrapped.report_json().map_err(rejected)?;
-    let (hdr, bytes) = match wrapped {
-        FinishWrapped::Skipped { bytes, .. } => (false, bytes),
-        FinishWrapped::Hdr { bytes, .. } => (true, bytes),
-    };
-    Ok(HdrFinishWrapResult {
+    Ok(HdrFinishResult {
         hdr,
         report: format!("{}\n", report.render()),
         bytes,

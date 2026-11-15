@@ -451,7 +451,11 @@ impl<W: JfifWrite> Encoder<W> {
 
         self.writer.write_marker(Marker::SOI)?;
 
-        self.writer.write_header(&self.density)?;
+        if jpeg_color_type == JpegColorType::Luma {
+            self.writer.write_header_with_version(&self.density, 0x01)?;
+        } else {
+            self.writer.write_header(&self.density)?;
+        }
 
         if jpeg_color_type == JpegColorType::Cmyk {
             //Set ColorTransform info to "Unknown"
@@ -488,7 +492,7 @@ impl<W: JfifWrite> Encoder<W> {
 
         match color {
             JpegColorType::Luma => {
-                add_component!(self.components, 0, 0, 1, 1);
+                add_component!(self.components, 1, 0, 1, 1);
             }
             JpegColorType::Ycbcr => {
                 add_component!(
@@ -551,15 +555,25 @@ impl<W: JfifWrite> Encoder<W> {
         image: &I,
         q_tables: &[QuantizationTable; 2],
     ) -> Result<(), EncodingError> {
-        self.writer.write_frame_header(
-            image.width(),
-            image.height(),
-            &self.components,
-            self.progressive_scans.is_some(),
-        )?;
+        if image.get_jpeg_color_type() == JpegColorType::Luma {
+            self.writer.write_quantization_segment(0, &q_tables[0])?;
+            self.writer.write_frame_header(
+                image.width(),
+                image.height(),
+                &self.components,
+                self.progressive_scans.is_some(),
+            )?;
+        } else {
+            self.writer.write_frame_header(
+                image.width(),
+                image.height(),
+                &self.components,
+                self.progressive_scans.is_some(),
+            )?;
 
-        self.writer.write_quantization_segment(0, &q_tables[0])?;
-        self.writer.write_quantization_segment(1, &q_tables[1])?;
+            self.writer.write_quantization_segment(0, &q_tables[0])?;
+            self.writer.write_quantization_segment(1, &q_tables[1])?;
+        }
 
         self.writer
             .write_huffman_segment(CodingClass::Dc, 0, &self.huffman_tables[0].0)?;

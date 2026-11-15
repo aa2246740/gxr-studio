@@ -340,45 +340,59 @@ export function cases(inputs) {
         });
       }
 
-      if (has('finish_rgb.npy')) {
+      if (has('finish_rgb.npy') && has('payload.jpg')) {
         const rgbPath = path('finish_rgb.npy');
+        const pPath = path('payload.jpg');
         const fmt = has('fmt.txt') ? readFileSync(path('fmt.txt'), 'utf8').trim() : 'jpeg';
         const paramsJson = has('finish_params.json') ? readFileSync(path('finish_params.json'), 'utf8') : '';
-        const args = ['hdrtrack-finish-prepare', '--layer', lPath, '--state', sPath, '--fmt', fmt, '--rgb', rgbPath];
+        const args = ['hdrtrack-finish', '--payload', pPath, '--layer', lPath, '--state', sPath, '--fmt', fmt, '--rgb', rgbPath];
         if (has('finish_params.json')) args.push('--params', path('finish_params.json'));
-        const runPrep = (mod, wOverride, hOverride) => {
+        const runFin = (mod, wOverride, hOverride, paramsOverride) => {
           const r = readNpy(rgbPath);
           const w = wOverride ?? r.shape[1];
           const h = hOverride ?? r.shape[0];
-          return mod.hdrtrack_finish_prepare(readNpy(lPath).values, sJson, fmt, r.values, w, h, paramsJson);
+          const pBytes = new Uint8Array(readFileSync(pPath));
+          return mod.hdrtrack_finish(pBytes, readNpy(lPath).values, sJson, fmt, r.values, w, h, paramsOverride ?? paramsJson);
         };
         out.push({
-          label: `${folder}::hdrtrack_finish_prepare_report`,
-          cliArgs: [...args, '--out', join(dir, `fp-r-${out.length}.npy`)],
-          wasm: (mod) => runPrep(mod).report,
+          label: `${folder}::hdrtrack_finish_report`,
+          cliArgs: [...args, '--out', join(dir, `fn-r-${out.length}.npy`)],
+          wasm: (mod) => runFin(mod).report,
         });
         out.push({
-          label: `${folder}::hdrtrack_finish_prepare_codes`,
-          cliArgs: [...args, '--out', join(dir, `fp-c-${out.length}.npy`)],
+          label: `${folder}::hdrtrack_finish_bytes`,
+          cliArgs: [...args, '--out', join(dir, `fn-b-${out.length}.npy`)],
           wasm: (mod) => {
-            const res = runPrep(mod);
-            return framed(res.height, res.width, res.codes());
+            const res = runFin(mod);
+            const bytes = res.bytes();
+            return framed(1, bytes.length, bytes);
           },
         });
         if (has('bad_nums')) {
           for (const bad of BAD_NUMS) {
             for (const flag of ['w', 'h']) {
               out.push({
-                label: `${folder}::hdrtrack_finish_prepare_${flag}_${String(bad)}`,
-                cliArgs: ['hdrtrack-finish-prepare', '--layer', lPath, '--state', sPath, '--fmt', fmt, '--rgb', rgbPath, `--${flag}`, String(bad), '--out', join(dir, `fp-bad-${out.length}.npy`)],
+                label: `${folder}::hdrtrack_finish_${flag}_${String(bad)}`,
+                cliArgs: ['hdrtrack-finish', '--payload', pPath, '--layer', lPath, '--state', sPath, '--fmt', fmt, '--rgb', rgbPath, `--${flag}`, String(bad), '--out', join(dir, `fn-bad-${out.length}.npy`)],
                 wasm: (mod) => {
                   const r = readNpy(rgbPath);
                   const w = flag === 'w' ? bad : r.shape[1];
                   const h = flag === 'h' ? bad : r.shape[0];
-                  return runPrep(mod, w, h).report;
+                  return runFin(mod, w, h).report;
                 },
               });
             }
+          }
+        }
+        if (has('json_depth')) {
+          for (const [name, text] of Object.entries(deepJsonCases())) {
+            const deepPath = join(dir, `deep-params-${name}-${out.length}.json`);
+            writeFileSync(deepPath, text);
+            out.push({
+              label: `${folder}::hdrtrack_params_json_${name}`,
+              cliArgs: ['hdrtrack-finish', '--payload', pPath, '--layer', lPath, '--state', sPath, '--fmt', fmt, '--rgb', rgbPath, '--params', deepPath, '--out', join(dir, `d-pm-${out.length}.npy`)],
+              wasm: (mod) => runFin(mod, undefined, undefined, text).report,
+            });
           }
         }
       }
@@ -447,55 +461,6 @@ export function cases(inputs) {
               wasm: (mod) => mod.hdrtrack_to_grid(readNpy(lPath).values, lw, lh, ow, oh, f).report,
             });
           }
-        }
-      }
-    }
-
-    if (has('payload.jpg') && has('meta.json')) {
-      const pPath = path('payload.jpg');
-      const mPath = path('meta.json');
-      const mJson = readFileSync(mPath, 'utf8');
-      const hasGain = has('gain.jpg');
-      const stops = has('stops.txt') ? Number(readFileSync(path('stops.txt'), 'utf8').trim()) : 1.5;
-      const args = ['hdrtrack-finish-wrap', '--payload', pPath, '--meta', mPath, '--gain-max-stops', String(stops)];
-      if (hasGain) args.push('--gain', path('gain.jpg'));
-      const runWrap = (mod, sOverride) => {
-        const pBytes = new Uint8Array(readFileSync(pPath));
-        const gBytes = hasGain ? new Uint8Array(readFileSync(path('gain.jpg'))) : new Uint8Array(0);
-        return mod.hdrtrack_finish_wrap(pBytes, gBytes, mJson, sOverride ?? stops);
-      };
-      out.push({
-        label: `${folder}::hdrtrack_finish_wrap_report`,
-        cliArgs: [...args, '--out', join(dir, `fw-r-${out.length}.npy`)],
-        wasm: (mod) => runWrap(mod).report,
-      });
-      out.push({
-        label: `${folder}::hdrtrack_finish_wrap_bytes`,
-        cliArgs: [...args, '--out', join(dir, `fw-b-${out.length}.npy`)],
-        wasm: (mod) => {
-          const res = runWrap(mod);
-          const bytes = res.bytes();
-          return framed(1, bytes.length, bytes);
-        },
-      });
-      if (has('bad_nums')) {
-        for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-          out.push({
-            label: `${folder}::hdrtrack_finish_wrap_stops_${String(bad)}`,
-            cliArgs: ['hdrtrack-finish-wrap', '--payload', pPath, '--meta', mPath, '--gain-max-stops', String(bad), '--out', join(dir, `fw-bad-${out.length}.npy`)],
-            wasm: (mod) => runWrap(mod, bad).report,
-          });
-        }
-      }
-      if (has('json_depth')) {
-        for (const [name, text] of Object.entries(deepJsonCases())) {
-          const deepPath = join(dir, `deep-meta-${name}-${out.length}.json`);
-          writeFileSync(deepPath, text);
-          out.push({
-            label: `${folder}::hdrtrack_meta_json_${name}`,
-            cliArgs: ['hdrtrack-finish-wrap', '--payload', pPath, '--meta', deepPath, '--gain-max-stops', '1.0', '--out', join(dir, `d-mt-${out.length}.npy`)],
-            wasm: (mod) => mod.hdrtrack_finish_wrap(new Uint8Array(readFileSync(pPath)), new Uint8Array(0), text, 1.0).report,
-          });
         }
       }
     }

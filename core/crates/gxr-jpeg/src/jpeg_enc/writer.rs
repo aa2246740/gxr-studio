@@ -157,11 +157,19 @@ impl<W: JfifWrite> JfifWriter<W> {
     }
 
     pub fn write_header(&mut self, density: &Density) -> Result<(), EncodingError> {
+        self.write_header_with_version(density, 0x02)
+    }
+
+    pub fn write_header_with_version(
+        &mut self,
+        density: &Density,
+        minor_version: u8,
+    ) -> Result<(), EncodingError> {
         self.write_marker(Marker::APP(0))?;
         self.write_u16(16)?;
 
         self.write(b"JFIF\0")?;
-        self.write(&[0x01, 0x02])?;
+        self.write(&[0x01, minor_version])?;
 
         match *density {
             Density::None => {
