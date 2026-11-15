@@ -7,7 +7,7 @@ import test from 'node:test';
 import { checkPack, crossed, modelIso, TEXT, uncalibratedReason, unitLine, unitOfLens } from '../../mobile/src/lib/calib.ts';
 import { mergeMeta, photoMetaFromJpeg, photoMetaFromTiff } from '../../mobile/src/lib/exif.ts';
 import { classify } from '../../mobile/src/lib/group.ts';
-import { bakeParams, BASE_NAMES, cardTag, levelsFor, listing, namesOnly, shelf } from '../../mobile/src/lib/recipes.ts';
+import { BASE_NAMES, cardTag, choices, defaults, effective, levelText, namesOnly, nearestIndex, selection, selectionKey, shelf, shelves } from '../../mobile/src/lib/recipes.ts';
 import { crc32, plainName, readStoredZip } from '../../mobile/src/lib/zip.ts';
 
 const enc = new TextEncoder();
@@ -127,13 +127,14 @@ test('the zip the desktop writes, and the same pack compressed', async () => {
   const pack = await checkPack(zip.entries);
   assert.equal(pack.ok, true, JSON.stringify(pack));
   assert.deepEqual(pack.units.map((u) => u.unit), ['jlaunch', 'qlaunch', 'l08firm']);
-  assert.deepEqual(Object.keys(pack.units[0].models), ['200', '1600']);
+  // 每个单元能不能用由核心的 color_calib_check 判断；这里只列出来。
+  assert.deepEqual(pack.units[0], { unit: 'jlaunch' });
   const squeezed = readStoredZip(new Uint8Array(readFileSync(deflated)));
   assert.equal(squeezed.ok, false);
   assert.equal(squeezed.reason, 'compressed');
 });
 
-test('pack check uses the desktop wording for each failure', async () => {
+test('pack check covers the zip layer; model_for checks are left to the core', async () => {
   const ctx = new Uint8Array([9, 9, 9]);
   const ring = enc.encode('{"schema":"gxr-sector-model/2"}');
   const sha = async (bytes) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -161,14 +162,13 @@ test('pack check uses the desktop wording for each failure', async () => {
   };
   await bad(manifest, { 'c200.npz': new Uint8Array([9, 9, 8]) }, TEXT.changed);
   await bad(manifest, { 'r1600.json': null }, TEXT.filesMissing);
-  await bad({ ...clone(), schema: 'gxr-studio/calib/1' }, {}, TEXT.outdated);
-  await bad({ ...clone(), units: { other: clone().units.qlaunch } }, {}, TEXT.units);
-  const noBranch = clone();
-  delete noBranch.units.qlaunch.models['1600'];
-  await bad(noBranch, {}, TEXT.badList);
-  const outside = clone();
-  outside.units.qlaunch.models['200'].ctx = 'not-listed.npz';
-  await bad(outside, {}, TEXT.badList);
+  // 版本、单元、分支文件名这些是 model_for 的检查，交给核心的 color_calib_check（tests/test_mobile_ui_calib_wasm.py），
+  // 这里不再重写：zip 这一层完整就收下，单元只用来列出来。
+  const outdated = await checkPack(files({ ...clone(), schema: 'gxr-studio/calib/1' }));
+  assert.equal(outdated.ok, true);
+  const odd = await checkPack(files({ ...clone(), units: { other: {}, l08firm: {}, jlaunch: {} } }));
+  assert.deepEqual(odd.units.map((u) => u.unit), ['jlaunch', 'l08firm']);
+  await bad({ ...clone(), files: [] }, {}, TEXT.badList);
   const escape = clone();
   escape.files['../x'] = { size: 1, sha256: '0'.repeat(64) };
   await bad(escape, {}, TEXT.badList);
@@ -255,64 +255,54 @@ test('several GXRCE.DAT: the newest by lastModified is used', () => {
   assert.equal(out.ignored, 0);
 });
 
-function menu() {
-  const controls = ['amount', 'contrast', 'highlight', 'shadow', 'saturation', 'fade'].map((name) => ({ name, label: name }));
-  const items = [];
-  const recipes = [];
-  for (let unit = 0; unit < 3; unit += 1) {
-    for (let slot = 1; slot <= 8; slot += 1) {
-      const names = slot === 3 ? [1, 2, 3, 5] : slot === 4 ? [1, 2, 3, 4] : [0, 1, 2, 3, 4];
-      recipes.push({ unit, slot, first_item: items.length, item_count: names.length });
-      for (const control of names) items.push({ control, min_level: -4, max_level: 4, default_level: control === 0 ? 100 : 0, points: [] });
-    }
-  }
-  return { controls, items, recipes };
+const amount = { name: 'amount', label: 'Amt', min: 0, max: 150, default: 100, cap_lower: false, cap_upper: false, amount_step: 25, levels: [0, 25, 50, 75, 100, 125, 150] };
+const knob = (name, def = 0) => ({ name, label: name, min: -9, max: 9, default: def, cap_lower: false, cap_upper: false, amount_step: null, levels: Array.from({ length: 19 }, (_, i) => i - 9) });
+
+/** `color_listing` 的形状（数据是编的）。 */
+function listingJson() {
+  const unit = (id) => ({
+    id,
+    recipes: Array.from({ length: 8 }, (_, i) => ({ slot: i + 1, number: String(i + 1).padStart(2, '0'), controls: i === 3 ? [knob('contrast')] : [amount, knob('contrast'), knob('fade')] })),
+    looks: [{ kind: 'look', id: 'a'.repeat(64), name: 'Acros', slot: 3, controls: [amount, knob('contrast')] }],
+    users: [{ kind: 'camera_user', id: 'b'.repeat(64), name: 'MY POP', slot: 1, controls: [amount, knob('contrast', 2)] }],
+  });
+  return { units: [unit('jlaunch'), unit('qlaunch'), { ...unit('l08firm'), recipes: [...unit('l08firm').recipes.slice(0, 4), { kind: 'record', id: 'c'.repeat(64), name: 'FILE 05', slot: 2, number: '05', position: 5, controls: [amount] }] }] };
 }
 
-function summary() {
-  const units = ['jlaunch', 'qlaunch', 'l08firm'].map((unit, unit_index) => ({
-    unit,
-    unit_index,
-    entries: Array.from({ length: 8 }, (_, i) => ({ slot: i + 1, sha256: `${unit_index}${i + 1}`.padEnd(64, '0') })),
-  }));
-  return {
-    generation: 158,
-    units,
-    looks: [
-      { name: 'Acros', base: 3, unit_mask: 0b111, sha256: 'a'.repeat(64) },
-      { name: 'Velvia 50', base: 1, unit_mask: 0b010, sha256: 'b'.repeat(64) },
-    ],
-    recipes: [],
-    users: [
-      { name: 'MY BW', base: 3, levels: [2, 0, 0, 3] },
-      { name: 'MY POP', base: 1, levels: [1, -1, 0, 2, 0, 0] },
-    ],
-  };
-}
-
-test('recipe listing follows the desktop order, names and knob rules', () => {
-  const list = listing(summary(), menu(), 'jlaunch');
+test('recipe cards come from color_listing in the desktop order, names and knob rules', () => {
+  const list = shelves(listingJson(), 'jlaunch');
   assert.deepEqual(list.builtin.map((c) => c.name), BASE_NAMES);
   assert.deepEqual(list.builtin.map((c) => c.desc).slice(0, 4), ['饱和度高', '饱和度略低', '黑白，对比高', '原厂标准色彩']);
-  assert.equal(list.builtin[0].entrySha256, '01'.padEnd(64, '0'));
-  assert.deepEqual(list.builtin[0].levels, [100, 0, 0, 0, 0]);
-  assert.deepEqual(list.builtin[3].levels, [0, 0, 0, 0]);
-  // jlaunch 只拿到对这个单元开放的 Looks；文件里的条目字节手机上拿不到，先标成还画不了。
-  assert.deepEqual(list.looks.map((c) => [c.name, c.desc, c.pending]), [['Acros', '黑白', true]]);
-  assert.deepEqual(listing(summary(), menu(), 'qlaunch').looks.map((c) => c.name), ['Acros', 'Velvia 50']);
-  // 用户配方：黑白底子没有饱和度旋钮，饱和度不是 0 就用不了（桌面 knob_not_available）。
-  assert.equal(list.users[0].levels, null);
-  assert.equal(list.users[0].error, '无法保存配方。有一个旋钮无法使用。');
-  assert.deepEqual(list.users[1].levels, [100, 1, -1, 0, 2]);
-  assert.equal(list.users[1].entrySha256, list.builtin[0].entrySha256);
-  assert.equal(list.users[1].desc, '相机里的配方');
-  assert.equal(shelf(list, 'all').length, 8 + 1 + 2);
-  assert.equal(shelf(list, 'mine').length, 2);
+  assert.deepEqual(list.looks.map((c) => [c.id, c.name, c.desc, c.slot]), [[`look:${'a'.repeat(64)}`, 'Acros', '黑白', 3]]);
+  assert.deepEqual(list.users.map((c) => [c.name, c.desc]), [['MY POP', '相机里的配方']]);
+  assert.equal(shelf(list, 'all').length, 10);
   assert.equal(cardTag(list.builtin[6]), '相机里 · 07');
-  assert.equal(JSON.parse(bakeParams(list.builtin[0], 'qlaunch')).knobs.unit, 1);
-  assert.deepEqual(JSON.parse(bakeParams(list.users[1], 'jlaunch')), { step: 0.375, knobs: { levels: [100, 1, -1, 0, 2], unit: 0, slot: 1 } });
-  assert.equal(bakeParams(list.users[0], 'jlaunch'), null);
-  assert.deepEqual(levelsFor(menu(), 0, 4, { amount: 100 }), { levels: [0, 0, 0, 0] });
-  assert.deepEqual(levelsFor(menu(), 0, 4, { amount: 50 }), { error: '无法保存配方。有一个旋钮无法使用。' });
+  assert.equal(cardTag(list.looks[0]), 'Looks');
+  const mount = shelves(listingJson(), 'l08firm');
+  assert.deepEqual(mount.builtin.map((c) => c.name), ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原厂标准', 'FILE 05']);
+  assert.equal(cardTag(mount.builtin[4]), '相机里 · 05');
+  // 交给 color_resolve 的选择：桌面 RecipeSel 的 JSON，只带这个配方的旋钮，档位不在可选里就用默认。
+  assert.deepEqual(selection(list.builtin[0], 'jlaunch', undefined), { kind: 'builtin', unit: 'jlaunch', slot: 1, levels: { amount: 100, contrast: 0, fade: 0 } });
+  assert.deepEqual(selection(list.looks[0], 'jlaunch', { contrast: 3, fade: 2, amount: 7 }), {
+    kind: 'look',
+    unit: 'jlaunch',
+    slot: 3,
+    levels: { amount: 100, contrast: 3 },
+    id: 'a'.repeat(64),
+  });
+  assert.deepEqual(defaults(list.users[0]), { amount: 100, contrast: 2 });
+  const sel = selection(list.users[0], 'qlaunch', { contrast: -1 });
+  assert.equal(selectionKey(sel), selectionKey({ ...sel, levels: { contrast: -1, amount: 100 } }));
+  assert.notEqual(selectionKey(sel), selectionKey(selection(list.users[0], 'qlaunch', { contrast: 1 })));
+  assert.equal(effective(knob('contrast'), { contrast: 12 }), 0);
+  // 旧版相机（第 135 代以前）这四项只认 ±5；强度不受影响。
+  assert.deepEqual(choices(knob('contrast'), 127), [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]);
+  assert.equal(choices(knob('contrast'), 158).length, 19);
+  assert.equal(choices(knob('fade'), 127).length, 19);
+  assert.deepEqual(choices(amount, null), amount.levels);
+  assert.equal(nearestIndex([-5, 0, 5], 4), 2);
+  assert.equal(levelText(amount, 100), '100');
+  assert.equal(levelText(knob('contrast'), 1), '+1');
+  assert.equal(levelText(knob('contrast'), -2), '-2');
   assert.deepEqual(namesOnly().map((c) => c.name), BASE_NAMES);
 });

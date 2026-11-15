@@ -384,19 +384,26 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 ### 相机配方文件和配方卡
 
-`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`camdata_menu` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。超过 16 MiB 的不读。每次选 DAT、清空照片都让 DAT 的版本加一，导入、删除、恢复校准数据让校准的版本加一；异步结果提交前核对版本，晚到的只丢掉。
+`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`color_listing` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。超过 16 MiB 的不读。每次选 DAT、清空照片都让 DAT 的版本加一，导入、删除、恢复校准数据让校准的版本加一；异步结果提交前核对版本，晚到的只丢掉。
 
 配方卡照桌面 `CameraData.listing` 和 `recipes.js`：这张照片所在单元的内置 8 个（`BASE_NAMES`，说明用 `look_model.js` 的表），文件里对这个单元开放的 Looks，相机里的用户配方。镜头单元按 `unit_of_lens`（镜头名先取相机 JPG 的 `LensModel`，没有再取 DNG 的，再没有用 `UniqueCameraModel` 去掉「RICOH 」），认不出用 50mm。模型按 `model_for`：ISO ≥ 566 用 1600，否则用 200。「未校准」照 `RenderService.plan`：认不出单元、ISO 不在实拍校准范围、配方单元不是照片的单元，原因用 `calibration_note.js` 的句子。
 
-每张卡的烘焙表是 `color_bake(底子条目, 原厂 04, 菜单, ctx, ring, {"step":0.375,"knobs":{levels, unit, slot}})`，和桌面 `CameraData.resolve` 一样每次从底子重算旋钮（默认档位也走一遍 `knobs.apply`）。缓存键是（单元、模型、底子 sha256、档位）。一张表约 3.8 MB，JS 里最多留 16 张；显卡里用 24 个固定的键轮流装（同一个键再装一次引擎会销毁旧的那份），舞台正在用的那张不让出去。这两个数等真机量过再调。配方卡小图（`app/looks.ts`）全局最多 32 MiB（一张约 96 KiB，约 340 张），按最近最少使用放掉，正在打开的那张照片的卡不放；换相机配方文件或校准数据时全部放掉。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、带档位的用户配方）。
+每张卡的烘焙表见下面「旋钮、Looks 和校准核对」：`color_resolve` 出条目，再 `color_bake`。一张表约 3.8 MB，JS 里最多留 16 张；显卡里用 24 个固定的键轮流装（同一个键再装一次引擎会销毁旧的那份），舞台正在用的那张不让出去。这两个数等真机量过再调。配方卡小图（`app/looks.ts`）全局最多 32 MiB（一张约 96 KiB，约 340 张），按最近最少使用放掉，正在打开的那张照片的卡不放；换相机配方文件或校准数据时全部放掉。卡片按顺序一张张做烘焙表、请显卡出 192 像素的小图，拖滑块时先停。浏览器测试核对过：同一张照片、同一个条目和模型，UI 交给显卡的表和桌面 `preview_bake → bake_bytes` 逐字节相同（默认的原厂 04、内置配方、相机里的用户配方）；Look 和动过旋钮的 Look 见下面「还没做的」。
 
 点卡就把选择记进这张照片的编辑状态（`photo.choice`），和调整放在一起，换片、重新选同一张都留着。表已经在缓存里就当帧换上；还在做时照片留着上一张，做好了而且还是要它才换。长按看原图是中性转换、调整归零。
 
 没有校准数据（或这个单元没校准）时，卡片和照片都是中性转换（`lib/neutral.ts`），配方照样能选（06c）。没有 DAT 时只列八个位置的名字，卡片置灰，点卡或打开「配方」页提示补选（06d）。只有 JPG 时卡片是相机 JPG、全部停用，面板是桌面的两句（06e）。
 
+### 旋钮、Looks 和校准核对（第 6 项）
+
+配方列表来自核心的 `color_listing`（桌面 `CameraData.listing`）：内置 8 个（r5 时含文件记录）、对这个单元开放的 Looks、相机里的用户配方，每张卡带自己的旋钮。选中的配方照桌面 `RecipeSel` 的 JSON 交给 `color_resolve`，拿到旋钮已经套好的 552 字节条目，再 `color_bake`（不带 knobs）。Looks 和 r5 记录也这样画、这样选。缓存键是（单元、模型、条目 sha256）。
+
+「配方」页在已校准时列出这个配方的全部旋钮（`KNOB_NAMES`，强度在最前），滑块的位置是档位的序号，旧版相机（第 135 代以前）对比度、高光、阴影、饱和度只到 ±5。拖动时只改右边的数字；松手（`change`）才记下档位、重新 resolve 和烘焙。新表做好之前照片留着上一张。每个配方各记各的档位（`photo.levels`），没选配方时动旋钮就选上现在显示的这个。
+
+单元能不能用交给核心的 `color_calib_check`（`gxr-cli color-calib-check --dir` 背后的 `model_for` 检查：版本、单元、原厂 04 指纹、文件清单、SHA-256、按 ISO 选模型并建模型），两个 ISO 分支各调一次，选出来的 ctx、ring 文件名就是烘焙用的。TS 里只剩 zip 这一层的完整性检查。`color_calib_check(manifest, index_json, blob, stock04, unit, iso)`：manifest 之外的文件拼成一块 `blob`，`index_json` 是 `{"名字": [偏移, 长度]}`，每段先查边界；`iso` 是 f64，必须是有限的整数。和 CLI 的比较用例在 `wasm_cases/color.mjs` 的 `calib`。
+
 ### 还没做的
 
-- **Looks 和 r5 记录画不了。** `camdata_parse` 只给它们的名字和 sha256，WASM 没有导出它们的 552 字节条目，所以这些卡列出来但写「这项下一步做」。需要一个导出，例如 `camdata_extra_entries(dat_bytes, library_bytes?) -> Uint8Array`：按 `looks` 再 `recipes` 的顺序连续给出每条 552 字节。
+- 卡片画的是调整归零的样子，不跟着调整变。
 - r5（`GXRFX.BIN`）还不能选。
-- 旋钮（强度、对比度、褪色、饱和度）等 resolve 单元合并后再做。
-- 卡片用的是调整归零的样子，不跟着调整变。
+- 浏览器测试里，这份 DAT 的第一个 Look 在合成校准包上，`gxr-color` 的 `color_bake` 和桌面 numpy 有一个 float32 不同（gain 格 109793 的虚部），color 单元的 `bake_gap` 也解释不了。手机和原生 `gxr-cli` 逐字节相同，条目和桌面相同。这一句断言照旧，等 `gxr-color` 修好。

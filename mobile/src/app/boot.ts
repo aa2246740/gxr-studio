@@ -5,7 +5,7 @@ import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
-import { bakeIn, importCalib, readDat, restoreCalib, warmCore } from '../core/api';
+import { bakeIn, calibCheck, importCalib, readDat, resolveRecipe, restoreCalib, warmCore } from '../core/api';
 import { deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
@@ -51,6 +51,8 @@ class App implements AppApi {
     importCalib,
     restoreCalib,
     bake: bakeIn,
+    resolve: resolveRecipe,
+    calibCheck,
     deletePack,
     watermark: loadWatermark,
   });
@@ -421,6 +423,7 @@ class App implements AppApi {
           jpgMeta: null,
           dngMeta: null,
           choice: null,
+          levels: new Map(),
           looks: new Map(),
         };
         this.byId.set(id, photo);

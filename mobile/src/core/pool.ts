@@ -34,7 +34,7 @@ export class Pool {
     buffer: ArrayBuffer | null,
     transfer: Transferable[],
     args: BakeArgs | null = null,
-    extra: Pick<CoreRequest, 'file' | 'meta'> = {},
+    extra: Pick<CoreRequest, 'file' | 'meta' | 'resolve' | 'check'> = {},
   ): Promise<CoreResult> {
     const id = this.seq++;
     const worker = this.workers[this.next % this.workers.length];

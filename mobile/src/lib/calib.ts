@@ -1,12 +1,10 @@
-// 校准包的核对，照桌面 `camdata/calib.py` 的 `model_for` / `unit_status` 做：版本、单元、文件清单、SHA-256。
-// 原厂 04 的指纹和建模型要等有了相机配方文件才查（见 recipes 的 unit 检查）。文案用桌面的原话。
+// 校准包：zip 这一层的完整性（条目、大小、SHA-256），以及按 ISO 选模型、未校准原因这些桌面规则。
+// 单元能不能用（版本、原厂 04 指纹、文件清单、模型）交给核心的 `color_calib_check`，文案用桌面的原话。
 // 纯函数，Worker 和 Node 测试都能跑；不抛，坏数据给原因。
 
-export const SCHEMA = 'gxr-studio/calib/2';
 export const UNITS = ['jlaunch', 'qlaunch', 'l08firm'] as const;
 export type Unit = (typeof UNITS)[number];
 export const UNIT_ISOS: Record<Unit, number[]> = { jlaunch: [200, 1600], qlaunch: [200], l08firm: [200] };
-export const MODEL_ISOS = [200, 1600] as const;
 /** 200 和 1600 的几何中点：低于它用 ISO 200 的模型（render/service.py 的 ISO_SPLIT）。 */
 export const ISO_SPLIT = 566;
 export const UNIT_LABEL: Record<Unit, string> = { jlaunch: '50mm', qlaunch: '28mm', l08firm: 'MOUNT' };
@@ -23,20 +21,14 @@ export const TEXT = {
   units: '校准数据的单元不正确',
 } as const;
 
+/** 包里列出的一个单元。这个单元能不能用（版本、原厂 04 指纹、文件清单、模型）由核心的 `color_calib_check` 判断。 */
 export interface UnitPack {
   unit: Unit;
-  stockSha256: string;
-  /** ISO 分支（"200"、"1600"）→ { ctx, ring } 文件名。 */
-  models: Record<string, { ctx: string; ring: string }>;
 }
 
 export type PackCheck =
   | { ok: true; units: UnitPack[]; manifestSha256: string }
   | { ok: false; message: string; detail: string };
-
-function isUnit(name: string): name is Unit {
-  return (UNITS as readonly string[]).includes(name);
-}
 
 function hex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -57,8 +49,9 @@ function bad(message: string, detail = ''): PackCheck {
 }
 
 /**
- * `files` 是 zip 里的全部条目。核对 manifest 和它列出的每个文件（大小、SHA-256），以及每个单元两个 ISO 分支的文件名。
- * 清单外的文件（哪怕结构和 SHA 都对）不收。
+ * `files` 是 zip 里的全部条目。这里只管 zip 这一层有没有拿完整：manifest 读得出来，条目正好是 manifest.json 加
+ * 清单列出的文件，每个文件的大小和 SHA-256 对得上。版本、单元、原厂 04 指纹、每个分支的文件名和模型，
+ * 都交给核心的 `color_calib_check`（和桌面 model_for 同一段代码），这里不再重写一遍。
  */
 export async function checkPack(files: Map<string, Uint8Array>): Promise<PackCheck> {
   try {
@@ -70,18 +63,13 @@ export async function checkPack(files: Map<string, Uint8Array>): Promise<PackChe
     } catch {
       return bad(TEXT.unreadable, 'manifest.json');
     }
-    if (!manifest || typeof manifest !== 'object' || (manifest as { schema?: unknown }).schema !== SCHEMA) return bad(TEXT.outdated);
-    const m = manifest as { units?: unknown; files?: unknown };
+    const m = (manifest && typeof manifest === 'object' ? manifest : {}) as { units?: unknown; files?: unknown };
     if (!m.files || typeof m.files !== 'object' || Array.isArray(m.files)) return bad(TEXT.badList, 'files');
-    if (!m.units || typeof m.units !== 'object' || Array.isArray(m.units)) return bad(TEXT.badList, 'units');
     const listed = m.files as Record<string, unknown>;
-    const unitRows = m.units as Record<string, unknown>;
     // zip 里的条目必须正好是 manifest.json 加清单列出的文件：多一项、少一项都不收（Sol r1）。
     for (const name of files.keys()) {
       if (name !== 'manifest.json' && !Object.prototype.hasOwnProperty.call(listed, name)) return bad(TEXT.badList, name);
     }
-    const names = Object.keys(unitRows);
-    if (!names.length || !names.every(isUnit)) return bad(TEXT.units);
     for (const [name, meta] of Object.entries(listed)) {
       if (!plain(name) || !meta || typeof meta !== 'object') return bad(TEXT.badList, name);
       const blob = files.get(name);
@@ -89,23 +77,9 @@ export async function checkPack(files: Map<string, Uint8Array>): Promise<PackChe
       const want = meta as { size?: unknown; sha256?: unknown };
       if (want.size !== blob.length || typeof want.sha256 !== 'string' || (await sha256(blob)) !== want.sha256) return bad(TEXT.changed, name);
     }
-    const units: UnitPack[] = [];
-    for (const unit of UNITS) {
-      const row = unitRows[unit];
-      if (row === undefined) continue;
-      const meta = row as { camera_stock_sha256?: unknown; models?: unknown } | null;
-      if (!meta || typeof meta !== 'object' || typeof meta.camera_stock_sha256 !== 'string') return bad(TEXT.badList, unit);
-      const models = meta.models as Record<string, unknown> | undefined;
-      if (!models || typeof models !== 'object') return bad(TEXT.badList, unit);
-      const out: Record<string, { ctx: string; ring: string }> = {};
-      for (const branch of MODEL_ISOS) {
-        const pair = models[String(branch)] as { ctx?: unknown; ring?: unknown } | undefined;
-        if (!pair || typeof pair !== 'object' || !plain(pair.ctx) || !plain(pair.ring)) return bad(TEXT.badList, `${unit}/${branch}`);
-        if (!Object.prototype.hasOwnProperty.call(listed, pair.ctx) || !Object.prototype.hasOwnProperty.call(listed, pair.ring)) return bad(TEXT.badList, `${unit}/${branch}`);
-        out[String(branch)] = { ctx: pair.ctx, ring: pair.ring };
-      }
-      units.push({ unit, stockSha256: meta.camera_stock_sha256, models: out });
-    }
+    // 给界面列「哪些镜头」用：清单里认得的单元。能不能用以核心的检查为准。
+    const rows = m.units && typeof m.units === 'object' && !Array.isArray(m.units) ? Object.keys(m.units) : [];
+    const units = UNITS.filter((unit) => rows.includes(unit)).map((unit) => ({ unit }));
     return { ok: true, units, manifestSha256: await sha256(raw) };
   } catch {
     return bad(TEXT.unreadable);

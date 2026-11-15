@@ -37,9 +37,10 @@ try {
       return { promise, resolve, reject };
     };
     const datRead = (name) => ({
-      summary: JSON.stringify({ generation: 158, units: [], looks: [], recipes: [], users: [], name }),
-      menu: JSON.stringify({ controls: [], recipes: [], items: [] }),
+      summary: JSON.stringify({ generation: 158, name }),
+      listing: JSON.stringify({ units: [] }),
       entries: new Uint8Array(24 * 552),
+      bytes: new ArrayBuffer(8),
     });
     const calibOk = (tag) => ({ ok: true, units: [], manifestSha256: tag, files: new Map() });
     /** 一个 Book，异步边界都交给测试来放行。`calls` 记下每个边界被调了几次。 */
@@ -92,6 +93,8 @@ try {
           return true;
         },
         watermark: async () => 0,
+        resolve: () => Promise.reject(new Error('no resolves here')),
+        calibCheck: () => Promise.reject(new Error('no checks here')),
       };
       return { book: new Book(io), pending, calls };
     }
@@ -193,10 +196,16 @@ try {
       };
       book.attach(engine);
       book.io.bake = async () => ({ meta: { nx: 1, ny: 1, origin: [0, 0], step: 0.375 }, data: new ArrayBuffer(16) });
-      book.dat = { name: 'GXRCE.DAT', read: { summary: '{}', menu: '{}', entries: new Uint8Array(24 * 552) }, summary: {}, menu: {} };
+      // color_resolve 换成假的：每个选择一个不同的条目 sha256。
+      book.io.resolve = async (_dat, recipe) => {
+        const sel = JSON.parse(recipe);
+        return { entry: new Uint8Array(552), entrySha256: `e${sel.levels.amount}`, levels: sel.levels };
+      };
+      book.dat = { name: 'GXRCE.DAT', read: { summary: '{}', listing: '{}', entries: new Uint8Array(24 * 552), bytes: new ArrayBuffer(8) }, generation: 158, listing: { units: [] } };
       const pair = { ctx: 'c', ring: 'r' };
-      book.pack = { name: 'p', savedAt: 1, manifestSha256: 'x', units: [{ unit: 'jlaunch', stockSha256: '', models: { 200: pair, 1600: pair } }], files: new Map([['c', new Uint8Array(1)], ['r', new Uint8Array(1)]]) };
-      const card = (i) => ({ id: `builtin:${i}`, kind: 'builtin', name: String(i), desc: null, slot: 1, entrySha256: `e${i}`, levels: [i], error: null, pending: false });
+      book.pack = { name: 'p', savedAt: 1, manifestSha256: 'x', units: [{ unit: 'jlaunch' }], files: new Map([['c', new Uint8Array(1)], ['r', new Uint8Array(1)]]) };
+      book.picks.set('jlaunch', { generation: book.generationId(), names: { 200: pair, 1600: pair } });
+      const card = (i) => ({ id: `builtin:${i}`, kind: 'builtin', name: String(i), desc: null, slot: 1, recipeId: null, number: '01', controls: [{ name: 'amount', label: 'Amt', min: 0, max: 99, default: i, cap_lower: false, cap_upper: false, amount_step: 1, levels: [i] }] });
       const first = await book.bake(card(0), 'jlaunch', 200);
       const stage = book.gpuKey(first);
       book.pin(first);
@@ -251,6 +260,8 @@ try {
         importCalib: api.importCalib,
         restoreCalib: api.restoreCalib,
         bake: api.bakeIn,
+        resolve: api.resolveRecipe,
+        calibCheck: api.calibCheck,
         deletePack: idb.deletePack,
         watermark: idb.loadWatermark,
       });
@@ -288,6 +299,8 @@ try {
         importCalib: api.importCalib,
         restoreCalib: api.restoreCalib,
         bake: api.bakeIn,
+        resolve: api.resolveRecipe,
+        calibCheck: api.calibCheck,
         deletePack: idb.deletePack,
         watermark: idb.loadWatermark,
       });

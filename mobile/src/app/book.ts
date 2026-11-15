@@ -2,10 +2,10 @@
 // 读文件、核对、烘焙都在 Worker 里；这里只排队、记结果、通知界面。
 
 import type { Engine } from '../../../frontend/src/index';
-import type { Bake, CalibRead, CalibRestored, DatRead } from '../core/api';
-import type { BakeArgs } from '../core/protocol';
-import { modelIso, sha256, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
-import { bakeParams, unitIndex, type Card, type DatSummary, type Menu } from '../lib/recipes';
+import type { Bake, CalibPick, CalibRead, CalibRestored, DatRead, Resolved } from '../core/api';
+import type { BakeArgs, CalibCheckArgs } from '../core/protocol';
+import { modelIso, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
+import { selection, selectionKey, unitIndex, type Card, type Listing } from '../lib/recipes';
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
 
 /**
@@ -27,8 +27,10 @@ export interface Pack {
 export interface Dat {
   name: string;
   read: DatRead;
-  summary: DatSummary;
-  menu: Menu;
+  /** 代数（旧版相机的旋钮只认 ±5）。 */
+  generation: number | null;
+  /** `color_listing` 的配方和旋钮。 */
+  listing: Listing;
 }
 
 export type UnitState =
@@ -63,6 +65,10 @@ export interface BookIo {
   importCalib(file: File, savedAt: number): Promise<CalibRead>;
   restoreCalib(): Promise<CalibRestored>;
   bake(args: BakeArgs): Promise<Bake>;
+  /** `color_resolve`：配方选择 → 条目（旋钮已经套上）。 */
+  resolve(dat: ArrayBuffer, recipe: string): Promise<Resolved>;
+  /** `color_calib_check`：这个单元、这个 ISO 的 model_for 检查。 */
+  calibCheck(args: CalibCheckArgs): Promise<CalibPick>;
   /** 记一个删除时间；比它早的导入不会再写进去。 */
   /** 写成功返回 true；已经有更新的记录、没写进去返回 false；事务失败抛错。 */
   deletePack(at: number): Promise<boolean>;
@@ -127,6 +133,9 @@ export class Book {
     this.units.clear();
     this.bakes.clear();
     this.done.clear();
+    this.resolved.clear();
+    this.keyOfSel.clear();
+    this.picks.clear();
     // 舞台还在用的那个显卡键先留着（换了相机配方文件或校准数据，新表做好之前照片不变），别的都可以重用。
     const kept = this.slotOf.get(this.pinned);
     this.slotOf.clear();
@@ -265,10 +274,11 @@ export class Book {
       }
       const read = await this.io.readDat(bytes);
       if (seq !== this.datSeq) return;
-      const summary = JSON.parse(read.summary) as DatSummary;
-      const menu = JSON.parse(read.menu) as Menu;
+      const summary = JSON.parse(read.summary) as { generation?: unknown };
+      const listing = JSON.parse(read.listing) as Listing;
       if (read.entries.length !== 24 * 552) throw new Error('条目长度不合格');
-      this.dat = { name: file.name, read, summary, menu };
+      const generation = typeof summary.generation === 'number' ? summary.generation : null;
+      this.dat = { name: file.name, read, generation, listing };
       this.bump();
     } catch (err) {
       if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${err instanceof Error ? err.message : String(err)}`;
@@ -296,17 +306,20 @@ export class Book {
     return this.dat.read.entries.subarray(at, at + 552);
   }
 
+  /** 这个单元两个 ISO 分支 model_for 选出来的 ctx、ring（核对通过之后才有）。 */
+  private readonly picks = new Map<Unit, { generation: number; names: Record<number, { ctx: string; ring: string }> }>();
+
   private files(unit: Unit, iso: 200 | 1600): { ctx: Uint8Array; ring: Uint8Array } | null {
-    const row = this.pack?.units.find((u) => u.unit === unit);
-    const pair = row?.models[String(iso)];
+    const pick = this.picks.get(unit);
+    const pair = pick && pick.generation === this.generation ? pick.names[iso] : undefined;
     const ctx = pair ? this.pack?.files.get(pair.ctx) : undefined;
     const ring = pair ? this.pack?.files.get(pair.ring) : undefined;
     return ctx && ring ? { ctx, ring } : null;
   }
 
   /**
-   * 这个单元能不能用校准模型预测（`calib.unit_status` + `model_for`）。第一次问时在后台核对：
-   * 原厂 04 的指纹，再用两个 ISO 分支各建一次模型。核对完会通知界面。
+   * 这个单元能不能用校准模型预测。第一次问时在后台交给核心的 `color_calib_check`（桌面 model_for 的同一段检查：
+   * 版本、单元、原厂 04 指纹、文件清单、SHA-256，再建模型），两个 ISO 分支各一次。核对完会通知界面。
    */
   unitState(unit: Unit): UnitState {
     if (!this.pack) return { state: 'none' };
@@ -325,19 +338,32 @@ export class Book {
     return { state: 'checking' };
   }
 
-  private async checkUnit(unit: Unit, row: UnitPack, generation: number): Promise<UnitState> {
+  private async checkUnit(unit: Unit, _row: UnitPack, generation: number): Promise<UnitState> {
     const stock = this.entry(unit, 4);
-    if (!stock || !this.dat) return { state: 'invalid', message: TEXT.unreadable };
-    if ((await sha256(stock.subarray(115, 211))) !== row.stockSha256) return { state: 'invalid', message: TEXT.stock };
+    const pack = this.pack;
+    const manifest = pack?.files.get('manifest.json');
+    if (!stock || !pack || !manifest) return { state: 'invalid', message: TEXT.unreadable };
+    const names = [...pack.files.keys()].filter((name) => name !== 'manifest.json');
+    const found: Record<number, { ctx: string; ring: string }> = {};
     for (const iso of [200, 1600] as const) {
-      const files = this.files(unit, iso);
-      if (!files || generation !== this.generation) return { state: 'invalid', message: TEXT.filesMissing };
       try {
-        await this.io.bake({ entry: copy(stock), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{}' });
-      } catch {
-        return { state: 'invalid', message: TEXT.unreadable };
+        const pick = await this.io.calibCheck({
+          manifest: copy(manifest),
+          names,
+          blobs: names.map((name) => copy(pack.files.get(name) ?? new Uint8Array())),
+          stock: copy(stock),
+          unit,
+          iso,
+        });
+        found[pick.model_iso] = { ctx: pick.ctx, ring: pick.ring };
+      } catch (err) {
+        // 文案就是桌面 unit_status 的：「缺少」开头的算没有这个单元，其余算失效。
+        const message = err instanceof Error && err.message ? err.message : TEXT.unreadable;
+        return message.startsWith('缺少') && !message.startsWith('缺少校准文件') ? { state: 'missing', message } : { state: 'invalid', message };
       }
+      if (generation !== this.generation) return { state: 'checking' };
     }
+    this.picks.set(unit, { generation, names: found });
     return { state: 'ready' };
   }
 
@@ -346,24 +372,53 @@ export class Book {
     return UNIT_ISOS[unit];
   }
 
-  /** 一张卡在这张照片上的烘焙表的键（显卡里的 bake key）。缓存按（单元、模型、底子 sha256、档位）。 */
-  bakeKey(card: Card, unit: Unit, iso: number | null): string | null {
-    if (!card.levels || !card.entrySha256 || card.pending) return null;
-    return `bake:${this.generation}:${unit}:${modelIso(iso)}:${card.entrySha256}:${card.levels.join(',')}`;
+  /** 配方选择 → 条目，按（这一份 DAT 和校准、选择）缓存。 */
+  private readonly resolved = new Map<string, Promise<Resolved>>();
+  /** （模型、选择）→ 烘焙表的键；resolve 过一次以后才知道（条目 sha256 要 resolve 才有）。 */
+  private readonly keyOfSel = new Map<string, string>();
+
+  private resolveSel(sel: Record<string, unknown>): Promise<Resolved> {
+    const dat = this.dat;
+    if (!dat) return Promise.reject(new Error('找不到这个配方。请重新选择。'));
+    const id = `${this.generation}|${selectionKey(sel)}`;
+    let job = this.resolved.get(id);
+    if (!job) {
+      job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel));
+      this.resolved.set(id, job);
+      job.catch(() => {
+        if (this.resolved.get(id) === job) this.resolved.delete(id);
+      });
+    }
+    return job;
   }
 
-  /** 做好（或拿缓存）这张卡的烘焙表，返回它的身份键（还没装进显卡，用之前调 gpuKey）。失败抛核心的原话。 */
-  async bake(card: Card, unit: Unit, iso: number | null): Promise<string> {
-    const key = this.bakeKey(card, unit, iso);
-    const params = bakeParams(card, unit);
-    if (!key || !params || !this.dat) throw new Error(card.error ?? '找不到这个配方。请重新选择。');
+  /**
+   * 一张卡（带这些档位）在这张照片上的烘焙表的键；还没 resolve 过返回 null。缓存按（单元、模型、条目 sha256）：
+   * 不同的选择 resolve 出同一个条目时共用一张表。
+   */
+  bakeKey(card: Card, unit: Unit, iso: number | null, levels?: Record<string, number>): string | null {
+    return this.keyOfSel.get(`${this.generation}|${modelIso(iso)}|${selectionKey(selection(card, unit, levels))}`) ?? null;
+  }
+
+  /**
+   * 做好（或拿缓存）这张卡的烘焙表，返回它的键（还没装进显卡，用之前调 gpuKey）。先 `color_resolve` 拿到旋钮套好的
+   * 条目（和桌面 CameraData.resolve 一样，Looks、用户配方、r5 记录都行），再 `color_bake`。失败抛核心的原话。
+   */
+  async bake(card: Card, unit: Unit, iso: number | null, levels?: Record<string, number>): Promise<string> {
+    if (!this.dat || !card.controls.length) throw new Error('找不到这个配方。请重新选择。');
+    const generation = this.generation;
+    const model = modelIso(iso);
+    const sel = selection(card, unit, levels);
+    const got = await this.resolveSel(sel);
+    if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
+    const key = `bake:${generation}:${unit}:${model}:${got.entrySha256}`;
+    this.keyOfSel.set(`${generation}|${model}|${selectionKey(sel)}`, key);
     let job = this.bakes.get(key);
     if (!job) {
-      const base = this.entry(unit, card.slot);
       const stock = this.entry(unit, 4);
-      const files = this.files(unit, modelIso(iso));
-      if (!base || !stock || !files) throw new Error(TEXT.filesMissing);
-      job = this.io.bake({ entry: copy(base), stock: copy(stock), menu: this.dat.read.menu, ctx: copy(files.ctx), ring: copy(files.ring), params });
+      const files = this.files(unit, model);
+      if (!stock || !files) throw new Error(TEXT.filesMissing);
+      job = this.io.bake({ entry: copy(got.entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' });
       this.bakes.set(key, job);
       job.then(
         (made) => {

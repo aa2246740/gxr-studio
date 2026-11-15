@@ -5,7 +5,7 @@ import type { UnitPack } from '../lib/calib';
 import type { PhotoMeta } from '../lib/exif';
 import type { ZipFail } from '../lib/zip';
 import { Pool } from './pool';
-import type { BakeArgs } from './protocol';
+import type { BakeArgs, CalibCheckArgs } from './protocol';
 
 export interface Described {
   layout: RawLayout | null;
@@ -66,17 +66,61 @@ export async function describeDng(bytes: ArrayBuffer): Promise<Described> {
 }
 
 export interface DatRead {
+  /** `camdata_parse` 的摘要（代数等）。 */
   summary: string;
-  menu: string;
-  /** 24 × 552 字节：单元 0..2，位置 1..8。 */
+  /** `color_listing`：桌面 CameraData.listing 的配方和旋钮。 */
+  listing: string;
+  /** 24 × 552 字节：单元 0..2，位置 1..8（原厂 04 从这里取）。 */
   entries: Uint8Array;
+  /** DAT 原来的字节（Worker 读完还回来的），之后 resolve 用。 */
+  bytes: ArrayBuffer;
 }
 
 /** 解析相机配方文件。坏文件抛核心的原话。 */
 export async function readDat(bytes: ArrayBuffer): Promise<DatRead> {
   const { json, buffers } = await workers().request('dat', bytes, [bytes]);
-  const data = JSON.parse(json) as { summary: string; menu: string };
-  return { summary: data.summary, menu: data.menu, entries: new Uint8Array(buffers[0] ?? new ArrayBuffer(0)) };
+  const data = JSON.parse(json) as { summary: string; listing: string };
+  return {
+    summary: data.summary,
+    listing: data.listing,
+    entries: new Uint8Array(buffers[0] ?? new ArrayBuffer(0)),
+    bytes: buffers[1] ?? new ArrayBuffer(0),
+  };
+}
+
+export interface Resolved {
+  entry: Uint8Array;
+  entrySha256: string;
+  levels: Record<string, number>;
+}
+
+function fromHex(text: string): Uint8Array {
+  const out = new Uint8Array(text.length >> 1);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+/** `color_resolve`：这份 DAT 上的一个配方选择 → 552 字节条目（旋钮已经套上）。`dat` 是拷贝。失败抛核心的原话。 */
+export async function resolveRecipe(dat: ArrayBuffer, recipe: string): Promise<Resolved> {
+  const { json } = await workers().request('resolve', null, [dat], null, { resolve: { dat, recipe } });
+  const data = JSON.parse(json) as { entry: string; entry_sha256: string; levels: Record<string, number> };
+  return { entry: fromHex(data.entry), entrySha256: data.entry_sha256, levels: data.levels };
+}
+
+export interface CalibPick {
+  iso: number;
+  calibrated: boolean;
+  model_iso: number;
+  ctx: string;
+  ring: string;
+  rows: number;
+}
+
+/** `color_calib_check`：校准包对这个单元、这个 ISO 的 model_for 检查。字节都是拷贝。失败抛桌面的原话。 */
+export async function calibCheck(args: CalibCheckArgs): Promise<CalibPick> {
+  const transfer = [args.manifest, args.stock, ...args.blobs];
+  const { json } = await workers().request('calib-check', null, transfer, null, { check: args });
+  return JSON.parse(json) as CalibPick;
 }
 
 export type CalibRead =

@@ -63,6 +63,8 @@ export interface Photo {
   dngMeta: PhotoMeta | null;
   /** 选中的配方。和调整一样是这张照片这次的编辑状态；换片、重新选同一张都留着。 */
   choice: Choice | null;
+  /** 每个配方各自记住的旋钮档位（桌面 recipes.js 换配方时也是各记各的）。键是卡的 id。 */
+  levels: Map<string, Record<string, number>>;
   /** 配方卡的小图，按烘焙表的键记，只对当时的版本有效。 */
   looks: Map<string, { version: number; bitmap: ImageBitmap }>;
 }

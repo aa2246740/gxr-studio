@@ -5,7 +5,7 @@ import type { Engine, Geometry } from '../../../frontend/src/index';
 import { crossed, uncalibratedReason, unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
-import { cardTag, listing, namesOnly, shelf, type Card, type Listing, type Shelf } from '../lib/recipes';
+import { cardTag, choices, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, shelf, shelves, type Card, type Control, type Shelf, type Shelves } from '../lib/recipes';
 import type { UnitState } from './book';
 import { button, el, icon } from './dom';
 import { lookCache } from './looks';
@@ -57,7 +57,8 @@ interface Scene {
   unit: Unit;
   iso: number | null;
   state: UnitState;
-  list: Listing | null;
+  list: Shelves | null;
+  generation: number | null;
 }
 
 export class RecipeView {
@@ -136,13 +137,19 @@ export class RecipeView {
       unit,
       iso: meta.iso,
       state: book.unitState(unit),
-      list: dat ? listing(dat.summary, dat.menu, unit) : null,
+      list: dat ? shelves(dat.listing, unit) : null,
+      generation: dat?.generation ?? null,
     };
   }
 
   private cardsOf(scene: Scene): Card[] {
     if (!scene.list) return namesOnly();
     return shelf(scene.list, this.which);
+  }
+
+  /** 这张卡在这张照片上记着的档位（没动过是 undefined，用配方自己的默认）。 */
+  private levelsOf(card: Card): Record<string, number> | undefined {
+    return this.photo.levels.get(card.id);
   }
 
   private chosen(scene: Scene): Card | null {
@@ -192,7 +199,7 @@ export class RecipeView {
       const thumb = el('div', 'th');
       const sub = el('span', 'sub');
       node.append(thumb, el('span', 'nm', card.name), sub);
-      const usable = scene.raw && scene.dat && !card.pending && card.levels !== null;
+      const usable = scene.raw && scene.dat && card.controls.length > 0;
       if (!usable) node.classList.add('lockd');
       if (!scene.raw) node.disabled = true;
       if (picked && picked.id === card.id) this.mark(node, thumb);
@@ -227,19 +234,11 @@ export class RecipeView {
       } else if (!scene.dat) {
         bitmap = this.neutralBitmap;
         source = NEUTRAL_LABEL;
-      } else if (card.pending) {
-        bitmap = this.neutralBitmap;
-        source = NEUTRAL_LABEL;
-        text = '这项下一步做';
-      } else if (card.error) {
-        bitmap = this.neutralBitmap;
-        source = NEUTRAL_LABEL;
-        text = card.error;
       } else if (scene.state.state !== 'ready') {
         bitmap = this.neutralBitmap;
         source = text = NEUTRAL_LABEL;
       } else {
-        const key = this.api.book().bakeKey(card, scene.unit, scene.iso);
+        const key = this.api.book().bakeKey(card, scene.unit, scene.iso, this.levelsOf(card));
         const look = key ? lookCache.get(this.photo, key) : null;
         if (look) {
           bitmap = look;
@@ -303,8 +302,11 @@ export class RecipeView {
     this.panel.append(head);
     this.panel.append(this.statusBlock(scene, off));
     if (book.datNote) this.panel.append(el('p', 'pad faint small', book.datNote));
-    // 设计稿上只有已校准（03a）才有分组；没校准（06c）的面板留给导入的说明。
-    if (calibrated) this.panel.append(this.chips(scene));
+    // 设计稿上只有已校准（03a）才有分组和旋钮；没校准（06c）的面板留给导入的说明。
+    if (calibrated) {
+      this.panel.append(this.chips(scene));
+      if (target && target.controls.length) this.panel.append(this.knobs(scene, target));
+    }
   }
 
   private statusBlock(scene: Scene, off: boolean): HTMLElement {
@@ -370,6 +372,73 @@ export class RecipeView {
     return row;
   }
 
+  /**
+   * 旋钮（桌面 recipes.js 的 levelRow）：滑块的位置是档位的序号。拖的时候只改右边的数字；松手（change）才记下档位，
+   * 重新 resolve、烘焙，照片和这张卡换成新的样子。没选配方时动旋钮，就选上现在显示的这个配方（桌面 ensureRecipe）。
+   */
+  private knobs(scene: Scene, card: Card): HTMLElement {
+    const box = el('div', 'knobs');
+    box.dataset.card = card.id;
+    const amount = card.controls.filter((c) => c.name === 'amount');
+    const rest = card.controls.filter((c) => c.name !== 'amount');
+    for (const control of [...amount, ...rest]) box.append(this.knobRow(scene, card, control));
+    return box;
+  }
+
+  private knobRow(scene: Scene, card: Card, control: Control): HTMLElement {
+    const levels = choices(control, scene.generation);
+    const current = effective(control, this.levelsOf(card));
+    const row = el('div', 'krow');
+    row.dataset.knob = control.name;
+    const value = el('span', 'val num', levelText(control, current));
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = String(Math.max(0, levels.length - 1));
+    input.step = '1';
+    input.value = String(nearestIndex(levels, current));
+    input.setAttribute('aria-label', KNOB_NAMES[control.name] ?? control.label);
+    const paint = () => {
+      const level = levels[Number(input.value)] ?? control.default;
+      value.textContent = levelText(control, level);
+      const span = Math.max(1, levels.length - 1);
+      const zero = nearestIndex(levels, control.name === 'amount' ? levels[0] : 0);
+      const at = Number(input.value);
+      input.style.setProperty('--a', `${(Math.min(at, zero) / span) * 100}%`);
+      input.style.setProperty('--b', `${(Math.max(at, zero) / span) * 100}%`);
+    };
+    paint();
+    input.addEventListener('input', paint);
+    input.addEventListener('change', () => {
+      const level = levels[Number(input.value)];
+      if (level === undefined) return;
+      this.setLevel(card, control.name, level);
+    });
+    const track = el('div', 'slider');
+    track.append(input);
+    row.append(el('span', 'lab', KNOB_NAMES[control.name] ?? control.label), track, value);
+    return row;
+  }
+
+  /** 松手：记下这个配方的这一档，选上它，重新 resolve + 烘焙（照片在新表做好之前留着上一张）。 */
+  private setLevel(card: Card, name: string, level: number): void {
+    const scene = this.scene();
+    const next: Record<string, number> = {};
+    for (const c of card.controls) next[c.name] = effective(c, this.photo.levels.get(card.id));
+    next[name] = level;
+    this.photo.levels.set(card.id, next);
+    if (this.photo.choice?.id !== card.id) {
+      this.photo.choice = { id: card.id, unit: scene.unit };
+      for (const slot of this.slots) {
+        slot.node.classList.remove('on');
+        slot.thumb.querySelector('.ckk')?.remove();
+        if (slot.card.id === card.id) this.mark(slot.node, slot.thumb);
+      }
+    }
+    this.applyLook(scene);
+    void this.renderCards(scene, this.token);
+  }
+
   /** 点一张卡：记进这张照片的编辑状态，照片换成它（烘焙表没好之前留着上一张）。 */
   private pick(card: Card): void {
     const scene = this.scene();
@@ -378,7 +447,7 @@ export class RecipeView {
       this.ask();
       return;
     }
-    if (card.pending || !card.levels) return;
+    if (!card.controls.length) return;
     this.photo.choice = { id: card.id, unit: scene.unit };
     for (const slot of this.slots) {
       slot.node.classList.remove('on');
@@ -394,23 +463,28 @@ export class RecipeView {
     if (!scene.raw || !this.engine || this.hooks.mode() !== 'raw') return;
     const target = this.target(scene);
     const book = this.api.book();
-    const key = scene.dat && scene.state.state === 'ready' && target ? book.bakeKey(target, scene.unit, scene.iso) : null;
-    if (!target || !key) {
+    const ready = scene.dat && scene.state.state === 'ready' && target !== null;
+    if (!target || !ready) {
       this.wanted = NEUTRAL_BAKE_KEY;
       this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
       return;
     }
-    if (book.ready(key)) {
+    const levels = this.levelsOf(target);
+    const key = book.bakeKey(target, scene.unit, scene.iso, levels);
+    if (key && book.ready(key)) {
       this.wanted = key;
       this.show(key, PREDICTED_LABEL);
       return;
     }
-    // 新的表还在做：照片先留着上一张（第一次打开时是中性转换），做好了而且还是要它才换。
+    // 新的表还在做（resolve + bake）：照片先留着上一张（第一次打开时是中性转换），做好了而且还是要它才换。
     if (!this.shown) this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
-    this.wanted = key;
-    book.bake(target, scene.unit, scene.iso).then(
+    const want = `${target.id}|${JSON.stringify(levels ?? null)}|${scene.unit}|${scene.iso}`;
+    this.wanted = want;
+    book.bake(target, scene.unit, scene.iso, levels).then(
       (made) => {
-        if (this.wanted === made && this.strip.isConnected) this.show(made, PREDICTED_LABEL);
+        if (this.wanted !== want || !this.strip.isConnected) return;
+        this.wanted = made;
+        this.show(made, PREDICTED_LABEL);
       },
       () => undefined,
     );
@@ -439,15 +513,15 @@ export class RecipeView {
     const alive = () => token === this.token && this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
     const order = [...this.cardsOf(scene), ...shelf(scene.list, 'all')];
     const seen = new Set<string>();
-    const jobs: Array<{ card: Card; key: string; bake: Promise<string> }> = [];
+    const jobs: Array<{ card: Card; bake: Promise<string> }> = [];
     for (const card of order) {
-      const key = book.bakeKey(card, scene.unit, scene.iso);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      if (lookCache.get(photo, key)) continue;
-      const bake = book.bake(card, scene.unit, scene.iso);
+      if (seen.has(card.id) || !card.controls.length) continue;
+      seen.add(card.id);
+      const known = book.bakeKey(card, scene.unit, scene.iso, this.levelsOf(card));
+      if (known && lookCache.get(photo, known)) continue;
+      const bake = book.bake(card, scene.unit, scene.iso, this.levelsOf(card));
       bake.catch(() => undefined);
-      jobs.push({ card, key, bake });
+      jobs.push({ card, bake });
     }
     for (const job of jobs) {
       let key: string;
@@ -469,7 +543,7 @@ export class RecipeView {
       let gpu = book.gpuKey(key);
       if (!gpu) {
         try {
-          await book.bake(job.card, scene.unit, scene.iso);
+          await book.bake(job.card, scene.unit, scene.iso, this.levelsOf(job.card));
         } catch {
           continue;
         }
@@ -483,6 +557,10 @@ export class RecipeView {
       if (!alive()) {
         bitmap.close();
         return;
+      }
+      if (lookCache.get(photo, key)) {
+        bitmap.close();
+        continue;
       }
       lookCache.put(photo, key, version, bitmap);
       this.paintThumbs();

@@ -365,3 +365,8 @@ svg.curve { width: min(220px, 52vw); height: auto; flex: none; border-radius: 10
 .path .fic { color: var(--accent-text); display: inline-flex; }
 .ask-sheet .btn.primary { margin-top: 14px; }
 .ask-sheet .btn.ghost { margin-top: 6px; }
+.knobs { margin-top: 4px; padding: 0 16px; }
+.krow { display: flex; align-items: center; gap: 10px; min-height: 48px; }
+.krow .lab { width: 72px; flex: none; font-size: 15px; color: var(--text-1); }
+.krow .slider { flex: 1; height: 44px; }
+.krow .val { width: 44px; flex: none; text-align: right; font-size: 15px; }

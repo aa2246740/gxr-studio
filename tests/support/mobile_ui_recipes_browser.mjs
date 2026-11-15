@@ -162,6 +162,45 @@ try {
     await page.waitForFunction((want) => document.querySelector('.app')?.dataset.recipeKey === want, chosenKey, { timeout: 60_000 });
   }
 
+  // 选一个 Look（文件里的条目，靠 color_resolve 拿字节），再动一个旋钮：松手才重新 resolve + 烘焙。
+  const look = page.locator('.editor .strip[data-recipes] .rc[data-card^="look:"]:not(.lockd)').first();
+  if (await look.count()) {
+    const id = await look.getAttribute('data-card');
+    await look.scrollIntoViewIfNeeded();
+    await look.click();
+    await page.waitForFunction((prev) => document.querySelector('.app')?.dataset.recipeKey !== prev, chosenKey, { timeout: 90_000 });
+    const lookKey = await recipeKey(page);
+    const drawn = await page
+      .waitForFunction((card) => document.querySelector(`.editor .strip[data-recipes] .rc[data-card="${card}"] .th`)?.dataset.source === '电脑预测', id, { timeout: 120_000 })
+      .then(() => true, () => false);
+    const panelText = await page.locator('.editor .panel.recipe').innerText();
+    const row = page.locator(`.editor .knobs[data-card="${id}"] .krow:not([data-knob="amount"])`).first();
+    const knobName = await row.getAttribute('data-knob');
+    const keysBefore = await page.evaluate(() => [...(window.__gxrBakes?.keys() ?? [])].length);
+    await row.locator('input').evaluate((input) => {
+      input.value = String(Math.min(Number(input.max), Number(input.value) + 2));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    // 只发 input（拖动中）：不重新烘焙，舞台不换。
+    await page.waitForTimeout(800);
+    const duringDrag = { key: await recipeKey(page), bakes: await page.evaluate(() => [...(window.__gxrBakes?.keys() ?? [])].length) };
+    await row.locator('input').evaluate((input) => input.dispatchEvent(new Event('change', { bubbles: true })));
+    await page.waitForFunction((prev) => document.querySelector('.app')?.dataset.recipeKey !== prev, lookKey, { timeout: 90_000 });
+    const knobKey = await recipeKey(page);
+    const level = Number(await row.locator('.val').innerText());
+    step('look', {
+      id,
+      key: lookKey,
+      bake: await bakeOf(page, lookKey),
+      drawn,
+      panel: panelText,
+      knob: { name: knobName, level, key: knobKey, bake: await bakeOf(page, knobKey), keysBefore, duringDrag },
+    });
+    await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').scrollIntoViewIfNeeded();
+    await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').click();
+    await page.waitForFunction((want) => document.querySelector('.app')?.dataset.recipeKey === want, chosenKey, { timeout: 60_000 });
+  }
+
   // 长按看原图，松手回来。
   const box = await page.locator('.stage').boundingBox();
   const sx = box.x + box.width / 2;

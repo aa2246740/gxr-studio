@@ -167,7 +167,10 @@ DATS = (
 )
 
 
-def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jpg: Path, picks: dict[str, str]) -> dict[str, dict[str, object]]:
+Picks = dict[str, object]
+
+
+def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jpg: Path, picks: Picks) -> dict[str, dict[str, object]]:
     """桌面那条路：导入同一份相机配方文件和合成校准包，按导出用的 RenderService.plan → preview_bake → bake_bytes 出表。"""
     import hashlib
 
@@ -177,6 +180,7 @@ def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jp
     from gxr_studio.meta import read_dng_meta, read_jpeg_meta
     from gxr_studio.render.params import EditState, RecipeSel
     from gxr_studio.render.service import RenderService
+    from support.core_cli import CLI as CORE_CLI
     from support.mobile_ui_calib import write_pack
 
     store.import_from_dat(raw, home)
@@ -191,24 +195,46 @@ def _desktop_bakes(home: Path, raw: bytes, pack: dict[str, bytes], dng: Path, jp
     try:
         render = RenderService(home, lib)
         unit = render.photo_unit(shot) or "jlaunch"
-        users = render.recipe_menu().listing()[["jlaunch", "qlaunch", "l08firm"].index(unit)].get("users", [])
+        listed = render.recipe_menu().listing()[["jlaunch", "qlaunch", "l08firm"].index(unit)]
         out: dict[str, dict[str, object]] = {}
-        for name, card in picks.items():
+        for name, pick in picks.items():
+            card, levels = pick if isinstance(pick, tuple) else (pick, {})
             if card is None:
                 sel = None
             elif card.startswith("builtin:"):
-                sel = RecipeSel(unit, int(card.split(":")[1]))
+                sel = RecipeSel(unit, int(card.split(":")[1]), levels=tuple(levels.items()))
             else:
-                info = users[int(card.split(":")[1])]
-                sel = RecipeSel(unit, int(info["slot"]), kind="camera_user", id=info["id"])
+                kind, ident = card.split(":", 1)
+                info = next(r for r in listed["looks" if kind == "look" else "users"] if r["id"] == ident)
+                sel = RecipeSel(unit, int(info["slot"]), levels=tuple(levels.items()), kind=kind, id=ident)
             plan = render.plan(shot, EditState(recipe=sel))
             data, meta = bake_bytes(render.preview_bake(plan))
+            # 同一个条目、同一个模型交给原生 gxr-cli color-bake：手机（WASM）必须和它逐字节相同。
+            manifest = json.loads((calib.calib_dir(home) / "manifest.json").read_text(encoding="utf-8"))
+            branch = manifest["units"][unit]["models"][str(plan.model_iso)]
+            work = home.parent / f"native-{name}"
+            work.mkdir(exist_ok=True)
+            (work / "e.bin").write_bytes(plan.entry)
+            (work / "s.bin").write_bytes(store.load_stock04(home, unit))
+            (work / "p.json").write_text('{"step": 0.375}', encoding="utf-8")
+            native = subprocess.run(
+                [str(CORE_CLI), "color-bake", "--entry", str(work / "e.bin"), "--stock", str(work / "s.bin")]
+                + ["--ctx", str(calib.calib_dir(home) / branch["ctx"]), "--ring", str(calib.calib_dir(home) / branch["ring"])]
+                + ["--params", str(work / "p.json"), "--out", str(work / "o.bin"), "--meta", str(work / "m.json")],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            assert native.returncode == 0, native.stderr
             out[name] = {
+                "native_sha256": hashlib.sha256((work / "o.bin").read_bytes()).hexdigest(),
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "bytes": len(data),
                 "meta": meta,
                 "model_iso": plan.model_iso,
                 "unit": unit,
+                "entry_sha256": plan.entry_sha256,
             }
         return out
     finally:
@@ -279,6 +305,7 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     cards = steps["cards"]
     assert cards["names"][:4] == ["GR 正片", "GR 负片", "GR 高对比黑白", "原厂标准"]
     assert cards["label"] == "电脑预测"
+    assert "这项下一步做" not in cards["subs"]
     chosen = steps["chosen"]
     assert chosen["on"] == "builtin:1" and chosen["label"] == "电脑预测" and chosen["changed"]
     assert "GR 正片" in chosen["panel"] and "相机里 · 01" in chosen["panel"]
@@ -286,9 +313,13 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
 
     stem = cards["stem"]
     pair = next(i for i in range(0, len(files), 2) if files[i].stem == stem)
-    picks = {"default": None, "chosen": "builtin:1"}
+    picks: dict[str, object] = {"default": None, "chosen": "builtin:1"}
     if "user" in steps:
         picks["user"] = steps["user"]["id"]
+    assert "look" in steps, "this DAT has no Looks for the photo's unit"
+    look = steps["look"]
+    picks["look"] = look["id"]
+    picks["knob"] = (look["id"], {look["knob"]["name"]: look["knob"]["level"]})
     desktop = _desktop_bakes(tmp_path / "app", raw, pack, files[pair], files[pair + 1], picks)
     for name, key in (("default", "defaultBake"), ("chosen", "bake")):
         phone = cards[key] if name == "default" else chosen[key]
@@ -298,10 +329,6 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
         assert phone["meta"] == desktop[name]["meta"], (name, phone["meta"], desktop[name]["meta"])
     if "user" in steps:
         assert steps["user"]["bake"]["sha256"] == desktop["user"]["sha256"], (steps["user"], desktop["user"])
-    # 留一份给报告：两边的 sha256 和字节数。
-    parity = {"phone": report["steps"], "desktop": desktop}
-    (tmp_path / "bake-parity.json").write_text(json.dumps(parity, ensure_ascii=False, indent=1), encoding="utf-8")
-
     assert steps["hold"]["held"] == "原图" and steps["hold"]["after"] == "电脑预测"
     swipe = steps["swipe"]
     assert swipe["second"]["stem"] != stem and swipe["second"]["on"] == 0
@@ -322,6 +349,26 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     assert jpg["label"] == "相机 JPG" and jpg["disabled"] == jpg["cards"] > 0
     assert "配方需要 RAW 文件" in jpg["panel"] and "拍摄时将画质设为 RAW+JPEG" in jpg["panel"]
     assert "HDR 需要 RAW 文件" in jpg["panel"]
+
+    # 第 6 项：选一个 Look、动一个旋钮。
+    assert look["drawn"] and "这项下一步做" not in look["panel"]
+    knob = look["knob"]
+    assert knob["key"] != look["key"] and knob["bake"]["sha256"] != look["bake"]["sha256"]
+    # 拖动中（只有 input）不重新烘焙，舞台不换；松手才换。
+    assert knob["duringDrag"]["key"] == look["key"] and knob["duringDrag"]["bakes"] == knob["keysBefore"]
+    # UI 这一边：交给引擎的是和桌面同一个条目（旋钮已经套上）的表，而且和原生 gxr-cli 烘出来的逐字节相同。
+    assert look["key"].endswith(":" + desktop["look"]["entry_sha256"]), (look["key"], desktop["look"])
+    assert knob["key"].endswith(":" + desktop["knob"]["entry_sha256"]), (knob["key"], desktop["knob"])
+    assert look["bake"]["sha256"] == desktop["look"]["native_sha256"], (look["bake"], desktop["look"])
+    assert knob["bake"]["sha256"] == desktop["knob"]["native_sha256"], (knob["bake"], desktop["knob"])
+    assert knob["bake"]["meta"] == desktop["knob"]["meta"]
+    parity = {"phone": report["steps"], "desktop": desktop}
+    (tmp_path / "bake-parity.json").write_text(json.dumps(parity, ensure_ascii=False, indent=1), encoding="utf-8")
+    # 最后和桌面 numpy 的 bake_bytes 逐字节比。这份 DAT 的第一个 Look（M9 STD）在合成校准包上，gxr-color 的 color_bake
+    # 有一个 float32 和 numpy 不同，color 单元自己的 bake_gap 也解释不了（gain 格 109793 的虚部，见 REPORT.md）。
+    # 门槛不放宽：这两句现在失败，等 gxr-color 修好。
+    assert look["bake"]["sha256"] == desktop["look"]["sha256"], (look["key"], desktop["look"])
+    assert knob["bake"]["sha256"] == desktop["knob"]["sha256"], (knob["key"], desktop["knob"])
 
 
 BOOK_DRIVER = REPO / "tests" / "support" / "mobile_ui_book_races.mjs"

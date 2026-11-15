@@ -1,13 +1,13 @@
 // 模块 Worker：WASM 只在这里加载。主线程把 DNG 的一份拷贝传进来，原件留给显卡引擎。
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
-import init, { camdata_entries, camdata_menu, camdata_parse, color_bake, dng_describe } from '../wasm-pkg/gxr_wasm.js';
+import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_listing, color_resolve, dng_describe } from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
 import { loadPack, savePack } from '../lib/idb';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
-import type { BakeArgs, CoreOp, CoreReply, CoreRequest } from './protocol';
+import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, ResolveArgs } from './protocol';
 
 let ready: Promise<unknown> | null = null;
 
@@ -63,9 +63,38 @@ function describe(id: number, buffer: ArrayBuffer): void {
 function dat(id: number, buffer: ArrayBuffer): void {
   const bytes = new Uint8Array(buffer);
   const summary = camdata_parse(bytes, undefined);
-  const menu = camdata_menu(bytes, undefined);
+  // 配方列表照桌面 CameraData.listing（内置、文件里的 Looks、相机里的用户配方，各带旋钮）。
+  const listing = color_listing(bytes, undefined);
   const entries = camdata_entries(bytes, undefined);
-  ok(id, JSON.stringify({ summary, menu }), [own(entries)]);
+  // DAT 字节原样还回去：之后每次 color_resolve 都要用（主线程不再复制一份）。
+  ok(id, JSON.stringify({ summary, listing }), [own(entries), buffer]);
+}
+
+/** 一个配方选择 → 552 字节条目（旋钮已经套上，和桌面 CameraData.resolve 一样）。 */
+function resolve(id: number, args: ResolveArgs): void {
+  const text = color_resolve(new Uint8Array(args.dat), new TextEncoder().encode(args.recipe), undefined);
+  ok(id, text);
+}
+
+/** 校准包对这个单元、这个 ISO 的 model_for 检查（gxr-cli color-calib-check --dir 的同一段代码）。 */
+function calibCheck(id: number, args: CalibCheckArgs): void {
+  const index: Record<string, [number, number]> = {};
+  let size = 0;
+  args.names.forEach((name, i) => {
+    index[name] = [size, args.blobs[i].byteLength];
+    size += args.blobs[i].byteLength;
+  });
+  const blob = new Uint8Array(size);
+  args.blobs.forEach((part, i) => blob.set(new Uint8Array(part), index[args.names[i]][0]));
+  const text = color_calib_check(
+    new Uint8Array(args.manifest),
+    new TextEncoder().encode(JSON.stringify(index)),
+    blob,
+    new Uint8Array(args.stock),
+    args.unit,
+    args.iso,
+  );
+  ok(id, text);
 }
 
 /** 核对一份 zip；`save` 给了就在这里（Worker 里）存进 IndexedDB，主线程不复制整包。 */
@@ -139,6 +168,8 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'calib-file' && file && meta) await calibFile(id, file, meta);
   else if (op === 'calib-restore') await calibRestore(id);
   else if (op === 'bake' && args) bake(id, args);
+  else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
+  else if (op === 'calib-check' && req.check) calibCheck(id, req.check);
   else throw new Error('未知请求');
 }
 
