@@ -10,7 +10,6 @@ it; ``gxr-cli source-*`` gets the same files. Nothing here prints calibration co
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,8 +24,9 @@ from gxr_studio.raw.dng import RawDecodeError
 from gxr_studio.render.params import Adjust, Curves, EditError, EditState, RecipeSel
 from gxr_studio.render.service import NoRaw, RenderService, RenderUnavailable
 from support import color_fixtures as cf
+from support import samples as sample_files
 
-PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(Path(__file__).resolve().parents[2]))).resolve()
+PARENT = sample_files.sample_parent()
 CAPTURES = PARENT / "captures"
 
 
