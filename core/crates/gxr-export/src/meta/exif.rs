@@ -75,20 +75,41 @@ fn exif_value_to_jpeg(val: &ExifValue) -> ExifVal {
 /// Port of `gxr_studio/export.py:192 _clean_text`.
 pub fn clean_text(value: Option<&ExifValue>) -> Option<String> {
     let val = value?;
-    let raw = match val {
-        ExifValue::Bytes(b) => b
-            .iter()
-            .filter(|&&byte| byte < 0x80)
-            .map(|&byte| char::from(byte))
-            .collect::<String>(),
-        other => other.to_python_str(),
-    };
-    let cleaned = raw.replace('\0', "");
-    let trimmed = py_strip(&cleaned);
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+    match val {
+        ExifValue::Bytes(b) => {
+            let clean_len = b.iter().filter(|&&byte| byte < 0x80 && byte != 0).count();
+            let mut s = String::new();
+            s.try_reserve_exact(clean_len).ok()?;
+            for &byte in b {
+                if byte < 0x80 && byte != 0 {
+                    s.push(char::from(byte));
+                }
+            }
+            let trimmed = py_strip(&s);
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.len() == s.len() {
+                Some(s)
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        other => {
+            let raw = other.to_python_str();
+            let cleaned_buf;
+            let cleaned: &str = if raw.contains('\0') {
+                cleaned_buf = raw.replace('\0', "");
+                &cleaned_buf
+            } else {
+                &raw
+            };
+            let trimmed = py_strip(cleaned);
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
     }
 }
 

@@ -386,7 +386,8 @@ fn parse_py_float_str(s: &str) -> Option<f64> {
         return None;
     }
     let bytes = s.as_bytes();
-    let mut clean = String::with_capacity(bytes.len());
+    let mut clean = String::new();
+    clean.try_reserve_exact(bytes.len()).ok()?;
     for (i, &b) in bytes.iter().enumerate() {
         if b == b'_' {
             let prev_ok = i > 0 && bytes[i - 1].is_ascii_digit();
@@ -401,14 +402,20 @@ fn parse_py_float_str(s: &str) -> Option<f64> {
     clean.parse::<f64>().ok()
 }
 
-pub fn bytes_to_hex(bytes: &[u8]) -> String {
+pub fn try_bytes_to_hex(bytes: &[u8]) -> Option<String> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
+    let hex_len = bytes.len().checked_mul(2)?;
+    let mut out = String::new();
+    out.try_reserve_exact(hex_len).ok()?;
     for &b in bytes {
         out.push(char::from(HEX[usize::from(b >> 4)]));
         out.push(char::from(HEX[usize::from(b & 0x0F)]));
     }
-    out
+    Some(out)
+}
+
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    try_bytes_to_hex(bytes).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -494,5 +501,15 @@ mod tests {
     fn py_strip_includes_control_separators_1c_to_1f() {
         assert_eq!(py_strip("\x1cA\x1d"), "A");
         assert_eq!(py_strip("\x1e\x1fRICOH \u{85}\u{a0}"), "RICOH");
+    }
+
+    #[test]
+    fn try_bytes_to_hex_encodes_bytes() {
+        assert_eq!(try_bytes_to_hex(b"").as_deref(), Some(""));
+        assert_eq!(
+            try_bytes_to_hex(&[0x00, 0x7f, 0xff]).as_deref(),
+            Some("007fff")
+        );
+        assert_eq!(bytes_to_hex(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
     }
 }

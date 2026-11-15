@@ -140,13 +140,30 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                 if marker == 0xFFE1 {
                     if let Some(rest) = payload.strip_prefix(b"Exif\x00\x00") {
                         match &mut exif_bytes {
-                            Some(buf) => buf.extend_from_slice(rest),
-                            None => exif_bytes = Some(payload.to_vec()),
+                            Some(buf) => {
+                                if buf.try_reserve_exact(rest.len()).is_err() {
+                                    return Err("MemoryError: out of memory".to_string());
+                                }
+                                buf.extend_from_slice(rest);
+                            }
+                            None => {
+                                let mut buf = Vec::new();
+                                if buf.try_reserve_exact(payload.len()).is_err() {
+                                    return Err("MemoryError: out of memory".to_string());
+                                }
+                                buf.extend_from_slice(payload);
+                                exif_bytes = Some(buf);
+                            }
                         }
                     } else if let Some(rest) =
                         payload.strip_prefix(b"http://ns.adobe.com/xap/1.0/\x00")
                     {
-                        xmp_bytes = Some(rest.to_vec());
+                        let mut buf = Vec::new();
+                        if buf.try_reserve_exact(rest.len()).is_err() {
+                            return Err("MemoryError: out of memory".to_string());
+                        }
+                        buf.extend_from_slice(rest);
+                        xmp_bytes = Some(buf);
                     }
                 }
             }

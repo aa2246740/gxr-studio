@@ -61,16 +61,22 @@ pub fn load_ifd(
     };
 
     let num_entries: u64 = if bigtiff {
-        let Some(b) = bytes.get(pos..pos + 8) else {
+        let Some(end) = pos.checked_add(8) else {
             return Ok(Ifd { tags, next: 0 });
         };
-        pos += 8;
+        let Some(b) = bytes.get(pos..end) else {
+            return Ok(Ifd { tags, next: 0 });
+        };
+        pos = end;
         endian.u64(b.try_into().unwrap_or([0; 8]))
     } else {
-        let Some(b) = bytes.get(pos..pos + 2) else {
+        let Some(end) = pos.checked_add(2) else {
             return Ok(Ifd { tags, next: 0 });
         };
-        pos += 2;
+        let Some(b) = bytes.get(pos..end) else {
+            return Ok(Ifd { tags, next: 0 });
+        };
+        pos = end;
         u64::from(endian.u16([b[0], b[1]]))
     };
 
@@ -78,10 +84,13 @@ pub fn load_ifd(
     let inline_limit = if bigtiff { 8u64 } else { 4u64 };
 
     for _ in 0..num_entries {
-        let Some(entry) = bytes.get(pos..pos + entry_size) else {
+        let Some(entry_end) = pos.checked_add(entry_size) else {
             return Ok(Ifd { tags, next: 0 });
         };
-        pos += entry_size;
+        let Some(entry) = bytes.get(pos..entry_end) else {
+            return Ok(Ifd { tags, next: 0 });
+        };
+        pos = entry_end;
 
         let tag = endian.u16([entry[0], entry[1]]);
         let typ = endian.u16([entry[2], entry[3]]);
@@ -133,13 +142,13 @@ pub fn load_ifd(
     }
 
     let next = if bigtiff {
-        bytes
-            .get(pos..pos + 8)
+        pos.checked_add(8)
+            .and_then(|end| bytes.get(pos..end))
             .and_then(|b| b.try_into().ok())
             .map_or(0, |b| endian.u64(b))
     } else {
-        bytes
-            .get(pos..pos + 4)
+        pos.checked_add(4)
+            .and_then(|end| bytes.get(pos..end))
             .and_then(|b| b.try_into().ok())
             .map_or(0, |b| u64::from(endian.u32(b)))
     };
@@ -157,6 +166,24 @@ fn tiff_unit_size(typ: u16) -> Option<u64> {
     }
 }
 
+fn try_alloc_vec<T>(count: usize) -> Option<Vec<T>> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(count).ok()?;
+    Some(out)
+}
+
+fn try_collect_chunks<T>(
+    chunks: std::slice::ChunksExact<'_, u8>,
+    count: usize,
+    mut f: impl FnMut(&[u8]) -> T,
+) -> Option<Vec<T>> {
+    let mut out = try_alloc_vec(count)?;
+    for c in chunks {
+        out.push(f(c));
+    }
+    Some(out)
+}
+
 fn decode_tag_value(
     tag: u16,
     typ: u16,
@@ -167,108 +194,112 @@ fn decode_tag_value(
 ) -> Option<ExifValue> {
     match typ {
         // BYTE (1) / UNDEFINED (7)
-        1 | 7 => Some(ExifValue::Bytes(data.to_vec())),
+        1 | 7 => {
+            let mut out = try_alloc_vec(data.len())?;
+            out.extend_from_slice(data);
+            Some(ExifValue::Bytes(out))
+        }
         // ASCII (2): strip at most one trailing NUL and decode as latin-1
         2 => {
             let trimmed = data.strip_suffix(b"\0").unwrap_or(data);
-            let s: String = trimmed.iter().map(|&b| char::from(b)).collect();
+            let utf8_len: usize = trimmed.iter().map(|&b| if b < 0x80 { 1 } else { 2 }).sum();
+            let mut s = String::new();
+            s.try_reserve_exact(utf8_len).ok()?;
+            for &b in trimmed {
+                s.push(char::from(b));
+            }
             Some(ExifValue::Str(s))
         }
         // SHORT (3)
         3 => decode_ints(
-            data.chunks_exact(2)
-                .map(|c| i64::from(endian.u16([c[0], c[1]])))
-                .collect(),
+            try_collect_chunks(data.chunks_exact(2), data.len() / 2, |c| {
+                i64::from(endian.u16([c[0], c[1]]))
+            })?,
             tag,
             group,
             fixup,
         ),
         // LONG (4) / IFD (13)
         4 | 13 => decode_ints(
-            data.chunks_exact(4)
-                .map(|c| i64::from(endian.u32([c[0], c[1], c[2], c[3]])))
-                .collect(),
+            try_collect_chunks(data.chunks_exact(4), data.len() / 4, |c| {
+                i64::from(endian.u32([c[0], c[1], c[2], c[3]]))
+            })?,
             tag,
             group,
             fixup,
         ),
         // SBYTE (6)
-        6 => decode_ints(
-            data.iter().map(|&b| i64::from(b as i8)).collect(),
-            tag,
-            group,
-            fixup,
-        ),
+        6 => {
+            let mut vals = try_alloc_vec(data.len())?;
+            for &b in data {
+                vals.push(i64::from(b as i8));
+            }
+            decode_ints(vals, tag, group, fixup)
+        }
         // SSHORT (8)
         8 => decode_ints(
-            data.chunks_exact(2)
-                .map(|c| i64::from(endian.i16([c[0], c[1]])))
-                .collect(),
+            try_collect_chunks(data.chunks_exact(2), data.len() / 2, |c| {
+                i64::from(endian.i16([c[0], c[1]]))
+            })?,
             tag,
             group,
             fixup,
         ),
         // SLONG (9)
         9 => decode_ints(
-            data.chunks_exact(4)
-                .map(|c| i64::from(endian.i32([c[0], c[1], c[2], c[3]])))
-                .collect(),
+            try_collect_chunks(data.chunks_exact(4), data.len() / 4, |c| {
+                i64::from(endian.i32([c[0], c[1], c[2], c[3]]))
+            })?,
             tag,
             group,
             fixup,
         ),
         // LONG8 (16)
         16 => decode_ints(
-            data.chunks_exact(8)
-                .map(|c| {
-                    let v = endian.u64(c.try_into().unwrap_or([0; 8]));
-                    i64::try_from(v).unwrap_or(i64::MAX)
-                })
-                .collect(),
+            try_collect_chunks(data.chunks_exact(8), data.len() / 8, |c| {
+                let v = endian.u64(c.try_into().unwrap_or([0; 8]));
+                i64::try_from(v).unwrap_or(i64::MAX)
+            })?,
             tag,
             group,
             fixup,
         ),
         // RATIONAL (5)
         5 => decode_rationals(
-            data.chunks_exact(8)
-                .map(|c| {
-                    let n = i64::from(endian.u32([c[0], c[1], c[2], c[3]]));
-                    let d = i64::from(endian.u32([c[4], c[5], c[6], c[7]]));
-                    (n, d)
-                })
-                .collect(),
+            try_collect_chunks(data.chunks_exact(8), data.len() / 8, |c| {
+                let n = i64::from(endian.u32([c[0], c[1], c[2], c[3]]));
+                let d = i64::from(endian.u32([c[4], c[5], c[6], c[7]]));
+                (n, d)
+            })?,
             tag,
             group,
             fixup,
         ),
         // SRATIONAL (10)
         10 => decode_rationals(
-            data.chunks_exact(8)
-                .map(|c| {
-                    let n = i64::from(endian.i32([c[0], c[1], c[2], c[3]]));
-                    let d = i64::from(endian.i32([c[4], c[5], c[6], c[7]]));
-                    (n, d)
-                })
-                .collect(),
+            try_collect_chunks(data.chunks_exact(8), data.len() / 8, |c| {
+                let n = i64::from(endian.i32([c[0], c[1], c[2], c[3]]));
+                let d = i64::from(endian.i32([c[4], c[5], c[6], c[7]]));
+                (n, d)
+            })?,
             tag,
             group,
             fixup,
         ),
         // FLOAT (11)
         11 => decode_floats(
-            data.chunks_exact(4)
-                .map(|c| f64::from(endian.f32([c[0], c[1], c[2], c[3]])))
-                .collect(),
+            try_collect_chunks(data.chunks_exact(4), data.len() / 4, |c| {
+                f64::from(endian.f32([c[0], c[1], c[2], c[3]]))
+            })?,
             tag,
             group,
             fixup,
         ),
         // DOUBLE (12)
         12 => decode_floats(
-            data.chunks_exact(8)
-                .map(|c| endian.f64(c.try_into().unwrap_or([0; 8])))
-                .collect(),
+            try_collect_chunks(data.chunks_exact(8), data.len() / 8, |c| {
+                endian.f64(c.try_into().unwrap_or([0; 8]))
+            })?,
             tag,
             group,
             fixup,
@@ -413,4 +444,51 @@ pub fn is_known_open_info(
             | (_, 6, [1], 1, [8, 8, 8], [])
             | (_, 8, [1], 1, [8, 8, 8], [])
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_ifd_handles_extreme_offsets_without_overflow() {
+        let minimal_tif = b"II*\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        for extreme in [
+            u64::MAX,
+            u64::MAX - 1,
+            u64::MAX - 7,
+            u64::from(u32::MAX),
+            usize::MAX as u64,
+            (usize::MAX - 1) as u64,
+        ] {
+            let ifd = load_ifd(minimal_tif, Endian::Little, false, extreme, None, false)
+                .expect("classic extreme offset");
+            assert!(ifd.tags.is_empty());
+            assert_eq!(ifd.next, 0);
+
+            let big = load_ifd(minimal_tif, Endian::Little, true, extreme, None, false)
+                .expect("bigtiff extreme offset");
+            assert!(big.tags.is_empty());
+            assert_eq!(big.next, 0);
+        }
+    }
+
+    #[test]
+    fn decode_tag_value_handles_ascii_latin1_and_empty_numeric_chunks() {
+        // Latin-1 high byte 0xe9 expands to 2 UTF-8 bytes; trailing NUL is stripped
+        let ascii = decode_tag_value(270, 2, b"caf\xe9\0", Endian::Little, None, false);
+        assert_eq!(ascii, Some(ExifValue::Str("caf\u{e9}".to_string())));
+
+        // Incomplete chunk (< unit size) yields None safely
+        assert_eq!(
+            decode_tag_value(256, 4, b"\x01\x02", Endian::Little, None, false),
+            None
+        );
+
+        // Byte/Undefined preserves raw bytes
+        assert_eq!(
+            decode_tag_value(36864, 7, b"0230", Endian::Little, Some(EXIF_IFD_TAG), false),
+            Some(ExifValue::Bytes(b"0230".to_vec()))
+        );
+    }
 }

@@ -354,9 +354,8 @@ pub fn photo_meta_from_bytes(
         lens.clone()
     };
 
-    let name_chars: Vec<char> = name.chars().collect();
-    let start = name_chars.len().saturating_sub(4);
-    let frame_no: String = name_chars[start..].iter().collect();
+    let start_byte = name.char_indices().rev().nth(3).map_or(0, |(idx, _)| idx);
+    let frame_no = name[start_byte..].to_string();
 
     Ok(PhotoTextResult {
         lens,
@@ -495,5 +494,21 @@ mod tests {
             format_shutter_text(Some(1e-320)).unwrap_err().kind,
             "OverflowError"
         );
+    }
+
+    #[test]
+    fn photo_text_frame_no_handles_short_and_multibyte_names() {
+        let minimal_jpg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\xff\xd9";
+        for (name, expected) in [
+            ("R0001234", "1234"),
+            ("ab", "ab"),
+            ("", ""),
+            ("照片ABCD", "ABCD"),
+            ("a中b文c", "中b文c"),
+        ] {
+            let res = photo_meta_from_bytes(Some(minimal_jpg), None, name, None, 0.0, 2026)
+                .expect("valid minimal jpeg");
+            assert_eq!(res.frame_no, expected, "name={name}");
+        }
     }
 }
