@@ -194,7 +194,7 @@ fn cmd_batch(args: &[String]) -> Result<String, Failure> {
         })();
         match row_res {
             Ok(line) => lines.push(line),
-            Err(err) => lines.push(common::failure_row_json(&err).render()),
+            Err(err) => lines.push(common::failure_row_json(&err, crate::USAGE).render()),
         }
     }
     Ok(lines.join("\n"))

@@ -99,10 +99,6 @@ fn run(args: &[String]) -> Result<Output, Failure> {
     dispatch(command, rest)
 }
 
-pub(crate) fn format_usage_stderr(message: &str) -> String {
-    format!("gxr-cli: {message}\n{USAGE}\n")
-}
-
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
@@ -119,7 +115,7 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Err(Failure::Usage(message)) => {
-            eprint!("{}", format_usage_stderr(&message));
+            eprintln!("gxr-cli: {message}\n{USAGE}");
             ExitCode::from(1)
         }
     }

@@ -440,7 +440,7 @@ fn begin_batch_cmd(args: &[String]) -> Result<String, Failure> {
         })();
         let row_json = match row_res {
             Ok(state) => Json::object([("exit", Json::Int(0)), ("state", state)]),
-            Err(err) => common::failure_row_json(&err),
+            Err(err) => common::failure_row_json(&err, crate::USAGE),
         };
         lines.push(row_json.render());
     }

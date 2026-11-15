@@ -26,7 +26,9 @@ pub struct Output {
 }
 
 /// JSON line payload for a failed batch row, preserving the single-file CLI exit code & error body.
-pub fn failure_row_json(err: &Failure) -> Json {
+/// `usage` is the caller's usage text, so that this file stays free of `main.rs` items (test drivers
+/// such as `tests/support/hdr_cli_npy_order.py` mount `common.rs` with their own `main.rs`).
+pub fn failure_row_json(err: &Failure, usage: &str) -> Json {
     match err {
         Failure::Core(e) => {
             let err_obj = Json::object([
@@ -37,7 +39,7 @@ pub fn failure_row_json(err: &Failure) -> Json {
         }
         Failure::Usage(msg) => Json::object([
             ("exit", Json::Int(1)),
-            ("stderr", Json::str(crate::format_usage_stderr(msg))),
+            ("stderr", Json::str(format!("gxr-cli: {msg}\n{usage}\n"))),
         ]),
     }
 }
