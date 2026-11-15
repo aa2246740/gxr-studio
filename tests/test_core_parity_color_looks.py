@@ -2,17 +2,19 @@
 
 Covers PORT-WAVE-1 Amendments 1-4 and UNIT-color-oracle:
 - Gate A: Rust `color-bake` float32 bytes == sequential oracle bytes exact, zero masks.
+- Real Python float64 full-grid check: production `chain.bake_chroma` (`table.forward`) float64 gains
+  for every cell are compared against the sequential oracle within 1e-12 relative.
 - Gate B: any Python float32 diff only where Gate A holds, mechanically attributed (or_f64,
   py_f64 batched/single, midpoint side, and host negative control reproducing Python's value).
-- Coverage: every builtin, Look, record, and user recipe across all real DATs under
-  GXR_STUDIO_TEST_PARENT on jlaunch (ISO 200 & 1600), qlaunch (ISO 200), and l08firm (ISO 200),
-  at defaults (step=0.375) and ±max per control (step=2.0), plus explicit g158 M9 STD / instax
-  mini / QianXi A checks at step=0.375.
+- Coverage: daily suite runs negative controls (host BLAS/libm/FMA & 1e-10 injection), explicit
+  g158 M9 STD / instax mini / QianXi A checks at step=0.375, and `lut-libm` checks; the full
+  26-DAT sweep (`test_all_real_dats_*`) is gated on `GXR_COLOR_DAT_SWEEP=1`.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -304,6 +306,13 @@ def test_g158_reported_looks_default_and_minmax(tmp_path: Path, look_name: str) 
     assert failures == [], "\n".join(failures)
 
 
+_SWEEP_SKIP = pytest.mark.skipif(
+    os.environ.get("GXR_COLOR_DAT_SWEEP") != "1",
+    reason="26-DAT full sweep skipped by default (set GXR_COLOR_DAT_SWEEP=1 to run; see docs/mobile.md)",
+)
+
+
+@_SWEEP_SKIP
 @pytest.mark.parametrize(("unit_name", "u", "iso"), MODELS, ids=MODEL_IDS)
 def test_all_real_dats_base_recipes_step_0375(tmp_path: Path, unit_name: str, u: int, iso: int) -> None:
     """Every unique builtin/Look/record/user base entry of all real DATs at step=0.375 on each model."""
@@ -312,6 +321,7 @@ def test_all_real_dats_base_recipes_step_0375(tmp_path: Path, unit_name: str, u:
     _run_bake_cases(tmp_path, base_cases, u, iso, 0.375)
 
 
+@_SWEEP_SKIP
 @pytest.mark.parametrize(
     ("unit_name", "u", "iso", "part"),
     [(*m, p) for m in MODELS for p in (0, 1)],

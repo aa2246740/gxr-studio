@@ -185,8 +185,12 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 ### 精度
 
 - 整数、字符串、错误种类和文案：一样。
-- 烘焙表（Gate A / Gate B，PORT-WAVE-1 Amendments 1–3）：`color_parity.bake_gate`（基于 `tests/support/color_oracle*.py` 的无 BLAS/LAPACK/FMA 顺序 Python oracle，初等函数经 `gxr_math`/libm、`np.interp` 走 `interp_1d_seq`）校验 float64 全网格相对误差 `<= 1e-12·max(1,|a|)`；**Gate A** 要求 Rust 与顺序 oracle 的 float32 字节**逐位相等**，无掩码；**Gate B** 只允许真实 Python 与 Rust 在 Gate A 通过的格点上差值，并机械归因（oracle 与 Python 批量/单格 float64 值、各自落在 float32 舍入中点的哪一侧、以及恢复宿主 BLAS/FMA/libm 路径后精确复现 Python float32 的负对照；虚部极小近零分量 `|py| < 1e-4` 须满足 float64 `1e-12` 门限且负对照复现 Python）。套用和 `predict(quantize=True)`：uint8 一样，没有 ±1 余量。
-- 覆盖范围（`tests/test_core_parity_color_looks.py`）：对 `GXR_STUDIO_TEST_PARENT` 下全部 26 份真实 DAT 的每个 builtin、Look、record 与 user 配方，在 `jlaunch`（ISO 200 与 1600）、`qlaunch`（ISO 200）和 `l08firm`（ISO 200）合成校准包上测试默认（`step=0.375`）与各旋钮 ±max 极值（`step=2.0`），并显式校验原失败 Looks（`g158` `M9 STD`、`instax mini`、`QianXi A`）。
+- 烘焙表（Gate A / Gate B，PORT-WAVE-1 Amendments 1–3）：`color_parity.bake_gate`（基于 `tests/support/color_oracle*.py` 的无 BLAS/LAPACK/FMA 顺序 Python oracle，初等函数经 `gxr_math`/libm、`np.interp` 走 `interp_1d_seq`）在每次调用时都通过生产路径 `chain.bake_chroma`（4096 格分块调用真实 `table.forward`）捕获 cast 前的完整 float64 增益网格，无论 `float32` 是否相同或是否传入 `grid_cache`，均强制校验整张网格对顺序 oracle 的相对误差 `<= 1e-12·max(1,|a|)`（含 NaN/inf 规则，并有注入 `1e-10` 漂移的负对照）；**Gate A** 要求 Rust 与顺序 oracle 的 float32 字节**逐位相等**，无掩码；**Gate B** 只允许真实 Python 与 Rust 在 Gate A 通过的格点上差值，并机械归因（oracle 与 Python 批量/单格 float64 值、各自落在 float32 舍入中点的哪一侧、以及恢复宿主 BLAS/FMA/libm 路径后精确复现 Python float32 的负对照；虚部极小近零分量 `|py| < 1e-4` 须满足 float64 `1e-12` 门限且负对照复现 Python）。套用和 `predict(quantize=True)`：uint8 一样，没有 ±1 余量。
+- 覆盖范围（`tests/test_core_parity_color_looks.py`）：日常对拍（`make check` / 默认 pytest）运行合成烘焙对拍、负对照（恢复宿主核与 `1e-10` 注入）、`lut-libm` 边界检查（`atan2`/`hypot` 仅限 `--stream` tag 7/8，文件模式 `--op` 拒绝）以及 3 个回归 Looks（`g158` `M9 STD`、`instax mini`、`QianXi A`，`step=0.375` 默认与各旋钮 ±max）。全量 26 份真实 DAT 扫描（`test_all_real_dats_base_recipes_step_0375` 与 `test_all_real_dats_knobs_minmax_step_2`，在 `jlaunch` ISO 200/1600、`qlaunch` ISO 200、`l08firm` ISO 200 上测全部 builtin、Look、record 与 user 默认与 ±max，约 1 小时）仅在 `GXR_COLOR_DAT_SWEEP=1` 时执行；未设该变量时即使 `GXR_REQUIRE_SAMPLES=1` 也直接跳过。触及 `gxr-color` 或色彩测试的合并门槛显式运行：
+
+```sh
+GXR_COLOR_DAT_SWEEP=1 GXR_REQUIRE_CORE=1 GXR_REQUIRE_SAMPLES=1 uv run --frozen python -I -m pytest -q tests/test_core_parity_color.py tests/test_core_parity_color_looks.py
+```
 - 未量化的 `predict` 和增益：`|a−b| ≤ 1e-12·max(1,|a|)`。
 - 运算都是顺序的乘加，不融合。numpy 在这台机器上会融合，也会用分块的 BLAS；这些差在 float64 的末位，跨过 float32 舍入中点时由上面的 Gate B 机械归因（PORT-NOTES §2b）。
 - 复数除法照 numpy 的写法：先选分支，再乘倒数 `1/(br + bi·rat)`，不是直接除。
