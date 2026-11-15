@@ -135,11 +135,10 @@ def _run_bake_cases(
         if stock04 not in pack_map:
             pk, mdl = _make_pack(tmp_path / f"pk_{len(pack_map)}", stock04, u, iso)
             c_seq = co.build_grid_cache(mdl, step, use_libm=True, use_seq_matmul=True, use_seq_cplx=True)
-            c_host = co.build_grid_cache(mdl, step, use_libm=False, use_seq_matmul=False, use_seq_cplx=False)
-            pack_map[stock04] = (pk, mdl, c_seq, c_host)
-        pk, mdl, c_seq, c_host = pack_map[stock04]
+            pack_map[stock04] = (pk, mdl, c_seq, c_seq)
+        pk, mdl, c_seq, _c_unused = pack_map[stock04]
         py, rs = cp.bake(work, pk, entry, params=params)
-        err, allowed = cp.bake_gate(py, rs, mdl, entry, grid_cache=c_seq, host_cache=c_host)
+        err, allowed = cp.bake_gate(py, rs, mdl, entry, grid_cache=c_seq)
         fam_total[family] = fam_total.get(family, 0) + 1
         if err is not None:
             fam_gate_a_fail[family] = fam_gate_a_fail.get(family, 0) + 1
@@ -202,6 +201,62 @@ def test_oracle_negative_controls_restoring_host_kernels_fail(tmp_path: Path) ->
     assert np.array_equal(p_seq[:, 0], interp_1d_seq(np.arange(4096, dtype=np.float64), xs, ys))
 
 
+def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path) -> None:
+    """Injecting 1e-10 into real `table.forward` (with float32 unchanged) must fail `bake_gate` (Sol r1 P1)."""
+    from gxr_studio.gpu import tables
+    from gxr_studio.render import chain
+
+    require_cli()
+    pack = cp.synthetic_pack(tmp_path / "pk", rows=4)
+    model = pack.model()
+    entry = cf.entry(words=2, tilt=5)
+    work = tmp_path / "w"
+    work.mkdir()
+    py, rust = cp.bake(work, pack, entry, params={"step": 2.0})
+    assert not isinstance(py, BaseException) and not isinstance(rust, cp.CoreCliError)
+    cache = co.build_grid_cache(model, 2.0)
+    host_cache = co.build_grid_cache(model, 2.0, use_libm=False, use_seq_matmul=False, use_seq_cplx=False)
+    ok_err, _ok_allowed = cp.bake_gate(py, rust, model, entry, grid_cache=cache, host_cache=host_cache)
+    assert ok_err is None, ok_err
+
+    original_forward = model.engine.table.forward
+    calls = 0
+    injected = 0
+
+    def capturing_forward(probes: np.ndarray, z: Any) -> Any:
+        nonlocal calls, injected
+        calls += 1
+        result = original_forward(probes, z)
+        g = result[0] / probes
+        eligible = (np.abs(g.real) > 0.1) & (np.abs(g.imag) > 0.01)
+        target = np.where(eligible, (g.real + 1e-10) + 1j * g.imag, g)
+        candidate = target * probes
+        actual_candidate = candidate / probes
+        same32 = (actual_candidate.real.astype(np.float32) == g.real.astype(np.float32)) & (
+            actual_candidate.imag.astype(np.float32) == g.imag.astype(np.float32)
+        )
+        chosen = eligible & same32
+        injected += int(np.count_nonzero(chosen))
+        return (np.where(chosen, candidate, result[0]), *result[1:])
+
+    model.engine.table.forward = capturing_forward
+    try:
+        mutated_bk = chain.bake_chroma(model, entry, 2.0, workers=1)
+        mutated_data, mutated_meta = tables.bake_bytes(mutated_bk)
+        assert injected > 0 and mutated_data == py[0], "negative control must keep float32 bytes unchanged"
+        calls_before = calls
+        err_cached, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk), rust, model, entry, grid_cache=cache, host_cache=host_cache)
+        calls_after_cached = calls
+        err_auto, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk), rust, model, entry)
+        calls_after_auto = calls
+        assert calls_after_cached > calls_before, "cached bake_gate must invoke production table.forward"
+        assert calls_after_auto > calls_after_cached, "auto-cache bake_gate must invoke production table.forward"
+        assert err_cached is not None and "1e-12" in err_cached, err_cached
+        assert err_auto is not None and "1e-12" in err_auto, err_auto
+    finally:
+        model.engine.table.forward = original_forward
+
+
 @pytest.mark.parametrize("look_name", ["instax mini", "QianXi A", "M9 STD"])
 def test_g158_reported_looks_default_and_minmax(tmp_path: Path, look_name: str) -> None:
     """Explicitly check g158 M9 STD, instax mini, and QianXi A on jlaunch ISO 200 (seed=3) at defaults & ±max."""
@@ -236,13 +291,12 @@ def test_g158_reported_looks_default_and_minmax(tmp_path: Path, look_name: str) 
     assert cases, f"no entries found for {look_name}"
     pack, mdl = _make_pack(tmp_path / "pk_s3", stock04, 0, 200, seed=3)
     c_seq = co.build_grid_cache(mdl, 0.375)
-    c_host = co.build_grid_cache(mdl, 0.375, use_libm=False, use_seq_matmul=False, use_seq_cplx=False)
     work = tmp_path / "w"
     work.mkdir()
     failures: list[str] = []
     for _st, entry, _fam, label in cases:
         py, rs = cp.bake(work, pack, entry)
-        err, allowed = cp.bake_gate(py, rs, mdl, entry, grid_cache=c_seq, host_cache=c_host)
+        err, allowed = cp.bake_gate(py, rs, mdl, entry, grid_cache=c_seq)
         if err is not None:
             failures.append(f"{label}: {err}")
         for line in allowed:

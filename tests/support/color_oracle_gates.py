@@ -149,7 +149,8 @@ def _unpack_bake(res: tuple[Any, ...]) -> tuple[bytes, dict[str, Any], Any | Non
     return res[0], res[1], res[2]
 
 
-_GRID_CACHE: dict[tuple[Any, ...], tuple[OracleGridCache, OracleGridCache]] = {}
+_GRID_CACHE: dict[tuple[Any, ...], OracleGridCache] = {}
+_TODO_CACHE: dict[tuple[bytes, float], tuple[int, int, tuple[float, float], np.ndarray]] = {}
 
 
 def _cache_key(model: UnitModel, step: float, backend: str) -> tuple[Any, ...]:
@@ -167,7 +168,7 @@ def _cache_key(model: UnitModel, step: float, backend: str) -> tuple[Any, ...]:
     return (h.hexdigest(), float(t.s0), float(t.kappa), str(t.kernel), float(t.k), float(step), backend)
 
 
-def _cached_grids(model: UnitModel, step: float) -> tuple[OracleGridCache, OracleGridCache]:
+def _cached_grid(model: UnitModel, step: float) -> OracleGridCache:
     from support.color_oracle import build_grid_cache
 
     key = _cache_key(model, step, libm_backend())
@@ -177,9 +178,76 @@ def _cached_grids(model: UnitModel, step: float) -> tuple[OracleGridCache, Oracl
     if len(_GRID_CACHE) >= 8:
         _GRID_CACHE.pop(next(iter(_GRID_CACHE)))
     seq_c = build_grid_cache(model, step, use_libm=True, use_seq_matmul=True, use_seq_cplx=True)
-    host_c = build_grid_cache(model, step, use_libm=False, use_seq_matmul=False, use_seq_cplx=False)
-    _GRID_CACHE[key] = (seq_c, host_c)
-    return seq_c, host_c
+    _GRID_CACHE[key] = seq_c
+    return seq_c
+
+
+def _production_todo(model: UnitModel, entry: bytes, step: float) -> tuple[int, int, tuple[float, float], np.ndarray]:
+    from scipy.spatial import ConvexHull
+
+    factory = getattr(model, "factory", entry)
+    key = (bytes(factory[216:244]), float(step))
+    cached = _TODO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    lookup = model.mm.MatrixRow.from_bytes(factory[216:244])
+    lm = lookup.effective(100.0)
+    lo_off = lookup.offsets - np.array([0.0, 128.0, 128.0])
+    corners = np.array([[r, g, b] for r in (0, 255) for g in (0, 255) for b in (0, 255)], np.float64) @ lm.T + lo_off
+    lo = np.floor(corners[:, 1:].min(axis=0) / step) * step - step
+    hi = np.ceil(corners[:, 1:].max(axis=0) / step) * step + step
+    nx, ny = int(round((hi[0] - lo[0]) / step)) + 1, int(round((hi[1] - lo[1]) / step)) + 1
+    cb = lo[0] + step * np.arange(nx)
+    cr = lo[1] + step * np.arange(ny)
+    c = (cb[None, :] + 1j * cr[:, None]).reshape(-1)
+    hull = ConvexHull(corners[:, 1:])
+    near = np.all(
+        hull.equations[:, :2] @ np.column_stack([c.real, c.imag]).T + hull.equations[:, 2:3] <= 2.0 * step * np.sqrt(2.0),
+        axis=0,
+    )
+    val = (nx, ny, (float(lo[0]), float(lo[1])), np.flatnonzero(near))
+    if len(_TODO_CACHE) >= 16:
+        _TODO_CACHE.pop(next(iter(_TODO_CACHE)))
+    _TODO_CACHE[key] = val
+    return val
+
+
+def _real_python_bake_f64(model: UnitModel, entry: bytes, step: float) -> tuple[chain.ChromaBake, np.ndarray]:
+    """Run production `chain.bake_chroma` (4096-cell batched `table.forward`) and capture float64 gains before float32 cast."""
+    table = model.engine.table
+    orig_forward = table.forward
+    batch_gains: list[np.ndarray] = []
+
+    def capturing_forward(probes: np.ndarray, z: Any) -> Any:
+        res = orig_forward(probes, z)
+        batch_gains.append(res[0] / probes)
+        return res
+
+    table.forward = capturing_forward
+    try:
+        bk = chain.bake_chroma(model, entry, step, workers=1)
+    finally:
+        table.forward = orig_forward
+
+    ny, nx = bk.gain.shape[:2]
+    if entry[0] == 3:
+        gain_f64 = np.empty((ny, nx, 2), dtype=np.float64)
+        gain_f64[..., 0] = 1.0
+        gain_f64[..., 1] = 0.0
+        return bk, gain_f64
+
+    p_nx, p_ny, p_origin, todo = _production_todo(model, entry, step)
+    if (p_nx, p_ny) != (nx, ny) or p_origin != bk.origin:
+        raise RuntimeError(f"production grid mismatch: {(p_nx, p_ny, p_origin)} vs {(nx, ny, bk.origin)}")
+    cat = np.concatenate(batch_gains) if batch_gains else np.empty(0, dtype=np.complex128)
+    if len(cat) != len(todo):
+        raise RuntimeError(f"captured {len(cat)} forward gains != {len(todo)} todo cells")
+    gain_c = np.ones(nx * ny, dtype=np.complex128)
+    gain_c[todo] = cat
+    gain_f64 = np.stack([gain_c.real, gain_c.imag], axis=-1).reshape(ny, nx, 2)
+    if not np.array_equal(gain_f64.astype(np.float32), bk.gain, equal_nan=True):
+        raise RuntimeError("captured float64 gain grid cast to float32 does not match ChromaBake.gain")
+    return bk, gain_f64
 
 
 def bake_gate(
@@ -192,6 +260,7 @@ def bake_gate(
     host_cache: OracleGridCache | None = None,
 ) -> tuple[str | None, list[str]]:
     """Gate A (Rust == sequential oracle exact, zero masks) and Gate B (mechanical host attribution vs Python)."""
+    _ = host_cache  # kept for caller signature compatibility; real Python f64 check always runs via chain.bake_chroma
     data, meta, bk = _unpack_bake(py)
     r_data, r_meta, summary = _unpack_bake(rust)
     if isinstance(summary, dict) and "bytes" in summary and summary["bytes"] != len(r_data):
@@ -205,29 +274,16 @@ def bake_gate(
 
     step = float(meta["step"])
     if grid_cache is None:
-        cached_seq, cached_host = _cached_grids(model, step)
-        grid_cache = cached_seq
-        if host_cache is None:
-            host_cache = cached_host
+        grid_cache = _cached_grid(model, step)
     or_data, or_meta, or_bk, or_gain_f64 = oracle_bake_chroma(model, entry, step, grid_cache=grid_cache)
     for key in ("nx", "ny", "origin", "step"):
         if or_meta[key] != r_meta[key]:
             return f"Gate A oracle meta {key}: oracle {or_meta[key]!r} rust {r_meta[key]!r}", []
 
-    if host_cache is not None:
-        _h_data, _h_meta, _h_bk, h_gain_f64 = oracle_bake_chroma(
-            model,
-            entry,
-            step,
-            grid_cache=host_cache,
-            use_libm=False,
-            use_seq_matmul=False,
-            use_seq_cplx=False,
-            use_seq_interp=False,
-        )
-        rel_err = float64_rel_gap(h_gain_f64, or_gain_f64)
-        if rel_err is not None:
-            return f"Oracle vs Python host float64 > 1e-12 rel: {rel_err}", []
+    _real_bk, real_gain_f64 = _real_python_bake_f64(model, entry, step)
+    rel_err = float64_rel_gap(real_gain_f64, or_gain_f64)
+    if rel_err is not None:
+        return f"Real Python vs Oracle float64 > 1e-12 rel: {rel_err}", []
 
     or_f32 = np.frombuffer(or_data, "<f4")
     rs_f32 = np.frombuffer(r_data, "<f4")
