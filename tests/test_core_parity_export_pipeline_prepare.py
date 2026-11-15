@@ -39,6 +39,7 @@ from gxr_studio.render.service import RenderService
 from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import first_difference, real_pairs
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
+from support.samples import missing
 
 
 @pytest.fixture(autouse=True)
@@ -143,7 +144,7 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
 
     pairs = real_pairs(18)
     if not pairs:
-        pytest.skip("no real captures under GXR_STUDIO_TEST_PARENT")
+        missing("captures/ 真实样本不在本机（export-pipeline）")
     render = RenderService(settings.home_dir, lib)
     frame_def, stamp_def = load_defaults(render.home)
     tally = {"no_ink": 0, "ink": 0, "original": 0}
@@ -283,7 +284,7 @@ def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> 
 
     pairs = real_pairs(6)
     if not pairs:
-        pytest.skip("no real captures under GXR_STUDIO_TEST_PARENT")
+        missing("captures/ 真实样本不在本机（export-pipeline）")
     render = RenderService(settings.home_dir, lib)
     crops: list[tuple[Any, Any]] = [
         (None, None),

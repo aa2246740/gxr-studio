@@ -23,6 +23,7 @@ from gxr_studio.finish.compose import load_jpeg
 from gxr_studio.finish.serve import _fit
 from support.core_cli import error_of, require_cli, run_json
 from support.export_pipeline_cases import first_difference, real_pairs, source_exif_json, synthetic_images, synthetic_source
+from support.samples import missing
 
 QUALITIES = (95, 85, 70)
 
@@ -82,7 +83,7 @@ def test_huffopt_equals_pillow_optimize(quality: int, tmp_path: Path) -> None:
 def test_huffopt_real_arrays(tmp_path: Path) -> None:
     pairs = real_pairs(6)
     if not pairs:
-        pytest.skip("no real captures under GXR_STUDIO_TEST_PARENT")
+        missing("captures/ 真实样本不在本机（export-pipeline）")
     for i, (jpg, _dng) in enumerate(pairs):
         rgb = load_jpeg(jpg, None)
         for quality in QUALITIES:
@@ -196,7 +197,7 @@ def test_complete_synthetic_equals_write_rgb_with_exif(quality: int, long_edge: 
 def test_complete_real_arrays(tmp_path: Path, pinned_icc: bytes) -> None:
     pairs = real_pairs(8)
     if not pairs:
-        pytest.skip("no real captures under GXR_STUDIO_TEST_PARENT")
+        missing("captures/ 真实样本不在本机（export-pipeline）")
     labels = LABEL_SETS[0]
     for i, (jpg, dng) in enumerate(pairs):
         rgb = load_jpeg(jpg, None)

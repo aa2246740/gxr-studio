@@ -1,6 +1,6 @@
 """Shared helpers for ``tests/test_core_parity_export_pipeline*.py``.
 
-Real samples come from ``GXR_STUDIO_TEST_PARENT/captures`` (never copied into the repo). EXIF values
+Real samples come from ``support.samples.captures()`` (never copied into the repo). EXIF values
 from real photos are compared without printing them: a mismatch reports tag ids and hashes only.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +17,9 @@ from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
 from gxr_studio.export import source_exif
+from support.samples import captures
 
-_STUDIO = Path(__file__).resolve().parents[2]
-PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
-CAPTURES = PARENT / "captures"
+CAPTURES = captures()
 
 
 def exif_val_json(v: Any) -> Any:
