@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -60,6 +61,8 @@ def test_cleared_records_do_not_carry_over():
 
 def test_a_rejected_connection_does_not_mark_the_next_test(tmp_path):
     (tmp_path / "conftest.py").write_text((Path(__file__).parent / "conftest.py").read_text(encoding="utf-8"), encoding="utf-8")
+    # conftest imports support.samples, so the copied conftest needs its helpers next to it
+    shutil.copytree(Path(__file__).parent / "support", tmp_path / "support", ignore=shutil.ignore_patterns("__pycache__"))
     script = tmp_path / "test_records.py"
     script.write_text(
         "import socket, pytest\n"

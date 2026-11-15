@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +20,10 @@ from gxr_studio.finish.spec import FRAME_STYLES, FrameSpec, Geometry, StampSpec
 from gxr_studio.raw.dng import RawDecodeError, open_dng
 from gxr_studio.raw.render import render_half
 from gxr_studio.render.params import EditState, parse_adjust, parse_curve
+from support import samples as sample_files
 from support.core_cli import error_of, require_cli, run_json
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
-CAPTURES = _PARENT / "captures"
+CAPTURES = sample_files.captures()
 
 
 def _synth_rgb(w: int, h: int, seed: int = 7) -> np.ndarray:
@@ -463,7 +461,7 @@ def test_finish_array_real_photos_parity(tmp_path: Path) -> None:
     require_cli()
     samples = _real_capture_inputs(limit=24)
     if len(samples) < 20:
-        pytest.skip(f"need >= 20 real images in {CAPTURES}, got {len(samples)}")
+        sample_files.missing(f"need >= 20 real images in {CAPTURES}, got {len(samples)}")
     curve_a = {"master": [[0, 6], [84, 72], [184, 202], [255, 250]]}
     curve_b = {"master": [[0, 0], [128, 138], [255, 255]], "r": [[0, 0], [120, 140], [255, 255]], "b": [[0, 10], [128, 112], [255, 248]]}
     for idx, (name, rgb, from_raw) in enumerate(samples):

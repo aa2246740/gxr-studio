@@ -15,6 +15,7 @@ from gxr_studio.camdata import store
 from gxr_studio.camdata.recipe_tags import parse_recipe_tag, recipe_payload
 from gxr_studio.render.camera_recipe import recorded_recipe
 from gxr_studio.render.recipes import CameraData
+from support import samples
 from test_datcodec import reseal
 from test_recipe_tag_render import SyntheticCamera
 from test_recipe_tags import sample
@@ -112,7 +113,7 @@ def test_all_69_default_records_match_both_studio_and_reviewed_firmware_generati
 def test_field_raw_and_jpg_tags_agree_and_unknown_positions_remain_unnamed(tmp_path, generation):
     captures = t.REPO / "captures/g181-field-20261110"
     if not captures.is_dir():
-        pytest.skip("g181 成对实拍文件不在本机")
+        samples.missing("g181 成对实拍文件不在本机")
     raw, library = need_bundle(generation)
     store.import_from_dat(raw, tmp_path, library=library)
     pairs = verifier().verify_pairs(CameraData(tmp_path), captures)

@@ -162,6 +162,10 @@ gxr-cli color-predict --entry E.bin --stock STOCK04.bin --ctx C.npz --ring R.jso
 gxr-cli color-bake --entry E.bin --stock STOCK04.bin --ctx C.npz --ring R.json [--params P.json] [--menu final.json] --out BAKE.bin --meta META.json
 gxr-cli color-apply --bake BAKE.bin --meta META.json --codes IN.npy [--params P.json] --out OUT.npy
 gxr-cli color-tones --params P.json --out TABLE.npy
+gxr-cli color-parse-edit --json EDIT.json
+gxr-cli color-listing [--dat GXRCE.DAT [--library GXRFX.BIN]]
+gxr-cli color-controls [--dat GXRCE.DAT [--library GXRFX.BIN]] --unit U --slot S
+gxr-cli color-resolve --dat GXRCE.DAT [--library GXRFX.BIN] (--recipe R.json | --default --unit U)
 ```
 
 - `color-knobs-apply`：`P.json` 有 `levels` 时走菜单（还要 `unit`、`slot`，级别必须是整数）；没有时用 `amount`（默认 100）、`doses`（10 个整数）、`wb_method`、`tone_method`。`--stock` 省略时和底子相同。输出 552 字节，标准输出是 `out`、`length` 和 `stats`。`amount == 0` 仍会重写 CRC。
@@ -170,7 +174,9 @@ gxr-cli color-tones --params P.json --out TABLE.npy
 - `color-predict`：默认是 `UnitModel.predict`（先 `input_codes`，色相查找用原厂矩阵行）；`--base` 是 `Model.predict`（不做输入映射，按配方色度 `forward`）。码值 `.npy` 是 float32 或 float64，最后一维是 3，dtype 按 Python 的规则参与运算。默认输出 uint8，`--float` 输出夹紧后未量化的 float64。
 - `color-bake`：`P.json` 是 `{"step": 0.375, "knobs": {...}}`，都可省。有 `knobs` 时先 `knobs.apply(stock, entry, …)`，这时要给 `--menu`。`BAKE.bin` 就是 `bake_bytes` 的 float32 表（布局见 `common.wgsl`）。标准输出是 `bytes`、`sha256` 和 `meta`。
 - `color-apply`：`chroma_u8`。`P.json` 是 `{"adjust": {...}, "curves": {...}}`，都可省；增益来自 `channel_gains`，调子表来自 `display_table`。
-- `color-tones`：输出 `gains`（或 null），调子表写成 float32 `.npy`（或 `table: null`）。`adjust` 和 `curves` 是 `parse_adjust` / `parse_curve` 之后的值；解析本身在第二波（编辑解析）。
+- `color-tones`：输出 `gains`（或 null），调子表写成 float32 `.npy`（或 `table: null`）。`adjust` 和 `curves` 是 `parse_adjust` / `parse_curve` 之后的值。
+- `color-parse-edit`：`resolve::parse_edit_state` 只解析 `recipe`、`adjust`、`curve` 和可选 `lut`（不包含桌面 `render/edits.py:parse_edit` 里的 `geometry`、`border`/`frame`、`stamp`），输出标准化后的对象以及 `canonical` 和 `digest`。
+- `color-listing` / `color-controls` / `color-resolve`：无 `--dat` 时按内嵌菜单输出（`color-listing`、`color-controls`）；提供 `GXRCE.DAT`（和可选 `GXRFX.BIN`）时按机内配方表解析列表、控件或目标 `552` 字节条目、`entry_sha256` 与 `knobs` 请求。`EditError` 按 `{"error":{"kind","message","detail"}}` 返回。
 
 ### meta 多了 `input_coefficients`
 
@@ -196,12 +202,12 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 - `model_for`：版本、单元、清单、改动 kind `calib`，原厂 04 不匹配 kind `stock_mismatch`。包里缺文件 kind `file_not_found`，文案不和 Python 的 `FileNotFoundError` 逐字相同。
 - 预测和烘焙：`ValueError` 的文案相同（不对称色表行、系数字高位、色相环节点、输入映射尺寸、未知核类型、`需要 v2 pre-table 模型`），色相环缺键 kind `key`。
 - 不和 Python 逐字相同的：八个角张不成面积时 Qhull 报 `QhullError`，这里 kind `qhull`，文案只是一行；条目不是 552 字节（Python 的条目都来自 `datcodec`，永远是 552）；色相环里节点不是 24 个、`gain_per_sector` 不是 1 或 24 个（Python 到预测时才报 numpy 的广播错误，这里构造时就拒绝，文案用节点检查那句）；数字字段不是数字（kind `type`）；网格超过 2^24 格（kind `memory`）。
-- JSON：数组和对象最多嵌套 128 层，进入下一层之前就检查。超出时 kind `json`，文案 `JSON 嵌套太深`，原生和 WASM 一样（Python 的 `json` 会接受更深的输入，这是有意的差别）。
+- JSON：数组和对象最多嵌套 128 层，进入下一层之前就检查，超出时 kind `json`，文案 `JSON 嵌套太深`；编辑与配方解析输入上限为 4 MiB（`MAX_JSON_BYTES`），超出时 kind `json`，文案 `JSON 文件过大`，原生和 WASM 一样（Python 的 `json` 会接受更大、更深的输入，这是有意的差别）。解析器同时保留独立 UTF-16 代理转义（`\uD800`..`\uDFFF`），并在输出 JSON 时按 `\uXXXX` 原样写回。
 - 尺寸：`.npy` 的形状、头部长度和烘焙网格（包括 meta 里的 `nx`、`ny`）都用带检查的 u64 相乘，元素数不超过 2^32−1，分配失败也不 panic。超出时原生和 WASM 给同一句 numpy 文案 `array is too big; …`（kind `value`）。
 
 ### WASM
 
-`color_bake(entry, stock, menu_json, ctx_npz, ring_json, params_json)` 返回 `ColorBake`（`bytes()`、`meta`、`summary`），`color_apply(bake_bin, meta_json, codes_f32, params_json)` 返回 uint8。两者和 CLI 走同一段 `gxr-color` 代码。比较用例在 `mobile/scripts/wasm_cases/color.mjs`，每个输入是一份列出文件的 JSON。
+`color_bake(entry, stock, menu_json, ctx_npz, ring_json, params_json)` 返回 `ColorBake`（`bytes()`、`meta`、`summary`），`color_apply(bake_bin, meta_json, codes_f32, params_json)` 返回 uint8；`color_listing(dat_bytes?, library_bytes?)`、`color_controls(dat_bytes?, unit: f64, slot: f64, library_bytes?)`、`color_resolve(dat_bytes, recipe_json, library_bytes?)` 返回带换行的 JSON 字符串（失败抛出含 `kind`、`message` 和可选 `detail` 的核心错误 JSON）。`color_controls` 会先校验有限整数与 `unit`（0..2）/ `slot`（1..8）范围，避免 JS `Number` 转 `i32` 回绕。比较用例在 `mobile/scripts/wasm_cases/color.mjs`，对拍在 `tests/test_core_parity_resolve.py`（另含完整错误 JSON 与非有限/小数边界对比）。
 
 ## 边框和日期戳（frame）
 
@@ -367,3 +373,36 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 有显卡时，配方卡是这张 RAW 的中性小图（`engine.thumb`，每个版本做一次）；没有显卡时卡片照实写「相机 JPG」或「内嵌预览」。直方图照设计稿的 `hist_svg`：红绿蓝和亮度、平方根纵轴、上限只看内部档位，两端三角在压死或溢出到 0.5% 时点亮；RAW 第一帧、换片和每次调整后数一次，按内容版本合并，静止时不读显卡。裁剪、边框、LUT、曲线四页按 03e–03h 摆好静态控件，全部停用，写「这项下一步做」。
 
 模拟器截图走开发服务器：`?shot=start|grid|editor|drag` 从样本端点读 DNG，摆好那一屏后 POST `/__dev/report/shot-<名字>`（写进不进仓库的 `mobile/.reports/`），截图脚本等这个文件出现再截。生产包里没有这段。
+
+## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
+
+移植的是导出时「从哪张图开始」：`finish/serve.py` 的 `color_image` 和 `_raw_rgb`（只有 `full=True`）、`render/service.py` 的 `plan` 和不精确的 `renderer`、`raw/render.py` 的 `render_full`（任意渲染器）、`lut/photo.py` 的 `color_image`。不移植 `exact_u8`（精确导出）、电脑图库里的本机配方、近似配方（`approx.ENABLED` 是 False）和预览路径。
+
+桌面版从应用数据目录读相机数据和校准包，手机直接拿用户选的文件：DAT（r5 卡另带 GXRFX.BIN）、校准包里的每个文件、相机 JPG 和内嵌预览（浏览器解码好的 uint8，JPG 已按 EXIF 转正），以及解析后的配方条目（编辑解析那一单元的输出）。
+
+| 命令 | 输入 | 输出 |
+| --- | --- | --- |
+| `source-plan` | `--shot`、`--edit`，可选 `--dat`/`--library`、`--entry`、`--calib DIR`、`--binding` | `selection`、`plan`（单元、槽、`model_iso`、`calibrated`、`defaulted`、标签、条目 sha256）和 `renderer`（id、标签、写进 EXIF 270 的 `description`） |
+| `source-selection` | `--shot`、`--edit`、`--base` | 这个底图模式会规划哪个配方，调用方据此去解析条目；相机 JPG 时是 `null` |
+| `source-render` | `--dng`、`--entry`、`--stock`、`--unit`、`--calib`、`--iso`、可选 `--adjust` | 全尺寸 uint8 `(H, W, 3)`，已转正 |
+| `source-color-image` | 同上，再加 `--base`、`--jpg`/`--preview`（uint8 `.npy`）、`--cube`/`--space` | `path`（走了哪条路）、`from_raw`、`labels`，图写到 `--out` |
+
+- shot 是 `{"files": {"dng": {"relpath"}, "jpg": {...}}, "lens", "iso"}`，只看有哪些文件、DNG 的文件名、镜头和 ISO。edit 是 `RecipeSel.to_json()`、LUT 的 id，加上 `color-apply` 读的 `adjust`、`curves`。
+- `binding` 是桌面的 `engine_pin()`。它来自应用数据目录里文件的哈希和修改时间，手机没法算出同一个值，所以由调用方给；描述里的这一段因此和桌面不会逐字节相同，除非调用方给的就是桌面那份。
+- 配方渲染按条带走：每次 256 行去马赛克（float32），交给 `chroma_u8`，量化后写进 uint8 输出，没有整幅的浮点数组。LUT 的 Log 路径也按条带：先算这一条带的场景 XYZ（`colour.xyz` 整条带先核对有限），再按 65536 像素一块套 LUT，和 Python 的分块一样。显示域 LUT 对整张 uint8 底图按 65536 像素一块套。
+- 本机配方：Python 先查 RAW+JPG 是否成对（`local_recipe_needs_pair`），再去电脑图库解析。手机没有那个图库，成对时报 `local_recipe_unsupported`（`RenderUnavailable`，state 仍是 `local_recipe`），这是有意的差别。
+- 照搬的 Python 行为：底图模式 `neutral` 在有相机数据和校准时画的是这个单元的原厂 04（电脑模拟），标签却写中性转换，描述是配方的那句英文；没有校准时才是真正的中性转换。`standard` 退回中性转换时不套调整（`from_raw` 为真，后面只做 `apply_extra`）。
+- 错误：`NoRaw` 报 `no_raw`；`RenderUnavailable` 带 `state`；`EditError` 带 `detail`；`RawDecodeError` 按 `export_finish` 改成 `raw_unreadable`（有 JPG）或 `no_jpg_source`，`detail` 是「没有全尺寸传感器数据，也没有更小的预览。」加原因。
+- `render_full` 在分配输出之前做和 `gxr_raw::render_full` 一样的裁切窗口、白平衡和马赛克检查（`check_crop_window` 在 `gxr-raw` 里是私有的，这里照抄了同样的判断和文案），所以坏文件在配方渲染和中性渲染上报同一个错。尺寸用带检查的 u64，元素数不超过 2^32−1，输出缓冲区可失败地申请。
+
+WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_bytes, binding)` 返回和 CLI 一样的 JSON（带换行）；`source_render(dng, name, entry, stock04, unit, calib_index_json, calib_bytes, iso, adjust_json)` 返回 `[h u32][w u32][rgb]`。校准包的格式照 `frame_layout` 的字体：`[[名字, 字节数], …]` 加拼在一起的文件。比较用例在 `mobile/scripts/wasm_cases/source.mjs`。
+
+输入检查（Sol r1 之后），CLI 和 WASM 走同一段代码：
+
+- 0 字节就是没给：空的 `dat`、`library`、`entry` 当作缺省，空的调整当作 `{}`。CLI 的空文件和 WASM 的空数组结果一样。
+- 条目和原厂 04 必须正好 552 字节，在求哈希、规划或渲染之前检查，错误是 `value`／`entry must be 552 bytes`。
+- 解码好的相机 JPG 和内嵌预览在公共 `color_image` 入口先查：宽高大于 0、3 个通道、`h*w*3` 用带检查的 u64 算且不超过 2^32−1、字节数正好相符，然后才复制或套 LUT。CLI 读 `--jpg`/`--preview` 的 `.npy` 时，解析完头就用同一个 `check_rgb_shape` 查声明的形状和 payload 长度，不通过就报错，不复制像素；通过的像素留在读文件的那块缓冲里。
+- 调整解析之后再查有限值：曝光是 NaN 或 ±Infinity 时报 `bad_adjust`／「请求无效。请刷新页面后重试。」，曲线点非有限时报 `bad_curve`，文案和 Python 的 `parse_adjust`、`_parse_points` 一样。
+- WASM 的 `iso` 按 f64 接收（CLI 把文本读成同一个数），先查有限、是整数、绝对值不超过 2^53，再变成整数；`NaN`、`Infinity`、`1.5` 报 `bad_request`／`iso 要是整数`，超过 2^53 报 `iso 超出范围`。
+
+对拍在 `tests/test_core_parity_export_source.py`：相机数据用上层项目的 g127 DAT（`GXR_STUDIO_TEST_PARENT`），校准包是合成的（`color_fixtures` 生成，用 `import_calibration` 写），机主的校准来源在本机时另跑 3 张，不打印内容。配方渲染、标签、`from_raw`、错误都要求完全相同；LUT 照 lut 单元的 Gate A / Gate B（顺序 oracle、边界点、机械归因）。
