@@ -10,8 +10,9 @@ toolchain as the ``rustc`` that links the probe, and takes the rlib paths from c
 
 It builds ``-p gxr-cli``, the same unit ``make core`` builds, and reads the artifacts of
 its dependencies ``gxr-finish`` and ``gxr-raw``. Two reasons not to ask for
-``-p gxr-finish -p gxr-raw`` directly: feature unification then differs from ``make core``,
-so cargo compiles a second set of rlibs instead of doing nothing; and for root packages
+``-p gxr-finish -p gxr-raw`` directly: building the libraries as root packages produces
+another set of rlibs (a different profile fingerprint) instead of reusing ``make core``'s
+dependency artifacts; and for root packages
 cargo reports the unhashed copy ``target/release/libgxr_raw.rlib``, which every root
 build overwrites, instead of the hashed file in ``deps/``. When ``make core`` is up to
 date, this cargo run does nothing, and the probe links the very rlibs ``gxr-cli`` linked.
