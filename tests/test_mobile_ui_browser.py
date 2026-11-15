@@ -405,6 +405,21 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
         path = tmp_path / f"{name}.zip"
         path.write_bytes(calib_export.zip_bytes(files, (2026, 11, 15, 9, 0, 0)))
         bad[name] = str(path)
+    # Sol r4：某个 ISO 分支缺 ctx / ring（或整个为空）的包也要在保存前拒收，不能盖掉好包。
+    for name, drop in {"empty-both": ("200", "1600"), "no-ctx-200": ("200:ctx",), "no-ring-1600": ("1600:ring",)}.items():
+        files = pack_files({"jlaunch": entry(words=0)})
+        listed = json.loads(files["manifest.json"])
+        models = listed["units"]["jlaunch"]["models"]
+        for item in drop:
+            branch, _, key = item.partition(":")
+            if key:
+                del models[branch][key]
+            else:
+                models[branch] = {}
+        files["manifest.json"] = json.dumps(listed).encode()
+        path = tmp_path / f"{name}.zip"
+        path.write_bytes(calib_export.zip_bytes(files, (2026, 11, 15, 9, 0, 0)))
+        bad[name] = str(path)
     manifest = tmp_path / "book.json"
     manifest.write_text(json.dumps({"pack": str(pack), "bad": bad}), encoding="utf-8")
     result = _drive(BOOK_DRIVER, manifest, tmp_path, "", timeout=180)
@@ -444,6 +459,8 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert invalid["bad"]["old-schema"] == {"accepted": False, "error": "校准数据版本已更新，请重新导入", "pack": "good.zip"}
     assert invalid["bad"]["empty-units"] == {"accepted": False, "error": "校准数据的单元不正确", "pack": "good.zip"}
     assert invalid["bad"]["unknown-unit"] == {"accepted": False, "error": "校准数据的单元不正确", "pack": "good.zip"}
+    for name in ("empty-both", "no-ctx-200", "no-ring-1600"):
+        assert invalid["bad"][name] == {"accepted": False, "error": "校准数据的文件清单不正确", "pack": "good.zip"}, name
     # Sol r3：同一张打开的照片反复调旋钮，每张卡只留现在那张，旧的关掉；上限任何时候都成立。
     knob_thumbs = cases["knobThumbs"]
     assert knob_thumbs["oneCard"] == {"entries": 1, "bytes": 192 * 128 * 4, "live": 1, "lastLive": True}

@@ -386,3 +386,28 @@ def test_a_swap_right_after_the_first_check_cannot_redirect(tmp_path: Path, monk
         calib_export.export_for_iphone(home, target, [])
     assert swapped and err.value.code == "bad_destination"
     assert not any(other.iterdir()) and not any((tmp_path / "A-was").iterdir())
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        {"200": {}, "1600": {}},
+        {"200": {"ring": "ring_jlaunch_200.json"}, "1600": {"ctx": "ctx_jlaunch_1600.npz", "ring": "ring_jlaunch_1600.json"}},
+        {"200": {"ctx": "ctx_jlaunch_200.npz", "ring": "ring_jlaunch_200.json"}, "1600": {"ctx": "ctx_jlaunch_1600.npz"}},
+        {"200": {"ctx": "ctx_jlaunch_200.npz", "ring": "ring_jlaunch_200.json"}, "1600": {}},
+        {"200": {"ctx": "ctx_jlaunch_200.npz", "ring": 7}, "1600": {"ctx": "ctx_jlaunch_1600.npz", "ring": "ring_jlaunch_1600.json"}},
+    ],
+)
+def test_a_branch_without_both_ctx_and_ring_is_not_exported(tmp_path: Path, models: dict[str, object]) -> None:
+    """Sol r4：每个 ISO 分支都要有 ctx 和 ring 两项（import_calibration 总是写两项），少一项就是清单不对。"""
+    home = tmp_path / "app"
+    _pack(home, ("jlaunch",))
+    folder = calib.calib_dir(home)
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    manifest["units"]["jlaunch"]["models"] = models
+    (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    dest = tmp_path / "out"
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, dest, [])
+    assert err.value.message == "校准数据的文件清单不正确"
+    assert not dest.exists() or not any(dest.iterdir())

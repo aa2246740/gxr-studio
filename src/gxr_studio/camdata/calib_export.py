@@ -89,7 +89,8 @@ def collect(home: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
             raise _invalid(BAD_LIST, unit)
         for branch in calib.MODEL_ISOS:
             pair = models.get(str(branch))
-            if not isinstance(pair, dict) or not pair:
+            # import_calibration 总是写 ctx 和 ring 两项，导出时两个分支的模型都要建：少一项就用不了。
+            if not isinstance(pair, dict) or not all(isinstance(pair.get(key), str) for key in ("ctx", "ring")):
                 raise _invalid(BAD_LIST, f"{unit}/{branch}")
             for name in pair.values():
                 if not _plain_name(name) or name not in listed:

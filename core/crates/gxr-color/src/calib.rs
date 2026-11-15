@@ -211,10 +211,17 @@ fn manifest_of(manifest: &[u8]) -> Result<Value, CoreError> {
 
 /// `model_for`'s file-list loop for one unit: both ISO branches, every name plain and listed,
 /// present, and matching its sha256. Returns the files it read.
+///
+/// `complete`: each branch must also name both a `ctx` and a `ring` (as strings), else
+/// 校准数据的文件清单不正确. `import_calibration` always writes both, and the desktop export
+/// builds both models, so a pack missing one can't be used; `check_pack` (the import gate) asks
+/// for it. `model_for` does not: Python only reads the chosen branch's `ctx`/`ring` (a missing
+/// one is the `KeyError` below), and the parity tests hold it to that.
 fn branch_files(
     m: &Value,
     meta: &Value,
     read: &dyn Fn(&str) -> Option<Vec<u8>>,
+    complete: bool,
 ) -> Result<Vec<(String, Vec<u8>)>, CoreError> {
     let files = obj_get(m, "files")?;
     let models = obj_get(meta, "models")?;
@@ -227,6 +234,13 @@ fn branch_files(
                 "models entry must be an object",
             ));
         };
+        if complete
+            && ["ctx", "ring"]
+                .iter()
+                .any(|key| !matches!(pair.get(key), Some(Value::Str(_))))
+        {
+            return Err(calib("校准数据的文件清单不正确"));
+        }
         for (_, name) in entries {
             let Value::Str(name) = name else {
                 return Err(calib("校准数据的文件清单不正确"));
@@ -249,7 +263,8 @@ fn branch_files(
 /// The checks of a pack that don't need the camera data, for a pack about to be imported:
 /// `model_for`'s version check, then the unit set as `import_calibration` requires it (not
 /// empty, only known units, else 校准数据的单元不正确), then `model_for`'s file-list checks for
-/// every listed unit. The stock-04 fingerprint and the model build stay in `model_for`.
+/// every listed unit, with both `ctx` and `ring` named in each ISO branch. The stock-04
+/// fingerprint and the model build stay in `model_for`.
 /// Returns the units in `UNIT_ISOS` order.
 pub fn check_pack(
     manifest: &[u8],
@@ -266,7 +281,7 @@ pub fn check_pack(
     let mut out = Vec::new();
     for unit in ["jlaunch", "qlaunch", "l08firm"] {
         if let Some(meta) = units.get(unit) {
-            branch_files(&m, meta, read)?;
+            branch_files(&m, meta, read, true)?;
             out.push(unit.to_string());
         }
     }
@@ -317,7 +332,7 @@ pub fn model_for(
         ));
     }
     let models = obj_get(meta, "models")?;
-    let blobs = branch_files(&m, meta, read)?;
+    let blobs = branch_files(&m, meta, read, false)?;
     let model_iso = if iso >= ISO_SPLIT { 1600 } else { 200 };
     let pair = obj_get(models, &model_iso.to_string())?;
     let name_of = |key: &str| -> Result<String, CoreError> {

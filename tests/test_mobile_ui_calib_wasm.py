@@ -77,6 +77,22 @@ def test_wasm_calib_check_matches_the_cli(tmp_path: Path) -> None:
         manifest["units"] = units
         (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         specs[f"pack-units-{name}"] = {"kind": "calib-pack", "dir": str(folder)}
+    # Sol r4：每个 ISO 分支都要有字符串的 ctx 和 ring；少一项、为空、类型不对、引用清单外的文件都拒收。
+    full = json.loads((good / "manifest.json").read_text(encoding="utf-8"))["units"]["jlaunch"]["models"]
+    variants: dict[str, object] = {
+        "empty-both": {"200": {}, "1600": {}},
+        "no-ctx-200": {"200": {"ring": full["200"]["ring"]}, "1600": full["1600"]},
+        "no-ring-1600": {"200": full["200"], "1600": {"ctx": full["1600"]["ctx"]}},
+        "empty-1600": {"200": full["200"], "1600": {}},
+        "ring-not-text": {"200": {**full["200"], "ring": 7}, "1600": full["1600"]},
+        "unlisted-ref": {"200": {**full["200"], "ctx": "not-listed.npz"}, "1600": full["1600"]},
+    }
+    for name, models in variants.items():
+        folder = _pack(tmp_path / f"refs-{name}", {"jlaunch": stock})
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        manifest["units"]["jlaunch"]["models"] = models
+        (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        specs[f"pack-refs-{name}"] = {"kind": "calib-pack", "dir": str(folder)}
     three = _pack(tmp_path / "three", {"jlaunch": stock, "qlaunch": entry(words=1), "l08firm": entry(words=2)})
     specs["pack-three"] = {"kind": "calib-pack", "dir": str(three)}
     inputs = []
