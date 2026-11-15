@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from conftest import PORT
 from gpu_support import require_chrome
 from gxr_studio.app import create_app
+from support.speed import SpeedBudgets, speed_budgets
 from test_api import find, import_all
 
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -89,6 +90,12 @@ def drive(live, tmp_path, mode: str) -> dict:
 
 
 def check(out: dict, mode: str) -> None:
+    with speed_budgets() as speed:
+        _check(out, mode, speed)
+
+
+def _check(out: dict, mode: str, speed: SpeedBudgets) -> None:
+    """直方图跟手的下限记进 speed，其他断言马上判。"""
     source = "gpu" if mode == "gpu" else "server"
     min_hz = float(os.environ.get("GXR_HIST_MIN_HZ", "2" if mode == "gpu" else "1.5"))
     # 位置：面板最上面、工具标签之上，六个标签下都看得见
@@ -109,7 +116,7 @@ def check(out: dict, mode: str) -> None:
     frame_work = rate["frameWork"]
     print(f"[{mode}] hidden frame work: {frame_work}")
     assert frame_work == {"cards": 13, "hidden": True, "redraws": 0, "blurBuilds": 0}, frame_work
-    assert rate["perSecond"] >= min_hz, rate
+    speed.at_least(rate["perSecond"], min_hz, f"拖动时直方图每秒更新次数（{rate}）")
     # 三角：曝光 +5 档高光死白，−5 档暗部死黑，各自亮起；提示里写着多少、怎么点、J
     lit = out["lit"]
     assert lit["up"]["highlight"] == "true" and lit["up"]["blown"] >= 0.005, lit

@@ -24,26 +24,36 @@ function readNpyRgb(path) {
   return { height: dims[0], width: dims[1], payload: new Uint8Array(buf.subarray(hdrAt + hdrLen)) };
 }
 
+function jsNum(v) {
+  if (v === 'NaN') return Number.NaN;
+  if (v === 'Infinity') return Number.POSITIVE_INFINITY;
+  if (v === '-Infinity') return Number.NEGATIVE_INFINITY;
+  return v;
+}
+
 export function cases(inputs) {
   const out = [];
   for (const specPath of inputs) {
     const spec = JSON.parse(readFileSync(specPath, 'utf8'));
     const exifJson = spec.exif ? readFileSync(spec.exif, 'utf8') : '';
+    const cliWidth = spec.cliWidth ?? spec.width;
+    const cliHeight = spec.cliHeight ?? spec.height;
+    const cliQuality = spec.cliQuality ?? spec.quality;
     const cliArgs = spec.raw
       ? [
           'jpeg-encode',
           '--raw',
           spec.raw,
           '--width',
-          String(spec.width),
+          String(cliWidth),
           '--height',
-          String(spec.height),
+          String(cliHeight),
           '--quality',
-          String(spec.quality),
+          String(cliQuality),
           '--out',
           spec.out,
         ]
-      : ['jpeg-encode', '--in', spec.npy, '--quality', String(spec.quality), '--out', spec.out];
+      : ['jpeg-encode', '--in', spec.npy, '--quality', String(cliQuality), '--out', spec.out];
     if (spec.exif) {
       cliArgs.push('--exif', spec.exif);
     }
@@ -52,9 +62,10 @@ export function cases(inputs) {
       cliArgs,
       wasm: (mod) => {
         const { height, width, payload } = spec.raw
-          ? { height: spec.height, width: spec.width, payload: new Uint8Array(readFileSync(spec.raw)) }
+          ? { height: jsNum(spec.height), width: jsNum(spec.width), payload: new Uint8Array(readFileSync(spec.raw)) }
           : readNpyRgb(spec.npy);
-        const jpg = mod.jpeg_encode(payload, width, height, spec.quality, exifJson);
+        const quality = jsNum(spec.quality);
+        const jpg = mod.jpeg_encode(payload, width, height, quality, exifJson);
         const cliJpg = readFileSync(spec.out);
         if (!Buffer.from(jpg.buffer, jpg.byteOffset, jpg.byteLength).equals(cliJpg)) {
           return 'JPEG_BYTES_DIFFER\n';
@@ -65,7 +76,7 @@ export function cases(inputs) {
             out: spec.out,
             width,
             height,
-            quality: spec.quality,
+            quality,
             bytes: jpg.length,
             sha256,
           }) + '\n'
