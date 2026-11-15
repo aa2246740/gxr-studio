@@ -21,6 +21,7 @@ mod npy;
 mod npz;
 mod params;
 mod pretable;
+pub mod resolve;
 mod sector;
 mod size;
 mod tones;
