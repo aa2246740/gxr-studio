@@ -333,6 +333,148 @@ def test_begin_failure_reasons_match_python(tmp_path: Path) -> None:
     _same_f32_nan(py_ok.layer, rs_layer, "begin synthetic pair")
 
 
+def _jpeg_header_variants(jpg: bytes) -> tuple[list[tuple[str, bytes]], bytes | None]:
+    """Build prefix truncations at every JPEG header segment boundary up to SOS plus stripped-SOF."""
+    assert jpg.startswith(b"\xff\xd8")
+    cuts: list[tuple[str, int]] = [("soi_1", 1), ("soi_2", 2)]
+    sof_span: tuple[int, int] | None = None
+    pos = 2
+    idx = 0
+    no_len = {0xC8, *range(0xD0, 0xDA), *range(0xF0, 0xFE)}
+    sof_markers = {*range(0xC0, 0xC4), *range(0xC5, 0xC8), *range(0xC9, 0xCC), *range(0xCD, 0xD0), 0xDE}
+
+    while pos < len(jpg):
+        if jpg[pos] != 0xFF:
+            pos += 1
+            continue
+        seg_start = pos
+        while pos < len(jpg) and jpg[pos] == 0xFF:
+            pos += 1
+        if pos >= len(jpg):
+            break
+        marker = jpg[pos]
+        pos += 1
+        if marker == 0x00:
+            continue
+        if marker in no_len:
+            cuts.append((f"seg{idx}_{marker:02x}_end", pos))
+            idx += 1
+            if marker == 0xD9:
+                break
+            continue
+        if pos + 2 > len(jpg):
+            break
+        seg_len = int.from_bytes(jpg[pos : pos + 2], "big")
+        seg_end = pos + seg_len
+        if marker in sof_markers and sof_span is None:
+            sof_span = (seg_start, seg_end)
+        if marker == 0xDA:
+            cuts.extend(
+                [
+                    ("before_sos", seg_start),
+                    ("after_sos_marker", seg_start + 2),
+                    ("after_sos_len", min(seg_start + 4, len(jpg))),
+                    ("sos_short_1", max(seg_start + 2, seg_end - 1)),
+                    ("sos_exact_end", seg_end),
+                ]
+            )
+            break
+        cuts.extend(
+            [
+                (f"seg{idx}_{marker:02x}_before", seg_start),
+                (f"seg{idx}_{marker:02x}_marker", min(seg_start + 2, len(jpg))),
+                (f"seg{idx}_{marker:02x}_short1", max(seg_start + 2, seg_end - 1)),
+                (f"seg{idx}_{marker:02x}_end", min(seg_end, len(jpg))),
+            ]
+        )
+        pos = seg_end
+        idx += 1
+
+    variants: list[tuple[str, bytes]] = []
+    seen_lens: set[int] = set()
+    for name, cut in cuts:
+        if cut not in seen_lens and 0 <= cut <= len(jpg):
+            seen_lens.add(cut)
+            variants.append((name, jpg[:cut]))
+    if jpg.endswith(b"\xff\xd9"):
+        variants.append(("no_eoi", jpg[:-2]))
+    variants.append(("full", jpg))
+    stripped_sof = (jpg[: sof_span[0]] + jpg[sof_span[1] :]) if sof_span is not None else None
+    return variants, stripped_sof
+
+
+def test_begin_jpeg_header_validation_matches_python(tmp_path: Path) -> None:
+    # 1. Sol's five inputs plus every segment boundary on hs.pair(9)
+    jpg_bytes, dng_bytes = hs.pair(9, orientation=1)
+    rgb = load_jpeg(io.BytesIO(jpg_bytes), None)
+    rgb_path = _save(tmp_path / "rgb9.npy", rgb)
+    dng_path = tmp_path / "p9.dng"
+    dng_path.write_bytes(dng_bytes)
+
+    variants, stripped_sof = _jpeg_header_variants(jpg_bytes)
+    assert stripped_sof is not None
+    variants.append(("no_sof0", stripped_sof))
+    variants.append(("minimal_sos_eoi", bytes.fromhex("ff d8 ff da 00 08 01 01 00 00 3f 00 ff d9")))
+
+    saw_active = False
+    saw_bad_meta = False
+    for i, (name, blob) in enumerate(variants):
+        j_path = tmp_path / f"v9-{i}.jpg"
+        j_path.write_bytes(blob)
+        py_track = HdrTrack(dng_path, jpeg=j_path)
+        py_track.begin(rgb)
+        meta = hp.ok(
+            [
+                "hdrtrack-begin",
+                "--rgb",
+                rgb_path,
+                "--dng",
+                str(dng_path),
+                "--dng-name",
+                "p9.dng",
+                "--jpeg",
+                str(j_path),
+                "--out",
+                str(tmp_path / f"o9-{i}.npy"),
+            ]
+        )
+        assert meta == _state_of(py_track), f"pair(9) {name}: python={_state_of(py_track)} rust={meta}"
+        saw_active |= meta["active"] is True
+        saw_bad_meta |= meta["problem"] == "metadata_unreadable"
+    assert saw_active and saw_bad_meta
+
+    # 2. Every segment boundary on a real JPG+DNG pair when captures directory is present
+    real_pairs = _real_pairs_all()
+    if real_pairs:
+        real_jpg, real_dng = real_pairs[0]
+        real_rgb = load_jpeg(real_jpg, None)
+        real_rgb_path = _save(tmp_path / "real-rgb.npy", real_rgb)
+        real_variants, real_no_sof = _jpeg_header_variants(real_jpg.read_bytes())
+        if real_no_sof is not None:
+            real_variants.append(("no_sof", real_no_sof))
+        for i, (name, blob) in enumerate(real_variants):
+            j_path = tmp_path / f"real-{i}.jpg"
+            j_path.write_bytes(blob)
+            py_track = HdrTrack(real_dng, jpeg=j_path)
+            py_track.begin(real_rgb)
+            meta = hp.ok(
+                [
+                    "hdrtrack-begin",
+                    "--rgb",
+                    real_rgb_path,
+                    "--dng",
+                    str(real_dng),
+                    "--dng-name",
+                    real_dng.name,
+                    "--jpeg",
+                    str(j_path),
+                    "--out",
+                    str(tmp_path / f"ro-{i}.npy"),
+                ]
+            )
+            assert meta == _state_of(py_track), f"real {real_dng.name} {name}: python={_state_of(py_track)} rust={meta}"
+
+
 # ---------------------------------------------------------------- 3. warp, box, crop, stamp on layer
 
 

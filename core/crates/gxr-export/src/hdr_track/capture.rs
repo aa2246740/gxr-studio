@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use gxr_hdr::{Field, MISMATCH, TagValue, capture_of, differs, jpeg_segments};
+use gxr_hdr::{Field, MISMATCH, TagValue, capture_of, differs};
 use gxr_raw::CoreError;
 use gxr_raw::pyrepr::py_float_repr;
 
@@ -265,33 +265,164 @@ pub fn from_dng(data: &[u8]) -> Result<Vec<(String, Field)>, CoreError> {
     capture_from_tiff(&tiff).map_err(|()| raw_meta_err())
 }
 
+fn is_sof_marker(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf | 0xde
+    )
+}
+
+fn marker_has_no_length(marker: u8) -> bool {
+    matches!(marker, 0xc8 | 0xd0..=0xd9 | 0xf0..=0xfd)
+}
+
+fn validate_sof(payload: &[u8]) -> Result<(), ()> {
+    if payload.len() < 6 {
+        return Err(());
+    }
+    let bits = payload[0];
+    let height = u16::from_be_bytes([payload[1], payload[2]]);
+    let width = u16::from_be_bytes([payload[3], payload[4]]);
+    let layers = payload[5];
+    if bits != 8 || height == 0 || width == 0 || !matches!(layers, 1 | 3 | 4) {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn validate_dqt(mut rest: &[u8]) -> Result<(), ()> {
+    while !rest.is_empty() {
+        let prec = if (rest[0] >> 4) == 0 { 1 } else { 2 };
+        let qt_len = 1 + prec * 64;
+        if rest.len() < qt_len {
+            return Err(());
+        }
+        rest = &rest[qt_len..];
+    }
+    Ok(())
+}
+
+/// Port of Pillow `JpegImageFile._open` + `ImageFile.__init__` header validation as reached by
+/// `capture.from_jpeg` / `meta.read_jpeg_meta`: reads markers and APP/DQT/SOF segments up to SOS
+/// (`0xFFDA`) without scanning entropy data or requiring EOI (`0xFFD9`).
+fn read_jpeg_exif_blob(data: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    if !data.starts_with(b"\xff\xd8\xff") {
+        return Err(());
+    }
+    let mut pos = 3usize;
+    let mut cur = 0xff_u8;
+    let mut has_valid_sof = false;
+    let mut exif: Option<Vec<u8>> = None;
+
+    loop {
+        if cur != 0xff {
+            let Some(&b) = data.get(pos) else {
+                return Err(());
+            };
+            pos += 1;
+            cur = b;
+            continue;
+        }
+        let Some(&nxt) = data.get(pos) else {
+            return Err(());
+        };
+        pos += 1;
+
+        if nxt == 0xff {
+            cur = 0xff;
+            continue;
+        }
+        if nxt == 0x00 {
+            let Some(&b) = data.get(pos) else {
+                return Err(());
+            };
+            pos += 1;
+            cur = b;
+            continue;
+        }
+        if nxt < 0xc0 {
+            return Err(());
+        }
+
+        if !marker_has_no_length(nxt) {
+            if pos + 2 > data.len() {
+                return Err(());
+            }
+            let seg_len = usize::from(u16::from_be_bytes([data[pos], data[pos + 1]]));
+            pos += 2;
+            let payload = if seg_len <= 2 {
+                &[][..]
+            } else {
+                let n = seg_len - 2;
+                if pos + n > data.len() {
+                    return Err(());
+                }
+                let s = &data[pos..pos + n];
+                pos += n;
+                s
+            };
+
+            if is_sof_marker(nxt) {
+                validate_sof(payload)?;
+                has_valid_sof = true;
+            } else if nxt == 0xdb {
+                validate_dqt(payload)?;
+            } else if nxt == 0xe1
+                && let Some(rest) = payload.strip_prefix(b"Exif\x00\x00")
+            {
+                if let Some(buf) = &mut exif {
+                    buf.extend_from_slice(rest);
+                } else {
+                    exif = Some(payload.to_vec());
+                }
+            }
+        }
+
+        if nxt == 0xda {
+            break;
+        }
+        let Some(&b) = data.get(pos) else {
+            return Err(());
+        };
+        pos += 1;
+        cur = b;
+    }
+
+    if !has_valid_sof {
+        return Err(());
+    }
+    Ok(exif)
+}
+
 /// Port of `gxr_studio/hdr/capture.py:65 from_jpeg`.
 pub fn from_jpeg(data: &[u8]) -> Result<Vec<(String, Field)>, CoreError> {
-    let (segs, _sos, _eoi) = jpeg_segments(data, 0).map_err(|_| jpg_meta_err())?;
-    for seg in segs {
-        if seg.marker == 0xe1 && seg.end - seg.start > 10 {
-            let payload = &data[seg.start + 4..seg.end];
-            if let Some(tiff_bytes) = payload.strip_prefix(b"Exif\x00\x00") {
-                if let Ok(tiff) = TiffReader::new(tiff_bytes)
-                    && let Ok(cap) = capture_from_tiff(&tiff)
-                {
-                    return Ok(cap);
-                }
-                // Match Pillow `Image.getexif()` when EXIF IFD is corrupt vs absent: try root IFD only
-                // if sub-IFD failed; if root itself isn't valid TIFF, fall back to empty `{}`.
-                if let Ok(tiff) = TiffReader::new(tiff_bytes)
-                    && let Ok(root) = tiff.ifd(i64::from(tiff.root))
-                {
-                    let tags: Vec<(u32, TagValue)> = root
-                        .iter()
-                        .map(|(&tag, val)| (u32::from(tag), tiff_val_to_tag_value(tag, val)))
-                        .collect();
-                    if let Some(cap) = capture_of(&tags) {
-                        return Ok(cap);
-                    }
-                }
-                return Ok(Vec::new());
-            }
+    let exif_blob = read_jpeg_exif_blob(data).map_err(|()| jpg_meta_err())?;
+    let Some(blob) = exif_blob else {
+        return Ok(Vec::new());
+    };
+    let mut tiff_bytes = blob.as_slice();
+    while let Some(rest) = tiff_bytes.strip_prefix(b"Exif\x00\x00") {
+        tiff_bytes = rest;
+    }
+    if tiff_bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Ok(tiff) = TiffReader::new(tiff_bytes)
+        && let Ok(cap) = capture_from_tiff(&tiff)
+    {
+        return Ok(cap);
+    }
+    // Match Pillow `Image.getexif()` when EXIF IFD is corrupt vs absent: try root IFD only
+    // if sub-IFD failed; if root itself isn't valid TIFF, fall back to empty `{}`.
+    if let Ok(tiff) = TiffReader::new(tiff_bytes)
+        && let Ok(root) = tiff.ifd(i64::from(tiff.root))
+    {
+        let tags: Vec<(u32, TagValue)> = root
+            .iter()
+            .map(|(&tag, val)| (u32::from(tag), tiff_val_to_tag_value(tag, val)))
+            .collect();
+        if let Some(cap) = capture_of(&tags) {
+            return Ok(cap);
         }
     }
     Ok(Vec::new())
@@ -352,6 +483,9 @@ mod tests {
         d
     }
 
+    const SOF0_4X4: [u8; 13] = [0xff, 0xc0, 0, 11, 8, 0, 4, 0, 4, 1, 1, 0x11, 0];
+    const SOS_1C: [u8; 10] = [0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0];
+
     #[test]
     fn reads_dng_and_jpeg_capture_and_detects_mismatch() {
         let raw_tiff = sample_tiff("RICOH", 200);
@@ -368,15 +502,39 @@ mod tests {
         let app1 = gxr_hdr::app_segment(0xe1, &exif_payload).unwrap();
         let mut jpg = vec![0xff, 0xd8];
         jpg.extend_from_slice(&app1);
-        jpg.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0, 0, 63, 0, 0xff, 0xd9]);
+        jpg.extend_from_slice(&SOF0_4X4);
+        jpg.extend_from_slice(&SOS_1C);
+        jpg.extend_from_slice(&[0xff, 0xd9]);
 
         let err = check_capture(&jpg, &raw_cap).unwrap_err();
         assert_eq!(err.kind, "capture_mismatch");
+
+        // Header-only JPEG missing EOI still succeeds like Pillow Image.open
+        let no_eoi = &jpg[..jpg.len() - 2];
+        assert_eq!(
+            check_capture(no_eoi, &raw_cap).unwrap_err().kind,
+            "capture_mismatch"
+        );
     }
 
     #[test]
     fn rejects_invalid_dng_and_jpeg_as_metadata_unreadable() {
         assert_eq!(from_dng(b"bad").unwrap_err().kind, "metadata_unreadable");
         assert_eq!(from_jpeg(b"bad").unwrap_err().kind, "metadata_unreadable");
+
+        // Missing SOF0 (SOI + SOS + EOI only) must be rejected like Pillow Image.open
+        let minimal = [0xff, 0xd8, 0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0, 0xff, 0xd9];
+        assert_eq!(from_jpeg(&minimal).unwrap_err().kind, "metadata_unreadable");
+
+        // Truncation inside SOS header or before SOS is rejected; exact end of SOS is accepted
+        let mut hdr = vec![0xff, 0xd8];
+        hdr.extend_from_slice(&SOF0_4X4);
+        assert_eq!(from_jpeg(&hdr).unwrap_err().kind, "metadata_unreadable");
+        hdr.extend_from_slice(&SOS_1C);
+        assert_eq!(
+            from_jpeg(&hdr[..hdr.len() - 1]).unwrap_err().kind,
+            "metadata_unreadable"
+        );
+        assert!(from_jpeg(&hdr).is_ok());
     }
 }
