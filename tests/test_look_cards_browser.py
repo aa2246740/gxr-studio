@@ -28,6 +28,7 @@ from gpu_support import require_chrome
 from gxr_studio.app import create_app
 from gxr_studio.camdata import calib, store
 from gxr_studio.devtools.synthetic_card import make_card
+from support import samples
 from test_api import find, import_all
 from test_viewer_browser import FLAGS, cannot_present
 
@@ -43,10 +44,10 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="本机没�
 
 @pytest.fixture
 def live(settings, volumes):
-    samples = t.REPO / "captures/a12-50/2026-10-19/stage2c-first-run"
-    if not samples.is_dir():
-        pytest.skip("captures/a12-50 样本不在本机")
-    make_card(volumes, samples=samples)  # 含 4 对真实样本的假卡（只读复制）
+    folder = samples.a12_50_samples()
+    if not folder.is_dir():
+        samples.missing("captures/a12-50 样本不在本机")
+    make_card(volumes, samples=folder)  # 含 4 对真实样本的假卡（只读复制）
     raw = t.fixture_dat(127)
     src = calib.dev_sources(t.REPO)
     if raw is None or not src:

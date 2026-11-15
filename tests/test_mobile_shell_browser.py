@@ -20,12 +20,13 @@ import pytest
 from gpu_support import find_chrome
 from gxr_studio.gpu.source import describe
 from gxr_studio.raw.dng import Dng
+from support import samples
 from test_core_parity_raw import _same
 
 pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
-PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(REPO.parent)))
+PARENT = samples.sample_parent()
 SAMPLES = PARENT / "captures/a12-50/2026-10-19/stage2c-first-run"
 PKG = REPO / "mobile" / "src" / "wasm-pkg" / "gxr_wasm.js"
 FLAGS = [
@@ -112,6 +113,7 @@ def _wait_http(port: int, proc: subprocess.Popen[str]) -> None:
 
 def test_mobile_shell_autotest(tmp_path: Path) -> None:
     dngs = sorted(path for path in SAMPLES.iterdir() if path.is_file() and path.suffix.upper() == ".DNG") if SAMPLES.is_dir() else []
+    samples.need_sample(bool(dngs), f"no DNGs in {SAMPLES}")
     _need(bool(dngs), f"no DNGs in {SAMPLES}")
     _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
     _need(shutil.which("pnpm") is not None and shutil.which("node") is not None, "pnpm and node are required")

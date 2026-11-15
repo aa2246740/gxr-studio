@@ -31,6 +31,7 @@ from gxr_studio.hdr import gain as g
 from support import hdr_fft_alloc as fa
 from support import hdr_fft_ref as fr
 from support import hdr_parity as hp
+from support import samples
 from support.core_cli import require_cli
 from support.wasm_check import run_area
 
@@ -355,7 +356,7 @@ REAL = hp.real_pairs()
 
 
 @needs_reference
-@pytest.mark.parametrize("pair", REAL, ids=[p[1].name for p in REAL])
+@pytest.mark.parametrize("pair", samples.real_params(REAL, f"no RAW+JPG pairs under {hp.CAPTURES}"), ids=[p[1].name for p in REAL] or None)
 def test_real_pair_planes(tmp_path: Path, pair: tuple[Path, Path]) -> None:
     """The five planes ``align`` computes on a real A12 pair."""
     from gxr_studio.raw import open_dng

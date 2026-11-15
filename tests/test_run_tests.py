@@ -51,7 +51,11 @@ def scratch() -> Iterator[Path]:
 
 
 def _gate(path: Path, workers: int) -> None:
-    path.write_text(f"def workers():\n    return {workers}, {{'fake': True}}\n", encoding="utf-8")
+    """假的 loadgate：给定进程数，安静判断总是安静，免得真机器忙时外层自测也去等。"""
+    path.write_text(
+        f"def workers():\n    return {workers}, {{'fake': True}}\n\ndef quiet_for_timing():\n    return True, {{'fake': True}}\n",
+        encoding="utf-8",
+    )
 
 
 def _rcfile(path: Path) -> None:
@@ -499,3 +503,249 @@ def test_cov_config_value_reaches_coverage_unchanged(tmp_path: Path, scratch: Pa
     proc = _run_with_config(tmp_path, tree, str(link), [f"xml:{toml_xml}"], None)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _xml_lines(toml_xml) == ("2", "2")
+
+
+# ---- exclusive：先等安静，只有墙钟预算没过的用例安静后再跑一次 ----------------------------------------
+
+_SPEED_CLASS = "class SpeedBudgetExceeded(AssertionError):\n    gxr_speed_budget = True\n\n"
+
+
+def _exclusive_tree(directory: Path, body: str, *, extra: str = "") -> None:
+    """一个普通用例加一个 exclusive 用例。body 是 exclusive 用例的函数体；runs 文件数这个用例跑了几次。"""
+    _write_tree(directory, exclusive=False)
+    (directory / "test_speed.py").write_text(
+        "import os\nimport hits\nimport pytest\n\n"
+        + _SPEED_CLASS
+        + extra
+        + "@pytest.mark.exclusive\ndef test_speed_probe(request, subtests):\n"
+        "    hits.hit('speed')\n"
+        "    runs = sum(1 for line in open(os.environ['HITS'], encoding='utf-8') if line.strip() == 'speed')\n" + body,
+        encoding="utf-8",
+    )
+
+
+def _quiet_env(tmp: Path, gate_body: str | None, *, budget: float = 30, poll: float = 0.05) -> dict[str, str]:
+    """gate_body 是假 loadgate 里 quiet_for_timing 之外的源码；None 表示不设 GXR_LOADGATE。"""
+    env = {"GXR_QUIET_MAX_WAIT_S": str(budget), "GXR_QUIET_POLL_S": str(poll), "GATE_COUNT": str(tmp / "gate-count")}
+    if gate_body is not None:
+        gate = tmp / "quiet_gate.py"
+        gate.write_text("import os\n\ndef workers():\n    return 2, {'fake': True}\n\n" + gate_body, encoding="utf-8")
+        env["GXR_LOADGATE"] = str(gate)
+    return env
+
+
+def _run_quiet(
+    tmp: Path, tree: Path, extra_env: dict[str, str], *, unset_gate: bool = False, reruns: str = "--force-reruns=0"
+) -> subprocess.CompletedProcess[str]:
+    _rcfile(tmp / "coveragerc")
+    opts = [reruns if opt == "--force-reruns=0" else opt for opt in _base_opts(tree, tmp / "junit.xml")]
+    env = _runner_env(tmp, opts, workers=2)
+    if unset_gate:
+        env.pop("GXR_LOADGATE")
+    env.update(extra_env)
+    return subprocess.run([sys.executable, "-I", str(RUNNER)], cwd=ROOT, env=env, text=True, capture_output=True, timeout=120, check=False)
+
+
+_COUNTING_GATE = """
+def quiet_for_timing():
+    path = os.environ['GATE_COUNT']
+    n = (int(open(path).read()) if os.path.exists(path) else 0) + 1
+    open(path, 'w').write(str(n))
+    return n > {busy}, {{'idle_cores': 9.0 if n > {busy} else 1.0, 'check': n}}
+"""
+
+
+def _junit_case(path: Path, name: str) -> list[ET.Element]:
+    return [case for case in ET.parse(path).getroot().iter("testcase") if case.attrib.get("name") == name]
+
+
+def test_quiet_immediately_runs_the_exclusive_stage_after_one_check(tmp_path: Path, scratch: Path) -> None:
+    tree = scratch / "tree"
+    _exclusive_tree(tree, "    assert runs == 1\n")
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)))
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "等机器安静（exclusive 阶段开始前）：等了 0 秒，问了 1 次，安静了，loadgate.quiet_for_timing" in out
+    assert "等机器安静（exclusive 用例之前：" in out and "test_speed_probe" in out
+    assert _hits(tmp_path) == {"alpha": 1, "beta": 1, "speed": 1}
+
+
+def test_quiet_after_three_busy_checks(tmp_path: Path, scratch: Path) -> None:
+    tree = scratch / "tree"
+    _exclusive_tree(tree, "    assert runs == 1\n")
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=3)))
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "等机器安静（exclusive 阶段开始前）：" in out and "问了 4 次，安静了" in out, out
+    assert '安静了，loadgate.quiet_for_timing {"idle_cores": 9.0}' in out
+    assert "一直没安静下来" not in out
+
+
+def test_never_quiet_times_out_and_runs_anyway(tmp_path: Path, scratch: Path) -> None:
+    tree = scratch / "tree"
+    _exclusive_tree(tree, "    assert runs == 1\n")
+    env = _quiet_env(tmp_path, _COUNTING_GATE.format(busy=10**9), budget=5.5, poll=0.1)  # 够采几次，不到 1 秒
+    proc = _run_quiet(tmp_path, tree, env)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "机器一直没安静下来（exclusive 阶段开始前）" in out and "照样跑" in out and "idle_cores" in out, out
+    assert "机器一直没安静下来（exclusive 用例之前：" in out and "不再采样" in out  # 预算用完以后不再采样
+    assert _hits(tmp_path)["speed"] == 1
+
+
+@pytest.mark.parametrize(
+    ("gate_body", "unset", "expect"),
+    [
+        (None, True, ["没有设置", "公开回退 load1="]),
+        ("def quiet_for_timing():\n    raise RuntimeError('iostat gone')\n", False, ["安静判断出错", "iostat gone", "公开回退 load1="]),
+        ("", False, ["没有 quiet_for_timing 或 cap", "公开回退 load1="]),
+        ("def cap(running):\n    return running + 1, {'admit': True, 'spare': 3.0}\n", False, ["loadgate.cap admit"]),
+    ],
+    ids=["unset", "raises", "no-function", "cap-only"],
+)
+def test_loadgate_when_usable_and_the_public_fallback_otherwise(
+    tmp_path: Path, scratch: Path, gate_body: str | None, unset: bool, expect: list[str]
+) -> None:
+    tree = scratch / "tree"
+    _exclusive_tree(tree, "    assert runs == 1\n")
+    # 回退看的是真机器的 load1：预算只比一次采样窗口（5 秒）多一点，忙也只等一下。
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, gate_body, budget=5.3, poll=0.1), unset_gate=unset)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    for text in expect:
+        assert text in out, (text, out)
+    if "公开回退" not in expect[-1]:
+        assert "公开回退" not in out
+
+
+_RETRY_PASSES = "    if runs == 1:\n        raise SpeedBudgetExceeded('visibleMs 7194 > 1000')\n"
+_ALWAYS_SLOW = "    raise SpeedBudgetExceeded(f'visibleMs 7194 > 1000 (run {runs})')\n"
+_FUNCTIONAL = "    assert runs == 99, 'box did not move'\n"
+_TEARDOWN = "    request.addfinalizer(lambda: (_ for _ in ()).throw(RuntimeError('teardown broke')))\n" + _ALWAYS_SLOW
+
+
+def test_a_speed_failure_is_retried_once_when_quiet_and_the_second_run_counts(tmp_path: Path, scratch: Path) -> None:
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _RETRY_PASSES)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)))
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert _hits(tmp_path)["speed"] == 2
+    assert "[exclusive] " in out and "[exclusive-retry] " in out  # 两次的输出都在
+    assert "等机器安静（速度预算重试之前）" in out
+    assert "test_speed_probe 第一次只有墙钟预算没过（speed），等安静（或等待预算用完）后重跑，第二次通过，以第二次为准" in out
+    cases = _junit_case(tmp_path / "junit.xml", "test_speed_probe")
+    assert len(cases) == 1 and cases[0].find("failure") is None
+    suite = ET.parse(tmp_path / "junit.xml").getroot().find("testsuite")
+    assert suite is not None and suite.attrib["failures"] == "0" and suite.attrib["tests"] == "3"
+
+
+@pytest.mark.parametrize("body", [_FUNCTIONAL, _TEARDOWN], ids=["functional", "speed-then-teardown-error"])
+def test_a_non_speed_failure_is_never_retried(tmp_path: Path, scratch: Path, body: str) -> None:
+    tree = scratch / "tree"
+    _exclusive_tree(tree, body)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)))
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1, out
+    assert _hits(tmp_path)["speed"] == 1
+    assert "[exclusive-retry]" not in out and "速度预算重试" not in out
+
+
+def test_a_speed_failure_that_fails_twice_stays_failed(tmp_path: Path, scratch: Path) -> None:
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _ALWAYS_SLOW)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)))
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1, out
+    assert _hits(tmp_path)["speed"] == 2
+    assert "等安静（或等待预算用完）后重跑，第二次仍然失败（speed）" in out and "(run 2)" in out
+    cases = _junit_case(tmp_path / "junit.xml", "test_speed_probe")
+    assert len(cases) == 1 and cases[0].find("failure") is not None
+
+
+# Sol r1 的输入：原生 subtest 里的失败要算进同一次尝试（rerunfailures 会把 setup 报告攒到最后才发）。
+_SUBTEST_FUNCTIONAL_AND_SPEED = (
+    "    with subtests.test(msg='functional fault'):\n"
+    "        assert runs > 1, 'functional fault'\n"
+    "    if runs == 1:\n"
+    "        raise SpeedBudgetExceeded('latency 2 > 1')\n"
+)
+_SUBTEST_SPEED_AND_CALL_SPEED = (
+    "    with subtests.test(msg='speed subtest'):\n"
+    "        if runs == 1:\n"
+    "            raise SpeedBudgetExceeded('subtest latency 2 > 1')\n"
+    "    if runs == 1:\n"
+    "        raise SpeedBudgetExceeded('call latency 2 > 1')\n"
+)
+
+
+@pytest.mark.parametrize("reruns", ["--force-reruns=0", "--reruns=1"])
+def test_a_functional_subtest_failure_next_to_a_speed_overrun_is_not_retried(tmp_path: Path, scratch: Path, reruns: str) -> None:
+    """Sol r1/r2 P1：第一次功能 subtest 失败 + 速度超限，第二次都会过。两种模式都只跑 1 次、退出 1：
+    安静重试不做；exclusive 阶段带 --force-reruns 0，外面给 --reruns=1 也不重跑（r2 时曾跑 2 次并退出 0）。"""
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _SUBTEST_FUNCTIONAL_AND_SPEED)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns=reruns)
+    out = proc.stdout + proc.stderr
+    assert "[exclusive-retry]" not in out and "速度预算重试" not in out, out
+    assert proc.returncode == 1 and "functional fault" in out, out
+    assert _hits(tmp_path)["speed"] == 1
+    suite = ET.parse(tmp_path / "junit.xml").getroot().find("testsuite")
+    assert suite is not None and int(suite.attrib["failures"]) >= 1, ET.tostring(suite)
+
+
+_FUNCTIONAL_THEN_PASS = "    assert runs > 1, 'functional fault'\n"
+_MODULE_FIXTURE = (
+    "@pytest.fixture(scope='module', autouse=True)\ndef module_state():\n"
+    "    path = os.environ['HITS'] + '.module'\n    open(path, 'w').write('setup')\n    yield\n"
+    "    open(path, 'w').write('teardown')\n    raise RuntimeError('module finalizer fault')\n\n"
+)
+_SPEED_WITH_FUNCTION_FINALIZER = (
+    "    request.addfinalizer(lambda: (_ for _ in ()).throw(RuntimeError('function finalizer fault')))\n"
+    "    raise SpeedBudgetExceeded('latency 2 > 1')\n"
+)
+
+
+@pytest.mark.parametrize("reruns", ["--force-reruns=0", "--reruns=1"])
+def test_exclusive_tests_get_no_plugin_reruns_but_shards_keep_them(tmp_path: Path, scratch: Path, reruns: str) -> None:
+    """exclusive 子进程带 --force-reruns 0：功能失败只跑 1 次、退出 1，不管外面给了什么 --reruns（比原来严，经理 r3 定）。
+    计算分片照样用 --reruns：同样「第一次失败、第二次过」的普通用例在 --reruns=1 下重跑后通过。"""
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _FUNCTIONAL_THEN_PASS)
+    (tree / "test_flaky_normal.py").write_text(
+        "import hits, os\n\ndef test_flaky_normal():\n    hits.hit('flaky')\n"
+        "    assert sum(1 for l in open(os.environ['HITS']) if l.strip() == 'flaky') > 1\n",
+        encoding="utf-8",
+    )
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns=reruns)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1 and "functional fault" in out, out
+    assert _hits(tmp_path)["speed"] == 1 and "[exclusive-retry]" not in out
+    assert _hits(tmp_path)["flaky"] == (2 if reruns == "--reruns=1" else 1)
+
+
+def test_module_fixture_teardown_runs_after_a_speed_failure_with_a_teardown_error(tmp_path: Path, scratch: Path) -> None:
+    """Sol r3 P2：--reruns=1 下最后一个 exclusive 用例 call 速度超限、函数级 finalizer 出错，另有 module 级 autouse fixture。
+    exclusive 阶段不用插件重跑以后，module 清理照常执行、错误照常报告；有 teardown 错误，不做安静重试。"""
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _SPEED_WITH_FUNCTION_FINALIZER, extra=_MODULE_FIXTURE)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)), reruns="--reruns=1")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1 and _hits(tmp_path)["speed"] == 1, out
+    assert Path(str(tmp_path / "hits.log") + ".module").read_text() == "teardown"
+    assert "module finalizer fault" in out and "function finalizer fault" in out and "[exclusive-retry]" not in out
+
+
+def test_speed_only_subtest_and_call_retry_leaves_only_the_second_run_in_junit(tmp_path: Path, scratch: Path) -> None:
+    """Sol r1 P2：subtest 和主 call 各一个 SpeedBudgetExceeded，重跑后都过；合并 JUnit 要和第二次一样，没有第一次的失败。"""
+    tree = scratch / "tree"
+    _exclusive_tree(tree, _SUBTEST_SPEED_AND_CALL_SPEED)
+    proc = _run_quiet(tmp_path, tree, _quiet_env(tmp_path, _COUNTING_GATE.format(busy=0)))
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert _hits(tmp_path)["speed"] == 2 and "第二次通过" in out
+    suite = ET.parse(tmp_path / "junit.xml").getroot().find("testsuite")
+    assert suite is not None
+    # alpha、beta 各 1，加上第二次的 subtest 通过和主 call 通过各 1
+    assert (suite.attrib["tests"], suite.attrib["failures"], suite.attrib["errors"]) == ("4", "0", "0"), ET.tostring(suite)
+    assert all(case.find("failure") is None for case in suite.iter("testcase"))
