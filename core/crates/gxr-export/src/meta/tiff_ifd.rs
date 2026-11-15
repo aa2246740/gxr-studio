@@ -358,27 +358,107 @@ fn decode_floats(vals: Vec<f64>, tag: u16, group: Option<u16>, fixup: bool) -> O
 }
 
 /// Port of `PIL.TiffTags.lookup(tag, group).length`.
-fn tiff_tag_length(tag: u16, group: Option<u16>) -> Option<usize> {
-    if group == Some(EXIF_IFD_TAG) {
-        return match tag {
+pub fn tiff_tag_length(tag: u16, group: Option<u16>) -> Option<usize> {
+    match group {
+        None => match tag {
+            258 | 273 | 279 | 280 | 281 | 291 | 301 | 320 | 324 | 325 | 330 | 336 | 338 | 339
+            | 340 | 341 | 517 | 518 | 519 | 520 | 521 | 700 | 32996 | 34377 | 45059 | 50838 => {
+                Some(0)
+            }
+            297 | 318 | 321 | 530 => Some(2),
+            529 => Some(3),
+            319 | 342 | 532 => Some(6),
+            254
+            | 255
+            | 256
+            | 257
+            | 259
+            | 262
+            | 263
+            | 264
+            | 265
+            | 266
+            | 269
+            | 270
+            | 271
+            | 272
+            | 274
+            | 277
+            | 278
+            | 282
+            | 283
+            | 284
+            | 285
+            | 286
+            | 287
+            | 288
+            | 289
+            | 290
+            | 292
+            | 293
+            | 296
+            | 305
+            | 306
+            | 315
+            | 316
+            | 317
+            | 322
+            | 323
+            | 332
+            | 333
+            | 334
+            | 337
+            | 347
+            | 512
+            | 513
+            | 514
+            | 515
+            | 531
+            | 32995
+            | 32997
+            | 32998
+            | 33432
+            | 33723
+            | 34665
+            | 34675
+            | 34853
+            | 36864
+            | 37724
+            | 40960
+            | 40965
+            | 41730
+            | 45056
+            | 45057
+            | 45058
+            | 45060
+            | 45313
+            | 45569..=45581
+            | 50741
+            | 50780
+            | 50839 => Some(1),
+            _ => None,
+        },
+        // EXIF (0x8769)
+        Some(EXIF_IFD_TAG) => match tag {
             36864 | 40960 | 40965 | 41730 => Some(1),
             _ => None,
-        };
-    }
-    if group.is_some() {
-        return None;
-    }
-    match tag {
-        258 | 273 | 279 | 280 | 281 | 291 | 301 | 320 | 324 | 325 | 330 | 336 | 338 | 339 | 340
-        | 341 | 517 | 518 | 519 | 520 | 521 | 700 | 32996 | 34377 | 45059 | 50838 => Some(0),
-        297 | 318 | 321 | 530 => Some(2),
-        529 => Some(3),
-        319 | 342 | 532 => Some(6),
-        254 | 255 | 256 | 257 | 259 | 262 | 263 | 264 | 265 | 266 | 269 | 270 | 271 | 272 | 274
-        | 277 | 278 | 282 | 283 | 284 | 285 | 286 | 287 | 288 | 289 | 290 | 292 | 293 | 296
-        | 305 | 306 | 315 | 316 | 317 | 322 | 323 | 326 | 327 | 332 | 333 | 334 | 347 | 512
-        | 513 | 514 | 515 | 531 | 33432 | 34665 | 34675 | 34853 | 37724 | 40965 => Some(1),
-        _ => None,
+        },
+        // GPS (0x8825)
+        Some(34853) => match tag {
+            0 => Some(4),
+            1 | 3 | 9 | 10 | 12 | 14 | 16 | 19 | 21 | 23 | 25 => Some(2),
+            2 | 4 | 7 | 20 | 22 => Some(3),
+            5 | 6 | 11 | 13 | 15 | 17 | 24 | 26 | 30 => Some(1),
+            8 | 18 | 27 | 28 => Some(0),
+            29 => Some(11),
+            _ => None,
+        },
+        // Interoperability (0xA005)
+        Some(40965) => match tag {
+            1 | 2 => Some(1),
+            _ => None,
+        },
+        Some(_) => None,
     }
 }
 
@@ -490,5 +570,121 @@ mod tests {
             decode_tag_value(36864, 7, b"0230", Endian::Little, Some(EXIF_IFD_TAG), false),
             Some(ExifValue::Bytes(b"0230".to_vec()))
         );
+    }
+
+    fn minimal_le_tiff_u16_values(tag: u16, vals: &[u16]) -> Vec<u8> {
+        let mut out = b"II*\x00\x08\x00\x00\x00\x01\x00".to_vec();
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+        out.extend_from_slice(&u32::try_from(vals.len()).unwrap().to_le_bytes());
+        if vals.len() <= 2 {
+            let mut inline = [0u8; 4];
+            for (i, &v) in vals.iter().enumerate() {
+                inline[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+            }
+            out.extend_from_slice(&inline);
+            out.extend_from_slice(&0u32.to_le_bytes());
+        } else {
+            out.extend_from_slice(&26u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            for &v in vals {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn tiff_tag_length_and_load_ifd_match_pillow_groups() {
+        // Sol r4 four count=2 counterexamples unwrap/stay-array per group
+        assert_eq!(tiff_tag_length(30, Some(34853)), Some(1));
+        assert_eq!(tiff_tag_length(1, Some(40965)), Some(1));
+        assert_eq!(tiff_tag_length(326, None), None);
+        assert_eq!(tiff_tag_length(327, None), None);
+        assert_eq!(tiff_tag_length(1, Some(60000)), None);
+
+        let gps_30 = minimal_le_tiff_u16_values(30, &[0, 1]);
+        assert_eq!(
+            load_ifd(&gps_30, Endian::Little, false, 8, Some(34853), false)
+                .unwrap()
+                .tags
+                .get(&30),
+            Some(&ExifValue::Int(0))
+        );
+        // Unknown group does not inherit GPS lengths
+        assert_eq!(
+            load_ifd(&gps_30, Endian::Little, false, 8, Some(60000), false)
+                .unwrap()
+                .tags
+                .get(&30),
+            Some(&ExifValue::Ints(vec![0, 1]))
+        );
+
+        let interop_1 = minimal_le_tiff_u16_values(1, &[1, 2]);
+        assert_eq!(
+            load_ifd(&interop_1, Endian::Little, false, 8, Some(40965), false)
+                .unwrap()
+                .tags
+                .get(&1),
+            Some(&ExifValue::Int(1))
+        );
+        assert_eq!(
+            load_ifd(&interop_1, Endian::Little, false, 8, None, false)
+                .unwrap()
+                .tags
+                .get(&1),
+            Some(&ExifValue::Ints(vec![1, 2]))
+        );
+
+        for tag in [326u16, 327u16] {
+            let tiff = minimal_le_tiff_u16_values(tag, &[2, 3]);
+            for group in [None, Some(EXIF_IFD_TAG)] {
+                assert_eq!(
+                    load_ifd(&tiff, Endian::Little, false, 8, group, false)
+                        .unwrap()
+                        .tags
+                        .get(&tag),
+                    Some(&ExifValue::Ints(vec![2, 3]))
+                );
+            }
+        }
+
+        // GPS tags whose Pillow length != 1 must stay 1-element arrays for count=1
+        let gps_non_scalar: &[(u16, usize)] = &[
+            (0, 4),
+            (1, 2),
+            (3, 2),
+            (9, 2),
+            (10, 2),
+            (12, 2),
+            (14, 2),
+            (16, 2),
+            (19, 2),
+            (21, 2),
+            (23, 2),
+            (25, 2),
+            (2, 3),
+            (4, 3),
+            (7, 3),
+            (20, 3),
+            (22, 3),
+            (8, 0),
+            (18, 0),
+            (27, 0),
+            (28, 0),
+            (29, 11),
+        ];
+        for &(tag, expected_len) in gps_non_scalar {
+            assert_eq!(tiff_tag_length(tag, Some(34853)), Some(expected_len));
+            let tiff = minimal_le_tiff_u16_values(tag, &[7]);
+            assert_eq!(
+                load_ifd(&tiff, Endian::Little, false, 8, Some(34853), false)
+                    .unwrap()
+                    .tags
+                    .get(&tag),
+                Some(&ExifValue::Ints(vec![7])),
+                "GPS tag {tag} count=1 should stay array"
+            );
+        }
     }
 }

@@ -13,7 +13,7 @@ mod jpeg_enc;
 pub mod json_parse;
 pub mod segments;
 
-pub use encode::encode_jpeg;
+pub use encode::{encode_jpeg, encode_luma_jpeg};
 pub use exif::{ExifSpec, ExifVal, SOFTWARE, build_exif, parse_exif_json};
 pub use icc::{SRGB_ICC, srgb_icc};
 pub use segments::{

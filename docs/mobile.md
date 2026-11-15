@@ -451,3 +451,13 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 - WASM 的 `iso` 按 f64 接收（CLI 把文本读成同一个数），先查有限、是整数、绝对值不超过 2^53，再变成整数；`NaN`、`Infinity`、`1.5` 报 `bad_request`／`iso 要是整数`，超过 2^53 报 `iso 超出范围`。
 
 对拍在 `tests/test_core_parity_export_source.py`：相机数据用上层项目的 g127 DAT（`GXR_STUDIO_TEST_PARENT`），校准包是合成的（`color_fixtures` 生成，用 `import_calibration` 写），机主的校准来源在本机时另跑 3 张，不打印内容。配方渲染、标签、`from_raw`、错误都要求完全相同；LUT 照 lut 单元的 Gate A / Gate B（顺序 oracle、边界点、机械归因）。
+
+## HDR 追踪与封装（`gxr-export` 的 `hdr_track/`，命令前缀 `hdrtrack-`）
+
+移植桌面版成片导出里的 HDR 增益图层跟踪与 Ultra HDR JPEG 封装：`finish/hdr_export.py`（`HdrTrack` 状态机）、`finish/geometry.py` 的 `warp_float` 与双通道 `crop_valid_f32`、`gxr_finish::resample_f32(..., Filter::Box, ...)` 以及 `gxr_jpeg::encode_luma_jpeg`（单通道增益图 JPEG 与 Pillow `"L"` 逐字节一致），最后交给 `gxr-hdr::assemble` 写入 MPF + XMP Gain Map。
+
+- CLI 子命令（`cmd_hdrtrack.rs`）：`hdrtrack-warp-float`、`hdrtrack-crop-valid`、`hdrtrack-begin`、`hdrtrack-begin-batch`（按行隔离返回 `exit`/结果，不 export 到 WASM）、`hdrtrack-warp`、`hdrtrack-box`、`hdrtrack-crop`、`hdrtrack-stamp`、`hdrtrack-frame`、`hdrtrack-to-grid`、`hdrtrack-finish`。
+- WASM 导出（`gxr-wasm/src/hdrtrack.rs`）：`hdrtrack_begin`、`hdrtrack_warp`、`hdrtrack_box`、`hdrtrack_crop`、`hdrtrack_stamp`、`hdrtrack_frame`、`hdrtrack_to_grid`、`hdrtrack_finish`（不含 `hdrtrack-begin-batch`）。
+- 源 JPEG 校验复用 `gxr-export::meta` 的 `open_image` / `load_image_exif`，`hdr_track/` 本身不复制 JPEG/TIFF 解析；向 Pillow 12.2.0 对齐时，对 `meta/tiff_ifd.rs` 的 `tiff_tag_length` 按 IFD 分组（Root / EXIF `34665` / GPS `34853` / Interop `40965`）拆表，并移除了 Pillow `TAGS_V2` 已不存在的 `326`、`327`。
+- **已接受的偏差 — 超大像素（DecompressionBomb）JPEG**：对超出 Pillow 像素上限（178,956,970 像素）的 JPEG，桌面 Python 的 `HdrTrack.begin`（`hdr/gain.py:check_capture`）仅捕获 `(ValueError, OSError, SyntaxError)`，会直接向外抛出未捕获的 `DecompressionBombError`；手机核心在 `hdr_track/capture.rs` 中将所有 `meta::tiff_exif::open_image` 错误统一归类为 `"metadata_unreadable"`，令 `HdrTrack` 安全失活并按无 HDR 导出（不崩溃）。`meta` 元数据层（`open_image`、`read_jpeg_meta`、`photo_meta`）仍与 Pillow 12.2.0 一致返回 `DecompressionBombError`；差分 sweep（`tests/test_core_parity_jpeg_sweep.py`）仅对明确登记的 5 例超大像素边界（`ord_mp_big_bomb_sof`、`ord_mp_no_b002_bomb_sof`、`ord_bomb_solo`、`ord_zero_then_bomb`、`ord_ok_then_bomb`）归一化 `HdrTrack.begin` 状态。
+
