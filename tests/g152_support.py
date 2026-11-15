@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from e0_support import REPO as ROOT
+from support import samples
 
 PACKAGES = [(gen, test) for gen in (150, 152, 153) for test in (False, True)]
 ALL_PACKAGES = PACKAGES + [(gen, test) for gen in (154, 155) for test in (False, True)]
@@ -53,7 +54,9 @@ class CameraReference:
         product = ROOT / f"firmware/engine_v{ENGINE_VERSIONS[gen]}_g{gen}/candidate/containers/product"
         compiler = shutil.which("clang")
         crc_source = product.parent.parent / "engine_services/crc.c"
-        if not product.is_dir() or not crc_source.is_file() or compiler is None:
+        if not product.is_dir() or not crc_source.is_file():
+            samples.missing(f"g{gen} 的相机 C 源码或 clang 不在本机")
+        if compiler is None:
             pytest.skip(f"g{gen} 的相机 C 源码或 clang 不在本机")
         folder.mkdir(parents=True, exist_ok=True)
         crc = crc_source.read_text(encoding="utf-8")

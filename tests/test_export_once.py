@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import io
-import os
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +24,9 @@ from gxr_studio.hdr.gain import sdr_luma_grid
 from gxr_studio.raw import Renderer
 from gxr_studio.render.params import Adjust, EditState, RecipeSel
 from gxr_studio.render.service import RenderService
+from support import samples
 from support.export_once_legacy import legacy_export_payload, legacy_render_stage
 
-STUDIO = Path(__file__).resolve().parents[1]
 LONG_EDGE = 200
 CROP = {"crop": {"rect": [0.05, 0.08, 0.85, 0.8], "preset": "free"}}
 
@@ -344,8 +343,7 @@ def test_hdr_reasons_without_raw_and_with_a_bad_frame_are_unchanged(studio, monk
 
 
 def _real_pairs(limit: int) -> list[Path]:
-    parent = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", STUDIO.parent))
-    root = parent / "captures" / "a12-50"
+    root = samples.captures() / "a12-50"
     if not root.is_dir():
         return []
     jpgs = sorted(p for p in root.rglob("*.JPG") if p.with_suffix(".DNG").is_file())
@@ -356,7 +354,7 @@ def _real_pairs(limit: int) -> list[Path]:
 def real_pairs():
     pairs = _real_pairs(2)
     if not pairs:
-        pytest.skip("没有现场 a12-50 样本")
+        samples.missing("没有现场 a12-50 样本")
     return pairs
 
 
@@ -365,7 +363,7 @@ def test_real_photo_preview_and_untouched_export_are_unchanged(lib, settings, re
     import shutil
 
     if index >= len(real_pairs):
-        pytest.skip("样本不够")
+        samples.missing("样本不够")
     src = real_pairs[index]
     folder = lib.root / "real"
     folder.mkdir()

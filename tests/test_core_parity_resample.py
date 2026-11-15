@@ -18,14 +18,13 @@ from gxr_studio.finish.hdr_export import _to_grid
 from gxr_studio.finish.layout import fit_size
 from gxr_studio.hdr.gain import block_mean
 from gxr_studio.raw import NEUTRAL, RawDecodeError, open_dng, render_full
+from support import samples as sample_files
 from support.core_cli import error_of, require_cli, run_json, run_npy
 from support.resample_alloc import run_resample_oom_probe
 from support.resample_oracle import oracle_pixel_f32, oracle_resample_f32, precompute_coeffs_seq
 from support.wasm_check import CLI, PKG, run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
-CAPTURES = _PARENT / "captures"
+CAPTURES = sample_files.captures()
 
 _PIL_FILTERS: dict[str, Image.Resampling] = {
     "box": Image.Resampling.BOX,
@@ -219,7 +218,7 @@ def test_uint8_real_exports_fit_size_lanczos(tmp_path: Path) -> None:
         msg = f"need >= 20 real images under {CAPTURES}, found {len(jpgs)} jpg + {len(dngs)} dng"
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail(msg)
-        pytest.skip(msg)
+        sample_files.missing(msg)
 
     images: list[tuple[str, np.ndarray]] = []
     for p in jpgs:

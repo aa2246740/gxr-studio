@@ -26,12 +26,12 @@ from gxr_studio.finish.geometry import (
 from gxr_studio.finish.spec import EditError, Geometry, parse_geometry
 from gxr_studio.gpu.box import final_box
 from gxr_studio.raw.dng import RawDecodeError, open_dng
+from support import samples
 from support.core_cli import error_of, require_cli, run_json
 from support.geometry_alloc import run_rule2_oom_probe
 from support.wasm_check import run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
+_PARENT = samples.sample_parent()
 CAPTURES = _PARENT / "captures"
 _CAP = 60
 
@@ -568,7 +568,7 @@ def test_final_box_on_real_dng_dimensions() -> None:
     if not sizes:
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail(f"no DNGs under {CAPTURES}")
-        pytest.skip(f"no DNGs under {CAPTURES}")
+        samples.missing(f"no DNGs under {CAPTURES}")
     seen: dict[tuple[int, int], str] = {}
     for rel, w, h in sizes:
         seen.setdefault((w, h), rel)

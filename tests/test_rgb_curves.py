@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 from scipy.interpolate import PchipInterpolator
 
-from e0_support import REPO
 from gxr_studio.finish.compose import encode_jpeg, load_jpeg
 from gxr_studio.finish.pixels import apply_base
 from gxr_studio.render.params import CURVE_MAX_POINTS, Adjust, Curves, EditError, parse_adjust, parse_curve, parse_edit
 from gxr_studio.render.tones import TABLE_SIZE, apply_table, channel_gains, display_table, tone_function
+from support import samples
 
 POINTS = [[0, 10], [128, 110], [255, 245]]
 IDENTITY = [[0, 0], [128, 128], [255, 255]]
@@ -109,9 +109,9 @@ def _legacy_base(rgb, adjust, master):
 
 @pytest.fixture
 def real_rgb():
-    folder = REPO / "captures/a12-50/2026-10-19/stage2c-first-run"
+    folder = samples.a12_50_samples()
     if not folder.is_dir():
-        pytest.skip("真实相机样本只保存在本机")
+        samples.missing("真实相机样本只保存在本机")
     source = next(folder.glob("*.JPG"))
     return load_jpeg(source, 640)
 

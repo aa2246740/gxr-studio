@@ -23,6 +23,7 @@ from gxr_studio.raw.codes import half_res_codes, orient_array, wb_mosaic_block
 from gxr_studio.raw.demosaic import demosaic_full, demosaic_strips
 from gxr_studio.raw.dng import Dng, RawDecodeError, open_dng
 from gxr_studio.raw.tiff import Tiff
+from support import samples
 from support.core_cli import CoreCliError, error_of, require_cli, run, run_json, run_npy
 from support.dng_writer import write_dng
 from support.raw_render_parity import (
@@ -35,8 +36,7 @@ from support.raw_render_parity import (
     verify_powf_boundary_counterexamples,
 )
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent)))
+_PARENT = samples.sample_parent()
 CAPTURES = _PARENT / "captures"
 _CAP = 60
 _FLOAT_AT = {("layout", "white"), ("scene", "b")}
@@ -169,13 +169,13 @@ def test_real_sample_set() -> None:
     if not REAL:
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail(f"no DNGs under {CAPTURES}")
-        pytest.skip(f"no DNGs under {CAPTURES}")
+        samples.missing(f"no DNGs under {CAPTURES}")
     units = Counter(path.relative_to(CAPTURES).parts[0] for path in REAL)
     print(f"real_dngs={len(REAL)} units={dict(sorted(units.items()))}")
     assert REAL
 
 
-@pytest.mark.parametrize("path", REAL, ids=_real_id if REAL else None)
+@pytest.mark.parametrize("path", samples.real_params(REAL, f"no DNGs under {CAPTURES}"), ids=_real_id if REAL else None)
 def test_real_describe_summary_mosaic_and_half(path: Path, tmp_path: Path) -> None:
     require_cli()
     py_desc, py_err = _python_describe(path)
@@ -758,7 +758,7 @@ _REAL_RENDER = REAL[::4] if len(REAL) >= 10 else REAL
 assert len([p for p in _REAL_RENDER if "contrib" not in p.as_posix()]) >= 10 or not REAL
 
 
-@pytest.mark.parametrize("path", _REAL_RENDER, ids=_real_id if _REAL_RENDER else None)
+@pytest.mark.parametrize("path", samples.real_params(_REAL_RENDER, f"no DNGs under {CAPTURES}"), ids=_real_id if _REAL_RENDER else None)
 def test_real_demosaic_strip_and_neutral_match_python(path: Path, tmp_path: Path) -> None:
     require_cli()
     expect_neutral(path, tmp_path)
