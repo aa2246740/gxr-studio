@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from gxr_studio.finish.spec import FrameSpec, StampSpec
-from support.export_pipeline_cases import check, synthetic_source
+from support.export_pipeline_cases import check, redact_failures, synthetic_source
 from support.frame_cases import FIXTURE_CJK, desktop_mark, font_pairs
 from support.wasm_check import run_area
 
@@ -218,6 +218,7 @@ def _hdr_cases(tmp: Path, base: dict[str, Any], side_paths: dict[str, str], pic:
     return out
 
 
+@redact_failures
 def test_wasm_matches_native_export_pipeline(tmp_path: Path) -> None:
     fonts = font_pairs()
     rng = np.random.default_rng(7)

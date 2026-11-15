@@ -44,7 +44,7 @@ from gxr_studio.render.params import RecipeSel, parse_edit
 from support import export_source_cases as xs
 from support import export_source_run as xr
 from support.core_cli import require_cli, run_json
-from support.export_pipeline_cases import check, cli_ok, mtime_args, same_file_redacted, same_pixels, same_redacted
+from support.export_pipeline_cases import check, cli_ok, mtime_args, note, redact_failures, same_file_redacted, same_pixels, same_redacted
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 
@@ -52,11 +52,13 @@ DAT = xs.real_dat()
 
 
 @pytest.fixture(autouse=True)
+@redact_failures
 def _cli() -> None:
     require_cli()
 
 
 @pytest.fixture
+@redact_failures
 def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     np.save(tmp_path / "icc.npy", np.zeros((8, 8, 3), dtype=np.uint8))
     code, payload = run_json(["jpeg-encode", "--in", str(tmp_path / "icc.npy"), "--quality", "95", "--out", str(tmp_path / "icc.jpg")])
@@ -227,6 +229,7 @@ def run_case(
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
+@redact_failures
 def test_raw_branches_real_pairs_match_export_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:
     pairs = [(d, j) for d, j in xs.real_pairs(60) if j is not None]
     if len(pairs) < 20:
@@ -241,7 +244,7 @@ def test_raw_branches_real_pairs_match_export_finish(tmp_path: Path, monkeypatch
             out = run_case(h, tmp_path, monkeypatch, f"W{idx:03d}", dng, jpg if keep_jpg else None, case)
             key = f"{out['render']}/{'no-ink' if out['no_ink'] else 'ink'}/{'pair' if keep_jpg else 'dng-only'}"
             tally[key] = tally.get(key, 0) + 1
-    print("export-pipeline e2e raw:", json.dumps(tally, ensure_ascii=False, sort_keys=True))
+    note("e2e raw", tally)
     check(sum(tally.values()) == 20, "expected 20 exports")
     check(any(k.startswith("recipe-prediction") for k in tally) and any(k.startswith("neutral-preview") for k in tally), "branches missing")
 
@@ -268,6 +271,7 @@ SPECS = {
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
+@redact_failures
 def test_lut_branches_real_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:
     from support import export_source_lut as gates
     from support.lut_cases import cube_text
@@ -308,7 +312,7 @@ def test_lut_branches_real_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
                     n_a, n_b = gates.log_gate(tmp_path, lut.cube, lut.spec, dng, out["rgb0"], out["rs_base"], label, sample=4000)
                 points["a"] += n_a
                 points["b"] += n_b
-    print("export-pipeline e2e lut:", points)
+    note("e2e lut", points)
     check(points["cases"] == 3 * len(pairs), "LUT case count")
 
 

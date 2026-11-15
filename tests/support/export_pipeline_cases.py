@@ -6,9 +6,17 @@ from real photos are compared without printing them: a mismatch reports tag ids 
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import hashlib
 import io
 import json
+import logging
+import os
+import re
+import traceback
+import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +136,40 @@ def mtime_args(path: Path) -> list[str]:
     return ["--mtime-ms", repr(st * 1000.0), "--tz-offset-min", str(minutes)]
 
 
+# ---- Redaction at the exit (Sol r1–r3 P1) -------------------------------------------------
+#
+# Every test and fixture in tests/test_core_parity_export_pipeline*.py carries @redact_failures
+# (the AST guard checks it). Whatever a test raises, the report shows only the exception type, the
+# innermost file:line in this unit's files and a SHA-256 prefix of the original message, plus the
+# detail a redaction helper built itself (lengths, offsets, shapes, counts, identifier-only field
+# paths, error kinds). Labels and messages are never shown, only hashed.
+
+_SAFE_SEGMENT = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]{0,40}|\[[0-9]{1,9}\])$")
+_SAFE_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,40}$")
+_HELPERS = {"_fail", "check", "same_redacted", "same_file_redacted", "same_pixels", "cli_ok", "_diffs"}
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+class RedactedMismatch(Exception):  # noqa: N818  the name reads as what failed
+    """A failed comparison: ``detail`` is built by the helper from safe facts only; ``label``
+    (caller text, possibly holding photo data) is kept only as a hash."""
+
+    def __init__(self, detail: str, label: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.label_sha = _sha(label)
+
+    def __str__(self) -> str:
+        return f"{self.detail} (label sha256 {self.label_sha})"
+
+
+def _path_join(path: str, segment: str) -> str:
+    return f"{path}.{segment}" if _SAFE_SEGMENT.match(segment) else f"{path}.?"
+
+
 def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
     from test_core_parity_export_meta import _digest_value, _values_equal
 
@@ -135,7 +177,7 @@ def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
         if list(got.keys()) != list(want.keys()):
             out.append(f"{path}: keys or key order differ ({len(got)} vs {len(want)} keys)")
         for k in [k for k in got if k in want]:
-            _diffs(got[k], want[k], f"{path}.{k}", out)
+            _diffs(got[k], want[k], _path_join(path, str(k)), out)
         return
     if isinstance(got, (list, tuple)) and isinstance(want, (list, tuple)):
         if len(got) != len(want):
@@ -148,59 +190,126 @@ def _diffs(got: Any, want: Any, path: str, out: list[str]) -> None:
 
 
 def same_redacted(got: Any, want: Any, label: str) -> None:
-    """Exact equality of values that may hold real-photo text (``meta``, frame and stamp layouts,
-    labels, state, result fields). A mismatch reports only the field path, the type and a SHA-256
-    prefix of each side (export-meta's ``_digest_value``) and fails with ``pytrace=False``, so
-    pytest never expands the values into the log (Sol r1 P1)."""
-    import pytest
-
+    """Exact equality of values that may hold real-photo text (``meta``, layouts, labels, state,
+    result fields): a mismatch reports field paths (identifier keys only), types and SHA-256
+    prefixes (export-meta's ``_digest_value``)."""
     out: list[str] = []
     _diffs(got, want, "$", out)
     if out:
-        pytest.fail(f"{label}: mismatch: " + "; ".join(out[:20]), pytrace=False)
-
-
-def _fail(label: str) -> None:
-    import pytest
-
-    pytest.fail(label, pytrace=False)
+        raise RedactedMismatch("mismatch: " + "; ".join(out[:20]), label)
 
 
 def check(ok: bool, label: str) -> None:
-    """A plain ``if`` in place of a bare ``assert``: pytest never expands the operands, only
-    ``label`` (which callers keep to synthetic ids and counts) reaches the log (Sol r2 P1)."""
+    """A plain ``if`` in place of a bare ``assert``; the label is only hashed."""
     if not ok:
-        _fail(label)
+        raise RedactedMismatch("check failed", label)
 
 
 def same_file_redacted(got: bytes | None, want: bytes, label: str) -> None:
-    """Whole-file byte equality. A mismatch reports only the lengths, the first differing byte
-    and SHA-256 prefixes; the bytes (which carry the source EXIF) never reach the log."""
+    """Whole-file byte equality: lengths, the first differing byte and SHA-256 prefixes only."""
     if got is None:
-        _fail(f"{label}: no file (expected {len(want)} bytes, sha {digest(want)})")
-    elif got != want:
-        _fail(f"{label}: {first_difference(got, want)}")
+        raise RedactedMismatch(f"no file (expected {len(want)} bytes, sha {digest(want)})", label)
+    if got != want:
+        raise RedactedMismatch(first_difference(got, want), label)
 
 
 def same_pixels(got: Any, want: Any, label: str) -> None:
-    """Exact array equality, reporting shapes, the count of differing elements and the first
-    index only, never the values."""
+    """Exact array equality: shapes, dtypes, the count of differing elements and the first index."""
     if got.shape != want.shape or got.dtype != want.dtype:
-        _fail(f"{label}: shape/dtype {got.shape} {got.dtype} vs {want.shape} {want.dtype}")
-        return
+        raise RedactedMismatch(f"shape/dtype {got.shape} {got.dtype} vs {want.shape} {want.dtype}", label)
     bad = np.argwhere(got != want)
     if len(bad):
-        _fail(f"{label}: {len(bad)} values differ, first at {tuple(int(v) for v in bad[0])}")
+        raise RedactedMismatch(f"{len(bad)} values differ, first at {tuple(int(v) for v in bad[0])}", label)
 
 
 def error_kind(payload: Any) -> str:
-    """The core error kind of a CLI payload (never its message)."""
+    """The core error kind of a CLI payload, if it is an identifier (never the message)."""
     if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
-        return str(payload["error"].get("kind"))
+        kind = str(payload["error"].get("kind"))
+        return kind if _SAFE_WORD.match(kind) else "?"
     return "-"
 
 
 def cli_ok(code: int, payload: Any, label: str) -> None:
-    """A CLI call that must succeed; a failure reports the exit code and error kind only."""
+    """A CLI call that must succeed: the exit code and error kind only."""
     if code != 0:
-        _fail(f"{label}: exit {code}, kind {error_kind(payload)}")
+        raise RedactedMismatch(f"exit {int(code)}, kind {error_kind(payload)}", label)
+
+
+def _ours(filename: str) -> bool:
+    p = Path(filename)
+    return p.name.startswith("test_core_parity_export_pipeline") or (p.parent.name == "support" and p.name.startswith("export_pipeline_"))
+
+
+def _site(exc: BaseException) -> str:
+    """The innermost frame in this unit's files, skipping the redaction helpers themselves."""
+    site = "?"
+    for frame, line in traceback.walk_tb(exc.__traceback__):
+        code = frame.f_code
+        if not _ours(code.co_filename):
+            continue
+        if Path(code.co_filename).name == "export_pipeline_cases.py" and code.co_name in _HELPERS | {"wrapper"}:
+            continue
+        site = f"{Path(code.co_filename).name}:{line}"
+    return site
+
+
+def _summary(exc: BaseException) -> str:
+    kind = type(exc).__name__
+    if isinstance(exc, RedactedMismatch):
+        return f"redacted {kind} at {_site(exc)}: {exc.detail}; label sha256 {exc.label_sha}"
+    try:
+        text = str(exc)
+    except Exception:  # noqa: BLE001  an exception whose str() fails still gets reported
+        text = "<unprintable>"
+    return f"redacted {kind} at {_site(exc)}; message sha256 {_sha(text)}"
+
+
+def redact_failures(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a test or fixture so that no failure can carry photo data to stdout, stderr or JUnit.
+
+    - pytest's skip, xfail and exit outcomes pass through unchanged;
+    - any other exception becomes ``pytest.fail(summary, pytrace=False)``, raised after the
+      ``except`` block so neither ``__cause__`` nor ``__context__`` holds the original;
+    - while the test runs, ``sys.stdout`` / ``sys.stderr`` writes, logging and warnings are
+      swallowed, so captured-output and warning sections cannot carry data either.
+    """
+    import pytest
+
+    passthrough = (pytest.skip.Exception, pytest.xfail.Exception, pytest.exit.Exception, KeyboardInterrupt)
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        summary: str | None = None
+        sink = io.StringIO()
+        previous = logging.root.manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink), warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    return fn(*args, **kwargs)
+                except passthrough:
+                    raise
+                except BaseException as exc:  # noqa: BLE001  every failure is redacted here
+                    summary = _summary(exc)
+                    del exc
+        finally:
+            logging.disable(previous)
+        pytest.fail(summary or "redacted failure", pytrace=False)
+
+    return wrapper
+
+
+def anon_ids(prefix: str, values: Any) -> list[str]:
+    """Anonymous parametrize ids (``P000``, ``P001``, …), so no value reaches a test id."""
+    return [f"{prefix}{i:03d}" for i in range(len(values))]
+
+
+def note(name: str, value: Any) -> None:
+    """Record a tally (counts and reason codes only) for the report, outside pytest's output:
+    appended as one JSON line to ``$EXPORT_PIPELINE_NOTES`` when that is set."""
+    path = os.environ.get("EXPORT_PIPELINE_NOTES")
+    if path:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"name": name, "value": value}, ensure_ascii=False, sort_keys=True) + "\n")

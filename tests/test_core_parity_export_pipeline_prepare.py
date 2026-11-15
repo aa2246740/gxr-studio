@@ -41,7 +41,9 @@ from support.export_pipeline_cases import (
     cli_ok,
     error_kind,
     mtime_args,
+    note,
     real_pairs,
+    redact_failures,
     same_file_redacted,
     same_pixels,
     same_redacted,
@@ -51,11 +53,13 @@ from support.samples import missing
 
 
 @pytest.fixture(autouse=True)
+@redact_failures
 def _cli() -> None:
     require_cli()
 
 
 @pytest.fixture
+@redact_failures
 def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     """See ``test_core_parity_export_pipeline.pinned_icc``: only header bytes 24..36 differ."""
     np.save(tmp_path / "icc.npy", np.zeros((8, 8, 3), dtype=np.uint8))
@@ -143,6 +147,7 @@ def _write(tmp: Path, name: str, obj: Any) -> str:
     return str(path)
 
 
+@redact_failures
 def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, settings: Any, pinned_icc: bytes) -> None:
     pairs = real_pairs(18)
     if not pairs:
@@ -233,10 +238,11 @@ def test_e2e_camera_jpg_shots_match_export_finish(tmp_path: Path, lib: Any, sett
             for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
                 same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
             tally["no_ink" if no_ink else "ink"] += 1
-    print("export-pipeline e2e camera-jpg:", tally)
+    note("e2e camera-jpg", tally)
     check(tally["original"] >= 1 and tally["ink"] >= 3 and tally["no_ink"] >= 3, f"too few cases: {tally}")
 
 
+@redact_failures
 def test_prepare_errors(tmp_path: Path) -> None:
     np.save(tmp_path / "p.npy", np.zeros((4, 4, 3), dtype=np.uint8))
     shot = _write(tmp_path, "shot.json", {"name": "R", "width": 4, "height": 4, "files": {"jpg": {}}})
@@ -253,6 +259,7 @@ def test_prepare_errors(tmp_path: Path) -> None:
         check(canvas is None and payload["error"]["kind"] == kind, f"expected {kind}, got {error_kind(payload)}")
 
 
+@redact_failures
 def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
     """Broken stored defaults give the factory frame and stamp, as ``serve.load_defaults`` does."""
     from gxr_studio.finish.serve import defaults_path
@@ -285,6 +292,7 @@ def test_defaults_fall_back_like_load_defaults(tmp_path: Path) -> None:
         check(payload["prepared"]["stamp"] is None, "a stamp was laid out")
 
 
+@redact_failures
 def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> None:
     from gxr_studio.finish.sizes import output_sizes, source_size
 
@@ -332,23 +340,75 @@ def test_output_sizes_match_desktop(tmp_path: Path, lib: Any, settings: Any) -> 
     check(compared >= 30, f"only {compared} sizes cases")
 
 
-CANARY_TARGETS: dict[str, tuple[str, str | None, int, tuple[str, ...]]] = {
-    # target: (child pytest node, plugin target or None for the HDR probe module, failures
-    # expected, the failure sites the child must name)
-    "sizes": ("test_core_parity_export_pipeline_prepare.py::test_output_sizes_match_desktop", "sizes", 1, ("S000 sizes 0: mismatch",)),
-    "bytes": ("test_core_parity_export_pipeline_prepare.py::test_e2e_camera_jpg_shots_match_export_finish", "bytes", 1, ("P000: lengths",)),
-    "raw": ("test_core_parity_export_pipeline_raw.py::test_raw_branches_real_pairs_match_export_finish", "raw", 1, ("W000: lengths",)),
-    "hdr": ("support/export_pipeline_canary_probe.py", None, 3, ("Gate A: lengths", "Gate B: lengths", "SYNTHETIC hdr state: mismatch")),
+# target: (child pytest node, plugin target or None for a probe module, failures expected,
+# the failure sites as (file, a needle on the failing statement, a word of the helper's detail)).
+CANARY_TARGETS: dict[str, tuple[str, str | None, int, list[tuple[str, str, str]]]] = {
+    "sizes": (
+        "test_core_parity_export_pipeline_prepare.py::test_output_sizes_match_desktop",
+        "sizes",
+        1,
+        [("test_core_parity_export_pipeline_prepare.py", "same_redacted(got, json.loads(json.dumps(want))", "mismatch")],
+    ),
+    "bytes": (
+        "test_core_parity_export_pipeline_prepare.py::test_e2e_camera_jpg_shots_match_export_finish",
+        "bytes",
+        1,
+        [("test_core_parity_export_pipeline_prepare.py", "same_file_redacted(got, py_file, stem)", "lengths")],
+    ),
+    "raw": (
+        "test_core_parity_export_pipeline_raw.py::test_raw_branches_real_pairs_match_export_finish",
+        "raw",
+        1,
+        [("test_core_parity_export_pipeline_raw.py", "same_file_redacted(got, py_file, stem)", "lengths")],
+    ),
+    "hdr": (
+        "support/export_pipeline_canary_probe.py",
+        None,
+        3,
+        [
+            ("test_core_parity_export_pipeline_hdr.py", 'f"{label}: Gate A"', "lengths"),
+            ("test_core_parity_export_pipeline_hdr.py", 'f"{label}: Gate B"', "lengths"),
+            ("export_pipeline_canary_probe.py", '"SYNTHETIC hdr state"', "mismatch"),
+        ],
+    ),
+    "mutants": (
+        "support/export_pipeline_mutants.py",
+        None,
+        10,
+        [
+            ("export_pipeline_mutants.py", f"# MUTANT {m}", "redacted")
+            for m in ("len_str", "len_dict", "format_spec", "raise", "check_label", "print", "logging", "warning", "pytest_fail", "np_testing")
+        ],
+    ),
 }
 
 
+def _statement_lines(path: Path, needle: str) -> set[int]:
+    """The lines of the innermost simple statement containing ``needle``."""
+    import ast
+
+    src = path.read_text(encoding="utf-8")
+    hit = next(i for i, line in enumerate(src.split("\n"), 1) if needle in line)
+    compound = (ast.FunctionDef, ast.If, ast.For, ast.While, ast.With, ast.Try)
+    spans = [
+        (n.lineno, n.end_lineno or n.lineno)
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.stmt) and not isinstance(n, compound) and n.lineno <= hit <= (n.end_lineno or n.lineno)
+    ]
+    lo, hi = min(spans, key=lambda s: s[1] - s[0])
+    return set(range(lo, hi + 1))
+
+
 @pytest.mark.parametrize("verbosity", ["-q", "-vv"])
-@pytest.mark.parametrize("target", sorted(CANARY_TARGETS))
+@pytest.mark.parametrize("target", ["bytes", "hdr", "mutants", "raw", "sizes"])
+@redact_failures
 def test_failed_real_comparison_prints_no_exif(target: str, verbosity: str, tmp_path: Path) -> None:
-    """Sol r1/r2 P1: force a mismatch on a synthetic EXIF canary through the real comparison code
-    (meta, finished file bytes, the RAW/LUT ``run_case``, HDR Gate A and B, HDR state), under
-    ``-q`` and ``-vv``; the canary must not reach stdout, stderr or the JUnit file."""
+    """Sol r1–r3 P1: force failures on a synthetic EXIF canary through the real comparison code
+    (meta, finished file bytes, the RAW/LUT ``run_case``, HDR Gate A and B, HDR state) and through
+    Sol's r3 mutants, under ``-q`` and ``-vv``. Every child test must fail, name the right file and
+    line, and the canary must not reach stdout, stderr or the JUnit file."""
     import os
+    import re
     import subprocess
     import sys
 
@@ -368,21 +428,24 @@ def test_failed_real_comparison_prints_no_exif(target: str, verbosity: str, tmp_
         "EXPORT_PIPELINE_CANARY_TARGET": plugin or "",
         "PYTHONPATH": str(repo / "tests"),
     }
+    env.pop("EXPORT_PIPELINE_NOTES", None)
     args = [sys.executable, "-m", "pytest", verbosity, "-p", "no:randomly", node, f"--basetemp={tmp_path / 'child'}", f"--junitxml={junit}"]
-    if plugin is not None:
-        args[3:3] = ["-p", "support.export_pipeline_canary"]
-    else:
-        args[3:3] = ["-o", "python_files=*.py"]
+    args[3:3] = ["-p", "support.export_pipeline_canary"] if plugin is not None else ["-o", "python_files=*.py"]
     proc = subprocess.run(args, cwd=repo / "tests", env=env, capture_output=True, text=True, timeout=900, check=False)  # noqa: S603  # nosec B603
-    check(proc.returncode == 1, f"{target} {verbosity}: the forced mismatch did not fail the child (exit {proc.returncode})")
+    check(proc.returncode == 1, f"{target} {verbosity}: the forced failure did not fail the child (exit {proc.returncode})")
     check(f"{failures} failed" in proc.stdout, f"{target} {verbosity}: expected {failures} failures")
-    for site in sites:
-        check(site in proc.stdout, f"{target} {verbosity}: did not fail at {site!r}")
+    for fname, needle, word in sites:
+        where = repo / "tests" / fname if (repo / "tests" / fname).is_file() else repo / "tests" / "support" / fname
+        lines = _statement_lines(where, needle)
+        named = {int(n) for n in re.findall(re.escape(fname) + r":(\d+)", proc.stdout)}
+        check(bool(named & lines), f"{target} {verbosity}: no failure names {fname} at {sorted(lines)}")
+        check(word in proc.stdout, f"{target} {verbosity}: no {word!r} detail")
     for name, text in (("stdout", proc.stdout), ("stderr", proc.stderr), ("junit", junit.read_text(encoding="utf-8"))):
         check(CANARY not in text, f"{target} {verbosity}: the canary reached {name}")
 
 
 @pytest.mark.parametrize("command", ["export-run-plan", "export-run-prepare"])
+@redact_failures
 def test_blank_sidecar_is_an_empty_object(command: str, tmp_path: Path) -> None:
     """Sol r1 P2-01: an omitted, empty or whitespace-only sidecar gives exactly what ``{}`` gives."""
     np.save(tmp_path / "px.npy", np.arange(18, dtype=np.uint8).reshape(2, 3, 3))

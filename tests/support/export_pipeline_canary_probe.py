@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 from support.export_pipeline_canary import CANARY
-from support.export_pipeline_cases import check, same_redacted
+from support.export_pipeline_cases import check, redact_failures, same_redacted
 
 
 def _hdr_files() -> tuple[bytes, dict[str, Any]]:
@@ -40,6 +40,7 @@ def _hdr_files() -> tuple[bytes, dict[str, Any]]:
     return expected, {"rgb": rgb, "layer": layer, "payload": payload}
 
 
+@redact_failures
 def test_hdr_gate_a_mismatch() -> None:
     import test_core_parity_export_pipeline_hdr as target
 
@@ -47,6 +48,7 @@ def test_hdr_gate_a_mismatch() -> None:
     target._attribute(expected.replace(CANARY.encode(), b"X" * len(CANARY)), expected, fin, "SYNTHETIC HDR")
 
 
+@redact_failures
 def test_hdr_gate_b_mismatch() -> None:
     import test_core_parity_export_pipeline_hdr as target
 
@@ -55,6 +57,7 @@ def test_hdr_gate_b_mismatch() -> None:
     target._attribute(expected, expected.replace(CANARY.encode(), b"X" * len(CANARY)), fin, "SYNTHETIC HDR")
 
 
+@redact_failures
 def test_hdr_state_mismatch() -> None:
     state = {"asked": True, "active": False, "shape": None, "problem": CANARY, "frame": {"items": [{"k": "text", "text": CANARY}]}}
     same_redacted(state, {**state, "problem": "no_raw"}, "SYNTHETIC hdr state")

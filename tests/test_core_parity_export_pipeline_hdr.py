@@ -44,6 +44,8 @@ from support.export_pipeline_cases import (
     error_kind,
     first_difference,
     mtime_args,
+    note,
+    redact_failures,
     same_file_redacted,
     same_pixels,
     same_redacted,
@@ -79,6 +81,7 @@ CASES: list[tuple[dict[str, Any], str, bool, int]] = [
 
 
 @pytest.fixture(autouse=True)
+@redact_failures
 def _cli() -> None:
     require_cli()
 
@@ -252,6 +255,7 @@ def _pairs(n: int) -> list[tuple[Path, Path]]:
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
 @pytest.mark.parametrize("long_edge", [None, 1600])
+@redact_failures
 def test_hdr_real_pairs_match_export_finish(long_edge: int | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:  # noqa: F811
     h = xs.make_home(tmp_path / "home", DAT)
     tally: dict[str, int] = {}
@@ -261,12 +265,13 @@ def test_hdr_real_pairs_match_export_finish(long_edge: int | None, tmp_path: Pat
             out = run_hdr_case(h, tmp_path, monkeypatch, f"H{long_edge or 0}{idx:02d}", dng, jpg if case[2] else None, case, long_edge)
             key = f"hdr={out['hdr']}/{out['reason']}/{'ink' if out['ink'] else 'no-ink'}/{out['how']}"
             tally[key] = tally.get(key, 0) + 1
-    print(f"export-pipeline e2e hdr long_edge={long_edge}:", json.dumps(tally, sort_keys=True))
+    note(f"e2e hdr long_edge={long_edge}", tally)
     check(sum(tally.values()) == 10, "expected 10 exports")
     check(any(k.startswith("hdr=True") for k in tally), "no export made HDR")
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
+@redact_failures
 def test_hdr_reasons_on_crafted_shots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:  # noqa: F811
     """``no_raw`` (JPG only), ``raw_unreadable`` (a DNG neither side can open), a camera JPG that is
     not this DNG's (``capture_mismatch`` / ``not_aligned``), a JPG without capture EXIF, and
@@ -299,7 +304,7 @@ def test_hdr_reasons_on_crafted_shots(tmp_path: Path, monkeypatch: pytest.Monkey
             if out["reason"] == "frame_layout":
                 reasons["blur"] = "frame_layout"
                 break
-    print("export-pipeline hdr reasons:", reasons)
+    note("hdr reasons", reasons)
     same_redacted([reasons["no_raw"], reasons["raw_unreadable"]], ["no_raw", "raw_unreadable"], "crafted reasons")
     same_redacted(reasons.get("blur"), "frame_layout", "blur reason")
 
@@ -318,6 +323,7 @@ def _bomb_jpeg(path: Path) -> Path:
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
+@redact_failures
 def test_hdr_pixel_limit_deviation(tmp_path: Path) -> None:
     """The accepted deviation (hdr-track r4, docs/mobile.md): a camera JPG over Pillow's pixel
     limit. The desktop raises ``DecompressionBombError`` (uncaught in ``load_jpeg`` /

@@ -23,10 +23,12 @@ from gxr_studio.finish.compose import load_jpeg
 from gxr_studio.finish.serve import _fit
 from support.core_cli import error_of, require_cli, run_json
 from support.export_pipeline_cases import (
+    anon_ids,
     check,
     cli_ok,
     error_kind,
     real_pairs,
+    redact_failures,
     same_file_redacted,
     same_redacted,
     source_exif_json,
@@ -39,11 +41,13 @@ QUALITIES = (95, 85, 70)
 
 
 @pytest.fixture(autouse=True)
+@redact_failures
 def _cli() -> None:
     require_cli()
 
 
 @pytest.fixture
+@redact_failures
 def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     """Python's ``srgb_icc()`` is made by LittleCMS at run time, with the creation time in header
     bytes 24..36, so no two desktop runs write the same file. gxr-jpeg fixes those bytes. Assert
@@ -57,7 +61,7 @@ def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     with Image.open(tmp_path / "icc.jpg") as im:
         rs = bytes(im.info["icc_profile"])
     py = srgb_icc()
-    assert len(rs) == len(py) == 588
+    check(len(rs) == len(py) == 588, "ICC profiles are not 588 bytes")
     check(rs[:24] == py[:24] and rs[36:] == py[36:], "ICC profiles differ outside bytes 24..36")
     monkeypatch.setattr(export_mod, "_ICC", rs)
     return rs
@@ -81,7 +85,8 @@ def _huffopt(data: bytes, tmp: Path, tag: str) -> bytes:
     return out.read_bytes()
 
 
-@pytest.mark.parametrize("quality", QUALITIES + (100, 90, 89, 1))
+@pytest.mark.parametrize("quality", QUALITIES + (100, 90, 89, 1), ids=anon_ids("Q", QUALITIES + (100, 90, 89, 1)))
+@redact_failures
 def test_huffopt_equals_pillow_optimize(quality: int, tmp_path: Path) -> None:
     for name, rgb in synthetic_images():
         plain = _pillow(rgb, quality, False)
@@ -90,6 +95,7 @@ def test_huffopt_equals_pillow_optimize(quality: int, tmp_path: Path) -> None:
         same_file_redacted(got, want, f"{name} q{quality}")
 
 
+@redact_failures
 def test_huffopt_real_arrays(tmp_path: Path) -> None:
     pairs = real_pairs(6)
     if not pairs:
@@ -102,6 +108,7 @@ def test_huffopt_real_arrays(tmp_path: Path) -> None:
             same_file_redacted(got, want, f"real {i} q{quality}")
 
 
+@redact_failures
 def test_huffopt_rejects_damaged_input(tmp_path: Path) -> None:
     good = _pillow(np.zeros((16, 16, 3), dtype=np.uint8), 95, False)
     for tag, data in [("empty", b""), ("text", b"not a jpeg"), ("truncated", good[: len(good) - 40]), ("no-eoi", good[:-2])]:
@@ -188,8 +195,9 @@ def _expected_result(name: str, rgb: np.ndarray, data: bytes, labels: dict[str, 
     }
 
 
-@pytest.mark.parametrize("quality", QUALITIES)
+@pytest.mark.parametrize("quality", QUALITIES, ids=anon_ids("Q", QUALITIES))
 @pytest.mark.parametrize("long_edge", [None, 64])
+@redact_failures
 def test_complete_synthetic_equals_write_rgb_with_exif(quality: int, long_edge: int | None, tmp_path: Path, pinned_icc: bytes) -> None:
     src = synthetic_source(tmp_path / "src.jpg")
     exif_json = source_exif_json(src)
@@ -204,6 +212,7 @@ def test_complete_synthetic_equals_write_rgb_with_exif(quality: int, long_edge: 
         same_redacted(payload["result"], _expected_result("R0001", fitted, want, labels), f"{name} result")
 
 
+@redact_failures
 def test_complete_real_arrays(tmp_path: Path, pinned_icc: bytes) -> None:
     pairs = real_pairs(8)
     if not pairs:
@@ -223,20 +232,21 @@ def test_complete_real_arrays(tmp_path: Path, pinned_icc: bytes) -> None:
         check(payload["result"]["width"] == fitted.shape[1] and payload["result"]["height"] == fitted.shape[0], f"real {i}: result size")
 
 
-@pytest.mark.parametrize(
-    ("state", "kind"),
-    [
-        (_state("R", 0, None, {}), "bad_quality"),
-        (_state("R", 101, None, {}), "bad_quality"),
-        (_state("R", 95.0, None, {}), "bad_quality"),
-        (_state("R", 95, 63, {}), "bad_size"),
-        (_state("R", 95, 30001, {}), "bad_size"),
-        (_state("R", 95, 1600.0, {}), "bad_size"),
-        (_state("R", True, None, {}), "bad_state"),
-        ({"quality": 95, "labels": {}}, "bad_state"),
-        (_state("R", 95, None, {"text": 1}), "bad_request"),
-    ],
-)
+OPTION_ERRORS: list[tuple[dict[str, Any], str]] = [
+    (_state("R", 0, None, {}), "bad_quality"),
+    (_state("R", 101, None, {}), "bad_quality"),
+    (_state("R", 95.0, None, {}), "bad_quality"),
+    (_state("R", 95, 63, {}), "bad_size"),
+    (_state("R", 95, 30001, {}), "bad_size"),
+    (_state("R", 95, 1600.0, {}), "bad_size"),
+    (_state("R", True, None, {}), "bad_state"),
+    ({"quality": 95, "labels": {}}, "bad_state"),
+    (_state("R", 95, None, {"text": 1}), "bad_request"),
+]
+
+
+@pytest.mark.parametrize(("state", "kind"), OPTION_ERRORS, ids=anon_ids("O", OPTION_ERRORS))
+@redact_failures
 def test_complete_option_errors(state: dict[str, Any], kind: str, tmp_path: Path) -> None:
     got, payload = _complete(tmp_path, "err", np.zeros((4, 4, 3), dtype=np.uint8), state, "")
     check(got is None and payload["error"]["kind"] == kind, f"expected error {kind}, got {error_kind(payload)}")
@@ -259,6 +269,7 @@ def _with_unused_table(jpeg: bytes, cls: int) -> bytes:
 
 
 @pytest.mark.parametrize("cls", [0, 1])
+@redact_failures
 def test_huffopt_unused_table_is_an_error(cls: int, tmp_path: Path) -> None:
     plain = _pillow(np.full((1, 1, 3), 120, dtype=np.uint8), 95, False)
     data = _with_unused_table(plain, cls)
@@ -284,7 +295,8 @@ BAD_HDR_STATES: list[Any] = [
 ]
 
 
-@pytest.mark.parametrize("hdr", BAD_HDR_STATES)
+@pytest.mark.parametrize("hdr", BAD_HDR_STATES, ids=anon_ids("H", BAD_HDR_STATES))
+@redact_failures
 def test_complete_rejects_malformed_hdr_state(hdr: Any, tmp_path: Path) -> None:
     """Sol r1 P2-02: a malformed ``state.hdr`` is hdr-track's state error, never a ``no_raw`` export."""
     got, payload = _complete(tmp_path, "badhdr", np.zeros((2, 3, 3), dtype=np.uint8), _state("R", 95, None, {}, hdr), "")
@@ -292,6 +304,7 @@ def test_complete_rejects_malformed_hdr_state(hdr: Any, tmp_path: Path) -> None:
     check(payload["error"]["kind"] in ("bad_input", "bad_state", "bad_geometry"), f"unexpected kind {error_kind(payload)}")
 
 
+@redact_failures
 def test_complete_valid_inactive_hdr_is_no_raw(tmp_path: Path) -> None:
     hdr = {"asked": True, "active": False, "shape": None, "problem": "no_raw", "frame": None}
     got, payload = _complete(tmp_path, "inact", np.zeros((2, 3, 3), dtype=np.uint8), _state("R", 95, None, {}, hdr), "")
