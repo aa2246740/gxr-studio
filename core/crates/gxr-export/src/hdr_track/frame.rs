@@ -18,6 +18,7 @@ fn bad_layout() -> CoreError {
 /// `null` layout (`style == "none"`) is a no-op. Any `blur` backdrop (`blur_fill`) or mismatched
 /// photo placement turns an active track inactive with `problem = "frame_layout"`, matching Python.
 pub fn frame_track(state: &HdrTrackState, layout_json: &str) -> Result<HdrTrackState, CoreError> {
+    let dims = state.validate()?;
     let val = parse_json(layout_json, "bad_frame", INVALID_LAYOUT)?;
     if matches!(val, JsonValue::Null) {
         return Ok(state.clone());
@@ -53,11 +54,8 @@ pub fn frame_track(state: &HdrTrackState, layout_json: &str) -> Result<HdrTrackS
         .and_then(JsonValue::as_array)
         .ok_or_else(bad_layout)?;
 
-    if !state.active {
+    let Some((lh, lw)) = dims else {
         return Ok(state.clone());
-    }
-    let Some([lh, lw, 2]) = state.shape else {
-        return Err(CoreError::new("bad_input", "HDR 轨道状态格式不对"));
     };
 
     if is_blur {

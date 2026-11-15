@@ -150,6 +150,7 @@ pub fn finish(
     h: u64,
     params: &Params,
 ) -> Result<FinishOutput, CoreError> {
+    let dims = state.validate()?;
     let (wu, hu) = checked_rgb_bytes(rgb, w, h)?;
     let factor = usize::try_from(params.map_factor)
         .ok()
@@ -162,14 +163,11 @@ pub fn finish(
             reason: NOT_JPEG.to_string(),
         });
     }
-    if !state.active {
+    let Some((lh, lw)) = dims else {
         return Ok(FinishOutput::Skipped {
             bytes: payload.to_vec(),
             reason: state.problem.clone().unwrap_or_else(|| NO_RAW.to_string()),
         });
-    }
-    let Some([lh, lw, 2]) = state.shape else {
-        return Err(CoreError::new("bad_input", "HDR 轨道状态格式不对"));
     };
 
     let grid = to_grid(&state.layer, lw as u64, lh as u64, w, h, factor)?;

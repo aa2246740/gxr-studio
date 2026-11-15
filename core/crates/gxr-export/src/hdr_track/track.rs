@@ -113,6 +113,43 @@ impl HdrTrackState {
         }
     }
 
+    /// Construct a validated active state from `(height, width)` and flat `(h, w, 2)` float32 values.
+    pub fn active(height: usize, width: usize, layer: Vec<f32>) -> Result<Self, CoreError> {
+        let state = Self {
+            active: true,
+            shape: Some([height, width, 2]),
+            problem: None,
+            layer,
+        };
+        let _ = state.validate()?;
+        Ok(state)
+    }
+
+    /// Shared invariant check for all public `HdrTrackState` consumers:
+    /// verifies `active` / `shape` / `problem` / `layer` correspondence and validates dimensions,
+    /// byte limits, and exact slice length via `checked_float_layer_slice`.
+    pub fn validate(&self) -> Result<Option<(usize, usize)>, CoreError> {
+        if !self.active {
+            if self.shape.is_some() || !self.layer.is_empty() {
+                return Err(bad_geometry());
+            }
+            return Ok(None);
+        }
+        if self.problem.is_some() {
+            return Err(bad_geometry());
+        }
+        let Some([lh, lw, c]) = self.shape else {
+            return Err(bad_geometry());
+        };
+        if c != 2 {
+            return Err(bad_geometry());
+        }
+        let lh_u = u64::try_from(lh).map_err(|_| too_big())?;
+        let lw_u = u64::try_from(lw).map_err(|_| too_big())?;
+        let (wu, hu, _, _) = checked_float_layer_slice(&self.layer, lw_u, lh_u, 2)?;
+        Ok(Some((hu, wu)))
+    }
+
     pub fn to_meta_json(&self) -> Json {
         let shape = match self.shape {
             Some([h, w, c]) => Json::ints(&[
@@ -304,12 +341,10 @@ pub fn begin(
 
 /// Port of `gxr_studio/finish/hdr_export.py:89 HdrTrack.warp`.
 pub fn warp_track(state: &HdrTrackState, geom_json: &str) -> Result<HdrTrackState, CoreError> {
+    let dims = state.validate()?;
     let geom: Geometry = parse_geometry(geom_json)?;
-    if !state.active {
+    let Some((lh, lw)) = dims else {
         return Ok(state.clone());
-    }
-    let Some([lh, lw, 2]) = state.shape else {
-        return Err(bad_state());
     };
     let warped = warp_float_u64(&state.layer, lw as u64, lh as u64, 2, &geom)?;
     Ok(HdrTrackState {
@@ -328,15 +363,13 @@ pub fn box_track(
     w: u64,
     h: u64,
 ) -> Result<HdrTrackState, CoreError> {
+    let dims = state.validate()?;
     if w == 0 || h == 0 {
         return Err(bad_rect());
     }
     let (wu, hu, _, out_elems) = checked_float_layer_dims(w, h, 2)?;
-    if !state.active {
+    let Some((lh, lw)) = dims else {
         return Ok(state.clone());
-    }
-    let Some([lh, lw, 2]) = state.shape else {
-        return Err(bad_state());
     };
     let x_end = x.checked_add(w).ok_or_else(bad_rect)?;
     let y_end = y.checked_add(h).ok_or_else(bad_rect)?;
@@ -382,12 +415,10 @@ pub fn parse_rect4_json(rect_json: &str) -> Result<[f64; 4], CoreError> {
 
 /// Port of `gxr_studio/finish/hdr_export.py:97 HdrTrack.crop`.
 pub fn crop_track(state: &HdrTrackState, rect_json: &str) -> Result<HdrTrackState, CoreError> {
+    let dims = state.validate()?;
     let rect = parse_rect4_json(rect_json)?;
-    if !state.active {
+    let Some((lh, lw)) = dims else {
         return Ok(state.clone());
-    }
-    let Some([lh, lw, 2]) = state.shape else {
-        return Err(bad_state());
     };
     let cropped = crop_valid_f32_u64(&state.layer, lw as u64, lh as u64, 2, rect)?;
     Ok(HdrTrackState {
@@ -406,16 +437,14 @@ pub fn stamp_track(
     w: u64,
     h: u64,
 ) -> Result<HdrTrackState, CoreError> {
-    if !state.active {
+    let dims = state.validate()?;
+    let Some((lh, lw)) = dims else {
         if !(w == 0 && h == 0 && mask.is_empty()) {
             let _ = gxr_finish::geometry::bounds::checked_mask_slice(mask, w, h)?;
         }
         return Ok(state.clone());
-    }
-    let (wu, hu, _) = gxr_finish::geometry::bounds::checked_mask_slice(mask, w, h)?;
-    let Some([lh, lw, 2]) = state.shape else {
-        return Err(bad_state());
     };
+    let (wu, hu, _) = gxr_finish::geometry::bounds::checked_mask_slice(mask, w, h)?;
     if wu != lw || hu != lh {
         return Err(bad_geometry());
     }
@@ -442,17 +471,18 @@ pub fn stamp_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{finish, frame_track};
 
     fn active_2x3() -> HdrTrackState {
-        HdrTrackState {
-            active: true,
-            shape: Some([2, 3, 2]),
-            problem: None,
-            layer: vec![
+        HdrTrackState::active(
+            2,
+            3,
+            vec![
                 0.1, 0.0, 0.2, 0.0, 0.3, 1.0, // row 0
                 0.4, 0.0, 0.5, 0.0, 0.6, 1.0, // row 1
             ],
-        }
+        )
+        .unwrap()
     }
 
     #[test]
@@ -483,12 +513,7 @@ mod tests {
 
     #[test]
     fn box_and_stamp_update_layer_and_nan() {
-        let st = HdrTrackState {
-            active: true,
-            shape: Some([5, 5, 2]),
-            problem: None,
-            layer: vec![0.5_f32; 5 * 5 * 2],
-        };
+        let st = HdrTrackState::active(5, 5, vec![0.5_f32; 5 * 5 * 2]).unwrap();
         let mut mask = vec![0_u8; 25];
         mask[2 * 5 + 2] = 1;
         let stamped = stamp_track(&st, &mask, 5, 5).unwrap();
@@ -517,5 +542,93 @@ mod tests {
         let deep = format!("{}0{}", "[".repeat(129), "]".repeat(129));
         let err = HdrTrackState::from_json_and_slice(&[], &deep).unwrap_err();
         assert_eq!((err.kind, err.message.as_str()), ("json", "JSON 嵌套太深"));
+    }
+
+    #[test]
+    fn public_state_consumers_reject_malformed_states_without_panic() {
+        let layout =
+            r#"{"width":5,"height":4,"bgfx":null,"items":[{"k":"photo","x":1,"y":1,"w":3,"h":2}]}"#;
+        let rgb = vec![0_u8; 3 * 2 * 3];
+        let params = Params::default();
+        let assert_all_consumers_err = |st: &HdrTrackState, expected: &CoreError| {
+            assert_eq!(warp_track(st, "{}").unwrap_err(), *expected);
+            assert_eq!(box_track(st, 0, 0, 1, 1).unwrap_err(), *expected);
+            assert_eq!(crop_track(st, "[0,0,1,1]").unwrap_err(), *expected);
+            assert_eq!(
+                stamp_track(st, &[1, 0, 0, 0, 0, 0], 3, 2).unwrap_err(),
+                *expected
+            );
+            assert_eq!(stamp_track(st, &[0; 6], 3, 2).unwrap_err(), *expected);
+            assert_eq!(frame_track(st, layout).unwrap_err(), *expected);
+            assert_eq!(frame_track(st, "null").unwrap_err(), *expected);
+            assert_eq!(
+                finish(b"hdr", st, "jpeg", &rgb, 3, 2, &params).unwrap_err(),
+                *expected
+            );
+            assert_eq!(
+                finish(b"png", st, "png", &rgb, 3, 2, &params).unwrap_err(),
+                *expected
+            );
+        };
+
+        let empty = HdrTrackState {
+            active: true,
+            shape: Some([2, 3, 2]),
+            problem: None,
+            layer: vec![],
+        };
+        assert_all_consumers_err(&empty, &bad_geometry());
+
+        let short = HdrTrackState {
+            active: true,
+            shape: Some([2, 3, 2]),
+            problem: None,
+            layer: vec![0.0; 11],
+        };
+        assert_all_consumers_err(&short, &bad_geometry());
+
+        let huge = HdrTrackState {
+            active: true,
+            shape: Some([2_147_483_648, 1, 2]),
+            problem: None,
+            layer: vec![],
+        };
+        assert_all_consumers_err(&huge, &too_big());
+
+        let inactive_with_shape = HdrTrackState {
+            active: false,
+            shape: Some([2, 3, 2]),
+            problem: Some("no_raw".to_string()),
+            layer: vec![],
+        };
+        assert_all_consumers_err(&inactive_with_shape, &bad_geometry());
+
+        let inactive_with_layer = HdrTrackState {
+            active: false,
+            shape: None,
+            problem: Some("no_raw".to_string()),
+            layer: vec![1.0],
+        };
+        assert_all_consumers_err(&inactive_with_layer, &bad_geometry());
+
+        let active_no_shape = HdrTrackState {
+            active: true,
+            shape: None,
+            problem: None,
+            layer: vec![],
+        };
+        assert_all_consumers_err(&active_no_shape, &bad_geometry());
+
+        let bad_channels = HdrTrackState {
+            active: true,
+            shape: Some([2, 3, 3]),
+            problem: None,
+            layer: vec![0.0; 18],
+        };
+        assert_all_consumers_err(&bad_channels, &bad_geometry());
+        assert_eq!(
+            HdrTrackState::active(2_147_483_648, 1, vec![]).unwrap_err(),
+            too_big()
+        );
     }
 }
