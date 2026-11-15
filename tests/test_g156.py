@@ -16,6 +16,7 @@ import pytest
 import e0_support as t
 from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import intake, store
+from support import samples
 from test_camdata_api import tree
 from test_datcodec import reseal
 from test_g152 import client as client
@@ -159,7 +160,7 @@ def bank_offsets(raw):
 def parent_format():
     path = t.REPO / "research/v39_g153/dat_format.py"
     if not path.is_file():
-        pytest.skip("The parent's independent DAT reader is absent")
+        samples.missing("The parent's independent DAT reader is absent")
     return t.load_by_path("g156_test_dat_format", path)
 
 
@@ -168,7 +169,9 @@ def camera_gate(tmp_path_factory, parent_format):
     """Call the parent's parser builder with all build outputs redirected outside both repos."""
     path = t.REPO / "research/v39_g153/format_checks.py"
     product = t.REPO / "firmware/engine_v68_g156/candidate/containers/product"
-    if not path.is_file() or not product.is_dir() or shutil.which("clang") is None or sys.platform != "darwin":
+    if not path.is_file() or not product.is_dir():
+        samples.missing("The parent's g156 C parser builder needs its sources and macOS clang")
+    if shutil.which("clang") is None or sys.platform != "darwin":
         pytest.skip("The parent's g156 C parser builder needs its sources and macOS clang")
     previous_path = sys.path[:]
     try:

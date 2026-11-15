@@ -15,6 +15,7 @@ import pytest
 from e0_support import REPO
 from g152_support import CONTROL_NAMES
 from gxr_studio.camdata import r5
+from support import samples
 
 PACKAGES = {
     176: REPO / "research/body_r5_freeze/local/packages/r5-NOT_FOR_INSTALLATION/SD_ROOT",
@@ -46,7 +47,9 @@ class FullRecordReference:
         product = REPO / "research/build_g178_r1/local/engine-004/candidate/containers/product"
         crc_source = product.parent.parent / "engine_services/crc.c"
         compiler = shutil.which("clang")
-        if not product.is_dir() or not crc_source.is_file() or compiler is None:
+        if not product.is_dir() or not crc_source.is_file():
+            samples.missing("g178 的真实 C 源码或 clang 不在本机")
+        if compiler is None:
             pytest.skip("g178 的真实 C 源码或 clang 不在本机")
         folder.mkdir(parents=True, exist_ok=True)
         crc = crc_source.read_text()

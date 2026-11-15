@@ -8,6 +8,7 @@ pub mod geometry;
 #[path = "box.rs"]
 pub mod gpu_box;
 pub mod raster;
+pub mod resample;
 
 pub use geometry::{Geometry, parse_geometry, warp, warp_u64, warp_valid, warp_valid_u64};
 pub use gpu_box::{final_box, final_box_json, final_box_json_u64, final_box_u64};
@@ -17,3 +18,4 @@ pub use raster::{
     finish_unframed, fit_logo_json, has_white_background, key_white, linear_to_srgb,
     prepare_logo_key, srgb_to_linear, stats_of, trim_ink,
 };
+pub use resample::{Filter, Mode, resample_f32, resample_f32_u64, resample_u8, resample_u8_u64};

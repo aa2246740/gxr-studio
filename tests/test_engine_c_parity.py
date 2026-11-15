@@ -16,6 +16,7 @@ import pytest
 import e0_support as t
 from gxr_studio.camdata import datcodec as dc
 from gxr_studio.engine import knobs, menu
+from support import samples
 
 STATS = ("clamps", "node_repairs", "monotone_repairs", "slope_repairs", "colour_cap", "matrix_cap", "rowsum_cap")
 
@@ -37,7 +38,9 @@ class CStats(ct.Structure):
 def lib(tmp_path_factory):
     src = t.KNOBS_SRC / "knobs.c"
     clang = shutil.which("clang") or "/usr/bin/clang"
-    if not src.is_file() or not shutil.which(clang):
+    if not src.is_file():
+        samples.missing("knobs.c 或 clang 不在本机")
+    if not shutil.which(clang):
         pytest.skip("knobs.c 或 clang 不在本机")
     out = tmp_path_factory.mktemp("c-parity") / "knobs.dylib"
     cp = subprocess.run(

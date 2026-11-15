@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import random
 import sys
 from pathlib import Path
 
+from support import samples
+
 STUDIO = Path(__file__).resolve().parents[1]
-REPO = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", STUDIO.parent)).resolve()
+REPO = samples.sample_parent()
 RESEARCH = REPO / "research"
 GOLDEN = Path(__file__).parent / "golden"
 

@@ -162,6 +162,10 @@ gxr-cli color-predict --entry E.bin --stock STOCK04.bin --ctx C.npz --ring R.jso
 gxr-cli color-bake --entry E.bin --stock STOCK04.bin --ctx C.npz --ring R.json [--params P.json] [--menu final.json] --out BAKE.bin --meta META.json
 gxr-cli color-apply --bake BAKE.bin --meta META.json --codes IN.npy [--params P.json] --out OUT.npy
 gxr-cli color-tones --params P.json --out TABLE.npy
+gxr-cli color-parse-edit --json EDIT.json
+gxr-cli color-listing [--dat GXRCE.DAT [--library GXRFX.BIN]]
+gxr-cli color-controls [--dat GXRCE.DAT [--library GXRFX.BIN]] --unit U --slot S
+gxr-cli color-resolve --dat GXRCE.DAT [--library GXRFX.BIN] (--recipe R.json | --default --unit U)
 ```
 
 - `color-knobs-apply`：`P.json` 有 `levels` 时走菜单（还要 `unit`、`slot`，级别必须是整数）；没有时用 `amount`（默认 100）、`doses`（10 个整数）、`wb_method`、`tone_method`。`--stock` 省略时和底子相同。输出 552 字节，标准输出是 `out`、`length` 和 `stats`。`amount == 0` 仍会重写 CRC。
@@ -170,7 +174,9 @@ gxr-cli color-tones --params P.json --out TABLE.npy
 - `color-predict`：默认是 `UnitModel.predict`（先 `input_codes`，色相查找用原厂矩阵行）；`--base` 是 `Model.predict`（不做输入映射，按配方色度 `forward`）。码值 `.npy` 是 float32 或 float64，最后一维是 3，dtype 按 Python 的规则参与运算。默认输出 uint8，`--float` 输出夹紧后未量化的 float64。
 - `color-bake`：`P.json` 是 `{"step": 0.375, "knobs": {...}}`，都可省。有 `knobs` 时先 `knobs.apply(stock, entry, …)`，这时要给 `--menu`。`BAKE.bin` 就是 `bake_bytes` 的 float32 表（布局见 `common.wgsl`）。标准输出是 `bytes`、`sha256` 和 `meta`。
 - `color-apply`：`chroma_u8`。`P.json` 是 `{"adjust": {...}, "curves": {...}}`，都可省；增益来自 `channel_gains`，调子表来自 `display_table`。
-- `color-tones`：输出 `gains`（或 null），调子表写成 float32 `.npy`（或 `table: null`）。`adjust` 和 `curves` 是 `parse_adjust` / `parse_curve` 之后的值；解析本身在第二波（编辑解析）。
+- `color-tones`：输出 `gains`（或 null），调子表写成 float32 `.npy`（或 `table: null`）。`adjust` 和 `curves` 是 `parse_adjust` / `parse_curve` 之后的值。
+- `color-parse-edit`：`resolve::parse_edit_state` 只解析 `recipe`、`adjust`、`curve` 和可选 `lut`（不包含桌面 `render/edits.py:parse_edit` 里的 `geometry`、`border`/`frame`、`stamp`），输出标准化后的对象以及 `canonical` 和 `digest`。
+- `color-listing` / `color-controls` / `color-resolve`：无 `--dat` 时按内嵌菜单输出（`color-listing`、`color-controls`）；提供 `GXRCE.DAT`（和可选 `GXRFX.BIN`）时按机内配方表解析列表、控件或目标 `552` 字节条目、`entry_sha256` 与 `knobs` 请求。`EditError` 按 `{"error":{"kind","message","detail"}}` 返回。
 
 ### meta 多了 `input_coefficients`
 
@@ -196,12 +202,12 @@ Python 的 meta 只有 `nx`、`ny`、`origin`、`step`。`.bin` 里的输入映�
 - `model_for`：版本、单元、清单、改动 kind `calib`，原厂 04 不匹配 kind `stock_mismatch`。包里缺文件 kind `file_not_found`，文案不和 Python 的 `FileNotFoundError` 逐字相同。
 - 预测和烘焙：`ValueError` 的文案相同（不对称色表行、系数字高位、色相环节点、输入映射尺寸、未知核类型、`需要 v2 pre-table 模型`），色相环缺键 kind `key`。
 - 不和 Python 逐字相同的：八个角张不成面积时 Qhull 报 `QhullError`，这里 kind `qhull`，文案只是一行；条目不是 552 字节（Python 的条目都来自 `datcodec`，永远是 552）；色相环里节点不是 24 个、`gain_per_sector` 不是 1 或 24 个（Python 到预测时才报 numpy 的广播错误，这里构造时就拒绝，文案用节点检查那句）；数字字段不是数字（kind `type`）；网格超过 2^24 格（kind `memory`）。
-- JSON：数组和对象最多嵌套 128 层，进入下一层之前就检查。超出时 kind `json`，文案 `JSON 嵌套太深`，原生和 WASM 一样（Python 的 `json` 会接受更深的输入，这是有意的差别）。
+- JSON：数组和对象最多嵌套 128 层，进入下一层之前就检查，超出时 kind `json`，文案 `JSON 嵌套太深`；编辑与配方解析输入上限为 4 MiB（`MAX_JSON_BYTES`），超出时 kind `json`，文案 `JSON 文件过大`，原生和 WASM 一样（Python 的 `json` 会接受更大、更深的输入，这是有意的差别）。解析器同时保留独立 UTF-16 代理转义（`\uD800`..`\uDFFF`），并在输出 JSON 时按 `\uXXXX` 原样写回。
 - 尺寸：`.npy` 的形状、头部长度和烘焙网格（包括 meta 里的 `nx`、`ny`）都用带检查的 u64 相乘，元素数不超过 2^32−1，分配失败也不 panic。超出时原生和 WASM 给同一句 numpy 文案 `array is too big; …`（kind `value`）。
 
 ### WASM
 
-`color_bake(entry, stock, menu_json, ctx_npz, ring_json, params_json)` 返回 `ColorBake`（`bytes()`、`meta`、`summary`），`color_apply(bake_bin, meta_json, codes_f32, params_json)` 返回 uint8。两者和 CLI 走同一段 `gxr-color` 代码。比较用例在 `mobile/scripts/wasm_cases/color.mjs`，每个输入是一份列出文件的 JSON。
+`color_bake(entry, stock, menu_json, ctx_npz, ring_json, params_json)` 返回 `ColorBake`（`bytes()`、`meta`、`summary`），`color_apply(bake_bin, meta_json, codes_f32, params_json)` 返回 uint8；`color_listing(dat_bytes?, library_bytes?)`、`color_controls(dat_bytes?, unit: f64, slot: f64, library_bytes?)`、`color_resolve(dat_bytes, recipe_json, library_bytes?)` 返回带换行的 JSON 字符串（失败抛出含 `kind`、`message` 和可选 `detail` 的核心错误 JSON）。`color_controls` 会先校验有限整数与 `unit`（0..2）/ `slot`（1..8）范围，避免 JS `Number` 转 `i32` 回绕。比较用例在 `mobile/scripts/wasm_cases/color.mjs`，对拍在 `tests/test_core_parity_resolve.py`（另含完整错误 JSON 与非有限/小数边界对比）。
 
 ## 边框和日期戳（frame）
 
