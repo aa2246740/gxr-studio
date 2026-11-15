@@ -26,9 +26,11 @@ const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number
 
 /**
  * 显卡在忙（上一张的直方图还在读回）时 `histogram()` 立刻给 null，于是每帧再试一次。
- * 连着这么多帧都拿不到（显卡丢了之类）就停，下一次调整再开始，免得一直每帧去问。
+ * 连着这么多帧都拿不到（显卡丢了之类）就放慢到每 HIST_SLOW_MS 试一次，一直试到画上、换片或关掉，
+ * 不会停下来等用户再调一下，也不会每帧都去问。
  */
-const HIST_MAX_MISSES = 300;
+const HIST_FAST_MISSES = 300;
+const HIST_SLOW_MS = 250;
 
 const TABS = ['配方', '调整', '裁剪', '边框', 'LUT', '曲线'] as const;
 
@@ -69,8 +71,9 @@ export class EditorView {
   private histBusy = false;
   private histAgain = false;
   private histDrawn = -1;
-  /** 排在下一帧的重试和连着拿不到的次数。 */
+  /** 排在下一帧（或放慢后排在定时器上）的重试和连着拿不到的次数。 */
   private histFrame = 0;
+  private histTimer = 0;
   private histMisses = 0;
   private clipLow: HTMLElement | null = null;
   private clipHigh: HTMLElement | null = null;
@@ -120,8 +123,7 @@ export class EditorView {
     this.holding = false;
     this.wantNeighbor = '';
     this.histAgain = false;
-    if (this.histFrame) cancelAnimationFrame(this.histFrame);
-    this.histFrame = 0;
+    this.cancelHistRetry();
     this.shell.dataset.drag = '0';
     this.sharp?.close();
     this.sharp = null;
@@ -360,7 +362,11 @@ export class EditorView {
    */
   private requestHist(retry = false): void {
     if (!this.engine || this.mode === 'still') return;
-    if (!retry) this.histMisses = 0;
+    if (!retry) {
+      // 新的调整：重新按帧试，排着的慢重试不要了。
+      this.histMisses = 0;
+      this.cancelHistRetry();
+    }
     if (this.histBusy) {
       this.histAgain = true;
       return;
@@ -376,15 +382,24 @@ export class EditorView {
         this.histMisses = drawn ? 0 : this.histMisses + 1;
         const engine = this.engine;
         if (!this.histAgain && !(engine && engine.contentVersion !== this.histDrawn)) return;
-        if (this.histMisses >= HIST_MAX_MISSES) return;
-        // 排到下一帧再数。不能在这里直接再调：显卡忙时 histogram() 马上给 null，一串微任务接着跑，
-        // 页面的定时器、显卡回调和手势都轮不到，换片时整页就卡死了。
-        if (this.histFrame) cancelAnimationFrame(this.histFrame);
-        this.histFrame = requestAnimationFrame(() => {
+        // 排到下一帧（连着拿不到太久就排到慢定时器）再数。不能在这里直接再调：显卡忙时 histogram() 马上给 null，
+        // 一串微任务接着跑，页面的定时器、显卡回调和手势都轮不到，换片时整页就卡死了。
+        this.cancelHistRetry();
+        const again = (): void => {
           this.histFrame = 0;
+          this.histTimer = 0;
           if (token === this.token) this.requestHist(true);
-        });
+        };
+        if (this.histMisses < HIST_FAST_MISSES) this.histFrame = requestAnimationFrame(again);
+        else this.histTimer = window.setTimeout(again, HIST_SLOW_MS);
       });
+  }
+
+  private cancelHistRetry(): void {
+    if (this.histFrame) cancelAnimationFrame(this.histFrame);
+    if (this.histTimer) window.clearTimeout(this.histTimer);
+    this.histFrame = 0;
+    this.histTimer = 0;
   }
 
   /** 数到并画上了才是 true；显卡在忙、换了片都是 false。 */

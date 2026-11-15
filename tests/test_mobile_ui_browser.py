@@ -531,6 +531,10 @@ def test_mobile_ui_hist_retry_yields(tmp_path: Path) -> None:
     assert busy["calls"] <= busy["frames"] + 1 and busy["ticks"] > 0, busy
     # 换片以后排着的那次取消了。
     assert cases["afterDestroy"] == {"more": 0}
-    # 连着拿不到 300 帧就停；下一次调整重新开始并画上。
-    capped = cases["capped"]
-    assert capped == {"stoppedAt": 300, "histDrawn": 1, "guardHit": False}, capped
+    # 经理 r6 裁定：忙超过 300 帧以后放慢到每 250 ms 一次，不停；空下来后不用新的调整就自己画上。
+    back = cases["backoff"]
+    assert back["guardHit"] is False and back["fastCalls"] == 301, back
+    assert 2 <= back["slowCalls"] <= 6 and back["minGap"] >= 200, back
+    assert back["ticks"] > 0, back
+    assert back["histDrawn"] == 1 and back["drawnAfterMs"] <= 1000, back
+    assert back["afterDrawn"] == 0 and back["afterDestroySlow"] == 0, back

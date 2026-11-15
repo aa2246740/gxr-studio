@@ -29,7 +29,7 @@ try {
     if (!reloaded) break;
   }
   out.cases = await within(
-    30_000,
+    60_000,
     page.evaluate(async () => {
       const { EditorView } = await import('/src/app/editor.ts');
       const frame = () => new Promise((done) => requestAnimationFrame(done));
@@ -43,6 +43,7 @@ try {
           async histogram() {
             state.calls += 1;
             state.callFrames.push(state.frames);
+            state.callTimes?.push(performance.now());
             if (state.busy && state.calls < GUARD) return null;
             if (state.busy) state.guardHit = true;
             return { counts: new Uint32Array(1026), samples: 1, version: this.contentVersion };
@@ -130,21 +131,58 @@ try {
         result.afterDestroy = { more: state.calls - before };
       }
 
-      // 4. 连着拿不到到上限后停下，下一次调整（不是重试）重新开始。
+      // 4. 经理 r6 裁定：忙超过 300 帧以后不停，放慢到每 250 ms 试一次；空下来后不用新的调整也能自己画上。
+      //    慢下来以后照样让出事件循环（定时器照跑），也不是每帧都问。
       {
-        const state = { calls: 0, busy: true, guardHit: false, frames: 0, callFrames: [] };
+        const state = { calls: 0, busy: true, guardHit: false, frames: 0, callFrames: [], callTimes: [] };
         const v = view(fakeEngine(state));
+        let ticks = 0;
+        const interval = setInterval(() => {
+          ticks += 1;
+        }, 10);
         v.requestHist();
-        let last = -1;
-        for (let i = 0; i < 2000 && last !== state.calls; i++) {
-          last = state.calls;
-          for (let k = 0; k < 3; k++) await frame();
-        }
-        const stoppedAt = state.calls;
+        // 按时间等（不按帧数），修坏了（比如到 300 就停）也是断言失败，不是整个驱动超时。
+        const fastUntil = performance.now() + 12_000;
+        while (state.calls <= 300 && performance.now() < fastUntil) await frame();
+        const fastCalls = state.calls;
+        // 慢阶段看 1.1 秒：每 250 ms 一次，大约 4 次。
+        const slowFrom = state.calls;
+        const slowStart = performance.now();
+        await new Promise((done) => setTimeout(done, 1100));
+        const slowCalls = state.calls - slowFrom;
+        const gaps = state.callTimes.slice(Math.max(0, slowFrom - 1)).map((t, i, all) => (i ? t - all[i - 1] : null)).filter((g) => g !== null);
+        const ticksSlow = ticks;
+        // 空下来：不调 requestHist，等它自己画上。
         state.busy = false;
-        v.requestHist();
-        for (let i = 0; i < 10 && v.histDrawn !== 1; i++) await frame();
-        result.capped = { stoppedAt, histDrawn: v.histDrawn, guardHit: state.guardHit };
+        const freedAt = performance.now();
+        while (v.histDrawn !== 1 && performance.now() - freedAt < 2000) await frame();
+        result.backoff = {
+          fastCalls,
+          slowCalls,
+          slowMs: Math.round(performance.now() - slowStart),
+          minGap: gaps.length ? Math.round(Math.min(...gaps)) : null,
+          ticks: ticksSlow,
+          histDrawn: v.histDrawn,
+          drawnAfterMs: Math.round(performance.now() - freedAt),
+          guardHit: state.guardHit,
+        };
+        // 画上以后不再问。
+        const settled = state.calls;
+        await new Promise((done) => setTimeout(done, 600));
+        result.backoff.afterDrawn = state.calls - settled;
+        // 慢阶段里关掉：排着的定时器取消，不再问。
+        state.busy = true;
+        state.calls = 0;
+        state.callTimes = [];
+        const w = view(fakeEngine(state));
+        w.requestHist();
+        const slowUntil = performance.now() + 12_000;
+        while (state.calls <= 301 && performance.now() < slowUntil) await frame();
+        w.destroy();
+        const before = state.calls;
+        await new Promise((done) => setTimeout(done, 600));
+        result.backoff.afterDestroySlow = state.calls - before;
+        clearInterval(interval);
         v.destroy();
       }
       return result;
