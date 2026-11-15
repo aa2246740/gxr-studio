@@ -322,3 +322,38 @@ def test_a_missing_destination_is_created_through_the_pinned_parent(tmp_path: Pa
     monkeypatch.setattr(calib_export, "collect", real_collect)
     made = calib_export.export_for_iphone(home, tmp_path / "fresh" / "a" / "b", [], now=NOON)
     assert made.parent == (tmp_path / "fresh" / "a" / "b").resolve() and made.is_file()
+
+
+def test_the_validated_snapshot_is_what_gets_written(tmp_path: Path, monkeypatch) -> None:
+    """收集到的是坏模型，收集之后本机的包被换成好的（Sol r2）：校验的是收集到的那份，所以拒绝，不写 zip。
+    不换时，zip 里的每个文件就是校验过的那份。"""
+    home = tmp_path / "app"
+    good = _pack(home, ("jlaunch",))
+    _relist(home, "ring_jlaunch_200.json", b'{"schema": "gxr-sector-model/2"}')
+    real_collect = calib_export.collect
+
+    def swap(target: Path):
+        out = real_collect(target)
+        write_pack(calib.calib_dir(home), good)  # 本机的包现在又是好的
+        return out
+
+    monkeypatch.setattr(calib_export, "collect", swap)
+    dest = tmp_path / "out"
+    with pytest.raises(calib_export.CalibExportError) as err:
+        calib_export.export_for_iphone(home, dest, [])
+    assert err.value.message == "校准数据读不出来，请重新导入"
+    assert not dest.exists() or not any(dest.iterdir())
+
+    seen: dict[str, bytes] = {}
+
+    def keep(target: Path):
+        manifest, files = real_collect(target)
+        seen.update(files)
+        return manifest, files
+
+    monkeypatch.setattr(calib_export, "collect", keep)
+    path = calib_export.export_for_iphone(home, dest, [], now=NOON)
+    with zipfile.ZipFile(path) as archive:
+        assert {name: archive.read(name) for name in archive.namelist()} == seen == good
+        ring = json.loads(archive.read("ring_jlaunch_200.json"))
+    assert "nodes_unwrapped_deg" in ring  # 写进去的模型是好的那份

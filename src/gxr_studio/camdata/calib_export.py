@@ -121,17 +121,24 @@ def zip_bytes(files: dict[str, bytes], when: tuple[int, int, int, int, int, int]
     return buffer.getvalue()
 
 
-def check_models(home: Path, manifest: dict[str, Any]) -> None:
-    """照 `model_for`：包里实际有的每个单元、两个 ISO 分支都要能建出模型，原厂 04 指纹要对上当前的相机数据。
+def check_models(home: Path, manifest: dict[str, Any], files: dict[str, bytes]) -> None:
+    """照 `model_for` 校验**这份快照**：包里实际有的每个单元，原厂 04 指纹要对上当前的相机数据（每个单元只读一次），
+    两个 ISO 分支都要能从快照里的字节建出模型。之后写进 zip 的也是这份快照，中间不再重读文件（Sol r2）。
     只有部分单元的包照样能导出。文案照 `unit_status`。"""
+    from . import store
+
     for unit in sorted(manifest["units"]):
+        meta = manifest["units"][unit]
+        try:
+            stock04 = store.load_stock04(home, unit)
+        except FileNotFoundError as exc:
+            raise _invalid(FILES_MISSING, unit) from exc
+        if meta.get("camera_stock_sha256") != calib.stock_fingerprint(stock04):
+            raise _invalid("校准数据与这个单元的原厂 04 不匹配，请重新导入", unit)
         for iso in calib.MODEL_ISOS:
+            pair = meta["models"][str(iso)]
             try:
-                calib.model_for(home, iso, unit=unit)
-            except FileNotFoundError as exc:
-                raise _invalid(FILES_MISSING, f"{unit}/{iso}") from exc
-            except calib.CalibError as exc:
-                raise _invalid(str(exc), f"{unit}/{iso}") from exc
+                calib.build_model(stock04, files[pair["ctx"]], files[pair["ring"]])
             except Exception as exc:  # noqa: BLE001  数组、ring 或模型参数坏了，和 unit_status 一样归为读不出来
                 raise _invalid(UNREADABLE, f"{unit}/{iso}") from exc
 
@@ -192,7 +199,7 @@ def export_for_iphone(
     try:
         with privacy.PrivateDir(anchor, "calibration_export", blocked) as base:
             manifest, files = collect(home)
-            check_models(home, manifest)
+            check_models(home, manifest, files)
             data = zip_bytes(files, (max(1980, local.tm_year), local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec))
             base.verify()
             with contextlib.ExitStack() as stack:
