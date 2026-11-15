@@ -63,3 +63,12 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 ### 生成的 Unicode 表（`gxr-hdr`）
 
 `core/crates/gxr-hdr/src/unicode_tables.rs` 不是外部包，是 `core/crates/gxr-hdr/scripts/gen_unicode_tables.py` 用参考 Python（3.14.7，Unicode 16.0.0）逐个码点生成的：`str.isspace()` 的空白、`float(str)` 认的十进制数字、`str.casefold()` 的完整折叠。数据来自 Unicode Character Database，许可是 Unicode License v3，全文在 `core/crates/gxr-hdr/NOTICE`。换 Python 或 Unicode 版本时重跑脚本，再 `rustfmt`；`tests/test_core_parity_hdr_review.py` 会核对表和当前解释器一致。
+
+### 内部移植的图像重采样器（`gxr-finish`，原 `Pillow 12.2.0`）
+
+`core/crates/gxr-finish/src/resample/` 依据 `Pillow 12.2.0`（2026-04-01 发布，MIT-CMU / HPND 许可）的 `src/libImaging/Resample.c`、`src/libImaging/Convert.c`（`RGBA ↔ RGBa`）、`src/libImaging/ImagingUtils.h` 与 `src/PIL/Image.py`（`resize`）用纯安全 Rust 重写，不引入外部 Rust crate。Pillow 版权与 MIT-CMU 许可全文保存在 `core/crates/gxr-finish/NOTICE`。
+
+相对上游 `Pillow 12.2.0` C 实现的约束：
+- `#![forbid(unsafe_code)]` 纯安全 Rust 实现；
+- Lanczos `sinc` 统一调用 `gxr_math::sin`（`libm`），使原生 CLI 与 WASM 逐位一致；
+- `32bpc`（`mode = "F"`）按标准 IEEE 754 `f64` 顺序乘加并禁止 FMA（`mul_add`），遵循核心可移植算术规范。

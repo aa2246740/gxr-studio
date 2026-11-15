@@ -42,6 +42,7 @@ dependencies = [
 name = "gxr-color"
 version = "0.1.0"
 dependencies = [
+ "gxr-camdata",
  "gxr-math",
  "gxr-raw",
 ]

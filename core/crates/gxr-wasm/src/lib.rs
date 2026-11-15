@@ -15,6 +15,7 @@ mod hdrtrack;
 mod jpeg;
 mod lut;
 mod raw;
+mod resample;
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
