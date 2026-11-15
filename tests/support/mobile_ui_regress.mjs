@@ -87,6 +87,12 @@ async function makePage({ gpu = true, width = 390, height = 844 } = {}) {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  // 只为诊断：页面崩了、关了、整页刷新，都往 stderr 记一行（F4 在整轮高负载下偶尔卡住，要看是哪一种）。
+  page.on('crash', () => process.stderr.write(`page crash +${Date.now()}\n`));
+  page.on('close', () => process.stderr.write(`page close +${Date.now()}\n`));
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) process.stderr.write(`page navigated ${frame.url()} +${Date.now()}\n`);
+  });
   await page.goto(`${base}/`);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await page.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
@@ -539,7 +545,16 @@ const CASES = {
         };
         const second = await editorState(page);
         stage('gpu: swipe back');
+        // 只为诊断：每 20 秒问一次页面还答不答（5 秒内），答了就印标题，不答就印「没有回应」。不改任何等待和断言。
+        const watchdog = setInterval(() => {
+          Promise.race([
+            page.evaluate(() => `${document.querySelector('.editor .nav b')?.textContent} screen=${document.querySelector('.app')?.dataset.screen}`),
+            new Promise((done) => setTimeout(() => done('no answer within 5 s'), 5000)),
+          ]).then((text) => stage(`gpu: watchdog ${text}`), (err) => stage(`gpu: watchdog error ${err?.message ?? err}`));
+        }, 20_000);
+        watchdog.unref(); // 测试失败抛出时不让它拖住驱动退出
         await swipeBack();
+        stage('gpu: swipe gesture sent');
         await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 }).catch(async (err) => {
           const state = await page.evaluate(() => ({
             title: document.querySelector('.editor .nav b')?.textContent,
@@ -550,7 +565,9 @@ const CASES = {
           }));
           throw new Error(`${err.message}\nwant=${first.title} second=${second.title}\n${JSON.stringify(state)}`);
         });
+        stage('gpu: title is first again');
         await waitCards();
+        clearInterval(watchdog);
         const calls = await page.evaluate(() => window.__thumbCalls);
         stage('gpu: back on first');
         return { labels, diff, callsAfterFirst, calls, first, second, errors };
