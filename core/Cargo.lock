@@ -51,6 +51,7 @@ dependencies = [
 name = "gxr-export"
 version = "0.1.0"
 dependencies = [
+ "gxr-color",
  "gxr-finish",
  "gxr-frame",
  "gxr-jpeg",

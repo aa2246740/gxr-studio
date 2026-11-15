@@ -1,9 +1,11 @@
 //! `export-*` commands. Owner: wave-2 export (export-meta: `export-meta-*`; export-pipeline:
-//! `export-run-*`).
+//! `export-run-*`, thin wrappers over `gxr_export::pipeline::api`, which `gxr-wasm` calls too).
 
-use gxr_export::pipeline::{ExportFail, State, complete_sdr, optimize_huffman};
+use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs};
+use gxr_export::pipeline::{ExportFail, ExportOpts, optimize_huffman};
+use gxr_frame::Fonts;
+use gxr_raw::Json;
 use gxr_raw::sha256::sha256_hex;
-use gxr_raw::{CoreError, Json};
 
 use crate::common::{self, Failure, Output};
 
@@ -18,6 +20,8 @@ fn run_pipeline(command: &str, args: &[String]) -> Result<Output, Failure> {
     let result = match command {
         "export-run-complete" => cmd_complete(args)?,
         "export-run-huffopt" => cmd_huffopt(args)?,
+        "export-run-prepare" => cmd_prepare(args)?,
+        "export-run-sizes" => cmd_sizes(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
     Ok(match result {
@@ -32,6 +36,10 @@ fn run_pipeline(command: &str, args: &[String]) -> Result<Output, Failure> {
     })
 }
 
+type Ran = Result<Result<Json, ExportFail>, Failure>;
+/// `(w, h, bytes)` of an RGB `.npy`.
+type RgbNpy = (f64, f64, Vec<u8>);
+
 fn opt<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Failure> {
     if args.iter().any(|a| a == name) {
         Ok(Some(common::option(args, name)?))
@@ -44,21 +52,51 @@ fn write(path: &str, data: &[u8]) -> Result<(), Failure> {
     std::fs::write(path, data).map_err(|e| Failure::Usage(format!("cannot write {path}: {e}")))
 }
 
-/// A C-order uint8 `.npy` of shape `(H, W, 3)` → `(w, h, bytes)`. Shape problems are core
-/// errors with the same text WASM gives for a bad length.
-/// `(w, h, bytes)` of an RGB `.npy`.
-type RgbNpy = (u64, u64, Vec<u8>);
+fn read_or_empty(args: &[String], name: &str) -> Result<Vec<u8>, Failure> {
+    match opt(args, name)? {
+        Some(p) => common::read(p),
+        None => Ok(Vec::new()),
+    }
+}
 
-fn read_rgb_npy(path: &str) -> Result<Result<RgbNpy, ExportFail>, Failure> {
+fn num_arg(args: &[String], name: &str) -> Result<Option<f64>, Failure> {
+    match opt(args, name)? {
+        None => Ok(None),
+        Some(t) => t
+            .parse::<f64>()
+            .map(Some)
+            .map_err(|_| Failure::Usage(format!("bad number for {name}: {t:?}"))),
+    }
+}
+
+/// `--font NAME=PATH`, one per face (as `frame-*`).
+fn fonts(args: &[String]) -> Result<Fonts, Failure> {
+    let mut fonts = Fonts::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--font" {
+            let spec = args
+                .get(i + 1)
+                .ok_or_else(|| Failure::Usage("--font needs a value".into()))?;
+            let (name, path) = spec
+                .split_once('=')
+                .ok_or_else(|| Failure::Usage(format!("--font wants NAME=PATH, got {spec:?}")))?;
+            fonts.add(name, &common::read(path)?)?;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(fonts)
+}
+
+/// A uint8 `.npy` of shape `(H, W, 3)` → `(w, h, bytes)`. A file that isn't one is a usage
+/// error; the core checks the size against the bytes, the same way WASM does.
+fn read_rgb_npy(path: &str) -> Result<RgbNpy, Failure> {
     let bytes = common::read(path)?;
-    let bad = |m: &str| {
-        Ok(Err(ExportFail::Core(CoreError::new(
-            "bad_image",
-            m.to_string(),
-        ))))
-    };
+    let bad = |m: &str| Failure::Usage(format!("{path}: {m}"));
     if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
-        return bad("不是 .npy 文件");
+        return Err(bad("not an .npy file"));
     }
     let (at, len) = match bytes[6] {
         1 => (
@@ -69,59 +107,73 @@ fn read_rgb_npy(path: &str) -> Result<Result<RgbNpy, ExportFail>, Failure> {
             12usize,
             u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
         ),
-        _ => return bad("不支持的 .npy 版本"),
+        _ => return Err(bad("unsupported .npy version")),
     };
-    let Some(header) = bytes.get(at..at.saturating_add(len)) else {
-        return bad(".npy 头不完整");
-    };
+    let header = bytes
+        .get(at..at.saturating_add(len))
+        .ok_or_else(|| bad("short header"))?;
     let header = String::from_utf8_lossy(header);
     if !(header.contains("'|u1'") || header.contains("'<u1'") || header.contains("'u1'"))
         || header.contains("'fortran_order': True")
     {
-        return bad("要是 C 顺序的 uint8 数组");
+        return Err(bad("want a C-order uint8 array"));
     }
-    let Some(open) = header.find("'shape': (") else {
-        return bad(".npy 没有 shape");
-    };
+    let open = header.find("'shape': (").ok_or_else(|| bad("no shape"))?;
     let rest = &header[open + 10..];
-    let Some(close) = rest.find(')') else {
-        return bad(".npy 没有 shape");
-    };
-    let dims: Vec<u64> = rest[..close]
+    let close = rest.find(')').ok_or_else(|| bad("no shape"))?;
+    let dims: Vec<f64> = rest[..close]
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.parse().ok())
         .collect();
-    let [h, w, 3] = dims.as_slice() else {
-        return bad("要是 (H, W, 3) 数组");
+    let [h, w, c] = dims.as_slice() else {
+        return Err(bad("want shape (H, W, 3)"));
     };
-    Ok(Ok((*w, *h, bytes[at + len..].to_vec())))
+    if *c != 3.0 {
+        return Err(bad("want shape (H, W, 3)"));
+    }
+    Ok((*w, *h, bytes[at + len..].to_vec()))
 }
 
-fn cmd_complete(args: &[String]) -> Result<Result<Json, ExportFail>, Failure> {
-    let canvas_path = common::option(args, "--canvas")?;
+/// `np.save` of a `(H, W, 3)` uint8 array (format 1.0).
+fn write_rgb_npy(path: &str, width: usize, height: usize, data: &[u8]) -> Result<(), Failure> {
+    let mut header =
+        format!("{{'descr': '|u1', 'fortran_order': False, 'shape': ({height}, {width}, 3), }}");
+    while (10 + header.len() + 1) % 64 != 0 {
+        header.push(' ');
+    }
+    header.push('\n');
+    let mut out = Vec::with_capacity(10 + header.len() + data.len());
+    out.extend_from_slice(b"\x93NUMPY\x01\x00");
+    out.extend_from_slice(&(header.len() as u16).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(data);
+    write(path, &out)
+}
+
+fn picture(p: Option<&RgbNpy>) -> Option<Picture<'_>> {
+    p.map(|(w, h, d)| Picture {
+        data: d,
+        width: *w,
+        height: *h,
+    })
+}
+
+/// `export-run-complete --canvas RGB.npy --state S [--exif EXIF.json] --out OUT.jpg`.
+fn cmd_complete(args: &[String]) -> Ran {
+    let (w, h, canvas) = read_rgb_npy(common::option(args, "--canvas")?)?;
     let state = common::read(common::option(args, "--state")?)?;
     let out = common::option(args, "--out")?;
-    let exif_text = match opt(args, "--exif")? {
-        Some(p) => String::from_utf8(common::read(p)?)
-            .map_err(|_| Failure::Usage("--exif is not UTF-8".into()))?,
-        None => String::new(),
+    let exif = String::from_utf8(read_or_empty(args, "--exif")?)
+        .map_err(|_| Failure::Usage("--exif is not UTF-8".into()))?;
+    let picture = Picture {
+        data: &canvas,
+        width: w,
+        height: h,
     };
-    let (w, h, canvas) = match read_rgb_npy(canvas_path)? {
-        Ok(v) => v,
-        Err(e) => return Ok(Err(e)),
-    };
-    let state = match State::parse(&state) {
-        Ok(s) => s,
-        Err(e) => return Ok(Err(e)),
-    };
-    let source = match gxr_jpeg::parse_exif_json(&exif_text) {
-        Ok(s) => s,
-        Err(e) => return Ok(Err(e.into())),
-    };
-    match complete_sdr(&canvas, w, h, &state, &source) {
-        Ok((done, _rgb)) => {
+    match api::complete(picture, &state, &exif) {
+        Ok(done) => {
             write(out, &done.file)?;
             Ok(Ok(Json::object([
                 ("result", done.result),
@@ -133,17 +185,91 @@ fn cmd_complete(args: &[String]) -> Result<Result<Json, ExportFail>, Failure> {
 }
 
 /// `optimize_huffman` on a JPEG file (a test hook for the transcode alone).
-fn cmd_huffopt(args: &[String]) -> Result<Result<Json, ExportFail>, Failure> {
+fn cmd_huffopt(args: &[String]) -> Ran {
     let data = common::read(common::option(args, "--in")?)?;
     let out = common::option(args, "--out")?;
     match optimize_huffman(&data) {
         Ok(file) => {
             write(out, &file)?;
             Ok(Ok(Json::object([
-                ("bytes", Json::Int(file.len() as i64)),
+                (
+                    "bytes",
+                    Json::Int(i64::try_from(file.len()).unwrap_or(i64::MAX)),
+                ),
                 ("sha256", Json::str(sha256_hex(&file))),
             ])))
         }
         Err(e) => Ok(Err(e.into())),
     }
+}
+
+/// `export-run-prepare --shot S [--side E] [--defaults D] [--layout L] [--base MODE]
+/// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...]
+/// [--picked RGB.npy --from-raw 0|1 --labels J] [--jpg RGB.npy] --out CANVAS.npy`.
+fn cmd_prepare(args: &[String]) -> Ran {
+    let shot = common::read(common::option(args, "--shot")?)?;
+    let side = read_or_empty(args, "--side")?;
+    let defaults = read_or_empty(args, "--defaults")?;
+    let layout = read_or_empty(args, "--layout")?;
+    let labels = read_or_empty(args, "--labels")?;
+    let base = opt(args, "--base")?.unwrap_or("auto").to_string();
+    let out = common::option(args, "--out")?;
+    let opts = ExportOpts {
+        quality: num_arg(args, "--quality")?.unwrap_or(95.0),
+        long_edge: num_arg(args, "--long-edge")?,
+        hdr: args.iter().any(|a| a == "--hdr"),
+    };
+    let fonts = fonts(args)?;
+    let picked = opt(args, "--picked")?.map(read_rgb_npy).transpose()?;
+    let jpg = opt(args, "--jpg")?.map(read_rgb_npy).transpose()?;
+    let pargs = PrepareArgs {
+        shot: &shot,
+        side: &side,
+        defaults: &defaults,
+        layout: &layout,
+        base: &base,
+        labels: &labels,
+        from_raw: opt(args, "--from-raw")? == Some("1"),
+        opts,
+    };
+    match api::prepare(
+        &pargs,
+        picture(picked.as_ref()),
+        picture(jpg.as_ref()),
+        &fonts,
+    ) {
+        Ok((canvas, json, original)) => {
+            write_rgb_npy(out, canvas.width, canvas.height, &canvas.data)?;
+            Ok(Ok(Json::object([
+                ("original", Json::Bool(original)),
+                ("prepared", json),
+            ])))
+        }
+        Err(e) => Ok(Err(e)),
+    }
+}
+
+/// `export-run-sizes --width W --height H [--side E] [--defaults D] [--layout L] [--rect JSON]
+/// [--preset P] [--font NAME=PATH...]`.
+fn cmd_sizes(args: &[String]) -> Ran {
+    let width =
+        num_arg(args, "--width")?.ok_or_else(|| Failure::Usage("missing --width".into()))?;
+    let height =
+        num_arg(args, "--height")?.ok_or_else(|| Failure::Usage("missing --height".into()))?;
+    let side = read_or_empty(args, "--side")?;
+    let defaults = read_or_empty(args, "--defaults")?;
+    let layout = read_or_empty(args, "--layout")?;
+    let rect = opt(args, "--rect")?.unwrap_or("").as_bytes().to_vec();
+    let preset = opt(args, "--preset")?;
+    let fonts = fonts(args)?;
+    let sargs = SizesArgs {
+        width,
+        height,
+        side: &side,
+        defaults: &defaults,
+        layout: &layout,
+        rect: &rect,
+        preset,
+    };
+    Ok(api::sizes(&sargs, &fonts))
 }
