@@ -183,7 +183,8 @@ def export_for_iphone(
         raise CalibExportError(422, "bad_destination", "无法导出到这个位置。请换一个文件夹。", exc.detail) from exc
     # 检查通过后马上把目标钉成目录句柄：目标已存在就钉它本身，不存在就钉最近的已存在上级，
     # 之后建目录、写入、清理都只通过句柄，不再按路径重新解释（Sol r2）。
-    anchor, missing = dest, []
+    anchor: Path = dest
+    missing: list[str] = []
     while not os.path.lexists(anchor) and anchor.parent != anchor:
         missing.insert(0, anchor.name)
         anchor = anchor.parent
