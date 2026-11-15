@@ -40,6 +40,7 @@ pub(crate) fn is_open_fallback_err(e: &str) -> bool {
     e.starts_with("SyntaxError:")
         || e.starts_with("IndexError:")
         || e.starts_with("TypeError:")
+        || e.starts_with("struct.error:")
         || e.starts_with("UnidentifiedImageError:")
 }
 
@@ -70,7 +71,113 @@ pub fn open_image(bytes: &[u8]) -> Result<ImageDoc, String> {
     }
 }
 
-/// Port of `PIL.JpegImagePlugin.JpegImageFile._open`.
+fn validate_dqt(mut rest: &[u8]) -> Result<(), String> {
+    while !rest.is_empty() {
+        let prec = if (rest[0] >> 4) == 0 { 1 } else { 2 };
+        let qt_len = 1 + prec * 64;
+        if rest.len() < qt_len {
+            return Err("SyntaxError: bad quantization table marker".to_string());
+        }
+        rest = &rest[qt_len..];
+    }
+    Ok(())
+}
+
+fn validate_photoshop_app13(s: &[u8]) -> Result<(), String> {
+    let mut offset = 14usize;
+    while s.get(offset..offset + 4) == Some(b"8BIM".as_slice()) {
+        offset += 4;
+        let Some(code_bytes) = s.get(offset..offset + 2) else {
+            // `i16(s, offset)` raises `struct.error`, caught by Pillow's `except struct.error`.
+            break;
+        };
+        let code = u16::from_be_bytes([code_bytes[0], code_bytes[1]]);
+        offset += 2;
+        let Some(&name_len) = s.get(offset) else {
+            // `s[offset]` raises `IndexError`, NOT caught by `except struct.error`.
+            return Err("IndexError: index out of range".to_string());
+        };
+        offset += 1 + usize::from(name_len);
+        offset += offset & 1;
+        let Some(sz_bytes) = s.get(offset..offset + 4) else {
+            // `i32(s, offset)` raises `struct.error`, caught cleanly.
+            break;
+        };
+        let size = u32::from_be_bytes([sz_bytes[0], sz_bytes[1], sz_bytes[2], sz_bytes[3]]);
+        offset += 4;
+        let Ok(size_u) = usize::try_from(size) else {
+            break;
+        };
+        if code == 0x03ED {
+            let end = offset.saturating_add(size_u).min(s.len());
+            if end.saturating_sub(offset) < 14 {
+                break;
+            }
+        }
+        let Some(next) = offset
+            .checked_add(size_u)
+            .and_then(|o| o.checked_add(o & 1))
+        else {
+            break;
+        };
+        offset = next;
+    }
+    Ok(())
+}
+
+fn validate_mpf(mp_bytes: &[u8]) -> Result<(), String> {
+    // Mirror `JpegImagePlugin.jpeg_factory` + `_getmp`:
+    // `SyntaxError`, `TypeError`, `IndexError` fall back to base JPEG, while
+    // `struct.error` (short `0xB002` MP entries buffer) propagates to `Image.open`.
+    let Some(hdr) = mp_bytes.get(..8) else {
+        return Ok(());
+    };
+    let Ok((endian, bigtiff, ifd0_off)) = parse_tiff_header(hdr, hdr) else {
+        return Ok(());
+    };
+    let Ok(ifd0) = load_ifd(mp_bytes, endian, bigtiff, ifd0_off, None, false) else {
+        return Ok(());
+    };
+    let Some(quant_val) = ifd0.tags.get(&0xB001) else {
+        return Ok(());
+    };
+    let Some(quant) = quant_val.as_i64() else {
+        return Ok(());
+    };
+    if quant <= 0 {
+        return Ok(());
+    }
+    let Some(ExifValue::Bytes(raw_entries)) = ifd0.tags.get(&0xB002) else {
+        return Ok(());
+    };
+    let Ok(quant_u) = usize::try_from(quant) else {
+        return Err("struct.error: unpack_from requires a buffer of at least 16 bytes".to_string());
+    };
+    for entry_idx in 0..quant_u {
+        let Some(start) = entry_idx.checked_mul(16) else {
+            return Err(
+                "struct.error: unpack_from requires a buffer of at least 16 bytes".to_string(),
+            );
+        };
+        let Some(entry) = start
+            .checked_add(16)
+            .and_then(|end| raw_entries.get(start..end))
+        else {
+            return Err(
+                "struct.error: unpack_from requires a buffer of at least 16 bytes".to_string(),
+            );
+        };
+        let attr = endian.u32([entry[0], entry[1], entry[2], entry[3]]);
+        let image_data_format = (attr >> 24) & 7;
+        if image_data_format != 0 {
+            // `_getmp` raises `SyntaxError("unsupported picture format in MPO")`, caught by `jpeg_factory`.
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// Port of `PIL.JpegImagePlugin.JpegImageFile._open` + `ImageFile.__init__` + `jpeg_factory`.
 pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
     if !bytes.starts_with(b"\xff\xd8\xff") {
         return Err("SyntaxError: not a JPEG file".to_string());
@@ -81,8 +188,11 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
 
     let mut width: Option<u32> = None;
     let mut height: Option<u32> = None;
+    let mut has_mode = false;
     let mut exif_bytes: Option<Vec<u8>> = None;
     let mut xmp_bytes: Option<Vec<u8>> = None;
+    let mut icclist: Vec<&[u8]> = Vec::new();
+    let mut mp_bytes: Option<&[u8]> = None;
     let mut saw_sos = false;
 
     loop {
@@ -115,13 +225,8 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
         }
 
         match marker {
-            // Markers with no payload (RST0..RST7, SOI, EOI, TEM)
-            0xFFD0..=0xFFD9 | 0xFF01 => {
-                if marker == 0xFFD9 {
-                    // EOI reached without SOS
-                    break;
-                }
-            }
+            // Markers with no payload length (JPG, RST0..RST7, SOI, EOI, JPG0..JPG13)
+            0xFFC8 | 0xFFD0..=0xFFD9 | 0xFFF0..=0xFFFD => {}
             // APP0..APP15
             0xFFE0..=0xFFEF => {
                 let Some(len_bytes) = bytes.get(pos..).and_then(|s| s.get(..2)) else {
@@ -129,15 +234,24 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                 };
                 pos += 2;
                 let seg_len = usize::from(u16::from_be_bytes([len_bytes[0], len_bytes[1]]));
-                if seg_len < 2 {
-                    break;
-                }
-                let payload_len = seg_len - 2;
-                let Some(payload) = bytes.get(pos..).and_then(|s| s.get(..payload_len)) else {
-                    return Err("OSError: Truncated File Read".to_string());
+                let payload: &[u8] = if seg_len < 2 {
+                    &[]
+                } else {
+                    let payload_len = seg_len - 2;
+                    let Some(slice) = bytes.get(pos..).and_then(|s| s.get(..payload_len)) else {
+                        return Err("OSError: Truncated File Read".to_string());
+                    };
+                    pos += payload_len;
+                    slice
                 };
-                pos += payload_len;
-                if marker == 0xFFE1 {
+
+                if (marker == 0xFFE0 && payload.starts_with(b"JFIF"))
+                    || (marker == 0xFFEE && payload.starts_with(b"Adobe"))
+                {
+                    if payload.len() < 7 {
+                        return Err("IndexError: index out of range".to_string());
+                    }
+                } else if marker == 0xFFE1 {
                     if let Some(rest) = payload.strip_prefix(b"Exif\x00\x00") {
                         match &mut exif_bytes {
                             Some(buf) => {
@@ -165,23 +279,33 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                         buf.extend_from_slice(rest);
                         xmp_bytes = Some(buf);
                     }
+                } else if marker == 0xFFE2 {
+                    if payload.starts_with(b"ICC_PROFILE\x00") {
+                        icclist.push(payload);
+                    } else if let Some(rest) = payload.strip_prefix(b"MPF\x00") {
+                        mp_bytes = Some(rest);
+                    }
+                } else if marker == 0xFFED && payload.starts_with(b"Photoshop 3.0\x00") {
+                    validate_photoshop_app13(payload)?;
                 }
             }
-            // SOF markers (excluding DHT 0xFFC4, JPG 0xFFC8, DAC 0xFFCC)
-            0xFFC0..=0xFFC3 | 0xFFC5..=0xFFC7 | 0xFFC9..=0xFFCB | 0xFFCD..=0xFFCF => {
+            // SOF markers (including DHP 0xFFDE; excluding DHT 0xFFC4, JPG 0xFFC8, DAC 0xFFCC)
+            0xFFC0..=0xFFC3 | 0xFFC5..=0xFFC7 | 0xFFC9..=0xFFCB | 0xFFCD..=0xFFCF | 0xFFDE => {
                 let Some(len_bytes) = bytes.get(pos..).and_then(|s| s.get(..2)) else {
                     break;
                 };
                 pos += 2;
                 let seg_len = usize::from(u16::from_be_bytes([len_bytes[0], len_bytes[1]]));
-                if seg_len < 2 {
-                    break;
-                }
-                let payload_len = seg_len - 2;
-                let Some(payload) = bytes.get(pos..).and_then(|s| s.get(..payload_len)) else {
-                    return Err("OSError: Truncated File Read".to_string());
+                let payload: &[u8] = if seg_len < 2 {
+                    &[]
+                } else {
+                    let payload_len = seg_len - 2;
+                    let Some(slice) = bytes.get(pos..).and_then(|s| s.get(..payload_len)) else {
+                        return Err("OSError: Truncated File Read".to_string());
+                    };
+                    pos += payload_len;
+                    slice
                 };
-                pos += payload_len;
                 if payload.len() < 6 {
                     return Err("SyntaxError: truncated SOF".to_string());
                 }
@@ -195,8 +319,38 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                 if !matches!(layers, 1 | 3 | 4) {
                     return Err(format!("SyntaxError: cannot handle {layers}-layer images"));
                 }
+                if !icclist.is_empty() {
+                    icclist.sort_unstable();
+                    if icclist[0].len() < 14 {
+                        return Err("IndexError: index out of range".to_string());
+                    }
+                    icclist.clear();
+                }
+                if !(payload.len() - 6).is_multiple_of(3) {
+                    return Err("IndexError: index out of range".to_string());
+                }
                 width = Some(w);
                 height = Some(h);
+                has_mode = true;
+            }
+            // DQT
+            0xFFDB => {
+                let Some(len_bytes) = bytes.get(pos..).and_then(|s| s.get(..2)) else {
+                    break;
+                };
+                pos += 2;
+                let seg_len = usize::from(u16::from_be_bytes([len_bytes[0], len_bytes[1]]));
+                let payload: &[u8] = if seg_len < 2 {
+                    &[]
+                } else {
+                    let payload_len = seg_len - 2;
+                    let Some(slice) = bytes.get(pos..).and_then(|s| s.get(..payload_len)) else {
+                        return Err("OSError: Truncated File Read".to_string());
+                    };
+                    pos += payload_len;
+                    slice
+                };
+                validate_dqt(payload)?;
             }
             // SOS
             0xFFDA => {
@@ -205,38 +359,35 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
                 };
                 pos += 2;
                 let seg_len = usize::from(u16::from_be_bytes([len_bytes[0], len_bytes[1]]));
-                if seg_len < 2 {
-                    break;
-                }
-                if bytes
-                    .get(pos..)
-                    .and_then(|s| s.get(..seg_len - 2))
-                    .is_none()
+                if seg_len >= 2
+                    && bytes
+                        .get(pos..)
+                        .and_then(|s| s.get(..seg_len - 2))
+                        .is_none()
                 {
                     return Err("OSError: Truncated File Read".to_string());
                 }
                 saw_sos = true;
                 break;
             }
-            // Other sized markers (DHT, DQT, DRI, COM, etc.)
-            0xFFC4 | 0xFFC8 | 0xFFCC | 0xFFDB..=0xFFFE => {
+            // Other sized markers (DHT, DAC, DNL, DRI, EXP, COM)
+            0xFFC4 | 0xFFCC | 0xFFDC | 0xFFDD | 0xFFDF | 0xFFFE => {
                 let Some(len_bytes) = bytes.get(pos..).and_then(|s| s.get(..2)) else {
                     break;
                 };
                 pos += 2;
                 let seg_len = usize::from(u16::from_be_bytes([len_bytes[0], len_bytes[1]]));
-                if seg_len < 2 {
-                    break;
+                if seg_len >= 2 {
+                    let payload_len = seg_len - 2;
+                    if bytes
+                        .get(pos..)
+                        .and_then(|s| s.get(..payload_len))
+                        .is_none()
+                    {
+                        return Err("OSError: Truncated File Read".to_string());
+                    }
+                    pos += payload_len;
                 }
-                let payload_len = seg_len - 2;
-                if bytes
-                    .get(pos..)
-                    .and_then(|s| s.get(..payload_len))
-                    .is_none()
-                {
-                    return Err("OSError: Truncated File Read".to_string());
-                }
-                pos += payload_len;
             }
             _ => {
                 return Err("SyntaxError: no marker found".to_string());
@@ -256,6 +407,12 @@ pub fn parse_jpeg(bytes: &[u8]) -> Result<JpegDoc, String> {
     let (Some(w), Some(h)) = (width, height) else {
         return Err("UnidentifiedImageError: missing SOF".to_string());
     };
+    if !has_mode || w == 0 || h == 0 {
+        return Err("SyntaxError: not identified by this driver".to_string());
+    }
+    if let Some(mp) = mp_bytes {
+        validate_mpf(mp)?;
+    }
     check_decompression_bomb(w, h)?;
     Ok(JpegDoc {
         width: w,

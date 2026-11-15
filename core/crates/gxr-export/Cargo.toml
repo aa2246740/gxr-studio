@@ -1,6 +1,6 @@
 [package]
 name = "gxr-export"
-description = "Source photo metadata, the export base picture and the full-resolution export pipeline"
+description = "HDR track, source photo metadata, the export base picture and the full-resolution export pipeline"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ gxr-camdata.workspace = true
 gxr-color.workspace = true
 gxr-finish.workspace = true
 gxr-frame.workspace = true
+gxr-hdr.workspace = true
 gxr-jpeg.workspace = true
 gxr-lut.workspace = true
 gxr-raw.workspace = true

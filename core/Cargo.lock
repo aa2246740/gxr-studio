@@ -55,6 +55,7 @@ dependencies = [
  "gxr-color",
  "gxr-finish",
  "gxr-frame",
+ "gxr-hdr",
  "gxr-jpeg",
  "gxr-lut",
  "gxr-raw",

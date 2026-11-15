@@ -7,32 +7,67 @@ use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 use gxr_hdr as hdr;
 use gxr_raw::{CoreError, error_json};
 
+const U64_UPPER_BOUND_F64: f64 = 18_446_744_073_709_551_616.0;
+
 fn rejected(err: CoreError) -> JsValue {
     JsValue::from_str(&error_json(&err).render())
 }
 
-/// The caller's dimensions go through the shared count limit and are compared with the slice
-/// length before anything is copied (`Plane32::from_slice`, UNIT-COMMON allocation rule 1).
-fn plane(values: &[f32], height: u32, width: u32) -> Result<hdr::Plane32, JsValue> {
-    hdr::Plane32::from_slice(values, u64::from(height), u64::from(width)).map_err(rejected)
+fn checked_dim_u64(v: f64) -> Result<u64, CoreError> {
+    if v.is_finite() && v.fract() == 0.0 && v >= 0.0 {
+        if v < U64_UPPER_BOUND_F64 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(v as u64)
+        } else {
+            Ok(u64::MAX)
+        }
+    } else {
+        Err(hdr::unsupported("bad_input", "数组长度和形状对不上"))
+    }
+}
+
+/// Validate caller dimensions against the shared count limit and borrowed slice length using
+/// full `u64` axes so an empty plane `(2^32+1, 0)` does not narrow to `usize` on wasm32.
+fn validate_plane_u64(values: &[f32], height: f64, width: f64) -> Result<(u64, u64), CoreError> {
+    let h = checked_dim_u64(height)?;
+    let w = checked_dim_u64(width)?;
+    let n = hdr::count(&[h, w])?;
+    if n != values.len() {
+        return Err(hdr::unsupported("bad_input", "数组长度和形状对不上"));
+    }
+    Ok((h, w))
+}
+
+fn align_core(
+    sdr: &[f32],
+    sdr_height: f64,
+    sdr_width: f64,
+    raw: &[f32],
+    raw_height: f64,
+    raw_width: f64,
+) -> Result<String, CoreError> {
+    let (sh, sw) = validate_plane_u64(sdr, sdr_height, sdr_width)?;
+    let (rh, rw) = validate_plane_u64(raw, raw_height, raw_width)?;
+    if sh == 0 || sw == 0 || rh == 0 || rw == 0 {
+        return Err(hdr::unsupported("bad_input", "无法对齐空图"));
+    }
+    let sdr_plane = hdr::Plane32::from_slice(sdr, sh, sw)?;
+    let raw_plane = hdr::Plane32::from_slice(raw, rh, rw)?;
+    let report = hdr::align_report(&sdr_plane, &raw_plane)?;
+    Ok(format!("{}\n", report.render()))
 }
 
 /// `align(sdr_y, raw_y)` and `check_alignment`, as `gxr-cli hdr-align` prints them.
 #[wasm_bindgen]
 pub fn hdr_align(
     sdr: &[f32],
-    sdr_height: u32,
-    sdr_width: u32,
+    sdr_height: f64,
+    sdr_width: f64,
     raw: &[f32],
-    raw_height: u32,
-    raw_width: u32,
+    raw_height: f64,
+    raw_width: f64,
 ) -> Result<String, JsValue> {
-    let report = hdr::align_report(
-        &plane(sdr, sdr_height, sdr_width)?,
-        &plane(raw, raw_height, raw_width)?,
-    )
-    .map_err(rejected)?;
-    Ok(format!("{}\n", report.render()))
+    align_core(sdr, sdr_height, sdr_width, raw, raw_height, raw_width).map_err(rejected)
 }
 
 /// The gain map on the grid: uint8 codes for the gain JPEG, and the JSON report.
@@ -68,6 +103,48 @@ impl HdrGain {
     }
 }
 
+fn gain_core(
+    sdr: &[f32],
+    raw: &[f32],
+    clip: &[u8],
+    height: f64,
+    width: f64,
+    params_json: &str,
+) -> Result<HdrGain, CoreError> {
+    let (h, w) = validate_plane_u64(sdr, height, width)?;
+    let _ = validate_plane_u64(raw, height, width)?;
+    // Same order as `gxr-cli hdr-gain`: Params are read before the clip length is checked.
+    let params = if params_json.is_empty() {
+        hdr::Params::default()
+    } else {
+        hdr::params_from_json(params_json)?
+    };
+    let n = hdr::count(&[h, w])?;
+    if n != clip.len() {
+        return Err(hdr::unsupported("bad_input", "数组长度和形状对不上"));
+    }
+    if h == 0 || w == 0 {
+        return Err(hdr::compute_gain(&[], &[], &[], 0, 0, &params)
+            .err()
+            .unwrap_or_else(|| hdr::unsupported("no_curve", "可用于拟合的像素太少")));
+    }
+    let s = hdr::Plane32::from_slice(sdr, h, w)?;
+    let r = hdr::Plane32::from_slice(raw, h, w)?;
+    let mask = hdr::clip_mask(clip, s.h, s.w)?;
+    let result = hdr::compute_gain(&s.v, &r.v, &mask, s.h, s.w, &params)?;
+    let report = hdr::gain_report(&result)?;
+    let out_h =
+        u32::try_from(s.h).map_err(|_| CoreError::new("value_error", hdr::ARRAY_TOO_BIG))?;
+    let out_w =
+        u32::try_from(s.w).map_err(|_| CoreError::new("value_error", hdr::ARRAY_TOO_BIG))?;
+    Ok(HdrGain {
+        height: out_h,
+        width: out_w,
+        codes: hdr::quantise_gain(&result.delta, &result.meta),
+        report: format!("{}\n", report.render()),
+    })
+}
+
 /// `compute_gain(sdr_y, raw_y, clip, Params(**params))` and the uint8 quantisation.
 /// `clip` is one byte per pixel (non-zero = clipped); `raw` is NaN outside the photo.
 #[wasm_bindgen]
@@ -75,27 +152,11 @@ pub fn hdr_gain(
     sdr: &[f32],
     raw: &[f32],
     clip: &[u8],
-    height: u32,
-    width: u32,
+    height: f64,
+    width: f64,
     params_json: &str,
 ) -> Result<HdrGain, JsValue> {
-    let s = plane(sdr, height, width)?;
-    let r = plane(raw, height, width)?;
-    // Same order as `gxr-cli hdr-gain`: Params are read before the clip length is checked.
-    let params = if params_json.is_empty() {
-        hdr::Params::default()
-    } else {
-        hdr::params_from_json(params_json).map_err(rejected)?
-    };
-    let mask = hdr::clip_mask(clip, s.h, s.w).map_err(rejected)?;
-    let result = hdr::compute_gain(&s.v, &r.v, &mask, s.h, s.w, &params).map_err(rejected)?;
-    let report = hdr::gain_report(&result).map_err(rejected)?;
-    Ok(HdrGain {
-        height,
-        width,
-        codes: hdr::quantise_gain(&result.delta, &result.meta),
-        report: format!("{}\n", report.render()),
-    })
+    gain_core(sdr, raw, clip, height, width, params_json).map_err(rejected)
 }
 
 /// `assemble(primary, gain_jpeg, GainMeta(**meta))`: the HDR JPEG bytes.
@@ -107,21 +168,39 @@ pub fn hdr_assemble(primary: &[u8], gain_jpeg: &[u8], meta_json: &str) -> Result
 
 // ---- hdr-fft ----
 
+fn fft_core(
+    values: &[f32],
+    rows: f64,
+    n: f64,
+    inverse: bool,
+    two_d: bool,
+) -> Result<Vec<u8>, CoreError> {
+    let rows_u64 = checked_dim_u64(rows)?;
+    let n_u64 = checked_dim_u64(n)?;
+    let w = hdr::count(&[n_u64, 2])?;
+    let w_u64 = u64::try_from(w).unwrap_or(u64::MAX);
+    let count = hdr::count(&[rows_u64, w_u64])?;
+    if count != values.len() {
+        return Err(hdr::unsupported("bad_input", "数组长度和形状对不上"));
+    }
+    // `n == 0` fails before `rows` is inspected; keep `Plane32` constructible on wasm32 when `rows > u32::MAX`.
+    let rows_safe = if w == 0 { 0 } else { rows_u64 };
+    let data = hdr::Plane32::from_slice(values, rows_safe, w_u64)?;
+    let out = data.fft_complex(inverse, two_d, None)?;
+    hdr::f32_le_bytes(&out.v)
+}
+
 /// numpy `fft` / `ifft` along the last axis (or `fft2` / `ifft2` when `two_d`) of complex64
 /// data given as `(re, im)` float32 pairs, `rows × n`; the bytes `gxr-cli hdr-fft` writes.
 #[wasm_bindgen]
 pub fn hdr_fft(
     values: &[f32],
-    rows: u32,
-    n: u32,
+    rows: f64,
+    n: f64,
     inverse: bool,
     two_d: bool,
 ) -> Result<Vec<u8>, JsValue> {
-    let w = hdr::count(&[u64::from(n), 2]).map_err(rejected)?;
-    let w = u64::try_from(w).unwrap_or(u64::MAX);
-    let data = hdr::Plane32::from_slice(values, u64::from(rows), w).map_err(rejected)?;
-    let out = data.fft_complex(inverse, two_d, None).map_err(rejected)?;
-    hdr::f32_le_bytes(&out.v).map_err(rejected)
+    fft_core(values, rows, n, inverse, two_d).map_err(rejected)
 }
 
 /// `_phase_shift`'s float32 plane and its peak.
@@ -145,16 +224,20 @@ impl HdrPhasePlane {
     }
 }
 
-/// `gxr-cli hdr-phase-plane` on two `height × width` float32 planes.
-#[wasm_bindgen]
-pub fn hdr_phase_plane(
+fn phase_plane_core(
     a: &[f32],
     b: &[f32],
-    height: u32,
-    width: u32,
-) -> Result<HdrPhasePlane, JsValue> {
-    let (pa, pb) = (plane(a, height, width)?, plane(b, height, width)?);
-    let (pc, (dy, dx)) = pa.phase_plane(&pb, None).map_err(rejected)?;
+    height: f64,
+    width: f64,
+) -> Result<HdrPhasePlane, CoreError> {
+    let (h, w) = validate_plane_u64(a, height, width)?;
+    let _ = validate_plane_u64(b, height, width)?;
+    if h == 0 || w == 0 {
+        return Err(hdr::unsupported("bad_input", "FFT 形状对不上"));
+    }
+    let pa = hdr::Plane32::from_slice(a, h, w)?;
+    let pb = hdr::Plane32::from_slice(b, h, w)?;
+    let (pc, (dy, dx)) = pa.phase_plane(&pb, None)?;
     let dims = [pc.h, pc.w].map(|d| i64::try_from(d).unwrap_or(i64::MAX));
     let report = gxr_raw::Json::object([
         ("dy", gxr_raw::Json::Int(dy)),
@@ -169,6 +252,105 @@ pub fn hdr_phase_plane(
     ]);
     Ok(HdrPhasePlane {
         report: format!("{}\n", report.render()),
-        plane: hdr::f32_le_bytes(&pc.v).map_err(rejected)?,
+        plane: hdr::f32_le_bytes(&pc.v)?,
     })
+}
+
+/// `gxr-cli hdr-phase-plane` on two `height × width` float32 planes.
+#[wasm_bindgen]
+pub fn hdr_phase_plane(
+    a: &[f32],
+    b: &[f32],
+    height: f64,
+    width: f64,
+) -> Result<HdrPhasePlane, JsValue> {
+    phase_plane_core(a, b, height, width).map_err(rejected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdr_dim_validation_rejects_bad_floats_and_preserves_large_u64() {
+        assert_eq!(checked_dim_u64(0.0).unwrap(), 0);
+        assert_eq!(checked_dim_u64(32.0).unwrap(), 32);
+        assert_eq!(checked_dim_u64(4_294_967_297.0).unwrap(), 4_294_967_297);
+        assert_eq!(
+            checked_dim_u64(9_007_199_254_740_992.0).unwrap(),
+            9_007_199_254_740_992
+        );
+        assert_eq!(checked_dim_u64(U64_UPPER_BOUND_F64).unwrap(), u64::MAX);
+        for bad in [-1.0, 1.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = checked_dim_u64(bad).unwrap_err();
+            assert_eq!(err.kind, "bad_input");
+            assert_eq!(err.message, "数组长度和形状对不上");
+        }
+    }
+
+    #[test]
+    fn hdr_empty_shapes_with_large_other_axis_preserve_native_error_order() {
+        for (h, w) in [
+            (0.0, 0.0),
+            (4_294_967_297.0, 0.0),
+            (9_007_199_254_740_992.0, 0.0),
+            (0.0, 4_294_967_297.0),
+            (0.0, 9_007_199_254_740_992.0),
+        ] {
+            let err = align_core(&[], h, w, &[], h, w).unwrap_err();
+            assert_eq!(
+                (err.kind, err.message.as_str()),
+                ("bad_input", "无法对齐空图")
+            );
+
+            let err = gain_core(&[], &[], &[], h, w, "[]").err().unwrap();
+            assert_eq!(
+                (err.kind, err.message.as_str()),
+                ("bad_input", "需要一个 JSON 对象")
+            );
+
+            let err = gain_core(&[], &[], &[1], h, w, "").err().unwrap();
+            assert_eq!(
+                (err.kind, err.message.as_str()),
+                ("bad_input", "数组长度和形状对不上")
+            );
+
+            let err = gain_core(&[], &[], &[], h, w, "").err().unwrap();
+            assert_eq!(
+                (err.kind, err.message.as_str()),
+                ("no_curve", "可用于拟合的像素太少")
+            );
+
+            let err = phase_plane_core(&[], &[], h, w).err().unwrap();
+            assert_eq!(
+                (err.kind, err.message.as_str()),
+                ("bad_input", "FFT 形状对不上")
+            );
+        }
+
+        for rows in [0.0, 1.0, 4_294_967_297.0, 9_007_199_254_740_992.0] {
+            for inverse in [false, true] {
+                for two_d in [false, true] {
+                    let err = fft_core(&[], rows, 0.0, inverse, two_d).unwrap_err();
+                    assert_eq!(
+                        (err.kind, err.message.as_str()),
+                        (
+                            "value_error",
+                            "Invalid number of FFT data points (0) specified."
+                        )
+                    );
+                }
+            }
+        }
+
+        assert!(fft_core(&[], 0.0, 4.0, false, false).unwrap().is_empty());
+        let err = fft_core(&[], 0.0, 4.0, false, true).unwrap_err();
+        assert_eq!(
+            (err.kind, err.message.as_str()),
+            (
+                "value_error",
+                "Invalid number of FFT data points (0) specified."
+            )
+        );
+    }
 }

@@ -3,10 +3,25 @@
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
 use gxr_lut::{
-    Cube, LutTableResult, RenderSpec, Target, apply_u8, checked_elements, identify, lut_bytes,
-    try_vec_cap,
+    Cube, LutTableResult, RenderSpec, Target, apply_u8, checked_elements, fit_count_u64, identify,
+    lut_bytes, try_vec_cap,
 };
 use gxr_raw::{CoreError, Json, error_json};
+
+const U64_UPPER_BOUND_F64: f64 = 18_446_744_073_709_551_616.0;
+
+fn checked_dim_u64(v: f64) -> Result<u64, CoreError> {
+    if v.is_finite() && v.fract() == 0.0 && v >= 0.0 {
+        if v < U64_UPPER_BOUND_F64 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(v as u64)
+        } else {
+            Ok(u64::MAX)
+        }
+    } else {
+        Err(CoreError::new("value_error", "LUT 输入必须为有限 RGB"))
+    }
+}
 
 fn rejected(err: CoreError) -> JsValue {
     JsValue::from_str(&error_json(&err).render())
@@ -133,17 +148,23 @@ pub fn lut_apply_u8(
     cube_bytes: &[u8],
     space_json: &str,
     rgb: &[u8],
-    height: u32,
-    width: u32,
+    height: f64,
+    width: f64,
     xyz: Option<Vec<f64>>,
 ) -> Result<LutImageU8, JsValue> {
     let cube = Cube::read_bytes(cube_bytes).map_err(rejected)?;
     let spec = RenderSpec::from_json(space_json).map_err(rejected)?;
     let target = Target::from_spec(&cube, &spec);
 
-    let expected_len =
-        checked_elements(&[u64::from(height), u64::from(width), 3]).map_err(rejected)?;
-    let npixels = checked_elements(&[u64::from(height), u64::from(width)]).map_err(rejected)?;
+    let h_u64 = checked_dim_u64(height).map_err(rejected)?;
+    let w_u64 = checked_dim_u64(width).map_err(rejected)?;
+    let h_usize = fit_count_u64(h_u64).map_err(rejected)?;
+    let w_usize = fit_count_u64(w_u64).map_err(rejected)?;
+    let height_u32 = u32::try_from(h_usize).map_err(|_| rejected(gxr_lut::too_big_core()))?;
+    let width_u32 = u32::try_from(w_usize).map_err(|_| rejected(gxr_lut::too_big_core()))?;
+
+    let expected_len = checked_elements(&[h_u64, w_u64, 3]).map_err(rejected)?;
+    let npixels = checked_elements(&[h_u64, w_u64]).map_err(rejected)?;
     if rgb.len() != expected_len {
         return Err(rejected(CoreError::new(
             "value_error",
@@ -181,8 +202,29 @@ pub fn lut_apply_u8(
         values.extend_from_slice(&px);
     }
     Ok(LutImageU8 {
-        height,
-        width,
+        height: height_u32,
+        width: width_u32,
         values,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dim_validation_checks_finiteness_integer_and_sign() {
+        assert_eq!(checked_dim_u64(2.0).unwrap(), 2);
+        assert_eq!(checked_dim_u64(4_294_967_297.0).unwrap(), 4_294_967_297);
+        assert_eq!(
+            checked_dim_u64(9_007_199_254_740_992.0).unwrap(),
+            9_007_199_254_740_992
+        );
+        assert_eq!(checked_dim_u64(U64_UPPER_BOUND_F64).unwrap(), u64::MAX);
+        for bad in [-1.0, 1.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = checked_dim_u64(bad).unwrap_err();
+            assert_eq!(err.kind, "value_error");
+            assert_eq!(err.message, "LUT 输入必须为有限 RGB");
+        }
+    }
 }
