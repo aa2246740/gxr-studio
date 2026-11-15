@@ -138,3 +138,133 @@ pub fn color_resolve(
             .map_err(rejected_resolve)?;
     Ok(format!("{text}\n"))
 }
+
+/// `iso` from JavaScript: a finite whole number in the safe-integer range (UNIT-COMMON "WASM
+/// number parameters"), so the cast to `i64` can't wrap or truncate.
+fn checked_iso(iso: f64) -> Option<i64> {
+    const SAFE: f64 = 9_007_199_254_740_991.0;
+    if !iso.is_finite() || iso.fract() != 0.0 || !(-SAFE..=SAFE).contains(&iso) {
+        return None;
+    }
+    Some(iso as i64)
+}
+
+/// The pack's files as one byte buffer plus `{"name": [offset, length], ...}`. Every range is
+/// checked against the buffer before it is used.
+fn pack_files(
+    index_json: &[u8],
+    blob: &[u8],
+) -> Result<Vec<(String, Vec<u8>)>, gxr_raw::CoreError> {
+    let bad = || gxr_raw::CoreError::new("value", "calibration file index");
+    let index = gxr_color::parse_json(index_json)?;
+    let gxr_color::Value::Object(pairs) = index else {
+        return Err(bad());
+    };
+    let mut files = Vec::with_capacity(pairs.len());
+    for (name, range) in pairs {
+        let span = range.as_array().ok_or_else(bad)?;
+        let [offset, length] = span else {
+            return Err(bad());
+        };
+        let start = offset
+            .as_int()
+            .and_then(|v| usize::try_from(v).ok())
+            .ok_or_else(bad)?;
+        let len = length
+            .as_int()
+            .and_then(|v| usize::try_from(v).ok())
+            .ok_or_else(bad)?;
+        let end = start
+            .checked_add(len)
+            .filter(|&e| e <= blob.len())
+            .ok_or_else(bad)?;
+        files.push((name, blob[start..end].to_vec()));
+    }
+    Ok(files)
+}
+
+/// `model_for(home, iso, unit=unit)` on a calibration pack held in memory: the same checks as
+/// `gxr-cli color-calib-check --dir` (version, unit, stock-04 fingerprint, file list, sha256),
+/// the ISO pick, then the model it builds. `manifest` is `manifest.json`; the other files come
+/// as `blob` plus `index_json` (`{"name": [offset, length]}`). Returns the CLI's stdout.
+#[wasm_bindgen]
+pub fn color_calib_check(
+    manifest: &[u8],
+    index_json: &[u8],
+    blob: &[u8],
+    stock04: &[u8],
+    unit: &str,
+    iso: f64,
+) -> Result<String, JsValue> {
+    let iso = checked_iso(iso)
+        .ok_or_else(|| rejected(gxr_raw::CoreError::new("value", "iso must be an integer")))?;
+    let files = pack_files(index_json, blob).map_err(rejected)?;
+    let read = |name: &str| {
+        files
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.clone())
+    };
+    let (pick, ctx, ring) =
+        gxr_color::model_for(manifest, stock04, iso, unit, &read).map_err(rejected)?;
+    let model = gxr_color::unit_model(stock04, &ctx, &ring).map_err(rejected)?;
+    let rows = i64::try_from(model.coefficients.rows).map_or(i64::MAX, |v| v);
+    let json = gxr_raw::Json::object([
+        ("iso", gxr_raw::Json::Int(pick.iso)),
+        ("calibrated", gxr_raw::Json::Bool(pick.calibrated)),
+        ("model_iso", gxr_raw::Json::Int(pick.model_iso)),
+        ("ctx", gxr_raw::Json::str(pick.ctx)),
+        ("ring", gxr_raw::Json::str(pick.ring)),
+        ("rows", gxr_raw::Json::Int(rows)),
+    ]);
+    Ok(format!("{}\n", json.render()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{checked_iso, pack_files};
+
+    #[test]
+    fn iso_must_be_a_safe_whole_number() {
+        assert_eq!(checked_iso(200.0), Some(200));
+        assert_eq!(checked_iso(-1.0), Some(-1));
+        for bad in [
+            200.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            9_007_199_254_740_992.0,
+        ] {
+            assert_eq!(checked_iso(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn file_ranges_are_checked() {
+        let blob = b"abcdef";
+        let ok = pack_files(br#"{"a": [0, 2], "b": [2, 4]}"#, blob).unwrap();
+        assert_eq!(
+            ok,
+            vec![
+                ("a".to_string(), b"ab".to_vec()),
+                ("b".to_string(), b"cdef".to_vec())
+            ]
+        );
+        for bad in [
+            &br#"{"a": [0, 7]}"#[..],
+            br#"{"a": [6, 1]}"#,
+            br#"{"a": [-1, 1]}"#,
+            br#"{"a": [0]}"#,
+            br#"{"a": [0, 1.5]}"#,
+            br#"[]"#,
+            br#"{"a": [18446744073709551615, 1]}"#,
+        ] {
+            assert!(
+                pack_files(bad, blob).is_err(),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
+}

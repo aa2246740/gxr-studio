@@ -1,7 +1,8 @@
 // 色彩：烘焙表和套用。每个输入是一份 JSON，列出这一例要用的文件（测试现场生成）。
 // bake: {"kind": "bake", "entry", "stock", "menu"?, "ctx", "ring", "params"?}
 // apply: {"kind": "apply", "bake", "meta", "codes", "params"?, "out"}
-import { readFileSync } from 'node:fs';
+// calib: {"kind": "calib", "dir", "unit", "iso", "stock"}：校准包文件夹里的文件在 WASM 这边拼成一块，加一份索引
+import { readdirSync, readFileSync } from 'node:fs';
 
 const bytes = (path) => new Uint8Array(readFileSync(path));
 
@@ -94,6 +95,32 @@ export function cases(inputs) {
         label: `${file}::color_resolve`,
         cliArgs,
         wasm: (mod) => mod.color_resolve(bytes(spec.dat), bytes(spec.recipe), spec.library ? bytes(spec.library) : undefined),
+      });
+    } else if (spec.kind === 'calib') {
+      const cliArgs = ['color-calib-check', '--dir', spec.dir, '--unit', spec.unit, '--iso', String(spec.iso), '--stock', spec.stock];
+      out.push({
+        label: `${file}::color_calib_check`,
+        cliArgs,
+        wasm: (mod) => {
+          const index = {};
+          const parts = [];
+          let offset = 0;
+          for (const name of readdirSync(spec.dir).sort()) {
+            if (name === 'manifest.json') continue;
+            const data = bytes(`${spec.dir}/${name}`);
+            index[name] = [offset, data.length];
+            parts.push(data);
+            offset += data.length;
+          }
+          const blob = new Uint8Array(offset);
+          let at = 0;
+          for (const part of parts) {
+            blob.set(part, at);
+            at += part.length;
+          }
+          const manifest = bytes(`${spec.dir}/manifest.json`);
+          return mod.color_calib_check(manifest, new TextEncoder().encode(JSON.stringify(index)), blob, bytes(spec.stock), spec.unit, spec.iso);
+        },
       });
     } else {
       throw new Error(`unknown color case kind ${spec.kind}`);
