@@ -165,8 +165,10 @@ def _rust_names(pattern: str) -> set[str]:
 _KNOWN_KEYS = frozenset(_FIXED_KEYS | _rust_names(r'\(\s*"([a-z_][a-z0-9_]{0,30})",\s*(?:Json|crate::item|Val|item|v|json)'))
 _KNOWN_KINDS = frozenset(
     _rust_names(
-        r'(?:CoreError::new|ExportFail::export|Fail::unavailable|Fail::edit|EditError::new|EditError::with_detail)\(\s*"([a-z_][a-z0-9_]*)"'
+        r'(?:CoreError::new|ExportFail::export|Fail::unavailable|EditError::new|EditError::with_detail|\bedit|\bunsupported)\(\s*"([a-z_][a-z0-9_]*)"'
     )
+    | _rust_names(r'\(\s*"([a-z_][a-z0-9_]*)",\s*"[^"\n]*[^\x00-\x7f]')  # (code, user-facing message)
+    | _rust_names(r'\b(?:kind|code) == "([a-z_][a-z0-9_]*)"')
     | {"raw_decode", "json", "unknown"}
 )
 _KNOWN_DTYPES = frozenset({"uint8", "uint16", "int16", "int32", "int64", "float32", "float64", "bool"})
