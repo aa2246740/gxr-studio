@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -15,16 +13,14 @@ from gxr_studio.finish.sizes import output_sizes
 from gxr_studio.finish.spec import FrameSpec, StampSpec
 from gxr_studio.render.params import EditState
 from gxr_studio.render.service import RenderService
-
-ROOT = Path(__file__).resolve().parents[1]
+from support import samples
 
 
 @pytest.fixture(scope="session")
 def real_sample():
-    parent = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", ROOT.parent))
-    source = parent / "captures/a12-50/2026-10-19/stage2c-first-run/R8051145.JPG"
+    source = samples.a12_50_samples() / "R8051145.JPG"
     if not source.is_file():
-        pytest.skip("没有现场 a12-50 样本")
+        samples.missing("没有现场 a12-50 样本")
     return source
 
 

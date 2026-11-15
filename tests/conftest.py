@@ -29,8 +29,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 from gxr_studio.config import Settings  # noqa: E402
 from gxr_studio.devtools.synthetic_card import make_card  # noqa: E402
 from gxr_studio.library.store import Library  # noqa: E402
+from support import samples  # noqa: E402
 
 PORT = 8765
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", f"{samples.REQUIRED_MARK}(reason): 缺真实样本，GXR_REQUIRE_SAMPLES=1 时在 setup 失败")
+
+
+def pytest_runtest_setup(item):
+    samples.fail_if_marked(item)
 
 
 @pytest.fixture(scope="session")
@@ -86,12 +95,11 @@ def card(volumes):
 
 @pytest.fixture
 def real_card(volumes):
-    """含 4 对真实样本的假卡（约 90 MB）；找不到样本就跳过。"""
-    from gxr_studio.devtools.synthetic_card import DEFAULT_SAMPLES
-
-    if not DEFAULT_SAMPLES.is_dir():
-        pytest.skip("captures/a12-50 样本不在本机")
-    return make_card(volumes)
+    """含 4 对真实样本的假卡（约 90 MB）；样本从 GXR_STUDIO_TEST_PARENT 找（见 support/samples.py），找不到就跳过。"""
+    folder = samples.a12_50_samples()
+    if not folder.is_dir():
+        samples.missing("captures/a12-50 样本不在本机")
+    return make_card(volumes, samples=folder)
 
 
 @pytest.fixture

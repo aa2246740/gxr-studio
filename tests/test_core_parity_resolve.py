@@ -8,7 +8,6 @@ code/message/detail must match Python exactly.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,13 +19,13 @@ from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import intake, store
 from gxr_studio.render import params as py_params
 from gxr_studio.render.recipes import CameraData, Menu
+from support import samples as sample_files
 from support import wasm_check
 from support.core_cli import error_of, require_cli, run_json
 from support.fake_card import fake_dat
 from support.wasm_check import run_area
 
-_STUDIO = Path(__file__).resolve().parents[1]
-_PARENT = Path(os.environ.get("GXR_STUDIO_TEST_PARENT", str(_STUDIO.parent))).resolve()
+_PARENT = sample_files.sample_parent()
 
 
 def _discover_single_file_dats() -> list[tuple[str, Path]]:
