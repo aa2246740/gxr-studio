@@ -54,6 +54,31 @@ def test_wasm_calib_check_matches_the_cli(tmp_path: Path) -> None:
     manifest["files"]["ring_jlaunch_200.json"] = {"size": len(bad_ring), "sha256": hashlib.sha256(bad_ring).hexdigest()}
     (broken / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     specs["broken-model"] = {"kind": "calib", "dir": str(broken), "unit": "jlaunch", "iso": 200, "stock": str(stock_file)}
+    # Sol r3：数字边界两边共用一条规则、同样的结构化错误。
+    for name, iso in {
+        "2p53": 2**53,
+        "2p53-1": 2**53 - 1,
+        "2p32+1": 2**32 + 1,
+        "minus-1": -1,
+        "half": "1.5",
+        "nan": "NaN",
+        "inf": "Infinity",
+        "ninf": "-Infinity",
+    }.items():
+        specs[f"iso-{name}"] = {"kind": "calib", "dir": str(good), "unit": "jlaunch", "iso": iso, "stock": str(stock_file)}
+    # 不需要相机数据的包级检查（导入前）：好的包，旧版本，空的 / 未知的单元，文件缺，文件改过。
+    specs["pack-ok"] = {"kind": "calib-pack", "dir": str(good)}
+    specs["pack-outdated"] = {"kind": "calib-pack", "dir": str(old)}
+    specs["pack-changed"] = {"kind": "calib-pack", "dir": str(changed)}
+    specs["pack-missing-file"] = {"kind": "calib-pack", "dir": str(missing)}
+    for name, units in {"empty": {}, "unknown": {"nounit": {}}, "list": []}.items():
+        folder = _pack(tmp_path / f"units-{name}", {"jlaunch": stock})
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        manifest["units"] = units
+        (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        specs[f"pack-units-{name}"] = {"kind": "calib-pack", "dir": str(folder)}
+    three = _pack(tmp_path / "three", {"jlaunch": stock, "qlaunch": entry(words=1), "l08firm": entry(words=2)})
+    specs["pack-three"] = {"kind": "calib-pack", "dir": str(three)}
     inputs = []
     for name, spec in specs.items():
         path = tmp_path / f"case-calib-{name}.json"

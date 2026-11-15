@@ -27,7 +27,10 @@ mod size;
 mod tones;
 
 pub use api::{apply_with_params, bake_summary, bake_with_params};
-pub use calib::{Context, CtxArrays, ISO_SPLIT, Pick, context, load_ctx, model_for, unit_model};
+pub use calib::{
+    Context, CtxArrays, ISO_SPLIT, Pick, check_pack, checked_iso, context, load_ctx, model_for,
+    unit_model,
+};
 pub use chain::{
     ChromaBake, STEP, bake_bytes, bake_chroma, chroma_float, chroma_u8,
     from_bytes as bake_from_bytes, quantize,

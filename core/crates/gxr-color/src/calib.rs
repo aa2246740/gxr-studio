@@ -198,41 +198,25 @@ fn plain_name(name: &str) -> bool {
     !name.contains('/') && name != "."
 }
 
-/// Port of gxr_studio/camdata/calib.py:121 model_for, without the filesystem.
-///
-/// `read(name)` returns a pack file's bytes (`None` when it is missing). Returns the pick and
-/// the chosen ctx and ring bytes.
-pub fn model_for(
-    manifest: &[u8],
-    stock04: &[u8],
-    iso: i64,
-    unit: &str,
-    read: &dyn Fn(&str) -> Option<Vec<u8>>,
-) -> Result<(Pick, Vec<u8>, Vec<u8>), CoreError> {
+/// `manifest.json` parsed, with `model_for`'s version check.
+fn manifest_of(manifest: &[u8]) -> Result<Value, CoreError> {
     let m = parse_json(manifest)?;
     if !matches!(&m, Value::Object(_))
         || !matches!(m.get("schema"), Some(Value::Str(s)) if s == SCHEMA)
     {
         return Err(calib("校准数据版本已更新，请重新导入"));
     }
-    let isos = unit_isos(unit);
-    if isos.is_none() {
-        return Err(calib("缺少这个单元的校准数据"));
-    }
-    let units = obj_get(&m, "units")?;
-    if !matches!(units, Value::Object(_)) || units.get(unit).is_none() {
-        return Err(calib("缺少这个单元的校准数据"));
-    }
-    let meta = obj_get(units, unit)?;
-    // `entry[115:211]`: a short entry slices short, as in Python.
-    let len = stock04.len();
-    let fingerprint = gxr_raw::sha256::sha256_hex(&stock04[115.min(len)..211.min(len)]);
-    if !matches!(obj_get(meta, "camera_stock_sha256")?, Value::Str(s) if *s == fingerprint) {
-        return Err(stock_mismatch(
-            "校准数据与这个单元的原厂 04 不匹配，请重新导入",
-        ));
-    }
-    let files = obj_get(&m, "files")?;
+    Ok(m)
+}
+
+/// `model_for`'s file-list loop for one unit: both ISO branches, every name plain and listed,
+/// present, and matching its sha256. Returns the files it read.
+fn branch_files(
+    m: &Value,
+    meta: &Value,
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Result<Vec<(String, Vec<u8>)>, CoreError> {
+    let files = obj_get(m, "files")?;
     let models = obj_get(meta, "models")?;
     let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
     for branch in MODEL_ISOS {
@@ -259,6 +243,81 @@ pub fn model_for(
             blobs.push((name.clone(), blob));
         }
     }
+    Ok(blobs)
+}
+
+/// The checks of a pack that don't need the camera data, for a pack about to be imported:
+/// `model_for`'s version check, then the unit set as `import_calibration` requires it (not
+/// empty, only known units, else 校准数据的单元不正确), then `model_for`'s file-list checks for
+/// every listed unit. The stock-04 fingerprint and the model build stay in `model_for`.
+/// Returns the units in `UNIT_ISOS` order.
+pub fn check_pack(
+    manifest: &[u8],
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Result<Vec<String>, CoreError> {
+    let m = manifest_of(manifest)?;
+    let units = obj_get(&m, "units")?;
+    let Value::Object(rows) = units else {
+        return Err(calib("校准数据的单元不正确"));
+    };
+    if rows.is_empty() || rows.iter().any(|(name, _)| unit_isos(name).is_none()) {
+        return Err(calib("校准数据的单元不正确"));
+    }
+    let mut out = Vec::new();
+    for unit in ["jlaunch", "qlaunch", "l08firm"] {
+        if let Some(meta) = units.get(unit) {
+            branch_files(&m, meta, read)?;
+            out.push(unit.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// An ISO from outside (a CLI argument or a JavaScript number), as f64: a finite whole number
+/// in the safe-integer range, so the cast to `i64` can't wrap or truncate. The CLI and WASM
+/// share it, so both refuse the same values with the same error.
+pub fn checked_iso(iso: f64) -> Result<i64, CoreError> {
+    const SAFE: f64 = 9_007_199_254_740_991.0;
+    if !iso.is_finite() || iso.fract() != 0.0 || !(-SAFE..=SAFE).contains(&iso) {
+        return Err(CoreError::new(
+            "value",
+            "iso must be a whole number between -(2**53 - 1) and 2**53 - 1",
+        ));
+    }
+    Ok(iso as i64)
+}
+
+/// Port of gxr_studio/camdata/calib.py:121 model_for, without the filesystem.
+///
+/// `read(name)` returns a pack file's bytes (`None` when it is missing). Returns the pick and
+/// the chosen ctx and ring bytes.
+pub fn model_for(
+    manifest: &[u8],
+    stock04: &[u8],
+    iso: i64,
+    unit: &str,
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Result<(Pick, Vec<u8>, Vec<u8>), CoreError> {
+    let m = manifest_of(manifest)?;
+    let isos = unit_isos(unit);
+    if isos.is_none() {
+        return Err(calib("缺少这个单元的校准数据"));
+    }
+    let units = obj_get(&m, "units")?;
+    if !matches!(units, Value::Object(_)) || units.get(unit).is_none() {
+        return Err(calib("缺少这个单元的校准数据"));
+    }
+    let meta = obj_get(units, unit)?;
+    // `entry[115:211]`: a short entry slices short, as in Python.
+    let len = stock04.len();
+    let fingerprint = gxr_raw::sha256::sha256_hex(&stock04[115.min(len)..211.min(len)]);
+    if !matches!(obj_get(meta, "camera_stock_sha256")?, Value::Str(s) if *s == fingerprint) {
+        return Err(stock_mismatch(
+            "校准数据与这个单元的原厂 04 不匹配，请重新导入",
+        ));
+    }
+    let models = obj_get(meta, "models")?;
+    let blobs = branch_files(&m, meta, read)?;
     let model_iso = if iso >= ISO_SPLIT { 1600 } else { 200 };
     let pair = obj_get(models, &model_iso.to_string())?;
     let name_of = |key: &str| -> Result<String, CoreError> {

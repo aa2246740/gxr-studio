@@ -31,6 +31,27 @@ function npyFloat32(path) {
   return { shape, values: new Float32Array(copy.buffer) };
 }
 
+/** 校准包文件夹：manifest 单独，其余文件拼成一块，加 `{名字: [偏移, 长度]}` 索引。 */
+function packOf(dir) {
+  const index = {};
+  const parts = [];
+  let offset = 0;
+  for (const name of readdirSync(dir).sort()) {
+    if (name === 'manifest.json') continue;
+    const data = bytes(`${dir}/${name}`);
+    index[name] = [offset, data.length];
+    parts.push(data);
+    offset += data.length;
+  }
+  const blob = new Uint8Array(offset);
+  let at = 0;
+  for (const part of parts) {
+    blob.set(part, at);
+    at += part.length;
+  }
+  return { manifest: bytes(`${dir}/manifest.json`), index: new TextEncoder().encode(JSON.stringify(index)), blob };
+}
+
 export function cases(inputs) {
   const out = [];
   for (const file of inputs) {
@@ -102,24 +123,19 @@ export function cases(inputs) {
         label: `${file}::color_calib_check`,
         cliArgs,
         wasm: (mod) => {
-          const index = {};
-          const parts = [];
-          let offset = 0;
-          for (const name of readdirSync(spec.dir).sort()) {
-            if (name === 'manifest.json') continue;
-            const data = bytes(`${spec.dir}/${name}`);
-            index[name] = [offset, data.length];
-            parts.push(data);
-            offset += data.length;
-          }
-          const blob = new Uint8Array(offset);
-          let at = 0;
-          for (const part of parts) {
-            blob.set(part, at);
-            at += part.length;
-          }
-          const manifest = bytes(`${spec.dir}/manifest.json`);
-          return mod.color_calib_check(manifest, new TextEncoder().encode(JSON.stringify(index)), blob, bytes(spec.stock), spec.unit, spec.iso);
+          const { manifest, index, blob } = packOf(spec.dir);
+          // `iso` 可以是字符串（"NaN"、"Infinity"、"1.5"），CLI 照原样收，WASM 收 Number(…)。
+          const iso = typeof spec.iso === 'string' ? Number(spec.iso) : spec.iso;
+          return mod.color_calib_check(manifest, index, blob, bytes(spec.stock), spec.unit, iso);
+        },
+      });
+    } else if (spec.kind === 'calib-pack') {
+      out.push({
+        label: `${file}::color_calib_pack`,
+        cliArgs: ['color-calib-check', '--dir', spec.dir],
+        wasm: (mod) => {
+          const { manifest, index, blob } = packOf(spec.dir);
+          return mod.color_calib_pack(manifest, index, blob);
         },
       });
     } else {

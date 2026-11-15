@@ -10,8 +10,9 @@ use gxr_color::resolve::{
 };
 use gxr_color::{
     Codes, Flavour, Stats, Table, apply, apply_with_params, bake_summary, bake_with_params,
-    channel_gains, context, decode_npy, display_table, encode_npy, knobs_request, model_for,
-    parse_json, predict, quantize_f64, stock_words_of_entry, tones_of, unit_model,
+    channel_gains, check_pack, checked_iso, context, decode_npy, display_table, encode_npy,
+    knobs_request, model_for, parse_json, predict, quantize_f64, stock_words_of_entry, tones_of,
+    unit_model,
 };
 use gxr_raw::Json;
 
@@ -62,13 +63,25 @@ fn calib_check(args: &[String]) -> Result<Output, Failure> {
 /// `model_for(home, iso, unit=unit)` on a pack folder: the pick, then the model it builds.
 fn pack_check(args: &[String]) -> Result<Output, Failure> {
     let dir = option(args, "--dir")?.to_string();
-    let unit = option(args, "--unit")?;
-    let iso: i64 = option(args, "--iso")?
-        .parse()
-        .map_err(|_| Failure::Usage("--iso must be an integer".into()))?;
-    let stock = read_bin(option(args, "--stock")?)?;
     let manifest = read_bin(&format!("{dir}/manifest.json"))?;
     let read = |name: &str| std::fs::read(Path::new(&dir).join(name)).ok();
+    // Without `--unit`: the checks that don't need the camera data, before a pack is imported.
+    if optional(args, "--unit")?.is_none() {
+        let units = check_pack(&manifest, &read)?;
+        return ok(Json::object([(
+            "units",
+            Json::Array(units.into_iter().map(Json::Str).collect()),
+        )]));
+    }
+    let unit = option(args, "--unit")?;
+    // The same number rule as WASM: parsed as f64, then a finite whole number in the safe range.
+    let iso = checked_iso(
+        option(args, "--iso")?
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(f64::NAN),
+    )?;
+    let stock = read_bin(option(args, "--stock")?)?;
     let (pick, ctx, ring) = model_for(&manifest, &stock, iso, unit, &read)?;
     let model = unit_model(&stock, &ctx, &ring)?;
     ok(Json::object([

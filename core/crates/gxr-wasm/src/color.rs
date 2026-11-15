@@ -139,16 +139,6 @@ pub fn color_resolve(
     Ok(format!("{text}\n"))
 }
 
-/// `iso` from JavaScript: a finite whole number in the safe-integer range (UNIT-COMMON "WASM
-/// number parameters"), so the cast to `i64` can't wrap or truncate.
-fn checked_iso(iso: f64) -> Option<i64> {
-    const SAFE: f64 = 9_007_199_254_740_991.0;
-    if !iso.is_finite() || iso.fract() != 0.0 || !(-SAFE..=SAFE).contains(&iso) {
-        return None;
-    }
-    Some(iso as i64)
-}
-
 /// The pack's files as one byte buffer plus `{"name": [offset, length], ...}`. Every range is
 /// checked against the buffer before it is used.
 fn pack_files(
@@ -196,8 +186,8 @@ pub fn color_calib_check(
     unit: &str,
     iso: f64,
 ) -> Result<String, JsValue> {
-    let iso = checked_iso(iso)
-        .ok_or_else(|| rejected(gxr_raw::CoreError::new("value", "iso must be an integer")))?;
+    // The same number rule as `gxr-cli color-calib-check` (gxr_color::checked_iso).
+    let iso = gxr_color::checked_iso(iso).map_err(rejected)?;
     let files = pack_files(index_json, blob).map_err(rejected)?;
     let read = |name: &str| {
         files
@@ -220,14 +210,46 @@ pub fn color_calib_check(
     Ok(format!("{}\n", json.render()))
 }
 
+/// The checks of a calibration pack that don't need the camera data (`gxr-cli color-calib-check
+/// --dir` without `--unit`): version, the unit set, and every listed unit's file list and sha256.
+/// The phone runs it before it saves an imported pack. Returns `{"units": [...]}` like the CLI.
+#[wasm_bindgen]
+pub fn color_calib_pack(
+    manifest: &[u8],
+    index_json: &[u8],
+    blob: &[u8],
+) -> Result<String, JsValue> {
+    let files = pack_files(index_json, blob).map_err(rejected)?;
+    let read = |name: &str| {
+        files
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.clone())
+    };
+    let units = gxr_color::check_pack(manifest, &read).map_err(rejected)?;
+    let json = gxr_raw::Json::object([(
+        "units",
+        gxr_raw::Json::Array(units.into_iter().map(gxr_raw::Json::Str).collect()),
+    )]);
+    Ok(format!("{}\n", json.render()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{checked_iso, pack_files};
+    use super::pack_files;
 
     #[test]
     fn iso_must_be_a_safe_whole_number() {
-        assert_eq!(checked_iso(200.0), Some(200));
-        assert_eq!(checked_iso(-1.0), Some(-1));
+        assert_eq!(gxr_color::checked_iso(200.0).ok(), Some(200));
+        assert_eq!(gxr_color::checked_iso(-1.0).ok(), Some(-1));
+        assert_eq!(
+            gxr_color::checked_iso(4_294_967_297.0).ok(),
+            Some(4_294_967_297)
+        );
+        assert_eq!(
+            gxr_color::checked_iso(9_007_199_254_740_991.0).ok(),
+            Some(9_007_199_254_740_991)
+        );
         for bad in [
             200.5,
             f64::NAN,
@@ -236,7 +258,7 @@ mod tests {
             1e300,
             9_007_199_254_740_992.0,
         ] {
-            assert_eq!(checked_iso(bad), None, "{bad}");
+            assert!(gxr_color::checked_iso(bad).is_err(), "{bad}");
         }
     }
 
