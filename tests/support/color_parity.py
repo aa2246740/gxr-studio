@@ -16,11 +16,10 @@ from gxr_studio.camdata import calib, store
 from gxr_studio.camdata.unit_model import UnitModel, input_codes
 from gxr_studio.engine import knobs, menu
 from gxr_studio.engine.model import Model
-from gxr_studio.gpu import tables
 from gxr_studio.render import chain, tones
 from gxr_studio.render.params import Adjust, Curves
 from support import color_fixtures as cf
-from support.color_oracle_gates import bake_gate, capture_bake_chroma  # noqa: F401
+from support.color_oracle_gates import CapturedBake, bake_gate, capture_bake_chroma  # noqa: F401
 from support.core_cli import CoreCliError, error_of, run_json
 
 
@@ -208,7 +207,7 @@ def predict_gap(
 
 
 def bake(tmp: Path, pack: Pack, entry: bytes, *, params: dict[str, Any] | None = None, menu: Path | None = None) -> tuple[Any, Any]:
-    """(python (bytes, meta, ChromaBake, gain_f64_witness) or exception, rust (bytes, meta, summary) or error)."""
+    """(CapturedBake or exception, rust (bytes, meta, summary) or error)."""
     e, out, meta = tmp / "bake-entry.bin", tmp / "bake.bin", tmp / "bake.meta.json"
     e.write_bytes(entry)
     args: list[Any] = ["color-bake", "--entry", e, *pack.args()]
@@ -225,9 +224,7 @@ def bake(tmp: Path, pack: Pack, entry: bytes, *, params: dict[str, Any] | None =
         knob = (params or {}).get("knobs")
         if knob is not None:
             entry = knobs.apply(pack.stock04, entry, knob_request(knob))[0]
-        bk, witness = capture_bake_chroma(pack.model(), entry, step, workers=1)
-        data, py_meta = tables.bake_bytes(bk)
-        py: Any = (data, py_meta, bk, witness)
+        py: Any = capture_bake_chroma(pack.model(), entry, step, workers=1)
     except Exception as exc:  # noqa: BLE001
         py = exc
     return py, rust

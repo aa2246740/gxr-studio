@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -150,54 +151,36 @@ def _unpack_rust_bake(res: tuple[Any, ...]) -> tuple[bytes, dict[str, Any], Any 
     return res[0], res[1], res[2]
 
 
-def _unpack_py_bake(
-    py: Any, witness_arg: np.ndarray | None
-) -> tuple[bytes, dict[str, Any], chain.ChromaBake | None, np.ndarray | None, str | None]:
-    if not isinstance(py, tuple):
-        return b"", {}, None, None, f"py must be a tuple, got {type(py).__name__}"
-    if len(py) == 2:
-        data, meta = py
-        bk = None
-        py_witness = None
-    elif len(py) == 3:
-        data, meta, bk = py
-        py_witness = None
-    elif len(py) == 4:
-        data, meta, bk, py_witness = py
-    else:
-        return b"", {}, None, None, f"expected py tuple of length 2..4, got {len(py)}"
-    if py_witness is not None and witness_arg is not None and py_witness is not witness_arg:
-        if not (
-            isinstance(py_witness, np.ndarray)
-            and isinstance(witness_arg, np.ndarray)
-            and py_witness.dtype == witness_arg.dtype
-            and np.array_equal(py_witness, witness_arg, equal_nan=True)
-        ):
-            return b"", {}, None, None, "conflicting float64 gain witnesses provided in py and witness="
-    use_witness = witness_arg if witness_arg is not None else py_witness
-    if use_witness is None:
-        return (
-            b"",
-            {},
-            None,
-            None,
-            "missing float64 gain witness: generate py via capture_bake_chroma and pass (bytes, meta, bk, witness) or witness=",
-        )
-    if not isinstance(use_witness, np.ndarray) or use_witness.dtype != np.float64:
-        got_type = type(use_witness).__name__
-        got_dtype = getattr(use_witness, "dtype", None)
-        return (
-            b"",
-            {},
-            None,
-            None,
-            f"float64 gain witness must be np.ndarray(dtype=float64), got {got_type}({got_dtype!r})",
-        )
-    return data, meta, bk, use_witness, None
+@dataclass(frozen=True)
+class CapturedBake:
+    """Frozen single-run production bake output bound to its pre-float32 float64 gain witness."""
+
+    bk: chain.ChromaBake
+    data: bytes
+    meta: dict[str, Any]
+    witness: np.ndarray
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.bk, chain.ChromaBake):
+            raise TypeError(f"CapturedBake.bk must be ChromaBake, got {type(self.bk).__name__}")
+        if not isinstance(self.data, bytes):
+            raise TypeError(f"CapturedBake.data must be bytes, got {type(self.data).__name__}")
+        if not isinstance(self.meta, dict):
+            raise TypeError(f"CapturedBake.meta must be dict, got {type(self.meta).__name__}")
+        if not isinstance(self.witness, np.ndarray) or self.witness.dtype != np.float64:
+            got_type = type(self.witness).__name__
+            got_dtype = getattr(self.witness, "dtype", None)
+            raise TypeError(f"CapturedBake.witness must be float64 ndarray, got {got_type}({got_dtype!r})")
+        w = np.array(self.witness, dtype=np.float64, copy=True)
+        w.setflags(write=False)
+        meta_copy = {k: (list(v) if isinstance(v, list) else v) for k, v in self.meta.items()}
+        object.__setattr__(self, "witness", w)
+        object.__setattr__(self, "meta", meta_copy)
 
 
 _GRID_CACHE: dict[tuple[Any, ...], OracleGridCache] = {}
-_CAPTURE_LOCK = threading.RLock()
+_CAPTURE_LOCK = threading.Lock()
+_CAPTURE_OWNER = threading.local()
 
 
 class _ReshapeCapture:
@@ -229,12 +212,16 @@ class _StackCapture:
 
 
 class _NumpyCaptureProxy:
-    def __init__(self, orig_np: Any, captured: list[np.ndarray]) -> None:
+    def __init__(self, orig_np: Any, captured: list[np.ndarray], owner_tid: int) -> None:
         self._orig_np = orig_np
         self._captured = captured
+        self._owner_tid = owner_tid
 
-    def stack(self, *args: Any, **kwargs: Any) -> _StackCapture:
-        return _StackCapture(self._orig_np.stack(*args, **kwargs), self._captured)
+    def stack(self, *args: Any, **kwargs: Any) -> Any:
+        out = self._orig_np.stack(*args, **kwargs)
+        if threading.get_ident() != self._owner_tid:
+            return out
+        return _StackCapture(out, self._captured)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._orig_np, name)
@@ -246,16 +233,23 @@ def capture_bake_chroma(
     step: float = chain.CHROMA_STEP,
     *,
     workers: int = 1,
-) -> tuple[chain.ChromaBake, np.ndarray]:
-    """Run production `chain.bake_chroma` once and capture the pre-float32 float64 gain grid `(ny, nx, 2)`."""
+) -> CapturedBake:
+    """Run production `chain.bake_chroma` once and return frozen `CapturedBake` (`bk`, `data`, `meta`, read-only f64 `witness`)."""
+    if getattr(_CAPTURE_OWNER, "active", False):
+        raise RuntimeError("nested capture_bake_chroma on the same thread is refused")
     captured: list[np.ndarray] = []
+    owner_tid = threading.get_ident()
     with _CAPTURE_LOCK:
         orig_np = chain.np
-        chain.np = _NumpyCaptureProxy(orig_np, captured)
+        if isinstance(orig_np, _NumpyCaptureProxy):
+            raise RuntimeError("chain.np already holds a capture proxy; refusing nested capture")
+        _CAPTURE_OWNER.active = True
+        chain.np = _NumpyCaptureProxy(orig_np, captured, owner_tid)
         try:
             bk = chain.bake_chroma(model, entry, step, workers=workers)
         finally:
             chain.np = orig_np
+            _CAPTURE_OWNER.active = False
     if len(captured) != 1:
         raise RuntimeError(f"chain.bake_chroma gain witness hook fired {len(captured)} times, expected 1")
     witness = captured[0]
@@ -263,7 +257,8 @@ def capture_bake_chroma(
         raise RuntimeError(f"captured gain witness shape/dtype mismatch: {(witness.shape, witness.dtype)} vs {bk.gain.shape}")
     if not np.array_equal(witness.astype(np.float32), bk.gain, equal_nan=True):
         raise RuntimeError("captured float64 witness cast to float32 does not match ChromaBake.gain")
-    return bk, witness
+    data, meta = tables.bake_bytes(bk)
+    return CapturedBake(bk=bk, data=data, meta=meta, witness=witness)
 
 
 def _cache_key(model: UnitModel, step: float, backend: str) -> tuple[Any, ...]:
@@ -395,20 +390,19 @@ def _attribute_gate_b(
 
 
 def bake_gate(
-    py: tuple[Any, ...],
+    py: CapturedBake,
     rust: tuple[Any, ...],
     model: UnitModel,
     entry: bytes,
     *,
-    witness: np.ndarray | None = None,
     grid_cache: OracleGridCache | None = None,
     host_cache: OracleGridCache | None = None,
 ) -> tuple[str | None, list[str]]:
     """Gate A (Rust == sequential oracle exact, zero masks) and Gate B (mechanical host attribution vs Python)."""
     _ = host_cache  # kept for caller signature compatibility; host check runs only on Gate B float32 diffs
-    data, meta, bk, real_gain_f64, unpack_err = _unpack_py_bake(py, witness)
-    if unpack_err is not None or real_gain_f64 is None:
-        return unpack_err or "missing float64 gain witness", []
+    if not isinstance(py, CapturedBake):
+        return f"py must be CapturedBake (from capture_bake_chroma), got {type(py).__name__}", []
+    data, meta, bk, real_gain_f64 = py.data, py.meta, py.bk, py.witness
     r_data, r_meta, summary = _unpack_rust_bake(rust)
     val_err = _validate_witness_and_meta(data, meta, bk, real_gain_f64, r_data, r_meta, summary, model)
     if val_err is not None:

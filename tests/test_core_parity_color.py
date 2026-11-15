@@ -503,7 +503,7 @@ def _check_bake(tmp: Path, pack: Any, entry: bytes, **kw: Any) -> Any:
     for line in allowed:
         print(f"bake float32 allowed: {line}")
     assert gap is None, gap
-    return py[2]
+    return py.bk
 
 
 def test_bake_matches_python_on_synthetic_models(tmp_path: Path) -> None:

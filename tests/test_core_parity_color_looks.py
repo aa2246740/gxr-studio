@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
 
@@ -204,10 +207,8 @@ def test_oracle_negative_controls_restoring_host_kernels_fail(tmp_path: Path) ->
 
 
 def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reference-run 1e-10 injection (restored before `bake_gate`), persistent injection, and monochrome/outside-hull
-    `np.ones` 1e-10 injection (all with float32 unchanged) must fail `bake_gate` (Sol r1 P1 & Sol r2 P1/P2)."""
-    from gxr_studio.gpu import tables
-
+    """Reference-run 1e-10 injection (restored before `bake_gate`), persistent injection, monochrome/outside-hull
+    `np.ones` 1e-10 injection, and Sol r3 stale-capture / mismatched-Rust pairings must fail `bake_gate`."""
     require_cli()
     pack = cp.synthetic_pack(tmp_path / "pk", rows=4)
     model = pack.model()
@@ -215,14 +216,16 @@ def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path, mon
     work = tmp_path / "w"
     work.mkdir()
     py, rust = cp.bake(work, pack, entry, params={"step": 2.0})
-    assert not isinstance(py, BaseException) and not isinstance(rust, cp.CoreCliError)
+    assert isinstance(py, cp.CapturedBake) and not isinstance(rust, cp.CoreCliError)
     cache = co.build_grid_cache(model, 2.0)
     host_cache = co.build_grid_cache(model, 2.0, use_libm=False, use_seq_matmul=False, use_seq_cplx=False)
     ok_err, _ok_allowed = cp.bake_gate(py, rust, model, entry, grid_cache=cache, host_cache=host_cache)
     assert ok_err is None, ok_err
-    # Also accept 2-tuple (data, meta) with explicit `witness=` kwarg (ui-m2 reference caller pattern).
-    ok_err_kw, _ = cp.bake_gate((py[0], py[1]), rust, model, entry, witness=py[3], grid_cache=cache)
-    assert ok_err_kw is None, ok_err_kw
+    assert not py.witness.flags.writeable
+    with pytest.raises(FrozenInstanceError):
+        py.data = b""  # type: ignore[misc]
+    with pytest.raises(ValueError, match="read-only"):
+        py.witness[0, 0, 0] = 0.0
 
     original_forward = model.engine.table.forward
     calls = 0
@@ -252,49 +255,50 @@ def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path, mon
     # 1) Persistent injection (Sol r1): table.forward mutated during capture and left in place.
     model.engine.table.forward = capturing_forward
     try:
-        mutated_bk, mutated_witness = cp.capture_bake_chroma(model, entry, 2.0, workers=1)
-        mutated_data, mutated_meta = tables.bake_bytes(mutated_bk)
-        assert injected > 0 and mutated_data == py[0], "negative control must keep float32 bytes unchanged"
-        err_persist_cached, _ = cp.bake_gate(
-            (mutated_data, mutated_meta, mutated_bk, mutated_witness),
-            rust,
-            model,
-            entry,
-            grid_cache=cache,
-            host_cache=host_cache,
-        )
-        err_persist_auto, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk, mutated_witness), rust, model, entry)
+        mutated_py = cp.capture_bake_chroma(model, entry, 2.0, workers=1)
+        assert injected > 0 and mutated_py.data == py.data, "negative control must keep float32 bytes unchanged"
+        err_persist_cached, _ = cp.bake_gate(mutated_py, rust, model, entry, grid_cache=cache, host_cache=host_cache)
+        err_persist_auto, _ = cp.bake_gate(mutated_py, rust, model, entry)
         assert err_persist_cached is not None and "1e-12" in err_persist_cached, err_persist_cached
         assert err_persist_auto is not None and "1e-12" in err_persist_auto, err_persist_auto
     finally:
         model.engine.table.forward = original_forward
 
-    # 2) Reference-run restored injection (Sol r2 #1): restore table.forward BEFORE calling bake_gate,
-    #    and verify bake_gate does NOT re-invoke table.forward when validating the captured witness.
+    # 2) Reference-run restored injection (Sol r2 #1) + Sol r3 P1 exact scenario (rows=4, seed=3, words=2, tilt=5, step=2):
+    #    restore table.forward BEFORE calling bake_gate; verify bake_gate validates mutated_py's own witness
+    #    without re-running table.forward, and rejects pairing stale witness or mismatched Rust results.
     model.engine.table.forward = counting_forward
     try:
         calls_before = calls
-        err_restored_cached, _ = cp.bake_gate(
-            (mutated_data, mutated_meta, mutated_bk, mutated_witness),
-            rust,
-            model,
-            entry,
-            grid_cache=cache,
-            host_cache=host_cache,
-        )
-        err_restored_auto, _ = cp.bake_gate((mutated_data, mutated_meta, mutated_bk, mutated_witness), rust, model, entry)
-        err_restored_kw, _ = cp.bake_gate((mutated_data, mutated_meta), rust, model, entry, witness=mutated_witness, grid_cache=cache)
-        assert calls == calls_before, "bake_gate must validate the captured witness without re-running chain.bake_chroma"
+        err_restored_cached, _ = cp.bake_gate(mutated_py, rust, model, entry, grid_cache=cache, host_cache=host_cache)
+        err_restored_auto, _ = cp.bake_gate(mutated_py, rust, model, entry)
+        assert calls == calls_before, "bake_gate must validate CapturedBake.witness without re-running chain.bake_chroma"
         assert err_restored_cached is not None and "1e-12" in err_restored_cached, err_restored_cached
         assert err_restored_auto is not None and "1e-12" in err_restored_auto, err_restored_auto
-        assert err_restored_kw is not None and "1e-12" in err_restored_kw, err_restored_kw
     finally:
         model.engine.table.forward = original_forward
+
+    # Pairing stale capture with a new Rust result (different entry or step) must also fail normal checks.
+    other_entry = cf.entry(words=3, tilt=2)
+    other_py, other_rust = cp.bake(work, pack, other_entry, params={"step": 2.0})
+    assert isinstance(other_py, cp.CapturedBake) and not isinstance(other_rust, cp.CoreCliError)
+    err_stale_gate_a, _ = cp.bake_gate(py, other_rust, model, entry, grid_cache=cache)
+    assert err_stale_gate_a is not None and "Gate A failed" in err_stale_gate_a, err_stale_gate_a
+    err_stale_f64, _ = cp.bake_gate(py, other_rust, model, other_entry, grid_cache=cache)
+    assert err_stale_f64 is not None and "1e-12" in err_stale_f64, err_stale_f64
+
+    step4_py, step4_rust = cp.bake(work, pack, entry, params={"step": 4.0})
+    assert isinstance(step4_py, cp.CapturedBake) and not isinstance(step4_rust, cp.CoreCliError)
+    err_stale_rust_step, _ = cp.bake_gate(py, step4_rust, model, entry, grid_cache=cache)
+    assert err_stale_rust_step is not None and "meta nx" in err_stale_rust_step, err_stale_rust_step
+    r_data, r_meta, r_summary = rust
+    err_meta_step, _ = cp.bake_gate(py, (r_data, {**r_meta, "step": 4.0}, r_summary), model, entry, grid_cache=cache)
+    assert err_meta_step is not None and "meta step" in err_meta_step, err_meta_step
 
     # 3) Monochrome & outside-hull identity-fill injection via np.ones (Sol r2 #2).
     bw_entry = cf.entry(kind=3)
     bw_py, bw_rust = cp.bake(work, pack, bw_entry, params={"step": 2.0})
-    assert not isinstance(bw_py, BaseException) and not isinstance(bw_rust, cp.CoreCliError)
+    assert isinstance(bw_py, cp.CapturedBake) and not isinstance(bw_rust, cp.CoreCliError)
     assert cp.bake_gate(bw_py, bw_rust, model, bw_entry, grid_cache=cache)[0] is None
 
     orig_ones = np.ones
@@ -306,24 +310,23 @@ def test_oracle_negative_control_real_python_f64_drift_fails(tmp_path: Path, mon
         return arr
 
     monkeypatch.setattr(np, "ones", poisoned_ones)
-    bw_bad_bk, bw_bad_witness = cp.capture_bake_chroma(model, bw_entry, 2.0, workers=1)
-    bw_bad_data, bw_bad_meta = tables.bake_bytes(bw_bad_bk)
-    assert bw_bad_data == bw_py[0], "monochrome negative control must keep float32 bytes unchanged"
-    err_bw_cached, _ = cp.bake_gate((bw_bad_data, bw_bad_meta, bw_bad_bk, bw_bad_witness), bw_rust, model, bw_entry, grid_cache=cache)
-    err_bw_auto, _ = cp.bake_gate((bw_bad_data, bw_bad_meta, bw_bad_bk, bw_bad_witness), bw_rust, model, bw_entry)
+    bw_bad_py = cp.capture_bake_chroma(model, bw_entry, 2.0, workers=1)
+    assert bw_bad_py.data == bw_py.data, "monochrome negative control must keep float32 bytes unchanged"
+    err_bw_cached, _ = cp.bake_gate(bw_bad_py, bw_rust, model, bw_entry, grid_cache=cache)
+    err_bw_auto, _ = cp.bake_gate(bw_bad_py, bw_rust, model, bw_entry)
     assert err_bw_cached is not None and "1e-12" in err_bw_cached, err_bw_cached
     assert err_bw_auto is not None and "1e-12" in err_bw_auto, err_bw_auto
 
     # Also catches outside-hull (~near) 1e-10 drift on colour entries (where table.forward only fills `near`).
-    hull_bad_bk, hull_bad_witness = cp.capture_bake_chroma(model, entry, 2.0, workers=1)
-    hull_bad_data, hull_bad_meta = tables.bake_bytes(hull_bad_bk)
-    assert hull_bad_data == py[0], "outside-hull negative control must keep float32 bytes unchanged"
-    err_hull, _ = cp.bake_gate((hull_bad_data, hull_bad_meta, hull_bad_bk, hull_bad_witness), rust, model, entry, grid_cache=cache)
+    hull_bad_py = cp.capture_bake_chroma(model, entry, 2.0, workers=1)
+    assert hull_bad_py.data == py.data, "outside-hull negative control must keep float32 bytes unchanged"
+    err_hull, _ = cp.bake_gate(hull_bad_py, rust, model, entry, grid_cache=cache)
     assert err_hull is not None and "1e-12" in err_hull, err_hull
 
 
 def test_oracle_witness_validation_and_hook_errors_fail_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing, non-float64, tampered, mismatched, or hook-bypassed witnesses must fail loudly (never skip)."""
+    """Non-CapturedBake inputs (tuples/ndarrays), tampered CapturedBake fields, removed `witness=` kwarg,
+    and hook 0/2 fires must fail loudly (never skip)."""
     from gxr_studio.render import chain
 
     require_cli()
@@ -333,19 +336,37 @@ def test_oracle_witness_validation_and_hook_errors_fail_loudly(tmp_path: Path, m
     work = tmp_path / "w"
     work.mkdir()
     py, rust = cp.bake(work, pack, entry, params={"step": 2.0})
-    assert not isinstance(py, BaseException) and not isinstance(rust, cp.CoreCliError)
-    data, meta, bk, witness = py
+    assert isinstance(py, cp.CapturedBake) and not isinstance(rust, cp.CoreCliError)
+    data, meta, bk, witness = py.data, py.meta, py.bk, py.witness
     cache = co.build_grid_cache(model, 2.0)
 
-    for bad_py, kw, needle in (
-        ((data, meta), {}, "missing float64 gain witness"),
-        ((data, meta, bk), {}, "missing float64 gain witness"),
-        ((data, meta, bk), {"witness": witness.astype(np.float32)}, "float64"),
-        ((data, meta, bk), {"witness": witness[:, :, :1]}, "witness shape"),
-        ((data, meta, bk, witness), {"witness": witness + 1.0}, "conflicting"),
-        ((data, meta, bk, witness + 1.0), {}, "witness.astype(float32) differs from py"),
+    # Plain tuples (2/3/4-tuples) and ndarrays are rejected as errors, never skipped (Sol r3 P1).
+    for non_captured in (
+        (data, meta),
+        (data, meta, bk),
+        (data, meta, bk, witness),
+        witness,
+        None,
     ):
-        err, _ = cp.bake_gate(bad_py, rust, model, entry, grid_cache=cache, **kw)
+        err, _ = cp.bake_gate(non_captured, rust, model, entry, grid_cache=cache)  # type: ignore[arg-type]
+        assert err is not None and "CapturedBake" in err, (type(non_captured), err)
+
+    # The separate `witness=` parameter is removed from bake_gate.
+    with pytest.raises(TypeError, match="witness"):
+        cp.bake_gate(py, rust, model, entry, grid_cache=cache, witness=witness)  # type: ignore[call-arg]
+
+    # Directly constructed mismatched CapturedBake values are still rejected by bytes/meta/shape checks.
+    with pytest.raises(TypeError, match="float64 ndarray"):
+        cp.CapturedBake(bk=bk, data=data, meta=meta, witness=witness.astype(np.float32))
+    bad_shape = cp.CapturedBake(bk=bk, data=data, meta=meta, witness=witness[:, :, :1])
+    bad_gain = cp.CapturedBake(bk=bk, data=data, meta=meta, witness=witness + 1.0)
+    bad_meta = cp.CapturedBake(bk=bk, data=data, meta={**meta, "step": 3.0}, witness=witness)
+    for bad_captured, needle in (
+        (bad_shape, "witness shape"),
+        (bad_gain, "witness.astype(float32) differs from py"),
+        (bad_meta, "meta step"),
+    ):
+        err, _ = cp.bake_gate(bad_captured, rust, model, entry, grid_cache=cache)
         assert err is not None and needle in err, (needle, err)
 
     # Hook firing 0 times or 2 times must raise RuntimeError and still restore chain.np.
@@ -369,6 +390,90 @@ def test_oracle_witness_validation_and_hook_errors_fail_loudly(tmp_path: Path, m
     with pytest.raises(RuntimeError, match="fired 2 times"):
         cp.capture_bake_chroma(model, entry, 2.0)
     assert chain.np is orig_np
+
+
+def test_oracle_capture_thread_isolation_and_no_reentrancy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global `chain.np` proxy must pass other threads' `stack` calls straight to plain numpy
+    (concurrent `bake_chroma` and `bake_model(grid=2)` succeed with capture firing once), and refuse
+    same-thread nested capture before modifying `chain.np` (Sol r3 P2)."""
+    from gxr_studio.gpu import tables
+    from gxr_studio.render import chain
+
+    pack = cp.synthetic_pack(tmp_path / "pk", rows=4)
+    model = pack.model()
+    entry = cf.entry(kind=3)
+    orig_np = chain.np
+    orig_bake = chain.bake_chroma
+    expected_bytes = tables.bake_bytes(orig_bake(model, entry, 2.0, workers=1))[0]
+    expected_model_lut = chain.bake_model(model, entry, grid=2, workers=1).lut
+
+    # 1) Same-thread nested capture fails loudly BEFORE modifying `chain.np`.
+    nested_calls = 0
+
+    def nested_hook(mdl: Any, ent: bytes, step: float = chain.CHROMA_STEP, *, workers: int = 1) -> Any:
+        nonlocal nested_calls
+        if nested_calls == 0:
+            nested_calls += 1
+            proxy_before = chain.np
+            with pytest.raises(RuntimeError, match="nested capture_bake_chroma"):
+                cp.capture_bake_chroma(mdl, ent, step, workers=workers)
+            assert chain.np is proxy_before
+        return orig_bake(mdl, ent, step, workers=workers)
+
+    monkeypatch.setattr(chain, "bake_chroma", nested_hook)
+    outer = cp.capture_bake_chroma(model, entry, 2.0, workers=1)
+    assert outer.data == expected_bytes
+    assert chain.np is orig_np
+
+    # Uncaught nested capture also raises before modifying chain.np and restores orig_np cleanly.
+    def uncaught_nested_hook(mdl: Any, ent: bytes, step: float = chain.CHROMA_STEP, *, workers: int = 1) -> Any:
+        proxy_before = chain.np
+        try:
+            return cp.capture_bake_chroma(mdl, ent, step, workers=workers)
+        finally:
+            assert chain.np is proxy_before
+
+    monkeypatch.setattr(chain, "bake_chroma", uncaught_nested_hook)
+    with pytest.raises(RuntimeError, match="nested capture_bake_chroma"):
+        cp.capture_bake_chroma(model, entry, 2.0, workers=1)
+    assert chain.np is orig_np
+
+    # 2) Event-controlled concurrency with another thread calling `chain.bake_chroma` and `chain.bake_model(grid=2)`.
+    entered = threading.Event()
+    release = threading.Event()
+    owner_tid: dict[str, int] = {}
+
+    def held_bake(mdl: Any, ent: bytes, step: float = chain.CHROMA_STEP, *, workers: int = 1) -> Any:
+        if threading.get_ident() == owner_tid.get("tid"):
+            entered.set()
+            assert release.wait(20), "concurrency barrier timeout"
+        return orig_bake(mdl, ent, step, workers=workers)
+
+    def run_held_capture() -> cp.CapturedBake:
+        owner_tid["tid"] = threading.get_ident()
+        return cp.capture_bake_chroma(model, entry, 2.0, workers=1)
+
+    monkeypatch.setattr(chain, "bake_chroma", held_bake)
+    for label in ("bake_chroma", "bake_model"):
+        entered.clear()
+        release.clear()
+        owner_tid.clear()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(run_held_capture)
+            try:
+                assert entered.wait(20), f"{label}: capture thread did not reach barrier"
+                if label == "bake_chroma":
+                    other_bk = chain.bake_chroma(model, entry, 2.0, workers=1)
+                    assert tables.bake_bytes(other_bk)[0] == expected_bytes
+                else:
+                    other_model_bk = chain.bake_model(model, entry, grid=2, workers=1)
+                    assert other_model_bk.grid == 2
+                    assert np.array_equal(other_model_bk.lut, expected_model_lut)
+            finally:
+                release.set()
+            captured = future.result(timeout=20)
+        assert isinstance(captured, cp.CapturedBake) and captured.data == expected_bytes
+        assert chain.np is orig_np
 
 
 @pytest.mark.parametrize("look_name", ["instax mini", "QianXi A", "M9 STD"])
