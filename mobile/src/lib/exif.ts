@@ -1,8 +1,14 @@
-// 只读 JPEG APP1 / TIFF IFD 里的拍摄时间，以及 DNG 内嵌预览的位置。
+// 只读 JPEG APP1 / TIFF IFD 里的拍摄时间、镜头名和 ISO，以及 DNG 内嵌预览的位置。
 // 坏数据返回 null，不抛。调用方只把文件开头的一小段传进来。
 
 export interface CaptureTime {
   ms: number;
+}
+
+/** 配方要用的两项：镜头名（选镜头单元）和 ISO（选模型）。读不到是 null。 */
+export interface PhotoMeta {
+  lens: string | null;
+  iso: number | null;
 }
 
 export interface ByteRange {
@@ -71,6 +77,9 @@ interface Found {
   subOriginal: string | null;
   dateTime: string | null;
   embedded: ByteRange | null;
+  lens: string | null;
+  unique: string | null;
+  iso: number | null;
   /** 缩小尺寸、JPEG 压缩的单条带（GXR 的 DNG 把 640×480 预览放在第二个 SubIFD 里）。 */
   strips: ByteRange[];
 }
@@ -95,6 +104,33 @@ function readAsciiTag(bytes: Uint8Array, entry: number, count: number, le: boole
   const place = inlineValue(bytes, entry, 1, count, le);
   if (!place) return null;
   return ascii(bytes, place.offset, count);
+}
+
+/** 桌面 meta._clean：按 ASCII 读、去掉 NUL 和首尾空白；空的当作没有。 */
+function looseAscii(bytes: Uint8Array, offset: number, count: number): string | null {
+  if (count <= 0 || count > 256 || offset < 0 || offset + count > bytes.length) return null;
+  let text = '';
+  for (let i = 0; i < count; i++) {
+    const code = bytes[offset + i];
+    if (code === 0) continue;
+    if (code < 128) text += String.fromCharCode(code);
+  }
+  text = text.trim();
+  return text || null;
+}
+
+function looseTag(bytes: Uint8Array, entry: number, count: number, le: boolean): string | null {
+  const place = inlineValue(bytes, entry, 1, count, le);
+  return place ? looseAscii(bytes, place.offset, count) : null;
+}
+
+/** ISO（SHORT 或 LONG，取第一个值）。 */
+function firstNumber(bytes: Uint8Array, entry: number, type: number, count: number, le: boolean): number | null {
+  if (count < 1 || (type !== 3 && type !== 4)) return null;
+  const size = type === 3 ? 2 : 4;
+  const place = inlineValue(bytes, entry, size, count, le);
+  if (!place) return null;
+  return type === 3 ? u16(bytes, place.offset, le) : u32(bytes, place.offset, le);
 }
 
 function noteEmbedded(found: Found, offset: number | null, length: number | null): void {
@@ -126,6 +162,9 @@ function walk(bytes: Uint8Array, le: boolean, ifd: number, depth: number, found:
     if (tag === 0x0132 && type === 2) found.dateTime = readAsciiTag(bytes, entry, n, le);
     if (tag === 0x9003 && type === 2) found.original = readAsciiTag(bytes, entry, n, le);
     if (tag === 0x9291 && type === 2) found.subOriginal = readAsciiTag(bytes, entry, n, le);
+    if (tag === 0xa434 && type === 2 && found.lens === null) found.lens = looseTag(bytes, entry, n, le);
+    if (tag === 0xc614 && depth === 0 && found.unique === null) found.unique = looseTag(bytes, entry, n, le);
+    if (tag === 0x8827 && found.iso === null) found.iso = firstNumber(bytes, entry, type, n, le);
     if (tag === 0x8769 && type === 4 && n >= 1) {
       const place = inlineValue(bytes, entry, 4, n, le);
       const next = place ? u32(bytes, place.offset, le) : null;
@@ -172,7 +211,7 @@ function fromTiff(bytes: Uint8Array): Found | null {
   if (u16(bytes, 2, le) !== 42) return null;
   const first = u32(bytes, 4, le);
   if (first === null) return null;
-  const found: Found = { original: null, subOriginal: null, dateTime: null, embedded: null, strips: [] };
+  const found: Found = { original: null, subOriginal: null, dateTime: null, embedded: null, lens: null, unique: null, iso: null, strips: [] };
   walk(bytes, le, first, 0, found);
   return found;
 }
@@ -182,6 +221,58 @@ function timeOf(found: Found): CaptureTime | null {
   if (original !== null) return { ms: original };
   const plain = found.dateTime ? captureMillis(found.dateTime, null) : null;
   return plain === null ? null : { ms: plain };
+}
+
+function exifOfJpeg(bytes: Uint8Array): Found | null {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 4 <= bytes.length) {
+    if (bytes[i] !== 0xff) return null;
+    while (i < bytes.length && bytes[i] === 0xff) i += 1;
+    if (i >= bytes.length) return null;
+    const marker = bytes[i];
+    i += 1;
+    if (marker === 0xd9 || marker === 0xda) return null;
+    const length = u16(bytes, i, false);
+    if (length === null || length < 2 || i + length > bytes.length) return null;
+    if (marker === 0xe1 && length >= 8 && ascii(bytes, i + 2, 6) === 'Exif') {
+      const found = fromTiff(bytes.subarray(i + 8, i + length));
+      if (found) return found;
+    }
+    i += length;
+  }
+  return null;
+}
+
+function metaOf(found: Found | null, dng: boolean): PhotoMeta {
+  if (!found) return { lens: null, iso: null };
+  // 桌面 read_dng_meta：Exif 里没有镜头名时，用 UniqueCameraModel 去掉开头的「RICOH 」。
+  const lens = found.lens ?? (dng && found.unique ? found.unique.replace(/^RICOH\s+/, '') || null : null);
+  // 桌面导入时 `if m.iso`：0 和读不到一样。
+  return { lens, iso: found.iso ? found.iso : null };
+}
+
+/** 相机 JPG 开头一段里的镜头名和 ISO（桌面 meta.read_jpeg_meta 的 42036、34855）。 */
+export function photoMetaFromJpeg(bytes: Uint8Array): PhotoMeta {
+  try {
+    return metaOf(exifOfJpeg(bytes), false);
+  } catch {
+    return { lens: null, iso: null };
+  }
+}
+
+/** DNG 里的镜头名和 ISO（桌面 meta.read_dng_meta）。 */
+export function photoMetaFromTiff(bytes: Uint8Array): PhotoMeta {
+  try {
+    return metaOf(fromTiff(bytes), true);
+  } catch {
+    return { lens: null, iso: null };
+  }
+}
+
+/** 先用相机 JPG 的，没有再用 DNG 的（桌面导入：`next(m.lens for m in (jpg_meta, dng_meta) if m and m.lens)`）。 */
+export function mergeMeta(jpg: PhotoMeta | null, dng: PhotoMeta | null): PhotoMeta {
+  return { lens: jpg?.lens ?? dng?.lens ?? null, iso: jpg?.iso ?? dng?.iso ?? null };
 }
 
 /** JPEG 开头一段里的 APP1。没有 Exif、截断、标记坏了，都返回 null。 */

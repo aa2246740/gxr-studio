@@ -87,6 +87,12 @@ async function makePage({ gpu = true, width = 390, height = 844 } = {}) {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  // 只为诊断：页面崩了、关了、整页刷新，都往 stderr 记一行（F4 在整轮高负载下偶尔卡住，要看是哪一种）。
+  page.on('crash', () => process.stderr.write(`page crash +${Date.now()}\n`));
+  page.on('close', () => process.stderr.write(`page close +${Date.now()}\n`));
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) process.stderr.write(`page navigated ${frame.url()} +${Date.now()}\n`);
+  });
   await page.goto(`${base}/`);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await page.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
@@ -103,7 +109,7 @@ function asFiles(files) {
 }
 
 async function pick(page, files) {
-  await page.locator('input[type=file]').setInputFiles(asFiles(files));
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles(asFiles(files));
   await page.waitForFunction(() => {
     const sub = document.querySelector('.nav small');
     return sub && !sub.textContent.includes('正在读取') && document.querySelectorAll('.cell').length > 0 && !document.querySelector('.cell.skel');
@@ -195,7 +201,7 @@ const CASES = {
         };
         window.__gpuHold = true;
       });
-      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       // 第一次上传扣住；同名重选第三张真 DNG 再打开，第二次上传排在后面。
       await page.locator(`.cell[data-id="${a}"]`).click();
       await page.waitForFunction(() => window.__uploads.length === 1 && window.__gpuHeld.length === 1, null, { timeout: 120_000 });
@@ -294,7 +300,7 @@ const CASES = {
       const ids = await gridIds(page);
       const [a, b, c] = ids;
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
       // 卡拔了：之后所有整份读取都回 gone。
@@ -312,7 +318,7 @@ const CASES = {
       const screenAfterC = await page.locator('.app').getAttribute('data-screen');
       await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 60_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 60_000 });
       const reopened = await page.locator('.app').getAttribute('data-screen');
       return { ids, dialog, subtitle, classes, againDialog, screenAfterC, reopened, errors };
     } finally {
@@ -341,7 +347,7 @@ const CASES = {
         };
         window.__gpuHold = true;
       });
-      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      const label = () => page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       await page.locator('.cell').first().click();
       await page.waitForFunction(() => window.__uploads.length === 1 && window.__gpuHeld.length === 1, null, { timeout: 120_000 });
       await page.getByRole('button', { name: '照片', exact: true }).click();
@@ -471,10 +477,14 @@ const CASES = {
 
   /** F4：有显卡时配方卡是这张的中性小图，只做一次；没显卡时如实写相机 JPG / 内嵌预览。 */
   async 'recipe-cards'() {
+    // 只为诊断：每一步往 stderr 印一行用了多久，整个驱动超时时 pytest 会把它们带出来。
+    const started = Date.now();
+    const stage = (label) => process.stderr.write(`recipe-cards ${label} +${Date.now() - started}ms\n`);
     const gpuRun = await (async () => {
       const { page, context, errors } = await makePage({ gpu: true });
       try {
         await pick(page, manifest.pairs.slice(0, 4));
+        stage('gpu: picked');
         await page.evaluate(() => {
           window.__thumbCalls = 0;
           const engine = window.__gxrEngine;
@@ -492,6 +502,7 @@ const CASES = {
           }, null, { timeout: 120_000 });
         await page.locator('.cell').first().click();
         await waitCards();
+        stage('gpu: first cards');
         const first = await editorState(page);
         const labels = await page.locator('.editor > .strip .rc .sub').allInnerTexts();
         // 卡片和同一个源用显卡现出的中性小图比，缩到 96×64 后逐通道平均差。
@@ -520,9 +531,11 @@ const CASES = {
           return sum / n;
         });
         const callsAfterFirst = await page.evaluate(() => window.__thumbCalls);
+        stage('gpu: diff done');
         await swipeLeft(page);
         await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
         await waitCards();
+        stage('gpu: second cards');
         const swipeBack = async () => {
           const box = await page.locator('.stage').boundingBox();
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -531,16 +544,54 @@ const CASES = {
           await page.mouse.up();
         };
         const second = await editorState(page);
-        await swipeBack();
-        await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 });
-        await waitCards();
+        stage('gpu: swipe back');
+        // 只为诊断：每 20 秒问一次页面还答不答（5 秒内），答了就印标题，不答就印「没有回应」。不改任何等待和断言。
+        const watchdog = setInterval(() => {
+          Promise.race([
+            page.evaluate(() => `${document.querySelector('.editor .nav b')?.textContent} screen=${document.querySelector('.app')?.dataset.screen}`),
+            new Promise((done) => setTimeout(() => done('no answer within 5 s'), 5000)),
+          ]).then((text) => stage(`gpu: watchdog ${text}`), (err) => stage(`gpu: watchdog error ${err?.message ?? err}`));
+        }, 20_000);
+        watchdog.unref(); // 测试失败抛出时不让它拖住驱动退出
+        try {
+          await swipeBack();
+          stage('gpu: swipe gesture sent');
+          await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 }).catch(async (err) => {
+            // Sol r6 P2：页面卡死时诊断的 evaluate 也不会回来。Node 这边单独给 5 秒，读不到就写「页面无回应」，
+            // 照样抛出原来那个 30 秒超时，不让诊断把最初的失败吞掉。
+            let late;
+            const state = await Promise.race([
+              page.evaluate(() => ({
+                title: document.querySelector('.editor .nav b')?.textContent,
+                screen: document.querySelector('.app')?.dataset.screen,
+                label: document.querySelector('.editor .lbl')?.textContent,
+                overlays: [...document.querySelectorAll('.scrim, .ms, .dlg')].map((n) => n.className),
+                cells: [...document.querySelectorAll('.cell')].map((n) => n.dataset.id),
+              })),
+              new Promise((done) => {
+                late = setTimeout(() => done('页面无回应'), 5000);
+              }),
+            ])
+              .catch((probe) => `页面状态读不到：${probe?.message ?? probe}`)
+              .finally(() => clearTimeout(late));
+            err.message = `${err.message}\nwant=${first.title} second=${second.title}\n${typeof state === 'string' ? state : JSON.stringify(state)}`;
+            stage(`gpu: title wait failed ${typeof state === 'string' ? state : 'state read'}`);
+            throw err;
+          });
+          stage('gpu: title is first again');
+          await waitCards();
+        } finally {
+          clearInterval(watchdog);
+        }
         const calls = await page.evaluate(() => window.__thumbCalls);
+        stage('gpu: back on first');
         return { labels, diff, callsAfterFirst, calls, first, second, errors };
       } finally {
         await context.close();
       }
     })();
     const fallback = await (async () => {
+      stage('fallback: start');
       const { page, context, errors } = await makePage({ gpu: false });
       try {
         await pick(page, [manifest.dngs[0], ...manifest.pairs.slice(2, 4)]);
@@ -573,7 +624,7 @@ const CASES = {
       const bName = `${b.toUpperCase()}.DNG`;
       const aName = `${a.toUpperCase()}.DNG`;
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       const before = await page.evaluate(() => window.__gxrEngine.stats());
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
@@ -595,7 +646,7 @@ const CASES = {
       await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
       // 已经在显卡里的那张：不读卡，直接打开、拖曝光。
       await page.locator(`.cell[data-id="${a}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 60_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 60_000 });
       const slider = page.locator('input[data-key="exposure_ev"]');
       const box = await slider.boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -614,7 +665,7 @@ const CASES = {
       const subtitleRepicked = await page.locator('.nav small').innerText();
       const bClassRepicked = await cellClass(page, b);
       await page.locator(`.cell[data-id="${b}"]`).click();
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       const repickedTitle = await page.locator('.editor .nav b').innerText();
       return { a, b, aName, bName, before, after, dialog, subtitle, subtitleAfterRefresh, bClass, againDialog, reopened, readsAfterCard, subtitleRepicked, bClassRepicked, repickedTitle, errors };
     } finally {
@@ -637,7 +688,7 @@ const CASES = {
       const { page, context, errors } = await makePage({ gpu: false });
       try {
         await page.evaluate(() => window.__hold('thumb'));
-        await page.locator('input[type=file]').setInputFiles({ name, mimeType: 'image/jpeg', buffer: variant.first });
+        await page.locator('input.filepick:not(.calibpick)').setInputFiles({ name, mimeType: 'image/jpeg', buffer: variant.first });
         await page.waitForFunction(() => window.__held.length === 1, null, { timeout: 30_000 });
         await pick(page, [{ name, mimeType: 'image/jpeg', buffer: real }]);
         const read = () =>
@@ -681,7 +732,7 @@ const CASES = {
       await page.waitForTimeout(1500);
       await swipeLeft(page);
       await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
-      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('开发用中性预览'), null, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       const second = await editorState(page);
       return { gpu, first, second, mainReads: await page.evaluate(() => window.__mainReads), errors };
     } finally {

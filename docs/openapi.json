@@ -433,6 +433,23 @@
         "title": "ExportFile",
         "type": "object"
       },
+      "ExportPackRequest": {
+        "properties": {
+          "dest_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dest Dir"
+          }
+        },
+        "title": "ExportPackRequest",
+        "type": "object"
+      },
       "ExportRecipeBinding": {
         "properties": {
           "assessed_entry": {
@@ -1323,6 +1340,43 @@
           }
         },
         "summary": "Get Audit"
+      }
+    },
+    "/api/calibration/export-iphone": {
+      "post": {
+        "description": "校准数据 → `GXR 校准数据 YYYY-MM-DD.zip`。目标文件夹走导出的检查；返回的 export_id 用导出的「在访达中显示」。",
+        "operationId": "export_calibration_for_iphone_api_calibration_export_iphone_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportPackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Calibration For Iphone"
       }
     },
     "/api/calibration/import": {
