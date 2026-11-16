@@ -6,7 +6,7 @@ use gxr_export::meta::{
     read_source_exif,
 };
 use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs, SourceFiles};
-use gxr_export::pipeline::{ExportFail, ExportOpts, optimize_huffman};
+use gxr_export::pipeline::{ExportFail, ExportOpts};
 use gxr_export::source::CalibPack;
 use gxr_frame::Fonts;
 use gxr_raw::Json;
@@ -24,7 +24,6 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
 fn run_pipeline(command: &str, args: &[String]) -> Result<Output, Failure> {
     let result = match command {
         "export-run-complete" => cmd_complete(args)?,
-        "export-run-huffopt" => cmd_huffopt(args)?,
         "export-run-plan" => cmd_plan(args)?,
         "export-run-prepare" => cmd_prepare(args)?,
         "export-run-sizes" => cmd_sizes(args)?,
@@ -216,25 +215,6 @@ fn cmd_complete(args: &[String]) -> Ran {
             ])))
         }
         Err(e) => Ok(Err(e)),
-    }
-}
-
-/// `optimize_huffman` on a JPEG file (a test hook for the transcode alone).
-fn cmd_huffopt(args: &[String]) -> Ran {
-    let data = common::read(common::option(args, "--in")?)?;
-    let out = common::option(args, "--out")?;
-    match optimize_huffman(&data) {
-        Ok(file) => {
-            write(out, &file)?;
-            Ok(Ok(Json::object([
-                (
-                    "bytes",
-                    Json::Int(i64::try_from(file.len()).unwrap_or(i64::MAX)),
-                ),
-                ("sha256", Json::str(sha256_hex(&file))),
-            ])))
-        }
-        Err(e) => Ok(Err(e.into())),
     }
 }
 

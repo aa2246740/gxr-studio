@@ -200,6 +200,9 @@ pub struct Encoder<W: JfifWrite> {
 
     pub(super) optimize_huffman_table: bool,
 
+    /// GXR: write what libjpeg-turbo writes for Pillow `optimize=True` (see `optimize.rs`).
+    libjpeg_optimize: bool,
+
     app_segments: Vec<(u8, Vec<u8>)>,
 }
 
@@ -243,6 +246,7 @@ impl<W: JfifWrite> Encoder<W> {
             progressive_scans: None,
             restart_interval: None,
             optimize_huffman_table: false,
+            libjpeg_optimize: false,
             app_segments: Vec::new(),
         }
     }
@@ -334,6 +338,13 @@ impl<W: JfifWrite> Encoder<W> {
     /// Returns if optimized huffman table should be generated
     pub fn optimized_huffman_tables(&self) -> bool {
         self.optimize_huffman_table
+    }
+
+    /// GXR: encode as libjpeg-turbo does with `optimize_coding = TRUE` (Pillow `optimize=True`):
+    /// optimal Huffman tables for the single interleaved scan, JFIF 1.01, and DQT before SOF0.
+    /// `false` (the default) keeps the vendored encoder's own output.
+    pub fn set_libjpeg_optimize(&mut self, on: bool) {
+        self.libjpeg_optimize = on;
     }
 
     /// Appends a custom app segment to the JFIF file
@@ -451,7 +462,8 @@ impl<W: JfifWrite> Encoder<W> {
 
         self.writer.write_marker(Marker::SOI)?;
 
-        if jpeg_color_type == JpegColorType::Luma {
+        if jpeg_color_type == JpegColorType::Luma || self.libjpeg_optimize {
+            // libjpeg-turbo writes JFIF 1.01 (`jcmarker.c write_jfif_app0`).
             self.writer.write_header_with_version(&self.density, 0x01)?;
         } else {
             self.writer.write_header(&self.density)?;
@@ -473,7 +485,9 @@ impl<W: JfifWrite> Encoder<W> {
             self.writer.write_segment(Marker::APP(*nr), data)?;
         }
 
-        if let Some(scans) = self.progressive_scans {
+        if self.libjpeg_optimize {
+            self.encode_image_libjpeg_optimized::<_, OP>(image, &q_tables)?;
+        } else if let Some(scans) = self.progressive_scans {
             self.encode_image_progressive::<_, OP>(image, scans, &q_tables)?;
         } else if self.optimize_huffman_table || !self.sampling_factor.supports_interleaved() {
             self.encode_image_sequential::<_, OP>(image, &q_tables)?;
@@ -557,6 +571,16 @@ impl<W: JfifWrite> Encoder<W> {
     ) -> Result<(), EncodingError> {
         if image.get_jpeg_color_type() == JpegColorType::Luma {
             self.writer.write_quantization_segment(0, &q_tables[0])?;
+            self.writer.write_frame_header(
+                image.width(),
+                image.height(),
+                &self.components,
+                self.progressive_scans.is_some(),
+            )?;
+        } else if self.libjpeg_optimize {
+            // libjpeg's marker order (`jcmarker.c write_frame_header`): every DQT, then SOF0.
+            self.writer.write_quantization_segment(0, &q_tables[0])?;
+            self.writer.write_quantization_segment(1, &q_tables[1])?;
             self.writer.write_frame_header(
                 image.width(),
                 image.height(),

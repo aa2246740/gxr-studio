@@ -1,6 +1,7 @@
 // Owner: wave-1 unit jpeg.
 // Inputs are JSON spec files:
-//   { "npy": "...", "out": "...", "quality": 95, "exif": "..." }
+//   { "npy": "...", "out": "...", "quality": 95, "exif": "...", "optimize": true }
+// ("optimize" is optional: true adds `--optimize`, Pillow optimize=True as `_finish` writes.)
 // or raw byte buffer specs (including empty huge-dimension error tests):
 //   { "raw": "...", "width": 65535, "height": 65535, "out": "...", "quality": 85, "exif": "..." }
 import { createHash } from 'node:crypto';
@@ -57,6 +58,10 @@ export function cases(inputs) {
     if (spec.exif) {
       cliArgs.push('--exif', spec.exif);
     }
+    const optimize = spec.optimize === true;
+    if (optimize) {
+      cliArgs.push('--optimize');
+    }
     out.push({
       label: `${specPath}::jpeg_encode`,
       cliArgs,
@@ -65,7 +70,7 @@ export function cases(inputs) {
           ? { height: jsNum(spec.height), width: jsNum(spec.width), payload: new Uint8Array(readFileSync(spec.raw)) }
           : readNpyRgb(spec.npy);
         const quality = jsNum(spec.quality);
-        const jpg = mod.jpeg_encode(payload, width, height, quality, exifJson);
+        const jpg = mod.jpeg_encode(payload, width, height, quality, exifJson, optimize);
         const cliJpg = readFileSync(spec.out);
         if (!Buffer.from(jpg.buffer, jpg.byteOffset, jpg.byteLength).equals(cliJpg)) {
           return 'JPEG_BYTES_DIFFER\n';
