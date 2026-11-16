@@ -417,6 +417,8 @@ def test_mobile_ui_export_batch_regressions_sol_r1(tmp_path: Path) -> None:
     report = run_driver(tmp_path, {"mode": "state", "stateDriver": str(STATE)}, timeout=300)
     check(report["pageErrors"] == [], "no page errors")
     steps = report["steps"]
+    for name in ("retryKept", "held", "cap", "urls", "workerOom", "workerOomOnce"):
+        check("error" not in steps[name], "every Sol r1 scenario ran to the end")
 
     kept = steps["retryKept"]
     check(kept["afterDone"]["phase"] == "ready" and kept["afterDone"]["failures"] == 1, "P2-01: batch stays open with its failure")

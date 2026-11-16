@@ -84,7 +84,7 @@ const dockOf = (page) =>
       share: shell.querySelectorAll('[data-act="share"]').length,
       dock: shell.querySelector('.pdock')?.innerText ?? null,
       liveUrls: window.__state.live.size,
-      flowUrls: flow.liveUrls(),
+      flowUrls: flow.liveUrls?.() ?? null,
     };
   });
 
@@ -92,173 +92,199 @@ export async function state({ newPage, out }) {
   const page = await newPage('record');
   await page.evaluate(SETUP);
   const steps = out.steps;
-
-  // P2-01：两张，第一张读不了。先存成功的那张、在 05e 点「好」：06f 还在，能重试；重试成功后才结束。
-  await page.evaluate(() => window.__state.flow({ 0: ['read', 10], 1: [10] }, 2));
-  await page.locator('#state-shell [data-act="share"]').click();
-  await page.locator('#state-shell [data-act="done"]').click();
-  const afterDone = await dockOf(page);
-  await page.locator('#state-shell [data-act="retry"]').click();
-  await page.waitForFunction(() => window.__state.current.batch.phase === 'ready');
-  const afterRetry = await dockOf(page);
-  await page.locator('#state-shell [data-act="share"]').click();
-  await page.locator('#state-shell [data-act="done"]').click();
-  steps.retryKept = { afterDone, afterRetry, end: await dockOf(page) };
-
-  // P2-02 和 P2-05：上限 100，p0 读不了，p1、p2 各 60，p3、p4 各 10。p2 会超过上限：放掉、排回去；停着时点重试。
-  steps.held = await page.evaluate(async () => {
-    const t = window.__state;
-    const plan = { 0: ['read', 1], 1: [60], 2: [60], 3: [10], 4: [10] };
-    let batch = null;
-    let maxRetained = 0;
-    const host = t.host(plan, () => {
-      if (batch) maxRetained = Math.max(maxRetained, batch.stagedBytes);
+  try {
+    // P2-01：两张，第一张读不了。先存成功的那张、在 05e 点「好」：06f 还在，能重试；重试成功后才结束。
+    await page.evaluate(() => window.__state.flow({ 0: ['read', 10], 1: [10] }, 2));
+    await page.locator('#state-shell [data-act="share"]').click();
+    await page.locator('#state-shell [data-act="done"]').click();
+    const afterDone = await dockOf(page);
+    await page.locator('#state-shell [data-act="retry"]').click();
+    await page.waitForFunction(() => window.__state.current.batch.phase === 'ready');
+    const afterRetry = await dockOf(page);
+    await page.locator('#state-shell [data-act="share"]').click();
+    await page.locator('#state-shell [data-act="done"]').click();
+    steps.retryKept = { afterDone, afterRetry, end: await dockOf(page) };
+  } catch (err) {
+    steps.retryKept = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+    await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
+  }
+  try {
+    // P2-02 和 P2-05：上限 100，p0 读不了，p1、p2 各 60，p3、p4 各 10。p2 会超过上限：放掉、排回去；停着时点重试。
+    steps.held = await page.evaluate(async () => {
+      const t = window.__state;
+      const plan = { 0: ['read', 1], 1: [60], 2: [60], 3: [10], 4: [10] };
+      let batch = null;
+      let maxRetained = 0;
+      const host = t.host(plan, () => {
+        if (batch) maxRetained = Math.max(maxRetained, batch.stagedBytes);
+      });
+      batch = new t.ExportBatch(t.items(5), host, 100);
+      batch.start();
+      await batch.settled();
+      const heldAt = { phase: batch.phase, staged: batch.staged.map((s) => s.id), pending: batch.pending?.() ?? null, stagedBytes: batch.stagedBytes };
+      batch.retry();
+      const afterRetry = { phase: batch.phase, pending: batch.pending?.() ?? null, calls: host.calls.length };
+      batch.release();
+      await batch.settled();
+      return {
+        heldAt,
+        afterRetry,
+        end: { phase: batch.phase, staged: batch.staged.map((s) => s.id), failures: batch.failures.size, waits: [...batch.states.values()].filter((s) => s === 'wait').length },
+        calls: host.calls,
+        maxRetained,
+        stagedHigh: batch.stagedHigh,
+      };
     });
-    batch = new t.ExportBatch(t.items(5), host, 100);
-    batch.start();
-    await batch.settled();
-    const heldAt = { phase: batch.phase, staged: batch.staged.map((s) => s.id), pending: batch.pending(), stagedBytes: batch.stagedBytes };
-    batch.retry();
-    const afterRetry = { phase: batch.phase, pending: batch.pending(), calls: host.calls.length };
-    batch.release();
-    await batch.settled();
-    return {
-      heldAt,
-      afterRetry,
-      end: { phase: batch.phase, staged: batch.staged.map((s) => s.id), failures: batch.failures.size, waits: [...batch.states.values()].filter((s) => s === 'wait').length },
-      calls: host.calls,
-      maxRetained,
-      stagedHigh: batch.stagedHigh,
-    };
-  });
-  // P2-05 照 Sol 的原样：40、50、30（再 25），上限 100。
-  steps.cap = await page.evaluate(async () => {
-    const t = window.__state;
-    let batch = null;
-    let maxRetained = 0;
-    const host = t.host({ 0: [40], 1: [50], 2: [30], 3: [25] }, () => {
-      if (batch) maxRetained = Math.max(maxRetained, batch.stagedBytes);
+  } catch (err) {
+    steps.held = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+    await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
+  }
+  try {
+    // P2-05 照 Sol 的原样：40、50、30（再 25），上限 100。
+    steps.cap = await page.evaluate(async () => {
+      const t = window.__state;
+      let batch = null;
+      let maxRetained = 0;
+      const host = t.host({ 0: [40], 1: [50], 2: [30], 3: [25] }, () => {
+        if (batch) maxRetained = Math.max(maxRetained, batch.stagedBytes);
+      });
+      batch = new t.ExportBatch(t.items(4), host, 100);
+      batch.start();
+      await batch.settled();
+      const held = { phase: batch.phase, stagedBytes: batch.stagedBytes, stagedHigh: batch.stagedHigh };
+      batch.release();
+      await batch.settled();
+      return { held, end: { phase: batch.phase, sizes: batch.staged.map((s) => s.file.size) }, calls: host.calls, maxRetained, stagedHigh: batch.stagedHigh };
     });
-    batch = new t.ExportBatch(t.items(4), host, 100);
-    batch.start();
-    await batch.settled();
-    const held = { phase: batch.phase, stagedBytes: batch.stagedBytes, stagedHigh: batch.stagedHigh };
-    batch.release();
-    await batch.settled();
-    return { held, end: { phase: batch.phase, sizes: batch.staged.map((s) => s.file.size) }, calls: host.calls, maxRetained, stagedHigh: batch.stagedHigh };
-  });
-
-  // P2-03：没有共享面板。连点两次「存到相册」（重画），点「好」再清空；再来一批，显示链接后直接清空；再一批后开始新的一批。
-  await page.evaluate(() => {
-    Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
-    Object.defineProperty(navigator, 'canShare', { configurable: true, value: undefined });
-  });
-  await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
-  await page.locator('#state-shell [data-act="share"]').click();
-  const firstPaint = await dockOf(page);
-  await page.locator('#state-shell [data-act="share"]').click();
-  const secondPaint = await dockOf(page);
-  await page.locator('#state-shell .links button').click();
-  await page.evaluate(() => window.__state.current.flow.clear());
-  const afterDoneClear = await dockOf(page);
-  await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
-  await page.locator('#state-shell [data-act="share"]').click();
-  await page.evaluate(() => window.__state.current.flow.clear());
-  const afterClear = await dockOf(page);
-  await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
-  await page.locator('#state-shell [data-act="share"]').click();
-  // 这一批结束（取消后重画）也撤销。
-  await page.evaluate(() => {
-    const { flow } = window.__state.current;
-    flow.batch.cancel();
-    flow.paint();
-  });
-  const afterEnd = await dockOf(page);
-  // 显示链接时开始新的一批（flow 的 start 路径，合成的空照片，没有文件）：上一批的链接先撤销。
-  await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
-  await page.locator('#state-shell [data-act="share"]').click();
-  const beforeStart = await dockOf(page);
-  await page.evaluate(() => {
-    const { flow } = window.__state.current;
-    const knobs = { exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 };
-    const photo = { id: 'n', stem: 'N', version: 1, dng: null, jpg: null, lastModified: 0, captureMs: 0, jpgMeta: null, dngMeta: null, choice: null, levels: new Map(), knobs };
-    flow.start([photo], { size: 'original', quality: 'high' });
-  });
-  const afterStart = await page.evaluate(() => ({ liveUrls: window.__state.live.size, flowUrls: window.__state.current.flow.liveUrls() }));
-  await page.evaluate(() => window.__state.current.flow.clear());
-  steps.urls = {
-    firstPaint,
-    secondPaint,
-    afterDoneClear,
-    afterClear,
-    afterEnd,
-    beforeStart,
-    afterStart,
-    created: await page.evaluate(() => window.__state.created),
-    revoked: await page.evaluate(() => window.__state.revoked),
-  };
-
-  // P2-04：建 Worker 时 RangeError（工厂每次都抛）。两张都按陷阱失败，各试一次建 Worker，批次停在 ready，暂停解除。
-  steps.workerOom = await page.evaluate(async () => {
-    const t = window.__state;
-    let attempts = 0;
-    const core = new t.ExportCore(() => {
-      attempts += 1;
-      throw new RangeError('synthetic Worker allocation failure');
+  } catch (err) {
+    steps.cap = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+    await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
+  }
+  try {
+    // P2-03：没有共享面板。连点两次「存到相册」（重画），点「好」再清空；再来一批，显示链接后直接清空；再一批后开始新的一批。
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
+      Object.defineProperty(navigator, 'canShare', { configurable: true, value: undefined });
     });
-    core.begin({ dat: null, calibIndex: '', calibBlob: null });
-    const flow = { busy: false };
-    const host = {
-      run: (item) => core.run({ dng: null, jpg: null, req: item.req }),
-      session: () => 1,
-      photo: () => ({ version: 1, dng: null, jpg: null }),
-      stop: () => core.stop(),
-      idle: () => core.release(),
-      markGone() {},
-      busy(on) {
-        flow.busy = on;
-      },
-      changed() {},
-    };
-    const batch = new t.ExportBatch(t.items(2), host);
-    batch.start();
-    await batch.settled();
-    return {
-      phase: batch.phase,
-      states: Object.fromEntries(batch.states),
-      messages: [...batch.failures.values()].map((f) => f.message === t.TEXT.memory),
-      kinds: [...batch.failures.values()].map((f) => f.kind),
-      attempts,
-      busy: flow.busy,
-      alive: core.alive(),
-    };
-  });
-  // 只有第一次建 Worker 抛：第二张用真的导出 Worker 做一张合成的空请求（它会按核心的拒绝失败，但 Worker 建得起来、批次走完）。
-  steps.workerOomOnce = await page.evaluate(async () => {
-    const t = window.__state;
-    let attempts = 0;
-    const core = new t.ExportCore(() => {
-      attempts += 1;
-      if (attempts === 1) throw new RangeError('synthetic Worker allocation failure');
-      return new Worker(new URL('/src/core/export_worker.ts', location.href), { type: 'module' });
+    await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
+    await page.locator('#state-shell [data-act="share"]').click();
+    const firstPaint = await dockOf(page);
+    await page.locator('#state-shell [data-act="share"]').click();
+    const secondPaint = await dockOf(page);
+    await page.locator('#state-shell .links button').click();
+    await page.evaluate(() => window.__state.current.flow.clear());
+    const afterDoneClear = await dockOf(page);
+    await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
+    await page.locator('#state-shell [data-act="share"]').click();
+    await page.evaluate(() => window.__state.current.flow.clear());
+    const afterClear = await dockOf(page);
+    await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
+    await page.locator('#state-shell [data-act="share"]').click();
+    // 这一批结束（取消后重画）也撤销。
+    await page.evaluate(() => {
+      const { flow } = window.__state.current;
+      flow.batch.cancel();
+      flow.paint();
     });
-    core.begin({ dat: null, calibIndex: '', calibBlob: null });
-    const req = { shot: { name: 'S', files: {} }, side: {}, defaults: {}, base: 'auto', layout: {}, binding: 'x', quality: 95, longEdge: undefined, hdr: false, mtimeMs: 0, tzOffsetMin: 0, resolve: null, needsJpg: false };
-    const host = {
-      run: (item) => core.run({ dng: null, jpg: null, req }),
-      session: () => 1,
-      photo: () => ({ version: 1, dng: null, jpg: null }),
-      stop: () => core.stop(),
-      idle: () => core.stop(),
-      markGone() {},
-      busy() {},
-      changed() {},
+    const afterEnd = await dockOf(page);
+    // 显示链接时开始新的一批（flow 的 start 路径，合成的空照片，没有文件）：上一批的链接先撤销。
+    await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
+    await page.locator('#state-shell [data-act="share"]').click();
+    const beforeStart = await dockOf(page);
+    await page.evaluate(() => {
+      const { flow } = window.__state.current;
+      const knobs = { exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 };
+      const photo = { id: 'n', stem: 'N', version: 1, dng: null, jpg: null, lastModified: 0, captureMs: 0, jpgMeta: null, dngMeta: null, choice: null, levels: new Map(), knobs };
+      flow.start([photo], { size: 'original', quality: 'high' });
+    });
+    const afterStart = await page.evaluate(() => ({ liveUrls: window.__state.live.size, flowUrls: window.__state.current.flow.liveUrls?.() ?? null }));
+    await page.evaluate(() => window.__state.current.flow.clear());
+    steps.urls = {
+      firstPaint,
+      secondPaint,
+      afterDoneClear,
+      afterClear,
+      afterEnd,
+      beforeStart,
+      afterStart,
+      created: await page.evaluate(() => window.__state.created),
+      revoked: await page.evaluate(() => window.__state.revoked),
     };
-    const batch = new t.ExportBatch(t.items(2), host);
-    batch.start();
-    await batch.settled();
-    return { phase: batch.phase, kinds: [...batch.failures.values()].map((f) => f.kind), attempts, calls: batch.items.map((it) => batch.states.get(it.id)) };
-  });
+  } catch (err) {
+    steps.urls = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+    await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
+  }
+  try {
+    // P2-04：建 Worker 时 RangeError（工厂每次都抛）。两张都按陷阱失败，各试一次建 Worker，批次停在 ready，暂停解除。
+    steps.workerOom = await page.evaluate(async () => {
+      const t = window.__state;
+      let attempts = 0;
+      const core = new t.ExportCore(() => {
+        attempts += 1;
+        throw new RangeError('synthetic Worker allocation failure');
+      });
+      core.begin({ dat: null, calibIndex: '', calibBlob: null });
+      const flow = { busy: false };
+      const host = {
+        run: (item) => core.run({ dng: null, jpg: null, req: item.req }),
+        session: () => 1,
+        photo: () => ({ version: 1, dng: null, jpg: null }),
+        stop: () => core.stop(),
+        idle: () => core.release(),
+        markGone() {},
+        busy(on) {
+          flow.busy = on;
+        },
+        changed() {},
+      };
+      const batch = new t.ExportBatch(t.items(2), host);
+      batch.start();
+      await batch.settled();
+      return {
+        phase: batch.phase,
+        states: Object.fromEntries(batch.states),
+        messages: [...batch.failures.values()].map((f) => f.message === t.TEXT.memory),
+        kinds: [...batch.failures.values()].map((f) => f.kind),
+        attempts,
+        busy: flow.busy,
+        alive: core.alive(),
+      };
+    });
+  } catch (err) {
+    steps.workerOom = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+    await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
+  }
+  try {
+    // 只有第一次建 Worker 抛：第二张用真的导出 Worker 做一张合成的空请求（它会按核心的拒绝失败，但 Worker 建得起来、批次走完）。
+    steps.workerOomOnce = await page.evaluate(async () => {
+      const t = window.__state;
+      let attempts = 0;
+      const core = new t.ExportCore(() => {
+        attempts += 1;
+        if (attempts === 1) throw new RangeError('synthetic Worker allocation failure');
+        return new Worker(new URL('/src/core/export_worker.ts', location.href), { type: 'module' });
+      });
+      core.begin({ dat: null, calibIndex: '', calibBlob: null });
+      const req = { shot: { name: 'S', files: {} }, side: {}, defaults: {}, base: 'auto', layout: {}, binding: 'x', quality: 95, longEdge: undefined, hdr: false, mtimeMs: 0, tzOffsetMin: 0, resolve: null, needsJpg: false };
+      const host = {
+        run: (item) => core.run({ dng: null, jpg: null, req }),
+        session: () => 1,
+        photo: () => ({ version: 1, dng: null, jpg: null }),
+        stop: () => core.stop(),
+        idle: () => core.stop(),
+        markGone() {},
+        busy() {},
+        changed() {},
+      };
+      const batch = new t.ExportBatch(t.items(2), host);
+      batch.start();
+      await batch.settled();
+      return { phase: batch.phase, kinds: [...batch.failures.values()].map((f) => f.kind), attempts, calls: batch.items.map((it) => batch.states.get(it.id)) };
+    });
+  } catch (err) {
+    steps.workerOomOnce = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+    await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
+  }
   steps.paused = await page.evaluate(() => window.__state.exportPaused());
   await page.close();
 }
