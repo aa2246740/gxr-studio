@@ -87,7 +87,7 @@ async function edit(page, stem, plan) {
 }
 
 /** 选择模式里点这几张，点「导出 N 张」，在面板里选尺寸和品质，点「存到相册」。返回面板上的字。 */
-export async function exportFromGrid(page, stems, size = '原始尺寸', quality = '高') {
+export async function exportFromGrid(page, stems, size = '原始尺寸', quality = '高', beforeGo = null) {
   await page.locator('.nav .nb.bold').click();
   for (const stem of stems) await page.locator(cellOf(stem)).evaluate((node) => node.click());
   await page.locator('.dock [data-act="export"]').click();
@@ -97,6 +97,7 @@ export async function exportFromGrid(page, stems, size = '原始尺寸', quality
   await sheet.locator('.frow').nth(1).locator('.seg button', { hasText: quality }).click();
   const text = await sheet.innerText();
   const hdrDisabled = await sheet.locator('input.switch').isDisabled();
+  if (beforeGo) await beforeGo();
   await sheet.locator('.go').click();
   return { text, hdrDisabled };
 }

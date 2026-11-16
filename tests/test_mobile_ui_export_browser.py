@@ -366,7 +366,7 @@ def test_mobile_ui_export_flows(tmp_path: Path) -> None:
 
     single = steps["single"]
     check(single["editorButton"] == "导出这张", "editor button without 下一步做")
-    check("下一步做" not in single["selectBar"].split("套用调整")[-1], "selection bar export without 下一步做")
+    check("导出 0 张" in single["selectBar"] and "导出 0 张 · 下一步做" not in single["selectBar"], "selection bar export without 下一步做")
     check(" × " in single["sizeOriginal"] and single["sizeOriginal"].endswith("像素") or "像素 · " in single["sizeOriginal"], "size line")
     check(single["sizeSmall"].startswith("1600 × ") or " × 1600 像素" in single["sizeSmall"], "small tier is 1600 on the long edge")
     check("未导入相机配方文件时，导出不会带上相机配方效果" in single["sheetText"], "no-recipe-file guide")
@@ -383,7 +383,7 @@ def test_mobile_ui_export_flows(tmp_path: Path) -> None:
     check(trap["staged"] == 2 and len(trap["failures"]) == 1, "trap on photo 2 of 3: two files, one failure")
     check(trap["failures"][0]["kind"] == "trap", "the failure is the trap")
     check("内存不够，这张没做成。可以重试，或改用小一点的尺寸。" in (trap["dock"] or ""), "memory line shown")
-    check(trap["workers"] >= 2, "a new Worker was created after the trap")
+    check(trap["workers"] == 2, "a new Worker was created after the trap")
     check("做好 2 张，1 张没做成" in (trap["dock"] or "") and "重试这张" in (trap["dock"] or ""), "06f wording")
     check(steps["trapRetry"]["staged"] == 3 and steps["trapRetry"]["failures"] == [], "retry after the trap succeeds")
 

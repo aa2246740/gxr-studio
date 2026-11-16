@@ -57,20 +57,23 @@ export async function flows({ newPage, manifest, out }) {
   out.steps.single = { editorButton, sizeOriginal, sizeSmall, sheetText, selectBar };
 
   // 2. 五张，做完第 2 张就点「停止」（同一帧里点，第 3 张来不及做完）。
-  await exportFromGrid(page, manifest.stems.slice(0, 5));
-  await page.evaluate(
-    () =>
-      new Promise((done) => {
-        const tick = () => {
-          const b = window.__devExport.flow.current();
-          if (b && b.okCount() >= 2) {
-            [...document.querySelectorAll('.pdock button')].find((x) => x.textContent === '停止')?.click();
-            done();
-          } else requestAnimationFrame(tick);
-        };
-        tick();
-      }),
-  );
+  // 在点「存到相册」之前装好：第 2 张提交、贴底栏重画的那一刻（同一个任务里）点「停止」，第 3 张来不及做完。
+  const armStop = () =>
+    page.evaluate(() => {
+      window.__stopArmed = true;
+      const observer = new MutationObserver(() => {
+        const b = window.__devExport.flow.current();
+        if (!window.__stopArmed || !b || b.phase !== 'running' || b.okCount() < 2) return;
+        const stop = [...document.querySelectorAll('.pdock button')].find((x) => x.textContent === '停止');
+        if (!stop) return;
+        window.__stopArmed = false;
+        observer.disconnect();
+        stop.click();
+      });
+      observer.observe(document.querySelector('.app'), { childList: true, subtree: true, characterData: true });
+    });
+  await exportFromGrid(page, manifest.stems.slice(0, 5), '原始尺寸', '高', armStop);
+  await page.waitForFunction(() => window.__devExport.flow.current()?.phase !== 'running', null, { timeout: 300_000 });
   const stopped = await flowOf(page);
   // 一张新的导出照常能做。
   await page.waitForTimeout(300);
@@ -82,6 +85,8 @@ export async function flows({ newPage, manifest, out }) {
 
   // 3. Worker 陷阱：三张里第 2 张在 prepare 之后模拟陷阱。内存那句、Worker 重建、第 3 张做好。
   await page.evaluate(() => {
+    // 先关掉上一批还闲着的 Worker：这一批从新的 Worker 开始，陷阱之后应该正好建了第 2 个。
+    window.__devExport.core.stop();
     window.__devExport.trapAt = 1;
   });
   await exportFromGrid(page, manifest.stems.slice(0, 3));
