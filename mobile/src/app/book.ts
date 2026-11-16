@@ -7,6 +7,7 @@ import type { BakeArgs, CalibCheckArgs } from '../core/protocol';
 import { modelIso, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
 import { selection, selectionKey, unitIndex, type Card, type Listing } from '../lib/recipes';
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
+import { whenExportIdle } from './export_pause';
 
 /**
  * 烘焙表一张约 3.8 MB（683×683 的增益网格）。JS 里最多留 16 张，显卡里最多 24 张（Sol r1 的建议，等真机量过再调）：
@@ -418,7 +419,12 @@ export class Book {
       const stock = this.entry(unit, 4);
       const files = this.files(unit, model);
       if (!stock || !files) throw new Error(TEXT.filesMissing);
-      job = this.io.bake({ entry: copy(got.entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' });
+      // 导出跑着时新的烘焙先等它停（UI-M3）；等完再核对一次相机配方文件和校准有没有换。
+      const entry = got.entry;
+      job = whenExportIdle().then(() => {
+        if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
+        return this.io.bake({ entry: copy(entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' });
+      });
       this.bakes.set(key, job);
       job.then(
         (made) => {

@@ -10,6 +10,7 @@ mod fdct;
 mod huffman;
 mod image_buffer;
 mod marker;
+mod optimize;
 mod quantization;
 mod writer;
 

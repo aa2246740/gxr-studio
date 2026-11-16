@@ -11,10 +11,12 @@ mod exif_tiff;
 pub mod icc;
 mod jpeg_enc;
 pub mod json_parse;
+mod pillow_buffer;
+mod rational;
 pub mod segments;
 
-pub use encode::{encode_jpeg, encode_luma_jpeg};
-pub use exif::{ExifSpec, ExifVal, SOFTWARE, build_exif, parse_exif_json};
+pub use encode::{encode_jpeg, encode_jpeg_with, encode_luma_jpeg};
+pub use exif::{ExifSpec, ExifVal, SOFTWARE, build_exif, build_exif_with, parse_exif_json};
 pub use icc::{SRGB_ICC, srgb_icc};
 pub use segments::{
     EXIF_SIG, ICC_SIG, MAX_MARKER_PAYLOAD, Segment, app_segment, icc_segments, jpeg_segments,
