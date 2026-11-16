@@ -456,7 +456,7 @@ test('P1-01：DISPLAY_SPACES 对齐桌面 display 空间，setSpace 未传 outpu
   assert.equal(changed.record.output_space, 'gamma24');
 });
 
-test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B) 时仍保持 B 的快照一致', async () => {
+test('P2-02：exportSnapshot 写屏障在延迟期间阻塞 rename/setSpace/removeChecked，失败也释放屏障', async () => {
   const idA = 'a'.repeat(64);
   const idB = 'b'.repeat(64);
   const store = new Map([
@@ -470,10 +470,12 @@ test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B
     [idB, blobB],
   ]);
 
-  let releaseA;
-  const waitA = new Promise((r) => {
-    releaseA = r;
+  let releaseSnap;
+  let waitSnap = new Promise((r) => {
+    releaseSnap = r;
   });
+  const ioCalls = [];
+  let failNextSnapshot = false;
 
   const book = new LutBook({
     importLut: async () => {
@@ -481,6 +483,7 @@ test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B
     },
     restore: async () => ({ records: [...store.values()], order: [idA, idB], totalBytes: 256, watermark: 1 }),
     patch: async (cubeId, patch, version) => {
+      ioCalls.push(`patch:${Object.keys(patch).includes('name') ? 'rename' : 'space'}`);
       const prev = store.get(cubeId);
       if (!prev) return { ok: false, reason: 'not_found' };
       const next = { ...prev, ...patch, version: prev.version + 1, savedAt: version };
@@ -488,27 +491,58 @@ test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B
       return { ok: true, record: next };
     },
     remove: async (cubeId) => {
+      ioCalls.push('delete');
       blobs.delete(cubeId);
       return store.delete(cubeId);
     },
-    readBlob: async (cubeId) => {
-      if (cubeId === idA) await waitA;
-      return blobs.get(cubeId) ?? null;
+    readBlob: async (cubeId) => blobs.get(cubeId) ?? null,
+    snapshotBatch: async (ids) => {
+      ioCalls.push('snapshot:start');
+      await waitSnap;
+      if (failNextSnapshot) {
+        ioCalls.push('snapshot:fail');
+        throw new Error('AbortError');
+      }
+      ioCalls.push('snapshot:done');
+      return ids.map((cubeId) => ({
+        cubeId,
+        record: store.get(cubeId) ?? null,
+        blob: blobs.get(cubeId) ?? null,
+      }));
     },
   });
   await book.restore();
 
   const snapTask = book.exportSnapshot([idA, idB]);
+  const renameTask = book.rename(idB, 'NewB');
   const patchTask = book.setSpace(idB, { input_space: 'applelog' });
-  const removeTask = patchTask.then(() => book.remove(idB));
-  await removeTask;
-  releaseA();
+  const removeTask = book.removeChecked(idB);
 
-  const snap = await snapTask;
+  // 快照未完成前，任何写消息都不得发出。
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(ioCalls, ['snapshot:start']);
+
+  releaseSnap();
+  const [snap, renameRes, patchRes, removeRes] = await Promise.all([snapTask, renameTask, patchTask, removeTask]);
+  assert.equal(ioCalls[0], 'snapshot:start');
+  assert.equal(ioCalls[1], 'snapshot:done');
+  assert.equal(ioCalls.slice(2).length, 3);
+  assert.equal(renameRes.ok, true);
+  assert.equal(patchRes.ok, true);
+  assert.equal(removeRes.ok, true);
   assert.ok(snap[idA]);
   assert.ok(snap[idB]);
   assert.equal(snap[idB].cube, blobB);
   assert.equal(JSON.parse(snap[idB].space).input_space, 'srgb');
+  assert.equal(book.get(idB), undefined);
+
+  // 快照读取失败时，写屏障必须释放且后续删除照常成功。
+  failNextSnapshot = true;
+  waitSnap = Promise.resolve();
+  await assert.rejects(() => book.exportSnapshot([idA]), /AbortError/);
+  const delA = await book.removeChecked(idA);
+  assert.equal(delA.ok, true);
+  assert.equal(book.get(idA), undefined);
 });
 
 test('P2-03：IDB AbortError 时 LutBook 不改动内存目录且返回清晰中文错误', async () => {

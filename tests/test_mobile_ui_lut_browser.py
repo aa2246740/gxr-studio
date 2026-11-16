@@ -473,3 +473,49 @@ def test_mobile_ui_lut_end_to_end_parity_and_lifecycle(tmp_path: Path, pinned_ic
         )
     finally:
         desk.lib.close()
+
+
+RACE_DRIVER = REPO / "tests" / "support" / "mobile_ui_lut_snapshot_race_browser.mjs"
+
+
+def test_mobile_ui_lut_snapshot_write_barrier(tmp_path: Path) -> None:
+    """P2-02 写屏障回归：真实多 Worker 池繁忙时，快照之后排队改空间与删除 B 不会丢失快照里的 B，且失败会释放屏障。"""
+    _prereq()
+    manifest_path = tmp_path / "manifest.json"
+    report_path = tmp_path / "report.json"
+    manifest_path.write_text(json.dumps({"out": str(report_path)}), encoding="utf-8")
+
+    proc = _drive(RACE_DRIVER, manifest_path, tmp_path, "", timeout=300)
+    check(report_path.is_file(), "snapshot barrier driver wrote report")
+    report: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
+    check(proc.returncode == 0 and report.get("error") is None, "snapshot barrier driver finished without error")
+    same_redacted(report["pageErrors"], [], "snapshot barrier browser page errors empty")
+
+    race = report["race"]
+    check(race["workerCount"] >= 2, "multi-worker core pool is active")
+    for row in race["snapshot"]:
+        check(row["present"] is True, "snapshot retains A and B despite queued patch and delete")
+        check(row["space"] == "srgb", "snapshot freezes tap-time srgb input_space")
+        check(row["bytesEqual"] is True, "snapshot retains original .cube bytes")
+
+    check(race["patchOk"] is True and race["patchedSpace"] == "applelog", "setSpace to applelog succeeds after snapshot")
+    check(race["removed"] is True and race["catalogueHasB"] is False, "delete succeeds after snapshot")
+    check(race["catalogueHasA"] is True, "unrelated LUT A remains in catalogue")
+
+    event_types = [ev["type"] for ev in race["events"]]
+    check("snapshot-settled" in event_types and "patch" in event_types and "delete" in event_types, "all lifecycle events recorded")
+    check(event_types.index("snapshot-settled") < event_types.index("patch"), "snapshot settles before queued setSpace runs")
+    check(event_types.index("patch") < event_types.index("delete"), "queued setSpace completes before delete runs")
+
+    dispatch_ops = [d["op"] for d in race["dispatches"]]
+    check(
+        dispatch_ops == ["lut-snapshot", "lut-patch", "lut-delete"],
+        "pool dispatches lut-patch and lut-delete strictly after snapshot completes",
+    )
+
+    fail_rel = report["failRelease"]
+    check(fail_rel["failOk"] is False, "failed snapshot rejects caller promise")
+    check(
+        fail_rel["deleteOk"] is True and fail_rel["catalogueHasC"] is False,
+        "failed snapshot releases write barrier so subsequent delete completes",
+    )

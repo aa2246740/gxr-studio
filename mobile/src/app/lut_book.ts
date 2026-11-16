@@ -69,9 +69,16 @@ export class LutBook {
   private noticeText = '';
   private readonly io: LutBookIo;
   private readonly listeners = new Set<() => void>();
+  private readonly snapshotBarriers = new Set<Promise<void>>();
 
   constructor(io: LutBookIo = defaultIo) {
     this.io = io;
+  }
+
+  private async waitForSnapshots(): Promise<void> {
+    while (this.snapshotBarriers.size > 0) {
+      await Promise.all([...this.snapshotBarriers]);
+    }
   }
 
   onChange(fn: () => void): () => void {
@@ -198,6 +205,7 @@ export class LutBook {
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : LUT_ERRORS.bad_name };
     }
+    await this.waitForSnapshots();
     let res: { ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' };
     try {
       res = await this.io.patch(cubeId, { name: cleaned }, this.nextVersion());
@@ -214,6 +222,7 @@ export class LutBook {
 
   async setSpace(cubeId: string, update: LutSpaceUpdate): Promise<{ ok: true; record: LutRecord } | { ok: false; message: string }> {
     await this.restore();
+    await this.waitForSnapshots();
     const current = this.byId.get(cubeId);
     if (!current) return { ok: false, message: LUT_ERRORS.cube_not_found };
     const patch: LutPatchFields = {
@@ -243,6 +252,7 @@ export class LutBook {
   /** 先在 IndexedDB 写删除，确认删掉才清内存并通知订阅者；事务失败时不动内存并返回错误信息。 */
   async removeChecked(cubeId: string): Promise<{ ok: true } | { ok: false; message: string }> {
     await this.restore();
+    await this.waitForSnapshots();
     let deleted = false;
     try {
       deleted = await this.io.remove(cubeId, this.nextVersion());
@@ -263,13 +273,26 @@ export class LutBook {
     return res.ok;
   }
 
-  /** 在测试或导出开始前同步定格一组 LUT 的目标色彩空间，并用单事务批量快照读取原始字节（P2-02）。 */
+  /** 在测试或导出开始前同步定格一组 LUT 的目标色彩空间，并用单事务批量快照读取原始字节（P2-02），同时登记写屏障阻止后续改动/删除抢跑。 */
   exportSnapshot(cubeIds: readonly string[]): Promise<Record<string, { cube: ArrayBuffer; space: string }>> {
     const unique = [...new Set(cubeIds)];
-    if (!this.restored) {
-      return this.restore().then(() => this.captureSnapshotSync(unique));
+    let task: Promise<Record<string, { cube: ArrayBuffer; space: string }>>;
+    try {
+      task = !this.restored ? this.restore().then(() => this.captureSnapshotSync(unique)) : this.captureSnapshotSync(unique);
+    } catch (err) {
+      task = Promise.reject(err);
     }
-    return this.captureSnapshotSync(unique);
+    let barrier!: Promise<void>;
+    barrier = task.then(
+      () => {
+        this.snapshotBarriers.delete(barrier);
+      },
+      () => {
+        this.snapshotBarriers.delete(barrier);
+      },
+    );
+    this.snapshotBarriers.add(barrier);
+    return task;
   }
 
   private captureSnapshotSync(uniqueIds: readonly string[]): Promise<Record<string, { cube: ArrayBuffer; space: string }>> {
