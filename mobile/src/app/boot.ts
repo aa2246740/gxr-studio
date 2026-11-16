@@ -111,6 +111,7 @@ class App implements AppApi {
       let files = shot === 'jpg' ? [] : await sampleFiles();
       const extra = shot === 'jpg' ? await aliasFile('zz-jpg.dng', 'R9990002.JPG') : shot === 'recipe' || shot === 'nocal' ? await aliasFile('zz-dat.dng', 'GXRCE.DAT') : null;
       if (extra) files = [...files, extra];
+      if (shot.endsWith('-hdr')) files = [...files, ...(await (await import('./export_shots')).hdrShotFiles(files))];
       if (files.length) {
         this.ingest(files);
         await this.settle();

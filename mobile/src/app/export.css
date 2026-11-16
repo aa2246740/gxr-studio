@@ -11,7 +11,15 @@
 .ms.export .hdrrow .tx { flex: 1; min-width: 0; }
 .ms.export .hdrrow .tx b { display: block; font: 600 15px/20px var(--font-ui); }
 .ms.export .hdrrow .tx small { display: block; font-size: 13px; line-height: 18px; color: var(--text-2); margin-top: 2px; }
-.ms.export .hdrrow .later { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.ms.export .switch { cursor: pointer; transition: background 0.15s; }
+.ms.export .switch::after { transition: left 0.15s; }
+.ms.export .switch:checked { background: var(--accent); }
+.ms.export .switch:checked::after { left: 22px; }
+.ms.export .switch:disabled { opacity: 0.45; cursor: default; }
+.ms.export .switch:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.ms.export .hdrmix { margin: 10px 0 0; padding: 8px 12px; }
+.ms.export .hdrmix[hidden] { display: none; }
+.ms.export .hdrmix .tx { font-size: 13px; line-height: 18px; }
 .ms.export .guide { margin-top: 6px; font-size: 13px; line-height: 18px; color: var(--text-2); }
 .ms.export .go { margin-top: 14px; gap: 8px; }
 .ms.export .foot { font-size: 12px; line-height: 16px; margin-top: 8px; text-align: center; color: var(--text-3); }
@@ -46,3 +54,5 @@
 .pthumbs .t .spin { position: absolute; right: 3px; bottom: 3px; width: 16px; height: 16px; border-width: 2px; background: rgba(0, 0, 0, 0.55); }
 .pdock .links { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .pdock .links a { color: var(--accent-text); font-size: 14px; line-height: 20px; }
+
+.pdock .tx small.hdrline { margin-top: 2px; }

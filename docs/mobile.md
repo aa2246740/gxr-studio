@@ -499,7 +499,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 ## 导出进相册（M3）
 
-选择栏的「导出 N 张」和编辑器的「导出这张」打开同一个导出面板（05a）：尺寸「原始尺寸 / 大 / 中 / 小」（长边不限、3000、2048、1600）、品质「高 / 中 / 低」（95、85、70），默认原始尺寸、高，和桌面 `SIZE_TIERS` / `QUALITY_TIERS` 一样。一张时右边写成品尺寸（`export_output_sizes`，源尺寸在导出 Worker 里从文件头读：相机 JPG 转正后的尺寸，或 DNG 的裁切窗口）；几张时写桌面那句「每张照片按各自比例导出，成品尺寸可能不同。」。HDR 那一行照设计稿摆着，开关停用，写「这项下一步做」。没选 `GXRCE.DAT` 时面板下面是桌面那句说明。
+选择栏的「导出 N 张」和编辑器的「导出这张」打开同一个导出面板（05a）：尺寸「原始尺寸 / 大 / 中 / 小」（长边不限、3000、2048、1600）、品质「高 / 中 / 低」（95、85、70），默认原始尺寸、高，和桌面 `SIZE_TIERS` / `QUALITY_TIERS` 一样。一张时右边写成品尺寸（`export_output_sizes`，源尺寸在导出 Worker 里从文件头读：相机 JPG 转正后的尺寸，或 DNG 的裁切窗口）；几张时写桌面那句「每张照片按各自比例导出，成品尺寸可能不同。」。HDR 那一行见下面「HDR」。没选 `GXRCE.DAT` 时面板下面是桌面那句说明。
 
 - **请求**（`lib/export_request.ts`，纯函数）：`shot` 照桌面图库的 shot（`name`、`files`、`lens`、`iso`；`width` / `height` 是图库存的 `photo_meta(jpg).width or photo_meta(dng).width`，由 Worker 读文件头补上：`lib/photo_size.ts` 照 `meta.read_jpeg_meta` / `read_dng_meta`，不用解码后的位图）；`side` 照桌面 `render/edits.write` 写出的 sidecar：`recipe` 是 `RecipeSel.to_json`（档位只带用户动过的，和桌面 `cleanLevels` 一样），`memory` 是照片的 `photo.memory`（桌面 `look_cards.js` recipeTarget 记下的那份，空的档位也是一项，见「复制和套用到这一组」），键按桌面 `recipeKey` 改写（内置 `<单元>/<位置>`，其余 `<单元>/<种类>/<id>`）；`adjust` 是 `Adjust.to_json`，全是 0 时不写。没动过的照片是 `{}`。`defaults` 是 `{}`，底图「自动」，`layout` 是 `{}`（M3 没有边框和日期戳）。`binding` 是 `gxr-core <构建号>`，构建号是 `vite build` 时的短提交号（`vite.config.ts` 的 `__GXR_BUILD__`，开发服务器里是 `dev`）。
 - **导出 Worker**（`core/export_worker.ts`、`core/export_api.ts`）：不是 M1/M2 那组 Worker。一个 Worker、一份 WASM、一次一张；一批开始时建，结束后闲 30 秒、停止或清空时关掉，WASM 的线性内存跟着还回去。相机配方文件和校准包（`calib_index` + `calib_blob`，文件按名字排好）每批交一次，Worker 重建时再交。每张：读 DNG / JPG（主线程不调 `File.arrayBuffer`）→ `export_plan` → 选了配方时 `color_resolve`（只有 RAW、没选配方时用这个单元的原厂 04）→ 没选配方又有相机 JPG 时解码相机 JPG → `export_prepare` → 墨迹 → `export_complete`。核心报 `raw_unreadable` / `no_jpg_source` / `raw_decode` 时，像桌面 `_raw_rgb` 那样解内嵌预览（`export_meta_preview` 的位置）再试一次。
@@ -511,7 +511,9 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 - **`?perf=1`**：一批的 WASM、JS、待存文件的高水位和每张的毫秒数。
 - **开发服务器里**（生产包里没有）：`window.__devExport` 可以把 `binding` 换成桌面的 `engine_pin()`（逐字节对比用）、把分批上限改小、在第几张模拟一次陷阱，测试也从这里读批次和内存。
 
-测试：`tests/test_mobile_ui_export_unit.py`（请求、批次状态机、分批、文件头尺寸，`node:test`）和 `tests/test_mobile_ui_export_browser.py`（`browser_serial`：解码门禁；六张照片在界面里编辑后导出，和桌面 `export_finish` 逐字节相同，ICC 时间戳按导出管线的办法固定；停止、陷阱、清空、读不了再重试、没有共享面板）。这两个文件也在导出管线隐私 lint 的范围里。
+- **HDR**（ui-m3-hdr，M5 的导出那一半提前做）：选中的照片里有 RAW 时开关可用，写设计稿那句「在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。」；一张 RAW 都没有时停用，写桌面的「HDR 需要 RAW 文件」（`hdrAvailable`、`HDR_NO_RAW`），也不改记住的选择。开着、又混着只有 JPG 的照片时，下面一行「HDR 需要 RAW 文件：N 张只有 JPG，会存普通版本。」。开关记在 `localStorage`（`gxr.mobile.export_hdr`），第一次默认关，和桌面 `prefs.export_hdr` 一样。开了 HDR，每张的请求都带 `hdr: true`，做不做得成由核心定（只有 JPG 的是 `no_raw`，照常导出普通版本）。Worker 里 `export_prepare` 之后用 `hdr_layer()` 取出数据层（float32 `(h, w, 2)`），原样交给 `export_complete`，不回主线程；日期戳掩码是空的（M3 没有日期戳，M4 的墨迹补上）。进度第二行是「生成 HDR 版本要多等几秒。可以接着看照片。」；05c / 05e 多一行「4 张 HDR · 1 张只有 JPG，存普通版本」，别的原因没做成的按桌面 `hdrSummary` 计数（「N 张未生成 HDR」），逐张写桌面 `HDR_NOTES` 的说明（`capture_mismatch`「RAW 与 JPG 不是同一次拍摄」，别的「这张照片不支持 HDR」）。文件名里的 `_hdr` 只看核心结果的 `hdr`。HDR 的一批待存文件上限是 256 MiB（`STAGE_CAP_HDR_BYTES`），比普通的 384 MiB 低，因为 HDR 的 WASM 峰值和 Worker 里多拿的数据层会让整页的估算超过 1.2 GiB。
+
+测试：`tests/test_mobile_ui_export_hdr_unit.py`（HDR 的开关、文案和上限，`node:test`）、`tests/test_mobile_ui_export_hdr_browser.py`（`browser_serial`：四对 RAW+JPG 加一张只有 JPG 的开 HDR 导出原始尺寸和小，和桌面 `export_finish(hdr=True)` 逐字节相同，`hdr`、`hdr_reason`、文件名也相同）、`tests/test_mobile_ui_export_unit.py`（请求、批次状态机、分批、文件头尺寸，`node:test`）和 `tests/test_mobile_ui_export_browser.py`（`browser_serial`：解码门禁；六张照片在界面里编辑后导出，和桌面 `export_finish` 逐字节相同，ICC 时间戳按导出管线的办法固定；停止、陷阱、清空、读不了再重试、没有共享面板）。这几个文件都在导出管线隐私 lint 的范围里（`test_mobile_ui_export*.py`）。
 
 ## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
 

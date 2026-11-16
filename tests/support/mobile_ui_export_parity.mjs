@@ -60,7 +60,7 @@ async function pickCard(page, card) {
 }
 
 /** 一张照片在界面里做的编辑。返回实际设上的值（Python 那边按同样的值让桌面写 sidecar）。 */
-async function edit(page, stem, plan) {
+export async function edit(page, stem, plan) {
   await openPhoto(page, stem);
   const done = { stem, knobs: {} };
   if (plan.card || plan.look) await waitCards(page);
