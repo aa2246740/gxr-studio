@@ -251,15 +251,19 @@ def test_color_image_every_branch(
 
 
 @needs_dat
-def test_neutral_base_renders_stock_04_when_calibrated(
+def test_neutral_base_is_neutral_when_calibrated(
     homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Python quirk kept as-is: base "neutral" plans stock 04 when it can, and labels it neutral."""
+    """Base "neutral" never plans a recipe: NEUTRAL pixels, neutral labels and from_raw false, even
+    with camera data and calibration for the unit (desktop-quirks fix; it used to render stock 04)."""
     shot = xs.shot_for(files["ok"], None, lens=LENSES[0], iso=200)
-    python, rust, py_rgb, rs_rgb = xr.color_case(homes["all"], tmp_path, shot, EditState(), "neutral", monkeypatch=monkeypatch)
-    xr.assert_same_result(python, rust, py_rgb, rs_rgb, "neutral-quirk")
-    assert rust["path"] == "raw-recipe" and rust["labels"]["id"] == "neutral-preview"
-    assert rust["labels"]["description"].startswith("GXR Studio computer prediction"), rust["labels"]
+    edit = EditState(adjust=ADJUST_ON, curve=CURVES_ON)
+    python, rust, py_rgb, rs_rgb = xr.color_case(homes["all"], tmp_path, shot, edit, "neutral", monkeypatch=monkeypatch)
+    xr.assert_same_result(python, rust, py_rgb, rs_rgb, "neutral-calibrated")
+    assert rust["path"] == "raw-neutral" and rust["from_raw"] is False, rust
+    labels = rust["labels"]
+    assert (labels["id"], labels["text"], labels["calibrated"]) == ("neutral-preview", "中性转换", "0"), labels
+    assert labels["description"].startswith("GXR Studio neutral-preview"), labels
 
 
 @needs_dat
