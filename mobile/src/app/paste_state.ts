@@ -228,6 +228,7 @@ function exposeEdits(api: AppApi): void {
       rev: photo.rev,
       choice: photo.choice,
       levels: Object.fromEntries(photo.levels),
+      memory: Object.fromEntries(photo.memory),
       knobs: { ...photo.knobs },
       ms: photoMs(photo),
     }));

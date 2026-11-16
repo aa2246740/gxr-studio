@@ -5,14 +5,15 @@ import { copyFrom, pasteBatch, PasteUndo } from '../../mobile/src/lib/paste.ts';
 
 const knobs = (over = {}) => ({ exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0, ...over });
 // 来源：22 张配方卡各记着档位（全部 22 的情况），曝光和对比度动过。
-const levels = new Map(Array.from({ length: 22 }, (_, i) => [`look:${i}`, { amount: 80, contrast: 2, fade: 1, saturation: -1 }]));
-const source = { id: 'src', rev: 0, choice: { id: 'look:3', unit: 'jlaunch' }, levels, knobs: knobs({ exposure_ev: 0.7, contrast: -10 }) };
+const memory = new Map(Array.from({ length: 22 }, (_, i) => [`look:${i}`, { amount: 80, contrast: 2, fade: 1, saturation: -1 }]));
+const source = { id: 'src', rev: 0, choice: { id: 'look:3', unit: 'jlaunch' }, levels: new Map([['look:3', { amount: 80 }]]), memory, knobs: knobs({ exposure_ev: 0.7, contrast: -10 }) };
 const { clip } = copyFrom(source, 'R0000000', ['recipe', 'adjust']);
 const photos = Array.from({ length: 500 }, (_, i) => ({
   id: `p${i}`,
   rev: 0,
   choice: { id: 'builtin:1', unit: 'jlaunch' },
   levels: new Map([['builtin:1', { amount: 50 }]]),
+  memory: new Map(),
   knobs: knobs({ warm: i % 7 }),
 }));
 const targets = photos.map((photo, i) => ({ photo, raw: i % 10 !== 0, unit: 'jlaunch' }));

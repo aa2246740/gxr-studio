@@ -238,3 +238,30 @@ export interface Choice {
   id: string;
   unit: Unit;
 }
+
+/** `preview.js` 的 cleanLevels：只留这个配方真有、值在可选里的档位；不补默认（没给的取菜单默认是 resolve 那一步的事）。 */
+export function cleanLevels(card: Card | null, levels: Record<string, number> | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!card || !levels) return out;
+  for (const c of card.controls) {
+    const v = levels[c.name];
+    if (v !== undefined && c.levels.includes(v)) out[c.name] = v;
+  }
+  return out;
+}
+
+/**
+ * `look_cards.js` 的 recipeTarget：换配方时把切走的那个（没选配方时是原厂 04，档位为空）的档位记进 memory，
+ * 新配方取回 memory 里上次的档位。已经是它了就是 same，什么都不改。memory 的键是卡的 id，和桌面的 recipeKey 一一对应。
+ */
+export function recipeSwitch(
+  memory: ReadonlyMap<string, Record<string, number>>,
+  current: { id: string; card: Card | null; levels: Record<string, number> | undefined; chosen: boolean },
+  next: Card,
+): { same: true } | { same: false; memory: Map<string, Record<string, number>>; levels: Record<string, number> } {
+  if (current.chosen && current.id === next.id) return { same: true };
+  const out = new Map<string, Record<string, number>>();
+  for (const [key, value] of memory) out.set(key, { ...value });
+  out.set(current.id, cleanLevels(current.card, current.levels));
+  return { same: false, memory: out, levels: cleanLevels(next, out.get(next.id) ?? {}) };
+}

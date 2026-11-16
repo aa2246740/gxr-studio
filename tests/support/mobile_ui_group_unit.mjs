@@ -19,6 +19,7 @@ import {
   undoBatch,
 } from '../../mobile/src/lib/paste.ts';
 import * as text from '../../mobile/src/lib/paste_text.ts';
+import { cleanLevels, recipeSwitch } from '../../mobile/src/lib/recipes.ts';
 
 const ROOT = new URL('../../', import.meta.url);
 const CORE = readFileSync(new URL('web/assets/paste_core.js', ROOT), 'utf8');
@@ -164,19 +165,20 @@ function knobs(over = {}) {
 }
 
 function photo(id, over = {}) {
-  return { id, rev: 0, choice: null, levels: new Map(), knobs: knobs(), ...over };
+  return { id, rev: 0, choice: null, levels: new Map(), memory: new Map(), knobs: knobs(), ...over };
 }
 
 function env(listed = true) {
   return { recipeWithoutRaw: false, listed: () => listed };
 }
 
-/** 来源：配方 builtin:3（50mm），两个配方各记着档位，曝光 +0.7、对比度 -10。 */
+/** 来源：配方 builtin:3（50mm）带两档，memory 里记着切走过的原厂 04（空）和一个 Look，曝光 +0.7、对比度 -10。 */
 function source() {
   return photo('src', {
     choice: { id: 'builtin:3', unit: 'jlaunch' },
-    levels: new Map([
-      ['builtin:3', { amount: 80, contrast: 2 }],
+    levels: new Map([['builtin:3', { amount: 80, contrast: 2 }]]),
+    memory: new Map([
+      ['builtin:4', {}],
       ['look:abc', { fade: 3 }],
     ]),
     knobs: knobs({ exposure_ev: 0.7, contrast: -10 }),
@@ -205,26 +207,44 @@ test('剪贴板是复制那一刻的深拷贝', () => {
   const clip = copyFrom(src, 'R0000001', ['recipe', 'adjust']).clip;
   src.knobs.exposure_ev = 3;
   src.levels.get('builtin:3').amount = 10;
+  src.memory.get('look:abc').fade = 0;
   src.choice.id = 'builtin:1';
   assert.equal(clip.knobs.exposure_ev, 0.7);
-  assert.equal(clip.recipe.levels.get('builtin:3').amount, 80);
+  assert.deepEqual(clip.recipe.levels, { amount: 80, contrast: 2 });
+  assert.equal(clip.recipe.memory.get('look:abc').fade, 3);
   assert.equal(clip.recipe.choice.id, 'builtin:3');
   assert.deepEqual(clip.from, { id: 'src', stem: 'R0000001' });
 });
 
-test('配方：同单元、有 RAW、列表里有 → 换配方，各配方的档位整份跟过来（桌面 memory），之后互不影响', () => {
+test('配方：同单元、有 RAW、列表里有 → 换配方和它的档位，memory 整份跟过来（桌面 memory），之后互不影响', () => {
   const clip = copied();
-  const target = photo('t', { levels: new Map([['builtin:1', { amount: 50 }]]), knobs: knobs({ shadow: 30 }) });
+  const target = photo('t', {
+    choice: { id: 'builtin:1', unit: 'jlaunch' },
+    levels: new Map([['builtin:1', { amount: 50 }]]),
+    memory: new Map([['builtin:2', { fade: 1 }]]),
+    knobs: knobs({ shadow: 30 }),
+  });
   const { outcome, before } = pasteOne({ photo: target, raw: true, unit: 'jlaunch' }, clip, clip.groups, env());
   assert.deepEqual(outcome, { id: 't', status: 'applied', applied: ['recipe', 'adjust'], skipped: [], rev: 1 });
   assert.deepEqual(target.choice, { id: 'builtin:3', unit: 'jlaunch' });
-  assert.deepEqual([...target.levels.entries()], [['builtin:3', { amount: 80, contrast: 2 }], ['look:abc', { fade: 3 }]]);
+  assert.deepEqual([...target.levels.entries()], [['builtin:3', { amount: 80, contrast: 2 }]]);
+  // 目标自己原来的配方不记进 memory（桌面 write 只是换掉 recipe），memory 换成来源的。
+  assert.deepEqual([...target.memory.entries()], [['builtin:4', {}], ['look:abc', { fade: 3 }]]);
   // 调整整份换掉，0 也算（阴影原来是 30）。
   assert.deepEqual(target.knobs, knobs({ exposure_ev: 0.7, contrast: -10 }));
   assert.equal(target.rev, 1);
   assert.deepEqual([...before.levels.entries()], [['builtin:1', { amount: 50 }]]);
+  assert.deepEqual([...before.memory.entries()], [['builtin:2', { fade: 1 }]]);
   target.levels.get('builtin:3').amount = 1;
-  assert.equal(clip.recipe.levels.get('builtin:3').amount, 80);
+  target.memory.get('look:abc').fade = 9;
+  assert.equal(clip.recipe.levels.amount, 80);
+  assert.equal(clip.recipe.memory.get('look:abc').fade, 3);
+  // 撤销连 memory 一起还原。
+  const undo = new PasteUndo();
+  undo.add('m', 't', target.rev, before);
+  assert.deepEqual(undoBatch(undo.take('m'), () => target).counts, { restored: 1, changed: 0, error: 0 });
+  assert.deepEqual([...target.memory.entries()], [['builtin:2', { fade: 1 }]]);
+  assert.deepEqual([...target.levels.entries()], [['builtin:1', { amount: 50 }]]);
   // 认不出镜头的照片：桌面不算单元不同。
   const unknown = photo('u');
   assert.equal(pasteOne({ photo: unknown, raw: true, unit: null }, clip, clip.groups, env()).outcome.status, 'applied');
@@ -323,7 +343,7 @@ test('同一批里套到同一张两次，撤销回到最早的样子', () => {
 test('只留最近 20 批（MAX_UNDO_BATCHES），再加的挤掉最早的；动过的批排到最后', () => {
   assert.equal(MAX_UNDO_BATCHES, 20);
   const undo = new PasteUndo();
-  const before = { choice: null, levels: new Map(), knobs: knobs() };
+  const before = { choice: null, levels: new Map(), memory: new Map(), knobs: knobs() };
   for (let i = 0; i < 20; i++) undo.add(`b${i}`, 'x', 1, before);
   undo.add('b0', 'y', 1, before); // 再用一次最早那批：它排到最新
   undo.add('b20', 'x', 1, before);
@@ -335,7 +355,7 @@ test('只留最近 20 批（MAX_UNDO_BATCHES），再加的挤掉最早的；动
 
 test('还原只改编辑状态的三项，rev 对不上时什么都不写', () => {
   const p = photo('a', { rev: 4, knobs: knobs({ saturation: 7 }) });
-  const entry = { rev: 3, before: { choice: { id: 'builtin:2', unit: 'qlaunch' }, levels: new Map([['builtin:2', { amount: 1 }]]), knobs: knobs() } };
+  const entry = { rev: 3, before: { choice: { id: 'builtin:2', unit: 'qlaunch' }, levels: new Map([['builtin:2', { amount: 1 }]]), memory: new Map([['builtin:4', {}]]), knobs: knobs() } };
   assert.equal(restore(p, entry), 'changed');
   assert.equal(p.knobs.saturation, 7);
   assert.equal(p.rev, 4);
@@ -386,4 +406,53 @@ test('按时间片套用：每片之后让出主线程；清空照片后不再�
   });
   assert.equal(results.length, 1);
   assert.equal(later[1].rev, 0);
+});
+
+test('来源的 memory 是空的：目标的 memory 留着（桌面 recipeBody 不带 memory 键，write 沿用 sidecar 里的）', () => {
+  const src = photo('s', { choice: { id: 'builtin:2', unit: 'jlaunch' }, levels: new Map([['builtin:2', { amount: 60 }]]) });
+  const clip = copyFrom(src, 'S', ['recipe']).clip;
+  assert.equal(clip.recipe.memory.size, 0);
+  const target = photo('t', { memory: new Map([['look:x', { fade: 2 }]]) });
+  pasteOne({ photo: target, raw: true, unit: 'jlaunch' }, clip, clip.groups, env());
+  assert.deepEqual(target.choice, { id: 'builtin:2', unit: 'jlaunch' });
+  assert.deepEqual([...target.levels.entries()], [['builtin:2', { amount: 60 }]]);
+  assert.deepEqual([...target.memory.entries()], [['look:x', { fade: 2 }]]);
+});
+
+// ---- 换配方时的 memory（look_cards.js recipeTarget）和 cleanLevels -------------------------
+
+const control = (name, levels, dflt = 0) => ({ name, label: name, min: Math.min(...levels), max: Math.max(...levels), default: dflt, cap_lower: false, cap_upper: false, amount_step: null, levels });
+const card = (id, controls) => ({ id, kind: id.split(':')[0], name: id, desc: null, slot: 1, recipeId: null, controls, number: '01' });
+const B4 = card('builtin:4', [control('amount', [0, 50, 100], 100), control('contrast', [-2, -1, 0, 1, 2])]);
+const B2 = card('builtin:2', [control('amount', [0, 50, 100], 100), control('fade', [0, 1, 2, 3])]);
+const LOOK = card('look:abc', [control('fade', [0, 1, 2, 3])]);
+
+test('cleanLevels：只留这个配方有的、值在可选里的档位，不补默认', () => {
+  assert.deepEqual(cleanLevels(B2, { amount: 50, fade: 9, contrast: 1 }), { amount: 50 });
+  assert.deepEqual(cleanLevels(B2, undefined), {});
+  assert.deepEqual(cleanLevels(null, { amount: 50 }), {});
+});
+
+test('换配方：切走的（没选过时是原厂 04、档位为空）记进 memory，新配方取回上次的档位；当前配方不进 memory', () => {
+  // 没选配方，第一次点 builtin:2：memory 里多一项空的原厂 04（桌面 selection 的默认），builtin:2 从空档位开始。
+  const first = recipeSwitch(new Map(), { id: 'builtin:4', card: B4, levels: undefined, chosen: false }, B2);
+  assert.equal(first.same, false);
+  assert.deepEqual([...first.memory.entries()], [['builtin:4', {}]]);
+  assert.deepEqual(first.levels, {});
+  // 在 builtin:2 上动了档位再换到 Look：builtin:2 的档位（清理过）记进 memory。
+  const second = recipeSwitch(first.memory, { id: 'builtin:2', card: B2, levels: { amount: 50, fade: 9 }, chosen: true }, LOOK);
+  assert.deepEqual([...second.memory.entries()], [['builtin:4', {}], ['builtin:2', { amount: 50 }]]);
+  assert.deepEqual(second.levels, {});
+  // 换回 builtin:2：取回 memory 里的档位；memory 里那一项留着（桌面也不删）。
+  const back = recipeSwitch(second.memory, { id: 'look:abc', card: LOOK, levels: { fade: 2 }, chosen: true }, B2);
+  assert.deepEqual(back.levels, { amount: 50 });
+  assert.deepEqual([...back.memory.entries()], [['builtin:4', {}], ['builtin:2', { amount: 50 }], ['look:abc', { fade: 2 }]]);
+  // 点已经选中的那张：什么都不改。
+  assert.deepEqual(recipeSwitch(back.memory, { id: 'builtin:2', card: B2, levels: { amount: 50 }, chosen: true }, B2), { same: true });
+  // 没选配方时点原厂 04：桌面不算同一个（ed.recipe 是空的），照样记一项。
+  const stock = recipeSwitch(new Map(), { id: 'builtin:4', card: B4, levels: undefined, chosen: false }, B4);
+  assert.equal(stock.same, false);
+  assert.deepEqual([...stock.memory.entries()], [['builtin:4', {}]]);
+  // 输入的 memory 不被改动。
+  assert.deepEqual([...first.memory.entries()], [['builtin:4', {}]]);
 });

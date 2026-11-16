@@ -477,13 +477,15 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 复制完是 04b：这张所在的一组（当前间隔下的组）、「套用到这一组（N 张）」（不含来源这张）、「选照片…」和「先不套用」。网格组标题上的「套用到这一组」复制过就能点，目标是这一组里除来源以外的每一张；没复制时点它写一行「先打开一张照片，点「复制调整」。」。「选照片…」把网格开成挑选模式（04d），底栏是剪贴板和「套用到 N 张」；选择栏的「套用调整」一样。每条路都先确认（04c）。「这一组」永远是现在显示的那一组：复制后改了间隔，组标题给的就是新的张数，确认里写准确的张数。
 
-套用是同步的、在内存里，规则照 `render/paste.py` 的 `paste_one`（`lib/paste.ts`）：配方组里，镜头单元不同 → `unit_mismatch`；只有 JPG → `needs_raw`（近似模式关着）；这份 DAT 里这个单元没有这张卡 → `recipe_rejected`；否则换配方，各配方记着的档位整份换成来源的（桌面的 `memory`）。调整组整份换成复制来的，0 也算。配方组要么整个套用，要么不套。来源这张从来不是目标。结果句是桌面的 `pasteMessage`，撤销的结果是 `undoMessage`，这几个函数的字放在 `lib/paste_text.ts`，单元测试从 `web/assets/paste_core.js` 里把桌面的函数原样抠出来跑，对同一批输入比输出。
+旋钮档位和 `memory` 照桌面记：`photo.levels` 是选中那个配方的档位，只记用户动过的（`ensureRecipe(view).levels[name] = …`）；`photo.memory` 是桌面的 `memory`（`look_cards.js` 的 recipeTarget）：换配方时把切走的那个配方的档位（`cleanLevels`，不补默认；没选过配方时是档位为空的原厂 04）记进去，新配方取回 memory 里上次的档位，点已经选中的那张什么都不改，当前配方的档位不在 memory 里更新。键是卡的 id，导出时按镜头单元换成桌面的 recipeKey。
+
+套用是同步的、在内存里，规则照 `render/paste.py` 的 `paste_one`（`lib/paste.ts`）：配方组里，镜头单元不同 → `unit_mismatch`；只有 JPG → `needs_raw`（近似模式关着）；这份 DAT 里这个单元没有这张卡 → `recipe_rejected`；否则换成来源的配方和它的档位；来源的 `memory` 不是空的就整份换过来，是空的就留着目标自己的（`render/edits.write` 在请求里没有 `memory` 时沿用 sidecar 里的）。调整组整份换成复制来的，0 也算。配方组要么整个套用，要么不套。来源这张从来不是目标。结果句是桌面的 `pasteMessage`，撤销的结果是 `undoMessage`，这几个函数的字放在 `lib/paste_text.ts`，单元测试从 `web/assets/paste_core.js` 里把桌面的函数原样抠出来跑，对同一批输入比输出。
 
 每张照片有一个编辑版本 `rev`：选配方、旋钮松手、滑块松手（`change`）、全部重置、点两下归零、套用、撤销都加一；重新选同一张照片不变。撤销照 `PasteUndo`：每批记下每张套用之前的配方、档位和调整，以及套用之后的 `rev`；同一批里套到同一张两次，还原到最早的样子；只留最近 20 批，只在内存里，重新打开页面就没有了。撤销时 `rev` 还是套用后那一版才还原，否则算「粘贴之后又改过」。
 
 结果和「撤销」贴在网格底部（04e），和「已复制」占同一格；到下一次复制、下一次套用、清除、清空照片，或离开网格 15 秒（桌面提示的 `timeout: 15000`）才收起。没有按钮的一行（没复制时的提示、撤销的结果）照桌面普通提示，3.2 秒后收起。套用按时间片做，每片最多 4 ms，片与片之间让出主线程：500 张合成照片一共约 4–7 ms。
 
-拍摄时间和桌面同源：手机的拍摄时间是 `photo_meta(...).taken` 加 `SubSecTimeOriginal` 的毫秒（桌面的 `taken` 到秒为止），没有 EXIF 时间时两边都用文件修改时间。模拟器截图用 `?shot=paste-04a|paste-04b|paste-04c|paste-04d|paste-04e|paste-02a`（`app/paste_shots.ts`，只在开发服务器里）。
+拍摄时间和桌面同源：手机的拍摄时间是 `photo_meta(...).taken` 加 `SubSecTimeOriginal` 的毫秒（桌面的 `taken` 到秒为止）。RAW+JPG 的相机 JPG 里没有拍摄时间时，和桌面导入一样用 DNG 的（Worker 再读一次 DNG 的前 256 KiB，缩略图仍用 JPG 的）；两个都没有才用文件修改时间。模拟器截图用 `?shot=paste-04a|paste-04b|paste-04c|paste-04d|paste-04e|paste-02a`（`app/paste_shots.ts`，只在开发服务器里）。
 
 ## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
 

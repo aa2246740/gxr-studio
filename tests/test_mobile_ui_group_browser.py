@@ -133,6 +133,8 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
     assert src["after"]["knobs"]["exposure_ev"] == 0.7 and src["after"]["knobs"]["contrast"] == 12
     # 选配方、两次滑块松手：三次落定的修改。
     assert src["after"]["rev"] == src["beforeRev"] + 3
+    # 桌面 memory：第一次选配方时把默认的原厂 04（档位为空）记进去；当前配方的档位不在 memory 里。
+    assert src["after"]["memory"] == {"builtin:4": {}} and src["after"]["levels"] == {"builtin:2": {}}
 
     group = steps["group"]
     assert group["button"] == "复制 2 项"
@@ -162,7 +164,8 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
             assert row["choice"] is None
         else:
             assert row["choice"] == src["after"]["choice"], stem
-            same_redacted(row["levels"], src["after"]["levels"], "target levels == source levels (memory)")
+            same_redacted(row["levels"], src["after"]["levels"], "target levels == source levels")
+            same_redacted(row["memory"], src["after"]["memory"], "target memory == source memory")
     for stem in times:
         if stem not in group3:
             assert after[stem]["rev"] == 0 and after[stem]["choice"] is None, stem
@@ -184,7 +187,8 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
     for before, now, undone in zip(pick["before"], pick["after"], pick["restored"], strict=True):
         assert now["choice"] == src["after"]["choice"] and now["knobs"] == src["after"]["knobs"]
         assert now["rev"] == before["rev"] + 1
-        assert undone["choice"] == before["choice"] and undone["knobs"] == before["knobs"] and undone["levels"] == before["levels"]
+        assert undone["choice"] == before["choice"] and undone["knobs"] == before["knobs"]
+        assert undone["levels"] == before["levels"] and undone["memory"] == before["memory"]
         assert undone["rev"] == before["rev"] + 2
     assert pick["undone"] == "已撤销 2 张"
 
@@ -199,3 +203,51 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
     cleared = steps["cleared"]
     assert "已复制：配方 / 风格、调整" in cleared["copiedBar"] and f"来自 {source} · 点组标题上的「套用到这一组」" in cleared["copiedBar"]
     assert cleared["bars"] == 0 and cleared["idle"] == len(expect["1"])
+
+
+CAPTURE_DRIVER = REPO / "tests" / "support" / "mobile_ui_group_capture_browser.mjs"
+
+
+def test_mobile_ui_group_capture_time_falls_back_to_the_dng(tmp_path: Path) -> None:
+    """RAW+JPG 配对、相机 JPG 里没有拍摄时间：和桌面导入一样用 DNG 的拍摄时间，不用文件日期。
+
+    JPG 是测试里合成的（没有 EXIF），DNG 是真样本在 tmp_path 里的副本。另有一张只有合成 JPG 的照片：两边都用修改时间。"""
+    import os
+
+    from PIL import Image
+
+    from gxr_studio.meta import read_dng_meta, read_jpeg_meta
+    from test_mobile_ui_group_unit import _subsec_ms, _taken_ms
+
+    dngs = sorted(SAMPLES.glob("*.DNG")) if SAMPLES.is_dir() else []
+    samples.need_sample(bool(dngs), f"need a DNG in {SAMPLES}")
+    if not dngs:
+        pytest.skip(f"need a DNG in {SAMPLES}")
+    _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
+    _need(MODULES.is_dir(), "mobile/node_modules is missing")
+    _need(shutil.which("node") is not None, "node is required")
+    _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
+
+    paired_jpg, paired_dng, lone = tmp_path / "R9990010.JPG", tmp_path / "R9990010.DNG", tmp_path / "R9990011.JPG"
+    shutil.copyfile(dngs[0], paired_dng)
+    for path, colour in ((paired_jpg, (120, 90, 60)), (lone, (60, 90, 120))):
+        Image.new("RGB", (96, 64), colour).save(path, "JPEG", quality=90)
+    stamp = 1_700_000_000  # 整秒：File.lastModified 是毫秒
+    for path in (paired_jpg, paired_dng, lone):
+        os.utime(path, (stamp, stamp))
+    check(read_jpeg_meta(paired_jpg).taken is None and read_jpeg_meta(lone).taken is None, "synthetic JPGs have no capture time")
+    dng_taken = read_dng_meta(paired_dng).taken
+    check(dng_taken is not None, "the DNG has a capture time")
+    assert dng_taken is not None
+    # 桌面导入：next(m.taken for m in (jpg_meta, dng_meta) if m.taken)，手机再加 DNG 的 SubSecTimeOriginal。
+    want = {"R9990010": _taken_ms(dng_taken) + _subsec_ms(paired_dng), "R9990011": stamp * 1000}
+
+    manifest = tmp_path / "capture.json"
+    manifest.write_text(json.dumps({"files": [str(paired_dng), str(paired_jpg), str(lone)], "photos": 2}), encoding="utf-8")
+    result = _drive(CAPTURE_DRIVER, manifest, tmp_path, "", timeout=240)
+    assert result.returncode == 0, result.stderr[-3000:] + result.stdout[-3000:]
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["pageErrors"] == []
+    got = {row["stem"]: row["ms"] for row in sorted(report["photos"], key=lambda row: row["stem"])}
+    same_redacted(got, want, "paired JPG without a time uses the DNG's; a lone JPG uses lastModified")
+    check(got["R9990010"] != stamp * 1000, "not the file date")

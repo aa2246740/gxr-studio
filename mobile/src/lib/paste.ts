@@ -1,6 +1,7 @@
 // 把一张照片的编辑套用到别的照片，以及把一批撤销回去。照桌面 `render/paste.py` 的 `paste_one`、`PasteUndo`、`restore`：
 // - 配方组：镜头单元不同 → unit_mismatch；只有 JPG → needs_raw（近似模式关着，`recipe_without_raw` 是 false）；
-//   这份相机配方文件里这个单元没有这个配方 → recipe_rejected；否则换成这个配方，各配方记着的档位整份跟过来（桌面的 memory）。
+//   这份相机配方文件里这个单元没有这个配方 → recipe_rejected；否则换成这个配方和它的档位；来源的 memory 不是空的就整份跟过来，
+//   是空的就保留目标原来的（`render/edits.write`：请求里没有 memory 键时沿用 sidecar 里的）。
 // - 调整组：全部换成复制来的调整，0 也算。
 // - 复制时没带上的组 → not_copied。配方组要么整个套用，要么整个不套用。
 // - 撤销只在照片还停在套用后的那一版（rev）时才还原；同一批里套到同一张两次，还原到最早的样子；只留最近 20 批。
@@ -21,7 +22,10 @@ export interface Editable {
   id: string;
   rev: number;
   choice: Choice | null;
+  /** 选中的配方的档位（桌面 recipe.levels），键是 choice.id。 */
   levels: Levels;
+  /** 桌面的 memory：切走的配方各自记着的档位。 */
+  memory: Levels;
   knobs: KnobMap;
 }
 
@@ -29,7 +33,8 @@ export interface Editable {
 export interface Clip {
   groups: GroupId[];
   from: { id: string; stem: string };
-  recipe: { choice: Choice; levels: Levels } | null;
+  /** levels 是选中那个配方的档位；memory 是空的时套用不动目标的 memory（桌面 recipeBody 只在非空时带 memory）。 */
+  recipe: { choice: Choice; levels: Record<string, number>; memory: Levels } | null;
   knobs: KnobMap | null;
 }
 
@@ -53,6 +58,7 @@ export interface Env {
 export interface Before {
   choice: Choice | null;
   levels: Levels;
+  memory: Levels;
   knobs: KnobMap;
 }
 
@@ -63,7 +69,7 @@ export function cloneLevels(levels: Levels): Levels {
 }
 
 export function snapshot(photo: Editable): Before {
-  return { choice: photo.choice ? { ...photo.choice } : null, levels: cloneLevels(photo.levels), knobs: { ...photo.knobs } };
+  return { choice: photo.choice ? { ...photo.choice } : null, levels: cloneLevels(photo.levels), memory: cloneLevels(photo.memory), knobs: { ...photo.knobs } };
 }
 
 /** 配方组「设置过」：选了配方（手机上还没有 LUT）。 */
@@ -93,7 +99,10 @@ export function copyFrom(photo: Editable, stem: string, groups: readonly GroupId
   const clip: Clip = {
     groups: copied,
     from: { id: photo.id, stem },
-    recipe: copied.includes('recipe') && photo.choice ? { choice: { ...photo.choice }, levels: cloneLevels(photo.levels) } : null,
+    recipe:
+      copied.includes('recipe') && photo.choice
+        ? { choice: { ...photo.choice }, levels: { ...(photo.levels.get(photo.choice.id) ?? {}) }, memory: cloneLevels(photo.memory) }
+        : null,
     knobs: copied.includes('adjust') ? { ...photo.knobs } : null,
   };
   return { clip, copied, empty };
@@ -107,7 +116,7 @@ function carries(clip: Clip, group: GroupId): boolean {
 }
 
 interface Changes {
-  recipe?: { choice: Choice; levels: Levels };
+  recipe?: { choice: Choice; levels: Levels; memory: Levels | null };
   knobs?: KnobMap;
 }
 
@@ -126,7 +135,13 @@ function recipeChanges(target: Target, clip: Clip, env: Env, skips: Skip[]): Cha
     skips.push({ group: 'recipe', reason: 'recipe_rejected', message: '这张照片用不了这个配方，没有套用。', part: 'recipe' });
     return {};
   }
-  return { recipe: { choice: { ...recipe.choice }, levels: cloneLevels(recipe.levels) } };
+  return {
+    recipe: {
+      choice: { ...recipe.choice },
+      levels: new Map([[recipe.choice.id, { ...recipe.levels }]]),
+      memory: recipe.memory.size ? cloneLevels(recipe.memory) : null,
+    },
+  };
 }
 
 /** `paste_one` 的判断：返回结果和要改的内容，不改照片。 */
@@ -160,8 +175,9 @@ export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[],
   const before = snapshot(photo);
   if (changes.recipe) {
     photo.choice = changes.recipe.choice;
-    // 桌面 memory：来源各个配方记着的档位整份换过来。
     photo.levels = changes.recipe.levels;
+    // 桌面 memory：来源记着的整份换过来；来源是空的就留着目标自己的。
+    if (changes.recipe.memory) photo.memory = changes.recipe.memory;
   }
   if (changes.knobs) Object.assign(photo.knobs, changes.knobs);
   photo.rev += 1;
@@ -226,6 +242,7 @@ export function restore(photo: Editable | undefined, entry: UndoEntry): RestoreS
   if (photo.rev !== entry.rev) return 'changed';
   photo.choice = entry.before.choice ? { ...entry.before.choice } : null;
   photo.levels = cloneLevels(entry.before.levels);
+  photo.memory = cloneLevels(entry.before.memory);
   for (const key of Object.keys(photo.knobs) as Array<keyof Knobs>) photo.knobs[key] = entry.before.knobs[key] ?? 0;
   photo.rev += 1;
   return 'restored';

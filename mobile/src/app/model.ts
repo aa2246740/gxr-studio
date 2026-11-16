@@ -68,8 +68,15 @@ export interface Photo {
   rev: number;
   /** 选中的配方。和调整一样是这张照片这次的编辑状态；换片、重新选同一张都留着。 */
   choice: Choice | null;
-  /** 每个配方各自记住的旋钮档位（桌面 recipes.js 换配方时也是各记各的）。键是卡的 id。 */
+  /**
+   * 选中的配方的旋钮档位（桌面 `recipe.levels`）：只有一项，键是 `choice.id`；只记用户给过的档位，没给的取配方默认。
+   */
   levels: Map<string, Record<string, number>>;
+  /**
+   * 桌面的 `memory`（`look_cards.js` recipeTarget）：换配方时切走的那个配方的档位记在这里，键是卡的 id
+   * （导出时按镜头单元换成桌面的 recipeKey）。当前配方不在这里更新；套用时整份跟过来，来源是空的就保留目标原来的。
+   */
+  memory: Map<string, Record<string, number>>;
   /** 配方卡的小图，按烘焙表的键记，只对当时的版本有效。 */
   looks: Map<string, { version: number; bitmap: ImageBitmap }>;
 }

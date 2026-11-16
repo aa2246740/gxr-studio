@@ -5,7 +5,7 @@ import type { Engine, Geometry } from '../../../frontend/src/index';
 import { crossed, uncalibratedReason, unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
-import { cardTag, choices, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, shelf, shelves, type Card, type Control, type Shelf, type Shelves } from '../lib/recipes';
+import { cardTag, choices, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, recipeSwitch, shelf, shelves, type Card, type Control, type Shelf, type Shelves } from '../lib/recipes';
 import type { UnitState } from './book';
 import { button, el, icon } from './dom';
 import { lookCache } from './looks';
@@ -30,6 +30,8 @@ const ADJUST = {
 /** 桌面 lut.js 的那句；手机上没有本机配方，只用前半句。 */
 const MINE_EMPTY = '电脑上还没有我的配方。';
 const NEUTRAL_LABEL = '中性转换';
+/** 没选配方时桌面的 selection 是这个单元的原厂 04（`{ unit, slot: 4, levels: {} }`）。 */
+const DEFAULT_CARD = 'builtin:4';
 const PREDICTED_LABEL = '电脑预测';
 
 export interface StageHooks {
@@ -147,9 +149,15 @@ export class RecipeView {
     return shelf(scene.list, this.which);
   }
 
-  /** 这张卡在这张照片上记着的档位（没动过是 undefined，用配方自己的默认）。 */
+  /**
+   * 这张卡在这张照片上会用的档位（桌面 recipeTarget）：选中的配方用它自己的档位；没选配方时默认的原厂 04 档位为空；
+   * 别的卡用 memory 里上次切走时记下的。undefined 就是全用配方自己的默认。
+   */
   private levelsOf(card: Card): Record<string, number> | undefined {
-    return this.photo.levels.get(card.id);
+    const choice = this.photo.choice;
+    if (choice?.id === card.id) return this.photo.levels.get(card.id);
+    if (!choice && card.id === DEFAULT_CARD) return undefined;
+    return this.photo.memory.get(card.id);
   }
 
   private chosen(scene: Scene): Card | null {
@@ -423,10 +431,11 @@ export class RecipeView {
   /** 松手：记下这个配方的这一档，选上它，重新 resolve + 烘焙（照片在新表做好之前留着上一张）。 */
   private setLevel(card: Card, name: string, level: number): void {
     const scene = this.scene();
-    const next: Record<string, number> = {};
-    for (const c of card.controls) next[c.name] = effective(c, this.photo.levels.get(card.id));
+    // 只记用户动过的旋钮（桌面 recipes.js 的 ensureRecipe(view).levels[name] = …）：没动过的取这个配方的默认。
+    // memory 不动；没选配方时 ensureRecipe 从空档位开始。
+    const next: Record<string, number> = this.photo.choice?.id === card.id ? { ...(this.photo.levels.get(card.id) ?? {}) } : {};
     next[name] = level;
-    this.photo.levels.set(card.id, next);
+    this.photo.levels = new Map([[card.id, next]]);
     this.photo.rev += 1;
     if (this.photo.choice?.id !== card.id) {
       this.photo.choice = { id: card.id, unit: scene.unit };
@@ -449,6 +458,14 @@ export class RecipeView {
       return;
     }
     if (!card.controls.length) return;
+    // 桌面 switchRecipe：切走的那个记进 memory，新配方取回上次的档位；已经是它就什么都不改。
+    const choice = this.photo.choice;
+    const currentId = choice?.id ?? DEFAULT_CARD;
+    const currentCard = scene.list ? shelf(scene.list, 'all').find((item) => item.id === currentId) ?? null : null;
+    const switched = recipeSwitch(this.photo.memory, { id: currentId, card: currentCard, levels: choice ? this.photo.levels.get(currentId) : undefined, chosen: choice !== null }, card);
+    if (switched.same) return;
+    this.photo.memory = switched.memory;
+    this.photo.levels = new Map([[card.id, switched.levels]]);
     this.photo.choice = { id: card.id, unit: scene.unit };
     this.photo.rev += 1;
     for (const slot of this.slots) {
