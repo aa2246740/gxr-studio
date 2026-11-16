@@ -25,7 +25,7 @@ import {
 import { button, el } from './dom';
 import { commitStamp, isMtimeDate, photoIsoDate } from './frame_state';
 import type { Photo } from './model';
-import { registerSheet } from './sheet_lifecycle';
+import { cancelHostSheets, registerSheet } from './sheet_lifecycle';
 
 function segGroup<T extends string>(
   items: ReadonlyArray<readonly [T, string]>,
@@ -63,6 +63,7 @@ export function openStampSheet(
   onUpdate: () => void,
   isAlive: () => boolean = () => true,
 ): void {
+  cancelHostSheets(host);
   host.querySelector('.scrim.stamp-scrim')?.remove();
   host.querySelector('.ms.stamp-sheet')?.remove();
 

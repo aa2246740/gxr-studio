@@ -38,6 +38,8 @@ try {
 
   out.results = await page.evaluate(async ({ logoBytesArr }) => {
     const { StageDecorController, buildBackdropCanvas } = await import('/src/app/stage_finish.ts');
+    const { EditorView } = await import('/src/app/editor.ts');
+    const { Book } = await import('/src/app/book.ts');
     const { FrameView } = await import('/src/app/frame_view.ts');
     const { openLogoSheet } = await import('/src/app/logo_sheet.ts');
     const { openFrameMoreSheet } = await import('/src/app/frame_more_sheet.ts');
@@ -980,6 +982,242 @@ try {
 
       bmp.close();
       res.s1FrameNoOk = true;
+    }
+
+    // =========================================================================
+    // S2-1 (Checklist #2): Unconfirmed drafts & open sheets cancel BEFORE tokens/destroyed flags invalidate
+    // Covers frame x stamp x (EditorView.destroy, EditorView.open switch, FrameView.destroy) + logo_sheet
+    // =========================================================================
+    {
+      const { loadAllLogos } = await import('/src/lib/idb.ts');
+      const book = new Book();
+      const makeRealEditorHost = () => {
+        const shell = document.createElement('div');
+        shell.className = 'app';
+        shell.style.width = '390px';
+        shell.style.height = '844px';
+        const view = document.createElement('div');
+        shell.append(view);
+        document.body.append(shell);
+        return { shell, view };
+      };
+      const makeStubApi = (list) => {
+        const map = new Map(list.map((p) => [p.id, p]));
+        return {
+          photos: () => list,
+          photo: (id) => map.get(id),
+          order: () => 'desc',
+          gap: () => 15,
+          ignored: () => 0,
+          hasDat: () => false,
+          loading: () => ({ done: list.length, total: list.length }),
+          setOrder: () => {},
+          setGap: () => {},
+          open: () => {},
+          remove: () => {},
+          clear: () => {},
+          addPhotos: () => {},
+          showHelp: () => {},
+          back: () => {},
+          swipe: () => {},
+          markBad: () => {},
+          markGone: () => {},
+          readFull: async () => ({ ok: false, gone: false, stale: false }),
+          uploadRaw: async () => false,
+          takeWarm: () => null,
+          keepWarm: () => {},
+          gpu: () => false,
+          session: () => 1,
+          cardOut: () => false,
+          still: async () => null,
+          watch: () => {},
+          perf: () => {},
+          book: () => book,
+          pickDat: () => {},
+          pickCalib: () => {},
+          showCalib: () => {},
+          exportPhotos: () => {},
+          takeCalib: () => {},
+        };
+      };
+
+      const draftCases = [];
+      for (const kind of ['frame', 'stamp']) {
+        for (const exit of ['editor-destroy', 'editor-switch', 'frame-destroy']) {
+          const bmp1 = await makeTestBitmap(120, 90);
+          const bmp2 = await makeTestBitmap(120, 90);
+          const p1 = makePhoto(
+            `s2_${kind}_${exit}_1`,
+            bmp1,
+            { style: 'leica', text: 'ORIGINAL' },
+            { enabled: true, content: 'date+text', text: 'ORIGINAL' },
+          );
+          p1.rev = 7;
+          const p2 = makePhoto(`s2_${kind}_${exit}_2`, bmp2, { style: 'none', text: '' });
+          p2.rev = 1;
+
+          const { shell, view } = makeRealEditorHost();
+          const api = makeStubApi([p1, p2]);
+          const editor = new EditorView(view, shell, api, null);
+
+          if (exit === 'frame-destroy') {
+            // Direct FrameView mount with real View lifecycle callback
+            let fvDestroyed = false;
+            const fv = new FrameView(shell, p1, {
+              ew: () => [4000, 3000],
+              backdrop: () => null,
+              onChange: () => {},
+              isAlive: () => !fvDestroyed,
+            });
+            shell.append(fv.panelEl());
+            fv.tabOpened();
+            const openBtn = kind === 'frame'
+              ? fv.panelEl().querySelector('[data-act="frame-more"]')
+              : fv.panelEl().querySelector('[data-act="open-stamp"]');
+            assert(openBtn, `S2 FrameView missing button for ${kind}`);
+            openBtn.click();
+            const inp = shell.querySelector('.ms input.txtbox');
+            assert(inp, `S2 FrameView missing text input for ${kind}`);
+            inp.value = 'DRAFT';
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            const midText = kind === 'frame' ? p1.border.text : p1.stamp.text;
+            assert(midText === 'DRAFT' && p1.rev === 7, `S2 pre-cancel draft missing for ${kind}/${exit}`);
+            fv.destroy();
+          } else {
+            editor.open(p1);
+            const frameTabBtn = [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框');
+            assert(frameTabBtn, 'S2 EditorView missing 边框 tab');
+            frameTabBtn.click();
+            const openBtn = kind === 'frame'
+              ? view.querySelector('.panel.frame [data-act="frame-more"]')
+              : view.querySelector('.panel.frame [data-act="open-stamp"]');
+            assert(openBtn, `S2 EditorView missing trigger for ${kind}`);
+            openBtn.click();
+            const inp = shell.querySelector('.ms input.txtbox');
+            assert(inp, `S2 EditorView missing text input for ${kind}`);
+            inp.value = 'DRAFT';
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            const midText = kind === 'frame' ? p1.border.text : p1.stamp.text;
+            assert(midText === 'DRAFT' && p1.rev === 7, `S2 pre-cancel draft missing for ${kind}/${exit}`);
+
+            if (exit === 'editor-destroy') {
+              editor.destroy();
+            } else {
+              editor.open(p2);
+            }
+          }
+
+          await sleep(180);
+          const gotText = kind === 'frame' ? p1.border.text : p1.stamp.text;
+          const openSheets = shell.querySelectorAll('.ms').length;
+          draftCases.push({ kind, exit, gotText, rev: p1.rev, openSheets });
+
+          if (exit === 'editor-switch') editor.destroy();
+          shell.remove();
+          bmp1.close();
+          bmp2.close();
+        }
+      }
+      const badDrafts = draftCases.filter((c) => c.openSheets !== 0 || c.gotText !== 'ORIGINAL' || c.rev !== 7);
+      assert(
+        badDrafts.length === 0,
+        `S2 draft rollback failures (${badDrafts.length}/${draftCases.length}): ${JSON.stringify(badDrafts)}`,
+      );
+
+      // Also verify logo_sheet registered on the host cancels & aborts in-flight save across
+      // EditorView.destroy(), EditorView.open(switch), and FrameView.destroy()
+      const makeSolidPng = async (rgba, name) => {
+        const cv = document.createElement('canvas');
+        cv.width = 64;
+        cv.height = 64;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3] / 255})`;
+        ctx.fillRect(0, 0, 64, 64);
+        const blob = await new Promise((resolve) => cv.toBlob(resolve, 'image/png'));
+        cv.width = 0;
+        cv.height = 0;
+        return new File([blob], name, { type: 'image/png' });
+      };
+      const initLogos = await loadAllLogos();
+      const baseLogoCount = initLogos.length;
+      const origPostMessage = Worker.prototype.postMessage;
+      let holdSave = false;
+      let releaseSave = null;
+      Worker.prototype.postMessage = function (msg, transfer) {
+        if (holdSave && msg && msg.op === 'logo-save') {
+          return new Promise((resolve) => {
+            releaseSave = () => resolve(origPostMessage.call(this, msg, transfer));
+          });
+        }
+        return origPostMessage.call(this, msg, transfer);
+      };
+      try {
+        for (const exit of ['editor-destroy', 'editor-switch', 'frame-destroy']) {
+          const bmp1 = await makeTestBitmap(120, 90);
+          const bmp2 = await makeTestBitmap(120, 90);
+          const p1 = makePhoto(`s2_logo_${exit}_1`, bmp1, { style: 'leica', logo: 'ricoh' });
+          p1.rev = 7;
+          const p2 = makePhoto(`s2_logo_${exit}_2`, bmp2, { style: 'none' });
+          const { shell, view } = makeRealEditorHost();
+          const api = makeStubApi([p1, p2]);
+          const editor = new EditorView(view, shell, api, null);
+          let fv = null;
+          if (exit === 'frame-destroy') {
+            fv = new FrameView(shell, p1, { ew: () => [4000, 3000], backdrop: () => null, onChange: () => {} });
+            shell.append(fv.panelEl());
+            fv.panelEl().querySelector('[data-act="frame-logo"]').click();
+          } else {
+            editor.open(p1);
+            [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框').click();
+            view.querySelector('.panel.frame [data-act="frame-logo"]').click();
+          }
+          await sleep(30);
+          shell.querySelector('.ms.logo-sheet [data-logo-action="upload"]').click();
+          await sleep(10);
+          const logoFile = await makeSolidPng([10, 160, 80, 255], `S2Cancel_${exit}.png`);
+          const fi = shell.querySelector('.ms.logo-sheet input.filepick');
+          const dt = new DataTransfer();
+          dt.items.add(logoFile);
+          fi.files = dt.files;
+          fi.dispatchEvent(new Event('change'));
+          let saveBtn = null;
+          for (let i = 0; i < 100; i += 1) {
+            saveBtn = shell.querySelector('.ms.logo-sheet [data-logo-action="save"]');
+            if (saveBtn && !saveBtn.disabled) break;
+            await sleep(25);
+          }
+          assert(saveBtn && !saveBtn.disabled, `S2 logo/${exit}: preview failed`);
+          releaseSave = null;
+          holdSave = true;
+          saveBtn.click();
+          for (let i = 0; i < 50; i += 1) {
+            if (releaseSave) break;
+            await sleep(10);
+          }
+          holdSave = false;
+          assert(typeof releaseSave === 'function', `S2 logo/${exit}: save did not reach Worker`);
+
+          if (exit === 'frame-destroy') fv.destroy();
+          else if (exit === 'editor-destroy') editor.destroy();
+          else editor.open(p2);
+
+          assert(shell.querySelectorAll('.ms').length === 0, `S2 logo/${exit}: sheet not removed`);
+          releaseSave();
+          await sleep(120);
+          const after = await loadAllLogos();
+          assert(after.length === baseLogoCount, `S2 logo/${exit}: cancelled save wrote to IDB`);
+          assert(p1.border.logo === 'ricoh' && p1.rev === 7, `S2 logo/${exit}: mutated photo`);
+
+          if (exit === 'editor-switch') editor.destroy();
+          shell.remove();
+          bmp1.close();
+          bmp2.close();
+        }
+      } finally {
+        Worker.prototype.postMessage = origPostMessage;
+      }
+
+      res.s2DraftOrderAndSheetsOk = true;
     }
 
     return res;

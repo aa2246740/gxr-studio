@@ -116,4 +116,5 @@ def test_mobile_ui_frame_lifecycle_browser(tmp_path: Path) -> None:
         "s1TextRefusalOk": True,
         "s1CardsAndBackdropOk": True,
         "s1FrameNoOk": True,
+        "s2DraftOrderAndSheetsOk": True,
     }, report["results"]

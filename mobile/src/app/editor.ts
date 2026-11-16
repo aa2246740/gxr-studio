@@ -121,6 +121,7 @@ export class EditorView {
   ) {}
 
   open(photo: Photo): void {
+    cancelHostSheets(this.shell);
     this.openGen += 1;
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
     // 正在看的这张的配方卡小图不会被全局上限挤掉。
@@ -140,11 +141,11 @@ export class EditorView {
   }
 
   destroy(): void {
+    cancelHostSheets(this.shell);
     this.openGen += 1;
     this.token += 1;
     this.gestureAbort?.abort();
     this.gestureAbort = null;
-    cancelHostSheets(this.shell);
     lookCache.setOpen(null);
     this.offPaste?.();
     this.offPaste = null;

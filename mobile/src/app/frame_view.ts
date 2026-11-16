@@ -162,6 +162,7 @@ export class FrameView {
   }
 
   destroy(): void {
+    cancelHostSheets(this.shell);
     this.destroyed = true;
     this.tabOpen = false;
     this.layoutToken += 1;
@@ -169,7 +170,6 @@ export class FrameView {
     this.paintingSig = '';
     cancelAnimationFrame(this.frameQueue);
     this.frameQueue = 0;
-    cancelHostSheets(this.shell);
     for (const { thumb } of this.holders.values()) {
       for (const cv of thumb.querySelectorAll('canvas')) {
         cv.width = 0;

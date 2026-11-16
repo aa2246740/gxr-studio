@@ -19,7 +19,7 @@ import { button, el } from './dom';
 import { commitFrame } from './frame_state';
 import { logoStore } from './logo_store';
 import type { Photo } from './model';
-import { registerSheet } from './sheet_lifecycle';
+import { cancelHostSheets, registerSheet } from './sheet_lifecycle';
 
 function segGroup<T extends string>(
   items: ReadonlyArray<readonly [T, string]>,
@@ -49,6 +49,7 @@ export function openFrameMoreSheet(
   onUpdate: () => void,
   isAlive: () => boolean = () => true,
 ): void {
+  cancelHostSheets(host);
   host.querySelector('.scrim.frame-more-scrim')?.remove();
   host.querySelector('.ms.frame-more-sheet')?.remove();
 

@@ -18,7 +18,7 @@ import { button, el, icon } from './dom';
 import { autoMonoMessage, commitFrame } from './frame_state';
 import { logoStore } from './logo_store';
 import type { Photo } from './model';
-import { registerSheet } from './sheet_lifecycle';
+import { cancelHostSheets, registerSheet } from './sheet_lifecycle';
 import { showToast } from './toast';
 
 const CHECK_ICON = 'M5 12.5l4.5 4.5L19 7.5';
@@ -47,6 +47,7 @@ export function openLogoSheet(
   onUpdate: () => void,
   isAlive: () => boolean = () => true,
 ): void {
+  cancelHostSheets(host);
   host.querySelector('.scrim.logo-scrim')?.remove();
   host.querySelector('.ms.logo-sheet')?.remove();
 
