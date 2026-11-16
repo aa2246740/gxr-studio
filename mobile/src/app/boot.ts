@@ -123,6 +123,8 @@ class App implements AppApi {
         await new Promise((done) => setTimeout(done, 800));
       }
     }
+    // M3 复制 / 套用那几屏（04a–04e、02a 带剪贴板）。
+    if (shot.startsWith('paste-') && this.byId.size) await (await import('./paste_shots')).pasteShot(shot, this, this.shell);
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     this.shell.dataset.shot = shot;
     await reportShot(shot, {

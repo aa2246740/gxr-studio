@@ -163,7 +163,7 @@ export function openWhereSheet(host: HTMLElement, api: AppApi, photo: Photo, tit
   closePasteSheets(host);
   const sheet = el('div', 'ms paste-sheet');
   sheet.dataset.state = 'copied-where';
-  const head = el('div', 'hd start');
+  const head = el('div', 'hd lead-row');
   const ok = el('span', 'okc');
   ok.append(icon(PASTE_ICON.check));
   head.append(ok, el('h2', '', title));

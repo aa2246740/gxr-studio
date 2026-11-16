@@ -360,9 +360,12 @@ export class GridView {
     }
     cnt.textContent = `${group.ids.length} 张`;
     go.dataset.act = 'apply-group';
-    // 复制过才是蓝色；没复制时点它说一句怎么复制。
-    go.className = pasteState.clip ? 'go' : 'go idle';
-    go.replaceChildren(icon(PASTE_ICON.copy), el('span', '', '套用到这一组'));
+    // 复制过才是蓝色；没复制时点它说一句怎么复制。刚套用过的那一组是灰的（04e），还能再点。
+    const bar = pasteState.bar;
+    const from = pasteState.clip?.from.id;
+    const done = bar?.kind === 'applied' && group.ids.some((id) => bar.ids.has(id)) && group.ids.every((id) => id === from || bar.ids.has(id));
+    go.className = pasteState.clip && !done ? 'go' : 'go idle';
+    go.replaceChildren(...(done ? [] : [icon(PASTE_ICON.copy)]), el('span', '', '套用到这一组'));
   }
 
   private paintHeads(): void {

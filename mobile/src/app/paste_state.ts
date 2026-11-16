@@ -15,7 +15,7 @@ export const INFO_MS = 3200;
 export const UNDO_MS = 15_000;
 
 export type Bar =
-  | { kind: 'applied'; batchId: string; line: string; sub: string; used: boolean }
+  | { kind: 'applied'; batchId: string; line: string; sub: string; used: boolean; ids: ReadonlySet<string> }
   | { kind: 'info'; line: string }
   | null;
 
@@ -195,9 +195,10 @@ export class PasteState {
     if (api.session() !== session) return outcomes;
     const used = outcomes.some((r) => r.applied.length);
     const line = pasteMessage(outcomes);
-    if (used) this.setBar({ kind: 'applied', batchId, line, sub: `${range} · ${groupsText(clip.groups)}`, used });
+    const ids = new Set(outcomes.filter((r) => r.applied.length).map((r) => r.id));
+    if (used) this.setBar({ kind: 'applied', batchId, line, sub: `${range} · ${groupsText(clip.groups)}`, used, ids });
     else this.setBar({ kind: 'info', line });
-    this.edited(new Set(outcomes.filter((r) => r.applied.length).map((r) => r.id)));
+    this.edited(ids);
     return outcomes;
   }
 

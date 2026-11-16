@@ -1,6 +1,7 @@
 /* 复制 / 套用（04a–04e）和网格底栏（02a、04d、04e）。尺寸照设计稿 design/r1/src/screens_apply.py、ui.py。 */
 .paste-sheet .hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.paste-sheet .hd.start { justify-content: flex-start; }
+.paste-sheet .hd.lead-row { justify-content: flex-start; }
+.paste-sheet .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--gray-600); margin: -8px auto 12px; }
 .paste-sheet .hd .nb { margin-right: -10px; }
 .paste-sheet .okc, .pastebar .okc { color: var(--ok-text); display: grid; place-items: center; width: 28px; flex: none; }
 .pastebar .accc { color: var(--accent-text); display: grid; place-items: center; width: 28px; flex: none; }
@@ -28,7 +29,7 @@
 .gpick .btn.block { margin-top: 12px; }
 .gpick .gapline { font-size: 12px; line-height: 16px; margin-top: 6px; text-align: center; }
 .pfoot { font-size: 12px; line-height: 16px; margin-top: 8px; }
-.paste-dlg { top: auto; bottom: 24%; }
+.dlg.paste-dlg { top: auto; bottom: 24%; }
 .paste-dlg .pcenter { margin-top: 12px; display: flex; justify-content: center; }
 .paste-dlg p.pundo { margin-top: 10px; font-size: 13px; color: var(--text-3); }
 .pastebar .tx { flex: 1; min-width: 0; padding-left: 4px; }
@@ -39,3 +40,5 @@
 .gh .cnt { font-size: 13px; color: var(--text-3); white-space: nowrap; }
 .gh .go.idle { background: var(--surface-control); color: var(--text-2); }
 .gh .go .ico { width: 18px; height: 18px; }
+/* 选择栏不显示时整格收起（.dock 的 display:flex 会盖过 hidden）。 */
+.dock[hidden] { display: none; }
