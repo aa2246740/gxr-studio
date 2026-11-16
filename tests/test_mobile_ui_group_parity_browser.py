@@ -82,7 +82,7 @@ def _memory(side: dict[str, Any] | None) -> Any:
     return {key: dict(sorted(levels.items())) for key, levels in sorted((recipe.get("memory") or {}).items())}
 
 
-def test_mobile_ui_group_paste_matches_the_desktop(tmp_path: Path) -> None:
+def _run_parity(tmp_path: Path, *, with_lut: bool) -> None:
     from gxr_studio.render import edits, paste
     from gxr_studio.render.params import parse_edit
     from gxr_studio.render.recipes import unit_of_lens
@@ -120,16 +120,41 @@ def test_mobile_ui_group_paste_matches_the_desktop(tmp_path: Path) -> None:
     check(unit == "jlaunch" and unit_of_lens(shots[targets[2]]["lens"]) == "qlaunch", "units as planned")
     check(unit_of_lens(shots[targets[0]]["lens"]) == unit, "same-unit target")
 
+    lut_payload: dict[str, str] | None = None
+    cube_id: str | None = None
+    if with_lut:
+        import numpy as np
+
+        from support.lut_cases import cube_text
+
+        cube_txt = cube_text(
+            lambda x: np.clip(x * np.array([1.04, 0.98, 0.92]), 0, 1),
+            size=9,
+            title="Parity LUT",
+            comments="# Input: sRGB\n",
+        )
+        cube_path = tmp_path / "parity_srgb.cube"
+        cube_path.write_text(cube_txt, encoding="utf-8")
+        added = desk.render.luts.add(cube_txt.encode("utf-8"), cube_path.name)
+        cube_id = str(added["cube_id"])
+        lut_payload = {"path": str(cube_path), "cubeId": cube_id}
+
     # ---- 手机 ----
     report_path = tmp_path / "phone.json"
     manifest = tmp_path / "parity.json"
     files = [str(p) for p in (s_dng, s_jpg, t1_dng, t1_jpg, t2_jpg, t3_dng, t3_jpg)]
-    manifest.write_text(
-        json.dumps(
-            {"pack": str(desk.zip), "dat": str(dat), "files": files, "photos": 4, "source": source, "targets": targets, "out": str(report_path)}
-        ),
-        encoding="utf-8",
-    )
+    manifest_doc: dict[str, Any] = {
+        "pack": str(desk.zip),
+        "dat": str(dat),
+        "files": files,
+        "photos": 4,
+        "source": source,
+        "targets": targets,
+        "out": str(report_path),
+    }
+    if lut_payload is not None:
+        manifest_doc["lut"] = lut_payload
+    manifest.write_text(json.dumps(manifest_doc), encoding="utf-8")
     result = _drive(DRIVER, manifest, tmp_path, "", timeout=600)
     check(report_path.is_file(), "driver wrote its report")
     phone: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
@@ -148,7 +173,10 @@ def test_mobile_ui_group_paste_matches_the_desktop(tmp_path: Path) -> None:
     js = _desktop_js(tmp_path, {"recipe": {"catalog": catalog, "photoUnit": unit, "actions": actions}})
     menu = desk.render.recipe_menu()
     src_edit = steps["source"]["edit"]
-    edits.write(desk.lib, shots[source], {"recipe": js["body"], "adjust": _adjust(src_edit["knobs"])}, menu)
+    desk_changes: dict[str, Any] = {"recipe": js["body"], "adjust": _adjust(src_edit["knobs"])}
+    if cube_id is not None:
+        desk_changes["lut"] = cube_id
+    edits.write(desk.lib, shots[source], desk_changes, menu)
     _edit, desk_source = edits.read(desk.lib, shots[source])
 
     # 来源：手机交给导出的 sidecar 和桌面写的一样，memory 也一样（含空的那一项和当前配方的旧档位）。
@@ -159,7 +187,11 @@ def test_mobile_ui_group_paste_matches_the_desktop(tmp_path: Path) -> None:
     check(f"{unit}/2" in _memory(desk_source), "desktop memory keeps the current recipe's old snapshot")
 
     # ---- 桌面：同一次套用 ----
-    env = paste.Env(menu, lambda _lut: True, False, desk.render.recipes)
+    def _lut_needs_raw(lut_id: str) -> bool:
+        item = desk.render.luts.get(lut_id)
+        return item["input_space"] not in ("srgb", "rec709", "gamma24")
+
+    env = paste.Env(menu, _lut_needs_raw, False, desk.render.recipes)
     groups = ["recipe", "adjust"]
 
     # 手机按网格的顺序（拍摄时间）逐张套用；结果句里各种原因的先后跟着结果的顺序走，所以桌面也按这个顺序。
@@ -429,3 +461,12 @@ def test_mobile_ui_group_geometry_and_crop_paste_matches_desktop(tmp_path: Path)
         )
     finally:
         desk.lib.close()
+
+
+def test_mobile_ui_group_paste_matches_the_desktop(tmp_path: Path) -> None:
+    _run_parity(tmp_path, with_lut=False)
+
+
+def test_mobile_ui_group_paste_recipe_with_lut_matches_the_desktop(tmp_path: Path) -> None:
+    """UI-M4-LUT item 6: extend group paste desktop parity with a recipe + LUT source."""
+    _run_parity(tmp_path, with_lut=True)

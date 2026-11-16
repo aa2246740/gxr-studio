@@ -34,7 +34,10 @@ export class Pool {
     buffer: ArrayBuffer | null,
     transfer: Transferable[],
     args: BakeArgs | null = null,
-    extra: Pick<CoreRequest, 'file' | 'meta' | 'resolve' | 'check' | 'geom' | 'finalBox' | 'sizes'> = {},
+    extra: Pick<
+      CoreRequest,
+      'file' | 'meta' | 'resolve' | 'check' | 'geom' | 'finalBox' | 'sizes' | 'lutImport' | 'lutPatch' | 'lutDelete' | 'lutBlob' | 'lutSnapshot'
+    > = {},
   ): Promise<CoreResult> {
     const id = this.seq++;
     const worker = this.workers[this.next % this.workers.length];

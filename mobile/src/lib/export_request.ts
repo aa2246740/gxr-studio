@@ -4,6 +4,7 @@
 
 import { unitOfLens, type Unit } from './calib';
 import { cloneCrop, geometrySidecar, type CropState, type GeometryState } from './crop';
+import { isDisplaySpace } from './lut';
 import type { Frame } from './photo_size';
 import type { Card } from './recipes';
 
@@ -37,6 +38,10 @@ export interface RequestPhoto {
   lens: string | null;
   iso: number | null;
   choice: { id: string; unit: Unit } | null;
+  /** 选中的 LUT（cube_id），没有是 null。 */
+  lut?: string | null;
+  /** 选中那个 LUT 的输入色彩空间（仅用于决定要不要解相机 JPG；真正交给核心的规格在 Worker 批次快照里）。 */
+  lutInputSpace?: string | null;
   /** 选中那个配方的档位（只有用户动过的），键是卡的 id（`builtin:3`、`look:<id>`…）。 */
   levels: ReadonlyMap<string, Record<string, number>>;
   /** 桌面的 memory（`look_cards.js` recipeTarget：换配方时切走的那个），键是卡的 id；空的档位也是一项。 */
@@ -74,7 +79,7 @@ export interface ExportRequest {
    * 没选、又有相机 JPG 时走相机 JPG，不要条目；只有 RAW 时用这个单元的原厂 04（source/plan.rs 的 selection）。
    */
   resolve: string | null;
-  /** 这一张要不要解码相机 JPG（没选配方、又有相机 JPG：原样导出或编辑过的相机 JPG）。 */
+  /** 这一张要不要解码相机 JPG（没选配方、又有相机 JPG，且不是 Log LUT）。 */
   needsJpg: boolean;
 }
 
@@ -121,11 +126,8 @@ export function adjustJson(k: KnobValues): Record<string, unknown> | null {
 }
 
 /**
- * 桌面 sidecar 里这张照片的编辑（`render/edits.write` 写出的那几块）：`recipe`（带 `memory`）和 `adjust`。
- * `cards` 是这个单元的全部配方卡（`shelf(list, 'all')`），按 id 找卡的位置、条目和旋钮。
- * memory 就是照片的 `memory`（桌面 look_cards.js recipeTarget 记下的那份），键照桌面 recipeKey 改写；空的档位
- * （比如第一次选配方时记下的原厂 04 `{}`）照样是一项，和 render/edits.write 存的一样；整份是空的才不写。
- * 没动过的照片（没选配方、调整全是 0）是 `{}`。
+ * 桌面 sidecar 里这张照片的编辑（`render/edits.write` 写出的那几块）：`recipe`（带 `memory`）、`lut` 和 `adjust`。
+ * 没动过的照片（没选配方、没选 LUT、调整全是 0）是 `{}`。
  */
 export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<string, unknown> {
   const side: Record<string, unknown> = {};
@@ -142,6 +144,7 @@ export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<s
     }
     side.recipe = Object.keys(memory).length ? { ...recipe, memory } : recipe;
   }
+  if (photo.lut) side.lut = photo.lut;
   const adjust = adjustJson(photo.knobs);
   if (adjust) side.adjust = adjust;
   const geom = photo.geometry ? geometrySidecar(photo.geometry.straighten) : null;
@@ -169,6 +172,7 @@ export function buildRequest(photo: RequestPhoto, cards: readonly Card[], option
     const unit = unitOfLens(photo.lens) ?? 'jlaunch';
     resolve = JSON.stringify({ kind: 'builtin', unit, slot: 4, levels: {} });
   }
+  const isLogLut = Boolean(photo.lut && photo.lutInputSpace && !isDisplaySpace(photo.lutInputSpace));
   const mtimeMs = photo.sourceModified;
   return {
     shot: { name: photo.stem, files, lens: photo.lens, iso: photo.iso },
@@ -183,6 +187,6 @@ export function buildRequest(photo: RequestPhoto, cards: readonly Card[], option
     mtimeMs,
     tzOffsetMin: -new Date(mtimeMs).getTimezoneOffset(),
     resolve,
-    needsJpg: photo.jpgName !== null && (!recipe || photo.dngName === null),
+    needsJpg: !isLogLut && photo.jpgName !== null && (!recipe || photo.dngName === null),
   };
 }

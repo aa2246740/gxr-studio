@@ -1,5 +1,7 @@
 // 主线程和核心 Worker 之间的消息。
 
+import type { LutPatchFields } from '../lib/idb';
+
 export type CoreOp =
   | 'ping'
   | 'describe'
@@ -12,7 +14,13 @@ export type CoreOp =
   | 'geom-crop-write'
   | 'geom-geometry-write'
   | 'geom-final-box'
-  | 'export-output-sizes';
+  | 'export-output-sizes'
+  | 'lut-import'
+  | 'lut-restore'
+  | 'lut-patch'
+  | 'lut-delete'
+  | 'lut-blob'
+  | 'lut-snapshot';
 
 export class CoreError extends Error {
   constructor(
@@ -70,6 +78,32 @@ export interface OutputSizesArgs {
   preset?: string;
 }
 
+/** 导入一个 `.cube` LUT：File 交给 Worker，大小检查、sha256、解析识别、写 IndexedDB 都在 Worker 里做。 */
+export interface LutImportArgs {
+  file: File;
+  filename: string;
+  version: number;
+}
+
+export interface LutPatchArgs {
+  cubeId: string;
+  patch: LutPatchFields;
+  version: number;
+}
+
+export interface LutDeleteArgs {
+  cubeId: string;
+  version: number;
+}
+
+export interface LutBlobArgs {
+  cubeId: string;
+}
+
+export interface LutSnapshotArgs {
+  cubeIds: string[];
+}
+
 export interface CoreRequest {
   id: number;
   op: CoreOp;
@@ -84,6 +118,11 @@ export interface CoreRequest {
   geom?: GeomWriteArgs | null;
   finalBox?: FinalBoxArgs | null;
   sizes?: OutputSizesArgs | null;
+  lutImport?: LutImportArgs | null;
+  lutPatch?: LutPatchArgs | null;
+  lutDelete?: LutDeleteArgs | null;
+  lutBlob?: LutBlobArgs | null;
+  lutSnapshot?: LutSnapshotArgs | null;
 }
 
 export type CoreReply =

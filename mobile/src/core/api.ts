@@ -5,6 +5,8 @@ import type { UnitPack } from '../lib/calib';
 import type { CropState } from '../lib/crop';
 import type { PhotoMeta } from '../lib/exif';
 import type { Frame } from '../lib/photo_size';
+import type { LutPatchFields, LutSnapshotRow } from '../lib/idb';
+import type { LutRecord } from '../lib/lut';
 import type { ZipFail } from '../lib/zip';
 import { Pool } from './pool';
 import type { BakeArgs, CalibCheckArgs } from './protocol';
@@ -262,4 +264,75 @@ export async function geomOutputSizes(
     },
   });
   return JSON.parse(json) as OutputSizesReply;
+}
+
+export type LutImportReply =
+  | { ok: true; duplicate: boolean; record: LutRecord; totalBytes: number }
+  | { ok: false; reason: string; message: string };
+
+export interface LutLibraryMeta {
+  records: LutRecord[];
+  order: string[];
+  totalBytes: number;
+  watermark: number;
+}
+
+/** 在 Worker 里解析、识别并保存一个 .cube LUT（主线程不读文件字节）。 */
+export async function importLutFile(file: File, filename: string, version: number): Promise<LutImportReply> {
+  const { json } = await workers().request('lut-import', null, [], null, {
+    lutImport: { file, filename, version },
+  });
+  return JSON.parse(json) as LutImportReply;
+}
+
+/** 打开页面时在 Worker 里从 IndexedDB 读回 LUT 目录元数据（不含大文件字节）。 */
+export async function restoreLutLibrary(): Promise<LutLibraryMeta> {
+  const { json } = await workers().request('lut-restore', null, []);
+  return JSON.parse(json) as LutLibraryMeta;
+}
+
+/** 在 Worker 里更新 LUT 元数据（改名、输入色彩空间等）。 */
+export async function patchLut(
+  cubeId: string,
+  patch: LutPatchFields,
+  version: number,
+): Promise<{ ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' }> {
+  const { json } = await workers().request('lut-patch', null, [], null, {
+    lutPatch: { cubeId, patch, version },
+  });
+  return JSON.parse(json) as { ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' };
+}
+
+/** 在 Worker 里从 IndexedDB 删除一条 LUT（先写删除后再清内存）。 */
+export async function deleteLut(cubeId: string, version: number): Promise<boolean> {
+  const { json } = await workers().request('lut-delete', null, [], null, {
+    lutDelete: { cubeId, version },
+  });
+  const parsed = JSON.parse(json) as { ok?: boolean };
+  return parsed.ok === true;
+}
+
+/** 从 IndexedDB 读出原始 .cube 字节（供导出或建 GPU 3D 表用）。 */
+export async function readLutBlob(cubeId: string): Promise<ArrayBuffer | null> {
+  const { json, buffers } = await workers().request('lut-blob', null, [], null, {
+    lutBlob: { cubeId },
+  });
+  const parsed = JSON.parse(json) as { ok?: boolean };
+  return parsed.ok && buffers[0] ? buffers[0] : null;
+}
+
+/** 在单个 IndexedDB readonly 事务里原子读取一组 LUT 的记录与 .cube 字节（P2-02）。 */
+export async function readLutBatchSnapshot(cubeIds: readonly string[]): Promise<LutSnapshotRow[]> {
+  const unique = [...new Set(cubeIds)];
+  if (!unique.length) return [];
+  const { json, buffers } = await workers().request('lut-snapshot', null, [], null, {
+    lutSnapshot: { cubeIds: unique },
+  });
+  const parsed = JSON.parse(json) as { items?: Array<{ cubeId: string; record: LutRecord | null; hasBlob: boolean }> };
+  let bi = 0;
+  return (parsed.items ?? []).map((item) => ({
+    cubeId: item.cubeId,
+    record: item.record,
+    blob: item.hasBlob ? (buffers[bi++] ?? null) : null,
+  }));
 }

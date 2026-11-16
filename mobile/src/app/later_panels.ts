@@ -1,5 +1,5 @@
-// 边框、LUT、曲线三页：按设计稿 03f–03h 摆好静态的控件，这一版全部停用，写「这项下一步做」。
-// 这里没有任何算法，只有版式。名字和顺序跟桌面一样（frame_panel.js、lut.js、curves.js）。
+// 边框、曲线两页：按设计稿 03f / 03h 摆好静态的控件，这一版全部停用，写「这项下一步做」。
+// 这里没有任何算法，只有版式。名字和顺序跟桌面一样（frame_panel.js、curves.js）。
 
 import { button, el } from './dom';
 
@@ -95,39 +95,6 @@ export function framePanel(): HTMLElement {
   weight.classList.add('push');
   colors.append(weight);
   panel.append(strip, colors, chipRow(['标志', '参数', '日期'], null), switchRow('时间戳', '印在照片上：橙色数码管，右下角'));
-  return panel;
-}
-
-function lutCard(name: string, tint: string | null): HTMLButtonElement {
-  const card = button('rc', '');
-  card.disabled = true;
-  const thumb = el('div', 'th');
-  if (tint) thumb.style.background = tint;
-  else thumb.textContent = '×';
-  card.append(thumb, el('div', 'nm', name));
-  return card;
-}
-
-/** 03g：不用 LUT 和示例、输入色彩空间、说明、导入。 */
-export function lutPanel(): HTMLElement {
-  const panel = shell('lut');
-  const strip = el('div', 'strip inpanel');
-  strip.append(
-    lutCard('不用 LUT', null),
-    lutCard('胶片暖调', 'linear-gradient(135deg,#6b4a2b,#d9a560)'),
-    lutCard('青橙电影', 'linear-gradient(135deg,#1f5a66,#e0904a)'),
-    lutCard('黑金', 'linear-gradient(135deg,#111,#b8963e)'),
-  );
-  const space = button('lrow pad', '');
-  space.disabled = true;
-  const text = el('div');
-  text.append(el('b', '', '输入色彩空间'), el('small', '', 'sRGB · 文件已写明'));
-  space.append(text);
-  const add = button('btn block', '导入 LUT（.cube 文件）');
-  add.disabled = true;
-  const addRow = el('div', 'pad');
-  addRow.append(add);
-  panel.append(strip, space, el('p', 'pad faint small', 'LUT 会拟合成一个配方，只在这台 iPhone 上用。效果是电脑预测，不写入相机。'), addRow);
   return panel;
 }
 

@@ -149,7 +149,15 @@ try {
   await page.waitForSelector('.app[data-core="1"]', { timeout: 30_000 });
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
   await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
-  await page.locator('input.filepick:not(.calibpick)').setInputFiles([...manifest.files, manifest.dat]);
+  if (manifest.lut) {
+    await page.locator('input.lutpick').setInputFiles(manifest.lut.path);
+    await page.waitForFunction(
+      (id) => Boolean(window.__gxrLutBook?.get(id)),
+      manifest.lut.cubeId,
+      { timeout: 60_000 },
+    );
+  }
+  await page.locator('input.filepick:not(.calibpick):not(.lutpick)').setInputFiles([...manifest.files, manifest.dat]);
   await page.waitForFunction(
     (n) => {
       const sub = document.querySelector('.nav small');
@@ -206,6 +214,17 @@ try {
     await knob(page, 'builtin:2', 0);
     await setAdjust(page, 'exposure_ev', 0.7);
     await setAdjust(page, 'contrast', 12);
+    if (manifest.lut) {
+      await page.locator('.tabs button[data-tab="lut"]').click();
+      await page.locator(`.panel.lut .rc[data-lut="${manifest.lut.cubeId}"]`).click();
+      await page.waitForFunction(
+        ({ stem, cubeId }) =>
+          Boolean(document.querySelector('.tabs button[data-tab="lut"].dot')) &&
+          window.__gxrEdits().find((row) => row.stem === stem)?.lut === cubeId,
+        { stem: source, cubeId: manifest.lut.cubeId },
+        { timeout: 60_000 },
+      );
+    }
     out.steps.source = { edit: (await edits(page)).find((row) => row.stem === source), side: (await sides(page, [source]))[source] };
 
     // 复制（默认的两组）→ 先不套用 → 网格里选三张目标 → 套用调整。

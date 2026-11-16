@@ -8,11 +8,12 @@
 import init, { color_resolve, export_complete, export_meta_preview, export_output_sizes, export_plan, export_prepare, type InitOutput } from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { shotSize, jpegSize, dngSize } from '../lib/photo_size';
+import { LUT_ERRORS } from '../lib/lut';
 import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJob } from './export_protocol';
 
 let ready: Promise<InitOutput> | null = null;
 let wasm: InitOutput | null = null;
-let setup: ExportSetup = { dat: null, calibIndex: '', calibBlob: null };
+let setup: ExportSetup = { dat: null, calibIndex: '', calibBlob: null, luts: {} };
 
 function load(): Promise<InitOutput> {
   ready ??= init({ module_or_path: wasmUrl }).then((out) => {
@@ -136,7 +137,17 @@ async function runJob(job: ExportJob): Promise<void> {
       if ((req.side as { recipe?: unknown }).recipe) throw coreFail(err);
     }
   }
-  // 4. 相机 JPG 只在要用时解码（原样导出、编辑过的相机 JPG）。
+  // 4. LUT 快照（如果在编辑状态选了 LUT，找不到快照就按桌面语义直接拒绝，绝不静默跳过）。
+  const lutId = typeof (req.side as { lut?: unknown }).lut === 'string' ? (req.side as { lut: string }).lut : null;
+  let cubeBytes: Uint8Array = EMPTY;
+  let spaceText = '';
+  if (lutId) {
+    const lutEntry = setup.luts?.[lutId];
+    if (!lutEntry) throw new Fail('core', 'cube_not_found', LUT_ERRORS.cube_not_found);
+    cubeBytes = new Uint8Array(lutEntry.cube);
+    spaceText = lutEntry.space || '{}';
+  }
+  // 5. 相机 JPG 只在要用时解码（原样导出、编辑过的相机 JPG）。
   let jpg: { data: Uint8Array; width: number; height: number } | null = null;
   if (jpgBytes && (req.needsJpg || plan.original)) jpg = await decodeJpeg(jpgBytes);
   const calibBlob = setup.calibBlob ? new Uint8Array(setup.calibBlob) : EMPTY;
@@ -145,7 +156,7 @@ async function runJob(job: ExportJob): Promise<void> {
       shotText, sideText, JSON.stringify(req.defaults), JSON.stringify(req.layout), req.base,
       req.quality, req.longEdge, req.hdr, '', EMPTY,
       dat, entry, setup.calibIndex, calibBlob, req.binding,
-      dngBytes ?? EMPTY, jpgBytes ?? EMPTY, EMPTY, '',
+      dngBytes ?? EMPTY, jpgBytes ?? EMPTY, cubeBytes, spaceText,
       jpg?.data ?? EMPTY, jpg?.width ?? 0, jpg?.height ?? 0,
       preview?.data ?? EMPTY, preview?.width ?? 0, preview?.height ?? 0,
       req.mtimeMs, req.tzOffsetMin,

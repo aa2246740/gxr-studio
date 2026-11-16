@@ -5,6 +5,7 @@ import { unitOfLens } from '../lib/calib';
 import { cloneCrop, geometrySidecar, sideSubset, zeroGeometry } from '../lib/crop';
 import { mergeMeta } from '../lib/exif';
 import { formatClock } from '../lib/group';
+import { isDisplaySpace } from '../lib/lut';
 import { copyFrom, pasteBatch, PasteUndo, undoBatch, type Clip, type Env, type Target } from '../lib/paste';
 import { shelf, shelves } from '../lib/recipes';
 import { copyMessage, groupName, pasteMessage, undoMessage, type GroupId, type Outcome } from '../lib/paste_text';
@@ -44,9 +45,15 @@ function targetOf(photo: Photo): Target {
 
 function envOf(api: AppApi): Env {
   const dat = api.book().dat;
+  const lutBook = (api as Partial<AppApi>).lutBook?.();
   return {
     recipeWithoutRaw: false,
     listed: (unit, id) => (dat ? shelf(shelves(dat.listing, unit), 'all').some((card) => card.id === id) : false),
+    lutNeedsRaw: (cubeId) => {
+      const rec = lutBook?.get(cubeId);
+      if (!rec || !rec.input_space) return 'missing';
+      return !isDisplaySpace(rec.input_space);
+    },
   };
 }
 
@@ -300,7 +307,7 @@ function exposeEdits(api: AppApi): void {
     if (!photo) return null;
     const { requestPhoto, cardsFor } = await import('./export_ui');
     const { buildRequest } = await import('../lib/export_request');
-    return buildRequest(requestPhoto(photo), cardsFor(api.book(), photo), { size: 'original', quality: 'high' }, 'dev');
+    return buildRequest(requestPhoto(photo, api.lutBook()), cardsFor(api.book(), photo), { size: 'original', quality: 'high' }, 'dev');
   };
   w.__gxrEdits = () =>
     api.photos().map((photo) => ({
@@ -309,6 +316,7 @@ function exposeEdits(api: AppApi): void {
       choice: photo.choice,
       levels: Object.fromEntries(photo.levels),
       memory: Object.fromEntries(photo.memory),
+      lut: photo.lut,
       knobs: { ...photo.knobs },
       frame: photo.frame,
       geometry: { ...photo.geometry },

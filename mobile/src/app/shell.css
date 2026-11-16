@@ -64,7 +64,7 @@ h1, h2, p { margin: 0; }
 .app { position: relative; background: var(--surface-app); display: flex; flex-direction: column; }
 .view { flex: 1; min-height: 0; position: relative; }
 .screen { position: absolute; inset: 0; display: flex; flex-direction: column; padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); }
-.filepick { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.filepick, .lutpick { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .ico { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .num { font-variant-numeric: tabular-nums; font-family: var(--font-num); }
 .dim { color: var(--text-2); }
@@ -438,3 +438,56 @@ svg.curve { width: min(220px, 52vw); height: auto; flex: none; border-radius: 10
 .krow .lab { width: 72px; flex: none; font-size: 15px; color: var(--text-1); }
 .krow .slider { flex: 1; height: 44px; }
 .krow .val { width: 44px; flex: none; text-align: right; font-size: 15px; }
+
+/* LUT（03g 与输入色彩空间弹层） */
+.tabs button.dot::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  left: calc(50% + 16px);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-text);
+}
+.rc .th.lut-none { font-size: 26px; font-weight: 300; color: var(--text-2); }
+.rc .th.lut-deleted-th { font-size: 22px; font-weight: 600; color: var(--danger-text); background: var(--danger-bg); }
+.panel.lut .strip.inpanel .rc .sub:empty { display: none; }
+.panel.lut .lrow { border-top: 0; min-height: 56px; }
+.panel.lut .lrow:disabled { opacity: 0.5; }
+.panel.lut .lrow small.warn { color: var(--warn-text); }
+.panel.lut .lut-chev { color: var(--text-3); display: inline-flex; flex: none; }
+.panel.lut .lut-chev .ico { width: 18px; height: 18px; }
+.panel.lut .lut-foot { margin-top: 2px; margin-bottom: 12px; }
+.panel.lut .lut-status { margin-bottom: 8px; color: var(--warn-text); }
+.panel.lut .lut-add-row .btn .ico { width: 18px; height: 18px; }
+.lut-missing { margin-top: 4px; }
+.lut-sheet .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--gray-600); margin: -10px auto 10px; }
+.lut-space-sheet { max-height: 84%; display: flex; flex-direction: column; }
+.lut-space-sheet .hd, .lut-action-sheet .hd { display: flex; align-items: center; justify-content: space-between; }
+.lut-sheet-meta { margin-top: 10px; }
+.lut-sheet-meta .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lut-sheet-name { font: 600 15px/20px var(--font-ui); }
+.lut-sheet-note { margin-top: 6px; }
+.lut-sheet-err { margin-top: 6px; }
+.lut-space-list { flex: 1; min-height: 0; overflow: auto; margin-top: 10px; border-top: 1px solid var(--line-subtle); }
+.lut-space-group { padding: 10px 0 4px; font: 600 12px/16px var(--font-ui); color: var(--text-3); }
+.lut-space-adv { flex: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.lut-adv-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lut-adv-row .seg { width: 224px; flex: none; }
+.lut-adv-row .seg button { min-height: 36px; font-size: 13px; white-space: nowrap; }
+.lut-act-stack { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.lut-action-file { margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn.danger { background: var(--danger-bg); color: var(--danger-text); box-shadow: inset 0 0 0 1px rgba(255, 122, 112, 0.28); }
+.lut-name-input {
+  width: 100%;
+  margin-top: 12px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-control);
+  color: var(--text-1);
+  user-select: text;
+  -webkit-user-select: text;
+}
