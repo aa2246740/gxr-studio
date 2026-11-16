@@ -22,10 +22,11 @@ from PIL import Image, ImageDraw
 from gxr_studio.finish import frame_texture
 from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, PilFonts, draw_run
 from gxr_studio.finish.frame_core import Type
+from gxr_studio.finish.layout import advance, glyph_xs
 from support.core_cli import require_cli, run_json, run_npy
 from support.export_pipeline_cases import anon_ids, check, cli_ok, same_kind, same_pixels, same_redacted
 from support.frame_cases import FIXTURE_CJK
-from support.ink_text_cases import dehinted_font_paths, font_path, patched_pil_fonts
+from support.ink_text_cases import dehinted_font_paths, font_path, open_pil_face, patched_pil_fonts
 from support.wasm_check import run_area
 
 
@@ -239,17 +240,42 @@ def test_inktext_run_cjk_and_hinted_report_exact_false(tmp_path: Path) -> None:
     same_kind(err_payload, "missing_cjk", "missing cjk font error")
 
 
+def _pillow_gxr_mark(atkinson_path: Path) -> dict[str, int]:
+    """Independent Pillow computation of the untrimmed 1000 px 'GXR' mark box."""
+    face = open_pil_face(atkinson_path, 1000)
+    metrics = FontMetrics()
+    w = math.floor(advance(metrics, "atkinson", 1000, "GXR") + 0.5)
+    h = int(sum(face.getmetrics()))
+    ref = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(ref)
+    for ch, x in zip("GXR", glyph_xs(metrics, "atkinson", 1000, "GXR", 0), strict=True):
+        draw.text((x, 0), ch, fill=255, font=face)
+    rows = np.nonzero(np.asarray(ref).any(axis=1))[0]
+    return {"w": w, "h": h, "ink_top": int(rows[0]), "ink_bottom": int(rows[-1])}
+
+
 def test_gxr_mark_cli_wasm_parity_and_errors(tmp_path: Path) -> None:
     """inktext-mark CLI vs gxr_mark WASM parity across real, de-hinted, and missing fonts."""
     dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
     real_atkinson = [["atkinson", str(font_path("atkinson"))]]
     dehint_atkinson = [["atkinson", str(dehinted["atkinson"])]]
 
-    # Sanity check CLI output structure directly
+    # Exact de-hinted mark check against independent Pillow calculation & expected spec metrics.
+    code_dh, payload_dh = run_json(["inktext-mark", "--font", f"atkinson={dehinted['atkinson']}"])
+    cli_ok(code_dh, payload_dh, "inktext-mark dehint")
+    want_dh = _pillow_gxr_mark(dehinted["atkinson"])
+    same_redacted(payload_dh, want_dh, "inktext-mark dehint vs pillow")
+    same_redacted(
+        payload_dh,
+        {"w": 1951, "h": 1240, "ink_top": 270, "ink_bottom": 961},
+        "inktext-mark exact untrimmed metrics",
+    )
+
+    # Real hinted atkinson mark check
     code, payload = run_json(["inktext-mark", "--font", f"atkinson={font_path('atkinson')}"])
     cli_ok(code, payload, "inktext-mark real")
-    check(int(payload.get("w", 0)) > 1000 and int(payload.get("h", 0)) > 400, "mark dimensions plausible")
-    check(payload.get("ink_top") == 0 and int(payload.get("ink_bottom", -1)) == int(payload["h"]) - 1, "tight ink bounds")
+    check(int(payload.get("w", 0)) == 1951 and int(payload.get("h", 0)) == 1240, "real mark dimensions")
+    check(0 < int(payload.get("ink_top", 0)) < int(payload.get("ink_bottom", 0)) < int(payload["h"]) - 1, "untrimmed ink bounds")
 
     # Missing atkinson -> missing_font
     code_miss, err_miss = run_json(["inktext-mark", "--font", f"inter={font_path('inter')}"])
@@ -270,11 +296,9 @@ def test_gxr_mark_cli_wasm_parity_and_errors(tmp_path: Path) -> None:
     proc = run_area("inktext", specs, tmp_path)
     check(proc.returncode == 0, "wasm inktext mark parity failed")
 
-    # Real vs dehinted mark metrics remain close (atkinson hinting at 1000px shifts <= 2px)
-    code_dh, payload_dh = run_json(["inktext-mark", "--font", f"atkinson={dehinted['atkinson']}"])
-    cli_ok(code_dh, payload_dh, "inktext-mark dehint")
+    # Real vs dehinted mark metrics remain close (atkinson hinting at 1000px shifts <= 4px)
     same_redacted(
-        [abs(int(payload["w"]) - int(payload_dh["w"])) <= 4, abs(int(payload["h"]) - int(payload_dh["h"])) <= 4],
+        [abs(int(payload["w"]) - int(payload_dh["w"])) <= 4, abs(int(payload["ink_top"]) - int(payload_dh["ink_top"])) <= 4],
         [True, True],
         "mark real vs dehinted delta bound",
     )

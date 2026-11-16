@@ -80,8 +80,8 @@ fn precheck_clogos(items: &[Val], logos: &[LogoInput]) -> Result<(), CoreError> 
 
 /// Port of `gxr_studio/finish/frame.py:draw_frame`.
 ///
-/// Returns `(canvas, exact)` where `exact == false` if any `"text"` item relied on hinting or CFF
-/// glyphs or if a built-in `"logo"` mark item was painted.
+/// Returns `(canvas, exact)` where `exact == false` if any `"text"` item or built-in `"logo"`
+/// mark item relied on hinting or CFF glyphs.
 pub fn draw_frame(
     photo: &InkImage,
     layout: &Val,
@@ -244,14 +244,38 @@ pub fn draw_frame(
                         "height and width must be > 0",
                     ));
                 }
+                let logo_fill = match parse_opt_rgb3(item.get("fill"), "logo.fill")? {
+                    Some(rgb) => rgb,
+                    None => match parse_opt_rgb3(layout.get("ink"), "layout.ink")? {
+                        Some(rgb) => rgb,
+                        None => {
+                            let luma = 0.299 * f64::from(bg[0])
+                                + 0.587 * f64::from(bg[1])
+                                + 0.114 * f64::from(bg[2]);
+                            if luma < 128.0 {
+                                [244, 244, 246]
+                            } else {
+                                [22, 22, 26]
+                            }
+                        }
+                    },
+                };
                 if mark_cache.is_none() {
                     mark_cache = Some(gxr_mark(fonts)?);
                 }
                 let mark = mark_cache
                     .as_ref()
                     .ok_or_else(|| bad_frame("mark cache uninitialized"))?;
-                paint_logo_with_mark(&mut canvas, x, y, w_i64 as u64, h_i64 as u64, mark)?;
-                exact = false;
+                exact &= paint_logo_with_mark(
+                    &mut canvas,
+                    x,
+                    y,
+                    w_i64 as u64,
+                    h_i64 as u64,
+                    logo_fill,
+                    mark,
+                    fonts,
+                )?;
             }
             "clogo" => {
                 let id = opt_str(item, "id", "")?;

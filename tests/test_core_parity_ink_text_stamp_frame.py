@@ -12,21 +12,22 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, PilFonts
 from gxr_studio.finish.frame import draw_frame
-from gxr_studio.finish.layout import frame_layout, stamp_layout
+from gxr_studio.finish.layout import frame_layout, glyph_xs, stamp_layout
 from gxr_studio.finish.logo_math import LogoInfo
 from gxr_studio.finish.spec import FRAME_STYLES, FrameSpec, StampSpec
 from gxr_studio.finish.stamp import apply_stamp, format_stamp
 from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import anon_ids, check, cli_ok, same_kind, same_pixels
 from support.frame_cases import FIXTURE_CJK
-from support.ink_text_cases import dehinted_font_paths, font_path, patched_pil_fonts
+from support.ink_text_cases import dehinted_font_paths, font_path, open_pil_face, patched_pil_fonts
 
 
 @pytest.fixture(autouse=True)
@@ -277,9 +278,78 @@ def test_gate_a_draw_frame_all_styles_exact(case_idx: int, tmp_path: Path) -> No
     same_pixels(np.load(out_npy), want, f"frame-{tag}")
 
 
+def _pillow_paint_builtin_logo(
+    im: Image.Image,
+    item: dict[str, Any],
+    fill: tuple[int, int, int],
+    atkinson_path: Path,
+    h_ref: int,
+) -> None:
+    """Independent Pillow oracle for built-in GXR logo painting via draw_run at target px."""
+    metrics = FontMetrics()
+    h = int(item["h"])
+    x0 = int(item["x"])
+    y0 = int(item["y"])
+    px = max(1, round(1000 * h / h_ref))
+    face = open_pil_face(atkinson_path, px)
+    draw = ImageDraw.Draw(im)
+    for ch, x in zip("GXR", glyph_xs(metrics, "atkinson", px, "GXR", x0), strict=True):
+        draw.text((x, y0), ch, font=face, fill=fill)
+
+
 def test_frame_builtin_logo_mark_and_errors(tmp_path: Path) -> None:
-    """Built-in 'logo' mark paints GXR wordmark with exact=False; missing clogo errors unknown_logo."""
+    """Built-in 'logo' mark redraws 'GXR' via draw_run matching Pillow 0-diff on dehinted fonts."""
     dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
+    h_ref = int(sum(open_pil_face(dehinted["atkinson"], 1000).getmetrics()))
+
+    # 1. Explicit item.fill and layout.ink fallback (Gate A 0-diff vs independent Pillow oracle).
+    tiny_photo = np.zeros((1, 1, 3), dtype=np.uint8)
+    tiny_npy = tmp_path / "logo-tiny.npy"
+    np.save(tiny_npy, tiny_photo)
+    logo_item = {"k": "logo", "x": 5, "y": 7, "w": round(1951 * 120 / h_ref), "h": 120, "fill": [200, 40, 30]}
+    for tag, item_obj, want_fill in (
+        ("item-fill", logo_item, (200, 40, 30)),
+        ("layout-ink", {k: v for k, v in logo_item.items() if k != "fill"}, (10, 20, 30)),
+    ):
+        layout_obj = {"width": 300, "height": 180, "bg": [255, 255, 255], "ink": [10, 20, 30], "items": [item_obj]}
+        out_npy = tmp_path / f"builtin-{tag}.npy"
+        code, payload = run_json(
+            [
+                "inktext-frame",
+                "--in",
+                str(tiny_npy),
+                "--layout-json",
+                json.dumps(layout_obj),
+                *_font_args(dehinted),
+                "--out",
+                str(out_npy),
+            ]
+        )
+        cli_ok(code, payload, "inktext-frame builtin logo fill")
+        check(payload.get("exact") is True, "dehinted builtin logo must report exact=True")
+        want_im = Image.new("RGB", (300, 180), (255, 255, 255))
+        _pillow_paint_builtin_logo(want_im, item_obj, want_fill, dehinted["atkinson"], h_ref)
+        same_pixels(np.load(out_npy), np.asarray(want_im), f"builtin-logo-{tag}")
+
+    # Real hinted atkinson -> exact=False
+    real_fonts = {name: font_path(name) for name in FONT_FILES}
+    real_out = tmp_path / "builtin-real.npy"
+    code_real, payload_real = run_json(
+        [
+            "inktext-frame",
+            "--in",
+            str(tiny_npy),
+            "--layout-json",
+            json.dumps({"width": 300, "height": 180, "bg": [255, 255, 255], "items": [logo_item]}),
+            *_font_args(real_fonts),
+            "--out",
+            str(real_out),
+        ]
+    )
+    cli_ok(code_real, payload_real, "inktext-frame builtin logo real")
+    check(payload_real.get("exact") is False, "hinted builtin logo must report exact=False")
+
+    # 2. Leica white/black frames without item.fill or layout.ink fall back to bg palette ink (0-diff).
     photo = _synth_photo(180, 120, seed=401)
     in_npy = tmp_path / "logo-photo.npy"
     np.save(in_npy, photo)
@@ -305,16 +375,23 @@ def test_frame_builtin_logo_mark_and_errors(tmp_path: Path) -> None:
                 str(out_npy),
             ]
         )
-        cli_ok(code, payload, "inktext-frame builtin logo")
-        check(payload.get("exact") is False, "builtin logo mark must report exact=False")
-        got = np.load(out_npy)
+        cli_ok(code, payload, "inktext-frame leica logo")
+        check(payload.get("exact") is True, "dehinted leica logo must report exact=True")
+        fl_no_logo = type(fl)(
+            width=fl.width,
+            height=fl.height,
+            photo=fl.photo,
+            items=tuple(it for it in fl.items if it.get("k") != "logo"),
+            bg=fl.bg,
+            bgfx=fl.bgfx,
+            grain=fl.grain,
+        )
+        with patched_pil_fonts(dehinted):
+            want_im = draw_frame(Image.fromarray(photo, "RGB"), fl_no_logo, PilFonts())
         logo_items = [it for it in fl.items if it.get("k") == "logo"]
         check(len(logo_items) == 1, "expected 1 logo item")
-        li = logo_items[0]
-        box = got[li["y"] : li["y"] + li["h"], li["x"] : li["x"] + li["w"]]
-        # Verify at least some pixels inside logo box reached the expected ink RGB
-        dist = np.abs(box.astype(np.int16) - np.array(expected_ink, dtype=np.int16)).sum(axis=2)
-        check(int((dist <= 4).sum()) > 10, "builtin logo ink color mismatch")
+        _pillow_paint_builtin_logo(want_im, logo_items[0], expected_ink, dehinted["atkinson"], h_ref)
+        same_pixels(np.load(out_npy), np.asarray(want_im), f"leica-builtin-logo-{color}")
 
     # Missing clogo in bundle -> unknown_logo before rendering
     bad_layout = {
