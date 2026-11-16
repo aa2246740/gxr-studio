@@ -1,8 +1,10 @@
 // 这一次打开里的照片。文件句柄留着，字节只在正在看的那一张上。
 
 import type { RawLayout, Scene } from '../../../frontend/src/index';
+import type { CropState, GeometryState } from '../lib/crop';
 import type { PhotoMeta } from '../lib/exif';
 import type { GapMinutes, Order } from '../lib/group';
+import type { Frame } from '../lib/photo_size';
 import type { Choice } from '../lib/recipes';
 import type { Book } from './book';
 import { lookCache } from './looks';
@@ -61,8 +63,14 @@ export interface Photo {
   /** 相机 JPG 和 DNG 里读到的镜头名、ISO（桌面导入时先用 JPG 的）。 */
   jpgMeta: PhotoMeta | null;
   dngMeta: PhotoMeta | null;
+  /** 文件头读出的方向和转正尺寸（JPG 优先，否则 DNG）。裁剪提交和导出用来对拍。 */
+  frame: Frame | null;
+  /** 手机端的几何编辑（只有拉直；旋转 90° / 翻转 / 透视 / 畸变留在 0 / false）。 */
+  geometry: GeometryState;
+  /** 手机端的裁切状态；null 表示未改过（默认原比例）。 */
+  crop: CropState | null;
   /**
-   * 编辑状态的版本：每次落定的修改（选配方、旋钮松手、滑块松手、重置、套用、撤销）加一。重新选同一张照片不变。
+   * 编辑状态的版本：每次落定的修改（选配方、旋钮松手、滑块松手、裁剪/拉直落定、重置、套用、撤销）加一。重新选同一张照片不变。
    * 撤销套用时核对它，和桌面 sidecar 的 rev 一样：套用之后又改过的不还原。
    */
   rev: number;

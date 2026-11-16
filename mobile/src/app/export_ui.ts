@@ -99,6 +99,9 @@ export function requestPhoto(photo: Photo): RequestPhoto {
     levels: photo.levels,
     memory: photo.memory,
     knobs: photo.knobs,
+    frame: photo.frame,
+    geometry: photo.geometry,
+    crop: photo.crop,
     sourceModified: source?.lastModified ?? photo.lastModified,
   };
 }

@@ -1,0 +1,378 @@
+// Sol r1 regressions in headless Chrome (SwiftShader WebGPU + real WASM Workers):
+// - P2-01: stale async Worker reply on repick, navigation, undo-after-paste, and clear/delete
+// - P2-02: ruler pointercancel restores committed state without committing or calling WASM
+// - P2-03: RAW without DAT and uncalibrated RAW redraw cropped neutral cards cleanly with empty error banner
+
+import { readFileSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { cellOf, pickAll } from './mobile_ui_export_parity.mjs';
+
+const [runtime, url, manifestPath] = process.argv.slice(2);
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+const { launchPinnedChromium, verifyPinnedRuntime } = await import(pathToFileURL(runtime).href);
+verifyPinnedRuntime();
+
+const browser = await launchPinnedChromium({
+  args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'],
+});
+
+const out = { pageErrors: [], steps: {} };
+
+function installWorkerGate() {
+  const heldOps = new Set();
+  const heldQueue = [];
+  const sentOps = [];
+  const origPost = Worker.prototype.postMessage;
+  const inflightByWorker = new WeakMap();
+  const desc = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage');
+
+  Object.defineProperty(Worker.prototype, 'onmessage', {
+    configurable: true,
+    get() {
+      return desc.get.call(this);
+    },
+    set(fn) {
+      if (typeof fn !== 'function') {
+        desc.set.call(this, fn);
+        return;
+      }
+      const worker = this;
+      desc.set.call(worker, function (ev) {
+        const id = ev?.data?.id;
+        const map = inflightByWorker.get(worker);
+        const op = map?.get(id);
+        if (op) map.delete(id);
+        if (op && heldOps.has(op)) {
+          heldQueue.push({ worker, fn, ev, op });
+          return;
+        }
+        return fn.call(this, ev);
+      });
+    },
+  });
+
+  Worker.prototype.postMessage = function (message, ...rest) {
+    if (message && typeof message === 'object' && typeof message.op === 'string' && typeof message.id === 'number') {
+      sentOps.push({ op: message.op, id: message.id });
+      let map = inflightByWorker.get(this);
+      if (!map) {
+        map = new Map();
+        inflightByWorker.set(this, map);
+      }
+      map.set(message.id, message.op);
+    }
+    return origPost.call(this, message, ...rest);
+  };
+
+  window.__workerGate = {
+    hold(op) {
+      heldOps.add(op);
+    },
+    unhold(op) {
+      heldOps.delete(op);
+    },
+    pendingCount(op) {
+      return heldQueue.filter((item) => !op || item.op === op).length;
+    },
+    sentCount(op) {
+      return sentOps.filter((item) => !op || item.op === op).length;
+    },
+    flush(op) {
+      const keep = [];
+      const fire = [];
+      for (const item of heldQueue) {
+        if (!op || item.op === op) fire.push(item);
+        else keep.push(item);
+      }
+      heldQueue.length = 0;
+      heldQueue.push(...keep);
+      for (const item of fire) item.fn?.call(item.worker, item.ev);
+    },
+  };
+}
+
+async function settle(page) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await page.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
+    const reloaded = await page.waitForEvent('framenavigated', { timeout: 4_000 }).then(() => true).catch(() => false);
+    if (!reloaded) return;
+  }
+  throw new Error('page kept reloading');
+}
+
+async function newPage() {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  page.on('pageerror', (error) => out.pageErrors.push(error.message));
+  await page.addInitScript(installWorkerGate);
+  await page.goto(url);
+  await settle(page);
+  return page;
+}
+
+async function openPhoto(page, stem) {
+  await page.locator(cellOf(stem)).evaluate((node) => node.click());
+  await page.waitForFunction((want) => document.querySelector('.editor')?.dataset.photo === want, stem, { timeout: 120_000 });
+  await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, stem, { timeout: 120_000 });
+  await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
+}
+
+async function backToGrid(page) {
+  await page.getByRole('button', { name: '照片', exact: true }).click();
+  await page.waitForSelector('[data-screen="grid"]');
+}
+
+async function selectPreset(page, stem, id) {
+  const chip = page.locator(`.crop-panel .chips button[data-preset="${id}"]`);
+  await chip.scrollIntoViewIfNeeded();
+  await chip.click();
+  await page.waitForFunction(
+    ({ s, want }) => {
+      const row = window.__gxrEdits?.().find((r) => r.stem === s);
+      return row && row.crop?.preset === want;
+    },
+    { s: stem, want: id },
+    { timeout: 30_000 },
+  );
+}
+
+async function editRow(page, stem) {
+  return page.evaluate((s) => window.__gxrEdits?.().find((r) => r.stem === s) ?? null, stem);
+}
+
+async function runStaleAndCancel() {
+  const page = await newPage();
+  const { stemA, stemB, jpgA, files } = manifest;
+  await pickAll(page, manifest, files);
+
+  await page.evaluate(() => {
+    window.__geomLog = [];
+    const eng = window.__gxrEngine;
+    if (eng) {
+      const orig = eng.setGeometry.bind(eng);
+      eng.setGeometry = (g) => {
+        window.__geomLog.push({
+          stem: document.querySelector('.editor')?.dataset.photo ?? null,
+          straighten: g?.straighten ?? 0,
+          box: g?.box ? [...g.box] : null,
+        });
+        return orig(g);
+      };
+    }
+  });
+
+  // 1) P2-02: Ruler pointercancel must restore angle/crop/rev without calling WASM
+  await openPhoto(page, stemA);
+  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.waitForSelector('.crop-panel');
+  await selectPreset(page, stemA, '16:9');
+  const beforeCancel = await editRow(page, stemA);
+  const geomCallsBefore = await page.evaluate(() => window.__workerGate.sentCount('geom-geometry-write'));
+  const rulerRect = await page.locator('.crop-panel .ruler').boundingBox();
+  const rMidX = Math.round(rulerRect.x + rulerRect.width / 2);
+  const rMidY = Math.round(rulerRect.y + rulerRect.height / 2);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [{ x: rMidX, y: rMidY, id: 1 }],
+  });
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchMove',
+    touchPoints: [{ x: rMidX - 36, y: rMidY, id: 1 }],
+  });
+  const duringDrag = await page.evaluate(() => document.querySelector('.app')?.dataset.drag);
+  const duringAngle = await page.evaluate(() => document.querySelector('.crop-panel .straighten .num')?.textContent?.trim());
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchCancel',
+    touchPoints: [],
+  });
+  await page.waitForTimeout(100);
+  const afterDrag = await page.evaluate(() => document.querySelector('.app')?.dataset.drag);
+  const afterAngle = await page.evaluate(() => document.querySelector('.crop-panel .straighten .num')?.textContent?.trim());
+  const rulerDragState = { duringDrag, duringAngle, afterDrag, afterAngle };
+  const afterCancel = await editRow(page, stemA);
+  const geomCallsAfter = await page.evaluate(() => window.__workerGate.sentCount('geom-geometry-write'));
+  out.steps.rulerCancel = {
+    ...rulerDragState,
+    beforeRev: beforeCancel.rev,
+    afterRev: afterCancel.rev,
+    beforeStraighten: beforeCancel.geometry.straighten,
+    afterStraighten: afterCancel.geometry.straighten,
+    sameCrop: JSON.stringify(beforeCancel.crop) === JSON.stringify(afterCancel.crop),
+    wasmCallsDelta: geomCallsAfter - geomCallsBefore,
+  };
+
+  // Straighten 2.0° normally so rev becomes 2
+  const rulerBox = await page.locator('.crop-panel .ruler').boundingBox();
+  const rcx = rulerBox.x + rulerBox.width / 2;
+  const rcy = rulerBox.y + rulerBox.height / 2;
+  await page.mouse.move(rcx, rcy);
+  await page.mouse.down();
+  await page.mouse.move(rcx - 36, rcy, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForFunction((s) => Math.abs((window.__gxrEdits?.().find((r) => r.stem === s)?.geometry?.straighten ?? 0) - 2) < 0.05, stemA, { timeout: 30_000 });
+
+  // 2) P2-01 (repick): Hold real 1:1 WASM reply, go back, re-pick same JPG, flush delayed reply
+  await page.evaluate(() => window.__workerGate.hold('geom-crop-write'));
+  await page.locator('.crop-panel .chips button[data-preset="1:1"]').click();
+  await page.waitForFunction(() => window.__workerGate.pendingCount('geom-crop-write') === 1, null, { timeout: 10_000 });
+  await backToGrid(page);
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles([jpgA]);
+  await page.waitForFunction(
+    (s) => {
+      const sub = document.querySelector('.nav small');
+      return sub && !sub.textContent.includes('正在读取') && window.__gxrEdits?.().some((r) => r.stem === s);
+    },
+    stemA,
+    { timeout: 30_000 },
+  );
+  await page.evaluate(() => {
+    window.__workerGate.unhold('geom-crop-write');
+    window.__workerGate.flush('geom-crop-write');
+  });
+  await page.waitForTimeout(200);
+  out.steps.staleRepick = await editRow(page, stemA);
+
+  // 3) P2-01 (navigation): Hold ArrowRight 0.1° straighten reply on A, open B, flush A's reply
+  await openPhoto(page, stemA);
+  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.waitForSelector('.crop-panel');
+  await page.evaluate(() => window.__workerGate.hold('geom-geometry-write'));
+  await page.locator('.crop-panel .ruler').focus();
+  await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(() => window.__workerGate.pendingCount('geom-geometry-write') === 1, null, { timeout: 10_000 });
+  await backToGrid(page);
+  await openPhoto(page, stemB);
+  const logStartB = await page.evaluate(() => window.__geomLog.length);
+  await page.evaluate(() => {
+    window.__workerGate.unhold('geom-geometry-write');
+    window.__workerGate.flush('geom-geometry-write');
+  });
+  await page.waitForTimeout(250);
+  const logAfterFlushB = await page.evaluate((from) => window.__geomLog.slice(from), logStartB);
+  out.steps.staleNavigation = {
+    editB: await editRow(page, stemB),
+    engineCallsDuringB: logAfterFlushB,
+  };
+
+  // 4) P2-01 (undo after paste): Copy A (16:9, 2°), apply to B, start 1:1 on B (held), undo paste on grid, flush 1:1
+  await backToGrid(page);
+  await openPhoto(page, stemA);
+  await page.locator('[data-act="copy"]').click();
+  await page.waitForSelector('.paste-sheet[data-state="copy-options"]');
+  for (const grp of ['geometry', 'crop']) {
+    const row = page.locator(`.paste-sheet .optrow[data-group="${grp}"]`);
+    if (!(await row.evaluate((n) => n.classList.contains('on')))) await row.click();
+  }
+  await page.locator('.paste-sheet .btn.primary').click();
+  await page.waitForSelector('.paste-sheet[data-state="copied-where"]');
+  await page.locator('.paste-sheet [data-act="apply-group"]').click();
+  await page.waitForSelector('.paste-dlg[data-state="confirm"]');
+  await page.locator('.paste-dlg [data-act="confirm"]').click();
+  await page.waitForSelector('.pastebar[data-state="applied"]', { timeout: 30_000 });
+
+  await openPhoto(page, stemB);
+  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.waitForSelector('.crop-panel');
+  await page.evaluate(() => window.__workerGate.hold('geom-crop-write'));
+  await page.locator('.crop-panel .chips button[data-preset="1:1"]').click();
+  await page.waitForFunction(() => window.__workerGate.pendingCount('geom-crop-write') === 1, null, { timeout: 10_000 });
+  await backToGrid(page);
+  await page.locator('.pastebar [data-act="undo"]').click();
+  await page.waitForSelector('.pastebar[data-state="info"]', { timeout: 10_000 });
+  await page.evaluate(() => {
+    window.__workerGate.unhold('geom-crop-write');
+    window.__workerGate.flush('geom-crop-write');
+  });
+  await page.waitForTimeout(200);
+  out.steps.staleUndoAfterPaste = await editRow(page, stemB);
+
+  // 5) P2-01 (clear/delete): Hold 4:5 on B, go back & clear all photos, flush delayed reply
+  await openPhoto(page, stemB);
+  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.waitForSelector('.crop-panel');
+  await page.evaluate(() => window.__workerGate.hold('geom-crop-write'));
+  await page.locator('.crop-panel .chips button[data-preset="4:5"]').click();
+  await page.waitForFunction(() => window.__workerGate.pendingCount('geom-crop-write') === 1, null, { timeout: 10_000 });
+  await backToGrid(page);
+  await page.locator('.nav .nb[aria-label="更多"]').click();
+  await page.locator('.ms .lrow', { hasText: '清空照片，重新选' }).click();
+  await page.waitForSelector('[data-screen="start"]', { timeout: 10_000 });
+  await page.evaluate(() => {
+    window.__workerGate.unhold('geom-crop-write');
+    window.__workerGate.flush('geom-crop-write');
+  });
+  await page.waitForTimeout(200);
+  out.steps.staleClearCount = await page.evaluate(() => window.__gxrEdits?.().length ?? -1);
+
+  await page.close();
+}
+
+async function checkRawNeutralCropCase(files, wantState, stem) {
+  const page = await newPage();
+  await pickAll(page, manifest, files);
+  await openPhoto(page, stem);
+  await page.waitForFunction(
+    (s) => document.querySelector('.strip[data-recipes]')?.dataset.state === s,
+    wantState,
+    { timeout: 60_000 },
+  );
+  // Wait for initial 192x128 neutral card canvases to render (at least all visible cards)
+  await page.waitForFunction(() => document.querySelectorAll('.strip[data-recipes] .rc .th canvas').length >= 8, null, { timeout: 60_000 });
+  const beforeCard = await page.evaluate(() => {
+    const c = document.querySelector('.strip[data-recipes] .rc .th canvas');
+    return c ? { w: c.width, h: c.height } : null;
+  });
+
+  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.waitForSelector('.crop-panel');
+  await selectPreset(page, stem, 'xpan-65-24');
+
+  // Wait for new XPan cropped neutral cards (landscape width > 2 * height) to redraw cleanly
+  await page.waitForFunction(
+    () => {
+      const canvases = [...document.querySelectorAll('.strip[data-recipes] .rc .th[data-cropped="1"] canvas')];
+      return canvases.length >= 8 && canvases.every((c) => c.width > c.height * 2);
+    },
+    null,
+    { timeout: 60_000 },
+  );
+  await page.waitForTimeout(150);
+
+  const errHidden = await page.locator('.crop-panel .crop-err').evaluate((n) => n.hidden);
+  const errText = (await page.locator('.crop-panel .crop-err').textContent())?.trim() ?? '';
+  const edit = await editRow(page, stem);
+  const afterCard = await page.evaluate(() => {
+    const c = document.querySelector('.strip[data-recipes] .rc .th canvas');
+    return c ? { w: c.width, h: c.height } : null;
+  });
+  await page.close();
+  return {
+    state: wantState,
+    errHidden,
+    errText,
+    rev: edit?.rev ?? null,
+    preset: edit?.crop?.preset ?? null,
+    beforeCard,
+    afterCard,
+  };
+}
+
+async function runRawClosedBitmap() {
+  const { dng, jpg, dat, stem } = manifest;
+  out.steps.noDat = await checkRawNeutralCropCase([dng, jpg], 'no-recipe-file', stem);
+  out.steps.uncalibrated = await checkRawNeutralCropCase([dng, jpg, dat], 'uncalibrated', stem);
+}
+
+try {
+  if (manifest.mode === 'staleAndCancel') await runStaleAndCancel();
+  else if (manifest.mode === 'rawClosedBitmap') await runRawClosedBitmap();
+  else throw new Error(`unknown regression mode: ${manifest.mode}`);
+} catch (error) {
+  out.error = String(error?.stack ?? error);
+} finally {
+  await browser.close();
+}
+
+writeFileSync(manifest.out, JSON.stringify(out));
+console.log(JSON.stringify({ done: true, error: out.error ? out.error.split('\n').slice(0, 2).join(' | ') : null }));
+if (out.error) process.exit(1);

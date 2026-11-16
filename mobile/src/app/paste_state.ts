@@ -2,12 +2,24 @@
 // 剪贴板只在这一页的内存里，和桌面一样；撤销也只在内存里，重新打开页面就没有了。
 
 import { unitOfLens } from '../lib/calib';
+import { cloneCrop, geometrySidecar, sideSubset, zeroGeometry } from '../lib/crop';
 import { mergeMeta } from '../lib/exif';
 import { formatClock } from '../lib/group';
 import { copyFrom, pasteBatch, PasteUndo, undoBatch, type Clip, type Env, type Target } from '../lib/paste';
 import { shelf, shelves } from '../lib/recipes';
 import { copyMessage, groupName, pasteMessage, undoMessage, type GroupId, type Outcome } from '../lib/paste_text';
 import type { AppApi, Photo } from './model';
+
+/** 几何 / 裁剪变了，把旧图刷出的中性小图和配方卡小图放掉（不在这里 static import model.ts，Node 测试安全）。 */
+function invalidateThumbs(photo: Photo | undefined): void {
+  if (!photo) return;
+  photo.neutral?.bitmap?.close?.();
+  photo.neutral = null;
+  if (photo.looks) {
+    for (const entry of photo.looks.values()) entry?.bitmap?.close?.();
+    photo.looks.clear();
+  }
+}
 
 /** model.ts 的 photoMs（这里只 import 类型，Node 测试不用把 looks.ts 也加载进来）。 */
 function photoMs(photo: Photo): number {
@@ -208,10 +220,42 @@ export class PasteState {
     const targets = photos.filter((photo) => api.photo(photo.id) === photo).map((photo) => targetOf(photo));
     let outcomes: Outcome[] = [];
     try {
+      const needsGeom = clip.groups.includes('geometry') || clip.groups.includes('crop');
+      const coreApi = needsGeom ? await import('../core/api') : null;
       outcomes = await pasteBatch(targets, clip, clip.groups, envOf(api), this.undo, batchId, {
         alive: () => api.session() === session,
         current: (id) => api.photo(id),
         budgetMs: this.budgetMs,
+        ...(coreApi
+          ? {
+              geom: {
+                applyGeometry: async (photo, geometry) => {
+                  const reply = await coreApi.geomGeometryWrite(
+                    sideSubset({
+                      frame: photo.frame ?? null,
+                      geometry: photo.geometry ?? zeroGeometry(),
+                      crop: photo.crop ?? null,
+                    }),
+                    geometrySidecar(geometry.straighten),
+                  );
+                  return {
+                    geometry: { straighten: reply.geometry?.straighten ?? 0 },
+                    crop: reply.crop,
+                  };
+                },
+                applyCrop: async (photo, geometry, crop, preset, rect) => {
+                  const reply = await coreApi.geomCropWrite(
+                    sideSubset({ frame: photo.frame ?? null, geometry, crop }),
+                    { preset, rect, fit: true },
+                  );
+                  return {
+                    geometry: { straighten: reply.geometry?.straighten ?? 0 },
+                    crop: reply.crop,
+                  };
+                },
+              },
+            }
+          : {}),
       });
     } finally {
       this.busy = false;
@@ -221,6 +265,7 @@ export class PasteState {
     const used = outcomes.some((r) => r.applied.length);
     const line = pasteMessage(outcomes);
     const ids = new Set(outcomes.filter((r) => r.applied.length).map((r) => r.id));
+    for (const id of ids) invalidateThumbs(api.photo(id));
     if (used) this.setBar({ kind: 'applied', batchId, line, sub: `${range} · ${groupsText(clip.groups)}`, used, ids });
     else this.setBar({ kind: 'info', line });
     this.edited(ids);
@@ -235,7 +280,9 @@ export class PasteState {
     const res = entries ? undoBatch(entries, (id) => api.photo(id)) : { counts: { restored: 0, changed: 0, error: 0 }, results: [] };
     const line = undoMessage(res);
     this.setBar({ kind: 'info', line });
-    this.edited(new Set(res.results.filter((r) => r.status === 'restored').map((r) => r.id)));
+    const restoredIds = new Set(res.results.filter((r) => r.status === 'restored').map((r) => r.id));
+    for (const id of restoredIds) invalidateThumbs(api.photo(id));
+    this.edited(restoredIds);
     return line;
   }
 }
@@ -243,7 +290,7 @@ export class PasteState {
 /** 整个页面一份。 */
 export const pasteState = new PasteState();
 
-/** 只在开发服务器里：测试读每张照片的编辑状态（配方、各配方的档位、调整、rev）。 */
+/** 只在开发服务器里：测试读每张照片的编辑状态（配方、各配方的档位、调整、几何、裁剪、rev）。 */
 function exposeEdits(api: AppApi): void {
   const w = window as unknown as { __gxrEdits?: () => unknown; __gxrPaste?: PasteState; __gxrRequest?: (stem: string) => Promise<unknown> };
   w.__gxrPaste = pasteState;
@@ -263,6 +310,9 @@ function exposeEdits(api: AppApi): void {
       levels: Object.fromEntries(photo.levels),
       memory: Object.fromEntries(photo.memory),
       knobs: { ...photo.knobs },
+      frame: photo.frame,
+      geometry: { ...photo.geometry },
+      crop: cloneCrop(photo.crop),
       ms: photoMs(photo),
     }));
 }

@@ -1,6 +1,7 @@
 // 手机上的三屏：起始、网格、编辑。不碰历史记录，返回就是回到网格。
 
 import { Engine, type RawLayout, type Scene } from '../../../frontend/src/index';
+import { zeroGeometry } from '../lib/crop';
 import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
@@ -103,13 +104,19 @@ class App implements AppApi {
     const { sampleFiles, reportShot, aliasFile } = await import('./shots');
     // UI-M2 的几屏：校准数据和相机配方文件也走样本端点（截图用的临时样本目录里起了 zz- 开头的别名）。
     const recipeShot = ['recipe', 'nocal', 'nodat', 'jpg'].includes(shot);
-    if (shot === 'calib' || shot === 'recipe') {
+    const cropShot = shot === 'crop' || shot === 'crop-editor';
+    if (shot === 'calib' || shot === 'recipe' || cropShot) {
       const pack = await aliasFile('zz-calib.dng', 'GXR 校准数据.zip');
       if (pack) await this.recipeBook.importPack(pack);
     } else if (recipeShot) await this.recipeBook.removePack();
     if (shot !== 'start' && shot !== 'calib') {
       let files = shot === 'jpg' ? [] : await sampleFiles();
-      const extra = shot === 'jpg' ? await aliasFile('zz-jpg.dng', 'R9990002.JPG') : shot === 'recipe' || shot === 'nocal' ? await aliasFile('zz-dat.dng', 'GXRCE.DAT') : null;
+      const extra =
+        shot === 'jpg'
+          ? await aliasFile('zz-jpg.dng', 'R9990002.JPG')
+          : shot === 'recipe' || shot === 'nocal' || cropShot
+            ? await aliasFile('zz-dat.dng', 'GXRCE.DAT')
+            : null;
       if (extra) files = [...files, extra];
       if (shot.endsWith('-hdr')) files = [...files, ...(await (await import('./export_shots')).hdrShotFiles(files))];
       if (files.length) {
@@ -118,7 +125,7 @@ class App implements AppApi {
       }
       for (let i = 0; i < 100 && (this.recipeBook.datBusy || this.recipeBook.packBusy); i++) await new Promise((done) => setTimeout(done, 100));
     }
-    if ((shot === 'editor' || shot === 'drag' || recipeShot) && this.byId.size) {
+    if ((shot === 'editor' || shot === 'drag' || recipeShot || cropShot) && this.byId.size) {
       const first = this.ordered()[0];
       if (first) this.open(first.id);
       await this.editor?.settled;
@@ -128,6 +135,18 @@ class App implements AppApi {
         await new Promise((done) => setTimeout(done, 1500));
         if (shot === 'recipe') this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
         await new Promise((done) => setTimeout(done, 800));
+      }
+      if (cropShot) {
+        this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
+        this.view.querySelector<HTMLButtonElement>('.tabs button[data-tab="2"]')?.click();
+        await new Promise((done) => setTimeout(done, 400));
+        this.view.querySelector<HTMLButtonElement>('.crop-panel .chips button[data-preset="xpan-65-24"]')?.click();
+        for (let i = 0; i < 60 && first?.crop?.preset !== 'xpan-65-24'; i++) await new Promise((done) => setTimeout(done, 100));
+        await new Promise((done) => setTimeout(done, 800));
+        if (shot === 'crop-editor') {
+          this.view.querySelector<HTMLButtonElement>('.tabs button[data-tab="0"]')?.click();
+          await new Promise((done) => setTimeout(done, 1200));
+        }
       }
     }
     // M3 复制 / 套用那几屏（04a–04e、02a 带剪贴板）。
@@ -448,6 +467,9 @@ class App implements AppApi {
           rev: 0,
           jpgMeta: null,
           dngMeta: null,
+          frame: null,
+          geometry: zeroGeometry(),
+          crop: null,
           choice: null,
           levels: new Map(),
           memory: new Map(),
@@ -500,6 +522,7 @@ class App implements AppApi {
     if (photo.jpg && photo.dng && reply.ok && reply.bitmap === null) {
       // 相机 JPG 解不出来：镜头名和 ISO 还是先记下 JPG 里读到的（桌面先用 JPG 的）。
       photo.jpgMeta = reply.meta;
+      if (reply.frame) photo.frame = reply.frame;
       this.drop(reply);
       const dng = photo.dng;
       from = dng;
@@ -519,8 +542,9 @@ class App implements AppApi {
       return;
     }
     let captureMs = reply.captureMs;
-    if (captureMs === null && from === photo.jpg && photo.dng) {
-      // 相机 JPG 里没有拍摄时间：照桌面导入（先 JPG、再 DNG，最后才是文件日期）用 DNG 的。只要时间和镜头，缩略图仍用 JPG 的。
+    let frame = reply.frame;
+    if ((captureMs === null || frame === null) && from === photo.jpg && photo.dng) {
+      // 相机 JPG 里没有拍摄时间或尺寸：照桌面导入（先 JPG、再 DNG，最后才是文件日期）用 DNG 的。
       const dng = photo.dng;
       const extra = await this.queue.run(dng, 'dng');
       if (!live(dng)) {
@@ -529,12 +553,14 @@ class App implements AppApi {
         return;
       }
       if (extra.ok && !extra.bad) {
-        captureMs = extra.captureMs;
+        if (captureMs === null) captureMs = extra.captureMs;
         photo.dngMeta = extra.meta;
+        if (frame === null) frame = extra.frame;
       }
       this.drop(extra);
     }
     if (captureMs !== null) photo.captureMs = captureMs;
+    if (frame) photo.frame = frame;
     if (from === photo.jpg) photo.jpgMeta = reply.meta;
     else photo.dngMeta = reply.meta;
     if (reply.bitmap) {

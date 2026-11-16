@@ -1,7 +1,20 @@
 // 模块 Worker：WASM 只在这里加载。主线程把 DNG 的一份拷贝传进来，原件留给显卡引擎。
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
-import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_calib_pack, color_listing, color_resolve, dng_describe } from '../wasm-pkg/gxr_wasm.js';
+import init, {
+  camdata_entries,
+  camdata_parse,
+  color_bake,
+  color_calib_check,
+  color_calib_pack,
+  color_listing,
+  color_resolve,
+  dng_describe,
+  export_output_sizes,
+  geom_crop_write,
+  geom_final_box,
+  geom_geometry_write,
+} from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
@@ -9,6 +22,7 @@ import { loadPack, savePack } from '../lib/idb';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
 import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, ResolveArgs } from './protocol';
 
+const EMPTY = new Uint8Array(0);
 let ready: Promise<unknown> | null = null;
 
 function load(): Promise<unknown> {
@@ -16,17 +30,22 @@ function load(): Promise<unknown> {
   return ready;
 }
 
-/** 核心的错误是 JSON 文本（kind、message）；拿出 message，拿不出就原样。 */
-function coreMessage(err: unknown): string {
+/** 核心的错误是 JSON 文本（kind、message）；拿出 code 和 message，拿不出就原样。 */
+function coreError(err: unknown): { code?: string; message: string } {
   const text = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
   try {
-    const parsed = JSON.parse(text) as { error?: { message?: unknown }; message?: unknown };
+    const parsed = JSON.parse(text) as { error?: { kind?: unknown; message?: unknown }; message?: unknown };
+    const code = typeof parsed.error?.kind === 'string' ? parsed.error.kind : undefined;
     const message = parsed.error?.message ?? parsed.message;
-    if (typeof message === 'string') return message;
+    if (typeof message === 'string') return { code, message };
   } catch {
     /* 不是 JSON，就用原文。 */
   }
-  return text;
+  return { message: text };
+}
+
+function coreMessage(err: unknown): string {
+  return coreError(err).message;
 }
 
 function ok(id: number, json: string, buffers: ArrayBuffer[] = []): void {
@@ -35,7 +54,8 @@ function ok(id: number, json: string, buffers: ArrayBuffer[] = []): void {
 }
 
 function failed(id: number, err: unknown): void {
-  const reply: CoreReply = { id, ok: false, message: coreMessage(err) };
+  const parsed = coreError(err);
+  const reply: CoreReply = { id, ok: false, code: parsed.code, message: parsed.message };
   self.postMessage(reply);
 }
 
@@ -185,6 +205,22 @@ function bake(id: number, args: BakeArgs): void {
   ok(id, meta, [own(bytes)]);
 }
 
+function geomCropWrite(id: number, side: string, request: string): void {
+  ok(id, geom_crop_write(side, request));
+}
+
+function geomGeometryWrite(id: number, side: string, geometry: string): void {
+  ok(id, geom_geometry_write(side, geometry));
+}
+
+function geomFinalBox(id: number, w: number, h: number, geometry: string, crop: string): void {
+  ok(id, geom_final_box(w, h, geometry, crop));
+}
+
+function outputSizes(id: number, w: number, h: number, side: string, rect: string, preset?: string): void {
+  ok(id, export_output_sizes(w, h, side, '{}', '{}', rect, preset, '', EMPTY));
+}
+
 async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   const { buffer, args, file, meta } = req;
   await load();
@@ -195,6 +231,10 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'bake' && args) bake(id, args);
   else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
   else if (op === 'calib-check' && req.check) calibCheck(id, req.check);
+  else if (op === 'geom-crop-write' && req.geom) geomCropWrite(id, req.geom.side, req.geom.payload);
+  else if (op === 'geom-geometry-write' && req.geom) geomGeometryWrite(id, req.geom.side, req.geom.payload);
+  else if (op === 'geom-final-box' && req.finalBox) geomFinalBox(id, req.finalBox.w, req.finalBox.h, req.finalBox.geometry, req.finalBox.crop);
+  else if (op === 'export-output-sizes' && req.sizes) outputSizes(id, req.sizes.w, req.sizes.h, req.sizes.side, req.sizes.rect, req.sizes.preset);
   else throw new Error('未知请求');
 }
 

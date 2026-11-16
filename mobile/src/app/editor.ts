@@ -5,8 +5,9 @@ import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
+import { CropStage, DEFAULT_GEOMETRY } from './crop_stage';
 import { button, el, icon, ICON } from './dom';
-import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
+import { curvesPanel, framePanel, lutPanel } from './later_panels';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
 import { lookCache } from './looks';
 import { pasteState } from './paste_state';
@@ -83,13 +84,17 @@ export class EditorView {
   private valueEl: HTMLElement | null = null;
   private labelEl: HTMLElement | null = null;
   private stageLabel: HTMLElement | null = null;
+  private pv: HTMLElement | null = null;
   private gpuCanvas: HTMLCanvasElement | null = null;
   private still: HTMLCanvasElement | null = null;
   private hist: HTMLCanvasElement | null = null;
   private caption = '';
+  private lookCaption = '';
   private sharp: ImageBitmap | null = null;
   private placeholder: HTMLElement | null = null;
   private recipes: RecipeView | null = null;
+  private cropStage: CropStage | null = null;
+  private pvObserver: ResizeObserver | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
   private recipeKey = NEUTRAL_BAKE_KEY;
   private tab = 1;
@@ -119,7 +124,12 @@ export class EditorView {
       if (this.photo && ids.has(this.photo.id) && this.api.photo(this.photo.id) === this.photo) this.api.open(this.photo.id);
     });
     this.build(photo, index);
-    this.settled = this.load(photo).then(() => this.sharpening);
+    this.shell.dataset.settled = '0';
+    this.settled = this.load(photo)
+      .then(() => this.sharpening)
+      .finally(() => {
+        if (this.photo === photo) this.shell.dataset.settled = photo.stem;
+      });
   }
 
   /** 模拟器没有显卡，滑块是停用的。截图时只把拖动中的版式摆出来。 */
@@ -129,15 +139,21 @@ export class EditorView {
 
   destroy(): void {
     this.token += 1;
+    this.photo = null;
     lookCache.setOpen(null);
     this.offPaste?.();
     this.offPaste = null;
     this.dragging = false;
     this.holding = false;
+    this.cropStage?.destroy();
+    this.cropStage = null;
     this.wantNeighbor = '';
     this.histAgain = false;
     this.cancelHistRetry();
+    this.pvObserver?.disconnect();
+    this.pvObserver = null;
     this.shell.dataset.drag = '0';
+    this.shell.dataset.settled = '0';
     this.sharp?.close();
     this.sharp = null;
     this.recipes?.destroy();
@@ -147,6 +163,50 @@ export class EditorView {
 
   private build(photo: Photo, index: number): void {
     this.photo = photo;
+    this.tab = 1;
+    this.lookCaption = '';
+    this.pvObserver?.disconnect();
+    this.pvObserver = null;
+    this.cropStage?.destroy();
+    this.cropStage = new CropStage(this.shell, this.api, this.engine, {
+      photo: () => this.photo,
+      mode: () => this.mode,
+      active: () => this.tab === 2,
+      sharp: () => this.sharp,
+      stillCanvas: () => this.still,
+      placeholderEl: () => this.placeholder,
+      pvEl: () => this.pv,
+      caption: () => this.caption,
+      holding: () => this.holding,
+      setHolding: (on, label) => {
+        if (on) {
+          this.holding = true;
+          this.restLabel = label ?? this.caption;
+          this.setLabel('原图');
+        } else {
+          this.holding = false;
+          this.setLabel(this.restLabel);
+        }
+        this.push();
+      },
+      setLabel: (text) => this.setLabel(text),
+      enterDrag: () => this.enterDrag(),
+      leaveDrag: () => this.leaveDrag(),
+      dragging: () => this.dragging,
+      requestHist: () => this.requestHist(),
+      swipe: (id, dir) => this.api.swipe(id, dir),
+      onCommitted: (target, changed) => {
+        if (changed && this.photo === target) {
+          if (this.mode === 'raw') {
+            this.recipes?.neutral(null);
+            void this.neutralCards(target, `raw:${target.id}`);
+          }
+          this.recipes?.refresh();
+        }
+      },
+      restLabelText: () => this.restLabelText(),
+    });
+
     this.host.replaceChildren();
     const photos = this.api.photos();
     const screen = el('section', 'screen editor');
@@ -161,6 +221,7 @@ export class EditorView {
 
     const stage = el('div', 'stage');
     const pv = el('div', 'pv');
+    this.pv = pv;
     this.gpuCanvas = document.createElement('canvas');
     this.gpuCanvas.className = 'gpu';
     this.still = document.createElement('canvas');
@@ -168,10 +229,19 @@ export class EditorView {
     this.still.hidden = true;
     this.placeholder = el('div', 'ph', '只有 RAW');
     this.placeholder.hidden = true;
+
     pv.append(this.gpuCanvas, this.still, this.placeholder);
+    this.cropStage.mountOverlay(pv);
     this.stageLabel = el('div', 'lbl');
     stage.append(pv, this.stageLabel);
-    this.bindGesture(stage);
+    if (typeof ResizeObserver === 'function') {
+      this.pvObserver = new ResizeObserver(() => {
+        this.engine?.redraw();
+        if (this.tab === 2) this.cropStage?.renderOverlay();
+      });
+      this.pvObserver.observe(pv);
+    }
+    this.cropStage.bindGesture(stage);
 
     this.recipeKey = NEUTRAL_BAKE_KEY;
     this.recipes = new RecipeView(this.api, this.engine, photo, {
@@ -179,8 +249,10 @@ export class EditorView {
       look: (key, label) => this.useLook(key, label),
       dragging: () => this.dragging,
       recipeTab: () => this.tab === 0,
+      geometry: () => this.cropStage?.resolveBoxGeometry(photo) ?? Promise.resolve({ geometry: { ...DEFAULT_GEOMETRY }, cropped: false }),
     });
     const strip = this.recipes.stripEl();
+    const cropPanelEl = this.cropStage.createPanel();
 
     const sheet = el('div', 'sheet');
     sheet.append(el('div', 'grab'));
@@ -188,9 +260,12 @@ export class EditorView {
     const panels: HTMLElement[] = [];
     TABS.forEach((name, tabIndex) => {
       const tab = button('', name);
+      tab.dataset.tab = String(tabIndex);
       tab.setAttribute('role', 'tab');
       if (tabIndex === 1) tab.classList.add('on');
+      if (tabIndex === 2) this.cropStage?.attachTabButton(tab);
       tab.addEventListener('click', () => {
+        if (this.tab === tabIndex) return;
         for (const item of tabs.children) item.classList.remove('on');
         tab.classList.add('on');
         this.tab = tabIndex;
@@ -198,10 +273,11 @@ export class EditorView {
         panels.forEach((panel, panelIndex) => {
           panel.hidden = panelIndex !== tabIndex;
         });
+        this.cropStage?.syncTabMode();
       });
       tabs.append(tab);
     });
-    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanel(), framePanel(), lutPanel(), curvesPanel());
+    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanelEl, framePanel(), lutPanel(), curvesPanel());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -220,14 +296,16 @@ export class EditorView {
     screen.append(nav, stage, strip, sheet);
     this.host.append(screen);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
-    this.paintStill(photo.bitmap);
+    this.cropStage.paintTabDot();
+    this.cropStage.paintStill(photo.bitmap);
   }
 
   /** 配方那边定下了舞台该用哪张烘焙表。长按看原图时先记着，松手再换。 */
   private useLook(key: string, label: string): void {
     this.recipeKey = key;
+    this.lookCaption = label;
     if (this.holding) this.restLabel = label;
-    else this.setLabel(label);
+    else if (this.tab !== 2) this.setLabel(label);
     this.push();
   }
 
@@ -361,32 +439,25 @@ export class EditorView {
     this.stageLabel.append(el('span', 'tag neutral', text));
   }
 
-  private paintStill(bitmap: ImageBitmap | null): void {
-    if (!this.still) return;
-    if (!bitmap) {
-      this.still.hidden = true;
-      return;
-    }
-    if (this.placeholder) this.placeholder.hidden = true;
-    this.still.hidden = false;
-    this.still.width = bitmap.width;
-    this.still.height = bitmap.height;
-    this.still.getContext('2d')?.drawImage(bitmap, 0, 0);
-  }
-
   private enterDrag(): void {
     if (this.dragging) return;
     this.dragging = true;
     this.shell.dataset.drag = '1';
     this.api.watch('drag', true);
-    requestAnimationFrame(() => this.engine?.redraw());
+    const token = this.token;
+    requestAnimationFrame(() => {
+      if (token === this.token) this.engine?.redraw();
+    });
   }
 
   private leaveDrag(): void {
     this.dragging = false;
     this.shell.dataset.drag = '0';
     this.api.watch('drag', false);
-    requestAnimationFrame(() => this.engine?.redraw());
+    const token = this.token;
+    requestAnimationFrame(() => {
+      if (token === this.token) this.engine?.redraw();
+    });
   }
 
   /**
@@ -489,51 +560,8 @@ export class EditorView {
     this.clipHigh?.classList.toggle('lit', shape.high);
   }
 
-  private bindGesture(stage: HTMLElement): void {
-    stage.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || event.clientX < 24) return;
-      const startX = event.clientX;
-      const startY = event.clientY;
-      const pointer = event.pointerId;
-      let moved = false;
-      let held = false;
-      const timer = window.setTimeout(() => {
-        if (moved || !this.photo) return;
-        held = true;
-        this.holding = true;
-        this.restLabel = this.caption;
-        this.setLabel('原图');
-        this.push();
-      }, 450);
-      const move = (ev: PointerEvent) => {
-        if (ev.pointerId !== pointer) return;
-        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 12) moved = true;
-      };
-      const up = (ev: PointerEvent) => {
-        if (ev.pointerId !== pointer) return;
-        window.clearTimeout(timer);
-        stage.removeEventListener('pointermove', move);
-        stage.removeEventListener('pointerup', up);
-        stage.removeEventListener('pointercancel', up);
-        const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
-        // 松手的位置也算移动：页面忙的时候 pointermove 可能晚到，按住计时先到了，横着滑出去仍然算换片。
-        if (Math.hypot(dx, dy) > 12) moved = true;
-        const swiped = ev.type === 'pointerup' && moved && Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy);
-        if (held) {
-          this.holding = false;
-          this.setLabel(this.restLabel);
-          this.push();
-          if (!swiped) return;
-        }
-        if (swiped && this.photo) {
-          this.api.swipe(this.photo.id, dx < 0 ? 1 : -1);
-        }
-      };
-      stage.addEventListener('pointermove', move);
-      stage.addEventListener('pointerup', up);
-      stage.addEventListener('pointercancel', up);
-    });
+  private restLabelText(): string {
+    return this.mode === 'raw' ? this.lookCaption || '中性转换' : this.mode === 'jpg' ? '相机 JPG' : this.photo?.jpg ? '相机 JPG' : '只有 RAW';
   }
 
   private nextPhoto(dir: -1 | 1): Photo | null {
@@ -581,16 +609,19 @@ export class EditorView {
         if (this.gpuCanvas) this.gpuCanvas.hidden = false;
         if (this.still) this.still.hidden = true;
         this.push();
+        await this.cropStage?.applyPreviewGeometry();
+        if (token !== this.token) return;
         const frame = this.engine.frame();
         if (frame) this.shell.dataset.frame = '1';
         if (this.input) this.input.disabled = false;
+        this.cropStage?.syncLoaded();
       }
       return;
     }
     // 这个版本的完整源已经在显卡里：不读卡，直接显示。卡被拔出后照样能开、能调。
     const key = `raw:${photo.id}`;
     if (this.engine && photo.cached === version && this.engine.hasSource(key)) {
-      this.showRaw(key);
+      await this.showRaw(key);
       return;
     }
     // 没有显卡、但这个版本描述过：直接放相机 JPG 或内嵌预览。
@@ -639,7 +670,7 @@ export class EditorView {
       // 上传由 App 按照片排队，提交前核对版本；过期的请求不会碰显卡里的源。
       const installed = await this.api.uploadRaw(photo, version, described.layout, bytes, described.scene);
       if (!installed || token !== this.token) return;
-      this.showRaw(key);
+      await this.showRaw(key);
       this.prefetch(this.nextPhoto(1));
     } catch {
       if (token !== this.token) return;
@@ -649,18 +680,21 @@ export class EditorView {
 
   /** 这张 RAW 的中性小图：每个版本只请显卡出一次，之后换片回来直接用。 */
   private async neutralCards(photo: Photo, key: string): Promise<void> {
-    if (!this.engine) return;
+    if (!this.engine || !this.cropStage) return;
     const version = photo.version;
+    const rev = photo.rev;
+    const token = this.token;
     if (photo.neutral && photo.neutral.version === version) {
-      this.recipes?.neutral(photo.neutral.bitmap);
+      if (token === this.token) this.recipes?.neutral(photo.neutral.bitmap);
       return;
     }
-    const token = this.token;
     const session = this.api.session();
-    // 照片还是这次会话里的同一张、同一个版本：清空、去掉、重新选过都算过期。
-    const alive = () => this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
+    // 照片还是这次会话里的同一张、同一个版本和编辑版本：清空、去掉、重新选过或改过裁剪都算过期。
+    const alive = () =>
+      this.api.photo(photo.id) === photo && photo.version === version && photo.rev === rev && this.api.session() === session;
     const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
-    const geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
+    const { geometry } = await this.cropStage.resolveBoxGeometry(photo);
+    if (!alive()) return;
     const out = await this.engine.thumb({ source: key, look, geometry, aspect: null, maxEdge: 192 });
     if (!out || !alive()) return;
     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
@@ -668,19 +702,25 @@ export class EditorView {
       bitmap.close();
       return;
     }
+    if (token === this.token) this.recipes?.neutral(null);
     photo.neutral?.bitmap.close();
     photo.neutral = { version, bitmap };
     if (token === this.token) this.recipes?.neutral(bitmap);
   }
 
-  private showRaw(key: string): void {
+  private async showRaw(key: string): Promise<void> {
     if (!this.engine) return;
+    const token = this.token;
     this.engine.show(key);
     this.mode = 'raw';
     this.push();
+    await this.cropStage?.applyPreviewGeometry();
+    if (token !== this.token) return;
     const frame = this.engine.frame();
     if (frame) this.shell.dataset.frame = '1';
-    if (!this.caption) this.setLabel('中性转换');
+    if (!this.lookCaption) this.lookCaption = '中性转换';
+    if (this.tab !== 2 && !this.caption) this.setLabel(this.lookCaption);
+    this.cropStage?.syncLoaded();
     this.recipes?.start(key);
     if (this.gpuCanvas) this.gpuCanvas.hidden = false;
     if (this.still) this.still.hidden = true;
@@ -690,8 +730,9 @@ export class EditorView {
 
   private showStillPhoto(photo: Photo, label: string): void {
     this.mode = 'still';
-    this.setLabel(label);
-    this.paintStill(photo.bitmap);
+    this.lookCaption = label;
+    if (this.tab !== 2) this.setLabel(label);
+    this.cropStage?.paintStill(photo.bitmap);
     if (this.gpuCanvas) this.gpuCanvas.hidden = true;
     if (!this.engine && this.input) this.input.disabled = true;
     // 没有相机 JPG、DNG 里也没有预览：照片区写「只有 RAW」，不留一块空灰。
@@ -702,7 +743,8 @@ export class EditorView {
   /** 先放缩略图，Worker 解好屏幕宽度的那张再换上。主线程只画一次。 */
   private async sharpen(photo: Photo): Promise<void> {
     const token = this.token;
-    const width = Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
+    const fullJpg = !photo.dng && !!photo.jpg && !!this.engine;
+    const width = fullJpg ? Number.POSITIVE_INFINITY : Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
     const bitmap = await this.api.still(photo, width);
     if (!bitmap) return;
     if (token !== this.token || this.mode === 'raw') {
@@ -710,16 +752,21 @@ export class EditorView {
       return;
     }
     if (this.mode === 'jpg' && this.engine) {
-      // 只有 JPG 又有显卡：换成清楚的纹理。复制进显卡后位图就能关掉。
+      // 只有 JPG 又有显卡：换成完整纹理，使 layerSize 和成片尺寸与导出一致。复制进显卡后位图就能关掉。
       const key = `jpg:${photo.id}`;
       this.engine.addJpg(key, bitmap);
       bitmap.close();
       this.engine.show(key);
       this.push();
+      await this.cropStage?.applyPreviewGeometry();
+      if (token !== this.token) return;
+      this.engine.frame();
+      this.cropStage?.syncLoaded();
       return;
     }
     this.sharp?.close();
     this.sharp = bitmap;
-    this.paintStill(bitmap);
+    this.cropStage?.paintStill(bitmap);
+    this.cropStage?.syncLoaded();
   }
 }

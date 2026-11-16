@@ -44,6 +44,8 @@ export interface StageHooks {
   dragging(): boolean;
   /** 「配方」页现在开着没有。 */
   recipeTab(): boolean;
+  /** 几何与裁切框（给配方卡小图裁剪预览）。 */
+  geometry(): Promise<{ geometry: Geometry; cropped: boolean }>;
 }
 
 interface Slot {
@@ -111,8 +113,8 @@ export class RecipeView {
     this.refresh();
   }
 
-  /** 中性小图好了（每个版本做一次）。没校准、没有相机配方文件时卡片都用它。 */
-  neutral(bitmap: ImageBitmap): void {
+  /** 中性小图好了（每个版本做一次）。没校准、没有相机配方文件时卡片都用它；关闭旧位图前先传 null 清掉。 */
+  neutral(bitmap: ImageBitmap | null): void {
     this.neutralBitmap = bitmap;
     this.paintThumbs();
   }
@@ -227,9 +229,9 @@ export class RecipeView {
     thumb.append(tick);
   }
 
-  /** 每张卡画什么、底下写什么。 */
   private paintThumbs(): void {
     const scene = this.scene();
+    const cropped = this.photo.crop !== null || this.photo.geometry.straighten !== 0;
     for (const slot of this.slots) {
       const { card, thumb, sub } = slot;
       let bitmap: ImageBitmap | null = null;
@@ -242,10 +244,10 @@ export class RecipeView {
         bitmap = this.photo.bitmap;
         source = text = this.photo.jpg ? '相机 JPG' : this.photo.bitmap ? '内嵌预览' : '只有 RAW';
       } else if (!scene.dat) {
-        bitmap = this.neutralBitmap;
+        bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = NEUTRAL_LABEL;
       } else if (scene.state.state !== 'ready') {
-        bitmap = this.neutralBitmap;
+        bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = text = NEUTRAL_LABEL;
       } else {
         const key = this.api.book().bakeKey(card, scene.unit, scene.iso, this.levelsOf(card));
@@ -257,6 +259,7 @@ export class RecipeView {
         text = card.desc ?? '';
       }
       sub.textContent = text;
+      thumb.dataset.cropped = cropped && scene.raw && scene.gpu ? '1' : '0';
       const want = bitmap ? `${source}:${bitmapId(bitmap)}` : '';
       if (thumb.dataset.drawn === want) continue;
       thumb.querySelector('canvas')?.remove();
@@ -535,6 +538,9 @@ export class RecipeView {
     const version = photo.version;
     const session = this.api.session();
     const alive = () => token === this.token && this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
+    const geomInfo = await this.hooks.geometry().catch(() => ({ geometry: GEOMETRY, cropped: false }));
+    if (!alive()) return;
+    const thumbGeometry = geomInfo.geometry;
     const order = [...this.cardsOf(scene), ...shelf(scene.list, 'all')];
     const seen = new Set<string>();
     const jobs: Array<{ card: Card; bake: Promise<string> }> = [];
@@ -576,7 +582,7 @@ export class RecipeView {
         gpu = book.gpuKey(key);
         if (!gpu) continue;
       }
-      const out = await engine.thumb({ source, look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: GEOMETRY, aspect: null, maxEdge: 192 });
+      const out = await engine.thumb({ source, look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: thumbGeometry, aspect: null, maxEdge: 192 });
       if (!out || !alive()) return;
       const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
       if (!alive()) {

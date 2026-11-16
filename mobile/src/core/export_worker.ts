@@ -214,7 +214,10 @@ async function runSizes(job: SizesJob): Promise<void> {
   const head = new Uint8Array(await file.slice(0, 1 << 20).arrayBuffer());
   const size = job.useJpg ? jpegSize(head) : dngSize(head);
   if (!size) throw new Error('no size');
-  const json = export_output_sizes(size.width, size.height, JSON.stringify(job.side), '{}', '{}', '', undefined, '', EMPTY);
+  const crop = job.side.crop as { rect?: unknown; preset?: unknown } | undefined;
+  const rect = Array.isArray(crop?.rect) ? JSON.stringify(crop.rect) : '';
+  const preset = typeof crop?.preset === 'string' ? crop.preset : undefined;
+  const json = export_output_sizes(size.width, size.height, JSON.stringify(job.side), '{}', '{}', rect, preset, '', EMPTY);
   post({ op: 'sizes', id: job.id, ok: true, json });
 }
 
