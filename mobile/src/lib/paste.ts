@@ -9,8 +9,23 @@
 
 import type { Choice } from './recipes';
 import type { Unit } from './calib';
+import type { CropState, GeometryState } from './crop';
+import type { Frame } from './photo_size';
 import type { GroupId, Outcome, Skip, UndoCounts } from './paste_text';
 import type { Knobs } from '../app/model';
+
+function zeroGeometry(): GeometryState {
+  return { straighten: 0 };
+}
+
+function cloneCrop(crop: CropState | null): CropState | null {
+  return crop ? { preset: crop.preset, rect: [crop.rect[0], crop.rect[1], crop.rect[2], crop.rect[3]], angle_deg: crop.angle_deg } : null;
+}
+
+function rectFromArray(a: readonly number[] | null | undefined): { x: number; y: number; w: number; h: number } {
+  if (!Array.isArray(a) || a.length !== 4) return { x: 0, y: 0, w: 1, h: 1 };
+  return { x: a[0], y: a[1], w: a[2], h: a[3] };
+}
 
 export const MAX_UNDO_BATCHES = 20;
 
@@ -29,6 +44,9 @@ export interface Editable {
   /** 桌面的 memory：切走的配方各自记着的档位。 */
   memory: Levels;
   knobs: KnobMap;
+  frame?: Frame | null;
+  geometry?: GeometryState;
+  crop?: CropState | null;
 }
 
 /** 剪贴板：复制那一刻的深拷贝，之后来源再改也不影响。 */
@@ -38,6 +56,8 @@ export interface Clip {
   /** levels 是选中那个配方的档位；memory 是空的时套用不动目标的 memory（桌面 recipeBody 只在非空时带 memory）。 */
   recipe: { choice: Choice; levels: Record<string, number>; memory: Levels } | null;
   knobs: KnobMap | null;
+  geometry: GeometryState | null;
+  crop: { preset: string; rect: [number, number, number, number] } | null;
 }
 
 /** 目标照片能不能用的判断依据。 */
@@ -65,12 +85,28 @@ export interface Env {
   recipeWithoutRaw: boolean;
 }
 
+export interface GeomHooks {
+  applyGeometry(
+    photo: Editable,
+    geometry: GeometryState,
+  ): Promise<{ geometry: GeometryState; crop: CropState | null }>;
+  applyCrop(
+    photo: Editable,
+    nextGeometry: GeometryState,
+    nextCrop: CropState | null,
+    preset: string,
+    rect: [number, number, number, number],
+  ): Promise<{ geometry: GeometryState; crop: CropState | null }>;
+}
+
 /** 套用之前这张照片的样子（撤销用）。 */
 export interface Before {
   choice: Choice | null;
   levels: Levels;
   memory: Levels;
   knobs: KnobMap;
+  geometry?: GeometryState;
+  crop?: CropState | null;
 }
 
 export function cloneLevels(levels: Levels): Levels {
@@ -80,7 +116,14 @@ export function cloneLevels(levels: Levels): Levels {
 }
 
 export function snapshot(photo: Editable): Before {
-  return { choice: photo.choice ? { ...photo.choice } : null, levels: cloneLevels(photo.levels), memory: cloneLevels(photo.memory), knobs: { ...photo.knobs } };
+  return {
+    choice: photo.choice ? { ...photo.choice } : null,
+    levels: cloneLevels(photo.levels),
+    memory: cloneLevels(photo.memory),
+    knobs: { ...photo.knobs },
+    ...(photo.geometry !== undefined ? { geometry: { straighten: photo.geometry.straighten } } : {}),
+    ...('crop' in photo ? { crop: cloneCrop(photo.crop ?? null) } : {}),
+  };
 }
 
 /** 配方组「设置过」：选了配方（手机上还没有 LUT）。 */
@@ -93,11 +136,26 @@ export function adjustIsSet(photo: Editable): boolean {
   return Object.values(photo.knobs).some((value) => Number(value) !== 0);
 }
 
-/** 这张照片里有设置、可以复制的组（`groupsPresent`）。几何、裁剪、边框、时间戳在 M4 之前设不了。 */
+/** 几何组「设置过」：手机上只有拉直（旋转和翻转不算在内）。 */
+export function geometryIsSet(photo: Editable): boolean {
+  return (photo.geometry?.straighten ?? 0) !== 0;
+}
+
+/** 裁剪组「设置过」（`paste_core.js` cropIsSet）：比例不是原始，或框没有占满整张。 */
+export function cropIsSet(photo: Editable): boolean {
+  const c = photo.crop;
+  if (!c) return false;
+  const r = rectFromArray(c.rect);
+  return c.preset !== 'original' || r.w < 0.999 || r.h < 0.999 || r.x > 0.001 || r.y > 0.001;
+}
+
+/** 这张照片里有设置、可以复制的组（`groupsPresent`）。边框、时间戳在后续单元做。 */
 export function groupsPresent(photo: Editable): GroupId[] {
   const out: GroupId[] = [];
   if (recipeIsSet(photo)) out.push('recipe');
   if (adjustIsSet(photo)) out.push('adjust');
+  if (geometryIsSet(photo)) out.push('geometry');
+  if (cropIsSet(photo)) out.push('crop');
   return out;
 }
 
@@ -115,6 +173,8 @@ export function copyFrom(photo: Editable, stem: string, groups: readonly GroupId
         ? { choice: { ...photo.choice }, levels: { ...(photo.levels.get(photo.choice.id) ?? {}) }, memory: cloneLevels(photo.memory) }
         : null,
     knobs: copied.includes('adjust') ? { ...photo.knobs } : null,
+    geometry: copied.includes('geometry') ? { straighten: photo.geometry?.straighten ?? 0 } : null,
+    crop: copied.includes('crop') && photo.crop ? { preset: photo.crop.preset, rect: [...photo.crop.rect] } : null,
   };
   return { clip, copied, empty };
 }
@@ -123,6 +183,8 @@ export function copyFrom(photo: Editable, stem: string, groups: readonly GroupId
 function carries(clip: Clip, group: GroupId): boolean {
   if (group === 'recipe') return clip.recipe !== null;
   if (group === 'adjust') return clip.knobs !== null;
+  if (group === 'geometry') return clip.geometry !== null;
+  if (group === 'crop') return clip.crop !== null;
   return false;
 }
 
@@ -178,6 +240,24 @@ export function planOne(target: Target, clip: Clip, groups: readonly GroupId[], 
   return { outcome: { id: target.photo.id, status, applied, skipped: skips }, changes };
 }
 
+function makeOutcome(id: string, groups: readonly GroupId[], done: ReadonlySet<GroupId>, skips: Skip[], rev?: number): Outcome {
+  const applied = groups.filter((g) => done.has(g));
+  const whole = applied.length === groups.length && !skips.length;
+  const status = whole ? 'applied' : applied.length ? 'partial' : 'skipped';
+  return { id, status, applied, skipped: skips, ...(rev !== undefined ? { rev } : {}) };
+}
+
+function errorInfo(err: unknown): { code: string; message: string } {
+  if (err && typeof err === 'object') {
+    const rec = err as { code?: unknown; message?: unknown };
+    return {
+      code: typeof rec.code === 'string' && rec.code ? rec.code : 'rejected',
+      message: typeof rec.message === 'string' && rec.message ? rec.message : '裁剪无效',
+    };
+  }
+  return { code: 'rejected', message: '裁剪无效' };
+}
+
 /** 套用到一张：改了东西就加 rev，返回结果和套用之前的样子（没改就是 null）。 */
 export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[], env: Env): { outcome: Outcome; before: Before | null } {
   const { outcome, changes } = planOne(target, clip, groups, env);
@@ -194,6 +274,86 @@ export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[],
   photo.rev += 1;
   outcome.rev = photo.rev;
   return { outcome, before };
+}
+
+/** 支持异步 WASM 几何 / 裁剪写入的套用（和桌面 `render/paste.py` paste_one 同序）。 */
+export async function pasteOneAsync(
+  target: Target,
+  clip: Clip,
+  groups: readonly GroupId[],
+  env: Env,
+  geom?: GeomHooks,
+  staleCheck?: () => Outcome | null,
+): Promise<{ outcome: Outcome; before: Before | null }> {
+  const skips: Skip[] = [];
+  for (const group of groups) {
+    if (!carries(clip, group)) skips.push({ group, reason: 'not_copied', message: '复制时没有带上这一项。' });
+  }
+  const changes: Changes = {};
+  if (groups.includes('recipe')) {
+    const beforeLen = skips.length;
+    const part = recipeChanges(target, clip, env, skips);
+    if (skips.length === beforeLen) Object.assign(changes, part);
+  }
+  if (groups.includes('adjust') && clip.knobs) changes.knobs = { ...clip.knobs };
+
+  const done = new Set<GroupId>();
+  if (changes.recipe) done.add('recipe');
+  if (changes.knobs) done.add('adjust');
+
+  const photo = target.photo;
+  let nextGeom: GeometryState = photo.geometry ? { straighten: photo.geometry.straighten } : zeroGeometry();
+  let nextCrop: CropState | null = cloneCrop(photo.crop ?? null);
+  let geomTouched = false;
+
+  if (geom && groups.includes('geometry') && clip.geometry) {
+    try {
+      const reply = await geom.applyGeometry(photo, clip.geometry);
+      nextGeom = { straighten: reply.geometry.straighten };
+      nextCrop = cloneCrop(reply.crop);
+      geomTouched = true;
+      done.add('geometry');
+    } catch (err) {
+      const info = errorInfo(err);
+      skips.push({ group: 'geometry', reason: 'rejected', message: info.message });
+    }
+  }
+
+  if (geom && groups.includes('crop') && clip.crop) {
+    try {
+      const reply = await geom.applyCrop(photo, nextGeom, nextCrop, clip.crop.preset, clip.crop.rect);
+      nextGeom = { straighten: reply.geometry.straighten };
+      nextCrop = cloneCrop(reply.crop);
+      geomTouched = true;
+      done.add('crop');
+    } catch (err) {
+      const info = errorInfo(err);
+      skips.push({ group: 'crop', reason: info.code, message: info.message });
+    }
+  }
+
+  if (staleCheck) {
+    const gone = staleCheck();
+    if (gone) return { outcome: gone, before: null };
+  }
+
+  if (!done.size) {
+    return { outcome: makeOutcome(photo.id, groups, done, skips), before: null };
+  }
+
+  const before = snapshot(photo);
+  if (changes.recipe) {
+    photo.choice = changes.recipe.choice;
+    photo.levels = changes.recipe.levels;
+    if (changes.recipe.memory) photo.memory = changes.recipe.memory;
+  }
+  if (changes.knobs) Object.assign(photo.knobs, changes.knobs);
+  if (geomTouched) {
+    photo.geometry = nextGeom;
+    photo.crop = nextCrop;
+  }
+  photo.rev += 1;
+  return { outcome: makeOutcome(photo.id, groups, done, skips, photo.rev), before };
 }
 
 export interface UndoEntry {
@@ -255,6 +415,8 @@ export function restore(photo: Editable | undefined, entry: UndoEntry): RestoreS
   photo.levels = cloneLevels(entry.before.levels);
   photo.memory = cloneLevels(entry.before.memory);
   for (const key of Object.keys(photo.knobs) as Array<keyof Knobs>) photo.knobs[key] = entry.before.knobs[key] ?? 0;
+  if (entry.before.geometry !== undefined) photo.geometry = { straighten: entry.before.geometry.straighten };
+  if ('crop' in entry.before) photo.crop = cloneCrop(entry.before.crop ?? null);
   photo.rev += 1;
   return 'restored';
 }
@@ -290,6 +452,7 @@ export async function pasteBatch(
     onSlice?: (ms: number) => void;
     /** 这张照片现在是哪个对象（清空、去掉、换了对象就是 undefined 或别的对象）。不给就认为一直是同一个。 */
     current?: (id: string) => Editable | undefined;
+    geom?: GeomHooks;
   } = {},
 ): Promise<Outcome[]> {
   const budget = options.budgetMs ?? 4;
@@ -303,12 +466,13 @@ export async function pasteBatch(
     if (!expected.has(target.photo.id)) expected.set(target.photo.id, { version: target.version ?? target.photo.version ?? null, rev: target.rev ?? target.photo.rev });
   }
   const stale = (target: Target): Outcome | null => {
-    const now = options.current ? options.current(target.photo.id) : target.photo;
-    if (!now || now !== target.photo) return failed(target.photo.id, 'photo_not_found');
+    const cur = options.current ? options.current(target.photo.id) : target.photo;
+    if (!cur || cur !== target.photo) return failed(target.photo.id, 'photo_not_found');
     const want = expected.get(target.photo.id);
-    if (!want || (now.version ?? null) !== want.version || now.rev !== want.rev) return failed(target.photo.id, 'rev_conflict');
+    if (!want || (cur.version ?? null) !== want.version || cur.rev !== want.rev) return failed(target.photo.id, 'rev_conflict');
     return null;
   };
+  const needsGeom = !!options.geom && (groups.includes('geometry') || groups.includes('crop'));
   let i = 0;
   while (i < targets.length) {
     if (!alive()) break;
@@ -323,7 +487,9 @@ export async function pasteBatch(
         outcomes.push(gone);
         continue;
       }
-      const { outcome, before } = pasteOne(target, clip, groups, env);
+      const { outcome, before } = needsGeom
+        ? await pasteOneAsync(target, clip, groups, env, options.geom, () => (!alive() ? failed(target.photo.id, 'photo_not_found') : stale(target)))
+        : pasteOne(target, clip, groups, env);
       if (before && outcome.rev !== undefined) {
         undo.add(batchId, target.photo.id, outcome.rev, before);
         const want = expected.get(target.photo.id);

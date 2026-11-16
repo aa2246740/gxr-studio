@@ -1,6 +1,6 @@
 // 几个各自持有一份 WASM 的 Worker。页面不能用 SharedArrayBuffer（GitHub Pages 没有 COOP/COEP）。
 
-import type { BakeArgs, CoreOp, CoreReply, CoreRequest, CoreResult } from './protocol';
+import { CoreError, type BakeArgs, type CoreOp, type CoreReply, type CoreRequest, type CoreResult } from './protocol';
 
 interface Pending {
   resolve: (result: CoreResult) => void;
@@ -34,7 +34,7 @@ export class Pool {
     buffer: ArrayBuffer | null,
     transfer: Transferable[],
     args: BakeArgs | null = null,
-    extra: Pick<CoreRequest, 'file' | 'meta' | 'resolve' | 'check'> = {},
+    extra: Pick<CoreRequest, 'file' | 'meta' | 'resolve' | 'check' | 'geom' | 'finalBox' | 'sizes'> = {},
   ): Promise<CoreResult> {
     const id = this.seq++;
     const worker = this.workers[this.next % this.workers.length];
@@ -56,7 +56,7 @@ export class Pool {
     if (!pending) return;
     this.pending.delete(reply.id);
     if (reply.ok) pending.resolve({ json: reply.json, buffers: reply.buffers });
-    else pending.reject(new Error(reply.message));
+    else pending.reject(reply.code ? new CoreError(reply.code, reply.message) : new Error(reply.message));
   }
 
   private failAll(message: string): void {

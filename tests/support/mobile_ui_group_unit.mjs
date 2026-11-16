@@ -22,10 +22,13 @@ import vm from 'node:vm';
 import {
   adjustIsSet,
   copyFrom,
+  cropIsSet,
+  geometryIsSet,
   groupsPresent,
   MAX_UNDO_BATCHES,
   pasteBatch,
   pasteOne,
+  pasteOneAsync,
   PasteUndo,
   planOne,
   restore,
@@ -538,4 +541,80 @@ test('同一批里同一张出现两次：第二次按这一批自己写完的 r
   assert.equal(a.rev, 2);
   undoBatch(undo.take('d'), () => a);
   assert.equal(a.knobs.tint, 4);
+});
+
+// ---- M4：几何和裁剪组 -------------------------------------------------------------
+
+test('几何和裁剪设置过判断、groupsPresent、深拷贝、pasteOneAsync、撤销和 CropError 跳过', async () => {
+  assert.equal(geometryIsSet(photo('g0', { geometry: { straighten: 0 } })), false);
+  assert.equal(geometryIsSet(photo('g1', { geometry: { straighten: 1.5 } })), true);
+  assert.equal(cropIsSet(photo('c0', { crop: null })), false);
+  assert.equal(cropIsSet(photo('c1', { crop: { preset: 'original', rect: [0, 0, 1, 1], angle_deg: 0 } })), false);
+  assert.equal(cropIsSet(photo('c2', { crop: { preset: 'original', rect: [0.02, 0, 0.96, 1], angle_deg: 0 } })), true);
+  assert.equal(cropIsSet(photo('c3', { crop: { preset: 'xpan-65-24', rect: [0, 0.2, 1, 0.55], angle_deg: 0 } })), true);
+
+  const src = photo('src', {
+    choice: { id: 'builtin:3', unit: 'jlaunch' },
+    levels: new Map([['builtin:3', { amount: 80 }]]),
+    knobs: knobs({ exposure_ev: 0.4 }),
+    geometry: { straighten: 1.5 },
+    crop: { preset: 'xpan-65-24', rect: [0.05, 0.25, 0.9, 0.498], angle_deg: 1.5 },
+  });
+  assert.deepEqual(groupsPresent(src), ['recipe', 'adjust', 'geometry', 'crop']);
+
+  const { clip, copied: cop, empty } = copyFrom(src, 'R0000010', ['recipe', 'adjust', 'geometry', 'crop']);
+  assert.deepEqual(cop, ['recipe', 'adjust', 'geometry', 'crop']);
+  assert.deepEqual(empty, []);
+  src.geometry.straighten = -3;
+  src.crop.rect[0] = 0.2;
+  assert.equal(clip.geometry.straighten, 1.5);
+  assert.equal(clip.crop.rect[0], 0.05);
+
+  // pasteOneAsync：先写 geometry，再带着 fit 结果写 crop；撤销连 geometry/crop 一起还原。
+  const tgt = photo('t', {
+    geometry: { straighten: 0 },
+    crop: null,
+  });
+  const calls = [];
+  const geomHooks = {
+    applyGeometry: async (_p, g) => {
+      calls.push(['geometry', g.straighten]);
+      return { geometry: { straighten: g.straighten }, crop: { preset: 'free', rect: [0.02, 0.02, 0.96, 0.96], angle_deg: g.straighten } };
+    },
+    applyCrop: async (_p, nextGeom, _nextCrop, preset, rect) => {
+      calls.push(['crop', nextGeom.straighten, preset]);
+      return { geometry: nextGeom, crop: { preset, rect: [0.1, 0.2, 0.8, 0.443], angle_deg: nextGeom.straighten } };
+    },
+  };
+  const { outcome, before } = await pasteOneAsync({ photo: tgt, raw: true, unit: 'jlaunch' }, clip, clip.groups, env(), geomHooks);
+  assert.equal(outcome.status, 'applied');
+  assert.deepEqual(calls, [
+    ['geometry', 1.5],
+    ['crop', 1.5, 'xpan-65-24'],
+  ]);
+  assert.equal(tgt.geometry.straighten, 1.5);
+  assert.equal(tgt.crop.preset, 'xpan-65-24');
+  assert.equal(tgt.rev, 1);
+
+  const undo = new PasteUndo();
+  undo.add('m4', tgt.id, outcome.rev, before);
+  const res = undoBatch(undo.take('m4'), () => tgt);
+  assert.deepEqual(res.counts, { restored: 1, changed: 0, error: 0 });
+  assert.deepEqual(tgt.geometry, { straighten: 0 });
+  assert.equal(tgt.crop, null);
+  assert.equal(tgt.rev, 2);
+
+  // applyCrop 抛出 CoreError 形状的错误 → Skip(group='crop', reason=code, message)，geometry 照样生效。
+  const bad = photo('b', { geometry: { straighten: 0 }, crop: null });
+  const failHooks = {
+    applyGeometry: async (_p, g) => ({ geometry: { straighten: g.straighten }, crop: { preset: 'free', rect: [0.02, 0.02, 0.96, 0.96], angle_deg: g.straighten } }),
+    applyCrop: async () => {
+      throw Object.assign(new Error('裁剪区域太小，请放大裁剪框。'), { code: 'crop_too_small' });
+    },
+  };
+  const part = await pasteOneAsync({ photo: bad, raw: true, unit: 'jlaunch' }, clip, ['geometry', 'crop'], env(), failHooks);
+  assert.equal(part.outcome.status, 'partial');
+  assert.deepEqual(part.outcome.applied, ['geometry']);
+  assert.deepEqual(part.outcome.skipped, [{ group: 'crop', reason: 'crop_too_small', message: '裁剪区域太小，请放大裁剪框。' }]);
+  assert.equal(text.pasteMessage([part.outcome]), '已套用：几何；这张没有套用裁剪：裁剪区域太小，请放大裁剪框。');
 });

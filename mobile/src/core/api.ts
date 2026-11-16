@@ -2,7 +2,9 @@
 
 import type { BakeMeta, RawLayout, Scene } from '../../../frontend/src/index';
 import type { UnitPack } from '../lib/calib';
+import type { CropState } from '../lib/crop';
 import type { PhotoMeta } from '../lib/exif';
+import type { Frame } from '../lib/photo_size';
 import type { ZipFail } from '../lib/zip';
 import { Pool } from './pool';
 import type { BakeArgs, CalibCheckArgs } from './protocol';
@@ -184,4 +186,80 @@ export async function bakeIn(args: BakeArgs): Promise<Bake> {
     data: buffers[0] ?? new ArrayBuffer(0),
     fullMeta,
   };
+}
+
+export interface GeomWriteReply {
+  frame: Frame | null;
+  geometry: {
+    straighten: number;
+    vertical: number;
+    horizontal: number;
+    distortion: number;
+    rotate90: number;
+    flip: boolean;
+  } | null;
+  crop: CropState | null;
+  describe: { preset: string; rect: [number, number, number, number]; angle: number };
+}
+
+export interface FinalBoxReply {
+  box: [number, number, number, number];
+  valid: [number, number, number, number];
+  header: string;
+}
+
+export interface OutputSizesReply {
+  photo: [number, number];
+  crop_preset: string | null;
+  ratio: [number, number] | null;
+  sizes: {
+    original: [number, number];
+    large: [number, number];
+    medium: [number, number];
+    small: [number, number];
+  };
+}
+
+/** 裁切写入规则（`gxr-finish/src/crop_edit.rs`），只在 Worker 里跑 WASM。 */
+export async function geomCropWrite(side: Record<string, unknown>, request: Record<string, unknown>): Promise<GeomWriteReply> {
+  const { json } = await workers().request('geom-crop-write', null, [], null, {
+    geom: { side: JSON.stringify(side), payload: JSON.stringify(request) },
+  });
+  return JSON.parse(json) as GeomWriteReply;
+}
+
+/** 几何写入规则（改拉直时按桌面 `render/edits.py` 重收裁切框），只在 Worker 里跑 WASM。 */
+export async function geomGeometryWrite(side: Record<string, unknown>, geometry: Record<string, unknown> | null): Promise<GeomWriteReply> {
+  const { json } = await workers().request('geom-geometry-write', null, [], null, {
+    geom: { side: JSON.stringify(side), payload: JSON.stringify(geometry) },
+  });
+  return JSON.parse(json) as GeomWriteReply;
+}
+
+/** 成片裁切框（`gpu/box.py:final_box`），与导出和显卡预览同一份 WASM。 */
+export async function geomFinalBox(w: number, h: number, geometry: Record<string, unknown> | null, crop: CropState | null): Promise<FinalBoxReply> {
+  const { json } = await workers().request('geom-final-box', null, [], null, {
+    finalBox: { w, h, geometry: JSON.stringify(geometry ?? {}), crop: JSON.stringify(crop) },
+  });
+  return JSON.parse(json) as FinalBoxReply;
+}
+
+/** 成品像素行，走 Worker 里的 `export_output_sizes`（传当前框的 `rect` 和 `preset`）。 */
+export async function geomOutputSizes(
+  w: number,
+  h: number,
+  side: Record<string, unknown>,
+  rect: [number, number, number, number] | null,
+  preset: string | null,
+): Promise<OutputSizesReply> {
+  const { json } = await workers().request('export-output-sizes', null, [], null, {
+    sizes: {
+      w,
+      h,
+      side: JSON.stringify(side),
+      rect: rect ? JSON.stringify(rect) : '',
+      preset: preset ?? undefined,
+    },
+  });
+  return JSON.parse(json) as OutputSizesReply;
 }

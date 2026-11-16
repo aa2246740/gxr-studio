@@ -3,6 +3,8 @@
 // defaults 是没有默认设置文件的桌面（{}）；底图「自动」。M3 不能设边框、日期戳、裁剪、LUT、曲线（M4 才有）。
 
 import { unitOfLens, type Unit } from './calib';
+import { cloneCrop, geometrySidecar, type CropState, type GeometryState } from './crop';
+import type { Frame } from './photo_size';
 import type { Card } from './recipes';
 
 /** 桌面 export.SIZE_TIERS：长边像素，原始尺寸是 undefined。 */
@@ -40,6 +42,9 @@ export interface RequestPhoto {
   /** 桌面的 memory（`look_cards.js` recipeTarget：换配方时切走的那个），键是卡的 id；空的档位也是一项。 */
   memory: ReadonlyMap<string, Record<string, number>>;
   knobs: KnobValues;
+  frame?: Frame | null;
+  geometry?: GeometryState;
+  crop?: CropState | null;
   /** 源文件（有相机 JPG 用 JPG，否则 DNG，即桌面 serve._source_path）的 File.lastModified。 */
   sourceModified: number;
 }
@@ -139,6 +144,12 @@ export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<s
   }
   const adjust = adjustJson(photo.knobs);
   if (adjust) side.adjust = adjust;
+  const geom = photo.geometry ? geometrySidecar(photo.geometry.straighten) : null;
+  if (geom) side.geometry = geom;
+  if (photo.crop) side.crop = cloneCrop(photo.crop);
+  if (photo.frame && Object.keys(side).length > 0) {
+    side.frame = { orientation: photo.frame.orientation, width: photo.frame.width, height: photo.frame.height };
+  }
   return side;
 }
 

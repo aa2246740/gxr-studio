@@ -1,5 +1,5 @@
-// 裁剪、边框、LUT、曲线四页：按设计稿 03e–03h 摆好静态的控件，这一版全部停用，写「这项下一步做」。
-// 这里没有任何算法，只有版式。名字和顺序跟桌面一样（crop.js、frame_panel.js、lut.js、curves.js）。
+// 边框、LUT、曲线三页：按设计稿 03f–03h 摆好静态的控件，这一版全部停用，写「这项下一步做」。
+// 这里没有任何算法，只有版式。名字和顺序跟桌面一样（frame_panel.js、lut.js、curves.js）。
 
 import { button, el } from './dom';
 
@@ -44,32 +44,6 @@ function switchRow(title: string, detail: string): HTMLElement {
   input.disabled = true;
   row.append(text, input);
   return row;
-}
-
-/** 03e：比例、横竖、参考线、拉直。 */
-export function cropPanel(): HTMLElement {
-  const panel = shell('crop');
-  panel.append(chipRow(['原始', '自由', '1:1', '4:5', '3:2', '16:9', 'XPan 65:24', '小红书 3:4'], '原始'));
-  const row = el('div', 'pad row gap8');
-  const guide = button('btn', '参考线：三等分');
-  guide.disabled = true;
-  row.append(segment(['横向', '竖向'], 0, '方向'), guide);
-  const straighten = el('div', 'pad straighten');
-  const head = el('div', 'row between');
-  head.append(el('span', 'dim small', '拉直'), el('span', 'dim small num', '0.0°'));
-  const ruler = document.createElement('input');
-  ruler.type = 'range';
-  ruler.min = '-10';
-  ruler.max = '10';
-  ruler.step = '0.1';
-  ruler.value = '0';
-  ruler.disabled = true;
-  ruler.setAttribute('aria-label', '拉直');
-  const ticks = el('div', 'ticks num');
-  for (const text of ['−10°', '−5°', '0°', '5°', '10°']) ticks.append(el('span', '', text));
-  straighten.append(head, ruler, ticks);
-  panel.append(row, straighten);
-  return panel;
 }
 
 /** 03f 的样式小卡：底色、照片框和一两条示意线。 */

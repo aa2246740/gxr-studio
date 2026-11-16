@@ -82,6 +82,66 @@ async function undo(page) {
   return text(page, '.pastebar[data-state="info"]');
 }
 
+async function setCropTab(page, { preset, orient, angleDeg } = {}) {
+  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.waitForSelector('.crop-panel');
+  const stem = await page.locator('.editor').getAttribute('data-photo');
+  if (typeof angleDeg === 'number' && angleDeg !== 0) {
+    const box = await page.locator('.crop-panel .ruler').boundingBox();
+    const startX = angleDeg > 0 ? box.x + box.width - 16 : box.x + 16;
+    const startY = box.y + box.height / 2;
+    const dx = -angleDeg * 18;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + dx, startY, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForFunction(
+      ({ s, want }) => {
+        const row = window.__gxrEdits?.().find((r) => r.stem === s);
+        return row && Math.abs((row.geometry?.straighten ?? 0) - want) < 0.05;
+      },
+      { s: stem, want: angleDeg },
+      { timeout: 30_000 },
+    );
+  }
+  if (preset) {
+    const btn = page.locator(`.crop-panel .chips button[data-preset="${preset}"]`);
+    await btn.scrollIntoViewIfNeeded();
+    await btn.click();
+    await page.waitForFunction(
+      ({ s, want }) => window.__gxrEdits?.().find((r) => r.stem === s)?.crop?.preset === want,
+      { s: stem, want: preset },
+      { timeout: 30_000 },
+    );
+  }
+  if (orient) {
+    await page.locator(`.crop-panel .seg button[data-orient="${orient}"]`).click();
+    await page.waitForTimeout(250);
+  }
+}
+
+async function copyGroups(page, wantGroups) {
+  await page.locator('[data-act="copy"]').click();
+  await page.waitForSelector('[data-state="copy-options"]');
+  const optionRows = await page.locator('[data-state="copy-options"] .optrow').evaluateAll((nodes) =>
+    nodes.map((node) => ({
+      group: node.dataset.group,
+      text: node.innerText,
+      checked: node.getAttribute('aria-pressed') === 'true',
+    })),
+  );
+  for (const row of optionRows) {
+    const want = wantGroups.includes(row.group);
+    if (row.checked !== want) {
+      await page.locator(`[data-state="copy-options"] .optrow[data-group="${row.group}"]`).click();
+    }
+  }
+  await page.locator('[data-state="copy-options"] .btn.primary').click();
+  await page.waitForSelector('[data-state="copied-where"]');
+  await page.locator('[data-state="copied-where"] .btn.ghost').click();
+  return optionRows;
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 440, height: 956 } });
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
@@ -101,39 +161,73 @@ try {
   const { source, targets } = manifest;
   const all = [source, ...targets];
 
-  // 来源的编辑：两个配方各记档位，再换回第一个（桌面 memory 里留着它切走时的旧档位）。
-  await openPhoto(page, source);
-  await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'calibrated', null, { timeout: 120_000 });
-  await pick(page, 'builtin:2');
-  await knob(page, 'builtin:2', 0);
-  const look = await page.locator('.editor .strip[data-recipes] .rc[data-card^="look:"]').first().getAttribute('data-card');
-  await pick(page, look);
-  await knob(page, look, 0);
-  await pick(page, 'builtin:2');
-  await knob(page, 'builtin:2', 0);
-  await setAdjust(page, 'exposure_ev', 0.7);
-  await setAdjust(page, 'contrast', 12);
-  out.steps.source = { edit: (await edits(page)).find((row) => row.stem === source), side: (await sides(page, [source]))[source] };
+  if (manifest.mode === 'crop') {
+    // 第三张目标先预设 18° 拉直，让纯「裁剪」粘贴过来的 XPan 框超出旋转边界、触发 fit=true 路径。
+    await openPhoto(page, targets[2]);
+    await setCropTab(page, { angleDeg: 18 });
+    out.steps.preT3 = { edit: (await edits(page)).find((row) => row.stem === targets[2]), side: (await sides(page, [targets[2]]))[targets[2]] };
+    await back(page);
 
-  // 复制（默认的两组）→ 先不套用 → 网格里选三张目标 → 套用调整。
-  await page.locator('[data-act="copy"]').click();
-  await page.waitForSelector('[data-state="copy-options"]');
-  await page.locator('[data-state="copy-options"] .btn.primary').click();
-  await page.waitForSelector('[data-state="copied-where"]');
-  await page.locator('[data-state="copied-where"] .btn.ghost').click();
-  await back(page);
-  const line = await select(page, targets);
-  out.steps.paste = { line, outcomes: await outcomes(page), sides: await sides(page, all), edits: await edits(page) };
-  const undone = await undo(page);
-  out.steps.undo = { line: undone, sides: await sides(page, all) };
+    // 来源：1.5° 拉直 + XPan 横向（外加一点曝光，一并核对多组协同）。
+    await openPhoto(page, source);
+    await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'calibrated', null, { timeout: 120_000 });
+    await setAdjust(page, 'exposure_ev', 0.4);
+    await setCropTab(page, { angleDeg: 1.5, preset: 'xpan-65-24', orient: 'landscape' });
+    out.steps.source = { edit: (await edits(page)).find((row) => row.stem === source), side: (await sides(page, [source]))[source] };
 
-  // 再套用一次，改其中一张，再撤销：那一张不动并说明。
-  const again = await select(page, targets);
-  await openPhoto(page, targets[0]);
-  await setAdjust(page, 'shadow', 20);
-  await back(page);
-  const changed = await undo(page);
-  out.steps.changed = { pasteLine: again, line: changed, sides: await sides(page, all) };
+    // 1) 复制 ['adjust', 'geometry', 'crop'] → 套用到 同方向目标 + 竖向目标（竖向目标触发 fit=true）。
+    const optionRows = await copyGroups(page, ['adjust', 'geometry', 'crop']);
+    out.steps.copyOptions = optionRows;
+    await back(page);
+    const pairTargets = [targets[0], targets[1]];
+    const line1 = await select(page, pairTargets);
+    out.steps.paste1 = { line: line1, outcomes: await outcomes(page), sides: await sides(page, [source, ...pairTargets]), edits: await edits(page) };
+    const undone1 = await undo(page);
+    out.steps.undo1 = { line: undone1, sides: await sides(page, [source, ...pairTargets]) };
+
+    // 2) 只复制 ['crop'] → 套用到已拉直 18° 的 targets[2]（触发框越界 fit=true 收框路径），再撤销。
+    await openPhoto(page, source);
+    await copyGroups(page, ['crop']);
+    await back(page);
+    const line2 = await select(page, [targets[2]]);
+    out.steps.paste2 = { line: line2, outcomes: await outcomes(page), sides: await sides(page, [targets[2]]), edits: await edits(page) };
+    const undone2 = await undo(page);
+    out.steps.undo2 = { line: undone2, sides: await sides(page, [targets[2]]) };
+  } else {
+    // 来源的编辑：两个配方各记档位，再换回第一个（桌面 memory 里留着它切走时的旧档位）。
+    await openPhoto(page, source);
+    await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'calibrated', null, { timeout: 120_000 });
+    await pick(page, 'builtin:2');
+    await knob(page, 'builtin:2', 0);
+    const look = await page.locator('.editor .strip[data-recipes] .rc[data-card^="look:"]').first().getAttribute('data-card');
+    await pick(page, look);
+    await knob(page, look, 0);
+    await pick(page, 'builtin:2');
+    await knob(page, 'builtin:2', 0);
+    await setAdjust(page, 'exposure_ev', 0.7);
+    await setAdjust(page, 'contrast', 12);
+    out.steps.source = { edit: (await edits(page)).find((row) => row.stem === source), side: (await sides(page, [source]))[source] };
+
+    // 复制（默认的两组）→ 先不套用 → 网格里选三张目标 → 套用调整。
+    await page.locator('[data-act="copy"]').click();
+    await page.waitForSelector('[data-state="copy-options"]');
+    await page.locator('[data-state="copy-options"] .btn.primary').click();
+    await page.waitForSelector('[data-state="copied-where"]');
+    await page.locator('[data-state="copied-where"] .btn.ghost').click();
+    await back(page);
+    const line = await select(page, targets);
+    out.steps.paste = { line, outcomes: await outcomes(page), sides: await sides(page, all), edits: await edits(page) };
+    const undone = await undo(page);
+    out.steps.undo = { line: undone, sides: await sides(page, all) };
+
+    // 再套用一次，改其中一张，再撤销：那一张不动并说明。
+    const again = await select(page, targets);
+    await openPhoto(page, targets[0]);
+    await setAdjust(page, 'shadow', 20);
+    await back(page);
+    const changed = await undo(page);
+    out.steps.changed = { pasteLine: again, line: changed, sides: await sides(page, all) };
+  }
 } catch (error) {
   out.error = String(error?.stack ?? error);
 } finally {
