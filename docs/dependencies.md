@@ -72,3 +72,14 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 - `#![forbid(unsafe_code)]` 纯安全 Rust 实现；
 - Lanczos `sinc` 统一调用 `gxr_math::sin`（`libm`），使原生 CLI 与 WASM 逐位一致；
 - `32bpc`（`mode = "F"`）按标准 IEEE 754 `f64` 顺序乘加并禁止 FMA（`mul_add`），遵循核心可移植算术规范。
+
+### 内部移植的 TrueType 轮廓与光栅器（`gxr-finish`，原 `FreeType 2.14.3` 与 `Pillow 12.2.0`）
+
+`core/crates/gxr-finish/src/ink_text/` 依据 `FreeType 2.14.3`（FTL 许可，不含字节码解释器）与 `Pillow 12.2.0`（`src/_imagingft.c`、`src/libImaging/Paste.c`，MIT-CMU 许可）用纯安全 Rust 重写，不引入外部 Rust crate：
+- `ftcalc.rs` / `glyf.rs`：移植自 `ftcalc.c`、`fttrigon.c`、`ftoutln.c`、`ftobjs.c`、`ttgload.c` 与 `ttobjs.c`；
+- `gray.rs`：移植自 `ftgrays.c` 与 `ftsmooth.c`；
+- `text.rs`：移植自 Pillow 12.2.0 `src/_imagingft.c` 与 `src/libImaging/Paste.c`。
+
+Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved.
+
+完整许可与声明保存在 `core/crates/gxr-finish/NOTICE`。

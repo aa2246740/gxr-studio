@@ -36,3 +36,25 @@ INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
 LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
 OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+src/ink_text/ includes a Rust port of portions of FreeType 2.14.3
+(src/base/ftcalc.c, fttrigon.c, ftoutln.c, ftobjs.c;
+ src/truetype/ttgload.c, ttobjs.c; src/smooth/ftgrays.c, ftsmooth.c)
+and Pillow 12.2.0 (src/_imagingft.c, src/libImaging/Paste.c).
+
+Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved.
+
+The FreeType Project is licensed under the FreeType License (FTL):
+
+  Permission is granted to use, copy, modify, and distribute this software
+  (in both source and object code forms) and derivative works thereof for any
+  purpose and without fee, provided that distribution in binary form includes
+  this acknowledgement and disclaimer.
+
+  THE FREETYPE PROJECT IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND,
+  EITHER EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. IN NO EVENT WILL ANY
+  OF THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY DAMAGES CAUSED BY THE
+  USE OR THE INABILITY TO USE, OF THE FREETYPE PROJECT.
