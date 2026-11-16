@@ -154,6 +154,10 @@ async function dragCropBox(page) {
   await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
   await page.mouse.down();
   await page.mouse.move(corner.x - 45, corner.y - 30, { steps: 6 });
+  const dragBadge = await page.evaluate(() => {
+    const m = /^(\d+)\s*×\s*(\d+)$/.exec(document.querySelector('.cbox .csize')?.textContent?.trim() || '');
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  });
   await page.mouse.up();
   await page.waitForFunction(
     ({ s, prev }) => {
@@ -181,7 +185,7 @@ async function dragCropBox(page) {
   );
   const currentStem = await page.locator('.editor').getAttribute('data-photo');
   const afterMove = await page.evaluate((s) => window.__gxrEdits?.().find((r) => r.stem === s)?.crop, stem);
-  return { stayedSamePhoto: currentStem === stem, afterResize, afterMove };
+  return { stayedSamePhoto: currentStem === stem, dragBadge, afterResize, afterMove };
 }
 
 async function batchFacts(page) {
@@ -225,14 +229,33 @@ async function runFinalSize(page) {
       await page.waitForSelector('.crop-panel');
       if (angle !== 0) await dragStraighten(page, angle, false);
       await selectPreset(page, preset, orient);
-      if (preset === 'free') await dragCropBox(page);
+      let dragBadge = null;
+      if (preset === 'free') {
+        const drag = await dragCropBox(page);
+        dragBadge = drag.dragBadge;
+      }
+      await page.waitForFunction(
+        () => {
+          const b = document.querySelector('.cbox .csize')?.textContent?.trim() || '';
+          const l = document.querySelector('.crop-size-line')?.textContent || '';
+          const m1 = /^(\d+)\s*×\s*(\d+)$/.exec(b);
+          const m2 = /成品\s*(\d+)\s*×\s*(\d+)\s*像素/.exec(l);
+          return Boolean(m1 && m2 && m1[1] === m2[1] && m1[2] === m2[2]);
+        },
+        null,
+        { timeout: 30_000 },
+      );
+      const badgeSize = await page.evaluate(() => {
+        const m = /^(\d+)\s*×\s*(\d+)$/.exec(document.querySelector('.cbox .csize')?.textContent?.trim() || '');
+        return m ? [Number(m[1]), Number(m[2])] : null;
+      });
       const side = await page.evaluate(async (s) => (await window.__gxrRequest(s))?.side ?? null, stem);
       const seq = Number(await page.evaluate(() => document.querySelector('.app')?.dataset.geoSeq || '0'));
       await page.locator('.tabs button[data-tab="1"]').click();
       await waitGeo(page, seq);
       const finalSize = await page.evaluate(() => window.__gxrEngine?.finalSize?.() ?? null);
       const layerSize = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
-      results.push({ stem, preset, orient, angle, side, finalSize, layerSize });
+      results.push({ stem, preset, orient, angle, side, finalSize, layerSize, badgeSize, dragBadge });
       // reset straighten to 0 before next non-zero test if needed
       if (angle !== 0) {
         await page.locator('.tabs button[data-tab="2"]').click();

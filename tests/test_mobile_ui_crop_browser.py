@@ -30,6 +30,7 @@ pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
 DRIVER = REPO / "tests" / "support" / "mobile_ui_crop_browser.mjs"
+REG_DRIVER = REPO / "tests" / "support" / "mobile_ui_crop_regressions_browser.mjs"
 
 __all__ = ["pinned_icc"]
 
@@ -41,11 +42,11 @@ def _prereq() -> None:
     _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
 
 
-def _run_driver(tmp_path: Path, manifest: dict[str, Any], *, timeout: int = 1500) -> dict[str, Any]:
+def _run_driver(tmp_path: Path, manifest: dict[str, Any], *, timeout: int = 1500, driver: Path = DRIVER) -> dict[str, Any]:
     out = tmp_path / f"{manifest['mode']}-report.json"
     mpath = tmp_path / f"{manifest['mode']}-manifest.json"
     mpath.write_text(json.dumps({**manifest, "out": str(out)}), encoding="utf-8")
-    result = _drive(DRIVER, mpath, tmp_path, "", timeout=timeout)
+    result = _drive(driver, mpath, tmp_path, "", timeout=timeout)
     debug = os.environ.get("GXR_M4_DEBUG")
     if debug:
         Path(debug, f"{manifest['mode']}-driver.log").write_text(result.stdout + result.stderr, encoding="utf-8")
@@ -119,11 +120,22 @@ def test_mobile_ui_crop_gpu_final_size_parity(tmp_path: Path) -> None:
             layer_w, layer_h = int(ls["w"]), int(ls["h"])
             (bx, by, bw, bh), _ = desktop_final_box(layer_w, layer_h, geom, rect, preset)
             same_redacted(got, [bw, bh], f"finalSize == desktop final_box(layerSize) ({row['preset']}, {row['orient']}, {row['angle']})")
+            same_redacted(
+                row["badgeSize"],
+                want_export,
+                f"crop badge == export_output_sizes ({row['preset']}, {row['orient']}, {row['angle']})",
+            )
             if row["stem"] == jpg_only.stem:
                 same_redacted(got, want_export, f"JPG finalSize == export_output_sizes ({row['preset']}, {row['orient']}, {row['angle']})")
             else:
                 close = abs(got[0] * 2 - want_export[0]) <= 2 and abs(got[1] * 2 - want_export[1]) <= 2
                 check(close, "DNG half-res Engine.finalSize() * 2 tracks export_output_sizes within 2 px")
+                if row["preset"] == "free":
+                    drag_badge = row.get("dragBadge")
+                    check(
+                        drag_badge is not None and drag_badge[0] > 2200,
+                        "DNG free-drag badge estimates on full frame (>2200 px), not half-res layer",
+                    )
         check(report["steps"][f"croppedCards_{dng.stem}"] > 0, "recipe strip rendered cropped card thumbnails")
     finally:
         desk.lib.close()
@@ -294,3 +306,90 @@ def test_mobile_ui_crop_end_to_end_parity(tmp_path: Path, pinned_icc: bytes) -> 
         note("ui_m4_crop_parity", {"count": len(table_rows), "rows": table_rows})
     finally:
         desk.lib.close()
+
+
+def test_mobile_ui_crop_stale_async_and_pointer_cancel_browser(tmp_path: Path) -> None:
+    """P2-01 & P2-02: delayed real WASM replies across repick/navigation/undo/clear are discarded, and ruler pointercancel does not commit."""
+    from PIL import Image
+
+    _prereq()
+    jpg_a = tmp_path / "R9991001.JPG"
+    jpg_b = tmp_path / "R9991002.JPG"
+    Image.new("RGB", (640, 480), (40, 90, 140)).save(jpg_a, format="JPEG", quality=92)
+    Image.new("RGB", (640, 480), (150, 70, 50)).save(jpg_b, format="JPEG", quality=92)
+    os.utime(jpg_a, (1_700_000_000, 1_700_000_000))
+    os.utime(jpg_b, (1_700_000_010, 1_700_000_010))
+
+    report = _run_driver(
+        tmp_path,
+        {
+            "mode": "staleAndCancel",
+            "files": [str(jpg_a), str(jpg_b)],
+            "count": 2,
+            "stemA": jpg_a.stem,
+            "stemB": jpg_b.stem,
+            "jpgA": str(jpg_a),
+        },
+        timeout=600,
+        driver=REG_DRIVER,
+    )
+    check(report["pageErrors"] == [], "no page errors")
+    steps = report["steps"]
+
+    cancel = steps["rulerCancel"]
+    check(cancel["duringDrag"] == "1" and cancel["afterDrag"] == "0", "ruler cancel exits drag layout")
+    check(cancel["duringAngle"] == "2.0°" and cancel["afterAngle"] == "0.0°", "ruler cancel restores displayed angle")
+    check(cancel["afterRev"] == cancel["beforeRev"] == 1, "ruler cancel does not increment rev")
+    check(cancel["beforeStraighten"] == 0 and cancel["afterStraighten"] == 0, "ruler cancel keeps straighten at 0")
+    check(cancel["sameCrop"] is True, "ruler cancel restores previous crop rect")
+    check(cancel["wasmCallsDelta"] == 0, "ruler cancel does not call WASM geom-geometry-write")
+
+    repick = steps["staleRepick"]
+    check(repick is not None and repick["crop"]["preset"] == "16:9", "stale repick keeps 16:9 instead of delayed 1:1")
+    check(repick["geometry"]["straighten"] == 2 and repick["rev"] == 2, "stale repick keeps straighten=2 and rev=2")
+
+    nav = steps["staleNavigation"]
+    edit_b = nav["editB"]
+    check(edit_b["crop"] is None and edit_b["geometry"]["straighten"] == 0 and edit_b["rev"] == 0, "stale navigation leaves B edits intact")
+    bad_calls = [c for c in nav["engineCallsDuringB"] if c.get("straighten") != 0]
+    check(bad_calls == [], "stale destroyed controller must not push non-zero straighten to shared Engine")
+
+    undo = steps["staleUndoAfterPaste"]
+    check(undo["crop"] is None and undo["geometry"]["straighten"] == 0, "undo-after-paste discards stale in-flight 1:1 commit")
+    check(undo["rev"] == 2, "undo-after-paste preserves undo rev=2")
+    check(steps["staleClearCount"] == 0, "clearing photos discards stale in-flight commit")
+
+
+def test_mobile_ui_crop_raw_closed_bitmap_and_error_banner_browser(tmp_path: Path) -> None:
+    """P2-03: RAW without DAT and uncalibrated RAW clear stale neutral bitmap before refreshing and leave crop error banner empty."""
+    pairs = mx.real_pairs(1)
+    if not pairs:
+        samples.missing(f"need a DNG+JPG pair in {mx.SAMPLE_DIR}")
+    dat = _local_dat()
+    _prereq()
+    dng, jpg = pairs[0]
+    report = _run_driver(
+        tmp_path,
+        {
+            "mode": "rawClosedBitmap",
+            "count": 1,
+            "stem": dng.stem,
+            "dng": str(dng),
+            "jpg": str(jpg),
+            "dat": str(dat),
+        },
+        timeout=900,
+        driver=REG_DRIVER,
+    )
+    check(report["pageErrors"] == [], "no page errors")
+    no_dat = report["steps"]["noDat"]
+    check(no_dat["errHidden"] is True and no_dat["errText"] == "", "noDat: crop error banner must remain hidden/empty")
+    check(no_dat["preset"] == "xpan-65-24" and no_dat["rev"] == 1, "noDat: valid XPan crop saved cleanly")
+    no_dat_card = no_dat["afterCard"]
+    check(no_dat_card is not None and no_dat_card["w"] > no_dat_card["h"] * 2, "noDat: cropped XPan neutral card redrawn cleanly")
+
+    uncal = report["steps"]["uncalibrated"]
+    check(uncal["errHidden"] is True and uncal["errText"] == "", "uncalibrated: crop error banner must remain hidden/empty")
+    check(uncal["preset"] == "xpan-65-24" and uncal["rev"] == 1, "uncalibrated: valid XPan crop saved cleanly")
+    uncal_card = uncal["afterCard"]
+    check(uncal_card is not None and uncal_card["w"] > uncal_card["h"] * 2, "uncalibrated: cropped XPan neutral card redrawn cleanly")

@@ -421,3 +421,89 @@ def test_wasm_matches_native_for_crop_edit(tmp_path: Path) -> None:
 
     proc = run_area("geometry", specs, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def _strict_json(raw: str) -> Any:
+    def _reject(token: str) -> Any:
+        raise ValueError(f"non-standard JSON constant {token!r}")
+
+    return json.loads(raw, parse_constant=_reject)
+
+
+def test_stored_unrepresentable_crop_rejected_strict_json_and_wasm_parity(tmp_path: Path) -> None:
+    """P2-04: stored bad crop rects/angles cannot bypass bounds or emit NaN/Infinity on identity geometry writes."""
+    require_cli()
+
+    # Exact raw JSON literals (including non-finite NaN/Infinity tokens in stored sidecar)
+    bad_rect_cases = [
+        ("huge-1e18", "[1e18,0,1e18,0.5]"),
+        ("huge-w", "[0,0,1e18,0.5]"),
+        ("nan-x", "[NaN,0,0.5,0.5]"),
+        ("inf-x", "[Infinity,0,0.5,0.5]"),
+        ("neginf-x", "[-Infinity,0,0.5,0.5]"),
+    ]
+    specs: list[Path] = []
+    expected_err: dict[str, tuple[str, str]] = {}
+
+    def _add_spec(name: str, side_raw: str, payload_raw: str, is_crop: bool) -> None:
+        sf = tmp_path / f"{name}-side.json"
+        pf = tmp_path / f"{name}-payload.json"
+        sp = tmp_path / f"{name}.json"
+        sf.write_text(side_raw, encoding="utf-8")
+        pf.write_text(payload_raw, encoding="utf-8")
+        key = "cropWrite" if is_crop else "geometryWrite"
+        arg = "requestFile" if is_crop else "geometryFile"
+        sp.write_text(json.dumps({key: {"sideFile": str(sf), arg: str(pf)}}), encoding="utf-8")
+        specs.append(sp)
+
+    clean_side = '{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":null}'
+    for tag, rect_lit in bad_rect_cases:
+        code_direct, pay_direct = _cli_crop_write(tmp_path, clean_side, f'{{"preset":"free","rect":{rect_lit},"angle_deg":0}}')
+        err_direct = error_of(code_direct, pay_direct)
+        assert err_direct is not None and err_direct.kind == "bad_rect", (tag, code_direct, pay_direct)
+
+        stored_side = (
+            f'{{"frame":{{"width":640,"height":480,"orientation":1}},'
+            f'"geometry":null,"crop":{{"preset":"free","rect":{rect_lit},"angle_deg":0}}}}'
+        )
+        for gtag, geom_lit in (("zero", '{"straighten":0}'), ("null", "null"), ("tilt", '{"straighten":1.5}')):
+            case_dir = tmp_path / f"{tag}-{gtag}"
+            case_dir.mkdir(exist_ok=True)
+            code, pay = _cli_geom_write(case_dir, stored_side, geom_lit)
+            err = error_of(code, pay)
+            assert err is not None, f"{tag}-{gtag}: expected error, got {pay!r}"
+            assert err.kind == err_direct.kind and err.message == err_direct.message, f"{tag}-{gtag}: {err} vs {err_direct}"
+            _strict_json(json.dumps(pay))
+            name = f"{tag}-{gtag}"
+            _add_spec(name, stored_side, geom_lit, False)
+            expected_err[name] = (err.kind, err.message)
+
+    # Stored angle_deg = NaN is rejected as bad_angle when reused by crop-write, and sanitized to finite straighten by geometry-write
+    bad_angle_side = (
+        '{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":{"preset":"free","rect":[0.1,0.1,0.5,0.5],"angle_deg":NaN}}'
+    )
+    code_ang_crop, pay_ang_crop = _cli_crop_write(tmp_path, bad_angle_side, '{"preset":"1:1"}')
+    err_ang = error_of(code_ang_crop, pay_ang_crop)
+    assert err_ang is not None and err_ang.kind == "bad_angle", (code_ang_crop, pay_ang_crop)
+    _strict_json(json.dumps(pay_ang_crop))
+    _add_spec("stored-nan-angle-crop", bad_angle_side, '{"preset":"1:1"}', True)
+
+    code_ang_geom, pay_ang_geom = _cli_geom_write(tmp_path, bad_angle_side, '{"straighten":0}')
+    assert code_ang_geom == 0 and error_of(code_ang_geom, pay_ang_geom) is None
+    assert pay_ang_geom["crop"]["angle_deg"] == 0.0
+    _strict_json(json.dumps(pay_ang_geom))
+    _add_spec("stored-nan-angle-geom", bad_angle_side, '{"straighten":0}', False)
+
+    # Valid identity geometry write still returns strict JSON
+    good_side = (
+        '{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":{"preset":"1:1","rect":[0.125,0,0.75,1],"angle_deg":0}}'
+    )
+    code_ok, pay_ok = _cli_geom_write(tmp_path, good_side, '{"straighten":0}')
+    assert code_ok == 0 and error_of(code_ok, pay_ok) is None
+    _strict_json(json.dumps(pay_ok))
+    _add_spec("valid-identity", good_side, '{"straighten":0}', False)
+
+    # WASM vs native exact byte parity + strict JS JSON.parse validation
+    proc = run_area("geometry", specs, tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert expected_err

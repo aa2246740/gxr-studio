@@ -7,8 +7,8 @@
 use gxr_raw::{CoreError, Json};
 
 use crate::crop::{
-    Crop, MAX_ANGLE, check_final, crop_box as px_crop_box, default_crop, fit_target_crop,
-    target_ratio, validate_crop,
+    Crop, MAX_ANGLE, check_final, checked_crop_box, default_crop, fit_target_crop, target_ratio,
+    validate_crop,
 };
 use crate::geometry::bounds::checked_mask_dims;
 use crate::geometry::json::{JsonValue, parse_json};
@@ -213,6 +213,9 @@ fn parse_rect4(val: &JsonValue) -> Result<[f64; 4], CoreError> {
     let mut out = [0.0; 4];
     for (i, item) in arr.iter().enumerate() {
         let f = item.as_f64().ok_or_else(bad_rect)?;
+        if !f.is_finite() {
+            return Err(bad_rect());
+        }
         out[i] = f;
     }
     Ok(out)
@@ -246,7 +249,7 @@ fn describe_parts(
             &default
         }
     };
-    let [x0, y0, bw, bh] = px_crop_box(crop.rect, w as i64, h as i64);
+    let [x0, y0, bw, bh] = checked_crop_box(crop.rect, w as i64, h as i64)?;
     let orient_str = if bw >= bh { "landscape" } else { "portrait" };
     Ok(Json::object([
         ("preset", Json::str(&crop.preset)),
@@ -286,7 +289,13 @@ fn crop_from_json_value(val: &JsonValue) -> Result<Option<Crop>, CoreError> {
             let rect = parse_rect4(rect_val)?;
             let angle_deg = match val.get("angle_deg") {
                 None | Some(JsonValue::Null) => 0.0,
-                Some(v) => v.as_f64().ok_or_else(bad_angle_invalid)?,
+                Some(v) => {
+                    let a = v.as_f64().ok_or_else(bad_angle_invalid)?;
+                    if !a.is_finite() {
+                        return Err(bad_angle_invalid());
+                    }
+                    a
+                }
             };
             Ok(Some(Crop {
                 preset: preset.to_string(),
@@ -558,6 +567,11 @@ pub fn geometry_write_json(side_json: &str, geometry_json: &str) -> Result<Json,
         resized && stored.is_some(),
     )?;
 
+    let (out_w, out_h) = match (src_w, src_h) {
+        (Some(w), Some(h)) => output_size(w, h, &geom)?,
+        _ => (120, 90),
+    };
+
     let (out_crop_json, desc_crop): (Json, Option<Crop>) = if let Some(rect) = fixed {
         let preset_str = preset_name.filter(|s| !s.is_empty()).unwrap_or("free");
         let rounded = [
@@ -573,6 +587,9 @@ pub fn geometry_write_json(side_json: &str, geometry_json: &str) -> Result<Json,
         };
         (crop.to_json(), Some(crop))
     } else if let Some(JsonValue::Object(pairs)) = crop_obj {
+        if let Some(r) = stored {
+            let _ = checked_crop_box(r, out_w as i64, out_h as i64)?;
+        }
         let json = upsert_field(pairs, "angle_deg", Json::Float(geom.straighten));
         let desc_crop = if let (Some(p), Some(r)) = (preset_name, stored) {
             Some(Crop {
@@ -644,6 +661,30 @@ mod tests {
         let cleared = geometry_write_json(&res, "null").unwrap().render();
         assert!(cleared.contains(r#""geometry":null"#));
         assert!(cleared.contains(r#""angle_deg":0.0"#));
+    }
+
+    #[test]
+    fn geometry_write_and_describe_reject_unrepresentable_stored_crops() {
+        let cases = [
+            r#"{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":{"preset":"free","rect":[1e18,0,1e18,0.5],"angle_deg":0}}"#,
+            r#"{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":{"preset":"free","rect":[NaN,0,0.5,0.5],"angle_deg":0}}"#,
+            r#"{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":{"preset":"free","rect":[Infinity,0,0.5,0.5],"angle_deg":0}}"#,
+            r#"{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":{"preset":"free","rect":[0,-Infinity,0.5,0.5],"angle_deg":0}}"#,
+        ];
+        for side in cases {
+            let geom_err = geometry_write_json(side, r#"{"straighten":0}"#).unwrap_err();
+            assert_eq!(geom_err.kind, "bad_rect");
+            assert_eq!(geom_err.message, "裁剪框超出画面范围");
+
+            let desc_err = describe_json(side).unwrap_err();
+            assert_eq!(desc_err.kind, "bad_rect");
+            assert_eq!(desc_err.message, "裁剪框超出画面范围");
+        }
+        let bad_angle = describe_json(
+            r#"{"frame":{"width":640,"height":480,"orientation":1},"geometry":null,"crop":{"preset":"free","rect":[0,0,0.5,0.5],"angle_deg":NaN}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(bad_angle.kind, "bad_angle");
     }
 
     #[test]

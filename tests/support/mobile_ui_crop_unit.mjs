@@ -20,6 +20,7 @@ registerHooks({
 const {
   centeredMaxRect,
   cropIsPortrait,
+  croppedPixelSize,
   fitStraightened,
   geometrySidecar,
   GUIDE_PREFS_KEY,
@@ -211,4 +212,14 @@ test('编辑状态提交与松手回弹：无变化不加 rev，有效提交才�
   // 重复提交相同结果（松手没动）：不加 rev
   assert.equal(applyReply({ geometry: geometrySidecar(1.5), crop: snapCrop }), false);
   assert.equal(photo.rev, 1);
+});
+
+test('croppedPixelSize：奇数全尺寸与半分辨率乘 2 会差 1 px，角标必须基于完整帧', () => {
+  const full = { w: 4287, h: 2849 };
+  const half = { w: Math.floor(full.w / 2), h: Math.floor(full.h / 2) };
+  const rect = centeredMaxRect(full, 65 / 24, 0, [65, 24]);
+  const fullPx = croppedPixelSize(rect, full);
+  const halfPx = croppedPixelSize(rect, half);
+  assert.equal(fullPx.w, 4287);
+  assert.notEqual(halfPx.w * 2, fullPx.w);
 });

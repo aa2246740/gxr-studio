@@ -139,6 +139,7 @@ export class EditorView {
 
   destroy(): void {
     this.token += 1;
+    this.photo = null;
     lookCache.setOpen(null);
     this.offPaste?.();
     this.offPaste = null;
@@ -195,8 +196,11 @@ export class EditorView {
       requestHist: () => this.requestHist(),
       swipe: (id, dir) => this.api.swipe(id, dir),
       onCommitted: (target, changed) => {
-        if (changed) {
-          if (this.mode === 'raw') void this.neutralCards(target, `raw:${target.id}`);
+        if (changed && this.photo === target) {
+          if (this.mode === 'raw') {
+            this.recipes?.neutral(null);
+            void this.neutralCards(target, `raw:${target.id}`);
+          }
           this.recipes?.refresh();
         }
       },
@@ -440,14 +444,20 @@ export class EditorView {
     this.dragging = true;
     this.shell.dataset.drag = '1';
     this.api.watch('drag', true);
-    requestAnimationFrame(() => this.engine?.redraw());
+    const token = this.token;
+    requestAnimationFrame(() => {
+      if (token === this.token) this.engine?.redraw();
+    });
   }
 
   private leaveDrag(): void {
     this.dragging = false;
     this.shell.dataset.drag = '0';
     this.api.watch('drag', false);
-    requestAnimationFrame(() => this.engine?.redraw());
+    const token = this.token;
+    requestAnimationFrame(() => {
+      if (token === this.token) this.engine?.redraw();
+    });
   }
 
   /**
@@ -600,6 +610,7 @@ export class EditorView {
         if (this.still) this.still.hidden = true;
         this.push();
         await this.cropStage?.applyPreviewGeometry();
+        if (token !== this.token) return;
         const frame = this.engine.frame();
         if (frame) this.shell.dataset.frame = '1';
         if (this.input) this.input.disabled = false;
@@ -671,14 +682,16 @@ export class EditorView {
   private async neutralCards(photo: Photo, key: string): Promise<void> {
     if (!this.engine || !this.cropStage) return;
     const version = photo.version;
+    const rev = photo.rev;
+    const token = this.token;
     if (photo.neutral && photo.neutral.version === version) {
-      this.recipes?.neutral(photo.neutral.bitmap);
+      if (token === this.token) this.recipes?.neutral(photo.neutral.bitmap);
       return;
     }
-    const token = this.token;
     const session = this.api.session();
-    // 照片还是这次会话里的同一张、同一个版本：清空、去掉、重新选过都算过期。
-    const alive = () => this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
+    // 照片还是这次会话里的同一张、同一个版本和编辑版本：清空、去掉、重新选过或改过裁剪都算过期。
+    const alive = () =>
+      this.api.photo(photo.id) === photo && photo.version === version && photo.rev === rev && this.api.session() === session;
     const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
     const { geometry } = await this.cropStage.resolveBoxGeometry(photo);
     if (!alive()) return;
@@ -689,6 +702,7 @@ export class EditorView {
       bitmap.close();
       return;
     }
+    if (token === this.token) this.recipes?.neutral(null);
     photo.neutral?.bitmap.close();
     photo.neutral = { version, bitmap };
     if (token === this.token) this.recipes?.neutral(bitmap);
@@ -696,10 +710,12 @@ export class EditorView {
 
   private async showRaw(key: string): Promise<void> {
     if (!this.engine) return;
+    const token = this.token;
     this.engine.show(key);
     this.mode = 'raw';
     this.push();
     await this.cropStage?.applyPreviewGeometry();
+    if (token !== this.token) return;
     const frame = this.engine.frame();
     if (frame) this.shell.dataset.frame = '1';
     if (!this.lookCaption) this.lookCaption = '中性转换';
@@ -743,6 +759,7 @@ export class EditorView {
       this.engine.show(key);
       this.push();
       await this.cropStage?.applyPreviewGeometry();
+      if (token !== this.token) return;
       this.engine.frame();
       this.cropStage?.syncLoaded();
       return;

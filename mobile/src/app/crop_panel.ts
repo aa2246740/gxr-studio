@@ -41,7 +41,9 @@ export interface CropPanelHooks {
   beginStraighten(): void;
   previewStraighten(angle: number): void;
   endStraighten(): void;
+  cancelStraighten(): void;
   resetStraighten(): void;
+  onExportSize?: (photo: Photo, width: number, height: number) => void;
 }
 
 function fmtDeg(v: number): string {
@@ -69,6 +71,7 @@ export class CropPanel {
   private readonly errBanner = el('div', 'bn crop-err');
   private readonly errText = el('span', 'tx', '');
   private sizeSeq = 0;
+  private destroyed = false;
   private lastTap = { at: 0, x: 0, y: 0 };
 
   constructor(
@@ -183,7 +186,11 @@ export class CropPanel {
       startX = ev.clientX;
       startAngle = this.hooks.liveStraighten();
       moved = false;
-      this.ruler.setPointerCapture(ev.pointerId);
+      try {
+        this.ruler.setPointerCapture(ev.pointerId);
+      } catch {
+        /* ignore */
+      }
       this.hooks.beginStraighten();
     });
 
@@ -200,9 +207,20 @@ export class CropPanel {
     const finish = (ev: PointerEvent) => {
       if (ev.pointerId !== activeId) return;
       activeId = -1;
-      if (this.ruler.hasPointerCapture(ev.pointerId)) this.ruler.releasePointerCapture(ev.pointerId);
+      if (this.ruler.hasPointerCapture?.(ev.pointerId)) {
+        try {
+          this.ruler.releasePointerCapture(ev.pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (ev.type === 'pointercancel') {
+        this.hooks.cancelStraighten();
+        this.paintAngle(this.hooks.liveStraighten());
+        return;
+      }
       this.hooks.endStraighten();
-      if (!moved && ev.type === 'pointerup') {
+      if (!moved) {
         const now = performance.now();
         const close = Math.hypot(ev.clientX - this.lastTap.x, ev.clientY - this.lastTap.y) < 16;
         if (now - this.lastTap.at < 320 && close) {
@@ -306,6 +324,7 @@ export class CropPanel {
   }
 
   refreshSize(): void {
+    if (this.destroyed) return;
     const photo = this.hooks.photo();
     if (!photo) return;
     const crop = this.hooks.liveCrop();
@@ -331,12 +350,22 @@ export class CropPanel {
     }
     const seq = ++this.sizeSeq;
     const version = photo.version;
+    const rev = photo.rev;
     const side = sideSubset({ frame, geometry: { straighten: this.hooks.liveStraighten() }, crop });
     void geomOutputSizes(frame.width, frame.height, side, rectArr, preset)
       .then((reply) => {
-        if (seq !== this.sizeSeq || this.hooks.photo() !== photo || photo.version !== version) return;
+        if (
+          this.destroyed ||
+          seq !== this.sizeSeq ||
+          this.hooks.photo() !== photo ||
+          photo.version !== version ||
+          photo.rev !== rev
+        ) {
+          return;
+        }
         const [w, h] = reply.sizes.original;
         this.sizeLine.textContent = `成品 ${w} × ${h} 像素 · ${label}`;
+        this.hooks.onExportSize?.(photo, w, h);
       })
       .catch(() => {
         /* 算不出来就留着上一次的值，不置空。 */
@@ -344,6 +373,7 @@ export class CropPanel {
   }
 
   destroy(): void {
+    this.destroyed = true;
     this.sizeSeq += 1;
     this.closeGuideSheet();
   }

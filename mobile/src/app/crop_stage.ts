@@ -73,6 +73,8 @@ export class CropStage {
   private draftAngle: number | null = null;
   private straightenBaseRect: Rect | null = null;
   private geoSeq = 0;
+  private destroyed = false;
+  private exportSize: { photo: Photo; version: number; rev: number; w: number; h: number } | null = null;
   private commitChain: Promise<void> = Promise.resolve();
 
   constructor(
@@ -93,6 +95,9 @@ export class CropStage {
   }
 
   destroy(): void {
+    this.destroyed = true;
+    this.geoSeq += 1;
+    this.exportSize = null;
     this.reset();
     this.cropOverlay = null;
     this.cropBox = null;
@@ -130,12 +135,21 @@ export class CropStage {
       pickOrientation: (orient) => void this.commitOrientation(orient),
       guidesChanged: () => this.renderOverlay(),
       beginStraighten: () => {
+        if (this.destroyed) return;
         this.straightenBaseRect = rectFromArray(this.liveCrop()?.rect);
         this.host.enterDrag();
       },
       previewStraighten: (angle) => this.onPreviewStraighten(angle),
       endStraighten: () => this.onEndStraighten(),
+      cancelStraighten: () => this.onCancelStraighten(),
       resetStraighten: () => void this.commitStraighten(0),
+      onExportSize: (target, w, h) => {
+        if (this.destroyed || this.host.photo() !== target) return;
+        this.exportSize = { photo: target, version: target.version, rev: target.rev, w, h };
+        if (this.draftRect === null && this.draftAngle === null && this.cropSizeEl && this.host.active()) {
+          this.cropSizeEl.textContent = `${w} × ${h}`;
+        }
+      },
     });
     return this.cropPanel.panelEl();
   }
@@ -146,12 +160,13 @@ export class CropStage {
   }
 
   syncLoaded(): void {
-    if (!this.host.active()) return;
+    if (this.destroyed || !this.host.active()) return;
     this.renderOverlay();
     this.cropPanel?.sync();
   }
 
   syncTabMode(): void {
+    if (this.destroyed) return;
     this.gesture.cancel();
     this.draftRect = null;
     this.draftAngle = null;
@@ -211,9 +226,11 @@ export class CropStage {
   }
 
   renderOverlay(): void {
+    if (this.destroyed) return;
     const pv = this.host.pvEl();
+    const photo = this.host.photo();
     if (!pv || !this.cropOverlay || !this.cropBox || !this.cropSizeEl || !this.cropGuidesSvg) return;
-    if (!this.host.active() || !this.host.photo()) {
+    if (!this.host.active() || !photo) {
       this.cropOverlay.hidden = true;
       return;
     }
@@ -241,7 +258,16 @@ export class CropStage {
     this.cropBox.style.width = `${bw}px`;
     this.cropBox.style.height = `${bh}px`;
 
-    const px = croppedPixelSize(rect, canvas);
+    const exact =
+      this.draftRect === null &&
+      this.draftAngle === null &&
+      this.exportSize &&
+      this.exportSize.photo === photo &&
+      this.exportSize.version === photo.version &&
+      this.exportSize.rev === photo.rev
+        ? this.exportSize
+        : null;
+    const px = exact ? { w: exact.w, h: exact.h } : croppedPixelSize(rect, this.badgeCanvas(photo));
     this.cropSizeEl.textContent = `${px.w} × ${px.h}`;
 
     const prefs = loadGuidePrefs();
@@ -288,6 +314,7 @@ export class CropStage {
   }
 
   async applyPreviewGeometry(): Promise<void> {
+    if (this.destroyed) return;
     const photo = this.host.photo();
     if (!photo) return;
     if (this.host.mode() === 'still') {
@@ -297,6 +324,7 @@ export class CropStage {
     if (!this.engine) return;
     const seq = ++this.geoSeq;
     const version = photo.version;
+    const session = this.api.session();
     if (this.host.active()) {
       this.engine.setGeometry({ ...DEFAULT_GEOMETRY, straighten: this.liveStraighten(), box: null });
       this.engine.setDisplayAspect(null);
@@ -304,9 +332,27 @@ export class CropStage {
       return;
     }
     await this.commitChain.catch(() => undefined);
-    if (seq !== this.geoSeq || this.host.photo() !== photo || photo.version !== version || this.host.active()) return;
+    if (
+      this.destroyed ||
+      seq !== this.geoSeq ||
+      this.api.session() !== session ||
+      this.host.photo() !== photo ||
+      photo.version !== version ||
+      this.host.active()
+    ) {
+      return;
+    }
     const { geometry } = await this.resolveBoxGeometry(photo);
-    if (seq !== this.geoSeq || this.host.photo() !== photo || photo.version !== version || this.host.active()) return;
+    if (
+      this.destroyed ||
+      seq !== this.geoSeq ||
+      this.api.session() !== session ||
+      this.host.photo() !== photo ||
+      photo.version !== version ||
+      this.host.active()
+    ) {
+      return;
+    }
     this.engine.setGeometry(geometry);
     this.engine.setDisplayAspect(null);
     this.host.requestHist();
@@ -507,6 +553,12 @@ export class CropStage {
     return { w: 1, h: 1 };
   }
 
+  private badgeCanvas(photo: Photo): CanvasDims {
+    const frame = photo.frame;
+    if (frame && frame.width > 0 && frame.height > 0) return { w: frame.width, h: frame.height };
+    return this.photoCanvas();
+  }
+
   private liveStraighten(): number {
     return this.draftAngle ?? this.host.photo()?.geometry.straighten ?? 0;
   }
@@ -525,6 +577,7 @@ export class CropStage {
   }
 
   private onPreviewStraighten(angle: number): void {
+    if (this.destroyed) return;
     const photo = this.host.photo();
     if (!photo) return;
     const clean = Math.min(45, Math.max(-45, Math.round(angle * 10) / 10));
@@ -542,18 +595,39 @@ export class CropStage {
   }
 
   private onEndStraighten(): void {
+    if (this.destroyed) return;
     const angle = this.draftAngle;
     this.straightenBaseRect = null;
     if (this.host.dragging()) this.host.leaveDrag();
     if (angle !== null) void this.commitStraighten(angle);
   }
 
-  private enqueueCommit(photo: Photo, fn: () => Promise<void>): Promise<void> {
+  private onCancelStraighten(): void {
+    if (this.destroyed) return;
+    this.draftAngle = null;
+    this.draftRect = null;
+    this.straightenBaseRect = null;
+    if (this.host.dragging()) this.host.leaveDrag();
+    this.cropPanel?.syncAngleOnly();
+    this.renderOverlay();
+    void this.applyPreviewGeometry();
+  }
+
+  private isModelCurrent(photo: Photo, version: number, session: number, rev?: number): boolean {
+    return (
+      this.api.session() === session &&
+      this.api.photo(photo.id) === photo &&
+      photo.version === version &&
+      (rev === undefined || photo.rev === rev)
+    );
+  }
+
+  private enqueueCommit(photo: Photo, fn: (version: number, session: number, sentRev: number) => Promise<void>): Promise<void> {
     const version = photo.version;
     const session = this.api.session();
     const run = this.commitChain.then(async () => {
-      if (this.api.photo(photo.id) !== photo || photo.version !== version || this.api.session() !== session) return;
-      await fn();
+      if (!this.isModelCurrent(photo, version, session)) return;
+      await fn(version, session, photo.rev);
     });
     this.commitChain = run.catch(() => undefined);
     return run;
@@ -561,11 +635,11 @@ export class CropStage {
 
   private async commitPreset(preset: string, orient?: Orientation): Promise<void> {
     const photo = this.host.photo();
-    if (!photo) return;
-    await this.enqueueCommit(photo, async () => {
+    if (!photo || this.destroyed) return;
+    await this.enqueueCommit(photo, async (version, session, sentRev) => {
       if (preset === 'original' && photo.crop === null && photo.geometry.straighten === 0) {
-        this.draftRect = null;
-        if (this.host.photo() === photo) {
+        if (!this.destroyed && this.host.photo() === photo) {
+          this.draftRect = null;
           this.cropPanel?.sync();
           this.renderOverlay();
         }
@@ -574,78 +648,98 @@ export class CropStage {
       const orientation = ORIENTABLE.has(preset) ? (orient ?? 'landscape') : undefined;
       const req: Record<string, unknown> = { preset, rect: null };
       if (orientation) req.orientation = orientation;
+      let reply: Awaited<ReturnType<typeof geomCropWrite>>;
       try {
-        const reply = await geomCropWrite(sideSubset(photo), req);
-        this.applyCommitReply(photo, reply);
+        reply = await geomCropWrite(sideSubset(photo), req);
       } catch (err) {
-        this.handleCommitError(photo, err);
+        this.handleCommitError(photo, version, session, sentRev, err);
+        return;
       }
+      this.applyCommitReply(photo, version, session, sentRev, reply);
     });
   }
 
   private async commitOrientation(orient: Orientation): Promise<void> {
     const photo = this.host.photo();
-    if (!photo) return;
+    if (!photo || this.destroyed) return;
     const preset = photo.crop?.preset ?? 'original';
     if (!ORIENTABLE.has(preset)) return;
-    await this.enqueueCommit(photo, async () => {
+    await this.enqueueCommit(photo, async (version, session, sentRev) => {
+      let reply: Awaited<ReturnType<typeof geomCropWrite>>;
       try {
-        const reply = await geomCropWrite(sideSubset(photo), { preset, rect: null, orientation: orient });
-        this.applyCommitReply(photo, reply);
+        reply = await geomCropWrite(sideSubset(photo), { preset, rect: null, orientation: orient });
       } catch (err) {
-        this.handleCommitError(photo, err);
+        this.handleCommitError(photo, version, session, sentRev, err);
+        return;
       }
+      this.applyCommitReply(photo, version, session, sentRev, reply);
     });
   }
 
   private async commitStraighten(angle: number): Promise<void> {
     const photo = this.host.photo();
-    if (!photo) return;
+    if (!photo || this.destroyed) return;
     const clean = Math.round(angle * 10) / 10;
-    await this.enqueueCommit(photo, async () => {
+    await this.enqueueCommit(photo, async (version, session, sentRev) => {
       if (clean === photo.geometry.straighten) {
-        this.draftAngle = null;
-        this.draftRect = null;
-        if (this.host.photo() === photo) {
+        if (!this.destroyed && this.host.photo() === photo) {
+          this.draftAngle = null;
+          this.draftRect = null;
           this.cropPanel?.sync();
           this.renderOverlay();
           void this.applyPreviewGeometry();
         }
         return;
       }
+      let reply: Awaited<ReturnType<typeof geomGeometryWrite>>;
       try {
-        const reply = await geomGeometryWrite(sideSubset(photo), geometrySidecar(clean));
-        this.applyCommitReply(photo, reply);
+        reply = await geomGeometryWrite(sideSubset(photo), geometrySidecar(clean));
       } catch (err) {
-        this.handleCommitError(photo, err);
+        this.handleCommitError(photo, version, session, sentRev, err);
+        return;
       }
+      this.applyCommitReply(photo, version, session, sentRev, reply);
     });
   }
 
   private async commitCrop(rect: [number, number, number, number]): Promise<void> {
     const photo = this.host.photo();
-    if (!photo) return;
-    await this.enqueueCommit(photo, async () => {
+    if (!photo || this.destroyed) return;
+    const canvas = this.photoCanvas();
+    await this.enqueueCommit(photo, async (version, session, sentRev) => {
       const preset = photo.crop?.preset ?? 'original';
-      const canvas = this.photoCanvas();
       const orientation = ORIENTABLE.has(preset) ? (cropIsPortrait(rectFromArray(rect), canvas) ? 'portrait' : 'landscape') : undefined;
       const req: Record<string, unknown> = { preset, rect };
       if (orientation) req.orientation = orientation;
+      let reply: Awaited<ReturnType<typeof geomCropWrite>>;
       try {
-        const reply = await geomCropWrite(sideSubset(photo), req);
-        this.applyCommitReply(photo, reply);
+        reply = await geomCropWrite(sideSubset(photo), req);
       } catch (err) {
-        this.handleCommitError(photo, err);
+        this.handleCommitError(photo, version, session, sentRev, err);
+        return;
       }
+      this.applyCommitReply(photo, version, session, sentRev, reply);
     });
   }
 
-  private applyCommitReply(photo: Photo, reply: Awaited<ReturnType<typeof geomCropWrite>>): void {
+  private applyCommitReply(
+    photo: Photo,
+    version: number,
+    session: number,
+    sentRev: number,
+    reply: Awaited<ReturnType<typeof geomCropWrite>>,
+  ): void {
+    if (!this.isModelCurrent(photo, version, session, sentRev)) {
+      if (!this.destroyed && this.host.photo() === photo) {
+        this.draftRect = null;
+        this.draftAngle = null;
+        this.renderOverlay();
+      }
+      return;
+    }
     const nextAngle = reply.geometry?.straighten ?? 0;
     const nextCrop = reply.crop;
     const changed = nextAngle !== photo.geometry.straighten || !sameCropState(photo.crop, nextCrop);
-    this.draftRect = null;
-    this.draftAngle = null;
     if (changed) {
       photo.geometry = { straighten: nextAngle };
       photo.crop = nextCrop;
@@ -654,7 +748,9 @@ export class CropStage {
       photo.neutral = null;
       releaseLooks(photo);
     }
-    if (this.host.photo() !== photo) return;
+    if (this.destroyed || this.host.photo() !== photo) return;
+    this.draftRect = null;
+    this.draftAngle = null;
     this.cropPanel?.showError(null);
     this.paintTabDot();
     this.cropPanel?.sync();
@@ -663,10 +759,11 @@ export class CropStage {
     this.host.onCommitted(photo, changed);
   }
 
-  private handleCommitError(photo: Photo, err: unknown): void {
+  private handleCommitError(photo: Photo, version: number, session: number, sentRev: number, err: unknown): void {
+    if (!this.isModelCurrent(photo, version, session, sentRev)) return;
+    if (this.destroyed || this.host.photo() !== photo) return;
     this.draftRect = null;
     this.draftAngle = null;
-    if (this.host.photo() !== photo) return;
     const message = err instanceof CoreError ? err.message : err instanceof Error ? err.message : '裁剪无效';
     this.cropPanel?.showError(message);
     this.cropPanel?.sync();

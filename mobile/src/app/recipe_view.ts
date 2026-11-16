@@ -113,8 +113,8 @@ export class RecipeView {
     this.refresh();
   }
 
-  /** 中性小图好了（每个版本做一次）。没校准、没有相机配方文件时卡片都用它。 */
-  neutral(bitmap: ImageBitmap): void {
+  /** 中性小图好了（每个版本做一次）。没校准、没有相机配方文件时卡片都用它；关闭旧位图前先传 null 清掉。 */
+  neutral(bitmap: ImageBitmap | null): void {
     this.neutralBitmap = bitmap;
     this.paintThumbs();
   }
@@ -244,10 +244,10 @@ export class RecipeView {
         bitmap = this.photo.bitmap;
         source = text = this.photo.jpg ? '相机 JPG' : this.photo.bitmap ? '内嵌预览' : '只有 RAW';
       } else if (!scene.dat) {
-        bitmap = this.neutralBitmap;
+        bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = NEUTRAL_LABEL;
       } else if (scene.state.state !== 'ready') {
-        bitmap = this.neutralBitmap;
+        bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = text = NEUTRAL_LABEL;
       } else {
         const key = this.api.book().bakeKey(card, scene.unit, scene.iso, this.levelsOf(card));
