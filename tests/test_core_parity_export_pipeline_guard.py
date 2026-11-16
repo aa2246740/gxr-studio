@@ -42,6 +42,8 @@ def _files() -> list[Path]:
             *TESTS.glob("test_core_parity_export_pipeline*.py"),
             *TESTS.glob("test_core_parity_ink*.py"),
             *TESTS.glob("test_mobile_ui_export*.py"),
+            *TESTS.glob("test_mobile_ui_crop*.py"),
+            *TESTS.glob("test_mobile_ui_lut*.py"),
             TESTS / "test_core_parity_jpeg_optimize.py",
             *(TESTS / "support").glob("export_pipeline_canary*.py"),
         ]

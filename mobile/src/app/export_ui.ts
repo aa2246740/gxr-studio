@@ -8,10 +8,12 @@ import { mergeMeta } from '../lib/exif';
 import { buildRequest, buildSide, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
 import { formatClock, formatDay } from '../lib/group';
 import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrMixLine, hdrResultText } from '../lib/hdr_text';
+import { isDisplaySpace } from '../lib/lut';
 import { loadExportHdr, saveExportHdr } from '../lib/prefs';
 import { shelf, shelves, type Card } from '../lib/recipes';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeText, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
+import type { LutBook } from './lut_book';
 import { button, el } from './dom';
 import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem, type Staged } from './export_batch';
 import { setExportPaused } from './export_pause';
@@ -60,6 +62,7 @@ export interface ExportApp {
   photo(id: string): Photo | undefined;
   session(): number;
   book(): Book;
+  lutBook?(): LutBook;
   markGone(id: string, version: number): void;
 }
 
@@ -86,9 +89,10 @@ export function cardsFor(book: Book, photo: Photo): Card[] {
   return shelf(shelves(dat.listing, unit), 'all');
 }
 
-export function requestPhoto(photo: Photo): RequestPhoto {
+export function requestPhoto(photo: Photo, lutBook?: LutBook): RequestPhoto {
   const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
   const source = photo.jpg ?? photo.dng;
+  const lutRecord = photo.lut ? lutBook?.get(photo.lut) : undefined;
   return {
     stem: photo.stem,
     dngName: photo.dng?.name ?? null,
@@ -98,7 +102,12 @@ export function requestPhoto(photo: Photo): RequestPhoto {
     choice: photo.choice,
     levels: photo.levels,
     memory: photo.memory,
+    lut: photo.lut,
+    lutInputSpace: lutRecord?.input_space ?? null,
     knobs: photo.knobs,
+    frame: photo.frame,
+    geometry: photo.geometry,
+    crop: photo.crop,
     sourceModified: source?.lastModified ?? photo.lastModified,
   };
 }
@@ -258,8 +267,11 @@ export class ExportFlow {
     if (n === 1) {
       const photo = photos[0];
       const seq = ++this.sizeSeq;
-      const side = buildSide(requestPhoto(photo), cardsFor(this.app.book(), photo));
-      const useJpg = photo.jpg !== null && (!side.recipe || photo.dng === null);
+      const lutBook = this.app.lutBook?.();
+      const reqPhoto = requestPhoto(photo, lutBook);
+      const side = buildSide(reqPhoto, cardsFor(this.app.book(), photo));
+      const isLogLut = Boolean(reqPhoto.lutInputSpace && !isDisplaySpace(reqPhoto.lutInputSpace));
+      const useJpg = photo.jpg !== null && !isLogLut && (!side.recipe || photo.dng === null);
       void this.core.sizes({ dng: photo.dng, jpg: photo.jpg, side, useJpg }).then((reply) => {
         if (!this.batch || this.batch.phase === 'closed') this.core.release();
         if (seq !== this.sizeSeq || !sheet.isConnected) return;
@@ -303,16 +315,18 @@ export class ExportFlow {
     this.revokeUrls();
     const hooks = dev();
     const book = this.app.book();
+    const lutBook = this.app.lutBook?.();
     const items: BatchItem[] = photos.map((photo) => ({
       id: photo.id,
       stem: photo.stem,
       version: photo.version,
       dng: photo.dng,
       jpg: photo.jpg,
-      req: buildRequest(requestPhoto(photo), cardsFor(book, photo), options, __GXR_BUILD__, hooks?.binding),
+      req: buildRequest(requestPhoto(photo, lutBook), cardsFor(book, photo), options, __GXR_BUILD__, hooks?.binding),
     }));
+    const cubeIds = [...new Set(photos.map((photo) => photo.lut).filter((id): id is string => id !== null))];
     const pack = calibPack(book.pack?.files ?? null);
-    this.core.begin({ dat: book.dat ? book.dat.read.bytes.slice(0) : null, calibIndex: pack.calibIndex, calibBlob: pack.calibBlob });
+    const datCopy = book.dat ? book.dat.read.bytes.slice(0) : null;
     const host: BatchHost = {
       run: (item, index) => this.run(item, index),
       stop: () => this.core.stop(),
@@ -330,8 +344,26 @@ export class ExportFlow {
     this.chunk = 0;
     this.chunks = [];
     this.savedCount = 0;
-    this.batch = new ExportBatch(items, host, options.hdr ? STAGE_CAP_HDR_BYTES : STAGE_CAP_BYTES);
-    this.batch.start();
+    const batch = new ExportBatch(items, host, options.hdr ? STAGE_CAP_HDR_BYTES : STAGE_CAP_BYTES);
+    this.batch = batch;
+    if (!cubeIds.length || !lutBook) {
+      this.core.begin({ dat: datCopy, calibIndex: pack.calibIndex, calibBlob: pack.calibBlob, luts: {} });
+      batch.start();
+      return;
+    }
+    this.paint();
+    void lutBook.exportSnapshot(cubeIds).then(
+      (luts) => {
+        if (this.batch !== batch || batch.phase !== 'running') return;
+        this.core.begin({ dat: datCopy, calibIndex: pack.calibIndex, calibBlob: pack.calibBlob, luts });
+        batch.start();
+      },
+      () => {
+        if (this.batch !== batch || batch.phase !== 'running') return;
+        this.core.begin({ dat: datCopy, calibIndex: pack.calibIndex, calibBlob: pack.calibBlob, luts: {} });
+        batch.start();
+      },
+    );
   }
 
   private run(item: BatchItem, index: number): Promise<RunResult> {

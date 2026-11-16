@@ -1,6 +1,36 @@
 // 主线程和核心 Worker 之间的消息。
 
-export type CoreOp = 'ping' | 'describe' | 'dat' | 'calib-file' | 'calib-restore' | 'bake' | 'resolve' | 'calib-check';
+import type { LutPatchFields } from '../lib/idb';
+
+export type CoreOp =
+  | 'ping'
+  | 'describe'
+  | 'dat'
+  | 'calib-file'
+  | 'calib-restore'
+  | 'bake'
+  | 'resolve'
+  | 'calib-check'
+  | 'geom-crop-write'
+  | 'geom-geometry-write'
+  | 'geom-final-box'
+  | 'export-output-sizes'
+  | 'lut-import'
+  | 'lut-restore'
+  | 'lut-patch'
+  | 'lut-delete'
+  | 'lut-blob'
+  | 'lut-snapshot';
+
+export class CoreError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+    this.name = 'CoreError';
+  }
+}
 
 /** 烘焙一张表要的全部输入。字节都是拷贝，交给 Worker 后这边不再用。 */
 export interface BakeArgs {
@@ -28,6 +58,52 @@ export interface CalibCheckArgs {
   iso: number;
 }
 
+export interface GeomWriteArgs {
+  side: string;
+  payload: string;
+}
+
+export interface FinalBoxArgs {
+  w: number;
+  h: number;
+  geometry: string;
+  crop: string;
+}
+
+export interface OutputSizesArgs {
+  w: number;
+  h: number;
+  side: string;
+  rect: string;
+  preset?: string;
+}
+
+/** 导入一个 `.cube` LUT：File 交给 Worker，大小检查、sha256、解析识别、写 IndexedDB 都在 Worker 里做。 */
+export interface LutImportArgs {
+  file: File;
+  filename: string;
+  version: number;
+}
+
+export interface LutPatchArgs {
+  cubeId: string;
+  patch: LutPatchFields;
+  version: number;
+}
+
+export interface LutDeleteArgs {
+  cubeId: string;
+  version: number;
+}
+
+export interface LutBlobArgs {
+  cubeId: string;
+}
+
+export interface LutSnapshotArgs {
+  cubeIds: string[];
+}
+
 export interface CoreRequest {
   id: number;
   op: CoreOp;
@@ -39,11 +115,19 @@ export interface CoreRequest {
   meta?: { name: string; savedAt: number } | null;
   resolve?: ResolveArgs | null;
   check?: CalibCheckArgs | null;
+  geom?: GeomWriteArgs | null;
+  finalBox?: FinalBoxArgs | null;
+  sizes?: OutputSizesArgs | null;
+  lutImport?: LutImportArgs | null;
+  lutPatch?: LutPatchArgs | null;
+  lutDelete?: LutDeleteArgs | null;
+  lutBlob?: LutBlobArgs | null;
+  lutSnapshot?: LutSnapshotArgs | null;
 }
 
 export type CoreReply =
   | { id: number; ok: true; json: string; buffers: ArrayBuffer[] }
-  | { id: number; ok: false; message: string };
+  | { id: number; ok: false; code?: string; message: string };
 
 export interface CoreResult {
   json: string;
