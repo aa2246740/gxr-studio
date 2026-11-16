@@ -76,15 +76,14 @@ export class LutBook {
     this.io = io;
   }
 
-  private async waitForSnapshots(): Promise<void> {
-    while (this.snapshotBarriers.size > 0) {
-      await Promise.all([...this.snapshotBarriers]);
-    }
-  }
-
-  /** 写入按调用顺序逐条执行；轮到时再等所有在途快照读完。 */
+  /** 写入按调用顺序逐条执行；轮到时在同一回调内等完所有在途快照后立即发出写入，中间不再让出微任务。 */
   private queueWrite<T>(op: () => Promise<T>): Promise<T> {
-    const run = this.writeTail.then(() => this.waitForSnapshots()).then(op);
+    const run = this.writeTail.then(async () => {
+      while (this.snapshotBarriers.size > 0) {
+        await Promise.all([...this.snapshotBarriers]);
+      }
+      return op();
+    });
     this.writeTail = run.then(
       () => undefined,
       () => undefined,

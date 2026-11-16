@@ -567,3 +567,41 @@ def test_mobile_ui_lut_snapshot_write_barrier(tmp_path: Path) -> None:
         "removeChecked after setSpace deletes B from memory and IndexedDB",
     )
     check(space_del["catalogueHasA"] is True, "unrelated LUT A remains after overlapping snapshot delete")
+
+    handoff = report["handoff"]
+    check(handoff["workerCount"] == 4, "handoff regression runs on real 4-worker core pool")
+    same_redacted([c["gap"] for c in handoff["cases"]], [0, 1, 2], "handoff covers microtask gaps 0, 1, and 2")
+    for case in handoff["cases"]:
+        check(
+            case["memoryAtSecondClick"]["present"] is True
+            and case["memoryAtSecondClick"]["space"] == "srgb"
+            and case["memoryAtSecondClick"]["output"] == "rec709",
+            "B remains intact in memory with srgb/rec709 when S2 registers",
+        )
+        for snap_rows in (case["snap1"], case["snap2"]):
+            for row in snap_rows:
+                check(row["present"] is True, "handoff snapshots S1 and S2 both retain A and B")
+                check(row["space"] == "srgb" and row["output"] == "rec709", "handoff snapshots preserve srgb/rec709 space")
+                check(row["bytesEqual"] is True, "handoff snapshots retain original .cube bytes")
+        if not case["writePostedAtSecondClick"]:
+            same_redacted(
+                case["nonPingDispatches"],
+                ["lut-snapshot", "lut-snapshot", "lut-delete"],
+                "unsent queued delete waits for newly registered handoff snapshot",
+            )
+        check(
+            case["deleteOk"] is True and case["catalogueHasB"] is False and case["persistedHasB"] is False,
+            "queued removeChecked deletes B after handoff snapshots settle",
+        )
+        check(case["catalogueHasA"] is True, "unrelated LUT A remains after handoff delete")
+
+    gap2 = handoff["cases"][2]
+    check(
+        gap2["writePostedAtSecondClick"] is True,
+        "barrier check and write dispatch run in same continuation with zero microtask gap",
+    )
+    same_redacted(
+        gap2["nonPingDispatches"],
+        ["lut-snapshot", "lut-delete", "lut-snapshot"],
+        "handoff gap-2 dispatches delete onto rotated busy worker while S2 reads idle worker",
+    )

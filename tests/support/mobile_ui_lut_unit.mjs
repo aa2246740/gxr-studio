@@ -758,6 +758,118 @@ test('P2-01（Opus r3）：两个快照重叠时写操作严格按调用顺序�
   });
 });
 
+test('Sol r4 P2-01：S1 刚完成与排队写发出之间无微任务空隙，交接登记的 S2 仍保留 B 原字节与空间', async () => {
+  const idA = 'd'.repeat(64);
+  const idB = 'e'.repeat(64);
+  const blobA = new Uint8Array([9, 8, 7, 6]).buffer;
+  const blobB = new Uint8Array([5, 4, 3, 2]).buffer;
+
+  function deferred() {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  for (const gap of [0, 1, 2]) {
+    const store = new Map([
+      [idA, makeRec(idA, { name: 'HandoffA', input_space: 'srgb', output_space: 'rec709', savedAt: 1 })],
+      [idB, makeRec(idB, { name: 'HandoffB', input_space: 'srgb', output_space: 'rec709', savedAt: 2 })],
+    ]);
+    const blobs = new Map([
+      [idA, blobA],
+      [idB, blobB],
+    ]);
+    let high = 2;
+    let poolCursor = 0;
+    let holdSlot0 = false;
+    const slot0Hold = deferred();
+    const s1Gate = deferred();
+    const calls = [];
+
+    const book = new LutBook({
+      importLut: async () => {
+        throw new Error('unused');
+      },
+      restore: async () => ({ records: [...store.values()], order: [idA, idB], totalBytes: 256, watermark: high }),
+      patch: async () => {
+        throw new Error('unused');
+      },
+      remove: async (cubeId, version) => {
+        const slot = poolCursor % 2;
+        poolCursor += 1;
+        calls.push({ op: 'delete', slot, version });
+        if (slot === 0 && holdSlot0) await slot0Hold.promise;
+        if (high >= version) return false;
+        high = version;
+        blobs.delete(cubeId);
+        return store.delete(cubeId);
+      },
+      readBlob: async (cubeId) => blobs.get(cubeId) ?? null,
+      snapshotBatch: async (ids) => {
+        const slot = poolCursor % 2;
+        poolCursor += 1;
+        const seq = calls.filter((c) => c.op === 'snapshot').length + 1;
+        calls.push({ op: 'snapshot', seq, slot });
+        if (seq === 1) {
+          await s1Gate.promise;
+          holdSlot0 = true;
+        } else if (slot === 0 && holdSlot0) {
+          await slot0Hold.promise;
+        }
+        return ids.map((cubeId) => ({
+          cubeId,
+          record: store.get(cubeId) ?? null,
+          blob: blobs.get(cubeId) ?? null,
+        }));
+      },
+    });
+
+    await book.restore();
+    // S1 落在槽 0；轮转游标回槽 0 后排入 removeChecked(B)。
+    const s1 = book.exportSnapshot([idA, idB]);
+    const deleting = book.removeChecked(idB);
+    poolCursor = 0;
+
+    const second = s1.then(async () => {
+      for (let i = 0; i < gap; i += 1) await Promise.resolve();
+      const writePostedAtSecondClick = calls.some((c) => c.op === 'delete');
+      const s2Promise = book.exportSnapshot([idA, idB]);
+      // 等后续微任务落地后再释放槽 0 忙碌锁，模拟繁忙 Worker 稍后完成
+      setTimeout(() => slot0Hold.resolve(), 5);
+      return { writePostedAtSecondClick, snap2: await s2Promise };
+    });
+
+    s1Gate.resolve();
+    const [snap1, secondRes, delRes] = await Promise.all([s1, second, deleting]);
+
+    assert.equal(snap1[idB]?.cube, blobB, `gap=${gap} S1 retains B bytes`);
+    assert.equal(snap1[idA]?.cube, blobA, `gap=${gap} S1 retains A bytes`);
+    assert.ok(secondRes.snap2[idB], `gap=${gap} S2 must retain B`);
+    assert.equal(secondRes.snap2[idB].cube, blobB, `gap=${gap} S2 retains B bytes`);
+    assert.equal(JSON.parse(secondRes.snap2[idB].space).input_space, 'srgb', `gap=${gap} S2 preserves srgb`);
+    assert.equal(JSON.parse(secondRes.snap2[idB].space).output_space, 'rec709', `gap=${gap} S2 preserves rec709`);
+    if (!secondRes.writePostedAtSecondClick) {
+      assert.deepEqual(
+        calls.map((c) => c.op),
+        ['snapshot', 'snapshot', 'delete'],
+        `gap=${gap} unsent delete must wait for S2`,
+      );
+    } else {
+      assert.equal(gap, 2);
+      assert.deepEqual(
+        calls.map((c) => c.op),
+        ['snapshot', 'delete', 'snapshot'],
+        'gap=2 dispatches delete in same continuation onto busy slot 0 while S2 reads idle slot 1',
+      );
+    }
+    assert.deepEqual(delRes, { ok: true });
+    assert.equal(book.get(idB), undefined);
+    assert.equal(store.has(idB), false);
+  }
+});
+
 test('P2-03：IDB AbortError 时 LutBook 不改动内存目录且返回清晰中文错误', async () => {
   const idA = 'c'.repeat(64);
   const recA = makeRec(idA, { name: 'KeepMe', input_space: 'srgb', output_space: 'rec709' });

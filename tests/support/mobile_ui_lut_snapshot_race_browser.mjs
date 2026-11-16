@@ -15,7 +15,7 @@ const browser = await launchPinnedChromium({
   args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'],
 });
 
-const out = { pageErrors: [], race: null, overlap: null, failRelease: null, error: null };
+const out = { pageErrors: [], race: null, overlap: null, handoff: null, failRelease: null, error: null };
 
 async function settle(page) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -61,10 +61,35 @@ try {
 
   await page.route('**/src/core/worker.ts*', async (route) => {
     const response = await route.fetch();
-    const prefix = `self.addEventListener('message', (event) => {
+    const prefix = `const __reviewNativePost = self.postMessage.bind(self);
+    const __reviewSnapshotIds = new Set();
+    self.postMessage = function(message, ...args) {
+      const holdMs =
+        typeof message?.id === 'number' &&
+        __reviewSnapshotIds.delete(message.id) &&
+        self.__reviewHoldAfterReply > 0
+          ? self.__reviewHoldAfterReply
+          : 0;
+      if (holdMs > 0) self.__reviewHoldAfterReply = 0;
+      __reviewNativePost(message, ...args);
+      if (holdMs > 0) {
+        const until = performance.now() + holdMs;
+        while (performance.now() < until) {}
+      }
+    };
+    self.addEventListener('message', (event) => {
+      if (event.data && event.data.__reviewHoldAfterReply) {
+        event.stopImmediatePropagation();
+        self.__reviewHoldAfterReply = event.data.__reviewHoldAfterReply;
+        __reviewNativePost({ __reviewHoldArmed: true });
+        return;
+      }
+      if (event.data && event.data.op === 'lut-snapshot') {
+        __reviewSnapshotIds.add(event.data.id);
+      }
       if (event.data && event.data.__reviewBusyMs) {
         event.stopImmediatePropagation();
-        self.postMessage({ __reviewBusyStarted: true });
+        __reviewNativePost({ __reviewBusyStarted: true });
         const until = performance.now() + event.data.__reviewBusyMs;
         while (performance.now() < until) {}
         return;
@@ -72,13 +97,14 @@ try {
       if (event.data && event.data.__reviewFailNextSnapshot) {
         event.stopImmediatePropagation();
         self.__reviewFailNextSnapshot = true;
-        self.postMessage({ __reviewFailArmed: true });
+        __reviewNativePost({ __reviewFailArmed: true });
         return;
       }
       if (event.data && event.data.op === 'lut-snapshot' && self.__reviewFailNextSnapshot) {
         event.stopImmediatePropagation();
+        __reviewSnapshotIds.delete(event.data.id);
         self.__reviewFailNextSnapshot = false;
-        self.postMessage({
+        __reviewNativePost({
           id: event.data.id,
           op: 'lut-snapshot',
           ok: false,
@@ -232,7 +258,76 @@ try {
       };
     }
 
-    // 场景 3：快照读取失败时屏障必须释放，后续删除照常完成。
+    // 场景 3（Sol r4 P2-01）：真实 4 Worker 池交接竞态（不替换 snapshotBatch 或 IndexedDB）：
+    // S1 在繁忙 Worker 上执行（该 Worker 发回 S1 结果后继续受控忙碌），removeChecked(B) 排在屏障后；
+    // 池轮转回该繁忙 Worker，在 S1 resolve 后经过 0/1/2 个微任务（含 Sol 指定的 2 微任务交接点）登记 S2，
+    // 验证 S2 仍保留 B 的原始字节与 srgb/rec709 空间，且未发出的删除绝不绕过新登记的 S2。
+    const cube709 = (name) =>
+      `# Input: sRGB\n# Output: Rec.709\nTITLE "${name}"\nLUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n`;
+    const handoffView = (snap, rec, expectedText) => ({
+      id: rec.cube_id,
+      present: Boolean(snap[rec.cube_id]),
+      space: snap[rec.cube_id] ? JSON.parse(snap[rec.cube_id].space).input_space : null,
+      output: snap[rec.cube_id] ? JSON.parse(snap[rec.cube_id].space).output_space : null,
+      bytesEqual: snap[rec.cube_id] ? new TextDecoder().decode(snap[rec.cube_id].cube) === expectedText : false,
+    });
+    const handoffCases = [];
+    for (const gap of [0, 1, 2]) {
+      const handoffTexts = [`HandoffA_${gap}`, `HandoffB_${gap}`].map(cube709);
+      const impH = await appBook.importFiles(handoffTexts.map((t, i) => new File([t], `handoff_${gap}_${i}.cube`)));
+      if (impH.added.length !== 2) throw new Error('synthetic handoff LUT import failed');
+      const [ha, hb] = impH.added;
+
+      const p0 = window.__reviewCorePosts.length;
+      const targetWorker = workers[nextWorkerIndex()];
+      const holdArmed = new Promise((resolve) => {
+        targetWorker.addEventListener('message', function onHoldArm(event) {
+          if (event.data?.__reviewHoldArmed) {
+            targetWorker.removeEventListener('message', onHoldArm);
+            resolve();
+          }
+        });
+      });
+      targetWorker.postMessage({ __reviewHoldAfterReply: 800 });
+      await holdArmed;
+
+      const busyIdx = await busyNextWorker(450);
+      const s1 = appBook.exportSnapshot([ha.cube_id, hb.cube_id]);
+      const deleting = appBook.removeChecked(hb.cube_id);
+      await rotatePoolTo(busyIdx);
+      const second = s1.then(async () => {
+        for (let i = 0; i < gap; i += 1) await Promise.resolve();
+        const writePostedAtSecondClick = window.__reviewCorePosts.slice(p0).some((d) => d.op === 'lut-delete');
+        const memB = appBook.get(hb.cube_id);
+        const memoryAtSecondClick = memB
+          ? { present: true, space: memB.input_space, output: memB.output_space, version: memB.version }
+          : { present: false, space: null, output: null, version: null };
+        const snap2 = await appBook.exportSnapshot([ha.cube_id, hb.cube_id]);
+        return { writePostedAtSecondClick, memoryAtSecondClick, snap2 };
+      });
+
+      const [snap1, secondRes, delRes] = await Promise.all([s1, second, deleting]);
+      const nonPing = window.__reviewCorePosts
+        .slice(p0)
+        .filter((d) => d.op !== 'ping')
+        .map((d) => (d.detail ? `${d.op}:${d.detail}` : d.op));
+      const persisted = await api.restoreLutLibrary();
+
+      handoffCases.push({
+        gap,
+        writePostedAtSecondClick: secondRes.writePostedAtSecondClick,
+        memoryAtSecondClick: secondRes.memoryAtSecondClick,
+        nonPingDispatches: nonPing,
+        snap1: [ha, hb].map((r, i) => handoffView(snap1, r, handoffTexts[i])),
+        snap2: [ha, hb].map((r, i) => handoffView(secondRes.snap2, r, handoffTexts[i])),
+        deleteOk: delRes.ok,
+        catalogueHasA: Boolean(appBook.get(ha.cube_id)),
+        catalogueHasB: Boolean(appBook.get(hb.cube_id)),
+        persistedHasB: persisted.records.some((r) => r.cube_id === hb.cube_id),
+      });
+    }
+
+    // 场景 4：快照读取失败时屏障必须释放，后续删除照常完成。
     const textC = cube('BarrierFailC');
     const impC = await appBook.importFiles([new File([textC], 'barrier_fail_c.cube')]);
     if (impC.added.length !== 1) throw new Error('synthetic fail-release LUT import failed');
@@ -275,6 +370,10 @@ try {
         spaceOrder: overlapSpaceOrder,
         spaceThenDelete: overlapSpaceThenDelete,
       },
+      handoff: {
+        workerCount: workers.length,
+        cases: handoffCases,
+      },
       failRelease: {
         failOk: failRes.ok,
         failMessage: failRes.message,
@@ -286,6 +385,7 @@ try {
 
   out.race = result.race;
   out.overlap = result.overlap;
+  out.handoff = result.handoff;
   out.failRelease = result.failRelease;
   await page.close();
 } catch (err) {
