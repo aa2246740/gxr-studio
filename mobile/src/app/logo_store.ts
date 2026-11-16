@@ -143,10 +143,9 @@ class LogoStore {
     try {
       wrote = await putStoredLogo(stored, LOGO_LIMITS.maxLogos, signal);
     } catch {
-      return { ok: false, error: '保存标志失败，请重试。' };
+      return { ok: false, error: isAborted() ? '已取消。' : '保存标志失败，请重试。' };
     }
-    if (isAborted()) return { ok: false, error: '已取消。' };
-    if (!wrote) return { ok: false, error: LOGO_ERR.limit };
+    if (!wrote) return { ok: false, error: isAborted() ? '已取消。' : LOGO_ERR.limit };
     this.rows.push(stored);
     this.byId.set(stored.id, stored);
     const cv = buildCanvas(stored);

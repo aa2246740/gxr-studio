@@ -215,7 +215,7 @@ export async function putStoredLogo(logo: StoredLogo, maxLogos = 12, signal?: Ab
       };
       tx.oncomplete = () => {
         cleanup();
-        resolve(wrote && !abortedBySignal && !signal?.aborted);
+        resolve(wrote);
       };
       tx.onerror = () => {
         cleanup();
