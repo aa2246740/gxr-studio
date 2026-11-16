@@ -308,26 +308,23 @@ pub fn export_prepare(
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn export_complete(
-    canvas: &[u8],
+    canvas: Vec<u8>,
     width: f64,
     height: f64,
     state: &str,
     source: &[u8],
-    hdr_layer: &[f32],
-    stamp_mask: &[u8],
+    hdr_layer: Vec<f32>,
+    stamp_mask: Vec<u8>,
     mask_width: f64,
     mask_height: f64,
 ) -> Result<ExportCompleted, JsValue> {
-    let picture = Picture {
-        data: canvas,
+    let done = api::complete_owned(
+        canvas,
         width,
         height,
-    };
-    let done = api::complete(
-        picture,
         state.as_bytes(),
         api::ExifSource::File(source),
-        Some(api::HdrArgs {
+        Some(api::HdrArgsOwned {
             layer: hdr_layer,
             mask: stamp_mask,
             mask_width,

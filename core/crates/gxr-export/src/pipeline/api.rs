@@ -5,7 +5,10 @@
 use gxr_frame::{Fonts, Val, parse_json};
 use gxr_raw::{CoreError, Json};
 
-use super::complete::{Completed, HdrInputs, State, checked_rgb, complete_export};
+use super::complete::{
+    Completed, HdrInputs, HdrInputsOwned, State, checked_rgb, complete_export,
+    complete_export_owned,
+};
 use super::encode::Rgb;
 use super::hdr::{StampMask, begin_track, hdr_state_json, track_geometry};
 use crate::hdr_track::HdrTrackState;
@@ -395,6 +398,63 @@ pub struct HdrArgs<'a> {
     pub mask: &'a [u8],
     pub mask_width: f64,
     pub mask_height: f64,
+}
+
+/// Owned HDR inputs for zero-copy WASM `export_complete`.
+pub struct HdrArgsOwned {
+    pub layer: Vec<f32>,
+    pub mask: Vec<u8>,
+    pub mask_width: f64,
+    pub mask_height: f64,
+}
+
+pub fn complete_owned(
+    canvas: Vec<u8>,
+    width: f64,
+    height: f64,
+    state: &[u8],
+    exif: ExifSource<'_>,
+    hdr: Option<HdrArgsOwned>,
+) -> Result<Completed, ExportFail> {
+    let hdr_dims = match &hdr {
+        None => None,
+        Some(a) => {
+            if a.mask.is_empty() {
+                Some((0, 0))
+            } else {
+                Some((
+                    dim_from_f64(a.mask_width, "掩码宽")?,
+                    dim_from_f64(a.mask_height, "掩码高")?,
+                ))
+            }
+        }
+    };
+    let w = dim_from_f64(width, "宽")?;
+    let h = dim_from_f64(height, "高")?;
+    checked_rgb(&canvas, w, h)?;
+    let state = State::parse(state)?;
+    let source = match exif {
+        ExifSource::File(bytes) => crate::meta::read_source_exif(bytes).to_jpeg_exif_spec(),
+        ExifSource::Json(text) => gxr_jpeg::parse_exif_json(text)?,
+    };
+    let (Some((mask_w, mask_h)), Some(hdr)) = (hdr_dims, hdr) else {
+        return Ok(complete_export_owned(canvas, w, h, &state, &source, None)?.0);
+    };
+    let mask = if hdr.mask.is_empty() {
+        None
+    } else {
+        Some(StampMask {
+            data: &hdr.mask,
+            width: mask_w,
+            height: mask_h,
+        })
+    };
+    let hdr_in = HdrInputsOwned {
+        layer: hdr.layer,
+        mask,
+    };
+    let (done, _rgb) = complete_export_owned(canvas, w, h, &state, &source, Some(hdr_in))?;
+    Ok(done)
 }
 
 pub fn complete(

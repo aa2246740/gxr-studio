@@ -555,6 +555,7 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 
 - CLI 子命令（`cmd_hdrtrack.rs`）：`hdrtrack-warp-float`、`hdrtrack-crop-valid`、`hdrtrack-begin`、`hdrtrack-begin-batch`（按行隔离返回 `exit`/结果，不 export 到 WASM）、`hdrtrack-warp`、`hdrtrack-box`、`hdrtrack-crop`、`hdrtrack-stamp`、`hdrtrack-frame`、`hdrtrack-to-grid`、`hdrtrack-finish`。
 - WASM 导出（`gxr-wasm/src/hdrtrack.rs`）：`hdrtrack_begin`、`hdrtrack_warp`、`hdrtrack_box`、`hdrtrack_crop`、`hdrtrack_stamp`、`hdrtrack_frame`、`hdrtrack_to_grid`、`hdrtrack_finish`（不含 `hdrtrack-begin-batch`）。
+- **HDR 有界内存流式通道（`hdr_track/frame.rs`、`hdr_track/finish.rs`、`gxr-hdr/gain.rs`、`pipeline/complete.rs`）**：`export_complete` 通过 `frame_placement` 仅校验版面并记录照片贴片坐标 `(photo_x, photo_y)`，不再分配整张加框画布的 `(canvas_h, canvas_w, 2)` float32 缓冲区（`darkroom` `9:16` `5166×9184` 上可省 362 MiB）；`to_grid_placed` / `finish_placed` 用预计算 Box 卷积核与仅含几个输入行的环形滑窗逐行流式生成增益网格并在构造 `sdr_luma_grid` 前立即释放 `hdr_layer`（再省 543 MiB 的三平面整画布浮点数组）；`gxr-hdr::sdr_luma_grid` 改为按 `factor` 行条带流式求均值（0.16 MiB 条带缓冲替代 181 MiB 全画布 float32 `y` 平面）；`stamp_track_in_place` 原地写入 `NaN` 掩码，WASM `export_complete` 与 `export_ink` 一样接管 `canvas` / `hdr_layer` / `stamp_mask` 所有权以消除重复拷贝。全部路径与原 `frame_track` + `to_grid` + `finish` 逐位一致。
 - 源 JPEG 校验复用 `gxr-export::meta` 的 `open_image` / `load_image_exif`，`hdr_track/` 本身不复制 JPEG/TIFF 解析；向 Pillow 12.2.0 对齐时，对 `meta/tiff_ifd.rs` 的 `tiff_tag_length` 按 IFD 分组（Root / EXIF `34665` / GPS `34853` / Interop `40965`）拆表，并移除了 Pillow `TAGS_V2` 已不存在的 `326`、`327`。
 - **已接受的偏差 — 超大像素（DecompressionBomb）JPEG**：对超出 Pillow 像素上限（178,956,970 像素）的 JPEG，桌面 Python 的 `HdrTrack.begin`（`hdr/gain.py:check_capture`）仅捕获 `(ValueError, OSError, SyntaxError)`，会直接向外抛出未捕获的 `DecompressionBombError`；手机核心在 `hdr_track/capture.rs` 中将所有 `meta::tiff_exif::open_image` 错误统一归类为 `"metadata_unreadable"`，令 `HdrTrack` 安全失活并按无 HDR 导出（不崩溃）。`meta` 元数据层（`open_image`、`read_jpeg_meta`、`photo_meta`）仍与 Pillow 12.2.0 一致返回 `DecompressionBombError`；差分 sweep（`tests/test_core_parity_jpeg_sweep.py`）仅对明确登记的 5 例超大像素边界（`ord_mp_big_bomb_sof`、`ord_mp_no_b002_bomb_sof`、`ord_bomb_solo`、`ord_zero_then_bomb`、`ord_ok_then_bomb`）归一化 `HdrTrack.begin` 状态。
 
@@ -576,16 +577,17 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 - **内置 `GXR` 标志规则（`mark.rs` / `frame.rs`）**：`gxr_mark` 以 `"atkinson"`、参考字号 `R = 1000` 在未裁紧的 `w × h`（`w` 为 `GXR` 步进和四舍五入、`h = asc + desc`）画布上测量 `{"w", "h", "ink_top", "ink_bottom"}`；绘制 `"logo"` 时在 `(item.x, item.y)` 以目标字号 `px = max(1, round(1000 * item.h / h))` 按 `glyph_xs` 列规则调用 `draw_run` 重画 `"GXR"`，颜色按 `item.fill -> layout.ink -> bg 亮度导出的边框主墨色（深底 [244, 244, 246] / 浅底 [22, 22, 26]）` 解析；去 hinting `"atkinson"` 下返回 `exact = true`。
 
 - **CLI 子命令**：`cmd_inktext.rs` 提供 `inktext-draw`、`inktext-batch`、`inktext-run`、`inktext-mark`、`inktext-stamp`、`inktext-frame`；`cmd_export.rs` 提供 `export-run-ink`（含 `--stamp-mask-out` 输出 HDR `stamp_hdr_mask` 与 `--logo ID=PATH` 自定义标志）。
-- **WASM 导出**：`gxr-wasm/src/inktext.rs` 导出 `inktext_draw` 与 `gxr_mark`；`gxr-wasm/src/export.rs` 导出 `export_ink(canvas, width, height, prepared_json, font_index, font_pack, logo_index, logo_blob) -> ExportInked`（含 `width`、`height`、`mask_width`、`mask_height`、`exact`、`json()` 与零拷贝 `canvas()` / `stamp_mask()`）。全部宽高由 `f64` 校验为有限正整数，JSON 维持 128 层 / 4 MiB 上限，支持 `u64` 边界并统一回 `too_big()` / `value_error`。
+- **WASM 导出**：`gxr-wasm/src/inktext.rs` 导出 `inktext_draw` 与 `gxr_mark`；`gxr-wasm/src/export.rs` 导出 `export_ink(canvas, width, height, prepared_json, font_index, font_pack, logo_index, logo_blob) -> ExportInked`（含 `width`、`height`、`mask_width`、`mask_height`、`exact`、`json()` 与零拷贝 `canvas()` / `stamp_mask()`），`export_complete` 同样接收所有权 `canvas` / `hdr_layer` / `stamp_mask`（JS/TS 签名不变）。全部宽高由 `f64` 校验为有限正整数，JSON 维持 128 层 / 4 MiB 上限，支持 `u64` 边界并统一回 `too_big()` / `value_error`。
 - **Gate A / Gate B 与字形微调规则（`tests/test_core_parity_ink_text*.py`）**：
   - 去除字体 `hinting`（`fpgm` / `prep` / `cvt` / `glyf` 指令）的 TTF / OTF 字体下，**Gate A** 要求单字掩码、`draw_run`、`stamp`、`13` 种 `FRAME_STYLES`、自定义与内置 `GXR` 标志以及 `export-run-prepare -> export-run-ink -> export-run-complete` 与 Pillow 12.2.0 全链路 **0 像素差**，写入相同固定 ICC 与 EXIF 后的 JPEG 也与桌面逐字节相同。
   - 原版带微调字体在手机无字节码解释器时的差异走 **Gate B**（`tests/test_core_parity_ink_text_gate_b.py`）：按字体族锁定有界边框（竖向 `atkinson`/`inter`/`inter_sb`/`courier` ≤ 2 px、`patrick` ≤ 3 px、`dseg` ≤ 4 px；水平 ≤ 1 px；≥ 16 px 与小字号覆墨率区间）并输出实测报表。
 - **4288×2848 WASM 端到端实测（`export_prepare -> export_ink -> export_complete`，各自独立新 WASM 实例，原生字节码，标准 7 字体包）**：
   - **SDR**（上限 `<= 512 MiB`）：
-    - `gallery` + `seg7` 戳（`4630×3233`）：prepare 62.9 ms，ink 57.6 ms，complete 1186.7 ms，线性内存高水位 **143.1 MiB**；
-    - `leica` + 内置 `GXR` 标志 + 戳（`4875×6500`）：prepare 88.4 ms，ink 94.3 ms，complete 2376.7 ms，高水位 **233.8 MiB**；
-    - `blur_fill` + 模糊背景 + `sans` 戳（`4658×3403`）：prepare 51.8 ms，ink 968.5 ms，complete 1130.2 ms，高水位 **158.2 MiB**；
-    - `darkroom` `9:16` `thin` 最大含颗粒画布 + `typewriter` 戳（`5166×9184`）：prepare 40.9 ms，ink 2314.5 ms，complete 3236.1 ms，高水位 **459.8 MiB**。
-  - **HDR**（上限 `<= 768 MiB`，含 `4288×2848` `stamp_hdr_mask`、`hdr_layer` `(2848, 4288, 2)` 与 Ultra HDR 封装）：
-    - `gallery` HDR + 照片戳（`4630×3233`，掩码 `4288×2848`）：prepare 66.1 ms，ink 88.6 ms，complete 1966.8 ms，高水位 **634.0 MiB**；
-    - `blur_fill` HDR + 照片戳（`4658×3403`，掩码 `4288×2848`）：prepare 97.9 ms，ink 807.6 ms，complete 1926.3 ms，高水位 **639.7 MiB**。
+    - `gallery` + `seg7` 戳（`4630×3233`）：prepare 82.0 ms，ink 44.9 ms，complete 904.8 ms，线性内存高水位 **150.6 MiB**；
+    - `leica` + 内置 `GXR` 标志 + `seg7` 戳（`4504×3325`）：prepare 66.6 ms，ink 45.9 ms，complete 911.2 ms，高水位 **150.6 MiB**；
+    - `blur_fill` + 模糊背景 + `sans` 戳（`4658×3403`）：prepare 49.8 ms，ink 728.6 ms，complete 944.4 ms，高水位 **165.8 MiB**；
+    - `darkroom` `9:16` `thin` 最大含颗粒画布 + `typewriter` 戳（`5166×9184`）：prepare 46.1 ms，ink 2203.4 ms，complete 3003.9 ms，高水位 **467.4 MiB**。
+  - **HDR**（上限 `<= 768 MiB`，真对图实测 `hdr_active = true`，含 `4288×2848` `stamp_hdr_mask`（227,343 个非零掩码像素）、`hdr_layer` `(2848, 4288, 2)` 与 Ultra HDR 封装）：
+    - `gallery` HDR + 照片 `seg7` 戳（`4630×3233`，`hdr_result = true`）：prepare 4058.7 ms，ink 94.0 ms，complete 1334.7 ms，高水位 **366.8 MiB**；
+    - `blur_fill` HDR + 照片 `seg7` 戳（`4658×3403`，按 `frame_layout` 规则退化为 SDR）：prepare 3965.2 ms，ink 755.4 ms，complete 1128.1 ms，高水位 **366.8 MiB**；
+    - `darkroom` `9:16` `thin` 最大含颗粒画布 + 照片 `seg7` 戳（`5166×9184`，`hdr_result = true`，输出 14,162,439 B）：prepare 3985.3 ms，ink 2198.2 ms，complete 3820.7 ms，高水位 **421.4 MiB**（优化前 1449.2 MiB）。
