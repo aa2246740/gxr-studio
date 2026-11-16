@@ -368,6 +368,58 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 - **预览定位与解码边界**：`dng_preview_location`、`export-meta-preview` 与 `export_meta_preview` 只做结构挑选，返回 `dng_preview_image` 在不解码之前选中的唯一最大候选 `{offset, length}`（SubIFD `330`、`Compression == 7`、`0 < 条带字节数 <= 32 MiB`、可读且 `width * height` 严格最大），或 `null`。不在核心里复制 libjpeg 解码或表/扫描验证。JPEG 解码与坏图拒收由调用方负责（手机端由浏览器解码，对拍测试由 Pillow 解码）；若这个唯一候选解码失败，调用方视为无预览（`None`），不再尝试次大候选，与桌面 Python 一致。
 - **WASM 参数与时间**：`export_meta_photo` 从浏览器显式接收 `mtime_ms` 与 `tz_offset_min`（`Option<f64>`），不读系统时钟或时区；`tz_offset_min` 在窄化之前先校验有限、整数且位于 `-1439..=1439`，与原生 CLI 给出相同的 `CoreError`。
 
+## 导出管线（`gxr-export` 的 `pipeline/`，命令前缀 `export-run-`）
+
+手机的整张导出拆成两次 Rust 调用，中间由浏览器画墨迹（文字、线条、标志、日期戳和光晕；PORT-WAVE-1「成片与导出 2–4」）。结果对齐桌面 1.0.1 的 `finish/serve.export_finish`。手机只导出 JPEG，不做 PNG。台账、目标文件夹、`claim_path` 的文件系统部分、本机配方和精确导出都不在手机上。
+
+- **`export_plan(shot, side, defaults, base)`**：`serve._plan`。返回 `original`（没有可见编辑、有相机 JPG、底图是自动或相机 JPG 时为真）和解析后的边框、日期戳。为真时调用方把解码后的相机 JPG 交给下一步，否则交 `color_image` 的结果。
+- **`export_prepare(...)`**：先校验品质和长边（`ExportOptions.validate`），再跑 `render.params.parse_edit` 里成片要用的部分。底图有两种：原样相机 JPG（`_plan` 为真时），否则调用 export-source 的 `color_image`（RAW 配方、中性 RAW、`standard` 的 04 模拟、内嵌预览回退、LUT、编辑过的相机 JPG）。之后是调整、几何、裁剪（raster `finish_array`，不画日期戳）、日期戳版面、边框版面，以及只有背景和照片的画布（raster `draw_frame_canvas`）。返回画布（uint8）和 JSON：`frame`、`stamp`、`stamp_on`、`photo`、`labels`、`state`。
+  - 源文件输入照 export-source 的约定，空字节等于没给：DAT、resolve 给出的配方条目、校准包（`calib_index` + `calib_blob`）、写进 EXIF 描述的 `binding`、DNG 字节、相机 JPG 解码后的像素和**原始字节**（hdr-track 的拍摄核对要用）、内嵌预览像素、LUT（`.cube` 和空间 JSON）。sidecar 的颜色部分按 resolve 解析后的值交给 export-source；export-source 的错误（`raw_unreadable`、`no_jpg_source`、带 `state` 的 `RenderUnavailable`）原样返回。
+  - 边框和日期戳的文字（`serve._meta`）：有源文件字节时，Rust 用 export-meta 的 `photo_meta` 算出 `meta`、`taken` 和 `file_time`，有相机 JPG 时读 JPG，否则读 DNG，和桌面一样。`file_time` 来自调用方传的 `mtime_ms`（`File.lastModified`）和当时的时区偏移 `tz_offset_min`，Rust 不读时钟和时区。这时 `layout` 只提供 `logos` 和 `mark`。
+  - 日期戳画在哪：`stamp_on == "photo"` 时画在照片上，坐标相对照片。浏览器必须按 `photo` 矩形裁剪着画，光晕不能越出照片，因为桌面是在加边框之前把日期戳画进照片的。即时成像边框加 `placement == "border"` 时是 `"canvas"`，在边框画好之后画在整张画布上。
+  - `canvas`：`"full"` 时返回的就是整张画布（有边框时是背景加照片，没边框时就是照片）。`"photo"` 表示这是模糊背景或纸张颗粒（PORT-WAVE-1 决定 3，raster 不画）：返回的只是成片照片，浏览器画好背景后把它贴在 `photo` 的位置，再画墨迹。
+  - `labels` 和桌面 `_stage_rgb` / `_original_labels` 写出的字典逐项相同，顺序也相同。
+  - HDR（`hdr` 为真时）：在底图上跑 hdr-track 的 `begin`（DNG 加相机 JPG 的原始字节；没有 DNG 是 `no_raw`），再按照片实际走的分支做 `warp` / `box` / `crop`（和 `finish_unframed` 一样用 `warp_valid`、`fit_preset_in_valid`、`normalized_valid_rect`、`clamp_norm_rect` 判断）。数据层以 float32 `(h, w, 2)` 单独返回（WASM 的 `hdr_layer()`，CLI 的 `--hdr-out`），`state.hdr` 里是它的 `active` / `shape` / `problem` 和边框版面。
+  - `state` 是交给下一步的小 JSON（名字、品质、长边、标签、HDR），调用方原样传回。
+- **`export_complete(canvas, w, h, state, source, hdr_layer, stamp_mask, mask_w, mask_h)`**：HDR 时先用浏览器给的日期戳掩码跑 `stamp`（只有画在照片上的日期戳才有掩码：照片大小，日期戳在黑底和白底上各画一次，变了的像素非 0；边框上的日期戳不碰数据层，和桌面一样），再用版面跑 `frame`，最后 `finish`：payload 是本单元那一次编码的结果，rgb 是缩放后的数组。`hdr`、`hdr_reason` 和文件名里的 `_hdr` 跟着它，和桌面一致。手机只导出 JPEG，所以 `not_jpeg` 走不到；`container` 只在 payload 不是合格 JPEG 时出现，本单元自己的编码结果不会触发（hdr-track 自己的测试覆盖这两个理由）。像素超过 Pillow 上限的相机 JPG 是已接受的偏差：桌面直接抛 `DecompressionBombError`，手机在原样导出时 `begin` 报 `metadata_unreadable`、照常导出不带 HDR；编辑过的照片在 `photo_meta` 那一步两边都失败。
+  - `source` 等参数：`source` 是 `state.source` 指的那个文件（有相机 JPG 时是 JPG，否则是 DNG，即 `serve._source_path`）的字节。export-meta 按 `export.source_exif` 读出 `base` / `sub`，`pipeline` 写上 `270` 描述并按 Pillow 约分有理数，再交给 gxr-jpeg 的 `build_exif`。画好墨迹的画布先 `_fit` 到长边（gxr-finish resample 的 LANCZOS），再按 `_finish` 的参数编码一次。返回文件字节，以及 `ExportResult` 的字段（`width`、`height`、`bytes`、`render`、`render_label`、`format`、`render_kind`、`calibrated`、`detail`、`hdr`、`hdr_reason`、`recipe_binding`）和文件名 `file_name` / `tag`（`原名_gxr{tag}.jpg`，做成 HDR 时 tag 加 `_hdr`）。
+- **`export_output_sizes(w, h, side, defaults, layout, rect, preset, fonts)`**：`finish/sizes.output_sizes`。`w × h` 是源尺寸（相机 JPG 转正后的尺寸、DNG 裁切窗口或内嵌预览尺寸），由调用方从文件头得到。
+- 版面输入 `layout` 用 gxr-frame 的请求格式，去掉 `w`、`h`：`meta`、`logos`、`mark`、`taken`、`file_time`。字体和 `frame_layout` 一样，用字体包（`font_index` + `font_pack`）。
+- CLI：`export-run-plan`、`export-run-prepare`、`export-run-complete`、`export-run-sizes`，以及只做霍夫曼重编码的 `export-run-huffopt`。CLI 和 WASM 都调用 `pipeline::api`，同样的输入给出同样的字节。尺寸、品质和长边都按 f64 传入，先检查再收窄。
+
+### 为什么编码后还有一步重编码
+
+桌面 `_finish` 用 Pillow `optimize=True`，也就是 libjpeg-turbo 按这张图自己的符号统计重建霍夫曼表，仍是一次交错扫描。gxr-jpeg 的编码和 Pillow `optimize=False` 逐字节相同（Annex K 标准表）。量化后的系数两者一样，只有霍夫曼码不同。所以 `pipeline/huffopt.rs` 把 gxr-jpeg 的输出无损重编码：先用原表解出每个符号并计数，按 `jchuff.c` 的 `jpeg_gen_optimal_table`（平局取较大的符号，保留 256 号）建表，再用新表写出同样的符号和附加位。字节填充和末尾补 1 位都照 libjpeg 做。同一步还把段顺序改成 libjpeg 的写法（DQT 在 SOF0 前），JFIF 版本写 1.01。gxr-jpeg 写的是 SOF0 在前、JFIF 1.02。
+
+### 和桌面字节相同的前提
+
+- **ICC 时间戳。** Python 的 `srgb_icc()` 是 LittleCMS 运行时生成的，头里第 24–36 字节是生成时间，所以桌面每次运行写出的文件都不一样。gxr-jpeg 把这 12 字节固定了。测试先断言两份 588 字节的配置只有这 12 字节不同，再让 Python 用固定的那份。
+- **有理数。** Pillow 写 RATIONAL 时都经过 `_limit_rational(值, 2**32-1)`：分数约分，大于 1 时通过倒数限制（例如 28/10 写成 14/5）。gxr-jpeg 原样写分子分母，所以 `pipeline` 在交给 gxr-jpeg 之前先按 Pillow 的规则约分。带符号的有理数（SRATIONAL）在范围内时 Pillow 原样写，这里也不动。分母为 0 的值两边都原样写，但 Pillow 推断的类型是 SRATIONAL（NaN 不 ≥ 0），gxr-jpeg 推断的是 RATIONAL；真实照片里还没遇到。
+- **EXIF 描述里的 `binding`。** 桌面写 `engine_pin()`，手机无法得到同样的值。描述由 export-source 的 `Request.binding` 决定，界面传 `gxr-core <构建号>`；测试传桌面的值，描述就逐字节相同。
+
+### LUT 底图不逐字节
+
+export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩阵乘经过 Accelerate，Rust 用顺序的 IEEE 运算。它的 Gate A（对顺序 oracle）为 0 点，Gate B 的差点逐点归因到主机 BLAS（PORT-WAVE-1 的平台规则）。所以带显示域 LUT 的导出在这些像素上和桌面不同。测试分三步证明其余部分一致：Rust 的底图和 Python 的底图过 export-source 自己的 Gate A/B；Rust 的画布等于 Python 用 **Rust 的底图**做成片的结果；把 Python 自己的成片数组交给 `export_complete`，文件和桌面逐字节相同。Log LUT 走 float64 路径，真照片上 0 差。
+
+### 内存
+
+两次测量都在 Node 里用同一个 WASM 包，线性内存只增不减，所以结束时的大小就是峰值：
+- 4288×2848 真 DNG，配方渲染（合成校准包）+ 拉直 + 画廊边框 + 日期戳：prepare 2678 ms，complete 519 ms，峰值 191.8 MiB（`mobile-export-pipeline/report/wasm-measure-raw.json`）；
+- 合成的 4288×2848 底图走同样的成片，再在同一个实例里做一张长边 2048 的无边框导出：峰值 257.6 MiB（`report/wasm-measure.json`）。
+
+- 4288×2848 真 DNG，中性渲染 + 拉直 + 画廊边框 + 日期戳 + HDR（数据层有效，带日期戳掩码）：prepare 6464 ms，complete 1222 ms，峰值 471.5 MiB（`report/wasm-measure-hdr.json`）。
+
+都远低于页面约 2 GiB 的上限。
+
+### 测试输出里不出现照片数据
+
+对拍用实拍照片（EXIF、像素、元数据），测试失败时不能把这些内容打出来。威胁模型是：按本仓库平常写法写的测试，用 `make test`、`make check` 或 pytest 的 `-q`、`-v`、`-vv` 跑，不会无意中把照片派生的数据打进输出或 JUnit。故意绕过的测试代码不在范围内，那归代码评审管。
+
+- 比较走 `tests/support/export_pipeline_cases.py` 的脱敏函数：`same_redacted`（字段路径只用固定词表里的键，别的键打哈希）、`same_file_redacted`（长度、第一个不同的字节、SHA-256 前缀）、`same_pixels`（形状、固定集合里的 dtype、不同元素的个数和第一个位置，不打数值）、`cli_ok`、`check`（标签是字面量）。错误只报已知的种类，别的打哈希。所有 helper 的 label 只打 SHA-256 前缀（label 可能含照片标签），后面附调用方的文件名和行号（只从栈帧取这两项，不带回溯和局部变量），所以失败仍然找得到。失败用 `pytest.fail(..., pytrace=False)`。
+- `tests/test_core_parity_export_pipeline_guard.py` 是一个 lint，只抓常见的失手：裸 `assert` 比较非标量（含对非字面量取 `len`、动态的 f-string 格式说明）、非字面量的 `raise AssertionError` / `pytest.fail`（含 `reason=`）、`check` 的非字面量 label（含 `label=`）、任何 `np.testing` / `numpy.testing` 以及 `assert_array_*` / `assert_allclose`（会打出数组值，改用 `same_pixels`）、`print`、`logging`、`sys.stdout` / `sys.stderr`、`warnings.warn`、不是字面量或 `anon_ids(<个数>)` 的参数化 id、WASM 测试之外的 `synthetic_failure`。参数按同一套办法取：先看位置参数，没有再看关键字，`*args` / `**kwargs` 当作非字面量。每条报规则代码加文件和行号（如 `E_ASSERT test_core_parity_export_pipeline_x.py:12`），并附该规则的固定提示。它不解析别名，也不是边界。
+- 金丝雀测试在 `-q`、`-v`、`-vv` 下让真实的比较代码在合成照片上失败（文件字节、元数据、HDR 状态和 Gate A/B、像素、RAW/LUT 共用路径、未知键、未知错误种类、结构 dtype，以及用照片 LensModel 拼 label 的各个 helper 和 `check(label=...)`），检查每条失败都带 label 哈希、调用位置和 helper 的细节，金丝雀和像素值不出现在 stdout、stderr 和 JUnit 里。另有测试确认 yield fixture 的 teardown 出错照常报错，`-W error` 照常把警告变成失败：测试不吞 pytest 自己的结果。
+- **`-l` / `--showlocals` 不支持用在实拍测试上**：它会把回溯里的局部变量打出来，局部变量里有照片数据。
+
 ## 第一版界面
 
 `mobile/index.html` 是给 iPhone Safari 的界面，不是开发壳。三屏都在内存里切换，不用浏览器的历史记录：起始、按拍摄时间分组的网格、编辑一张。

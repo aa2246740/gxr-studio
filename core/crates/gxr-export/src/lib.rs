@@ -1,12 +1,15 @@
-//! Full-resolution export pipeline: HDR track ([`hdr_track`]), source photo metadata ([`meta`]), and
-//! the export base picture ([`source`]) (`gxr_studio/export.py`, `finish/hdr_export.py`, `docs/mobile.md`).
+//! Full-resolution export: HDR track ([`hdr_track`]), source photo metadata ([`meta`]), the
+//! export base picture ([`source`]) and the export pipeline ([`pipeline`])
+//! (`gxr_studio/export.py`, `finish/serve.py`, `finish/hdr_export.py`, `docs/mobile.md`).
 //!
 //! Provides [`hdr_track`] (`begin`/`warp`/`box`/`crop`/`stamp`/`frame`/`finish`), [`meta`] (source
-//! EXIF extraction, photo display text, JPEG/DNG metadata, embedded DNG preview location), and [`source`].
+//! EXIF extraction, photo display text, JPEG/DNG metadata, embedded DNG preview location),
+//! [`source`] and [`pipeline`] (`export_prepare` / `export_complete` / `output_sizes`).
 #![forbid(unsafe_code)]
 
 pub mod hdr_track;
 pub mod meta;
+pub mod pipeline;
 pub mod source;
 
 pub use hdr_track::{

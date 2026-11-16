@@ -1,14 +1,466 @@
-//! `export-meta-*` commands. Owner: wave-2 unit export-meta.
+//! `export-*` commands. Owner: wave-2 export (export-meta: `export-meta-*`; export-pipeline:
+//! `export-run-*`, thin wrappers over `gxr_export::pipeline::api`, which `gxr-wasm` calls too).
 
 use gxr_export::meta::{
     DEFAULT_NOW_YEAR, dng_preview_location, photo_meta_from_bytes, read_dng_meta, read_jpeg_meta,
     read_source_exif,
 };
+use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs, SourceFiles};
+use gxr_export::pipeline::{ExportFail, ExportOpts, optimize_huffman};
+use gxr_export::source::CalibPack;
+use gxr_frame::Fonts;
 use gxr_raw::Json;
+use gxr_raw::sha256::sha256_hex;
 
 use crate::common::{self, Failure, Output};
 
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
+    if command.starts_with("export-run-") {
+        return run_pipeline(command, args);
+    }
+    run_meta(command, args)
+}
+
+fn run_pipeline(command: &str, args: &[String]) -> Result<Output, Failure> {
+    let result = match command {
+        "export-run-complete" => cmd_complete(args)?,
+        "export-run-huffopt" => cmd_huffopt(args)?,
+        "export-run-plan" => cmd_plan(args)?,
+        "export-run-prepare" => cmd_prepare(args)?,
+        "export-run-sizes" => cmd_sizes(args)?,
+        _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
+    };
+    Ok(match result {
+        Ok(json) => Output {
+            text: json.render(),
+            ok: true,
+        },
+        Err(fail) => Output {
+            text: fail.to_json().render(),
+            ok: false,
+        },
+    })
+}
+
+type Ran = Result<Result<Json, ExportFail>, Failure>;
+/// `(w, h, bytes)` of an RGB `.npy`.
+type RgbNpy = (f64, f64, Vec<u8>);
+
+fn opt<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Failure> {
+    if args.iter().any(|a| a == name) {
+        Ok(Some(common::option(args, name)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn write(path: &str, data: &[u8]) -> Result<(), Failure> {
+    std::fs::write(path, data).map_err(|e| Failure::Usage(format!("cannot write {path}: {e}")))
+}
+
+fn read_or_empty(args: &[String], name: &str) -> Result<Vec<u8>, Failure> {
+    match opt(args, name)? {
+        Some(p) => common::read(p),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn num_arg(args: &[String], name: &str) -> Result<Option<f64>, Failure> {
+    match opt(args, name)? {
+        None => Ok(None),
+        Some(t) => t
+            .parse::<f64>()
+            .map(Some)
+            .map_err(|_| Failure::Usage(format!("bad number for {name}: {t:?}"))),
+    }
+}
+
+/// `--font NAME=PATH`, one per face (as `frame-*`).
+fn fonts(args: &[String]) -> Result<Fonts, Failure> {
+    let mut fonts = Fonts::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--font" {
+            let spec = args
+                .get(i + 1)
+                .ok_or_else(|| Failure::Usage("--font needs a value".into()))?;
+            let (name, path) = spec
+                .split_once('=')
+                .ok_or_else(|| Failure::Usage(format!("--font wants NAME=PATH, got {spec:?}")))?;
+            fonts.add(name, &common::read(path)?)?;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(fonts)
+}
+
+/// A uint8 `.npy` of shape `(H, W, 3)` → `(w, h, bytes)`. A file that isn't one is a usage
+/// error; the core checks the size against the bytes, the same way WASM does.
+fn read_rgb_npy(path: &str) -> Result<RgbNpy, Failure> {
+    let bytes = common::read(path)?;
+    let bad = |m: &str| Failure::Usage(format!("{path}: {m}"));
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return Err(bad("not an .npy file"));
+    }
+    let (at, len) = match bytes[6] {
+        1 => (
+            10usize,
+            usize::from(u16::from_le_bytes([bytes[8], bytes[9]])),
+        ),
+        2 | 3 if bytes.len() >= 12 => (
+            12usize,
+            u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+        ),
+        _ => return Err(bad("unsupported .npy version")),
+    };
+    let header = bytes
+        .get(at..at.saturating_add(len))
+        .ok_or_else(|| bad("short header"))?;
+    let header = String::from_utf8_lossy(header);
+    if !(header.contains("'|u1'") || header.contains("'<u1'") || header.contains("'u1'"))
+        || header.contains("'fortran_order': True")
+    {
+        return Err(bad("want a C-order uint8 array"));
+    }
+    let open = header.find("'shape': (").ok_or_else(|| bad("no shape"))?;
+    let rest = &header[open + 10..];
+    let close = rest.find(')').ok_or_else(|| bad("no shape"))?;
+    let dims: Vec<f64> = rest[..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let [h, w, c] = dims.as_slice() else {
+        return Err(bad("want shape (H, W, 3)"));
+    };
+    if *c != 3.0 {
+        return Err(bad("want shape (H, W, 3)"));
+    }
+    Ok((*w, *h, bytes[at + len..].to_vec()))
+}
+
+/// `np.save` of a `(H, W, 3)` uint8 array (format 1.0).
+fn write_rgb_npy(path: &str, width: usize, height: usize, data: &[u8]) -> Result<(), Failure> {
+    let mut header =
+        format!("{{'descr': '|u1', 'fortran_order': False, 'shape': ({height}, {width}, 3), }}");
+    while (10 + header.len() + 1) % 64 != 0 {
+        header.push(' ');
+    }
+    header.push('\n');
+    let mut out = Vec::with_capacity(10 + header.len() + data.len());
+    out.extend_from_slice(b"\x93NUMPY\x01\x00");
+    out.extend_from_slice(&(header.len() as u16).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(data);
+    write(path, &out)
+}
+
+fn picture(p: Option<&RgbNpy>) -> Option<Picture<'_>> {
+    p.map(|(w, h, d)| Picture {
+        data: d,
+        width: *w,
+        height: *h,
+    })
+}
+
+/// `export-run-complete --canvas RGB.npy [--w W --h H] --state S (--src SOURCE | --exif EXIF.json)
+/// [--hdr-layer LAYER.npy] [--stamp-mask MASK.npy [--mask-w W --mask-h H]] --out OUT.jpg`
+/// (`--w` / `--h` override the array's size, as numbers, for the size-check cases).
+fn cmd_complete(args: &[String]) -> Ran {
+    let (w, h, canvas) = read_rgb_npy(common::option(args, "--canvas")?)?;
+    let (w, h) = (
+        num_arg(args, "--w")?.unwrap_or(w),
+        num_arg(args, "--h")?.unwrap_or(h),
+    );
+    let state = common::read(common::option(args, "--state")?)?;
+    let out = common::option(args, "--out")?;
+    let exif = opt(args, "--exif")?
+        .map(|p| {
+            String::from_utf8(common::read(p)?)
+                .map_err(|_| Failure::Usage("--exif is not UTF-8".into()))
+        })
+        .transpose()?;
+    let src = read_or_empty(args, "--src")?;
+    let picture = Picture {
+        data: &canvas,
+        width: w,
+        height: h,
+    };
+    // No `--exif`: the source file's bytes (none given = no EXIF), the same path as WASM.
+    let source = match &exif {
+        Some(text) => api::ExifSource::Json(text),
+        None => api::ExifSource::File(&src),
+    };
+    let layer = opt(args, "--hdr-layer")?.map(read_f32_npy).transpose()?;
+    let mask = opt(args, "--stamp-mask")?.map(read_mask_npy).transpose()?;
+    let (mw, mh, mask_bytes) = mask.unwrap_or((0.0, 0.0, Vec::new()));
+    let (mw, mh) = (
+        num_arg(args, "--mask-w")?.unwrap_or(mw),
+        num_arg(args, "--mask-h")?.unwrap_or(mh),
+    );
+    let hdr = (layer.is_some() || !mask_bytes.is_empty()).then(|| api::HdrArgs {
+        layer: layer.as_deref().unwrap_or(&[]),
+        mask: &mask_bytes,
+        mask_width: mw,
+        mask_height: mh,
+    });
+    match api::complete(picture, &state, source, hdr) {
+        Ok(done) => {
+            write(out, &done.file)?;
+            Ok(Ok(Json::object([
+                ("result", done.result),
+                ("sha256", Json::str(sha256_hex(&done.file))),
+            ])))
+        }
+        Err(e) => Ok(Err(e)),
+    }
+}
+
+/// `optimize_huffman` on a JPEG file (a test hook for the transcode alone).
+fn cmd_huffopt(args: &[String]) -> Ran {
+    let data = common::read(common::option(args, "--in")?)?;
+    let out = common::option(args, "--out")?;
+    match optimize_huffman(&data) {
+        Ok(file) => {
+            write(out, &file)?;
+            Ok(Ok(Json::object([
+                (
+                    "bytes",
+                    Json::Int(i64::try_from(file.len()).unwrap_or(i64::MAX)),
+                ),
+                ("sha256", Json::str(sha256_hex(&file))),
+            ])))
+        }
+        Err(e) => Ok(Err(e.into())),
+    }
+}
+
+/// `export-run-prepare --shot S [--side E] [--defaults D] [--layout L] [--base MODE]
+/// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...] [--dat DAT] [--entry ENTRY.bin]
+/// [--calib DIR] [--binding TEXT] [--dng DNG] [--jpg RGB.npy] [--jpg-bytes JPG] [--preview RGB.npy]
+/// [--cube C.cube --space SPACE.json] [--mtime-ms MS --tz-offset-min M] [--w W --h H]
+/// [--hdr-out LAYER.npy] --out CANVAS.npy`.
+fn cmd_prepare(args: &[String]) -> Ran {
+    let shot = common::read(common::option(args, "--shot")?)?;
+    let side = read_or_empty(args, "--side")?;
+    let defaults = read_or_empty(args, "--defaults")?;
+    let layout = read_or_empty(args, "--layout")?;
+    let base = opt(args, "--base")?.unwrap_or("auto").to_string();
+    let out = common::option(args, "--out")?;
+    let opts = ExportOpts {
+        quality: num_arg(args, "--quality")?.unwrap_or(95.0),
+        long_edge: num_arg(args, "--long-edge")?,
+        hdr: args.iter().any(|a| a == "--hdr"),
+    };
+    let fonts = fonts(args)?;
+    let (ow, oh) = (num_arg(args, "--w")?, num_arg(args, "--h")?);
+    let size = |(w, h, d): RgbNpy| (ow.unwrap_or(w), oh.unwrap_or(h), d);
+    let jpg = opt(args, "--jpg")?.map(read_rgb_npy).transpose()?.map(size);
+    let preview = opt(args, "--preview")?.map(read_rgb_npy).transpose()?;
+    let pack = opt(args, "--calib")?.map(read_pack).transpose()?;
+    let dat = read_or_empty(args, "--dat")?;
+    let entry = read_or_empty(args, "--entry")?;
+    let dng = read_or_empty(args, "--dng")?;
+    let jpg_bytes = read_or_empty(args, "--jpg-bytes")?;
+    let cube = read_or_empty(args, "--cube")?;
+    let space = String::from_utf8(read_or_empty(args, "--space")?)
+        .map_err(|_| Failure::Usage("--space is not UTF-8".into()))?;
+    let binding = opt(args, "--binding")?.unwrap_or("").to_string();
+    let files = SourceFiles {
+        dat: &dat,
+        entry: &entry,
+        pack: pack.as_ref(),
+        binding: &binding,
+        dng: &dng,
+        jpg_bytes: &jpg_bytes,
+        cube: &cube,
+        space: &space,
+        mtime_ms: num_arg(args, "--mtime-ms")?,
+        tz_offset_min: num_arg(args, "--tz-offset-min")?.unwrap_or(0.0),
+    };
+    let pargs = PrepareArgs {
+        shot: &shot,
+        side: &side,
+        defaults: &defaults,
+        layout: &layout,
+        base: &base,
+        opts,
+    };
+    let result = api::prepare(
+        &pargs,
+        &files,
+        picture(jpg.as_ref()),
+        picture(preview.as_ref()),
+        &fonts,
+    );
+    match result {
+        Ok(p) => {
+            write_rgb_npy(out, p.canvas.width, p.canvas.height, &p.canvas.data)?;
+            if let Some(path) = opt(args, "--hdr-out")? {
+                let layer = p.hdr_layer.unwrap_or_default();
+                let (h, w) = hdr_shape(&p.json);
+                write(path, &crate::npy::encode(&layer, &[h, w, 2]))?;
+            }
+            Ok(Ok(Json::object([
+                ("original", Json::Bool(p.original)),
+                ("prepared", p.json),
+            ])))
+        }
+        Err(e) => Ok(Err(e)),
+    }
+}
+
+/// `prepared.state.hdr.shape` as `(h, w)`; `(0, 0)` when the track is inactive.
+fn hdr_shape(json: &Json) -> (usize, usize) {
+    let get = |j: &Json, k: &str| match j {
+        Json::Object(p) => p.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()),
+        _ => None,
+    };
+    let shape = get(json, "state")
+        .and_then(|s| get(&s, "hdr"))
+        .and_then(|h| get(&h, "shape"));
+    match shape {
+        Some(Json::Array(v)) => match v.as_slice() {
+            [Json::Int(h), Json::Int(w), _] => (
+                usize::try_from(*h).unwrap_or(0),
+                usize::try_from(*w).unwrap_or(0),
+            ),
+            _ => (0, 0),
+        },
+        _ => (0, 0),
+    }
+}
+
+/// A little-endian float32 `.npy` (`<f4`, C order) → its values (any shape).
+fn read_f32_npy(path: &str) -> Result<Vec<f32>, Failure> {
+    let bytes = common::read(path)?;
+    let bad = |m: &str| Failure::Usage(format!("{path}: {m}"));
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return Err(bad("not an .npy file"));
+    }
+    let (at, len) = match bytes[6] {
+        1 => (
+            10usize,
+            usize::from(u16::from_le_bytes([bytes[8], bytes[9]])),
+        ),
+        2 | 3 if bytes.len() >= 12 => (
+            12usize,
+            u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+        ),
+        _ => return Err(bad("unsupported .npy version")),
+    };
+    let header = bytes
+        .get(at..at.saturating_add(len))
+        .ok_or_else(|| bad("short header"))?;
+    let header = String::from_utf8_lossy(header);
+    if !header.contains("'<f4'") || header.contains("'fortran_order': True") {
+        return Err(bad("want a C-order <f4 array"));
+    }
+    let body = &bytes[at + len..];
+    if body.len() % 4 != 0 {
+        return Err(bad("payload is not whole float32s"));
+    }
+    Ok(body
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
+}
+
+/// A 2-D uint8 or bool `.npy` `(H, W)` → `(w, h, bytes)`.
+fn read_mask_npy(path: &str) -> Result<RgbNpy, Failure> {
+    let bytes = common::read(path)?;
+    let bad = |m: &str| Failure::Usage(format!("{path}: {m}"));
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return Err(bad("not an .npy file"));
+    }
+    let (at, len) = match bytes[6] {
+        1 => (
+            10usize,
+            usize::from(u16::from_le_bytes([bytes[8], bytes[9]])),
+        ),
+        _ => return Err(bad("unsupported .npy version")),
+    };
+    let header = bytes
+        .get(at..at.saturating_add(len))
+        .ok_or_else(|| bad("short header"))?;
+    let header = String::from_utf8_lossy(header);
+    if !(header.contains("'|u1'") || header.contains("'|b1'"))
+        || header.contains("'fortran_order': True")
+    {
+        return Err(bad("want a C-order uint8 or bool array"));
+    }
+    let open = header.find("'shape': (").ok_or_else(|| bad("no shape"))?;
+    let rest = &header[open + 10..];
+    let close = rest.find(')').ok_or_else(|| bad("no shape"))?;
+    let dims: Vec<f64> = rest[..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let [h, w] = dims.as_slice() else {
+        return Err(bad("want shape (H, W)"));
+    };
+    Ok((*w, *h, bytes[at + len..].to_vec()))
+}
+
+/// A calibration folder as export-source's `CalibPack` (files sorted by name, as `source-*`).
+fn read_pack(dir: &str) -> Result<CalibPack, Failure> {
+    let list =
+        std::fs::read_dir(dir).map_err(|e| Failure::Usage(format!("cannot list {dir}: {e}")))?;
+    let mut files = Vec::new();
+    for entry in list {
+        let entry = entry.map_err(|e| Failure::Usage(format!("cannot list {dir}: {e}")))?;
+        let path = entry.path();
+        if path.is_file() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            files.push((name, common::read(&path.to_string_lossy())?));
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(CalibPack { files })
+}
+
+/// `export-run-sizes --width W --height H [--side E] [--defaults D] [--layout L] [--rect JSON]
+/// [--preset P] [--font NAME=PATH...]`.
+fn cmd_sizes(args: &[String]) -> Ran {
+    let width =
+        num_arg(args, "--width")?.ok_or_else(|| Failure::Usage("missing --width".into()))?;
+    let height =
+        num_arg(args, "--height")?.ok_or_else(|| Failure::Usage("missing --height".into()))?;
+    let side = read_or_empty(args, "--side")?;
+    let defaults = read_or_empty(args, "--defaults")?;
+    let layout = read_or_empty(args, "--layout")?;
+    let rect = opt(args, "--rect")?.unwrap_or("").as_bytes().to_vec();
+    let preset = opt(args, "--preset")?;
+    let fonts = fonts(args)?;
+    let sargs = SizesArgs {
+        width,
+        height,
+        side: &side,
+        defaults: &defaults,
+        layout: &layout,
+        rect: &rect,
+        preset,
+    };
+    Ok(api::sizes(&sargs, &fonts))
+}
+
+/// `export-run-plan --shot S [--side E] [--defaults D] [--base MODE]`: `serve._plan`.
+fn cmd_plan(args: &[String]) -> Ran {
+    let shot = common::read(common::option(args, "--shot")?)?;
+    let side = read_or_empty(args, "--side")?;
+    let defaults = read_or_empty(args, "--defaults")?;
+    let base = opt(args, "--base")?.unwrap_or("auto").to_string();
+    Ok(api::plan_json(&shot, &side, &defaults, &base))
+}
+
+// ---- export-meta
+
+fn run_meta(command: &str, args: &[String]) -> Result<Output, Failure> {
     if command == "export-meta-read" {
         return Ok(Output {
             text: cmd_read(args)?,
