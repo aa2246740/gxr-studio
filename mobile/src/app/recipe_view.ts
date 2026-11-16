@@ -44,12 +44,15 @@ export interface StageHooks {
   dragging(): boolean;
   /** 「配方」页现在开着没有。 */
   recipeTab(): boolean;
+  /** 几何与裁切框（给配方卡小图裁剪预览）。 */
+  geometry(): Promise<{ geometry: Geometry; cropped: boolean }>;
 }
 
 interface Slot {
   card: Card;
   node: HTMLButtonElement;
   thumb: HTMLElement;
+  nameEl: HTMLElement;
   sub: HTMLElement;
 }
 
@@ -69,6 +72,7 @@ export class RecipeView {
   private token = 0;
   private which: Shelf = 'all';
   private slots: Slot[] = [];
+  private stripKeys: string[] = [];
   private readonly strip = el('div', 'strip');
   private readonly panel = el('div', 'panel recipe');
   private rawKey: string | null = null;
@@ -111,8 +115,8 @@ export class RecipeView {
     this.refresh();
   }
 
-  /** 中性小图好了（每个版本做一次）。没校准、没有相机配方文件时卡片都用它。 */
-  neutral(bitmap: ImageBitmap): void {
+  /** 中性小图好了（每个版本做一次）。没校准、没有相机配方文件时卡片都用它；关闭旧位图前先传 null 清掉。 */
+  neutral(bitmap: ImageBitmap | null): void {
     this.neutralBitmap = bitmap;
     this.paintThumbs();
   }
@@ -192,44 +196,86 @@ export class RecipeView {
   }
 
   private buildStrip(scene: Scene): void {
-    this.strip.replaceChildren();
-    this.slots = [];
     const cards = this.cardsOf(scene);
     const locked = scene.raw && !scene.dat;
     const picked = this.chosen(scene);
     this.strip.dataset.state = !scene.raw ? 'jpg-only' : locked ? 'no-recipe-file' : scene.state.state === 'ready' ? 'calibrated' : 'uncalibrated';
-    if (scene.list && this.which === 'mine' && !cards.length) {
+    const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
+    if (isEmpty) {
+      this.strip.replaceChildren();
+      this.slots = [];
+      this.stripKeys = ['__empty__'];
       const empty = el('p', 'empty faint', MINE_EMPTY);
       this.strip.append(empty);
       return;
     }
-    for (const card of cards) {
+
+    const nextKeys = cards.map((card) => card.id);
+    const sameStrip =
+      nextKeys.length === this.stripKeys.length &&
+      nextKeys.every((k, i) => k === this.stripKeys[i]) &&
+      this.slots.length === cards.length;
+
+    if (sameStrip) {
+      for (let i = 0; i < cards.length; i += 1) {
+        const card = cards[i];
+        const slot = this.slots[i];
+        slot.card = card;
+        slot.nameEl.textContent = card.name;
+        const usable = scene.raw && scene.dat && card.controls.length > 0;
+        slot.node.classList.toggle('lockd', !usable);
+        slot.node.disabled = !scene.raw;
+        this.syncMark(slot.node, slot.thumb, Boolean(picked && picked.id === card.id));
+      }
+      this.paintThumbs();
+      return;
+    }
+
+    this.strip.replaceChildren();
+    this.slots = [];
+    this.stripKeys = nextKeys;
+    for (let i = 0; i < cards.length; i += 1) {
+      const card = cards[i];
       const node = button('rc', '');
       node.dataset.card = card.id;
       const thumb = el('div', 'th');
+      const nameEl = el('span', 'nm', card.name);
       const sub = el('span', 'sub');
-      node.append(thumb, el('span', 'nm', card.name), sub);
+      node.append(thumb, nameEl, sub);
       const usable = scene.raw && scene.dat && card.controls.length > 0;
       if (!usable) node.classList.add('lockd');
       if (!scene.raw) node.disabled = true;
-      if (picked && picked.id === card.id) this.mark(node, thumb);
-      node.addEventListener('click', () => this.pick(card));
+      this.syncMark(node, thumb, Boolean(picked && picked.id === card.id));
+      const idx = i;
+      node.addEventListener('click', () => {
+        const current = this.slots[idx]?.card;
+        if (current) this.pick(current);
+      });
       this.strip.append(node);
-      this.slots.push({ card, node, thumb, sub });
+      this.slots.push({ card, node, thumb, nameEl, sub });
     }
     this.paintThumbs();
   }
 
-  private mark(node: HTMLElement, thumb: HTMLElement): void {
-    node.classList.add('on');
-    const tick = el('span', 'ckk');
-    tick.append(icon(CHECK));
-    thumb.append(tick);
+  private syncMark(node: HTMLElement, thumb: HTMLElement, on: boolean): void {
+    node.classList.toggle('on', on);
+    const existing = thumb.querySelector('.ckk');
+    if (on && !existing) {
+      const tick = el('span', 'ckk');
+      tick.append(icon(CHECK));
+      thumb.append(tick);
+    } else if (!on && existing) {
+      existing.remove();
+    }
   }
 
-  /** 每张卡画什么、底下写什么。 */
+  private mark(node: HTMLElement, thumb: HTMLElement): void {
+    this.syncMark(node, thumb, true);
+  }
+
   private paintThumbs(): void {
     const scene = this.scene();
+    const cropped = this.photo.crop !== null || this.photo.geometry.straighten !== 0;
     for (const slot of this.slots) {
       const { card, thumb, sub } = slot;
       let bitmap: ImageBitmap | null = null;
@@ -242,10 +288,10 @@ export class RecipeView {
         bitmap = this.photo.bitmap;
         source = text = this.photo.jpg ? '相机 JPG' : this.photo.bitmap ? '内嵌预览' : '只有 RAW';
       } else if (!scene.dat) {
-        bitmap = this.neutralBitmap;
+        bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = NEUTRAL_LABEL;
       } else if (scene.state.state !== 'ready') {
-        bitmap = this.neutralBitmap;
+        bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = text = NEUTRAL_LABEL;
       } else {
         const key = this.api.book().bakeKey(card, scene.unit, scene.iso, this.levelsOf(card));
@@ -257,6 +303,7 @@ export class RecipeView {
         text = card.desc ?? '';
       }
       sub.textContent = text;
+      thumb.dataset.cropped = cropped && scene.raw && scene.gpu ? '1' : '0';
       const want = bitmap ? `${source}:${bitmapId(bitmap)}` : '';
       if (thumb.dataset.drawn === want) continue;
       thumb.querySelector('canvas')?.remove();
@@ -535,6 +582,9 @@ export class RecipeView {
     const version = photo.version;
     const session = this.api.session();
     const alive = () => token === this.token && this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
+    const geomInfo = await this.hooks.geometry().catch(() => ({ geometry: GEOMETRY, cropped: false }));
+    if (!alive()) return;
+    const thumbGeometry = geomInfo.geometry;
     const order = [...this.cardsOf(scene), ...shelf(scene.list, 'all')];
     const seen = new Set<string>();
     const jobs: Array<{ card: Card; bake: Promise<string> }> = [];
@@ -576,7 +626,7 @@ export class RecipeView {
         gpu = book.gpuKey(key);
         if (!gpu) continue;
       }
-      const out = await engine.thumb({ source, look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: GEOMETRY, aspect: null, maxEdge: 192 });
+      const out = await engine.thumb({ source, look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: thumbGeometry, aspect: null, maxEdge: 192 });
       if (!out || !alive()) return;
       const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
       if (!alive()) {

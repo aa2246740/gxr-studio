@@ -213,8 +213,24 @@ def test_histogram_updates_on_content_and_rests_when_idle(server: dict[str, Any]
 def test_later_tabs_keep_the_design_layout_disabled(server: dict[str, Any]) -> None:
     data = run_case(server, "later-tabs")
     want = {
-        "裁剪": ["原始", "XPan 65:24", "小红书 3:4", "横向", "竖向", "参考线：三等分", "拉直", "0.0°"],
-        "LUT": ["不用 LUT", "胶片暖调", "青橙电影", "黑金", "输入色彩空间", "导入 LUT（.cube 文件）", "不写入相机"],
+        "边框": [
+            "无",
+            "徕卡水印",
+            "模糊背景",
+            "白边",
+            "哈苏水印",
+            "拍立得",
+            "胶片",
+            "极简细线",
+            "颜色",
+            "细",
+            "中",
+            "粗",
+            "标志",
+            "参数",
+            "日期",
+            "时间戳",
+        ],
         "曲线": ["主曲线", "红", "绿", "蓝", "重置此通道"],
     }
     for tab, words in want.items():
@@ -226,7 +242,7 @@ def test_later_tabs_keep_the_design_layout_disabled(server: dict[str, Any]) -> N
         # 有真控件，而且一个都不能点。
         assert panel["controls"] >= 4 and panel["enabled"] == 0, (tab, panel)
     assert data["tabs"]["曲线"]["svg"] == 1
-    assert data["tabs"]["裁剪"]["inputs"] == 1
+    assert data["tabs"]["边框"]["inputs"] == 1
 
 
 def test_old_gpu_upload_cannot_replace_a_newer_version(server: dict[str, Any]) -> None:

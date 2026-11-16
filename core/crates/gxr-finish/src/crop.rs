@@ -87,9 +87,28 @@ impl Crop {
     }
 }
 
+const I64_MIN_F64: f64 = -9_223_372_036_854_775_808.0;
+const I64_UPPER_BOUND_F64: f64 = 9_223_372_036_854_775_808.0;
+
+fn bad_rect() -> CoreError {
+    CoreError::new("bad_rect", "裁剪框超出画面范围")
+}
+
 /// Port of `gxr_studio/crop.py:56 round_half_up`
 pub fn round_half_up(v: f64) -> i64 {
     (v + 0.5).floor() as i64
+}
+
+/// Checked `round_half_up` rejecting non-finite or out-of-`i64` values with `bad_rect` instead of saturating.
+pub fn checked_round_half_up(v: f64) -> Result<i64, CoreError> {
+    if !v.is_finite() {
+        return Err(bad_rect());
+    }
+    let f = (v + 0.5).floor();
+    if !f.is_finite() || !(I64_MIN_F64..I64_UPPER_BOUND_F64).contains(&f) {
+        return Err(bad_rect());
+    }
+    Ok(f as i64)
 }
 
 /// Port of `gxr_studio/crop.py:60 target_ratio`
@@ -105,7 +124,7 @@ pub fn target_ratio(
     }
     if preset == "original" {
         if width <= 0 || height <= 0 {
-            return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+            return Err(bad_rect());
         }
         return Ok(Some(Ratio::new(width, height)));
     }
@@ -130,6 +149,55 @@ pub fn crop_box(rect: [f64; 4], width: i64, height: i64) -> [i64; 4] {
         round_half_up(w * wf),
         round_half_up(h * hf),
     ]
+}
+
+/// Checked `crop_box`: verifies finite coordinates, finite pixel products/endpoints,
+/// non-saturating `i64` rounding (aligned with `geometry::bounds::rect_to_pixels`), and endpoint sums.
+pub fn checked_crop_box(rect: [f64; 4], width: i64, height: i64) -> Result<[i64; 4], CoreError> {
+    if width <= 0 || height <= 0 {
+        return Err(bad_rect());
+    }
+    let [x, y, w, h] = rect;
+    if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+        return Err(bad_rect());
+    }
+    let wf = width as f64;
+    let hf = height as f64;
+    let xw = x * wf;
+    let yh = y * hf;
+    let ww = w * wf;
+    let hh = h * hf;
+    let cxw = (x + w / 2.0) * wf;
+    let cyh = (y + h / 2.0) * hf;
+    let x1w = (x + w) * wf;
+    let y1h = (y + h) * hf;
+    if !xw.is_finite()
+        || !yh.is_finite()
+        || !ww.is_finite()
+        || !hh.is_finite()
+        || !cxw.is_finite()
+        || !cyh.is_finite()
+        || !x1w.is_finite()
+        || !y1h.is_finite()
+    {
+        return Err(bad_rect());
+    }
+    let rx = crate::geometry::bounds::round_even(xw)?;
+    let ry = crate::geometry::bounds::round_even(yh)?;
+    let rw_even = crate::geometry::bounds::round_even(ww)?;
+    let rh_even = crate::geometry::bounds::round_even(hh)?;
+    let _ = rx.checked_add(rw_even).ok_or_else(bad_rect)?;
+    let _ = ry.checked_add(rh_even).ok_or_else(bad_rect)?;
+    let _ = rx.checked_add(1_i64.max(rw_even)).ok_or_else(bad_rect)?;
+    let _ = ry.checked_add(1_i64.max(rh_even)).ok_or_else(bad_rect)?;
+
+    let x0 = checked_round_half_up(xw)?;
+    let y0 = checked_round_half_up(yh)?;
+    let bw = checked_round_half_up(ww)?;
+    let bh = checked_round_half_up(hh)?;
+    let _ = x0.checked_add(bw).ok_or_else(bad_rect)?;
+    let _ = y0.checked_add(bh).ok_or_else(bad_rect)?;
+    Ok([x0, y0, bw, bh])
 }
 
 /// Port of `gxr_studio/crop.py:81 box_inside`
@@ -293,7 +361,7 @@ pub fn ratio_off(ratio: Ratio, w_px: i64, h_px: i64) -> f64 {
 pub fn check_final(preset: &str, rect: [f64; 4], width: i64, height: i64) -> Result<(), CoreError> {
     check_min_size(rect, width, height)?;
     if let Some(ratio) = target_ratio(preset, width, height, false)? {
-        let [_, _, w_px, h_px] = crop_box(rect, width, height);
+        let [_, _, w_px, h_px] = checked_crop_box(rect, width, height)?;
         if ratio_off(ratio, w_px, h_px) > RATIO_TOLERANCE {
             return Err(CoreError::new("ratio_mismatch", "裁剪框超出画面范围"));
         }
@@ -303,7 +371,7 @@ pub fn check_final(preset: &str, rect: [f64; 4], width: i64, height: i64) -> Res
 
 /// Port of `gxr_studio/crop.py:179 check_min_size`
 pub fn check_min_size(rect: [f64; 4], width: i64, height: i64) -> Result<(), CoreError> {
-    let [_, _, w_px, h_px] = crop_box(rect, width, height);
+    let [_, _, w_px, h_px] = checked_crop_box(rect, width, height)?;
     if w_px < MIN_SIDE_PX || h_px < MIN_SIDE_PX {
         return Err(CoreError::new("too_small", "裁剪框超出画面范围"));
     }
@@ -324,13 +392,13 @@ pub fn validate_crop(
     let ratio = target_ratio(preset, width, height, false)?;
     let [x, y, w, h] = rect;
     if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
-        return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+        return Err(bad_rect());
     }
     let eps = 1e-9;
     if w <= 0.0 || h <= 0.0 || x < -eps || y < -eps || x + w > 1.0 + eps || y + h > 1.0 + eps {
-        return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+        return Err(bad_rect());
     }
-    let [_, _, w_px, h_px] = crop_box([x, y, w, h], width, height);
+    let [_, _, w_px, h_px] = checked_crop_box([x, y, w, h], width, height)?;
     if w_px < MIN_SIDE_PX || h_px < MIN_SIDE_PX {
         return Err(CoreError::new("too_small", "裁剪框超出画面范围"));
     }
@@ -377,16 +445,18 @@ pub fn affine_coeffs(box_px: [i64; 4], width: i64, height: i64, angle_deg: f64) 
 
 fn parse_rect_array(val: &JsonValue) -> Result<[f64; 4], CoreError> {
     let Some(arr) = val.as_array() else {
-        return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+        return Err(bad_rect());
     };
     if arr.len() != 4 {
-        return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+        return Err(bad_rect());
     }
     let mut out = [0.0; 4];
     for (i, item) in arr.iter().enumerate() {
-        out[i] = item
-            .as_f64()
-            .ok_or_else(|| CoreError::new("bad_rect", "裁剪框超出画面范围"))?;
+        let f = item.as_f64().ok_or_else(bad_rect)?;
+        if !f.is_finite() {
+            return Err(bad_rect());
+        }
+        out[i] = f;
     }
     Ok(out)
 }
@@ -394,11 +464,11 @@ fn parse_rect_array(val: &JsonValue) -> Result<[f64; 4], CoreError> {
 /// CLI helper: parse `--crop JSON`, validate or compute default crop, return `{"box": ..., "crop": ...}` JSON.
 pub fn crop_box_json(width: i64, height: i64, crop_json: &str) -> Result<Json, CoreError> {
     if width <= 0 || height <= 0 {
-        return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+        return Err(bad_rect());
     }
     let val = parse_json(crop_json, "bad_rect", "裁剪框超出画面范围")?;
     if !matches!(val, JsonValue::Object(_)) {
-        return Err(CoreError::new("bad_rect", "裁剪框超出画面范围"));
+        return Err(bad_rect());
     }
     let preset = match val.get("preset") {
         None | Some(JsonValue::Null) => "free",
@@ -414,21 +484,15 @@ pub fn crop_box_json(width: i64, height: i64, crop_json: &str) -> Result<Json, C
     };
     let mirrored = match val.get("mirrored") {
         None | Some(JsonValue::Null) => false,
-        Some(v) => v
-            .as_bool()
-            .ok_or_else(|| CoreError::new("bad_rect", "裁剪框超出画面范围"))?,
+        Some(v) => v.as_bool().ok_or_else(bad_rect)?,
     };
     let check_region = match val.get("check_region") {
         None | Some(JsonValue::Null) => true,
-        Some(v) => v
-            .as_bool()
-            .ok_or_else(|| CoreError::new("bad_rect", "裁剪框超出画面范围"))?,
+        Some(v) => v.as_bool().ok_or_else(bad_rect)?,
     };
     let flip = match val.get("flip") {
         None | Some(JsonValue::Null) => false,
-        Some(v) => v
-            .as_bool()
-            .ok_or_else(|| CoreError::new("bad_rect", "裁剪框超出画面范围"))?,
+        Some(v) => v.as_bool().ok_or_else(bad_rect)?,
     };
     let crop = match val.get("rect") {
         None | Some(JsonValue::Null) => default_crop(preset, width, height, angle_deg, flip)?,
@@ -445,7 +509,7 @@ pub fn crop_box_json(width: i64, height: i64, crop_json: &str) -> Result<Json, C
             )?
         }
     };
-    let px = crop_box(crop.rect, width, height);
+    let px = checked_crop_box(crop.rect, width, height)?;
     Ok(Json::object([
         ("box", Json::ints(&px)),
         ("crop", crop.to_json()),
