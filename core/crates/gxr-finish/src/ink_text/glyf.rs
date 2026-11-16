@@ -5,12 +5,17 @@
 
 use std::collections::BTreeMap;
 
-use gxr_frame::{FontTable, read_font};
+use gxr_frame::{Cff, read_cmap};
 use gxr_raw::CoreError;
 
+use super::cff_outline::load_cff_glyph;
 use super::ftcalc::{
     FtMatrix, FtVector, ft_div_fix, ft_hypot, ft_mul_fix, ft_pix_ceil, ft_pix_floor, ft_pix_round,
     ft_vector_transform,
+};
+use super::glyf_sfnt::{
+    be_i16, be_u16, be_u32, invalid_composite, invalid_outline, read_exact, select_asc_desc,
+    table_directory, table_span,
 };
 
 pub const FT_CURVE_TAG_CONIC: u8 = 0;
@@ -22,7 +27,6 @@ pub const FT_OUTLINE_REVERSE_FILL: u32 = 0x0004;
 pub const FT_OUTLINE_OVERLAP: u32 = 0x1000;
 
 const HEAD_FLAG_INTEGER_PPEM: u16 = 8;
-const OS2_FLAG_USE_TYPO_METRICS: u16 = 128;
 
 // Simple glyph point flags.
 const ON_CURVE_POINT: u8 = 0x01;
@@ -41,6 +45,7 @@ const WE_HAVE_A_SCALE: u16 = 0x0008;
 const MORE_COMPONENTS: u16 = 0x0020;
 const WE_HAVE_AN_XY_SCALE: u16 = 0x0040;
 const WE_HAVE_A_2X2: u16 = 0x0080;
+const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
 const USE_MY_METRICS: u16 = 0x0200;
 const OVERLAP_COMPOUND: u16 = 0x0400;
 const SCALED_COMPONENT_OFFSET: u16 = 0x0800;
@@ -65,6 +70,7 @@ pub struct LoadedGlyph {
     /// Raw scaled horizontal advance in 26.6 (`pp2.x - pp1.x`).
     pub raw_hori_advance: i64,
     pub linear_hori_advance: i64,
+    pub hinted: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,37 +144,48 @@ impl SizeMetrics {
     }
 }
 
-/// Parsed TrueType font tables needed to load unhinted outlines and metrics.
+enum FaceOutlines {
+    Ttf {
+        loca_at: u64,
+        glyf_at: u64,
+        long_loca: bool,
+        auto_hint_default: bool,
+        has_prep: bool,
+    },
+    Cff(Box<Cff>),
+}
+
+/// Parsed SFNT font tables needed to load TrueType or CFF outlines and metrics.
 pub struct FontFace<'a> {
     data: &'a [u8],
     pub upm: i64,
     pub head_flags: u16,
-    pub long_loca: bool,
     pub ascender: i64,
     pub descender: i64,
     pub num_metrics: u64,
     pub num_glyphs: u64,
     hmtx_at: u64,
     hmtx_len: u64,
-    loca_at: u64,
-    glyf_at: u64,
-    table: FontTable,
+    cmap: BTreeMap<u32, u32>,
+    outlines: FaceOutlines,
 }
 
 impl<'a> FontFace<'a> {
     pub fn parse(data: &'a [u8]) -> Result<Self, CoreError> {
-        let table = read_font(data)?;
-        if table.upm <= 0 {
-            return Err(CoreError::new("value_error", "font unitsPerEm is zero"));
+        if data.len() >= 4 && &data[..4] == b"ttcf" {
+            return Err(CoreError::new("value_error", "字体集合（.ttc）不读"));
         }
         let dir = table_directory(data)?;
         let (head_at, _) = table_span(&dir, "head")?;
         let (hhea_at, _) = table_span(&dir, "hhea")?;
-        let (maxp_at, _) = table_span(&dir, "maxp")?;
+        let (maxp_at, maxp_len) = table_span(&dir, "maxp")?;
         let (hmtx_at, hmtx_len) = table_span(&dir, "hmtx")?;
-        let (loca_at, _) = table_span(&dir, "loca")?;
-        let (glyf_at, _) = table_span(&dir, "glyf")?;
+        let (cmap_at, _) = table_span(&dir, "cmap")?;
 
+        let upm = i64::from(be_u16(data, head_at + 18)?);
+        if upm <= 0 {
+            return Err(CoreError::new("value_error", "font unitsPerEm is zero"));
+        }
         let head_flags = be_u16(data, head_at + 16)?;
         let long_loca = be_i16(data, head_at + 50)? == 1;
         let hhea_asc = be_i16(data, hhea_at + 4)?;
@@ -178,47 +195,103 @@ impl<'a> FontFace<'a> {
         if num_glyphs == 0 {
             return Err(CoreError::new("value_error", "font has zero glyphs"));
         }
-
         let (ascender, descender) = select_asc_desc(data, &dir, hhea_asc, hhea_desc)?;
+
+        let mut cmap = BTreeMap::new();
+        for (code, gid) in read_cmap(data, cmap_at)? {
+            if gid > 0 && gid < num_glyphs {
+                cmap.insert(code, gid as u32);
+            }
+        }
+
+        let outlines = if let Some(&(cff_at, cff_len)) = dir.get("CFF ")
+            && !dir.contains_key("glyf")
+        {
+            FaceOutlines::Cff(Box::new(Cff::parse(read_exact(data, cff_at, cff_len)?)?))
+        } else {
+            let (loca_at, _) = table_span(&dir, "loca")?;
+            let (glyf_at, _) = table_span(&dir, "glyf")?;
+            let has_fpgm = dir.get("fpgm").is_some_and(|&(_, len)| len > 0);
+            let prep_len = dir.get("prep").map_or(0, |&(_, len)| len);
+            let max_instr = if maxp_len >= 28 {
+                be_u16(data, maxp_at + 26)?
+            } else {
+                1
+            };
+            let auto_hint_default = (!has_fpgm && prep_len <= 7) || max_instr == 0;
+            FaceOutlines::Ttf {
+                loca_at,
+                glyf_at,
+                long_loca,
+                auto_hint_default,
+                has_prep: prep_len > 0,
+            }
+        };
 
         Ok(Self {
             data,
-            upm: table.upm,
+            upm,
             head_flags,
-            long_loca,
             ascender,
             descender,
             num_metrics,
             num_glyphs,
             hmtx_at,
             hmtx_len,
-            loca_at,
-            glyf_at,
-            table,
+            cmap,
+            outlines,
         })
     }
 
-    pub fn font_table(&self) -> &FontTable {
-        &self.table
-    }
-
     pub fn glyph_id(&self, ch: char) -> u32 {
-        self.table.glyphs.get(&u32::from(ch)).map_or(0, |g| g.id)
+        self.cmap.get(&u32::from(ch)).copied().unwrap_or(0)
     }
 
     pub fn load_char(&self, metrics: &SizeMetrics, ch: char) -> Result<LoadedGlyph, CoreError> {
         self.load_glyph(metrics, self.glyph_id(ch))
     }
 
-    /// Port of FreeType `TT_Load_Glyph` with bytecode hinting skipped (v40 backward compat).
+    /// Port of FreeType `TT_Load_Glyph` / `cff_slot_load` with bytecode hinting skipped.
     pub fn load_glyph(&self, metrics: &SizeMetrics, gid: u32) -> Result<LoadedGlyph, CoreError> {
+        if u64::from(gid) >= self.num_glyphs {
+            return Err(CoreError::new("value_error", "invalid glyph index"));
+        }
+        let (loca_at, glyf_at, long_loca, auto_hint_default, has_prep) = match &self.outlines {
+            FaceOutlines::Cff(cff) => {
+                let (advance, _lsb) = self.hmtx_metrics(gid)?;
+                return load_cff_glyph(
+                    cff,
+                    gid,
+                    advance,
+                    metrics.hinted_x_scale,
+                    metrics.hinted_y_scale,
+                );
+            }
+            FaceOutlines::Ttf {
+                loca_at,
+                glyf_at,
+                long_loca,
+                auto_hint_default,
+                has_prep,
+            } => (
+                *loca_at,
+                *glyf_at,
+                *long_loca,
+                *auto_hint_default,
+                *has_prep,
+            ),
+        };
         let mut outline = Outline::default();
         let mut state = LoaderState {
             x_scale: metrics.hinted_x_scale,
             y_scale: metrics.hinted_y_scale,
+            loca_at,
+            glyf_at,
+            long_loca,
             pp1: FtVector::default(),
             pp2: FtVector::default(),
             linear: 0,
+            hinted: auto_hint_default || has_prep,
             visited: Vec::new(),
         };
         self.load_truetype_glyph(&mut state, &mut outline, gid, 0)?;
@@ -233,6 +306,7 @@ impl<'a> FontFace<'a> {
             hori_advance: ft_pix_round(raw_hori_advance),
             raw_hori_advance,
             linear_hori_advance: state.linear,
+            hinted: state.hinted,
         })
     }
 
@@ -253,7 +327,7 @@ impl<'a> FontFace<'a> {
             return Err(CoreError::new("value_error", "invalid glyph index"));
         }
 
-        let (start, byte_len) = self.glyph_span(gid)?;
+        let (start, byte_len) = self.glyph_span(state.loca_at, state.long_loca, gid)?;
         let (advance, lsb) = self.hmtx_metrics(gid)?;
         state.linear = i64::from(advance);
 
@@ -270,7 +344,7 @@ impl<'a> FontFace<'a> {
             return Ok(());
         }
 
-        let at = self
+        let at = state
             .glyf_at
             .checked_add(start)
             .ok_or_else(invalid_outline)?;
@@ -339,6 +413,9 @@ impl<'a> FontFace<'a> {
 
         let mut cursor = end_pts_bytes;
         let ins_len = usize::from(u16::from_be_bytes([body[cursor], body[cursor + 1]]));
+        if ins_len > 0 {
+            state.hinted = true;
+        }
         cursor += 2;
         cursor = cursor.checked_add(ins_len).ok_or_else(invalid_outline)?;
         if cursor > body.len() {
@@ -443,6 +520,9 @@ impl<'a> FontFace<'a> {
         state.pp2.x = ft_mul_fix(state.pp2.x, state.x_scale);
 
         for sub in &subglyphs {
+            if (sub.flags & WE_HAVE_INSTRUCTIONS) != 0 {
+                state.hinted = true;
+            }
             let saved_pp1 = state.pp1;
             let saved_pp2 = state.pp2;
             let saved_linear = state.linear;
@@ -516,16 +596,16 @@ impl<'a> FontFace<'a> {
         Ok(())
     }
 
-    fn glyph_span(&self, gid: u32) -> Result<(u64, u64), CoreError> {
+    fn glyph_span(&self, loca_at: u64, long_loca: bool, gid: u32) -> Result<(u64, u64), CoreError> {
         let g = u64::from(gid);
-        let (a, b) = if self.long_loca {
-            let at = self.loca_at + g * 4;
+        let (a, b) = if long_loca {
+            let at = loca_at + g * 4;
             (
                 u64::from(be_u32(self.data, at)?),
                 u64::from(be_u32(self.data, at + 4)?),
             )
         } else {
-            let at = self.loca_at + g * 2;
+            let at = loca_at + g * 2;
             (
                 u64::from(be_u16(self.data, at)?) * 2,
                 u64::from(be_u16(self.data, at + 2)?) * 2,
@@ -561,9 +641,13 @@ impl<'a> FontFace<'a> {
 struct LoaderState {
     x_scale: i64,
     y_scale: i64,
+    loca_at: u64,
+    glyf_at: u64,
+    long_loca: bool,
     pp1: FtVector,
     pp2: FtVector,
     linear: i64,
+    hinted: bool,
     visited: Vec<u32>,
 }
 
@@ -576,82 +660,56 @@ struct SubGlyph {
 }
 
 fn parse_subglyphs(body: &[u8], num_glyphs: u64) -> Result<Vec<SubGlyph>, CoreError> {
-    let mut cursor = 0_usize;
+    let mut c = 0_usize;
     let mut out = Vec::new();
+    let rd_i16 = |c: &mut usize| -> Result<i64, CoreError> {
+        let b = body.get(*c..*c + 2).ok_or_else(invalid_composite)?;
+        *c += 2;
+        Ok(i64::from(i16::from_be_bytes([b[0], b[1]])))
+    };
+    let rd_u16 = |c: &mut usize| -> Result<i64, CoreError> {
+        let b = body.get(*c..*c + 2).ok_or_else(invalid_composite)?;
+        *c += 2;
+        Ok(i64::from(u16::from_be_bytes([b[0], b[1]])))
+    };
     loop {
-        if cursor + 4 > body.len() {
+        if c + 4 > body.len() {
             return Err(invalid_composite());
         }
-        let flags = u16::from_be_bytes([body[cursor], body[cursor + 1]]);
-        let index = u16::from_be_bytes([body[cursor + 2], body[cursor + 3]]);
-        cursor += 4;
+        let flags = u16::from_be_bytes([body[c], body[c + 1]]);
+        let index = u16::from_be_bytes([body[c + 2], body[c + 3]]);
+        c += 4;
         if u64::from(index) >= num_glyphs {
             return Err(invalid_composite());
         }
-
-        let (arg1, arg2) = if (flags & ARGS_ARE_XY_VALUES) != 0 {
-            if (flags & ARGS_ARE_WORDS) != 0 {
-                if cursor + 4 > body.len() {
-                    return Err(invalid_composite());
-                }
-                let a = i64::from(i16::from_be_bytes([body[cursor], body[cursor + 1]]));
-                let b = i64::from(i16::from_be_bytes([body[cursor + 2], body[cursor + 3]]));
-                cursor += 4;
-                (a, b)
-            } else {
-                if cursor + 2 > body.len() {
-                    return Err(invalid_composite());
-                }
-                let a = i64::from(body[cursor] as i8);
-                let b = i64::from(body[cursor + 1] as i8);
-                cursor += 2;
-                (a, b)
+        let (arg1, arg2) = match (flags & ARGS_ARE_XY_VALUES != 0, flags & ARGS_ARE_WORDS != 0) {
+            (true, true) => (rd_i16(&mut c)?, rd_i16(&mut c)?),
+            (true, false) => {
+                let b = body.get(c..c + 2).ok_or_else(invalid_composite)?;
+                c += 2;
+                (i64::from(b[0] as i8), i64::from(b[1] as i8))
             }
-        } else if (flags & ARGS_ARE_WORDS) != 0 {
-            if cursor + 4 > body.len() {
-                return Err(invalid_composite());
+            (false, true) => (rd_u16(&mut c)?, rd_u16(&mut c)?),
+            (false, false) => {
+                let b = body.get(c..c + 2).ok_or_else(invalid_composite)?;
+                c += 2;
+                (i64::from(b[0]), i64::from(b[1]))
             }
-            let a = i64::from(u16::from_be_bytes([body[cursor], body[cursor + 1]]));
-            let b = i64::from(u16::from_be_bytes([body[cursor + 2], body[cursor + 3]]));
-            cursor += 4;
-            (a, b)
-        } else {
-            if cursor + 2 > body.len() {
-                return Err(invalid_composite());
-            }
-            let a = i64::from(body[cursor]);
-            let b = i64::from(body[cursor + 1]);
-            cursor += 2;
-            (a, b)
         };
-
         let mut transform = FtMatrix::default();
         if (flags & WE_HAVE_A_SCALE) != 0 {
-            if cursor + 2 > body.len() {
-                return Err(invalid_composite());
-            }
-            let s = i64::from(i16::from_be_bytes([body[cursor], body[cursor + 1]])) * 4;
-            cursor += 2;
+            let s = rd_i16(&mut c)? * 4;
             transform.xx = s;
             transform.yy = s;
         } else if (flags & WE_HAVE_AN_XY_SCALE) != 0 {
-            if cursor + 4 > body.len() {
-                return Err(invalid_composite());
-            }
-            transform.xx = i64::from(i16::from_be_bytes([body[cursor], body[cursor + 1]])) * 4;
-            transform.yy = i64::from(i16::from_be_bytes([body[cursor + 2], body[cursor + 3]])) * 4;
-            cursor += 4;
+            transform.xx = rd_i16(&mut c)? * 4;
+            transform.yy = rd_i16(&mut c)? * 4;
         } else if (flags & WE_HAVE_A_2X2) != 0 {
-            if cursor + 8 > body.len() {
-                return Err(invalid_composite());
-            }
-            transform.xx = i64::from(i16::from_be_bytes([body[cursor], body[cursor + 1]])) * 4;
-            transform.yx = i64::from(i16::from_be_bytes([body[cursor + 2], body[cursor + 3]])) * 4;
-            transform.xy = i64::from(i16::from_be_bytes([body[cursor + 4], body[cursor + 5]])) * 4;
-            transform.yy = i64::from(i16::from_be_bytes([body[cursor + 6], body[cursor + 7]])) * 4;
-            cursor += 8;
+            transform.xx = rd_i16(&mut c)? * 4;
+            transform.yx = rd_i16(&mut c)? * 4;
+            transform.xy = rd_i16(&mut c)? * 4;
+            transform.yy = rd_i16(&mut c)? * 4;
         }
-
         out.push(SubGlyph {
             flags,
             index,
@@ -664,85 +722,4 @@ fn parse_subglyphs(body: &[u8], num_glyphs: u64) -> Result<Vec<SubGlyph>, CoreEr
         }
     }
     Ok(out)
-}
-
-fn select_asc_desc(
-    data: &[u8],
-    dir: &BTreeMap<String, (u64, u64)>,
-    hhea_asc: i16,
-    hhea_desc: i16,
-) -> Result<(i64, i64), CoreError> {
-    if let Some(&(os2_at, os2_len)) = dir.get("OS/2")
-        && os2_len >= 78
-    {
-        let fs_sel = be_u16(data, os2_at + 62)?;
-        let typo_asc = be_i16(data, os2_at + 68)?;
-        let typo_desc = be_i16(data, os2_at + 70)?;
-        let win_asc = be_u16(data, os2_at + 74)?;
-        let win_desc = be_u16(data, os2_at + 76)?;
-        if (fs_sel & OS2_FLAG_USE_TYPO_METRICS) != 0 {
-            return Ok((i64::from(typo_asc), i64::from(typo_desc)));
-        }
-        if hhea_asc != 0 || hhea_desc != 0 {
-            return Ok((i64::from(hhea_asc), i64::from(hhea_desc)));
-        }
-        if typo_asc != 0 || typo_desc != 0 {
-            return Ok((i64::from(typo_asc), i64::from(typo_desc)));
-        }
-        return Ok((i64::from(win_asc), -i64::from(win_desc)));
-    }
-    Ok((i64::from(hhea_asc), i64::from(hhea_desc)))
-}
-
-fn table_directory(data: &[u8]) -> Result<BTreeMap<String, (u64, u64)>, CoreError> {
-    let count = u64::from(be_u16(data, 4)?);
-    let mut out = BTreeMap::new();
-    for i in 0..count {
-        let at = 12 + 16 * i;
-        let tag = read_exact(data, at, 4)?;
-        let mut name = String::with_capacity(4);
-        for &byte in tag {
-            name.push(char::from(byte));
-        }
-        let offset = u64::from(be_u32(data, at + 8)?);
-        let length = u64::from(be_u32(data, at + 12)?);
-        out.insert(name, (offset, length));
-    }
-    Ok(out)
-}
-
-fn table_span(dir: &BTreeMap<String, (u64, u64)>, name: &str) -> Result<(u64, u64), CoreError> {
-    dir.get(name)
-        .copied()
-        .ok_or_else(|| CoreError::new("key_error", format!("'{name}'")))
-}
-
-fn invalid_outline() -> CoreError {
-    CoreError::new("value_error", "invalid TrueType glyph outline")
-}
-
-fn invalid_composite() -> CoreError {
-    CoreError::new("value_error", "invalid TrueType composite glyph")
-}
-
-fn read_exact(data: &[u8], at: u64, n: u64) -> Result<&[u8], CoreError> {
-    let start = usize::try_from(at).map_err(|_| invalid_outline())?;
-    let len = usize::try_from(n).map_err(|_| invalid_outline())?;
-    let end = start.checked_add(len).ok_or_else(invalid_outline)?;
-    data.get(start..end).ok_or_else(invalid_outline)
-}
-
-fn be_u16(data: &[u8], at: u64) -> Result<u16, CoreError> {
-    let b = read_exact(data, at, 2)?;
-    Ok(u16::from_be_bytes([b[0], b[1]]))
-}
-
-fn be_i16(data: &[u8], at: u64) -> Result<i16, CoreError> {
-    let b = read_exact(data, at, 2)?;
-    Ok(i16::from_be_bytes([b[0], b[1]]))
-}
-
-fn be_u32(data: &[u8], at: u64) -> Result<u32, CoreError> {
-    let b = read_exact(data, at, 4)?;
-    Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }

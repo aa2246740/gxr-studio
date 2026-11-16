@@ -164,13 +164,11 @@ fn render_bitmap_into_mask(
     })
 }
 
-/// Port of Pillow `_imagingft.c` (`text_layout_fallback` + `bounding_box_and_anchors` + `font_render`)
-/// for a single character, horizontal BASIC layout, `anchor="la"`, `mode="L"`.
-pub fn render_char_mask(
+fn render_char_mask_tracked(
     face: &FontFace<'_>,
     px: u32,
     ch: char,
-) -> Result<RenderedCharMask, CoreError> {
+) -> Result<(RenderedCharMask, bool), CoreError> {
     let metrics = SizeMetrics::from_pixel_size(face, px)?;
     let glyph = face.load_char(&metrics, ch)?;
     let bbox_px = if glyph.outline.points.is_empty() {
@@ -181,7 +179,18 @@ pub fn render_char_mask(
     let advanced_px = pixel_26_6(glyph.hori_advance);
     let ascender_px = pixel_26_6(metrics.root_ascender);
     let bitmap = render_glyph_bitmap(&glyph.outline, Some((metrics.x_ppem, metrics.y_ppem)))?;
-    render_bitmap_into_mask(&bitmap, bbox_px, advanced_px, ascender_px)
+    let mask = render_bitmap_into_mask(&bitmap, bbox_px, advanced_px, ascender_px)?;
+    Ok((mask, glyph.hinted))
+}
+
+/// Port of Pillow `_imagingft.c` (`text_layout_fallback` + `bounding_box_and_anchors` + `font_render`)
+/// for a single character, horizontal BASIC layout, `anchor="la"`, `mode="L"`.
+pub fn render_char_mask(
+    face: &FontFace<'_>,
+    px: u32,
+    ch: char,
+) -> Result<RenderedCharMask, CoreError> {
+    Ok(render_char_mask_tracked(face, px, ch)?.0)
 }
 
 /// Port of Pillow `Paste.c` `fill_mask_L` (`ImageDraw.draw_bitmap((x + x_off, y + y_off), mask, ink)`).
@@ -283,6 +292,21 @@ pub fn blend_mask_onto(
     Ok(())
 }
 
+/// Like [`draw_char`], also reporting whether the glyph used hinting/auto-hinter/CFF.
+pub fn draw_char_tracked(
+    canvas: &mut CanvasMut<'_>,
+    face: &FontFace<'_>,
+    px: u32,
+    ch: char,
+    x: i64,
+    y: i64,
+    fill: [u8; 4],
+) -> Result<bool, CoreError> {
+    let (mask, hinted) = render_char_mask_tracked(face, px, ch)?;
+    blend_mask_onto(canvas, x, y, &mask, fill)?;
+    Ok(hinted)
+}
+
 /// Port of Pillow `ImageDraw.text((x, y), ch, font=..., fill=...)` for one char (`anchor="la"`).
 pub fn draw_char(
     canvas: &mut CanvasMut<'_>,
@@ -293,11 +317,11 @@ pub fn draw_char(
     y: i64,
     fill: [u8; 4],
 ) -> Result<(), CoreError> {
-    let mask = render_char_mask(face, px, ch)?;
-    blend_mask_onto(canvas, x, y, &mask, fill)
+    let _ = draw_char_tracked(canvas, face, px, ch, x, y, fill)?;
+    Ok(())
 }
 
-fn unpack_font_pack<'a>(
+pub(crate) fn unpack_font_pack<'a>(
     index_json: &str,
     blob: &'a [u8],
 ) -> Result<BTreeMap<String, &'a [u8]>, CoreError> {
@@ -346,7 +370,7 @@ fn unpack_font_pack<'a>(
     Ok(map)
 }
 
-fn val_i64(v: &Val, field: &str) -> Result<i64, CoreError> {
+pub(crate) fn val_i64(v: &Val, field: &str) -> Result<i64, CoreError> {
     match v {
         Val::Int(n) => Ok(*n),
         _ => Err(CoreError::new(
@@ -356,7 +380,7 @@ fn val_i64(v: &Val, field: &str) -> Result<i64, CoreError> {
     }
 }
 
-fn val_str<'a>(v: &'a Val, field: &str) -> Result<&'a str, CoreError> {
+pub(crate) fn val_str<'a>(v: &'a Val, field: &str) -> Result<&'a str, CoreError> {
     match v {
         Val::Str(s) => Ok(s.as_str()),
         _ => Err(CoreError::new(

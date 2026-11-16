@@ -12,6 +12,9 @@ use gxr_frame::Fonts;
 use gxr_raw::Json;
 use gxr_raw::sha256::sha256_hex;
 
+#[path = "cmd_export_ink.rs"]
+mod cmd_export_ink;
+
 use crate::common::{self, Failure, Output};
 
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
@@ -24,6 +27,7 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
 fn run_pipeline(command: &str, args: &[String]) -> Result<Output, Failure> {
     let result = match command {
         "export-run-complete" => cmd_complete(args)?,
+        "export-run-ink" => cmd_export_ink::cmd_ink(args)?,
         "export-run-plan" => cmd_plan(args)?,
         "export-run-prepare" => cmd_prepare(args)?,
         "export-run-sizes" => cmd_sizes(args)?,

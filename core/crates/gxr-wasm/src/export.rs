@@ -11,7 +11,7 @@ use gxr_export::meta::{
     DEFAULT_NOW_YEAR, dng_preview_location, photo_meta_from_bytes, read_source_exif,
 };
 use gxr_export::pipeline::api::{self, Picture, PrepareArgs, SizesArgs, SourceFiles};
-use gxr_export::pipeline::{ExportFail, ExportOpts};
+use gxr_export::pipeline::{self, ExportFail, ExportOpts};
 use gxr_export::source::pack_from_index;
 use gxr_frame::{Fonts, fonts_from_pack};
 use gxr_raw::sha256::sha256_hex;
@@ -84,6 +84,108 @@ impl ExportCompleted {
     pub fn json(&self) -> String {
         self.json.clone()
     }
+}
+
+/// Inked export canvas and HDR photo-stamp mask returned by [`export_ink`].
+#[wasm_bindgen]
+pub struct ExportInked {
+    width: f64,
+    height: f64,
+    mask_width: f64,
+    mask_height: f64,
+    exact: bool,
+    canvas: Vec<u8>,
+    stamp_mask: Vec<u8>,
+    json: String,
+}
+
+#[wasm_bindgen]
+impl ExportInked {
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> f64 {
+        self.width
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> f64 {
+        self.height
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn mask_width(&self) -> f64 {
+        self.mask_width
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn mask_height(&self) -> f64 {
+        self.mask_height
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn exact(&self) -> bool {
+        self.exact
+    }
+
+    pub fn json(&self) -> String {
+        self.json.clone()
+    }
+
+    /// Move out the inked RGB canvas (`height * width * 3`) without cloning.
+    pub fn canvas(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.canvas)
+    }
+
+    /// Move out the HDR photo-stamp mask (`mask_height * mask_width`), empty when unneeded.
+    pub fn stamp_mask(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.stamp_mask)
+    }
+}
+
+/// Apply frame backdrop/items, stamp, and HDR stamp mask to the canvas from `export_prepare`.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn export_ink(
+    canvas: Vec<u8>,
+    width: f64,
+    height: f64,
+    prepared_json: &str,
+    font_index: &str,
+    font_pack: &[u8],
+    logo_index: &str,
+    logo_blob: &[u8],
+) -> Result<ExportInked, JsValue> {
+    let inked = pipeline::export_ink(
+        canvas,
+        width,
+        height,
+        prepared_json.as_bytes(),
+        font_index,
+        font_pack,
+        logo_index,
+        logo_blob,
+    )
+    .map_err(rejected)?;
+    let json = format!(
+        "{}\n",
+        Json::object([
+            ("width", Json::Int(inked.width as i64)),
+            ("height", Json::Int(inked.height as i64)),
+            ("mask_width", Json::Int(inked.mask_width as i64)),
+            ("mask_height", Json::Int(inked.mask_height as i64)),
+            ("exact", Json::Bool(inked.exact)),
+        ])
+        .render()
+    );
+    Ok(ExportInked {
+        width: inked.width as f64,
+        height: inked.height as f64,
+        mask_width: inked.mask_width as f64,
+        mask_height: inked.mask_height as f64,
+        exact: inked.exact,
+        canvas: inked.canvas,
+        stamp_mask: inked.stamp_mask,
+        json,
+    })
 }
 
 /// `serve._plan`: `{"original": true}` when the export is the untouched camera JPG, so the

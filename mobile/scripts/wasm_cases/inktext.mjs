@@ -45,6 +45,18 @@ export function cases(inputs) {
   for (const file of inputs) {
     const spec = JSON.parse(readFileSync(file, 'utf8'));
     const idx = out.length;
+    const fontArgs = (spec.fonts || []).flatMap(([name, path]) => ['--font', `${name}=${path}`]);
+    if (spec.kind === 'mark') {
+      out.push({
+        label: `${file}::gxr_mark`,
+        cliArgs: ['inktext-mark', ...fontArgs],
+        wasm: (mod) => {
+          const faces = pack(spec.fonts);
+          return mod.gxr_mark(faces.index, faces.bytes);
+        },
+      });
+      continue;
+    }
     const outNpy = join(dir, `draw-${idx}.npy`);
     const outRep = join(dir, `draw-rep-${idx}.npy`);
     const opsText = typeof spec.ops === 'string' ? spec.ops : JSON.stringify(spec.ops ?? []);
@@ -54,7 +66,6 @@ export function cases(inputs) {
     const h = jsNum(spec.h);
     const cliW = spec.cliW ?? w;
     const cliH = spec.cliH ?? h;
-    const fontArgs = (spec.fonts || []).flatMap(([name, path]) => ['--font', `${name}=${path}`]);
     const baseArgs = ['inktext-draw', '--in', spec.npy, '--mode', spec.mode, '--ops', opsPath, ...fontArgs];
     if (spec.overrideDims) {
       baseArgs.push('--w', String(cliW), '--h', String(cliH));

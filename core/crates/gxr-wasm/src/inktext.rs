@@ -2,7 +2,7 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_finish::inktext_draw_u64;
+use gxr_finish::{gxr_mark_json, inktext_draw_u64};
 use gxr_raw::{CoreError, error_json};
 
 fn rejected(err: CoreError) -> JsValue {
@@ -90,6 +90,13 @@ pub fn inktext_draw(
         pixels: res.pixels,
         report,
     })
+}
+
+/// Built-in `"GXR"` mark metrics `{"w", "h", "ink_top", "ink_bottom"}` matching `gxr-frame`.
+#[wasm_bindgen]
+pub fn gxr_mark(font_index_json: &str, fonts: &[u8]) -> Result<String, JsValue> {
+    let json = gxr_mark_json(font_index_json, fonts).map_err(rejected)?;
+    Ok(format!("{}\n", json.render()))
 }
 
 #[cfg(test)]

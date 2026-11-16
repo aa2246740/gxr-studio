@@ -15,6 +15,14 @@ use gxr_raw::CoreError;
 /// 16.16 fixed point, as CFF and FreeType store coordinates.
 pub type Fixed = i64;
 
+/// A contour segment from a Type 2 charstring in absolute 16.16 font coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CffSeg {
+    Move(Fixed, Fixed),
+    Line(Fixed, Fixed),
+    Curve([Fixed; 6]),
+}
+
 const ONE: Fixed = 65536;
 const MAX_STACK: usize = 48;
 const MAX_SUBR_DEPTH: usize = 10;
@@ -300,9 +308,17 @@ impl Cff {
         })
     }
 
-    /// Control box `(x_min, y_min, x_max, y_max)` of glyph `gid` in 16.16 font units, or
-    /// `None` when the glyph draws nothing.
-    pub fn control_box(&self, gid: usize) -> Result<Option<[Fixed; 4]>, CoreError> {
+    /// Number of charstring glyphs in the CFF INDEX.
+    #[must_use]
+    pub fn num_glyphs(&self) -> usize {
+        self.charstrings.len()
+    }
+
+    fn exec_glyph(
+        &self,
+        gid: usize,
+        segs: Option<&mut Vec<CffSeg>>,
+    ) -> Result<Option<[Fixed; 4]>, CoreError> {
         let (start, end) = self
             .charstrings
             .get(gid)
@@ -320,15 +336,29 @@ impl Cff {
             y: 0,
             open: None,
             bbox: None,
+            segs,
             ops: 0,
             done: false,
         };
         run.exec(start, end, 0)?;
         Ok(run.bbox)
     }
+
+    /// Control box `(x_min, y_min, x_max, y_max)` of glyph `gid` in 16.16 font units, or
+    /// `None` when the glyph draws nothing.
+    pub fn control_box(&self, gid: usize) -> Result<Option<[Fixed; 4]>, CoreError> {
+        self.exec_glyph(gid, None)
+    }
+
+    /// Contour segments of glyph `gid` in absolute 16.16 font coordinates.
+    pub fn segments(&self, gid: usize) -> Result<Vec<CffSeg>, CoreError> {
+        let mut segs = Vec::new();
+        let _ = self.exec_glyph(gid, Some(&mut segs))?;
+        Ok(segs)
+    }
 }
 
-struct Run<'a> {
+struct Run<'a, 'b> {
     cff: &'a Cff,
     local: &'a Index,
     stack: Vec<Fixed>,
@@ -339,6 +369,7 @@ struct Run<'a> {
     /// Start of the current contour, until its first segment adds it.
     open: Option<(Fixed, Fixed)>,
     bbox: Option<[Fixed; 4]>,
+    segs: Option<&'b mut Vec<CffSeg>>,
     ops: usize,
     done: bool,
 }
@@ -353,7 +384,7 @@ fn bias(count: usize) -> i64 {
     }
 }
 
-impl Run<'_> {
+impl Run<'_, '_> {
     fn add(&mut self, x: Fixed, y: Fixed) {
         self.bbox = Some(match self.bbox {
             None => [x, y, x, y],
@@ -364,6 +395,9 @@ impl Run<'_> {
     fn begin_segment(&mut self) {
         if let Some((x, y)) = self.open.take() {
             self.add(x, y);
+            if let Some(segs) = self.segs.as_deref_mut() {
+                segs.push(CffSeg::Move(x, y));
+            }
         }
     }
 
@@ -378,6 +412,9 @@ impl Run<'_> {
         self.x += dx;
         self.y += dy;
         self.add(self.x, self.y);
+        if let Some(segs) = self.segs.as_deref_mut() {
+            segs.push(CffSeg::Line(self.x, self.y));
+        }
     }
 
     fn curve(&mut self, d: [Fixed; 6]) {
@@ -390,6 +427,9 @@ impl Run<'_> {
         self.add(x3, y3);
         self.x = x3;
         self.y = y3;
+        if let Some(segs) = self.segs.as_deref_mut() {
+            segs.push(CffSeg::Curve([x1, y1, x2, y2, x3, y3]));
+        }
     }
 
     /// Drop the optional leading width argument the first stack-clearing operator may carry.

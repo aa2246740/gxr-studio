@@ -21,9 +21,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from gxr_studio.finish.fonts import FONT_FILES
+from support.export_pipeline_cases import check
 from support.ink_text_cases import (
     DRAWABLE_CHARS,
     GATE_B_COVERAGE_RATIO_GE_16,
@@ -73,27 +72,20 @@ def measure_gate_b_for_font(
 
         # 1. Attribution: Gate A must be exact for this exact (font, px, ch)
         pil_dh = pillow_mask(pil_dh_faces[px], ch)
-        if (dhw, dhh, dhx, dhy, dhbuf) != pil_dh:
-            pytest.fail(
-                f"Gate B unattributed difference font={font_name} px={px} ch={ch!r}",
-            )
+        check((dhw, dhh, dhx, dhy, dhbuf) == pil_dh, "gate B unattributed difference")
 
         diff_px, max_d, box_rs, box_py, rs_sum, py_sum = compare_masks_common_space(rs_mask, pil_real)
         # 2. Exact ink presence
-        assert (box_rs is None) == (box_py is None), f"ink presence mismatch {font_name} px={px} ch={ch!r}"
+        check((box_rs is None) == (box_py is None), "gate B ink presence mismatch")
         if box_rs is not None and box_py is not None:
             d_l = box_rs[0] - box_py[0]
             d_t = box_rs[1] - box_py[1]
             d_r = box_rs[2] - box_py[2]
             d_b = box_rs[3] - box_py[3]
             # 3. Horizontal edges <= 1 px
-            assert max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND, (
-                f"horizontal bbox edge shifted > {GATE_B_HORIZ_EDGE_BOUND} px font={font_name} px={px} ch={ch!r} deltas={(d_l, d_t, d_r, d_b)}"
-            )
+            check(max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND, "gate B horiz bbox edge exceeded")
             # 4. Vertical edges <= per-font bound
-            assert max(abs(d_t), abs(d_b)) <= max_vert_edge, (
-                f"vertical bbox edge exceeded {max_vert_edge} px font={font_name} px={px} ch={ch!r} deltas={(d_l, d_t, d_r, d_b)}"
-            )
+            check(max(abs(d_t), abs(d_b)) <= max_vert_edge, "gate B vert bbox edge exceeded")
         else:
             d_l = d_t = d_r = d_b = 0
 
@@ -101,15 +93,9 @@ def measure_gate_b_for_font(
         if py_sum > 0:
             ratio = rs_sum / py_sum
             if px >= 16:
-                assert ratio_lo <= ratio <= ratio_hi, (
-                    f"Gate B coverage ratio out of [{ratio_lo}, {ratio_hi}] "
-                    f"font={font_name} px={px} ch={ch!r}: ratio={ratio:.4f} ({rs_sum}/{py_sum})"
-                )
+                check(ratio_lo <= ratio <= ratio_hi, "gate B coverage ratio ge 16 out of bounds")
             elif min(rs_sum, py_sum) >= GATE_B_SMALL_PX_MIN_SUM:
-                assert sm_lo <= ratio <= sm_hi, (
-                    f"Gate B small-px coverage ratio out of [{sm_lo}, {sm_hi}] "
-                    f"font={font_name} px={px} ch={ch!r}: ratio={ratio:.4f} ({rs_sum}/{py_sum})"
-                )
+                check(sm_lo <= ratio <= sm_hi, "gate B small-px coverage ratio out of bounds")
 
         diffs.append(
             DiffRecord(
@@ -173,4 +159,4 @@ def test_gate_b_real_fonts_attributed_and_bounded(tmp_path: Path) -> None:
             )
             total_diffs += len(diffs)
 
-    assert total_diffs > 0
+    check(total_diffs > 0, "gate B total diffs must be positive")

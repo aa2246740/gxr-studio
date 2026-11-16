@@ -569,3 +569,21 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
   - `blur_fill` 模糊背景（`sigma=686, sat=1.15, veil=0.9`）：`4288×2848` 输出用时 WASM 605.8 ms，WASM 线性内存高水位 115.9 MiB；`original` 比例完整画布（`4658×3515`）WASM 684.4 ms，高水位 149.7 MiB。
   - `paper_grain`（`4288×2848` 经 `frame_layout` 产生的最大含颗粒画布 `darkroom` `9:16` `thin` = `5166×9184`，`amount=0.016`）：`run_ink_ops_vec` 接管画布所有权并走 `paper_grain_in_place` 原地加噪（无第 2 份全画布拷贝，只保留单份 `(h, w)` `float32` `fine` 平面），WASM 1746.9 ms，WASM 线性内存高水位 373.1 MiB。
 
+## 文字与成片着墨（`gxr-finish::ink_text`，命令前缀 `inktext-`）
+
+移植 FreeType 2.14.3 轮廓光栅化（`glyf` + CFF Type 2 + `ftgrays.c` 平滑灰度光栅化器）与 Pillow 12.2.0 / `finish` 文字、日期戳与完整边框着墨：`ink_text/ftcalc.rs`、`ink_text/glyf.rs` + `glyf_sfnt.rs`、`ink_text/cff_outline.rs`、`ink_text/gray.rs` + `gray_worker.rs`、`ink_text/text.rs`、`ink_text/run.rs`（`draw_text_item` / `draw_run` / `text_ink`）、`ink_text/mark.rs`（`gxr_mark` 用内嵌 `atkinson` 量 `GXR` 标志并 `paint_logo_item` 原位绘制）、`ink_text/stamp.rs`（`apply_stamp` + `stamp_hdr_mask`）、`ink_text/frame.rs`（`draw_frame`）以及 `gxr-export::pipeline::ink`（`export_ink` 衔接 `export_prepare` 与 `export_complete`）。
+
+- **CLI 子命令**：`cmd_inktext.rs` 提供 `inktext-draw`、`inktext-batch`、`inktext-run`、`inktext-mark`、`inktext-stamp`、`inktext-frame`；`cmd_export.rs` 提供 `export-run-ink`（含 `--stamp-mask-out` 输出 HDR `stamp_hdr_mask` 与 `--logo ID=PATH` 自定义标志）。
+- **WASM 导出**：`gxr-wasm/src/inktext.rs` 导出 `inktext_draw` 与 `gxr_mark`；`gxr-wasm/src/export.rs` 导出 `export_ink(canvas, width, height, prepared_json, font_index, font_pack, logo_index, logo_blob) -> ExportInked`（含 `width`、`height`、`mask_width`、`mask_height`、`exact`、`json()` 与零拷贝 `canvas()` / `stamp_mask()`）。全部宽高由 `f64` 校验为有限正整数，JSON 维持 128 层 / 4 MiB 上限，支持 `u64` 边界并统一回 `too_big()` / `value_error`。
+- **Gate A / Gate B 与字形微调规则（`tests/test_core_parity_ink_text*.py`）**：
+  - 去除字体 `hinting`（`fpgm` / `prep` / `cvt` / `glyf` 指令）的 TTF / OTF 字体下，**Gate A** 要求单字掩码、`draw_run`、`stamp`、`13` 种 `FRAME_STYLES`、自定义与内置 `GXR` 标志以及 `export-run-prepare -> export-run-ink -> export-run-complete` 与 Pillow 12.2.0 全链路 **0 像素差**，写入相同固定 ICC 与 EXIF 后的 JPEG 也与桌面逐字节相同。
+  - 原版带微调字体在手机无字节码解释器时的差异走 **Gate B**（`tests/test_core_parity_ink_text_gate_b.py`）：按字体族锁定有界边框（竖向 `atkinson`/`inter`/`inter_sb`/`courier` ≤ 2 px、`patrick` ≤ 3 px、`dseg` ≤ 4 px；水平 ≤ 1 px；≥ 16 px 与小字号覆墨率区间）并输出实测报表。
+- **4288×2848 WASM 端到端实测（`export_prepare -> export_ink -> export_complete`，各自独立新 WASM 实例，原生字节码，标准 7 字体包）**：
+  - **SDR**（上限 `<= 512 MiB`）：
+    - `gallery` + `seg7` 戳（`4630×3233`）：prepare 62.9 ms，ink 57.6 ms，complete 1186.7 ms，线性内存高水位 **143.1 MiB**；
+    - `leica` + 内置 `GXR` 标志 + 戳（`4875×6500`）：prepare 88.4 ms，ink 94.3 ms，complete 2376.7 ms，高水位 **233.8 MiB**；
+    - `blur_fill` + 模糊背景 + `sans` 戳（`4658×3403`）：prepare 51.8 ms，ink 968.5 ms，complete 1130.2 ms，高水位 **158.2 MiB**；
+    - `darkroom` `9:16` `thin` 最大含颗粒画布 + `typewriter` 戳（`5166×9184`）：prepare 40.9 ms，ink 2314.5 ms，complete 3236.1 ms，高水位 **459.8 MiB**。
+  - **HDR**（上限 `<= 768 MiB`，含 `4288×2848` `stamp_hdr_mask`、`hdr_layer` `(2848, 4288, 2)` 与 Ultra HDR 封装）：
+    - `gallery` HDR + 照片戳（`4630×3233`，掩码 `4288×2848`）：prepare 66.1 ms，ink 88.6 ms，complete 1966.8 ms，高水位 **634.0 MiB**；
+    - `blur_fill` HDR + 照片戳（`4658×3403`，掩码 `4288×2848`）：prepare 97.9 ms，ink 807.6 ms，complete 1926.3 ms，高水位 **639.7 MiB**。

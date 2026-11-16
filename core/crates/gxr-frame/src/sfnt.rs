@@ -211,7 +211,7 @@ pub(crate) fn table_at(
 /// Port of `gxr_studio/finish/sfnt.py:60` `_cmap`.
 ///
 /// Values are glyph ids, including 0. `read_font` drops id 0 and ids past `maxp`.
-pub(crate) fn cmap(data: &[u8], offset: u64) -> Result<BTreeMap<u32, u64>, CoreError> {
+pub fn cmap(data: &[u8], offset: u64) -> Result<BTreeMap<u32, u64>, CoreError> {
     let count = u64::from(be_u16(data, offset + 2)?);
     let mut subtables = Vec::new();
     for i in 0..count {

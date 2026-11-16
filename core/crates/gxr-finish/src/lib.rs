@@ -14,6 +14,10 @@ pub mod resample;
 
 pub use geometry::{Geometry, parse_geometry, warp, warp_u64, warp_valid, warp_valid_u64};
 pub use gpu_box::{final_box, final_box_json, final_box_json_u64, final_box_u64};
+pub use ink_text::frame::{draw_frame, inktext_frame_u64};
+pub use ink_text::mark::{GxrMark, gxr_mark, gxr_mark_json, paint_logo_item, paint_logo_with_mark};
+pub use ink_text::run::{FontPack, draw_run, draw_text_item, inktext_run_u64, text_ink};
+pub use ink_text::stamp::{apply_stamp, inktext_stamp_u64, stamp_hdr_mask};
 pub use ink_text::text::{inktext_batch_masks, inktext_draw_u64};
 pub use raster::{
     FinishAdjust, FinishOptions, FinishUnframed, FrameCanvas, LogoKeyResult, apply_base,

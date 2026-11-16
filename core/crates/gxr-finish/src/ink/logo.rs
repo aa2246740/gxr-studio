@@ -4,11 +4,13 @@
 use gxr_frame::LogoInfo;
 use gxr_raw::{CoreError, Json};
 
+use crate::geometry::bounds::{checked_add_u64, checked_mul_u64, fit_count};
 use crate::geometry::json::{JsonValue, parse_json};
 use crate::ink::draw::bad_coords;
 use crate::ink::image::{InkImage, InkMode, bad_mismatch, mean_u8_as_f32};
 use crate::ink::ops::LogoInput;
 use crate::ink::paste::paste_image;
+use crate::raster::bounds::checked_rgba_slice;
 use crate::raster::logo::{KeyMode, alpha_luma, prepare_logo_key, stats_of};
 use crate::resample::{Filter, Mode, resample_u8_u64};
 
@@ -329,4 +331,131 @@ pub fn parse_logo_prepare_json(key_json: &str) -> Result<LogoPrepareOptions, Cor
         id,
         name,
     })
+}
+
+/// Parse `logo_index_json` + `logo_blob` into [`LogoInput`]s.
+///
+/// Supports:
+/// - `[[id, w, h], ...]` sequential tightly packed RGBA slices consuming the whole `logo_blob`
+/// - `[{id, w, h, offset, len}, ...]` explicit slice offsets
+/// - `{id: {w, h, offset, len}, ...}` map form
+pub fn decode_logo_bundle(
+    logo_index_json: &str,
+    logo_blob: &[u8],
+) -> Result<Vec<LogoInput>, CoreError> {
+    let trimmed = logo_index_json.trim();
+    if trimmed.is_empty() || trimmed == "[]" || trimmed == "{}" {
+        return Ok(Vec::new());
+    }
+    let parsed = parse_json(trimmed, "bad_request", "标志索引格式不对。")?;
+    let mut out = Vec::new();
+    if let JsonValue::Array(arr) = &parsed
+        && arr
+            .first()
+            .is_some_and(|v| matches!(v, JsonValue::Array(_)))
+    {
+        let mut cursor = 0_usize;
+        for item in arr {
+            let JsonValue::Array(tuple) = item else {
+                return Err(bad_logo_opts("logo tuple entry must be [id, w, h]"));
+            };
+            if tuple.len() != 3 {
+                return Err(bad_logo_opts("logo tuple entry must be [id, w, h]"));
+            }
+            let id = tuple[0]
+                .as_str()
+                .ok_or_else(|| bad_logo_opts("logo id must be string"))?;
+            let w = u64::try_from(
+                tuple[1]
+                    .as_strict_int()
+                    .ok_or_else(|| bad_logo_opts("logo w must be integer"))?,
+            )
+            .map_err(|_| bad_logo_opts("logo w invalid"))?;
+            let h = u64::try_from(
+                tuple[2]
+                    .as_strict_int()
+                    .ok_or_else(|| bad_logo_opts("logo h must be integer"))?,
+            )
+            .map_err(|_| bad_logo_opts("logo h invalid"))?;
+            let len = checked_mul_u64(checked_mul_u64(w, h)?, 4)?;
+            let end = checked_add_u64(cursor as u64, len)?;
+            if end > logo_blob.len() as u64 {
+                return Err(bad_logo_opts("logo slice out of bounds"));
+            }
+            let end_u = fit_count(end, 1)?;
+            let slice = &logo_blob[cursor..end_u];
+            let _ = checked_rgba_slice(slice, w, h)?;
+            let image = InkImage::from_bytes(InkMode::Rgba, w, h, slice)?;
+            out.push(LogoInput {
+                id: id.to_string(),
+                image,
+            });
+            cursor = end_u;
+        }
+        if cursor != logo_blob.len() {
+            return Err(bad_logo_opts("logo blob trailing bytes"));
+        }
+        return Ok(out);
+    }
+
+    let entries: Vec<(&str, &JsonValue)> = match &parsed {
+        JsonValue::Array(arr) => {
+            let mut v = Vec::with_capacity(arr.len());
+            for item in arr {
+                let id = item
+                    .get("id")
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| bad_logo_opts("logo id must be string"))?;
+                v.push((id, item));
+            }
+            v
+        }
+        JsonValue::Object(pairs) => pairs.iter().map(|(k, v)| (k.as_str(), v)).collect(),
+        _ => return Err(bad_logo_opts("logo_index_json must be array or object")),
+    };
+
+    for (id, meta) in entries {
+        let w = u64::try_from(
+            meta.get("w")
+                .and_then(JsonValue::as_strict_int)
+                .ok_or_else(|| bad_logo_opts("logo w must be integer"))?,
+        )
+        .map_err(|_| bad_logo_opts("logo w invalid"))?;
+        let h = u64::try_from(
+            meta.get("h")
+                .and_then(JsonValue::as_strict_int)
+                .ok_or_else(|| bad_logo_opts("logo h must be integer"))?,
+        )
+        .map_err(|_| bad_logo_opts("logo h invalid"))?;
+        let offset = u64::try_from(
+            meta.get("offset")
+                .and_then(JsonValue::as_strict_int)
+                .ok_or_else(|| bad_logo_opts("logo offset must be integer"))?,
+        )
+        .map_err(|_| bad_logo_opts("logo offset invalid"))?;
+        let len = u64::try_from(
+            meta.get("len")
+                .and_then(JsonValue::as_strict_int)
+                .ok_or_else(|| bad_logo_opts("logo len must be integer"))?,
+        )
+        .map_err(|_| bad_logo_opts("logo len invalid"))?;
+        let end = checked_add_u64(offset, len)?;
+        if end > logo_blob.len() as u64 {
+            return Err(bad_logo_opts("logo slice out of bounds"));
+        }
+        let off_u = fit_count(offset, 1)?;
+        let end_u = fit_count(end, 1)?;
+        let slice = &logo_blob[off_u..end_u];
+        let _ = checked_rgba_slice(slice, w, h)?;
+        let expected_bytes = checked_mul_u64(checked_mul_u64(w, h)?, 4)?;
+        if len != expected_bytes {
+            return Err(bad_logo_opts("logo len does not match RGBA dimensions"));
+        }
+        let image = InkImage::from_bytes(InkMode::Rgba, w, h, slice)?;
+        out.push(LogoInput {
+            id: id.to_string(),
+            image,
+        });
+    }
+    Ok(out)
 }

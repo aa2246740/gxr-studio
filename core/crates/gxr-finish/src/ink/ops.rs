@@ -2,7 +2,6 @@
 
 use gxr_raw::CoreError;
 
-use crate::geometry::bounds::{checked_add_u64, checked_mul_u64, fit_count};
 use crate::geometry::json::{JsonValue, parse_json};
 use crate::ink::backdrop::{background, blurred_background, paper_grain_in_place};
 use crate::ink::blur::gaussian_blur;
@@ -11,12 +10,12 @@ use crate::ink::draw::{draw_line, draw_polygon, draw_rectangle};
 use crate::ink::draw_arc::draw_rounded_rectangle;
 use crate::ink::draw_ellipse::draw_ellipse;
 use crate::ink::image::{InkImage, InkMode};
+pub use crate::ink::logo::decode_logo_bundle;
 use crate::ink::logo::{ClogoItem, ClogoTrace, paint_clogo_traced};
 use crate::ink::paste::{paste_color, paste_image};
 use crate::ink::shapes::{
     RectItem, ShadowItem, paint_ellipse, paint_hole, paint_poly, paint_rect, paint_shadow,
 };
-use crate::raster::bounds::checked_rgba_slice;
 
 /// An RGBA logo input passed into [`run_ink_ops`].
 #[derive(Clone, Debug)]
@@ -156,60 +155,6 @@ fn parse_box4(val: &JsonValue, default_w: usize, default_h: usize) -> Result<[i6
         ]),
         _ => Err(bad_ops("box must have 2 or 4 integers")),
     }
-}
-
-/// Parse `logo_index_json` + `logo_blob` from WASM into [`LogoInput`]s.
-pub fn decode_logo_bundle(
-    logo_index_json: &str,
-    logo_blob: &[u8],
-) -> Result<Vec<LogoInput>, CoreError> {
-    let trimmed = logo_index_json.trim();
-    if trimmed.is_empty() || trimmed == "[]" || trimmed == "{}" {
-        return Ok(Vec::new());
-    }
-    let parsed = parse_json(trimmed, "bad_request", "标志索引格式不对。")?;
-    let mut out = Vec::new();
-    let entries: Vec<(&str, &JsonValue)> = match &parsed {
-        JsonValue::Array(arr) => {
-            let mut v = Vec::with_capacity(arr.len());
-            for item in arr {
-                let id = req_str(item, "id", "logo id must be string")?;
-                v.push((id, item));
-            }
-            v
-        }
-        JsonValue::Object(pairs) => pairs.iter().map(|(k, v)| (k.as_str(), v)).collect(),
-        _ => return Err(bad_ops("logo_index_json must be array or object")),
-    };
-
-    for (id, meta) in entries {
-        let w = u64::try_from(req_int(meta, "w", "logo w must be integer")?)
-            .map_err(|_| bad_ops("logo w invalid"))?;
-        let h = u64::try_from(req_int(meta, "h", "logo h must be integer")?)
-            .map_err(|_| bad_ops("logo h invalid"))?;
-        let offset = u64::try_from(req_int(meta, "offset", "logo offset must be integer")?)
-            .map_err(|_| bad_ops("logo offset invalid"))?;
-        let len = u64::try_from(req_int(meta, "len", "logo len must be integer")?)
-            .map_err(|_| bad_ops("logo len invalid"))?;
-        let end = checked_add_u64(offset, len)?;
-        if end > logo_blob.len() as u64 {
-            return Err(bad_ops("logo slice out of bounds"));
-        }
-        let off_u = fit_count(offset, 1)?;
-        let end_u = fit_count(end, 1)?;
-        let slice = &logo_blob[off_u..end_u];
-        let _ = checked_rgba_slice(slice, w, h)?;
-        let expected_bytes = checked_mul_u64(checked_mul_u64(w, h)?, 4)?;
-        if len != expected_bytes {
-            return Err(bad_ops("logo len does not match RGBA dimensions"));
-        }
-        let image = InkImage::from_bytes(InkMode::Rgba, w, h, slice)?;
-        out.push(LogoInput {
-            id: id.to_string(),
-            image,
-        });
-    }
-    Ok(out)
 }
 
 fn find_reg<'a>(regs: &'a [(String, InkImage)], name: &str) -> Result<&'a InkImage, CoreError> {

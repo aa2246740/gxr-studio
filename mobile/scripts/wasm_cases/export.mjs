@@ -104,6 +104,35 @@ function prepareArgs(c) {
   return args;
 }
 
+const logoArgs = (logos) => (logos || []).flatMap(([id, path]) => ['--logo', `${id}=${path}`]);
+
+function packLogos(logos) {
+  const index = [];
+  const parts = [];
+  for (const [id, path] of logos || []) {
+    const img = npy(path);
+    index.push([id, img.w, img.h]);
+    parts.push(img.data);
+  }
+  return { index: JSON.stringify(index), bytes: new Uint8Array(Buffer.concat(parts)) };
+}
+
+function inkArgs(c) {
+  const args = ['export-run-ink', '--canvas', c.canvas, '--prepared', c.prepared, ...sizeArgs(c), ...fontArgs(c.fonts), ...logoArgs(c.logos)];
+  if (c.mask_out) args.push('--stamp-mask-out', c.mask_out);
+  return args;
+}
+
+function inkCall(mod, c) {
+  const pic = npy(c.canvas);
+  const faces = pack(c.fonts);
+  const logos = packLogos(c.logos);
+  return mod.export_ink(
+    pic.data, c.w !== undefined ? num(c.w) : pic.w, c.h !== undefined ? num(c.h) : pic.h,
+    text(c.prepared), faces.index, faces.bytes, logos.index, logos.bytes,
+  );
+}
+
 function pipelineCases(inputs) {
   const out = [];
   for (const manifest of inputs) {
@@ -140,6 +169,40 @@ function pipelineCases(inputs) {
               const layer = p.hdr_layer();
               const shape = JSON.parse(p.json()).prepared.state.hdr.shape || [0, 0, 2];
               return framed(shape[0], shape[1], new Uint8Array(layer.buffer, layer.byteOffset, layer.byteLength));
+            },
+          });
+        }
+      } else if (c.kind === 'ink') {
+        out.push({
+          label: `${label}-json`,
+          cliArgs: [...inkArgs(c), '--out', `${c.out}.json.npy`],
+          wasm: (mod) => {
+            const r = inkCall(mod, c);
+            const j = r.json();
+            r.free();
+            return j;
+          },
+        });
+        out.push({
+          label: `${label}-canvas`,
+          cliArgs: [...inkArgs(c), '--out', `${c.out}.canvas.npy`],
+          wasm: (mod) => {
+            const r = inkCall(mod, c);
+            const buf = framed(r.height, r.width, r.canvas());
+            r.free();
+            return buf;
+          },
+        });
+        if (c.hdr) {
+          const maskPath = `${c.out}.mask.npy`;
+          out.push({
+            label: `${label}-mask`,
+            cliArgs: [...inkArgs({ ...c, mask_out: maskPath }), '--out', `${c.out}.mc.npy`, '--out', maskPath],
+            wasm: (mod) => {
+              const r = inkCall(mod, c);
+              const buf = framed(r.mask_height, r.mask_width, r.stamp_mask());
+              r.free();
+              return buf;
             },
           });
         }
@@ -274,7 +337,7 @@ function metaCases(inputs) {
   return out;
 }
 
-const PIPELINE_KINDS = new Set(['plan', 'prepare', 'complete', 'sizes']);
+const PIPELINE_KINDS = new Set(['plan', 'prepare', 'ink', 'complete', 'sizes']);
 
 // A manifest whose cases are all pipeline kinds goes to the pipeline cases; anything else
 // (meta manifests, photo paths) to export-meta's.

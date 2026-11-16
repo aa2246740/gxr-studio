@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw
 
 from gxr_studio.finish.fonts import FONT_FILES
 from support.core_cli import error_of, run_json, run_npy
+from support.export_pipeline_cases import check, same_pixels
 from support.ink_text_cases import (
     DRAWABLE_CHARS,
     LARGE_PX_CHARS,
@@ -55,7 +56,7 @@ def test_dehint_negative_control_proves_native_loader(tmp_path: Path) -> None:
             for ch in "ABeg08":
                 if pillow_mask(f_native, ch) != pillow_mask(f_auto, ch):
                     changed += 1
-    assert changed >= 20, f"expected auto-hinter negative control to differ, got {changed}"
+    check(changed >= 20, "expected auto-hinter negative control to differ")
 
     # DSEG7 proof: unmodified DSEG7 == zero_maxp autohinted DSEG7, while fpgm=b'\x00' stays native.
     real_dseg = font_path("dseg")
@@ -71,12 +72,12 @@ def test_dehint_negative_control_proves_native_loader(tmp_path: Path) -> None:
                 dseg_same_as_auto += 1
             if m_real != pillow_mask(f_native, ch):
                 dseg_diff_from_native += 1
-    assert dseg_same_as_auto == 45
-    assert dseg_diff_from_native == 45
+    check(dseg_same_as_auto == 45, "dseg real vs autohint count")
+    check(dseg_diff_from_native == 45, "dseg real vs native count")
 
 
 def _assert_batch_exact(
-    font_name: str,
+    _font_name: str,
     path: Path,
     pxs: list[int],
     chars: tuple[str, ...],
@@ -88,15 +89,7 @@ def _assert_batch_exact(
     for px, cp, rw, rh, rx, ry, rbuf in rs_items:
         ch = chr(cp)
         pw, ph, px_off, py_off, pbuf = pillow_mask(faces[px], ch)
-        if (rw, rh, rx, ry, rbuf) != (pw, ph, px_off, py_off, pbuf):
-            diff_idx = next(
-                (i for i, (a, b) in enumerate(zip(rbuf, pbuf, strict=False)) if a != b),
-                -1,
-            )
-            pytest.fail(
-                f"Gate A mismatch font={font_name} ch={ch!r} px={px}: "
-                f"rust=({rw},{rh},{rx},{ry}) py=({pw},{ph},{px_off},{py_off}) first_diff={diff_idx}",
-            )
+        check((rw, rh, rx, ry, rbuf) == (pw, ph, px_off, py_off, pbuf), "gate A batch mask mismatch")
 
 
 def test_gate_a_dehinted_masks_exact(tmp_path: Path) -> None:
@@ -104,7 +97,7 @@ def test_gate_a_dehinted_masks_exact(tmp_path: Path) -> None:
     dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
     layout_pxs = sample_layout_pxs()
     max_layout_px = max(max(v) for v in layout_pxs.values() if v)
-    assert max_layout_px >= 5112
+    check(max_layout_px >= 5112, "max layout px below 5112")
 
     pxs_1_to_160 = list(range(1, 161))
     for name in FONT_FILES:
@@ -155,23 +148,23 @@ def test_real_dseg7_autohinted_within_gate_b_bounds(tmp_path: Path, px: int) -> 
         if rs_mask == pil_real:
             continue
         saw_diff = True
-        assert (dhw, dhh, dhx, dhy, dhbuf) == pillow_mask(pil_dh_face, ch)
+        check((dhw, dhh, dhx, dhy, dhbuf) == pillow_mask(pil_dh_face, ch), "dseg gate B attribution")
         _diff_px, _max_d, box_rs, box_py, rs_sum, py_sum = compare_masks_common_space(rs_mask, pil_real)
-        assert (box_rs is None) == (box_py is None)
+        check((box_rs is None) == (box_py is None), "dseg gate B ink presence")
         if box_rs is not None and box_py is not None:
             d_l = box_rs[0] - box_py[0]
             d_t = box_rs[1] - box_py[1]
             d_r = box_rs[2] - box_py[2]
             d_b = box_rs[3] - box_py[3]
-            assert max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND
-            assert max(abs(d_t), abs(d_b)) <= v_limit
+            check(max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND, "dseg gate B horiz edge bound")
+            check(max(abs(d_t), abs(d_b)) <= v_limit, "dseg gate B vert edge bound")
         if py_sum > 0:
             ratio = rs_sum / py_sum
             if px >= 16:
-                assert r_lo <= ratio <= r_hi
+                check(r_lo <= ratio <= r_hi, "dseg gate B coverage ratio ge 16")
             elif min(rs_sum, py_sum) >= GATE_B_SMALL_PX_MIN_SUM:
-                assert sm_lo <= ratio <= sm_hi
-    assert saw_diff
+                check(sm_lo <= ratio <= sm_hi, "dseg gate B small px coverage ratio")
+    check(saw_diff, "dseg autohint diff expected")
 
 
 def test_gate_a_draw_text_modes_and_clipping_exact(tmp_path: Path) -> None:
@@ -245,7 +238,7 @@ def test_gate_a_draw_text_modes_and_clipping_exact(tmp_path: Path) -> None:
             fill_val = op["fill"] if isinstance(op["fill"], int) else tuple(op["fill"])
             draw.text((int(op["x"]), int(op["y"])), str(op["ch"]), font=face, fill=fill_val)
         want = np.asarray(im)
-        assert np.array_equal(got, want), f"Gate A canvas mismatch for {tag}"
+        same_pixels(got, want, f"inktext draw {tag}")
 
 
 def test_synthetic_ttf_outlines_match_freetype(tmp_path: Path) -> None:
@@ -272,7 +265,7 @@ def test_synthetic_ttf_outlines_match_freetype(tmp_path: Path) -> None:
         ["inktext-draw", "--in", str(in_npy), "--mode", "L", "--ops", str(ops_json), "--font", f"syn={syn_ttf}", "--out", str(out_npy)],
     )
     err = error_of(code, payload)
-    assert err is not None and err.kind == "bad_geometry"
+    check(err is not None and err.kind == "bad_geometry", "huge outline bad_geometry error")
 
 
 def test_wasm_matches_native_inktext(tmp_path: Path) -> None:
@@ -400,4 +393,4 @@ def test_wasm_matches_native_inktext(tmp_path: Path) -> None:
             )
 
     proc = run_area("inktext", specs, tmp_path)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    check(proc.returncode == 0, "wasm inktext parity failed")
