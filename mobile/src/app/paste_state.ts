@@ -92,6 +92,7 @@ export class PasteState {
 
   /** 换了会话（清空照片）：剪贴板、撤销、底栏都不要了。 */
   sync(api: AppApi): void {
+    if (import.meta.env.DEV) exposeEdits(api);
     if (api.session() !== this.session) {
       this.session = api.session();
       this.reset();
@@ -215,3 +216,18 @@ export class PasteState {
 
 /** 整个页面一份。 */
 export const pasteState = new PasteState();
+
+/** 只在开发服务器里：测试读每张照片的编辑状态（配方、各配方的档位、调整、rev）。 */
+function exposeEdits(api: AppApi): void {
+  const w = window as unknown as { __gxrEdits?: () => unknown; __gxrPaste?: PasteState };
+  w.__gxrPaste = pasteState;
+  w.__gxrEdits = () =>
+    api.photos().map((photo) => ({
+      stem: photo.stem,
+      rev: photo.rev,
+      choice: photo.choice,
+      levels: Object.fromEntries(photo.levels),
+      knobs: { ...photo.knobs },
+      ms: photoMs(photo),
+    }));
+}
