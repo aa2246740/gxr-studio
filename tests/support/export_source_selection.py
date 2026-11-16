@@ -304,4 +304,17 @@ def write_lut_wasm_specs(files: dict[str, Path], tmp: Path) -> list[Path]:
                 },
             )
         )
+    # Sol r2: a `--space` file that is not UTF-8 must give the same CoreError natively and in WASM.
+    for kind, base in (("scene", "auto"), ("display", "neutral"), ("display", "standard")):
+        folder = tmp / "bad-space" / f"{kind}-{base}"
+        folder.mkdir(parents=True, exist_ok=True)
+        bad = folder / "space.json"
+        bad.write_bytes(b"\xff")
+        edit_path = xs.write_json(folder / "edit.json", xs.edit_json(_lut_edit(kind, f"{kind}/{base}")))
+        specs.append(
+            xs.write_json(
+                folder / "spec.json",
+                {"kind": "selection", "shot": str(shot_path), "edit": str(edit_path), "base": base, "space": str(bad)},
+            )
+        )
     return specs

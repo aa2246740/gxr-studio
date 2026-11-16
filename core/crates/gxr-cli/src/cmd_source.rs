@@ -149,12 +149,13 @@ fn run_plan(args: &[String]) -> Result<Output, Failure> {
 fn run_selection(args: &[String]) -> Result<Output, Failure> {
     let shot = bytes_of(option(args, "--shot")?)?;
     let edit = bytes_of(option(args, "--edit")?)?;
-    let space = match maybe_bytes(args, "--space")? {
-        Some(bytes) => Some(
-            String::from_utf8(bytes).map_err(|_| Failure::Usage("--space is not UTF-8".into()))?,
-        ),
-        None => None,
-    };
+    let space =
+        match maybe_bytes(args, "--space")? {
+            Some(bytes) => Some(String::from_utf8(bytes).map_err(|_| {
+                Failure::Core(CoreError::new("bad_request", "--space is not UTF-8"))
+            })?),
+            None => None,
+        };
     let text = selection_json(&shot, &edit, option(args, "--base")?, space.as_deref())?;
     Ok(Output { text, ok: true })
 }
