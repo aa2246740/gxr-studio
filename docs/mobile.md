@@ -471,6 +471,22 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 - 卡片画的是调整归零的样子，不跟着调整变。
 - r5（`GXRFX.BIN`）还不能选。
 
+## 导出进相册（M3）
+
+选择栏的「导出 N 张」和编辑器的「导出这张」打开同一个导出面板（05a）：尺寸「原始尺寸 / 大 / 中 / 小」（长边不限、3000、2048、1600）、品质「高 / 中 / 低」（95、85、70），默认原始尺寸、高，和桌面 `SIZE_TIERS` / `QUALITY_TIERS` 一样。一张时右边写成品尺寸（`export_output_sizes`，源尺寸在导出 Worker 里从文件头读：相机 JPG 转正后的尺寸，或 DNG 的裁切窗口）；几张时写桌面那句「每张照片按各自比例导出，成品尺寸可能不同。」。HDR 那一行照设计稿摆着，开关停用，写「这项下一步做」。没选 `GXRCE.DAT` 时面板下面是桌面那句说明。
+
+- **请求**（`lib/export_request.ts`，纯函数）：`shot` 照桌面图库的 shot（`name`、`files`、`lens`、`iso`；`width` / `height` 是图库存的 `photo_meta(jpg).width or photo_meta(dng).width`，由 Worker 读文件头补上：`lib/photo_size.ts` 照 `meta.read_jpeg_meta` / `read_dng_meta`，不用解码后的位图）；`side` 照桌面 `render/edits.write` 写出的 sidecar：`recipe` 是 `RecipeSel.to_json`（档位只带用户动过的，和桌面 `cleanLevels` 一样），`memory` 是这张照片上别的配方各自记着的档位，键按桌面 `recipeKey` 改写（内置 `<单元>/<位置>`，其余 `<单元>/<种类>/<id>`）；`adjust` 是 `Adjust.to_json`，全是 0 时不写。没动过的照片是 `{}`。`defaults` 是 `{}`，底图「自动」，`layout` 是 `{}`（M3 没有边框和日期戳）。`binding` 是 `gxr-core <构建号>`，构建号是 `vite build` 时的短提交号（`vite.config.ts` 的 `__GXR_BUILD__`，开发服务器里是 `dev`）。
+- **导出 Worker**（`core/export_worker.ts`、`core/export_api.ts`）：不是 M1/M2 那组 Worker。一个 Worker、一份 WASM、一次一张；一批开始时建，结束后闲 30 秒、停止或清空时关掉，WASM 的线性内存跟着还回去。相机配方文件和校准包（`calib_index` + `calib_blob`，文件按名字排好）每批交一次，Worker 重建时再交。每张：读 DNG / JPG（主线程不调 `File.arrayBuffer`）→ `export_plan` → 选了配方时 `color_resolve`（只有 RAW、没选配方时用这个单元的原厂 04）→ 没选配方又有相机 JPG 时解码相机 JPG → `export_prepare` → 墨迹 → `export_complete`。核心报 `raw_unreadable` / `no_jpg_source` / `raw_decode` 时，像桌面 `_raw_rgb` 那样解内嵌预览（`export_meta_preview` 的位置）再试一次。
+- **墨迹**：M3 不能设边框、日期戳、裁剪和 LUT，`export_prepare` 只会给 `canvas: "full"`、没有版面，墨迹这一步什么都不画（导出管线的「无墨迹」情况，和桌面逐字节相同）。三次调用之间留着 `ink(prepared, canvas)` 这一处；万一 prepare 给了边框、日期戳或 `canvas: "photo"`，这一张按 `ink_not_supported` 失败，绝不漏掉墨迹导出。M4 在这里补上，字体包也跟着 M4。
+- **解码相机 JPG**：照 `finish/compose.load_jpeg`：`createImageBitmap(blob, { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' })`，画到 `OffscreenCanvas`（`srgb`、`willReadFrequently`），`getImageData` 后去掉 alpha，位图马上关掉。无头 Chrome 里和 Pillow 逐像素相同（含 Orientation 6、8 的拷贝）；Safari 用的是 ImageIO，真机检查时比解码像素的哈希。
+- **陷阱**：WASM 陷阱、`RangeError` 或 Worker 的 `error` 事件：关掉 Worker，这一张写「内存不够，这张没做成。可以重试，或改用小一点的尺寸。」，下一张用新的 Worker 接着做。
+- **批次**（`app/export_batch.ts`，不碰 DOM）：点「存到相册」那一刻把照片、文件句柄、版本和请求定下来，之后改动不影响这一批；按网格当前的顺序做。「停止」马上关掉 Worker，做好的留着。「重试这张 / 这 N 张」只重做失败的，用同一份请求，重新选过的照片用新的 File。做好的文件（`new File([bytes], file_name, { type: 'image/jpeg' })`）留在内存里，最多 384 MiB；下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。每次提交前核对会话、批次和照片版本，晚到的结果丢掉。读不了的文件走 M1 的 `gone`（拔卡）路径。跑着的时候配方卡小图和烘焙先停（`app/export_pause.ts`），并申请屏幕常亮。
+- **进度和结果**：点「存到相册」面板收起，进度贴在最底下（`.pdock`，在网格和编辑器下面，不盖住选择栏），可以接着滚、点开照片。做完不自动打开共享面板：Safari 只认刚发生的那次点击。05c 的「存到相册」在点击里同步调用 `navigator.share({ files })`，前面没有 await；先问 `canShare`，没有共享面板的浏览器写一句「这个浏览器打不开系统的共享面板。」，加每个文件的下载链接。一次最多 20 张、256 MiB（`SHARE_MAX_FILES` / `SHARE_MAX_BYTES`），多了分批，按钮写「存到相册（第 1 批，共 3 批）」。`share()` resolve 只说明用户在面板里做了某个操作，不一定是存储图像，所以 05e 写「好了：N 张」和「在面板里点了「存储 N 张图像」，就已经在相册里。」，不说「已存到相册」（机主决定 2）；关掉面板（`AbortError`）就留在 05c。
+- **`?perf=1`**：一批的 WASM、JS、待存文件的高水位和每张的毫秒数。
+- **开发服务器里**（生产包里没有）：`window.__devExport` 可以把 `binding` 换成桌面的 `engine_pin()`（逐字节对比用）、把分批上限改小、在第几张模拟一次陷阱，测试也从这里读批次和内存。
+
+测试：`tests/test_mobile_ui_export_unit.py`（请求、批次状态机、分批、文件头尺寸，`node:test`）和 `tests/test_mobile_ui_export_browser.py`（`browser_serial`：解码门禁；六张照片在界面里编辑后导出，和桌面 `export_finish` 逐字节相同，ICC 时间戳按导出管线的办法固定；停止、陷阱、清空、读不了再重试、没有共享面板）。这两个文件也在导出管线隐私 lint 的范围里。
+
 ## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
 
 移植的是导出时「从哪张图开始」：`finish/serve.py` 的 `color_image` 和 `_raw_rgb`（只有 `full=True`）、`render/service.py` 的 `plan` 和不精确的 `renderer`、`raw/render.py` 的 `render_full`（任意渲染器）、`lut/photo.py` 的 `color_image`。不移植 `exact_u8`（精确导出）、电脑图库里的本机配方、近似配方（`approx.ENABLED` 是 False）和预览路径。

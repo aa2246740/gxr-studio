@@ -129,6 +129,10 @@ class App implements AppApi {
         await new Promise((done) => setTimeout(done, 800));
       }
     }
+    if (shot.startsWith('export-') && this.byId.size) {
+      const { exportShot } = await import('./export_shots');
+      await exportShot(shot, this.ordered().map((photo) => photo.id), this.exporter, this.shell);
+    }
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     this.shell.dataset.shot = shot;
     await reportShot(shot, {
