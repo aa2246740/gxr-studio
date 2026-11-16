@@ -4,6 +4,7 @@ use gxr_raw::CoreError;
 
 use crate::geometry::bounds::{checked_add_u64, checked_mul_u64, fit_count};
 use crate::geometry::json::{JsonValue, parse_json};
+use crate::ink::backdrop::{background, blurred_background, paper_grain};
 use crate::ink::blur::gaussian_blur;
 use crate::ink::draw::{draw_ellipse, draw_line, draw_polygon, draw_rectangle};
 use crate::ink::draw_arc::draw_rounded_rectangle;
@@ -503,6 +504,57 @@ fn apply_op(
                 color,
             };
             paint_shadow(img, &item)?;
+        }
+        "background" => {
+            let w = u64::try_from(req_int(step, "w", "background requires integer w")?)
+                .map_err(|_| bad_ops("invalid w"))?;
+            let h = u64::try_from(req_int(step, "h", "background requires integer h")?)
+                .map_err(|_| bad_ops("invalid h"))?;
+            let bg = parse_opt_ink3(step.get("bg").or_else(|| step.get("color")))?
+                .ok_or_else(|| bad_ops("background requires bg or color"))?;
+            let kind = step.get("kind").and_then(JsonValue::as_str);
+            let glow_falloff = match step.get("falloff") {
+                Some(JsonValue::Null) => None,
+                Some(v) => {
+                    let f = v
+                        .as_f64()
+                        .ok_or_else(|| bad_ops("falloff must be finite"))?;
+                    if !f.is_finite() {
+                        return Err(bad_ops("falloff must be finite"));
+                    }
+                    if kind.is_some_and(|k| k != "glow") {
+                        None
+                    } else {
+                        Some(f)
+                    }
+                }
+                None => {
+                    if kind == Some("glow") {
+                        Some(0.05)
+                    } else {
+                        None
+                    }
+                }
+            };
+            *img = background(w, h, bg, glow_falloff)?;
+        }
+        "blurred_background" => {
+            let w = u64::try_from(req_int(step, "w", "blurred_background requires integer w")?)
+                .map_err(|_| bad_ops("invalid w"))?;
+            let h = u64::try_from(req_int(step, "h", "blurred_background requires integer h")?)
+                .map_err(|_| bad_ops("invalid h"))?;
+            let sigma = opt_f64(step, "sigma", 90.0, "sigma must be finite")?;
+            let sat = opt_f64(step, "sat", 1.0, "sat must be finite")?;
+            let veil = opt_f64(step, "veil", 1.0, "veil must be finite")?;
+            let src = match step.get("photo_reg").and_then(JsonValue::as_str) {
+                Some(r) => find_reg(regs, r)?,
+                None => img,
+            };
+            *img = blurred_background(src, w, h, sigma, sat, veil)?;
+        }
+        "paper_grain" => {
+            let amount = req_f64(step, "amount", "paper_grain requires finite amount")?;
+            *img = paper_grain(img, amount)?;
         }
         _ => return Err(bad_ops("unsupported ink op")),
     }
