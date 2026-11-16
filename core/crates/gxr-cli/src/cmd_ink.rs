@@ -4,8 +4,9 @@ use std::io::{BufReader, BufWriter, Read, Write};
 
 use gxr_finish::geometry::bounds::{checked_mul_u64, fit_count, too_big};
 use gxr_finish::ink::{
-    InkImage, InkMode, LogoInput, Pcg64, background, blurred_background, gaussian_blur, mean_f32,
-    mean_u8_as_f32, pairwise_sum_f32, paper_grain, run_ink_ops,
+    InkImage, InkMode, LogoInput, Pcg64, background, blurred_background, carrier_contours,
+    gaussian_blur, mean_f32, mean_u8_as_f32, paint_carrier, pairwise_sum_f32, paper_grain,
+    run_ink_ops,
 };
 use gxr_raw::{CoreError, Json};
 
@@ -18,6 +19,7 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "ink-blur" => cmd_ink_blur(args)?,
         "ink-backdrop" => cmd_ink_backdrop(args)?,
         "ink-grain" => cmd_ink_grain(args)?,
+        "ink-carrier" => cmd_ink_carrier(args)?,
         "ink-libm" => cmd_ink_libm(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
@@ -460,6 +462,69 @@ fn cmd_ink_grain(args: &[String]) -> Result<Json, Failure> {
             "shape",
             Json::ints(&[out.height as i64, out.width as i64, 3]),
         ),
+    ]))
+}
+
+fn contour_json(pts: &[[f64; 2]]) -> Json {
+    Json::Array(
+        pts.iter()
+            .map(|p| Json::Array(vec![Json::Float(p[0]), Json::Float(p[1])]))
+            .collect(),
+    )
+}
+
+fn cmd_ink_carrier(args: &[String]) -> Result<Json, Failure> {
+    let w: i64 = common::option(args, "--w")?
+        .parse()
+        .map_err(|_| usage("invalid --w"))?;
+    let h: i64 = common::option(args, "--h")?
+        .parse()
+        .map_err(|_| usage("invalid --h"))?;
+    let c: i64 = common::option(args, "--c")?
+        .parse()
+        .map_err(|_| usage("invalid --c"))?;
+    let jit: i64 = common::option(args, "--jit")?
+        .parse()
+        .map_err(|_| usage("invalid --jit"))?;
+    let seed: u64 = match opt_str(args, "--seed")? {
+        Some(v) => v.parse().map_err(|_| usage("invalid --seed"))?,
+        None => 42,
+    };
+    let (outer, inner) = carrier_contours(w, h, c, jit, seed)?;
+    if let (Some(in_path), Some(out_path)) = (opt_str(args, "--in")?, opt_str(args, "--out")?) {
+        let x: i64 = match opt_str(args, "--x")? {
+            Some(v) => v.parse().map_err(|_| usage("invalid --x"))?,
+            None => 0,
+        };
+        let y: i64 = match opt_str(args, "--y")? {
+            Some(v) => v.parse().map_err(|_| usage("invalid --y"))?,
+            None => 0,
+        };
+        let fill = parse_rgb_triplet(common::option(args, "--fill")?)?;
+        let paper = parse_rgb_triplet(common::option(args, "--paper")?)?;
+        let mut canvas = read_image_npy(in_path, Some("RGB"))?;
+        paint_carrier(&mut canvas, x, y, w, h, c, jit, seed, fill, paper)?;
+        let out_shape = vec![canvas.height, canvas.width, 3];
+        let _ = write_npy_u8(out_path, &out_shape, &canvas.data)?;
+        return Ok(Json::object([
+            ("out", Json::str(out_path)),
+            ("mode", Json::str(canvas.mode.as_str())),
+            (
+                "shape",
+                Json::ints(&[canvas.height as i64, canvas.width as i64, 3]),
+            ),
+            ("outer", contour_json(&outer)),
+            ("inner", contour_json(&inner)),
+        ]));
+    }
+    Ok(Json::object([
+        ("w", Json::Int(w)),
+        ("h", Json::Int(h)),
+        ("c", Json::Int(c)),
+        ("jit", Json::Int(jit)),
+        ("seed", Json::str(seed.to_string())),
+        ("outer", contour_json(&outer)),
+        ("inner", contour_json(&inner)),
     ]))
 }
 

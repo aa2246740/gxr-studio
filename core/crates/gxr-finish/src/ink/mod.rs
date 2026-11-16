@@ -4,6 +4,7 @@
 
 pub mod backdrop;
 pub mod blur;
+pub mod carrier;
 pub mod draw;
 pub mod draw_arc;
 pub mod image;
@@ -15,6 +16,7 @@ pub mod shapes;
 
 pub use backdrop::{background, blurred_background, paper_grain};
 pub use blur::{box_blur, gaussian_blur};
+pub use carrier::{carrier_contours, paint_carrier, wobble};
 pub use draw::{draw_ellipse, draw_line, draw_polygon, draw_rectangle};
 pub use draw_arc::draw_rounded_rectangle;
 pub use image::{InkImage, InkMode, mean_f32, mean_u8_as_f32, pairwise_sum_f32};

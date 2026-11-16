@@ -6,6 +6,7 @@ use crate::geometry::bounds::{checked_add_u64, checked_mul_u64, fit_count};
 use crate::geometry::json::{JsonValue, parse_json};
 use crate::ink::backdrop::{background, blurred_background, paper_grain};
 use crate::ink::blur::gaussian_blur;
+use crate::ink::carrier::paint_carrier;
 use crate::ink::draw::{draw_ellipse, draw_line, draw_polygon, draw_rectangle};
 use crate::ink::draw_arc::draw_rounded_rectangle;
 use crate::ink::image::{InkImage, InkMode};
@@ -555,6 +556,25 @@ fn apply_op(
         "paper_grain" => {
             let amount = req_f64(step, "amount", "paper_grain requires finite amount")?;
             *img = paper_grain(img, amount)?;
+        }
+        "paint_carrier" => {
+            let x = req_int(step, "x", "paint_carrier requires int x")?;
+            let y = req_int(step, "y", "paint_carrier requires int y")?;
+            let w = req_int(step, "w", "paint_carrier requires int w")?;
+            let h = req_int(step, "h", "paint_carrier requires int h")?;
+            let c = req_int(step, "c", "paint_carrier requires int c")?;
+            let jit = req_int(step, "jit", "paint_carrier requires int jit")?;
+            let seed = u64::try_from(req_int(
+                step,
+                "seed",
+                "paint_carrier requires non-negative seed",
+            )?)
+            .map_err(|_| bad_ops("invalid seed"))?;
+            let fill = parse_opt_ink3(step.get("fill"))?
+                .ok_or_else(|| bad_ops("paint_carrier requires fill"))?;
+            let paper = parse_opt_ink3(step.get("paper"))?
+                .ok_or_else(|| bad_ops("paint_carrier requires paper"))?;
+            paint_carrier(img, x, y, w, h, c, jit, seed, fill, paper)?;
         }
         _ => return Err(bad_ops("unsupported ink op")),
     }

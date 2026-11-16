@@ -113,18 +113,22 @@ def libm_exp_scalar(x: float, *, use_libm: bool = True, perturb_ulp: int = 0) ->
     return _ulp_shift(val, perturb_ulp)
 
 
-def libm_exp_vec(x: np.ndarray, *, use_libm: bool = True, perturb_ulp: int = 0) -> np.ndarray:
+def libm_exp_vec(x: np.ndarray, *, use_libm: bool = True, perturb_ulp: int = 0, inject: float = 0.0) -> np.ndarray:
     arr = np.asarray(_elem_exp(x, use_libm=use_libm), dtype=np.float64)
-    if perturb_ulp == 0:
-        return arr
-    return np.array([_ulp_shift(float(v), perturb_ulp) for v in arr.flat], dtype=np.float64).reshape(arr.shape)
+    if perturb_ulp != 0:
+        arr = np.array([_ulp_shift(float(v), perturb_ulp) for v in arr.flat], dtype=np.float64).reshape(arr.shape)
+    if inject != 0.0:
+        arr = arr + inject
+    return arr
 
 
-def libm_sin_vec(x: np.ndarray, *, use_libm: bool = True, perturb_ulp: int = 0) -> np.ndarray:
+def libm_sin_vec(x: np.ndarray, *, use_libm: bool = True, perturb_ulp: int = 0, inject: float = 0.0) -> np.ndarray:
     arr = np.asarray(_elem_sin(x, use_libm=use_libm), dtype=np.float64)
-    if perturb_ulp == 0:
-        return arr
-    return np.array([_ulp_shift(float(v), perturb_ulp) for v in arr.flat], dtype=np.float64).reshape(arr.shape)
+    if perturb_ulp != 0:
+        arr = np.array([_ulp_shift(float(v), perturb_ulp) for v in arr.flat], dtype=np.float64).reshape(arr.shape)
+    if inject != 0.0:
+        arr = arr + inject
+    return arr
 
 
 def run_ziggurat_from_raw(
@@ -373,18 +377,29 @@ def wobble_oracle(
     *,
     use_libm: bool = True,
     perturb_ulp: int = 0,
+    inject: float = 0.0,
 ) -> np.ndarray:
     t = np.arange(n, dtype=np.float64)
     out = np.zeros(n, dtype=np.float64)
     for k, amp in enumerate((1.0, 0.55, 0.3)):
         wl = wavelength / (1.0 + 1.7 * k)
-        out += amp * libm_sin_vec(2.0 * math.pi * t / wl + rng.uniform(0.0, 6.28), use_libm=use_libm, perturb_ulp=perturb_ulp)
+        out += amp * libm_sin_vec(
+            2.0 * math.pi * t / wl + rng.uniform(0.0, 6.28),
+            use_libm=use_libm,
+            perturb_ulp=perturb_ulp,
+            inject=inject,
+        )
     out /= 1.85
     for _ in range(notches):
         pos = rng.uniform(0.0, float(n))
         wid = rng.uniform(0.5, 1.3) * notch_w
         scale = rng.choice([-1.0, 1.0]) * rng.uniform(0.7, 1.4)
-        out += scale * libm_exp_vec(-(((t - pos) / wid) ** 2), use_libm=use_libm, perturb_ulp=perturb_ulp)
+        out += scale * libm_exp_vec(
+            -(((t - pos) / wid) ** 2),
+            use_libm=use_libm,
+            perturb_ulp=perturb_ulp,
+            inject=inject,
+        )
     out += rng.normal(0.0, 0.05, n)
     return np.clip(out, -1.4, 1.4)
 
@@ -398,6 +413,7 @@ def carrier_contours_oracle(
     *,
     use_libm: bool = True,
     perturb_ulp: int = 0,
+    inject: float = 0.0,
 ) -> tuple[list[list[float]], list[list[float]]]:
     short = min(w, h)
     rng = np.random.default_rng(seed=seed)
@@ -410,6 +426,7 @@ def carrier_contours_oracle(
             0.04 * short,
             use_libm=use_libm,
             perturb_ulp=perturb_ulp,
+            inject=inject,
         )
         for s in "trbl"
     }
@@ -423,6 +440,7 @@ def carrier_contours_oracle(
                 0.03 * short,
                 use_libm=use_libm,
                 perturb_ulp=perturb_ulp,
+                inject=inject,
             )
             * 1.4
             + 1.2,
