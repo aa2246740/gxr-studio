@@ -24,9 +24,9 @@ from support.core_cli import error_of, run_json, run_npy
 from support.export_pipeline_cases import check, same_pixels
 from support.ink_text_cases import (
     DRAWABLE_CHARS,
-    LARGE_PX_CHARS,
     dehinted_font_paths,
     font_path,
+    large_px_char_chunks,
     make_inktext_cli_and_wasm_spec,
     open_pil_face,
     pillow_mask,
@@ -83,36 +83,42 @@ def _assert_batch_exact(
     chars: tuple[str, ...],
     work_dir: Path,
     tag: str,
-) -> None:
+) -> int:
     rs_items = run_rust_batch(path, pxs, chars, work_dir, tag=tag)
     faces = {px: open_pil_face(path, px) for px in pxs}
+    count = 0
     for px, cp, rw, rh, rx, ry, rbuf in rs_items:
         ch = chr(cp)
         pw, ph, px_off, py_off, pbuf = pillow_mask(faces[px], ch)
         check((rw, rh, rx, ry, rbuf) == (pw, ph, px_off, py_off, pbuf), "gate A batch mask mismatch")
+        count += 1
+    return count
 
 
 def test_gate_a_dehinted_masks_exact(tmp_path: Path) -> None:
-    """Gate A: 0-tolerance mask parity for px 1..=160 and sampled layout px up to 5112."""
+    """Gate A: 0-tolerance mask parity for px 1..=160 and all sampled layout px up to 5112 (all 99 chars)."""
     dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
     layout_pxs = sample_layout_pxs()
     max_layout_px = max(max(v) for v in layout_pxs.values() if v)
     check(max_layout_px >= 5112, "max layout px below 5112")
 
     pxs_1_to_160 = list(range(1, 161))
+    total_cases = 0
     for name in FONT_FILES:
         fpath = dehinted[name]
         for idx, start in enumerate(range(0, len(pxs_1_to_160), 40)):
             chunk = pxs_1_to_160[start : start + 40]
-            _assert_batch_exact(name, fpath, chunk, DRAWABLE_CHARS, tmp_path, f"{name}-lo-{idx}")
+            total_cases += _assert_batch_exact(name, fpath, chunk, DRAWABLE_CHARS, tmp_path, f"{name}-lo-{idx}")
 
         extra_pxs = sorted(p for p in layout_pxs[name] if p > 160)
         small_extra = [p for p in extra_pxs if p <= 400]
         large_extra = [p for p in extra_pxs if p > 400]
         if small_extra:
-            _assert_batch_exact(name, fpath, small_extra, DRAWABLE_CHARS, tmp_path, f"{name}-sm")
+            total_cases += _assert_batch_exact(name, fpath, small_extra, DRAWABLE_CHARS, tmp_path, f"{name}-sm")
         for px in large_extra:
-            _assert_batch_exact(name, fpath, [px], LARGE_PX_CHARS, tmp_path, f"{name}-lg-{px}")
+            for cidx, cchunk in enumerate(large_px_char_chunks(px)):
+                total_cases += _assert_batch_exact(name, fpath, [px], cchunk, tmp_path, f"{name}-lg-{px}-{cidx}")
+    check(total_cases == 102_960, "expected full 102,960 Gate A cases across all 99 DRAWABLE_CHARS")
 
 
 @pytest.mark.parametrize("px", [1, 13, 16, 24, 36, 48, 3693])
@@ -129,9 +135,6 @@ def test_real_dseg7_autohinted_within_gate_b_bounds(tmp_path: Path, px: int) -> 
 
     dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
     real_path = font_path("dseg")
-    chars = LARGE_PX_CHARS if px > 400 else DRAWABLE_CHARS
-    rs_real = run_rust_batch(real_path, [px], chars, tmp_path, tag=f"dseg-real-{px}")
-    rs_dh = run_rust_batch(dehinted["dseg"], [px], chars, tmp_path, tag=f"dseg-dh-{px}")
     pil_real_face = open_pil_face(real_path, px)
     pil_dh_face = open_pil_face(dehinted["dseg"], px)
 
@@ -139,31 +142,34 @@ def test_real_dseg7_autohinted_within_gate_b_bounds(tmp_path: Path, px: int) -> 
     r_lo, r_hi = GATE_B_COVERAGE_RATIO_GE_16["dseg"]
     sm_lo, sm_hi = GATE_B_SMALL_PX_COVERAGE_RATIO
     saw_diff = False
-    for rs_it, dh_it in zip(rs_real, rs_dh, strict=True):
-        _px, cp, rw, rh, rx, ry, rbuf = rs_it
-        _dpx, _dcp, dhw, dhh, dhx, dhy, dhbuf = dh_it
-        ch = chr(cp)
-        pil_real = pillow_mask(pil_real_face, ch)
-        rs_mask = (rw, rh, rx, ry, rbuf)
-        if rs_mask == pil_real:
-            continue
-        saw_diff = True
-        check((dhw, dhh, dhx, dhy, dhbuf) == pillow_mask(pil_dh_face, ch), "dseg gate B attribution")
-        _diff_px, _max_d, box_rs, box_py, rs_sum, py_sum = compare_masks_common_space(rs_mask, pil_real)
-        check((box_rs is None) == (box_py is None), "dseg gate B ink presence")
-        if box_rs is not None and box_py is not None:
-            d_l = box_rs[0] - box_py[0]
-            d_t = box_rs[1] - box_py[1]
-            d_r = box_rs[2] - box_py[2]
-            d_b = box_rs[3] - box_py[3]
-            check(max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND, "dseg gate B horiz edge bound")
-            check(max(abs(d_t), abs(d_b)) <= v_limit, "dseg gate B vert edge bound")
-        if py_sum > 0:
-            ratio = rs_sum / py_sum
-            if px >= 16:
-                check(r_lo <= ratio <= r_hi, "dseg gate B coverage ratio ge 16")
-            elif min(rs_sum, py_sum) >= GATE_B_SMALL_PX_MIN_SUM:
-                check(sm_lo <= ratio <= sm_hi, "dseg gate B small px coverage ratio")
+    for cidx, cchunk in enumerate(large_px_char_chunks(px)):
+        rs_real = run_rust_batch(real_path, [px], cchunk, tmp_path, tag=f"dseg-real-{px}-{cidx}")
+        rs_dh = run_rust_batch(dehinted["dseg"], [px], cchunk, tmp_path, tag=f"dseg-dh-{px}-{cidx}")
+        for rs_it, dh_it in zip(rs_real, rs_dh, strict=True):
+            _px, cp, rw, rh, rx, ry, rbuf = rs_it
+            _dpx, _dcp, dhw, dhh, dhx, dhy, dhbuf = dh_it
+            ch = chr(cp)
+            pil_real = pillow_mask(pil_real_face, ch)
+            rs_mask = (rw, rh, rx, ry, rbuf)
+            if rs_mask == pil_real:
+                continue
+            saw_diff = True
+            check((dhw, dhh, dhx, dhy, dhbuf) == pillow_mask(pil_dh_face, ch), "dseg gate B attribution")
+            _diff_px, _max_d, box_rs, box_py, rs_sum, py_sum = compare_masks_common_space(rs_mask, pil_real)
+            check((box_rs is None) == (box_py is None), "dseg gate B ink presence")
+            if box_rs is not None and box_py is not None:
+                d_l = box_rs[0] - box_py[0]
+                d_t = box_rs[1] - box_py[1]
+                d_r = box_rs[2] - box_py[2]
+                d_b = box_rs[3] - box_py[3]
+                check(max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND, "dseg gate B horiz edge bound")
+                check(max(abs(d_t), abs(d_b)) <= v_limit, "dseg gate B vert edge bound")
+            if py_sum > 0:
+                ratio = rs_sum / py_sum
+                if px >= 16:
+                    check(r_lo <= ratio <= r_hi, "dseg gate B coverage ratio ge 16")
+                elif min(rs_sum, py_sum) >= GATE_B_SMALL_PX_MIN_SUM:
+                    check(sm_lo <= ratio <= sm_hi, "dseg gate B small px coverage ratio")
     check(saw_diff, "dseg autohint diff expected")
 
 

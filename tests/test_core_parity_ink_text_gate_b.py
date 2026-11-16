@@ -30,11 +30,11 @@ from support.ink_text_cases import (
     GATE_B_SMALL_PX_COVERAGE_RATIO,
     GATE_B_SMALL_PX_MIN_SUM,
     GATE_B_VERT_EDGE_BOUNDS,
-    LARGE_PX_CHARS,
     DiffRecord,
     compare_masks_common_space,
     dehinted_font_paths,
     font_path,
+    large_px_char_chunks,
     open_pil_face,
     pillow_mask,
     run_rust_batch,
@@ -49,7 +49,7 @@ def measure_gate_b_for_font(
     chars: tuple[str, ...],
     work_dir: Path,
     tag: str,
-) -> list[DiffRecord]:
+) -> tuple[int, list[DiffRecord]]:
     real_path = font_path(font_name)
     rs_items = run_rust_batch(real_path, pxs, chars, work_dir, tag=f"gb-real-{tag}")
     dehint_rs_items = run_rust_batch(dehinted_path, pxs, chars, work_dir, tag=f"gb-dh-{tag}")
@@ -60,8 +60,10 @@ def measure_gate_b_for_font(
     ratio_lo, ratio_hi = GATE_B_COVERAGE_RATIO_GE_16[font_name]
     sm_lo, sm_hi = GATE_B_SMALL_PX_COVERAGE_RATIO
 
+    cases = 0
     diffs: list[DiffRecord] = []
     for rs_it, dh_it in zip(rs_items, dehint_rs_items, strict=True):
+        cases += 1
         px, cp, rw, rh, rx, ry, rbuf = rs_it
         _dpx, _dcp, dhw, dhh, dhx, dhy, dhbuf = dh_it
         ch = chr(cp)
@@ -112,20 +114,21 @@ def measure_gate_b_for_font(
                 py_sum=py_sum,
             ),
         )
-    return diffs
+    return cases, diffs
 
 
 def test_gate_b_real_fonts_attributed_and_bounded(tmp_path: Path) -> None:
-    """Gate B across px 1..=160 and layout px values, attributing 100% of diffs and enforcing frozen bounds."""
+    """Gate B across px 1..=160 and all layout px values (all 99 chars), attributing 100% of diffs."""
     dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
     layout_pxs = sample_layout_pxs()
     pxs_1_to_160 = list(range(1, 161))
 
+    total_cases = 0
     total_diffs = 0
     for font_name in FONT_FILES:
         for idx, start in enumerate(range(0, len(pxs_1_to_160), 40)):
             chunk = pxs_1_to_160[start : start + 40]
-            diffs = measure_gate_b_for_font(
+            c_cnt, diffs = measure_gate_b_for_font(
                 font_name,
                 dehinted[font_name],
                 chunk,
@@ -133,13 +136,14 @@ def test_gate_b_real_fonts_attributed_and_bounded(tmp_path: Path) -> None:
                 tmp_path,
                 f"{font_name}-lo-{idx}",
             )
+            total_cases += c_cnt
             total_diffs += len(diffs)
 
         extra_pxs = sorted(p for p in layout_pxs[font_name] if p > 160)
         small_extra = [p for p in extra_pxs if p <= 400]
         large_extra = [p for p in extra_pxs if p > 400]
         if small_extra:
-            diffs = measure_gate_b_for_font(
+            c_cnt, diffs = measure_gate_b_for_font(
                 font_name,
                 dehinted[font_name],
                 small_extra,
@@ -147,16 +151,20 @@ def test_gate_b_real_fonts_attributed_and_bounded(tmp_path: Path) -> None:
                 tmp_path,
                 f"{font_name}-sm",
             )
+            total_cases += c_cnt
             total_diffs += len(diffs)
         for px in large_extra:
-            diffs = measure_gate_b_for_font(
-                font_name,
-                dehinted[font_name],
-                [px],
-                LARGE_PX_CHARS,
-                tmp_path,
-                f"{font_name}-lg-{px}",
-            )
-            total_diffs += len(diffs)
+            for cidx, cchunk in enumerate(large_px_char_chunks(px)):
+                c_cnt, diffs = measure_gate_b_for_font(
+                    font_name,
+                    dehinted[font_name],
+                    [px],
+                    cchunk,
+                    tmp_path,
+                    f"{font_name}-lg-{px}-{cidx}",
+                )
+                total_cases += c_cnt
+                total_diffs += len(diffs)
 
+    check(total_cases == 102_960, "expected full 102,960 Gate B cases across all 99 DRAWABLE_CHARS")
     check(total_diffs > 0, "gate B total diffs must be positive")

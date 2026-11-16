@@ -22,7 +22,12 @@ DRAWABLE_CHARS: tuple[str, ...] = tuple(
     [chr(c) for c in range(0x20, 0x7F)] + ["·", "Á", "É", "Ü"],
 )
 
-LARGE_PX_CHARS: tuple[str, ...] = tuple("0123456789:-· GXRFAf/.Á")
+
+def large_px_char_chunks(px: int) -> tuple[tuple[str, ...], ...]:
+    """Split ``DRAWABLE_CHARS`` into bounded-memory batches for large glyph sizes."""
+    step = len(DRAWABLE_CHARS) if px <= 400 else 20 if px <= 1200 else 10 if px <= 2500 else 5
+    return tuple(DRAWABLE_CHARS[i : i + step] for i in range(0, len(DRAWABLE_CHARS), step))
+
 
 # Frozen Gate B bounds (M4-PLAN-NOTES.md, Manager decision on ink-text items 1-3, 2026-11-16).
 GATE_B_HORIZ_EDGE_BOUND = 1
@@ -102,30 +107,34 @@ def run_rust_batch(
         json.dumps({"pxs": pxs, "chars": list(chars)}),
         encoding="utf-8",
     )
-    code, payload = run_json(
-        [
-            "inktext-batch",
-            "--font",
-            str(font),
-            "--cases",
-            str(cases_path),
-            "--out-bin",
-            str(bin_path),
-        ],
-    )
-    err = error_of(code, payload)
-    if err is not None:
-        raise err
-    blob = bin_path.read_bytes()
-    out: list[tuple[int, int, int, int, int, int, bytes]] = []
-    pos = 0
-    for px, cp, w, h, x_off, y_off, length in payload["items"]:
-        chunk = blob[pos : pos + length]
-        assert len(chunk) == length
-        pos += length
-        out.append((int(px), int(cp), int(w), int(h), int(x_off), int(y_off), chunk))
-    assert pos == len(blob)
-    return out
+    try:
+        code, payload = run_json(
+            [
+                "inktext-batch",
+                "--font",
+                str(font),
+                "--cases",
+                str(cases_path),
+                "--out-bin",
+                str(bin_path),
+            ],
+        )
+        err = error_of(code, payload)
+        if err is not None:
+            raise err
+        blob = bin_path.read_bytes()
+        out: list[tuple[int, int, int, int, int, int, bytes]] = []
+        pos = 0
+        for px, cp, w, h, x_off, y_off, length in payload["items"]:
+            chunk = blob[pos : pos + length]
+            assert len(chunk) == length
+            pos += length
+            out.append((int(px), int(cp), int(w), int(h), int(x_off), int(y_off), chunk))
+        assert pos == len(blob)
+        return out
+    finally:
+        cases_path.unlink(missing_ok=True)
+        bin_path.unlink(missing_ok=True)
 
 
 def sample_layout_pxs() -> dict[str, set[int]]:
