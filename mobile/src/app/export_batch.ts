@@ -7,6 +7,11 @@ import type { ExportRequest } from '../lib/export_request';
 
 /** 做好、还没交出去的文件最多占这么多字节。下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。 */
 export const STAGE_CAP_BYTES = 384 * 1024 * 1024;
+/**
+ * 开了 HDR 的一批用的上限。HDR 让导出 Worker 的 WASM 峰值从约 260 MiB 升到约 470 MiB，Worker 里还多拿着一份数据层，
+ * 384 MiB 的待存文件加上它们会超过整页 1.2 GiB 的估算，所以 HDR 批次把待存文件压到这里（理由和数字见 ui-m3-hdr 的 REPORT.md）。
+ */
+export const STAGE_CAP_HDR_BYTES = 256 * 1024 * 1024;
 
 export const TEXT = {
   read: '存储卡上的文件读不了',
@@ -91,7 +96,7 @@ export class ExportBatch {
 
   readonly items: BatchItem[];
   private readonly host: BatchHost;
-  private readonly cap: number;
+  readonly cap: number;
 
   // 不用参数属性：Node 的 strip-types 跑单元测试时不认。
   constructor(items: BatchItem[], host: BatchHost, cap = STAGE_CAP_BYTES) {
@@ -100,6 +105,11 @@ export class ExportBatch {
     this.cap = cap;
     this.session = host.session();
     for (const item of items) this.states.set(item.id, 'wait');
+  }
+
+  /** 这一批开了 HDR（点「存到相册」时定下来的）。 */
+  get hdr(): boolean {
+    return this.items.some((it) => it.req.hdr);
   }
 
   item(id: string): BatchItem | undefined {

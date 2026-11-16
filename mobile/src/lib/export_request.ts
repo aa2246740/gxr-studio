@@ -45,6 +45,8 @@ export interface RequestPhoto {
 export interface ExportOptions {
   size: SizeTier;
   quality: QualityTier;
+  /** 开了 HDR：每张都带上，做不做得成由核心定（只有 JPG 的是 `no_raw`，照常导出普通版本，和桌面一样）。 */
+  hdr?: boolean;
 }
 
 export interface ExportRequest {
@@ -164,7 +166,7 @@ export function buildRequest(photo: RequestPhoto, cards: readonly Card[], option
     binding: binding ?? `${BINDING_PREFIX}${build}`,
     quality: QUALITY_TIERS[options.quality],
     longEdge: SIZE_TIERS[options.size],
-    hdr: false,
+    hdr: options.hdr === true,
     mtimeMs,
     tzOffsetMin: -new Date(mtimeMs).getTimezoneOffset(),
     resolve,

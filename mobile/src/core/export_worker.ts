@@ -3,6 +3,7 @@
 //
 // 每张：export_plan → 读 DNG / JPG → 选了配方时 color_resolve → 需要时解码相机 JPG（或核心要的内嵌预览）
 // → export_prepare → 墨迹（M3 没有边框和日期戳，这一步什么都不画）→ export_complete。
+// 开了 HDR 时 prepare 还给一份数据层（hdr_layer），留在这个 Worker 里，原样交给 complete。
 
 import init, { color_resolve, export_complete, export_meta_preview, export_output_sizes, export_plan, export_prepare, type InitOutput } from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
@@ -94,6 +95,7 @@ function fromHex(text: string): Uint8Array {
 }
 
 const EMPTY = new Uint8Array(0);
+const NO_LAYER = new Float32Array(0);
 
 function memory(id: number, stage: ExportMemory['stage'], js: number): void {
   post({ op: 'mem', id, mem: { stage, wasm: wasm?.memory.buffer.byteLength ?? 0, js } });
@@ -171,19 +173,24 @@ async function runJob(job: ExportJob): Promise<void> {
   let json: { prepared: Record<string, unknown> };
   let width: number;
   let height: number;
+  // HDR 的数据层（float32，(h, w, 2)）：只在这个 Worker 里，原样交给 export_complete，不回主线程。
+  let layer: Float32Array = NO_LAYER;
   try {
     json = JSON.parse(made.json()) as { prepared: Record<string, unknown> };
     width = made.width;
     height = made.height;
     canvas = made.canvas();
+    if (req.hdr) layer = made.hdr_layer();
   } finally {
     made.free();
   }
-  memory(job.id, 'prepare', canvas.byteLength + source.byteLength + (dngBytes?.byteLength ?? 0));
+  memory(job.id, 'prepare', canvas.byteLength + layer.byteLength + source.byteLength + (dngBytes?.byteLength ?? 0));
   if (job.devTrap && import.meta.env.DEV) throw new WebAssembly.RuntimeError('unreachable (dev trap)');
   canvas = ink(json.prepared, canvas);
-  const done = export_complete(canvas, width, height, JSON.stringify(json.prepared.state), source, new Float32Array(0), EMPTY, 0, 0);
+  // 日期戳掩码是空的：M3 没有日期戳（M4 的墨迹在这里补上掩码）。
+  const done = export_complete(canvas, width, height, JSON.stringify(json.prepared.state), source, layer, EMPTY, 0, 0);
   canvas = EMPTY;
+  layer = NO_LAYER;
   let file: Uint8Array;
   let result: Record<string, unknown>;
   try {

@@ -272,7 +272,7 @@ def test_mobile_ui_export_files_match_desktop(tmp_path: Path, pinned_icc: bytes)
         check("导出 6 张" in full["sheet"]["text"], "sheet title")
         check("每张照片按各自比例导出，成品尺寸可能不同。" in full["sheet"]["text"], "several photos: the desktop size line")
         check("在系统面板里点「存储 6 张图像」" in full["sheet"]["text"], "the reworded footnote")
-        check(full["sheet"]["hdrDisabled"] is True, "HDR switch disabled until ui-m3-hdr")
+        check(full["sheet"]["hdrDisabled"] is False, "HDR switch enabled with RAW selected; off by default, so this batch is SDR")
         check("6 张已做好" in full["ready"], "05c main line")
         check(full["shared"]["labels"] == ["存到相册（第 1 批，共 2 批）", "存到相册（第 2 批，共 2 批）"], "two share chunks of at most 4")
         check("好了：6 张" in full["shared"]["saved"] and "已存到相册" not in full["shared"]["saved"], "05e wording (owner decision 2)")
@@ -371,7 +371,7 @@ def test_mobile_ui_export_flows(tmp_path: Path) -> None:
     check(single["sizeSmall"].startswith("1600 × ") or " × 1600 像素" in single["sizeSmall"], "small tier is 1600 on the long edge")
     check("未导入相机配方文件时，导出不会带上相机配方效果" in single["sheetText"], "no-recipe-file guide")
     check("导出 1 张" in single["sheetText"] and "点「存储图像」" in single["sheetText"], "one-photo title and footnote")
-    check("这项下一步做" in single["sheetText"], "HDR row marked as later")
+    check("这项下一步做" not in single["sheetText"] and "亮处会更亮" in single["sheetText"], "HDR row live (ui-m3-hdr)")
 
     stop = steps["stop"]
     check(stop["stopped"]["phase"] == "stopped" and stop["stopped"]["staged"] == 2, "stop after 2 of 5 keeps 2 files")
