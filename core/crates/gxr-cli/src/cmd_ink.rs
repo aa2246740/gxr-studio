@@ -5,9 +5,10 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use gxr_finish::geometry::bounds::{checked_mul_u64, fit_count, too_big};
 use gxr_finish::ink::{
     InkImage, InkMode, LogoInput, Pcg64, background, blurred_background, carrier_contours,
-    gaussian_blur, mean_f32, mean_u8_as_f32, paint_carrier, pairwise_sum_f32, paper_grain,
-    run_ink_ops,
+    finish_logo_prepare, gaussian_blur, mean_f32, mean_u8_as_f32, paint_carrier, pairwise_sum_f32,
+    paper_grain, parse_logo_prepare_json, run_ink_ops,
 };
+use gxr_finish::raster::logo::KeyMode;
 use gxr_raw::{CoreError, Json};
 
 use crate::common::{self, Failure, Output};
@@ -20,6 +21,7 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
         "ink-backdrop" => cmd_ink_backdrop(args)?,
         "ink-grain" => cmd_ink_grain(args)?,
         "ink-carrier" => cmd_ink_carrier(args)?,
+        "ink-logo-prepare" => cmd_ink_logo_prepare(args)?,
         "ink-libm" => cmd_ink_libm(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
@@ -186,21 +188,65 @@ fn collect_logos(args: &[String]) -> Result<Vec<LogoInput>, Failure> {
     Ok(logos)
 }
 
+fn dim_from_f64(v: f64) -> Result<u64, CoreError> {
+    if !v.is_finite() || v.fract() != 0.0 {
+        return Err(CoreError::new(
+            "value_error",
+            "dimensions must be finite integers",
+        ));
+    }
+    if v <= 0.0 {
+        return Err(CoreError::new(
+            "value_error",
+            "height and width must be > 0",
+        ));
+    }
+    if v > f64::from(i32::MAX) {
+        return Err(too_big());
+    }
+    Ok(v as u64)
+}
+
+fn parse_cli_dim(raw: &str) -> Result<u64, Failure> {
+    let f: f64 = raw.parse().map_err(|_| {
+        Failure::Core(CoreError::new(
+            "value_error",
+            "dimensions must be finite integers",
+        ))
+    })?;
+    dim_from_f64(f).map_err(Failure::Core)
+}
+
 fn cmd_ink_ops(args: &[String]) -> Result<Json, Failure> {
     let in_path = common::option(args, "--canvas")?;
     let out_path = common::option(args, "--out")?;
     let mode_override = opt_str(args, "--mode")?;
     let ops_json = read_ops_text(args)?;
     let logos = collect_logos(args)?;
-    let canvas = read_image_npy(in_path, mode_override)?;
-    let out = run_ink_ops(
-        &canvas.data,
-        canvas.width as u64,
-        canvas.height as u64,
-        canvas.mode,
-        &ops_json,
-        &logos,
-    )?;
+    let npy = read_npy_file(in_path)?;
+    if npy.descr != "|u1" {
+        return Err(usage(format!("expected uint8 npy, got {}", npy.descr)));
+    }
+    let (h, w, inferred_mode) = match npy.shape.as_slice() {
+        [h, w] => (*h as u64, *w as u64, InkMode::L),
+        [h, w, 1] => (*h as u64, *w as u64, InkMode::L),
+        [h, w, 3] => (*h as u64, *w as u64, InkMode::Rgb),
+        [h, w, 4] => (*h as u64, *w as u64, InkMode::Rgba),
+        s => return Err(usage(format!("unsupported image npy shape {s:?}"))),
+    };
+    let mode = match mode_override {
+        Some(m) => InkMode::parse(m)?,
+        None => inferred_mode,
+    };
+    let w_arg = match opt_str(args, "--w")? {
+        Some(s) => parse_cli_dim(s)?,
+        None => w,
+    };
+    let h_arg = match opt_str(args, "--h")? {
+        Some(s) => parse_cli_dim(s)?,
+        None => h,
+    };
+    let out = run_ink_ops(&npy.data, w_arg, h_arg, mode, &ops_json, &logos)?;
     let out_shape: Vec<usize> = match out.mode {
         InkMode::L => vec![out.height, out.width],
         InkMode::Rgb => vec![out.height, out.width, 3],
@@ -526,6 +572,70 @@ fn cmd_ink_carrier(args: &[String]) -> Result<Json, Failure> {
         ("outer", contour_json(&outer)),
         ("inner", contour_json(&inner)),
     ]))
+}
+
+fn cmd_ink_logo_prepare(args: &[String]) -> Result<Json, Failure> {
+    let in_path = common::option(args, "--in")?;
+    let out_path = common::option(args, "--out")?;
+    let npy = read_npy_file(in_path)?;
+    if npy.descr != "|u1" {
+        return Err(usage(format!("expected uint8 npy, got {}", npy.descr)));
+    }
+    let (h, w) = match npy.shape.as_slice() {
+        [h, w, 4] => (*h as u64, *w as u64),
+        s => return Err(usage(format!("expected RGBA uint8 npy, got {s:?}"))),
+    };
+    let w_arg = match opt_str(args, "--w")? {
+        Some(s) => parse_cli_dim(s)?,
+        None => w,
+    };
+    let h_arg = match opt_str(args, "--h")? {
+        Some(s) => parse_cli_dim(s)?,
+        None => h,
+    };
+
+    let key_json = if let Some(path) = opt_str(args, "--key")? {
+        std::fs::read_to_string(path).map_err(|e| usage(format!("cannot read {path}: {e}")))?
+    } else if let Some(inline) = opt_str(args, "--key-json")? {
+        inline.to_string()
+    } else {
+        String::new()
+    };
+    let mut opts = parse_logo_prepare_json(&key_json)?;
+    if let Some(km) = opt_str(args, "--key-mode")? {
+        opts.key_mode = if km == "auto" {
+            KeyMode::Auto
+        } else {
+            match km.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => KeyMode::Bool(true),
+                "0" | "false" | "no" | "off" => KeyMode::Bool(false),
+                _ => KeyMode::Bool(false),
+            }
+        };
+    }
+    if let Some(tol_s) = opt_str(args, "--tol")? {
+        opts.tol = tol_s
+            .parse()
+            .map_err(|_| usage(format!("bad --tol: {tol_s:?}")))?;
+    }
+    if let Some(id_s) = opt_str(args, "--id")? {
+        opts.id = id_s.to_string();
+    }
+    if let Some(name_s) = opt_str(args, "--name")? {
+        opts.name = name_s.to_string();
+    }
+
+    let res = finish_logo_prepare(
+        &npy.data,
+        w_arg,
+        h_arg,
+        opts.key_mode,
+        opts.tol,
+        &opts.id,
+        &opts.name,
+    )?;
+    let _ = write_npy_u8(out_path, &[res.height, res.width, 4], &res.rgba)?;
+    Ok(res.report_json())
 }
 
 fn cmd_ink_libm(args: &[String]) -> Result<Json, Failure> {

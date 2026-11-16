@@ -10,6 +10,7 @@ use crate::ink::carrier::paint_carrier;
 use crate::ink::draw::{draw_ellipse, draw_line, draw_polygon, draw_rectangle};
 use crate::ink::draw_arc::draw_rounded_rectangle;
 use crate::ink::image::{InkImage, InkMode};
+use crate::ink::logo::{ClogoItem, paint_clogo};
 use crate::ink::paste::{paste_color, paste_image};
 use crate::ink::shapes::{
     RectItem, ShadowItem, paint_ellipse, paint_hole, paint_poly, paint_rect, paint_shadow,
@@ -245,10 +246,10 @@ pub fn run_ink_ops(
 
         if let Some(reg_name) = target_reg {
             let mut img = find_reg(&regs, reg_name)?.clone();
-            apply_op(&mut img, op, step, &regs, Some(&cur))?;
+            apply_op(&mut img, op, step, &regs, logos, Some(&cur))?;
             set_reg(&mut regs, reg_name, img);
         } else {
-            apply_op(&mut cur, op, step, &regs, None)?;
+            apply_op(&mut cur, op, step, &regs, logos, None)?;
         }
 
         if let Some(save_as) = step.get("save_as").and_then(JsonValue::as_str) {
@@ -267,6 +268,7 @@ fn apply_op(
     op: &str,
     step: &JsonValue,
     regs: &[(String, InkImage)],
+    logos: &[LogoInput],
     canvas_opt: Option<&InkImage>,
 ) -> Result<(), CoreError> {
     match op {
@@ -575,6 +577,73 @@ fn apply_op(
             let paper = parse_opt_ink3(step.get("paper"))?
                 .ok_or_else(|| bad_ops("paint_carrier requires paper"))?;
             paint_carrier(img, x, y, w, h, c, jit, seed, fill, paper)?;
+        }
+        "paint_clogo" => {
+            let id = match step.get("id") {
+                None | Some(JsonValue::Null) => "",
+                Some(v) => v
+                    .as_str()
+                    .ok_or_else(|| bad_ops("clogo id must be string"))?,
+            };
+            let x = req_int(step, "x", "paint_clogo requires int x")?;
+            let y = req_int(step, "y", "paint_clogo requires int y")?;
+            let raw_w = req_int(step, "w", "paint_clogo requires int w")?;
+            let raw_h = req_int(step, "h", "paint_clogo requires int h")?;
+            if raw_w <= 0 || raw_h <= 0 {
+                return Err(CoreError::new(
+                    "value_error",
+                    "height and width must be > 0",
+                ));
+            }
+            let mode = match step.get("mode") {
+                None | Some(JsonValue::Null) => "orig",
+                Some(v) => v
+                    .as_str()
+                    .ok_or_else(|| bad_ops("clogo mode must be string"))?,
+            };
+            let ink = match step.get("ink") {
+                None | Some(JsonValue::Null) => [22, 22, 26],
+                Some(v) if v.as_array().is_some_and(<[_]>::is_empty) => [22, 22, 26],
+                Some(v) => {
+                    let c = parse_color(v, "bad clogo ink color")?;
+                    [c[0], c[1], c[2]]
+                }
+            };
+            let auto = match step.get("auto") {
+                None | Some(JsonValue::Null) => false,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| bad_ops("clogo auto must be boolean"))?,
+            };
+            let auto_ink = match step.get("auto_ink") {
+                None | Some(JsonValue::Null) => None,
+                Some(v) => {
+                    let pair = v
+                        .as_array()
+                        .ok_or_else(|| bad_ops("clogo auto_ink must be 2-element array"))?;
+                    if pair.is_empty() {
+                        None
+                    } else if pair.len() != 2 {
+                        return Err(bad_ops("clogo auto_ink must have 2 colors"));
+                    } else {
+                        let c0 = parse_color(&pair[0], "bad clogo auto_ink light")?;
+                        let c1 = parse_color(&pair[1], "bad clogo auto_ink dark")?;
+                        Some([[c0[0], c0[1], c0[2]], [c1[0], c1[1], c1[2]]])
+                    }
+                }
+            };
+            let item = ClogoItem {
+                id,
+                x,
+                y,
+                w: raw_w as u64,
+                h: raw_h as u64,
+                mode,
+                ink,
+                auto,
+                auto_ink,
+            };
+            paint_clogo(img, &item, logos)?;
         }
         _ => return Err(bad_ops("unsupported ink op")),
     }

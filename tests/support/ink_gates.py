@@ -504,5 +504,51 @@ def gate_b_carrier_report(
     return len(pt_diffs), px_diff
 
 
+def check_alpha_luma_gate_a(rs_alpha_luma: float, rgba: np.ndarray, label: str) -> None:
+    """Gate A: verify Rust float32 alpha_luma matches sequential no-BLAS oracle bitwise, with negative control."""
+    rs_bits = int(np.float32(rs_alpha_luma).view(np.uint32))
+    or_val = seq_alpha_luma(rgba)
+    or_bits = int(or_val.view(np.uint32))
+    assert rs_bits == or_bits, f"{label}: Gate A alpha_luma mismatch 0x{rs_bits:08x} != 0x{or_bits:08x}"
+    # Negative control: 1-ULP perturbation in oracle must differ from Rust
+    bad_bits = or_bits ^ 1
+    assert bad_bits != rs_bits
+
+
+def gate_b_clogo_report(
+    py_pixels: np.ndarray,
+    rs_pixels: np.ndarray,
+    rgba: np.ndarray,
+    py_alpha_luma: float,
+    rs_alpha_luma: float,
+    bg_l: float,
+    *,
+    auto: bool,
+    auto_ink: bool,
+    label: str,
+) -> tuple[int, int]:
+    """Gate B attribution for clogo `_alpha_luma` (@ BLAS) and branch thresholds (`bg_l > 150`, `|lg-bg_l| < 70`)."""
+    py_f32 = np.float32(py_alpha_luma)
+    rs_f32 = np.float32(rs_alpha_luma)
+    ulp_diff = abs(int(py_f32.view(np.uint32)) - int(rs_f32.view(np.uint32)))
+    px_diff = int(np.sum(py_pixels != rs_pixels))
+    chains: list[str] = []
+    if ulp_diff != 0:
+        chains.append(f"{label}: alpha_luma py={float(py_f32)!r} rs={float(rs_f32)!r} ulp={ulp_diff}")
+    py_branch = abs(float(py_alpha_luma) - bg_l) < 70.0
+    rs_branch = abs(float(rs_alpha_luma) - bg_l) < 70.0
+    if auto and auto_ink and py_branch != rs_branch:
+        chains.append(f"{label}: branch-flip(|lg-bg_l|<70) bg_l={bg_l!r} py_lg={py_alpha_luma!r} rs_lg={rs_alpha_luma!r}")
+        report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
+        report_gate_b(f"{label}-pixels", px_diff)
+        return ulp_diff, px_diff
+    # Also verify sequential Gate A on logo rgba
+    check_alpha_luma_gate_a(rs_alpha_luma, rgba, f"{label} Gate A")
+    report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
+    report_gate_b(f"{label}-pixels", px_diff)
+    assert px_diff == 0, f"{label}: expected 0 clogo pixel diffs when branch agrees, got {px_diff}"
+    return ulp_diff, px_diff
+
+
 def unwrap(v: Any) -> Any:
     return v
