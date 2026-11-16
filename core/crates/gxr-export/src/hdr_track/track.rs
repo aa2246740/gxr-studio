@@ -170,21 +170,14 @@ impl HdrTrackState {
         ])
     }
 
-    pub fn from_json_and_slice(layer: &[f32], state_json: &str) -> Result<Self, CoreError> {
-        let val = parse_json(state_json, "bad_input", "HDR 轨道状态格式不对")?;
-        if !matches!(val, JsonValue::Object(_)) {
-            return Err(bad_state());
-        }
+    fn parse_active_shape(
+        val: &JsonValue,
+        layer: &[f32],
+    ) -> Result<Option<(usize, usize)>, CoreError> {
         let active = match val.get("active") {
             Some(JsonValue::Bool(b)) => *b,
             _ => return Err(bad_state()),
         };
-        let problem = match val.get("problem") {
-            None | Some(JsonValue::Null) => None,
-            Some(JsonValue::Str(s)) => Some(s.clone()),
-            _ => return Err(bad_state()),
-        };
-
         if !active {
             if !layer.is_empty() {
                 return Err(bad_state());
@@ -201,12 +194,7 @@ impl HdrTrackState {
                 }
                 _ => return Err(bad_state()),
             }
-            return Ok(Self {
-                active: false,
-                shape: None,
-                problem,
-                layer: Vec::new(),
-            });
+            return Ok(None);
         }
 
         let Some(arr) = val.get("shape").and_then(JsonValue::as_array) else {
@@ -224,10 +212,56 @@ impl HdrTrackState {
         if c_u != 2 {
             return Err(bad_state());
         }
-        let (wu, hu, _, elems) = checked_float_layer_slice(layer, w_u, h_u, 2)?;
-        let cap = fit_count(elems, 4)?;
+        let (wu, hu, _, _) = checked_float_layer_slice(layer, w_u, h_u, 2)?;
+        Ok(Some((hu, wu)))
+    }
+
+    fn parse_meta(state_json: &str) -> Result<(JsonValue, Option<String>), CoreError> {
+        let val = parse_json(state_json, "bad_input", "HDR 轨道状态格式不对")?;
+        if !matches!(val, JsonValue::Object(_)) {
+            return Err(bad_state());
+        }
+        let problem = match val.get("problem") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::Str(s)) => Some(s.clone()),
+            _ => return Err(bad_state()),
+        };
+        Ok((val, problem))
+    }
+
+    /// Construct [`HdrTrackState`] by moving an owned `layer` buffer without cloning.
+    pub fn from_json_and_vec(layer: Vec<f32>, state_json: &str) -> Result<Self, CoreError> {
+        let (val, problem) = Self::parse_meta(state_json)?;
+        let Some((hu, wu)) = Self::parse_active_shape(&val, &layer)? else {
+            return Ok(Self {
+                active: false,
+                shape: None,
+                problem,
+                layer: Vec::new(),
+            });
+        };
+        Ok(Self {
+            active: true,
+            shape: Some([hu, wu, 2]),
+            problem: None,
+            layer,
+        })
+    }
+
+    pub fn from_json_and_slice(layer: &[f32], state_json: &str) -> Result<Self, CoreError> {
+        let (val, problem) = Self::parse_meta(state_json)?;
+        let Some((hu, wu)) = Self::parse_active_shape(&val, layer)? else {
+            return Ok(Self {
+                active: false,
+                shape: None,
+                problem,
+                layer: Vec::new(),
+            });
+        };
         let mut owned = Vec::new();
-        owned.try_reserve_exact(cap).map_err(|_| too_big())?;
+        owned
+            .try_reserve_exact(layer.len())
+            .map_err(|_| too_big())?;
         owned.extend_from_slice(layer);
         Ok(Self {
             active: true,
@@ -429,6 +463,49 @@ pub fn crop_track(state: &HdrTrackState, rect_json: &str) -> Result<HdrTrackStat
     })
 }
 
+fn stamp_dilated(
+    state: &HdrTrackState,
+    mask: &[u8],
+    w: u64,
+    h: u64,
+) -> Result<Option<Vec<bool>>, CoreError> {
+    let dims = state.validate()?;
+    let Some((lh, lw)) = dims else {
+        if !(w == 0 && h == 0 && mask.is_empty()) {
+            let _ = gxr_finish::geometry::bounds::checked_mask_slice(mask, w, h)?;
+        }
+        return Ok(None);
+    };
+    let (wu, hu, _) = gxr_finish::geometry::bounds::checked_mask_slice(mask, w, h)?;
+    if wu != lw || hu != lh {
+        return Err(bad_geometry());
+    }
+    if !mask.iter().any(|&b| b != 0) {
+        return Ok(None);
+    }
+    let bool_mask: Vec<bool> = mask.iter().map(|&b| b != 0).collect();
+    Ok(Some(gxr_hdr::binary_dilation(&bool_mask, lh, lw, 2)?))
+}
+
+/// Apply `stamp_track` in place on an owned [`HdrTrackState`] without cloning its layer.
+pub fn stamp_track_in_place(
+    state: &mut HdrTrackState,
+    mask: &[u8],
+    w: u64,
+    h: u64,
+) -> Result<(), CoreError> {
+    let Some(dilated) = stamp_dilated(state, mask, w, h)? else {
+        return Ok(());
+    };
+    for (i, &hit) in dilated.iter().enumerate() {
+        if hit {
+            state.layer[i * 2] = f32::NAN;
+            state.layer[i * 2 + 1] = f32::NAN;
+        }
+    }
+    Ok(())
+}
+
 /// Port of `gxr_studio/finish/hdr_export.py:101 HdrTrack.stamp` from a caller-provided `(h, w)`
 /// uint8/bool stamp mask (`!= 0` where stamp modified the image), dilated by `iterations=2` -> NaN.
 pub fn stamp_track(
@@ -437,35 +514,9 @@ pub fn stamp_track(
     w: u64,
     h: u64,
 ) -> Result<HdrTrackState, CoreError> {
-    let dims = state.validate()?;
-    let Some((lh, lw)) = dims else {
-        if !(w == 0 && h == 0 && mask.is_empty()) {
-            let _ = gxr_finish::geometry::bounds::checked_mask_slice(mask, w, h)?;
-        }
-        return Ok(state.clone());
-    };
-    let (wu, hu, _) = gxr_finish::geometry::bounds::checked_mask_slice(mask, w, h)?;
-    if wu != lw || hu != lh {
-        return Err(bad_geometry());
-    }
-    if !mask.iter().any(|&b| b != 0) {
-        return Ok(state.clone());
-    }
-    let bool_mask: Vec<bool> = mask.iter().map(|&b| b != 0).collect();
-    let dilated = gxr_hdr::binary_dilation(&bool_mask, lh, lw, 2)?;
-    let mut out = state.layer.clone();
-    for (i, &hit) in dilated.iter().enumerate() {
-        if hit {
-            out[i * 2] = f32::NAN;
-            out[i * 2 + 1] = f32::NAN;
-        }
-    }
-    Ok(HdrTrackState {
-        active: true,
-        shape: Some([lh, lw, 2]),
-        problem: None,
-        layer: out,
-    })
+    let mut out = state.clone();
+    stamp_track_in_place(&mut out, mask, w, h)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -630,5 +681,21 @@ mod tests {
             HdrTrackState::active(2_147_483_648, 1, vec![]).unwrap_err(),
             too_big()
         );
+    }
+
+    #[test]
+    fn owned_layer_and_in_place_stamp_match_borrowed_bitwise() {
+        let raw: Vec<f32> = (0..(5 * 5 * 2)).map(|i| (i as f32) * 0.1 + 0.05).collect();
+        let meta = r#"{"active":true,"shape":[5,5,2],"problem":null}"#;
+        let borrowed = HdrTrackState::from_json_and_slice(&raw, meta).unwrap();
+        let mut owned = HdrTrackState::from_json_and_vec(raw, meta).unwrap();
+        let mut mask = vec![0_u8; 25];
+        mask[2 * 5 + 2] = 1;
+        let ref_stamped = stamp_track(&borrowed, &mask, 5, 5).unwrap();
+        stamp_track_in_place(&mut owned, &mask, 5, 5).unwrap();
+        assert_eq!(owned.shape, ref_stamped.shape);
+        let a_bits: Vec<u32> = owned.layer.iter().map(|v| v.to_bits()).collect();
+        let b_bits: Vec<u32> = ref_stamped.layer.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(a_bits, b_bits);
     }
 }

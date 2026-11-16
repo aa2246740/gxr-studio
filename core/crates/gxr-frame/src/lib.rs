@@ -26,13 +26,15 @@ mod value;
 pub type Meta = std::collections::BTreeMap<String, String>;
 
 pub use api::{batch_json, fonts_from, fonts_from_pack, frame_json, stamp_json};
+pub use cff::{Cff, CffSeg, Fixed};
 pub use cjk::CjkFont;
+pub use frame_core::Type;
 pub use layout::{
     FrameLayout, StampLayout, fit_size, format_stamp, frame_layout, ratio_size, stamp_layout,
 };
 pub use logo::{LogoInfo, aspect_mult, clogo_item, coverage_comp, fit_logo, pick_logo_mode};
 pub use metrics::{FONT_FILES, Fonts};
-pub use sfnt::{FontTable, Glyph, read_font};
+pub use sfnt::{FontTable, Glyph, cmap as read_cmap, read_font};
 pub use spec::{
     FrameSpec, StampSpec, factory_frame, factory_stamp, parse_frame, parse_stamp, stored_frame,
 };

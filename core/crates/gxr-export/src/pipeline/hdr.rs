@@ -13,8 +13,8 @@ use gxr_frame::Val;
 use gxr_raw::{CoreError, Json};
 
 use crate::hdr_track::{
-    FinishOutput, HdrTrackState, begin, box_track, crop_track, finish, frame_track,
-    parse_params_opt, stamp_track, warp_track,
+    FinishOutput, FramedTrack, HdrTrackState, begin, box_track, crop_track, finish, finish_placed,
+    frame_placement, frame_track, parse_params_opt, stamp_track_in_place, warp_track,
 };
 
 use super::encode::Rgb;
@@ -103,6 +103,56 @@ pub struct StampMask<'a> {
     pub height: u64,
 }
 
+fn apply_mask(
+    mut state: HdrTrackState,
+    mask: Option<StampMask<'_>>,
+) -> Result<HdrTrackState, CoreError> {
+    if let Some(m) = mask
+        && !m.data.is_empty()
+    {
+        stamp_track_in_place(&mut state, m.data, m.width, m.height)?;
+    }
+    Ok(state)
+}
+
+fn stamp_from_inputs(
+    hdr: &Val,
+    layer: &[f32],
+    mask: Option<StampMask<'_>>,
+) -> Result<HdrTrackState, CoreError> {
+    let state = HdrTrackState::from_json_and_slice(layer, &render_val(hdr))?;
+    apply_mask(state, mask)
+}
+
+/// Bounded-memory equivalent of [`track_final`] that moves an owned `layer` without copying
+/// and records its frame offset via [`frame_placement`].
+pub fn track_final_placed_owned(
+    hdr: &Val,
+    layer: Vec<f32>,
+    mask: Option<StampMask<'_>>,
+) -> Result<FramedTrack, CoreError> {
+    let state = HdrTrackState::from_json_and_vec(layer, &render_val(hdr))?;
+    let state = apply_mask(state, mask)?;
+    let frame = hdr
+        .get("frame")
+        .map_or_else(|| "null".to_string(), render_val);
+    frame_placement(state, &frame)
+}
+
+/// Bounded-memory equivalent of [`track_final`] that keeps the photo-sized HDR layer and records
+/// its frame offset via [`frame_placement`].
+pub fn track_final_placed(
+    hdr: &Val,
+    layer: &[f32],
+    mask: Option<StampMask<'_>>,
+) -> Result<FramedTrack, CoreError> {
+    let state = stamp_from_inputs(hdr, layer, mask)?;
+    let frame = hdr
+        .get("frame")
+        .map_or_else(|| "null".to_string(), render_val);
+    frame_placement(state, &frame)
+}
+
 /// `track.stamp` (mask) and `track.frame` on the state `export_prepare` wrote. `state.hdr` goes
 /// unchanged to hdr-track's strict reader (`HdrTrackState::from_json_and_slice`), so a malformed
 /// state (`42`, `{}`, `"active": "true"`, …) is its `bad_input` error, never an `no_raw` export
@@ -113,16 +163,49 @@ pub fn track_final(
     layer: &[f32],
     mask: Option<StampMask<'_>>,
 ) -> Result<HdrTrackState, CoreError> {
-    let mut state = HdrTrackState::from_json_and_slice(layer, &render_val(hdr))?;
-    if let Some(m) = mask
-        && !m.data.is_empty()
-    {
-        state = stamp_track(&state, m.data, m.width, m.height)?;
-    }
+    let state = stamp_from_inputs(hdr, layer, mask)?;
     let frame = hdr
         .get("frame")
         .map_or_else(|| "null".to_string(), render_val);
     frame_track(&state, &frame)
+}
+
+fn finish_outcome(out: FinishOutput) -> (Vec<u8>, HdrOutcome) {
+    match out {
+        FinishOutput::Hdr { bytes, .. } => (
+            bytes,
+            HdrOutcome {
+                hdr: true,
+                reason: None,
+            },
+        ),
+        FinishOutput::Skipped { bytes, reason } => (
+            bytes,
+            HdrOutcome {
+                hdr: false,
+                reason: Some(reason),
+            },
+        ),
+    }
+}
+
+/// Streaming `hdr_export.finish` directly from a [`FramedTrack`].
+pub fn finish_hdr_placed(
+    framed: FramedTrack,
+    payload: Vec<u8>,
+    rgb: &Rgb,
+) -> Result<(Vec<u8>, HdrOutcome), CoreError> {
+    let params = parse_params_opt("")?;
+    let out = finish_placed(
+        &payload,
+        framed,
+        "jpeg",
+        &rgb.data,
+        rgb.width as u64,
+        rgb.height as u64,
+        &params,
+    )?;
+    Ok(finish_outcome(out))
 }
 
 /// `hdr_export.finish(payload, track, "jpeg", rgb)`: the file and the outcome (`hdr`, `reason`).
@@ -141,20 +224,5 @@ pub fn finish_hdr(
         rgb.height as u64,
         &params,
     )?;
-    Ok(match out {
-        FinishOutput::Hdr { bytes, .. } => (
-            bytes,
-            HdrOutcome {
-                hdr: true,
-                reason: None,
-            },
-        ),
-        FinishOutput::Skipped { bytes, reason } => (
-            bytes,
-            HdrOutcome {
-                hdr: false,
-                reason: Some(reason),
-            },
-        ),
-    })
+    Ok(finish_outcome(out))
 }

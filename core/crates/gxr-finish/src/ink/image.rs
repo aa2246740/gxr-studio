@@ -103,6 +103,22 @@ impl InkImage {
         self.data
     }
 
+    #[must_use]
+    pub(crate) fn as_canvas_mut(&mut self) -> crate::ink_text::text::CanvasMut<'_> {
+        use crate::ink_text::text::{CanvasMode, CanvasMut};
+        let mode = match self.mode {
+            InkMode::L => CanvasMode::L,
+            InkMode::Rgb => CanvasMode::Rgb,
+            InkMode::Rgba => CanvasMode::Rgba,
+        };
+        CanvasMut {
+            data: &mut self.data,
+            width: self.width,
+            height: self.height,
+            mode,
+        }
+    }
+
     /// Construct an [`InkImage`] from caller-supplied pixels, rejecting zero dimensions and
     /// enforcing the shared `MAX_COUNT` / `MAX_BYTES` bounds before copying.
     pub fn from_bytes(mode: InkMode, w: u64, h: u64, data: &[u8]) -> Result<Self, CoreError> {

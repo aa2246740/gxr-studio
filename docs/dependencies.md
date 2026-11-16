@@ -79,4 +79,13 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 - `Pillow 12.2.0`（MIT-CMU / HPND 许可）的 `Draw.c`、`BoxBlur.c`（3 遍定点框模糊）、`Paste.c`（`DIV255` 掩码混合）、`AlphaComposite.c`、`Convert.c`、`Point.c`、`Crop.c`、`Geometry.c`、`Chops.c` 与 `Image.py` / `ImageDraw.py` / `ImageFilter.py`；
 - `NumPy 2.4.3`（BSD-3-Clause 许可）的 `float32` 成对求和、`SeedSequence`（含 Melissa E. O'Neill / NumPy Developers MIT 许可的 `bit_generator.pyx`）、`PCG64`（含 Melissa O'Neill / Robert Kern MIT 许可的 `pcg64.h`）与 Ziggurat 正态分布表及采样（尾区 `log` / `exp` 与线虫扰动 `sin` / `exp` 统一走 `gxr_math` `libm`）。
 
-上述版权声明与许可原文均保存在 `core/crates/gxr-finish/NOTICE`。
+### 内部移植的 TrueType 轮廓与光栅器（`gxr-finish::ink_text`，原 `FreeType 2.14.3` 与 `Pillow 12.2.0`）
+
+`core/crates/gxr-finish/src/ink_text/` 依据 `FreeType 2.14.3`（FTL 许可，不含字节码解释器）与 `Pillow 12.2.0`（`src/_imagingft.c`、`src/libImaging/Paste.c`，MIT-CMU 许可）用纯安全 Rust 重写，不引入外部 Rust crate：
+- `ftcalc.rs` / `glyf.rs`：移植自 `ftcalc.c`、`fttrigon.c`、`ftoutln.c`、`ftobjs.c`、`ttgload.c` 与 `ttobjs.c`；
+- `gray.rs`：移植自 `ftgrays.c` 与 `ftsmooth.c`；
+- `text.rs`：移植自 Pillow 12.2.0 `src/_imagingft.c` 与 `src/libImaging/Paste.c`。
+
+Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved.
+
+未经修改的 FreeType 2.14.3 FTL 许可全文保存在 `core/crates/gxr-finish/FTL.TXT`（源码分发须原样保留）；归属声明、摘要与移植说明（以及 Pillow / NumPy 完整许可正文）保存在 `core/crates/gxr-finish/NOTICE`。
