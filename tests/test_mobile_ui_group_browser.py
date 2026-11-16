@@ -267,3 +267,33 @@ def test_mobile_ui_group_capture_time_falls_back_to_the_dng(tmp_path: Path) -> N
     got = {row["stem"]: row["ms"] for row in sorted(report["photos"], key=lambda row: row["stem"])}
     same_redacted(got, want, "paired JPG without a time uses the DNG's; a lone JPG uses lastModified")
     check(got["R9990010"] != stamp * 1000, "not the file date")
+
+
+LEVEL_DRIVER = REPO / "tests" / "support" / "mobile_ui_group_level_browser.mjs"
+
+
+def test_mobile_ui_group_recipe_knob_same_value_keeps_rev(tmp_path: Path) -> None:
+    """Sol r2：配方选中、强度默认 100 没存键，同值的 change（或拖到 0 再回 100）不是修改：rev 不变，套用照样能撤销。
+
+    对照：已存的同值档位也不加 rev；真的改了档位才加一，撤销时算「粘贴之后又改过」。合成的配方列表，不读照片。"""
+    _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
+    _need(MODULES.is_dir(), "mobile/node_modules is missing")
+    _need(shutil.which("node") is not None, "node is required")
+    _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
+    manifest = tmp_path / "level.json"
+    manifest.write_text("{}", encoding="utf-8")
+    result = _drive(LEVEL_DRIVER, manifest, tmp_path, "", timeout=180)
+    assert result.returncode == 0, result.stderr[-3000:] + result.stdout[-3000:]
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["pageErrors"] == []
+    cases = {row["action"]: row for row in report["cases"]}
+    for name in ("default-same", "default-roundtrip"):
+        row = cases[name]
+        assert row["afterRev"] == row["beforeRev"] == 1, (name, row)
+        assert row["levels"] == {"builtin:2": {}}, (name, row)
+        assert row["counts"] == {"restored": 1, "changed": 0, "error": 0} and row["choiceAfterUndo"] is None, (name, row)
+    stored = cases["stored-same"]
+    assert stored["afterRev"] == stored["beforeRev"] == 1 and stored["counts"]["restored"] == 1
+    changed = cases["changed"]
+    assert changed["afterRev"] == 2 and changed["levels"] == {"builtin:2": {"amount": 50}}
+    assert changed["counts"] == {"restored": 0, "changed": 1, "error": 0}
