@@ -5,7 +5,7 @@ use gxr_frame::{Val, parse_json};
 use gxr_raw::CoreError;
 
 use super::run::{FontPack, draw_run_fields, parse_rgb3, parse_xs, req_field, val_f64};
-use crate::geometry::bounds::{checked_mul_u64, fit_count};
+use crate::geometry::bounds::{checked_mul_u64, try_vec_u8};
 use crate::ink::blur::{gaussian_blur, gaussian_blur_radius};
 use crate::ink::draw::{bad_coords, draw_polygon};
 use crate::ink::image::{InkImage, InkMode, bad_mismatch};
@@ -350,8 +350,7 @@ pub fn stamp_hdr_mask(
     fonts: &FontPack<'_>,
     layout: &Val,
 ) -> Result<Vec<u8>, CoreError> {
-    let total = fit_count(checked_mul_u64(w, h)?, 1)?;
-    let mut mask = vec![0_u8; total];
+    let mut mask = try_vec_u8(checked_mul_u64(w, h)?, 0)?;
     if matches!(layout, Val::Null) || w == 0 || h == 0 {
         return Ok(mask);
     }
@@ -422,4 +421,21 @@ pub fn inktext_stamp_u64(
     let layout = parse_json(layout_json.as_bytes())?;
     let exact = apply_stamp(&mut img, &fonts, &layout)?;
     Ok((img, exact))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stamp_hdr_mask_null_and_oversized_bounds() {
+        let fonts = FontPack::from_pack("[]", &[]).unwrap();
+        assert_eq!(
+            stamp_hdr_mask(4, 3, &fonts, &Val::Null).unwrap(),
+            vec![0_u8; 12]
+        );
+        assert!(stamp_hdr_mask(0, 0, &fonts, &Val::Null).unwrap().is_empty());
+        let err = stamp_hdr_mask(2_147_483_648, 1, &fonts, &Val::Null).unwrap_err();
+        assert_eq!(err.kind, "bad_geometry");
+    }
 }
