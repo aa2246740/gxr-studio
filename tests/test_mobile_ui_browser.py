@@ -495,6 +495,39 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert "太大" in (vis["afterImport"]["error"] or "") and vis["afterImport"]["busy"] is False
     assert vis["afterDelete"]["idbNow"] is None and vis["afterDelete"]["memNow"] is None
     assert "太大" in (vis["afterDelete"]["error"] or "") and vis["afterDelete"]["busy"] is False
+    # Sol s4：六个「导入/删除/再导入 × 两种回复顺序」及两个「未落库但本次可用 B 之后晚到旧回复」反例（真实 Worker 事务 abort）。
+    wm = cases["calibSessionWatermark"]
+    assert len(wm["sixOrders"]) == 6
+    for row in wm["sixOrders"]:
+        assert row["rejectedKeptWatermark"] is True, row
+        assert row["memory"] == row["expected"] and row["disk"] == row["expected"] and row["busy"] is False, row
+    assert len(wm["unsavedCounterexamples"]) == 2
+    bad_unsaved = [
+        {
+            "mode": row["mode"],
+            "aSaved": row["aSaved"],
+            "bSaved": row["bSaved"],
+            "abortDelta": row["abortDelta"],
+            "beforeLateMemory": row["beforeLate"]["memory"],
+            "afterLateMemory": row["afterLate"]["memory"],
+            "afterLateDisk": row["afterLate"]["disk"],
+            "expectedDisk": row["expectedDisk"],
+        }
+        for row in wm["unsavedCounterexamples"]
+        if not (
+            row["aSaved"] is True
+            and row["bSaved"] is False
+            and row["bReturn"] is False
+            and row["abortDelta"] == 1
+            and row["beforeLate"]["memory"] == "BUnsaved.zip"
+            and "没有存进这台 iPhone" in (row["beforeLate"]["error"] or "")
+            and row["afterLate"]["memory"] == "BUnsaved.zip"
+            and row["afterLate"]["disk"] == row["expectedDisk"]
+            and "没有存进这台 iPhone" in (row["afterLate"]["error"] or "")
+            and row["afterLate"]["busy"] is False
+        )
+    ]
+    assert not bad_unsaved, f"unsaved session-pack counterexamples failed: {bad_unsaved}"
     # Sol r3：同一张打开的照片反复调旋钮，每张卡只留现在那张，旧的关掉；上限任何时候都成立。
     knob_thumbs = cases["knobThumbs"]
     assert knob_thumbs["oneCard"] == {"entries": 1, "bytes": 192 * 128 * 4, "live": 1, "lastLive": True}

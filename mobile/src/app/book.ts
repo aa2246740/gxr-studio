@@ -167,7 +167,7 @@ export class Book {
     return this.nextStamp();
   }
 
-  /** 已经应用到 `this.pack` 的最高持久化版本（IndexedDB 真正提交过的导入或删除墓碑）。 */
+  /** 已经应用到内存（`this.pack`）的最高版本，包括本次会话能用但未存下的校准包。 */
   private appliedAt = 0;
 
   /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对（在 Worker 里）。 */
@@ -213,7 +213,7 @@ export class Book {
         return false;
       }
       // 核对过了，这次会话里能用；但只有真的存进去了才算导入成功，否则照实说（Sol r2）。
-      if (read.saved) this.appliedAt = Math.max(this.appliedAt, savedAt);
+      this.appliedAt = Math.max(this.appliedAt, savedAt);
       this.commit(read, file.name, savedAt);
       if (!read.saved) {
         this.packError = NOT_SAVED;
