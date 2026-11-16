@@ -13,6 +13,7 @@ pub mod resample;
 
 pub use geometry::{Geometry, parse_geometry, warp, warp_u64, warp_valid, warp_valid_u64};
 pub use gpu_box::{final_box, final_box_json, final_box_json_u64, final_box_u64};
+pub use ink_text::text::{inktext_batch_masks, inktext_draw_u64};
 pub use raster::{
     FinishAdjust, FinishOptions, FinishUnframed, FrameCanvas, LogoKeyResult, apply_base,
     apply_extra, background, draw_frame_canvas, draw_frame_canvas_u64, finish_array_u64,

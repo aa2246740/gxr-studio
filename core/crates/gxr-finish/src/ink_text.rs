@@ -11,3 +11,4 @@ pub mod gray;
 #[cfg(test)]
 mod gray_tests;
 mod gray_worker;
+pub mod text;
