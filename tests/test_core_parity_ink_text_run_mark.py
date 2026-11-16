@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import math
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -21,34 +20,18 @@ import pytest
 from PIL import Image, ImageDraw
 
 from gxr_studio.finish import frame_texture
-from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, PilFonts, draw_run, open_face
+from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, PilFonts, draw_run
 from gxr_studio.finish.frame_core import Type
 from support.core_cli import require_cli, run_json, run_npy
 from support.export_pipeline_cases import anon_ids, check, cli_ok, same_kind, same_pixels, same_redacted
 from support.frame_cases import FIXTURE_CJK
-from support.ink_text_cases import dehinted_font_paths, font_path
+from support.ink_text_cases import dehinted_font_paths, font_path, patched_pil_fonts
 from support.wasm_check import run_area
 
 
 @pytest.fixture(autouse=True)
 def _cli() -> None:
     require_cli()
-
-
-@contextmanager
-def _patched_pil_fonts(font_map: dict[str, Path]) -> Any:
-    saved = PilFonts._load
-
-    @staticmethod
-    def _custom_load(font: str, px: int, cjk: bool) -> Any:
-        key = "cjk" if cjk else font
-        return open_face(str(font_map[key]), px)
-
-    PilFonts._load = _custom_load  # type: ignore[method-assign]
-    try:
-        yield
-    finally:
-        PilFonts._load = saved  # type: ignore[method-assign]
 
 
 def _font_args(font_map: dict[str, Path]) -> list[str]:
@@ -104,7 +87,7 @@ def _build_run_item(
 
 def _python_draw_run_item(bg: np.ndarray, mode: str, item: dict[str, Any], font_map: dict[str, Path]) -> np.ndarray:
     im = Image.fromarray(bg.copy(), mode)
-    with _patched_pil_fonts(font_map):
+    with patched_pil_fonts(font_map):
         fonts = PilFonts()
         if item.get("rot"):
             face = fonts.face(item["font"], item["px"], False)

@@ -10,16 +10,14 @@ Covers:
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, PilFonts, open_face
+from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, PilFonts
 from gxr_studio.finish.frame import draw_frame
 from gxr_studio.finish.layout import frame_layout, stamp_layout
 from gxr_studio.finish.logo_math import LogoInfo
@@ -28,28 +26,12 @@ from gxr_studio.finish.stamp import apply_stamp, format_stamp
 from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import anon_ids, check, cli_ok, same_kind, same_pixels
 from support.frame_cases import FIXTURE_CJK
-from support.ink_text_cases import dehinted_font_paths, font_path
+from support.ink_text_cases import dehinted_font_paths, font_path, patched_pil_fonts
 
 
 @pytest.fixture(autouse=True)
 def _cli() -> None:
     require_cli()
-
-
-@contextmanager
-def _patched_pil_fonts(font_map: dict[str, Path]) -> Any:
-    saved = PilFonts._load
-
-    @staticmethod
-    def _custom_load(font: str, px: int, cjk: bool) -> Any:
-        key = "cjk" if cjk else font
-        return open_face(str(font_map[key]), px)
-
-    PilFonts._load = _custom_load  # type: ignore[method-assign]
-    try:
-        yield
-    finally:
-        PilFonts._load = saved  # type: ignore[method-assign]
 
 
 def _font_args(font_map: dict[str, Path]) -> list[str]:
@@ -111,7 +93,7 @@ def test_gate_a_apply_stamp_and_hdr_mask_exact(case_idx: int, tmp_path: Path) ->
     if sl is None:
         return
 
-    with _patched_pil_fonts(dehinted):
+    with patched_pil_fonts(dehinted):
         want = apply_stamp(canvas.copy(), sspec, taken, None, sl)
         black = np.zeros_like(canvas)
         white = np.full_like(canvas, 255)
@@ -265,7 +247,7 @@ def test_gate_a_draw_frame_all_styles_exact(case_idx: int, tmp_path: Path) -> No
     if fl is None:
         return
 
-    with _patched_pil_fonts(dehinted):
+    with patched_pil_fonts(dehinted):
         want = np.asarray(draw_frame(Image.fromarray(photo, "RGB"), fl, PilFonts(), logo_images=logo_images))
 
     in_npy = tmp_path / f"{tag}-photo.npy"

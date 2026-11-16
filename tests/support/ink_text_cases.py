@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,7 +12,7 @@ from typing import Any
 import numpy as np
 from PIL import ImageFont
 
-from gxr_studio.finish.fonts import ASSETS, FONT_FILES, LAYOUT_ENGINE, FontMetrics
+from gxr_studio.finish.fonts import ASSETS, FONT_FILES, LAYOUT_ENGINE, FontMetrics, PilFonts, open_face
 from gxr_studio.finish.layout import frame_layout, stamp_layout
 from gxr_studio.finish.spec import FRAME_STYLES, FrameSpec, StampSpec
 from support.core_cli import error_of, run_json
@@ -62,6 +64,23 @@ def dehinted_font_paths(dest_dir: Path, *, zero_maxp: bool = False) -> dict[str,
 
 def open_pil_face(path: Path, px: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(path), max(1, px), layout_engine=LAYOUT_ENGINE)
+
+
+@contextmanager
+def patched_pil_fonts(font_map: dict[str, Path]) -> Iterator[None]:
+    """Temporarily replace ``PilFonts._load`` while preserving its raw descriptor."""
+    saved = vars(PilFonts)["_load"]
+
+    @staticmethod
+    def _custom_load(font: str, px: int, cjk: bool) -> Any:
+        key = "cjk" if cjk else font
+        return open_face(str(font_map[key]), px)
+
+    PilFonts._load = _custom_load  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        setattr(PilFonts, "_load", saved)
 
 
 def pillow_mask(face: ImageFont.FreeTypeFont, ch: str) -> tuple[int, int, int, int, bytes]:

@@ -15,7 +15,6 @@ Covers:
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,7 +25,7 @@ from PIL import Image
 
 from gxr_studio import export as export_mod
 from gxr_studio.finish.compose import finish_array
-from gxr_studio.finish.fonts import FONT_FILES, PilFonts, open_face
+from gxr_studio.finish.fonts import FONT_FILES, PilFonts
 from gxr_studio.finish.logo_math import LogoInfo
 from gxr_studio.finish.spec import FrameSpec, StampSpec
 from gxr_studio.render.params import parse_edit
@@ -40,7 +39,7 @@ from support.export_pipeline_cases import (
     synthetic_source,
 )
 from support.frame_cases import FIXTURE_CJK, desktop_mark
-from support.ink_text_cases import dehinted_font_paths, font_path
+from support.ink_text_cases import dehinted_font_paths, font_path, patched_pil_fonts
 from support.wasm_check import run_area
 
 
@@ -61,20 +60,15 @@ def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     return rs
 
 
-@contextmanager
-def _patched_pil_fonts(font_map: dict[str, Path]) -> Any:
-    saved = PilFonts._load
-
-    @staticmethod
-    def _custom_load(font: str, px: int, cjk: bool) -> Any:
-        key = "cjk" if cjk else font
-        return open_face(str(font_map[key]), px)
-
-    PilFonts._load = _custom_load  # type: ignore[method-assign]
-    try:
-        yield
-    finally:
-        PilFonts._load = saved  # type: ignore[method-assign]
+def test_patched_pil_fonts_restores_descriptor_and_real_face() -> None:
+    before = vars(PilFonts)["_load"]
+    check(isinstance(before, staticmethod), "expected PilFonts._load staticmethod before patch")
+    with patched_pil_fonts({}):
+        pass
+    after = vars(PilFonts)["_load"]
+    check(after is before and isinstance(after, staticmethod), "PilFonts._load descriptor altered after exit")
+    face = PilFonts().face("atkinson", 16, False)
+    check(face is not None and hasattr(face, "getmetrics"), "real PilFonts().face failed after context exit")
 
 
 def _w(tmp: Path, name: str, obj: Any) -> str:
@@ -254,7 +248,7 @@ def test_end_to_end_prepare_ink_complete_parity(case_idx: int, tmp_path: Path, p
     )
     raw_preset = crop_raw.get("preset") if isinstance(crop_raw, dict) else None
     crop_preset = raw_preset if isinstance(raw_preset, str) else None
-    with _patched_pil_fonts(dehinted):
+    with patched_pil_fonts(dehinted):
         want_canvas, _ = finish_array(
             rgb,
             edit,
@@ -327,7 +321,7 @@ def test_export_ink_hdr_mask_photo_vs_border_stamp(tmp_path: Path) -> None:
     if sl_border is None:
         return
 
-    with _patched_pil_fonts(dehinted):
+    with patched_pil_fonts(dehinted):
         black = np.zeros_like(photo)
         white = np.full_like(photo, 255)
         want_mask = (

@@ -412,7 +412,7 @@ def test_wasm_matches_native_inktext(tmp_path: Path) -> None:
                 ],
             )
             err = error_of(code, payload)
-            check(err is not None and err.kind == "bad_geometry", f"{tag} expected bad_geometry")
+            check(err is not None and err.kind == "bad_geometry", "extreme coord expected bad_geometry")
 
     add_spec(
         "err-2x1-short-buf",
