@@ -449,8 +449,10 @@ test('Checklist #5: idb logo operations use atomic transactions and logoStore ro
   dbRows.set('id1', existing);
 
   const loaded = await idbMod.loadAllLogos();
-  assert.equal(openedVersion, 2, 'IndexedDB version must stay at 2');
-  assert.ok(stores.has('calib') && stores.has('logos'));
+  assert.equal(openedVersion, 3, 'IndexedDB version must be 3 after merging frame + LUT');
+  for (const name of ['calib', 'logos', 'lut_records', 'lut_blobs', 'lut_meta']) {
+    assert.ok(stores.has(name), `missing store ${name}`);
+  }
   assert.equal(loaded.length, 1);
 
   // Calling upgrade check when stores already exist must not throw
@@ -734,6 +736,170 @@ test('S3 Same-Family Audit: LogoStore.rename and remove await in-flight ensureLo
     assert.equal(store.info('l_a')?.name, 'RenamedA', 'committed rename must not be overwritten by earlier ensureLoaded');
     assert.equal(store.info('l_b'), null, 'committed remove must not be resurrected by earlier ensureLoaded');
     assert.deepEqual(store.list().map((x) => x.id), ['l_a']);
+  } finally {
+    globalThis.indexedDB = origIdb;
+  }
+});
+
+test('Merge: IndexedDB v2 -> v3 upgrade preserves LUT-only and logos-only v2 databases', async () => {
+  const origIdb = globalThis.indexedDB;
+
+  function makeV2Db(initialStores) {
+    let currentVersion = 2;
+    const storeMaps = new Map();
+    for (const [name, keyPath] of initialStores) {
+      storeMaps.set(name, { keyPath, rows: new Map() });
+    }
+    return {
+      get version() {
+        return currentVersion;
+      },
+      storeNames() {
+        return [...storeMaps.keys()].sort();
+      },
+      seed(storeName, key, val) {
+        storeMaps.get(storeName).rows.set(key, val);
+      },
+      idb: {
+        open(_name, version = currentVersion) {
+          if (version < currentVersion) {
+            throw new Error(`VersionError: requested ${version} < existing ${currentVersion}`);
+          }
+          const needUpgrade = version > currentVersion;
+          currentVersion = version;
+          const db = {
+            objectStoreNames: { contains: (s) => storeMaps.has(s) },
+            createObjectStore(s, opts) {
+              if (storeMaps.has(s)) throw new Error(`ConstraintError: store ${s} already exists`);
+              storeMaps.set(s, { keyPath: opts?.keyPath ?? null, rows: new Map() });
+            },
+            close() {},
+            transaction(names, _mode) {
+              const list = Array.isArray(names) ? names : [names];
+              for (const n of list) {
+                if (!storeMaps.has(n)) throw new Error(`NotFoundError: missing store ${n}`);
+              }
+              const tx = {
+                error: null,
+                oncomplete: null,
+                onerror: null,
+                onabort: null,
+                objectStore(n) {
+                  const entry = storeMaps.get(n);
+                  const runReq = (fn) => {
+                    const r = { result: undefined, error: null, onsuccess: null, onerror: null };
+                    queueMicrotask(() => {
+                      r.result = fn();
+                      r.onsuccess?.();
+                    });
+                    return r;
+                  };
+                  return {
+                    getAll: () => runReq(() => [...entry.rows.values()]),
+                    get: (k) => runReq(() => entry.rows.get(k)),
+                    put: (val, k) => {
+                      const key = entry.keyPath ? val[entry.keyPath] : k;
+                      entry.rows.set(key, val);
+                      return runReq(() => key);
+                    },
+                    delete: (k) => {
+                      entry.rows.delete(k);
+                      return runReq(() => undefined);
+                    },
+                  };
+                },
+              };
+              queueMicrotask(() => queueMicrotask(() => tx.oncomplete?.()));
+              return tx;
+            },
+          };
+          const req = { result: db, onupgradeneeded: null, onsuccess: null, onerror: null };
+          queueMicrotask(() => {
+            if (needUpgrade) req.onupgradeneeded?.();
+            req.onsuccess?.();
+          });
+          return req;
+        },
+      },
+    };
+  }
+
+  try {
+    const idbMod = await import('../../mobile/src/lib/idb.ts');
+    const allFive = ['calib', 'logos', 'lut_blobs', 'lut_meta', 'lut_records'];
+
+    // Case A: v2 database holding only LUT stores (+ calib), opened at v3 -> gains logos, LUT data unchanged
+    const lutOnly = makeV2Db([
+      ['calib', null],
+      ['lut_records', 'cube_id'],
+      ['lut_blobs', null],
+      ['lut_meta', null],
+    ]);
+    const lutRec = {
+      cube_id: 'cube_v2_1',
+      label: 'Classic Film',
+      filename: 'classic.cube',
+      bytes: 16,
+      n: 2,
+      kind: '3d',
+      domain_min: [0, 0, 0],
+      domain_max: [1, 1, 1],
+      input_space: 'srgb',
+      output_space: 'srgb',
+      input_gamut: null,
+      output_gamut: null,
+      input_range: 'full',
+      output_range: 'full',
+      space_source: 'default',
+      version: 1,
+      savedAt: 42,
+    };
+    const lutBytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]).buffer;
+    lutOnly.seed('lut_records', 'cube_v2_1', lutRec);
+    lutOnly.seed('lut_blobs', 'cube_v2_1', lutBytes);
+    lutOnly.seed('lut_meta', 'order', ['cube_v2_1']);
+    lutOnly.seed('lut_meta', 'watermark', 42);
+
+    globalThis.indexedDB = lutOnly.idb;
+    const logosFromLutV2 = await idbMod.loadAllLogos();
+    assert.equal(lutOnly.version, 3);
+    assert.deepEqual(lutOnly.storeNames(), allFive);
+    assert.deepEqual(logosFromLutV2, []);
+    const restoredLut = await idbMod.loadLutLibraryMeta();
+    assert.equal(restoredLut.records.length, 1);
+    assert.deepEqual(restoredLut.records[0], lutRec);
+    assert.equal(restoredLut.watermark, 42);
+    const restoredBlob = await idbMod.loadLutBlob('cube_v2_1');
+    assert.deepEqual(new Uint8Array(restoredBlob), new Uint8Array(lutBytes));
+
+    // Case B: v2 database holding only logos (+ calib), opened at v3 -> gains LUT stores, logo data unchanged
+    const logosOnly = makeV2Db([
+      ['calib', null],
+      ['logos', 'id'],
+    ]);
+    const logoRec = {
+      id: 'logo_v2_1',
+      name: 'V2Mark',
+      w: 8,
+      h: 8,
+      coverage: 0.4,
+      opaque: false,
+      lum: 120,
+      rgba: new Uint8Array(8 * 8 * 4).fill(200).buffer,
+      createdAt: 77,
+    };
+    logosOnly.seed('logos', 'logo_v2_1', logoRec);
+
+    globalThis.indexedDB = logosOnly.idb;
+    const lutMetaFromLogoV2 = await idbMod.loadLutLibraryMeta();
+    assert.equal(logosOnly.version, 3);
+    assert.deepEqual(logosOnly.storeNames(), allFive);
+    assert.deepEqual(lutMetaFromLogoV2, { records: [], order: [], totalBytes: 0, watermark: 0 });
+    const restoredLogos = await idbMod.loadAllLogos();
+    assert.equal(restoredLogos.length, 1);
+    assert.equal(restoredLogos[0].id, 'logo_v2_1');
+    assert.equal(restoredLogos[0].name, 'V2Mark');
+    assert.equal(restoredLogos[0].rgba.byteLength, 8 * 8 * 4);
   } finally {
     globalThis.indexedDB = origIdb;
   }

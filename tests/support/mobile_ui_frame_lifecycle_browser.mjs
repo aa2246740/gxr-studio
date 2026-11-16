@@ -55,7 +55,21 @@ try {
     }));
     const { cancelHostSheets } = sheetLifecycle;
     const { DEFAULT_FRAME, DEFAULT_STAMP } = await import('/src/lib/frame_spec.ts');
+    const { zeroGeometry } = await import('/src/lib/crop.ts');
+    const { LutBook } = await import('/src/app/lut_book.ts');
+    const { LutGpu } = await import('/src/app/lut_gpu.ts');
     const { readFrameMeta, prepareLogo, computeFrameLayout } = await import('/src/core/api.ts');
+
+    const stubLutBook = new LutBook({
+      importLut: async () => {
+        throw new Error('stub');
+      },
+      restore: async () => ({ records: [], totalBytes: 0, maxVersion: 0 }),
+      patch: async () => ({ ok: false, reason: 'not_found' }),
+      remove: async () => false,
+      readBlob: async () => null,
+    });
+    const stubLutGpu = new LutGpu();
 
     const fail = (msg) => {
       throw new Error(msg);
@@ -108,9 +122,13 @@ try {
         border: { ...DEFAULT_FRAME, ...borderPatch },
         stamp: { ...DEFAULT_STAMP, ...stampPatch },
         frameMeta: null,
+        frame: null,
+        geometry: zeroGeometry(),
+        crop: null,
         choice: null,
         levels: new Map(),
         memory: new Map(),
+        lut: null,
         looks: new Map(),
       };
     }
@@ -1033,6 +1051,9 @@ try {
           watch: () => {},
           perf: () => {},
           book: () => book,
+          lutBook: () => stubLutBook,
+          lutGpu: () => stubLutGpu,
+          pickLut: () => {},
           pickDat: () => {},
           pickCalib: () => {},
           showCalib: () => {},
@@ -1297,6 +1318,9 @@ try {
           watch: () => {},
           perf: () => {},
           book: () => book,
+          lutBook: () => stubLutBook,
+          lutGpu: () => stubLutGpu,
+          pickLut: () => {},
           pickDat: () => {},
           pickCalib: () => {},
           showCalib: () => {},
@@ -1638,6 +1662,9 @@ try {
           watch: () => {},
           perf: () => {},
           book: () => book,
+          lutBook: () => stubLutBook,
+          lutGpu: () => stubLutGpu,
+          pickLut: () => {},
           pickDat: () => {},
           pickCalib: () => {},
           showCalib: () => {},
@@ -1893,6 +1920,155 @@ try {
 
     return res;
   }, { logoBytesArr: logoBytes });
+  await context.close();
+
+  // Isolated BrowserContext: real Chromium IndexedDB v2 -> v3 upgrade for LUT-only and logos-only v2 DBs
+  const context2 = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  try {
+    const idbPageUrl = `${baseUrl.replace(/\/$/, '')}/__idb_v2_to_v3__`;
+    await context2.route(idbPageUrl, (route) =>
+      route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><title>idb</title>' }),
+    );
+    const page2 = await context2.newPage();
+    page2.on('pageerror', (err) => out.pageErrors.push(err.message));
+    await page2.goto(idbPageUrl);
+    out.results.idbV2ToV3UpgradeOk = await page2.evaluate(async () => {
+      const idbMod = await import('/src/lib/idb.ts');
+      const allFive = ['calib', 'logos', 'lut_blobs', 'lut_meta', 'lut_records'];
+      const assert = (cond, msg) => {
+        if (!cond) throw new Error(msg);
+      };
+      const resetDb = () =>
+        new Promise((resolve, reject) => {
+          const req = indexedDB.deleteDatabase('gxr-mobile');
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+          req.onblocked = () => reject(new Error('deleteDatabase blocked'));
+        });
+      const inspectDb = () =>
+        new Promise((resolve, reject) => {
+          const req = indexedDB.open('gxr-mobile');
+          req.onsuccess = () => {
+            const db = req.result;
+            const info = { version: db.version, stores: [...db.objectStoreNames].sort() };
+            db.close();
+            resolve(info);
+          };
+          req.onerror = () => reject(req.error);
+        });
+
+      // 1. v2 database with ONLY LUT stores (+ calib), opened at v3 -> gains logos, LUT data unchanged
+      await resetDb();
+      const lutRec = {
+        cube_id: 'cube_real_v2',
+        label: 'Real V2 LUT',
+        filename: 'real_v2.cube',
+        bytes: 8,
+        n: 2,
+        kind: '3d',
+        domain_min: [0, 0, 0],
+        domain_max: [1, 1, 1],
+        input_space: 'srgb',
+        output_space: 'srgb',
+        input_gamut: null,
+        output_gamut: null,
+        input_range: 'full',
+        output_range: 'full',
+        space_source: 'default',
+        version: 1,
+        savedAt: 99,
+      };
+      const lutBlob = new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]).buffer;
+      await new Promise((resolve, reject) => {
+        const req = indexedDB.open('gxr-mobile', 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          db.createObjectStore('calib');
+          db.createObjectStore('lut_records', { keyPath: 'cube_id' });
+          db.createObjectStore('lut_blobs');
+          db.createObjectStore('lut_meta');
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(['lut_records', 'lut_blobs', 'lut_meta'], 'readwrite');
+          tx.objectStore('lut_records').put(lutRec);
+          tx.objectStore('lut_blobs').put(lutBlob, 'cube_real_v2');
+          tx.objectStore('lut_meta').put(['cube_real_v2'], 'order');
+          tx.objectStore('lut_meta').put(99, 'watermark');
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+
+      const logosAfterLutUpgrade = await idbMod.loadAllLogos();
+      const infoA = await inspectDb();
+      assert(infoA.version === 3, `expected v3 after LUT-only upgrade, got ${infoA.version}`);
+      assert(JSON.stringify(infoA.stores) === JSON.stringify(allFive), `stores mismatch A: ${infoA.stores}`);
+      assert(logosAfterLutUpgrade.length === 0, 'expected empty logos store after LUT-only upgrade');
+      const lutMeta = await idbMod.loadLutLibraryMeta();
+      assert(lutMeta.records.length === 1 && lutMeta.records[0].label === 'Real V2 LUT', 'LUT record lost on upgrade');
+      assert(lutMeta.watermark === 99, 'LUT watermark lost on upgrade');
+      const gotBlob = await idbMod.loadLutBlob('cube_real_v2');
+      assert(
+        gotBlob && JSON.stringify([...new Uint8Array(gotBlob)]) === JSON.stringify([10, 20, 30, 40, 50, 60, 70, 80]),
+        'LUT blob lost on upgrade',
+      );
+
+      // 2. v2 database with ONLY logos (+ calib), opened at v3 -> gains LUT stores, logo data unchanged
+      await resetDb();
+      const logoRow = {
+        id: 'logo_real_v2',
+        name: 'RealV2Logo',
+        w: 4,
+        h: 4,
+        coverage: 0.5,
+        opaque: false,
+        lum: 80,
+        rgba: new Uint8Array(4 * 4 * 4).fill(180).buffer,
+        createdAt: 123,
+      };
+      await new Promise((resolve, reject) => {
+        const req = indexedDB.open('gxr-mobile', 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          db.createObjectStore('calib');
+          db.createObjectStore('logos', { keyPath: 'id' });
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction('logos', 'readwrite');
+          tx.objectStore('logos').put(logoRow);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+
+      const lutAfterLogoUpgrade = await idbMod.loadLutLibraryMeta();
+      const infoB = await inspectDb();
+      assert(infoB.version === 3, `expected v3 after logos-only upgrade, got ${infoB.version}`);
+      assert(JSON.stringify(infoB.stores) === JSON.stringify(allFive), `stores mismatch B: ${infoB.stores}`);
+      assert(lutAfterLogoUpgrade.records.length === 0 && lutAfterLogoUpgrade.totalBytes === 0, 'expected empty LUT stores');
+      const logosRestored = await idbMod.loadAllLogos();
+      assert(
+        logosRestored.length === 1 &&
+          logosRestored[0].id === 'logo_real_v2' &&
+          logosRestored[0].name === 'RealV2Logo' &&
+          logosRestored[0].rgba.byteLength === 64,
+        'logo row lost on upgrade',
+      );
+      return true;
+    });
+  } finally {
+    await context2.close();
+  }
 } finally {
   await browser.close();
 }
