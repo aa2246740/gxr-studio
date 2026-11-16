@@ -2,7 +2,8 @@
 
 use gxr_finish::geometry::bounds::{checked_mul_u64, fit_count, too_big};
 use gxr_finish::ink::{
-    InkImage, InkMode, LogoInput, mean_f32, mean_u8_as_f32, pairwise_sum_f32, run_ink_ops,
+    InkImage, InkMode, LogoInput, gaussian_blur, mean_f32, mean_u8_as_f32, pairwise_sum_f32,
+    run_ink_ops,
 };
 use gxr_raw::{CoreError, Json};
 
@@ -12,6 +13,7 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
     let json = match command {
         "ink-ops" => cmd_ink_ops(args)?,
         "ink-reduce" => cmd_ink_reduce(args)?,
+        "ink-blur" => cmd_ink_blur(args)?,
         _ => return Err(Failure::Usage(format!("unknown command {command:?}"))),
     };
     Ok(Output {
@@ -253,5 +255,34 @@ fn cmd_ink_reduce(args: &[String]) -> Result<Json, Failure> {
         ("op", Json::str(op)),
         ("bits", Json::Int(i64::from(bits))),
         ("hex", Json::str(format!("{bits:08x}"))),
+    ]))
+}
+
+fn cmd_ink_blur(args: &[String]) -> Result<Json, Failure> {
+    let in_path = common::option(args, "--in")?;
+    let out_path = common::option(args, "--out")?;
+    let mode_override = opt_str(args, "--mode")?;
+    let radius: f64 = common::option(args, "--radius")?
+        .parse()
+        .map_err(|_| usage("invalid --radius"))?;
+    let yradius: f64 = match opt_str(args, "--y-radius")? {
+        Some(v) => v.parse().map_err(|_| usage("invalid --y-radius"))?,
+        None => radius,
+    };
+    let im = read_image_npy(in_path, mode_override)?;
+    let out = gaussian_blur(&im, radius, yradius)?;
+    let out_shape: Vec<usize> = match out.mode {
+        InkMode::L => vec![out.height, out.width],
+        InkMode::Rgb => vec![out.height, out.width, 3],
+        InkMode::Rgba => vec![out.height, out.width, 4],
+    };
+    let _ = write_npy_u8(out_path, &out_shape, &out.data)?;
+    Ok(Json::object([
+        ("out", Json::str(out_path)),
+        ("mode", Json::str(out.mode.as_str())),
+        (
+            "shape",
+            Json::ints(&out_shape.iter().map(|&d| d as i64).collect::<Vec<_>>()),
+        ),
     ]))
 }

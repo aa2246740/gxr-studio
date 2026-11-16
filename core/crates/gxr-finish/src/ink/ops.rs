@@ -4,10 +4,14 @@ use gxr_raw::CoreError;
 
 use crate::geometry::bounds::{checked_add_u64, checked_mul_u64, fit_count};
 use crate::geometry::json::{JsonValue, parse_json};
+use crate::ink::blur::gaussian_blur;
 use crate::ink::draw::{draw_ellipse, draw_line, draw_polygon, draw_rectangle};
 use crate::ink::draw_arc::draw_rounded_rectangle;
 use crate::ink::image::{InkImage, InkMode};
 use crate::ink::paste::{paste_color, paste_image};
+use crate::ink::shapes::{
+    RectItem, ShadowItem, paint_ellipse, paint_hole, paint_poly, paint_rect, paint_shadow,
+};
 use crate::raster::bounds::checked_rgba_slice;
 
 /// An RGBA logo input passed into [`run_ink_ops`].
@@ -431,6 +435,74 @@ fn apply_op(
             if let Some(fill) = parse_opt_ink3(step.get("fill"))? {
                 draw_line(img, &pts, fill, width)?;
             }
+        }
+        "gaussian_blur" => {
+            let rx = opt_f64(step, "radius", 0.0, "radius must be finite")?;
+            let ry = opt_f64(step, "y_radius", rx, "y_radius must be finite")?;
+            *img = gaussian_blur(img, rx, ry)?;
+        }
+        "paint_rect" => {
+            let item = RectItem {
+                x: req_int(step, "x", "paint_rect requires int x")?,
+                y: req_int(step, "y", "paint_rect requires int y")?,
+                w: req_int(step, "w", "paint_rect requires int w")?,
+                h: req_int(step, "h", "paint_rect requires int h")?,
+                radius: opt_f64(step, "radius", 0.0, "radius must be finite")?,
+                fill: parse_opt_ink3(step.get("fill"))?,
+                outline: parse_opt_ink3(step.get("outline"))?,
+                stroke_w: opt_f64(step, "stroke_w", 1.0, "stroke_w must be finite")?,
+                alpha: opt_f64(step, "alpha", 1.0, "alpha must be finite")?,
+            };
+            paint_rect(img, &item)?;
+        }
+        "paint_poly" => {
+            let pts = parse_pts(step.get("pts"), "paint_poly requires pts")?;
+            let fill = parse_opt_ink3(step.get("fill"))?
+                .ok_or_else(|| bad_ops("paint_poly requires fill"))?;
+            let alpha = opt_f64(step, "alpha", 1.0, "alpha must be finite")?;
+            paint_poly(img, &pts, fill, alpha)?;
+        }
+        "paint_ellipse" => {
+            let cx = req_f64(step, "cx", "paint_ellipse requires cx")?;
+            let cy = req_f64(step, "cy", "paint_ellipse requires cy")?;
+            let r = req_f64(step, "r", "paint_ellipse requires r")?;
+            let fill = parse_opt_ink3(step.get("fill"))?
+                .ok_or_else(|| bad_ops("paint_ellipse requires fill"))?;
+            let alpha = opt_f64(step, "alpha", 1.0, "alpha must be finite")?;
+            paint_ellipse(img, cx, cy, r, fill, alpha)?;
+        }
+        "paint_hole" => {
+            let x = req_int(step, "x", "paint_hole requires int x")?;
+            let y = req_int(step, "y", "paint_hole requires int y")?;
+            let w = req_int(step, "w", "paint_hole requires int w")?;
+            let h = req_int(step, "h", "paint_hole requires int h")?;
+            let radius = opt_f64(step, "radius", 0.0, "radius must be finite")?;
+            let base_reg = step
+                .get("base_reg")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("base");
+            let base = if base_reg == "$canvas" {
+                canvas_opt.ok_or_else(|| bad_ops("no main canvas"))?
+            } else {
+                find_reg(regs, base_reg)?
+            };
+            paint_hole(img, x, y, w, h, radius, base)?;
+        }
+        "paint_shadow" => {
+            let color = parse_opt_ink3(step.get("color"))?.unwrap_or([0, 0, 0]);
+            let item = ShadowItem {
+                x: req_int(step, "x", "paint_shadow requires int x")?,
+                y: req_int(step, "y", "paint_shadow requires int y")?,
+                w: req_int(step, "w", "paint_shadow requires int w")?,
+                h: req_int(step, "h", "paint_shadow requires int h")?,
+                blur: req_f64(step, "blur", "paint_shadow requires blur")?,
+                dx: opt_int(step, "dx", 0, "dx must be int")?,
+                dy: opt_int(step, "dy", 0, "dy must be int")?,
+                radius: opt_f64(step, "radius", 0.0, "radius must be finite")?,
+                alpha: opt_f64(step, "alpha", 0.3, "alpha must be finite")?,
+                color,
+            };
+            paint_shadow(img, &item)?;
         }
         _ => return Err(bad_ops("unsupported ink op")),
     }
