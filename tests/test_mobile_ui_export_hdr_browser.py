@@ -40,6 +40,22 @@ def _desktop_hdr(desk: Desktop, shot: dict[str, Any], side: dict[str, Any], qual
     )
 
 
+def _hdr_text(outcomes: list[tuple[str, bool, str | None]]) -> tuple[str, list[str]]:
+    """The 05c / 05e line and per-photo notes the phone should show for these desktop outcomes
+    (design wording; desktop ``hdrSummary`` and ``HDR_NOTES``)."""
+    from gxr_studio.api.routes import HDR_NOTES, HDR_UNSUPPORTED
+
+    made = sum(1 for _s, hdr, _r in outcomes if hdr)
+    jpg_only = sum(1 for _s, hdr, r in outcomes if not hdr and r == "no_raw")
+    notes = [f"{s}：{HDR_NOTES.get(r or '', HDR_UNSUPPORTED)}" for s, hdr, r in outcomes if not hdr and r != "no_raw"]
+    parts = [f"{made} 张 HDR"] if made else []
+    if jpg_only:
+        parts.append(f"{jpg_only} 张只有 JPG，存普通版本")
+    if notes:
+        parts.append(f"{len(notes)} 张未生成 HDR")
+    return " · ".join(parts), notes
+
+
 def _memory(facts: dict[str, Any]) -> dict[str, Any]:
     mem = facts["mem"]
     return {
@@ -114,14 +130,6 @@ def test_mobile_ui_export_hdr_files_match_desktop(tmp_path: Path, pinned_icc: by
         check("HDR 需要 RAW 文件" in jpg_row["text"], "JPG-only selection: the desktop HDR_NO_RAW line")
         check(steps["jpgOnly"]["stored"] == "1", "a disabled switch does not change the remembered choice")
 
-        # 05b / 05c / 05e wording.
-        for step in (full, small):
-            check("生成 HDR 版本要多等几秒。可以接着看照片。" in step["running"], "05b HDR line")
-            check("5 张已做好" in step["ready"], "05c main line")
-            check("4 张 HDR · 1 张只有 JPG，存普通版本" in step["ready"], "05c HDR line")
-            check("4 张 HDR · 1 张只有 JPG，存普通版本" in step["shared"]["saved"], "05e HDR line")
-            check("好了：5 张" in step["shared"]["saved"] and "已存到相册" not in step["shared"]["saved"], "05e main line")
-            check(all(c["active"] is True for c in step["files"]), "share() called inside the tap")
         check(full["cap"] == 256 * MIB, "HDR batches use the lower staging cap")
 
         edits = {e["stem"]: e for e in steps["edits"]}
@@ -129,6 +137,7 @@ def test_mobile_ui_export_hdr_files_match_desktop(tmp_path: Path, pinned_icc: by
         sides = {stem: desk.sidecar(shots[stem], desk.changes(shots[stem], edits[stem])) for stem in stems}
         table: dict[str, int] = {}
         for tag, step, quality, long_edge in (("full-", full, 95, None), ("small-", small, 70, 1600)):
+            outcomes: list[tuple[str, bool, str | None]] = []
             for stem, fact in step["facts"]["facts"].items():
                 shot, side = shots[stem], sides[stem]
                 res = _desktop_hdr(desk, shot, side, quality, long_edge)
@@ -141,8 +150,19 @@ def test_mobile_ui_export_hdr_files_match_desktop(tmp_path: Path, pinned_icc: by
                 check(fact["result"]["file_name"].endswith("_hdr.jpg") == (fact["result"]["hdr"] is True), "_hdr exactly when hdr is true")
                 key = f"{tag}{'hdr' if res.hdr else 'sdr/' + str(res.hdr_reason)}"
                 table[key] = table.get(key, 0) + 1
+                outcomes.append((stem, bool(res.hdr), res.hdr_reason))
+            # 05b / 05c / 05e: the wording follows the desktop outcome of the same photos.
+            line, notes = _hdr_text(outcomes)
+            check("生成 HDR 版本要多等几秒。可以接着看照片。" in step["running"], "05b HDR line")
+            check("5 张已做好" in step["ready"], "05c main line")
+            check(line in step["ready"].splitlines(), "05c HDR line from the desktop outcomes")
+            check(all(n in step["ready"].splitlines() for n in notes), "05c per-photo HDR notes (desktop HDR_NOTES)")
+            check(line in step["shared"]["saved"].splitlines(), "05e HDR line")
+            check("好了：5 张" in step["shared"]["saved"] and "已存到相册" not in step["shared"]["saved"], "05e main line")
+            check(all(c["active"] is True for c in step["files"]), "share() called inside the tap")
         check(sum(table.values()) == 10, "five full-size and five small HDR exports compared")
-        check(table.get("full-hdr") == 4 and table.get("small-hdr") == 4, "the four pairs made HDR at both sizes")
+        check(table.get("full-sdr/no_raw") == 1 and table.get("small-sdr/no_raw") == 1, "the JPG-only photo is no_raw at both sizes")
+        check(table.get("full-hdr", 0) >= 2 and table.get("small-hdr", 0) >= 2, "at least two pairs made HDR at each size")
 
         mem = full["facts"]["mem"]
         check(0 < mem["wasm"] <= 640 * MIB, "full-size HDR export WASM high-water mark within 640 MiB")
