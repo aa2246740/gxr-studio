@@ -363,9 +363,169 @@ async function runRawClosedBitmap() {
   out.steps.uncalibrated = await checkRawNeutralCropCase([dng, jpg, dat], 'uncalibrated', stem);
 }
 
+async function runNeutralReopen() {
+  const { dng, jpg, jpgB, dngC, stemA, stemB } = manifest;
+  const page = await newPage();
+  await page.evaluate(async () => {
+    const { EditorView } = await import('/src/app/editor.ts');
+    const origOpen = EditorView.prototype.open;
+    EditorView.prototype.open = function (...args) {
+      window.__editor = this;
+      return origOpen.apply(this, args);
+    };
+  });
+  await pickAll(page, manifest, [dng, jpg, jpgB]);
+  await openPhoto(page, stemA);
+  await page.waitForFunction(() => document.querySelector('.strip[data-recipes]')?.dataset.state === 'no-recipe-file', null, { timeout: 60_000 });
+  await page.waitForFunction(() => document.querySelectorAll('.strip[data-recipes] .rc .th canvas').length >= 8, null, { timeout: 60_000 });
+
+  await page.evaluate(() => {
+    const engine = window.__gxrEngine;
+    const origThumb = engine.thumb.bind(engine);
+    let holdOnce = true;
+    window.__releaseNeutralThumb = null;
+    window.__neutralThumbHeld = false;
+    engine.thumb = async (...args) => {
+      const reply = await origThumb(...args);
+      if (holdOnce) {
+        holdOnce = false;
+        window.__neutralThumbHeld = true;
+        await new Promise((resolve) => {
+          window.__releaseNeutralThumb = resolve;
+        });
+      }
+      return reply;
+    };
+  });
+
+  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.waitForSelector('.crop-panel');
+  const xpan = page.locator('.crop-panel .chips button[data-preset="xpan-65-24"]');
+  await xpan.scrollIntoViewIfNeeded();
+  await xpan.click();
+  await page.waitForFunction(
+    (s) => {
+      const row = window.__gxrEdits?.().find((r) => r.stem === s);
+      return row?.rev === 1 && row?.crop?.preset === 'xpan-65-24' && window.__neutralThumbHeld === true;
+    },
+    stemA,
+    { timeout: 60_000 },
+  );
+
+  // A -> B -> A with same version & rev while first EditorView's Engine.thumb reply is held
+  await backToGrid(page);
+  await openPhoto(page, stemB);
+  await backToGrid(page);
+  await openPhoto(page, stemA);
+  await page.waitForFunction(
+    () => {
+      const canvases = [...document.querySelectorAll('.strip[data-recipes] .rc .th[data-cropped="1"] canvas')];
+      return canvases.length >= 8 && canvases.every((c) => c.width > c.height * 2);
+    },
+    null,
+    { timeout: 60_000 },
+  );
+
+  const before = await page.evaluate(() => {
+    const ed = window.__editor;
+    window.__freshNeutral = ed.photo.neutral;
+    const row = {
+      freshWidth: window.__freshNeutral?.bitmap?.width ?? 0,
+      rev: ed.photo.rev,
+      version: ed.photo.version,
+      session: ed.api.session(),
+      cards: document.querySelectorAll('.strip[data-recipes] .rc .th canvas').length,
+    };
+    window.__releaseNeutralThumb?.();
+    return row;
+  });
+  await page.waitForTimeout(350);
+  const after = await page.evaluate(() => {
+    const ed = window.__editor;
+    const p = ed.photo;
+    return {
+      sameNeutral: p.neutral === window.__freshNeutral,
+      freshWidth: window.__freshNeutral?.bitmap?.width ?? 0,
+      liveWidth: p.neutral?.bitmap?.width ?? 0,
+      viewMatchesModel: ed.recipes?.neutralBitmap === p.neutral?.bitmap,
+      rev: p.rev,
+      version: p.version,
+      session: ed.api.session(),
+    };
+  });
+
+  // Import real DAT and confirm neutral cards remain visible across refresh
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles([manifest.dat]);
+  await page.waitForFunction(() => document.querySelector('.strip[data-recipes]')?.dataset.state === 'uncalibrated', null, { timeout: 60_000 });
+  await page.waitForTimeout(200);
+  const refresh = await page.evaluate(() => ({
+    cards: document.querySelectorAll('.strip[data-recipes] .rc .th canvas').length,
+    slots: document.querySelectorAll('.strip[data-recipes] .rc .th').length,
+    cropErr: document.querySelector('.crop-err:not([hidden])')?.textContent?.trim() ?? null,
+  }));
+
+  // Also test stale load() continuation after showRaw() does not call prefetch() once EditorView advances
+  await backToGrid(page);
+  await pickAll(page, { count: 3 }, [dngC]);
+  await openPhoto(page, stemB);
+  const prefetchGuard = await page.evaluate(async ({ sB, sC }) => {
+    const { CropStage } = await import('/src/app/crop_stage.ts');
+    const ed = window.__editor;
+    const photos = ed.api.photos();
+    const photoC = photos.find((p) => p.stem === sC);
+    const prevIdx = photos.findIndex((p, i) => i < photos.length - 1 && p.stem !== sC && Boolean(photos[i + 1].dng));
+    const prevPhoto = prevIdx >= 0 ? photos[prevIdx] : photos.find((p) => p.stem === sB);
+    const prevNext = photos[photos.indexOf(prevPhoto) + 1];
+    const readFullCalls = [];
+    const origReadFull = ed.api.readFull.bind(ed.api);
+    ed.api.readFull = (p) => {
+      readFullCalls.push(p.stem);
+      return origReadFull(p);
+    };
+    const origApply = CropStage.prototype.applyPreviewGeometry;
+    let releaseBox = null;
+    let holdOnce = true;
+    CropStage.prototype.applyPreviewGeometry = function (...args) {
+      if (holdOnce) {
+        holdOnce = false;
+        return new Promise((resolve) => {
+          releaseBox = () => {
+            releaseBox = null;
+            resolve(origApply.apply(this, args));
+          };
+        });
+      }
+      return origApply.apply(this, args);
+    };
+    try {
+      ed.open(photoC);
+      const loadC = ed.settled;
+      for (let i = 0; i < 400 && !releaseBox; i += 1) await new Promise((r) => setTimeout(r, 25));
+      if (!releaseBox) throw new Error('applyPreviewGeometry was not reached during load(photoC)');
+      const holdRelease = releaseBox;
+      ed.open(prevPhoto);
+      await ed.settled;
+      const countAfterReopen = readFullCalls.length;
+      holdRelease();
+      await loadC;
+      await new Promise((r) => setTimeout(r, 50));
+      return {
+        staleCalls: readFullCalls.slice(countAfterReopen),
+        hadNextRaw: Boolean(prevNext?.dng),
+      };
+    } finally {
+      CropStage.prototype.applyPreviewGeometry = origApply;
+    }
+  }, { sB: stemB, sC: dngC.replace(/^.*\//, '').replace(/\.[^.]+$/, '') });
+
+  await page.close();
+  out.steps.neutralReopen = { before, after, refresh, prefetchGuard };
+}
+
 try {
   if (manifest.mode === 'staleAndCancel') await runStaleAndCancel();
   else if (manifest.mode === 'rawClosedBitmap') await runRawClosedBitmap();
+  else if (manifest.mode === 'neutralReopen') await runNeutralReopen();
   else throw new Error(`unknown regression mode: ${manifest.mode}`);
 } catch (error) {
   out.error = String(error?.stack ?? error);

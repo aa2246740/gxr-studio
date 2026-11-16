@@ -213,7 +213,6 @@ def test_histogram_updates_on_content_and_rests_when_idle(server: dict[str, Any]
 def test_later_tabs_keep_the_design_layout_disabled(server: dict[str, Any]) -> None:
     data = run_case(server, "later-tabs")
     want = {
-        "裁剪": ["原始", "XPan 65:24", "小红书 3:4", "横向", "竖向", "参考线：三等分", "拉直", "0.0°"],
         "边框": [
             "无",
             "徕卡水印",
@@ -244,7 +243,6 @@ def test_later_tabs_keep_the_design_layout_disabled(server: dict[str, Any]) -> N
         # 有真控件，而且一个都不能点。
         assert panel["controls"] >= 4 and panel["enabled"] == 0, (tab, panel)
     assert data["tabs"]["曲线"]["svg"] == 1
-    assert data["tabs"]["裁剪"]["inputs"] == 1
     assert data["tabs"]["边框"]["inputs"] == 1
 
 

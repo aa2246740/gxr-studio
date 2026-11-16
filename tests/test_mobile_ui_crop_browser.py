@@ -393,3 +393,48 @@ def test_mobile_ui_crop_raw_closed_bitmap_and_error_banner_browser(tmp_path: Pat
     check(uncal["preset"] == "xpan-65-24" and uncal["rev"] == 1, "uncalibrated: valid XPan crop saved cleanly")
     uncal_card = uncal["afterCard"]
     check(uncal_card is not None and uncal_card["w"] > uncal_card["h"] * 2, "uncalibrated: cropped XPan neutral card redrawn cleanly")
+
+
+def test_mobile_ui_crop_neutral_reopen_and_editor_lifecycle_browser(tmp_path: Path) -> None:
+    """Sol r2 P2-01: A -> B -> A reopen keeps fresh neutral bitmap alive across delayed Engine.thumb, and stale load does not prefetch."""
+    from PIL import Image
+
+    pairs = mx.real_pairs(1)
+    if not pairs:
+        samples.missing(f"need a DNG+JPG pair in {mx.SAMPLE_DIR}")
+    dat = _local_dat()
+    _prereq()
+    dng, jpg = pairs[0]
+    jpg_b = tmp_path / "R9991002.JPG"
+    Image.new("RGB", (640, 480), (70, 110, 160)).save(jpg_b, format="JPEG", quality=92)
+    os.utime(jpg_b, (1_700_000_010, 1_700_000_010))
+    dng_c = mx.copy_as(dng, tmp_path / "R9991003.DNG")
+    os.utime(dng_c, (1_700_000_020, 1_700_000_020))
+
+    report = _run_driver(
+        tmp_path,
+        {
+            "mode": "neutralReopen",
+            "count": 2,
+            "stemA": dng.stem,
+            "stemB": jpg_b.stem,
+            "dng": str(dng),
+            "jpg": str(jpg),
+            "jpgB": str(jpg_b),
+            "dngC": str(dng_c),
+            "dat": str(dat),
+        },
+        timeout=900,
+        driver=REG_DRIVER,
+    )
+    check(report["pageErrors"] == [], "no page errors")
+    res = report["steps"]["neutralReopen"]
+    before, after, refresh = res["before"], res["after"], res["refresh"]
+    check(before["freshWidth"] > 0 and before["cards"] >= 8, "new editor drew neutral cards before releasing stale thumb")
+    check(after["sameNeutral"] is True, "stale neutralCards did not replace fresh photo.neutral cache object")
+    check(after["freshWidth"] > 0 and after["liveWidth"] > 0, "fresh neutral ImageBitmap stayed alive (width > 0)")
+    check(after["viewMatchesModel"] is True, "RecipeView neutralBitmap matches model photo.neutral.bitmap")
+    check(after["rev"] == before["rev"] and after["version"] == before["version"], "rev and version stayed unchanged")
+    check(refresh["cards"] >= 8 and refresh["cropErr"] is None, "DAT refresh preserves >= 8 real thumbnails without crop error")
+    check(res["prefetchGuard"]["hadNextRaw"] is True, "prevPhoto has a RAW neighbor to guard against stale prefetch")
+    check(res["prefetchGuard"]["staleCalls"] == [], "stale load() after showRaw() did not call prefetch()")
