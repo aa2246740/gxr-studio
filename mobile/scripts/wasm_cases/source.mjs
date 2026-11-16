@@ -1,7 +1,7 @@
 // 导出底图：source_plan、source_render 和 source_selection。每个输入是一份 JSON，列出这一例要用的文件（测试现场生成）。
 // plan:      {"kind": "plan", "shot", "edit", "dat"?, "library"?, "entry"?, "calib"?, "binding"?}
 // render:    {"kind": "render", "dng", "entry", "stock", "unit", "calib", "iso", "adjust"?, "out"}
-// selection: {"kind": "selection", "shot", "edit", "base"}
+// selection: {"kind": "selection", "shot", "edit", "base", "space"?}
 // iso 可以写成字符串（"NaN"、"Infinity"、"4294967297"）：CLI 收到原文，WASM 收到 Number(原文)。
 // calib 是一个文件夹：CLI 读里面每个文件，WASM 按文件名排序后拼成一段字节加清单。
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -50,10 +50,13 @@ export function cases(inputs) {
         },
       });
     } else if (spec.kind === 'selection') {
+      const cliArgs = ['source-selection', '--shot', spec.shot, '--edit', spec.edit, '--base', spec.base];
+      if (spec.space) cliArgs.push('--space', spec.space);
       out.push({
         label: `${file}::source_selection`,
-        cliArgs: ['source-selection', '--shot', spec.shot, '--edit', spec.edit, '--base', spec.base],
-        wasm: (mod) => mod.source_selection(bytes(spec.shot), bytes(spec.edit), spec.base),
+        cliArgs,
+        wasm: (mod) =>
+          mod.source_selection(bytes(spec.shot), bytes(spec.edit), spec.base, spec.space ? bytes(spec.space) : empty),
       });
     } else if (spec.kind === 'render') {
       const cliArgs = ['source-render', '--dng', spec.dng, '--entry', spec.entry, '--stock', spec.stock];

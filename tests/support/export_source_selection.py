@@ -128,14 +128,17 @@ def desktop_hint(render: Any, lib: Any, shot: dict[str, Any], edit: EditState, b
     return {"kind": sel.kind, "unit": sel.unit, "slot": sel.slot, "defaulted": used.recipe is None}, outcome
 
 
-def cli_selection(shot: dict[str, Any], edit: EditState | str, base: str, tmp: Path) -> Any:
+def cli_selection(shot: dict[str, Any], edit: EditState | str, base: str, tmp: Path, space: Path | None = None) -> Any:
     shot_path = xs.write_json(tmp / "shot.json", shot)
     if isinstance(edit, str):
         edit_path = tmp / "edit.json"
         edit_path.write_text(edit, encoding="utf-8")
     else:
         edit_path = xs.write_json(tmp / "edit.json", xs.edit_json(edit))
-    code, payload = run_json(["source-selection", "--shot", str(shot_path), "--edit", str(edit_path), "--base", base])
+    args = ["source-selection", "--shot", str(shot_path), "--edit", str(edit_path), "--base", base]
+    if space is not None:
+        args += ["--space", str(space)]
+    code, payload = run_json(args)
     assert code == 0, payload
     return payload["selection"]
 
@@ -199,6 +202,106 @@ def write_wasm_specs(files: dict[str, Path], tmp: Path) -> list[Path]:
             xs.write_json(
                 folder / "spec.json",
                 {"kind": "selection", "shot": str(shot_path), "edit": str(edit_path), "base": case.base},
+            )
+        )
+    return specs
+
+
+_SPACE_FIELDS = {"output_space": "srgb", "input_gamut": None, "output_gamut": None, "input_range": "full", "output_range": "full"}
+LUT_SPACES = {"scene": {"input_space": "slog3", **_SPACE_FIELDS}, "display": {"input_space": "srgb", **_SPACE_FIELDS}}
+
+
+def _lut_rows() -> list[tuple[str, str, str, str]]:
+    """(name, lut kind, base, expect) for one RAW-only photo.
+
+    A scene LUT never plans. A display LUT keeps the no-LUT rule for that base.
+    """
+    rows = []
+    for kind in ("scene", "display"):
+        for base in ("auto", "neutral", "standard"):
+            expect = "scene" if kind == "scene" else ("neutral" if base == "neutral" else "stock")
+            rows.append((f"{kind}/{base}", kind, base, expect))
+    rows.append(("scene/auto/recipe", "scene", "auto", "scene"))
+    rows.append(("display/auto/recipe", "display", "auto", "recipe"))
+    return rows
+
+
+def _prepare_luts(tmp: Path) -> tuple[dict[str, Any], dict[str, Path]]:
+    from support.export_source_run import Lut
+    from support.lut_cases import cube_text
+
+    text = cube_text(size=2)
+    luts: dict[str, Any] = {}
+    spaces: dict[str, Path] = {}
+    for name, spec in LUT_SPACES.items():
+        luts[name] = Lut(tmp, text, spec, name)
+        spaces[name] = xs.write_json(tmp / f"{name}-space.json", spec)
+    return luts, spaces
+
+
+def _lut_edit(kind: str, named: str) -> EditState:
+    recipe = RecipeSel("qlaunch", 2) if named.endswith("/recipe") else None
+    return EditState(recipe=recipe, lut=kind)
+
+
+def _expect_lut(name: str, expect: str, desktop: dict[str, Any] | None, outcome: dict[str, Any]) -> None:
+    if expect == "scene":
+        assert desktop is None, (name, desktop)
+        assert "error" not in outcome, (name, outcome.get("error"))
+        assert outcome.get("id") == "lut-prediction" and outcome.get("from_raw") is False, (name, outcome.get("id"))
+        return
+    if expect == "neutral":
+        assert desktop is None, (name, desktop)
+        assert outcome.get("id") == "lut-prediction" and outcome.get("from_raw") is False, (name, outcome.get("id"))
+        return
+    if expect == "recipe":
+        assert desktop == {"kind": "builtin", "unit": "qlaunch", "slot": 2, "defaulted": False}, (name, desktop)
+        return
+    assert expect == "stock", expect
+    assert desktop == {"kind": "builtin", "unit": "jlaunch", "slot": 4, "defaulted": True}, (name, desktop)
+
+
+def run_lut_matrix(homes: dict[str, Any], files: dict[str, Path], tmp: Path) -> int:
+    """Scene LUT hint is null. Display LUT hint matches the desktop's no-LUT rule."""
+    shot = shots(files)["raw-50"]
+    luts, spaces = _prepare_luts(tmp)
+    n = 0
+    for name, kind, base, expect in _lut_rows():
+        edit = _lut_edit(kind, name)
+        for home in HOMES:
+            render = homes[home].render
+            saved = render.luts
+            render.luts = luts[kind]
+            try:
+                desktop, outcome = desktop_hint(render, homes[home].lib, shot, edit, base)
+            finally:
+                render.luts = saved
+            cli = cli_selection(shot, edit, base, tmp, spaces[kind])
+            assert cli == desktop, (name, home, cli, desktop)
+            _expect_lut(name, expect, desktop, outcome)
+            n += 1
+    return n
+
+
+def write_lut_wasm_specs(files: dict[str, Path], tmp: Path) -> list[Path]:
+    """The same LUT rows, one native/WASM spec each. The hint does not read the DAT."""
+    shot_path = xs.write_json(tmp / "shot.json", shots(files)["raw-50"])
+    _luts, spaces = _prepare_luts(tmp)
+    specs: list[Path] = []
+    for name, kind, base, _expect in _lut_rows():
+        folder = tmp / name
+        folder.mkdir(parents=True, exist_ok=True)
+        edit_path = xs.write_json(folder / "edit.json", xs.edit_json(_lut_edit(kind, name)))
+        specs.append(
+            xs.write_json(
+                folder / "spec.json",
+                {
+                    "kind": "selection",
+                    "shot": str(shot_path),
+                    "edit": str(edit_path),
+                    "base": base,
+                    "space": str(spaces[kind]),
+                },
             )
         )
     return specs

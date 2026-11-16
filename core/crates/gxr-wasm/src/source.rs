@@ -50,11 +50,24 @@ pub fn source_plan(
 }
 
 /// `source-selection`: which recipe `color_image` will plan. `{"selection":null}` for
-/// `camera-jpg` and `neutral` (the desktop does not plan a recipe). Same JSON as the CLI,
-/// including the newline `println!` adds.
+/// `camera-jpg`, `neutral`, and a scene-referred LUT. `space_json` is the `--space` text;
+/// empty means the caller did not pass one. Same JSON as the CLI, including the newline.
 #[wasm_bindgen]
-pub fn source_selection(shot_json: &[u8], edit_json: &[u8], base: &str) -> Result<String, JsValue> {
-    let text = selection_json(shot_json, edit_json, base).map_err(|e| rejected(&e))?;
+pub fn source_selection(
+    shot_json: &[u8],
+    edit_json: &[u8],
+    base: &str,
+    space_json: &[u8],
+) -> Result<String, JsValue> {
+    let space = if space_json.is_empty() {
+        None
+    } else {
+        Some(
+            std::str::from_utf8(space_json)
+                .map_err(|_| rejected(&CoreError::new("bad_request", "--space is not UTF-8")))?,
+        )
+    };
+    let text = selection_json(shot_json, edit_json, base, space).map_err(|e| rejected(&e))?;
     Ok(format!("{text}\n"))
 }
 

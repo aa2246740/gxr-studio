@@ -3,7 +3,7 @@
 //! ```text
 //! source-plan --shot S.json --edit E.json [--dat GXRCE.DAT [--library GXRFX.BIN]]
 //!             [--entry ENTRY.bin] [--calib DIR] [--binding TEXT]
-//! source-selection --shot S.json --edit E.json --base MODE
+//! source-selection --shot S.json --edit E.json --base MODE [--space SPACE.json]
 //! source-render --dng FILE --entry ENTRY.bin --stock STOCK04.bin --unit U --calib DIR
 //!               --iso N [--adjust A.json] --out OUT.npy
 //! source-color-image --shot S.json --edit E.json --base MODE --out OUT.npy
@@ -149,7 +149,13 @@ fn run_plan(args: &[String]) -> Result<Output, Failure> {
 fn run_selection(args: &[String]) -> Result<Output, Failure> {
     let shot = bytes_of(option(args, "--shot")?)?;
     let edit = bytes_of(option(args, "--edit")?)?;
-    let text = selection_json(&shot, &edit, option(args, "--base")?)?;
+    let space = match maybe_bytes(args, "--space")? {
+        Some(bytes) => Some(
+            String::from_utf8(bytes).map_err(|_| Failure::Usage("--space is not UTF-8".into()))?,
+        ),
+        None => None,
+    };
+    let text = selection_json(&shot, &edit, option(args, "--base")?, space.as_deref())?;
     Ok(Output { text, ok: true })
 }
 
