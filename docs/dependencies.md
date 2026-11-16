@@ -88,4 +88,4 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 
 Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved.
 
-完整许可与声明保存在 `core/crates/gxr-finish/NOTICE`。
+未经修改的 FreeType 2.14.3 FTL 许可全文保存在 `core/crates/gxr-finish/FTL.TXT`（源码分发须原样保留）；归属声明、摘要与移植说明（以及 Pillow / NumPy 完整许可正文）保存在 `core/crates/gxr-finish/NOTICE`。
