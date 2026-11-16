@@ -156,7 +156,12 @@ pub fn selection_json(shot: &[u8], edit: &[u8], base: &str) -> Result<String, Co
         base
     };
     let recipe = match mode {
-        "camera-jpg" => return Ok(Json::object([("selection", Json::Null)]).render()),
+        // `color_image` does not plan a recipe here. `neutral` always renders NEUTRAL
+        // (`serve.py`, `neutral=True`), even when the edit names a recipe, with or without
+        // calibration or camera data. There is no entry for the caller to resolve.
+        "camera-jpg" | "neutral" => {
+            return Ok(Json::object([("selection", Json::Null)]).render());
+        }
         "recipe" => edit.recipe.as_ref(),
         _ => None,
     };
@@ -342,5 +347,60 @@ mod tests {
         );
         let other = Fail::NoRaw("x".into());
         assert_eq!(export_error(other.clone(), true), other);
+    }
+
+    /// `neutral` names no recipe. `auto` on a RAW-only photo still defaults to stock 04.
+    #[test]
+    fn neutral_selection_is_null_and_auto_keeps_stock_04() {
+        let raw = br#"{"files":{"dng":{"relpath":"R0000001.DNG"}},"lens":"GR LENS A12 50mm F2.5 MACRO","iso":200}"#;
+        let pair = br#"{"files":{"dng":{"relpath":"R0000001.DNG"},"jpg":{"relpath":"R0000001.JPG"}},"lens":"GR LENS A12 50mm F2.5 MACRO","iso":200}"#;
+        let wide = br#"{"files":{"dng":{"relpath":"R0000001.DNG"}},"lens":"RICOH LENS A12 28mm F2.5","iso":200}"#;
+        let bare = br#"{"files":{"dng":{"relpath":"R0000001.DNG"}},"lens":null,"iso":200}"#;
+        let empty = b"{}";
+        let recipe = br#"{"recipe":{"kind":"builtin","unit":"qlaunch","slot":2}}"#;
+        let adjust = br#"{"adjust":{"exposure_ev":0.7}}"#;
+        let none = r#"{"selection":null}"#;
+        let stock = |unit: &str| {
+            format!(
+                r#"{{"selection":{{"kind":"builtin","unit":"{unit}","slot":4,"defaulted":true}}}}"#
+            )
+        };
+        for shot in [
+            raw.as_slice(),
+            pair.as_slice(),
+            wide.as_slice(),
+            bare.as_slice(),
+        ] {
+            for edit in [empty.as_slice(), recipe.as_slice(), adjust.as_slice()] {
+                assert_eq!(selection_json(shot, edit, "neutral").unwrap(), none);
+            }
+        }
+        assert_eq!(selection_json(raw, empty, "camera-jpg").unwrap(), none);
+        assert_eq!(selection_json(pair, empty, "auto").unwrap(), none);
+        assert_eq!(
+            selection_json(raw, empty, "auto").unwrap(),
+            stock("jlaunch")
+        );
+        assert_eq!(
+            selection_json(wide, empty, "auto").unwrap(),
+            stock("qlaunch")
+        );
+        assert_eq!(
+            selection_json(bare, empty, "standard").unwrap(),
+            stock("jlaunch")
+        );
+        assert_eq!(
+            selection_json(raw, recipe, "auto").unwrap(),
+            r#"{"selection":{"kind":"builtin","unit":"qlaunch","slot":2,"defaulted":false}}"#
+        );
+        // `standard` drops an explicit recipe and still plans stock 04.
+        assert_eq!(
+            selection_json(raw, recipe, "standard").unwrap(),
+            stock("jlaunch")
+        );
+        assert_eq!(
+            selection_json(raw, adjust, "auto").unwrap(),
+            stock("jlaunch")
+        );
     }
 }

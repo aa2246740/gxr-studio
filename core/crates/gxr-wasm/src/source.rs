@@ -7,7 +7,9 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_export::source::{Request, iso_from_number, pack_from_index, plan_json, render};
+use gxr_export::source::{
+    Request, iso_from_number, pack_from_index, plan_json, render, selection_json,
+};
 use gxr_raw::{CoreError, error_json};
 
 fn rejected(err: &CoreError) -> JsValue {
@@ -45,6 +47,15 @@ pub fn source_plan(
     } else {
         Err(JsValue::from_str(&text))
     }
+}
+
+/// `source-selection`: which recipe `color_image` will plan. `{"selection":null}` for
+/// `camera-jpg` and `neutral` (the desktop does not plan a recipe). Same JSON as the CLI,
+/// including the newline `println!` adds.
+#[wasm_bindgen]
+pub fn source_selection(shot_json: &[u8], edit_json: &[u8], base: &str) -> Result<String, JsValue> {
+    let text = selection_json(shot_json, edit_json, base).map_err(|e| rejected(&e))?;
+    Ok(format!("{text}\n"))
 }
 
 /// `render_full(open_dng(dng), renderer)` for the recipe renderer of `entry` at `iso`:

@@ -267,6 +267,25 @@ def test_neutral_base_is_neutral_when_calibrated(
 
 
 @needs_dat
+def test_neutral_source_selection_matches_desktop(homes: dict[str, xs.Home], files: dict[str, Path], tmp_path: Path) -> None:
+    """`source-selection` for `neutral` is null, because the desktop never plans a recipe.
+
+    Covers calibration and no calibration, camera data and no camera data, an empty edit,
+    `{}`, a recipe and adjustments. `auto` on a RAW-only photo still names stock 04. The same
+    inputs match between the CLI and WASM.
+    """
+    from support.export_source_selection import run_matrix, write_wasm_specs
+    from support.wasm_check import run_area
+
+    n = run_matrix(homes, files, tmp_path)
+    wasm_tmp = tmp_path / "wasm"
+    wasm_tmp.mkdir()
+    proc = run_area("source", write_wasm_specs(files, wasm_tmp), wasm_tmp)
+    print(f"selection-hint cases={n} wasm={proc.stdout.strip()}")
+    assert n > 0
+
+
+@needs_dat
 @pytest.mark.skipif(not REAL, reason="没有真 DNG")
 def test_color_image_real_pairs_full_size(homes: dict[str, xs.Home], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The branches that produce pixels, on real RAW+JPG pairs at full size."""
