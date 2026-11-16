@@ -243,6 +243,69 @@ def test_exif_base_rationals_like_pillow(base_extra: dict[int, Any], tmp_path: P
     same_file_redacted(got, _desktop(rgb, 95, base, SYN_SUB), "base rational case")
 
 
+_EDGES = [
+    -(1 << 63),
+    -(1 << 40),
+    -(1 << 32),
+    -(1 << 31) - 1,
+    -(1 << 31),
+    -1,
+    0,
+    1,
+    (1 << 31) - 1,
+    1 << 31,
+    (1 << 32) - 1,
+    1 << 32,
+    1 << 40,
+    (1 << 63) - 1,
+]
+_FLOATS = [0.0, -0.0, 0.1, 72.5, 1e-20, 1e-22, 1e-23, 1e-24, 1e-30, 1e-100, 1e-300, 5e-324]
+_FLOATS += [1e20, 1e22, 1e23, 1e24, 1e30, 1e100, 1e300]
+_MIXED = [(R(1, 0), R(-1, 2)), (R(-1, 2), R(1 << 40, 0)), (R(-5, 0), R(-1, 2)), (R(0, -9), R(-7, -3))]
+
+
+def _sol_r1_cases() -> list[tuple[int, dict[int, Any], dict[int, Any]]]:
+    """Sol r1's 415 rational cases: every i64 edge pair in a base and a sub tag, floats from
+    5e-324 to 1e300 in XResolution (with exposure and aperture beside it), mixed arrays."""
+    cases: list[tuple[int, dict[int, Any], dict[int, Any]]] = []
+    for n in _EDGES:
+        for d in _EDGES:
+            cases.append((85, {282: R(n, d)}, {}))
+            cases.append((85, {}, {37380: R(n, d)}))
+    for value in _FLOATS:
+        cases.append((95, {282: value}, {33434: R(1, 250), 33437: R(28, 10)}))
+    for values in _MIXED:
+        cases.append((90, {}, {37380: values}))
+    return cases
+
+
+def test_sol_r1_rational_sweep(tmp_path: Path, pinned_icc: bytes) -> None:
+    """Whole files (or the same encode_failed) against _finish for all 415 cases; 11 of them
+    (|x| from 1e-23 down and from 1e23 up) used to drop to the reduced EXIF."""
+    rgb = np.full((3, 5, 3), (17, 63, 199), dtype=np.uint8)
+    cases = _sol_r1_cases()
+    check(len(cases) == 415, "Sol r1 has 415 rational cases")
+    files = 0
+    for i, (quality, base, sub) in enumerate(cases):
+        files += _same_outcome(tmp_path, f"sol{i}", rgb, quality, base, sub) is not None
+    note("jpeg_optimize_sol_r1_cases", len(cases))
+    note("jpeg_optimize_sol_r1_files", files)
+
+
+@pytest.mark.parametrize("value", [1e-300, -1e-300, 1e300, -1e300, 1e-23, 1e23, 5e-324], ids=anon_ids(7))
+def test_sol_r1_tiny_and_huge_float_keep_the_full_exif(value: float, tmp_path: Path, pinned_icc: bytes) -> None:
+    """Sol r1's 5x3 file: Pillow writes XResolution 0/1 (1/0 via the reciprocal) and keeps
+    ExposureTime and FNumber; so must gxr-jpeg."""
+    rgb = np.full((3, 5, 3), (17, 63, 199), dtype=np.uint8)
+    sub = {33434: R(1, 250), 33437: R(28, 10)}
+    want = _same_outcome(tmp_path, "tiny", rgb, 95, {282: value}, sub)
+    check(want is not None, "the desktop writes this file")
+    exif = Image.open(io.BytesIO(want or b"")).getexif()
+    check(282 in exif and {33434, 33437} <= set(exif.get_ifd(0x8769)), "the full EXIF is kept")
+    xres = exif[282]
+    check((xres.numerator, xres.denominator) == ((0, 1) if abs(value) < 1 else (1, 0)), "XResolution 0/1 or 1/0")
+
+
 def test_exif_that_neither_side_can_write(tmp_path: Path, pinned_icc: bytes) -> None:
     """A bad value in a tag the reduced EXIF keeps too: Pillow fails both tries, gxr-jpeg too."""
     rgb = np.full((8, 8, 3), 90, dtype=np.uint8)
@@ -359,6 +422,11 @@ def test_wasm_matches_native_optimize(tmp_path: Path) -> None:
         raw_path = tmp_path / f"raw_{tag}.bin"
         raw_path.write_bytes(raw)
         specs.append(_spec(tmp_path, f"raw_{tag}", raw=str(raw_path), width=w_val, height=h_val, quality=85, optimize=True))
+    # Sol r1: tiny and huge floats in a RATIONAL tag (0/1 and 1/0, full EXIF kept).
+    for i, value in enumerate((1e-300, -1e-300, 1e300, -1e300, 5e-324)):
+        tiny = tmp_path / f"tiny{i}.exif.json"
+        tiny.write_text(_exif_json({282: value}, {33434: R(1, 250), 33437: R(28, 10)}), encoding="utf-8")
+        specs.append(_spec(tmp_path, f"tiny{i}", npy=str(small), exif=str(tiny), quality=95, optimize=True))
     unwritable = tmp_path / "unwritable.exif.json"
     unwritable.write_text(_exif_json(SYN_BASE, {34855: R(-5, 0)}), encoding="utf-8")
     fallback = tmp_path / "fallback.exif.json"

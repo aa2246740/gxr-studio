@@ -5,15 +5,18 @@
 //!
 //! Python's ints are unbounded; here every value fits in `i128`. Inputs are `i64` pairs, and the
 //! only larger numbers come from `Fraction(float)`, whose denominator is at most `2**1074`. Those
-//! that don't fit in `i128` (floats below about `2**-74`) are an error: Pillow would write them,
-//! but no real EXIF value is that small. The arithmetic that can grow beyond `i128` in
-//! `limit_denominator` is checked and resolved exactly (see there).
+//! that don't fit in `i128` are floats with `|x| <= 2**-73`, whose limited value is exactly 0 for
+//! every `max_val` used here, so they are answered without the fraction (`limit_rational`). The
+//! arithmetic that can grow beyond `i128` in `limit_denominator` is checked and resolved exactly
+//! (see there).
 
 use gxr_raw::CoreError;
 
 const U32_MAX: i128 = (1_i128 << 32) - 1;
 const I32_MAX: i128 = (1_i128 << 31) - 1;
 const I32_MIN: i128 = -(1_i128 << 31);
+/// `2**-73`: at or below it, `Fraction(x).limit_denominator(m)` is 0 for any `m <= 2**32 - 1`.
+const TINY: f64 = 1.058_791_184_067_875_4e-22;
 
 fn bad(what: &str) -> CoreError {
     CoreError::new("encode_failed", format!("EXIF 有理数：{what}"))
@@ -148,6 +151,13 @@ fn limit_rational(val: RatVal, max_val: i128) -> Result<(i128, i128), CoreError>
             }
             let inv = f.abs() > 1.0;
             let x = if inv { 1.0 / f } else { f };
+            // `Fraction(x).limit_denominator(max_val)` is 0 whenever `|x| <= 2**-73` and
+            // `max_val <= 2**32 - 1` (0 is closer than any p/q with q <= max_val), and those are
+            // the floats whose exact fraction needs more than i128 (Sol r1). Pillow writes `0/1`,
+            // swapped to `1/0` on the reciprocal branch; never the reduced EXIF.
+            if max_val <= U32_MAX && x.abs() <= TINY {
+                return Ok(if inv { (1, 0) } else { (0, 1) });
+            }
             let (n, d) = fraction_from_f64(x)?;
             let (p, q) = limit_denominator(n, d, max_val);
             Ok(if inv { (q, p) } else { (p, q) })
@@ -280,6 +290,49 @@ mod tests {
         assert_eq!(
             limit_rational(RatVal::Float(0.1), U32_MAX).unwrap(),
             (1, 10)
+        );
+    }
+
+    #[test]
+    fn tiny_and_huge_floats_like_pillow() {
+        // Sol r1: Pillow writes 0/1 (1/0 through the reciprocal); these used to be errors,
+        // which dropped the whole EXIF to the reduced set.
+        assert_eq!(TINY.to_bits(), (1023 - 73) << 52);
+        for f in [1e-23, -1e-23, 1e-300, -1e-300, 5e-324, -5e-324, TINY, -TINY] {
+            assert_eq!(
+                limit_rational(RatVal::Float(f), U32_MAX).unwrap(),
+                (0, 1),
+                "{f}"
+            );
+            assert_eq!(
+                pack_rational(RatVal::Float(f.abs())).unwrap(),
+                [0, 0, 0, 0, 0, 0, 0, 1]
+            );
+        }
+        for f in [1e23, -1e23, 1e300, -1e300, f64::MAX, f64::INFINITY] {
+            assert_eq!(
+                limit_rational(RatVal::Float(f), U32_MAX).unwrap(),
+                (1, 0),
+                "{f}"
+            );
+            assert_eq!(
+                pack_rational(RatVal::Float(f)).unwrap(),
+                [0, 0, 0, 1, 0, 0, 0, 0]
+            );
+        }
+        // Just above 2**-73 still takes the exact path, with Python's answer.
+        let above = f64::from_bits(TINY.to_bits() + 1);
+        assert_eq!(
+            limit_rational(RatVal::Float(above), U32_MAX).unwrap(),
+            (0, 1)
+        );
+        assert_eq!(
+            limit_rational(RatVal::Float(1e-20), U32_MAX).unwrap(),
+            (0, 1)
+        );
+        assert_eq!(
+            limit_rational(RatVal::Float(1e22), U32_MAX).unwrap(),
+            (1, 0)
         );
     }
 }
