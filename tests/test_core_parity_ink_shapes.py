@@ -87,10 +87,8 @@ def _py_paint_item(canvas: Image.Image, it: dict[str, Any], base: Image.Image) -
 def _run_batch(w: int, h: int, items: list[dict[str, Any]], tmp_path: Path, tag: str, seed: int) -> None:
     canvas_arr = _synth_rgb(w, h, seed)
     base_arr = _synth_rgb(w, h, seed + 1)
-    pil_canvas = Image.fromarray(canvas_arr, "RGB")
+    pil_canvas = Image.fromarray(canvas_arr.copy(), "RGB")
     pil_base = Image.fromarray(base_arr, "RGB")
-    for it in items:
-        _py_paint_item(pil_canvas, it, pil_base)
 
     in_npy = tmp_path / f"{tag}_in.npy"
     base_npy = tmp_path / f"{tag}_base.npy"
@@ -98,10 +96,45 @@ def _run_batch(w: int, h: int, items: list[dict[str, Any]], tmp_path: Path, tag:
     out_npy = tmp_path / f"{tag}_out.npy"
     np.save(in_npy, canvas_arr)
     np.save(base_npy, np.dstack([base_arr, np.full((h, w), 255, dtype=np.uint8)]))
+
+    valid_items: list[dict[str, Any]] = []
+    for idx, it in enumerate(items):
+        snap = pil_canvas.copy()
+        try:
+            _py_paint_item(snap, it, pil_base)
+        except ValueError:
+            err_ops_p = tmp_path / f"{tag}_err_{idx}_ops.json"
+            err_out_p = tmp_path / f"{tag}_err_{idx}_out.npy"
+            err_ops = [
+                {"op": "convert", "target": "logo:base_in", "mode": "RGB", "save_as": "base"},
+                _item_to_op(it),
+            ]
+            err_ops_p.write_text(json.dumps(err_ops), encoding="utf-8")
+            code, payload = run_json(
+                [
+                    "ink-ops",
+                    "--canvas",
+                    str(in_npy),
+                    "--mode",
+                    "RGB",
+                    "--logo",
+                    f"base_in={base_npy}",
+                    "--ops",
+                    str(err_ops_p),
+                    "--out",
+                    str(err_out_p),
+                ]
+            )
+            check(code != 0 and payload["error"]["kind"] == "value_error", "degenerate shape error parity")
+            continue
+        pil_canvas = snap
+        valid_items.append(it)
+
+    if not valid_items:
+        return
     ops = [
-        {"op": "load_reg", "reg": "logo:base_in", "save_as": "base_rgba"},
-        {"op": "convert", "target": "base_rgba", "mode": "RGB", "save_as": "base"},
-    ] + [_item_to_op(it) for it in items]
+        {"op": "convert", "target": "logo:base_in", "mode": "RGB", "save_as": "base"},
+    ] + [_item_to_op(it) for it in valid_items]
     ops_p.write_text(json.dumps(ops), encoding="utf-8")
     got = run_npy(["ink-ops", "--canvas", str(in_npy), "--mode", "RGB", "--logo", f"base_in={base_npy}", "--ops", str(ops_p)], out_npy)
     same_pixels(got, np.asarray(pil_canvas, dtype=np.uint8), f"ink shapes {tag}")
