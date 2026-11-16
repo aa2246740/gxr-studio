@@ -16,7 +16,7 @@ import {
 import type { LogoMode, LogoSize } from '../lib/frame_spec';
 import { button, el, icon } from './dom';
 import { autoMonoMessage, commitFrame } from './frame_state';
-import { logoStore } from './logo_store';
+import { logoStore, MISSING_LOGO_TOAST } from './logo_store';
 import type { Photo } from './model';
 import { cancelHostSheets, registerSheet } from './sheet_lifecycle';
 import { showToast } from './toast';
@@ -325,13 +325,19 @@ export function openLogoSheet(
           opAbort = ac;
           busy = true;
           doDel.disabled = true;
+          const wasInUse = photo.version === version && photo.border.logo === item.id;
           try {
             const res = await logoStore.remove(item.id, ac.signal);
             if (res.ok) {
-              if (photo.version === version && photo.border.logo === item.id) {
-                commitFrame(photo, { logo: 'ricoh', show_logo: true }, () => {
+              if (wasInUse && photo.version === version) {
+                if (photo.border.logo === item.id) {
+                  commitFrame(photo, { logo: 'ricoh', show_logo: true }, () => {
+                    if (isAlive()) onUpdate();
+                  });
+                } else {
+                  photo.rev += 1;
                   if (isAlive()) onUpdate();
-                });
+                }
               } else if (!closed && !ac.signal.aborted && myOp === opToken && stillAlive()) {
                 onUpdate();
               }
@@ -344,7 +350,7 @@ export function openLogoSheet(
             confirmingLogoId = null;
             menuLogoId = null;
             if (stillAlive()) {
-              showToast(host, `已删除「${item.name}」。`);
+              showToast(host, wasInUse ? MISSING_LOGO_TOAST : `已删除「${item.name}」。`);
               render();
             }
           } catch {

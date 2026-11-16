@@ -6,14 +6,30 @@ import type { ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJo
 export const IDLE_MS = 30_000;
 
 export type RunResult =
-  | { ok: true; file: ArrayBuffer; result: Record<string, unknown>; shot: Record<string, unknown>; ms: number }
+  | { ok: true; file: ArrayBuffer; result: Record<string, unknown>; shot: Record<string, unknown>; exact?: boolean; ms: number }
   | { ok: false; kind: FailKind; code: string; message: string };
 
 /** 一批里的内存高水位（字节）。`?perf=1` 显示，测试读它。 */
+export interface StageMark {
+  wasm: number;
+  js: number;
+  total: number;
+}
+
 export interface MemoryMarks {
   wasm: number;
   js: number;
+  total: number;
   workers: number;
+  stages: Record<ExportMemory['stage'], StageMark>;
+}
+
+function zeroStages(): Record<ExportMemory['stage'], StageMark> {
+  return {
+    prepare: { wasm: 0, js: 0, total: 0 },
+    ink: { wasm: 0, js: 0, total: 0 },
+    complete: { wasm: 0, js: 0, total: 0 },
+  };
 }
 
 type Pending = { kind: 'run'; done: (r: RunResult) => void } | { kind: 'sizes'; done: (r: { ok: boolean; json?: string }) => void } | { kind: 'decode'; done: (r: ExportOut) => void };
@@ -31,7 +47,7 @@ export class ExportCore {
   private seq = 1;
   private readonly pending = new Map<number, Pending>();
   private idle = 0;
-  readonly marks: MemoryMarks = { wasm: 0, js: 0, workers: 0 };
+  readonly marks: MemoryMarks = { wasm: 0, js: 0, total: 0, workers: 0, stages: zeroStages() };
   onMemory: ((mem: ExportMemory) => void) | null = null;
 
   constructor(private readonly factory: WorkerFactory = defaultFactory) {}
@@ -45,7 +61,9 @@ export class ExportCore {
     this.setupPending = true;
     this.marks.wasm = 0;
     this.marks.js = 0;
+    this.marks.total = 0;
     this.marks.workers = 0;
+    this.marks.stages = zeroStages();
   }
 
   alive(): boolean {
@@ -164,6 +182,10 @@ export class ExportCore {
         calibIndex: s.calibIndex,
         calibBlob: s.calibBlob ? s.calibBlob.slice(0) : null,
         luts,
+        fontIndex: s.fontIndex ?? '',
+        fontPack: s.fontPack ? s.fontPack.slice(0) : null,
+        logoIndex: s.logoIndex ?? '',
+        logoBlob: s.logoBlob ? s.logoBlob.slice(0) : null,
       },
     });
   }
@@ -171,8 +193,16 @@ export class ExportCore {
   private finish(worker: Worker, msg: ExportOut): void {
     if (worker !== this.worker) return;
     if (msg.op === 'mem') {
+      const total = msg.mem.wasm + msg.mem.js;
       this.marks.wasm = Math.max(this.marks.wasm, msg.mem.wasm);
       this.marks.js = Math.max(this.marks.js, msg.mem.js);
+      this.marks.total = Math.max(this.marks.total, total);
+      const st = this.marks.stages[msg.mem.stage];
+      if (st) {
+        st.wasm = Math.max(st.wasm, msg.mem.wasm);
+        st.js = Math.max(st.js, msg.mem.js);
+        st.total = Math.max(st.total, total);
+      }
       this.onMemory?.(msg.mem);
       return;
     }
@@ -180,7 +210,7 @@ export class ExportCore {
     if (!pending) return;
     this.pending.delete(msg.id);
     if (msg.op === 'done' && pending.kind === 'run') {
-      if (msg.ok) pending.done({ ok: true, file: msg.file, result: msg.result, shot: msg.shot, ms: msg.ms });
+      if (msg.ok) pending.done({ ok: true, file: msg.file, result: msg.result, shot: msg.shot, exact: msg.exact, ms: msg.ms });
       else {
         pending.done({ ok: false, kind: msg.kind, code: msg.code, message: msg.message });
         // 陷阱以后这份 WASM 不能再用：关掉，下一张用新的。

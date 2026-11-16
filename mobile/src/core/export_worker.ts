@@ -2,18 +2,30 @@
 // （线性内存只增不减，留在 M1/M2 的 Worker 里会一直占着）。文件在这里读，主线程不调 File.arrayBuffer。
 //
 // 每张：export_plan → 读 DNG / JPG → 选了配方时 color_resolve → 需要时解码相机 JPG（或核心要的内嵌预览）
-// → export_prepare → 墨迹（M3 没有边框和日期戳，这一步什么都不画）→ export_complete。
-// 开了 HDR 时 prepare 还给一份数据层（hdr_layer），留在这个 Worker 里，原样交给 complete。
+// → export_prepare → export_ink（边框、标志、时间戳与 HDR 日期戳掩码）→ export_complete。
+// 开了 HDR 时 prepare 还给一份数据层（hdr_layer），留在这个 Worker 里，连同着墨掩码一起交给 complete。
 
-import init, { color_resolve, export_complete, export_meta_preview, export_output_sizes, export_plan, export_prepare, type InitOutput } from '../wasm-pkg/gxr_wasm.js';
+import init, {
+  color_resolve,
+  export_complete,
+  export_ink,
+  export_meta_photo,
+  export_meta_preview,
+  export_output_sizes,
+  export_plan,
+  export_prepare,
+  type InitOutput,
+} from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
+import { mapInkError } from '../lib/export_request';
+import { momentFromIso } from '../lib/frame_spec';
 import { shotSize, jpegSize, dngSize } from '../lib/photo_size';
 import { LUT_ERRORS } from '../lib/lut';
 import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJob } from './export_protocol';
 
 let ready: Promise<InitOutput> | null = null;
 let wasm: InitOutput | null = null;
-let setup: ExportSetup = { dat: null, calibIndex: '', calibBlob: null, luts: {} };
+let setup: ExportSetup = { dat: null, calibIndex: '', calibBlob: null, luts: {}, fontIndex: '', fontPack: null, logoIndex: '', logoBlob: null };
 
 function load(): Promise<InitOutput> {
   ready ??= init({ module_or_path: wasmUrl }).then((out) => {
@@ -102,17 +114,17 @@ function memory(id: number, stage: ExportMemory['stage'], js: number): void {
   post({ op: 'mem', id, mem: { stage, wasm: wasm?.memory.buffer.byteLength ?? 0, js } });
 }
 
-/**
- * 墨迹这一步：把边框、日期戳画到画布上。M3 里不能设边框、日期戳（M4 才有），prepare 只会给 `canvas: "full"`、
- * 没有边框和日期戳版面，什么都不用画。给了的话这一张不导出（绝不漏掉墨迹导出）。M4 在这里补上。
- */
-function ink(prepared: Record<string, unknown>, canvas: Uint8Array): Uint8Array {
-  if (prepared.canvas !== 'full' || prepared.frame != null || prepared.stamp != null) throw new Fail('ink', 'ink_not_supported', '');
-  return canvas;
-}
-
 /** DNG 读不出全尺寸数据时，桌面改用内嵌预览（serve._raw_rgb）。只有这几种错误才去解预览再试一次。 */
 const NEEDS_PREVIEW = new Set(['raw_unreadable', 'no_jpg_source', 'raw_decode']);
+
+async function headSlice(file: File | null): Promise<Uint8Array | null> {
+  if (!file) return null;
+  try {
+    return new Uint8Array(await file.slice(0, 1 << 20).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
 
 async function runJob(job: ExportJob): Promise<void> {
   const start = performance.now();
@@ -151,10 +163,14 @@ async function runJob(job: ExportJob): Promise<void> {
   let jpg: { data: Uint8Array; width: number; height: number } | null = null;
   if (jpgBytes && (req.needsJpg || plan.original)) jpg = await decodeJpeg(jpgBytes);
   const calibBlob = setup.calibBlob ? new Uint8Array(setup.calibBlob) : EMPTY;
+  const fontIndex = setup.fontIndex ?? '';
+  const fontPack = setup.fontPack ? new Uint8Array(setup.fontPack) : EMPTY;
+  const logoIndex = setup.logoIndex ?? '';
+  const logoBlob = setup.logoBlob ? new Uint8Array(setup.logoBlob) : EMPTY;
   const prepare = (preview: { data: Uint8Array; width: number; height: number } | null) =>
     export_prepare(
       shotText, sideText, JSON.stringify(req.defaults), JSON.stringify(req.layout), req.base,
-      req.quality, req.longEdge, req.hdr, '', EMPTY,
+      req.quality, req.longEdge, req.hdr, fontIndex, fontPack,
       dat, entry, setup.calibIndex, calibBlob, req.binding,
       dngBytes ?? EMPTY, jpgBytes ?? EMPTY, cubeBytes, spaceText,
       jpg?.data ?? EMPTY, jpg?.width ?? 0, jpg?.height ?? 0,
@@ -176,18 +192,21 @@ async function runJob(job: ExportJob): Promise<void> {
     }
     made = prepare(preview);
   }
-  // WASM 有了自己的那份：解码的像素和 DNG 不再要（DNG 只在没有相机 JPG 时还要给 complete 读 EXIF）。
+  // WASM 有了自己的那份：解码的像素和用不到的源文件马上放掉，只留 complete 写 EXIF 要的那份源文件。
   jpg = null;
-  const source = jpgBytes ?? dngBytes ?? EMPTY;
-  if (jpgBytes) dngBytes = null;
+  let source: Uint8Array = jpgBytes ?? dngBytes ?? EMPTY;
+  jpgBytes = null;
+  dngBytes = null;
   let canvas: Uint8Array;
+  let madeJson: string;
   let json: { prepared: Record<string, unknown> };
   let width: number;
   let height: number;
   // HDR 的数据层（float32，(h, w, 2)）：只在这个 Worker 里，原样交给 export_complete，不回主线程。
   let layer: Float32Array = NO_LAYER;
   try {
-    json = JSON.parse(made.json()) as { prepared: Record<string, unknown> };
+    madeJson = made.json();
+    json = JSON.parse(madeJson) as { prepared: Record<string, unknown> };
     width = made.width;
     height = made.height;
     canvas = made.canvas();
@@ -195,13 +214,51 @@ async function runJob(job: ExportJob): Promise<void> {
   } finally {
     made.free();
   }
-  memory(job.id, 'prepare', canvas.byteLength + layer.byteLength + source.byteLength + (dngBytes?.byteLength ?? 0));
+  memory(job.id, 'prepare', canvas.byteLength + layer.byteLength + source.byteLength);
   if (job.devTrap && import.meta.env.DEV) throw new WebAssembly.RuntimeError('unreachable (dev trap)');
-  canvas = ink(json.prepared, canvas);
-  // 日期戳掩码是空的：M3 没有日期戳（M4 的墨迹在这里补上掩码）。
-  const done = export_complete(canvas, width, height, JSON.stringify(json.prepared.state), source, layer, EMPTY, 0, 0);
+  // 6. Rust 着墨：边框底衬与元素、日期戳和 HDR 照片落点掩码。
+  let stampMask: Uint8Array = EMPTY;
+  let maskWidth = 0;
+  let maskHeight = 0;
+  let exact = true;
+  let inked;
+  try {
+    if (job.devInkTrap && import.meta.env.DEV) throw new WebAssembly.RuntimeError('unreachable (dev ink trap)');
+    const inCanvas = canvas;
+    canvas = EMPTY;
+    inked = export_ink(inCanvas, width, height, madeJson, fontIndex, fontPack, logoIndex, logoBlob);
+  } catch (err) {
+    const mapped = mapInkError(err);
+    throw new Fail(mapped.kind, mapped.code, mapped.message);
+  }
+  try {
+    width = inked.width;
+    height = inked.height;
+    maskWidth = inked.mask_width;
+    maskHeight = inked.mask_height;
+    exact = inked.exact;
+    canvas = inked.canvas();
+    stampMask = inked.stamp_mask();
+  } finally {
+    inked.free();
+  }
+  memory(job.id, 'ink', canvas.byteLength + stampMask.byteLength + layer.byteLength + source.byteLength);
+  if (import.meta.env.DEV && job.devCanvasReport && !exact) {
+    const hdr = new Uint8Array(8);
+    const view = new DataView(hdr.buffer);
+    view.setUint32(0, width, true);
+    view.setUint32(4, height, true);
+    await fetch(`/__dev/report/${encodeURIComponent(job.devCanvasReport)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Blob([hdr, canvas as Uint8Array<ArrayBuffer>]),
+    }).catch(() => undefined);
+  }
+  const done = export_complete(canvas, width, height, JSON.stringify(json.prepared.state), source, layer, stampMask, maskWidth, maskHeight);
   canvas = EMPTY;
+  stampMask = EMPTY;
   layer = NO_LAYER;
+  source = EMPTY;
   let file: Uint8Array;
   let result: Record<string, unknown>;
   try {
@@ -210,25 +267,42 @@ async function runJob(job: ExportJob): Promise<void> {
   } finally {
     done.free();
   }
-  jpgBytes = null;
-  dngBytes = null;
   memory(job.id, 'complete', file.byteLength);
   const buffer = file.buffer as ArrayBuffer;
-  post({ op: 'done', id: job.id, ok: true, file: buffer, result, shot, ms: performance.now() - start }, [buffer]);
+  post({ op: 'done', id: job.id, ok: true, file: buffer, result, shot, exact, ms: performance.now() - start }, [buffer]);
 }
 
-/** 导出面板上的成品尺寸：源尺寸从文件头来（相机 JPG 转正后的尺寸，或 DNG 的裁切窗口），只读开头一段。 */
+/** 导出面板上的成品尺寸：源尺寸从文件头来（相机 JPG 转正后的尺寸，或 DNG 的裁切窗口），有边框或时间戳时补齐字体与拍摄元数据。 */
 async function runSizes(job: SizesJob): Promise<void> {
   await load();
-  const file = job.useJpg ? job.jpg : job.dng;
-  if (!file) throw new Error('no file');
-  const head = new Uint8Array(await file.slice(0, 1 << 20).arrayBuffer());
+  const [jpgHead, dngHead] = await Promise.all([headSlice(job.jpg), headSlice(job.dng)]);
+  const head = job.useJpg ? jpgHead : dngHead;
+  if (!head) throw new Error('no file');
   const size = job.useJpg ? jpegSize(head) : dngSize(head);
   if (!size) throw new Error('no size');
+  let layout: Record<string, unknown> = job.layout ? { ...job.layout } : {};
+  if ((job.side.border || job.side.stamp) && (jpgHead || dngHead)) {
+    try {
+      const raw = JSON.parse(export_meta_photo(jpgHead, dngHead, job.stem ?? '', job.mtimeMs, job.tzOffsetMin ?? 0)) as {
+        frame?: Record<string, string>;
+        taken?: string | null;
+        file_time?: string | null;
+      };
+      layout = {
+        ...layout,
+        meta: raw.frame ?? {},
+        taken: momentFromIso(raw.taken ?? null),
+        file_time: momentFromIso(raw.file_time ?? null),
+      };
+    } catch {
+      /* 文件头不含完整元数据时退回空拍摄信息。 */
+    }
+  }
   const crop = job.side.crop as { rect?: unknown; preset?: unknown } | undefined;
   const rect = Array.isArray(crop?.rect) ? JSON.stringify(crop.rect) : '';
   const preset = typeof crop?.preset === 'string' ? crop.preset : undefined;
-  const json = export_output_sizes(size.width, size.height, JSON.stringify(job.side), '{}', '{}', rect, preset, '', EMPTY);
+  const fontPack = job.fontPack ? new Uint8Array(job.fontPack) : EMPTY;
+  const json = export_output_sizes(size.width, size.height, JSON.stringify(job.side), '{}', JSON.stringify(layout), rect, preset, job.fontIndex ?? '', fontPack);
   post({ op: 'sizes', id: job.id, ok: true, json });
 }
 

@@ -469,5 +469,72 @@ test('failText: core message as is, unknown kinds use the desktop fallback', () 
   assert.equal(failText('core', 'bad_adjust', '请求无效。请刷新页面后重试。'), '请求无效。请刷新页面后重试。');
   assert.equal(failText('core', 'unknown', ''), TEXT.fallback);
   assert.equal(failText('core', 'x', ''), TEXT.fallback);
-  assert.equal(failText('ink', 'ink_not_supported', ''), TEXT.ink);
+  assert.equal('ink' in TEXT, false);
+});
+
+test('border / stamp sidecar, layout logos + GXR_MARK, mapInkError, and packLogoEntries', async () => {
+  const { DEFAULT_FRAME, DEFAULT_STAMP } = await import('../../mobile/src/lib/frame_spec.ts');
+  const { GXR_MARK, CJK_REFUSE_MESSAGE } = await import('../../mobile/src/lib/fonts.ts');
+  const { MISSING_LOGO_LINE, packLogoEntries } = await import('../../mobile/src/lib/logo_key.ts');
+
+  assert.equal(req.borderJson(DEFAULT_FRAME), null);
+  assert.equal(req.stampJson(DEFAULT_STAMP), null);
+
+  const logoInfo = { id: 'custom-1', name: 'Studio', w: 2, h: 1, coverage: 0.5, opaque: false, lum: 0.2 };
+  const border = { ...DEFAULT_FRAME, style: 'exhibition_label', show_logo: true, logo: 'custom-1', text: 'GXR' };
+  const stampPhoto = { ...DEFAULT_STAMP, enabled: true, placement: 'photo' };
+  const stampBorder = { ...DEFAULT_STAMP, enabled: true, placement: 'border' };
+
+  assert.equal(req.usedLogoId(border), 'custom-1');
+  assert.equal(req.usedLogoId({ ...border, show_logo: false }), null);
+  assert.equal(req.usedLogoId({ ...border, logo: 'ricoh' }), null);
+  assert.equal(req.usedLogoId({ ...border, style: 'gallery' }), null);
+
+  assert.equal('placement' in req.stampJson(stampPhoto), false);
+  assert.equal(req.stampJson(stampBorder).placement, 'border');
+
+  const r = req.buildRequest(
+    photo({
+      border,
+      stamp: stampBorder,
+      logoInfo,
+      frame: { orientation: 1, width: 4288, height: 2848 },
+    }),
+    CARDS,
+    OPTS,
+    'b',
+  );
+  assert.equal(r.side.border.version, 2);
+  assert.equal(r.side.border.style, 'exhibition_label');
+  assert.equal(r.side.stamp.placement, 'border');
+  assert.deepEqual(r.side.frame, { orientation: 1, width: 4288, height: 2848 });
+  assert.deepEqual(r.layout, { logos: [logoInfo], mark: GXR_MARK });
+
+  assert.deepEqual(req.mapInkError(JSON.stringify({ error: { kind: 'missing_cjk', message: 'cjk' } })), {
+    kind: 'core',
+    code: 'missing_cjk',
+    message: CJK_REFUSE_MESSAGE,
+  });
+  assert.deepEqual(req.mapInkError(JSON.stringify({ error: { kind: 'unknown_logo', message: 'missing' } })), {
+    kind: 'core',
+    code: 'unknown_logo',
+    message: MISSING_LOGO_LINE,
+  });
+  assert.deepEqual(req.mapInkError(JSON.stringify({ error: { kind: 'bad_state', message: 'x' } })), {
+    kind: 'core',
+    code: 'ink_error',
+    message: req.INK_FALLBACK_MESSAGE,
+  });
+  assert.deepEqual(req.mapInkError('plain boom'), {
+    kind: 'core',
+    code: 'ink_error',
+    message: req.INK_FALLBACK_MESSAGE,
+  });
+  assert.equal(req.mapInkError(new WebAssembly.RuntimeError('unreachable')).kind, 'trap');
+  assert.equal(req.mapInkError(new RangeError('oom')).kind, 'trap');
+
+  const rgba = new Uint8Array([10, 20, 30, 255, 40, 50, 60, 128]);
+  const packed = packLogoEntries([{ id: 'custom-1', w: 2, h: 1, rgba }]);
+  assert.deepEqual(JSON.parse(packed.logoIndex), [['custom-1', 2, 1]]);
+  assert.deepEqual([...packed.logoBlob], [...rgba]);
 });

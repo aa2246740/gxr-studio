@@ -16,7 +16,6 @@ export const STAGE_CAP_HDR_BYTES = 256 * 1024 * 1024;
 export const TEXT = {
   read: '存储卡上的文件读不了',
   memory: '内存不够，这张没做成。可以重试，或改用小一点的尺寸。',
-  ink: '这张有边框或日期戳，下一步才能导出。',
   fallback: '导出失败。请重试。',
 };
 
@@ -67,7 +66,6 @@ export type Phase = 'running' | 'held' | 'ready' | 'stopped' | 'closed';
 export function failText(kind: FailKind | 'stale', code: string, message: string): string {
   if (kind === 'read') return TEXT.read;
   if (kind === 'trap') return TEXT.memory;
-  if (kind === 'ink') return TEXT.ink;
   if (kind === 'core' && code !== 'unknown' && message) return message;
   return TEXT.fallback;
 }
@@ -82,6 +80,8 @@ export class ExportBatch {
   readonly results = new Map<string, Record<string, unknown>>();
   /** 交给 export_prepare 的 shot（开发服务器的测试读）。 */
   readonly shots = new Map<string, Record<string, unknown>>();
+  /** 每张 `export_ink` 返回的 `exact` 标记。 */
+  readonly exacts = new Map<string, boolean>();
   staged: Staged[] = [];
   stagedBytes = 0;
   /** 留着待交的文件最多同时占了多少字节（报告用；任何时候都不超过上限）。 */
@@ -306,6 +306,7 @@ export class ExportBatch {
     this.states.set(item.id, 'ok');
     this.results.set(item.id, result.result);
     this.shots.set(item.id, result.shot);
+    this.exacts.set(item.id, result.exact !== false);
     this.times.push(result.ms);
     this.staged.push({ id: item.id, file });
     this.stagedBytes += file.size;

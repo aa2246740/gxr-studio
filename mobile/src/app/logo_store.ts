@@ -3,9 +3,9 @@
 import { prepareLogo } from '../core/api';
 import type { LogoInfo } from '../lib/frame_spec';
 import { deleteStoredLogo, loadAllLogos, putStoredLogo, renameStoredLogo, type StoredLogo } from '../lib/idb';
-import { cleanLogoName, LOGO_ERR, LOGO_LIMITS } from '../lib/logo_key';
+import { cleanLogoName, LOGO_ERR, LOGO_LIMITS, MISSING_LOGO_LINE, packLogoEntries } from '../lib/logo_key';
 
-export const MISSING_LOGO_TOAST = '找不到这个标志，已改回 GXR 标志。';
+export const MISSING_LOGO_TOAST = MISSING_LOGO_LINE;
 
 function toInfo(row: StoredLogo): LogoInfo {
   return {
@@ -63,6 +63,26 @@ export class LogoStore {
   info(id: string): LogoInfo | null {
     const row = this.byId.get(id);
     return row ? toInfo(row) : null;
+  }
+
+  packLogos(ids: Iterable<string>): { logoIndex: string; logoBlob: ArrayBuffer | null; infos: LogoInfo[] } {
+    const seen = new Set<string>();
+    const entries: Array<{ id: string; w: number; h: number; rgba: ArrayBuffer }> = [];
+    const infos: LogoInfo[] = [];
+    for (const id of ids) {
+      if (!id || id === 'ricoh' || id === 'none' || seen.has(id)) continue;
+      seen.add(id);
+      const row = this.byId.get(id);
+      if (!row) continue;
+      entries.push({ id: row.id, w: row.w, h: row.h, rgba: row.rgba });
+      infos.push(toInfo(row));
+    }
+    const { logoIndex, logoBlob } = packLogoEntries(entries);
+    return {
+      logoIndex,
+      logoBlob: logoBlob.byteLength ? (logoBlob.buffer as ArrayBuffer) : null,
+      infos,
+    };
   }
 
   onChange(fn: () => void): () => void {

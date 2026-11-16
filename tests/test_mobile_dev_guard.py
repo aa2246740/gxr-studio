@@ -47,11 +47,18 @@ def _stop(proc: subprocess.Popen[str] | None) -> None:
         proc.wait(timeout=10)
 
 
-def _http(port: int, path: str, *, method: str = "GET", body: bytes | None = None) -> tuple[int, bytes]:
+def _http(
+    port: int,
+    path: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    content_type: str = "application/json",
+) -> tuple[int, bytes]:
     """Talk to Vite from a child process. The pytest process itself stays offline."""
     script = """
-const [url, method, payload] = process.argv.slice(1);
-const headers = payload ? { 'content-type': 'application/json' } : {};
+const [url, method, payload, contentType] = process.argv.slice(1);
+const headers = payload ? { 'content-type': contentType } : {};
 const body = payload ? Buffer.from(payload, 'base64') : undefined;
 fetch(url, { method, body, headers })
   .then(async (response) => {
@@ -71,6 +78,7 @@ fetch(url, { method, body, headers })
             f"http://127.0.0.1:{port}{path}",
             method,
             "" if body is None else base64.b64encode(body).decode("ascii"),
+            content_type,
         ],
         check=False,
         capture_output=True,
@@ -107,6 +115,12 @@ def test_dev_samples_and_reports_do_not_follow_symlinks(tmp_path: Path) -> None:
     if link.is_symlink() or link.exists():
         link.unlink()
     link.symlink_to(secret)
+    secret_bin = tmp_path / "secret.bin"
+    secret_bin.write_bytes(b"untouched-bin")
+    link_bin = reports / "guard.bin"
+    if link_bin.is_symlink() or link_bin.exists():
+        link_bin.unlink()
+    link_bin.symlink_to(secret_bin)
 
     port = _free_port()
     env = os.environ.copy()
@@ -149,10 +163,21 @@ def test_dev_samples_and_reports_do_not_follow_symlinks(tmp_path: Path) -> None:
         posted, _body = _http(port, "/__dev/report/guard", method="POST", body=b'{"ok":true}')
         assert posted == 400
         assert secret.read_text(encoding="utf-8") == "untouched"
+        posted_bin, _body = _http(
+            port,
+            "/__dev/report/guard",
+            method="POST",
+            body=b"\x01\x00\x00\x00\x01\x00\x00\x00\xff\x00\x00",
+            content_type="application/octet-stream",
+        )
+        assert posted_bin == 400
+        assert secret_bin.read_bytes() == b"untouched-bin"
     finally:
         _stop(vite)
         if link.is_symlink() or link.exists():
             link.unlink()
+        if link_bin.is_symlink() or link_bin.exists():
+            link_bin.unlink()
 
 
 def test_mobile_check_rejects_leaked_ricoh_content_in_ordinary_file() -> None:

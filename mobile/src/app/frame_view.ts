@@ -120,7 +120,7 @@ export class FrameView {
       queueMicrotask(() => {
         queueMicrotask(() => {
           if (!this.aliveNow()) return;
-          if (checkMissingLogo(this.photo)) {
+          if (checkMissingLogo(this.photo, (msg) => showToast(this.shell, msg))) {
             this.photo.rev += 1;
             this.changed();
           } else if (this.tabOpen) {

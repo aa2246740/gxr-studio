@@ -276,3 +276,36 @@ export function drawCheckerPreview(
     tmp.height = 0;
   }
 }
+
+export const MISSING_LOGO_LINE = '找不到这个标志，已改回 GXR 标志。';
+
+export interface LogoPackEntry {
+  id: string;
+  w: number;
+  h: number;
+  rgba: ArrayBuffer | Uint8Array;
+}
+
+/** 拼成 `gxr-finish` `decode_logo_bundle` 认得的紧凑 RGBA 包：`[[id, w, h], ...]` + 连续字节。 */
+export function packLogoEntries(entries: ReadonlyArray<LogoPackEntry>): { logoIndex: string; logoBlob: Uint8Array } {
+  if (!entries.length) return { logoIndex: '', logoBlob: new Uint8Array(0) };
+  const index: Array<[string, number, number]> = [];
+  let total = 0;
+  const slices: Uint8Array[] = [];
+  for (const item of entries) {
+    const expected = item.w * item.h * 4;
+    const bytes = item.rgba instanceof Uint8Array ? item.rgba : new Uint8Array(item.rgba);
+    if (expected <= 0 || bytes.byteLength !== expected) continue;
+    index.push([item.id, item.w, item.h]);
+    slices.push(bytes);
+    total += expected;
+  }
+  if (!index.length) return { logoIndex: '', logoBlob: new Uint8Array(0) };
+  const blob = new Uint8Array(total);
+  let at = 0;
+  for (const bytes of slices) {
+    blob.set(bytes, at);
+    at += bytes.byteLength;
+  }
+  return { logoIndex: JSON.stringify(index), logoBlob: blob };
+}
