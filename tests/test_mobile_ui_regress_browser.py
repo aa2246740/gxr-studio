@@ -231,7 +231,6 @@ def test_later_tabs_keep_the_design_layout_disabled(server: dict[str, Any]) -> N
             "日期",
             "时间戳",
         ],
-        "LUT": ["不用 LUT", "胶片暖调", "青橙电影", "黑金", "输入色彩空间", "导入 LUT（.cube 文件）", "不写入相机"],
         "曲线": ["主曲线", "红", "绿", "蓝", "重置此通道"],
     }
     for tab, words in want.items():

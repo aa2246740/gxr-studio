@@ -381,7 +381,7 @@ const CASES = {
     }
   },
 
-  /** F7：边框、LUT、曲线三页有稿上的静态控件，全部停用，写「这项下一步做」。 */
+  /** F7：边框、曲线两页有稿上的静态控件，全部停用，写「这项下一步做」。 */
   async 'later-tabs'() {
     const { page, context, errors } = await makePage({ gpu: false });
     try {
@@ -389,7 +389,7 @@ const CASES = {
       await page.locator('.cell').first().click();
       await page.waitForSelector('[data-screen="editor"]');
       const tabs = {};
-      for (const name of ['边框', 'LUT', '曲线']) {
+      for (const name of ['边框', '曲线']) {
         await page.getByRole('tab', { name, exact: true }).click();
         tabs[name] = await page.evaluate(() => {
           const panel = [...document.querySelectorAll('.later-panel')].find((node) => !node.hidden);
