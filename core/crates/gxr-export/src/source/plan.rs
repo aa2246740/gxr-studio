@@ -2,6 +2,7 @@
 //! the home folder: the camera data is the DAT the user picked, the calibration pack is a
 //! list of named files, and the resolved recipe entry is an input (the resolve unit makes it).
 
+use gxr_color::resolve::unit_of_lens;
 use gxr_color::{ChromaBake, Table, UnitModel, bake_chroma, channel_gains, display_table};
 use gxr_raw::CoreError;
 use gxr_raw::sha256::sha256_hex;
@@ -16,21 +17,6 @@ pub const EXPORT_STEP: f64 = 0.375;
 pub const UNCALIBRATED_LABEL: &str = "电脑预测 未校准";
 pub const CALIBRATED_LABEL: &str = "电脑预测";
 pub const MODEL_NOTE: &str = "镜头单元、配方单元或 ISO 不在实拍校准范围";
-
-/// Port of gxr_studio/render/recipes.py:211 unit_of_lens.
-pub fn unit_of_lens(lens: Option<&str>, model: Option<&str>) -> Option<&'static str> {
-    let text = format!("{} {}", lens.unwrap_or(""), model.unwrap_or("")).to_lowercase();
-    if text.contains("mount") {
-        return Some("l08firm");
-    }
-    if text.contains("50mm") {
-        return Some("jlaunch");
-    }
-    if text.contains("28mm") {
-        return Some("qlaunch");
-    }
-    None
-}
 
 /// `calib.UNIT_ISOS`.
 fn unit_isos(unit: &str) -> &'static [i64] {
