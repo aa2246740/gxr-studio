@@ -97,6 +97,8 @@ export class EditorView {
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
   private restLabel = '';
+  /** 当前这根滑块上次落定的值（松手时一样就不算修改）。 */
+  private committed = 0;
   /** 套用或撤销改了正在看的这张：重新打开，照片和面板都按新的编辑状态画。 */
   private offPaste: (() => void) | null = null;
 
@@ -267,6 +269,8 @@ export class EditorView {
     const reset = button('fbtn', '全部重置');
     reset.addEventListener('click', () => {
       if (!this.photo) return;
+      // 全都已经是 0：没有修改，不加 rev（不然撤销套用时会当成套用之后又改过）。
+      if (Object.values(this.photo.knobs).every((value) => value === 0)) return;
       this.photo.knobs = zeroKnobs();
       this.photo.rev += 1;
       this.showKnob();
@@ -285,7 +289,12 @@ export class EditorView {
     });
     // 松手（change）才算落定的修改，编辑状态的版本加一（撤销套用时据此判断改没改过）。
     this.input.addEventListener('change', () => {
-      if (this.photo) this.photo.rev += 1;
+      if (!this.photo) return;
+      // 松手时的值和上次落定的一样（拖出去又拖回来）：没有修改。
+      const value = this.photo.knobs[this.key];
+      if (value === this.committed) return;
+      this.committed = value;
+      this.photo.rev += 1;
     });
     this.input.addEventListener('pointerdown', () => this.enterDrag());
     const end = () => {
@@ -294,8 +303,9 @@ export class EditorView {
     this.input.addEventListener('pointerup', end);
     this.input.addEventListener('pointercancel', end);
     this.input.addEventListener('dblclick', () => {
-      if (!this.photo) return;
+      if (!this.photo || this.photo.knobs[this.key] === 0) return;
       this.photo.knobs[this.key] = 0;
+      this.committed = 0;
       this.photo.rev += 1;
       this.showKnob();
       this.push();
@@ -311,6 +321,7 @@ export class EditorView {
     this.input.max = String(spec.max);
     this.input.step = String(spec.step);
     this.input.value = String(this.photo.knobs[this.key]);
+    this.committed = this.photo.knobs[this.key];
     this.input.dataset.key = spec.key;
     this.paintSlider();
   }

@@ -456,3 +456,73 @@ test('换配方：切走的（没选过时是原厂 04、档位为空）记进 m
   // 输入的 memory 不被改动。
   assert.deepEqual([...first.memory.entries()], [['builtin:4', {}]]);
 });
+
+// ---- Sol r1 P2：片与片之间目标变了，不写入 ---------------------------------------------
+
+/** 每张各占一片；第一片之后（让出主线程时）跑一次 `between`。 */
+async function sliced(targets, clip, between, current) {
+  let ran = false;
+  return pasteBatch(targets, clip, clip.groups, env(), new PasteUndo(), 'drift', {
+    budgetMs: 0,
+    yieldFn: async () => {
+      if (!ran) {
+        ran = true;
+        between();
+      }
+    },
+    current,
+  });
+}
+
+test('片之间目标被编辑（rev 变了）：不写入、不记撤销，按桌面 rev_conflict 计数', async () => {
+  const clip = copied(['adjust']);
+  const a = photo('a', { version: 1 });
+  const b = photo('b', { version: 1 });
+  const byId = new Map([['a', a], ['b', b]]);
+  const results = await sliced([a, b].map((p) => ({ photo: p, raw: true, unit: null })), clip, () => {
+    b.knobs.exposure_ev = 3;
+    b.rev += 1;
+  }, (id) => byId.get(id));
+  assert.deepEqual(results.map((r) => [r.id, r.status, r.code ?? null]), [['a', 'applied', null], ['b', 'error', 'rev_conflict']]);
+  assert.equal(b.knobs.exposure_ev, 3);
+  assert.equal(b.rev, 1);
+  assert.equal(text.pasteMessage(results), '已套用到 1 张；1 张在别处改过，没有粘贴');
+});
+
+test('片之间目标被重新选过（version 变了）、去掉了、换了对象：都不写入', async () => {
+  const clip = copied(['adjust']);
+  for (const [name, change, code] of [
+    ['re-picked', (b, byId) => { b.version += 1; }, 'rev_conflict'],
+    ['removed', (b, byId) => { byId.delete('b'); }, 'photo_not_found'],
+    ['replaced', (b, byId) => { byId.set('b', photo('b', { version: 1 })); }, 'photo_not_found'],
+  ]) {
+    const a = photo('a', { version: 1 });
+    const b = photo('b', { version: 1 });
+    const byId = new Map([['a', a], ['b', b]]);
+    const undo = new PasteUndo();
+    const results = await pasteBatch([a, b].map((p) => ({ photo: p, raw: true, unit: null })), clip, clip.groups, env(), undo, 'x', {
+      budgetMs: 0,
+      yieldFn: async () => change(b, byId),
+      current: (id) => byId.get(id),
+    });
+    assert.deepEqual(results.map((r) => [r.id, r.code ?? r.status]), [['a', 'applied'], ['b', code]], name);
+    assert.equal(b.knobs.exposure_ev, 0, name);
+    assert.equal(b.rev, 0, name);
+    assert.deepEqual([...undo.take('x').keys()], ['a'], name);
+  }
+});
+
+test('同一批里同一张出现两次：第二次按这一批自己写完的 rev 核对，照样套用，撤销回到最早的样子', async () => {
+  const clip = copied(['adjust']);
+  const a = photo('a', { version: 1, knobs: knobs({ tint: 4 }) });
+  const undo = new PasteUndo();
+  const results = await pasteBatch([{ photo: a, raw: true, unit: null }, { photo: a, raw: true, unit: null }], clip, clip.groups, env(), undo, 'd', {
+    budgetMs: 0,
+    yieldFn: async () => undefined,
+    current: () => a,
+  });
+  assert.deepEqual(results.map((r) => r.status), ['applied', 'applied']);
+  assert.equal(a.rev, 2);
+  undoBatch(undo.take('d'), () => a);
+  assert.equal(a.knobs.tint, 4);
+});

@@ -263,6 +263,14 @@ export class GridView {
       bl.replaceChildren();
       if (photo.jpg && !photo.dng) bl.append(el('span', 'bdg', 'JPG'));
     }
+    // 04e：带着编辑（选了配方，或有一项调整不是 0）的照片右下角有铅笔，按现在的编辑状态挂上或拿掉。
+    const edited = photo.choice !== null || Object.values(photo.knobs).some((value) => value !== 0);
+    const mark = cell.querySelector('.edt');
+    if (edited && !mark) {
+      const pencil = el('span', 'edt');
+      pencil.append(icon(PASTE_ICON.pencil));
+      cell.append(pencil);
+    } else if (!edited) mark?.remove();
     if (!photo.bitmap) return;
     let canvas = cell.querySelector('canvas');
     if (!canvas) {

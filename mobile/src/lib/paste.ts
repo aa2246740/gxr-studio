@@ -21,6 +21,8 @@ export type Levels = Map<string, Record<string, number>>;
 export interface Editable {
   id: string;
   rev: number;
+  /** 文件的版本（重新选同一张照片就加一）。没有就不核对。 */
+  version?: number;
   choice: Choice | null;
   /** 选中的配方的档位（桌面 recipe.levels），键是 choice.id。 */
   levels: Levels;
@@ -45,6 +47,15 @@ export interface Target {
   raw: boolean;
   /** 照片的镜头单元（`unitOfLens`），认不出是 null：桌面这时不算单元不同。 */
   unit: Unit | null;
+  /** 点「套用」那一刻的文件版本和编辑版本（不给就取这一批开始时的）。提交前核对，变了就不写。 */
+  version?: number;
+  rev?: number;
+}
+
+/** 桌面 `render/paste.py` 的 `_failed` 和 `api/paste_routes.py`：这一张没处理，结果里记成 error。 */
+function failed(id: string, code: 'rev_conflict' | 'photo_not_found'): Outcome {
+  const message = code === 'rev_conflict' ? '这张照片已在别处修改，没有粘贴。' : '找不到这张照片。';
+  return { id, status: 'error', applied: [], skipped: [], code, message };
 }
 
 export interface Env {
@@ -271,13 +282,33 @@ export async function pasteBatch(
   env: Env,
   undo: PasteUndo,
   batchId: string,
-  options: { budgetMs?: number; now?: () => number; yieldFn?: () => Promise<void>; alive?: () => boolean; onSlice?: (ms: number) => void } = {},
+  options: {
+    budgetMs?: number;
+    now?: () => number;
+    yieldFn?: () => Promise<void>;
+    alive?: () => boolean;
+    onSlice?: (ms: number) => void;
+    /** 这张照片现在是哪个对象（清空、去掉、换了对象就是 undefined 或别的对象）。不给就认为一直是同一个。 */
+    current?: (id: string) => Editable | undefined;
+  } = {},
 ): Promise<Outcome[]> {
   const budget = options.budgetMs ?? 4;
   const now = options.now ?? (() => performance.now());
   const pause = options.yieldFn ?? (() => new Promise<void>((done) => setTimeout(done, 0)));
   const alive = options.alive ?? (() => true);
   const outcomes: Outcome[] = [];
+  // 每张照片这一批预期的版本：开始时的（或点套用那一刻的）；这一批自己写过一次就换成写完的 rev。
+  const expected = new Map<string, { version: number | null; rev: number }>();
+  for (const target of targets) {
+    if (!expected.has(target.photo.id)) expected.set(target.photo.id, { version: target.version ?? target.photo.version ?? null, rev: target.rev ?? target.photo.rev });
+  }
+  const stale = (target: Target): Outcome | null => {
+    const now = options.current ? options.current(target.photo.id) : target.photo;
+    if (!now || now !== target.photo) return failed(target.photo.id, 'photo_not_found');
+    const want = expected.get(target.photo.id);
+    if (!want || (now.version ?? null) !== want.version || now.rev !== want.rev) return failed(target.photo.id, 'rev_conflict');
+    return null;
+  };
   let i = 0;
   while (i < targets.length) {
     if (!alive()) break;
@@ -286,8 +317,18 @@ export async function pasteBatch(
       const target = targets[i];
       i += 1;
       if (target.photo.id === clip.from.id) continue; // 来源这张从来不是目标
+      // 片与片之间这张被改过、重新选过、去掉或换了对象：不写，不记撤销，按桌面的 rev_conflict / photo_not_found 计数。
+      const gone = stale(target);
+      if (gone) {
+        outcomes.push(gone);
+        continue;
+      }
       const { outcome, before } = pasteOne(target, clip, groups, env);
-      if (before && outcome.rev !== undefined) undo.add(batchId, target.photo.id, outcome.rev, before);
+      if (before && outcome.rev !== undefined) {
+        undo.add(batchId, target.photo.id, outcome.rev, before);
+        const want = expected.get(target.photo.id);
+        if (want) want.rev = outcome.rev;
+      }
       outcomes.push(outcome);
     } while (i < targets.length && now() - start < budget);
     options.onSlice?.(now() - start);

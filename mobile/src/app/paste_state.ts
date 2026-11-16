@@ -7,7 +7,12 @@ import { formatClock } from '../lib/group';
 import { copyFrom, pasteBatch, PasteUndo, undoBatch, type Clip, type Env, type Target } from '../lib/paste';
 import { shelf, shelves } from '../lib/recipes';
 import { copyMessage, groupName, pasteMessage, undoMessage, type GroupId, type Outcome } from '../lib/paste_text';
-import { photoMs, type AppApi, type Photo } from './model';
+import type { AppApi, Photo } from './model';
+
+/** model.ts 的 photoMs（这里只 import 类型，Node 测试不用把 looks.ts 也加载进来）。 */
+function photoMs(photo: Photo): number {
+  return photo.captureMs ?? photo.lastModified;
+}
 
 /** 桌面普通提示（没有按钮）停留的时间。 */
 export const INFO_MS = 3200;
@@ -22,7 +27,7 @@ export type Bar =
 /** 每张目标照片在这次会话里的身份：清空、去掉、重新选过的照片不再套用。 */
 function targetOf(photo: Photo): Target {
   const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
-  return { photo, raw: photo.dng !== null, unit: unitOfLens(meta.lens) };
+  return { photo, raw: photo.dng !== null, unit: unitOfLens(meta.lens), version: photo.version, rev: photo.rev };
 }
 
 function envOf(api: AppApi): Env {
@@ -64,8 +69,13 @@ export class PasteState {
   pickNext = false;
   /** 正在套用（按时间片）。这时再点套用不理。 */
   busy = false;
+  /** 每一片最多占主线程多久（测试可以改小，让每张各占一片）。 */
+  budgetMs = 4;
   private session = -1;
   private leaveTimer = 0;
+  /** 网格现在看得见吗；看不见时从什么时候起（Date.now）。结果在离开网格之后才到，也按离开那一刻算 15 秒。 */
+  private onGrid = true;
+  private leftAt = 0;
   private infoTimer = 0;
   private readonly listeners = new Set<() => void>();
   private readonly editListeners = new Set<(ids: ReadonlySet<string>) => void>();
@@ -112,6 +122,7 @@ export class PasteState {
     window.clearTimeout(this.leaveTimer);
     this.leaveTimer = 0;
     this.bar = bar;
+    if (bar?.kind === 'applied' && !this.onGrid) this.expireApplied(bar);
     if (bar?.kind === 'info') {
       this.infoTimer = window.setTimeout(() => {
         if (this.bar === bar) {
@@ -130,21 +141,30 @@ export class PasteState {
 
   /** 回到了网格：底栏不再倒计时。 */
   gridShown(): void {
+    this.onGrid = true;
     window.clearTimeout(this.leaveTimer);
     this.leaveTimer = 0;
   }
 
-  /** 离开网格：套用结果再留 15 秒。 */
+  /** 离开网格：记下离开的时刻；套用结果从这一刻起再留 15 秒（结果还没到的，到的时候补上计时）。 */
   gridLeft(): void {
-    if (this.bar?.kind !== 'applied' || this.leaveTimer) return;
-    const bar = this.bar;
+    if (this.onGrid) {
+      this.onGrid = false;
+      this.leftAt = Date.now();
+    }
+    if (this.bar?.kind === 'applied' && !this.leaveTimer) this.expireApplied(this.bar);
+  }
+
+  private expireApplied(bar: Bar): void {
+    window.clearTimeout(this.leaveTimer);
+    const left = Math.max(0, UNDO_MS - (Date.now() - this.leftAt));
     this.leaveTimer = window.setTimeout(() => {
       this.leaveTimer = 0;
       if (this.bar === bar) {
         this.bar = null;
         this.changed();
       }
-    }, UNDO_MS);
+    }, left);
   }
 
   /** 复制：勾选的、这张确实设置过的组进剪贴板。什么都没有就不动剪贴板。返回要说的那句。 */
@@ -188,6 +208,8 @@ export class PasteState {
     try {
       outcomes = await pasteBatch(targets, clip, clip.groups, envOf(api), this.undo, batchId, {
         alive: () => api.session() === session,
+        current: (id) => api.photo(id),
+        budgetMs: this.budgetMs,
       });
     } finally {
       this.busy = false;

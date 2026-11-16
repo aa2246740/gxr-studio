@@ -42,3 +42,6 @@
 .gh .go .ico { width: 18px; height: 18px; }
 /* 选择栏不显示时整格收起（.dock 的 display:flex 会盖过 hidden）。 */
 .dock[hidden] { display: none; }
+/* 04e：带着编辑的照片右下角的铅笔（设计稿 ui.py 的 .cell .edt）。 */
+.cell .edt { position: absolute; right: 5px; bottom: 5px; width: 22px; height: 22px; border-radius: 6px; background: rgba(0, 0, 0, 0.66); display: grid; place-items: center; color: #fff; }
+.cell .edt .ico { width: 13px; height: 13px; stroke-width: 2.2; }

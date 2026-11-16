@@ -50,6 +50,16 @@ def test_mobile_ui_group_paste_rules_and_messages() -> None:
     assert "ℹ fail 0" in result.stdout or "# fail 0" in result.stdout, result.stdout
 
 
+STATE = REPO / "tests" / "support" / "mobile_ui_group_state_unit.mjs"
+
+
+def test_mobile_ui_group_paste_state_bar_timer_and_drift() -> None:
+    """Sol r1：结果栏离开网格 15 秒后收起（结果在离开之后才到也按离开那一刻算）；按时间片套用时片之间目标变了不写入。"""
+    result = _run(STATE, "--test")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ℹ fail 0" in result.stdout or "# fail 0" in result.stdout, result.stdout
+
+
 @pytest.mark.exclusive  # 500 张套用一次，主线程每一片不超过 8 ms
 def test_mobile_ui_group_paste_500_photos_in_slices() -> None:
     result = _run(TIMING)

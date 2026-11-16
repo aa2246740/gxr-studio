@@ -14,6 +14,7 @@ export const PASTE_ICON = {
   check: 'M5 12.5l4.5 4.5L19 7.5',
   copy: 'M8.5 8.5h11.5v11.5H8.5zM15.5 8.5V7A2.5 2.5 0 0 0 13 4.5H7A2.5 2.5 0 0 0 4.5 7v6A2.5 2.5 0 0 0 7 15.5h1.5',
   undo: 'M9 14L4 9l5-5M4 9h9a6 6 0 0 1 0 12h-3',
+  pencil: 'M4 20l1-4L16.5 4.5a2 2 0 0 1 3 3L8 19z',
 } as const;
 
 /** 调整的名字和格式（编辑器 SLIDERS 的名字、formatKnob 的写法）。 */

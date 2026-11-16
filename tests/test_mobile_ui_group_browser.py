@@ -200,9 +200,24 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
     assert changed["p1"] == changed["p1Before"] and changed["p1"]["knobs"]["shadow"] == -15
     assert changed["p2"]["knobs"] == pick["restored"][1]["knobs"] and changed["p2"]["choice"] == pick["restored"][1]["choice"]
 
+    # 04e 的铅笔：按现在的编辑状态，同组套用后这一组每一张都有（来源也有编辑）。
+    assert group["pencils"] == sorted(stem.lower() for stem in group3)
+
     cleared = steps["cleared"]
     assert "已复制：配方 / 风格、调整" in cleared["copiedBar"] and f"来自 {source} · 点组标题上的「套用到这一组」" in cleared["copiedBar"]
     assert cleared["bars"] == 0 and cleared["idle"] == len(expect["1"])
+
+    # Sol r1 P2：只套用配方之后，零值的「全部重置」、点两下已经是 0 的滑块、松开没动的滑块都不加 rev，撤销照样还原。
+    noop = steps["noop"]
+    assert noop["recipeOnly"] == "复制 1 项"
+    assert noop["before"]["choice"] is None and set(noop["before"]["knobs"].values()) == {0}
+    assert noop["applied"]["line"] == "已套用到 1 张"
+    assert noop["pasted"]["rev"] == noop["before"]["rev"] + 1 and noop["pasted"]["choice"] == src["after"]["choice"]
+    assert noop["afterNoop"]["rev"] == noop["pasted"]["rev"]
+    assert noop["line"] == "已撤销 1 张"
+    assert noop["restored"]["choice"] is None and noop["restored"]["rev"] == noop["pasted"]["rev"] + 1
+    target2 = picks[1].lower()
+    assert target2 in noop["pencilsBeforeUndo"] and target2 not in noop["pencilsAfterUndo"]
 
 
 CAPTURE_DRIVER = REPO / "tests" / "support" / "mobile_ui_group_capture_browser.mjs"

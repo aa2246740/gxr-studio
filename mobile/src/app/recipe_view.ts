@@ -434,6 +434,8 @@ export class RecipeView {
     // 只记用户动过的旋钮（桌面 recipes.js 的 ensureRecipe(view).levels[name] = …）：没动过的取这个配方的默认。
     // memory 不动；没选配方时 ensureRecipe 从空档位开始。
     const next: Record<string, number> = this.photo.choice?.id === card.id ? { ...(this.photo.levels.get(card.id) ?? {}) } : {};
+    // 这一档本来就记着这个值：没有修改，不加 rev。
+    if (this.photo.choice?.id === card.id && next[name] === level) return;
     next[name] = level;
     this.photo.levels = new Map([[card.id, next]]);
     this.photo.rev += 1;

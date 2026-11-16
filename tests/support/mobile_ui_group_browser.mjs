@@ -64,6 +64,11 @@ async function knobShown(page, key) {
   return page.locator('.panel.adjust .val').innerText();
 }
 
+/** 带着编辑的照片右下角的铅笔（04e），按格子的照片 id。 */
+async function pencils(page) {
+  return page.locator('.cell').evaluateAll((nodes) => nodes.filter((node) => node.querySelector('.edt')).map((node) => node.dataset.id).sort());
+}
+
 async function heads(page) {
   return page.locator('.gh[data-row]').evaluateAll((nodes) =>
     nodes.map((node) => ({ row: node.dataset.row, range: node.querySelector('.rng')?.textContent, cnt: node.querySelector('.cnt')?.textContent, go: node.querySelector('.go')?.textContent })),
@@ -140,7 +145,7 @@ try {
   await page.locator('[data-state="confirm"] [data-act="confirm"]').click();
   await grid(page);
   const applied = await appliedBar(page);
-  step('group', { ...copied, confirm, applied, edits: await edits(page) });
+  step('group', { ...copied, confirm, applied, edits: await edits(page), pencils: await pencils(page) });
 
   // 打开一张目标：同一个配方、同样的调整。回到网格，结果栏还在。
   const target = manifest.sameGroupTarget;
@@ -212,6 +217,39 @@ try {
   const copiedBar = await text(page, '.pastebar[data-state="copied"]');
   await page.locator('[data-act="clear-clip"]').click();
   step('cleared', { copiedBar, bars: await page.locator('.pastebar').count(), idle: await page.locator('.gh .go.idle').count() });
+
+  // Sol r1 P2：只套用配方（目标的调整本来全是 0），再点「全部重置」、点两下已经是 0 的滑块、松开没动的滑块：都不是修改，
+  // rev 不变，撤销照样还原。
+  const target2 = manifest.picks[1];
+  const zeroBefore = await editOf(page, target2);
+  await openPhoto(page, src);
+  await page.locator('[data-act="copy"]').click();
+  await page.waitForSelector('[data-state="copy-options"]');
+  await page.locator('[data-state="copy-options"] .optrow[data-group="adjust"]').click();
+  const recipeOnly = await text(page, '[data-state="copy-options"] .btn.primary');
+  await page.locator('[data-state="copy-options"] .btn.primary').click();
+  await page.waitForSelector('[data-state="copied-where"]');
+  await page.locator('[data-state="copied-where"] .btn.ghost').click();
+  await back(page);
+  await page.locator('.nav .nb.bold').click();
+  await page.locator(`.cell[data-id="${target2.toLowerCase()}"]`).evaluate((node) => node.click());
+  await page.locator('[data-act="paste-selection"]').click();
+  await confirmText(page);
+  await page.locator('[data-state="confirm"] [data-act="confirm"]').click();
+  const noopApplied = await appliedBar(page);
+  const pasted = await editOf(page, target2);
+  await openPhoto(page, target2);
+  await page.locator('.tabs button', { hasText: '调整' }).click();
+  await page.locator('.hint-row .fbtn', { hasText: '全部重置' }).click();
+  await page.locator('.panel.adjust input[type="range"]').evaluate((input) => {
+    input.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await back(page);
+  const afterNoop = await editOf(page, target2);
+  const pencilsBeforeUndo = await pencils(page);
+  const noopLine = await undo(page);
+  step('noop', { recipeOnly, before: zeroBefore, applied: noopApplied, pasted, afterNoop, line: noopLine, restored: await editOf(page, target2), pencilsBeforeUndo, pencilsAfterUndo: await pencils(page) });
 } catch (error) {
   out.error = String(error?.stack ?? error);
 } finally {
