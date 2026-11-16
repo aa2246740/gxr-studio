@@ -456,7 +456,7 @@ test('P1-01：DISPLAY_SPACES 对齐桌面 display 空间，setSpace 未传 outpu
   assert.equal(changed.record.output_space, 'gamma24');
 });
 
-test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B) 时仍保持 B 的快照一致', async () => {
+test('P2-02：exportSnapshot 写屏障在延迟期间阻塞 rename/setSpace/removeChecked，失败也释放屏障', async () => {
   const idA = 'a'.repeat(64);
   const idB = 'b'.repeat(64);
   const store = new Map([
@@ -470,10 +470,12 @@ test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B
     [idB, blobB],
   ]);
 
-  let releaseA;
-  const waitA = new Promise((r) => {
-    releaseA = r;
+  let releaseSnap;
+  let waitSnap = new Promise((r) => {
+    releaseSnap = r;
   });
+  const ioCalls = [];
+  let failNextSnapshot = false;
 
   const book = new LutBook({
     importLut: async () => {
@@ -481,6 +483,7 @@ test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B
     },
     restore: async () => ({ records: [...store.values()], order: [idA, idB], totalBytes: 256, watermark: 1 }),
     patch: async (cubeId, patch, version) => {
+      ioCalls.push(`patch:${Object.keys(patch).includes('name') ? 'rename' : 'space'}`);
       const prev = store.get(cubeId);
       if (!prev) return { ok: false, reason: 'not_found' };
       const next = { ...prev, ...patch, version: prev.version + 1, savedAt: version };
@@ -488,27 +491,383 @@ test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B
       return { ok: true, record: next };
     },
     remove: async (cubeId) => {
+      ioCalls.push('delete');
       blobs.delete(cubeId);
       return store.delete(cubeId);
     },
-    readBlob: async (cubeId) => {
-      if (cubeId === idA) await waitA;
-      return blobs.get(cubeId) ?? null;
+    readBlob: async (cubeId) => blobs.get(cubeId) ?? null,
+    snapshotBatch: async (ids) => {
+      ioCalls.push('snapshot:start');
+      await waitSnap;
+      if (failNextSnapshot) {
+        ioCalls.push('snapshot:fail');
+        throw new Error('AbortError');
+      }
+      ioCalls.push('snapshot:done');
+      return ids.map((cubeId) => ({
+        cubeId,
+        record: store.get(cubeId) ?? null,
+        blob: blobs.get(cubeId) ?? null,
+      }));
     },
   });
   await book.restore();
 
   const snapTask = book.exportSnapshot([idA, idB]);
+  const renameTask = book.rename(idB, 'NewB');
   const patchTask = book.setSpace(idB, { input_space: 'applelog' });
-  const removeTask = patchTask.then(() => book.remove(idB));
-  await removeTask;
-  releaseA();
+  const removeTask = book.removeChecked(idB);
 
-  const snap = await snapTask;
+  // 快照未完成前，任何写消息都不得发出。
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(ioCalls, ['snapshot:start']);
+
+  releaseSnap();
+  const [snap, renameRes, patchRes, removeRes] = await Promise.all([snapTask, renameTask, patchTask, removeTask]);
+  assert.equal(ioCalls[0], 'snapshot:start');
+  assert.equal(ioCalls[1], 'snapshot:done');
+  assert.equal(ioCalls.slice(2).length, 3);
+  assert.equal(renameRes.ok, true);
+  assert.equal(patchRes.ok, true);
+  assert.equal(removeRes.ok, true);
   assert.ok(snap[idA]);
   assert.ok(snap[idB]);
   assert.equal(snap[idB].cube, blobB);
   assert.equal(JSON.parse(snap[idB].space).input_space, 'srgb');
+  assert.equal(book.get(idB), undefined);
+
+  // 快照读取失败时，写屏障必须释放且后续删除照常成功。
+  failNextSnapshot = true;
+  waitSnap = Promise.resolve();
+  await assert.rejects(() => book.exportSnapshot([idA]), /AbortError/);
+  const delA = await book.removeChecked(idA);
+  assert.equal(delA.ok, true);
+  assert.equal(book.get(idA), undefined);
+});
+
+test('P2-01（Opus r3）：两个快照重叠时写操作严格按调用顺序生效，失败写不阻塞后续写', async (t) => {
+  const idA = 'a'.repeat(64);
+  const idB = 'b'.repeat(64);
+  const blobA = new TextEncoder().encode('# Overlap A').buffer;
+  const blobB = new TextEncoder().encode('# Overlap B').buffer;
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function makeOverlapBook() {
+    const store = new Map([
+      [idA, makeRec(idA, { name: 'A', input_space: 'srgb', output_space: 'srgb' })],
+      [idB, makeRec(idB, { name: 'B', input_space: 'srgb', output_space: 'srgb' })],
+    ]);
+    const blobs = new Map([
+      [idA, blobA],
+      [idB, blobB],
+    ]);
+    const calls = [];
+    const gates = [];
+    let high = 1;
+    let failNextPatch = false;
+
+    const book = new LutBook({
+      importLut: async () => {
+        throw new Error('unused');
+      },
+      restore: async () => ({ records: [...store.values()], order: [idA, idB], totalBytes: 256, watermark: high }),
+      patch: async (cubeId, patch, version) => {
+        const tag = patch.name !== undefined ? `name:${patch.name}` : `space:${patch.input_space}`;
+        calls.push({ op: 'patch', tag, version });
+        if (failNextPatch) {
+          failNextPatch = false;
+          throw Object.assign(new Error('Transaction aborted'), { name: 'AbortError' });
+        }
+        const prev = store.get(cubeId);
+        if (!prev) return { ok: false, reason: 'not_found' };
+        if (high >= version || prev.savedAt >= version) return { ok: false, reason: 'stale' };
+        high = version;
+        const next = { ...prev, ...patch, version: prev.version + 1, savedAt: version };
+        store.set(cubeId, next);
+        return { ok: true, record: next };
+      },
+      remove: async (cubeId, version) => {
+        calls.push({ op: 'delete', tag: 'delete', version });
+        if (high >= version) return false;
+        high = version;
+        blobs.delete(cubeId);
+        return store.delete(cubeId);
+      },
+      readBlob: async (cubeId) => blobs.get(cubeId) ?? null,
+      snapshotBatch: async (ids) => {
+        const g = deferred();
+        gates.push(g);
+        calls.push({ op: 'snapshot', tag: `snapshot#${gates.length}`, version: 0 });
+        await g.promise;
+        return ids.map((cubeId) => ({
+          cubeId,
+          record: store.get(cubeId) ?? null,
+          blob: blobs.get(cubeId) ?? null,
+        }));
+      },
+    });
+    return {
+      book,
+      store,
+      calls,
+      gates,
+      armPatchFailure: () => {
+        failNextPatch = true;
+      },
+    };
+  }
+
+  await t.test('setSpace applelog -> srgb：存储调用顺序与最终值都是 srgb', async () => {
+    const { book, store, calls, gates } = makeOverlapBook();
+    await book.restore();
+    const s1 = book.exportSnapshot([idA, idB]);
+    await tick();
+    const w1 = book.setSpace(idB, { input_space: 'applelog' });
+    await tick();
+    const s2 = book.exportSnapshot([idA, idB]);
+    await tick();
+    const w2 = book.setSpace(idB, { input_space: 'srgb' });
+    await tick();
+    assert.equal(calls.filter((c) => c.op !== 'snapshot').length, 0);
+
+    gates[0].resolve();
+    await tick();
+    assert.equal(calls.filter((c) => c.op !== 'snapshot').length, 0);
+    gates[1].resolve();
+
+    const [snap1, snap2, r1, r2] = await Promise.all([s1, s2, w1, w2]);
+    assert.deepEqual(
+      {
+        callOrder: calls.map((c) => c.tag),
+        finalStore: store.get(idB)?.input_space,
+        finalMemory: book.get(idB)?.input_space,
+      },
+      {
+        callOrder: ['snapshot#1', 'snapshot#2', 'space:applelog', 'space:srgb'],
+        finalStore: 'srgb',
+        finalMemory: 'srgb',
+      },
+    );
+    assert.ok(calls[2].version < calls[3].version);
+    assert.equal(r1.ok, true);
+    assert.equal(r1.record.input_space, 'applelog');
+    assert.equal(r2.ok, true);
+    assert.equal(r2.record.input_space, 'srgb');
+    for (const snap of [snap1, snap2]) {
+      assert.equal(snap[idB].cube, blobB);
+      assert.equal(JSON.parse(snap[idB].space).input_space, 'srgb');
+    }
+  });
+
+  await t.test('rename X -> Y：存储调用顺序为 X -> Y，最终名字是 Y', async () => {
+    const { book, store, calls, gates } = makeOverlapBook();
+    await book.restore();
+    const s1 = book.exportSnapshot([idB]);
+    await tick();
+    const w1 = book.rename(idB, 'X');
+    await tick();
+    const s2 = book.exportSnapshot([idB]);
+    await tick();
+    const w2 = book.rename(idB, 'Y');
+    await tick();
+
+    gates[0].resolve();
+    await tick();
+    gates[1].resolve();
+
+    const [snap1, snap2, r1, r2] = await Promise.all([s1, s2, w1, w2]);
+    assert.deepEqual(
+      {
+        callOrder: calls.map((c) => c.tag),
+        finalStore: store.get(idB)?.name,
+        finalMemory: book.get(idB)?.name,
+      },
+      {
+        callOrder: ['snapshot#1', 'snapshot#2', 'name:X', 'name:Y'],
+        finalStore: 'Y',
+        finalMemory: 'Y',
+      },
+    );
+    assert.ok(calls[2].version < calls[3].version);
+    assert.equal(r1.ok, true);
+    assert.equal(r1.record.name, 'X');
+    assert.equal(r2.ok, true);
+    assert.equal(r2.record.name, 'Y');
+    assert.equal(snap1[idB].cube, blobB);
+    assert.equal(snap2[idB].cube, blobB);
+  });
+
+  await t.test('setSpace 后 removeChecked：先改后删，最终被删且两次都无错误；失败写不阻塞队列', async () => {
+    const { book, store, calls, gates, armPatchFailure } = makeOverlapBook();
+    await book.restore();
+    const s1 = book.exportSnapshot([idA, idB]);
+    await tick();
+    const w1 = book.setSpace(idB, { input_space: 'applelog' });
+    await tick();
+    const s2 = book.exportSnapshot([idA, idB]);
+    await tick();
+    const w2 = book.removeChecked(idB);
+    await tick();
+
+    gates[0].resolve();
+    await tick();
+    gates[1].resolve();
+
+    const [snap1, snap2, r1, r2] = await Promise.all([s1, s2, w1, w2]);
+    assert.deepEqual(
+      {
+        callOrder: calls.map((c) => c.tag),
+        w1: r1.ok ? { ok: true } : r1,
+        w2: r2,
+        bInStore: store.has(idB),
+        bInMemory: book.get(idB) !== undefined,
+      },
+      {
+        callOrder: ['snapshot#1', 'snapshot#2', 'space:applelog', 'delete'],
+        w1: { ok: true },
+        w2: { ok: true },
+        bInStore: false,
+        bInMemory: false,
+      },
+    );
+    assert.ok(calls[2].version < calls[3].version);
+    assert.ok(book.get(idA));
+    for (const snap of [snap1, snap2]) {
+      assert.equal(snap[idB].cube, blobB);
+      assert.equal(JSON.parse(snap[idB].space).input_space, 'srgb');
+    }
+
+    armPatchFailure();
+    const failedWrite = book.setSpace(idA, { input_space: 'applelog' });
+    const nextWrite = book.rename(idA, 'AfterFail');
+    const [failRes, nextRes] = await Promise.all([failedWrite, nextWrite]);
+    assert.deepEqual(failRes, { ok: false, message: '保存未生效，请重试。' });
+    assert.equal(book.get(idA)?.input_space, 'srgb');
+    assert.equal(nextRes.ok, true);
+    assert.equal(book.get(idA)?.name, 'AfterFail');
+  });
+});
+
+test('Sol r4 P2-01：S1 刚完成与排队写发出之间无微任务空隙，交接登记的 S2 仍保留 B 原字节与空间', async () => {
+  const idA = 'd'.repeat(64);
+  const idB = 'e'.repeat(64);
+  const blobA = new Uint8Array([9, 8, 7, 6]).buffer;
+  const blobB = new Uint8Array([5, 4, 3, 2]).buffer;
+
+  function deferred() {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  for (const gap of [0, 1, 2]) {
+    const store = new Map([
+      [idA, makeRec(idA, { name: 'HandoffA', input_space: 'srgb', output_space: 'rec709', savedAt: 1 })],
+      [idB, makeRec(idB, { name: 'HandoffB', input_space: 'srgb', output_space: 'rec709', savedAt: 2 })],
+    ]);
+    const blobs = new Map([
+      [idA, blobA],
+      [idB, blobB],
+    ]);
+    let high = 2;
+    let poolCursor = 0;
+    let holdSlot0 = false;
+    const slot0Hold = deferred();
+    const s1Gate = deferred();
+    const calls = [];
+
+    const book = new LutBook({
+      importLut: async () => {
+        throw new Error('unused');
+      },
+      restore: async () => ({ records: [...store.values()], order: [idA, idB], totalBytes: 256, watermark: high }),
+      patch: async () => {
+        throw new Error('unused');
+      },
+      remove: async (cubeId, version) => {
+        const slot = poolCursor % 2;
+        poolCursor += 1;
+        calls.push({ op: 'delete', slot, version });
+        if (slot === 0 && holdSlot0) await slot0Hold.promise;
+        if (high >= version) return false;
+        high = version;
+        blobs.delete(cubeId);
+        return store.delete(cubeId);
+      },
+      readBlob: async (cubeId) => blobs.get(cubeId) ?? null,
+      snapshotBatch: async (ids) => {
+        const slot = poolCursor % 2;
+        poolCursor += 1;
+        const seq = calls.filter((c) => c.op === 'snapshot').length + 1;
+        calls.push({ op: 'snapshot', seq, slot });
+        if (seq === 1) {
+          await s1Gate.promise;
+          holdSlot0 = true;
+        } else if (slot === 0 && holdSlot0) {
+          await slot0Hold.promise;
+        }
+        return ids.map((cubeId) => ({
+          cubeId,
+          record: store.get(cubeId) ?? null,
+          blob: blobs.get(cubeId) ?? null,
+        }));
+      },
+    });
+
+    await book.restore();
+    // S1 落在槽 0；轮转游标回槽 0 后排入 removeChecked(B)。
+    const s1 = book.exportSnapshot([idA, idB]);
+    const deleting = book.removeChecked(idB);
+    poolCursor = 0;
+
+    const second = s1.then(async () => {
+      for (let i = 0; i < gap; i += 1) await Promise.resolve();
+      const writePostedAtSecondClick = calls.some((c) => c.op === 'delete');
+      const s2Promise = book.exportSnapshot([idA, idB]);
+      // 等后续微任务落地后再释放槽 0 忙碌锁，模拟繁忙 Worker 稍后完成
+      setTimeout(() => slot0Hold.resolve(), 5);
+      return { writePostedAtSecondClick, snap2: await s2Promise };
+    });
+
+    s1Gate.resolve();
+    const [snap1, secondRes, delRes] = await Promise.all([s1, second, deleting]);
+
+    assert.equal(snap1[idB]?.cube, blobB, `gap=${gap} S1 retains B bytes`);
+    assert.equal(snap1[idA]?.cube, blobA, `gap=${gap} S1 retains A bytes`);
+    assert.ok(secondRes.snap2[idB], `gap=${gap} S2 must retain B`);
+    assert.equal(secondRes.snap2[idB].cube, blobB, `gap=${gap} S2 retains B bytes`);
+    assert.equal(JSON.parse(secondRes.snap2[idB].space).input_space, 'srgb', `gap=${gap} S2 preserves srgb`);
+    assert.equal(JSON.parse(secondRes.snap2[idB].space).output_space, 'rec709', `gap=${gap} S2 preserves rec709`);
+    if (!secondRes.writePostedAtSecondClick) {
+      assert.deepEqual(
+        calls.map((c) => c.op),
+        ['snapshot', 'snapshot', 'delete'],
+        `gap=${gap} unsent delete must wait for S2`,
+      );
+    } else {
+      assert.equal(gap, 2);
+      assert.deepEqual(
+        calls.map((c) => c.op),
+        ['snapshot', 'delete', 'snapshot'],
+        'gap=2 dispatches delete in same continuation onto busy slot 0 while S2 reads idle slot 1',
+      );
+    }
+    assert.deepEqual(delRes, { ok: true });
+    assert.equal(book.get(idB), undefined);
+    assert.equal(store.has(idB), false);
+  }
 });
 
 test('P2-03：IDB AbortError 时 LutBook 不改动内存目录且返回清晰中文错误', async () => {

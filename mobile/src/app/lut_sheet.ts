@@ -81,6 +81,7 @@ export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: 
         input_range: inputRange,
         output_range: outputRange,
       });
+      if (!sheet.isConnected) return;
       if (!res.ok) {
         errLine.textContent = res.message;
         errLine.hidden = false;
@@ -92,6 +93,7 @@ export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: 
       if (closeAfter) view.close();
       else renderBody();
     } catch {
+      if (!sheet.isConnected) return;
       errLine.textContent = '保存未生效，请重试。';
       errLine.hidden = false;
     } finally {
@@ -283,6 +285,7 @@ function openRenameDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
     save.disabled = true;
     try {
       const res = await lutBook.rename(record.cube_id, input.value);
+      if (!dlg.isConnected) return;
       if (!res.ok) {
         err.textContent = res.message;
         err.hidden = false;
@@ -291,6 +294,7 @@ function openRenameDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
       view.close();
       onRenamed();
     } catch {
+      if (!dlg.isConnected) return;
       err.textContent = '保存未生效，请重试。';
       err.hidden = false;
     } finally {
@@ -332,6 +336,7 @@ function openDeleteDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
     err.hidden = true;
     try {
       const res = await lutBook.removeChecked(record.cube_id);
+      if (!dlg.isConnected) return;
       if (!res.ok) {
         err.textContent = res.message;
         err.hidden = false;
@@ -340,6 +345,7 @@ function openDeleteDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
       view.close();
       onDeleted(record.cube_id);
     } catch {
+      if (!dlg.isConnected) return;
       err.textContent = '删除没有成功，请再试一次。';
       err.hidden = false;
     } finally {

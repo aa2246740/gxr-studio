@@ -473,3 +473,135 @@ def test_mobile_ui_lut_end_to_end_parity_and_lifecycle(tmp_path: Path, pinned_ic
         )
     finally:
         desk.lib.close()
+
+
+RACE_DRIVER = REPO / "tests" / "support" / "mobile_ui_lut_snapshot_race_browser.mjs"
+
+
+def test_mobile_ui_lut_snapshot_write_barrier(tmp_path: Path) -> None:
+    """P2-02 写屏障回归：真实多 Worker 池繁忙时，快照之后排队改空间与删除 B 不会丢失快照里的 B，且失败会释放屏障。"""
+    _prereq()
+    manifest_path = tmp_path / "manifest.json"
+    report_path = tmp_path / "report.json"
+    manifest_path.write_text(json.dumps({"out": str(report_path)}), encoding="utf-8")
+
+    proc = _drive(RACE_DRIVER, manifest_path, tmp_path, "", timeout=300)
+    check(report_path.is_file(), "snapshot barrier driver wrote report")
+    report: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
+    check(proc.returncode == 0 and report.get("error") is None, "snapshot barrier driver finished without error")
+    same_redacted(report["pageErrors"], [], "snapshot barrier browser page errors empty")
+
+    race = report["race"]
+    check(race["workerCount"] >= 2, "multi-worker core pool is active")
+    for row in race["snapshot"]:
+        check(row["present"] is True, "snapshot retains A and B despite queued patch and delete")
+        check(row["space"] == "srgb", "snapshot freezes tap-time srgb input_space")
+        check(row["bytesEqual"] is True, "snapshot retains original .cube bytes")
+
+    check(race["patchOk"] is True and race["patchedSpace"] == "applelog", "setSpace to applelog succeeds after snapshot")
+    check(race["removed"] is True and race["catalogueHasB"] is False, "delete succeeds after snapshot")
+    check(race["catalogueHasA"] is True, "unrelated LUT A remains in catalogue")
+
+    event_types = [ev["type"] for ev in race["events"]]
+    check("snapshot-settled" in event_types and "patch" in event_types and "delete" in event_types, "all lifecycle events recorded")
+    check(event_types.index("snapshot-settled") < event_types.index("patch"), "snapshot settles before queued setSpace runs")
+    check(event_types.index("patch") < event_types.index("delete"), "queued setSpace completes before delete runs")
+
+    dispatch_ops = [d["op"] for d in race["dispatches"]]
+    check(
+        dispatch_ops == ["lut-snapshot", "lut-patch", "lut-delete"],
+        "pool dispatches lut-patch and lut-delete strictly after snapshot completes",
+    )
+
+    fail_rel = report["failRelease"]
+    check(fail_rel["failOk"] is False, "failed snapshot rejects caller promise")
+    check(
+        fail_rel["deleteOk"] is True and fail_rel["catalogueHasC"] is False,
+        "failed snapshot releases write barrier so subsequent delete completes",
+    )
+
+    overlap = report["overlap"]
+    check(overlap["workerCount"] == 4, "real 4-worker core pool is active")
+
+    space_order = overlap["spaceOrder"]
+    for snap_rows in (space_order["snap1"], space_order["snap2"]):
+        for row in snap_rows:
+            check(row["present"] is True, "overlapping snapshots both retain A and B")
+            check(row["space"] == "srgb", "overlapping snapshots both freeze click-time srgb")
+            check(row["bytesEqual"] is True, "overlapping snapshots both retain original .cube bytes")
+    same_redacted(
+        space_order["nonPingDispatches"],
+        ["lut-snapshot", "lut-snapshot", "lut-patch:applelog", "lut-patch:srgb"],
+        "overlapping snapshots dispatch setSpace writes in FIFO call order",
+    )
+    check(
+        space_order["w1Ok"] is True and space_order["w1Space"] == "applelog",
+        "first setSpace(applelog) succeeds in call order",
+    )
+    check(
+        space_order["w2Ok"] is True and space_order["w2Space"] == "srgb",
+        "second setSpace(srgb) succeeds in call order",
+    )
+    check(
+        space_order["memorySpace"] == "srgb" and space_order["persistedSpace"] == "srgb",
+        "final in-memory and IndexedDB input_space equals last write srgb",
+    )
+
+    space_del = overlap["spaceThenDelete"]
+    for snap_rows in (space_del["snap1"], space_del["snap2"]):
+        for row in snap_rows:
+            check(row["present"] is True, "overlapping snapshots retain A and B before patch+delete")
+            check(row["space"] == "srgb", "overlapping snapshots freeze click-time srgb before patch+delete")
+            check(row["bytesEqual"] is True, "overlapping snapshots retain original bytes before patch+delete")
+    same_redacted(
+        space_del["nonPingDispatches"],
+        ["lut-snapshot", "lut-snapshot", "lut-patch:applelog", "lut-delete"],
+        "overlapping snapshots dispatch lut-patch strictly before lut-delete",
+    )
+    check(
+        space_del["patchOk"] is True and space_del["patchedSpace"] == "applelog",
+        "setSpace before removeChecked succeeds without not_found error",
+    )
+    check(
+        space_del["deleteOk"] is True and space_del["catalogueHasB"] is False and space_del["persistedHasB"] is False,
+        "removeChecked after setSpace deletes B from memory and IndexedDB",
+    )
+    check(space_del["catalogueHasA"] is True, "unrelated LUT A remains after overlapping snapshot delete")
+
+    handoff = report["handoff"]
+    check(handoff["workerCount"] == 4, "handoff regression runs on real 4-worker core pool")
+    same_redacted([c["gap"] for c in handoff["cases"]], [0, 1, 2], "handoff covers microtask gaps 0, 1, and 2")
+    for case in handoff["cases"]:
+        check(
+            case["memoryAtSecondClick"]["present"] is True
+            and case["memoryAtSecondClick"]["space"] == "srgb"
+            and case["memoryAtSecondClick"]["output"] == "rec709",
+            "B remains intact in memory with srgb/rec709 when S2 registers",
+        )
+        for snap_rows in (case["snap1"], case["snap2"]):
+            for row in snap_rows:
+                check(row["present"] is True, "handoff snapshots S1 and S2 both retain A and B")
+                check(row["space"] == "srgb" and row["output"] == "rec709", "handoff snapshots preserve srgb/rec709 space")
+                check(row["bytesEqual"] is True, "handoff snapshots retain original .cube bytes")
+        if not case["writePostedAtSecondClick"]:
+            same_redacted(
+                case["nonPingDispatches"],
+                ["lut-snapshot", "lut-snapshot", "lut-delete"],
+                "unsent queued delete waits for newly registered handoff snapshot",
+            )
+        check(
+            case["deleteOk"] is True and case["catalogueHasB"] is False and case["persistedHasB"] is False,
+            "queued removeChecked deletes B after handoff snapshots settle",
+        )
+        check(case["catalogueHasA"] is True, "unrelated LUT A remains after handoff delete")
+
+    gap2 = handoff["cases"][2]
+    check(
+        gap2["writePostedAtSecondClick"] is True,
+        "barrier check and write dispatch run in same continuation with zero microtask gap",
+    )
+    same_redacted(
+        gap2["nonPingDispatches"],
+        ["lut-snapshot", "lut-delete", "lut-snapshot"],
+        "handoff gap-2 dispatches delete onto rotated busy worker while S2 reads idle worker",
+    )
