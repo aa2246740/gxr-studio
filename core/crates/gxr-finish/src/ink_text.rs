@@ -18,3 +18,5 @@ pub mod mark;
 pub mod run;
 pub mod stamp;
 pub mod text;
+#[cfg(test)]
+mod text_tests;

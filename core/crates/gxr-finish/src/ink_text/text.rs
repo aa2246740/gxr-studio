@@ -9,18 +9,18 @@ use gxr_raw::{CoreError, Json};
 use super::ftcalc::{FtBBox, FtVector, ft_cbox_pixels, ft_outline_get_cbox, pixel_26_6};
 use super::glyf::{FontFace, Outline, SizeMetrics};
 use super::gray::{GlyphBitmap, render_glyph_bitmap, render_outline_gray};
-use crate::geometry::bounds::{checked_mask_dims, checked_mul_u64, fit_count};
+use crate::geometry::bounds::{checked_mask_dims, checked_mul_u64, fit_count, try_vec_u8};
 
 /// Supported Pillow destination canvas modes for text painting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CanvasMode {
+pub(crate) enum CanvasMode {
     L,
     Rgb,
     Rgba,
 }
 
 impl CanvasMode {
-    pub fn parse(name: &str) -> Result<Self, CoreError> {
+    pub(crate) fn parse(name: &str) -> Result<Self, CoreError> {
         match name {
             "L" => Ok(Self::L),
             "RGB" => Ok(Self::Rgb),
@@ -33,7 +33,7 @@ impl CanvasMode {
     }
 
     #[inline]
-    pub fn channels(self) -> usize {
+    pub(crate) fn channels(self) -> usize {
         match self {
             Self::L => 1,
             Self::Rgb => 3,
@@ -43,21 +43,21 @@ impl CanvasMode {
 }
 
 /// Mutable raster buffer target matching Pillow's `L`, `RGB`, or `RGBA` image.
-pub struct CanvasMut<'a> {
-    pub data: &'a mut [u8],
-    pub width: usize,
-    pub height: usize,
-    pub mode: CanvasMode,
+pub(crate) struct CanvasMut<'a> {
+    pub(crate) data: &'a mut [u8],
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) mode: CanvasMode,
 }
 
 /// Mask and placement offset returned by Pillow's `_imagingft.c` `font_render` (`mode="L"`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RenderedCharMask {
-    pub width: usize,
-    pub height: usize,
-    pub x_offset: i32,
-    pub y_offset: i32,
-    pub mask: Vec<u8>,
+pub(crate) struct RenderedCharMask {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) x_offset: i32,
+    pub(crate) y_offset: i32,
+    pub(crate) mask: Vec<u8>,
 }
 
 /// Output of `inktext_draw_u64`.
@@ -92,6 +92,10 @@ pub fn blend_u8(mask: u8, dst: u8, ink: u8) -> u8 {
     div255(u32::from(dst) * u32::from(255 - mask) + u32::from(ink) * u32::from(mask))
 }
 
+fn bad_geom(msg: &str) -> CoreError {
+    CoreError::new("bad_geometry", msg)
+}
+
 fn render_bitmap_into_mask(
     bitmap: &GlyphBitmap,
     bbox_px: FtBBox,
@@ -103,19 +107,22 @@ fn render_bitmap_into_mask(
     let y_min = 0_i64.min(bbox_px.y_min);
     let y_max = 0_i64.max(bbox_px.y_max);
 
-    let mask_w_i64 = x_max - x_min;
-    let mask_h_i64 = y_max - y_min;
-    let x_offset = i32::try_from(x_min).map_err(|_| CoreError::new("bad_geometry", "x_offset"))?;
-    let y_offset = i32::try_from(-(y_max - ascender_px))
-        .map_err(|_| CoreError::new("bad_geometry", "y_offset"))?;
+    let mask_w_i64 = x_max
+        .checked_sub(x_min)
+        .ok_or_else(|| bad_geom("mask width overflow"))?;
+    let mask_h_i64 = y_max
+        .checked_sub(y_min)
+        .ok_or_else(|| bad_geom("mask height overflow"))?;
+    let x_offset = i32::try_from(x_min).map_err(|_| bad_geom("x_offset"))?;
+    let y_offset = y_max
+        .checked_sub(ascender_px)
+        .and_then(i64::checked_neg)
+        .and_then(|v| i32::try_from(v).ok())
+        .ok_or_else(|| bad_geom("y_offset"))?;
 
     if mask_w_i64 <= 0 || mask_h_i64 <= 0 {
-        let width = usize::try_from(mask_w_i64.max(0))
-            .map_err(|_| CoreError::new("bad_geometry", "mask_w"))?;
-        let height = usize::try_from(mask_h_i64.max(0))
-            .map_err(|_| CoreError::new("bad_geometry", "mask_h"))?;
-        let _ = fit_count(width as u64, 1)?;
-        let _ = fit_count(height as u64, 1)?;
+        let width = fit_count(u64::try_from(mask_w_i64.max(0)).unwrap_or(0), 1)?;
+        let height = fit_count(u64::try_from(mask_h_i64.max(0)).unwrap_or(0), 1)?;
         return Ok(RenderedCharMask {
             width,
             height,
@@ -126,31 +133,61 @@ fn render_bitmap_into_mask(
     }
 
     let (mask_w, mask_h, pixels) = checked_mask_dims(mask_w_i64 as u64, mask_h_i64 as u64)?;
-    let mask_len = fit_count(pixels, 1)?;
-    let mut mask = vec![0_u8; mask_len];
+    let mut mask = try_vec_u8(pixels, 0)?;
 
     if !bitmap.buffer.is_empty() && bitmap.width > 0 && bitmap.height > 0 {
-        let r_xmin = 0_i32.min(bitmap.left);
-        let r_ymax = 0_i32.max(bitmap.top);
-        let xx = i64::from(-r_xmin) + i64::from(bitmap.left);
-        let yy0 = i64::from(r_ymax) - i64::from(bitmap.top);
+        let bmp_pixels = checked_mul_u64(bitmap.width as u64, bitmap.height as u64)?;
+        let expected_bmp = fit_count(bmp_pixels, 1)?;
+        if bitmap.buffer.len() != expected_bmp {
+            return Err(bad_geom("bitmap buffer length mismatch"));
+        }
+        let mw = i64::try_from(mask_w).map_err(|_| bad_geom("mask_w"))?;
+        let mh = i64::try_from(mask_h).map_err(|_| bad_geom("mask_h"))?;
+        let bw = i64::try_from(bitmap.width).map_err(|_| bad_geom("bmp_w"))?;
+        let bh = i64::try_from(bitmap.height).map_err(|_| bad_geom("bmp_h"))?;
+        let r_xmin = 0_i64.min(i64::from(bitmap.left));
+        let r_ymax = 0_i64.max(i64::from(bitmap.top));
+        let xx = i64::from(bitmap.left)
+            .checked_sub(r_xmin)
+            .ok_or_else(|| bad_geom("bitmap x overflow"))?;
+        let yy0 = r_ymax
+            .checked_sub(i64::from(bitmap.top))
+            .ok_or_else(|| bad_geom("bitmap y overflow"))?;
+        let xx1 = xx
+            .checked_add(bw)
+            .ok_or_else(|| bad_geom("bitmap x overflow"))?;
+        let yy1 = yy0
+            .checked_add(bh)
+            .ok_or_else(|| bad_geom("bitmap y overflow"))?;
 
-        let x0 = usize::try_from(0_i64.max(-xx))
-            .unwrap_or(0)
-            .min(bitmap.width);
-        let x1 = usize::try_from(0_i64.max((mask_w as i64) - xx))
-            .unwrap_or(0)
-            .min(bitmap.width);
-        if x1 > x0 {
-            for by in 0..bitmap.height {
-                let yy = yy0 + (by as i64);
-                if yy >= 0 && yy < (mask_h as i64) {
-                    let dst_off = (yy as usize) * mask_w + ((xx + (x0 as i64)) as usize);
-                    let src_off = by * bitmap.width + x0;
-                    let len = x1 - x0;
-                    mask[dst_off..dst_off + len]
-                        .copy_from_slice(&bitmap.buffer[src_off..src_off + len]);
-                }
+        let ix0 = xx.max(0);
+        let ix1 = xx1.min(mw);
+        let iy0 = yy0.max(0);
+        let iy1 = yy1.min(mh);
+        if ix0 < ix1 && iy0 < iy1 {
+            let dst_x0 = usize::try_from(ix0).map_err(|_| bad_geom("dst_x0"))?;
+            let src_x0 = ix0
+                .checked_sub(xx)
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or_else(|| bad_geom("src_x0"))?;
+            let len = ix1
+                .checked_sub(ix0)
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or_else(|| bad_geom("copy len"))?;
+            let dst_y0 = usize::try_from(iy0).map_err(|_| bad_geom("dst_y0"))?;
+            let src_y0 = iy0
+                .checked_sub(yy0)
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or_else(|| bad_geom("src_y0"))?;
+            let rows = iy1
+                .checked_sub(iy0)
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or_else(|| bad_geom("rows"))?;
+            for r in 0..rows {
+                let dst_off = (dst_y0 + r) * mask_w + dst_x0;
+                let src_off = (src_y0 + r) * bitmap.width + src_x0;
+                mask[dst_off..dst_off + len]
+                    .copy_from_slice(&bitmap.buffer[src_off..src_off + len]);
             }
         }
     }
@@ -183,18 +220,8 @@ fn render_char_mask_tracked(
     Ok((mask, glyph.hinted))
 }
 
-/// Port of Pillow `_imagingft.c` (`text_layout_fallback` + `bounding_box_and_anchors` + `font_render`)
-/// for a single character, horizontal BASIC layout, `anchor="la"`, `mode="L"`.
-pub fn render_char_mask(
-    face: &FontFace<'_>,
-    px: u32,
-    ch: char,
-) -> Result<RenderedCharMask, CoreError> {
-    Ok(render_char_mask_tracked(face, px, ch)?.0)
-}
-
 /// Port of Pillow `Paste.c` `fill_mask_L` (`ImageDraw.draw_bitmap((x + x_off, y + y_off), mask, ink)`).
-pub fn blend_mask_onto(
+pub(crate) fn blend_mask_onto(
     canvas: &mut CanvasMut<'_>,
     x: i64,
     y: i64,
@@ -205,54 +232,67 @@ pub fn blend_mask_onto(
     let ch = canvas.mode.channels();
     let expected = fit_count(checked_mul_u64(pixels, ch as u64)?, 1)?;
     if canvas.data.len() != expected {
-        return Err(CoreError::new(
-            "bad_geometry",
-            "canvas buffer length mismatch",
-        ));
+        return Err(bad_geom("canvas buffer length mismatch"));
     }
-    if mask.width == 0 || mask.height == 0 || mask.mask.is_empty() {
+
+    let mw_u64 = u64::try_from(mask.width).map_err(|_| bad_geom("mask width overflow"))?;
+    let mh_u64 = u64::try_from(mask.height).map_err(|_| bad_geom("mask height overflow"))?;
+    let _ = fit_count(mw_u64, 1)?;
+    let _ = fit_count(mh_u64, 1)?;
+    let mask_pixels = checked_mul_u64(mw_u64, mh_u64)?;
+    let expected_mask = fit_count(mask_pixels, 1)?;
+    if mask.mask.len() != expected_mask {
+        return Err(bad_geom("mask buffer length mismatch"));
+    }
+    if mask.width == 0 || mask.height == 0 {
         return Ok(());
     }
 
-    let mut dx0 = x
+    let cw = i64::try_from(canvas.width).map_err(|_| bad_geom("canvas width overflow"))?;
+    let ch_h = i64::try_from(canvas.height).map_err(|_| bad_geom("canvas height overflow"))?;
+    let mw = i64::try_from(mask.width).map_err(|_| bad_geom("mask width overflow"))?;
+    let mh = i64::try_from(mask.height).map_err(|_| bad_geom("mask height overflow"))?;
+
+    let dx0 = x
         .checked_add(i64::from(mask.x_offset))
-        .ok_or_else(|| CoreError::new("bad_geometry", "x coordinate overflow"))?;
-    let mut dy0 = y
+        .ok_or_else(|| bad_geom("x coordinate overflow"))?;
+    let dy0 = y
         .checked_add(i64::from(mask.y_offset))
-        .ok_or_else(|| CoreError::new("bad_geometry", "y coordinate overflow"))?;
-    let mut xsize = mask.width as i64;
-    let mut ysize = mask.height as i64;
-    let mut sx0 = 0_i64;
-    let mut sy0 = 0_i64;
+        .ok_or_else(|| bad_geom("y coordinate overflow"))?;
+    let dx1 = dx0
+        .checked_add(mw)
+        .ok_or_else(|| bad_geom("x coordinate overflow"))?;
+    let dy1 = dy0
+        .checked_add(mh)
+        .ok_or_else(|| bad_geom("y coordinate overflow"))?;
 
-    if dx0 < 0 {
-        xsize += dx0;
-        sx0 = -dx0;
-        dx0 = 0;
-    }
-    let cw = canvas.width as i64;
-    if dx0 + xsize > cw {
-        xsize = cw - dx0;
-    }
-    if dy0 < 0 {
-        ysize += dy0;
-        sy0 = -dy0;
-        dy0 = 0;
-    }
-    let ch_h = canvas.height as i64;
-    if dy0 + ysize > ch_h {
-        ysize = ch_h - dy0;
-    }
-    if xsize <= 0 || ysize <= 0 {
+    let ix0 = dx0.max(0);
+    let ix1 = dx1.min(cw);
+    let iy0 = dy0.max(0);
+    let iy1 = dy1.min(ch_h);
+    if ix0 >= ix1 || iy0 >= iy1 {
         return Ok(());
     }
 
-    let dx0 = dx0 as usize;
-    let dy0 = dy0 as usize;
-    let sx0 = sx0 as usize;
-    let sy0 = sy0 as usize;
-    let xsize = xsize as usize;
-    let ysize = ysize as usize;
+    let sx0_i64 = ix0
+        .checked_sub(dx0)
+        .ok_or_else(|| bad_geom("x coordinate overflow"))?;
+    let sy0_i64 = iy0
+        .checked_sub(dy0)
+        .ok_or_else(|| bad_geom("y coordinate overflow"))?;
+    let xsize_i64 = ix1
+        .checked_sub(ix0)
+        .ok_or_else(|| bad_geom("x coordinate overflow"))?;
+    let ysize_i64 = iy1
+        .checked_sub(iy0)
+        .ok_or_else(|| bad_geom("y coordinate overflow"))?;
+
+    let dx0 = usize::try_from(ix0).map_err(|_| bad_geom("x index overflow"))?;
+    let dy0 = usize::try_from(iy0).map_err(|_| bad_geom("y index overflow"))?;
+    let sx0 = usize::try_from(sx0_i64).map_err(|_| bad_geom("sx index overflow"))?;
+    let sy0 = usize::try_from(sy0_i64).map_err(|_| bad_geom("sy index overflow"))?;
+    let xsize = usize::try_from(xsize_i64).map_err(|_| bad_geom("xsize overflow"))?;
+    let ysize = usize::try_from(ysize_i64).map_err(|_| bad_geom("ysize overflow"))?;
 
     for row in 0..ysize {
         let mask_row =
@@ -293,7 +333,7 @@ pub fn blend_mask_onto(
 }
 
 /// Like [`draw_char`], also reporting whether the glyph used hinting/auto-hinter/CFF.
-pub fn draw_char_tracked(
+pub(crate) fn draw_char_tracked(
     canvas: &mut CanvasMut<'_>,
     face: &FontFace<'_>,
     px: u32,
@@ -305,20 +345,6 @@ pub fn draw_char_tracked(
     let (mask, hinted) = render_char_mask_tracked(face, px, ch)?;
     blend_mask_onto(canvas, x, y, &mask, fill)?;
     Ok(hinted)
-}
-
-/// Port of Pillow `ImageDraw.text((x, y), ch, font=..., fill=...)` for one char (`anchor="la"`).
-pub fn draw_char(
-    canvas: &mut CanvasMut<'_>,
-    face: &FontFace<'_>,
-    px: u32,
-    ch: char,
-    x: i64,
-    y: i64,
-    fill: [u8; 4],
-) -> Result<(), CoreError> {
-    let _ = draw_char_tracked(canvas, face, px, ch, x, y, fill)?;
-    Ok(())
 }
 
 pub(crate) fn unpack_font_pack<'a>(
@@ -567,7 +593,7 @@ pub fn inktext_draw_u64(
                     faces.insert(font_name.to_string(), FontFace::parse(bytes)?);
                 }
                 let face = &faces[font_name];
-                draw_char(&mut canvas, face, px, c, x, y, fill)?;
+                draw_char_tracked(&mut canvas, face, px, c, x, y, fill)?;
                 drawn += 1;
             }
             "outline" => {
@@ -589,20 +615,20 @@ pub fn inktext_draw_u64(
                 )?;
                 let raw = matches!(op.get("raw"), Some(Val::Bool(true)));
                 if raw {
-                    let w_out = usize::try_from(
-                        op.get("w")
-                            .map(|v| val_i64(v, "w"))
-                            .transpose()?
-                            .unwrap_or(wu as i64),
-                    )
-                    .map_err(|_| CoreError::new("value_error", "bad w"))?;
-                    let h_out = usize::try_from(
-                        op.get("h")
-                            .map(|v| val_i64(v, "h"))
-                            .transpose()?
-                            .unwrap_or(hu as i64),
-                    )
-                    .map_err(|_| CoreError::new("value_error", "bad h"))?;
+                    let w_i64 = op
+                        .get("w")
+                        .map(|v| val_i64(v, "w"))
+                        .transpose()?
+                        .unwrap_or(wu as i64);
+                    let h_i64 = op
+                        .get("h")
+                        .map(|v| val_i64(v, "h"))
+                        .transpose()?
+                        .unwrap_or(hu as i64);
+                    let w_u64 = u64::try_from(w_i64).map_err(|_| bad_geom("bad w"))?;
+                    let h_u64 = u64::try_from(h_i64).map_err(|_| bad_geom("bad h"))?;
+                    let w_out = fit_count(w_u64, 1)?;
+                    let h_out = fit_count(h_u64, 1)?;
                     let buf = render_outline_gray(&outline, w_out, h_out)?;
                     let mask = RenderedCharMask {
                         width: w_out,
@@ -719,58 +745,4 @@ pub fn inktext_batch_masks(
     }
 
     Ok((Json::object([("items", Json::Array(items))]), blob))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn blend_mask_rgba_preserves_transparent_and_opaque_dst_rules() {
-        // dst pixel 0: alpha=0 (transparent) -> RGB uses channel_mask = 255, alpha uses mask.
-        // dst pixel 1: alpha=100 (>0) -> RGB & alpha both use channel_mask = mask.
-        let mut buf = vec![10, 20, 30, 0, 10, 20, 30, 100];
-        let mut canvas = CanvasMut {
-            data: &mut buf,
-            width: 2,
-            height: 1,
-            mode: CanvasMode::Rgba,
-        };
-        let mask = RenderedCharMask {
-            width: 2,
-            height: 1,
-            x_offset: 0,
-            y_offset: 0,
-            mask: vec![128, 128],
-        };
-        blend_mask_onto(&mut canvas, 0, 0, &mask, [200, 100, 50, 255]).unwrap();
-        assert_eq!(&buf[0..4], &[200, 100, 50, 128]);
-        assert_eq!(
-            &buf[4..8],
-            &[
-                blend_u8(128, 10, 200),
-                blend_u8(128, 20, 100),
-                blend_u8(128, 30, 50),
-                blend_u8(128, 100, 255),
-            ]
-        );
-    }
-
-    #[test]
-    fn json_nesting_over_128_is_rejected() {
-        let deep = "[".repeat(130) + &"]".repeat(130);
-        let err = inktext_draw_u64(&[0], 1, 1, "L", &deep, "[]", &[]).unwrap_err();
-        assert_eq!(err.kind, "json");
-    }
-
-    #[test]
-    fn draw_ops_renders_even_odd_and_rejects_huge_cbox() {
-        let ops = r#"[{"op":"outline","points":[[0,0],[0,384],[384,384],[384,0],[128,128],[128,256],[256,256],[256,128]],"tags":[1,1,1,1,1,1,1,1],"contours":[3,7],"flags":2,"x":0,"y":6,"fill":255,"ppem":[16,16]}]"#;
-        let res = inktext_draw_u64(&[0_u8; 6 * 6], 6, 6, "L", ops, "[]", &[]).unwrap();
-        assert_eq!(res.pixels[3 * 6 + 3], 0);
-        assert_eq!(res.pixels[0], 255);
-
-        let huge_ops = r#"[{"op":"outline","points":[[0,0],[0,64],[16777217,64],[16777217,0]],"tags":[1,1,1,1],"contours":[3],"raw":true,"w":4,"h":4,"fill":255}]"#;
-        assert!(inktext_draw_u64(&[0_u8; 16], 4, 4, "L", huge_ops, "[]", &[]).is_err());
-    }
 }

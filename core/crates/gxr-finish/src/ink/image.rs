@@ -104,7 +104,7 @@ impl InkImage {
     }
 
     #[must_use]
-    pub fn as_canvas_mut(&mut self) -> crate::ink_text::text::CanvasMut<'_> {
+    pub(crate) fn as_canvas_mut(&mut self) -> crate::ink_text::text::CanvasMut<'_> {
         use crate::ink_text::text::{CanvasMode, CanvasMut};
         let mode = match self.mode {
             InkMode::L => CanvasMode::L,

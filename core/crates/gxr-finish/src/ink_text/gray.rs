@@ -14,13 +14,13 @@ use crate::geometry::bounds::{checked_mask_dims, try_vec_u8};
 
 /// Grayscale coverage bitmap produced by `ft_smooth_render`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GlyphBitmap {
-    pub left: i32,
-    pub top: i32,
-    pub width: usize,
-    pub height: usize,
+pub(crate) struct GlyphBitmap {
+    pub(crate) left: i32,
+    pub(crate) top: i32,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
     /// Top-down row-major 8-bit coverage (`width * height` bytes).
-    pub buffer: Vec<u8>,
+    pub(crate) buffer: Vec<u8>,
 }
 
 fn validate_outline(outline: &Outline) -> Result<(), CoreError> {
@@ -57,7 +57,7 @@ fn validate_outline(outline: &Outline) -> Result<(), CoreError> {
 }
 
 /// Port of FreeType `ft_glyphslot_preset_bitmap` for `FT_RENDER_MODE_NORMAL`.
-pub fn preset_bitmap(
+pub(crate) fn preset_bitmap(
     outline: &Outline,
     ppem: Option<(u16, u16)>,
 ) -> Result<(i32, i32, usize, usize), CoreError> {
@@ -102,7 +102,7 @@ pub fn preset_bitmap(
 }
 
 /// Render a glyph outline matching FreeType's `ft_smooth_render` (`FT_RENDER_MODE_NORMAL`).
-pub fn render_glyph_bitmap(
+pub(crate) fn render_glyph_bitmap(
     outline: &Outline,
     ppem: Option<(u16, u16)>,
 ) -> Result<GlyphBitmap, CoreError> {
@@ -124,7 +124,10 @@ pub fn render_glyph_bitmap(
     let y_shift = 64 * (-i64::from(top) + height as i64);
     let overlap = (outline.flags & FT_OUTLINE_OVERLAP) != 0;
     let shifted_points: Vec<FtVector> = if overlap {
-        if width * (OVERLAP_SCALE as usize) > 0x7FFF {
+        if width
+            .checked_mul(OVERLAP_SCALE as usize)
+            .is_none_or(|v| v > 0x7FFF)
+        {
             return Err(CoreError::new("bad_geometry", "overlap glyph too wide"));
         }
         outline
@@ -188,7 +191,7 @@ pub fn render_glyph_bitmap(
 }
 
 /// Render a raw 26.6 outline matching FreeType `FT_Outline_Render` (`cbox` <= `0x1000000`).
-pub fn render_outline_gray(
+pub(crate) fn render_outline_gray(
     outline: &Outline,
     width: usize,
     height: usize,
@@ -220,7 +223,10 @@ pub fn render_outline_gray(
     let mut worker = GrayWorker::new();
     let overlap = (outline.flags & FT_OUTLINE_OVERLAP) != 0;
     if overlap {
-        if width * (OVERLAP_SCALE as usize) > 0x7FFF {
+        if width
+            .checked_mul(OVERLAP_SCALE as usize)
+            .is_none_or(|v| v > 0x7FFF)
+        {
             return Err(CoreError::new("bad_geometry", "overlap glyph too wide"));
         }
         let inflated = Outline {

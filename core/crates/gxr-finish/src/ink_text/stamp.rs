@@ -216,20 +216,21 @@ fn paint_ops(
                 let xs_slice = if ox == 0 {
                     xs.as_slice()
                 } else {
-                    shifted_xs = xs.iter().map(|&x| x.saturating_sub(ox)).collect::<Vec<_>>();
+                    let mut buf = Vec::with_capacity(xs.len());
+                    for &x in xs {
+                        buf.push(
+                            x.checked_sub(ox)
+                                .ok_or_else(|| bad_coords("stamp x coordinate overflow"))?,
+                        );
+                    }
+                    shifted_xs = buf;
                     shifted_xs.as_slice()
                 };
-                exact &= draw_run_fields(
-                    target,
-                    font,
-                    *px,
-                    *cjk,
-                    text,
-                    xs_slice,
-                    y.saturating_sub(oy),
-                    fonts,
-                    fill4,
-                )?;
+                let sy = y
+                    .checked_sub(oy)
+                    .ok_or_else(|| bad_coords("stamp y coordinate overflow"))?;
+                exact &=
+                    draw_run_fields(target, font, *px, *cjk, text, xs_slice, sy, fonts, fill4)?;
             }
             StampOp::Poly { pts } => {
                 if ox == 0 && oy == 0 {
@@ -259,23 +260,35 @@ fn apply_parsed_stamp(
     }
     let mut exact = true;
     if let Some(glow) = parsed.glow {
-        let cw = img.width() as i64;
-        let ch = img.height() as i64;
+        let cw = i64::try_from(img.width()).map_err(|_| bad_coords("canvas width overflow"))?;
+        let ch = i64::try_from(img.height()).map_err(|_| bad_coords("canvas height overflow"))?;
         let bx0 = (parsed.bbox[0].saturating_sub(ox)).clamp(0, cw);
         let by0 = (parsed.bbox[1].saturating_sub(oy)).clamp(0, ch);
         let bx1 = (parsed.bbox[2].saturating_sub(ox)).clamp(0, cw);
         let by1 = (parsed.bbox[3].saturating_sub(oy)).clamp(0, ch);
         if bx1 > bx0 && by1 > by0 {
-            let sw = (bx1 - bx0) as u64;
-            let sh = (by1 - by0) as u64;
+            let sw_i64 = bx1
+                .checked_sub(bx0)
+                .ok_or_else(|| bad_coords("stamp width overflow"))?;
+            let sh_i64 = by1
+                .checked_sub(by0)
+                .ok_or_else(|| bad_coords("stamp height overflow"))?;
+            let sw = u64::try_from(sw_i64).map_err(|_| bad_coords("stamp width overflow"))?;
+            let sh = u64::try_from(sh_i64).map_err(|_| bad_coords("stamp height overflow"))?;
+            let shift_x = ox
+                .checked_add(bx0)
+                .ok_or_else(|| bad_coords("stamp x offset overflow"))?;
+            let shift_y = oy
+                .checked_add(by0)
+                .ok_or_else(|| bad_coords("stamp y offset overflow"))?;
             let mut alpha = InkImage::new_filled(InkMode::L, sw, sh, [0, 0, 0, 0])?;
             exact &= paint_ops(
                 &mut alpha,
                 &parsed.ops,
                 fonts,
                 [255, 255, 255],
-                ox + bx0,
-                oy + by0,
+                shift_x,
+                shift_y,
             )?;
             let blurred = gaussian_blur(&alpha, glow, glow)?;
             drop(alpha);
@@ -356,11 +369,19 @@ pub fn stamp_hdr_mask(
     if bx1 <= bx0 || by1 <= by0 {
         return Ok(mask);
     }
-    let sw = (bx1 - bx0) as u64;
-    let sh = (by1 - by0) as u64;
-    let sw_u = sw as usize;
-    let sh_u = sh as usize;
-    let w_u = w as usize;
+    let sw = u64::try_from(
+        bx1.checked_sub(bx0)
+            .ok_or_else(|| bad_coords("sw overflow"))?,
+    )
+    .map_err(|_| bad_coords("sw overflow"))?;
+    let sh = u64::try_from(
+        by1.checked_sub(by0)
+            .ok_or_else(|| bad_coords("sh overflow"))?,
+    )
+    .map_err(|_| bad_coords("sh overflow"))?;
+    let sw_u = usize::try_from(sw).map_err(|_| bad_coords("sw index overflow"))?;
+    let sh_u = usize::try_from(sh).map_err(|_| bad_coords("sh index overflow"))?;
+    let w_u = usize::try_from(w).map_err(|_| bad_coords("w index overflow"))?;
 
     let mut black = InkImage::new_filled(InkMode::Rgb, sw, sh, [0, 0, 0, 255])?;
     apply_parsed_stamp(&mut black, fonts, &parsed, bx0, by0)?;
@@ -370,8 +391,8 @@ pub fn stamp_hdr_mask(
 
     let b_data = black.as_slice();
     let w_data = white.as_slice();
-    let ox_u = bx0 as usize;
-    let oy_u = by0 as usize;
+    let ox_u = usize::try_from(bx0).map_err(|_| bad_coords("ox index overflow"))?;
+    let oy_u = usize::try_from(by0).map_err(|_| bad_coords("oy index overflow"))?;
     for sy in 0..sh_u {
         let dst_row = (oy_u + sy) * w_u + ox_u;
         let src_row = sy * sw_u;

@@ -366,6 +366,91 @@ def test_wasm_matches_native_inktext(tmp_path: Path) -> None:
         ),
     )
 
+    # Extreme i64 coordinates and 2x1 short-buffer bounds (P1-02, P2-03)
+    coords_npy = tmp_path / "coords64.npy"
+    np.save(coords_npy, np.zeros((64, 64), dtype=np.uint8))
+    one_byte_npy = tmp_path / "onebyte.npy"
+    np.save(one_byte_npy, np.zeros((1, 1), dtype=np.uint8))
+
+    for tag, x_val, y_val in (
+        ("err-max-x", (1 << 63) - 1, 0),
+        ("err-max-y", 0, (1 << 63) - 1),
+        ("ok-min-x", -(1 << 63), 0),
+        ("ok-min-y", 0, -(1 << 63)),
+    ):
+        ops_extreme = [
+            {"op": "char", "font": "atkinson", "px": 16, "ch": "G", "x": x_val, "y": y_val, "fill": 255},
+        ]
+        add_spec(
+            tag,
+            make_inktext_cli_and_wasm_spec(
+                npy_path=coords_npy,
+                mode="L",
+                ops=ops_extreme,
+                fonts=[["atkinson", str(dehinted["atkinson"])]],
+                w=64,
+                h=64,
+            ),
+        )
+        if tag.startswith("err-"):
+            ops_file = tmp_path / f"{tag}-ops.json"
+            out_file = tmp_path / f"{tag}-out.npy"
+            ops_file.write_text(json.dumps(ops_extreme), encoding="utf-8")
+            code, payload = run_json(
+                [
+                    "inktext-draw",
+                    "--in",
+                    str(coords_npy),
+                    "--mode",
+                    "L",
+                    "--ops",
+                    str(ops_file),
+                    "--font",
+                    f"atkinson={dehinted['atkinson']}",
+                    "--out",
+                    str(out_file),
+                ],
+            )
+            err = error_of(code, payload)
+            check(err is not None and err.kind == "bad_geometry", f"{tag} expected bad_geometry")
+
+    add_spec(
+        "err-2x1-short-buf",
+        make_inktext_cli_and_wasm_spec(
+            npy_path=one_byte_npy,
+            mode="L",
+            ops=[],
+            fonts=[],
+            w=2,
+            h=1,
+            cli_w=2,
+            cli_h=1,
+            override_dims=True,
+        ),
+    )
+    short_ops = tmp_path / "short-2x1-ops.json"
+    short_out = tmp_path / "short-2x1-out.npy"
+    short_ops.write_text("[]", encoding="utf-8")
+    code, payload = run_json(
+        [
+            "inktext-draw",
+            "--in",
+            str(one_byte_npy),
+            "--mode",
+            "L",
+            "--w",
+            "2",
+            "--h",
+            "1",
+            "--ops",
+            str(short_ops),
+            "--out",
+            str(short_out),
+        ],
+    )
+    err = error_of(code, payload)
+    check(err is not None and err.kind == "bad_geometry", "2x1 short buf expected bad_geometry")
+
     # f64 parameter validation edge cases (UNIT-COMMON)
     for field in ("w", "h"):
         for val, cli_val in (
