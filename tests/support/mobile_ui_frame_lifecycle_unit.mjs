@@ -614,3 +614,127 @@ test('S1-6: keyWhiteImageData applies 3x3 ring soft-alpha on all 4 edges and 4 c
     assert.equal(alphaAt(out, corner[0], corner[1]), 255, `extreme corner (${corner[0]},${corner[1]}) interior stays 255`);
   }
 });
+
+test('S3 Same-Family Audit: LogoStore.rename and remove await in-flight ensureLoaded without stale snapshot clobber', async () => {
+  const rowsInDb = new Map([
+    [
+      'l_a',
+      {
+        id: 'l_a',
+        name: 'InitialA',
+        w: 16,
+        h: 16,
+        coverage: 0.4,
+        opaque: false,
+        lum: 120,
+        rgba: new ArrayBuffer(16 * 16 * 4),
+        createdAt: 10,
+      },
+    ],
+    [
+      'l_b',
+      {
+        id: 'l_b',
+        name: 'InitialB',
+        w: 16,
+        h: 16,
+        coverage: 0.4,
+        opaque: false,
+        lum: 120,
+        rgba: new ArrayBuffer(16 * 16 * 4),
+        createdAt: 20,
+      },
+    ],
+  ]);
+
+  let releaseGetAll = null;
+  let holdNextGetAll = true;
+  const origIdb = globalThis.indexedDB;
+  globalThis.indexedDB = {
+    open() {
+      const req = {
+        result: {
+          objectStoreNames: { contains: () => true },
+          close() {},
+          transaction(_store, mode) {
+            const tx = { error: null, oncomplete: null, onerror: null, onabort: null };
+            return Object.assign(tx, {
+              objectStore() {
+                return {
+                  getAll() {
+                    const r = { result: undefined, onsuccess: null, onerror: null };
+                    const snap = [...rowsInDb.values()].map((x) => ({ ...x }));
+                    if (mode === 'readonly' && holdNextGetAll) {
+                      holdNextGetAll = false;
+                      releaseGetAll = () => {
+                        r.result = snap;
+                        r.onsuccess?.();
+                        queueMicrotask(() => tx.oncomplete?.());
+                      };
+                    } else {
+                      queueMicrotask(() => {
+                        r.result = snap;
+                        r.onsuccess?.();
+                        queueMicrotask(() => tx.oncomplete?.());
+                      });
+                    }
+                    return r;
+                  },
+                  get(id) {
+                    const r = { result: undefined, onsuccess: null, onerror: null };
+                    queueMicrotask(() => {
+                      const cur = rowsInDb.get(id);
+                      r.result = cur ? { ...cur } : undefined;
+                      r.onsuccess?.();
+                    });
+                    return r;
+                  },
+                  put(row) {
+                    rowsInDb.set(row.id, { ...row });
+                    queueMicrotask(() => tx.oncomplete?.());
+                    return {};
+                  },
+                  delete(id) {
+                    rowsInDb.delete(id);
+                    queueMicrotask(() => tx.oncomplete?.());
+                    return {};
+                  },
+                };
+              },
+            });
+          },
+        },
+        onupgradeneeded: null,
+        onsuccess: null,
+        onerror: null,
+      };
+      queueMicrotask(() => req.onsuccess?.());
+      return req;
+    },
+  };
+
+  try {
+    const mod = await import('../../mobile/src/app/logo_store.ts');
+    assert.equal(typeof mod.LogoStore, 'function', 'LogoStore class should be exported for isolated testing');
+    const store = new mod.LogoStore();
+
+    // Kick off ensureLoaded (held on readonly getAll with pre-mutation snapshot)
+    const loadProm = store.ensureLoaded();
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(typeof releaseGetAll, 'function');
+
+    // Start rename('l_a', 'RenamedA') and remove('l_b') while ensureLoaded is still in flight
+    const renProm = store.rename('l_a', 'RenamedA');
+    const remProm = store.remove('l_b');
+    releaseGetAll();
+
+    const [, renRes, remRes] = await Promise.all([loadProm, renProm, remProm]);
+    assert.equal(renRes.ok, true);
+    assert.equal(remRes.ok, true);
+    assert.equal(store.info('l_a')?.name, 'RenamedA', 'committed rename must not be overwritten by earlier ensureLoaded');
+    assert.equal(store.info('l_b'), null, 'committed remove must not be resurrected by earlier ensureLoaded');
+    assert.deepEqual(store.list().map((x) => x.id), ['l_a']);
+  } finally {
+    globalThis.indexedDB = origIdb;
+  }
+});

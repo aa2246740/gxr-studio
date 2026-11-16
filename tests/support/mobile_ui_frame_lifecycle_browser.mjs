@@ -1580,6 +1580,317 @@ try {
       res.s3CommitBoundaryMatrixOk = true;
     }
 
+    // =========================================================================
+    // S3 Same-Family Audit: Logo delete/rename commit boundaries + post-commit text preservation
+    // =========================================================================
+    {
+      const { loadAllLogos } = await import('/src/lib/idb.ts');
+      const until = async (pred, msg, timeoutMs = 8000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const val = pred();
+          if (val) return val;
+          await sleep(15);
+        }
+        fail(msg);
+      };
+
+      const book = new Book();
+      const makeRealHost = () => {
+        const shell = document.createElement('div');
+        shell.className = 'app';
+        shell.style.width = '390px';
+        shell.style.height = '844px';
+        const view = document.createElement('div');
+        shell.append(view);
+        document.body.append(shell);
+        return { shell, view };
+      };
+      const makeEditorApi = (list) => {
+        const map = new Map(list.map((p) => [p.id, p]));
+        return {
+          photos: () => list,
+          photo: (id) => map.get(id),
+          order: () => 'desc',
+          gap: () => 15,
+          ignored: () => 0,
+          hasDat: () => false,
+          loading: () => ({ done: list.length, total: list.length }),
+          setOrder: () => {},
+          setGap: () => {},
+          open: () => {},
+          remove: () => {},
+          clear: () => {},
+          addPhotos: () => {},
+          showHelp: () => {},
+          back: () => {},
+          swipe: () => {},
+          markBad: () => {},
+          markGone: () => {},
+          readFull: async () => ({ ok: false, gone: false, stale: false }),
+          uploadRaw: async () => false,
+          takeWarm: () => null,
+          keepWarm: () => {},
+          gpu: () => false,
+          session: () => 1,
+          cardOut: () => false,
+          still: async () => null,
+          watch: () => {},
+          perf: () => {},
+          book: () => book,
+          pickDat: () => {},
+          pickCalib: () => {},
+          showCalib: () => {},
+          exportPhotos: () => {},
+          takeCalib: () => {},
+        };
+      };
+
+      await logoStore.ensureLoaded();
+      const syntheticLogoFile = new File([new Uint8Array(logoBytesArr)], 'AuditMark.png', { type: 'image/png' });
+
+      // 1. Delete pre-commit cancel (transaction-active) vs post-commit cancel (transaction-committed)
+      for (const exit of ['replace-frame', 'replace-logo', 'editor-switch']) {
+        const seeded = await logoStore.add(syntheticLogoFile, { name: `Del_${exit}`, keyWhite: true, tol: 30 });
+        assert(seeded.ok, `seed failed for Del_${exit}`);
+        const logoId = seeded.logo.id;
+
+        const bmp1 = await makeTestBitmap(120, 90);
+        const bmp2 = await makeTestBitmap(120, 90);
+        const p1 = makePhoto(`audit_del_${exit}_1`, bmp1, { style: 'leica', logo: logoId, show_logo: true });
+        p1.rev = 7;
+        const p2 = makePhoto(`audit_del_${exit}_2`, bmp2, { style: 'leica', logo: logoId, show_logo: true });
+        p2.rev = 3;
+
+        const { shell, view } = makeRealHost();
+        const api = makeEditorApi([p1, p2]);
+        const editor = new EditorView(view, shell, api, null);
+        const origDelete = IDBObjectStore.prototype.delete;
+        const origTx = IDBDatabase.prototype.transaction;
+        const origAbort = IDBTransaction.prototype.abort;
+
+        try {
+          editor.open(p1);
+          [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框').click();
+          view.querySelector('.panel.frame [data-act="frame-logo"]').click();
+          await until(
+            () => shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"]`),
+            `missing seeded row ${logoId}`,
+          );
+
+          // (a) Pre-commit cancel during active delete transaction -> rolls back cleanly
+          if (exit === 'replace-frame') {
+            let abortCount = 0;
+            IDBTransaction.prototype.abort = function (...args) {
+              abortCount += 1;
+              return origAbort.apply(this, args);
+            };
+            IDBObjectStore.prototype.delete = function (...args) {
+              const req = origDelete.apply(this, args);
+              if (this.name === 'logos') {
+                openFrameMoreSheet(shell, p1, () => {});
+              }
+              return req;
+            };
+            shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"] button[aria-label*="更多操作"]`).click();
+            [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '删除').click();
+            [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button.danger')].find((b) => b.textContent === '删除').click();
+            await sleep(80);
+            IDBObjectStore.prototype.delete = origDelete;
+            IDBTransaction.prototype.abort = origAbort;
+
+            assert(abortCount > 0, 'active delete transaction must abort on sheet replacement');
+            assert((await loadAllLogos()).some((r) => r.id === logoId), 'aborted delete must keep row in IDB');
+            assert(Boolean(logoStore.info(logoId)), 'aborted delete must keep row in LogoStore');
+            assert(p1.border.logo === logoId && p1.rev === 7, 'aborted delete must keep p1.border.logo');
+
+            // Reopen logo sheet for committed-boundary test
+            openLogoSheet(shell, p1, () => editor.frames?.refresh());
+            await until(
+              () => shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"]`),
+              'missing row on reopen',
+            );
+          }
+
+          // (b) Commit-boundary exit (`complete` fires before `tx.oncomplete`)
+          let exited = false;
+          IDBDatabase.prototype.transaction = function (...args) {
+            const tx = origTx.apply(this, args);
+            if (args[1] === 'readwrite' && tx.objectStoreNames.contains('logos')) {
+              tx.addEventListener(
+                'complete',
+                () => {
+                  if (exited) return;
+                  exited = true;
+                  if (exit === 'replace-frame') openFrameMoreSheet(shell, p1, () => {});
+                  else if (exit === 'replace-logo') openLogoSheet(shell, p1, () => {});
+                  else editor.open(p2);
+                },
+                { once: true },
+              );
+            }
+            return tx;
+          };
+
+          shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"] button[aria-label*="更多操作"]`).click();
+          [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '删除').click();
+          [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button.danger')].find((b) => b.textContent === '删除').click();
+
+          await until(() => exited, `delete commit-boundary exit did not run for ${exit}`);
+          await sleep(80);
+          IDBDatabase.prototype.transaction = origTx;
+
+          assert(!(await loadAllLogos()).some((r) => r.id === logoId), `deleted logo ${logoId} must be gone from IDB`);
+          assert(!logoStore.info(logoId), `deleted logo ${logoId} must be gone from LogoStore`);
+          assert(
+            p1.border.logo === 'ricoh' && p1.rev === 8,
+            `committed delete with ${exit} must revert p1.border.logo to ricoh (got ${p1.border.logo}, rev=${p1.rev})`,
+          );
+          if (exit === 'replace-frame') {
+            assert(
+              !shell.querySelector('.ms.frame-more-sheet [aria-label="标志颜色"]'),
+              'replace-frame sheet must remove custom logo controls once logo deletion commits',
+            );
+          } else if (exit === 'replace-logo') {
+            assert(
+              !shell.querySelector(`.ms.logo-sheet [data-logo="${logoId}"]`),
+              'replace-logo sheet must not list deleted logo',
+            );
+            assert(
+              shell.querySelector('.ms.logo-sheet [data-logo="ricoh"]')?.classList.contains('on'),
+              'replace-logo sheet must mark GXR logo active after deleted-logo fallback',
+            );
+          } else if (exit === 'editor-switch') {
+            assert(
+              p2.border.logo === 'ricoh' && p2.rev === 4,
+              `switched-to p2 using deleted logo must also revert via FrameView catalogue watch (got ${p2.border.logo}, rev=${p2.rev})`,
+            );
+          }
+        } finally {
+          IDBObjectStore.prototype.delete = origDelete;
+          IDBDatabase.prototype.transaction = origTx;
+          IDBTransaction.prototype.abort = origAbort;
+          if (logoStore.info(logoId)) await logoStore.remove(logoId);
+          editor.destroy();
+          shell.remove();
+          bmp1.close();
+          bmp2.close();
+        }
+      }
+
+      // 2. Rename pre-commit cancel vs commit-boundary exit
+      {
+        const seeded = await logoStore.add(syntheticLogoFile, { name: 'OrigName', keyWhite: true, tol: 30 });
+        assert(seeded.ok, 'seed failed for rename audit');
+        const logoId = seeded.logo.id;
+        const bmp = await makeTestBitmap(120, 90);
+        const p1 = makePhoto('audit_ren_1', bmp, { style: 'leica', logo: logoId, show_logo: true });
+        const { shell, view } = makeRealHost();
+        const editor = new EditorView(view, shell, makeEditorApi([p1]), null);
+        const origPut = IDBObjectStore.prototype.put;
+        const origTx = IDBDatabase.prototype.transaction;
+
+        try {
+          editor.open(p1);
+          [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框').click();
+          view.querySelector('.panel.frame [data-act="frame-logo"]').click();
+          await until(() => shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"]`), 'rename row missing');
+
+          // (a) Pre-commit cancel during active rename transaction
+          IDBObjectStore.prototype.put = function (...args) {
+            const req = origPut.apply(this, args);
+            if (this.name === 'logos') openLogoSheet(shell, p1, () => {});
+            return req;
+          };
+          shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"] button[aria-label*="更多操作"]`).click();
+          [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '重命名').click();
+          const inp1 = shell.querySelector('.ms.logo-sheet .logo-row-acts input.txtbox');
+          inp1.value = 'AbortedName';
+          [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '保存').click();
+          await sleep(80);
+          IDBObjectStore.prototype.put = origPut;
+
+          const idbAfterAbort = (await loadAllLogos()).find((r) => r.id === logoId);
+          assert(idbAfterAbort?.name === 'OrigName', `aborted rename must keep IDB name OrigName, got ${idbAfterAbort?.name}`);
+          assert(logoStore.info(logoId)?.name === 'OrigName', 'aborted rename must keep LogoStore name OrigName');
+
+          // (b) Commit-boundary exit (`complete` before `tx.oncomplete`)
+          let renExited = false;
+          IDBDatabase.prototype.transaction = function (...args) {
+            const tx = origTx.apply(this, args);
+            if (args[1] === 'readwrite' && tx.objectStoreNames.contains('logos')) {
+              tx.addEventListener(
+                'complete',
+                () => {
+                  if (renExited) return;
+                  renExited = true;
+                  openLogoSheet(shell, p1, () => {});
+                },
+                { once: true },
+              );
+            }
+            return tx;
+          };
+          shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"] button[aria-label*="更多操作"]`).click();
+          [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '重命名').click();
+          const inp2 = shell.querySelector('.ms.logo-sheet .logo-row-acts input.txtbox');
+          inp2.value = 'CommittedName';
+          [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '保存').click();
+          await until(() => renExited, 'rename commit-boundary exit did not run');
+          await sleep(80);
+          IDBDatabase.prototype.transaction = origTx;
+
+          const idbAfterCommit = (await loadAllLogos()).find((r) => r.id === logoId);
+          assert(idbAfterCommit?.name === 'CommittedName', 'committed rename must persist in IDB');
+          assert(logoStore.info(logoId)?.name === 'CommittedName', 'committed rename must update LogoStore');
+          const uiTitle = shell.querySelector(`.ms.logo-sheet [data-logo="${logoId}"] b`)?.textContent;
+          assert(uiTitle === 'CommittedName', `replacement logo_sheet must show CommittedName, got ${uiTitle}`);
+        } finally {
+          IDBObjectStore.prototype.put = origPut;
+          IDBDatabase.prototype.transaction = origTx;
+          await logoStore.remove(logoId);
+          editor.destroy();
+          shell.remove();
+          bmp.close();
+        }
+      }
+
+      // 3. Post-commit cancel on frame_more_sheet & stamp_sheet preserves committed text
+      {
+        const bmp = await makeTestBitmap(80, 60);
+        const p = makePhoto(
+          'audit_text_1',
+          bmp,
+          { style: 'leica', text: 'INIT' },
+          { enabled: true, content: 'date+text', text: 'INIT_S' },
+        );
+        p.rev = 5;
+        const shell = document.createElement('div');
+        document.body.append(shell);
+
+        openFrameMoreSheet(shell, p, () => {});
+        const fInp = shell.querySelector('.ms.frame-more-sheet input.txtbox');
+        fInp.value = 'COMMITTED_F';
+        fInp.dispatchEvent(new Event('change', { bubbles: true }));
+        assert(p.border.text === 'COMMITTED_F' && p.rev === 6, 'change event must commit frame text');
+        cancelHostSheets(shell);
+        assert(p.border.text === 'COMMITTED_F' && p.rev === 6, 'post-commit cancel must preserve committed frame text');
+
+        openStampSheet(shell, p, () => {});
+        const sInp = shell.querySelector('.ms.stamp-sheet input.txtbox');
+        sInp.value = 'COMMITTED_S';
+        sInp.dispatchEvent(new Event('change', { bubbles: true }));
+        assert(p.stamp.text === 'COMMITTED_S' && p.rev === 7, 'change event must commit stamp text');
+        cancelHostSheets(shell);
+        assert(p.stamp.text === 'COMMITTED_S' && p.rev === 7, 'post-commit cancel must preserve committed stamp text');
+
+        shell.remove();
+        bmp.close();
+      }
+
+      res.s3SameFamilyPersistenceOk = true;
+    }
+
     return res;
   }, { logoBytesArr: logoBytes });
 } finally {

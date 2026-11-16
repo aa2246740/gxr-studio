@@ -140,14 +140,16 @@ export function openLogoSheet(
     if (activeLogo === 'none') noneBtn.lastElementChild?.append(icon(CHECK_ICON));
     noneBtn.addEventListener('click', () => applyLogo('none', false));
 
-    // GXR 标志（内置文字徽标，ID 保持 'ricoh'）
-    const gxrBtn = button(`logo-opt${activeLogo === 'ricoh' ? ' on' : ''}`, '');
+    // GXR 标志（内置文字徽标，ID 保持 'ricoh'；自定义标志缺失时也回退高亮）
+    const gxrSelected =
+      activeLogo === 'ricoh' || (logoStore.loaded() && activeLogo !== 'none' && !logoStore.info(activeLogo));
+    const gxrBtn = button(`logo-opt${gxrSelected ? ' on' : ''}`, '');
     gxrBtn.dataset.logo = 'ricoh';
     const gxrThumb = el('div', 'lth', 'GXR');
     const gxrTx = el('div', 'ltx');
     gxrTx.append(el('b', '', 'GXR 标志'), el('small', '', '内置文字徽标，默认样式'));
     gxrBtn.append(gxrThumb, gxrTx);
-    if (activeLogo === 'ricoh') {
+    if (gxrSelected) {
       const ck = el('span', 'lck');
       ck.append(icon(CHECK_ICON));
       gxrBtn.append(ck);
@@ -191,11 +193,14 @@ export function openLogoSheet(
         const doRename = async () => {
           if (busy || !stillAlive()) return;
           const myOp = ++opToken;
+          opAbort?.abort();
+          const ac = new AbortController();
+          opAbort = ac;
           busy = true;
           saveBtn.disabled = true;
           try {
-            const res = await logoStore.rename(item.id, input.value);
-            if (closed || myOp !== opToken) return;
+            const res = await logoStore.rename(item.id, input.value, ac.signal);
+            if (closed || ac.signal.aborted || myOp !== opToken) return;
             if (!res.ok) {
               showToast(host, res.error);
               return;
@@ -206,9 +211,10 @@ export function openLogoSheet(
               render();
             }
           } catch {
-            if (!closed && myOp === opToken) showToast(host, '保存标志名称失败，请重试。');
+            if (!closed && !ac.signal.aborted && myOp === opToken) showToast(host, '保存标志名称失败，请重试。');
           } finally {
-            if (!closed && myOp === opToken) {
+            if (opAbort === ac) opAbort = null;
+            if (!closed && !ac.signal.aborted && myOp === opToken) {
               busy = false;
               saveBtn.disabled = false;
             }
@@ -314,11 +320,23 @@ export function openLogoSheet(
         doDel.addEventListener('click', async () => {
           if (busy || !stillAlive()) return;
           const myOp = ++opToken;
+          opAbort?.abort();
+          const ac = new AbortController();
+          opAbort = ac;
           busy = true;
           doDel.disabled = true;
           try {
-            const res = await logoStore.remove(item.id);
-            if (closed || myOp !== opToken) return;
+            const res = await logoStore.remove(item.id, ac.signal);
+            if (res.ok) {
+              if (photo.version === version && photo.border.logo === item.id) {
+                commitFrame(photo, { logo: 'ricoh', show_logo: true }, () => {
+                  if (isAlive()) onUpdate();
+                });
+              } else if (!closed && !ac.signal.aborted && myOp === opToken && stillAlive()) {
+                onUpdate();
+              }
+            }
+            if (closed || ac.signal.aborted || myOp !== opToken) return;
             if (!res.ok) {
               showToast(host, res.error);
               return;
@@ -326,18 +344,14 @@ export function openLogoSheet(
             confirmingLogoId = null;
             menuLogoId = null;
             if (stillAlive()) {
-              if (photo.border.logo === item.id) {
-                commitFrame(photo, { logo: 'ricoh', show_logo: true }, onUpdate);
-              } else {
-                onUpdate();
-              }
               showToast(host, `已删除「${item.name}」。`);
               render();
             }
           } catch {
-            if (!closed && myOp === opToken) showToast(host, '删除标志失败，请重试。');
+            if (!closed && !ac.signal.aborted && myOp === opToken) showToast(host, '删除标志失败，请重试。');
           } finally {
-            if (!closed && myOp === opToken) {
+            if (opAbort === ac) opAbort = null;
+            if (!closed && !ac.signal.aborted && myOp === opToken) {
               busy = false;
               doDel.disabled = false;
             }

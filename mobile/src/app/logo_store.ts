@@ -39,7 +39,7 @@ function buildCanvas(row: StoredLogo): HTMLCanvasElement | null {
   return cv;
 }
 
-class LogoStore {
+export class LogoStore {
   private rows: StoredLogo[] = [];
   private byId = new Map<string, StoredLogo>();
   private canvases = new Map<string, HTMLCanvasElement>();
@@ -154,17 +154,26 @@ class LogoStore {
     return { ok: true, logo: toInfo(stored) };
   }
 
-  async rename(id: string, rawName: string): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+  async rename(
+    id: string,
+    rawName: string,
+    abortCtrl?: (() => boolean) | AbortSignal,
+  ): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+    const signal = typeof abortCtrl === 'function' ? undefined : abortCtrl;
+    const isAborted = (): boolean => (typeof abortCtrl === 'function' ? abortCtrl() : Boolean(abortCtrl?.aborted));
     const trimmed = rawName.trim();
     if (!trimmed) return { ok: false, error: LOGO_ERR.badName };
+    if (isAborted()) return { ok: false, error: '已取消。' };
+    await this.ensureLoaded();
+    if (isAborted()) return { ok: false, error: '已取消。' };
     const next = cleanLogoName(trimmed);
     let wrote = false;
     try {
-      wrote = await renameStoredLogo(id, next);
+      wrote = await renameStoredLogo(id, next, signal);
     } catch {
-      return { ok: false, error: '保存标志名称失败，请重试。' };
+      return { ok: false, error: isAborted() ? '已取消。' : '保存标志名称失败，请重试。' };
     }
-    if (!wrote) return { ok: false, error: '找不到这个标志。' };
+    if (!wrote) return { ok: false, error: isAborted() ? '已取消。' : '找不到这个标志。' };
     const row = this.byId.get(id);
     if (row) {
       row.name = next;
@@ -173,12 +182,22 @@ class LogoStore {
     return { ok: true, name: next };
   }
 
-  async remove(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async remove(
+    id: string,
+    abortCtrl?: (() => boolean) | AbortSignal,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const signal = typeof abortCtrl === 'function' ? undefined : abortCtrl;
+    const isAborted = (): boolean => (typeof abortCtrl === 'function' ? abortCtrl() : Boolean(abortCtrl?.aborted));
+    if (isAborted()) return { ok: false, error: '已取消。' };
+    await this.ensureLoaded();
+    if (isAborted()) return { ok: false, error: '已取消。' };
+    let wrote = false;
     try {
-      await deleteStoredLogo(id);
+      wrote = await deleteStoredLogo(id, signal);
     } catch {
-      return { ok: false, error: '删除标志失败，请重试。' };
+      return { ok: false, error: isAborted() ? '已取消。' : '删除标志失败，请重试。' };
     }
+    if (!wrote) return { ok: false, error: '已取消。' };
     this.rows = this.rows.filter((row) => row.id !== id);
     this.byId.delete(id);
     const oldCv = this.canvases.get(id);

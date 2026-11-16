@@ -18,6 +18,7 @@ import { drawDecor } from './finish_draw';
 import { openFrameMoreSheet } from './frame_more_sheet';
 import {
   autoMonoMessage,
+  checkMissingLogo,
   commitFrame,
   commitSelectStyle,
   commitStamp,
@@ -50,6 +51,7 @@ export class FrameView {
   private readonly stampTitleSummary: HTMLElement;
   private readonly stampSwitch: HTMLInputElement;
   private readonly holders = new Map<FrameStyle, { card: HTMLButtonElement; thumb: HTMLElement }>();
+  private readonly unsubLogo: () => void;
   private tabOpen = false;
   private cardLayouts = new Map<FrameStyle, FrameLayoutData | null>();
   private layoutSig = '';
@@ -111,6 +113,20 @@ export class FrameView {
     });
     stampRow.append(stampBtn, this.stampSwitch);
 
+    this.unsubLogo = logoStore.onChange(() => {
+      queueMicrotask(() => {
+        queueMicrotask(() => {
+          if (!this.aliveNow()) return;
+          if (checkMissingLogo(this.photo)) {
+            this.photo.rev += 1;
+            this.changed();
+          } else if (this.tabOpen) {
+            void this.paintCards();
+          }
+        });
+      });
+    });
+
     this.root.append(this.strip, this.controls, stampRow);
     this.syncSelection();
     this.renderControls();
@@ -164,6 +180,7 @@ export class FrameView {
   destroy(): void {
     cancelHostSheets(this.shell);
     this.destroyed = true;
+    this.unsubLogo();
     this.tabOpen = false;
     this.layoutToken += 1;
     this.paintToken += 1;

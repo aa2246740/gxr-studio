@@ -488,6 +488,13 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert invalid["bad"]["unknown-unit"] == {"accepted": False, "error": "校准数据的单元不正确", "pack": "good.zip"}
     for name in ("empty-both", "no-ctx-200", "no-ring-1600"):
         assert invalid["bad"][name] == {"accepted": False, "error": "校准数据的文件清单不正确", "pack": "good.zip"}, name
+    vis = cases["calibCommitVisibility"]
+    assert vis["afterImport"]["idbDuringSupersede"] == "CommittedGood.zip"
+    assert vis["afterImport"]["idbNow"] == "CommittedGood.zip"
+    assert vis["afterImport"]["memNow"] == "CommittedGood.zip"
+    assert "太大" in (vis["afterImport"]["error"] or "") and vis["afterImport"]["busy"] is False
+    assert vis["afterDelete"]["idbNow"] is None and vis["afterDelete"]["memNow"] is None
+    assert "太大" in (vis["afterDelete"]["error"] or "") and vis["afterDelete"]["busy"] is False
     # Sol r3：同一张打开的照片反复调旋钮，每张卡只留现在那张，旧的关掉；上限任何时候都成立。
     knob_thumbs = cases["knobThumbs"]
     assert knob_thumbs["oneCard"] == {"entries": 1, "bytes": 192 * 128 * 4, "live": 1, "lastLive": True}

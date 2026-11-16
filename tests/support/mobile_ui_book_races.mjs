@@ -358,6 +358,82 @@ try {
       await reopened.restore();
       result.invalidImports = { good, bad, reopened: reopened.pack?.name ?? null };
     }
+    // 13. 提交边界可见性（Carbon 同族审计）：校准包已经写进真实 IndexedDB（或删除墓碑已经提交）之后，
+    //     紧接着选了一个不写库的超大/坏文件，内存里的 book.pack 必须和真实 IndexedDB 一致，不能丢掉已提交的包或留着已删的包。
+    if (packB64) {
+      const api = await import('/src/core/api.ts');
+      const idb = await import('/src/lib/idb.ts');
+      const bytes = Uint8Array.from(atob(packB64), (c) => c.charCodeAt(0));
+      const zipFile = (name) => new File([bytes], name, { lastModified: 1 });
+      const huge = { name: 'huge.zip', size: 4 * 2 ** 30, lastModified: 1 };
+      let hookAfterImportCommit = null;
+      const realWithHook = () => ({
+        readFile: async () => null,
+        readDat: api.readDat,
+        importCalib: async (f, savedAt) => {
+          const outCal = await api.importCalib(f, savedAt);
+          if (hookAfterImportCommit) {
+            const fn = hookAfterImportCommit;
+            hookAfterImportCommit = null;
+            await fn();
+          }
+          return outCal;
+        },
+        restoreCalib: api.restoreCalib,
+        bake: api.bakeIn,
+        resolve: api.resolveRecipe,
+        calibCheck: api.calibCheck,
+        deletePack: idb.deletePack,
+        watermark: idb.loadWatermark,
+      });
+
+      await idb.deletePack(Date.now() + 1000);
+      const book = new Book(realWithHook());
+      let idbDuringSupersede = null;
+      hookAfterImportCommit = async () => {
+        idbDuringSupersede = (await idb.loadPack())?.name ?? null;
+        await book.importPack(huge);
+      };
+      const firstOk = await book.importPack(zipFile('CommittedGood.zip'));
+      const afterImport = {
+        firstOk,
+        idbDuringSupersede,
+        idbNow: (await idb.loadPack())?.name ?? null,
+        memNow: book.pack?.name ?? null,
+        error: book.packError,
+        busy: book.packBusy,
+      };
+
+      const origTx = IDBDatabase.prototype.transaction;
+      let delHooked = false;
+      IDBDatabase.prototype.transaction = function (...args) {
+        const tx = origTx.apply(this, args);
+        if (!delHooked && args[1] === 'readwrite' && tx.objectStoreNames.contains('calib')) {
+          delHooked = true;
+          tx.addEventListener(
+            'complete',
+            () => {
+              void book.importPack(huge);
+            },
+            { once: true },
+          );
+        }
+        return tx;
+      };
+      try {
+        await book.removePack();
+      } finally {
+        IDBDatabase.prototype.transaction = origTx;
+      }
+      await tick();
+      const afterDelete = {
+        idbNow: (await idb.loadPack())?.name ?? null,
+        memNow: book.pack?.name ?? null,
+        error: book.packError,
+        busy: book.packBusy,
+      };
+      result.calibCommitVisibility = { afterImport, afterDelete };
+    }
     // 9b. Sol r3：同一张打开的照片反复调旋钮。每张卡只留现在那张，换下来的位图立刻关掉；上限任何时候都成立。
     {
       const { LookCache } = await import('/src/app/looks.ts');

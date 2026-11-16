@@ -137,6 +137,7 @@ export function openFrameMoreSheet(
   // 自定义标志颜色 / 大小
   const activeLogo = cur.logo || (cur.show_logo === false ? 'none' : 'ricoh');
   const isCustomLogo = activeLogo !== 'ricoh' && activeLogo !== 'none' && Boolean(logoStore.info(activeLogo));
+  let customLogoRows: HTMLElement[] = [];
   if (opts.includes('logo') && isCustomLogo) {
     const modeRow = el('div', 'fsrow');
     modeRow.append(el('span', 'fslab', '标志颜色'));
@@ -172,6 +173,7 @@ export function openFrameMoreSheet(
         },
       ),
     );
+    customLogoRows = [modeRow, sizeRow];
     body.append(modeRow, sizeRow);
   }
 
@@ -275,12 +277,22 @@ export function openFrameMoreSheet(
     body.append(row);
   }
 
+  const unsubLogo = logoStore.onChange(() => {
+    if (!stillAlive() || !customLogoRows.length) return;
+    const curLogo = photo.border.logo || (photo.border.show_logo === false ? 'none' : 'ricoh');
+    if (curLogo === 'ricoh' || curLogo === 'none' || !logoStore.info(curLogo)) {
+      for (const r of customLogoRows) r.remove();
+      customLogoRows = [];
+    }
+  });
+
   let unregister = () => {};
   const close = () => {
     if (closed) return;
     flushText?.();
     closed = true;
     clearTimer();
+    unsubLogo();
     unregister();
     scrim.remove();
     sheet.remove();
@@ -289,6 +301,7 @@ export function openFrameMoreSheet(
     if (closed) return;
     closed = true;
     clearTimer();
+    unsubLogo();
     if (photo.version === version && isAlive()) {
       restoreText?.();
     }
