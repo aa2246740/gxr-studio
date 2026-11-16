@@ -4,6 +4,8 @@ use gxr_raw::CoreError;
 
 use crate::geometry::bounds::{checked_add_u64, checked_mul_u64, fit_count};
 use crate::geometry::json::{JsonValue, parse_json};
+use crate::ink::draw::{draw_ellipse, draw_line, draw_polygon, draw_rectangle};
+use crate::ink::draw_arc::draw_rounded_rectangle;
 use crate::ink::image::{InkImage, InkMode};
 use crate::ink::paste::{paste_color, paste_image};
 use crate::raster::bounds::checked_rgba_slice;
@@ -389,7 +391,117 @@ fn apply_op(
             let dst_box = parse_box4(box_val, mw, mh)?;
             paste_color(img, color, dst_box, mask)?;
         }
+        "draw_polygon" => {
+            let pts = parse_pts(step.get("pts"), "draw_polygon requires pts")?;
+            if let Some(fill) = parse_opt_ink3(step.get("fill"))? {
+                draw_polygon(img, &pts, fill)?;
+            }
+        }
+        "draw_rectangle" => {
+            let xy = parse_box4_f64(step.get("box"), "draw_rectangle requires 4-number box")?;
+            let fill = parse_opt_ink3(step.get("fill"))?;
+            let outline = parse_opt_ink3(step.get("outline"))?;
+            let width = i32::try_from(opt_int(step, "width", 1, "width must be int")?)
+                .map_err(|_| bad_ops("width out of i32 range"))?;
+            draw_rectangle(img, xy, fill, outline, width)?;
+        }
+        "draw_rounded_rectangle" => {
+            let xy = parse_box4_f64(
+                step.get("box"),
+                "draw_rounded_rectangle requires 4-number box",
+            )?;
+            let radius = opt_f64(step, "radius", 0.0, "radius must be finite")?;
+            let fill = parse_opt_ink3(step.get("fill"))?;
+            let outline = parse_opt_ink3(step.get("outline"))?;
+            let width = i32::try_from(opt_int(step, "width", 1, "width must be int")?)
+                .map_err(|_| bad_ops("width out of i32 range"))?;
+            let corners = parse_corners(step.get("corners"))?;
+            draw_rounded_rectangle(img, xy, radius, fill, outline, width, corners)?;
+        }
+        "draw_ellipse" => {
+            let xy = parse_box4_f64(step.get("box"), "draw_ellipse requires 4-number box")?;
+            if let Some(fill) = parse_opt_ink3(step.get("fill"))? {
+                draw_ellipse(img, xy, fill)?;
+            }
+        }
+        "draw_line" => {
+            let pts = parse_pts(step.get("pts"), "draw_line requires pts")?;
+            let width = i32::try_from(opt_int(step, "width", 0, "width must be int")?)
+                .map_err(|_| bad_ops("width out of i32 range"))?;
+            if let Some(fill) = parse_opt_ink3(step.get("fill"))? {
+                draw_line(img, &pts, fill, width)?;
+            }
+        }
         _ => return Err(bad_ops("unsupported ink op")),
     }
     Ok(())
+}
+
+pub(crate) fn parse_opt_ink3(val: Option<&JsonValue>) -> Result<Option<[u8; 3]>, CoreError> {
+    match val {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(v) => {
+            let c = parse_color(v, "bad ink color")?;
+            Ok(Some([c[0], c[1], c[2]]))
+        }
+    }
+}
+
+pub(crate) fn parse_box4_f64(val: Option<&JsonValue>, msg: &str) -> Result<[f64; 4], CoreError> {
+    let arr = val
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| bad_ops(msg))?;
+    if arr.len() != 4 {
+        return Err(bad_ops(msg));
+    }
+    let mut out = [0.0_f64; 4];
+    for (i, v) in arr.iter().enumerate() {
+        let f = v.as_f64().ok_or_else(|| bad_ops(msg))?;
+        if !f.is_finite() {
+            return Err(bad_ops(msg));
+        }
+        out[i] = f;
+    }
+    Ok(out)
+}
+
+pub(crate) fn parse_pts(val: Option<&JsonValue>, msg: &str) -> Result<Vec<[f64; 2]>, CoreError> {
+    let arr = val
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| bad_ops(msg))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let pair = item.as_array().ok_or_else(|| bad_ops(msg))?;
+        if pair.len() != 2 {
+            return Err(bad_ops(msg));
+        }
+        let x = pair[0].as_f64().ok_or_else(|| bad_ops(msg))?;
+        let y = pair[1].as_f64().ok_or_else(|| bad_ops(msg))?;
+        if !x.is_finite() || !y.is_finite() {
+            return Err(bad_ops(msg));
+        }
+        out.push([x, y]);
+    }
+    Ok(out)
+}
+
+pub(crate) fn parse_corners(val: Option<&JsonValue>) -> Result<[bool; 4], CoreError> {
+    match val {
+        None | Some(JsonValue::Null) => Ok([true, true, true, true]),
+        Some(v) => {
+            let arr = v
+                .as_array()
+                .ok_or_else(|| bad_ops("corners must be 4 booleans"))?;
+            if arr.len() != 4 {
+                return Err(bad_ops("corners must be 4 booleans"));
+            }
+            let mut out = [true; 4];
+            for (i, item) in arr.iter().enumerate() {
+                out[i] = item
+                    .as_bool()
+                    .ok_or_else(|| bad_ops("corners must be 4 booleans"))?;
+            }
+            Ok(out)
+        }
+    }
 }
