@@ -7,3 +7,7 @@ pub mod ftcalc;
 pub mod glyf;
 #[cfg(test)]
 mod glyf_tests;
+pub mod gray;
+#[cfg(test)]
+mod gray_tests;
+mod gray_worker;
