@@ -149,4 +149,6 @@ export interface AppApi {
   pickCalib(): void;
   /** 「更多 → 校准数据」。 */
   showCalib(): void;
+  /** 打开导出面板（05a）。`ids` 按网格的顺序导出；点了「存到相册」时调 `onStart`。 */
+  exportPhotos(ids: string[], onStart?: () => void): void;
 }

@@ -194,8 +194,9 @@ export class EditorView {
     });
     const copy = button('btn', '复制调整 · 下一步做');
     copy.disabled = true;
-    const save = button('btn primary', '导出这张 · 下一步做');
-    save.disabled = true;
+    const save = button('btn primary', '导出这张');
+    save.dataset.act = 'export';
+    save.addEventListener('click', () => this.api.exportPhotos([photo.id]));
     const acts = el('div', 'actbar');
     acts.append(copy, save);
     sheet.append(tabs, ...panels, acts);

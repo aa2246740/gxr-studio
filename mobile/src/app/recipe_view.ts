@@ -8,6 +8,7 @@ import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { cardTag, choices, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, shelf, shelves, type Card, type Control, type Shelf, type Shelves } from '../lib/recipes';
 import type { UnitState } from './book';
 import { button, el, icon } from './dom';
+import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
 import type { AppApi, Photo } from './model';
 
@@ -423,8 +424,9 @@ export class RecipeView {
   /** 松手：记下这个配方的这一档，选上它，重新 resolve + 烘焙（照片在新表做好之前留着上一张）。 */
   private setLevel(card: Card, name: string, level: number): void {
     const scene = this.scene();
-    const next: Record<string, number> = {};
-    for (const c of card.controls) next[c.name] = effective(c, this.photo.levels.get(card.id));
+    // 只记用户动过的旋钮（桌面 recipes.js 的 ensureRecipe(view).levels[name] = …）：没动过的取这个配方的默认，
+    // 导出时交给 sidecar 的 levels 才和桌面写的一样（UI-M3）。
+    const next: Record<string, number> = { ...(this.photo.levels.get(card.id) ?? {}) };
     next[name] = level;
     this.photo.levels.set(card.id, next);
     if (this.photo.choice?.id !== card.id) {
@@ -537,7 +539,8 @@ export class RecipeView {
         }
         continue;
       }
-      while (alive() && this.hooks.dragging()) await new Promise((done) => setTimeout(done, 120));
+      // 拖滑块、导出跑着（UI-M3）时先停。
+      while (alive() && (this.hooks.dragging() || exportPaused())) await new Promise((done) => setTimeout(done, 120));
       if (!alive()) return;
       // 拿到显卡键就在同一轮里提交，不会被别的表换掉；JS 里已经挤掉了就再做一次。
       let gpu = book.gpuKey(key);

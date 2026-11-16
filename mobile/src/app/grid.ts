@@ -284,8 +284,10 @@ export class GridView {
     if (!this.selecting) return;
     const apply = button('fbtn ctl grow', `套用调整 · 下一步做`);
     apply.disabled = true;
-    const exp = button('fbtn fill grow', `导出 ${this.selected.size} 张 · 下一步做`);
-    exp.disabled = true;
+    const exp = button('fbtn fill grow', `导出 ${this.selected.size} 张`);
+    exp.dataset.act = 'export';
+    exp.disabled = this.selected.size === 0;
+    exp.addEventListener('click', () => this.api.exportPhotos([...this.selected], () => this.toggleSelect(false)));
     this.bar.append(apply, exp);
     if (this.title) this.title.textContent = `已选 ${this.selected.size} 张`;
   }
