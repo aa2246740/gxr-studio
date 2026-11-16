@@ -29,6 +29,8 @@ fn checked_jpeg_dim_u32(dim: f64) -> u32 {
 }
 
 /// Port of `gxr_studio/export.py:_finish` single JPEG encode with EXIF and sRGB ICC.
+/// `optimize = true` is what `_finish` writes (Pillow `optimize=True`); `false` keeps the
+/// Annex K tables (`gxr_jpeg::encode_jpeg_with`).
 #[wasm_bindgen]
 pub fn jpeg_encode(
     rgb_u8: &[u8],
@@ -36,6 +38,7 @@ pub fn jpeg_encode(
     h: f64,
     quality: f64,
     exif_json: &str,
+    optimize: bool,
 ) -> Result<Vec<u8>, JsValue> {
     let q = checked_quality_i32(quality);
     if !(1..=100).contains(&q) {
@@ -45,7 +48,7 @@ pub fn jpeg_encode(
     }
     let w_u32 = checked_jpeg_dim_u32(w);
     let h_u32 = checked_jpeg_dim_u32(h);
-    gxr_jpeg::encode_jpeg(rgb_u8, w_u32, h_u32, q, exif_json)
+    gxr_jpeg::encode_jpeg_with(rgb_u8, w_u32, h_u32, q, exif_json, optimize)
         .map_err(|err| JsValue::from_str(&error_json(&err).render()))
 }
 

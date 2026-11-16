@@ -141,9 +141,21 @@ fn plan_inner(req: &Request<'_>) -> Result<Json, Fail> {
 
 /// `source-selection`: which recipe `color_image` will plan for this base mode, so the caller
 /// knows which entry to resolve. `null` when the picture does not come from a recipe render.
-pub fn selection_json(shot: &[u8], edit: &[u8], base: &str) -> Result<String, CoreError> {
+///
+/// `space` is the optional `--space` JSON (`RenderSpec`). A scene-referred LUT never plans a
+/// recipe (`lut/photo.py` builds the picture from the RAW). A display-referred LUT, or no LUT,
+/// keeps the base-mode rule below; the LUT id itself is not a recipe.
+pub fn selection_json(
+    shot: &[u8],
+    edit: &[u8],
+    base: &str,
+    space: Option<&str>,
+) -> Result<String, CoreError> {
     let shot: Shot = parse_shot(shot)?;
     let edit = parse_edit(edit)?;
+    if scene_lut(&edit, space)? {
+        return Ok(Json::object([("selection", Json::Null)]).render());
+    }
     let mode = if base == "auto" {
         if edit.recipe.is_some() {
             "recipe"
@@ -156,12 +168,31 @@ pub fn selection_json(shot: &[u8], edit: &[u8], base: &str) -> Result<String, Co
         base
     };
     let recipe = match mode {
-        "camera-jpg" => return Ok(Json::object([("selection", Json::Null)]).render()),
+        // `color_image` does not plan a recipe here. `neutral` always renders NEUTRAL
+        // (`serve.py`, `neutral=True`), even when the edit names a recipe, with or without
+        // calibration or camera data. There is no entry for the caller to resolve.
+        "camera-jpg" | "neutral" => {
+            return Ok(Json::object([("selection", Json::Null)]).render());
+        }
         "recipe" => edit.recipe.as_ref(),
         _ => None,
     };
     let (sel, defaulted) = selection(&shot, recipe);
     Ok(Json::object([("selection", sel_json(&sel, defaulted))]).render())
+}
+
+/// True when the edit names a LUT whose input space is not display-referred.
+///
+/// No `--space` keeps the previous rule: the caller has not said which kind of LUT it is.
+fn scene_lut(edit: &super::input::Edit, space: Option<&str>) -> Result<bool, CoreError> {
+    let Some(text) = space.filter(|text| !text.is_empty()) else {
+        return Ok(false);
+    };
+    if edit.lut.is_none() {
+        return Ok(false);
+    }
+    let spec = gxr_lut::spaces::RenderSpec::from_json(text)?;
+    Ok(!gxr_lut::spaces::is_display(&spec.input_space))
 }
 
 /// `source-render`: `render_full(open_dng(path), renderer)` for a recipe renderer built from
@@ -342,5 +373,71 @@ mod tests {
         );
         let other = Fail::NoRaw("x".into());
         assert_eq!(export_error(other.clone(), true), other);
+    }
+
+    /// `neutral` names no recipe. `auto` on a RAW-only photo still defaults to stock 04.
+    #[test]
+    fn neutral_selection_is_null_and_auto_keeps_stock_04() {
+        let raw = br#"{"files":{"dng":{"relpath":"R0000001.DNG"}},"lens":"GR LENS A12 50mm F2.5 MACRO","iso":200}"#;
+        let pair = br#"{"files":{"dng":{"relpath":"R0000001.DNG"},"jpg":{"relpath":"R0000001.JPG"}},"lens":"GR LENS A12 50mm F2.5 MACRO","iso":200}"#;
+        let wide = br#"{"files":{"dng":{"relpath":"R0000001.DNG"}},"lens":"RICOH LENS A12 28mm F2.5","iso":200}"#;
+        let bare = br#"{"files":{"dng":{"relpath":"R0000001.DNG"}},"lens":null,"iso":200}"#;
+        let empty = b"{}";
+        let recipe = br#"{"recipe":{"kind":"builtin","unit":"qlaunch","slot":2}}"#;
+        let adjust = br#"{"adjust":{"exposure_ev":0.7}}"#;
+        let none = r#"{"selection":null}"#;
+        let stock = |unit: &str| {
+            format!(
+                r#"{{"selection":{{"kind":"builtin","unit":"{unit}","slot":4,"defaulted":true}}}}"#
+            )
+        };
+        let pick =
+            |shot: &[u8], edit: &[u8], base: &str| selection_json(shot, edit, base, None).unwrap();
+        for shot in [
+            raw.as_slice(),
+            pair.as_slice(),
+            wide.as_slice(),
+            bare.as_slice(),
+        ] {
+            for edit in [empty.as_slice(), recipe.as_slice(), adjust.as_slice()] {
+                assert_eq!(pick(shot, edit, "neutral"), none);
+            }
+        }
+        assert_eq!(pick(raw, empty, "camera-jpg"), none);
+        assert_eq!(pick(pair, empty, "auto"), none);
+        assert_eq!(pick(raw, empty, "auto"), stock("jlaunch"));
+        assert_eq!(pick(wide, empty, "auto"), stock("qlaunch"));
+        assert_eq!(pick(bare, empty, "standard"), stock("jlaunch"));
+        assert_eq!(
+            pick(raw, recipe, "auto"),
+            r#"{"selection":{"kind":"builtin","unit":"qlaunch","slot":2,"defaulted":false}}"#
+        );
+        // `standard` drops an explicit recipe and still plans stock 04.
+        assert_eq!(pick(raw, recipe, "standard"), stock("jlaunch"));
+        assert_eq!(pick(raw, adjust, "auto"), stock("jlaunch"));
+
+        let lut = br#"{"lut":"scene"}"#;
+        let scene = r#"{"input_space":"slog3","output_space":"srgb"}"#;
+        let display = r#"{"input_space":"srgb","output_space":"srgb"}"#;
+        for base in ["auto", "neutral", "standard"] {
+            assert_eq!(selection_json(raw, lut, base, Some(scene)).unwrap(), none);
+        }
+        // A display LUT keeps the no-LUT rule: RAW-only auto and standard still name stock 04.
+        assert_eq!(
+            selection_json(raw, lut, "auto", Some(display)).unwrap(),
+            stock("jlaunch")
+        );
+        assert_eq!(
+            selection_json(raw, lut, "neutral", Some(display)).unwrap(),
+            none
+        );
+        assert_eq!(
+            selection_json(raw, lut, "standard", Some(display)).unwrap(),
+            stock("jlaunch")
+        );
+        assert_eq!(
+            selection_json(raw, lut, "auto", None).unwrap(),
+            stock("jlaunch")
+        );
     }
 }

@@ -24,6 +24,9 @@ pub enum EncodingError {
 
     /// An io error occurred during writing (Should be used in no_std cases instead of IoError)
     Write(std::string::String),
+
+    /// GXR: building or using optimal Huffman tables failed (never a panic)
+    Huffman(std::string::String),
 }
 
 impl From<std::io::Error> for EncodingError {
@@ -57,6 +60,7 @@ impl Display for EncodingError {
             }
             IoError(err) => err.fmt(f),
             Write(err) => write!(f, "{}", err),
+            Huffman(what) => write!(f, "JPEG 结构：{}", what),
         }
     }
 }

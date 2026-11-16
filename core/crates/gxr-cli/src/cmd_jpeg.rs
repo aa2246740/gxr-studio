@@ -1,7 +1,8 @@
 //! `jpeg-*` commands. Owner: wave-1 unit jpeg.
 
 use gxr_jpeg::{
-    build_exif, encode_jpeg, parse_exif_json, segments_json, set_meta, sof_dimensions, srgb_icc,
+    build_exif, encode_jpeg_with, parse_exif_json, segments_json, set_meta, sof_dimensions,
+    srgb_icc,
 };
 use gxr_raw::sha256::sha256_hex;
 use gxr_raw::{CoreError, Json};
@@ -69,7 +70,9 @@ fn cmd_encode(args: &[String]) -> Result<Json, Failure> {
         let npy_bytes = common::read(in_path)?;
         parse_rgb_u8_npy(&npy_bytes)?
     };
-    let encoded = encode_jpeg(&rgb, w, h, quality, &exif_json)?;
+    // `--optimize`: what `_finish` writes (Pillow `optimize=True`), byte for byte.
+    let optimize = has_flag(args, "--optimize");
+    let encoded = encode_jpeg_with(&rgb, w, h, quality, &exif_json, optimize)?;
     write_bytes(out_path, &encoded)?;
 
     let len = i64::try_from(encoded.len())
