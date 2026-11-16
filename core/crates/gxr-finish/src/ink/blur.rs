@@ -21,7 +21,7 @@ pub(crate) fn gaussian_blur_radius(radius: f32, passes: i32) -> f32 {
     let l = ((f64::from(l_big) - 1.0_f64) / 2.0_f64).floor() as f32;
     let l_p1 = l + 1.0_f32;
     let a_num = l.mul_add(2.0_f32, 1.0_f32) * l.mul_add(l_p1, -3.0_f32 * sigma2);
-    let a_den = 6.0_f32 * (-l_p1).mul_add(l_p1, sigma2);
+    let a_den = gaussian_blur_denominator(sigma2, l_p1);
     let a = a_num / a_den;
     l + a
 }
@@ -446,5 +446,31 @@ mod tests {
         assert!(gaussian_blur(&empty, 1e300, 1e300).is_err());
         assert!(box_blur(&empty, 2_147_483_648.0_f32, 0.0_f32, 1).is_err());
         assert!(gaussian_blur(&empty, -1.0, 0.0).is_err());
+    }
+}
+
+/// The Gaussian blur denominator `6 * (sigma2 - l_p1 * l_p1)`. The pinned Pillow 12.2.0 arm64 wheel
+/// fuses the multiply-subtract `sigma2 - l_p1 * l_p1` in the Gaussian radius code (PORT-WAVE-1
+/// Amendment 5; the r3 regression pins the fused bits), so it is computed with `mul_add` here.
+/// Kept in one helper so the regression below tests production code.
+#[inline]
+#[allow(clippy::disallowed_methods)]
+fn gaussian_blur_denominator(sigma2: f32, l_p1: f32) -> f32 {
+    6.0_f32 * (-l_p1).mul_add(l_p1, sigma2)
+}
+
+#[cfg(test)]
+mod review_den_gate {
+    use super::*;
+
+    #[test]
+    fn production_denominator_pins_fma() {
+        // Derived from radius=388581.8125_f32 and passes=3.
+        let sigma2 = 50_331_942_912.0_f32;
+        let l_p1 = 388_582.0_f32;
+        assert_eq!(
+            gaussian_blur_denominator(sigma2, l_p1).to_bits(),
+            0xd30c_a043
+        );
     }
 }
