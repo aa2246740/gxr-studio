@@ -26,6 +26,8 @@ const defaultFactory: WorkerFactory = () => new Worker(new URL('./export_worker.
 export class ExportCore {
   private worker: Worker | null = null;
   private setup: ExportSetup | null = null;
+  /** 现在的 Worker 还没收到这一批的设置。只在 ensure() 里发（它总在 run / sizes / decode 的 try 里），发成功才清掉。 */
+  private setupPending = true;
   private seq = 1;
   private readonly pending = new Map<number, Pending>();
   private idle = 0;
@@ -34,13 +36,16 @@ export class ExportCore {
 
   constructor(private readonly factory: WorkerFactory = defaultFactory) {}
 
-  /** 这一批的相机配方文件和校准包。Worker 重建时再交一次（交的是拷贝，这边留着原件）。 */
+  /**
+   * 这一批的相机配方文件和校准包。这里只记下，不发：发给 Worker（含拷贝）在下一次 run() 的 try 里做，
+   * 失败（比如分配失败的 RangeError）就关掉 Worker、这张按陷阱结算（Sol r2 P2-04）。Worker 重建时再交一次。
+   */
   begin(setup: ExportSetup): void {
     this.setup = setup;
+    this.setupPending = true;
     this.marks.wasm = 0;
     this.marks.js = 0;
     this.marks.workers = 0;
-    if (this.worker) this.sendSetup(this.worker);
   }
 
   alive(): boolean {
@@ -112,11 +117,22 @@ export class ExportCore {
     }, IDLE_MS);
   }
 
+  /**
+   * 拿到（或新建）Worker，并把还没发的设置发过去。只在 run / sizes / decode 的 try 里调用：factory、设置拷贝或
+   * postMessage 抛错时，调用方 stop()（关掉已经记下的 Worker）并按陷阱结算。
+   */
   private ensure(): Worker {
     window.clearTimeout(this.idle);
     this.idle = 0;
-    if (this.worker) return this.worker;
-    // factory 抛错时 this.worker 还是 null，调用方按陷阱结算；setup 拷贝抛错时下面已经记下了 worker，stop() 会关掉它。
+    const worker = this.worker ?? this.create();
+    if (this.setupPending) {
+      this.sendSetup(worker);
+      this.setupPending = false;
+    }
+    return worker;
+  }
+
+  private create(): Worker {
     const worker = this.factory();
     this.marks.workers += 1;
     worker.onmessage = (event: MessageEvent<ExportOut>) => this.finish(worker, event.data);
@@ -128,7 +144,8 @@ export class ExportCore {
       if (this.worker === worker) this.stop('trap');
     };
     this.worker = worker;
-    this.sendSetup(worker);
+    // 新的 Worker 什么设置都没有。
+    this.setupPending = true;
     return worker;
   }
 

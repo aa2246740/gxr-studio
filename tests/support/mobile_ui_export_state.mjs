@@ -285,6 +285,134 @@ export async function state({ newPage, out }) {
     steps.workerOomOnce = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
     await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
   }
+  // Sol r2 P2-04（照它的复现）：一张的导出面板先查成品尺寸，这时已经建好 Worker；点「存到相册」后给这个 Worker 发设置时
+  // RangeError（第 2 次发设置时注入，真的导出 Worker 和 WASM，浏览器里现画的 2×2 JPG）。这张按陷阱失败、写内存那句、
+  // 有重试；Worker 关掉；重试用新的 Worker 做好。
+  try {
+    await page.evaluate(async () => {
+      const t = window.__state;
+      const shell = document.createElement('div');
+      shell.className = 'app';
+      shell.id = 'state-shell';
+      document.querySelector('#state-shell')?.remove();
+      document.body.append(shell);
+      const canvas = document.createElement('canvas');
+      canvas.width = 2;
+      canvas.height = 2;
+      canvas.getContext('2d').fillRect(0, 0, 2, 2);
+      const jpg = new File([await new Promise((done) => canvas.toBlob(done, 'image/jpeg'))], 'S0.JPG');
+      const knobs = { exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 };
+      const photo = { id: 'p0', stem: 'S0', version: 1, dng: null, jpg, lastModified: 0, captureMs: 0, jpgMeta: null, dngMeta: null, choice: null, levels: new Map(), knobs };
+      const app = { photos: () => [photo], photo: (id) => (id === photo.id ? photo : undefined), session: () => 1, book: () => ({ dat: null, pack: null }), markGone() {} };
+      const flow = new t.ExportFlow(shell, app, null);
+      const calls = { setup: 0, sizes: 0, run: 0, terminate: 0 };
+      flow.core.factory = () => {
+        const worker = new Worker(new URL('/src/core/export_worker.ts', location.href), { type: 'module' });
+        const post = worker.postMessage.bind(worker);
+        const terminate = worker.terminate.bind(worker);
+        worker.postMessage = (msg, ...args) => {
+          if (msg.op in calls) calls[msg.op] += 1;
+          if (msg.op === 'setup' && calls.setup === 2) throw new RangeError('synthetic warm setup allocation');
+          return post(msg, ...args);
+        };
+        worker.terminate = () => {
+          calls.terminate += 1;
+          return terminate();
+        };
+        return worker;
+      };
+      t.warm = { flow, shell, calls };
+      flow.open(['p0']);
+    });
+    await page.waitForFunction(() => document.querySelector('#state-shell .size')?.textContent.includes('2 × 2'), null, { timeout: 60_000 });
+    const before = await page.evaluate(() => ({ alive: window.__state.warm.flow.core.alive(), calls: { ...window.__state.warm.calls } }));
+    await page.locator('#state-shell .ms.export .go').click();
+    await page.waitForFunction(() => window.__state.warm.flow.current()?.phase === 'ready', null, { timeout: 60_000 });
+    const warmState = () =>
+      page.evaluate(() => {
+        const { flow, shell, calls } = window.__state.warm;
+        const b = flow.current();
+        return {
+          phase: b?.phase ?? null,
+          kinds: b ? [...b.failures.values()].map((f) => f.kind) : [],
+          staged: b?.staged.length ?? 0,
+          alive: flow.core.alive(),
+          calls: { ...calls },
+          retry: shell.querySelectorAll('[data-act="retry"]').length,
+          memoryLine: (shell.querySelector('.pdock')?.textContent ?? '').includes(window.__state.TEXT.memory),
+          sheet: shell.querySelector('.ms.export') !== null,
+        };
+      });
+    const after = await warmState();
+    await page.locator('#state-shell [data-act="retry"]').click();
+    await page.waitForFunction(() => window.__state.warm.flow.current()?.phase === 'ready', null, { timeout: 60_000 });
+    const retried = await warmState();
+    await page.evaluate(() => window.__state.warm.flow.clear());
+    steps.warmSetup = { before, after, retried };
+  } catch (err) {
+    steps.warmSetup = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+    await page.evaluate(() => window.__state.warm?.flow?.clear?.()).catch(() => undefined);
+  }
+
+  // 几张一批、Worker 已经建好（先查过尺寸）时发设置抛错：这张按陷阱失败，下一张用新的 Worker 做好。
+  try {
+    steps.warmBatch = await page.evaluate(async () => {
+      const t = window.__state;
+      let attempts = 0;
+      let setups = 0;
+      let terminations = 0;
+      const core = new t.ExportCore(() => {
+        attempts += 1;
+        return {
+          postMessage(msg) {
+            if (msg.op === 'setup') {
+              setups += 1;
+              if (setups === 2) throw new RangeError('synthetic warm setup allocation');
+            }
+            if (msg.op === 'run') {
+              queueMicrotask(() => this.onmessage({ data: { op: 'done', id: msg.job.id, ok: true, file: new ArrayBuffer(20), result: { file_name: 'S_gxr.jpg' }, shot: {}, ms: 1 } }));
+            }
+            if (msg.op === 'sizes') queueMicrotask(() => this.onmessage({ data: { op: 'sizes', id: msg.job.id, ok: true, json: '{}' } }));
+          },
+          terminate() {
+            terminations += 1;
+          },
+        };
+      });
+      const probe = await core.sizes({ dng: null, jpg: null, side: {}, useJpg: true });
+      core.begin({ dat: new ArrayBuffer(4), calibIndex: '', calibBlob: new ArrayBuffer(4) });
+      let busy = true;
+      const batch = new t.ExportBatch(t.items(2), {
+        run: (item) => core.run({ dng: null, jpg: null, req: item.req }),
+        session: () => 1,
+        photo: () => ({ version: 1, dng: null, jpg: null }),
+        stop: () => core.stop(),
+        idle() {},
+        markGone() {},
+        busy(on) {
+          busy = on;
+        },
+        changed() {},
+      });
+      batch.start();
+      await batch.settled();
+      const result = {
+        probe: probe.ok,
+        phase: batch.phase,
+        states: Object.fromEntries(batch.states),
+        kinds: [...batch.failures.values()].map((f) => f.kind),
+        memoryLine: [...batch.failures.values()].every((f) => f.message === t.TEXT.memory),
+        attempts,
+        setups,
+        terminations,
+        busy,
+      };
+      core.stop();
+      return result;
+    });
+  } catch (err) {
+    steps.warmBatch = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
+  }
   steps.paused = await page.evaluate(() => window.__state.exportPaused());
   await page.close();
 }

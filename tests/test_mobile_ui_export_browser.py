@@ -417,7 +417,7 @@ def test_mobile_ui_export_batch_regressions_sol_r1(tmp_path: Path) -> None:
     report = run_driver(tmp_path, {"mode": "state", "stateDriver": str(STATE)}, timeout=300)
     check(report["pageErrors"] == [], "no page errors")
     steps = report["steps"]
-    for name in ("retryKept", "held", "cap", "urls", "workerOom", "workerOomOnce"):
+    for name in ("retryKept", "held", "cap", "urls", "workerOom", "workerOomOnce", "warmSetup", "warmBatch"):
         check("error" not in steps[name], "every Sol r1 scenario ran to the end")
 
     kept = steps["retryKept"]
@@ -462,4 +462,27 @@ def test_mobile_ui_export_batch_regressions_sol_r1(tmp_path: Path) -> None:
     once = steps["workerOomOnce"]
     check(once["phase"] == "ready" and once["attempts"] == 2 and once["kinds"][0] == "trap", "P2-04: next photo runs on a new Worker")
     check("run" not in once["calls"] and "wait" not in once["calls"], "P2-04: no photo left running or waiting")
+    warm = steps["warmSetup"]
+    check(warm["before"]["alive"] is True and warm["before"]["calls"]["setup"] == 1, "r2 P2-04: the size probe created the Worker first")
+    check(
+        warm["after"]["phase"] == "ready" and warm["after"]["kinds"] == ["trap"],
+        "r2 P2-04: setup send failure on the existing Worker is a trap",
+    )
+    check(warm["after"]["memoryLine"] is True and warm["after"]["retry"] == 1, "r2 P2-04: memory line and retry shown")
+    check(warm["after"]["sheet"] is False and warm["after"]["calls"]["run"] == 0, "r2 P2-04: sheet closed, nothing sent after the failed setup")
+    check(warm["after"]["alive"] is False and warm["after"]["calls"]["terminate"] >= 1, "r2 P2-04: the Worker is terminated")
+    check(
+        warm["retried"]["phase"] == "ready" and warm["retried"]["kinds"] == [] and warm["retried"]["staged"] == 1,
+        "r2 P2-04: retry succeeds on a new Worker",
+    )
+    batch = steps["warmBatch"]
+    check(batch["probe"] is True and batch["phase"] == "ready", "r2 P2-04: batch with a pre-created Worker settles")
+    check(
+        batch["states"] == {"0": "fail", "1": "ok"} and batch["kinds"] == ["trap"] and batch["memoryLine"] is True,
+        "r2 P2-04: next photo still made",
+    )
+    check(
+        batch["attempts"] == 2 and batch["setups"] == 3 and batch["terminations"] >= 1 and batch["busy"] is False,
+        "r2 P2-04: new Worker for the next photo",
+    )
     check(steps["paused"] is False, "card thumbnails and bakes resume")
