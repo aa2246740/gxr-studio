@@ -344,12 +344,21 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 `gxr-jpeg` 负责成片导出时的单次 JPEG 编码，以及给 wave-2 HDR 封装使用的段操作：
 
-- 编码参数对齐 `src/gxr_studio/export.py` 的 `_finish`：品质 `1..=100`（高 95 / 中 85 / 低 70），`quality >= 90` 用 4:4:4，否则用 4:2:0；用 Annex K 标准霍夫曼表、单遍扫描（与 Pillow `optimize=False` 一致）；写入 APP1 EXIF 和 588 字节 sRGB ICC（`ICC_PROFILE`）。
+- 编码参数对齐 `src/gxr_studio/export.py` 的 `_finish`：品质 `1..=100`（高 95 / 中 85 / 低 70），`quality >= 90` 用 4:4:4，否则用 4:2:0；一次交错扫描；写入 APP1 EXIF 和 588 字节 sRGB ICC（`ICC_PROFILE`）。
+- `encode_jpeg_with(.., optimize)`（CLI `jpeg-encode --optimize`，WASM `jpeg_encode` 的最后一个参数）：
+  - `optimize = true` 就是 `_finish` 写出的文件（Pillow `optimize=True`），整个文件逐字节相同：按这张图自己的符号统计建霍夫曼表（`jchuff.c` 的 `jpeg_gen_optimal_table`，平局取较大的符号，保留 256 号），JFIF 1.01，libjpeg 的段顺序（DQT 在 SOF0 前），EXIF 有理数按 Pillow 写（见下）。
+  - `optimize = false`（`encode_jpeg`）和以前逐字节相同：Annex K 标准表，SOF0、DQT、DHT 和扫描数据与 Pillow `optimize=False` 相同；头部是 JFIF 1.02、SOF0 在 DQT 前、有理数原样写。
+  - 优化表分两遍走同一批行条带：第一遍做颜色转换、下采样、DCT 和量化，只计数；建表；第二遍重新算同样的块并写出。libjpeg-turbo 是把整张系数数组存下来（4:4:4 时是 RGB 输入的两倍），这里不存，峰值内存和一次编码相同，代价是 DCT 算两遍。
+  - 内存：Node 里的 WASM，4288×2848，每次一个新实例（线性内存只增不减，结束时的大小就是峰值）。噪声图 q95 开不开优化峰值都是 82.3 MiB（耗时 1298 ms 对 722 ms），平滑图 q95 都是 39.4 MiB；q85、q70 也都不变（round-6 `mobile-jpeg-optimize/report/wasm-peak.jsonl`）。
+  - 用不到的表、全零的计数、越界的系数都返回 `encode_failed`，不 panic（`jpeg_enc/optimize.rs` 的单测）。
+- EXIF 有理数（`optimize = true`，`rational.rs`）：照 Pillow 12.2.0 的 `_setitem` 推断类型，值里有 `< 0` 的才是 SRATIONAL，分母为 0 的值是 NaN，不算负数（所以 `5/0`、`-5/0`、`0/-3` 都是 RATIONAL）。RATIONAL 每个值过 `_limit_rational(v, 2**32-1)`（约分，大于 1 时经倒数限制；整数和浮点先变成 `float`）；SRATIONAL 过 `_limit_signed_rational`（保留原分子分母，超出 int32 时才限制，第二步用浮点除法）。Pillow 写不了的值（比如 RATIONAL 里的 `-5/0`）两边都让完整 EXIF 失败，退到精简 EXIF。
+- Pillow 的输出缓冲区（`pillow_buffer.rs`）：`optimize=True` 时 libjpeg 在 `jpeg_finish_compress` 里一次写出全部表和扫描，不能中途换缓冲区，Pillow 只给 `max(65536, k·w·h + len(exif)+5 + len(icc 段)+1, 4w)` 字节（品质 ≥ 95 时 k = 2，否则 1）。装不下就是 libjpeg 的 “Suspension not allowed here”，`_finish` 先退到精简 EXIF 再试，再失败就是 `encode_failed`。桌面在高熵画面上真会这样失败（例如 320×480 的噪声在 q100）。gxr-jpeg 按 Pillow 的状态机算同样的条件，结果和桌面一致：同样退到精简 EXIF，同样报 `encode_failed`。边界是在 Pillow 12.2.0 上量出来的：写完 SOI、APP0、APP1、APP2 后剩余空间不足 1024 字节时，Pillow 换一个新缓冲区再写扫描；最后一段输出必须严格小于剩余空间。
 - 底层编码器是内置在 `core/crates/gxr-jpeg/src/jpeg_enc/` 的 `jpeg-encoder 0.6.0` 源码（MIT/Apache-2.0，含 IJG 代码，许可原文和致谢见 `core/crates/gxr-jpeg/NOTICE` 与 `docs/dependencies.md`），已改成 libjpeg-turbo 的算术：整数除法量化 `(|x| + (q>>1)) / q`、`jccolor.c` 的定点颜色转换、`h2v2_downsample` 的交替 bias 与边缘扩展。不再依赖外部 crate。门槛（Gate B）：SOF0、DQT、DHT 和 SOS 起的扫描数据与 Pillow 逐字节相同，解码像素零差。
 - EXIF 映射（`build_exif`）：`270`（`ImageDescription`）按 UTF-8 写入、`33432`（`Copyright`）按 latin-1 写入，强制 `274`（`Orientation`）= 1、`305`（`Software`）= `"GXR Studio"`、输出尺寸 `40962`/`40963`；去掉 GPS 与 MakerNote（`37500`）；超过 65533 字节自动退到精简子集。
 - sRGB ICC 固定为 LittleCMS 生成的 588 字节标准配置（头里 `24..36` 字节的创建时间戳固定，以保证原生与 WASM 逐字节一致）。
 - 容器辅助函数（`jpeg_segments`、`app_segment`、`set_meta`）按 `gxr_studio/hdr/container.py` 的段遍历逻辑实现，在不重编码熵数据的前提下替换/插入 APP1 EXIF 与 APP2 ICC。
-- WASM 导出 `jpeg_encode(rgb_u8, w, h, quality, exif_json) -> bytes`，由 `mobile/scripts/wasm_cases/jpeg.mjs` 验证与 `gxr-cli jpeg-encode` 逐字节一致。
+- WASM 导出 `jpeg_encode(rgb_u8, w, h, quality, exif_json, optimize) -> bytes`，由 `mobile/scripts/wasm_cases/jpeg.mjs` 验证与 `gxr-cli jpeg-encode` 逐字节一致（规格里 `"optimize": true` 时 CLI 加 `--optimize`）。
+- 整个文件的门槛在 `tests/test_core_parity_jpeg_optimize.py`：13 种尺寸（从 1×1 起）× 12 个品质（1–100），有理数的各种写法和退回精简 EXIF，缓冲区上限（失败、跨过上限的扫描、退回精简 EXIF），20 张真实照片的 95/85/70 以及不带 ICC、不带源 EXIF 的文件，WASM 对原生（含错误）。真实照片的比较走导出管线的脱敏函数，这个文件也在 `test_core_parity_export_pipeline_guard.py` 的 lint 范围里。
 
 ## 几何（`gxr-finish`）
 
@@ -385,16 +394,17 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
   - `source` 等参数：`source` 是 `state.source` 指的那个文件（有相机 JPG 时是 JPG，否则是 DNG，即 `serve._source_path`）的字节。export-meta 按 `export.source_exif` 读出 `base` / `sub`，`pipeline` 写上 `270` 描述并按 Pillow 约分有理数，再交给 gxr-jpeg 的 `build_exif`。画好墨迹的画布先 `_fit` 到长边（gxr-finish resample 的 LANCZOS），再按 `_finish` 的参数编码一次。返回文件字节，以及 `ExportResult` 的字段（`width`、`height`、`bytes`、`render`、`render_label`、`format`、`render_kind`、`calibrated`、`detail`、`hdr`、`hdr_reason`、`recipe_binding`）和文件名 `file_name` / `tag`（`原名_gxr{tag}.jpg`，做成 HDR 时 tag 加 `_hdr`）。
 - **`export_output_sizes(w, h, side, defaults, layout, rect, preset, fonts)`**：`finish/sizes.output_sizes`。`w × h` 是源尺寸（相机 JPG 转正后的尺寸、DNG 裁切窗口或内嵌预览尺寸），由调用方从文件头得到。
 - 版面输入 `layout` 用 gxr-frame 的请求格式，去掉 `w`、`h`：`meta`、`logos`、`mark`、`taken`、`file_time`。字体和 `frame_layout` 一样，用字体包（`font_index` + `font_pack`）。
-- CLI：`export-run-plan`、`export-run-prepare`、`export-run-complete`、`export-run-sizes`，以及只做霍夫曼重编码的 `export-run-huffopt`。CLI 和 WASM 都调用 `pipeline::api`，同样的输入给出同样的字节。尺寸、品质和长边都按 f64 传入，先检查再收窄。
+- CLI：`export-run-plan`、`export-run-prepare`、`export-run-complete`、`export-run-sizes`。CLI 和 WASM 都调用 `pipeline::api`，同样的输入给出同样的字节。尺寸、品质和长边都按 f64 传入，先检查再收窄。
 
-### 为什么编码后还有一步重编码
+### 编码就是桌面的文件
 
-桌面 `_finish` 用 Pillow `optimize=True`，也就是 libjpeg-turbo 按这张图自己的符号统计重建霍夫曼表，仍是一次交错扫描。gxr-jpeg 的编码和 Pillow `optimize=False` 逐字节相同（Annex K 标准表）。量化后的系数两者一样，只有霍夫曼码不同。所以 `pipeline/huffopt.rs` 把 gxr-jpeg 的输出无损重编码：先用原表解出每个符号并计数，按 `jchuff.c` 的 `jpeg_gen_optimal_table`（平局取较大的符号，保留 256 号）建表，再用新表写出同样的符号和附加位。字节填充和末尾补 1 位都照 libjpeg 做。同一步还把段顺序改成 libjpeg 的写法（DQT 在 SOF0 前），JFIF 版本写 1.01。gxr-jpeg 写的是 SOF0 在前、JFIF 1.02。
+桌面 `_finish` 用 Pillow `optimize=True`。`export_complete` 直接调用 `gxr_jpeg::encode_jpeg_with(.., optimize = true)`，出来的就是这个文件：优化霍夫曼表、JFIF 1.01、DQT 在 SOF0 前、有理数按 Pillow 写，都在 gxr-jpeg 里（见上面 `gxr-jpeg` 一节）。以前这里有一步 `pipeline/huffopt.rs`：把 gxr-jpeg 的 `optimize=False` 输出无损重编码，再改段顺序、JFIF 版本，并在交给 gxr-jpeg 之前先约分有理数。这些都已经移进编码器，重编码和 `export-run-huffopt` 命令也去掉了。
 
 ### 和桌面字节相同的前提
 
 - **ICC 时间戳。** Python 的 `srgb_icc()` 是 LittleCMS 运行时生成的，头里第 24–36 字节是生成时间，所以桌面每次运行写出的文件都不一样。gxr-jpeg 把这 12 字节固定了。测试先断言两份 588 字节的配置只有这 12 字节不同，再让 Python 用固定的那份。
-- **有理数。** Pillow 写 RATIONAL 时都经过 `_limit_rational(值, 2**32-1)`：分数约分，大于 1 时通过倒数限制（例如 28/10 写成 14/5）。gxr-jpeg 原样写分子分母，所以 `pipeline` 在交给 gxr-jpeg 之前先按 Pillow 的规则约分。带符号的有理数（SRATIONAL）在范围内时 Pillow 原样写，这里也不动。分母为 0 的值两边都原样写，但 Pillow 推断的类型是 SRATIONAL（NaN 不 ≥ 0），gxr-jpeg 推断的是 RATIONAL；真实照片里还没遇到。
+- **有理数。** Pillow 写 RATIONAL 时都经过 `_limit_rational(值, 2**32-1)`（例如 28/10 写成 14/5），SRATIONAL 经过 `_limit_signed_rational`。gxr-jpeg 在 `optimize = true` 时照样写，分母为 0 的值也按 Pillow 推断类型（NaN 不 `< 0`，所以是 RATIONAL）。`pipeline` 把源照片的有理数原样交给 gxr-jpeg。
+- **缓冲区。** 桌面写不出的高熵文件（Pillow 的输出缓冲区装不下），手机也报 `encode_failed`，并且和桌面一样先退到精简 EXIF 再试。
 - **EXIF 描述里的 `binding`。** 桌面写 `engine_pin()`，手机无法得到同样的值。描述由 export-source 的 `Request.binding` 决定，界面传 `gxr-core <构建号>`；测试传桌面的值，描述就逐字节相同。
 
 ### LUT 底图不逐字节

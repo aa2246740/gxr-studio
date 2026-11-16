@@ -290,21 +290,51 @@ fn encode_latin1(s: &str) -> Result<Vec<u8>, CoreError> {
 /// Produces the `b"Exif\x00\x00..."` APP1 payload, trying `full=true` first and falling back
 /// to `full=false` if the serialized payload exceeds `MAX_MARKER_PAYLOAD` (65533 bytes).
 pub fn build_exif(spec: &ExifSpec, width: u32, height: u32) -> Result<Vec<u8>, CoreError> {
-    let attempts: &[bool] = match spec.full {
-        Some(false) => &[false],
-        _ => &[true, false],
-    };
+    build_exif_with(spec, width, height, false)
+}
+
+/// [`build_exif`], with `pillow = true` writing every rational the way Pillow 12.2.0 does
+/// (`_limit_rational`, `_limit_signed_rational` and its RATIONAL/SRATIONAL inference; see
+/// `rational.rs`). `encode_jpeg_with(.., optimize = true)` uses this mode, so the whole file
+/// matches `_finish`. `false` keeps the values as given, as before.
+pub fn build_exif_with(
+    spec: &ExifSpec,
+    width: u32,
+    height: u32,
+    pillow: bool,
+) -> Result<Vec<u8>, CoreError> {
     let mut last_err = None;
-    for &full in attempts {
-        match build_exif_attempt(spec, width, height, full) {
-            Ok(bytes) if bytes.len() <= MAX_MARKER_PAYLOAD => return Ok(bytes),
-            Ok(_) => {
-                last_err = Some(CoreError::new("encode_failed", "EXIF data is too long"));
-            }
+    for &full in exif_attempts(spec) {
+        match build_exif_once(spec, width, height, full, pillow) {
+            Ok(bytes) => return Ok(bytes),
             Err(e) => last_err = Some(e),
         }
     }
     Err(last_err.unwrap_or_else(|| CoreError::new("encode_failed", "EXIF data is too long")))
+}
+
+/// `_finish`'s `for full in (True, False)`, or only the reduced set when the spec says so.
+pub(crate) fn exif_attempts(spec: &ExifSpec) -> &'static [bool] {
+    match spec.full {
+        Some(false) => &[false],
+        _ => &[true, false],
+    }
+}
+
+/// One `build_exif(full)`, refused like Pillow's `EXIF data is too long` past
+/// `MAX_MARKER_PAYLOAD` (65533 bytes).
+pub(crate) fn build_exif_once(
+    spec: &ExifSpec,
+    width: u32,
+    height: u32,
+    full: bool,
+    pillow: bool,
+) -> Result<Vec<u8>, CoreError> {
+    let bytes = build_exif_attempt(spec, width, height, full, pillow)?;
+    if bytes.len() > MAX_MARKER_PAYLOAD {
+        return Err(CoreError::new("encode_failed", "EXIF data is too long"));
+    }
+    Ok(bytes)
 }
 
 fn build_exif_attempt(
@@ -312,6 +342,7 @@ fn build_exif_attempt(
     width: u32,
     height: u32,
     full: bool,
+    pillow: bool,
 ) -> Result<Vec<u8>, CoreError> {
     let mut base: BTreeMap<u16, ExifVal> = BTreeMap::new();
     for (&tag, val) in &spec.base {
@@ -344,7 +375,7 @@ fn build_exif_attempt(
     sub.insert(40962, ExifVal::Ints(vec![i64::from(width)]));
     sub.insert(40963, ExifVal::Ints(vec![i64::from(height)]));
 
-    let tiff = serialize_ifd0_with_exif(&base, &sub)?;
+    let tiff = serialize_ifd0_with_exif(&base, &sub, pillow)?;
     let mut out = Vec::with_capacity(EXIF_SIG.len() + 8 + tiff.len());
     out.extend_from_slice(EXIF_SIG);
     out.extend_from_slice(b"MM\x00*\x00\x00\x00\x08");

@@ -299,7 +299,8 @@ def synthetic_failure(ok: bool, text: str, label: str) -> None:
 
 
 _LINT = re.compile(
-    r"^E_[A-Z_]{2,20} test_core_parity_export_pipeline[a-z_]*\.py:[0-9]{1,6}$|^E_[A-Z_]{2,20} export_pipeline_[a-z_]+\.py:[0-9]{1,6}$"
+    r"^E_[A-Z_]{2,20} test_core_parity_(?:export_pipeline[a-z_]*|jpeg_optimize)\.py:[0-9]{1,6}$"
+    r"|^E_[A-Z_]{2,20} export_pipeline_[a-z_]+\.py:[0-9]{1,6}$"
 )
 
 
