@@ -187,6 +187,7 @@ export class EditorView {
         this.holding = on;
         this.renderStageLabel();
         this.push();
+        void this.decor?.sync();
       },
       setLabel: (text) => this.setLabel(text),
       enterDrag: () => this.enterDrag(),
@@ -201,6 +202,8 @@ export class EditorView {
             void this.neutralCards(target, `raw:${target.id}`);
           }
           this.recipes?.refresh();
+          this.decor?.onCropChanged();
+          this.frames?.refresh();
         }
       },
       restLabelText: () => this.restLabelText(),
@@ -245,12 +248,14 @@ export class EditorView {
     this.recipeKey = NEUTRAL_BAKE_KEY;
     this.lutToken = null;
     this.lutLabel = null;
+    const cropGeo = () =>
+      this.cropStage?.resolveBoxGeometry(photo) ?? Promise.resolve({ geometry: { ...DEFAULT_GEOMETRY }, cropped: false });
     this.recipes = new RecipeView(this.api, this.engine, photo, {
       mode: () => this.mode,
       look: (key, label) => this.useLook(key, label),
       dragging: () => this.dragging,
       recipeTab: () => this.tab === 0,
-      geometry: () => this.cropStage?.resolveBoxGeometry(photo) ?? Promise.resolve({ geometry: { ...DEFAULT_GEOMETRY }, cropped: false }),
+      geometry: cropGeo,
     });
     this.luts = new LutView(this.shell, this.api, this.engine, photo, {
       mode: () => this.mode,
@@ -283,6 +288,8 @@ export class EditorView {
       still: this.still,
       mode: () => this.mode,
       frameTab: () => this.tab === 3,
+      cropTab: () => this.tab === 2 || this.holding,
+      geometry: cropGeo,
       isAlive: viewAlive,
       onMeta: () => this.frames?.refresh(),
       onBackdrop: () => this.frames?.backdropUpdated(),
@@ -317,6 +324,7 @@ export class EditorView {
       if (tabIndex === 2) this.cropStage?.attachTabButton(tab);
       tab.addEventListener('click', () => {
         if (this.tab === tabIndex) return;
+        const prevTab = this.tab;
         for (const item of tabs.children) item.classList.remove('on');
         tab.classList.add('on');
         this.tab = tabIndex;
@@ -331,6 +339,7 @@ export class EditorView {
         panels.forEach((panel, panelIndex) => {
           panel.hidden = panelIndex !== tabIndex;
         });
+        if (prevTab === 2 || tabIndex === 2) void this.decor?.sync();
         this.cropStage?.syncTabMode();
       });
       tabs.append(tab);

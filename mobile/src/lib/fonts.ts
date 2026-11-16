@@ -134,7 +134,7 @@ export function fontsNeeded(
   }
   if (style === 'leica') {
     const logo = frame?.logo ?? (frame?.show_logo === false ? 'none' : 'ricoh');
-    if (frame?.show_logo !== false && logo === 'ricoh') ids.add('atkinson');
+    if (frame?.show_logo !== false && logo !== 'none') ids.add('atkinson');
   }
   if (style === 'cinema' || style === 'slide_mount') {
     ids.add('inter_sb');

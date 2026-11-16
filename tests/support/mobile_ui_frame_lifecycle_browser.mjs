@@ -1918,6 +1918,108 @@ try {
       res.s3SameFamilyPersistenceOk = true;
     }
 
+    // =========================================================================
+    // Item 2: Cropped photo gets exact geom_final_box frame layout in Worker & EditorView
+    // =========================================================================
+    {
+      const { geomCropWrite, geomFinalBox } = await import('/src/core/api.ts');
+      const { photoExportSize } = await import('/src/app/frame_state.ts');
+      const bmp = await makeTestBitmap(300, 200);
+      const srcW = 4288;
+      const srcH = 2848;
+      const geomSide = { straighten: 2.5, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false };
+      const cropReply = await geomCropWrite(
+        { frame: { orientation: 1, width: srcW, height: srcH }, geometry: geomSide, crop: null },
+        { preset: '4:5', orientation: 'portrait' },
+      );
+      const boxReply = await geomFinalBox(srcW, srcH, geomSide, cropReply.crop);
+      const [expW, expH] = [boxReply.box[2], boxReply.box[3]];
+
+      const croppedPhoto = makePhoto('crop_frame_1', bmp, { style: 'gallery', weight: 'medium' });
+      croppedPhoto.frame = { orientation: 1, width: srcW, height: srcH };
+      croppedPhoto.frameMeta = {
+        frame: { lens: '', lens_short: '', aperture: '', shutter: '', iso: '', date: '', frame_no: '0001' },
+        taken: '2026-11-16T12:00:00',
+        file_time: null,
+        width: srcW,
+        height: srcH,
+      };
+      croppedPhoto.geometry = { straighten: 2.5 };
+      croppedPhoto.crop = cropReply.crop;
+
+      const deco = await resolveStageDeco(croppedPhoto, null, () => {});
+      assert(deco !== null && deco.frame !== null, 'cropped photo must resolve stage deco');
+      assert(
+        deco.ew === expW && deco.eh === expH,
+        `expected deco ew×eh=${expW}×${expH} from geom_final_box, got ${deco.ew}×${deco.eh}`,
+      );
+      assert(
+        JSON.stringify(photoExportSize(croppedPhoto, null)) === JSON.stringify([expW, expH]),
+        'photoExportSize after resolveStageDeco must return cached geom_final_box size',
+      );
+      assert(deco.width < deco.height, `portrait 4:5 crop with gallery frame must be portrait, got ${deco.width}×${deco.height}`);
+
+      // Also verify EditorView clears .pv-deco on Crop tab and restores cropped frame decor on Frame tab
+      const host = document.createElement('div');
+      host.style.cssText = 'position:fixed;inset:0;width:390px;height:844px;';
+      const shell = document.createElement('div');
+      shell.className = 'app';
+      shell.append(host);
+      document.body.append(shell);
+      const book = new Book();
+      const api = {
+        photos: () => [croppedPhoto],
+        photo: (id) => (id === croppedPhoto.id ? croppedPhoto : undefined),
+        session: () => 1,
+        open: () => {},
+        back: () => {},
+        swipe: () => {},
+        watch: () => {},
+        takeWarm: () => null,
+        keepWarm: () => {},
+        readFull: async () => ({ ok: false, gone: false, stale: true }),
+        markGone: () => {},
+        markBad: () => {},
+        uploadRaw: async () => false,
+        still: async () => null,
+        book: () => book,
+        lutBook: () => stubLutBook,
+        lutGpu: () => stubLutGpu,
+        exportPhotos: () => {},
+      };
+      const ed = new EditorView(host, shell, api, null);
+      try {
+        ed.open(croppedPhoto);
+        await ed.settled;
+        for (let i = 0; i < 60; i += 1) {
+          if (host.querySelector('.stage .pv.framed[data-decor="1"] .pv-deco')) break;
+          await sleep(25);
+        }
+        assert(Boolean(host.querySelector('.stage .pv.framed[data-decor="1"] .pv-deco')), 'framed stage must render initially');
+        const cropTab = [...host.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '裁剪');
+        const frameTab = [...host.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框');
+        cropTab.click();
+        assert(!host.querySelector('.stage .pv.framed'), 'Crop tab must clear .pv.framed so crop overlay aligns');
+        assert(!host.querySelector('.stage .pv .pv-deco'), 'Crop tab must clear .pv-deco');
+        frameTab.click();
+        for (let i = 0; i < 60; i += 1) {
+          if (host.querySelector('.stage .pv.framed[data-decor="1"] .pv-deco')) break;
+          await sleep(25);
+        }
+        const pvEl = host.querySelector('.stage .pv.framed[data-decor="1"]');
+        assert(Boolean(pvEl), 'switching back to Frame tab must restore .pv.framed');
+        const pvW = parseFloat(pvEl.style.width);
+        const pvH = parseFloat(pvEl.style.height);
+        assert(pvW > 0 && pvH > pvW, `stage .pv on portrait cropped photo must be portrait, got ${pvW}×${pvH}`);
+      } finally {
+        ed.destroy();
+        shell.remove();
+        bmp.close();
+      }
+
+      res.croppedFrameLayoutOk = true;
+    }
+
     return res;
   }, { logoBytesArr: logoBytes });
   await context.close();

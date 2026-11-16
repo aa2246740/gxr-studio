@@ -22,8 +22,11 @@ import {
   commitFrame,
   commitSelectStyle,
   commitStamp,
+  ensureCroppedPhotoSize,
   ensureFrameMeta,
+  isPhotoCropped,
   photoExportSize,
+  photoSourceSize,
   resolveCardLayouts,
 } from './frame_state';
 import { openLogoSheet } from './logo_sheet';
@@ -315,6 +318,11 @@ export class FrameView {
     if (!initialBase || initialBase.width <= 0 || initialBase.height <= 0) return;
 
     const version = this.photo.version;
+    if (isPhotoCropped(this.photo) && photoSourceSize(this.photo)) {
+      const myCheck = this.layoutToken;
+      await ensureCroppedPhotoSize(this.photo);
+      if (!this.aliveNow() || !this.tabOpen || myCheck !== this.layoutToken || this.photo.version !== version) return;
+    }
     const [ew, eh] = this.host.ew();
     const cur = this.photo.border;
     const logoInfo = cur.logo !== 'ricoh' && cur.logo !== 'none' ? logoStore.info(cur.logo) : null;
@@ -322,6 +330,8 @@ export class FrameView {
       version,
       ew,
       eh,
+      this.photo.crop ?? null,
+      this.photo.geometry?.straighten ?? 0,
       this.photo.frameMeta?.frame ?? null,
       cur.color,
       cur.weight,

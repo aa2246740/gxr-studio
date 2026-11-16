@@ -1,7 +1,8 @@
 // 舞台上的实时边框与时间戳叠加层（照桌面 `web/assets/stage_finish.js`）：
 // GPU 画布与无 GPU 的 `still` 仍显示照片本身；边框与时间戳由浏览器画在同一 `.pv` 容器上的 `.pv-deco` 叠加画布。
 
-import type { Engine } from '../../../frontend/src/index';
+import type { Engine, Geometry } from '../../../frontend/src/index';
+import { rectFromArray } from '../lib/crop';
 import { fontsNeeded, type FontKey } from '../lib/fonts';
 import type { Deco, FrameLayoutData, FrameSpec, StampSpec } from '../lib/frame_spec';
 import { fontReady } from './font_loader';
@@ -165,8 +166,11 @@ export function buildBackdropCanvas(
     stillCanvas && !stillCanvas.hidden && stillCanvas.width > 0 ? stillCanvas : photo.bitmap;
   if (!src) return null;
   if ('closed' in src && (src as { closed?: boolean }).closed) return null;
-  const sw = src.width;
-  const sh = src.height;
+  const cropRect = src === photo.bitmap && photo.crop ? rectFromArray(photo.crop.rect) : null;
+  const sx = cropRect ? Math.round(cropRect.x * src.width) : 0;
+  const sy = cropRect ? Math.round(cropRect.y * src.height) : 0;
+  const sw = cropRect ? Math.max(1, Math.round(cropRect.w * src.width)) : src.width;
+  const sh = cropRect ? Math.max(1, Math.round(cropRect.h * src.height)) : src.height;
   if (sw <= 0 || sh <= 0) return null;
   const scale = Math.min(1, 480 / Math.max(sw, sh));
   const w = Math.max(1, Math.round(sw * scale));
@@ -182,7 +186,7 @@ export function buildBackdropCanvas(
   }
   try {
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(src, 0, 0, w, h);
+    ctx.drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
   } catch {
     cv.width = 0;
     cv.height = 0;
@@ -211,6 +215,8 @@ export interface StageDecorHost {
   still: HTMLCanvasElement | null;
   mode: () => 'raw' | 'jpg' | 'still';
   frameTab?: () => boolean;
+  cropTab?: () => boolean;
+  geometry?: () => Promise<{ geometry: Geometry; cropped: boolean }>;
   isAlive?: () => boolean;
   onMeta?: () => void;
   onBackdrop?: () => void;
@@ -285,6 +291,14 @@ export class StageDecorController {
     if (this.aliveNow() && !this.gpuBackdrop) void this.refreshGpuBackdrop();
   }
 
+  onCropChanged(): void {
+    this.backdropGen += 1;
+    this.dropBackdrops();
+    if (!this.aliveNow()) return;
+    if (this.needsGpuBackdrop() && !this.host.cropTab?.()) void this.refreshGpuBackdrop();
+    if (this.host.photo.border.style !== 'none' || this.host.photo.stamp.enabled) void this.sync();
+  }
+
   onLookChanged(dragging: boolean): void {
     this.backdropGen += 1;
     this.dropBackdrops();
@@ -321,7 +335,7 @@ export class StageDecorController {
     const version = this.host.photo.version;
     const { pv, stage, photo, engine, gpuCanvas, still, mode, onMeta, onToast } = this.host;
     const media = mode() === 'still' || !engine ? still : gpuCanvas;
-    if (photo.border.style === 'none' && !photo.stamp.enabled) {
+    if ((photo.border.style === 'none' && !photo.stamp.enabled) || this.host.cropTab?.()) {
       this.lastDeco = null;
       clearDecor(pv, media);
       return;
@@ -390,10 +404,12 @@ export class StageDecorController {
     const version = photo.version;
     const source = m === 'raw' ? `raw:${photo.id}` : `jpg:${photo.id}`;
     try {
+      const geometry = this.host.geometry ? (await this.host.geometry()).geometry : NEUTRAL_GEOMETRY;
+      if (!this.aliveNow() || gen !== this.backdropGen || photo.version !== version) return;
       const out = await engine.thumb({
         source,
         look: {},
-        geometry: NEUTRAL_GEOMETRY,
+        geometry,
         aspect: null,
         maxEdge: 480,
       });

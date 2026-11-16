@@ -904,3 +904,159 @@ test('Merge: IndexedDB v2 -> v3 upgrade preserves LUT-only and logos-only v2 dat
     globalThis.indexedDB = origIdb;
   }
 });
+
+test('Item 2: cropped photo gets exact geom_final_box frame layout size instead of uncropped frameMeta', async () => {
+  const wasmJs = path.resolve('mobile/src/wasm-pkg/gxr_wasm.js');
+  const wasmBin = path.resolve('mobile/src/wasm-pkg/gxr_wasm_bg.wasm');
+  const wasm = await import(pathToFileURL(wasmJs).href);
+  await wasm.default({ module_or_path: readFileSync(wasmBin) });
+
+  const fontsMod = await import('../../mobile/src/lib/fonts.ts');
+  const frameState = await import('../../mobile/src/app/frame_state.ts');
+
+  const fontDir = path.resolve('src/gxr_studio/assets/fonts');
+  const fontPairs = ['atkinson', 'inter', 'inter_sb'].map((k) => [
+    k,
+    new Uint8Array(readFileSync(path.join(fontDir, fontsMod.FONT_FILES[k]))),
+  ]);
+  const { indexJson, pack } = fontsMod.packFonts(fontPairs);
+
+  // Also verify WASM gxr_mark matches GXR_MARK constant
+  const wasmMark = JSON.parse(wasm.gxr_mark(indexJson, pack));
+  assert.deepEqual(wasmMark, fontsMod.GXR_MARK);
+
+  frameState.setFinalBoxResolverForTest(async (w, h, geometry, crop) =>
+    JSON.parse(wasm.geom_final_box(w, h, JSON.stringify(geometry ?? {}), JSON.stringify(crop))),
+  );
+
+  try {
+    const srcW = 4288;
+    const srcH = 2848;
+    const makeStubPhoto = (crop, straighten = 0) => ({
+      id: 'p_crop',
+      stem: 'R0001234',
+      version: 1,
+      dng: null,
+      jpg: null,
+      lastModified: 1700000000000,
+      captureMs: null,
+      status: 'ready',
+      gone: false,
+      cached: null,
+      checked: 1,
+      bitmap: null,
+      neutral: null,
+      knobs: {
+        exposure_ev: 0,
+        contrast: 0,
+        highlight: 0,
+        shadow: 0,
+        black_point: 0,
+        warm: 0,
+        tint: 0,
+        saturation: 0,
+        vibrance: 0,
+        vignette: 0,
+      },
+      jpgMeta: null,
+      dngMeta: null,
+      border: frameSpec.selectFrame(frameSpec.DEFAULT_FRAME, 'gallery'),
+      stamp: { ...frameSpec.DEFAULT_STAMP },
+      frameMeta: {
+        frame: { lens: '', lens_short: '', aperture: '', shutter: '', iso: '', date: '', frame_no: '1234' },
+        taken: '2026-11-16T12:00:00',
+        file_time: null,
+        width: srcW,
+        height: srcH,
+      },
+      frame: { orientation: 1, width: srcW, height: srcH },
+      geometry: { straighten },
+      crop,
+      rev: 1,
+      choice: null,
+      levels: new Map(),
+      memory: new Map(),
+      lut: null,
+      looks: new Map(),
+    });
+
+    // 1. Uncropped photo uses full source dimensions [4288, 2848]
+    const uncropped = makeStubPhoto(null, 0);
+    assert.deepEqual(frameState.photoExportSize(uncropped, null), [srcW, srcH]);
+
+    // 2. Square 1:1 crop via WASM geom_crop_write
+    const sqWrite = JSON.parse(
+      wasm.geom_crop_write(
+        JSON.stringify({ frame: { orientation: 1, width: srcW, height: srcH }, geometry: null, crop: null }),
+        JSON.stringify({ preset: '1:1' }),
+      ),
+    );
+    const sqBox = JSON.parse(wasm.geom_final_box(srcW, srcH, '{}', JSON.stringify(sqWrite.crop))).box;
+    assert.deepEqual([sqBox[2], sqBox[3]], [2848, 2848]);
+
+    const sqPhoto = makeStubPhoto(sqWrite.crop, 0);
+    // Half-res DNG engine (2144x1424 -> 1424x1424) must NOT leak half-res size or uncropped 4288x2848
+    const halfResDngEngine = {
+      layerSize: () => ({ w: 2144, h: 1424 }),
+      finalSize: () => ({ w: 1424, h: 1424 }),
+    };
+    assert.deepEqual(frameState.photoExportSize(sqPhoto, halfResDngEngine), [2848, 2848]);
+    // Uncropped Crop-tab engine (box: null -> finalSize == 4288x2848) must still return cropped size
+    const cropTabEngine = {
+      layerSize: () => ({ w: srcW, h: srcH }),
+      finalSize: () => ({ w: srcW, h: srcH }),
+    };
+    assert.deepEqual(frameState.photoExportSize(sqPhoto, cropTabEngine), [2848, 2848]);
+
+    const ensuredSq = await frameState.ensureCroppedPhotoSize(sqPhoto);
+    assert.deepEqual(ensuredSq, [sqBox[2], sqBox[3]]);
+    assert.deepEqual(frameState.photoExportSize(sqPhoto, null), [sqBox[2], sqBox[3]]);
+
+    // 3. Straightened (3.5 deg) + portrait 4:5 crop: exact WASM geom_final_box matches export_output_sizes
+    const geomSide = { straighten: 3.5, vertical: 0, horizontal: 0, distortion: 0, rotate90: 0, flip: false };
+    const p45Write = JSON.parse(
+      wasm.geom_crop_write(
+        JSON.stringify({ frame: { orientation: 1, width: srcW, height: srcH }, geometry: geomSide, crop: null }),
+        JSON.stringify({ preset: '4:5', orientation: 'portrait' }),
+      ),
+    );
+    const p45Box = JSON.parse(
+      wasm.geom_final_box(srcW, srcH, JSON.stringify(geomSide), JSON.stringify(p45Write.crop)),
+    ).box;
+    const p45Photo = makeStubPhoto(p45Write.crop, 3.5);
+    p45Photo.border = frameSpec.selectFrame(frameSpec.DEFAULT_FRAME, 'leica');
+
+    const ensuredP45 = await frameState.ensureCroppedPhotoSize(p45Photo);
+    assert.deepEqual(ensuredP45, [p45Box[2], p45Box[3]]);
+    const [ew, eh] = frameState.photoExportSize(p45Photo, halfResDngEngine);
+    assert.equal(ew, p45Box[2]);
+    assert.equal(eh, p45Box[3]);
+    assert.ok(ew < eh, `portrait 4:5 crop must have ew < eh, got ${ew}x${eh}`);
+
+    // Verify frame_layout at [ew, eh] matches export_output_sizes.sizes.original
+    const reqJson = frameState.buildFrameRequestJson(ew, eh, p45Photo, p45Photo.border.logo);
+    const layout = JSON.parse(wasm.frame_layout(reqJson, JSON.stringify(p45Photo.border), indexJson, pack));
+    const outSizes = JSON.parse(
+      wasm.export_output_sizes(
+        srcW,
+        srcH,
+        JSON.stringify({
+          frame: { orientation: 1, width: srcW, height: srcH },
+          geometry: geomSide,
+          crop: p45Write.crop,
+          border: p45Photo.border,
+        }),
+        '{}',
+        JSON.stringify({ meta: p45Photo.frameMeta.frame, logos: [], mark: fontsMod.GXR_MARK }),
+        JSON.stringify(p45Write.crop.rect),
+        p45Write.crop.preset,
+        indexJson,
+        pack,
+      ),
+    );
+    assert.deepEqual(outSizes.photo, [ew, eh]);
+    assert.deepEqual(outSizes.sizes.original, [layout.width, layout.height]);
+  } finally {
+    frameState.setFinalBoxResolverForTest(null);
+  }
+});

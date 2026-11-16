@@ -33,7 +33,11 @@ export class LookCache {
   private readonly current = new Map<string, string>();
   private clears = 0;
 
-  constructor(private readonly limit = LOOK_CACHE_BYTES) {}
+  private readonly limit: number;
+
+  constructor(limit = LOOK_CACHE_BYTES) {
+    this.limit = limit;
+  }
 
   private id(photo: Photo, key: string): string {
     return `${photo.id}\u0000${key}`;

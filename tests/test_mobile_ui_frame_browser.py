@@ -119,5 +119,6 @@ def test_mobile_ui_frame_lifecycle_browser(tmp_path: Path) -> None:
         "s2DraftOrderAndSheetsOk": True,
         "s3CommitBoundaryMatrixOk": True,
         "s3SameFamilyPersistenceOk": True,
+        "croppedFrameLayoutOk": True,
         "idbV2ToV3UpgradeOk": True,
     }, report["results"]
