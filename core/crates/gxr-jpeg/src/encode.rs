@@ -4,24 +4,46 @@ use crate::jpeg_enc::{ColorType, Encoder, SamplingFactor};
 
 use gxr_raw::CoreError;
 
-use crate::exif::{build_exif, parse_exif_json};
+use crate::exif::{build_exif_once, build_exif_with, exif_attempts, parse_exif_json};
 use crate::icc::srgb_icc;
+use crate::pillow_buffer::pillow_fits;
 
-/// Encode `rgb` (`height * width * 3` bytes, row-major RGB uint8) once to JPEG.
-///
-/// Matches `_finish` (`export.py:277-286`) with `libjpeg-turbo`-equivalent
-/// `optimize=False` encoding:
-/// - `quality` validated in `1..=100`
-/// - `4:4:4` chroma subsampling when `quality >= 90`, else `4:2:0` (`h2v2_downsample`)
-/// - standard Annex K.3 Huffman tables (`optimize_huffman_table = false`, single interleaved scan)
-/// - APP1 EXIF built via `build_exif`
-/// - APP2 588-byte sRGB ICC profile
+/// Encode `rgb` (`height * width * 3` bytes, row-major RGB uint8) once to JPEG, with Pillow's
+/// `optimize=False` tables: [`encode_jpeg_with`] with `optimize = false`.
 pub fn encode_jpeg(
     rgb: &[u8],
     width: u32,
     height: u32,
     quality: i32,
     exif_json: &str,
+) -> Result<Vec<u8>, CoreError> {
+    encode_jpeg_with(rgb, width, height, quality, exif_json, false)
+}
+
+/// Port of `gxr_studio/export.py:246 _finish` (JPEG): encode `rgb` (`height * width * 3`
+/// bytes, row-major RGB uint8) once, with libjpeg-turbo's arithmetic:
+/// - `quality` validated in `1..=100`;
+/// - `4:4:4` chroma subsampling when `quality >= 90`, else `4:2:0` (`h2v2_downsample`);
+/// - one interleaved baseline scan;
+/// - APP1 EXIF built via `build_exif`, then APP2 with the 588-byte sRGB ICC profile.
+///
+/// `optimize = true` is what `_finish` writes (Pillow `optimize=True`), byte for byte: optimal
+/// Huffman tables (`jchuff.c jpeg_gen_optimal_table`), JFIF 1.01, libjpeg's marker order (DQT
+/// before SOF0) and every EXIF rational as Pillow writes it (`_limit_rational`,
+/// `_limit_signed_rational`, zero-denominator values inferred as Pillow does). It also fails
+/// where `_finish` fails: Pillow's fixed `optimize=True` output buffer (`pillow_buffer.rs`)
+/// can't hold the file with the full EXIF, then with the reduced one, so `encode_failed`.
+///
+/// `optimize = false` is the earlier output, unchanged: the Annex K.3 tables, whose SOF0, DQT,
+/// DHT and scan bytes equal Pillow `optimize=False`; JFIF 1.02, SOF0 before DQT, and rationals
+/// written as given.
+pub fn encode_jpeg_with(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    quality: i32,
+    exif_json: &str,
+    optimize: bool,
 ) -> Result<Vec<u8>, CoreError> {
     if !(1..=100).contains(&quality) {
         return Err(CoreError::new("bad_quality", "品质要在 1 到 100 之间。"));
@@ -47,10 +69,57 @@ pub fn encode_jpeg(
     }
 
     let spec = parse_exif_json(exif_json)?;
-    let exif_payload = build_exif(&spec, width, height)?;
-
     let q_u8 = u8::try_from(quality)
         .map_err(|_| CoreError::new("bad_quality", "品质要在 1 到 100 之间。"))?;
+    if !optimize {
+        let exif_payload = build_exif_with(&spec, width, height, false)?;
+        return encode_once(rgb, w16, h16, q_u8, &exif_payload, false);
+    }
+    // `_finish`: `for full in (True, False)`, each try failing on the EXIF or on Pillow's buffer.
+    let mut last_err = None;
+    for &full in exif_attempts(&spec) {
+        let exif_payload = match build_exif_once(&spec, width, height, full, true) {
+            Ok(p) => p,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        };
+        let out = encode_once(rgb, w16, h16, q_u8, &exif_payload, true)?;
+        let exif_len = u64::try_from(exif_payload.len()).unwrap_or(u64::MAX);
+        let extra = icc_segments_len();
+        let header = 20_u64.saturating_add(exif_len + 4).saturating_add(extra);
+        let finish = u64::try_from(out.len())
+            .unwrap_or(u64::MAX)
+            .saturating_sub(header);
+        if pillow_fits(width, height, quality, exif_len, extra, finish) {
+            return Ok(out);
+        }
+        last_err = Some(CoreError::new(
+            "encode_failed",
+            "无法导出。请重试。（Suspension not allowed here：文件超出 Pillow 的输出缓冲区）",
+        ));
+    }
+    Err(last_err.unwrap_or_else(|| CoreError::new("encode_failed", "无法导出。请重试。")))
+}
+
+/// The APP2 `ICC_PROFILE` segments `add_icc_profile` writes for `srgb_icc()`: one marker,
+/// length and 14-byte header per 65519-byte chunk.
+fn icc_segments_len() -> u64 {
+    let n = srgb_icc().len() as u64;
+    let chunks = n.div_ceil(65_519).max(1);
+    n + chunks * (2 + 2 + 14)
+}
+
+/// One encode of the validated picture with this EXIF payload and the sRGB ICC profile.
+fn encode_once(
+    rgb: &[u8],
+    w16: u16,
+    h16: u16,
+    q_u8: u8,
+    exif_payload: &[u8],
+    optimize: bool,
+) -> Result<Vec<u8>, CoreError> {
     let mut out = Vec::new();
     let mut encoder = Encoder::new(&mut out, q_u8);
     encoder.set_sampling_factor(if q_u8 >= 90 {
@@ -59,8 +128,9 @@ pub fn encode_jpeg(
         SamplingFactor::R_4_2_0
     });
     encoder.set_optimized_huffman_tables(false);
+    encoder.set_libjpeg_optimize(optimize);
     encoder
-        .add_app_segment(1, &exif_payload)
+        .add_app_segment(1, exif_payload)
         .map_err(|e| CoreError::new("encode_failed", format!("EXIF segment error: {e}")))?;
     encoder
         .add_icc_profile(srgb_icc())

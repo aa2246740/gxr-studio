@@ -9,6 +9,8 @@ import { button, el, icon, ICON } from './dom';
 import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
 import { lookCache } from './looks';
+import { pasteState } from './paste_state';
+import { openCopySheet, PASTE_ICON } from './paste_ui';
 import { RecipeView } from './recipe_view';
 
 const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
@@ -95,6 +97,10 @@ export class EditorView {
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
   private restLabel = '';
+  /** 当前这根滑块上次落定的值（松手时一样就不算修改）。 */
+  private committed = 0;
+  /** 套用或撤销改了正在看的这张：重新打开，照片和面板都按新的编辑状态画。 */
+  private offPaste: (() => void) | null = null;
 
   constructor(
     private readonly host: HTMLElement,
@@ -107,6 +113,11 @@ export class EditorView {
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
     // 正在看的这张的配方卡小图不会被全局上限挤掉。
     lookCache.setOpen(photo);
+    pasteState.gridLeft();
+    this.offPaste?.();
+    this.offPaste = pasteState.onEdit((ids) => {
+      if (this.photo && ids.has(this.photo.id) && this.api.photo(this.photo.id) === this.photo) this.api.open(this.photo.id);
+    });
     this.build(photo, index);
     this.settled = this.load(photo).then(() => this.sharpening);
   }
@@ -119,6 +130,8 @@ export class EditorView {
   destroy(): void {
     this.token += 1;
     lookCache.setOpen(null);
+    this.offPaste?.();
+    this.offPaste = null;
     this.dragging = false;
     this.holding = false;
     this.wantNeighbor = '';
@@ -192,8 +205,12 @@ export class EditorView {
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
-    const copy = button('btn', '复制调整 · 下一步做');
-    copy.disabled = true;
+    const copy = button('btn', '复制调整');
+    copy.prepend(icon(PASTE_ICON.copy));
+    copy.dataset.act = 'copy';
+    copy.addEventListener('click', () => {
+      if (this.photo) openCopySheet(this.shell, this.api, this.photo, () => undefined);
+    });
     const save = button('btn primary', '导出这张');
     save.dataset.act = 'export';
     save.addEventListener('click', () => this.api.exportPhotos([photo.id]));
@@ -253,7 +270,10 @@ export class EditorView {
     const reset = button('fbtn', '全部重置');
     reset.addEventListener('click', () => {
       if (!this.photo) return;
+      // 全都已经是 0：没有修改，不加 rev（不然撤销套用时会当成套用之后又改过）。
+      if (Object.values(this.photo.knobs).every((value) => value === 0)) return;
       this.photo.knobs = zeroKnobs();
+      this.photo.rev += 1;
       this.showKnob();
       this.push();
     });
@@ -268,6 +288,15 @@ export class EditorView {
       this.paintSlider();
       this.push();
     });
+    // 松手（change）才算落定的修改，编辑状态的版本加一（撤销套用时据此判断改没改过）。
+    this.input.addEventListener('change', () => {
+      if (!this.photo) return;
+      // 松手时的值和上次落定的一样（拖出去又拖回来）：没有修改。
+      const value = this.photo.knobs[this.key];
+      if (value === this.committed) return;
+      this.committed = value;
+      this.photo.rev += 1;
+    });
     this.input.addEventListener('pointerdown', () => this.enterDrag());
     const end = () => {
       if (this.dragging) this.leaveDrag();
@@ -275,8 +304,10 @@ export class EditorView {
     this.input.addEventListener('pointerup', end);
     this.input.addEventListener('pointercancel', end);
     this.input.addEventListener('dblclick', () => {
-      if (!this.photo) return;
+      if (!this.photo || this.photo.knobs[this.key] === 0) return;
       this.photo.knobs[this.key] = 0;
+      this.committed = 0;
+      this.photo.rev += 1;
       this.showKnob();
       this.push();
     });
@@ -291,6 +322,7 @@ export class EditorView {
     this.input.max = String(spec.max);
     this.input.step = String(spec.step);
     this.input.value = String(this.photo.knobs[this.key]);
+    this.committed = this.photo.knobs[this.key];
     this.input.dataset.key = spec.key;
     this.paintSlider();
   }

@@ -79,14 +79,14 @@ function dev(): DevExport | null {
   return scope.__devExport;
 }
 
-function cardsFor(book: Book, photo: Photo): Card[] {
+export function cardsFor(book: Book, photo: Photo): Card[] {
   const dat = book.dat;
   if (!dat) return [];
   const unit = unitOfLens(mergeMeta(photo.jpgMeta, photo.dngMeta).lens) ?? 'jlaunch';
   return shelf(shelves(dat.listing, unit), 'all');
 }
 
-function requestPhoto(photo: Photo): RequestPhoto {
+export function requestPhoto(photo: Photo): RequestPhoto {
   const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
   const source = photo.jpg ?? photo.dng;
   return {
@@ -97,6 +97,7 @@ function requestPhoto(photo: Photo): RequestPhoto {
     iso: meta.iso,
     choice: photo.choice,
     levels: photo.levels,
+    memory: photo.memory,
     knobs: photo.knobs,
     sourceModified: source?.lastModified ?? photo.lastModified,
   };

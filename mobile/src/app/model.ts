@@ -61,10 +61,22 @@ export interface Photo {
   /** 相机 JPG 和 DNG 里读到的镜头名、ISO（桌面导入时先用 JPG 的）。 */
   jpgMeta: PhotoMeta | null;
   dngMeta: PhotoMeta | null;
+  /**
+   * 编辑状态的版本：每次落定的修改（选配方、旋钮松手、滑块松手、重置、套用、撤销）加一。重新选同一张照片不变。
+   * 撤销套用时核对它，和桌面 sidecar 的 rev 一样：套用之后又改过的不还原。
+   */
+  rev: number;
   /** 选中的配方。和调整一样是这张照片这次的编辑状态；换片、重新选同一张都留着。 */
   choice: Choice | null;
-  /** 每个配方各自记住的旋钮档位（桌面 recipes.js 换配方时也是各记各的）。键是卡的 id。 */
+  /**
+   * 选中的配方的旋钮档位（桌面 `recipe.levels`）：只有一项，键是 `choice.id`；只记用户给过的档位，没给的取配方默认。
+   */
   levels: Map<string, Record<string, number>>;
+  /**
+   * 桌面的 `memory`（`look_cards.js` recipeTarget）：换配方时切走的那个配方的档位记在这里，键是卡的 id
+   * （导出时按镜头单元换成桌面的 recipeKey）。当前配方不在这里更新；套用时整份跟过来，来源是空的就保留目标原来的。
+   */
+  memory: Map<string, Record<string, number>>;
   /** 配方卡的小图，按烘焙表的键记，只对当时的版本有效。 */
   looks: Map<string, { version: number; bitmap: ImageBitmap }>;
 }

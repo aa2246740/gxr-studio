@@ -130,6 +130,8 @@ class App implements AppApi {
         await new Promise((done) => setTimeout(done, 800));
       }
     }
+    // M3 复制 / 套用那几屏（04a–04e、02a 带剪贴板）。
+    if (shot.startsWith('paste-') && this.byId.size) await (await import('./paste_shots')).pasteShot(shot, this, this.shell);
     if (shot.startsWith('export-') && this.byId.size) {
       const { exportShot } = await import('./export_shots');
       await exportShot(shot, this.ordered().map((photo) => photo.id), this.exporter, this.shell);
@@ -443,10 +445,12 @@ class App implements AppApi {
           bitmap: null,
           neutral: null,
           knobs: zeroKnobs(),
+          rev: 0,
           jpgMeta: null,
           dngMeta: null,
           choice: null,
           levels: new Map(),
+          memory: new Map(),
           looks: new Map(),
         };
         this.byId.set(id, photo);
@@ -514,7 +518,23 @@ class App implements AppApi {
       this.afterRead(photo);
       return;
     }
-    if (reply.captureMs !== null) photo.captureMs = reply.captureMs;
+    let captureMs = reply.captureMs;
+    if (captureMs === null && from === photo.jpg && photo.dng) {
+      // 相机 JPG 里没有拍摄时间：照桌面导入（先 JPG、再 DNG，最后才是文件日期）用 DNG 的。只要时间和镜头，缩略图仍用 JPG 的。
+      const dng = photo.dng;
+      const extra = await this.queue.run(dng, 'dng');
+      if (!live(dng)) {
+        this.drop(extra);
+        this.drop(reply);
+        return;
+      }
+      if (extra.ok && !extra.bad) {
+        captureMs = extra.captureMs;
+        photo.dngMeta = extra.meta;
+      }
+      this.drop(extra);
+    }
+    if (captureMs !== null) photo.captureMs = captureMs;
     if (from === photo.jpg) photo.jpgMeta = reply.meta;
     else photo.dngMeta = reply.meta;
     if (reply.bitmap) {

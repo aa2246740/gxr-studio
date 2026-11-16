@@ -40,6 +40,7 @@ function photo(over = {}) {
     iso: 200,
     choice: null,
     levels: new Map(),
+    memory: new Map(),
     knobs: { ...ZERO },
     sourceModified: Date.UTC(2026, 10, 15, 1, 2, 3, 456),
     ...over,
@@ -87,17 +88,22 @@ test('knobs only: Adjust.to_json shape, zero extras left out, camera JPG branch'
 });
 
 test('recipe and knobs together, levels cleaned and sorted, memory keyed like recipeKey', () => {
-  const levels = new Map([
-    ['builtin:3', { contrast: 2, amount: 50, bogus: 1 }],
-    ['builtin:4', { contrast: 1 }],
+  const levels = new Map([['builtin:3', { contrast: 2, amount: 50, bogus: 1 }]]);
+  // UI-M3-GROUP：memory 是照片自己的 memory（桌面 recipeTarget 记下的），不再从 levels 推。空的一项（第一次选配方时的原厂 04）
+  // 和选中配方以前切走时记下的旧档位都照桌面留着；levels 里别的卡不进 memory。
+  const memory = new Map([
+    ['builtin:4', {}],
     [`look:${LOOK_ID}`, { fade: 2, saturation: 7 }],
+    ['builtin:3', { contrast: 1 }],
   ]);
-  const p = photo({ choice: { id: 'builtin:3', unit: 'jlaunch' }, levels, knobs: { ...ZERO, contrast: 10 } });
+  const p = photo({ choice: { id: 'builtin:3', unit: 'jlaunch' }, levels, memory, knobs: { ...ZERO, contrast: 10 } });
   const side = req.buildSide(p, CARDS);
   assert.deepEqual(side.recipe, {
     kind: 'builtin', unit: 'jlaunch', slot: 3, levels: { amount: 50, contrast: 2 },
-    memory: { 'jlaunch/4': { contrast: 1 }, [`jlaunch/look/${LOOK_ID}`]: { fade: 2 } },
+    memory: { 'jlaunch/4': {}, [`jlaunch/look/${LOOK_ID}`]: { fade: 2 }, 'jlaunch/3': { contrast: 1 } },
   });
+  // memory 是空的时不写这一键（render/edits.write 的 `if memory`）。
+  assert.equal('memory' in req.buildSide(photo({ choice: { id: 'builtin:3', unit: 'jlaunch' }, levels }), CARDS).recipe, false);
   assert.deepEqual(Object.keys(side.recipe.levels), ['amount', 'contrast']);
   assert.deepEqual(side.adjust, { exposure_ev: 0, wb: { warm: 0, tint: 0 }, contrast: 10, highlight: 0, shadow: 0 });
   // memory never goes to color_resolve.

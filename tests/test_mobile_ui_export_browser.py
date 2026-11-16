@@ -194,6 +194,10 @@ class Desktop:
             listed = self.render.recipe_menu().listing()[["jlaunch", "qlaunch", "l08firm"].index(unit)]
             info = next(r for r in listed["looks"] if r["id"] == look["id"])
             out["recipe"] = {"kind": "look", "id": look["id"], "unit": unit, "slot": int(info["slot"]), "levels": {look["knob"]: look["level"]}}
+        if "recipe" in out:
+            # 桌面 look_cards.js recipeTarget：第一次选配方时把切走的默认原厂 04（档位为空）记进 memory，
+            # recipeBody({ memory: true }) 带着它交给 PUT /edit（UI-M3-GROUP 第 7 项：手机也这样记）。
+            out["recipe"]["memory"] = {f"{unit}/4": {}}
         knobs = dict(done.get("knobs") or {})
         if knobs:
             adjust: dict[str, Any] = {k: v for k, v in knobs.items() if k not in ("warm", "tint")}

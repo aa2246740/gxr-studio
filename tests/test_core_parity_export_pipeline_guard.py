@@ -3,8 +3,9 @@
 The threat model: test code written in this repo's normal style, run with ``make test``,
 ``make check`` or pytest ``-q`` / ``-v`` / ``-vv``, must not leak photo-derived data by accident.
 The guarantee comes from the redacted helpers in ``tests/support/export_pipeline_cases.py``; this
-lint only catches the usual slips, over every ``tests/test_core_parity_export_pipeline*.py`` and
-the export-pipeline canary support files. It does not try to resolve aliases or class-method tricks
+lint only catches the usual slips, over every ``tests/test_core_parity_export_pipeline*.py``,
+``tests/test_core_parity_jpeg_optimize.py`` (real photos too) and the export-pipeline canary
+support files. It does not try to resolve aliases or class-method tricks
 (deliberately adversarial code is code review's job). Each violation is a rule code plus file:line:
 
 - ``E_ASSERT``: a bare ``assert`` comparing anything but plain scalars (including ``len`` of a
@@ -40,6 +41,7 @@ def _files() -> list[Path]:
         [
             *TESTS.glob("test_core_parity_export_pipeline*.py"),
             *TESTS.glob("test_mobile_ui_export*.py"),
+            TESTS / "test_core_parity_jpeg_optimize.py",
             *(TESTS / "support").glob("export_pipeline_canary*.py"),
         ]
     )

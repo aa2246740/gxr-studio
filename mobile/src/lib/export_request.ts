@@ -35,8 +35,10 @@ export interface RequestPhoto {
   lens: string | null;
   iso: number | null;
   choice: { id: string; unit: Unit } | null;
-  /** 每张卡记着的档位，键是卡的 id（`builtin:3`、`look:<id>`…）。 */
+  /** 选中那个配方的档位（只有用户动过的），键是卡的 id（`builtin:3`、`look:<id>`…）。 */
   levels: ReadonlyMap<string, Record<string, number>>;
+  /** 桌面的 memory（`look_cards.js` recipeTarget：换配方时切走的那个），键是卡的 id；空的档位也是一项。 */
+  memory: ReadonlyMap<string, Record<string, number>>;
   knobs: KnobValues;
   /** 源文件（有相机 JPG 用 JPG，否则 DNG，即桌面 serve._source_path）的 File.lastModified。 */
   sourceModified: number;
@@ -116,7 +118,8 @@ export function adjustJson(k: KnobValues): Record<string, unknown> | null {
 /**
  * 桌面 sidecar 里这张照片的编辑（`render/edits.write` 写出的那几块）：`recipe`（带 `memory`）和 `adjust`。
  * `cards` 是这个单元的全部配方卡（`shelf(list, 'all')`），按 id 找卡的位置、条目和旋钮。
- * memory 记的是这张照片上别的配方各自的档位（键照桌面 recipeKey 改写），选中的那个不在里面；没有就不写。
+ * memory 就是照片的 `memory`（桌面 look_cards.js recipeTarget 记下的那份），键照桌面 recipeKey 改写；空的档位
+ * （比如第一次选配方时记下的原厂 04 `{}`）照样是一项，和 render/edits.write 存的一样；整份是空的才不写。
  * 没动过的照片（没选配方、调整全是 0）是 `{}`。
  */
 export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<string, unknown> {
@@ -127,11 +130,10 @@ export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<s
   if (chosen && photo.choice) {
     const recipe = recipeJson(photo.choice.unit, chosen, cleanLevels(chosen, photo.levels.get(chosen.id)));
     const memory: Record<string, Record<string, number>> = {};
-    for (const [id, levels] of photo.levels) {
+    for (const [id, levels] of photo.memory) {
       const card = byId.get(id);
-      if (!card || id === chosen.id) continue;
-      const clean = cleanLevels(card, levels);
-      if (Object.keys(clean).length) memory[recipeKey(unit, card)] = sorted(clean);
+      if (!card) continue;
+      memory[recipeKey(unit, card)] = sorted(cleanLevels(card, levels));
     }
     side.recipe = Object.keys(memory).length ? { ...recipe, memory } : recipe;
   }
