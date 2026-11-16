@@ -3,6 +3,7 @@
 use std::io::Write;
 
 use gxr_finish::crop::crop_box_json;
+use gxr_finish::crop_edit::{crop_write_json, geometry_write_json};
 use gxr_finish::geometry::fit::{
     clamp_norm_rect, fit_ratio_in_valid, fitted_crop, header_value, normalized_valid_rect,
 };
@@ -15,6 +16,8 @@ use crate::common::{self, Failure, Output};
 pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
     let json = match command {
         "geom-crop-box" => cmd_crop_box(args)?,
+        "geom-crop-write" => cmd_crop_write(args)?,
+        "geom-geometry-write" => cmd_geometry_write(args)?,
         "geom-final-box" => cmd_final_box(args)?,
         "geom-warp" => cmd_warp(args)?,
         "geom-warp-valid" => cmd_warp_valid(args)?,
@@ -66,11 +69,32 @@ fn opt_str<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Failur
     }
 }
 
+fn read_json_file(path: &str) -> Result<String, Failure> {
+    let bytes = common::read(path)?;
+    String::from_utf8(bytes).map_err(|_| Failure::Usage(format!("{path} is not valid UTF-8 JSON")))
+}
+
 fn cmd_crop_box(args: &[String]) -> Result<Json, Failure> {
     let w = parse_dim(args, "--w")? as i64;
     let h = parse_dim(args, "--h")? as i64;
     let crop = common::option(args, "--crop")?;
     Ok(crop_box_json(w, h, crop)?)
+}
+
+fn cmd_crop_write(args: &[String]) -> Result<Json, Failure> {
+    let side_path = common::option(args, "--side")?;
+    let req_path = common::option(args, "--request")?;
+    let side_json = read_json_file(side_path)?;
+    let req_json = read_json_file(req_path)?;
+    Ok(crop_write_json(&side_json, &req_json)?)
+}
+
+fn cmd_geometry_write(args: &[String]) -> Result<Json, Failure> {
+    let side_path = common::option(args, "--side")?;
+    let geom_path = common::option(args, "--geometry")?;
+    let side_json = read_json_file(side_path)?;
+    let geom_json = read_json_file(geom_path)?;
+    Ok(geometry_write_json(&side_json, &geom_json)?)
 }
 
 fn cmd_final_box(args: &[String]) -> Result<Json, Failure> {
