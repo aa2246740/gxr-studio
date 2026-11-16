@@ -211,7 +211,8 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
     noop = steps["noop"]
     assert noop["recipeOnly"] == "复制 1 项"
     assert noop["before"]["choice"] is None and set(noop["before"]["knobs"].values()) == {0}
-    assert noop["applied"]["line"] == "已套用到 1 张"
+    # 只有一张时桌面 pasteMessage 说得更直接。
+    assert noop["applied"]["line"] == "已套用：配方 / 风格"
     assert noop["pasted"]["rev"] == noop["before"]["rev"] + 1 and noop["pasted"]["choice"] == src["after"]["choice"]
     assert noop["afterNoop"]["rev"] == noop["pasted"]["rev"]
     assert noop["line"] == "已撤销 1 张"
