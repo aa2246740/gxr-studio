@@ -22,6 +22,27 @@ DRAWABLE_CHARS: tuple[str, ...] = tuple(
 
 LARGE_PX_CHARS: tuple[str, ...] = tuple("0123456789:-· GXRFAf/.Á")
 
+# Frozen Gate B bounds (M4-PLAN-NOTES.md, Manager decision on ink-text items 1-3, 2026-11-16).
+GATE_B_HORIZ_EDGE_BOUND = 1
+GATE_B_VERT_EDGE_BOUNDS: dict[str, int] = {
+    "atkinson": 2,
+    "inter": 2,
+    "inter_sb": 2,
+    "courier": 2,
+    "patrick": 3,
+    "dseg": 4,
+}
+GATE_B_COVERAGE_RATIO_GE_16: dict[str, tuple[float, float]] = {
+    "atkinson": (0.83, 1.15),
+    "inter": (0.83, 1.15),
+    "inter_sb": (0.83, 1.15),
+    "courier": (0.83, 1.15),
+    "patrick": (0.52, 2.10),
+    "dseg": (0.77, 1.37),
+}
+GATE_B_SMALL_PX_MIN_SUM = 512
+GATE_B_SMALL_PX_COVERAGE_RATIO = (0.45, 1.80)
+
 
 def font_path(name: str) -> Path:
     return ASSETS / "fonts" / FONT_FILES[name]

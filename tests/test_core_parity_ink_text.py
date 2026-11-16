@@ -122,16 +122,56 @@ def test_gate_a_dehinted_masks_exact(tmp_path: Path) -> None:
             _assert_batch_exact(name, fpath, [px], LARGE_PX_CHARS, tmp_path, f"{name}-lg-{px}")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Spec stop condition: FreeType 2.14.3 FT_Load_Glyph autohints unmodified "
-        "DSEG7Classic-Regular.ttf (empty fpgm/prep, ftobjs.c:1012-1016); awaits manager ruling"
-    ),
-)
-def test_stop_condition_real_dseg7_autohinted(tmp_path: Path) -> None:
-    """Documents the exact Gate A stop condition hit on unmodified DSEG7Classic-Regular.ttf."""
-    _assert_batch_exact("dseg_real", font_path("dseg"), [1, 13, 36], ('"', "0", "8"), tmp_path, "dseg-real-stop")
+@pytest.mark.parametrize("px", [1, 13, 16, 24, 36, 48, 3693])
+def test_real_dseg7_autohinted_within_gate_b_bounds(tmp_path: Path, px: int) -> None:
+    """Real unmodified DSEG7 is auto-hinted by Pillow (ftobjs.c:1012-1016) and meets Gate B bounds."""
+    from support.ink_text_cases import (
+        GATE_B_COVERAGE_RATIO_GE_16,
+        GATE_B_HORIZ_EDGE_BOUND,
+        GATE_B_SMALL_PX_COVERAGE_RATIO,
+        GATE_B_SMALL_PX_MIN_SUM,
+        GATE_B_VERT_EDGE_BOUNDS,
+        compare_masks_common_space,
+    )
+
+    dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
+    real_path = font_path("dseg")
+    chars = LARGE_PX_CHARS if px > 400 else DRAWABLE_CHARS
+    rs_real = run_rust_batch(real_path, [px], chars, tmp_path, tag=f"dseg-real-{px}")
+    rs_dh = run_rust_batch(dehinted["dseg"], [px], chars, tmp_path, tag=f"dseg-dh-{px}")
+    pil_real_face = open_pil_face(real_path, px)
+    pil_dh_face = open_pil_face(dehinted["dseg"], px)
+
+    v_limit = GATE_B_VERT_EDGE_BOUNDS["dseg"]
+    r_lo, r_hi = GATE_B_COVERAGE_RATIO_GE_16["dseg"]
+    sm_lo, sm_hi = GATE_B_SMALL_PX_COVERAGE_RATIO
+    saw_diff = False
+    for rs_it, dh_it in zip(rs_real, rs_dh, strict=True):
+        _px, cp, rw, rh, rx, ry, rbuf = rs_it
+        _dpx, _dcp, dhw, dhh, dhx, dhy, dhbuf = dh_it
+        ch = chr(cp)
+        pil_real = pillow_mask(pil_real_face, ch)
+        rs_mask = (rw, rh, rx, ry, rbuf)
+        if rs_mask == pil_real:
+            continue
+        saw_diff = True
+        assert (dhw, dhh, dhx, dhy, dhbuf) == pillow_mask(pil_dh_face, ch)
+        _diff_px, _max_d, box_rs, box_py, rs_sum, py_sum = compare_masks_common_space(rs_mask, pil_real)
+        assert (box_rs is None) == (box_py is None)
+        if box_rs is not None and box_py is not None:
+            d_l = box_rs[0] - box_py[0]
+            d_t = box_rs[1] - box_py[1]
+            d_r = box_rs[2] - box_py[2]
+            d_b = box_rs[3] - box_py[3]
+            assert max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND
+            assert max(abs(d_t), abs(d_b)) <= v_limit
+        if py_sum > 0:
+            ratio = rs_sum / py_sum
+            if px >= 16:
+                assert r_lo <= ratio <= r_hi
+            elif min(rs_sum, py_sum) >= GATE_B_SMALL_PX_MIN_SUM:
+                assert sm_lo <= ratio <= sm_hi
+    assert saw_diff
 
 
 def test_gate_a_draw_text_modes_and_clipping_exact(tmp_path: Path) -> None:

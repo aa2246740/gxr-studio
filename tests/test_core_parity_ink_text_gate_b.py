@@ -1,16 +1,20 @@
-"""Gate B measurement and attribution tests for real hinted/autohinted fonts (Item 3).
+"""Gate B attribution and frozen-bound tests for all 6 real fonts (Item 3).
 
 Asserts for every ``(font, px, ch)`` across the 5 shipped hinted fonts (Atkinson, Inter,
 Inter SemiBold, Courier Prime, Patrick Hand) plus real unmodified DSEG7 (auto-hinted by
-FreeType 2.14.3 due to empty ``fpgm``/``prep``):
-1. Whenever Rust (unhinted native loader) differs from real Pillow (hinted/autohinted),
-   Gate A (de-hinted Rust vs de-hinted Pillow) is 100% exact for that ``(font, px, ch)``.
-   This mechanically attributes 100% of differences to FreeType TrueType hinting/autohinting.
-2. Ink presence matches (``(box_rs is None) == (box_py is None)``) across all 98,552 cases.
-3. Horizontal ink-bbox edges stay within 1 px (``|d_left| <= 1, |d_right| <= 1``) everywhere.
-4. Vertical edges follow the measured empirical envelope until M-3 freezes the final bound;
-   ``test_stop_condition_gate_b_vertical_bbox_gt_1px`` documents the spec's ``> 1 px`` stop
-   condition with ``xfail(strict=True)``.
+FreeType 2.14.3 due to empty ``fpgm``/``prep``), per the frozen bounds in
+``M4-PLAN-NOTES.md`` ("Manager decision on ink-text items 1-3, 2026-11-16"):
+1. Attribution: whenever Rust (unhinted native loader) differs from real Pillow,
+   Gate A (de-hinted ``fpgm=b'\\x00'`` Rust vs de-hinted Pillow) is 100% exact for that
+   ``(font, px, ch)`` (0 unattributed differences).
+2. Ink presence matches (``(box_rs is None) == (box_py is None)``).
+3. Horizontal ink-bbox edges stay within 1 px (``|d_left| <= 1, |d_right| <= 1``).
+4. Vertical ink-bbox edges stay within ``<= 2 px`` (Atkinson, Inter, Inter SemiBold,
+   Courier Prime), ``<= 3 px`` (Patrick Hand), ``<= 4 px`` (DSEG7).
+5. Coverage-sum ratio ``rs_sum / py_sum`` at ``px >= 16`` stays within ``[0.83, 1.15]``
+   (Atkinson/Inter/Inter SemiBold/Courier Prime), ``[0.52, 2.10]`` (Patrick Hand), and
+   ``[0.77, 1.37]`` (DSEG7); below 16 px it is unrestricted when ``min(sum) < 512``, and
+   bounded within ``[0.45, 1.80]`` when ``min(sum) >= 512``.
 """
 
 from __future__ import annotations
@@ -22,6 +26,11 @@ import pytest
 from gxr_studio.finish.fonts import FONT_FILES
 from support.ink_text_cases import (
     DRAWABLE_CHARS,
+    GATE_B_COVERAGE_RATIO_GE_16,
+    GATE_B_HORIZ_EDGE_BOUND,
+    GATE_B_SMALL_PX_COVERAGE_RATIO,
+    GATE_B_SMALL_PX_MIN_SUM,
+    GATE_B_VERT_EDGE_BOUNDS,
     LARGE_PX_CHARS,
     DiffRecord,
     compare_masks_common_space,
@@ -33,16 +42,6 @@ from support.ink_text_cases import (
     sample_layout_pxs,
 )
 
-# Measured empirical vertical ink-bbox edge shift maxima from gate_ab_stats.json (Items 1-3).
-EMPIRICAL_MAX_VERT_EDGE_SHIFT: dict[str, int] = {
-    "atkinson": 2,
-    "inter": 2,
-    "inter_sb": 2,
-    "courier": 2,
-    "patrick": 3,
-    "dseg": 4,
-}
-
 
 def measure_gate_b_for_font(
     font_name: str,
@@ -51,14 +50,16 @@ def measure_gate_b_for_font(
     chars: tuple[str, ...],
     work_dir: Path,
     tag: str,
-    *,
-    max_vert_edge: int,
 ) -> list[DiffRecord]:
     real_path = font_path(font_name)
     rs_items = run_rust_batch(real_path, pxs, chars, work_dir, tag=f"gb-real-{tag}")
     dehint_rs_items = run_rust_batch(dehinted_path, pxs, chars, work_dir, tag=f"gb-dh-{tag}")
     pil_real_faces = {px: open_pil_face(real_path, px) for px in pxs}
     pil_dh_faces = {px: open_pil_face(dehinted_path, px) for px in pxs}
+
+    max_vert_edge = GATE_B_VERT_EDGE_BOUNDS[font_name]
+    ratio_lo, ratio_hi = GATE_B_COVERAGE_RATIO_GE_16[font_name]
+    sm_lo, sm_hi = GATE_B_SMALL_PX_COVERAGE_RATIO
 
     diffs: list[DiffRecord] = []
     for rs_it, dh_it in zip(rs_items, dehint_rs_items, strict=True):
@@ -70,28 +71,45 @@ def measure_gate_b_for_font(
         if rs_mask == pil_real:
             continue
 
-        # Attribution: Gate A must be exact for this exact (font, px, ch)
+        # 1. Attribution: Gate A must be exact for this exact (font, px, ch)
         pil_dh = pillow_mask(pil_dh_faces[px], ch)
         if (dhw, dhh, dhx, dhy, dhbuf) != pil_dh:
             pytest.fail(
-                f"Gate B stop condition: difference where Gate A is not exact font={font_name} px={px} ch={ch!r}",
+                f"Gate B unattributed difference font={font_name} px={px} ch={ch!r}",
             )
 
         diff_px, max_d, box_rs, box_py, rs_sum, py_sum = compare_masks_common_space(rs_mask, pil_real)
+        # 2. Exact ink presence
         assert (box_rs is None) == (box_py is None), f"ink presence mismatch {font_name} px={px} ch={ch!r}"
         if box_rs is not None and box_py is not None:
             d_l = box_rs[0] - box_py[0]
             d_t = box_rs[1] - box_py[1]
             d_r = box_rs[2] - box_py[2]
             d_b = box_rs[3] - box_py[3]
-            assert max(abs(d_l), abs(d_r)) <= 1, (
-                f"horizontal bbox edge shifted > 1 px font={font_name} px={px} ch={ch!r} deltas={(d_l, d_t, d_r, d_b)}"
+            # 3. Horizontal edges <= 1 px
+            assert max(abs(d_l), abs(d_r)) <= GATE_B_HORIZ_EDGE_BOUND, (
+                f"horizontal bbox edge shifted > {GATE_B_HORIZ_EDGE_BOUND} px font={font_name} px={px} ch={ch!r} deltas={(d_l, d_t, d_r, d_b)}"
             )
+            # 4. Vertical edges <= per-font bound
             assert max(abs(d_t), abs(d_b)) <= max_vert_edge, (
-                f"vertical bbox edge exceeded measured {max_vert_edge} px font={font_name} px={px} ch={ch!r} deltas={(d_l, d_t, d_r, d_b)}"
+                f"vertical bbox edge exceeded {max_vert_edge} px font={font_name} px={px} ch={ch!r} deltas={(d_l, d_t, d_r, d_b)}"
             )
         else:
             d_l = d_t = d_r = d_b = 0
+
+        # 5. Coverage-sum ratio
+        if py_sum > 0:
+            ratio = rs_sum / py_sum
+            if px >= 16:
+                assert ratio_lo <= ratio <= ratio_hi, (
+                    f"Gate B coverage ratio out of [{ratio_lo}, {ratio_hi}] "
+                    f"font={font_name} px={px} ch={ch!r}: ratio={ratio:.4f} ({rs_sum}/{py_sum})"
+                )
+            elif min(rs_sum, py_sum) >= GATE_B_SMALL_PX_MIN_SUM:
+                assert sm_lo <= ratio <= sm_hi, (
+                    f"Gate B small-px coverage ratio out of [{sm_lo}, {sm_hi}] "
+                    f"font={font_name} px={px} ch={ch!r}: ratio={ratio:.4f} ({rs_sum}/{py_sum})"
+                )
 
         diffs.append(
             DiffRecord(
@@ -111,15 +129,14 @@ def measure_gate_b_for_font(
     return diffs
 
 
-def test_gate_b_real_fonts_attributed_and_measured(tmp_path: Path) -> None:
-    """Measure Gate B across px 1..=160 and layout px values, attributing 100% of diffs to hinting."""
+def test_gate_b_real_fonts_attributed_and_bounded(tmp_path: Path) -> None:
+    """Gate B across px 1..=160 and layout px values, attributing 100% of diffs and enforcing frozen bounds."""
     dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
     layout_pxs = sample_layout_pxs()
     pxs_1_to_160 = list(range(1, 161))
 
     total_diffs = 0
     for font_name in FONT_FILES:
-        limit = EMPIRICAL_MAX_VERT_EDGE_SHIFT[font_name]
         for idx, start in enumerate(range(0, len(pxs_1_to_160), 40)):
             chunk = pxs_1_to_160[start : start + 40]
             diffs = measure_gate_b_for_font(
@@ -129,7 +146,6 @@ def test_gate_b_real_fonts_attributed_and_measured(tmp_path: Path) -> None:
                 DRAWABLE_CHARS,
                 tmp_path,
                 f"{font_name}-lo-{idx}",
-                max_vert_edge=limit,
             )
             total_diffs += len(diffs)
 
@@ -144,7 +160,6 @@ def test_gate_b_real_fonts_attributed_and_measured(tmp_path: Path) -> None:
                 DRAWABLE_CHARS,
                 tmp_path,
                 f"{font_name}-sm",
-                max_vert_edge=limit,
             )
             total_diffs += len(diffs)
         for px in large_extra:
@@ -155,30 +170,7 @@ def test_gate_b_real_fonts_attributed_and_measured(tmp_path: Path) -> None:
                 LARGE_PX_CHARS,
                 tmp_path,
                 f"{font_name}-lg-{px}",
-                max_vert_edge=limit,
             )
             total_diffs += len(diffs)
 
     assert total_diffs > 0
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Spec stop condition: TrueType hinting / autohint shifts vertical ink-bbox edge > 1 px "
-        "(up to 2 px Atkinson/Inter/Courier, 3 px Patrick, 4 px DSEG7); awaits M-3 bound freeze"
-    ),
-)
-def test_stop_condition_gate_b_vertical_bbox_gt_1px(tmp_path: Path) -> None:
-    """Documents the exact Gate B > 1 px vertical bbox shift stop condition pending M-3 freeze."""
-    dehinted = dehinted_font_paths(tmp_path, zero_maxp=False)
-    for font_name, px, ch in (("atkinson", 17, "f"), ("patrick", 9, "'"), ("dseg", 13, "0")):
-        measure_gate_b_for_font(
-            font_name,
-            dehinted[font_name],
-            [px],
-            (ch,),
-            tmp_path,
-            f"stop-{font_name}",
-            max_vert_edge=1,
-        )
