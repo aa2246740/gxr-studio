@@ -68,11 +68,19 @@ def test_carrier_contours_gate_a_and_negative_control(w: int, h: int, c: int, ji
     check_gate_a_arrays(or_outer, rs_outer, "carrier outer Gate A", rel_tol=1e-12)
     check_gate_a_arrays(or_inner, rs_inner, "carrier inner Gate A", rel_tol=1e-12)
 
-    # Negative control: 1e-10 perturbation on pinned libm sin/exp must trip Gate A, and 1-ULP shifts sin/exp.
+    # Negative control: 1e-10 perturbation and non-finite NaN/Inf values must trip Gate A.
     bad_outer_l, _ = carrier_contours_oracle(w, h, c, jit, seed, use_libm=True, inject=1e-10)
     bad_outer = np.asarray(bad_outer_l, dtype=np.float64)
     with pytest.raises(AssertionError):
         check_gate_a_arrays(bad_outer, rs_outer, "carrier negative control", rel_tol=1e-12)
+    nan_outer = rs_outer.copy()
+    nan_outer[0, 0] = np.nan
+    with pytest.raises(AssertionError):
+        check_gate_a_arrays(nan_outer, nan_outer.copy(), "carrier nan negative control", rel_tol=1e-12)
+    inf_outer = rs_outer.copy()
+    inf_outer[0, 0] = np.inf
+    with pytest.raises(AssertionError):
+        check_gate_a_arrays(or_outer, inf_outer, "carrier inf negative control", rel_tol=1e-12)
     sin_ok = libm_sin_vec(np.array([0.75, 2.3], dtype=np.float64), use_libm=True, perturb_ulp=0)
     sin_bad = libm_sin_vec(np.array([0.75, 2.3], dtype=np.float64), use_libm=True, perturb_ulp=1)
     exp_ok = libm_exp_vec(np.array([-0.25, -1.5], dtype=np.float64), use_libm=True, perturb_ulp=0)
@@ -151,6 +159,11 @@ def test_carrier_gate_b_contours_and_paint_pixels(
         py_pixels,
         rs_pixels,
         "carrier",
+        w=w,
+        h=h,
+        c=c,
+        jit=jit,
+        seed=seed,
     )
     check(pt_diffs >= 0 and px_diffs == 0, "carrier Gate B contours attributed and pixels exact")
 

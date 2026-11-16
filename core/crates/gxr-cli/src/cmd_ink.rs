@@ -6,7 +6,7 @@ use gxr_finish::geometry::bounds::{checked_mul_u64, fit_count, too_big};
 use gxr_finish::ink::{
     InkImage, InkMode, LogoInput, Pcg64, background, blurred_background, carrier_contours,
     finish_logo_prepare, gaussian_blur, mean_f32, mean_u8_as_f32, paint_carrier, pairwise_sum_f32,
-    paper_grain, parse_logo_prepare_json, run_ink_ops,
+    paper_grain_in_place, parse_logo_prepare_json, run_ink_ops_traced, run_ink_ops_vec,
 };
 use gxr_finish::raster::logo::KeyMode;
 use gxr_raw::{CoreError, Json};
@@ -142,7 +142,7 @@ fn read_image_npy(path: &str, mode_override: Option<&str>) -> Result<InkImage, F
         Some(m) => InkMode::parse(m)?,
         None => inferred_mode,
     };
-    InkImage::from_bytes(mode, w, h, &npy.data).map_err(Failure::Core)
+    InkImage::from_vec(mode, w, h, npy.data).map_err(Failure::Core)
 }
 
 fn opt_str<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Failure> {
@@ -220,6 +220,7 @@ fn parse_cli_dim(raw: &str) -> Result<u64, Failure> {
 fn cmd_ink_ops(args: &[String]) -> Result<Json, Failure> {
     let in_path = common::option(args, "--canvas")?;
     let out_path = common::option(args, "--out")?;
+    let trace_out = opt_str(args, "--trace-out")?;
     let mode_override = opt_str(args, "--mode")?;
     let ops_json = read_ops_text(args)?;
     let logos = collect_logos(args)?;
@@ -246,21 +247,48 @@ fn cmd_ink_ops(args: &[String]) -> Result<Json, Failure> {
         Some(s) => parse_cli_dim(s)?,
         None => h,
     };
-    let out = run_ink_ops(&npy.data, w_arg, h_arg, mode, &ops_json, &logos)?;
-    let out_shape: Vec<usize> = match out.mode {
-        InkMode::L => vec![out.height, out.width],
-        InkMode::Rgb => vec![out.height, out.width, 3],
-        InkMode::Rgba => vec![out.height, out.width, 4],
+    let out = if let Some(trace_path) = trace_out {
+        let traced = run_ink_ops_traced(&npy.data, w_arg, h_arg, mode, &ops_json, &logos)?;
+        let entries: Vec<Json> = traced
+            .clogo_traces
+            .into_iter()
+            .map(|t| {
+                Json::object([
+                    ("opaque", Json::Bool(t.opaque)),
+                    ("alpha_luma", Json::Float(t.alpha_luma)),
+                    ("bg_l", Json::opt(t.bg_l.map(Json::Float))),
+                    ("mode", Json::str(&t.mode)),
+                    (
+                        "ink",
+                        Json::ints(&[
+                            i64::from(t.ink[0]),
+                            i64::from(t.ink[1]),
+                            i64::from(t.ink[2]),
+                        ]),
+                    ),
+                ])
+            })
+            .collect();
+        let doc = Json::object([("clogo", Json::Array(entries))]);
+        std::fs::write(trace_path, format!("{}\n", doc.render()))
+            .map_err(|e| usage(format!("cannot write {trace_path}: {e}")))?;
+        traced.image
+    } else {
+        run_ink_ops_vec(npy.data, w_arg, h_arg, mode, &ops_json, &logos)?
     };
-    let mut info = write_npy_u8(out_path, &out_shape, &out.data)?;
-    let _ = &mut info;
-    let dims = [out.height as i64, out.width as i64];
+    let out_shape: Vec<usize> = match out.mode() {
+        InkMode::L => vec![out.height(), out.width()],
+        InkMode::Rgb => vec![out.height(), out.width(), 3],
+        InkMode::Rgba => vec![out.height(), out.width(), 4],
+    };
+    let _ = write_npy_u8(out_path, &out_shape, out.as_slice())?;
+    let dims = [out.height() as i64, out.width() as i64];
     Ok(Json::object([
         ("out", Json::str(out_path)),
-        ("mode", Json::str(out.mode.as_str())),
+        ("mode", Json::str(out.mode().as_str())),
         (
             "shape",
-            Json::ints(&match out.mode {
+            Json::ints(&match out.mode() {
                 InkMode::L => vec![dims[0], dims[1]],
                 InkMode::Rgb => vec![dims[0], dims[1], 3],
                 InkMode::Rgba => vec![dims[0], dims[1], 4],
@@ -324,15 +352,15 @@ fn cmd_ink_blur(args: &[String]) -> Result<Json, Failure> {
     };
     let im = read_image_npy(in_path, mode_override)?;
     let out = gaussian_blur(&im, radius, yradius)?;
-    let out_shape: Vec<usize> = match out.mode {
-        InkMode::L => vec![out.height, out.width],
-        InkMode::Rgb => vec![out.height, out.width, 3],
-        InkMode::Rgba => vec![out.height, out.width, 4],
+    let out_shape: Vec<usize> = match out.mode() {
+        InkMode::L => vec![out.height(), out.width()],
+        InkMode::Rgb => vec![out.height(), out.width(), 3],
+        InkMode::Rgba => vec![out.height(), out.width(), 4],
     };
-    let _ = write_npy_u8(out_path, &out_shape, &out.data)?;
+    let _ = write_npy_u8(out_path, &out_shape, out.as_slice())?;
     Ok(Json::object([
         ("out", Json::str(out_path)),
-        ("mode", Json::str(out.mode.as_str())),
+        ("mode", Json::str(out.mode().as_str())),
         (
             "shape",
             Json::ints(&out_shape.iter().map(|&d| d as i64).collect::<Vec<_>>()),
@@ -426,14 +454,14 @@ fn cmd_ink_backdrop(args: &[String]) -> Result<Json, Failure> {
         };
         background(width, height, bg, falloff)?
     };
-    let out_shape = vec![out.height, out.width, 3];
-    let _ = write_npy_u8(out_path, &out_shape, &out.data)?;
+    let out_shape = vec![out.height(), out.width(), 3];
+    let _ = write_npy_u8(out_path, &out_shape, out.as_slice())?;
     Ok(Json::object([
         ("out", Json::str(out_path)),
-        ("mode", Json::str(out.mode.as_str())),
+        ("mode", Json::str(out.mode().as_str())),
         (
             "shape",
-            Json::ints(&[out.height as i64, out.width as i64, 3]),
+            Json::ints(&[out.height() as i64, out.width() as i64, 3]),
         ),
     ]))
 }
@@ -497,16 +525,16 @@ fn cmd_ink_grain(args: &[String]) -> Result<Json, Failure> {
     let amount: f64 = common::option(args, "--amount")?
         .parse()
         .map_err(|_| usage("invalid --amount"))?;
-    let canvas = read_image_npy(in_path, Some("RGB"))?;
-    let out = paper_grain(&canvas, amount)?;
-    let out_shape = vec![out.height, out.width, 3];
-    let _ = write_npy_u8(out_path, &out_shape, &out.data)?;
+    let mut canvas = read_image_npy(in_path, Some("RGB"))?;
+    paper_grain_in_place(&mut canvas, amount)?;
+    let out_shape = vec![canvas.height(), canvas.width(), 3];
+    let _ = write_npy_u8(out_path, &out_shape, canvas.as_slice())?;
     Ok(Json::object([
         ("out", Json::str(out_path)),
-        ("mode", Json::str(out.mode.as_str())),
+        ("mode", Json::str(canvas.mode().as_str())),
         (
             "shape",
-            Json::ints(&[out.height as i64, out.width as i64, 3]),
+            Json::ints(&[canvas.height() as i64, canvas.width() as i64, 3]),
         ),
     ]))
 }
@@ -550,14 +578,14 @@ fn cmd_ink_carrier(args: &[String]) -> Result<Json, Failure> {
         let paper = parse_rgb_triplet(common::option(args, "--paper")?)?;
         let mut canvas = read_image_npy(in_path, Some("RGB"))?;
         paint_carrier(&mut canvas, x, y, w, h, c, jit, seed, fill, paper)?;
-        let out_shape = vec![canvas.height, canvas.width, 3];
-        let _ = write_npy_u8(out_path, &out_shape, &canvas.data)?;
+        let out_shape = vec![canvas.height(), canvas.width(), 3];
+        let _ = write_npy_u8(out_path, &out_shape, canvas.as_slice())?;
         return Ok(Json::object([
             ("out", Json::str(out_path)),
-            ("mode", Json::str(canvas.mode.as_str())),
+            ("mode", Json::str(canvas.mode().as_str())),
             (
                 "shape",
-                Json::ints(&[canvas.height as i64, canvas.width as i64, 3]),
+                Json::ints(&[canvas.height() as i64, canvas.width() as i64, 3]),
             ),
             ("outer", contour_json(&outer)),
             ("inner", contour_json(&inner)),

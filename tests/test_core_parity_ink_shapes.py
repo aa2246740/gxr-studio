@@ -308,6 +308,52 @@ def test_shapes_ss_boundaries_and_synthetics(tmp_path: Path) -> None:
         _run_batch(w, h, items, tmp_path, tag, 500 + idx)
 
 
+PINNED_SS_COUNTEREXAMPLES: list[dict[str, Any]] = [
+    {"k": "poly", "pts": [(38.0 / 3.0, -4.0), (11.5, 9.25), (-4.0, 15.0)], "fill": (210, 90, 40), "alpha": 0.85},
+    {"k": "poly", "pts": [(3.25, 4.75), (59.5, 12.25), (27.75, 58.5)], "fill": (40, 180, 220), "alpha": 0.9},
+    {"k": "poly", "pts": [(-6.5, 10.5), (68.5, 22.5), (31.5, 61.5), (4.5, 48.5)], "fill": (180, 60, 210), "alpha": 0.75},
+    {"k": "poly", "pts": [(5.0, 5.0), (55.0, 7.0), (30.0, 31.0), (52.0, 54.0), (7.0, 52.0)], "fill": (220, 200, 40), "alpha": 0.6},
+    {
+        "k": "rect",
+        "x": 4,
+        "y": 4,
+        "w": 40,
+        "h": 30,
+        "radius": 11.5,
+        "fill": (100, 190, 80),
+        "outline": (20, 30, 40),
+        "stroke_w": 2.25,
+        "alpha": 0.8,
+    },
+    {"k": "rect", "x": -5, "y": 10, "w": 45, "h": 35, "radius": 9.0, "fill": (230, 120, 70), "alpha": 0.7},
+    {"k": "rect", "x": 12, "y": -6, "w": 36, "h": 42, "radius": 18.0, "outline": (250, 240, 220), "stroke_w": 3.0, "alpha": 1.0},
+    {"k": "ellipse", "cx": 31.75, "cy": 29.25, "r": 16.5, "fill": (240, 80, 160), "alpha": 0.82},
+    {"k": "ellipse", "cx": 2.5, "cy": 61.5, "r": 14.0, "fill": (50, 210, 140), "alpha": 0.68},
+    {"k": "hole", "x": 10, "y": 12, "w": 38, "h": 34, "radius": 10.5},
+    {"k": "shadow", "x": 8, "y": 10, "w": 40, "h": 32, "blur": 4.25, "dx": 3, "dy": -2, "radius": 8.0, "alpha": 0.55, "color": (10, 20, 30)},
+    {"k": "shadow", "x": -8, "y": -6, "w": 30, "h": 28, "blur": 0.0, "dx": 4, "dy": 4, "radius": 4.0, "alpha": 0.4, "color": (0, 0, 0)},
+]
+
+
+@pytest.mark.parametrize("it", PINNED_SS_COUNTEREXAMPLES, ids=anon_ids(len(PINNED_SS_COUNTEREXAMPLES)))
+def test_shapes_pinned_supersampled_counterexamples(it: dict[str, Any], tmp_path: Path) -> None:
+    _run_batch(64, 64, [it], tmp_path, "pinned_ss", 701)
+
+
+def test_shapes_300_randomized_supersampled_polygons(tmp_path: Path) -> None:
+    rng = np.random.default_rng(2026111603)
+    ss_polys: list[dict[str, Any]] = []
+    for i in range(300):
+        n_pts = int(rng.integers(3, 6))
+        pts = [(round(float(x), 3), round(float(y), 3)) for x, y in rng.uniform(-16.0, 80.0, size=(n_pts, 2))]
+        fill = tuple(int(v) for v in rng.integers(0, 256, size=3))
+        alpha = round(float(rng.uniform(0.15, 1.0)), 3)
+        ss_polys.append({"k": "poly", "pts": pts, "fill": fill, "alpha": alpha})
+    for b in range(0, 300, 100):
+        _run_batch(64, 64, ss_polys[b : b + 100], tmp_path, f"rand_ss_{b}", 800 + b)
+    check(len(ss_polys) == 300, "ran 300 randomized supersampled polygons")
+
+
 @pytest.mark.parametrize(
     ("cw", "ch", "items"),
     LAYOUT_BATCHES,
@@ -321,9 +367,23 @@ def test_shapes_error_paths(tmp_path: Path) -> None:
     l_img = np.zeros((10, 10), dtype=np.uint8)
     in_npy = tmp_path / "l.npy"
     np.save(in_npy, l_img)
+    rgb_npy = tmp_path / "rgb.npy"
+    np.save(rgb_npy, np.zeros((10, 10, 3), dtype=np.uint8))
     ops_p = tmp_path / "ops.json"
     out_p = tmp_path / "out.npy"
     ops_p.write_text(json.dumps([{"op": "paint_rect", "x": 0, "y": 0, "w": 5, "h": 5, "fill": [1, 2, 3]}]), encoding="utf-8")
     code, payload = run_json(["ink-ops", "--canvas", str(in_npy), "--mode", "L", "--ops", str(ops_p), "--out", str(out_p)])
     check(code != 0, "paint_rect on L mode fails")
     check(payload["error"]["kind"] == "value_error", "paint_rect on L error kind")
+
+    hostile_ops = [
+        [{"op": "paint_shadow", "x": 200, "y": 200, "w": 10, "h": 10, "blur": 1e300, "alpha": 0.5}],
+        [{"op": "paint_shadow", "x": 0, "y": 0, "w": 10, "h": 10, "blur": -1.0, "alpha": 0.5}],
+        [{"op": "paint_poly", "pts": [[1e30, 0.0], [0.0, 10.0], [10.0, 10.0]], "fill": [1, 2, 3], "alpha": 1.0}],
+        [{"op": "paint_rect", "x": 0, "y": 0, "w": 8, "h": 8, "stroke_w": 1e30, "outline": [1, 2, 3], "alpha": 1.0}],
+        [{"op": "paint_ellipse", "cx": 1e30, "cy": 0.0, "r": 5.0, "fill": [1, 2, 3], "alpha": 1.0}],
+    ]
+    for bad in hostile_ops:
+        ops_p.write_text(json.dumps(bad), encoding="utf-8")
+        c2, p2 = run_json(["ink-ops", "--canvas", str(rgb_npy), "--mode", "RGB", "--ops", str(ops_p), "--out", str(out_p)])
+        check(c2 != 0 and p2["error"]["kind"] == "value_error", "hostile shape op fails cleanly with value_error")

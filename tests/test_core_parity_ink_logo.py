@@ -269,15 +269,32 @@ def test_paint_clogo_parity(case: dict[str, Any], tmp_path: Path) -> None:
     canvas_npy = tmp_path / "canvas.npy"
     logo_npy = tmp_path / "u_logo.npy"
     out_npy = tmp_path / "out.npy"
+    trace_json = tmp_path / "trace.json"
     np.save(canvas_npy, canvas_arr)
     np.save(logo_npy, logo_arr)
     op = {"op": "paint_clogo", **item}
     rs_pixels = run_npy(
-        ["ink-ops", "--canvas", str(canvas_npy), "--logo", f"u_logo={logo_npy}", "--ops-json", json.dumps([op])],
+        [
+            "ink-ops",
+            "--canvas",
+            str(canvas_npy),
+            "--logo",
+            f"u_logo={logo_npy}",
+            "--ops-json",
+            json.dumps([op]),
+            "--trace-out",
+            str(trace_json),
+        ],
         out_npy,
     )
+    trace_doc = json.loads(trace_json.read_text(encoding="utf-8"))
+    clogo_traces = trace_doc["clogo"]
 
     if logo_kind not in ("missing_id", "empty_id"):
+        check(len(clogo_traces) == 1, "clogo emitted one trace entry")
+        rs_trace = clogo_traces[0]
+        rs_lg = float(rs_trace["alpha_luma"])
+
         prep_npy = tmp_path / "prep.npy"
         kcode, key_json = run_json(
             ["finish-logo-key", "--in", str(logo_npy), "--key-mode", "false", "--out", str(prep_npy)],
@@ -286,24 +303,30 @@ def test_paint_clogo_parity(case: dict[str, Any], tmp_path: Path) -> None:
         rs_trimmed = np.load(prep_npy)
         check_alpha_luma_gate_a(float(key_json["alpha_luma"]), rs_trimmed, "clogo source Gate A")
         _, py_lg = _alpha_luma(logo_im)
-        rs_lg = float(seq_alpha_luma(logo_arr))
         x0, y0 = max(0, case["x"]), max(0, case["y"])
         x1 = min(case["cw"], case["x"] + case["w"])
         y1 = min(case["ch"], case["y"] + case["h"])
         reg = Image.fromarray(canvas_arr, case["canvas_mode"]).crop((x0, y0, x1, y1)).convert("L")
         bg_l = float(np.asarray(reg, dtype=np.float32).mean()) if reg.width and reg.height else 128.0
+        if rs_trace["bg_l"] is not None:
+            check(abs(float(rs_trace["bg_l"]) - bg_l) <= 1e-4, "clogo trace bg_l matches canvas region mean")
+            bg_l_gate = float(rs_trace["bg_l"])
+        else:
+            bg_l_gate = bg_l
         gate_b_clogo_report(
             py_pixels,
             rs_pixels,
             logo_arr,
             py_lg,
             rs_lg,
-            bg_l,
+            bg_l_gate,
             auto=bool(case["auto"]),
             auto_ink=bool(case["auto_ink"]),
             label=f"clogo_{logo_kind}_{case['mode']}",
+            seq_pixels=py_pixels,
         )
     else:
+        check(len(clogo_traces) == 0, "clogo noop emitted no trace entries")
         same_pixels(py_pixels, rs_pixels, "clogo noop exact")
 
 
@@ -342,6 +365,7 @@ def test_paint_clogo_threshold_boundaries(logo_kind: str, bg_val: int, tag: str,
     canvas_npy = tmp_path / "c.npy"
     logo_npy = tmp_path / "l.npy"
     out_npy = tmp_path / "out.npy"
+    trace_json = tmp_path / "trace.json"
     np.save(canvas_npy, canvas_arr)
     np.save(logo_npy, logo_arr)
     rs_pixels = run_npy(
@@ -353,22 +377,119 @@ def test_paint_clogo_threshold_boundaries(logo_kind: str, bg_val: int, tag: str,
             f"t_logo={logo_npy}",
             "--ops-json",
             json.dumps([{"op": "paint_clogo", **item}]),
+            "--trace-out",
+            str(trace_json),
         ],
         out_npy,
     )
+    trace = json.loads(trace_json.read_text(encoding="utf-8"))["clogo"][0]
+    rs_lg = float(trace["alpha_luma"])
+    bg_l_gate = float(trace["bg_l"]) if trace["bg_l"] is not None else float(bg_val)
     _, py_lg = _alpha_luma(logo_im)
-    rs_lg = float(seq_alpha_luma(logo_arr))
     gate_b_clogo_report(
         py_pixels,
         rs_pixels,
         logo_arr,
         py_lg,
         rs_lg,
-        float(bg_val),
+        bg_l_gate,
         auto=True,
         auto_ink=True,
         label=f"clogo_thresh_{tag}",
+        seq_pixels=py_pixels,
     )
+
+
+def test_paint_clogo_gate_a_negative_control_and_branch_flip(tmp_path: Path) -> None:
+    # Negative control: corrupt [220, 220, 220, 128] patch must trip Gate A (never hidden behind early returns).
+    corrupt_logo = np.full((64, 64, 4), [220, 220, 220, 128], dtype=np.uint8)
+    expected_lg = float(seq_alpha_luma(corrupt_logo))
+    check_alpha_luma_gate_a(expected_lg, corrupt_logo, "corrupt_baseline")
+    bad_lg = float(np.frombuffer((int(np.float32(expected_lg).view(np.uint32)) ^ 1).to_bytes(4, "little"), dtype=np.float32)[0])
+    with pytest.raises(AssertionError):
+        check_alpha_luma_gate_a(bad_lg, corrupt_logo, "corrupt_1ulp")
+    with pytest.raises(AssertionError):
+        check_alpha_luma_gate_a(float("nan"), corrupt_logo, "corrupt_nan")
+
+    # Run real Rust clogo near |lg - bg_l| == 70 and verify Gate A runs even when py vs rs branches differ,
+    # while requiring 0 pixel diffs against the sequential-oracle render on branch flip.
+    logo_arr = _synth_logo_rgba("near_70")
+    logo_im = Image.fromarray(logo_arr, "RGBA")
+    canvas_arr = _synth_canvas(140, 100, 150, "RGB")
+    py_canvas_seq = Image.fromarray(canvas_arr.copy(), "RGB")
+    item = {
+        "k": "clogo",
+        "id": "bf_logo",
+        "x": 16,
+        "y": 12,
+        "w": 96,
+        "h": 72,
+        "mode": "auto",
+        "ink": [20, 20, 20],
+        "auto": True,
+        "auto_ink": [[245, 240, 230], [18, 20, 24]],
+    }
+    paint_clogo(py_canvas_seq, item, {"bf_logo": logo_im})
+    seq_pixels = np.asarray(py_canvas_seq, dtype=np.uint8)
+
+    canvas_npy = tmp_path / "bf_c.npy"
+    logo_npy = tmp_path / "bf_l.npy"
+    out_npy = tmp_path / "bf_out.npy"
+    trace_json = tmp_path / "bf_trace.json"
+    np.save(canvas_npy, canvas_arr)
+    np.save(logo_npy, logo_arr)
+    rs_pixels = run_npy(
+        [
+            "ink-ops",
+            "--canvas",
+            str(canvas_npy),
+            "--logo",
+            f"bf_logo={logo_npy}",
+            "--ops-json",
+            json.dumps([{"op": "paint_clogo", **item}]),
+            "--trace-out",
+            str(trace_json),
+        ],
+        out_npy,
+    )
+    trace = json.loads(trace_json.read_text(encoding="utf-8"))["clogo"][0]
+    rs_lg = float(trace["alpha_luma"])
+    bg_l_gate = float(trace["bg_l"])
+
+    # Corrupt rs_lg across branch boundary must still trip Gate A (no early-return bypass).
+    with pytest.raises(AssertionError):
+        gate_b_clogo_report(
+            seq_pixels,
+            rs_pixels,
+            logo_arr,
+            219.9,
+            220.1,
+            bg_l_gate,
+            auto=True,
+            auto_ink=True,
+            label="clogo_corrupt_branch_flip",
+            seq_pixels=seq_pixels,
+        )
+
+    # True Gate-A-passing rs_lg (`~220.00003 >= bg_l+70`, branch `orig`) vs simulated flipped py render (`219.5 < bg_l+70`, branch `mono`)
+    # passes attribution via seq_pixels == rs_pixels.
+    flipped_item = dict(item, mode="mono", auto=False)
+    py_canvas_flipped = Image.fromarray(canvas_arr.copy(), "RGB")
+    paint_clogo(py_canvas_flipped, flipped_item, {"bf_logo": logo_im})
+    flipped_pixels = np.asarray(py_canvas_flipped, dtype=np.uint8)
+    ulp_diff, px_diff = gate_b_clogo_report(
+        flipped_pixels,
+        rs_pixels,
+        logo_arr,
+        219.5,
+        rs_lg,
+        bg_l_gate,
+        auto=True,
+        auto_ink=True,
+        label="clogo_simulated_branch_flip",
+        seq_pixels=seq_pixels,
+    )
+    check(ulp_diff >= 0 and px_diff > 0, "branch flip reported pixel diff attributed against sequential oracle")
 
 
 def _to_png_bytes(rgba: np.ndarray, *, mode: str = "RGBA") -> bytes:

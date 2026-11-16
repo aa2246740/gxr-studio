@@ -176,6 +176,19 @@ def test_point_mul(scale: float, tmp_path: Path) -> None:
     same_pixels(got, np.asarray(pil, dtype=np.uint8), "ink point_mul")
 
 
+@pytest.mark.parametrize("scale", [1e300, 2.0**63, -1e300], ids=anon_ids(3))
+def test_point_mul_overflow_parity(scale: float, tmp_path: Path) -> None:
+    img = _synth_img(8, 8, "L", 67)
+    in_npy = tmp_path / "ov_in.npy"
+    out_npy = tmp_path / "ov_out.npy"
+    ops_p = tmp_path / "ov_ops.json"
+    np.save(in_npy, np.asarray(img, dtype=np.uint8))
+    ops_p.write_text(json.dumps([{"op": "point_mul", "scale": scale}]), encoding="utf-8")
+    code, payload = run_json(["ink-ops", "--canvas", str(in_npy), "--mode", "L", "--ops", str(ops_p), "--out", str(out_npy)])
+    check(code != 0, "extreme point_mul fails instead of clamping i64::MAX")
+    check(payload["error"]["kind"] in ("overflow_error", "value_error"), "extreme point_mul error kind")
+
+
 @pytest.mark.parametrize(
     ("src_mode", "dst_mode"),
     [

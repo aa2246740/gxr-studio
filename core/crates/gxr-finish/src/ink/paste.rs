@@ -33,40 +33,42 @@ fn clip_paste_box(
     box_w: i64,
     box_h: i64,
 ) -> Option<ClippedBox> {
-    let mut xsize = box_w;
-    let mut ysize = box_h;
-    let mut sx0: i64 = 0;
-    let mut sy0: i64 = 0;
-    let mut dx = dx0;
-    let mut dy = dy0;
+    let mut xsize = i128::from(box_w);
+    let mut ysize = i128::from(box_h);
+    let mut sx0 = 0_i128;
+    let mut sy0 = 0_i128;
+    let mut dx = i128::from(dx0);
+    let mut dy = i128::from(dy0);
+    let dw = dst_w as i128;
+    let dh = dst_h as i128;
 
     if dx < 0 {
-        xsize = xsize.saturating_add(dx);
-        sx0 = dx.saturating_neg();
+        xsize += dx;
+        sx0 = -dx;
         dx = 0;
     }
-    if dx + xsize > dst_w as i64 {
-        xsize = dst_w as i64 - dx;
+    if dx + xsize > dw {
+        xsize = dw - dx;
     }
     if dy < 0 {
-        ysize = ysize.saturating_add(dy);
-        sy0 = dy.saturating_neg();
+        ysize += dy;
+        sy0 = -dy;
         dy = 0;
     }
-    if dy + ysize > dst_h as i64 {
-        ysize = dst_h as i64 - dy;
+    if dy + ysize > dh {
+        ysize = dh - dy;
     }
 
     if xsize <= 0 || ysize <= 0 {
         return None;
     }
     Some(ClippedBox {
-        dx: dx as usize,
-        dy: dy as usize,
-        sx: sx0 as usize,
-        sy: sy0 as usize,
-        w: xsize as usize,
-        h: ysize as usize,
+        dx: usize::try_from(dx).ok()?,
+        dy: usize::try_from(dy).ok()?,
+        sx: usize::try_from(sx0).ok()?,
+        sy: usize::try_from(sy0).ok()?,
+        w: usize::try_from(xsize).ok()?,
+        h: usize::try_from(ysize).ok()?,
     })
 }
 

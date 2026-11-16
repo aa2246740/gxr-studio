@@ -30,34 +30,54 @@ pub struct ClogoItem<'a> {
     pub auto_ink: Option<[[u8; 3]; 2]>,
 }
 
-/// Port of `gxr_studio/finish/logo_math.py:paint_clogo`.
-pub fn paint_clogo(
+/// Per-call decision trace emitted by [`paint_clogo_traced`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClogoTrace {
+    pub opaque: bool,
+    pub alpha_luma: f64,
+    pub bg_l: Option<f64>,
+    pub mode: String,
+    pub ink: [u8; 3],
+}
+
+/// Port of `gxr_studio/finish/logo_math.py:paint_clogo`, returning the internal decision trace.
+pub fn paint_clogo_traced(
     canvas: &mut InkImage,
     item: &ClogoItem<'_>,
     logos: &[LogoInput],
-) -> Result<(), CoreError> {
+) -> Result<Option<ClogoTrace>, CoreError> {
     if item.id.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let Some(found) = logos.iter().rev().find(|l| l.id == item.id) else {
-        return Ok(());
+        return Ok(None);
     };
     let src = &found.image;
-    if src.mode != InkMode::Rgba {
+    if src.mode() != InkMode::Rgba {
         return Err(bad_mismatch("clogo source must be RGBA"));
     }
+    let w_i64 = i64::try_from(item.w).map_err(|_| bad_coords("clogo box overflow"))?;
+    let h_i64 = i64::try_from(item.h).map_err(|_| bad_coords("clogo box overflow"))?;
+    let x1 = item
+        .x
+        .checked_add(w_i64)
+        .ok_or_else(|| bad_coords("clogo box overflow"))?;
+    let y1 = item
+        .y
+        .checked_add(h_i64)
+        .ok_or_else(|| bad_coords("clogo box overflow"))?;
 
     let big_bytes = resample_u8_u64(
-        &src.data,
-        src.width as u64,
-        src.height as u64,
+        src.as_slice(),
+        src.width() as u64,
+        src.height() as u64,
         Mode::Rgba,
         Filter::Lanczos,
         item.w,
         item.h,
     )?;
-    let mut big = InkImage::from_bytes(InkMode::Rgba, item.w, item.h, &big_bytes)?;
-    let (opaque, lg, _) = alpha_luma(&src.data, src.width as u64, src.height as u64)?;
+    let mut big = InkImage::from_vec(InkMode::Rgba, item.w, item.h, big_bytes)?;
+    let (opaque, lg, _) = alpha_luma(src.as_slice(), src.width() as u64, src.height() as u64)?;
 
     let mut mode = if opaque || item.mode.is_empty() {
         "orig"
@@ -65,23 +85,25 @@ pub fn paint_clogo(
         item.mode
     };
     let mut ink = item.ink;
+    let mut bg_l_out = None;
 
     if let Some([light, dark]) = item.auto_ink
         && !opaque
     {
-        let cw = canvas.width as i64;
-        let ch = canvas.height as i64;
-        let x0 = item.x.clamp(0, cw);
-        let y0 = item.y.clamp(0, ch);
-        let x1 = item.x.saturating_add(item.w as i64).clamp(0, cw);
-        let y1 = item.y.saturating_add(item.h as i64).clamp(0, ch);
-        let bg_l = if x1 > x0 && y1 > y0 {
-            let reg = canvas.crop(x0, y0, x1, y1)?;
+        let cw = canvas.width() as i64;
+        let ch = canvas.height() as i64;
+        let cx0 = item.x.clamp(0, cw);
+        let cy0 = item.y.clamp(0, ch);
+        let cx1 = item.x.saturating_add(w_i64).clamp(0, cw);
+        let cy1 = item.y.saturating_add(h_i64).clamp(0, ch);
+        let bg_l = if cx1 > cx0 && cy1 > cy0 {
+            let reg = canvas.crop(cx0, cy0, cx1, cy1)?;
             let reg_l = reg.convert(InkMode::L)?;
-            f64::from(mean_u8_as_f32(&reg_l.data))
+            f64::from(mean_u8_as_f32(reg_l.as_slice()))
         } else {
             128.0_f64
         };
+        bg_l_out = Some(bg_l);
         ink = if bg_l > 150.0_f64 { dark } else { light };
         if item.auto {
             mode = if (lg - bg_l).abs() < 70.0_f64 {
@@ -100,15 +122,24 @@ pub fn paint_clogo(
         }
     }
 
-    let x1 = item
-        .x
-        .checked_add(item.w as i64)
-        .ok_or_else(|| bad_coords("clogo box overflow"))?;
-    let y1 = item
-        .y
-        .checked_add(item.h as i64)
-        .ok_or_else(|| bad_coords("clogo box overflow"))?;
-    paste_image(canvas, &big, [item.x, item.y, x1, y1], Some(&big))
+    paste_image(canvas, &big, [item.x, item.y, x1, y1], Some(&big))?;
+    Ok(Some(ClogoTrace {
+        opaque,
+        alpha_luma: lg,
+        bg_l: bg_l_out,
+        mode: mode.to_string(),
+        ink,
+    }))
+}
+
+/// Port of `gxr_studio/finish/logo_math.py:paint_clogo`.
+pub fn paint_clogo(
+    canvas: &mut InkImage,
+    item: &ClogoItem<'_>,
+    logos: &[LogoInput],
+) -> Result<(), CoreError> {
+    let _ = paint_clogo_traced(canvas, item, logos)?;
+    Ok(())
 }
 
 /// Stored custom logo result after keying, trimming, min-side check, `STORE_LONG_EDGE` resize,

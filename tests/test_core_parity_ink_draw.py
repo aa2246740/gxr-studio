@@ -45,6 +45,8 @@ POLY_CASES: list[list[list[float]]] = [
     [[10.0, 4.0], [10.0, 18.0], [10.0, 29.0]],
     [[6.0, 6.0], [18.0, 6.0], [30.0, 6.0], [24.0, 24.0], [12.0, 14.0]],
     [[6.0, 6.0], [32.0, 12.0], [14.0, 28.0], [28.0, 6.0], [8.0, 26.0]],
+    # Pinned _polygon_generic FMA edge_x_f32 counterexample (Sol r1):
+    [[38.0, -13.0], [35.0, 9.0], [-12.0, 15.0]],
 ]
 
 
@@ -213,6 +215,182 @@ def test_draw_line_widths(mode: str, pts: list[list[float]], width: int, tmp_pat
     same_pixels(got, np.asarray(pil, dtype=np.uint8), "ink draw_line")
 
 
+PINNED_PRIMITIVE_COUNTEREXAMPLES: list[dict[str, Any]] = [
+    {"op": "draw_polygon", "pts": [[38, -13], [35, 9], [-12, 15]], "fill": [211, 90, 45]},
+    {"op": "draw_polygon", "pts": [[3.5, 4.5], [47.5, 11.5], [19.5, 31.5]], "fill": [40, 200, 120]},
+    {"op": "draw_polygon", "pts": [[-10, -5], [40, 7], [22, 33], [-4, 18]], "fill": [180, 60, 210]},
+    {"op": "draw_polygon", "pts": [[1, 1], [39, 2], [20, 17], [38, 31], [2, 30]], "fill": [90, 140, 220]},
+    {"op": "draw_line", "pts": [[2.0, 3.0], [37.0, 29.0]], "fill": [255, 80, 40], "width": 5},
+    {"op": "draw_line", "pts": [[39.0, 1.0], [2.0, 24.0]], "fill": [50, 240, 180], "width": 7},
+    {"op": "draw_line", "pts": [[-4.0, 15.0], [45.0, 16.0]], "fill": [210, 210, 30], "width": 9},
+    {"op": "draw_line", "pts": [[11.0, -3.0], [19.0, 36.0]], "fill": [30, 170, 250], "width": 6},
+    {"op": "draw_line", "pts": [[5.0, 5.0], [23.0, 29.0], [39.0, 7.0]], "fill": [230, 120, 200], "width": 4},
+    {"op": "draw_rounded_rectangle", "box": [3.5, 3.5, 35.5, 27.5], "radius": 9.5, "fill": [100, 180, 90], "outline": [20, 30, 40], "width": 2},
+    {
+        "op": "draw_rounded_rectangle",
+        "box": [2.0, 2.0, 38.0, 30.0],
+        "radius": 11.0,
+        "fill": [200, 150, 70],
+        "outline": [15, 15, 15],
+        "width": 5,
+        "corners": [True, False, True, False],
+    },
+    {
+        "op": "draw_rounded_rectangle",
+        "box": [-3.0, -2.0, 26.0, 24.0],
+        "radius": 10.0,
+        "outline": [240, 220, 50],
+        "width": 3,
+        "corners": [False, True, True, True],
+    },
+    {"op": "draw_ellipse", "box": [2.5, 2.5, 37.5, 29.5], "fill": [175, 85, 215]},
+    {"op": "draw_rectangle", "box": [-4.5, 2.5, 33.5, 28.5], "fill": [60, 190, 210], "outline": [250, 50, 50], "width": 4},
+    {"op": "draw_rectangle", "box": [1.0, 1.0, 15.0, 15.0], "outline": [255, 255, 255], "width": 100},
+]
+
+
+@pytest.mark.parametrize("op", PINNED_PRIMITIVE_COUNTEREXAMPLES, ids=anon_ids(len(PINNED_PRIMITIVE_COUNTEREXAMPLES)))
+def test_pinned_primitive_counterexamples(op: dict[str, Any], tmp_path: Path) -> None:
+    canvas = _blank("RGB", 48, 40)
+    pil = canvas.copy()
+    d = ImageDraw.Draw(pil)
+    kind = op["op"]
+    if kind == "draw_polygon":
+        d.polygon([tuple(p) for p in op["pts"]], fill=tuple(op["fill"]))
+    elif kind == "draw_line":
+        d.line([tuple(p) for p in op["pts"]], fill=tuple(op["fill"]), width=op["width"])
+    elif kind == "draw_rounded_rectangle":
+        d.rounded_rectangle(
+            tuple(op["box"]),
+            radius=op["radius"],
+            fill=tuple(op["fill"]) if "fill" in op else None,
+            outline=tuple(op["outline"]) if "outline" in op else None,
+            width=op.get("width", 1),
+            corners=tuple(op["corners"]) if "corners" in op else None,
+        )
+    elif kind == "draw_ellipse":
+        d.ellipse(tuple(op["box"]), fill=tuple(op["fill"]))
+    elif kind == "draw_rectangle":
+        d.rectangle(
+            tuple(op["box"]),
+            fill=tuple(op["fill"]) if "fill" in op else None,
+            outline=tuple(op["outline"]) if "outline" in op else None,
+            width=op.get("width", 1),
+        )
+    got = _cli_ops(canvas, [op], tmp_path, "pinned")
+    same_pixels(got, np.asarray(pil, dtype=np.uint8), "ink pinned primitive counterexample")
+
+
+def _apply_pil_op(d: ImageDraw.ImageDraw, op: dict[str, Any]) -> None:
+    kind = op["op"]
+    if kind == "draw_polygon":
+        d.polygon([tuple(p) for p in op["pts"]], fill=tuple(op["fill"]))
+    elif kind == "draw_line":
+        d.line([tuple(p) for p in op["pts"]], fill=tuple(op["fill"]), width=op["width"])
+    elif kind == "draw_rectangle":
+        d.rectangle(
+            tuple(op["box"]),
+            fill=tuple(op["fill"]),
+            outline=tuple(op["outline"]),
+            width=op["width"],
+        )
+    elif kind == "draw_rounded_rectangle":
+        d.rounded_rectangle(
+            tuple(op["box"]),
+            radius=op["radius"],
+            fill=tuple(op["fill"]),
+            outline=tuple(op["outline"]),
+            width=op["width"],
+            corners=tuple(op["corners"]),
+        )
+    else:
+        d.ellipse(tuple(op["box"]), fill=tuple(op["fill"]))
+
+
+def test_draw_1800_primitives_and_100k_polys_and_wide_lines(tmp_path: Path) -> None:
+    rng = np.random.default_rng(20261116)
+    cw, ch = 64, 64
+
+    # Part A: 1,800 mixed primitives (360 of each kind) across 3 batches of 600 ops.
+    mixed_ops: list[dict[str, Any]] = []
+    for i in range(1800):
+        ink1 = [int(v) for v in rng.integers(0, 256, size=3)]
+        ink2 = [int(v) for v in rng.integers(0, 256, size=3)]
+        k = i % 5
+        if k == 0:
+            n_pts = int(rng.integers(3, 6))
+            pts = [[int(x), int(y)] for x, y in rng.integers(-24, 88, size=(n_pts, 2))]
+            mixed_ops.append({"op": "draw_polygon", "pts": pts, "fill": ink1})
+        elif k == 1:
+            n_pts = int(rng.integers(2, 4))
+            pts = [[int(x), int(y)] for x, y in rng.integers(-24, 88, size=(n_pts, 2))]
+            w = int(rng.integers(0, 14))
+            mixed_ops.append({"op": "draw_line", "pts": pts, "fill": ink1, "width": w})
+        elif k == 2:
+            x0, y0 = [int(v) for v in rng.integers(-16, 48, size=2)]
+            x1 = x0 + int(rng.integers(0, 48))
+            y1 = y0 + int(rng.integers(0, 48))
+            w = int(rng.integers(0, 8))
+            mixed_ops.append({"op": "draw_rectangle", "box": [x0, y0, x1, y1], "fill": ink1, "outline": ink2, "width": w})
+        elif k == 3:
+            x0, y0 = [int(v) for v in rng.integers(-10, 40, size=2)]
+            dx = int(rng.integers(12, 44))
+            dy = int(rng.integers(12, 44))
+            corners = [bool(c) for c in rng.integers(0, 2, size=4)]
+            max_r = min(dx, dy) / 2.0 if all(corners) else (min(dx, dy) - 2) / 4.0
+            rad = float(rng.uniform(0.0, max(0.0, max_r)))
+            w = int(rng.integers(0, 6))
+            mixed_ops.append(
+                {
+                    "op": "draw_rounded_rectangle",
+                    "box": [x0, y0, x0 + dx, y0 + dy],
+                    "radius": round(rad, 2),
+                    "fill": ink1,
+                    "outline": ink2,
+                    "width": w,
+                    "corners": corners,
+                }
+            )
+        else:
+            x0, y0 = [int(v) for v in rng.integers(-16, 48, size=2)]
+            x1 = x0 + int(rng.integers(0, 48))
+            y1 = y0 + int(rng.integers(0, 48))
+            mixed_ops.append({"op": "draw_ellipse", "box": [x0, y0, x1, y1], "fill": ink1})
+
+    pil = _blank("RGB", cw, ch)
+    for b_idx in range(0, len(mixed_ops), 600):
+        batch = mixed_ops[b_idx : b_idx + 600]
+        rs_arr = _cli_ops(pil, batch, tmp_path, f"mix_{b_idx}")
+        d = ImageDraw.Draw(pil)
+        for op in batch:
+            _apply_pil_op(d, op)
+        same_pixels(rs_arr, np.asarray(pil, dtype=np.uint8), "ink 1800 mixed primitives batch")
+
+    # Part B: 100,000 randomized polygons (50,000) + wide lines (50,000) in 20 batches of 5,000.
+    total_count = 0
+    pil_big = _blank("RGB", cw, ch)
+    for b in range(20):
+        batch: list[dict[str, Any]] = []
+        d = ImageDraw.Draw(pil_big)
+        rs_in = pil_big.copy()
+        for j in range(5000):
+            ink = [int(v) for v in rng.integers(0, 256, size=3)]
+            if (b * 5000 + j) % 2 == 0:
+                pts = [[int(x), int(y)] for x, y in rng.integers(-24, 88, size=(3, 2))]
+                op = {"op": "draw_polygon", "pts": pts, "fill": ink}
+                d.polygon([tuple(p) for p in pts], fill=tuple(ink))
+            else:
+                pts = [[int(x), int(y)] for x, y in rng.integers(-24, 88, size=(2, 2))]
+                w = int(rng.integers(2, 12))
+                op = {"op": "draw_line", "pts": pts, "fill": ink, "width": w}
+                d.line([tuple(p) for p in pts], fill=tuple(ink), width=w)
+            batch.append(op)
+        rs_arr = _cli_ops(rs_in, batch, tmp_path, f"bulk_{b}")
+        same_pixels(rs_arr, np.asarray(pil_big, dtype=np.uint8), "ink 100k polygons and wide lines")
+        total_count += len(batch)
+    check(total_count == 100_000, "ran 100,000 randomized polygons and wide lines")
+
+
 def test_draw_error_paths(tmp_path: Path) -> None:
     rgba = Image.new("RGBA", (10, 10), (0, 0, 0, 255))
     in_npy = tmp_path / "rgba.npy"
@@ -222,7 +400,22 @@ def test_draw_error_paths(tmp_path: Path) -> None:
         ("rgba", [{"op": "draw_rectangle", "box": [0, 0, 5, 5], "fill": [1, 2, 3]}]),
         ("x1_lt_x0", [{"op": "draw_rectangle", "box": [5, 0, 4, 5], "fill": [1, 2, 3]}]),
         ("y1_lt_y0", [{"op": "draw_ellipse", "box": [0, 5, 5, 4], "fill": [1, 2, 3]}]),
+        ("ellipse_65536", [{"op": "draw_ellipse", "box": [0, 0, 65536, 65536], "fill": [1, 2, 3]}]),
+        ("ellipse_huge", [{"op": "draw_ellipse", "box": [0, 0, 1e30, 1e30], "fill": [1, 2, 3]}]),
         ("rr_bad", [{"op": "draw_rounded_rectangle", "box": [5, 0, 4, 5], "radius": 2.0, "fill": [1, 2, 3]}]),
+        ("rr_neg_r", [{"op": "draw_rounded_rectangle", "box": [0, 0, 10, 10], "radius": -5.0, "fill": [1, 2, 3]}]),
+        (
+            "rr_partial_1e300",
+            [
+                {
+                    "op": "draw_rounded_rectangle",
+                    "box": [0, 0, 10, 10],
+                    "radius": 1e300,
+                    "corners": [True, True, False, True],
+                    "fill": [1, 2, 3],
+                }
+            ],
+        ),
         (
             "rr_partial_overflow",
             [
@@ -235,7 +428,9 @@ def test_draw_error_paths(tmp_path: Path) -> None:
                 }
             ],
         ),
+        ("line_huge", [{"op": "draw_line", "pts": [[0, 0], [1e30, 0]], "fill": [1, 2, 3], "width": 5}]),
         ("poly_1pt", [{"op": "draw_polygon", "pts": [[1, 1]], "fill": [1, 2, 3]}]),
+        ("poly_huge", [{"op": "draw_polygon", "pts": [[0, 0], [1e30, 0], [0, 10]], "fill": [1, 2, 3]}]),
     ]
     for idx, (tag, ops) in enumerate(bad_ops):
         p = in_npy if tag == "rgba" else tmp_path / "rgb.npy"

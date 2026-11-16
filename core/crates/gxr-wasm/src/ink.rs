@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 use gxr_finish::geometry::bounds::too_big;
 use gxr_finish::ink::{
     InkMode, decode_logo_bundle, finish_logo_prepare as finish_logo_prepare_core,
-    parse_logo_prepare_json, run_ink_ops,
+    parse_logo_prepare_json, run_ink_ops_vec,
 };
 use gxr_raw::{CoreError, error_json};
 
@@ -97,7 +97,7 @@ impl PreparedLogo {
 /// Execute an array of M4 `ink` operations on `(canvas, w, h, mode)` with bundled RGBA logos.
 #[wasm_bindgen]
 pub fn ink_ops(
-    canvas: &[u8],
+    canvas: Vec<u8>,
     w: f64,
     h: f64,
     mode: &str,
@@ -109,14 +109,15 @@ pub fn ink_ops(
     let w_u64 = dim_from_f64(w).map_err(rejected)?;
     let h_u64 = dim_from_f64(h).map_err(rejected)?;
     let logos = decode_logo_bundle(logo_index_json, logo_blob).map_err(rejected)?;
-    let out = run_ink_ops(canvas, w_u64, h_u64, parsed_mode, ops_json, &logos).map_err(rejected)?;
-    let width = u32::try_from(out.width).map_err(|_| rejected(too_big()))?;
-    let height = u32::try_from(out.height).map_err(|_| rejected(too_big()))?;
+    let out =
+        run_ink_ops_vec(canvas, w_u64, h_u64, parsed_mode, ops_json, &logos).map_err(rejected)?;
+    let width = u32::try_from(out.width()).map_err(|_| rejected(too_big()))?;
+    let height = u32::try_from(out.height()).map_err(|_| rejected(too_big()))?;
     Ok(InkOpsResult {
         width,
         height,
-        mode: out.mode.as_str().to_string(),
-        data: out.data,
+        mode: out.mode().as_str().to_string(),
+        data: out.into_bytes(),
     })
 }
 

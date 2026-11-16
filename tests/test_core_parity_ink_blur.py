@@ -99,3 +99,13 @@ def test_gaussian_blur_anisotropic_and_errors(tmp_path: Path) -> None:
     code, payload = run_json(["ink-blur", "--in", str(in_npy), "--mode", "RGB", "--radius", "-1.0", "--out", str(out_err)])
     check(code != 0, "negative blur radius fails")
     check(payload["error"]["kind"] == "value_error", "negative blur radius kind")
+
+    # Huge radius rejected cleanly without float-to-int UB even on non-empty or empty images
+    code_huge, payload_huge = run_json(["ink-blur", "--in", str(in_npy), "--mode", "RGB", "--radius", "1e300", "--out", str(out_err)])
+    check(code_huge != 0 and payload_huge["error"]["kind"] == "value_error", "huge blur radius rejected cleanly")
+
+    # FMA-sensitive GaussianBlur radius (5793.5390625 differs between fused & unfused _gaussian_blur_radius)
+    pil_fma = Image.fromarray(arr, "RGB").filter(ImageFilter.GaussianBlur(5793.5390625))
+    out_fma = tmp_path / "out_fma.npy"
+    got_fma = run_npy(["ink-blur", "--in", str(in_npy), "--mode", "RGB", "--radius", repr(5793.5390625)], out_fma)
+    same_pixels(got_fma, np.asarray(pil_fma, dtype=np.uint8), "ink-blur fma-sensitive radius")

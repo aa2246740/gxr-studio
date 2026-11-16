@@ -4,13 +4,14 @@ use gxr_raw::CoreError;
 
 use crate::geometry::bounds::{checked_add_u64, checked_mul_u64, fit_count};
 use crate::geometry::json::{JsonValue, parse_json};
-use crate::ink::backdrop::{background, blurred_background, paper_grain};
+use crate::ink::backdrop::{background, blurred_background, paper_grain_in_place};
 use crate::ink::blur::gaussian_blur;
 use crate::ink::carrier::paint_carrier;
-use crate::ink::draw::{draw_ellipse, draw_line, draw_polygon, draw_rectangle};
+use crate::ink::draw::{draw_line, draw_polygon, draw_rectangle};
 use crate::ink::draw_arc::draw_rounded_rectangle;
+use crate::ink::draw_ellipse::draw_ellipse;
 use crate::ink::image::{InkImage, InkMode};
-use crate::ink::logo::{ClogoItem, paint_clogo};
+use crate::ink::logo::{ClogoItem, ClogoTrace, paint_clogo_traced};
 use crate::ink::paste::{paste_color, paste_image};
 use crate::ink::shapes::{
     RectItem, ShadowItem, paint_ellipse, paint_hole, paint_poly, paint_rect, paint_shadow,
@@ -22,6 +23,13 @@ use crate::raster::bounds::checked_rgba_slice;
 pub struct LogoInput {
     pub id: String,
     pub image: InkImage,
+}
+
+/// Output image and per-`paint_clogo` decision traces returned by [`run_ink_ops_traced`].
+#[derive(Clone, Debug)]
+pub struct InkOpsOutput {
+    pub image: InkImage,
+    pub clogo_traces: Vec<ClogoTrace>,
 }
 
 fn bad_ops(msg: &str) -> CoreError {
@@ -220,16 +228,12 @@ fn set_reg(regs: &mut Vec<(String, InkImage)>, name: &str, img: InkImage) {
     }
 }
 
-/// Execute an array of `ink-ops` commands on `(canvas, w, h, mode)`.
-pub fn run_ink_ops(
-    canvas: &[u8],
-    w: u64,
-    h: u64,
-    mode: InkMode,
+fn run_ink_ops_on_image(
+    mut cur: InkImage,
     ops_json: &str,
     logos: &[LogoInput],
+    mut traces: Option<&mut Vec<ClogoTrace>>,
 ) -> Result<InkImage, CoreError> {
-    let mut cur = InkImage::from_bytes(mode, w, h, canvas)?;
     let ops_val = parse_json(ops_json, "bad_request", "绘图指令格式不对。")?;
     let ops = ops_val
         .as_array()
@@ -246,10 +250,26 @@ pub fn run_ink_ops(
 
         if let Some(reg_name) = target_reg {
             let mut img = find_reg(&regs, reg_name)?.clone();
-            apply_op(&mut img, op, step, &regs, logos, Some(&cur))?;
+            apply_op(
+                &mut img,
+                op,
+                step,
+                &regs,
+                logos,
+                Some(&cur),
+                traces.as_deref_mut(),
+            )?;
             set_reg(&mut regs, reg_name, img);
         } else {
-            apply_op(&mut cur, op, step, &regs, logos, None)?;
+            apply_op(
+                &mut cur,
+                op,
+                step,
+                &regs,
+                logos,
+                None,
+                traces.as_deref_mut(),
+            )?;
         }
 
         if let Some(save_as) = step.get("save_as").and_then(JsonValue::as_str) {
@@ -263,6 +283,50 @@ pub fn run_ink_ops(
     Ok(cur)
 }
 
+/// Execute an array of `ink-ops` commands on `(canvas, w, h, mode)`.
+pub fn run_ink_ops(
+    canvas: &[u8],
+    w: u64,
+    h: u64,
+    mode: InkMode,
+    ops_json: &str,
+    logos: &[LogoInput],
+) -> Result<InkImage, CoreError> {
+    let cur = InkImage::from_bytes(mode, w, h, canvas)?;
+    run_ink_ops_on_image(cur, ops_json, logos, None)
+}
+
+/// Execute `ink-ops` taking ownership of `canvas` without copying it upfront.
+pub fn run_ink_ops_vec(
+    canvas: Vec<u8>,
+    w: u64,
+    h: u64,
+    mode: InkMode,
+    ops_json: &str,
+    logos: &[LogoInput],
+) -> Result<InkImage, CoreError> {
+    let cur = InkImage::from_vec(mode, w, h, canvas)?;
+    run_ink_ops_on_image(cur, ops_json, logos, None)
+}
+
+/// Execute `ink-ops` and capture [`ClogoTrace`] records for every `paint_clogo` invocation.
+pub fn run_ink_ops_traced(
+    canvas: &[u8],
+    w: u64,
+    h: u64,
+    mode: InkMode,
+    ops_json: &str,
+    logos: &[LogoInput],
+) -> Result<InkOpsOutput, CoreError> {
+    let cur = InkImage::from_bytes(mode, w, h, canvas)?;
+    let mut clogo_traces = Vec::new();
+    let image = run_ink_ops_on_image(cur, ops_json, logos, Some(&mut clogo_traces))?;
+    Ok(InkOpsOutput {
+        image,
+        clogo_traces,
+    })
+}
+
 fn apply_op(
     img: &mut InkImage,
     op: &str,
@@ -270,6 +334,7 @@ fn apply_op(
     regs: &[(String, InkImage)],
     logos: &[LogoInput],
     canvas_opt: Option<&InkImage>,
+    traces: Option<&mut Vec<ClogoTrace>>,
 ) -> Result<(), CoreError> {
     match op {
         "new" => {
@@ -557,7 +622,7 @@ fn apply_op(
         }
         "paper_grain" => {
             let amount = req_f64(step, "amount", "paper_grain requires finite amount")?;
-            *img = paper_grain(img, amount)?;
+            paper_grain_in_place(img, amount)?;
         }
         "paint_carrier" => {
             let x = req_int(step, "x", "paint_carrier requires int x")?;
@@ -643,7 +708,11 @@ fn apply_op(
                 auto,
                 auto_ink,
             };
-            paint_clogo(img, &item, logos)?;
+            if let Some(trace) = paint_clogo_traced(img, &item, logos)?
+                && let Some(out_traces) = traces
+            {
+                out_traces.push(trace);
+            }
         }
         _ => return Err(bad_ops("unsupported ink op")),
     }

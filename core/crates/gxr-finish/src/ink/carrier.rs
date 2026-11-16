@@ -20,6 +20,13 @@ pub fn wobble(
     notches: usize,
     notch_w: f64,
 ) -> Result<Vec<f64>, CoreError> {
+    if !wavelength.is_finite()
+        || wavelength <= 0.0_f64
+        || !notch_w.is_finite()
+        || notch_w <= 0.0_f64
+    {
+        return Err(bad_coords("wobble parameters must be positive finite"));
+    }
     let _ = fit_count(n as u64, 8)?;
     let mut out = Vec::new();
     out.try_reserve_exact(n).map_err(|_| too_big())?;

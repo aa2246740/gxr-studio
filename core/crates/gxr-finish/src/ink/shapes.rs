@@ -3,13 +3,30 @@
 
 use gxr_raw::CoreError;
 
-use crate::geometry::bounds::{checked_mul_u64, fit_count};
-use crate::ink::blur::gaussian_blur;
-use crate::ink::draw::{bad_coords, draw_ellipse, draw_polygon, draw_rectangle};
+use crate::geometry::bounds::{checked_mul_u64, fit_count, too_big};
+use crate::ink::blur::{gaussian_blur, gaussian_blur_radius};
+use crate::ink::draw::{bad_coords, draw_polygon, draw_rectangle};
 use crate::ink::draw_arc::draw_rounded_rectangle;
+use crate::ink::draw_ellipse::draw_ellipse;
 use crate::ink::image::{InkImage, InkMode, bad_mismatch};
 use crate::ink::paste::{paste_color, paste_image};
 use crate::resample::{Filter, Mode, resample_u8_u64};
+
+#[inline]
+fn finite_f64_to_i64(v: f64, msg: &str) -> Result<i64, CoreError> {
+    if !v.is_finite() || v < (i64::MIN as f64) || v >= 9_223_372_036_854_775_808.0_f64 {
+        return Err(bad_coords(msg));
+    }
+    Ok(v as i64)
+}
+
+#[inline]
+fn finite_f64_to_i32(v: f64, msg: &str) -> Result<i32, CoreError> {
+    if !v.is_finite() || v < f64::from(i32::MIN) || v > f64::from(i32::MAX) {
+        return Err(bad_coords(msg));
+    }
+    Ok(v as i32)
+}
 
 /// Supersampling factor matching `frame_paint.py:_ss_for`.
 #[must_use]
@@ -35,15 +52,15 @@ pub fn aa_paint<F>(
 where
     F: FnOnce(&mut InkImage, i64, i64, i64) -> Result<(), CoreError>,
 {
-    if canvas.mode != InkMode::Rgb {
+    if canvas.mode() != InkMode::Rgb {
         return Err(bad_mismatch("aa_paint requires RGB canvas"));
     }
     if !alpha.is_finite() {
         return Err(bad_coords("alpha must be finite"));
     }
     let [x0, y0, x1, y1] = bbox;
-    let bw = (x1.saturating_sub(x0)).max(1) as u64;
-    let bh = (y1.saturating_sub(y0)).max(1) as u64;
+    let bw = u64::try_from((i128::from(x1) - i128::from(x0)).max(1)).map_err(|_| too_big())?;
+    let bh = u64::try_from((i128::from(y1) - i128::from(y0)).max(1)).map_err(|_| too_big())?;
     let area = checked_mul_u64(bw, bh)?;
     let _ = fit_count(area, 1)?;
     let ss = ss_for(area);
@@ -54,9 +71,9 @@ where
     let mut big = InkImage::new_filled(InkMode::L, big_w, big_h, [0, 0, 0, 0])?;
     draw_fn(&mut big, ss as i64, x0, y0)?;
 
-    let mask_bytes = resample_u8_u64(&big.data, big_w, big_h, Mode::L, Filter::Box, bw, bh)?;
+    let mask_bytes = resample_u8_u64(big.as_slice(), big_w, big_h, Mode::L, Filter::Box, bw, bh)?;
     drop(big);
-    let mut mask = InkImage::from_bytes(InkMode::L, bw, bh, &mask_bytes)?;
+    let mut mask = InkImage::from_vec(InkMode::L, bw, bh, mask_bytes)?;
     if alpha < 1.0_f64 {
         let lut = InkImage::point_table_mul(alpha)?;
         mask = mask.point(&lut)?;
@@ -131,28 +148,37 @@ pub struct RectItem {
 
 /// Port of `frame_paint.py:paint_rect`.
 pub fn paint_rect(canvas: &mut InkImage, it: &RectItem) -> Result<(), CoreError> {
-    if canvas.mode != InkMode::Rgb {
+    if canvas.mode() != InkMode::Rgb {
         return Err(bad_mismatch("paint_rect requires RGB canvas"));
+    }
+    if !it.radius.is_finite() || !it.stroke_w.is_finite() || !it.alpha.is_finite() {
+        return Err(bad_coords("rect parameters must be finite"));
     }
     let xf = it.x as f64;
     let yf = it.y as f64;
     let wf = it.w as f64;
     let hf = it.h as f64;
     if it.radius <= 0.0_f64 && it.alpha >= 1.0_f64 {
-        let sw_i = if !it.stroke_w.is_finite() {
-            return Err(bad_coords("stroke_w must be finite"));
-        } else {
-            it.stroke_w.trunc() as i32
-        };
-        return draw_rectangle(
-            canvas,
-            [xf, yf, (it.x + it.w - 1) as f64, (it.y + it.h - 1) as f64],
-            it.fill,
-            it.outline,
-            sw_i,
-        );
+        let sw_i = finite_f64_to_i32(it.stroke_w.trunc(), "stroke_w out of range")?;
+        let x1_f = (i128::from(it.x) + i128::from(it.w) - 1) as f64;
+        let y1_f = (i128::from(it.y) + i128::from(it.h) - 1) as f64;
+        return draw_rectangle(canvas, [xf, yf, x1_f, y1_f], it.fill, it.outline, sw_i);
     }
-    let bbox = [it.x - 1, it.y - 1, it.x + it.w + 1, it.y + it.h + 1];
+    let bx0 =
+        it.x.checked_sub(1)
+            .ok_or_else(|| bad_coords("rect x overflow"))?;
+    let by0 =
+        it.y.checked_sub(1)
+            .ok_or_else(|| bad_coords("rect y overflow"))?;
+    let bx1 =
+        it.x.checked_add(it.w)
+            .and_then(|v| v.checked_add(1))
+            .ok_or_else(|| bad_coords("rect x overflow"))?;
+    let by1 =
+        it.y.checked_add(it.h)
+            .and_then(|v| v.checked_add(1))
+            .ok_or_else(|| bad_coords("rect y overflow"))?;
+    let bbox = [bx0, by0, bx1, by1];
     if let Some(fill) = it.fill {
         aa_paint(
             canvas,
@@ -193,6 +219,12 @@ pub fn paint_poly(
     fill: [u8; 3],
     alpha: f64,
 ) -> Result<(), CoreError> {
+    if canvas.mode() != InkMode::Rgb {
+        return Err(bad_mismatch("paint_poly requires RGB canvas"));
+    }
+    if !alpha.is_finite() {
+        return Err(bad_coords("alpha must be finite"));
+    }
     if pts.is_empty() {
         return Err(bad_coords("poly pts cannot be empty"));
     }
@@ -209,12 +241,19 @@ pub fn paint_poly(
         min_y = min_y.min(p[1]);
         max_y = max_y.max(p[1]);
     }
-    let bbox = [
-        (min_x.floor() as i64) - 2,
-        (min_y.floor() as i64) - 2,
-        (max_x.ceil() as i64) + 2,
-        (max_y.ceil() as i64) + 2,
-    ];
+    let bx0 = finite_f64_to_i64(min_x.floor(), "poly coordinate out of range")?
+        .checked_sub(2)
+        .ok_or_else(|| bad_coords("poly bbox overflow"))?;
+    let by0 = finite_f64_to_i64(min_y.floor(), "poly coordinate out of range")?
+        .checked_sub(2)
+        .ok_or_else(|| bad_coords("poly bbox overflow"))?;
+    let bx1 = finite_f64_to_i64(max_x.ceil(), "poly coordinate out of range")?
+        .checked_add(2)
+        .ok_or_else(|| bad_coords("poly bbox overflow"))?;
+    let by1 = finite_f64_to_i64(max_y.ceil(), "poly coordinate out of range")?
+        .checked_add(2)
+        .ok_or_else(|| bad_coords("poly bbox overflow"))?;
+    let bbox = [bx0, by0, bx1, by1];
     aa_paint(
         canvas,
         bbox,
@@ -243,15 +282,25 @@ pub fn paint_ellipse(
     fill: [u8; 3],
     alpha: f64,
 ) -> Result<(), CoreError> {
-    if !cx.is_finite() || !cy.is_finite() || !r.is_finite() {
+    if canvas.mode() != InkMode::Rgb {
+        return Err(bad_mismatch("paint_ellipse requires RGB canvas"));
+    }
+    if !cx.is_finite() || !cy.is_finite() || !r.is_finite() || !alpha.is_finite() {
         return Err(bad_coords("ellipse parameters must be finite"));
     }
-    let bbox = [
-        ((cx - r).floor() as i64) - 2,
-        ((cy - r).floor() as i64) - 2,
-        ((cx + r).ceil() as i64) + 2,
-        ((cy + r).ceil() as i64) + 2,
-    ];
+    let bx0 = finite_f64_to_i64((cx - r).floor(), "ellipse coordinate out of range")?
+        .checked_sub(2)
+        .ok_or_else(|| bad_coords("ellipse bbox overflow"))?;
+    let by0 = finite_f64_to_i64((cy - r).floor(), "ellipse coordinate out of range")?
+        .checked_sub(2)
+        .ok_or_else(|| bad_coords("ellipse bbox overflow"))?;
+    let bx1 = finite_f64_to_i64((cx + r).ceil(), "ellipse coordinate out of range")?
+        .checked_add(2)
+        .ok_or_else(|| bad_coords("ellipse bbox overflow"))?;
+    let by1 = finite_f64_to_i64((cy + r).ceil(), "ellipse coordinate out of range")?
+        .checked_add(2)
+        .ok_or_else(|| bad_coords("ellipse bbox overflow"))?;
+    let bbox = [bx0, by0, bx1, by1];
     aa_paint(
         canvas,
         bbox,
@@ -283,7 +332,27 @@ pub fn paint_hole(
     radius: f64,
     base: &InkImage,
 ) -> Result<(), CoreError> {
-    let bbox = [x - 1, y - 1, x + w + 1, y + h + 1];
+    if canvas.mode() != InkMode::Rgb {
+        return Err(bad_mismatch("paint_hole requires RGB canvas"));
+    }
+    if !radius.is_finite() {
+        return Err(bad_coords("hole radius must be finite"));
+    }
+    let bx0 = x
+        .checked_sub(1)
+        .ok_or_else(|| bad_coords("hole bbox overflow"))?;
+    let by0 = y
+        .checked_sub(1)
+        .ok_or_else(|| bad_coords("hole bbox overflow"))?;
+    let bx1 = x
+        .checked_add(w)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| bad_coords("hole bbox overflow"))?;
+    let by1 = y
+        .checked_add(h)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| bad_coords("hole bbox overflow"))?;
+    let bbox = [bx0, by0, bx1, by1];
     aa_paint(
         canvas,
         bbox,
@@ -316,7 +385,7 @@ pub struct ShadowItem {
 
 /// Port of `frame_paint.py:paint_shadow`.
 pub fn paint_shadow(canvas: &mut InkImage, it: &ShadowItem) -> Result<(), CoreError> {
-    if canvas.mode != InkMode::Rgb {
+    if canvas.mode() != InkMode::Rgb {
         return Err(bad_mismatch("paint_shadow requires RGB canvas"));
     }
     if !it.blur.is_finite() || !it.radius.is_finite() || !it.alpha.is_finite() {
@@ -325,22 +394,39 @@ pub fn paint_shadow(canvas: &mut InkImage, it: &ShadowItem) -> Result<(), CoreEr
     if it.blur < 0.0_f64 {
         return Err(CoreError::new("value_error", "radius must be >= 0"));
     }
-    let pad = (it.blur * 3.0_f64).trunc() as i64 + 2;
-    let x0 = (it.x + it.dx - pad).max(0);
-    let y0 = (it.y + it.dy - pad).max(0);
-    let x1 = (it.x + it.dx + it.w + pad).min(canvas.width as i64);
-    let y1 = (it.y + it.dy + it.h + pad).min(canvas.height as i64);
-    if x1 <= x0 || y1 <= y0 {
+    let blur_r = gaussian_blur_radius(it.blur as f32, 3);
+    if !blur_r.is_finite() || blur_r >= 2_147_483_648.0_f32 {
+        return Err(CoreError::new("value_error", "radius out of range"));
+    }
+    let pad = finite_f64_to_i64((it.blur * 3.0_f64).trunc(), "shadow blur out of range")?
+        .checked_add(2)
+        .ok_or_else(|| CoreError::new("value_error", "shadow blur out of range"))?;
+    let lut = InkImage::point_table_mul(it.alpha)?;
+
+    let cw = canvas.width() as i128;
+    let ch = canvas.height() as i128;
+    let sx = i128::from(it.x) + i128::from(it.dx);
+    let sy = i128::from(it.y) + i128::from(it.dy);
+    let pad_128 = i128::from(pad);
+    let x0_128 = (sx - pad_128).max(0);
+    let y0_128 = (sy - pad_128).max(0);
+    let x1_128 = (sx + i128::from(it.w) + pad_128).min(cw);
+    let y1_128 = (sy + i128::from(it.h) + pad_128).min(ch);
+    if x1_128 <= x0_128 || y1_128 <= y0_128 {
         return Ok(());
     }
+    let x0 = i64::try_from(x0_128).map_err(|_| bad_coords("shadow bbox overflow"))?;
+    let y0 = i64::try_from(y0_128).map_err(|_| bad_coords("shadow bbox overflow"))?;
+    let x1 = i64::try_from(x1_128).map_err(|_| bad_coords("shadow bbox overflow"))?;
+    let y1 = i64::try_from(y1_128).map_err(|_| bad_coords("shadow bbox overflow"))?;
     let mw = (x1 - x0) as u64;
     let mh = (y1 - y0) as u64;
     let mut m = InkImage::new_filled(InkMode::L, mw, mh, [0, 0, 0, 0])?;
     let box4 = [
-        (it.x + it.dx - x0) as f64,
-        (it.y + it.dy - y0) as f64,
-        (it.x + it.dx + it.w - x0 - 1) as f64,
-        (it.y + it.dy + it.h - y0 - 1) as f64,
+        (sx - x0_128) as f64,
+        (sy - y0_128) as f64,
+        (sx + i128::from(it.w) - x0_128 - 1) as f64,
+        (sy + i128::from(it.h) - y0_128 - 1) as f64,
     ];
     let ink = [255, 255, 255];
     if it.radius > 0.0_f64 {
@@ -349,7 +435,6 @@ pub fn paint_shadow(canvas: &mut InkImage, it: &ShadowItem) -> Result<(), CoreEr
         draw_rectangle(&mut m, box4, Some(ink), None, 1)?;
     }
     let blurred = gaussian_blur(&m, it.blur, it.blur)?;
-    let lut = InkImage::point_table_mul(it.alpha)?;
     let mask = blurred.point(&lut)?;
     paste_color(
         canvas,

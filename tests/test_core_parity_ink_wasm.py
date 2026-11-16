@@ -274,6 +274,53 @@ def test_wasm_matches_native_ink_ops_and_logo_prepare(tmp_path: Path) -> None:
             )
         )
 
+    # 7. FMA-sensitive primitives + GaussianBlur parity between WASM and CLI
+    ops_fma = [
+        {"op": "draw_polygon", "pts": [[38.0, -13.0], [35.0, 9.0], [-12.0, 15.0]], "fill": [210, 120, 45]},
+        {"op": "draw_line", "pts": [[2.0, 3.0], [37.0, 29.0]], "fill": [255, 80, 40], "width": 5},
+        {
+            "op": "draw_rounded_rectangle",
+            "box": [3.5, 3.5, 35.5, 27.5],
+            "radius": 9.5,
+            "fill": [100, 180, 90],
+            "outline": [20, 30, 40],
+            "width": 2,
+        },
+        {"op": "paint_poly", "pts": [[12.666, -4.0], [11.5, 9.25], [-4.0, 15.0]], "fill": [210, 90, 40], "alpha": 0.85},
+        {"op": "gaussian_blur", "radius": 5793.5390625},
+    ]
+    cases.append(
+        _write_case(
+            tmp_path,
+            "ink-fma-ops",
+            {"kind": "ink_ops", "canvasNpy": str(canvas_rgb_npy), "w": 140, "h": 100, "mode": "RGB", "expectMode": "RGB", "ops": ops_fma},
+        )
+    )
+
+    # 8. Hostile op-parameter overflow & bounds error parity between CLI and WASM
+    hostile_ops: list[tuple[str, Any]] = [
+        ("pt-mul-1e300", [{"op": "point_mul", "scale": 1e300}]),
+        ("pt-mul-2p63", [{"op": "point_mul", "scale": 2.0**63}]),
+        ("pt-mul-inf-json", '[{"op":"point_mul","scale":1e999}]'),
+        ("ellipse-65536", [{"op": "draw_ellipse", "box": [0, 0, 65536, 65536], "fill": [1, 2, 3]}]),
+        ("rr-neg-r", [{"op": "draw_rounded_rectangle", "box": [0, 0, 10, 10], "radius": -5.0, "fill": [1, 2, 3]}]),
+        (
+            "rr-partial-1e300",
+            [{"op": "draw_rounded_rectangle", "box": [0, 0, 10, 10], "radius": 1e300, "corners": [True, True, False, True], "fill": [1, 2, 3]}],
+        ),
+        ("line-huge", [{"op": "draw_line", "pts": [[0, 0], [1e30, 0]], "fill": [1, 2, 3], "width": 5}]),
+        ("shadow-1e300", [{"op": "paint_shadow", "x": 200, "y": 200, "w": 10, "h": 10, "blur": 1e300, "alpha": 0.5}]),
+        ("blur-1e300", [{"op": "gaussian_blur", "radius": 1e300}]),
+    ]
+    for tag, ops_payload in hostile_ops:
+        cases.append(
+            _write_case(
+                tmp_path,
+                f"ink-hostile-op-{tag}",
+                {"kind": "ink_ops", "canvasNpy": str(canvas_rgb_npy), "w": 140, "h": 100, "mode": "RGB", "ops": ops_payload},
+            )
+        )
+
     # Verify CLI distinguishes depth 128 (bad_request) vs 129 (json: JSON 嵌套太深) directly too.
     dummy_out = tmp_path / "depth_out.npy"
     c128, p128 = run_json(["ink-ops", "--canvas", str(canvas_rgb_npy), "--ops-json", _deep_json(128, "array"), "--out", str(dummy_out)])

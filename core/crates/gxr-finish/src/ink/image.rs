@@ -47,10 +47,10 @@ impl InkMode {
 /// Owned 8-bit image buffer in row-major C order (`H x W x C`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InkImage {
-    pub width: usize,
-    pub height: usize,
-    pub mode: InkMode,
-    pub data: Vec<u8>,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) mode: InkMode,
+    pub(crate) data: Vec<u8>,
 }
 
 pub(crate) fn bad_dims_zero() -> CoreError {
@@ -78,6 +78,31 @@ pub(crate) fn checked_image_dims(
 }
 
 impl InkImage {
+    #[must_use]
+    pub const fn width(&self) -> usize {
+        self.width
+    }
+
+    #[must_use]
+    pub const fn height(&self) -> usize {
+        self.height
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> InkMode {
+        self.mode
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.data
+    }
+
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.data
+    }
+
     /// Construct an [`InkImage`] from caller-supplied pixels, rejecting zero dimensions and
     /// enforcing the shared `MAX_COUNT` / `MAX_BYTES` bounds before copying.
     pub fn from_bytes(mode: InkMode, w: u64, h: u64, data: &[u8]) -> Result<Self, CoreError> {
@@ -95,6 +120,24 @@ impl InkImage {
             height: hu,
             mode,
             data: buf,
+        })
+    }
+
+    /// Construct an [`InkImage`] taking ownership of caller-supplied pixels without copying,
+    /// rejecting zero dimensions and enforcing the shared `MAX_COUNT` / `MAX_BYTES` bounds.
+    pub fn from_vec(mode: InkMode, w: u64, h: u64, data: Vec<u8>) -> Result<Self, CoreError> {
+        if w == 0 || h == 0 {
+            return Err(bad_dims_zero());
+        }
+        let (wu, hu, expected) = checked_image_dims(w, h, mode)?;
+        if data.len() != expected {
+            return Err(bad_mismatch("input length does not match image dimensions"));
+        }
+        Ok(Self {
+            width: wu,
+            height: hu,
+            mode,
+            data,
         })
     }
 
@@ -180,15 +223,36 @@ impl InkImage {
         })
     }
 
-    /// Build a 256-entry `point` LUT matching Python `[CLIP8(int(v * scale)) for v in range(256)]`.
+    /// Build a 256-entry `point` LUT matching Python `[CLIP8(int(v * scale)) for v in range(256)]`
+    /// and Pillow's `PyLong_AsLong` C `long` range check (`i64`).
     pub fn point_table_mul(scale: f64) -> Result<[u8; 256], CoreError> {
-        if !scale.is_finite() {
-            return Err(bad_mismatch("point scale must be finite"));
+        const I64_MIN_F64: f64 = -9_223_372_036_854_775_808.0;
+        const I64_UPPER_F64: f64 = 9_223_372_036_854_775_808.0;
+
+        for i in 0..256 {
+            let prod = (i as f64) * scale;
+            if prod.is_nan() {
+                return Err(CoreError::new(
+                    "value_error",
+                    "cannot convert float NaN to integer",
+                ));
+            }
+            if !prod.is_finite() {
+                return Err(CoreError::new(
+                    "overflow_error",
+                    "cannot convert float infinity to integer",
+                ));
+            }
         }
         let mut table = [0_u8; 256];
         for (i, slot) in table.iter_mut().enumerate() {
-            let prod = (i as f64) * scale;
-            let t = prod.trunc();
+            let t = ((i as f64) * scale).trunc();
+            if !(I64_MIN_F64..I64_UPPER_F64).contains(&t) {
+                return Err(CoreError::new(
+                    "overflow_error",
+                    "Python int too large to convert to C long",
+                ));
+            }
             *slot = if t <= 0.0 {
                 0
             } else if t >= 255.0 {
@@ -394,8 +458,8 @@ impl InkImage {
         if sy1 < sy0 {
             return Err(bad_mismatch("Coordinate 'lower' is less than 'upper'"));
         }
-        let xsize = (sx1 - sx0) as u64;
-        let ysize = (sy1 - sy0) as u64;
+        let xsize = u64::try_from(i128::from(sx1) - i128::from(sx0)).map_err(|_| too_big())?;
+        let ysize = u64::try_from(i128::from(sy1) - i128::from(sy0)).map_err(|_| too_big())?;
         let mut out = Self::new_filled(self.mode, xsize, ysize, [0, 0, 0, 0])?;
         if out.width == 0 || out.height == 0 || self.width == 0 || self.height == 0 {
             return Ok(out);

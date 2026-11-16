@@ -6,16 +6,22 @@ use crate::geometry::bounds::{checked_mul_u64, fit_count, too_big};
 use crate::ink::image::{InkImage, bad_mismatch};
 
 /// Port of Pillow `BoxBlur.c:_gaussian_blur_radius`.
+///
+/// Uses fused multiply-add on the four sites contracted by macOS arm64 Pillow 12.2.0
+/// `_imaging.cpython-314-darwin.so` (`_ImagingGaussianBlur` at `0x13bb0`/`0x13c18`,
+/// `0x13be0`/`0x13c38`, `0x13bf0`/`0x13c44`, `0x13bf8`/`0x13c4c`).
 #[must_use]
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn gaussian_blur_radius(radius: f32, passes: i32) -> f32 {
     if radius == 0.0_f32 {
         return 0.0_f32;
     }
     let sigma2 = radius * radius / (passes as f32);
-    let l_big = (12.0_f64 * f64::from(sigma2) + 1.0_f64).sqrt() as f32;
+    let l_big = f64::from(sigma2).mul_add(12.0_f64, 1.0_f64).sqrt() as f32;
     let l = ((f64::from(l_big) - 1.0_f64) / 2.0_f64).floor() as f32;
-    let a_num = (2.0_f32 * l + 1.0_f32) * (l * (l + 1.0_f32) - 3.0_f32 * sigma2);
-    let a_den = 6.0_f32 * (sigma2 - (l + 1.0_f32) * (l + 1.0_f32));
+    let l_p1 = l + 1.0_f32;
+    let a_num = l.mul_add(2.0_f32, 1.0_f32) * l.mul_add(l_p1, -3.0_f32 * sigma2);
+    let a_den = 6.0_f32 * (-l_p1).mul_add(l_p1, sigma2);
     let a = a_num / a_den;
     l + a
 }
@@ -174,14 +180,17 @@ fn horizontal_box_blur(
     ch: usize,
     float_radius: f32,
 ) -> Result<(), CoreError> {
+    if !(0.0_f32..2_147_483_648.0_f32).contains(&float_radius) {
+        return Err(CoreError::new("value_error", "radius out of range"));
+    }
     if w == 0 || h == 0 {
         return Ok(());
     }
-    if !float_radius.is_finite() || float_radius < 0.0_f32 || float_radius > (i32::MAX as f32) {
-        return Err(CoreError::new("value_error", "radius out of range"));
-    }
     let radius = (float_radius as i32) as usize;
-    let ww = (16_777_216.0_f32 / (float_radius * 2.0_f32 + 1.0_f32)) as u32;
+    #[allow(clippy::disallowed_methods)]
+    // Matches `_ImagingHorizontalBoxBlur` at `0x12cb8` in `_imaging.cpython-314-darwin.so`.
+    let denom = float_radius.mul_add(2.0_f32, 1.0_f32);
+    let ww = (16_777_216.0_f32 / denom) as u32;
     let factor = ((radius as u32).wrapping_mul(2).wrapping_add(1)).wrapping_mul(ww);
     let fw = 16_777_216_u32.wrapping_sub(factor) / 2;
 
@@ -302,6 +311,9 @@ pub fn box_blur(
     if !xradius.is_finite() || !yradius.is_finite() || xradius < 0.0_f32 || yradius < 0.0_f32 {
         return Err(CoreError::new("value_error", "radius must be >= 0"));
     }
+    if xradius >= 2_147_483_648.0_f32 || yradius >= 2_147_483_648.0_f32 {
+        return Err(CoreError::new("value_error", "radius out of range"));
+    }
     if passes < 1 {
         return Err(CoreError::new(
             "value_error",
@@ -355,10 +367,41 @@ pub fn gaussian_blur(im: &InkImage, xradius: f64, yradius: f64) -> Result<InkIma
     if !xradius.is_finite() || !yradius.is_finite() || xradius < 0.0_f64 || yradius < 0.0_f64 {
         return Err(CoreError::new("value_error", "radius must be >= 0"));
     }
-    if xradius == 0.0_f64 && yradius == 0.0_f64 {
-        return Ok(im.clone());
-    }
     let xr = gaussian_blur_radius(xradius as f32, 3);
     let yr = gaussian_blur_radius(yradius as f32, 3);
+    if !xr.is_finite() || !yr.is_finite() || xr >= 2_147_483_648.0_f32 || yr >= 2_147_483_648.0_f32
+    {
+        return Err(CoreError::new("value_error", "radius out of range"));
+    }
     box_blur(im, xr, yr, 3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ink::image::InkMode;
+
+    #[test]
+    fn fma_sensitive_gaussian_blur_radius_and_extreme_bounds() {
+        // Inputs where FMA differs from unfused in `_gaussian_blur_radius`:
+        // Verify exact bit-pattern (`0x45b50850` vs unfused `0x45b50851`) and clean rejection of out-of-range radii.
+        let radius = 5793.539_f32;
+        let r = gaussian_blur_radius(radius, 3);
+        let r_unfused = {
+            let sigma2 = radius * radius / 3.0_f32;
+            let l_big = (12.0_f64 * f64::from(sigma2) + 1.0_f64).sqrt() as f32;
+            let l = ((f64::from(l_big) - 1.0_f64) / 2.0_f64).floor() as f32;
+            let l_p1 = l + 1.0_f32;
+            let a_num = (2.0_f32 * l + 1.0_f32) * (l * l_p1 - 3.0_f32 * sigma2);
+            let a_den = 6.0_f32 * (sigma2 - l_p1 * l_p1);
+            l + a_num / a_den
+        };
+        assert_eq!(r.to_bits(), 0x45b5_0850);
+        assert_ne!(r.to_bits(), r_unfused.to_bits());
+
+        let empty = InkImage::new_filled(InkMode::Rgb, 0, 0, [0, 0, 0, 255]).expect("empty");
+        assert!(gaussian_blur(&empty, 1e300, 1e300).is_err());
+        assert!(box_blur(&empty, 2_147_483_648.0_f32, 0.0_f32, 1).is_err());
+        assert!(gaussian_blur(&empty, -1.0, 0.0).is_err());
+    }
 }

@@ -3,9 +3,10 @@
 use gxr_raw::CoreError;
 
 use crate::ink::draw::{
-    EllipseState, bad_coords, check_mode, draw_ellipse, draw_ellipse_outline, draw_rect_c,
-    draw_rectangle, float_to_c_int, hline_px, same_ink,
+    bad_coords, check_mode, draw_rect_fill_i64, draw_rectangle, float_to_c_int, hline_px_i64,
+    same_ink,
 };
+use crate::ink::draw_ellipse::{EllipseState, draw_ellipse, draw_ellipse_outline};
 use crate::ink::image::InkImage;
 
 const PI: f64 = std::f64::consts::PI;
@@ -23,8 +24,15 @@ fn round_ties_even_i32(v: f64) -> Result<i32, CoreError> {
 }
 
 #[inline]
-fn lround_f64(v: f64) -> i32 {
-    v.round() as i32
+fn lround_f64(v: f64) -> Result<i32, CoreError> {
+    if !v.is_finite() {
+        return Err(bad_coords("arc intersection out of range"));
+    }
+    let r = v.round();
+    if r < f64::from(i32::MIN) || r > f64::from(i32::MAX) {
+        return Err(bad_coords("arc intersection out of range"));
+    }
+    Ok(r as i32)
 }
 
 /// Port of Pillow `ImageDraw.rounded_rectangle`.
@@ -39,6 +47,9 @@ pub fn draw_rounded_rectangle(
     corners: [bool; 4],
 ) -> Result<(), CoreError> {
     check_mode(im)?;
+    if xy.iter().any(|v| !v.is_finite()) {
+        return Err(bad_coords("coordinates must be finite"));
+    }
     if !radius.is_finite() {
         return Err(bad_coords("radius must be finite"));
     }
@@ -50,21 +61,23 @@ pub fn draw_rounded_rectangle(
     }
 
     let mut d = radius * 2.0_f64;
-    let x0 = round_ties_even_i32(xy[0])?;
-    let y0 = round_ties_even_i32(xy[1])?;
-    let x1 = round_ties_even_i32(xy[2])?;
-    let y1 = round_ties_even_i32(xy[3])?;
+    let x0 = i64::from(round_ties_even_i32(xy[0])?);
+    let y0 = i64::from(round_ties_even_i32(xy[1])?);
+    let x1 = i64::from(round_ties_even_i32(xy[2])?);
+    let y1 = i64::from(round_ties_even_i32(xy[3])?);
+    let dx = x1 - x0;
+    let dy = y1 - y0;
 
     let mut full_x = false;
     let mut full_y = false;
     if corners.iter().all(|&c| c) {
-        full_x = d >= f64::from(x1 - x0 - 1);
+        full_x = d >= ((dx - 1) as f64);
         if full_x {
-            d = f64::from(x1 - x0);
+            d = dx as f64;
         }
-        full_y = d >= f64::from(y1 - y0 - 1);
+        full_y = d >= ((dy - 1) as f64);
         if full_y {
-            d = f64::from(y1 - y0);
+            d = dy as f64;
         }
         if full_x && full_y {
             if let Some(fill_ink) = fill {
@@ -84,11 +97,15 @@ pub fn draw_rounded_rectangle(
         return draw_rectangle(im, xy, fill, outline, width);
     }
 
-    let r = (d / 2.0_f64).floor() as i32;
-    let x0f = f64::from(x0);
-    let y0f = f64::from(y0);
-    let x1f = f64::from(x1);
-    let y1f = f64::from(y1);
+    let r_f = (d / 2.0_f64).floor();
+    if !r_f.is_finite() || r_f < f64::from(i32::MIN) || r_f > f64::from(i32::MAX) {
+        return Err(bad_coords("radius out of range"));
+    }
+    let r = r_f as i64;
+    let x0f = x0 as f64;
+    let y0f = y0 as f64;
+    let x1f = x1 as f64;
+    let y1f = y1 as f64;
 
     let corner_parts = || -> Vec<([f64; 4], f64, f64)> {
         if full_x {
@@ -117,14 +134,14 @@ pub fn draw_rounded_rectangle(
     };
 
     let checked_fill_rect =
-        |im: &mut InkImage, ax0: i32, ay0: i32, ax1: i32, ay1: i32, ink: [u8; 3]| {
+        |im: &mut InkImage, ax0: i64, ay0: i64, ax1: i64, ay1: i64, ink: [u8; 3]| {
             if ax1 < ax0 {
                 return Err(bad_coords("x1 must be greater than or equal to x0"));
             }
             if ay1 < ay0 {
                 return Err(bad_coords("y1 must be greater than or equal to y0"));
             }
-            draw_rect_c(im, ax0, ay0, ax1, ay1, ink, true, 0);
+            draw_rect_fill_i64(im, ax0, ay0, ax1, ay1, ink);
             Ok(())
         };
 
@@ -167,6 +184,7 @@ pub fn draw_rounded_rectangle(
         for (part, s, e) in corner_parts() {
             draw_arc_outline(im, part, s, e, out_ink, width)?;
         }
+        let w_i64 = i64::from(width);
         if !full_x {
             let mut tx0 = x0;
             let mut tx1 = x1;
@@ -176,7 +194,7 @@ pub fn draw_rounded_rectangle(
             if corners[1] {
                 tx1 -= r + 1;
             }
-            checked_fill_rect(im, tx0, y0, tx1, y0 + width - 1, out_ink)?;
+            checked_fill_rect(im, tx0, y0, tx1, y0 + w_i64 - 1, out_ink)?;
 
             let mut bx0 = x0;
             let mut bx1 = x1;
@@ -186,7 +204,7 @@ pub fn draw_rounded_rectangle(
             if corners[2] {
                 bx1 -= r + 1;
             }
-            checked_fill_rect(im, bx0, y1 - width + 1, bx1, y1, out_ink)?;
+            checked_fill_rect(im, bx0, y1 - w_i64 + 1, bx1, y1, out_ink)?;
         }
         if !full_y {
             let mut ly0 = y0;
@@ -197,7 +215,7 @@ pub fn draw_rounded_rectangle(
             if corners[3] {
                 ly1 -= r + 1;
             }
-            checked_fill_rect(im, x0, ly0, x0 + width - 1, ly1, out_ink)?;
+            checked_fill_rect(im, x0, ly0, x0 + w_i64 - 1, ly1, out_ink)?;
 
             let mut ry0 = y0;
             let mut ry1 = y1;
@@ -207,7 +225,7 @@ pub fn draw_rounded_rectangle(
             if corners[2] {
                 ry1 -= r + 1;
             }
-            checked_fill_rect(im, x1 - width + 1, ry0, x1, ry1, out_ink)?;
+            checked_fill_rect(im, x1 - w_i64 + 1, ry0, x1, ry1, out_ink)?;
         }
     }
 
@@ -233,43 +251,59 @@ fn clip_tree_transpose(nodes: &mut [ClipNode], idx: usize) {
     }
 }
 
+/// FMA helper matching `_clip_tree_do_clip` at `0x1e494` in `_imaging.cpython-314-darwin.so`.
+#[inline]
+#[allow(clippy::disallowed_methods)]
+fn halfplane_by_plus_c(b: f64, y: i32, c: f64) -> f64 {
+    b.mul_add(f64::from(y), c)
+}
+
+/// FMA helper matching `_clip_tree_do_clip` at `0x1e4f0..1e4f8` and `0x1e520..1e528` in
+/// `_imaging.cpython-314-darwin.so`.
+#[inline]
+#[allow(clippy::disallowed_methods)]
+fn eval_halfplane_fma(a: f64, x: i32, by: f64, c: f64) -> f64 {
+    c + a.mul_add(f64::from(x), by)
+}
+
 fn clip_tree_do_clip(
     nodes: &[ClipNode],
     root: Option<usize>,
     mut x0: i32,
     y: i32,
     mut x1: i32,
-) -> Vec<(i32, i8)> {
+) -> Result<Vec<(i32, i8)>, CoreError> {
     let Some(idx) = root else {
-        return vec![(x0, 1), (x1, -1)];
+        return Ok(vec![(x0, 1), (x1, -1)]);
     };
     match nodes[idx] {
         ClipNode::HalfPlane { a, b, c } => {
             let eps = 1e-9_f64;
             if a.abs() < eps {
-                if b * f64::from(y) + c < -eps {
+                if halfplane_by_plus_c(b, y, c) < -eps {
                     x0 = 1;
                     x1 = 0;
                 }
             } else {
-                let ix = -(b * f64::from(y) + c) / a;
-                if a * f64::from(x0) + b * f64::from(y) + c < eps {
-                    x0 = lround_f64(f64::from(x0).max(ix));
+                let ix = -halfplane_by_plus_c(b, y, c) / a;
+                let by = b * f64::from(y);
+                if eval_halfplane_fma(a, x0, by, c) < eps {
+                    x0 = lround_f64(f64::from(x0).max(ix))?;
                 }
-                if a * f64::from(x1) + b * f64::from(y) + c < eps {
-                    x1 = lround_f64(f64::from(x1).min(ix));
+                if eval_halfplane_fma(a, x1, by, c) < eps {
+                    x1 = lround_f64(f64::from(x1).min(ix))?;
                 }
             }
             if x0 <= x1 {
-                vec![(x0, 1), (x1, -1)]
+                Ok(vec![(x0, 1), (x1, -1)])
             } else {
-                Vec::new()
+                Ok(Vec::new())
             }
         }
         ClipNode::And(l, r) | ClipNode::Or(l, r) => {
             let is_or = matches!(nodes[idx], ClipNode::Or(_, _));
-            let l1 = clip_tree_do_clip(nodes, Some(l), x0, y, x1);
-            let l2 = clip_tree_do_clip(nodes, Some(r), x0, y, x1);
+            let l1 = clip_tree_do_clip(nodes, Some(l), x0, y, x1)?;
+            let l2 = clip_tree_do_clip(nodes, Some(r), x0, y, x1)?;
             let mut out: Vec<(i32, i8)> = Vec::with_capacity(l1.len() + l2.len());
             let mut i1 = 0_usize;
             let mut i2 = 0_usize;
@@ -302,7 +336,7 @@ fn clip_tree_do_clip(
                     out.push(t);
                 }
             }
-            out
+            Ok(out)
         }
     }
 }
@@ -462,6 +496,9 @@ fn draw_pieslice_fill(
     end: f64,
     ink: [u8; 3],
 ) -> Result<(), CoreError> {
+    if xy.iter().any(|v| !v.is_finite()) || !start.is_finite() || !end.is_finite() {
+        return Err(bad_coords("coordinates must be finite"));
+    }
     if xy[2] < xy[0] {
         return Err(bad_coords("x1 must be greater than or equal to x0"));
     }
@@ -481,22 +518,27 @@ fn draw_pieslice_fill(
     let y0 = float_to_c_int(xy[1])?;
     let x1 = float_to_c_int(xy[2])?;
     let y1 = float_to_c_int(xy[3])?;
-    let a = x1 - x0;
-    let b = y1 - y0;
+    let a = x1
+        .checked_sub(x0)
+        .ok_or_else(|| bad_coords("pieslice width out of range"))?;
+    let b = y1
+        .checked_sub(y0)
+        .ok_or_else(|| bad_coords("pieslice height out of range"))?;
     if a < 0 || b < 0 {
         return Ok(());
     }
     let (nodes, root) = build_pie_tree(a, b, al, ar);
-    let mut st = EllipseState::new(a, b, x1 + y1 - x0 - y0);
+    let stroke = i32::try_from(i64::from(a) + i64::from(b)).unwrap_or(i32::MAX);
+    let mut st = EllipseState::new(a, b, stroke)?;
     while let Some((lx0, ly, lx1)) = st.next_span() {
-        let evs = clip_tree_do_clip(&nodes, root, lx0, ly, lx1);
+        let evs = clip_tree_do_clip(&nodes, root, lx0, ly, lx1)?;
         let mut i = 0_usize;
         while i + 1 < evs.len() {
-            hline_px(
+            hline_px_i64(
                 im,
-                x0 + (evs[i].0 + a) / 2,
-                y0 + (ly + b) / 2,
-                x0 + (evs[i + 1].0 + a) / 2,
+                i64::from(x0) + (i64::from(evs[i].0) + i64::from(a)) / 2,
+                i64::from(y0) + (i64::from(ly) + i64::from(b)) / 2,
+                i64::from(x0) + (i64::from(evs[i + 1].0) + i64::from(a)) / 2,
                 ink,
             );
             i += 2;
@@ -513,6 +555,9 @@ fn draw_arc_outline(
     ink: [u8; 3],
     width: i32,
 ) -> Result<(), CoreError> {
+    if xy.iter().any(|v| !v.is_finite()) || !start.is_finite() || !end.is_finite() {
+        return Err(bad_coords("coordinates must be finite"));
+    }
     if xy[2] < xy[0] {
         return Err(bad_coords("x1 must be greater than or equal to x0"));
     }
@@ -532,26 +577,90 @@ fn draw_arc_outline(
     let y0 = float_to_c_int(xy[1])?;
     let x1 = float_to_c_int(xy[2])?;
     let y1 = float_to_c_int(xy[3])?;
-    let a = x1 - x0;
-    let b = y1 - y0;
+    let a = x1
+        .checked_sub(x0)
+        .ok_or_else(|| bad_coords("arc width out of range"))?;
+    let b = y1
+        .checked_sub(y0)
+        .ok_or_else(|| bad_coords("arc height out of range"))?;
     if a < 0 || b < 0 {
         return Ok(());
     }
     let (nodes, root) = build_arc_tree(a, b, al, ar);
-    let mut st = EllipseState::new(a, b, width);
+    let mut st = EllipseState::new(a, b, width)?;
     while let Some((lx0, ly, lx1)) = st.next_span() {
-        let evs = clip_tree_do_clip(&nodes, root, lx0, ly, lx1);
+        let evs = clip_tree_do_clip(&nodes, root, lx0, ly, lx1)?;
         let mut i = 0_usize;
         while i + 1 < evs.len() {
-            hline_px(
+            hline_px_i64(
                 im,
-                x0 + (evs[i].0 + a) / 2,
-                y0 + (ly + b) / 2,
-                x0 + (evs[i + 1].0 + a) / 2,
+                i64::from(x0) + (i64::from(evs[i].0) + i64::from(a)) / 2,
+                i64::from(y0) + (i64::from(ly) + i64::from(b)) / 2,
+                i64::from(x0) + (i64::from(evs[i + 1].0) + i64::from(a)) / 2,
                 ink,
             );
             i += 2;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ink::image::InkMode;
+
+    #[test]
+    fn rounded_rectangle_handles_extreme_and_negative_radii() {
+        let mut im = InkImage::new_filled(InkMode::Rgb, 20, 20, [0, 0, 0, 255]).expect("im");
+        // All-corners True clamps large radius to ellipse instead of failing.
+        draw_rounded_rectangle(
+            &mut im,
+            [2.0, 2.0, 17.0, 17.0],
+            1e300,
+            Some([10, 20, 30]),
+            None,
+            1,
+            [true, true, true, true],
+        )
+        .expect("all corners clamp to ellipse");
+        // Partial corners with 1e300 rejects cleanly.
+        assert!(
+            draw_rounded_rectangle(
+                &mut im,
+                [2.0, 2.0, 17.0, 17.0],
+                1e300,
+                Some([10, 20, 30]),
+                None,
+                1,
+                [true, false, false, false],
+            )
+            .is_err()
+        );
+        // Negative radius with corners rejects; with all corners false behaves like rectangle.
+        assert!(
+            draw_rounded_rectangle(
+                &mut im,
+                [0.0, 0.0, 10.0, 10.0],
+                -5.0,
+                Some([1, 2, 3]),
+                None,
+                1,
+                [true, true, true, true],
+            )
+            .is_err()
+        );
+        draw_rounded_rectangle(
+            &mut im,
+            [0.0, 0.0, 10.0, 10.0],
+            -5.0,
+            Some([1, 2, 3]),
+            None,
+            1,
+            [false, false, false, false],
+        )
+        .expect("no rounded corners delegates to draw_rectangle");
+        assert!(lround_f64(f64::INFINITY).is_err());
+        assert!(lround_f64(1e20).is_err());
+    }
 }

@@ -27,10 +27,25 @@ pub fn blurred_background(
     if !sigma.is_finite() || sigma < 0.0_f64 || !sat.is_finite() || !veil.is_finite() {
         return Err(bad_coords("blurred_background parameters must be finite"));
     }
+    let _ = fit_count(width, 1)?;
+    let _ = fit_count(height, 1)?;
+    let out_bytes_u64 = checked_mul_u64(checked_mul_u64(width, height)?, 3)?;
+    let out_bytes = fit_count(out_bytes_u64, 1)?;
 
     let scale = (width as f64 / photo.width as f64).max(height as f64 / photo.height as f64);
-    let bw = width.max(((photo.width as f64) * scale).round_ties_even().max(0.0) as u64);
-    let bh = height.max(((photo.height as f64) * scale).round_ties_even().max(0.0) as u64);
+    let bw_f = ((photo.width as f64) * scale).round_ties_even();
+    let bh_f = ((photo.height as f64) * scale).round_ties_even();
+    if !bw_f.is_finite()
+        || !bh_f.is_finite()
+        || bw_f > (u64::MAX as f64)
+        || bh_f > (u64::MAX as f64)
+    {
+        return Err(too_big());
+    }
+    let bw = width.max(bw_f.max(0.0) as u64);
+    let bh = height.max(bh_f.max(0.0) as u64);
+    let _ = fit_count(bw, 1)?;
+    let _ = fit_count(bh, 1)?;
     let _ = fit_count(checked_mul_u64(bw, bh)?, 3)?;
 
     let sw = (bw / 8).max(8);
@@ -54,8 +69,6 @@ pub fn blurred_background(
     let big = resample_u8_u64(&blurred.data, sw, sh, Mode::Rgb, Filter::Bicubic, bw, bh)?;
     drop(blurred);
 
-    let out_bytes_u64 = checked_mul_u64(checked_mul_u64(width, height)?, 3)?;
-    let out_bytes = fit_count(out_bytes_u64, 1)?;
     let mut out = Vec::new();
     out.try_reserve_exact(out_bytes).map_err(|_| too_big())?;
     out.resize(out_bytes, 0);
@@ -92,10 +105,15 @@ pub fn blurred_background(
     })
 }
 
-/// Port of `frame_texture.py:paper_grain`. Holds at most one `(h, w)` f32 plane (`fine`).
-pub fn paper_grain(canvas: &InkImage, amount: f64) -> Result<InkImage, CoreError> {
+/// Port of `frame_texture.py:paper_grain`, mutating `canvas` in place without allocating a
+/// second RGB output buffer. Holds at most one `(h, w)` `f32` plane (`fine`) and one `(h, w)`
+/// `u8` plane (`low_big`).
+pub fn paper_grain_in_place(canvas: &mut InkImage, amount: f64) -> Result<(), CoreError> {
     if canvas.mode != InkMode::Rgb {
         return Err(bad_mismatch("paper_grain requires RGB canvas"));
+    }
+    if canvas.width == 0 || canvas.height == 0 {
+        return Err(bad_coords("paper_grain dimensions must be positive"));
     }
     if !amount.is_finite() || amount < 0.0_f64 {
         return Err(bad_coords("paper_grain amount must be non-negative finite"));
@@ -104,7 +122,12 @@ pub fn paper_grain(canvas: &InkImage, amount: f64) -> Result<InkImage, CoreError
     let h = canvas.height as u64;
     let pixels = checked_mul_u64(w, h)?;
     let n_px = fit_count(pixels, 4)?;
-    let out_bytes = fit_count(checked_mul_u64(pixels, 3)?, 1)?;
+    let expected_bytes = fit_count(checked_mul_u64(pixels, 3)?, 1)?;
+    if canvas.data.len() != expected_bytes {
+        return Err(bad_mismatch(
+            "canvas length does not match image dimensions",
+        ));
+    }
 
     let mut rng = Pcg64::from_seed(42);
     let scale = 255.0_f64 * amount;
@@ -126,26 +149,46 @@ pub fn paper_grain(canvas: &InkImage, amount: f64) -> Result<InkImage, CoreError
     drop(low_u8);
 
     let amt_f = amount as f32;
-    let mut out = Vec::new();
-    out.try_reserve_exact(out_bytes).map_err(|_| too_big())?;
-    out.resize(out_bytes, 0);
-
     for i in 0..n_px {
         let f_i = fine[i];
         let low_f = (f32::from(low_big[i]) - 128.0_f32) * amt_f * 0.8_f32;
         let base = i * 3;
         for c in 0..3 {
             let s = f32::from(canvas.data[base + c]) + f_i + low_f;
-            out[base + c] = s.clamp(0.0_f32, 255.0_f32) as u8;
+            canvas.data[base + c] = s.clamp(0.0_f32, 255.0_f32) as u8;
         }
     }
 
-    Ok(InkImage {
-        mode: InkMode::Rgb,
-        width: canvas.width,
-        height: canvas.height,
-        data: out,
-    })
+    Ok(())
+}
+
+/// Port of `frame_texture.py:paper_grain`. Validates upfront before cloning the canvas.
+pub fn paper_grain(canvas: &InkImage, amount: f64) -> Result<InkImage, CoreError> {
+    if canvas.mode != InkMode::Rgb {
+        return Err(bad_mismatch("paper_grain requires RGB canvas"));
+    }
+    if canvas.width == 0 || canvas.height == 0 {
+        return Err(bad_coords("paper_grain dimensions must be positive"));
+    }
+    if !amount.is_finite() || amount < 0.0_f64 {
+        return Err(bad_coords("paper_grain amount must be non-negative finite"));
+    }
+    let pixels = checked_mul_u64(canvas.width as u64, canvas.height as u64)?;
+    let _ = fit_count(pixels, 4)?;
+    let expected_bytes = fit_count(checked_mul_u64(pixels, 3)?, 1)?;
+    if canvas.data.len() != expected_bytes {
+        return Err(bad_mismatch(
+            "canvas length does not match image dimensions",
+        ));
+    }
+    let mut out = InkImage::from_bytes(
+        InkMode::Rgb,
+        canvas.width as u64,
+        canvas.height as u64,
+        &canvas.data,
+    )?;
+    paper_grain_in_place(&mut out, amount)?;
+    Ok(out)
 }
 
 /// Port of `frame_paint.py:background` (solid or glow), delegating to `crate::raster::background`.

@@ -473,6 +473,9 @@ def carrier_contours_oracle(
 
 
 def check_gate_a_arrays(or_arr: np.ndarray, rs_arr: np.ndarray, label: str, *, rel_tol: float = 1e-12) -> None:
+    assert or_arr.shape == rs_arr.shape, f"{label}: Gate A shape mismatch {or_arr.shape} != {rs_arr.shape}"
+    assert bool(np.all(np.isfinite(or_arr))), f"{label}: Gate A oracle has non-finite values"
+    assert bool(np.all(np.isfinite(rs_arr))), f"{label}: Gate A Rust output has non-finite values"
     diff = np.abs(or_arr - rs_arr)
     limit = rel_tol * np.maximum(1.0, np.abs(or_arr))
     bad = int(np.sum(diff > limit))
@@ -487,8 +490,28 @@ def gate_b_carrier_report(
     py_pixels: np.ndarray,
     rs_pixels: np.ndarray,
     label: str,
+    *,
+    w: int,
+    h: int,
+    c: int,
+    jit: int,
+    seed: int,
 ) -> tuple[int, int]:
-    """Compare real Python contours & canvas pixels against Rust, attributing any contour diffs."""
+    """Verify Gate A unconditionally via `carrier_contours_oracle`, then attribute Python vs Rust diffs."""
+    or_outer_l, or_inner_l = carrier_contours_oracle(w, h, c, jit, seed, use_libm=True, perturb_ulp=0)
+    check_gate_a_arrays(
+        np.asarray(or_outer_l, dtype=np.float64),
+        np.asarray(rs_outer, dtype=np.float64),
+        f"{label}-outer-gate-a",
+        rel_tol=1e-12,
+    )
+    check_gate_a_arrays(
+        np.asarray(or_inner_l, dtype=np.float64),
+        np.asarray(rs_inner, dtype=np.float64),
+        f"{label}-inner-gate-a",
+        rel_tol=1e-12,
+    )
+
     pt_diffs: list[str] = []
     for tag, p_pts, r_pts in (("outer", py_outer, rs_outer), ("inner", py_inner, rs_inner)):
         assert len(p_pts) == len(r_pts)
@@ -506,6 +529,7 @@ def gate_b_carrier_report(
 
 def check_alpha_luma_gate_a(rs_alpha_luma: float, rgba: np.ndarray, label: str) -> None:
     """Gate A: verify Rust float32 alpha_luma matches sequential no-BLAS oracle bitwise, with negative control."""
+    assert math.isfinite(rs_alpha_luma), f"{label}: non-finite Rust alpha_luma {rs_alpha_luma!r}"
     rs_bits = int(np.float32(rs_alpha_luma).view(np.uint32))
     or_val = seq_alpha_luma(rgba)
     or_bits = int(or_val.view(np.uint32))
@@ -526,8 +550,11 @@ def gate_b_clogo_report(
     auto: bool,
     auto_ink: bool,
     label: str,
+    seq_pixels: np.ndarray | None = None,
 ) -> tuple[int, int]:
     """Gate B attribution for clogo `_alpha_luma` (@ BLAS) and branch thresholds (`bg_l > 150`, `|lg-bg_l| < 70`)."""
+    # Always verify Gate A against sequential oracle, even if real Python and Rust flip a branch.
+    check_alpha_luma_gate_a(rs_alpha_luma, rgba, f"{label} Gate A")
     py_f32 = np.float32(py_alpha_luma)
     rs_f32 = np.float32(rs_alpha_luma)
     ulp_diff = abs(int(py_f32.view(np.uint32)) - int(rs_f32.view(np.uint32)))
@@ -539,11 +566,12 @@ def gate_b_clogo_report(
     rs_branch = abs(float(rs_alpha_luma) - bg_l) < 70.0
     if auto and auto_ink and py_branch != rs_branch:
         chains.append(f"{label}: branch-flip(|lg-bg_l|<70) bg_l={bg_l!r} py_lg={py_alpha_luma!r} rs_lg={rs_alpha_luma!r}")
+        assert seq_pixels is not None, f"{label}: branch-flip occurred without sequential-oracle pixels"
+        seq_diff = int(np.sum(seq_pixels != rs_pixels))
         report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
         report_gate_b(f"{label}-pixels", px_diff)
+        assert seq_diff == 0, f"{label}: expected 0 diffs vs sequential-luma oracle on branch flip, got {seq_diff}"
         return ulp_diff, px_diff
-    # Also verify sequential Gate A on logo rgba
-    check_alpha_luma_gate_a(rs_alpha_luma, rgba, f"{label} Gate A")
     report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
     report_gate_b(f"{label}-pixels", px_diff)
     assert px_diff == 0, f"{label}: expected 0 clogo pixel diffs when branch agrees, got {px_diff}"
