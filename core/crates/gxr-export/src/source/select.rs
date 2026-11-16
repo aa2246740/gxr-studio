@@ -54,8 +54,13 @@ pub fn open_dng<'a>(src: &Sources<'a>) -> Result<Dng<'a>, Fail> {
     Ok(Dng::open(data, &src.shot.dng_name)?)
 }
 
-/// Port of gxr_studio/finish/serve.py:118 _raw_rgb with `full=True`.
-pub fn raw_rgb(src: &Sources<'_>, edit: &Edit) -> Result<(Image<u8>, Labels, &'static str), Fail> {
+/// Port of gxr_studio/finish/serve.py:118 _raw_rgb with `full=True`. `neutral` skips the
+/// renderer plan and always renders NEUTRAL (base mode `neutral`).
+pub fn raw_rgb(
+    src: &Sources<'_>,
+    edit: &Edit,
+    neutral: bool,
+) -> Result<(Image<u8>, Labels, &'static str), Fail> {
     let dng = match open_dng(src) {
         Ok(dng) => dng,
         Err(Fail::Core(e)) if e.kind == "raw_decode" => {
@@ -86,10 +91,14 @@ pub fn raw_rgb(src: &Sources<'_>, edit: &Edit) -> Result<(Image<u8>, Labels, &'s
         }
         Err(e) => return Err(e),
     };
-    let recipe = match renderer(src.shot, edit, &src.ctx) {
-        Ok(r) => Some(r),
-        Err(Fail::Unavailable { .. }) if edit.recipe.is_none() => None,
-        Err(e) => return Err(e),
+    let recipe = if neutral {
+        None
+    } else {
+        match renderer(src.shot, edit, &src.ctx) {
+            Ok(r) => Some(r),
+            Err(Fail::Unavailable { .. }) if edit.recipe.is_none() => None,
+            Err(e) => return Err(e),
+        }
     };
     let Some(r) = recipe else {
         let rgb = gxr_raw::render_full(&dng)?;
@@ -242,9 +251,9 @@ pub(crate) fn color_image_checked(
         if !has_dng {
             return Err(Fail::NoRaw(NO_RAW.to_string()));
         }
-        // `EditState()`: no recipe, so `renderer` plans the unit's stock 04 when it can, and
-        // falls back to NEUTRAL only on `RenderUnavailable`. The labels say neutral either way.
-        let (rgb, mut labels, path) = raw_rgb(src, &Edit::empty())?;
+        // `neutral=True`: never plans a recipe, so the pixels are NEUTRAL (or the embedded
+        // preview when there is no full CFA). No adjustment is baked in.
+        let (rgb, mut labels, path) = raw_rgb(src, &Edit::empty(), true)?;
         labels.set("kind", "original");
         labels.set("label", "original");
         labels.set("text", "中性转换");
@@ -256,9 +265,10 @@ pub(crate) fn color_image_checked(
                 "GXR Studio neutral-preview: white-balanced linear sensor data to sRGB, no recipe applied",
             );
         }
+        // A neutral picture has no adjustment baked in: the finish applies them all, as for a JPG.
         return Ok(Picked {
             rgb,
-            from_raw: true,
+            from_raw: false,
             labels,
             path,
         });
@@ -283,7 +293,7 @@ pub(crate) fn color_image_checked(
             curves: edit.curves.clone(),
         }
     };
-    let (rgb, mut labels, path) = match raw_rgb(src, &raw_edit) {
+    let (rgb, mut labels, path) = match raw_rgb(src, &raw_edit, false) {
         Ok(found) => found,
         Err(exc) if exc.is_caught_by_color_image() => {
             if is_local(&raw_edit) || !has_jpg {
@@ -299,13 +309,15 @@ pub(crate) fn color_image_checked(
         }
         Err(exc) => return Err(exc),
     };
-    if mode == "standard" && labels.get("id") != Some("neutral-preview") {
+    // NEUTRAL fallback or embedded preview: the renderer applied no adjustment.
+    let neutral = labels.get("id") == Some("neutral-preview");
+    if mode == "standard" && !neutral {
         labels.set("kind", "prediction");
         labels.set("label", "prediction");
     }
     Ok(Picked {
         rgb,
-        from_raw: true,
+        from_raw: !neutral,
         labels,
         path,
     })
