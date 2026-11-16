@@ -69,6 +69,8 @@ export class PasteState {
   pickNext = false;
   /** 正在套用（按时间片）。这时再点套用不理。 */
   busy = false;
+  /** 上一批每张的结果（和桌面 `Outcome.to_json` 同形；对拍测试读它）。 */
+  lastOutcomes: Outcome[] = [];
   /** 每一片最多占主线程多久（测试可以改小，让每张各占一片）。 */
   budgetMs = 4;
   private session = -1;
@@ -215,6 +217,7 @@ export class PasteState {
       this.busy = false;
     }
     if (api.session() !== session) return outcomes;
+    this.lastOutcomes = outcomes;
     const used = outcomes.some((r) => r.applied.length);
     const line = pasteMessage(outcomes);
     const ids = new Set(outcomes.filter((r) => r.applied.length).map((r) => r.id));
@@ -242,8 +245,16 @@ export const pasteState = new PasteState();
 
 /** 只在开发服务器里：测试读每张照片的编辑状态（配方、各配方的档位、调整、rev）。 */
 function exposeEdits(api: AppApi): void {
-  const w = window as unknown as { __gxrEdits?: () => unknown; __gxrPaste?: PasteState };
+  const w = window as unknown as { __gxrEdits?: () => unknown; __gxrPaste?: PasteState; __gxrRequest?: (stem: string) => Promise<unknown> };
   w.__gxrPaste = pasteState;
+  // 这张照片导出时交给核心的请求（ui-m3 的 buildRequest，和点「存到相册」时同一份输入）。动态 import：Node 测试不加载导出界面。
+  w.__gxrRequest = async (stem) => {
+    const photo = api.photos().find((item) => item.stem === stem);
+    if (!photo) return null;
+    const { requestPhoto, cardsFor } = await import('./export_ui');
+    const { buildRequest } = await import('../lib/export_request');
+    return buildRequest(requestPhoto(photo), cardsFor(api.book(), photo), { size: 'original', quality: 'high' }, 'dev');
+  };
   w.__gxrEdits = () =>
     api.photos().map((photo) => ({
       stem: photo.stem,
