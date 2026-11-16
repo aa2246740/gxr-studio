@@ -1,0 +1,47 @@
+/* 复制 / 套用（04a–04e）和网格底栏（02a、04d、04e）。尺寸照设计稿 design/r1/src/screens_apply.py、ui.py。 */
+.paste-sheet .hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.paste-sheet .hd.lead-row { justify-content: flex-start; }
+.paste-sheet .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--gray-600); margin: -8px auto 12px; }
+.paste-sheet .hd .nb { margin-right: -10px; }
+.paste-sheet .okc, .pastebar .okc { color: var(--ok-text); display: grid; place-items: center; width: 28px; flex: none; }
+.pastebar .accc { color: var(--accent-text); display: grid; place-items: center; width: 28px; flex: none; }
+.popts { margin-top: 8px; }
+.optrow { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 58px; padding: 7px 0; border-top: 1px solid var(--line-subtle); text-align: left; }
+.optrow:first-child { border-top: 0; }
+.optrow .tx { flex: 1; min-width: 0; }
+.optrow .tx b { display: block; font: 500 16px/22px var(--font-ui); }
+.optrow .tx small { display: block; font-size: 13px; line-height: 18px; color: var(--text-2); }
+.optrow .tx small i { font-style: normal; color: var(--text-3); }
+.cc { width: 26px; height: 26px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--gray-500); display: grid; place-items: center; color: #fff; flex: none; }
+.cc.on { background: var(--accent); box-shadow: none; }
+.cc .ico { width: 14px; height: 14px; stroke-width: 2.6; }
+.paste-sheet > .btn.block { margin-top: 12px; }
+.pnote { margin-top: 8px; font-size: 13px; line-height: 18px; }
+.pthumbs { display: flex; gap: 4px; }
+.pthumbs .t { width: 60px; height: 40px; border-radius: 5px; overflow: hidden; position: relative; flex: none; background: var(--gray-800); }
+.pthumbs.sm .t { width: 56px; height: 37px; }
+.pthumbs .t canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pthumbs .t.src { box-shadow: 0 0 0 2px var(--accent-text); }
+.gpick { margin-top: 14px; border-radius: 14px; background: var(--surface-raised); box-shadow: inset 0 0 0 1px var(--line-subtle); padding: 12px; }
+.gpick .ghd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.gpick .ghd b { font: 600 16px/20px var(--font-num); }
+.gpick .ghd span { font-size: 13px; }
+.gpick .btn.block { margin-top: 12px; }
+.gpick .gapline { font-size: 12px; line-height: 16px; margin-top: 6px; text-align: center; }
+.pfoot { font-size: 12px; line-height: 16px; margin-top: 8px; }
+.dlg.paste-dlg { top: auto; bottom: 24%; }
+.paste-dlg .pcenter { margin-top: 12px; display: flex; justify-content: center; }
+.paste-dlg p.pundo { margin-top: 10px; font-size: 13px; color: var(--text-3); }
+.pastebar .tx { flex: 1; min-width: 0; padding-left: 4px; }
+.pastebar .tx b { display: block; font: 500 15px/20px var(--font-ui); }
+.pastebar .tx small { display: block; font-size: 12px; line-height: 16px; color: var(--text-2); }
+.pastebar .fbtn { min-height: 56px; padding: 0 18px; gap: 6px; }
+.pastebar .fbtn.fill { font-size: 16px; }
+.gh .cnt { font-size: 13px; color: var(--text-3); white-space: nowrap; }
+.gh .go.idle { background: var(--surface-control); color: var(--text-2); }
+.gh .go .ico { width: 18px; height: 18px; }
+/* 选择栏不显示时整格收起（.dock 的 display:flex 会盖过 hidden）。 */
+.dock[hidden] { display: none; }
+/* 04e：带着编辑的照片右下角的铅笔（设计稿 ui.py 的 .cell .edt）。 */
+.cell .edt { position: absolute; right: 5px; bottom: 5px; width: 22px; height: 22px; border-radius: 6px; background: rgba(0, 0, 0, 0.66); display: grid; place-items: center; color: #fff; }
+.cell .edt .ico { width: 13px; height: 13px; stroke-width: 2.2; }

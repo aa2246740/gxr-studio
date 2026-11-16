@@ -559,7 +559,7 @@ impl Encoder<BufWriter<File>> {
     }
 }
 
-fn get_block(
+pub(super) fn get_block(
     data: &[u8],
     start_x: usize,
     start_y: usize,

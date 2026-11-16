@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use gxr_raw::CoreError;
 
 use crate::exif::ExifVal;
+use crate::rational::{RatVal, infer_signed, pack_rational, pack_signed_rational};
 
 pub(crate) const TYPE_BYTE: u16 = 1;
 pub(crate) const TYPE_ASCII: u16 = 2;
@@ -102,11 +103,20 @@ fn lookup_exif_type(tag: u16) -> Option<u16> {
     }
 }
 
-fn infer_type(val: &ExifVal) -> u16 {
+/// The tag type when the tag table has none. In Pillow mode, rationals follow Pillow's
+/// `_setitem` (SRATIONAL when a value is `< 0`; a zero denominator is NaN, never negative).
+fn infer_type(val: &ExifVal, pillow: bool) -> u16 {
     match val {
         ExifVal::Str(_) => TYPE_ASCII,
         ExifVal::Bytes(_) => TYPE_BYTE,
         ExifVal::Floats(_) => TYPE_DOUBLE,
+        ExifVal::Rationals(rs) if pillow => {
+            if infer_signed(rs) {
+                TYPE_SRATIONAL
+            } else {
+                TYPE_RATIONAL
+            }
+        }
         ExifVal::Rationals(rs) => {
             if rs.iter().any(|&(n, d)| (n < 0) ^ (d < 0)) {
                 TYPE_SRATIONAL
@@ -128,8 +138,10 @@ fn infer_type(val: &ExifVal) -> u16 {
     }
 }
 
-fn encode_tag_data(typ: u16, val: &ExifVal) -> Result<(u32, Vec<u8>), CoreError> {
+fn encode_tag_data(typ: u16, val: &ExifVal, pillow: bool) -> Result<(u32, Vec<u8>), CoreError> {
     match typ {
+        TYPE_RATIONAL if pillow => encode_rationals_pillow(val),
+        TYPE_SRATIONAL if pillow => encode_signed_rationals_pillow(val),
         TYPE_ASCII => {
             let mut data = match val {
                 ExifVal::Bytes(b) => b.clone(),
@@ -281,6 +293,47 @@ fn encode_rationals_unsigned(val: &ExifVal) -> Result<(u32, Vec<u8>), CoreError>
     Ok((count, data))
 }
 
+/// Pillow `write_rational`: an `IFDRational` per pair; ints become floats first (`_setitem`).
+fn encode_rationals_pillow(val: &ExifVal) -> Result<(u32, Vec<u8>), CoreError> {
+    let vals: Vec<RatVal> = match val {
+        ExifVal::Rationals(rs) => rs.iter().map(|&(n, d)| RatVal::Ifd(n, d)).collect(),
+        #[allow(clippy::cast_precision_loss)]
+        ExifVal::Ints(vs) => vs.iter().map(|&v| RatVal::Float(v as f64)).collect(),
+        ExifVal::Floats(fs) => fs.iter().map(|&f| RatVal::Float(f)).collect(),
+        _ => {
+            return Err(CoreError::new(
+                "encode_failed",
+                "invalid RATIONAL EXIF tag value",
+            ));
+        }
+    };
+    let count = u32::try_from(vals.len())
+        .map_err(|_| CoreError::new("encode_failed", "EXIF RATIONAL tag too long"))?;
+    let mut data = Vec::with_capacity(vals.len() * 8);
+    for v in vals {
+        data.extend_from_slice(&pack_rational(v)?);
+    }
+    Ok((count, data))
+}
+
+/// Pillow `write_signed_rational`. Only inferred tags are SRATIONAL, so every value is an
+/// `IFDRational`.
+fn encode_signed_rationals_pillow(val: &ExifVal) -> Result<(u32, Vec<u8>), CoreError> {
+    let ExifVal::Rationals(rs) = val else {
+        return Err(CoreError::new(
+            "encode_failed",
+            "invalid SRATIONAL EXIF tag value",
+        ));
+    };
+    let mut data = Vec::with_capacity(rs.len() * 8);
+    for &(n, d) in rs {
+        data.extend_from_slice(&pack_signed_rational(n, d)?);
+    }
+    let count = u32::try_from(rs.len())
+        .map_err(|_| CoreError::new("encode_failed", "EXIF SRATIONAL tag too long"))?;
+    Ok((count, data))
+}
+
 fn encode_rationals_signed(val: &ExifVal) -> Result<(u32, Vec<u8>), CoreError> {
     let rs: Vec<(i64, i64)> = match val {
         ExifVal::Rationals(rs) => rs.clone(),
@@ -315,6 +368,7 @@ fn serialize_ifd(
     tags: &BTreeMap<u16, ExifVal>,
     start_offset: u32,
     lookup: fn(u16) -> Option<u16>,
+    pillow: bool,
 ) -> Result<Vec<u8>, CoreError> {
     let n_entries = u16::try_from(tags.len())
         .map_err(|_| CoreError::new("encode_failed", "too many EXIF tags"))?;
@@ -326,8 +380,8 @@ fn serialize_ifd(
 
     let mut entries = Vec::with_capacity(tags.len());
     for (&tag, val) in tags {
-        let typ = lookup(tag).unwrap_or_else(|| infer_type(val));
-        let (count, data) = encode_tag_data(typ, val)?;
+        let typ = lookup(tag).unwrap_or_else(|| infer_type(val, pillow));
+        let (count, data) = encode_tag_data(typ, val, pillow)?;
         entries.push(pack_entry(tag, typ, count, data, &mut offset)?);
     }
 
@@ -337,6 +391,7 @@ fn serialize_ifd(
 pub(crate) fn serialize_ifd0_with_exif(
     base: &BTreeMap<u16, ExifVal>,
     sub: &BTreeMap<u16, ExifVal>,
+    pillow: bool,
 ) -> Result<Vec<u8>, CoreError> {
     let n_entries = u16::try_from(base.len() + 1)
         .map_err(|_| CoreError::new("encode_failed", "too many EXIF IFD0 tags"))?;
@@ -347,16 +402,16 @@ pub(crate) fn serialize_ifd0_with_exif(
 
     for (&tag, val) in base {
         if !sub_written && tag > 0x8769 {
-            let sub_bytes = serialize_ifd(sub, offset, lookup_exif_type)?;
+            let sub_bytes = serialize_ifd(sub, offset, lookup_exif_type, pillow)?;
             entries.push(pack_ifd_pointer(0x8769, sub_bytes, &mut offset)?);
             sub_written = true;
         }
-        let typ = lookup_base_type(tag).unwrap_or_else(|| infer_type(val));
-        let (count, data) = encode_tag_data(typ, val)?;
+        let typ = lookup_base_type(tag).unwrap_or_else(|| infer_type(val, pillow));
+        let (count, data) = encode_tag_data(typ, val, pillow)?;
         entries.push(pack_entry(tag, typ, count, data, &mut offset)?);
     }
     if !sub_written {
-        let sub_bytes = serialize_ifd(sub, offset, lookup_exif_type)?;
+        let sub_bytes = serialize_ifd(sub, offset, lookup_exif_type, pillow)?;
         entries.push(pack_ifd_pointer(0x8769, sub_bytes, &mut offset)?);
     }
 

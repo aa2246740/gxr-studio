@@ -1,15 +1,14 @@
 """Parity: the phone export pipeline (``gxr-export`` ``pipeline/``) against desktop ``export_finish``.
 
 Gates (UNIT-export-pipeline.md):
-- ``export-run-huffopt``: re-coding Pillow's ``optimize=False`` file with optimal tables gives
-  Pillow's ``optimize=True`` file byte for byte (what ``export.py:_finish`` writes).
 - ``export-run-complete`` (no ink): ``_fit`` + one encode equals ``write_rgb_with_exif`` byte for
   byte, qualities 95/85/70, long edge on and off; the result JSON equals ``export_finish``'s fields.
+  The pipeline calls ``gxr_jpeg::encode_jpeg_with(.., optimize = true)`` straight through; the
+  encoder's own whole-file gates are in ``test_core_parity_jpeg_optimize.py``.
 """
 
 from __future__ import annotations
 
-import io
 import json
 from pathlib import Path
 from typing import Any
@@ -21,7 +20,7 @@ from PIL import Image
 from gxr_studio.export import srgb_icc, write_rgb_with_exif
 from gxr_studio.finish.compose import load_jpeg
 from gxr_studio.finish.serve import _fit
-from support.core_cli import error_of, require_cli, run_json
+from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import (
     anon_ids,
     check,
@@ -63,55 +62,6 @@ def pinned_icc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
     check(rs[:24] == py[:24] and rs[36:] == py[36:], "ICC profiles differ outside bytes 24..36")
     monkeypatch.setattr(export_mod, "_ICC", rs)
     return rs
-
-
-def _pillow(rgb: np.ndarray, quality: int, optimize: bool) -> bytes:
-    buf = io.BytesIO()
-    Image.fromarray(np.ascontiguousarray(rgb), "RGB").save(
-        buf, "JPEG", quality=quality, subsampling=0 if quality >= 90 else 2, optimize=optimize, icc_profile=srgb_icc()
-    )
-    return buf.getvalue()
-
-
-def _huffopt(data: bytes, tmp: Path, tag: str) -> bytes:
-    src, out = tmp / f"{tag}.jpg", tmp / f"{tag}.opt.jpg"
-    src.write_bytes(data)
-    code, payload = run_json(["export-run-huffopt", "--in", str(src), "--out", str(out)])
-    err = error_of(code, payload)
-    if err is not None:
-        raise err
-    return out.read_bytes()
-
-
-@pytest.mark.parametrize("quality", QUALITIES + (100, 90, 89, 1), ids=anon_ids(len(QUALITIES) + 4))
-def test_huffopt_equals_pillow_optimize(quality: int, tmp_path: Path) -> None:
-    for name, rgb in synthetic_images():
-        plain = _pillow(rgb, quality, False)
-        want = _pillow(rgb, quality, True)
-        got = _huffopt(plain, tmp_path, f"{name}-{quality}")
-        same_file_redacted(got, want, f"{name} q{quality}")
-
-
-def test_huffopt_real_arrays(tmp_path: Path) -> None:
-    pairs = real_pairs(6)
-    if not pairs:
-        missing("captures/ 真实样本不在本机（export-pipeline）")
-    for i, (jpg, _dng) in enumerate(pairs):
-        rgb = load_jpeg(jpg, None)
-        for quality in QUALITIES:
-            got = _huffopt(_pillow(rgb, quality, False), tmp_path, f"real{i}-{quality}")
-            want = _pillow(rgb, quality, True)
-            same_file_redacted(got, want, f"real {i} q{quality}")
-
-
-def test_huffopt_rejects_damaged_input(tmp_path: Path) -> None:
-    good = _pillow(np.zeros((16, 16, 3), dtype=np.uint8), 95, False)
-    for tag, data in [("empty", b""), ("text", b"not a jpeg"), ("truncated", good[: len(good) - 40]), ("no-eoi", good[:-2])]:
-        src, out = tmp_path / f"{tag}.jpg", tmp_path / f"{tag}.out.jpg"
-        src.write_bytes(data)
-        code, payload = run_json(["export-run-huffopt", "--in", str(src), "--out", str(out)])
-        err = error_of(code, payload)
-        check(err is not None and err.kind == "encode_failed", "expected encode_failed")
 
 
 def _state(name: str, quality: Any, long_edge: Any, labels: dict[str, Any], hdr: Any = None) -> dict[str, Any]:
@@ -243,37 +193,6 @@ def test_complete_option_errors(state: dict[str, Any], kind: str, tmp_path: Path
     got, payload = _complete(tmp_path, "err", np.zeros((4, 4, 3), dtype=np.uint8), state, "")
     check(got is None, "expected an error")
     same_kind(payload, kind, "option error")
-
-
-def _with_unused_table(jpeg: bytes, cls: int) -> bytes:
-    """Copy the first DHT of class ``cls`` (0 = DC, 1 = AC) as table id 2 and insert it before SOS;
-    the scan never uses it (Sol r1 P2-03)."""
-    at = 2
-    while True:
-        check(jpeg[at] == 0xFF, "synthetic JPEG: segment marker expected")
-        marker, length = jpeg[at + 1], int.from_bytes(jpeg[at + 2 : at + 4], "big")
-        if marker == 0xC4 and jpeg[at + 4] >> 4 == cls:
-            seg = bytearray(jpeg[at : at + 2 + length])
-            seg[4] = (cls << 4) | 2
-            break
-        at += 2 + length
-    sos = jpeg.index(b"\xff\xda")
-    return jpeg[:sos] + bytes(seg) + jpeg[sos:]
-
-
-@pytest.mark.parametrize("cls", [0, 1])
-def test_huffopt_unused_table_is_an_error(cls: int, tmp_path: Path) -> None:
-    plain = _pillow(np.full((1, 1, 3), 120, dtype=np.uint8), 95, False)
-    data = _with_unused_table(plain, cls)
-    with Image.open(io.BytesIO(data)) as im:
-        im.load()  # Pillow decodes it
-    src, out = tmp_path / "unused.jpg", tmp_path / "unused.out.jpg"
-    src.write_bytes(data)
-    code, payload = run_json(["export-run-huffopt", "--in", str(src), "--out", str(out)])
-    err = error_of(code, payload)
-    check(err is not None and err.kind == "encode_failed", "expected encode_failed")
-    # The ordinary file still re-codes to Pillow optimize=True exactly.
-    same_file_redacted(_huffopt(plain, tmp_path, f"plain{cls}"), _pillow(np.full((1, 1, 3), 120, dtype=np.uint8), 95, True), f"plain{cls}")
 
 
 BAD_HDR_STATES: list[Any] = [

@@ -1,4 +1,5 @@
 // 开发服务器只绑 127.0.0.1。样本和测试回执只在 dev 里存在，打进生产包的检查会搜 __dev。
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -163,8 +164,19 @@ async function handleDev(
   res.end();
 }
 
-export default defineConfig({
+/** 构建号：这次构建的短提交号，写进导出 EXIF 描述的 `gxr-core <构建号>`。开发服务器里是 `dev`。 */
+function buildId(command: string): string {
+  if (command !== 'build') return 'dev';
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+export default defineConfig(({ command }) => ({
   root,
+  define: { __GXR_BUILD__: JSON.stringify(buildId(command)) },
   server: {
     host: '127.0.0.1',
     port: 5199,
@@ -183,4 +195,4 @@ export default defineConfig({
     },
   },
   plugins: [devSamples()],
-});
+}));

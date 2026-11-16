@@ -1,0 +1,58 @@
+/* UI-M3：导出面板（05a）、贴底的进度和结果（05b / 05c / 06f / 05e）。尺寸照设计稿 screens_export.py。 */
+
+.ms.export .row { display: flex; align-items: center; }
+.ms.export .row h2 { flex: 1; }
+.ms.export .frow { padding: 10px 0; border-top: 1px solid var(--line-subtle); }
+.ms.export .frow:first-child { border-top: 0; padding-top: 4px; }
+.ms.export .frow .lab { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.ms.export .frow .lab b { font: 600 15px/20px var(--font-ui); flex: none; }
+.ms.export .frow .lab span { font-size: 13px; color: var(--text-2); text-align: right; }
+.ms.export .hdrrow { display: flex; align-items: center; gap: 8px; }
+.ms.export .hdrrow .tx { flex: 1; min-width: 0; }
+.ms.export .hdrrow .tx b { display: block; font: 600 15px/20px var(--font-ui); }
+.ms.export .hdrrow .tx small { display: block; font-size: 13px; line-height: 18px; color: var(--text-2); margin-top: 2px; }
+.ms.export .switch { cursor: pointer; transition: background 0.15s; }
+.ms.export .switch::after { transition: left 0.15s; }
+.ms.export .switch:checked { background: var(--accent); }
+.ms.export .switch:checked::after { left: 22px; }
+.ms.export .switch:disabled { opacity: 0.45; cursor: default; }
+.ms.export .switch:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.ms.export .hdrmix { margin: 10px 0 0; padding: 8px 12px; }
+.ms.export .hdrmix[hidden] { display: none; }
+.ms.export .hdrmix .tx { font-size: 13px; line-height: 18px; }
+.ms.export .guide { margin-top: 6px; font-size: 13px; line-height: 18px; color: var(--text-2); }
+.ms.export .go { margin-top: 14px; gap: 8px; }
+.ms.export .foot { font-size: 12px; line-height: 16px; margin-top: 8px; text-align: center; color: var(--text-3); }
+
+.app:has(> .pdock) .screen { padding-bottom: 0; }
+.pdock { flex: none; position: relative; z-index: 6; background: var(--surface-titlebar); border-top: 1px solid var(--line); padding: 10px 12px calc(10px + var(--safe-bottom)); }
+.pdock .top { display: flex; align-items: center; gap: 10px; }
+.pdock .tx { flex: 1; min-width: 0; }
+.pdock .tx b { display: block; font: 500 15px/20px var(--font-ui); }
+.pdock .tx small { display: block; font-size: 12px; line-height: 16px; color: var(--text-2); }
+.pdock .why { margin: 2px 0 0; padding: 0; list-style: none; max-height: 64px; overflow: auto; }
+.pdock .why li { font-size: 12px; line-height: 16px; color: var(--text-2); }
+.pdock .ic { display: grid; place-items: center; width: 28px; flex: none; }
+.pdock .ic.ok { color: var(--ok-text); }
+.pdock .ic.warn { color: var(--warn-text); }
+.pdock .fbtn.fill-acc { background: var(--accent); color: #fff; min-height: 56px; font-size: 16px; padding: 0 18px; gap: 6px; }
+.pdock .fbtn.fill-ctl { background: var(--surface-control); color: var(--text-1); box-shadow: inset 0 0 0 1px var(--line); }
+.pdock .btn.block { margin-top: 10px; gap: 8px; }
+.pdock .bar { height: 4px; margin-top: 10px; border-radius: 999px; background: var(--gray-700); overflow: hidden; }
+.pdock .bar i { display: block; height: 100%; border-radius: 999px; background: var(--accent-text); transition: width 0.2s; }
+.pdock .spin { width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid rgba(106, 166, 255, 0.25); border-top-color: var(--accent-text); flex: none; animation: gxr-spin 0.9s linear infinite; }
+@keyframes gxr-spin { to { transform: rotate(360deg); } }
+.pthumbs { display: flex; gap: 4px; margin-top: 10px; }
+.pthumbs .t { position: relative; flex: 1; height: 44px; border-radius: 5px; overflow: hidden; background: var(--gray-800); max-width: 72px; }
+.pthumbs .t canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pthumbs .t.wait canvas { filter: brightness(0.45) saturate(0.5); }
+.pthumbs .t.fail canvas { filter: brightness(0.4); }
+.pthumbs .t .st { position: absolute; right: 3px; bottom: 3px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.65); color: #fff; }
+.pthumbs .t .st .ico { width: 11px; height: 11px; stroke-width: 2.6; }
+.pthumbs .t.ok .st { background: var(--ok-text); color: #0d1f14; }
+.pthumbs .t.fail .st { background: var(--danger-text); color: #2a0d0b; }
+.pthumbs .t .spin { position: absolute; right: 3px; bottom: 3px; width: 16px; height: 16px; border-width: 2px; background: rgba(0, 0, 0, 0.55); }
+.pdock .links { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.pdock .links a { color: var(--accent-text); font-size: 14px; line-height: 20px; }
+
+.pdock .tx small.hdrline { margin-top: 2px; }

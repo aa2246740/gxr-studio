@@ -7,7 +7,9 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_export::source::{Request, iso_from_number, pack_from_index, plan_json, render};
+use gxr_export::source::{
+    Request, iso_from_number, pack_from_index, plan_json, render, selection_json,
+};
 use gxr_raw::{CoreError, error_json};
 
 fn rejected(err: &CoreError) -> JsValue {
@@ -45,6 +47,28 @@ pub fn source_plan(
     } else {
         Err(JsValue::from_str(&text))
     }
+}
+
+/// `source-selection`: which recipe `color_image` will plan. `{"selection":null}` for
+/// `camera-jpg`, `neutral`, and a scene-referred LUT. `space_json` is the `--space` text;
+/// empty means the caller did not pass one. Same JSON as the CLI, including the newline.
+#[wasm_bindgen]
+pub fn source_selection(
+    shot_json: &[u8],
+    edit_json: &[u8],
+    base: &str,
+    space_json: &[u8],
+) -> Result<String, JsValue> {
+    let space = if space_json.is_empty() {
+        None
+    } else {
+        Some(
+            std::str::from_utf8(space_json)
+                .map_err(|_| rejected(&CoreError::new("bad_request", "--space is not UTF-8")))?,
+        )
+    };
+    let text = selection_json(shot_json, edit_json, base, space).map_err(|e| rejected(&e))?;
+    Ok(format!("{text}\n"))
 }
 
 /// `render_full(open_dng(dng), renderer)` for the recipe renderer of `entry` at `iso`:

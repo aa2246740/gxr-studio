@@ -345,12 +345,21 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 `gxr-jpeg` 负责成片导出时的单次 JPEG 编码，以及给 wave-2 HDR 封装使用的段操作：
 
-- 编码参数对齐 `src/gxr_studio/export.py` 的 `_finish`：品质 `1..=100`（高 95 / 中 85 / 低 70），`quality >= 90` 用 4:4:4，否则用 4:2:0；用 Annex K 标准霍夫曼表、单遍扫描（与 Pillow `optimize=False` 一致）；写入 APP1 EXIF 和 588 字节 sRGB ICC（`ICC_PROFILE`）。
+- 编码参数对齐 `src/gxr_studio/export.py` 的 `_finish`：品质 `1..=100`（高 95 / 中 85 / 低 70），`quality >= 90` 用 4:4:4，否则用 4:2:0；一次交错扫描；写入 APP1 EXIF 和 588 字节 sRGB ICC（`ICC_PROFILE`）。
+- `encode_jpeg_with(.., optimize)`（CLI `jpeg-encode --optimize`，WASM `jpeg_encode` 的最后一个参数）：
+  - `optimize = true` 就是 `_finish` 写出的文件（Pillow `optimize=True`），整个文件逐字节相同：按这张图自己的符号统计建霍夫曼表（`jchuff.c` 的 `jpeg_gen_optimal_table`，平局取较大的符号，保留 256 号），JFIF 1.01，libjpeg 的段顺序（DQT 在 SOF0 前），EXIF 有理数按 Pillow 写（见下）。
+  - `optimize = false`（`encode_jpeg`）和以前逐字节相同：Annex K 标准表，SOF0、DQT、DHT 和扫描数据与 Pillow `optimize=False` 相同；头部是 JFIF 1.02、SOF0 在 DQT 前、有理数原样写。
+  - 优化表分两遍走同一批行条带：第一遍做颜色转换、下采样、DCT 和量化，只计数；建表；第二遍重新算同样的块并写出。libjpeg-turbo 是把整张系数数组存下来（4:4:4 时是 RGB 输入的两倍），这里不存，峰值内存和一次编码相同，代价是 DCT 算两遍。
+  - 内存：Node 里的 WASM，4288×2848，每次一个新实例（线性内存只增不减，结束时的大小就是峰值）。噪声图 q95 开不开优化峰值都是 82.3 MiB（耗时 1298 ms 对 722 ms），平滑图 q95 都是 39.4 MiB；q85、q70 也都不变（round-6 `mobile-jpeg-optimize/report/wasm-peak.jsonl`）。
+  - 用不到的表、全零的计数、越界的系数都返回 `encode_failed`，不 panic（`jpeg_enc/optimize.rs` 的单测）。
+- EXIF 有理数（`optimize = true`，`rational.rs`）：照 Pillow 12.2.0 的 `_setitem` 推断类型，值里有 `< 0` 的才是 SRATIONAL，分母为 0 的值是 NaN，不算负数（所以 `5/0`、`-5/0`、`0/-3` 都是 RATIONAL）。RATIONAL 每个值过 `_limit_rational(v, 2**32-1)`（约分，大于 1 时经倒数限制；整数和浮点先变成 `float`）；SRATIONAL 过 `_limit_signed_rational`（保留原分子分母，超出 int32 时才限制，第二步用浮点除法）。Pillow 写不了的值（比如 RATIONAL 里的 `-5/0`）两边都让完整 EXIF 失败，退到精简 EXIF。
+- Pillow 的输出缓冲区（`pillow_buffer.rs`）：`optimize=True` 时 libjpeg 在 `jpeg_finish_compress` 里一次写出全部表和扫描，不能中途换缓冲区，Pillow 只给 `max(65536, k·w·h + len(exif)+5 + len(icc 段)+1, 4w)` 字节（品质 ≥ 95 时 k = 2，否则 1）。装不下就是 libjpeg 的 “Suspension not allowed here”，`_finish` 先退到精简 EXIF 再试，再失败就是 `encode_failed`。桌面在高熵画面上真会这样失败（例如 320×480 的噪声在 q100）。gxr-jpeg 按 Pillow 的状态机算同样的条件，结果和桌面一致：同样退到精简 EXIF，同样报 `encode_failed`。边界是在 Pillow 12.2.0 上量出来的：写完 SOI、APP0、APP1、APP2 后剩余空间不足 1024 字节时，Pillow 换一个新缓冲区再写扫描；最后一段输出必须严格小于剩余空间。
 - 底层编码器是内置在 `core/crates/gxr-jpeg/src/jpeg_enc/` 的 `jpeg-encoder 0.6.0` 源码（MIT/Apache-2.0，含 IJG 代码，许可原文和致谢见 `core/crates/gxr-jpeg/NOTICE` 与 `docs/dependencies.md`），已改成 libjpeg-turbo 的算术：整数除法量化 `(|x| + (q>>1)) / q`、`jccolor.c` 的定点颜色转换、`h2v2_downsample` 的交替 bias 与边缘扩展。不再依赖外部 crate。门槛（Gate B）：SOF0、DQT、DHT 和 SOS 起的扫描数据与 Pillow 逐字节相同，解码像素零差。
 - EXIF 映射（`build_exif`）：`270`（`ImageDescription`）按 UTF-8 写入、`33432`（`Copyright`）按 latin-1 写入，强制 `274`（`Orientation`）= 1、`305`（`Software`）= `"GXR Studio"`、输出尺寸 `40962`/`40963`；去掉 GPS 与 MakerNote（`37500`）；超过 65533 字节自动退到精简子集。
 - sRGB ICC 固定为 LittleCMS 生成的 588 字节标准配置（头里 `24..36` 字节的创建时间戳固定，以保证原生与 WASM 逐字节一致）。
 - 容器辅助函数（`jpeg_segments`、`app_segment`、`set_meta`）按 `gxr_studio/hdr/container.py` 的段遍历逻辑实现，在不重编码熵数据的前提下替换/插入 APP1 EXIF 与 APP2 ICC。
-- WASM 导出 `jpeg_encode(rgb_u8, w, h, quality, exif_json) -> bytes`，由 `mobile/scripts/wasm_cases/jpeg.mjs` 验证与 `gxr-cli jpeg-encode` 逐字节一致。
+- WASM 导出 `jpeg_encode(rgb_u8, w, h, quality, exif_json, optimize) -> bytes`，由 `mobile/scripts/wasm_cases/jpeg.mjs` 验证与 `gxr-cli jpeg-encode` 逐字节一致（规格里 `"optimize": true` 时 CLI 加 `--optimize`）。
+- 整个文件的门槛在 `tests/test_core_parity_jpeg_optimize.py`：13 种尺寸（从 1×1 起）× 12 个品质（1–100），有理数的各种写法和退回精简 EXIF，缓冲区上限（失败、跨过上限的扫描、退回精简 EXIF），20 张真实照片的 95/85/70 以及不带 ICC、不带源 EXIF 的文件，WASM 对原生（含错误）。真实照片的比较走导出管线的脱敏函数，这个文件也在 `test_core_parity_export_pipeline_guard.py` 的 lint 范围里。
 
 ## 几何（`gxr-finish`）
 
@@ -386,16 +395,17 @@ WASM 导出（`gxr-wasm/src/camdata.rs`）：
   - `source` 等参数：`source` 是 `state.source` 指的那个文件（有相机 JPG 时是 JPG，否则是 DNG，即 `serve._source_path`）的字节。export-meta 按 `export.source_exif` 读出 `base` / `sub`，`pipeline` 写上 `270` 描述并按 Pillow 约分有理数，再交给 gxr-jpeg 的 `build_exif`。画好墨迹的画布先 `_fit` 到长边（gxr-finish resample 的 LANCZOS），再按 `_finish` 的参数编码一次。返回文件字节，以及 `ExportResult` 的字段（`width`、`height`、`bytes`、`render`、`render_label`、`format`、`render_kind`、`calibrated`、`detail`、`hdr`、`hdr_reason`、`recipe_binding`）和文件名 `file_name` / `tag`（`原名_gxr{tag}.jpg`，做成 HDR 时 tag 加 `_hdr`）。
 - **`export_output_sizes(w, h, side, defaults, layout, rect, preset, fonts)`**：`finish/sizes.output_sizes`。`w × h` 是源尺寸（相机 JPG 转正后的尺寸、DNG 裁切窗口或内嵌预览尺寸），由调用方从文件头得到。
 - 版面输入 `layout` 用 gxr-frame 的请求格式，去掉 `w`、`h`：`meta`、`logos`、`mark`、`taken`、`file_time`。字体和 `frame_layout` 一样，用字体包（`font_index` + `font_pack`）。
-- CLI：`export-run-plan`、`export-run-prepare`、`export-run-complete`、`export-run-sizes`，以及只做霍夫曼重编码的 `export-run-huffopt`。CLI 和 WASM 都调用 `pipeline::api`，同样的输入给出同样的字节。尺寸、品质和长边都按 f64 传入，先检查再收窄。
+- CLI：`export-run-plan`、`export-run-prepare`、`export-run-complete`、`export-run-sizes`。CLI 和 WASM 都调用 `pipeline::api`，同样的输入给出同样的字节。尺寸、品质和长边都按 f64 传入，先检查再收窄。
 
-### 为什么编码后还有一步重编码
+### 编码就是桌面的文件
 
-桌面 `_finish` 用 Pillow `optimize=True`，也就是 libjpeg-turbo 按这张图自己的符号统计重建霍夫曼表，仍是一次交错扫描。gxr-jpeg 的编码和 Pillow `optimize=False` 逐字节相同（Annex K 标准表）。量化后的系数两者一样，只有霍夫曼码不同。所以 `pipeline/huffopt.rs` 把 gxr-jpeg 的输出无损重编码：先用原表解出每个符号并计数，按 `jchuff.c` 的 `jpeg_gen_optimal_table`（平局取较大的符号，保留 256 号）建表，再用新表写出同样的符号和附加位。字节填充和末尾补 1 位都照 libjpeg 做。同一步还把段顺序改成 libjpeg 的写法（DQT 在 SOF0 前），JFIF 版本写 1.01。gxr-jpeg 写的是 SOF0 在前、JFIF 1.02。
+桌面 `_finish` 用 Pillow `optimize=True`。`export_complete` 直接调用 `gxr_jpeg::encode_jpeg_with(.., optimize = true)`，出来的就是这个文件：优化霍夫曼表、JFIF 1.01、DQT 在 SOF0 前、有理数按 Pillow 写，都在 gxr-jpeg 里（见上面 `gxr-jpeg` 一节）。以前这里有一步 `pipeline/huffopt.rs`：把 gxr-jpeg 的 `optimize=False` 输出无损重编码，再改段顺序、JFIF 版本，并在交给 gxr-jpeg 之前先约分有理数。这些都已经移进编码器，重编码和 `export-run-huffopt` 命令也去掉了。
 
 ### 和桌面字节相同的前提
 
 - **ICC 时间戳。** Python 的 `srgb_icc()` 是 LittleCMS 运行时生成的，头里第 24–36 字节是生成时间，所以桌面每次运行写出的文件都不一样。gxr-jpeg 把这 12 字节固定了。测试先断言两份 588 字节的配置只有这 12 字节不同，再让 Python 用固定的那份。
-- **有理数。** Pillow 写 RATIONAL 时都经过 `_limit_rational(值, 2**32-1)`：分数约分，大于 1 时通过倒数限制（例如 28/10 写成 14/5）。gxr-jpeg 原样写分子分母，所以 `pipeline` 在交给 gxr-jpeg 之前先按 Pillow 的规则约分。带符号的有理数（SRATIONAL）在范围内时 Pillow 原样写，这里也不动。分母为 0 的值两边都原样写，但 Pillow 推断的类型是 SRATIONAL（NaN 不 ≥ 0），gxr-jpeg 推断的是 RATIONAL；真实照片里还没遇到。
+- **有理数。** Pillow 写 RATIONAL 时都经过 `_limit_rational(值, 2**32-1)`（例如 28/10 写成 14/5），SRATIONAL 经过 `_limit_signed_rational`。gxr-jpeg 在 `optimize = true` 时照样写，分母为 0 的值也按 Pillow 推断类型（NaN 不 `< 0`，所以是 RATIONAL）。`pipeline` 把源照片的有理数原样交给 gxr-jpeg。
+- **缓冲区。** 桌面写不出的高熵文件（Pillow 的输出缓冲区装不下），手机也报 `encode_failed`，并且和桌面一样先退到精简 EXIF 再试。
 - **EXIF 描述里的 `binding`。** 桌面写 `engine_pin()`，手机无法得到同样的值。描述由 export-source 的 `Request.binding` 决定，界面传 `gxr-core <构建号>`；测试传桌面的值，描述就逐字节相同。
 
 ### LUT 底图不逐字节
@@ -472,6 +482,40 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 - 卡片画的是调整归零的样子，不跟着调整变。
 - r5（`GXRFX.BIN`）还不能选。
 
+## 复制和套用到这一组（M3）
+
+编辑器的「复制调整」（04a）照桌面 `paste_core.js`：六组（配方 / 风格、调整、几何、裁剪、边框、时间戳）、默认勾前两组，勾选记在 `localStorage` 的 `gxr-studio.paste-groups`（和桌面同一个键）。「设置过」照 `groupSource`：选了配方算配方组，有一项调整不是 0 算调整组；几何、裁剪、边框、时间戳在 M4 之前设不了，总是写「（这张没有设置）」。剪贴板只在这一页的内存里，是复制那一刻的深拷贝：`{ groups, from: {id, stem}, recipe: {choice, levels} | null, knobs | null }`。
+
+复制完是 04b：这张所在的一组（当前间隔下的组）、「套用到这一组（N 张）」（不含来源这张）、「选照片…」和「先不套用」。网格组标题上的「套用到这一组」复制过就能点，目标是这一组里除来源以外的每一张；没复制时点它写一行「先打开一张照片，点「复制调整」。」。「选照片…」把网格开成挑选模式（04d），底栏是剪贴板和「套用到 N 张」；选择栏的「套用调整」一样。每条路都先确认（04c）。「这一组」永远是现在显示的那一组：复制后改了间隔，组标题给的就是新的张数，确认里写准确的张数。
+
+旋钮档位和 `memory` 照桌面记：`photo.levels` 是选中那个配方的档位，只记用户动过的（`ensureRecipe(view).levels[name] = …`）；`photo.memory` 是桌面的 `memory`（`look_cards.js` 的 recipeTarget）：换配方时把切走的那个配方的档位（`cleanLevels`，不补默认；没选过配方时是档位为空的原厂 04）记进去，新配方取回 memory 里上次的档位，点已经选中的那张什么都不改，当前配方的档位不在 memory 里更新。键是卡的 id，导出时按镜头单元换成桌面的 recipeKey（`lib/export_request.ts` 的 `buildSide`）。换配方的那一步在 `lib/recipe_memory.ts`，`cleanLevels` 只有 `lib/export_request.ts` 那一份。
+
+套用是同步的、在内存里，规则照 `render/paste.py` 的 `paste_one`（`lib/paste.ts`）：配方组里，镜头单元不同 → `unit_mismatch`；只有 JPG → `needs_raw`（近似模式关着）；这份 DAT 里这个单元没有这张卡 → `recipe_rejected`；否则换成来源的配方和它的档位；来源的 `memory` 不是空的就整份换过来，是空的就留着目标自己的（`render/edits.write` 在请求里没有 `memory` 时沿用 sidecar 里的）。调整组整份换成复制来的，0 也算。配方组要么整个套用，要么不套。来源这张从来不是目标。结果句是桌面的 `pasteMessage`，撤销的结果是 `undoMessage`，这几个函数的字放在 `lib/paste_text.ts`，单元测试从 `web/assets/paste_core.js` 里把桌面的函数原样抠出来跑，对同一批输入比输出。
+
+每张照片有一个编辑版本 `rev`：选配方、旋钮松手、滑块松手（`change`）、全部重置、点两下归零、套用、撤销都加一；重新选同一张照片不变。撤销照 `PasteUndo`：每批记下每张套用之前的配方、档位和调整，以及套用之后的 `rev`；同一批里套到同一张两次，还原到最早的样子；只留最近 20 批，只在内存里，重新打开页面就没有了。撤销时 `rev` 还是套用后那一版才还原，否则算「粘贴之后又改过」。
+
+结果和「撤销」贴在网格底部（04e），和「已复制」占同一格；到下一次复制、下一次套用、清除、清空照片，或离开网格 15 秒（桌面提示的 `timeout: 15000`）才收起。没有按钮的一行（没复制时的提示、撤销的结果）照桌面普通提示，3.2 秒后收起。套用按时间片做，每片最多 4 ms，片与片之间让出主线程：500 张合成照片一共约 4–7 ms。
+
+拍摄时间和桌面同源：手机的拍摄时间是 `photo_meta(...).taken` 加 `SubSecTimeOriginal` 的毫秒（桌面的 `taken` 到秒为止）。RAW+JPG 的相机 JPG 里没有拍摄时间时，和桌面导入一样用 DNG 的（Worker 再读一次 DNG 的前 256 KiB，缩略图仍用 JPG 的）；两个都没有才用文件修改时间。模拟器截图用 `?shot=paste-04a|paste-04b|paste-04c|paste-04d|paste-04e|paste-02a`（`app/paste_shots.ts`，只在开发服务器里）。
+
+## 导出进相册（M3）
+
+选择栏的「导出 N 张」和编辑器的「导出这张」打开同一个导出面板（05a）：尺寸「原始尺寸 / 大 / 中 / 小」（长边不限、3000、2048、1600）、品质「高 / 中 / 低」（95、85、70），默认原始尺寸、高，和桌面 `SIZE_TIERS` / `QUALITY_TIERS` 一样。一张时右边写成品尺寸（`export_output_sizes`，源尺寸在导出 Worker 里从文件头读：相机 JPG 转正后的尺寸，或 DNG 的裁切窗口）；几张时写桌面那句「每张照片按各自比例导出，成品尺寸可能不同。」。HDR 那一行见下面「HDR」。没选 `GXRCE.DAT` 时面板下面是桌面那句说明。
+
+- **请求**（`lib/export_request.ts`，纯函数）：`shot` 照桌面图库的 shot（`name`、`files`、`lens`、`iso`；`width` / `height` 是图库存的 `photo_meta(jpg).width or photo_meta(dng).width`，由 Worker 读文件头补上：`lib/photo_size.ts` 照 `meta.read_jpeg_meta` / `read_dng_meta`，不用解码后的位图）；`side` 照桌面 `render/edits.write` 写出的 sidecar：`recipe` 是 `RecipeSel.to_json`（档位只带用户动过的，和桌面 `cleanLevels` 一样），`memory` 是照片的 `photo.memory`（桌面 `look_cards.js` recipeTarget 记下的那份，空的档位也是一项，见「复制和套用到这一组」），键按桌面 `recipeKey` 改写（内置 `<单元>/<位置>`，其余 `<单元>/<种类>/<id>`）；`adjust` 是 `Adjust.to_json`，全是 0 时不写。没动过的照片是 `{}`。`defaults` 是 `{}`，底图「自动」，`layout` 是 `{}`（M3 没有边框和日期戳）。`binding` 是 `gxr-core <构建号>`，构建号是 `vite build` 时的短提交号（`vite.config.ts` 的 `__GXR_BUILD__`，开发服务器里是 `dev`）。
+- **导出 Worker**（`core/export_worker.ts`、`core/export_api.ts`）：不是 M1/M2 那组 Worker。一个 Worker、一份 WASM、一次一张；一批开始时建，结束后闲 30 秒、停止或清空时关掉，WASM 的线性内存跟着还回去。相机配方文件和校准包（`calib_index` + `calib_blob`，文件按名字排好）每批交一次，Worker 重建时再交。每张：读 DNG / JPG（主线程不调 `File.arrayBuffer`）→ `export_plan` → 选了配方时 `color_resolve`（只有 RAW、没选配方时用这个单元的原厂 04）→ 没选配方又有相机 JPG 时解码相机 JPG → `export_prepare` → 墨迹 → `export_complete`。核心报 `raw_unreadable` / `no_jpg_source` / `raw_decode` 时，像桌面 `_raw_rgb` 那样解内嵌预览（`export_meta_preview` 的位置）再试一次。
+- **墨迹**：M3 不能设边框、日期戳、裁剪和 LUT，`export_prepare` 只会给 `canvas: "full"`、没有版面，墨迹这一步什么都不画（导出管线的「无墨迹」情况，和桌面逐字节相同）。三次调用之间留着 `ink(prepared, canvas)` 这一处；万一 prepare 给了边框、日期戳或 `canvas: "photo"`，这一张按 `ink_not_supported` 失败，绝不漏掉墨迹导出。M4 在这里补上，字体包也跟着 M4。
+- **解码相机 JPG**：照 `finish/compose.load_jpeg`：`createImageBitmap(blob, { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' })`，画到 `OffscreenCanvas`（`srgb`、`willReadFrequently`），`getImageData` 后去掉 alpha，位图马上关掉。无头 Chrome 里和 Pillow 逐像素相同（含 Orientation 6、8 的拷贝）；Safari 用的是 ImageIO，真机检查时比解码像素的哈希。
+- **陷阱**：WASM 陷阱、`RangeError` 或 Worker 的 `error` 事件：关掉 Worker，这一张写「内存不够，这张没做成。可以重试，或改用小一点的尺寸。」，下一张用新的 Worker 接着做。
+- **批次**（`app/export_batch.ts`，不碰 DOM）：点「存到相册」那一刻把照片、文件句柄、版本和请求定下来，之后改动不影响这一批；按网格当前的顺序做。「停止」马上关掉 Worker，做好的留着。「重试这张 / 这 N 张」只重做失败的，用同一份请求，重新选过的照片用新的 File；失败的照片按网格顺序并进还没做的队列，不会把它冲掉。先把做好的存进相册、点了「好」，失败的照片和重试仍然留在 06f，直到它们做好或者清空。做好的文件（`new File([bytes], file_name, { type: 'image/jpeg' })`）留在内存里，任何时候都不超过 384 MiB：下一份结果会超过时就放掉它，这张排回队首，先停在「做好了」那一栏，交出去、点「好」以后再做它和剩下的；一张就超过上限的按内存不够算。交给 Worker 这一步本身抛错（建 Worker 时的 `RangeError` 之类）也按陷阱算，接着做下一张；这一批的设置（相机配方文件、校准包）也不在 `begin()` 里发，而是在交第一张时、同一个 try 里发给新建或已经建好的 Worker（比如一张时先查过成品尺寸），发不出去同样按陷阱算。下载兜底的对象 URL 由导出这边统一记着，重画、交出、清空、新的一批和批次结束时都撤销。每次提交前核对会话、批次和照片版本，晚到的结果丢掉。读不了的文件走 M1 的 `gone`（拔卡）路径。跑着的时候配方卡小图和烘焙先停（`app/export_pause.ts`），并申请屏幕常亮。
+- **进度和结果**：点「存到相册」面板收起，进度贴在最底下（`.pdock`，在网格和编辑器下面，不盖住选择栏），可以接着滚、点开照片。做完不自动打开共享面板：Safari 只认刚发生的那次点击。05c 的「存到相册」在点击里同步调用 `navigator.share({ files })`，前面没有 await；先问 `canShare`，没有共享面板的浏览器写一句「这个浏览器打不开系统的共享面板。」，加每个文件的下载链接。一次最多 20 张、256 MiB（`SHARE_MAX_FILES` / `SHARE_MAX_BYTES`），多了分批，按钮写「存到相册（第 1 批，共 3 批）」。`share()` resolve 只说明用户在面板里做了某个操作，不一定是存储图像，所以 05e 写「好了：N 张」和「在面板里点了「存储 N 张图像」，就已经在相册里。」，不说「已存到相册」（机主决定 2）；关掉面板（`AbortError`）就留在 05c。
+- **`?perf=1`**：一批的 WASM、JS、待存文件的高水位和每张的毫秒数。
+- **开发服务器里**（生产包里没有）：`window.__devExport` 可以把 `binding` 换成桌面的 `engine_pin()`（逐字节对比用）、把分批上限改小、在第几张模拟一次陷阱，测试也从这里读批次和内存。
+
+- **HDR**（ui-m3-hdr，M5 的导出那一半提前做）：选中的照片里有 RAW 时开关可用，写设计稿那句「在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。」；一张 RAW 都没有时停用，写桌面的「HDR 需要 RAW 文件」（`hdrAvailable`、`HDR_NO_RAW`），也不改记住的选择。开着、又混着只有 JPG 的照片时，下面一行「HDR 需要 RAW 文件：N 张只有 JPG，会存普通版本。」。开关记在 `localStorage`（`gxr.mobile.export_hdr`），第一次默认关，和桌面 `prefs.export_hdr` 一样。开了 HDR，每张的请求都带 `hdr: true`，做不做得成由核心定（只有 JPG 的是 `no_raw`，照常导出普通版本）。Worker 里 `export_prepare` 之后用 `hdr_layer()` 取出数据层（float32 `(h, w, 2)`），原样交给 `export_complete`，不回主线程；日期戳掩码是空的（M3 没有日期戳，M4 的墨迹补上）。进度第二行是「生成 HDR 版本要多等几秒。可以接着看照片。」；05c / 05e 多一行「4 张 HDR · 1 张只有 JPG，存普通版本」，别的原因没做成的按桌面 `hdrSummary` 计数（「N 张未生成 HDR」），逐张写桌面 `HDR_NOTES` 的说明（`capture_mismatch`「RAW 与 JPG 不是同一次拍摄」，别的「这张照片不支持 HDR」）。文件名里的 `_hdr` 只看核心结果的 `hdr`。HDR 的一批待存文件上限是 256 MiB（`STAGE_CAP_HDR_BYTES`），比普通的 384 MiB 低，因为 HDR 的 WASM 峰值和 Worker 里多拿的数据层会让整页的估算超过 1.2 GiB。
+
+测试：`tests/test_mobile_ui_export_hdr_unit.py`（HDR 的开关、文案和上限，`node:test`）、`tests/test_mobile_ui_export_hdr_browser.py`（`browser_serial`：四对 RAW+JPG 加一张只有 JPG 的开 HDR 导出原始尺寸和小，和桌面 `export_finish(hdr=True)` 逐字节相同，`hdr`、`hdr_reason`、文件名也相同）、`tests/test_mobile_ui_export_unit.py`（请求、批次状态机、分批、文件头尺寸，`node:test`）和 `tests/test_mobile_ui_export_browser.py`（`browser_serial`：解码门禁；六张照片在界面里编辑后导出，和桌面 `export_finish` 逐字节相同，ICC 时间戳按导出管线的办法固定；停止、陷阱、清空、读不了再重试、没有共享面板）。这几个文件都在导出管线隐私 lint 的范围里（`test_mobile_ui_export*.py`）。
+
 ## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
 
 移植的是导出时「从哪张图开始」：`finish/serve.py` 的 `color_image` 和 `_raw_rgb`（只有 `full=True`）、`render/service.py` 的 `plan` 和不精确的 `renderer`、`raw/render.py` 的 `render_full`（任意渲染器）、`lut/photo.py` 的 `color_image`。不移植 `exact_u8`（精确导出）、电脑图库里的本机配方、近似配方（`approx.ENABLED` 是 False）和预览路径。
@@ -481,7 +525,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 | 命令 | 输入 | 输出 |
 | --- | --- | --- |
 | `source-plan` | `--shot`、`--edit`，可选 `--dat`/`--library`、`--entry`、`--calib DIR`、`--binding` | `selection`、`plan`（单元、槽、`model_iso`、`calibrated`、`defaulted`、标签、条目 sha256）和 `renderer`（id、标签、写进 EXIF 270 的 `description`） |
-| `source-selection` | `--shot`、`--edit`、`--base` | 这个底图模式会规划哪个配方，调用方据此去解析条目；相机 JPG 时是 `null` |
+| `source-selection` | `--shot`、`--edit`、`--base`，可选 `--space` | 这个底图模式会规划哪个配方，调用方据此去解析条目。相机 JPG、中性转换，以及场景域 LUT（`--space` 的输入空间不是 srgb、rec709、gamma24）时是 `null`。显示域 LUT 去掉 LUT 后仍按底图模式选，不随校准或相机数据改变 |
 | `source-render` | `--dng`、`--entry`、`--stock`、`--unit`、`--calib`、`--iso`、可选 `--adjust` | 全尺寸 uint8 `(H, W, 3)`，已转正 |
 | `source-color-image` | 同上，再加 `--base`、`--jpg`/`--preview`（uint8 `.npy`）、`--cube`/`--space` | `path`（走了哪条路）、`from_raw`、`labels`，图写到 `--out` |
 
@@ -493,7 +537,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 - 错误：`NoRaw` 报 `no_raw`；`RenderUnavailable` 带 `state`；`EditError` 带 `detail`；`RawDecodeError` 按 `export_finish` 改成 `raw_unreadable`（有 JPG）或 `no_jpg_source`，`detail` 是「没有全尺寸传感器数据，也没有更小的预览。」加原因。
 - `render_full` 在分配输出之前做和 `gxr_raw::render_full` 一样的裁切窗口、白平衡和马赛克检查（`check_crop_window` 在 `gxr-raw` 里是私有的，这里照抄了同样的判断和文案），所以坏文件在配方渲染和中性渲染上报同一个错。尺寸用带检查的 u64，元素数不超过 2^32−1，输出缓冲区可失败地申请。
 
-WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_bytes, binding)` 返回和 CLI 一样的 JSON（带换行）；`source_render(dng, name, entry, stock04, unit, calib_index_json, calib_bytes, iso, adjust_json)` 返回 `[h u32][w u32][rgb]`。校准包的格式照 `frame_layout` 的字体：`[[名字, 字节数], …]` 加拼在一起的文件。比较用例在 `mobile/scripts/wasm_cases/source.mjs`。
+WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_bytes, binding)` 返回和 CLI 一样的 JSON（带换行）；`source_selection(shot, edit, base, space_json)` 同样返回 `source-selection` 的 JSON（带换行），`space_json` 为空就是没给 `--space`；`source_render(dng, name, entry, stock04, unit, calib_index_json, calib_bytes, iso, adjust_json)` 返回 `[h u32][w u32][rgb]`。校准包的格式照 `frame_layout` 的字体：`[[名字, 字节数], …]` 加拼在一起的文件。比较用例在 `mobile/scripts/wasm_cases/source.mjs`。
 
 输入检查（Sol r1 之后），CLI 和 WASM 走同一段代码：
 
