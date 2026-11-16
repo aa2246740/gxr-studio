@@ -63,12 +63,11 @@ def test_gaussian_blur_radii(mode: str, radius: float, tmp_path: Path) -> None:
     same_pixels(got, np.asarray(pil, dtype=np.uint8), "ink-blur")
 
 
+TINY_LARGE_CASES = list(itertools.product((1, 2, 3, 5, 11), (1, 2, 4, 9), (0.6, 3.5, 19.7)))
+
+
 @pytest.mark.parametrize("mode", ["L", "RGB"], ids=["L", "RGB"])
-@pytest.mark.parametrize(
-    ("w", "h", "radius"),
-    list(itertools.product((1, 2, 3, 5, 11), (1, 2, 4, 9), (0.6, 3.5, 19.7))),
-    ids=anon_ids(5 * 4 * 3),
-)
+@pytest.mark.parametrize(("w", "h", "radius"), TINY_LARGE_CASES, ids=anon_ids(len(TINY_LARGE_CASES)))
 def test_gaussian_blur_tiny_and_large_radius(mode: str, w: int, h: int, radius: float, tmp_path: Path) -> None:
     arr = _synth(w, h, mode, 202 + w * 13 + h)
     pil = Image.fromarray(arr, mode).filter(ImageFilter.GaussianBlur(radius))

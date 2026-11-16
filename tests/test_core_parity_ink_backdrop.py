@@ -251,7 +251,8 @@ def test_paper_grain_styles_and_4288x2848(tmp_path: Path) -> None:
     amt = grain_styles[0][1]
     big_layout = frame_layout(4288, 2848, FrameSpec(style="darkroom", color="black", table="dark", output_ratio="4:5"), {}, metrics)
     check(big_layout is not None, "darkroom 4288x2848 layout exists")
-    assert big_layout is not None
+    if big_layout is None:
+        return
     for tag, bw, bh in (("photo", 4288, 2848), ("max_frame", int(big_layout.width), int(big_layout.height))):
         arr = _synth_rgb(bw, bh, 999 if tag == "photo" else 1001)
         py_out = np.asarray(tex.paper_grain(Image.fromarray(arr, "RGB"), amt), dtype=np.uint8)

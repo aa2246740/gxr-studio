@@ -127,6 +127,7 @@ Python 看起来算错了也先原样移植，把疑问写进报告，不要顺�
 | lut | `lut-`、`scene-` | `gxr-lut` | `cmd_lut.rs` | `gxr-wasm/src/lut.rs` | `wasm_cases/lut.mjs` | `tests/test_core_parity_lut.py` |
 | hdr | `hdr-` | `gxr-hdr` | `cmd_hdr.rs` | `gxr-wasm/src/hdr.rs` | `wasm_cases/hdr.mjs` | `tests/test_core_parity_hdr.py` |
 | geometry | `geom-` | `gxr-finish` | `cmd_geometry.rs` | `gxr-wasm/src/geometry.rs` | `wasm_cases/geometry.mjs` | `tests/test_core_parity_geometry.py` |
+| ink | `ink-` | `gxr-finish` | `cmd_ink.rs` | `gxr-wasm/src/ink.rs` | `wasm_cases/ink.mjs` | `tests/test_core_parity_ink_*.py` |
 | frame | `frame-`、`stamp-` | `gxr-frame` | `cmd_frame.rs` | `gxr-wasm/src/frame.rs` | `wasm_cases/frame.mjs` | `tests/test_core_parity_frame.py` |
 | jpeg | `jpeg-` | `gxr-jpeg` | `cmd_jpeg.rs` | `gxr-wasm/src/jpeg.rs` | `wasm_cases/jpeg.mjs` | `tests/test_core_parity_jpeg.py` |
 | export | `export-` | `gxr-export` | `cmd_export.rs` | `gxr-wasm/src/export.rs` | `wasm_cases/export.mjs` | `tests/test_core_parity_export.py` |
@@ -512,4 +513,15 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 - WASM 导出（`gxr-wasm/src/hdrtrack.rs`）：`hdrtrack_begin`、`hdrtrack_warp`、`hdrtrack_box`、`hdrtrack_crop`、`hdrtrack_stamp`、`hdrtrack_frame`、`hdrtrack_to_grid`、`hdrtrack_finish`（不含 `hdrtrack-begin-batch`）。
 - 源 JPEG 校验复用 `gxr-export::meta` 的 `open_image` / `load_image_exif`，`hdr_track/` 本身不复制 JPEG/TIFF 解析；向 Pillow 12.2.0 对齐时，对 `meta/tiff_ifd.rs` 的 `tiff_tag_length` 按 IFD 分组（Root / EXIF `34665` / GPS `34853` / Interop `40965`）拆表，并移除了 Pillow `TAGS_V2` 已不存在的 `326`、`327`。
 - **已接受的偏差 — 超大像素（DecompressionBomb）JPEG**：对超出 Pillow 像素上限（178,956,970 像素）的 JPEG，桌面 Python 的 `HdrTrack.begin`（`hdr/gain.py:check_capture`）仅捕获 `(ValueError, OSError, SyntaxError)`，会直接向外抛出未捕获的 `DecompressionBombError`；手机核心在 `hdr_track/capture.rs` 中将所有 `meta::tiff_exif::open_image` 错误统一归类为 `"metadata_unreadable"`，令 `HdrTrack` 安全失活并按无 HDR 导出（不崩溃）。`meta` 元数据层（`open_image`、`read_jpeg_meta`、`photo_meta`）仍与 Pillow 12.2.0 一致返回 `DecompressionBombError`；差分 sweep（`tests/test_core_parity_jpeg_sweep.py`）仅对明确登记的 5 例超大像素边界（`ord_mp_big_bomb_sof`、`ord_mp_no_b002_bomb_sof`、`ord_bomb_solo`、`ord_zero_then_bomb`、`ord_ok_then_bomb`）归一化 `HdrTrack.begin` 状态。
+
+## 墨迹（`gxr-finish::ink`，命令前缀 `ink-`）
+
+移植桌面非文字 Pillow 12.2.0 与 NumPy 2.4.3 的边框绘制原语：`ink/image.rs`（`new`、`convert`、`point_mul`、`crop_f64`、`rotate90`、`putalpha`、`alpha_composite` 与 NumPy `f32` 成对求和）、`ink/paste.rs`（`DIV255` 掩码混合）、`ink/draw.rs` + `ink/draw_arc.rs`（`polygon`、`rectangle`、`rounded_rectangle`、`ellipse`、宽线 `line`）、`ink/shapes.rs`（`aa_paint` 超采样下采样与 `paint_rect`/`poly`/`ellipse`/`hole`/`shadow`）、`ink/blur.rs`（3 遍定点 `BoxBlur.c` `GaussianBlur`）、`ink/backdrop.rs` + `ink/rng.rs` + `ink/rng_tables.rs`（`blurred_background`、`background` 与 `SeedSequence` → `PCG64` → Ziggurat `paper_grain`）、`ink/carrier.rs`（负片线虫 `carrier_contours` 与 4× 超采样 `paint_carrier`）、`ink/logo.rs`（`paint_clogo` 与 `finish_logo_prepare`）以及公共解释器 `ink/ops.rs`。
+
+- **CLI 子命令（`cmd_ink.rs`）**：`ink-ops`、`ink-reduce`、`ink-blur`、`ink-backdrop`、`ink-grain`、`ink-carrier`、`ink-logo-prepare`。
+- **WASM 导出（`gxr-wasm/src/ink.rs`）**：`ink_ops(canvas, w, h, mode, ops_json, logo_index_json, logo_blob)`（返回 `InkOpsResult`，含 `width`、`height`、`mode` 与消耗所有权的 `data()`）与 `finish_logo_prepare(rgba, w, h, key_json)`（返回 `PreparedLogo`，含 `width`、`height`、`report` 与 `rgba()`）；宽高按 `f64` 接收并做有限正整数、65535 / `2^32 - 1` 检查，JSON 输入保持 128 层嵌套上限与 4 MiB 大小上限。比较用例在 `mobile/scripts/wasm_cases/ink.mjs`，对拍在 `tests/test_core_parity_ink_*.py`（已纳入 `test_core_parity_export_pipeline_guard.py` 隐私 lint）。
+- **Gate A/B 与平台数值规则**：Pillow 原语、`GaussianBlur`、`blurred_background` 与超采样形状在全部样式、比例与 1×1..4288×2848 下与 Pillow 逐字节相等。`PCG64` `u64` 流（10⁷ 次，seeds `42`/`0`/`1`/`2^63`）与 NumPy 逐位相等；Ziggurat `normal` 尾区 `log`/`exp`、线虫 `_wobble` `sin`/`exp` 与 `paint_clogo` `_alpha_luma` `@` 分别按 PORT-WAVE-1 `libm` / BLAS 规则通过 Gate A（pinned `libm` 与顺序 IEEE oracle 0 差，含 1-ULP / `1e-10` 负对照）及 Gate B 机械归因（线虫 0 像素差、`clogo` 在 `bg_l=150` 与 `|lg−bg_l|=70` 边界 0 分支翻转且 0 像素差）。
+- **4288×2848 实测与 WASM 高水位**：
+  - `blur_fill` 模糊背景（`sigma=686, sat=1.15, veil=0.9`）：`4288×2848` 输出用时 WASM 408.4 ms / CLI 281.7 ms，WASM 线性内存高水位 150.8 MiB；`original` 比例完整画布（`4658×3515`）WASM 506.7 ms / CLI 320.8 ms，高水位 184.6 MiB。
+  - `paper_grain`（`4288×2848` 经 `frame_layout` 产生的最大含颗粒画布 `darkroom` `9:16` `thin` = `5166×9184`，`amount=0.016`）：只保留单份 `(h, w)` `float32` `fine` 平面，WASM 2010.6 ms / CLI 2309.4 ms，WASM 线性内存高水位 644.6 MiB。
 
