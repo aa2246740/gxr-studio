@@ -13,6 +13,8 @@ import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
 import { ExportFlow } from './export_ui';
 import { GridView } from './grid';
+import { LutBook } from './lut_book';
+import { LutGpu } from './lut_gpu';
 import { openable, photoMs, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
@@ -57,6 +59,10 @@ class App implements AppApi {
     deletePack,
     watermark: loadWatermark,
   });
+  /** 用户导入的 .cube LUT 目录（只存 IndexedDB 与 Worker，页面按需拿字节）。 */
+  private readonly lutBookStore = new LutBook();
+  /** 3 槽 GPU 3D LUT 纹理队列与短命 lut_table Worker 调度。 */
+  private readonly lutGpuQueue = new LutGpu(() => this.engine);
 
   /** 导出进相册（UI-M3）：导出面板、贴底的进度和结果、共享面板。 */
   private readonly exporter: ExportFlow;
@@ -66,6 +72,7 @@ class App implements AppApi {
     private readonly view: HTMLElement,
     private readonly picker: HTMLInputElement,
     private readonly calibPicker: HTMLInputElement,
+    private readonly lutPicker: HTMLInputElement,
     private readonly perf: HTMLElement,
     private readonly perfOn: boolean,
     private readonly pageErrors: string[],
@@ -76,6 +83,7 @@ class App implements AppApi {
   async start(engine: Engine | null): Promise<void> {
     this.engine = engine;
     this.recipeBook.attach(engine);
+    this.lutGpuQueue.attach(() => this.engine);
     // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
     let generation = this.recipeBook.generationId();
     this.recipeBook.onChange(() => {
@@ -87,6 +95,7 @@ class App implements AppApi {
       if (this.screen === 'grid') this.grid?.refresh();
     });
     const restored = this.recipeBook.restore().catch(() => undefined);
+    const lutsRestored = this.lutBookStore.restore().catch(() => undefined);
     if (this.perfOn) {
       this.perf.hidden = false;
       void measureInterval().then((value) => {
@@ -97,19 +106,27 @@ class App implements AppApi {
     if (!import.meta.env.DEV) return;
     (window as unknown as { __gxrBook?: Book }).__gxrBook = this.recipeBook;
     (window as unknown as { __gxrLooks?: typeof lookCache }).__gxrLooks = lookCache;
-    await restored;
+    (window as unknown as { __gxrLutBook?: LutBook }).__gxrLutBook = this.lutBookStore;
+    (window as unknown as { __gxrLutGpu?: LutGpu }).__gxrLutGpu = this.lutGpuQueue;
+    await Promise.all([restored, lutsRestored]);
     const shot = new URLSearchParams(location.search).get('shot');
     if (!shot) return;
     const { sampleFiles, reportShot, aliasFile } = await import('./shots');
     // UI-M2 的几屏：校准数据和相机配方文件也走样本端点（截图用的临时样本目录里起了 zz- 开头的别名）。
+    const lutShotMode = shot === 'lut' || shot === 'lut-space';
     const recipeShot = ['recipe', 'nocal', 'nodat', 'jpg'].includes(shot);
-    if (shot === 'calib' || shot === 'recipe') {
+    if (shot === 'calib' || shot === 'recipe' || lutShotMode) {
       const pack = await aliasFile('zz-calib.dng', 'GXR 校准数据.zip');
       if (pack) await this.recipeBook.importPack(pack);
     } else if (recipeShot) await this.recipeBook.removePack();
     if (shot !== 'start' && shot !== 'calib') {
       let files = shot === 'jpg' ? [] : await sampleFiles();
-      const extra = shot === 'jpg' ? await aliasFile('zz-jpg.dng', 'R9990002.JPG') : shot === 'recipe' || shot === 'nocal' ? await aliasFile('zz-dat.dng', 'GXRCE.DAT') : null;
+      const extra =
+        shot === 'jpg'
+          ? await aliasFile('zz-jpg.dng', 'R9990002.JPG')
+          : shot === 'recipe' || shot === 'nocal' || lutShotMode
+            ? await aliasFile('zz-dat.dng', 'GXRCE.DAT')
+            : null;
       if (extra) files = [...files, extra];
       if (shot.endsWith('-hdr')) files = [...files, ...(await (await import('./export_shots')).hdrShotFiles(files))];
       if (files.length) {
@@ -118,7 +135,7 @@ class App implements AppApi {
       }
       for (let i = 0; i < 100 && (this.recipeBook.datBusy || this.recipeBook.packBusy); i++) await new Promise((done) => setTimeout(done, 100));
     }
-    if ((shot === 'editor' || shot === 'drag' || recipeShot) && this.byId.size) {
+    if ((shot === 'editor' || shot === 'drag' || recipeShot || lutShotMode) && this.byId.size) {
       const first = this.ordered()[0];
       if (first) this.open(first.id);
       await this.editor?.settled;
@@ -128,6 +145,10 @@ class App implements AppApi {
         await new Promise((done) => setTimeout(done, 1500));
         if (shot === 'recipe') this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
         await new Promise((done) => setTimeout(done, 800));
+      }
+      if (lutShotMode) {
+        const { lutShot } = await import('./lut_shots');
+        await lutShot(shot, this, this.shell);
       }
     }
     // M3 复制 / 套用那几屏（04a–04e、02a 带剪贴板）。
@@ -181,6 +202,18 @@ class App implements AppApi {
     return this.recipeBook;
   }
 
+  lutBook(): LutBook {
+    return this.lutBookStore;
+  }
+
+  lutGpu(): LutGpu {
+    return this.lutGpuQueue;
+  }
+
+  pickLut(): void {
+    this.lutPicker.click();
+  }
+
   pickDat(): void {
     this.picker.click();
   }
@@ -205,6 +238,10 @@ class App implements AppApi {
 
   takeCalib(file: File): void {
     void this.recipeBook.importPack(file);
+  }
+
+  takeLuts(files: File[]): void {
+    void this.lutBookStore.importFiles(files);
   }
 
   loading(): { done: number; total: number } {
@@ -451,6 +488,7 @@ class App implements AppApi {
           choice: null,
           levels: new Map(),
           memory: new Map(),
+          lut: null,
           looks: new Map(),
         };
         this.byId.set(id, photo);
@@ -627,17 +665,22 @@ export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<
   const calibPicker = document.createElement('input');
   calibPicker.type = 'file';
   calibPicker.className = 'filepick calibpick';
+  // .cube LUT 也不加 accept（iOS 「文件」按扩展名过滤会把 .cube 变灰），允许多选。
+  const lutPicker = document.createElement('input');
+  lutPicker.type = 'file';
+  lutPicker.multiple = true;
+  lutPicker.className = 'lutpick';
   const view = document.createElement('div');
   view.className = 'view';
   const perf = document.createElement('p');
   perf.className = 'perf';
   perf.hidden = true;
-  shell.append(picker, calibPicker, view, perf);
+  shell.append(picker, calibPicker, lutPicker, view, perf);
   root.replaceChildren(shell);
   const coreReady = warmCore();
 
   const perfOn = new URLSearchParams(location.search).get('perf') === '1';
-  const app = new App(shell, view, picker, calibPicker, perf, perfOn, pageErrors);
+  const app = new App(shell, view, picker, calibPicker, lutPicker, perf, perfOn, pageErrors);
   picker.addEventListener('change', () => {
     const files = picker.files ? Array.from(picker.files) : [];
     picker.value = '';
@@ -647,6 +690,11 @@ export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<
     const file = calibPicker.files?.[0] ?? null;
     calibPicker.value = '';
     if (file) app.takeCalib(file);
+  });
+  lutPicker.addEventListener('change', () => {
+    const files = lutPicker.files ? Array.from(lutPicker.files) : [];
+    lutPicker.value = '';
+    if (files.length) app.takeLuts(files);
   });
 
   let engine: Engine | null = null;

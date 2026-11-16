@@ -6,6 +6,8 @@ import type { GapMinutes, Order } from '../lib/group';
 import type { Choice } from '../lib/recipes';
 import type { Book } from './book';
 import { lookCache } from './looks';
+import type { LutBook } from './lut_book';
+import type { LutGpu } from './lut_gpu';
 
 /** 缩略图这一步的状态。文件读不读得了、显卡里有没有源，是另外两件事（gone、cached）。 */
 export type PhotoStatus = 'pending' | 'ready' | 'bad';
@@ -77,7 +79,9 @@ export interface Photo {
    * （导出时按镜头单元换成桌面的 recipeKey）。当前配方不在这里更新；套用时整份跟过来，来源是空的就保留目标原来的。
    */
   memory: Map<string, Record<string, number>>;
-  /** 配方卡的小图，按烘焙表的键记，只对当时的版本有效。 */
+  /** 选中的 LUT（`.cube` 文件 SHA-256 `cube_id`，null 表示不用 LUT）。 */
+  lut: string | null;
+  /** 配方卡与 LUT 卡的小图，按烘焙/LUT 令牌的键记，只对当时的版本有效。 */
   looks: Map<string, { version: number; bitmap: ImageBitmap }>;
 }
 
@@ -155,6 +159,12 @@ export interface AppApi {
   watch(kind: 'scroll' | 'drag', on: boolean): void;
   /** 相机配方文件、校准数据和烘焙表。 */
   book(): Book;
+  /** 用户 LUT 目录。 */
+  lutBook(): LutBook;
+  /** GPU LUT 纹理队列（3 槽上限、短命 lut_table Worker）。 */
+  lutGpu(): LutGpu;
+  /** 选 .cube LUT 文件。 */
+  pickLut(): void;
   /** 只选 GXRCE.DAT（06d 的按钮）。选完留在当前这一屏。 */
   pickDat(): void;
   /** 选校准数据 zip。 */

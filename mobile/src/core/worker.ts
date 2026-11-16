@@ -1,13 +1,14 @@
 // 模块 Worker：WASM 只在这里加载。主线程把 DNG 的一份拷贝传进来，原件留给显卡引擎。
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
-import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_calib_pack, color_listing, color_resolve, dng_describe } from '../wasm-pkg/gxr_wasm.js';
+import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_calib_pack, color_listing, color_resolve, dng_describe, lut_identify, lut_parse } from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
-import { loadPack, savePack } from '../lib/idb';
+import { deleteLutRecord, loadLutBlob, loadLutLibraryMeta, loadPack, patchLutRecord, saveLut, savePack } from '../lib/idb';
+import { LUT_ERRORS, MAX_CUBE_BYTES, buildLutRecord, readLutHeader, sha256Hex, type IdentifyReport, type ParsedCubeSummary } from '../lib/lut';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
-import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, ResolveArgs } from './protocol';
+import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, LutBlobArgs, LutDeleteArgs, LutImportArgs, LutPatchArgs, ResolveArgs } from './protocol';
 
 let ready: Promise<unknown> | null = null;
 
@@ -185,6 +186,95 @@ function bake(id: number, args: BakeArgs): void {
   ok(id, meta, [own(bytes)]);
 }
 
+async function sha256Buffer(buffer: ArrayBuffer): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', buffer);
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return sha256Hex(new Uint8Array(buffer));
+}
+
+async function lutImport(id: number, args: LutImportArgs): Promise<void> {
+  if (args.file.size > MAX_CUBE_BYTES) {
+    ok(id, JSON.stringify({ ok: false, reason: 'too_big', message: LUT_ERRORS.cube_too_big }));
+    return;
+  }
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await args.file.arrayBuffer();
+  } catch {
+    ok(id, JSON.stringify({ ok: false, reason: 'unreadable', message: LUT_ERRORS.cube_unreadable }));
+    return;
+  }
+  const bytes = new Uint8Array(buffer);
+  let parsed: ParsedCubeSummary;
+  let identified: IdentifyReport;
+  try {
+    parsed = JSON.parse(lut_parse(bytes)) as ParsedCubeSummary;
+    identified = JSON.parse(lut_identify(bytes, args.filename)) as IdentifyReport;
+  } catch (err) {
+    const msg = coreMessage(err);
+    ok(id, JSON.stringify({ ok: false, reason: 'parse', message: msg || LUT_ERRORS.cube_unreadable }));
+    return;
+  }
+  const cubeId = await sha256Buffer(buffer);
+  const header = readLutHeader(new TextDecoder().decode(bytes));
+  const record = buildLutRecord({
+    cubeId,
+    filename: args.filename,
+    byteLength: bytes.byteLength,
+    parsed,
+    identified,
+    header,
+    savedAt: args.version,
+  });
+  const saved = await saveLut(record, buffer, args.version);
+  if (!saved.ok) {
+    ok(
+      id,
+      JSON.stringify({
+        ok: false,
+        reason: saved.reason,
+        message: saved.reason === 'full' ? LUT_ERRORS.library_full : '',
+      }),
+    );
+    return;
+  }
+  ok(
+    id,
+    JSON.stringify({
+      ok: true,
+      duplicate: saved.duplicate,
+      record: saved.record,
+      totalBytes: saved.totalBytes,
+    }),
+  );
+}
+
+async function lutRestore(id: number): Promise<void> {
+  const meta = await loadLutLibraryMeta();
+  ok(id, JSON.stringify(meta));
+}
+
+async function lutPatch(id: number, args: LutPatchArgs): Promise<void> {
+  const res = await patchLutRecord(args.cubeId, args.patch, args.version);
+  ok(id, JSON.stringify(res));
+}
+
+async function lutDelete(id: number, args: LutDeleteArgs): Promise<void> {
+  const deleted = await deleteLutRecord(args.cubeId, args.version);
+  ok(id, JSON.stringify({ ok: deleted }));
+}
+
+async function lutBlob(id: number, args: LutBlobArgs): Promise<void> {
+  const blob = await loadLutBlob(args.cubeId);
+  if (!blob) {
+    ok(id, JSON.stringify({ ok: false }));
+    return;
+  }
+  ok(id, JSON.stringify({ ok: true }), [blob]);
+}
+
 async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   const { buffer, args, file, meta } = req;
   await load();
@@ -195,6 +285,11 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'bake' && args) bake(id, args);
   else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
   else if (op === 'calib-check' && req.check) calibCheck(id, req.check);
+  else if (op === 'lut-import' && req.lutImport) await lutImport(id, req.lutImport);
+  else if (op === 'lut-restore') await lutRestore(id);
+  else if (op === 'lut-patch' && req.lutPatch) await lutPatch(id, req.lutPatch);
+  else if (op === 'lut-delete' && req.lutDelete) await lutDelete(id, req.lutDelete);
+  else if (op === 'lut-blob' && req.lutBlob) await lutBlob(id, req.lutBlob);
   else throw new Error('未知请求');
 }
 

@@ -1,8 +1,16 @@
-// 校准数据存在这台 iPhone 的浏览器里（IndexedDB），加到主屏幕后重开还在。只存用户自己导入的那个 zip。
+// 校准数据与用户 LUT 存在这台 iPhone 的浏览器里（IndexedDB），加到主屏幕后重开还在。
+
+import { MAX_LUT_LIBRARY_BYTES, type LutRecord } from './lut';
 
 const DB = 'gxr-mobile';
+const DB_VERSION = 2;
 const STORE = 'calib';
 const KEY = 'pack';
+const LUT_RECORDS = 'lut_records';
+const LUT_BLOBS = 'lut_blobs';
+const LUT_META = 'lut_meta';
+const LUT_ORDER_KEY = 'order';
+const LUT_WATERMARK_KEY = 'watermark';
 
 export interface StoredPack {
   zip: ArrayBuffer;
@@ -12,9 +20,13 @@ export interface StoredPack {
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB, 1);
+    const request = indexedDB.open(DB, DB_VERSION);
     request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains(LUT_RECORDS)) db.createObjectStore(LUT_RECORDS, { keyPath: 'cube_id' });
+      if (!db.objectStoreNames.contains(LUT_BLOBS)) db.createObjectStore(LUT_BLOBS);
+      if (!db.objectStoreNames.contains(LUT_META)) db.createObjectStore(LUT_META);
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('IndexedDB'));
@@ -111,3 +123,239 @@ export async function deletePack(at: number): Promise<boolean> {
   if (typeof indexedDB === 'undefined') return true;
   return putIfNewer({ zip: null, name: '', savedAt: at });
 }
+
+// ---- LUT 库 IndexedDB 存储（256 MiB 上限、去重、版本水位、确认删除） --------------------
+
+export type SaveLutResult =
+  | { ok: true; duplicate: boolean; record: LutRecord; totalBytes: number }
+  | { ok: false; reason: 'full' | 'stale' };
+
+export type LutPatchFields = Partial<
+  Pick<
+    LutRecord,
+    | 'name'
+    | 'input_space'
+    | 'output_space'
+    | 'input_gamut'
+    | 'output_gamut'
+    | 'input_range'
+    | 'output_range'
+    | 'input_space_manual'
+    | 'input_space_state'
+    | 'starred'
+  >
+>;
+
+export async function loadLutWatermark(): Promise<number> {
+  if (typeof indexedDB === 'undefined') return 0;
+  const db = await open();
+  try {
+    return await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction(LUT_META, 'readonly');
+      const req = tx.objectStore(LUT_META).get(LUT_WATERMARK_KEY);
+      tx.oncomplete = () => resolve(watermarkOf(req.result));
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadLutLibraryMeta(): Promise<{ records: LutRecord[]; order: string[]; totalBytes: number; watermark: number }> {
+  if (typeof indexedDB === 'undefined') return { records: [], order: [], totalBytes: 0, watermark: 0 };
+  const db = await open();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction([LUT_RECORDS, LUT_META], 'readonly');
+      const recReq = tx.objectStore(LUT_RECORDS).getAll();
+      const ordReq = tx.objectStore(LUT_META).get(LUT_ORDER_KEY);
+      const wmReq = tx.objectStore(LUT_META).get(LUT_WATERMARK_KEY);
+      tx.oncomplete = () => {
+        const all = (Array.isArray(recReq.result) ? recReq.result : []) as LutRecord[];
+        const byId = new Map(all.map((r) => [r.cube_id, r]));
+        const savedOrder = Array.isArray(ordReq.result) ? (ordReq.result as string[]) : [];
+        const ordered: LutRecord[] = [];
+        const seen = new Set<string>();
+        for (const id of savedOrder) {
+          const item = byId.get(id);
+          if (item && !seen.has(id)) {
+            seen.add(id);
+            ordered.push(item);
+          }
+        }
+        for (const item of all) {
+          if (!seen.has(item.cube_id)) ordered.push(item);
+        }
+        const totalBytes = ordered.reduce((sum, r) => sum + (Number.isFinite(r.bytes) ? r.bytes : 0), 0);
+        resolve({ records: ordered, order: ordered.map((r) => r.cube_id), totalBytes, watermark: watermarkOf(wmReq.result) });
+      };
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadLutTotalBytes(): Promise<number> {
+  if (typeof indexedDB === 'undefined') return 0;
+  const meta = await loadLutLibraryMeta();
+  return meta.totalBytes;
+}
+
+export async function loadLutBlob(cubeId: string): Promise<ArrayBuffer | null> {
+  if (typeof indexedDB === 'undefined') return null;
+  const db = await open();
+  try {
+    return await new Promise<ArrayBuffer | null>((resolve, reject) => {
+      const tx = db.transaction(LUT_BLOBS, 'readonly');
+      const req = tx.objectStore(LUT_BLOBS).get(cubeId);
+      tx.oncomplete = () => resolve(req.result instanceof ArrayBuffer ? req.result : null);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/** 原子写入新 LUT：同事务校验版本水位、去重（不覆盖用户改名与手动空间）及 256 MiB 上限。 */
+export async function saveLut(record: LutRecord, blob: ArrayBuffer, version: number): Promise<SaveLutResult> {
+  const db = await open();
+  try {
+    const out = await new Promise<SaveLutResult>((resolve, reject) => {
+      const tx = db.transaction([LUT_RECORDS, LUT_BLOBS, LUT_META], 'readwrite');
+      const recs = tx.objectStore(LUT_RECORDS);
+      const blobs = tx.objectStore(LUT_BLOBS);
+      const meta = tx.objectStore(LUT_META);
+      let result: SaveLutResult = { ok: false, reason: 'stale' };
+
+      const wmReq = meta.get(LUT_WATERMARK_KEY);
+      const ordReq = meta.get(LUT_ORDER_KEY);
+      const allReq = recs.getAll();
+
+      allReq.onsuccess = () => {
+        const high = watermarkOf(wmReq.result);
+        const all = (Array.isArray(allReq.result) ? allReq.result : []) as LutRecord[];
+        const totalBytes = all.reduce((sum, r) => sum + (Number.isFinite(r.bytes) ? r.bytes : 0), 0);
+        const existing = all.find((r) => r.cube_id === record.cube_id);
+        if (existing) {
+          // 已经导入过：确保原始字节完好，但不覆盖用户的改名或已选色彩空间。
+          const blobReq = blobs.get(record.cube_id);
+          blobReq.onsuccess = () => {
+            if (!(blobReq.result instanceof ArrayBuffer) || blobReq.result.byteLength !== blob.byteLength) {
+              blobs.put(blob, record.cube_id);
+            }
+            result = { ok: true, duplicate: true, record: existing, totalBytes };
+          };
+          return;
+        }
+        if (high >= version) {
+          result = { ok: false, reason: 'stale' };
+          return;
+        }
+        if (totalBytes + blob.byteLength > MAX_LUT_LIBRARY_BYTES) {
+          result = { ok: false, reason: 'full' };
+          return;
+        }
+        const order = Array.isArray(ordReq.result) ? ([...ordReq.result] as string[]) : all.map((r) => r.cube_id);
+        if (!order.includes(record.cube_id)) order.push(record.cube_id);
+        const stored: LutRecord = { ...record, savedAt: version };
+        recs.put(stored);
+        blobs.put(blob, record.cube_id);
+        meta.put(order, LUT_ORDER_KEY);
+        meta.put(version, LUT_WATERMARK_KEY);
+        result = { ok: true, duplicate: false, record: stored, totalBytes: totalBytes + blob.byteLength };
+      };
+
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+    if (out.ok && !out.duplicate) {
+      void navigator.storage?.persist?.().catch(() => false);
+    }
+    return out;
+  } finally {
+    db.close();
+  }
+}
+
+export async function patchLutRecord(
+  cubeId: string,
+  patch: LutPatchFields,
+  version: number,
+): Promise<{ ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' }> {
+  const db = await open();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction([LUT_RECORDS, LUT_META], 'readwrite');
+      const recs = tx.objectStore(LUT_RECORDS);
+      const meta = tx.objectStore(LUT_META);
+      let result: { ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' } = { ok: false, reason: 'not_found' };
+
+      const wmReq = meta.get(LUT_WATERMARK_KEY);
+      const itemReq = recs.get(cubeId);
+      itemReq.onsuccess = () => {
+        const current = itemReq.result as LutRecord | undefined;
+        if (!current) {
+          result = { ok: false, reason: 'not_found' };
+          return;
+        }
+        const high = watermarkOf(wmReq.result);
+        if (high >= version || current.savedAt >= version) {
+          result = { ok: false, reason: 'stale' };
+          return;
+        }
+        const next: LutRecord = {
+          ...current,
+          ...patch,
+          version: current.version + 1,
+          savedAt: version,
+        };
+        recs.put(next);
+        meta.put(version, LUT_WATERMARK_KEY);
+        result = { ok: true, record: next };
+      };
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/** 确认在 IndexedDB 删完记录、字节与顺序再返回 true，调用方据此清内存。 */
+export async function deleteLutRecord(cubeId: string, version: number): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return true;
+  const db = await open();
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction([LUT_RECORDS, LUT_BLOBS, LUT_META], 'readwrite');
+      const recs = tx.objectStore(LUT_RECORDS);
+      const blobs = tx.objectStore(LUT_BLOBS);
+      const meta = tx.objectStore(LUT_META);
+      let deleted = false;
+      const wmReq = meta.get(LUT_WATERMARK_KEY);
+      const ordReq = meta.get(LUT_ORDER_KEY);
+      ordReq.onsuccess = () => {
+        const high = watermarkOf(wmReq.result);
+        if (high >= version) return;
+        recs.delete(cubeId);
+        blobs.delete(cubeId);
+        const order = Array.isArray(ordReq.result) ? (ordReq.result as string[]).filter((id) => id !== cubeId) : [];
+        meta.put(order, LUT_ORDER_KEY);
+        meta.put(version, LUT_WATERMARK_KEY);
+        deleted = true;
+      };
+      tx.oncomplete = () => resolve(deleted);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+

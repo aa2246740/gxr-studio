@@ -6,7 +6,8 @@ import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
 import { button, el, icon, ICON } from './dom';
-import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
+import { cropPanel, curvesPanel, framePanel } from './later_panels';
+import { LutView } from './lut_view';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
 import { lookCache } from './looks';
 import { pasteState } from './paste_state';
@@ -90,13 +91,17 @@ export class EditorView {
   private sharp: ImageBitmap | null = null;
   private placeholder: HTMLElement | null = null;
   private recipes: RecipeView | null = null;
+  private luts: LutView | null = null;
+  private lutTabBtn: HTMLButtonElement | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
   private recipeKey = NEUTRAL_BAKE_KEY;
+  /** 舞台上套的 LUT 渲染令牌和名称。 */
+  private lutToken: string | null = null;
+  private lutLabel: string | null = null;
   private tab = 1;
   /** 这张读完、清楚的图也换上之后才 resolve。只给截图和测试等。 */
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
-  private restLabel = '';
   /** 当前这根滑块上次落定的值（松手时一样就不算修改）。 */
   private committed = 0;
   /** 套用或撤销改了正在看的这张：重新打开，照片和面板都按新的编辑状态画。 */
@@ -142,6 +147,9 @@ export class EditorView {
     this.sharp = null;
     this.recipes?.destroy();
     this.recipes = null;
+    this.luts?.destroy();
+    this.luts = null;
+    this.lutTabBtn = null;
     this.engine?.detach();
   }
 
@@ -174,11 +182,21 @@ export class EditorView {
     this.bindGesture(stage);
 
     this.recipeKey = NEUTRAL_BAKE_KEY;
+    this.lutToken = null;
+    this.lutLabel = null;
     this.recipes = new RecipeView(this.api, this.engine, photo, {
       mode: () => this.mode,
       look: (key, label) => this.useLook(key, label),
       dragging: () => this.dragging,
       recipeTab: () => this.tab === 0,
+    });
+    this.luts = new LutView(this.shell, this.api, this.engine, photo, {
+      mode: () => this.mode,
+      recipeGpuKey: () => this.recipeKey,
+      stageLut: (token, label) => this.useLut(token, label),
+      dragging: () => this.dragging,
+      lutTab: () => this.tab === 4,
+      lutChanged: () => this.updateLutTabDot(),
     });
     const strip = this.recipes.stripEl();
 
@@ -186,22 +204,29 @@ export class EditorView {
     sheet.append(el('div', 'grab'));
     const tabs = el('div', 'tabs');
     const panels: HTMLElement[] = [];
+    this.lutTabBtn = null;
     TABS.forEach((name, tabIndex) => {
       const tab = button('', name);
       tab.setAttribute('role', 'tab');
+      if (tabIndex === 4) {
+        tab.dataset.tab = 'lut';
+        this.lutTabBtn = tab;
+        this.updateLutTabDot();
+      }
       if (tabIndex === 1) tab.classList.add('on');
       tab.addEventListener('click', () => {
         for (const item of tabs.children) item.classList.remove('on');
         tab.classList.add('on');
         this.tab = tabIndex;
         if (tabIndex === 0) this.recipes?.tabOpened();
+        if (tabIndex === 4) this.luts?.tabOpened();
         panels.forEach((panel, panelIndex) => {
           panel.hidden = panelIndex !== tabIndex;
         });
       });
       tabs.append(tab);
     });
-    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanel(), framePanel(), lutPanel(), curvesPanel());
+    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanel(), framePanel(), this.luts.panelEl(), curvesPanel());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -223,11 +248,24 @@ export class EditorView {
     this.paintStill(photo.bitmap);
   }
 
-  /** 配方那边定下了舞台该用哪张烘焙表。长按看原图时先记着，松手再换。 */
+  private updateLutTabDot(): void {
+    this.lutTabBtn?.classList.toggle('dot', this.photo?.lut !== null);
+  }
+
+  /** 配方那边定下了舞台该用哪张烘焙表。 */
   private useLook(key: string, label: string): void {
     this.recipeKey = key;
-    if (this.holding) this.restLabel = label;
-    else this.setLabel(label);
+    this.caption = label;
+    this.renderStageLabel();
+    this.push();
+    this.luts?.recipeUpdated();
+  }
+
+  /** LUT 这边定下了舞台该用哪张 3D LUT 纹理。 */
+  private useLut(token: string | null, label: string | null): void {
+    this.lutToken = token;
+    this.lutLabel = label;
+    this.renderStageLabel();
     this.push();
   }
 
@@ -342,10 +380,14 @@ export class EditorView {
   private push(): void {
     if (!this.engine || !this.photo || this.mode === 'still') return;
     const knobs = this.holding ? zeroKnobs() : this.photo.knobs;
+    const lut = this.holding ? null : this.lutToken;
+    if (lut && !this.engine.hasLut(lut)) {
+      this.luts?.ensureActive();
+    }
     this.engine.setLook({
-      // 按住看原图：中性转换、调整归零。
+      // 按住看原图：中性转换、不用 LUT、调整归零。
       recipe: this.mode === 'raw' ? (this.holding ? NEUTRAL_BAKE_KEY : this.recipeKey) : null,
-      lut: null,
+      lut,
       lutStrength: 1,
       curve: null,
       adjust: toAdjust(knobs),
@@ -355,8 +397,17 @@ export class EditorView {
 
   private setLabel(text: string): void {
     this.caption = text;
+    this.renderStageLabel();
+  }
+
+  private renderStageLabel(): void {
     if (!this.stageLabel) return;
     this.stageLabel.replaceChildren();
+    const text = this.holding
+      ? '原图'
+      : this.lutLabel
+        ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}`
+        : this.caption;
     if (!text) return;
     this.stageLabel.append(el('span', 'tag neutral', text));
   }
@@ -501,8 +552,7 @@ export class EditorView {
         if (moved || !this.photo) return;
         held = true;
         this.holding = true;
-        this.restLabel = this.caption;
-        this.setLabel('原图');
+        this.renderStageLabel();
         this.push();
       }, 450);
       const move = (ev: PointerEvent) => {
@@ -522,7 +572,7 @@ export class EditorView {
         const swiped = ev.type === 'pointerup' && moved && Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy);
         if (held) {
           this.holding = false;
-          this.setLabel(this.restLabel);
+          this.renderStageLabel();
           this.push();
           if (!swiped) return;
         }
@@ -578,6 +628,7 @@ export class EditorView {
         this.engine.addJpg(key, photo.bitmap);
         this.engine.show(key);
         this.mode = 'jpg';
+        this.luts?.start(key);
         if (this.gpuCanvas) this.gpuCanvas.hidden = false;
         if (this.still) this.still.hidden = true;
         this.push();
@@ -682,6 +733,7 @@ export class EditorView {
     if (frame) this.shell.dataset.frame = '1';
     if (!this.caption) this.setLabel('中性转换');
     this.recipes?.start(key);
+    this.luts?.start(key);
     if (this.gpuCanvas) this.gpuCanvas.hidden = false;
     if (this.still) this.still.hidden = true;
     if (this.input) this.input.disabled = false;
@@ -715,6 +767,7 @@ export class EditorView {
       this.engine.addJpg(key, bitmap);
       bitmap.close();
       this.engine.show(key);
+      this.luts?.start(key);
       this.push();
       return;
     }

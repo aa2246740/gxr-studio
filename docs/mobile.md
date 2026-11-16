@@ -515,6 +515,15 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 测试：`tests/test_mobile_ui_export_hdr_unit.py`（HDR 的开关、文案和上限，`node:test`）、`tests/test_mobile_ui_export_hdr_browser.py`（`browser_serial`：四对 RAW+JPG 加一张只有 JPG 的开 HDR 导出原始尺寸和小，和桌面 `export_finish(hdr=True)` 逐字节相同，`hdr`、`hdr_reason`、文件名也相同）、`tests/test_mobile_ui_export_unit.py`（请求、批次状态机、分批、文件头尺寸，`node:test`）和 `tests/test_mobile_ui_export_browser.py`（`browser_serial`：解码门禁；六张照片在界面里编辑后导出，和桌面 `export_finish` 逐字节相同，ICC 时间戳按导出管线的办法固定；停止、陷阱、清空、读不了再重试、没有共享面板）。这几个文件都在导出管线隐私 lint 的范围里（`test_mobile_ui_export*.py`）。
 
+## LUT（M4）
+
+- **导入与存储（`lib/lut.ts`、`app/lut_book.ts`、`core/worker.ts`）**：用不带 `accept` 滤镜的多选文件框打开选择器，仅收 `.cube` 文件并统计忽略项（「N 个文件不是 .cube，没有导入。」）。在 Worker 里先按 `MAX_BYTES` 检查大小再读取字节、算 SHA-256，调用 `lut_parse` 与 `lut_identify(bytes, filename)` 生成与桌面 `_record` 对齐的记录；字节和记录按 M2 的版本化提交与删除确认规则存进 IndexedDB（`gxr-mobile` 的 `luts` / `lut_bytes` / `lut_tombstones`），库总容量上限 **256 MiB**（`MAX_LUT_LIBRARY_BYTES`），超出报「LUT 太多了。删掉几个再导入。」，重复 `cube_id` 为空操作并提示「已经导入过」。
+- **输入色彩空间（`app/lut_sheet.ts`）**：`lut_identify` 未写明或存在冲突时卡片显示「· 请选择输入色彩空间」并锁定，选定后解锁；选单按桌面 `lut_choices.js` 的两组（「普通照片与视频显示」「相机 Log 与高级空间」）列出全部 12 个空间，默认选项与说明行由核心 `undeclared_choice` 给出，03g 行显示当前空间与来源标记（文件已写明 / 推测 / 默认 / 已手选）。空间是库级属性，更改后同步刷新所有使用同一 LUT 的照片。
+- **03g 标签页与直接套用（经理决定 M-4）**：首张「不用 LUT」，其后为每份已导入 LUT 生成当前照片的 GPU 小图（纳入 M2 的 32 MiB 全局缩略图上限）；无输入空间或 JPG-only 照片遇到 Log LUT（非 `srgb` / `rec709` / `gamma24`）时锁卡并显示「这个 LUT 需要 RAW 文件」；引用的 LUT 被删除后显示「LUT 已删除」；长按支持「重命名」「删除」；03g 脚注按 M-4 改为「LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。」。
+- **GPU 预览与内存（`workers/lut_table.ts`、`app/lut_gpu.ts`）**：`lut_table(bytes, space_json)` 在专用短命 Worker 中逐个运行，完成后立即 `terminate()` 并将表（64 MiB）转移回主线程（不进常驻池，避免 WASM 线性内存滞留）；表未就绪时照片保持上一帧画面；`engine.addLut(cube_id, meta, data)` 后立刻丢弃 JS 持有，引擎显存缓存最多保留 3 份 LUT（`trim(this.luts, 3)`）。无头 Chrome 实测连切 3 份显示 LUT：GPU 峰值 **192.0 MiB**，JS 暂态峰值 **64.0 MiB**，短命 `lut_table` Worker WASM 峰值 **75.88 MiB**。
+- **配方复制与导出（`lib/paste.ts`、`lib/export_request.ts`、`core/export_worker.ts`）**：配方组扩展为「配方、LUT」，只要选了配方或 LUT 即视为已设置，套用与配方部分全有或全无，处理 `lut_missing` 与 `needs_raw`（`part: "lut"`）。导出请求带 `side.lut = cube_id`，点击导出时快照 LUT 字节与 `TargetSpec` 并在每批首次需要时传给导出 Worker 的 `export_prepare`；LUT 已删或 JPG-only 配 Log LUT 时按桌面 `cube_not_found` / `lut_needs_raw` 报错（绝不静默去 LUT 导出）。无头 Chrome 实测导出峰值：SDR 全尺寸 WASM **209.6 MiB** / JS **39.3 MiB**，HDR + Log LUT 全尺寸 WASM **438.2 MiB** / JS **132.2 MiB**（低于 640 MiB 上限）。
+- **测试**：`tests/test_mobile_ui_lut_unit.py`（`node:test` 记录构建、空间选择、配方+LUT 粘贴、出图令牌与桌面 Python 逐项对比）、`tests/test_mobile_ui_group_parity_browser.py`（配方 + LUT 复制套用桌面一致）以及 `tests/test_mobile_ui_lut_browser.py`（`browser_serial`，受 `test_core_parity_export_pipeline_guard.py` 隐私 lint 约束：导入、选空间、3 槽短命 Worker GPU 预览、Display/Log/HDR 导出与桌面/Gate A/B 对拍、重命名与删卡导出报错）。
+
 ## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
 
 移植的是导出时「从哪张图开始」：`finish/serve.py` 的 `color_image` 和 `_raw_rgb`（只有 `full=True`）、`render/service.py` 的 `plan` 和不精确的 `renderer`、`raw/render.py` 的 `render_full`（任意渲染器）、`lut/photo.py` 的 `color_image`。不移植 `exact_u8`（精确导出）、电脑图库里的本机配方、近似配方（`approx.ENABLED` 是 False）和预览路径。

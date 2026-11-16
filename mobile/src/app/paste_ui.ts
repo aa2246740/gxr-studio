@@ -46,6 +46,9 @@ export function clipSummary(api: AppApi): string {
     const card = dat ? shelf(shelves(dat.listing, clip.recipe.choice.unit), 'all').find((item) => item.id === clip.recipe?.choice.id) : null;
     if (card) parts.push(card.name);
   }
+  if (clip.lut) {
+    parts.push(api.lutBook().get(clip.lut)?.name ?? 'LUT 已删除');
+  }
   if (clip.knobs) {
     for (const [key, label] of KNOB_LABEL) {
       const value = clip.knobs[key] ?? 0;
