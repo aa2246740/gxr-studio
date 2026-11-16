@@ -7,11 +7,13 @@ import { unitOfLens } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { buildRequest, buildSide, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
 import { formatClock, formatDay } from '../lib/group';
+import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrMixLine, hdrResultText } from '../lib/hdr_text';
+import { loadExportHdr, saveExportHdr } from '../lib/prefs';
 import { shelf, shelves, type Card } from '../lib/recipes';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeText, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
 import { button, el } from './dom';
-import { ExportBatch, type BatchHost, type BatchItem, type Staged } from './export_batch';
+import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem, type Staged } from './export_batch';
 import { setExportPaused } from './export_pause';
 import { photoMs, type Photo } from './model';
 import './export.css';
@@ -29,7 +31,6 @@ const QUALITIES: Array<[QualityTier, string]> = [
   ['medium', '中'],
   ['low', '低'],
 ];
-const HDR_LINE = '在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。';
 const NO_DAT_GUIDE = '未导入相机配方文件时，导出不会带上相机配方效果：有相机 JPG 的照片导出相机 JPG；只有 RAW、又套用了配方的照片可能导不出。';
 const NO_SHARE = '这个浏览器打不开系统的共享面板。';
 
@@ -37,6 +38,7 @@ const NS = 'http://www.w3.org/2000/svg';
 const PATH = {
   export: 'M12 15V3M7.5 7.5 12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7',
   check: 'M5 12.5l4.5 4.5L19 7',
+  info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
   x: 'M6 6l12 12M18 6 6 18',
   alert: 'M12 4 2.5 20h19L12 4zM12 10v4.5M12 17.5h.01',
 };
@@ -201,18 +203,39 @@ export class ExportFlow {
         quality = v;
       }),
     );
-    // HDR 照设计稿摆着，开关停用，写「这项下一步做」（M1 的做法），等 ui-m3-hdr。
+    // HDR（05a）：选中的照片一张 RAW 都没有时停用，写桌面的「HDR 需要 RAW 文件」，也不改记住的选择（桌面 hdrAvailable）。
+    // 开关记在 localStorage，第一次默认关。开着、又有只有 JPG 的照片时，下面一行说这几张存普通版本。
+    const canHdr = hdrAvailable(photos);
+    let hdrOn = canHdr && loadExportHdr();
     const hdrRow = el('div', 'frow');
     const hdr = el('div', 'hdrrow');
     const hdrText = el('div', 'tx');
-    hdrText.append(el('b', '', 'HDR'), el('small', '', HDR_LINE));
+    hdrText.append(el('b', '', 'HDR'), el('small', '', canHdr ? HDR_LINE : HDR_NO_RAW));
     const sw = document.createElement('input');
     sw.type = 'checkbox';
     sw.className = 'switch';
-    sw.disabled = true;
+    sw.disabled = !canHdr;
+    sw.checked = hdrOn;
+    sw.setAttribute('role', 'switch');
     sw.setAttribute('aria-label', 'HDR');
-    hdr.append(hdrText, el('span', 'later', '这项下一步做'), sw);
+    hdr.append(hdrText, sw);
     hdrRow.append(hdr);
+    const mix = hdrMixLine(photos);
+    const mixBox = mix ? el('div', 'bn grey hdrmix') : null;
+    if (mixBox && mix) {
+      mixBox.dataset.state = 'hdr-mix';
+      const ic = el('span', 'dim');
+      ic.append(ico(PATH.info, 'md'));
+      mixBox.append(ic, el('div', 'tx dim', mix));
+      mixBox.hidden = !hdrOn;
+      hdrRow.append(mixBox);
+    }
+    sw.addEventListener('change', () => {
+      if (!canHdr) return;
+      hdrOn = sw.checked;
+      saveExportHdr(hdrOn);
+      if (mixBox) mixBox.hidden = !hdrOn;
+    });
     const form = el('div');
     form.style.marginTop = '10px';
     form.append(sizeRow, qualityRow, hdrRow);
@@ -226,7 +249,7 @@ export class ExportFlow {
     go.addEventListener('click', () => {
       this.closeSheet();
       onStart?.();
-      this.start(photos, { size, quality });
+      this.start(photos, { size, quality, hdr: hdrOn });
     });
     const foot = el('p', 'foot', `做好后再点一次「存到相册」，在系统面板里点「${n === 1 ? '存储图像' : `存储 ${n} 张图像`}」。`);
     sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
@@ -275,7 +298,7 @@ export class ExportFlow {
   }
 
   /** 点「存到相册」：把这几张、它们的文件句柄、版本和请求定下来。新的一批会放掉上一批还没交出去的文件。 */
-  private start(photos: Photo[], options: { size: SizeTier; quality: QualityTier }): void {
+  private start(photos: Photo[], options: { size: SizeTier; quality: QualityTier; hdr: boolean }): void {
     this.batch?.cancel();
     this.revokeUrls();
     const hooks = dev();
@@ -307,7 +330,7 @@ export class ExportFlow {
     this.chunk = 0;
     this.chunks = [];
     this.savedCount = 0;
-    this.batch = new ExportBatch(items, host);
+    this.batch = new ExportBatch(items, host, options.hdr ? STAGE_CAP_HDR_BYTES : STAGE_CAP_BYTES);
     this.batch.start();
   }
 
@@ -423,7 +446,7 @@ export class ExportFlow {
     const { done, total, current } = batch.progress();
     const top = el('div', 'top');
     const tx = el('div', 'tx');
-    tx.append(el('b', 'num', `正在导出 ${current} / ${total}`), el('small', '', '可以接着看照片。'));
+    tx.append(el('b', 'num', `正在导出 ${current} / ${total}`), el('small', '', batch.hdr ? HDR_PROGRESS : '可以接着看照片。'));
     const stop = button('fbtn fill-ctl', '停止');
     stop.addEventListener('click', () => batch.stop());
     top.append(el('span', 'spin'), tx, stop);
@@ -450,6 +473,7 @@ export class ExportFlow {
     else if (!ok) main = `${failed.length} 张没做成`;
     else main = `做好 ${ok} 张，${failed.length} 张没做成`;
     tx.append(el('b', '', main));
+    this.paintHdr(tx, batch);
     if (failed.length) {
       const why = el('ul', 'why');
       for (const f of failed) why.append(el('li', '', `${f.stem}：${f.message}`));
@@ -477,6 +501,26 @@ export class ExportFlow {
       dock.append(close);
     }
     if (this.view === 'noshare') this.paintLinks(dock, batch);
+  }
+
+  /**
+   * 开了 HDR 的一批：05c / 05e 的那一行（「4 张 HDR · 1 张只有 JPG，存普通版本」），按还没交出去的文件数；别的原因没做成
+   * HDR 的逐张写桌面的说明（hdr_note）。做没做成 HDR 看核心的结果。
+   */
+  private paintHdr(tx: HTMLElement, batch: ExportBatch): void {
+    if (!batch.hdr || !batch.staged.length) return;
+    const rows = batch.staged.map((s) => ({ stem: batch.item(s.id)?.stem ?? '', result: batch.results.get(s.id) }));
+    const { line, notes } = hdrResultText(rows);
+    if (line) {
+      const small = el('small', 'hdrline', line);
+      small.dataset.state = 'hdr-line';
+      tx.append(small);
+    }
+    if (notes.length) {
+      const list = el('ul', 'why hdrnotes');
+      for (const note of notes) list.append(el('li', '', note));
+      tx.append(list);
+    }
   }
 
   /** 05c 的「存到相册」。分几批时写第几批；点下去在这次点击里同步调用 navigator.share。 */
@@ -550,6 +594,7 @@ export class ExportFlow {
     icon.append(ico(PATH.check));
     const tx = el('div', 'tx');
     tx.append(el('b', '', `好了：${n} 张`), el('small', '', `在面板里点了「${n === 1 ? '存储图像' : `存储 ${n} 张图像`}」，就已经在相册里。`));
+    this.paintHdr(tx, batch);
     const done = button('fbtn fill-ctl', '好');
     done.dataset.act = 'done';
     done.addEventListener('click', () => this.finishShare(batch));
