@@ -1,7 +1,9 @@
 // 校准数据存在这台 iPhone 的浏览器里（IndexedDB），加到主屏幕后重开还在。只存用户自己导入的那个 zip。
 
 const DB = 'gxr-mobile';
+const DB_VERSION = 2;
 const STORE = 'calib';
+const LOGOS_STORE = 'logos';
 const KEY = 'pack';
 
 export interface StoredPack {
@@ -10,11 +12,26 @@ export interface StoredPack {
   savedAt: number;
 }
 
+export interface StoredLogo {
+  id: string;
+  name: string;
+  w: number;
+  h: number;
+  coverage: number;
+  opaque: boolean;
+  lum: number;
+  rgba: ArrayBuffer;
+  createdAt: number;
+}
+
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB, 1);
+    const request = indexedDB.open(DB, DB_VERSION);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+      if (!request.result.objectStoreNames.contains(LOGOS_STORE)) {
+        request.result.createObjectStore(LOGOS_STORE, { keyPath: 'id' });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('IndexedDB'));
@@ -110,4 +127,88 @@ export async function savePack(pack: StoredPack): Promise<boolean> {
 export async function deletePack(at: number): Promise<boolean> {
   if (typeof indexedDB === 'undefined') return true;
   return putIfNewer({ zip: null, name: '', savedAt: at });
+}
+
+export async function loadAllLogos(): Promise<StoredLogo[]> {
+  if (typeof indexedDB === 'undefined') return [];
+  const db = await open();
+  try {
+    const rows = await new Promise<StoredLogo[]>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readonly');
+      const req = tx.objectStore(LOGOS_STORE).getAll();
+      tx.oncomplete = () => resolve((req.result as StoredLogo[]) ?? []);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+    return rows.sort((a, b) => a.createdAt - b.createdAt);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+export async function putStoredLogo(logo: StoredLogo, maxLogos = 12): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return false;
+  const db = await open();
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readwrite');
+      const store = tx.objectStore(LOGOS_STORE);
+      let wrote = false;
+      const allReq = store.getAll();
+      allReq.onsuccess = () => {
+        const list = (allReq.result as StoredLogo[]) ?? [];
+        const exists = list.some((row) => row.id === logo.id);
+        if (!exists && list.length >= maxLogos) return;
+        store.put(logo);
+        wrote = true;
+      };
+      tx.oncomplete = () => resolve(wrote);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function renameStoredLogo(id: string, name: string): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return false;
+  const db = await open();
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readwrite');
+      const store = tx.objectStore(LOGOS_STORE);
+      let wrote = false;
+      const req = store.get(id);
+      req.onsuccess = () => {
+        const row = req.result as StoredLogo | undefined;
+        if (!row) return;
+        store.put({ ...row, name });
+        wrote = true;
+      };
+      tx.oncomplete = () => resolve(wrote);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function deleteStoredLogo(id: string): Promise<void> {
+  if (typeof indexedDB === 'undefined') return;
+  const db = await open();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readwrite');
+      tx.objectStore(LOGOS_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
 }

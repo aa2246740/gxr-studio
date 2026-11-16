@@ -1,13 +1,53 @@
 // 模块 Worker：WASM 只在这里加载。主线程把 DNG 的一份拷贝传进来，原件留给显卡引擎。
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
-import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_calib_pack, color_listing, color_resolve, dng_describe } from '../wasm-pkg/gxr_wasm.js';
+import init, {
+  camdata_entries,
+  camdata_parse,
+  color_bake,
+  color_calib_check,
+  color_calib_pack,
+  color_listing,
+  color_resolve,
+  dng_describe,
+  export_meta_photo,
+  frame_layout,
+  stamp_layout,
+} from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
+import { FONT_URLS } from '../lib/font_assets';
+import { packFonts, type FontKey } from '../lib/fonts';
 import { loadPack, savePack } from '../lib/idb';
+import {
+  cleanLogoName,
+  cropImageData,
+  hasWhiteBackground,
+  isOpaqueImageData,
+  keyWhiteImageData,
+  LOGO_ERR,
+  LOGO_LIMITS,
+  logoStats,
+  sniffImageMagic,
+  trimBounds,
+  type RgbaPixels,
+} from '../lib/logo_key';
+import { shotSize } from '../lib/photo_size';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
-import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, ResolveArgs } from './protocol';
+import type {
+  BakeArgs,
+  CalibCheckArgs,
+  CoreOp,
+  CoreReply,
+  CoreRequest,
+  FrameLayoutArgs,
+  FrameMetaArgs,
+  LogoSaveArgs,
+  ResolveArgs,
+} from './protocol';
+
+const fontCache = new Map<FontKey, Uint8Array>();
 
 let ready: Promise<unknown> | null = null;
 
@@ -185,6 +225,203 @@ function bake(id: number, args: BakeArgs): void {
   ok(id, meta, [own(bytes)]);
 }
 
+async function headSlice(file: File | null): Promise<Uint8Array | null> {
+  if (!file) return null;
+  try {
+    return new Uint8Array(await file.slice(0, 1 << 20).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+async function frameMeta(id: number, args: FrameMetaArgs): Promise<void> {
+  const [jpgHead, dngHead] = await Promise.all([headSlice(args.jpg), headSlice(args.dng)]);
+  const size = shotSize(jpgHead, dngHead);
+  const mtime = Number.isFinite(args.mtimeMs) ? args.mtimeMs : undefined;
+  const tz = Number.isFinite(args.tzOffsetMin) ? Math.max(-1439, Math.min(1439, Math.trunc(args.tzOffsetMin))) : 0;
+  const raw = JSON.parse(export_meta_photo(jpgHead, dngHead, args.name, mtime, tz)) as {
+    frame?: Record<string, string>;
+    taken?: string | null;
+    file_time?: string | null;
+  };
+  ok(
+    id,
+    JSON.stringify({
+      frame: raw.frame ?? {},
+      taken: raw.taken ?? null,
+      file_time: raw.file_time ?? null,
+      width: size?.width ?? null,
+      height: size?.height ?? null,
+    }),
+  );
+}
+
+async function ensureFontBytes(keys: readonly FontKey[]): Promise<Array<readonly [FontKey, Uint8Array]>> {
+  const unique = [...new Set(keys)].filter((k): k is FontKey => k in FONT_URLS);
+  return Promise.all(
+    unique.map(async (key) => {
+      let bytes = fontCache.get(key);
+      if (!bytes) {
+        const res = await fetch(FONT_URLS[key], { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`font_${key}_${res.status}`);
+        bytes = new Uint8Array(await res.arrayBuffer());
+        fontCache.set(key, bytes);
+      }
+      return [key, bytes] as const;
+    }),
+  );
+}
+
+async function frameLayoutOp(id: number, args: FrameLayoutArgs): Promise<void> {
+  const loaded = await ensureFontBytes(args.fontKeys);
+  const { indexJson, pack } = packFonts(loaded);
+  if (args.cards) {
+    const cards: Record<string, unknown> = {};
+    for (const card of args.cards) {
+      try {
+        cards[card.id] = JSON.parse(frame_layout(args.metaJson, card.specJson, indexJson, pack));
+      } catch {
+        cards[card.id] = null;
+      }
+    }
+    ok(id, JSON.stringify({ cards }));
+    return;
+  }
+  const frame = args.frameSpecJson ? JSON.parse(frame_layout(args.metaJson, args.frameSpecJson, indexJson, pack)) : null;
+  const stamp =
+    args.stampSpecJson && args.stampMetaJson
+      ? JSON.parse(stamp_layout(args.stampMetaJson, args.stampSpecJson, indexJson, pack))
+      : null;
+  ok(id, JSON.stringify({ frame, stamp }));
+}
+
+function bitmapToRgba(bmp: ImageBitmap, width: number, height: number): RgbaPixels {
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error(LOGO_ERR.unreadable);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, 0, 0, width, height);
+  const data = ctx.getImageData(0, 0, width, height);
+  return { width, height, data: data.data };
+}
+
+function resizeRgba(rgba: RgbaPixels, outW: number, outH: number): RgbaPixels {
+  const srcCanvas = new OffscreenCanvas(rgba.width, rgba.height);
+  const sctx = srcCanvas.getContext('2d');
+  if (!sctx) throw new Error(LOGO_ERR.unreadable);
+  sctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0);
+  const dstCanvas = new OffscreenCanvas(outW, outH);
+  const dctx = dstCanvas.getContext('2d', { willReadFrequently: true });
+  if (!dctx) throw new Error(LOGO_ERR.unreadable);
+  dctx.imageSmoothingQuality = 'high';
+  dctx.drawImage(srcCanvas, 0, 0, outW, outH);
+  const out = dctx.getImageData(0, 0, outW, outH);
+  return { width: outW, height: outH, data: out.data };
+}
+
+async function decodeLogoFile(file: File): Promise<{ bmp: ImageBitmap } | { error: string }> {
+  if (file.size > LOGO_LIMITS.bytes) return { error: LOGO_ERR.tooBig };
+  let magic: 'PNG' | 'JPEG' | 'WEBP' | null = null;
+  try {
+    const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    magic = sniffImageMagic(head);
+  } catch {
+    return { error: LOGO_ERR.unreadable };
+  }
+  if (!magic) return { error: LOGO_ERR.unreadable };
+  try {
+    const bmp = await createImageBitmap(file, {
+      imageOrientation: 'from-image',
+      colorSpaceConversion: 'default',
+      premultiplyAlpha: 'none',
+    });
+    if (
+      bmp.width <= 0 ||
+      bmp.height <= 0 ||
+      bmp.width > LOGO_LIMITS.dim ||
+      bmp.height > LOGO_LIMITS.dim ||
+      bmp.width * bmp.height > LOGO_LIMITS.pixels
+    ) {
+      bmp.close();
+      return { error: LOGO_ERR.unreadable };
+    }
+    return { bmp };
+  } catch {
+    return { error: LOGO_ERR.unreadable };
+  }
+}
+
+async function logoPreview(id: number, file: File): Promise<void> {
+  const decoded = await decodeLogoFile(file);
+  if ('error' in decoded) {
+    ok(id, JSON.stringify({ ok: false, error: decoded.error }));
+    return;
+  }
+  const { bmp } = decoded;
+  try {
+    const origW = bmp.width;
+    const origH = bmp.height;
+    const scale = Math.min(1, 480 / Math.max(origW, origH));
+    const pw = Math.max(1, Math.round(origW * scale));
+    const ph = Math.max(1, Math.round(origH * scale));
+    const rgba = bitmapToRgba(bmp, pw, ph);
+    const whiteBg = hasWhiteBackground(rgba);
+    const origOpaque = isOpaqueImageData(rgba);
+    const buf = own(new Uint8Array(rgba.data.buffer, rgba.data.byteOffset, rgba.data.byteLength));
+    ok(id, JSON.stringify({ ok: true, width: pw, height: ph, origW, origH, whiteBg, origOpaque }), [buf]);
+  } finally {
+    bmp.close();
+  }
+}
+
+async function logoSave(id: number, file: File, args: LogoSaveArgs): Promise<void> {
+  const decoded = await decodeLogoFile(file);
+  if ('error' in decoded) {
+    ok(id, JSON.stringify({ ok: false, error: decoded.error }));
+    return;
+  }
+  const { bmp } = decoded;
+  let rgba: RgbaPixels;
+  try {
+    rgba = bitmapToRgba(bmp, bmp.width, bmp.height);
+  } finally {
+    bmp.close();
+  }
+  const origOpaque = isOpaqueImageData(rgba);
+  if (args.keyWhite && origOpaque) {
+    rgba = keyWhiteImageData(rgba, args.tol);
+  }
+  const box = trimBounds(rgba);
+  if (!box || Math.min(box[2], box[3]) < LOGO_LIMITS.minSide) {
+    ok(id, JSON.stringify({ ok: false, error: LOGO_ERR.tooSmall }));
+    return;
+  }
+  let trimmed = cropImageData(rgba, box);
+  const longEdge = Math.max(trimmed.width, trimmed.height);
+  if (longEdge > LOGO_LIMITS.storeLongEdge) {
+    const scale = LOGO_LIMITS.storeLongEdge / longEdge;
+    const nw = Math.max(1, Math.round(trimmed.width * scale));
+    const nh = Math.max(1, Math.round(trimmed.height * scale));
+    trimmed = resizeRgba(trimmed, nw, nh);
+  }
+  const stats = logoStats(trimmed);
+  const name = cleanLogoName(args.name, file.name);
+  const buf = own(new Uint8Array(trimmed.data.buffer, trimmed.data.byteOffset, trimmed.data.byteLength));
+  ok(
+    id,
+    JSON.stringify({
+      ok: true,
+      name,
+      w: trimmed.width,
+      h: trimmed.height,
+      coverage: stats.coverage,
+      opaque: stats.opaque,
+      lum: stats.lum,
+    }),
+    [buf],
+  );
+}
+
 async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   const { buffer, args, file, meta } = req;
   await load();
@@ -195,6 +432,10 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'bake' && args) bake(id, args);
   else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
   else if (op === 'calib-check' && req.check) calibCheck(id, req.check);
+  else if (op === 'frame-meta' && req.frameMeta) await frameMeta(id, req.frameMeta);
+  else if (op === 'frame-layout' && req.frameLayout) await frameLayoutOp(id, req.frameLayout);
+  else if (op === 'logo-preview' && file) await logoPreview(id, file);
+  else if (op === 'logo-save' && file && req.logoSave) await logoSave(id, file, req.logoSave);
   else throw new Error('未知请求');
 }
 

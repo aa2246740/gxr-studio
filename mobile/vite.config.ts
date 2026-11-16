@@ -181,7 +181,7 @@ export default defineConfig(({ command }) => ({
     host: '127.0.0.1',
     port: 5199,
     strictPort: true,
-    fs: { allow: [root, path.resolve(root, '../frontend')] },
+    fs: { allow: [root, path.resolve(root, '../frontend'), path.resolve(root, '../src/gxr_studio/assets/fonts')] },
   },
   build: {
     outDir: 'dist',

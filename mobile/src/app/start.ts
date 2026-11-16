@@ -1,4 +1,5 @@
 import type { AppApi } from './model';
+import { FONT_LICENCE_LABELS, FONT_LICENCES } from '../lib/font_assets';
 import { calibCard } from './calib_ui';
 import { button, el, icon, ICON } from './dom';
 
@@ -86,6 +87,18 @@ export function renderHelp(host: HTMLElement): HTMLElement {
       '拔卡前，先确认照片已经存到相册。除了在胶片柜里点「写入存储卡」，GXR Studio 不会改动存储卡上的文件。',
     ),
   );
+  const licences = el('p', 'faint licence-links');
+  licences.append(document.createTextNode('字体许可：'));
+  FONT_LICENCE_LABELS.forEach(([key, label], index) => {
+    if (index > 0) licences.append(document.createTextNode(' · '));
+    const link = document.createElement('a');
+    link.href = FONT_LICENCES[key];
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = label;
+    licences.append(link);
+  });
+  sheet.append(licences);
   host.append(scrim, sheet);
   return sheet;
 }

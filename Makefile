@@ -100,3 +100,13 @@ mobile-check: mobile-build
 		echo "dev endpoints leaked into the mobile build"; \
 		exit 1; \
 	fi
+	@if find mobile/dist -iname '*ricoh*' | grep -q .; then \
+		echo "Ricoh asset leaked into mobile/dist"; \
+		exit 1; \
+	fi
+	@for stem in AtkinsonHyperlegible-Regular AtkinsonHyperlegible-OFL CourierPrime-Regular CourierPrime-OFL DSEG7Classic-Regular DSEG-LICENSE Inter-Regular Inter-OFL Inter-SemiBold PatrickHand-Regular PatrickHand-OFL; do \
+		if ! find mobile/dist/assets -maxdepth 1 -name "$${stem}*" | grep -q .; then \
+			echo "missing font or licence in mobile/dist/assets: $${stem}"; \
+			exit 1; \
+		fi; \
+	done

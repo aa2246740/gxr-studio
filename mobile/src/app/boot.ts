@@ -14,6 +14,7 @@ import { EditorView } from './editor';
 import { ExportFlow } from './export_ui';
 import { GridView } from './grid';
 import { openable, photoMs, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
+import { DEFAULT_FRAME, DEFAULT_STAMP } from '../lib/frame_spec';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -135,6 +136,13 @@ class App implements AppApi {
     if (shot.startsWith('export-') && this.byId.size) {
       const { exportShot } = await import('./export_shots');
       await exportShot(shot, this.ordered().map((photo) => photo.id), this.exporter, this.shell);
+    }
+    if (shot.startsWith('frame') && this.byId.size) {
+      const first = this.ordered()[0];
+      if (first) this.open(first.id);
+      await this.editor?.settled;
+      const { frameShot } = await import('./frame_shots');
+      await frameShot(shot, this.shell, this.view);
     }
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     this.shell.dataset.shot = shot;
@@ -448,6 +456,9 @@ class App implements AppApi {
           rev: 0,
           jpgMeta: null,
           dngMeta: null,
+          border: { ...DEFAULT_FRAME },
+          stamp: { ...DEFAULT_STAMP },
+          frameMeta: null,
           choice: null,
           levels: new Map(),
           memory: new Map(),
@@ -463,6 +474,7 @@ class App implements AppApi {
       // 换了 File 就是新版本：之前在路上的读取结果回来时都作废。
       photo.version += 1;
       photo.gone = false;
+      photo.frameMeta = null;
       photo.neutral?.bitmap.close();
       photo.neutral = null;
       releaseLooks(photo);

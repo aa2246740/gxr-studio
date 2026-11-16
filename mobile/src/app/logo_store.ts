@@ -1,0 +1,169 @@
+// 手机本地自定义标志目录（存在 IndexedDB `logos` 表）：读取、添加、重命名、删除，和给 Canvas2D 直接用的离屏画布缓存。
+
+import { prepareLogo } from '../core/api';
+import type { LogoInfo } from '../lib/frame_spec';
+import { deleteStoredLogo, loadAllLogos, putStoredLogo, renameStoredLogo, type StoredLogo } from '../lib/idb';
+import { cleanLogoName, LOGO_ERR, LOGO_LIMITS } from '../lib/logo_key';
+
+export const MISSING_LOGO_TOAST = '找不到这个标志，已改回 GXR 标志。';
+
+function toInfo(row: StoredLogo): LogoInfo {
+  return {
+    id: row.id,
+    name: row.name,
+    w: row.w,
+    h: row.h,
+    coverage: row.coverage,
+    opaque: row.opaque,
+    lum: row.lum,
+  };
+}
+
+function makeId(): string {
+  const rand = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID().replace(/-/g, '').slice(0, 10)
+    : Math.random().toString(36).slice(2, 12);
+  return `logo_${Date.now().toString(36)}_${rand}`;
+}
+
+function buildCanvas(row: StoredLogo): HTMLCanvasElement | null {
+  if (typeof document === 'undefined') return null;
+  const cv = document.createElement('canvas');
+  cv.width = row.w;
+  cv.height = row.h;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return null;
+  const rgba = new Uint8ClampedArray(row.rgba);
+  if (rgba.length !== row.w * row.h * 4) return null;
+  ctx.putImageData(new ImageData(rgba, row.w, row.h), 0, 0);
+  return cv;
+}
+
+class LogoStore {
+  private rows: StoredLogo[] = [];
+  private byId = new Map<string, StoredLogo>();
+  private canvases = new Map<string, HTMLCanvasElement>();
+  private isLoaded = false;
+  private loading: Promise<LogoInfo[]> | null = null;
+  private rev = 0;
+  private listeners = new Set<() => void>();
+
+  loaded(): boolean {
+    return this.isLoaded;
+  }
+
+  revision(): number {
+    return this.rev;
+  }
+
+  list(): LogoInfo[] {
+    return this.rows.map(toInfo);
+  }
+
+  info(id: string): LogoInfo | null {
+    const row = this.byId.get(id);
+    return row ? toInfo(row) : null;
+  }
+
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  private emit(): void {
+    this.rev += 1;
+    for (const fn of [...this.listeners]) fn();
+  }
+
+  async ensureLoaded(): Promise<LogoInfo[]> {
+    if (this.isLoaded) return this.list();
+    if (this.loading) return this.loading;
+    this.loading = loadAllLogos()
+      .then((rows) => {
+        this.rows = rows;
+        this.byId = new Map(rows.map((row) => [row.id, row]));
+        this.isLoaded = true;
+        this.loading = null;
+        this.emit();
+        return this.list();
+      })
+      .catch(() => {
+        this.loading = null;
+        this.isLoaded = true;
+        return this.list();
+      });
+    return this.loading;
+  }
+
+  canvas(id: string, onReady?: (() => void) | null): HTMLCanvasElement | null {
+    const existing = this.canvases.get(id);
+    if (existing) return existing;
+    const row = this.byId.get(id);
+    if (!row) {
+      if (!this.isLoaded) {
+        void this.ensureLoaded().then(() => {
+          if (this.byId.has(id)) onReady?.();
+        });
+      }
+      return null;
+    }
+    const cv = buildCanvas(row);
+    if (cv) this.canvases.set(id, cv);
+    return cv;
+  }
+
+  async add(
+    file: File,
+    options: { name: string; keyWhite: boolean; tol: number },
+  ): Promise<{ ok: true; logo: LogoInfo } | { ok: false; error: string }> {
+    await this.ensureLoaded();
+    if (this.rows.length >= LOGO_LIMITS.maxLogos) {
+      return { ok: false, error: LOGO_ERR.limit };
+    }
+    const prepared = await prepareLogo(file, options);
+    if (!prepared.ok) return { ok: false, error: prepared.error };
+    const stored: StoredLogo = {
+      id: makeId(),
+      name: prepared.name,
+      w: prepared.w,
+      h: prepared.h,
+      coverage: prepared.coverage,
+      opaque: prepared.opaque,
+      lum: prepared.lum,
+      rgba: prepared.rgba,
+      createdAt: Date.now(),
+    };
+    const wrote = await putStoredLogo(stored, LOGO_LIMITS.maxLogos);
+    if (!wrote) return { ok: false, error: LOGO_ERR.limit };
+    this.rows.push(stored);
+    this.byId.set(stored.id, stored);
+    const cv = buildCanvas(stored);
+    if (cv) this.canvases.set(stored.id, cv);
+    this.emit();
+    return { ok: true, logo: toInfo(stored) };
+  }
+
+  async rename(id: string, rawName: string): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+    const trimmed = rawName.trim();
+    if (!trimmed) return { ok: false, error: LOGO_ERR.badName };
+    const next = cleanLogoName(trimmed);
+    const wrote = await renameStoredLogo(id, next);
+    if (!wrote) return { ok: false, error: '找不到这个标志。' };
+    const row = this.byId.get(id);
+    if (row) {
+      row.name = next;
+      this.emit();
+    }
+    return { ok: true, name: next };
+  }
+
+  async remove(id: string): Promise<void> {
+    await deleteStoredLogo(id);
+    this.rows = this.rows.filter((row) => row.id !== id);
+    this.byId.delete(id);
+    this.canvases.delete(id);
+    this.emit();
+  }
+}
+
+export const logoStore = new LogoStore();

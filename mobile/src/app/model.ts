@@ -2,6 +2,7 @@
 
 import type { RawLayout, Scene } from '../../../frontend/src/index';
 import type { PhotoMeta } from '../lib/exif';
+import type { FrameMetaResult, FrameSpec, StampSpec } from '../lib/frame_spec';
 import type { GapMinutes, Order } from '../lib/group';
 import type { Choice } from '../lib/recipes';
 import type { Book } from './book';
@@ -61,6 +62,10 @@ export interface Photo {
   /** 相机 JPG 和 DNG 里读到的镜头名、ISO（桌面导入时先用 JPG 的）。 */
   jpgMeta: PhotoMeta | null;
   dngMeta: PhotoMeta | null;
+  /** 边框 / 时间戳规格与 Worker 读出来的完整 EXIF/尺寸信息。 */
+  border: FrameSpec;
+  stamp: StampSpec;
+  frameMeta: FrameMetaResult | null;
   /**
    * 编辑状态的版本：每次落定的修改（选配方、旋钮松手、滑块松手、重置、套用、撤销）加一。重新选同一张照片不变。
    * 撤销套用时核对它，和桌面 sidecar 的 rev 一样：套用之后又改过的不还原。

@@ -6,12 +6,17 @@ import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
 import { button, el, icon, ICON } from './dom';
-import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
+import { cropPanel, curvesPanel, lutPanel } from './later_panels';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
 import { lookCache } from './looks';
 import { pasteState } from './paste_state';
 import { openCopySheet, PASTE_ICON } from './paste_ui';
 import { RecipeView } from './recipe_view';
+import { photoExportSize } from './frame_state';
+import { FrameView } from './frame_view';
+import { StageDecorController } from './stage_finish';
+import { showToast } from './toast';
+import './frame.css';
 
 const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
   { key: 'exposure_ev', label: '曝光', min: -5, max: 5, step: 0.1 },
@@ -90,6 +95,8 @@ export class EditorView {
   private sharp: ImageBitmap | null = null;
   private placeholder: HTMLElement | null = null;
   private recipes: RecipeView | null = null;
+  private frames: FrameView | null = null;
+  private decor: StageDecorController | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
   private recipeKey = NEUTRAL_BAKE_KEY;
   private tab = 1;
@@ -142,6 +149,10 @@ export class EditorView {
     this.sharp = null;
     this.recipes?.destroy();
     this.recipes = null;
+    this.frames?.destroy();
+    this.frames = null;
+    this.decor?.destroy();
+    this.decor = null;
     this.engine?.detach();
   }
 
@@ -181,6 +192,27 @@ export class EditorView {
       recipeTab: () => this.tab === 0,
     });
     const strip = this.recipes.stripEl();
+    this.decor?.destroy();
+    this.decor = new StageDecorController({
+      pv,
+      stage,
+      photo,
+      engine: this.engine,
+      gpuCanvas: this.gpuCanvas,
+      still: this.still,
+      mode: () => this.mode,
+      frameTab: () => this.tab === 3,
+      onMeta: () => this.frames?.refresh(),
+      onBackdrop: () => this.frames?.backdropUpdated(),
+      onToast: (msg) => showToast(this.shell, msg),
+    });
+    this.frames = new FrameView(this.shell, photo, {
+      ew: () => photoExportSize(photo, this.engine),
+      backdrop: () => this.decor?.backdropCanvas() ?? null,
+      onChange: () => {
+        void this.decor?.sync();
+      },
+    });
 
     const sheet = el('div', 'sheet');
     sheet.append(el('div', 'grab'));
@@ -195,13 +227,19 @@ export class EditorView {
         tab.classList.add('on');
         this.tab = tabIndex;
         if (tabIndex === 0) this.recipes?.tabOpened();
+        if (tabIndex === 3) {
+          this.frames?.tabOpened();
+          this.decor?.onFrameTabOpened();
+        } else {
+          this.frames?.tabClosed();
+        }
         panels.forEach((panel, panelIndex) => {
           panel.hidden = panelIndex !== tabIndex;
         });
       });
       tabs.append(tab);
     });
-    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanel(), framePanel(), lutPanel(), curvesPanel());
+    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanel(), this.frames.panelEl(), lutPanel(), curvesPanel());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -221,6 +259,7 @@ export class EditorView {
     this.host.append(screen);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
     this.paintStill(photo.bitmap);
+    void this.decor.sync();
   }
 
   /** 配方那边定下了舞台该用哪张烘焙表。长按看原图时先记着，松手再换。 */
@@ -351,6 +390,7 @@ export class EditorView {
       adjust: toAdjust(knobs),
     });
     this.requestHist();
+    this.decor?.onLookChanged(this.dragging);
   }
 
   private setLabel(text: string): void {
@@ -386,7 +426,10 @@ export class EditorView {
     this.dragging = false;
     this.shell.dataset.drag = '0';
     this.api.watch('drag', false);
-    requestAnimationFrame(() => this.engine?.redraw());
+    requestAnimationFrame(() => {
+      this.engine?.redraw();
+      this.decor?.onLookChanged(false);
+    });
   }
 
   /**
@@ -584,6 +627,7 @@ export class EditorView {
         const frame = this.engine.frame();
         if (frame) this.shell.dataset.frame = '1';
         if (this.input) this.input.disabled = false;
+        this.decor?.onMediaReady();
       }
       return;
     }
@@ -686,6 +730,7 @@ export class EditorView {
     if (this.still) this.still.hidden = true;
     if (this.input) this.input.disabled = false;
     if (this.photo) void this.neutralCards(this.photo, key);
+    this.decor?.onMediaReady();
   }
 
   private showStillPhoto(photo: Photo, label: string): void {
@@ -696,6 +741,7 @@ export class EditorView {
     if (!this.engine && this.input) this.input.disabled = true;
     // 没有相机 JPG、DNG 里也没有预览：照片区写「只有 RAW」，不留一块空灰。
     if (this.placeholder) this.placeholder.hidden = !!photo.bitmap || !!photo.jpg;
+    this.decor?.onMediaReady();
     this.sharpening = this.sharpen(photo);
   }
 
@@ -716,10 +762,12 @@ export class EditorView {
       bitmap.close();
       this.engine.show(key);
       this.push();
+      this.decor?.onMediaReady();
       return;
     }
     this.sharp?.close();
     this.sharp = bitmap;
     this.paintStill(bitmap);
+    this.decor?.onMediaReady();
   }
 }
