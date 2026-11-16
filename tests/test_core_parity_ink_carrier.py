@@ -68,19 +68,32 @@ def test_carrier_contours_gate_a_and_negative_control(w: int, h: int, c: int, ji
     check_gate_a_arrays(or_outer, rs_outer, "carrier outer Gate A", rel_tol=1e-12)
     check_gate_a_arrays(or_inner, rs_inner, "carrier inner Gate A", rel_tol=1e-12)
 
-    # Negative control: 1e-10 perturbation and non-finite NaN/Inf values must trip Gate A.
+    # Positive controls: matching NaN, +Inf, and -Inf at identical positions must pass Gate A.
+    nan_outer = rs_outer.copy()
+    nan_outer[0, 0] = np.nan
+    check_gate_a_arrays(nan_outer, nan_outer.copy(), "carrier matching nan control", rel_tol=1e-12)
+    pinf_outer = rs_outer.copy()
+    pinf_outer[0, 0] = np.inf
+    check_gate_a_arrays(pinf_outer, pinf_outer.copy(), "carrier matching +inf control", rel_tol=1e-12)
+    ninf_outer = rs_outer.copy()
+    ninf_outer[0, 0] = -np.inf
+    check_gate_a_arrays(ninf_outer, ninf_outer.copy(), "carrier matching -inf control", rel_tol=1e-12)
+
+    # Negative controls: 1e-10 perturbation, one-sided NaN/Inf, and +/-Inf sign mismatch must fail Gate A.
     bad_outer_l, _ = carrier_contours_oracle(w, h, c, jit, seed, use_libm=True, inject=1e-10)
     bad_outer = np.asarray(bad_outer_l, dtype=np.float64)
     with pytest.raises(AssertionError):
         check_gate_a_arrays(bad_outer, rs_outer, "carrier negative control", rel_tol=1e-12)
-    nan_outer = rs_outer.copy()
-    nan_outer[0, 0] = np.nan
     with pytest.raises(AssertionError):
-        check_gate_a_arrays(nan_outer, nan_outer.copy(), "carrier nan negative control", rel_tol=1e-12)
-    inf_outer = rs_outer.copy()
-    inf_outer[0, 0] = np.inf
+        check_gate_a_arrays(or_outer, nan_outer, "carrier finite vs nan negative control", rel_tol=1e-12)
     with pytest.raises(AssertionError):
-        check_gate_a_arrays(or_outer, inf_outer, "carrier inf negative control", rel_tol=1e-12)
+        check_gate_a_arrays(nan_outer, rs_outer, "carrier nan vs finite negative control", rel_tol=1e-12)
+    with pytest.raises(AssertionError):
+        check_gate_a_arrays(pinf_outer, ninf_outer, "carrier +inf vs -inf negative control", rel_tol=1e-12)
+    with pytest.raises(AssertionError):
+        check_gate_a_arrays(or_outer, pinf_outer, "carrier finite vs +inf negative control", rel_tol=1e-12)
+    with pytest.raises(AssertionError):
+        check_gate_a_arrays(pinf_outer, rs_outer, "carrier +inf vs finite negative control", rel_tol=1e-12)
     sin_ok = libm_sin_vec(np.array([0.75, 2.3], dtype=np.float64), use_libm=True, perturb_ulp=0)
     sin_bad = libm_sin_vec(np.array([0.75, 2.3], dtype=np.float64), use_libm=True, perturb_ulp=1)
     exp_ok = libm_exp_vec(np.array([-0.25, -1.5], dtype=np.float64), use_libm=True, perturb_ulp=0)

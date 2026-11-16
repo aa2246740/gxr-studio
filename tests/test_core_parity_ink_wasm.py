@@ -288,12 +288,31 @@ def test_wasm_matches_native_ink_ops_and_logo_prepare(tmp_path: Path) -> None:
         },
         {"op": "paint_poly", "pts": [[12.666, -4.0], [11.5, 9.25], [-4.0, 15.0]], "fill": [210, 90, 40], "alpha": 0.85},
         {"op": "gaussian_blur", "radius": 5793.5390625},
+        {"op": "gaussian_blur", "radius": 5833.5244140625},
     ]
     cases.append(
         _write_case(
             tmp_path,
             "ink-fma-ops",
             {"kind": "ink_ops", "canvasNpy": str(canvas_rgb_npy), "w": 140, "h": 100, "mode": "RGB", "expectMode": "RGB", "ops": ops_fma},
+        )
+    )
+
+    wide_l_npy = tmp_path / "wide_l.npy"
+    np.save(wide_l_npy, np.zeros((16, 16), dtype=np.uint8))
+    cases.append(
+        _write_case(
+            tmp_path,
+            "ink-fma-wide-line",
+            {
+                "kind": "ink_ops",
+                "canvasNpy": str(wide_l_npy),
+                "w": 16,
+                "h": 16,
+                "mode": "L",
+                "expectMode": "L",
+                "ops": [{"op": "draw_line", "pts": [[2, 1], [416721299, 240594154]], "width": 3, "fill": 255}],
+            },
         )
     )
 

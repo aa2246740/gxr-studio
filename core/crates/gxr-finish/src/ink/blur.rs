@@ -399,6 +399,49 @@ mod tests {
         assert_eq!(r.to_bits(), 0x45b5_0850);
         assert_ne!(r.to_bits(), r_unfused.to_bits());
 
+        // End-to-end 3-pass GaussianBlur pixel difference when `gauss_num` FMA is disabled:
+        // Note: `gauss_sqrt` (`* 12.0` from f32 in f64), `gauss_2l1` (`* 2.0`), and `box_denom` (`* 2.0`)
+        // have exact multiplications, so fused == unfused for all finite f32 inputs on those three sites.
+        #[allow(clippy::excessive_precision)]
+        let r_edge = 5833.5244140625_f32;
+        let r_edge_unfused = {
+            let sigma2 = r_edge * r_edge / 3.0_f32;
+            let l_big = (12.0_f64 * f64::from(sigma2) + 1.0_f64).sqrt() as f32;
+            let l = ((f64::from(l_big) - 1.0_f64) / 2.0_f64).floor() as f32;
+            let l_p1 = l + 1.0_f32;
+            let a_num = (2.0_f32 * l + 1.0_f32) * (l * l_p1 - 3.0_f32 * sigma2);
+            let a_den = 6.0_f32 * (sigma2 - l_p1 * l_p1);
+            l + a_num / a_den
+        };
+        assert_ne!(
+            gaussian_blur_radius(r_edge, 3).to_bits(),
+            r_edge_unfused.to_bits()
+        );
+        let mut row = vec![0_u8; 11_680];
+        let mut state: u32 = 1_169_574_962;
+        for px in &mut row {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *px = (state >> 24) as u8;
+        }
+        let im_row = InkImage::from_vec(InkMode::L, 11_680, 1, row).expect("row");
+        let fused_out = gaussian_blur(&im_row, f64::from(r_edge), 0.0).expect("fused");
+        let unfused_out = box_blur(&im_row, r_edge_unfused, 0.0_f32, 3).expect("unfused");
+        assert_ne!(fused_out.as_slice(), unfused_out.as_slice());
+
+        // `gauss_den` (`(-l_p1).mul_add(l_p1, sigma2)`) differs in bit value at `388581.8125_f32`:
+        #[allow(clippy::excessive_precision)]
+        let r_den = 388581.8125_f32;
+        let sigma2_den = r_den * r_den / 3.0_f32;
+        let l_den = ((f64::from((f64::from(sigma2_den) * 12.0_f64 + 1.0_f64).sqrt() as f32)
+            - 1.0_f64)
+            / 2.0_f64)
+            .floor() as f32;
+        let lp1_den = l_den + 1.0_f32;
+        #[allow(clippy::disallowed_methods)]
+        let den_fused = (-lp1_den).mul_add(lp1_den, sigma2_den);
+        let den_unfused = sigma2_den - lp1_den * lp1_den;
+        assert_ne!(den_fused.to_bits(), den_unfused.to_bits());
+
         let empty = InkImage::new_filled(InkMode::Rgb, 0, 0, [0, 0, 0, 255]).expect("empty");
         assert!(gaussian_blur(&empty, 1e300, 1e300).is_err());
         assert!(box_blur(&empty, 2_147_483_648.0_f32, 0.0_f32, 1).is_err());

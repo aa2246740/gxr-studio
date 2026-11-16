@@ -474,12 +474,21 @@ def carrier_contours_oracle(
 
 def check_gate_a_arrays(or_arr: np.ndarray, rs_arr: np.ndarray, label: str, *, rel_tol: float = 1e-12) -> None:
     assert or_arr.shape == rs_arr.shape, f"{label}: Gate A shape mismatch {or_arr.shape} != {rs_arr.shape}"
-    assert bool(np.all(np.isfinite(or_arr))), f"{label}: Gate A oracle has non-finite values"
-    assert bool(np.all(np.isfinite(rs_arr))), f"{label}: Gate A Rust output has non-finite values"
-    diff = np.abs(or_arr - rs_arr)
-    limit = rel_tol * np.maximum(1.0, np.abs(or_arr))
-    bad = int(np.sum(diff > limit))
-    assert bad == 0, f"{label}: Gate A exceeded {rel_tol} on {bad} values (max_diff={float(np.max(diff)):.3e})"
+    assert or_arr.dtype == rs_arr.dtype, f"{label}: Gate A dtype mismatch {or_arr.dtype} != {rs_arr.dtype}"
+    or_nan = np.isnan(or_arr)
+    rs_nan = np.isnan(rs_arr)
+    assert bool(np.array_equal(or_nan, rs_nan)), f"{label}: Gate A NaN mask mismatch"
+    inf_mask = np.isinf(or_arr) | np.isinf(rs_arr)
+    if bool(np.any(inf_mask)):
+        assert bool(np.array_equal(or_arr[inf_mask], rs_arr[inf_mask])), f"{label}: Gate A Infinity mismatch"
+    finite_mask = (~or_nan) & (~inf_mask)
+    if bool(np.any(finite_mask)):
+        or_fin = or_arr[finite_mask]
+        rs_fin = rs_arr[finite_mask]
+        diff = np.abs(or_fin - rs_fin)
+        limit = rel_tol * np.maximum(1.0, np.abs(or_fin))
+        bad = int(np.sum(diff > limit))
+        assert bad == 0, f"{label}: Gate A exceeded {rel_tol} on {bad} values (max_diff={float(np.max(diff)):.3e})"
 
 
 def gate_b_carrier_report(
@@ -539,6 +548,35 @@ def check_alpha_luma_gate_a(rs_alpha_luma: float, rgba: np.ndarray, label: str) 
     assert bad_bits != rs_bits
 
 
+def render_clogo_seq_oracle(
+    canvas_arr: np.ndarray,
+    canvas_mode: str,
+    item: dict[str, Any],
+    logo_id: str,
+    logo_arr: np.ndarray,
+    *,
+    override_luma: float | None = None,
+) -> np.ndarray:
+    """Re-render `paint_clogo` with `logo_math._alpha_luma` replaced by `seq_alpha_luma` (or a controlled luma)."""
+    from unittest.mock import patch
+
+    from PIL import Image
+
+    from gxr_studio.finish import logo_math
+
+    def _oracle_alpha_luma(src: Image.Image) -> tuple[bool, float]:
+        rgba = np.asarray(src.convert("RGBA"), dtype=np.uint8)
+        opaque = int(rgba[:, :, 3].min()) >= 250
+        luma = float(seq_alpha_luma(rgba)) if override_luma is None else float(override_luma)
+        return opaque, luma
+
+    canvas_copy = Image.fromarray(canvas_arr.copy(), canvas_mode)
+    logo_im = Image.fromarray(logo_arr, "RGBA")
+    with patch.object(logo_math, "_alpha_luma", side_effect=_oracle_alpha_luma):
+        logo_math.paint_clogo(canvas_copy, item, {logo_id: logo_im})
+    return np.asarray(canvas_copy, dtype=np.uint8)
+
+
 def gate_b_clogo_report(
     py_pixels: np.ndarray,
     rs_pixels: np.ndarray,
@@ -551,6 +589,7 @@ def gate_b_clogo_report(
     auto_ink: bool,
     label: str,
     seq_pixels: np.ndarray | None = None,
+    synthetic_control: bool = False,
 ) -> tuple[int, int]:
     """Gate B attribution for clogo `_alpha_luma` (@ BLAS) and branch thresholds (`bg_l > 150`, `|lg-bg_l| < 70`)."""
     # Always verify Gate A against sequential oracle, even if real Python and Rust flip a branch.
@@ -568,12 +607,16 @@ def gate_b_clogo_report(
         chains.append(f"{label}: branch-flip(|lg-bg_l|<70) bg_l={bg_l!r} py_lg={py_alpha_luma!r} rs_lg={rs_alpha_luma!r}")
         assert seq_pixels is not None, f"{label}: branch-flip occurred without sequential-oracle pixels"
         seq_diff = int(np.sum(seq_pixels != rs_pixels))
-        report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
-        report_gate_b(f"{label}-pixels", px_diff)
+        if not synthetic_control:
+            report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
+            report_gate_b(f"{label}-pixels", px_diff)
+        else:
+            print(f"[gate-b-synthetic-control] {label}: py_ulp={ulp_diff} py_px={px_diff} seq_diff={seq_diff}")
         assert seq_diff == 0, f"{label}: expected 0 diffs vs sequential-luma oracle on branch flip, got {seq_diff}"
         return ulp_diff, px_diff
-    report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
-    report_gate_b(f"{label}-pixels", px_diff)
+    if not synthetic_control:
+        report_gate_b(f"{label}-luma", ulp_diff, chains=tuple(chains))
+        report_gate_b(f"{label}-pixels", px_diff)
     assert px_diff == 0, f"{label}: expected 0 clogo pixel diffs when branch agrees, got {px_diff}"
     return ulp_diff, px_diff
 

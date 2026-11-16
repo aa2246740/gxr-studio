@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -109,3 +110,35 @@ def test_gaussian_blur_anisotropic_and_errors(tmp_path: Path) -> None:
     out_fma = tmp_path / "out_fma.npy"
     got_fma = run_npy(["ink-blur", "--in", str(in_npy), "--mode", "RGB", "--radius", repr(5793.5390625)], out_fma)
     same_pixels(got_fma, np.asarray(pil_fma, dtype=np.uint8), "ink-blur fma-sensitive radius")
+
+
+def test_gaussian_blur_fma_weight_boundary(tmp_path: Path) -> None:
+    # Sol r2 GaussianBlur numerator FMA boundary: 1x300001 uint8 row (seed 1210308362), radius 167772.15625.
+    rng = np.random.default_rng(1210308362)
+    row = rng.integers(0, 256, size=(1, 300001), dtype=np.uint8)
+    radius = 167772.15625
+    im_row = Image.fromarray(row, "L")
+    pil_row = np.asarray(im_row.filter(ImageFilter.GaussianBlur(radius)), dtype=np.uint8)
+
+    in_npy = tmp_path / "gauss_row_in.npy"
+    out_npy = tmp_path / "gauss_row_out.npy"
+    np.save(in_npy, row)
+    got_row = run_npy(["ink-blur", "--in", str(in_npy), "--mode", "L", "--radius", repr(radius)], out_npy)
+    same_pixels(got_row, pil_row, "ink-blur 1x300001 FMA weight boundary exact")
+
+    # Test-only unfused `gauss_num` variant differs from Pillow/Rust on 113,642 pixels:
+    r_f = np.float32(radius)
+    sigma2 = np.float32(np.float32(r_f * r_f) / np.float32(3.0))
+    l_big = np.float32(math.sqrt(12.0 * float(sigma2) + 1.0))
+    l_val = np.float32(math.floor((float(l_big) - 1.0) / 2.0))
+    l_p1 = np.float32(l_val + np.float32(1.0))
+    a_num_u = np.float32(
+        np.float32(np.float32(2.0) * l_val + np.float32(1.0)) * np.float32(np.float32(l_val * l_p1) - np.float32(3.0) * sigma2)
+    )
+    a_den_u = np.float32(np.float32(6.0) * np.float32(sigma2 - np.float32(l_p1 * l_p1)))
+    r_unfused = float(np.float32(l_val + np.float32(a_num_u / a_den_u)))
+    pil_unfused = im_row.copy()
+    for _ in range(3):
+        pil_unfused = pil_unfused.filter(ImageFilter.BoxBlur((r_unfused, 0.0)))
+    unfused_arr = np.asarray(pil_unfused, dtype=np.uint8)
+    check(int(np.sum(got_row != unfused_arr)) == 113642, "unfused gauss_num differs by 113,642 pixels")

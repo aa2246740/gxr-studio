@@ -80,8 +80,8 @@ fn round_down_f64(f: f64) -> i32 {
 
 /// Contracted `ROUND_DOWN(a * b)` matching `_ImagingDrawWideLine`
 /// (`0x1cb30`, `0x1cb5c`, `0x1cb84`, `0x1cbac` in `_imaging.cpython-314-darwin.so`):
-/// non-negative branch contracts `fma(a, b, -0.5)` (`fmsub`), negative branch is unfused
-/// `fabs(a * b) - 0.5`.
+/// non-negative branch contracts `fma(a, b, -0.5)` (`fmadd` with `-0.5` addend), negative branch is
+/// unfused `fabs(a * b) - 0.5`.
 #[inline]
 #[allow(clippy::disallowed_methods)]
 fn round_down_mul_f64(a: f64, b: f64) -> Result<i32, CoreError> {
@@ -329,6 +329,16 @@ fn edge_x_f32(y: i32, offset: i32, e: &Edge) -> f32 {
 }
 
 fn polygon_generic(im: &mut InkImage, edges: &[Edge], ink: [u8; 3]) {
+    polygon_generic_with(im, edges, ink, edge_x_f32);
+}
+
+#[inline(always)]
+fn polygon_generic_with<F: Fn(i32, i32, &Edge) -> f32>(
+    im: &mut InkImage,
+    edges: &[Edge],
+    ink: [u8; 3],
+    edge_x: F,
+) {
     if edges.is_empty() || im.width == 0 || im.height == 0 {
         return;
     }
@@ -363,7 +373,7 @@ fn polygon_generic(im: &mut InkImage, edges: &[Edge], ink: [u8; 3]) {
         let mut j = 0_usize;
         for (i, current) in edge_table.iter().enumerate() {
             if y >= current.ymin && y <= current.ymax {
-                xx[j] = edge_x_f32(y, 0, current);
+                xx[j] = edge_x(y, 0, current);
                 j += 1;
 
                 if y == current.ymax && y < ymax {
@@ -376,15 +386,15 @@ fn polygon_generic(im: &mut InkImage, edges: &[Edge], ink: [u8; 3]) {
                         {
                             continue;
                         }
-                        let other_x = edge_x_f32(y, 0, other_edge);
+                        let other_x = edge_x(y, 0, other_edge);
                         if xx[j - 1].round() == other_x.round() {
                             let offset = if y == current.ymax { -1 } else { 1 };
-                            let adj_x = edge_x_f32(y, offset, current);
+                            let adj_x = edge_x(y, offset, current);
                             let y_off = i64::from(y) + i64::from(offset);
                             if y_off >= i64::from(other_edge.ymin)
                                 && y_off <= i64::from(other_edge.ymax)
                             {
-                                let adj_other = edge_x_f32(y, offset, other_edge);
+                                let adj_other = edge_x(y, offset, other_edge);
                                 if xx[j - 1] > adj_x + 1.0_f32 && xx[j - 1] > adj_other + 1.0_f32 {
                                     xx[j - 1] = adj_x.max(adj_other).round() + 1.0_f32;
                                 } else if xx[j - 1] < adj_x - 1.0_f32
@@ -625,6 +635,20 @@ fn wide_line(
     ink: [u8; 3],
     width: i32,
 ) -> Result<(), CoreError> {
+    draw_wide_line_with(im, x0, y0, x1, y1, ink, width, round_down_mul_f64)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_wide_line_with<F: Fn(f64, f64) -> Result<i32, CoreError>>(
+    im: &mut InkImage,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    ink: [u8; 3],
+    width: i32,
+    round_mul: F,
+) -> Result<(), CoreError> {
     let dx = x1
         .checked_sub(x0)
         .ok_or_else(|| bad_coords("wide line dx overflow"))?;
@@ -643,10 +667,10 @@ fn wide_line(
     let ratio_max = f64::from(round_up_f64(small_hypotenuse)) / big_hypotenuse;
     let ratio_min = f64::from(round_down_f64(small_hypotenuse)) / big_hypotenuse;
 
-    let dxmin = round_down_mul_f64(ratio_min, f64::from(dy))?;
-    let dxmax = round_down_mul_f64(ratio_max, f64::from(dy))?;
-    let dymin = round_down_mul_f64(ratio_min, f64::from(dx))?;
-    let dymax = round_down_mul_f64(ratio_max, f64::from(dx))?;
+    let dxmin = round_mul(ratio_min, f64::from(dy))?;
+    let dxmax = round_mul(ratio_max, f64::from(dy))?;
+    let dymin = round_mul(ratio_min, f64::from(dx))?;
+    let dymax = round_mul(ratio_max, f64::from(dx))?;
 
     let v0x = x0
         .checked_sub(dxmin)
@@ -686,40 +710,5 @@ fn wide_line(
 pub use crate::ink::draw_ellipse::draw_ellipse;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wide_line_and_polygon_fma_and_bounds() {
-        // Negative/non-negative FMA sensitivity in `round_down_mul_f64`:
-        let a = 1.5_f64 / gxr_math::hypot(1.0, 2.0);
-        let b = 2.0_f64;
-        assert_eq!(round_down_mul_f64(a, b).expect("ok"), 1);
-
-        // Edge X FMA helper works with negative dy without overflow:
-        let e = make_edge(-10, -10, 10, 10).expect("edge");
-        assert_eq!(edge_x_f32(0, 0, &e), 0.0_f32);
-
-        // Extreme coordinate subtraction fails cleanly instead of overflowing/hanging:
-        let mut im = InkImage::new_filled(InkMode::Rgb, 16, 16, [0, 0, 0, 255]).expect("im");
-        assert!(
-            draw_line(
-                &mut im,
-                &[[f64::from(i32::MIN), 0.0], [f64::from(i32::MAX), 1.0]],
-                [255, 0, 0],
-                3,
-            )
-            .is_err()
-        );
-        // Huge rectangle width completes without hanging:
-        draw_rectangle(
-            &mut im,
-            [0.0, 0.0, 15.0, 15.0],
-            None,
-            Some([1, 2, 3]),
-            i32::MAX,
-        )
-        .expect("ok");
-        assert_eq!(im.as_slice()[0..3], [1, 2, 3]);
-    }
-}
+#[path = "draw_tests.rs"]
+mod tests;

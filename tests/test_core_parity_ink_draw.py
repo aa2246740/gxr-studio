@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -441,3 +442,58 @@ def test_draw_error_paths(tmp_path: Path) -> None:
         code, payload = run_json(["ink-ops", "--canvas", str(p), "--ops", str(ops_p), "--out", str(out_p)])
         check(code != 0, "bad draw op fails")
         check(payload["error"]["kind"] == "value_error", "bad draw op kind")
+
+
+def test_draw_wide_line_and_polygon_fma_regressions(tmp_path: Path) -> None:
+    # 1. Sol r2 wide-line FMA counterexample: 16x16 L canvas, width 3, [[2,1],[416721299,240594154]].
+    canvas_l = Image.new("L", (16, 16), 0)
+    pil_l = canvas_l.copy()
+    wide_pts = [[2, 1], [416721299, 240594154]]
+    ImageDraw.Draw(pil_l).line([tuple(p) for p in wide_pts], fill=255, width=3)
+    got_l = _cli_ops(canvas_l, [{"op": "draw_line", "pts": wide_pts, "width": 3, "fill": 255}], tmp_path, "wide_fma")
+    same_pixels(got_l, np.asarray(pil_l, dtype=np.uint8), "ink wide-line FMA counterexample exact")
+    check(int(got_l[0, 2]) == 0, "wide-line FMA keeps (x=2, y=0) == 0")
+
+    # Test-only unfused `ROUND_DOWN(a * b)` variant must fail against the fused render:
+    dx, dy = 416721299 - 2, 240594154 - 1
+    big_h = math.hypot(float(dx), float(dy))
+    ratio_min = math.ceil(1.0 - 0.5) / big_h
+    ratio_max = math.floor(1.0 + 0.5) / big_h
+    fused_dxmin = math.ceil(math.fma(ratio_min, float(dy), -0.5))
+    unfused_dxmin = math.ceil(ratio_min * float(dy) - 0.5)
+    check(fused_dxmin == 1 and unfused_dxmin == 0, "wide-line FMA vs unfused dxmin differs")
+    unfused_dxmax = math.ceil(ratio_max * float(dy) - 0.5)
+    unfused_dymin = math.ceil(ratio_min * float(dx) - 0.5)
+    unfused_dymax = math.ceil(ratio_max * float(dx) - 0.5)
+    x0, y0, x1, y1 = 2, 1, 416721299, 240594154
+    unfused_quad = [
+        [x0 - unfused_dxmin, y0 + unfused_dymax],
+        [x1 - unfused_dxmin, y1 + unfused_dymax],
+        [x1 + unfused_dxmax, y1 - unfused_dymin],
+        [x0 + unfused_dxmax, y0 - unfused_dymin],
+    ]
+    pil_unfused = canvas_l.copy()
+    ImageDraw.Draw(pil_unfused).polygon([tuple(p) for p in unfused_quad], fill=255)
+    unfused_arr = np.asarray(pil_unfused, dtype=np.uint8)
+    check(int(unfused_arr[0, 2]) == 255 and int(np.sum(got_l != unfused_arr)) == 10, "unfused wide line differs by 10 pixels")
+
+    # 2. Sol r1 `_polygon_generic` FMA counterexample: edge_x_f32 fused vs unfused differs.
+    canvas_p = Image.new("L", (48, 40), 17)
+    pil_p = canvas_p.copy()
+    poly_pts = [[38, -13], [35, 9], [-12, 15]]
+    ImageDraw.Draw(pil_p).polygon([tuple(p) for p in poly_pts], fill=211)
+    got_p = _cli_ops(canvas_p, [{"op": "draw_polygon", "pts": poly_pts, "fill": 211}], tmp_path, "poly_fma")
+    same_pixels(got_p, np.asarray(pil_p, dtype=np.uint8), "ink polygon FMA counterexample exact")
+    edge_diff = False
+    for (px0, py0), (px1, py1) in zip(poly_pts, [*poly_pts[1:], poly_pts[0]], strict=True):
+        if py1 == py0:
+            continue
+        edx = np.float32(np.float32(px1 - px0) / np.float32(py1 - py0))
+        ymin, ymax = max(0, min(py0, py1)), min(40, max(py0, py1))
+        for y in range(ymin, ymax + 1):
+            edy = np.float32(y - py0)
+            xf = np.float32(math.fma(float(edy), float(edx), float(px0)))
+            xu = np.float32(np.float32(px0) + np.float32(edy * edx))
+            if xf != xu:
+                edge_diff = True
+    check(edge_diff, "polygon FMA edge_x_f32 differs from unfused")

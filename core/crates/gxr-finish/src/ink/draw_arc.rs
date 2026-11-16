@@ -663,4 +663,76 @@ mod tests {
         assert!(lround_f64(f64::INFINITY).is_err());
         assert!(lround_f64(1e20).is_err());
     }
+
+    fn clip_tree_do_clip_unfused(
+        nodes: &[ClipNode],
+        root: Option<usize>,
+        mut x0: i32,
+        y: i32,
+        mut x1: i32,
+    ) -> Result<Vec<(i32, i8)>, CoreError> {
+        let Some(idx) = root else {
+            return Ok(vec![(x0, 1), (x1, -1)]);
+        };
+        match nodes[idx] {
+            ClipNode::HalfPlane { a, b, c } => {
+                let eps = 1e-9_f64;
+                if a.abs() < eps {
+                    if b * f64::from(y) + c < -eps {
+                        x0 = 1;
+                        x1 = 0;
+                    }
+                } else {
+                    let ix = -(b * f64::from(y) + c) / a;
+                    let by = b * f64::from(y);
+                    if c + (a * f64::from(x0) + by) < eps {
+                        x0 = lround_f64(f64::from(x0).max(ix))?;
+                    }
+                    if c + (a * f64::from(x1) + by) < eps {
+                        x1 = lround_f64(f64::from(x1).min(ix))?;
+                    }
+                }
+                if x0 <= x1 {
+                    Ok(vec![(x0, 1), (x1, -1)])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            ClipNode::And(_, _) | ClipNode::Or(_, _) => unreachable!("halfplane-only test"),
+        }
+    }
+
+    #[test]
+    fn clip_tree_fma_differs_from_unfused() {
+        // Site `clip_by_c`: `b.mul_add(y, c)` vs `b * y + c` flips `ix = -0.5` round boundary.
+        let a1 = 1.0_f64 / 16_777_216.0_f64;
+        let b1 = 1.0_f64 + f64::EPSILON;
+        let c1 = -(b1 * 3.0_f64) + 0.5_f64 * a1;
+        let nodes_by_c = [ClipNode::HalfPlane {
+            a: a1,
+            b: b1,
+            c: c1,
+        }];
+        let fused_1 = clip_tree_do_clip(&nodes_by_c, Some(0), -10, 3, 10).expect("fused");
+        let unfused_1 =
+            clip_tree_do_clip_unfused(&nodes_by_c, Some(0), -10, 3, 10).expect("unfused");
+        assert_eq!(fused_1, vec![(0, 1), (10, -1)]);
+        assert_eq!(unfused_1, vec![(-1, 1), (10, -1)]);
+        assert_ne!(fused_1, unfused_1);
+
+        // Site `clip_ax_by`: `c + a.mul_add(x, by)` vs `c + (a * x + by)` flips `< eps` at `x1 = 3`.
+        let a2 = (1.0_f64 + f64::EPSILON) * 1.5e-9_f64;
+        let b2 = -(a2 * 3.0_f64);
+        let c2 = 1e-9_f64;
+        let nodes_ax_by = [ClipNode::HalfPlane {
+            a: a2,
+            b: b2,
+            c: c2,
+        }];
+        let fused_2 = clip_tree_do_clip(&nodes_ax_by, Some(0), 0, 1, 3).expect("fused");
+        let unfused_2 = clip_tree_do_clip_unfused(&nodes_ax_by, Some(0), 0, 1, 3).expect("unfused");
+        assert_eq!(fused_2, vec![(2, 1), (2, -1)]);
+        assert_eq!(unfused_2, vec![(2, 1), (3, -1)]);
+        assert_ne!(fused_2, unfused_2);
+    }
 }

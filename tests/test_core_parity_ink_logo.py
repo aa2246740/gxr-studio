@@ -15,7 +15,7 @@ from gxr_studio.finish.logo_math import _alpha_luma, paint_clogo
 from gxr_studio.finish.logo_store import ERR_TOO_SMALL, LogoError, decode_safe_rgba, prepare_uploaded_logo
 from support.core_cli import error_of, run_json, run_npy
 from support.export_pipeline_cases import anon_ids, check, same_pixels
-from support.ink_gates import check_alpha_luma_gate_a, gate_b_clogo_report, seq_alpha_luma
+from support.ink_gates import check_alpha_luma_gate_a, gate_b_clogo_report, render_clogo_seq_oracle, seq_alpha_luma
 
 
 def _synth_logo_rgba(kind: str, w: int = 96, h: int = 72) -> np.ndarray:
@@ -313,6 +313,7 @@ def test_paint_clogo_parity(case: dict[str, Any], tmp_path: Path) -> None:
             bg_l_gate = float(rs_trace["bg_l"])
         else:
             bg_l_gate = bg_l
+        seq_pixels = render_clogo_seq_oracle(canvas_arr, case["canvas_mode"], item, logo_id, logo_arr)
         gate_b_clogo_report(
             py_pixels,
             rs_pixels,
@@ -323,7 +324,7 @@ def test_paint_clogo_parity(case: dict[str, Any], tmp_path: Path) -> None:
             auto=bool(case["auto"]),
             auto_ink=bool(case["auto_ink"]),
             label=f"clogo_{logo_kind}_{case['mode']}",
-            seq_pixels=py_pixels,
+            seq_pixels=seq_pixels,
         )
     else:
         check(len(clogo_traces) == 0, "clogo noop emitted no trace entries")
@@ -386,6 +387,7 @@ def test_paint_clogo_threshold_boundaries(logo_kind: str, bg_val: int, tag: str,
     rs_lg = float(trace["alpha_luma"])
     bg_l_gate = float(trace["bg_l"]) if trace["bg_l"] is not None else float(bg_val)
     _, py_lg = _alpha_luma(logo_im)
+    seq_pixels = render_clogo_seq_oracle(canvas_arr, "RGB", item, "t_logo", logo_arr)
     gate_b_clogo_report(
         py_pixels,
         rs_pixels,
@@ -396,7 +398,7 @@ def test_paint_clogo_threshold_boundaries(logo_kind: str, bg_val: int, tag: str,
         auto=True,
         auto_ink=True,
         label=f"clogo_thresh_{tag}",
-        seq_pixels=py_pixels,
+        seq_pixels=seq_pixels,
     )
 
 
@@ -411,12 +413,11 @@ def test_paint_clogo_gate_a_negative_control_and_branch_flip(tmp_path: Path) -> 
     with pytest.raises(AssertionError):
         check_alpha_luma_gate_a(float("nan"), corrupt_logo, "corrupt_nan")
 
-    # Run real Rust clogo near |lg - bg_l| == 70 and verify Gate A runs even when py vs rs branches differ,
-    # while requiring 0 pixel diffs against the sequential-oracle render on branch flip.
+    # Run real Rust clogo near |lg - bg_l| == 70, re-render `seq_pixels` using `seq_alpha_luma` via
+    # `render_clogo_seq_oracle` (patching `logo_math._alpha_luma` around real `paint_clogo`), and
+    # test controlled branch-flip attribution without counting it as a real BLAS divergence.
     logo_arr = _synth_logo_rgba("near_70")
-    logo_im = Image.fromarray(logo_arr, "RGBA")
     canvas_arr = _synth_canvas(140, 100, 150, "RGB")
-    py_canvas_seq = Image.fromarray(canvas_arr.copy(), "RGB")
     item = {
         "k": "clogo",
         "id": "bf_logo",
@@ -429,8 +430,7 @@ def test_paint_clogo_gate_a_negative_control_and_branch_flip(tmp_path: Path) -> 
         "auto": True,
         "auto_ink": [[245, 240, 230], [18, 20, 24]],
     }
-    paint_clogo(py_canvas_seq, item, {"bf_logo": logo_im})
-    seq_pixels = np.asarray(py_canvas_seq, dtype=np.uint8)
+    seq_pixels = render_clogo_seq_oracle(canvas_arr, "RGB", item, "bf_logo", logo_arr)
 
     canvas_npy = tmp_path / "bf_c.npy"
     logo_npy = tmp_path / "bf_l.npy"
@@ -456,6 +456,9 @@ def test_paint_clogo_gate_a_negative_control_and_branch_flip(tmp_path: Path) -> 
     rs_lg = float(trace["alpha_luma"])
     bg_l_gate = float(trace["bg_l"])
 
+    check_alpha_luma_gate_a(rs_lg, logo_arr, "clogo_near_70_real_gate_a")
+    same_pixels(seq_pixels, rs_pixels, "clogo_near_70 sequential oracle vs Rust exact")
+
     # Corrupt rs_lg across branch boundary must still trip Gate A (no early-return bypass).
     with pytest.raises(AssertionError):
         gate_b_clogo_report(
@@ -469,16 +472,14 @@ def test_paint_clogo_gate_a_negative_control_and_branch_flip(tmp_path: Path) -> 
             auto_ink=True,
             label="clogo_corrupt_branch_flip",
             seq_pixels=seq_pixels,
+            synthetic_control=True,
         )
 
-    # True Gate-A-passing rs_lg (`~220.00003 >= bg_l+70`, branch `orig`) vs simulated flipped py render (`219.5 < bg_l+70`, branch `mono`)
-    # passes attribution via seq_pixels == rs_pixels.
-    flipped_item = dict(item, mode="mono", auto=False)
-    py_canvas_flipped = Image.fromarray(canvas_arr.copy(), "RGB")
-    paint_clogo(py_canvas_flipped, flipped_item, {"bf_logo": logo_im})
-    flipped_pixels = np.asarray(py_canvas_flipped, dtype=np.uint8)
+    # Controlled oracle simulation: override only `logo_math._alpha_luma` -> 219.5 on real `paint_clogo`
+    # while `seq_pixels` uses real `seq_alpha_luma` and matches Rust `rs_pixels` byte-for-byte.
+    ctrl_py_pixels = render_clogo_seq_oracle(canvas_arr, "RGB", item, "bf_logo", logo_arr, override_luma=219.5)
     ulp_diff, px_diff = gate_b_clogo_report(
-        flipped_pixels,
+        ctrl_py_pixels,
         rs_pixels,
         logo_arr,
         219.5,
@@ -486,10 +487,29 @@ def test_paint_clogo_gate_a_negative_control_and_branch_flip(tmp_path: Path) -> 
         bg_l_gate,
         auto=True,
         auto_ink=True,
-        label="clogo_simulated_branch_flip",
+        label="clogo_controlled_branch_flip",
         seq_pixels=seq_pixels,
+        synthetic_control=True,
     )
-    check(ulp_diff >= 0 and px_diff > 0, "branch flip reported pixel diff attributed against sequential oracle")
+    check(ulp_diff > 0 and px_diff > 0, "controlled branch flip attributed against sequential oracle")
+
+    # Injecting an unrelated pixel into `seq_pixels` must fail branch-flip attribution.
+    bad_seq_pixels = seq_pixels.copy()
+    bad_seq_pixels[0, 0, 0] ^= 1
+    with pytest.raises(AssertionError):
+        gate_b_clogo_report(
+            ctrl_py_pixels,
+            rs_pixels,
+            logo_arr,
+            219.5,
+            rs_lg,
+            bg_l_gate,
+            auto=True,
+            auto_ink=True,
+            label="clogo_bad_seq_pixel_inject",
+            seq_pixels=bad_seq_pixels,
+            synthetic_control=True,
+        )
 
 
 def _to_png_bytes(rgba: np.ndarray, *, mode: str = "RGBA") -> bytes:
