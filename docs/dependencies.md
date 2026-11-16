@@ -73,7 +73,13 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 - Lanczos `sinc` 统一调用 `gxr_math::sin`（`libm`），使原生 CLI 与 WASM 逐位一致；
 - `32bpc`（`mode = "F"`）按标准 IEEE 754 `f64` 顺序乘加并禁止 FMA（`mul_add`），遵循核心可移植算术规范。
 
-### 内部移植的 TrueType 轮廓与光栅器（`gxr-finish`，原 `FreeType 2.14.3` 与 `Pillow 12.2.0`）
+### 内部移植的非文字绘制、模糊与纸张颗粒生成器（`gxr-finish::ink`，原 `Pillow 12.2.0` 与 `NumPy 2.4.3`）
+
+`core/crates/gxr-finish/src/ink/` 不引入外部 Rust crate，以 `#![forbid(unsafe_code)]` 纯安全 Rust 重写了：
+- `Pillow 12.2.0`（MIT-CMU / HPND 许可）的 `Draw.c`、`BoxBlur.c`（3 遍定点框模糊）、`Paste.c`（`DIV255` 掩码混合）、`AlphaComposite.c`、`Convert.c`、`Point.c`、`Crop.c`、`Geometry.c`、`Chops.c` 与 `Image.py` / `ImageDraw.py` / `ImageFilter.py`；
+- `NumPy 2.4.3`（BSD-3-Clause 许可）的 `float32` 成对求和、`SeedSequence`（含 Melissa E. O'Neill / NumPy Developers MIT 许可的 `bit_generator.pyx`）、`PCG64`（含 Melissa O'Neill / Robert Kern MIT 许可的 `pcg64.h`）与 Ziggurat 正态分布表及采样（尾区 `log` / `exp` 与线虫扰动 `sin` / `exp` 统一走 `gxr_math` `libm`）。
+
+### 内部移植的 TrueType 轮廓与光栅器（`gxr-finish::ink_text`，原 `FreeType 2.14.3` 与 `Pillow 12.2.0`）
 
 `core/crates/gxr-finish/src/ink_text/` 依据 `FreeType 2.14.3`（FTL 许可，不含字节码解释器）与 `Pillow 12.2.0`（`src/_imagingft.c`、`src/libImaging/Paste.c`，MIT-CMU 许可）用纯安全 Rust 重写，不引入外部 Rust crate：
 - `ftcalc.rs` / `glyf.rs`：移植自 `ftcalc.c`、`fttrigon.c`、`ftoutln.c`、`ftobjs.c`、`ttgload.c` 与 `ttobjs.c`；

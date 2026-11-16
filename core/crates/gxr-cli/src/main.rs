@@ -15,6 +15,7 @@ mod cmd_frame;
 mod cmd_geometry;
 mod cmd_hdr;
 mod cmd_hdrtrack;
+mod cmd_ink;
 mod cmd_inktext;
 mod cmd_jpeg;
 mod cmd_lut;
@@ -89,6 +90,9 @@ fn dispatch(command: &str, rest: &[String]) -> Result<Output, Failure> {
     }
     if command.starts_with("inktext-") {
         return cmd_inktext::run(command, rest);
+    }
+    if command.starts_with("ink-") {
+        return cmd_ink::run(command, rest);
     }
     // Commands that are not an area prefix keep the previous usage text.
     if rest.is_empty() {

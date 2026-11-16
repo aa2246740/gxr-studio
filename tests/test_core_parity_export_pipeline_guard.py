@@ -36,7 +36,13 @@ SHORT = 40
 
 
 def _files() -> list[Path]:
-    return sorted([*TESTS.glob("test_core_parity_export_pipeline*.py"), *(TESTS / "support").glob("export_pipeline_canary*.py")])
+    return sorted(
+        [
+            *TESTS.glob("test_core_parity_export_pipeline*.py"),
+            *TESTS.glob("test_core_parity_ink*.py"),
+            *(TESTS / "support").glob("export_pipeline_canary*.py"),
+        ]
+    )
 
 
 def _literal(node: ast.expr | None) -> bool:
