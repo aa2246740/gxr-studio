@@ -15,7 +15,7 @@ const browser = await launchPinnedChromium({
   args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'],
 });
 
-const out = { pageErrors: [], race: null, failRelease: null, error: null };
+const out = { pageErrors: [], race: null, overlap: null, failRelease: null, error: null };
 
 async function settle(page) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -48,6 +48,10 @@ try {
           window.__reviewCorePosts.push({
             worker: window.__reviewCoreWorkers.indexOf(this),
             op: message.op,
+            detail:
+              message.op === 'lut-patch'
+                ? (message.lutPatch?.patch?.name ?? message.lutPatch?.patch?.input_space ?? null)
+                : null,
           });
         }
         return super.postMessage(message, ...args);
@@ -96,6 +100,7 @@ try {
 
   const result = await page.evaluate(async () => {
     const appBook = window.__gxrLutBook;
+    const api = await import('/src/core/api.ts');
     await appBook.restore();
     const cube = (name) =>
       `# Input: sRGB\nTITLE "${name}"\nLUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n`;
@@ -105,19 +110,38 @@ try {
     const [a, b] = imported.added;
 
     const workers = window.__reviewCoreWorkers;
-    const postStart = window.__reviewCorePosts.length;
-    const nextIdx = (workers.indexOf(window.__reviewLastCore) + 1) % workers.length;
-    const busyWorker = workers[nextIdx];
-    const busyStarted = new Promise((resolve) => {
-      busyWorker.addEventListener('message', function onBusy(event) {
-        if (event.data?.__reviewBusyStarted) {
-          busyWorker.removeEventListener('message', onBusy);
-          resolve();
-        }
+    const nextWorkerIndex = () => (workers.indexOf(window.__reviewLastCore) + 1) % workers.length;
+    async function busyNextWorker(ms) {
+      const idx = nextWorkerIndex();
+      const w = workers[idx];
+      const started = new Promise((resolve) => {
+        w.addEventListener('message', function onBusy(event) {
+          if (event.data?.__reviewBusyStarted) {
+            w.removeEventListener('message', onBusy);
+            resolve();
+          }
+        });
       });
+      w.postMessage({ __reviewBusyMs: ms });
+      await started;
+      return idx;
+    }
+    async function rotatePoolTo(targetIdx) {
+      let guard = 0;
+      while (nextWorkerIndex() !== targetIdx && guard < workers.length * 2) {
+        await api.warmCore();
+        guard += 1;
+      }
+    }
+    const snapView = (snap, rec, expectedText) => ({
+      id: rec.cube_id,
+      present: Boolean(snap[rec.cube_id]),
+      space: snap[rec.cube_id] ? JSON.parse(snap[rec.cube_id].space).input_space : null,
+      bytesEqual: snap[rec.cube_id] ? new TextDecoder().decode(snap[rec.cube_id].cube) === expectedText : false,
     });
-    busyWorker.postMessage({ __reviewBusyMs: 1500 });
-    await busyStarted;
+
+    const postStart = window.__reviewCorePosts.length;
+    const nextIdx = await busyNextWorker(1500);
 
     const events = [{ type: 'busy-started', worker: nextIdx }];
     const pending = appBook.exportSnapshot([a.cube_id, b.cube_id]);
@@ -131,22 +155,90 @@ try {
     events.push({ type: 'delete', ok: removed });
     const snap = await pending;
 
-    const snapshot = [a, b].map((r, i) => ({
-      id: r.cube_id,
-      present: Boolean(snap[r.cube_id]),
-      space: snap[r.cube_id] ? JSON.parse(snap[r.cube_id].space).input_space : null,
-      bytesEqual: snap[r.cube_id] ? new TextDecoder().decode(snap[r.cube_id].cube) === texts[i] : false,
-    }));
+    const snapshot = [a, b].map((r, i) => snapView(snap, r, texts[i]));
 
     const dispatches = window.__reviewCorePosts.slice(postStart);
 
-    // 场景 2：快照读取失败时屏障必须释放，后续删除照常完成。
+    // 场景 2（Opus r3 P2-01）：真实多 Worker 池上两次导出快照重叠（均排在繁忙 Worker 后依次完成），
+    // 验证：(a) setSpace(applelog) -> S2 -> setSpace(srgb) 按调用顺序生效且最终为 srgb；
+    //       (b) setSpace(applelog) -> S2 -> removeChecked 先改后删且两次写都成功，两个快照都保留 B 原字节与点击时空间。
+    let overlapSpaceOrder;
+    {
+      const overlapTexts1 = ['OverlapSpaceA', 'OverlapSpaceB'].map(cube);
+      const imp1 = await appBook.importFiles(overlapTexts1.map((t, i) => new File([t], `overlap_space_${i}.cube`)));
+      if (imp1.added.length !== 2) throw new Error('synthetic overlap space LUT import failed');
+      const [oa, ob] = imp1.added;
+
+      const p0 = window.__reviewCorePosts.length;
+      const busy1 = await busyNextWorker(2000);
+      const s1 = appBook.exportSnapshot([oa.cube_id, ob.cube_id]);
+      const w1 = appBook.setSpace(ob.cube_id, { input_space: 'applelog' });
+      await rotatePoolTo(busy1);
+      const s2 = appBook.exportSnapshot([oa.cube_id, ob.cube_id]);
+      const w2 = appBook.setSpace(ob.cube_id, { input_space: 'srgb' });
+      const [snap1, snap2, r1, r2] = await Promise.all([s1, s2, w1, w2]);
+      const nonPing = window.__reviewCorePosts
+        .slice(p0)
+        .filter((d) => d.op !== 'ping')
+        .map((d) => (d.detail ? `${d.op}:${d.detail}` : d.op));
+      const persisted = await api.restoreLutLibrary();
+      const persistedB = persisted.records.find((r) => r.cube_id === ob.cube_id) ?? null;
+
+      overlapSpaceOrder = {
+        nonPingDispatches: nonPing,
+        snap1: [oa, ob].map((r, i) => snapView(snap1, r, overlapTexts1[i])),
+        snap2: [oa, ob].map((r, i) => snapView(snap2, r, overlapTexts1[i])),
+        w1Ok: r1.ok,
+        w1Space: r1.ok ? r1.record.input_space : null,
+        w2Ok: r2.ok,
+        w2Space: r2.ok ? r2.record.input_space : null,
+        memorySpace: appBook.get(ob.cube_id)?.input_space ?? null,
+        persistedSpace: persistedB?.input_space ?? null,
+      };
+    }
+
+    let overlapSpaceThenDelete;
+    {
+      const overlapTexts2 = ['OverlapDelA', 'OverlapDelB'].map(cube);
+      const imp2 = await appBook.importFiles(overlapTexts2.map((t, i) => new File([t], `overlap_del_${i}.cube`)));
+      if (imp2.added.length !== 2) throw new Error('synthetic overlap delete LUT import failed');
+      const [da, db] = imp2.added;
+
+      const p0 = window.__reviewCorePosts.length;
+      const busy2 = await busyNextWorker(2000);
+      const s1 = appBook.exportSnapshot([da.cube_id, db.cube_id]);
+      const w1 = appBook.setSpace(db.cube_id, { input_space: 'applelog' });
+      await rotatePoolTo(busy2);
+      const s2 = appBook.exportSnapshot([da.cube_id, db.cube_id]);
+      const w2 = appBook.removeChecked(db.cube_id);
+      const [snap1, snap2, r1, r2] = await Promise.all([s1, s2, w1, w2]);
+      const nonPing = window.__reviewCorePosts
+        .slice(p0)
+        .filter((d) => d.op !== 'ping')
+        .map((d) => (d.detail ? `${d.op}:${d.detail}` : d.op));
+      const persisted = await api.restoreLutLibrary();
+
+      overlapSpaceThenDelete = {
+        nonPingDispatches: nonPing,
+        snap1: [da, db].map((r, i) => snapView(snap1, r, overlapTexts2[i])),
+        snap2: [da, db].map((r, i) => snapView(snap2, r, overlapTexts2[i])),
+        patchOk: r1.ok,
+        patchMessage: r1.ok ? '' : r1.message,
+        patchedSpace: r1.ok ? r1.record.input_space : null,
+        deleteOk: r2.ok,
+        catalogueHasA: Boolean(appBook.get(da.cube_id)),
+        catalogueHasB: Boolean(appBook.get(db.cube_id)),
+        persistedHasB: persisted.records.some((r) => r.cube_id === db.cube_id),
+      };
+    }
+
+    // 场景 3：快照读取失败时屏障必须释放，后续删除照常完成。
     const textC = cube('BarrierFailC');
     const impC = await appBook.importFiles([new File([textC], 'barrier_fail_c.cube')]);
     if (impC.added.length !== 1) throw new Error('synthetic fail-release LUT import failed');
     const [c] = impC.added;
 
-    const failIdx = (workers.indexOf(window.__reviewLastCore) + 1) % workers.length;
+    const failIdx = nextWorkerIndex();
     const failWorker = workers[failIdx];
     const armed = new Promise((resolve) => {
       failWorker.addEventListener('message', function onArm(event) {
@@ -178,6 +270,11 @@ try {
         catalogueHasB: Boolean(appBook.get(b.cube_id)),
         dispatches,
       },
+      overlap: {
+        workerCount: workers.length,
+        spaceOrder: overlapSpaceOrder,
+        spaceThenDelete: overlapSpaceThenDelete,
+      },
       failRelease: {
         failOk: failRes.ok,
         failMessage: failRes.message,
@@ -188,6 +285,7 @@ try {
   });
 
   out.race = result.race;
+  out.overlap = result.overlap;
   out.failRelease = result.failRelease;
   await page.close();
 } catch (err) {

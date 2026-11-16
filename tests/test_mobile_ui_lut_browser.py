@@ -519,3 +519,51 @@ def test_mobile_ui_lut_snapshot_write_barrier(tmp_path: Path) -> None:
         fail_rel["deleteOk"] is True and fail_rel["catalogueHasC"] is False,
         "failed snapshot releases write barrier so subsequent delete completes",
     )
+
+    overlap = report["overlap"]
+    check(overlap["workerCount"] == 4, "real 4-worker core pool is active")
+
+    space_order = overlap["spaceOrder"]
+    for snap_rows in (space_order["snap1"], space_order["snap2"]):
+        for row in snap_rows:
+            check(row["present"] is True, "overlapping snapshots both retain A and B")
+            check(row["space"] == "srgb", "overlapping snapshots both freeze click-time srgb")
+            check(row["bytesEqual"] is True, "overlapping snapshots both retain original .cube bytes")
+    same_redacted(
+        space_order["nonPingDispatches"],
+        ["lut-snapshot", "lut-snapshot", "lut-patch:applelog", "lut-patch:srgb"],
+        "overlapping snapshots dispatch setSpace writes in FIFO call order",
+    )
+    check(
+        space_order["w1Ok"] is True and space_order["w1Space"] == "applelog",
+        "first setSpace(applelog) succeeds in call order",
+    )
+    check(
+        space_order["w2Ok"] is True and space_order["w2Space"] == "srgb",
+        "second setSpace(srgb) succeeds in call order",
+    )
+    check(
+        space_order["memorySpace"] == "srgb" and space_order["persistedSpace"] == "srgb",
+        "final in-memory and IndexedDB input_space equals last write srgb",
+    )
+
+    space_del = overlap["spaceThenDelete"]
+    for snap_rows in (space_del["snap1"], space_del["snap2"]):
+        for row in snap_rows:
+            check(row["present"] is True, "overlapping snapshots retain A and B before patch+delete")
+            check(row["space"] == "srgb", "overlapping snapshots freeze click-time srgb before patch+delete")
+            check(row["bytesEqual"] is True, "overlapping snapshots retain original bytes before patch+delete")
+    same_redacted(
+        space_del["nonPingDispatches"],
+        ["lut-snapshot", "lut-snapshot", "lut-patch:applelog", "lut-delete"],
+        "overlapping snapshots dispatch lut-patch strictly before lut-delete",
+    )
+    check(
+        space_del["patchOk"] is True and space_del["patchedSpace"] == "applelog",
+        "setSpace before removeChecked succeeds without not_found error",
+    )
+    check(
+        space_del["deleteOk"] is True and space_del["catalogueHasB"] is False and space_del["persistedHasB"] is False,
+        "removeChecked after setSpace deletes B from memory and IndexedDB",
+    )
+    check(space_del["catalogueHasA"] is True, "unrelated LUT A remains after overlapping snapshot delete")

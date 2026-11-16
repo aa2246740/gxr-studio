@@ -70,6 +70,7 @@ export class LutBook {
   private readonly io: LutBookIo;
   private readonly listeners = new Set<() => void>();
   private readonly snapshotBarriers = new Set<Promise<void>>();
+  private writeTail: Promise<void> = Promise.resolve();
 
   constructor(io: LutBookIo = defaultIo) {
     this.io = io;
@@ -79,6 +80,16 @@ export class LutBook {
     while (this.snapshotBarriers.size > 0) {
       await Promise.all([...this.snapshotBarriers]);
     }
+  }
+
+  /** 写入按调用顺序逐条执行；轮到时再等所有在途快照读完。 */
+  private queueWrite<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.writeTail.then(() => this.waitForSnapshots()).then(op);
+    this.writeTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   onChange(fn: () => void): () => void {
@@ -205,24 +216,28 @@ export class LutBook {
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : LUT_ERRORS.bad_name };
     }
-    await this.waitForSnapshots();
-    let res: { ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' };
-    try {
-      res = await this.io.patch(cubeId, { name: cleaned }, this.nextVersion());
-    } catch {
-      return { ok: false, message: '保存未生效，请重试。' };
-    }
-    if (!res.ok) {
-      return { ok: false, message: res.reason === 'not_found' ? LUT_ERRORS.cube_not_found : '保存未生效，请重试。' };
-    }
-    this.upsert(res.record);
-    this.changed();
-    return { ok: true, record: res.record };
+    return this.queueWrite(async () => {
+      let res: { ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' };
+      try {
+        res = await this.io.patch(cubeId, { name: cleaned }, this.nextVersion());
+      } catch {
+        return { ok: false, message: '保存未生效，请重试。' };
+      }
+      if (!res.ok) {
+        return { ok: false, message: res.reason === 'not_found' ? LUT_ERRORS.cube_not_found : '保存未生效，请重试。' };
+      }
+      this.upsert(res.record);
+      this.changed();
+      return { ok: true, record: res.record };
+    });
   }
 
   async setSpace(cubeId: string, update: LutSpaceUpdate): Promise<{ ok: true; record: LutRecord } | { ok: false; message: string }> {
     await this.restore();
-    await this.waitForSnapshots();
+    return this.queueWrite(() => this.setSpaceNow(cubeId, update));
+  }
+
+  private async setSpaceNow(cubeId: string, update: LutSpaceUpdate): Promise<{ ok: true; record: LutRecord } | { ok: false; message: string }> {
     const current = this.byId.get(cubeId);
     if (!current) return { ok: false, message: LUT_ERRORS.cube_not_found };
     const patch: LutPatchFields = {
@@ -252,7 +267,10 @@ export class LutBook {
   /** 先在 IndexedDB 写删除，确认删掉才清内存并通知订阅者；事务失败时不动内存并返回错误信息。 */
   async removeChecked(cubeId: string): Promise<{ ok: true } | { ok: false; message: string }> {
     await this.restore();
-    await this.waitForSnapshots();
+    return this.queueWrite(() => this.removeNow(cubeId));
+  }
+
+  private async removeNow(cubeId: string): Promise<{ ok: true } | { ok: false; message: string }> {
     let deleted = false;
     try {
       deleted = await this.io.remove(cubeId, this.nextVersion());
