@@ -6,7 +6,7 @@ import { ExportCore, calibPack, type RunResult } from '../core/export_api';
 import { unitOfLens } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { buildRequest, buildSide, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
-import { formatClock } from '../lib/group';
+import { formatClock, formatDay } from '../lib/group';
 import { shelf, shelves, type Card } from '../lib/recipes';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeText, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
@@ -103,8 +103,12 @@ function requestPhoto(photo: Photo): RequestPhoto {
 function timeRange(photos: Photo[]): string {
   if (!photos.length) return 'JPG';
   const times = photos.map((p) => photoMs(p));
-  const a = formatClock(Math.min(...times));
-  const b = formatClock(Math.max(...times));
+  const lo = Math.min(...times);
+  const hi = Math.max(...times);
+  const a = formatClock(lo);
+  const b = formatClock(hi);
+  // 跨了天就带上日期，免得「18:51–11:46」看起来像倒着的。
+  if (formatDay(lo) !== formatDay(hi)) return `${formatDay(lo)} ${a} – ${formatDay(hi)} ${b} · JPG`;
   return `${a === b ? a : `${a}–${b}`} · JPG`;
 }
 
