@@ -9,6 +9,8 @@ import { button, el, icon, ICON } from './dom';
 import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
 import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
 import { lookCache } from './looks';
+import { pasteState } from './paste_state';
+import { openCopySheet, PASTE_ICON } from './paste_ui';
 import { RecipeView } from './recipe_view';
 
 const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
@@ -95,6 +97,8 @@ export class EditorView {
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
   private restLabel = '';
+  /** 套用或撤销改了正在看的这张：重新打开，照片和面板都按新的编辑状态画。 */
+  private offPaste: (() => void) | null = null;
 
   constructor(
     private readonly host: HTMLElement,
@@ -107,6 +111,11 @@ export class EditorView {
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
     // 正在看的这张的配方卡小图不会被全局上限挤掉。
     lookCache.setOpen(photo);
+    pasteState.gridLeft();
+    this.offPaste?.();
+    this.offPaste = pasteState.onEdit((ids) => {
+      if (this.photo && ids.has(this.photo.id) && this.api.photo(this.photo.id) === this.photo) this.api.open(this.photo.id);
+    });
     this.build(photo, index);
     this.settled = this.load(photo).then(() => this.sharpening);
   }
@@ -119,6 +128,8 @@ export class EditorView {
   destroy(): void {
     this.token += 1;
     lookCache.setOpen(null);
+    this.offPaste?.();
+    this.offPaste = null;
     this.dragging = false;
     this.holding = false;
     this.wantNeighbor = '';
@@ -192,8 +203,12 @@ export class EditorView {
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
-    const copy = button('btn', '复制调整 · 下一步做');
-    copy.disabled = true;
+    const copy = button('btn', '复制调整');
+    copy.prepend(icon(PASTE_ICON.copy));
+    copy.dataset.act = 'copy';
+    copy.addEventListener('click', () => {
+      if (this.photo) openCopySheet(this.shell, this.api, this.photo, () => undefined);
+    });
     const save = button('btn primary', '导出这张 · 下一步做');
     save.disabled = true;
     const acts = el('div', 'actbar');
@@ -253,6 +268,7 @@ export class EditorView {
     reset.addEventListener('click', () => {
       if (!this.photo) return;
       this.photo.knobs = zeroKnobs();
+      this.photo.rev += 1;
       this.showKnob();
       this.push();
     });
@@ -267,6 +283,10 @@ export class EditorView {
       this.paintSlider();
       this.push();
     });
+    // 松手（change）才算落定的修改，编辑状态的版本加一（撤销套用时据此判断改没改过）。
+    this.input.addEventListener('change', () => {
+      if (this.photo) this.photo.rev += 1;
+    });
     this.input.addEventListener('pointerdown', () => this.enterDrag());
     const end = () => {
       if (this.dragging) this.leaveDrag();
@@ -276,6 +296,7 @@ export class EditorView {
     this.input.addEventListener('dblclick', () => {
       if (!this.photo) return;
       this.photo.knobs[this.key] = 0;
+      this.photo.rev += 1;
       this.showKnob();
       this.push();
     });

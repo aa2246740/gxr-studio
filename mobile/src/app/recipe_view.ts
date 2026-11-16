@@ -427,6 +427,7 @@ export class RecipeView {
     for (const c of card.controls) next[c.name] = effective(c, this.photo.levels.get(card.id));
     next[name] = level;
     this.photo.levels.set(card.id, next);
+    this.photo.rev += 1;
     if (this.photo.choice?.id !== card.id) {
       this.photo.choice = { id: card.id, unit: scene.unit };
       for (const slot of this.slots) {
@@ -449,6 +450,7 @@ export class RecipeView {
     }
     if (!card.controls.length) return;
     this.photo.choice = { id: card.id, unit: scene.unit };
+    this.photo.rev += 1;
     for (const slot of this.slots) {
       slot.node.classList.remove('on');
       slot.thumb.querySelector('.ckk')?.remove();

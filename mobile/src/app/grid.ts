@@ -1,7 +1,10 @@
-import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type VRow } from '../lib/group';
+import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
 import { UNIT_LABEL } from '../lib/calib';
-import { button, el } from './dom';
+import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
+import { button, el, icon } from './dom';
 import { openable, photoMs, unread, type AppApi, type Photo } from './model';
+import { groupsText, pasteState, rangeOf } from './paste_state';
+import { groupBody, openConfirm, pasteBar, pickBody, PASTE_ICON } from './paste_ui';
 
 const GAPS: GapMinutes[] = [1, 3, 5, 10];
 
@@ -24,6 +27,12 @@ export class GridView {
   private readonly selected = new Set<string>();
   private sheet: HTMLElement | null = null;
   private datLine: HTMLElement | null = null;
+  /** 「选照片…」（04d）：选要套用的照片，底栏是剪贴板和「套用到 N 张」。 */
+  private picking = false;
+  /** 组标题那一行的键 → 这一组（套用到这一组、选这一组用）。 */
+  private readonly groupRows = new Map<string, TimeGroup>();
+  private pasteBarEl: HTMLElement | null = null;
+  private offPaste: (() => void) | null = null;
 
   constructor(
     private readonly host: HTMLElement,
@@ -31,8 +40,21 @@ export class GridView {
   ) {}
 
   show(): void {
+    pasteState.sync(this.api);
+    pasteState.gridShown();
+    if (pasteState.pickNext && pasteState.clip) {
+      this.picking = true;
+      this.selecting = true;
+    }
+    pasteState.pickNext = false;
+    this.offPaste?.();
+    this.offPaste = pasteState.onChange(() => {
+      if (this.host.isConnected && this.scroller?.isConnected) this.relayout();
+      else this.offPaste?.();
+    });
     this.mount();
     this.relayout();
+    if (this.picking) this.toggleSelect(true);
   }
 
   /** 缩略图或顺序变了。只重挂看得见的行。 */
@@ -58,13 +80,13 @@ export class GridView {
     const nav = el('header', 'nav');
     const more = button('nb plain', '…');
     more.setAttribute('aria-label', '更多');
-    more.addEventListener('click', () => this.menu());
+    more.addEventListener('click', () => (this.picking ? this.toggleSelect(false) : this.menu()));
     const titleBox = el('div', 't');
     this.title = el('b', '', '照片');
     this.sub = el('small', '', '');
     titleBox.append(this.title, this.sub);
     const choose = button('nb bold', '选择');
-    choose.addEventListener('click', () => this.toggleSelect(!this.selecting));
+    choose.addEventListener('click', () => (this.picking ? this.selectAll() : this.toggleSelect(!this.selecting)));
     const prog = el('div', 'prog');
     prog.append(el('i'));
     nav.append(more, titleBox, choose, prog);
@@ -125,6 +147,8 @@ export class GridView {
     const width = this.scroller.clientWidth || 390;
     const cellH = Math.max(48, (width / 3) * (2 / 3) + 2);
     this.rows = layoutRows(groups, cellH);
+    this.groupRows.clear();
+    for (const group of groups) this.groupRows.set(`group:${group.ids[0] ?? group.startMs}`, group);
     this.subtitle(photos, groups.length);
     this.paintDat();
     for (const item of this.host.querySelectorAll<HTMLButtonElement>('[data-order]')) {
@@ -133,6 +157,16 @@ export class GridView {
     this.sig = '';
     this.renderWindow();
     this.selectionBar();
+    this.paintPasteBar();
+  }
+
+  /** 已复制、套用结果和撤销占贴底的那一格；选择模式时让给选择栏。 */
+  private paintPasteBar(): void {
+    const screen = this.scroller?.parentElement;
+    if (!screen) return;
+    this.pasteBarEl?.remove();
+    this.pasteBarEl = this.selecting ? null : pasteBar(this.api, () => this.relayout());
+    if (this.pasteBarEl) screen.append(this.pasteBarEl);
   }
 
   private paintDat(): void {
@@ -192,16 +226,7 @@ export class GridView {
 
   private renderRow(row: VRow): HTMLElement {
     if (row.kind === 'day') return el('div', 'day', row.label);
-    if (row.kind === 'group') {
-      const head = el('div', 'gh');
-      head.dataset.kind = 'group';
-      head.append(el('span', 'rng', row.label));
-      const apply = button('go', '');
-      apply.disabled = true;
-      apply.append(el('span', '', '套用到这一组'), el('small', '', '下一步做'));
-      head.append(apply);
-      return head;
-    }
+    if (row.kind === 'group') return this.groupHead(row);
     const cells = el('div', 'cells');
     cells.style.height = `${row.height}px`;
     for (const id of row.ids) {
@@ -259,6 +284,7 @@ export class GridView {
       else this.selected.add(id);
       this.selectionBar();
       this.paint();
+      this.paintHeads();
       return;
     }
     if (photo.status === 'bad') this.showUnreadable(id);
@@ -268,26 +294,180 @@ export class GridView {
 
   private toggleSelect(on: boolean): void {
     this.selecting = on;
-    if (!on) this.selected.clear();
+    if (!on) {
+      this.selected.clear();
+      this.picking = false;
+    }
     const choose = this.host.querySelector('.nb.bold');
     if (choose) choose.textContent = on ? '取消' : '选择';
-    if (this.title) this.title.textContent = on ? `已选 ${this.selected.size} 张` : '照片';
     this.sig = '';
     this.renderWindow();
     this.selectionBar();
+    this.paintPasteBar();
+    this.paintTitle();
   }
 
   private selectionBar(): void {
     if (!this.bar) return;
     this.bar.hidden = !this.selecting;
     this.bar.replaceChildren();
+    this.bar.classList.toggle('pastebar', this.picking);
     if (!this.selecting) return;
-    const apply = button('fbtn ctl grow', `套用调整 · 下一步做`);
-    apply.disabled = true;
+    if (this.picking) {
+      this.pickBar();
+      return;
+    }
+    const apply = button('fbtn ctl grow', '套用调整');
+    apply.dataset.act = 'paste-selection';
+    apply.disabled = this.selected.size === 0;
+    apply.addEventListener('click', () => this.pasteSelection());
     const exp = button('fbtn fill grow', `导出 ${this.selected.size} 张 · 下一步做`);
     exp.disabled = true;
     this.bar.append(apply, exp);
-    if (this.title) this.title.textContent = `已选 ${this.selected.size} 张`;
+    this.paintTitle();
+  }
+
+  /** 组标题：时间范围、张数和「套用到这一组」；选择时是「已选 x/y」和「选这一组 / 取消这一组」。 */
+  private groupHead(row: VRow): HTMLElement {
+    const head = el('div', 'gh');
+    head.dataset.kind = 'group';
+    head.dataset.row = row.key;
+    const group = this.groupRows.get(row.key);
+    head.append(el('span', 'rng', group?.rangeLabel ?? row.label), el('span', 'cnt', ''));
+    const go = button('go', '');
+    go.addEventListener('click', () => {
+      if (!group) return;
+      if (this.selecting) this.toggleGroup(group);
+      else this.applyGroup(group);
+    });
+    head.append(go);
+    this.paintHead(head);
+    return head;
+  }
+
+  private paintHead(head: HTMLElement): void {
+    const group = this.groupRows.get(head.dataset.row ?? '');
+    const cnt = head.querySelector('.cnt');
+    const go = head.querySelector<HTMLButtonElement>('.go');
+    if (!group || !cnt || !go) return;
+    const picked = group.ids.filter((id) => this.selected.has(id)).length;
+    if (this.selecting) {
+      cnt.textContent = picked ? `已选 ${picked}/${group.ids.length}` : `${group.ids.length} 张`;
+      go.className = 'go';
+      go.dataset.act = 'select-group';
+      go.replaceChildren(el('span', '', picked < group.ids.length ? '选这一组' : '取消这一组'));
+      return;
+    }
+    cnt.textContent = `${group.ids.length} 张`;
+    go.dataset.act = 'apply-group';
+    // 复制过才是蓝色；没复制时点它说一句怎么复制。
+    go.className = pasteState.clip ? 'go' : 'go idle';
+    go.replaceChildren(icon(PASTE_ICON.copy), el('span', '', '套用到这一组'));
+  }
+
+  private paintHeads(): void {
+    for (const head of this.host.querySelectorAll<HTMLElement>('.gh[data-row]')) this.paintHead(head);
+  }
+
+  private paintTitle(): void {
+    if (!this.title) return;
+    if (this.picking) {
+      this.title.textContent = '选要套用的照片';
+      if (this.sub) this.sub.textContent = `已选 ${this.selected.size} 张`;
+    } else this.title.textContent = this.selecting ? `已选 ${this.selected.size} 张` : '照片';
+    const more = this.host.querySelector<HTMLButtonElement>('.nav .nb.plain, .nav .nb.pick-cancel');
+    const choose = this.host.querySelector<HTMLButtonElement>('.nav .nb.bold');
+    if (more) {
+      more.className = this.picking ? 'nb pick-cancel' : 'nb plain';
+      more.textContent = this.picking ? '取消' : '…';
+    }
+    if (choose && this.picking) choose.textContent = '全选';
+  }
+
+  /** 「套用到这一组」：这一组里除了复制来源的每一张。没复制过就说一句。 */
+  private applyGroup(group: TimeGroup): void {
+    const clip = pasteState.clip;
+    if (!clip) {
+      pasteState.info(NOTHING_COPIED);
+      return;
+    }
+    const targets = pasteState.targets(this.api, group.ids);
+    if (!targets.length) {
+      pasteState.info(ONLY_SOURCE);
+      return;
+    }
+    const inside = group.ids.includes(clip.from.id);
+    openConfirm(this.host, this.api, {
+      title: `套用到这一组的 ${targets.length} 张？`,
+      body: groupBody(group.rangeLabel, targets.length, inside, clip.from.stem),
+      targets,
+      range: group.rangeLabel,
+      afterApply: () => this.relayout(),
+    });
+  }
+
+  /** 选择栏的「套用调整」、04d 的「套用到 N 张」：选中的照片里去掉复制来源。 */
+  private pasteSelection(): void {
+    const clip = pasteState.clip;
+    if (!clip) {
+      pasteState.info(NOTHING_COPIED);
+      this.toggleSelect(false);
+      return;
+    }
+    const order = this.api.photos().map((photo) => photo.id).filter((id) => this.selected.has(id));
+    const targets = pasteState.targets(this.api, order);
+    if (!targets.length) {
+      pasteState.info(ONLY_SOURCE);
+      this.toggleSelect(false);
+      return;
+    }
+    openConfirm(this.host, this.api, {
+      title: `套用到 ${targets.length} 张？`,
+      body: pickBody(targets.length, clip.from.stem),
+      targets,
+      range: rangeOf(targets),
+      afterApply: () => this.relayout(),
+      onGo: () => this.toggleSelect(false),
+    });
+  }
+
+  /** 04d 的底栏：剪贴板里是什么、来自哪张，和「套用到 N 张」。 */
+  private pickBar(): void {
+    if (!this.bar) return;
+    const clip = pasteState.clip;
+    if (!clip) {
+      this.toggleSelect(false);
+      return;
+    }
+    const n = pasteState.targets(this.api, [...this.selected]).length;
+    const acc = el('span', 'accc');
+    acc.append(icon(PASTE_ICON.copy));
+    const text = el('div', 'tx');
+    text.append(el('b', '', groupsText(clip.groups)), el('small', '', `来自 ${clip.from.stem}`));
+    const go = button('fbtn fill', `套用到 ${n} 张`);
+    go.dataset.act = 'paste-picked';
+    go.disabled = n === 0;
+    go.addEventListener('click', () => this.pasteSelection());
+    this.bar.append(acc, text, go);
+    this.paintTitle();
+  }
+
+  private toggleGroup(group: TimeGroup): void {
+    const all = group.ids.every((id) => this.selected.has(id));
+    for (const id of group.ids) {
+      if (all) this.selected.delete(id);
+      else this.selected.add(id);
+    }
+    this.selectionBar();
+    this.paint();
+    this.paintHeads();
+  }
+
+  private selectAll(): void {
+    for (const photo of this.api.photos()) this.selected.add(photo.id);
+    this.selectionBar();
+    this.paint();
+    this.paintHeads();
   }
 
   private readyCount(): number {

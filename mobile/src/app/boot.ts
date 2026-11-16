@@ -420,6 +420,7 @@ class App implements AppApi {
           bitmap: null,
           neutral: null,
           knobs: zeroKnobs(),
+          rev: 0,
           jpgMeta: null,
           dngMeta: null,
           choice: null,
