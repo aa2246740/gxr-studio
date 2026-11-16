@@ -72,3 +72,11 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 - `#![forbid(unsafe_code)]` 纯安全 Rust 实现；
 - Lanczos `sinc` 统一调用 `gxr_math::sin`（`libm`），使原生 CLI 与 WASM 逐位一致；
 - `32bpc`（`mode = "F"`）按标准 IEEE 754 `f64` 顺序乘加并禁止 FMA（`mul_add`），遵循核心可移植算术规范。
+
+### 内部移植的非文字绘制、模糊与纸张颗粒生成器（`gxr-finish::ink`，原 `Pillow 12.2.0` 与 `NumPy 2.4.3`）
+
+`core/crates/gxr-finish/src/ink/` 不引入外部 Rust crate，以 `#![forbid(unsafe_code)]` 纯安全 Rust 重写了：
+- `Pillow 12.2.0`（MIT-CMU / HPND 许可）的 `Draw.c`、`BoxBlur.c`（3 遍定点框模糊）、`Paste.c`（`DIV255` 掩码混合）、`AlphaComposite.c`、`Convert.c`、`Point.c`、`Crop.c`、`Geometry.c`、`Chops.c` 与 `Image.py` / `ImageDraw.py` / `ImageFilter.py`；
+- `NumPy 2.4.3`（BSD-3-Clause 许可）的 `float32` 成对求和、`SeedSequence`（含 Melissa E. O'Neill / NumPy Developers MIT 许可的 `bit_generator.pyx`）、`PCG64`（含 Melissa O'Neill / Robert Kern MIT 许可的 `pcg64.h`）与 Ziggurat 正态分布表及采样（尾区 `log` / `exp` 与线虫扰动 `sin` / `exp` 统一走 `gxr_math` `libm`）。
+
+上述版权声明与许可原文均保存在 `core/crates/gxr-finish/NOTICE`。

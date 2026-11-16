@@ -26,6 +26,12 @@ pub fn ln(x: f64) -> f64 {
     libm::log(x)
 }
 
+/// `ln(1 + x)` (`f64::ln_1p`, C `log1p`).
+#[inline]
+pub fn log1p(x: f64) -> f64 {
+    libm::log1p(x)
+}
+
 /// Base-2 logarithm (`f64::log2`).
 #[inline]
 pub fn log2(x: f64) -> f64 {

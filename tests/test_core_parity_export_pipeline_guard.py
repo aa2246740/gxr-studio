@@ -40,6 +40,7 @@ def _files() -> list[Path]:
     return sorted(
         [
             *TESTS.glob("test_core_parity_export_pipeline*.py"),
+            *TESTS.glob("test_core_parity_ink*.py"),
             *TESTS.glob("test_mobile_ui_export*.py"),
             TESTS / "test_core_parity_jpeg_optimize.py",
             *(TESTS / "support").glob("export_pipeline_canary*.py"),
