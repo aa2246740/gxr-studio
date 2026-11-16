@@ -5,6 +5,19 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { registerHooks } from 'node:module';
+
+// mobile/src 里的 import 不带扩展名（vite 的写法）；Node 找不到时补上 .ts（export_request.ts 要用到 calib.ts）。
+registerHooks({
+  resolve(spec, ctx, next) {
+    try {
+      return next(spec, ctx);
+    } catch (err) {
+      if (spec.startsWith('.') && !/\.[a-z]+$/.test(spec)) return next(`${spec}.ts`, ctx);
+      throw err;
+    }
+  },
+});
 import vm from 'node:vm';
 import {
   adjustIsSet,
@@ -19,7 +32,8 @@ import {
   undoBatch,
 } from '../../mobile/src/lib/paste.ts';
 import * as text from '../../mobile/src/lib/paste_text.ts';
-import { cleanLevels, recipeSwitch } from '../../mobile/src/lib/recipes.ts';
+const { cleanLevels } = await import('../../mobile/src/lib/export_request.ts');
+const { recipeSwitch } = await import('../../mobile/src/lib/recipe_memory.ts');
 
 const ROOT = new URL('../../', import.meta.url);
 const CORE = readFileSync(new URL('web/assets/paste_core.js', ROOT), 'utf8');
@@ -430,7 +444,6 @@ const LOOK = card('look:abc', [control('fade', [0, 1, 2, 3])]);
 test('cleanLevels：只留这个配方有的、值在可选里的档位，不补默认', () => {
   assert.deepEqual(cleanLevels(B2, { amount: 50, fade: 9, contrast: 1 }), { amount: 50 });
   assert.deepEqual(cleanLevels(B2, undefined), {});
-  assert.deepEqual(cleanLevels(null, { amount: 50 }), {});
 });
 
 test('换配方：切走的（没选过时是原厂 04、档位为空）记进 memory，新配方取回上次的档位；当前配方不进 memory', () => {

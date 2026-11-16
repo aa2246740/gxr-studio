@@ -329,8 +329,10 @@ export class GridView {
     apply.dataset.act = 'paste-selection';
     apply.disabled = this.selected.size === 0;
     apply.addEventListener('click', () => this.pasteSelection());
-    const exp = button('fbtn fill grow', `导出 ${this.selected.size} 张 · 下一步做`);
-    exp.disabled = true;
+    const exp = button('fbtn fill grow', `导出 ${this.selected.size} 张`);
+    exp.dataset.act = 'export';
+    exp.disabled = this.selected.size === 0;
+    exp.addEventListener('click', () => this.api.exportPhotos([...this.selected], () => this.toggleSelect(false)));
     this.bar.append(apply, exp);
     this.paintTitle();
   }

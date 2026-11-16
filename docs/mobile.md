@@ -477,7 +477,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 复制完是 04b：这张所在的一组（当前间隔下的组）、「套用到这一组（N 张）」（不含来源这张）、「选照片…」和「先不套用」。网格组标题上的「套用到这一组」复制过就能点，目标是这一组里除来源以外的每一张；没复制时点它写一行「先打开一张照片，点「复制调整」。」。「选照片…」把网格开成挑选模式（04d），底栏是剪贴板和「套用到 N 张」；选择栏的「套用调整」一样。每条路都先确认（04c）。「这一组」永远是现在显示的那一组：复制后改了间隔，组标题给的就是新的张数，确认里写准确的张数。
 
-旋钮档位和 `memory` 照桌面记：`photo.levels` 是选中那个配方的档位，只记用户动过的（`ensureRecipe(view).levels[name] = …`）；`photo.memory` 是桌面的 `memory`（`look_cards.js` 的 recipeTarget）：换配方时把切走的那个配方的档位（`cleanLevels`，不补默认；没选过配方时是档位为空的原厂 04）记进去，新配方取回 memory 里上次的档位，点已经选中的那张什么都不改，当前配方的档位不在 memory 里更新。键是卡的 id，导出时按镜头单元换成桌面的 recipeKey。
+旋钮档位和 `memory` 照桌面记：`photo.levels` 是选中那个配方的档位，只记用户动过的（`ensureRecipe(view).levels[name] = …`）；`photo.memory` 是桌面的 `memory`（`look_cards.js` 的 recipeTarget）：换配方时把切走的那个配方的档位（`cleanLevels`，不补默认；没选过配方时是档位为空的原厂 04）记进去，新配方取回 memory 里上次的档位，点已经选中的那张什么都不改，当前配方的档位不在 memory 里更新。键是卡的 id，导出时按镜头单元换成桌面的 recipeKey（`lib/export_request.ts` 的 `buildSide`）。换配方的那一步在 `lib/recipe_memory.ts`，`cleanLevels` 只有 `lib/export_request.ts` 那一份。
 
 套用是同步的、在内存里，规则照 `render/paste.py` 的 `paste_one`（`lib/paste.ts`）：配方组里，镜头单元不同 → `unit_mismatch`；只有 JPG → `needs_raw`（近似模式关着）；这份 DAT 里这个单元没有这张卡 → `recipe_rejected`；否则换成来源的配方和它的档位；来源的 `memory` 不是空的就整份换过来，是空的就留着目标自己的（`render/edits.write` 在请求里没有 `memory` 时沿用 sidecar 里的）。调整组整份换成复制来的，0 也算。配方组要么整个套用，要么不套。来源这张从来不是目标。结果句是桌面的 `pasteMessage`，撤销的结果是 `undoMessage`，这几个函数的字放在 `lib/paste_text.ts`，单元测试从 `web/assets/paste_core.js` 里把桌面的函数原样抠出来跑，对同一批输入比输出。
 
@@ -486,6 +486,22 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 结果和「撤销」贴在网格底部（04e），和「已复制」占同一格；到下一次复制、下一次套用、清除、清空照片，或离开网格 15 秒（桌面提示的 `timeout: 15000`）才收起。没有按钮的一行（没复制时的提示、撤销的结果）照桌面普通提示，3.2 秒后收起。套用按时间片做，每片最多 4 ms，片与片之间让出主线程：500 张合成照片一共约 4–7 ms。
 
 拍摄时间和桌面同源：手机的拍摄时间是 `photo_meta(...).taken` 加 `SubSecTimeOriginal` 的毫秒（桌面的 `taken` 到秒为止）。RAW+JPG 的相机 JPG 里没有拍摄时间时，和桌面导入一样用 DNG 的（Worker 再读一次 DNG 的前 256 KiB，缩略图仍用 JPG 的）；两个都没有才用文件修改时间。模拟器截图用 `?shot=paste-04a|paste-04b|paste-04c|paste-04d|paste-04e|paste-02a`（`app/paste_shots.ts`，只在开发服务器里）。
+
+## 导出进相册（M3）
+
+选择栏的「导出 N 张」和编辑器的「导出这张」打开同一个导出面板（05a）：尺寸「原始尺寸 / 大 / 中 / 小」（长边不限、3000、2048、1600）、品质「高 / 中 / 低」（95、85、70），默认原始尺寸、高，和桌面 `SIZE_TIERS` / `QUALITY_TIERS` 一样。一张时右边写成品尺寸（`export_output_sizes`，源尺寸在导出 Worker 里从文件头读：相机 JPG 转正后的尺寸，或 DNG 的裁切窗口）；几张时写桌面那句「每张照片按各自比例导出，成品尺寸可能不同。」。HDR 那一行照设计稿摆着，开关停用，写「这项下一步做」。没选 `GXRCE.DAT` 时面板下面是桌面那句说明。
+
+- **请求**（`lib/export_request.ts`，纯函数）：`shot` 照桌面图库的 shot（`name`、`files`、`lens`、`iso`；`width` / `height` 是图库存的 `photo_meta(jpg).width or photo_meta(dng).width`，由 Worker 读文件头补上：`lib/photo_size.ts` 照 `meta.read_jpeg_meta` / `read_dng_meta`，不用解码后的位图）；`side` 照桌面 `render/edits.write` 写出的 sidecar：`recipe` 是 `RecipeSel.to_json`（档位只带用户动过的，和桌面 `cleanLevels` 一样），`memory` 是照片的 `photo.memory`（桌面 `look_cards.js` recipeTarget 记下的那份，空的档位也是一项，见「复制和套用到这一组」），键按桌面 `recipeKey` 改写（内置 `<单元>/<位置>`，其余 `<单元>/<种类>/<id>`）；`adjust` 是 `Adjust.to_json`，全是 0 时不写。没动过的照片是 `{}`。`defaults` 是 `{}`，底图「自动」，`layout` 是 `{}`（M3 没有边框和日期戳）。`binding` 是 `gxr-core <构建号>`，构建号是 `vite build` 时的短提交号（`vite.config.ts` 的 `__GXR_BUILD__`，开发服务器里是 `dev`）。
+- **导出 Worker**（`core/export_worker.ts`、`core/export_api.ts`）：不是 M1/M2 那组 Worker。一个 Worker、一份 WASM、一次一张；一批开始时建，结束后闲 30 秒、停止或清空时关掉，WASM 的线性内存跟着还回去。相机配方文件和校准包（`calib_index` + `calib_blob`，文件按名字排好）每批交一次，Worker 重建时再交。每张：读 DNG / JPG（主线程不调 `File.arrayBuffer`）→ `export_plan` → 选了配方时 `color_resolve`（只有 RAW、没选配方时用这个单元的原厂 04）→ 没选配方又有相机 JPG 时解码相机 JPG → `export_prepare` → 墨迹 → `export_complete`。核心报 `raw_unreadable` / `no_jpg_source` / `raw_decode` 时，像桌面 `_raw_rgb` 那样解内嵌预览（`export_meta_preview` 的位置）再试一次。
+- **墨迹**：M3 不能设边框、日期戳、裁剪和 LUT，`export_prepare` 只会给 `canvas: "full"`、没有版面，墨迹这一步什么都不画（导出管线的「无墨迹」情况，和桌面逐字节相同）。三次调用之间留着 `ink(prepared, canvas)` 这一处；万一 prepare 给了边框、日期戳或 `canvas: "photo"`，这一张按 `ink_not_supported` 失败，绝不漏掉墨迹导出。M4 在这里补上，字体包也跟着 M4。
+- **解码相机 JPG**：照 `finish/compose.load_jpeg`：`createImageBitmap(blob, { imageOrientation: 'from-image', colorSpaceConversion: 'none', premultiplyAlpha: 'none' })`，画到 `OffscreenCanvas`（`srgb`、`willReadFrequently`），`getImageData` 后去掉 alpha，位图马上关掉。无头 Chrome 里和 Pillow 逐像素相同（含 Orientation 6、8 的拷贝）；Safari 用的是 ImageIO，真机检查时比解码像素的哈希。
+- **陷阱**：WASM 陷阱、`RangeError` 或 Worker 的 `error` 事件：关掉 Worker，这一张写「内存不够，这张没做成。可以重试，或改用小一点的尺寸。」，下一张用新的 Worker 接着做。
+- **批次**（`app/export_batch.ts`，不碰 DOM）：点「存到相册」那一刻把照片、文件句柄、版本和请求定下来，之后改动不影响这一批；按网格当前的顺序做。「停止」马上关掉 Worker，做好的留着。「重试这张 / 这 N 张」只重做失败的，用同一份请求，重新选过的照片用新的 File；失败的照片按网格顺序并进还没做的队列，不会把它冲掉。先把做好的存进相册、点了「好」，失败的照片和重试仍然留在 06f，直到它们做好或者清空。做好的文件（`new File([bytes], file_name, { type: 'image/jpeg' })`）留在内存里，任何时候都不超过 384 MiB：下一份结果会超过时就放掉它，这张排回队首，先停在「做好了」那一栏，交出去、点「好」以后再做它和剩下的；一张就超过上限的按内存不够算。交给 Worker 这一步本身抛错（建 Worker 时的 `RangeError` 之类）也按陷阱算，接着做下一张；这一批的设置（相机配方文件、校准包）也不在 `begin()` 里发，而是在交第一张时、同一个 try 里发给新建或已经建好的 Worker（比如一张时先查过成品尺寸），发不出去同样按陷阱算。下载兜底的对象 URL 由导出这边统一记着，重画、交出、清空、新的一批和批次结束时都撤销。每次提交前核对会话、批次和照片版本，晚到的结果丢掉。读不了的文件走 M1 的 `gone`（拔卡）路径。跑着的时候配方卡小图和烘焙先停（`app/export_pause.ts`），并申请屏幕常亮。
+- **进度和结果**：点「存到相册」面板收起，进度贴在最底下（`.pdock`，在网格和编辑器下面，不盖住选择栏），可以接着滚、点开照片。做完不自动打开共享面板：Safari 只认刚发生的那次点击。05c 的「存到相册」在点击里同步调用 `navigator.share({ files })`，前面没有 await；先问 `canShare`，没有共享面板的浏览器写一句「这个浏览器打不开系统的共享面板。」，加每个文件的下载链接。一次最多 20 张、256 MiB（`SHARE_MAX_FILES` / `SHARE_MAX_BYTES`），多了分批，按钮写「存到相册（第 1 批，共 3 批）」。`share()` resolve 只说明用户在面板里做了某个操作，不一定是存储图像，所以 05e 写「好了：N 张」和「在面板里点了「存储 N 张图像」，就已经在相册里。」，不说「已存到相册」（机主决定 2）；关掉面板（`AbortError`）就留在 05c。
+- **`?perf=1`**：一批的 WASM、JS、待存文件的高水位和每张的毫秒数。
+- **开发服务器里**（生产包里没有）：`window.__devExport` 可以把 `binding` 换成桌面的 `engine_pin()`（逐字节对比用）、把分批上限改小、在第几张模拟一次陷阱，测试也从这里读批次和内存。
+
+测试：`tests/test_mobile_ui_export_unit.py`（请求、批次状态机、分批、文件头尺寸，`node:test`）和 `tests/test_mobile_ui_export_browser.py`（`browser_serial`：解码门禁；六张照片在界面里编辑后导出，和桌面 `export_finish` 逐字节相同，ICC 时间戳按导出管线的办法固定；停止、陷阱、清空、读不了再重试、没有共享面板）。这两个文件也在导出管线隐私 lint 的范围里。
 
 ## 导出底图（`gxr-export` 的 `source/`，命令前缀 `source-`）
 
@@ -504,7 +520,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 - `binding` 是桌面的 `engine_pin()`。它来自应用数据目录里文件的哈希和修改时间，手机没法算出同一个值，所以由调用方给；描述里的这一段因此和桌面不会逐字节相同，除非调用方给的就是桌面那份。
 - 配方渲染按条带走：每次 256 行去马赛克（float32），交给 `chroma_u8`，量化后写进 uint8 输出，没有整幅的浮点数组。LUT 的 Log 路径也按条带：先算这一条带的场景 XYZ（`colour.xyz` 整条带先核对有限），再按 65536 像素一块套 LUT，和 Python 的分块一样。显示域 LUT 对整张 uint8 底图按 65536 像素一块套。
 - 本机配方：Python 先查 RAW+JPG 是否成对（`local_recipe_needs_pair`），再去电脑图库解析。手机没有那个图库，成对时报 `local_recipe_unsupported`（`RenderUnavailable`，state 仍是 `local_recipe`），这是有意的差别。
-- 照搬的 Python 行为：底图模式 `neutral` 在有相机数据和校准时画的是这个单元的原厂 04（电脑模拟），标签却写中性转换，描述是配方的那句英文；没有校准时才是真正的中性转换。`standard` 退回中性转换时不套调整（`from_raw` 为真，后面只做 `apply_extra`）。
+- 中性转换：底图模式 `neutral` 一律画中性转换（不规划配方，有校准也一样），没有全尺寸 CFA 时用内嵌预览。画面是中性转换或内嵌预览时 `from_raw` 为假，成片像 JPG 一样套全部调整；`standard` 退回中性转换时也是这样。
 - 错误：`NoRaw` 报 `no_raw`；`RenderUnavailable` 带 `state`；`EditError` 带 `detail`；`RawDecodeError` 按 `export_finish` 改成 `raw_unreadable`（有 JPG）或 `no_jpg_source`，`detail` 是「没有全尺寸传感器数据，也没有更小的预览。」加原因。
 - `render_full` 在分配输出之前做和 `gxr_raw::render_full` 一样的裁切窗口、白平衡和马赛克检查（`check_crop_window` 在 `gxr-raw` 里是私有的，这里照抄了同样的判断和文案），所以坏文件在配方渲染和中性渲染上报同一个错。尺寸用带检查的 u64，元素数不超过 2^32−1，输出缓冲区可失败地申请。
 

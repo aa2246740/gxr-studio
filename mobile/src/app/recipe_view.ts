@@ -5,9 +5,11 @@ import type { Engine, Geometry } from '../../../frontend/src/index';
 import { crossed, uncalibratedReason, unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
-import { cardTag, choices, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, recipeSwitch, shelf, shelves, type Card, type Control, type Shelf, type Shelves } from '../lib/recipes';
+import { cardTag, choices, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, shelf, shelves, type Card, type Control, type Shelf, type Shelves } from '../lib/recipes';
+import { recipeSwitch } from '../lib/recipe_memory';
 import type { UnitState } from './book';
 import { button, el, icon } from './dom';
+import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
 import type { AppApi, Photo } from './model';
 
@@ -431,8 +433,8 @@ export class RecipeView {
   /** 松手：记下这个配方的这一档，选上它，重新 resolve + 烘焙（照片在新表做好之前留着上一张）。 */
   private setLevel(card: Card, name: string, level: number): void {
     const scene = this.scene();
-    // 只记用户动过的旋钮（桌面 recipes.js 的 ensureRecipe(view).levels[name] = …）：没动过的取这个配方的默认。
-    // memory 不动；没选配方时 ensureRecipe 从空档位开始。
+    // 只记用户动过的旋钮（桌面 recipes.js 的 ensureRecipe(view).levels[name] = …）：没动过的取这个配方的默认，
+    // 导出时交给 sidecar 的 levels 才和桌面写的一样（UI-M3）。memory 不动；没选配方时 ensureRecipe 从空档位开始。
     const next: Record<string, number> = this.photo.choice?.id === card.id ? { ...(this.photo.levels.get(card.id) ?? {}) } : {};
     // 这一档现在的有效值（没存的就是配方自己的默认，比如强度 100）已经是它：没有修改，不加 rev、不重烘。
     const control = card.controls.find((c) => c.name === name);
@@ -559,7 +561,8 @@ export class RecipeView {
         }
         continue;
       }
-      while (alive() && this.hooks.dragging()) await new Promise((done) => setTimeout(done, 120));
+      // 拖滑块、导出跑着（UI-M3）时先停。
+      while (alive() && (this.hooks.dragging() || exportPaused())) await new Promise((done) => setTimeout(done, 120));
       if (!alive()) return;
       // 拿到显卡键就在同一轮里提交，不会被别的表换掉；JS 里已经挤掉了就再做一次。
       let gpu = book.gpuKey(key);

@@ -11,6 +11,7 @@ import { Book } from './book';
 import { lookCache } from './looks';
 import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
+import { ExportFlow } from './export_ui';
 import { GridView } from './grid';
 import { openable, photoMs, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { ThumbQueue } from './queue';
@@ -57,6 +58,9 @@ class App implements AppApi {
     watermark: loadWatermark,
   });
 
+  /** 导出进相册（UI-M3）：导出面板、贴底的进度和结果、共享面板。 */
+  private readonly exporter: ExportFlow;
+
   constructor(
     private readonly shell: HTMLElement,
     private readonly view: HTMLElement,
@@ -65,7 +69,9 @@ class App implements AppApi {
     private readonly perf: HTMLElement,
     private readonly perfOn: boolean,
     private readonly pageErrors: string[],
-  ) {}
+  ) {
+    this.exporter = new ExportFlow(shell, this, perf);
+  }
 
   async start(engine: Engine | null): Promise<void> {
     this.engine = engine;
@@ -125,6 +131,10 @@ class App implements AppApi {
     }
     // M3 复制 / 套用那几屏（04a–04e、02a 带剪贴板）。
     if (shot.startsWith('paste-') && this.byId.size) await (await import('./paste_shots')).pasteShot(shot, this, this.shell);
+    if (shot.startsWith('export-') && this.byId.size) {
+      const { exportShot } = await import('./export_shots');
+      await exportShot(shot, this.ordered().map((photo) => photo.id), this.exporter, this.shell);
+    }
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     this.shell.dataset.shot = shot;
     await reportShot(shot, {
@@ -180,6 +190,16 @@ class App implements AppApi {
 
   showCalib(): void {
     showCalibSheet(this.shell, this);
+  }
+
+  exportPhotos(ids: string[], onStart?: () => void): void {
+    const want = new Set(ids);
+    this.exporter.open(
+      this.ordered()
+        .filter((photo) => want.has(photo.id))
+        .map((photo) => photo.id),
+      onStart,
+    );
   }
 
   takeCalib(file: File): void {
@@ -321,6 +341,8 @@ class App implements AppApi {
 
   clear(): void {
     this.generation += 1;
+    // 导出这一批停下，做好的文件丢掉，晚到的结果不会再交给共享面板。
+    this.exporter.clear();
     this.queue.cancel();
     this.closeEditor();
     for (const photo of this.byId.values()) releaseBitmaps(photo);

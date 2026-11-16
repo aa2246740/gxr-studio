@@ -211,8 +211,9 @@ export class EditorView {
     copy.addEventListener('click', () => {
       if (this.photo) openCopySheet(this.shell, this.api, this.photo, () => undefined);
     });
-    const save = button('btn primary', '导出这张 · 下一步做');
-    save.disabled = true;
+    const save = button('btn primary', '导出这张');
+    save.dataset.act = 'export';
+    save.addEventListener('click', () => this.api.exportPhotos([photo.id]));
     const acts = el('div', 'actbar');
     acts.append(copy, save);
     sheet.append(tabs, ...panels, acts);

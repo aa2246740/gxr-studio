@@ -18,9 +18,11 @@ pub use api::{
     selection_json,
 };
 pub use fail::{Fail, Labels, NO_RAW};
+/// One implementation, in `gxr-color` (the resolve unit); re-exported so this path keeps working.
+pub use gxr_color::resolve::unit_of_lens;
 pub use input::{Edit, RecipeSel, Shot, parse_edit, parse_shot};
 pub use plan::{
     CALIBRATED_LABEL, CalibPack, Camera, Context, EXPORT_STEP, ISO_SPLIT, MODEL_NOTE, Plan,
-    UNCALIBRATED_LABEL, unit_of_lens,
+    UNCALIBRATED_LABEL,
 };
 pub use select::{CAMERA_JPG, PREVIEW, Picked, Sources, check_rgb_shape, color_image};

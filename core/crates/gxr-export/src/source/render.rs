@@ -5,9 +5,9 @@
 //! its oriented copy); there is never a full-frame float buffer.
 
 use gxr_color::{Codes, chroma_u8};
-use gxr_raw::codes::{STRIP_ROWS, crop_shape};
+use gxr_raw::codes::STRIP_ROWS;
 use gxr_raw::mosaic::require_finite;
-use gxr_raw::{CoreError, Dng, Image, demosaic_strips, orient_array, wb_gains};
+use gxr_raw::{CoreError, Dng, Image, check_crop_window, demosaic_strips, orient_array, wb_gains};
 
 use super::plan::RecipeDisplay;
 
@@ -28,41 +28,6 @@ fn fit(n: u64) -> Result<usize, CoreError> {
     usize::try_from(n).map_err(|_| too_big())
 }
 
-/// The crop-window check `gxr_raw::render_full` makes before allocating (`check_crop_window`
-/// is private to `gxr-raw`; this is the same test with the same errors), so a recipe render
-/// refuses a bad DNG exactly as the neutral render does.
-fn check_crop_window(dng: &Dng<'_>) -> Result<(i64, i64), CoreError> {
-    let (h, w) = crop_shape(dng);
-    if h < 4 || w < 4 {
-        return Err(CoreError::raw_decode("画面太小"));
-    }
-    let cy0 = dng.active[0]
-        .checked_add(dng.crop_origin.1)
-        .ok_or_else(too_big)?;
-    let cx0 = dng.active[1]
-        .checked_add(dng.crop_origin.0)
-        .ok_or_else(too_big)?;
-    let cy1 = cy0.checked_add(h).ok_or_else(too_big)?;
-    let cx1 = cx0.checked_add(w).ok_or_else(too_big)?;
-    if dng.crop_origin.0 < 0
-        || dng.crop_origin.1 < 0
-        || cy0 < dng.active[0]
-        || cx0 < dng.active[1]
-        || cy1 > dng.active[2]
-        || cx1 > dng.active[3]
-        || cy0 < 0
-        || cx0 < 0
-        || cy1 > dng.height
-        || cx1 > dng.width
-    {
-        return Err(CoreError::new(
-            "index_error",
-            format!("block [{cy0}, {cy1}) x [{cx0}, {cx1}) outside the raw plane"),
-        ));
-    }
-    Ok((h, w))
-}
-
 /// Port of gxr_studio/raw/render.py:57 render_full.
 ///
 /// `display(strip, out)` writes `strip.values.len()` uint8 codes for one float32
@@ -73,7 +38,7 @@ pub fn render_full_with(
 ) -> Result<Image<u8>, CoreError> {
     // The same order as `gxr_raw::render_full`: window, white balance and mosaic before the
     // output buffer, so a truncated file reports its missing strips.
-    let (h, w) = check_crop_window(dng)?;
+    let (_, _, h, w) = check_crop_window(dng)?;
     wb_gains(dng)?;
     dng.mosaic()?;
     let uh = u64::try_from(h).map_err(|_| too_big())?;
