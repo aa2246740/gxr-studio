@@ -24,7 +24,9 @@ pub mod summary;
 pub mod tiff;
 
 pub use codes::{CODE_MAX, Image, half_res_codes, orient_array, wb_gains, wb_mosaic_block};
-pub use demosaic::{PAD, demosaic_block, demosaic_full, demosaic_strip, demosaic_strips};
+pub use demosaic::{
+    PAD, check_crop_window, demosaic_block, demosaic_full, demosaic_strip, demosaic_strips,
+};
 pub use dng::Dng;
 pub use error::CoreError;
 pub use gpu_source::{RawSource, describe, describe_json, error_json};

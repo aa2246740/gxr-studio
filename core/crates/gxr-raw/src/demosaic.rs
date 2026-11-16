@@ -223,7 +223,10 @@ fn reflect_pad(block: &Image<f32>, top: usize, bottom: usize) -> Result<Image<f3
 
 /// Validate crop bounds with checked arithmetic before allocating any strip or full-frame
 /// buffer. Rejects negative `crop_origin`, out-of-`ActiveArea`, and out-of-plane bounds.
-pub(crate) fn check_crop_window(dng: &Dng<'_>) -> Result<(i64, i64, i64, i64), CoreError> {
+///
+/// Returns `(cy0, cx0, h, w)`: the window's top-left in raw-plane coordinates and its size.
+/// Public so `gxr-export`'s recipe render refuses a bad DNG with exactly these errors.
+pub fn check_crop_window(dng: &Dng<'_>) -> Result<(i64, i64, i64, i64), CoreError> {
     let (h, w) = crop_shape(dng);
     if h < 4 || w < 4 {
         return Err(CoreError::raw_decode("画面太小"));
