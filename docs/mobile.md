@@ -488,7 +488,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 - `binding` 是桌面的 `engine_pin()`。它来自应用数据目录里文件的哈希和修改时间，手机没法算出同一个值，所以由调用方给；描述里的这一段因此和桌面不会逐字节相同，除非调用方给的就是桌面那份。
 - 配方渲染按条带走：每次 256 行去马赛克（float32），交给 `chroma_u8`，量化后写进 uint8 输出，没有整幅的浮点数组。LUT 的 Log 路径也按条带：先算这一条带的场景 XYZ（`colour.xyz` 整条带先核对有限），再按 65536 像素一块套 LUT，和 Python 的分块一样。显示域 LUT 对整张 uint8 底图按 65536 像素一块套。
 - 本机配方：Python 先查 RAW+JPG 是否成对（`local_recipe_needs_pair`），再去电脑图库解析。手机没有那个图库，成对时报 `local_recipe_unsupported`（`RenderUnavailable`，state 仍是 `local_recipe`），这是有意的差别。
-- 照搬的 Python 行为：底图模式 `neutral` 在有相机数据和校准时画的是这个单元的原厂 04（电脑模拟），标签却写中性转换，描述是配方的那句英文；没有校准时才是真正的中性转换。`standard` 退回中性转换时不套调整（`from_raw` 为真，后面只做 `apply_extra`）。
+- 中性转换：底图模式 `neutral` 一律画中性转换（不规划配方，有校准也一样），没有全尺寸 CFA 时用内嵌预览。画面是中性转换或内嵌预览时 `from_raw` 为假，成片像 JPG 一样套全部调整；`standard` 退回中性转换时也是这样。
 - 错误：`NoRaw` 报 `no_raw`；`RenderUnavailable` 带 `state`；`EditError` 带 `detail`；`RawDecodeError` 按 `export_finish` 改成 `raw_unreadable`（有 JPG）或 `no_jpg_source`，`detail` 是「没有全尺寸传感器数据，也没有更小的预览。」加原因。
 - `render_full` 在分配输出之前做和 `gxr_raw::render_full` 一样的裁切窗口、白平衡和马赛克检查（`check_crop_window` 在 `gxr-raw` 里是私有的，这里照抄了同样的判断和文案），所以坏文件在配方渲染和中性渲染上报同一个错。尺寸用带检查的 u64，元素数不超过 2^32−1，输出缓冲区可失败地申请。
 

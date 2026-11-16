@@ -115,11 +115,13 @@ def _embedded_rgb(path: Path) -> np.ndarray | None:
     return np.asarray(image.convert("RGB"))
 
 
-def _raw_rgb(render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, *, full: bool) -> tuple[np.ndarray, dict[str, str]]:
-    """full 为真时按传感器全尺寸解码。没有全尺寸 CFA 时退回内嵌的最大预览，并在 detail 里写明。"""
-    from ..raw import NEUTRAL, open_dng, render_full
+def _raw_rgb(
+    render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, *, full: bool, neutral: bool = False
+) -> tuple[np.ndarray, dict[str, str]]:
+    """full 为真时按传感器全尺寸解码。没有全尺寸 CFA 时退回内嵌的最大预览，并在 detail 里写明。neutral 为真时不规划配方，一定是中性转换。"""
+    from ..raw import NEUTRAL, open_dng, render_full, render_half
 
-    if not full:
+    if not full and not neutral:
         out = render.render_preview(shot, edit, max_edge=None, quality=95, crop=None)
         kind = "prediction"
         return _decode(out.jpeg), {
@@ -159,12 +161,12 @@ def _raw_rgb(render: RenderService, lib: Library, shot: dict[str, Any], edit: Ed
         }
     try:
         try:
-            renderer = render.renderer(shot, edit, precise=False)
+            renderer = NEUTRAL if neutral else render.renderer(shot, edit, precise=False)
         except RenderUnavailable:
             if edit.recipe is not None:
                 raise
             renderer = NEUTRAL
-        rgb = render_full(dng, renderer)
+        rgb = render_full(dng, renderer) if full else render_half(dng, renderer)
     finally:
         dng.release()
     kind = "original" if renderer is NEUTRAL else "prediction"
@@ -235,7 +237,7 @@ def color_image(
     if mode == "neutral":
         if not has_dng:
             raise NoRaw(NO_RAW)
-        rgb, labels = _raw_rgb(render, lib, shot, EditState(), full=full)
+        rgb, labels = _raw_rgb(render, lib, shot, EditState(), full=full, neutral=True)
         labels["kind"] = "original"
         labels["label"] = "original"
         labels["text"] = "中性转换"
@@ -243,7 +245,7 @@ def color_image(
         labels["tag"] = "_neutral"
         if not labels.get("description"):
             labels["description"] = "GXR Studio neutral-preview: white-balanced linear sensor data to sRGB, no recipe applied"
-        return rgb, True, labels
+        return rgb, False, labels  # 中性转换没有套调整：成片按 JPG 那样做全部调整
     if not has_dng:
         if edit.recipe is not None and edit.recipe.kind == "local":
             raise EditError("local_recipe_needs_pair", "完整本机配方需要RAW+JPG照片。")
@@ -293,10 +295,11 @@ def color_image(
                 "key": "",
             },
         )
-    if mode == "standard" and labels.get("id") != "neutral-preview":
+    neutral = labels.get("id") == "neutral-preview"  # 退回中性转换或内嵌预览：渲染器没有套调整
+    if mode == "standard" and not neutral:
         labels["kind"] = "prediction"
         labels["label"] = "prediction"
-    return rgb, True, labels
+    return rgb, not neutral, labels
 
 
 def _source_path(lib: Library, shot: dict[str, Any]) -> Path:
