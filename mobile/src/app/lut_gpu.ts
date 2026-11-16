@@ -22,9 +22,15 @@ export interface LutGpuStats {
   peakWorkerWasmBytes: number;
 }
 
+export interface LutTableJob {
+  promise: Promise<LutTableReply>;
+  cancel(): void;
+}
+
 export interface LutGpuHost {
   engine(): Engine | null;
   readBlob(cubeId: string): Promise<ArrayBuffer | null>;
+  runWorker?(cube: ArrayBuffer, spec: string): LutTableJob;
 }
 
 const defaultHost = (getEngine: () => Engine | null): LutGpuHost => ({
@@ -37,8 +43,9 @@ function tableGpuBytes(meta: LutMeta): number {
   return n * n * n * (meta.table8 ? 4 : 16);
 }
 
-function buildOneInShortWorker(cube: ArrayBuffer, spec: string): Promise<LutTableReply> {
-  return new Promise((resolve) => {
+function buildOneInShortWorker(cube: ArrayBuffer, spec: string): LutTableJob {
+  let finishRef: ((reply: LutTableReply) => void) | null = null;
+  const promise = new Promise<LutTableReply>((resolve) => {
     const worker = new Worker(new URL('../workers/lut_table.ts', import.meta.url), { type: 'module' });
     let finished = false;
     const finish = (reply: LutTableReply) => {
@@ -51,6 +58,7 @@ function buildOneInShortWorker(cube: ArrayBuffer, spec: string): Promise<LutTabl
       }
       resolve(reply);
     };
+    finishRef = finish;
     worker.onmessage = (event: MessageEvent<LutTableReply>) => finish(event.data);
     worker.onerror = (event) =>
       finish({ ok: false, reason: 'worker', message: event.message || 'LUT Worker 出错', wasmBytes: 0 });
@@ -61,13 +69,19 @@ function buildOneInShortWorker(cube: ArrayBuffer, spec: string): Promise<LutTabl
       finish({ ok: false, reason: 'worker', message: err instanceof Error ? err.message : String(err), wasmBytes: 0 });
     }
   });
+  return {
+    promise,
+    cancel: () => finishRef?.({ ok: false, reason: 'cancelled', message: '已取消', wasmBytes: 0 }),
+  };
 }
 
 export class LutGpu {
   private readonly inflight = new Map<string, Promise<{ ok: true; token: string } | { ok: false; reason: string; message: string }>>();
+  private readonly activeJobs = new Set<() => void>();
   private tail: Promise<unknown> = Promise.resolve();
   /** 与 `Engine.luts` 的 FIFO 3 槽对齐：前端镜像记录每槽字节数以统计准确峰值。 */
   private readonly gpuSlots = new Map<string, number>();
+  private generation = 0;
   private aliveCount = 0;
   private spawnedCount = 0;
   private terminatedCount = 0;
@@ -83,6 +97,18 @@ export class LutGpu {
 
   attach(getEngine: () => Engine | null): void {
     this.host = { ...this.host, engine: getEngine };
+  }
+
+  /** 清空排队中的与运行中的短命 Worker，丢弃过期完成回调，并销毁 GPU 上的 3D LUT 纹理（P2-04）。 */
+  clear(): void {
+    this.generation += 1;
+    for (const cancel of [...this.activeJobs]) cancel();
+    this.activeJobs.clear();
+    this.pendingCount = 0;
+    this.inflight.clear();
+    this.tail = Promise.resolve();
+    this.gpuSlots.clear();
+    this.host.engine()?.clearLuts?.();
   }
 
   stats(): LutGpuStats {
@@ -119,27 +145,43 @@ export class LutGpu {
     const existing = this.inflight.get(token);
     if (existing) return existing;
 
+    const gen = this.generation;
     this.pendingCount += 1;
     const job = this.tail
       .catch(() => undefined)
       .then(async (): Promise<{ ok: true; token: string } | { ok: false; reason: string; message: string }> => {
+        if (gen !== this.generation) return { ok: false, reason: 'cancelled', message: '已取消' };
         const eng = this.host.engine();
         if (!eng) return { ok: false, reason: 'no_gpu', message: '没有显卡' };
         if (eng.hasLut(token)) return { ok: true, token };
 
         const blob = await this.host.readBlob(record.cube_id);
+        if (gen !== this.generation) return { ok: false, reason: 'cancelled', message: '已取消' };
         if (!blob) return { ok: false, reason: 'not_found', message: '找不到这个 LUT。请重新导入。' };
 
         this.peakJsBytes = Math.max(this.peakJsBytes, blob.byteLength);
+        const workerJob = (this.host.runWorker ?? buildOneInShortWorker)(blob, JSON.stringify(spec));
         this.spawnedCount += 1;
         this.aliveCount += 1;
-        let reply: LutTableReply;
-        try {
-          reply = await buildOneInShortWorker(blob, JSON.stringify(spec));
-        } finally {
+        let finished = false;
+        const finishWorker = (cancelled: boolean) => {
+          if (finished) return;
+          finished = true;
+          this.activeJobs.delete(cancelWorker);
           this.aliveCount = Math.max(0, this.aliveCount - 1);
           this.terminatedCount += 1;
+          if (cancelled) workerJob.cancel();
+        };
+        const cancelWorker = () => finishWorker(true);
+        this.activeJobs.add(cancelWorker);
+
+        let reply: LutTableReply;
+        try {
+          reply = await workerJob.promise;
+        } finally {
+          finishWorker(false);
         }
+        if (gen !== this.generation) return { ok: false, reason: 'cancelled', message: '已取消' };
         if (reply.wasmBytes > 0) this.peakWorkerWasmBytes = Math.max(this.peakWorkerWasmBytes, reply.wasmBytes);
         if (!reply.ok) {
           return { ok: false, reason: reply.reason, message: reply.message };
@@ -150,7 +192,7 @@ export class LutGpu {
         try {
           const meta = JSON.parse(reply.metaJson) as LutMeta;
           const engNow = this.host.engine();
-          if (!engNow) return { ok: false, reason: 'no_gpu', message: '没有显卡' };
+          if (!engNow || gen !== this.generation) return { ok: false, reason: 'cancelled', message: '已取消' };
           engNow.addLut(token, meta, data);
           this.recordSlot(token, tableGpuBytes(meta));
           return { ok: true, token };
@@ -160,8 +202,10 @@ export class LutGpu {
         }
       })
       .finally(() => {
-        this.pendingCount = Math.max(0, this.pendingCount - 1);
-        if (this.inflight.get(token) === job) this.inflight.delete(token);
+        if (gen === this.generation) {
+          this.pendingCount = Math.max(0, this.pendingCount - 1);
+          if (this.inflight.get(token) === job) this.inflight.delete(token);
+        }
       });
 
     this.inflight.set(token, job);

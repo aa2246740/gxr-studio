@@ -220,6 +220,43 @@ export async function loadLutBlob(cubeId: string): Promise<ArrayBuffer | null> {
   }
 }
 
+export interface LutSnapshotRow {
+  cubeId: string;
+  record: LutRecord | null;
+  blob: ArrayBuffer | null;
+}
+
+/** 在单个 readonly 事务里一次读完一批 LUT 的记录和 .cube 字节，后续 patch/delete 写事务会排在它后面。 */
+export async function loadLutBatchSnapshot(cubeIds: readonly string[]): Promise<LutSnapshotRow[]> {
+  const unique = [...new Set(cubeIds)];
+  if (!unique.length || typeof indexedDB === 'undefined') return [];
+  const db = await open();
+  try {
+    return await new Promise<LutSnapshotRow[]>((resolve, reject) => {
+      const tx = db.transaction([LUT_RECORDS, LUT_BLOBS], 'readonly');
+      const recs = tx.objectStore(LUT_RECORDS);
+      const blobs = tx.objectStore(LUT_BLOBS);
+      const pending = unique.map((cubeId) => ({
+        cubeId,
+        recReq: recs.get(cubeId),
+        blobReq: blobs.get(cubeId),
+      }));
+      tx.oncomplete = () =>
+        resolve(
+          pending.map(({ cubeId, recReq, blobReq }) => ({
+            cubeId,
+            record: (recReq.result as LutRecord | undefined) ?? null,
+            blob: blobReq.result instanceof ArrayBuffer ? blobReq.result : null,
+          })),
+        );
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
 /** 原子写入新 LUT：同事务校验版本水位、去重（不覆盖用户改名与手动空间）及 256 MiB 上限。 */
 export async function saveLut(record: LutRecord, blob: ArrayBuffer, version: number): Promise<SaveLutResult> {
   const db = await open();

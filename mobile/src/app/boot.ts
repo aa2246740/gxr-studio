@@ -373,6 +373,7 @@ class App implements AppApi {
     const photo = this.byId.get(id);
     if (photo) releaseBitmaps(photo);
     this.byId.delete(id);
+    this.lutGpuQueue.clear();
     if (!this.byId.size) this.showStart();
     else this.grid?.refresh();
   }
@@ -382,6 +383,7 @@ class App implements AppApi {
     // 导出这一批停下，做好的文件丢掉，晚到的结果不会再交给共享面板。
     this.exporter.clear();
     this.queue.cancel();
+    this.lutGpuQueue.clear();
     this.closeEditor();
     for (const photo of this.byId.values()) releaseBitmaps(photo);
     this.byId.clear();

@@ -107,7 +107,7 @@ def _write_synthetic_luts(tmp_path: Path, desk: Desktop) -> dict[str, dict[str, 
     return out
 
 
-def _verify_display_raw_gate_b(
+def _verify_display_lut_gate_b(
     tmp_path: Path,
     desk: Desktop,
     shot: dict[str, Any],
@@ -120,7 +120,11 @@ def _verify_display_raw_gate_b(
     long_edge: int | None,
     label: str,
 ) -> tuple[bool, int]:
-    """显示域 LUT 跑在 RAW 上时：逐字节相同，或由 export-source Gate A/B 逐点归因且用 Rust 底图重走成片后逐字节相同。"""
+    """Display 域 LUT 跑在 RAW 或 JPG-only 上时的 Gate A/B 判定（Manager post-r1 P2-01 规范修订）。
+
+    Display LUT 允许以「逐字节相同」或「export-source Gate A=0 + Gate B 逐点归因且用 Rust 底图重走桌面成片逐字节相同」通过；
+    未套 LUT 的相机 JPG 与全部 Log / 场景 LUT 仍严格要求逐字节一致。
+    """
     if phone_bytes == desk_bytes:
         return True, 0
 
@@ -235,6 +239,20 @@ def test_mobile_ui_lut_end_to_end_parity_and_lifecycle(tmp_path: Path, pinned_ic
         a, b, c, d = (p[0].stem for p in pairs)
         stems = [a, b, c, d, jpg_only.stem]
 
+        extra_dir = tmp_path / "extra_luts"
+        extra_dir.mkdir()
+        rec709_txt = cube_text(
+            lambda x: np.clip(x * np.array([1.02, 0.99, 0.96]), 0.0, 1.0),
+            size=17,
+            title="Synth Rec709 Out",
+            comments="# Input: sRGB\n# Output: Rec.709\n",
+        )
+        rec709_path = extra_dir / "synth_rec709_out.cube"
+        rec709_bytes = rec709_txt.encode("utf-8")
+        rec709_path.write_bytes(rec709_bytes)
+        bad_utf8_path = extra_dir / "bad_utf8.cube"
+        bad_utf8_path.write_bytes(b'\xff\xfeTITLE "Bad"\nLUT_3D_SIZE 2\n')
+
         files = [str(p) for pair in pairs for p in pair] + [str(jpg_only), str(dat)]
         out_dir = tmp_path / "phone"
         out_dir.mkdir()
@@ -247,6 +265,8 @@ def test_mobile_ui_lut_end_to_end_parity_and_lifecycle(tmp_path: Path, pinned_ic
             "stems": {"a": a, "b": b, "c": c, "d": d, "jpgOnly": jpg_only.stem},
             "luts": {k: {"path": v["path"], "cubeId": v["cubeId"]} for k, v in luts.items() if k != "ignore"},
             "ignoreFile": luts["ignore"]["path"],
+            "rec709Out": {"path": str(rec709_path), "cubeId": hashlib.sha256(rec709_bytes).hexdigest()},
+            "badUtf8File": str(bad_utf8_path),
             "binding": desk.binding(),
             "outDir": str(out_dir),
             "out": str(report_path),
@@ -331,7 +351,8 @@ def test_mobile_ui_lut_end_to_end_parity_and_lifecycle(tmp_path: Path, pinned_ic
                 display_keys = {a: "disp33", b: "shaper", jpg_only.stem: "undeclared"}
                 case_id = f"{tag}{'A' if stem == a else 'B' if stem == b else 'C' if stem == c else 'JPG'}"
                 if stem in display_keys:
-                    # Display LUT (Pair A, Pair B, JPG-only)：逐字节相同，或过 Gate A=0 / Gate B 机械归因且 Rust 底图成片逐字节相同
+                    # 根据 Manager post-r1 P2-01 规范修订：Display 域 LUT 在任意源（RAW Pair A/B 与 JPG-only）均允许走
+                    # Gate A=0 + Gate B 机械归因与 Rust 底图桌面成片逐字节一致（Log/场景 LUT 与无 LUT 相机 JPG 仍严格逐字节一致）。
                     rec = luts[display_keys[stem]]["record"]
                     spec = {
                         "input_space": rec["input_space"],
@@ -341,7 +362,7 @@ def test_mobile_ui_lut_end_to_end_parity_and_lifecycle(tmp_path: Path, pinned_ic
                         "input_range": rec["input_range"],
                         "output_range": rec["output_range"],
                     }
-                    exact, nb = _verify_display_raw_gate_b(
+                    exact, nb = _verify_display_lut_gate_b(
                         tmp_path,
                         desk,
                         shot,
@@ -400,6 +421,41 @@ def test_mobile_ui_lut_end_to_end_parity_and_lifecycle(tmp_path: Path, pinned_ic
         sdr_mem = exports["sdrFull"]["facts"]["mem"]
         check(0 < hdr_mem["wasm"] <= 640 * MIB, "HDR Log LUT WASM HWM within 640 MiB")
         check(gpu_stats["gpuSlots"] <= 3 and gpu_stats["alive"] == 0, "GPU slots <= 3 and short worker cleaned up")
+
+        # post-r1 浏览器回归核对（P3-01 / P1-01 / P2-03 / P2-04）
+        pr = steps["postR1Regressions"]
+        check(
+            "无法读取 LUT。请改用 .cube 文件。" in pr["badUtf8Status"] and "utf-8" not in pr["badUtf8Status"].lower(),
+            "P3-01 non-UTF-8 .cube shows desktop cube_unreadable error",
+        )
+        same_redacted(
+            [c["value"] for c in pr["outputSpaceChoices"]],
+            ["srgb", "rec709", "gamma24"],
+            "P1-01 space sheet offers desktop display output spaces",
+        )
+        check(
+            any(c["value"] == "rec709" and c["on"] for c in pr["outputSpaceChoices"]),
+            "P1-01 output space selector highlights rec709 initially",
+        )
+        check(pr["outputSpaceAfterEdit"] == "rec709", "P1-01 changing input_range preserves declared output_space")
+        check(
+            pr["abortRecovery"]["errs"] == ["删除没有成功，请再试一次。"]
+            and pr["abortRecovery"]["goDisabled"] is False
+            and pr["abortRecovery"]["stillPresent"] is True,
+            "P2-03 delete transaction abort shows single error, restores button, keeps LUT",
+        )
+        check(
+            pr["gpuBeforeClear"]["engine"]["luts"] >= 1 and pr["gpuBeforeClear"]["lutGpu"]["gpuSlots"] >= 1,
+            "P2-04 GPU LUT textures populated before Clear",
+        )
+        check(
+            pr["gpuAfterClear"]["engine"]["luts"] == 0
+            and pr["gpuAfterClear"]["lutGpu"]["gpuSlots"] == 0
+            and pr["gpuAfterClear"]["lutGpu"]["gpuBytes"] == 0
+            and pr["gpuAfterClear"]["lutGpu"]["alive"] == 0
+            and pr["gpuAfterClear"]["lutGpu"]["pending"] == 0,
+            "P2-04 Clear destroys GPU LUT textures and resets LutGpu stats",
+        )
 
         note("ui_m4_lut_parity", {"byte_equal": byte_equal, "gate_b_points": gate_b_points})
         note(

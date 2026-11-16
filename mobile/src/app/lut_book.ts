@@ -1,8 +1,8 @@
 // 用户 LUT 目录（元数据在内存，.cube 字节与完整目录只在 Worker / IndexedDB 里）。
 // 每次导入、改名、改输入色彩空间或删除都带着单调递增版本写 IndexedDB；删除先确认写完再清内存。
 
-import { deleteLut, importLutFile, patchLut, readLutBlob, restoreLutLibrary, type LutImportReply, type LutLibraryMeta } from '../core/api';
-import type { LutPatchFields } from '../lib/idb';
+import { deleteLut, importLutFile, patchLut, readLutBatchSnapshot, readLutBlob, restoreLutLibrary, type LutImportReply, type LutLibraryMeta } from '../core/api';
+import type { LutPatchFields, LutSnapshotRow } from '../lib/idb';
 import {
   LUT_ERRORS,
   MAX_CUBE_BYTES,
@@ -24,6 +24,7 @@ export interface LutBookIo {
   patch(cubeId: string, patch: LutPatchFields, version: number): Promise<{ ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' }>;
   remove(cubeId: string, version: number): Promise<boolean>;
   readBlob(cubeId: string): Promise<ArrayBuffer | null>;
+  snapshotBatch?(cubeIds: readonly string[]): Promise<LutSnapshotRow[]>;
 }
 
 const defaultIo: LutBookIo = {
@@ -32,6 +33,7 @@ const defaultIo: LutBookIo = {
   patch: patchLut,
   remove: deleteLut,
   readBlob: readLutBlob,
+  snapshotBatch: readLutBatchSnapshot,
 };
 
 export interface LutImportOutcome {
@@ -44,10 +46,16 @@ export interface LutImportOutcome {
 
 export interface LutSpaceUpdate {
   input_space: SpaceId;
+  output_space?: SpaceId;
   input_gamut?: GamutId | null;
   output_gamut?: GamutId | null;
   input_range?: RangeKind;
   output_range?: RangeKind;
+}
+
+function errorText(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+  return raw.trim() ? raw.trim() : fallback;
 }
 
 export class LutBook {
@@ -59,9 +67,12 @@ export class LutBook {
   private restoreTask: Promise<void> | null = null;
   private noticeSeq = 0;
   private noticeText = '';
+  private readonly io: LutBookIo;
   private readonly listeners = new Set<() => void>();
 
-  constructor(private readonly io: LutBookIo = defaultIo) {}
+  constructor(io: LutBookIo = defaultIo) {
+    this.io = io;
+  }
 
   onChange(fn: () => void): () => void {
     this.listeners.add(fn);
@@ -133,7 +144,13 @@ export class LutBook {
         errors.push(`${item.name}：${LUT_ERRORS.cube_too_big}`);
         continue;
       }
-      const res = await this.io.importLut(item.file, item.name, this.nextVersion());
+      let res: LutImportReply;
+      try {
+        res = await this.io.importLut(item.file, item.name, this.nextVersion());
+      } catch (err) {
+        errors.push(`${item.name}：${errorText(err, LUT_ERRORS.cube_unreadable)}`);
+        continue;
+      }
       if (!res.ok) {
         if (res.message) errors.push(`${item.name}：${res.message}`);
         continue;
@@ -181,7 +198,12 @@ export class LutBook {
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : LUT_ERRORS.bad_name };
     }
-    const res = await this.io.patch(cubeId, { name: cleaned }, this.nextVersion());
+    let res: { ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' };
+    try {
+      res = await this.io.patch(cubeId, { name: cleaned }, this.nextVersion());
+    } catch {
+      return { ok: false, message: '保存未生效，请重试。' };
+    }
     if (!res.ok) {
       return { ok: false, message: res.reason === 'not_found' ? LUT_ERRORS.cube_not_found : '保存未生效，请重试。' };
     }
@@ -196,15 +218,20 @@ export class LutBook {
     if (!current) return { ok: false, message: LUT_ERRORS.cube_not_found };
     const patch: LutPatchFields = {
       input_space: update.input_space,
-      output_space: 'srgb',
-      input_gamut: update.input_gamut ?? current.input_gamut ?? null,
+      output_space: update.output_space ?? current.output_space ?? 'srgb',
+      input_gamut: update.input_gamut !== undefined ? update.input_gamut : current.input_gamut ?? null,
       output_gamut: update.output_gamut !== undefined ? update.output_gamut : current.output_gamut ?? null,
       input_range: update.input_range ?? current.input_range ?? 'full',
       output_range: update.output_range ?? current.output_range ?? 'full',
       input_space_manual: true,
       input_space_state: 'manual',
     };
-    const res = await this.io.patch(cubeId, patch, this.nextVersion());
+    let res: { ok: true; record: LutRecord } | { ok: false; reason: 'not_found' | 'stale' };
+    try {
+      res = await this.io.patch(cubeId, patch, this.nextVersion());
+    } catch {
+      return { ok: false, message: '保存未生效，请重试。' };
+    }
     if (!res.ok) {
       return { ok: false, message: res.reason === 'not_found' ? LUT_ERRORS.cube_not_found : '保存未生效，请重试。' };
     }
@@ -213,31 +240,79 @@ export class LutBook {
     return { ok: true, record: res.record };
   }
 
-  /** 先在 IndexedDB 写删除，确认删掉才清内存并通知订阅者（Sol r2 原则）。 */
-  async remove(cubeId: string): Promise<boolean> {
+  /** 先在 IndexedDB 写删除，确认删掉才清内存并通知订阅者；事务失败时不动内存并返回错误信息。 */
+  async removeChecked(cubeId: string): Promise<{ ok: true } | { ok: false; message: string }> {
     await this.restore();
-    const deleted = await this.io.remove(cubeId, this.nextVersion());
-    if (!deleted) return false;
+    let deleted = false;
+    try {
+      deleted = await this.io.remove(cubeId, this.nextVersion());
+    } catch {
+      return { ok: false, message: '删除没有成功，请再试一次。' };
+    }
+    if (!deleted) return { ok: false, message: '删除没有成功，请再试一次。' };
     this.records = this.records.filter((r) => r.cube_id !== cubeId);
     this.byId.delete(cubeId);
     this.totalBytes = this.records.reduce((s, r) => s + r.bytes, 0);
     this.changed();
-    return true;
+    return { ok: true };
   }
 
-  /** 在测试或导出开始前按当前引用定格一组 LUT 的字节和目标色彩空间。 */
-  async exportSnapshot(cubeIds: readonly string[]): Promise<Record<string, { cube: ArrayBuffer; space: string }>> {
-    await this.restore();
-    const out: Record<string, { cube: ArrayBuffer; space: string }> = {};
-    for (const id of new Set(cubeIds)) {
+  /** 先在 IndexedDB 写删除，确认删掉才清内存并通知订阅者（Sol r2 原则）。 */
+  async remove(cubeId: string): Promise<boolean> {
+    const res = await this.removeChecked(cubeId);
+    return res.ok;
+  }
+
+  /** 在测试或导出开始前同步定格一组 LUT 的目标色彩空间，并用单事务批量快照读取原始字节（P2-02）。 */
+  exportSnapshot(cubeIds: readonly string[]): Promise<Record<string, { cube: ArrayBuffer; space: string }>> {
+    const unique = [...new Set(cubeIds)];
+    if (!this.restored) {
+      return this.restore().then(() => this.captureSnapshotSync(unique));
+    }
+    return this.captureSnapshotSync(unique);
+  }
+
+  private captureSnapshotSync(uniqueIds: readonly string[]): Promise<Record<string, { cube: ArrayBuffer; space: string }>> {
+    const frozenSpecs = new Map<string, string>();
+    for (const id of uniqueIds) {
       const rec = this.byId.get(id);
       if (!rec) continue;
-      const blob = await this.io.readBlob(id);
-      if (!blob) continue;
       const spec = lutTargetSpec(rec);
-      out[id] = { cube: blob, space: spec ? JSON.stringify(spec) : '' };
+      frozenSpecs.set(id, spec ? JSON.stringify(spec) : '');
     }
-    return out;
+    const ids = [...frozenSpecs.keys()];
+    if (!ids.length) return Promise.resolve({});
+
+    if (this.io.snapshotBatch) {
+      return this.io.snapshotBatch(ids).then((rows) => {
+        const out: Record<string, { cube: ArrayBuffer; space: string }> = {};
+        for (const row of rows) {
+          const specStr = frozenSpecs.get(row.cubeId);
+          if (specStr === undefined || !row.blob) continue;
+          out[row.cubeId] = { cube: row.blob, space: specStr };
+        }
+        return out;
+      });
+    }
+
+    // 同步发起全部 readBlob 请求（兼容仅提供 readBlob 的测试桩），确保在任意 await 前锁定全部读取。
+    const reads = ids.map((id) => ({
+      id,
+      spec: frozenSpecs.get(id) ?? '',
+      blobTask: this.io.readBlob(id),
+    }));
+    return Promise.all(
+      reads.map(async (item) => {
+        const blob = await item.blobTask;
+        return blob ? ([item.id, { cube: blob, space: item.spec }] as const) : null;
+      }),
+    ).then((entries) => {
+      const out: Record<string, { cube: ArrayBuffer; space: string }> = {};
+      for (const entry of entries) {
+        if (entry) out[entry[0]] = entry[1];
+      }
+      return out;
+    });
   }
 
   private upsert(record: LutRecord): void {

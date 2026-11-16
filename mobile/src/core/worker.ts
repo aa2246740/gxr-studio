@@ -5,10 +5,10 @@ import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, co
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
-import { deleteLutRecord, loadLutBlob, loadLutLibraryMeta, loadPack, patchLutRecord, saveLut, savePack } from '../lib/idb';
-import { LUT_ERRORS, MAX_CUBE_BYTES, buildLutRecord, readLutHeader, sha256Hex, type IdentifyReport, type ParsedCubeSummary } from '../lib/lut';
+import { deleteLutRecord, loadLutBatchSnapshot, loadLutBlob, loadLutLibraryMeta, loadPack, patchLutRecord, saveLut, savePack } from '../lib/idb';
+import { LUT_ERRORS, MAX_CUBE_BYTES, buildLutRecord, decodeCubeUtf8, readLutHeader, sha256Hex, type IdentifyReport, type LutRecord, type ParsedCubeSummary } from '../lib/lut';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
-import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, LutBlobArgs, LutDeleteArgs, LutImportArgs, LutPatchArgs, ResolveArgs } from './protocol';
+import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, LutBlobArgs, LutDeleteArgs, LutImportArgs, LutPatchArgs, LutSnapshotArgs, ResolveArgs } from './protocol';
 
 let ready: Promise<unknown> | null = null;
 
@@ -207,6 +207,11 @@ async function lutImport(id: number, args: LutImportArgs): Promise<void> {
     return;
   }
   const bytes = new Uint8Array(buffer);
+  const text = decodeCubeUtf8(bytes);
+  if (text === null) {
+    ok(id, JSON.stringify({ ok: false, reason: 'unreadable', message: LUT_ERRORS.cube_unreadable }));
+    return;
+  }
   let parsed: ParsedCubeSummary;
   let identified: IdentifyReport;
   try {
@@ -214,11 +219,19 @@ async function lutImport(id: number, args: LutImportArgs): Promise<void> {
     identified = JSON.parse(lut_identify(bytes, args.filename)) as IdentifyReport;
   } catch (err) {
     const msg = coreMessage(err);
-    ok(id, JSON.stringify({ ok: false, reason: 'parse', message: msg || LUT_ERRORS.cube_unreadable }));
+    const isUtf8 = /utf-?8/i.test(msg);
+    ok(
+      id,
+      JSON.stringify({
+        ok: false,
+        reason: isUtf8 ? 'unreadable' : 'parse',
+        message: isUtf8 || !msg ? LUT_ERRORS.cube_unreadable : msg,
+      }),
+    );
     return;
   }
   const cubeId = await sha256Buffer(buffer);
-  const header = readLutHeader(new TextDecoder().decode(bytes));
+  const header = readLutHeader(text);
   const record = buildLutRecord({
     cubeId,
     filename: args.filename,
@@ -275,6 +288,17 @@ async function lutBlob(id: number, args: LutBlobArgs): Promise<void> {
   ok(id, JSON.stringify({ ok: true }), [blob]);
 }
 
+async function lutSnapshot(id: number, args: LutSnapshotArgs): Promise<void> {
+  const rows = await loadLutBatchSnapshot(args.cubeIds);
+  const items: Array<{ cubeId: string; record: LutRecord | null; hasBlob: boolean }> = [];
+  const buffers: ArrayBuffer[] = [];
+  for (const row of rows) {
+    if (row.blob) buffers.push(row.blob);
+    items.push({ cubeId: row.cubeId, record: row.record, hasBlob: row.blob !== null });
+  }
+  ok(id, JSON.stringify({ items }), buffers);
+}
+
 async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   const { buffer, args, file, meta } = req;
   await load();
@@ -290,6 +314,7 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'lut-patch' && req.lutPatch) await lutPatch(id, req.lutPatch);
   else if (op === 'lut-delete' && req.lutDelete) await lutDelete(id, req.lutDelete);
   else if (op === 'lut-blob' && req.lutBlob) await lutBlob(id, req.lutBlob);
+  else if (op === 'lut-snapshot' && req.lutSnapshot) await lutSnapshot(id, req.lutSnapshot);
   else throw new Error('未知请求');
 }
 

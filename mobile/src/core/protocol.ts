@@ -15,7 +15,8 @@ export type CoreOp =
   | 'lut-restore'
   | 'lut-patch'
   | 'lut-delete'
-  | 'lut-blob';
+  | 'lut-blob'
+  | 'lut-snapshot';
 
 /** 烘焙一张表要的全部输入。字节都是拷贝，交给 Worker 后这边不再用。 */
 export interface BakeArgs {
@@ -65,6 +66,10 @@ export interface LutBlobArgs {
   cubeId: string;
 }
 
+export interface LutSnapshotArgs {
+  cubeIds: string[];
+}
+
 export interface CoreRequest {
   id: number;
   op: CoreOp;
@@ -80,6 +85,7 @@ export interface CoreRequest {
   lutPatch?: LutPatchArgs | null;
   lutDelete?: LutDeleteArgs | null;
   lutBlob?: LutBlobArgs | null;
+  lutSnapshot?: LutSnapshotArgs | null;
 }
 
 export type CoreReply =

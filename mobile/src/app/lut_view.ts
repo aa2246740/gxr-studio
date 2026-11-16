@@ -51,6 +51,7 @@ interface Slot {
   record: LutRecord | null;
   node: HTMLButtonElement;
   thumb: HTMLElement;
+  nameEl: HTMLElement;
   sub: HTMLElement;
 }
 
@@ -59,6 +60,14 @@ export class LutView {
   private thumbToken = 0;
   private sourceKey: string | null = null;
   private readonly panel = el('div', 'panel lut');
+  private readonly strip = el('div', 'strip inpanel');
+  private readonly missingBanner = el('div', 'bn lut-missing');
+  private readonly spaceRow = button('lrow pad', '');
+  private readonly spaceSmall = el('small', '', '');
+  private readonly foot = el('p', 'pad faint small lut-foot', LUT_FOOTNOTE);
+  private readonly statusEl = el('p', 'pad small lut-status', '');
+  private readonly addRow = el('div', 'pad lut-add-row');
+  private stripKeys: string[] = [];
   private slots: Slot[] = [];
   private statusMsg = '';
   private seenNotice = 0;
@@ -74,6 +83,34 @@ export class LutView {
     private readonly hooks: LutStageHooks,
   ) {
     this.panel.dataset.panel = 'lut';
+    this.strip.dataset.luts = '1';
+
+    this.missingBanner.dataset.state = 'lut-deleted';
+    const missTx = el('div', 'tx');
+    missTx.append(el('b', '', LUT_ERRORS.cube_not_found), el('div', 'dim small', '已选的 LUT 不在本地库里；点「不用 LUT」或重新导入后再导出。'));
+    this.missingBanner.append(missTx);
+
+    this.spaceRow.dataset.act = 'lut-space';
+    const spaceTx = el('div', 'grow');
+    spaceTx.append(el('b', '', '输入色彩空间'), this.spaceSmall);
+    const arrow = el('span', 'lut-chev');
+    arrow.append(icon(CHEVRON));
+    this.spaceRow.append(spaceTx, arrow);
+    this.spaceRow.addEventListener('click', () => {
+      const rec = this.photo.lut ? this.api.lutBook().get(this.photo.lut) : undefined;
+      if (rec) this.openSpaceFor(rec, false);
+    });
+
+    this.statusEl.dataset.state = 'lut-status';
+
+    const add = button('btn block', '导入 LUT（.cube 文件）');
+    add.dataset.act = 'lut-import';
+    add.prepend(icon(PLUS));
+    add.addEventListener('click', () => this.api.pickLut());
+    this.addRow.append(add);
+
+    this.panel.append(this.strip, this.spaceRow, this.foot, this.addRow);
+
     this.seenNotice = api.lutBook().lastNotice().seq;
     this.off = api.lutBook().onChange(() => {
       const notice = api.lutBook().lastNotice();
@@ -161,117 +198,113 @@ export class LutView {
   }
 
   private build(): void {
-    const scrollLeft = this.panel.querySelector('.strip')?.scrollLeft ?? 0;
-    this.panel.replaceChildren();
-    this.slots = [];
-
     const lutBook = this.api.lutBook();
     const list = lutBook.list();
     const selectedId = this.photo.lut;
     const selectedRec = selectedId ? lutBook.get(selectedId) : undefined;
     const deleted = Boolean(selectedId && !selectedRec);
 
-    const strip = el('div', 'strip inpanel');
-    strip.dataset.luts = '1';
+    const nextKeys = ['none', ...(deleted ? ['deleted'] : []), ...list.map((r) => r.cube_id)];
+    const sameStrip =
+      nextKeys.length === this.stripKeys.length &&
+      nextKeys.every((k, i) => k === this.stripKeys[i]) &&
+      this.slots.length === 1 + list.length;
 
-    // 第一张卡：不用 LUT
-    const noneBtn = button(selectedId === null ? 'rc on' : 'rc', '');
-    noneBtn.dataset.lut = 'none';
-    const noneThumb = el('div', 'th lut-none');
-    noneThumb.textContent = '×';
-    if (selectedId === null) this.mark(noneBtn, noneThumb);
-    const noneSub = el('span', 'sub');
-    noneBtn.append(noneThumb, el('span', 'nm', '不用 LUT'), noneSub);
-    noneBtn.addEventListener('click', () => {
-      if (this.photo.lut === null) return;
-      this.photo.lut = null;
-      this.photo.rev += 1;
-      this.statusMsg = '';
-      this.refresh();
-    });
-    strip.append(noneBtn);
-    this.slots.push({ record: null, node: noneBtn, thumb: noneThumb, sub: noneSub });
-
-    // 若照片选过已被删除的 LUT：明显标出「LUT 已删除」提示卡片（导出也按桌面语义拒绝）。
-    if (deleted) {
-      const delCard = button('rc on lockd', '');
-      delCard.dataset.lut = 'deleted';
-      const delThumb = el('div', 'th lut-deleted-th');
-      delThumb.textContent = '!';
-      const delSub = el('span', 'sub', '找不到这个 LUT');
-      delCard.append(delThumb, el('span', 'nm', 'LUT 已删除'), delSub);
-      delCard.addEventListener('click', () => {
-        this.statusMsg = LUT_ERRORS.cube_not_found;
-        this.build();
-      });
-      strip.append(delCard);
-    }
-
-    for (const record of list) {
-      const card = button('rc', '');
-      card.dataset.lut = record.cube_id;
-      const thumb = el('div', 'th');
-      const needsSpace = !record.input_space;
-      const needsRaw = !this.hasRaw() && Boolean(record.input_space && !isDisplaySpace(record.input_space));
-      const subText = needsSpace ? '请选择色彩空间' : needsRaw ? '需要 RAW 文件' : '';
-      const sub = el('span', 'sub', subText);
-      if (needsSpace || needsRaw) card.classList.add('lockd');
-      if (selectedId === record.cube_id) this.mark(card, thumb);
-      card.append(thumb, el('span', 'nm', record.name), sub);
-
-      this.bindCardGestures(card, record, needsSpace, needsRaw);
-      strip.append(card);
-      this.slots.push({ record, node: card, thumb, sub });
-    }
-
-    this.panel.append(strip);
-    if (scrollLeft > 0) strip.scrollLeft = scrollLeft;
-
-    if (deleted) {
-      const warn = el('div', 'bn lut-missing');
-      warn.dataset.state = 'lut-deleted';
-      const tx = el('div', 'tx');
-      tx.append(el('b', '', LUT_ERRORS.cube_not_found), el('div', 'dim small', '已选的 LUT 不在本地库里；点「不用 LUT」或重新导入后再导出。'));
-      warn.append(tx);
-      this.panel.append(warn);
-    }
-
-    const spaceRow = button('lrow pad', '');
-    spaceRow.dataset.act = 'lut-space';
-    const spaceTx = el('div', 'grow');
-    const sp = this.spaceLine(selectedRec);
-    const small = el('small', sp.warn ? 'warn' : '', sp.text);
-    spaceTx.append(el('b', '', '输入色彩空间'), small);
-    const arrow = el('span', 'lut-chev');
-    arrow.append(icon(CHEVRON));
-    spaceRow.append(spaceTx, arrow);
-    if (!selectedRec) {
-      spaceRow.disabled = true;
+    if (sameStrip) {
+      // 卡片键序列没变时原地更新类名与文字，避免异步 refresh() 拆卸正在点击或滚动中的 .rc 元素。
+      this.syncMark(this.slots[0].node, this.slots[0].thumb, selectedId === null);
+      for (let i = 0; i < list.length; i += 1) {
+        const record = list[i];
+        const slot = this.slots[i + 1];
+        slot.record = record;
+        slot.nameEl.textContent = record.name;
+        const needsSpace = !record.input_space;
+        const needsRaw = !this.hasRaw() && Boolean(record.input_space && !isDisplaySpace(record.input_space));
+        slot.sub.textContent = needsSpace ? '请选择色彩空间' : needsRaw ? '需要 RAW 文件' : '';
+        slot.node.classList.toggle('lockd', needsSpace || needsRaw);
+        this.syncMark(slot.node, slot.thumb, selectedId === record.cube_id);
+      }
     } else {
-      spaceRow.addEventListener('click', () => this.openSpaceFor(selectedRec, false));
-    }
-    this.panel.append(spaceRow);
+      const scrollLeft = this.strip.scrollLeft;
+      this.strip.replaceChildren();
+      this.slots = [];
+      this.stripKeys = nextKeys;
 
-    this.panel.append(el('p', 'pad faint small lut-foot', LUT_FOOTNOTE));
+      // 第一张卡：不用 LUT
+      const noneBtn = button(selectedId === null ? 'rc on' : 'rc', '');
+      noneBtn.dataset.lut = 'none';
+      const noneThumb = el('div', 'th lut-none');
+      noneThumb.textContent = '×';
+      const noneName = el('span', 'nm', '不用 LUT');
+      const noneSub = el('span', 'sub');
+      noneBtn.append(noneThumb, noneName, noneSub);
+      noneBtn.addEventListener('click', () => {
+        if (this.photo.lut === null) return;
+        this.photo.lut = null;
+        this.photo.rev += 1;
+        this.statusMsg = '';
+        this.refresh();
+      });
+      this.strip.append(noneBtn);
+      this.slots.push({ record: null, node: noneBtn, thumb: noneThumb, nameEl: noneName, sub: noneSub });
+
+      // 若照片选过已被删除的 LUT：明显标出「LUT 已删除」提示卡片（导出也按桌面语义拒绝）。
+      if (deleted) {
+        const delCard = button('rc on lockd', '');
+        delCard.dataset.lut = 'deleted';
+        const delThumb = el('div', 'th lut-deleted-th');
+        delThumb.textContent = '!';
+        const delSub = el('span', 'sub', '找不到这个 LUT');
+        delCard.append(delThumb, el('span', 'nm', 'LUT 已删除'), delSub);
+        delCard.addEventListener('click', () => {
+          this.statusMsg = LUT_ERRORS.cube_not_found;
+          this.build();
+        });
+        this.strip.append(delCard);
+      }
+
+      for (const record of list) {
+        const card = button('rc', '');
+        card.dataset.lut = record.cube_id;
+        const thumb = el('div', 'th');
+        const needsSpace = !record.input_space;
+        const needsRaw = !this.hasRaw() && Boolean(record.input_space && !isDisplaySpace(record.input_space));
+        const subText = needsSpace ? '请选择色彩空间' : needsRaw ? '需要 RAW 文件' : '';
+        const nameEl = el('span', 'nm', record.name);
+        const sub = el('span', 'sub', subText);
+        if (needsSpace || needsRaw) card.classList.add('lockd');
+        this.syncMark(card, thumb, selectedId === record.cube_id);
+        card.append(thumb, nameEl, sub);
+
+        this.bindCardGestures(card, record.cube_id);
+        this.strip.append(card);
+        this.slots.push({ record, node: card, thumb, nameEl, sub });
+      }
+      if (scrollLeft > 0) this.strip.scrollLeft = scrollLeft;
+    }
+
+    if (deleted && !this.missingBanner.isConnected) {
+      this.panel.insertBefore(this.missingBanner, this.spaceRow);
+    } else if (!deleted && this.missingBanner.isConnected) {
+      this.missingBanner.remove();
+    }
+
+    const sp = this.spaceLine(selectedRec);
+    this.spaceSmall.className = sp.warn ? 'warn' : '';
+    this.spaceSmall.textContent = sp.text;
+    this.spaceRow.disabled = !selectedRec;
 
     if (this.statusMsg) {
-      const st = el('p', 'pad small lut-status', this.statusMsg);
-      st.dataset.state = 'lut-status';
-      this.panel.append(st);
+      this.statusEl.textContent = this.statusMsg;
+      if (!this.statusEl.isConnected) this.panel.insertBefore(this.statusEl, this.addRow);
+    } else if (this.statusEl.isConnected) {
+      this.statusEl.remove();
     }
-
-    const add = button('btn block', '导入 LUT（.cube 文件）');
-    add.dataset.act = 'lut-import';
-    add.prepend(icon(PLUS));
-    add.addEventListener('click', () => this.api.pickLut());
-    const addRow = el('div', 'pad lut-add-row');
-    addRow.append(add);
-    this.panel.append(addRow);
 
     this.paintThumbs();
   }
 
-  private bindCardGestures(card: HTMLButtonElement, record: LutRecord, needsSpace: boolean, needsRaw: boolean): void {
+  private bindCardGestures(card: HTMLButtonElement, cubeId: string): void {
     let suppressTap = false;
     let pressTimer = 0;
     let startX = 0;
@@ -287,12 +320,13 @@ export class LutView {
       window.clearTimeout(pressTimer);
       pressTimer = window.setTimeout(() => {
         if (moved) return;
+        const record = this.api.lutBook().get(cubeId);
+        if (!record) return;
         suppressTap = true;
         openLutActionSheet(this.shell, this.api.lutBook(), record, {
           onChanged: () => this.refresh(),
-          onDeleted: (cubeId) => {
-            if (this.photo.lut === cubeId) {
-              // 保留 photo.lut 为已删除的 id 不动或清掉？桌面删除后仍保留 edit.lut 以便显式报 cube_not_found（UI 可清晰标为已删除并可点不用 LUT）。
+          onDeleted: (deletedId) => {
+            if (this.photo.lut === deletedId) {
               this.statusMsg = '';
             }
             this.refresh();
@@ -323,11 +357,13 @@ export class LutView {
         suppressTap = false;
         return;
       }
-      if (needsSpace) {
+      const record = this.api.lutBook().get(cubeId);
+      if (!record) return;
+      if (!record.input_space) {
         this.openSpaceFor(record, true);
         return;
       }
-      if (needsRaw) {
+      if (!this.hasRaw() && !isDisplaySpace(record.input_space)) {
         this.statusMsg = LUT_ERRORS.lut_needs_raw;
         this.build();
         return;
@@ -358,12 +394,16 @@ export class LutView {
     });
   }
 
-  private mark(node: HTMLElement, thumb: HTMLElement): void {
-    node.classList.add('on');
-    if (!thumb.classList.contains('lut-none')) {
+  private syncMark(node: HTMLElement, thumb: HTMLElement, on: boolean): void {
+    node.classList.toggle('on', on);
+    if (thumb.classList.contains('lut-none')) return;
+    const existing = thumb.querySelector('.ckk');
+    if (on && !existing) {
       const tick = el('span', 'ckk');
       tick.append(icon(CHECK));
       thumb.append(tick);
+    } else if (!on && existing) {
+      existing.remove();
     }
   }
 

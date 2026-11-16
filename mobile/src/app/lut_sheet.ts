@@ -1,6 +1,7 @@
 // LUT 面板弹层：输入色彩空间选择（12 空间分组 + 范围/色域）、长按操作菜单（重命名 / 删除）及确认框。
 
 import {
+  DISPLAY_SPACES,
   LUT_ERRORS,
   OUTPUT_GAMUTS,
   SOURCE_TAGS,
@@ -43,6 +44,8 @@ export interface SpaceSheetOptions {
 export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: LutRecord, options: SpaceSheetOptions): void {
   let current = initial;
   let inputRange: RangeKind = current.input_range ?? 'full';
+  let outputSpace: SpaceId = current.output_space ?? 'srgb';
+  let outputSpaceEdited = false;
   let outputGamut: GamutId | '' = current.output_gamut ?? '';
   let outputRange: RangeKind = current.output_range ?? 'full';
   let busy = false;
@@ -73,6 +76,7 @@ export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: 
     try {
       const res = await lutBook.setSpace(current.cube_id, {
         input_space: space,
+        ...(outputSpaceEdited ? { output_space: outputSpace } : {}),
         output_gamut: outputGamut || null,
         input_range: inputRange,
         output_range: outputRange,
@@ -83,16 +87,27 @@ export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: 
         return;
       }
       current = res.record;
+      outputSpace = current.output_space ?? outputSpace;
       options.onUpdated(res.record);
       if (closeAfter) view.close();
       else renderBody();
+    } catch {
+      errLine.textContent = '保存未生效，请重试。';
+      errLine.hidden = false;
     } finally {
       busy = false;
     }
   };
 
-  const makeSeg = <T extends string>(label: string, items: ReadonlyArray<readonly [T, string]>, value: T, pick: (v: T) => void): HTMLElement => {
+  const makeSeg = <T extends string>(
+    label: string,
+    key: string,
+    items: ReadonlyArray<readonly [T, string]>,
+    value: T,
+    pick: (v: T) => void,
+  ): HTMLElement => {
     const row = el('div', 'frow lut-adv-row');
+    row.dataset.field = key;
     row.append(el('span', 'dim small', label));
     const seg = el('div', 'seg');
     seg.setAttribute('role', 'group');
@@ -155,9 +170,11 @@ export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: 
       }
     }
 
+    const displayItems = DISPLAY_SPACES.map((s) => [s.id, s.shortLabel] as const);
     adv.replaceChildren(
       makeSeg<RangeKind>(
         '输入范围',
+        'input_range',
         [
           ['full', '满量程'],
           ['legal', '法律范围'],
@@ -167,11 +184,16 @@ export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: 
           inputRange = v;
         },
       ),
-      makeSeg<GamutId | ''>('输出色域', OUTPUT_GAMUTS, outputGamut, (v) => {
+      makeSeg<SpaceId>('输出色彩空间', 'output_space', displayItems, outputSpace, (v) => {
+        outputSpace = v;
+        outputSpaceEdited = true;
+      }),
+      makeSeg<GamutId | ''>('输出色域', 'output_gamut', OUTPUT_GAMUTS, outputGamut, (v) => {
         outputGamut = v;
       }),
       makeSeg<RangeKind>(
         '输出范围',
+        'output_range',
         [
           ['full', '满量程'],
           ['legal', '法律范围'],
@@ -246,7 +268,9 @@ function openRenameDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
   dlg.append(el('h2', '', '重命名 LUT'), input, err, acts);
   const view = mountOverlay(host, dlg, () => view.close());
   cancel.addEventListener('click', () => view.close());
+  let busy = false;
   const submit = async () => {
+    if (busy) return;
     err.hidden = true;
     try {
       cleanLutLabel(input.value);
@@ -255,16 +279,24 @@ function openRenameDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
       err.hidden = false;
       return;
     }
+    busy = true;
     save.disabled = true;
-    const res = await lutBook.rename(record.cube_id, input.value);
-    save.disabled = false;
-    if (!res.ok) {
-      err.textContent = res.message;
+    try {
+      const res = await lutBook.rename(record.cube_id, input.value);
+      if (!res.ok) {
+        err.textContent = res.message;
+        err.hidden = false;
+        return;
+      }
+      view.close();
+      onRenamed();
+    } catch {
+      err.textContent = '保存未生效，请重试。';
       err.hidden = false;
-      return;
+    } finally {
+      busy = false;
+      save.disabled = false;
     }
-    view.close();
-    onRenamed();
   };
   save.addEventListener('click', () => void submit());
   input.addEventListener('keydown', (e) => {
@@ -292,17 +324,27 @@ function openDeleteDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
   );
   const view = mountOverlay(host, dlg, () => view.close());
   cancel.addEventListener('click', () => view.close());
+  let busy = false;
   go.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
     go.disabled = true;
     err.hidden = true;
-    const deleted = await lutBook.remove(record.cube_id);
-    go.disabled = false;
-    if (!deleted) {
+    try {
+      const res = await lutBook.removeChecked(record.cube_id);
+      if (!res.ok) {
+        err.textContent = res.message;
+        err.hidden = false;
+        return;
+      }
+      view.close();
+      onDeleted(record.cube_id);
+    } catch {
       err.textContent = '删除没有成功，请再试一次。';
       err.hidden = false;
-      return;
+    } finally {
+      busy = false;
+      go.disabled = false;
     }
-    view.close();
-    onDeleted(record.cube_id);
   });
 }

@@ -65,6 +65,8 @@ export const SPACES: readonly SpaceInfo[] = [
   { id: 'linear', label: '线性光（高级）', shortLabel: '线性光（高级）', kind: 'log', gamut: 'rec709' },
 ] as const;
 
+export const DISPLAY_SPACES: readonly SpaceInfo[] = SPACES.filter((s) => s.kind === 'display');
+
 export const SPACE_GROUPS: ReadonlyArray<{ kind: SpaceKind; label: string }> = [
   { kind: 'display', label: '普通照片与视频显示' },
   { kind: 'log', label: '相机 Log 与高级空间' },
@@ -208,6 +210,16 @@ const META_KEYS: Record<string, 'source' | 'author' | 'license'> = {
 
 const CC_RE = /CC[ -]BY|creativecommons\.org\/licenses|Creative Commons/i;
 const HEADER_FIELD_RE = /^([^:=]+)[:=] ?(.*)$/;
+
+/** 按 UTF-8（去 BOM）读取 `.cube` 文本；非 UTF-8 返回 null。 */
+export function decodeCubeUtf8(bytes: Uint8Array): string | null {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  } catch {
+    return null;
+  }
+}
 
 /** `lut/metadata.py` read_header()：提取署名与其余注释供选择建议。 */
 export function readLutHeader(text: string): LutHeader {

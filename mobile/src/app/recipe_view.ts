@@ -50,6 +50,7 @@ interface Slot {
   card: Card;
   node: HTMLButtonElement;
   thumb: HTMLElement;
+  nameEl: HTMLElement;
   sub: HTMLElement;
 }
 
@@ -69,6 +70,7 @@ export class RecipeView {
   private token = 0;
   private which: Shelf = 'all';
   private slots: Slot[] = [];
+  private stripKeys: string[] = [];
   private readonly strip = el('div', 'strip');
   private readonly panel = el('div', 'panel recipe');
   private rawKey: string | null = null;
@@ -192,39 +194,81 @@ export class RecipeView {
   }
 
   private buildStrip(scene: Scene): void {
-    this.strip.replaceChildren();
-    this.slots = [];
     const cards = this.cardsOf(scene);
     const locked = scene.raw && !scene.dat;
     const picked = this.chosen(scene);
     this.strip.dataset.state = !scene.raw ? 'jpg-only' : locked ? 'no-recipe-file' : scene.state.state === 'ready' ? 'calibrated' : 'uncalibrated';
-    if (scene.list && this.which === 'mine' && !cards.length) {
+    const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
+    if (isEmpty) {
+      this.strip.replaceChildren();
+      this.slots = [];
+      this.stripKeys = ['__empty__'];
       const empty = el('p', 'empty faint', MINE_EMPTY);
       this.strip.append(empty);
       return;
     }
-    for (const card of cards) {
+
+    const nextKeys = cards.map((card) => card.id);
+    const sameStrip =
+      nextKeys.length === this.stripKeys.length &&
+      nextKeys.every((k, i) => k === this.stripKeys[i]) &&
+      this.slots.length === cards.length;
+
+    if (sameStrip) {
+      for (let i = 0; i < cards.length; i += 1) {
+        const card = cards[i];
+        const slot = this.slots[i];
+        slot.card = card;
+        slot.nameEl.textContent = card.name;
+        const usable = scene.raw && scene.dat && card.controls.length > 0;
+        slot.node.classList.toggle('lockd', !usable);
+        slot.node.disabled = !scene.raw;
+        this.syncMark(slot.node, slot.thumb, Boolean(picked && picked.id === card.id));
+      }
+      this.paintThumbs();
+      return;
+    }
+
+    this.strip.replaceChildren();
+    this.slots = [];
+    this.stripKeys = nextKeys;
+    for (let i = 0; i < cards.length; i += 1) {
+      const card = cards[i];
       const node = button('rc', '');
       node.dataset.card = card.id;
       const thumb = el('div', 'th');
+      const nameEl = el('span', 'nm', card.name);
       const sub = el('span', 'sub');
-      node.append(thumb, el('span', 'nm', card.name), sub);
+      node.append(thumb, nameEl, sub);
       const usable = scene.raw && scene.dat && card.controls.length > 0;
       if (!usable) node.classList.add('lockd');
       if (!scene.raw) node.disabled = true;
-      if (picked && picked.id === card.id) this.mark(node, thumb);
-      node.addEventListener('click', () => this.pick(card));
+      this.syncMark(node, thumb, Boolean(picked && picked.id === card.id));
+      const idx = i;
+      node.addEventListener('click', () => {
+        const current = this.slots[idx]?.card;
+        if (current) this.pick(current);
+      });
       this.strip.append(node);
-      this.slots.push({ card, node, thumb, sub });
+      this.slots.push({ card, node, thumb, nameEl, sub });
     }
     this.paintThumbs();
   }
 
+  private syncMark(node: HTMLElement, thumb: HTMLElement, on: boolean): void {
+    node.classList.toggle('on', on);
+    const existing = thumb.querySelector('.ckk');
+    if (on && !existing) {
+      const tick = el('span', 'ckk');
+      tick.append(icon(CHECK));
+      thumb.append(tick);
+    } else if (!on && existing) {
+      existing.remove();
+    }
+  }
+
   private mark(node: HTMLElement, thumb: HTMLElement): void {
-    node.classList.add('on');
-    const tick = el('span', 'ckk');
-    tick.append(icon(CHECK));
-    thumb.append(tick);
+    this.syncMark(node, thumb, true);
   }
 
   /** 每张卡画什么、底下写什么。 */

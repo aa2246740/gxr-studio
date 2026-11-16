@@ -22,6 +22,7 @@ const {
   MAX_LUT_LIBRARY_BYTES,
   LUT_FOOTNOTE,
   LUT_ERRORS,
+  DISPLAY_SPACES,
   ignoredFilesMessage,
   SPACES,
   SPACE_GROUPS,
@@ -34,6 +35,7 @@ const {
   fileParts,
   classifyLutImports,
   commentStart,
+  decodeCubeUtf8,
   readLutHeader,
   guessSpace,
   computeInputChoice,
@@ -43,6 +45,9 @@ const {
   deletedLutToken,
   sha256Hex,
 } = await import('../../mobile/src/lib/lut.ts');
+
+const { LutBook } = await import('../../mobile/src/app/lut_book.ts');
+const { LutGpu } = await import('../../mobile/src/app/lut_gpu.ts');
 
 const {
   copyFrom,
@@ -381,4 +386,248 @@ test('pasteMessage：lut_missing 与 needs_raw (part: lut) 和桌面逐字相同
   for (const c of cases) {
     assert.equal(pasteText.pasteMessage(c), desk.pasteMessage(JSON.parse(JSON.stringify(c))));
   }
+});
+
+function makeRec(id, over = {}) {
+  return buildLutRecord({
+    cubeId: id,
+    filename: `${id.slice(0, 6)}.cube`,
+    byteLength: 128,
+    parsed: { title: over.name ?? id.slice(0, 6), kind: '3D', size_1d: 0, size_3d: 2 },
+    identified: {
+      input_space: 'srgb',
+      input_space_state: 'declared',
+      output_space: 'srgb',
+      output_space_state: 'unknown',
+      space_evidence: { input_declarations: ['sRGB'] },
+      ...over,
+    },
+    header: { source: '', author: '', license: '', comments: [] },
+    savedAt: 1,
+  });
+}
+
+test('P3-01：decodeCubeUtf8 拒绝非法 UTF-8 字节并去除 UTF-8 BOM', () => {
+  assert.equal(decodeCubeUtf8(new Uint8Array([0xff, 0xfe, 0x00, 0x41])), null);
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('# Input: sRGB\nTITLE "BOM"\n')]);
+  assert.equal(decodeCubeUtf8(bom), '# Input: sRGB\nTITLE "BOM"\n');
+  assert.equal(decodeCubeUtf8(new TextEncoder().encode('# Input: Rec.709\n')), '# Input: Rec.709\n');
+});
+
+test('P1-01：DISPLAY_SPACES 对齐桌面 display 空间，setSpace 未传 output_space 时保留原值', async () => {
+  assert.deepEqual(
+    DISPLAY_SPACES.map((s) => s.id),
+    ['srgb', 'rec709', 'gamma24'],
+  );
+  const idA = '1'.repeat(64);
+  const store = new Map([[idA, makeRec(idA, { output_space: 'rec709', output_space_state: 'declared' })]]);
+  const book = new LutBook({
+    importLut: async () => {
+      throw new Error('unused');
+    },
+    restore: async () => ({ records: [...store.values()], order: [idA], totalBytes: 128, watermark: 1 }),
+    patch: async (cubeId, patch, version) => {
+      const prev = store.get(cubeId);
+      if (!prev) return { ok: false, reason: 'not_found' };
+      const next = { ...prev, ...patch, version: prev.version + 1, savedAt: version };
+      store.set(cubeId, next);
+      return { ok: true, record: next };
+    },
+    remove: async () => true,
+    readBlob: async () => null,
+  });
+  await book.restore();
+
+  const kept = await book.setSpace(idA, {
+    input_space: 'srgb',
+    input_range: 'legal',
+    output_gamut: 'rec2020',
+  });
+  assert.equal(kept.ok, true);
+  assert.equal(kept.record.output_space, 'rec709');
+  assert.equal(kept.record.input_range, 'legal');
+  assert.equal(kept.record.output_gamut, 'rec2020');
+
+  const changed = await book.setSpace(idA, {
+    input_space: 'srgb',
+    output_space: 'gamma24',
+  });
+  assert.equal(changed.ok, true);
+  assert.equal(changed.record.output_space, 'gamma24');
+});
+
+test('P2-02：exportSnapshot 在延迟 readBlob(A) + 并发 setSpace(B)/remove(B) 时仍保持 B 的快照一致', async () => {
+  const idA = 'a'.repeat(64);
+  const idB = 'b'.repeat(64);
+  const store = new Map([
+    [idA, makeRec(idA, { input_space: 'srgb', output_space: 'srgb' })],
+    [idB, makeRec(idB, { input_space: 'srgb', output_space: 'srgb' })],
+  ]);
+  const blobA = new TextEncoder().encode('# A').buffer;
+  const blobB = new TextEncoder().encode('# B').buffer;
+  const blobs = new Map([
+    [idA, blobA],
+    [idB, blobB],
+  ]);
+
+  let releaseA;
+  const waitA = new Promise((r) => {
+    releaseA = r;
+  });
+
+  const book = new LutBook({
+    importLut: async () => {
+      throw new Error('unused');
+    },
+    restore: async () => ({ records: [...store.values()], order: [idA, idB], totalBytes: 256, watermark: 1 }),
+    patch: async (cubeId, patch, version) => {
+      const prev = store.get(cubeId);
+      if (!prev) return { ok: false, reason: 'not_found' };
+      const next = { ...prev, ...patch, version: prev.version + 1, savedAt: version };
+      store.set(cubeId, next);
+      return { ok: true, record: next };
+    },
+    remove: async (cubeId) => {
+      blobs.delete(cubeId);
+      return store.delete(cubeId);
+    },
+    readBlob: async (cubeId) => {
+      if (cubeId === idA) await waitA;
+      return blobs.get(cubeId) ?? null;
+    },
+  });
+  await book.restore();
+
+  const snapTask = book.exportSnapshot([idA, idB]);
+  const patchTask = book.setSpace(idB, { input_space: 'applelog' });
+  const removeTask = patchTask.then(() => book.remove(idB));
+  await removeTask;
+  releaseA();
+
+  const snap = await snapTask;
+  assert.ok(snap[idA]);
+  assert.ok(snap[idB]);
+  assert.equal(snap[idB].cube, blobB);
+  assert.equal(JSON.parse(snap[idB].space).input_space, 'srgb');
+});
+
+test('P2-03：IDB AbortError 时 LutBook 不改动内存目录且返回清晰中文错误', async () => {
+  const idA = 'c'.repeat(64);
+  const recA = makeRec(idA, { name: 'KeepMe', input_space: 'srgb', output_space: 'rec709' });
+  const abortErr = () => Object.assign(new Error('Transaction aborted'), { name: 'AbortError' });
+  const book = new LutBook({
+    importLut: async () => {
+      throw abortErr();
+    },
+    restore: async () => ({ records: [recA], order: [idA], totalBytes: 128, watermark: 1 }),
+    patch: async () => {
+      throw abortErr();
+    },
+    remove: async () => {
+      throw abortErr();
+    },
+    readBlob: async () => null,
+  });
+  await book.restore();
+
+  const rem = await book.removeChecked(idA);
+  assert.equal(rem.ok, false);
+  assert.equal(rem.message, '删除没有成功，请再试一次。');
+  assert.equal(await book.remove(idA), false);
+  assert.equal(book.list().length, 1);
+  assert.equal(book.bytes(), 128);
+
+  const ren = await book.rename(idA, 'Renamed');
+  assert.equal(ren.ok, false);
+  assert.equal(ren.message, '保存未生效，请重试。');
+  assert.equal(book.get(idA)?.name, 'KeepMe');
+
+  const sp = await book.setSpace(idA, { input_space: 'applelog' });
+  assert.equal(sp.ok, false);
+  assert.equal(sp.message, '保存未生效，请重试。');
+  assert.equal(book.get(idA)?.input_space, 'srgb');
+
+  const imp = await book.importFiles([new File(['not saved'], 'abort.cube')]);
+  assert.equal(imp.added.length, 0);
+  assert.equal(imp.errors.length, 1);
+  assert.equal(book.list().length, 1);
+});
+
+test('P2-04：LutGpu.clear() 同步终止短命 Worker、拒绝过期结果并清零 GPU 纹理槽', async () => {
+  const luts = new Map();
+  let clearLutsCalled = 0;
+  const engine = {
+    hasLut: (t) => luts.has(t),
+    addLut: (t, _meta, _data) => luts.set(t, true),
+    clearLuts: () => {
+      clearLutsCalled += 1;
+      luts.clear();
+    },
+  };
+
+  let cancelledCalls = 0;
+  let workerResolvers = [];
+  const gpu = new LutGpu(() => engine, {
+    engine: () => engine,
+    readBlob: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+    runWorker: () => {
+      let resolve;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      workerResolvers.push(resolve);
+      return {
+        promise,
+        cancel: () => {
+          cancelledCalls += 1;
+          resolve({ ok: false, reason: 'cancelled', message: '已取消', wasmBytes: 0 });
+        },
+      };
+    },
+  });
+
+  const rec1 = makeRec('1'.repeat(64));
+  const rec2 = makeRec('2'.repeat(64));
+  const rec3 = makeRec('3'.repeat(64));
+
+  const p1 = gpu.ensure(rec1);
+  await new Promise((r) => setTimeout(r, 0));
+  workerResolvers[0]({
+    ok: true,
+    metaJson: JSON.stringify({ n: 2, table8: false }),
+    data: new ArrayBuffer(2 * 2 * 2 * 16),
+    wasmBytes: 1024,
+  });
+  assert.equal((await p1).ok, true);
+  assert.equal(gpu.stats().gpuSlots, 1);
+
+  // 启动 rec2（处于 runWorker 中）并排队 rec3，然后立刻 clear()
+  const p2 = gpu.ensure(rec2);
+  const p3 = gpu.ensure(rec3);
+  await new Promise((r) => setTimeout(r, 0));
+  gpu.clear();
+
+  const st = gpu.stats();
+  assert.equal(clearLutsCalled, 1);
+  assert.equal(cancelledCalls, 1);
+  assert.equal(st.alive, 0);
+  assert.equal(st.terminated, st.spawned);
+  assert.equal(st.pending, 0);
+  assert.equal(st.gpuSlots, 0);
+  assert.equal(st.gpuBytes, 0);
+  assert.equal(luts.size, 0);
+
+  // 即使晚到的完成回调尝试返回成功，也不能重新污染引擎或统计
+  workerResolvers[1]?.({
+    ok: true,
+    metaJson: JSON.stringify({ n: 2, table8: false }),
+    data: new ArrayBuffer(2 * 2 * 2 * 16),
+    wasmBytes: 1024,
+  });
+  const [r2, r3] = await Promise.all([p2, p3]);
+  assert.equal(r2.ok, false);
+  assert.equal(r3.ok, false);
+  assert.equal(luts.size, 0);
+  assert.equal(gpu.stats().gpuSlots, 0);
+  assert.equal(gpu.stats().pending, 0);
 });

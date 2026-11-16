@@ -366,6 +366,126 @@ try {
     deletedFailures,
   };
 
+  // 11. post-r1 回归：P3-01 非 UTF-8 .cube 中文提示、P1-01 保留 output_space、P2-03 删除事务中止恢复、P2-04 清空销毁 GPU LUT
+  // 关闭导出 dock 并仍在 Pair A LUT 页签继续
+  const doneBtn = page.locator('.pdock [data-act="done"]');
+  if (await doneBtn.count()) {
+    await doneBtn.click();
+    await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
+  }
+
+  // P3-01：非 UTF-8 .cube 报桌面 LUT_ERRORS.cube_unreadable（不透出底层 UTF-8/Rust 文案）
+  await page.locator('input.lutpick').setInputFiles([manifest.badUtf8File]);
+  await page.waitForFunction(
+    () => document.querySelector('.panel.lut [data-state="lut-status"]')?.textContent?.includes('无法读取 LUT。请改用 .cube 文件。'),
+    null,
+    { timeout: 15_000 },
+  );
+  const badUtf8Status = await page.locator('.panel.lut [data-state="lut-status"]').innerText();
+
+  // P1-01：导入 # Input: sRGB + # Output: Rec.709，改输入范围等参数后 output_space 仍保留 rec709；UI 也显示输出色彩空间行
+  const rec709Id = manifest.rec709Out.cubeId;
+  await page.locator('input.lutpick').setInputFiles([manifest.rec709Out.path]);
+  await page.waitForFunction((id) => Boolean(window.__gxrLutBook?.get(id)), rec709Id, { timeout: 15_000 });
+  const recCard = page.locator(`.panel.lut .rc[data-lut="${rec709Id}"]`);
+  await recCard.scrollIntoViewIfNeeded();
+  await recCard.click();
+  await waitLutReady(page, rec709Id);
+  await page.locator('.panel.lut [data-act="lut-space"]').click();
+  await page.waitForSelector('.lut-space-sheet[data-state="lut-space"]', { timeout: 10_000 });
+  const outputSpaceChoices = await page.evaluate(() =>
+    [...document.querySelectorAll('.lut-adv-row[data-field="output_space"] button')].map((b) => ({
+      value: b.getAttribute('data-value'),
+      on: b.classList.contains('on'),
+      text: b.textContent,
+    })),
+  );
+  await page.locator('.lut-adv-row[data-field="input_range"] [data-value="legal"]').click();
+  await page.waitForFunction(
+    (id) => window.__gxrLutBook?.get(id)?.input_range === 'legal',
+    rec709Id,
+    { timeout: 10_000 },
+  );
+  const outputSpaceAfterEdit = await page.evaluate((id) => window.__gxrLutBook?.get(id)?.output_space ?? null, rec709Id);
+  await page.locator('.lut-space-sheet .hd .nb').click();
+  await page.waitForFunction(() => !document.querySelector('.lut-space-sheet'), null, { timeout: 10_000 });
+
+  // 确保已有多个 LUT 上到 GPU 纹理（为 P2-04 做准备）
+  for (const id of [ids.shaper, ids.undeclared, rec709Id]) {
+    const cBtn = page.locator(`.panel.lut .rc[data-lut="${id}"]`);
+    await cBtn.scrollIntoViewIfNeeded();
+    await cBtn.click();
+    await waitLutReady(page, id);
+  }
+  const gpuBeforeClear = await page.evaluate(() => ({
+    engine: window.__gxrEngine?.stats() ?? null,
+    lutGpu: window.__gxrLutGpu?.stats() ?? null,
+  }));
+
+  // P2-03：真实 IndexedDB tx.abort() 触发删除失败时，按钮恢复可点、显示单行错误且 LUT 仍在本地库
+  await longPress(page, `.panel.lut .rc[data-lut="${ids.shaper}"]`);
+  await page.locator('[data-state="lut-actions"] [data-act="lut-delete"]').click();
+  await page.waitForSelector('[data-state="lut-delete"]', { timeout: 10_000 });
+  await page.evaluate(() => {
+    const book = window.__gxrLutBook;
+    book.__origRemove = book.io.remove;
+    book.io.remove = () =>
+      new Promise((_resolve, reject) => {
+        const req = indexedDB.open('gxr-mobile');
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(['lut_records'], 'readwrite');
+          tx.onabort = () => {
+            db.close();
+            reject(tx.error ?? new DOMException('The transaction was aborted.', 'AbortError'));
+          };
+          tx.abort();
+        };
+        req.onerror = () => reject(req.error ?? new DOMException('AbortError', 'AbortError'));
+      });
+  });
+  await page.locator('[data-state="lut-delete"] [data-act="lut-delete-confirm"]').click();
+  await page.waitForFunction(
+    () => {
+      const err = document.querySelector('[data-state="lut-delete"] .bad');
+      const go = document.querySelector('[data-state="lut-delete"] [data-act="lut-delete-confirm"]');
+      return err && !err.hidden && err.textContent && go && !go.disabled;
+    },
+    null,
+    { timeout: 15_000 },
+  );
+  const abortRecovery = await page.evaluate((id) => {
+    const dlg = document.querySelector('[data-state="lut-delete"]');
+    const errs = [...dlg.querySelectorAll('.bad')].filter((n) => !n.hidden).map((n) => n.textContent);
+    const go = dlg.querySelector('[data-act="lut-delete-confirm"]');
+    const stillPresent = Boolean(window.__gxrLutBook?.get(id));
+    window.__gxrLutBook.io.remove = window.__gxrLutBook.__origRemove;
+    delete window.__gxrLutBook.__origRemove;
+    return { errs, goDisabled: Boolean(go?.disabled), stillPresent };
+  }, ids.shaper);
+  await page.locator('[data-state="lut-delete"] .acts button', { hasText: '取消' }).click();
+  await page.waitForFunction(() => !document.querySelector('[data-state="lut-delete"]'), null, { timeout: 10_000 });
+
+  // P2-04：回到网格点击「清空照片，重新选」→ Engine LUT 纹理和 LutGpu 队列与统计全清零
+  await backToGrid(page);
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.waitForSelector('.ms');
+  await page.getByText('清空照片，重新选').click();
+  await page.waitForSelector('[data-screen="start"]', { timeout: 15_000 });
+  const gpuAfterClear = await page.evaluate(() => ({
+    engine: window.__gxrEngine?.stats() ?? null,
+    lutGpu: window.__gxrLutGpu?.stats() ?? null,
+  }));
+
+  out.steps.postR1Regressions = {
+    badUtf8Status,
+    outputSpaceChoices,
+    outputSpaceAfterEdit,
+    gpuBeforeClear,
+    abortRecovery,
+    gpuAfterClear,
+  };
+
   await page.close();
 } catch (err) {
   out.error = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err);

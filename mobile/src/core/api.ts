@@ -3,7 +3,7 @@
 import type { BakeMeta, RawLayout, Scene } from '../../../frontend/src/index';
 import type { UnitPack } from '../lib/calib';
 import type { PhotoMeta } from '../lib/exif';
-import type { LutPatchFields } from '../lib/idb';
+import type { LutPatchFields, LutSnapshotRow } from '../lib/idb';
 import type { LutRecord } from '../lib/lut';
 import type { ZipFail } from '../lib/zip';
 import { Pool } from './pool';
@@ -241,4 +241,20 @@ export async function readLutBlob(cubeId: string): Promise<ArrayBuffer | null> {
   });
   const parsed = JSON.parse(json) as { ok?: boolean };
   return parsed.ok && buffers[0] ? buffers[0] : null;
+}
+
+/** 在单个 IndexedDB readonly 事务里原子读取一组 LUT 的记录与 .cube 字节（P2-02）。 */
+export async function readLutBatchSnapshot(cubeIds: readonly string[]): Promise<LutSnapshotRow[]> {
+  const unique = [...new Set(cubeIds)];
+  if (!unique.length) return [];
+  const { json, buffers } = await workers().request('lut-snapshot', null, [], null, {
+    lutSnapshot: { cubeIds: unique },
+  });
+  const parsed = JSON.parse(json) as { items?: Array<{ cubeId: string; record: LutRecord | null; hasBlob: boolean }> };
+  let bi = 0;
+  return (parsed.items ?? []).map((item) => ({
+    cubeId: item.cubeId,
+    record: item.record,
+    blob: item.hasBlob ? (buffers[bi++] ?? null) : null,
+  }));
 }
