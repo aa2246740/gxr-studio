@@ -1220,6 +1220,366 @@ try {
       res.s2DraftOrderAndSheetsOk = true;
     }
 
+    // =========================================================================
+    // S3 (Checklist #5): Real-IndexedDB commit-boundary matrix (5 phases x 6 exits = 30 cases)
+    // =========================================================================
+    {
+      const { Pool } = await import('/src/core/pool.ts');
+      const { activeSheetCount } = await import('/src/app/sheet_lifecycle.ts');
+      const { loadAllLogos } = await import('/src/lib/idb.ts');
+
+      const until = async (pred, msg, timeoutMs = 8000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const val = pred();
+          if (val) return val;
+          await sleep(15);
+        }
+        fail(msg);
+      };
+
+      const phases = [
+        'worker-pending',
+        'transaction-active',
+        'transaction-committed',
+        'committed-pending',
+        'completed',
+      ];
+      const exits = [
+        'replace-frame',
+        'replace-stamp',
+        'replace-logo',
+        'editor-destroy',
+        'editor-switch',
+        'frame-destroy',
+      ];
+
+      const book = new Book();
+      const makeRealHost = () => {
+        const shell = document.createElement('div');
+        shell.className = 'app';
+        shell.style.width = '390px';
+        shell.style.height = '844px';
+        const view = document.createElement('div');
+        shell.append(view);
+        document.body.append(shell);
+        return { shell, view };
+      };
+      const makeEditorApi = (list) => {
+        const map = new Map(list.map((p) => [p.id, p]));
+        return {
+          photos: () => list,
+          photo: (id) => map.get(id),
+          order: () => 'desc',
+          gap: () => 15,
+          ignored: () => 0,
+          hasDat: () => false,
+          loading: () => ({ done: list.length, total: list.length }),
+          setOrder: () => {},
+          setGap: () => {},
+          open: () => {},
+          remove: () => {},
+          clear: () => {},
+          addPhotos: () => {},
+          showHelp: () => {},
+          back: () => {},
+          swipe: () => {},
+          markBad: () => {},
+          markGone: () => {},
+          readFull: async () => ({ ok: false, gone: false, stale: false }),
+          uploadRaw: async () => false,
+          takeWarm: () => null,
+          keepWarm: () => {},
+          gpu: () => false,
+          session: () => 1,
+          cardOut: () => false,
+          still: async () => null,
+          watch: () => {},
+          perf: () => {},
+          book: () => book,
+          pickDat: () => {},
+          pickCalib: () => {},
+          showCalib: () => {},
+          exportPhotos: () => {},
+          takeCalib: () => {},
+        };
+      };
+
+      await logoStore.ensureLoaded();
+      const baselineIds = new Set((await loadAllLogos()).map((r) => r.id));
+      const syntheticLogoFile = new File([new Uint8Array(logoBytesArr)], 'SyntheticMark.png', { type: 'image/png' });
+      const failures = [];
+      let matrixCount = 0;
+
+      for (const phase of phases) {
+        for (const exit of exits) {
+          matrixCount += 1;
+          const bmp1 = await makeTestBitmap(120, 90);
+          const bmp2 = await makeTestBitmap(120, 90);
+          const p1 = makePhoto(`s3_${phase}_${exit}_1`, bmp1, { style: 'leica', logo: 'ricoh', show_logo: true });
+          p1.rev = 7;
+          const p2 = makePhoto(`s3_${phase}_${exit}_2`, bmp2, { style: 'leica', logo: 'ricoh', show_logo: true });
+          p2.rev = 0;
+
+          const { shell, view } = makeRealHost();
+          const api = makeEditorApi([p1, p2]);
+          const editor = new EditorView(view, shell, api, null);
+
+          const origRequest = Pool.prototype.request;
+          const origAdd = logoStore.add;
+          const origPut = IDBObjectStore.prototype.put;
+          const origAbort = IDBTransaction.prototype.abort;
+          const origTx = IDBDatabase.prototype.transaction;
+
+          let exitCalled = false;
+          let workerHeld = false;
+          let commitHeld = false;
+          let abortCalls = 0;
+          let addPromise = null;
+          let addResult = null;
+          let releaseWorker = () => {};
+          let releaseCommit = () => {};
+          const workerGate = new Promise((r) => {
+            releaseWorker = r;
+          });
+          const commitGate = new Promise((r) => {
+            releaseCommit = r;
+          });
+
+          const doExit = () => {
+            if (exitCalled) return;
+            exitCalled = true;
+            if (exit === 'replace-frame') openFrameMoreSheet(shell, p1, () => {});
+            else if (exit === 'replace-stamp') openStampSheet(shell, p1, () => {});
+            else if (exit === 'replace-logo') openLogoSheet(shell, p1, () => {});
+            else if (exit === 'editor-destroy') editor.destroy();
+            else if (exit === 'editor-switch') editor.open(p2);
+            else if (exit === 'frame-destroy') editor.frames.destroy();
+          };
+
+          try {
+            editor.open(p1);
+            const frameTab = [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框');
+            assert(frameTab, `S3 ${phase}/${exit}: missing 边框 tab`);
+            frameTab.click();
+            const logoChip = view.querySelector('.panel.frame [data-act="frame-logo"]');
+            assert(logoChip, `S3 ${phase}/${exit}: missing 标志 chip`);
+            logoChip.click();
+
+            await until(
+              () => shell.querySelector('.ms.logo-sheet [data-logo-action="upload"]'),
+              `S3 ${phase}/${exit}: logo list upload button missing`,
+            );
+            shell.querySelector('.ms.logo-sheet [data-logo-action="upload"]').click();
+
+            const picker = shell.querySelector('.ms.logo-sheet input.filepick');
+            const dt = new DataTransfer();
+            dt.items.add(syntheticLogoFile);
+            picker.files = dt.files;
+            picker.dispatchEvent(new Event('change', { bubbles: true }));
+            await until(
+              () => {
+                const btn = shell.querySelector('.ms.logo-sheet [data-logo-action="save"]');
+                return btn && !btn.disabled;
+              },
+              `S3 ${phase}/${exit}: preview save button never enabled`,
+            );
+
+            const oldSheet = shell.querySelector('.ms.logo-sheet');
+            Pool.prototype.request = async function (...args) {
+              const outReq = await origRequest.apply(this, args);
+              if (phase === 'worker-pending' && args[0] === 'logo-save') {
+                workerHeld = true;
+                await workerGate;
+              }
+              return outReq;
+            };
+            logoStore.add = function (...args) {
+              addPromise = (async () => {
+                const r = await origAdd.apply(this, args);
+                addResult = r;
+                if (phase === 'committed-pending' && r.ok) {
+                  commitHeld = true;
+                  await commitGate;
+                }
+                return r;
+              })();
+              return addPromise;
+            };
+            IDBTransaction.prototype.abort = function (...args) {
+              abortCalls += 1;
+              return origAbort.apply(this, args);
+            };
+            IDBDatabase.prototype.transaction = function (...args) {
+              const tx = origTx.apply(this, args);
+              if (
+                phase === 'transaction-committed' &&
+                args[1] === 'readwrite' &&
+                tx.objectStoreNames.contains('logos')
+              ) {
+                // Real IDB commit boundary: `complete` event fires after durability, before app's `tx.oncomplete`.
+                tx.addEventListener('complete', doExit, { once: true });
+              }
+              return tx;
+            };
+            IDBObjectStore.prototype.put = function (...args) {
+              const req = origPut.apply(this, args);
+              if (phase === 'transaction-active' && this.name === 'logos') {
+                doExit();
+              }
+              return req;
+            };
+
+            shell.querySelector('.ms.logo-sheet [data-logo-action="save"]').click();
+
+            if (phase === 'worker-pending') {
+              await until(() => workerHeld, `S3 ${phase}/${exit}: worker-pending not reached`);
+              doExit();
+              releaseWorker();
+            } else if (phase === 'transaction-active') {
+              await until(() => exitCalled, `S3 ${phase}/${exit}: transaction-active not reached`);
+            } else if (phase === 'transaction-committed') {
+              await until(() => exitCalled, `S3 ${phase}/${exit}: transaction-committed not reached`);
+            } else if (phase === 'committed-pending') {
+              await until(() => commitHeld, `S3 ${phase}/${exit}: committed-pending not reached`);
+              const midRows = await loadAllLogos();
+              assert(
+                midRows.some((r) => r.id === addResult.logo.id),
+                `S3 ${phase}/${exit}: row must already be durable before committed-pending exit`,
+              );
+              doExit();
+              releaseCommit();
+            } else {
+              await until(
+                () => !oldSheet.isConnected && p1.border.logo !== 'ricoh',
+                `S3 ${phase}/${exit}: save did not complete before exit`,
+              );
+              doExit();
+            }
+
+            await addPromise;
+            await sleep(80);
+
+            // Restore prototypes before verification & fresh upload check
+            IDBObjectStore.prototype.put = origPut;
+            IDBDatabase.prototype.transaction = origTx;
+            IDBTransaction.prototype.abort = origAbort;
+            Pool.prototype.request = origRequest;
+            logoStore.add = origAdd;
+
+            const stored = (await loadAllLogos()).filter((r) => !baselineIds.has(r.id));
+            const cached = logoStore.list().filter((r) => !baselineIds.has(r.id));
+            const committed =
+              phase === 'transaction-committed' || phase === 'committed-pending' || phase === 'completed';
+            const expectedCount = committed ? 1 : 0;
+            const expectedSheets = exit.startsWith('replace-') ? 1 : 0;
+            const openSheets = shell.querySelectorAll('.ms').length;
+            const regCount = activeSheetCount(shell);
+            const liveReplacementHasSaved =
+              exit !== 'replace-logo' || !committed || stored.every((s) => Boolean(shell.querySelector(`.ms.logo-sheet [data-logo="${s.id}"]`)));
+
+            // Reopen logo catalogue and verify persisted vs cached vs UI rows + fresh upload save button
+            openLogoSheet(shell, p2, () => {});
+            await sleep(20);
+            const reopenedHasSaved = stored.every((s) =>
+              Boolean(shell.querySelector(`.ms.logo-sheet [data-logo="${s.id}"]`)),
+            );
+            const reopenedRowCount = shell.querySelectorAll('.ms.logo-sheet .logo-row').length - baselineIds.size;
+
+            shell.querySelector('.ms.logo-sheet [data-logo-action="upload"]').click();
+            const picker2 = shell.querySelector('.ms.logo-sheet input.filepick');
+            const dt2 = new DataTransfer();
+            dt2.items.add(syntheticLogoFile);
+            picker2.files = dt2.files;
+            picker2.dispatchEvent(new Event('change', { bubbles: true }));
+            await until(
+              () => {
+                const btn2 = shell.querySelector('.ms.logo-sheet [data-logo-action="save"]');
+                return btn2 && !btn2.disabled;
+              },
+              `S3 ${phase}/${exit}: fresh upload save button stuck disabled`,
+            );
+
+            // Also execute an actual fresh save on transaction-committed/replace-logo to prove end-to-end save works afterwards
+            let freshSavedOk = true;
+            if (phase === 'transaction-committed' && exit === 'replace-logo') {
+              shell.querySelector('.ms.logo-sheet [data-logo-action="save"]').click();
+              await until(() => p2.border.logo !== 'ricoh', 'fresh save after transaction-committed did not commit to p2');
+              freshSavedOk = p2.rev === 1 && Boolean(logoStore.info(p2.border.logo));
+              if (p2.border.logo !== 'ricoh') {
+                await logoStore.remove(p2.border.logo);
+                p2.border.logo = 'ricoh';
+                p2.rev = 0;
+              }
+            }
+
+            const expectedPhotoRev = phase === 'completed' ? 8 : 7;
+            const expectedPhotoLogo = phase === 'completed' ? (stored[0]?.id ?? '') : 'ricoh';
+
+            const okCell =
+              stored.length === expectedCount &&
+              cached.length === expectedCount &&
+              Boolean(addResult?.ok) === committed &&
+              !oldSheet.isConnected &&
+              openSheets === expectedSheets &&
+              regCount === expectedSheets &&
+              liveReplacementHasSaved &&
+              reopenedHasSaved &&
+              reopenedRowCount === expectedCount &&
+              freshSavedOk &&
+              p1.rev === expectedPhotoRev &&
+              p1.border.logo === expectedPhotoLogo &&
+              p2.rev === 0 &&
+              (phase !== 'transaction-active' || abortCalls > 0);
+
+            if (!okCell) {
+              failures.push({
+                phase,
+                exit,
+                persisted: stored.length,
+                cached: cached.length,
+                addOk: Boolean(addResult?.ok),
+                reopenedRowCount,
+                reopenedHasSaved,
+                liveReplacementHasSaved,
+                p1Rev: p1.rev,
+                p1Logo: p1.border.logo,
+                openSheets,
+                regCount,
+                abortCalls,
+              });
+            }
+
+            cancelHostSheets(shell);
+            for (const row of await loadAllLogos()) {
+              if (!baselineIds.has(row.id)) {
+                await logoStore.remove(row.id);
+              }
+            }
+          } finally {
+            releaseWorker();
+            releaseCommit();
+            IDBObjectStore.prototype.put = origPut;
+            IDBDatabase.prototype.transaction = origTx;
+            IDBTransaction.prototype.abort = origAbort;
+            Pool.prototype.request = origRequest;
+            logoStore.add = origAdd;
+            editor.destroy();
+            shell.remove();
+            bmp1.close();
+            bmp2.close();
+          }
+        }
+      }
+
+      assert(matrixCount === 30, `Expected 30 commit-boundary cases, ran ${matrixCount}`);
+      assert(
+        failures.length === 0,
+        `S3 commit-boundary failures (${failures.length}/30): ${JSON.stringify(failures)}`,
+      );
+      res.s3CommitBoundaryMatrixOk = true;
+    }
+
     return res;
   }, { logoBytesArr: logoBytes });
 } finally {

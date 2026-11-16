@@ -117,4 +117,5 @@ def test_mobile_ui_frame_lifecycle_browser(tmp_path: Path) -> None:
         "s1CardsAndBackdropOk": True,
         "s1FrameNoOk": True,
         "s2DraftOrderAndSheetsOk": True,
+        "s3CommitBoundaryMatrixOk": True,
     }, report["results"]
