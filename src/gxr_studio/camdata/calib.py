@@ -140,10 +140,15 @@ def model_for(home: Path, iso: int = 200, *, unit: str = "jlaunch") -> tuple[Uni
             blobs[name] = blob
     model_iso = 1600 if int(iso) >= 566 else 200
     pair = meta["models"][str(model_iso)]
-    with np.load(io.BytesIO(blobs[pair["ctx"]]), allow_pickle=False) as z:
-        d0, d1, coefficients = (z[k].copy() for k in ("d0", "d1", "input_coefficients"))
-    model = UnitModel(stock_words_of_entry(stock04), d0, d1, json.loads(blobs[pair["ring"]]), stock04, coefficients)
+    model = build_model(stock04, blobs[pair["ctx"]], blobs[pair["ring"]])
     return model, {"iso": int(iso), "calibrated": int(iso) in UNIT_ISOS[unit], "model_iso": model_iso}
+
+
+def build_model(stock04: bytes, ctx: bytes, ring: bytes) -> UnitModel:
+    """从一个分支的 ctx npz 和 ring JSON 建模型（`model_for` 和「导出给 iPhone」的快照校验共用）。"""
+    with np.load(io.BytesIO(ctx), allow_pickle=False) as z:
+        d0, d1, coefficients = (z[k].copy() for k in ("d0", "d1", "input_coefficients"))
+    return UnitModel(stock_words_of_entry(stock04), d0, d1, json.loads(ring), stock04, coefficients)
 
 
 def unit_status(home: Path, unit: str) -> dict[str, Any]:

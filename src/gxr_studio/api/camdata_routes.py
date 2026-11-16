@@ -4,6 +4,7 @@
 - `POST /api/camdata/import-card`     从插着的卡上只读取出 GXRCE.DAT 并导入（卡不会被写）；
 - `POST /api/camdata/import-file`     从本地文件（或装着它的文件夹）导入，没有卡时用；
 - `POST /api/calibration/import`      从本地文件夹导入标定包（需要先导入相机数据）。
+- `POST /api/calibration/export-iphone` 把校准数据打成一个不压缩的 zip，写进导出文件夹，给 iPhone 版导入。
 
 导入成功后渲染缓存清空、没有 JPG 的照片的缩略图缓存删除；`data_version` 变了，照片链接里的 `?v=` 跟着变。
 理光字节只写到应用数据目录。
@@ -19,7 +20,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .. import privacy
-from ..camdata import datcodec, intake, r5
+from ..camdata import calib_export, datcodec, intake, r5
 from ..cards.session import MountSession, SessionError
 from ..library import thumbs
 from .errors import ApiError
@@ -34,6 +35,10 @@ class ImportCardRequest(BaseModel):
 
 class PathRequest(BaseModel):
     path: str
+
+
+class ExportPackRequest(BaseModel):
+    dest_dir: str | None = None  # 不给就用默认的导出文件夹
 
 
 def _api(exc: intake.IntakeError) -> ApiError:
@@ -269,4 +274,22 @@ def import_calibration(body: PathRequest, request: Request) -> dict[Any, Any]:
         "message": msg,
         "invalidated": {"render_cache": True, "thumbnails_removed": removed},
         "status": status,
+    }
+
+
+@router.post("/api/calibration/export-iphone", response_model=None)
+def export_calibration_for_iphone(body: ExportPackRequest, request: Request) -> dict[str, Any]:
+    """校准数据 → `GXR 校准数据 YYYY-MM-DD.zip`。目标文件夹走导出的检查；返回的 export_id 用导出的「在访达中显示」。"""
+    c = ctx(request)
+    dest = Path(body.dest_dir).expanduser() if body.dest_dir else c.settings.export_dir
+    try:
+        with c.camdata_lock:
+            path = calib_export.export_for_iphone(c.settings.home_dir, dest, [*_forbidden(c), c.lib.root])
+    except calib_export.CalibExportError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, {"detail": exc.detail} if exc.detail else None) from exc
+    return {
+        "path": str(path),
+        "name": path.name,
+        "export_id": c.exports.note_new(path.parent, path),
+        "message": "用隔空投送发到 iPhone，存到「文件」里，再在手机上导入。",
     }

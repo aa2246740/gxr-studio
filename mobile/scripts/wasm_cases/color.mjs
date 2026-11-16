@@ -1,7 +1,8 @@
 // 色彩：烘焙表和套用。每个输入是一份 JSON，列出这一例要用的文件（测试现场生成）。
 // bake: {"kind": "bake", "entry", "stock", "menu"?, "ctx", "ring", "params"?}
 // apply: {"kind": "apply", "bake", "meta", "codes", "params"?, "out"}
-import { readFileSync } from 'node:fs';
+// calib: {"kind": "calib", "dir", "unit", "iso", "stock"}：校准包文件夹里的文件在 WASM 这边拼成一块，加一份索引
+import { readdirSync, readFileSync } from 'node:fs';
 
 const bytes = (path) => new Uint8Array(readFileSync(path));
 
@@ -28,6 +29,27 @@ function npyFloat32(path) {
   const copy = new Uint8Array(data.byteLength);
   copy.set(data);
   return { shape, values: new Float32Array(copy.buffer) };
+}
+
+/** 校准包文件夹：manifest 单独，其余文件拼成一块，加 `{名字: [偏移, 长度]}` 索引。 */
+function packOf(dir) {
+  const index = {};
+  const parts = [];
+  let offset = 0;
+  for (const name of readdirSync(dir).sort()) {
+    if (name === 'manifest.json') continue;
+    const data = bytes(`${dir}/${name}`);
+    index[name] = [offset, data.length];
+    parts.push(data);
+    offset += data.length;
+  }
+  const blob = new Uint8Array(offset);
+  let at = 0;
+  for (const part of parts) {
+    blob.set(part, at);
+    at += part.length;
+  }
+  return { manifest: bytes(`${dir}/manifest.json`), index: new TextEncoder().encode(JSON.stringify(index)), blob };
 }
 
 export function cases(inputs) {
@@ -94,6 +116,27 @@ export function cases(inputs) {
         label: `${file}::color_resolve`,
         cliArgs,
         wasm: (mod) => mod.color_resolve(bytes(spec.dat), bytes(spec.recipe), spec.library ? bytes(spec.library) : undefined),
+      });
+    } else if (spec.kind === 'calib') {
+      const cliArgs = ['color-calib-check', '--dir', spec.dir, '--unit', spec.unit, '--iso', String(spec.iso), '--stock', spec.stock];
+      out.push({
+        label: `${file}::color_calib_check`,
+        cliArgs,
+        wasm: (mod) => {
+          const { manifest, index, blob } = packOf(spec.dir);
+          // `iso` 可以是字符串（"NaN"、"Infinity"、"1.5"），CLI 照原样收，WASM 收 Number(…)。
+          const iso = typeof spec.iso === 'string' ? Number(spec.iso) : spec.iso;
+          return mod.color_calib_check(manifest, index, blob, bytes(spec.stock), spec.unit, iso);
+        },
+      });
+    } else if (spec.kind === 'calib-pack') {
+      out.push({
+        label: `${file}::color_calib_pack`,
+        cliArgs: ['color-calib-check', '--dir', spec.dir],
+        wasm: (mod) => {
+          const { manifest, index, blob } = packOf(spec.dir);
+          return mod.color_calib_pack(manifest, index, blob);
+        },
       });
     } else {
       throw new Error(`unknown color case kind ${spec.kind}`);

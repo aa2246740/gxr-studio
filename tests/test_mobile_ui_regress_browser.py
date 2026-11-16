@@ -85,15 +85,20 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]
 
 
 def run_case(server: dict[str, Any], name: str) -> dict[str, Any]:
-    result = subprocess.run(
-        ["node", str(DRIVER), str(RUNTIME), server["base"], str(server["manifest"]), name],
-        cwd=REPO,
-        env={**os.environ, "HOME": str(REAL_HOME)},
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    try:
+        result = subprocess.run(
+            ["node", str(DRIVER), str(RUNTIME), server["base"], str(server["manifest"]), name],
+            cwd=REPO,
+            env={**os.environ, "HOME": str(REAL_HOME)},
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # 只为诊断：驱动在 stderr 上印每一步的时间，超时时把已经印出来的带上，看停在哪一步。
+        partial = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        pytest.fail(f"{name}: driver timed out after 300 s; stages so far:\n{partial[-4000:]}")
     assert result.returncode == 0, result.stdout + result.stderr
     out: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
     assert out["ok"], out.get("error")
@@ -173,7 +178,8 @@ def test_card_removed_keeps_cached_photos_and_counts_unread(server: dict[str, An
 def test_recipe_cards_show_the_real_source(server: dict[str, Any]) -> None:
     data = run_case(server, "recipe-cards")
     gpu = data["gpuRun"]
-    assert set(gpu["labels"]) == {"中性转换"}
+    # 没选相机配方文件（06d）：卡片置灰、不写小字，画的仍是这张 RAW 的中性小图（data-source）。
+    assert set(gpu["labels"]) == {""}
     # 卡片就是这张 RAW 的中性小图（同一份显卡输出，只差缩放）。
     assert gpu["diff"] <= 2.0, gpu["diff"]
     # 第一张一次、第二张一次，滑回第一张不再请显卡出图。

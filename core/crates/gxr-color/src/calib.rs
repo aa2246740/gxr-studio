@@ -198,6 +198,110 @@ fn plain_name(name: &str) -> bool {
     !name.contains('/') && name != "."
 }
 
+/// `manifest.json` parsed, with `model_for`'s version check.
+fn manifest_of(manifest: &[u8]) -> Result<Value, CoreError> {
+    let m = parse_json(manifest)?;
+    if !matches!(&m, Value::Object(_))
+        || !matches!(m.get("schema"), Some(Value::Str(s)) if s == SCHEMA)
+    {
+        return Err(calib("校准数据版本已更新，请重新导入"));
+    }
+    Ok(m)
+}
+
+/// `model_for`'s file-list loop for one unit: both ISO branches, every name plain and listed,
+/// present, and matching its sha256. Returns the files it read.
+///
+/// `complete`: each branch must also name both a `ctx` and a `ring` (as strings), else
+/// 校准数据的文件清单不正确. `import_calibration` always writes both, and the desktop export
+/// builds both models, so a pack missing one can't be used; `check_pack` (the import gate) asks
+/// for it. `model_for` does not: Python only reads the chosen branch's `ctx`/`ring` (a missing
+/// one is the `KeyError` below), and the parity tests hold it to that.
+fn branch_files(
+    m: &Value,
+    meta: &Value,
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+    complete: bool,
+) -> Result<Vec<(String, Vec<u8>)>, CoreError> {
+    let files = obj_get(m, "files")?;
+    let models = obj_get(meta, "models")?;
+    let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
+    for branch in MODEL_ISOS {
+        let pair = obj_get(models, &branch.to_string())?;
+        let Value::Object(entries) = pair else {
+            return Err(CoreError::new(
+                "attribute",
+                "models entry must be an object",
+            ));
+        };
+        if complete
+            && ["ctx", "ring"]
+                .iter()
+                .any(|key| !matches!(pair.get(key), Some(Value::Str(_))))
+        {
+            return Err(calib("校准数据的文件清单不正确"));
+        }
+        for (_, name) in entries {
+            let Value::Str(name) = name else {
+                return Err(calib("校准数据的文件清单不正确"));
+            };
+            if !plain_name(name) || files.get(name).is_none() {
+                return Err(calib("校准数据的文件清单不正确"));
+            }
+            let blob = read(name)
+                .ok_or_else(|| CoreError::new("file_not_found", format!("缺少校准文件 {name}")))?;
+            let want = obj_get(obj_get(files, name)?, "sha256")?;
+            if !matches!(want, Value::Str(s) if *s == gxr_raw::sha256::sha256_hex(&blob)) {
+                return Err(calib("校准数据被改动，请重新导入"));
+            }
+            blobs.push((name.clone(), blob));
+        }
+    }
+    Ok(blobs)
+}
+
+/// The checks of a pack that don't need the camera data, for a pack about to be imported:
+/// `model_for`'s version check, then the unit set as `import_calibration` requires it (not
+/// empty, only known units, else 校准数据的单元不正确), then `model_for`'s file-list checks for
+/// every listed unit, with both `ctx` and `ring` named in each ISO branch. The stock-04
+/// fingerprint and the model build stay in `model_for`.
+/// Returns the units in `UNIT_ISOS` order.
+pub fn check_pack(
+    manifest: &[u8],
+    read: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Result<Vec<String>, CoreError> {
+    let m = manifest_of(manifest)?;
+    let units = obj_get(&m, "units")?;
+    let Value::Object(rows) = units else {
+        return Err(calib("校准数据的单元不正确"));
+    };
+    if rows.is_empty() || rows.iter().any(|(name, _)| unit_isos(name).is_none()) {
+        return Err(calib("校准数据的单元不正确"));
+    }
+    let mut out = Vec::new();
+    for unit in ["jlaunch", "qlaunch", "l08firm"] {
+        if let Some(meta) = units.get(unit) {
+            branch_files(&m, meta, read, true)?;
+            out.push(unit.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// An ISO from outside (a CLI argument or a JavaScript number), as f64: a finite whole number
+/// in the safe-integer range, so the cast to `i64` can't wrap or truncate. The CLI and WASM
+/// share it, so both refuse the same values with the same error.
+pub fn checked_iso(iso: f64) -> Result<i64, CoreError> {
+    const SAFE: f64 = 9_007_199_254_740_991.0;
+    if !iso.is_finite() || iso.fract() != 0.0 || !(-SAFE..=SAFE).contains(&iso) {
+        return Err(CoreError::new(
+            "value",
+            "iso must be a whole number between -(2**53 - 1) and 2**53 - 1",
+        ));
+    }
+    Ok(iso as i64)
+}
+
 /// Port of gxr_studio/camdata/calib.py:121 model_for, without the filesystem.
 ///
 /// `read(name)` returns a pack file's bytes (`None` when it is missing). Returns the pick and
@@ -209,12 +313,7 @@ pub fn model_for(
     unit: &str,
     read: &dyn Fn(&str) -> Option<Vec<u8>>,
 ) -> Result<(Pick, Vec<u8>, Vec<u8>), CoreError> {
-    let m = parse_json(manifest)?;
-    if !matches!(&m, Value::Object(_))
-        || !matches!(m.get("schema"), Some(Value::Str(s)) if s == SCHEMA)
-    {
-        return Err(calib("校准数据版本已更新，请重新导入"));
-    }
+    let m = manifest_of(manifest)?;
     let isos = unit_isos(unit);
     if isos.is_none() {
         return Err(calib("缺少这个单元的校准数据"));
@@ -232,33 +331,8 @@ pub fn model_for(
             "校准数据与这个单元的原厂 04 不匹配，请重新导入",
         ));
     }
-    let files = obj_get(&m, "files")?;
     let models = obj_get(meta, "models")?;
-    let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
-    for branch in MODEL_ISOS {
-        let pair = obj_get(models, &branch.to_string())?;
-        let Value::Object(entries) = pair else {
-            return Err(CoreError::new(
-                "attribute",
-                "models entry must be an object",
-            ));
-        };
-        for (_, name) in entries {
-            let Value::Str(name) = name else {
-                return Err(calib("校准数据的文件清单不正确"));
-            };
-            if !plain_name(name) || files.get(name).is_none() {
-                return Err(calib("校准数据的文件清单不正确"));
-            }
-            let blob = read(name)
-                .ok_or_else(|| CoreError::new("file_not_found", format!("缺少校准文件 {name}")))?;
-            let want = obj_get(obj_get(files, name)?, "sha256")?;
-            if !matches!(want, Value::Str(s) if *s == gxr_raw::sha256::sha256_hex(&blob)) {
-                return Err(calib("校准数据被改动，请重新导入"));
-            }
-            blobs.push((name.clone(), blob));
-        }
-    }
+    let blobs = branch_files(&m, meta, read, false)?;
     let model_iso = if iso >= ISO_SPLIT { 1600 } else { 200 };
     let pair = obj_get(models, &model_iso.to_string())?;
     let name_of = |key: &str| -> Result<String, CoreError> {

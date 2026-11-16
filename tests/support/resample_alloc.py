@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from support.core_cli import CLI, REPO
-from support.geometry_alloc import _find_rustc, _skip_or_fail
+from support.core_rlibs import compile_and_run_probe
 
 _PROBE_RS = """use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -103,44 +102,5 @@ fn main() {
 
 
 def run_resample_oom_probe(tmp_path: Path) -> None:
-    """Compile and execute the OOM probe against the built release ``libgxr_finish`` rlib."""
-    import subprocess
-
-    if not CLI.is_file():
-        _skip_or_fail(f"need {CLI}; run make core")
-    deps = REPO / "core" / "target" / "release" / "deps"
-    finish_rlibs = sorted(deps.glob("libgxr_finish-*.rlib"), key=lambda p: p.stat().st_mtime, reverse=True)
-    raw_rlibs = sorted(deps.glob("libgxr_raw-*.rlib"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not finish_rlibs or not raw_rlibs:
-        _skip_or_fail(f"missing release rlibs under {deps}; run make core")
-
-    rustc = _find_rustc()
-    src_path = tmp_path / "resample_oom_probe.rs"
-    bin_path = tmp_path / "resample_oom_probe"
-    src_path.write_text(_PROBE_RS, encoding="utf-8")
-    compile_proc = subprocess.run(
-        [
-            rustc,
-            "--edition=2024",
-            "-C",
-            "opt-level=2",
-            "-C",
-            "panic=abort",
-            "-L",
-            f"dependency={deps}",
-            "--extern",
-            f"gxr_finish={finish_rlibs[0]}",
-            "--extern",
-            f"gxr_raw={raw_rlibs[0]}",
-            str(src_path),
-            "-o",
-            str(bin_path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert compile_proc.returncode == 0, compile_proc.stdout + compile_proc.stderr
-    run_proc = subprocess.run([str(bin_path)], check=False, capture_output=True, text=True, timeout=60)
-    assert run_proc.returncode == 0, run_proc.stdout + run_proc.stderr
+    """Compile and execute the OOM probe against the release rlibs cargo reports for gxr-finish and gxr-raw."""
+    compile_and_run_probe(tmp_path, "resample_oom_probe", _PROBE_RS)

@@ -1,8 +1,15 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type VRow } from '../lib/group';
+import { UNIT_LABEL } from '../lib/calib';
 import { button, el } from './dom';
 import { openable, photoMs, unread, type AppApi, type Photo } from './model';
 
 const GAPS: GapMinutes[] = [1, 3, 5, 10];
+
+function calibDetail(api: AppApi): string {
+  const pack = api.book().pack;
+  if (!pack) return '还没导入校准数据';
+  return `已导入：${pack.units.map((row) => UNIT_LABEL[row.unit]).join('、')}`;
+}
 
 export class GridView {
   private scroller: HTMLElement | null = null;
@@ -16,6 +23,7 @@ export class GridView {
   private selecting = false;
   private readonly selected = new Set<string>();
   private sheet: HTMLElement | null = null;
+  private datLine: HTMLElement | null = null;
 
   constructor(
     private readonly host: HTMLElement,
@@ -76,6 +84,11 @@ export class GridView {
       seg.append(item);
     }
     order.append(seg);
+    // 相机配方文件的一行：选了几个用哪个，或者读不了。
+    this.datLine = el('p', 'note datline');
+    this.datLine.dataset.state = 'dat-note';
+    this.datLine.hidden = true;
+    order.append(this.datLine);
 
     this.scroller = el('div', 'gscroll');
     this.inner = el('div', 'inner');
@@ -113,12 +126,22 @@ export class GridView {
     const cellH = Math.max(48, (width / 3) * (2 / 3) + 2);
     this.rows = layoutRows(groups, cellH);
     this.subtitle(photos, groups.length);
+    this.paintDat();
     for (const item of this.host.querySelectorAll<HTMLButtonElement>('[data-order]')) {
       item.classList.toggle('on', item.dataset.order === this.api.order());
     }
     this.sig = '';
     this.renderWindow();
     this.selectionBar();
+  }
+
+  private paintDat(): void {
+    if (!this.datLine) return;
+    const book = this.api.book();
+    const text = book.datError ?? book.datNote ?? '';
+    this.datLine.textContent = text;
+    this.datLine.hidden = !text;
+    this.datLine.classList.toggle('bad', !!book.datError);
   }
 
   private subtitle(photos: Photo[], groups: number): void {
@@ -378,15 +401,15 @@ export class GridView {
     const rows: Array<[string, string, () => void]> = [
       ['添加照片', '再从存储卡里选几张', () => this.api.addPhotos()],
       ['胶片柜', '下一步做', () => undefined],
-      ['校准数据', '还没导入校准数据', () => undefined],
-      ['怎么把卡插到 iPhone', this.api.hasDat() ? '相机配方文件已选上，下一步再用' : '需要配方时再选 GXRCE.DAT', () => this.api.showHelp()],
+      ['校准数据', calibDetail(this.api), () => this.api.showCalib()],
+      ['怎么把卡插到 iPhone', this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT', () => this.api.showHelp()],
     ];
     for (const [title, detail, run] of rows) {
       const line = button('lrow', '');
       const text = el('div');
       text.append(el('b', '', title), el('small', '', detail));
       line.append(text);
-      line.disabled = title === '胶片柜' || title === '校准数据';
+      line.disabled = title === '胶片柜';
       line.addEventListener('click', () => {
         this.closeSheet();
         run();
