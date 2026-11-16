@@ -30,6 +30,7 @@
 | `incoming/fonts/PatrickHand-Regular.ttf` | 拍立得下面的手写 | <https://github.com/google/fonts/tree/main/ofl/patrickhand> | 214772 | `0f173b3e6cb6d1af25babf7f0057c5ac4ee11f9992b0469bb817e967ef4ad0fc` |
 | `incoming/fonts/PatrickHand-OFL.txt` | Patrick Hand 的 OFL | 同目录 `OFL.txt` | 4376 | `377f4f9c19e935228552478eb68cc2ed82910988a60ba60e2ac73b09f32d02d1` |
 | `fonts/Inter-Regular.ttf` | 边框上的镜头名和参数。零是普通椭圆，没有斜杠也没有圆点 | <https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip> 里的 `extras/ttf/Inter-Regular.ttf`。zip 没有放进仓库 | 411640 | `40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82` |
+| `fonts/Inter-SemiBold.ttf` | 边框标题与品牌文字。与 Inter Regular 同源 | <https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip> 里的 `extras/ttf/Inter-SemiBold.ttf`。许可证见同包 `Inter-OFL.txt`（SIL OFL 1.1） | 419744 | `78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3` |
 | `fonts/Inter-OFL.txt` | Inter 的 OFL。版权 2016 The Inter Project Authors | 同一个 zip 里的 `LICENSE.txt` | 4380 | `262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a` |
 
 ## 测试夹具

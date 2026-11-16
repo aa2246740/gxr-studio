@@ -1,12 +1,13 @@
 // 03f「更多」按钮打开的底部面板（「更多选项」）：
 // 成品比例、画幅（拍立得/胶片）、背景（灯台/黑色）、型号文字「GXR」、标志颜色/大小、题字（拒收中文）。
 
-import { CJK_REFUSE_MESSAGE, clipText, hasCjk, stripCjk } from '../lib/fonts';
+import { sanitizeEnglishText } from '../lib/fonts';
 import {
   FILM_FORMATS,
   INSTANT_FORMATS,
   normalizeFrame,
   OUTPUT_CHOICES,
+  restoreFrameSpec,
   STYLE_OPTIONS,
   TEXT_MAX,
   type LogoMode,
@@ -18,6 +19,7 @@ import { button, el } from './dom';
 import { commitFrame } from './frame_state';
 import { logoStore } from './logo_store';
 import type { Photo } from './model';
+import { registerSheet } from './sheet_lifecycle';
 
 function segGroup<T extends string>(
   items: ReadonlyArray<readonly [T, string]>,
@@ -45,13 +47,25 @@ export function openFrameMoreSheet(
   host: HTMLElement,
   photo: Photo,
   onUpdate: () => void,
+  isAlive: () => boolean = () => true,
 ): void {
   host.querySelector('.scrim.frame-more-scrim')?.remove();
   host.querySelector('.ms.frame-more-sheet')?.remove();
 
+  const version = photo.version;
   const scrim = el('div', 'scrim frame-more-scrim');
   const sheet = el('div', 'ms frame-sheet frame-more-sheet');
   sheet.dataset.state = 'frame-more';
+
+  let closed = false;
+  let timer = 0;
+  const stillAlive = (): boolean => !closed && sheet.isConnected && photo.version === version && isAlive();
+  const clearTimer = (): void => {
+    if (timer) {
+      window.clearTimeout(timer);
+      timer = 0;
+    }
+  };
 
   const hd = el('div', 'hd');
   hd.append(el('h2', '', '更多选项'));
@@ -77,6 +91,7 @@ export function openFrameMoreSheet(
     select.append(opt);
   }
   select.addEventListener('change', () => {
+    if (!stillAlive()) return;
     commitFrame(photo, { output_ratio: select.value as OutputRatio }, onUpdate);
   });
   ratioLine.append(select);
@@ -90,6 +105,7 @@ export function openFrameMoreSheet(
     const formats = cur.style === 'film' ? FILM_FORMATS : INSTANT_FORMATS;
     row.append(
       segGroup(formats, cur.fmt, '画幅', (fmt) => {
+        if (!stillAlive()) return;
         commitFrame(photo, { fmt }, onUpdate);
       }),
     );
@@ -109,6 +125,7 @@ export function openFrameMoreSheet(
         cur.table,
         '背景',
         (table) => {
+          if (!stillAlive()) return;
           commitFrame(photo, { table }, onUpdate);
         },
       ),
@@ -132,6 +149,7 @@ export function openFrameMoreSheet(
         cur.logo_mode,
         '标志颜色',
         (logo_mode) => {
+          if (!stillAlive()) return;
           commitFrame(photo, { logo_mode }, onUpdate);
         },
       ),
@@ -148,6 +166,7 @@ export function openFrameMoreSheet(
         cur.logo_size,
         '大小',
         (logo_size) => {
+          if (!stillAlive()) return;
           commitFrame(photo, { logo_size }, onUpdate);
         },
       ),
@@ -165,6 +184,7 @@ export function openFrameMoreSheet(
     input.className = 'switch';
     input.checked = cur.model !== false;
     input.addEventListener('change', () => {
+      if (!stillAlive()) return;
       commitFrame(photo, { model: input.checked }, onUpdate);
     });
     swRow.append(input);
@@ -174,6 +194,7 @@ export function openFrameMoreSheet(
 
   // 题字文字（24 字上限，拒收中文）
   let flushText: (() => void) | null = null;
+  let restoreText: (() => void) | null = null;
   if (opts.includes('text')) {
     const row = el('div', 'fsrow');
     row.append(el('span', 'fslab', '文字'));
@@ -190,48 +211,91 @@ export function openFrameMoreSheet(
     err.setAttribute('role', 'status');
 
     let initialText = cur.text;
-    let timer = 0;
+    let composing = false;
     const applyLive = () => {
-      window.clearTimeout(timer);
-      const raw = input.value;
-      if (hasCjk(raw)) {
-        const clean = clipText(stripCjk(raw), TEXT_MAX);
-        input.value = clean;
-        err.textContent = CJK_REFUSE_MESSAGE;
+      clearTimer();
+      if (!stillAlive()) return;
+      const checked = sanitizeEnglishText(input.value, TEXT_MAX);
+      if (input.value !== checked.text) input.value = checked.text;
+      if (checked.rejectedCjk) {
+        err.textContent = checked.error ?? '';
         err.hidden = false;
-        return;
+      } else {
+        err.hidden = true;
       }
-      const clipped = clipText(raw, TEXT_MAX);
-      if (clipped !== raw) input.value = clipped;
-      err.hidden = true;
-      photo.border = normalizeFrame({ ...photo.border, text: clipped });
-      timer = window.setTimeout(() => onUpdate(), 140);
+      photo.border = normalizeFrame({ ...photo.border, text: checked.text });
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (stillAlive()) onUpdate();
+      }, 140);
     };
     flushText = () => {
-      window.clearTimeout(timer);
-      const clean = clipText(stripCjk(input.value), TEXT_MAX).trim();
+      clearTimer();
+      composing = false;
+      if (!stillAlive()) return;
+      const checked = sanitizeEnglishText(input.value, TEXT_MAX);
+      const clean = checked.text.trim();
       if (input.value !== clean) input.value = clean;
+      if (checked.rejectedCjk) {
+        err.textContent = checked.error ?? '';
+        err.hidden = false;
+      }
+      const prevDraftText = photo.border.text;
       const next = normalizeFrame({ ...photo.border, text: clean });
+      photo.border = next;
       if (next.text !== initialText) {
-        photo.border = next;
         photo.rev += 1;
         initialText = next.text;
         onUpdate();
+      } else if (next.text !== prevDraftText) {
+        onUpdate();
       }
     };
+    restoreText = () => {
+      photo.border = restoreFrameSpec(photo.border, initialText).spec;
+    };
 
-    input.addEventListener('input', applyLive);
-    input.addEventListener('compositionend', applyLive);
-    input.addEventListener('change', flushText);
+    input.addEventListener('compositionstart', () => {
+      composing = true;
+    });
+    input.addEventListener('input', (e) => {
+      if (composing || (e instanceof InputEvent && e.isComposing)) return;
+      applyLive();
+    });
+    input.addEventListener('compositionend', () => {
+      composing = false;
+      applyLive();
+    });
+    input.addEventListener('change', () => {
+      if (composing) return;
+      flushText?.();
+    });
     row.append(input, err);
     body.append(row);
   }
 
+  let unregister = () => {};
   const close = () => {
+    if (closed) return;
     flushText?.();
+    closed = true;
+    clearTimer();
+    unregister();
     scrim.remove();
     sheet.remove();
   };
+  const cancel = () => {
+    if (closed) return;
+    closed = true;
+    clearTimer();
+    if (photo.version === version && isAlive()) {
+      restoreText?.();
+    }
+    unregister();
+    scrim.remove();
+    sheet.remove();
+  };
+  unregister = registerSheet(host, cancel);
   done.addEventListener('click', close);
   scrim.addEventListener('click', close);
 

@@ -21,13 +21,31 @@ function normal(rng: () => number): number {
   return Math.sqrt(-2 * Math.log(rng())) * Math.cos(2 * Math.PI * rng());
 }
 
-function remember<V>(map: Map<string, V>, key: string, value: V): V {
+function remember<V>(
+  map: Map<string, V>,
+  key: string,
+  value: V,
+  onEvict?: (evicted: V) => void,
+): V {
   if (map.size >= 8) {
     const oldest = map.keys().next().value;
-    if (oldest !== undefined) map.delete(oldest);
+    if (oldest !== undefined) {
+      const evicted = map.get(oldest);
+      if (evicted !== undefined) onEvict?.(evicted);
+      map.delete(oldest);
+    }
   }
   map.set(key, value);
   return value;
+}
+
+export function clearTextureCaches(): void {
+  for (const cv of grains.values()) {
+    cv.width = 0;
+    cv.height = 0;
+  }
+  grains.clear();
+  contours.clear();
 }
 
 /** Port of `web/assets/finish_texture.js:paintGrain`. */
@@ -60,7 +78,10 @@ export function paintGrain(ctx: CanvasRenderingContext2D, frame: FrameLayoutData
       }
     }
     sc.putImageData(pixels, 0, 0);
-    remember(grains, key, cv);
+    remember(grains, key, cv, (oldCv) => {
+      oldCv.width = 0;
+      oldCv.height = 0;
+    });
   }
   ctx.drawImage(cv, 0, 0);
 }

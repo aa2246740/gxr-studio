@@ -104,6 +104,10 @@ mobile-check: mobile-build
 		echo "Ricoh asset leaked into mobile/dist"; \
 		exit 1; \
 	fi
+	@if LC_ALL=C grep -R -n -a -F -e 'ricoh.png' -e 'Ricoh_logo' mobile/dist; then \
+		echo "Ricoh asset content leaked into mobile/dist"; \
+		exit 1; \
+	fi
 	@for stem in AtkinsonHyperlegible-Regular AtkinsonHyperlegible-OFL CourierPrime-Regular CourierPrime-OFL DSEG7Classic-Regular DSEG-LICENSE Inter-Regular Inter-OFL Inter-SemiBold PatrickHand-Regular PatrickHand-OFL; do \
 		if ! find mobile/dist/assets -maxdepth 1 -name "$${stem}*" | grep -q .; then \
 			echo "missing font or licence in mobile/dist/assets: $${stem}"; \

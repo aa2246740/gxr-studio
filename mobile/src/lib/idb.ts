@@ -90,15 +90,33 @@ async function putIfNewer(row: StoredPack | Tomb): Promise<boolean> {
       let wrote = false;
       const mark = store.get(WATERMARK);
       mark.onsuccess = () => {
-        const record = store.get(KEY);
-        record.onsuccess = () => {
-          const now = record.result as { savedAt?: unknown } | undefined;
-          const high = Math.max(watermarkOf(mark.result), watermarkOf(now?.savedAt));
-          if (high >= row.savedAt) return;
-          store.put(row, KEY);
-          store.put(row.savedAt, WATERMARK);
-          wrote = true;
-        };
+        try {
+          const record = store.get(KEY);
+          record.onsuccess = () => {
+            try {
+              const now = record.result as { savedAt?: unknown } | undefined;
+              const high = Math.max(watermarkOf(mark.result), watermarkOf(now?.savedAt));
+              if (high >= row.savedAt) return;
+              store.put(row, KEY);
+              store.put(row.savedAt, WATERMARK);
+              wrote = true;
+            } catch (err) {
+              try {
+                tx.abort();
+              } catch {
+                /* transaction may already be aborted */
+              }
+              reject(err);
+            }
+          };
+        } catch (err) {
+          try {
+            tx.abort();
+          } catch {
+            /* transaction may already be aborted */
+          }
+          reject(err);
+        }
       };
       tx.oncomplete = () => resolve(wrote);
       tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
@@ -148,25 +166,73 @@ export async function loadAllLogos(): Promise<StoredLogo[]> {
   }
 }
 
-export async function putStoredLogo(logo: StoredLogo, maxLogos = 12): Promise<boolean> {
-  if (typeof indexedDB === 'undefined') return false;
+export async function putStoredLogo(logo: StoredLogo, maxLogos = 12, signal?: AbortSignal): Promise<boolean> {
+  if (typeof indexedDB === 'undefined' || signal?.aborted) return false;
   const db = await open();
+  if (signal?.aborted) {
+    db.close();
+    return false;
+  }
   try {
     return await new Promise<boolean>((resolve, reject) => {
       const tx = db.transaction(LOGOS_STORE, 'readwrite');
       const store = tx.objectStore(LOGOS_STORE);
       let wrote = false;
+      let abortedBySignal = false;
+      const onAbort = () => {
+        abortedBySignal = true;
+        try {
+          tx.abort();
+        } catch {
+          /* transaction may already be finished */
+        }
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const cleanup = () => {
+        signal?.removeEventListener('abort', onAbort);
+      };
       const allReq = store.getAll();
       allReq.onsuccess = () => {
-        const list = (allReq.result as StoredLogo[]) ?? [];
-        const exists = list.some((row) => row.id === logo.id);
-        if (!exists && list.length >= maxLogos) return;
-        store.put(logo);
-        wrote = true;
+        try {
+          if (signal?.aborted || abortedBySignal) {
+            onAbort();
+            return;
+          }
+          const list = (allReq.result as StoredLogo[]) ?? [];
+          const exists = list.some((row) => row.id === logo.id);
+          if (!exists && list.length >= maxLogos) return;
+          store.put(logo);
+          wrote = true;
+        } catch (err) {
+          cleanup();
+          try {
+            tx.abort();
+          } catch {
+            /* transaction may already be aborted */
+          }
+          reject(err);
+        }
       };
-      tx.oncomplete = () => resolve(wrote);
-      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
-      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.oncomplete = () => {
+        cleanup();
+        resolve(wrote && !abortedBySignal && !signal?.aborted);
+      };
+      tx.onerror = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
+      tx.onabort = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
     });
   } finally {
     db.close();
@@ -183,10 +249,19 @@ export async function renameStoredLogo(id: string, name: string): Promise<boolea
       let wrote = false;
       const req = store.get(id);
       req.onsuccess = () => {
-        const row = req.result as StoredLogo | undefined;
-        if (!row) return;
-        store.put({ ...row, name });
-        wrote = true;
+        try {
+          const row = req.result as StoredLogo | undefined;
+          if (!row) return;
+          store.put({ ...row, name });
+          wrote = true;
+        } catch (err) {
+          try {
+            tx.abort();
+          } catch {
+            /* transaction may already be aborted */
+          }
+          reject(err);
+        }
       };
       tx.oncomplete = () => resolve(wrote);
       tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));

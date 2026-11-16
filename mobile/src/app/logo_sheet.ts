@@ -10,6 +10,7 @@ import {
   LOGO_LIMITS,
   LOGO_WARN,
   stemOf,
+  validateLogoTol,
   type RgbaPixels,
 } from '../lib/logo_key';
 import type { LogoMode, LogoSize } from '../lib/frame_spec';
@@ -17,6 +18,7 @@ import { button, el, icon } from './dom';
 import { autoMonoMessage, commitFrame } from './frame_state';
 import { logoStore } from './logo_store';
 import type { Photo } from './model';
+import { registerSheet } from './sheet_lifecycle';
 import { showToast } from './toast';
 
 const CHECK_ICON = 'M5 12.5l4.5 4.5L19 7.5';
@@ -43,10 +45,12 @@ export function openLogoSheet(
   host: HTMLElement,
   photo: Photo,
   onUpdate: () => void,
+  isAlive: () => boolean = () => true,
 ): void {
   host.querySelector('.scrim.logo-scrim')?.remove();
   host.querySelector('.ms.logo-sheet')?.remove();
 
+  const version = photo.version;
   const scrim = el('div', 'scrim logo-scrim');
   const sheet = el('div', 'ms frame-sheet logo-sheet');
 
@@ -55,14 +59,53 @@ export function openLogoSheet(
   let editingLogoId: string | null = null;
   let confirmingLogoId: string | null = null;
   let busy = false;
+  let closed = false;
+  let pickToken = 0;
+  let opToken = 0;
+  let pressTimer = 0;
+  let opAbort: AbortController | null = null;
+  let activePickFile: File | null = null;
+  const pvCanvases: HTMLCanvasElement[] = [];
 
+  const stillAlive = (): boolean => !closed && sheet.isConnected && photo.version === version && isAlive();
+  const clearPressTimer = (): void => {
+    if (pressTimer) {
+      window.clearTimeout(pressTimer);
+      pressTimer = 0;
+    }
+  };
+  const cancelInFlight = (): void => {
+    pickToken += 1;
+    opToken += 1;
+    activePickFile = null;
+    opAbort?.abort();
+    opAbort = null;
+  };
+  const zeroCanvases = (): void => {
+    while (pvCanvases.length) {
+      const cv = pvCanvases.pop();
+      if (cv) {
+        cv.width = 0;
+        cv.height = 0;
+      }
+    }
+  };
+
+  let unregister = () => {};
   const close = () => {
+    if (closed) return;
+    closed = true;
+    cancelInFlight();
+    clearPressTimer();
+    zeroCanvases();
+    unregister();
     unsub();
     scrim.remove();
     sheet.remove();
   };
 
   const applyLogo = (logo: string, showLogo: boolean): void => {
+    if (!stillAlive()) return;
     commitFrame(photo, { logo, show_logo: showLogo }, onUpdate);
     const monoMsg = autoMonoMessage(photo.border);
     if (monoMsg) showToast(host, monoMsg);
@@ -70,6 +113,8 @@ export function openLogoSheet(
   };
 
   const renderList = (): void => {
+    clearPressTimer();
+    zeroCanvases();
     sheet.dataset.state = 'logo';
     const hd = el('div', 'hd');
     hd.append(el('h2', '', '标志'));
@@ -143,17 +188,30 @@ export function openLogoSheet(
         });
         const saveBtn = button('btn primary', '保存');
         const doRename = async () => {
-          if (busy) return;
+          if (busy || !stillAlive()) return;
+          const myOp = ++opToken;
           busy = true;
-          const res = await logoStore.rename(item.id, input.value);
-          busy = false;
-          if (!res.ok) {
-            showToast(host, res.error);
-            return;
+          saveBtn.disabled = true;
+          try {
+            const res = await logoStore.rename(item.id, input.value);
+            if (closed || myOp !== opToken) return;
+            if (!res.ok) {
+              showToast(host, res.error);
+              return;
+            }
+            editingLogoId = null;
+            if (stillAlive()) {
+              onUpdate();
+              render();
+            }
+          } catch {
+            if (!closed && myOp === opToken) showToast(host, '保存标志名称失败，请重试。');
+          } finally {
+            if (!closed && myOp === opToken) {
+              busy = false;
+              saveBtn.disabled = false;
+            }
           }
-          editingLogoId = null;
-          onUpdate();
-          render();
         };
         saveBtn.addEventListener('click', () => void doRename());
         input.addEventListener('keydown', (e) => {
@@ -168,7 +226,9 @@ export function openLogoSheet(
         actRow.append(input, cancelBtn, saveBtn);
         wrap.append(actRow);
         body.append(wrap);
-        queueMicrotask(() => input.focus());
+        queueMicrotask(() => {
+          if (!closed && input.isConnected) input.focus();
+        });
         continue;
       }
 
@@ -182,6 +242,7 @@ export function openLogoSheet(
         copy.width = srcCv.width;
         copy.height = srcCv.height;
         copy.getContext('2d')?.drawImage(srcCv, 0, 0);
+        pvCanvases.push(copy);
         thumb.append(copy);
       }
       const tx = el('div', 'ltx');
@@ -194,22 +255,26 @@ export function openLogoSheet(
         opt.append(ck);
       }
 
-      let pressTimer = 0;
       let longPressed = false;
       opt.addEventListener('pointerdown', () => {
         longPressed = false;
-        window.clearTimeout(pressTimer);
+        clearPressTimer();
         pressTimer = window.setTimeout(() => {
+          pressTimer = 0;
+          if (!stillAlive()) return;
           longPressed = true;
           menuLogoId = menuLogoId === item.id ? null : item.id;
           confirmingLogoId = null;
           render();
         }, 480);
       });
-      const cancelPress = () => window.clearTimeout(pressTimer);
-      opt.addEventListener('pointerup', cancelPress);
-      opt.addEventListener('pointercancel', cancelPress);
-      opt.addEventListener('pointermove', cancelPress);
+      const resetAndCancelPress = () => {
+        longPressed = false;
+        clearPressTimer();
+      };
+      opt.addEventListener('pointerup', clearPressTimer);
+      opt.addEventListener('pointercancel', resetAndCancelPress);
+      opt.addEventListener('pointermove', resetAndCancelPress);
       opt.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         menuLogoId = menuLogoId === item.id ? null : item.id;
@@ -246,19 +311,36 @@ export function openLogoSheet(
         });
         const doDel = button('btn danger', '删除');
         doDel.addEventListener('click', async () => {
-          if (busy) return;
+          if (busy || !stillAlive()) return;
+          const myOp = ++opToken;
           busy = true;
-          await logoStore.remove(item.id);
-          busy = false;
-          confirmingLogoId = null;
-          menuLogoId = null;
-          if (photo.border.logo === item.id) {
-            commitFrame(photo, { logo: 'ricoh', show_logo: true }, onUpdate);
-          } else {
-            onUpdate();
+          doDel.disabled = true;
+          try {
+            const res = await logoStore.remove(item.id);
+            if (closed || myOp !== opToken) return;
+            if (!res.ok) {
+              showToast(host, res.error);
+              return;
+            }
+            confirmingLogoId = null;
+            menuLogoId = null;
+            if (stillAlive()) {
+              if (photo.border.logo === item.id) {
+                commitFrame(photo, { logo: 'ricoh', show_logo: true }, onUpdate);
+              } else {
+                onUpdate();
+              }
+              showToast(host, `已删除「${item.name}」。`);
+              render();
+            }
+          } catch {
+            if (!closed && myOp === opToken) showToast(host, '删除标志失败，请重试。');
+          } finally {
+            if (!closed && myOp === opToken) {
+              busy = false;
+              doDel.disabled = false;
+            }
           }
-          showToast(host, `已删除「${item.name}」。`);
-          render();
         });
         confirmRow.append(cancelDel, doDel);
         wrap.append(confirmRow);
@@ -297,6 +379,7 @@ export function openLogoSheet(
           cur.logo_mode,
           '标志颜色',
           (logo_mode) => {
+            if (!stillAlive()) return;
             commitFrame(photo, { logo_mode }, onUpdate);
             render();
           },
@@ -314,6 +397,7 @@ export function openLogoSheet(
           cur.logo_size,
           '大小',
           (logo_size) => {
+            if (!stillAlive()) return;
             commitFrame(photo, { logo_size }, onUpdate);
             render();
           },
@@ -340,10 +424,13 @@ export function openLogoSheet(
   };
 
   const renderUpload = (): void => {
+    clearPressTimer();
+    zeroCanvases();
     sheet.dataset.state = 'logo-upload';
     const hd = el('div', 'hd');
     const backBtn = button('nb', '返回');
     backBtn.addEventListener('click', () => {
+      cancelInFlight();
       viewMode = 'list';
       render();
     });
@@ -382,6 +469,7 @@ export function openLogoSheet(
     rightCanvas.className = 'logo-pv-canvas';
     rightCanvas.width = 248;
     rightCanvas.height = 164;
+    pvCanvases.push(leftCanvas, rightCanvas);
     drawCheckerPreview(leftCanvas, null);
     drawCheckerPreview(rightCanvas, null);
 
@@ -442,7 +530,13 @@ export function openLogoSheet(
         return;
       }
       const keyOn = keySwitch.checked;
-      const tol = Number(tolInput.value) || 0;
+      let tol = 30;
+      try {
+        tol = validateLogoTol(Number(tolInput.value));
+      } catch {
+        tol = 30;
+        tolInput.value = '30';
+      }
       tolOut.textContent = String(tol);
       tolInput.disabled = !keyOn;
       leftLab.textContent = whiteBg ? '你选的图片（有白底）' : '你选的图片';
@@ -466,6 +560,8 @@ export function openLogoSheet(
       const file = fileInput.files?.[0];
       fileInput.value = '';
       if (!file) return;
+      const myPick = ++pickToken;
+      activePickFile = file;
       currentFile = null;
       origData = null;
       saveBtn.disabled = true;
@@ -480,56 +576,99 @@ export function openLogoSheet(
         showToast(host, LOGO_ERR.tooBig);
         return;
       }
-      void previewLogo(file).then((res) => {
-        if (!res.ok) {
-          refreshPreview();
-          msgEl.className = 'ferr';
-          msgEl.textContent = res.error;
-          msgEl.hidden = false;
-          showToast(host, res.error);
-          return;
-        }
-        currentFile = file;
-        origData = res.imgData;
-        whiteBg = res.whiteBg;
-        origOpaque = res.origOpaque;
-        keySwitch.disabled = !origOpaque;
-        keySwitch.checked = whiteBg;
-        tolInput.value = '30';
-        if (!nameTouched || !nameInput.value.trim()) {
-          nameInput.value = stemOf(file.name) || '我的标志';
-        }
-        saveBtn.disabled = false;
-        refreshPreview();
-      });
-    });
-
-    saveBtn.addEventListener('click', () => {
-      if (uploadBusy || !currentFile) return;
-      const chosenName = cleanLogoName(nameInput.value.trim(), currentFile.name);
-      uploadBusy = true;
-      saveBtn.disabled = true;
-      void logoStore
-        .add(currentFile, {
-          name: chosenName,
-          keyWhite: keySwitch.checked,
-          tol: Number(tolInput.value) || 0,
-        })
+      void previewLogo(file)
         .then((res) => {
-          uploadBusy = false;
+          if (myPick !== pickToken || activePickFile !== file || viewMode !== 'upload' || !stillAlive()) return;
           if (!res.ok) {
-            saveBtn.disabled = false;
+            refreshPreview();
             msgEl.className = 'ferr';
             msgEl.textContent = res.error;
             msgEl.hidden = false;
             showToast(host, res.error);
             return;
           }
+          currentFile = file;
+          origData = res.imgData;
+          whiteBg = res.whiteBg;
+          origOpaque = res.origOpaque;
+          keySwitch.disabled = !origOpaque;
+          keySwitch.checked = whiteBg;
+          tolInput.value = '30';
+          if (!nameTouched || !nameInput.value.trim()) {
+            nameInput.value = stemOf(file.name) || '我的标志';
+          }
+          saveBtn.disabled = false;
+          refreshPreview();
+        })
+        .catch(() => {
+          if (myPick !== pickToken || activePickFile !== file || viewMode !== 'upload' || !stillAlive()) return;
+          refreshPreview();
+          msgEl.className = 'ferr';
+          msgEl.textContent = LOGO_ERR.unreadable;
+          msgEl.hidden = false;
+          showToast(host, LOGO_ERR.unreadable);
+        });
+    });
+
+    saveBtn.addEventListener('click', () => {
+      if (uploadBusy || !currentFile || !stillAlive()) return;
+      let tol: number;
+      try {
+        tol = validateLogoTol(Number(tolInput.value));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : LOGO_ERR.badTol;
+        msgEl.className = 'ferr';
+        msgEl.textContent = msg;
+        msgEl.hidden = false;
+        showToast(host, msg);
+        return;
+      }
+      const chosenName = cleanLogoName(nameInput.value.trim(), currentFile.name);
+      const myOp = ++opToken;
+      opAbort?.abort();
+      const ac = new AbortController();
+      opAbort = ac;
+      uploadBusy = true;
+      saveBtn.disabled = true;
+      void logoStore
+        .add(
+          currentFile,
+          {
+            name: chosenName,
+            keyWhite: keySwitch.checked,
+            tol,
+          },
+          ac.signal,
+        )
+        .then((res) => {
+          if (closed || ac.signal.aborted || myOp !== opToken) return;
+          if (!res.ok) {
+            msgEl.className = 'ferr';
+            msgEl.textContent = res.error;
+            msgEl.hidden = false;
+            showToast(host, res.error);
+            return;
+          }
+          if (!stillAlive()) return;
           commitFrame(photo, { logo: res.logo.id, show_logo: true }, onUpdate);
           close();
           showToast(host, `已保存「${res.logo.name}」，并用在这个边框上。`);
           const monoMsg = autoMonoMessage(photo.border, res.logo);
           if (monoMsg) showToast(host, monoMsg);
+        })
+        .catch(() => {
+          if (closed || ac.signal.aborted || myOp !== opToken) return;
+          msgEl.className = 'ferr';
+          msgEl.textContent = '保存标志失败，请重试。';
+          msgEl.hidden = false;
+          showToast(host, '保存标志失败，请重试。');
+        })
+        .finally(() => {
+          if (opAbort === ac) opAbort = null;
+          if (!closed && !ac.signal.aborted && myOp === opToken) {
+            uploadBusy = false;
+            if (currentFile) saveBtn.disabled = false;
+          }
         });
     });
 
@@ -557,14 +696,18 @@ export function openLogoSheet(
     else renderList();
   };
 
+  unregister = registerSheet(host, close);
   const unsub = logoStore.onChange(() => {
-    if (sheet.isConnected && viewMode === 'list') renderList();
+    if (stillAlive() && viewMode === 'list') renderList();
   });
 
   scrim.addEventListener('click', close);
   host.append(scrim, sheet);
-  void logoStore.ensureLoaded().then(() => {
-    if (sheet.isConnected && viewMode === 'list') renderList();
-  });
+  void logoStore.ensureLoaded().then(
+    () => {
+      if (stillAlive() && viewMode === 'list') renderList();
+    },
+    () => undefined,
+  );
   render();
 }

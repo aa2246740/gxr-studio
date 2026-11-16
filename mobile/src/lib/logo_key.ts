@@ -21,6 +21,7 @@ export const LOGO_ERR = {
   tooSmall: '图片太小了：标志至少要 64 像素高。',
   limit: '已经保存了 12 个标志。删除一个，再上传新的。',
   badName: '请输入标志名称（最多 20 个字）。',
+  badTol: '容差必须是 0 到 60 的整数。',
 } as const;
 
 export const LOGO_WARN = {
@@ -86,8 +87,15 @@ export function hasWhiteBackground(imgData: RgbaPixels): boolean {
   });
 }
 
+export function validateLogoTol(tol: number): number {
+  if (!Number.isFinite(tol) || !Number.isInteger(tol) || tol < 0 || tol > 60) {
+    throw new RangeError(LOGO_ERR.badTol);
+  }
+  return tol;
+}
+
 export function keyWhiteImageData(imgData: RgbaPixels, tol = 30): RgbaPixels {
-  const clamped = Math.max(0, Math.min(60, Math.trunc(tol)));
+  const clamped = validateLogoTol(tol);
   const { width: w, height: h, data: src } = imgData;
   const n = w * h;
   const near = new Uint8Array(n);
@@ -136,12 +144,8 @@ export function keyWhiteImageData(imgData: RgbaPixels, tol = 30): RgbaPixels {
         out[o + 3] = 0;
         continue;
       }
-      if (x === 0 || x === w - 1 || y === 0 || y === h - 1) {
-        out[o + 3] = 255;
-        continue;
-      }
-      const x0 = x - 1;
-      const x1 = x + 1;
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(w - 1, x + 1);
       let hasBg = false;
       for (let yy = y0; yy <= y1 && !hasBg; yy++) {
         const row = yy * w;
@@ -253,17 +257,22 @@ export function drawCheckerPreview(
   if (!box) return;
   const [bx, by, bw, bh] = box;
   const tmp = document.createElement('canvas');
-  tmp.width = imgData.width;
-  tmp.height = imgData.height;
-  const tctx = tmp.getContext('2d');
-  if (!tctx) return;
-  tctx.putImageData(new ImageData(new Uint8ClampedArray(imgData.data), imgData.width, imgData.height), 0, 0);
-  const pad = 20;
-  const availW = Math.max(1, cw - 2 * pad);
-  const availH = Math.max(1, ch - 2 * pad);
-  const scale = Math.min(availW / bw, availH / bh);
-  const dw = bw * scale;
-  const dh = bh * scale;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(tmp, bx, by, bw, bh, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+  try {
+    tmp.width = imgData.width;
+    tmp.height = imgData.height;
+    const tctx = tmp.getContext('2d');
+    if (!tctx) return;
+    tctx.putImageData(new ImageData(new Uint8ClampedArray(imgData.data), imgData.width, imgData.height), 0, 0);
+    const pad = 20;
+    const availW = Math.max(1, cw - 2 * pad);
+    const availH = Math.max(1, ch - 2 * pad);
+    const scale = Math.min(availW / bw, availH / bh);
+    const dw = bw * scale;
+    const dh = bh * scale;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(tmp, bx, by, bw, bh, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+  } finally {
+    tmp.width = 0;
+    tmp.height = 0;
+  }
 }

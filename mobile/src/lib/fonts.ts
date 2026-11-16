@@ -78,6 +78,23 @@ export function clipText(text: string, max = 24): string {
   return Array.from(text).slice(0, max).join('');
 }
 
+export function sanitizeEnglishText(
+  raw: unknown,
+  max = 24,
+): { text: string; rejectedCjk: boolean; overLength: boolean; error: string | null } {
+  const str = typeof raw === 'string' ? raw : '';
+  const rejectedCjk = hasCjk(str);
+  const cleaned = rejectedCjk ? stripCjk(str) : str;
+  const overLength = Array.from(cleaned).length > max;
+  const text = clipText(cleaned, max);
+  return {
+    text,
+    rejectedCjk,
+    overLength,
+    error: rejectedCjk ? CJK_REFUSE_MESSAGE : null,
+  };
+}
+
 export interface FontNeedFrame {
   style?: string;
   logo?: string;

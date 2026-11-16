@@ -17,6 +17,7 @@ pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
 DRIVER = REPO / "tests" / "support" / "mobile_ui_frame_browser.mjs"
+LIFECYCLE_DRIVER = REPO / "tests" / "support" / "mobile_ui_frame_lifecycle_browser.mjs"
 
 
 def _make_logo_png(dest: Path) -> Path:
@@ -89,3 +90,30 @@ def test_mobile_ui_frame_browser(tmp_path: Path) -> None:
     assert "1 / 12" in (report["logoCountAfterSave"] or "")
     assert report["logoRenamed"] is True
     assert report["logoDeletedFallback"] is True
+
+
+def test_mobile_ui_frame_lifecycle_browser(tmp_path: Path) -> None:
+    _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
+    _need(MODULES.is_dir(), "mobile/node_modules is missing")
+    _need(shutil.which("node") is not None, "node is required")
+    _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
+
+    logo_png = _make_logo_png(tmp_path / "studio_logo.png")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"logoPng": str(logo_png)}), encoding="utf-8")
+
+    result = _drive(LIFECYCLE_DRIVER, manifest, tmp_path, "", timeout=240)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["pageErrors"] == [], report["pageErrors"]
+    assert report["results"] == {
+        "lateAsyncOk": True,
+        "cancelAndIdbOk": True,
+        "resourcesFreedOk": True,
+        "boundedRetryOk": True,
+        "hostileWorkerOk": True,
+        "s1LogoCancelAndRaceOk": True,
+        "s1TextRefusalOk": True,
+        "s1CardsAndBackdropOk": True,
+        "s1FrameNoOk": True,
+    }, report["results"]

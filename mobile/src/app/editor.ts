@@ -12,8 +12,10 @@ import { lookCache } from './looks';
 import { pasteState } from './paste_state';
 import { openCopySheet, PASTE_ICON } from './paste_ui';
 import { RecipeView } from './recipe_view';
+import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
 import { FrameView } from './frame_view';
+import { bindStageGesture, cancelHostSheets } from './sheet_lifecycle';
 import { StageDecorController } from './stage_finish';
 import { showToast } from './toast';
 import './frame.css';
@@ -68,6 +70,8 @@ function isGone(err: unknown): boolean {
 
 export class EditorView {
   private token = 0;
+  private openGen = 0;
+  private gestureAbort: AbortController | null = null;
   private photo: Photo | null = null;
   private mode: 'raw' | 'jpg' | 'still' = 'still';
   private wantNeighbor = '';
@@ -117,6 +121,7 @@ export class EditorView {
   ) {}
 
   open(photo: Photo): void {
+    this.openGen += 1;
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
     // 正在看的这张的配方卡小图不会被全局上限挤掉。
     lookCache.setOpen(photo);
@@ -135,7 +140,11 @@ export class EditorView {
   }
 
   destroy(): void {
+    this.openGen += 1;
     this.token += 1;
+    this.gestureAbort?.abort();
+    this.gestureAbort = null;
+    cancelHostSheets(this.shell);
     lookCache.setOpen(null);
     this.offPaste?.();
     this.offPaste = null;
@@ -153,11 +162,26 @@ export class EditorView {
     this.frames = null;
     this.decor?.destroy();
     this.decor = null;
+    releaseFinishDrawResources();
+    for (const cv of [this.hist, this.still, this.gpuCanvas]) {
+      if (cv) cv.width = cv.height = 0;
+    }
+    this.hist = this.still = this.gpuCanvas = null;
     this.engine?.detach();
   }
 
   private build(photo: Photo, index: number): void {
     this.photo = photo;
+    const gen = this.openGen;
+    const version = photo.version;
+    const session = this.api.session();
+    const viewAlive = (): boolean =>
+      gen === this.openGen &&
+      this.photo === photo &&
+      this.api.photo(photo.id) === photo &&
+      photo.version === version &&
+      this.api.session() === session;
+
     this.host.replaceChildren();
     const photos = this.api.photos();
     const screen = el('section', 'screen editor');
@@ -202,13 +226,17 @@ export class EditorView {
       still: this.still,
       mode: () => this.mode,
       frameTab: () => this.tab === 3,
+      isAlive: viewAlive,
       onMeta: () => this.frames?.refresh(),
       onBackdrop: () => this.frames?.backdropUpdated(),
       onToast: (msg) => showToast(this.shell, msg),
     });
+    this.frames?.destroy();
     this.frames = new FrameView(this.shell, photo, {
       ew: () => photoExportSize(photo, this.engine),
       backdrop: () => this.decor?.backdropCanvas() ?? null,
+      backdropKey: () => this.decor?.backdrop()?.key ?? '',
+      isAlive: viewAlive,
       onChange: () => {
         void this.decor?.sync();
       },
@@ -403,7 +431,7 @@ export class EditorView {
 
   private paintStill(bitmap: ImageBitmap | null): void {
     if (!this.still) return;
-    if (!bitmap) {
+    if (!bitmap || bitmap.width <= 0 || bitmap.height <= 0) {
       this.still.hidden = true;
       return;
     }
@@ -533,49 +561,24 @@ export class EditorView {
   }
 
   private bindGesture(stage: HTMLElement): void {
-    stage.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || event.clientX < 24) return;
-      const startX = event.clientX;
-      const startY = event.clientY;
-      const pointer = event.pointerId;
-      let moved = false;
-      let held = false;
-      const timer = window.setTimeout(() => {
-        if (moved || !this.photo) return;
-        held = true;
+    this.gestureAbort?.abort();
+    const ac = (this.gestureAbort = new AbortController());
+    bindStageGesture(stage, ac.signal, {
+      hasPhoto: () => Boolean(this.photo),
+      onHoldStart: () => {
         this.holding = true;
         this.restLabel = this.caption;
         this.setLabel('原图');
         this.push();
-      }, 450);
-      const move = (ev: PointerEvent) => {
-        if (ev.pointerId !== pointer) return;
-        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 12) moved = true;
-      };
-      const up = (ev: PointerEvent) => {
-        if (ev.pointerId !== pointer) return;
-        window.clearTimeout(timer);
-        stage.removeEventListener('pointermove', move);
-        stage.removeEventListener('pointerup', up);
-        stage.removeEventListener('pointercancel', up);
-        const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
-        // 松手的位置也算移动：页面忙的时候 pointermove 可能晚到，按住计时先到了，横着滑出去仍然算换片。
-        if (Math.hypot(dx, dy) > 12) moved = true;
-        const swiped = ev.type === 'pointerup' && moved && Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy);
-        if (held) {
-          this.holding = false;
-          this.setLabel(this.restLabel);
-          this.push();
-          if (!swiped) return;
-        }
-        if (swiped && this.photo) {
-          this.api.swipe(this.photo.id, dx < 0 ? 1 : -1);
-        }
-      };
-      stage.addEventListener('pointermove', move);
-      stage.addEventListener('pointerup', up);
-      stage.addEventListener('pointercancel', up);
+      },
+      onHoldEnd: () => {
+        this.holding = false;
+        this.setLabel(this.restLabel);
+        this.push();
+      },
+      onSwipe: (dir) => {
+        if (this.photo) this.api.swipe(this.photo.id, dir);
+      },
     });
   }
 

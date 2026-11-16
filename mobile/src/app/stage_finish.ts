@@ -5,7 +5,7 @@ import type { Engine } from '../../../frontend/src/index';
 import { fontsNeeded, type FontKey } from '../lib/fonts';
 import type { Deco, FrameLayoutData, FrameSpec, StampSpec } from '../lib/frame_spec';
 import { fontReady } from './font_loader';
-import { primeBlurFrames } from './finish_bg';
+import { clearBlurCache, primeBlurFrames } from './finish_bg';
 import { drawDecor } from './finish_draw';
 import { resolveStageDeco } from './frame_state';
 import { logoStore } from './logo_store';
@@ -35,7 +35,14 @@ function ensureOverlay(pv: HTMLElement): HTMLCanvasElement {
 /** 去掉叠加装饰与行内定位，恢复无边框时的舞台布局（Port of `stage_finish.js:clearDecor`）。 */
 export function clearDecor(pv: HTMLElement, media: HTMLElement | null): void {
   for (const c of [...pv.children]) {
-    if (c.classList?.contains('pv-deco')) c.remove();
+    if (c.classList?.contains('pv-deco')) {
+      if (c instanceof HTMLCanvasElement) {
+        c.width = 0;
+        c.height = 0;
+        delete c.dataset.key;
+      }
+      c.remove();
+    }
   }
   pv.classList.remove('framed');
   delete pv.dataset.decor;
@@ -76,6 +83,7 @@ export function applyDecor(
   onRedraw: () => void,
   warmBlurFrames: readonly FrameLayoutData[] = [],
   warmActive: () => boolean = () => false,
+  onPrimeCancel?: (cancel: () => void) => void,
 ): void {
   const { cssW, cssH, s, W, H } = fit;
   const frame = deco.frame;
@@ -118,7 +126,8 @@ export function applyDecor(
   if (canvas.dataset.key === key) return;
 
   if (frame?.bgfx?.kind === 'blur' && backdrop?.canvas) {
-    primeBlurFrames(backdrop.canvas, [frame, ...warmBlurFrames], warmActive);
+    const cancel = primeBlurFrames(backdrop.canvas, [frame, ...warmBlurFrames], warmActive);
+    onPrimeCancel?.(cancel);
   }
 
   canvas.dataset.key = key;
@@ -155,6 +164,7 @@ export function buildBackdropCanvas(
   const src: HTMLCanvasElement | ImageBitmap | null =
     stillCanvas && !stillCanvas.hidden && stillCanvas.width > 0 ? stillCanvas : photo.bitmap;
   if (!src) return null;
+  if ('closed' in src && (src as { closed?: boolean }).closed) return null;
   const sw = src.width;
   const sh = src.height;
   if (sw <= 0 || sh <= 0) return null;
@@ -165,9 +175,19 @@ export function buildBackdropCanvas(
   cv.width = w;
   cv.height = h;
   const ctx = cv.getContext('2d');
-  if (!ctx) return null;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(src, 0, 0, w, h);
+  if (!ctx) {
+    cv.width = 0;
+    cv.height = 0;
+    return null;
+  }
+  try {
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(src, 0, 0, w, h);
+  } catch {
+    cv.width = 0;
+    cv.height = 0;
+    return null;
+  }
   const sig = `${photo.id}:${photo.version}:${photo.rev}:${mode}:${engine?.contentVersion ?? 0}:${w}x${h}`;
   return { canvas: cv, key: sig };
 }
@@ -191,6 +211,7 @@ export interface StageDecorHost {
   still: HTMLCanvasElement | null;
   mode: () => 'raw' | 'jpg' | 'still';
   frameTab?: () => boolean;
+  isAlive?: () => boolean;
   onMeta?: () => void;
   onBackdrop?: () => void;
   onToast?: (msg: string) => void;
@@ -200,21 +221,44 @@ export interface StageDecorHost {
 export class StageDecorController {
   private destroyed = false;
   private syncToken = 0;
+  private backdropGen = 0;
   private lastDeco: Deco | null = null;
   private fallbackBackdrop: { canvas: HTMLCanvasElement; key: string } | null = null;
   private gpuBackdrop: { canvas: HTMLCanvasElement; key: string } | null = null;
   private gpuThumbBusy = false;
   private gpuThumbAgain = false;
   private dragRaf = 0;
+  private cancelBlurPrime: (() => void) | null = null;
   private readonly ro: ResizeObserver;
 
   constructor(private readonly host: StageDecorHost) {
     this.ro = new ResizeObserver(() => {
-      if (!this.destroyed && (this.host.photo.border.style !== 'none' || this.host.photo.stamp.enabled)) {
+      if (this.aliveNow() && (this.host.photo.border.style !== 'none' || this.host.photo.stamp.enabled)) {
         void this.sync();
       }
     });
     this.ro.observe(host.stage);
+  }
+
+  private aliveNow(): boolean {
+    return !this.destroyed && (this.host.isAlive?.() ?? true);
+  }
+
+  private dropBackdrops(): void {
+    this.cancelBlurPrime?.();
+    this.cancelBlurPrime = null;
+    if (this.fallbackBackdrop) {
+      clearBlurCache(this.fallbackBackdrop.canvas);
+      this.fallbackBackdrop.canvas.width = 0;
+      this.fallbackBackdrop.canvas.height = 0;
+      this.fallbackBackdrop = null;
+    }
+    if (this.gpuBackdrop) {
+      clearBlurCache(this.gpuBackdrop.canvas);
+      this.gpuBackdrop.canvas.width = 0;
+      this.gpuBackdrop.canvas.height = 0;
+      this.gpuBackdrop = null;
+    }
   }
 
   private needsGpuBackdrop(): boolean {
@@ -224,6 +268,7 @@ export class StageDecorController {
   }
 
   backdrop(): { canvas: HTMLCanvasElement; key: string } | null {
+    if (!this.aliveNow()) return null;
     if (this.gpuBackdrop) return this.gpuBackdrop;
     if (!this.fallbackBackdrop) {
       const { photo, engine, gpuCanvas, still, mode } = this.host;
@@ -237,12 +282,13 @@ export class StageDecorController {
   }
 
   onFrameTabOpened(): void {
-    if (!this.destroyed && !this.gpuBackdrop) void this.refreshGpuBackdrop();
+    if (this.aliveNow() && !this.gpuBackdrop) void this.refreshGpuBackdrop();
   }
 
   onLookChanged(dragging: boolean): void {
-    this.fallbackBackdrop = null;
-    this.gpuBackdrop = null;
+    this.backdropGen += 1;
+    this.dropBackdrops();
+    if (!this.aliveNow()) return;
     const needsBackdrop = this.needsGpuBackdrop();
     const hasDecor = this.host.photo.border.style !== 'none' || this.host.photo.stamp.enabled;
     if (!needsBackdrop && !hasDecor) return;
@@ -255,22 +301,24 @@ export class StageDecorController {
     if (this.dragRaf) return;
     this.dragRaf = requestAnimationFrame(() => {
       this.dragRaf = 0;
-      if (this.destroyed) return;
+      if (!this.aliveNow()) return;
       if (this.needsGpuBackdrop()) void this.refreshGpuBackdrop();
       void this.sync();
     });
   }
 
   onMediaReady(): void {
-    this.fallbackBackdrop = null;
-    this.gpuBackdrop = null;
+    this.backdropGen += 1;
+    this.dropBackdrops();
+    if (!this.aliveNow()) return;
     if (this.needsGpuBackdrop()) void this.refreshGpuBackdrop();
     if (this.host.photo.border.style !== 'none' || this.host.photo.stamp.enabled) void this.sync();
   }
 
   async sync(): Promise<void> {
-    if (this.destroyed) return;
+    if (!this.aliveNow()) return;
     const token = ++this.syncToken;
+    const version = this.host.photo.version;
     const { pv, stage, photo, engine, gpuCanvas, still, mode, onMeta, onToast } = this.host;
     const media = mode() === 'still' || !engine ? still : gpuCanvas;
     if (photo.border.style === 'none' && !photo.stamp.enabled) {
@@ -280,18 +328,24 @@ export class StageDecorController {
     }
 
     const hadMeta = Boolean(photo.frameMeta);
-    const deco = await resolveStageDeco(
-      photo,
-      engine,
-      () => {
-        if (!this.destroyed) {
-          if (!hadMeta && photo.frameMeta) onMeta?.();
-          void this.sync();
-        }
-      },
-      onToast,
-    );
-    if (this.destroyed || token !== this.syncToken) return;
+    let deco: Deco | null = null;
+    try {
+      deco = await resolveStageDeco(
+        photo,
+        engine,
+        () => {
+          if (this.aliveNow() && photo.version === version) {
+            if (!hadMeta && photo.frameMeta) onMeta?.();
+            void this.sync();
+          }
+        },
+        onToast,
+        () => this.aliveNow() && token === this.syncToken && photo.version === version,
+      );
+    } catch {
+      return;
+    }
+    if (!this.aliveNow() || token !== this.syncToken || photo.version !== version) return;
     if (!deco || !media) {
       this.lastDeco = null;
       clearDecor(pv, media);
@@ -311,7 +365,13 @@ export class StageDecorController {
       photo,
       this.backdrop(),
       () => {
-        if (!this.destroyed) void this.sync();
+        if (this.aliveNow() && photo.version === version) void this.sync();
+      },
+      [],
+      () => false,
+      (cancel) => {
+        this.cancelBlurPrime?.();
+        this.cancelBlurPrime = cancel;
       },
     );
   }
@@ -319,13 +379,15 @@ export class StageDecorController {
   private async refreshGpuBackdrop(): Promise<void> {
     const { engine, photo, mode, onBackdrop } = this.host;
     const m = mode();
-    if (this.destroyed || !engine || m === 'still') return;
+    if (!this.aliveNow() || !engine || m === 'still') return;
     if (this.gpuThumbBusy) {
       this.gpuThumbAgain = true;
       return;
     }
     this.gpuThumbBusy = true;
     this.gpuThumbAgain = false;
+    const gen = this.backdropGen;
+    const version = photo.version;
     const source = m === 'raw' ? `raw:${photo.id}` : `jpg:${photo.id}`;
     try {
       const out = await engine.thumb({
@@ -335,13 +397,22 @@ export class StageDecorController {
         aspect: null,
         maxEdge: 480,
       });
-      if (this.destroyed || !out) return;
+      if (!this.aliveNow() || gen !== this.backdropGen || photo.version !== version || !out) return;
       const cv = document.createElement('canvas');
       cv.width = out.w;
       cv.height = out.h;
       const ctx = cv.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) {
+        cv.width = 0;
+        cv.height = 0;
+        return;
+      }
       ctx.putImageData(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h), 0, 0);
+      if (this.gpuBackdrop) {
+        clearBlurCache(this.gpuBackdrop.canvas);
+        this.gpuBackdrop.canvas.width = 0;
+        this.gpuBackdrop.canvas.height = 0;
+      }
       this.gpuBackdrop = {
         canvas: cv,
         key: `${photo.id}:${photo.version}:${photo.rev}:${engine.contentVersion}:${out.w}x${out.h}`,
@@ -352,7 +423,7 @@ export class StageDecorController {
       // GPU 正忙或设备丢失时沿用 2D 底图。
     } finally {
       this.gpuThumbBusy = false;
-      if (!this.destroyed && this.gpuThumbAgain) {
+      if (this.aliveNow() && this.gpuThumbAgain && this.needsGpuBackdrop()) {
         this.gpuThumbAgain = false;
         void this.refreshGpuBackdrop();
       }
@@ -362,9 +433,12 @@ export class StageDecorController {
   destroy(): void {
     this.destroyed = true;
     this.syncToken += 1;
+    this.backdropGen += 1;
     this.ro.disconnect();
     if (this.dragRaf) cancelAnimationFrame(this.dragRaf);
     this.dragRaf = 0;
+    this.dropBackdrops();
+    this.lastDeco = null;
     const media = this.host.mode() === 'still' || !this.host.engine ? this.host.still : this.host.gpuCanvas;
     clearDecor(this.host.pv, media);
   }

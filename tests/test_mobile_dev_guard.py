@@ -153,3 +153,74 @@ def test_dev_samples_and_reports_do_not_follow_symlinks(tmp_path: Path) -> None:
         _stop(vite)
         if link.is_symlink() or link.exists():
             link.unlink()
+
+
+def test_mobile_check_rejects_leaked_ricoh_content_in_ordinary_file() -> None:
+    from conftest import REAL_HOME
+
+    dist_assets = REPO / "mobile" / "dist" / "assets"
+    _need(dist_assets.is_dir(), "mobile/dist/assets is missing; run make mobile-check first")
+    env = os.environ.copy()
+    for candidate in (
+        REAL_HOME / ".cache" / "node" / "corepack",
+        REAL_HOME / "Library" / "Caches" / "node" / "corepack",
+    ):
+        if candidate.is_dir():
+            env.setdefault("COREPACK_HOME", str(candidate))
+            break
+    env.setdefault("COREPACK_ENABLE_NETWORK", "0")
+    rustup = shutil.which("rustup")
+    if rustup:
+        toolchain = (REPO / "core" / "rust-toolchain.toml").read_text(encoding="utf-8")
+        for line in toolchain.splitlines():
+            if line.startswith("channel"):
+                channel = line.split('"')[1]
+                which_cargo = subprocess.run(
+                    [rustup, "which", "--toolchain", channel, "cargo"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if which_cargo.returncode == 0 and which_cargo.stdout.strip():
+                    env["PATH"] = f"{Path(which_cargo.stdout.strip()).parent}:{env.get('PATH', '')}"
+                break
+
+    clean = subprocess.run(
+        ["make", "-o", "mobile-build", "mobile-check"],
+        cwd=REPO,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert clean.returncode == 0, clean.stdout + clean.stderr
+
+    for payload in ("Ricoh_logo_2005.svg", "ricoh.png"):
+        bait = dist_assets / "ordinary-bundle-chunk.js"
+        try:
+            bait.write_text(f'const x = "{payload}";\n', encoding="utf-8")
+            bad = subprocess.run(
+                ["make", "-o", "mobile-build", "mobile-check"],
+                cwd=REPO,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert bad.returncode != 0, f"mobile-check failed to catch {payload!r} inside {bait.name}"
+        finally:
+            if bait.exists():
+                bait.unlink()
+
+    after = subprocess.run(
+        ["make", "-o", "mobile-build", "mobile-check"],
+        cwd=REPO,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert after.returncode == 0, after.stdout + after.stderr

@@ -115,12 +115,18 @@ class LogoStore {
   async add(
     file: File,
     options: { name: string; keyWhite: boolean; tol: number },
+    abortCtrl?: (() => boolean) | AbortSignal,
   ): Promise<{ ok: true; logo: LogoInfo } | { ok: false; error: string }> {
+    const signal = typeof abortCtrl === 'function' ? undefined : abortCtrl;
+    const isAborted = (): boolean => (typeof abortCtrl === 'function' ? abortCtrl() : Boolean(abortCtrl?.aborted));
+    if (isAborted()) return { ok: false, error: '已取消。' };
     await this.ensureLoaded();
+    if (isAborted()) return { ok: false, error: '已取消。' };
     if (this.rows.length >= LOGO_LIMITS.maxLogos) {
       return { ok: false, error: LOGO_ERR.limit };
     }
     const prepared = await prepareLogo(file, options);
+    if (isAborted()) return { ok: false, error: '已取消。' };
     if (!prepared.ok) return { ok: false, error: prepared.error };
     const stored: StoredLogo = {
       id: makeId(),
@@ -133,7 +139,13 @@ class LogoStore {
       rgba: prepared.rgba,
       createdAt: Date.now(),
     };
-    const wrote = await putStoredLogo(stored, LOGO_LIMITS.maxLogos);
+    let wrote = false;
+    try {
+      wrote = await putStoredLogo(stored, LOGO_LIMITS.maxLogos, signal);
+    } catch {
+      return { ok: false, error: '保存标志失败，请重试。' };
+    }
+    if (isAborted()) return { ok: false, error: '已取消。' };
     if (!wrote) return { ok: false, error: LOGO_ERR.limit };
     this.rows.push(stored);
     this.byId.set(stored.id, stored);
@@ -147,7 +159,12 @@ class LogoStore {
     const trimmed = rawName.trim();
     if (!trimmed) return { ok: false, error: LOGO_ERR.badName };
     const next = cleanLogoName(trimmed);
-    const wrote = await renameStoredLogo(id, next);
+    let wrote = false;
+    try {
+      wrote = await renameStoredLogo(id, next);
+    } catch {
+      return { ok: false, error: '保存标志名称失败，请重试。' };
+    }
     if (!wrote) return { ok: false, error: '找不到这个标志。' };
     const row = this.byId.get(id);
     if (row) {
@@ -157,12 +174,22 @@ class LogoStore {
     return { ok: true, name: next };
   }
 
-  async remove(id: string): Promise<void> {
-    await deleteStoredLogo(id);
+  async remove(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await deleteStoredLogo(id);
+    } catch {
+      return { ok: false, error: '删除标志失败，请重试。' };
+    }
     this.rows = this.rows.filter((row) => row.id !== id);
     this.byId.delete(id);
-    this.canvases.delete(id);
+    const oldCv = this.canvases.get(id);
+    if (oldCv) {
+      oldCv.width = 0;
+      oldCv.height = 0;
+      this.canvases.delete(id);
+    }
     this.emit();
+    return { ok: true };
   }
 }
 

@@ -1,10 +1,11 @@
 // 时间戳底部面板（选项、顺序与文案严格对齐桌面 `web/assets/stamp_panel.js`）：
 // 开关、印记落点（拍立得）、内容、格式、显示时间、指定日期（YYYY-MM-DD + 重置 + 使用文件修改日期）、文字（拒收中文）、字体、颜色、大小、位置、发光。
 
-import { CJK_REFUSE_MESSAGE, clipText, hasCjk, stripCjk } from '../lib/fonts';
+import { sanitizeEnglishText } from '../lib/fonts';
 import {
   isDateString,
   normalizeStamp,
+  restoreStampSpec,
   STAMP_COLOR_HEX,
   STAMP_COLOR_NAMES,
   STAMP_CONTENT,
@@ -24,6 +25,7 @@ import {
 import { button, el } from './dom';
 import { commitStamp, isMtimeDate, photoIsoDate } from './frame_state';
 import type { Photo } from './model';
+import { registerSheet } from './sheet_lifecycle';
 
 function segGroup<T extends string>(
   items: ReadonlyArray<readonly [T, string]>,
@@ -59,13 +61,25 @@ export function openStampSheet(
   host: HTMLElement,
   photo: Photo,
   onUpdate: () => void,
+  isAlive: () => boolean = () => true,
 ): void {
   host.querySelector('.scrim.stamp-scrim')?.remove();
   host.querySelector('.ms.stamp-sheet')?.remove();
 
+  const version = photo.version;
   const scrim = el('div', 'scrim stamp-scrim');
   const sheet = el('div', 'ms frame-sheet stamp-sheet');
   sheet.dataset.state = 'stamp';
+
+  let closed = false;
+  let timer = 0;
+  const stillAlive = (): boolean => !closed && sheet.isConnected && photo.version === version && isAlive();
+  const clearTimer = (): void => {
+    if (timer) {
+      window.clearTimeout(timer);
+      timer = 0;
+    }
+  };
 
   const hd = el('div', 'hd');
   hd.append(el('h2', '', '时间戳'));
@@ -75,12 +89,17 @@ export function openStampSheet(
   const body = el('div', 'ms-body');
   let initialText = photo.stamp.text;
   let flushText: (() => void) | null = null;
+  const restoreText = (): void => {
+    photo.stamp = restoreStampSpec(photo.stamp, initialText).spec;
+  };
 
   const update = (patch: Partial<typeof photo.stamp>): void => {
-    if (commitStamp(photo, patch, onUpdate)) renderBody();
+    if (!stillAlive()) return;
+    if (commitStamp(photo, patch, onUpdate) && stillAlive()) renderBody();
   };
 
   const renderBody = (): void => {
+    clearTimer();
     body.replaceChildren();
     flushText = null;
     const st = photo.stamp;
@@ -202,39 +221,62 @@ export function openStampSheet(
       err.hidden = true;
       err.setAttribute('role', 'status');
 
-      let timer = 0;
+      let composing = false;
       const applyLive = () => {
-        window.clearTimeout(timer);
-        const raw = input.value;
-        if (hasCjk(raw)) {
-          const clean = clipText(stripCjk(raw), TEXT_MAX);
-          input.value = clean;
-          err.textContent = CJK_REFUSE_MESSAGE;
+        clearTimer();
+        if (!stillAlive()) return;
+        const checked = sanitizeEnglishText(input.value, TEXT_MAX);
+        if (input.value !== checked.text) input.value = checked.text;
+        if (checked.rejectedCjk) {
+          err.textContent = checked.error ?? '';
           err.hidden = false;
-          return;
+        } else {
+          err.hidden = true;
         }
-        const clipped = clipText(raw, TEXT_MAX);
-        if (clipped !== raw) input.value = clipped;
-        err.hidden = true;
-        photo.stamp = normalizeStamp({ ...photo.stamp, text: clipped });
-        timer = window.setTimeout(() => onUpdate(), 120);
+        photo.stamp = normalizeStamp({ ...photo.stamp, text: checked.text });
+        timer = window.setTimeout(() => {
+          timer = 0;
+          if (stillAlive()) onUpdate();
+        }, 120);
       };
       flushText = () => {
-        window.clearTimeout(timer);
-        const clean = clipText(stripCjk(input.value), TEXT_MAX).trim();
+        clearTimer();
+        composing = false;
+        if (!stillAlive()) return;
+        const checked = sanitizeEnglishText(input.value, TEXT_MAX);
+        const clean = checked.text.trim();
         if (input.value !== clean) input.value = clean;
+        if (checked.rejectedCjk) {
+          err.textContent = checked.error ?? '';
+          err.hidden = false;
+        }
+        const prevDraftText = photo.stamp.text;
         const next = normalizeStamp({ ...photo.stamp, text: clean });
+        photo.stamp = next;
         if (next.text !== initialText) {
-          photo.stamp = next;
           photo.rev += 1;
           initialText = next.text;
+          onUpdate();
+        } else if (next.text !== prevDraftText) {
           onUpdate();
         }
       };
 
-      input.addEventListener('input', applyLive);
-      input.addEventListener('compositionend', applyLive);
-      input.addEventListener('change', flushText);
+      input.addEventListener('compositionstart', () => {
+        composing = true;
+      });
+      input.addEventListener('input', (e) => {
+        if (composing || (e instanceof InputEvent && e.isComposing)) return;
+        applyLive();
+      });
+      input.addEventListener('compositionend', () => {
+        composing = false;
+        applyLive();
+      });
+      input.addEventListener('change', () => {
+        if (composing) return;
+        flushText?.();
+      });
       textRow.append(input, err);
       inner.append(textRow);
     }
@@ -311,11 +353,28 @@ export function openStampSheet(
 
   renderBody();
 
+  let unregister = () => {};
   const close = () => {
+    if (closed) return;
     flushText?.();
+    closed = true;
+    clearTimer();
+    unregister();
     scrim.remove();
     sheet.remove();
   };
+  const cancel = () => {
+    if (closed) return;
+    closed = true;
+    clearTimer();
+    if (photo.version === version && isAlive()) {
+      restoreText();
+    }
+    unregister();
+    scrim.remove();
+    sheet.remove();
+  };
+  unregister = registerSheet(host, cancel);
   done.addEventListener('click', close);
   scrim.addEventListener('click', close);
 

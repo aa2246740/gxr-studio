@@ -237,8 +237,8 @@ async function headSlice(file: File | null): Promise<Uint8Array | null> {
 async function frameMeta(id: number, args: FrameMetaArgs): Promise<void> {
   const [jpgHead, dngHead] = await Promise.all([headSlice(args.jpg), headSlice(args.dng)]);
   const size = shotSize(jpgHead, dngHead);
-  const mtime = Number.isFinite(args.mtimeMs) ? args.mtimeMs : undefined;
-  const tz = Number.isFinite(args.tzOffsetMin) ? Math.max(-1439, Math.min(1439, Math.trunc(args.tzOffsetMin))) : 0;
+  const mtime = args.mtimeMs ?? undefined;
+  const tz = args.tzOffsetMin ?? 0;
   const raw = JSON.parse(export_meta_photo(jpgHead, dngHead, args.name, mtime, tz)) as {
     frame?: Record<string, string>;
     taken?: string | null;
@@ -297,26 +297,38 @@ async function frameLayoutOp(id: number, args: FrameLayoutArgs): Promise<void> {
 
 function bitmapToRgba(bmp: ImageBitmap, width: number, height: number): RgbaPixels {
   const canvas = new OffscreenCanvas(width, height);
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) throw new Error(LOGO_ERR.unreadable);
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bmp, 0, 0, width, height);
-  const data = ctx.getImageData(0, 0, width, height);
-  return { width, height, data: data.data };
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error(LOGO_ERR.unreadable);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, 0, 0, width, height);
+    const data = ctx.getImageData(0, 0, width, height);
+    return { width, height, data: data.data };
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
 }
 
 function resizeRgba(rgba: RgbaPixels, outW: number, outH: number): RgbaPixels {
   const srcCanvas = new OffscreenCanvas(rgba.width, rgba.height);
-  const sctx = srcCanvas.getContext('2d');
-  if (!sctx) throw new Error(LOGO_ERR.unreadable);
-  sctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0);
   const dstCanvas = new OffscreenCanvas(outW, outH);
-  const dctx = dstCanvas.getContext('2d', { willReadFrequently: true });
-  if (!dctx) throw new Error(LOGO_ERR.unreadable);
-  dctx.imageSmoothingQuality = 'high';
-  dctx.drawImage(srcCanvas, 0, 0, outW, outH);
-  const out = dctx.getImageData(0, 0, outW, outH);
-  return { width: outW, height: outH, data: out.data };
+  try {
+    const sctx = srcCanvas.getContext('2d');
+    if (!sctx) throw new Error(LOGO_ERR.unreadable);
+    sctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0);
+    const dctx = dstCanvas.getContext('2d', { willReadFrequently: true });
+    if (!dctx) throw new Error(LOGO_ERR.unreadable);
+    dctx.imageSmoothingQuality = 'high';
+    dctx.drawImage(srcCanvas, 0, 0, outW, outH);
+    const out = dctx.getImageData(0, 0, outW, outH);
+    return { width: outW, height: outH, data: out.data };
+  } finally {
+    srcCanvas.width = 0;
+    srcCanvas.height = 0;
+    dstCanvas.width = 0;
+    dstCanvas.height = 0;
+  }
 }
 
 async function decodeLogoFile(file: File): Promise<{ bmp: ImageBitmap } | { error: string }> {
@@ -375,6 +387,10 @@ async function logoPreview(id: number, file: File): Promise<void> {
 }
 
 async function logoSave(id: number, file: File, args: LogoSaveArgs): Promise<void> {
+  if (!Number.isFinite(args.tol) || !Number.isInteger(args.tol) || args.tol < 0 || args.tol > 60) {
+    ok(id, JSON.stringify({ ok: false, error: LOGO_ERR.badTol }));
+    return;
+  }
   const decoded = await decodeLogoFile(file);
   if ('error' in decoded) {
     ok(id, JSON.stringify({ ok: false, error: decoded.error }));

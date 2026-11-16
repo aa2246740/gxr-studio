@@ -30,7 +30,10 @@ import { photoMs, type Photo } from './model';
 
 const MAX_DECO_CACHE = 48;
 const decoCache = new Map<string, Deco>();
-const inFlightMeta = new WeakMap<Photo, { version: number; promise: Promise<FrameMetaResult | null> }>();
+const inFlightMeta = new WeakMap<
+  Photo,
+  { version: number; dng: File | null; jpg: File | null; promise: Promise<FrameMetaResult | null> }
+>();
 
 function rememberDeco(key: string, deco: Deco): void {
   if (decoCache.size >= MAX_DECO_CACHE) {
@@ -84,21 +87,26 @@ export function photoExportSize(photo: Photo, engine: Engine | null): [number, n
 export function ensureFrameMeta(photo: Photo): Promise<FrameMetaResult | null> {
   if (photo.frameMeta) return Promise.resolve(photo.frameMeta);
   const pending = inFlightMeta.get(photo);
-  if (pending && pending.version === photo.version) return pending.promise;
+  if (pending && pending.version === photo.version && pending.dng === photo.dng && pending.jpg === photo.jpg) {
+    return pending.promise;
+  }
   const version = photo.version;
-  const source = photo.jpg ?? photo.dng;
+  const dng = photo.dng;
+  const jpg = photo.jpg;
+  const source = jpg ?? dng;
   const mtimeMs = source?.lastModified ?? photo.lastModified;
   const tzOffsetMin = Number.isFinite(mtimeMs) ? -new Date(mtimeMs).getTimezoneOffset() : 0;
-  const name = photo.dng?.name ?? photo.jpg?.name ?? `${photo.stem}.DNG`;
+  const name = photo.stem;
   const promise = readFrameMeta({
-    jpg: photo.jpg,
-    dng: photo.dng,
+    jpg,
+    dng,
     name,
     mtimeMs,
     tzOffsetMin,
   })
     .then((res) => {
-      if (photo.version === version) photo.frameMeta = res;
+      if (photo.version !== version || photo.dng !== dng || photo.jpg !== jpg) return null;
+      photo.frameMeta = res;
       return res;
     })
     .catch(() => null)
@@ -106,7 +114,7 @@ export function ensureFrameMeta(photo: Photo): Promise<FrameMetaResult | null> {
       const cur = inFlightMeta.get(photo);
       if (cur && cur.promise === promise) inFlightMeta.delete(photo);
     });
-  inFlightMeta.set(photo, { version, promise });
+  inFlightMeta.set(photo, { version, dng, jpg, promise });
   return promise;
 }
 
@@ -231,20 +239,32 @@ export async function resolveStageDeco(
   engine: Engine | null,
   onAsyncUpdate: () => void,
   onToast?: (msg: string) => void,
+  isAlive: () => boolean = () => true,
 ): Promise<Deco | null> {
+  const version = photo.version;
+  const dng = photo.dng;
+  const jpg = photo.jpg;
+  const stillAlive = (): boolean =>
+    photo.version === version && photo.dng === dng && photo.jpg === jpg && isAlive();
+
   const hasFrame = photo.border.style !== 'none';
   const hasStamp = photo.stamp.enabled;
   if (!hasFrame && !hasStamp) return null;
 
   if (!logoStore.loaded()) {
-    void logoStore.ensureLoaded().then(() => onAsyncUpdate());
+    void logoStore.ensureLoaded().then(
+      () => {
+        if (stillAlive()) onAsyncUpdate();
+      },
+      () => undefined,
+    );
   } else if (checkMissingLogo(photo, onToast)) {
     photo.rev += 1;
   }
 
   if (!photo.frameMeta) {
     void ensureFrameMeta(photo).then((res) => {
-      if (res) onAsyncUpdate();
+      if (res && stillAlive()) onAsyncUpdate();
     });
   }
 
@@ -252,13 +272,13 @@ export async function resolveStageDeco(
   const frameSpec = hasFrame ? photo.border : null;
   const stampSpec = hasStamp ? photo.stamp : null;
   const needed = fontsNeeded(frameSpec, stampSpec);
-  ensureFontsLoaded(needed, onAsyncUpdate);
+  ensureFontsLoaded(needed, onAsyncUpdate, stillAlive);
 
   const logoId = frameSpec?.logo;
   const logoInfo = logoId && logoId !== 'ricoh' && logoId !== 'none' ? logoStore.info(logoId) : null;
   const key = JSON.stringify([
     photo.id,
-    photo.version,
+    version,
     ew,
     eh,
     frameSpec,
@@ -281,7 +301,7 @@ export async function resolveStageDeco(
     fontKeys: needed,
   });
 
-  if (!result.frame && !result.stamp) return null;
+  if (!stillAlive() || (!result.frame && !result.stamp)) return null;
   const deco: Deco = {
     key,
     frame: result.frame,
@@ -301,7 +321,10 @@ export async function resolveCardLayouts(
   ew: number,
   eh: number,
   onFontsReady: () => void,
+  isAlive: () => boolean = () => true,
 ): Promise<Record<string, FrameLayoutData | null>> {
+  const version = photo.version;
+  const stillAlive = (): boolean => photo.version === version && isAlive();
   const needed = new Set<FontKey>();
   const cards: Array<{ id: string; specJson: string }> = [];
   for (const style of FRAME_ORDER) {
@@ -312,7 +335,7 @@ export async function resolveCardLayouts(
     cards.push({ id: style, specJson: JSON.stringify(spec) });
   }
   const fontKeys = [...needed];
-  ensureFontsLoaded(fontKeys, onFontsReady);
+  ensureFontsLoaded(fontKeys, onFontsReady, stillAlive);
   const metaJson = buildFrameRequestJson(ew, eh, photo, photo.border.logo);
   return computeCardLayouts(metaJson, fontKeys, cards);
 }

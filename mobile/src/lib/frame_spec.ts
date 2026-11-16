@@ -1,6 +1,8 @@
 // 边框与时间戳的规格、默认值、归一化和文字摘要（照桌面 `finish.js`、`frame_panel.js`、`stamp_panel.js`、`output_size.js`）。
 // 纯函数，不碰 DOM 或 WASM，Node 测试直接跑。
 
+import { CJK_REFUSE_MESSAGE, hasCjk, sanitizeEnglishText } from './fonts.ts';
+
 export const TEXT_MAX = 24;
 export const LOGO_ID_RE = /^[a-z0-9_-]{1,64}$/;
 
@@ -368,6 +370,7 @@ export function normalizeFrame(f: Partial<FrameSpec> | Record<string, unknown> |
     typeof out.show_params !== 'boolean' ||
     typeof out.show_date !== 'boolean' ||
     typeof out.text !== 'string' ||
+    hasCjk(out.text) ||
     Array.from(out.text).length > TEXT_MAX
   ) {
     return { ...DEFAULT_FRAME };
@@ -389,6 +392,11 @@ export function selectFrame(frame: FrameSpec, style: FrameStyle): FrameSpec {
 export function normalizeStamp(s: Partial<StampSpec> | Record<string, unknown> | null | undefined): StampSpec {
   if (!s || typeof s !== 'object' || Array.isArray(s)) return { ...DEFAULT_STAMP };
   const raw = s as Record<string, unknown>;
+  if ('text' in raw && raw.text !== undefined) {
+    if (typeof raw.text !== 'string' || hasCjk(raw.text) || Array.from(raw.text).length > TEXT_MAX) {
+      return { ...DEFAULT_STAMP };
+    }
+  }
   return {
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_STAMP.enabled,
     content: VALID_STAMP_CONTENT.has(String(raw.content)) ? (raw.content as StampContent) : DEFAULT_STAMP.content,
@@ -397,7 +405,7 @@ export function normalizeStamp(s: Partial<StampSpec> | Record<string, unknown> |
       : DEFAULT_STAMP.date_format,
     show_time: typeof raw.show_time === 'boolean' ? raw.show_time : DEFAULT_STAMP.show_time,
     date_override: isDateString(raw.date_override) ? raw.date_override : null,
-    text: typeof raw.text === 'string' ? clipText(raw.text, TEXT_MAX) : DEFAULT_STAMP.text,
+    text: typeof raw.text === 'string' ? raw.text : DEFAULT_STAMP.text,
     font: VALID_STAMP_FONTS.has(String(raw.font)) ? (raw.font as StampFont) : DEFAULT_STAMP.font,
     color: VALID_STAMP_COLORS.has(String(raw.color)) ? (raw.color as StampColor) : DEFAULT_STAMP.color,
     size: VALID_STAMP_SIZES.has(String(raw.size)) ? (raw.size as StampSize) : DEFAULT_STAMP.size,
@@ -406,6 +414,30 @@ export function normalizeStamp(s: Partial<StampSpec> | Record<string, unknown> |
     placement: VALID_STAMP_PLACEMENTS.has(String(raw.placement))
       ? (raw.placement as StampPlacement)
       : DEFAULT_STAMP.placement,
+  };
+}
+
+export function restoreFrameSpec(
+  frame: FrameSpec,
+  rawText: unknown,
+): { spec: FrameSpec; ok: boolean; error: string | null } {
+  const checked = sanitizeEnglishText(rawText, TEXT_MAX);
+  return {
+    spec: normalizeFrame({ ...frame, text: checked.text }),
+    ok: !checked.rejectedCjk,
+    error: checked.rejectedCjk ? CJK_REFUSE_MESSAGE : checked.error,
+  };
+}
+
+export function restoreStampSpec(
+  stamp: StampSpec,
+  rawText: unknown,
+): { spec: StampSpec; ok: boolean; error: string | null } {
+  const checked = sanitizeEnglishText(rawText, TEXT_MAX);
+  return {
+    spec: normalizeStamp({ ...stamp, text: checked.text }),
+    ok: !checked.rejectedCjk,
+    error: checked.rejectedCjk ? CJK_REFUSE_MESSAGE : checked.error,
   };
 }
 

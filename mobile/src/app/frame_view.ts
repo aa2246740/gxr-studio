@@ -28,6 +28,7 @@ import {
 import { openLogoSheet } from './logo_sheet';
 import { logoStore } from './logo_store';
 import type { Photo } from './model';
+import { cancelHostSheets } from './sheet_lifecycle';
 import { openStampSheet } from './stamp_sheet';
 import { showToast } from './toast';
 
@@ -37,7 +38,9 @@ const CARD_EDGE = 192;
 export interface FrameHost {
   ew: () => [number, number];
   backdrop: () => HTMLCanvasElement | null;
+  backdropKey?: () => string;
   onChange: () => void;
+  isAlive?: () => boolean;
 }
 
 export class FrameView {
@@ -51,7 +54,9 @@ export class FrameView {
   private cardLayouts = new Map<FrameStyle, FrameLayoutData | null>();
   private layoutSig = '';
   private drawnSig = '';
-  private cardToken = 0;
+  private paintingSig = '';
+  private layoutToken = 0;
+  private paintToken = 0;
   private frameQueue = 0;
   private destroyed = false;
 
@@ -73,7 +78,7 @@ export class FrameView {
       const name = el('div', 'nm', FRAME_NAMES[style]);
       card.append(thumb, name);
       card.addEventListener('click', () => {
-        if (this.photo.border.style === style) return;
+        if (!this.aliveNow() || this.photo.border.style === style) return;
         commitSelectStyle(this.photo, style, () => {
           const monoMsg = autoMonoMessage(this.photo.border);
           if (monoMsg) showToast(this.shell, monoMsg);
@@ -91,7 +96,8 @@ export class FrameView {
     this.stampTitleSummary = el('small', '', stampSummary(this.photo.stamp, this.photo.border));
     stampBtn.append(el('b', '', '时间戳'), this.stampTitleSummary);
     stampBtn.addEventListener('click', () => {
-      openStampSheet(this.shell, this.photo, () => this.changed());
+      if (!this.aliveNow()) return;
+      openStampSheet(this.shell, this.photo, () => this.changed(), () => this.aliveNow());
     });
 
     this.stampSwitch = document.createElement('input');
@@ -100,6 +106,7 @@ export class FrameView {
     this.stampSwitch.checked = this.photo.stamp.enabled;
     this.stampSwitch.setAttribute('aria-label', '时间戳');
     this.stampSwitch.addEventListener('change', () => {
+      if (!this.aliveNow()) return;
       commitStamp(this.photo, { enabled: this.stampSwitch.checked }, () => this.changed());
     });
     stampRow.append(stampBtn, this.stampSwitch);
@@ -109,18 +116,24 @@ export class FrameView {
     this.renderControls();
   }
 
+  private aliveNow(): boolean {
+    return !this.destroyed && (this.host.isAlive?.() ?? true);
+  }
+
   panelEl(): HTMLElement {
     return this.root;
   }
 
   tabOpened(): void {
+    if (!this.aliveNow()) return;
     this.tabOpen = true;
+    const version = this.photo.version;
     void ensureFrameMeta(this.photo).then(() => {
-      if (!this.destroyed && this.tabOpen) void this.paintCards();
+      if (this.aliveNow() && this.tabOpen && this.photo.version === version) void this.paintCards();
     });
     if (!logoStore.loaded()) {
       void logoStore.ensureLoaded().then(() => {
-        if (!this.destroyed && this.tabOpen) void this.paintCards();
+        if (this.aliveNow() && this.tabOpen && this.photo.version === version) void this.paintCards();
       });
     }
     void this.paintCards();
@@ -128,15 +141,19 @@ export class FrameView {
 
   tabClosed(): void {
     this.tabOpen = false;
+    this.layoutToken += 1;
+    this.paintToken += 1;
+    this.paintingSig = '';
     cancelAnimationFrame(this.frameQueue);
     this.frameQueue = 0;
   }
 
   backdropUpdated(): void {
-    if (this.tabOpen) void this.paintCards();
+    if (this.aliveNow() && this.tabOpen) void this.paintCards();
   }
 
   refresh(): void {
+    if (!this.aliveNow()) return;
     this.syncSelection();
     this.renderControls();
     this.stampSwitch.checked = this.photo.stamp.enabled;
@@ -146,12 +163,26 @@ export class FrameView {
 
   destroy(): void {
     this.destroyed = true;
-    this.cardToken += 1;
+    this.tabOpen = false;
+    this.layoutToken += 1;
+    this.paintToken += 1;
+    this.paintingSig = '';
     cancelAnimationFrame(this.frameQueue);
     this.frameQueue = 0;
+    cancelHostSheets(this.shell);
+    for (const { thumb } of this.holders.values()) {
+      for (const cv of thumb.querySelectorAll('canvas')) {
+        cv.width = 0;
+        cv.height = 0;
+        cv.remove();
+      }
+    }
+    this.cardLayouts.clear();
+    this.holders.clear();
   }
 
   private changed(): void {
+    if (!this.aliveNow()) return;
     this.refresh();
     this.host.onChange();
   }
@@ -193,6 +224,7 @@ export class FrameView {
           dot.style.background = COLOR_HEX[color];
           sw.append(dot);
           sw.addEventListener('click', () => {
+            if (!this.aliveNow()) return;
             commitFrame(this.photo, { color }, () => {
               const monoMsg = autoMonoMessage(this.photo.border);
               if (monoMsg) showToast(this.shell, monoMsg);
@@ -210,6 +242,7 @@ export class FrameView {
           const btn = button(cur.weight === weight ? 'on' : '', WEIGHT_NAMES[weight]);
           btn.dataset.weight = weight;
           btn.addEventListener('click', () => {
+            if (!this.aliveNow()) return;
             commitFrame(this.photo, { weight }, () => this.changed());
           });
           seg.append(btn);
@@ -226,7 +259,8 @@ export class FrameView {
       const logoChip = button(logoOn ? 'chip on' : 'chip', '标志');
       logoChip.dataset.act = 'frame-logo';
       logoChip.addEventListener('click', () => {
-        openLogoSheet(this.shell, this.photo, () => this.changed());
+        if (!this.aliveNow()) return;
+        openLogoSheet(this.shell, this.photo, () => this.changed(), () => this.aliveNow());
       });
       chips.append(logoChip);
     }
@@ -234,6 +268,7 @@ export class FrameView {
       const paramChip = button(cur.show_params ? 'chip on' : 'chip', '参数');
       paramChip.dataset.act = 'frame-params';
       paramChip.addEventListener('click', () => {
+        if (!this.aliveNow()) return;
         commitFrame(this.photo, { show_params: !this.photo.border.show_params }, () => this.changed());
       });
       chips.append(paramChip);
@@ -242,6 +277,7 @@ export class FrameView {
       const dateChip = button(cur.show_date ? 'chip on' : 'chip', '日期');
       dateChip.dataset.act = 'frame-date';
       dateChip.addEventListener('click', () => {
+        if (!this.aliveNow()) return;
         commitFrame(this.photo, { show_date: !this.photo.border.show_date }, () => this.changed());
       });
       chips.append(dateChip);
@@ -249,22 +285,24 @@ export class FrameView {
     const moreChip = button('chip push', '更多');
     moreChip.dataset.act = 'frame-more';
     moreChip.addEventListener('click', () => {
-      openFrameMoreSheet(this.shell, this.photo, () => this.changed());
+      if (!this.aliveNow()) return;
+      openFrameMoreSheet(this.shell, this.photo, () => this.changed(), () => this.aliveNow());
     });
     chips.append(moreChip);
     this.controls.append(chips);
   }
 
   private async paintCards(): Promise<void> {
-    if (this.destroyed || !this.tabOpen) return;
-    const base = this.host.backdrop();
-    if (!base) return;
+    if (!this.aliveNow() || !this.tabOpen) return;
+    const initialBase = this.host.backdrop();
+    if (!initialBase || initialBase.width <= 0 || initialBase.height <= 0) return;
 
+    const version = this.photo.version;
     const [ew, eh] = this.host.ew();
     const cur = this.photo.border;
     const logoInfo = cur.logo !== 'ricoh' && cur.logo !== 'none' ? logoStore.info(cur.logo) : null;
     const layoutKey = JSON.stringify([
-      this.photo.version,
+      version,
       ew,
       eh,
       this.photo.frameMeta?.frame ?? null,
@@ -284,15 +322,27 @@ export class FrameView {
       logoInfo,
     ]);
 
-    const token = ++this.cardToken;
     if (this.layoutSig !== layoutKey) {
-      const layouts = await resolveCardLayouts(this.photo, ew, eh, () => {
-        if (!this.destroyed && this.tabOpen) {
-          this.drawnSig = '';
-          void this.paintCards();
-        }
-      });
-      if (this.destroyed || token !== this.cardToken) return;
+      const myLayout = ++this.layoutToken;
+      let layouts: Record<string, FrameLayoutData | null>;
+      try {
+        layouts = await resolveCardLayouts(
+          this.photo,
+          ew,
+          eh,
+          () => {
+            if (this.aliveNow() && this.tabOpen && this.photo.version === version) {
+              this.drawnSig = '';
+              this.paintingSig = '';
+              void this.paintCards();
+            }
+          },
+          () => this.aliveNow() && this.tabOpen && myLayout === this.layoutToken && this.photo.version === version,
+        );
+      } catch {
+        return;
+      }
+      if (!this.aliveNow() || !this.tabOpen || myLayout !== this.layoutToken || this.photo.version !== version) return;
       this.cardLayouts.clear();
       this.cardLayouts.set('none', null);
       for (const style of FRAME_ORDER) {
@@ -300,19 +350,29 @@ export class FrameView {
       }
       this.layoutSig = layoutKey;
       this.drawnSig = '';
+      this.paintingSig = '';
     }
 
-    const drawKey = `${layoutKey}|${base.width}x${base.height}|${logoStore.revision()}|${this.photo.rev}`;
-    if (this.drawnSig === drawKey) return;
-    this.drawnSig = drawKey;
+    const base = this.host.backdrop();
+    if (!base || base.width <= 0 || base.height <= 0) return;
+    const backdropKey = this.host.backdropKey?.() ?? '';
+    const drawKey = `${layoutKey}|${base.width}x${base.height}|${backdropKey}|${logoStore.revision()}|${this.photo.rev}`;
+    if (this.drawnSig === drawKey || (this.frameQueue && this.paintingSig === drawKey)) return;
 
+    const myPaint = ++this.paintToken;
+    this.paintingSig = drawKey;
+    this.drawnSig = '';
     cancelAnimationFrame(this.frameQueue);
+    this.frameQueue = 0;
+
     const styles = [...FRAME_ORDER];
     let index = 0;
 
-    const drawOne = (style: FrameStyle): void => {
+    const drawOne = (style: FrameStyle): boolean => {
+      const activeBase = this.host.backdrop();
+      if (!activeBase || activeBase.width <= 0 || activeBase.height <= 0) return false;
       const holder = this.holders.get(style);
-      if (!holder) return;
+      if (!holder) return true;
       const { thumb } = holder;
       const frameLayout = style === 'none' ? null : (this.cardLayouts.get(style) ?? null);
       const dw = frameLayout ? frameLayout.width : ew;
@@ -339,11 +399,12 @@ export class FrameView {
           },
           scale,
           {
-            photo: base,
-            backdrop: base,
+            photo: activeBase,
+            backdrop: activeBase,
             onLogo: () => {
               this.drawnSig = '';
-              if (!this.destroyed && this.tabOpen) void this.paintCards();
+              this.paintingSig = '';
+              if (this.aliveNow() && this.tabOpen && this.photo.version === version) void this.paintCards();
             },
           },
         );
@@ -351,17 +412,24 @@ export class FrameView {
       thumb.classList.remove('skel');
       thumb.removeAttribute('aria-busy');
       if (!canvas.parentElement) thumb.prepend(canvas);
+      return true;
     };
 
     const batch = (): void => {
       this.frameQueue = 0;
-      if (this.destroyed || token !== this.cardToken || !this.tabOpen) return;
+      if (!this.aliveNow() || myPaint !== this.paintToken || !this.tabOpen || this.photo.version !== version) return;
       const end = Math.min(styles.length, index + 3);
       while (index < end) {
-        drawOne(styles[index++]);
+        if (!drawOne(styles[index++])) {
+          this.paintingSig = '';
+          return;
+        }
       }
       if (index < styles.length) {
         this.frameQueue = requestAnimationFrame(batch);
+      } else {
+        this.paintingSig = '';
+        this.drawnSig = drawKey;
       }
     };
     batch();

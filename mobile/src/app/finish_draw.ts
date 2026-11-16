@@ -4,8 +4,8 @@
 import { ascentOf, GXR_MARK, GXR_MARK_ASCENT } from '../lib/fonts';
 import { pickLogoMode, type Deco, type FrameItem, type FrameLayoutData, type StampLayoutData } from '../lib/frame_spec';
 import { fontCss, fontReady } from './font_loader';
-import { paintBackground } from './finish_bg';
-import { paintCarrier } from './finish_texture';
+import { paintBackground, clearBlurCache } from './finish_bg';
+import { clearTextureCaches, paintCarrier } from './finish_texture';
 import { logoStore } from './logo_store';
 
 const GLOW_GAIN = 2.0;
@@ -20,6 +20,21 @@ const rgb = (c: readonly [number, number, number]): string => `rgb(${c[0]}, ${c[
 
 let tintCanvas: HTMLCanvasElement | null = null;
 let scratch: HTMLCanvasElement | null = null;
+
+export function releaseFinishDrawResources(): void {
+  if (tintCanvas) {
+    tintCanvas.width = 0;
+    tintCanvas.height = 0;
+    tintCanvas = null;
+  }
+  if (scratch) {
+    scratch.width = 0;
+    scratch.height = 0;
+    scratch = null;
+  }
+  clearTextureCaches();
+  clearBlurCache();
+}
 
 function textInk(ctx: CanvasRenderingContext2D, item: TextItem | StampTextOp, s: number): [number, number, number] {
   if (!('auto_ink' in item) || !item.auto_ink) return item.fill ?? [22, 22, 26];
@@ -73,7 +88,7 @@ function drawBuiltInMark(
 /** Port of `web/assets/finish_draw.js:drawClogo`. */
 function drawClogo(ctx: CanvasRenderingContext2D, item: ClogoItem, s: number, onLogo: (() => void) | null): void {
   const img = logoStore.canvas(item.id, onLogo);
-  if (!img) return;
+  if (!img || img.width <= 0 || img.height <= 0) return;
   const info = logoStore.info(item.id);
   const opaque = Boolean(info?.opaque);
   let mode = opaque ? 'orig' : item.mode || 'orig';
@@ -148,18 +163,34 @@ function rotatedText(ctx: CanvasRenderingContext2D, item: TextItem, s: number): 
     return;
   }
   const cv = document.createElement('canvas');
-  cv.width = Math.max(1, Math.ceil(item.tw * s));
-  cv.height = Math.max(1, Math.ceil((ascentOf(item.font, item.px) + Math.ceil(item.px * 0.4)) * s));
-  const sc = cv.getContext('2d');
-  if (!sc) return;
-  sc.fontKerning = 'none';
-  sc.textBaseline = 'alphabetic';
-  drawText(sc, { ...item, y: 0, xs: item.xs0 }, 0, 0, s);
-  ctx.save();
-  ctx.translate(item.gx * s, (item.gy + item.tw) * s);
-  ctx.rotate(-Math.PI / 2);
-  ctx.drawImage(cv, 0, 0);
-  ctx.restore();
+  try {
+    cv.width = Math.max(1, Math.ceil(item.tw * s));
+    cv.height = Math.max(1, Math.ceil((ascentOf(item.font, item.px) + Math.ceil(item.px * 0.4)) * s));
+    const sc = cv.getContext('2d');
+    if (!sc) return;
+    sc.fontKerning = 'none';
+    sc.textBaseline = 'alphabetic';
+    drawText(sc, { ...item, y: 0, xs: item.xs0 }, 0, 0, s);
+    ctx.save();
+    ctx.translate(item.gx * s, (item.gy + item.tw) * s);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(cv, 0, 0);
+    ctx.restore();
+  } finally {
+    cv.width = 0;
+    cv.height = 0;
+  }
+}
+
+function isUsableSource(src: CanvasImageSource | null | undefined): src is CanvasImageSource {
+  if (!src) return false;
+  if ('closed' in src && (src as { closed?: boolean }).closed) return false;
+  if ('width' in src && 'height' in src) {
+    const w = typeof src.width === 'number' ? src.width : 0;
+    const h = typeof src.height === 'number' ? src.height : 0;
+    if (w <= 0 || h <= 0) return false;
+  }
+  return true;
 }
 
 /** Port of `web/assets/finish_draw.js:drawFrameItems`. */
@@ -170,9 +201,10 @@ function drawFrameItems(
   onLogo: (() => void) | null,
   photo: CanvasImageSource | null,
 ): void {
+  const usablePhoto = isUsableSource(photo) ? photo : null;
   for (const item of frame.items) {
     if (item.k === 'photo') {
-      if (photo) ctx.drawImage(photo, item.x * s, item.y * s, item.w * s, item.h * s);
+      if (usablePhoto) ctx.drawImage(usablePhoto, item.x * s, item.y * s, item.w * s, item.h * s);
       else ctx.clearRect(item.x * s, item.y * s, item.w * s, item.h * s);
     } else if (item.k === 'text') {
       if (item.rot) rotatedText(ctx, item, s);
@@ -289,7 +321,7 @@ export function drawDecor(
   const [px, py] = frame ? frame.photo : [0, 0];
   ctx.imageSmoothingQuality = 'high';
   if (frame) paintBackground(ctx, frame, s, backdrop);
-  else if (photo) ctx.drawImage(photo, 0, 0, deco.ew * s, deco.eh * s);
+  else if (isUsableSource(photo)) ctx.drawImage(photo, 0, 0, deco.ew * s, deco.eh * s);
   ctx.fontKerning = 'none';
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
