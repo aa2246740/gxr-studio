@@ -25,11 +25,10 @@ pub use draw_ellipse::draw_ellipse;
 pub use image::{InkImage, InkMode, mean_f32, mean_u8_as_f32, pairwise_sum_f32};
 pub use logo::{
     ClogoItem, ClogoTrace, ERR_TOO_SMALL, LogoPrepareOptions, LogoPrepareResult,
-    finish_logo_prepare, paint_clogo, paint_clogo_traced, parse_logo_prepare_json,
+    decode_logo_bundle, finish_logo_prepare, paint_clogo, paint_clogo_traced,
+    parse_logo_prepare_json,
 };
-pub use ops::{
-    InkOpsOutput, LogoInput, decode_logo_bundle, run_ink_ops, run_ink_ops_traced, run_ink_ops_vec,
-};
+pub use ops::{InkOpsOutput, LogoInput, run_ink_ops, run_ink_ops_traced, run_ink_ops_vec};
 pub use paste::{paste_color, paste_image};
 pub use rng::{Pcg64, SeedSequence};
 pub use shapes::{

@@ -13,6 +13,7 @@ mod geometry;
 mod hdr;
 mod hdrtrack;
 mod ink;
+mod inktext;
 mod jpeg;
 mod lut;
 mod raw;

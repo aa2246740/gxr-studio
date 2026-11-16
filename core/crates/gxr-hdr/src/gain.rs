@@ -196,29 +196,76 @@ pub fn srgb_to_linear(c: u8) -> f32 {
 
 /// Port of gxr_studio/hdr/gain.py:153 sdr_luma_grid: `(h, w, 3)` uint8 → float32 grid.
 ///
-/// `@ LUMA` is written as `(r * l0 + g * l1) + b * l2` in float32.
+/// `@ LUMA` is written as `(r * l0 + g * l1) + b * l2` in float32. Streams one `factor`-row
+/// strip at a time instead of allocating a full-canvas `(h, w)` float32 buffer while producing
+/// bit-for-bit identical output to computing `y` and calling `block_mean`.
 pub fn sdr_luma_grid(rgb: &[u8], h: usize, w: usize, factor: usize) -> Result<Plane32, CoreError> {
     if size::count(&[dim(h), dim(w), 3])? != rgb.len() {
         return Err(bad("RGB 长度和形状对不上"));
     }
+    let (gh, gw) = grid_shape(h, w, factor)?;
+    if h == 0 || w == 0 {
+        return Ok(Plane32 {
+            h: gh,
+            w: gw,
+            v: Vec::new(),
+        });
+    }
+    // Preserve block_mean's overflow checks and bounded-allocation ordering.
+    size::count(&[dim(gh), dim(factor), dim(gw), dim(factor)])?;
+    let n = size::count(&[dim(factor), dim(factor)])?;
+    let mut out = size::with_capacity(size::count(&[dim(gh), dim(gw)])?)?;
+    let mut row = size::filled(factor, 0.0_f32)?;
+    let mut block = size::filled(if gw == 1 { n } else { 0 }, 0.0_f32)?;
+    let strip_h = factor.min(h);
+    let mut strip = size::filled(size::count(&[dim(strip_h), dim(w)])?, 0.0_f32)?;
+
     // A fixed 256-entry table on the stack: no heap buffer that is not sized by the input.
     let mut lut = [0.0f32; 256];
     for (c, slot) in (0..=255u8).zip(lut.iter_mut()) {
         *slot = srgb_to_linear(c);
     }
-    let y: Vec<f32> = rgb
-        .chunks_exact(3)
-        .map(|p| {
+
+    let row_stride = w * 3;
+    for gy in 0..gh {
+        let y0 = gy * factor;
+        let rows = (h - y0).min(factor);
+        let src = &rgb[y0 * row_stride..(y0 + rows) * row_stride];
+        for (dst, p) in strip[..rows * w].iter_mut().zip(src.chunks_exact(3)) {
             let (r, g, b) = (
                 lut[usize::from(p[0])],
                 lut[usize::from(p[1])],
                 lut[usize::from(p[2])],
             );
-            r * LUMA[0] + g * LUMA[1] + b * LUMA[2]
-        })
-        .collect();
-    let (v, gh, gw) = block_mean(&y, h, w, factor)?;
-    Ok(Plane32 { h: gh, w: gw, v })
+            *dst = r * LUMA[0] + g * LUMA[1] + b * LUMA[2];
+        }
+        let at = |iy: usize, x: usize| strip[iy.min(rows - 1) * w + x.min(w - 1)];
+        for gx in 0..gw {
+            let total = if gw == 1 {
+                for iy in 0..factor {
+                    for ix in 0..factor {
+                        block[iy * factor + ix] = at(iy, gx * factor + ix);
+                    }
+                }
+                sum(&block)
+            } else {
+                let mut acc = 0.0_f32;
+                for iy in 0..factor {
+                    for (ix, slot) in row.iter_mut().enumerate() {
+                        *slot = at(iy, gx * factor + ix);
+                    }
+                    acc += pairwise(&row);
+                }
+                acc
+            };
+            out.push(mean_of(total, n));
+        }
+    }
+    Ok(Plane32 {
+        h: gh,
+        w: gw,
+        v: out,
+    })
 }
 
 /// Port of gxr_studio/hdr/gain.py:102 raw_luma, without the capture metadata (see
@@ -644,4 +691,37 @@ pub fn register(
     let mut c = size::with_capacity(warped.len())?;
     c.extend(warped.iter().map(|&v| v > f32_of(0.01)));
     Ok((y, c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdr_luma_grid_streaming_matches_reference_block_mean_bitwise() {
+        let mut lut = [0.0f32; 256];
+        for (c, slot) in (0..=255u8).zip(lut.iter_mut()) {
+            *slot = srgb_to_linear(c);
+        }
+        for &(h, w, factor) in &[(1, 1, 8), (5, 7, 8), (19, 6, 8), (23, 29, 8), (17, 3, 4)] {
+            let mut rgb = Vec::with_capacity(h * w * 3);
+            for i in 0..(h * w * 3) {
+                rgb.push(((i * 73 + 19) % 256) as u8);
+            }
+            let y: Vec<f32> = rgb
+                .chunks_exact(3)
+                .map(|p| {
+                    lut[usize::from(p[0])] * LUMA[0]
+                        + lut[usize::from(p[1])] * LUMA[1]
+                        + lut[usize::from(p[2])] * LUMA[2]
+                })
+                .collect();
+            let (ref_v, gh, gw) = block_mean(&y, h, w, factor).unwrap();
+            let streamed = sdr_luma_grid(&rgb, h, w, factor).unwrap();
+            assert_eq!((streamed.h, streamed.w), (gh, gw));
+            let a_bits: Vec<u32> = streamed.v.iter().map(|v| v.to_bits()).collect();
+            let b_bits: Vec<u32> = ref_v.iter().map(|v| v.to_bits()).collect();
+            assert_eq!(a_bits, b_bits, "mismatch for ({h}, {w}, factor={factor})");
+        }
+    }
 }

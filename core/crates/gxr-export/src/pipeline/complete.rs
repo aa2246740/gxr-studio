@@ -9,8 +9,9 @@ use gxr_jpeg::ExifSpec;
 use gxr_raw::{CoreError, Json};
 
 use super::encode::{Rgb, fit, write_rgb_with_exif};
-use super::hdr::{StampMask, finish_hdr, track_final};
+use super::hdr::{StampMask, finish_hdr_placed, track_final_placed, track_final_placed_owned};
 use super::result::{ExportFail, Labels, result_json, result_labels, validate_options};
+use crate::hdr_track::FramedTrack;
 
 /// Largest pixel count any image input may have (`gxr-raw`'s shared limit, 2**32 − 1 elements).
 const MAX_ELEMENTS: u64 = u32::MAX as u64;
@@ -105,6 +106,69 @@ pub struct HdrInputs<'a> {
     pub mask: Option<StampMask<'a>>,
 }
 
+/// Owned variant of [`HdrInputs`] so WASM callers can move `hdr_layer` without cloning.
+pub struct HdrInputsOwned<'a> {
+    pub layer: Vec<f32>,
+    pub mask: Option<StampMask<'a>>,
+}
+
+fn finish_with_track(
+    rgb: Rgb,
+    track: Option<FramedTrack>,
+    state: &State,
+    source: &ExifSpec,
+) -> Result<(Completed, Rgb), ExportFail> {
+    let rgb = fit(rgb, state.long_edge)?;
+    let note = state.labels.note().to_string();
+    let payload = write_rgb_with_exif(&rgb, source, &note, state.quality)?;
+    let rl = result_labels(&state.labels);
+    let (file, hdr) = match track {
+        None => (payload, None),
+        Some(t) => {
+            let (bytes, outcome) = finish_hdr_placed(t, payload, &rgb)?;
+            (bytes, Some(outcome))
+        }
+    };
+    let result = result_json(
+        &state.name,
+        rgb.width,
+        rgb.height,
+        file.len(),
+        &rl,
+        hdr.as_ref(),
+    );
+    Ok((Completed { file, result }, rgb))
+}
+
+/// Zero-copy [`complete_export`] moving caller-owned `canvas` and `hdr_in.layer`.
+pub fn complete_export_owned(
+    canvas: Vec<u8>,
+    w: u64,
+    h: u64,
+    state: &State,
+    source: &ExifSpec,
+    hdr_in: Option<HdrInputsOwned<'_>>,
+) -> Result<(Completed, Rgb), ExportFail> {
+    let (wu, hu) = checked_rgb(&canvas, w, h)?;
+    // Validate the HDR state, layer, mask and layout first (Sol r1 P2-02).
+    let track = match &state.hdr {
+        None => None,
+        Some(h) => {
+            let (layer, mask) = match hdr_in {
+                Some(i) => (i.layer, i.mask),
+                None => (Vec::new(), None),
+            };
+            Some(track_final_placed_owned(h, layer, mask)?)
+        }
+    };
+    let rgb = Rgb {
+        width: wu,
+        height: hu,
+        data: canvas,
+    };
+    finish_with_track(rgb, track, state, source)
+}
+
 /// `export_complete`: the inked canvas, the state and the source EXIF (export-meta's `base` /
 /// `sub`, without 270) → `_fit`, one encode, then, when `state.hdr` is set,
 /// `hdr_export.finish` → the file and the result.
@@ -125,7 +189,7 @@ pub fn complete_export(
                 Some(i) => (i.layer, i.mask),
                 None => (&[][..], None),
             };
-            Some(track_final(h, layer, mask)?)
+            Some(track_final_placed(h, layer, mask)?)
         }
     };
     let mut data = Vec::new();
@@ -137,24 +201,5 @@ pub fn complete_export(
         height: hu,
         data,
     };
-    let rgb = fit(rgb, state.long_edge)?;
-    let note = state.labels.note().to_string();
-    let payload = write_rgb_with_exif(&rgb, source, &note, state.quality)?;
-    let rl = result_labels(&state.labels);
-    let (file, hdr) = match &track {
-        None => (payload, None),
-        Some(t) => {
-            let (bytes, outcome) = finish_hdr(t, payload, &rgb)?;
-            (bytes, Some(outcome))
-        }
-    };
-    let result = result_json(
-        &state.name,
-        rgb.width,
-        rgb.height,
-        file.len(),
-        &rl,
-        hdr.as_ref(),
-    );
-    Ok((Completed { file, result }, rgb))
+    finish_with_track(rgb, track, state, source)
 }
