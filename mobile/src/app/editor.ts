@@ -506,6 +506,17 @@ export class EditorView {
     throw new DOMException('读不了', reply.gone ? 'NotReadableError' : 'EncodingError');
   }
 
+  private same(token: number, photo: Photo, version: number, session: number, rev?: number): boolean {
+    return (
+      token === this.token &&
+      this.photo === photo &&
+      this.api.session() === session &&
+      this.api.photo(photo.id) === photo &&
+      photo.version === version &&
+      (rev === undefined || photo.rev === rev)
+    );
+  }
+
   private prefetch(next: Photo | null): void {
     if (!next?.dng) {
       this.wantNeighbor = '';
@@ -513,10 +524,11 @@ export class EditorView {
     }
     const id = next.id;
     const version = next.version;
+    const session = this.api.session();
     const token = this.token;
     this.wantNeighbor = id;
     void this.api.readFull(next).then((reply) => {
-      if (!reply.ok || this.token !== token || this.wantNeighbor !== id) return;
+      if (!reply.ok || this.token !== token || this.wantNeighbor !== id || this.api.session() !== session || this.api.photo(id) !== next || next.version !== version) return;
       this.api.keepWarm(id, version, reply.bytes);
     });
   }
@@ -524,6 +536,7 @@ export class EditorView {
   private async load(photo: Photo): Promise<void> {
     const token = ++this.token;
     const version = photo.version;
+    const session = this.api.session();
     if (!photo.dng) {
       this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW');
       if (this.engine && photo.bitmap) {
@@ -536,7 +549,7 @@ export class EditorView {
         if (this.still) this.still.hidden = true;
         this.push();
         await this.cropStage?.applyPreviewGeometry();
-        if (token !== this.token) return;
+        if (!this.same(token, photo, version, session)) return;
         const frame = this.engine.frame();
         if (frame) this.shell.dataset.frame = '1';
         this.adjust?.setDisabled(false);
@@ -559,31 +572,29 @@ export class EditorView {
     try {
       bytes = await this.take(photo);
     } catch (err) {
-      if (token !== this.token) return;
+      if (!this.same(token, photo, version, session)) return;
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if (isGone(err)) this.api.markGone(photo.id, version);
       else this.api.markBad(photo.id, version);
       return;
     }
-    if (token !== this.token) return;
+    if (!this.same(token, photo, version, session)) return;
     // 先用 WASM 描述，坏文件的判断和有没有显卡无关。
     let described: Described;
     try {
       described = await describeDng(bytes);
     } catch {
-      if (token === this.token) this.api.markBad(photo.id, version);
+      if (this.same(token, photo, version, session)) this.api.markBad(photo.id, version);
       return;
     }
-    if (token !== this.token) return;
+    if (!this.same(token, photo, version, session)) return;
     if (!described.layout || described.reason) {
       this.api.markBad(photo.id, version);
       return;
     }
-    if (photo.version === version) {
-      photo.checked = version;
-      // 镜头名和 ISO：相机 JPG 里没有时用 DNG 里的（选镜头单元和模型）。
-      photo.dngMeta = described.meta;
-    }
+    photo.checked = version;
+    // 镜头名和 ISO：相机 JPG 里没有时用 DNG 里的（选镜头单元和模型）。
+    photo.dngMeta = described.meta;
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
       this.adjust?.setDisabled(true);
@@ -595,11 +606,12 @@ export class EditorView {
       // 每张照片一个固定的键：再加一次会替换（并销毁）原来那份纹理，不会同一张占两份。
       // 上传由 App 按照片排队，提交前核对版本；过期的请求不会碰显卡里的源。
       const installed = await this.api.uploadRaw(photo, version, described.layout, bytes, described.scene);
-      if (!installed || token !== this.token) return;
+      if (!installed || !this.same(token, photo, version, session)) return;
       await this.showRaw(key);
+      if (!this.same(token, photo, version, session)) return;
       this.prefetch(this.nextPhoto(1));
     } catch {
-      if (token !== this.token) return;
+      if (!this.same(token, photo, version, session)) return;
       this.api.markBad(photo.id, version);
     }
   }
@@ -610,14 +622,13 @@ export class EditorView {
     const version = photo.version;
     const rev = photo.rev;
     const token = this.token;
+    const session = this.api.session();
+    // 照片还是这次会话里的同一张、同一个编辑实例、版本和编辑版本：离开重开、清空、去掉、重新选过或改过裁剪都算过期。
+    const alive = () => this.same(token, photo, version, session, rev);
     if (photo.neutral && photo.neutral.version === version) {
-      if (token === this.token) this.recipes?.neutral(photo.neutral.bitmap);
+      if (alive()) this.recipes?.neutral(photo.neutral.bitmap);
       return;
     }
-    const session = this.api.session();
-    // 照片还是这次会话里的同一张、同一个版本和编辑版本：清空、去掉、重新选过或改过裁剪都算过期。
-    const alive = () =>
-      this.api.photo(photo.id) === photo && photo.version === version && photo.rev === rev && this.api.session() === session;
     const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
     const { geometry } = await this.cropStage.resolveBoxGeometry(photo);
     if (!alive()) return;
@@ -628,20 +639,23 @@ export class EditorView {
       bitmap.close();
       return;
     }
-    if (token === this.token) this.recipes?.neutral(null);
+    this.recipes?.neutral(null);
     photo.neutral?.bitmap.close();
     photo.neutral = { version, bitmap };
-    if (token === this.token) this.recipes?.neutral(bitmap);
+    this.recipes?.neutral(bitmap);
   }
 
   private async showRaw(key: string): Promise<void> {
-    if (!this.engine) return;
+    if (!this.engine || !this.photo) return;
+    const photo = this.photo;
     const token = this.token;
+    const version = photo.version;
+    const session = this.api.session();
     this.engine.show(key);
     this.mode = 'raw';
     this.push();
     await this.cropStage?.applyPreviewGeometry();
-    if (token !== this.token) return;
+    if (!this.same(token, photo, version, session)) return;
     const frame = this.engine.frame();
     if (frame) this.shell.dataset.frame = '1';
     if (!this.lookCaption) this.lookCaption = '中性转换';
@@ -652,7 +666,7 @@ export class EditorView {
     if (this.gpuCanvas) this.gpuCanvas.hidden = false;
     if (this.still) this.still.hidden = true;
     this.adjust?.setDisabled(false);
-    if (this.photo) void this.neutralCards(this.photo, key);
+    void this.neutralCards(photo, key);
   }
 
   private showStillPhoto(photo: Photo, label: string): void {
@@ -670,11 +684,14 @@ export class EditorView {
   /** 先放缩略图，Worker 解好屏幕宽度的那张再换上。主线程只画一次。 */
   private async sharpen(photo: Photo): Promise<void> {
     const token = this.token;
+    const version = photo.version;
+    const session = this.api.session();
+    const alive = () => this.same(token, photo, version, session);
     const fullJpg = !photo.dng && !!photo.jpg && !!this.engine;
     const width = fullJpg ? Number.POSITIVE_INFINITY : Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
     const bitmap = await this.api.still(photo, width);
     if (!bitmap) return;
-    if (token !== this.token || this.mode === 'raw') {
+    if (!alive() || this.mode === 'raw') {
       bitmap.close();
       return;
     }
@@ -687,7 +704,7 @@ export class EditorView {
       this.luts?.start(key);
       this.push();
       await this.cropStage?.applyPreviewGeometry();
-      if (token !== this.token) return;
+      if (!alive()) return;
       this.engine.frame();
       this.cropStage?.syncLoaded();
       return;
