@@ -127,6 +127,7 @@ Python 看起来算错了也先原样移植，把疑问写进报告，不要顺�
 | lut | `lut-`、`scene-` | `gxr-lut` | `cmd_lut.rs` | `gxr-wasm/src/lut.rs` | `wasm_cases/lut.mjs` | `tests/test_core_parity_lut.py` |
 | hdr | `hdr-` | `gxr-hdr` | `cmd_hdr.rs` | `gxr-wasm/src/hdr.rs` | `wasm_cases/hdr.mjs` | `tests/test_core_parity_hdr.py` |
 | geometry | `geom-` | `gxr-finish` | `cmd_geometry.rs` | `gxr-wasm/src/geometry.rs` | `wasm_cases/geometry.mjs` | `tests/test_core_parity_geometry.py` |
+| ink | `ink-` | `gxr-finish` | `cmd_ink.rs` | `gxr-wasm/src/ink.rs` | `wasm_cases/ink.mjs` | `tests/test_core_parity_ink_*.py` |
 | frame | `frame-`、`stamp-` | `gxr-frame` | `cmd_frame.rs` | `gxr-wasm/src/frame.rs` | `wasm_cases/frame.mjs` | `tests/test_core_parity_frame.py` |
 | jpeg | `jpeg-` | `gxr-jpeg` | `cmd_jpeg.rs` | `gxr-wasm/src/jpeg.rs` | `wasm_cases/jpeg.mjs` | `tests/test_core_parity_jpeg.py` |
 | export | `export-` | `gxr-export` | `cmd_export.rs` | `gxr-wasm/src/export.rs` | `wasm_cases/export.mjs` | `tests/test_core_parity_export.py` |
@@ -579,4 +580,16 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 - **显卡预览与配方卡**：离开「裁剪」页时，舞台通过 Worker `geom_final_box` 取得整数裁切框并传给 `Engine.setGeometry({ straighten, box })`；无头 Chrome（SwiftShader）对 DNG 与相机 JPG 全部预设/方向/拉直组合核对 `Engine.finalSize() == export_output_sizes`。`RecipeView`（`mobile/src/app/recipe_view.ts`）与中性小图一样传入已解析的 `{ geometry, crop }`，在松手提交后重绘配方卡小图（拖动中不重绘）。
 - **导出与复制粘贴**：`lib/export_request.ts` 在 `side` 中按桌面键名写入 `geometry`、`crop` 与 `frame`，并把 `rect` / `preset` 传给 `export_output_sizes`；HDR 导出经 `hdr-track` 携带裁切，导出字节与桌面 `export_finish` 逐字节相同。复制粘贴中「几何」与「裁剪」变为可设置（规则对齐 `paste_core.js` 与 `paste.py`：`几何` 保留目标的 `rotate90`/`flip`；`裁剪` 走 `geom_crop_write(..., fit=true)`，遇到 `CropError` 转为 `Skip(group="crop", reason=code, message)` 并套用 `pasteMessage`）。
 - **测试**：`tests/test_core_parity_crop_edit.py`、`tests/test_mobile_ui_crop_unit.py`（`tests/support/mobile_ui_crop_unit.mjs`）、`tests/test_mobile_ui_group_unit.py`、`tests/test_mobile_ui_group_parity_browser.py`、`tests/test_mobile_ui_crop_browser.py`（纳入导出管线隐私 lint `test_core_parity_export_pipeline_guard.py`）。
+
+## 墨迹（`gxr-finish::ink`，命令前缀 `ink-`）
+
+移植桌面非文字 Pillow 12.2.0 与 NumPy 2.4.3 的边框绘制原语：`ink/image.rs`（`new`、`convert`、`point_mul`、`crop_f64`、`rotate90`、`putalpha`、`alpha_composite` 与 NumPy `f32` 成对求和）、`ink/paste.rs`（`DIV255` 掩码混合）、`ink/draw.rs` + `ink/draw_arc.rs` + `ink/draw_ellipse.rs`（`polygon`、`rectangle`、`rounded_rectangle`、`ellipse`、宽线 `line`）、`ink/shapes.rs`（`aa_paint` 超采样下采样与 `paint_rect`/`poly`/`ellipse`/`hole`/`shadow`）、`ink/blur.rs`（3 遍定点 `BoxBlur.c` `GaussianBlur`）、`ink/backdrop.rs` + `ink/rng.rs` + `ink/rng_tables.rs`（`blurred_background`、`background` 与 `SeedSequence` → `PCG64` → Ziggurat `paper_grain`/`paper_grain_in_place`）、`ink/carrier.rs`（负片线虫 `carrier_contours` 与 4× 超采样 `paint_carrier`）、`ink/logo.rs`（`paint_clogo`/`paint_clogo_traced` 与 `finish_logo_prepare`）以及公共解释器 `ink/ops.rs`（`run_ink_ops_vec` 零拷贝交接与 `run_ink_ops_traced`）。
+
+- **CLI 子命令（`cmd_ink.rs`）**：`ink-ops`（含 `--trace-out` 输出 `paint_clogo` 运行时跟踪）、`ink-reduce`、`ink-blur`、`ink-backdrop`、`ink-grain`、`ink-carrier`、`ink-logo-prepare`。
+- **WASM 导出（`gxr-wasm/src/ink.rs`）**：`ink_ops(canvas, w, h, mode, ops_json, logo_index_json, logo_blob)`（接收所有权 `Vec<u8>` 并走 `run_ink_ops_vec`，返回 `InkOpsResult`，含 `width`、`height`、`mode` 与消耗所有权的 `data()`）与 `finish_logo_prepare(rgba, w, h, key_json)`（返回 `PreparedLogo`，含 `width`、`height`、`report` 与 `rgba()`）；宽高按 `f64` 接收并做有限正整数、65535 / `2^32 - 1` 检查，JSON 输入保持 128 层嵌套上限与 4 MiB 大小上限。比较用例在 `mobile/scripts/wasm_cases/ink.mjs`，对拍在 `tests/test_core_parity_ink_*.py`（已纳入 `test_core_parity_export_pipeline_guard.py` 隐私 lint）。
+- **Gate A/B 与平台数值规则**：Pillow 原语、`GaussianBlur`、`blurred_background` 与超采样形状在全部样式、比例与 1×1..4288×2848 下与 Pillow 逐字节相等；其中 Pillow arm64 轮子按 Amendment 5 精确收缩的 FMA 位点（`_ImagingGaussianBlur`、`0x13bb0` 等、`_ImagingHorizontalBoxBlur` `0x12cb8`、`_ImagingDrawWideLine` `0x9b9c`、`_polygon_generic` `0x9ecc..0x9ed8`、`_clip_tree_do_clip` `0x1e494`/`0x1e4f0..0x1e528`）通过局部 `#[allow(clippy::disallowed_methods)]` + `.mul_add` 对齐。`PCG64` `u64` 流（10⁷ 次，seeds `42`/`0`/`1`/`2^63`）与 NumPy 逐位相等；Ziggurat `normal` 尾区 `log`/`exp`、线虫 `_wobble` `sin`/`exp` 与 `paint_clogo` `_alpha_luma` `@` 分别按 PORT-WAVE-1 `libm` / BLAS 规则通过 Gate A（pinned `libm` 与顺序 IEEE oracle 0 差，含 1-ULP / `1e-10` / 非有限负对照）及 Gate B 机械归因（线虫 0 像素差、`clogo` 读真实运行时 `alpha_luma`、分支翻转时仍做 Gate A 并用顺序 oracle 归因像素）。
+- **4288×2848 实测与 WASM 高水位（均 `<= 512 MiB`）**：
+  - `blur_fill` 模糊背景（`sigma=686, sat=1.15, veil=0.9`）：`4288×2848` 输出用时 WASM 605.8 ms，WASM 线性内存高水位 115.9 MiB；`original` 比例完整画布（`4658×3515`）WASM 684.4 ms，高水位 149.7 MiB。
+  - `paper_grain`（`4288×2848` 经 `frame_layout` 产生的最大含颗粒画布 `darkroom` `9:16` `thin` = `5166×9184`，`amount=0.016`）：`run_ink_ops_vec` 接管画布所有权并走 `paper_grain_in_place` 原地加噪（无第 2 份全画布拷贝，只保留单份 `(h, w)` `float32` `fine` 平面），WASM 1746.9 ms，WASM 线性内存高水位 373.1 MiB。
+
 

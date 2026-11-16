@@ -8,6 +8,7 @@ pub mod crop_edit;
 pub mod geometry;
 #[path = "box.rs"]
 pub mod gpu_box;
+pub mod ink;
 pub mod raster;
 pub mod resample;
 
