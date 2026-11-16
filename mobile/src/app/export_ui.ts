@@ -140,6 +140,8 @@ export class ExportFlow {
   private savedCount = 0;
   private wake: { release(): Promise<void> } | null = null;
   private sizeSeq = 0;
+  /** 下载兜底的对象 URL 全记在这里，重画、交出、清空、新的一批和批次结束时统一撤销（Sol r1 P2-03）。 */
+  private readonly urls = new Set<string>();
 
   constructor(
     private readonly shell: HTMLElement,
@@ -255,6 +257,16 @@ export class ExportFlow {
     this.removeDock();
   }
 
+  /** 现在还没撤销的对象 URL 有几个（开发服务器的测试读）。 */
+  liveUrls(): number {
+    return this.urls.size;
+  }
+
+  private revokeUrls(): void {
+    for (const url of this.urls) URL.revokeObjectURL(url);
+    this.urls.clear();
+  }
+
   private closeSheet(): void {
     this.sizeSeq += 1;
     for (const node of this.sheet) node.remove();
@@ -264,6 +276,7 @@ export class ExportFlow {
   /** 点「存到相册」：把这几张、它们的文件句柄、版本和请求定下来。新的一批会放掉上一批还没交出去的文件。 */
   private start(photos: Photo[], options: { size: SizeTier; quality: QualityTier }): void {
     this.batch?.cancel();
+    this.revokeUrls();
     const hooks = dev();
     const book = this.app.book();
     const items: BatchItem[] = photos.map((photo) => ({
@@ -320,6 +333,7 @@ export class ExportFlow {
   }
 
   private removeDock(): void {
+    this.revokeUrls();
     this.dock?.remove();
     this.dock = null;
     this.shell.removeAttribute('data-export');
@@ -338,6 +352,8 @@ export class ExportFlow {
       this.shell.insertBefore(this.dock, perf);
     }
     const dock = this.dock;
+    // 重画会丢掉旧的下载链接：它们的 URL 先撤销，需要的话 paintLinks 再建。
+    this.revokeUrls();
     dock.replaceChildren();
     this.shell.dataset.export = batch.phase;
     dock.dataset.phase = batch.phase;
@@ -391,9 +407,10 @@ export class ExportFlow {
         t.append(canvas);
       }
       if (state === 'run') t.append(el('span', 'spin'));
-      else if (state === 'ok' || state === 'fail') {
+      else if (state === 'ok' || state === 'saved' || state === 'fail') {
+        if (state === 'saved') t.classList.add('ok');
         const st = el('span', 'st');
-        st.append(ico(state === 'ok' ? PATH.check : PATH.x));
+        st.append(ico(state === 'fail' ? PATH.x : PATH.check));
         t.append(st);
       }
       row.append(t);
@@ -424,10 +441,13 @@ export class ExportFlow {
     const icon = el('span', `ic ${failed.length ? 'warn' : 'ok'}`);
     icon.append(ico(failed.length ? PATH.alert : PATH.check));
     let main: string;
+    // 只数还没交出去的文件和还剩的失败（交出去的不再算待存，Sol r1 P2-01）。
+    const made = ok > 0 || batch.savedCount() > 0;
     if (batch.phase === 'stopped') main = `已停止。做好的 ${ok} 张还没存，点「存到相册」。`;
     else if (!failed.length) main = `${ok} 张已做好`;
-    else if (!batch.okCount()) main = `${failed.length} 张都没做成`;
-    else main = `做好 ${batch.okCount()} 张，${failed.length} 张没做成`;
+    else if (!made) main = `${failed.length} 张都没做成`;
+    else if (!ok) main = `${failed.length} 张没做成`;
+    else main = `做好 ${ok} 张，${failed.length} 张没做成`;
     tx.append(el('b', '', main));
     if (failed.length) {
       const why = el('ul', 'why');
@@ -436,7 +456,7 @@ export class ExportFlow {
     }
     top.append(icon, tx);
     if (failed.length) {
-      const label = !batch.okCount() ? '重试' : failed.length === 1 ? '重试这张' : `重试这 ${failed.length} 张`;
+      const label = !made ? '重试' : failed.length === 1 ? '重试这张' : `重试这 ${failed.length} 张`;
       const retry = button('fbtn fill-ctl', label);
       retry.dataset.act = 'retry';
       retry.addEventListener('click', () => {
@@ -509,7 +529,9 @@ export class ExportFlow {
     box.append(el('p', 'dim', NO_SHARE));
     for (const s of batch.staged) {
       const a = el('a', '', s.file.name);
-      a.href = URL.createObjectURL(s.file);
+      const url = URL.createObjectURL(s.file);
+      this.urls.add(url);
+      a.href = url;
       a.download = s.file.name;
       box.append(a);
     }
@@ -535,7 +557,7 @@ export class ExportFlow {
   }
 
   private finishShare(batch: ExportBatch): void {
-    for (const a of this.dock?.querySelectorAll<HTMLAnchorElement>('a[download]') ?? []) URL.revokeObjectURL(a.href);
+    this.revokeUrls();
     this.view = 'progress';
     this.savedCount = 0;
     this.chunks = [];

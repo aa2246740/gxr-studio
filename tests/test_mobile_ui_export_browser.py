@@ -405,3 +405,59 @@ def test_mobile_ui_export_flows(tmp_path: Path) -> None:
     from support.export_pipeline_cases import note
 
     note("ui_m3_flows", {"scroll_ticks": scroll["ticks"], "scroll_max_gap_ms": round(scroll["maxGap"], 1), "trap_workers": trap["workers"]})
+
+
+STATE = REPO / "tests" / "support" / "mobile_ui_export_state.mjs"
+
+
+def test_mobile_ui_export_batch_regressions_sol_r1(tmp_path: Path) -> None:
+    """Sol r1 P2-01..05, replayed in the browser on the real ExportFlow / ExportBatch / ExportCore with
+    Sol's synthetic inputs (no photos)."""
+    _prereq()
+    report = run_driver(tmp_path, {"mode": "state", "stateDriver": str(STATE)}, timeout=300)
+    check(report["pageErrors"] == [], "no page errors")
+    steps = report["steps"]
+
+    kept = steps["retryKept"]
+    check(kept["afterDone"]["phase"] == "ready" and kept["afterDone"]["failures"] == 1, "P2-01: batch stays open with its failure")
+    check(kept["afterDone"]["retry"] == 1 and kept["afterDone"]["share"] == 0, "P2-01: retry kept, nothing left to share")
+    check(
+        "1 张没做成" in (kept["afterDone"]["dock"] or "") and "做好" not in (kept["afterDone"]["dock"] or ""),
+        "P2-01: shared photos not counted again",
+    )
+    check(kept["afterRetry"]["failures"] == 0 and kept["afterRetry"]["staged"] == 1, "P2-01: retry succeeds")
+    check(kept["end"]["phase"] == "closed" and kept["end"]["dock"] is None, "P2-01: batch ends once nothing is left")
+
+    held = steps["held"]
+    check(held["heldAt"]["phase"] == "held" and held["heldAt"]["staged"] == ["1"], "P2-05: the over-cap result is not held")
+    check(held["heldAt"]["stagedBytes"] <= 100 and held["maxRetained"] <= 100 and held["stagedHigh"] <= 100, "P2-05: never above the cap")
+    check(held["afterRetry"]["phase"] == "held" and held["afterRetry"]["pending"] == 4, "P2-02: retry while held keeps the queue")
+    check(held["afterRetry"]["calls"] == 3, "P2-02: retry waits for the hand-off")
+    check(held["calls"] == ["0", "1", "2", "0", "2", "3", "4"], "P2-02: queue continues in grid order after the hand-off")
+    check(held["end"]["phase"] == "ready" and held["end"]["staged"] == ["0", "2", "3", "4"], "P2-02: every photo made")
+    check(held["end"]["failures"] == 0 and held["end"]["waits"] == 0, "P2-02: nothing left waiting")
+
+    cap = steps["cap"]
+    check(
+        cap["held"]["phase"] == "held" and cap["held"]["stagedBytes"] == 90 and cap["held"]["stagedHigh"] == 90,
+        "P2-05: 40+50 held, 30 released",
+    )
+    check(cap["maxRetained"] <= 100 and cap["stagedHigh"] <= 100, "P2-05: retained bytes never above the cap")
+    check(cap["end"]["phase"] == "ready" and cap["end"]["sizes"] == [30, 25], "P2-05: the released photo is redone after the hand-off")
+    check(cap["calls"] == ["0", "1", "2", "2", "3"], "P2-05: re-queued photo runs first")
+
+    urls = steps["urls"]
+    check(urls["firstPaint"]["liveUrls"] == 1 and urls["secondPaint"]["liveUrls"] == 1, "P2-03: a redraw revokes the old link")
+    for key in ("afterDoneClear", "afterClear", "afterEnd"):
+        check(urls[key]["liveUrls"] == 0 and urls[key]["flowUrls"] == 0, "P2-03: no object URL left after hand-off, 清空 or batch end")
+    check(urls["beforeStart"]["liveUrls"] == 1 and urls["afterStart"]["liveUrls"] == 0, "P2-03: a new export revokes the old links")
+    check(urls["created"] == urls["revoked"], "P2-03: every created URL revoked")
+
+    oom = steps["workerOom"]
+    check(oom["phase"] == "ready" and oom["kinds"] == ["trap", "trap"], "P2-04: Worker creation RangeError settles as a trap")
+    check(oom["messages"] == [True, True] and oom["attempts"] == 2, "P2-04: memory line, a new Worker tried for the next photo")
+    check(oom["busy"] is False and oom["alive"] is False, "P2-04: pause released, no Worker left")
+    once = steps["workerOomOnce"]
+    check(once["phase"] == "ready" and once["attempts"] == 2 and once["kinds"][0] == "trap", "P2-04: next photo runs on a new Worker")
+    check("run" not in once["calls"] and "wait" not in once["calls"], "P2-04: no photo left running or waiting")
+    check(steps["paused"] is False, "card thumbnails and bakes resume")

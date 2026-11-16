@@ -47,31 +47,50 @@ export class ExportCore {
     return this.worker !== null;
   }
 
+  /**
+   * 交一张给 Worker。建 Worker、交设置时的拷贝、发消息本身抛错（比如分配失败的 RangeError）也不往外抛：
+   * 关掉 Worker，按陷阱（RangeError / RuntimeError）或内部错误返回，批次照常结算这一张、接着做下一张（Sol r1 P2-04）。
+   */
   run(job: Omit<ExportJob, 'id'>): Promise<RunResult> {
-    const worker = this.ensure();
     const id = this.seq++;
     return new Promise((resolve) => {
       this.pending.set(id, { kind: 'run', done: resolve });
-      worker.postMessage({ op: 'run', job: { ...job, id } });
+      try {
+        this.ensure().postMessage({ op: 'run', job: { ...job, id } });
+      } catch (err) {
+        this.pending.delete(id);
+        this.stop();
+        resolve({ ok: false, kind: isTrap(err) ? 'trap' : 'core', code: isTrap(err) ? 'trap' : 'unknown', message: '' });
+      }
     });
   }
 
   sizes(job: Omit<SizesJob, 'id'>): Promise<{ ok: boolean; json?: string }> {
-    const worker = this.ensure();
     const id = this.seq++;
     return new Promise((resolve) => {
       this.pending.set(id, { kind: 'sizes', done: resolve });
-      worker.postMessage({ op: 'sizes', job: { ...job, id } });
+      try {
+        this.ensure().postMessage({ op: 'sizes', job: { ...job, id } });
+      } catch {
+        this.pending.delete(id);
+        this.stop();
+        resolve({ ok: false });
+      }
     });
   }
 
   /** 只给开发服务器的解码门禁用：照导出的办法解一张 JPG，拿回 RGB。 */
   decode(file: File): Promise<ExportOut> {
-    const worker = this.ensure();
     const id = this.seq++;
     return new Promise((resolve) => {
       this.pending.set(id, { kind: 'decode', done: resolve });
-      worker.postMessage({ op: 'decode', id, file });
+      try {
+        this.ensure().postMessage({ op: 'decode', id, file });
+      } catch (err) {
+        this.pending.delete(id);
+        this.stop();
+        resolve({ op: 'decoded', id, ok: false, message: err instanceof Error ? err.name : 'error' });
+      }
     });
   }
 
@@ -97,6 +116,7 @@ export class ExportCore {
     window.clearTimeout(this.idle);
     this.idle = 0;
     if (this.worker) return this.worker;
+    // factory 抛错时 this.worker 还是 null，调用方按陷阱结算；setup 拷贝抛错时下面已经记下了 worker，stop() 会关掉它。
     const worker = this.factory();
     this.marks.workers += 1;
     worker.onmessage = (event: MessageEvent<ExportOut>) => this.finish(worker, event.data);
@@ -147,6 +167,10 @@ export class ExportCore {
       else pending.done({ op: 'decoded', id, ok: false, message: 'stopped' });
     }
   }
+}
+
+function isTrap(err: unknown): boolean {
+  return err instanceof RangeError || err instanceof WebAssembly.RuntimeError;
 }
 
 /** 校准包：manifest 和其余文件按名字排好拼成一块，加 `[[名字, 字节数], …]`（export_prepare 的 calib_index）。 */

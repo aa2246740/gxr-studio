@@ -338,7 +338,7 @@ test('batch: cancel (清空) drops files and late results', async () => {
   assert.equal(host.calls.stop, 1);
 });
 
-test('batch: the staging cap pauses at the ready bar and continues after release', async () => {
+test('batch: the staging cap is never passed; the over-cap result is dropped and redone after the hand-off (Sol r1 P2-05)', async () => {
   const host = fakeHost();
   const batch = new ExportBatch(items(4, host), host, 100);
   batch.start();
@@ -347,21 +347,116 @@ test('batch: the staging cap pauses at the ready bar and continues after release
     host.pending.shift().resolve(ok(size));
   }
   await tick();
-  host.pending.shift().resolve(ok(30)); // 40 + 50 + 30 > 100
+  host.pending.shift().resolve(ok(30)); // 40 + 50 + 30 > 100: dropped, p2 back to the front
   await tick();
   assert.equal(batch.phase, 'held');
-  assert.equal(batch.staged.length, 2);
+  assert.deepEqual(batch.staged.map((s) => s.file.size), [40, 50]);
+  assert.equal(batch.states.get('p2'), 'wait');
+  assert.equal(batch.pending(), 2);
   assert.equal(host.pending.length, 0);
-  assert.equal(batch.stagedHigh, 120);
+  assert.equal(batch.stagedHigh, 90);
   batch.release();
   await tick();
   assert.equal(batch.phase, 'running');
-  assert.deepEqual(batch.staged.map((s) => s.file.size), [30]);
+  assert.deepEqual(host.calls.run, ['p0', 'p1', 'p2', 'p2']);
+  host.pending.shift().resolve(ok(30));
+  await tick();
   host.pending.shift().resolve(ok(25));
   await batch.settled();
   assert.equal(batch.phase, 'ready');
   assert.deepEqual(batch.staged.map((s) => s.file.size), [30, 25]);
+  assert.equal(batch.savedCount(), 2);
+  assert.ok(batch.stagedHigh <= 100);
   assert.equal(STAGE_CAP_BYTES, 384 * 1024 * 1024);
+});
+
+test('batch: one file alone over the cap fails with the memory line', async () => {
+  const host = fakeHost();
+  const batch = new ExportBatch(items(2, host), host, 100);
+  batch.start();
+  await tick();
+  host.pending.shift().resolve(ok(150));
+  await tick();
+  host.pending.shift().resolve(ok(20));
+  await batch.settled();
+  assert.equal(batch.failures.get('p0').message, TEXT.memory);
+  assert.deepEqual(batch.staged.map((s) => s.file.size), [20]);
+  assert.ok(batch.stagedHigh <= 100);
+});
+
+test('batch: after sharing the successes the failures keep their retry (Sol r1 P2-01)', async () => {
+  const host = fakeHost();
+  const batch = new ExportBatch(items(2, host), host);
+  batch.start();
+  await tick();
+  host.pending.shift().resolve({ ok: false, kind: 'read', code: 'read', message: '' });
+  await tick();
+  host.pending.shift().resolve(ok());
+  await batch.settled();
+  batch.release();
+  assert.equal(batch.phase, 'ready');
+  assert.equal(batch.failures.size, 1);
+  assert.equal(batch.staged.length, 0);
+  assert.equal(batch.states.get('p1'), 'saved');
+  batch.retry();
+  await tick();
+  host.pending.shift().resolve(ok());
+  await batch.settled();
+  assert.equal(batch.phase, 'ready');
+  assert.equal(batch.failures.size, 0);
+  assert.equal(batch.staged.length, 1);
+  batch.release();
+  assert.equal(batch.phase, 'closed');
+});
+
+test('batch: retry while held keeps the queue and starts after the hand-off (Sol r1 P2-02)', async () => {
+  const host = fakeHost();
+  const batch = new ExportBatch(items(5, host), host, 100);
+  batch.start();
+  await tick();
+  host.pending.shift().resolve({ ok: false, kind: 'read', code: 'read', message: '' });
+  for (const size of [60, 60]) {
+    await tick();
+    host.pending.shift().resolve(ok(size));
+  }
+  await tick();
+  assert.equal(batch.phase, 'held');
+  batch.retry();
+  await tick();
+  assert.equal(batch.phase, 'held');
+  assert.equal(host.pending.length, 0);
+  assert.equal(batch.pending(), 4); // p0 (retry), p2 (dropped), p3, p4 in grid order
+  batch.release();
+  for (const size of [1, 60, 10, 10]) {
+    await tick();
+    host.pending.shift().resolve(ok(size));
+  }
+  await batch.settled();
+  assert.deepEqual(host.calls.run, ['p0', 'p1', 'p2', 'p0', 'p2', 'p3', 'p4']);
+  assert.equal(batch.phase, 'ready');
+  assert.deepEqual(batch.staged.map((s) => s.file.size), [1, 60, 10, 10]);
+  assert.equal(batch.failures.size, 0);
+});
+
+test('batch: a run that throws (Worker creation RangeError) settles as a trap and the next photo runs (Sol r1 P2-04)', async () => {
+  const host = fakeHost();
+  let first = true;
+  host.run = (item) => {
+    host.calls.run.push(item.id);
+    if (first) {
+      first = false;
+      throw new RangeError('synthetic');
+    }
+    return Promise.resolve(ok());
+  };
+  const batch = new ExportBatch(items(2, host), host);
+  batch.start();
+  await batch.settled();
+  assert.equal(batch.phase, 'ready');
+  assert.equal(batch.failures.get('p0').message, TEXT.memory);
+  assert.equal(batch.staged.length, 1);
+  assert.equal(host.calls.stop, 1);
+  assert.equal(host.calls.busy.at(-1), false);
 });
 
 test('failText: core message as is, unknown kinds use the desktop fallback', () => {

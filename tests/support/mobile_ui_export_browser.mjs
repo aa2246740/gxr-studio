@@ -109,6 +109,7 @@ async function decodeGate() {
 try {
   if (manifest.mode === 'decode') await decodeGate();
   else if (manifest.mode === 'parity') await (await import(pathToFileURL(manifest.parityDriver).href)).parity({ browser, newPage, manifest, out });
+  else if (manifest.mode === 'state') await (await import(pathToFileURL(manifest.stateDriver).href)).state({ browser, newPage, manifest, out });
   else if (manifest.mode === 'flows') await (await import(pathToFileURL(manifest.flowsDriver).href)).flows({ browser, newPage, manifest, out });
   else throw new Error(`unknown mode ${manifest.mode}`);
 } catch (err) {
