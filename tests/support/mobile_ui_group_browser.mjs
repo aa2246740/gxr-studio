@@ -136,7 +136,7 @@ try {
   await setKnob(page, 'exposure_ev', 0.7);
   await setKnob(page, 'contrast', 12);
   const source = await editOf(page, src);
-  step('source', { beforeRev: before.rev, after: source, on: await page.locator('.editor .strip .rc.on').getAttribute('data-card') });
+  step('source', { beforeRev: before.rev, after: source, on: await page.locator('.editor .strip[data-recipes] .rc.on').getAttribute('data-card') });
 
   // 04a → 04b → 04c → 网格上的结果。
   const copied = await copyDefaults(page);
@@ -151,7 +151,7 @@ try {
   const target = manifest.sameGroupTarget;
   await openPhoto(page, target);
   const opened = {
-    on: await page.locator('.editor .strip .rc.on').getAttribute('data-card'),
+    on: await page.locator('.editor .strip[data-recipes] .rc.on').getAttribute('data-card'),
     exposure: await knobShown(page, 'exposure_ev'),
     contrast: await knobShown(page, 'contrast'),
   };

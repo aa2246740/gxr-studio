@@ -2,11 +2,17 @@
 
 import type { ExportRequest } from '../lib/export_request';
 
-/** 一批开始时交一次：相机配方文件和校准包（`calib_index` + `calib_blob`，照 export_prepare 的格式）。 */
+/** 一批开始时交一次：相机配方文件、校准包（`calib_index` + `calib_blob`）以及快照好的 LUT 字节与空间配置。 */
+export interface ExportLutEntry {
+  cube: ArrayBuffer;
+  space: string;
+}
+
 export interface ExportSetup {
   dat: ArrayBuffer | null;
   calibIndex: string;
   calibBlob: ArrayBuffer | null;
+  luts?: Record<string, ExportLutEntry>;
 }
 
 export interface ExportJob {

@@ -40,7 +40,29 @@ export function cases(inputs) {
     const geomJson = typeof spec.geometry === 'string' ? spec.geometry : JSON.stringify(spec.geometry ?? {});
     const cropJson = typeof spec.crop === 'string' ? spec.crop : JSON.stringify(spec.crop ?? null);
 
-    if (spec.checkFinalBox !== false) {
+    if (spec.cropWrite) {
+      const { sideFile, requestFile } = spec.cropWrite;
+      const sideText = readFileSync(sideFile, 'utf8');
+      const reqText = readFileSync(requestFile, 'utf8');
+      out.push({
+        label: `${file}::geom_crop_write`,
+        cliArgs: ['geom-crop-write', '--side', sideFile, '--request', requestFile],
+        wasm: (mod) => `${mod.geom_crop_write(sideText, reqText)}\n`,
+      });
+    }
+
+    if (spec.geometryWrite) {
+      const { sideFile, geometryFile } = spec.geometryWrite;
+      const sideText = readFileSync(sideFile, 'utf8');
+      const geomText = readFileSync(geometryFile, 'utf8');
+      out.push({
+        label: `${file}::geom_geometry_write`,
+        cliArgs: ['geom-geometry-write', '--side', sideFile, '--geometry', geometryFile],
+        wasm: (mod) => `${mod.geom_geometry_write(sideText, geomText)}\n`,
+      });
+    }
+
+    if (spec.checkFinalBox !== false && !spec.cropWrite && !spec.geometryWrite) {
       out.push({
         label: `${file}::geom_final_box`,
         cliArgs: ['geom-final-box', '--w', String(cliW), '--h', String(cliH), '--geometry', geomJson, '--crop', cropJson],

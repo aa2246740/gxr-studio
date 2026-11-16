@@ -2,6 +2,7 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
+use gxr_finish::crop_edit::{crop_write_json, geometry_write_json};
 use gxr_finish::{final_box_json_u64, parse_geometry, warp_u64};
 use gxr_raw::{CoreError, error_json};
 
@@ -22,6 +23,22 @@ fn checked_dim_u64(v: f64) -> Option<u64> {
     } else {
         None
     }
+}
+
+/// Port of `library/edits.py:write_crop` (pure rules + `recovered_frame` + `describe`).
+#[wasm_bindgen]
+pub fn geom_crop_write(side_json: &str, request_json: &str) -> Result<String, JsValue> {
+    crop_write_json(side_json, request_json)
+        .map(|json| json.render())
+        .map_err(rejected)
+}
+
+/// Port of `render/edits.py:write` `geometry` branch (crop refit, 6-decimal rounding, `"free"` fallback).
+#[wasm_bindgen]
+pub fn geom_geometry_write(side_json: &str, geometry_json: &str) -> Result<String, JsValue> {
+    geometry_write_json(side_json, geometry_json)
+        .map(|json| json.render())
+        .map_err(rejected)
 }
 
 /// Port of `gpu/box.py:final_box` returning `{"box":[x,y,w,h],"valid":[vx,vy,vw,vh],"header":"..."}`.

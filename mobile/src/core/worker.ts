@@ -1,14 +1,31 @@
 // 模块 Worker：WASM 只在这里加载。主线程把 DNG 的一份拷贝传进来，原件留给显卡引擎。
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
-import init, { camdata_entries, camdata_parse, color_bake, color_calib_check, color_calib_pack, color_listing, color_resolve, dng_describe } from '../wasm-pkg/gxr_wasm.js';
+import init, {
+  camdata_entries,
+  camdata_parse,
+  color_bake,
+  color_calib_check,
+  color_calib_pack,
+  color_listing,
+  color_resolve,
+  dng_describe,
+  export_output_sizes,
+  geom_crop_write,
+  geom_final_box,
+  geom_geometry_write,
+  lut_identify,
+  lut_parse,
+} from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
-import { loadPack, savePack } from '../lib/idb';
+import { deleteLutRecord, loadLutBatchSnapshot, loadLutBlob, loadLutLibraryMeta, loadPack, patchLutRecord, saveLut, savePack } from '../lib/idb';
+import { LUT_ERRORS, MAX_CUBE_BYTES, buildLutRecord, decodeCubeUtf8, readLutHeader, sha256Hex, type IdentifyReport, type LutRecord, type ParsedCubeSummary } from '../lib/lut';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
-import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, ResolveArgs } from './protocol';
+import type { BakeArgs, CalibCheckArgs, CoreOp, CoreReply, CoreRequest, LutBlobArgs, LutDeleteArgs, LutImportArgs, LutPatchArgs, LutSnapshotArgs, ResolveArgs } from './protocol';
 
+const EMPTY = new Uint8Array(0);
 let ready: Promise<unknown> | null = null;
 
 function load(): Promise<unknown> {
@@ -16,17 +33,22 @@ function load(): Promise<unknown> {
   return ready;
 }
 
-/** 核心的错误是 JSON 文本（kind、message）；拿出 message，拿不出就原样。 */
-function coreMessage(err: unknown): string {
+/** 核心的错误是 JSON 文本（kind、message）；拿出 code 和 message，拿不出就原样。 */
+function coreError(err: unknown): { code?: string; message: string } {
   const text = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
   try {
-    const parsed = JSON.parse(text) as { error?: { message?: unknown }; message?: unknown };
+    const parsed = JSON.parse(text) as { error?: { kind?: unknown; message?: unknown }; message?: unknown };
+    const code = typeof parsed.error?.kind === 'string' ? parsed.error.kind : undefined;
     const message = parsed.error?.message ?? parsed.message;
-    if (typeof message === 'string') return message;
+    if (typeof message === 'string') return { code, message };
   } catch {
     /* 不是 JSON，就用原文。 */
   }
-  return text;
+  return { message: text };
+}
+
+function coreMessage(err: unknown): string {
+  return coreError(err).message;
 }
 
 function ok(id: number, json: string, buffers: ArrayBuffer[] = []): void {
@@ -35,7 +57,8 @@ function ok(id: number, json: string, buffers: ArrayBuffer[] = []): void {
 }
 
 function failed(id: number, err: unknown): void {
-  const reply: CoreReply = { id, ok: false, message: coreMessage(err) };
+  const parsed = coreError(err);
+  const reply: CoreReply = { id, ok: false, code: parsed.code, message: parsed.message };
   self.postMessage(reply);
 }
 
@@ -185,6 +208,135 @@ function bake(id: number, args: BakeArgs): void {
   ok(id, meta, [own(bytes)]);
 }
 
+function geomCropWrite(id: number, side: string, request: string): void {
+  ok(id, geom_crop_write(side, request));
+}
+
+function geomGeometryWrite(id: number, side: string, geometry: string): void {
+  ok(id, geom_geometry_write(side, geometry));
+}
+
+function geomFinalBox(id: number, w: number, h: number, geometry: string, crop: string): void {
+  ok(id, geom_final_box(w, h, geometry, crop));
+}
+
+function outputSizes(id: number, w: number, h: number, side: string, rect: string, preset?: string): void {
+  ok(id, export_output_sizes(w, h, side, '{}', '{}', rect, preset, '', EMPTY));
+}
+
+async function sha256Buffer(buffer: ArrayBuffer): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', buffer);
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return sha256Hex(new Uint8Array(buffer));
+}
+
+async function lutImport(id: number, args: LutImportArgs): Promise<void> {
+  if (args.file.size > MAX_CUBE_BYTES) {
+    ok(id, JSON.stringify({ ok: false, reason: 'too_big', message: LUT_ERRORS.cube_too_big }));
+    return;
+  }
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await args.file.arrayBuffer();
+  } catch {
+    ok(id, JSON.stringify({ ok: false, reason: 'unreadable', message: LUT_ERRORS.cube_unreadable }));
+    return;
+  }
+  const bytes = new Uint8Array(buffer);
+  const text = decodeCubeUtf8(bytes);
+  if (text === null) {
+    ok(id, JSON.stringify({ ok: false, reason: 'unreadable', message: LUT_ERRORS.cube_unreadable }));
+    return;
+  }
+  let parsed: ParsedCubeSummary;
+  let identified: IdentifyReport;
+  try {
+    parsed = JSON.parse(lut_parse(bytes)) as ParsedCubeSummary;
+    identified = JSON.parse(lut_identify(bytes, args.filename)) as IdentifyReport;
+  } catch (err) {
+    const msg = coreMessage(err);
+    const isUtf8 = /utf-?8/i.test(msg);
+    ok(
+      id,
+      JSON.stringify({
+        ok: false,
+        reason: isUtf8 ? 'unreadable' : 'parse',
+        message: isUtf8 || !msg ? LUT_ERRORS.cube_unreadable : msg,
+      }),
+    );
+    return;
+  }
+  const cubeId = await sha256Buffer(buffer);
+  const header = readLutHeader(text);
+  const record = buildLutRecord({
+    cubeId,
+    filename: args.filename,
+    byteLength: bytes.byteLength,
+    parsed,
+    identified,
+    header,
+    savedAt: args.version,
+  });
+  const saved = await saveLut(record, buffer, args.version);
+  if (!saved.ok) {
+    ok(
+      id,
+      JSON.stringify({
+        ok: false,
+        reason: saved.reason,
+        message: saved.reason === 'full' ? LUT_ERRORS.library_full : '',
+      }),
+    );
+    return;
+  }
+  ok(
+    id,
+    JSON.stringify({
+      ok: true,
+      duplicate: saved.duplicate,
+      record: saved.record,
+      totalBytes: saved.totalBytes,
+    }),
+  );
+}
+
+async function lutRestore(id: number): Promise<void> {
+  const meta = await loadLutLibraryMeta();
+  ok(id, JSON.stringify(meta));
+}
+
+async function lutPatch(id: number, args: LutPatchArgs): Promise<void> {
+  const res = await patchLutRecord(args.cubeId, args.patch, args.version);
+  ok(id, JSON.stringify(res));
+}
+
+async function lutDelete(id: number, args: LutDeleteArgs): Promise<void> {
+  const deleted = await deleteLutRecord(args.cubeId, args.version);
+  ok(id, JSON.stringify({ ok: deleted }));
+}
+
+async function lutBlob(id: number, args: LutBlobArgs): Promise<void> {
+  const blob = await loadLutBlob(args.cubeId);
+  if (!blob) {
+    ok(id, JSON.stringify({ ok: false }));
+    return;
+  }
+  ok(id, JSON.stringify({ ok: true }), [blob]);
+}
+
+async function lutSnapshot(id: number, args: LutSnapshotArgs): Promise<void> {
+  const rows = await loadLutBatchSnapshot(args.cubeIds);
+  const items: Array<{ cubeId: string; record: LutRecord | null; hasBlob: boolean }> = [];
+  const buffers: ArrayBuffer[] = [];
+  for (const row of rows) {
+    if (row.blob) buffers.push(row.blob);
+    items.push({ cubeId: row.cubeId, record: row.record, hasBlob: row.blob !== null });
+  }
+  ok(id, JSON.stringify({ items }), buffers);
+}
+
 async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   const { buffer, args, file, meta } = req;
   await load();
@@ -195,6 +347,16 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'bake' && args) bake(id, args);
   else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
   else if (op === 'calib-check' && req.check) calibCheck(id, req.check);
+  else if (op === 'geom-crop-write' && req.geom) geomCropWrite(id, req.geom.side, req.geom.payload);
+  else if (op === 'geom-geometry-write' && req.geom) geomGeometryWrite(id, req.geom.side, req.geom.payload);
+  else if (op === 'geom-final-box' && req.finalBox) geomFinalBox(id, req.finalBox.w, req.finalBox.h, req.finalBox.geometry, req.finalBox.crop);
+  else if (op === 'export-output-sizes' && req.sizes) outputSizes(id, req.sizes.w, req.sizes.h, req.sizes.side, req.sizes.rect, req.sizes.preset);
+  else if (op === 'lut-import' && req.lutImport) await lutImport(id, req.lutImport);
+  else if (op === 'lut-restore') await lutRestore(id);
+  else if (op === 'lut-patch' && req.lutPatch) await lutPatch(id, req.lutPatch);
+  else if (op === 'lut-delete' && req.lutDelete) await lutDelete(id, req.lutDelete);
+  else if (op === 'lut-blob' && req.lutBlob) await lutBlob(id, req.lutBlob);
+  else if (op === 'lut-snapshot' && req.lutSnapshot) await lutSnapshot(id, req.lutSnapshot);
   else throw new Error('未知请求');
 }
 

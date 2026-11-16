@@ -2,6 +2,7 @@
 // 字都是设计稿和桌面 paste_core.js 的原话；逻辑在 lib/paste.ts 和 paste_state.ts。
 
 import { groupByGap } from '../lib/group';
+import { presetLabel, rectFromArray } from '../lib/crop';
 import { shelf, shelves } from '../lib/recipes';
 import { NOT_SET, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { groupsPresent } from '../lib/paste';
@@ -36,7 +37,7 @@ function knobText(key: keyof Knobs, value: number): string {
   return value > 0 ? `+${value}` : String(value);
 }
 
-/** 04b 那句「Kodachrome 25，曝光 +0.7」：配方的名字和动过的调整。 */
+/** 04b 那句「Kodachrome 25，曝光 +0.7」：配方的名字、动过的调整、拉直和裁剪比例。 */
 export function clipSummary(api: AppApi): string {
   const clip = pasteState.clip;
   if (!clip) return '';
@@ -46,11 +47,23 @@ export function clipSummary(api: AppApi): string {
     const card = dat ? shelf(shelves(dat.listing, clip.recipe.choice.unit), 'all').find((item) => item.id === clip.recipe?.choice.id) : null;
     if (card) parts.push(card.name);
   }
+  if (clip.lut) {
+    parts.push(api.lutBook().get(clip.lut)?.name ?? 'LUT 已删除');
+  }
   if (clip.knobs) {
     for (const [key, label] of KNOB_LABEL) {
       const value = clip.knobs[key] ?? 0;
       if (value !== 0) parts.push(`${label} ${knobText(key, value)}`);
     }
+  }
+  if (clip.geometry && clip.geometry.straighten !== 0) {
+    const v = clip.geometry.straighten;
+    parts.push(`拉直 ${v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1)}°`);
+  }
+  if (clip.crop) {
+    const srcFrame = api.photo(clip.from.id)?.frame;
+    const canvas = srcFrame ? { w: srcFrame.width, h: srcFrame.height } : null;
+    parts.push(presetLabel(clip.crop.preset, rectFromArray(clip.crop.rect), canvas));
   }
   return parts.join('，');
 }

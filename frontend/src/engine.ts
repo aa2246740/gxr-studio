@@ -392,6 +392,16 @@ export class Engine {
     this.trim(this.luts, 3, (l) => l.tex.destroy()); // 精确表每张 64 MB
   }
 
+  clearLuts(): void {
+    for (const l of this.luts.values()) l.tex.destroy();
+    this.luts.clear();
+    if (this.look.lut !== null) {
+      this.look.lut = null;
+      this.dirtyColor = true;
+      this.schedule();
+    }
+  }
+
   private trim<T>(map: Map<string, T>, max: number, drop: (v: T) => void, keep: string | null = null): void {
     for (const [k, v] of map) {
       if (map.size <= max) break;

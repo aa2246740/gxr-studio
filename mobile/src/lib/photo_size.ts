@@ -8,6 +8,12 @@ export interface Size {
   height: number;
 }
 
+export interface Frame {
+  orientation: number;
+  width: number;
+  height: number;
+}
+
 const MAX_ENTRIES = 512;
 
 function u16(b: Uint8Array, at: number, le: boolean): number | null {
@@ -87,8 +93,8 @@ function tiffHeader(b: Uint8Array): { le: boolean; ifd0: number } | null {
 
 const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 
-/** 相机 JPG：SOF 的宽高，按 APP1 里 IFD0 的方向转正。 */
-export function jpegSize(b: Uint8Array): Size | null {
+/** 相机 JPG：方向标签（1..8）加按它转正后的 SOF 宽高（桌面 side.frame 的形状）。 */
+export function jpegFrame(b: Uint8Array): Frame | null {
   try {
     if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
     let orient = 1;
@@ -112,7 +118,8 @@ export function jpegSize(b: Uint8Array): Size | null {
         const h = u16(b, i + 3, false);
         const w = u16(b, i + 5, false);
         if (h === null || w === null || !h || !w) return null;
-        return oriented(w, h, orient);
+        const size = oriented(w, h, orient);
+        return { orientation: orient, width: size.width, height: size.height };
       }
       i += length;
     }
@@ -122,8 +129,14 @@ export function jpegSize(b: Uint8Array): Size | null {
   }
 }
 
-/** DNG：第一个整幅子 IFD 的 DefaultCropSize（或宽高），按 IFD0 的方向转正。 */
-export function dngSize(b: Uint8Array): Size | null {
+/** 相机 JPG：SOF 的宽高，按 APP1 里 IFD0 的方向转正。 */
+export function jpegSize(b: Uint8Array): Size | null {
+  const frame = jpegFrame(b);
+  return frame ? { width: frame.width, height: frame.height } : null;
+}
+
+/** DNG：IFD0 的方向（1..8）加转正后的 DefaultCropSize（或宽高），和桌面 side.frame 一样。 */
+export function dngFrame(b: Uint8Array): Frame | null {
   try {
     const head = tiffHeader(b);
     if (!head) return null;
@@ -154,13 +167,27 @@ export function dngSize(b: Uint8Array): Size | null {
       break;
     }
     if (!width || !height) return null;
-    return oriented(width, height, orientation(num(b, ifd0.get(274), 0, le)));
+    const orient = orientation(num(b, ifd0.get(274), 0, le));
+    const size = oriented(width, height, orient);
+    return { orientation: orient, width: size.width, height: size.height };
   } catch {
     return null;
   }
 }
 
+/** DNG：第一个整幅子 IFD 的 DefaultCropSize（或宽高），按 IFD0 的方向转正。 */
+export function dngSize(b: Uint8Array): Size | null {
+  const frame = dngFrame(b);
+  return frame ? { width: frame.width, height: frame.height } : null;
+}
+
+/** 桌面图库的规则：先看相机 JPG（读不了就当没有），没有再看 DNG。都没有是 null。 */
+export function shotFrame(jpg: Uint8Array | null, dng: Uint8Array | null): Frame | null {
+  return (jpg ? jpegFrame(jpg) : null) ?? (dng ? dngFrame(dng) : null);
+}
+
 /** 桌面图库的规则：先看相机 JPG（读不了就当没有），没有再看 DNG。都没有是 null（shot 里不写）。 */
 export function shotSize(jpg: Uint8Array | null, dng: Uint8Array | null): Size | null {
-  return (jpg ? jpegSize(jpg) : null) ?? (dng ? dngSize(dng) : null);
+  const frame = shotFrame(jpg, dng);
+  return frame ? { width: frame.width, height: frame.height } : null;
 }

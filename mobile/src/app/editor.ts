@@ -1,30 +1,20 @@
 // 编辑一张。拖滑块时只改 setLook 和滑块上的数字，不重建页面。
 
-import { Engine, type Adjust } from '../../../frontend/src/index';
+import type { Engine } from '../../../frontend/src/index';
 import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
+import { AdjustView, toAdjust } from './adjust_view';
+import { CropStage, DEFAULT_GEOMETRY } from './crop_stage';
 import { button, el, icon, ICON } from './dom';
-import { cropPanel, curvesPanel, framePanel, lutPanel } from './later_panels';
-import { photoMs, zeroKnobs, type AppApi, type Knobs, type Photo } from './model';
+import { curvesPanel, framePanel } from './later_panels';
+import { LutView } from './lut_view';
+import { photoMs, zeroKnobs, type AppApi, type Photo } from './model';
 import { lookCache } from './looks';
 import { pasteState } from './paste_state';
 import { openCopySheet, PASTE_ICON } from './paste_ui';
 import { RecipeView } from './recipe_view';
-
-const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
-  { key: 'exposure_ev', label: '曝光', min: -5, max: 5, step: 0.1 },
-  { key: 'contrast', label: '对比度', min: -100, max: 100, step: 1 },
-  { key: 'highlight', label: '高光', min: -100, max: 100, step: 1 },
-  { key: 'shadow', label: '阴影', min: -100, max: 100, step: 1 },
-  { key: 'black_point', label: '黑点', min: -100, max: 100, step: 1 },
-  { key: 'warm', label: '色温', min: -100, max: 100, step: 1 },
-  { key: 'tint', label: '色调', min: -100, max: 100, step: 1 },
-  { key: 'saturation', label: '饱和度', min: -100, max: 100, step: 1 },
-  { key: 'vibrance', label: '自然饱和度', min: -100, max: 100, step: 1 },
-  { key: 'vignette', label: '暗角', min: -100, max: 100, step: 1 },
-];
 
 /**
  * 显卡在忙（上一张的直方图还在读回）时 `histogram()` 立刻给 null，于是每帧再试一次。
@@ -36,26 +26,6 @@ const HIST_SLOW_MS = 250;
 
 const TABS = ['配方', '调整', '裁剪', '边框', 'LUT', '曲线'] as const;
 
-function formatKnob(key: keyof Knobs, value: number): string {
-  if (value === 0) return key === 'exposure_ev' ? '0.0' : '0';
-  if (key === 'exposure_ev') return value > 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
-  return value > 0 ? `+${value}` : String(value);
-}
-
-function toAdjust(knobs: Knobs): Adjust {
-  return {
-    exposure_ev: knobs.exposure_ev,
-    wb: { warm: knobs.warm, tint: knobs.tint },
-    contrast: knobs.contrast,
-    highlight: knobs.highlight,
-    shadow: knobs.shadow,
-    black_point: knobs.black_point,
-    saturation: knobs.saturation,
-    vibrance: knobs.vibrance,
-    vignette: knobs.vignette,
-  };
-}
-
 function isGone(err: unknown): boolean {
   const name = err instanceof DOMException ? err.name : err instanceof Error ? err.name : '';
   return name === 'NotFoundError' || name === 'NotReadableError';
@@ -66,7 +36,6 @@ export class EditorView {
   private photo: Photo | null = null;
   private mode: 'raw' | 'jpg' | 'still' = 'still';
   private wantNeighbor = '';
-  private key: keyof Knobs = 'exposure_ev';
   private dragging = false;
   private holding = false;
   /** 直方图：正在数、数完还要再数一次、上次画的是哪个内容版本。静止时不再读显卡。 */
@@ -79,26 +48,30 @@ export class EditorView {
   private histMisses = 0;
   private clipLow: HTMLElement | null = null;
   private clipHigh: HTMLElement | null = null;
-  private input: HTMLInputElement | null = null;
-  private valueEl: HTMLElement | null = null;
-  private labelEl: HTMLElement | null = null;
   private stageLabel: HTMLElement | null = null;
+  private pv: HTMLElement | null = null;
   private gpuCanvas: HTMLCanvasElement | null = null;
   private still: HTMLCanvasElement | null = null;
   private hist: HTMLCanvasElement | null = null;
   private caption = '';
+  private lookCaption = '';
   private sharp: ImageBitmap | null = null;
   private placeholder: HTMLElement | null = null;
   private recipes: RecipeView | null = null;
+  private adjust: AdjustView | null = null;
+  private cropStage: CropStage | null = null;
+  private pvObserver: ResizeObserver | null = null;
+  private luts: LutView | null = null;
+  private lutTabBtn: HTMLButtonElement | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
   private recipeKey = NEUTRAL_BAKE_KEY;
+  /** 舞台上套的 LUT 渲染令牌和名称。 */
+  private lutToken: string | null = null;
+  private lutLabel: string | null = null;
   private tab = 1;
   /** 这张读完、清楚的图也换上之后才 resolve。只给截图和测试等。 */
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
-  private restLabel = '';
-  /** 当前这根滑块上次落定的值（松手时一样就不算修改）。 */
-  private committed = 0;
   /** 套用或撤销改了正在看的这张：重新打开，照片和面板都按新的编辑状态画。 */
   private offPaste: (() => void) | null = null;
 
@@ -119,7 +92,12 @@ export class EditorView {
       if (this.photo && ids.has(this.photo.id) && this.api.photo(this.photo.id) === this.photo) this.api.open(this.photo.id);
     });
     this.build(photo, index);
-    this.settled = this.load(photo).then(() => this.sharpening);
+    this.shell.dataset.settled = '0';
+    this.settled = this.load(photo)
+      .then(() => this.sharpening)
+      .finally(() => {
+        if (this.photo === photo) this.shell.dataset.settled = photo.stem;
+      });
   }
 
   /** 模拟器没有显卡，滑块是停用的。截图时只把拖动中的版式摆出来。 */
@@ -129,24 +107,73 @@ export class EditorView {
 
   destroy(): void {
     this.token += 1;
+    this.photo = null;
     lookCache.setOpen(null);
     this.offPaste?.();
     this.offPaste = null;
     this.dragging = false;
     this.holding = false;
+    this.cropStage?.destroy();
+    this.cropStage = null;
     this.wantNeighbor = '';
     this.histAgain = false;
     this.cancelHistRetry();
+    this.pvObserver?.disconnect();
+    this.pvObserver = null;
     this.shell.dataset.drag = '0';
+    this.shell.dataset.settled = '0';
     this.sharp?.close();
     this.sharp = null;
     this.recipes?.destroy();
     this.recipes = null;
+    this.adjust?.destroy();
+    this.adjust = null;
+    this.luts?.destroy();
+    this.luts = null;
+    this.lutTabBtn = null;
     this.engine?.detach();
   }
 
   private build(photo: Photo, index: number): void {
     this.photo = photo;
+    this.tab = 1;
+    this.lookCaption = '';
+    this.pvObserver?.disconnect();
+    this.pvObserver = null;
+    this.cropStage?.destroy();
+    this.cropStage = new CropStage(this.shell, this.api, this.engine, {
+      photo: () => this.photo,
+      mode: () => this.mode,
+      active: () => this.tab === 2,
+      sharp: () => this.sharp,
+      stillCanvas: () => this.still,
+      placeholderEl: () => this.placeholder,
+      pvEl: () => this.pv,
+      caption: () => this.caption,
+      holding: () => this.holding,
+      setHolding: (on) => {
+        this.holding = on;
+        this.renderStageLabel();
+        this.push();
+      },
+      setLabel: (text) => this.setLabel(text),
+      enterDrag: () => this.enterDrag(),
+      leaveDrag: () => this.leaveDrag(),
+      dragging: () => this.dragging,
+      requestHist: () => this.requestHist(),
+      swipe: (id, dir) => this.api.swipe(id, dir),
+      onCommitted: (target, changed) => {
+        if (changed && this.photo === target) {
+          if (this.mode === 'raw') {
+            this.recipes?.neutral(null);
+            void this.neutralCards(target, `raw:${target.id}`);
+          }
+          this.recipes?.refresh();
+        }
+      },
+      restLabelText: () => this.restLabelText(),
+    });
+
     this.host.replaceChildren();
     const photos = this.api.photos();
     const screen = el('section', 'screen editor');
@@ -161,6 +188,7 @@ export class EditorView {
 
     const stage = el('div', 'stage');
     const pv = el('div', 'pv');
+    this.pv = pv;
     this.gpuCanvas = document.createElement('canvas');
     this.gpuCanvas.className = 'gpu';
     this.still = document.createElement('canvas');
@@ -168,40 +196,83 @@ export class EditorView {
     this.still.hidden = true;
     this.placeholder = el('div', 'ph', '只有 RAW');
     this.placeholder.hidden = true;
+
     pv.append(this.gpuCanvas, this.still, this.placeholder);
+    this.cropStage.mountOverlay(pv);
     this.stageLabel = el('div', 'lbl');
     stage.append(pv, this.stageLabel);
-    this.bindGesture(stage);
+    if (typeof ResizeObserver === 'function') {
+      this.pvObserver = new ResizeObserver(() => {
+        this.engine?.redraw();
+        if (this.tab === 2) this.cropStage?.renderOverlay();
+      });
+      this.pvObserver.observe(pv);
+    }
+    this.cropStage.bindGesture(stage);
 
     this.recipeKey = NEUTRAL_BAKE_KEY;
+    this.lutToken = null;
+    this.lutLabel = null;
     this.recipes = new RecipeView(this.api, this.engine, photo, {
       mode: () => this.mode,
       look: (key, label) => this.useLook(key, label),
       dragging: () => this.dragging,
       recipeTab: () => this.tab === 0,
+      geometry: () => this.cropStage?.resolveBoxGeometry(photo) ?? Promise.resolve({ geometry: { ...DEFAULT_GEOMETRY }, cropped: false }),
     });
+    this.luts = new LutView(this.shell, this.api, this.engine, photo, {
+      mode: () => this.mode,
+      recipeGpuKey: () => this.recipeKey,
+      stageLut: (token, label) => this.useLut(token, label),
+      dragging: () => this.dragging,
+      lutTab: () => this.tab === 4,
+      lutChanged: () => this.updateLutTabDot(),
+    });
+    this.adjust?.destroy();
+    this.adjust = new AdjustView(
+      {
+        photo: () => this.photo,
+        push: () => this.push(),
+        enterDrag: () => this.enterDrag(),
+        leaveDrag: () => this.leaveDrag(),
+        dragging: () => this.dragging,
+      },
+      this.histEl(),
+    );
     const strip = this.recipes.stripEl();
+    const cropPanelEl = this.cropStage.createPanel();
 
     const sheet = el('div', 'sheet');
     sheet.append(el('div', 'grab'));
     const tabs = el('div', 'tabs');
     const panels: HTMLElement[] = [];
+    this.lutTabBtn = null;
     TABS.forEach((name, tabIndex) => {
       const tab = button('', name);
+      tab.dataset.tab = String(tabIndex);
       tab.setAttribute('role', 'tab');
+      if (tabIndex === 4) {
+        tab.dataset.tab = 'lut';
+        this.lutTabBtn = tab;
+        this.updateLutTabDot();
+      }
       if (tabIndex === 1) tab.classList.add('on');
+      if (tabIndex === 2) this.cropStage?.attachTabButton(tab);
       tab.addEventListener('click', () => {
+        if (this.tab === tabIndex) return;
         for (const item of tabs.children) item.classList.remove('on');
         tab.classList.add('on');
         this.tab = tabIndex;
         if (tabIndex === 0) this.recipes?.tabOpened();
+        if (tabIndex === 4) this.luts?.tabOpened();
         panels.forEach((panel, panelIndex) => {
           panel.hidden = panelIndex !== tabIndex;
         });
+        this.cropStage?.syncTabMode();
       });
       tabs.append(tab);
     });
-    panels.push(this.recipes.panelEl(), this.adjustPanel(), cropPanel(), framePanel(), lutPanel(), curvesPanel());
+    panels.push(this.recipes.panelEl(), this.adjust.panelEl(), cropPanelEl, framePanel(), this.luts.panelEl(), curvesPanel());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -220,19 +291,32 @@ export class EditorView {
     screen.append(nav, stage, strip, sheet);
     this.host.append(screen);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
-    this.paintStill(photo.bitmap);
+    this.cropStage.paintTabDot();
+    this.cropStage.paintStill(photo.bitmap);
   }
 
-  /** 配方那边定下了舞台该用哪张烘焙表。长按看原图时先记着，松手再换。 */
+  private updateLutTabDot(): void {
+    this.lutTabBtn?.classList.toggle('dot', this.photo?.lut !== null);
+  }
+
+  /** 配方那边定下了舞台该用哪张烘焙表。 */
   private useLook(key: string, label: string): void {
     this.recipeKey = key;
-    if (this.holding) this.restLabel = label;
-    else this.setLabel(label);
+    this.lookCaption = label;
+    if (this.tab !== 2) this.setLabel(label);
+    this.push();
+    this.luts?.recipeUpdated();
+  }
+
+  /** LUT 这边定下了舞台该用哪张 3D LUT 纹理。 */
+  private useLut(token: string | null, label: string | null): void {
+    this.lutToken = token;
+    this.lutLabel = label;
+    this.renderStageLabel();
     this.push();
   }
 
-  private adjustPanel(): HTMLElement {
-    const panel = el('div', 'panel adjust');
+  private histEl(): HTMLElement {
     const hist = el('div', 'hist');
     this.hist = document.createElement('canvas');
     this.hist.width = 816;
@@ -242,110 +326,20 @@ export class EditorView {
     this.clipLow.setAttribute('aria-label', '暗部压死');
     this.clipHigh.setAttribute('aria-label', '高光溢出');
     hist.append(this.hist, this.clipLow, this.clipHigh);
-    const chips = el('div', 'chips');
-    for (const spec of SLIDERS) {
-      const chip = button('chip', spec.label);
-      chip.dataset.key = spec.key;
-      if (spec.key === this.key) chip.classList.add('on');
-      chip.addEventListener('click', () => {
-        this.key = spec.key;
-        for (const item of chips.querySelectorAll('.chip')) item.classList.toggle('on', item === chip);
-        this.showKnob();
-      });
-      chips.append(chip);
-    }
-    const big = el('div', 'big');
-    const line = el('div', 'l1');
-    this.labelEl = el('b', '', '曝光');
-    this.valueEl = el('span', 'val', '0.0');
-    line.append(this.labelEl, this.valueEl);
-    this.input = document.createElement('input');
-    this.input.type = 'range';
-    this.input.dataset.key = 'exposure_ev';
-    const slider = el('div', 'slider');
-    slider.append(this.input);
-    big.append(line, slider);
-    const hint = el('div', 'hint-row');
-    hint.append(el('span', 'faint', '点两下圆点回到 0'));
-    const reset = button('fbtn', '全部重置');
-    reset.addEventListener('click', () => {
-      if (!this.photo) return;
-      // 全都已经是 0：没有修改，不加 rev（不然撤销套用时会当成套用之后又改过）。
-      if (Object.values(this.photo.knobs).every((value) => value === 0)) return;
-      this.photo.knobs = zeroKnobs();
-      this.photo.rev += 1;
-      this.showKnob();
-      this.push();
-    });
-    hint.append(reset);
-    panel.append(hist, chips, big, hint);
-    this.showKnob();
-    this.input.addEventListener('input', () => {
-      if (!this.photo || !this.input) return;
-      const value = Number(this.input.value);
-      if (!Number.isFinite(value)) return;
-      this.photo.knobs[this.key] = value;
-      this.paintSlider();
-      this.push();
-    });
-    // 松手（change）才算落定的修改，编辑状态的版本加一（撤销套用时据此判断改没改过）。
-    this.input.addEventListener('change', () => {
-      if (!this.photo) return;
-      // 松手时的值和上次落定的一样（拖出去又拖回来）：没有修改。
-      const value = this.photo.knobs[this.key];
-      if (value === this.committed) return;
-      this.committed = value;
-      this.photo.rev += 1;
-    });
-    this.input.addEventListener('pointerdown', () => this.enterDrag());
-    const end = () => {
-      if (this.dragging) this.leaveDrag();
-    };
-    this.input.addEventListener('pointerup', end);
-    this.input.addEventListener('pointercancel', end);
-    this.input.addEventListener('dblclick', () => {
-      if (!this.photo || this.photo.knobs[this.key] === 0) return;
-      this.photo.knobs[this.key] = 0;
-      this.committed = 0;
-      this.photo.rev += 1;
-      this.showKnob();
-      this.push();
-    });
-    return panel;
-  }
-
-  private showKnob(): void {
-    const spec = SLIDERS.find((item) => item.key === this.key);
-    if (!spec || !this.input || !this.labelEl || !this.photo) return;
-    this.labelEl.textContent = spec.label;
-    this.input.min = String(spec.min);
-    this.input.max = String(spec.max);
-    this.input.step = String(spec.step);
-    this.input.value = String(this.photo.knobs[this.key]);
-    this.committed = this.photo.knobs[this.key];
-    this.input.dataset.key = spec.key;
-    this.paintSlider();
-  }
-
-  private paintSlider(): void {
-    const spec = SLIDERS.find((item) => item.key === this.key);
-    if (!spec || !this.input || !this.valueEl || !this.photo) return;
-    const value = this.photo.knobs[this.key];
-    this.valueEl.textContent = formatKnob(this.key, value);
-    const span = spec.max - spec.min || 1;
-    const pct = ((value - spec.min) / span) * 100;
-    const zero = ((0 - spec.min) / span) * 100;
-    this.input.style.setProperty('--a', `${Math.min(pct, zero)}%`);
-    this.input.style.setProperty('--b', `${Math.max(pct, zero)}%`);
+    return hist;
   }
 
   private push(): void {
     if (!this.engine || !this.photo || this.mode === 'still') return;
     const knobs = this.holding ? zeroKnobs() : this.photo.knobs;
+    const lut = this.holding ? null : this.lutToken;
+    if (lut && !this.engine.hasLut(lut)) {
+      this.luts?.ensureActive();
+    }
     this.engine.setLook({
-      // 按住看原图：中性转换、调整归零。
+      // 按住看原图：中性转换、不用 LUT、调整归零。
       recipe: this.mode === 'raw' ? (this.holding ? NEUTRAL_BAKE_KEY : this.recipeKey) : null,
-      lut: null,
+      lut,
       lutStrength: 1,
       curve: null,
       adjust: toAdjust(knobs),
@@ -355,23 +349,19 @@ export class EditorView {
 
   private setLabel(text: string): void {
     this.caption = text;
-    if (!this.stageLabel) return;
-    this.stageLabel.replaceChildren();
-    if (!text) return;
-    this.stageLabel.append(el('span', 'tag neutral', text));
+    this.renderStageLabel();
   }
 
-  private paintStill(bitmap: ImageBitmap | null): void {
-    if (!this.still) return;
-    if (!bitmap) {
-      this.still.hidden = true;
-      return;
-    }
-    if (this.placeholder) this.placeholder.hidden = true;
-    this.still.hidden = false;
-    this.still.width = bitmap.width;
-    this.still.height = bitmap.height;
-    this.still.getContext('2d')?.drawImage(bitmap, 0, 0);
+  private renderStageLabel(): void {
+    if (!this.stageLabel) return;
+    this.stageLabel.replaceChildren();
+    const text = this.holding
+      ? '原图'
+      : this.lutLabel
+        ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}`
+        : this.caption;
+    if (!text) return;
+    this.stageLabel.append(el('span', 'tag neutral', text));
   }
 
   private enterDrag(): void {
@@ -379,14 +369,20 @@ export class EditorView {
     this.dragging = true;
     this.shell.dataset.drag = '1';
     this.api.watch('drag', true);
-    requestAnimationFrame(() => this.engine?.redraw());
+    const token = this.token;
+    requestAnimationFrame(() => {
+      if (token === this.token) this.engine?.redraw();
+    });
   }
 
   private leaveDrag(): void {
     this.dragging = false;
     this.shell.dataset.drag = '0';
     this.api.watch('drag', false);
-    requestAnimationFrame(() => this.engine?.redraw());
+    const token = this.token;
+    requestAnimationFrame(() => {
+      if (token === this.token) this.engine?.redraw();
+    });
   }
 
   /**
@@ -489,51 +485,8 @@ export class EditorView {
     this.clipHigh?.classList.toggle('lit', shape.high);
   }
 
-  private bindGesture(stage: HTMLElement): void {
-    stage.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || event.clientX < 24) return;
-      const startX = event.clientX;
-      const startY = event.clientY;
-      const pointer = event.pointerId;
-      let moved = false;
-      let held = false;
-      const timer = window.setTimeout(() => {
-        if (moved || !this.photo) return;
-        held = true;
-        this.holding = true;
-        this.restLabel = this.caption;
-        this.setLabel('原图');
-        this.push();
-      }, 450);
-      const move = (ev: PointerEvent) => {
-        if (ev.pointerId !== pointer) return;
-        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 12) moved = true;
-      };
-      const up = (ev: PointerEvent) => {
-        if (ev.pointerId !== pointer) return;
-        window.clearTimeout(timer);
-        stage.removeEventListener('pointermove', move);
-        stage.removeEventListener('pointerup', up);
-        stage.removeEventListener('pointercancel', up);
-        const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
-        // 松手的位置也算移动：页面忙的时候 pointermove 可能晚到，按住计时先到了，横着滑出去仍然算换片。
-        if (Math.hypot(dx, dy) > 12) moved = true;
-        const swiped = ev.type === 'pointerup' && moved && Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy);
-        if (held) {
-          this.holding = false;
-          this.setLabel(this.restLabel);
-          this.push();
-          if (!swiped) return;
-        }
-        if (swiped && this.photo) {
-          this.api.swipe(this.photo.id, dx < 0 ? 1 : -1);
-        }
-      };
-      stage.addEventListener('pointermove', move);
-      stage.addEventListener('pointerup', up);
-      stage.addEventListener('pointercancel', up);
-    });
+  private restLabelText(): string {
+    return this.mode === 'raw' ? this.lookCaption || '中性转换' : this.mode === 'jpg' ? '相机 JPG' : this.photo?.jpg ? '相机 JPG' : '只有 RAW';
   }
 
   private nextPhoto(dir: -1 | 1): Photo | null {
@@ -553,6 +506,17 @@ export class EditorView {
     throw new DOMException('读不了', reply.gone ? 'NotReadableError' : 'EncodingError');
   }
 
+  private same(token: number, photo: Photo, version: number, session: number, rev?: number): boolean {
+    return (
+      token === this.token &&
+      this.photo === photo &&
+      this.api.session() === session &&
+      this.api.photo(photo.id) === photo &&
+      photo.version === version &&
+      (rev === undefined || photo.rev === rev)
+    );
+  }
+
   private prefetch(next: Photo | null): void {
     if (!next?.dng) {
       this.wantNeighbor = '';
@@ -560,10 +524,11 @@ export class EditorView {
     }
     const id = next.id;
     const version = next.version;
+    const session = this.api.session();
     const token = this.token;
     this.wantNeighbor = id;
     void this.api.readFull(next).then((reply) => {
-      if (!reply.ok || this.token !== token || this.wantNeighbor !== id) return;
+      if (!reply.ok || this.token !== token || this.wantNeighbor !== id || this.api.session() !== session || this.api.photo(id) !== next || next.version !== version) return;
       this.api.keepWarm(id, version, reply.bytes);
     });
   }
@@ -571,6 +536,7 @@ export class EditorView {
   private async load(photo: Photo): Promise<void> {
     const token = ++this.token;
     const version = photo.version;
+    const session = this.api.session();
     if (!photo.dng) {
       this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW');
       if (this.engine && photo.bitmap) {
@@ -578,19 +544,23 @@ export class EditorView {
         this.engine.addJpg(key, photo.bitmap);
         this.engine.show(key);
         this.mode = 'jpg';
+        this.luts?.start(key);
         if (this.gpuCanvas) this.gpuCanvas.hidden = false;
         if (this.still) this.still.hidden = true;
         this.push();
+        await this.cropStage?.applyPreviewGeometry();
+        if (!this.same(token, photo, version, session)) return;
         const frame = this.engine.frame();
         if (frame) this.shell.dataset.frame = '1';
-        if (this.input) this.input.disabled = false;
+        this.adjust?.setDisabled(false);
+        this.cropStage?.syncLoaded();
       }
       return;
     }
     // 这个版本的完整源已经在显卡里：不读卡，直接显示。卡被拔出后照样能开、能调。
     const key = `raw:${photo.id}`;
     if (this.engine && photo.cached === version && this.engine.hasSource(key)) {
-      this.showRaw(key);
+      await this.showRaw(key);
       return;
     }
     // 没有显卡、但这个版本描述过：直接放相机 JPG 或内嵌预览。
@@ -602,34 +572,32 @@ export class EditorView {
     try {
       bytes = await this.take(photo);
     } catch (err) {
-      if (token !== this.token) return;
+      if (!this.same(token, photo, version, session)) return;
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if (isGone(err)) this.api.markGone(photo.id, version);
       else this.api.markBad(photo.id, version);
       return;
     }
-    if (token !== this.token) return;
+    if (!this.same(token, photo, version, session)) return;
     // 先用 WASM 描述，坏文件的判断和有没有显卡无关。
     let described: Described;
     try {
       described = await describeDng(bytes);
     } catch {
-      if (token === this.token) this.api.markBad(photo.id, version);
+      if (this.same(token, photo, version, session)) this.api.markBad(photo.id, version);
       return;
     }
-    if (token !== this.token) return;
+    if (!this.same(token, photo, version, session)) return;
     if (!described.layout || described.reason) {
       this.api.markBad(photo.id, version);
       return;
     }
-    if (photo.version === version) {
-      photo.checked = version;
-      // 镜头名和 ISO：相机 JPG 里没有时用 DNG 里的（选镜头单元和模型）。
-      photo.dngMeta = described.meta;
-    }
+    photo.checked = version;
+    // 镜头名和 ISO：相机 JPG 里没有时用 DNG 里的（选镜头单元和模型）。
+    photo.dngMeta = described.meta;
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
-      if (this.input) this.input.disabled = true;
+      this.adjust?.setDisabled(true);
       this.recipes?.refresh();
       this.prefetch(this.nextPhoto(1));
       return;
@@ -638,29 +606,32 @@ export class EditorView {
       // 每张照片一个固定的键：再加一次会替换（并销毁）原来那份纹理，不会同一张占两份。
       // 上传由 App 按照片排队，提交前核对版本；过期的请求不会碰显卡里的源。
       const installed = await this.api.uploadRaw(photo, version, described.layout, bytes, described.scene);
-      if (!installed || token !== this.token) return;
-      this.showRaw(key);
+      if (!installed || !this.same(token, photo, version, session)) return;
+      await this.showRaw(key);
+      if (!this.same(token, photo, version, session)) return;
       this.prefetch(this.nextPhoto(1));
     } catch {
-      if (token !== this.token) return;
+      if (!this.same(token, photo, version, session)) return;
       this.api.markBad(photo.id, version);
     }
   }
 
   /** 这张 RAW 的中性小图：每个版本只请显卡出一次，之后换片回来直接用。 */
   private async neutralCards(photo: Photo, key: string): Promise<void> {
-    if (!this.engine) return;
+    if (!this.engine || !this.cropStage) return;
     const version = photo.version;
-    if (photo.neutral && photo.neutral.version === version) {
-      this.recipes?.neutral(photo.neutral.bitmap);
-      return;
-    }
+    const rev = photo.rev;
     const token = this.token;
     const session = this.api.session();
-    // 照片还是这次会话里的同一张、同一个版本：清空、去掉、重新选过都算过期。
-    const alive = () => this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
+    // 照片还是这次会话里的同一张、同一个编辑实例、版本和编辑版本：离开重开、清空、去掉、重新选过或改过裁剪都算过期。
+    const alive = () => this.same(token, photo, version, session, rev);
+    if (photo.neutral && photo.neutral.version === version) {
+      if (alive()) this.recipes?.neutral(photo.neutral.bitmap);
+      return;
+    }
     const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
-    const geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
+    const { geometry } = await this.cropStage.resolveBoxGeometry(photo);
+    if (!alive()) return;
     const out = await this.engine.thumb({ source: key, look, geometry, aspect: null, maxEdge: 192 });
     if (!out || !alive()) return;
     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
@@ -668,32 +639,43 @@ export class EditorView {
       bitmap.close();
       return;
     }
+    this.recipes?.neutral(null);
     photo.neutral?.bitmap.close();
     photo.neutral = { version, bitmap };
-    if (token === this.token) this.recipes?.neutral(bitmap);
+    this.recipes?.neutral(bitmap);
   }
 
-  private showRaw(key: string): void {
-    if (!this.engine) return;
+  private async showRaw(key: string): Promise<void> {
+    if (!this.engine || !this.photo) return;
+    const photo = this.photo;
+    const token = this.token;
+    const version = photo.version;
+    const session = this.api.session();
     this.engine.show(key);
     this.mode = 'raw';
     this.push();
+    await this.cropStage?.applyPreviewGeometry();
+    if (!this.same(token, photo, version, session)) return;
     const frame = this.engine.frame();
     if (frame) this.shell.dataset.frame = '1';
-    if (!this.caption) this.setLabel('中性转换');
+    if (!this.lookCaption) this.lookCaption = '中性转换';
+    if (this.tab !== 2 && !this.caption) this.setLabel(this.lookCaption);
+    this.cropStage?.syncLoaded();
     this.recipes?.start(key);
+    this.luts?.start(key);
     if (this.gpuCanvas) this.gpuCanvas.hidden = false;
     if (this.still) this.still.hidden = true;
-    if (this.input) this.input.disabled = false;
-    if (this.photo) void this.neutralCards(this.photo, key);
+    this.adjust?.setDisabled(false);
+    void this.neutralCards(photo, key);
   }
 
   private showStillPhoto(photo: Photo, label: string): void {
     this.mode = 'still';
-    this.setLabel(label);
-    this.paintStill(photo.bitmap);
+    this.lookCaption = label;
+    if (this.tab !== 2) this.setLabel(label);
+    this.cropStage?.paintStill(photo.bitmap);
     if (this.gpuCanvas) this.gpuCanvas.hidden = true;
-    if (!this.engine && this.input) this.input.disabled = true;
+    if (!this.engine) this.adjust?.setDisabled(true);
     // 没有相机 JPG、DNG 里也没有预览：照片区写「只有 RAW」，不留一块空灰。
     if (this.placeholder) this.placeholder.hidden = !!photo.bitmap || !!photo.jpg;
     this.sharpening = this.sharpen(photo);
@@ -702,24 +684,34 @@ export class EditorView {
   /** 先放缩略图，Worker 解好屏幕宽度的那张再换上。主线程只画一次。 */
   private async sharpen(photo: Photo): Promise<void> {
     const token = this.token;
-    const width = Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
+    const version = photo.version;
+    const session = this.api.session();
+    const alive = () => this.same(token, photo, version, session);
+    const fullJpg = !photo.dng && !!photo.jpg && !!this.engine;
+    const width = fullJpg ? Number.POSITIVE_INFINITY : Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
     const bitmap = await this.api.still(photo, width);
     if (!bitmap) return;
-    if (token !== this.token || this.mode === 'raw') {
+    if (!alive() || this.mode === 'raw') {
       bitmap.close();
       return;
     }
     if (this.mode === 'jpg' && this.engine) {
-      // 只有 JPG 又有显卡：换成清楚的纹理。复制进显卡后位图就能关掉。
+      // 只有 JPG 又有显卡：换成完整纹理，使 layerSize 和成片尺寸与导出一致。复制进显卡后位图就能关掉。
       const key = `jpg:${photo.id}`;
       this.engine.addJpg(key, bitmap);
       bitmap.close();
       this.engine.show(key);
+      this.luts?.start(key);
       this.push();
+      await this.cropStage?.applyPreviewGeometry();
+      if (!alive()) return;
+      this.engine.frame();
+      this.cropStage?.syncLoaded();
       return;
     }
     this.sharp?.close();
     this.sharp = bitmap;
-    this.paintStill(bitmap);
+    this.cropStage?.paintStill(bitmap);
+    this.cropStage?.syncLoaded();
   }
 }

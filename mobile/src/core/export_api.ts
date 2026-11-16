@@ -150,8 +150,22 @@ export class ExportCore {
   }
 
   private sendSetup(worker: Worker): void {
-    const s = this.setup ?? { dat: null, calibIndex: '', calibBlob: null };
-    worker.postMessage({ op: 'setup', setup: { dat: s.dat ? s.dat.slice(0) : null, calibIndex: s.calibIndex, calibBlob: s.calibBlob ? s.calibBlob.slice(0) : null } });
+    const s = this.setup ?? { dat: null, calibIndex: '', calibBlob: null, luts: {} };
+    const luts: Record<string, { cube: ArrayBuffer; space: string }> = {};
+    if (s.luts) {
+      for (const [id, entry] of Object.entries(s.luts)) {
+        luts[id] = { cube: entry.cube.slice(0), space: entry.space };
+      }
+    }
+    worker.postMessage({
+      op: 'setup',
+      setup: {
+        dat: s.dat ? s.dat.slice(0) : null,
+        calibIndex: s.calibIndex,
+        calibBlob: s.calibBlob ? s.calibBlob.slice(0) : null,
+        luts,
+      },
+    });
   }
 
   private finish(worker: Worker, msg: ExportOut): void {
