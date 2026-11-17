@@ -315,7 +315,14 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
 
 
 def _shot(desk: Desktop, stem: str, dng: Path | None, jpg: Path | None) -> dict[str, Any]:
-    """``Desktop.shot`` links the sample in. The library will not open a link, so replace it with a copy."""
+    """``Desktop.shot`` links the sample in. The library will not open a link, so replace it with a copy.
+
+    The library index also records the orientation the importer read (``cards/importer.py``: the JPG's
+    metadata, else the DNG's), and an edit's first sidecar takes ``frame.orientation`` from it.
+    ``Desktop.shot`` leaves it out, which only shows on portrait photos.
+    """
+    from gxr_studio.meta import read_dng_meta, read_jpeg_meta
+
     made = desk.shot(stem, dng, jpg)
     for src in (dng, jpg):
         if src is None:
@@ -324,6 +331,9 @@ def _shot(desk: Desktop, stem: str, dng: Path | None, jpg: Path | None) -> dict[
         if dest.is_symlink():
             dest.unlink()
             shutil.copy2(src, dest)
+    jpg_meta = read_jpeg_meta(jpg) if jpg else None
+    primary = jpg_meta if jpg_meta is not None and not jpg_meta.error else (read_dng_meta(dng) if dng else None)
+    made["orientation"] = primary.orientation if primary is not None and primary.orientation else 1
     return made
 
 
