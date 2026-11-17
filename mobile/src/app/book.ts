@@ -167,14 +167,19 @@ export class Book {
     return this.nextStamp();
   }
 
+  /** 已经应用到内存（`this.pack`）的最高版本，包括本次会话能用但未存下的校准包。 */
+  private appliedAt = 0;
+
   /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对（在 Worker 里）。 */
   async restore(): Promise<void> {
     const seq = ++this.packSeq;
     const read = await this.io.restoreCalib();
-    if (!read || seq !== this.packSeq) return;
+    if (!read || seq !== this.packSeq || read.savedAt <= this.appliedAt) return;
     this.stamp = Math.max(this.stamp, read.savedAt);
-    if (read.ok) this.commit(read, read.name, read.savedAt);
-    else this.packError = this.failText(read);
+    if (read.ok) {
+      this.appliedAt = read.savedAt;
+      this.commit(read, read.name, read.savedAt);
+    } else this.packError = this.failText(read);
     this.changed();
   }
 
@@ -195,12 +200,20 @@ export class Book {
       const savedAt = await this.stampAbove();
       if (seq !== this.packSeq) return false;
       const read = await this.io.importCalib(file, savedAt);
-      if (seq !== this.packSeq) return false;
+      if (seq !== this.packSeq) {
+        if (read.ok && read.saved && savedAt > this.appliedAt) {
+          this.appliedAt = savedAt;
+          this.commit(read, file.name, savedAt);
+          this.changed();
+        }
+        return false;
+      }
       if (!read.ok) {
         this.packError = this.failText(read);
         return false;
       }
       // 核对过了，这次会话里能用；但只有真的存进去了才算导入成功，否则照实说（Sol r2）。
+      this.appliedAt = Math.max(this.appliedAt, savedAt);
       this.commit(read, file.name, savedAt);
       if (!read.saved) {
         this.packError = NOT_SAVED;
@@ -228,9 +241,20 @@ export class Book {
     this.packError = null;
     this.changed();
     try {
-      const wrote = await this.io.deletePack(await this.stampAbove());
+      const at = await this.stampAbove();
       if (seq !== this.packSeq) return;
+      const wrote = await this.io.deletePack(at);
+      if (seq !== this.packSeq) {
+        if (wrote && at > this.appliedAt) {
+          this.appliedAt = at;
+          this.pack = null;
+          this.bump();
+          this.changed();
+        }
+        return;
+      }
       if (!wrote) throw new Error('tombstone not written');
+      this.appliedAt = Math.max(this.appliedAt, at);
       this.pack = null;
       this.packError = null;
       this.bump();

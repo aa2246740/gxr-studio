@@ -126,8 +126,9 @@ async function handleDev(
     res.end('bad name');
     return;
   }
-  const body = await readBody(req, 1_000_000);
-  JSON.parse(body.toString('utf8'));
+  const isBin = String(req.headers['content-type'] || '').startsWith('application/octet-stream');
+  const body = await readBody(req, isBin ? 200_000_000 : 1_000_000);
+  if (!isBin) JSON.parse(body.toString('utf8'));
   const dir = path.resolve(root, '.reports');
   fs.mkdirSync(dir, { recursive: true });
   const resolved = path.resolve(dir);
@@ -137,7 +138,7 @@ async function handleDev(
     res.end('report dir escapes');
     return;
   }
-  const target = path.join(dir, `${name}.json`);
+  const target = path.join(dir, `${name}.${isBin ? 'bin' : 'json'}`);
   try {
     if (fs.lstatSync(target).isSymbolicLink()) {
       res.statusCode = 400;
@@ -181,7 +182,7 @@ export default defineConfig(({ command }) => ({
     host: '127.0.0.1',
     port: 5199,
     strictPort: true,
-    fs: { allow: [root, path.resolve(root, '../frontend')] },
+    fs: { allow: [root, path.resolve(root, '../frontend'), path.resolve(root, '../src/gxr_studio/assets/fonts')] },
   },
   build: {
     outDir: 'dist',

@@ -18,6 +18,32 @@ try {
   const page = await browser.newPage();
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
   if (process.env.GXR_DEBUG) { page.on('console', (m) => console.error('console', m.text())); page.on('framenavigated', (f) => console.error('nav', f.url(), Date.now())); }
+  await page.route('**/src/core/worker.ts*', async (route) => {
+    const response = await route.fetch();
+    const patch = `
+const __calibOrigPut = IDBObjectStore.prototype.put;
+IDBObjectStore.prototype.put = function (...args) {
+  const req = __calibOrigPut.apply(this, args);
+  if (this.name === 'calib' && args[0]?.name === 'BUnsaved.zip') {
+    this.transaction.addEventListener('abort', () => postMessage({ id: 0, calibTxAborted: true }), { once: true });
+    this.transaction.abort();
+  }
+  return req;
+};`;
+    await route.fulfill({ response, body: `${await response.text()}\n${patch}` });
+  });
+  await page.addInitScript(() => {
+    window.__calibWorkerAbortCount = 0;
+    const OrigWorker = window.Worker;
+    window.Worker = class extends OrigWorker {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener('message', (ev) => {
+          if (ev.data?.calibTxAborted) window.__calibWorkerAbortCount += 1;
+        });
+      }
+    };
+  });
   await page.goto(url);
   // 第一次编译 Worker 时开发服务器可能整页刷新：等它停稳。
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -357,6 +383,202 @@ try {
       const reopened = new Book(real());
       await reopened.restore();
       result.invalidImports = { good, bad, reopened: reopened.pack?.name ?? null };
+    }
+    // 13. 提交边界可见性（Carbon 同族审计）：校准包已经写进真实 IndexedDB（或删除墓碑已经提交）之后，
+    //     紧接着选了一个不写库的超大/坏文件，内存里的 book.pack 必须和真实 IndexedDB 一致，不能丢掉已提交的包或留着已删的包。
+    if (packB64) {
+      const api = await import('/src/core/api.ts');
+      const idb = await import('/src/lib/idb.ts');
+      const bytes = Uint8Array.from(atob(packB64), (c) => c.charCodeAt(0));
+      const zipFile = (name) => new File([bytes], name, { lastModified: 1 });
+      const huge = { name: 'huge.zip', size: 4 * 2 ** 30, lastModified: 1 };
+      let hookAfterImportCommit = null;
+      const realWithHook = () => ({
+        readFile: async () => null,
+        readDat: api.readDat,
+        importCalib: async (f, savedAt) => {
+          const outCal = await api.importCalib(f, savedAt);
+          if (hookAfterImportCommit) {
+            const fn = hookAfterImportCommit;
+            hookAfterImportCommit = null;
+            await fn();
+          }
+          return outCal;
+        },
+        restoreCalib: api.restoreCalib,
+        bake: api.bakeIn,
+        resolve: api.resolveRecipe,
+        calibCheck: api.calibCheck,
+        deletePack: idb.deletePack,
+        watermark: idb.loadWatermark,
+      });
+
+      await idb.deletePack(Date.now() + 1000);
+      const book = new Book(realWithHook());
+      let idbDuringSupersede = null;
+      hookAfterImportCommit = async () => {
+        idbDuringSupersede = (await idb.loadPack())?.name ?? null;
+        await book.importPack(huge);
+      };
+      const firstOk = await book.importPack(zipFile('CommittedGood.zip'));
+      const afterImport = {
+        firstOk,
+        idbDuringSupersede,
+        idbNow: (await idb.loadPack())?.name ?? null,
+        memNow: book.pack?.name ?? null,
+        error: book.packError,
+        busy: book.packBusy,
+      };
+
+      const origTx = IDBDatabase.prototype.transaction;
+      let delHooked = false;
+      IDBDatabase.prototype.transaction = function (...args) {
+        const tx = origTx.apply(this, args);
+        if (!delHooked && args[1] === 'readwrite' && tx.objectStoreNames.contains('calib')) {
+          delHooked = true;
+          tx.addEventListener(
+            'complete',
+            () => {
+              void book.importPack(huge);
+            },
+            { once: true },
+          );
+        }
+        return tx;
+      };
+      try {
+        await book.removePack();
+      } finally {
+        IDBDatabase.prototype.transaction = origTx;
+      }
+      await tick();
+      const afterDelete = {
+        idbNow: (await idb.loadPack())?.name ?? null,
+        memNow: book.pack?.name ?? null,
+        error: book.packError,
+        busy: book.packBusy,
+      };
+      result.calibCommitVisibility = { afterImport, afterDelete };
+
+      // 14. 会话水位（Sol s4 P2）：
+      //     (a) 导入/删除/再导入 × 两种回复顺序（6 例），经真实 Worker 解析与真实 IndexedDB 落库，
+      //         并夹入不推进水位的超大文件/损坏文件，内存与磁盘最终均停在更新的一次操作；
+      //     (b) 两个反例：先提交导入 A（或删除墓碑）但暂缓交付回复，再导入 B 且让 Worker 真实写事务 abort()
+      //         （saved=false，但本次会话选用 B 并提示「没有存进这台 iPhone：这次能用…」），随后放行旧回复，
+      //         旧导入/旧删除回复绝不能把本次会话正在用的 B 盖回 A 或清空。
+      const snap = async (b) => ({
+        memory: b.pack?.name ?? null,
+        disk: (await idb.loadPack())?.name ?? null,
+        appliedAt: b.appliedAt,
+        selectedAt: b.pack?.savedAt ?? null,
+        busy: b.packBusy,
+        error: b.packError,
+      });
+      const makeHeld = () => {
+        const ready = new Map();
+        const release = new Map();
+        const seen = new Map();
+        const hold = (key) => {
+          ready.set(key, deferred());
+          release.set(key, deferred());
+        };
+        const deliver = async (key, value) => {
+          seen.set(key, value);
+          if (ready.has(key)) {
+            ready.get(key).resolve();
+            await release.get(key).promise;
+          }
+          return value;
+        };
+        const heldBook = new Book({
+          readFile: async () => null,
+          readDat: api.readDat,
+          importCalib: async (f, at) => deliver(f.name, await api.importCalib(f, at)),
+          restoreCalib: api.restoreCalib,
+          bake: api.bakeIn,
+          resolve: api.resolveRecipe,
+          calibCheck: api.calibCheck,
+          deletePack: async (at) => deliver('delete', await idb.deletePack(at)),
+          watermark: idb.loadWatermark,
+        });
+        return { book: heldBook, hold, ready, release, seen };
+      };
+
+      const sixOrders = [];
+      for (const mode of ['import-delete', 'delete-import', 'import-import']) {
+        for (const order of ['older-first', 'newer-first']) {
+          await idb.deletePack((await idb.loadWatermark()) + 10);
+          const { book: ob, hold, ready, release } = makeHeld();
+          if (mode.startsWith('delete')) await ob.importPack(zipFile('Seed.zip'));
+          const first = mode.startsWith('delete') ? 'delete' : 'A.zip';
+          const second = mode.endsWith('delete') ? 'delete' : 'B.zip';
+          hold(first);
+          hold(second);
+          const opA = first === 'delete' ? ob.removePack() : ob.importPack(zipFile(first));
+          await ready.get(first).promise;
+          const opB = second === 'delete' ? ob.removePack() : ob.importPack(zipFile(second));
+          await ready.get(second).promise;
+          const beforeSupersedeAt = ob.appliedAt;
+          await ob.importPack(huge);
+          const afterHugeAt = ob.appliedAt;
+          const corrupt = new File([new Uint8Array([1, 2, 3, 4])], 'corrupt.zip', { lastModified: 1 });
+          await ob.importPack(corrupt);
+          const afterCorruptAt = ob.appliedAt;
+          if (order === 'older-first') {
+            release.get(first).resolve();
+            await opA;
+            release.get(second).resolve();
+            await opB;
+          } else {
+            release.get(second).resolve();
+            await opB;
+            release.get(first).resolve();
+            await opA;
+          }
+          const expected = second === 'delete' ? null : second;
+          const state = await snap(ob);
+          sixOrders.push({
+            mode,
+            order,
+            expected,
+            rejectedKeptWatermark: afterHugeAt === beforeSupersedeAt && afterCorruptAt === beforeSupersedeAt,
+            ...state,
+          });
+        }
+      }
+
+      const unsavedCounterexamples = [];
+      window.__calibWorkerAbortCount = 0;
+      for (const olderOp of ['import', 'delete']) {
+        await idb.deletePack((await idb.loadWatermark()) + 10);
+        const { book: ub, hold, ready, release, seen } = makeHeld();
+        if (olderOp === 'delete') await ub.importPack(zipFile('Seed.zip'));
+        const first = olderOp === 'delete' ? 'delete' : 'ACommitted.zip';
+        hold(first);
+        const opA = olderOp === 'delete' ? ub.removePack() : ub.importPack(zipFile(first));
+        await ready.get(first).promise;
+        const aPersisted = await snap(ub);
+        const abortBefore = window.__calibWorkerAbortCount;
+        const bReturn = await ub.importPack(zipFile('BUnsaved.zip'));
+        const beforeLate = await snap(ub);
+        release.get(first).resolve();
+        await opA;
+        const afterLate = await snap(ub);
+        await tick();
+        const abortDelta = window.__calibWorkerAbortCount - abortBefore;
+        unsavedCounterexamples.push({
+          mode: `${olderOp}-then-newer-unsaved-import`,
+          aSaved: olderOp === 'delete' ? seen.get(first) : seen.get(first)?.saved,
+          bSaved: seen.get('BUnsaved.zip')?.saved,
+          bReturn,
+          abortDelta,
+          aPersisted,
+          beforeLate,
+          afterLate,
+          expectedDisk: olderOp === 'delete' ? null : 'ACommitted.zip',
+        });
+      }
+      result.calibSessionWatermark = { sixOrders, unsavedCounterexamples };
     }
     // 9b. Sol r3：同一张打开的照片反复调旋钮。每张卡只留现在那张，换下来的位图立刻关掉；上限任何时候都成立。
     {

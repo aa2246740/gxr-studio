@@ -1,9 +1,12 @@
 // 一张照片交给 export_plan / export_prepare 的请求：从这次会话的编辑状态拼出来。纯函数，不碰 DOM。
 // shot 照桌面图库的 shot 字典（宽高在 Worker 里从文件头补上）；side 照桌面 render/edits.write 写出的 sidecar；
-// defaults 是没有默认设置文件的桌面（{}）；底图「自动」。M3 不能设边框、日期戳、裁剪、LUT、曲线（M4 才有）。
+// defaults 是没有默认设置文件的桌面（{}）；底图「自动」。
 
 import { unitOfLens, type Unit } from './calib';
 import { cloneCrop, geometrySidecar, type CropState, type GeometryState } from './crop';
+import { CJK_REFUSE_MESSAGE, GXR_MARK } from './fonts';
+import { LOGO_STYLES, type FrameSpec, type LogoInfo, type StampSpec } from './frame_spec';
+import { MISSING_LOGO_LINE } from './logo_key';
 import { isDisplaySpace } from './lut';
 import type { Frame } from './photo_size';
 import type { Card } from './recipes';
@@ -50,6 +53,10 @@ export interface RequestPhoto {
   frame?: Frame | null;
   geometry?: GeometryState;
   crop?: CropState | null;
+  border?: FrameSpec | null;
+  stamp?: StampSpec | null;
+  /** 这张边框实际用到的自定义标志信息（`logoStore.info(border.logo)`），没有或内置/不显示时为 null。 */
+  logoInfo?: LogoInfo | null;
   /** 源文件（有相机 JPG 用 JPG，否则 DNG，即桌面 serve._source_path）的 File.lastModified。 */
   sourceModified: number;
 }
@@ -67,7 +74,7 @@ export interface ExportRequest {
   side: Record<string, unknown>;
   defaults: Record<string, never>;
   base: 'auto';
-  layout: Record<string, never>;
+  layout: Record<string, unknown>;
   binding: string;
   quality: number;
   longEdge: number | undefined;
@@ -125,9 +132,81 @@ export function adjustJson(k: KnobValues): Record<string, unknown> | null {
   return out;
 }
 
+/** 这张边框实际会用到的自定义标志 id；无边框、不支持标志的样式、不显示或内置 GXR 标志时返回 null。 */
+export function usedLogoId(border: FrameSpec | null | undefined): string | null {
+  if (!border || border.style === 'none' || !LOGO_STYLES.includes(border.style)) return null;
+  if (!border.show_logo || !border.logo || border.logo === 'ricoh' || border.logo === 'none') return null;
+  return border.logo;
+}
+
+/** `FrameSpec.to_json`；`style === 'none'` 时不写进 sidecar。 */
+export function borderJson(f: FrameSpec | null | undefined): Record<string, unknown> | null {
+  if (!f || f.style === 'none') return null;
+  return {
+    version: 2,
+    style: f.style,
+    color: f.color,
+    weight: f.weight,
+    show_logo: f.show_logo,
+    show_params: f.show_params,
+    show_date: f.show_date,
+    text: f.text,
+    output_ratio: f.output_ratio,
+    fmt: f.fmt,
+    table: f.table,
+    logo: f.logo,
+    logo_mode: f.logo_mode,
+    logo_size: f.logo_size,
+    model: f.model,
+  };
+}
+
+/** `StampSpec.to_json`；未开启时不写进 sidecar，落点为 `photo` 时照桌面省掉 `placement`。 */
+export function stampJson(s: StampSpec | null | undefined): Record<string, unknown> | null {
+  if (!s || !s.enabled) return null;
+  const out: Record<string, unknown> = {
+    enabled: true,
+    content: s.content,
+    date_format: s.date_format,
+    show_time: s.show_time,
+    date_override: s.date_override,
+    text: s.text,
+    font: s.font,
+    color: s.color,
+    size: s.size,
+    corner: s.corner,
+    glow: s.glow,
+  };
+  if (s.placement !== 'photo') out.placement = s.placement;
+  return out;
+}
+
+export const INK_FALLBACK_MESSAGE = '导出失败。请重试。';
+
+/** `export_ink` 的错误映射：陷阱走 M3 恢复，`missing_cjk` 走桌面中文提示，`unknown_logo` 走标志回退句，其余一律走桌面兜底。 */
+export function mapInkError(err: unknown): { kind: 'trap' | 'core'; code: string; message: string } {
+  if (err instanceof WebAssembly.RuntimeError || err instanceof RangeError) {
+    return { kind: 'trap', code: 'trap', message: err.message };
+  }
+  const text = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
+  try {
+    const parsed = JSON.parse(text) as { error?: { kind?: unknown } };
+    const errorKind = parsed.error?.kind;
+    if (errorKind === 'missing_cjk') {
+      return { kind: 'core', code: 'missing_cjk', message: CJK_REFUSE_MESSAGE };
+    }
+    if (errorKind === 'unknown_logo') {
+      return { kind: 'core', code: 'unknown_logo', message: MISSING_LOGO_LINE };
+    }
+  } catch {
+    /* 非 JSON 错误归入兜底。 */
+  }
+  return { kind: 'core', code: 'ink_error', message: INK_FALLBACK_MESSAGE };
+}
+
 /**
- * 桌面 sidecar 里这张照片的编辑（`render/edits.write` 写出的那几块）：`recipe`（带 `memory`）、`lut` 和 `adjust`。
- * 没动过的照片（没选配方、没选 LUT、调整全是 0）是 `{}`。
+ * 桌面 sidecar 里这张照片的编辑（`render/edits.write` 写出的那几块）：`recipe`（带 `memory`）、`lut`、`adjust`、`geometry`、`crop`、`border`、`stamp`。
+ * 没动过的照片是 `{}`。
  */
 export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<string, unknown> {
   const side: Record<string, unknown> = {};
@@ -150,6 +229,10 @@ export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<s
   const geom = photo.geometry ? geometrySidecar(photo.geometry.straighten) : null;
   if (geom) side.geometry = geom;
   if (photo.crop) side.crop = cloneCrop(photo.crop);
+  const border = borderJson(photo.border);
+  if (border) side.border = border;
+  const stamp = stampJson(photo.stamp);
+  if (stamp) side.stamp = stamp;
   if (photo.frame && Object.keys(side).length > 0) {
     side.frame = { orientation: photo.frame.orientation, width: photo.frame.width, height: photo.frame.height };
   }
@@ -174,12 +257,15 @@ export function buildRequest(photo: RequestPhoto, cards: readonly Card[], option
   }
   const isLogLut = Boolean(photo.lut && photo.lutInputSpace && !isDisplaySpace(photo.lutInputSpace));
   const mtimeMs = photo.sourceModified;
+  const logoId = usedLogoId(photo.border);
+  const usedLogos: LogoInfo[] = logoId && photo.logoInfo && photo.logoInfo.id === logoId ? [photo.logoInfo] : [];
+  const layout: Record<string, unknown> = side.border || side.stamp ? { logos: usedLogos, mark: { ...GXR_MARK } } : {};
   return {
     shot: { name: photo.stem, files, lens: photo.lens, iso: photo.iso },
     side,
     defaults: {},
     base: 'auto',
-    layout: {},
+    layout,
     binding: binding ?? `${BINDING_PREFIX}${build}`,
     quality: QUALITY_TIERS[options.quality],
     longEdge: SIZE_TIERS[options.size],

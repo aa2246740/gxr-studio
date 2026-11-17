@@ -8,13 +8,20 @@ import { histPoint, histShape } from '../lib/hist';
 import { AdjustView, toAdjust } from './adjust_view';
 import { CropStage, DEFAULT_GEOMETRY } from './crop_stage';
 import { button, el, icon, ICON } from './dom';
-import { curvesPanel, framePanel } from './later_panels';
+import { curvesPanel } from './later_panels';
 import { LutView } from './lut_view';
 import { photoMs, zeroKnobs, type AppApi, type Photo } from './model';
 import { lookCache } from './looks';
 import { pasteState } from './paste_state';
 import { openCopySheet, PASTE_ICON } from './paste_ui';
 import { RecipeView } from './recipe_view';
+import { releaseFinishDrawResources } from './finish_draw';
+import { photoExportSize } from './frame_state';
+import { FrameView } from './frame_view';
+import { cancelHostSheets } from './sheet_lifecycle';
+import { StageDecorController } from './stage_finish';
+import { showToast } from './toast';
+import './frame.css';
 
 /**
  * 显卡在忙（上一张的直方图还在读回）时 `histogram()` 立刻给 null，于是每帧再试一次。
@@ -33,6 +40,7 @@ function isGone(err: unknown): boolean {
 
 export class EditorView {
   private token = 0;
+  private openGen = 0;
   private photo: Photo | null = null;
   private mode: 'raw' | 'jpg' | 'still' = 'still';
   private wantNeighbor = '';
@@ -61,6 +69,8 @@ export class EditorView {
   private adjust: AdjustView | null = null;
   private cropStage: CropStage | null = null;
   private pvObserver: ResizeObserver | null = null;
+  private frames: FrameView | null = null;
+  private decor: StageDecorController | null = null;
   private luts: LutView | null = null;
   private lutTabBtn: HTMLButtonElement | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
@@ -83,6 +93,8 @@ export class EditorView {
   ) {}
 
   open(photo: Photo): void {
+    cancelHostSheets(this.shell);
+    this.openGen += 1;
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
     // 正在看的这张的配方卡小图不会被全局上限挤掉。
     lookCache.setOpen(photo);
@@ -106,6 +118,8 @@ export class EditorView {
   }
 
   destroy(): void {
+    cancelHostSheets(this.shell);
+    this.openGen += 1;
     this.token += 1;
     this.photo = null;
     lookCache.setOpen(null);
@@ -128,14 +142,32 @@ export class EditorView {
     this.recipes = null;
     this.adjust?.destroy();
     this.adjust = null;
+    this.frames?.destroy();
+    this.frames = null;
+    this.decor?.destroy();
+    this.decor = null;
+    releaseFinishDrawResources();
     this.luts?.destroy();
     this.luts = null;
     this.lutTabBtn = null;
+    for (const cv of [this.hist, this.still, this.gpuCanvas]) {
+      if (cv) cv.width = cv.height = 0;
+    }
+    this.hist = this.still = this.gpuCanvas = null;
     this.engine?.detach();
   }
 
   private build(photo: Photo, index: number): void {
     this.photo = photo;
+    const gen = this.openGen;
+    const version = photo.version;
+    const session = this.api.session();
+    const viewAlive = (): boolean =>
+      gen === this.openGen &&
+      this.photo === photo &&
+      this.api.photo(photo.id) === photo &&
+      photo.version === version &&
+      this.api.session() === session;
     this.tab = 1;
     this.lookCaption = '';
     this.pvObserver?.disconnect();
@@ -155,6 +187,7 @@ export class EditorView {
         this.holding = on;
         this.renderStageLabel();
         this.push();
+        void this.decor?.sync();
       },
       setLabel: (text) => this.setLabel(text),
       enterDrag: () => this.enterDrag(),
@@ -169,6 +202,8 @@ export class EditorView {
             void this.neutralCards(target, `raw:${target.id}`);
           }
           this.recipes?.refresh();
+          this.decor?.onCropChanged();
+          this.frames?.refresh();
         }
       },
       restLabelText: () => this.restLabelText(),
@@ -213,12 +248,14 @@ export class EditorView {
     this.recipeKey = NEUTRAL_BAKE_KEY;
     this.lutToken = null;
     this.lutLabel = null;
+    const cropGeo = () =>
+      this.cropStage?.resolveBoxGeometry(photo) ?? Promise.resolve({ geometry: { ...DEFAULT_GEOMETRY }, cropped: false });
     this.recipes = new RecipeView(this.api, this.engine, photo, {
       mode: () => this.mode,
       look: (key, label) => this.useLook(key, label),
       dragging: () => this.dragging,
       recipeTab: () => this.tab === 0,
-      geometry: () => this.cropStage?.resolveBoxGeometry(photo) ?? Promise.resolve({ geometry: { ...DEFAULT_GEOMETRY }, cropped: false }),
+      geometry: cropGeo,
     });
     this.luts = new LutView(this.shell, this.api, this.engine, photo, {
       mode: () => this.mode,
@@ -241,6 +278,33 @@ export class EditorView {
     );
     const strip = this.recipes.stripEl();
     const cropPanelEl = this.cropStage.createPanel();
+    this.decor?.destroy();
+    this.decor = new StageDecorController({
+      pv,
+      stage,
+      photo,
+      engine: this.engine,
+      gpuCanvas: this.gpuCanvas,
+      still: this.still,
+      mode: () => this.mode,
+      frameTab: () => this.tab === 3,
+      cropTab: () => this.tab === 2 || this.holding,
+      geometry: cropGeo,
+      isAlive: viewAlive,
+      onMeta: () => this.frames?.refresh(),
+      onBackdrop: () => this.frames?.backdropUpdated(),
+      onToast: (msg) => showToast(this.shell, msg),
+    });
+    this.frames?.destroy();
+    this.frames = new FrameView(this.shell, photo, {
+      ew: () => photoExportSize(photo, this.engine),
+      backdrop: () => this.decor?.backdropCanvas() ?? null,
+      backdropKey: () => this.decor?.backdrop()?.key ?? '',
+      isAlive: viewAlive,
+      onChange: () => {
+        void this.decor?.sync();
+      },
+    });
 
     const sheet = el('div', 'sheet');
     sheet.append(el('div', 'grab'));
@@ -260,19 +324,27 @@ export class EditorView {
       if (tabIndex === 2) this.cropStage?.attachTabButton(tab);
       tab.addEventListener('click', () => {
         if (this.tab === tabIndex) return;
+        const prevTab = this.tab;
         for (const item of tabs.children) item.classList.remove('on');
         tab.classList.add('on');
         this.tab = tabIndex;
         if (tabIndex === 0) this.recipes?.tabOpened();
+        if (tabIndex === 3) {
+          this.frames?.tabOpened();
+          this.decor?.onFrameTabOpened();
+        } else {
+          this.frames?.tabClosed();
+        }
         if (tabIndex === 4) this.luts?.tabOpened();
         panels.forEach((panel, panelIndex) => {
           panel.hidden = panelIndex !== tabIndex;
         });
+        if (prevTab === 2 || tabIndex === 2) void this.decor?.sync();
         this.cropStage?.syncTabMode();
       });
       tabs.append(tab);
     });
-    panels.push(this.recipes.panelEl(), this.adjust.panelEl(), cropPanelEl, framePanel(), this.luts.panelEl(), curvesPanel());
+    panels.push(this.recipes.panelEl(), this.adjust.panelEl(), cropPanelEl, this.frames.panelEl(), this.luts.panelEl(), curvesPanel());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -293,6 +365,7 @@ export class EditorView {
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
     this.cropStage.paintTabDot();
     this.cropStage.paintStill(photo.bitmap);
+    void this.decor.sync();
   }
 
   private updateLutTabDot(): void {
@@ -345,6 +418,7 @@ export class EditorView {
       adjust: toAdjust(knobs),
     });
     this.requestHist();
+    this.decor?.onLookChanged(this.dragging);
   }
 
   private setLabel(text: string): void {
@@ -381,7 +455,9 @@ export class EditorView {
     this.api.watch('drag', false);
     const token = this.token;
     requestAnimationFrame(() => {
-      if (token === this.token) this.engine?.redraw();
+      if (token !== this.token) return;
+      this.engine?.redraw();
+      this.decor?.onLookChanged(false);
     });
   }
 
@@ -554,6 +630,7 @@ export class EditorView {
         if (frame) this.shell.dataset.frame = '1';
         this.adjust?.setDisabled(false);
         this.cropStage?.syncLoaded();
+        this.decor?.onMediaReady();
       }
       return;
     }
@@ -667,6 +744,7 @@ export class EditorView {
     if (this.still) this.still.hidden = true;
     this.adjust?.setDisabled(false);
     void this.neutralCards(photo, key);
+    this.decor?.onMediaReady();
   }
 
   private showStillPhoto(photo: Photo, label: string): void {
@@ -678,6 +756,7 @@ export class EditorView {
     if (!this.engine) this.adjust?.setDisabled(true);
     // 没有相机 JPG、DNG 里也没有预览：照片区写「只有 RAW」，不留一块空灰。
     if (this.placeholder) this.placeholder.hidden = !!photo.bitmap || !!photo.jpg;
+    this.decor?.onMediaReady();
     this.sharpening = this.sharpen(photo);
   }
 
@@ -707,11 +786,13 @@ export class EditorView {
       if (!alive()) return;
       this.engine.frame();
       this.cropStage?.syncLoaded();
+      this.decor?.onMediaReady();
       return;
     }
     this.sharp?.close();
     this.sharp = bitmap;
     this.cropStage?.paintStill(bitmap);
     this.cropStage?.syncLoaded();
+    this.decor?.onMediaReady();
   }
 }

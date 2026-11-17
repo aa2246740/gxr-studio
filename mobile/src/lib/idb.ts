@@ -1,10 +1,11 @@
-// 校准数据与用户 LUT 存在这台 iPhone 的浏览器里（IndexedDB），加到主屏幕后重开还在。
+// 校准数据、自定义标志与用户 LUT 存在这台 iPhone 的浏览器里（IndexedDB），加到主屏幕后重开还在。
 
 import { MAX_LUT_LIBRARY_BYTES, type LutRecord } from './lut';
 
 const DB = 'gxr-mobile';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = 'calib';
+const LOGOS_STORE = 'logos';
 const KEY = 'pack';
 const LUT_RECORDS = 'lut_records';
 const LUT_BLOBS = 'lut_blobs';
@@ -18,12 +19,25 @@ export interface StoredPack {
   savedAt: number;
 }
 
+export interface StoredLogo {
+  id: string;
+  name: string;
+  w: number;
+  h: number;
+  coverage: number;
+  opaque: boolean;
+  lum: number;
+  rgba: ArrayBuffer;
+  createdAt: number;
+}
+
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains(LOGOS_STORE)) db.createObjectStore(LOGOS_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(LUT_RECORDS)) db.createObjectStore(LUT_RECORDS, { keyPath: 'cube_id' });
       if (!db.objectStoreNames.contains(LUT_BLOBS)) db.createObjectStore(LUT_BLOBS);
       if (!db.objectStoreNames.contains(LUT_META)) db.createObjectStore(LUT_META);
@@ -85,15 +99,33 @@ async function putIfNewer(row: StoredPack | Tomb): Promise<boolean> {
       let wrote = false;
       const mark = store.get(WATERMARK);
       mark.onsuccess = () => {
-        const record = store.get(KEY);
-        record.onsuccess = () => {
-          const now = record.result as { savedAt?: unknown } | undefined;
-          const high = Math.max(watermarkOf(mark.result), watermarkOf(now?.savedAt));
-          if (high >= row.savedAt) return;
-          store.put(row, KEY);
-          store.put(row.savedAt, WATERMARK);
-          wrote = true;
-        };
+        try {
+          const record = store.get(KEY);
+          record.onsuccess = () => {
+            try {
+              const now = record.result as { savedAt?: unknown } | undefined;
+              const high = Math.max(watermarkOf(mark.result), watermarkOf(now?.savedAt));
+              if (high >= row.savedAt) return;
+              store.put(row, KEY);
+              store.put(row.savedAt, WATERMARK);
+              wrote = true;
+            } catch (err) {
+              try {
+                tx.abort();
+              } catch {
+                /* transaction may already be aborted */
+              }
+              reject(err);
+            }
+          };
+        } catch (err) {
+          try {
+            tx.abort();
+          } catch {
+            /* transaction may already be aborted */
+          }
+          reject(err);
+        }
       };
       tx.oncomplete = () => resolve(wrote);
       tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
@@ -122,6 +154,227 @@ export async function savePack(pack: StoredPack): Promise<boolean> {
 export async function deletePack(at: number): Promise<boolean> {
   if (typeof indexedDB === 'undefined') return true;
   return putIfNewer({ zip: null, name: '', savedAt: at });
+}
+
+export async function loadAllLogos(): Promise<StoredLogo[]> {
+  if (typeof indexedDB === 'undefined') return [];
+  const db = await open();
+  try {
+    const rows = await new Promise<StoredLogo[]>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readonly');
+      const req = tx.objectStore(LOGOS_STORE).getAll();
+      tx.oncomplete = () => resolve((req.result as StoredLogo[]) ?? []);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+    return rows.sort((a, b) => a.createdAt - b.createdAt);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+export async function putStoredLogo(logo: StoredLogo, maxLogos = 12, signal?: AbortSignal): Promise<boolean> {
+  if (typeof indexedDB === 'undefined' || signal?.aborted) return false;
+  const db = await open();
+  if (signal?.aborted) {
+    db.close();
+    return false;
+  }
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readwrite');
+      const store = tx.objectStore(LOGOS_STORE);
+      let wrote = false;
+      let abortedBySignal = false;
+      const onAbort = () => {
+        abortedBySignal = true;
+        try {
+          tx.abort();
+        } catch {
+          /* transaction may already be finished */
+        }
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const cleanup = () => {
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const allReq = store.getAll();
+      allReq.onsuccess = () => {
+        try {
+          if (signal?.aborted || abortedBySignal) {
+            onAbort();
+            return;
+          }
+          const list = (allReq.result as StoredLogo[]) ?? [];
+          const exists = list.some((row) => row.id === logo.id);
+          if (!exists && list.length >= maxLogos) return;
+          store.put(logo);
+          wrote = true;
+        } catch (err) {
+          cleanup();
+          try {
+            tx.abort();
+          } catch {
+            /* transaction may already be aborted */
+          }
+          reject(err);
+        }
+      };
+      tx.oncomplete = () => {
+        cleanup();
+        resolve(wrote);
+      };
+      tx.onerror = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
+      tx.onabort = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function renameStoredLogo(id: string, name: string, signal?: AbortSignal): Promise<boolean> {
+  if (typeof indexedDB === 'undefined' || signal?.aborted) return false;
+  const db = await open();
+  if (signal?.aborted) {
+    db.close();
+    return false;
+  }
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readwrite');
+      const store = tx.objectStore(LOGOS_STORE);
+      let wrote = false;
+      let abortedBySignal = false;
+      const onAbort = () => {
+        abortedBySignal = true;
+        try {
+          tx.abort();
+        } catch {
+          /* transaction may already be finished */
+        }
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const cleanup = () => {
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const req = store.get(id);
+      req.onsuccess = () => {
+        try {
+          if (signal?.aborted || abortedBySignal) {
+            onAbort();
+            return;
+          }
+          const row = req.result as StoredLogo | undefined;
+          if (!row) return;
+          store.put({ ...row, name });
+          wrote = true;
+        } catch (err) {
+          cleanup();
+          try {
+            tx.abort();
+          } catch {
+            /* transaction may already be aborted */
+          }
+          reject(err);
+        }
+      };
+      tx.oncomplete = () => {
+        cleanup();
+        resolve(wrote);
+      };
+      tx.onerror = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
+      tx.onabort = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function deleteStoredLogo(id: string, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+  if (typeof indexedDB === 'undefined') return true;
+  const db = await open();
+  if (signal?.aborted) {
+    db.close();
+    return false;
+  }
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(LOGOS_STORE, 'readwrite');
+      let wrote = false;
+      let abortedBySignal = false;
+      const onAbort = () => {
+        abortedBySignal = true;
+        try {
+          tx.abort();
+        } catch {
+          /* transaction may already be finished */
+        }
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const cleanup = () => {
+        signal?.removeEventListener('abort', onAbort);
+      };
+      if (signal?.aborted || abortedBySignal) {
+        onAbort();
+      } else {
+        tx.objectStore(LOGOS_STORE).delete(id);
+        wrote = true;
+      }
+      tx.oncomplete = () => {
+        cleanup();
+        resolve(wrote);
+      };
+      tx.onerror = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
+      tx.onabort = () => {
+        cleanup();
+        if (abortedBySignal || signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        reject(tx.error ?? new Error('IndexedDB'));
+      };
+    });
+  } finally {
+    db.close();
+  }
 }
 
 // ---- LUT 库 IndexedDB 存储（256 MiB 上限、去重、版本水位、确认删除） --------------------

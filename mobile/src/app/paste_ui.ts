@@ -3,6 +3,7 @@
 
 import { groupByGap } from '../lib/group';
 import { presetLabel, rectFromArray } from '../lib/crop';
+import { FRAME_NAMES } from '../lib/frame_spec';
 import { shelf, shelves } from '../lib/recipes';
 import { NOT_SET, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { groupsPresent } from '../lib/paste';
@@ -37,7 +38,7 @@ function knobText(key: keyof Knobs, value: number): string {
   return value > 0 ? `+${value}` : String(value);
 }
 
-/** 04b 那句「Kodachrome 25，曝光 +0.7」：配方的名字、动过的调整、拉直和裁剪比例。 */
+/** 04b 那句「Kodachrome 25，曝光 +0.7」：配方的名字、动过的调整、拉直、裁剪比例、边框与时间戳。 */
 export function clipSummary(api: AppApi): string {
   const clip = pasteState.clip;
   if (!clip) return '';
@@ -64,6 +65,12 @@ export function clipSummary(api: AppApi): string {
     const srcFrame = api.photo(clip.from.id)?.frame;
     const canvas = srcFrame ? { w: srcFrame.width, h: srcFrame.height } : null;
     parts.push(presetLabel(clip.crop.preset, rectFromArray(clip.crop.rect), canvas));
+  }
+  if (clip.border && clip.border.style !== 'none') {
+    parts.push(FRAME_NAMES[clip.border.style]);
+  }
+  if (clip.stamp && clip.stamp.enabled) {
+    parts.push('时间戳');
   }
   return parts.join('，');
 }

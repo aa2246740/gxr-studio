@@ -10,6 +10,7 @@
 import type { Choice } from './recipes';
 import type { Unit } from './calib';
 import type { CropState, GeometryState } from './crop';
+import { DEFAULT_FRAME, DEFAULT_STAMP, normalizeFrame, normalizeStamp, type FrameSpec, type StampSpec } from './frame_spec.ts';
 import type { Frame } from './photo_size';
 import type { GroupId, Outcome, Skip, UndoCounts } from './paste_text';
 import type { Knobs } from '../app/model';
@@ -49,6 +50,8 @@ export interface Editable {
   frame?: Frame | null;
   geometry?: GeometryState;
   crop?: CropState | null;
+  border?: FrameSpec;
+  stamp?: StampSpec;
 }
 
 /** 剪贴板：复制那一刻的深拷贝，之后来源再改也不影响。 */
@@ -61,6 +64,8 @@ export interface Clip {
   knobs: KnobMap | null;
   geometry: GeometryState | null;
   crop: { preset: string; rect: [number, number, number, number] } | null;
+  border?: FrameSpec | null;
+  stamp?: StampSpec | null;
 }
 
 /** 目标照片能不能用的判断依据。 */
@@ -113,6 +118,8 @@ export interface Before {
   knobs: KnobMap;
   geometry?: GeometryState;
   crop?: CropState | null;
+  border?: FrameSpec;
+  stamp?: StampSpec;
 }
 
 export function cloneLevels(levels: Levels): Levels {
@@ -130,6 +137,8 @@ export function snapshot(photo: Editable): Before {
     knobs: { ...photo.knobs },
     ...(photo.geometry !== undefined ? { geometry: { straighten: photo.geometry.straighten } } : {}),
     ...('crop' in photo ? { crop: cloneCrop(photo.crop ?? null) } : {}),
+    ...(photo.border !== undefined ? { border: { ...photo.border } } : {}),
+    ...(photo.stamp !== undefined ? { stamp: { ...photo.stamp } } : {}),
   };
 }
 
@@ -156,13 +165,25 @@ export function cropIsSet(photo: Editable): boolean {
   return c.preset !== 'original' || r.w < 0.999 || r.h < 0.999 || r.x > 0.001 || r.y > 0.001;
 }
 
-/** 这张照片里有设置、可以复制的组（`groupsPresent`）。边框、时间戳在后续单元做。 */
+/** 边框组「设置过」（`paste_core.js` groupSource）：样式不是 `none`。 */
+export function frameIsSet(photo: Editable): boolean {
+  return Boolean(photo.border && photo.border.style !== 'none');
+}
+
+/** 时间戳组「设置过」（`paste_core.js` groupSource）：开关打开。 */
+export function stampIsSet(photo: Editable): boolean {
+  return Boolean(photo.stamp && photo.stamp.enabled);
+}
+
+/** 这张照片里有设置、可以复制的组（`groupsPresent`）。 */
 export function groupsPresent(photo: Editable): GroupId[] {
   const out: GroupId[] = [];
   if (recipeIsSet(photo)) out.push('recipe');
   if (adjustIsSet(photo)) out.push('adjust');
   if (geometryIsSet(photo)) out.push('geometry');
   if (cropIsSet(photo)) out.push('crop');
+  if (frameIsSet(photo)) out.push('frame');
+  if (stampIsSet(photo)) out.push('stamp');
   return out;
 }
 
@@ -184,6 +205,8 @@ export function copyFrom(photo: Editable, stem: string, groups: readonly GroupId
     knobs: copied.includes('adjust') ? { ...photo.knobs } : null,
     geometry: copied.includes('geometry') ? { straighten: photo.geometry?.straighten ?? 0 } : null,
     crop: copied.includes('crop') && photo.crop ? { preset: photo.crop.preset, rect: [...photo.crop.rect] } : null,
+    border: copied.includes('frame') && photo.border ? { ...normalizeFrame(photo.border) } : null,
+    stamp: copied.includes('stamp') && photo.stamp ? { ...normalizeStamp(photo.stamp) } : null,
   };
   return { clip, copied, empty };
 }
@@ -194,6 +217,8 @@ function carries(clip: Clip, group: GroupId): boolean {
   if (group === 'adjust') return clip.knobs !== null;
   if (group === 'geometry') return clip.geometry !== null;
   if (group === 'crop') return clip.crop !== null;
+  if (group === 'frame') return (clip.border ?? null) !== null;
+  if (group === 'stamp') return (clip.stamp ?? null) !== null;
   return false;
 }
 
@@ -201,6 +226,8 @@ interface Changes {
   recipe?: { choice: Choice | null; levels: Levels; memory: Levels | null };
   lut?: string | null;
   knobs?: KnobMap;
+  border?: FrameSpec;
+  stamp?: StampSpec;
 }
 
 function recipeChanges(target: Target, clip: Clip, env: Env, skips: Skip[]): Changes {
@@ -251,9 +278,13 @@ export function planOne(target: Target, clip: Clip, groups: readonly GroupId[], 
     if (skips.length === before) Object.assign(changes, part);
   }
   if (groups.includes('adjust') && clip.knobs) changes.knobs = { ...clip.knobs };
+  if (groups.includes('frame') && clip.border) changes.border = { ...normalizeFrame(clip.border) };
+  if (groups.includes('stamp') && clip.stamp) changes.stamp = { ...normalizeStamp(clip.stamp) };
   const done = new Set<GroupId>();
   if (changes.recipe !== undefined || changes.lut !== undefined) done.add('recipe');
   if (changes.knobs) done.add('adjust');
+  if (changes.border) done.add('frame');
+  if (changes.stamp) done.add('stamp');
   const applied = groups.filter((g) => done.has(g));
   const whole = applied.length === groups.length && !skips.length;
   const status = whole ? 'applied' : applied.length ? 'partial' : 'skipped';
@@ -281,7 +312,15 @@ function errorInfo(err: unknown): { code: string; message: string } {
 /** 套用到一张：改了东西就加 rev，返回结果和套用之前的样子（没改就是 null）。 */
 export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[], env: Env): { outcome: Outcome; before: Before | null } {
   const { outcome, changes } = planOne(target, clip, groups, env);
-  if (changes.recipe === undefined && changes.lut === undefined && !changes.knobs) return { outcome, before: null };
+  if (
+    changes.recipe === undefined &&
+    changes.lut === undefined &&
+    !changes.knobs &&
+    !changes.border &&
+    !changes.stamp
+  ) {
+    return { outcome, before: null };
+  }
   const photo = target.photo;
   const before = snapshot(photo);
   if (changes.recipe) {
@@ -294,6 +333,8 @@ export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[],
     photo.lut = changes.lut;
   }
   if (changes.knobs) Object.assign(photo.knobs, changes.knobs);
+  if (changes.border) photo.border = { ...changes.border };
+  if (changes.stamp) photo.stamp = { ...changes.stamp };
   photo.rev += 1;
   outcome.rev = photo.rev;
   return { outcome, before };
@@ -319,10 +360,14 @@ export async function pasteOneAsync(
     if (skips.length === beforeLen) Object.assign(changes, part);
   }
   if (groups.includes('adjust') && clip.knobs) changes.knobs = { ...clip.knobs };
+  if (groups.includes('frame') && clip.border) changes.border = { ...normalizeFrame(clip.border) };
+  if (groups.includes('stamp') && clip.stamp) changes.stamp = { ...normalizeStamp(clip.stamp) };
 
   const done = new Set<GroupId>();
   if (changes.recipe !== undefined || changes.lut !== undefined) done.add('recipe');
   if (changes.knobs) done.add('adjust');
+  if (changes.border) done.add('frame');
+  if (changes.stamp) done.add('stamp');
 
   const photo = target.photo;
   let nextGeom: GeometryState = photo.geometry ? { straighten: photo.geometry.straighten } : zeroGeometry();
@@ -378,6 +423,8 @@ export async function pasteOneAsync(
     photo.geometry = nextGeom;
     photo.crop = nextCrop;
   }
+  if (changes.border) photo.border = { ...changes.border };
+  if (changes.stamp) photo.stamp = { ...changes.stamp };
   photo.rev += 1;
   return { outcome: makeOutcome(photo.id, groups, done, skips, photo.rev), before };
 }
@@ -444,6 +491,10 @@ export function restore(photo: Editable | undefined, entry: UndoEntry): RestoreS
   for (const key of Object.keys(photo.knobs) as Array<keyof Knobs>) photo.knobs[key] = entry.before.knobs[key] ?? 0;
   if (entry.before.geometry !== undefined) photo.geometry = { straighten: entry.before.geometry.straighten };
   if ('crop' in entry.before) photo.crop = cloneCrop(entry.before.crop ?? null);
+  if (entry.before.border !== undefined) photo.border = { ...entry.before.border };
+  else if ('border' in photo) photo.border = { ...DEFAULT_FRAME };
+  if (entry.before.stamp !== undefined) photo.stamp = { ...entry.before.stamp };
+  else if ('stamp' in photo) photo.stamp = { ...DEFAULT_STAMP };
   photo.rev += 1;
   return 'restored';
 }

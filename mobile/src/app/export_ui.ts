@@ -5,7 +5,8 @@
 import { ExportCore, calibPack, type RunResult } from '../core/export_api';
 import { unitOfLens } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
-import { buildRequest, buildSide, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
+import { buildRequest, usedLogoId, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
+import { fontsNeeded, type FontKey } from '../lib/fonts';
 import { formatClock, formatDay } from '../lib/group';
 import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrMixLine, hdrResultText } from '../lib/hdr_text';
 import { isDisplaySpace } from '../lib/lut';
@@ -13,10 +14,13 @@ import { loadExportHdr, saveExportHdr } from '../lib/prefs';
 import { shelf, shelves, type Card } from '../lib/recipes';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeText, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
-import type { LutBook } from './lut_book';
 import { button, el } from './dom';
 import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem, type Staged } from './export_batch';
+import { estimatePeak, type BatchFonts } from './export_budget';
 import { setExportPaused } from './export_pause';
+import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
+import { logoStore } from './logo_store';
+import type { LutBook } from './lut_book';
 import { photoMs, type Photo } from './model';
 import './export.css';
 
@@ -71,6 +75,11 @@ interface DevExport {
   binding?: string;
   chunkFiles?: number;
   trapAt?: number;
+  inkTrapAt?: number;
+  canvasReportPrefix?: string;
+  /** 去 hint 的第二次导出：exact 时也把画布交出来。 */
+  forceCanvas?: boolean;
+  installFonts?: (entries: Array<[FontKey, Uint8Array]>) => void;
   flow?: ExportFlow;
   core?: ExportCore;
 }
@@ -79,7 +88,9 @@ function dev(): DevExport | null {
   if (!import.meta.env.DEV) return null;
   const scope = window as unknown as { __devExport?: DevExport };
   scope.__devExport ??= {};
-  return scope.__devExport;
+  const hook = scope.__devExport;
+  hook.installFonts ??= (entries) => replaceFontBytesForDev(entries);
+  return hook;
 }
 
 export function cardsFor(book: Book, photo: Photo): Card[] {
@@ -93,21 +104,33 @@ export function requestPhoto(photo: Photo, lutBook?: LutBook): RequestPhoto {
   const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
   const source = photo.jpg ?? photo.dng;
   const lutRecord = photo.lut ? lutBook?.get(photo.lut) : undefined;
+  const border = photo.border ? { ...photo.border } : null;
+  const stamp = photo.stamp ? { ...photo.stamp } : null;
+  const logoId = usedLogoId(border);
   return {
     stem: photo.stem,
     dngName: photo.dng?.name ?? null,
     jpgName: photo.jpg?.name ?? null,
     lens: meta.lens,
     iso: meta.iso,
-    choice: photo.choice,
-    levels: photo.levels,
-    memory: photo.memory,
+    choice: photo.choice ? { ...photo.choice } : null,
+    levels: new Map([...photo.levels].map(([k, v]) => [k, { ...v }])),
+    memory: new Map([...photo.memory].map(([k, v]) => [k, { ...v }])),
     lut: photo.lut,
     lutInputSpace: lutRecord?.input_space ?? null,
-    knobs: photo.knobs,
-    frame: photo.frame,
-    geometry: photo.geometry,
-    crop: photo.crop,
+    knobs: { ...photo.knobs },
+    frame: photo.frame ? { ...photo.frame } : null,
+    geometry: photo.geometry ? { ...photo.geometry } : undefined,
+    crop: photo.crop
+      ? {
+          preset: photo.crop.preset,
+          rect: [photo.crop.rect[0], photo.crop.rect[1], photo.crop.rect[2], photo.crop.rect[3]],
+          angle_deg: photo.crop.angle_deg,
+        }
+      : null,
+    border,
+    stamp,
+    logoInfo: logoId ? logoStore.info(logoId) : null,
     sourceModified: source?.lastModified ?? photo.lastModified,
   };
 }
@@ -267,12 +290,30 @@ export class ExportFlow {
     if (n === 1) {
       const photo = photos[0];
       const seq = ++this.sizeSeq;
-      const lutBook = this.app.lutBook?.();
-      const reqPhoto = requestPhoto(photo, lutBook);
-      const side = buildSide(reqPhoto, cardsFor(this.app.book(), photo));
-      const isLogLut = Boolean(reqPhoto.lutInputSpace && !isDisplaySpace(reqPhoto.lutInputSpace));
-      const useJpg = photo.jpg !== null && !isLogLut && (!side.recipe || photo.dng === null);
-      void this.core.sizes({ dng: photo.dng, jpg: photo.jpg, side, useJpg }).then((reply) => {
+      void (async () => {
+        const fontKeys = fontsNeeded(photo.border, photo.stamp);
+        const [, fonts] = await Promise.all([
+          logoStore.ensureLoaded(),
+          fontKeys.length ? ensureFontPack(fontKeys) : Promise.resolve({ fontIndex: '', fontPack: null }),
+        ]);
+        if (seq !== this.sizeSeq || !sheet.isConnected) return;
+        const lutBook = this.app.lutBook?.();
+        const reqPhoto = requestPhoto(photo, lutBook);
+        const req = buildRequest(reqPhoto, cardsFor(this.app.book(), photo), { size: 'original', quality: 'high' }, __GXR_BUILD__);
+        const isLogLut = Boolean(reqPhoto.lutInputSpace && !isDisplaySpace(reqPhoto.lutInputSpace));
+        const useJpg = photo.jpg !== null && !isLogLut && (!req.side.recipe || photo.dng === null);
+        const reply = await this.core.sizes({
+          dng: photo.dng,
+          jpg: photo.jpg,
+          side: req.side,
+          layout: req.layout,
+          useJpg,
+          stem: photo.stem,
+          mtimeMs: req.mtimeMs,
+          tzOffsetMin: req.tzOffsetMin,
+          fontIndex: fonts.fontIndex,
+          fontPack: fonts.fontPack,
+        });
         if (!this.batch || this.batch.phase === 'closed') this.core.release();
         if (seq !== this.sizeSeq || !sheet.isConnected) return;
         if (!reply.ok || !reply.json) {
@@ -281,7 +322,13 @@ export class ExportFlow {
         }
         sized = JSON.parse(reply.json) as typeof sized;
         paintSize();
+      })().catch(() => {
+        if (seq === this.sizeSeq && sheet.isConnected) sizeLine.textContent = SIZE_FAILED;
       });
+    } else {
+      const warmFonts = [...new Set(photos.flatMap((p) => fontsNeeded(p.border, p.stamp)))];
+      void logoStore.ensureLoaded();
+      if (warmFonts.length) void ensureFontPack(warmFonts).catch(() => undefined);
     }
   }
 
@@ -314,17 +361,33 @@ export class ExportFlow {
     this.batch?.cancel();
     this.revokeUrls();
     const hooks = dev();
+    const binding = hooks?.binding;
     const book = this.app.book();
     const lutBook = this.app.lutBook?.();
-    const items: BatchItem[] = photos.map((photo) => ({
-      id: photo.id,
-      stem: photo.stem,
-      version: photo.version,
-      dng: photo.dng,
-      jpg: photo.jpg,
-      req: buildRequest(requestPhoto(photo, lutBook), cardsFor(book, photo), options, __GXR_BUILD__, hooks?.binding),
+    const snapshots = photos.map((photo) => {
+      const reqPhoto = requestPhoto(photo, lutBook);
+      const cards = cardsFor(book, photo);
+      return {
+        id: photo.id,
+        stem: photo.stem,
+        version: photo.version,
+        dng: photo.dng,
+        jpg: photo.jpg,
+        reqPhoto,
+        cards,
+      };
+    });
+    const items: BatchItem[] = snapshots.map((s) => ({
+      id: s.id,
+      stem: s.stem,
+      version: s.version,
+      dng: s.dng,
+      jpg: s.jpg,
+      req: buildRequest(s.reqPhoto, s.cards, options, __GXR_BUILD__, binding),
     }));
-    const cubeIds = [...new Set(photos.map((photo) => photo.lut).filter((id): id is string => id !== null))];
+    const cubeIds = [...new Set(snapshots.map((s) => s.reqPhoto.lut).filter((id): id is string => Boolean(id)))];
+    const fontKeys = [...new Set(snapshots.flatMap((s) => fontsNeeded(s.reqPhoto.border, s.reqPhoto.stamp)))];
+    const logoIds = [...new Set(snapshots.map((s) => usedLogoId(s.reqPhoto.border)).filter((id): id is string => id !== null))];
     const pack = calibPack(book.pack?.files ?? null);
     const datCopy = book.dat ? book.dat.read.bytes.slice(0) : null;
     const host: BatchHost = {
@@ -339,36 +402,80 @@ export class ExportFlow {
       markGone: (id, version) => this.app.markGone(id, version),
       busy: (on) => this.busy(on),
       changed: () => this.paint(),
+      memoryPeak: () => this.core.marks.total,
+      peakEstimate: (item) => estimatePeak(this.core, item, options.size, fonts),
     };
+    let fonts: BatchFonts = { fontIndex: '', fontPack: null };
     this.view = 'progress';
     this.chunk = 0;
     this.chunks = [];
     this.savedCount = 0;
     const batch = new ExportBatch(items, host, options.hdr ? STAGE_CAP_HDR_BYTES : STAGE_CAP_BYTES);
     this.batch = batch;
-    if (!cubeIds.length || !lutBook) {
-      this.core.begin({ dat: datCopy, calibIndex: pack.calibIndex, calibBlob: pack.calibBlob, luts: {} });
+    const syncFonts = cachedFontPack(fontKeys);
+    const logosReady = !logoIds.length || logoStore.loaded();
+    if ((!cubeIds.length || !lutBook) && syncFonts && logosReady) {
+      const packedLogos = logoStore.packLogos(logoIds);
+      fonts = syncFonts;
+      this.core.begin({
+        dat: datCopy,
+        calibIndex: pack.calibIndex,
+        calibBlob: pack.calibBlob,
+        luts: {},
+        fontIndex: syncFonts.fontIndex,
+        fontPack: syncFonts.fontPack,
+        logoIndex: packedLogos.logoIndex,
+        logoBlob: packedLogos.logoBlob,
+      });
       batch.start();
       return;
     }
     this.paint();
-    void lutBook.exportSnapshot(cubeIds).then(
-      (luts) => {
-        if (this.batch !== batch || batch.phase !== 'running') return;
-        this.core.begin({ dat: datCopy, calibIndex: pack.calibIndex, calibBlob: pack.calibBlob, luts });
-        batch.start();
-      },
-      () => {
-        if (this.batch !== batch || batch.phase !== 'running') return;
-        this.core.begin({ dat: datCopy, calibIndex: pack.calibIndex, calibBlob: pack.calibBlob, luts: {} });
-        batch.start();
-      },
-    );
+    const lutTask = cubeIds.length && lutBook ? lutBook.exportSnapshot(cubeIds).catch(() => ({})) : Promise.resolve({});
+    const fontTask = fontKeys.length
+      ? ensureFontPack(fontKeys).catch(() => ({ fontIndex: '', fontPack: null }))
+      : Promise.resolve({ fontIndex: '', fontPack: null });
+    const logoTask = logoIds.length && !logoStore.loaded() ? logoStore.ensureLoaded().catch(() => []) : Promise.resolve([]);
+    void Promise.all([lutTask, fontTask, logoTask]).then(([luts, fonts0]) => {
+      if (this.batch !== batch || batch.phase !== 'running') return;
+      if (logoIds.length) {
+        snapshots.forEach((s, idx) => {
+          const lid = usedLogoId(s.reqPhoto.border);
+          s.reqPhoto.logoInfo = lid ? logoStore.info(lid) : null;
+          items[idx].req = buildRequest(s.reqPhoto, s.cards, options, __GXR_BUILD__, binding);
+        });
+      }
+      const packedLogos = logoStore.packLogos(logoIds);
+      fonts = fonts0;
+      this.core.begin({
+        dat: datCopy,
+        calibIndex: pack.calibIndex,
+        calibBlob: pack.calibBlob,
+        luts,
+        fontIndex: fonts0.fontIndex,
+        fontPack: fonts0.fontPack,
+        logoIndex: packedLogos.logoIndex,
+        logoBlob: packedLogos.logoBlob,
+      });
+      batch.start();
+    });
   }
 
   private run(item: BatchItem, index: number): Promise<RunResult> {
-    const trap = import.meta.env.DEV && dev()?.trapAt === index;
-    return this.core.run({ dng: item.dng, jpg: item.jpg, req: item.req, ...(trap ? { devTrap: true } : {}) });
+    const d = dev();
+    const trap = import.meta.env.DEV && d?.trapAt === index;
+    const inkTrap = import.meta.env.DEV && d?.inkTrapAt === index;
+    const canvasReport = import.meta.env.DEV && d?.canvasReportPrefix ? `${d.canvasReportPrefix}-${index}` : undefined;
+    const forceCanvas = import.meta.env.DEV && d?.forceCanvas === true;
+    return this.core.run({
+      dng: item.dng,
+      jpg: item.jpg,
+      req: item.req,
+      ...(trap ? { devTrap: true } : {}),
+      ...(inkTrap ? { devInkTrap: true } : {}),
+      ...(canvasReport ? { devCanvasReport: canvasReport } : {}),
+      ...(canvasReport && forceCanvas ? { devForceCanvas: true } : {}),
+    });
   }
 
   private busy(on: boolean): void {

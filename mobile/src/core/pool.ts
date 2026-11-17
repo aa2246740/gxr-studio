@@ -36,7 +36,21 @@ export class Pool {
     args: BakeArgs | null = null,
     extra: Pick<
       CoreRequest,
-      'file' | 'meta' | 'resolve' | 'check' | 'geom' | 'finalBox' | 'sizes' | 'lutImport' | 'lutPatch' | 'lutDelete' | 'lutBlob' | 'lutSnapshot'
+      | 'file'
+      | 'meta'
+      | 'resolve'
+      | 'check'
+      | 'frameMeta'
+      | 'frameLayout'
+      | 'logoSave'
+      | 'geom'
+      | 'finalBox'
+      | 'sizes'
+      | 'lutImport'
+      | 'lutPatch'
+      | 'lutDelete'
+      | 'lutBlob'
+      | 'lutSnapshot'
     > = {},
   ): Promise<CoreResult> {
     const id = this.seq++;

@@ -23,6 +23,7 @@ import {
   adjustIsSet,
   copyFrom,
   cropIsSet,
+  frameIsSet,
   geometryIsSet,
   groupsPresent,
   MAX_UNDO_BATCHES,
@@ -32,8 +33,10 @@ import {
   PasteUndo,
   planOne,
   restore,
+  stampIsSet,
   undoBatch,
 } from '../../mobile/src/lib/paste.ts';
+import { DEFAULT_FRAME, DEFAULT_STAMP, selectFrame } from '../../mobile/src/lib/frame_spec.ts';
 import * as text from '../../mobile/src/lib/paste_text.ts';
 const { cleanLevels } = await import('../../mobile/src/lib/export_request.ts');
 const { recipeSwitch } = await import('../../mobile/src/lib/recipe_memory.ts');
@@ -617,4 +620,98 @@ test('几何和裁剪设置过判断、groupsPresent、深拷贝、pasteOneAsync
   assert.deepEqual(part.outcome.applied, ['geometry']);
   assert.deepEqual(part.outcome.skipped, [{ group: 'crop', reason: 'crop_too_small', message: '裁剪区域太小，请放大裁剪框。' }]);
   assert.equal(text.pasteMessage([part.outcome]), '已套用：几何；这张没有套用裁剪：裁剪区域太小，请放大裁剪框。');
+});
+
+// ---- M4-FRAME：边框和时间戳组 ------------------------------------------------------
+
+test('边框和时间戳设置过判断、groupsPresent、深拷贝、未知标志保留、pasteOne/pasteOneAsync 与撤销还原', async () => {
+  assert.equal(frameIsSet(photo('f0')), false);
+  assert.equal(frameIsSet(photo('f1', { border: { ...DEFAULT_FRAME } })), false);
+  assert.equal(frameIsSet(photo('f2', { border: selectFrame(DEFAULT_FRAME, 'leica') })), true);
+  assert.equal(stampIsSet(photo('s0')), false);
+  assert.equal(stampIsSet(photo('s1', { stamp: { ...DEFAULT_STAMP } })), false);
+  assert.equal(stampIsSet(photo('s2', { stamp: { ...DEFAULT_STAMP, enabled: true } })), true);
+
+  const customBorder = {
+    ...selectFrame(DEFAULT_FRAME, 'exhibition_label'),
+    logo: 'ghost_logo_id',
+    logo_mode: 'mono',
+    text: 'TOKYO 2026',
+    output_ratio: '4:5',
+  };
+  const customStamp = {
+    ...DEFAULT_STAMP,
+    enabled: true,
+    content: 'date+text',
+    text: 'GXR',
+    font: 'typewriter',
+    color: 'yellow',
+    corner: 'bl',
+    placement: 'border',
+  };
+  const src = photo('src', {
+    choice: { id: 'builtin:3', unit: 'jlaunch' },
+    levels: new Map([['builtin:3', { amount: 80 }]]),
+    knobs: knobs({ exposure_ev: 0.4 }),
+    geometry: { straighten: 1.5 },
+    crop: { preset: 'xpan-65-24', rect: [0.05, 0.25, 0.9, 0.498], angle_deg: 1.5 },
+    border: { ...customBorder },
+    stamp: { ...customStamp },
+  });
+  assert.deepEqual(groupsPresent(src), ['recipe', 'adjust', 'geometry', 'crop', 'frame', 'stamp']);
+
+  const { clip, copied: cop, empty } = copyFrom(src, 'R0000011', ['frame', 'stamp']);
+  assert.deepEqual(cop, ['frame', 'stamp']);
+  assert.deepEqual(empty, []);
+  src.border.text = 'MUTATED';
+  src.stamp.text = 'MUTATED';
+  assert.equal(clip.border.text, 'TOKYO 2026');
+  assert.equal(clip.border.logo, 'ghost_logo_id');
+  assert.equal(clip.stamp.text, 'GXR');
+
+  // 1) pasteOne 套用到默认无边框目标：保留未知标志 id（照桌面 parse_frame），撤销回到无边框/未开启。
+  const t1 = photo('t1', { border: { ...DEFAULT_FRAME }, stamp: { ...DEFAULT_STAMP } });
+  const r1 = pasteOne({ photo: t1, raw: true, unit: 'jlaunch' }, clip, ['frame', 'stamp'], env());
+  assert.equal(r1.outcome.status, 'applied');
+  assert.deepEqual(r1.outcome.applied, ['frame', 'stamp']);
+  assert.equal(t1.border.style, 'exhibition_label');
+  assert.equal(t1.border.logo, 'ghost_logo_id');
+  assert.equal(t1.stamp.enabled, true);
+  assert.equal(t1.stamp.placement, 'border');
+  assert.equal(t1.rev, 1);
+
+  const undo = new PasteUndo();
+  undo.add('fs1', t1.id, r1.outcome.rev, r1.before);
+  const u1 = undoBatch(undo.take('fs1'), () => t1);
+  assert.deepEqual(u1.counts, { restored: 1, changed: 0, error: 0 });
+  assert.equal(t1.border.style, 'none');
+  assert.equal(t1.stamp.enabled, false);
+  assert.equal(t1.rev, 2);
+
+  // 2) pasteOneAsync 与已有边框的目标：连裁剪一起套用，撤销还原到目标原来的 gallery 边框。
+  const priorBorder = { ...selectFrame(DEFAULT_FRAME, 'gallery'), color: 'black', weight: 'thick' };
+  const t2 = photo('t2', {
+    geometry: { straighten: 0 },
+    crop: null,
+    border: { ...priorBorder },
+    stamp: { ...DEFAULT_STAMP },
+  });
+  const fullClip = copyFrom(src, 'R0000011', ['crop', 'frame', 'stamp']).clip;
+  const geomHooks = {
+    applyGeometry: async (_p, g) => ({ geometry: g, crop: null }),
+    applyCrop: async (_p, nextGeom, _nextCrop, preset) => ({
+      geometry: nextGeom,
+      crop: { preset, rect: [0, 0.2, 1, 0.6], angle_deg: 0 },
+    }),
+  };
+  const r2 = await pasteOneAsync({ photo: t2, raw: false, unit: null }, fullClip, ['crop', 'frame', 'stamp'], env(), geomHooks);
+  assert.equal(r2.outcome.status, 'applied');
+  assert.deepEqual(r2.outcome.applied, ['crop', 'frame', 'stamp']);
+  assert.equal(t2.border.style, 'exhibition_label');
+  assert.equal(t2.stamp.enabled, true);
+  undo.add('fs2', t2.id, r2.outcome.rev, r2.before);
+  undoBatch(undo.take('fs2'), () => t2);
+  assert.deepEqual(t2.border, priorBorder);
+  assert.equal(t2.stamp.enabled, false);
+  assert.equal(t2.crop, null);
 });

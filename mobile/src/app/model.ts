@@ -3,6 +3,7 @@
 import type { RawLayout, Scene } from '../../../frontend/src/index';
 import type { CropState, GeometryState } from '../lib/crop';
 import type { PhotoMeta } from '../lib/exif';
+import type { FrameMetaResult, FrameSpec, StampSpec } from '../lib/frame_spec';
 import type { GapMinutes, Order } from '../lib/group';
 import type { Frame } from '../lib/photo_size';
 import type { Choice } from '../lib/recipes';
@@ -65,6 +66,10 @@ export interface Photo {
   /** 相机 JPG 和 DNG 里读到的镜头名、ISO（桌面导入时先用 JPG 的）。 */
   jpgMeta: PhotoMeta | null;
   dngMeta: PhotoMeta | null;
+  /** 边框 / 时间戳规格与 Worker 读出来的完整 EXIF/尺寸信息。 */
+  border: FrameSpec;
+  stamp: StampSpec;
+  frameMeta: FrameMetaResult | null;
   /** 文件头读出的方向和转正尺寸（JPG 优先，否则 DNG）。裁剪提交和导出用来对拍。 */
   frame: Frame | null;
   /** 手机端的几何编辑（只有拉直；旋转 90° / 翻转 / 透视 / 畸变留在 0 / false）。 */

@@ -7,6 +7,46 @@ import type { ExportRequest } from '../lib/export_request';
 
 /** 做好、还没交出去的文件最多占这么多字节。下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。 */
 export const STAGE_CAP_BYTES = 384 * 1024 * 1024;
+/** 整页预算：同一阶段的 WASM+JS 峰值，加上待存估算，不超过 1.2 GiB。 */
+export const PAGE_BUDGET_BYTES = Math.trunc(1.2 * 1024 * 1024 * 1024);
+
+/** 待存估算（上限）加上同一阶段的峰值超过整页预算时，把上限降到刚好放得下，可以低于默认值。 */
+export function stageCapFor(sameStagePeak: number, requestedCap: number): number {
+  const room = PAGE_BUDGET_BYTES - Math.max(0, Math.trunc(sameStagePeak));
+  if (room >= requestedCap) return requestedCap;
+  return Math.max(0, room);
+}
+
+/** ink-text 量出的导出 Worker WASM 上限：4288×2848 的照片做全尺寸 blur_fill + 时间戳（画布 4875×6500）。 */
+export const WASM_CEILING_BYTES = 512 * 1024 * 1024;
+export const WASM_CEILING_HDR_BYTES = 768 * 1024 * 1024;
+const CEILING_SOURCE_PX = 4288 * 2848;
+const CEILING_CANVAS_PX = 4875 * 6500;
+
+/** 估一张导出要的内存用到的尺寸（像素数）和文件大小，全部在开始算之前就知道。 */
+export interface PeakInputs {
+  /** 源图（DNG 或相机 JPG，取大的）的像素数。 */
+  source: number;
+  /** 成品里照片部分的像素数。 */
+  photo: number;
+  /** 成品画布（含边框）的像素数。 */
+  canvas: number;
+  /** 最大的源文件字节数（Worker 留着它给 export_complete 写 EXIF）。 */
+  fileBytes: number;
+  hdr: boolean;
+}
+
+/**
+ * 一张导出在同一阶段里 WASM 与 JS 加起来的保守上界，开始算这一张之前估。
+ * - WASM：ink-text 的上限（SDR 512 MiB、HDR 768 MiB），源图或画布比量上限时的大，就按比例放大。
+ * - JS：Worker 报内存时手里同时拿着的东西：成品画布 RGB、日期戳掩码（照片大小）、HDR 数据层（照片大小 × 2 个 float32）和源文件。
+ */
+export function stagePeakEstimate(p: PeakInputs): number {
+  const scale = Math.max(1, p.source / CEILING_SOURCE_PX, p.canvas / CEILING_CANVAS_PX);
+  const wasm = (p.hdr ? WASM_CEILING_HDR_BYTES : WASM_CEILING_BYTES) * scale;
+  const js = p.canvas * 3 + p.photo * (p.hdr ? 9 : 1) + p.fileBytes;
+  return Math.ceil(wasm + js);
+}
 /**
  * 开了 HDR 的一批用的上限。HDR 让导出 Worker 的 WASM 峰值从约 260 MiB 升到约 470 MiB，Worker 里还多拿着一份数据层，
  * 384 MiB 的待存文件加上它们会超过整页 1.2 GiB 的估算，所以 HDR 批次把待存文件压到这里（理由和数字见 ui-m3-hdr 的 REPORT.md）。
@@ -16,7 +56,6 @@ export const STAGE_CAP_HDR_BYTES = 256 * 1024 * 1024;
 export const TEXT = {
   read: '存储卡上的文件读不了',
   memory: '内存不够，这张没做成。可以重试，或改用小一点的尺寸。',
-  ink: '这张有边框或日期戳，下一步才能导出。',
   fallback: '导出失败。请重试。',
 };
 
@@ -59,6 +98,21 @@ export interface BatchHost {
   /** 跑着的时候 true：配方卡小图和烘焙先停，申请屏幕常亮。 */
   busy(on: boolean): void;
   changed(): void;
+  /** 到目前为止，同一阶段里 WASM 与 JS 加在一起的峰值。没有就当 0。 */
+  memoryPeak?: () => number;
+  /**
+   * 开始算这一张之前：它同一阶段 WASM+JS 峰值的保守上界（`stagePeakEstimate`）。估不出来就抛错，按整页预算算。
+   * 这张的文件读不了就抛 `FileUnreadable`：不去算它，按 `read` 结算。
+   */
+  peakEstimate?: (item: BatchItem) => Promise<number> | number;
+}
+
+/** 开始算之前就知道这张的文件读不了（卡拔了、文件删了或变了）。Worker 里整个读文件时也会是 `read`，所以不必去算它。 */
+export class FileUnreadable extends Error {
+  constructor() {
+    super('read');
+    this.name = 'FileUnreadable';
+  }
 }
 
 export type Phase = 'running' | 'held' | 'ready' | 'stopped' | 'closed';
@@ -67,7 +121,6 @@ export type Phase = 'running' | 'held' | 'ready' | 'stopped' | 'closed';
 export function failText(kind: FailKind | 'stale', code: string, message: string): string {
   if (kind === 'read') return TEXT.read;
   if (kind === 'trap') return TEXT.memory;
-  if (kind === 'ink') return TEXT.ink;
   if (kind === 'core' && code !== 'unknown' && message) return message;
   return TEXT.fallback;
 }
@@ -82,6 +135,10 @@ export class ExportBatch {
   readonly results = new Map<string, Record<string, unknown>>();
   /** 交给 export_prepare 的 shot（开发服务器的测试读）。 */
   readonly shots = new Map<string, Record<string, unknown>>();
+  /** 每张 `export_ink` 返回的 `exact` 标记。 */
+  readonly exacts = new Map<string, boolean>();
+  /** 每张开始前估的同阶段峰值上界（已观察到的峰值和 `peakEstimate` 取大）。 */
+  readonly estimates = new Map<string, number>();
   staged: Staged[] = [];
   stagedBytes = 0;
   /** 留着待交的文件最多同时占了多少字节（报告用；任何时候都不超过上限）。 */
@@ -96,12 +153,15 @@ export class ExportBatch {
 
   readonly items: BatchItem[];
   private readonly host: BatchHost;
-  readonly cap: number;
+  /** 这一批点下去时的待存上限（SDR 384 MiB，HDR 256 MiB）。预算不够时 `cap` 可以再低。 */
+  readonly requestedCap: number;
+  cap: number;
 
   // 不用参数属性：Node 的 strip-types 跑单元测试时不认。
   constructor(items: BatchItem[], host: BatchHost, cap = STAGE_CAP_BYTES) {
     this.items = items;
     this.host = host;
+    this.requestedCap = cap;
     this.cap = cap;
     this.session = host.session();
     for (const item of items) this.states.set(item.id, 'wait');
@@ -193,6 +253,8 @@ export class ExportBatch {
     for (const s of this.staged) this.states.set(s.id, 'saved');
     this.staged = [];
     this.stagedBytes = 0;
+    // 交出去以后才把上限降到预算要的那么低（之前它不能低于已待存的字节）。
+    this.fitCap();
     if (this.queue.length && this.phase === 'held') {
       this.phase = 'running';
       this.kick();
@@ -239,9 +301,25 @@ export class ExportBatch {
 
   private async drain(token: number): Promise<void> {
     while (this.live(token) && this.queue.length) {
-      const id = this.queue.shift() as string;
+      const id = this.queue[0];
       const item = this.item(id);
-      if (!item) continue;
+      if (!item) {
+        this.queue.shift();
+        continue;
+      }
+      // 开始算之前：这一张的峰值上界加上已待存的放不进整页预算，就先停在「做好了」那一栏，交出去再算（Sol final-r2 P2-05）。
+      const room = await this.preflight(item);
+      if (!this.live(token)) return;
+      if (room === 'hold') {
+        this.hold();
+        return;
+      }
+      this.queue.shift();
+      if (room === 'read') {
+        // 文件读不了：不交给 Worker，和它在 Worker 里读不了一样结算（06f 那句「读不了」、M1 的 gone），接着做下一张。
+        this.commit(item, { ok: false, kind: 'read', code: 'read', message: '' });
+        continue;
+      }
       this.states.set(id, 'run');
       this.host.changed();
       const index = this.items.indexOf(item);
@@ -286,19 +364,18 @@ export class ExportBatch {
       this.fail(item, result.kind, result.code, result.message);
       return;
     }
+    const capFits = this.fitCap();
     const size = result.file.byteLength;
-    if (this.stagedBytes + size > this.cap) {
+    if (!capFits || this.stagedBytes + size > this.cap) {
       if (!this.staged.length) {
         // 一张就超过上限：按内存不够算（不能因为手里没别的文件就越过上限，Sol r1 P2-05）。
         this.fail(item, 'trap', 'staged_cap', '');
         return;
       }
-      // 留着会超过上限：这份结果放掉，这张排回队首，先停在「做好了」那一栏。交出去、点「好」以后再做它。
+      // 留着会超过上限（或上限要降到已待存的以下）：这份结果放掉，这张排回队首，先停在「做好了」那一栏。交出去、点「好」以后再做它。
       this.states.set(item.id, 'wait');
       this.queue.unshift(item.id);
-      this.phase = 'held';
-      this.host.busy(false);
-      this.host.changed();
+      this.hold();
       return;
     }
     const name = typeof result.result.file_name === 'string' ? result.result.file_name : `${item.stem}_gxr.jpg`;
@@ -306,10 +383,49 @@ export class ExportBatch {
     this.states.set(item.id, 'ok');
     this.results.set(item.id, result.result);
     this.shots.set(item.id, result.shot);
+    this.exacts.set(item.id, result.exact !== false);
     this.times.push(result.ms);
     this.staged.push({ id: item.id, file });
     this.stagedBytes += file.size;
     this.stagedHigh = Math.max(this.stagedHigh, this.stagedBytes);
+    this.host.changed();
+  }
+
+  /**
+   * 同一阶段的峰值加上待存上限超过整页预算时，把上限降下来。只降不升，而且任何时候都不低于已待存的字节：
+   * 预算要的上限比已待存的还低时返回 false，调用方先停在 held，交出去以后 release() 再降到位。
+   */
+  private fitCap(): boolean {
+    const fitted = stageCapFor(this.host.memoryPeak?.() ?? 0, this.requestedCap);
+    if (fitted < this.cap) this.cap = Math.max(fitted, this.stagedBytes);
+    return fitted >= this.stagedBytes;
+  }
+
+  /**
+   * 开始算 `item` 之前：上限要降到已待存的以下，或者它的峰值上界（已观察到的峰值和 host 的估算取大）加上已待存的
+   * 超过整页预算，就是 `hold`。手里没有待存的文件时不停：停下来也没有可以交出去的。估算失败按整页预算算；
+   * 文件读不了（`FileUnreadable`）是 `read`，这张不算。
+   */
+  private async preflight(item: BatchItem): Promise<'run' | 'hold' | 'read'> {
+    if (!this.fitCap()) return 'hold';
+    let estimate = 0;
+    if (this.host.peakEstimate) {
+      try {
+        estimate = await this.host.peakEstimate(item);
+      } catch (err) {
+        if (err instanceof FileUnreadable) return 'read';
+        estimate = PAGE_BUDGET_BYTES;
+      }
+    }
+    const bound = Math.max(this.host.memoryPeak?.() ?? 0, Number.isFinite(estimate) ? estimate : PAGE_BUDGET_BYTES);
+    this.estimates.set(item.id, bound);
+    return this.stagedBytes === 0 || bound + this.stagedBytes <= PAGE_BUDGET_BYTES ? 'run' : 'hold';
+  }
+
+  /** 停在「做好了」那一栏，等用户交出去（「存到相册」）、点「好」以后接着做。 */
+  private hold(): void {
+    this.phase = 'held';
+    this.host.busy(false);
     this.host.changed();
   }
 

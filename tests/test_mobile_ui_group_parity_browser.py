@@ -470,3 +470,174 @@ def test_mobile_ui_group_paste_matches_the_desktop(tmp_path: Path) -> None:
 def test_mobile_ui_group_paste_recipe_with_lut_matches_the_desktop(tmp_path: Path) -> None:
     """UI-M4-LUT item 6: extend group paste desktop parity with a recipe + LUT source."""
     _run_parity(tmp_path, with_lut=True)
+
+
+def test_mobile_ui_group_frame_and_stamp_paste_matches_desktop(tmp_path: Path) -> None:
+    """UI-M4-FRAME 第 7 项：边框 + 时间戳来源套用到横向目标与竖向目标，并核对撤销。"""
+    from gxr_studio.render import edits, paste
+    from gxr_studio.render.params import parse_edit
+    from support import mobile_ui_export as mx
+    from support import samples
+    from test_mobile_ui_export_browser import Desktop, _local_dat
+
+    pairs = real_pairs(3)
+    if len(pairs) < 3:
+        samples.missing("need three DNG+JPG pairs (GXR_STUDIO_TEST_PARENT)")
+    _need(PKG.is_file(), "wasm package is missing; run make core-wasm")
+    _need(MODULES.is_dir(), "mobile/node_modules is missing")
+    _need(shutil.which("node") is not None, "node is required")
+    _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
+    dat = _local_dat()
+
+    work = tmp_path / "files"
+    work.mkdir()
+    (s_dng, s_jpg), (t1_dng, t1_jpg) = pairs[0], pairs[1]
+    t2_jpg = work / "R9990005.JPG"
+    check(mx.set_orientation(pairs[2][1], t2_jpg, 6), "portrait target Orientation rewritten to 6")
+    source, targets = s_dng.stem, [t1_dng.stem, t2_jpg.stem]
+
+    desk = Desktop(tmp_path, dat)
+    try:
+        shots = {
+            source: desk.shot(source, s_dng, s_jpg),
+            targets[0]: desk.shot(targets[0], t1_dng, t1_jpg),
+            targets[1]: {**desk.shot(targets[1], None, t2_jpg), "orientation": 6},
+        }
+        check(shots[targets[0]]["width"] > shots[targets[0]]["height"], "t1 is landscape")
+        check(shots[targets[1]]["width"] < shots[targets[1]]["height"], "t2 is portrait")
+
+        report_path = tmp_path / "phone-frame.json"
+        manifest = tmp_path / "parity-frame.json"
+        files = [str(p) for p in (s_dng, s_jpg, t1_dng, t1_jpg, t2_jpg)]
+        manifest.write_text(
+            json.dumps(
+                {
+                    "mode": "frame",
+                    "pack": str(desk.zip),
+                    "dat": str(dat),
+                    "files": files,
+                    "photos": 3,
+                    "source": source,
+                    "targets": targets,
+                    "out": str(report_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = _drive(DRIVER, manifest, tmp_path, "", timeout=600)
+        check(report_path.is_file(), "frame parity driver wrote report")
+        phone: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
+        check(result.returncode == 0 and phone.get("error") is None, "frame parity driver finished")
+        check(phone["pageErrors"] == [], "no page errors")
+        steps = phone["steps"]
+
+        by_group = {row["group"]: row["text"] for row in steps["copyOptions"]}
+        check("（这张没有设置）" not in by_group["frame"], "frame group is marked set")
+        check("（这张没有设置）" not in by_group["stamp"], "stamp group is marked set")
+        check("徕卡水印，时间戳" in steps["whereLead"], "copied-where summary lists frame style and stamp")
+
+        menu = desk.render.recipe_menu()
+        env = paste.Env(menu, lambda _lut: True, False, desk.render.recipes)
+
+        edits.write(
+            desk.lib,
+            shots[source],
+            {
+                "frame": {
+                    "version": 2,
+                    "style": "leica",
+                    "color": "cream",
+                    "weight": "medium",
+                    "show_logo": True,
+                    "show_params": True,
+                    "show_date": True,
+                    "text": "",
+                    "output_ratio": "3:4",
+                    "fmt": "135",
+                    "table": "light",
+                    "logo": "ricoh",
+                    "logo_mode": "auto",
+                    "logo_size": "medium",
+                    "model": True,
+                },
+                "stamp": {
+                    "enabled": True,
+                    "content": "date+text",
+                    "date_format": "'yy mm dd",
+                    "show_time": False,
+                    "date_override": None,
+                    "text": "GXR 50",
+                    "font": "typewriter",
+                    "color": "yellow",
+                    "size": "medium",
+                    "corner": "bl",
+                    "glow": True,
+                    "placement": "photo",
+                },
+            },
+            menu,
+        )
+        _e, desk_src = edits.read(desk.lib, shots[source])
+        phone_src = steps["source"]["side"]
+        same_redacted(parse_edit(phone_src).to_json(), parse_edit(desk_src).to_json(), "frame source parse_edit")
+        same_redacted(phone_src.get("border"), desk_src.get("border"), "frame source border")
+        same_redacted(phone_src.get("stamp"), desk_src.get("stamp"), "frame source stamp")
+        same_redacted(phone_src.get("frame"), desk_src.get("frame"), "frame source size frame")
+
+        def undo_batch(entries: dict[str, Any]) -> list[dict[str, Any]]:
+            from gxr_studio.library import sidecar as sc
+            from gxr_studio.library.edits import RevisionConflict
+
+            rows: list[dict[str, Any]] = []
+            for shot_id, entry in entries.items():
+                try:
+                    rows.append({"id": shot_id, "status": "restored", "rev": paste.restore(desk.lib, shots[shot_id], entry)})
+                except RevisionConflict:
+                    rows.append({"id": shot_id, "status": "changed"})
+                except (sc.SidecarTooNew, sc.SidecarCorrupt):
+                    rows.append({"id": shot_id, "status": "error"})
+            return rows
+
+        pasted = steps["paste"]
+        by_id = {stem.lower(): stem for stem in targets}
+        order = [by_id[row["id"]] for row in pasted["outcomes"]]
+        check(sorted(order) == sorted(targets), "frame paste hit landscape and portrait targets")
+
+        undo = paste.PasteUndo()
+        src_clip = paste.source_from_photo(desk.lib, shots[source], menu)
+        desk_res = []
+        for stem in order:
+            out_row, prev = paste.paste_one(desk.lib, shots[stem], src_clip, ["frame", "stamp"], env)
+            if prev is not None and out_row.rev is not None:
+                undo.add("f1", stem, out_row.rev, prev)
+            desk_res.append(out_row.to_json())
+
+        same_redacted([_outcome(r) for r in pasted["outcomes"]], [_outcome(r) for r in desk_res], "frame paste outcomes")
+        for stem in [source, *targets]:
+            _e, dside = edits.read(desk.lib, shots[stem])
+            pside = pasted["sides"][stem]
+            same_redacted(parse_edit(pside).to_json(), parse_edit(dside).to_json(), f"frame paste {stem} parse_edit")
+            same_redacted(pside.get("border"), dside.get("border"), f"frame paste {stem} border")
+            same_redacted(pside.get("stamp"), dside.get("stamp"), f"frame paste {stem} stamp")
+            same_redacted(pside.get("frame"), dside.get("frame"), f"frame paste {stem} size frame")
+
+        undone = undo_batch(undo.take("f1") or {})
+        check(sorted(r["status"] for r in undone) == ["restored", "restored"], "frame undo restored both targets")
+        for stem in [source, *targets]:
+            _e, dside_u = edits.read(desk.lib, shots[stem])
+            pside_u = steps["undo"]["sides"][stem]
+            same_redacted(parse_edit(pside_u).to_json(), parse_edit(dside_u).to_json(), f"frame undo {stem} parse_edit")
+            same_redacted(pside_u.get("border"), dside_u.get("border"), f"frame undo {stem} border")
+            same_redacted(pside_u.get("stamp"), dside_u.get("stamp"), f"frame undo {stem} stamp")
+
+        def counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+            return {key: sum(1 for r in rows if r["status"] == key) for key in ("restored", "changed", "error")}
+
+        lines = _desktop_js(tmp_path, {"paste": [desk_res], "undo": [counts(undone)]})
+        same_redacted(
+            [pasted["line"], steps["undo"]["line"]],
+            [lines["pasteLines"][0], lines["undoLines"][0]],
+            "frame paste/undo lines equal the desktop's",
+        )
+    finally:
+        desk.lib.close()

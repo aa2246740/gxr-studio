@@ -321,6 +321,8 @@ function exposeEdits(api: AppApi): void {
       frame: photo.frame,
       geometry: { ...photo.geometry },
       crop: cloneCrop(photo.crop),
+      border: { ...photo.border },
+      stamp: { ...photo.stamp },
       ms: photoMs(photo),
     }));
 }

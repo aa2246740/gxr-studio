@@ -4,12 +4,15 @@ import type { BakeMeta, RawLayout, Scene } from '../../../frontend/src/index';
 import type { UnitPack } from '../lib/calib';
 import type { CropState } from '../lib/crop';
 import type { PhotoMeta } from '../lib/exif';
-import type { Frame } from '../lib/photo_size';
+import type { FontKey } from '../lib/fonts';
+import type { FrameLayoutData, FrameMetaResult, StampLayoutData } from '../lib/frame_spec';
 import type { LutPatchFields, LutSnapshotRow } from '../lib/idb';
+import type { RgbaPixels } from '../lib/logo_key';
 import type { LutRecord } from '../lib/lut';
+import type { Frame } from '../lib/photo_size';
 import type { ZipFail } from '../lib/zip';
 import { Pool } from './pool';
-import type { BakeArgs, CalibCheckArgs } from './protocol';
+import type { BakeArgs, CalibCheckArgs, FrameLayoutArgs, FrameMetaArgs, LogoSaveArgs } from './protocol';
 
 export interface Described {
   layout: RawLayout | null;
@@ -187,6 +190,96 @@ export async function bakeIn(args: BakeArgs): Promise<Bake> {
     meta: { nx: fullMeta.nx, ny: fullMeta.ny, origin: fullMeta.origin, step: fullMeta.step },
     data: buffers[0] ?? new ArrayBuffer(0),
     fullMeta,
+  };
+}
+
+export async function readFrameMeta(args: FrameMetaArgs): Promise<FrameMetaResult> {
+  const { json } = await workers().request('frame-meta', null, [], null, { frameMeta: args });
+  return JSON.parse(json) as FrameMetaResult;
+}
+
+export async function computeFrameLayout(
+  args: Omit<FrameLayoutArgs, 'cards'>,
+): Promise<{ frame: FrameLayoutData | null; stamp: StampLayoutData | null }> {
+  const { json } = await workers().request('frame-layout', null, [], null, { frameLayout: args });
+  return JSON.parse(json) as { frame: FrameLayoutData | null; stamp: StampLayoutData | null };
+}
+
+export async function computeCardLayouts(
+  metaJson: string,
+  fontKeys: FontKey[],
+  cards: Array<{ id: string; specJson: string }>,
+): Promise<Record<string, FrameLayoutData | null>> {
+  const { json } = await workers().request('frame-layout', null, [], null, {
+    frameLayout: {
+      metaJson,
+      frameSpecJson: null,
+      stampMetaJson: null,
+      stampSpecJson: null,
+      fontKeys,
+      cards,
+    },
+  });
+  const parsed = JSON.parse(json) as { cards?: Record<string, FrameLayoutData | null> };
+  return parsed.cards ?? {};
+}
+
+export type LogoPreviewReply =
+  | {
+      ok: true;
+      imgData: RgbaPixels;
+      origW: number;
+      origH: number;
+      whiteBg: boolean;
+      origOpaque: boolean;
+    }
+  | { ok: false; error: string };
+
+export async function previewLogo(file: File): Promise<LogoPreviewReply> {
+  const { json, buffers } = await workers().request('logo-preview', null, [], null, { file });
+  const data = JSON.parse(json) as
+    | { ok: false; error: string }
+    | { ok: true; width: number; height: number; origW: number; origH: number; whiteBg: boolean; origOpaque: boolean };
+  if (!data.ok) return { ok: false, error: data.error };
+  const rgba = new Uint8ClampedArray(buffers[0] ?? new ArrayBuffer(0));
+  return {
+    ok: true,
+    imgData: { width: data.width, height: data.height, data: rgba },
+    origW: data.origW,
+    origH: data.origH,
+    whiteBg: data.whiteBg,
+    origOpaque: data.origOpaque,
+  };
+}
+
+export type LogoSaveReply =
+  | {
+      ok: true;
+      name: string;
+      w: number;
+      h: number;
+      coverage: number;
+      opaque: boolean;
+      lum: number;
+      rgba: ArrayBuffer;
+    }
+  | { ok: false; error: string };
+
+export async function prepareLogo(file: File, args: LogoSaveArgs): Promise<LogoSaveReply> {
+  const { json, buffers } = await workers().request('logo-save', null, [], null, { file, logoSave: args });
+  const data = JSON.parse(json) as
+    | { ok: false; error: string }
+    | { ok: true; name: string; w: number; h: number; coverage: number; opaque: boolean; lum: number };
+  if (!data.ok) return { ok: false, error: data.error };
+  return {
+    ok: true,
+    name: data.name,
+    w: data.w,
+    h: data.h,
+    coverage: data.coverage,
+    opaque: data.opaque,
+    lum: data.lum,
+    rgba: buffers[0] ?? new ArrayBuffer(0),
   };
 }
 

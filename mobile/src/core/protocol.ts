@@ -1,5 +1,6 @@
 // 主线程和核心 Worker 之间的消息。
 
+import type { FontKey } from '../lib/fonts';
 import type { LutPatchFields } from '../lib/idb';
 
 export type CoreOp =
@@ -11,6 +12,10 @@ export type CoreOp =
   | 'bake'
   | 'resolve'
   | 'calib-check'
+  | 'frame-meta'
+  | 'frame-layout'
+  | 'logo-preview'
+  | 'logo-save'
   | 'geom-crop-write'
   | 'geom-geometry-write'
   | 'geom-final-box'
@@ -56,6 +61,29 @@ export interface CalibCheckArgs {
   stock: ArrayBuffer;
   unit: string;
   iso: number;
+}
+
+export interface FrameMetaArgs {
+  jpg: File | null;
+  dng: File | null;
+  name: string;
+  mtimeMs: number;
+  tzOffsetMin: number;
+}
+
+export interface FrameLayoutArgs {
+  metaJson: string;
+  frameSpecJson: string | null;
+  stampMetaJson: string | null;
+  stampSpecJson: string | null;
+  fontKeys: FontKey[];
+  cards?: Array<{ id: string; specJson: string }> | null;
+}
+
+export interface LogoSaveArgs {
+  name: string;
+  keyWhite: boolean;
+  tol: number;
 }
 
 export interface GeomWriteArgs {
@@ -109,12 +137,15 @@ export interface CoreRequest {
   op: CoreOp;
   buffer?: ArrayBuffer | null;
   args?: BakeArgs | null;
-  /** 校准数据 zip：File 交给 Worker，大小在 Worker 里读之前先查，主线程不碰字节。 */
+  /** 校准数据 zip / 标志图片：File 交给 Worker，大小在 Worker 里读之前先查，主线程不碰字节。 */
   file?: File | null;
   /** 导入时存进 IndexedDB 用的名字和时间。 */
   meta?: { name: string; savedAt: number } | null;
   resolve?: ResolveArgs | null;
   check?: CalibCheckArgs | null;
+  frameMeta?: FrameMetaArgs | null;
+  frameLayout?: FrameLayoutArgs | null;
+  logoSave?: LogoSaveArgs | null;
   geom?: GeomWriteArgs | null;
   finalBox?: FinalBoxArgs | null;
   sizes?: OutputSizesArgs | null;
