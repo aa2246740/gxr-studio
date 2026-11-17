@@ -21,6 +21,16 @@ export function setFontLoaderHooksForTest(hooks: { clock?: () => number }): void
   if (hooks.clock) clock = hooks.clock;
 }
 
+/** 开发服务器的对拍：用另一套字体字节替换已缓存的包。生产构建里这段是空的。 */
+export function replaceFontBytesForDev(entries: ReadonlyArray<readonly [FontKey, Uint8Array]>): void {
+  if (!import.meta.env.DEV) return;
+  for (const [key, bytes] of entries) {
+    if (!(key in FONT_URLS)) continue;
+    fontBytes.set(key, bytes);
+    byteLoading.delete(key);
+  }
+}
+
 export function resetFontLoaderForTest(): void {
   loading.clear();
   byteLoading.clear();

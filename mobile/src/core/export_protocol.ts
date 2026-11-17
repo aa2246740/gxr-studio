@@ -30,6 +30,8 @@ export interface ExportJob {
   devInkTrap?: boolean;
   /** 只在开发服务器的测试里：当 `export_ink` 返回 `exact === false` 时把着墨画布交到回执端点。 */
   devCanvasReport?: string;
+  /** 只在开发服务器的测试里：`exact === true` 时也交画布（去 hint 的整张对拍）。 */
+  devForceCanvas?: boolean;
 }
 
 export interface SizesJob {

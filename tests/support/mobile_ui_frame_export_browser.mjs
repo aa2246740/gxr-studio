@@ -3,7 +3,7 @@
 // 以及 HDR / 内存高水位 / 中文时间戳拒收 / 删除在用标志回退 GXR 标志 / export_ink 陷阱恢复。
 // 照片字节、文件名和 EXIF 一律不写 stdout，仅写入 manifest.out 临时文件。
 
-import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import {
   cellOf,
@@ -63,6 +63,19 @@ function collectCanvasBins(prefix, destDir) {
     }
   }
   return moved;
+}
+
+async function installFonts(page, files) {
+  const packed = Object.entries(files).map(([name, file]) => [name, readFileSync(file).toString('base64')]);
+  await page.evaluate((rows) => {
+    const entries = rows.map(([name, b64]) => {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      return [name, bytes];
+    });
+    window.__devExport.installFonts(entries);
+  }, packed);
 }
 
 function cleanResidualReports() {
@@ -323,6 +336,38 @@ export async function parity({ newPage, manifest, out }) {
     });
     memHdr.bins = collectCanvasBins('m4_memhdr', manifest.canvasDir);
     out.steps.memHdr = memHdr;
+
+    // 盖章后模糊进底衬的差异：同一张再用去 hint 的字体导一次，exact 时也交出画布。
+    await installFonts(page, manifest.dehintedFonts);
+    await page.evaluate(() => {
+      window.__devExport.forceCanvas = true;
+    });
+    const memSdrDehint = await runBatch(page, {
+      stems: [s.b],
+      size: '原始尺寸',
+      quality: '高',
+      hdr: false,
+      prefix: 'm4_memsdr_dh',
+      outDir: manifest.outDir,
+      fileTag: 'memsdr-dh-',
+    });
+    memSdrDehint.bins = collectCanvasBins('m4_memsdr_dh', manifest.canvasDir);
+    out.steps.memSdrDehint = memSdrDehint;
+    const memHdrDehint = await runBatch(page, {
+      stems: [s.b],
+      size: '原始尺寸',
+      quality: '高',
+      hdr: true,
+      prefix: 'm4_memhdr_dh',
+      outDir: manifest.outDir,
+      fileTag: 'memhdr-dh-',
+    });
+    memHdrDehint.bins = collectCanvasBins('m4_memhdr_dh', manifest.canvasDir);
+    out.steps.memHdrDehint = memHdrDehint;
+    await installFonts(page, manifest.realFonts);
+    await page.evaluate(() => {
+      window.__devExport.forceCanvas = false;
+    });
 
     // 5. 时间戳文字输入中文：显示提示行且不落入存储 / sidecar
     await openEditorFrameTab(page, s.e);

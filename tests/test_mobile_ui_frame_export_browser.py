@@ -19,6 +19,7 @@ from support import mobile_ui_export as mx
 from support import mobile_ui_frame_export as fx
 from support import samples
 from support.export_pipeline_cases import check, note, same_redacted
+from support.ink_text_cases import dehinted_font_paths, font_path
 from test_mobile_ui_export_browser import Desktop, _local_dat, _prereq, run_driver
 
 pytestmark = pytest.mark.browser_serial
@@ -34,6 +35,7 @@ _JOBS = (
     ("deletedLogo", "del-", "m4_del", 95, None, False),
 )
 _ROLE = {"full": "", "small": "-small", "hdr": "-hdr", "memSdr": "-mem", "memHdr": "-mem-hdr", "deletedLogo": "-deleted"}
+_DEHINT_PREFIX = {"memSdr": "m4_memsdr_dh", "memHdr": "m4_memhdr_dh"}
 
 
 @pytest.fixture
@@ -126,6 +128,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
         out_dir.mkdir()
         canvas_dir.mkdir()
         logo = _logo_png(tmp_path / "studio_logo.png")
+        dehinted_fonts = dehinted_font_paths(tmp_path / "dehint")
         report = run_driver(
             tmp_path,
             {
@@ -140,6 +143,8 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                 "outDir": str(out_dir),
                 "canvasDir": str(canvas_dir),
                 "logoPng": str(logo),
+                "dehintedFonts": {name: str(path) for name, path in dehinted_fonts.items()},
+                "realFonts": {name: str(font_path(name)) for name in dehinted_fonts},
             },
             timeout=3600,
         )
@@ -167,6 +172,8 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                 role = role_of[stem] + _ROLE[key]
                 work = tmp_path / "cmp" / role
                 work.mkdir(parents=True)
+                prefix = _DEHINT_PREFIX.get(key)
+                dehinted = canvas_dir / f"{prefix}-{int(fact['index'])}.bin" if prefix else None
                 rows.append(
                     fx.finish_one(
                         desk,
@@ -180,6 +187,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                         long_edge=edge,
                         hdr=hdr,
                         role=role,
+                        dehinted_canvas=dehinted,
                     )
                 )
         _cjk(report["steps"]["cjkStamp"])

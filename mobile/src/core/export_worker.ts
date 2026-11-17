@@ -243,7 +243,7 @@ async function runJob(job: ExportJob): Promise<void> {
     inked.free();
   }
   memory(job.id, 'ink', canvas.byteLength + stampMask.byteLength + layer.byteLength + source.byteLength);
-  if (import.meta.env.DEV && job.devCanvasReport && !exact) {
+  if (import.meta.env.DEV && job.devCanvasReport && (!exact || job.devForceCanvas)) {
     const hdr = new Uint8Array(8);
     const view = new DataView(hdr.buffer);
     view.setUint32(0, width, true);

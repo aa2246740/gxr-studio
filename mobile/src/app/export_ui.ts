@@ -6,7 +6,7 @@ import { ExportCore, calibPack, type RunResult } from '../core/export_api';
 import { unitOfLens } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { buildRequest, usedLogoId, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
-import { fontsNeeded } from '../lib/fonts';
+import { fontsNeeded, type FontKey } from '../lib/fonts';
 import { formatClock, formatDay } from '../lib/group';
 import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrMixLine, hdrResultText } from '../lib/hdr_text';
 import { isDisplaySpace } from '../lib/lut';
@@ -17,7 +17,7 @@ import type { Book } from './book';
 import { button, el } from './dom';
 import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem, type Staged } from './export_batch';
 import { setExportPaused } from './export_pause';
-import { cachedFontPack, ensureFontPack } from './font_loader';
+import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
 import type { LutBook } from './lut_book';
 import { photoMs, type Photo } from './model';
@@ -76,6 +76,9 @@ interface DevExport {
   trapAt?: number;
   inkTrapAt?: number;
   canvasReportPrefix?: string;
+  /** 去 hint 的第二次导出：exact 时也把画布交出来。 */
+  forceCanvas?: boolean;
+  installFonts?: (entries: Array<[FontKey, Uint8Array]>) => void;
   flow?: ExportFlow;
   core?: ExportCore;
 }
@@ -84,7 +87,9 @@ function dev(): DevExport | null {
   if (!import.meta.env.DEV) return null;
   const scope = window as unknown as { __devExport?: DevExport };
   scope.__devExport ??= {};
-  return scope.__devExport;
+  const hook = scope.__devExport;
+  hook.installFonts ??= (entries) => replaceFontBytesForDev(entries);
+  return hook;
 }
 
 export function cardsFor(book: Book, photo: Photo): Card[] {
@@ -455,6 +460,7 @@ export class ExportFlow {
     const trap = import.meta.env.DEV && d?.trapAt === index;
     const inkTrap = import.meta.env.DEV && d?.inkTrapAt === index;
     const canvasReport = import.meta.env.DEV && d?.canvasReportPrefix ? `${d.canvasReportPrefix}-${index}` : undefined;
+    const forceCanvas = import.meta.env.DEV && d?.forceCanvas === true;
     return this.core.run({
       dng: item.dng,
       jpg: item.jpg,
@@ -462,6 +468,7 @@ export class ExportFlow {
       ...(trap ? { devTrap: true } : {}),
       ...(inkTrap ? { devInkTrap: true } : {}),
       ...(canvasReport ? { devCanvasReport: canvasReport } : {}),
+      ...(canvasReport && forceCanvas ? { devForceCanvas: true } : {}),
     });
   }
 
