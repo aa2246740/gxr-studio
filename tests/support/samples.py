@@ -17,8 +17,9 @@ public repo has no samples, so this is off by default.
 from __future__ import annotations
 
 import os
+import struct
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, BinaryIO, NoReturn
 
 import pytest
 
@@ -34,6 +35,79 @@ def sample_parent() -> Path:
 
 def captures() -> Path:
     return sample_parent() / "captures"
+
+
+def raw_ifd_compression(path: Path) -> int | None:
+    """Compression of the full-resolution CFA IFD, or ``None`` if that tag cannot be read.
+
+    Stock GXR firmware writes uncompressed samples (1). Modified-firmware field DNGs use 7
+    (lossless JPEG), which the desktop decoder refuses. A missing compression tag counts as 1,
+    the TIFF default. ``None`` means the caller keeps the file: only a known value other than 1
+    is skipped, never a read error.
+    """
+    try:
+        with path.open("rb") as handle:
+            return _raw_ifd_compression(handle)
+    except (OSError, ValueError, struct.error, IndexError):
+        return None
+
+
+def _raw_ifd_compression(handle: BinaryIO) -> int | None:
+    head = handle.read(8)
+    if len(head) < 8 or head[:2] not in (b"II", b"MM"):
+        return None
+    endian = "<" if head[:2] == b"II" else ">"
+    if struct.unpack_from(endian + "H", head, 2)[0] != 42:
+        return None
+
+    def ifd(offset: int) -> dict[int, tuple[int, int, int]]:
+        handle.seek(offset)
+        counted = handle.read(2)
+        if len(counted) < 2:
+            raise ValueError("short IFD")
+        count = struct.unpack(endian + "H", counted)[0]
+        entries = handle.read(12 * count)
+        if len(entries) < 12 * count:
+            raise ValueError("short IFD")
+        out: dict[int, tuple[int, int, int]] = {}
+        for index in range(count):
+            tag, typ, number, raw = struct.unpack_from(endian + "HHII", entries, index * 12)
+            out[tag] = (typ, number, raw)
+        return out
+
+    def ints(entry: tuple[int, int, int]) -> list[int] | None:
+        typ, number, raw = entry
+        size = {3: 2, 4: 4}.get(typ)
+        if size is None or number < 1:
+            return None
+        if size * number <= 4:
+            blob = struct.pack(endian + "I", raw)
+        else:
+            handle.seek(raw)
+            blob = handle.read(size * number)
+            if len(blob) < size * number:
+                raise ValueError("short tag")
+        return list(struct.unpack(endian + ("H" if size == 2 else "I") * number, blob[: size * number]))
+
+    root = ifd(struct.unpack_from(endian + "I", head, 4)[0])
+    found = [root]
+    sub = root.get(330)
+    if sub is not None:
+        for offset in ints(sub) or []:
+            try:
+                found.append(ifd(offset))
+            except (OSError, ValueError, struct.error):
+                continue
+    for directory in found:
+        photo = ints(directory[262]) if 262 in directory else None
+        kind = ints(directory[254]) if 254 in directory else [0]
+        if not photo or photo[0] != 32803 or not kind or kind[0] != 0:
+            continue
+        if 259 not in directory:
+            return 1
+        got = ints(directory[259])
+        return int(got[0]) if got else None
+    return None
 
 
 def a12_50_samples() -> Path:

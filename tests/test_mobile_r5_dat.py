@@ -33,6 +33,7 @@ pytestmark = pytest.mark.browser_serial
 REPO = Path(__file__).resolve().parents[1]
 DRIVER = REPO / "tests" / "support" / "mobile_r5_dat_browser.mjs"
 EXPORT_DRIVER = REPO / "tests" / "support" / "mobile_r5_export_browser.mjs"
+ERROR_DRIVER = REPO / "tests" / "support" / "mobile_r5_dat_errors.mjs"
 OWNER = Path("/Volumes/Workspace/Scratch/gxr-studio-try-real/home/camera-data/dat-template")
 RECIPE = {"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {}}
 
@@ -321,3 +322,24 @@ def test_mobile_r5_export_matches_desktop(tmp_path: Path, pinned_icc: bytes) -> 
         same_redacted(got, want, "result JSON equals the desktop ExportResult")
     finally:
         desk.close()
+
+
+def test_mobile_r5_dat_error_stays_visible(tmp_path: Path) -> None:
+    """A bad library after a good card stays on the recipe panel, and a late missing-library error updates the open 06d sheet."""
+    _prereq()
+    report_path = tmp_path / "r5-errors.json"
+    manifest = tmp_path / "r5-errors-manifest.json"
+    manifest.write_text(json.dumps({"out": str(report_path)}), encoding="utf-8")
+    result = _drive(ERROR_DRIVER, manifest, tmp_path, "", timeout=180)
+    if result.returncode != 0 or not report_path.is_file():
+        pytest.fail("r5 error driver failed")
+    report: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
+    check(report.get("error") is None, "r5 error driver finished")
+    check(report.get("pageErrors") == [], "no page errors")
+    mismatch = report["cases"]["mismatch"]
+    check(mismatch["errorVisible"] is True, "recipe panel shows the bad-library error")
+    check(mismatch["keptRecipe"] is True, "the previously loaded recipes stay on the panel")
+    delayed = report["cases"]["delayed"]
+    check(delayed["sheetOpen"] is True, "06d sheet was open before the read finished")
+    check(delayed["sheetShowsCoreError"] is True, "open 06d sheet shows the late missing-library error")
+    check(delayed["closedAfterLoad"] is True, "06d sheet closes once the DAT has loaded")

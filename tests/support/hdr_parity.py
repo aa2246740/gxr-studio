@@ -313,11 +313,22 @@ def e2e_codes(tmp: Path, rsdr: np.ndarray, y: np.ndarray, clip: np.ndarray, ref:
 
 
 def real_pairs(limit: int = 8) -> list[tuple[Path, Path]]:
-    """RAW+JPG pairs (same stem) under ``captures/``, no backup paths, spread in sorted order."""
+    """RAW+JPG pairs (same stem) under ``captures/``, no backup paths, spread in sorted order.
+
+    A raw IFD whose compression is not 1 is skipped. Stock firmware is uncompressed; modified-firmware
+    field DNGs use 7 (lossless JPEG), which the desktop decoder refuses. Unreadable tags stay.
+    """
     if not CAPTURES.is_dir():
         return []
     dngs = sorted(
-        (p for p in CAPTURES.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower()),
+        (
+            p
+            for p in CAPTURES.rglob("*")
+            if p.is_file()
+            and p.suffix.upper() == ".DNG"
+            and "backup" not in p.as_posix().lower()
+            and samples.raw_ifd_compression(p) in (None, 1)
+        ),
         key=lambda p: p.as_posix(),
     )
     pairs = []
