@@ -85,6 +85,11 @@ export class EditorView {
     dragging: () => this.dragging,
     holding: () => this.holding,
     engine: () => this.engine,
+    onShowing: () => this.renderStageLabel(),
+    recipeKey: () => this.recipeKey,
+    lutToken: () => this.lutToken,
+    knobs: () => this.photo?.knobs ?? zeroKnobs(),
+    mode: () => this.mode,
   });
 
   constructor(
@@ -305,6 +310,7 @@ export class EditorView {
       isAlive: viewAlive,
       onChange: () => {
         void this.decor?.sync();
+        this.hdr.invalidate();
       },
     });
 

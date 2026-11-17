@@ -3,8 +3,9 @@
 // 以及 HDR / 内存高水位 / 中文时间戳拒收 / 删除在用标志回退 GXR 标志 / export_ink 陷阱恢复。
 // 照片字节、文件名和 EXIF 一律不写 stdout，仅写入 manifest.out 临时文件。
 
-import { existsSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { moveReportFile } from './move_report_file.mjs';
 import {
   cellOf,
   exportFromGrid,
@@ -76,7 +77,7 @@ function collectCanvasBins(prefix, destDir) {
     if (name.startsWith(`${prefix}-`) && name.endsWith('.bin')) {
       const src = path.join(REPORTS_DIR, name);
       const dst = path.join(destDir, name);
-      renameSync(src, dst);
+      moveReportFile(src, dst);
       moved.push(name);
     }
   }

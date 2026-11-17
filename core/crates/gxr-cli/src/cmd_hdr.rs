@@ -401,15 +401,19 @@ fn block_mean_cmd(args: &[String]) -> Result<Json, Failure> {
 
 fn luma_cmd(args: &[String]) -> Result<Json, Failure> {
     let rgb = npy(args, "--rgb")?;
-    if rgb.descr != "|u1" {
-        return Err(usage("--rgb must be uint8"));
-    }
+    // 没传 --rgb-shape 时保持原来的顺序：先形状，再 dtype。形状覆盖是后加的分支，单独检查。
     let (h, w) = if args.iter().any(|a| a == "--rgb-shape") {
+        if rgb.descr != "|u1" {
+            return Err(usage("--rgb must be uint8"));
+        }
         pair(args, "--rgb-shape")?
     } else {
         let [h, w, 3] = rgb.shape.as_slice() else {
             return Err(usage("--rgb must be (h, w, 3)"));
         };
+        if rgb.descr != "|u1" {
+            return Err(usage("--rgb must be uint8"));
+        }
         (*h, *w)
     };
     let grid = hdr::sdr_luma_grid(&rgb.data, h, w, number(args, "--factor")?)?;

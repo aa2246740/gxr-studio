@@ -1,46 +1,14 @@
-// 预览用的增益网格。拟合只走已有的 WASM：hdrtrack_begin → hdrtrack_to_grid → hdr_luma → hdr_gain。
+// 预览用的增益网格。拟合走 hdr_chain（和导出同一条 WASM 链），不在这里重写数学。
 // 不解码 hdrtrack_finish 的增益 JPEG。
 
 import type { GainMeta } from '../../../frontend/src/hdr_math';
+import { runHdrChain, type HdrChainWasm } from './hdr_chain';
 
 export const PREVIEW_FACTOR = 4;
 export const PREVIEW_LONG_EDGE = 1600;
 
-export interface HdrTrackBegun {
-  readonly active: boolean;
-  readonly height: number;
-  readonly width: number;
-  readonly state: string;
-  layer_bytes(): Uint8Array;
-}
-
-export interface HdrToGrid {
-  readonly gh: number;
-  readonly gw: number;
-  clip_bytes(): Uint8Array;
-  raw_y_bytes(): Uint8Array;
-}
-
-export interface HdrLumaOut {
-  readonly height: number;
-  readonly width: number;
-  bytes(): Uint8Array;
-}
-
-export interface HdrGainOut {
-  readonly height: number;
-  readonly width: number;
-  readonly report: string;
-  codes(): Uint8Array;
-}
-
-/** 预览网格要用的四个导出。测试传入已初始化的模块。 */
-export interface HdrGridWasm {
-  hdrtrack_begin(rgb: Uint8Array, w: number, h: number, hasDng: boolean, dng: Uint8Array, dngName: string, hasJpg: boolean, jpg: Uint8Array, params: string): HdrTrackBegun;
-  hdrtrack_to_grid(layer: Float32Array, w: number, h: number, outW: number, outH: number, factor: number): HdrToGrid;
-  hdr_luma(rgb: Uint8Array, height: number, width: number, factor: number): HdrLumaOut;
-  hdr_gain(sdr: Float32Array, raw: Float32Array, clip: Uint8Array, height: number, width: number, params: string): HdrGainOut;
-}
+/** 预览网格要用的导出。测试传入已初始化的模块。 */
+export type HdrGridWasm = HdrChainWasm;
 
 export type PreviewGrid =
   | { ok: true; width: number; height: number; codes: Uint8Array; meta: GainMeta }
@@ -96,91 +64,26 @@ export function downscaleRgba(src: Uint8Array, width: number, height: number, ed
   return { rgba: out, width: dw, height: dh };
 }
 
-function f32(bytes: Uint8Array): Float32Array {
-  const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  return new Float32Array(copy);
-}
-
-function reasonOf(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  try {
-    const parsed = JSON.parse(text) as { error?: { kind?: unknown } };
-    if (typeof parsed.error?.kind === 'string') return parsed.error.kind;
-  } catch {
-    /* 不是核心的 JSON。 */
-  }
-  return 'hdr_unsupported';
-}
-
-function metaOf(report: string): GainMeta | null {
-  try {
-    const parsed = JSON.parse(report) as { meta?: Partial<GainMeta> };
-    const meta = parsed.meta;
-    if (!meta) return null;
-    const num = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
-    return {
-      gain_min: num(meta.gain_min, 0),
-      gain_max: num(meta.gain_max, 1),
-      gamma: num(meta.gamma, 1),
-      offset_sdr: num(meta.offset_sdr, 1 / 64),
-      offset_hdr: num(meta.offset_hdr, 1 / 64),
-      cap_min: num(meta.cap_min, 0),
-      cap_max: num(meta.cap_max, 1),
-    };
-  } catch {
-    return null;
-  }
-}
-
 /**
- * 同一张预览尺寸的 SDR（uint8 RGB）和 DNG。失败（对不齐、拍摄信息不符、拟合不了）返回 reason，不抛。
+ * 没有裁切、没有变形时的预览网格：基图和当前 SDR 是同一张。
  * 名字固定写成 preview.dng，不把真实文件名送进核心。
  */
 export function fitPreviewGrid(mod: HdrGridWasm, rgb: Uint8Array, width: number, height: number, dng: Uint8Array, jpg: Uint8Array | null): PreviewGrid {
-  if (width < 1 || height < 1 || rgb.length !== width * height * 3 || dng.length === 0) return { ok: false, reason: 'bad_input' };
-  let begun: HdrTrackBegun;
-  try {
-    begun = mod.hdrtrack_begin(rgb, width, height, true, dng, 'preview.dng', jpg !== null, jpg ?? new Uint8Array(0), '');
-  } catch (err) {
-    return { ok: false, reason: reasonOf(err) };
-  }
-  const stateText = begun.state;
-  if (!begun.active) {
-    let reason = 'hdr_unsupported';
-    try {
-      const state = JSON.parse(stateText) as { problem?: unknown };
-      if (typeof state.problem === 'string' && state.problem) reason = state.problem;
-    } catch {
-      /* 状态不是 JSON 时用总称。 */
-    }
-    return { ok: false, reason };
-  }
-  const layerW = begun.width;
-  const layerH = begun.height;
-  const layer = f32(begun.layer_bytes());
-  let grid: HdrToGrid;
-  let luma: HdrLumaOut;
-  try {
-    grid = mod.hdrtrack_to_grid(layer, layerW, layerH, width, height, PREVIEW_FACTOR);
-    luma = mod.hdr_luma(rgb, height, width, PREVIEW_FACTOR);
-  } catch (err) {
-    return { ok: false, reason: reasonOf(err) };
-  }
-  const clip = grid.clip_bytes();
-  const raw = f32(grid.raw_y_bytes());
-  const gh = luma.height;
-  const gw = luma.width;
-  const sdr = f32(luma.bytes());
-  let gain: HdrGainOut;
-  try {
-    gain = mod.hdr_gain(sdr, raw, clip, gh, gw, '');
-  } catch (err) {
-    return { ok: false, reason: reasonOf(err) };
-  }
-  const meta = metaOf(gain.report);
-  const gridW = gain.width;
-  const gridH = gain.height;
-  const codes = gain.codes();
-  if (!meta) return { ok: false, reason: 'hdr_unsupported' };
-  return { ok: true, width: gridW, height: gridH, codes, meta };
+  return runHdrChain(mod, {
+    baseRgb: rgb,
+    baseWidth: width,
+    baseHeight: height,
+    sdrRgb: rgb,
+    sdrWidth: width,
+    sdrHeight: height,
+    dng,
+    jpg,
+    dngName: 'preview.dng',
+    geometryJson: null,
+    cropJson: null,
+    box: null,
+    frameLayoutJson: null,
+    stamp: null,
+    factor: PREVIEW_FACTOR,
+  });
 }

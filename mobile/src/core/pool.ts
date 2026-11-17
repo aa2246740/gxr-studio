@@ -51,7 +51,6 @@ export class Pool {
       | 'lutDelete'
       | 'lutBlob'
       | 'lutSnapshot'
-      | 'hdrGrid'
     > = {},
   ): Promise<CoreResult> {
     const id = this.seq++;

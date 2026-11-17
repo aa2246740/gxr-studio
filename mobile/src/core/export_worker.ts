@@ -22,6 +22,12 @@ import { momentFromIso } from '../lib/frame_spec';
 import { shotSize, jpegSize, dngSize } from '../lib/photo_size';
 import { LUT_ERRORS } from '../lib/lut';
 import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJob } from './export_protocol';
+import { runHdrChain, type HdrChainRequest, type HdrChainWasm } from './hdr_chain';
+
+/** 预览拟合用的同一条链。JPEG 仍由 export_prepare / export_complete 写，不把这里的网格塞进文件。 */
+export function fitSharedHdrGrid(mod: HdrChainWasm, req: HdrChainRequest) {
+  return runHdrChain(mod, req);
+}
 
 let ready: Promise<InitOutput> | null = null;
 let wasm: InitOutput | null = null;

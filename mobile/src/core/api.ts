@@ -11,7 +11,7 @@ import type { RgbaPixels } from '../lib/logo_key';
 import type { LutRecord } from '../lib/lut';
 import type { Frame } from '../lib/photo_size';
 import type { ZipFail } from '../lib/zip';
-import { downscaleRgba, type PreviewGrid } from './hdr_grid';
+
 import { Pool } from './pool';
 import type { BakeArgs, CalibCheckArgs, FrameLayoutArgs, FrameMetaArgs, LogoSaveArgs } from './protocol';
 
@@ -431,22 +431,4 @@ export async function readLutBatchSnapshot(cubeIds: readonly string[]): Promise<
   }));
 }
 
-/** 当前 SDR 读回（RGBA）缩到预览尺寸，在 Worker 里拟合增益网格。 */
-export async function hdrPreviewGrid(rgba: Uint8Array, width: number, height: number, dng: ArrayBuffer, jpg: ArrayBuffer | null): Promise<PreviewGrid> {
-  const small = downscaleRgba(rgba, width, height);
-  const pixels = new ArrayBuffer(small.rgba.byteLength);
-  new Uint8Array(pixels).set(small.rgba);
-  const dngCopy = new ArrayBuffer(dng.byteLength);
-  new Uint8Array(dngCopy).set(new Uint8Array(dng));
-  const jpgCopy = jpg ? new ArrayBuffer(jpg.byteLength) : null;
-  if (jpg && jpgCopy) new Uint8Array(jpgCopy).set(new Uint8Array(jpg));
-  const transfer: ArrayBuffer[] = [pixels, dngCopy];
-  if (jpgCopy) transfer.push(jpgCopy);
-  const { json, buffers } = await workers().request('hdr-preview-grid', pixels, transfer, null, {
-    hdrGrid: { width: small.width, height: small.height, dng: dngCopy, jpg: jpgCopy },
-  });
-  const parsed = JSON.parse(json) as PreviewGrid;
-  if (!parsed.ok) return parsed;
-  const codes = new Uint8Array(buffers[0] ?? new ArrayBuffer(0));
-  return { ...parsed, codes };
-}
+

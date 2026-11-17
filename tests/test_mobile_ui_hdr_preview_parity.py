@@ -1,6 +1,6 @@
 """预览网格和导出用的同一条 Rust 路径，在同一张预览 RGB 上逐格相同。
 
-Worker 侧是 fitPreviewGrid（hdrtrack_begin → hdrtrack_to_grid → hdr_luma → hdr_gain）。
+Worker 侧是 runHdrChain（begin，再按几何 warp/box，然后 to_grid、hdr_luma、hdr_gain）。
 对照侧是同样的 gxr-cli 命令。不解码增益 JPEG。输出里没有文件名、拍摄时间或 EXIF。
 """
 
@@ -49,13 +49,16 @@ def _preview_rgb(jpg: Path, edit: str) -> np.ndarray:
     return rgb
 
 
-def _worker(tmp: Path, rgb: np.ndarray, dng: Path, jpg: Path | None) -> dict:
+def _worker(tmp: Path, rgb: np.ndarray, dng: Path, jpg: Path | None, extra: dict[str, str] | None = None) -> dict:
     rgb_path = tmp / "rgb.u8"
     rgb_path.write_bytes(np.ascontiguousarray(rgb).tobytes())
     args = ["node", "--experimental-strip-types", str(FIT), str(rgb_path), str(rgb.shape[1]), str(rgb.shape[0]), str(dng)]
     if jpg is not None:
         args.append(str(jpg))
-    proc = subprocess.run(args, cwd=REPO, check=False, capture_output=True, text=True, timeout=180)
+    env = os.environ.copy()
+    if extra:
+        env.update(extra)
+    proc = subprocess.run(args, cwd=REPO, check=False, capture_output=True, text=True, timeout=180, env=env)
     if proc.returncode != 0:
         pytest.fail(f"preview grid worker failed\n{proc.stderr[-2000:]}")
     return json.loads(proc.stdout)
@@ -180,3 +183,129 @@ def test_preview_grid_matches_the_export_path(tmp_path: Path) -> None:
     rows.append({"index": "unsupported", "ok": False, "reason": worker["reason"]})
     assert peak <= 640 * MIB, peak
     print(json.dumps({"matched": matched, "rss_mib": round(peak / MIB, 1), "rows": rows}, ensure_ascii=False))
+
+
+def _cli_boxed(tmp: Path, rgb: np.ndarray, dng: Path, jpg: Path, x: int, y: int, cw: int, ch: int) -> dict:
+    from support.hdr_parity import save
+
+    cropped = np.ascontiguousarray(rgb[y : y + ch, x : x + cw])
+    rgb_npy = save(tmp / "rgb.npy", rgb)
+    begin = ["hdrtrack-begin", "--rgb", rgb_npy, "--dng", str(dng), "--dng-name", "preview.dng", "--out", str(tmp / "base-layer.npy")]
+    begin.extend(["--jpeg", str(jpg)])
+    code, payload = run_json(begin)
+    err = error_of(code, payload)
+    if err is not None or not payload.get("active"):
+        return {"ok": False, "reason": err.kind if err is not None else payload.get("problem")}
+    code, boxed = run_json(
+        [
+            "hdrtrack-box",
+            "--layer",
+            str(tmp / "base-layer.npy"),
+            "--state-json",
+            json.dumps(payload),
+            "--x",
+            str(x),
+            "--y",
+            str(y),
+            "--w",
+            str(cw),
+            "--h",
+            str(ch),
+            "--out",
+            str(tmp / "crop-layer.npy"),
+        ]
+    )
+    err = error_of(code, boxed)
+    if err is not None or not boxed.get("active"):
+        return {"ok": False, "reason": err.kind if err is not None else boxed.get("problem")}
+    sdr_npy = save(tmp / "sdr-rgb.npy", cropped)
+    h, w = cropped.shape[:2]
+    code, _desc = run_json(
+        [
+            "hdrtrack-to-grid",
+            "--layer",
+            str(tmp / "crop-layer.npy"),
+            "--out-w",
+            str(w),
+            "--out-h",
+            str(h),
+            "--factor",
+            "4",
+            "--out",
+            str(tmp / "raw.npy"),
+            "--clip-out",
+            str(tmp / "clip.npy"),
+        ]
+    )
+    if error_of(code, _desc):
+        return {"ok": False, "reason": error_of(code, _desc).kind}
+    code, _luma = run_json(["hdr-luma", "--rgb", sdr_npy, "--factor", "4", "--out", str(tmp / "sdr.npy")])
+    if error_of(code, _luma):
+        return {"ok": False, "reason": error_of(code, _luma).kind}
+    code, report = run_json(
+        [
+            "hdr-gain",
+            "--sdr",
+            str(tmp / "sdr.npy"),
+            "--raw",
+            str(tmp / "raw.npy"),
+            "--clip",
+            str(tmp / "clip.npy"),
+            "--out",
+            str(tmp / "codes.npy"),
+        ]
+    )
+    err = error_of(code, report)
+    if err is not None:
+        return {"ok": False, "reason": err.kind}
+    return {"ok": True, "codes": np.load(tmp / "codes.npy"), "meta": report["meta"]}
+
+
+def test_crop_and_blur_use_the_export_chain(tmp_path: Path) -> None:
+    """1600 预览上的整数裁切必须和 hdrtrack-box 的导出链同一张网格；blur_fill 回 frame_layout。"""
+    _need()
+    pairs = real_pairs(12)
+    if not pairs:
+        samples.missing("no RAW+JPG pair")
+    chosen = None
+    for index, (jpg, dng) in enumerate(pairs):
+        rgb = _preview_rgb(jpg, "plain")
+        work = tmp_path / f"seek{index}"
+        work.mkdir()
+        if _worker(work, rgb, dng, jpg)["ok"]:
+            chosen = (rgb, dng, jpg)
+            break
+    if chosen is None:
+        samples.missing("no aligned pair")
+    rgb, dng, jpg = chosen
+    height, width = rgb.shape[:2]
+    x, y, cw, ch = width // 4, height // 4, width // 2, height // 2
+    crop = tmp_path / "crop"
+    crop.mkdir()
+    got = _worker(crop, rgb, dng, jpg, {"HDR_BOX": f"{x},{y},{cw},{ch}"})
+    native = _cli_boxed(crop, rgb, dng, jpg, x, y, cw, ch)
+    assert got["ok"] is True and native["ok"] is True
+    _same(0, got, native)
+    assert got["width"] == native["codes"].shape[1]
+    assert got["height"] == native["codes"].shape[0]
+    blur = tmp_path / "blur"
+    blur.mkdir()
+    framed = _worker(
+        blur,
+        rgb,
+        dng,
+        jpg,
+        {
+            "HDR_FRAME": json.dumps(
+                {
+                    "width": width + 2,
+                    "height": height + 2,
+                    "photo": [1, 1],
+                    "items": [{"k": "photo", "x": 1, "y": 1, "w": width, "h": height}],
+                    "bgfx": {"kind": "blur", "sigma": 90},
+                }
+            )
+        },
+    )
+    assert framed["ok"] is False
+    assert framed["reason"] == "frame_layout"

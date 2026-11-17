@@ -520,7 +520,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 编辑时，能显示 HDR 的 iPhone 在画面上看到导出那张 HDR 会有的更亮高光。三件同时成立才打开：`matchMedia('(dynamic-range: high)')` 并且画布 `getConfiguration()` 接受 `rgba16float` + `toneMapping: { mode: 'extended' }`（`srgb` 色域，和成片的 sRGB 原色一致）；这张有 DNG；导出开关 `localStorage` `gxr.mobile.export_hdr` 开着。少一件就保持现在的 SDR 画布，像素路径不变。模拟器和无头 Chrome 这套探测是 false，测试可以用 `debugForceHdrDisplay` 强制。
 
-增益网格不每帧重算。打开照片时，以及滑块松手、换配方、换 LUT、裁剪落定之后约 300ms，Worker 做一次：把引擎 `readback()` 的当前 SDR 缩到长边 1600（再小，对齐用的块就不够纹理），RGBA 去掉 alpha，然后 `hdrtrack_begin` → `hdrtrack_to_grid` → `hdr_luma` → `hdr_gain`（`map_factor` 4，和导出默认一样）。拖动期间沿用上一张网格。拟合失败（对不齐、`frame_layout`、拍摄信息不符等）就留在 SDR，不另加说明，导出那一侧已经有 `hdr_note`。不解码 `hdrtrack_finish` 的增益 JPEG。
+增益网格不每帧重算。打开照片时，以及滑块松手、换配方、换 LUT、裁剪或边框落定之后约 300ms，编辑器自己的一个 Worker 做一次（不进四份核心池；忙的时候只留最新的一次，换片、关掉或关上 HDR 就 terminate）。当前 SDR 缩到长边 1600。拟合和导出是同一条 WASM 链：在未裁切、未变形的基图上 `hdrtrack_begin`，再 `hdrtrack_warp` / `hdrtrack_box`，边框和日期戳过 `hdrtrack_frame` / `hdrtrack_stamp`（`blur_fill` 得到 `frame_layout`），然后 `hdrtrack_to_grid` → `hdr_luma` → `hdr_gain`（预览 factor 4）。拖动期间不发新拟合。读图或拟合失败，只要还是当前这张，就清掉网格回到 SDR；过期的失败不碰新画面。不解码 `hdrtrack_finish` 的增益 JPEG。
 
 着色器（`hdr_present.wgsl`，只有 `setOutput({ hdr: true })` 才走）把 8 位 sRGB 码值解成线性，再按 ISO 21496-1：`shaped = pow(G, 1/gamma)`，`log2Gain = mix(gainMin, gainMax, shaped)`，`factor = exp2(log2Gain * weight)`，`hdr = (linear + offsetSdr) * factor - offsetHdr`。`weight` 用屏幕的线性 headroom（`screen.currentHdrHeadroom`，取 log2）夹在 `cap_min` 和 `cap_max` 之间；浏览器没给这个数时用 `cap_max`，权重为 1。网格是 `r8unorm`，双线性采样。画布是 `rgba16float`，1.0 仍是 SDR 白。长按原图时暂时回到 SDR，松开恢复。换片或关掉编辑器会 `setOutput({ hdr: false })` 并销毁增益纹理。晚到的网格对不上会话、照片或版本就丢掉。开着的时候照片下面可以有一行小灰字「HDR 预览」（`SHOW_HDR_PREVIEW_LABEL`）。
 

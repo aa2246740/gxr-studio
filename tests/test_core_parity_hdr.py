@@ -184,6 +184,17 @@ def test_srgb_to_linear_is_correctly_rounded(tmp_path: Path) -> None:
     assert differ == list(hp.POW_CODES)
 
 
+def test_hdr_luma_default_checks_shape_before_dtype(tmp_path: Path) -> None:
+    """没传 --rgb-shape 时，float32 的 2×2 先报形状，和改绑定之前的默认 stderr 一样。"""
+    from support.core_cli import run
+
+    path = tmp_path / "f32.npy"
+    np.save(path, np.zeros((2, 2), np.float32))
+    proc = run(["hdr-luma", "--rgb", str(path), "--factor", "4", "--out", str(tmp_path / "out.npy")])
+    assert proc.returncode == 1
+    assert proc.stderr.splitlines()[0] == "gxr-cli: --rgb must be (h, w, 3)"
+
+
 def test_huge_caller_sizes_are_refused_not_allocated(tmp_path: Path) -> None:
     """UNIT-COMMON size amendment: caller dimensions go through checked u64 and the 2**32 - 1
     count limit; the answer is one core error (exit 2), never a panic, abort or wrap."""

@@ -138,6 +138,14 @@ export interface HdrGridArgs {
   height: number;
   dng: ArrayBuffer;
   jpg: ArrayBuffer | null;
+  base?: ArrayBuffer | null;
+  baseWidth?: number;
+  baseHeight?: number;
+  geometryJson?: string | null;
+  cropJson?: string | null;
+  box?: { x: number; y: number; w: number; h: number } | null;
+  frameLayoutJson?: string | null;
+  factor?: number;
 }
 
 export interface CoreRequest {

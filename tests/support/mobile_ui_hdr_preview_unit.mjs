@@ -1,6 +1,7 @@
 // HDR 预览的条件、晚到结果、拖动时不发拟合、关掉时释放纹理。合成数据，不读照片。
 
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
@@ -17,6 +18,8 @@ registerHooks({
 
 const { previewWanted, debugForceHdrDisplay, hdrDisplayCapable } = await import('../../mobile/src/core/hdr_display.ts');
 const { HdrPreviewController, HDR_REFIT_MS, ticketMatches } = await import('../../mobile/src/core/hdr_preview.ts');
+const { HdrFitHost } = await import('../../mobile/src/core/hdr_fit_host.ts');
+const { moveReportFile } = await import('./move_report_file.mjs');
 const { rgbaToRgb, downscaleRgba } = await import('../../mobile/src/core/hdr_grid.ts');
 const { gainWeight } = await import('../../frontend/src/hdr_math.ts');
 
@@ -157,4 +160,214 @@ test('switch off and holding stay on the SDR output', async () => {
   h.ctl.sync();
   assert.equal(h.modes.at(-1)?.hdr, false);
   assert.equal(h.ctl.showing, false);
+});
+
+function clocked() {
+  const timers = new Map();
+  let seq = 1;
+  const modes = [];
+  let photo = { id: 'p', version: 1, rev: 0, dng: {}, jpg: null, border: { style: 'none' } };
+  const engine = {
+    setOutput(mode) { modes.push(mode); },
+    async readback() { return { w: 4, h: 2, data: new Uint8Array(4 * 2 * 4) }; },
+    hdrGainCount() { return modes.at(-1)?.hdr ? 1 : 0; },
+  };
+  let readDng = async () => new ArrayBuffer(8);
+  let fitImpl = async (req) => ({ ok: true, width: 1, height: 1, codes: new Uint8Array([req.ticket.rev + 1]), meta: { gain_min: 0, gain_max: 1, gamma: 1, offset_sdr: 0, offset_hdr: 0, cap_min: 0, cap_max: 1 } });
+  let labels = 0;
+  const ctl = new HdrPreviewController({
+    photo: () => photo,
+    session: () => 1,
+    dragging: () => false,
+    holding: () => false,
+    exportOn: () => true,
+    display: () => true,
+    engine: () => engine,
+    readDng: (item) => readDng(item),
+    fit: (req) => fitImpl(req),
+    clock: {
+      set(fn, ms) {
+        const id = seq++;
+        timers.set(id, { fn, ms });
+        return id;
+      },
+      clear(id) { timers.delete(id); },
+    },
+    onShowing() { labels = ctl.showing ? 1 : 0; },
+    frameLayout: () => (photo.border?.style === 'blur_fill' ? '{"width":2,"height":2,"items":[],"bgfx":{"kind":"blur"}}' : null),
+  });
+  async function fire() {
+    const pending = [...timers.entries()];
+    timers.clear();
+    for (const [, timer] of pending) timer.fn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return {
+    ctl, modes, engine, fire,
+    labels: () => labels,
+    setPhoto(next) { photo = next; },
+    photo: () => photo,
+    setReadDng(fn) { readDng = fn; },
+    setFit(fn) { fitImpl = fn; },
+  };
+}
+
+test('a failed read and a rejected fit clear HDR and do not reject', async () => {
+  const leaks = [];
+  const onReject = (err) => leaks.push(err);
+  process.on('unhandledRejection', onReject);
+  try {
+    const h = clocked();
+    h.ctl.sync();
+    await h.fire();
+    assert.equal(h.modes.at(-1)?.hdr, true);
+    assert.equal(h.labels(), 1);
+    h.photo().rev = 1;
+    h.setReadDng(async () => null);
+    h.ctl.sync();
+    await h.fire();
+    assert.equal(h.modes.at(-1)?.hdr, false);
+    assert.equal(h.engine.hdrGainCount(), 0);
+    assert.equal(h.labels(), 0);
+    h.photo().rev = 2;
+    h.setReadDng(async () => new ArrayBuffer(8));
+    h.setFit(async () => { throw new Error('worker down'); });
+    h.ctl.sync();
+    await h.fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.modes.at(-1)?.hdr, false);
+    assert.equal(leaks.length, 0);
+  } finally {
+    process.off('unhandledRejection', onReject);
+  }
+});
+
+test('a stale failure does not clear the picture that replaced it', async () => {
+  const h = clocked();
+  h.ctl.sync();
+  await h.fire();
+  assert.equal(h.modes.at(-1)?.hdr, true);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  h.photo().rev = 1;
+  h.setFit(async () => gate.then(() => { throw new Error('old fit'); }));
+  h.ctl.sync();
+  const started = h.fire();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  h.setPhoto({ id: 'q', version: 1, rev: 0, dng: {}, jpg: null, border: { style: 'none' } });
+  h.setFit(async () => ({ ok: true, width: 1, height: 1, codes: new Uint8Array([9]), meta: { gain_min: 0, gain_max: 1, gamma: 1, offset_sdr: 0, offset_hdr: 0, cap_min: 0, cap_max: 1 } }));
+  h.ctl.sync();
+  await h.fire();
+  assert.equal(h.modes.at(-1)?.hdr, true);
+  assert.equal(h.modes.at(-1)?.gain?.codes?.[0], 9);
+  release();
+  await started;
+  assert.equal(h.modes.at(-1)?.gain?.codes?.[0], 9);
+  assert.equal(h.engine.hdrGainCount(), 1);
+});
+
+test('blur_fill drops the in-flight reply and stays SDR', async () => {
+  const h = clocked();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  h.setFit(async () => gate.then(() => ({ ok: true, width: 1, height: 1, codes: new Uint8Array([1]), meta: { gain_min: 0, gain_max: 1, gamma: 1, offset_sdr: 0, offset_hdr: 0, cap_min: 0, cap_max: 1 } })));
+  h.ctl.sync();
+  const started = h.fire();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  h.photo().rev = 1;
+  h.photo().border = { style: 'blur_fill' };
+  h.setFit(async (req) => {
+    assert.match(req.frameLayoutJson, /blur/);
+    return { ok: false, reason: 'frame_layout' };
+  });
+  h.ctl.invalidate();
+  await h.fire();
+  release();
+  await started;
+  assert.equal(h.modes.some((mode) => mode.hdr === true), false);
+  assert.equal(h.engine.hdrGainCount(), 0);
+  assert.equal(h.ctl.showing, false);
+  assert.equal(h.labels(), 0);
+});
+
+test('holding the original clears the HDR label', async () => {
+  const host = {
+    nodes: [],
+    querySelector() { return this.nodes[0] ?? null; },
+    append(node) { this.nodes = [node]; },
+  };
+  const real = globalThis.document;
+  globalThis.document = { createElement() { return { dataset: {}, className: '', textContent: '', remove() { host.nodes = []; } }; } };
+  try {
+    const h = clocked();
+    h.ctl.sync();
+    await h.fire();
+    h.ctl.paintLabel(host);
+    assert.equal(host.nodes.length, 1);
+    h.ctl.showing = false;
+    h.ctl.paintLabel(host);
+    assert.equal(host.nodes.length, 0);
+  } finally {
+    globalThis.document = real;
+  }
+});
+
+test('the fit host keeps one worker, one in flight, and only the latest queued', async () => {
+  const made = [];
+  function port() {
+    const worker = {
+      dead: false,
+      posts: [],
+      onmessage: null,
+      onerror: null,
+      postMessage(message) { this.posts.push(message); },
+      terminate() { this.dead = true; },
+    };
+    made.push(worker);
+    return worker;
+  }
+  const host = new HdrFitHost(port);
+  const job = (n) => ({
+    sdr: new Uint8Array([n]),
+    width: 1,
+    height: 1,
+    dng: new ArrayBuffer(1),
+    jpg: null,
+    base: null,
+    baseWidth: 1,
+    baseHeight: 1,
+    geometryJson: null,
+    cropJson: null,
+    box: null,
+    frameLayoutJson: null,
+    factor: 4,
+  });
+  const first = host.request(job(1));
+  const dropped = host.request(job(2));
+  const latest = host.request(job(3));
+  assert.equal((await dropped).reason, 'stale');
+  assert.equal(made.length, 1);
+  assert.equal(made[0].posts.length, 1);
+  made[0].onmessage({ data: { id: made[0].posts[0].id, ok: true, json: JSON.stringify({ ok: true, width: 1, height: 1, meta: { gain_min: 0, gain_max: 1, gamma: 1, offset_sdr: 0, offset_hdr: 0, cap_min: 0, cap_max: 1 } }), buffers: [new Uint8Array([7]).buffer] } });
+  assert.equal((await first).ok, true);
+  assert.equal(made[0].posts.length, 2);
+  host.stop();
+  assert.equal((await latest).reason, 'stale');
+  assert.equal(made[0].dead, true);
+  assert.equal(made.length, 1);
+});
+
+test('moveReportFile copies across volumes when rename throws EXDEV', () => {
+  const src = '/Volumes/Workspace/Scratch/gxr-studio-hillclimb/round-6/mobile-ui-m5-hdr-preview/tmp-move-src.bin';
+  const dst = '/tmp/m5-move-dst.bin';
+  writeFileSync(src, 'cross-volume');
+  try {
+    moveReportFile(src, dst);
+    assert.equal(existsSync(src), false);
+    assert.equal(readFileSync(dst, 'utf8'), 'cross-volume');
+  } finally {
+    if (existsSync(src)) rmSync(src);
+    if (existsSync(dst)) rmSync(dst);
+  }
 });

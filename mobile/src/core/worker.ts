@@ -16,7 +16,11 @@ import init, {
   hdr_gain,
   hdr_luma,
   hdrtrack_begin,
+  hdrtrack_box,
+  hdrtrack_frame,
+  hdrtrack_stamp,
   hdrtrack_to_grid,
+  hdrtrack_warp,
   geom_crop_write,
   geom_final_box,
   geom_geometry_write,
@@ -65,7 +69,8 @@ import {
 } from '../lib/lut';
 import { shotSize } from '../lib/photo_size';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
-import { fitPreviewGrid, rgbaToRgb } from './hdr_grid';
+import { runHdrChain } from './hdr_chain';
+import { rgbaToRgb, PREVIEW_FACTOR } from './hdr_grid';
 import type {
   BakeArgs,
   CalibCheckArgs,
@@ -639,15 +644,45 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else throw new Error('未知请求');
 }
 
-function hdrPreview(id: number, rgba: ArrayBuffer, args: { width: number; height: number; dng: ArrayBuffer; jpg: ArrayBuffer | null }): void {
+function hdrPreview(
+  id: number,
+  rgba: ArrayBuffer,
+  args: {
+    width: number;
+    height: number;
+    dng: ArrayBuffer;
+    jpg: ArrayBuffer | null;
+    base?: ArrayBuffer | null;
+    baseWidth?: number;
+    baseHeight?: number;
+    geometryJson?: string | null;
+    cropJson?: string | null;
+    box?: { x: number; y: number; w: number; h: number } | null;
+    frameLayoutJson?: string | null;
+    factor?: number;
+  },
+): void {
   const rgb = rgbaToRgb(new Uint8Array(rgba), args.width, args.height);
-  const grid = fitPreviewGrid(
-    { hdrtrack_begin, hdrtrack_to_grid, hdr_luma, hdr_gain },
-    rgb,
-    args.width,
-    args.height,
-    new Uint8Array(args.dng),
-    args.jpg ? new Uint8Array(args.jpg) : null,
+  const base = args.base && args.baseWidth && args.baseHeight ? rgbaToRgb(new Uint8Array(args.base), args.baseWidth, args.baseHeight) : rgb;
+  const grid = runHdrChain(
+    { hdrtrack_begin, hdrtrack_warp, hdrtrack_box, hdrtrack_stamp, hdrtrack_frame, hdrtrack_to_grid, hdr_luma, hdr_gain, geom_final_box },
+    {
+      baseRgb: base,
+      baseWidth: args.base ? (args.baseWidth ?? args.width) : args.width,
+      baseHeight: args.base ? (args.baseHeight ?? args.height) : args.height,
+      sdrRgb: rgb,
+      sdrWidth: args.width,
+      sdrHeight: args.height,
+      dng: new Uint8Array(args.dng),
+      jpg: args.jpg ? new Uint8Array(args.jpg) : null,
+      dngName: 'preview.dng',
+      geometryJson: args.geometryJson ?? null,
+      cropJson: args.cropJson ?? null,
+      box: args.box ?? null,
+      frameLayoutJson: args.frameLayoutJson ?? null,
+      stamp: null,
+      factor: args.factor ?? PREVIEW_FACTOR,
+    },
   );
   if (!grid.ok) {
     ok(id, JSON.stringify(grid));

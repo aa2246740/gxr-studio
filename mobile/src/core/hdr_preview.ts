@@ -1,8 +1,11 @@
 // 编辑器里的 HDR 预览什么时候算、什么时候丢掉。拖动中不发请求；松手后 300ms 再算。
-// 晚到的结果对不上（会话、照片、版本）就丢掉，不碰引擎。
+// 每次 await 之后按当前的照片对象、version、rev、session 和引擎对象复核，不拿事先存下的票对比。
 
 import type { GainMeta, GainTexture, HdrOutputMode } from '../../../frontend/src/hdr_math';
 import { displayHeadroom, previewWanted } from './hdr_display';
+import { downscaleRgba, PREVIEW_FACTOR, PREVIEW_LONG_EDGE } from './hdr_grid';
+import type { HdrChainResult } from './hdr_chain';
+import type { HdrFitJob } from './hdr_fit_host';
 
 export const HDR_REFIT_MS = 300;
 /** 设计稿上的小灰字。评审要拿掉时改成 false。 */
@@ -29,18 +32,11 @@ export interface HdrEngine {
   hdrGainCount(): number;
 }
 
-export interface HdrFitRequest {
+export interface HdrFitRequest extends HdrFitJob {
   ticket: HdrTicket;
-  rgba: Uint8Array;
-  width: number;
-  height: number;
-  dng: ArrayBuffer;
-  jpg: ArrayBuffer | null;
 }
 
-export type HdrFitResult =
-  | { ok: true; width: number; height: number; codes: Uint8Array; meta: GainMeta }
-  | { ok: false; reason: string };
+export type HdrFitResult = HdrChainResult;
 
 export function ticketMatches(held: HdrTicket, now: HdrTicket): boolean {
   return held.session === now.session && held.photoId === now.photoId && held.version === now.version && held.rev === now.rev;
@@ -55,6 +51,23 @@ const nativeClock: Clock = {
   set: (fn, ms) => setTimeout(fn, ms) as unknown as number,
   clear: (id) => clearTimeout(id),
 };
+
+interface Seen {
+  photo: HdrPhotoSnap;
+  version: number;
+  rev: number;
+  session: number;
+  engine: HdrEngine;
+  frame: string | null;
+  geometry: string | null;
+  crop: string | null;
+}
+
+interface RgbaShot {
+  rgba: Uint8Array;
+  width: number;
+  height: number;
+}
 
 /**
  * 打开、松手、换片、关掉。`requests` 只数真正发出的拟合，拖动中的 sync 不加。
@@ -81,6 +94,12 @@ export class HdrPreviewController {
     fit: (req: HdrFitRequest) => Promise<HdrFitResult>;
     watchExport?: (fn: () => void) => () => void;
     clock?: Clock;
+    onShowing?: () => void;
+    stopFit?: () => void;
+    frameLayout?: () => string | null;
+    geometryJson?: () => string | null;
+    cropJson?: () => string | null;
+    readBase?: () => Promise<RgbaShot | null>;
   };
 
   private offExport: (() => void) | null = null;
@@ -102,6 +121,7 @@ export class HdrPreviewController {
       this.epoch += 1;
       this.runId += 1;
       this.clearTimer();
+      this.deps.stopFit?.();
       this.release();
       this.ticket = next;
     } else if (this.ticket) {
@@ -110,6 +130,7 @@ export class HdrPreviewController {
     if (this.deps.holding() || !this.wanted(photo)) {
       this.runId += 1;
       this.clearTimer();
+      this.deps.stopFit?.();
       this.showSdr();
       return;
     }
@@ -121,10 +142,20 @@ export class HdrPreviewController {
     this.arm();
   }
 
+  /** 边框或时间戳改了：马上丢掉正在跑的拟合，按现在的状态重算；不支持就回到 SDR。 */
+  invalidate(): void {
+    this.runId += 1;
+    this.clearTimer();
+    this.deps.stopFit?.();
+    this.release();
+    if (this.deps.photo()) this.sync();
+  }
+
   close(): void {
     this.epoch += 1;
     this.runId += 1;
     this.clearTimer();
+    this.deps.stopFit?.();
     this.release();
     this.ticket = null;
     this.offExport?.();
@@ -146,42 +177,75 @@ export class HdrPreviewController {
     return previewWanted(this.deps.display(), photo.dng !== null, this.deps.exportOn());
   }
 
+  private seen(photo: HdrPhotoSnap, engine: HdrEngine): Seen {
+    return {
+      photo,
+      version: photo.version,
+      rev: photo.rev,
+      session: this.deps.session(),
+      engine,
+      frame: this.deps.frameLayout?.() ?? null,
+      geometry: this.deps.geometryJson?.() ?? null,
+      crop: this.deps.cropJson?.() ?? null,
+    };
+  }
+
+  /** 对着现在的照片、版本、rev、会话和引擎，不比较开跑时抄下来的票。 */
+  private current(epoch: number, runId: number, seen: Seen): boolean {
+    if (epoch !== this.epoch || runId !== this.runId) return false;
+    const photo = this.deps.photo();
+    const engine = this.deps.engine();
+    if (!photo || !engine) return false;
+    if (photo !== seen.photo || photo.version !== seen.version || photo.rev !== seen.rev) return false;
+    if (this.deps.session() !== seen.session || engine !== seen.engine) return false;
+    if ((this.deps.frameLayout?.() ?? null) !== seen.frame) return false;
+    if ((this.deps.geometryJson?.() ?? null) !== seen.geometry) return false;
+    if ((this.deps.cropJson?.() ?? null) !== seen.crop) return false;
+    if (this.deps.dragging() || this.deps.holding() || !this.wanted(photo)) return false;
+    return true;
+  }
+
   private arm(): void {
     this.clearTimer();
     const epoch = this.epoch;
     const runId = ++this.runId;
-    const ticket = this.ticket;
-    if (!ticket) return;
     const clock = this.deps.clock ?? nativeClock;
     this.timer = clock.set(() => {
       this.timer = 0;
-      void this.run(epoch, runId, ticket);
+      void this.run(epoch, runId).catch(() => {
+        const photo = this.deps.photo();
+        const engine = this.deps.engine();
+        if (photo && engine && this.current(epoch, runId, this.seen(photo, engine))) this.failCurrent();
+      });
     }, HDR_REFIT_MS);
   }
 
-  private live(epoch: number, runId: number, ticket: HdrTicket): boolean {
-    return epoch === this.epoch && runId === this.runId && this.ticket !== null && ticketMatches(ticket, this.ticket);
-  }
-
-  private async run(epoch: number, runId: number, ticket: HdrTicket): Promise<void> {
+  private async run(epoch: number, runId: number): Promise<void> {
     const photo = this.deps.photo();
     const engine = this.deps.engine();
-    if (!photo || !engine || !this.live(epoch, runId, ticket)) return;
-    if (this.deps.dragging() || this.deps.holding() || !this.wanted(photo)) return;
-    let rgba: Uint8Array;
-    let width: number;
-    let height: number;
+    if (!photo || !engine) return;
+    const seen = this.seen(photo, engine);
+    if (!this.current(epoch, runId, seen)) return;
+    let shot: { w: number; h: number; data: Uint8Array };
     try {
-      const shot = await engine.readback();
-      rgba = shot.data;
-      width = shot.w;
-      height = shot.h;
+      shot = await engine.readback();
     } catch {
+      if (this.current(epoch, runId, seen)) this.failCurrent();
       return;
     }
-    if (!this.live(epoch, runId, ticket)) return;
-    const dng = await this.deps.readDng(photo);
-    if (!dng || !this.live(epoch, runId, ticket)) return;
+    if (!this.current(epoch, runId, seen)) return;
+    let dng: ArrayBuffer | null;
+    try {
+      dng = await this.deps.readDng(photo);
+    } catch {
+      if (this.current(epoch, runId, seen)) this.failCurrent();
+      return;
+    }
+    if (!this.current(epoch, runId, seen)) return;
+    if (!dng) {
+      this.failCurrent();
+      return;
+    }
     let jpg: ArrayBuffer | null = null;
     if (photo.jpg) {
       try {
@@ -190,13 +254,46 @@ export class HdrPreviewController {
         jpg = null;
       }
     }
-    if (!this.live(epoch, runId, ticket) || this.deps.dragging() || this.deps.holding()) return;
+    if (!this.current(epoch, runId, seen)) return;
+    let base: RgbaShot | null = null;
+    if (this.deps.readBase) {
+      try {
+        base = await this.deps.readBase();
+      } catch {
+        if (this.current(epoch, runId, seen)) this.failCurrent();
+        return;
+      }
+      if (!this.current(epoch, runId, seen)) return;
+    }
+    const sdr = downscaleRgba(shot.data, shot.w, shot.h, PREVIEW_LONG_EDGE);
+    const baseShot = base ? downscaleRgba(base.rgba, base.width, base.height, PREVIEW_LONG_EDGE) : null;
     this.requests += 1;
-    const fitted = await this.deps.fit({ ticket, rgba, width, height, dng, jpg });
-    if (!this.live(epoch, runId, ticket) || this.deps.holding()) return;
+    let fitted: HdrFitResult;
+    try {
+      fitted = await this.deps.fit({
+        ticket: { session: seen.session, photoId: photo.id, version: photo.version, rev: photo.rev },
+        sdr: sdr.rgba,
+        width: sdr.width,
+        height: sdr.height,
+        dng,
+        jpg,
+        base: baseShot ? baseShot.rgba : null,
+        baseWidth: baseShot ? baseShot.width : sdr.width,
+        baseHeight: baseShot ? baseShot.height : sdr.height,
+        geometryJson: seen.geometry,
+        cropJson: seen.crop,
+        box: null,
+        frameLayoutJson: seen.frame,
+        factor: PREVIEW_FACTOR,
+      });
+    } catch {
+      if (this.current(epoch, runId, seen)) this.failCurrent();
+      return;
+    }
+    if (!this.current(epoch, runId, seen)) return;
     if (!fitted.ok) {
-      this.grid = null;
-      this.showSdr();
+      if (fitted.reason === 'stale') return;
+      this.failCurrent();
       return;
     }
     this.grid = { gain: { width: fitted.width, height: fitted.height, codes: fitted.codes }, meta: fitted.meta };
@@ -208,13 +305,25 @@ export class HdrPreviewController {
     if (!engine || !this.grid || this.deps.holding()) return;
     engine.setOutput({ hdr: true, gain: this.grid.gain, meta: this.grid.meta, headroom: displayHeadroom() });
     this.applied = true;
-    this.showing = true;
+    this.setShowing(true);
+  }
+
+  private failCurrent(): void {
+    this.grid = null;
+    this.showSdr();
   }
 
   private showSdr(): void {
     if (this.applied) this.deps.engine()?.setOutput({ hdr: false });
     this.applied = false;
-    this.showing = false;
+    this.grid = null;
+    this.setShowing(false);
+  }
+
+  private setShowing(on: boolean): void {
+    if (this.showing === on) return;
+    this.showing = on;
+    this.deps.onShowing?.();
   }
 
   private release(): void {
