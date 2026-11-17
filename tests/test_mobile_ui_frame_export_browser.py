@@ -1,13 +1,16 @@
 """UI-M4 frame item 9: framed exports in the browser, compared with the desktop.
 
-The sample folder has four DNG+JPG pairs. Styles E, F and the JPG-only photo use copies of those
-files under synthetic names, so the grid can hold every style the spec lists. Comparisons go
-through the redacted helpers. The driver report stays in the test's temporary directory.
+The sample folder has four DNG+JPG pairs. Styles E and F are full copies of two of those pairs
+under synthetic names; the JPG-only photo copies just the JPEG. Two more pairs are portrait:
+the first portrait DNG+JPG files under the captures root, in sorted path order, or an orientation
+rewrite when none can be read. Comparisons go through the redacted helpers. The driver report
+stays in the test's temporary directory. Nothing here prints a photo name, a capture time, or EXIF.
 """
 
 from __future__ import annotations
 
 import shutil
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +36,19 @@ _JOBS = (
     ("memSdr", "memsdr-", "m4_memsdr", 95, None, False),
     ("memHdr", "memhdr-", "m4_memhdr", 95, None, True),
     ("deletedLogo", "del-", "m4_del", 95, None, False),
+    ("portraitFrame", "pframe-", "m4_pframe", 95, None, False),
+    ("portraitInstant", "pinst-", "m4_pinst", 95, None, False),
 )
-_ROLE = {"full": "", "small": "-small", "hdr": "-hdr", "memSdr": "-mem", "memHdr": "-mem-hdr", "deletedLogo": "-deleted"}
+_ROLE = {
+    "full": "",
+    "small": "-small",
+    "hdr": "-hdr",
+    "memSdr": "-mem",
+    "memHdr": "-mem-hdr",
+    "deletedLogo": "-deleted",
+    "portraitFrame": "",
+    "portraitInstant": "",
+}
 _DEHINT_PREFIX = {"memSdr": "m4_memsdr_dh", "memHdr": "m4_memhdr_dh"}
 
 
@@ -90,6 +104,95 @@ def _deleted_step(report: dict[str, Any]) -> dict[str, Any]:
     return report["steps"]["deletedLogo"]["export"]
 
 
+def _display_size(path: Path) -> tuple[int, int] | None:
+    """Upright JPEG size. Failures stay empty: the path and EXIF are not reported."""
+    try:
+        with Image.open(path) as im:
+            orient = int(im.getexif().get(274, 1) or 1)
+            width, height = im.size
+    except Exception:
+        return None
+    if orient in (5, 6, 7, 8):
+        return height, width
+    return width, height
+
+
+def _portrait_pairs(limit: int) -> list[tuple[Path, Path]]:
+    """First portrait DNG+JPG pairs under captures, in sorted path order."""
+    root = samples.captures()
+    if not root.is_dir():
+        return []
+    found: list[tuple[Path, Path]] = []
+    dngs = sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG")
+    for dng in dngs:
+        jpg = next((dng.with_suffix(ext) for ext in (".JPG", ".jpg") if dng.with_suffix(ext).is_file()), None)
+        if jpg is None:
+            continue
+        size = _display_size(jpg)
+        if size is not None and size[1] > size[0]:
+            found.append((dng, jpg))
+        if len(found) >= limit:
+            break
+    return found
+
+
+def _copy_pair(pair: tuple[Path, Path], folder: Path, stem: str) -> tuple[Path, Path]:
+    dng = mx.copy_as(pair[0], folder / f"{stem}.DNG")
+    jpg = mx.copy_as(pair[1], folder / f"{stem}.JPG")
+    return dng, jpg
+
+
+def _patch_tiff_orientation(path: Path, value: int) -> bool:
+    """Rewrite IFD0 Orientation in place. Returns false when the tag is absent."""
+    with path.open("r+b") as handle:
+        header = handle.read(8)
+        if len(header) < 8 or header[:2] not in (b"II", b"MM"):
+            return False
+        end = "<" if header[:2] == b"II" else ">"
+        if struct.unpack(end + "H", header[2:4])[0] != 42:
+            return False
+        ifd = struct.unpack(end + "I", header[4:8])[0]
+        handle.seek(ifd)
+        count_raw = handle.read(2)
+        if len(count_raw) < 2:
+            return False
+        for _ in range(min(struct.unpack(end + "H", count_raw)[0], 80)):
+            entry = handle.read(12)
+            if len(entry) < 12:
+                return False
+            tag, kind = struct.unpack(end + "HH", entry[:4])
+            if tag == 0x0112 and kind == 3:
+                handle.seek(-4, 1)
+                handle.write(struct.pack(end + "HH", value, 0))
+                return True
+    return False
+
+
+def _rewritten_portrait(pair: tuple[Path, Path], folder: Path, stem: str) -> tuple[Path, Path] | None:
+    dng = mx.copy_as(pair[0], folder / f"{stem}.DNG")
+    jpg = folder / f"{stem}.JPG"
+    if not mx.set_orientation(pair[1], jpg, 6):
+        return None
+    _patch_tiff_orientation(dng, 6)
+    size = _display_size(jpg)
+    if size is None or size[1] <= size[0]:
+        return None
+    return dng, jpg
+
+
+def _portrait_copies(pairs: list[tuple[Path, Path]], folder: Path) -> list[tuple[Path, Path]]:
+    real = _portrait_pairs(2)
+    if len(real) >= 2:
+        return [_copy_pair(real[0], folder, "R9990008"), _copy_pair(real[1], folder, "R9990009")]
+    made: list[tuple[Path, Path]] = []
+    for stem, pair in zip(("R9990008", "R9990009"), pairs[:2], strict=True):
+        rewritten = _rewritten_portrait(pair, folder, stem)
+        check(rewritten is not None, "portrait target")
+        if rewritten is not None:
+            made.append(rewritten)
+    return made
+
+
 def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: bytes) -> None:
     """Item 9: sidecar, exact files, Gate B canvases, HDR reasons, CJK, logo fallback, and the ink trap."""
     check(len(pinned_icc) == 588, "icc pin")
@@ -100,9 +203,14 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
     _prereq()
     desk = Desktop(tmp_path, dat)
     try:
-        jpg_e = mx.copy_as(pairs[0][1], tmp_path / "R9990005.JPG")
-        jpg_f = mx.copy_as(pairs[1][1], tmp_path / "R9990006.JPG")
+        dng_e, jpg_e = _copy_pair(pairs[0], tmp_path, "R9990005")
+        dng_f, jpg_f = _copy_pair(pairs[1], tmp_path, "R9990006")
         jpg_only = mx.copy_as(pairs[2][1], tmp_path / "R9990007.JPG")
+        portraits = _portrait_copies(pairs, tmp_path)
+        check(len(portraits) == 2, "two portrait pairs")
+        for _dng, jpg in portraits:
+            size = _display_size(jpg)
+            check(size is not None and size[1] > size[0], "portrait target before export")
         stems = {
             "a": pairs[0][0].stem,
             "b": pairs[1][0].stem,
@@ -111,18 +219,22 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
             "e": jpg_e.stem,
             "f": jpg_f.stem,
             "jpgOnly": jpg_only.stem,
+            "pFrame": portraits[0][0].stem,
+            "pInstant": portraits[1][0].stem,
         }
         photos: dict[str, tuple[Path | None, Path | None]] = {pairs[i][0].stem: pairs[i] for i in range(4)}
-        photos[jpg_e.stem] = (None, jpg_e)
-        photos[jpg_f.stem] = (None, jpg_f)
+        photos[jpg_e.stem] = (dng_e, jpg_e)
+        photos[jpg_f.stem] = (dng_f, jpg_f)
         photos[jpg_only.stem] = (None, jpg_only)
-        role_of = {
-            stems[key]: label
-            for key, label in zip(("a", "b", "c", "d", "e", "f", "jpgOnly"), ("A", "B", "C", "D", "E", "F", "jpg"), strict=True)
-        }
+        photos[portraits[0][0].stem] = portraits[0]
+        photos[portraits[1][0].stem] = portraits[1]
+        labels = ("A", "B", "C", "D", "E", "F", "jpg", "P-frame", "P-instant")
+        keys = ("a", "b", "c", "d", "e", "f", "jpgOnly", "pFrame", "pInstant")
+        role_of = {stems[key]: label for key, label in zip(keys, labels, strict=True)}
         order = [stems[key] for key in ("a", "b", "c", "d", "e", "f", "jpgOnly")]
         files = [str(path) for pair in pairs for path in pair]
-        files += [str(jpg_e), str(jpg_f), str(jpg_only), str(dat)]
+        files += [str(dng_e), str(jpg_e), str(dng_f), str(jpg_f), str(jpg_only), str(dat)]
+        files += [str(path) for pair in portraits for path in pair]
         out_dir = tmp_path / "phone"
         canvas_dir = tmp_path / "canvas"
         out_dir.mkdir()
@@ -136,7 +248,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                 "parityDriver": str(DRIVER),
                 "files": files,
                 "pack": str(desk.zip),
-                "count": len(order),
+                "count": len(order) + len(portraits),
                 "order": order,
                 "stems": stems,
                 "binding": desk.binding(),
@@ -151,7 +263,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
         check(report["pageErrors"] == [], "no page errors")
         leica = report["steps"]["leicaOn"]
         check(leica["logo"] is True and leica["params"] is True and leica["date"] is True, "leica chips on")
-        shots = {stem: _shot(desk, stem, *photos[stem]) for stem in order}
+        shots = {stem: _shot(desk, stem, *photos[stem]) for stem in (*order, stems["pFrame"], stems["pInstant"])}
         full_facts = report["steps"]["full"]["facts"]["facts"]
         side_a = full_facts[stems["a"]]["side"]
         same_redacted(
@@ -193,7 +305,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
         _cjk(report["steps"]["cjkStamp"])
         _trap(report["steps"]["inkTrap"])
         note("ui_m4_frame_summary", {"rows": len(rows), "exact": sum(1 for row in rows if row["kind"] == "exact")})
-        check(len(rows) == 7 + 2 + 3 + 1 + 1 + 1, "every listed export compared")
+        check(len(rows) == 7 + 2 + 3 + 1 + 1 + 1 + 2, "every listed export compared")
     finally:
         desk.lib.close()
 

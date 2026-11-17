@@ -35,6 +35,24 @@ async function openEditorFrameTab(page, stem) {
   );
 }
 
+async function assertPortrait(page) {
+  await page.getByRole('button', { name: '导出这张', exact: true }).click();
+  await page.waitForSelector('.ms.export');
+  await page.waitForFunction(
+    () => {
+      const txt = document.querySelector('.ms.export .num.size')?.textContent ?? '';
+      return txt.includes(' × ') && !txt.includes('正在计算');
+    },
+    null,
+    { timeout: 60_000 },
+  );
+  const txt = (await page.locator('.ms.export .num.size').textContent()) ?? '';
+  const match = txt.match(/(\d+)\s*×\s*(\d+)/);
+  if (!match || Number(match[2]) <= Number(match[1])) throw new Error('portrait target is not portrait');
+  await page.locator('.ms.export .row button:has-text("取消")').click();
+  await page.waitForFunction(() => !document.querySelector('.ms.export'));
+}
+
 async function backToGrid(page) {
   await page.getByRole('button', { name: '照片', exact: true }).click();
   await page.waitForSelector('[data-screen="grid"]', { timeout: 30_000 });
@@ -259,6 +277,46 @@ export async function parity({ newPage, manifest, out }) {
     await pickFrameStyle(page, 'darkroom');
     await page.locator('.panel.frame .stamp-row input.switch').click();
     await backToGrid(page);
+
+    // 竖图：白边 + 时间戳，以及拍立得边框上的时间戳。导出前尺寸行必须是高大于宽。
+    await openEditorFrameTab(page, s.pFrame);
+    await pickFrameStyle(page, 'gallery');
+    await page.locator('.panel.frame .stamp-row input.switch').click();
+    await page.waitForFunction(() => Boolean(document.querySelector('.stage .pv.framed[data-decor="1"]')));
+    await assertPortrait(page);
+    await backToGrid(page);
+    await openEditorFrameTab(page, s.pInstant);
+    await pickFrameStyle(page, 'instant');
+    await page.locator('.panel.frame .stamp-row input.switch').click();
+    await page.locator('.panel.frame [data-act="open-stamp"]').click();
+    await page.waitForSelector('.ms.stamp-sheet');
+    await page.locator('.ms.stamp-sheet .seg[aria-label="印记落点"] button:has-text("拍立得边框上")').click();
+    await page.locator('.ms.stamp-sheet .hd button:has-text("完成")').click();
+    await page.waitForFunction(() => !document.querySelector('.ms.stamp-sheet'));
+    await assertPortrait(page);
+    await backToGrid(page);
+    const portraitFrame = await runBatch(page, {
+      stems: [s.pFrame],
+      size: '原始尺寸',
+      quality: '高',
+      hdr: false,
+      prefix: 'm4_pframe',
+      outDir: manifest.outDir,
+      fileTag: 'pframe-',
+    });
+    portraitFrame.bins = collectCanvasBins('m4_pframe', manifest.canvasDir);
+    out.steps.portraitFrame = portraitFrame;
+    const portraitInstant = await runBatch(page, {
+      stems: [s.pInstant],
+      size: '原始尺寸',
+      quality: '高',
+      hdr: false,
+      prefix: 'm4_pinst',
+      outDir: manifest.outDir,
+      fileTag: 'pinst-',
+    });
+    portraitInstant.bins = collectCanvasBins('m4_pinst', manifest.canvasDir);
+    out.steps.portraitInstant = portraitInstant;
 
     // 1. 全量 7 张导出：原始尺寸 / 高（SDR）
     const full = await runBatch(page, {
