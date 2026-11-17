@@ -253,6 +253,12 @@ async function runJob(job: ExportJob): Promise<void> {
       headers: { 'content-type': 'application/octet-stream' },
       body: new Blob([hdr, canvas as Uint8Array<ArrayBuffer>]),
     }).catch(() => undefined);
+    // 同一张的字形掩模（Rust 实际混合的 8-bit coverage）。模块只在开发服务器里动态载入。
+    const name = encodeURIComponent(`${job.devCanvasReport}-masks`);
+    await import('./dev_glyph_masks')
+      .then(({ glyphMaskReport }) => glyphMaskReport(json.prepared, req.layout, exact, fontIndex, fontPack))
+      .then((body) => fetch(`/__dev/report/${name}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body }))
+      .catch(() => undefined);
   }
   const done = export_complete(canvas, width, height, JSON.stringify(json.prepared.state), source, layer, stampMask, maskWidth, maskHeight);
   canvas = EMPTY;
@@ -303,7 +309,9 @@ async function runSizes(job: SizesJob): Promise<void> {
   const preset = typeof crop?.preset === 'string' ? crop.preset : undefined;
   const fontPack = job.fontPack ? new Uint8Array(job.fontPack) : EMPTY;
   const json = export_output_sizes(size.width, size.height, JSON.stringify(job.side), '{}', JSON.stringify(layout), rect, preset, job.fontIndex ?? '', fontPack);
-  post({ op: 'sizes', id: job.id, ok: true, json });
+  const pixels = (s: { width: number; height: number } | null) => (s ? s.width * s.height : 0);
+  const source = Math.max(pixels(jpgHead ? jpegSize(jpgHead) : null), pixels(dngHead ? dngSize(dngHead) : null));
+  post({ op: 'sizes', id: job.id, ok: true, json, source });
 }
 
 self.onmessage = (event: MessageEvent<ExportIn>) => {

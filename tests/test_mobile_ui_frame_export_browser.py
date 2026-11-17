@@ -240,7 +240,10 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
         out_dir.mkdir()
         canvas_dir.mkdir()
         logo = _logo_png(tmp_path / "studio_logo.png")
-        dehinted_fonts = dehinted_font_paths(tmp_path / "dehint")
+        dehint_dir = tmp_path / "dehint"
+        dehint_dir.mkdir()
+        dehinted_fonts = dehinted_font_paths(dehint_dir)
+        fonts = fx.Fonts(real={name: font_path(name) for name in dehinted_fonts}, dehint=dehinted_fonts)
         report = run_driver(
             tmp_path,
             {
@@ -255,8 +258,8 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                 "outDir": str(out_dir),
                 "canvasDir": str(canvas_dir),
                 "logoPng": str(logo),
-                "dehintedFonts": {name: str(path) for name, path in dehinted_fonts.items()},
-                "realFonts": {name: str(font_path(name)) for name in dehinted_fonts},
+                "dehintedFonts": {name: str(path) for name, path in fonts.dehint.items()},
+                "realFonts": {name: str(path) for name, path in fonts.real.items()},
             },
             timeout=3600,
         )
@@ -299,6 +302,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                         long_edge=edge,
                         hdr=hdr,
                         role=role,
+                        fonts=fonts,
                         dehinted_canvas=dehinted,
                     )
                 )
@@ -311,7 +315,14 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
 
 
 def _shot(desk: Desktop, stem: str, dng: Path | None, jpg: Path | None) -> dict[str, Any]:
-    """``Desktop.shot`` links the sample in. The library will not open a link, so replace it with a copy."""
+    """``Desktop.shot`` links the sample in. The library will not open a link, so replace it with a copy.
+
+    The library index also records the orientation the importer read (``cards/importer.py``: the JPG's
+    metadata, else the DNG's), and an edit's first sidecar takes ``frame.orientation`` from it.
+    ``Desktop.shot`` leaves it out, which only shows on portrait photos.
+    """
+    from gxr_studio.meta import read_dng_meta, read_jpeg_meta
+
     made = desk.shot(stem, dng, jpg)
     for src in (dng, jpg):
         if src is None:
@@ -320,6 +331,9 @@ def _shot(desk: Desktop, stem: str, dng: Path | None, jpg: Path | None) -> dict[
         if dest.is_symlink():
             dest.unlink()
             shutil.copy2(src, dest)
+    jpg_meta = read_jpeg_meta(jpg) if jpg else None
+    primary = jpg_meta if jpg_meta is not None and not jpg_meta.error else (read_dng_meta(dng) if dng else None)
+    made["orientation"] = primary.orientation if primary is not None and primary.orientation else 1
     return made
 
 

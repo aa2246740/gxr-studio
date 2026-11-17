@@ -80,7 +80,8 @@ export type ExportOut =
       ms: number;
     }
   | { op: 'done'; id: number; ok: false; kind: FailKind; code: string; message: string }
-  | { op: 'sizes'; id: number; ok: true; json: string }
+  /** `source`：两份文件头里大的那份源图的像素数（导出前估内存用）。 */
+  | { op: 'sizes'; id: number; ok: true; json: string; source: number }
   | { op: 'sizes'; id: number; ok: false; message: string }
   | { op: 'decoded'; id: number; ok: true; rgb: ArrayBuffer; width: number; height: number }
   | { op: 'decoded'; id: number; ok: false; message: string };

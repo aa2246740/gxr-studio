@@ -119,6 +119,7 @@ async function frameBatchFacts(page) {
         width: shot.width ?? null,
         height: shot.height ?? null,
         exact: batch.exacts.has(item.id) ? batch.exacts.get(item.id) : null,
+        estimate: batch.estimates.has(item.id) ? batch.estimates.get(item.id) : null,
         result: batch.results.get(item.id) || null,
         binding: item.req.binding,
       };

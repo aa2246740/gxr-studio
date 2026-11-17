@@ -1,11 +1,9 @@
 // 编辑一张。拖滑块时只改 setLook 和滑块上的数字，不重建页面。
 
 import type { Engine } from '../../../frontend/src/index';
-import { describeDng, hdrPreviewGrid, type Described } from '../core/api';
-import { hdrDisplayCapable } from '../core/hdr_display';
-import { HdrPreviewController } from '../core/hdr_preview';
-import { loadExportHdr, watchExportHdr } from '../lib/prefs';
+import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
+import { createHdrPreview } from './hdr_hookup';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
 import { AdjustView, toAdjust } from './adjust_view';
@@ -81,20 +79,12 @@ export class EditorView {
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
   private offPaste: (() => void) | null = null;
-  private readonly hdr = new HdrPreviewController({
+  private readonly hdr = createHdrPreview({
     photo: () => this.photo,
-    session: () => this.api.session(),
+    api: () => this.api,
     dragging: () => this.dragging,
     holding: () => this.holding,
-    exportOn: () => loadExportHdr(),
-    display: () => hdrDisplayCapable(this.engine?.device ?? null),
     engine: () => this.engine,
-    readDng: async (photo) => {
-      const full = await this.api.readFull(photo as Photo);
-      return full.ok ? full.bytes : null;
-    },
-    fit: (req) => hdrPreviewGrid(req.rgba, req.width, req.height, req.dng, req.jpg),
-    watchExport: (fn) => watchExportHdr(fn),
   });
 
   constructor(

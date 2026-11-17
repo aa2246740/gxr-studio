@@ -16,6 +16,7 @@ import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeTex
 import type { Book } from './book';
 import { button, el } from './dom';
 import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem, type Staged } from './export_batch';
+import { estimatePeak, type BatchFonts } from './export_budget';
 import { setExportPaused } from './export_pause';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
@@ -402,7 +403,9 @@ export class ExportFlow {
       busy: (on) => this.busy(on),
       changed: () => this.paint(),
       memoryPeak: () => this.core.marks.total,
+      peakEstimate: (item) => estimatePeak(this.core, item, options.size, fonts),
     };
+    let fonts: BatchFonts = { fontIndex: '', fontPack: null };
     this.view = 'progress';
     this.chunk = 0;
     this.chunks = [];
@@ -413,6 +416,7 @@ export class ExportFlow {
     const logosReady = !logoIds.length || logoStore.loaded();
     if ((!cubeIds.length || !lutBook) && syncFonts && logosReady) {
       const packedLogos = logoStore.packLogos(logoIds);
+      fonts = syncFonts;
       this.core.begin({
         dat: datCopy,
         calibIndex: pack.calibIndex,
@@ -432,7 +436,7 @@ export class ExportFlow {
       ? ensureFontPack(fontKeys).catch(() => ({ fontIndex: '', fontPack: null }))
       : Promise.resolve({ fontIndex: '', fontPack: null });
     const logoTask = logoIds.length && !logoStore.loaded() ? logoStore.ensureLoaded().catch(() => []) : Promise.resolve([]);
-    void Promise.all([lutTask, fontTask, logoTask]).then(([luts, fonts]) => {
+    void Promise.all([lutTask, fontTask, logoTask]).then(([luts, fonts0]) => {
       if (this.batch !== batch || batch.phase !== 'running') return;
       if (logoIds.length) {
         snapshots.forEach((s, idx) => {
@@ -442,13 +446,14 @@ export class ExportFlow {
         });
       }
       const packedLogos = logoStore.packLogos(logoIds);
+      fonts = fonts0;
       this.core.begin({
         dat: datCopy,
         calibIndex: pack.calibIndex,
         calibBlob: pack.calibBlob,
         luts,
-        fontIndex: fonts.fontIndex,
-        fontPack: fonts.fontPack,
+        fontIndex: fonts0.fontIndex,
+        fontPack: fonts0.fontPack,
         logoIndex: packedLogos.logoIndex,
         logoBlob: packedLogos.logoBlob,
       });

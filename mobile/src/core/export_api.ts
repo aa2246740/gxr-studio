@@ -32,7 +32,7 @@ function zeroStages(): Record<ExportMemory['stage'], StageMark> {
   };
 }
 
-type Pending = { kind: 'run'; done: (r: RunResult) => void } | { kind: 'sizes'; done: (r: { ok: boolean; json?: string }) => void } | { kind: 'decode'; done: (r: ExportOut) => void };
+type Pending = { kind: 'run'; done: (r: RunResult) => void } | { kind: 'sizes'; done: (r: { ok: boolean; json?: string; source?: number }) => void } | { kind: 'decode'; done: (r: ExportOut) => void };
 
 /** 可替换的 Worker 工厂：测试用假的。 */
 export type WorkerFactory = () => Worker;
@@ -49,8 +49,12 @@ export class ExportCore {
   private idle = 0;
   readonly marks: MemoryMarks = { wasm: 0, js: 0, total: 0, workers: 0, stages: zeroStages() };
   onMemory: ((mem: ExportMemory) => void) | null = null;
+  private readonly factory: WorkerFactory;
 
-  constructor(private readonly factory: WorkerFactory = defaultFactory) {}
+  // 不用参数属性：Node 的 strip-types 跑单元测试时不认。
+  constructor(factory: WorkerFactory = defaultFactory) {
+    this.factory = factory;
+  }
 
   /**
    * 这一批的相机配方文件和校准包。这里只记下，不发：发给 Worker（含拷贝）在下一次 run() 的 try 里做，
@@ -88,12 +92,16 @@ export class ExportCore {
     });
   }
 
-  sizes(job: Omit<SizesJob, 'id'>): Promise<{ ok: boolean; json?: string }> {
+  /**
+   * 成品尺寸。`withSetup` 为 false 时不顺带发这一批的设置（批次开始算一张之前估内存用）：设置还是由下一次 run()
+   * 在它自己的 try 里发，发设置失败照旧按这一张的陷阱结算（Sol r2 P2-04）。
+   */
+  sizes(job: Omit<SizesJob, 'id'>, withSetup = true): Promise<{ ok: boolean; json?: string; source?: number }> {
     const id = this.seq++;
     return new Promise((resolve) => {
       this.pending.set(id, { kind: 'sizes', done: resolve });
       try {
-        this.ensure().postMessage({ op: 'sizes', job: { ...job, id } });
+        this.ensure(withSetup).postMessage({ op: 'sizes', job: { ...job, id } });
       } catch {
         this.pending.delete(id);
         this.stop();
@@ -139,11 +147,11 @@ export class ExportCore {
    * 拿到（或新建）Worker，并把还没发的设置发过去。只在 run / sizes / decode 的 try 里调用：factory、设置拷贝或
    * postMessage 抛错时，调用方 stop()（关掉已经记下的 Worker）并按陷阱结算。
    */
-  private ensure(): Worker {
+  private ensure(withSetup = true): Worker {
     window.clearTimeout(this.idle);
     this.idle = 0;
     const worker = this.worker ?? this.create();
-    if (this.setupPending) {
+    if (withSetup && this.setupPending) {
       this.sendSetup(worker);
       this.setupPending = false;
     }
@@ -216,7 +224,7 @@ export class ExportCore {
         // 陷阱以后这份 WASM 不能再用：关掉，下一张用新的。
         if (msg.kind === 'trap') this.stop('trap');
       }
-    } else if (msg.op === 'sizes' && pending.kind === 'sizes') pending.done(msg.ok ? { ok: true, json: msg.json } : { ok: false });
+    } else if (msg.op === 'sizes' && pending.kind === 'sizes') pending.done(msg.ok ? { ok: true, json: msg.json, source: msg.source } : { ok: false });
     else if (msg.op === 'decoded' && pending.kind === 'decode') pending.done(msg);
   }
 

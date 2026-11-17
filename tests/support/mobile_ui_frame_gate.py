@@ -1,24 +1,39 @@
-"""Canvas gate for a framed phone export.
+"""Canvas gates for a framed phone export that ``export_ink`` did not mark exact.
 
-Pixels outside glyph boxes match the Python paint. Ink inside a box follows ink-text's frozen
-Gate B: 8-bit coverage sums, colour, and an exact de-hinted glyph when the coverage differs.
-A blur backdrop may differ only when the stamp was drawn before the blur, and only if the same
-export with de-hinted fonts then matches Python on every pixel.
+The phone's dev hook hands over two things: the inked canvas, and for every glyph ``export_ink``
+drew, the 8-bit coverage mask the Rust rasterizer blended (same font pack, same rasterizer).
+Three gates use them:
+
+- **Mask gate.** Each Rust mask against the Pillow mask of the same font file, ``px`` and
+  character (``compare_masks_common_space``): ink-text's frozen Gate B bounds for the shipped
+  hinted fonts, with the exact de-hinted attribution for every glyph that differs; exact for the
+  de-hinted export. Nothing is derived from the finished photo's RGB.
+- **Composite gate.** Python paints the same layout again, but every glyph Pillow would rasterize
+  is replaced by the phone's Rust mask and blended by Pillow's own ``draw_bitmap`` (the
+  ``fill_mask_L`` blend ink-text's Gate A ports). Every pixel inside a glyph window, and in fact
+  the whole canvas, must then equal the phone's exactly: colour, glow and compositing included.
+- **Outside gate.** Outside the glyph windows the phone equals the ordinary Python paint. A blur
+  backdrop may differ only when the stamp is drawn before the blur, and then the same export with
+  de-hinted fonts must equal Python on every pixel (manager ruling on P2-01).
 
 Nothing here prints a photo name, a capture time, or EXIF.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
-import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-from gxr_studio.finish.fonts import FontMetrics, PilFonts
+from gxr_studio.finish.fonts import FONT_FILES, FontMetrics, PilFonts, open_face
 from gxr_studio.finish.layout import FrameLayout, glyph_xs, stamp_layout
 from gxr_studio.finish.spec import FrameSpec, StampSpec
 from gxr_studio.finish.stamp import format_stamp
@@ -30,27 +45,15 @@ from support.ink_text_cases import (
     GATE_B_SMALL_PX_MIN_SUM,
     GATE_B_VERT_EDGE_BOUNDS,
     compare_masks_common_space,
-    dehinted_font_paths,
     open_pil_face,
-    patched_pil_fonts,
     pillow_mask,
     run_rust_batch,
 )
 
-_GATE_FONT = {
-    "atkinson": "atkinson",
-    "inter": "inter",
-    "inter_sb": "inter_sb",
-    "courier": "courier",
-    "patrick": "patrick",
-    "dseg": "dseg",
-    "seg7": "dseg",
-    "typewriter": "courier",
-    "sans": "atkinson",
-}
-_DEHINT: dict[str, Path] | None = None
-_ATTR_EXACT: dict[tuple[str, int, str], bool] = {}
+Mask = tuple[int, int, int, int, bytes]
+GlyphKey = tuple[str, int, str]
 _GlyphBox = tuple[tuple[int, int, int, int], str, int, float | None, str]
+_ATTR_EXACT: dict[tuple[str, str, int, str], bool] = {}
 
 
 def _host() -> tuple[dict[str, int], Any]:
@@ -68,6 +71,208 @@ def _stamp_on(frame: FrameSpec, stamp: StampSpec) -> str | None:
     return "photo"
 
 
+# --- the phone's glyph report -------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GlyphReport:
+    """What the dev hook posted next to the canvas (``<prefix>-<index>-masks.bin``)."""
+
+    exact: bool
+    runs: list[dict[str, Any]]
+    masks: dict[GlyphKey, Mask]
+    clipped: list[GlyphKey]
+    fonts: dict[str, str]
+
+
+def read_glyph_report(path: Path | None) -> GlyphReport:
+    """``u32`` LE header length, the JSON header, then the mask bytes it indexes."""
+    check(path is not None and path.is_file(), "glyph masks posted")
+    raw = path.read_bytes() if path is not None and path.is_file() else b"\2\0\0\0{}"
+    size = int.from_bytes(raw[:4], "little")
+    check(4 + size <= len(raw), "glyph mask header")
+    head = json.loads(raw[4 : 4 + size].decode("utf-8"))
+    body = raw[4 + size :]
+    masks: dict[GlyphKey, Mask] = {}
+    clipped: list[GlyphKey] = []
+    end = 0
+    for glyph in head.get("glyphs", []):
+        key = (str(glyph["font"]), int(glyph["px"]), str(glyph["ch"]))
+        start, length = int(glyph["offset"]), int(glyph["length"])
+        width, height = int(glyph["w"]), int(glyph["h"])
+        check(length == width * height and start == end, "glyph mask length")
+        masks[key] = (width, height, int(glyph["x_off"]), int(glyph["y_off"]), body[start : start + length])
+        end = start + length
+        if glyph.get("clipped"):
+            clipped.append(key)
+    check(end == len(body), "glyph mask body")
+    return GlyphReport(bool(head.get("exact")), list(head.get("runs", [])), masks, clipped, dict(head.get("fonts", {})))
+
+
+def fonts_match(report: GlyphReport, fonts: dict[str, Path]) -> None:
+    """The phone's font pack is byte for byte the files the Pillow masks come from."""
+    want = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in fonts.items()}
+    check(bool(report.fonts) and all(want.get(name) == digest for name, digest in report.fonts.items()), "phone font files")
+    check({font for font, _px, _ch in report.masks} <= set(report.fonts), "glyph fonts are in the phone's pack")
+
+
+# --- mask gate -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MaskResult:
+    ok: bool
+    diff_px: int
+    horiz: int
+    vert: int
+    ratio: float | None
+
+
+def _ratio_ok(font: str, px: int, rs_sum: int, py_sum: int) -> bool:
+    if py_sum <= 0:
+        return rs_sum == 0
+    ratio = rs_sum / py_sum
+    if px >= 16:
+        lo, hi = GATE_B_COVERAGE_RATIO_GE_16[font]
+        return lo <= ratio <= hi
+    if min(rs_sum, py_sum) < GATE_B_SMALL_PX_MIN_SUM:
+        return True
+    lo, hi = GATE_B_SMALL_PX_COVERAGE_RATIO
+    return lo <= ratio <= hi
+
+
+def mask_gate(rust: Mask, pillow: Mask, font: str, px: int) -> MaskResult:
+    """Ink-text's frozen Gate B on two 8-bit masks: ink presence, bbox edges, coverage-sum ratio."""
+    diff_px, _max_d, rs_box, py_box, rs_sum, py_sum = compare_masks_common_space(rust, pillow)
+    ratio = None if py_sum == 0 else rs_sum / py_sum
+    if diff_px == 0:
+        return MaskResult(True, 0, 0, 0, ratio)
+    if (rs_box is None) != (py_box is None):
+        return MaskResult(False, diff_px, 0, 0, ratio)
+    horiz = vert = 0
+    if rs_box is not None and py_box is not None:
+        horiz = max(abs(rs_box[0] - py_box[0]), abs(rs_box[2] - py_box[2]))
+        vert = max(abs(rs_box[1] - py_box[1]), abs(rs_box[3] - py_box[3]))
+    ok = horiz <= GATE_B_HORIZ_EDGE_BOUND and vert <= GATE_B_VERT_EDGE_BOUNDS[font] and _ratio_ok(font, px, rs_sum, py_sum)
+    return MaskResult(ok, diff_px, horiz, vert, ratio)
+
+
+def glyph_hint_attributed(font: str, px: int, ch: str, dehint: dict[str, Path]) -> bool:
+    """Gate A for one glyph: de-hinted Rust and de-hinted Pillow masks are identical."""
+    path = dehint[font]
+    key = (str(path), font, px, ch)
+    if key not in _ATTR_EXACT:
+        item = run_rust_batch(path, [px], [ch], path.parent, tag=f"attr-{font}-{px}-{ord(ch)}")[0]
+        _ATTR_EXACT[key] = (item[2], item[3], item[4], item[5], item[6]) == pillow_mask(open_pil_face(path, px), ch)
+    return _ATTR_EXACT[key]
+
+
+def masks_ok(report: GlyphReport, fonts: dict[str, Path], dehint: dict[str, Path] | None) -> dict[str, Any]:
+    """Every reported glyph against Pillow on the same font file.
+
+    ``dehint`` given: the hinted run, frozen Gate B plus the exact de-hinted attribution of every
+    glyph that differs. ``dehint`` None: ``fonts`` are the de-hinted files and every mask is exact.
+    """
+    fonts_match(report, fonts)
+    check(not report.clipped, "glyph mask clipped")
+    check(bool(report.masks), "glyph masks present")
+    stats: dict[str, Any] = {"glyphs": len(report.masks), "mask_exact": 0, "max_horiz": 0, "max_vert": 0, "worst_ratio": None}
+    for (font, px, ch), rust in sorted(report.masks.items()):
+        check(font in FONT_FILES, "glyph font")
+        result = mask_gate(rust, pillow_mask(open_pil_face(fonts[font], px), ch), font, px)
+        if result.diff_px == 0:
+            stats["mask_exact"] += 1
+        else:
+            stats["max_horiz"] = max(stats["max_horiz"], result.horiz)
+            stats["max_vert"] = max(stats["max_vert"], result.vert)
+            worst = stats["worst_ratio"]
+            if result.ratio is not None and (worst is None or abs(result.ratio - 1) > abs(worst - 1)):
+                stats["worst_ratio"] = result.ratio
+        attributed = result.diff_px == 0 or (dehint is not None and glyph_hint_attributed(font, px, ch, dehint))
+        if not (result.ok and attributed):
+            row = {
+                "font": font,
+                "px": px,
+                "diff": result.diff_px,
+                "horiz": result.horiz,
+                "vert": result.vert,
+                "ratio": result.ratio,
+                "attributed": attributed,
+            }
+            note("ui_m4_frame_glyph", row)
+        check(result.ok, "gate B glyph mask")
+        check(attributed, "de-hinted glyph is exact" if dehint is not None else "de-hinted glyph mask is exact")
+    return stats
+
+
+# --- composite gate ------------------------------------------------------------------------
+
+
+class MissingGlyph(KeyError):
+    """Python drew a glyph the phone did not report. (Not an AttributeError: ``draw.text``
+    swallows those and falls back to ``getmask``.)"""
+
+
+class _RustFace:
+    """A Pillow face whose glyph rasterizer is replaced by the phone's masks. Metrics stay Pillow's."""
+
+    def __init__(self, real: Any, font: str, px: int, masks: dict[GlyphKey, Mask], used: set[GlyphKey]) -> None:
+        self._real = real
+        self._font = font
+        self._px = px
+        self._masks = masks
+        self._used = used
+
+    def getmask2(self, text: str, mode: str = "", *_args: Any, **kwargs: Any) -> tuple[Any, tuple[int, int]]:
+        whole = kwargs.get("start") in (None, (0.0, 0.0))
+        check(mode == "L" and kwargs.get("anchor") in (None, "la") and not kwargs.get("stroke_width") and whole, "glyph draw mode")
+        key = (self._font, self._px, text)
+        try:
+            width, height, x_off, y_off, buf = self._masks[key]
+        except KeyError:
+            raise MissingGlyph(key) from None
+        self._used.add(key)
+        image = Image.frombytes("L", (width, height), buf) if width and height else Image.new("L", (0, 0))
+        return image.im, (x_off, y_off)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+@contextmanager
+def rust_glyphs(masks: dict[GlyphKey, Mask], fonts: dict[str, Path]) -> Iterator[set[GlyphKey]]:
+    """Inside, every ``PilFonts`` face draws the given masks. Yields the keys actually drawn."""
+    saved = vars(PilFonts)["_load"]
+    used: set[GlyphKey] = set()
+
+    def _load(font: str, px: int, cjk: bool) -> Any:
+        check(not cjk, "no CJK glyphs")
+        return _RustFace(open_face(str(fonts[font]), px), font, px, masks, used)
+
+    PilFonts._load = staticmethod(_load)  # type: ignore[method-assign,assignment]
+    try:
+        yield used
+    finally:
+        setattr(PilFonts, "_load", saved)
+
+
+def composite_ok(phone: np.ndarray, rust_paint: np.ndarray, windows: np.ndarray) -> dict[str, int]:
+    """Inside every glyph window the phone pixel is exactly blend(background, fill, Rust mask);
+    the same paint must also match on the rest of the canvas."""
+    if phone.shape != rust_paint.shape or phone.dtype != rust_paint.dtype:
+        same_pixels(phone, rust_paint, "composite canvas shape")
+    differ = np.any(phone != rust_paint, axis=-1)
+    inside = int(np.count_nonzero(differ & windows))
+    whole = int(np.count_nonzero(differ))
+    note("ui_m4_frame_composite", {"inside": inside, "whole": whole})
+    check(inside == 0, "composite inside glyph windows")
+    check(whole == 0, "composite whole canvas")
+    return {"composite_inside": inside, "composite_whole": whole}
+
+
+# --- glyph windows -------------------------------------------------------------------------
+
+
 def _char_box(fonts: PilFonts, ch: str, x: int, y: int, font: str, px: int) -> tuple[int, int, int, int] | None:
     if ch == " " or ord(ch) < 0x20:
         return None
@@ -83,27 +288,13 @@ def _rotated_box(item: dict[str, Any], fonts: PilFonts) -> tuple[int, int, int, 
     return int(item["gx"]), int(item["gy"]), int(item["gx"]) + height, int(item["gy"]) + width
 
 
-def _push(
-    boxes: list[_GlyphBox],
-    box: tuple[int, int, int, int] | None,
-    font: str,
-    px: int,
-    glow: float | None,
-    text: str,
-) -> None:
+def _push(boxes: list[_GlyphBox], box: tuple[int, int, int, int] | None, font: str, px: int, glow: float | None, text: str) -> None:
     if box is None or not text:
         return
     boxes.append((box, font, px, glow, text))
 
 
-def _text_boxes(
-    fonts: PilFonts,
-    item: dict[str, Any],
-    ox: int,
-    oy: int,
-    glow: float | None,
-    boxes: list[_GlyphBox],
-) -> None:
+def _text_boxes(fonts: PilFonts, item: dict[str, Any], ox: int, oy: int, glow: float | None, boxes: list[_GlyphBox]) -> None:
     font = str(item["font"])
     px = int(item["px"])
     if item.get("rot"):
@@ -164,10 +355,9 @@ def _photo_size(layout: FrameLayout) -> tuple[int, int]:
 
 
 def _window(box: tuple[int, int, int, int], font: str, glow: float | None) -> tuple[int, int, int, int]:
-    gate = _GATE_FONT[font]
     pad = math.ceil(3 * glow) + 2 if glow else 0
     hx = max(GATE_B_HORIZ_EDGE_BOUND, pad)
-    vy = max(GATE_B_VERT_EDGE_BOUNDS[gate], pad)
+    vy = max(GATE_B_VERT_EDGE_BOUNDS[font], pad)
     left, top, right, bottom = box
     return left - hx, top - vy, right + hx, bottom + vy
 
@@ -181,122 +371,18 @@ def _clip(box: tuple[int, int, int, int], height: int, width: int) -> tuple[int,
     return left, top, right, bottom
 
 
-def _ratio_ok(font: str, px: int, rs_sum: int, py_sum: int) -> bool:
-    if py_sum <= 0:
-        return rs_sum == 0
-    ratio = rs_sum / py_sum
-    gate = _GATE_FONT[font]
-    if px >= 16:
-        lo, hi = GATE_B_COVERAGE_RATIO_GE_16[gate]
-        return lo <= ratio <= hi
-    if min(rs_sum, py_sum) < GATE_B_SMALL_PX_MIN_SUM:
-        return True
-    lo, hi = GATE_B_SMALL_PX_COVERAGE_RATIO
-    return lo <= ratio <= hi
+def glyph_windows(boxes: list[_GlyphBox], height: int, width: int) -> np.ndarray:
+    allow = np.zeros((height, width), dtype=bool)
+    for box, font, _px, glow, _text in boxes:
+        check(font in FONT_FILES, "glyph font")
+        window = _clip(_window(box, font, glow), height, width)
+        if window is not None:
+            left, top, right, bottom = window
+            allow[top:bottom, left:right] = True
+    return allow
 
 
-def _project_coverage(delta: np.ndarray, ink: np.ndarray) -> np.ndarray:
-    """8-bit coverage along one ink colour. A zero ink vector falls back to the strongest channel."""
-    denom = float(np.dot(ink, ink))
-    if denom <= 0.0:
-        return np.clip(np.max(np.abs(delta), axis=2), 0, 255).astype(np.uint8)
-    covered = delta.astype(np.float64) @ ink
-    return np.clip(np.rint(covered / denom * 255.0), 0, 255).astype(np.uint8)
-
-
-def _coverage_planes(phone: np.ndarray, py: np.ndarray, blank: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Phone and Python coverage masks, both measured against Python's ink colour."""
-    py_delta = py.astype(np.int16) - blank.astype(np.int16)
-    phone_delta = phone.astype(np.int16) - blank.astype(np.int16)
-    weight = np.abs(py_delta).sum(axis=2)
-    if int(weight.max()) == 0:
-        zero = np.zeros(py.shape[:2], dtype=np.uint8)
-        return _project_coverage(phone_delta, np.zeros(3, dtype=np.float64)), zero
-    flat = int(np.argmax(weight))
-    row, col = divmod(flat, weight.shape[1])
-    ink = py_delta[row, col].astype(np.float64)
-    return _project_coverage(phone_delta, ink), _project_coverage(py_delta, ink)
-
-
-def _mask_of(plane: np.ndarray) -> tuple[int, int, int, int, bytes]:
-    height, width = plane.shape
-    return width, height, 0, 0, np.ascontiguousarray(plane).tobytes()
-
-
-def _ink_angle_ok(phone: np.ndarray, py: np.ndarray, blank: np.ndarray) -> bool:
-    """Overlapping ink must share a colour. Hinting may change coverage, not the ink direction."""
-    py_delta = py.astype(np.float64) - blank.astype(np.float64)
-    phone_delta = phone.astype(np.float64) - blank.astype(np.float64)
-    both = (np.max(np.abs(py_delta), axis=2) > 0) & (np.max(np.abs(phone_delta), axis=2) > 0)
-    if not np.any(both):
-        return True
-    left, right = py_delta[both], phone_delta[both]
-    scale = np.maximum(np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1), 1.0)
-    sine = np.linalg.norm(np.cross(left, right), axis=1) / scale
-    return bool(np.all(sine <= 0.05))
-
-
-def _dehint_paths() -> dict[str, Path]:
-    global _DEHINT
-    if _DEHINT is None:
-        folder = Path(tempfile.gettempdir()) / "gxr-frame-dehint"
-        folder.mkdir(exist_ok=True)
-        _DEHINT = dehinted_font_paths(folder)
-    return _DEHINT
-
-
-def glyph_hint_attributed(font: str, px: int, text: str) -> bool:
-    """Gate A for one run: de-hinted Rust and de-hinted Pillow masks of each character are exact."""
-    gate = _GATE_FONT.get(font)
-    if gate is None:
-        return False
-    paths = _dehint_paths()
-    for ch in text:
-        if ch == " " or ord(ch) < 0x20:
-            continue
-        key = (gate, px, ch)
-        cached = _ATTR_EXACT.get(key)
-        if cached is None:
-            rust = run_rust_batch(paths[gate], [px], [ch], paths[gate].parent, tag=f"attr-{gate}-{px}-{ord(ch)}")
-            item = rust[0]
-            pillow = pillow_mask(open_pil_face(paths[gate], px), ch)
-            cached = (item[2], item[3], item[4], item[5], item[6]) == pillow
-            _ATTR_EXACT[key] = cached
-        if not cached:
-            return False
-    return True
-
-
-def _glyph_ok(
-    phone: np.ndarray,
-    py: np.ndarray,
-    blank: np.ndarray,
-    window: tuple[int, int, int, int],
-    font: str,
-    px: int,
-    text: str | None = None,
-) -> tuple[bool, int, int, float | None]:
-    """Frozen Gate B on 8-bit coverage sums, plus colour and de-hinted attribution."""
-    left, top, right, bottom = window
-    phone_rgb = phone[top:bottom, left:right]
-    py_rgb = py[top:bottom, left:right]
-    bg = blank[top:bottom, left:right]
-    if not _ink_angle_ok(phone_rgb, py_rgb, bg):
-        return False, 0, 0, None
-    phone_plane, py_plane = _coverage_planes(phone_rgb, py_rgb, bg)
-    _diff_px, _max_d, phone_box, py_box, phone_sum, py_sum = compare_masks_common_space(_mask_of(phone_plane), _mask_of(py_plane))
-    if (py_box is None) != (phone_box is None):
-        return False, 0, 0, None
-    horiz = vert = 0
-    if py_box is not None and phone_box is not None:
-        horiz = max(abs(phone_box[0] - py_box[0]), abs(phone_box[2] - py_box[2]))
-        vert = max(abs(phone_box[1] - py_box[1]), abs(phone_box[3] - py_box[3]))
-    ratio = None if py_sum == 0 else phone_sum / py_sum
-    gate = _GATE_FONT[font]
-    ok = horiz <= GATE_B_HORIZ_EDGE_BOUND and vert <= GATE_B_VERT_EDGE_BOUNDS[gate] and _ratio_ok(font, px, phone_sum, py_sum)
-    if ok and text and not np.array_equal(phone_plane, py_plane):
-        ok = glyph_hint_attributed(font, px, text)
-    return ok, horiz, vert, ratio
+# --- blur backdrop (P2-01 ruling) ------------------------------------------------------------
 
 
 def _item_bounds(item: dict[str, Any]) -> tuple[int, int, int, int] | None:
@@ -315,11 +401,7 @@ def _item_bounds(item: dict[str, Any]) -> tuple[int, int, int, int] | None:
 
 
 def _blur_backdrop(layout: FrameLayout, height: int, width: int) -> np.ndarray:
-    """Pixels of a ``blur_fill`` backdrop not covered by the photo or another item.
-
-    The backdrop is a blur of the stamped photo, so a Gate B stamp difference is smeared
-    here. Ink-text draws the stamp before that blur.
-    """
+    """Pixels of a ``blur_fill`` backdrop not covered by the photo or another item."""
     mask = np.zeros((height, width), dtype=bool)
     if not layout.bgfx or layout.bgfx.get("kind") != "blur":
         return mask
@@ -341,122 +423,90 @@ def _stamp_before_blur(layout: FrameLayout, frame: FrameSpec, stamp: StampSpec) 
 
 
 def _row_counts(mask: np.ndarray) -> list[dict[str, int]]:
-    rows: list[dict[str, int]] = []
-    for y in np.nonzero(mask.any(axis=1))[0]:
-        rows.append({"y": int(y), "pixels": int(np.count_nonzero(mask[int(y)]))})
-    return rows
+    return [{"y": int(y), "pixels": int(np.count_nonzero(mask[int(y)]))} for y in np.nonzero(mask.any(axis=1))[0]]
 
 
-def paint_dehinted(
-    photo: np.ndarray,
-    layout: FrameLayout,
-    frame: FrameSpec,
-    stamp: StampSpec,
-    taken: Any,
-    file_time: Any,
-    logo_images: dict[str, Image.Image] | None,
-) -> np.ndarray:
-    """The same Python paint with ink-text's Gate A fonts (instructions stripped, native loader kept)."""
-    _mark, paint_reference = _host()
-    with patched_pil_fonts(_dehint_paths()):
-        return paint_reference(photo, layout, frame, stamp, taken, file_time, logo_images, glyphs=True)
+@dataclass(frozen=True)
+class Scene:
+    """One export as Python paints it."""
+
+    photo: np.ndarray
+    layout: FrameLayout
+    frame: FrameSpec
+    stamp: StampSpec
+    taken: Any
+    file_time: Any
+    logo_images: dict[str, Image.Image] | None
+
+    def paint(self) -> np.ndarray:
+        _mark, paint_reference = _host()
+        out = paint_reference(self.photo, self.layout, self.frame, self.stamp, self.taken, self.file_time, self.logo_images)
+        return np.asarray(out)
+
+    def paint_fonts(self, fonts: dict[str, Path]) -> np.ndarray:
+        """The same paint with Pillow on other font files (the de-hinted Gate A fonts)."""
+        from support.ink_text_cases import patched_pil_fonts
+
+        with patched_pil_fonts(fonts):
+            return self.paint()
+
+    def paint_masks(self, report: GlyphReport, fonts: dict[str, Path]) -> np.ndarray:
+        """The same paint with every glyph replaced by the phone's mask; it must draw exactly those."""
+        with rust_glyphs(report.masks, fonts) as used:
+            out = self.paint()
+        check(used == set(report.masks), "phone reported exactly the glyphs Python draws")
+        return out
 
 
 def _prove_dehinted(
-    phone: np.ndarray | None,
-    photo: np.ndarray,
-    layout: FrameLayout,
-    frame: FrameSpec,
-    stamp: StampSpec,
-    taken: Any,
-    file_time: Any,
-    logo_images: dict[str, Image.Image] | None,
-    rows: list[dict[str, int]],
-) -> None:
-    """A second export with de-hinted fonts must match Python on every pixel, backdrop included."""
-    check(phone is not None, "de-hinted export")
-    painted = paint_dehinted(photo, layout, frame, stamp, taken, file_time, logo_images)
-    equal = phone is not None and phone.shape == painted.shape and bool(np.array_equal(phone, painted))
-    note("ui_m4_frame_dehint", {"pixels": sum(row["pixels"] for row in rows), "rows": len(rows), "equal": equal})
+    scene: Scene, phone: np.ndarray | None, report: GlyphReport | None, dehint: dict[str, Path], rows: list[dict[str, int]]
+) -> dict[str, Any]:
+    """The de-hinted export: exact masks, and the whole canvas, backdrop included, equals Python."""
+    check(phone is not None and report is not None, "de-hinted export")
+    if phone is None or report is None:
+        return {}
+    stats = masks_ok(report, dehint, None)
+    painted = scene.paint_fonts(dehint)
+    equal = phone.shape == painted.shape and bool(np.array_equal(phone, painted))
+    pixels = sum(row["pixels"] for row in rows)
+    note(
+        "ui_m4_frame_dehint", {"pixels": pixels, "rows": len(rows), "equal": equal, "masks": stats["glyphs"], "mask_exact": stats["mask_exact"]}
+    )
     check(equal, "de-hinted canvas")
+    return {"dehinted_equal": equal, "dehinted_masks": stats["glyphs"], "dehinted_mask_exact": stats["mask_exact"]}
 
 
 def compare_canvas(
     phone: np.ndarray,
-    photo: np.ndarray,
-    layout: FrameLayout,
-    frame: FrameSpec,
-    stamp: StampSpec,
-    taken: Any,
-    file_time: Any,
-    logo_images: dict[str, Image.Image] | None,
+    scene: Scene,
+    report: GlyphReport,
+    fonts: dict[str, Path],
+    dehint: dict[str, Path],
     dehinted_phone: np.ndarray | None = None,
+    dehinted_report: GlyphReport | None = None,
 ) -> dict[str, Any]:
-    """Exact outside glyph boxes; frozen Gate B on the ink inside them."""
-    _mark, paint_reference = _host()
-    py = paint_reference(photo, layout, frame, stamp, taken, file_time, logo_images, glyphs=True)
+    """The mask, composite and outside gates for one inked canvas."""
+    py = scene.paint()
     if phone.shape != py.shape or phone.dtype != py.dtype:
         same_pixels(phone, py, "inked canvas shape")
-    if np.array_equal(phone, py):
-        return {
-            "outside": 0,
-            "glyphs": 0,
-            "max_horiz": 0,
-            "max_vert": 0,
-            "worst_ratio": None,
-            "blur_smear": 0,
-            "backdrop_rows": [],
-            "dehinted_equal": None,
-        }
-    boxes = glyph_boxes(layout, frame, stamp, taken, file_time, photo.shape[1], photo.shape[0])
-    check(all(font in _GATE_FONT for _box, font, _px, _glow, _text in boxes), "glyph font")
     height, width = py.shape[:2]
-    allow = np.zeros((height, width), dtype=bool)
-    windows: list[tuple[tuple[int, int, int, int], str, int, str]] = []
-    for box, font, px, glow, text in boxes:
-        window = _clip(_window(box, font, glow), height, width)
-        if window is None:
-            continue
-        left, top, right, bottom = window
-        allow[top:bottom, left:right] = True
-        windows.append((window, font, px, text))
+    stats = masks_ok(report, fonts, dehint)
+    boxes = glyph_boxes(scene.layout, scene.frame, scene.stamp, scene.taken, scene.file_time, scene.photo.shape[1], scene.photo.shape[0])
+    allow = glyph_windows(boxes, height, width)
+    stats.update(composite_ok(phone, scene.paint_masks(report, fonts), allow))
     differ = np.any(phone != py, axis=-1)
-    backdrop = _blur_backdrop(layout, height, width)
-    backdrop_diff = differ & backdrop & ~allow
-    other = differ & ~allow & ~backdrop
-    outside = int(np.count_nonzero(other))
-    rows = _row_counts(backdrop_diff)
-    smear = int(np.count_nonzero(backdrop_diff))
-    note("ui_m4_frame_outside", {"outside": outside, "glyphs": len(windows), "blur_smear": smear, "backdrop_rows": len(rows)})
+    backdrop = _blur_backdrop(scene.layout, height, width)
+    rows = _row_counts(differ & backdrop & ~allow)
+    outside = int(np.count_nonzero(differ & ~allow & ~backdrop))
+    pixels = sum(r["pixels"] for r in rows)
+    note("ui_m4_frame_outside", {"outside": outside, "windows": len(boxes), "backdrop_pixels": pixels, "backdrop_rows": len(rows)})
     if outside:
-        shown_phone = phone.copy()
-        shown_py = py.copy()
+        shown_phone, shown_py = phone.copy(), py.copy()
         shown_phone[allow | backdrop] = 0
         shown_py[allow | backdrop] = 0
         same_pixels(shown_phone, shown_py, "outside glyph boxes")
-    dehinted_equal: bool | None = None
+    stats.update({"outside": outside, "windows": len(boxes), "backdrop_rows": rows, "backdrop_pixels": pixels, "dehinted_equal": None})
     if rows:
-        check(_stamp_before_blur(layout, frame, stamp), "backdrop difference")
-        _prove_dehinted(dehinted_phone, photo, layout, frame, stamp, taken, file_time, logo_images, rows)
-        dehinted_equal = True
-    blank = paint_reference(photo, layout, frame, stamp, taken, file_time, logo_images, glyphs=False)
-    max_horiz = max_vert = 0
-    worst: float | None = None
-    for window, font, px, text in windows:
-        ok, horiz, vert, ratio = _glyph_ok(phone, py, blank, window, font, px, text)
-        max_horiz, max_vert = max(max_horiz, horiz), max(max_vert, vert)
-        if ratio is not None and (worst is None or abs(ratio - 1) > abs(worst - 1)):
-            worst = ratio
-        if not ok:
-            note("ui_m4_frame_glyph", {"horiz": horiz, "vert": vert, "ratio": ratio, "px": px, "font": font})
-        check(ok, "gate B glyph")
-    return {
-        "outside": outside,
-        "glyphs": len(windows),
-        "max_horiz": max_horiz,
-        "max_vert": max_vert,
-        "worst_ratio": worst,
-        "blur_smear": smear,
-        "backdrop_rows": rows,
-        "dehinted_equal": dehinted_equal,
-    }
+        check(_stamp_before_blur(scene.layout, scene.frame, scene.stamp), "backdrop difference")
+        stats.update(_prove_dehinted(scene, dehinted_phone, dehinted_report, dehint, rows))
+    return stats
