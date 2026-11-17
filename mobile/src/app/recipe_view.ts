@@ -82,6 +82,8 @@ export class RecipeView {
   /** 最近一次要的那张表。旧的烘焙结果回来时不再换上去。 */
   private wanted = '';
   private asked = false;
+  /** 已经打开的 06d 提示。解析晚到时 `refresh` 改这几句，读成功就关掉。 */
+  private askLeads: HTMLElement | null = null;
   private readonly off: () => void;
 
   constructor(
@@ -191,6 +193,7 @@ export class RecipeView {
     const scene = this.scene();
     this.buildStrip(scene);
     this.buildPanel(scene);
+    this.syncAsk();
     this.applyLook(scene);
     void this.renderCards(scene, token);
   }
@@ -334,14 +337,12 @@ export class RecipeView {
       return;
     }
     const book = this.api.book();
+    // 错误和「还没有文件」分开：补选一个坏的 GXRFX.BIN 时旧配方还在，核心原话也要留在面板上。
+    if (book.datError) this.panel.append(this.datFileBox(book.datError));
     if (!scene.dat) {
-      const box = el('div', 'pad');
-      box.append(el('p', 'dim', book.datError ?? '配方要用存储卡上的相机配方文件，这次没有和照片一起选上。每张卡选一次就行。没选之前，照片只显示中性转换。'));
-      const pick = button('btn primary block', '在「文件」里选 GXRCE.DAT');
-      pick.prepend(icon(FILE));
-      pick.addEventListener('click', () => this.api.pickDat());
-      box.append(pick);
-      this.panel.append(box);
+      if (!book.datError) {
+        this.panel.append(this.datFileBox('配方要用存储卡上的相机配方文件，这次没有和照片一起选上。每张卡选一次就行。没选之前，照片只显示中性转换。'));
+      }
       return;
     }
     const target = this.target(scene);
@@ -642,6 +643,41 @@ export class RecipeView {
     }
   }
 
+  /** 没有配方文件时的说明和重新选择。`message` 是核心原话，或还没选文件时的通用句。 */
+  private datFileBox(message: string): HTMLElement {
+    const box = el('div', 'pad');
+    box.append(el('p', 'dim', message));
+    const pick = button('btn primary block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
+    pick.prepend(icon(FILE));
+    pick.addEventListener('click', () => this.api.pickDat());
+    box.append(pick);
+    return box;
+  }
+
+  private askLeadNodes(datError: string | null): HTMLElement[] {
+    return datError
+      ? [el('p', 'lead', datError)]
+      : [
+          el('p', 'lead', '配方要用存储卡上的相机配方文件，这次没有和照片一起选上。'),
+          el('p', 'lead', '每张卡选一次就行。没选之前，照片只显示中性转换。'),
+        ];
+  }
+
+  /** 弹层还开着：成功读入后关掉，否则把提示改成现在的 `book.datError`。 */
+  private syncAsk(): void {
+    const leads = this.askLeads;
+    if (!leads?.isConnected) {
+      this.askLeads = null;
+      return;
+    }
+    const book = this.api.book();
+    if (book.dat && !book.datError) {
+      this.closeAsk();
+      return;
+    }
+    leads.replaceChildren(...this.askLeadNodes(book.datError));
+  }
+
   /** 06d：还差相机配方文件。 */
   private ask(): void {
     this.asked = true;
@@ -656,8 +692,15 @@ export class RecipeView {
     const path = el('div', 'path');
     const fic = el('span', 'fic');
     fic.append(icon(FILE));
-    path.append(fic, el('span', '', '存储卡'), el('span', 'faint', '›'), el('b', 'num', 'GXRCE.DAT'), el('span', 'faint small', '（在最外层，和 DCIM 并排）'));
-    const pick = button('btn primary lg block', '在「文件」里选 GXRCE.DAT');
+    path.append(
+      fic,
+      el('span', '', '存储卡'),
+      el('span', 'faint', '›'),
+      el('b', 'num', 'GXRCE.DAT'),
+      el('span', 'faint small', '（在最外层，和 DCIM 并排）'),
+      el('b', 'num', 'GXRFX.BIN（新卡才有）'),
+    );
+    const pick = button('btn primary lg block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
     pick.prepend(icon(FILE));
     pick.addEventListener('click', () => {
       this.closeAsk();
@@ -666,15 +709,11 @@ export class RecipeView {
     const later = button('btn lg ghost block', '先不用，只看中性转换');
     later.addEventListener('click', () => this.closeAsk());
     scrim.addEventListener('click', () => this.closeAsk());
-    sheet.append(
-      el('div', 'grab'),
-      head,
-      el('p', 'lead', '配方要用存储卡上的相机配方文件，这次没有和照片一起选上。'),
-      el('p', 'lead', '每张卡选一次就行。没选之前，照片只显示中性转换。'),
-      path,
-      pick,
-      later,
-    );
+    const book = this.api.book();
+    const leads = el('div', 'ask-leads');
+    this.askLeads = leads;
+    leads.append(...this.askLeadNodes(book.datError));
+    sheet.append(el('div', 'grab'), head, leads, path, pick, later);
     host.append(scrim, sheet);
   }
 
@@ -682,6 +721,7 @@ export class RecipeView {
     const host = this.strip.closest('.app') ?? document;
     host.querySelector('.ask-scrim')?.remove();
     host.querySelector('.ask-sheet')?.remove();
+    this.askLeads = null;
   }
 }
 

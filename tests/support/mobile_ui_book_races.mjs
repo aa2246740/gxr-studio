@@ -73,7 +73,7 @@ IDBObjectStore.prototype.put = function (...args) {
     /** 一个 Book，异步边界都交给测试来放行。`calls` 记下每个边界被调了几次。 */
     function make() {
       const pending = { read: [], dat: [], calib: [], load: [], pack: [] };
-      const calls = { read: 0, dat: 0, calib: 0, load: 0, save: 0, del: 0, packFile: 0 };
+      const calls = { read: 0, dat: 0, calib: 0, load: 0, save: 0, del: 0, packFile: 0, library: 0 };
       const io = {
         readFile: () => {
           calls.read += 1;
@@ -81,8 +81,9 @@ IDBObjectStore.prototype.put = function (...args) {
           pending.read.push(d);
           return d.promise;
         },
-        readDat: () => {
+        readDat: (_bytes, library) => {
           calls.dat += 1;
+          calls.library = library ? library.byteLength : 0;
           const d = deferred();
           pending.dat.push(d);
           return d.promise;
@@ -162,6 +163,36 @@ IDBObjectStore.prototype.put = function (...args) {
       pending.dat[1]?.resolve(datRead('A'));
       await a;
       result.olderLate = { name: book.dat ? JSON.parse(book.dat.read.summary).name : null, busy: book.datBusy };
+    }
+    // r5：DAT 和 GXRFX.BIN 都读，库字节交给 readDat。过大的 BIN 一个字节都不读。
+    {
+      const { book, pending, calls } = make();
+      const run = book.setDat(file('GXRCE.DAT', 12), 1, file('GXRFX.BIN', 32));
+      await tick();
+      pending.read[0].resolve(new ArrayBuffer(12));
+      await tick();
+      const reads = pending.read.length;
+      if (pending.read[1]) pending.read[1].resolve(new ArrayBuffer(32));
+      await tick();
+      if (pending.dat[0]) pending.dat[0].resolve(datRead('pair'));
+      await run;
+      result.withBin = {
+        reads,
+        library: calls.library,
+        entries: book.dat ? book.dat.read.entries.length : 0,
+        error: book.datError,
+      };
+    }
+    {
+      const { book, pending, calls } = make();
+      const run = book.setDat(file('GXRCE.DAT', 12), 1, file('GXRFX.BIN', (16 << 20) + 1));
+      await tick();
+      const reads = calls.read;
+      if (pending.read[0]) pending.read[0].resolve(new ArrayBuffer(8));
+      await tick();
+      if (pending.dat[0]) pending.dat[0].resolve(datRead('big'));
+      await run;
+      result.bigBin = { reads, error: book.datError, hasDat: book.dat !== null };
     }
     // 4. 导入校准数据还在核对时删除：核对完也不复活。
     {

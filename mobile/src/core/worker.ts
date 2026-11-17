@@ -148,19 +148,26 @@ function describe(id: number, buffer: ArrayBuffer): void {
   ok(id, JSON.stringify(data));
 }
 
-function dat(id: number, buffer: ArrayBuffer): void {
+function libraryView(library: ArrayBuffer | null | undefined): Uint8Array | undefined {
+  // 拷一份再交给 WASM：同一个库还要原样还给主线程，不能被借走。
+  return library ? new Uint8Array(library.slice(0)) : undefined;
+}
+
+function dat(id: number, buffer: ArrayBuffer, library: ArrayBuffer | null): void {
   const bytes = new Uint8Array(buffer);
-  const summary = camdata_parse(bytes, undefined);
+  const summary = camdata_parse(bytes, libraryView(library));
   // 配方列表照桌面 CameraData.listing（内置、文件里的 Looks、相机里的用户配方，各带旋钮）。
-  const listing = color_listing(bytes, undefined);
-  const entries = camdata_entries(bytes, undefined);
-  // DAT 字节原样还回去：之后每次 color_resolve 都要用（主线程不再复制一份）。
-  ok(id, JSON.stringify({ summary, listing }), [own(entries), buffer]);
+  const listing = color_listing(bytes, libraryView(library));
+  const entries = camdata_entries(bytes, libraryView(library));
+  // DAT 和库的字节原样还回去：之后每次 color_resolve 都要用（主线程不再复制一份）。
+  const back = [own(entries), buffer];
+  if (library) back.push(library);
+  ok(id, JSON.stringify({ summary, listing }), back);
 }
 
 /** 一个配方选择 → 552 字节条目（旋钮已经套上，和桌面 CameraData.resolve 一样）。 */
 function resolve(id: number, args: ResolveArgs): void {
-  const text = color_resolve(new Uint8Array(args.dat), new TextEncoder().encode(args.recipe), undefined);
+  const text = color_resolve(new Uint8Array(args.dat), new TextEncoder().encode(args.recipe), libraryView(args.library));
   ok(id, text);
 }
 
@@ -620,7 +627,7 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   const { buffer, args, file, meta } = req;
   await load();
   if (op === 'describe' && buffer) describe(id, buffer);
-  else if (op === 'dat' && buffer) dat(id, buffer);
+  else if (op === 'dat' && buffer) dat(id, buffer, req.resolve?.library ?? null);
   else if (op === 'calib-file' && file && meta) await calibFile(id, file, meta);
   else if (op === 'calib-restore') await calibRestore(id);
   else if (op === 'bake' && args) bake(id, args);

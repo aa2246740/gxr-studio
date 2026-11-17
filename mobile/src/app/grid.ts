@@ -174,7 +174,7 @@ export class GridView {
     const book = this.api.book();
     const text = book.datError ?? book.datNote ?? '';
     this.datLine.textContent = text;
-    this.datLine.hidden = !text;
+    this.datLine.hidden = book.datError ? false : !text;
     this.datLine.classList.toggle('bad', !!book.datError);
   }
 
@@ -595,7 +595,7 @@ export class GridView {
       ['添加照片', '再从存储卡里选几张', () => this.api.addPhotos()],
       ['胶片柜', '下一步做', () => undefined],
       ['校准数据', calibDetail(this.api), () => this.api.showCalib()],
-      ['怎么把卡插到 iPhone', this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT', () => this.api.showHelp()],
+      ['怎么把卡插到 iPhone', this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT 和 GXRFX.BIN', () => this.api.showHelp()],
     ];
     for (const [title, detail, run] of rows) {
       const line = button('lrow', '');

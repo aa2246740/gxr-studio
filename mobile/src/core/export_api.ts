@@ -1,6 +1,7 @@
 // 主线程这边的导出 Worker：只有一个，一次一张。一批开始时建，闲 30 秒或停止就关掉，WASM 的内存跟着还回去。
 // Worker 陷阱、RangeError 或 error 事件：关掉它，这张算失败（内存不够那一句），下一张用新的 Worker 接着做。
 
+import { libraryFor } from './api';
 import type { ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJob } from './export_protocol';
 
 export const IDLE_MS = 30_000;
@@ -183,10 +184,12 @@ export class ExportCore {
         luts[id] = { cube: entry.cube.slice(0), space: entry.space };
       }
     }
+    const library = s.library !== undefined ? s.library : libraryFor(s.dat);
     worker.postMessage({
       op: 'setup',
       setup: {
         dat: s.dat ? s.dat.slice(0) : null,
+        library: library ? library.slice(0) : null,
         calibIndex: s.calibIndex,
         calibBlob: s.calibBlob ? s.calibBlob.slice(0) : null,
         luts,

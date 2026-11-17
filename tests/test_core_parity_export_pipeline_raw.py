@@ -226,6 +226,35 @@ def run_case(
     return {"no_ink": no_ink, "base_diff": base_diff, "rgb0": rgb0, "rs_base": rs_base, "shot": shot, "render": res.render}
 
 
+def test_capture_scanners_skip_raw_compression_7(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synthetic CFA whose raw IFD compression is 7 is left out. Unreadable headers stay."""
+    from support import export_pipeline_cases as pipe
+    from support import hdr_parity as hp
+    from support.dng_writer import write_dng
+
+    def write(name: str, compression: int | None) -> None:
+        path = tmp_path / name
+        if compression is None:
+            path.write_bytes(b"not-tiff")
+        else:
+            path.write_bytes(write_dng(np.zeros((2, 2), np.uint16), compression=compression))
+        path.with_suffix(".JPG").write_bytes(b"jpg")
+
+    write("plain.DNG", 1)
+    write("lossy.DNG", 7)
+    write("notes.DNG", None)
+    monkeypatch.setattr(xs, "CAPTURES", tmp_path)
+    monkeypatch.setattr(pipe, "CAPTURES", tmp_path)
+    monkeypatch.setattr(hp, "CAPTURES", tmp_path)
+    source = {path.name for path, _jpg in xs.real_pairs(10)}
+    pipeline = {path.name for _jpg, path in pipe.real_pairs(10)}
+    hdr = {path.name for _jpg, path in hp.real_pairs(10)}
+    kept = {"plain.DNG", "notes.DNG"}
+    check(source == kept, "source scanner skips compression 7")
+    check(pipeline == kept, "pipeline scanner skips compression 7")
+    check(hdr == kept, "hdr scanner skips compression 7")
+
+
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
 def test_raw_branches_real_pairs_match_export_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:
     pairs = [(d, j) for d, j in xs.real_pairs(60) if j is not None]

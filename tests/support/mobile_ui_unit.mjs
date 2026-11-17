@@ -231,6 +231,47 @@ test('pairing, dat and ignored files', () => {
   assert.equal(first.jpgIndex, 1);
   assert.equal(out.photos[1].dngIndex, null);
   assert.equal(out.photos[1].jpgIndex, 4);
+  assert.equal(out.binIndex, null);
+  assert.equal(out.binCount, 0);
+});
+
+test('GXRFX.BIN is kept with the DAT, alone, and the newest of several', () => {
+  const both = classify([
+    { name: 'R010.DNG', lastModified: 1 },
+    { name: 'R010.JPG', lastModified: 2 },
+    { name: 'GXRCE.DAT', lastModified: 3 },
+    { name: 'GXRFX.BIN', lastModified: 4 },
+    { name: 'notes.txt', lastModified: 5 },
+  ]);
+  assert.equal(both.datIndex, 2);
+  assert.equal(both.binIndex, 3);
+  assert.equal(both.binCount, 1);
+  assert.equal(both.datCount, 1);
+  assert.equal(both.photos.length, 1);
+  assert.equal(both.photos[0].dngIndex, 0);
+  assert.equal(both.photos[0].jpgIndex, 1);
+  assert.equal(both.ignored, 1);
+
+  const only = classify([
+    { name: 'gxrfx.bin', lastModified: 1 },
+    { name: 'R1.DNG', lastModified: 2 },
+  ]);
+  assert.equal(only.binIndex, 0);
+  assert.equal(only.binCount, 1);
+  assert.equal(only.datIndex, null);
+  assert.equal(only.photos.length, 1);
+  assert.equal(only.ignored, 0);
+
+  const newest = classify([
+    { name: 'GXRFX.BIN', lastModified: 5 },
+    { name: 'gxrfx.bin', lastModified: 9 },
+    { name: 'GXRFX.BIN', lastModified: 9 },
+  ]);
+  assert.equal(newest.binIndex, 1);
+  assert.equal(newest.binCount, 3);
+  assert.equal(newest.datIndex, null);
+  assert.equal(newest.photos.length, 0);
+  assert.equal(newest.ignored, 0);
 });
 
 test('three minute gap and order toggle', () => {

@@ -76,7 +76,7 @@ function prepareCall(mod, c) {
   return mod.export_prepare(
     text(c.shot), text(c.side), text(c.defaults), text(c.layout), c.base || 'auto',
     num(c.quality), c.long_edge === null || c.long_edge === undefined ? undefined : num(c.long_edge), Boolean(c.hdr),
-    faces.index, faces.bytes, bytes(c.dat), bytes(c.entry), calib.index, calib.bytes, c.binding || '',
+    faces.index, faces.bytes, bytes(c.dat), bytes(c.library), bytes(c.entry), calib.index, calib.bytes, c.binding || '',
     bytes(c.dng), bytes(c.jpg_bytes), bytes(c.cube), text(c.space),
     jpg.data, c.w !== undefined ? num(c.w) : jpg.w, c.h !== undefined ? num(c.h) : jpg.h,
     prev.data, prev.w, prev.h,
@@ -88,7 +88,7 @@ function prepareCall(mod, c) {
 function prepareArgs(c) {
   const args = ['export-run-prepare', '--shot', c.shot, '--quality', String(num(c.quality)), '--base', c.base || 'auto'];
   for (const [flag, key] of [
-    ['--side', 'side'], ['--defaults', 'defaults'], ['--layout', 'layout'], ['--dat', 'dat'], ['--entry', 'entry'],
+    ['--side', 'side'], ['--defaults', 'defaults'], ['--layout', 'layout'], ['--dat', 'dat'], ['--library', 'library'], ['--entry', 'entry'],
     ['--calib', 'calib'], ['--dng', 'dng'], ['--jpg', 'jpg'], ['--jpg-bytes', 'jpg_bytes'], ['--preview', 'preview'],
     ['--cube', 'cube'], ['--space', 'space'],
   ]) {

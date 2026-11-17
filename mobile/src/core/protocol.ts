@@ -48,10 +48,11 @@ export interface BakeArgs {
   params: string;
 }
 
-/** `color_resolve`：这份 DAT 上的一个配方选择（桌面 RecipeSel 的 JSON）。 */
+/** `color_resolve`：这份 DAT 上的一个配方选择（桌面 RecipeSel 的 JSON）。`library` 是同卡的 GXRFX.BIN。 */
 export interface ResolveArgs {
   dat: ArrayBuffer;
   recipe: string;
+  library?: ArrayBuffer | null;
 }
 
 /** `color_calib_check`：校准包的 manifest、其余文件、这个单元的原厂 04 和 ISO。 */

@@ -25,7 +25,7 @@ import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKin
 
 let ready: Promise<InitOutput> | null = null;
 let wasm: InitOutput | null = null;
-let setup: ExportSetup = { dat: null, calibIndex: '', calibBlob: null, luts: {}, fontIndex: '', fontPack: null, logoIndex: '', logoBlob: null };
+let setup: ExportSetup = { dat: null, library: null, calibIndex: '', calibBlob: null, luts: {}, fontIndex: '', fontPack: null, logoIndex: '', logoBlob: null };
 
 function load(): Promise<InitOutput> {
   ready ??= init({ module_or_path: wasmUrl }).then((out) => {
@@ -144,7 +144,8 @@ async function runJob(job: ExportJob): Promise<void> {
   const dat = setup.dat ? new Uint8Array(setup.dat) : EMPTY;
   if (req.resolve && dat.length) {
     try {
-      entry = fromHex((JSON.parse(color_resolve(dat, new TextEncoder().encode(req.resolve), undefined)) as { entry: string }).entry);
+      const library = setup.library ? new Uint8Array(setup.library.slice(0)) : undefined;
+      entry = fromHex((JSON.parse(color_resolve(dat, new TextEncoder().encode(req.resolve), library)) as { entry: string }).entry);
     } catch (err) {
       if ((req.side as { recipe?: unknown }).recipe) throw coreFail(err);
     }
@@ -167,11 +168,13 @@ async function runJob(job: ExportJob): Promise<void> {
   const fontPack = setup.fontPack ? new Uint8Array(setup.fontPack) : EMPTY;
   const logoIndex = setup.logoIndex ?? '';
   const logoBlob = setup.logoBlob ? new Uint8Array(setup.logoBlob) : EMPTY;
+  // 空字节就是没有 GXRFX.BIN。和 color_resolve 各拷一份，避免 WASM 把同一段视图吃掉。
+  const libraryBytes = setup.library?.byteLength ? new Uint8Array(setup.library.slice(0)) : EMPTY;
   const prepare = (preview: { data: Uint8Array; width: number; height: number } | null) =>
     export_prepare(
       shotText, sideText, JSON.stringify(req.defaults), JSON.stringify(req.layout), req.base,
       req.quality, req.longEdge, req.hdr, fontIndex, fontPack,
-      dat, entry, setup.calibIndex, calibBlob, req.binding,
+      dat, libraryBytes, entry, setup.calibIndex, calibBlob, req.binding,
       dngBytes ?? EMPTY, jpgBytes ?? EMPTY, cubeBytes, spaceText,
       jpg?.data ?? EMPTY, jpg?.width ?? 0, jpg?.height ?? 0,
       preview?.data ?? EMPTY, preview?.width ?? 0, preview?.height ?? 0,

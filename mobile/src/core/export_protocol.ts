@@ -10,6 +10,8 @@ export interface ExportLutEntry {
 
 export interface ExportSetup {
   dat: ArrayBuffer | null;
+  /** 同卡的 GXRFX.BIN。没写时由导出这边按 DAT 字节找回。 */
+  library?: ArrayBuffer | null;
   calibIndex: string;
   calibBlob: ArrayBuffer | null;
   luts?: Record<string, ExportLutEntry>;

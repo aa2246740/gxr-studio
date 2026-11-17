@@ -223,7 +223,7 @@ fn cmd_complete(args: &[String]) -> Ran {
 }
 
 /// `export-run-prepare --shot S [--side E] [--defaults D] [--layout L] [--base MODE]
-/// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...] [--dat DAT] [--entry ENTRY.bin]
+/// [--quality Q] [--long-edge N] [--hdr] [--font NAME=PATH...] [--dat DAT] [--library GXRFX.BIN] [--entry ENTRY.bin]
 /// [--calib DIR] [--binding TEXT] [--dng DNG] [--jpg RGB.npy] [--jpg-bytes JPG] [--preview RGB.npy]
 /// [--cube C.cube --space SPACE.json] [--mtime-ms MS --tz-offset-min M] [--w W --h H]
 /// [--hdr-out LAYER.npy] --out CANVAS.npy`.
@@ -246,6 +246,7 @@ fn cmd_prepare(args: &[String]) -> Ran {
     let preview = opt(args, "--preview")?.map(read_rgb_npy).transpose()?;
     let pack = opt(args, "--calib")?.map(read_pack).transpose()?;
     let dat = read_or_empty(args, "--dat")?;
+    let library = read_or_empty(args, "--library")?;
     let entry = read_or_empty(args, "--entry")?;
     let dng = read_or_empty(args, "--dng")?;
     let jpg_bytes = read_or_empty(args, "--jpg-bytes")?;
@@ -255,6 +256,7 @@ fn cmd_prepare(args: &[String]) -> Ran {
     let binding = opt(args, "--binding")?.unwrap_or("").to_string();
     let files = SourceFiles {
         dat: &dat,
+        library: &library,
         entry: &entry,
         pack: pack.as_ref(),
         binding: &binding,

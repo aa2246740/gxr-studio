@@ -208,6 +208,7 @@ fn pic(data: &[u8], width: f64, height: f64) -> Option<Picture<'_>> {
 }
 
 /// `export_prepare`. Source inputs follow export-source: empty bytes mean "not given".
+/// `library` is `GXRFX.BIN` and comes right after `dat`; empty means the card has no library.
 /// `jpg` is the decoded camera JPG (`createImageBitmap`) and `jpg_bytes` its original file
 /// (hdr-track's capture check); `preview` the decoded embedded preview. The calibration pack is
 /// `calib_index` (`[[name, bytes], ...]`) over `calib_blob`. `long_edge` is `undefined` for
@@ -227,6 +228,7 @@ pub fn export_prepare(
     font_index: &str,
     font_pack: &[u8],
     dat: &[u8],
+    library: &[u8],
     entry: &[u8],
     calib_index: &str,
     calib_blob: &[u8],
@@ -252,6 +254,7 @@ pub fn export_prepare(
     };
     let files = SourceFiles {
         dat,
+        library,
         entry,
         pack: pack.as_ref(),
         binding,
