@@ -1,11 +1,10 @@
 // 开始算一张之前估它要的内存（Sol final-r2 P2-05）：用同一个导出 Worker 按文件头算成品尺寸（05a 那行用的
 // export_output_sizes），再按 export_batch 的 stagePeakEstimate 得到同一阶段 WASM+JS 的保守上界。
-// 文件头读不出尺寸时（比如文件已经读不了），按量 ink-text 上限的那张（4288×2848 照片、4875×6500 画布）估：
-// 这一张多半在读文件时就失败，不该为它把批次停下来。
+// 文件读不了时不估：抛 FileUnreadable，批次照 Worker 里读不了一样按 read 结算这张。别的原因估不出来就抛错，按整页预算算。
 
 import type { ExportCore } from '../core/export_api';
 import type { SizeTier } from '../lib/export_request';
-import { CEILING_CANVAS_PX, CEILING_SOURCE_PX, stagePeakEstimate, type BatchItem } from './export_batch';
+import { FileUnreadable, stagePeakEstimate, type BatchItem } from './export_batch';
 
 export interface BatchFonts {
   fontIndex: string;
@@ -21,18 +20,21 @@ function area(pair: [number, number] | undefined): number {
   return pair && Number.isFinite(pair[0]) && Number.isFinite(pair[1]) ? pair[0] * pair[1] : 0;
 }
 
-/** `item` 照 `tier` 导出时同一阶段的峰值上界。 */
-export async function estimatePeak(core: ExportCore, item: BatchItem, tier: SizeTier, fonts: BatchFonts): Promise<number> {
-  const fileBytes = Math.max(item.dng?.size ?? 0, item.jpg?.size ?? 0);
-  const reference = { source: CEILING_SOURCE_PX, photo: CEILING_SOURCE_PX, canvas: CEILING_CANVAS_PX, fileBytes, hdr: item.req.hdr };
+/** 读得到第一个字节。Worker 的 run() 两份文件都整个读，哪份读不了这张就是 `read`。 */
+async function readable(file: File | null): Promise<boolean> {
+  if (!file) return true;
   try {
-    return await measured(core, item, tier, fonts, fileBytes);
+    await file.slice(0, 1).arrayBuffer();
+    return true;
   } catch {
-    return stagePeakEstimate(reference);
+    return false;
   }
 }
 
-async function measured(core: ExportCore, item: BatchItem, tier: SizeTier, fonts: BatchFonts, fileBytes: number): Promise<number> {
+/** `item` 照 `tier` 导出时同一阶段的峰值上界。文件读不了抛 `FileUnreadable`；尺寸算不出来抛错（批次按整页预算算）。 */
+export async function estimatePeak(core: ExportCore, item: BatchItem, tier: SizeTier, fonts: BatchFonts): Promise<number> {
+  const [dngOk, jpgOk] = await Promise.all([readable(item.dng), readable(item.jpg)]);
+  if (!dngOk || !jpgOk) throw new FileUnreadable();
   const job = {
     dng: item.dng,
     jpg: item.jpg,
@@ -45,7 +47,7 @@ async function measured(core: ExportCore, item: BatchItem, tier: SizeTier, fonts
     fontIndex: fonts.fontIndex,
     fontPack: fonts.fontPack,
   };
-  // 不顺带发这一批的设置：它由这一张的 run() 自己发（发不出去照旧算这一张的陷阱）。
+  // 不顺带发这一批的设置：它由这一张的 run() 自己发（发不出去照旧算这一张的陷阱，Sol r2 P2-04）。
   const reply = await core.sizes(job, false);
   if (!reply.ok || !reply.json) throw new Error('sizes');
   const sized = JSON.parse(reply.json) as Sized;
@@ -57,7 +59,7 @@ async function measured(core: ExportCore, item: BatchItem, tier: SizeTier, fonts
     source: Math.max(reply.source ?? 0, area(sized.photo)),
     photo,
     canvas,
-    fileBytes,
+    fileBytes: Math.max(item.dng?.size ?? 0, item.jpg?.size ?? 0),
     hdr: item.req.hdr,
   });
 }

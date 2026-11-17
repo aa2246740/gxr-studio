@@ -23,16 +23,18 @@ globalThis.window ??= globalThis;
 const batchMod = await import('../../mobile/src/app/export_batch.ts');
 const { estimatePeak } = await import('../../mobile/src/app/export_budget.ts');
 const { ExportCore } = await import('../../mobile/src/core/export_api.ts');
-const { CEILING_CANVAS_PX, CEILING_SOURCE_PX, ExportBatch, PAGE_BUDGET_BYTES, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, WASM_CEILING_BYTES, WASM_CEILING_HDR_BYTES, stagePeakEstimate } = batchMod;
+const { ExportBatch, FileUnreadable, PAGE_BUDGET_BYTES, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, TEXT, WASM_CEILING_BYTES, WASM_CEILING_HDR_BYTES, stagePeakEstimate } = batchMod;
 const MIB = 1024 * 1024;
 
 /**
  * `plan[i]` = { size, peak, estimate? }. `estimate` defaults to `peak` (an exact estimate); `null` means the
- * host has no estimate for it; `'throw'` makes the estimate fail. Runs resolve on their own after a tick.
+ * host has no estimate for it; `'throw'` makes the estimate fail; `'unreadable'` throws `FileUnreadable`, as
+ * export_budget does when a file cannot be read. Runs resolve on their own after a tick.
  */
 function harness(plan, { cap = STAGE_CAP_BYTES, estimates = true } = {}) {
   const runs = [];
   const invariant = [];
+  const gone = [];
   let observed = 0;
   let batch = null;
   const host = {
@@ -40,7 +42,9 @@ function harness(plan, { cap = STAGE_CAP_BYTES, estimates = true } = {}) {
     photo: () => ({ version: 1, dng: null, jpg: null }),
     stop() {},
     idle() {},
-    markGone() {},
+    markGone(id, version) {
+      gone.push([id, version]);
+    },
     busy() {},
     changed() {
       if (batch) invariant.push({ staged: batch.stagedBytes, cap: batch.cap, phase: batch.phase });
@@ -58,12 +62,13 @@ function harness(plan, { cap = STAGE_CAP_BYTES, estimates = true } = {}) {
     host.peakEstimate = async (item) => {
       const step = plan[Number(item.id.slice(1))];
       if (step.estimate === 'throw') throw new Error('sizes');
+      if (step.estimate === 'unreadable') throw new FileUnreadable();
       return step.estimate === undefined ? step.peak : step.estimate ?? 0;
     };
   }
   const items = plan.map((_, i) => ({ id: `p${i}`, stem: `S${i}`, version: 1, dng: null, jpg: null, req: { hdr: false } }));
   batch = new ExportBatch(items, host, cap);
-  return { batch, runs, invariant };
+  return { batch, runs, invariant, gone };
 }
 
 /** Peak + what was staged when each run started never passes the page budget. */
@@ -204,29 +209,6 @@ test('stagePeakEstimate: ink-text WASM ceiling plus what the Worker holds in JS,
   assert.ok(hdr + STAGE_CAP_HDR_BYTES > PAGE_BUDGET_BYTES);
 });
 
-test('estimatePeak: sizes from the file heads without sending the batch setup; a failed probe falls back to the measured case', async () => {
-  const file = (size) => ({ size });
-  const item = { id: 'p0', stem: 'S0', version: 1, dng: file(20 * MIB), jpg: file(5 * MIB), req: { side: {}, layout: {}, needsJpg: true, mtimeMs: 0, tzOffsetMin: 0, hdr: false } };
-  const fonts = { fontIndex: '', fontPack: null };
-  const calls = [];
-  const sized = { photo: [4000, 3000], sizes: { original: [5000, 6000], small: [1600, 1920] } };
-  const core = {
-    async sizes(job, withSetup) {
-      calls.push({ job, withSetup });
-      return { ok: true, json: JSON.stringify(sized), source: 4288 * 2848 };
-    },
-  };
-  const small = await estimatePeak(core, item, 'small', fonts);
-  assert.equal(calls[0].withSetup, false, 'the setup is left for run()');
-  assert.equal(calls[0].job.useJpg, true);
-  const canvas = 1600 * 1920;
-  const photo = 4000 * 3000 * (canvas / (5000 * 6000));
-  assert.equal(small, stagePeakEstimate({ source: 4288 * 2848, photo, canvas, fileBytes: 20 * MIB, hdr: false }));
-  const failing = { async sizes() { return { ok: false }; } };
-  const fallback = await estimatePeak(failing, { ...item, req: { ...item.req, hdr: true } }, 'original', fonts);
-  assert.equal(fallback, stagePeakEstimate({ source: CEILING_SOURCE_PX, photo: CEILING_SOURCE_PX, canvas: CEILING_CANVAS_PX, fileBytes: 20 * MIB, hdr: true }));
-});
-
 /** A File stand-in: `size`, and `slice().arrayBuffer()` that rejects like a deleted or changed file when `gone`. */
 function file(size, gone = false) {
   return {
@@ -246,6 +228,70 @@ function photoItem(dng, jpg, hdr = false) {
 
 const FONTS = { fontIndex: '', fontPack: null };
 const SIZED = { photo: [4000, 3000], sizes: { original: [5000, 6000], small: [1600, 1920] } };
+
+test('estimatePeak: sizes from the file heads, without sending the batch setup', async () => {
+  const calls = [];
+  const core = {
+    async sizes(job, withSetup) {
+      calls.push({ job, withSetup });
+      return { ok: true, json: JSON.stringify(SIZED), source: 4288 * 2848 };
+    },
+  };
+  const small = await estimatePeak(core, photoItem(file(20 * MIB), file(5 * MIB)), 'small', FONTS);
+  assert.equal(calls[0].withSetup, false, 'the setup is left for run()');
+  assert.equal(calls[0].job.useJpg, true);
+  const canvas = 1600 * 1920;
+  const photo = 4000 * 3000 * (canvas / (5000 * 6000));
+  assert.equal(small, stagePeakEstimate({ source: 4288 * 2848, photo, canvas, fileBytes: 20 * MIB, hdr: false }));
+});
+
+test('estimatePeak: a file that cannot be read is FileUnreadable, before any probe', async () => {
+  const calls = [];
+  const probe = {
+    async sizes() {
+      calls.push('sizes');
+      return { ok: true, json: JSON.stringify(SIZED), source: 4288 * 2848 };
+    },
+  };
+  for (const item of [photoItem(file(20 * MIB), file(5 * MIB, true)), photoItem(file(20 * MIB, true), file(5 * MIB)), photoItem(null, file(5 * MIB, true))]) {
+    await assert.rejects(estimatePeak(probe, item, 'original', FONTS), FileUnreadable);
+  }
+  assert.deepEqual(calls, [], 'no probe for an unreadable file');
+});
+
+test('estimatePeak: a failed probe on readable files fails the estimate (whole page budget), never a guessed size', async () => {
+  // Readable files whose probe fails (Worker stopped, header without a size): the estimate fails, so the batch
+  // counts the whole page budget. It must not fall back to a size it did not read.
+  for (const reply of [{ ok: false }, { ok: true, json: '{}' }]) {
+    const failing = { sizes: async () => reply };
+    const err = await estimatePeak(failing, photoItem(file(20 * MIB), file(5 * MIB), true), 'original', FONTS).then(
+      (value) => value,
+      (e) => e,
+    );
+    assert.ok(err instanceof Error && err.name !== 'FileUnreadable', `failed probe ${JSON.stringify(reply)} gave ${err}`);
+  }
+});
+
+test('a photo whose file cannot be read settles as read without being computed, and never holds the batch', async () => {
+  // M3 item 9 (a file deleted before its turn): with a file already staged, the unreadable photo fails with the
+  // 06f read line and goes the M1 gone way, exactly as when the Worker cannot read it; the next photo still runs.
+  const { batch, runs, invariant, gone } = harness([
+    { size: 10 * MIB, peak: 400 * MIB },
+    { size: 1, peak: 400 * MIB, estimate: 'unreadable' },
+    { size: 10 * MIB, peak: 400 * MIB },
+  ]);
+  batch.start();
+  await batch.settled();
+  assert.equal(batch.phase, 'ready');
+  assert.deepEqual(runs.map((r) => r.index), [0, 2], 'the unreadable photo was never computed');
+  assert.deepEqual([...batch.failures.values()].map((f) => [f.id, f.kind, f.message]), [['p1', 'read', TEXT.read]]);
+  assert.deepEqual(gone, [['p1', 1]]);
+  assert.equal(batch.stagedBytes, 20 * MIB);
+  assert.ok(invariant.every((row) => row.phase !== 'held'), 'never held');
+  assert.equal(batch.estimates.has('p1'), false);
+  budgetHeld(runs);
+  capHeld(invariant);
+});
 
 test("the preflight probe never sends the batch setup: a setup failure still lands on the photo's run as a trap", async () => {
   // Real ExportCore, fake Worker (Sol r2 P2-04 kept under the per-photo preflight). The probe answers from the

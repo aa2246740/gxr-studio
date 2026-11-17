@@ -20,8 +20,8 @@ export function stageCapFor(sameStagePeak: number, requestedCap: number): number
 /** ink-text 量出的导出 Worker WASM 上限：4288×2848 的照片做全尺寸 blur_fill + 时间戳（画布 4875×6500）。 */
 export const WASM_CEILING_BYTES = 512 * 1024 * 1024;
 export const WASM_CEILING_HDR_BYTES = 768 * 1024 * 1024;
-export const CEILING_SOURCE_PX = 4288 * 2848;
-export const CEILING_CANVAS_PX = 4875 * 6500;
+const CEILING_SOURCE_PX = 4288 * 2848;
+const CEILING_CANVAS_PX = 4875 * 6500;
 
 /** 估一张导出要的内存用到的尺寸（像素数）和文件大小，全部在开始算之前就知道。 */
 export interface PeakInputs {
@@ -100,8 +100,19 @@ export interface BatchHost {
   changed(): void;
   /** 到目前为止，同一阶段里 WASM 与 JS 加在一起的峰值。没有就当 0。 */
   memoryPeak?: () => number;
-  /** 开始算这一张之前：它同一阶段 WASM+JS 峰值的保守上界（`stagePeakEstimate`）。估不出来就抛错，按整页预算算。 */
+  /**
+   * 开始算这一张之前：它同一阶段 WASM+JS 峰值的保守上界（`stagePeakEstimate`）。估不出来就抛错，按整页预算算。
+   * 这张的文件读不了就抛 `FileUnreadable`：不去算它，按 `read` 结算。
+   */
   peakEstimate?: (item: BatchItem) => Promise<number> | number;
+}
+
+/** 开始算之前就知道这张的文件读不了（卡拔了、文件删了或变了）。Worker 里整个读文件时也会是 `read`，所以不必去算它。 */
+export class FileUnreadable extends Error {
+  constructor() {
+    super('read');
+    this.name = 'FileUnreadable';
+  }
 }
 
 export type Phase = 'running' | 'held' | 'ready' | 'stopped' | 'closed';
@@ -299,11 +310,16 @@ export class ExportBatch {
       // 开始算之前：这一张的峰值上界加上已待存的放不进整页预算，就先停在「做好了」那一栏，交出去再算（Sol final-r2 P2-05）。
       const room = await this.preflight(item);
       if (!this.live(token)) return;
-      if (!room) {
+      if (room === 'hold') {
         this.hold();
         return;
       }
       this.queue.shift();
+      if (room === 'read') {
+        // 文件读不了：不交给 Worker，和它在 Worker 里读不了一样结算（06f 那句「读不了」、M1 的 gone），接着做下一张。
+        this.commit(item, { ok: false, kind: 'read', code: 'read', message: '' });
+        continue;
+      }
       this.states.set(id, 'run');
       this.host.changed();
       const index = this.items.indexOf(item);
@@ -387,21 +403,23 @@ export class ExportBatch {
 
   /**
    * 开始算 `item` 之前：上限要降到已待存的以下，或者它的峰值上界（已观察到的峰值和 host 的估算取大）加上已待存的
-   * 超过整页预算，就返回 false。手里没有待存的文件时总是 true：停下来也没有可以交出去的。估算失败按整页预算算。
+   * 超过整页预算，就是 `hold`。手里没有待存的文件时不停：停下来也没有可以交出去的。估算失败按整页预算算；
+   * 文件读不了（`FileUnreadable`）是 `read`，这张不算。
    */
-  private async preflight(item: BatchItem): Promise<boolean> {
-    if (!this.fitCap()) return false;
+  private async preflight(item: BatchItem): Promise<'run' | 'hold' | 'read'> {
+    if (!this.fitCap()) return 'hold';
     let estimate = 0;
     if (this.host.peakEstimate) {
       try {
         estimate = await this.host.peakEstimate(item);
-      } catch {
+      } catch (err) {
+        if (err instanceof FileUnreadable) return 'read';
         estimate = PAGE_BUDGET_BYTES;
       }
     }
     const bound = Math.max(this.host.memoryPeak?.() ?? 0, Number.isFinite(estimate) ? estimate : PAGE_BUDGET_BYTES);
     this.estimates.set(item.id, bound);
-    return this.stagedBytes === 0 || bound + this.stagedBytes <= PAGE_BUDGET_BYTES;
+    return this.stagedBytes === 0 || bound + this.stagedBytes <= PAGE_BUDGET_BYTES ? 'run' : 'hold';
   }
 
   /** 停在「做好了」那一栏，等用户交出去（「存到相册」）、点「好」以后接着做。 */
