@@ -18,8 +18,11 @@ registerHooks({
   },
 });
 
+// ExportCore (the real one, with a fake Worker below) clears and sets its idle timer through `window`.
+globalThis.window ??= globalThis;
 const batchMod = await import('../../mobile/src/app/export_batch.ts');
 const { estimatePeak } = await import('../../mobile/src/app/export_budget.ts');
+const { ExportCore } = await import('../../mobile/src/core/export_api.ts');
 const { CEILING_CANVAS_PX, CEILING_SOURCE_PX, ExportBatch, PAGE_BUDGET_BYTES, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, WASM_CEILING_BYTES, WASM_CEILING_HDR_BYTES, stagePeakEstimate } = batchMod;
 const MIB = 1024 * 1024;
 
@@ -222,4 +225,56 @@ test('estimatePeak: sizes from the file heads without sending the batch setup; a
   const failing = { async sizes() { return { ok: false }; } };
   const fallback = await estimatePeak(failing, { ...item, req: { ...item.req, hdr: true } }, 'original', fonts);
   assert.equal(fallback, stagePeakEstimate({ source: CEILING_SOURCE_PX, photo: CEILING_SOURCE_PX, canvas: CEILING_CANVAS_PX, fileBytes: 20 * MIB, hdr: true }));
+});
+
+/** A File stand-in: `size`, and `slice().arrayBuffer()` that rejects like a deleted or changed file when `gone`. */
+function file(size, gone = false) {
+  return {
+    size,
+    slice: () => ({
+      arrayBuffer: async () => {
+        if (gone) throw new DOMException('A requested file or directory could not be found', 'NotFoundError');
+        return new ArrayBuffer(1);
+      },
+    }),
+  };
+}
+
+function photoItem(dng, jpg, hdr = false) {
+  return { id: 'p0', stem: 'S0', version: 1, dng, jpg, req: { side: {}, layout: {}, needsJpg: true, mtimeMs: 0, tzOffsetMin: 0, hdr } };
+}
+
+const FONTS = { fontIndex: '', fontPack: null };
+const SIZED = { photo: [4000, 3000], sizes: { original: [5000, 6000], small: [1600, 1920] } };
+
+test("the preflight probe never sends the batch setup: a setup failure still lands on the photo's run as a trap", async () => {
+  // Real ExportCore, fake Worker (Sol r2 P2-04 kept under the per-photo preflight). The probe answers from the
+  // file heads; the setup copy goes out with run(), inside its try.
+  for (const failSetup of [false, true]) {
+    const posts = [];
+    const core = new ExportCore(() => ({
+      postMessage(msg) {
+        posts.push(msg.op);
+        if (msg.op === 'setup' && failSetup) throw new RangeError('synthetic setup allocation');
+        if (msg.op === 'sizes') queueMicrotask(() => this.onmessage({ data: { op: 'sizes', id: msg.job.id, ok: true, json: JSON.stringify(SIZED), source: 4288 * 2848 } }));
+        if (msg.op === 'run') queueMicrotask(() => this.onmessage({ data: { op: 'done', id: msg.job.id, ok: true, file: new ArrayBuffer(4), result: {}, shot: {}, ms: 1 } }));
+      },
+      terminate() {},
+    }));
+    core.begin({ dat: new ArrayBuffer(4), calibIndex: '', calibBlob: null });
+    const estimate = await estimatePeak(core, photoItem(file(20 * MIB), file(5 * MIB)), 'original', FONTS);
+    assert.ok(estimate > 0, 'the probe answered');
+    assert.deepEqual(posts, ['sizes'], 'no setup with the probe');
+    const run = await core.run({ dng: null, jpg: null, req: {} });
+    if (failSetup) {
+      assert.equal(run.ok, false);
+      assert.equal(run.kind, 'trap', 'the setup failure is this photo\'s trap');
+      assert.deepEqual(posts, ['sizes', 'setup']);
+      assert.equal(core.alive(), false, 'the Worker is closed');
+    } else {
+      assert.equal(run.ok, true);
+      assert.deepEqual(posts, ['sizes', 'setup', 'run']);
+    }
+    core.stop();
+  }
 });

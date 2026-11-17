@@ -49,8 +49,12 @@ export class ExportCore {
   private idle = 0;
   readonly marks: MemoryMarks = { wasm: 0, js: 0, total: 0, workers: 0, stages: zeroStages() };
   onMemory: ((mem: ExportMemory) => void) | null = null;
+  private readonly factory: WorkerFactory;
 
-  constructor(private readonly factory: WorkerFactory = defaultFactory) {}
+  // 不用参数属性：Node 的 strip-types 跑单元测试时不认。
+  constructor(factory: WorkerFactory = defaultFactory) {
+    this.factory = factory;
+  }
 
   /**
    * 这一批的相机配方文件和校准包。这里只记下，不发：发给 Worker（含拷贝）在下一次 run() 的 try 里做，
