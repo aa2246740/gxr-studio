@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -40,6 +41,11 @@ from support.ink_text_cases import (
     GATE_B_SMALL_PX_COVERAGE_RATIO,
     GATE_B_SMALL_PX_MIN_SUM,
     GATE_B_VERT_EDGE_BOUNDS,
+    compare_masks_common_space,
+    dehinted_font_paths,
+    open_pil_face,
+    pillow_mask,
+    run_rust_batch,
 )
 
 GXR_MARK = {"w": 1951, "h": 1240, "ink_top": 270, "ink_bottom": 961}
@@ -74,6 +80,9 @@ _GATE_FONT = {
     "sans": "atkinson",
 }
 _DRAW_RUNS = (fonts_mod, frame_mod, stamp_mod)
+_DEHINT: dict[str, Path] | None = None
+_ATTR_EXACT: dict[tuple[str, int, str], bool] = {}
+_GlyphBox = tuple[tuple[int, int, int, int], str, int, float | None, str]
 
 
 def read_canvas(path: Path) -> np.ndarray:
@@ -275,15 +284,16 @@ def _rotated_box(item: dict[str, Any], fonts: PilFonts) -> tuple[int, int, int, 
 
 
 def _push(
-    boxes: list[tuple[tuple[int, int, int, int], str, int, float | None]],
+    boxes: list[_GlyphBox],
     box: tuple[int, int, int, int] | None,
     font: str,
     px: int,
     glow: float | None,
+    text: str,
 ) -> None:
-    if box is None:
+    if box is None or not text:
         return
-    boxes.append((box, font, px, glow))
+    boxes.append((box, font, px, glow, text))
 
 
 def _text_boxes(
@@ -292,17 +302,17 @@ def _text_boxes(
     ox: int,
     oy: int,
     glow: float | None,
-    boxes: list[tuple[tuple[int, int, int, int], str, int, float | None]],
+    boxes: list[_GlyphBox],
 ) -> None:
     font = str(item["font"])
     px = int(item["px"])
     if item.get("rot"):
         left, top, right, bottom = _rotated_box(item, fonts)
-        _push(boxes, (left + ox, top + oy, right + ox, bottom + oy), font, px, glow)
+        _push(boxes, (left + ox, top + oy, right + ox, bottom + oy), font, px, glow, str(item["text"]))
         return
     for ch, x in zip(str(item["text"]), item["xs"], strict=True):
         box = _char_box(fonts, ch, int(x) + ox, int(item["y"]) + oy, font, px)
-        _push(boxes, box, font, px, glow)
+        _push(boxes, box, font, px, glow, ch)
 
 
 def glyph_boxes(
@@ -313,10 +323,10 @@ def glyph_boxes(
     file_time: Any,
     photo_w: int,
     photo_h: int,
-) -> list[tuple[tuple[int, int, int, int], str, int, float | None]]:
+) -> list[_GlyphBox]:
     """Every character box on the finished canvas, plus the glow radius of a date stamp."""
     fonts = PilFonts()
-    boxes: list[tuple[tuple[int, int, int, int], str, int, float | None]] = []
+    boxes: list[_GlyphBox] = []
     for item in layout.items:
         kind = item.get("k")
         if kind == "text":
@@ -325,7 +335,7 @@ def glyph_boxes(
             px = max(1, round(1000 * int(item["h"]) / GXR_MARK["h"]))
             metrics = FontMetrics(fonts)
             for ch, x in zip("GXR", glyph_xs(metrics, "atkinson", px, "GXR", float(item["x"])), strict=True):
-                _push(boxes, _char_box(fonts, ch, int(x), int(item["y"]), "atkinson", px), "atkinson", px, None)
+                _push(boxes, _char_box(fonts, ch, int(x), int(item["y"]), "atkinson", px), "atkinson", px, None, ch)
     text = format_stamp(stamp, taken, file_time)
     where = _stamp_on(frame, stamp)
     if where is None or not text:
@@ -370,13 +380,6 @@ def _clip(box: tuple[int, int, int, int], height: int, width: int) -> tuple[int,
     return left, top, right, bottom
 
 
-def _ink_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
-    ys, xs = np.nonzero(mask)
-    if len(xs) == 0:
-        return None
-    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
-
-
 def _ratio_ok(font: str, px: int, rs_sum: int, py_sum: int) -> bool:
     if py_sum <= 0:
         return rs_sum == 0
@@ -391,23 +394,107 @@ def _ratio_ok(font: str, px: int, rs_sum: int, py_sum: int) -> bool:
     return lo <= ratio <= hi
 
 
+def _project_coverage(delta: np.ndarray, ink: np.ndarray) -> np.ndarray:
+    """8-bit coverage along one ink colour. A zero ink vector falls back to the strongest channel."""
+    denom = float(np.dot(ink, ink))
+    if denom <= 0.0:
+        return np.clip(np.max(np.abs(delta), axis=2), 0, 255).astype(np.uint8)
+    covered = delta.astype(np.float64) @ ink
+    return np.clip(np.rint(covered / denom * 255.0), 0, 255).astype(np.uint8)
+
+
+def _coverage_planes(phone: np.ndarray, py: np.ndarray, blank: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Phone and Python coverage masks, both measured against Python's ink colour."""
+    py_delta = py.astype(np.int16) - blank.astype(np.int16)
+    phone_delta = phone.astype(np.int16) - blank.astype(np.int16)
+    weight = np.abs(py_delta).sum(axis=2)
+    if int(weight.max()) == 0:
+        zero = np.zeros(py.shape[:2], dtype=np.uint8)
+        return _project_coverage(phone_delta, np.zeros(3, dtype=np.float64)), zero
+    flat = int(np.argmax(weight))
+    row, col = divmod(flat, weight.shape[1])
+    ink = py_delta[row, col].astype(np.float64)
+    return _project_coverage(phone_delta, ink), _project_coverage(py_delta, ink)
+
+
+def _mask_of(plane: np.ndarray) -> tuple[int, int, int, int, bytes]:
+    height, width = plane.shape
+    return width, height, 0, 0, np.ascontiguousarray(plane).tobytes()
+
+
+def _ink_angle_ok(phone: np.ndarray, py: np.ndarray, blank: np.ndarray) -> bool:
+    """Overlapping ink must share a colour. Hinting may change coverage, not the ink direction."""
+    py_delta = py.astype(np.float64) - blank.astype(np.float64)
+    phone_delta = phone.astype(np.float64) - blank.astype(np.float64)
+    both = (np.max(np.abs(py_delta), axis=2) > 0) & (np.max(np.abs(phone_delta), axis=2) > 0)
+    if not np.any(both):
+        return True
+    left, right = py_delta[both], phone_delta[both]
+    scale = np.maximum(np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1), 1.0)
+    sine = np.linalg.norm(np.cross(left, right), axis=1) / scale
+    return bool(np.all(sine <= 0.05))
+
+
+def _dehint_paths() -> dict[str, Path]:
+    global _DEHINT
+    if _DEHINT is None:
+        folder = Path(tempfile.gettempdir()) / "gxr-frame-dehint"
+        folder.mkdir(exist_ok=True)
+        _DEHINT = dehinted_font_paths(folder)
+    return _DEHINT
+
+
+def glyph_hint_attributed(font: str, px: int, text: str) -> bool:
+    """Gate A for one run: de-hinted Rust and de-hinted Pillow masks of each character are exact."""
+    gate = _GATE_FONT.get(font)
+    if gate is None:
+        return False
+    paths = _dehint_paths()
+    for ch in text:
+        if ch == " " or ord(ch) < 0x20:
+            continue
+        key = (gate, px, ch)
+        cached = _ATTR_EXACT.get(key)
+        if cached is None:
+            rust = run_rust_batch(paths[gate], [px], [ch], paths[gate].parent, tag=f"attr-{gate}-{px}-{ord(ch)}")
+            item = rust[0]
+            pillow = pillow_mask(open_pil_face(paths[gate], px), ch)
+            cached = (item[2], item[3], item[4], item[5], item[6]) == pillow
+            _ATTR_EXACT[key] = cached
+        if not cached:
+            return False
+    return True
+
+
 def _glyph_ok(
-    phone: np.ndarray, py: np.ndarray, blank: np.ndarray, window: tuple[int, int, int, int], font: str, px: int
+    phone: np.ndarray,
+    py: np.ndarray,
+    blank: np.ndarray,
+    window: tuple[int, int, int, int],
+    font: str,
+    px: int,
+    text: str | None = None,
 ) -> tuple[bool, int, int, float | None]:
+    """Frozen Gate B on 8-bit coverage sums, plus colour and de-hinted attribution."""
     left, top, right, bottom = window
-    py_ink = np.any(py[top:bottom, left:right] != blank[top:bottom, left:right], axis=2)
-    rs_ink = np.any(phone[top:bottom, left:right] != blank[top:bottom, left:right], axis=2)
-    py_box, rs_box = _ink_bbox(py_ink), _ink_bbox(rs_ink)
-    if (py_box is None) != (rs_box is None):
+    phone_rgb = phone[top:bottom, left:right]
+    py_rgb = py[top:bottom, left:right]
+    bg = blank[top:bottom, left:right]
+    if not _ink_angle_ok(phone_rgb, py_rgb, bg):
+        return False, 0, 0, None
+    phone_plane, py_plane = _coverage_planes(phone_rgb, py_rgb, bg)
+    _diff_px, _max_d, phone_box, py_box, phone_sum, py_sum = compare_masks_common_space(_mask_of(phone_plane), _mask_of(py_plane))
+    if (py_box is None) != (phone_box is None):
         return False, 0, 0, None
     horiz = vert = 0
-    if py_box is not None and rs_box is not None:
-        horiz = max(abs(rs_box[0] - py_box[0]), abs(rs_box[2] - py_box[2]))
-        vert = max(abs(rs_box[1] - py_box[1]), abs(rs_box[3] - py_box[3]))
-    py_sum, rs_sum = int(py_ink.sum()), int(rs_ink.sum())
-    ratio = None if py_sum == 0 else rs_sum / py_sum
+    if py_box is not None and phone_box is not None:
+        horiz = max(abs(phone_box[0] - py_box[0]), abs(phone_box[2] - py_box[2]))
+        vert = max(abs(phone_box[1] - py_box[1]), abs(phone_box[3] - py_box[3]))
+    ratio = None if py_sum == 0 else phone_sum / py_sum
     gate = _GATE_FONT[font]
-    ok = horiz <= GATE_B_HORIZ_EDGE_BOUND and vert <= GATE_B_VERT_EDGE_BOUNDS[gate] and _ratio_ok(font, px, rs_sum, py_sum)
+    ok = horiz <= GATE_B_HORIZ_EDGE_BOUND and vert <= GATE_B_VERT_EDGE_BOUNDS[gate] and _ratio_ok(font, px, phone_sum, py_sum)
+    if ok and text and not np.array_equal(phone_plane, py_plane):
+        ok = glyph_hint_attributed(font, px, text)
     return ok, horiz, vert, ratio
 
 
@@ -463,17 +550,17 @@ def compare_canvas(
     if np.array_equal(phone, py):
         return {"outside": 0, "glyphs": 0, "max_horiz": 0, "max_vert": 0, "worst_ratio": None, "blur_smear": 0}
     boxes = glyph_boxes(layout, frame, stamp, taken, file_time, photo.shape[1], photo.shape[0])
-    check(all(font in _GATE_FONT for _box, font, _px, _glow in boxes), "glyph font")
+    check(all(font in _GATE_FONT for _box, font, _px, _glow, _text in boxes), "glyph font")
     height, width = py.shape[:2]
     allow = np.zeros((height, width), dtype=bool)
-    windows: list[tuple[tuple[int, int, int, int], str, int]] = []
-    for box, font, px, glow in boxes:
+    windows: list[tuple[tuple[int, int, int, int], str, int, str]] = []
+    for box, font, px, glow, text in boxes:
         window = _clip(_window(box, font, glow), height, width)
         if window is None:
             continue
         left, top, right, bottom = window
         allow[top:bottom, left:right] = True
-        windows.append((window, font, px))
+        windows.append((window, font, px, text))
     differ = np.any(phone != py, axis=-1)
     backdrop = _blur_backdrop(layout, height, width)
     smear = int(np.count_nonzero(differ & backdrop))
@@ -488,8 +575,8 @@ def compare_canvas(
     blank = paint_reference(photo, layout, frame, stamp, taken, file_time, logo_images, glyphs=False)
     max_horiz = max_vert = 0
     worst: float | None = None
-    for window, font, px in windows:
-        ok, horiz, vert, ratio = _glyph_ok(phone, py, blank, window, font, px)
+    for window, font, px, text in windows:
+        ok, horiz, vert, ratio = _glyph_ok(phone, py, blank, window, font, px, text)
         max_horiz, max_vert = max(max_horiz, horiz), max(max_vert, vert)
         if ratio is not None and (worst is None or abs(ratio - 1) > abs(worst - 1)):
             worst = ratio
