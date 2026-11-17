@@ -138,8 +138,31 @@ async function copyGroups(page, wantGroups) {
   }
   await page.locator('[data-state="copy-options"] .btn.primary').click();
   await page.waitForSelector('[data-state="copied-where"]');
+  out.steps.whereLead = await text(page, '[data-state="copied-where"] .lead');
   await page.locator('[data-state="copied-where"] .btn.ghost').click();
   return optionRows;
+}
+
+async function setFrameAndStamp(page) {
+  await page.locator('.tabs button', { hasText: '边框' }).click();
+  await page.waitForSelector('.panel.frame');
+  const card = page.locator('.panel.frame .rc[data-style="leica"]');
+  await card.scrollIntoViewIfNeeded();
+  await card.click();
+  await page.locator('.panel.frame .swc[data-color="cream"]').click();
+
+  await page.locator('.panel.frame [data-act="open-stamp"]').click();
+  await page.waitForSelector('.ms.stamp-sheet');
+  await page.locator('.ms.stamp-sheet input.switch[aria-label="时间戳"]').click();
+  await page.locator('.ms.stamp-sheet .seg[aria-label="内容"] button', { hasText: '日期和文字' }).click();
+  const textInput = page.locator('.ms.stamp-sheet input.txtbox[aria-label="文字"]');
+  await textInput.fill('GXR 50');
+  await textInput.dispatchEvent('change');
+  await page.locator('.ms.stamp-sheet .seg[aria-label="字体"] button', { hasText: '打字机' }).click();
+  await page.locator('.ms.stamp-sheet .swc[aria-label="黄"]').click();
+  await page.locator('.ms.stamp-sheet .seg[aria-label="位置"] button', { hasText: '左下' }).click();
+  await page.locator('.ms.stamp-sheet .hd button', { hasText: '完成' }).click();
+  await page.waitForSelector('.ms.stamp-sheet', { state: 'detached' });
 }
 
 try {
@@ -201,6 +224,18 @@ try {
     out.steps.paste2 = { line: line2, outcomes: await outcomes(page), sides: await sides(page, [targets[2]]), edits: await edits(page) };
     const undone2 = await undo(page);
     out.steps.undo2 = { line: undone2, sides: await sides(page, [targets[2]]) };
+  } else if (manifest.mode === 'frame') {
+    await openPhoto(page, source);
+    await setFrameAndStamp(page);
+    out.steps.source = { edit: (await edits(page)).find((row) => row.stem === source), side: (await sides(page, [source]))[source] };
+
+    const optionRows = await copyGroups(page, ['frame', 'stamp']);
+    out.steps.copyOptions = optionRows;
+    await back(page);
+    const line = await select(page, targets);
+    out.steps.paste = { line, outcomes: await outcomes(page), sides: await sides(page, all), edits: await edits(page) };
+    const undone = await undo(page);
+    out.steps.undo = { line: undone, sides: await sides(page, all) };
   } else {
     // 来源的编辑：两个配方各记档位，再换回第一个（桌面 memory 里留着它切走时的旧档位）。
     await openPhoto(page, source);
