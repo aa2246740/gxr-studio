@@ -168,11 +168,13 @@ async function runJob(job: ExportJob): Promise<void> {
   const fontPack = setup.fontPack ? new Uint8Array(setup.fontPack) : EMPTY;
   const logoIndex = setup.logoIndex ?? '';
   const logoBlob = setup.logoBlob ? new Uint8Array(setup.logoBlob) : EMPTY;
+  // 空字节就是没有 GXRFX.BIN。和 color_resolve 各拷一份，避免 WASM 把同一段视图吃掉。
+  const libraryBytes = setup.library?.byteLength ? new Uint8Array(setup.library.slice(0)) : EMPTY;
   const prepare = (preview: { data: Uint8Array; width: number; height: number } | null) =>
     export_prepare(
       shotText, sideText, JSON.stringify(req.defaults), JSON.stringify(req.layout), req.base,
       req.quality, req.longEdge, req.hdr, fontIndex, fontPack,
-      dat, entry, setup.calibIndex, calibBlob, req.binding,
+      dat, libraryBytes, entry, setup.calibIndex, calibBlob, req.binding,
       dngBytes ?? EMPTY, jpgBytes ?? EMPTY, cubeBytes, spaceText,
       jpg?.data ?? EMPTY, jpg?.width ?? 0, jpg?.height ?? 0,
       preview?.data ?? EMPTY, preview?.width ?? 0, preview?.height ?? 0,

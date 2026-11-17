@@ -57,6 +57,8 @@ pub struct PrepareArgs<'a> {
 #[derive(Default)]
 pub struct SourceFiles<'a> {
     pub dat: &'a [u8],
+    /// `GXRFX.BIN`. Empty means the card has no library.
+    pub library: &'a [u8],
     pub entry: &'a [u8],
     pub pack: Option<&'a CalibPack>,
     pub binding: &'a str,
@@ -287,7 +289,7 @@ pub fn prepare(
         shot: args.shot,
         edit: edit_text.as_bytes(),
         dat: given(files.dat),
-        library: None,
+        library: given(files.library),
         entry: given(files.entry),
         pack: files.pack,
         binding: files.binding,
