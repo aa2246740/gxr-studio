@@ -459,7 +459,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 ### 相机配方文件和配方卡
 
-`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`color_listing` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。超过 16 MiB 的不读。每次选 DAT、清空照片都让 DAT 的版本加一，导入、删除、恢复校准数据让校准的版本加一；异步结果提交前核对版本，晚到的只丢掉。
+`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`color_listing` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。超过 16 MiB 的不读。新卡同一文件夹里还有 `GXRFX.BIN`：`classify` 认这个名字，几个里同样用修改时间最新的，和 DAT 一起交给 `setDat`。两个文件可以分两次选，先选哪一个都行；只补了 BIN 而且已经有一份 DAT（读上了或没读上）就用存着的 DAT 再读一次，只选了 DAT 就留着先前的 BIN。`GXRFX.BIN` 也是超过 16 MiB 不读。库字节跟着 DAT 交给 `camdata_parse`、`camdata_entries`、`color_listing` 和每一次 `color_resolve`（烘焙前那一次，以及导出 Worker 里那一次）。06d 的表和配方页在读失败时写核心的原话，不藏起来；路径那一行同时写 `GXRFX.BIN（新卡才有）`。每次选 DAT、清空照片都让 DAT 的版本加一，导入、删除、恢复校准数据让校准的版本加一；异步结果提交前核对版本，晚到的只丢掉。
 
 配方卡照桌面 `CameraData.listing` 和 `recipes.js`：这张照片所在单元的内置 8 个（`BASE_NAMES`，说明用 `look_model.js` 的表），文件里对这个单元开放的 Looks，相机里的用户配方。镜头单元按 `unit_of_lens`（镜头名先取相机 JPG 的 `LensModel`，没有再取 DNG 的，再没有用 `UniqueCameraModel` 去掉「RICOH 」），认不出用 50mm。模型按 `model_for`：ISO ≥ 566 用 1600，否则用 200。「未校准」照 `RenderService.plan`：认不出单元、ISO 不在实拍校准范围、配方单元不是照片的单元，原因用 `calibration_note.js` 的句子。
 
@@ -480,7 +480,6 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 ### 还没做的
 
 - 卡片画的是调整归零的样子，不跟着调整变。
-- r5（`GXRFX.BIN`）还不能选。
 
 ## 复制和套用到这一组（M3）
 

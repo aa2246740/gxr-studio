@@ -32,6 +32,8 @@ class App implements AppApi {
   private gapMinutes: GapMinutes = loadGap();
   private ignoredCount = 0;
   private dat: File | null = null;
+  private bin: File | null = null;
+  private datCount = 0;
   private generation = 0;
   private screen: 'start' | 'grid' | 'editor' = 'start';
   private grid: GridView | null = null;
@@ -410,6 +412,8 @@ class App implements AppApi {
     for (const photo of this.byId.values()) releaseBitmaps(photo);
     this.byId.clear();
     this.dat = null;
+    this.bin = null;
+    this.datCount = 0;
     this.recipeBook.clearDat();
     this.ignoredCount = 0;
     this.warm = null;
@@ -482,9 +486,14 @@ class App implements AppApi {
   private ingest(files: File[]): void {
     const classified = classify(files.map((file) => ({ name: file.name, lastModified: file.lastModified })));
     this.ignoredCount += classified.ignored;
+    if (classified.binIndex !== null) this.bin = files[classified.binIndex];
     if (classified.datIndex !== null) {
       this.dat = files[classified.datIndex];
-      void this.recipeBook.setDat(this.dat, classified.datCount);
+      this.datCount = classified.datCount;
+    }
+    // 只补了 BIN、而且已经有一份 DAT（读上了或没读上）：用存着的 DAT 再读一次。只选了 DAT 时留着先前的 BIN。
+    if (this.dat && (classified.datIndex !== null || classified.binIndex !== null)) {
+      void this.recipeBook.setDat(this.dat, this.datCount, this.bin);
     }
     const generation = this.generation;
     for (const item of classified.photos) {

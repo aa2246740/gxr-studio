@@ -21,6 +21,10 @@ export interface Classified {
   datIndex: number | null;
   /** 这次一共选了几个 GXRCE.DAT。多于一个时界面写一行说明用的是哪个。 */
   datCount: number;
+  /** 选了几个 GXRFX.BIN 时，用修改时间最新的那个（一样新就用先出现的）。 */
+  binIndex: number | null;
+  /** 这次一共选了几个 GXRFX.BIN。 */
+  binCount: number;
   ignored: number;
 }
 
@@ -48,23 +52,31 @@ export interface VRow {
 
 const PHOTO = /^R.+\.(dng|jpg)$/i;
 const DAT = /^GXRCE\.DAT$/i;
+const BIN = /^GXRFX\.BIN$/i;
 
 function stemOf(name: string): string {
   const dot = name.lastIndexOf('.');
   return dot <= 0 ? name : name.slice(0, dot);
 }
 
-/** `R*.DNG` 和 `R*.JPG` 按主文件名配对。`GXRCE.DAT` 单独留下（几个里取最新的）。别的都计入忽略。 */
+/** `R*.DNG` 和 `R*.JPG` 按主文件名配对。`GXRCE.DAT` 和 `GXRFX.BIN` 单独留下（几个里取最新的）。别的都计入忽略。 */
 export function classify(files: readonly Incoming[]): Classified {
   const buckets = new Map<string, ClassifiedPhoto>();
   const order: string[] = [];
   let datIndex: number | null = null;
   let datCount = 0;
+  let binIndex: number | null = null;
+  let binCount = 0;
   let ignored = 0;
   files.forEach((file, index) => {
     if (DAT.test(file.name)) {
       datCount += 1;
       if (datIndex === null || file.lastModified > files[datIndex].lastModified) datIndex = index;
+      return;
+    }
+    if (BIN.test(file.name)) {
+      binCount += 1;
+      if (binIndex === null || file.lastModified > files[binIndex].lastModified) binIndex = index;
       return;
     }
     const match = PHOTO.exec(file.name);
@@ -87,7 +99,7 @@ export function classify(files: readonly Incoming[]): Classified {
     } else photo.jpgIndex = index;
     photo.lastModified = Math.max(photo.lastModified, file.lastModified);
   });
-  return { photos: order.map((key) => buckets.get(key)!), datIndex, datCount, ignored };
+  return { photos: order.map((key) => buckets.get(key)!), datIndex, datCount, binIndex, binCount, ignored };
 }
 
 export function isGap(value: number): value is GapMinutes {

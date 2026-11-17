@@ -457,6 +457,8 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert cases["clearThenLateSuccess"] == {"dat": None, "busy": False, "error": None}
     assert cases["clearThenLateFailure"] == {"dat": None, "busy": False, "error": None}
     assert cases["olderLate"] == {"name": "B", "busy": False}
+    assert cases["withBin"] == {"reads": 2, "library": 32, "entries": 24 * 552, "error": None}
+    assert cases["bigBin"]["reads"] == 0 and "太大" in cases["bigBin"]["error"] and cases["bigBin"]["hasDat"] is False
     late = cases["removeThenLateImport"]
     assert late["pack"] is None and late["busy"] is False and late["error"] is None and late["deletes"] == 1
     assert cases["lateRestore"] == {"sha": "NEW"}

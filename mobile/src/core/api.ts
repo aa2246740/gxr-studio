@@ -82,17 +82,47 @@ export interface DatRead {
   entries: Uint8Array;
   /** DAT 原来的字节（Worker 读完还回来的），之后 resolve 用。 */
   bytes: ArrayBuffer;
+  /** 同一次读回来的 GXRFX.BIN。单文件卡是 null。 */
+  library?: ArrayBuffer | null;
 }
 
-/** 解析相机配方文件。坏文件抛核心的原话。 */
-export async function readDat(bytes: ArrayBuffer): Promise<DatRead> {
-  const { json, buffers } = await workers().request('dat', bytes, [bytes]);
+/** DAT 字节 → 同一次读入的 GXRFX.BIN。导出只快照 DAT 字节，靠这个找回库。 */
+const libraries = new Map<string, ArrayBuffer | null>();
+
+function datKey(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes);
+  let hash = 2166136261;
+  for (let i = 0; i < view.length; i += 1) hash = Math.imul(hash ^ view[i], 16777619);
+  return `${view.length}:${hash >>> 0}`;
+}
+
+export function rememberLibrary(dat: ArrayBuffer, library: ArrayBuffer | null): void {
+  libraries.set(datKey(dat), library);
+}
+
+export function libraryFor(dat: ArrayBuffer | null): ArrayBuffer | null {
+  if (!dat || dat.byteLength === 0) return null;
+  return libraries.get(datKey(dat)) ?? null;
+}
+
+/** 解析相机配方文件。`library` 是同卡的 GXRFX.BIN。坏文件抛核心的原话。 */
+export async function readDat(bytes: ArrayBuffer, library?: ArrayBuffer | null): Promise<DatRead> {
+  const transfer: Transferable[] = [bytes];
+  if (library) transfer.push(library);
+  // 库字节放在 resolve.library：dat 这一支和 resolve 共用已经能传过去的那一格。
+  const { json, buffers } = await workers().request('dat', bytes, transfer, null, {
+    resolve: { dat: bytes, recipe: '', library: library ?? null },
+  });
   const data = JSON.parse(json) as { summary: string; listing: string };
+  const datBytes = buffers[1] ?? new ArrayBuffer(0);
+  const libraryBack = buffers[2] ?? null;
+  rememberLibrary(datBytes, libraryBack);
   return {
     summary: data.summary,
     listing: data.listing,
     entries: new Uint8Array(buffers[0] ?? new ArrayBuffer(0)),
-    bytes: buffers[1] ?? new ArrayBuffer(0),
+    bytes: datBytes,
+    library: libraryBack,
   };
 }
 
@@ -108,9 +138,11 @@ function fromHex(text: string): Uint8Array {
   return out;
 }
 
-/** `color_resolve`：这份 DAT 上的一个配方选择 → 552 字节条目（旋钮已经套上）。`dat` 是拷贝。失败抛核心的原话。 */
-export async function resolveRecipe(dat: ArrayBuffer, recipe: string): Promise<Resolved> {
-  const { json } = await workers().request('resolve', null, [dat], null, { resolve: { dat, recipe } });
+/** `color_resolve`：这份 DAT 上的一个配方选择 → 552 字节条目（旋钮已经套上）。`dat` 和 `library` 是拷贝。失败抛核心的原话。 */
+export async function resolveRecipe(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null): Promise<Resolved> {
+  const transfer: Transferable[] = [dat];
+  if (library) transfer.push(library);
+  const { json } = await workers().request('resolve', null, transfer, null, { resolve: { dat, recipe, library: library ?? null } });
   const data = JSON.parse(json) as { entry: string; entry_sha256: string; levels: Record<string, number> };
   return { entry: fromHex(data.entry), entrySha256: data.entry_sha256, levels: data.levels };
 }

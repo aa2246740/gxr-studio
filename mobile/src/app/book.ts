@@ -32,6 +32,8 @@ export interface Dat {
   generation: number | null;
   /** `color_listing` 的配方和旋钮。 */
   listing: Listing;
+  /** 同卡的 GXRFX.BIN。单文件卡是 null。 */
+  library: ArrayBuffer | null;
 }
 
 export type UnitState =
@@ -61,13 +63,13 @@ const ZIP_TEXT: Record<ZipFail, string> = {
 export interface BookIo {
   /** 读文件字节（Worker 里读完转移过来；主线程不调 File.arrayBuffer）。 */
   readFile(file: File): Promise<ArrayBuffer | null>;
-  readDat(bytes: ArrayBuffer): Promise<DatRead>;
+  readDat(bytes: ArrayBuffer, library?: ArrayBuffer | null): Promise<DatRead>;
   /** 校准数据 zip：大小检查、读取、核对、存 IndexedDB 都在 Worker 里，主线程不碰整包。 */
   importCalib(file: File, savedAt: number): Promise<CalibRead>;
   restoreCalib(): Promise<CalibRestored>;
   bake(args: BakeArgs): Promise<Bake>;
-  /** `color_resolve`：配方选择 → 条目（旋钮已经套上）。 */
-  resolve(dat: ArrayBuffer, recipe: string): Promise<Resolved>;
+  /** `color_resolve`：配方选择 → 条目（旋钮已经套上）。`library` 是同卡的 GXRFX.BIN。 */
+  resolve(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null): Promise<Resolved>;
   /** `color_calib_check`：这个单元、这个 ISO 的 model_for 检查。 */
   calibCheck(args: CalibCheckArgs): Promise<CalibPick>;
   /** 记一个删除时间；比它早的导入不会再写进去。 */
@@ -277,13 +279,19 @@ export class Book {
     this.bump();
   }
 
-  /** 这次选上的 GXRCE.DAT（已经挑好最新的那个）。`count` 是一共选了几个。 */
-  async setDat(file: File, count: number): Promise<void> {
+  /** 这次选上的 GXRCE.DAT（已经挑好最新的那个）。`count` 是一共选了几个。`bin` 是同一次或先前选上的 GXRFX.BIN。 */
+  async setDat(file: File, count: number, bin?: File | null): Promise<void> {
     const seq = ++this.datSeq;
     this.datNote = count > 1 ? `选了 ${count} 个 GXRCE.DAT，用的是修改时间最新的那个。` : null;
     if (file.size > MAX_DAT_BYTES) {
       this.datBusy = false;
       this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRCE.DAT。';
+      this.changed();
+      return;
+    }
+    if (bin && bin.size > MAX_DAT_BYTES) {
+      this.datBusy = false;
+      this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRFX.BIN。';
       this.changed();
       return;
     }
@@ -297,13 +305,22 @@ export class Book {
         this.datError = '读不了这个相机配方文件。请重新选一次 GXRCE.DAT。';
         return;
       }
-      const read = await this.io.readDat(bytes);
+      let library: ArrayBuffer | null = null;
+      if (bin) {
+        library = await this.io.readFile(bin);
+        if (seq !== this.datSeq) return;
+        if (!library) {
+          this.datError = '读不了这个相机配方文件。请重新选一次 GXRFX.BIN。';
+          return;
+        }
+      }
+      const read = await this.io.readDat(bytes, library);
       if (seq !== this.datSeq) return;
       const summary = JSON.parse(read.summary) as { generation?: unknown };
       const listing = JSON.parse(read.listing) as Listing;
       if (read.entries.length !== 24 * 552) throw new Error('条目长度不合格');
       const generation = typeof summary.generation === 'number' ? summary.generation : null;
-      this.dat = { name: file.name, read, generation, listing };
+      this.dat = { name: file.name, read, generation, listing, library: read.library ?? null };
       this.bump();
     } catch (err) {
       if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${err instanceof Error ? err.message : String(err)}`;
@@ -408,7 +425,7 @@ export class Book {
     const id = `${this.generation}|${selectionKey(sel)}`;
     let job = this.resolved.get(id);
     if (!job) {
-      job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel));
+      job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel), dat.library ? dat.library.slice(0) : null);
       this.resolved.set(id, job);
       job.catch(() => {
         if (this.resolved.get(id) === job) this.resolved.delete(id);

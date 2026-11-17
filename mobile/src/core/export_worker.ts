@@ -25,7 +25,7 @@ import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKin
 
 let ready: Promise<InitOutput> | null = null;
 let wasm: InitOutput | null = null;
-let setup: ExportSetup = { dat: null, calibIndex: '', calibBlob: null, luts: {}, fontIndex: '', fontPack: null, logoIndex: '', logoBlob: null };
+let setup: ExportSetup = { dat: null, library: null, calibIndex: '', calibBlob: null, luts: {}, fontIndex: '', fontPack: null, logoIndex: '', logoBlob: null };
 
 function load(): Promise<InitOutput> {
   ready ??= init({ module_or_path: wasmUrl }).then((out) => {
@@ -144,7 +144,8 @@ async function runJob(job: ExportJob): Promise<void> {
   const dat = setup.dat ? new Uint8Array(setup.dat) : EMPTY;
   if (req.resolve && dat.length) {
     try {
-      entry = fromHex((JSON.parse(color_resolve(dat, new TextEncoder().encode(req.resolve), undefined)) as { entry: string }).entry);
+      const library = setup.library ? new Uint8Array(setup.library.slice(0)) : undefined;
+      entry = fromHex((JSON.parse(color_resolve(dat, new TextEncoder().encode(req.resolve), library)) as { entry: string }).entry);
     } catch (err) {
       if ((req.side as { recipe?: unknown }).recipe) throw coreFail(err);
     }
