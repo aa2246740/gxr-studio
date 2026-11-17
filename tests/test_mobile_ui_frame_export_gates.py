@@ -210,17 +210,29 @@ def _memory_rejected(step: dict[str, Any]) -> bool:
     return _rejected(fx.memory_ok, step, hdr=False)
 
 
+def _step(wasm: int, js: int, cap: int, estimate: int | None) -> dict[str, Any]:
+    facts = {"S0": {"estimate": estimate}} if estimate is not None else {}
+    return {"facts": {"facts": facts, "mem": {"wasm": wasm, "js": js, "workers": 1}, "stagedHigh": 1, "cap": cap}}
+
+
 def test_page_budget_old_check_passes_until_the_cap_drops() -> None:
     """Sol's control: WASM 512 + JS 400 + cap 384 fails once JS is counted, and the cap must drop."""
     wasm = 512 * fx.MIB
     js = 400 * fx.MIB
     cap = 384 * fx.MIB
-    step = {"facts": {"mem": {"wasm": wasm, "js": js, "workers": 1}, "stagedHigh": 1, "cap": cap}}
+    step = _step(wasm, js, cap, wasm + js)
     check(wasm + cap <= fx.PAGE_BUDGET, "old wasm plus cap check would pass")
     check(wasm + js + cap > fx.PAGE_BUDGET, "same-stage total plus the old cap is over budget")
     check(_memory_rejected(step), "unlowered cap fails")
     lowered = fx.fit_stage_cap(wasm + js, cap)
     check(0 < lowered < cap, "cap drops below the default")
-    fixed = {"facts": {"mem": {"wasm": wasm, "js": js, "workers": 1}, "stagedHigh": 1, "cap": lowered}}
-    row = fx.memory_ok(fixed, hdr=False)
+    row = fx.memory_ok(_step(wasm, js, lowered, wasm + js), hdr=False)
     check(row["cap"] == lowered and int(row["peak"]) + lowered <= fx.PAGE_BUDGET, "lowered cap fits the page budget")
+
+
+def test_preflight_estimate_must_bound_the_measured_peak() -> None:
+    """The batch's estimate before the photo must not be below what the photo then used, and must exist."""
+    wasm, js, cap = 300 * fx.MIB, 100 * fx.MIB, 384 * fx.MIB
+    check(fx.memory_ok(_step(wasm, js, cap, wasm + js), hdr=False)["estimate"] == wasm + js, "exact estimate passes")
+    check(_memory_rejected(_step(wasm, js, cap, wasm + js - 1)), "estimate under the peak fails")
+    check(_memory_rejected(_step(wasm, js, cap, None)), "missing estimate fails")

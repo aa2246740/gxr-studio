@@ -309,7 +309,9 @@ async function runSizes(job: SizesJob): Promise<void> {
   const preset = typeof crop?.preset === 'string' ? crop.preset : undefined;
   const fontPack = job.fontPack ? new Uint8Array(job.fontPack) : EMPTY;
   const json = export_output_sizes(size.width, size.height, JSON.stringify(job.side), '{}', JSON.stringify(layout), rect, preset, job.fontIndex ?? '', fontPack);
-  post({ op: 'sizes', id: job.id, ok: true, json });
+  const pixels = (s: { width: number; height: number } | null) => (s ? s.width * s.height : 0);
+  const source = Math.max(pixels(jpgHead ? jpegSize(jpgHead) : null), pixels(dngHead ? dngSize(dngHead) : null));
+  post({ op: 'sizes', id: job.id, ok: true, json, source });
 }
 
 self.onmessage = (event: MessageEvent<ExportIn>) => {

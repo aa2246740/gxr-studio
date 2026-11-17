@@ -32,7 +32,7 @@ function zeroStages(): Record<ExportMemory['stage'], StageMark> {
   };
 }
 
-type Pending = { kind: 'run'; done: (r: RunResult) => void } | { kind: 'sizes'; done: (r: { ok: boolean; json?: string }) => void } | { kind: 'decode'; done: (r: ExportOut) => void };
+type Pending = { kind: 'run'; done: (r: RunResult) => void } | { kind: 'sizes'; done: (r: { ok: boolean; json?: string; source?: number }) => void } | { kind: 'decode'; done: (r: ExportOut) => void };
 
 /** 可替换的 Worker 工厂：测试用假的。 */
 export type WorkerFactory = () => Worker;
@@ -88,7 +88,7 @@ export class ExportCore {
     });
   }
 
-  sizes(job: Omit<SizesJob, 'id'>): Promise<{ ok: boolean; json?: string }> {
+  sizes(job: Omit<SizesJob, 'id'>): Promise<{ ok: boolean; json?: string; source?: number }> {
     const id = this.seq++;
     return new Promise((resolve) => {
       this.pending.set(id, { kind: 'sizes', done: resolve });
@@ -216,7 +216,7 @@ export class ExportCore {
         // 陷阱以后这份 WASM 不能再用：关掉，下一张用新的。
         if (msg.kind === 'trap') this.stop('trap');
       }
-    } else if (msg.op === 'sizes' && pending.kind === 'sizes') pending.done(msg.ok ? { ok: true, json: msg.json } : { ok: false });
+    } else if (msg.op === 'sizes' && pending.kind === 'sizes') pending.done(msg.ok ? { ok: true, json: msg.json, source: msg.source } : { ok: false });
     else if (msg.op === 'decoded' && pending.kind === 'decode') pending.done(msg);
   }
 

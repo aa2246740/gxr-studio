@@ -276,8 +276,15 @@ def fit_stage_cap(peak: int, requested: int) -> int:
     return max(0, room)
 
 
+def preflight_estimate(step: dict[str, Any]) -> int | None:
+    """The largest per-photo peak bound the batch computed before starting a photo (``ExportBatch.estimates``)."""
+    values = [int(fact["estimate"]) for fact in step["facts"].get("facts", {}).values() if isinstance(fact.get("estimate"), (int, float))]
+    return max(values) if values else None
+
+
 def memory_ok(step: dict[str, Any], *, hdr: bool) -> dict[str, Any]:
-    """WASM ceiling, and the same-stage peak plus the staging estimate, against 1.2 GiB."""
+    """WASM ceiling, the same-stage peak plus the staging estimate against 1.2 GiB, and the preflight
+    estimate (Sol final-r2 P2-05) bounding the measured same-stage peak."""
     mem = step["facts"]["mem"]
     wasm = int(mem["wasm"])
     staged = int(step["facts"]["stagedHigh"])
@@ -286,8 +293,18 @@ def memory_ok(step: dict[str, Any], *, hdr: bool) -> dict[str, Any]:
     ceiling = HDR_CEILING if hdr else SDR_CEILING
     default = STAGE_CAP_HDR if hdr else STAGE_CAP_SDR
     fitted = fit_stage_cap(peak, default)
-    row = {"wasm": wasm, "js": int(mem.get("js") or 0), "staged": staged, "cap": cap, "peak": peak, "workers": mem.get("workers")}
+    estimate = preflight_estimate(step)
+    row = {
+        "wasm": wasm,
+        "js": int(mem.get("js") or 0),
+        "staged": staged,
+        "cap": cap,
+        "peak": peak,
+        "estimate": estimate,
+        "workers": mem.get("workers"),
+    }
     note("ui_m4_frame_memory", {"hdr": hdr, **row})
+    check(estimate is not None and peak <= estimate, "preflight estimate bounds the measured peak")
     check(0 < wasm <= ceiling, "hdr wasm ceiling" if hdr else "sdr wasm ceiling")
     check(staged <= cap, "hdr staged bytes" if hdr else "sdr staged bytes")
     check(cap == fitted, "hdr staging cap" if hdr else "sdr staging cap")
