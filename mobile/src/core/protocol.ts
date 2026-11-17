@@ -25,7 +25,8 @@ export type CoreOp =
   | 'lut-patch'
   | 'lut-delete'
   | 'lut-blob'
-  | 'lut-snapshot';
+  | 'lut-snapshot'
+  | 'hdr-preview-grid';
 
 export class CoreError extends Error {
   readonly code: string;
@@ -132,6 +133,21 @@ export interface LutSnapshotArgs {
   cubeIds: string[];
 }
 
+export interface HdrGridArgs {
+  width: number;
+  height: number;
+  dng: ArrayBuffer;
+  jpg: ArrayBuffer | null;
+  base?: ArrayBuffer | null;
+  baseWidth?: number;
+  baseHeight?: number;
+  geometryJson?: string | null;
+  cropJson?: string | null;
+  box?: { x: number; y: number; w: number; h: number } | null;
+  frameLayoutJson?: string | null;
+  factor?: number;
+}
+
 export interface CoreRequest {
   id: number;
   op: CoreOp;
@@ -154,6 +170,7 @@ export interface CoreRequest {
   lutDelete?: LutDeleteArgs | null;
   lutBlob?: LutBlobArgs | null;
   lutSnapshot?: LutSnapshotArgs | null;
+  hdrGrid?: HdrGridArgs | null;
 }
 
 export type CoreReply =

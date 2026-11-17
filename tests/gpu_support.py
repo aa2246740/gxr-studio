@@ -63,6 +63,7 @@ class _Server:
     def __init__(self, files: dict[str, bytes], harness: Path = HARNESS) -> None:
         self.files = {"/": PAGE, "/harness.mjs": harness.read_bytes(), "/engine.js": ENGINE.read_bytes(), **files}
         self.results: dict[str, tuple[int, int, bytes]] = {}
+        self.kinds: dict[str, str] = {}
         self.done = threading.Event()
         self.summary: dict[str, Any] = {}
         self.progress: dict[str, Any] = {}
@@ -91,7 +92,9 @@ class _Server:
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 if url.path.startswith("/result/"):
                     q = parse_qs(url.query)
-                    outer.results[url.path[len("/result/") :]] = (int(q["w"][0]), int(q["h"][0]), body)
+                    key = url.path[len("/result/") :]
+                    outer.results[key] = (int(q["w"][0]), int(q["h"][0]), body)
+                    outer.kinds[key] = q.get("fmt", ["u8"])[0]
                 elif url.path == "/progress":
                     outer.progress = json.loads(body)
                 elif url.path == "/done":
@@ -180,5 +183,10 @@ def run_engine(
                 pytest.skip("这台机器的 Chrome 拿不到 WebGPU 软件适配器")
             pytest.fail(f"页面出错：{srv.summary['error']}\n{detail}")
         print(json.dumps(srv.summary))
-        out = {k: np.frombuffer(b, np.uint8).reshape(h, w, 4)[..., :3].copy() for k, (w, h, b) in srv.results.items()}
+        out: dict[str, np.ndarray] = {}
+        for key, (w, h, body) in srv.results.items():
+            if srv.kinds.get(key) == "f32":
+                out[key] = np.frombuffer(body, np.float32).reshape(h, w, 4).copy()
+            else:
+                out[key] = np.frombuffer(body, np.uint8).reshape(h, w, 4)[..., :3].copy()
         return out, srv.summary

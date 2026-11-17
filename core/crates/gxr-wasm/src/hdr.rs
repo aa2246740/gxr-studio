@@ -145,6 +145,83 @@ fn gain_core(
     })
 }
 
+/// Float32 SDR luma grid from `sdr_luma_grid` (`gxr-cli hdr-luma`).
+#[wasm_bindgen]
+pub struct HdrLuma {
+    height: u32,
+    width: u32,
+    values: Vec<f32>,
+}
+
+#[wasm_bindgen]
+impl HdrLuma {
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Row-major float32 luma. Consumes the object.
+    pub fn bytes(self) -> Result<Vec<u8>, JsValue> {
+        hdr::f32_le_bytes(&self.values).map_err(rejected)
+    }
+}
+
+fn pack_luma(h: u64, w: u64, values: Vec<f32>) -> Result<HdrLuma, CoreError> {
+    let height = u32::try_from(h).map_err(|_| CoreError::new("value_error", hdr::ARRAY_TOO_BIG))?;
+    let width = u32::try_from(w).map_err(|_| CoreError::new("value_error", hdr::ARRAY_TOO_BIG))?;
+    Ok(HdrLuma {
+        height,
+        width,
+        values,
+    })
+}
+
+/// Axes that do not fit `usize` on wasm32. Same checks as `sdr_luma_grid`, in the same order.
+/// A non-empty image whose factor does not fit `usize` hits the block-mean size check
+/// (`factor²` does not fit `u64`) and is `value_error` / too big, as on native.
+fn luma_wide(rgb: &[u8], h: u64, w: u64, factor: u64) -> Result<HdrLuma, CoreError> {
+    let n = hdr::count(&[h, w, 3])?;
+    if n != rgb.len() {
+        return Err(hdr::unsupported("bad_input", "RGB 长度和形状对不上"));
+    }
+    if factor == 0 {
+        return Err(hdr::unsupported("bad_input", "division by zero"));
+    }
+    if h == 0 || w == 0 {
+        return pack_luma(h.div_ceil(factor), w.div_ceil(factor), Vec::new());
+    }
+    Err(CoreError::new("value_error", hdr::ARRAY_TOO_BIG))
+}
+
+fn luma_core(rgb: &[u8], height: f64, width: f64, factor: f64) -> Result<HdrLuma, CoreError> {
+    // f64, not u32: wasm-bindgen would narrow `2**32+1` before the check (UNIT-COMMON).
+    let h = checked_dim_u64(height)?;
+    let w = checked_dim_u64(width)?;
+    let f = checked_dim_u64(factor)?;
+    let (hu, wu, fu) = match (usize::try_from(h), usize::try_from(w), usize::try_from(f)) {
+        (Ok(hu), Ok(wu), Ok(fu)) => (hu, wu, fu),
+        _ => return luma_wide(rgb, h, w, f),
+    };
+    let grid = hdr::sdr_luma_grid(rgb, hu, wu, fu)?;
+    pack_luma(
+        u64::try_from(grid.h).map_err(|_| CoreError::new("value_error", hdr::ARRAY_TOO_BIG))?,
+        u64::try_from(grid.w).map_err(|_| CoreError::new("value_error", hdr::ARRAY_TOO_BIG))?,
+        grid.v,
+    )
+}
+
+/// `sdr_luma_grid(rgb, factor)` as `gxr-cli hdr-luma` runs it.
+/// `height`, `width` and `factor` are JS numbers. `--rgb-shape` on the CLI passes the same axes.
+#[wasm_bindgen]
+pub fn hdr_luma(rgb: &[u8], height: f64, width: f64, factor: f64) -> Result<HdrLuma, JsValue> {
+    luma_core(rgb, height, width, factor).map_err(rejected)
+}
+
 /// `compute_gain(sdr_y, raw_y, clip, Params(**params))` and the uint8 quantisation.
 /// `clip` is one byte per pixel (non-zero = clipped); `raw` is NaN outside the photo.
 #[wasm_bindgen]

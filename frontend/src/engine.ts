@@ -6,6 +6,7 @@ import geoWgsl from './shaders/geo.wgsl?raw';
 import binWgsl from './shaders/bin.wgsl?raw';
 import presentWgsl from './shaders/present.wgsl?raw';
 import histWgsl from './shaders/hist.wgsl?raw';
+import { type GainMeta, HdrOutput, type HdrOutputMode, f16ToF32, presentMap } from './hdr_output';
 import { type Adjust, type Curves, channelGains, displayTable, TABLE_SIZE } from './tones';
 import { canvasOf, lens, rotatedSize } from './warp';
 
@@ -108,6 +109,8 @@ export interface ClipOverlay {
   highlight: boolean;
 }
 
+export type { GainMeta, GainTexture, HdrOutputMode } from './hdr_output';
+
 /** 一次直方图的结果。bins 排列：红、绿、蓝、亮度各 256 档，后面是暗部压死、高光溢出的点数（共 1026 个）。 */
 export interface HistogramData {
   counts: Uint32Array;
@@ -198,6 +201,7 @@ export class Engine {
   private displayAspect: number | null = null;
   private version = 0;
   private lost = false;
+  private readonly hdr: HdrOutput;
   onFrame: ((f: FrameInfo) => void) | null = null;
   onLost: ((reason: string) => void) | null = null;
 
@@ -230,7 +234,8 @@ export class Engine {
     const presentMod = mod(presentWgsl);
     const binMod = mod(binWgsl);
     const histMod = mod(histWgsl);
-    this.modules = [colorMod, geoMod, presentMod, binMod, histMod];
+    this.hdr = new HdrOutput(device);
+    this.modules = [colorMod, geoMod, presentMod, binMod, histMod, this.hdr.module];
     this.colorPipe = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: colorMod, entryPoint: 'vs' },
@@ -417,7 +422,7 @@ export class Engine {
     if (this.canvas === canvas) return;
     this.canvas = canvas;
     this.context = canvas.getContext('webgpu');
-    this.context?.configure({ device: this.device, format: this.format, alphaMode: 'opaque' });
+    this.configureContext();
     this.dirtyGeo = true;
     this.schedule();
   }
@@ -428,6 +433,32 @@ export class Engine {
     this.context?.unconfigure();
     this.canvas = null;
     this.context = null;
+  }
+
+  /** 打开或关掉 HDR 预览。关掉时画布和显示遍回到 SDR，成片纹理的读回不变。 */
+  setOutput(mode: HdrOutputMode): void {
+    this.hdr.set(mode);
+    this.configureContext();
+    this.schedule();
+  }
+
+  hdrGainCount(): number {
+    return this.hdr.textureCount;
+  }
+
+  private configureContext(): void {
+    if (!this.context) return;
+    if (this.hdr.active) {
+      this.context.configure({
+        device: this.device,
+        format: 'rgba16float',
+        alphaMode: 'opaque',
+        colorSpace: 'srgb',
+        toneMapping: { mode: 'extended' },
+      });
+    } else {
+      this.context.configure({ device: this.device, format: this.format, alphaMode: 'opaque' });
+    }
   }
 
   /** 换照片：只换绑定，不重建画布。 */
@@ -629,7 +660,13 @@ export class Engine {
       canvas.width = cw;
       canvas.height = ch;
     }
-    this.presentTo(enc, this.context!.getCurrentTexture().createView(), cw, ch, fw, fh);
+    const view = this.context!.getCurrentTexture().createView();
+    if (this.hdr.active && this.finalTex) {
+      const map = presentMap(cw, ch, fw, fh, STAGE_GRAY, CLIP.shadowMax, CLIP.highlightMin, this.clipOverlay, this.displayAspect);
+      this.hdr.present(enc, view, map, this.finalTex);
+    } else {
+      this.presentTo(enc, view, cw, ch, fw, fh);
+    }
   }
 
   /** 第三遍画到指定的目标（画布的当前纹理，或测试读回用的离屏纹理）。 */
@@ -885,8 +922,72 @@ export class Engine {
     return { sources: this.sources.size, sourceBytes: bytes, bakes: this.bakes.size, luts: this.luts.size };
   }
 
+  /**
+   * 把一张合成的 SDR 图和增益网格画进离屏 rgba16float，读回线性 RGBA。
+   * 不碰画布，也不改 SDR 的成片纹理。给着色器公式对拍用。
+   */
+  async renderHdrSample(input: {
+    sdr: Uint8Array;
+    width: number;
+    height: number;
+    gain: Uint8Array;
+    gainWidth: number;
+    gainHeight: number;
+    meta: GainMeta;
+    headroom?: number | null;
+  }): Promise<{ width: number; height: number; rgba: Float32Array }> {
+    const d = this.device;
+    const sdr = d.createTexture({
+      size: [input.width, input.height],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const sbpr = Math.ceil((input.width * 4) / 256) * 256;
+    const sPad = new Uint8Array(sbpr * input.height);
+    for (let y = 0; y < input.height; y++) sPad.set(input.sdr.subarray(y * input.width * 4, (y + 1) * input.width * 4), y * sbpr);
+    d.queue.writeTexture({ texture: sdr }, sPad, { bytesPerRow: sbpr, rowsPerImage: input.height }, [input.width, input.height]);
+    this.hdr.set({
+      hdr: true,
+      gain: { width: input.gainWidth, height: input.gainHeight, codes: input.gain },
+      meta: input.meta,
+      headroom: input.headroom ?? null,
+    });
+    const target = d.createTexture({
+      size: [input.width, input.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    const enc = d.createCommandEncoder();
+    const map = presentMap(input.width, input.height, input.width, input.height, STAGE_GRAY, CLIP.shadowMax, CLIP.highlightMin, { shadow: false, highlight: false }, null);
+    this.hdr.present(enc, target.createView(), map, sdr);
+    const bpr = Math.ceil((input.width * 8) / 256) * 256;
+    const buf = d.createBuffer({ size: bpr * input.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    enc.copyTextureToBuffer({ texture: target }, { buffer: buf, bytesPerRow: bpr }, [input.width, input.height]);
+    d.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const raw = new Uint16Array(buf.getMappedRange().slice(0));
+    buf.unmap();
+    buf.destroy();
+    target.destroy();
+    sdr.destroy();
+    this.hdr.release();
+    const rgba = new Float32Array(input.width * input.height * 4);
+    for (let y = 0; y < input.height; y++) {
+      for (let x = 0; x < input.width; x++) {
+        const i = y * (bpr / 2) + x * 4;
+        const o = (y * input.width + x) * 4;
+        rgba[o] = f16ToF32(raw[i] ?? 0);
+        rgba[o + 1] = f16ToF32(raw[i + 1] ?? 0);
+        rgba[o + 2] = f16ToF32(raw[i + 2] ?? 0);
+        rgba[o + 3] = f16ToF32(raw[i + 3] ?? 0);
+      }
+    }
+    return { width: input.width, height: input.height, rgba };
+  }
+
   dispose(): void {
     this.detach();
+    this.hdr.destroy();
     this.thumbColor?.destroy();
     this.thumbFinal?.destroy();
     for (const s of this.sources.values()) s.tex.destroy();

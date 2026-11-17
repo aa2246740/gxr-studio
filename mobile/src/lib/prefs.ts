@@ -37,10 +37,18 @@ export function loadExportHdr(): boolean {
   return store()?.getItem(HDR_KEY) === '1';
 }
 
+const hdrWatchers = new Set<() => void>();
+
+export function watchExportHdr(fn: () => void): () => void {
+  hdrWatchers.add(fn);
+  return () => hdrWatchers.delete(fn);
+}
+
 export function saveExportHdr(on: boolean): void {
   try {
     store()?.setItem(HDR_KEY, on ? '1' : '0');
   } catch {
     /* 存不下（隐私模式、满了）就只管这一次。 */
   }
+  for (const fn of hdrWatchers) fn();
 }

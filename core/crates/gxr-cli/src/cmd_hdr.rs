@@ -7,7 +7,9 @@
 //!            [--sigma S] [--size N] [--iterations N]
 //! hdr-map --in A.npy --sy Y.npy --sx X.npy --out B.npy       map_coordinates(order=1, nearest)
 //! hdr-block-mean --in A.npy --factor F --out B.npy
-//! hdr-luma --rgb RGB.npy --factor F --out Y.npy               sdr_luma_grid (uint8 (h, w, 3))
+//! hdr-luma --rgb RGB.npy --factor F --out Y.npy [--rgb-shape H W]
+//!                                                          sdr_luma_grid (uint8 (h, w, 3);
+//!                                                          --rgb-shape reinterprets the bytes)
 //! hdr-srgb --out L.npy                                       srgb_to_linear of codes 0..=255 (float32)
 //! hdr-log2 --in X.npy --out Y.npy                            np.log2 on float32, as the port computes it
 //! hdr-raw-luma DNG --out Y.npy --clip-out C.npy               raw_luma without the metadata
@@ -399,13 +401,22 @@ fn block_mean_cmd(args: &[String]) -> Result<Json, Failure> {
 
 fn luma_cmd(args: &[String]) -> Result<Json, Failure> {
     let rgb = npy(args, "--rgb")?;
-    let [h, w, 3] = rgb.shape.as_slice() else {
-        return Err(usage("--rgb must be (h, w, 3)"));
+    // 没传 --rgb-shape 时保持原来的顺序：先形状，再 dtype。形状覆盖是后加的分支，单独检查。
+    let (h, w) = if args.iter().any(|a| a == "--rgb-shape") {
+        if rgb.descr != "|u1" {
+            return Err(usage("--rgb must be uint8"));
+        }
+        pair(args, "--rgb-shape")?
+    } else {
+        let [h, w, 3] = rgb.shape.as_slice() else {
+            return Err(usage("--rgb must be (h, w, 3)"));
+        };
+        if rgb.descr != "|u1" {
+            return Err(usage("--rgb must be uint8"));
+        }
+        (*h, *w)
     };
-    if rgb.descr != "|u1" {
-        return Err(usage("--rgb must be uint8"));
-    }
-    let grid = hdr::sdr_luma_grid(&rgb.data, *h, *w, number(args, "--factor")?)?;
+    let grid = hdr::sdr_luma_grid(&rgb.data, h, w, number(args, "--factor")?)?;
     write(args, "--out", "<f4", &[grid.h, grid.w], &le_f32(&grid.v))
 }
 

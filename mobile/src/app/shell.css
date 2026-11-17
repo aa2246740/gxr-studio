@@ -114,6 +114,7 @@ h1, h2, p { margin: 0; }
 .lnk { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; color: var(--accent-text); font: 500 15px/1 var(--font-ui); background: none; }
 .tag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; font: 500 12px/1 var(--font-ui); color: var(--warn-text); background: var(--warn-bg); }
 .tag.neutral { height: 26px; padding: 0 12px; font-size: 13px; background: rgba(20, 20, 20, 0.78); color: var(--text-1); }
+.tag.hdr-preview { height: 18px; padding: 0 6px; font-size: 11px; color: var(--text-3); background: transparent; }
 .bdg { display: inline-flex; align-items: center; height: 17px; padding: 0 5px; border-radius: 4px; font: 600 10px/1 var(--font-num); color: #fff; background: rgba(0, 0, 0, 0.72); }
 
 .seg { display: flex; padding: 2px; border-radius: 12px; background: var(--surface-control); box-shadow: inset 0 0 0 1px var(--line-subtle); }
