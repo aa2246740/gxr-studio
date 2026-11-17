@@ -240,7 +240,9 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
         out_dir.mkdir()
         canvas_dir.mkdir()
         logo = _logo_png(tmp_path / "studio_logo.png")
-        dehinted_fonts = dehinted_font_paths(tmp_path / "dehint")
+        dehint_dir = tmp_path / "dehint"
+        dehint_dir.mkdir()
+        dehinted_fonts = dehinted_font_paths(dehint_dir)
         report = run_driver(
             tmp_path,
             {
