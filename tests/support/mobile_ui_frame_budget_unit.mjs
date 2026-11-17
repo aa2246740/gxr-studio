@@ -245,7 +245,7 @@ test('estimatePeak: sizes from the file heads, without sending the batch setup',
   assert.equal(small, stagePeakEstimate({ source: 4288 * 2848, photo, canvas, fileBytes: 20 * MIB, hdr: false }));
 });
 
-test('estimatePeak: a file that cannot be read is FileUnreadable, before any probe', async () => {
+test('estimatePeak: a file that cannot be read is FileUnreadable, even when the probe answers', async () => {
   const calls = [];
   const probe = {
     async sizes() {
@@ -256,7 +256,7 @@ test('estimatePeak: a file that cannot be read is FileUnreadable, before any pro
   for (const item of [photoItem(file(20 * MIB), file(5 * MIB, true)), photoItem(file(20 * MIB, true), file(5 * MIB)), photoItem(null, file(5 * MIB, true))]) {
     await assert.rejects(estimatePeak(probe, item, 'original', FONTS), FileUnreadable);
   }
-  assert.deepEqual(calls, [], 'no probe for an unreadable file');
+  assert.equal(calls.length, 3, 'the probe answered each time; the unreadable file still wins');
 });
 
 test('estimatePeak: a failed probe on readable files fails the estimate (whole page budget), never a guessed size', async () => {
@@ -323,4 +323,50 @@ test("the preflight probe never sends the batch setup: a setup failure still lan
     }
     core.stop();
   }
+});
+
+test('stop while the next photo is being estimated leaves no export Worker behind', async () => {
+  // M3 item 9 (stop after 2 of 5) with the real ExportBatch and ExportCore: 停止 lands in the same task as the
+  // commit that repaints the dock (a microtask, like the page's MutationObserver). The probe for the next photo
+  // must already be on the Worker that stop() closes; nothing may create a Worker after the stop.
+  let created = 0;
+  const core = new ExportCore(() => {
+    created += 1;
+    return {
+      postMessage(msg) {
+        if (msg.op === 'sizes') queueMicrotask(() => this.onmessage({ data: { op: 'sizes', id: msg.job.id, ok: true, json: JSON.stringify(SIZED), source: 4288 * 2848 } }));
+        if (msg.op === 'run') setTimeout(() => this.onmessage({ data: { op: 'done', id: msg.job.id, ok: true, file: new ArrayBuffer(4), result: {}, shot: {}, ms: 1 } }), 0);
+      },
+      terminate() {},
+    };
+  });
+  core.begin({ dat: null, calibIndex: '', calibBlob: null });
+  let batch = null;
+  let stopQueued = false;
+  const host = {
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    run: (item) => core.run({ dng: item.dng, jpg: item.jpg, req: item.req }),
+    stop: () => core.stop(),
+    idle: () => core.release(),
+    markGone() {},
+    busy() {},
+    changed() {
+      if (batch && !stopQueued && batch.phase === 'running' && batch.okCount() === 1) {
+        stopQueued = true;
+        queueMicrotask(() => batch.stop());
+      }
+    },
+    memoryPeak: () => core.marks.total,
+    peakEstimate: (item) => estimatePeak(core, item, 'original', FONTS),
+  };
+  const items = [0, 1, 2].map((i) => ({ ...photoItem(file(20 * MIB), file(5 * MIB)), id: `p${i}`, stem: `S${i}` }));
+  batch = new ExportBatch(items, host);
+  batch.start();
+  await batch.settled();
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(batch.phase, 'stopped');
+  assert.equal(batch.stagedBytes, 4);
+  assert.equal(core.alive(), false, 'stop closed the Worker and none was made after it');
+  assert.equal(created, 1);
 });

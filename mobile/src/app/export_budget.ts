@@ -33,8 +33,6 @@ async function readable(file: File | null): Promise<boolean> {
 
 /** `item` 照 `tier` 导出时同一阶段的峰值上界。文件读不了抛 `FileUnreadable`；尺寸算不出来抛错（批次按整页预算算）。 */
 export async function estimatePeak(core: ExportCore, item: BatchItem, tier: SizeTier, fonts: BatchFonts): Promise<number> {
-  const [dngOk, jpgOk] = await Promise.all([readable(item.dng), readable(item.jpg)]);
-  if (!dngOk || !jpgOk) throw new FileUnreadable();
   const job = {
     dng: item.dng,
     jpg: item.jpg,
@@ -47,8 +45,11 @@ export async function estimatePeak(core: ExportCore, item: BatchItem, tier: Size
     fontIndex: fonts.fontIndex,
     fontPack: fonts.fontPack,
   };
+  // 探针在第一个 await 之前就交给 Worker：这时点「停止」或清空，stop() 关掉的正是它，不会在停下以后再建一个 Worker。
   // 不顺带发这一批的设置：它由这一张的 run() 自己发（发不出去照旧算这一张的陷阱，Sol r2 P2-04）。
-  const reply = await core.sizes(job, false);
+  const probe = core.sizes(job, false);
+  const [reply, dngOk, jpgOk] = await Promise.all([probe, readable(item.dng), readable(item.jpg)]);
+  if (!dngOk || !jpgOk) throw new FileUnreadable();
   if (!reply.ok || !reply.json) throw new Error('sizes');
   const sized = JSON.parse(reply.json) as Sized;
   const full = area(sized.sizes?.original);
