@@ -323,6 +323,73 @@ export function cases(inputs) {
     }
   }
   out.push(...fftCases(inputs));
+  out.push(...lumaCases());
+  return out;
+}
+
+// hdr_luma：合成 RGB，和 gxr-cli hdr-luma 比 float32 网格。--rgb-shape 让短缓冲和超大尺寸走同一条校验。
+function npyU8(shape, data) {
+  const dims = shape.join(', ');
+  let dict = `{'descr': '|u1', 'fortran_order': False, 'shape': (${dims}), }`;
+  const spaces = (64 - ((11 + dict.length) % 64)) % 64;
+  dict = `${dict}${' '.repeat(spaces)}\n`;
+  const header = Buffer.alloc(10 + dict.length);
+  header.write('\u0093NUMPY', 0, 'latin1');
+  header[6] = 1;
+  header[7] = 0;
+  header.writeUInt16LE(dict.length, 8);
+  header.write(dict, 10, 'latin1');
+  return Buffer.concat([header, Buffer.from(data)]);
+}
+
+function lumaCases() {
+  const out = [];
+  const rgbOf = (h, w) => {
+    const data = new Uint8Array(h * w * 3);
+    for (let i = 0; i < data.length; i++) data[i] = (i * 17 + 3) & 255;
+    return data;
+  };
+  const writeRgb = (name, h, w, data) => {
+    const path = join(dir, name);
+    writeFileSync(path, npyU8([h, w, 3], data));
+    return path;
+  };
+  const push = (label, file, h, w, factor, override) => {
+    const args = ['hdr-luma', '--rgb', file, '--factor', String(factor), '--out', join(dir, `${label}.npy`)];
+    if (override) args.push('--rgb-shape', String(h), String(w));
+    out.push({
+      label: `hdr-luma::${label}`,
+      cliArgs: args,
+      wasm: (mod) => {
+        const rgb = readNpy(file);
+        const g = mod.hdr_luma(rgb.values, h, w, factor);
+        return framed(g.height, g.width, g.bytes());
+      },
+    });
+  };
+  const samples = [
+    [1, 1, 1],
+    [2, 3, 1],
+    [5, 7, 2],
+    [8, 8, 4],
+    [15, 9, 4],
+    [17, 13, 16],
+    [16, 16, 16],
+    [4, 1, 1],
+    [0, 0, 1],
+  ];
+  for (const [h, w, factor] of samples) {
+    const file = writeRgb(`luma-${h}x${w}-f${factor}.npy`, h, w, rgbOf(h, w));
+    push(`size_${h}x${w}_f${factor}`, file, h, w, factor, false);
+  }
+  const base = writeRgb('luma-base-2x2.npy', 2, 2, rgbOf(2, 2));
+  const empty = writeRgb('luma-empty.npy', 0, 0, new Uint8Array(0));
+  push('empty', empty, 4, 4, 1, true);
+  push('short', base, 3, 5, 1, true);
+  push('huge', base, 4294967295, 4294967295, 1, true);
+  push('huge_wide', base, 2147483648, 1, 1, true);
+  push('factor0', base, 2, 2, 0, false);
+  push('factor_huge', base, 2, 2, 4294967296, false);
   return out;
 }
 
