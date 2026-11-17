@@ -194,7 +194,7 @@ export async function state({ newPage, out }) {
     await page.evaluate(() => {
       const { flow } = window.__state.current;
       const knobs = { exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 };
-      const photo = { id: 'n', stem: 'N', version: 1, dng: null, jpg: null, lastModified: 0, captureMs: 0, jpgMeta: null, dngMeta: null, choice: null, levels: new Map(), knobs };
+      const photo = { id: 'n', stem: 'N', version: 1, dng: null, jpg: null, lastModified: 0, captureMs: 0, jpgMeta: null, dngMeta: null, choice: null, levels: new Map(), memory: new Map(), knobs };
       flow.start([photo], { size: 'original', quality: 'high' });
     });
     const afterStart = await page.evaluate(() => ({ liveUrls: window.__state.live.size, flowUrls: window.__state.current.flow.liveUrls?.() ?? null }));
@@ -302,7 +302,7 @@ export async function state({ newPage, out }) {
       canvas.getContext('2d').fillRect(0, 0, 2, 2);
       const jpg = new File([await new Promise((done) => canvas.toBlob(done, 'image/jpeg'))], 'S0.JPG');
       const knobs = { exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 };
-      const photo = { id: 'p0', stem: 'S0', version: 1, dng: null, jpg, lastModified: 0, captureMs: 0, jpgMeta: null, dngMeta: null, choice: null, levels: new Map(), knobs };
+      const photo = { id: 'p0', stem: 'S0', version: 1, dng: null, jpg, lastModified: 0, captureMs: 0, jpgMeta: null, dngMeta: null, choice: null, levels: new Map(), memory: new Map(), knobs };
       const app = { photos: () => [photo], photo: (id) => (id === photo.id ? photo : undefined), session: () => 1, book: () => ({ dat: null, pack: null }), markGone() {} };
       const flow = new t.ExportFlow(shell, app, null);
       const calls = { setup: 0, sizes: 0, run: 0, terminate: 0 };
