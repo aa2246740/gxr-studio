@@ -1,7 +1,9 @@
 // HDR 预览的条件、晚到结果、拖动时不发拟合、关掉时释放纹理。合成数据，不读照片。
 
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
@@ -358,16 +360,29 @@ test('the fit host keeps one worker, one in flight, and only the latest queued',
   assert.equal(made.length, 1);
 });
 
-test('moveReportFile copies across volumes when rename throws EXDEV', () => {
-  const src = '/Volumes/Workspace/Scratch/gxr-studio-hillclimb/round-6/mobile-ui-m5-hdr-preview/tmp-move-src.bin';
-  const dst = '/tmp/m5-move-dst.bin';
-  writeFileSync(src, 'cross-volume');
+test('moveReportFile copies when rename throws EXDEV and renames when it does not', () => {
+  const dir = mkdtempSync(tmpdir() + '/gxr-move-');
+  const src = join(dir, 'src.bin');
+  const dst = join(dir, 'dst.bin');
+  const sameSrc = join(dir, 'same-src.bin');
+  const sameDst = join(dir, 'same-dst.bin');
   try {
-    moveReportFile(src, dst);
+    writeFileSync(src, 'cross-volume');
+    let sawExdev = false;
+    moveReportFile(src, dst, () => {
+      sawExdev = true;
+      const err = new Error('EXDEV');
+      err.code = 'EXDEV';
+      throw err;
+    });
+    assert.equal(sawExdev, true);
     assert.equal(existsSync(src), false);
     assert.equal(readFileSync(dst, 'utf8'), 'cross-volume');
+    writeFileSync(sameSrc, 'same-volume');
+    moveReportFile(sameSrc, sameDst);
+    assert.equal(existsSync(sameSrc), false);
+    assert.equal(readFileSync(sameDst, 'utf8'), 'same-volume');
   } finally {
-    if (existsSync(src)) rmSync(src);
-    if (existsSync(dst)) rmSync(dst);
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -680,6 +680,7 @@ function hdrPreview(
       cropJson: args.cropJson ?? null,
       box: args.box ?? null,
       frameLayoutJson: args.frameLayoutJson ?? null,
+      // photo stamp mask is not applied to the preview gain: allowed preview difference (owner 2026-11-07); the overlay canvas draws the stamp above the HDR stage
       stamp: null,
       factor: args.factor ?? PREVIEW_FACTOR,
     },
