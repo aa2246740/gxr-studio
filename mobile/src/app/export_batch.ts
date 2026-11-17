@@ -20,8 +20,8 @@ export function stageCapFor(sameStagePeak: number, requestedCap: number): number
 /** ink-text 量出的导出 Worker WASM 上限：4288×2848 的照片做全尺寸 blur_fill + 时间戳（画布 4875×6500）。 */
 export const WASM_CEILING_BYTES = 512 * 1024 * 1024;
 export const WASM_CEILING_HDR_BYTES = 768 * 1024 * 1024;
-const CEILING_SOURCE_PX = 4288 * 2848;
-const CEILING_CANVAS_PX = 4875 * 6500;
+export const CEILING_SOURCE_PX = 4288 * 2848;
+export const CEILING_CANVAS_PX = 4875 * 6500;
 
 /** 估一张导出要的内存用到的尺寸（像素数）和文件大小，全部在开始算之前就知道。 */
 export interface PeakInputs {

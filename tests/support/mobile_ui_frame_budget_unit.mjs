@@ -19,7 +19,8 @@ registerHooks({
 });
 
 const batchMod = await import('../../mobile/src/app/export_batch.ts');
-const { ExportBatch, PAGE_BUDGET_BYTES, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, WASM_CEILING_BYTES, WASM_CEILING_HDR_BYTES, stagePeakEstimate } = batchMod;
+const { estimatePeak } = await import('../../mobile/src/app/export_budget.ts');
+const { CEILING_CANVAS_PX, CEILING_SOURCE_PX, ExportBatch, PAGE_BUDGET_BYTES, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, WASM_CEILING_BYTES, WASM_CEILING_HDR_BYTES, stagePeakEstimate } = batchMod;
 const MIB = 1024 * 1024;
 
 /**
@@ -198,4 +199,27 @@ test('stagePeakEstimate: ink-text WASM ceiling plus what the Worker holds in JS,
   // A full SDR staging cap still fits next to the SDR estimate; HDR holds earlier than its 256 MiB cap.
   assert.ok(sdr + STAGE_CAP_BYTES <= PAGE_BUDGET_BYTES);
   assert.ok(hdr + STAGE_CAP_HDR_BYTES > PAGE_BUDGET_BYTES);
+});
+
+test('estimatePeak: sizes from the file heads without sending the batch setup; a failed probe falls back to the measured case', async () => {
+  const file = (size) => ({ size });
+  const item = { id: 'p0', stem: 'S0', version: 1, dng: file(20 * MIB), jpg: file(5 * MIB), req: { side: {}, layout: {}, needsJpg: true, mtimeMs: 0, tzOffsetMin: 0, hdr: false } };
+  const fonts = { fontIndex: '', fontPack: null };
+  const calls = [];
+  const sized = { photo: [4000, 3000], sizes: { original: [5000, 6000], small: [1600, 1920] } };
+  const core = {
+    async sizes(job, withSetup) {
+      calls.push({ job, withSetup });
+      return { ok: true, json: JSON.stringify(sized), source: 4288 * 2848 };
+    },
+  };
+  const small = await estimatePeak(core, item, 'small', fonts);
+  assert.equal(calls[0].withSetup, false, 'the setup is left for run()');
+  assert.equal(calls[0].job.useJpg, true);
+  const canvas = 1600 * 1920;
+  const photo = 4000 * 3000 * (canvas / (5000 * 6000));
+  assert.equal(small, stagePeakEstimate({ source: 4288 * 2848, photo, canvas, fileBytes: 20 * MIB, hdr: false }));
+  const failing = { async sizes() { return { ok: false }; } };
+  const fallback = await estimatePeak(failing, { ...item, req: { ...item.req, hdr: true } }, 'original', fonts);
+  assert.equal(fallback, stagePeakEstimate({ source: CEILING_SOURCE_PX, photo: CEILING_SOURCE_PX, canvas: CEILING_CANVAS_PX, fileBytes: 20 * MIB, hdr: true }));
 });
