@@ -14,6 +14,8 @@ import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
 import { ExportFlow } from './export_ui';
 import { GridView } from './grid';
+import { clampPreviewCanvas, ColumnFrame, ensureGestureHint, watchLayout, type LayoutMode } from './layout';
+import './layout.css';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
 import { openable, photoMs, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
@@ -68,6 +70,8 @@ class App implements AppApi {
 
   /** 导出进相册（UI-M3）：导出面板、贴底的进度和结果、共享面板。 */
   private readonly exporter: ExportFlow;
+  private layoutMode: LayoutMode = 'phone';
+  private readonly slots: ColumnFrame;
 
   constructor(
     private readonly shell: HTMLElement,
@@ -79,7 +83,31 @@ class App implements AppApi {
     private readonly perfOn: boolean,
     private readonly pageErrors: string[],
   ) {
+    this.slots = new ColumnFrame(view);
     this.exporter = new ExportFlow(shell, this, perf);
+    watchLayout(shell, (mode, prev) => this.onLayout(mode, prev));
+  }
+  private onLayout(mode: LayoutMode, prev: LayoutMode): void {
+    if (this.editor?.dragging) this.editor.leaveDrag();
+    this.layoutMode = mode;
+    if (this.screen === 'start') return;
+    if (mode === 'columns') {
+      this.slots.showSplit();
+      this.ensureGrid();
+      ensureGestureHint(this.slots.editorHost);
+      this.grid?.setOpen(this.shell.dataset.open || '');
+    } else if (prev === 'columns') {
+      this.slots.showSingle(this.screen === 'editor' ? 'editor' : 'grid');
+    }
+    if (this.slots.gridHost.isConnected) this.grid?.refresh();
+    const canvas = this.slots.editorHost.querySelector('canvas.gpu');
+    if (canvas instanceof HTMLCanvasElement) clampPreviewCanvas(canvas);
+  }
+
+  private ensureGrid(): void {
+    if (!this.byId.size) return;
+    if (!this.grid) this.grid = new GridView(this.slots.gridHost, this);
+    if (!this.slots.gridHost.querySelector('.screen')) this.grid.show();
   }
 
   async start(engine: Engine | null): Promise<void> {
@@ -94,7 +122,7 @@ class App implements AppApi {
         generation = this.recipeBook.generationId();
         lookCache.clear();
       }
-      if (this.screen === 'grid') this.grid?.refresh();
+      if (this.screen === 'grid' || this.slots.mode === 'split') this.grid?.refresh();
     });
     const restored = this.recipeBook.restore().catch(() => undefined);
     const lutsRestored = this.lutBookStore.restore().catch(() => undefined);
@@ -355,8 +383,17 @@ class App implements AppApi {
     this.closeEditor();
     this.screen = 'editor';
     this.shell.dataset.screen = 'editor';
-    this.editor = new EditorView(this.view, this.shell, this, this.engine);
+    this.shell.dataset.open = photo.id;
+    if (this.layoutMode === 'columns') {
+      this.slots.showSplit();
+      this.ensureGrid();
+    } else this.slots.showSingle('editor');
+    this.editor = new EditorView(this.slots.editorHost, this.shell, this, this.engine);
     this.editor.open(photo);
+    if (this.layoutMode === 'columns') {
+      ensureGestureHint(this.slots.editorHost);
+      this.grid?.setOpen(photo.id);
+    }
   }
 
   back(): void {
@@ -453,15 +490,20 @@ class App implements AppApi {
     this.closeEditor();
     this.screen = 'start';
     this.shell.dataset.screen = 'start';
+    delete this.shell.dataset.open;
     this.grid = null;
+    this.slots.clear();
     renderStart(this.view, this);
   }
 
   private showGrid(remount: boolean): void {
     this.closeEditor();
+    delete this.shell.dataset.open;
     this.shell.dataset.screen = 'grid';
+    if (this.layoutMode === 'columns') this.slots.showSplit();
+    else this.slots.showSingle('grid');
     if (!this.grid || remount || this.screen !== 'grid') {
-      this.grid = new GridView(this.view, this);
+      this.grid = new GridView(this.slots.gridHost, this);
       this.grid.show();
     } else this.grid.refresh();
     this.screen = 'grid';
@@ -623,7 +665,7 @@ class App implements AppApi {
   }
 
   private afterRead(photo: Photo): void {
-    if (this.screen === 'grid') this.grid?.refresh();
+    if (this.screen === 'grid' || this.slots.mode === 'split') this.grid?.refresh();
     if (photo.status === 'bad' && this.screen === 'grid') this.grid?.showUnreadable(photo.id);
   }
 
@@ -665,7 +707,7 @@ class App implements AppApi {
   /** 拔卡期间缓存变了：重算，刷新格子和副标题；还开着的拔卡提示改数字，关掉了的不再弹。 */
   private cardChanged(): void {
     const { ready, missing } = this.cardCounts();
-    if (this.screen !== 'grid') return;
+    if (this.screen !== 'grid' && this.slots.mode !== 'split') return;
     this.grid?.updateCard(ready, missing);
     this.grid?.refresh();
   }

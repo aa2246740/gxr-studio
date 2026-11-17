@@ -1,4 +1,5 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
+import { gridColumns } from './layout';
 import { UNIT_LABEL } from '../lib/calib';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
@@ -33,6 +34,9 @@ export class GridView {
   private readonly groupRows = new Map<string, TimeGroup>();
   private pasteBarEl: HTMLElement | null = null;
   private offPaste: (() => void) | null = null;
+  /** 三栏里正在中间打开的那张。选择模式不画这个圈。 */
+  private openId = '';
+  private perRow = 3;
 
   constructor(
     private readonly host: HTMLElement,
@@ -59,8 +63,15 @@ export class GridView {
 
   /** 缩略图或顺序变了。只重挂看得见的行。 */
   refresh(): void {
-    if (!this.scroller) this.mount();
+    if (!this.scroller?.isConnected) this.mount();
     this.relayout();
+  }
+
+  /** 三栏左栏标出正在看的那张。 */
+  setOpen(id: string): void {
+    if (this.openId === id) return;
+    this.openId = id;
+    this.paint();
   }
 
   showUnreadable(id: string): void {
@@ -145,8 +156,10 @@ export class GridView {
       this.api.order(),
     );
     const width = this.scroller.clientWidth || 390;
-    const cellH = Math.max(48, (width / 3) * (2 / 3) + 2);
-    this.rows = layoutRows(groups, cellH);
+    this.perRow = gridColumns(width);
+    this.scroller.dataset.cols = String(this.perRow);
+    const cellH = Math.max(48, (width / this.perRow) * (2 / 3) + 2);
+    this.rows = layoutRows(groups, cellH, this.perRow);
     this.groupRows.clear();
     for (const group of groups) this.groupRows.set(`group:${group.ids[0] ?? group.startMs}`, group);
     this.subtitle(photos, groups.length);
@@ -228,6 +241,7 @@ export class GridView {
     if (row.kind === 'day') return el('div', 'day', row.label);
     if (row.kind === 'group') return this.groupHead(row);
     const cells = el('div', 'cells');
+    cells.style.gridTemplateColumns = `repeat(${this.perRow}, 1fr)`;
     cells.style.height = `${row.height}px`;
     for (const id of row.ids) {
       const photo = this.api.photo(id);
@@ -254,6 +268,7 @@ export class GridView {
     cell.classList.toggle('err', photo.status === 'bad');
     cell.classList.toggle('gone', unread(photo));
     cell.classList.toggle('on', this.selected.has(photo.id));
+    cell.classList.toggle('current', !this.selecting && photo.id === this.openId);
     const raw = cell.querySelector('.raw');
     const bl = cell.querySelector('.bl');
     if (raw) {

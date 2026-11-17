@@ -1,0 +1,133 @@
+/* iPad 布局。选择器都挂在 [data-layout] 上，手机宽度（小于 700）不进这些规则。
+   安全区和主屏幕全屏沿用 .screen 的 env(safe-area-inset-*)；viewport-fit=cover 在 index.html。
+   点按目标沿用壳上的 44px 下限。 */
+
+.slot-grid,
+.slot-editor {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.gesture { display: none; }
+
+.app[data-layout="pad"] .nav { height: 52px; }
+.app[data-layout="pad"] .strip { height: 132px; }
+.app[data-layout="pad"] .sheet { max-height: 520px; }
+
+.app[data-layout="columns"] .view:has(> .slot-grid + .slot-editor) {
+  display: grid;
+  grid-template-columns: minmax(240px, 400px) minmax(0, 1fr);
+}
+.app[data-layout="columns"] .view:has(> .slot-grid + .slot-editor) > .slot-grid,
+.app[data-layout="columns"] .view:has(> .slot-grid + .slot-editor) > .slot-editor {
+  position: relative;
+  inset: auto;
+  height: 100%;
+  overflow: hidden;
+}
+.app[data-layout="columns"] .slot-editor:empty { background: var(--stage); }
+
+.app[data-layout="columns"] .slot-grid { border-right: 1px solid var(--line); background: var(--surface-app); }
+.app[data-layout="columns"] .slot-grid .screen { padding-bottom: 0; }
+
+.app[data-layout="columns"] .slot-editor .screen.editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 392px);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  padding-bottom: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.app[data-layout="columns"] .slot-editor .nav { grid-column: 1; grid-row: 1; }
+.app[data-layout="columns"] .slot-editor .nav .nb { visibility: hidden; }
+.app[data-layout="columns"] .slot-editor .stage {
+  grid-column: 1;
+  grid-row: 2;
+  flex: none;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+  min-height: 120px;
+  max-height: 100%;
+}
+.app[data-layout="columns"] .slot-editor .strip {
+  grid-column: 1;
+  grid-row: 3;
+  height: 132px;
+}
+.app[data-layout="columns"] .slot-editor .gesture {
+  display: block;
+  grid-column: 1;
+  grid-row: 4;
+  margin: 0;
+  padding: 12px 16px 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+}
+.app[data-layout="columns"] .slot-editor .sheet {
+  grid-column: 2;
+  grid-row: 1 / span 4;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  border-radius: 0;
+  border-left: 1px solid var(--line);
+}
+.app[data-layout="columns"] .slot-editor .grab { display: none; }
+.app[data-layout="columns"] .slot-editor .tabs button { min-width: 44px; min-height: 44px; }
+
+.app[data-layout="columns"] .cell.current::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 3px var(--accent-text);
+  pointer-events: none;
+}
+
+/* 横屏不进 03d。就算 drag 被设上，照片、配方条和页签也留着。 */
+.app[data-layout="columns"][data-drag="1"] .slot-editor .nav,
+.app[data-layout="columns"][data-drag="1"] .slot-editor .strip,
+.app[data-layout="columns"][data-drag="1"] .slot-editor .actbar,
+.app[data-layout="columns"][data-drag="1"] .slot-editor .chips { display: flex; }
+.app[data-layout="columns"][data-drag="1"] .slot-editor .tabs { display: grid; }
+.app[data-layout="columns"][data-drag="1"] .slot-editor .sheet {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  background: var(--surface-panel);
+}
+.app[data-layout="columns"][data-drag="1"] .slot-editor .panel { overflow: auto; }
+
+/* 三栏里的面板改成居中卡片，不铺满底边。导出进度同样收成一张卡片。 */
+.app[data-layout="columns"] .scrim { position: fixed; inset: 0; z-index: 40; }
+.app[data-layout="columns"] .ms,
+.app[data-layout="columns"] .dlg,
+.app[data-layout="columns"] .dlg.paste-dlg {
+  position: fixed;
+  z-index: 41;
+  left: 50%;
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  width: min(520px, calc(100vw - 48px));
+  max-height: min(80vh, 760px);
+  transform: translate(-50%, -50%);
+  border-radius: 20px;
+  overflow: auto;
+  padding-bottom: 20px;
+}
+.app[data-layout="columns"] .pdock {
+  position: absolute;
+  left: 50%;
+  bottom: calc(24px + var(--safe-bottom));
+  transform: translateX(-50%);
+  width: min(520px, calc(100% - 48px));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  z-index: 24;
+  box-shadow: var(--shadow-dialog);
+}
+.app[data-layout="columns"]:has(> .pdock) .screen { padding-bottom: var(--safe-bottom); }

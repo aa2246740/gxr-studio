@@ -44,7 +44,7 @@ export class EditorView {
   private photo: Photo | null = null;
   private mode: 'raw' | 'jpg' | 'still' = 'still';
   private wantNeighbor = '';
-  private dragging = false;
+  dragging = false;
   private holding = false;
   /** 直方图：正在数、数完还要再数一次、上次画的是哪个内容版本。静止时不再读显卡。 */
   private histBusy = false;
@@ -441,7 +441,7 @@ export class EditorView {
   private enterDrag(): void {
     if (this.dragging) return;
     this.dragging = true;
-    this.shell.dataset.drag = '1';
+    this.shell.dataset.drag = this.shell.dataset.layout === 'columns' ? '0' : '1';
     this.api.watch('drag', true);
     const token = this.token;
     requestAnimationFrame(() => {
@@ -449,7 +449,7 @@ export class EditorView {
     });
   }
 
-  private leaveDrag(): void {
+  leaveDrag(): void {
     this.dragging = false;
     this.shell.dataset.drag = '0';
     this.api.watch('drag', false);
@@ -767,7 +767,8 @@ export class EditorView {
     const session = this.api.session();
     const alive = () => this.same(token, photo, version, session);
     const fullJpg = !photo.dng && !!photo.jpg && !!this.engine;
-    const width = fullJpg ? Number.POSITIVE_INFINITY : Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
+    const cssW = this.shell.dataset.layout === 'phone' || !this.shell.dataset.layout ? this.host.clientWidth : this.pv?.clientWidth || this.host.clientWidth;
+    const width = fullJpg ? Number.POSITIVE_INFINITY : Math.min(2048, Math.round((cssW || 390) * (window.devicePixelRatio || 1)));
     const bitmap = await this.api.still(photo, width);
     if (!bitmap) return;
     if (!alive() || this.mode === 'raw') {

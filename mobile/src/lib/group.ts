@@ -157,8 +157,9 @@ export function groupByGap(items: readonly Timed[], gapMinutes: GapMinutes, orde
   return groups;
 }
 
-/** 一天一行标题，一组一行标题加若干每行 3 张的格子。 */
-export function layoutRows(groups: readonly TimeGroup[], cellHeight: number): VRow[] {
+/** 一天一行标题，一组一行标题加若干格子。默认每行 3 张；更宽的栏可以多几列。 */
+export function layoutRows(groups: readonly TimeGroup[], cellHeight: number, perRow = 3): VRow[] {
+  const columns = perRow >= 2 && perRow <= 8 ? Math.floor(perRow) : 3;
   const rows: VRow[] = [];
   let lastDay = '';
   for (const group of groups) {
@@ -173,8 +174,8 @@ export function layoutRows(groups: readonly TimeGroup[], cellHeight: number): VR
       ids: group.ids,
       label: `${group.rangeLabel} · ${group.ids.length} 张`,
     });
-    for (let i = 0; i < group.ids.length; i += 3) {
-      const ids = group.ids.slice(i, i + 3);
+    for (let i = 0; i < group.ids.length; i += columns) {
+      const ids = group.ids.slice(i, i + columns);
       rows.push({ key: `cells:${ids[0]}`, kind: 'cells', height: cellHeight, ids, label: '' });
     }
   }
