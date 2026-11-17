@@ -1,10 +1,11 @@
 """Desktop side of the frame export parity check.
 
 The phone's ``export_ink`` flag says whether the file can match desktop ``export_finish`` byte for
-byte. When it cannot (a hinted glyph was drawn), the dev server saved the inked canvas. That canvas
-is compared with a Python paint of the same layout: pixels outside glyph boxes match, and the ink
-inside each box stays inside ink-text's frozen Gate B bounds. The built-in mark is the GXR word in
-Atkinson, which is what the phone draws; the reference paint does the same.
+byte. When it cannot (a hinted glyph was drawn), the dev server saved the inked canvas and the
+8-bit glyph masks Rust blended. ``mobile_ui_frame_gate`` checks them: each mask against Pillow's
+under ink-text's frozen Gate B, the canvas against a Python paint that blends those same masks,
+and every pixel outside the glyph windows against the ordinary Python paint. The built-in mark is
+the GXR word in Atkinson, which is what the phone draws; the reference paint does the same.
 
 Nothing here prints a photo name, a capture time, or EXIF. Callers use the redacted helpers.
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 import io
 import json
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -33,7 +35,7 @@ from gxr_studio.privacy import PrivateDir
 from gxr_studio.render.params import parse_edit
 from support.core_cli import run_json
 from support.export_pipeline_cases import check, cli_ok, note, same_file_redacted, same_redacted
-from support.mobile_ui_frame_gate import _stamp_on, compare_canvas
+from support.mobile_ui_frame_gate import Scene, _stamp_on, compare_canvas, read_glyph_report
 
 GXR_MARK = {"w": 1951, "h": 1240, "ink_top": 270, "ink_bottom": 961}
 MIB = 1024 * 1024
@@ -55,7 +57,6 @@ RESULT_KEYS = (
     "hdr",
     "hdr_reason",
 )
-_DRAW_RUNS = (fonts_mod, frame_mod, stamp_mod)
 
 
 def read_canvas(path: Path) -> np.ndarray:
@@ -65,6 +66,19 @@ def read_canvas(path: Path) -> np.ndarray:
     width, height = int.from_bytes(raw[:4], "little"), int.from_bytes(raw[4:8], "little")
     check(width > 0 and height > 0 and len(raw) == 8 + width * height * 3, "canvas length")
     return np.frombuffer(raw[8:], dtype=np.uint8).reshape(height, width, 3).copy()
+
+
+def masks_path(canvas: Path) -> Path:
+    """The glyph report the dev hook posts next to ``<prefix>-<index>.bin``."""
+    return canvas.with_name(f"{canvas.stem}-masks.bin")
+
+
+@dataclass(frozen=True)
+class Fonts:
+    """The font files the phone was given: the shipped ones, and ink-text's de-hinted Gate A copies."""
+
+    real: dict[str, Path]
+    dehint: dict[str, Path]
 
 
 def plant_logo(store: Any, logo_id: str, png_path: Path) -> tuple[Image.Image, dict[str, Any]]:
@@ -178,22 +192,6 @@ def _logo_painter(bg: tuple[int, int, int]) -> Iterator[None]:
         frame_mod._paint_item = original
 
 
-@contextmanager
-def _silent_glyphs() -> Iterator[None]:
-    saved = [module.draw_run for module in _DRAW_RUNS]
-
-    def noop(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    for module in _DRAW_RUNS:
-        module.draw_run = noop
-    try:
-        yield
-    finally:
-        for module, fn in zip(_DRAW_RUNS, saved, strict=True):
-            module.draw_run = fn
-
-
 def _photo(render: Any, lib: Any, shot: dict[str, Any], edit: Any, quality: int) -> np.ndarray:
     rgb, _from_raw, _labels = color_image(render, shot, edit, max_edge=None, quality=quality, lib=lib, base="auto", full=True)
     return np.ascontiguousarray(rgb)
@@ -207,10 +205,8 @@ def paint_reference(
     taken: Any,
     file_time: Any,
     logo_images: dict[str, Image.Image] | None,
-    *,
-    glyphs: bool,
 ) -> np.ndarray:
-    """Python's inked canvas. ``glyphs`` false leaves text, the date stamp and the GXR mark unpainted."""
+    """Python's inked canvas: the desktop's ``draw_frame`` and ``apply_stamp`` with the GXR mark."""
     where = _stamp_on(frame, stamp)
 
     def draw(image: np.ndarray) -> np.ndarray:
@@ -227,10 +223,7 @@ def paint_reference(
                 out = stamp_mod.apply_stamp(out, stamp, taken, file_time, laid)
         return np.ascontiguousarray(out)
 
-    if glyphs:
-        return draw(photo.copy())
-    with _silent_glyphs():
-        return draw(photo.copy())
+    return draw(photo.copy())
 
 
 def sidecar_ok(phone_side: dict[str, Any], desk_side: dict[str, Any]) -> None:
@@ -328,6 +321,7 @@ def _gate(
     canvas_path: Path,
     logo_images: dict[str, Image.Image] | None,
     quality: int,
+    fonts: Fonts,
     dehinted_canvas: Path | None = None,
 ) -> dict[str, Any]:
     from gxr_studio.finish.meta_text import photo_meta
@@ -340,8 +334,13 @@ def _gate(
     meta, taken, file_time = photo_meta(desk.lib, shot)
     logos = [dict(item) for item in fact.get("layout", {}).get("logos") or []]
     layout = rust_frame_layout(work, int(photo.shape[1]), int(photo.shape[0]), frame.to_json(), meta, logos)
+    scene = Scene(photo, layout, frame, stamp, taken, file_time, logo_images)
+    report = read_glyph_report(masks_path(canvas_path))
+    check(report.exact is False and fact.get("exact") is False, "glyph report for an inexact export")
     dehinted = read_canvas(dehinted_canvas) if dehinted_canvas is not None and dehinted_canvas.is_file() else None
-    return compare_canvas(read_canvas(canvas_path), photo, layout, frame, stamp, taken, file_time, logo_images, dehinted_phone=dehinted)
+    dehinted_report = read_glyph_report(masks_path(dehinted_canvas)) if dehinted is not None and dehinted_canvas is not None else None
+    phone = read_canvas(canvas_path)
+    return compare_canvas(phone, scene, report, fonts.real, fonts.dehint, dehinted_phone=dehinted, dehinted_report=dehinted_report)
 
 
 def finish_one(
@@ -357,6 +356,7 @@ def finish_one(
     long_edge: int | None,
     hdr: bool,
     role: str,
+    fonts: Fonts,
     dehinted_canvas: Path | None = None,
 ) -> dict[str, Any]:
     """One phone export against the desktop sidecar, result JSON, and either the file or the canvas."""
@@ -398,7 +398,7 @@ def finish_one(
         row["kind"] = "exact"
     else:
         row["kind"] = "gate"
-        gated = _gate(desk, work, shot, fact, _posted_canvas(canvas_path), logo_images, quality, dehinted_canvas)
+        gated = _gate(desk, work, shot, fact, _posted_canvas(canvas_path), logo_images, quality, fonts, dehinted_canvas)
         backdrop_rows = gated.pop("backdrop_rows", [])
         row.update(gated)
         row["backdrop_rows"] = backdrop_rows

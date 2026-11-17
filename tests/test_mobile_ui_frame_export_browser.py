@@ -243,6 +243,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
         dehint_dir = tmp_path / "dehint"
         dehint_dir.mkdir()
         dehinted_fonts = dehinted_font_paths(dehint_dir)
+        fonts = fx.Fonts(real={name: font_path(name) for name in dehinted_fonts}, dehint=dehinted_fonts)
         report = run_driver(
             tmp_path,
             {
@@ -257,8 +258,8 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                 "outDir": str(out_dir),
                 "canvasDir": str(canvas_dir),
                 "logoPng": str(logo),
-                "dehintedFonts": {name: str(path) for name, path in dehinted_fonts.items()},
-                "realFonts": {name: str(font_path(name)) for name in dehinted_fonts},
+                "dehintedFonts": {name: str(path) for name, path in fonts.dehint.items()},
+                "realFonts": {name: str(path) for name, path in fonts.real.items()},
             },
             timeout=3600,
         )
@@ -301,6 +302,7 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
                         long_edge=edge,
                         hdr=hdr,
                         role=role,
+                        fonts=fonts,
                         dehinted_canvas=dehinted,
                     )
                 )
