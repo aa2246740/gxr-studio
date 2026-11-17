@@ -20,7 +20,7 @@ registerHooks({
 const req = await import('../../mobile/src/lib/export_request.ts');
 const share = await import('../../mobile/src/lib/share_plan.ts');
 const sizes = await import('../../mobile/src/lib/photo_size.ts');
-const { ExportBatch, STAGE_CAP_BYTES, TEXT, failText } = await import('../../mobile/src/app/export_batch.ts');
+const { ExportBatch, PAGE_BUDGET_BYTES, STAGE_CAP_BYTES, TEXT, failText, stageCapFor } = await import('../../mobile/src/app/export_batch.ts');
 
 const ZERO = { exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 };
 const LOOK_ID = 'a'.repeat(64);
@@ -537,4 +537,26 @@ test('border / stamp sidecar, layout logos + GXR_MARK, mapInkError, and packLogo
   const packed = packLogoEntries([{ id: 'custom-1', w: 2, h: 1, rgba }]);
   assert.deepEqual(JSON.parse(packed.logoIndex), [['custom-1', 2, 1]]);
   assert.deepEqual([...packed.logoBlob], [...rgba]);
+});
+
+test('page budget counts same-stage JS and lowers the staging cap', async () => {
+  const mib = 1024 * 1024;
+  const peak = 512 * mib + 400 * mib;
+  const requested = 384 * mib;
+  // The old check ignored JS, so 512 + 384 still looked inside 1.2 GiB.
+  assert.ok(512 * mib + requested <= PAGE_BUDGET_BYTES);
+  assert.ok(peak + requested > PAGE_BUDGET_BYTES);
+  const lowered = stageCapFor(peak, requested);
+  assert.ok(lowered < requested);
+  assert.ok(peak + lowered <= PAGE_BUDGET_BYTES);
+  const host = fakeHost();
+  host.memoryPeak = () => peak;
+  const batch = new ExportBatch(items(1, host), host, requested);
+  batch.start();
+  await tick();
+  host.pending.shift().resolve(ok(32, 'R0_gxr.jpg'));
+  await batch.settled();
+  assert.equal(batch.cap, lowered);
+  assert.equal(batch.requestedCap, requested);
+  assert.equal(batch.staged.length, 1);
 });

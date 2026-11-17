@@ -257,19 +257,48 @@ def result_ok(phone: dict[str, Any], desk: Any) -> None:
     same_redacted(got, want, "result JSON")
 
 
+def same_stage_peak(step: dict[str, Any]) -> int:
+    """Peak of WASM+JS measured together in one stage, not the sum of the two separate peaks."""
+    facts = step["facts"]
+    marks = facts.get("marks")
+    if isinstance(marks, dict):
+        stages = marks.get("stages")
+        if isinstance(stages, dict) and stages:
+            totals = [int(stage.get("total") or 0) for stage in stages.values() if isinstance(stage, dict)]
+            if totals:
+                return max(totals)
+        if "total" in marks:
+            return int(marks["total"])
+    mem = facts["mem"]
+    if "total" in mem:
+        return int(mem["total"])
+    return int(mem.get("wasm") or 0) + int(mem.get("js") or 0)
+
+
+def fit_stage_cap(peak: int, requested: int) -> int:
+    """Lower the staging estimate until peak + cap fits in the 1.2 GiB page budget."""
+    room = PAGE_BUDGET - max(0, peak)
+    if room >= requested:
+        return requested
+    return max(0, room)
+
+
 def memory_ok(step: dict[str, Any], *, hdr: bool) -> dict[str, Any]:
-    """WASM linear-memory high water and the staging cap, against the ink-text ceilings."""
+    """WASM ceiling, and the same-stage peak plus the staging estimate, against 1.2 GiB."""
     mem = step["facts"]["mem"]
     wasm = int(mem["wasm"])
     staged = int(step["facts"]["stagedHigh"])
     cap = int(step["facts"]["cap"])
+    peak = same_stage_peak(step)
     ceiling = HDR_CEILING if hdr else SDR_CEILING
-    cap_want = STAGE_CAP_HDR if hdr else STAGE_CAP_SDR
-    row = {"wasm": wasm, "js": int(mem["js"]), "staged": staged, "cap": cap, "workers": mem.get("workers")}
+    default = STAGE_CAP_HDR if hdr else STAGE_CAP_SDR
+    fitted = fit_stage_cap(peak, default)
+    row = {"wasm": wasm, "js": int(mem.get("js") or 0), "staged": staged, "cap": cap, "peak": peak, "workers": mem.get("workers")}
     note("ui_m4_frame_memory", {"hdr": hdr, **row})
     check(0 < wasm <= ceiling, "hdr wasm ceiling" if hdr else "sdr wasm ceiling")
-    check(staged <= cap and cap == cap_want, "hdr staging cap" if hdr else "sdr staging cap")
-    check(wasm + cap <= PAGE_BUDGET, "hdr page budget" if hdr else "sdr page budget")
+    check(staged <= cap, "hdr staged bytes" if hdr else "sdr staged bytes")
+    check(cap == fitted, "hdr staging cap" if hdr else "sdr staging cap")
+    check(peak + cap <= PAGE_BUDGET, "hdr page budget" if hdr else "sdr page budget")
     return row
 
 

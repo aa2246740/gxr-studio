@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -76,3 +78,27 @@ def test_inverted_backdrop_fails_both_runs() -> None:
     check(changed == 101808, "inverted backdrop pixel count")
     check(_rejected(mutated, photo, layout, frame, stamp, None), "hinted run rejects the inverted backdrop")
     check(_rejected(mutated, photo, layout, frame, stamp, mutated), "de-hinted run rejects the inverted backdrop")
+
+
+def _memory_rejected(step: dict[str, Any]) -> bool:
+    try:
+        fx.memory_ok(step, hdr=False)
+    except BaseException as err:
+        return type(err).__name__ == "Failed"
+    return False
+
+
+def test_page_budget_old_check_passes_until_the_cap_drops() -> None:
+    """Sol's control: WASM 512 + JS 400 + cap 384 fails once JS is counted, and the cap must drop."""
+    wasm = 512 * fx.MIB
+    js = 400 * fx.MIB
+    cap = 384 * fx.MIB
+    step = {"facts": {"mem": {"wasm": wasm, "js": js, "workers": 1}, "stagedHigh": 1, "cap": cap}}
+    check(wasm + cap <= fx.PAGE_BUDGET, "old wasm plus cap check would pass")
+    check(wasm + js + cap > fx.PAGE_BUDGET, "same-stage total plus the old cap is over budget")
+    check(_memory_rejected(step), "unlowered cap fails")
+    lowered = fx.fit_stage_cap(wasm + js, cap)
+    check(0 < lowered < cap, "cap drops below the default")
+    fixed = {"facts": {"mem": {"wasm": wasm, "js": js, "workers": 1}, "stagedHigh": 1, "cap": lowered}}
+    row = fx.memory_ok(fixed, hdr=False)
+    check(row["cap"] == lowered and int(row["peak"]) + lowered <= fx.PAGE_BUDGET, "lowered cap fits the page budget")

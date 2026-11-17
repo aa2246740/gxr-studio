@@ -401,6 +401,7 @@ export class ExportFlow {
       markGone: (id, version) => this.app.markGone(id, version),
       busy: (on) => this.busy(on),
       changed: () => this.paint(),
+      memoryPeak: () => this.core.marks.total,
     };
     this.view = 'progress';
     this.chunk = 0;

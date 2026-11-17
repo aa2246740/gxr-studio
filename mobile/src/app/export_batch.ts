@@ -7,6 +7,15 @@ import type { ExportRequest } from '../lib/export_request';
 
 /** 做好、还没交出去的文件最多占这么多字节。下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。 */
 export const STAGE_CAP_BYTES = 384 * 1024 * 1024;
+/** 整页预算：同一阶段的 WASM+JS 峰值，加上待存估算，不超过 1.2 GiB。 */
+export const PAGE_BUDGET_BYTES = Math.trunc(1.2 * 1024 * 1024 * 1024);
+
+/** 待存估算（上限）加上同一阶段的峰值超过整页预算时，把上限降到刚好放得下，可以低于默认值。 */
+export function stageCapFor(sameStagePeak: number, requestedCap: number): number {
+  const room = PAGE_BUDGET_BYTES - Math.max(0, Math.trunc(sameStagePeak));
+  if (room >= requestedCap) return requestedCap;
+  return Math.max(0, room);
+}
 /**
  * 开了 HDR 的一批用的上限。HDR 让导出 Worker 的 WASM 峰值从约 260 MiB 升到约 470 MiB，Worker 里还多拿着一份数据层，
  * 384 MiB 的待存文件加上它们会超过整页 1.2 GiB 的估算，所以 HDR 批次把待存文件压到这里（理由和数字见 ui-m3-hdr 的 REPORT.md）。
@@ -58,6 +67,8 @@ export interface BatchHost {
   /** 跑着的时候 true：配方卡小图和烘焙先停，申请屏幕常亮。 */
   busy(on: boolean): void;
   changed(): void;
+  /** 到目前为止，同一阶段里 WASM 与 JS 加在一起的峰值。没有就当 0。 */
+  memoryPeak?: () => number;
 }
 
 export type Phase = 'running' | 'held' | 'ready' | 'stopped' | 'closed';
@@ -96,12 +107,15 @@ export class ExportBatch {
 
   readonly items: BatchItem[];
   private readonly host: BatchHost;
-  readonly cap: number;
+  /** 这一批点下去时的待存上限（SDR 384 MiB，HDR 256 MiB）。预算不够时 `cap` 可以再低。 */
+  readonly requestedCap: number;
+  cap: number;
 
   // 不用参数属性：Node 的 strip-types 跑单元测试时不认。
   constructor(items: BatchItem[], host: BatchHost, cap = STAGE_CAP_BYTES) {
     this.items = items;
     this.host = host;
+    this.requestedCap = cap;
     this.cap = cap;
     this.session = host.session();
     for (const item of items) this.states.set(item.id, 'wait');
@@ -286,6 +300,7 @@ export class ExportBatch {
       this.fail(item, result.kind, result.code, result.message);
       return;
     }
+    this.fitCap();
     const size = result.file.byteLength;
     if (this.stagedBytes + size > this.cap) {
       if (!this.staged.length) {
@@ -312,6 +327,12 @@ export class ExportBatch {
     this.stagedBytes += file.size;
     this.stagedHigh = Math.max(this.stagedHigh, this.stagedBytes);
     this.host.changed();
+  }
+
+  /** 同一阶段的峰值加上待存上限超过整页预算时，把上限降下来。只降不升。 */
+  private fitCap(): void {
+    const fitted = stageCapFor(this.host.memoryPeak?.() ?? 0, this.requestedCap);
+    if (fitted < this.cap) this.cap = fitted;
   }
 
   private fail(item: BatchItem, kind: FailKind | 'stale', code: string, message: string): void {
