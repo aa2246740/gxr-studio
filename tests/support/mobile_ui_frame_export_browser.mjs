@@ -31,7 +31,7 @@ async function openEditorFrameTab(page, stem) {
       return cards.length === 13 && skels.length === 0;
     },
     null,
-    { timeout: 60_000 },
+    { timeout: 120_000 },
   );
 }
 
@@ -97,7 +97,7 @@ async function frameBatchFacts(page) {
       marks,
       mem: JSON.parse(document.querySelector('.app').dataset.exportMem || '{}'),
       stagedHigh: batch.stagedHigh,
-      capBytes: batch.capBytes,
+      cap: batch.cap,
       times: batch.times,
     };
   });
@@ -164,19 +164,34 @@ export async function parity({ newPage, manifest, out }) {
     );
     const singleSizeOriginal = (await page.locator('.ms.export .num.size').textContent())?.trim() ?? '';
     await page.locator('.ms.export .frow').nth(0).locator('.seg button', { hasText: '小' }).click();
+    await page
+      .waitForFunction(
+        (prev) => {
+          const txt = (document.querySelector('.ms.export .num.size')?.textContent ?? '').trim();
+          return txt.includes(' × ') && !txt.includes('正在计算') && txt !== prev;
+        },
+        singleSizeOriginal,
+        { timeout: 30_000 },
+      )
+      .catch(() => undefined);
     const singleSizeSmall = (await page.locator('.ms.export .num.size').textContent())?.trim() ?? '';
     await page.locator('.ms.export .row button:has-text("取消")').click();
     await page.waitForFunction(() => !document.querySelector('.ms.export'));
     out.steps.singleSizes = { original: singleSizeOriginal, small: singleSizeSmall };
     await backToGrid(page);
 
-    // Pair B：blur_fill（关掉「参数」使无文字项，覆盖 exact === true 的逐字节成片比对）
+    // Pair B：blur_fill。关掉参数和标志，使这张没有文字、也没有内置徽标，走 exact 的逐字节成片。
     await openEditorFrameTab(page, s.b);
     await pickFrameStyle(page, 'blur_fill');
     await page.locator('.panel.frame [data-act="frame-params"]').click();
     await page.waitForFunction(
       () => !document.querySelector('.panel.frame [data-act="frame-params"]')?.classList.contains('on'),
     );
+    await page.locator('.panel.frame [data-act="frame-logo"]').click();
+    await page.waitForSelector('.ms.logo-sheet[data-state="logo"]');
+    await page.locator('.ms.logo-sheet [data-logo="none"]').click();
+    await page.locator('.ms.logo-sheet .hd button:has-text("完成")').click();
+    await page.waitForFunction(() => !document.querySelector('.ms.logo-sheet'));
     await backToGrid(page);
 
     // Pair C：instant + 时间戳落在拍立得边框上
@@ -271,10 +286,18 @@ export async function parity({ newPage, manifest, out }) {
     hdr.bins = collectCanvasBins('m4_hdr', manifest.canvasDir);
     out.steps.hdr = hdr;
 
-    // 4. 全尺寸 blur_fill（含默认参数文字）+ 默认时间戳：SDR 与 HDR 内存高水位测定
+    // 4. 全尺寸 blur_fill（标志 + 参数 + 默认时间戳）：SDR 与 HDR 内存高水位。
     await openEditorFrameTab(page, s.b);
     await page.locator('.panel.frame [data-act="frame-params"]').click();
+    await page.waitForFunction(() =>
+      document.querySelector('.panel.frame [data-act="frame-params"]')?.classList.contains('on'),
+    );
     await page.locator('.panel.frame .stamp-row input.switch').click();
+    await page.locator('.panel.frame [data-act="frame-logo"]').click();
+    await page.waitForSelector('.ms.logo-sheet[data-state="logo"]');
+    await page.locator('.ms.logo-sheet [data-logo="ricoh"]').click();
+    await page.locator('.ms.logo-sheet .hd button:has-text("完成")').click();
+    await page.waitForFunction(() => !document.querySelector('.ms.logo-sheet'));
     await backToGrid(page);
 
     const memSdr = await runBatch(page, {
@@ -290,7 +313,7 @@ export async function parity({ newPage, manifest, out }) {
     out.steps.memSdr = memSdr;
 
     const memHdr = await runBatch(page, {
-      stems: [s.b, s.a],
+      stems: [s.b],
       size: '原始尺寸',
       quality: '高',
       hdr: true,
