@@ -13,6 +13,10 @@ import init, {
   export_meta_photo,
   export_output_sizes,
   frame_layout,
+  hdr_gain,
+  hdr_luma,
+  hdrtrack_begin,
+  hdrtrack_to_grid,
   geom_crop_write,
   geom_final_box,
   geom_geometry_write,
@@ -61,6 +65,7 @@ import {
 } from '../lib/lut';
 import { shotSize } from '../lib/photo_size';
 import { readStoredZip, ZIP_LIMITS } from '../lib/zip';
+import { fitPreviewGrid, rgbaToRgb } from './hdr_grid';
 import type {
   BakeArgs,
   CalibCheckArgs,
@@ -630,7 +635,26 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'lut-delete' && req.lutDelete) await lutDelete(id, req.lutDelete);
   else if (op === 'lut-blob' && req.lutBlob) await lutBlob(id, req.lutBlob);
   else if (op === 'lut-snapshot' && req.lutSnapshot) await lutSnapshot(id, req.lutSnapshot);
+  else if (op === 'hdr-preview-grid' && buffer && req.hdrGrid) hdrPreview(id, buffer, req.hdrGrid);
   else throw new Error('未知请求');
+}
+
+function hdrPreview(id: number, rgba: ArrayBuffer, args: { width: number; height: number; dng: ArrayBuffer; jpg: ArrayBuffer | null }): void {
+  const rgb = rgbaToRgb(new Uint8Array(rgba), args.width, args.height);
+  const grid = fitPreviewGrid(
+    { hdrtrack_begin, hdrtrack_to_grid, hdr_luma, hdr_gain },
+    rgb,
+    args.width,
+    args.height,
+    new Uint8Array(args.dng),
+    args.jpg ? new Uint8Array(args.jpg) : null,
+  );
+  if (!grid.ok) {
+    ok(id, JSON.stringify(grid));
+    return;
+  }
+  const codes = grid.codes.buffer.slice(grid.codes.byteOffset, grid.codes.byteOffset + grid.codes.byteLength) as ArrayBuffer;
+  ok(id, JSON.stringify({ ok: true, width: grid.width, height: grid.height, meta: grid.meta }), [codes]);
 }
 
 self.onmessage = (event: MessageEvent<CoreRequest>) => {

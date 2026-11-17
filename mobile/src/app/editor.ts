@@ -1,7 +1,10 @@
 // 编辑一张。拖滑块时只改 setLook 和滑块上的数字，不重建页面。
 
 import type { Engine } from '../../../frontend/src/index';
-import { describeDng, type Described } from '../core/api';
+import { describeDng, hdrPreviewGrid, type Described } from '../core/api';
+import { hdrDisplayCapable } from '../core/hdr_display';
+import { HdrPreviewController } from '../core/hdr_preview';
+import { loadExportHdr, watchExportHdr } from '../lib/prefs';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
@@ -23,11 +26,6 @@ import { StageDecorController } from './stage_finish';
 import { showToast } from './toast';
 import './frame.css';
 
-/**
- * 显卡在忙（上一张的直方图还在读回）时 `histogram()` 立刻给 null，于是每帧再试一次。
- * 连着这么多帧都拿不到（显卡丢了之类）就放慢到每 HIST_SLOW_MS 试一次，一直试到画上、换片或关掉，
- * 不会停下来等用户再调一下，也不会每帧都去问。
- */
 const HIST_FAST_MISSES = 300;
 const HIST_SLOW_MS = 250;
 
@@ -82,8 +80,22 @@ export class EditorView {
   /** 这张读完、清楚的图也换上之后才 resolve。只给截图和测试等。 */
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
-  /** 套用或撤销改了正在看的这张：重新打开，照片和面板都按新的编辑状态画。 */
   private offPaste: (() => void) | null = null;
+  private readonly hdr = new HdrPreviewController({
+    photo: () => this.photo,
+    session: () => this.api.session(),
+    dragging: () => this.dragging,
+    holding: () => this.holding,
+    exportOn: () => loadExportHdr(),
+    display: () => hdrDisplayCapable(this.engine?.device ?? null),
+    engine: () => this.engine,
+    readDng: async (photo) => {
+      const full = await this.api.readFull(photo as Photo);
+      return full.ok ? full.bytes : null;
+    },
+    fit: (req) => hdrPreviewGrid(req.rgba, req.width, req.height, req.dng, req.jpg),
+    watchExport: (fn) => watchExportHdr(fn),
+  });
 
   constructor(
     private readonly host: HTMLElement,
@@ -96,7 +108,6 @@ export class EditorView {
     cancelHostSheets(this.shell);
     this.openGen += 1;
     const index = this.api.photos().findIndex((item) => item.id === photo.id);
-    // 正在看的这张的配方卡小图不会被全局上限挤掉。
     lookCache.setOpen(photo);
     pasteState.gridLeft();
     this.offPaste?.();
@@ -150,6 +161,7 @@ export class EditorView {
     this.luts?.destroy();
     this.luts = null;
     this.lutTabBtn = null;
+    this.hdr.close();
     for (const cv of [this.hist, this.still, this.gpuCanvas]) {
       if (cv) cv.width = cv.height = 0;
     }
@@ -419,6 +431,7 @@ export class EditorView {
     });
     this.requestHist();
     this.decor?.onLookChanged(this.dragging);
+    this.hdr.sync();
   }
 
   private setLabel(text: string): void {
@@ -434,8 +447,8 @@ export class EditorView {
       : this.lutLabel
         ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}`
         : this.caption;
-    if (!text) return;
-    this.stageLabel.append(el('span', 'tag neutral', text));
+    if (text) this.stageLabel.append(el('span', 'tag neutral', text));
+    this.hdr.paintLabel(this.stageLabel);
   }
 
   private enterDrag(): void {
@@ -458,17 +471,13 @@ export class EditorView {
       if (token !== this.token) return;
       this.engine?.redraw();
       this.decor?.onLookChanged(false);
+      this.hdr.sync();
     });
   }
 
-  /**
-   * 要一次直方图：RAW 第一帧、换片、每次调整之后。正在数就只记一笔，数完看内容版本变没变再补一次，
-   * 所以拖滑块时自然合并，停下来以后不会一直读显卡。
-   */
   private requestHist(retry = false): void {
     if (!this.engine || this.mode === 'still') return;
     if (!retry) {
-      // 新的调整：重新按帧试，排着的慢重试不要了。
       this.histMisses = 0;
       this.cancelHistRetry();
     }
@@ -486,10 +495,9 @@ export class EditorView {
         if (token !== this.token) return;
         this.histMisses = drawn ? 0 : this.histMisses + 1;
         const engine = this.engine;
-        // 只有画上了、而且没有更新的版本才停；没画上（忙、这一帧还没画完、显卡丢了）都接着按预算重试。
+
         if (drawn && !this.histAgain && !(engine && engine.contentVersion !== this.histDrawn)) return;
-        // 排到下一帧（连着拿不到太久就排到慢定时器）再数。不能在这里直接再调：显卡忙时 histogram() 马上给 null，
-        // 一串微任务接着跑，页面的定时器、显卡回调和手势都轮不到，换片时整页就卡死了。
+
         this.cancelHistRetry();
         const again = (): void => {
           this.histFrame = 0;
@@ -511,8 +519,7 @@ export class EditorView {
   /** 数到并画上了才是 true；显卡在忙、这一帧还没画完、换了片都是 false。 */
   private async countHist(token: number): Promise<boolean> {
     const engine = this.engine;
-    // 这一帧还没画完（pending）成片纹理就不是新的：这次算没拿到，和显卡忙一样占同一个重试预算，
-    // 每次调度只看一次。显卡丢了时 pending 可能一直是 true，这样 300 帧后也只是每 250 ms 看一次。
+
     if (!engine || token !== this.token || engine.pending) return false;
     const data = await engine.histogram();
     if (!data || token !== this.token) return false;
@@ -634,13 +641,11 @@ export class EditorView {
       }
       return;
     }
-    // 这个版本的完整源已经在显卡里：不读卡，直接显示。卡被拔出后照样能开、能调。
     const key = `raw:${photo.id}`;
     if (this.engine && photo.cached === version && this.engine.hasSource(key)) {
       await this.showRaw(key);
       return;
     }
-    // 没有显卡、但这个版本描述过：直接放相机 JPG 或内嵌预览。
     if (!this.engine && photo.checked === version) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
       return;
@@ -656,7 +661,6 @@ export class EditorView {
       return;
     }
     if (!this.same(token, photo, version, session)) return;
-    // 先用 WASM 描述，坏文件的判断和有没有显卡无关。
     let described: Described;
     try {
       described = await describeDng(bytes);
@@ -670,7 +674,6 @@ export class EditorView {
       return;
     }
     photo.checked = version;
-    // 镜头名和 ISO：相机 JPG 里没有时用 DNG 里的（选镜头单元和模型）。
     photo.dngMeta = described.meta;
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
@@ -680,8 +683,6 @@ export class EditorView {
       return;
     }
     try {
-      // 每张照片一个固定的键：再加一次会替换（并销毁）原来那份纹理，不会同一张占两份。
-      // 上传由 App 按照片排队，提交前核对版本；过期的请求不会碰显卡里的源。
       const installed = await this.api.uploadRaw(photo, version, described.layout, bytes, described.scene);
       if (!installed || !this.same(token, photo, version, session)) return;
       await this.showRaw(key);
@@ -700,7 +701,6 @@ export class EditorView {
     const rev = photo.rev;
     const token = this.token;
     const session = this.api.session();
-    // 照片还是这次会话里的同一张、同一个编辑实例、版本和编辑版本：离开重开、清空、去掉、重新选过或改过裁剪都算过期。
     const alive = () => this.same(token, photo, version, session, rev);
     if (photo.neutral && photo.neutral.version === version) {
       if (alive()) this.recipes?.neutral(photo.neutral.bitmap);

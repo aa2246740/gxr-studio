@@ -20,6 +20,14 @@ try {
   } else {
     await progress('ready', null, engine.info);
     for (const c of cases) {
+      if (c.hdr) {
+        await progress('hdr', c.id, engine.info);
+        c.hdr.sdr = new Uint8Array(c.hdr.sdr);
+        c.hdr.gain = new Uint8Array(c.hdr.gain);
+        const rb = await engine.renderHdrSample(c.hdr);
+        await post(`/result/${c.id}?w=${rb.width}&h=${rb.height}&fmt=f32`, new Uint8Array(rb.rgba.buffer, rb.rgba.byteOffset, rb.rgba.byteLength));
+        continue;
+      }
       await progress('source', c.id, engine.info);
       if (!engine.hasSource(c.source)) {
         if (c.raw) await engine.addRaw(c.source, c.raw.layout, await bin(c.raw.url), c.raw.scene || null);
