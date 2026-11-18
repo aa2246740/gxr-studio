@@ -294,30 +294,11 @@ def test_desktop_e2e_diptych_treated_as_jpg_only_and_recipe_note(settings: Any, 
 
     with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
         rows = client.get("/api/photos").json()
-        shot1 = next(r for r in rows if not r["diptych"])
-        shot2 = next(r for r in rows if r["diptych"])
+        ordered = sorted(rows, key=lambda r: r["name"])
+        assert len(ordered) == 2
+        shot1, shot2 = ordered[0], ordered[1]
 
-        assert shot1["has_raw"] is True
-        assert shot2["diptych"] is True
-        assert shot2["has_raw"] is False
-        assert shot2["hdr"] == "none"
-
-        p2 = client.get(f"/api/photos/{shot2['id']}").json()
-        assert p2["diptych"] is True and p2["has_raw"] is False
-
-        edit2 = client.get(f"/api/photos/{shot2['id']}/edit").json()
-        assert edit2["recipe_from_camera"] is False
-        assert edit2["recipe"] is None
-        assert edit2["render"]["recipe"] == "none"
-        assert edit2["render"]["reason"] == "no_raw"
-
-        caps2 = client.get(f"/api/photos/{shot2['id']}/capabilities").json()
-        assert caps2["raw"] is False and caps2["recipe"] == "none"
-
-        gpu2 = client.get(f"/api/photos/{shot2['id']}/gpu").json()
-        assert gpu2["raw"] is None and gpu2["raw_reason"] == "no_raw"
-
-        # 最终成片预览：保持相机 JPG 双联，不落到 DNG
+        # 先验证关键用户行为（避免在旧基线上因缺少新字段先报 KeyError）：保留黑缝与拦截 RAW 动作
         render_final = client.get(f"/api/photos/{shot2['id']}/render?stage=final&size=preview")
         assert render_final.status_code == 200
         with Image.open(io.BytesIO(render_final.content)) as im:
@@ -383,6 +364,26 @@ def test_desktop_e2e_diptych_treated_as_jpg_only_and_recipe_note(settings: Any, 
         with Image.open(io.BytesIO(thumb_res.content)) as im:
             cmax, lmax, rmax = _seam_luma_stats(im)
         assert cmax <= 12 and lmax > 20 and rmax > 20, (cmax, lmax, rmax)
+
+        edit2 = client.get(f"/api/photos/{shot2['id']}/edit").json()
+        assert edit2["recipe_from_camera"] is False
+        assert edit2["recipe"] is None
+        assert edit2["render"]["recipe"] == "none"
+        assert edit2["render"]["reason"] == "no_raw"
+
+        assert shot1["has_raw"] is True
+        assert shot2["diptych"] is True
+        assert shot2["has_raw"] is False
+        assert shot2["hdr"] == "none"
+
+        p2 = client.get(f"/api/photos/{shot2['id']}").json()
+        assert p2["diptych"] is True and p2["has_raw"] is False
+
+        caps2 = client.get(f"/api/photos/{shot2['id']}/capabilities").json()
+        assert caps2["raw"] is False and caps2["recipe"] == "none"
+
+        gpu2 = client.get(f"/api/photos/{shot2['id']}/gpu").json()
+        assert gpu2["raw"] is None and gpu2["raw_reason"] == "no_raw"
 
     # 桌面前端「配方」页文字（真实 web/assets/recipes.js + 真实 FastAPI）
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

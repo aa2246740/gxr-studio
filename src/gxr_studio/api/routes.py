@@ -671,6 +671,7 @@ def export_batch(body: BatchExportRequest, request: Request) -> Any:
                 progress.state = "cancelled"
                 return
             try:
+                shot = c.lib.resolve_diptych(shot)
                 item = _remember_export(c, job.id, _export_one(c, shot, body))
             except ApiError as exc:
                 item = {"id": shot["shot_id"], "error": exc.code, "message": exc.message}

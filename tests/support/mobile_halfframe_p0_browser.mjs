@@ -91,43 +91,46 @@ try {
       out.gridBadges[stem] = await page.locator(`${cellOf(stem)} .bl`).innerText();
     }
 
-    // Photo 1 (single half-frame frame, has RAW)
     const s1 = manifest.stems[0];
-    await page.locator(cellOf(s1)).evaluate((node) => node.click());
-    await page.waitForFunction((want) => document.querySelector('.editor')?.dataset.photo === want, s1, { timeout: 120_000 });
-    await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, s1, { timeout: 120_000 });
-    await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
-    const p1Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
-    await page.locator('.tabs button[data-tab="0"]').click();
-    await page.waitForSelector('.panel.recipe');
-    const p1RecipeText = await page.locator('.panel.recipe').innerText();
-    await page.getByRole('button', { name: '照片', exact: true }).click();
-    await page.waitForSelector('[data-screen="grid"]');
-
-    // Photo 2 (diptych JPG, treated as JPG-only)
     const s2 = manifest.stems[1];
-    await page.locator(cellOf(s2)).evaluate((node) => node.click());
-    await page.waitForFunction((want) => document.querySelector('.editor')?.dataset.photo === want, s2, { timeout: 120_000 });
-    await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, s2, { timeout: 120_000 });
-    await page.waitForFunction(() => (window.__gxrEngine?.layerSize?.()?.w ?? 0) >= 4288, null, { timeout: 120_000 });
-    await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
-    const p2Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
-    await page.locator('.stage .pv').screenshot({ path: manifest.stagePng });
-    await page.locator('.tabs button[data-tab="0"]').click();
-    await page.waitForSelector('.panel.recipe');
-    const p2RecipeText = await page.locator('.panel.recipe').innerText();
-    await page.getByRole('button', { name: '照片', exact: true }).click();
-    await page.waitForSelector('[data-screen="grid"]');
+    if (out.gridBadges[s2] !== 'JPG') {
+      out.earlyExit = `grid badge mismatch for ${s2}: ${out.gridBadges[s2]}`;
+    } else {
+      // Photo 1 (single half-frame frame, has RAW)
+      await page.locator(cellOf(s1)).evaluate((node) => node.click());
+      await page.waitForFunction((want) => document.querySelector('.editor')?.dataset.photo === want, s1, { timeout: 120_000 });
+      await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, s1, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
+      const p1Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
+      await page.locator('.tabs button[data-tab="0"]').click();
+      await page.waitForSelector('.panel.recipe');
+      const p1RecipeText = await page.locator('.panel.recipe').innerText();
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
 
-    await exportFromGrid(page, manifest.stems, '原始尺寸', '高');
-    await waitPhase(page, ['running', 'ready']);
-    const ready = await waitPhase(page, ['ready']);
-    const shared = await shareAll(page);
-    const files = await sharedFiles(page, manifest.outDir, 'hf-');
+      // Photo 2 (diptych JPG, treated as JPG-only)
+      await page.locator(cellOf(s2)).evaluate((node) => node.click());
+      await page.waitForFunction((want) => document.querySelector('.editor')?.dataset.photo === want, s2, { timeout: 120_000 });
+      await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, s2, { timeout: 120_000 });
+      await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
+      const p2Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
+      await page.locator('.stage .pv').screenshot({ path: manifest.stagePng });
+      await page.locator('.tabs button[data-tab="0"]').click();
+      await page.waitForSelector('.panel.recipe');
+      const p2RecipeText = await page.locator('.panel.recipe').innerText();
+      await page.getByRole('button', { name: '照片', exact: true }).click();
+      await page.waitForSelector('[data-screen="grid"]');
 
-    out.photo1 = { layer: p1Layer, recipeHasDiptychNote: p1RecipeText.includes('这张是半格双联') };
-    out.photo2 = { layer: p2Layer, recipeText: p2RecipeText };
-    out.export = { ready, shared, files };
+      await exportFromGrid(page, manifest.stems, '原始尺寸', '高');
+      await waitPhase(page, ['running', 'ready']);
+      const ready = await waitPhase(page, ['ready']);
+      const shared = await shareAll(page);
+      const files = await sharedFiles(page, manifest.outDir, 'hf-');
+
+      out.photo1 = { layer: p1Layer, recipeHasDiptychNote: p1RecipeText.includes('这张是半格双联') };
+      out.photo2 = { layer: p2Layer, recipeText: p2RecipeText };
+      out.export = { ready, shared, files };
+    }
   } else if (manifest.mode === 'desktop-note') {
     await page.goto(`${manifest.baseUrl}/?token=${encodeURIComponent(manifest.token)}`);
     await page.waitForSelector('.top, .grid, .empty', { timeout: 30_000 });

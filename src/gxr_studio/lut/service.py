@@ -262,9 +262,31 @@ class LutService:
                 raise LutError(404, "photo_not_found", "找不到这张照片。请刷新页面后重试。")
             shots = [s for s in shots if "dng" in s["files"]]
         else:
-            shots = [s for s in self.lib.list_shots(limit=2000) if "dng" in s["files"]]
-            shots.sort(key=lambda s: (s["captured_at"] or "", s["name"]), reverse=True)  # 新的在前
-            shots.sort(key=lambda s: 0 if s["iso"] == 200 else 1 if s["iso"] == 1600 else 2)  # 稳定排序：ISO 优先
+            candidates = [s for s in self.lib.list_shots(limit=2000) if "dng" in s["files"]]
+            candidates.sort(key=lambda s: (s["captured_at"] or "", s["name"]), reverse=True)  # 新的在前
+            candidates.sort(key=lambda s: 0 if s["iso"] == 200 else 1 if s["iso"] == 1600 else 2)  # 稳定排序：ISO 优先
+            if unit is not None:
+                candidates = [s for s in candidates if self.render.photo_unit(s) == unit]
+            shots = []
+            for s in candidates:
+                resolved = self.lib.resolve_diptych(s)
+                if "dng" in resolved["files"]:
+                    shots.append(resolved)
+                    if len(shots) >= limit:
+                        break
+            out = []
+            for s in shots:
+                f = s["files"]["dng"]
+                out.append(
+                    {
+                        "dng": str(self.lib.abspath(f["relpath"])),
+                        "sha256": f["sha256"],
+                        "label": s["name"],
+                        "iso": s["iso"],
+                        "shot_id": s["shot_id"],
+                    }
+                )
+            return out
         if unit is not None:
             shots = [s for s in shots if self.render.photo_unit(s) == unit]
         out = []

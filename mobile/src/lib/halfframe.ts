@@ -49,31 +49,60 @@ function sliceMaxLuma(
   return best;
 }
 
+export type DiptychAxis = 'col' | 'row';
+
+export interface DraftLayout {
+  draftWidth: number;
+  draftHeight: number;
+  axis: DiptychAxis;
+}
+
 /**
- * 纯函数检查 1/8 尺度 RGBA 像素（536×356 横向按列，或经 EXIF 90°/270° 转正后的 356×536 按行）是否匹配已知双联黑缝。
+ * 根据解码后位图的实际宽高确定 1/8 检测尺寸与扫描方向（不依赖头信息预测的旋转方向）。
+ */
+export function draftLayoutForBitmap(width: number, height: number): DraftLayout | null {
+  if ((width === DRAFT_WIDTH && height === DRAFT_HEIGHT) || (width === FULL_WIDTH && height === FULL_HEIGHT)) {
+    return { draftWidth: DRAFT_WIDTH, draftHeight: DRAFT_HEIGHT, axis: 'col' };
+  }
+  if ((width === DRAFT_HEIGHT && height === DRAFT_WIDTH) || (width === FULL_HEIGHT && height === FULL_WIDTH)) {
+    return { draftWidth: DRAFT_HEIGHT, draftHeight: DRAFT_WIDTH, axis: 'row' };
+  }
+  return null;
+}
+
+/**
+ * 纯函数检查 1/8 尺度 RGBA 像素（536×356 横向按列，或 356×536 竖向按行）是否匹配已知双联黑缝。
  */
 export function isDiptychRgba(
   rgba: Uint8Array | Uint8ClampedArray,
   width: number,
   height: number,
-  axis: 'col' | 'row' = 'col',
+  axis?: DiptychAxis,
 ): boolean {
-  const wantW = axis === 'row' ? DRAFT_HEIGHT : DRAFT_WIDTH;
-  const wantH = axis === 'row' ? DRAFT_WIDTH : DRAFT_HEIGHT;
+  const resolvedAxis: DiptychAxis | null =
+    axis ??
+    (width === DRAFT_WIDTH && height === DRAFT_HEIGHT
+      ? 'col'
+      : width === DRAFT_HEIGHT && height === DRAFT_WIDTH
+        ? 'row'
+        : null);
+  if (!resolvedAxis) return false;
+  const wantW = resolvedAxis === 'row' ? DRAFT_HEIGHT : DRAFT_WIDTH;
+  const wantH = resolvedAxis === 'row' ? DRAFT_WIDTH : DRAFT_HEIGHT;
   if (width !== wantW || height !== wantH || rgba.length < width * height * 4) return false;
   for (const [c0, c1] of SEAM_SLICES) {
     if (c0 <= 0 || c1 + 1 >= DRAFT_WIDTH) continue;
     let seamBlack = true;
     for (let c = c0; c <= c1; c += 1) {
-      if (sliceMaxLuma(rgba, width, height, c, axis) > LUMA_THRESHOLD) {
+      if (sliceMaxLuma(rgba, width, height, c, resolvedAxis) > LUMA_THRESHOLD) {
         seamBlack = false;
         break;
       }
     }
     if (!seamBlack) continue;
     if (
-      sliceMaxLuma(rgba, width, height, c0 - 1, axis) > LUMA_THRESHOLD &&
-      sliceMaxLuma(rgba, width, height, c1 + 1, axis) > LUMA_THRESHOLD
+      sliceMaxLuma(rgba, width, height, c0 - 1, resolvedAxis) > LUMA_THRESHOLD &&
+      sliceMaxLuma(rgba, width, height, c1 + 1, resolvedAxis) > LUMA_THRESHOLD
     ) {
       return true;
     }
@@ -114,27 +143,27 @@ function unrotatedDimsMatch(frame: Frame): { ok: boolean; rot90: boolean } {
  */
 export async function isDiptychBlob(blob: Blob, frame?: Frame | null): Promise<boolean> {
   if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') return false;
-  let rot90 = false;
+  let hintRot90 = false;
   const resolved = frame ?? (await readFrameFromBlob(blob));
   if (resolved) {
     const match = unrotatedDimsMatch(resolved);
     if (!match.ok) return false;
-    rot90 = match.rot90;
+    hintRot90 = match.rot90;
   } else {
     let probe: ImageBitmap | null = null;
     try {
       probe = await createImageBitmap(blob);
-      if (probe.width === FULL_WIDTH && probe.height === FULL_HEIGHT) rot90 = false;
-      else if (probe.width === FULL_HEIGHT && probe.height === FULL_WIDTH) rot90 = true;
-      else return false;
+      const probeLayout = draftLayoutForBitmap(probe.width, probe.height);
+      if (!probeLayout) return false;
+      hintRot90 = probeLayout.axis === 'row';
     } catch {
       return false;
     } finally {
       probe?.close();
     }
   }
-  const rw = rot90 ? DRAFT_HEIGHT : DRAFT_WIDTH;
-  const rh = rot90 ? DRAFT_WIDTH : DRAFT_HEIGHT;
+  const rw = hintRot90 ? DRAFT_HEIGHT : DRAFT_WIDTH;
+  const rh = hintRot90 ? DRAFT_WIDTH : DRAFT_HEIGHT;
   let bm: ImageBitmap | null = null;
   try {
     try {
@@ -142,14 +171,14 @@ export async function isDiptychBlob(blob: Blob, frame?: Frame | null): Promise<b
     } catch {
       bm = await createImageBitmap(blob);
     }
-    const validFull = (bm.width === FULL_WIDTH && bm.height === FULL_HEIGHT && !rot90) || (bm.width === FULL_HEIGHT && bm.height === FULL_WIDTH && rot90);
-    if (!((bm.width === rw && bm.height === rh) || validFull)) return false;
-    const canvas = new OffscreenCanvas(rw, rh);
+    const layout = draftLayoutForBitmap(bm.width, bm.height);
+    if (!layout) return false;
+    const canvas = new OffscreenCanvas(layout.draftWidth, layout.draftHeight);
     const ctx = canvas.getContext('2d');
     if (!ctx) return false;
-    ctx.drawImage(bm, 0, 0, rw, rh);
-    const rgba = ctx.getImageData(0, 0, rw, rh).data;
-    return isDiptychRgba(rgba, rw, rh, rot90 ? 'row' : 'col');
+    ctx.drawImage(bm, 0, 0, layout.draftWidth, layout.draftHeight);
+    const rgba = ctx.getImageData(0, 0, layout.draftWidth, layout.draftHeight).data;
+    return isDiptychRgba(rgba, layout.draftWidth, layout.draftHeight, layout.axis);
   } catch {
     return false;
   } finally {

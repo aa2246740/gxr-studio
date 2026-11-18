@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from starlette.types import Scope
 
-from . import __version__, audit, privacy
+from . import __version__, audit, halfframe, privacy
 from .alerts import StudioNotifier, register_alert_service
 from .api.camdata_routes import router as camdata_router
 from .api.errors import ApiError
@@ -87,6 +87,22 @@ def _migrate_luts(settings: Settings, render: RenderService) -> None:
         log.event(30, "lut_migrate_failed", error=type(exc).__name__)
 
 
+def start_halfframe_job(ctx: Context) -> None:
+    """旧图库缺少双联判定文件时，在后台分批补算并写入 `.studio/halfframe-v1.json`（解码在 `lib.lock` 外进行）。"""
+    todo = ctx.lib.halfframe_pending()
+    if not todo:
+        return
+    with ctx.hdr_lock:
+        if ctx.hdr_stopping or ctx.jobs.active("halfframe"):
+            return
+        progress = halfframe.HalfframeProgress(total=len(todo))
+
+        def _run(job: Any) -> None:
+            halfframe.run_backfill(ctx.lib, todo, progress, job.cancel)
+
+        ctx.jobs.start("halfframe", progress, _run)
+
+
 def create_app(
     settings: Settings,
     *,
@@ -124,13 +140,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
         _migrate_luts(settings, render)
+        start_halfframe_job(ctx)
         yield
         with ctx.hdr_lock:
             ctx.hdr_stopping = True
-            hdr_jobs = [job for job in jobs.all() if job.kind == "hdr"]
-            for job in hdr_jobs:
+            bg_jobs = [job for job in jobs.all() if job.kind in ("hdr", "halfframe")]
+            for job in bg_jobs:
                 job.cancel.set()
-        for job in hdr_jobs:
+        for job in bg_jobs:
             if job.thread is not None:
                 job.thread.join()
         shutdown_error_tracking()

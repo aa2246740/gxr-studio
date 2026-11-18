@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { DRAFT_HEIGHT, DRAFT_WIDTH, isDiptychRgba } from '../../mobile/src/lib/halfframe.ts';
+import { DRAFT_HEIGHT, DRAFT_WIDTH, FULL_HEIGHT, FULL_WIDTH, draftLayoutForBitmap, isDiptychRgba } from '../../mobile/src/lib/halfframe.ts';
 
 function makeRgba(width, height, fill = 128) {
   const buf = new Uint8ClampedArray(width * height * 4);
@@ -40,10 +40,35 @@ function blackRows(buf, width, fullStart, fullEnd) {
   }
 }
 
-test('isDiptychRgba detects g250 and legacy48 seams and rejects counterexamples', () => {
+test('draftLayoutForBitmap chooses col/row from decoded bitmap dimensions', () => {
+  assert.deepEqual(draftLayoutForBitmap(DRAFT_WIDTH, DRAFT_HEIGHT), {
+    draftWidth: DRAFT_WIDTH,
+    draftHeight: DRAFT_HEIGHT,
+    axis: 'col',
+  });
+  assert.deepEqual(draftLayoutForBitmap(FULL_WIDTH, FULL_HEIGHT), {
+    draftWidth: DRAFT_WIDTH,
+    draftHeight: DRAFT_HEIGHT,
+    axis: 'col',
+  });
+  assert.deepEqual(draftLayoutForBitmap(DRAFT_HEIGHT, DRAFT_WIDTH), {
+    draftWidth: DRAFT_HEIGHT,
+    draftHeight: DRAFT_WIDTH,
+    axis: 'row',
+  });
+  assert.deepEqual(draftLayoutForBitmap(FULL_HEIGHT, FULL_WIDTH), {
+    draftWidth: DRAFT_HEIGHT,
+    draftHeight: DRAFT_WIDTH,
+    axis: 'row',
+  });
+  assert.equal(draftLayoutForBitmap(DRAFT_WIDTH, 198), null);
+});
+
+test('isDiptychRgba detects g250 and legacy48 seams in landscape and portrait and rejects counterexamples', () => {
   const g250 = makeRgba(DRAFT_WIDTH, DRAFT_HEIGHT);
   blackCols(g250, DRAFT_WIDTH, DRAFT_HEIGHT, 2088, 2199);
   assert.equal(isDiptychRgba(g250, DRAFT_WIDTH, DRAFT_HEIGHT, 'col'), true);
+  assert.equal(isDiptychRgba(g250, DRAFT_WIDTH, DRAFT_HEIGHT), true);
 
   const legacy48 = makeRgba(DRAFT_WIDTH, DRAFT_HEIGHT);
   blackCols(legacy48, DRAFT_WIDTH, DRAFT_HEIGHT, 2120, 2167);
@@ -68,8 +93,20 @@ test('isDiptychRgba detects g250 and legacy48 seams and rejects counterexamples'
   const portraitDiptych = makeRgba(DRAFT_HEIGHT, DRAFT_WIDTH);
   blackRows(portraitDiptych, DRAFT_HEIGHT, 2088, 2199);
   assert.equal(isDiptychRgba(portraitDiptych, DRAFT_HEIGHT, DRAFT_WIDTH, 'row'), true);
+  assert.equal(isDiptychRgba(portraitDiptych, DRAFT_HEIGHT, DRAFT_WIDTH), true);
+
+  const portraitLegacy48 = makeRgba(DRAFT_HEIGHT, DRAFT_WIDTH);
+  blackRows(portraitLegacy48, DRAFT_HEIGHT, 2120, 2167);
+  assert.equal(isDiptychRgba(portraitLegacy48, DRAFT_HEIGHT, DRAFT_WIDTH, 'row'), true);
+
+  const portraitShifted = makeRgba(DRAFT_HEIGHT, DRAFT_WIDTH);
+  blackRows(portraitShifted, DRAFT_HEIGHT, 1200, 1311);
+  assert.equal(isDiptychRgba(portraitShifted, DRAFT_HEIGHT, DRAFT_WIDTH, 'row'), false);
 
   const portraitWide = makeRgba(DRAFT_HEIGHT, DRAFT_WIDTH);
   blackRows(portraitWide, DRAFT_HEIGHT, 2040, 2248);
   assert.equal(isDiptychRgba(portraitWide, DRAFT_HEIGHT, DRAFT_WIDTH, 'row'), false);
+
+  const portraitUniform = makeRgba(DRAFT_HEIGHT, DRAFT_WIDTH);
+  assert.equal(isDiptychRgba(portraitUniform, DRAFT_HEIGHT, DRAFT_WIDTH, 'row'), false);
 });

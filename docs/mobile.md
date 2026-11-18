@@ -676,4 +676,4 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 
 ## 半格双联
 
-手机端在读取相机 JPG 缩略图时由 `mobile/src/lib/halfframe.ts`（与桌面 `src/gxr_studio/halfframe.py` 同规则：未转正 `4288×2848`、1/8 尺度 `536×356` 下检查 `2088–2199` 与 `2120–2167` 已知黑缝、亮部阈值 ≤ 12 且两侧非黑）识别半格双联，并在 `mobile/src/app/boot.ts` 的 `readPhoto` 单一关口把该张 `Photo` 的 `diptych` 设为 `true`、清掉 `dng` 与 `dngMeta`。此后网格（`JPG` 角标）、编辑器、导出、HDR 预览与 LUT 均按只有 JPG 处理，不再加载该张的 DNG；「配方」页（`mobile/src/app/recipe_view.ts`）显示「这张是半格双联，配方效果要等配对功能。」。
+手机端在读取相机 JPG 缩略图时由 `mobile/src/lib/halfframe.ts`（与桌面 `src/gxr_studio/halfframe.py` 同规则：1/8 尺度 `536×356` 或竖拍转正后 `356×536` 下根据解码后 `ImageBitmap` 的实际宽高选定按列或按行检查 `2088–2199` 与 `2120–2167` 已知黑缝、亮部阈值 ≤ 12 且两侧非黑）识别半格双联，并在 `mobile/src/app/boot.ts` 的 `readPhoto` 单一关口把该张 `Photo` 的 `diptych` 设为 `true`、清掉 `dng` 与 `dngMeta`。此后网格（`JPG` 角标）、编辑器、导出、HDR 预览与 LUT 均按只有 JPG 处理，不再加载该张的 DNG；「配方」页（`mobile/src/app/recipe_view.ts`）显示「这张是半格双联，配方效果要等配对功能。」。
