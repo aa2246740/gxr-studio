@@ -19,7 +19,7 @@ from g178_support import need_bundle
 from gxr_studio import meta
 from gxr_studio.camdata import datcodec as dc
 from gxr_studio.camdata import intake, knob_table, r5, store
-from gxr_studio.camdata.catalog_names import CATALOG_GENERATIONS, CATALOG_NAMES, recipe_name
+from gxr_studio.camdata.catalog_names import CATALOG_DESCRIPTORS, CATALOG_GENERATIONS, CATALOG_NAMES, recipe_name, resolve_descriptors
 from gxr_studio.camdata.recipe_tags import parse_recipe_tag, recipe_payload
 from gxr_studio.cards.discovery import find_cards
 from gxr_studio.cards.importer import ImportOptions, run_import
@@ -218,12 +218,24 @@ def test_r6_profile_engine_cap_is_bounded_at_98304_while_r5_stays_81920() -> Non
     assert dc.PROFILES[250].max_file == 98304
 
 
-# --------------------------------------------------------------------------- 2. 识别 r6 库 6adf847602 与位置码 48
+# --------------------------------------------------------------------------- 2. 识别 r6 库 6adf847602 与全身份位置码解码规则
+
+
+def _read_fx_descriptors(library: bytes) -> list[tuple[str, int]]:
+    cat = library[64:]
+    secs = r5._sections(cat)
+    shared = cat[secs[5][0] : secs[5][0] + secs[5][1]]
+    area = shared[dc.u32(shared, 64) :]
+    count = dc.u16(area, 10)
+    out: list[tuple[str, int]] = []
+    for eff in range(1, count + 1):
+        desc = area[48 + 44 * (eff - 1) : 92 + 44 * (eff - 1)]
+        out.append((desc[32:44].split(b"\0")[0].decode("ascii"), desc[28]))
+    return out
 
 
 def test_r6_catalog_identity_6adf847602_and_position_48_decoding() -> None:
-    _, lib250, _, _ = _need_g185_or_g250(250)
-    raw250, _, _, _ = _need_g185_or_g250(250)
+    raw250, lib250, _, _ = _need_g185_or_g250(250)
     assert lib250[84:89].hex() == "6adf847602"
     assert dc.u32(lib250, 36) == 178
     assert CATALOG_GENERATIONS["6adf847602"] == 178
@@ -233,12 +245,20 @@ def test_r6_catalog_identity_6adf847602_and_position_48_decoding() -> None:
         native = tuple(record[4:36].split(b"\0")[0].decode("ascii")[3:] for record in dat.modules[index].records[:4])
         extras = tuple(record.name for record in dat.recipes if record.unit_mask >> index & 1)
         assert CATALOG_NAMES["6adf847602"][code] == native + extras
+    assert tuple(_read_fx_descriptors(lib250)) == CATALOG_DESCRIPTORS["6adf847602"]
 
+    _, lib178 = need_bundle(178)
+    _, lib176 = need_bundle(176)
+    assert tuple(_read_fx_descriptors(lib178)) == CATALOG_DESCRIPTORS["6a3a5a3c02"]
+    assert tuple(_read_fx_descriptors(lib176)) == CATALOG_DESCRIPTORS["d25d2f0a68"]
+
+    # root 规则 + 现场标签（R8052695 28 03, R8052696-698 28 06, R8052699-708 28 48, 11-13 MOUNT 10）
     assert recipe_name("6adf847602", "28", 1) == "GRPos"
     assert recipe_name("6adf847602", "28", 3) == "HC BW"
-    assert recipe_name("6adf847602", "28", 6) == "F-CN"
-    assert recipe_name("6adf847602", "28", 48) is None
-    assert recipe_payload(parse_recipe_tag("GXR1 6adf847602 28 48 A99999999-"))["catalogued"] is False
+    assert recipe_name("6adf847602", "28", 6) == "F-CC"
+    assert recipe_name("6adf847602", "28", 48) == "Teal Orange"
+    assert recipe_name("6adf847602", "MT", 10) == "F-CN"
+    assert recipe_payload(parse_recipe_tag("GXR1 6adf847602 28 48 A99999999-"))["catalogued"] is True
 
     # 用 Studio 自己的 r5 库描述符解码核对位置码 48（r->effect = 48 - 4 = 44，1-based 序号 44 -> 0-based 43）
     cat = lib250[64:]
@@ -250,8 +270,115 @@ def test_r6_catalog_identity_6adf847602_and_position_48_decoding() -> None:
     assert desc44[28] == 2  # unit_mask == 2 -> 28mm
 
 
+@pytest.mark.parametrize(
+    ("identity", "unit", "position", "expected"),
+    (
+        # 6adf847602 (r6 / g250)：现场标签与基底槽/越界回退
+        ("6adf847602", "28", 3, "HC BW"),
+        ("6adf847602", "28", 6, "F-CC"),
+        ("6adf847602", "28", 48, "Teal Orange"),
+        ("6adf847602", "MT", 10, "F-CN"),
+        ("6adf847602", "50", 6, "P160"),
+        ("6adf847602", "28", 5, "K64"),
+        ("6adf847602", "50", 48, None),
+        ("6adf847602", "28", 25, None),
+        # 6a3a5a3c02 (g178 / g181 / g182 r2 / g185)：同套描述符交错规则
+        ("6a3a5a3c02", "28", 3, "HC BW"),
+        ("6a3a5a3c02", "28", 6, "F-CC"),
+        ("6a3a5a3c02", "28", 30, "K25"),
+        ("6a3a5a3c02", "28", 48, "Teal Orange"),
+        ("6a3a5a3c02", "MT", 10, "F-CN"),
+        ("6a3a5a3c02", "50", 6, "P160"),
+        ("6a3a5a3c02", "28", 5, "K64"),
+        ("6a3a5a3c02", "MT", 48, None),
+        # d25d2f0a68 (g176)：29 条共享/独立描述符 + RV 基底槽 1..8
+        ("d25d2f0a68", "28", 3, "HC BW"),
+        ("d25d2f0a68", "28", 6, "Acros"),
+        ("d25d2f0a68", "28", 8, "ARRI 709"),
+        ("d25d2f0a68", "28", 29, "F-CC"),
+        ("d25d2f0a68", "28", 33, "Teal Orange"),
+        ("d25d2f0a68", "MT", 10, None),
+        ("d25d2f0a68", "MT", 31, "F-CN"),
+        ("d25d2f0a68", "50", 6, "P160"),
+        ("d25d2f0a68", "28", 5, "K64"),
+        ("d25d2f0a68", "28", 48, None),
+    ),
+)
+def test_root_position_rule_applies_to_all_three_identities(identity: str, unit: str, position: int, expected: str | None) -> None:
+    assert recipe_name(identity, unit, position) == expected
+
+
+@pytest.mark.parametrize("generation", (176, 178, 185, 250))
+def test_recorded_recipe_maps_position_via_effect_descriptor_not_menu_index(generation: int, tmp_path: Path) -> None:
+    if generation in (185, 250):
+        raw, library, _, _ = _need_g185_or_g250(generation)
+    else:
+        raw, library = need_bundle(generation)
+    home = tmp_path / f"home-{generation}"
+    store.import_from_dat(raw, home, library=library)
+    cam = CameraData(home)
+    identity = library[84:89].hex()
+
+    if generation == 176:
+        cases = (("28", 5, "builtin", "K64"), ("28", 6, "record", "Acros"), ("28", 29, "record", "F-CC"), ("MT", 31, "record", "F-CN"))
+        for unit, pos, kind, name in cases:
+            tag = parse_recipe_tag(f"GXR1 {identity} {unit} {pos:02d}")
+            sel = recorded_recipe(tag, cam)
+            assert sel is not None and sel.kind == kind
+            assert recipe_tag_payload(tag, cam)["name"] == name
+            assert len(cam.resolve(sel).entry) == 552
+    else:
+        cases = (("28", 3, "builtin", "HC BW"), ("28", 6, "record", "F-CC"), ("28", 48, "record", "Teal Orange"), ("MT", 10, "record", "F-CN"))
+        for unit, pos, kind, name in cases:
+            knobs = "-999999999" if kind == "builtin" else "A99999999-"
+            tag = parse_recipe_tag(f"GXR1 {identity} {unit} {pos:02d} {knobs}")
+            sel = recorded_recipe(tag, cam)
+            assert sel is not None and sel.kind == kind
+            assert recipe_tag_payload(tag, cam)["name"] == name
+            unit_row = next(row for row in cam.listing() if row["id"] == sel.unit)
+            if kind == "record":
+                expected_info = next(r for r in unit_row["recipes"] if r.get("kind") == "record" and r["name"] == name)
+                assert sel.id == expected_info["id"]
+            assert len(cam.resolve(sel).entry) == 552
+        # 50 06 按规则回退到 RV 基底槽 6 (P160)，178 目录已移除旧 5..8 入口，不得误选成 F-CN
+        assert recorded_recipe(parse_recipe_tag(f"GXR1 {identity} 50 06 A99999999-"), cam) is None
+
+
+def test_local_kubik_test_library_descriptors_follow_same_unit_interleave() -> None:
+    fx_path = samples.sample_parent() / "firmware/package_v310b_kubik_lib_r6/local/test-REVIEW_PENDING/GXRFX.BIN"
+    if not fx_path.is_file():
+        samples.missing("KUBIK 本地测试库不在本机")
+    lib_bytes = fx_path.read_bytes()
+    ident = lib_bytes[84:89].hex()
+    assert ident == "0ccc86c19b"
+    # KUBIK 尚未作为日常库登记进全局目录
+    assert ident not in CATALOG_GENERATIONS and ident not in CATALOG_NAMES
+    descriptors = _read_fx_descriptors(lib_bytes)
+    assert len(descriptors) == 66
+    expected_kubik = {
+        ("50", 62): "K-0815",
+        ("50", 65): "K-PACIFIC",
+        ("50", 68): "K-KINO",
+        ("28", 63): "K-0815",
+        ("28", 66): "K-PACIFIC",
+        ("28", 69): "K-KINO",
+        ("MT", 64): "K-0815",
+        ("MT", 67): "K-PACIFIC",
+        ("MT", 70): "K-KINO",
+        ("28", 6): "F-CC",
+        ("28", 48): "Teal Orange",
+        ("MT", 10): "F-CN",
+        ("50", 63): None,
+        ("28", 64): None,
+        ("MT", 62): None,
+    }
+    for (unit, pos), want in expected_kubik.items():
+        hit = resolve_descriptors(descriptors, unit, pos)
+        assert (None if hit is None else hit.name) == want
+
+
 @pytest.mark.parametrize("folder_name", ("probe251", "card250"))
-def test_r6_field_photos_resolve_catalog_names_and_keep_position_48_unnamed(folder_name: str, tmp_path: Path) -> None:
+def test_r6_field_photos_resolve_catalog_names_including_position_48(folder_name: str, tmp_path: Path) -> None:
     folder = samples.captures() / "r6-field-20261118" / folder_name
     if not folder.is_dir():
         samples.missing(f"captures/r6-field-20261118/{folder_name} 不在本机")
@@ -263,6 +390,8 @@ def test_r6_field_photos_resolve_catalog_names_and_keep_position_48_unnamed(fold
     dngs = sorted(folder.glob("*.DNG"))
     assert dngs
     seen_positions: list[int] = []
+    # root 规则 + 现场标签：01=GRPos, 03=HC BW, 06=F-CC (eff=2), 48=Teal Orange (eff=44)
+    expected = {1: ("GRPos", "builtin"), 3: ("HC BW", "builtin"), 6: ("F-CC", "record"), 48: ("Teal Orange", "record")}
     for dng_path in dngs:
         jpg_path = dng_path.with_suffix(".JPG")
         assert jpg_path.is_file()
@@ -276,14 +405,11 @@ def test_r6_field_photos_resolve_catalog_names_and_keep_position_48_unnamed(fold
         payload = recipe_tag_payload(tag, cam)
         assert payload is not None
         seen_positions.append(tag["position"])
-        if tag["position"] == 48:
-            assert payload["name"] is None and payload["catalogued"] is False
-            assert recorded_recipe(tag, cam) is None
-        else:
-            assert payload["name"] == {1: "GRPos", 3: "HC BW", 6: "F-CN"}[tag["position"]]
-            assert payload["catalogued"] is True and payload["amount_unknown"] is False
-            sel = recorded_recipe(tag, cam)
-            assert sel is not None and len(cam.resolve(sel).entry) == 552
+        want_name, want_kind = expected[tag["position"]]
+        assert payload["name"] == want_name
+        assert payload["catalogued"] is True and payload["amount_unknown"] is False
+        sel = recorded_recipe(tag, cam)
+        assert sel is not None and sel.kind == want_kind and len(cam.resolve(sel).entry) == 552
 
     if folder_name == "probe251":
         assert set(seen_positions) == {1, 3, 6}

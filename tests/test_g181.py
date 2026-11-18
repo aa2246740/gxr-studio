@@ -87,7 +87,9 @@ def test_the_rejected_g182_e4_candidate_is_not_registered():
         dc.parse(raw, library)
 
 
-@pytest.mark.parametrize("position", (24, 25, 30))
+# root 规则：28mm 只有 pos=1..4 及 effect=pos-4 对应 28mm（6,9,...,60）在目录内；
+# 23(50mm)/25(MT) 单元不匹配，62 越界（旧 24/30 实为 28mm Leica F1/K25）
+@pytest.mark.parametrize("position", (23, 25, 62))
 @pytest.mark.parametrize("generation", (181, 182))
 def test_empty_and_out_of_catalog_positions_never_borrow_a_name_or_selection(position, generation):
     camera = SyntheticCamera()
@@ -120,9 +122,9 @@ def test_field_raw_and_jpg_tags_agree_and_unknown_positions_remain_unnamed(tmp_p
     assert len(pairs) == 7
     assert all(pair["original_values_equal"] and pair["copyright_equal"] and pair["parsed_tags_equal"] for pair in pairs)
     assert sorted(pair["position"] for pair in pairs) == [1, 6, 6, 6, 9, 30, 30]
+    # root 规则 + 现场标签（g181 实拍全为 28mm）：01=GRPos, 06=F-CC (eff=2), 09=F-CN (eff=5), 30=K25 (eff=26)
+    expected_names = {1: "GRPos", 6: "F-CC", 9: "F-CN", 30: "K25"}
     for pair in pairs:
-        if pair["position"] == 30:
-            assert pair["studio"]["name"] is None and pair["unknown_reason"] == "position_not_in_catalog"
-        else:
-            assert pair["selection"] is not None and pair["unknown_reason"] is None
-            assert pair["studio"]["amount_unknown"] is False
+        assert pair["studio"]["name"] == expected_names[pair["position"]]
+        assert pair["selection"] is not None and pair["unknown_reason"] is None
+        assert pair["studio"]["amount_unknown"] is False

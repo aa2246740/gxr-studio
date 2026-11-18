@@ -187,14 +187,19 @@ def test_jpeg_and_dng_use_the_existing_exif_read_once(tmp_path, monkeypatch, kin
 
 def test_lookup_is_bound_to_identity_unit_and_camera_position():
     assert CAMERA_UNITS == {"28": "qlaunch", "50": "jlaunch", "MT": "l08firm"}
-    assert recipe_name("6a3a5a3c02", "28", 6) == "F-CN"
-    assert recipe_name("d25d2f0a68", "50", 19) == "Vision3 500T"
-    assert recipe_name("d25d2f0a68", "28", 19) == "F-CC"
-    assert recipe_name("d25d2f0a68", "MT", 19) == "Vision3 500T"
-    for identity, unit, position in (("0123456789", "28", 6), ("6a3a5a3c02", "28", 24), ("6a3a5a3c02", "XX", 1)):
+    # root 规则 + 现场标签 R8052696-698：28 06 对应 effect=2 的 28mm F-CC（旧按菜单序误作 F-CN）
+    assert recipe_name("6a3a5a3c02", "28", 6) == "F-CC"
+    # root 规则：d25d2f0a68 位置 19 (effect=15) 仅在 50mm 存在且为 Ektachrm 100；28mm F-CC 在 29 (eff=25)，MT Vision3 500T 在 27 (eff=23)
+    assert recipe_name("d25d2f0a68", "50", 19) == "Ektachrm 100"
+    assert recipe_name("d25d2f0a68", "28", 19) is None
+    assert recipe_name("d25d2f0a68", "28", 29) == "F-CC"
+    assert recipe_name("d25d2f0a68", "MT", 19) is None
+    assert recipe_name("d25d2f0a68", "MT", 27) == "Vision3 500T"
+    # root 规则：28 24 为 28mm Leica F1，改测 28 25 (MT 描述符单元不匹配) 与 28 62 (越界) 返回 None
+    for identity, unit, position in (("0123456789", "28", 6), ("6a3a5a3c02", "28", 25), ("6a3a5a3c02", "28", 62), ("6a3a5a3c02", "XX", 1)):
         assert recipe_name(identity, unit, position) is None
     assert recipe_payload(None) is None
-    assert recipe_payload(parse_recipe_tag(TAG))["name"] == "F-CN"
+    assert recipe_payload(parse_recipe_tag(TAG))["name"] == "F-CC"  # root 规则 + 现场标签 R8052696-698：28 06 为 F-CC
     assert recipe_payload(parse_recipe_tag(UNKNOWN))["name"] is None
     assert recipe_payload(parse_recipe_tag(TAG))["changes"] == {"contrast": -1, "saturation": 2}
     assert recipe_payload(parse_recipe_tag("GXR1 6a3a5a3c02 28 99 A99999999-"))["name"] is None
@@ -234,7 +239,7 @@ def test_import_rebuild_and_reopen_cache_the_tag_without_reading_again(lib, volu
     monkeypatch.setattr(meta, "read_dng_meta", unexpected_read)
     (cached,) = lib.list_shots()
     assert lib.get_shot(shot["shot_id"])["recipe_tag"] == parse_recipe_tag(TAG)
-    assert photo_json(cached)["recipe_tag"]["name"] == "F-CN"
+    assert photo_json(cached)["recipe_tag"]["name"] == "F-CC"  # root 规则 + 现场标签 R8052696-698：28 06 为 F-CC
 
 
 def test_migration_keeps_old_shots_and_requires_no_photo_read(lib, monkeypatch):
@@ -298,7 +303,8 @@ def test_photo_api_returns_the_cached_recipe(settings, volumes):
         assert photo["copyright"] == TAG
         tag = client.get(f"/api/photos/{photo['id']}").json()["recipe_tag"]
         assert tag["catalog_identity"] == "6a3a5a3c02" and tag["unit"] == "28" and tag["position"] == 6
-        assert tag["name"] == "F-CN" and tag["catalogued"] is True and tag["levels"]["saturation"] == 2
+        # root 规则 + 现场标签 R8052696-698：28 06 为 F-CC (effect=2)
+        assert tag["name"] == "F-CC" and tag["catalogued"] is True and tag["levels"]["saturation"] == 2
         caps = client.get(f"/api/photos/{photo['id']}/capabilities").json()
         assert caps["recipe"] == "none" and "相机 JPG" in caps["reason"]
 
@@ -371,7 +377,19 @@ def test_info_panel_displays_recipe_fallback_copyright_and_tweaks(tmp_path):
     )
     (modules / "controls.js").write_text("export const fmtSigned=v=>v>0?'+'+v:String(v);\n")
     (modules / "state.js").write_text("export const state={}; export const on=()=>{};\n")
-    tags = [TAG, LEGACY, UNKNOWN, "GXR1 0123456789 50 01", "GXR1 6a3a5a3c02 MT 22 -9999----9", "Alice <b>copyright</b>", None, "GXR1 bad", TAG]
+    # root 规则：MT Acros 为 effect=54 (pos=58)，MT 22 为 L-Contemp（旧按菜单序误作 Acros）
+    tags = [
+        TAG,
+        LEGACY,
+        UNKNOWN,
+        "GXR1 0123456789 50 01",
+        "GXR1 6a3a5a3c02 MT 58 -9999----9",
+        "Alice <b>copyright</b>",
+        None,
+        "GXR1 bad",
+        TAG,
+        "GXR1 6a3a5a3c02 MT 10 ----------",
+    ]
     photos = [
         {
             "id": str(i),
@@ -388,12 +406,14 @@ def test_info_panel_displays_recipe_fallback_copyright_and_tweaks(tmp_path):
     result = subprocess.run(["node", str(driver), str(modules), str(data)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     rows = json.loads(result.stdout)
-    assert rows[0]["recipe"] == "配方F-CN（28mm · 06） · 对比度 -1 · 饱和度 +2"
-    assert rows[1]["recipe"] == "配方F-CN（28mm · 06） · 微调未知"
+    # root 规则 + 现场标签 R8052696-698：28 06 为 F-CC；现场 MT 10 为 F-CN
+    assert rows[0]["recipe"] == "配方F-CC（28mm · 06） · 对比度 -1 · 饱和度 +2"
+    assert rows[1]["recipe"] == "配方F-CC（28mm · 06） · 微调未知"
     assert rows[2]["recipe"] == "配方GXR1 0123456789 MT 99 · 褪色 +3 · 强度未知（相机记录，Studio 目录里没有）"
     assert rows[3]["recipe"] == "配方GXR1 0123456789 50 01 · 微调未知（相机记录，Studio 目录里没有）"
-    assert rows[4]["recipe"] == "配方Acros（MOUNT · 22）"
-    assert rows[8]["recipe"] == "配方F-CN（28mm · 06） · 对比度 -1 · 饱和度 +2 · 强度未知"
+    assert rows[4]["recipe"] == "配方Acros（MOUNT · 58）"
+    assert rows[8]["recipe"] == "配方F-CC（28mm · 06） · 对比度 -1 · 饱和度 +2 · 强度未知"
+    assert rows[9]["recipe"] == "配方F-CN（MOUNT · 10）"
     for i in (5, 6, 7):
         assert rows[i]["recipe"] == "配方未标记"
     assert "版权Alice <b>copyright</b>" in rows[5]["shot"]

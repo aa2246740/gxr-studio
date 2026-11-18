@@ -25,8 +25,9 @@ from gxr_studio.render.service import RenderService
 from test_clone_coverage import _install_camera, _render_entry, _tiny_dng
 from test_lut_library import cube_bytes
 
-TAG = "GXR1 6a3a5a3c02 50 06 A8999B999-"
-LEGACY = "GXR1 6a3a5a3c02 50 06"
+# root 规则：50mm F-CN 对应 effect=4（位置码 08），旧 06 为按菜单序的误写
+TAG = "GXR1 6a3a5a3c02 50 08 A8999B999-"
+LEGACY = "GXR1 6a3a5a3c02 50 08"
 
 
 class SyntheticCamera(CameraData):
