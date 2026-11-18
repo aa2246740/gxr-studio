@@ -494,6 +494,7 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         user_names: Vec::new(),
         recipes: Vec::new(),
         shell_header: Vec::new(),
+        xdata: Vec::new(),
     };
 
     check_engine_binding(
@@ -503,6 +504,7 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         dat.bss,
         &dat.relocations,
         raw.len(),
+        &dat.xdata,
     )?;
     if prof.looks {
         dat.looks = parse_looks(&dat, raw, &pools)?;

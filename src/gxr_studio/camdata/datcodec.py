@@ -72,7 +72,9 @@ class Profile:
     max_engine: int = 65536
     flat_list: bool = False  # 平铺列表的 Looks 与用户条目合计至多 40 个
     mount_knobs_from_50mm: bool = False
-    library_generation: int | None = None  # 有限登记的 r5 库关系，不要求等于 DAT 代数
+    library_generation: int | None = None  # 有限登记的 r5/r6 库关系，不要求等于 DAT 代数
+    library_sha256: tuple[str, ...] = ()  # 指定绑定库的摘要（为空时按 library_generation 查 r5.LIBRARY_SHA256）
+    xdata: bool = False  # r6 区段 3（.xdata 只读常量），r5 及以前始终为空
 
     @property
     def bank_generation(self) -> int:
@@ -106,6 +108,20 @@ PROFILES = {
     178: Profile(178, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
     181: Profile(181, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
     182: Profile(182, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
+    185: Profile(185, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
+    250: Profile(
+        250,
+        98304,
+        True,
+        max_engine=98304,
+        mount_knobs_from_50mm=True,
+        library_generation=178,
+        library_sha256=(
+            "b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34",
+            "1a4810446475633e55771df28d5080ed28769a8850ef68cbde41be75acbad1d2",
+        ),
+        xdata=True,
+    ),
 }
 
 
@@ -196,6 +212,7 @@ class Dat:
     recipes: tuple[FullRecipe, ...] = ()
     library: bytes | None = None
     shell_header: bytes = b""
+    xdata: bytes = b""
 
     def entry_of(self, unit: int, slot: int) -> bytes:
         """槽位 1..16 的 552 B 深层条目（别名槽位解引用到所有者）。"""
@@ -212,6 +229,7 @@ def _check_engine_binding(dat: Dat, data_end: int) -> None:
         dat.bss,
         tuple((patch, target) for patch, target in dat.relocations),
         data_end,
+        hashlib.sha256(dat.xdata).hexdigest() if dat.xdata else None,
     )
     if registered is None:
         # 已登记的引擎只能用于它自己的代数，旧 profile 也不能接收换标签的新引擎。

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from ..camdata.catalog_names import CAMERA_UNITS, CATALOG_GENERATIONS, recipe_name
+from ..camdata.catalog_names import CAMERA_UNITS, CATALOG_GENERATIONS, resolve_catalog_position
 from ..camdata.datcodec import PROFILES
 from ..camdata.recipe_tags import RecipeTag, decoded_levels, recipe_payload
 from .params import EditError, EditState, RecipeSel, parse_edit
@@ -13,7 +13,10 @@ from .recipes import CameraData, Menu
 
 
 def _catalog_recipe(tag: RecipeTag | None, menu: Menu | None) -> tuple[str, dict[Any, Any]] | None:
-    if tag is None or recipe_name(tag["catalog_identity"], tag["unit"], tag["position"]) is None:
+    if tag is None:
+        return None
+    target = resolve_catalog_position(tag["catalog_identity"], tag["unit"], tag["position"])
+    if target is None:
         return None
     if (
         not isinstance(menu, CameraData)
@@ -22,11 +25,11 @@ def _catalog_recipe(tag: RecipeTag | None, menu: Menu | None) -> tuple[str, dict
         raise EditError("camera_recipe_catalog_missing", "请先导入拍摄时使用的相机配方文件。")
     unit = CAMERA_UNITS[tag["unit"]]
     recipes = next(row["recipes"] for row in menu.listing() if row["id"] == unit)
-    position = tag["position"]
-    if not 1 <= position <= len(recipes):
-        return None
-    info = recipes[position - 1]
-    return unit, info
+    if target.kind == "builtin":
+        info = next((row for row in recipes if row.get("kind", "builtin") == "builtin" and row["slot"] == target.slot), None)
+    else:
+        info = next((row for row in recipes if row.get("kind") == "record" and row["name"] == target.name), None)
+    return None if info is None else (unit, info)
 
 
 def _amount_levels(info: dict[Any, Any]) -> list[int] | None:
