@@ -706,15 +706,16 @@ def assert_meta_same(py_meta: dict[str, Any], rs_meta: dict[str, Any]) -> None:
 
 
 def real_dngs(captures_dir: Path, cap: int = 60) -> list[Path]:
+    """DNGs under ``captures_dir`` (no backups) in the stable sample for ``cap``
+    (``support.samples.stable_sample``: membership depends only on each file's own path)."""
+    from support.samples import stable_sample
+
     if not captures_dir.is_dir():
         return []
-    found = [
+    found = (
         path for path in captures_dir.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower()
-    ]
-    found.sort(key=lambda path: path.as_posix())
-    if len(found) <= cap:
-        return found
-    return [found[(i * len(found)) // cap] for i in range(cap)]
+    )
+    return stable_sample(found, captures_dir, cap)
 
 
 def check_scene_xyz(dng_path: Path, codes: np.ndarray, out_path: Path) -> None:

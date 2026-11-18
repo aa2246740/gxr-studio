@@ -5,7 +5,10 @@ calibration pack. Rust runs ``export-run-prepare --hdr`` (hdr-track ``begin`` an
 warp / box / crop) and ``export-run-complete`` (hdr-track ``stamp`` with the stamp mask, ``frame``
 from the layout, ``finish`` on this unit's single encode). Gates:
 - the track layer Rust's prepare returns equals Python's just before ``track.stamp`` (float32
-  bits, NaN at the same places);
+  bits, NaN at the same places; an untouched shot on the camera-JPG path never stamps, so there
+  it is Python's layer after ``begin``), or differs only through macOS ``tan`` in the perspective
+  sliders (``support.host_libm.layer_tan``: Gate A against the desktop's own geometry steps
+  replayed with a correctly rounded ``tan``, Gate B with zero unattributed values);
 - no ink: the file equals the desktop's byte for byte, or the difference is attributed with
   hdr-track's own rules (Gate A: Rust equals the sequential-IEEE oracle built from Python's
   layer; Gate B: Python equals the FMA oracle);
@@ -37,6 +40,7 @@ from gxr_studio.render.params import parse_edit
 from support import export_source_cases as xs
 from support import export_source_run as xr
 from support import hdr_parity as hp
+from support import host_libm as hl
 from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import (
     check,
@@ -51,7 +55,7 @@ from support.export_pipeline_cases import (
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
 from support.samples import missing
 from test_core_parity_export_pipeline_raw import Spy, _entry_for, _photo_only, _w, pinned_icc  # noqa: F401
-from test_core_parity_hdr_track_finish import _encode_gain_jpeg, _extract_gain_jpeg, _oracle_to_grid, _same_f32_nan, _stamp_changed_mask
+from test_core_parity_hdr_track_finish import _encode_gain_jpeg, _extract_gain_jpeg, _oracle_to_grid, _stamp_changed_mask
 
 DAT = xs.real_dat()
 
@@ -84,14 +88,36 @@ def _cli() -> None:
 
 
 class HdrSpy:
-    """Python's track layer when ``track.stamp`` is entered, and ``finish``'s inputs and result."""
+    """Python's track layer after ``begin`` and when ``track.stamp`` is entered, the geometry steps
+    in between (to replay them), and ``finish``'s inputs and result."""
 
     def __init__(self, mp: pytest.MonkeyPatch) -> None:
         self.pre_stamp: np.ndarray | None = None
         self.stamp_called = False
         self.finish: dict[str, Any] = {}
+        self.after_begin: np.ndarray | None = None
+        self.ops: list[tuple[str, tuple[Any, ...]]] = []
         real_stamp = HdrTrack.stamp
         real_finish = hdr_export.finish
+        real_begin = HdrTrack.begin
+
+        def begin(track: HdrTrack, base: np.ndarray) -> None:
+            real_begin(track, base)
+            self.after_begin = None if track.layer is None else track.layer.copy()
+
+        def recorded(name: str) -> Any:
+            real = getattr(HdrTrack, name)
+
+            def step(track: HdrTrack, *args: Any) -> None:
+                if track.layer is not None:
+                    self.ops.append((name, args))
+                real(track, *args)
+
+            return step
+
+        mp.setattr(HdrTrack, "begin", begin)
+        for name in ("warp", "box", "crop"):
+            mp.setattr(HdrTrack, name, recorded(name))
 
         def stamp(track: HdrTrack, spec: Any, taken: Any, file_time: Any) -> None:
             self.stamp_called = True
@@ -189,12 +215,16 @@ def run_hdr_case(
     same_redacted(list(prepared["labels"].items()), list(py_labels.items()), f"{stem} labels")
     hdr_state = prepared["state"]["hdr"]
     rs_layer = np.load(tmp / f"{stem}-layer.npy")
-    # The track after begin and the photo's geometry.
-    if hspy.pre_stamp is None:
+    # The track after begin and the photo's geometry. The untouched camera-JPG path never stamps:
+    # there Python's track is the one ``begin`` left.
+    layer_libm = None
+    py_layer = hspy.pre_stamp if hspy.stamp_called else hspy.after_begin
+    if py_layer is None:
         same_redacted([hdr_state["active"], int(rs_layer.size)], [False, 0], f"{stem} inactive hdr state")
     else:
+        check(hspy.stamp_called or not hspy.ops, "geometry steps on a track that never stamped")
         same_redacted(hdr_state["active"], True, f"{stem} active hdr state")
-        _same_f32_nan(hspy.pre_stamp, rs_layer, f"{stem} layer before stamp")
+        layer_libm = hl.layer_tan(py_layer, rs_layer, hspy.after_begin, hspy.ops, f"{stem} layer before stamp")
 
     frame_def, stamp_def = load_defaults(h.render.home)
     frame = resolved_frame(edit.frame, frame_def)
@@ -240,14 +270,15 @@ def run_hdr_case(
     same_redacted([r["file_name"], r["tag"].endswith("_hdr")], [res.path.name, bool(res.hdr)], f"{stem} file name")
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail"):
         same_redacted(r[key], getattr(res, key), f"{stem} result.{key}")
-    return {"hdr": res.hdr, "reason": res.hdr_reason, "how": how, "ink": not no_ink}
+    return {"hdr": res.hdr, "reason": res.hdr_reason, "how": how, "ink": not no_ink, "layer_libm": layer_libm}
 
 
 def _pairs(n: int) -> list[tuple[Path, Path]]:
-    pairs = [(d, j) for d, j in xs.real_pairs(60) if j is not None]
+    """The DNG+JPG pairs of the stable sample ``xs.real_pairs(n)`` (at least ``n``, more as captures/ grows)."""
+    pairs = [(d, j) for d, j in xs.real_pairs(n) if j is not None]
     if len(pairs) < n:
         missing(f"captures/ 里不足 {n} 对 RAW+JPG（export-pipeline HDR）")
-    return [pairs[(i * len(pairs)) // n] for i in range(n)]
+    return pairs
 
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
@@ -255,14 +286,21 @@ def _pairs(n: int) -> list[tuple[Path, Path]]:
 def test_hdr_real_pairs_match_export_finish(long_edge: int | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:  # noqa: F811
     h = xs.make_home(tmp_path / "home", DAT)
     tally: dict[str, int] = {}
+    libm = {"cases": 0, "values": 0, "unattributed": 0}
+    pairs = _pairs(10)
     with cjk_fonts((FIXTURE_CJK,)):
-        for idx, (dng, jpg) in enumerate(_pairs(10)):
+        for idx, (dng, jpg) in enumerate(pairs):
             case = CASES[idx % len(CASES)]
             out = run_hdr_case(h, tmp_path, monkeypatch, f"H{long_edge or 0}{idx:02d}", dng, jpg if case[2] else None, case, long_edge)
             key = f"hdr={out['hdr']}/{out['reason']}/{'ink' if out['ink'] else 'no-ink'}/{out['how']}"
             tally[key] = tally.get(key, 0) + 1
+            if out["layer_libm"] is not None:
+                libm["cases"] += 1
+                libm["values"] += out["layer_libm"]["values"]
+                libm["unattributed"] += out["layer_libm"]["unattributed"]
     note(f"e2e hdr long_edge={long_edge}", tally)
-    check(sum(tally.values()) == 10, "expected 10 exports")
+    note(f"e2e hdr host tan long_edge={long_edge}", libm)
+    check(sum(tally.values()) == len(pairs), "expected one export per pair")
     check(any(k.startswith("hdr=True") for k in tally), "no export made HDR")
 
 
@@ -275,7 +313,7 @@ def test_hdr_reasons_on_crafted_shots(tmp_path: Path, monkeypatch: pytest.Monkey
     from test_core_parity_export_source import _mosaic
 
     h = xs.make_home(tmp_path / "home", DAT)
-    (dng_a, jpg_a), (dng_b, jpg_b) = _pairs(2)
+    (dng_a, jpg_a), (dng_b, jpg_b), *_ = _pairs(2)
     bad = tmp_path / "R9999.DNG"
     bad.write_bytes(write_dng(_mosaic(16, 16, 3), compression=7))
     plain = tmp_path / "plain.JPG"
