@@ -5,6 +5,7 @@ import type { CropState, GeometryState } from '../lib/crop';
 import type { PhotoMeta } from '../lib/exif';
 import type { FrameMetaResult, FrameSpec, StampSpec } from '../lib/frame_spec';
 import type { GapMinutes, Order } from '../lib/group';
+import type { CurveMap } from '../lib/export_request';
 import type { Frame } from '../lib/photo_size';
 import type { Choice } from '../lib/recipes';
 import type { Book } from './book';
@@ -63,6 +64,8 @@ export interface Photo {
   /** 显卡出的中性转换小图（配方卡用），按版本缓存，只做一次。 */
   neutral: { version: number; bitmap: ImageBitmap } | null;
   knobs: Knobs;
+  /** 桌面的四条曲线。null 是没调过；恒等通道不放在里面。 */
+  curve: CurveMap | null;
   /** 相机 JPG 和 DNG 里读到的镜头名、ISO（桌面导入时先用 JPG 的）。 */
   jpgMeta: PhotoMeta | null;
   dngMeta: PhotoMeta | null;

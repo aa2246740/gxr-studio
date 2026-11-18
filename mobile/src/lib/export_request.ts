@@ -32,6 +32,29 @@ export interface KnobValues {
   vignette: number;
 }
 
+/** 桌面 curves.js：四个通道，恒等的省略，全恒等是 null。 */
+export const CURVE_CHANNELS = ['master', 'r', 'g', 'b'] as const;
+export type CurveChannel = (typeof CURVE_CHANNELS)[number];
+export type CurvePoint = [number, number];
+export type CurveMap = Partial<Record<CurveChannel, CurvePoint[]>>;
+export const CURVE_LABELS: ReadonlyArray<readonly [CurveChannel, string]> = [
+  ['master', '主曲线'],
+  ['r', '红'],
+  ['g', '绿'],
+  ['b', '蓝'],
+];
+
+/** 桌面 `normalizeCurves`：恒等通道（每个点 x = y）不写，一个通道都没有就是 null。 */
+export function curveJson(curves: CurveMap | null | undefined): CurveMap | null {
+  if (!curves) return null;
+  const out: CurveMap = {};
+  for (const key of CURVE_CHANNELS) {
+    const points = curves[key];
+    if (points && !points.every(([x, y]) => x === y)) out[key] = points.map((p) => [p[0], p[1]]);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** 拼请求要的那部分照片状态。 */
 export interface RequestPhoto {
   stem: string;
@@ -50,6 +73,8 @@ export interface RequestPhoto {
   /** 桌面的 memory（`look_cards.js` recipeTarget：换配方时切走的那个），键是卡的 id；空的档位也是一项。 */
   memory: ReadonlyMap<string, Record<string, number>>;
   knobs: KnobValues;
+  /** 桌面 sidecar 的 `curve`。null 是没调过（恒等）。 */
+  curve?: CurveMap | null;
   frame?: Frame | null;
   geometry?: GeometryState;
   crop?: CropState | null;
@@ -205,8 +230,8 @@ export function mapInkError(err: unknown): { kind: 'trap' | 'core'; code: string
 }
 
 /**
- * 桌面 sidecar 里这张照片的编辑（`render/edits.write` 写出的那几块）：`recipe`（带 `memory`）、`lut`、`adjust`、`geometry`、`crop`、`border`、`stamp`。
- * 没动过的照片是 `{}`。
+ * 桌面 sidecar 里这张照片的编辑（`render/edits.write` 写出的那几块）：`recipe`（带 `memory`）、`lut`、`adjust`、`curve`、`geometry`、`crop`、`border`、`stamp`。
+ * 没动过的照片是 `{}`。恒等曲线不写 `curve`。
  */
 export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<string, unknown> {
   const side: Record<string, unknown> = {};
@@ -226,6 +251,8 @@ export function buildSide(photo: RequestPhoto, cards: readonly Card[]): Record<s
   if (photo.lut) side.lut = photo.lut;
   const adjust = adjustJson(photo.knobs);
   if (adjust) side.adjust = adjust;
+  const curve = curveJson(photo.curve);
+  if (curve) side.curve = curve;
   const geom = photo.geometry ? geometrySidecar(photo.geometry.straighten) : null;
   if (geom) side.geometry = geom;
   if (photo.crop) side.crop = cloneCrop(photo.crop);

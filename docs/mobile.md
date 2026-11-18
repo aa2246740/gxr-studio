@@ -602,6 +602,14 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 - **导出与复制粘贴**：`lib/export_request.ts` 在 `side` 中按桌面键名写入 `geometry`、`crop` 与 `frame`，并把 `rect` / `preset` 传给 `export_output_sizes`；HDR 导出经 `hdr-track` 携带裁切，导出字节与桌面 `export_finish` 逐字节相同。复制粘贴中「几何」与「裁剪」变为可设置（规则对齐 `paste_core.js` 与 `paste.py`：`几何` 保留目标的 `rotate90`/`flip`；`裁剪` 走 `geom_crop_write(..., fit=true)`，遇到 `CropError` 转为 `Skip(group="crop", reason=code, message)` 并套用 `pasteMessage`）。
 - **测试**：`tests/test_core_parity_crop_edit.py`、`tests/test_mobile_ui_crop_unit.py`（`tests/support/mobile_ui_crop_unit.mjs`）、`tests/test_mobile_ui_group_unit.py`、`tests/test_mobile_ui_group_parity_browser.py`、`tests/test_mobile_ui_crop_browser.py`（纳入导出管线隐私 lint `test_core_parity_export_pipeline_guard.py`）。
 
+## 曲线（手机）
+
+编辑器的「曲线」页（03h，`app/curves_view.ts`）跟桌面 `curves.js` / `curve_editor.js` 用同一套点：主曲线、红、绿、蓝，最多 16 个点，端点只上下动，中间点夹在相邻点之间，横坐标不能重复，双击删中间点，重置此通道 / 重置全部曲线把恒等通道省掉。拖的时候曲线写在这张照片上，预览用 `requestAnimationFrame` 交给 `engine.setLook({curve})`，松手才给 `rev` 加一；`pointercancel`、换照片和 `destroy` 把没松手的那一下还原。触控热区大约 22px。
+
+导出把 `curve` 按桌面 sidecar 的形状放进 `side`（`lib/export_request.ts` 的 `curveJson`，恒等不写）。`export_prepare` 已经会套用它，手机不再做一遍。复制粘贴里曲线属于「调整」（`lib/paste.ts`）：复制调整带上曲线，恒等会把目标的曲线清掉，撤销按套用前的曲线还原。摘要用桌面的叫法：主曲线、红曲线、绿曲线、蓝曲线。
+
+测试：`tests/test_mobile_ui_curves_unit.py`（手势、预览 JSON、复制粘贴和撤销、生命周期），`tests/test_mobile_ui_export_curves_browser.py`（RAW+JPG 和只有 JPG，和桌面 `export_finish` 逐字节相同；恒等曲线和没曲线是同一份字节）。
+
 ## 墨迹（`gxr-finish::ink`，命令前缀 `ink-`）
 
 移植桌面非文字 Pillow 12.2.0 与 NumPy 2.4.3 的边框绘制原语：`ink/image.rs`（`new`、`convert`、`point_mul`、`crop_f64`、`rotate90`、`putalpha`、`alpha_composite` 与 NumPy `f32` 成对求和）、`ink/paste.rs`（`DIV255` 掩码混合）、`ink/draw.rs` + `ink/draw_arc.rs` + `ink/draw_ellipse.rs`（`polygon`、`rectangle`、`rounded_rectangle`、`ellipse`、宽线 `line`）、`ink/shapes.rs`（`aa_paint` 超采样下采样与 `paint_rect`/`poly`/`ellipse`/`hole`/`shadow`）、`ink/blur.rs`（3 遍定点 `BoxBlur.c` `GaussianBlur`）、`ink/backdrop.rs` + `ink/rng.rs` + `ink/rng_tables.rs`（`blurred_background`、`background` 与 `SeedSequence` → `PCG64` → Ziggurat `paper_grain`/`paper_grain_in_place`）、`ink/carrier.rs`（负片线虫 `carrier_contours` 与 4× 超采样 `paint_carrier`）、`ink/logo.rs`（`paint_clogo`/`paint_clogo_traced` 与 `finish_logo_prepare`）以及公共解释器 `ink/ops.rs`（`run_ink_ops_vec` 零拷贝交接与 `run_ink_ops_traced`）。

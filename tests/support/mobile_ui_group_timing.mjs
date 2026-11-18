@@ -1,7 +1,20 @@
 // UI-M3-GROUP：500 张合成照片套用一次，量主线程上每一片花了多久（规则：每帧不超过 8 ms）。
 // 只输出一行 JSON，断言在 Python 那边（墙钟断言要标 exclusive）。
 
-import { copyFrom, pasteBatch, PasteUndo } from '../../mobile/src/lib/paste.ts';
+import { registerHooks } from 'node:module';
+
+registerHooks({
+  resolve(spec, ctx, next) {
+    try {
+      return next(spec, ctx);
+    } catch (err) {
+      if (spec.startsWith('.') && !/\.[a-z]+$/.test(spec)) return next(`${spec}.ts`, ctx);
+      throw err;
+    }
+  },
+});
+
+const { copyFrom, pasteBatch, PasteUndo } = await import('../../mobile/src/lib/paste.ts');
 
 const knobs = (over = {}) => ({ exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0, ...over });
 // 来源：22 张配方卡各记着档位（全部 22 的情况），曝光和对比度动过。

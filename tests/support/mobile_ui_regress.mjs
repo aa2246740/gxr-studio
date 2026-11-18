@@ -381,7 +381,7 @@ const CASES = {
     }
   },
 
-  /** F7：曲线页有稿上的静态控件，全部停用，写「这项下一步做」。 */
+  /** 曲线页能调，不再是「这项下一步做」。 */
   async 'later-tabs'() {
     const { page, context, errors } = await makePage({ gpu: false });
     try {
@@ -392,8 +392,8 @@ const CASES = {
       for (const name of ['曲线']) {
         await page.getByRole('tab', { name, exact: true }).click();
         tabs[name] = await page.evaluate(() => {
-          const panel = [...document.querySelectorAll('.later-panel')].find((node) => !node.hidden);
-          if (!panel) return null;
+          const panel = document.querySelector('.editor .panel.curve-panel');
+          if (!panel || panel.hidden) return null;
           const controls = [...panel.querySelectorAll('button, input')];
           return {
             text: panel.innerText,
@@ -402,6 +402,7 @@ const CASES = {
             svg: panel.querySelectorAll('svg').length,
             enabled: controls.filter((node) => !node.disabled).length,
             controls: controls.length,
+            later: document.querySelectorAll('.later-panel').length,
           };
         });
       }

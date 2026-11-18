@@ -515,6 +515,7 @@ class App implements AppApi {
           bitmap: null,
           neutral: null,
           knobs: zeroKnobs(),
+          curve: null,
           rev: 0,
           jpgMeta: null,
           dngMeta: null,
