@@ -10,6 +10,7 @@ class EngineDescription:
     bss_bytes: int
     relocations: tuple[tuple[int, int], ...]
     linked_data_end: int
+    xdata_sha256: str | None = None
 
 
 BOUND_ENGINES = {
@@ -25,4 +26,15 @@ BOUND_ENGINES = {
     178: (EngineDescription("1fd9fb0de74e535cef5dd91c939c2bcac09772cf038b97955e25baa68d2b4c85", 71756, 23772, ((75552, 71724),), 75724),),
     181: (EngineDescription("28013529e2291f3854622dbc46ebefce10098689aa000cb0f512351838f2102f", 72308, 4252, ((76076, 65220),), 76248),),
     182: (EngineDescription("2391f3a55c036888750dfde9ca2d28748fe3fb4a85edd3ee0385be17f7803cc9", 72480, 4252, ((76264, 62800),), 76436),),
+    185: (EngineDescription("7c1ccba52638de97711602ad25c404504a2f618c0cddea01d7fa28e26d4b0ef7", 74760, 8468, ((78756, 64892),), 78928),),
+    250: (
+        EngineDescription(
+            "0f35d588356501e528639f2d2b90ec948ff40f6e97debc3f7192be9b3a9e77e8",
+            79052,
+            8608,
+            ((86352, 65340),),
+            90440,
+            "22f939465361925ea31bdb19e7f016b6d374bdb2f70b6e35449375e8df00d1a0",
+        ),
+    ),
 }

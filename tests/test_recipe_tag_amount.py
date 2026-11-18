@@ -45,7 +45,8 @@ def test_amount_character_uses_the_exact_units_legal_catalog_levels(code, expect
     payload = recipe_tag_payload(tag, camera)
     assert payload["levels"]["amount"] == expected and payload["changes"]["amount"] == expected
     assert payload["amount_unknown"] is False
-    assert recorded_recipe(parse_recipe_tag(f"GXR1 6a3a5a3c02 50 06 {code}99999999-"), camera).levels_dict()["amount"] == (
+    # root 规则：50mm F-CN 为 effect=4 (pos=08)；旧 06 为按菜单序的误写
+    assert recorded_recipe(parse_recipe_tag(f"GXR1 6a3a5a3c02 50 08 {code}99999999-"), camera).levels_dict()["amount"] == (
         20 if code == "2" else 70 if code == "7" else 120
     )
 
@@ -105,14 +106,16 @@ def test_current_sealed_catalog_has_no_per_recipe_amount_character_collisions(tm
 
 
 @pytest.mark.parametrize(
-    ("text", "kind", "amount"),
+    ("text", "kind", "amount", "expected_name"),
     (
-        ("GXR1 6a3a5a3c02 28 04 -99999999-", "builtin", None),
-        ("GXR1 6a3a5a3c02 28 06 A99999999-", "record", 100),
+        ("GXR1 6a3a5a3c02 28 04 -99999999-", "builtin", None, "Std"),
+        # root 规则 + 现场标签 R8052696-698：28 06 为 F-CC (effect=2)；28 09 为 F-CN (effect=5)
+        ("GXR1 6a3a5a3c02 28 06 A99999999-", "record", 100, "F-CC"),
+        ("GXR1 6a3a5a3c02 28 09 A99999999-", "record", 100, "F-CN"),
     ),
 )
 @pytest.mark.parametrize("generation", (178, 181, 182))
-def test_g181_sample_tags_parse_and_resolve_against_the_sealed_catalog(tmp_path, generation, text, kind, amount):
+def test_g181_sample_tags_parse_and_resolve_against_the_sealed_catalog(tmp_path, generation, text, kind, amount, expected_name):
     from g178_support import need_bundle
 
     raw, library = need_bundle(generation)
@@ -124,7 +127,7 @@ def test_g181_sample_tags_parse_and_resolve_against_the_sealed_catalog(tmp_path,
     assert selected.levels_dict().get("amount") == amount
     assert len(camera.resolve(selected).entry) == 552
     payload = recipe_tag_payload(tag, camera)
-    assert payload["name"] == ("Std" if kind == "builtin" else "F-CN")
+    assert payload["name"] == expected_name
     assert payload["amount_unknown"] is False
 
 
@@ -136,8 +139,15 @@ def test_quarter_amount_levels_in_the_real_catalog_resolve_to_the_recorded_perce
     store.import_from_dat(raw, tmp_path, library=library)
     camera = CameraData(tmp_path)
     checked = 0
-    for unit, code in zip(camera.listing(), ("50", "28", "MT")):
-        for position, recipe in enumerate(unit["recipes"], 1):
+    for unit_index, (unit, code) in enumerate(zip(camera.listing(), ("50", "28", "MT"))):
+        record_idx = 0
+        for recipe in unit["recipes"]:
+            # root 规则：1-4 为基底槽 pos=slot；Look 描述符按 50/28/MT 三元组交错，pos = 3*k + unit_index + 5
+            if recipe.get("kind", "builtin") == "builtin":
+                position = recipe["slot"]
+            else:
+                position = 3 * record_idx + unit_index + 5
+                record_idx += 1
             controls = {control["name"]: control for control in recipe["controls"]}
             for amount, character in ((25, "2"), (75, "7"), (125, "C")):
                 if amount not in controls.get("amount", {}).get("levels", []):

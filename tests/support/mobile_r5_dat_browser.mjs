@@ -32,28 +32,54 @@ async function newPage() {
   return page;
 }
 
-async function loaded(page) {
-  return page.evaluate(async () => {
+function bytesToBase64(bytes) {
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(text);
+}
+
+async function loaded(page, extraRecipe) {
+  const res = await page.evaluate(async (extra) => {
     const book = window.__gxrBook;
-    const recipe = { kind: 'builtin', unit: 'jlaunch', slot: 1, levels: {} };
-    const got = await book.io.resolve(
-      book.dat.read.bytes.slice(0),
-      JSON.stringify(recipe),
-      book.dat.library ? book.dat.library.slice(0) : null,
-    );
-    const bytes = got.entry;
-    let text = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const resolveOne = async (recipe) => {
+      const got = await book.io.resolve(
+        book.dat.read.bytes.slice(0),
+        JSON.stringify(recipe),
+        book.dat.library ? book.dat.library.slice(0) : null,
+      );
+      return {
+        bytes: Array.from(got.entry),
+        sha: got.entrySha256,
+        levels: got.levels,
+      };
+    };
+    const primary = await resolveOne({ kind: 'builtin', unit: 'jlaunch', slot: 1, levels: {} });
+    const extraGot = extra ? await resolveOne(extra) : null;
     return {
       entries: book.dat.read.entries.length,
       generation: book.dat.generation,
       library: book.dat.library ? book.dat.library.byteLength : 0,
       listing: book.dat.listing.units,
-      entry: btoa(text),
-      sha: got.entrySha256,
-      levels: got.levels,
+      primary,
+      extraGot,
     };
-  });
+  }, extraRecipe ?? null);
+  return {
+    entries: res.entries,
+    generation: res.generation,
+    library: res.library,
+    listing: res.listing,
+    entry: bytesToBase64(Uint8Array.from(res.primary.bytes)),
+    sha: res.primary.sha,
+    levels: res.primary.levels,
+    extra: res.extraGot
+      ? {
+          entry: bytesToBase64(Uint8Array.from(res.extraGot.bytes)),
+          sha: res.extraGot.sha,
+          levels: res.extraGot.levels,
+        }
+      : null,
+  };
 }
 
 try {
@@ -76,13 +102,13 @@ try {
   };
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.bin);
   await page.waitForFunction(() => window.__gxrBook?.dat?.read?.entries?.length === 13248, null, { timeout: 60_000 });
-  out.second = await loaded(page);
+  out.second = await loaded(page, manifest.extraRecipe);
   await page.close();
 
   const again = await newPage();
   await again.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.files);
   await again.waitForFunction(() => window.__gxrBook?.dat?.read?.entries?.length === 13248 && !window.__gxrBook.datBusy, null, { timeout: 60_000 });
-  out.loaded = await loaded(again);
+  out.loaded = await loaded(again, manifest.extraRecipe);
   await again.close();
 } catch (err) {
   out.error = line(err);

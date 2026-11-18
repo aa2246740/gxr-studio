@@ -44,7 +44,8 @@ def _catalogue(library: bytes | None, generation: int) -> bytes:
     library_generation = profile.library_generation
     if library is None:
         raise dc.DatError("缺少 GXRFX.BIN。请将 GXRCE.DAT 和 GXRFX.BIN 一起从存储卡复制到同一文件夹，再同时导入。")
-    if hashlib.sha256(library).hexdigest() != LIBRARY_SHA256[library_generation]:
+    expected_shas = profile.library_sha256 or (LIBRARY_SHA256[library_generation],)
+    if hashlib.sha256(library).hexdigest() not in expected_shas:
         raise dc.DatError(f"GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。")
     cat = library[64:]
     if (
@@ -122,10 +123,16 @@ def parse(raw: bytes, library: bytes | None) -> dc.Dat:
     _check_envelope(raw, b"GXRCE001", 0)
     sections = _sections(raw)
     generation = dc.peek_generation(raw)
+    prof = dc.PROFILES.get(generation)
+    if prof is None or prof.library_generation is None:
+        raise dc.UnsupportedGeneration(f"代数 {generation} 没有登记 r5 库")
     engine_at, engine_size = sections[0]
     reloc_at, reloc_size = sections[1]
-    if len(raw) > 98304 or engine_size > 81920 or reloc_size != 8 or any(n for _, n in sections[2:]):
+    xdata_at, xdata_size = sections[2]
+    trailing = sections[3:] if prof.xdata else sections[2:]
+    if len(raw) > prof.max_file or not 16 <= engine_size <= prof.max_engine or reloc_size != 8 or any(n for _, n in trailing):
         raise dc.DatError("r5 执行外壳尺寸不合格")
+    xdata = raw[xdata_at : xdata_at + xdata_size] if prof.xdata else b""
     dat = dc.Dat(
         generation,
         0,
@@ -142,14 +149,17 @@ def parse(raw: bytes, library: bytes | None) -> dc.Dat:
         None,
         library=library,
         shell_header=raw[:256],
+        xdata=xdata,
     )
     dc._check_engine_binding(dat, len(raw))
-    if len(raw) + dat.bss > dc.MAX_RAM or dc.u16(raw, 120) != 1:
+    if len(raw) + dat.bss > dc.MAX_RAM or dc.u16(raw, 120) != 1 or not 256 <= dat.entry <= 256 + engine_size - 4 or dat.entry % 4:
         raise dc.DatError("r5 BSS 或重定位不合格")
     for patch, target in dat.relocations:
-        if dc.u32(raw, patch) != target:
+        if not 256 <= patch <= 256 + engine_size - 4 or patch % 4 or not 256 <= target < len(raw) + dat.bss or dc.u32(raw, patch) != target:
             raise dc.DatError("r5 重定位与引擎不匹配")
     cat = _catalogue(library, generation)
+    if cat[80:112] != dat.resident_id or cat[212:228] != dat.abi_id:
+        raise dc.DatError(f"GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。")
     cat_sections = _sections(cat)
     shared_at, shared_size = cat_sections[5]
     shared = cat[shared_at : shared_at + shared_size]
@@ -174,7 +184,7 @@ def pack(dat: dc.Dat) -> bytes:
     struct.pack_into(">I", header, 28, dat.generation)
     struct.pack_into(">II", header, 112, dat.entry, dat.bss)
     header[80:112], header[212:228] = dat.resident_id, dat.abi_id
-    raw = header + dat.engine + b"".join(struct.pack(">II", *r) for r in dat.relocations)
+    raw = header + dat.engine + b"".join(struct.pack(">II", *r) for r in dat.relocations) + dat.xdata
     dc._check_engine_binding(dat, len(raw))
     struct.pack_into(">I", raw, 24, dc.crc(raw[256:]))
     struct.pack_into(">I", raw, 20, dc.crc(raw[:20] + bytes(4) + raw[24:256]))
