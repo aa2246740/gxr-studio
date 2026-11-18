@@ -43,16 +43,12 @@ _FLOAT_AT = {("layout", "white"), ("scene", "b")}
 
 
 def _real_dngs() -> list[Path]:
-    """Up to 60 DNGs under captures/, spread in sorted order, skipping backup paths."""
-    if not CAPTURES.is_dir():
+    """DNGs under captures/ (no backups) whose own path is in the stable sample for ``_CAP``."""
+    root = samples.captures()
+    if not root.is_dir():
         return []
-    found = [
-        path for path in CAPTURES.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower()
-    ]
-    found.sort(key=lambda path: path.as_posix())
-    if len(found) <= _CAP:
-        return found
-    return [found[(i * len(found)) // _CAP] for i in range(_CAP)]
+    found = (path for path in root.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower())
+    return samples.stable_sample(found, root, _CAP)
 
 
 REAL = _real_dngs()
@@ -653,7 +649,7 @@ def test_wb_block_uses_the_crop_row(tmp_path: Path) -> None:
         if os.environ.get("GXR_REQUIRE_CORE") == "1":
             pytest.fail("no real DNGs for wb-block")
         return
-    for path in REAL[:5]:
+    for path in REAL[:7]:
         for y0 in (0, 1, 17):
             _expect_wb(path, y0, y0 + 1, tmp_path)
 
@@ -754,7 +750,8 @@ def test_synthetic_demosaic_and_neutral_errors(tmp_path: Path) -> None:
         expect_neutral(path, tmp_path)
 
 
-_REAL_RENDER = REAL[::4] if len(REAL) >= 10 else REAL
+# The lowest-key share for 15: a file added elsewhere cannot move these.
+_REAL_RENDER = samples.stable_sample(REAL, samples.captures(), 15) if len(REAL) >= 10 else REAL
 assert len([p for p in _REAL_RENDER if "contrib" not in p.as_posix()]) >= 10 or not REAL
 
 

@@ -37,14 +37,12 @@ _CAP = 60
 
 
 def _real_dng_sizes() -> list[tuple[str, int, int]]:
-    if not CAPTURES.is_dir():
+    root = samples.captures()
+    if not root.is_dir():
         return []
-    found = [p for p in CAPTURES.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower()]
-    found.sort(key=lambda p: p.as_posix())
-    if len(found) > _CAP:
-        found = [found[(i * len(found)) // _CAP] for i in range(_CAP)]
+    found = (p for p in root.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower())
     sizes: list[tuple[str, int, int]] = []
-    for path in found:
+    for path in samples.stable_sample(found, root, _CAP):
         try:
             dng = open_dng(path)
         except RawDecodeError:
@@ -52,7 +50,7 @@ def _real_dng_sizes() -> list[tuple[str, int, int]]:
         _y0, _x0, ch, cw = dng.crop_window()
         if dng.orientation in (5, 6, 7, 8):
             cw, ch = ch, cw
-        sizes.append((path.relative_to(CAPTURES).as_posix(), cw, ch))
+        sizes.append((path.relative_to(root).as_posix(), cw, ch))
     return sizes
 
 
