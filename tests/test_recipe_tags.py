@@ -191,6 +191,8 @@ def test_lookup_is_bound_to_identity_unit_and_camera_position():
     assert recipe_name("6a3a5a3c02", "28", 6) == "F-CC"
     # root 规则：d25d2f0a68 位置 19 (effect=15) 仅在 50mm 存在且为 Ektachrm 100；28mm F-CC 在 29 (eff=25)，MT Vision3 500T 在 27 (eff=23)
     assert recipe_name("d25d2f0a68", "50", 19) == "Ektachrm 100"
+    # root 规则：50mm Vision3 500T 为 effect=22，pos=26；保留原菜单序号 19 用例的同一配方检查。
+    assert recipe_name("d25d2f0a68", "50", 26) == "Vision3 500T"
     assert recipe_name("d25d2f0a68", "28", 19) is None
     assert recipe_name("d25d2f0a68", "28", 29) == "F-CC"
     assert recipe_name("d25d2f0a68", "MT", 19) is None
