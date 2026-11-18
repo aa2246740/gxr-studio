@@ -378,6 +378,51 @@ test('copying and pasting 调整 carries the curve and undo puts it back', () =>
   assert.deepEqual(old.curve, { r: [[0, 0], [50, 80], [255, 255]] });
 });
 
+test('two-pointer drag ignores other pointers', () => {
+  const h = harness({ master: [[0, 0], [128, 120], [255, 255]] });
+  const ev = (x, y, pointerId) => ({ clientX: x, clientY: 255 - y, button: 0, pointerId, preventDefault() {} });
+  h.svg.dispatch('pointerdown', ev(128, 120, 1));
+  assert.equal(h.dragging, true);
+  h.svg.dispatch('pointermove', ev(128, 220, 2));
+  assert.deepEqual(h.photo.curve.master[1], [128, 120]);
+  h.svg.dispatch('pointerup', ev(128, 220, 2));
+  assert.equal(h.dragging, true);
+  assert.equal(h.photo.rev, 0);
+  h.svg.dispatch('pointercancel', ev(128, 220, 2));
+  assert.equal(h.dragging, true);
+  assert.equal(h.photo.rev, 0);
+  h.svg.dispatch('pointermove', ev(128, 160, 1));
+  h.svg.dispatch('pointerup', ev(128, 160, 1));
+  assert.equal(h.dragging, false);
+  assert.equal(h.photo.rev, 1);
+  assert.deepEqual(h.photo.curve.master[1], [128, 160]);
+});
+
+test('grab offset keeps a touched point from jumping on initial move or 1 px drag', () => {
+  const h = harness({ master: [[0, 0], [128, 120], [255, 255]] });
+  h.svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 203, height: 203 });
+  const client = (x, y) => ({ clientX: (x / 255) * 203, clientY: ((255 - y) / 255) * 203, button: 0, pointerId: 1, preventDefault() {} });
+  const down = client(150, 132);
+  h.svg.dispatch('pointerdown', down);
+  assert.equal(h.photo.curve.master.length, 3);
+  h.svg.dispatch('pointermove', { ...down, clientX: down.clientX + 0.3 });
+  assert.deepEqual(h.photo.curve.master[1], [128, 120]);
+  h.svg.dispatch('pointermove', { ...down, clientX: down.clientX + 1 });
+  assert.deepEqual(h.photo.curve.master[1], [129, 120]);
+  h.svg.dispatch('pointerup', { ...down, clientX: down.clientX + 1 });
+  assert.equal(h.photo.rev, 1);
+});
+
+test('curve count moves into .col with nowrap and unused later_panels is removed', () => {
+  const h = harness();
+  const col = h.view.panelEl().querySelector('.col');
+  assert.ok(col?.querySelector('.curve-count'), 'curve-count is inside .col');
+  const css = readFileSync(new URL('../../mobile/src/app/shell.css', import.meta.url), 'utf8');
+  assert.match(css, /\.curve-count\s*\{[^}]*white-space:\s*nowrap/);
+  assert.equal(css.includes('.later-panel'), false);
+  assert.throws(() => readFileSync(new URL('../../mobile/src/app/later_panels.ts', import.meta.url), 'utf8'));
+});
+
 test('editor.ts and boot.ts stay within 800 lines', () => {
   assert.ok(lines('../../mobile/src/app/editor.ts') <= 800);
   assert.ok(lines('../../mobile/src/app/boot.ts') <= 800);

@@ -271,3 +271,11 @@ def test_queued_upload_after_card_removed_updates_counts(server: dict[str, Any])
     assert data["adjusted"]["exposure"] not in ("0.0", ""), data["adjusted"]
     assert data["adjusted"]["uploads"] == 2, data["adjusted"]
     assert data["reopenedDialogs"] == 0
+
+
+def test_grid_edited_badge_tracks_all_edit_groups(server: dict[str, Any]) -> None:
+    data = run_case(server, "grid-edited-badges")
+    assert data["initial"] is False, data
+    for key in ("curve", "crop", "straighten", "frame", "stamp", "lut"):
+        assert data[key] is True, (key, data)
+        assert data[f"{key}Reset"] is False, (key, data)

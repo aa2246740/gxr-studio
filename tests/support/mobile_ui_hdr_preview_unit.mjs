@@ -1,7 +1,7 @@
 // HDR 预览的条件、晚到结果、拖动时不发拟合、关掉时释放纹理。合成数据，不读照片。
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerHooks } from 'node:module';
@@ -379,7 +379,12 @@ test('moveReportFile copies when rename throws EXDEV and renames when it does no
     assert.equal(existsSync(src), false);
     assert.equal(readFileSync(dst, 'utf8'), 'cross-volume');
     writeFileSync(sameSrc, 'same-volume');
-    moveReportFile(sameSrc, sameDst);
+    let renameCalls = 0;
+    moveReportFile(sameSrc, sameDst, (from, to) => {
+      renameCalls += 1;
+      renameSync(from, to);
+    });
+    assert.equal(renameCalls, 1);
     assert.equal(existsSync(sameSrc), false);
     assert.equal(readFileSync(sameDst, 'utf8'), 'same-volume');
   } finally {

@@ -343,3 +343,35 @@ def test_mobile_r5_dat_error_stays_visible(tmp_path: Path) -> None:
     check(delayed["sheetOpen"] is True, "06d sheet was open before the read finished")
     check(delayed["sheetShowsCoreError"] is True, "open 06d sheet shows the late missing-library error")
     check(delayed["closedAfterLoad"] is True, "06d sheet closes once the DAT has loaded")
+
+
+def test_mobile_r5_bad_bin_through_real_read_path(tmp_path: Path) -> None:
+    """Real Book.setDat read path: a corrupt GXRFX.BIN after a loaded r5 pair keeps recipes and shows the core error."""
+    pair = mx.real_pairs(1)
+    if len(pair) < 1:
+        samples.missing("need one DNG+JPG pair")
+    _prereq()
+    _owner_pair()
+    dng, jpg = pair[0]
+    report_path = tmp_path / "r5-real-bad-bin.json"
+    manifest = {
+        "real": True,
+        "dng": str(dng),
+        "jpg": str(jpg),
+        "dat": str(OWNER / "GXRCE.DAT"),
+        "bin": str(OWNER / "GXRFX.BIN"),
+        "out": str(report_path),
+    }
+    path = tmp_path / "r5-real-bad-bin-manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    result = _drive(ERROR_DRIVER, path, tmp_path, "", timeout=240)
+    if result.returncode != 0 or not report_path.is_file():
+        pytest.fail("r5 real bad-bin driver failed")
+    report: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
+    check(report.get("error") is None, "r5 real bad-bin driver finished")
+    check(report.get("pageErrors") == [], "no page errors")
+    real = report["real"]
+    check(bool(real["coreError"]), "corrupt GXRFX.BIN sets core datError")
+    check(real["hasPreviousDat"] is True and real["entries"] == 13248, "previous r5 DAT stays loaded")
+    check(real["errorVisible"] is True, "recipe panel shows the core error")
+    check(real["keptRecipe"] is True, "previously loaded recipes remain visible")

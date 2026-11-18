@@ -156,6 +156,16 @@ def test_mobile_ui_pick_grid_edit_and_bad_file(tmp_path: Path) -> None:
     assert report["orderBefore"]
     assert report["orderAfter"] == list(reversed(report["orderBefore"]))
     assert report["perf"]["samples"] > 0
+    perf_rect, lbl_rect = report["perfRect"], report["lblRect"]
+    assert perf_rect and lbl_rect and perf_rect["height"] > 0 and lbl_rect["height"] > 0
+    disjoint = (
+        perf_rect["bottom"] <= lbl_rect["top"]
+        or lbl_rect["bottom"] <= perf_rect["top"]
+        or perf_rect["right"] <= lbl_rect["left"]
+        or lbl_rect["right"] <= perf_rect["left"]
+    )
+    assert disjoint, (perf_rect, lbl_rect)
+    assert report["perfAfterSwipe"] == {"text": "", "perf": None, "kind": None}, report["perfAfterSwipe"]
     assert "原图" in report["held"]
     assert report["swipe"][0] != report["swipe"][1]
     assert "读不了" in report["bad"]

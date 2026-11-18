@@ -57,6 +57,8 @@ def _spread_pairs(limit: int) -> list[tuple[Path, Path]]:
     )
     pairs: list[tuple[Path, Path]] = []
     for d in dngs:
+        if samples.raw_ifd_compression(d) not in (None, 1):
+            continue
         for ext in (".JPG", ".jpg"):
             j = d.with_suffix(ext)
             if j.is_file():

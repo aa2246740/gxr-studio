@@ -12,6 +12,7 @@ export const HDR_NOTES: Readonly<Record<string, string>> = {
   no_raw: 'HDR 需要 RAW 文件',
   not_jpeg: 'HDR 需要 JPEG 格式',
   capture_mismatch: 'RAW 与 JPG 不是同一次拍摄',
+  frame_layout: '这个边框样式不能存 HDR',
 };
 export const HDR_UNSUPPORTED = '这张照片不支持 HDR';
 
@@ -25,6 +26,12 @@ export function hdrMixLine(photos: ReadonlyArray<{ dng: unknown }>): string | nu
   const jpgOnly = photos.filter((p) => p.dng == null).length;
   if (!jpgOnly || jpgOnly === photos.length) return null;
   return `${HDR_NO_RAW}：${jpgOnly} 张只有 JPG，会存普通版本。`;
+}
+
+/** 05a：开了 HDR、有带 RAW 且用了模糊填充边框的照片时提醒，没有就是 null。 */
+export function hdrFrameLine(photos: ReadonlyArray<{ dng: unknown; border?: { style?: string } | null }>): string | null {
+  const n = photos.filter((p) => p.dng != null && p.border?.style === 'blur_fill').length;
+  return n ? `${n} 张用的边框样式不能存 HDR，会存普通版本。` : null;
 }
 
 /** 桌面 hdrSummary：批量里没做成 HDR 的张数。 */

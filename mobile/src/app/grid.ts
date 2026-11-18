@@ -1,5 +1,6 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
 import { UNIT_LABEL } from '../lib/calib';
+import { groupsPresent } from '../lib/paste';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
 import { openable, photoMs, unread, type AppApi, type Photo } from './model';
@@ -263,8 +264,8 @@ export class GridView {
       bl.replaceChildren();
       if (photo.jpg && !photo.dng) bl.append(el('span', 'bdg', 'JPG'));
     }
-    // 04e：带着编辑（选了配方，或有一项调整不是 0）的照片右下角有铅笔，按现在的编辑状态挂上或拿掉。
-    const edited = photo.choice !== null || Object.values(photo.knobs).some((value) => value !== 0);
+    // 04e：带着编辑（配方/LUT、调整/曲线、拉直、裁剪、边框、时间戳任一组）的照片右下角有铅笔，按现在的编辑状态挂上或拿掉。
+    const edited = groupsPresent(photo).length > 0;
     const mark = cell.querySelector('.edt');
     if (edited && !mark) {
       const pencil = el('span', 'edt');

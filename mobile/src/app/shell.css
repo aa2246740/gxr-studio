@@ -324,17 +324,6 @@ h1, h2, p { margin: 0; }
 .guide-item { min-height: 54px; }
 .guide-item.on b { color: var(--accent-text); }
 .guide-item .gchk { color: var(--accent-text); display: grid; place-items: center; }
-
-/* 边框 / LUT / 曲线：静态版式，控件停用（03f–03h）。 */
-.later-panel .row { display: flex; align-items: center; }
-.later-panel .gap8 { gap: 8px; }
-.later-panel .between { justify-content: space-between; }
-.later-panel .grow { flex: 1; min-width: 0; }
-.later-panel .small { font-size: 13px; line-height: 18px; }
-.later-panel .seg { width: 190px; }
-.later-panel .row .btn { margin-left: auto; font-size: 15px; padding: 0 14px; }
-.later-panel .row .seg.push { margin-left: auto; width: 136px; }
-.later-panel button:disabled, .later-panel input:disabled { opacity: 0.55; }
 .straighten { margin-top: 10px; }
 .straighten input[type="range"] { width: 100%; margin: 4px 0 0; }
 .straighten .ticks { display: flex; justify-content: space-between; color: var(--text-3); font-size: 11px; }
@@ -358,7 +347,7 @@ h1, h2, p { margin: 0; }
 .curve-btn[data-changed='true']::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: currentColor; vertical-align: middle; }
 .curve-actions { display: flex; flex-direction: column; gap: 6px; }
 .curve-actions .btn { margin: 0; padding: 0 6px; font-size: 14px; }
-.curve-count { display: block; margin-top: 4px; }
+.curve-count { display: block; margin-top: 4px; white-space: nowrap; }
 svg.curve { width: min(220px, 52vw); height: auto; flex: none; border-radius: 10px; background: #202020; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); touch-action: none; }
 svg.curve .curve-bg { fill: #202020; }
 svg.curve .curve-grid { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; }
@@ -394,20 +383,16 @@ svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
 .app[data-drag="1"] .sheet { height: 214px; min-height: 214px; max-height: 214px; background: rgba(30, 30, 30, 0.94); }
 .app[data-drag="1"] .panel { overflow: hidden; }
 .perf {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: calc(var(--safe-top) + 48px);
-  z-index: 30;
+  flex: none;
   margin: 0;
-  padding: 6px 10px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.72);
+  padding: 4px 10px calc(4px + var(--safe-bottom));
+  background: var(--surface-titlebar);
+  border-top: 1px solid var(--line-subtle);
   color: var(--text-1);
   font: 12px/16px var(--font-num);
-  pointer-events: none;
 }
-.perf[hidden] { display: none; }
+.perf[hidden], .perf:empty { display: none; }
+.app:has(> .perf:not([hidden]):not(:empty)) .screen { padding-bottom: 0; }
 
 /* 配方（03a、06c、06d、06e）和校准数据（01）。 */
 .tag.ok { color: var(--accent-text); background: var(--accent-weak); }

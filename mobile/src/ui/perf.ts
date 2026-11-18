@@ -64,6 +64,7 @@ export function watchFrames(interval: number): { stop: () => PerfStats } {
 }
 
 export function formatStats(stats: PerfStats): string {
+  if (!stats.samples) return `p50 — · p95 — · 最大 — · 丢帧 ${stats.dropped}`;
   const ms = (value: number) => value.toFixed(1);
   return `p50 ${ms(stats.p50)} ms · p95 ${ms(stats.p95)} ms · 最大 ${ms(stats.max)} ms · 丢帧 ${stats.dropped}`;
 }

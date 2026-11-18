@@ -78,6 +78,16 @@ try {
   await page.mouse.up();
   await page.waitForFunction(() => document.querySelector('.perf')?.dataset.perf, null, { timeout: 5000 });
   out.perf = JSON.parse(await page.locator('.perf').getAttribute('data-perf'));
+  const rects = await page.evaluate(() => {
+    const r = (el) => {
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height };
+    };
+    return { perf: r(document.querySelector('.perf')), lbl: r(document.querySelector('.stage .lbl')) };
+  });
+  out.perfRect = rects.perf;
+  out.lblRect = rects.lbl;
   const stage = page.locator('.stage');
   const stageBox = await stage.boundingBox();
   if (!stageBox) throw new Error('照片区域没有尺寸');
@@ -97,6 +107,10 @@ try {
     throw new Error(`${err.message}\nerrors=${JSON.stringify(out.pageErrors)}\n${(await page.locator('body').innerText()).slice(0, 600)}`);
   });
   out.swipe = [beforeSwipe, await page.locator('.nav b').innerText()];
+  out.perfAfterSwipe = await page.evaluate(() => {
+    const p = document.querySelector('.perf');
+    return p ? { text: p.textContent ?? '', perf: p.dataset.perf ?? null, kind: p.dataset.kind ?? null } : null;
+  });
   await page.getByRole('button', { name: '照片', exact: true }).click();
   await page.waitForSelector('[data-screen="grid"]');
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.bad);

@@ -148,9 +148,19 @@ async function runBatch(page, { stems, size = '原始尺寸', quality = '高', h
     { pfx: prefix },
   );
   const callsBefore = await page.evaluate(() => window.__shareLog.calls.length);
+  let hdrFrameBefore = null;
+  let hdrFrame = null;
   const sheet = await exportFromGrid(page, stems, size, quality, async () => {
+    const readFrame = () =>
+      page.evaluate(() => {
+        const node = document.querySelector('.ms.export [data-state="hdr-frame"]');
+        if (!node) return null;
+        return { visible: !node.hidden && getComputedStyle(node).display !== 'none', text: node.textContent?.trim() ?? '' };
+      });
+    hdrFrameBefore = await readFrame();
     if (hdr) {
       await page.locator('.ms.export input.switch').click();
+      hdrFrame = await readFrame();
     }
   });
   await waitPhase(page, ['ready']);
@@ -164,7 +174,7 @@ async function runBatch(page, { stems, size = '原始尺寸', quality = '高', h
     window.__devExport.canvasReportPrefix = null;
     localStorage.removeItem('gxr.mobile.export_hdr');
   });
-  return { sheet, ready, facts, shared, files };
+  return { sheet: { ...sheet, hdrFrameBefore, hdrFrame }, ready, facts, shared, files };
 }
 
 export async function parity({ newPage, manifest, out }) {
