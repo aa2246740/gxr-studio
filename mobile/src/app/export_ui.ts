@@ -744,7 +744,7 @@ export class ExportFlow {
     const icon = el('span', 'ic ok');
     icon.append(ico(PATH.check));
     const tx = el('div', 'tx');
-    tx.append(el('b', '', `好了：${n} 张`), el('small', '', '选了「存储图像」的在相册里，选了「存储到"文件"」的在「文件」里。'));
+    tx.append(el('b', '', `好了：${n} 张`), el('small', '', '选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。'));
     this.paintHdr(tx, batch);
     const done = button('fbtn fill-ctl', '好');
     done.dataset.act = 'done';

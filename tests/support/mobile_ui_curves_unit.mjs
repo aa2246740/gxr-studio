@@ -413,6 +413,21 @@ test('grab offset keeps a touched point from jumping on initial move or 1 px dra
   assert.equal(h.photo.rev, 1);
 });
 
+test('grab offset still lets a dragged point reach 0 and 255 outside the box', () => {
+  const h1 = harness({ master: [[0, 0], [64, 40], [255, 255]] });
+  const ev = (x, y) => ({ clientX: x, clientY: 255 - y, button: 0, pointerId: 1, preventDefault() {} });
+  h1.svg.dispatch('pointerdown', ev(64, 20));
+  h1.svg.dispatch('pointermove', ev(64, -200));
+  h1.svg.dispatch('pointerup', ev(64, -200));
+  assert.deepEqual(h1.photo.curve.master[1], [64, 0]);
+
+  const h2 = harness();
+  h2.svg.dispatch('pointerdown', ev(250, 250));
+  h2.svg.dispatch('pointermove', ev(250, -10));
+  h2.svg.dispatch('pointerup', ev(250, -10));
+  assert.deepEqual(h2.photo.curve, { master: [[0, 0], [255, 0]] });
+});
+
 test('curve count moves into .col with nowrap and unused later_panels is removed', () => {
   const h = harness();
   const col = h.view.panelEl().querySelector('.col');

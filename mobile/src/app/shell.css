@@ -258,7 +258,6 @@ h1, h2, p { margin: 0; }
 .hint-row { display: flex; align-items: center; padding: 0 16px; gap: 8px; }
 .hint-row .faint { flex: 1; font-size: 13px; }
 .hint-row .fbtn { color: var(--accent-text); }
-.later { margin: 8px 16px; padding: 10px 12px; border-radius: 12px; background: var(--surface-raised); color: var(--text-2); font-size: 14px; line-height: 20px; }
 .bn { display: flex; gap: 10px; margin: 8px 16px; padding: 10px 12px; border-radius: 12px; background: var(--warn-bg); box-shadow: inset 0 0 0 1px var(--warn-line); font-size: 14px; line-height: 20px; }
 .bn.grey { background: var(--surface-raised); box-shadow: inset 0 0 0 1px var(--line); }
 .pad { padding: 0 16px; }
@@ -329,8 +328,6 @@ h1, h2, p { margin: 0; }
 .straighten .ticks { display: flex; justify-content: space-between; color: var(--text-3); font-size: 11px; }
 .strip.inpanel { height: auto; border-top: 0; padding: 2px 16px 6px; }
 .rc .th.fr { position: relative; display: block; }
-.rc .th.fr .fp { position: absolute; background: linear-gradient(160deg, #7c8794, #3b4048); border-radius: 2px; }
-.rc .th.fr .fm { position: absolute; }
 .swc { width: 32px; height: 44px; display: grid; place-items: center; }
 .swc i { width: 24px; height: 24px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25); }
 .swc.on i { box-shadow: 0 0 0 2px var(--accent-text); }

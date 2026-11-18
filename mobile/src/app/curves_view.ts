@@ -252,10 +252,13 @@ export class CurvesView {
 
   private onMove = (e: PointerEvent): void => {
     if (this.closed || !this.drag || !this.working || !this.dragPhoto || e.pointerId !== this.drag.pointerId) return;
-    const p = toCurvePoint(e.clientX, e.clientY, this.svg.getBoundingClientRect());
-    if (!p) return;
+    const rect = this.svg.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return;
+    const fx = ((e.clientX - rect.left) / rect.width) * 255;
+    const fy = 255 - ((e.clientY - rect.top) / rect.height) * 255;
+    if (!Number.isFinite(fx) || !Number.isFinite(fy)) return;
     const i = this.drag.i;
-    const next = clampMoved(this.working, i, p[0] + this.drag.dx, p[1] + this.drag.dy);
+    const next = clampMoved(this.working, i, Math.round(fx + this.drag.dx), Math.round(fy + this.drag.dy));
     const cur = this.working[i];
     if (next[0] === cur[0] && next[1] === cur[1]) return;
     this.drag.moved = true;
