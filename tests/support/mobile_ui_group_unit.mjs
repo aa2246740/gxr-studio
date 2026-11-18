@@ -19,7 +19,9 @@ registerHooks({
   },
 });
 import vm from 'node:vm';
-import {
+import { DEFAULT_FRAME, DEFAULT_STAMP, selectFrame } from '../../mobile/src/lib/frame_spec.ts';
+import * as text from '../../mobile/src/lib/paste_text.ts';
+const {
   adjustIsSet,
   copyFrom,
   cropIsSet,
@@ -35,9 +37,7 @@ import {
   restore,
   stampIsSet,
   undoBatch,
-} from '../../mobile/src/lib/paste.ts';
-import { DEFAULT_FRAME, DEFAULT_STAMP, selectFrame } from '../../mobile/src/lib/frame_spec.ts';
-import * as text from '../../mobile/src/lib/paste_text.ts';
+} = await import('../../mobile/src/lib/paste.ts');
 const { cleanLevels } = await import('../../mobile/src/lib/export_request.ts');
 const { recipeSwitch } = await import('../../mobile/src/lib/recipe_memory.ts');
 

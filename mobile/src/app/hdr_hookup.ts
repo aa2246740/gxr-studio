@@ -2,6 +2,7 @@
 
 import type { Engine, Look } from '../../../frontend/src/index';
 import { toAdjust } from './adjust_view';
+import { previewCurve } from './curves_view';
 import { HdrFitHost } from '../core/hdr_fit_host';
 import { HdrPreviewController } from '../core/hdr_preview';
 import { PREVIEW_LONG_EDGE } from '../core/hdr_grid';
@@ -59,7 +60,7 @@ export function createHdrPreview(host: {
     recipe: host.mode() === 'raw' ? (host.holding() ? NEUTRAL_BAKE_KEY : host.recipeKey()) : null,
     lut: host.holding() ? null : host.lutToken(),
     lutStrength: 1,
-    curve: null,
+    curve: previewCurve(host.photo()?.curve, host.holding()),
     adjust: toAdjust(host.holding() ? zeroKnobs() : host.knobs()),
   });
   return new HdrPreviewController({

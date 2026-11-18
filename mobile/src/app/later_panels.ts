@@ -1,9 +1,6 @@
-// 边框、曲线两页：按设计稿 03f / 03h 摆好静态的控件，这一版全部停用，写「这项下一步做」。
-// 这里没有任何算法，只有版式。名字和顺序跟桌面一样（frame_panel.js、curves.js）。
+// 边框页的旧占位。曲线已经接到 curves_view.ts。这里没有任何算法，只有版式。
 
 import { button, el } from './dom';
-
-const SVG = 'http://www.w3.org/2000/svg';
 
 function shell(tab: string): HTMLElement {
   const panel = el('div', 'panel later-panel');
@@ -95,34 +92,5 @@ export function framePanel(): HTMLElement {
   weight.classList.add('push');
   colors.append(weight);
   panel.append(strip, colors, chipRow(['标志', '参数', '日期'], null), switchRow('时间戳', '印在照片上：橙色数码管，右下角'));
-  return panel;
-}
-
-/** 03h：主曲线 / 红 / 绿 / 蓝、重置此通道、曲线图（还没有调过，所以是对角线）。 */
-export function curvesPanel(): HTMLElement {
-  const panel = shell('curves');
-  const row = el('div', 'row curves');
-  const column = el('div', 'col');
-  for (const [name, color] of [['主曲线', 'var(--text-1)'], ['红', '#ff7a70'], ['绿', '#5cc882'], ['蓝', '#80b6ff']] as const) {
-    const item = button(name === '主曲线' ? 'curve-btn on' : 'curve-btn', name);
-    item.style.color = color;
-    item.disabled = true;
-    column.append(item);
-  }
-  const reset = button('btn', '重置此通道');
-  reset.disabled = true;
-  column.append(reset);
-  const size = 220;
-  const svg = document.createElementNS(SVG, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
-  svg.setAttribute('class', 'curve');
-  svg.setAttribute('aria-label', '曲线');
-  let paths = '';
-  for (let i = 1; i < 4; i++) paths += `<path d="M${(size * i) / 4} 0V${size}M0 ${(size * i) / 4}H${size}" stroke="rgba(255,255,255,.07)" stroke-width="1"/>`;
-  paths += `<path d="M0 ${size}L${size} 0" stroke="#666" stroke-width="2"/>`;
-  paths += `<circle cx="0" cy="${size}" r="6" fill="#888"/><circle cx="${size}" cy="0" r="6" fill="#888"/>`;
-  svg.innerHTML = paths;
-  row.append(column, svg);
-  panel.append(row);
   return panel;
 }

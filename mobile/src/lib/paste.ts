@@ -2,7 +2,7 @@
 // - 配方组：镜头单元不同 → unit_mismatch；只有 JPG → needs_raw（近似模式关着，`recipe_without_raw` 是 false）；
 //   这份相机配方文件里这个单元没有这个配方 → recipe_rejected；否则换成这个配方和它的档位；来源的 memory 不是空的就整份跟过来，
 //   是空的就保留目标原来的（`render/edits.write`：请求里没有 memory 键时沿用 sidecar 里的）。
-// - 调整组：全部换成复制来的调整，0 也算。
+// - 调整组：全部换成复制来的调整和曲线，0 和恒等曲线也算（恒等会把目标的曲线清掉）。
 // - 复制时没带上的组 → not_copied。配方组要么整个套用，要么整个不套用。
 // - 撤销只在照片还停在套用后的那一版（rev）时才还原；同一批里套到同一张两次，还原到最早的样子；只留最近 20 批。
 // 纯函数，不碰界面和 WASM：镜头单元、配方列表由调用方给，Node 测试直接跑。
@@ -14,6 +14,7 @@ import { DEFAULT_FRAME, DEFAULT_STAMP, normalizeFrame, normalizeStamp, type Fram
 import type { Frame } from './photo_size';
 import type { GroupId, Outcome, Skip, UndoCounts } from './paste_text';
 import type { Knobs } from '../app/model';
+import { CURVE_LABELS, curveJson, type CurveMap } from './export_request';
 
 function zeroGeometry(): GeometryState {
   return { straighten: 0 };
@@ -47,6 +48,8 @@ export interface Editable {
   /** 桌面的 memory：切走的配方各自记着的档位。 */
   memory: Levels;
   knobs: KnobMap;
+  /** 曲线。没有这个字段的旧对象，套用和撤销都不碰它。 */
+  curve?: CurveMap | null;
   frame?: Frame | null;
   geometry?: GeometryState;
   crop?: CropState | null;
@@ -62,6 +65,8 @@ export interface Clip {
   recipe: { choice: Choice; levels: Record<string, number>; memory: Levels } | null;
   lut?: string | null;
   knobs: KnobMap | null;
+  /** 复制了调整组才有。null 是恒等，套用时清掉目标的曲线。 */
+  curve?: CurveMap | null;
   geometry: GeometryState | null;
   crop: { preset: string; rect: [number, number, number, number] } | null;
   border?: FrameSpec | null;
@@ -116,6 +121,7 @@ export interface Before {
   levels: Levels;
   memory: Levels;
   knobs: KnobMap;
+  curve?: CurveMap | null;
   geometry?: GeometryState;
   crop?: CropState | null;
   border?: FrameSpec;
@@ -135,6 +141,7 @@ export function snapshot(photo: Editable): Before {
     levels: cloneLevels(photo.levels),
     memory: cloneLevels(photo.memory),
     knobs: { ...photo.knobs },
+    ...('curve' in photo ? { curve: curveJson(photo.curve) } : {}),
     ...(photo.geometry !== undefined ? { geometry: { straighten: photo.geometry.straighten } } : {}),
     ...('crop' in photo ? { crop: cloneCrop(photo.crop ?? null) } : {}),
     ...(photo.border !== undefined ? { border: { ...photo.border } } : {}),
@@ -147,9 +154,20 @@ export function recipeIsSet(photo: Editable): boolean {
   return photo.choice !== null || (photo.lut ?? null) !== null;
 }
 
-/** 调整组「设置过」：有一项调整不是 0（手机上还没有曲线）。 */
+/** 调整组「设置过」：有一项调整不是 0，或者曲线不是恒等（桌面 `groupSource` 的 adjust）。 */
 export function adjustIsSet(photo: Editable): boolean {
-  return Object.values(photo.knobs).some((value) => Number(value) !== 0);
+  return Object.values(photo.knobs).some((value) => Number(value) !== 0) || curveJson(photo.curve) !== null;
+}
+
+/** 04b 摘要里的曲线。名字用桌面曲线页的叫法：主曲线、红曲线、绿曲线、蓝曲线。 */
+export function curveSummary(curve: CurveMap | null | undefined): string {
+  const normalized = curveJson(curve);
+  if (!normalized) return '';
+  const names: string[] = [];
+  for (const [key, label] of CURVE_LABELS) {
+    if (normalized[key]) names.push(key === 'master' ? label : `${label}曲线`);
+  }
+  return names.join('、');
 }
 
 /** 几何组「设置过」：手机上只有拉直（旋转和翻转不算在内）。 */
@@ -203,6 +221,7 @@ export function copyFrom(photo: Editable, stem: string, groups: readonly GroupId
         : null,
     lut: hasRecipe ? (photo.lut ?? null) : null,
     knobs: copied.includes('adjust') ? { ...photo.knobs } : null,
+    ...(copied.includes('adjust') ? { curve: curveJson(photo.curve) } : {}),
     geometry: copied.includes('geometry') ? { straighten: photo.geometry?.straighten ?? 0 } : null,
     crop: copied.includes('crop') && photo.crop ? { preset: photo.crop.preset, rect: [...photo.crop.rect] } : null,
     border: copied.includes('frame') && photo.border ? { ...normalizeFrame(photo.border) } : null,
@@ -214,7 +233,7 @@ export function copyFrom(photo: Editable, stem: string, groups: readonly GroupId
 /** 剪贴板里有没有这一组的内容（桌面 `GROUP_KEYS` 里的键在不在来源里）。 */
 function carries(clip: Clip, group: GroupId): boolean {
   if (group === 'recipe') return clip.recipe !== null || (clip.lut ?? null) !== null;
-  if (group === 'adjust') return clip.knobs !== null;
+  if (group === 'adjust') return clip.knobs !== null || curveJson(clip.curve) !== null;
   if (group === 'geometry') return clip.geometry !== null;
   if (group === 'crop') return clip.crop !== null;
   if (group === 'frame') return (clip.border ?? null) !== null;
@@ -226,8 +245,22 @@ interface Changes {
   recipe?: { choice: Choice | null; levels: Levels; memory: Levels | null };
   lut?: string | null;
   knobs?: KnobMap;
+  curve?: CurveMap | null;
   border?: FrameSpec;
   stamp?: StampSpec;
+}
+
+function takeAdjust(clip: Clip, groups: readonly GroupId[]): Pick<Changes, 'knobs' | 'curve'> {
+  if (!groups.includes('adjust') || !carries(clip, 'adjust')) return {};
+  const out: Pick<Changes, 'knobs' | 'curve'> = {};
+  if (clip.knobs) out.knobs = { ...clip.knobs };
+  if ('curve' in clip) out.curve = curveJson(clip.curve);
+  return out;
+}
+
+function applyAdjust(photo: Editable, changes: Changes): void {
+  if (changes.knobs) Object.assign(photo.knobs, changes.knobs);
+  if ('curve' in changes) photo.curve = curveJson(changes.curve);
 }
 
 function recipeChanges(target: Target, clip: Clip, env: Env, skips: Skip[]): Changes {
@@ -277,12 +310,12 @@ export function planOne(target: Target, clip: Clip, groups: readonly GroupId[], 
     // 配方（+ LUT）是一个整体的「风格」：有一半用不了，这一组整个不套用。
     if (skips.length === before) Object.assign(changes, part);
   }
-  if (groups.includes('adjust') && clip.knobs) changes.knobs = { ...clip.knobs };
+  Object.assign(changes, takeAdjust(clip, groups));
   if (groups.includes('frame') && clip.border) changes.border = { ...normalizeFrame(clip.border) };
   if (groups.includes('stamp') && clip.stamp) changes.stamp = { ...normalizeStamp(clip.stamp) };
   const done = new Set<GroupId>();
   if (changes.recipe !== undefined || changes.lut !== undefined) done.add('recipe');
-  if (changes.knobs) done.add('adjust');
+  if (changes.knobs || 'curve' in changes) done.add('adjust');
   if (changes.border) done.add('frame');
   if (changes.stamp) done.add('stamp');
   const applied = groups.filter((g) => done.has(g));
@@ -316,6 +349,7 @@ export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[],
     changes.recipe === undefined &&
     changes.lut === undefined &&
     !changes.knobs &&
+    !('curve' in changes) &&
     !changes.border &&
     !changes.stamp
   ) {
@@ -332,7 +366,7 @@ export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[],
   if (changes.lut !== undefined && ('lut' in photo || changes.lut !== null)) {
     photo.lut = changes.lut;
   }
-  if (changes.knobs) Object.assign(photo.knobs, changes.knobs);
+  applyAdjust(photo, changes);
   if (changes.border) photo.border = { ...changes.border };
   if (changes.stamp) photo.stamp = { ...changes.stamp };
   photo.rev += 1;
@@ -359,13 +393,13 @@ export async function pasteOneAsync(
     const part = recipeChanges(target, clip, env, skips);
     if (skips.length === beforeLen) Object.assign(changes, part);
   }
-  if (groups.includes('adjust') && clip.knobs) changes.knobs = { ...clip.knobs };
+  Object.assign(changes, takeAdjust(clip, groups));
   if (groups.includes('frame') && clip.border) changes.border = { ...normalizeFrame(clip.border) };
   if (groups.includes('stamp') && clip.stamp) changes.stamp = { ...normalizeStamp(clip.stamp) };
 
   const done = new Set<GroupId>();
   if (changes.recipe !== undefined || changes.lut !== undefined) done.add('recipe');
-  if (changes.knobs) done.add('adjust');
+  if (changes.knobs || 'curve' in changes) done.add('adjust');
   if (changes.border) done.add('frame');
   if (changes.stamp) done.add('stamp');
 
@@ -418,7 +452,7 @@ export async function pasteOneAsync(
   if (changes.lut !== undefined && ('lut' in photo || changes.lut !== null)) {
     photo.lut = changes.lut;
   }
-  if (changes.knobs) Object.assign(photo.knobs, changes.knobs);
+  applyAdjust(photo, changes);
   if (geomTouched) {
     photo.geometry = nextGeom;
     photo.crop = nextCrop;
@@ -489,6 +523,7 @@ export function restore(photo: Editable | undefined, entry: UndoEntry): RestoreS
   photo.levels = cloneLevels(entry.before.levels);
   photo.memory = cloneLevels(entry.before.memory);
   for (const key of Object.keys(photo.knobs) as Array<keyof Knobs>) photo.knobs[key] = entry.before.knobs[key] ?? 0;
+  if ('curve' in entry.before) photo.curve = curveJson(entry.before.curve);
   if (entry.before.geometry !== undefined) photo.geometry = { straighten: entry.before.geometry.straighten };
   if ('crop' in entry.before) photo.crop = cloneCrop(entry.before.crop ?? null);
   if (entry.before.border !== undefined) photo.border = { ...entry.before.border };

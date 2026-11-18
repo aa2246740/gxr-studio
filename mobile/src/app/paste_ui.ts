@@ -6,7 +6,7 @@ import { presetLabel, rectFromArray } from '../lib/crop';
 import { FRAME_NAMES } from '../lib/frame_spec';
 import { shelf, shelves } from '../lib/recipes';
 import { NOT_SET, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
-import { groupsPresent } from '../lib/paste';
+import { curveSummary, groupsPresent } from '../lib/paste';
 import { button, el, icon } from './dom';
 import { photoMs, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
@@ -57,6 +57,8 @@ export function clipSummary(api: AppApi): string {
       if (value !== 0) parts.push(`${label} ${knobText(key, value)}`);
     }
   }
+  const curves = curveSummary(clip.curve);
+  if (curves) parts.push(curves);
   if (clip.geometry && clip.geometry.straighten !== 0) {
     const v = clip.geometry.straighten;
     parts.push(`拉直 ${v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1)}°`);

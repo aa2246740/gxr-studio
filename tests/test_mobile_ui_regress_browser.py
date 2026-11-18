@@ -210,20 +210,16 @@ def test_histogram_updates_on_content_and_rests_when_idle(server: dict[str, Any]
     assert data["next"]["version"] is not None and data["next"]["painted"] > 1000, data["next"]
 
 
-def test_later_tabs_keep_the_design_layout_disabled(server: dict[str, Any]) -> None:
+def test_curves_tab_is_editable(server: dict[str, Any]) -> None:
     data = run_case(server, "later-tabs")
-    want = {
-        "曲线": ["主曲线", "红", "绿", "蓝", "重置此通道"],
-    }
-    for tab, words in want.items():
-        panel = data["tabs"][tab]
-        assert panel is not None, tab
-        assert "这项下一步做" in panel["text"], tab
-        for word in words:
-            assert word in panel["text"], (tab, word)
-        # 有真控件，而且一个都不能点。
-        assert panel["controls"] >= 4 and panel["enabled"] == 0, (tab, panel)
-    assert data["tabs"]["曲线"]["svg"] == 1
+    panel = data["tabs"]["曲线"]
+    assert panel is not None
+    assert "这项下一步做" not in panel["text"]
+    for word in ("主曲线", "红", "绿", "蓝", "重置此通道", "重置全部曲线"):
+        assert word in panel["text"]
+    assert panel["svg"] == 1
+    assert panel["controls"] >= 4 and panel["enabled"] >= 4
+    assert panel["later"] == 0
 
 
 def test_old_gpu_upload_cannot_replace_a_newer_version(server: dict[str, Any]) -> None:

@@ -9,7 +9,7 @@ import { histPoint, histShape } from '../lib/hist';
 import { AdjustView, toAdjust } from './adjust_view';
 import { CropStage, DEFAULT_GEOMETRY } from './crop_stage';
 import { button, el, icon, ICON } from './dom';
-import { curvesPanel } from './later_panels';
+import { mountCurves, previewCurve, type CurvesView } from './curves_view';
 import { LutView } from './lut_view';
 import { photoMs, zeroKnobs, type AppApi, type Photo } from './model';
 import { lookCache } from './looks';
@@ -63,6 +63,7 @@ export class EditorView {
   private placeholder: HTMLElement | null = null;
   private recipes: RecipeView | null = null;
   private adjust: AdjustView | null = null;
+  private curves: CurvesView | null = null;
   private cropStage: CropStage | null = null;
   private pvObserver: ResizeObserver | null = null;
   private frames: FrameView | null = null;
@@ -148,6 +149,8 @@ export class EditorView {
     this.recipes = null;
     this.adjust?.destroy();
     this.adjust = null;
+    this.curves?.destroy();
+    this.curves = null;
     this.frames?.destroy();
     this.frames = null;
     this.decor?.destroy();
@@ -352,7 +355,8 @@ export class EditorView {
       });
       tabs.append(tab);
     });
-    panels.push(this.recipes.panelEl(), this.adjust.panelEl(), cropPanelEl, this.frames.panelEl(), this.luts.panelEl(), curvesPanel());
+    this.curves = mountCurves(this.curves, { photo: () => this.photo, push: () => this.push(), enterDrag: () => this.enterDrag(), leaveDrag: () => this.leaveDrag(), dragging: () => this.dragging });
+    panels.push(this.recipes.panelEl(), this.adjust.panelEl(), cropPanelEl, this.frames.panelEl(), this.luts.panelEl(), this.curves.panelEl());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
     });
@@ -422,7 +426,7 @@ export class EditorView {
       recipe: this.mode === 'raw' ? (this.holding ? NEUTRAL_BAKE_KEY : this.recipeKey) : null,
       lut,
       lutStrength: 1,
-      curve: null,
+      curve: previewCurve(this.photo.curve, this.holding),
       adjust: toAdjust(knobs),
     });
     this.requestHist();

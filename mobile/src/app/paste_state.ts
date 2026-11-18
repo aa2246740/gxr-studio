@@ -6,6 +6,7 @@ import { cloneCrop, geometrySidecar, sideSubset, zeroGeometry } from '../lib/cro
 import { mergeMeta } from '../lib/exif';
 import { formatClock } from '../lib/group';
 import { isDisplaySpace } from '../lib/lut';
+import { curveJson } from '../lib/export_request';
 import { copyFrom, pasteBatch, PasteUndo, undoBatch, type Clip, type Env, type Target } from '../lib/paste';
 import { shelf, shelves } from '../lib/recipes';
 import { copyMessage, groupName, pasteMessage, undoMessage, type GroupId, type Outcome } from '../lib/paste_text';
@@ -318,6 +319,7 @@ function exposeEdits(api: AppApi): void {
       memory: Object.fromEntries(photo.memory),
       lut: photo.lut,
       knobs: { ...photo.knobs },
+      curve: curveJson(photo.curve),
       frame: photo.frame,
       geometry: { ...photo.geometry },
       crop: cloneCrop(photo.crop),

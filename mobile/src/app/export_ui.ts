@@ -119,6 +119,7 @@ export function requestPhoto(photo: Photo, lutBook?: LutBook): RequestPhoto {
     lut: photo.lut,
     lutInputSpace: lutRecord?.input_space ?? null,
     knobs: { ...photo.knobs },
+    curve: photo.curve ?? null,
     frame: photo.frame ? { ...photo.frame } : null,
     geometry: photo.geometry ? { ...photo.geometry } : undefined,
     crop: photo.crop
