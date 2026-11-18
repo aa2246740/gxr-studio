@@ -620,6 +620,7 @@ def test_e2e_real_pairs_match_export_finish(
         (EditState(frame=FrameSpec(style="blur_fill"), stamp=StampSpec(enabled=False)), {}),
         (EditState(), {}),
     ]
+    assert len(edits) == 6, "_edit_index 按 6 个编辑分；增删编辑时同步改 _edit_index"
 
     compared = 0
     for idx, (jpg, dng) in enumerate(pairs):

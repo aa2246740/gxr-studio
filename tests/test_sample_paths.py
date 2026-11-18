@@ -315,7 +315,11 @@ def _populate(root: Path, count: int = 80) -> None:
 
 
 def _add_unrelated(root: Path, scanner: str) -> None:
-    """Five files the scanner's own filter accepts. Names that fall inside the share enter the sample."""
+    """Five files the scanner's own filter accepts. Names that fall inside the share enter the sample.
+
+    By design a new file whose own key comes first in a case's class takes over that case (color
+    ``_apply_picks``); these names were chosen so none does, which keeps the assertion exact.
+    """
     extra = root / "zz-unrelated"
     extra.mkdir()
     if scanner in {"hdr_track_all", "hdr_track_spread"}:
@@ -434,7 +438,8 @@ def _slots(scanner: str, root: Path) -> dict[str, int]:
 
 @pytest.mark.parametrize("scanner", _SCANNERS)
 def test_local_scanner_picks_and_cases_stay_when_unrelated_files_arrive(scanner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Adding captures must not drop a picked file, nor change the case the parity test gives it."""
+    """Adding captures must not drop a picked file, nor change the case the parity test gives it,
+    unless a new file's own key comes first in that case's class."""
     root = tmp_path / "captures"
     _populate(root)
     before = _ids_of(scanner, root, monkeypatch)
