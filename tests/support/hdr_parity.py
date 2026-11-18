@@ -290,10 +290,38 @@ def flow(tmp: Path, jpeg: bytes, dng: bytes | Path, tag: str, *, gain: bool = Tr
         same_exact(clip, np.load(tmp / f"{tag}-regc.npy"), f"{tag} register.clip")
         stages += ["register", "gain:" + compare_gain(tmp, sdr, y, clip, None, tag)]
         if sdr_cells:
-            changed = e2e_codes(tmp, rsdr, y, clip, codes_ref(sdr, y, clip), tag)
-            assert changed == "0", f"{tag}: uint8 gain codes from Rust's grid differ: {changed}"
-            stages.append("e2e-gain-codes:0")
+            # Platform libm rule: Rust's grid is the correctly rounded one (check_sdr). Gate A: Rust's
+            # codes from its own grid equal Python's compute_gain on that grid.
+            changed = e2e_codes(tmp, rsdr, y, clip, codes_ref(rsdr, y, clip), tag)
+            assert changed == "0", f"{tag}: Gate A: uint8 gain codes from Rust's grid vs Python's on that grid differ: {changed}"
+            points = gain_points(sdr, rsdr, y, clip, tag)
+            stages.append(f"e2e-gain-codes:{len(points)}")
+            stages += [f"e2e-gain-point:{p}" for p in points]
     return Flow(stages, expect["alignment"], expect["check"])
+
+
+def gain_points(sdr: np.ndarray, rsdr: np.ndarray, y: np.ndarray, clip: np.ndarray, tag: str) -> list[str]:
+    """Gate B for the codes from Rust's own grid against real Python (Python's own grid).
+
+    Gate A held on every code, so each difference is attributed to the host ``powf`` behind
+    Python's grid (POW_CODES): it moved the fitted curve and ``delta`` by float noise. Each point
+    may differ by at most 1 code (PORT-WAVE-1 amendment 3); returns ``(row, col) python->rust`` with
+    both pre-quantisation values ``255 * r`` (``codes_of`` before rounding).
+    """
+    py, orc = g.compute_gain(sdr, y, clip, g.Params()), g.compute_gain(rsdr, y, clip, g.Params())
+
+    def scaled(res: g.GainResult) -> np.ndarray:
+        m = res.meta
+        return np.clip((res.delta - m.gain_min) / (m.gain_max - m.gain_min), 0, 1) ** m.gamma * 255.0
+
+    a, b = codes_of(py), codes_of(orc)
+    sa, sb = scaled(py), scaled(orc)
+    out = []
+    for r, c in np.argwhere(a != b):
+        step = int(b[r, c]) - int(a[r, c])
+        assert abs(step) == 1, f"{tag}: gain code ({r}, {c}) moves {step} codes from the host powf (cap 1)"
+        out.append(f"({r},{c}) {int(a[r, c])}->{int(b[r, c])} {float(sa[r, c])!r}/{float(sb[r, c])!r}")
+    return out
 
 
 def codes_ref(sdr: np.ndarray, y: np.ndarray, clip: np.ndarray) -> np.ndarray | None:
@@ -313,34 +341,26 @@ def e2e_codes(tmp: Path, rsdr: np.ndarray, y: np.ndarray, clip: np.ndarray, ref:
 
 
 def real_pairs(limit: int = 8) -> list[tuple[Path, Path]]:
-    """RAW+JPG pairs (same stem) under ``captures/``, no backup paths, spread in sorted order.
+    """RAW+JPG pairs (same stem) under ``captures/``, no backup paths, in the stable sample for
+    ``limit`` (``support.samples.stable_sample``: membership depends only on the DNG's own path),
+    in path order.
 
     A raw IFD whose compression is not 1 is skipped. Stock firmware is uncompressed; modified-firmware
     field DNGs use 7 (lossless JPEG), which the desktop decoder refuses. Unreadable tags stay.
     """
     if not CAPTURES.is_dir():
         return []
-    dngs = sorted(
-        (
-            p
-            for p in CAPTURES.rglob("*")
-            if p.is_file()
-            and p.suffix.upper() == ".DNG"
-            and "backup" not in p.as_posix().lower()
-            and samples.raw_ifd_compression(p) in (None, 1)
-        ),
-        key=lambda p: p.as_posix(),
+    dngs = (
+        p
+        for p in CAPTURES.rglob("*")
+        if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower() and samples.raw_ifd_compression(p) in (None, 1)
     )
-    pairs = []
-    for d in dngs:
-        for ext in (".JPG", ".jpg"):
-            j = d.with_suffix(ext)
-            if j.is_file():
-                pairs.append((j, d))
-                break
-    if len(pairs) <= limit:
-        return pairs
-    return [pairs[(i * len(pairs)) // limit] for i in range(limit)]
+    jpgs = {d: next((j for j in (d.with_suffix(".JPG"), d.with_suffix(".jpg")) if j.is_file()), None) for d in dngs}
+    return [
+        (jpg, d)
+        for d in samples.stable_sample((d for d, jpg in jpgs.items() if jpg is not None), CAPTURES, limit)
+        if (jpg := jpgs[d]) is not None
+    ]
 
 
 def tag_json(tags: dict[int, Any]) -> str:

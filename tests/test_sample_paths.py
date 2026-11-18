@@ -259,3 +259,22 @@ def test_guard_allows(tmp_path, case):
 def test_no_test_finds_samples_on_its_own():
     """回归：tests/ 里别再按 __file__、`DEFAULT_SAMPLES` 或自己读环境变量找样本（T3 工作树里会悄悄跳过）。"""
     assert sample_guard.scan_tests(TESTS) == []
+
+
+def test_stable_sample_membership_depends_only_on_each_file(tmp_path):
+    """parity-drift-1: adding captures elsewhere never moves a file in or out of a sample, and a
+    smaller request is a subset of a larger one (the old spread by sorted index shifted)."""
+    root = tmp_path / "captures"
+    first = [root / f"a{i // 50:02d}" / f"R{i:07d}.DNG" for i in range(2000)]
+    later = [root / "r6-field" / f"R{i:07d}.DNG" for i in range(500)] + [root / "a00" / f"Q{i:07d}.DNG" for i in range(500)]
+    for limit in (2, 8, 20, 60):
+        before = samples.stable_sample(first, root, limit)
+        after = samples.stable_sample(first + later, root, limit)
+        assert [p for p in after if p in set(first)] == before
+        assert before == [p for p in first if samples.sample_key(p, root) < samples.sample_share(limit)]
+    assert (
+        set(samples.stable_sample(first, root, 8)) <= set(samples.stable_sample(first, root, 20)) <= set(samples.stable_sample(first, root, 60))
+    )
+    assert samples.sample_share(1) == samples.sample_share(samples.SAMPLE_FLOOR)
+    # The key is the file's own relative path: the same layout under another parent gives the same keys.
+    assert samples.sample_key(first[7], root) == samples.sample_key(tmp_path / "x" / first[7].relative_to(root), tmp_path / "x")

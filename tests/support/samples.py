@@ -16,8 +16,10 @@ public repo has no samples, so this is off by default.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import struct
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, BinaryIO, NoReturn
 
@@ -25,6 +27,18 @@ import pytest
 
 STUDIO = Path(__file__).resolve().parents[2]
 REQUIRED_MARK = "gxr_sample_missing"
+
+# Stable real samples (unit parity-drift-1, 2026-11-18). A capture is in a helper's sample when its
+# own key is below the helper's share; adding, removing or renaming other files never moves it in
+# or out. The share is fixed, so a sample grows with captures/ instead of shifting.
+SAMPLE_SALT = b"gxr-studio real-sample v1:"
+# Share of captures/ per requested sample. On 2026-11-18 captures/ held 1,336 usable RAW+JPG pairs;
+# 1/954 gives about 1.4 times the old spread's count. A hash sample is random across folders, so
+# it needs that margin: with it every helper call keeps at least its old count and its old number
+# of capture folders.
+SAMPLE_UNIT = 1 / 954
+# The smallest request: callers that need one or two pairs take them from this share.
+SAMPLE_FLOOR = 8
 
 
 def sample_parent() -> Path:
@@ -35,6 +49,50 @@ def sample_parent() -> Path:
 
 def captures() -> Path:
     return sample_parent() / "captures"
+
+
+def sample_key(path: Path, root: Path) -> float:
+    """A file's place in [0, 1): SHA-256 of ``SAMPLE_SALT`` and its POSIX path relative to ``root``."""
+    rel = path.relative_to(root).as_posix().encode("utf-8", "surrogatepass")
+    return int.from_bytes(hashlib.sha256(SAMPLE_SALT + rel).digest()[:8], "big") / 2.0**64
+
+
+def sample_share(limit: int) -> float:
+    """The fixed share of captures/ a helper asked for ``limit`` samples takes."""
+    return min(1.0, max(limit, SAMPLE_FLOOR) * SAMPLE_UNIT)
+
+
+def stable_sample(paths: Iterable[Path], root: Path, limit: int) -> list[Path]:
+    """The paths whose :func:`sample_key` is below :func:`sample_share` of ``limit``, in path order.
+
+    Whether a file is picked depends only on its own path, so files added elsewhere under
+    ``root`` never change it. The count is not capped: it is about 1.4 times ``limit`` at the
+    2026-11-18 corpus (never fewer than the old spread gave) and grows with captures/.
+    """
+    share = sample_share(limit)
+    return sorted((p for p in paths if sample_key(p, root) < share), key=lambda p: p.as_posix())
+
+
+def pinned_capture(rel_sha: str, content_sha: str) -> Path:
+    """The capture whose path relative to captures/ has SHA-256 prefix ``rel_sha`` (no name in the repo).
+
+    The file's own SHA-256 must start with ``content_sha``, so a pinned regression never runs on
+    another photo. Missing: skip, or fail under ``GXR_REQUIRE_SAMPLES=1``.
+    """
+    root = captures()
+    found = []
+    if root.is_dir():
+        found = [
+            p
+            for p in root.rglob("*")
+            if p.is_file() and hashlib.sha256(p.relative_to(root).as_posix().encode("utf-8", "surrogatepass")).hexdigest().startswith(rel_sha)
+        ]
+    if len(found) != 1:
+        missing(f"pinned capture {rel_sha} is not under captures/ ({len(found)} matches)")
+    got = hashlib.sha256(found[0].read_bytes()).hexdigest()
+    if not got.startswith(content_sha):
+        pytest.fail(f"pinned capture {rel_sha} changed: content sha256 {got[:16]}, expected {content_sha}")
+    return found[0]
 
 
 def raw_ifd_compression(path: Path) -> int | None:

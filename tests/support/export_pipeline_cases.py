@@ -19,7 +19,7 @@ from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
 from gxr_studio.export import source_exif
-from support.samples import captures, raw_ifd_compression
+from support.samples import captures, raw_ifd_compression, stable_sample
 
 CAPTURES = captures()
 
@@ -64,31 +64,22 @@ def first_difference(a: bytes, b: bytes) -> str:
 
 
 def real_pairs(limit: int) -> list[tuple[Path, Path]]:
-    """Up to ``limit`` DNG+JPG pairs, spread evenly over the sorted capture list.
+    """The stable sample (``support.samples.stable_sample``) of DNG+JPG pairs, in path order.
 
+    A pair is in it when its DNG's own path key is below the share for ``limit``, so captures added
+    elsewhere never change it; the count is about 1.4 times ``limit`` today and grows with captures/.
     A raw IFD whose compression is not 1 is skipped. Stock firmware is uncompressed; modified-firmware
     field DNGs use 7 (lossless JPEG), which the desktop decoder refuses. Unreadable tags stay.
     """
     if not CAPTURES.is_dir():
         return []
-    dngs = sorted(
-        (
-            p
-            for p in CAPTURES.rglob("*")
-            if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower() and raw_ifd_compression(p) in (None, 1)
-        ),
-        key=lambda p: p.as_posix(),
+    dngs = (
+        p
+        for p in CAPTURES.rglob("*")
+        if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower() and raw_ifd_compression(p) in (None, 1)
     )
-    pairs: list[tuple[Path, Path]] = []
-    for d in dngs:
-        for ext in (".JPG", ".jpg"):
-            j = d.with_suffix(ext)
-            if j.is_file():
-                pairs.append((j, d))
-                break
-    if len(pairs) <= limit:
-        return pairs
-    return [pairs[(i * len(pairs)) // limit] for i in range(limit)]
+    jpgs = {d: next((j for j in (d.with_suffix(".JPG"), d.with_suffix(".jpg")) if j.is_file()), None) for d in dngs}
+    return [(jpg, d) for d in stable_sample((d for d, jpg in jpgs.items() if jpg is not None), CAPTURES, limit) if (jpg := jpgs[d]) is not None]
 
 
 def synthetic_source(path: Path, *, with_lens: bool = True) -> Path:
