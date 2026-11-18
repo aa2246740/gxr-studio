@@ -66,10 +66,11 @@ def _real_pairs_all() -> list[tuple[Path, Path]]:
 
 
 def _spread_pairs(limit: int) -> list[tuple[Path, Path]]:
+    """Pairs whose DNG is in the stable sample for ``limit``. ``_real_pairs_all`` still returns every pair."""
     pairs = _real_pairs_all()
-    if len(pairs) <= limit:
-        return pairs
-    return [pairs[(i * len(pairs)) // limit] for i in range(limit)]
+    root = samples.captures()
+    by_dng = {dng: (jpg, dng) for jpg, dng in pairs}
+    return [by_dng[dng] for dng in samples.stable_sample(by_dng, root, limit)]
 
 
 def _state_of(track: HdrTrack) -> dict[str, Any]:

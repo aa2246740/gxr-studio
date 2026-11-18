@@ -43,16 +43,12 @@ _FLOAT_AT = {("layout", "white"), ("scene", "b")}
 
 
 def _real_dngs() -> list[Path]:
-    """Up to 60 DNGs under captures/, spread in sorted order, skipping backup paths."""
-    if not CAPTURES.is_dir():
+    """DNGs under captures/ (no backups) whose own path is in the stable sample for ``_CAP``."""
+    root = samples.captures()
+    if not root.is_dir():
         return []
-    found = [
-        path for path in CAPTURES.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower()
-    ]
-    found.sort(key=lambda path: path.as_posix())
-    if len(found) <= _CAP:
-        return found
-    return [found[(i * len(found)) // _CAP] for i in range(_CAP)]
+    found = (path for path in root.rglob("*") if path.is_file() and path.suffix.upper() == ".DNG" and "backup" not in path.as_posix().lower())
+    return samples.stable_sample(found, root, _CAP)
 
 
 REAL = _real_dngs()
@@ -754,7 +750,8 @@ def test_synthetic_demosaic_and_neutral_errors(tmp_path: Path) -> None:
         expect_neutral(path, tmp_path)
 
 
-_REAL_RENDER = REAL[::4] if len(REAL) >= 10 else REAL
+# Every fourth photo by its own key, so a file added elsewhere cannot move these.
+_REAL_RENDER = [p for p in REAL if int(samples.sample_key(p, samples.captures()) * 1e9) % 4 == 0] if len(REAL) >= 10 else REAL
 assert len([p for p in _REAL_RENDER if "contrib" not in p.as_posix()]) >= 10 or not REAL
 
 

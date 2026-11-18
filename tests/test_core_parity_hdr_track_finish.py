@@ -49,24 +49,21 @@ def _write_json(path: Path, obj: Any) -> str:
 
 
 def _spread_pairs(limit: int) -> list[tuple[Path, Path]]:
-    if not CAPTURES.is_dir():
+    """JPG+DNG pairs (no backups, compression 1 or unread) whose DNG is in the stable sample for ``limit``."""
+    root = samples.captures()
+    if not root.is_dir():
         return []
-    dngs = sorted(
-        (p for p in CAPTURES.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower()),
-        key=lambda p: p.as_posix(),
-    )
-    pairs: list[tuple[Path, Path]] = []
-    for d in dngs:
-        if samples.raw_ifd_compression(d) not in (None, 1):
+    found = (p for p in root.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower())
+    pairs: dict[Path, tuple[Path, Path]] = {}
+    for dng in found:
+        if samples.raw_ifd_compression(dng) not in (None, 1):
             continue
         for ext in (".JPG", ".jpg"):
-            j = d.with_suffix(ext)
-            if j.is_file():
-                pairs.append((j, d))
+            jpg = dng.with_suffix(ext)
+            if jpg.is_file():
+                pairs[dng] = (jpg, dng)
                 break
-    if len(pairs) <= limit:
-        return pairs
-    return [pairs[(i * len(pairs)) // limit] for i in range(limit)]
+    return [pairs[dng] for dng in samples.stable_sample(pairs, root, limit)]
 
 
 def _state_of(track: HdrTrack) -> dict[str, Any]:
@@ -638,7 +635,7 @@ def test_e2e_real_pairs_match_export_finish(
                 "dng": {"relpath": f"2026/real_{long_edge or 'full'}/{stem}.DNG"},
             },
         }
-        edit, side = edits[idx % len(edits)]
+        edit, side = edits[int(samples.sample_key(dng, samples.captures()) * 1e9) % len(edits)]
 
         # Capture the pre-encode rgb, payload, and geometry/box decisions Python computes
         captured: dict[str, Any] = {}

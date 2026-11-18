@@ -280,3 +280,153 @@ def test_stable_sample_membership_depends_only_on_each_file(tmp_path):
     assert samples.sample_share(1) == samples.sample_share(samples.SAMPLE_FLOOR)
     # The key is the file's own relative path: the same layout under another parent gives the same keys.
     assert samples.sample_key(first[7], root) == samples.sample_key(tmp_path / "x" / first[7].relative_to(root), tmp_path / "x")
+
+
+# sample-stable-2: each test-local scanner. Picks and the case derived from a file's own key stay
+# put when five files arrive. The old index spread moves; this fails on 3a556bd for every scanner
+# that still spreads that way. ``hdr_track._real_pairs_all`` does not spread, so that case stays green.
+_SCANNERS = (
+    "color",
+    "raw",
+    "hdr_track_all",
+    "hdr_track_spread",
+    "hdr_finish",
+    "geometry",
+    "export_meta",
+    "resample",
+    "raster",
+)
+
+
+def _case_of(path: Path, root: Path) -> int:
+    """Same assignment the parity tests use: the file's own key, not its place in the list."""
+    return int(samples.sample_key(path, root) * 1e9) % 6
+
+
+def _bind_captures(monkeypatch: pytest.MonkeyPatch, root: Path, *modules: object) -> None:
+    monkeypatch.setattr(samples, "captures", lambda: root)
+    for module in modules:
+        monkeypatch.setattr(module, "CAPTURES", root, raising=False)
+
+
+def _populate(root: Path, count: int = 80) -> None:
+    """DNGs in several folders. The first five have no JPG yet, so a pair scanner can gain them later."""
+    for index in range(count):
+        folder = root / f"u{index % 7:02d}" / f"s{index % 4}"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"f{index:04d}.DNG").write_bytes(b"")
+        if index >= 5:
+            (folder / f"f{index:04d}.JPG").write_bytes(b"")
+
+
+def _add_unrelated(root: Path, scanner: str) -> None:
+    """Five files the scanner's own filter accepts. Pair scanners gain five JPG mates, not new DNGs."""
+    if scanner in {"hdr_track_all", "hdr_track_spread", "hdr_finish"}:
+        for index in range(5):
+            folder = root / f"u{index % 7:02d}" / f"s{index % 4}"
+            (folder / f"f{index:04d}.JPG").write_bytes(b"")
+        return
+    suffixes = {
+        "color": (".DNG",) * 5,
+        "raw": (".DNG",) * 5,
+        "geometry": (".DNG",) * 5,
+        "export_meta": (".DNG", ".DNG", ".JPG", ".JPG", ".JPG"),
+        "resample": (".DNG", ".DNG", ".JPG", ".JPG", ".JPG"),
+        "raster": (".JPG", ".JPG", ".DNG", ".JPG", ".DNG"),
+    }[scanner]
+    extra = root / "zz-unrelated"
+    extra.mkdir()
+    for index, suffix in enumerate(suffixes):
+        (extra / f"n{index:04d}{suffix}").write_bytes(b"")
+
+
+def _ids_of(scanner: str, root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], ...]:
+    if scanner == "color":
+        import test_core_parity_color as mod
+
+        _bind_captures(monkeypatch, root, mod)
+        return ([path.relative_to(root).as_posix() for path in mod._real_dngs()],)
+    if scanner == "raw":
+        import test_core_parity_raw as mod
+
+        _bind_captures(monkeypatch, root, mod)
+        return ([path.relative_to(root).as_posix() for path in mod._real_dngs()],)
+    if scanner in {"hdr_track_all", "hdr_track_spread"}:
+        import test_core_parity_hdr_track as mod
+
+        _bind_captures(monkeypatch, root, mod)
+        pairs = mod._real_pairs_all() if scanner == "hdr_track_all" else mod._spread_pairs(20)
+        return ([dng.relative_to(root).as_posix() for _jpg, dng in pairs],)
+    if scanner == "hdr_finish":
+        import test_core_parity_hdr_track_finish as mod
+
+        _bind_captures(monkeypatch, root, mod)
+        return ([dng.relative_to(root).as_posix() for _jpg, dng in mod._spread_pairs(16)],)
+    if scanner == "geometry":
+        import test_core_parity_geometry as mod
+
+        _bind_captures(monkeypatch, root, mod)
+
+        class _Opened:
+            orientation = 1
+
+            @staticmethod
+            def crop_window() -> tuple[int, int, int, int]:
+                return (0, 0, 6, 10)
+
+        monkeypatch.setattr(mod, "open_dng", lambda _path: _Opened())
+        return ([rel for rel, _width, _height in mod._real_dng_sizes()],)
+    if scanner == "export_meta":
+        import test_core_parity_export_meta as mod
+
+        _bind_captures(monkeypatch, root, mod)
+        dngs = [path.relative_to(root).as_posix() for path in mod._real_files((".DNG",))]
+        jpgs = [path.relative_to(root).as_posix() for path in mod._real_files((".JPG", ".JPEG"))]
+        return dngs, jpgs
+    if scanner == "resample":
+        import test_core_parity_resample as mod
+
+        _bind_captures(monkeypatch, root, mod)
+        jpgs, dngs = mod._collect_real_images(12)
+        return (
+            [path.relative_to(root).as_posix() for path in jpgs],
+            [path.relative_to(root).as_posix() for path in dngs],
+        )
+    import test_core_parity_raster as mod
+
+    _bind_captures(monkeypatch, root, mod)
+
+    class _Pixels:
+        shape = (4, 4, 3)
+
+    monkeypatch.setattr(mod, "open_dng", lambda _path: object())
+    monkeypatch.setattr(mod, "render_half", lambda _dng: _Pixels())
+    monkeypatch.setattr(mod, "load_jpeg", lambda _path, max_edge=None: _Pixels())
+    found = []
+    for row in mod._real_capture_inputs(24):
+        ident = row[0]
+        if isinstance(ident, Path):
+            found.append(ident.relative_to(root).as_posix())
+        else:
+            matches = [path for path in root.rglob("*") if path.is_file() and path.name == ident]
+            assert len(matches) == 1
+            found.append(matches[0].relative_to(root).as_posix())
+    return (found,)
+
+
+@pytest.mark.parametrize("scanner", _SCANNERS)
+def test_local_scanner_picks_and_cases_stay_when_unrelated_files_arrive(scanner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adding captures must not drop a file a scanner already picked, nor change the case of its own key."""
+    root = tmp_path / "captures"
+    _populate(root)
+    before = _ids_of(scanner, root, monkeypatch)
+    cases = {rel: _case_of(root / rel, root) for group in before for rel in group}
+    _add_unrelated(root, scanner)
+    after = _ids_of(scanner, root, monkeypatch)
+    assert len(before) == len(after)
+    for index, (left, right) in enumerate(zip(before, after, strict=True)):
+        assert left, f"{scanner} group {index} picked nothing"
+        missing = [rel for rel in left if rel not in set(right)]
+        assert not missing, f"{scanner} group {index} dropped {len(missing)} original picks"
+        for rel in left:
+            assert _case_of(root / rel, root) == cases[rel]

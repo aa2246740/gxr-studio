@@ -567,14 +567,12 @@ CAPTURES = _PARENT / "captures"
 
 
 def _real_dngs(cap: int = 60) -> list[Path]:
-    """The raw parity test's sample: up to 60 DNGs under captures/, spread, no backups."""
-    if not CAPTURES.is_dir():
+    """DNGs under captures/ (no backups) whose own path is in the stable sample for ``cap``."""
+    root = samples.captures()
+    if not root.is_dir():
         return []
-    found = sorted(
-        (p for p in CAPTURES.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower()),
-        key=lambda p: p.as_posix(),
-    )
-    return found if len(found) <= cap else [found[(i * len(found)) // cap] for i in range(cap)]
+    found = (p for p in root.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower())
+    return samples.stable_sample(found, root, cap)
 
 
 @pytest.fixture(scope="module")
@@ -648,16 +646,17 @@ def test_real_dngs_apply_matches_python(real_home: Path, tmp_path: Path) -> None
     dngs = _real_dngs()
     if len(dngs) < 5:
         samples.missing("captures/ 下的真实 DNG 少于 5 张")
-    picked = [dngs[(i * len(dngs)) // 5] for i in range(5)]
+    picked = dngs[:5]
     for i, dng in enumerate(picked):
-        unit = datcodec.NAMES[i % 3]
-        iso = 1600 if i == 4 else 200
+        slot = int(samples.sample_key(dng, samples.captures()) * 1e9)
+        unit = datcodec.NAMES[slot % 3]
+        iso = 1600 if slot % 5 == 4 else 200
         pack = _real_pack(tmp_path, real_home, unit, iso)
-        entry = store.load_entry(real_home, unit, 1 + (i * 3) % 8)
+        entry = store.load_entry(real_home, unit, 1 + (slot * 3) % 8)
         bk = _check_bake(tmp_path, pack, entry)
         files = cp.write_bake(tmp_path, pack, entry, f"real{i}")
         codes = run_npy(["dng-half-codes", str(dng)], tmp_path / f"half{i}.npy")
-        adjust, curves = cf.TONE_CASES[(2 * i) % len(cf.TONE_CASES)]
+        adjust, curves = cf.TONE_CASES[(2 * slot) % len(cf.TONE_CASES)]
         py, rust = cp.apply(tmp_path, files, bk, codes, adjust, curves)
         assert not isinstance(rust, CoreCliError), rust
         assert rust.shape == codes.shape and np.array_equal(py, rust), (dng.name, cf.first_difference(py, rust))
