@@ -187,6 +187,7 @@ def photo_json(shot: dict[Any, Any], data_version: str | None = None, render: An
         "captured_at": shot["captured_at"],
         "has_raw": bool(shot["has_raw"]),
         "has_jpg": bool(shot["has_jpg"]),
+        "diptych": bool(shot.get("diptych")),
         "iso": shot["iso"],
         "lens": shot["lens"],
         "unit": shot["unit"],

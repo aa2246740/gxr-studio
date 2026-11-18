@@ -674,3 +674,6 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
     - `blur_fill` HDR + 照片 `seg7` 戳（`4658×3403`，按 `frame_layout` 规则退化为 SDR）：prepare 3965.2 ms，ink 755.4 ms，complete 1128.1 ms，高水位 **366.8 MiB**；
     - `darkroom` `9:16` `thin` 最大含颗粒画布 + 照片 `seg7` 戳（`5166×9184`，`hdr_result = true`，输出 14,162,439 B）：prepare 3985.3 ms，ink 2198.2 ms，complete 3820.7 ms，高水位 **421.4 MiB**（优化前 1449.2 MiB）。
 
+## 半格双联
+
+手机端在读取相机 JPG 缩略图时由 `mobile/src/lib/halfframe.ts`（与桌面 `src/gxr_studio/halfframe.py` 同规则：未转正 `4288×2848`、1/8 尺度 `536×356` 下检查 `2088–2199` 与 `2120–2167` 已知黑缝、亮部阈值 ≤ 12 且两侧非黑）识别半格双联，并在 `mobile/src/app/boot.ts` 的 `readPhoto` 单一关口把该张 `Photo` 的 `diptych` 设为 `true`、清掉 `dng` 与 `dngMeta`。此后网格（`JPG` 角标）、编辑器、导出、HDR 预览与 LUT 均按只有 JPG 处理，不再加载该张的 DNG；「配方」页（`mobile/src/app/recipe_view.ts`）显示「这张是半格双联，配方效果要等配对功能。」。

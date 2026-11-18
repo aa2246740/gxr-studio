@@ -31,6 +31,7 @@ from typing import Any, Iterable, cast
 from .. import audit, osplat
 from .. import meta as metamod
 from ..camdata.recipe_tags import RECIPE_TAG_VERSION, RecipeTag, parse_recipe_tag
+from ..halfframe import is_diptych
 from . import sidecar as sc
 from .location import check_library_location
 
@@ -431,7 +432,16 @@ class Library:
         out = []
         for r in rows:
             d = dict(r)
-            d["files"] = files_by.get(r["shot_id"], {})
+            files = files_by.get(r["shot_id"], {})
+            jpg_info = files.get("jpg")
+            dims = (d.get("width"), d.get("height"))
+            size_ok = None in dims or dims in ((4288, 2848), (2848, 4288))
+            diptych = bool(jpg_info and size_ok and is_diptych(self.abspath(jpg_info["relpath"]), sha256=jpg_info.get("sha256")))
+            if diptych:
+                files.pop("dng", None)
+                d["has_raw"] = 0
+            d["diptych"] = diptych
+            d["files"] = files
             edit = edits.get(r["shot_id"])
             d["sidecar_rev"] = edit["sidecar_rev"] if edit else 0
             d["crop"] = json.loads(edit["crop_json"]) if edit and edit["crop_json"] else None

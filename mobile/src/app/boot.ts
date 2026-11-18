@@ -517,6 +517,7 @@ class App implements AppApi {
           version: 0,
           dng: null,
           jpg: null,
+          diptych: false,
           lastModified: item.lastModified,
           captureMs: null,
           status: 'pending',
@@ -544,11 +545,14 @@ class App implements AppApi {
         };
         this.byId.set(id, photo);
       }
+      if (item.jpgIndex !== null) {
+        photo.jpg = files[item.jpgIndex];
+        photo.diptych = false;
+      }
       if (item.dngIndex !== null) {
-        photo.dng = files[item.dngIndex];
+        if (!photo.diptych) photo.dng = files[item.dngIndex];
         photo.stem = item.stem;
       }
-      if (item.jpgIndex !== null) photo.jpg = files[item.jpgIndex];
       // 换了 File 就是新版本：之前在路上的读取结果回来时都作废。
       photo.version += 1;
       photo.gone = false;
@@ -608,6 +612,11 @@ class App implements AppApi {
       photo.status = 'bad';
       this.afterRead(photo);
       return;
+    }
+    if (!reply.bad && from === photo.jpg && reply.diptych) {
+      photo.diptych = true;
+      photo.dng = null;
+      photo.dngMeta = null;
     }
     let captureMs = reply.captureMs;
     let frame = reply.frame;
