@@ -596,3 +596,42 @@ def test_r2_backfill_logging_failed_state_future_version_and_schema_move(
     fail_evs = [e for e in _log_events(caplog) if e.get("event") == "halfframe_backfill_failed"]
     assert len(fail_evs) == 1 and fail_evs[0]["error"] == "IsADirectoryError"
     assert str(lib.root) not in json.dumps(fail_evs[0])
+
+
+def test_r3_rebuild_verdicts_never_raises_when_the_file_cannot_be_written(tmp_path: Path) -> None:
+    """Opus r3 P3-1: the index is already rebuilt, so a blocked verdict file is logged, not raised."""
+    studio = tmp_path / ".studio"
+    studio.mkdir()
+    target = studio / "halfframe-v1.json"
+    target.mkdir()  # a directory where the file should be: every write fails
+    store = halfframe.VerdictStore(target)
+    store.put("a" * 64, True, save=False)
+    halfframe.rebuild_verdicts([], store, lambda rel: tmp_path / rel)
+    assert target.is_dir()
+    assert store.get("a" * 64) is True
+
+
+def test_r3_rebuild_verdicts_recreates_a_deleted_file_even_when_clean(tmp_path: Path) -> None:
+    """flush_quietly writes even when nothing is dirty, so rebuild restores a deleted verdict file."""
+    studio = tmp_path / ".studio"
+    studio.mkdir()
+    target = studio / "halfframe-v1.json"
+    store = halfframe.VerdictStore(target)
+    store.put("b" * 64, False, save=True)
+    target.unlink()
+    halfframe.rebuild_verdicts([], store, lambda rel: tmp_path / rel)
+    assert json.loads(target.read_text(encoding="utf-8"))["verdicts"] == {"b" * 64: False}
+
+
+def test_r3_coalesced_save_does_not_recreate_a_deleted_library(tmp_path: Path) -> None:
+    """Opus r3 P3-2: a trailing save after the library folder is gone must not rebuild root/.studio."""
+    root = tmp_path / "lib"
+    studio = root / ".studio"
+    studio.mkdir(parents=True)
+    store = halfframe.VerdictStore(studio / "halfframe-v1.json", flush_interval=0.05)
+    store.put("c" * 64, True, save=True, coalesce=True)
+    store.put("d" * 64, True, save=True, coalesce=True)
+    shutil.rmtree(root)
+    time.sleep(0.3)
+    store.close()
+    assert not root.exists()

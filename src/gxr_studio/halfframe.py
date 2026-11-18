@@ -279,6 +279,10 @@ class VerdictStore:
         else:
             self._save_quietly()
 
+    def flush_quietly(self) -> None:
+        """Always write the current verdicts (even when nothing is dirty), logging instead of raising."""
+        self._save_quietly()
+
     def _save_quietly(self) -> None:
         from .library.store import LibraryPathRefused
 
@@ -300,7 +304,8 @@ class VerdictStore:
                 snapshot = dict(self._verdicts)
             if self._check_write is not None:
                 self._check_write()
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # 只建 .studio 这一层：库目录不在了就让保存失败，不替调用方重建整个库目录。
+            self.path.parent.mkdir(exist_ok=True)
             tmp = self.path.parent / f".{self.path.name}.{uuid.uuid4().hex}.tmp"
             payload = json.dumps({"version": HALFFRAME_VERSION, "verdicts": snapshot}, ensure_ascii=False, sort_keys=True)
             try:
@@ -509,7 +514,8 @@ def rebuild_verdicts(
         if verdict is not None:
             verdicts[sha] = verdict
     store.put_many(verdicts, save=False)
-    store.save()
+    # 索引已经重建好了；判定文件写不进去只记日志，不让「重建索引」报错。
+    store.flush_quietly()
 
 
 def pending_verdicts(db: sqlite3.Connection, store: VerdictStore) -> list[tuple[str, str]]:
