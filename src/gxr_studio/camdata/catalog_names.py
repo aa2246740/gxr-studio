@@ -2,9 +2,9 @@
 
 CAMERA_UNITS = {"28": "qlaunch", "50": "jlaunch", "MT": "l08firm"}
 UNIT_LABELS = {"28": "28mm", "50": "50mm", "MT": "MOUNT"}
-CATALOG_GENERATIONS = {"d25d2f0a68": 176, "6a3a5a3c02": 178}  # 库代数；g178/g181/g182 r2 共用 178 目录
+CATALOG_GENERATIONS = {"d25d2f0a68": 176, "6a3a5a3c02": 178, "6adf847602": 178}  # 库代数；g178/g181/g182/g185/g250 共用 178 目录
 
-# 对照 r5.LIBRARY_SHA256 登记的 g176 / g178 库；前四项是两代保留的原生配方。
+# 对照 r5.LIBRARY_SHA256 与 r6 profile 登记的库；前四项是两代保留的原生配方。
 _NATIVE = ("GRPos", "GRNeg", "HC BW", "Std")
 _G176_NATIVE = _NATIVE + ("K64", "P160", "K25", "Gold")
 _G176_HEAD = (
@@ -49,6 +49,7 @@ CATALOG_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
         "MT": _G176_NATIVE + _G176_HEAD + ("Vision3 500T",) + _G176_TAIL,
     },
     "6a3a5a3c02": {code: _G178 for code in CAMERA_UNITS},
+    "6adf847602": {code: _G178 for code in CAMERA_UNITS},
 }
 
 

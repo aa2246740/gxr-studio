@@ -371,6 +371,7 @@ pub fn pack(dat: &Dat) -> Result<Vec<u8>, CoreError> {
         dat.bss,
         &dat.relocations,
         cursor,
+        &dat.xdata,
     )?;
 
     let mut dir = vec![0u8; 192];

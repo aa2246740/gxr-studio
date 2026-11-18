@@ -11,6 +11,7 @@ pub struct EngineDescription<'a> {
     pub bss_bytes: u32,
     pub relocations: &'a [(u32, u32)],
     pub linked_data_end: usize,
+    pub xdata_sha256: Option<&'a str>,
 }
 
 const G156_ENGINES: &[EngineDescription<'static>] = &[
@@ -20,6 +21,7 @@ const G156_ENGINES: &[EngineDescription<'static>] = &[
         bss_bytes: 9284,
         relocations: &[(65840, 56136)],
         linked_data_end: 88684,
+        xdata_sha256: None,
     },
     EngineDescription {
         engine_sha256: "688427df58d334a375b125f1b5574ac6f0854962f5123859e47e5030c0052bf0",
@@ -27,6 +29,7 @@ const G156_ENGINES: &[EngineDescription<'static>] = &[
         bss_bytes: 9296,
         relocations: &[(68748, 59044)],
         linked_data_end: 90532,
+        xdata_sha256: None,
     },
 ];
 
@@ -37,6 +40,7 @@ const G158_ENGINES: &[EngineDescription<'static>] = &[
         bss_bytes: 4360,
         relocations: &[(67484, 57984)],
         linked_data_end: 92484,
+        xdata_sha256: None,
     },
     EngineDescription {
         engine_sha256: "441531dc1900ae5c3cf2e62092c5c6dc88a1f326b7cb74f8506159245fd2b34e",
@@ -44,6 +48,7 @@ const G158_ENGINES: &[EngineDescription<'static>] = &[
         bss_bytes: 4360,
         relocations: &[(69716, 60208)],
         linked_data_end: 94952,
+        xdata_sha256: None,
     },
 ];
 
@@ -53,6 +58,7 @@ const G176_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
     bss_bytes: 4248,
     relocations: &[(74492, 70700)],
     linked_data_end: 74664,
+    xdata_sha256: None,
 }];
 
 const G178_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
@@ -61,6 +67,7 @@ const G178_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
     bss_bytes: 23772,
     relocations: &[(75552, 71724)],
     linked_data_end: 75724,
+    xdata_sha256: None,
 }];
 
 const G181_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
@@ -69,6 +76,7 @@ const G181_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
     bss_bytes: 4252,
     relocations: &[(76076, 65220)],
     linked_data_end: 76248,
+    xdata_sha256: None,
 }];
 
 const G182_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
@@ -77,6 +85,25 @@ const G182_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
     bss_bytes: 4252,
     relocations: &[(76264, 62800)],
     linked_data_end: 76436,
+    xdata_sha256: None,
+}];
+
+const G185_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
+    engine_sha256: "7c1ccba52638de97711602ad25c404504a2f618c0cddea01d7fa28e26d4b0ef7",
+    entry: 74760,
+    bss_bytes: 8468,
+    relocations: &[(78756, 64892)],
+    linked_data_end: 78928,
+    xdata_sha256: None,
+}];
+
+const G250_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
+    engine_sha256: "0f35d588356501e528639f2d2b90ec948ff40f6e97debc3f7192be9b3a9e77e8",
+    entry: 79052,
+    bss_bytes: 8608,
+    relocations: &[(86352, 65340)],
+    linked_data_end: 90440,
+    xdata_sha256: Some("22f939465361925ea31bdb19e7f016b6d374bdb2f70b6e35449375e8df00d1a0"),
 }];
 
 const ALL_BOUND: &[&[EngineDescription<'static>]] = &[
@@ -86,6 +113,8 @@ const ALL_BOUND: &[&[EngineDescription<'static>]] = &[
     G178_ENGINES,
     G181_ENGINES,
     G182_ENGINES,
+    G185_ENGINES,
+    G250_ENGINES,
 ];
 
 fn bound_engines(generation: u32) -> Option<&'static [EngineDescription<'static>]> {
@@ -96,6 +125,8 @@ fn bound_engines(generation: u32) -> Option<&'static [EngineDescription<'static>
         178 => Some(G178_ENGINES),
         181 => Some(G181_ENGINES),
         182 => Some(G182_ENGINES),
+        185 => Some(G185_ENGINES),
+        250 => Some(G250_ENGINES),
         _ => None,
     }
 }
@@ -108,14 +139,23 @@ pub fn check_engine_binding(
     bss: u32,
     relocations: &[(u32, u32)],
     data_end: usize,
+    xdata: &[u8],
 ) -> Result<(), CoreError> {
     let sha = sha256_hex(engine);
+    let xdata_sha;
+    let xdata_sha256 = if xdata.is_empty() {
+        None
+    } else {
+        xdata_sha = sha256_hex(xdata);
+        Some(xdata_sha.as_str())
+    };
     let desc = EngineDescription {
         engine_sha256: &sha,
         entry,
         bss_bytes: bss,
         relocations,
         linked_data_end: data_end,
+        xdata_sha256,
     };
     match bound_engines(generation) {
         None => {

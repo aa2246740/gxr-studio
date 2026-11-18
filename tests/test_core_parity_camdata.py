@@ -67,6 +67,8 @@ def _discover_r5_bundles() -> list[tuple[str, Path, Path]]:
         ("g178", _PARENT / "research/build_g178_r1/local/model"),
         ("g181", _PARENT / "firmware/package_v310b_g181/local/g181-daily"),
         ("g182", _PARENT / "firmware/package_v310b_g182/local/g182-daily-r2"),
+        ("g185", _PARENT / "firmware/package_v310b_g185/local/g185-daily"),
+        ("g250", _PARENT / "firmware/package_v310b_hf10_r1/local/daily250-REVIEW_PENDING"),
     ]
     out: list[tuple[str, Path, Path]] = []
     for label, folder in candidates:

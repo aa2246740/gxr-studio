@@ -89,7 +89,9 @@ fn catalogue(library: Option<&[u8]>, generation: u32) -> Result<&[u8], CoreError
     if lib.len() > MAX_LIBRARY_BYTES {
         return Err(dat_error("无法导入相机配方文件。文件过大。"));
     }
-    let expected_sha = library_sha256(lib_gen)
+    let expected_sha = prof
+        .library_sha256
+        .or_else(|| library_sha256(lib_gen))
         .ok_or_else(|| unsupported_error(format!("代数 {generation} 没有登记 r5 库")))?;
     if sha256_hex(lib) != expected_sha {
         return Err(dat_error(format!(
@@ -332,15 +334,25 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     check_envelope(raw, b"GXRCE001", 0)?;
     let secs = sections(raw)?;
     let generation = peek_generation(raw)?;
+    let prof = profile(generation)
+        .filter(|p| p.library_generation.is_some())
+        .ok_or_else(|| unsupported_error(format!("代数 {generation} 没有登记 r5 库")))?;
     let (engine_at, engine_size) = secs[0];
     let (reloc_at, reloc_size) = secs[1];
-    if raw.len() > 98304
-        || engine_size > 81920
+    let (xdata_at, xdata_size) = secs[2];
+    let trailing = if prof.xdata { &secs[3..] } else { &secs[2..] };
+    if raw.len() > prof.max_file
+        || !(16..=prof.max_engine).contains(&engine_size)
         || reloc_size != 8
-        || secs[2..].iter().any(|&(_, n)| n != 0)
+        || trailing.iter().any(|&(_, n)| n != 0)
     {
         return Err(dat_error("r5 执行外壳尺寸不合格"));
     }
+    let xdata = if prof.xdata {
+        raw[xdata_at..xdata_at + xdata_size].to_vec()
+    } else {
+        Vec::new()
+    };
 
     let relocations = vec![(u32_be(raw, reloc_at), u32_be(raw, reloc_at + 4))];
     let mut resident_id = [0u8; 32];
@@ -367,6 +379,7 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         user_names: Vec::new(),
         recipes: Vec::new(),
         shell_header: raw[..256].to_vec(),
+        xdata,
     };
 
     check_engine_binding(
@@ -376,19 +389,30 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         dat.bss,
         &dat.relocations,
         raw.len(),
+        &dat.xdata,
     )?;
     let ram_u64 = add_u64(
         raw.len() as u64,
         u64::from(dat.bss),
         "r5 BSS 或重定位不合格",
     )?;
-    if ram_u64 > MAX_RAM as u64 || u16_be(raw, 120) != 1 {
+    let entry_u64 = u64::from(dat.entry);
+    if ram_u64 > MAX_RAM as u64
+        || u16_be(raw, 120) != 1
+        || entry_u64 < 256
+        || entry_u64 > 256 + (engine_size as u64) - 4
+        || !dat.entry.is_multiple_of(4)
+    {
         return Err(dat_error("r5 BSS 或重定位不合格"));
     }
     for &(patch, target) in &dat.relocations {
         let p_u64 = u64::from(patch);
-        let p_end = add_u64(p_u64, 4, "r5 重定位与引擎不匹配")?;
-        if p_end > raw.len() as u64
+        let t_u64 = u64::from(target);
+        if p_u64 < 256
+            || p_u64 > 256 + (engine_size as u64) - 4
+            || !patch.is_multiple_of(4)
+            || t_u64 < 256
+            || t_u64 >= ram_u64
             || u32_be(raw, fit_count(p_u64, "r5 重定位与引擎不匹配")?) != target
         {
             return Err(dat_error("r5 重定位与引擎不匹配"));
@@ -396,6 +420,11 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     }
 
     let cat = catalogue(library, generation)?;
+    if cat[80..112] != dat.resident_id || cat[212..228] != dat.abi_id {
+        return Err(dat_error(format!(
+            "GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。"
+        )));
+    }
     let cat_sections = sections(cat)?;
     let (shared_at, shared_size) = cat_sections[5];
     let shared = &cat[shared_at..shared_at + shared_size];

@@ -69,6 +69,8 @@ pub struct Profile {
     pub flat_list: bool,
     pub mount_knobs_from_50mm: bool,
     pub library_generation: Option<u32>,
+    pub library_sha256: Option<&'static str>,
+    pub xdata: bool,
 }
 
 impl Profile {
@@ -82,6 +84,8 @@ impl Profile {
             flat_list: false,
             mount_knobs_from_50mm: false,
             library_generation: None,
+            library_sha256: None,
+            xdata: false,
         }
     }
 
@@ -182,6 +186,20 @@ pub const PROFILES: &[Profile] = &[
         library_generation: Some(178),
         ..Profile::simple(182, 98304, true)
     },
+    Profile {
+        max_engine: 81920,
+        mount_knobs_from_50mm: true,
+        library_generation: Some(178),
+        ..Profile::simple(185, 98304, true)
+    },
+    Profile {
+        max_engine: 98304,
+        mount_knobs_from_50mm: true,
+        library_generation: Some(178),
+        library_sha256: Some("b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34"),
+        xdata: true,
+        ..Profile::simple(250, 98304, true)
+    },
 ];
 
 pub fn profile(generation: u32) -> Option<&'static Profile> {
@@ -256,6 +274,7 @@ pub struct Dat {
     pub user_names: Vec<String>,
     pub recipes: Vec<FullRecipe>,
     pub shell_header: Vec<u8>,
+    pub xdata: Vec<u8>,
 }
 
 impl Dat {
