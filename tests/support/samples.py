@@ -32,11 +32,12 @@ REQUIRED_MARK = "gxr_sample_missing"
 # own key is below the helper's share; adding, removing or renaming other files never moves it in
 # or out. The share is fixed, so a sample grows with captures/ instead of shifting.
 SAMPLE_SALT = b"gxr-studio real-sample v1:"
-# Share of captures/ per requested sample. On 2026-11-18 captures/ held 1,336 usable RAW+JPG pairs;
-# 1/954 gives about 1.4 times the old spread's count. A hash sample is random across folders, so
-# it needs that margin: with it every helper call keeps at least its old count and its old number
-# of capture folders.
-SAMPLE_UNIT = 1 / 954
+# Share of captures/ per requested sample, fixed (never derived from the current file count). On
+# 2026-11-18 captures/ held 1,336 usable RAW+JPG pairs; 1/910 gives about 1.5 times the old spread's
+# count. A hash sample is random across folders, so it needs that margin: with it every helper call
+# keeps at least its old count, its old number of top-level capture folders and its old number of
+# folders that directly hold the DNGs (docs/mobile.md has the table).
+SAMPLE_UNIT = 1 / 910
 # The smallest request: callers that need one or two pairs take them from this share.
 SAMPLE_FLOOR = 8
 
@@ -63,14 +64,17 @@ def sample_share(limit: int) -> float:
 
 
 def stable_sample(paths: Iterable[Path], root: Path, limit: int) -> list[Path]:
-    """The paths whose :func:`sample_key` is below :func:`sample_share` of ``limit``, in path order.
+    """The paths whose :func:`sample_key` is below :func:`sample_share` of ``limit``, in key order.
 
     Whether a file is picked depends only on its own path, so files added elsewhere under
-    ``root`` never change it. The count is not capped: it is about 1.4 times ``limit`` at the
+    ``root`` never change it. Key order makes a caller's slice ``[:k]`` the k lowest keys: spread
+    across folders like the sample itself, and changed by a new capture only when its own key is
+    below the k-th. The count is not capped: it is about 1.5 times ``limit`` at the
     2026-11-18 corpus (never fewer than the old spread gave) and grows with captures/.
     """
     share = sample_share(limit)
-    return sorted((p for p in paths if sample_key(p, root) < share), key=lambda p: p.as_posix())
+    keyed = [(sample_key(p, root), p.as_posix(), p) for p in paths]
+    return [p for key, _name, p in sorted(keyed) if key < share]
 
 
 def pinned_capture(rel_sha: str, content_sha: str) -> Path:

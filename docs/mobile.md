@@ -59,7 +59,28 @@ Python 是对照的标准。测试在 `tests/test_core_parity_<范围>.py`，调
 
 真照片从 `GXR_STUDIO_TEST_PARENT/captures/` 里找，路径含 `backup` 的不要。不要把路径写死，也不要把 DNG 放进仓库。合成文件在测试里用 `tests/support/dng_writer.py` 现造。
 
-抽样是稳定的（parity-drift-1，2026-11-18）：`tests/support/samples.stable_sample` 给每个文件一个键，即 `SAMPLE_SALT` 加上它相对 `captures/` 的路径做 SHA-256，取前 8 字节除以 2**64。键小于份额 `max(limit, 8) / 954` 的文件入选，按路径排序。一张照片入不入选只看它自己的路径：别处加文件、删文件都不会把它挤进挤出。以前按排序后的下标均匀抽，别的线程一加照片，整个样本就移位，换上从没测过的照片。`export_source_cases`、`export_pipeline_cases`、`hdr_parity` 的 `real_pairs` 和 `lut_cases.real_dngs` 都走这条；压缩方式不是 1 的 DNG 仍然先排除。份额是固定的，所以样本随 `captures/` 一起变大，不封顶。2026-11-18 时可用的成对照片有 1,336 对，每个调用点拿到的张数和覆盖的拍摄文件夹数都不少于旧的均匀抽样（大约是旧张数的 1.4 倍）。换盐或份额会换掉整个样本，要当作一次单独的改动。要固定测某一张照片时，用 `samples.pinned_capture(路径哈希, 内容哈希)`，仓库里不写文件名。
+抽样是稳定的（parity-drift-1，2026-11-18）：`tests/support/samples.stable_sample` 给每个文件一个键，即 `SAMPLE_SALT` 加上它相对 `captures/` 的路径做 SHA-256，取前 8 字节除以 2**64。键小于份额 `max(limit, 8) / 910` 的文件入选，按键排序，所以调用方取 `[:k]` 拿到的是键最小的 k 张，和整个样本一样散在各个文件夹里，只有新照片自己的键比第 k 小时才会换。一张照片入不入选只看它自己的路径：别处加文件、删文件都不会把它挤进挤出。以前按排序后的下标均匀抽，别的线程一加照片，整个样本就移位，换上从没测过的照片。`export_source_cases`、`export_pipeline_cases`、`hdr_parity` 的 `real_pairs` 和 `lut_cases.real_dngs` 都走这条；压缩方式不是 1 的 DNG 仍然先排除。份额是固定的，所以样本随 `captures/` 一起变大，不封顶。份额是写死的常数，不按当前文件总数去调。2026-11-18 晚上 `captures/` 有 1,413 个 DNG、1,345 对可用的成对照片，分在 55 个顶层文件夹、108 个直接放 DNG 的文件夹里。在这份语料上，每个调用点（包括取 `[:k]` 的地方）的张数、顶层文件夹数、DNG 所在文件夹数都不少于旧的均匀抽样（大约是旧张数的 1.5 倍）：
+
+| 调用点 | 旧的均匀抽样 | 现在（1/910） |
+|---|---|---|
+| export-source `REAL`（`xs(20)`） | 20 / 14 / 17 | 34 / 16 / 18 |
+| export-source `CANDIDATES`（`xs(60)`） | 60 / 22 / 29 | 91 / 26 / 30 |
+| RAW 端到端（20 对） | 20 / 13 / 16 | 34 / 16 / 18 |
+| RAW 的 LUT 分支（`[:3]`） | 3 / 1 / 3 | 3 / 3 / 3 |
+| HDR 导出端到端（10 对） | 10 / 8 / 10 | 14 / 9 / 10 |
+| HDR 导出 blur 循环（8） | 8 / 6 / 8 | 12 / 8 / 9 |
+| `pipe(2)` ink backdrop | 2 / 2 / 2 | 12 / 8 / 9 |
+| `pipe(6)` prepare 裁剪 | 6 / 5 / 6 | 12 / 8 / 9 |
+| `pipe(8)` export pipeline | 8 / 7 / 8 | 12 / 8 / 9 |
+| `pipe(18)` prepare 端到端 | 18 / 12 / 15 | 31 / 14 / 16 |
+| `pipe(20)` jpeg optimize | 20 / 14 / 17 | 34 / 16 / 18 |
+| `hp(8)` HDR 流程、FFT | 8 / 7 / 8 | 12 / 8 / 9 |
+| `hp(12)` 手机 HDR 预览 | 12 / 10 / 12 | 20 / 12 / 13 |
+| `lut real_dngs(60)` | 60 / 23 / 32 | 94 / 27 / 33 |
+| export-source `REAL[:3]` / 带 JPG 的 `[:3]` / `[:2]` / `REAL[0]` | 3/1/3、3/1/3、2/1/2、1/1/1 | 3/3/3、3/3/3、2/2/2、1/1/1 |
+| HDR 导出 `_pairs(2)` / `_pairs(1)` | 2/2/2、1/1/1 | 2/2/2、1/1/1 |
+
+格子里是「张数 / 顶层文件夹数 / DNG 所在文件夹数」。旧的均匀抽样本身随语料变，所以这一列是在同一份语料上算的。换盐或份额会换掉整个样本，要当作一次单独的改动。要固定测某一张照片时，用 `samples.pinned_capture(路径哈希, 内容哈希)`，仓库里不写文件名。
 
 ## 移植一个 Python 模块
 
@@ -298,7 +319,7 @@ WASM：`hdr_align`、`hdr_gain`（`HdrGain` 有 `codes()` 和 `report`）、`hdr
 ### 不逐位相同的地方，以及为什么不追
 
 - scipy 在 arm64 上把短高斯核（sigma 0.5、0.6）的累加编成了 FMA；`np.convolve`（BLAS）和 `np.interp` 也会融合。CONVENTIONS 不许 FMA，所以这些 float64 中间量可能差最后一位，float64 滤波输出按 `1e-12` 相对比较。
-- numpy 的 float32 `log2`、`pow` 调的是 Apple 的 libm，它在少数输入上不是正确舍入。按 PORT-WAVE-1「平台 libm」那条规则，对照值是正确舍入的结果，不抄 Apple 的值。这里用「libm 的 float64 结果舍入一次」：sRGB 的 256 个码值全部等于 `decimal` 50 位算出、再舍入一次的 float32（`test_srgb_to_linear_is_correctly_rounded`）。本机 numpy 只在码值 71、180 上不同，所以 `sdr_luma_grid` 会差最后一位；测试同时断言 Python 的 `align` 在 Rust 的网格上给出和 Rust 一样的结果。增益码值的 Gate A 是 Rust 从自己的网格算出的码值等于 Python 在同一张网格上的 `compute_gain`；和 Python 自己网格上的码值相比（Gate B），每个不同的码值都归因到这处 `powf`，且最多差 1（PORT-WAVE-1 Amendment 3），测试逐点打出两边量化前的值。有一对实拍照片因此有 8 个码值各差 1，见「导出管线」下的平台 libm 一节。
+- numpy 的 float32 `log2`、`pow` 调的是 Apple 的 libm，它在少数输入上不是正确舍入。按 PORT-WAVE-1「平台 libm」那条规则，对照值是正确舍入的结果，不抄 Apple 的值。这里用「libm 的 float64 结果舍入一次」：sRGB 的 256 个码值全部等于 `decimal` 50 位算出、再舍入一次的 float32（`test_srgb_to_linear_is_correctly_rounded`）。本机 numpy 只在码值 71、180 上不同，所以 `sdr_luma_grid` 会差最后一位；测试同时断言 Python 的 `align` 在 Rust 的网格上给出和 Rust 一样的结果。增益码值的 Gate A 是 Rust 从自己的网格算出的码值等于 Python 在同一张网格上的 `compute_gain`；和 Python 自己网格上的码值相比（Gate B），每个不同的码值都归因到这处 `powf`（`check_sdr` 先证明桌面网格等于主机表的回放），且最多差 1（PORT-WAVE-1 Amendment 3），测试逐点打出两边量化前的值。有一对实拍照片因此有 8 个码值各差 1，见「导出管线」下的平台 libm 一节。
 - 量化前的 float32 增益平面不设门槛：scipy 的 sigma 0.6 高斯在 arm64 上是 FMA，个别格子差 1 ulp；uint8 码值和元数据是精确的。
 
 ### hdr-fft：和 numpy 逐位相同的相位相关（`crates/gxr-hdr/src/fft/`）
@@ -419,8 +440,8 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 新的现场照片让旧的均匀抽样移位，抽到了三对以前没测过的照片，各有一处和桌面不同。三处都是 macOS libm 在个别输入上没有正确舍入，`gxr_math` 是正确舍入的，所以按 PORT-WAVE-1「平台 libm」规则归因，不改 Rust。测试的写法是：Gate A，Rust 等于桌面自己的计算换上正确舍入的函数，逐位相同；Gate B，Rust 和桌面不同的每个值，都是桌面和这个对照值不同的地方，未归因为 0；换回主机函数的回放必须重现桌面自己的结果，这是负对照。三对照片在 `tests/test_core_parity_drift_pins.py` 里按路径哈希固定。
 
 - **HDR 数据层，`tan`。** 垂直透视 15（`geometry._slider_s`）的 `tan` 参数是 `0x3fb41b2f769cf0df`。macOS 给 `0x3fb425cb88f37c5a`，比正确舍入的 `…59` 高 1 ulp（真值在 `…5a` 下方 0.593 ulp），Rust 给 `…59`。于是 `sv` 是 `0x3f93591bafa566d1` 对 `…d0`。在扭正后的 (2699, 3411)，桌面的 `sx − 3388` 正好是 `0x1.2fac93p-1`，落在 float32 的舍入中点上，向偶数舍成 `0x1.2fac94p-1`；Rust 的是 `0x1.2fac92ffffp-1`，舍成 `0x1.2fac92p-1`。双线性结果在裁剪后的 (2680, 3319, 0) 差 1 ulp（桌面 `0x1.4c86fep-5`，Rust `0x1.4c86fcp-5`）。2356 万个值里只有这 1 个不同；增益图和导出文件逐字节相同。`host_libm.layer_tan` 用 `HdrSpy` 记下的扭正前数据层和 `warp` / `box` / `crop` 步骤重放桌面代码：用 80 位 `Decimal` 的正确舍入 `tan`，结果等于 Rust（Gate A）；用主机 `tan`，结果等于桌面（负对照）。不用照片的版本在 4288×2848 的合成层上做同样的断言。
-- **中性 RAW 底图，`powf`。** rawrender 已知的输入 `0x3eadd76b`：macOS `powf` 给 `0x3f233873`，正确舍入和 Rust 是 `0x3f233874`，`srgb_encode` 落在 157.5 两边：桌面 157，Rust 158。这对照片有 3 个这样的红色值，裁剪后剩 2 个，饱和度 +15 把它们变成 157 对 159（第二次量化，局部斜率约 1.1，不是病态路径；主机函数那一级仍是 1 个码值）。长边 1600 的缩放把这 2 个值平均掉了，所以导出文件和桌面逐字节相同。`run_case` 在画布不同时取 Rust 的底图，用 `host_libm.neutral_base_powf` 逐点核对：量化前的 float32 码值两边逐位相同，Rust 的幂（`dng-srgb-pow`）等于 60 位 `Decimal` 的正确舍入值、numpy 的不等，两边的 uint8 各自由自己的幂算出且只差 1。然后要求 Rust 的画布等于桌面成片步骤作用在 Rust 底图上的结果（Gate A）。文件和桌面整张导出在 Rust 底图上的结果比，这里也等于桌面原本的文件。
-- **HDR 增益码值，sRGB 码值 71、180 的 `powf`。** 日志里的「differ: 8」是**个数**：8 个码值各差 1，不是一个码值差 8。这对照片的 SDR 网格有 2,819 / 763,264 格不同（Rust 的网格等于正确舍入的 oracle）。`fit_curve` 第 29 个区间有 9,867 格，是奇数，中位数就是其中一格，这一格的 log2 值从 `-0x1.228056p+0` 变成 `-0x1.22805ap+0`；单调化和 5 点平滑后 `cy[26..30]` 变了，拐点 `xk` 跟着动，`delta` 有 323,630 格在 float32 末位上变化，`gain_max` 仍是 1.5978。8 格的 `255·r` 正好跨过 `k + 0.5`，例如 (10, 363) 是 228.50001526 对 228.49998474，码值 229 对 228。Gate A：Rust 从自己网格算出的码值，等于 Python 在同一张网格上的 `compute_gain`，0 个不同。
+- **中性 RAW 底图，`powf`。** rawrender 已知的输入 `0x3eadd76b`：macOS `powf` 给 `0x3f233873`，正确舍入和 Rust 是 `0x3f233874`，`srgb_encode` 落在 157.5 两边：桌面 157，Rust 158。这对照片有 3 个这样的红色值，裁剪后剩 2 个；饱和度 +15 之后，画布上一处差 2 码（(1411, 3225, 0)，157 对 159），一处差 1 码（(2453, 707, 0)，157 对 158），最大差 2（第二次量化，局部斜率约 1.12，不是病态路径；主机函数那一级仍是 1 个码值）。长边 1600 的缩放把这 2 个值平均掉了，所以导出文件和桌面逐字节相同。`run_case` 在画布不同时取 Rust 的底图，用 `host_libm.neutral_base_powf` 逐点核对：量化前的 float32 码值两边逐位相同，Rust 的幂（`dng-srgb-pow`）等于 60 位 `Decimal` 的正确舍入值、numpy 的不等，两边的 uint8 各自由自己的幂算出且只差 1。然后要求 Rust 的画布等于桌面成片步骤作用在 Rust 底图上的结果（Gate A）。文件和桌面整张导出在 Rust 底图上的结果比，这里也等于桌面原本的文件。
+- **HDR 增益码值，sRGB 码值 71、180 的 `powf`。** 日志里的「differ: 8」是**个数**：8 个码值各差 1，不是一个码值差 8。这对照片的 SDR 网格有 2,819 / 763,264 格不同（Rust 的网格等于正确舍入的 oracle）。`fit_curve` 第 29 个区间有 9,867 格，是奇数，中位数就是其中一格，这一格的 log2 值从 `-0x1.228056p+0` 变成 `-0x1.22805ap+0`；单调化和 5 点平滑后 `cy[26..30]` 变了，拐点 `xk` 跟着动，`delta` 有 323,630 格在 float32 末位上变化，`gain_max` 仍是 1.5978。8 格的 `255·r` 正好跨过 `k + 0.5`，例如 (10, 363) 是 228.50001526 对 228.49998474，码值 229 对 228。Gate A：Rust 从自己网格算出的码值，等于 Python 在同一张网格上的 `compute_gain`，0 个不同。网格这一级另有主机回放：桌面的网格必须逐位等于用主机 sRGB 表（`srgb_to_linear(arange(256))`）走同一套 `block_mean(表[rgb] @ LUMA)` 的结果，而主机表和正确舍入表只在 `POW_CODES` 上不同，所以桌面和 Rust 的每个网格差都归到这两个码值的 `powf` 上。没有这一步时，桌面网格上一处和 `powf` 无关的改动（Sol r1 的反例：(197, 749) 从 `0x3ef97c70` 改成 `0x3ef98070`）会让第 9 个码值差 1，并被当成 `powf` 放过；现在它在 `check_sdr` 就失败，这个反例是固定的负对照。
 
 ### 内存
 

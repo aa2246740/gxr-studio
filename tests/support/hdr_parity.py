@@ -224,11 +224,19 @@ _ORACLE = srgb_oracle()
 
 
 def check_sdr(python: np.ndarray, rust: np.ndarray, rgb: np.ndarray, factor: int, what: str) -> int:
-    """Rust ``sdr_luma_grid`` must equal numpy's computed from the correctly rounded sRGB table.
+    """Rust ``sdr_luma_grid`` must equal numpy's computed from the correctly rounded sRGB table, and
+    the desktop's grid must equal the same computation from the host's own table (the host-libm
+    replay), bit for bit. The two tables differ only at POW_CODES (Apple ``powf``), so every cell
+    where the desktop and Rust differ is attributed to them; any other change to the desktop's
+    grid fails here instead of reaching the gain codes.
 
     Returns how many grid cells differ from numpy itself (Apple ``powf`` at POW_CODES).
     """
     same_f32(g.block_mean(_ORACLE[0][rgb] @ g.LUMA, factor), rust, what)
+    host = g.srgb_to_linear(np.arange(256, dtype=np.uint8))
+    off = [c for c in range(256) if int(host[c].view(np.uint32)) != int(_ORACLE[0][c].view(np.uint32))]
+    assert set(off) <= set(POW_CODES), f"{what}: host sRGB table differs from the correctly rounded one at codes {off}"
+    same_f32(g.block_mean(host[rgb] @ g.LUMA, factor), python, f"{what}: host-libm replay vs desktop")
     return int((python.view(np.uint32) != rust.view(np.uint32)).sum())
 
 
@@ -343,7 +351,7 @@ def e2e_codes(tmp: Path, rsdr: np.ndarray, y: np.ndarray, clip: np.ndarray, ref:
 def real_pairs(limit: int = 8) -> list[tuple[Path, Path]]:
     """RAW+JPG pairs (same stem) under ``captures/``, no backup paths, in the stable sample for
     ``limit`` (``support.samples.stable_sample``: membership depends only on the DNG's own path),
-    in path order.
+    in key order.
 
     A raw IFD whose compression is not 1 is skipped. Stock firmware is uncompressed; modified-firmware
     field DNGs use 7 (lossless JPEG), which the desktop decoder refuses. Unreadable tags stay.

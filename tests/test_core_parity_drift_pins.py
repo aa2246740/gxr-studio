@@ -10,9 +10,9 @@ SHA-256 of the DNG; no photo name is in the repo or the output.
   ``tan`` is 1 ulp high there, so the desktop's sample position at one layer element lands exactly
   on a float32 rounding tie and the bilinear value moves 1 ulp. The export file is unchanged.
 - Neutral RAW base, ``powf``: input ``0x3eadd76b`` in ``srgb_encode`` (rawrender's known case):
-  red 157 on the desktop, 158 in Rust at three pixels; a saturation edit turns two of them into
-  2-code differences in the finished canvas, and the 1600-pixel resize averages them away, so the
-  file is byte-identical.
+  red 157 on the desktop, 158 in Rust at three pixels. Two survive the crop; after a saturation
+  edit the canvas differs by 2 codes at one of them (157 vs 159) and by 1 code at the other
+  (157 vs 158). The 1600-pixel resize averages them away, so the file is byte-identical.
 - HDR gain from Rust's own SDR grid, ``powf`` at sRGB codes 71 and 180 (``POW_CODES``): the grid
   moves one tone-curve bin median, ``delta`` moves by float noise, and 8 gain codes cross a ``.5``
   boundary, each by exactly 1 code.
@@ -124,7 +124,7 @@ def test_pinned_raw_neutral_base_host_powf(tmp_path: Path, monkeypatch: pytest.M
     """The RAW export pair that broke ``test_raw_branches_real_pairs_match_export_finish`` on
     e85430f (``2 values differ, first at (1411, 3225, 0)``), with that test's ``RAW_CASES[1]``
     (neutral base, crop, saturation 15, long edge 1600). Three base values come from macOS
-    ``powf`` at one input; two survive the crop as 2-code canvas differences; the canvas equals
+    ``powf`` at one input; two survive the crop as canvas differences of 2 codes and 1 code; the canvas equals
     the desktop's own steps on Rust's base, and the file equals the desktop's byte for byte."""
     from support import export_source_cases as xs
     from support.frame_cases import FIXTURE_CJK, cjk_fonts
@@ -159,3 +159,26 @@ def test_pinned_gain_codes_host_powf(tmp_path: Path) -> None:
         "(371,1014) 131->130 130.50001525878906/130.49998474121094",
         "(406,883) 245->244 244.5/244.49996948242188",
     ]
+
+
+def test_gain_attribution_rejects_an_unrelated_grid_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Negative control (Sol r1 P1): one desktop grid cell that the host ``powf`` does not touch,
+    (197, 749), moved from ``0x3ef97c70`` to ``0x3ef98070``. That moves a 9th gain code by 1 at a
+    ``.5`` boundary, which Gate A and the 1-code cap alone would attribute; the host-libm replay of
+    the desktop grid in ``check_sdr`` must reject it instead."""
+    from gxr_studio.hdr import gain as g
+
+    dng, jpg = _pair(GAIN_PAIR)
+    real = g.sdr_luma_grid
+
+    def mutated(rgb: np.ndarray, factor: int) -> np.ndarray:
+        grid = real(rgb, factor)
+        assert int(grid[197, 749].view(np.uint32)) == 0x3EF97C70
+        grid[197, 749] = np.array(0x3EF98070, np.uint32).view(np.float32)
+        return grid
+
+    monkeypatch.setattr(g, "sdr_luma_grid", mutated)
+    with pytest.raises(
+        pytest.fail.Exception, match=r"^PINMUT sdr_luma_grid: host-libm replay vs desktop: 1 of 763264 differ; first \(197, 749\)"
+    ):
+        hp.flow(tmp_path, jpg.read_bytes(), dng, "PINMUT")

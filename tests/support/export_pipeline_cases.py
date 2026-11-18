@@ -64,10 +64,10 @@ def first_difference(a: bytes, b: bytes) -> str:
 
 
 def real_pairs(limit: int) -> list[tuple[Path, Path]]:
-    """The stable sample (``support.samples.stable_sample``) of DNG+JPG pairs, in path order.
+    """The stable sample (``support.samples.stable_sample``) of DNG+JPG pairs, in key order.
 
     A pair is in it when its DNG's own path key is below the share for ``limit``, so captures added
-    elsewhere never change it; the count is about 1.4 times ``limit`` today and grows with captures/.
+    elsewhere never change it; the count is about 1.5 times ``limit`` today and grows with captures/.
     A raw IFD whose compression is not 1 is skipped. Stock firmware is uncompressed; modified-firmware
     field DNGs use 7 (lossless JPEG), which the desktop decoder refuses. Unreadable tags stay.
     """

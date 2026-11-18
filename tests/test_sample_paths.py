@@ -271,7 +271,9 @@ def test_stable_sample_membership_depends_only_on_each_file(tmp_path):
         before = samples.stable_sample(first, root, limit)
         after = samples.stable_sample(first + later, root, limit)
         assert [p for p in after if p in set(first)] == before
-        assert before == [p for p in first if samples.sample_key(p, root) < samples.sample_share(limit)]
+        assert before == sorted(
+            (p for p in first if samples.sample_key(p, root) < samples.sample_share(limit)), key=lambda p: samples.sample_key(p, root)
+        )
     assert (
         set(samples.stable_sample(first, root, 8)) <= set(samples.stable_sample(first, root, 20)) <= set(samples.stable_sample(first, root, 60))
     )

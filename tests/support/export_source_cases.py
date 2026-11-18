@@ -148,10 +148,10 @@ def decoded_jpg(path: Path) -> np.ndarray:
 
 
 def real_pairs(cap: int) -> list[tuple[Path, Path | None]]:
-    """DNGs under captures/ (no backups) in the stable sample for ``cap``, in path order, each with its JPG if present.
+    """DNGs under captures/ (no backups) in the stable sample for ``cap``, in key order, each with its JPG if present.
 
     Membership depends only on each DNG's own path (``support.samples.stable_sample``); the count is
-    about 1.4 times ``cap`` today and grows with captures/.
+    about 1.5 times ``cap`` today and grows with captures/.
     A raw IFD whose compression is not 1 is skipped. Stock firmware is uncompressed; modified-firmware
     field DNGs use 7 (lossless JPEG), which the desktop decoder refuses. Unreadable tags stay.
     """
