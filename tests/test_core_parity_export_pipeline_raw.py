@@ -10,7 +10,10 @@ runs export-source's ``color_image`` itself) then ``export-run-complete``. Gates
 - labels exact, in order; frame and stamp layout JSON exact;
 - RAW branches: Rust's canvas equals Python's finished array (no ink) or the background+photo
   oracle (ink), and the file equals ``export_finish``'s byte for byte (12 ICC timestamp bytes
-  pinned);
+  pinned). A neutral base that differs only where macOS ``powf`` is not correctly rounded
+  (``support.host_libm.neutral_base_powf``, the platform libm rule) is attributed point by point;
+  the canvas and the file then equal the desktop's own steps run on Rust's (correctly rounded)
+  base;
 - LUT branches: the base picture is gated by export-source's Gate A/B (``export_source_lut``);
   a base difference is attributed point by point, and Python's own array fed to complete must
   still give the desktop file byte for byte.
@@ -43,6 +46,7 @@ from gxr_studio.meta import read_dng_meta
 from gxr_studio.render.params import RecipeSel, parse_edit
 from support import export_source_cases as xs
 from support import export_source_run as xr
+from support import host_libm as hl
 from support.core_cli import require_cli, run_json
 from support.export_pipeline_cases import check, cli_ok, mtime_args, note, same_file_redacted, same_pixels, same_redacted
 from support.frame_cases import FIXTURE_CJK, cjk_fonts, desktop_mark, font_args
@@ -203,11 +207,23 @@ def run_case(
     same_redacted(prepared["stamp"], None if py_stamp is None else json.loads(json.dumps(py_stamp.to_json())), f"{stem} stamp layout")
     want_canvas = photo if py_frame is None else _photo_only(photo, py_frame)
     no_ink = py_frame is None and py_stamp is None
+    libm: dict[str, int] | None = None
+    if lut is None and canvas.shape == want_canvas.shape and not np.array_equal(canvas, want_canvas):
+        # Platform libm rule: Rust's neutral base differs from the desktop's only where macOS powf is
+        # not correctly rounded. Gate A: the desktop's own finish on Rust's base gives Rust's canvas.
+        rs_base = _rust_base(tmp, stem, args, side, base)
+        same_redacted(res.render, "neutral-preview", f"{stem} render with a base difference")
+        libm = hl.neutral_base_powf(rgb0, rs_base, dng, tmp, f"{stem} base")
+        oracle, _hdr = real_finish_array(rs_base, edit, **{**kw, "frame": FrameSpec(style="none"), "stamp": replace(stamp, enabled=False)})
+        oracle_canvas = oracle if py_frame is None else _photo_only(oracle, py_frame)
+        libm["canvas_values"] = int(np.count_nonzero(canvas != want_canvas))
+        libm["canvas_max_code"] = int(np.abs(canvas.astype(np.int16) - want_canvas.astype(np.int16)).max())
+        want_canvas = oracle_canvas
     same_pixels(canvas, want_canvas, f"{stem} canvas")
     base_diff = int(np.count_nonzero(rs_base != rgb0)) if rs_base.shape == rgb0.shape else -1
     if lut is None:
-        same_redacted(base_diff, 0, f"{stem} base picture differences")
-    fed = canvas if (no_ink and base_diff == 0) else py_rgb
+        same_redacted(base_diff, 0 if libm is None else libm["base_values"], f"{stem} base picture differences")
+    fed = canvas if (no_ink and (base_diff == 0 or libm is not None)) else py_rgb
     same_redacted(prepared["state"]["source"], "jpg" if jpg is not None else "dng", f"{stem} source")
     s, c, o = (tmp / f"{stem}.{x}" for x in ("state.json", "fed.npy", "jpg"))
     s.write_text(json.dumps(prepared["state"], ensure_ascii=False), encoding="utf-8")
@@ -215,7 +231,12 @@ def run_case(
     code, done = run_json(["export-run-complete", "--canvas", str(c), "--state", str(s), "--src", str(source), "--out", str(o)])
     cli_ok(code, done, f"{stem} complete")
     got = o.read_bytes()
-    same_file_redacted(got, py_file, stem)
+    want_file = py_file
+    if libm is not None and fed is canvas:
+        # Gate A for the file: the desktop's whole export with Rust's base in place of its own.
+        want_file = _export_on_base(h, monkeypatch, shot, edit, side, tmp / f"{stem}-oracle", case, rs_base)
+        libm["file_differs"] = int(want_file != py_file)
+    same_file_redacted(got, want_file, stem)
     # The source EXIF really travelled (tag ids counted, values never printed).
     with Image.open(o) as im:
         exif = im.getexif()
@@ -223,13 +244,34 @@ def run_case(
     same_redacted(done["result"]["file_name"], res.path.name, f"{stem} file name")
     for key in ("width", "height", "render", "render_label", "render_kind", "calibrated", "detail", "hdr", "hdr_reason"):
         same_redacted(done["result"][key], getattr(res, key), f"{stem} result.{key}")
-    return {"no_ink": no_ink, "base_diff": base_diff, "rgb0": rgb0, "rs_base": rs_base, "shot": shot, "render": res.render}
+    return {"no_ink": no_ink, "base_diff": base_diff, "rgb0": rgb0, "rs_base": rs_base, "shot": shot, "render": res.render, "libm": libm}
+
+
+def _export_on_base(
+    h: xs.Home,
+    monkeypatch: pytest.MonkeyPatch,
+    shot: dict[str, Any],
+    edit: Any,
+    side: dict[str, Any],
+    dest: Path,
+    case: tuple[Any, ...],
+    rgb: np.ndarray,
+) -> bytes:
+    """``export_finish`` for ``case`` with ``finish_array`` given ``rgb`` instead of the rendered base."""
+    _side, base, _keep, quality, long_edge = case
+    with monkeypatch.context() as mp:
+        mp.setattr(serve_mod, "_embedded_rgb", lambda _p: None)
+        mp.setattr(xr.service.chain, "bake_chroma", xr._cached_bake)
+        mp.setattr(serve_mod, "finish_array", lambda _rgb, e, **kw: real_finish_array(rgb, e, **kw))
+        res = export_finish(h.render, h.lib, shot, edit, side, dest, [], quality=quality, long_edge=long_edge, fmt="jpeg", base=base)
+    return res.path.read_bytes()
 
 
 def test_capture_scanners_skip_raw_compression_7(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A synthetic CFA whose raw IFD compression is 7 is left out. Unreadable headers stay."""
     from support import export_pipeline_cases as pipe
     from support import hdr_parity as hp
+    from support import samples
     from support.dng_writer import write_dng
 
     def write(name: str, compression: int | None) -> None:
@@ -243,6 +285,7 @@ def test_capture_scanners_skip_raw_compression_7(tmp_path: Path, monkeypatch: py
     write("plain.DNG", 1)
     write("lossy.DNG", 7)
     write("notes.DNG", None)
+    monkeypatch.setattr(samples, "SAMPLE_UNIT", 1.0)  # the whole folder: this test is about the filter
     monkeypatch.setattr(xs, "CAPTURES", tmp_path)
     monkeypatch.setattr(pipe, "CAPTURES", tmp_path)
     monkeypatch.setattr(hp, "CAPTURES", tmp_path)
@@ -257,12 +300,12 @@ def test_capture_scanners_skip_raw_compression_7(tmp_path: Path, monkeypatch: py
 
 @pytest.mark.skipif(DAT is None, reason="没有 g127 DAT")
 def test_raw_branches_real_pairs_match_export_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_icc: bytes) -> None:
-    pairs = [(d, j) for d, j in xs.real_pairs(60) if j is not None]
+    pairs = [(d, j) for d, j in xs.real_pairs(20) if j is not None]
     if len(pairs) < 20:
         missing("captures/ 里不足 20 对 RAW+JPG（export-pipeline）")
-    pairs = [pairs[(i * len(pairs)) // 20] for i in range(20)]
     h = xs.make_home(tmp_path / "home", DAT)
     tally: dict[str, int] = {}
+    libm = {"cases": 0, "base_values": 0, "canvas_values": 0, "files": 0}
     with cjk_fonts((FIXTURE_CJK,)):
         for idx, (dng, jpg) in enumerate(pairs):
             case = RAW_CASES[idx % len(RAW_CASES)]
@@ -270,8 +313,14 @@ def test_raw_branches_real_pairs_match_export_finish(tmp_path: Path, monkeypatch
             out = run_case(h, tmp_path, monkeypatch, f"W{idx:03d}", dng, jpg if keep_jpg else None, case)
             key = f"{out['render']}/{'no-ink' if out['no_ink'] else 'ink'}/{'pair' if keep_jpg else 'dng-only'}"
             tally[key] = tally.get(key, 0) + 1
+            if out["libm"] is not None:
+                libm["cases"] += 1
+                libm["base_values"] += out["libm"]["base_values"]
+                libm["canvas_values"] += out["libm"]["canvas_values"]
+                libm["files"] += out["libm"].get("file_differs", 0)
     note("e2e raw", tally)
-    check(sum(tally.values()) == 20, "expected 20 exports")
+    note("e2e raw host powf", libm)
+    check(sum(tally.values()) == len(pairs), "expected one export per pair")
     check(any(k.startswith("recipe-prediction") for k in tally) and any(k.startswith("neutral-preview") for k in tally), "branches missing")
 
 

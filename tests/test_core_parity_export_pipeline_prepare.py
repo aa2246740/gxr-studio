@@ -359,7 +359,7 @@ CANARY_TARGETS: dict[str, tuple[str, str | None, int, list[Site]]] = {
         "test_core_parity_export_pipeline_raw.py::test_raw_branches_real_pairs_match_export_finish",
         "raw",
         1,
-        [(None, "test_core_parity_export_pipeline_raw.py", "same_file_redacted(got, py_file, stem)", "lengths ")],
+        [(None, "test_core_parity_export_pipeline_raw.py", "same_file_redacted(got, want_file, stem)", "lengths ")],
     ),
     "probe": (
         f"support/{_PROBE}",
