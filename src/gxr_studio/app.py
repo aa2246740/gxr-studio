@@ -89,11 +89,11 @@ def _migrate_luts(settings: Settings, render: RenderService) -> None:
 
 def start_halfframe_job(ctx: Context) -> None:
     """旧图库缺少双联判定文件时，在后台分批补算并写入 `.studio/halfframe-v1.json`（解码在 `lib.lock` 外进行）。"""
-    todo = ctx.lib.halfframe_pending()
-    if not todo:
-        return
     with ctx.hdr_lock:
         if ctx.hdr_stopping or ctx.jobs.active("halfframe"):
+            return
+        todo = ctx.lib.halfframe_pending()
+        if not todo:
             return
         progress = halfframe.HalfframeProgress(total=len(todo))
 

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +17,8 @@ from typing import Any
 
 import numpy as np
 from PIL import Image
+
+from .observe import log
 
 FULL_WIDTH = 4288
 FULL_HEIGHT = 2848
@@ -25,6 +29,7 @@ LUMA_THRESHOLD = 12
 HALFFRAME_VERSION = 1
 HALFFRAME_FILE = "halfframe-v1.json"
 HALFFRAME_REL = f".studio/{HALFFRAME_FILE}"
+FLUSH_INTERVAL = 1.0
 
 # 全分辨率下的双联黑缝列范围（含端点）：g250 为 112 px，早期测试固件 legacy48 为 48 px。
 SEAMS: tuple[tuple[int, int], ...] = (
@@ -113,26 +118,59 @@ def is_diptych(jpg_path: str | os.PathLike[str], *, sha256: str | None = None) -
 class VerdictStore:
     """图库级半格双联判定缓存（`.studio/halfframe-v1.json`）及其无上限内存镜像。"""
 
-    def __init__(self, path: Path, check_write: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        check_write: Callable[[], None] | None = None,
+        *,
+        flush_interval: float = FLUSH_INTERVAL,
+    ) -> None:
         self.path = Path(path)
         self._check_write = check_write
+        self._flush_interval = flush_interval
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._verdicts: dict[str, bool] = {}
+        self._dirty = False
+        self._readonly = False
+        self._save_warned = False
+        self._future_warned = False
+        self._closed = False
+        self._last_flush: float | None = None
+        self._timer: threading.Timer | None = None
 
     def load(self) -> None:
         loaded: dict[str, bool] = {}
+        future_version: int | None = None
         try:
             raw = self.path.read_text(encoding="utf-8")
             data = json.loads(raw)
         except (OSError, ValueError):
             data = None
-        if isinstance(data, dict) and data.get("version") == HALFFRAME_VERSION and isinstance(data.get("verdicts"), dict):
-            for k, v in data["verdicts"].items():
-                if isinstance(k, str) and isinstance(v, bool):
-                    loaded[k] = v
+        if isinstance(data, dict):
+            ver = data.get("version")
+            if isinstance(ver, int) and not isinstance(ver, bool) and ver > HALFFRAME_VERSION:
+                future_version = ver
+            elif ver == HALFFRAME_VERSION and isinstance(data.get("verdicts"), dict):
+                for k, v in data["verdicts"].items():
+                    if isinstance(k, str) and isinstance(v, bool):
+                        loaded[k] = v
         with self._lock:
+            timer = self._timer
+            self._timer = None
+            self._closed = False
             self._verdicts = loaded
+            self._dirty = False
+            self._last_flush = None
+            self._readonly = future_version is not None
+            self._save_warned = False
+            already_future = self._future_warned
+            if future_version is not None:
+                self._future_warned = True
+        if timer is not None:
+            timer.cancel()
+        if future_version is not None and not already_future:
+            log.event(logging.WARNING, "halfframe_future_version", version=future_version, supported=HALFFRAME_VERSION)
 
     def get(self, sha: str | None) -> bool | None:
         if not sha:
@@ -150,14 +188,23 @@ class VerdictStore:
         with self._lock:
             return {sha for sha, flag in self._verdicts.items() if flag}
 
-    def put(self, sha: str, value: bool, *, save: bool = True) -> None:
+    def put(self, sha: str, value: bool, *, save: bool = True, coalesce: bool = False, strict: bool = False) -> None:
         with self._lock:
             changed = self._verdicts.get(sha) is not value
             self._verdicts[sha] = value
-        if save and changed:
-            self.save()
+            if changed:
+                self._dirty = True
+            writable = not self._readonly
+            dirty = self._dirty
+        if not writable:
+            return
+        if coalesce:
+            if dirty:
+                self._flush_coalesced(strict=strict)
+        elif save and changed:
+            self._flush(strict=strict)
 
-    def put_many(self, items: dict[str, bool], *, replace: bool = False, save: bool = True) -> None:
+    def put_many(self, items: dict[str, bool], *, replace: bool = False, save: bool = True, strict: bool = False) -> None:
         with self._lock:
             if replace:
                 changed = self._verdicts != items
@@ -168,15 +215,91 @@ class VerdictStore:
                     if self._verdicts.get(sha) is not value:
                         changed = True
                     self._verdicts[sha] = value
-        if save and (changed or (replace and not self.path.exists())):
+            if changed:
+                self._dirty = True
+            writable = not self._readonly
+        if writable and save and (changed or (replace and not self.path.exists())):
+            self._flush(strict=strict)
+
+    def _timer_cb(self) -> None:
+        with self._lock:
+            self._timer = None
+            if self._closed or self._readonly or not self._dirty:
+                return
+            self._last_flush = time.monotonic()
+        self._save_quietly()
+
+    def _flush_coalesced(self, *, strict: bool = False) -> None:
+        timer: threading.Timer | None = None
+        due = False
+        with self._lock:
+            if self._closed or self._readonly or not self._dirty:
+                return
+            now = time.monotonic()
+            if self._last_flush is None or (now - self._last_flush) >= self._flush_interval:
+                due = True
+                timer = self._timer
+                self._timer = None
+                self._last_flush = now
+            elif self._timer is None:
+                delay = max(0.01, self._flush_interval - (now - self._last_flush))
+                t = threading.Timer(delay, self._timer_cb)
+                t.daemon = True
+                self._timer = t
+                t.start()
+        if timer is not None:
+            timer.cancel()
+        if due:
+            self._flush(strict=strict)
+
+    def flush(self, *, strict: bool = False) -> None:
+        with self._lock:
+            timer = self._timer
+            self._timer = None
+            dirty = self._dirty and not self._readonly
+        if timer is not None:
+            timer.cancel()
+        if dirty:
+            self._flush(strict=strict)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            timer = self._timer
+            self._timer = None
+            dirty = self._dirty and not self._readonly
+        if timer is not None:
+            timer.cancel()
+        if dirty:
+            self._save_quietly()
+
+    def _flush(self, *, strict: bool = False) -> None:
+        if strict:
             self.save()
+        else:
+            self._save_quietly()
+
+    def _save_quietly(self) -> None:
+        from .library.store import LibraryPathRefused
+
+        try:
+            self.save()
+        except (OSError, LibraryPathRefused) as exc:
+            with self._lock:
+                self._last_flush = time.monotonic()
+                already = self._save_warned
+                self._save_warned = True
+            if not already:
+                log.event(logging.WARNING, "halfframe_save_failed", error=type(exc).__name__)
 
     def save(self) -> None:
         with self._save_lock:
+            with self._lock:
+                if self._readonly:
+                    return
+                snapshot = dict(self._verdicts)
             if self._check_write is not None:
                 self._check_write()
-            with self._lock:
-                snapshot = dict(self._verdicts)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.parent / f".{self.path.name}.{uuid.uuid4().hex}.tmp"
             payload = json.dumps({"version": HALFFRAME_VERSION, "verdicts": snapshot}, ensure_ascii=False, sort_keys=True)
@@ -192,11 +315,16 @@ class VerdictStore:
                 except OSError:
                     pass
                 raise
+            with self._lock:
+                if self._verdicts == snapshot:
+                    self._dirty = False
+                self._last_flush = time.monotonic()
+                self._save_warned = False
 
 
 @dataclass
 class HalfframeProgress:
-    state: str = "running"  # running done cancelled
+    state: str = "running"  # running done cancelled failed
     total: int = 0
     done: int = 0
     diptychs: int = 0
@@ -226,20 +354,49 @@ def run_backfill(
     batch_size: int = 32,
 ) -> HalfframeProgress:
     """在 `lib.lock` 外批量检测旧图库还没落盘的 4288×2848 JPG，分批写回 `.studio/halfframe-v1.json`。"""
+    started = time.monotonic()
+    unreadable = 0
+    log.event(logging.INFO, "halfframe_backfill_started", total=progress.total)
     batch: dict[str, bool] = {}
-    for relpath, sha in todo:
-        if cancel.is_set():
-            break
-        verdict = detect_diptych(lib.abspath(relpath))
-        if verdict is not None:
-            batch[sha] = verdict
-        progress.advance(bool(verdict))
-        if len(batch) >= batch_size:
+    try:
+        for relpath, sha in todo:
+            if cancel.is_set():
+                break
+            verdict = detect_diptych(lib.abspath(relpath))
+            if verdict is None:
+                unreadable += 1
+            else:
+                batch[sha] = verdict
+            progress.advance(bool(verdict))
+            if len(batch) >= batch_size:
+                lib.record_halfframe_batch(batch)
+                batch.clear()
+        if batch:
             lib.record_halfframe_batch(batch)
-            batch.clear()
-    if batch:
-        lib.record_halfframe_batch(batch)
-    progress.finish("cancelled" if cancel.is_set() else "done")
+    except Exception as exc:
+        progress.finish("failed")
+        log.event(
+            logging.ERROR,
+            "halfframe_backfill_failed",
+            total=progress.total,
+            done=progress.done,
+            diptychs=progress.diptychs,
+            unreadable=unreadable,
+            error=type(exc).__name__,
+            seconds=round(time.monotonic() - started, 1),
+        )
+        raise
+    state = "cancelled" if cancel.is_set() else "done"
+    progress.finish(state)
+    log.event(
+        logging.INFO,
+        "halfframe_backfill_" + state,
+        total=progress.total,
+        done=progress.done,
+        diptychs=progress.diptychs,
+        unreadable=unreadable,
+        seconds=round(time.monotonic() - started, 1),
+    )
     return progress
 
 
@@ -271,7 +428,7 @@ def annotate_shot(
             if detected is not None:
                 diptych = detected
                 if jpg_sha:
-                    store.put(jpg_sha, detected, save=True)
+                    store.put(jpg_sha, detected, coalesce=True, strict=False)
     if diptych:
         files.pop("dng", None)
         d["has_raw"] = 0
@@ -299,7 +456,7 @@ def resolve_shot(shot: dict[Any, Any], store: VerdictStore, abspath: Callable[[s
             return shot
         diptych = detected
         if jpg_sha:
-            store.put(jpg_sha, detected, save=True)
+            store.put(jpg_sha, detected, coalesce=True, strict=False)
     if diptych == bool(shot.get("diptych")) and ("all_files" in shot):
         if not diptych or ("dng" not in shot.get("files", {}) and shot.get("has_raw") == 0):
             return shot
@@ -330,7 +487,7 @@ def ensure_verdict(
     verdict = detect_diptych(abspath(relpath))
     if verdict is None:
         return False
-    store.put(sha256, verdict, save=True)
+    store.put(sha256, verdict, save=True, strict=False)
     return verdict
 
 
@@ -339,15 +496,20 @@ def rebuild_verdicts(
     store: VerdictStore,
     abspath: Callable[[str], Path],
 ) -> None:
-    """`Library.rebuild` 在释放 `lib.lock` 后重建所有 4288×2848 JPG 的判定文件。"""
+    """`Library.rebuild` 在释放 `lib.lock` 后重建所有 4288×2848 JPG 的判定文件；已存的直接复用，合并落盘。"""
     verdicts: dict[str, bool] = {}
     for relpath, sha, width, height in items:
         if not sha or not is_target_dims(width, height):
             continue
+        known = store.get(sha)
+        if known is not None:
+            verdicts[sha] = known
+            continue
         verdict = detect_diptych(abspath(relpath))
         if verdict is not None:
             verdicts[sha] = verdict
-    store.put_many(verdicts, replace=True, save=True)
+    store.put_many(verdicts, save=False)
+    store.save()
 
 
 def pending_verdicts(db: sqlite3.Connection, store: VerdictStore) -> list[tuple[str, str]]:

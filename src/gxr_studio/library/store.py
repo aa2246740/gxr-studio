@@ -33,8 +33,8 @@ from .. import halfframe as hf
 from .. import meta as metamod
 from ..camdata.recipe_tags import RECIPE_TAG_VERSION, RecipeTag, parse_recipe_tag
 from . import sidecar as sc
-from .location import INDEX_SCHEMA as _SCHEMA
 from .location import check_library_location
+from .schema import INDEX_SCHEMA as _SCHEMA
 
 SCHEMA_VERSION = 1
 UNKNOWN_DATE_DIR = "未知日期"
@@ -171,6 +171,7 @@ class Library:
         self._db = db
 
     def close(self) -> None:
+        self._halfframe.close()
         with self.lock:
             if self._db is not None:
                 self._db.close()
@@ -423,7 +424,7 @@ class Library:
             return hf.pending_verdicts(self.db, self._halfframe)
 
     def record_halfframe_batch(self, items: dict[str, bool]) -> None:
-        self._halfframe.put_many(items, save=True)
+        self._halfframe.put_many(items, save=True, strict=True)
 
     def list_shots(self, date: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[Any, Any]]:
         sql, args = "SELECT * FROM shots", []
@@ -438,11 +439,11 @@ class Library:
             files_by, edits = self._fetch_meta(rows) if rows else ({}, {})
         return self._rows_to_shots(rows, files_by, edits, allow_decode=False)
 
-    def get_shot(self, shot_id: str) -> dict[Any, Any] | None:
+    def get_shot(self, shot_id: str, *, resolve: bool = True) -> dict[Any, Any] | None:
         with self.lock:
             rows = self.db.execute("SELECT * FROM shots WHERE shot_id=?", (shot_id,)).fetchall()
             files_by, edits = self._fetch_meta(rows) if rows else ({}, {})
-        return self._rows_to_shots(rows, files_by, edits, allow_decode=True)[0] if rows else None
+        return self._rows_to_shots(rows, files_by, edits, allow_decode=resolve)[0] if rows else None
 
     # ---- 写索引 -----------------------------------------------------------
     def commit_shot(

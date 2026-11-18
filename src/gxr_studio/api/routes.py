@@ -146,8 +146,8 @@ def identity_of(session: MountSession) -> Identity:
     return Identity(session.history_uuid, (fp.root_dev, fp.root_ino), verify=session.still_valid)
 
 
-def _shot_or_404(c: Any, shot_id: str) -> dict[Any, Any]:
-    shot = cast(dict[str, Any] | None, c.lib.get_shot(shot_id))
+def _shot_or_404(c: Any, shot_id: str, *, resolve: bool = True) -> dict[Any, Any]:
+    shot = cast(dict[str, Any] | None, c.lib.get_shot(shot_id, resolve=resolve))
     if shot is None:
         raise ApiError(404, "photo_not_found", "找不到这张照片。请刷新页面后重试。")
     return shot
@@ -482,7 +482,7 @@ def get_photo(shot_id: str, request: Request) -> Any:
 
 def _image(request: Request, shot_id: str, size: int) -> Response:
     c = ctx(request)
-    shot = _shot_or_404(c, shot_id)
+    shot = _shot_or_404(c, shot_id, resolve=False)
     # 导入相机数据/标定包会 purge_variants 删缓存；ensure 返回路径后文件可能马上被删，所以立刻把字节读进内存
     # （不用 FileResponse：它到发送时才打开文件），读不到就重画一次。
     path = data = None
