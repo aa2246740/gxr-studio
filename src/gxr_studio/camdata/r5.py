@@ -44,8 +44,8 @@ def _catalogue(library: bytes | None, generation: int) -> bytes:
     library_generation = profile.library_generation
     if library is None:
         raise dc.DatError("缺少 GXRFX.BIN。请将 GXRCE.DAT 和 GXRFX.BIN 一起从存储卡复制到同一文件夹，再同时导入。")
-    expected_sha = profile.library_sha256 or LIBRARY_SHA256[library_generation]
-    if hashlib.sha256(library).hexdigest() != expected_sha:
+    expected_shas = profile.library_sha256 or (LIBRARY_SHA256[library_generation],)
+    if hashlib.sha256(library).hexdigest() not in expected_shas:
         raise dc.DatError(f"GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。")
     cat = library[64:]
     if (

@@ -89,11 +89,15 @@ fn catalogue(library: Option<&[u8]>, generation: u32) -> Result<&[u8], CoreError
     if lib.len() > MAX_LIBRARY_BYTES {
         return Err(dat_error("无法导入相机配方文件。文件过大。"));
     }
-    let expected_sha = prof
-        .library_sha256
-        .or_else(|| library_sha256(lib_gen))
-        .ok_or_else(|| unsupported_error(format!("代数 {generation} 没有登记 r5 库")))?;
-    if sha256_hex(lib) != expected_sha {
+    let lib_sha = sha256_hex(lib);
+    let matched = if prof.library_sha256.is_empty() {
+        let expected_sha = library_sha256(lib_gen)
+            .ok_or_else(|| unsupported_error(format!("代数 {generation} 没有登记 r5 库")))?;
+        lib_sha == expected_sha
+    } else {
+        prof.library_sha256.contains(&lib_sha.as_str())
+    };
+    if !matched {
         return Err(dat_error(format!(
             "GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。"
         )));

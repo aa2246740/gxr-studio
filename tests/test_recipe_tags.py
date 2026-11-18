@@ -200,6 +200,18 @@ def test_lookup_is_bound_to_identity_unit_and_camera_position():
     # root 规则：28 24 为 28mm Leica F1，改测 28 25 (MT 描述符单元不匹配) 与 28 62 (越界) 返回 None
     for identity, unit, position in (("0123456789", "28", 6), ("6a3a5a3c02", "28", 25), ("6a3a5a3c02", "28", 62), ("6a3a5a3c02", "XX", 1)):
         assert recipe_name(identity, unit, position) is None
+    # KUBIK 日常库 0ccc86c19b：在 _G178 后追加 K-0815 / K-PACIFIC / K-KINO（effect+4：50/28/MT = 62/63/64, 65/66/67, 68/69/70）
+    assert recipe_name("0ccc86c19b", "50", 62) == "K-0815"
+    assert recipe_name("0ccc86c19b", "28", 63) == "K-0815"
+    assert recipe_name("0ccc86c19b", "MT", 64) == "K-0815"
+    assert recipe_name("0ccc86c19b", "50", 65) == "K-PACIFIC"
+    assert recipe_name("0ccc86c19b", "28", 66) == "K-PACIFIC"
+    assert recipe_name("0ccc86c19b", "MT", 67) == "K-PACIFIC"
+    assert recipe_name("0ccc86c19b", "50", 68) == "K-KINO"
+    assert recipe_name("0ccc86c19b", "28", 69) == "K-KINO"
+    assert recipe_name("0ccc86c19b", "MT", 70) == "K-KINO"
+    assert recipe_name("0ccc86c19b", "50", 63) is None
+    assert recipe_name("0ccc86c19b", "28", 71) is None
     assert recipe_payload(None) is None
     assert recipe_payload(parse_recipe_tag(TAG))["name"] == "F-CC"  # root 规则 + 现场标签 R8052696-698：28 06 为 F-CC
     assert recipe_payload(parse_recipe_tag(UNKNOWN))["name"] is None
@@ -207,11 +219,26 @@ def test_lookup_is_bound_to_identity_unit_and_camera_position():
     assert recipe_payload(parse_recipe_tag("GXR1 6a3a5a3c02 28 99 A99999999-"))["name"] is None
 
 
-@pytest.mark.parametrize("generation,identity", ((176, "d25d2f0a68"), (178, "6a3a5a3c02"), (181, "6a3a5a3c02"), (182, "6a3a5a3c02")))
+@pytest.mark.parametrize(
+    "generation,identity",
+    (
+        (176, "d25d2f0a68"),
+        (178, "6a3a5a3c02"),
+        (181, "6a3a5a3c02"),
+        (182, "6a3a5a3c02"),
+        (250, "6adf847602"),
+        (250, "0ccc86c19b"),
+    ),
+)
 def test_all_registered_names_match_the_sealed_catalog(generation, identity):
-    from g178_support import need_bundle
+    if generation == 250:
+        from test_g250 import _need_g185_or_g250, _need_kubik_bundle
 
-    raw, library = need_bundle(generation)
+        raw, library, _, _ = _need_kubik_bundle() if identity == "0ccc86c19b" else _need_g185_or_g250(250)
+    else:
+        from g178_support import need_bundle
+
+        raw, library = need_bundle(generation)
     assert library[84:89].hex() == identity
     dat = datcodec.parse(raw, library)
     count = 8 if generation == 176 else 4

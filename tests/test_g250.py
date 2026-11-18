@@ -53,6 +53,7 @@ XPAN_DRIVER = REPO / "tests" / "support" / "mobile_g250_xpan_browser.mjs"
 G185_DAT_SHA256 = "eab6de78d7d9c67906398319b3d8fb0b84eb7ad9c262f7cad7e70d589d9c7ce5"
 G250_DAT_SHA256 = "7b566902db1a5354d345185de37f960b01154fcc96027f5707273957db6e9be6"
 R6_LIB_SHA256 = "b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34"
+KUBIK_LIB_SHA256 = "1a4810446475633e55771df28d5080ed28769a8850ef68cbde41be75acbad1d2"
 
 
 def _bundle_paths(generation: int) -> tuple[Path, Path]:
@@ -77,6 +78,16 @@ def _need_g185_or_g250(generation: int) -> tuple[bytes, bytes, Path, Path]:
     assert hashlib.sha256(raw).hexdigest() == want_dat, f"g{generation} DAT 摘要已变化"
     assert hashlib.sha256(library).hexdigest() == want_lib, f"g{generation} 库摘要已变化"
     return raw, library, dat_path, fx_path
+
+
+def _need_kubik_bundle() -> tuple[bytes, bytes, Path, Path]:
+    raw250, _, dat_path, _ = _need_g185_or_g250(250)
+    fx_path = samples.sample_parent() / "firmware/package_v310b_kubik_lib_r6/local/test-REVIEW_PENDING/GXRFX.BIN"
+    if not fx_path.is_file():
+        samples.missing("KUBIK 本地测试库不在本机")
+    library = fx_path.read_bytes()
+    assert hashlib.sha256(library).hexdigest() == KUBIK_LIB_SHA256, "KUBIK 库摘要已变化"
+    return raw250, library, dat_path, fx_path
 
 
 def _find_xpan_pair() -> tuple[Path, Path]:
@@ -144,18 +155,71 @@ def test_g185_and_g250_decode_round_trip_and_intake(generation: int, tmp_path: P
     assert "28mm 23 条" in resp.json()["message"]
 
 
+def test_g250_kubik_library_decode_round_trip_and_intake(tmp_path: Path, client: Any) -> None:
+    raw250, kubik_lib, _, _ = _need_kubik_bundle()
+    _, lib250, _, _ = _need_g185_or_g250(250)
+    assert len(kubik_lib) == 52640 <= r5.MAX_LIBRARY_BYTES
+
+    info = intake.inspect_dat(raw250, kubik_lib)
+    assert info.generation == 250
+    dat = dc.parse(raw250, kubik_lib)
+    assert dat.generation == 250
+    assert dc.pack(dat) == raw250
+    assert dat.library == kubik_lib
+    assert len(dat.recipes) == 66
+    assert all(len(m.entries) == 8 for m in dat.modules)
+
+    bundle_dir = tmp_path / "kubik-bundle"
+    bundle_dir.mkdir()
+    dat_copy = bundle_dir / "GXRCE.DAT"
+    fx_copy = bundle_dir / "GXRFX.BIN"
+    dat_copy.write_bytes(raw250)
+    fx_copy.write_bytes(kubik_lib)
+    read_raw, read_name, read_lib = intake.read_bundle_from_path(dat_copy)
+    assert read_name == "GXRCE.DAT" and read_raw == raw250 and read_lib == kubik_lib
+
+    home_kubik = tmp_path / "home-kubik"
+    store.import_from_dat(raw250, home_kubik, library=kubik_lib)
+    cam_kubik = CameraData(home_kubik)
+
+    home_r6 = tmp_path / "home-r6"
+    store.import_from_dat(raw250, home_r6, library=lib250)
+    cam_r6 = CameraData(home_r6)
+
+    for unit_idx, unit_listing in enumerate(cam_kubik.listing()):
+        recipes = unit_listing["recipes"]
+        assert len(recipes) == 26
+        assert [r["name"] for r in recipes[-3:]] == ["K-0815", "K-PACIFIC", "K-KINO"]
+        assert [r["position"] for r in recipes[-3:]] == [24, 25, 26]
+        for item in recipes:
+            sel = RecipeSel(unit_listing["id"], item["slot"], kind=item.get("kind", "builtin"), id=item.get("id"))
+            assert len(cam_kubik.resolve(sel).entry) == 552
+        for old_item in cam_r6.listing()[unit_idx]["recipes"]:
+            sel = RecipeSel(unit_listing["id"], old_item["slot"], kind=old_item.get("kind", "builtin"), id=old_item.get("id"))
+            assert cam_kubik.resolve(sel).entry == cam_r6.resolve(sel).entry, (unit_idx, old_item["position"])
+
+    resp = client.post("/api/camdata/import-upload", content=raw250 + kubik_lib, headers={"X-GXR-Dat-Bytes": str(len(raw250))})
+    assert resp.status_code == 200, resp.text
+    assert "28mm 26 条" in resp.json()["message"]
+
+
 def test_g185_and_g250_reject_wrong_library_and_r6_envelope_limits(tmp_path: Path) -> None:
     raw185, lib185, dat185_path, fx185_path = _need_g185_or_g250(185)
     raw250, lib250, dat250_path, fx250_path = _need_g185_or_g250(250)
+    _, kubik_lib, _, kubik_fx_path = _need_kubik_bundle()
 
-    # 跨库禁止：g250 不认 g178 库；g185 不认 r6 库；g182 不认 r6 库
+    # 跨库禁止：g250 不认 g178 库；g185/g182 不认 r6 原库与 KUBIK 库
     with pytest.raises(intake.IntakeError, match="GXRFX.BIN"):
         intake.inspect_dat(raw250, lib185)
     with pytest.raises(intake.IntakeError, match="GXRFX.BIN"):
         intake.inspect_dat(raw185, lib250)
+    with pytest.raises(intake.IntakeError, match="GXRFX.BIN"):
+        intake.inspect_dat(raw185, kubik_lib)
     raw182, _ = need_bundle(182)
     with pytest.raises(dc.DatError, match="不匹配"):
         dc.parse(raw182, lib250)
+    with pytest.raises(dc.DatError, match="不匹配"):
+        dc.parse(raw182, kubik_lib)
 
     # g250 的 .xdata 哪怕改 1 字节重算 CRC 也必须拒绝
     xdata_at, xdata_len = struct.unpack_from(">II", raw250, 128 + 12 * 2 + 4)
@@ -197,6 +261,7 @@ def test_g185_and_g250_reject_wrong_library_and_r6_envelope_limits(tmp_path: Pat
     for p_dat, blob, p_lib in (
         (tmp_path / "g250_wrong_lib.dat", raw250, fx185_path),
         (tmp_path / "g185_wrong_lib.dat", raw185, fx250_path),
+        (tmp_path / "g185_kubik_lib.dat", raw185, kubik_fx_path),
         (tmp_path / "g250_bad_xdata.dat", bad_xdata_bytes, fx250_path),
         (tmp_path / "g250_bad_sec3.dat", reseal(bytes(bad_sec3)), fx250_path),
         (tmp_path / "g185_bad_sec2.dat", reseal(bytes(bad_g185_sec2)), fx185_path),
@@ -344,17 +409,25 @@ def test_recorded_recipe_maps_position_via_effect_descriptor_not_menu_index(gene
         assert recorded_recipe(parse_recipe_tag(f"GXR1 {identity} 50 06 A99999999-"), cam) is None
 
 
-def test_local_kubik_test_library_descriptors_follow_same_unit_interleave() -> None:
-    fx_path = samples.sample_parent() / "firmware/package_v310b_kubik_lib_r6/local/test-REVIEW_PENDING/GXRFX.BIN"
-    if not fx_path.is_file():
-        samples.missing("KUBIK 本地测试库不在本机")
-    lib_bytes = fx_path.read_bytes()
+def test_local_kubik_test_library_descriptors_and_catalog_registration(tmp_path: Path) -> None:
+    raw250, lib_bytes, _, _ = _need_kubik_bundle()
     ident = lib_bytes[84:89].hex()
     assert ident == "0ccc86c19b"
-    # KUBIK 尚未作为日常库登记进全局目录
-    assert ident not in CATALOG_GENERATIONS and ident not in CATALOG_NAMES
+    assert dc.u32(lib_bytes, 36) == 178
+    assert CATALOG_GENERATIONS[ident] == 178
+
     descriptors = _read_fx_descriptors(lib_bytes)
     assert len(descriptors) == 66
+    assert tuple(descriptors) == CATALOG_DESCRIPTORS[ident]
+
+    dat = dc.parse(raw250, lib_bytes)
+    for index, code in enumerate(("50", "28", "MT")):
+        native = tuple(record[4:36].split(b"\0")[0].decode("ascii")[3:] for record in dat.modules[index].records[:4])
+        extras = tuple(record.name for record in dat.recipes if record.unit_mask >> index & 1)
+        assert CATALOG_NAMES[ident][code] == native + extras
+        assert len(CATALOG_NAMES[ident][code]) == 26
+        assert CATALOG_NAMES[ident][code][-3:] == ("K-0815", "K-PACIFIC", "K-KINO")
+
     expected_kubik = {
         ("50", 62): "K-0815",
         ("50", 65): "K-PACIFIC",
@@ -375,6 +448,24 @@ def test_local_kubik_test_library_descriptors_follow_same_unit_interleave() -> N
     for (unit, pos), want in expected_kubik.items():
         hit = resolve_descriptors(descriptors, unit, pos)
         assert (None if hit is None else hit.name) == want
+        assert recipe_name(ident, unit, pos) == want
+
+    assert recipe_payload(parse_recipe_tag("GXR1 0ccc86c19b 28 69 A99999999-"))["catalogued"] is True
+
+    home = tmp_path / "home-kubik"
+    store.import_from_dat(raw250, home, library=lib_bytes)
+    cam = CameraData(home)
+    for (unit, pos), want in expected_kubik.items():
+        tag = parse_recipe_tag(f"GXR1 0ccc86c19b {unit} {pos:02d} A99999999-")
+        sel = recorded_recipe(tag, cam)
+        if want is None:
+            assert sel is None
+        else:
+            assert sel is not None and sel.kind == "record"
+            assert recipe_tag_payload(tag, cam)["name"] == want
+            assert len(cam.resolve(sel).entry) == 552
+    # 50 06 按规则回退到 RV 基底槽 6 (P160)，178 目录已移除旧 5..8 入口，不得误选成 F-CN
+    assert recorded_recipe(parse_recipe_tag("GXR1 0ccc86c19b 50 06 A99999999-"), cam) is None
 
 
 @pytest.mark.parametrize("folder_name", ("probe251", "card250"))
@@ -417,20 +508,83 @@ def test_r6_field_photos_resolve_catalog_names_including_position_48(folder_name
         assert set(seen_positions) == {3, 48}
 
 
+def test_kubik_field_photos_resolve_catalog_names_and_recipes(tmp_path: Path) -> None:
+    folder = samples.captures() / "r6-field-20261118" / "kubik_r6"
+    if not folder.is_dir():
+        samples.missing("captures/r6-field-20261118/kubik_r6 不在本机")
+    raw250, kubik_lib, _, _ = _need_kubik_bundle()
+    home = tmp_path / "home-kubik"
+    store.import_from_dat(raw250, home, library=kubik_lib)
+    cam = CameraData(home)
+
+    dngs = sorted(folder.glob("*.DNG"))
+    assert len(dngs) >= 9
+    expected = {
+        ("28", 63): "K-0815",
+        ("28", 66): "K-PACIFIC",
+        ("28", 69): "K-KINO",
+        ("MT", 64): "K-0815",
+        ("MT", 67): "K-PACIFIC",
+        ("MT", 70): "K-KINO",
+    }
+    seen_tags: set[tuple[str, int]] = set()
+    xpan_28_69 = False
+    for dng_path in dngs:
+        jpg_path = dng_path.with_suffix(".JPG")
+        assert jpg_path.is_file()
+        dm = meta.read_dng_meta(dng_path)
+        jm = meta.read_jpeg_meta(jpg_path)
+        assert dm.error is None and jm.error is None
+        assert dm.copyright == jm.copyright
+        assert dm.recipe_tag == jm.recipe_tag and jm.recipe_tag is not None
+        tag = jm.recipe_tag
+        assert tag["catalog_identity"] == "0ccc86c19b"
+        key = (tag["unit"], tag["position"])
+        seen_tags.add(key)
+        want_name = expected[key]
+        if (dm.width, dm.height) == (4288, 1584) and key == ("28", 69):
+            xpan_28_69 = True
+
+        payload = recipe_tag_payload(tag, cam)
+        assert payload is not None
+        assert payload["name"] == want_name
+        assert payload["catalogued"] is True and payload["amount_unknown"] is False
+
+        sel = recorded_recipe(tag, cam)
+        assert sel is not None and sel.kind == "record"
+        unit_row = next(row for row in cam.listing() if row["id"] == sel.unit)
+        matched = next(r for r in unit_row["recipes"] if r.get("kind") == "record" and r["id"] == sel.id)
+        assert matched["name"] == want_name
+        assert len(cam.resolve(sel).entry) == 552
+
+    assert seen_tags == set(expected)
+    assert xpan_28_69
+
+
 # --------------------------------------------------------------------------- 3. Rust / WASM / 手机三边读卡对拍
 
 
-@pytest.mark.parametrize("generation", (185, 250))
-def test_rust_cli_and_wasm_parity_for_g185_and_g250(generation: int, tmp_path: Path) -> None:
+@pytest.mark.parametrize(("generation", "variant"), ((185, "daily"), (250, "daily"), (250, "kubik")))
+def test_rust_cli_and_wasm_parity_for_g185_and_g250(generation: int, variant: str, tmp_path: Path) -> None:
     require_cli()
-    raw, library, dat_path, fx_path = _need_g185_or_g250(generation)
+    if variant == "kubik":
+        raw, library, _, _ = _need_kubik_bundle()
+        bundle_dir = tmp_path / "kubik-bundle"
+        bundle_dir.mkdir()
+        dat_path, fx_path = bundle_dir / "GXRCE.DAT", bundle_dir / "GXRFX.BIN"
+        dat_path.write_bytes(raw)
+        fx_path.write_bytes(library)
+    else:
+        raw, library, dat_path, fx_path = _need_g185_or_g250(generation)
     expected, entries = _expected_parse_summary(raw, library)
-    out_dir = tmp_path / f"entries-{generation}"
+    out_dir = tmp_path / f"entries-{generation}-{variant}"
     code, payload = run_json(["camdata-parse", "--dat", str(dat_path), "--library", str(fx_path), "--out-dir", str(out_dir)])
     assert error_of(code, payload) is None
     assert payload == expected
+    if variant == "kubik":
+        assert len(payload["recipes"]) == 66
 
-    arr = run_npy(["camdata-entries", "--dat", str(dat_path), "--library", str(fx_path)], tmp_path / f"entries-{generation}.npy")
+    arr = run_npy(["camdata-entries", "--dat", str(dat_path), "--library", str(fx_path)], tmp_path / f"entries-{generation}-{variant}.npy")
     expected_arr = np.frombuffer(b"".join(entries[(u, s)] for u in range(3) for s in store.SLOTS), dtype=np.uint8).reshape(24, 552)
     assert np.array_equal(arr, expected_arr)
 
@@ -441,38 +595,47 @@ def test_rust_cli_and_wasm_parity_for_g185_and_g250(generation: int, tmp_path: P
     assert error_of(mcode, mpayload) is None
     assert mpayload == expected_menu
 
-    wasm_dir = tmp_path / f"wasm-{generation}"
+    wasm_dir = tmp_path / f"wasm-{generation}-{variant}"
     wasm_dir.mkdir()
     proc = run_area("camdata", [dat_path], wasm_dir)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 @pytest.mark.browser_serial
-@pytest.mark.parametrize("generation", (185, 250))
-def test_mobile_browser_reads_g185_and_g250_cards(generation: int, tmp_path: Path) -> None:
+@pytest.mark.parametrize(("generation", "variant"), ((185, "daily"), (250, "daily"), (250, "kubik")))
+def test_mobile_browser_reads_g185_and_g250_cards(generation: int, variant: str, tmp_path: Path) -> None:
     pair = mx.real_pairs(1)
     if len(pair) < 1:
         samples.missing("need one DNG+JPG pair")
     _browser_prereq()
-    raw, library, dat_path, fx_path = _need_g185_or_g250(generation)
+    if variant == "kubik":
+        raw, library, dat_path, fx_path = _need_kubik_bundle()
+    else:
+        raw, library, dat_path, fx_path = _need_g185_or_g250(generation)
     dng, jpg = pair[0]
-    home = tmp_path / f"home-{generation}"
+    home = tmp_path / f"home-{generation}-{variant}"
     store.import_from_dat(raw, home, library=library)
     cam = CameraData(home)
-    report_path = tmp_path / f"g{generation}-report.json"
-    manifest = {
+    report_path = tmp_path / f"g{generation}-{variant}-report.json"
+    extra_recipe_dict: dict[str, Any] | None = None
+    if variant == "kubik":
+        qlaunch = next(row for row in cam.listing() if row["id"] == "qlaunch")
+        kino = next(r for r in qlaunch["recipes"] if r.get("kind") == "record" and r["name"] == "K-KINO")
+        extra_recipe_dict = {"kind": "record", "unit": "qlaunch", "slot": kino["slot"], "id": kino["id"], "levels": {}}
+    manifest: dict[str, Any] = {
         "dng": str(dng),
         "jpg": str(jpg),
         "dat": str(dat_path),
         "bin": str(fx_path),
         "files": [str(dng), str(jpg), str(dat_path), str(fx_path)],
+        "extraRecipe": extra_recipe_dict,
         "out": str(report_path),
     }
-    mpath = tmp_path / f"g{generation}-manifest.json"
+    mpath = tmp_path / f"g{generation}-{variant}-manifest.json"
     mpath.write_text(json.dumps(manifest), encoding="utf-8")
     result = _drive(R5_DAT_DRIVER, mpath, tmp_path, "", timeout=420)
     if result.returncode != 0 or not report_path.is_file():
-        pytest.fail(f"r5/r6 browser driver failed for g{generation}")
+        pytest.fail(f"r5/r6 browser driver failed for g{generation}-{variant}")
     report: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
     check(report.get("error") is None, "driver finished cleanly")
     check(report.get("pageErrors") == [], "no page errors")
@@ -482,13 +645,20 @@ def test_mobile_browser_reads_g185_and_g250_cards(generation: int, tmp_path: Pat
         assert phone["entries"] == 24 * 552
         assert phone["generation"] == generation
         assert phone["library"] == len(library)
-        same_redacted(phone["listing"], cam.listing(), f"g{generation} phone listing equals desktop listing")
+        same_redacted(phone["listing"], cam.listing(), f"g{generation}-{variant} phone listing equals desktop listing")
         sel = parse_recipe({"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {}})
         assert sel is not None
         resolved = cam.resolve(sel)
-        same_file_redacted(base64.b64decode(phone["entry"]), resolved.entry, f"g{generation} resolve entry")
-        same_redacted(phone["levels"], resolved.levels, f"g{generation} resolve levels")
-        same_redacted(phone["sha"], resolved.entry_sha256, f"g{generation} resolve sha")
+        same_file_redacted(base64.b64decode(phone["entry"]), resolved.entry, f"g{generation}-{variant} resolve entry")
+        same_redacted(phone["levels"], resolved.levels, f"g{generation}-{variant} resolve levels")
+        same_redacted(phone["sha"], resolved.entry_sha256, f"g{generation}-{variant} resolve sha")
+        if extra_recipe_dict is not None:
+            extra_sel = parse_recipe(extra_recipe_dict)
+            assert extra_sel is not None
+            extra_resolved = cam.resolve(extra_sel)
+            same_file_redacted(base64.b64decode(phone["extra"]["entry"]), extra_resolved.entry, "kubik K-KINO resolve entry")
+            same_redacted(phone["extra"]["levels"], extra_resolved.levels, "kubik K-KINO resolve levels")
+            same_redacted(phone["extra"]["sha"], extra_resolved.entry_sha256, "kubik K-KINO resolve sha")
     assert _same_read is not None
 
 

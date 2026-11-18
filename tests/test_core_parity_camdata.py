@@ -62,18 +62,23 @@ def _discover_single_file_dats() -> list[tuple[str, Path]]:
 
 
 def _discover_r5_bundles() -> list[tuple[str, Path, Path]]:
-    candidates = [
-        ("g176", _PARENT / "research/body_r5_freeze/local/packages/r5-NOT_FOR_INSTALLATION/SD_ROOT"),
-        ("g178", _PARENT / "research/build_g178_r1/local/model"),
-        ("g181", _PARENT / "firmware/package_v310b_g181/local/g181-daily"),
-        ("g182", _PARENT / "firmware/package_v310b_g182/local/g182-daily-r2"),
-        ("g185", _PARENT / "firmware/package_v310b_g185/local/g185-daily"),
-        ("g250", _PARENT / "firmware/package_v310b_hf10_r1/local/daily250-REVIEW_PENDING"),
+    candidates: list[tuple[str, Path, Path | None]] = [
+        ("g176", _PARENT / "research/body_r5_freeze/local/packages/r5-NOT_FOR_INSTALLATION/SD_ROOT", None),
+        ("g178", _PARENT / "research/build_g178_r1/local/model", None),
+        ("g181", _PARENT / "firmware/package_v310b_g181/local/g181-daily", None),
+        ("g182", _PARENT / "firmware/package_v310b_g182/local/g182-daily-r2", None),
+        ("g185", _PARENT / "firmware/package_v310b_g185/local/g185-daily", None),
+        ("g250", _PARENT / "firmware/package_v310b_hf10_r1/local/daily250-REVIEW_PENDING", None),
+        (
+            "g250_kubik",
+            _PARENT / "firmware/package_v310b_hf10_r1/local/daily250-REVIEW_PENDING",
+            _PARENT / "firmware/package_v310b_kubik_lib_r6/local/test-REVIEW_PENDING",
+        ),
     ]
     out: list[tuple[str, Path, Path]] = []
-    for label, folder in candidates:
-        dat_path = folder / "GXRCE.DAT"
-        fx_path = folder / "GXRFX.BIN"
+    for label, dat_folder, fx_folder in candidates:
+        dat_path = dat_folder / "GXRCE.DAT"
+        fx_path = (fx_folder or dat_folder) / "GXRFX.BIN"
         if dat_path.is_file() and fx_path.is_file():
             out.append((label, dat_path, fx_path))
     return out
@@ -481,7 +486,19 @@ def test_wasm_camdata_matches_native_on_synthetic_and_damaged(tmp_path: Path) ->
 
 
 def test_wasm_camdata_matches_native_on_real_dats(tmp_path: Path) -> None:
-    all_paths = [p for _, p in SINGLE_DATS] + [dat for _, dat, _ in R5_BUNDLES]
+    import shutil
+
+    all_paths = [p for _, p in SINGLE_DATS]
+    for label, dat_path, fx_path in R5_BUNDLES:
+        if fx_path.parent == dat_path.parent:
+            all_paths.append(dat_path)
+        else:
+            pair_dir = tmp_path / label
+            pair_dir.mkdir()
+            dat_copy = pair_dir / "GXRCE.DAT"
+            shutil.copyfile(dat_path, dat_copy)
+            shutil.copyfile(fx_path, pair_dir / "GXRFX.BIN")
+            all_paths.append(dat_copy)
     if not all_paths:
         pytest.skip("no real DAT fixtures on this machine")
     proc = run_area("camdata", all_paths, tmp_path)

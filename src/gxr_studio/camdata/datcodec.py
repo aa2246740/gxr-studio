@@ -73,7 +73,7 @@ class Profile:
     flat_list: bool = False  # 平铺列表的 Looks 与用户条目合计至多 40 个
     mount_knobs_from_50mm: bool = False
     library_generation: int | None = None  # 有限登记的 r5/r6 库关系，不要求等于 DAT 代数
-    library_sha256: str | None = None  # 指定单个绑定库的摘要（为空时按 library_generation 查 r5.LIBRARY_SHA256）
+    library_sha256: tuple[str, ...] = ()  # 指定绑定库的摘要（为空时按 library_generation 查 r5.LIBRARY_SHA256）
     xdata: bool = False  # r6 区段 3（.xdata 只读常量），r5 及以前始终为空
 
     @property
@@ -116,7 +116,10 @@ PROFILES = {
         max_engine=98304,
         mount_knobs_from_50mm=True,
         library_generation=178,
-        library_sha256="b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34",
+        library_sha256=(
+            "b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34",
+            "1a4810446475633e55771df28d5080ed28769a8850ef68cbde41be75acbad1d2",
+        ),
         xdata=True,
     ),
 }

@@ -69,7 +69,7 @@ pub struct Profile {
     pub flat_list: bool,
     pub mount_knobs_from_50mm: bool,
     pub library_generation: Option<u32>,
-    pub library_sha256: Option<&'static str>,
+    pub library_sha256: &'static [&'static str],
     pub xdata: bool,
 }
 
@@ -84,7 +84,7 @@ impl Profile {
             flat_list: false,
             mount_knobs_from_50mm: false,
             library_generation: None,
-            library_sha256: None,
+            library_sha256: &[],
             xdata: false,
         }
     }
@@ -196,7 +196,10 @@ pub const PROFILES: &[Profile] = &[
         max_engine: 98304,
         mount_knobs_from_50mm: true,
         library_generation: Some(178),
-        library_sha256: Some("b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34"),
+        library_sha256: &[
+            "b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34",
+            "1a4810446475633e55771df28d5080ed28769a8850ef68cbde41be75acbad1d2",
+        ],
         xdata: true,
         ..Profile::simple(250, 98304, true)
     },

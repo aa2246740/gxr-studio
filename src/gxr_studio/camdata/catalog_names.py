@@ -6,7 +6,8 @@ from dataclasses import dataclass
 CAMERA_UNITS = {"28": "qlaunch", "50": "jlaunch", "MT": "l08firm"}
 UNIT_LABELS = {"28": "28mm", "50": "50mm", "MT": "MOUNT"}
 UNIT_BITS = {"50": 1, "28": 2, "MT": 4}
-CATALOG_GENERATIONS = {"d25d2f0a68": 176, "6a3a5a3c02": 178, "6adf847602": 178}  # 库代数；g178/g181/g182/g185/g250 共用 178 目录
+# 库代数；g178/g181/g182/g185/g250 共用 178 目录
+CATALOG_GENERATIONS = {"d25d2f0a68": 176, "6a3a5a3c02": 178, "6adf847602": 178, "0ccc86c19b": 178}
 
 # 对照 r5.LIBRARY_SHA256 与 r6 profile 登记的库；前四项是两代保留的原生配方。
 _NATIVE = ("GRPos", "GRNeg", "HC BW", "Std")
@@ -46,6 +47,8 @@ _G178 = _NATIVE + (
     "Acros",
     "Tri-X 400",
 )
+_KUBIK_LOOKS = ("K-0815", "K-PACIFIC", "K-KINO")
+_KUBIK = _G178 + _KUBIK_LOOKS
 
 # 共享描述符区的全局顺序（pos = effect + 4，effect 为 1-based 下标；各风格按单元掩码 1/2/4 排列）。
 _G176_DESCRIPTORS: tuple[tuple[str, int], ...] = (
@@ -80,11 +83,13 @@ _G176_DESCRIPTORS: tuple[tuple[str, int], ...] = (
     ("Teal Orange", 7),
 )
 _G178_DESCRIPTORS: tuple[tuple[str, int], ...] = tuple((name, mask) for name in _G178[4:] for mask in (1, 2, 4))
+_KUBIK_DESCRIPTORS: tuple[tuple[str, int], ...] = _G178_DESCRIPTORS + tuple((name, mask) for name in _KUBIK_LOOKS for mask in (1, 2, 4))
 
 CATALOG_DESCRIPTORS: dict[str, tuple[tuple[str, int], ...]] = {
     "d25d2f0a68": _G176_DESCRIPTORS,
     "6a3a5a3c02": _G178_DESCRIPTORS,
     "6adf847602": _G178_DESCRIPTORS,
+    "0ccc86c19b": _KUBIK_DESCRIPTORS,
 }
 
 CATALOG_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
@@ -95,6 +100,7 @@ CATALOG_NAMES: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "6a3a5a3c02": {code: _G178 for code in CAMERA_UNITS},
     "6adf847602": {code: _G178 for code in CAMERA_UNITS},
+    "0ccc86c19b": {code: _KUBIK for code in CAMERA_UNITS},
 }
 
 
