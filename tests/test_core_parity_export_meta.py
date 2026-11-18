@@ -42,13 +42,11 @@ _CAP = 60
 
 
 def _real_files(exts: tuple[str, ...], cap: int = _CAP) -> list[Path]:
-    if not CAPTURES.is_dir():
+    root = sample_files.captures()
+    if not root.is_dir():
         return []
-    found = [p for p in CAPTURES.rglob("*") if p.is_file() and p.suffix.upper() in exts and "backup" not in p.as_posix().lower()]
-    found.sort(key=lambda p: p.as_posix())
-    if len(found) <= cap:
-        return found
-    return [found[(i * len(found)) // cap] for i in range(cap)]
+    found = (p for p in root.rglob("*") if p.is_file() and p.suffix.upper() in exts and "backup" not in p.as_posix().lower())
+    return sample_files.stable_sample(found, root, cap)
 
 
 REAL_DNGS = _real_files((".DNG",))

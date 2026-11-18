@@ -567,14 +567,22 @@ CAPTURES = _PARENT / "captures"
 
 
 def _real_dngs(cap: int = 60) -> list[Path]:
-    """The raw parity test's sample: up to 60 DNGs under captures/, spread, no backups."""
-    if not CAPTURES.is_dir():
+    """DNGs under captures/ (no backups) whose own path is in the stable sample for ``cap``."""
+    root = samples.captures()
+    if not root.is_dir():
         return []
-    found = sorted(
-        (p for p in CAPTURES.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower()),
-        key=lambda p: p.as_posix(),
-    )
-    return found if len(found) <= cap else [found[(i * len(found)) // cap] for i in range(cap)]
+    found = (p for p in root.rglob("*") if p.is_file() and p.suffix.upper() == ".DNG" and "backup" not in p.as_posix().lower())
+    return samples.stable_sample(found, root, cap)
+
+
+def _apply_picks(dngs: list[Path]) -> list[Path]:
+    """The photo for case ``i`` is the lowest-key DNG in class ``i``. ISO 1600 stays case 4."""
+    by_case: dict[int, Path] = {}
+    for dng in dngs:
+        by_case.setdefault(int(samples.sample_key(dng, samples.captures()) * 1e9) % 5, dng)
+    if len(by_case) < 5:
+        samples.missing("captures/ 下的真实 DNG 不够分到 5 个用例")
+    return [by_case[i] for i in range(5)]
 
 
 @pytest.fixture(scope="module")
@@ -648,7 +656,7 @@ def test_real_dngs_apply_matches_python(real_home: Path, tmp_path: Path) -> None
     dngs = _real_dngs()
     if len(dngs) < 5:
         samples.missing("captures/ 下的真实 DNG 少于 5 张")
-    picked = [dngs[(i * len(dngs)) // 5] for i in range(5)]
+    picked = _apply_picks(dngs)
     for i, dng in enumerate(picked):
         unit = datcodec.NAMES[i % 3]
         iso = 1600 if i == 4 else 200

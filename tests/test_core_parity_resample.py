@@ -35,11 +35,12 @@ _PIL_FILTERS: dict[str, Image.Resampling] = {
 
 
 def _collect_real_images(limit_per_kind: int = 12) -> tuple[list[Path], list[Path]]:
-    if not CAPTURES.is_dir():
+    root = sample_files.captures()
+    if not root.is_dir():
         return [], []
     jpgs: list[Path] = []
     dngs: list[Path] = []
-    for path in sorted(CAPTURES.rglob("*"), key=lambda p: p.as_posix()):
+    for path in root.rglob("*"):
         if not path.is_file() or "backup" in path.as_posix().lower():
             continue
         suf = path.suffix.upper()
@@ -47,11 +48,7 @@ def _collect_real_images(limit_per_kind: int = 12) -> tuple[list[Path], list[Pat
             jpgs.append(path)
         elif suf == ".DNG":
             dngs.append(path)
-    if len(jpgs) > limit_per_kind:
-        jpgs = [jpgs[(i * len(jpgs)) // limit_per_kind] for i in range(limit_per_kind)]
-    if len(dngs) > limit_per_kind:
-        dngs = [dngs[(i * len(dngs)) // limit_per_kind] for i in range(limit_per_kind)]
-    return jpgs, dngs
+    return sample_files.stable_sample(jpgs, root, limit_per_kind), sample_files.stable_sample(dngs, root, limit_per_kind)
 
 
 def _synth_u8(w: int, h: int, mode: str, seed: int = 1) -> np.ndarray:

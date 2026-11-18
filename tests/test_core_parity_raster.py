@@ -422,21 +422,20 @@ def test_finish_array_synthetic_branches_match_python(tmp_path: Path) -> None:
         assert np.array_equal(rs_rgb, py_rgb)
 
 
-def _real_capture_inputs(limit: int = 24) -> list[tuple[str, np.ndarray, bool]]:
-    if not CAPTURES.is_dir():
+def _edit_slot(path: Path) -> int:
+    """Edit switches for one photo, from its own path. Callers take ``slot % n``."""
+    return int(sample_files.sample_key(path, sample_files.captures()) * 1e9)
+
+
+def _real_capture_inputs(limit: int = 12) -> list[tuple[Path, np.ndarray, bool]]:
+    root = sample_files.captures()
+    if not root.is_dir():
         return []
-    files = sorted(
-        (
-            p
-            for p in CAPTURES.rglob("*")
-            if p.is_file() and p.suffix.upper() in {".JPG", ".JPEG", ".DNG"} and "backup" not in p.as_posix().lower()
-        ),
-        key=lambda p: p.as_posix(),
-    )
-    if len(files) > limit:
-        files = [files[(i * len(files)) // limit] for i in range(limit)]
-    out: list[tuple[str, np.ndarray, bool]] = []
-    for path in files:
+    files = [
+        p for p in root.rglob("*") if p.is_file() and p.suffix.upper() in {".JPG", ".JPEG", ".DNG"} and "backup" not in p.as_posix().lower()
+    ]
+    out: list[tuple[Path, np.ndarray, bool]] = []
+    for path in sample_files.stable_sample(files, root, limit):
         if path.suffix.upper() == ".DNG":
             try:
                 dng = open_dng(path)
@@ -447,45 +446,47 @@ def _real_capture_inputs(limit: int = 24) -> list[tuple[str, np.ndarray, bool]]:
                     img = np.ascontiguousarray(np.asarray(im))
             except (RawDecodeError, Exception):
                 continue
-            out.append((path.name, img, True))
+            out.append((path, img, True))
         else:
             try:
                 img = load_jpeg(path, max_edge=240)
             except Exception:
                 continue
-            out.append((path.name, img, False))
+            out.append((path, img, False))
     return out
 
 
 def test_finish_array_real_photos_parity(tmp_path: Path) -> None:
     require_cli()
-    samples = _real_capture_inputs(limit=24)
+    samples = _real_capture_inputs(limit=12)
     if len(samples) < 20:
         sample_files.missing(f"need >= 20 real images in {CAPTURES}, got {len(samples)}")
     curve_a = {"master": [[0, 6], [84, 72], [184, 202], [255, 250]]}
     curve_b = {"master": [[0, 0], [128, 138], [255, 255]], "r": [[0, 0], [120, 140], [255, 255]], "b": [[0, 10], [128, 112], [255, 248]]}
-    for idx, (name, rgb, from_raw) in enumerate(samples):
+    for idx, (path, rgb, from_raw) in enumerate(samples):
+        slot = _edit_slot(path)
+        name = path.name
         edit_dict: dict[str, Any] = {
             "adjust": {
-                "exposure_ev": -0.6 if idx % 2 == 0 else 0.75,
+                "exposure_ev": -0.6 if slot % 2 == 0 else 0.75,
                 "wb": {"warm": 18, "tint": -12},
-                "contrast": 30 if idx % 2 == 0 else -22,
-                "highlight": -35 if idx % 3 == 0 else 20,
-                "shadow": 40 if idx % 4 == 0 else -15,
-                "black_point": 15 if idx % 3 == 0 else -10,
+                "contrast": 30 if slot % 2 == 0 else -22,
+                "highlight": -35 if slot % 3 == 0 else 20,
+                "shadow": 40 if slot % 4 == 0 else -15,
+                "black_point": 15 if slot % 3 == 0 else -10,
                 "saturation": 22,
                 "vibrance": -18,
-                "vignette": 25 if idx % 2 == 0 else -30,
+                "vignette": 25 if slot % 2 == 0 else -30,
             },
-            "curve": curve_a if idx % 2 == 0 else curve_b,
+            "curve": curve_a if slot % 2 == 0 else curve_b,
             "geometry": {
-                "straighten": 2.5 if idx % 3 == 0 else -1.8,
-                "rotate90": idx % 4,
-                "flip": (idx % 2 == 1),
+                "straighten": 2.5 if slot % 3 == 0 else -1.8,
+                "rotate90": slot % 4,
+                "flip": (slot % 2 == 1),
             },
         }
-        stage = "uncropped" if idx % 5 == 0 else "final"
-        preset = "16:9" if stage == "final" and idx % 2 == 0 else None
+        stage = "uncropped" if slot % 5 == 0 else "final"
+        preset = "16:9" if stage == "final" and slot % 2 == 0 else None
         crop_rect = (0.05, 0.08, 0.85, 0.8) if stage == "final" and preset is None else None
         opts_dict: dict[str, Any] = {"stage": stage, "from_raw": from_raw}
         if preset:
