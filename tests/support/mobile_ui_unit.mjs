@@ -5,6 +5,12 @@ import test from 'node:test';
 import { captureMillis, captureTimeFromJpeg, captureTimeFromTiff, checkDng, embeddedJpegRange } from '../../mobile/src/lib/exif.ts';
 import { classify, groupByGap, groupCount, sortIds, visibleRange } from '../../mobile/src/lib/group.ts';
 import { CLIP_SHARE, histPoint, histShape } from '../../mobile/src/lib/hist.ts';
+import { formatStats } from '../../mobile/src/ui/perf.ts';
+
+test('formatStats shows em-dash when zero frames were sampled', () => {
+  assert.equal(formatStats({ p50: 0, p95: 0, max: 0, dropped: 0, interval: 16.7, samples: 0 }), 'p50 — · p95 — · 最大 — · 丢帧 0');
+  assert.equal(formatStats({ p50: 16.5, p95: 18, max: 20.1, dropped: 1, interval: 16.7, samples: 5 }), 'p50 16.5 ms · p95 18.0 ms · 最大 20.1 ms · 丢帧 1');
+});
 
 function u16(value) {
   return [value & 255, (value >> 8) & 255];

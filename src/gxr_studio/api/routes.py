@@ -37,7 +37,12 @@ TEMP_HOME = Path(__file__).with_name("temp_home.html")
 _UNSET_DEFAULTS = "0"  # nosec B105  默认装饰还没保存过时的版本号，不是口令
 EXPORT_SIDECAR_NOTE = "无法读取编辑记录，已按原图显示"
 HDR_UNSUPPORTED = "这张照片不支持 HDR"
-HDR_NOTES = {"no_raw": "HDR 需要 RAW 文件", "not_jpeg": "HDR 需要 JPEG 格式", "capture_mismatch": "RAW 与 JPG 不是同一次拍摄"}
+HDR_NOTES = {
+    "no_raw": "HDR 需要 RAW 文件",
+    "not_jpeg": "HDR 需要 JPEG 格式",
+    "capture_mismatch": "RAW 与 JPG 不是同一次拍摄",
+    "frame_layout": "这个边框样式不能存 HDR",
+}
 DENIED_NOTE = "需要访问存储卡的权限。请在“系统设置 › 隐私与安全性 › 文件与文件夹”中允许。"
 
 

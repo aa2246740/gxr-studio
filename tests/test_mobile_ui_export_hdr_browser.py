@@ -159,6 +159,7 @@ def test_mobile_ui_export_hdr_files_match_desktop(tmp_path: Path, pinned_icc: by
             check(all(n in step["ready"].splitlines() for n in notes), "05c per-photo HDR notes (desktop HDR_NOTES)")
             check(line in step["shared"]["saved"].splitlines(), "05e HDR line")
             check("好了：5 张" in step["shared"]["saved"] and "已存到相册" not in step["shared"]["saved"], "05e main line")
+            check("选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。" in step["shared"]["saved"], "05e share-done line (HDR)")
             check(all(c["active"] is True for c in step["files"]), "share() called inside the tap")
         check(sum(table.values()) == 10, "five full-size and five small HDR exports compared")
         check(table.get("full-sdr/no_raw") == 1 and table.get("small-sdr/no_raw") == 1, "the JPG-only photo is no_raw at both sizes")

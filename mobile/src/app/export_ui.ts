@@ -8,7 +8,7 @@ import { mergeMeta } from '../lib/exif';
 import { buildRequest, usedLogoId, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
 import { fontsNeeded, type FontKey } from '../lib/fonts';
 import { formatClock, formatDay } from '../lib/group';
-import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrMixLine, hdrResultText } from '../lib/hdr_text';
+import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrFrameLine, hdrMixLine, hdrResultText } from '../lib/hdr_text';
 import { isDisplaySpace } from '../lib/lut';
 import { loadExportHdr, saveExportHdr } from '../lib/prefs';
 import { shelf, shelves, type Card } from '../lib/recipes';
@@ -263,11 +263,22 @@ export class ExportFlow {
       mixBox.hidden = !hdrOn;
       hdrRow.append(mixBox);
     }
+    const frameWarn = hdrFrameLine(photos);
+    const frameBox = frameWarn ? el('div', 'bn grey hdrmix') : null;
+    if (frameBox && frameWarn) {
+      frameBox.dataset.state = 'hdr-frame';
+      const ic = el('span', 'dim');
+      ic.append(ico(PATH.alert, 'md'));
+      frameBox.append(ic, el('div', 'tx dim', frameWarn));
+      frameBox.hidden = !hdrOn;
+      hdrRow.append(frameBox);
+    }
     sw.addEventListener('change', () => {
       if (!canHdr) return;
       hdrOn = sw.checked;
       saveExportHdr(hdrOn);
       if (mixBox) mixBox.hidden = !hdrOn;
+      if (frameBox) frameBox.hidden = !hdrOn;
     });
     const form = el('div');
     form.style.marginTop = '10px';
@@ -549,8 +560,8 @@ export class ExportFlow {
     const data = { wasm: marks.wasm, js: marks.js, staged: batch.stagedHigh, workers: marks.workers, times: batch.times };
     this.shell.dataset.exportMem = JSON.stringify(data);
     if (this.perf && !this.perf.hidden) {
-      const avg = batch.times.length ? Math.round(batch.times.reduce((a, b) => a + b, 0) / batch.times.length) : 0;
-      this.perf.textContent = `导出 WASM ${mib(marks.wasm)} MiB · JS ${mib(marks.js)} MiB · 待存 ${mib(batch.stagedHigh)} MiB · 每张 ${avg} ms`;
+      const avg = batch.times.length ? `${Math.round(batch.times.reduce((a, b) => a + b, 0) / batch.times.length)} ms` : '—';
+      this.perf.textContent = `导出 WASM ${mib(marks.wasm)} MiB · JS ${mib(marks.js)} MiB · 待存 ${mib(batch.stagedHigh)} MiB · 每张 ${avg}`;
     }
   }
 
@@ -733,7 +744,7 @@ export class ExportFlow {
     const icon = el('span', 'ic ok');
     icon.append(ico(PATH.check));
     const tx = el('div', 'tx');
-    tx.append(el('b', '', `好了：${n} 张`), el('small', '', `在面板里点了「${n === 1 ? '存储图像' : `存储 ${n} 张图像`}」，就已经在相册里。`));
+    tx.append(el('b', '', `好了：${n} 张`), el('small', '', '选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。'));
     this.paintHdr(tx, batch);
     const done = button('fbtn fill-ctl', '好');
     done.dataset.act = 'done';

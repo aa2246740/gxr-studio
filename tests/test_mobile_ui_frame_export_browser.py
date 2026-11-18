@@ -264,6 +264,19 @@ def test_mobile_ui_frame_export_matches_desktop(tmp_path: Path, pinned_icc: byte
             timeout=3600,
         )
         check(report["pageErrors"] == [], "no page errors")
+        hdr_sheet = report["steps"]["hdr"]["sheet"]
+        check(
+            hdr_sheet["hdrFrameBefore"] is not None and hdr_sheet["hdrFrameBefore"]["visible"] is False,
+            "05a frame warning hidden while HDR is off",
+        )
+        check(
+            hdr_sheet["hdrFrame"] is not None and hdr_sheet["hdrFrame"]["visible"] is True,
+            "05a frame warning shown when HDR is on",
+        )
+        check(
+            hdr_sheet["hdrFrame"]["text"] == "1 张用的边框样式不能存 HDR，会存普通版本。",
+            "05a frame warning wording",
+        )
         leica = report["steps"]["leicaOn"]
         check(leica["logo"] is True and leica["params"] is True and leica["date"] is True, "leica chips on")
         shots = {stem: _shot(desk, stem, *photos[stem]) for stem in (*order, stems["pFrame"], stems["pInstant"])}

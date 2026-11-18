@@ -50,6 +50,19 @@ test('05a mix line only when some, not all, photos are JPG-only', () => {
   assert.equal(hdr.hdrMixLine([{ dng: null }]), null);
 });
 
+test('05a frame warning lists RAW-capable photos with blur_fill', () => {
+  assert.equal(hdr.hdrFrameLine([{ dng: {}, border: { style: 'blur_fill' } }]), '1 张用的边框样式不能存 HDR，会存普通版本。');
+  assert.equal(
+    hdr.hdrFrameLine([
+      { dng: {}, border: { style: 'blur_fill' } },
+      { dng: {}, border: { style: 'gallery' } },
+      { dng: null, border: { style: 'blur_fill' } },
+    ]),
+    '1 张用的边框样式不能存 HDR，会存普通版本。',
+  );
+  assert.equal(hdr.hdrFrameLine([{ dng: {}, border: { style: 'gallery' } }, { dng: null, border: { style: 'blur_fill' } }]), null);
+});
+
 test('remembered choice: off by default, gxr.mobile.export_hdr, storage failures ignored', () => {
   const data = new Map();
   globalThis.localStorage = {
@@ -87,6 +100,7 @@ test('notes per reason are the desktop HDR_NOTES, anything else HDR_UNSUPPORTED'
   assert.equal(hdr.hdrNote('no_raw'), 'HDR 需要 RAW 文件');
   assert.equal(hdr.hdrNote('capture_mismatch'), 'RAW 与 JPG 不是同一次拍摄');
   assert.equal(hdr.hdrNote('not_jpeg'), 'HDR 需要 JPEG 格式');
+  assert.equal(hdr.hdrNote('frame_layout'), '这个边框样式不能存 HDR');
   assert.equal(hdr.hdrNote('no_curve'), '这张照片不支持 HDR');
   assert.equal(hdr.hdrNote(null), '这张照片不支持 HDR');
   assert.equal(hdr.hdrNote('toString'), '这张照片不支持 HDR');
@@ -103,10 +117,15 @@ test('05c / 05e line: design wording, other reasons counted with hdrSummary and 
     { stem: 'E', result: r(false, 'no_raw') },
   ];
   assert.deepEqual(hdr.hdrResultText(rows), { line: '4 张 HDR · 1 张只有 JPG，存普通版本', notes: [] });
-  const mixed = [...rows, { stem: 'F', result: r(false, 'capture_mismatch') }, { stem: 'G', result: r(false, 'raw_unreadable') }];
+  const mixed = [
+    ...rows,
+    { stem: 'F', result: r(false, 'capture_mismatch') },
+    { stem: 'G', result: r(false, 'raw_unreadable') },
+    { stem: 'H', result: r(false, 'frame_layout') },
+  ];
   assert.deepEqual(hdr.hdrResultText(mixed), {
-    line: '4 张 HDR · 1 张只有 JPG，存普通版本 · 2 张未生成 HDR',
-    notes: ['F：RAW 与 JPG 不是同一次拍摄', 'G：这张照片不支持 HDR'],
+    line: '4 张 HDR · 1 张只有 JPG，存普通版本 · 3 张未生成 HDR',
+    notes: ['F：RAW 与 JPG 不是同一次拍摄', 'G：这张照片不支持 HDR', 'H：这个边框样式不能存 HDR'],
   });
   assert.deepEqual(hdr.hdrResultText([{ stem: 'A', result: r(true) }]), { line: '1 张 HDR', notes: [] });
   assert.deepEqual(hdr.hdrResultText([{ stem: 'A', result: undefined }, { stem: 'B', result: {} }]), { line: '', notes: [] });

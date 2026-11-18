@@ -796,6 +796,96 @@ const CASES = {
       await context.close();
     }
   },
+
+  /** 网格「已编辑」角标覆盖全部编辑组（曲线、裁剪、拉直、边框、印记、显示 LUT），撤回/重置后消失。 */
+  async 'grid-edited-badges'() {
+    const { page, context, errors } = await makePage({ gpu: false });
+    try {
+      await pick(page, [manifest.jpg]);
+      const badgeInGrid = async () => {
+        if ((await page.locator('.app').getAttribute('data-screen')) !== 'grid') {
+          await page.getByRole('button', { name: '照片', exact: true }).click();
+          await page.waitForSelector('[data-screen="grid"]');
+        }
+        return (await page.locator('.cell .edt').count()) > 0;
+      };
+      const openTab = async (name) => {
+        if ((await page.locator('.app').getAttribute('data-screen')) !== 'editor') {
+          await page.locator('.cell').first().click();
+          await page.waitForSelector('[data-screen="editor"]');
+        }
+        await page.getByRole('tab', { name, exact: true }).click();
+      };
+
+      const initial = await badgeInGrid();
+
+      await openTab('曲线');
+      const box = await page.locator('svg.curve').boundingBox();
+      await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.25);
+      await page.waitForSelector('.curve-btn[data-changed="true"]');
+      const curve = await badgeInGrid();
+      await openTab('曲线');
+      await page.getByRole('button', { name: '重置全部曲线', exact: true }).click();
+      await page.waitForFunction(() => !document.querySelector('.curve-btn[data-changed="true"]'));
+      const curveReset = await badgeInGrid();
+
+      await openTab('裁剪');
+      await page.locator('.crop-panel .chips button[data-preset="1:1"]').click();
+      await page.waitForFunction(() => document.querySelector('.tabs button.edited') !== null);
+      const crop = await badgeInGrid();
+      await openTab('裁剪');
+      await page.locator('.crop-panel .chips button[data-preset="original"]').click();
+      await page.waitForFunction(() => document.querySelector('.tabs button.edited') === null);
+      const cropReset = await badgeInGrid();
+
+      await openTab('裁剪');
+      await page.locator('.crop-panel .ruler').focus();
+      await page.keyboard.press('ArrowRight');
+      await page.waitForFunction(() => document.querySelector('.tabs button.edited') !== null);
+      const straighten = await badgeInGrid();
+      await openTab('裁剪');
+      await page.locator('.crop-panel .ruler').dblclick();
+      await page.waitForFunction(() => document.querySelector('.crop-panel .ruler')?.getAttribute('aria-valuenow') === '0');
+      await page.locator('.crop-panel .chips button[data-preset="original"]').click();
+      await page.waitForFunction(() => document.querySelector('.tabs button.edited') === null);
+      const straightenReset = await badgeInGrid();
+
+      await openTab('边框');
+      await page.locator('.panel.frame .rc[data-style="gallery"]').click();
+      await page.waitForSelector('.panel.frame .rc[data-style="gallery"].on');
+      const frame = await badgeInGrid();
+      await openTab('边框');
+      await page.locator('.panel.frame .rc[data-style="none"]').click();
+      await page.waitForSelector('.panel.frame .rc[data-style="none"].on');
+      const frameReset = await badgeInGrid();
+
+      await openTab('边框');
+      await page.locator('.panel.frame .stamp-row input.switch').click();
+      await page.waitForFunction(() => document.querySelector('.panel.frame .stamp-row input.switch')?.checked === true);
+      const stamp = await badgeInGrid();
+      await openTab('边框');
+      await page.locator('.panel.frame .stamp-row input.switch').click();
+      await page.waitForFunction(() => document.querySelector('.panel.frame .stamp-row input.switch')?.checked === false);
+      const stampReset = await badgeInGrid();
+
+      await openTab('LUT');
+      const cube = 'TITLE "Tiny"\n# Input: sRGB\nLUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n';
+      await page.locator('input.lutpick').setInputFiles({ name: 'tiny.cube', mimeType: 'text/plain', buffer: Buffer.from(cube) });
+      const lutCard = page.locator('.panel.lut .rc[data-lut]:not([data-lut="none"])').first();
+      await lutCard.waitFor({ timeout: 30_000 });
+      await lutCard.click();
+      await page.waitForSelector('.panel.lut .rc.on:not([data-lut="none"])');
+      const lut = await badgeInGrid();
+      await openTab('LUT');
+      await page.locator('.panel.lut .rc[data-lut="none"]').click();
+      await page.waitForSelector('.panel.lut .rc[data-lut="none"].on');
+      const lutReset = await badgeInGrid();
+
+      return { initial, curve, curveReset, crop, cropReset, straighten, straightenReset, frame, frameReset, stamp, stampReset, lut, lutReset, errors };
+    } finally {
+      await context.close();
+    }
+  },
 };
 
 let out;

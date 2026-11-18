@@ -102,8 +102,9 @@ export async function state({ newPage, out }) {
     await page.waitForFunction(() => window.__state.current.batch.phase === 'ready');
     const afterRetry = await dockOf(page);
     await page.locator('#state-shell [data-act="share"]').click();
+    const savedDock = await page.locator('#state-shell .pdock').innerText();
     await page.locator('#state-shell [data-act="done"]').click();
-    steps.retryKept = { afterDone, afterRetry, end: await dockOf(page) };
+    steps.retryKept = { afterDone, afterRetry, savedDock, end: await dockOf(page) };
   } catch (err) {
     steps.retryKept = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
     await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);
@@ -413,6 +414,21 @@ export async function state({ newPage, out }) {
   } catch (err) {
     steps.warmBatch = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
   }
+  steps.perfEmpty = await page.evaluate(() => {
+    const t = window.__state;
+    const shell = document.createElement('div');
+    shell.className = 'app';
+    const perf = document.createElement('p');
+    perf.hidden = false;
+    const app = { photos: () => [], photo: () => undefined, session: () => 1, book: () => ({ dat: null }), markGone() {} };
+    const flow = new t.ExportFlow(shell, app, perf);
+    const batch = new t.ExportBatch(t.items(1), t.host({ 0: [10] }));
+    flow.batch = batch;
+    flow.paint();
+    const text = perf.textContent ?? '';
+    flow.clear();
+    return text;
+  });
   steps.paused = await page.evaluate(() => window.__state.exportPaused());
   await page.close();
 }

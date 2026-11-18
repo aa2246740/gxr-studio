@@ -280,6 +280,9 @@ def test_mobile_ui_export_files_match_desktop(tmp_path: Path, pinned_icc: bytes)
         check("6 张已做好" in full["ready"], "05c main line")
         check(full["shared"]["labels"] == ["存到相册（第 1 批，共 2 批）", "存到相册（第 2 批，共 2 批）"], "two share chunks of at most 4")
         check("好了：6 张" in full["shared"]["saved"] and "已存到相册" not in full["shared"]["saved"], "05e wording (owner decision 2)")
+        done_line = "选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。"
+        check(done_line in full["shared"]["saved"], "05e share-done line")
+        check(done_line in steps["small"]["shared"]["saved"], "05e share-done line (small)")
         check(full["canShare"] >= 2, "canShare asked before each share")
         check([len(c["files"]) for c in full["files"]] == [4, 2], "chunk sizes")
         check(all(c["active"] is True for c in full["files"] + steps["small"]["files"]), "share() called inside the tap")
@@ -432,6 +435,7 @@ def test_mobile_ui_export_batch_regressions_sol_r1(tmp_path: Path) -> None:
         "P2-01: shared photos not counted again",
     )
     check(kept["afterRetry"]["failures"] == 0 and kept["afterRetry"]["staged"] == 1, "P2-01: retry succeeds")
+    check("选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。" in kept["savedDock"], "05e share-done line in ExportFlow")
     check(kept["end"]["phase"] == "closed" and kept["end"]["dock"] is None, "P2-01: batch ends once nothing is left")
 
     held = steps["held"]
@@ -489,4 +493,5 @@ def test_mobile_ui_export_batch_regressions_sol_r1(tmp_path: Path) -> None:
         batch["attempts"] == 2 and batch["setups"] == 3 and batch["terminations"] >= 1 and batch["busy"] is False,
         "r2 P2-04: new Worker for the next photo",
     )
+    check("每张 —" in steps["perfEmpty"] and "每张 0 ms" not in steps["perfEmpty"], "perf strip shows em-dash before first finished photo")
     check(steps["paused"] is False, "card thumbnails and bakes resume")

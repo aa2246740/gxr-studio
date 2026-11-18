@@ -73,7 +73,7 @@ async function editCurve(page, stem, kind) {
     await channel('b');
     await tap(page, 160, 50);
   } else if (kind === 'endpoint') {
-    await drag(page, 250, 250, 250, 0);
+    await drag(page, 250, 250, 250, -10);
   } else if (kind === 'many') {
     for (const x of [36, 72, 108, 144, 180, 216]) await tap(page, x, Math.min(255, x + 40));
   } else if (kind === 'identity') {

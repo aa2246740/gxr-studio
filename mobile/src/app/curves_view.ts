@@ -109,7 +109,10 @@ function sameCurve(a: CurveMap | null | undefined, b: CurveMap | null | undefine
 }
 
 interface Drag {
+  pointerId: number;
   i: number;
+  dx: number;
+  dy: number;
   added: boolean;
   moved: boolean;
 }
@@ -157,14 +160,14 @@ export class CurvesView {
     this.resetAll.addEventListener('click', () => this.reset(true));
     const actions = el('div', 'curve-actions');
     actions.append(this.resetOne, this.resetAll);
-    column.append(switches, actions);
+    this.count = el('span', 'small dim curve-count', `2 / ${CURVE_MAX}`);
+    column.append(switches, actions, this.count);
     this.svg = document.createElementNS(SVG_NS, 'svg');
     this.svg.setAttribute('viewBox', '0 0 255 255');
     this.svg.setAttribute('class', 'curve');
     this.svg.setAttribute('role', 'group');
     this.svg.style.touchAction = 'none';
-    this.count = el('span', 'small dim curve-count', `2 / ${CURVE_MAX}`);
-    row.append(column, this.svg, this.count);
+    row.append(column, this.svg);
     this.panel.append(row);
     this.svg.addEventListener('pointerdown', this.onDown, { passive: false });
     this.svg.addEventListener('pointermove', this.onMove);
@@ -182,6 +185,7 @@ export class CurvesView {
     if (this.closed) return;
     this.cancelFrame();
     const photo = this.dragPhoto;
+    const pointerId = this.drag?.pointerId ?? null;
     const was = this.drag !== null;
     if (photo && this.drag && this.owns(photo)) photo.curve = this.committed;
     this.drag = null;
@@ -193,6 +197,7 @@ export class CurvesView {
     this.svg.removeEventListener('pointerup', this.onUp);
     this.svg.removeEventListener('pointercancel', this.onCancel);
     this.svg.removeEventListener('dblclick', this.onDouble);
+    if (pointerId !== null) this.releaseCapture(pointerId);
     if (was && this.host.dragging()) this.host.leaveDrag();
   }
 
@@ -200,26 +205,40 @@ export class CurvesView {
     return sameCurve(photo.curve, this.preview);
   }
 
+  private releaseCapture(pointerId: number): void {
+    try {
+      if (this.svg.hasPointerCapture?.(pointerId)) this.svg.releasePointerCapture(pointerId);
+    } catch {
+      /* 测试替身没有指针捕获。 */
+    }
+  }
+
   private onDown = (e: PointerEvent): void => {
     if (this.closed || this.drag || e.button !== 0) return;
     const photo = this.host.photo();
-    const p = toCurvePoint(e.clientX, e.clientY, this.svg.getBoundingClientRect());
+    const rect = this.svg.getBoundingClientRect();
+    const p = toCurvePoint(e.clientX, e.clientY, rect);
     if (!photo || !p) return;
     const committed = curveJson(photo.curve);
     const working = channelPoints(committed, this.channel);
-    let i = nearestIndex(working, p, touchHit(this.svg.getBoundingClientRect().width));
+    let i = nearestIndex(working, p, touchHit(rect.width));
     let added = false;
+    let dx = 0;
+    let dy = 0;
     if (i < 0) {
       const at = tryInsert(working, p);
       if (at === null) return;
       i = at;
       added = true;
+    } else {
+      dx = working[i][0] - p[0];
+      dy = working[i][1] - p[1];
     }
     this.committed = committed;
     this.preview = committed;
     this.working = working;
     this.dragPhoto = photo;
-    this.drag = { i, added, moved: false };
+    this.drag = { pointerId: e.pointerId, i, dx, dy, added, moved: false };
     this.host.enterDrag();
     if (added) this.write(setChannel(committed, this.channel, working));
     else this.draw();
@@ -232,11 +251,14 @@ export class CurvesView {
   };
 
   private onMove = (e: PointerEvent): void => {
-    if (this.closed || !this.drag || !this.working || !this.dragPhoto) return;
-    const p = toCurvePoint(e.clientX, e.clientY, this.svg.getBoundingClientRect());
-    if (!p) return;
+    if (this.closed || !this.drag || !this.working || !this.dragPhoto || e.pointerId !== this.drag.pointerId) return;
+    const rect = this.svg.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return;
+    const fx = ((e.clientX - rect.left) / rect.width) * 255;
+    const fy = 255 - ((e.clientY - rect.top) / rect.height) * 255;
+    if (!Number.isFinite(fx) || !Number.isFinite(fy)) return;
     const i = this.drag.i;
-    const next = clampMoved(this.working, i, p[0], p[1]);
+    const next = clampMoved(this.working, i, Math.round(fx + this.drag.dx), Math.round(fy + this.drag.dy));
     const cur = this.working[i];
     if (next[0] === cur[0] && next[1] === cur[1]) return;
     this.drag.moved = true;
@@ -244,11 +266,13 @@ export class CurvesView {
     this.write(setChannel(this.dragPhoto.curve, this.channel, this.working));
   };
 
-  private onUp = (): void => {
+  private onUp = (e: PointerEvent): void => {
+    if (!this.drag || e.pointerId !== this.drag.pointerId) return;
     this.finish(false);
   };
 
-  private onCancel = (): void => {
+  private onCancel = (e: PointerEvent): void => {
+    if (!this.drag || e.pointerId !== this.drag.pointerId) return;
     this.finish(true);
   };
 
@@ -294,11 +318,13 @@ export class CurvesView {
   private finish(cancel: boolean): void {
     if (!this.drag || !this.dragPhoto) return;
     const photo = this.dragPhoto;
+    const pointerId = this.drag.pointerId;
     const changed = this.drag.added || this.drag.moved;
     this.drag = null;
     this.working = null;
     this.dragPhoto = null;
     this.cancelFrame();
+    this.releaseCapture(pointerId);
     const current = this.host.photo() === photo;
     if (!current || cancel || !changed) {
       if (this.owns(photo)) photo.curve = this.committed;

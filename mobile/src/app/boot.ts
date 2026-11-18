@@ -355,6 +355,7 @@ class App implements AppApi {
     const photo = this.byId.get(id);
     if (!photo || !openable(photo)) return;
     this.closeEditor();
+    this.resetPerf();
     this.screen = 'editor';
     this.shell.dataset.screen = 'editor';
     this.editor = new EditorView(this.view, this.shell, this, this.engine);
@@ -455,6 +456,7 @@ class App implements AppApi {
 
   private showStart(): void {
     this.closeEditor();
+    this.resetPerf();
     this.screen = 'start';
     this.shell.dataset.screen = 'start';
     this.grid = null;
@@ -464,11 +466,20 @@ class App implements AppApi {
   private showGrid(remount: boolean): void {
     this.closeEditor();
     this.shell.dataset.screen = 'grid';
+    if (this.screen !== 'grid') this.resetPerf();
     if (!this.grid || remount || this.screen !== 'grid') {
       this.grid = new GridView(this.view, this);
       this.grid.show();
     } else this.grid.refresh();
     this.screen = 'grid';
+  }
+
+  private resetPerf(): void {
+    this.frameWatch?.stop();
+    this.frameWatch = null;
+    this.perf.textContent = '';
+    delete this.perf.dataset.perf;
+    delete this.perf.dataset.kind;
   }
 
   private closeEditor(): void {
