@@ -66,6 +66,11 @@ def _spread_pairs(limit: int) -> list[tuple[Path, Path]]:
     return [pairs[dng] for dng in samples.stable_sample(pairs, root, limit)]
 
 
+def _edit_index(dng: Path) -> int:
+    """Which of the six real-pair edits this DNG gets. Depends only on its own path."""
+    return int(samples.sample_key(dng, samples.captures()) * 1e9) % 6
+
+
 def _state_of(track: HdrTrack) -> dict[str, Any]:
     if track.layer is None:
         return {"active": False, "shape": None, "problem": track.problem}
@@ -635,7 +640,7 @@ def test_e2e_real_pairs_match_export_finish(
                 "dng": {"relpath": f"2026/real_{long_edge or 'full'}/{stem}.DNG"},
             },
         }
-        edit, side = edits[int(samples.sample_key(dng, samples.captures()) * 1e9) % len(edits)]
+        edit, side = edits[_edit_index(dng)]
 
         # Capture the pre-encode rgb, payload, and geometry/box decisions Python computes
         captured: dict[str, Any] = {}

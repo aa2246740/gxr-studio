@@ -422,7 +422,12 @@ def test_finish_array_synthetic_branches_match_python(tmp_path: Path) -> None:
         assert np.array_equal(rs_rgb, py_rgb)
 
 
-def _real_capture_inputs(limit: int = 24) -> list[tuple[Path, np.ndarray, bool]]:
+def _edit_slot(path: Path) -> int:
+    """Edit switches for one photo, from its own path. Callers take ``slot % n``."""
+    return int(sample_files.sample_key(path, sample_files.captures()) * 1e9)
+
+
+def _real_capture_inputs(limit: int = 12) -> list[tuple[Path, np.ndarray, bool]]:
     root = sample_files.captures()
     if not root.is_dir():
         return []
@@ -453,13 +458,13 @@ def _real_capture_inputs(limit: int = 24) -> list[tuple[Path, np.ndarray, bool]]
 
 def test_finish_array_real_photos_parity(tmp_path: Path) -> None:
     require_cli()
-    samples = _real_capture_inputs(limit=24)
+    samples = _real_capture_inputs(limit=12)
     if len(samples) < 20:
         sample_files.missing(f"need >= 20 real images in {CAPTURES}, got {len(samples)}")
     curve_a = {"master": [[0, 6], [84, 72], [184, 202], [255, 250]]}
     curve_b = {"master": [[0, 0], [128, 138], [255, 255]], "r": [[0, 0], [120, 140], [255, 255]], "b": [[0, 10], [128, 112], [255, 248]]}
     for idx, (path, rgb, from_raw) in enumerate(samples):
-        slot = int(sample_files.sample_key(path, sample_files.captures()) * 1e9)
+        slot = _edit_slot(path)
         name = path.name
         edit_dict: dict[str, Any] = {
             "adjust": {

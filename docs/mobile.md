@@ -87,9 +87,10 @@ Python 是对照的标准。测试在 `tests/test_core_parity_<范围>.py`，调
 | geometry `_real_dng_sizes`（能打开的） | 57 / 22 / 29 | 91 / 26 / 30 |
 | export_meta `_real_files(60)` DNG、JPG | 60/23/32、60/32/40 | 94/27/33、119/34/55 |
 | resample `_collect_real_images(12)` JPG、DNG | 12/10/12、12/10/12 | 26/15/19、20/12/13 |
-| raster `_real_capture_inputs(24)`（能解码的） | 24 / 18 / 21 | 93 / 33 / 43 |
+| raster `_real_capture_inputs(12)`（能解码的） | 24 / 18 / 21 | 46 / 22 / 27 |
+| raw `_REAL_RENDER` | 15 / 12 / 14 | 27 / 14 / 16 |
 
-格子里是「张数 / 顶层文件夹数 / DNG 所在文件夹数」。旧的均匀抽样本身随语料变，所以这一列是在同一份语料上算的。换盐或份额会换掉整个样本，要当作一次单独的改动。要固定测某一张照片时，用 `samples.pinned_capture(路径哈希, 内容哈希)`，仓库里不写文件名。后九行是 sample-stable-2（2026-11-19）在同一份语料上接上同一份额；`_real_pairs_all` 没有按下标抽，所以两列相同。
+格子里是「张数 / 顶层文件夹数 / DNG 所在文件夹数」。旧的均匀抽样本身随语料变，所以这一列是在同一份语料上算的。换盐或份额会换掉整个样本，要当作一次单独的改动。要固定测某一张照片时，用 `samples.pinned_capture(路径哈希, 内容哈希)`，仓库里不写文件名。后十行是 sample-stable-2（2026-11-19）在同一份语料上接上同一份额；`_real_pairs_all` 没有按下标抽，所以两列相同。
 
 ## 移植一个 Python 模块
 

@@ -298,11 +298,6 @@ _SCANNERS = (
 )
 
 
-def _case_of(path: Path, root: Path) -> int:
-    """Same assignment the parity tests use: the file's own key, not its place in the list."""
-    return int(samples.sample_key(path, root) * 1e9) % 6
-
-
 def _bind_captures(monkeypatch: pytest.MonkeyPatch, root: Path, *modules: object) -> None:
     monkeypatch.setattr(samples, "captures", lambda: root)
     for module in modules:
@@ -320,24 +315,29 @@ def _populate(root: Path, count: int = 80) -> None:
 
 
 def _add_unrelated(root: Path, scanner: str) -> None:
-    """Five files the scanner's own filter accepts. Pair scanners gain five JPG mates, not new DNGs."""
-    if scanner in {"hdr_track_all", "hdr_track_spread", "hdr_finish"}:
+    """Five files the scanner's own filter accepts. Names that fall inside the share enter the sample."""
+    extra = root / "zz-unrelated"
+    extra.mkdir()
+    if scanner in {"hdr_track_all", "hdr_track_spread"}:
         for index in range(5):
             folder = root / f"u{index % 7:02d}" / f"s{index % 4}"
             (folder / f"f{index:04d}.JPG").write_bytes(b"")
         return
-    suffixes = {
-        "color": (".DNG",) * 5,
-        "raw": (".DNG",) * 5,
-        "geometry": (".DNG",) * 5,
-        "export_meta": (".DNG", ".DNG", ".JPG", ".JPG", ".JPG"),
-        "resample": (".DNG", ".DNG", ".JPG", ".JPG", ".JPG"),
-        "raster": (".JPG", ".JPG", ".DNG", ".JPG", ".DNG"),
+    if scanner == "hdr_finish":
+        for name in ("h0131.DNG", "h0199.DNG", "h0280.DNG", "h0312.DNG", "h0364.DNG"):
+            (extra / name).write_bytes(b"")
+            (extra / name.replace(".DNG", ".JPG")).write_bytes(b"")
+        return
+    names = {
+        "color": ("n0015.DNG", "n0043.DNG", "n0079.DNG", "n0094.DNG", "n0099.DNG"),
+        "raw": ("n0000.DNG", "n0001.DNG", "n0002.DNG", "n0003.DNG", "n0004.DNG"),
+        "geometry": ("n0000.DNG", "n0001.DNG", "n0002.DNG", "n0003.DNG", "n0004.DNG"),
+        "export_meta": ("n0000.DNG", "n0001.DNG", "n0002.JPG", "n0003.JPG", "n0004.JPG"),
+        "resample": ("n0000.DNG", "n0001.DNG", "n0002.JPG", "n0003.JPG", "n0004.JPG"),
+        "raster": ("r0006.DNG", "r0029.JPG", "r0061.JPG", "r0078.DNG", "r0167.DNG"),
     }[scanner]
-    extra = root / "zz-unrelated"
-    extra.mkdir()
-    for index, suffix in enumerate(suffixes):
-        (extra / f"n{index:04d}{suffix}").write_bytes(b"")
+    for name in names:
+        (extra / name).write_bytes(b"")
 
 
 def _ids_of(scanner: str, root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], ...]:
@@ -403,7 +403,7 @@ def _ids_of(scanner: str, root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
     monkeypatch.setattr(mod, "render_half", lambda _dng: _Pixels())
     monkeypatch.setattr(mod, "load_jpeg", lambda _path, max_edge=None: _Pixels())
     found = []
-    for row in mod._real_capture_inputs(24):
+    for row in mod._real_capture_inputs():
         ident = row[0]
         if isinstance(ident, Path):
             found.append(ident.relative_to(root).as_posix())
@@ -414,13 +414,31 @@ def _ids_of(scanner: str, root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
     return (found,)
 
 
+def _slots(scanner: str, root: Path) -> dict[str, int]:
+    """What the parity tests assign. Empty when that scanner does not assign a case."""
+    if scanner == "color":
+        import test_core_parity_color as mod
+
+        picked = mod._apply_picks(mod._real_dngs())
+        return {path.relative_to(root).as_posix(): index for index, path in enumerate(picked)}
+    if scanner == "raster":
+        import test_core_parity_raster as mod
+
+        return {path.relative_to(root).as_posix(): mod._edit_slot(path) for path, _img, _flag in mod._real_capture_inputs()}
+    if scanner == "hdr_finish":
+        import test_core_parity_hdr_track_finish as mod
+
+        return {dng.relative_to(root).as_posix(): mod._edit_index(dng) for _jpg, dng in mod._spread_pairs(16)}
+    return {}
+
+
 @pytest.mark.parametrize("scanner", _SCANNERS)
 def test_local_scanner_picks_and_cases_stay_when_unrelated_files_arrive(scanner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Adding captures must not drop a file a scanner already picked, nor change the case of its own key."""
+    """Adding captures must not drop a picked file, nor change the case the parity test gives it."""
     root = tmp_path / "captures"
     _populate(root)
     before = _ids_of(scanner, root, monkeypatch)
-    cases = {rel: _case_of(root / rel, root) for group in before for rel in group}
+    slots = _slots(scanner, root)
     _add_unrelated(root, scanner)
     after = _ids_of(scanner, root, monkeypatch)
     assert len(before) == len(after)
@@ -428,5 +446,7 @@ def test_local_scanner_picks_and_cases_stay_when_unrelated_files_arrive(scanner:
         assert left, f"{scanner} group {index} picked nothing"
         missing = [rel for rel in left if rel not in set(right)]
         assert not missing, f"{scanner} group {index} dropped {len(missing)} original picks"
-        for rel in left:
-            assert _case_of(root / rel, root) == cases[rel]
+    later = _slots(scanner, root)
+    for rel, slot in slots.items():
+        assert rel in later, f"{scanner} dropped the case for {rel}"
+        assert later[rel] == slot, f"{scanner} case for {rel} changed from {slot} to {later[rel]}"
