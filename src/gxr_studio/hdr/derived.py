@@ -27,7 +27,7 @@ from ..library.store import Library, LibraryPathRefused
 from ..observe import log
 from ..raw import RawDecodeError, open_dng
 from .container import ContainerError
-from .gain import HdrUnsupported, Params, hdr_from_camera_jpeg, raw_luma
+from .gain import HdrUnsupported, Params, RawLuma, hdr_from_camera_jpeg, pair_raw_luma, raw_luma
 
 VERSION = 2  # 重新核对旧缓存的拍摄信息和局部对应关系
 DIR = ".studio/hdr"
@@ -52,11 +52,13 @@ def status_path(lib: Library, shot_id: str) -> Path:
 
 
 def eligible(shot: dict[str, Any]) -> bool:
-    from ..halfframe_pairs import is_pair_second
+    from ..halfframe_pairs import has_pair_raw, is_pair_second
 
-    if shot.get("diptych") or is_pair_second(shot):
-        return False
     files = shot.get("files") or {}
+    if is_pair_second(shot):
+        return "jpg" in files and has_pair_raw(shot)
+    if shot.get("diptych"):
+        return False
     return "jpg" in files and "dng" in files
 
 
@@ -82,13 +84,34 @@ def _store(lib: Library, shot_id: str, ext: str, data: bytes) -> None:
         d.replace_file(_rel(shot_id, ext), data)
 
 
+def _load_raw(lib: Library, shot: dict[str, Any]) -> RawLuma:
+    from ..halfframe_compose import pair_half_shots, pair_orientation_and_half
+    from ..halfframe_pairs import has_pair_raw, is_pair_second
+
+    if is_pair_second(shot):
+        if not has_pair_raw(shot):
+            raise HdrUnsupported("no_raw", "半格一对缺少源 RAW 文件")
+        ori, first_half = pair_orientation_and_half(shot)
+        s1, s2 = pair_half_shots(shot)
+        first_jpg_rec = s1["files"].get("jpg")
+        first_jpeg = lib.abspath(first_jpg_rec["relpath"]).read_bytes() if isinstance(first_jpg_rec, dict) else None
+        dng1 = open_dng(lib.abspath(s1["files"]["dng"]["relpath"]))
+        try:
+            dng2 = open_dng(lib.abspath(s2["files"]["dng"]["relpath"]))
+        except BaseException:
+            dng1.release()
+            raise
+        return pair_raw_luma(dng1, dng2, first_half=first_half, orientation=ori, first_jpeg=first_jpeg)
+    return raw_luma(open_dng(lib.abspath(shot["files"]["dng"]["relpath"])))
+
+
 def generate(lib: Library, shot: dict[str, Any], params: Params | None = None) -> str:
     """给一张照片生成 HDR 版本，返回状态。做不了的（对不齐、RAW 读不出来）记一个原因文件，下次不再试。"""
     sid = str(shot["shot_id"])
     files = shot["files"]
     try:
         jpeg = lib.abspath(files["jpg"]["relpath"]).read_bytes()
-        raw = raw_luma(open_dng(lib.abspath(files["dng"]["relpath"])))
+        raw = _load_raw(lib, shot)
         out, stats = hdr_from_camera_jpeg(jpeg, raw, params)
     except (HdrUnsupported, RawDecodeError, ContainerError) as exc:
         reason = exc.reason if isinstance(exc, HdrUnsupported) else ("raw_unreadable" if isinstance(exc, RawDecodeError) else "jpeg_unreadable")

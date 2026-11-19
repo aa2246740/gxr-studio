@@ -5,6 +5,6 @@
 """
 
 from .container import GainMeta, assemble
-from .gain import HdrUnsupported, Params, RawLuma, hdr_from_camera_jpeg, raw_luma
+from .gain import HdrUnsupported, Params, RawLuma, hdr_from_camera_jpeg, pair_raw_luma, raw_luma
 
-__all__ = ["GainMeta", "HdrUnsupported", "Params", "RawLuma", "assemble", "hdr_from_camera_jpeg", "raw_luma"]
+__all__ = ["GainMeta", "HdrUnsupported", "Params", "RawLuma", "assemble", "hdr_from_camera_jpeg", "pair_raw_luma", "raw_luma"]

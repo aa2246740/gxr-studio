@@ -32,6 +32,7 @@ from ..hdr.gain import (
     check_capture,
     compute_gain,
     package,
+    pair_raw_luma,
     raw_luma,
     register,
     sdr_luma_grid,
@@ -51,6 +52,18 @@ def _solid(shape: tuple[int, ...], value: int) -> np.ndarray:
     return np.full((shape[0], shape[1], 3), value, np.uint8)
 
 
+@dataclass(frozen=True)
+class PairHdrSource:
+    """半格一对的 RAW 亮度来源（两张 DNG + 共享几何 + 各自原始配对 JPG）。"""
+
+    dng1: Path
+    dng2: Path
+    first_half: str
+    orientation: int
+    jpeg1: Path | None = None
+    jpeg2: Path | None = None
+
+
 @dataclass
 class HdrTrack:
     """跟着成片走的 RAW 亮度层：(H, W, 2) float32，[RAW 亮度, 过曝]；NaN = 这里不是照片。做不了时 `problem` 是原因。"""
@@ -60,6 +73,38 @@ class HdrTrack:
     layer: np.ndarray | None = None
     problem: str | None = None
     jpeg: Path | None = None  # 原始配对 JPG，不能拿编辑后重写的 EXIF 核对拍摄信息
+    pair: PairHdrSource | None = None
+
+    @classmethod
+    def for_shot(cls, lib: Any, shot: dict[str, Any], params: Params = Params()) -> HdrTrack:
+        """为单张或半格一对构造 `HdrTrack`。半格一对缺任一张 DNG 时退化为无 RAW（`NO_RAW`）。"""
+        from ..halfframe_compose import pair_half_shots, pair_orientation_and_half
+        from ..halfframe_pairs import has_pair_raw, is_pair_second
+
+        if is_pair_second(shot):
+            if not has_pair_raw(shot):
+                return cls(None, params=params)
+            ori, first_half = pair_orientation_and_half(shot)
+            s1, s2 = pair_half_shots(shot)
+            f1, f2 = s1["files"], s2["files"]
+            return cls(
+                None,
+                params=params,
+                pair=PairHdrSource(
+                    dng1=lib.abspath(f1["dng"]["relpath"]),
+                    dng2=lib.abspath(f2["dng"]["relpath"]),
+                    first_half=first_half,
+                    orientation=ori,
+                    jpeg1=lib.abspath(f1["jpg"]["relpath"]) if "jpg" in f1 else None,
+                    jpeg2=lib.abspath(f2["jpg"]["relpath"]) if "jpg" in f2 else None,
+                ),
+            )
+        files = shot.get("files") or {}
+        return cls(
+            lib.abspath(files["dng"]["relpath"]) if "dng" in files else None,
+            params=params,
+            jpeg=lib.abspath(files["jpg"]["relpath"]) if "jpg" in files else None,
+        )
 
     @property
     def active(self) -> bool:
@@ -67,13 +112,31 @@ class HdrTrack:
 
     def begin(self, base: np.ndarray) -> None:
         """底图定下来以后：读 DNG，对齐到底图，按底图全尺寸重采样。对不齐、读不出来就记下原因，导出照常（不带 HDR）。"""
-        if self.dng is None:
+        if self.pair is None and self.dng is None:
             self.problem = NO_RAW
             return
         try:
-            raw = raw_luma(open_dng(self.dng))
-            if self.jpeg is not None:
-                check_capture(self.jpeg.read_bytes(), raw)
+            if self.pair is not None:
+                p = self.pair
+                dng1 = open_dng(p.dng1)
+                try:
+                    dng2 = open_dng(p.dng2)
+                except BaseException:
+                    dng1.release()
+                    raise
+                raw = pair_raw_luma(
+                    dng1,
+                    dng2,
+                    first_half=p.first_half,
+                    orientation=p.orientation,
+                    first_jpeg=p.jpeg1.read_bytes() if p.jpeg1 is not None else None,
+                    second_jpeg=p.jpeg2.read_bytes() if p.jpeg2 is not None else None,
+                )
+            else:
+                assert self.dng is not None  # nosec B101
+                raw = raw_luma(open_dng(self.dng))
+                if self.jpeg is not None:
+                    check_capture(self.jpeg.read_bytes(), raw)
             grid = sdr_luma_grid(base, self.params.map_factor)
             al = align(grid, raw.y)
             check_alignment(al)
@@ -85,6 +148,16 @@ class HdrTrack:
             self.problem = "raw_unreadable"
             return
         self.layer = np.dstack([y, clip.astype(np.float32)])
+
+    def split_pair(self, *, first_half: str, orientation: int) -> tuple[HdrTrack, HdrTrack]:
+        """从已对齐的双联数据层切出两张单格各自的 `HdrTrack`，复用唯一半格几何。"""
+        if self.layer is None:
+            prob = self.problem or NO_RAW
+            return HdrTrack(None, params=self.params, problem=prob), HdrTrack(None, params=self.params, problem=prob)
+        from ..halfframe_compose import split_diptych_halves
+
+        h1, h2 = split_diptych_halves(self.layer, first_half=first_half, orientation=orientation)
+        return HdrTrack(None, params=self.params, layer=h1), HdrTrack(None, params=self.params, layer=h2)
 
     def warp(self, geom: Geometry) -> None:
         if self.layer is not None:
