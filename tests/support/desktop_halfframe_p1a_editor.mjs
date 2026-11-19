@@ -270,6 +270,48 @@ try {
     };
   }
 
+  // 3b) Startup race: the viewer's panel is drawn before the first camera-data status arrives.
+  // Delay /api/camdata/status so the recipe cards are drawn disabled; they must come alive once
+  // the status lands (app.js redraws the side panel on 'camdata-ready-changed').
+  await page.route('**/api/camdata/status', async (route) => {
+    await sleep(8000);
+    // A poll still waiting here when the route is removed must not crash the driver.
+    await route.continue().catch(() => {});
+  });
+  await page.goto(`${m.base}/`);
+  await page.waitForSelector('.top, .grid, .empty', { timeout: 90000 });
+  await page.evaluate((id) => {
+    location.hash = `#/photo/${id}`;
+  }, m.p2);
+  await page.waitForFunction(
+    (pid) =>
+      import('/assets/viewer.js').then((v) => {
+        const c = v.currentView();
+        return !!c && c.photo.id === pid && !!c.ed;
+      }),
+    m.p2,
+    { timeout: 90000 },
+  );
+  await page.evaluate(() => import('/assets/viewer.js').then((v) => v.openViewerTab('recipe')));
+  await page.waitForFunction(() => document.querySelectorAll('.lcard').length > 0, null, { timeout: 90000 });
+  const raceEarly = await panelState();
+  await page.waitForFunction(() => import('/assets/camdata.js').then((cd) => cd.camdataReady()), null, { timeout: 90000 });
+  let raceEnabled = true;
+  try {
+    await page.waitForFunction(
+      () => {
+        const cards = [...document.querySelectorAll('.lcard')];
+        return cards.length > 0 && cards.every((c) => !c.disabled && c.getAttribute('aria-disabled') !== 'true');
+      },
+      null,
+      { timeout: 20000 },
+    );
+  } catch {
+    raceEnabled = false;
+  }
+  await page.unroute('**/api/camdata/status');
+  out.steps.startupRace = { cards: raceEarly.cards, earlyDisabled: raceEarly.disabled, enabledAfterStatus: raceEnabled };
+
   // 4) Reload -> check stage, recipe state, and edited thumbnail
   out.renders.length = 0;
   await page.goto(`${m.base}/`);
