@@ -16,7 +16,7 @@ import { ExportFlow } from './export_ui';
 import { GridView } from './grid';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
-import { openable, photoMs, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
+import { ensureCameraRecipe, ensureCameraRecipes, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { DEFAULT_FRAME, DEFAULT_STAMP } from '../lib/frame_spec';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
@@ -86,6 +86,7 @@ class App implements AppApi {
 
   async start(engine: Engine | null): Promise<void> {
     this.engine = engine;
+    registerCameraRecipeReader(async (f) => { const r = await this.reader.read(new File([f.slice(0, 262144)], f.name)); return r.ok ? r.bytes : null; });
     this.recipeBook.attach(engine);
     this.lutGpuQueue.attach(() => this.engine);
     // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
@@ -96,6 +97,7 @@ class App implements AppApi {
         generation = this.recipeBook.generationId();
         lookCache.clear();
       }
+      if (this.recipeBook.dat) void ensureCameraRecipes([...this.byId.values()], this.recipeBook);
       if (this.screen === 'grid') this.grid?.refresh();
     });
     const restored = this.recipeBook.restore().catch(() => undefined);
@@ -557,6 +559,7 @@ class App implements AppApi {
       photo.version += 1;
       photo.gone = false;
       photo.frameMeta = null;
+      photo.dngCopyright = null; photo.dngCopyrightRead = null; photo.cameraRecipe = null;
       photo.neutral?.bitmap.close();
       photo.neutral = null;
       releaseLooks(photo);
@@ -617,6 +620,7 @@ class App implements AppApi {
       photo.diptych = true;
       photo.dng = null;
       photo.dngMeta = null;
+      photo.dngCopyright = null; photo.dngCopyrightRead = null; photo.cameraRecipe = null;
     }
     let captureMs = reply.captureMs;
     let frame = reply.frame;
@@ -653,6 +657,7 @@ class App implements AppApi {
   }
 
   private afterRead(photo: Photo): void {
+    if (photo.status === 'ready' && this.recipeBook.dat) void ensureCameraRecipe(photo, this.recipeBook);
     if (this.screen === 'grid') this.grid?.refresh();
     if (photo.status === 'bad' && this.screen === 'grid') this.grid?.showUnreadable(photo.id);
   }

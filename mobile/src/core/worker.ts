@@ -2,6 +2,7 @@
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
 import init, {
+  camdata_camera_recipe,
   camdata_entries,
   camdata_parse,
   color_bake,
@@ -31,6 +32,7 @@ import init, {
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
 import { photoMetaFromTiff } from '../lib/exif';
+import { CAMERA_RECIPE_PREFIX, encodeCameraRecipePayload } from '../lib/recipes';
 import { FONT_URLS } from '../lib/font_assets';
 import { packFonts, type FontKey } from '../lib/fonts';
 import {
@@ -165,8 +167,21 @@ function dat(id: number, buffer: ArrayBuffer, library: ArrayBuffer | null): void
   ok(id, JSON.stringify({ summary, listing }), back);
 }
 
-/** 一个配方选择 → 552 字节条目（旋钮已经套上，和桌面 CameraData.resolve 一样）。 */
+/** 一个配方选择 → 552 字节条目（旋钮已经套上，和桌面 CameraData.resolve 一样）；前缀 `@camera-recipe:` 走拍摄配方解析。 */
 function resolve(id: number, args: ResolveArgs): void {
+  if (args.recipe.startsWith(CAMERA_RECIPE_PREFIX)) {
+    const tagText = args.recipe.slice(CAMERA_RECIPE_PREFIX.length);
+    const datView = args.dat.byteLength > 0 ? new Uint8Array(args.dat) : undefined;
+    let payload: string;
+    try {
+      payload = camdata_camera_recipe(tagText, datView, libraryView(args.library));
+    } catch (err) {
+      const info = coreError(err);
+      payload = JSON.stringify({ error: { code: info.code ?? 'camera_recipe_error', message: info.message } });
+    }
+    ok(id, JSON.stringify({ entry: encodeCameraRecipePayload(payload), entry_sha256: '', knobs: null }));
+    return;
+  }
   const text = color_resolve(new Uint8Array(args.dat), new TextEncoder().encode(args.recipe), libraryView(args.library));
   ok(id, text);
 }

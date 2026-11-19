@@ -108,6 +108,41 @@ pub fn parse_recipe_tag(value: &str) -> Option<RecipeTag> {
     })
 }
 
+/// Default value for a knob (amount = 100, all others = 0).
+pub fn knob_default(name: &str) -> i64 {
+    if name == "amount" { 100 } else { 0 }
+}
+
+/// Port of `gxr_studio/camdata/recipe_tags.py:67 decoded_levels`.
+pub fn decoded_levels(tag: &RecipeTag, amount_levels: Option<&[i64]>) -> Option<[Option<i64>; 10]> {
+    let mut levels = tag.levels?;
+    let first = tag
+        .knob_code
+        .as_deref()
+        .and_then(|s| s.as_bytes().first().copied())
+        .unwrap_or(b'-');
+    let amount = if first == b'-' {
+        None
+    } else if let Some(idx) = ALPHABET.iter().position(|&c| c == first) {
+        let idx = idx as i64;
+        let matches: Vec<i64> = amount_levels
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .filter(|&level| level.div_euclid(10) == idx)
+            .collect();
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    levels[0] = amount;
+    Some(levels)
+}
+
 pub fn recipe_tag_to_json(tag: Option<&RecipeTag>) -> Json {
     let tag_json = match tag {
         None => Json::Null,
@@ -162,5 +197,34 @@ mod tests {
         assert!(parse_recipe_tag("GXR1 6a3a5a3c02 28 06 A8999B999-\n").is_none());
         let padded = format!("{:<69}\0", "GXR1 0123456789 50 17 799999999-");
         assert!(parse_recipe_tag(&padded).is_some());
+    }
+
+    #[test]
+    fn decodes_amount_and_handles_missing_or_ambiguous_levels() {
+        let tag = parse_recipe_tag("GXR1 6adf847602 50 47 A8999B999-").expect("valid");
+        // 'A' -> index 10 -> unique match 100 in [25, 50, 75, 100, 125]
+        let dec = decoded_levels(&tag, Some(&[25, 50, 75, 100, 125])).expect("decoded");
+        assert_eq!(dec[0], Some(100));
+        assert_eq!(dec[1], Some(-1));
+        assert_eq!(dec[5], Some(2));
+        assert_eq!(dec[9], None);
+
+        // Ambiguous match (100 and 105 both // 10 == 10) -> None
+        let amb = decoded_levels(&tag, Some(&[100, 105])).expect("ambiguous");
+        assert_eq!(amb[0], None);
+
+        // Missing amount_levels -> None
+        let missing = decoded_levels(&tag, None).expect("no amount levels");
+        assert_eq!(missing[0], None);
+
+        // Dash in amount slot -> None even when levels exist
+        let dash = parse_recipe_tag("GXR1 6adf847602 50 03 -999999999").expect("dash");
+        let dash_dec = decoded_levels(&dash, Some(&[0, 50, 100])).expect("dash dec");
+        assert_eq!(dash_dec[0], None);
+        assert_eq!(dash_dec[9], Some(0));
+
+        // Legacy tag without knob_code -> None
+        let legacy = parse_recipe_tag("GXR1 d25d2f0a68 50 01").expect("legacy");
+        assert_eq!(decoded_levels(&legacy, Some(&[50, 100])), None);
     }
 }

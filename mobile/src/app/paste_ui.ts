@@ -4,7 +4,7 @@
 import { groupByGap } from '../lib/group';
 import { presetLabel, rectFromArray } from '../lib/crop';
 import { FRAME_NAMES } from '../lib/frame_spec';
-import { shelf, shelves } from '../lib/recipes';
+import { photoWithAdopted, shelf, shelves } from '../lib/recipes';
 import { NOT_SET, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
 import { button, el, icon } from './dom';
@@ -124,7 +124,7 @@ function overlay(host: HTMLElement, node: HTMLElement, onScrim: () => void): Ove
 export function openCopySheet(host: HTMLElement, api: AppApi, photo: Photo, onCopied: () => void): void {
   closePasteSheets(host);
   const chosen = new Set<GroupId>(chosenGroups());
-  const present = new Set(groupsPresent(photo));
+  const present = new Set(groupsPresent(photoWithAdopted(photo, api.book().dat)));
   const sheet = el('div', 'ms paste-sheet');
   sheet.dataset.state = 'copy-options';
   const head = el('div', 'hd');

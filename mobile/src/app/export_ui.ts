@@ -11,7 +11,7 @@ import { formatClock, formatDay } from '../lib/group';
 import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrFrameLine, hdrMixLine, hdrResultText } from '../lib/hdr_text';
 import { isDisplaySpace } from '../lib/lut';
 import { loadExportHdr, saveExportHdr } from '../lib/prefs';
-import { shelf, shelves, type Card } from '../lib/recipes';
+import { adoptedSelectionOf, photoWithAdopted, shelf, shelves, type Card } from '../lib/recipes';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeText, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
 import { button, el } from './dom';
@@ -21,7 +21,7 @@ import { setExportPaused } from './export_pause';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
 import type { LutBook } from './lut_book';
-import { photoMs, type Photo } from './model';
+import { ensureCameraRecipe, ensureCameraRecipes, needsCameraRecipe, photoMs, type Photo } from './model';
 import './export.css';
 
 declare const __GXR_BUILD__: string;
@@ -96,11 +96,13 @@ function dev(): DevExport | null {
 export function cardsFor(book: Book, photo: Photo): Card[] {
   const dat = book.dat;
   if (!dat) return [];
-  const unit = unitOfLens(mergeMeta(photo.jpgMeta, photo.dngMeta).lens) ?? 'jlaunch';
+  const adopted = adoptedSelectionOf(photo, dat);
+  const unit = (photo.choice ?? adopted?.choice)?.unit ?? unitOfLens(mergeMeta(photo.jpgMeta, photo.dngMeta).lens) ?? 'jlaunch';
   return shelf(shelves(dat.listing, unit), 'all');
 }
 
-export function requestPhoto(photo: Photo, lutBook?: LutBook): RequestPhoto {
+export function requestPhoto(photo: Photo, lutBook?: LutBook, book?: Book): RequestPhoto {
+  const view = book ? photoWithAdopted(photo, book.dat) : photo;
   const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
   const source = photo.jpg ?? photo.dng;
   const lutRecord = photo.lut ? lutBook?.get(photo.lut) : undefined;
@@ -113,8 +115,8 @@ export function requestPhoto(photo: Photo, lutBook?: LutBook): RequestPhoto {
     jpgName: photo.jpg?.name ?? null,
     lens: meta.lens,
     iso: meta.iso,
-    choice: photo.choice ? { ...photo.choice } : null,
-    levels: new Map([...photo.levels].map(([k, v]) => [k, { ...v }])),
+    choice: view.choice ? { ...view.choice } : null,
+    levels: new Map([...view.levels].map(([k, v]) => [k, { ...v }])),
     memory: new Map([...photo.memory].map(([k, v]) => [k, { ...v }])),
     lut: photo.lut,
     lutInputSpace: lutRecord?.input_space ?? null,
@@ -307,11 +309,13 @@ export class ExportFlow {
         const [, fonts] = await Promise.all([
           logoStore.ensureLoaded(),
           fontKeys.length ? ensureFontPack(fontKeys) : Promise.resolve({ fontIndex: '', fontPack: null }),
+          ensureCameraRecipe(photo, this.app.book()),
         ]);
         if (seq !== this.sizeSeq || !sheet.isConnected) return;
         const lutBook = this.app.lutBook?.();
-        const reqPhoto = requestPhoto(photo, lutBook);
-        const req = buildRequest(reqPhoto, cardsFor(this.app.book(), photo), { size: 'original', quality: 'high' }, __GXR_BUILD__);
+        const book = this.app.book();
+        const reqPhoto = requestPhoto(photo, lutBook, book);
+        const req = buildRequest(reqPhoto, cardsFor(book, photo), { size: 'original', quality: 'high' }, __GXR_BUILD__);
         const isLogLut = Boolean(reqPhoto.lutInputSpace && !isDisplaySpace(reqPhoto.lutInputSpace));
         const useJpg = photo.jpg !== null && !isLogLut && (!req.side.recipe || photo.dng === null);
         const reply = await this.core.sizes({
@@ -340,6 +344,7 @@ export class ExportFlow {
     } else {
       const warmFonts = [...new Set(photos.flatMap((p) => fontsNeeded(p.border, p.stamp)))];
       void logoStore.ensureLoaded();
+      void ensureCameraRecipes(photos, this.app.book());
       if (warmFonts.length) void ensureFontPack(warmFonts).catch(() => undefined);
     }
   }
@@ -377,7 +382,7 @@ export class ExportFlow {
     const book = this.app.book();
     const lutBook = this.app.lutBook?.();
     const snapshots = photos.map((photo) => {
-      const reqPhoto = requestPhoto(photo, lutBook);
+      const reqPhoto = requestPhoto(photo, lutBook, book);
       const cards = cardsFor(book, photo);
       return {
         id: photo.id,
@@ -426,7 +431,8 @@ export class ExportFlow {
     this.batch = batch;
     const syncFonts = cachedFontPack(fontKeys);
     const logosReady = !logoIds.length || logoStore.loaded();
-    if ((!cubeIds.length || !lutBook) && syncFonts && logosReady) {
+    const needAdopt = Boolean(book.dat) && photos.some((p) => needsCameraRecipe(p, book.dat));
+    if (!needAdopt && (!cubeIds.length || !lutBook) && syncFonts && logosReady) {
       const packedLogos = logoStore.packLogos(logoIds);
       fonts = syncFonts;
       this.core.begin({
@@ -448,13 +454,16 @@ export class ExportFlow {
       ? ensureFontPack(fontKeys).catch(() => ({ fontIndex: '', fontPack: null }))
       : Promise.resolve({ fontIndex: '', fontPack: null });
     const logoTask = logoIds.length && !logoStore.loaded() ? logoStore.ensureLoaded().catch(() => []) : Promise.resolve([]);
-    void Promise.all([lutTask, fontTask, logoTask]).then(([luts, fonts0]) => {
+    const adoptTask = needAdopt ? ensureCameraRecipes(photos, book) : Promise.resolve();
+    void Promise.all([lutTask, fontTask, logoTask, adoptTask]).then(([luts, fonts0]) => {
       if (this.batch !== batch || batch.phase !== 'running') return;
-      if (logoIds.length) {
-        snapshots.forEach((s, idx) => {
-          const lid = usedLogoId(s.reqPhoto.border);
-          s.reqPhoto.logoInfo = lid ? logoStore.info(lid) : null;
-          items[idx].req = buildRequest(s.reqPhoto, s.cards, options, __GXR_BUILD__, binding);
+      if (needAdopt || logoIds.length) {
+        photos.forEach((photo, idx) => {
+          const reqPhoto = requestPhoto(photo, lutBook, book);
+          const cards = cardsFor(book, photo);
+          snapshots[idx].reqPhoto = reqPhoto;
+          snapshots[idx].cards = cards;
+          items[idx].req = buildRequest(reqPhoto, cards, options, __GXR_BUILD__, binding);
         });
       }
       const packedLogos = logoStore.packLogos(logoIds);

@@ -566,4 +566,4 @@ def test_wasm_exports_only_the_spec_listed_camdata_functions() -> None:
         pytest.skip("WASM package not built; run make core-wasm")
     dts = PKG.with_suffix(".d.ts").read_text(encoding="utf-8")
     exported = set(re.findall(r"export function (camdata_\w+)\(", dts))
-    assert exported == {"camdata_parse", "camdata_entries", "camdata_menu"}
+    assert exported == {"camdata_parse", "camdata_entries", "camdata_menu", "camdata_camera_recipe"}

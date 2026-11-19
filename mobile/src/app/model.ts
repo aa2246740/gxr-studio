@@ -2,12 +2,19 @@
 
 import type { RawLayout, Scene } from '../../../frontend/src/index';
 import type { CropState, GeometryState } from '../lib/crop';
-import type { PhotoMeta } from '../lib/exif';
+import { copyrightFromTiff, mergeCopyright, type PhotoMeta } from '../lib/exif';
 import type { FrameMetaResult, FrameSpec, StampSpec } from '../lib/frame_spec';
 import type { GapMinutes, Order } from '../lib/group';
 import type { CurveMap } from '../lib/export_request';
 import type { Frame } from '../lib/photo_size';
-import type { Choice } from '../lib/recipes';
+import {
+  CAMERA_RECIPE_PREFIX,
+  datKeyOf,
+  decodeCameraRecipePayload,
+  type CameraRecipeCache,
+  type CameraRecipeResult,
+  type Choice,
+} from '../lib/recipes';
 import type { Book } from './book';
 import { lookCache } from './looks';
 import type { LutBook } from './lut_book';
@@ -101,6 +108,12 @@ export interface Photo {
   lut: string | null;
   /** 配方卡与 LUT 卡的小图，按烘焙/LUT 令牌的键记，只对当时的版本有效。 */
   looks: Map<string, { version: number; bitmap: ImageBitmap }>;
+  /** DNG 文件头里的 Exif Copyright (0x8298)，供 RAW+JPG 按需补读（对齐桌面 DNG 优先、JPG 兜底）。 */
+  dngCopyright?: string | null;
+  /** 已补读过 DNG 头部 Copyright 的照片版本。 */
+  dngCopyrightRead?: number | null;
+  /** 拍摄配方标签在当前相机配方文件下的解析结果缓存；不写进 choice。 */
+  cameraRecipe?: CameraRecipeCache | null;
 }
 
 /** stale：读的时候照片被重新选过，结果作废。 */
@@ -191,4 +204,89 @@ export interface AppApi {
   showCalib(): void;
   /** 打开导出面板（05a）。`ids` 按网格的顺序导出；点了「存到相册」时调 `onStart`。 */
   exportPhotos(ids: string[], onStart?: () => void): void;
+}
+
+type HeadReader = (file: File) => Promise<ArrayBuffer | null>;
+let dngHeadReader: HeadReader | null = null;
+const cameraRecipeListeners = new Set<(photoId: string) => void>();
+const cameraRecipePending = new WeakMap<Photo, { key: string; promise: Promise<void> }>();
+
+/** 注册 Worker 端 DNG 头部读取器（主线程不调 File.arrayBuffer）。 */
+export function registerCameraRecipeReader(reader: HeadReader): void {
+  dngHeadReader = reader;
+}
+
+/** 某张照片的拍摄配方解析落地时通知编辑页刷新。 */
+export function onCameraRecipe(fn: (photoId: string) => void): () => void {
+  cameraRecipeListeners.add(fn);
+  return () => cameraRecipeListeners.delete(fn);
+}
+
+/** 这张照片在当前相机配方文件下是否还需要解析拍摄配方标签。 */
+export function needsCameraRecipe(photo: Photo, dat: Book['dat']): boolean {
+  if (!photo.dng || photo.diptych || photo.choice !== null) return false;
+  const key = datKeyOf(dat);
+  if (!key) return false;
+  const cache = photo.cameraRecipe;
+  return !cache || cache.datKey !== key || cache.version !== photo.version;
+}
+
+/** 读取 DNG 头部（按需）并在核心 Worker 里解析 Exif Copyright GXR1 拍摄标签。 */
+export function ensureCameraRecipe(photo: Photo, book: Book): Promise<void> {
+  const dat = book.dat;
+  if (!dat || !needsCameraRecipe(photo, dat)) return Promise.resolve();
+  const key = datKeyOf(dat);
+  if (!key) return Promise.resolve();
+  const version = photo.version;
+  const inflightKey = `${version}:${key}`;
+  const existing = cameraRecipePending.get(photo);
+  if (existing && existing.key === inflightKey) return existing.promise;
+
+  const promise = (async () => {
+    let dngCopy: string | null = null;
+    if (photo.dngMeta !== null) {
+      dngCopy = photo.dngMeta.copyright ?? null;
+    } else if (photo.dngCopyrightRead === version) {
+      dngCopy = photo.dngCopyright ?? null;
+    } else if (photo.dng && dngHeadReader) {
+      const head = await dngHeadReader(photo.dng).catch(() => null);
+      if (photo.version !== version) return;
+      if (head) {
+        dngCopy = copyrightFromTiff(new Uint8Array(head));
+        photo.dngCopyright = dngCopy;
+        photo.dngCopyrightRead = version;
+      }
+    }
+    if (photo.version !== version || datKeyOf(book.dat) !== key) return;
+    const copyright = mergeCopyright(dngCopy, photo.jpgMeta?.copyright);
+    let result: CameraRecipeResult;
+    if (copyright === null) {
+      result = { status: 'none' };
+    } else {
+      try {
+        const { resolveRecipe } = await import('../core/api');
+        const datCopy = dat.read.bytes.slice(0);
+        const libCopy = dat.read.library ? dat.read.library.slice(0) : null;
+        const resolved = await resolveRecipe(datCopy, CAMERA_RECIPE_PREFIX + copyright, libCopy);
+        result = decodeCameraRecipePayload(resolved.entry);
+      } catch {
+        result = { status: 'none' };
+      }
+    }
+    if (photo.version !== version || datKeyOf(book.dat) !== key) return;
+    photo.cameraRecipe = { datKey: key, copyright, version, result };
+    for (const fn of [...cameraRecipeListeners]) fn(photo.id);
+  })()
+    .catch(() => undefined)
+    .finally(() => {
+      if (cameraRecipePending.get(photo)?.key === inflightKey) cameraRecipePending.delete(photo);
+    });
+
+  cameraRecipePending.set(photo, { key: inflightKey, promise });
+  return promise;
+}
+
+export async function ensureCameraRecipes(photos: readonly Photo[], book: Book): Promise<void> {
+  if (!book.dat) return;
+  await Promise.all(photos.map((photo) => ensureCameraRecipe(photo, book)));
 }
