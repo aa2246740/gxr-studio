@@ -162,6 +162,10 @@ async function runEditorSnapshot(page) {
       tooltabs: norm(document.querySelector('.tooltabs')?.innerHTML || ''),
       panelFoot: norm(document.querySelector('.panel-foot')?.innerHTML || ''),
       stripMaskCount: document.querySelectorAll('.pair-strip-mask').length,
+      // R3-1: the pair read-only note and dimming never reach ordinary photos
+      roNoteCount: document.querySelectorAll('.pair-ro-note').length,
+      readonly: !!document.querySelector('.panel')?.classList.contains('pair-readonly'),
+      recipePanelOpacity: getComputedStyle(document.querySelector('#tp-recipe') || document.body).opacity,
     };
   });
 }
