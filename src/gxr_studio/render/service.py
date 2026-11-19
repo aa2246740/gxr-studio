@@ -417,6 +417,26 @@ class RenderService:
         """半分辨率、已转正的白平衡码值图（给 LUT 导入的预览和抽样用）。"""
         return self._proxy(shot, max_edge)
 
+    def proxy_sensor_codes(self, dng_rec: dict[Any, Any]) -> np.ndarray:
+        """半分辨率、传感器坐标系（未转正）的白平衡码值图；按 (DNG SHA-256, 'sensor') 缓存，供半格一对合成复用。"""
+        sha = dng_rec["sha256"]
+        key = (sha, "sensor")
+        hit = self._proxies.get(key)
+        if hit is not None:
+            return hit
+        with self._lock:
+            hit = self._proxies.get(key)
+            if hit is not None:
+                return hit
+            dng = open_dng(self.lib.abspath(dng_rec["relpath"]))
+            try:
+                base = np.ascontiguousarray(half_res_codes(dng), np.float32)
+            finally:
+                dng.release()
+            self._proxies.put(key, base, base.nbytes)
+            self.stats["decodes"] += 1
+            return base
+
     def _bake(self, plan: Plan, step: float) -> chain.ChromaBake:
         key = (plan.unit, plan.entry_sha256, plan.model_iso, step, plan.binding_sha256, ENGINE)
         hit = self._bakes.get(key)
@@ -502,6 +522,14 @@ class RenderService:
         crop: cropmod.Crop | None = None,
         quality: int = 88,
     ) -> RenderOut:
+        from ..halfframe_pairs import has_pair_raw
+
+        if has_pair_raw(shot):
+            from typing import cast
+
+            from ..halfframe_compose import pair_render_preview
+
+            return cast(RenderOut, pair_render_preview(self, shot, edit, max_edge=max_edge, exact=exact, crop=crop, quality=quality))
         if "dng" not in shot["files"]:
             raise NoRaw()
         plan = self.plan(shot, edit)

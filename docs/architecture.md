@@ -167,3 +167,11 @@ POSIX（macOS、Linux）和 Windows 的差别都收在 `osplat`：文件锁（`f
 
 没有"按路径核对、再按路径操作"的实现，也就没有那段空隙。`make type` 同时按 win32 平台做类型检查；
 `tests/test_platform_io.py` 的竞态测试在 Windows 上跑时用的是 Windows 原语（Windows 适配暂停期间不走 CI）。
+
+## 半格一对
+
+g250 半格模式下，同一对照片的第 1 张保存完整 3:2 RAW+JPG（MPF 640×424 预览两侧 0–163 与 476–639 列全黑，记作 `first_like`），第 2 张的相机 JPG 是 4288×2848 双联（中缝 2088–2199 列全黑，接缝宽 112），而第 2 张的 DNG 仍是第 2 张自己的完整 3:2 传感器数据。
+
+- **配对与存储**：`halfframe_pairs.py` / `halfframe_library.py` 只按 `g250` 几何配对（连续编号、同方向 EXIF 1/3/6/8、1/8 尺度灰度指纹 MAD ≤ 3.0 且相关 ≥ 0.99，并按方向规则确定第 1 张所在侧 `left`/`right`；旧 48 像素接缝仍保持 P0 只用 JPG 的行为）。配对结果与 `first_like` 缓存在 `.studio/halfframe-pairs-v1.json`，仅保存数字指纹与标志，绝不写文件名、时间或 EXIF；第 2 张在 `shot["files"]` 中仍保留不含 `"dng"` 的 P0 守则，由 `pair` 字段和只读 `pair_sources` 提供两张源 DNG。
+- **RAW 合成与 1 列偏移说明**：`halfframe_compose.py` 从两张 DNG 各自在传感器坐标系裁出列 `1099..1099+2087`（宽 2088），把第 1 张放回 `first_half` 侧、中缝填 RGB 0 后再按共享方向转正，再走既有的成片管线；代理预览从两份单 DNG 代理缓存按比例取整拼接。理光相机机内 JPEG 引擎按 `(7, 7)` 裁切而 DNG 的 `DefaultCropOrigin` 写 `[8, 7]`，因此相机 JPEG 相对按 DNG 标准裁切的渲染整幅固定右偏 1 列，半格合成据此从 DNG 列 1099 起切以与相机双联严丝合缝对齐（Studio 的通用 RAW 裁切本身保持不变）。
+- **导出与 HDR**：导出支持 `halfframe: "diptych" | "singles" | "both"`（默认沿用 `prefs.json` 中的 `export_halfframe`，缺省为 `diptych`），按日期批量导出自动去重第 1 张并返回 `pairs` 计数；若批量导出发生在后台配对完成之前（尚未识别成对），这两张照片会按两张普通照片各自导出。HDR 导入任务与导出继续拒绝半格一对，导出回退为 SDR 并返回「半格一对暂时做不了 HDR」。

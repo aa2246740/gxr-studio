@@ -285,7 +285,8 @@ def test_desktop_e2e_diptych_treated_as_jpg_only_and_recipe_note(settings: Any, 
     _clear_desktop_cache()
     card250 = _field_folder("card250")
     pairs = _sorted_pairs(card250)
-    _stage_volume_pairs(volumes, [pairs[0], pairs[1]])
+    # P1a 起第 1+2 张一起导入会配成一对；单独导入第 2 张配第 7 张（非双联）保留未配对双联的 P0 路径校验
+    _stage_volume_pairs(volumes, [pairs[1], pairs[6]])
     _setup_g250_calibrated_home(settings)
 
     run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
@@ -296,7 +297,7 @@ def test_desktop_e2e_diptych_treated_as_jpg_only_and_recipe_note(settings: Any, 
         rows = client.get("/api/photos").json()
         ordered = sorted(rows, key=lambda r: r["name"])
         assert len(ordered) == 2
-        shot1, shot2 = ordered[0], ordered[1]
+        shot2, shot1 = ordered[0], ordered[1]
 
         # 先验证关键用户行为（避免在旧基线上因缺少新字段先报 KeyError）：保留黑缝与拦截 RAW 动作
         render_final = client.get(f"/api/photos/{shot2['id']}/render?stage=final&size=preview")
@@ -426,7 +427,7 @@ def test_desktop_e2e_diptych_treated_as_jpg_only_and_recipe_note(settings: Any, 
         report = json.loads(out_path.read_text(encoding="utf-8"))
         assert "error" not in report, report
         assert report["pageErrors"] == []
-        assert "这张是半格双联，配方效果要等配对功能。" in report["desktopNote2"]
+        assert "这张双联没配上第 1 张，只能在相机 JPG 上调。" in report["desktopNote2"]
         assert report["desktopHasNote1"] is False
     finally:
         server.should_exit = True

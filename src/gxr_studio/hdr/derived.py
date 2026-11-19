@@ -52,6 +52,10 @@ def status_path(lib: Library, shot_id: str) -> Path:
 
 
 def eligible(shot: dict[str, Any]) -> bool:
+    from ..halfframe_pairs import is_pair_second
+
+    if shot.get("diptych") or is_pair_second(shot):
+        return False
     files = shot.get("files") or {}
     return "jpg" in files and "dng" in files
 

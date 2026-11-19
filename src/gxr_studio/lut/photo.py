@@ -20,6 +20,7 @@ def color_image(
 ) -> tuple[np.ndarray, bool, dict[str, str]]:
     from ..finish.serve import _fit
     from ..finish.serve import color_image as base_image
+    from ..halfframe_pairs import has_pair_raw
 
     try:
         target, item = render.luts.target(edit.lut)
@@ -30,12 +31,21 @@ def color_image(
             except RenderUnavailable:
                 if edit.recipe is not None:
                     raise
-                with_dng = open_dng(lib.abspath(shot["files"]["dng"]["relpath"]))
-                try:
-                    rgb = render_full(with_dng) if full else render_half(with_dng)
-                finally:
-                    with_dng.release()
+                if has_pair_raw(shot):
+                    from ..halfframe_compose import render_pair_rgb
+
+                    rgb, _ = render_pair_rgb(render, lib, shot, EditState(), full=full, neutral=True)
+                else:
+                    with_dng = open_dng(lib.abspath(shot["files"]["dng"]["relpath"]))
+                    try:
+                        rgb = render_full(with_dng) if full else render_half(with_dng)
+                    finally:
+                        with_dng.release()
             rgb = _apply(target, rgb)
+        elif has_pair_raw(shot):
+            from ..halfframe_compose import render_pair_lut_scene
+
+            rgb = render_pair_lut_scene(lib, shot, target, _apply, full=full)
         else:
             if "dng" not in shot["files"]:
                 raise EditError("lut_needs_raw", "这个 LUT 需要 RAW 文件")

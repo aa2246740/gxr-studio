@@ -164,17 +164,20 @@ def source_from_photo(lib: Library, shot: dict[Any, Any], menu: Menu | None = No
 
 
 def _recipe_changes(shot: dict[Any, Any], source: dict[str, Any], env: Env, skips: list[Skip]) -> dict[str, Any]:
+    from ..halfframe_pairs import has_pair_raw
+
     changes: dict[str, Any] = {}
+    files = shot.get("files") or {}
+    has_raw = ("dng" in files) or has_pair_raw(shot)
     if "recipe" in source:
         raw = source["recipe"]
         sel = parse_recipe(raw)
-        files = shot.get("files") or {}
         unit = unit_of_lens(shot.get("lens"))
         if sel is None:
             changes["recipe"] = None
         elif unit is not None and sel.unit != unit:
             skips.append(Skip("recipe", "unit_mismatch", "这张照片的镜头和复制来源不是同一个，没有套用配方。", "recipe"))
-        elif "dng" not in files and not env.recipe_without_raw:
+        elif not has_raw and not env.recipe_without_raw:
             skips.append(Skip("recipe", "needs_raw", "这张照片只有 JPG，没有套用配方。", "recipe"))
         else:
             try:
@@ -193,7 +196,7 @@ def _recipe_changes(shot: dict[Any, Any], source: dict[str, Any], env: Env, skip
             except LutError:
                 skips.append(Skip("recipe", "lut_missing", "图库里找不到这个 LUT，没有套用 LUT。", "lut"))
             else:
-                if needs_raw and "dng" not in (shot.get("files") or {}):
+                if needs_raw and not has_raw:
                     skips.append(Skip("recipe", "needs_raw", "这个 LUT 需要 RAW 文件，这张照片只有 JPG，没有套用 LUT。", "lut"))
                 else:
                     changes["lut"] = lut
