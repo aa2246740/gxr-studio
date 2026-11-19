@@ -317,11 +317,11 @@ export function ensureCameraRecipe(photo: Photo, book: Book, options?: EnsureCam
       } else if (photo.dng && dngHeadReader) {
         const head = await dngHeadReader(photo.dng).catch(() => null);
         if (photo.version !== version) return;
-        if (head) {
-          dngCopy = copyrightFromTiff(new Uint8Array(head));
-          photo.dngCopyright = dngCopy;
-          photo.dngCopyrightRead = version;
-        }
+        // 读 DNG 头部失败：不当成“没有标签”缓存，留给下一次请求重试。
+        if (!head) return;
+        dngCopy = copyrightFromTiff(new Uint8Array(head));
+        photo.dngCopyright = dngCopy;
+        photo.dngCopyrightRead = version;
       }
       copyright = mergeCopyright(photo.jpgMeta?.copyright, dngCopy);
     }

@@ -383,3 +383,24 @@ test('P3-4e: transient worker errors are not cached as none and next request ret
   assert.equal(attempts, 2, 'second request must retry after transient failure');
   assert.equal(recipesMod.adoptedSelectionOf(photo, book.dat)?.choice.id, 'record:rec6');
 });
+
+test('P3-A: a failed DNG header read is not cached as no tag and the next request retries', async () => {
+  const book = makeBook();
+  const photo = makePhoto({ id: 'raw-only', jpg: null, jpgMeta: null, dngMeta: null });
+  let reads = 0;
+  modelMod.registerCameraRecipeReader(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error('file briefly unreadable');
+    return new ArrayBuffer(16);
+  });
+  const resolve = async () => ({ status: 'none' });
+
+  await modelMod.ensureCameraRecipe(photo, book, { resolve });
+  assert.equal(reads, 1);
+  assert.equal(photo.cameraRecipe ?? null, null, 'failed head read must not cache { status: none }');
+  assert.equal(photo.dngCopyrightRead ?? null, null, 'failed head read must not mark the header as read');
+  assert.equal(modelMod.needsCameraRecipe(photo, book.dat), true, 'next request must still try to resolve');
+
+  await modelMod.ensureCameraRecipe(photo, book, { resolve });
+  assert.equal(reads, 2, 'second request must read the header again');
+});
