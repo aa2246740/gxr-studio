@@ -351,6 +351,9 @@ async function runWrongGen(page) {
     });
   const counts = await exportCounts();
   const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
+  await shareAll(page);
+  const files = await sharedFiles(page, manifest.outDir, 'wrong-gen-');
+  const fileCount = files.reduce((n, row) => n + row.files.length, 0);
   out.steps.wrongGen = {
     heading,
     hasMissingCatalogMessage: panelText.includes('请先导入拍摄时使用的相机配方文件。'),
@@ -359,6 +362,7 @@ async function runWrongGen(page) {
     choice: state?.choice ?? null,
     exportDone: counts.done,
     exportFailed: counts.failed,
+    fileCount,
     exportHasNote: exportNoteText.includes('请先导入拍摄时使用的相机配方文件。'),
   };
 }
@@ -371,7 +375,7 @@ async function runMissingDat(page) {
     window.__devExport ??= {};
     window.__devExport.binding = binding;
   }, manifest.binding);
-  await pickAll(page, { pack: manifest.pack, count: 1 }, manifest.missingDatFiles);
+  await pickAll(page, { count: 1 }, manifest.missingDatFiles);
   await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
@@ -380,10 +384,151 @@ async function runMissingDat(page) {
     return { done: b ? b.staged.length : 0, failed: b ? b.failures.size : 0 };
   });
   const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
+  await shareAll(page);
+  const files = await sharedFiles(page, manifest.outDir, 'missing-dat-');
+  const fileCount = files.reduce((n, row) => n + row.files.length, 0);
   out.steps.missingDat = {
     exportDone: counts.done,
     exportFailed: counts.failed,
+    fileCount,
     exportHasNote: exportNoteText.includes('请先导入拍摄时使用的相机配方文件。'),
+  };
+}
+
+async function runDatNoCalib(page) {
+  await page.addInitScript(fakeShare);
+  await page.goto(url);
+  await settle(page);
+  await page.evaluate((binding) => {
+    window.__devExport ??= {};
+    window.__devExport.binding = binding;
+  }, manifest.binding);
+  await pickAll(page, { count: 1 }, [...manifest.missingDatFiles, ...manifest.datFiles]);
+  await page.waitForFunction(
+    () => window.__gxrBook?.dat?.read?.entries?.length === 13248 && !window.__gxrBook.datBusy,
+    null,
+    { timeout: 120_000 },
+  );
+  const meta = await page.evaluate(async (s) => {
+    const req = await window.__gxrRequest(s);
+    return {
+      hasPack: Boolean(window.__gxrBook?.pack),
+      sideRecipe: req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null,
+    };
+  }, manifest.file1);
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await waitPhase(page, ['running', 'ready']);
+  await waitPhase(page, ['ready']);
+  const result = await page.evaluate(() => {
+    const b = window.__devExport.flow.current();
+    return {
+      done: b ? b.staged.length : 0,
+      failed: b ? b.failures.size : 0,
+      failures: b ? [...b.failures.values()].map((f) => ({ kind: f.kind, message: f.message })) : [],
+    };
+  });
+  let fileCount = 0;
+  if (result.done > 0) {
+    await shareAll(page);
+    const files = await sharedFiles(page, manifest.outDir, 'dat-nocalib-');
+    fileCount = files.reduce((n, row) => n + row.files.length, 0);
+  }
+  out.steps.datNoCalib = {
+    hasPack: meta.hasPack,
+    sideRecipe: meta.sideRecipe,
+    exportDone: result.done,
+    exportFailed: result.failed,
+    failures: result.failures,
+    fileCount,
+  };
+}
+
+async function runDatNoCalibRawOnly(page) {
+  await page.addInitScript(fakeShare);
+  await page.goto(url);
+  await settle(page);
+  await page.evaluate((binding) => {
+    window.__devExport ??= {};
+    window.__devExport.binding = binding;
+  }, manifest.binding);
+  await pickAll(page, { count: 1 }, [manifest.rawOnlyDng, ...manifest.datFiles]);
+  await page.waitForFunction(
+    () => window.__gxrBook?.dat?.read?.entries?.length === 13248 && !window.__gxrBook.datBusy,
+    null,
+    { timeout: 120_000 },
+  );
+  const meta = await page.evaluate(async (s) => {
+    const req = await window.__gxrRequest(s);
+    return {
+      hasPack: Boolean(window.__gxrBook?.pack),
+      sideRecipe: req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null,
+    };
+  }, manifest.file1);
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await waitPhase(page, ['running', 'ready']);
+  await waitPhase(page, ['ready']);
+  const result = await page.evaluate(() => {
+    const b = window.__devExport.flow.current();
+    return {
+      done: b ? b.staged.length : 0,
+      failed: b ? b.failures.size : 0,
+      failures: b ? [...b.failures.values()].map((f) => ({ kind: f.kind, message: f.message })) : [],
+    };
+  });
+  out.steps.datNoCalibRawOnly = {
+    hasPack: meta.hasPack,
+    sideRecipe: meta.sideRecipe,
+    exportDone: result.done,
+    exportFailed: result.failed,
+    failures: result.failures,
+  };
+}
+
+async function runDatPartialCalib(page) {
+  await page.addInitScript(fakeShare);
+  await page.goto(url);
+  await settle(page);
+  await page.evaluate((binding) => {
+    window.__devExport ??= {};
+    window.__devExport.binding = binding;
+  }, manifest.binding);
+  await pickAll(page, { pack: manifest.partialPack, count: 1 }, [...manifest.missingDatFiles, ...manifest.datFiles]);
+  await page.waitForFunction(
+    () => window.__gxrBook?.dat?.read?.entries?.length === 13248 && !window.__gxrBook.datBusy,
+    null,
+    { timeout: 120_000 },
+  );
+  const meta = await page.evaluate(async (s) => {
+    const req = await window.__gxrRequest(s);
+    return {
+      hasPack: Boolean(window.__gxrBook?.pack),
+      sideRecipe: req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null,
+    };
+  }, manifest.file1);
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await waitPhase(page, ['running', 'ready']);
+  await waitPhase(page, ['ready']);
+  const result = await page.evaluate(() => {
+    const b = window.__devExport.flow.current();
+    return {
+      done: b ? b.staged.length : 0,
+      failed: b ? b.failures.size : 0,
+      failures: b ? [...b.failures.values()].map((f) => ({ kind: f.kind, message: f.message })) : [],
+    };
+  });
+  let fileCount = 0;
+  if (result.done > 0) {
+    await shareAll(page);
+    const files = await sharedFiles(page, manifest.outDir, 'dat-partial-calib-');
+    fileCount = files.reduce((n, row) => n + row.files.length, 0);
+  }
+  out.steps.datPartialCalib = {
+    hasPack: meta.hasPack,
+    sideRecipe: meta.sideRecipe,
+    exportDone: result.done,
+    exportFailed: result.failed,
+    failures: result.failures,
+    fileCount,
   };
 }
 
@@ -418,27 +563,26 @@ async function runRawOnlyOpenBeforeDat(page) {
   out.steps.rawOnlyBeforeDat = { heading, sideRecipe };
 }
 
-try {
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+async function withFreshPage(fn) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
-  const adoptedOk = await runMain(page);
-  await page.close();
+  try {
+    return await fn(page);
+  } finally {
+    await context.close();
+  }
+}
 
+try {
+  const adoptedOk = await withFreshPage(runMain);
   if (adoptedOk) {
-    const page2 = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    page2.on('pageerror', (error) => out.pageErrors.push(error.message));
-    await runWrongGen(page2);
-    await page2.close();
-
-    const page3 = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    page3.on('pageerror', (error) => out.pageErrors.push(error.message));
-    await runMissingDat(page3);
-    await page3.close();
-
-    const page4 = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    page4.on('pageerror', (error) => out.pageErrors.push(error.message));
-    await runRawOnlyOpenBeforeDat(page4);
-    await page4.close();
+    await withFreshPage(runWrongGen);
+    await withFreshPage(runMissingDat);
+    await withFreshPage(runDatNoCalib);
+    await withFreshPage(runDatNoCalibRawOnly);
+    await withFreshPage(runDatPartialCalib);
+    await withFreshPage(runRawOnlyOpenBeforeDat);
   }
 } catch (err) {
   out.error = line(err);

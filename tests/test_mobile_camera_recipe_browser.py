@@ -12,7 +12,10 @@ from typing import Any
 
 import pytest
 
+from gxr_studio import meta
 from gxr_studio.camdata import calib_export, datcodec, store
+from gxr_studio.camdata.catalog_names import CAMERA_UNITS
+from gxr_studio.camdata.recipe_tags import parse_recipe_tag
 from support import samples
 from support.export_pipeline_cases import check, same_file_redacted
 from support.mobile_ui_calib import pack_files
@@ -58,8 +61,16 @@ def _wrong_gen_dat() -> Path:
     raise AssertionError("unreachable")
 
 
+def _check_exported_jpeg(out_dir: Path, prefix: str, label: str) -> bytes:
+    paths = sorted(out_dir.glob(f"{prefix}*"))
+    check(len(paths) == 1, f"{label}: expected 1 exported file matching {prefix}*, got {len(paths)}")
+    data = paths[0].read_bytes()
+    check(data.startswith(b"\xff\xd8") and len(data) > 10_000, f"{label}: exported file is not a valid JPEG ({len(data)} bytes)")
+    return data
+
+
 def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None:
-    """Acceptance #2 (all 6 bullets) + Acceptance #3 (reset clears curve + knobs) in headless Chromium."""
+    """Acceptance #2 (all 6 bullets), 4 camera-data export states, + Acceptance #3 (reset) in headless Chromium."""
     _prereq()
     _raw250, _lib250, dat250, fx250 = _need_g185_or_g250(250)
     wrong_dat = _wrong_gen_dat()
@@ -71,15 +82,27 @@ def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None
 
     # Synthetic calibration pack covering all 3 units (stock04 from g250 DAT) so recipe strip + stage rendering run calibrated.
     _parsed, entries = store.entries_from_dat(_raw250, library=_lib250)
-    pack = pack_files({name: entries[(unit, 4)] for unit, name in enumerate(("jlaunch", "qlaunch", "l08firm"))})
+    all_units = ("jlaunch", "qlaunch", "l08firm")
+    pack = pack_files({name: entries[(unit, 4)] for unit, name in enumerate(all_units)})
     pack_zip = tmp_path / "GXR 校准数据 2026-11-18.zip"
     pack_zip.write_bytes(calib_export.zip_bytes(pack, (2026, 11, 18, 9, 0, 0)))
+
+    # Partial calibration pack excluding card250 #1's own unit to exercise reactive camera-jpg-fallback retry.
+    dm1 = meta.read_dng_meta(dng1)
+    tag1 = parse_recipe_tag(dm1.copyright) if dm1.error is None and dm1.copyright else None
+    check(tag1 is not None, "card250 #1 must carry a valid shooting recipe tag")
+    assert tag1 is not None
+    unit1 = CAMERA_UNITS[tag1["unit"]]
+    partial_pack = pack_files({name: entries[(unit, 4)] for unit, name in enumerate(all_units) if name != unit1})
+    partial_pack_zip = tmp_path / "GXR 校准数据 部分 2026-11-18.zip"
+    partial_pack_zip.write_bytes(calib_export.zip_bytes(partial_pack, (2026, 11, 18, 9, 0, 0)))
 
     out_dir = tmp_path / "exported"
     out_dir.mkdir()
     report_path = tmp_path / "camera-recipe-report.json"
     manifest: dict[str, Any] = {
         "pack": str(pack_zip),
+        "partialPack": str(partial_pack_zip),
         "binding": "gxr-test-binding",
         "file1": dng1.stem,
         "diptych": dng2.stem,
@@ -112,15 +135,14 @@ def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None
     check(adopted["sideHasRecipe"] is True, "export request sidecar must include adopted recipe")
     check(adopted["recipeCopyRowHasNotSet"] is False, "copy sheet on adopted photo must treat recipe as present")
 
-    # Bullet 2: auto export equals exporting with Teal Orange chosen explicitly (byte-for-byte).
+    # State 3 (DAT with calibration) + Bullet 2: auto export equals exporting with Teal Orange chosen explicitly (byte-for-byte).
     exp = report["steps"]["exportParity"]
     check(exp["explicitChoice"] is not None, "explicit Teal Orange step must set photo.choice")
     check(exp["autoCount"] == 1 and exp["explicitCount"] == 1, "both auto and explicit exports produced 1 file")
     check(exp["autoStageEqualsExplicit"] is True, "stage recipe key of adopted Teal Orange equals explicit Teal Orange")
-    auto_paths = sorted(out_dir.glob("auto-*"))
-    explicit_paths = sorted(out_dir.glob("explicit-*"))
-    check(len(auto_paths) == 1 and len(explicit_paths) == 1, "both auto and explicit exports wrote 1 file")
-    same_file_redacted(auto_paths[0].read_bytes(), explicit_paths[0].read_bytes(), "auto export equals explicit Teal Orange export")
+    auto_bytes = _check_exported_jpeg(out_dir, "auto-", "state 3 (DAT + calibration) auto")
+    explicit_bytes = _check_exported_jpeg(out_dir, "explicit-", "state 3 (DAT + calibration) explicit")
+    same_file_redacted(auto_bytes, explicit_bytes, "auto export equals explicit Teal Orange export")
 
     # Bullet 3: choosing 原厂标准 persists and wins.
     wins = report["steps"]["explicitWins"]
@@ -132,7 +154,7 @@ def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None
         f"explicit choice must persist as builtin:4, got {wins['persistedChoice']!r}",
     )
 
-    # Bullet 4 + P3-1 + P3-2: wrong-generation DAT shows full desktop message, falls back to default, and export note warns.
+    # State 4 (wrong-generation DAT) + Bullet 4 + P3-1 + P3-2: full desktop message, fallback to default, camera JPG exported + note.
     wrong = report["steps"]["wrongGen"]
     check(wrong["hasMissingCatalogMessage"] is True, "wrong-gen DAT must show '请先导入拍摄时使用的相机配方文件。'")
     check(
@@ -143,12 +165,55 @@ def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None
     check(wrong["heading"] == "原厂标准", f"wrong-gen DAT must fall back to default '原厂标准', got {wrong['heading']!r}")
     check(wrong["choice"] is None, "wrong-gen fallback must not store photo.choice")
     check(wrong["exportDone"] == 1 and wrong["exportFailed"] == 0, "wrong-gen DAT export must still succeed as camera JPG")
+    check(wrong["fileCount"] == 1, f"wrong-gen DAT export must share 1 file, got {wrong['fileCount']}")
     check(wrong["exportHasNote"] is True, "wrong-gen DAT export must show per-photo note '请先导入拍摄时使用的相机配方文件。'")
+    _check_exported_jpeg(out_dir, "wrong-gen-", "state 4 (wrong-generation DAT)")
 
-    # P3-1: missing camera data on export still exports camera JPG and shows per-photo note.
+    # State 1 (no DAT) + P3-1: exports valid camera JPG file and shows per-photo note.
     missing = report["steps"]["missingDat"]
     check(missing["exportDone"] == 1 and missing["exportFailed"] == 0, "missing-DAT export must succeed as camera JPG")
+    check(missing["fileCount"] == 1, f"missing-DAT export must share 1 file, got {missing['fileCount']}")
     check(missing["exportHasNote"] is True, "missing-DAT export must show per-photo note '请先导入拍摄时使用的相机配方文件。'")
+    _check_exported_jpeg(out_dir, "missing-dat-", "state 1 (no DAT)")
+
+    # State 2 (DAT without calibration): RAW+JPG falls back to camera JPG; RAW-only returns desktop calibration_missing error.
+    no_calib = report["steps"]["datNoCalib"]
+    check(no_calib["hasPack"] is False, "datNoCalib must run without any calibration pack")
+    check(no_calib["sideRecipe"] == "record:6", f"datNoCalib expected adopted record:6, got {no_calib['sideRecipe']!r}")
+    check(
+        no_calib["exportDone"] == 1 and no_calib["exportFailed"] == 0 and no_calib["failures"] == [],
+        f"DAT without calibration RAW+JPG must succeed via camera-jpg-fallback, got {no_calib!r}",
+    )
+    check(no_calib["fileCount"] == 1, f"datNoCalib must share 1 file, got {no_calib['fileCount']}")
+    _check_exported_jpeg(out_dir, "dat-nocalib-", "state 2 (DAT without calibration, RAW+JPG)")
+
+    no_calib_raw = report["steps"]["datNoCalibRawOnly"]
+    check(no_calib_raw["hasPack"] is False, "datNoCalibRawOnly must run without any calibration pack")
+    check(no_calib_raw["sideRecipe"] == "record:6", f"datNoCalibRawOnly expected adopted record:6, got {no_calib_raw['sideRecipe']!r}")
+    check(
+        no_calib_raw["exportDone"] == 0 and no_calib_raw["exportFailed"] == 1,
+        f"DAT without calibration RAW-only must fail with desktop error, got {no_calib_raw!r}",
+    )
+    raw_msgs = [str(f.get("message", "")) for f in no_calib_raw["failures"]]
+    check(
+        any("无法生成电脑预测。请先导入校准数据。" in msg for msg in raw_msgs),
+        f"DAT without calibration RAW-only must surface desktop calibration_missing message, got {raw_msgs!r}",
+    )
+    check(
+        all("需要相机 JPG 的像素" not in msg for msg in raw_msgs),
+        f"RAW-only export must never leak camera-JPG internal error, got {raw_msgs!r}",
+    )
+
+    # State 2b (partial calibration missing this photo's unit): reactive retry decodes camera JPG and exports valid file.
+    partial = report["steps"]["datPartialCalib"]
+    check(partial["hasPack"] is True, "datPartialCalib must have a partial calibration pack loaded")
+    check(partial["sideRecipe"] == "record:6", f"datPartialCalib expected adopted record:6, got {partial['sideRecipe']!r}")
+    check(
+        partial["exportDone"] == 1 and partial["exportFailed"] == 0 and partial["failures"] == [],
+        f"DAT with partial calibration RAW+JPG must succeed via reactive camera-jpg-fallback retry, got {partial!r}",
+    )
+    check(partial["fileCount"] == 1, f"datPartialCalib must share 1 file, got {partial['fileCount']}")
+    _check_exported_jpeg(out_dir, "dat-partial-calib-", "state 2b (DAT with partial calibration, RAW+JPG)")
 
     # P1-1: RAW-only photo opened before importing DAT must keep tag and adopt after DAT import.
     raw_only = report["steps"]["rawOnlyBeforeDat"]

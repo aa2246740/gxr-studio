@@ -317,7 +317,8 @@ export class ExportFlow {
         const reqPhoto = requestPhoto(photo, lutBook, book);
         const req = buildRequest(reqPhoto, cardsFor(book, photo), { size: 'original', quality: 'high' }, __GXR_BUILD__);
         const isLogLut = Boolean(reqPhoto.lutInputSpace && !isDisplaySpace(reqPhoto.lutInputSpace));
-        const useJpg = photo.jpg !== null && !isLogLut && (!req.side.recipe || photo.dng === null);
+        const isLocalRecipe = (req.side.recipe as { kind?: unknown } | undefined)?.kind === 'local';
+        const useJpg = photo.jpg !== null && !isLogLut && (!req.side.recipe || photo.dng === null || (!isLocalRecipe && !book.pack));
         const reply = await this.core.sizes({
           dng: photo.dng,
           jpg: photo.jpg,

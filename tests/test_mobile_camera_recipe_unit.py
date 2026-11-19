@@ -12,6 +12,7 @@ REPO = Path(__file__).resolve().parents[1]
 RESET_UNIT = REPO / "tests" / "support" / "mobile_camera_recipe_reset_unit.mjs"
 LOGIC_UNIT = REPO / "tests" / "support" / "mobile_camera_recipe_logic_unit.mjs"
 R1_UNIT = REPO / "tests" / "support" / "mobile_camera_recipe_r1_unit.mjs"
+R2_UNIT = REPO / "tests" / "support" / "mobile_camera_recipe_r2_unit.mjs"
 
 
 def _run_node_test(path: Path) -> None:
@@ -40,3 +41,7 @@ def test_mobile_camera_recipe_logic() -> None:
 
 def test_mobile_camera_recipe_r1_fixes() -> None:
     _run_node_test(R1_UNIT)
+
+
+def test_mobile_camera_recipe_r2_fallback() -> None:
+    _run_node_test(R2_UNIT)

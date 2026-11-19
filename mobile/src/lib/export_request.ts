@@ -303,3 +303,39 @@ export function buildRequest(photo: RequestPhoto, cards: readonly Card[], option
     needsJpg: !isLogLut && photo.jpgName !== null && (!recipe || photo.dngName === null),
   };
 }
+
+/** `gxr-export` 的 `color_image` 回退到相机 JPG（select.rs:44）时的核心消息。 */
+export const NEEDS_CAMERA_JPG_MESSAGE = '需要相机 JPG 的像素';
+
+/** 进入 `export_prepare` 前是否预先解码相机 JPG：原样/JPG 路径，或缺少校准/相机数据且可能走 `camera-jpg-fallback` 的路径。 */
+export function shouldDecodeCameraJpg(args: {
+  hasJpg: boolean;
+  needsJpg: boolean;
+  planOriginal: boolean;
+  isLogLut: boolean;
+  isLocalRecipe: boolean;
+  hasCalib: boolean;
+  hasDat: boolean;
+}): boolean {
+  if (!args.hasJpg) return false;
+  if (args.needsJpg || args.planOriginal) return true;
+  if (args.isLogLut || args.isLocalRecipe) return false;
+  return !args.hasCalib || !args.hasDat;
+}
+
+/** `export_prepare` 失败后，若核心回退到 `camera-jpg-fallback` 并要求相机 JPG 像素（如部分校准包缺机身或 DNG 解不开），补解码重试一次。 */
+export function shouldRetryWithCameraJpg(args: {
+  hasJpg: boolean;
+  alreadyDecodedJpg: boolean;
+  failKind: string;
+  failCode: string;
+  failMessage: string;
+}): boolean {
+  return (
+    args.hasJpg &&
+    !args.alreadyDecodedJpg &&
+    args.failKind === 'core' &&
+    args.failCode === 'bad_request' &&
+    args.failMessage === NEEDS_CAMERA_JPG_MESSAGE
+  );
+}
