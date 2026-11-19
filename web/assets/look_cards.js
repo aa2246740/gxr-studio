@@ -13,6 +13,7 @@ import { state, on } from './state.js';
 import { cleanLevels, draftBody, gpuContext, recipeInfo, recipeKey, selection } from './preview.js';
 import { lookThumb, thumbWay } from './gpu_stage.js';
 import { Lru, cardKey, sharedKey } from './look_model.js';
+import { isPairSecond, isUntouchedPairRecipe } from './halfframe.js';
 
 const CARD_CSS_EDGE = 150; // 卡片图的长边（CSS 像素）；高分屏按两倍画
 const SETTLE_MS = 120; // 参数、输入停下来这么久才开始画
@@ -45,7 +46,7 @@ export function recipeTarget(view, target) {
   const ed = view.ed;
   const sel = selection(view);
   const next = { unit: sel.unit, kind: target.kind, slot: target.slot, ...(target.id ? { id: target.id } : {}), levels: {} };
-  if (ed.recipe && recipeKey(sel) === recipeKey(next)) return { same: true, next };
+  if (ed.recipe && !isUntouchedPairRecipe(view) && recipeKey(sel) === recipeKey(next)) return { same: true, next };
   const memory = { ...ed.memory, [recipeKey(sel)]: cleanLevels(recipeInfo(view, sel), sel.levels) };
   next.levels = cleanLevels(recipeInfo(view, next), memory[recipeKey(next)] || {});
   return { same: false, next, memory };
@@ -149,7 +150,7 @@ class Deck {
     const label = [item.name, item.desc, item.pressed ? '当前配方' : null].filter(Boolean).join('，');
     const el = h('button', {
       type: 'button',
-      class: 'lcard',
+      class: isPairSecond(this.view.photo) ? 'lcard pair-thumb' : 'lcard',
       'aria-pressed': String(!!item.pressed),
       'aria-disabled': item.disabled ? 'true' : null,
       'aria-label': label,

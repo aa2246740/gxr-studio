@@ -5,15 +5,16 @@ import { state, emit } from './state.js';
 import { h, button, toast, toastError, setFraction } from './dom.js';
 import { flushPhotos } from './saves.js';
 import { clipboard, copyKeys, pasteKeys, pasteMessage, postPaste, postUndo, undoMessage, newBatchId, groupName } from './paste_core.js';
+import { dedupePairIds, foldPhotos, selectionNoun } from './halfframe.js';
 
 export const CHUNK = 10; // 每次请求粘贴几张：进度按这个走，一次请求也不会拖太久
 let running = false;
 
 // 选择栏上的按钮。没有复制过时点它会说怎么复制
-export function pasteSelectionButton(n) {
+export function pasteSelectionButton(stats) {
   const clip = clipboard();
   const title = clip ? `粘贴 ${clip.from.name} 的${clip.groups.map(groupName).join('、')}（${pasteKeys()}）` : `先在编辑器里复制一张照片的调整（${copyKeys()}）`;
-  const b = button(`粘贴调整到 ${n} 张`, { ico: 'clipboard-paste', title, onclick: pasteToSelection });
+  const b = button(`粘贴调整到 ${selectionNoun(stats)}`, { ico: 'clipboard-paste', title, onclick: pasteToSelection });
   if (!clip) b.setAttribute('aria-disabled', 'true');
   return b;
 }
@@ -49,7 +50,14 @@ export async function pasteToSelection() {
     return true;
   }
   if (running) return true;
-  const ids = [...state.selection].filter((id) => id !== clip.from.id);
+  const visible = new Set(foldPhotos(state.photos, {
+    partners: state.partners,
+    halfframeOnly: state.galleryFilter === 'halfframe',
+    activeDate: state.galleryDate,
+  }).map((p) => p.id));
+  const targets = dedupePairIds([...state.selection], state.photos, state.partners)
+    .filter((id) => !visible.size || visible.has(id));
+  const ids = targets.filter((id) => id !== clip.from.id);
   if (!ids.length) {
     toast(state.selection.size ? '选中的只有复制来源这一张。请再选几张要粘贴的照片。' : '先选择要粘贴的照片：点照片左上角的圈，或按住 ⇧ 连续选择。', 'info');
     return true;

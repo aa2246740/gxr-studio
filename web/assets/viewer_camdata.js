@@ -6,7 +6,8 @@
 // - 在「配方」且焦点在配方面板里（比如在输入名字）：等焦点离开配方面板再重建。
 
 import { on } from './state.js';
-import { currentView, paintTabMods, refreshPanes } from './viewer.js';
+import { TABS, currentView, refreshPanes } from './viewer.js';
+import { paintTabMods } from './viewer_chrome.js';
 
 on('camdata-ready-changed', () => {
   const v = currentView();
@@ -19,7 +20,7 @@ on('camdata-ready-changed', () => {
   }
   if (v.pending) {
     v.panesStale = true;
-    paintTabMods(v);
+    paintTabMods(v, TABS);
     return;
   }
   const el = pane.content;

@@ -1,0 +1,102 @@
+/* 半格一对（方案 A）：图库双联格、半格角标、胶片条、配方提示、单张只读态、导出说明 */
+
+.cell.pair img,
+.fthumb.pair img {
+  object-fit: contain;
+  background: #0d0d0d;
+}
+
+.badge.hf {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+}
+
+.badge.hf .ico {
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.4;
+}
+
+.badge.hf.lone {
+  color: #ddd;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.fthumb.pair .b {
+  position: absolute;
+  left: 3px;
+  right: auto;
+  bottom: 3px;
+  display: flex;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.fthumb.pair .badge.hf {
+  font-size: 9px;
+  padding: 1px 4px;
+}
+
+.pair-strip-mask {
+  position: absolute;
+  pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(10, 10, 10, 0.56);
+  outline: 1px solid rgba(255, 255, 255, 0.38);
+  outline-offset: -1px;
+  z-index: 2;
+}
+
+.pair-hint {
+  margin: 6px 0 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-2);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+
+.pair-hint b {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+}
+
+.lcard.pair-thumb .thumb canvas {
+  object-fit: contain;
+  background: #0d0d0d;
+}
+
+.panel.pair-readonly .panel-body > [role="tabpanel"]:not(#tp-info),
+.panel.pair-readonly .panel-foot {
+  opacity: 0.62;
+}
+
+.panel.pair-readonly .panel-body [role="tabpanel"]:not(#tp-info) {
+  pointer-events: none;
+}
+
+.panel.pair-readonly .panel-foot button {
+  pointer-events: none;
+}
+
+.pair-ro-note {
+  margin: 8px var(--sp-4) 2px;
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-1);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+}
+
+body:has(#selbar:not([hidden])) .toast-root {
+  bottom: 80px;
+}
+
+.hf-note {
+  margin: 4px 0 0;
+}

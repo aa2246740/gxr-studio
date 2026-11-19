@@ -33,7 +33,7 @@ export function decodeImage(img) {
 }
 
 // 数 bitmap 里 region 的部分（null = 整幅）
-export function bitmapHistogram(bitmap, region) {
+export function bitmapHistogram(bitmap, region, excludeFn = null) {
   const [x0, y0, x1, y1] = pixelRegion(bitmap.width, bitmap.height, region);
   const sw = x1 - x0;
   const sh = y1 - y0;
@@ -47,11 +47,12 @@ export function bitmapHistogram(bitmap, region) {
   ctx.imageSmoothingQuality = 'medium';
   ctx.drawImage(bitmap, x0, y0, sw, sh, 0, 0, w, h);
   const data = ctx.getImageData(0, 0, w, h).data;
-  return summarize(countRGBA(data, w, h, { stride: 1 }), 'server');
+  const exclude = excludeFn ? excludeFn(w, h) : null;
+  return summarize(countRGBA(data, w, h, { stride: 1, exclude }), 'server');
 }
 
 // 把 bitmap 里暗部压死 / 高光溢出的点画到 target（叠在照片上的 canvas）。flags：{ shadow, highlight }。
-export function paintOverlay(target, bitmap, flags) {
+export function paintOverlay(target, bitmap, flags, excludeFn = null) {
   const k = Math.min(1, OVERLAY_EDGE / Math.max(bitmap.width, bitmap.height));
   const w = Math.max(1, Math.round(bitmap.width * k));
   const h = Math.max(1, Math.round(bitmap.height * k));
@@ -63,7 +64,8 @@ export function paintOverlay(target, bitmap, flags) {
   ctx.drawImage(bitmap, 0, 0, w, h);
   const src = ctx.getImageData(0, 0, w, h);
   const out = new ImageData(w, h);
-  const n = markClipping(src.data, out.data, flags);
+  const exclude = excludeFn ? excludeFn(w, h) : null;
+  const n = markClipping(src.data, out.data, { ...flags, width: w, exclude });
   target.width = w;
   target.height = h;
   target.getContext('2d').putImageData(out, 0, 0);

@@ -10,6 +10,7 @@ import { gpuEngine } from './gpu_stage.js';
 import { percentText } from './histogram_math.js';
 import { drawHistogram } from './histogram_draw.js';
 import { bitmapHistogram, clearOverlay, decodeImage, gpuHistogram, paintOverlay } from './histogram_sources.js';
+import { seamExclusionRect } from './halfframe.js';
 
 const KEY = 'gxr-studio.histogram-collapsed';
 const TICK_MS = 50; // 定时器的间隔
@@ -174,10 +175,22 @@ export function createHistogram() {
     return st.overlayCanvas;
   }
 
+  function histExclude(view, region) {
+    if (!view || !view.photo || !view.photo.diptych) return null;
+    const cropRect = view.mode === 'final' ? (view.crop && view.crop.rect ? view.crop.rect : null) : region;
+    return (w, h) => seamExclusionRect(view.photo, w, h, cropRect, view.pairView || 'diptych');
+  }
+
+  function overlayExclude(view) {
+    if (!view || !view.photo || !view.photo.diptych) return null;
+    const cropRect = view.mode === 'final' ? (view.crop && view.crop.rect ? view.crop.rect : null) : null;
+    return (w, h) => seamExclusionRect(view.photo, w, h, cropRect, view.pairView || 'diptych');
+  }
+
   function refreshOverlay() {
     const cv = mountOverlay();
     if (!cv) return;
-    if (st.bitmap) paintOverlay(cv, st.bitmap, clip);
+    if (st.bitmap) paintOverlay(cv, st.bitmap, clip, overlayExclude(st.view));
     else clearOverlay(cv);
   }
 
@@ -241,7 +254,8 @@ export function createHistogram() {
     // <img> 还没换成最新的（解码中）就等下一轮
     const img = view.stageArea.querySelector('.pv-img');
     if (!(img && img.src === url && img.complete && img.naturalWidth > 0)) return null;
-    return { key: `srv|${url}|${rk}`, region, run: () => serverRun(view, { img, bitmapKey: url, region }) };
+    const pv = view.pairView || 'diptych';
+    return { key: `srv|${url}|${rk}|${pv}`, region, run: () => serverRun(view, { img, bitmapKey: url, region }) };
   }
 
   async function serverRun(view, p) {
@@ -255,7 +269,7 @@ export function createHistogram() {
       st.bitmap = bitmap;
       st.bitmapKey = p.bitmapKey;
     }
-    const hist = bitmapHistogram(st.bitmap, p.region);
+    const hist = bitmapHistogram(st.bitmap, p.region, histExclude(view, p.region));
     refreshOverlay();
     return hist;
   }

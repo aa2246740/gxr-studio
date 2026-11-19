@@ -1,0 +1,157 @@
+{
+  "gallery": {
+    "sidebar": [
+      {
+        "tag": "div",
+        "cls": "grp",
+        "text": "图库"
+      },
+      {
+        "tag": "button",
+        "cls": "it",
+        "text": "全部照片15"
+      },
+      {
+        "tag": "div",
+        "cls": "grp",
+        "text": "日期"
+      },
+      {
+        "tag": "button",
+        "cls": "it",
+        "text": "<DATE>3"
+      },
+      {
+        "tag": "button",
+        "cls": "it",
+        "text": "<DATE>5"
+      },
+      {
+        "tag": "button",
+        "cls": "it",
+        "text": "<DATE>3"
+      },
+      {
+        "tag": "button",
+        "cls": "it",
+        "text": "<DATE>2"
+      },
+      {
+        "tag": "button",
+        "cls": "it",
+        "text": "<DATE>2"
+      }
+    ],
+    "libbar": {
+      "title": "全部照片",
+      "count": "15 张"
+    },
+    "cells": [
+      {
+        "cls": "cell",
+        "badges": [
+          "只有 JPG"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "只有 JPG"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "RAW"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "RAW"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "RAW"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "只有 JPG"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "只有 JPG"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "只有 JPG"
+        ],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [],
+        "objectFit": "cover"
+      },
+      {
+        "cls": "cell",
+        "badges": [
+          "只有 JPG"
+        ],
+        "objectFit": "cover"
+      }
+    ]
+  },
+  "exportRows": {
+    "title": "导出",
+    "rows": [
+      "格式",
+      "尺寸",
+      "成品",
+      "品质",
+      "HDR",
+      "导出到",
+      "文件名"
+    ]
+  }
+}

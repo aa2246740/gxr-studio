@@ -4,98 +4,29 @@
 // 两套后端：ed.v2 为真（探测到 /api/frames）时带 stage/size 和几何、边框、时间戳；否则走旧接口（只认配方、调整、曲线、拉直）。
 
 import { api, apiBlob } from './api.js';
-import { state, on } from './state.js';
 import { saveRecord, writeSave, clearFailed, flushPhotos, readFresh } from './saves.js';
 export { flushPhotos, saveStatus, retrySaves, SaveError } from './saves.js';
 import { toast, toastError } from './dom.js';
 import { applyCamdataStatus } from './camdata.js';
-import { isPrediction, lookNoteText, originalNoteText } from './look_notes.js';
 import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from './caps.js';
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
 import { route as gpuRoute } from './gpu_stage.js';
 import { curveBody, normalizeCurves } from './curves.js';
-import { localRecipe, rememberRecipe } from './my_recipes.js';
+import { rememberRecipe } from './my_recipes.js';
 export { CURVE_MAX, curveBody } from './curves.js';
 import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, syncUndo, withOwned } from './undo_entries.js';
 export { syncUndo }; // 撤销 / 重做按钮的置灰在 undo_entries.js
+import { isSinglePairView, isUntouchedPairRecipe } from './halfframe.js';
+import { loadCatalog, recipeBody } from './preview_recipe.js';
+export {
+  BASE_NAMES, slotName, recipeLabel, KNOB_NAMES, unitForPhoto, loadCatalog,
+  selection, recipeInfo, recipeKey, effective, cleanLevels, ensureRecipe, recipeBody,
+  LABEL_WORDS, stageLabels, originalNote, defaultNote,
+} from './preview_recipe.js';
 
 const PREVIEW_EDGE = 800; // 旧接口：拖动时的小图长边
 const DEBOUNCE_MS = 120;
-
-// 8 个底子的名字（与 UX.md 3.6 一致；28mm / MOUNT 的底子名字沿用同一套）
-// 配方位置的默认名（/api/recipes 没给名字时用）。5–8 号在相机里是用户可以改的位置，不写别家的名字（U7）。
-export const BASE_NAMES = ['GR 正片', 'GR 负片', 'GR 高对比黑白', '原厂标准', '空位 5', '空位 6', '空位 7', '空位 8'];
-// 配方名：/api/recipes 给了名字就用它，没给按位置号取默认名
-export function slotName(unitId, slot) {
-  const unit = state.catalog && state.catalog.units ? state.catalog.units.find((u) => u.id === unitId) : null;
-  const base = unit && unit.recipes ? unit.recipes.find((b) => b.slot === slot && (!b.kind || b.kind === 'builtin')) : null;
-  const name = (base && base.name) || BASE_NAMES[slot - 1] || `空位 ${slot}`;
-  return `${String(slot).padStart(2, '0')} ${name}`;
-}
-
-export function recipeLabel(unitId, recipe) {
-  if (recipe.kind === 'local') return localRecipe(recipe.id)?.name || '本机完整配方';
-  if (recipe.kind !== 'record') return slotName(unitId, recipe.slot);
-  const recipes = state.catalog?.units?.find((u) => u.id === unitId)?.recipes || [];
-  const index = recipes.findIndex((r) => r.kind === 'record' && r.id === recipe.id);
-  const record = recipes[index];
-  return record ? `${String(record.position || index + 1).padStart(2, '0')} ${record.name}` : '完整配方';
-}
-
-export const KNOB_NAMES = {
-  amount: '强度',
-  contrast: '对比度',
-  highlight: '高光',
-  shadow: '阴影',
-  fade: '褪色',
-  saturation: '饱和度',
-  warmth: '色温',
-  tint: '色调',
-  split: '分离色调',
-  filter: '黑白滤镜',
-};
-
-// 照片的镜头 → 单元（与后端 unit_of_lens 一致；认不出就返回 null，由调用方退回 50mm）
-export function unitForPhoto(photo) {
-  const text = `${photo.lens || ''} ${photo.unit || ''}`.toLowerCase();
-  if (text.includes('mount')) return 'l08firm';
-  if (text.includes('50mm')) return 'jlaunch';
-  if (text.includes('28mm')) return 'qlaunch';
-  return null;
-}
-
-let catalogPromise = null;
-let catalogVersion = 0;
-on('camdata-changed', () => {
-  state.catalog = null;
-  catalogPromise = null;
-  catalogVersion++;
-});
-export function loadCatalog({ refresh = false } = {}) {
-  if (refresh) {
-    state.catalog = null;
-    catalogPromise = null;
-    catalogVersion++;
-  }
-  if (state.catalog) return Promise.resolve(state.catalog);
-  if (!catalogPromise) {
-    const version = catalogVersion;
-    catalogPromise = api('/api/recipes').then(
-      (r) => {
-        if (version !== catalogVersion) return loadCatalog();
-        state.catalog = r;
-        return r;
-      },
-      (e) => {
-        if (version !== catalogVersion) return loadCatalog();
-        catalogPromise = null;
-        throw e;
-      },
-    ).finally(() => { if (version === catalogVersion) catalogPromise = null; });
-  }
-  return catalogPromise;
-}
 
 // ---- 保存：裁切和编辑共用一个 rev（保存队列在 saves.js，按照片 id 存，不挂在 ed 上） ----------
 
@@ -286,66 +217,6 @@ export function setCrop(view, c) {
 }
 
 
-export function selection(view) {
-  const ed = view.ed;
-  if (ed.recipe) return ed.recipe;
-  return { unit: unitForPhoto(view.photo) || 'jlaunch', slot: 4, levels: {} };
-}
-
-export function recipeInfo(view, sel = selection(view)) {
-  if (sel.kind === 'local') return localRecipe(sel.id);
-  const unit = state.catalog?.units?.find((u) => u.id === sel.unit);
-  if (sel.kind === 'look') return unit?.looks?.find((r) => r.id === sel.id) || null;
-  if (sel.kind === 'record') return unit?.recipes?.find((r) => r.kind === 'record' && r.id === sel.id) || null;
-  if (sel.kind === 'camera_user') return unit?.users?.find((r) => r.id === sel.id) || null;
-  return unit?.recipes?.find((r) => (!r.kind || r.kind === 'builtin') && r.slot === sel.slot) || null;
-}
-
-export function recipeKey(sel) {
-  return sel.kind && sel.kind !== 'builtin' ? `${sel.unit}/${sel.kind}/${sel.id}` : `${sel.unit}/${sel.slot}`;
-}
-
-// 旋钮的当前档位：没设过、或不在可选档位里，就取默认
-export function effective(control, levels) {
-  const v = levels?.[control.name];
-  return control.levels.includes(v) ? v : control.default;
-}
-
-// 只留下这个底子真正有的旋钮，并且档位都是允许的
-export function cleanLevels(info, levels) {
-  const out = {};
-  if (!info) return out;
-  for (const c of info.controls) {
-    const v = levels?.[c.name];
-    if (v !== undefined && c.levels.includes(v)) out[c.name] = v;
-  }
-  return out;
-}
-
-export function ensureRecipe(view) {
-  const ed = view.ed;
-  if (!ed.recipe) {
-    const sel = selection(view);
-    ed.recipe = { ...sel, levels: {} };
-  }
-  return ed.recipe;
-}
-
-export function recipeBody(view, { memory = false } = {}) {
-  const ed = view.ed;
-  if (!ed.recipe) return null;
-  const info = recipeInfo(view, ed.recipe);
-  const body = {
-    kind: ed.recipe.kind || 'builtin',
-    ...(ed.recipe.id ? { id: ed.recipe.id } : {}),
-    unit: ed.recipe.unit,
-    slot: ed.recipe.slot,
-    levels: ed.recipe.kind === 'local' && !info ? { ...(ed.recipe.levels || {}) } : cleanLevels(info, ed.recipe.levels),
-  };
-  if (memory && Object.keys(ed.memory).length) body.memory = ed.memory;
-  return body;
-}
-
 export function adjustBody(ed) {
   const a = ed.adj;
   const body = { exposure_ev: a.exposure_ev, wb: { warm: a.warm, tint: a.tint }, contrast: a.contrast, highlight: a.highlight, shadow: a.shadow };
@@ -370,6 +241,7 @@ export function styleOptions(ed, styleId) {
 // 写 /edit。changes 只带要改的键（后端只认带上来的键）。
 // 照片 id 和内容在调用时绑定（R03/R04）；兑现为 true / false。失败时界面保留你的修改，标成「未保存」，可以重试或放弃。
 export function persist(view, changes) {
+  if (isSinglePairView(view)) return Promise.resolve(false);
   if (view.ed && 'recipe' in changes) view.ed.recipeFromCamera = false;
   endChange(view); // 调用方在写之前已经改好了界面：这一下操作到此为止，撤销记一步，不等服务器回来
   if ('geometry' in changes) view.boxStale = true; // 服务器会顺带收框，界面的框要等读回来才跟上（setCrop 清掉）；这期间的框写入当目标写（crop.js cropBody）
@@ -390,6 +262,7 @@ export function persist(view, changes) {
 
 // 写 /crop：preset、rect、orientation（v2）或 flip（旧版的横竖），以及旧版的 angle_deg
 export function saveCrop(view, body) {
+  if (isSinglePairView(view)) return Promise.resolve(false);
   endChange(view); // 同 persist：框已经在界面上改好了，撤销这一步不等保存
   const rec = saveRecord(view.photo.id);
   const write = writeSave(rec, 'crop', body, {
@@ -428,7 +301,7 @@ export function resetCropRemote(view) {
 // 快照与「改了哪些组」在 undo_entries.js
 
 export function beginChange(view) {
-  if (view.ed && !view.pending) view.pending = snapshot(view);
+  if (view.ed && !view.pending && !isSinglePairView(view)) view.pending = snapshot(view);
 }
 
 export function endChange(view) {
@@ -451,6 +324,7 @@ export function endChange(view) {
 }
 
 export function undoChange(view) {
+  if (isSinglePairView(view)) return false;
   const s = view.undo && view.undo.pop();
   if (!s || !view.ed) return false;
   view.redo = view.redo || [];
@@ -461,6 +335,7 @@ export function undoChange(view) {
 
 // 重做（⇧⌘Z / Ctrl+Y）：把撤销掉的那一步放回来
 export function redoChange(view) {
+  if (isSinglePairView(view)) return false;
   const s = view.redo && view.redo.pop();
   if (!s || !view.ed) return false;
   view.undo = view.undo || [];
@@ -540,9 +415,10 @@ function cropDraft(view) {
 }
 
 // 渲染用的配方：只有 RAW 的完整配方照常用；只有 JPG 的「近似」只用底子、不带旋钮（DIAG 原因 3）；不能用的照片不带配方。
-// 其它请求（调整、曲线、裁切、纠正、边框、时间戳）和配方无关，照常发。
+// 未选过配方的半格一对发 null：两张 RAW 在服务端各自沿用拍摄时的配方。
 export function recipeForRender(view) {
   const ed = view.ed;
+  if (isUntouchedPairRecipe(view)) return null;
   const caps = ed.caps && ed.caps.recipe;
   const body = recipeBody(view);
   // 本机引用自带模型。当前相机数据缺失或引用损坏时仍交给服务端明确处理。
@@ -561,10 +437,13 @@ export function draftBody(view, stage) {
   return body;
 }
 
-function renderQuery(ed, stage, full) {
-  if (ed.v2) return `?stage=${stage}&size=${full ? 'full' : 'preview'}`;
+function renderQuery(view, stage, full) {
+  const ed = view.ed;
+  const single = isSinglePairView(view) ? `&view=${view.pairView}` : '';
+  if (ed.v2) return `?stage=${stage}&size=${full ? 'full' : 'preview'}${single}`;
   const parts = [`crop=${stage === 'final' ? 'true' : 'false'}`];
   if (!full) parts.push(`max_edge=${PREVIEW_EDGE}`);
+  if (single) parts.push(`view=${view.pairView}`);
   return `?${parts.join('&')}`;
 }
 
@@ -589,9 +468,11 @@ export function schedulePreview(view, { full = false, stage = null } = {}) {
   if (!ed) return;
   if (stage) view.stage = stage;
   clearTimeout(ed.timer);
-  const way = gpuRoute(view, gpuContext(view), () => {
-    if (view.ed === ed) schedulePreview(view, { full });
-  });
+  const way = isSinglePairView(view)
+    ? 'server'
+    : gpuRoute(view, gpuContext(view), () => {
+      if (view.ed === ed) schedulePreview(view, { full });
+    });
   if (way !== 'server') {
     ed.seq += 1; // 还在路上的服务器预览作废
     ed.ctl?.abort();
@@ -622,7 +503,7 @@ export function gpuContext(view) {
 
 async function runPreview(view, full) {
   const ed = view.ed;
-  const stage = view.stage === 'uncropped' ? 'uncropped' : 'final';
+  const stage = isSinglePairView(view) ? 'final' : (view.stage === 'uncropped' ? 'uncropped' : 'final');
   if (!ed) return;
   ed.seq += 1;
   const seq = ed.seq;
@@ -632,7 +513,7 @@ async function runPreview(view, full) {
   ed.busy = true;
   view.onChange?.();
   try {
-    const { blob, headers } = await apiBlob(`/api/photos/${view.photo.id}/render${renderQuery(ed, stage, full)}`, {
+    const { blob, headers } = await apiBlob(`/api/photos/${view.photo.id}/render${renderQuery(view, stage, full)}`, {
       body: draftBody(view, stage),
       signal: ctl.signal,
     });
@@ -669,7 +550,9 @@ export function beforeUrl(view, onReady) {
   const body = draftBody(view, 'final');
   const zero = { ...ed, adj: Object.fromEntries(Object.keys(ed.adj).map((k) => [k, 0])) };
   Object.assign(body, { recipe: null, lut: null, adjust: adjustBody(zero), curve: null });
-  const key = JSON.stringify([body.geometry || null, body.crop || null, body.frame || null, body.stamp || null]);
+  const keyParts = [body.geometry || null, body.crop || null, body.frame || null, body.stamp || null];
+  if (isSinglePairView(view)) keyParts.push(view.pairView);
+  const key = JSON.stringify(keyParts);
   const hit = ed.before;
   if (hit && hit.key === key) {
     // 又回到了缓存里的几何：还在路上的别的几何的请求作废，晚到了也不能把这张换掉（N03）
@@ -685,7 +568,7 @@ export function beforeUrl(view, onReady) {
   const shown = hit ? hit.url : null;
   const ticket = (ed.beforeSeq = (ed.beforeSeq || 0) + 1);
   ed.before = { key: hit ? hit.key : null, url: shown, loading: key };
-  apiBlob(`/api/photos/${view.photo.id}/render${renderQuery(ed, 'final', false)}`, { body }).then(({ blob }) => {
+  apiBlob(`/api/photos/${view.photo.id}/render${renderQuery(view, 'final', false)}`, { body }).then(({ blob }) => {
     if (view.ed !== ed || ed.beforeSeq !== ticket) return;
     const old = ed.before && ed.before.url;
     if (old) URL.revokeObjectURL(old);
@@ -718,30 +601,6 @@ export function validRect(view, canvas) {
   return legacyValid(g.straighten || 0, canvas);
 }
 
-// 画面上的小标签（COPY 3.9）：返回数组，没有就是 []。
-// 「未校准」（跨单元或跨 ISO，或认不出的单元）不在画面上：它在配方标签里当前配方的下面，提示气泡写具体原因（calibration_note.js）。
-// 近似只在 JPG 上出现，标签是「近似」。
-
-// 后端的 X-GXR-Label 是机器值：prediction（电脑预测）、approx（近似）、original（原图，不加小标签）。
-// 没有校准（X-GXR-Calibrated=0）的电脑预测在配方标签里说，不在画面上。界面上不出现英文机器值（R2-05）。
-export const LABEL_WORDS = { prediction: '电脑预测', approx: '近似', 'camera-jpg': '相机 JPG', neutral: '中性转换', embedded: '内嵌预览' };
-
-export function stageLabels(view) {
-  const ed = view.ed;
-  if (!ed || view.showOriginal) return [];
-  if (ed.caps.recipe === 'approx' && ed.recipe) return [{ text: '近似', kind: 'warn' }];
-  const label = ed.label;
-  if (!label || label === 'original') return [];
-  if (label === 'prediction' || label.includes('电脑预测')) {
-    return [{ text: '电脑预测', kind: 'ok' }]; // 「未校准」不再盖在照片上，在配方标签里当前配方的下面（recipes.js）
-  }
-  if (label === 'approx') return [{ text: '近似', kind: 'warn' }];
-  // 旧版后端直接给中文的时候照样显示
-  if (/[^\x00-\x7f]/.test(label)) return [{ text: label.replace(/\s*未校准$/, ''), kind: 'grey' }];
-  const word = LABEL_WORDS[label];
-  return word ? [{ text: word, kind: 'grey' }] : [];
-}
-
 // 渲染失败或照片不能出图时，要告诉用户的原因（中文 message）
 export function renderProblem(view) {
   const ed = view.ed;
@@ -755,21 +614,13 @@ export function renderProblem(view) {
 // 原图（按住空格）要显示的那张：照片本身
 // 按住空格看原图（PRD 第 11 节第 3 条）：有相机 JPG 给相机 JPG，只有 RAW 给 04 标准；永远不带编辑和默认装饰。
 export function originalUrl(view) {
-  return `/api/photos/${view.photo.id}/render?stage=original&size=preview`;
+  const single = isSinglePairView(view) ? `&view=${view.pairView}` : '';
+  return `/api/photos/${view.photo.id}/render?stage=original&size=preview${single}`;
 }
 
 // 后端还没有原图接口（404）时退回原来的预览图，见 stage.js 的 error 处理
 export function originalFallbackUrl(view) {
   return view.photo.preview_url;
-}
-
-export function originalNote(photo) {
-  return originalNoteText(photo && photo.preview_look);
-}
-
-export function defaultNote(photo) {
-  const look = photo && photo.preview_look;
-  return { text: lookNoteText(look), prediction: isPrediction(look) };
 }
 
 // 关掉大图：只停预览、放掉图片。已经排队的保存不受影响（它们绑定的是保存记录，不是 ed）。

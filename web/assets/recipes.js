@@ -28,6 +28,9 @@ import { uncalibratedReason } from './calibration_note.js';
 import { CAMERA_SOURCE, cachedMyRecipes, loadMyRecipes, sourceText } from './my_recipes.js';
 import { computerTarget, newDeck, recipeTarget, renderRecipe } from './look_cards.js';
 import { describeLook, groupComputer } from './look_model.js';
+import {
+  isPairSecond, isSinglePairView, isUntouchedPairRecipe, partnerOf, shortRecipeLabel,
+} from './halfframe.js';
 
 const NEW_TONE_KNOBS = ['contrast', 'highlight', 'shadow', 'saturation'];
 const COMPUTER_ONLY = ['fade', 'warmth', 'tint', 'split', 'filter'];
@@ -40,6 +43,12 @@ const LOCAL_QUALITY = {
   historical_exception: '历史授权收录，原准入未通过项仍保留。',
 };
 
+function pairHintEl() {
+  return h('p', { class: 'pair-hint' },
+    h('b', {}, '改一次，两半一起变。'),
+    '两张 RAW 各自渲染后按相机的方式拼好，中间留同样宽的黑缝。');
+}
+
 export function recipePanel(view) {
   const ed = view.ed;
   const caps = ed.caps || { recipe: 'none' };
@@ -50,7 +59,11 @@ export function recipePanel(view) {
   const hasRaw = caps.raw ?? view.photo.has_raw;
   const localReady = sel.kind === 'local' && ed.render?.available;
   const usable = (camdataReady() || localReady) && (state3 === 'full' || state3 === 'approx' || localReady);
-  const knobsOn = usable && (state3 === 'full' || localReady);
+  const pair = isPairSecond(view.photo);
+  const untouchedPair = isUntouchedPairRecipe(view);
+  const readonly = isSinglePairView(view);
+  const canPick = usable && !readonly;
+  const knobsOn = canPick && (state3 === 'full' || localReady);
   const photoUnit = unitForPhoto(view.photo);
 
   const nodes = [h('div', { class: 'pane-head' }, h('h2', {}, '配方'))];
@@ -59,13 +72,11 @@ export function recipePanel(view) {
 
   // COPY 3.3：近似只给一个小标签，后面一行说清楚为什么。只有 JPG 时面板里写一行「配方需要 RAW 文件」，下面一行小字，按钮置灰；点了只闪一下这一行
   let noticeEl = null;
-  if (view.photo.diptych) {
-    if (!view.photo.pair) {
-      noticeEl = h('div', { class: 'notice grey' },
-        h('div', { class: 'strong' }, '这张双联没配上第 1 张，只能在相机 JPG 上调。'),
-      );
-      nodes.push(noticeEl);
-    }
+  if (view.photo.diptych && !view.photo.pair) {
+    noticeEl = h('div', { class: 'notice grey' },
+      h('div', { class: 'strong' }, '这张双联没配上第 1 张，只能在相机 JPG 上调。'),
+    );
+    nodes.push(noticeEl);
   } else if (state3 === 'approx') {
     nodes.push(h('div', { class: 'row-tags' }, h('span', { class: 'chip warn' }, '近似'), h('span', { class: 'small dim' }, APPROX_NOTE)));
   } else if (!hasRaw) {
@@ -98,14 +109,19 @@ export function recipePanel(view) {
   const builtinCard = (target, name, extra = {}) => {
     const r = recipeInfo(view, { unit: sel.unit, ...target });
     const t = recipeTarget(view, target);
+    const pressed = untouchedPair
+      ? false
+      : (target.kind === 'builtin'
+          ? (!sel.kind || sel.kind === 'builtin') && target.slot === sel.slot && !!ed.recipe
+          : sel.kind === target.kind && sel.id === target.id);
     return {
       id: `${target.kind}:${target.id || target.slot}`,
       name,
       desc: target.kind === 'record' ? null : describeLook({ kind: target.kind, slot: target.slot, name }),
-      pressed: target.kind === 'builtin' ? (!sel.kind || sel.kind === 'builtin') && target.slot === sel.slot && !!ed.recipe : sel.kind === target.kind && sel.id === target.id,
+      pressed,
       render: usable && r ? renderRecipe(view, t.same ? sel : t.next, approx) : null,
-      onPick: () => (usable ? switchRecipe(view, target) : flash()),
-      ...off(usable),
+      onPick: () => (canPick ? switchRecipe(view, target) : flash()),
+      ...off(canPick),
       ...extra,
     };
   };
@@ -134,7 +150,7 @@ export function recipePanel(view) {
       // 本机记录只在 RAW+JPG 照片上提供选择。
       const mineUsable = !!(view.photo.has_raw && view.photo.has_jpg);
       const note = approx ? '近似效果只支持默认参数，电脑上的配方需要 RAW 文件' : null;
-      const items = mine.map((r) => computerCard(view, r, mineUsable, flash, note));
+      const items = mine.map((r) => computerCard(view, r, mineUsable, flash, note, { untouchedPair, readonly }));
       chosen.push(...items);
       nodes.push(h('div', { class: 'small dim sec-source' }, '电脑上 · 用 LUT 生成'),
         h('div', { class: mineUsable ? 'look-group' : 'look-group dimmed-block' }, deck.grid(items)));
@@ -145,8 +161,21 @@ export function recipePanel(view) {
 
   // 当前配方的名字，名字下面一行安静的「未校准」（原因在提示气泡里）。只在选了配方、又没套 LUT 时才有意义：
   // 配方的颜色是电脑预测，没有校准的照片上预测可能有偏差；LUT 的颜色不经过相机的校准，不用提醒
+  const showPairHint = pair && !!hasRaw;
   let updateQualityNote = () => {};
-  if (ed.recipe) {
+  if (untouchedPair) {
+    const p1 = partnerOf(view.photo, state.photos, state.partners);
+    const r1 = shortRecipeLabel(p1?.recipe_tag);
+    const r2 = shortRecipeLabel(view.photo.recipe_tag);
+    const header = [
+      h('div', { class: 'cur-look' },
+        h('div', { class: 'small' },
+          h('span', { class: 'dim' }, '拍摄时：'),
+          `第 1 张 ${r1} · 第 2 张 ${r2}`)),
+    ];
+    if (showPairHint) header.push(pairHintEl());
+    nodes.splice(1, 0, ...header);
+  } else if (ed.recipe) {
     const now = chosen.find((c) => c.pressed);
     const name = now ? now.name : info && (info.name || slotName(sel.unit, sel.slot));
     const calibratedIsos = unit?.calibrated_isos || (sel.unit === 'jlaunch' ? [200, 1600] : [200]);
@@ -163,12 +192,16 @@ export function recipePanel(view) {
       updateQualityNote();
     }
     const exposureNote = unit ? unit.exposure_note : (sel.unit !== 'jlaunch' ? '曝光沿用 50mm 的曲线' : null);
-    nodes.splice(1, 0, h('div', { class: 'cur-look' },
+    const header = [h('div', { class: 'cur-look' },
       h('div', { class: 'small' }, h('span', { class: 'dim' }, '当前：'), h('span', { class: 'strong' }, name || '')),
       qualityNote,
       warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null,
       ed.recipeFromCamera && view.photo.recipe_tag?.levels === null ? h('div', { class: 'small dim' }, '微调未知，电脑预测使用配方默认值') : null,
-      exposureNote ? h('div', { class: 'small dim' }, exposureNote) : null));
+      exposureNote ? h('div', { class: 'small dim' }, exposureNote) : null)];
+    if (showPairHint) header.push(pairHintEl());
+    nodes.splice(1, 0, ...header);
+  } else if (showPairHint) {
+    nodes.splice(1, 0, pairHintEl());
   }
 
   // 强度和旋钮：配方不能用时整块变淡；点了（捕获阶段拦住）闪一下
@@ -190,7 +223,7 @@ export function recipePanel(view) {
   nodes.push(rest);
   // 底部只留 [重置] 靠右，固定在面板底边。原来的「存储为我的配方」「写入存储卡」点了没有反应，删掉（U8）；
   // 我的配方在「配方」页从 LUT 生成，存储卡不写。
-  const reset = resetButton(view, usable && !!info);
+  const reset = resetButton(view, canPick && !!info);
   reset.classList.add('end');
   nodes.push(h('div', { class: 'sticky-foot' }, reset));
 
@@ -208,16 +241,17 @@ function sameAsComputer(view, r) {
   return !!info && info.controls.every((c) => effective(c, sel.levels) === effective(c, r.recipe.levels));
 }
 
-function computerCard(view, r, usable, flash, note = null) {
+function computerCard(view, r, usable, flash, note = null, { untouchedPair = false, readonly = false } = {}) {
+  const canPick = usable && !readonly;
   return {
     id: `computer:${r.id}`,
     name: r.name,
     desc: describeLook({ kind: 'computer', source: r.source }),
     title: note ? `${sourceText(r)}（${note}）` : sourceText(r),
-    pressed: sameAsComputer(view, r),
+    pressed: untouchedPair ? false : sameAsComputer(view, r),
     render: usable ? renderRecipe(view, computerTarget(view, r).next, false) : null,
-    onPick: () => (usable ? applyComputer(view, r) : flash()),
-    disabled: !usable,
+    onPick: () => (canPick ? applyComputer(view, r) : flash()),
+    disabled: !canPick,
   };
 }
 
@@ -233,8 +267,9 @@ function otherUnitGroup(other, photoUnit) {
 
 function applyComputer(view, r) {
   const ed = view.ed;
+  if (isSinglePairView(view)) return;
   if (!(view.photo.has_raw && view.photo.has_jpg)) return;
-  if (sameAsComputer(view, r)) return;
+  if (!isUntouchedPairRecipe(view) && sameAsComputer(view, r)) return;
   const { next, memory } = computerTarget(view, r);
   beginChange(view);
   ed.memory = memory;
@@ -321,6 +356,7 @@ function sliderEl(view, { label, levels, control, index, enabled, onChange }) {
 
 // 内置配方：换配方时记住原来的旋钮，取回这个配方上次的旋钮（每个配方各自记住）；卡片画的也是 recipeTarget 给的这一个
 function switchRecipe(view, target) {
+  if (isSinglePairView(view)) return;
   const ed = view.ed;
   const t = recipeTarget(view, target);
   if (t.same) return;

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
@@ -14,7 +15,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ..crop import Crop, CropError
-from ..halfframe_pairs import has_pair_raw
+from ..halfframe_compose import half_edit_for, pair_half_shots
+from ..halfframe_pairs import has_pair_raw, is_pair_second
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict
 from ..lut.errors import LutError
@@ -177,6 +179,39 @@ def _crop_of(side: dict[Any, Any]) -> Crop | None:
     return Crop(raw["preset"], tuple(raw["rect"]), float(raw.get("angle_deg", 0.0))) if raw else None
 
 
+def _prepare_render_target(
+    c: Any,
+    shot: dict[Any, Any],
+    body: RenderRequest | None,
+    stage: str | None,
+    view: str | None,
+) -> tuple[dict[Any, Any], EditState, dict[Any, Any], str | None]:
+    if view in ("first", "second"):
+        if not is_pair_second(shot):
+            raise ApiError(422, "bad_view", "这张照片不是半格一对，不能切换单张视图。")
+        try:
+            s1, s2 = pair_half_shots(shot)
+        except ValueError as exc:
+            raise ApiError(422, "bad_view", "找不到配对照片的源文件。") from exc
+        half = s1 if view == "first" else s2
+        edit, _side = _read_edit(c, shot, inherit_recipe=False)
+        merged = _merge(edit, body)
+        if "dng" in half["files"]:
+            half = {**half, "files": {k: v for k, v in half["files"].items() if k != "jpg"}}
+            edit = half_edit_for(c.render, half, merged)
+        else:
+            edit = replace(merged, recipe=None)
+        return half, replace(edit, geometry=None, frame=None, stamp=None), {}, stage or "final"
+
+    inherit = stage != "original" and not (body is not None and "recipe" in body.model_fields_set)
+    edit, side = _read_edit(c, shot, inherit_recipe=inherit)
+    edit = _merge(edit, body)
+    if body is not None and "crop" in body.model_fields_set:
+        side = {**side, "crop": body.crop}
+    use_stage = stage or ("final" if "dng" not in shot["files"] or edit.lut is not None else None)
+    return shot, edit, side, use_stage
+
+
 def _render(
     request: Request,
     shot_id: str,
@@ -187,6 +222,7 @@ def _render(
     quality: int,
     stage: str | None = None,
     size: str | None = None,
+    view: str | None = None,
 ) -> Response:
     from ..finish.serve import SIZE_EDGE, render_stage
 
@@ -194,6 +230,8 @@ def _render(
     shot = _shot_or_404(c, shot_id)
     if stage not in (None, "final", "uncropped", "original"):
         raise ApiError(422, "bad_stage", "请求无效。请刷新页面后重试。")
+    if view not in (None, "diptych", "first", "second"):
+        raise ApiError(422, "bad_view", "请求无效。请刷新页面后重试。")
     if size not in (None, "thumb", "preview", "full"):
         raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": "尺寸只能是 thumb、preview 或 full"})
     if max_edge is None and size in SIZE_EDGE:
@@ -202,11 +240,7 @@ def _render(
         raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": f"max_edge 要在 64 到 {MAX_EDGE_LIMIT} 之间"})
     if not 30 <= quality <= 100:
         raise ApiError(422, "bad_quality", "请求无效。请刷新页面后重试。", {"detail": "品质要在 30 到 100 之间。"})
-    edit, side = _read_edit(c, shot, inherit_recipe=stage != "original" and not (body is not None and "recipe" in body.model_fields_set))
-    edit = _merge(edit, body)
-    if body is not None and "crop" in body.model_fields_set:
-        side = {**side, "crop": body.crop}
-    use_stage = stage or ("final" if "dng" not in shot["files"] or edit.lut is not None else None)
+    shot, edit, side, use_stage = _prepare_render_target(c, shot, body, stage, view)
     if use_stage:
         try:
             jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality)
@@ -354,9 +388,10 @@ def get_render(
     quality: int = 88,
     stage: str | None = None,
     size: str | None = None,
+    view: str | None = None,
 ) -> Any:
-    """按 sidecar 里的编辑渲染。`stage=final` 是成片，`uncropped` 是裁剪页的整幅画面。"""
-    return _render(request, shot_id, None, max_edge, exact, crop, quality, stage, size)
+    """按 sidecar 里的编辑渲染。`stage=final` 是成片，`uncropped` 是裁剪页的整幅画面，`view=first|second` 预览半格单张整幅。"""
+    return _render(request, shot_id, None, max_edge, exact, crop, quality, stage, size, view)
 
 
 @router.post("/api/photos/{shot_id}/render", response_model=None)
@@ -370,6 +405,7 @@ def post_render(
     quality: int = 88,
     stage: str | None = None,
     size: str | None = None,
+    view: str | None = None,
 ) -> Any:
     """请求体里出现的块盖过 sidecar，不落盘。拖动滑块时用这个。"""
-    return _render(request, shot_id, body, max_edge, exact, crop, quality, stage, size)
+    return _render(request, shot_id, body, max_edge, exact, crop, quality, stage, size, view)

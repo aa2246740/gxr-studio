@@ -11,6 +11,7 @@ import {
   PASTE_GROUPS, chosenGroups, rememberGroups, groupsPresent, copyFromView, copyMessage, clipboard,
   copyKeys, pasteKeys, pasteMessage, postPaste, newBatchId, groupName,
 } from './paste_core.js';
+import { isSinglePairView } from './halfframe.js';
 
 // 服务器写了哪些组 → 界面上对应的编辑字段（preview.js 的 applyRetried 认的名字）
 const EDIT_FIELDS = { recipe: ['recipe', 'lut'], adjust: ['adjust', 'curve'], geometry: ['geometry'], frame: ['frame'], stamp: ['stamp'] };
@@ -57,7 +58,7 @@ export function openCopyOptions(view) {
 
 // 粘贴到当前这张：排进保存队列，成功后一次性装进界面，撤销一步还原
 export async function pasteEdits(view) {
-  if (!view || !currentIsShowing(view)) return false;
+  if (!view || !currentIsShowing(view) || isSinglePairView(view)) return false;
   const clip = clipboard();
   if (!clip) {
     toast(`先复制一张照片的调整：在编辑器里按 ${copyKeys()}，或点「复制调整」。`, 'info');
