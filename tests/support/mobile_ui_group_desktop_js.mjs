@@ -21,6 +21,8 @@ function block(source, start, end) {
 // P1b-ui moved the recipe helpers out of preview.js
 const PREVIEW = read('preview_recipe.js');
 const LOOKS = read('look_cards.js');
+// P1b-ui: recipeTarget asks whether the photo is an untouched half-frame pair (never true here)
+const HALF = read('halfframe.js');
 const CORE = read('paste_core.js');
 
 const [input, output] = process.argv.slice(2);
@@ -36,6 +38,8 @@ if (job.recipe) {
     block(PREVIEW, 'export function cleanLevels(info, levels) {', '\n}\n'),
     block(PREVIEW, 'export function ensureRecipe(view) {', '\n}\n'),
     block(PREVIEW, 'export function recipeBody(view, { memory = false } = {}) {', '\n}\n'),
+    block(HALF, 'export function isPairSecond(p) {', '\n}\n'),
+    block(HALF, 'export function isUntouchedPairRecipe(view) {', '\n}\n'),
     block(LOOKS, 'export function recipeTarget(view, target) {', '\n}\n'),
     '({ recipeTarget, ensureRecipe, recipeBody })',
   ].join('\n');
