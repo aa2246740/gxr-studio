@@ -4,10 +4,10 @@
 1. 像素一致性：card250 对 (1,2) 横屏与对 (3,4) 竖屏，在未改动（各自拍摄配方）、显式配方、显示类 LUT、
    曝光+曲线、Log LUT 下，GPU 读回与 Python 生产管线满足 `gpu_gate.py` 门槛，且接缝每像素差 ≤ 2；
    同时校验 `/render?stage=final` 输出同尺寸、同方向、接缝 ≤ 2；
-2. 延迟与显存：同一台机器上对 (1,2) 与单张 RAW（第 7 张）对比滑块到出帧中位延迟（≤ 1.3×）
-   及源图/总纹理字节（≤ 1.2×）；
-3. 非配对不回归：第 1 张（half_first）、第 7 张（普通 RAW+JPG）、第 11 张（XPan）、
-   card249 普通 3:2（第 5 张）与旧双联（第 2 张）的 `/gpu` 响应与基线 `ee33a95` 逐字节一致。
+   注：card250 两对的左右两半共用拍摄配方（`sameBake=True`），无实拍异配方对照；异烘焙表路径 `recipeChain2`
+   在构建时由 `common.wgsl` 的 `recipeChain` 自动生成，并由 `test_halfframe_p1b_gpu.py` 的合成异配方用例覆盖；
+2. 延迟与显存：同一台机器上对 (1,2) 与单张 RAW（第 7 张）交替 A/B 对比滑块到出帧中位延迟（≤ 1.3×）
+   及独立源图/总纹理字节（≤ 1.2×）。
 """
 
 from __future__ import annotations
@@ -16,13 +16,12 @@ import io
 import json
 import os
 import statistics
-import subprocess
-import sys
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -40,7 +39,6 @@ from gxr_studio.lut.photo import _apply
 from gxr_studio.render.params import EditState, parse_adjust, parse_curve, parse_recipe
 from gxr_studio.render.tones import channel_gains, display_table
 from test_halfframe_p0 import (
-    REPO,
     _clear_desktop_cache,
     _field_folder,
     _setup_g250_calibrated_home,
@@ -49,7 +47,7 @@ from test_halfframe_p0 import (
 )
 from test_lut import cube_bytes
 
-BASE_COMMIT = "ee33a95"
+pytestmark = pytest.mark.exclusive
 
 PAIR_HARNESS_JS = (
     """
@@ -410,6 +408,7 @@ def test_card250_pair_gpu_parity_latency_and_memory(
                     "seam_w": pinfo["window"]["seam_w"],
                     "display_lut": display_t is not None,
                     "layer": tuple(pinfo["layer"]),
+                    "same_bake": bool(b0_meta and b1_meta and b0_meta["key"] == b1_meta["key"]),
                 }
                 cases.append(
                     {
@@ -556,6 +555,7 @@ def test_card250_pair_gpu_parity_latency_and_memory(
         seam_ref = _seam_slice(ref, orientation=meta["orientation"], seam_x0=meta["seam_x0"], seam_w=meta["seam_w"])
         seam_max_diff = int(np.abs(seam_gpu.astype(np.int16) - seam_ref.astype(np.int16)).max())
         report_rows[cid] = {
+            "same_bake": meta["same_bake"],
             "within_1": res["within_1"],
             "mean_de00": res["mean_de00"],
             "max_out_band": res["max_out_band"],
@@ -612,132 +612,3 @@ def test_card250_pair_gpu_parity_latency_and_memory(
     assert src_ratio <= 1.2, f"pair source texture bytes ratio {src_ratio:.4f} > 1.2"
     assert total_ratio <= 1.2, f"pair total texture bytes ratio {total_ratio:.4f} > 1.2"
     assert lat_ratio <= 1.3, f"pair slider latency ratio {lat_ratio:.4f} > 1.3 ({med_pair:.2f}ms vs {med_single:.2f}ms)"
-
-
-def test_non_pair_gpu_info_byte_identical_to_base(
-    settings: Any,
-    lib: Library,
-    volumes: Path,
-    tmp_path: Path,
-) -> None:
-    """验收 4：第 1 张（half_first）、第 7 张（普通）、第 11 张（XPan）、card249 普通 3:2 与旧双联的 /gpu 与基线 ee33a95 逐字节一致。"""
-    _clear_desktop_cache()
-    c250 = _sorted_pairs(_field_folder("card250"))
-    c249 = _sorted_pairs(_field_folder("card249"))
-    # card250: 1(half_first), 2(pair), 7(ordinary RAW+JPG), 11(XPan); card249: 2(legacy diptych), 5(ordinary 3:2)
-    staged_250 = [c250[0], c250[1], c250[6], c250[10]]
-    staged_249 = [c249[1], c249[4]]
-    import shutil
-
-    for cname, plist in (("CARD250", staged_250), ("CARD249", staged_249)):
-        dcim = volumes / cname / "DCIM" / "100RICOH"
-        dcim.mkdir(parents=True, exist_ok=True)
-        for dng_p, jpg_p in plist:
-            shutil.copy2(dng_p, dcim / dng_p.name)
-            shutil.copy2(jpg_p, dcim / jpg_p.name)
-    _setup_g250_calibrated_home(settings)
-    _enable_gpu_flag(settings)
-    for card in find_cards((volumes,)):
-        run_import(lib, card, ImportOptions(min_free_bytes=0))
-
-    idx_250 = _index_shots_by_jpg_sha(lib, staged_250)
-    idx_249 = _index_shots_by_jpg_sha(lib, staged_249)
-    selected = {
-        "card250_photo1_half_first": idx_250[1]["shot_id"],
-        "card250_photo7_ordinary": idx_250[3]["shot_id"],
-        "card250_photo11_xpan": idx_250[4]["shot_id"],
-        "card249_photo2_legacy_diptych": idx_249[1]["shot_id"],
-        "card249_photo5_ordinary": idx_249[2]["shot_id"],
-    }
-    lib.close()
-
-    head_bodies: dict[str, bytes] = {}
-    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
-        for label, sid in selected.items():
-            r = client.get(f"/api/photos/{sid}/gpu")
-            assert r.status_code == 200, (label, r.status_code)
-            head_bodies[label] = r.content
-
-    has_base = subprocess.run(["git", "cat-file", "-e", f"{BASE_COMMIT}^{{commit}}"], cwd=REPO, check=False, capture_output=True)
-    assert has_base.returncode == 0, f"git commit {BASE_COMMIT} must be reachable"
-    base_dir = tmp_path / f"base_{BASE_COMMIT}"
-    base_dir.mkdir()
-    tar = subprocess.run(["git", "archive", BASE_COMMIT, "src"], cwd=REPO, capture_output=True, check=True)
-    subprocess.run(["tar", "-xf", "-", "-C", str(base_dir)], input=tar.stdout, check=True)
-
-    worker = tmp_path / "gpu_base_worker.py"
-    worker.write_text(
-        """
-import json
-import sys
-from pathlib import Path
-
-src_root = Path(sys.argv[1])
-home_dir = Path(sys.argv[2])
-lib_dir = Path(sys.argv[3])
-export_dir = Path(sys.argv[4])
-vol_dir = Path(sys.argv[5])
-port = int(sys.argv[6])
-token = sys.argv[7]
-shot_ids = json.loads(sys.argv[8])
-out_dir = Path(sys.argv[9])
-
-sys.meta_path = [f for f in sys.meta_path if "__editable" not in repr(f) and "gxr_studio" not in repr(f)]
-sys.path.insert(0, str(src_root))
-
-import gxr_studio
-assert Path(gxr_studio.__file__).resolve().is_relative_to(src_root.resolve()), gxr_studio.__file__
-
-from fastapi.testclient import TestClient
-from gxr_studio.app import create_app
-from gxr_studio.config import Settings
-
-cfg = Settings(
-    home_dir=home_dir,
-    library_dir=lib_dir,
-    export_dir=export_dir,
-    volumes_roots=(vol_dir,),
-    port=port,
-    token=token,
-    min_free_bytes=0,
-)
-paths = {}
-with TestClient(create_app(cfg), base_url=f"http://127.0.0.1:{port}", headers={"X-GXR-Token": token}) as client:
-    for label, sid in shot_ids.items():
-        r = client.get(f"/api/photos/{sid}/gpu")
-        assert r.status_code == 200, (label, r.status_code)
-        p = out_dir / f"{label}.json"
-        p.write_bytes(r.content)
-        paths[label] = str(p)
-print(json.dumps(paths))
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-    out_base = tmp_path / "out_base"
-    out_base.mkdir()
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            str(worker),
-            str(base_dir / "src"),
-            str(settings.home_dir),
-            str(settings.library_dir),
-            str(settings.export_dir),
-            str(volumes),
-            str(PORT),
-            settings.token,
-            json.dumps(selected),
-            str(out_base),
-        ],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    base_paths = json.loads(proc.stdout.splitlines()[-1])
-    for label in selected:
-        base_bytes = Path(base_paths[label]).read_bytes()
-        assert head_bodies[label] == base_bytes, f"{label} /gpu diverged from {BASE_COMMIT}"

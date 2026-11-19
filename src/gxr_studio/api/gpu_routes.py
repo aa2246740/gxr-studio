@@ -133,22 +133,26 @@ def _pair_half_shot(shot: dict[str, Any], half: int) -> dict[str, Any]:
     return s1 if half == 0 else s2
 
 
+def _pair_unavailable(unit: str | None, reason: str, render_available: bool) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "unit": unit,
+        "raw": None,
+        "raw_reason": reason,
+        "jpg": None,
+        "scene": None,
+        "render_available": render_available,
+        "pair": None,
+    }
+
+
 def _pair_gpu_info(c: Any, shot_id: str, shot: dict[str, Any]) -> dict[str, Any]:
     unit = c.render.photo_unit(shot)
     try:
         s1, s2 = pair_half_shots(shot)
         ori, first_half = pair_orientation_and_half(shot)
     except ValueError as exc:
-        return {
-            "enabled": True,
-            "unit": unit,
-            "raw": None,
-            "raw_reason": f"pair_invalid:{exc}",
-            "jpg": None,
-            "scene": None,
-            "render_available": False,
-            "pair": None,
-        }
+        return _pair_unavailable(unit, f"pair_invalid:{exc}", False)
     u1, u2 = c.render.photo_unit(s1), c.render.photo_unit(s2)
     render_available = c.render.available(u1 or "jlaunch") and c.render.available(u2 or "jlaunch")
     c.render.warm_preview_bakes(s1)
@@ -157,43 +161,16 @@ def _pair_gpu_info(c: Any, shot_id: str, shot: dict[str, Any]) -> dict[str, Any]
     src2 = _raw_source_meta(c, s2["files"]["dng"])
     if src1.layout is None or src2.layout is None:
         reason = src1.reason if src1.layout is None else src2.reason
-        return {
-            "enabled": True,
-            "unit": unit,
-            "raw": None,
-            "raw_reason": reason or "pair_raw_unavailable",
-            "jpg": None,
-            "scene": None,
-            "render_available": render_available,
-            "pair": None,
-        }
+        return _pair_unavailable(unit, reason or "pair_raw_unavailable", render_available)
     ch1, cw1 = int(src1.layout["crop"][2]), int(src1.layout["crop"][3])
     ch2, cw2 = int(src2.layout["crop"][2]), int(src2.layout["crop"][3])
     h2, w2 = ch1 // 2, cw1 // 2
     if (h2, w2) != (ch2 // 2, cw2 // 2):
-        return {
-            "enabled": True,
-            "unit": unit,
-            "raw": None,
-            "raw_reason": "pair_size_mismatch",
-            "jpg": None,
-            "scene": None,
-            "render_available": render_available,
-            "pair": None,
-        }
+        return _pair_unavailable(unit, "pair_size_mismatch", render_available)
     try:
         geo = proxy_geometry(w2)
     except ValueError:
-        return {
-            "enabled": True,
-            "unit": unit,
-            "raw": None,
-            "raw_reason": "pair_geometry_invalid",
-            "jpg": None,
-            "scene": None,
-            "render_available": render_available,
-            "pair": None,
-        }
+        return _pair_unavailable(unit, "pair_geometry_invalid", render_available)
     swap = ori >= 5
     layer = [h2, w2] if swap else [w2, h2]
     full = [2 * h2, 2 * w2] if swap else [2 * w2, 2 * h2]

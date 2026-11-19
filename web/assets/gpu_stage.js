@@ -158,22 +158,19 @@ function ensureSource(id, info, base) {
   return once(key, async (current) => {
     if (base === 'pair-raw') {
       const [s0, s1] = info.pair.sources;
+      const cfg = {
+        first_half: info.pair.first_half,
+        orientation: info.pair.orientation,
+        window: info.pair.window,
+        sources: [
+          { layout: s0.raw, scene: s0.scene },
+          { layout: s1.raw, scene: s1.scene },
+        ],
+      };
+      if (typeof engine.checkPairLimits === 'function') engine.checkPairLimits(cfg);
       const [r0, r1] = await Promise.all([binary(s0.raw.url), binary(s1.raw.url)]);
       if (current()) {
-        await engine.addPairRaw(
-          key,
-          {
-            first_half: info.pair.first_half,
-            orientation: info.pair.orientation,
-            window: info.pair.window,
-            sources: [
-              { layout: s0.raw, scene: s0.scene },
-              { layout: s1.raw, scene: s1.scene },
-            ],
-          },
-          r0.data,
-          r1.data,
-        );
+        await engine.addPairRaw(key, cfg, r0.data, r1.data);
       }
     } else if (base === 'raw') {
       const { data } = await binary(info.raw.url);
@@ -312,9 +309,10 @@ export function route(view, ctx, rerun) {
   const box = boxFor(view, id, layer, ctx, rerun);
   if (box === 'wait') return 'wait';
   if (box === 'server') return 'server';
-  engine.show(sKey);
   const bake = bUrl ? bakeMeta.get(bUrl) : null;
   const bake2 = bUrl2 ? bakeMeta.get(bUrl2) : null;
+  if (needBake && (!bake || (isPair && !bake2))) return 'server';
+  engine.show(sKey);
   engine.setLook({
     recipe: bake ? bake.key : null,
     ...(isPair ? { recipe2: bake2 ? bake2.key : null } : {}),

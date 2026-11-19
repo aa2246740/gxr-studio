@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -318,27 +319,10 @@ PAIR_NO_SCENE2 = {
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
-@pytest.mark.parametrize(
-    ("label", "ed", "info", "stage", "recipe", "lut_space", "expected"),
-    [
-        (
-            "半格一对未改 → pair-raw (recipe=null)",
-            ED,
-            PAIR_INFO,
-            "final",
-            None,
-            None,
-            {"base": "pair-raw", "recipe": None, "lut": None},
-        ),
-        (
-            "半格一对显式配方 → pair-raw",
-            ED,
-            PAIR_INFO,
-            "final",
-            REC,
-            None,
-            {"base": "pair-raw", "recipe": REC, "lut": None},
-        ),
+def test_decide_pair_branches(tmp_path: Path) -> None:
+    cases = [
+        ("半格一对未改 → pair-raw (recipe=null)", ED, PAIR_INFO, "final", None, None, {"base": "pair-raw", "recipe": None, "lut": None}),
+        ("半格一对显式配方 → pair-raw", ED, PAIR_INFO, "final", REC, None, {"base": "pair-raw", "recipe": REC, "lut": None}),
         (
             "半格一对显示类 LUT（未改）→ pair-raw",
             {**ED, "lut": "L"},
@@ -357,41 +341,45 @@ PAIR_NO_SCENE2 = {
             "srgb",
             {"base": "pair-raw", "recipe": REC, "lut": "L"},
         ),
-        (
-            "半格一对 Log LUT → pair-raw",
-            {**ED, "lut": "L"},
-            PAIR_INFO,
-            "final",
-            None,
-            "log",
-            {"base": "pair-raw", "lut": "L"},
-        ),
+        ("半格一对 Log LUT → pair-raw", {**ED, "lut": "L"}, PAIR_INFO, "final", None, "log", {"base": "pair-raw", "lut": "L"}),
         ("半格一对 Log LUT 缺第二张 scene → 服务器", {**ED, "lut": "L"}, PAIR_NO_SCENE2, "final", None, "log", None),
         ("半格一对原图 → 服务器", ED, PAIR_INFO, "orig", None, None, None),
         ("半格一对缺 RAW → 服务器（不退回双联 JPG）", ED, {**PAIR_INFO, "pair": None, "jpg": None}, "final", None, None, None),
-    ],
-)
-def test_decide_pair_branches(
-    tmp_path: Path,
-    label: str,
-    ed: Any,
-    info: Any,
-    stage: str,
-    recipe: Any,
-    lut_space: str | None,
-    expected: Any,
-) -> None:
-    got = _decide(tmp_path, [{"ed": ed, "info": info, "stage": stage, "recipe": recipe, "lutSpace": lut_space}])[0]
-    assert got == expected, label
+    ]
+    got = _decide(
+        tmp_path,
+        [{"ed": ed, "info": info, "stage": stage, "recipe": rec, "lutSpace": ls} for _, ed, info, stage, rec, ls, _ in cases],
+    )
+    for (label, *_, expected), actual in zip(cases, got, strict=True):
+        assert actual == expected, label
+
+
+def test_pair_shader_recipe_chain2_generated_from_common() -> None:
+    """P2-1：pair_color.wgsl 不手写 recipeChain2，由 common.wgsl 的 recipeChain 在构建时生成。"""
+    repo = Path(__file__).resolve().parents[1]
+    pair_src = (repo / "frontend" / "src" / "shaders" / "pair_color.wgsl").read_text(encoding="utf-8")
+    common_src = (repo / "frontend" / "src" / "shaders" / "common.wgsl").read_text(encoding="utf-8")
+    bundle = (ASSETS / "gpu" / "engine.js").read_text(encoding="utf-8")
+    assert "// __RECIPE_CHAIN_2__" in pair_src
+    assert "fn recipeChain2(" not in pair_src
+    m = re.search(r"fn recipeChain\([\s\S]*?\n\}", common_src)
+    assert m is not None, "common.wgsl missing fn recipeChain"
+    expected = m.group(0).replace("fn recipeChain(", "fn recipeChain2(", 1).replace("rec[", "rec2[").replace("p.bake", "pp.bake")
+    assert "__RECIPE_CHAIN_2__" not in bundle
+    assert expected in bundle
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
-def test_engine_pair_frees_both_textures_on_replace_evict_and_dispose(tmp_path: Path) -> None:
+def test_engine_pair_lifecycle_limits_and_recipe2_guard(tmp_path: Path) -> None:
+    """双纹理替换/释放、双烘焙表钉住、P3-1 缺 recipe2 拒画与 P3-6 限额预检。"""
     out = run_node(
         tmp_path,
         FAKE_GPU
         + """
-device.limits = { maxStorageBufferBindingSize: 1 << 28, maxBufferSize: 1 << 28, maxTextureDimension2D: 8192 };
+globalThis.requestAnimationFrame = () => 1;
+globalThis.cancelAnimationFrame = () => {};
+globalThis.window = { devicePixelRatio: 1 };
+device.limits = { maxStorageBufferBindingSize: 65536, maxBufferSize: 65536, maxTextureDimension2D: 256 };
 const origCreateTexture = device.createTexture.bind(device);
 device.createTexture = (d) => { const t = origCreateTexture(d); t.createView = () => ({}); return t; };
 device.createBindGroup = () => ({});
@@ -399,6 +387,8 @@ device.createComputePipeline = () => ({ getBindGroupLayout: () => ({}) });
 device.createRenderPipeline = () => ({ getBindGroupLayout: () => ({}) });
 device.createCommandEncoder = () => ({
   beginComputePass: () => ({ setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} }),
+  beginRenderPass: () => ({ setPipeline() {}, setBindGroup() {}, draw() {}, end() {} }),
+  copyTextureToBuffer() {},
   finish: () => ({}),
 });
 device.queue.onSubmittedWorkDone = async () => {};
@@ -409,33 +399,50 @@ const liveAfterInit = () => made.slice(baseCount).filter((r) => r.kind === 'text
 const layout = {
   bps: 12, big_endian: true, row_bytes: 240, strips: [[0, 240 * 120]],
   crop: [0, 0, 120, 156], active: [0, 0], phase: [0, 1, 1, 2],
-  black: [0, 0, 0, 0], white: 4095, wb: [4095, 4095, 4095],
-  orientation: 1, width: 160, height: 120,
+  black: [0, 0, 0, 0], white: 4095, wb: [4095, 4095, 4095], orientation: 1, width: 160, height: 120,
 };
 const cfg = {
   first_half: 'left', orientation: 1,
   window: { width: 160, height: 60, half_w: 78, strip_x0: 41, seam_x0: 78, seam_w: 4, right_x0: 82 },
   sources: [{ layout, scene: null }, { layout, scene: null }],
 };
+e.checkPairLimits(cfg);
+const catchMsg = (fn) => { try { fn(); return null; } catch (err) { return err.message; } };
+const texLimitErr = catchMsg(() => e.checkPairLimits({ ...cfg, window: { ...cfg.window, width: 512 } }));
+const rawLimitErr = catchMsg(() => e.checkPairLimits({
+  ...cfg, sources: [{ layout: { ...layout, strips: [[0, 70000]] }, scene: null }, { layout, scene: null }],
+}));
 const raw = new ArrayBuffer(240 * 120);
 await e.addPairRaw('P1', cfg, raw, raw);
 const afterAdd = { extraTex: liveAfterInit().length, bytes: e.stats().sourceBytes };
 await e.addPairRaw('P1', cfg, raw, raw);
 const afterReplace = { extraTex: liveAfterInit().length, sources: e.stats().sources };
+const ctx2 = { configure() {}, unconfigure() {}, getCurrentTexture: () => ({ createView: () => ({}) }) };
+e.attach({ width: 160, height: 120, clientWidth: 160, clientHeight: 120, getContext: () => ctx2 });
+e.show('P1');
 const meta = { nx: 2, ny: 2, origin: [0, 0], step: 1 };
 e.addBake('K1', meta, new ArrayBuffer(64));
 e.addBake('K2', meta, new ArrayBuffer(64));
+e.setLook({ recipe: 'K1' });
+const frameMissingUndefined = e.frame();
+e.setLook({ recipe: 'K1', recipe2: null });
+const frameMissingNull = e.frame();
+const thumbMissing = await e.thumb({ source: 'P1', look: { recipe: 'K1', recipe2: null }, geometry: {}, longEdge: 64 });
 e.setLook({ recipe: 'K1', recipe2: 'K2' });
+const frameBothOk = e.frame() !== null;
 for (let i = 0; i < 80; i++) e.addBake('B' + i, meta, new ArrayBuffer(64));
 const bakePin = { k1: e.hasBake('K1'), k2: e.hasBake('K2') };
 e.dispose();
 const afterDispose = { remainingSources: e.stats().sources, extraTex: liveAfterInit().length };
-console.log(JSON.stringify({ afterAdd, afterReplace, bakePin, afterDispose }));
+console.log(JSON.stringify({
+  texLimitErr, rawLimitErr, afterAdd, afterReplace, frameMissingUndefined, frameMissingNull, thumbMissing, frameBothOk, bakePin, afterDispose,
+}));
 """,
     )
-    assert out["afterAdd"] == {"extraTex": 2, "bytes": 78 * 60 * 2 * 16}
-    assert out["afterReplace"] == {"extraTex": 2, "sources": 1}
-    assert out["bakePin"] == {"k1": True, "k2": True}
+    assert out["texLimitErr"] == "pair_exceeds_texture_limit" and out["rawLimitErr"] == "raw_exceeds_storage_limit"
+    assert out["afterAdd"] == {"extraTex": 2, "bytes": 78 * 60 * 2 * 16} and out["afterReplace"] == {"extraTex": 2, "sources": 1}
+    assert out["frameMissingUndefined"] is None and out["frameMissingNull"] is None and out["thumbMissing"] is None
+    assert out["frameBothOk"] is True and out["bakePin"] == {"k1": True, "k2": True}
     assert out["afterDispose"] == {"remainingSources": 0, "extraTex": 0}
 
 
@@ -456,6 +463,7 @@ export class Engine {
   static async create() { return new Engine(); }
   constructor() { this.sources = new Map(); this.bakes = new Map(); this.luts = new Map(); this.current = null; }
   hasSource(k) { return this.sources.has(k); }
+  checkPairLimits() { if (globalThis.failPairLimit) throw new Error('pair_exceeds_texture_limit'); }
   async addPairRaw(k, cfg) {
     if (globalThis.failPairAdd) throw new Error('limit_exceeded');
     const swap = cfg.orientation >= 5;
@@ -485,49 +493,58 @@ export class Engine {
         f"""
 Object.defineProperty(globalThis, 'navigator', {{ value: {{ gpu: {{}} }}, configurable: true }});
 globalThis.log = [];
-globalThis.failPairAdd = false;
+globalThis.failPairAdd = globalThis.failPairLimit = globalThis.failBakeHalf1 = false;
 const pairInfo = {json.dumps(PAIR_INFO)};
+const infoFor = (id) => ({{
+  ...pairInfo,
+  pair: {{
+    ...pairInfo.pair,
+    sources: pairInfo.pair.sources.map((s, i) => ({{ ...s, raw: {{ ...s.raw, url: `/api/photos/${{id}}/raw?half=${{i}}` }} }})),
+  }},
+}});
 globalThis.apiStub = async (url) => {{
-  if (url.endsWith('/gpu')) return pairInfo;
+  const m = url.match(/\\/api\\/photos\\/([^/]+)\\/gpu$/);
+  if (m) return infoFor(m[1]);
   if (url.endsWith('/gpu/box')) return {{ box: [0, 0, 160, 120], valid: [0, 0, 1, 1] }};
   throw new Error('unexpected api ' + url);
 }};
-let bakesCalled = [];
+let bakesCalled = [], rawFetched = [];
+const res = (ok, n, h = {{}}, status = 200) => ({{ ok, status, arrayBuffer: async () => new ArrayBuffer(n), headers: new Headers(h) }});
 globalThis.fetch = async (url) => {{
+  if (url.includes('/raw')) rawFetched.push(url);
   if (url.includes('/bake')) {{
     bakesCalled.push(url);
     const half = url.includes('half=1') ? 1 : 0;
+    if (globalThis.failBakeHalf1 && half === 1) return res(false, 0, {{}}, 500);
     const meta = {{ key: `BK-${{half}}-${{bakesCalled.length}}`, calibrated: half === 0, nx: 2, ny: 2, origin: [0, 0], step: 1 }};
-    const headers = new Headers({{ 'X-GXR-Bake': encodeURIComponent(JSON.stringify(meta)) }});
-    return {{ ok: true, arrayBuffer: async () => new ArrayBuffer(32), headers }};
+    return res(true, 32, {{ 'X-GXR-Bake': encodeURIComponent(JSON.stringify(meta)) }});
   }}
-  return {{ ok: true, arrayBuffer: async () => new ArrayBuffer(64), headers: new Headers() }};
+  return res(true, 64);
 }};
 import {{ state }} from './state.js';
 import {{ route, lookThumb }} from './gpu_stage.js';
-state.settings = {{ gpu_preview: true }};
-state.camdata = {{ dataVersion: 'v1' }};
-const baseEd = () => ({{ v2: true, lut: null, geometry: {{}}, frame: {{ style: 'none' }}, stamp: {{ enabled: false }} }});
-const view = {{ photo: {{ id: 'P2', name: 'P2' }}, ed: baseEd() }};
+state.settings = {{ gpu_preview: true }}; state.camdata = {{ dataVersion: 'v1' }};
 const ctx = {{ stage: 'final', recipe: null, adjust: {{}}, curve: null, geometry: {{}}, crop: null, geometryKey: '' }};
-let way;
-for (let i = 0; i < 6; i++) {{
-  way = route(view, ctx, () => {{}});
-  await new Promise((r) => setTimeout(r, 10));
-  if (way === 'gpu') break;
+const ed0 = () => ({{ v2: true, lut: null, geometry: {{}}, frame: {{ style: 'none' }}, stamp: {{ enabled: false }} }});
+const makeView = (id) => ({{ photo: {{ id, name: id }}, ed: ed0() }});
+async function settle(view, want) {{
+  let way;
+  for (let i = 0; i < 6; i++) {{ way = route(view, ctx, () => {{}}); await new Promise((r) => setTimeout(r, 10)); if (way === want) break; }}
+  return way;
 }}
+const view = makeView('P2'), way = await settle(view, 'gpu');
 const lookCall = globalThis.log.find((x) => x[0] === 'setLook')?.[1];
 const thumbRes = await lookThumb(view, ctx, {{ kind: 'builtin', unit: 'jlaunch', slot: 1, levels: {{}} }}, 120);
-// Failure fallback when addPairRaw throws on another pair
-globalThis.failPairAdd = true;
-const view2 = {{ photo: {{ id: 'P3', name: 'P3' }}, ed: baseEd() }};
-let way2;
-for (let i = 0; i < 6; i++) {{
-  way2 = route(view2, ctx, () => {{}});
-  await new Promise((r) => setTimeout(r, 10));
-  if (way2 === 'server') break;
-}}
-console.log(JSON.stringify({{ way, calibrated: view.ed.calibrated, lookCall, thumbOk: !!(thumbRes && thumbRes.w === 4), way2 }}));
+globalThis.failPairAdd = true; const way2 = await settle(makeView('P3'), 'server'); globalThis.failPairAdd = false;
+globalThis.failPairLimit = true; const wayLimit = await settle(makeView('P4'), 'server'); globalThis.failPairLimit = false;
+const p4RawFetched = rawFetched.filter((u) => u.includes('/P4/raw'));
+globalThis.failBakeHalf1 = true; const logBeforeP5 = globalThis.log.length;
+const wayNoBake2 = await settle(makeView('P5'), 'server');
+const p5SetLooks = globalThis.log.slice(logBeforeP5).filter((x) => x[0] === 'setLook');
+console.log(JSON.stringify({{
+  way, calibrated: view.ed.calibrated, lookCall, thumbOk: !!(thumbRes && thumbRes.w === 4),
+  way2, wayLimit, p4RawFetched, wayNoBake2, p5SetLooks,
+}}));
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -540,6 +557,8 @@ console.log(JSON.stringify({{ way, calibrated: view.ed.calibrated, lookCall, thu
     assert out["lookCall"]["recipe"].startswith("BK-0-") and out["lookCall"]["recipe2"].startswith("BK-1-")
     assert out["thumbOk"] is True
     assert out["way2"] == "server"
+    assert out["wayLimit"] == "server" and out["p4RawFetched"] == []
+    assert out["wayNoBake2"] == "server" and out["p5SetLooks"] == []
 
 
 # ---- 3. 合成 GPU 逐像素对拍（方向 1/3/6/8、双配方、双场景矩阵、显示/Log LUT、接缝与显存） ----

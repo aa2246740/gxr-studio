@@ -1,15 +1,25 @@
 // WebGPU 预览引擎。源图、配方表、LUT 各上传一次；拖动只改 uniform 与 1 或 3 张 1021 点调子表。
 // 三遍：颜色（源图分辨率）→ 几何（1:1 成片纹理，读回和 Python 比的就是它）→ 显示（缩放到画布）。
 import colorWgsl from './shaders/color.wgsl?raw';
-import pairColorWgsl from './shaders/pair_color.wgsl?raw';
 import commonWgsl from './shaders/common.wgsl?raw';
 import geoWgsl from './shaders/geo.wgsl?raw';
 import binWgsl from './shaders/bin.wgsl?raw';
 import presentWgsl from './shaders/present.wgsl?raw';
 import histWgsl from './shaders/hist.wgsl?raw';
 import { type GainMeta, HdrOutput, type HdrOutputMode, f16ToF32, presentMap } from './hdr_output';
+import {
+  type PairInfo,
+  type PairSourceConfig,
+  type PairWindow,
+  checkPairLimits as validatePairLimits,
+  createPairResources,
+  encodePairColor,
+  loadPairRaw,
+} from './pair';
 import { type Adjust, type Curves, channelGains, displayTable, TABLE_SIZE } from './tones';
 import { canvasOf, lens, rotatedSize } from './warp';
+
+export type { PairSourceConfig, PairWindow };
 
 type Mat3 = [number[], number[], number[]];
 
@@ -28,26 +38,6 @@ export interface RawLayout {
   orientation: number;
   width: number;
   height: number;
-}
-
-export interface PairWindow {
-  width: number;
-  height: number;
-  half_w: number;
-  strip_x0: number;
-  seam_x0: number;
-  seam_w: number;
-  right_x0: number;
-}
-
-export interface PairSourceConfig {
-  first_half: 'left' | 'right';
-  orientation: number;
-  window: PairWindow;
-  sources: [
-    { layout: RawLayout; scene: Scene | null },
-    { layout: RawLayout; scene: Scene | null },
-  ];
 }
 
 export interface BakeMeta {
@@ -97,15 +87,6 @@ export interface Geometry {
   distortion: number;
   /** 旋转后画布上的裁切框（颜色层像素）。null = 整幅。 */
   box: [number, number, number, number] | null;
-}
-
-interface PairInfo {
-  sensorW: number;
-  sensorH: number;
-  halfW: number;
-  rightX0: number;
-  orientation: number;
-  firstLeft: boolean;
 }
 
 interface Source {
@@ -181,7 +162,6 @@ export function pixelRegion(width: number, height: number, region: [number, numb
 }
 
 const UNIFORM_FLOATS = 18 * 4;
-const PAIR_UNIFORM_FLOATS = 7 * 4;
 const MAX_SOURCE_BYTES = 640 << 20;
 // 画布外的空白：设计系统的舞台灰 --stage-dark #2a2a2a
 const STAGE_GRAY = 0x2a / 255;
@@ -267,23 +247,19 @@ export class Engine {
     });
     const mod = (code: string) => device.createShaderModule({ code });
     const colorMod = mod(commonWgsl + colorWgsl);
-    const pairColorMod = mod(commonWgsl + pairColorWgsl);
+    const pairRes = createPairResources(device, commonWgsl);
     const geoMod = mod(geoWgsl);
     const presentMod = mod(presentWgsl);
     const binMod = mod(binWgsl);
     const histMod = mod(histWgsl);
     this.hdr = new HdrOutput(device);
-    this.modules = [colorMod, pairColorMod, geoMod, presentMod, binMod, histMod, this.hdr.module];
+    this.modules = [colorMod, pairRes.module, geoMod, presentMod, binMod, histMod, this.hdr.module];
     this.colorPipe = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: colorMod, entryPoint: 'vs' },
       fragment: { module: colorMod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
     });
-    this.pairColorPipe = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: pairColorMod, entryPoint: 'vs' },
-      fragment: { module: pairColorMod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
-    });
+    this.pairColorPipe = pairRes.pipeline;
     this.geoPipe = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: geoMod, entryPoint: 'vs' },
@@ -298,7 +274,7 @@ export class Engine {
     this.histPipe = device.createComputePipeline({ layout: 'auto', compute: { module: histMod, entryPoint: 'main' } });
     const ub = (size: number) => device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.uniform = ub(UNIFORM_FLOATS * 4);
-    this.pairUniform = ub(PAIR_UNIFORM_FLOATS * 4);
+    this.pairUniform = pairRes.uniform;
     this.geoUniform = ub(5 * 16);
     this.presentUniform = ub(3 * 16);
     this.histUniform = ub(2 * 16);
@@ -404,47 +380,14 @@ export class Engine {
     this.putSource({ key, kind: 'raw', tex, w, h, bytes: w * h * 16, scene });
   }
 
+  /** 下载或上传两份 DNG 之前核对成片和条带的显卡限额，超限抛错以便调用方退回服务器。 */
+  checkPairLimits(cfg: PairSourceConfig): void {
+    validatePairLimits(this.device.limits, cfg);
+  }
+
   /** 半格一对的两份 DNG → 逐份按窗口拆包到两张半宽传感器条带纹理（总显存 ≤ 单张），顺序上传不叠加临时缓冲。 */
   async addPairRaw(key: string, cfg: PairSourceConfig, dng1: ArrayBuffer, dng2: ArrayBuffer): Promise<void> {
-    const swap = cfg.orientation >= 5;
-    const outW = swap ? cfg.window.height : cfg.window.width;
-    const outH = swap ? cfg.window.width : cfg.window.height;
-    const lim = this.device.limits;
-    if (lim?.maxTextureDimension2D && (outW > lim.maxTextureDimension2D || outH > lim.maxTextureDimension2D)) {
-      throw new Error('pair_exceeds_texture_limit');
-    }
-    const b1 = await this.binRaw(cfg.sources[0].layout, dng1);
-    let b2: { tex: GPUTexture; w: number; h: number };
-    try {
-      b2 = await this.binRaw(cfg.sources[1].layout, dng2);
-    } catch (err) {
-      b1.tex.destroy();
-      throw err;
-    }
-    if (b1.w !== cfg.window.half_w || b1.h !== cfg.window.height || b2.w !== cfg.window.half_w || b2.h !== cfg.window.height) {
-      b1.tex.destroy();
-      b2.tex.destroy();
-      throw new Error('pair_strip_size_mismatch');
-    }
-    this.putSource({
-      key,
-      kind: 'pair-raw',
-      tex: b1.tex,
-      tex2: b2.tex,
-      w: outW,
-      h: outH,
-      bytes: (b1.w * b1.h + b2.w * b2.h) * 16,
-      scene: cfg.sources[0].scene,
-      scene2: cfg.sources[1].scene,
-      pair: {
-        sensorW: cfg.window.width,
-        sensorH: cfg.window.height,
-        halfW: cfg.window.half_w,
-        rightX0: cfg.window.right_x0,
-        orientation: cfg.orientation,
-        firstLeft: cfg.first_half === 'left',
-      },
-    });
+    this.putSource(await loadPairRaw(this.device.limits, (lay, dng) => this.binRaw(lay, dng), key, cfg, dng1, dng2));
   }
 
   /** 相机 JPG（浏览器按 EXIF 方向解码）→ rgba8 纹理。 */
@@ -683,29 +626,6 @@ export class Engine {
     this.device.queue.writeBuffer(this.uniform, 0, u);
   }
 
-  private writePairUniform(src: Source, bake2: Bake | null, lut: Lut | null, sameBake: boolean): void {
-    const p = src.pair!;
-    const u = new Float32Array(PAIR_UNIFORM_FLOATS);
-    u.set([p.sensorW, p.sensorH, p.halfW, p.rightX0], 0);
-    u.set([p.orientation, p.firstLeft ? 1 : 0, sameBake ? 1 : 0, 0], 4);
-    if (bake2) {
-      u.set([bake2.meta.origin[0], bake2.meta.origin[1], 1 / bake2.meta.step, bake2.meta.nx], 8);
-      u.set([bake2.meta.ny, 0, 0, 0], 12);
-    }
-    if (lut && !lut.meta.table8) {
-      const m = lut.meta;
-      let M: Mat3 = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-      let off = [0, 0, 0];
-      if (src.scene2) {
-        M = mul3(m.xyz_to_input, src.scene2.A);
-        const b = src.scene2.b;
-        off = m.xyz_to_input.map((r) => r[0] * b[0] + r[1] * b[1] + r[2] * b[2]);
-      }
-      for (let r = 0; r < 3; r++) u.set([...M[r], off[r]], 16 + r * 4);
-    }
-    this.device.queue.writeBuffer(this.pairUniform, 0, u);
-  }
-
   private ensureTextures(src: Source, fw: number, fh: number): void {
     const d = this.device;
     if (!this.colorTex || this.colorTex.width !== src.w || this.colorTex.height !== src.h) {
@@ -720,52 +640,27 @@ export class Engine {
     }
   }
 
-  private encodePairColor(enc: GPUCommandEncoder, src: Source, look: Look = this.look, target: GPUTexture | null = this.colorTex): boolean {
-    if (!src.tex2 || !src.pair) return false;
-    const { mode, lut } = this.lutState(src, look);
-    const needsBake = mode === 0 || mode === 1;
-    const bake1 = look.recipe ? this.bakes.get(look.recipe) ?? null : null;
-    const recipe2Key = look.recipe2 ?? look.recipe;
-    const bake2 = recipe2Key ? this.bakes.get(recipe2Key) ?? null : null;
-    if (needsBake && (!bake1 || !bake2)) return false;
-    if (look.lut && !lut) return false;
-    if (mode === 2 && (!src.scene || !src.scene2)) return false;
-    this.writeUniform(src, bake1, lut, mode, look);
-    this.writePairUniform(src, bake2, lut, bake1 !== null && bake1 === bake2);
-    const d = this.device;
-    const anyBake = bake1 ?? this.bakes.values().next().value;
-    const recBuf1 = anyBake ? anyBake.buf : this.toneBuf;
-    const recBuf2 = (bake2 ?? anyBake)?.buf ?? this.toneBuf;
-    const g0 = d.createBindGroup({
-      layout: this.pairColorPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniform } },
-        { binding: 1, resource: { buffer: recBuf1 } },
-        { binding: 2, resource: { buffer: this.toneBuf } },
-        { binding: 3, resource: (lut && !lut.meta.table8 ? lut.tex : this.dummyLut).createView({ dimension: '3d' }) },
-        { binding: 4, resource: (lut && lut.meta.table8 ? lut.tex : this.dummyLut8).createView({ dimension: '3d' }) },
-      ],
-    });
-    const g1 = d.createBindGroup({
-      layout: this.pairColorPipe.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: this.pairUniform } },
-        { binding: 1, resource: src.tex.createView() },
-        { binding: 2, resource: src.tex2.createView() },
-        { binding: 3, resource: { buffer: recBuf2 } },
-      ],
-    });
-    const pass = enc.beginRenderPass({ colorAttachments: [{ view: target!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
-    pass.setPipeline(this.pairColorPipe);
-    pass.setBindGroup(0, g0);
-    pass.setBindGroup(1, g1);
-    pass.draw(3);
-    pass.end();
-    return true;
-  }
-
   private encodeColor(enc: GPUCommandEncoder, src: Source, look: Look = this.look, target: GPUTexture | null = this.colorTex): boolean {
-    if (src.kind === 'pair-raw') return this.encodePairColor(enc, src, look, target);
+    if (src.kind === 'pair-raw') {
+      return encodePairColor(
+        {
+          device: this.device,
+          pipeline: this.pairColorPipe,
+          uniform: this.uniform,
+          pairUniform: this.pairUniform,
+          toneBuf: this.toneBuf,
+          dummyLut: this.dummyLut,
+          dummyLut8: this.dummyLut8,
+          bakes: this.bakes,
+          lutState: (lk) => this.lutState(src, lk),
+          writeMainUniform: (bake1, lut, mode) => this.writeUniform(src, bake1, lut, mode, look),
+        },
+        enc,
+        src,
+        look,
+        target!,
+      );
+    }
     const { mode, lut } = this.lutState(src, look);
     const needsBake = mode === 0 || mode === 1;
     const bake = look.recipe ? this.bakes.get(look.recipe) ?? null : null;

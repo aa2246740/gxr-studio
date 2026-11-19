@@ -2,7 +2,7 @@
 // 与 common.wgsl 拼接后使用；单张照片仍走 color.wgsl，不受影响。
 struct PairP {
   geo: vec4f,   // sensor_w (w2), sensor_h (h2), half_w, right_x0
-  cfg: vec4f,   // orientation (1/3/6/8), first_left (1 = left, 0 = right), 0, 0
+  cfg: vec4f,   // orientation (1/3/6/8), first_left (1 = left, 0 = right), sameBake (1 = 共用 rec, 0 = rec2), 0
   bake: vec4f,  // 第二半烘焙表：origin cb, origin cr, 1/step, nx
   bake2: vec4f, // 第二半烘焙表：ny, 0, 0, 0
   inM0: vec4f,  // 第二半 Log LUT 进表 3×3 + 偏移
@@ -14,51 +14,8 @@ struct PairP {
 @group(1) @binding(2) var tex2: texture_2d<f32>;
 @group(1) @binding(3) var<storage, read> rec2: array<f32>;
 
-fn recipeChain2(codesIn: vec3f, gains: vec3f, useTable: bool) -> vec3f {
-  let raw = codesIn * gains;
-  let norm = raw / 4095.0;
-  let basis = array<f32, 10>(1.0, norm.x, norm.y, norm.z,
-    norm.x * norm.x, norm.y * norm.y, norm.z * norm.z,
-    norm.x * norm.y, norm.x * norm.z, norm.y * norm.z);
-  var mapped = raw;
-  for (var c = 0u; c < 3u; c++) {
-    var delta = 0.0;
-    for (var j = 0u; j < 10u; j++) { delta += basis[j] * rec2[INPUT_AT + j * 3u + c]; }
-    mapped[c] += 4095.0 * delta;
-  }
-  let x = clamp(mapped, vec3f(0.0), vec3f(4095.0));
-  var pc: vec3f;
-  for (var c = 0u; c < 3u; c++) {
-    let i = min(u32(x[c]), 4094u);
-    let v0 = rec2[i * 3u + c];
-    pc[c] = v0 + (rec2[(i + 1u) * 3u + c] - v0) * (x[c] - f32(i));
-  }
-  let y = rec2[MAT_AT] * pc.x + rec2[MAT_AT + 1u] * pc.y + rec2[MAT_AT + 2u] * pc.z + rec2[OFF_AT];
-  let cb = rec2[MAT_AT + 3u] * pc.x + rec2[MAT_AT + 4u] * pc.y + rec2[MAT_AT + 5u] * pc.z + rec2[OFF_AT + 1u];
-  let cr = rec2[MAT_AT + 6u] * pc.x + rec2[MAT_AT + 7u] * pc.y + rec2[MAT_AT + 8u] * pc.z + rec2[OFF_AT + 2u];
-  let nx = i32(pp.bake.w);
-  let ny = i32(pp.bake2.x);
-  let lookCb = rec2[LOOK_AT + 3u] * pc.x + rec2[LOOK_AT + 4u] * pc.y + rec2[LOOK_AT + 5u] * pc.z + rec2[LOOK_OFF + 1u];
-  let lookCr = rec2[LOOK_AT + 6u] * pc.x + rec2[LOOK_AT + 7u] * pc.y + rec2[LOOK_AT + 8u] * pc.z + rec2[LOOK_OFF + 2u];
-  let u = (lookCb - pp.bake.x) * pp.bake.z;
-  let v = (lookCr - pp.bake.y) * pp.bake.z;
-  let iu = clamp(i32(clamp(u, -1e6, 1e6)), 0, nx - 2);
-  let iv = clamp(i32(clamp(v, -1e6, 1e6)), 0, ny - 2);
-  let fu = u - f32(iu);
-  let fv = v - f32(iv);
-  let at = u32(iv * nx + iu);
-  let un = u32(nx);
-  let a00 = vec2f(rec2[GAIN_AT + at * 2u], rec2[GAIN_AT + at * 2u + 1u]);
-  let a01 = vec2f(rec2[GAIN_AT + (at + 1u) * 2u], rec2[GAIN_AT + (at + 1u) * 2u + 1u]);
-  let a10 = vec2f(rec2[GAIN_AT + (at + un) * 2u], rec2[GAIN_AT + (at + un) * 2u + 1u]);
-  let a11 = vec2f(rec2[GAIN_AT + (at + un + 1u) * 2u], rec2[GAIN_AT + (at + un + 1u) * 2u + 1u]);
-  let gg = (a00 * (1.0 - fu) + a01 * fu) * (1.0 - fv) + (a10 * (1.0 - fu) + a11 * fu) * fv;
-  let cbo = cb * gg.x - cr * gg.y;
-  let cro = cb * gg.y + cr * gg.x;
-  var rgb = clamp(vec3f(y + 1.402 * cro, y - 0.344136 * cbo - 0.714136 * cro, y + 1.772 * cbo), vec3f(0.0), vec3f(255.0));
-  if (useTable) { rgb = applyTable(rgb); }
-  return q8(rgb);
-}
+// 由 frontend/vite.config.ts 在构建时从 common.wgsl 的 recipeChain 自动生成（只替换 rec→rec2、p.bake→pp.bake），不手工抄一份
+// __RECIPE_CHAIN_2__
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let xy = vec2f(f32((i << 1u) & 2u), f32(i & 2u));

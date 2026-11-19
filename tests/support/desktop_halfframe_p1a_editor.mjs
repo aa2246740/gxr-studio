@@ -26,6 +26,8 @@ const out = {
   steps: {},
   puts: [],
   renders: [],
+  rawReqs: [],
+  bakeReqs: [],
   exports: [],
   cameraJpgReqs: [],
   gpuResponses: [],
@@ -46,8 +48,8 @@ try {
   page.on('pageerror', (e) => out.pageErrors.push(line(e)));
   page.on('request', (rq) => {
     const u = new URL(rq.url());
-    if (u.pathname.includes('/camera-jpg')) {
-      out.cameraJpgReqs.push(`${rq.method()} ${u.pathname.replace(m.p2, 'P2')}`);
+    if (u.pathname === `/api/photos/${m.p2}/camera-jpg`) {
+      out.cameraJpgReqs.push(`${rq.method()} /api/photos/P2/camera-jpg`);
     }
   });
   page.on('response', async (res) => {
@@ -73,6 +75,16 @@ try {
         render: res.headers()['x-gxr-render'] || null,
       });
     }
+    if (p === `/api/photos/${m.p2}/raw`) {
+      out.rawReqs.push({ status: res.status(), half: u.searchParams.get('half') });
+    }
+    if (p === `/api/photos/${m.p2}/bake`) {
+      out.bakeReqs.push({
+        status: res.status(),
+        half: u.searchParams.get('half'),
+        hasRecipe: u.searchParams.has('recipe'),
+      });
+    }
     if (p === `/api/photos/${m.p2}/gpu`) {
       let body = null;
       try { body = await res.json(); } catch { /* ignore */ }
@@ -96,6 +108,32 @@ try {
     );
 
   const captureStageImage = async (destPath) => {
+    if (m.gpu) {
+      const info = await page.evaluate(async () => {
+        const { gpuEngine } = await import('/assets/gpu_stage.js');
+        const eng = gpuEngine();
+        if (!eng) throw new Error('gpuEngine missing');
+        const rb = await eng.readback();
+        const c = document.createElement('canvas');
+        c.width = rb.w;
+        c.height = rb.h;
+        const ctx = c.getContext('2d');
+        const imgData = new ImageData(
+          new Uint8ClampedArray(rb.data.buffer, rb.data.byteOffset, rb.data.byteLength),
+          rb.w,
+          rb.h,
+        );
+        ctx.putImageData(imgData, 0, 0);
+        const dataUrl = c.toDataURL('image/png');
+        return {
+          b64: dataUrl.slice(dataUrl.indexOf(',') + 1),
+          w: rb.w,
+          h: rb.h,
+        };
+      });
+      writeFileSync(destPath, Buffer.from(info.b64, 'base64'));
+      return { w: info.w, h: info.h };
+    }
     await page.waitForFunction(() => {
       const img = document.querySelector('.stage-area img');
       return !!img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
@@ -121,7 +159,9 @@ try {
   };
 
   const panelState = async () =>
-    page.evaluate(() => {
+    page.evaluate(async () => {
+      const { currentView } = await import('/assets/viewer.js');
+      const v = currentView();
       const cards = [...document.querySelectorAll('.lcard')];
       return {
         cards: cards.length,
@@ -131,6 +171,10 @@ try {
         notices: [...document.querySelectorAll('.notice')].map((n) => n.textContent.trim().slice(0, 120)),
         stageLabels: document.querySelector('.stage-labels')?.textContent.trim().slice(0, 120) || '',
         gpuActive: !!document.querySelector('.gpu'),
+        viewGpuActive: v?.gpuActive || null,
+        edLabel: v?.ed?.label || null,
+        edCalibrated: v?.ed?.calibrated ?? null,
+        gpuFinishKey: v?.gpuFinishKey || null,
         lutDisabled: [...document.querySelectorAll('select[aria-label="LUT"] option')]
           .filter((o) => o.disabled)
           .map((o) => o.value),
@@ -158,7 +202,22 @@ try {
     );
     await page.waitForSelector('.edit-panel', { timeout: 30000 });
     await page.waitForFunction(() => document.querySelectorAll('.lcard').length > 0, null, { timeout: 30000 });
-    await waitFor(() => out.renders.some(isStageRender), 60000, 'initial stage render');
+    if (m.gpu) {
+      await waitFor(
+        () =>
+          page.evaluate(() =>
+            Promise.all([import('/assets/viewer.js'), import('/assets/gpu_stage.js')]).then(([v, gs]) => {
+              const c = v.currentView();
+              const eng = gs.gpuEngine();
+              return !!c && c.gpuActive === 'final' && !!c.gpuFinishKey && !!eng && !!eng.currentKey();
+            }),
+          ),
+        60000,
+        'initial GPU stage frame',
+      );
+    } else {
+      await waitFor(() => out.renders.some(isStageRender), 60000, 'initial stage render');
+    }
     await sleep(600);
   };
 
@@ -170,11 +229,16 @@ try {
   out.steps.initialPanel = await panelState();
   out.steps.initialStage = await captureStageImage(m.stageInitialPath);
   out.steps.initialRenders = out.renders.filter(isStageRender);
+  out.steps.initialRawReqs = [...out.rawReqs];
+  out.steps.initialBakeReqs = [...out.bakeReqs];
 
   // 1) Choose a non-pressed builtin recipe card -> saves & re-renders composite
   const putsBeforePick = out.puts.length;
   const rendersBeforePick = out.renders.length;
-  const prevStageSrc = await page.evaluate(() => document.querySelector('.stage-area img')?.src || '');
+  const prevStageSrc = m.gpu ? '' : await page.evaluate(() => document.querySelector('.stage-area img')?.src || '');
+  const prevFinishKey = m.gpu
+    ? await page.evaluate(() => import('/assets/viewer.js').then((v) => v.currentView()?.gpuFinishKey || ''))
+    : '';
   const pick = await page.evaluate(() => {
     const cards = [...document.querySelectorAll('.lcard')].filter(
       (c) => c.dataset.look && c.dataset.look.startsWith('builtin:') && c.getAttribute('aria-pressed') !== 'true',
@@ -185,19 +249,35 @@ try {
     return { look: c.dataset.look, disabled: !!c.disabled };
   });
   await waitFor(() => out.puts.length > putsBeforePick, 30000, 'recipe PUT /edit');
-  await waitFor(
-    () => out.renders.slice(rendersBeforePick).some(isStageRender),
-    60000,
-    'recipe full stage re-render',
-  );
-  await page.waitForFunction(
-    (prev) => {
-      const img = document.querySelector('.stage-area img');
-      return !!img && img.complete && img.naturalWidth > 0 && img.src !== prev;
-    },
-    prevStageSrc,
-    { timeout: 30000 },
-  );
+  if (m.gpu) {
+    await waitFor(
+      () =>
+        page.evaluate(
+          (prev) =>
+            import('/assets/viewer.js').then((v) => {
+              const c = v.currentView();
+              return !!c && c.gpuActive === 'final' && !!c.gpuFinishKey && c.gpuFinishKey !== prev;
+            }),
+          prevFinishKey,
+        ),
+      60000,
+      'recipe GPU stage re-render',
+    );
+  } else {
+    await waitFor(
+      () => out.renders.slice(rendersBeforePick).some(isStageRender),
+      60000,
+      'recipe full stage re-render',
+    );
+    await page.waitForFunction(
+      (prev) => {
+        const img = document.querySelector('.stage-area img');
+        return !!img && img.complete && img.naturalWidth > 0 && img.src !== prev;
+      },
+      prevStageSrc,
+      { timeout: 30000 },
+    );
+  }
   await sleep(300);
   out.steps.recipePick = {
     pick,
@@ -272,6 +352,8 @@ try {
 
   // 4) Reload -> check stage, recipe state, and edited thumbnail
   out.renders.length = 0;
+  const rawBeforeReload = out.rawReqs.length;
+  const bakeBeforeReload = out.bakeReqs.length;
   await page.goto(`${m.base}/`);
   await page.waitForSelector('.top, .grid, .empty', { timeout: 30000 });
   await openPhoto();
@@ -288,6 +370,8 @@ try {
     edit: (await api(`/api/photos/${m.p2}/edit`)).body,
     panel: await panelState(),
     renders: out.renders.filter(isStageRender),
+    rawReqs: out.rawReqs.slice(rawBeforeReload),
+    bakeReqs: out.bakeReqs.slice(bakeBeforeReload),
     stage: await captureStageImage(m.stageAfterReloadPath),
   };
 
