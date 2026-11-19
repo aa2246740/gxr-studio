@@ -156,6 +156,7 @@ def _edited_cache(lib: Library, shot: dict[Any, Any], size: int, render: Any) ->
     try:
         from ..finish.serve import edited_jpeg
 
+        shot = lib.resolve_diptych(shot)
         data = edited_jpeg(render, lib, shot, size)
     except Exception:
         return None

@@ -688,6 +688,8 @@ def _import_shot(lib: Any, card: Any, shot: CardShot, opts: Any, progress: Any, 
         copyright=tag_meta.copyright if tag_meta else None,
         recipe_tag=tag_meta.recipe_tag if tag_meta else None,
     )
+    if jpg_rec is not None:
+        lib.ensure_halfframe_verdict(jpg_rec.relpath, jpg_rec.sha256, (rec.width, rec.height))
     if opts.make_thumbs:
         try:
             thumbs.ensure(

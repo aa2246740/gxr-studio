@@ -43,7 +43,8 @@ def complete_existing(
         if sid is not None:
             existing = lib.get_shot(sid)
             break
-    if existing is None or any(s.card_file.kind in existing["files"] for s in fresh):
+    existing_files = existing.get("all_files", existing["files"]) if existing is not None else {}
+    if existing is None or any(s.card_file.kind in existing_files for s in fresh):
         return False
     folder, stem = existing["folder"], existing["name"]
     targets = {s.card_file.kind: f"{folder}/{stem}{Path(s.card_file.relpath).suffix}" for s in fresh}
@@ -71,7 +72,7 @@ def complete_existing(
             copyright, recipe_tag = meta.copyright, meta.recipe_tag
 
     records = [
-        FileRecord(k, v["relpath"], v["sha256"], v["size"], lib.abspath(v["relpath"]).stat().st_mtime_ns) for k, v in existing["files"].items()
+        FileRecord(k, v["relpath"], v["sha256"], v["size"], lib.abspath(v["relpath"]).stat().st_mtime_ns) for k, v in existing_files.items()
     ]
     for s in fresh:
         rel = targets[s.card_file.kind]
@@ -117,6 +118,8 @@ def complete_existing(
         copyright=copyright,
         recipe_tag=recipe_tag,
     )
+    if jpg_rec is not None:
+        lib.ensure_halfframe_verdict(jpg_rec.relpath, jpg_rec.sha256, (rec.width, rec.height))
     if opts.make_thumbs:
         try:
             thumbs.ensure(

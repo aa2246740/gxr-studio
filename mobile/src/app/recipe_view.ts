@@ -327,7 +327,11 @@ export class RecipeView {
       // 06e：桌面的两句，下面写还能用的几页。
       const note = el('div', 'bn grey');
       const text = el('div', 'tx');
-      text.append(el('b', '', '配方需要 RAW 文件'), el('div', 'dim', '拍摄时将画质设为 RAW+JPEG'));
+      if (this.photo.diptych) {
+        text.append(el('b', '', '这张是半格双联，配方效果要等配对功能。'));
+      } else {
+        text.append(el('b', '', '配方需要 RAW 文件'), el('div', 'dim', '拍摄时将画质设为 RAW+JPEG'));
+      }
       note.append(text);
       this.panel.append(
         note,

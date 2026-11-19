@@ -123,7 +123,14 @@ class HdrProgress:
 
 
 def pending(lib: Library, shots: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [s for s in shots if status_of(lib, s) == PENDING]
+    out: list[dict[str, Any]] = []
+    for s in shots:
+        if status_of(lib, s) != PENDING:
+            continue
+        resolved = lib.resolve_diptych(s)
+        if status_of(lib, resolved) == PENDING:
+            out.append(resolved)
+    return out
 
 
 def _all_shots(lib: Library, cancel: threading.Event, page: int = 500) -> Iterator[dict[str, Any]]:
@@ -154,6 +161,9 @@ def run_pending(lib: Library, progress: HdrProgress, cancel: threading.Event, pa
         for shot in reversed(todo):
             if cancel.is_set():
                 break
+            shot = lib.resolve_diptych(shot)
+            if not eligible(shot):
+                continue
             tried.add(shot["shot_id"])
             started = time.monotonic()
             try:

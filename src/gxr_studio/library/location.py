@@ -31,6 +31,7 @@ STUDIO_PATHS = (
     ".studio/import-log.jsonl",
     ".studio/thumbs",
     ".studio/hdr",
+    ".studio/halfframe-v1.json",
     ".studio/staging",
     ".studio/tmp",
 )

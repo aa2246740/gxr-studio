@@ -29,10 +29,12 @@ from pathlib import Path
 from typing import Any, Iterable, cast
 
 from .. import audit, osplat
+from .. import halfframe as hf
 from .. import meta as metamod
 from ..camdata.recipe_tags import RECIPE_TAG_VERSION, RecipeTag, parse_recipe_tag
 from . import sidecar as sc
 from .location import check_library_location
+from .schema import INDEX_SCHEMA as _SCHEMA
 
 SCHEMA_VERSION = 1
 UNKNOWN_DATE_DIR = "未知日期"
@@ -41,36 +43,6 @@ MEDIA_EXT = {".dng": "dng", ".jpg": "jpg"}
 VIDEO_EXT = {".avi": "avi"}
 SIDECAR_RESET_NOTE = "无法读取编辑记录，已按原图显示"
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS shots(
-  shot_id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL,
-  date TEXT, date_source TEXT, captured_at TEXT,
-  unit TEXT, lens TEXT, iso INTEGER, orientation INTEGER, width INTEGER, height INTEGER,
-  has_raw INTEGER NOT NULL, has_jpg INTEGER NOT NULL, added_at TEXT NOT NULL,
-  copyright TEXT, recipe_tag TEXT);
-CREATE TABLE IF NOT EXISTS files(
-  shot_id TEXT NOT NULL, kind TEXT NOT NULL, relpath TEXT NOT NULL,
-  sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
-  PRIMARY KEY(shot_id, kind));
-CREATE INDEX IF NOT EXISTS files_sha ON files(sha256);
-CREATE INDEX IF NOT EXISTS files_rel ON files(relpath);
-CREATE TABLE IF NOT EXISTS seen(
-  card_key TEXT NOT NULL, relpath TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
-  sha256 TEXT NOT NULL, PRIMARY KEY(card_key, relpath));
-CREATE TABLE IF NOT EXISTS seen2(
-  volume_uuid TEXT NOT NULL, relpath TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
-  sha256 TEXT NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY(volume_uuid, relpath));
-CREATE TABLE IF NOT EXISTS videos(
-  relpath TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, added_at TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS videos_sha ON videos(sha256);
-CREATE TABLE IF NOT EXISTS filecheck(
-  relpath TEXT PRIMARY KEY, ino INTEGER NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, ctime_ns INTEGER NOT NULL,
-  sha256 TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS edits(
-  shot_id TEXT PRIMARY KEY, sidecar_rev INTEGER NOT NULL, updated_at TEXT, crop_json TEXT);
-CREATE INDEX IF NOT EXISTS shots_date ON shots(date, captured_at, name);
-"""
 
 
 class LibraryPathRefused(Exception):
@@ -161,6 +133,8 @@ class Library:
         self.tmp_dir = self.studio / "tmp"  # sidecar 的临时文件；每次打开图库时清空
         self.log_path = self.studio / "import-log.jsonl"
         self.index_path = self.studio / "index.sqlite"
+        self.halfframe_path = self.studio / hf.HALFFRAME_FILE
+        self._halfframe = hf.VerdictStore(self.halfframe_path, check_write=lambda: self.check_write(hf.HALFFRAME_REL))
         self.lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self.query_log: list[str] | None = None
@@ -175,6 +149,7 @@ class Library:
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         self.tmp_dir.mkdir(exist_ok=True)
         self._connect()
+        self._halfframe.load()
         return self
 
     def _connect(self) -> None:
@@ -196,6 +171,7 @@ class Library:
         self._db = db
 
     def close(self) -> None:
+        self._halfframe.close()
         with self.lock:
             if self._db is not None:
                 self._db.close()
@@ -386,52 +362,48 @@ class Library:
                             SUM(has_jpg) AS jpgs, MIN(shot_id) AS any_id
                      FROM shots GROUP BY d)
                    SELECT g.d AS d, g.n AS n, g.raws AS raws, g.jpgs AS jpgs, g.any_id AS any_id,
-                          COALESCE(
-                            (SELECT s.shot_id FROM shots s
-                             WHERE COALESCE(s.date,'unknown')=g.d
-                             ORDER BY s.captured_at DESC, s.name, s.shot_id LIMIT 1),
-                            g.any_id) AS cover_id
-                   FROM grouped g
-                   ORDER BY (g.d='unknown'), g.d DESC"""
+                          COALESCE((SELECT s.shot_id FROM shots s WHERE COALESCE(s.date,'unknown')=g.d
+                            ORDER BY s.captured_at DESC, s.name, s.shot_id LIMIT 1), g.any_id) AS cover_id
+                   FROM grouped g ORDER BY (g.d='unknown'), g.d DESC"""
             ).fetchall()
+            sub = hf.diptych_raw_counts(self.db, self._halfframe.diptych_shas())
         return [
             {
                 "date": r["d"],
                 "count": r["n"],
-                "raw_count": r["raws"],
+                "raw_count": max(0, r["raws"] - sub.get(r["d"], 0)),
                 "jpg_count": r["jpgs"],
                 "cover_id": r["cover_id"],
             }
             for r in rows
         ]
 
-    def _rows_to_shots(self, rows: list[sqlite3.Row]) -> list[dict[Any, Any]]:
-        if not rows:
-            return []
+    def _fetch_meta(self, rows: list[sqlite3.Row]) -> tuple[dict[str, dict[Any, Any]], dict[str, sqlite3.Row]]:
         ids = [r["shot_id"] for r in rows]
         marks = ",".join("?" * len(ids))
         files_by: dict[str, dict[Any, Any]] = {shot_id: {} for shot_id in ids}
-        for f in self.db.execute(
-            f"SELECT shot_id, kind, relpath, sha256, size FROM files WHERE shot_id IN ({marks})",  # nosec B608  marks 只是问号占位，值在参数里
-            ids,
-        ):
-            files_by[f["shot_id"]][f["kind"]] = {
-                "kind": f["kind"],
-                "relpath": f["relpath"],
-                "sha256": f["sha256"],
-                "size": f["size"],
-            }
-        edits = {
-            e["shot_id"]: e
-            for e in self.db.execute(
-                f"SELECT shot_id, sidecar_rev, crop_json FROM edits WHERE shot_id IN ({marks})",  # nosec B608  同上，只拼接占位符个数
-                ids,
-            )
-        }
+        for f in self.db.execute(f"SELECT shot_id, kind, relpath, sha256, size FROM files WHERE shot_id IN ({marks})", ids):  # nosec B608
+            files_by[f["shot_id"]][f["kind"]] = {"kind": f["kind"], "relpath": f["relpath"], "sha256": f["sha256"], "size": f["size"]}
+        edits = {e["shot_id"]: e for e in self.db.execute(f"SELECT shot_id, sidecar_rev, crop_json FROM edits WHERE shot_id IN ({marks})", ids)}  # nosec B608
+        return files_by, edits
+
+    def _rows_to_shots(
+        self,
+        rows: list[sqlite3.Row],
+        files_by: dict[str, dict[Any, Any]] | None = None,
+        edits: dict[str, sqlite3.Row] | None = None,
+        *,
+        allow_decode: bool | None = None,
+    ) -> list[dict[Any, Any]]:
+        if not rows:
+            return []
+        if files_by is None or edits is None:
+            with self.lock:
+                files_by, edits = self._fetch_meta(rows)
+        can_decode = (len(rows) == 1) if allow_decode is None else (allow_decode and len(rows) == 1)
         out = []
         for r in rows:
-            d = dict(r)
-            d["files"] = files_by.get(r["shot_id"], {})
+            d = hf.annotate_shot(dict(r), files_by.get(r["shot_id"], {}), self._halfframe, self.abspath, allow_decode=can_decode)
             edit = edits.get(r["shot_id"])
             d["sidecar_rev"] = edit["sidecar_rev"] if edit else 0
             d["crop"] = json.loads(edit["crop_json"]) if edit and edit["crop_json"] else None
@@ -441,24 +413,37 @@ class Library:
             out.append(d)
         return out
 
+    def resolve_diptych(self, shot: dict[Any, Any]) -> dict[Any, Any]:
+        return hf.resolve_shot(shot, self._halfframe, self.abspath)
+
+    def ensure_halfframe_verdict(self, relpath: str, sha256: str | None, dims: tuple[int | None, int | None]) -> bool:
+        return hf.ensure_verdict(relpath, sha256, dims, self._halfframe, self.abspath)
+
+    def halfframe_pending(self) -> list[tuple[str, str]]:
+        with self.lock:
+            return hf.pending_verdicts(self.db, self._halfframe)
+
+    def record_halfframe_batch(self, items: dict[str, bool]) -> None:
+        self._halfframe.put_many(items, save=True, strict=True)
+
     def list_shots(self, date: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[Any, Any]]:
-        sql = "SELECT * FROM shots"
-        args: list[object] = []
+        sql, args = "SELECT * FROM shots", []
         if date == "unknown":
             sql += " WHERE date IS NULL"
         elif date:
-            sql += " WHERE date=?"
-            args.append(date)
+            sql, args = sql + " WHERE date=?", [date]
         # DESC 把未知日期 NULL 放在最后；固定同一时刻的顺序，分页和编辑器共用。
         sql += " ORDER BY date DESC, captured_at DESC, name, shot_id LIMIT ? OFFSET ?"
-        args += [limit, offset]
         with self.lock:
-            return self._rows_to_shots(self.db.execute(sql, args).fetchall())
+            rows = self.db.execute(sql, [*args, limit, offset]).fetchall()
+            files_by, edits = self._fetch_meta(rows) if rows else ({}, {})
+        return self._rows_to_shots(rows, files_by, edits, allow_decode=False)
 
-    def get_shot(self, shot_id: str) -> dict[Any, Any] | None:
+    def get_shot(self, shot_id: str, *, resolve: bool = True) -> dict[Any, Any] | None:
         with self.lock:
             rows = self.db.execute("SELECT * FROM shots WHERE shot_id=?", (shot_id,)).fetchall()
-            return self._rows_to_shots(rows)[0] if rows else None
+            files_by, edits = self._fetch_meta(rows) if rows else ({}, {})
+        return self._rows_to_shots(rows, files_by, edits, allow_decode=resolve)[0] if rows else None
 
     # ---- 写索引 -----------------------------------------------------------
     def commit_shot(
@@ -557,7 +542,7 @@ class Library:
             )
 
     def sidecar_path_for(self, shot: dict[Any, Any]) -> Path:
-        first = next(iter(shot["files"].values()))
+        first = next(iter(shot.get("all_files", shot["files"]).values()))
         return sc.sidecar_path(self.abspath(first["relpath"]))
 
     # ---- sidecar 坏了/没了：退回"没有编辑" ------------------------------------
@@ -571,25 +556,7 @@ class Library:
 
     def fresh_sidecar(self, shot: dict[Any, Any]) -> dict[Any, Any]:
         """按索引里的信息重新造一份"没有编辑"的 sidecar（只在内存里）。"""
-        files = shot["files"]
-        dng, jpg = files.get("dng"), files.get("jpg")
-        return sc.new_sidecar(
-            dng=Path(dng["relpath"]).name if dng else None,
-            jpg=Path(jpg["relpath"]).name if jpg else None,
-            dng_sha256=dng["sha256"] if dng else None,
-            jpg_sha256=jpg["sha256"] if jpg else None,
-            orientation=shot.get("orientation") or 1,
-            width=shot.get("width"),
-            height=shot.get("height"),
-            imported={
-                "shot_id": shot["shot_id"],
-                "date": shot.get("date"),
-                "date_source": "reset",
-                "captured_at": shot.get("captured_at"),
-                "added_at": shot.get("added_at"),
-                "sizes": {k: v["size"] for k, v in files.items()},
-            },
-        )
+        return sc.fresh_for_shot(shot)
 
     def read_sidecar_or_default(self, shot: dict[Any, Any]) -> tuple[dict[Any, Any], str | None]:
         """读用：sidecar 读不出来就给"没有编辑"的默认内容和一句白话，不改磁盘。"""
@@ -656,24 +623,20 @@ class Library:
                     groups.setdefault((str(rel_dir), p.stem.lower()), {})[kind] = p
                 elif ext in VIDEO_EXT:
                     videos.append(Path(dirpath) / fn)
+        rebuilt_jpgs: list[tuple[str, str, int | None, int | None]] = []
         with self.lock:
             self.db.execute("BEGIN")
             try:
                 for table in ("shots", "files", "edits", "seen", "seen2", "videos"):
                     self.db.execute(f"DELETE FROM {table}")  # nosec B608  table 来自上面的固定元组
                 for (folder, _), media in sorted(groups.items()):
-                    self._rebuild_group(folder, media, verify, report)
+                    self._rebuild_group(folder, media, verify, report, rebuilt_jpgs)
                 for v in sorted(videos):
                     st = v.stat()
+                    now_iso = datetime.now().isoformat(timespec="seconds")
                     self.db.execute(
                         "INSERT OR REPLACE INTO videos(relpath, sha256, size, mtime_ns, added_at) VALUES(?,?,?,?,?)",
-                        (
-                            v.relative_to(self.root).as_posix(),
-                            sha256_file(v),
-                            st.st_size,
-                            st.st_mtime_ns,
-                            datetime.now().isoformat(timespec="seconds"),
-                        ),
+                        (v.relative_to(self.root).as_posix(), sha256_file(v), st.st_size, st.st_mtime_ns, now_iso),
                     )
                     report.hashed += 1
                     report.videos += 1
@@ -691,9 +654,17 @@ class Library:
             self.add_seen(rows)
             self.add_seen2(rows2)
             report.seen_restored = len(rows) + len(rows2)
+        hf.rebuild_verdicts(rebuilt_jpgs, self._halfframe, self.abspath)
         return report
 
-    def _rebuild_group(self, rel_dir: str, media: dict[str, Path], verify: bool, report: RebuildReport) -> None:
+    def _rebuild_group(
+        self,
+        rel_dir: str,
+        media: dict[str, Path],
+        verify: bool,
+        report: RebuildReport,
+        rebuilt_jpgs: list[tuple[str, str, int | None, int | None]] | None = None,
+    ) -> None:
         any_path = next(iter(media.values()))
         sc_path = sc.sidecar_path(any_path)
         side: dict[Any, Any] | None = None
@@ -730,8 +701,7 @@ class Library:
             report.duplicates.append(rel_dir + "/" + any_path.stem)
             return
         # 元数据：JPG 优先
-        jpg = media.get("jpg")
-        dng = media.get("dng")
+        jpg, dng = media.get("jpg"), media.get("dng")
         pm_dng = metamod.read_dng_meta(dng) if dng else metamod.PhotoMeta()
         pm = metamod.read_jpeg_meta(jpg) if jpg else pm_dng
         if pm.error:
@@ -785,4 +755,6 @@ class Library:
             recipe_tag=tag_meta.recipe_tag,
         )
         self._insert_shot(rec)
+        if jpg is not None and jpg_sha and rebuilt_jpgs is not None:
+            rebuilt_jpgs.append((jpg.relative_to(self.root).as_posix(), jpg_sha, rec.width, rec.height))
         report.shots += 1

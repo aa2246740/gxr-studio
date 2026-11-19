@@ -142,3 +142,27 @@ def write_atomic(path: Path, data: dict[Any, Any], *, bump: bool = True, tmp_dir
             pass
         raise
     return out
+
+
+def fresh_for_shot(shot: dict[Any, Any]) -> dict[Any, Any]:
+    """按索引里的信息重新造一份"没有编辑"的 sidecar（只在内存里）。"""
+    files = shot.get("all_files", shot["files"])
+    dng, jpg = files.get("dng"), files.get("jpg")
+    imported = {
+        "shot_id": shot["shot_id"],
+        "date": shot.get("date"),
+        "date_source": "reset",
+        "captured_at": shot.get("captured_at"),
+        "added_at": shot.get("added_at"),
+        "sizes": {k: v["size"] for k, v in files.items()},
+    }
+    return new_sidecar(
+        dng=Path(dng["relpath"]).name if dng else None,
+        jpg=Path(jpg["relpath"]).name if jpg else None,
+        dng_sha256=dng["sha256"] if dng else None,
+        jpg_sha256=jpg["sha256"] if jpg else None,
+        orientation=shot.get("orientation") or 1,
+        width=shot.get("width"),
+        height=shot.get("height"),
+        imported=imported,
+    )

@@ -51,6 +51,8 @@ export interface Photo {
   version: number;
   dng: File | null;
   jpg: File | null;
+  /** 认出的半格双联 JPG（第 2 张）：保留 JPG，丢掉自己的 DNG，编辑和导出按只有 JPG 处理。 */
+  diptych?: boolean;
   lastModified: number;
   captureMs: number | null;
   status: PhotoStatus;
