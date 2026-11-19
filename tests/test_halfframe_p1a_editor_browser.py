@@ -278,6 +278,11 @@ def test_desktop_editor_halfframe_pair(
         exported_path = Path(ex_res["body"]["path"])
         assert exported_path.is_file(), ex_res
         _assert_composite_changed(untouched_composite, _load_rgb(exported_path), "default UI export")
+
+        # 6) 显卡开：第 2 张 → 双联 → 第 1 张，画面不能先闪出留下来的第 2 张
+        if gpu:
+            pv = ui["steps"]["pairViewStale"]
+            assert pv["leftover"] and pv["reachedFirst"] and not pv["showedLeftover"], pv
     finally:
         server.should_exit = True
         thread.join(timeout=20)

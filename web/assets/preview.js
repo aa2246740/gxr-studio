@@ -452,6 +452,11 @@ function setUrl(ed, stage, url) {
   ed.urls[stage] = url;
 }
 
+// 丢掉服务器出的这一层图（半格一对：双联在显卡上画时，留下的是更早某个单张视图的图）
+export function dropStageUrl(ed, stage) {
+  setUrl(ed, stage, null);
+}
+
 export function decodeLabel(raw) {
   if (!raw) return null;
   try {

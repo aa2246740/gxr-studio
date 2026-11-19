@@ -535,6 +535,54 @@ try {
   await waitFor(() => out.exports.length > exBefore, 90000, 'export POST response');
   out.steps.export = { clicked, results: out.exports.slice(exBefore) };
 
+  // 6) GPU on: 第 2 张 (server) → 双联 (GPU) → 第 1 张 must never show the leftover 第 2 张 image
+  if (m.gpu) {
+    await page.evaluate(() => document.querySelector('.dialog .dh button')?.click());
+    await sleep(300);
+    const viewState = () =>
+      page.evaluate(() =>
+        import('/assets/viewer.js').then((v) => {
+          const c = v.currentView();
+          const img = document.querySelector('.stage-area .pv-img');
+          return {
+            pv: c?.pairView || 'diptych',
+            gpuActive: c?.gpuActive ?? null,
+            busy: !!c?.ed?.busy,
+            finalUrl: c?.ed?.urls?.final || null,
+            imgSrc: img ? img.getAttribute('src') : null,
+            imgReady: !!img && img.complete && img.naturalWidth > 0,
+          };
+        }),
+      );
+    const pick = (idx) => page.click(`.viewbar [aria-label="半格视图"] button:nth-child(${idx})`);
+    await pick(3);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'second' && !s.busy && s.imgReady && !!s.finalUrl && s.imgSrc === s.finalUrl;
+    }, 90000, 'second view render');
+    const leftover = (await viewState()).finalUrl;
+    await pick(1);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'diptych' && s.gpuActive === 'final' && !s.busy;
+    }, 90000, 'diptych back on the GPU');
+    await pick(2);
+    const seen = [];
+    let reachedFirst = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 90000) {
+      const s = await viewState();
+      seen.push(s.imgSrc);
+      if (s.pv === 'first' && !s.busy && s.imgReady && s.imgSrc && s.imgSrc === s.finalUrl && s.imgSrc !== leftover) {
+        reachedFirst = true;
+        break;
+      }
+      await sleep(25);
+    }
+    out.steps.pairViewStale = { leftover: !!leftover, showedLeftover: seen.includes(leftover), reachedFirst, samples: seen.length };
+    await pick(1);
+  }
+
   await page.close();
 } catch (e) {
   out.error = line(e);

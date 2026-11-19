@@ -18,7 +18,8 @@ function block(source, start, end) {
   return source.slice(at, stop + end.length).replace(/^export /gm, '');
 }
 
-const PREVIEW = read('preview.js');
+// P1b-ui moved the recipe helpers out of preview.js
+const PREVIEW = read('preview_recipe.js');
 const LOOKS = read('look_cards.js');
 const CORE = read('paste_core.js');
 
