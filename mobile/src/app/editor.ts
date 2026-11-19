@@ -355,7 +355,7 @@ export class EditorView {
       });
       tabs.append(tab);
     });
-    this.curves = mountCurves(this.curves, { photo: () => this.photo, push: () => this.push(), enterDrag: () => this.enterDrag(), leaveDrag: () => this.leaveDrag(), dragging: () => this.dragging });
+    this.curves = mountCurves(this.curves, { photo: () => this.photo, push: () => this.push(), enterDrag: () => this.enterDrag(false), leaveDrag: () => this.leaveDrag(), dragging: () => this.dragging });
     panels.push(this.recipes.panelEl(), this.adjust.panelEl(), cropPanelEl, this.frames.panelEl(), this.luts.panelEl(), this.curves.panelEl());
     panels.forEach((panel, panelIndex) => {
       panel.hidden = panelIndex !== 1;
@@ -451,10 +451,10 @@ export class EditorView {
     this.hdr.paintLabel(this.stageLabel);
   }
 
-  private enterDrag(): void {
+  private enterDrag(layout = true): void {
     if (this.dragging) return;
     this.dragging = true;
-    this.shell.dataset.drag = '1';
+    if (layout) this.shell.dataset.drag = '1';
     this.api.watch('drag', true);
     const token = this.token;
     requestAnimationFrame(() => {
