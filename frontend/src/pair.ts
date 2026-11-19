@@ -1,5 +1,6 @@
 // 半格一对的 WebGPU 合成辅助（从 engine.ts 拆出）：窗口限额检查、两张半宽条带顺序上传、第二半 uniform 与渲染遍。
 import pairColorWgsl from './shaders/pair_color.wgsl?raw';
+import { expandPairColorWgsl } from './pair_wgsl';
 import type { BakeMeta, Look, LutMeta, RawLayout, Scene } from './engine';
 
 type Mat3 = [number[], number[], number[]];
@@ -65,7 +66,7 @@ export interface PairResources {
 const PAIR_UNIFORM_FLOATS = 7 * 4;
 
 export function createPairResources(device: GPUDevice, commonWgsl: string): PairResources {
-  const module = device.createShaderModule({ code: commonWgsl + pairColorWgsl });
+  const module = device.createShaderModule({ code: commonWgsl + expandPairColorWgsl(commonWgsl, pairColorWgsl) });
   const pipeline = device.createRenderPipeline({
     layout: 'auto',
     vertex: { module, entryPoint: 'vs' },

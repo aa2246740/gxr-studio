@@ -355,18 +355,26 @@ def test_decide_pair_branches(tmp_path: Path) -> None:
 
 
 def test_pair_shader_recipe_chain2_generated_from_common() -> None:
-    """P2-1：pair_color.wgsl 不手写 recipeChain2，由 common.wgsl 的 recipeChain 在构建时生成。"""
+    """pair_color.wgsl 不手写 recipeChain2 且不依赖特定 Vite 插件；任何产物均不得残留 __RECIPE_CHAIN_2__。"""
     repo = Path(__file__).resolve().parents[1]
-    pair_src = (repo / "frontend" / "src" / "shaders" / "pair_color.wgsl").read_text(encoding="utf-8")
-    common_src = (repo / "frontend" / "src" / "shaders" / "common.wgsl").read_text(encoding="utf-8")
-    bundle = (ASSETS / "gpu" / "engine.js").read_text(encoding="utf-8")
-    assert "// __RECIPE_CHAIN_2__" in pair_src
-    assert "fn recipeChain2(" not in pair_src
+    shaders = repo / "frontend" / "src" / "shaders"
+    pair_src, common_src = (shaders / "pair_color.wgsl").read_text("utf-8"), (shaders / "common.wgsl").read_text("utf-8")
+    bundle = (ASSETS / "gpu" / "engine.js").read_text("utf-8")
+    assert "fn recipeChain2(" not in pair_src and "__RECIPE_CHAIN_2__" not in pair_src
     m = re.search(r"fn recipeChain\([\s\S]*?\n\}", common_src)
     assert m is not None, "common.wgsl missing fn recipeChain"
     expected = m.group(0).replace("fn recipeChain(", "fn recipeChain2(", 1).replace("rec[", "rec2[").replace("p.bake", "pp.bake")
-    assert "__RECIPE_CHAIN_2__" not in bundle
-    assert expected in bundle
+    assert "__RECIPE_CHAIN_2__" not in bundle and expected in bundle
+    for js in sorted((repo / "mobile" / "dist").rglob("*.js")) if (repo / "mobile" / "dist").is_dir() else []:
+        assert "__RECIPE_CHAIN_2__" not in js.read_text("utf-8"), f"unexpanded marker in {js}"
+    if shutil.which("node") is not None:
+        js_code = (
+            "import { readFileSync as r } from 'node:fs'; import { expandPairColorWgsl as e } from './frontend/src/pair_wgsl.ts';"
+            "const c = r('frontend/src/shaders/common.wgsl', 'utf8'), p = r('frontend/src/shaders/pair_color.wgsl', 'utf8'), o = e(c, p);"
+            "if (e(c, o) !== o) throw new Error('not idempotent'); process.stdout.write(o);"
+        )
+        proc = subprocess.run(["node", "--input-type=module", "-e", js_code], cwd=repo, capture_output=True, text=True, check=True)
+        assert expected in proc.stdout and "__RECIPE_CHAIN_2__" not in proc.stdout
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
@@ -746,30 +754,19 @@ def test_synthetic_pair_gpu_parity_all_orientations_and_modes(tmp_path: Path) ->
                     "curve": curve_raw,
                 },
                 "geometry": {
-                    "straighten": geom.straighten,
-                    "rotate90": geom.rotate90,
-                    "flip": geom.flip,
-                    "vertical": geom.vertical,
-                    "horizontal": geom.horizontal,
-                    "distortion": geom.distortion,
+                    **{k: getattr(geom, k) for k in ("straighten", "rotate90", "flip", "vertical", "horizontal", "distortion")},
                     "box": box,
                 },
             }
         )
 
     add_case("o1_left_dual_bake", ori=1, first_half="left")
+    adj_extra = {"exposure_ev": 0.5, "wb": {"warm": 20, "tint": -10}, "contrast": 30, "black_point": -10, "saturation": 15, "vignette": -25}
     add_case(
         "o3_right_exp_curve_extra",
         ori=3,
         first_half="right",
-        adjust_raw={
-            "exposure_ev": 0.5,
-            "wb": {"warm": 20, "tint": -10},
-            "contrast": 30,
-            "black_point": -10,
-            "saturation": 15,
-            "vignette": -25,
-        },
+        adjust_raw=adj_extra,
         curve_raw={"master": [[0, 0], [64, 50], [192, 210], [255, 255]]},
     )
     add_case("o6_left_display_lut", ori=6, first_half="left", lut_kind="display", adjust_raw={"exposure_ev": 0.25, "contrast": 15})

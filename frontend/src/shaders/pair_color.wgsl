@@ -14,8 +14,7 @@ struct PairP {
 @group(1) @binding(2) var tex2: texture_2d<f32>;
 @group(1) @binding(3) var<storage, read> rec2: array<f32>;
 
-// 由 frontend/vite.config.ts 在构建时从 common.wgsl 的 recipeChain 自动生成（只替换 rec→rec2、p.bake→pp.bake），不手工抄一份
-// __RECIPE_CHAIN_2__
+// recipeChain2 由 pair_wgsl.ts 从 common.wgsl 的 recipeChain 自动派生（仅重命名 rec→rec2、p.bake→pp.bake），不手工抄一份
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let xy = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
