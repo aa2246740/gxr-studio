@@ -11,7 +11,7 @@ import { CropStage, DEFAULT_GEOMETRY } from './crop_stage';
 import { button, el, icon, ICON } from './dom';
 import { mountCurves, previewCurve, type CurvesView } from './curves_view';
 import { LutView } from './lut_view';
-import { photoMs, zeroKnobs, type AppApi, type Photo } from './model';
+import { isGone, photoMs, zeroKnobs, type AppApi, type Photo } from './model';
 import { lookCache } from './looks';
 import { pasteState } from './paste_state';
 import { openCopySheet, PASTE_ICON } from './paste_ui';
@@ -28,11 +28,6 @@ const HIST_FAST_MISSES = 300;
 const HIST_SLOW_MS = 250;
 
 const TABS = ['配方', '调整', '裁剪', '边框', 'LUT', '曲线'] as const;
-
-function isGone(err: unknown): boolean {
-  const name = err instanceof DOMException ? err.name : err instanceof Error ? err.name : '';
-  return name === 'NotFoundError' || name === 'NotReadableError';
-}
 
 export class EditorView {
   private token = 0;
@@ -283,6 +278,7 @@ export class EditorView {
         enterDrag: () => this.enterDrag(),
         leaveDrag: () => this.leaveDrag(),
         dragging: () => this.dragging,
+        refreshCurves: () => this.curves?.refresh(),
       },
       this.histEl(),
     );
@@ -675,7 +671,7 @@ export class EditorView {
       return;
     }
     photo.checked = version;
-    photo.dngMeta = described.meta;
+    photo.dngMeta = described.meta.copyright === undefined && photo.dngMeta?.copyright !== undefined ? { ...described.meta, copyright: photo.dngMeta.copyright } : described.meta;
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
       this.adjust?.setDisabled(true);

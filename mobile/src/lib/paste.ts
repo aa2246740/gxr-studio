@@ -41,6 +41,8 @@ export interface Editable {
   /** 文件的版本（重新选同一张照片就加一）。没有就不核对。 */
   version?: number;
   choice: Choice | null;
+  /** 显式关闭拍摄配方采用（如套用了仅含 LUT 的剪贴板，对应桌面 sidecar recipe: null）。 */
+  recipeOff?: boolean;
   /** 选中的 LUT（cube_id），null 表示不用 LUT。 */
   lut?: string | null;
   /** 选中的配方的档位（桌面 recipe.levels），键是 choice.id。 */
@@ -117,6 +119,7 @@ export interface GeomHooks {
 /** 套用之前这张照片的样子（撤销用）。 */
 export interface Before {
   choice: Choice | null;
+  recipeOff?: boolean;
   lut?: string | null;
   levels: Levels;
   memory: Levels;
@@ -137,6 +140,7 @@ export function cloneLevels(levels: Levels): Levels {
 export function snapshot(photo: Editable): Before {
   return {
     choice: photo.choice ? { ...photo.choice } : null,
+    ...('recipeOff' in photo || photo.recipeOff ? { recipeOff: Boolean(photo.recipeOff) } : {}),
     lut: photo.lut ?? null,
     levels: cloneLevels(photo.levels),
     memory: cloneLevels(photo.memory),
@@ -242,7 +246,7 @@ function carries(clip: Clip, group: GroupId): boolean {
 }
 
 interface Changes {
-  recipe?: { choice: Choice | null; levels: Levels; memory: Levels | null };
+  recipe?: { choice: Choice | null; off: boolean; levels: Levels; memory: Levels | null };
   lut?: string | null;
   knobs?: KnobMap;
   curve?: CurveMap | null;
@@ -267,7 +271,8 @@ function recipeChanges(target: Target, clip: Clip, env: Env, skips: Skip[]): Cha
   const out: Changes = {};
   const recipe = clip.recipe;
   if (!recipe) {
-    out.recipe = { choice: null, levels: new Map(), memory: null };
+    // 桌面 paste_core.js / paste.py:168-174：来源仅含 LUT 时写入 recipe: null，显式关闭目标照片的拍摄配方采用。
+    out.recipe = { choice: null, off: true, levels: new Map(), memory: null };
   } else if (target.unit !== null && recipe.choice.unit !== target.unit) {
     skips.push({ group: 'recipe', reason: 'unit_mismatch', message: '这张照片的镜头和复制来源不是同一个，没有套用配方。', part: 'recipe' });
   } else if (!target.raw && !env.recipeWithoutRaw) {
@@ -277,6 +282,7 @@ function recipeChanges(target: Target, clip: Clip, env: Env, skips: Skip[]): Cha
   } else {
     out.recipe = {
       choice: { ...recipe.choice },
+      off: false,
       levels: new Map([[recipe.choice.id, { ...recipe.levels }]]),
       memory: recipe.memory.size ? cloneLevels(recipe.memory) : null,
     };
@@ -359,6 +365,8 @@ export function pasteOne(target: Target, clip: Clip, groups: readonly GroupId[],
   const before = snapshot(photo);
   if (changes.recipe) {
     photo.choice = changes.recipe.choice;
+    if (changes.recipe.off) photo.recipeOff = true;
+    else if ('recipeOff' in photo) photo.recipeOff = false;
     photo.levels = changes.recipe.levels;
     // 桌面 memory：来源记着的整份换过来；来源是空的就留着目标自己的。
     if (changes.recipe.memory) photo.memory = changes.recipe.memory;
@@ -446,6 +454,8 @@ export async function pasteOneAsync(
   const before = snapshot(photo);
   if (changes.recipe) {
     photo.choice = changes.recipe.choice;
+    if (changes.recipe.off) photo.recipeOff = true;
+    else if ('recipeOff' in photo) photo.recipeOff = false;
     photo.levels = changes.recipe.levels;
     if (changes.recipe.memory) photo.memory = changes.recipe.memory;
   }
@@ -519,6 +529,8 @@ export function restore(photo: Editable | undefined, entry: UndoEntry): RestoreS
   if (!photo) return 'error';
   if (photo.rev !== entry.rev) return 'changed';
   photo.choice = entry.before.choice ? { ...entry.before.choice } : null;
+  if ('recipeOff' in entry.before) photo.recipeOff = entry.before.recipeOff;
+  else if ('recipeOff' in photo) photo.recipeOff = false;
   if ('lut' in photo || entry.before.lut !== undefined) photo.lut = entry.before.lut ?? null;
   photo.levels = cloneLevels(entry.before.levels);
   photo.memory = cloneLevels(entry.before.memory);

@@ -188,6 +188,10 @@ export class CurvesView {
     this.finish(true);
   }
 
+  refresh(): void {
+    if (!this.closed && !this.drag) this.draw();
+  }
+
   destroy(): void {
     if (this.closed) return;
     this.cancelDrag();

@@ -39,6 +39,7 @@ export class Pool {
       | 'file'
       | 'meta'
       | 'resolve'
+      | 'cameraRecipe'
       | 'check'
       | 'frameMeta'
       | 'frameLayout'

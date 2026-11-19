@@ -5,10 +5,11 @@ export interface CaptureTime {
   ms: number;
 }
 
-/** 配方要用的两项：镜头名（选镜头单元）和 ISO（选模型）。读不到是 null。 */
+/** 配方要用的镜头名（选镜头单元）、ISO（选模型）和可选拍摄版权标签（0x8298）。读不到是 null。 */
 export interface PhotoMeta {
   lens: string | null;
   iso: number | null;
+  copyright?: string | null;
 }
 
 export interface ByteRange {
@@ -80,6 +81,7 @@ interface Found {
   lens: string | null;
   unique: string | null;
   iso: number | null;
+  copyright: string | null;
   /** 缩小尺寸、JPEG 压缩的单条带（GXR 的 DNG 把 640×480 预览放在第二个 SubIFD 里）。 */
   strips: ByteRange[];
 }
@@ -104,6 +106,19 @@ function readAsciiTag(bytes: Uint8Array, entry: number, count: number, le: boole
   const place = inlineValue(bytes, entry, 1, count, le);
   if (!place) return null;
   return ascii(bytes, place.offset, count);
+}
+
+/** 桌面 recipe_tags.copyright_text：按 latin-1 读，保留空格，只去掉一个结尾 NUL。 */
+function rawAscii(bytes: Uint8Array, offset: number, count: number): string | null {
+  if (count <= 0 || count > MAX_ENTRIES || offset < 0 || offset + count > bytes.length) return null;
+  let text = '';
+  for (let i = 0; i < count; i++) text += String.fromCharCode(bytes[offset + i]);
+  return text.endsWith('\0') ? text.slice(0, -1) : text;
+}
+
+function rawAsciiTag(bytes: Uint8Array, entry: number, count: number, le: boolean): string | null {
+  const place = inlineValue(bytes, entry, 1, count, le);
+  return place ? rawAscii(bytes, place.offset, count) : null;
 }
 
 /** 桌面 meta._clean：按 ASCII 读、去掉 NUL 和首尾空白；空的当作没有。 */
@@ -160,6 +175,7 @@ function walk(bytes: Uint8Array, le: boolean, ifd: number, depth: number, found:
     const size = typeSize(type);
     if (size === null || n > MAX_ENTRIES) continue;
     if (tag === 0x0132 && type === 2) found.dateTime = readAsciiTag(bytes, entry, n, le);
+    if (tag === 0x8298 && type === 2 && depth === 0 && found.copyright === null) found.copyright = rawAsciiTag(bytes, entry, n, le);
     if (tag === 0x9003 && type === 2) found.original = readAsciiTag(bytes, entry, n, le);
     if (tag === 0x9291 && type === 2) found.subOriginal = readAsciiTag(bytes, entry, n, le);
     if (tag === 0xa434 && type === 2 && found.lens === null) found.lens = looseTag(bytes, entry, n, le);
@@ -211,7 +227,7 @@ function fromTiff(bytes: Uint8Array): Found | null {
   if (u16(bytes, 2, le) !== 42) return null;
   const first = u32(bytes, 4, le);
   if (first === null) return null;
-  const found: Found = { original: null, subOriginal: null, dateTime: null, embedded: null, lens: null, unique: null, iso: null, strips: [] };
+  const found: Found = { original: null, subOriginal: null, dateTime: null, embedded: null, lens: null, unique: null, iso: null, copyright: null, strips: [] };
   walk(bytes, le, first, 0, found);
   return found;
 }
@@ -249,7 +265,9 @@ function metaOf(found: Found | null, dng: boolean): PhotoMeta {
   // 桌面 read_dng_meta：Exif 里没有镜头名时，用 UniqueCameraModel 去掉开头的「RICOH 」。
   const lens = found.lens ?? (dng && found.unique ? found.unique.replace(/^RICOH\s+/, '') || null : null);
   // 桌面导入时 `if m.iso`：0 和读不到一样。
-  return { lens, iso: found.iso ? found.iso : null };
+  const base: PhotoMeta = { lens, iso: found.iso ? found.iso : null };
+  if (found.copyright !== null) base.copyright = found.copyright;
+  return base;
 }
 
 /** 相机 JPG 开头一段里的镜头名和 ISO（桌面 meta.read_jpeg_meta 的 42036、34855）。 */
@@ -268,6 +286,31 @@ export function photoMetaFromTiff(bytes: Uint8Array): PhotoMeta {
   } catch {
     return { lens: null, iso: null };
   }
+}
+
+/** DNG 开头一段里的 Exif Copyright (0x8298)，保留尾随空格以匹配桌面 parse_tag。 */
+export function copyrightFromTiff(bytes: Uint8Array): string | null {
+  try {
+    return fromTiff(bytes)?.copyright ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** JPEG 开头一段里的 Exif Copyright (0x8298)。 */
+export function copyrightFromJpeg(bytes: Uint8Array): string | null {
+  try {
+    return exifOfJpeg(bytes)?.copyright ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 相机配方标签优先级：JPG 优先，JPG 没有（null/undefined）再回退同拍 DNG（对齐桌面 importer.py:598 / store.py:709）。 */
+export function mergeCopyright(jpg: string | null | undefined, dng: string | null | undefined): string | null {
+  if (jpg != null) return jpg;
+  if (dng != null) return dng;
+  return null;
 }
 
 /** 先用相机 JPG 的，没有再用 DNG 的（桌面导入：`next(m.lens for m in (jpg_meta, dng_meta) if m and m.lens)`）。 */

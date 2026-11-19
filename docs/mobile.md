@@ -356,14 +356,16 @@ WASM：`hdr_align`、`hdr_gain`（`HdrGain` 有 `codes()` 和 `report`）、`hdr
 - `camdata-knob-table --kv PATH [--mount-50mm]`：只给原生对拍用，不导出到 WASM。对独立的 kv2/kv3 块执行 `knob_table.read`（覆盖内嵌 `final.json`）；WASM 侧经 `camdata_menu` 走同一段代码。
 - `camdata-parse-json --json PATH`：只给原生对拍用，不导出到 WASM。校验 JSON 输入：超过 4 MiB 报 `kind="json"` / `"JSON 文件过大"`，超过 128 层数组/对象嵌套报 `"JSON 嵌套太深"`。
 - `camdata-recipe-tag (--tag TEXT | --tag-hex HEX)`：返回 `{"tag": ...}` 解析结果。
+- `camdata-camera-recipe (--tag TEXT | --tag-hex HEX) [--dat PATH [--library PATH]]`：按桌面 `render/camera_recipe.py` 与 `camdata/catalog_names.py` 解析拍摄配方标签（`recorded_recipe` + `_catalog_recipe` + 旋钮校验），输出 `{"recipe": ... | null, "levels_unknown": bool}` 或桌面同款核心错误 JSON。
 
 WASM 导出（`gxr-wasm/src/camdata.rs`）：
 
 - `camdata_parse(dat_bytes, library_bytes?) -> string`：返回与 `camdata-parse` 逐字节相同的 JSON（末尾带换行），只含摘要与 `sha256`，不含原始条目字节。
 - `camdata_entries(dat_bytes, library_bytes?) -> Uint8Array`：单独的字节读取接口，按 `(unit 0..2, slot 1..8)` 顺序返回连续的 `24 × 552 = 13248` 字节条目。
 - `camdata_menu(dat_bytes?, library_bytes?) -> string`：返回解析后的菜单 JSON（末尾带换行）。
+- `camdata_camera_recipe(tag_text, dat_bytes?, library_bytes?) -> string`：与 `camdata-camera-recipe` 逐字节相同；失败抛出含桌面错误码与文案的核心错误 JSON。
 
-对拍在 `tests/test_core_parity_camdata.py` 与 `mobile/scripts/wasm_cases/camdata.mjs`；不把 `pack` 导出到 WASM。
+对拍在 `tests/test_core_parity_camdata.py`、`tests/test_core_parity_camera_recipe.py` 与 `mobile/scripts/wasm_cases/camdata.mjs`；不把 `pack` 导出到 WASM。
 
 ## raw-render（全分辨率去马赛克与中性转换）
 
@@ -687,3 +689,8 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 ## 半格双联
 
 手机端在读取相机 JPG 缩略图时由 `mobile/src/lib/halfframe.ts`（与桌面 `src/gxr_studio/halfframe.py` 同规则：1/8 尺度 `536×356` 或竖拍转正后 `356×536` 下根据解码后 `ImageBitmap` 的实际宽高选定按列或按行检查 `2088–2199` 与 `2120–2167` 已知黑缝、亮部阈值 ≤ 12 且两侧非黑）识别半格双联，并在 `mobile/src/app/boot.ts` 的 `readPhoto` 单一关口把该张 `Photo` 的 `diptych` 设为 `true`、清掉 `dng` 与 `dngMeta`。此后网格（`JPG` 角标）、编辑器、导出、HDR 预览与 LUT 均按只有 JPG 处理，不再加载该张的 DNG；「配方」页（`mobile/src/app/recipe_view.ts`）显示「这张是半格双联，配方效果要等配对功能。」。
+
+## 拍摄配方采用与全部重置
+
+- **拍摄配方采用（`gxr-camdata::camera_recipe` + `mobile/src/lib/exif.ts` / `recipes.ts` / `app/model.ts` / `recipe_view.ts` / `export_ui.ts` / `paste_*.ts`）**：手机端对未显式选择配方（`photo.choice === null` 且 `photo.recipeOff` 为假）的 RAW / RAW+JPG 照片按桌面优先级（JPG 优先、`is not None` 语义，缺失时再回退 DNG，保留尾随空格）读取 EXIF Copyright（`0x8298`），仅在打开编辑器、复制或导出时按需经核心 Worker 专用 `camera-recipe` 请求（`camdata_camera_recipe`）按 `(datKey, tag)` 记忆化解析 `GXR1` 标签，网格加载期间不额外读 DNG 头或调 WASM；Worker 临时失败不缓存为 `none`，留待下次重试。采用结果只缓存在 `photo.cameraRecipe`，**不写进 `photo.choice`**，因此未编辑过的照片在网格上不亮铅笔角标；但在配方页标题/标签/卡片条、舞台预测、导出 `auto` 以及复制调整中都按采用的配方与微调生效（与桌面 `editor_edit`、`recipes.js`、`paste_core.js` 一致）。显式选择始终覆盖采用；套用仅含 LUT 的剪贴板会把 `photo.recipeOff` 置为真以关闭采用，撤销时还原；只有 JPG 与半格双联照片不采用；标签微调未知时提示「微调未知，电脑预测使用配方默认值」；解析出错时编辑器显示桌面完整文案（`${message} 照片调整仍可保存，暂不生成拍摄配方预测。`）并回退到 `builtin:4`；未导入相机配方文件或导入错代配方文件时导出仍按原规则保留相机 JPG，并在导出完成栏逐张附上「请先导入拍摄时使用的相机配方文件。」说明。
+- **「全部重置」（`mobile/src/app/adjust_view.ts`）**：点「全部重置」同时把调整滑块与四条曲线（`photo.curve = null`）归零，且只在滑块或曲线确有修改时加一次 `rev` 并通过 `host.refreshCurves()` 刷新曲线面板与网格角标。

@@ -11,6 +11,7 @@ export type CoreOp =
   | 'calib-restore'
   | 'bake'
   | 'resolve'
+  | 'camera-recipe'
   | 'calib-check'
   | 'frame-meta'
   | 'frame-layout'
@@ -52,6 +53,13 @@ export interface BakeArgs {
 export interface ResolveArgs {
   dat: ArrayBuffer;
   recipe: string;
+  library?: ArrayBuffer | null;
+}
+
+/** `camdata_camera_recipe`：Exif Copyright 拍摄标签 + 当前加载的 DAT / GXRFX.BIN（均可为 null）。 */
+export interface CameraRecipeArgs {
+  tag: string;
+  dat?: ArrayBuffer | null;
   library?: ArrayBuffer | null;
 }
 
@@ -159,6 +167,7 @@ export interface CoreRequest {
   /** 导入时存进 IndexedDB 用的名字和时间。 */
   meta?: { name: string; savedAt: number } | null;
   resolve?: ResolveArgs | null;
+  cameraRecipe?: CameraRecipeArgs | null;
   check?: CalibCheckArgs | null;
   frameMeta?: FrameMetaArgs | null;
   frameLayout?: FrameLayoutArgs | null;

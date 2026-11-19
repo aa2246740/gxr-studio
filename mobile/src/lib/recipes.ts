@@ -238,3 +238,150 @@ export interface Choice {
   id: string;
   unit: Unit;
 }
+
+/** 没选配方、也没有拍摄标签时桌面的默认选择：原厂标准（slot 4）。 */
+export const DEFAULT_CARD = 'builtin:4';
+/** 未加载相机配方文件时（如导出补查拍摄标签报错）的缓存键。 */
+export const NO_DAT_CAMERA_RECIPE_KEY = 'dat:none';
+/** 桌面 `recipes.js:168`：拍摄标签未记录微调时的说明。 */
+export const CAMERA_RECIPE_LEVELS_UNKNOWN = '微调未知，电脑预测使用配方默认值';
+/** 桌面 `api/render_routes.py:100`：编辑器里跟在拍摄配方报错后面的固定说明。 */
+export const CAMERA_RECIPE_EDITOR_SUFFIX = '照片调整仍可保存，暂不生成拍摄配方预测。';
+
+export function formatCameraRecipeEditorError(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) return CAMERA_RECIPE_EDITOR_SUFFIX;
+  if (trimmed.includes(CAMERA_RECIPE_EDITOR_SUFFIX)) return trimmed;
+  return `${trimmed} ${CAMERA_RECIPE_EDITOR_SUFFIX}`;
+}
+
+/** 选配方单元的统一顺序：显式选中 → 已采用的拍摄配方 → 镜头名 → 默认 jlaunch。 */
+export function recipeUnitOf(
+  choice: Choice | null | undefined,
+  adopted: AdoptedSelection | null | undefined,
+  photoUnit: Unit | null | undefined,
+): Unit {
+  return choice?.unit ?? adopted?.choice.unit ?? photoUnit ?? 'jlaunch';
+}
+
+export interface CameraRecipeSelection {
+  kind: CardKind;
+  unit: Unit;
+  slot: number;
+  id?: string;
+  levels: Record<string, number>;
+}
+
+export interface CameraRecipeError {
+  code: string;
+  message: string;
+}
+
+export type CameraRecipeResult =
+  | { status: 'none' }
+  | { status: 'ok'; recipe: CameraRecipeSelection; levelsUnknown: boolean }
+  | { status: 'error'; error: CameraRecipeError };
+
+export interface CameraRecipeCache {
+  datKey: string;
+  copyright: string | null;
+  version: number;
+  result: CameraRecipeResult;
+}
+
+export interface AdoptedSelection {
+  choice: Choice;
+  levels: Record<string, number>;
+  levelsUnknown: boolean;
+}
+
+interface AdoptablePhoto {
+  dng: File | null;
+  diptych?: boolean;
+  choice: Choice | null;
+  recipeOff?: boolean;
+  levels: Map<string, Record<string, number>>;
+  cameraRecipe?: CameraRecipeCache | null;
+}
+
+const datKeys = new WeakMap<object, string>();
+let nextDatKey = 1;
+
+/** 给当前加载的 `Book.dat` 实例一个稳定的内存缓存键；未加载时返回 null。 */
+export function datKeyOf(dat: object | null | undefined): string | null {
+  if (!dat) return null;
+  let key = datKeys.get(dat);
+  if (!key) {
+    key = `dat:${nextDatKey++}`;
+    datKeys.set(dat, key);
+  }
+  return key;
+}
+
+export function cameraRecipeCardId(recipe: { kind: string; slot: number; id?: string }): string {
+  return recipe.kind === 'builtin' ? `builtin:${recipe.slot}` : `${recipe.kind}:${recipe.id ?? ''}`;
+}
+
+export function findAdoptedCard(listing: Listing, recipe: { kind: string; unit: Unit; slot: number; id?: string }): Card | null {
+  const id = cameraRecipeCardId(recipe);
+  return shelf(shelves(listing, recipe.unit), 'all').find((card) => card.id === id) ?? null;
+}
+
+/** 解析核心 Worker `camera-recipe` 返回的结构化 JSON。 */
+export function parseCameraRecipeResult(json: string): CameraRecipeResult {
+  const parsed = JSON.parse(json) as {
+    recipe?: CameraRecipeSelection | null;
+    levels_unknown?: boolean;
+    error?: CameraRecipeError;
+  };
+  if (parsed.error && typeof parsed.error.message === 'string') {
+    return { status: 'error', error: { code: parsed.error.code || 'camera_recipe_error', message: parsed.error.message } };
+  }
+  if (!parsed.recipe) return { status: 'none' };
+  return { status: 'ok', recipe: parsed.recipe, levelsUnknown: Boolean(parsed.levels_unknown) };
+}
+
+/** 未显式选配方且未关闭采用的 RAW 照片若匹配当前相机配方文件，返回采用的拍摄配方；显式选择、关闭采用、无 DNG、半格双联均返回 null。 */
+export function adoptedSelectionOf(
+  photo: Pick<AdoptablePhoto, 'dng' | 'diptych' | 'choice' | 'recipeOff' | 'cameraRecipe'>,
+  dat: object | null | undefined,
+): AdoptedSelection | null {
+  if (!photo.dng || photo.diptych || photo.choice !== null || photo.recipeOff) return null;
+  const key = datKeyOf(dat);
+  if (!key) return null;
+  const cache = photo.cameraRecipe;
+  if (!cache || cache.datKey !== key || cache.result.status !== 'ok') return null;
+  const r = cache.result.recipe;
+  return {
+    choice: { id: cameraRecipeCardId(r), unit: r.unit },
+    levels: { ...r.levels },
+    levelsUnknown: cache.result.levelsUnknown,
+  };
+}
+
+/** 未显式选配方且未关闭采用的 RAW 照片解析拍摄标签出错时（含未导入 DAT），返回桌面同款错误码与文案。 */
+export function cameraRecipeErrorOf(
+  photo: Pick<AdoptablePhoto, 'dng' | 'diptych' | 'choice' | 'recipeOff' | 'cameraRecipe'>,
+  dat: object | null | undefined,
+): CameraRecipeError | null {
+  if (!photo.dng || photo.diptych || photo.choice !== null || photo.recipeOff) return null;
+  const key = dat ? datKeyOf(dat) : NO_DAT_CAMERA_RECIPE_KEY;
+  if (!key) return null;
+  const cache = photo.cameraRecipe;
+  if (!cache || cache.datKey !== key || cache.result.status !== 'error') return null;
+  return cache.result.error;
+}
+
+/**
+ * 给导出与复制调整的只读视图：没有显式 `choice` 且未关闭采用时把已采用的拍摄配方叠上去，不改原照片对象。
+ * 原照片的 `choice` 仍保持 null，网格的铅笔角标因此不会亮起。
+ */
+export function photoWithAdopted<T extends AdoptablePhoto>(photo: T, dat: object | null | undefined): T {
+  const adopted = adoptedSelectionOf(photo, dat);
+  if (!adopted) return photo;
+  return {
+    ...photo,
+    choice: { ...adopted.choice },
+    levels: new Map([[adopted.choice.id, { ...adopted.levels }]]),
+  };
+}

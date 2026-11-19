@@ -179,6 +179,7 @@ class Desktop:
             "files": files,
             "lens": pm.lens or pm_dng.lens,
             "iso": pm.iso or pm_dng.iso,
+            "recipe_tag": pm_dng.recipe_tag or pm.recipe_tag,
         }
 
     def changes(self, shot: dict[str, Any], done: dict[str, Any]) -> dict[str, Any]:
@@ -216,12 +217,11 @@ class Desktop:
 
     def export(self, shot: dict[str, Any], side: dict[str, Any], quality: int, long_edge: int | None) -> Any:
         from gxr_studio.finish.serve import export_finish
-        from gxr_studio.render.params import parse_edit
+        from gxr_studio.render.camera_recipe import photo_edit
 
         dest = self.export_dir / f"{shot['name']}-{quality}-{long_edge}"
-        return export_finish(
-            self.render, self.lib, shot, parse_edit(side), side, dest, [], quality=quality, long_edge=long_edge, fmt="jpeg", base="auto"
-        )
+        edit = photo_edit(side, shot, self.render.recipe_menu())
+        return export_finish(self.render, self.lib, shot, edit, side, dest, [], quality=quality, long_edge=long_edge, fmt="jpeg", base="auto")
 
 
 def test_mobile_ui_export_files_match_desktop(tmp_path: Path, pinned_icc: bytes) -> None:
