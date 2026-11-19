@@ -184,23 +184,42 @@ def test_desktop_editor_halfframe_pair(
         assert ui["cameraJpgReqs"] == [], ui["cameraJpgReqs"]
         assert ui["steps"]["settings"]["gpu_preview"] is gpu
         for gr in ui["gpuResponses"]:
-            assert gr["status"] == 200 and gr["body"] == {"enabled": False}, gr
+            if gpu:
+                assert gr["status"] == 200 and gr["body"]["enabled"] is True, gr
+                assert isinstance(gr["body"].get("pair"), dict) and len(gr["body"]["pair"].get("sources", [])) == 2, gr
+            else:
+                assert gr["status"] == 200 and gr["body"] == {"enabled": False}, gr
 
-        # 初始：配方卡片可点、不灰显、未提示缺 RAW / 相机 JPG、GPU 舞台未激活
+        # 初始：配方卡片可点、不灰显、未提示缺 RAW / 相机 JPG、GPU 舞台按开关激活
         panel0 = ui["steps"]["initialPanel"]
         assert panel0["cards"] > 0 and panel0["disabled"] == 0 and panel0["dimmed"] == 0, panel0
-        assert panel0["gpuActive"] is False, panel0
+        assert panel0["gpuActive"] is gpu, panel0
         assert lut_ids["log"] not in panel0["lutDisabled"], panel0
         _assert_no_forbidden_copy(panel0, "initial")
-        for r in ui["steps"]["initialRenders"]:
-            assert r["label"] != "camera-jpg", r
+        if gpu:
+            assert ui["steps"]["initialRenders"] == [], ui["steps"]["initialRenders"]
+            raw_halves = {r["half"] for r in ui["steps"]["initialRawReqs"] if r["status"] == 200}
+            bake_halves = {r["half"] for r in ui["steps"]["initialBakeReqs"] if r["status"] == 200}
+            assert raw_halves == {"0", "1"}, ui["steps"]["initialRawReqs"]
+            assert bake_halves == {"0", "1"}, ui["steps"]["initialBakeReqs"]
+            assert panel0["viewGpuActive"] == "final", panel0
+            assert panel0["edLabel"] == "prediction" and panel0["edCalibrated"] is True, panel0
+        else:
+            for r in ui["steps"]["initialRenders"]:
+                assert r["label"] != "camera-jpg", r
 
         # 1) 点选配方卡片 -> PUT 200 + 重新渲染双联合成图
         rp = ui["steps"]["recipePick"]
         assert rp["pick"] is not None and rp["pick"]["disabled"] is False, rp
         assert any(p["status"] == 200 for p in rp["puts"]), rp
         assert rp["stored"] is not None, rp
-        assert any(r["status"] == 200 and r["pred"] == "1" and r["label"] != "camera-jpg" for r in rp["renders"]), rp
+        if gpu:
+            assert rp["renders"] == [], rp["renders"]
+            assert rp["panel"]["gpuActive"] is True and rp["panel"]["viewGpuActive"] == "final", rp["panel"]
+            assert rp["panel"]["gpuFinishKey"] and rp["panel"]["gpuFinishKey"] != panel0["gpuFinishKey"], rp["panel"]
+            assert rp["panel"]["edLabel"] == "prediction" and rp["panel"]["edCalibrated"] is True, rp["panel"]
+        else:
+            assert any(r["status"] == 200 and r["pred"] == "1" and r["label"] != "camera-jpg" for r in rp["renders"]), rp
         _assert_no_forbidden_copy(rp["panel"], "after recipe pick")
         _assert_composite_changed(untouched_composite, _load_rgb(stage_after_recipe_path), "stage after recipe")
 
@@ -227,9 +246,15 @@ def test_desktop_editor_halfframe_pair(
         assert ar["edit"]["lut"] == lut_ids["disp"], ar["edit"]
         assert ar["panel"]["cards"] > 0 and ar["panel"]["disabled"] == 0, ar["panel"]
         assert rp["pick"]["look"] in ar["panel"]["pressed"], (rp["pick"], ar["panel"])
-        assert ar["panel"]["gpuActive"] is False, ar["panel"]
+        assert ar["panel"]["gpuActive"] is gpu, ar["panel"]
         _assert_no_forbidden_copy(ar["panel"], "after reload")
-        assert any(r["status"] == 200 and r["pred"] == "1" and r["label"] != "camera-jpg" for r in ar["renders"]), ar["renders"]
+        if gpu:
+            assert ar["panel"]["viewGpuActive"] == "final" and ar["panel"]["gpuFinishKey"], ar["panel"]
+            assert ar["panel"]["edLabel"] == "prediction", ar["panel"]
+            assert {r["half"] for r in ar["rawReqs"] if r["status"] == 200} == {"0", "1"}, ar["rawReqs"]
+            assert {r["half"] for r in ar["bakeReqs"] if r["status"] == 200} == {"0", "1"}, ar["bakeReqs"]
+        else:
+            assert any(r["status"] == 200 and r["pred"] == "1" and r["label"] != "camera-jpg" for r in ar["renders"]), ar["renders"]
         _assert_composite_changed(untouched_composite, _load_rgb(stage_after_reload_path), "stage after reload")
 
         # 5) 对话框默认导出即合成图
@@ -237,6 +262,7 @@ def test_desktop_editor_halfframe_pair(
         assert ex_step["clicked"] is True and len(ex_step["results"]) >= 1, ex_step
         ex_res = ex_step["results"][0]
         assert ex_res["status"] == 200, ex_res
+        assert isinstance(ex_res["body"], dict) and ex_res["body"].get("path"), ex_res
         exported_path = Path(ex_res["body"]["path"])
         assert exported_path.is_file(), ex_res
         _assert_composite_changed(untouched_composite, _load_rgb(exported_path), "default UI export")

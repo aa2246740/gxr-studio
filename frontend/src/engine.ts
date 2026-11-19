@@ -7,8 +7,19 @@ import binWgsl from './shaders/bin.wgsl?raw';
 import presentWgsl from './shaders/present.wgsl?raw';
 import histWgsl from './shaders/hist.wgsl?raw';
 import { type GainMeta, HdrOutput, type HdrOutputMode, f16ToF32, presentMap } from './hdr_output';
+import {
+  type PairInfo,
+  type PairSourceConfig,
+  type PairWindow,
+  checkPairLimits as validatePairLimits,
+  createPairResources,
+  encodePairColor,
+  loadPairRaw,
+} from './pair';
 import { type Adjust, type Curves, channelGains, displayTable, TABLE_SIZE } from './tones';
 import { canvasOf, lens, rotatedSize } from './warp';
+
+export type { PairSourceConfig, PairWindow };
 
 type Mat3 = [number[], number[], number[]];
 
@@ -59,6 +70,7 @@ export interface Scene {
 
 export interface Look {
   recipe: string | null;
+  recipe2?: string | null;
   lut: string | null;
   lutStrength: number;
   adjust: Adjust;
@@ -79,12 +91,15 @@ export interface Geometry {
 
 interface Source {
   key: string;
-  kind: 'raw' | 'jpg';
+  kind: 'raw' | 'jpg' | 'pair-raw';
   tex: GPUTexture;
+  tex2?: GPUTexture;
   w: number;
   h: number;
   bytes: number;
   scene: Scene | null;
+  scene2?: Scene | null;
+  pair?: PairInfo;
 }
 
 interface Bake {
@@ -173,11 +188,13 @@ export class Engine {
   private context: GPUCanvasContext | null = null;
   private readonly format: GPUTextureFormat;
   private readonly colorPipe: GPURenderPipeline;
+  private readonly pairColorPipe: GPURenderPipeline;
   private readonly geoPipe: GPURenderPipeline;
   private readonly presentPipe: GPURenderPipeline;
   private readonly binPipe: GPUComputePipeline;
   private readonly histPipe: GPUComputePipeline;
   private readonly uniform: GPUBuffer;
+  private readonly pairUniform: GPUBuffer;
   private readonly geoUniform: GPUBuffer;
   private readonly presentUniform: GPUBuffer;
   private readonly histUniform: GPUBuffer;
@@ -191,7 +208,7 @@ export class Engine {
   private colorTex: GPUTexture | null = null;
   private finalTex: GPUTexture | null = null;
   private current: Source | null = null;
-  private look: Look = { recipe: null, lut: null, lutStrength: 1, adjust: {}, curve: null };
+  private look: Look = { recipe: null, recipe2: null, lut: null, lutStrength: 1, adjust: {}, curve: null };
   private geometry: Geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
   private dirtyColor = true;
   private dirtyGeo = true;
@@ -230,17 +247,19 @@ export class Engine {
     });
     const mod = (code: string) => device.createShaderModule({ code });
     const colorMod = mod(commonWgsl + colorWgsl);
+    const pairRes = createPairResources(device, commonWgsl);
     const geoMod = mod(geoWgsl);
     const presentMod = mod(presentWgsl);
     const binMod = mod(binWgsl);
     const histMod = mod(histWgsl);
     this.hdr = new HdrOutput(device);
-    this.modules = [colorMod, geoMod, presentMod, binMod, histMod, this.hdr.module];
+    this.modules = [colorMod, pairRes.module, geoMod, presentMod, binMod, histMod, this.hdr.module];
     this.colorPipe = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: colorMod, entryPoint: 'vs' },
       fragment: { module: colorMod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
     });
+    this.pairColorPipe = pairRes.pipeline;
     this.geoPipe = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: geoMod, entryPoint: 'vs' },
@@ -255,6 +274,7 @@ export class Engine {
     this.histPipe = device.createComputePipeline({ layout: 'auto', compute: { module: histMod, entryPoint: 'main' } });
     const ub = (size: number) => device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.uniform = ub(UNIFORM_FLOATS * 4);
+    this.pairUniform = pairRes.uniform;
     this.geoUniform = ub(5 * 16);
     this.presentUniform = ub(3 * 16);
     this.histUniform = ub(2 * 16);
@@ -296,11 +316,25 @@ export class Engine {
     return this.luts.has(key);
   }
 
-  /** DNG 原字节 → 显卡上拆包、归一化、白平衡、2×2 合并、转正。 */
-  async addRaw(key: string, layout: RawLayout, dng: ArrayBuffer, scene: Scene | null): Promise<void> {
+  private checkRawLimits(paddedBytes: number, w: number, h: number): void {
+    const lim = this.device.limits;
+    if (!lim) return;
+    if (lim.maxStorageBufferBindingSize && paddedBytes > lim.maxStorageBufferBindingSize) throw new Error('raw_exceeds_storage_limit');
+    if (lim.maxBufferSize && paddedBytes > lim.maxBufferSize) throw new Error('raw_exceeds_buffer_limit');
+    if (lim.maxTextureDimension2D && (w > lim.maxTextureDimension2D || h > lim.maxTextureDimension2D)) throw new Error('raw_exceeds_texture_limit');
+  }
+
+  private async binRaw(layout: RawLayout, dng: ArrayBuffer): Promise<{ tex: GPUTexture; w: number; h: number }> {
     const d = this.device;
     const total = layout.strips.reduce((s, [, n]) => s + n, 0);
-    const bytes = new Uint8Array(Math.ceil(total / 4) * 4);
+    const padded = Math.ceil(total / 4) * 4;
+    const w2 = Math.floor(layout.crop[3] / 2);
+    const h2 = Math.floor(layout.crop[2] / 2);
+    const swap = layout.orientation >= 5;
+    const w = swap ? h2 : w2;
+    const h = swap ? w2 : h2;
+    this.checkRawLimits(padded, w, h);
+    const bytes = new Uint8Array(padded);
     let at = 0;
     for (const [off, n] of layout.strips) {
       bytes.set(new Uint8Array(dng, off, n), at);
@@ -308,11 +342,6 @@ export class Engine {
     }
     const rawBuf = d.createBuffer({ size: bytes.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     d.queue.writeBuffer(rawBuf, 0, bytes);
-    const w2 = Math.floor(layout.crop[3] / 2);
-    const h2 = Math.floor(layout.crop[2] / 2);
-    const swap = layout.orientation >= 5;
-    const w = swap ? h2 : w2;
-    const h = swap ? w2 : h2;
     const tex = d.createTexture({ size: [w, h], format: 'rgba32float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
     const u = new Float32Array(24);
     u.set(layout.crop, 0);
@@ -323,20 +352,42 @@ export class Engine {
     u.set([layout.white, layout.active[0], layout.active[1], 0], 20);
     const ubuf = d.createBuffer({ size: u.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     d.queue.writeBuffer(ubuf, 0, u);
-    const enc = d.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(this.binPipe);
-    pass.setBindGroup(0, d.createBindGroup({
-      layout: this.binPipe.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: ubuf } }, { binding: 1, resource: { buffer: rawBuf } }, { binding: 2, resource: tex.createView() }],
-    }));
-    pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16));
-    pass.end();
-    d.queue.submit([enc.finish()]);
-    await d.queue.onSubmittedWorkDone();
-    rawBuf.destroy();
-    ubuf.destroy();
+    try {
+      const enc = d.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(this.binPipe);
+      pass.setBindGroup(0, d.createBindGroup({
+        layout: this.binPipe.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: ubuf } }, { binding: 1, resource: { buffer: rawBuf } }, { binding: 2, resource: tex.createView() }],
+      }));
+      pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16));
+      pass.end();
+      d.queue.submit([enc.finish()]);
+      await d.queue.onSubmittedWorkDone();
+    } catch (err) {
+      tex.destroy();
+      throw err;
+    } finally {
+      rawBuf.destroy();
+      ubuf.destroy();
+    }
+    return { tex, w, h };
+  }
+
+  /** DNG 原字节 → 显卡上拆包、归一化、白平衡、2×2 合并、转正。 */
+  async addRaw(key: string, layout: RawLayout, dng: ArrayBuffer, scene: Scene | null): Promise<void> {
+    const { tex, w, h } = await this.binRaw(layout, dng);
     this.putSource({ key, kind: 'raw', tex, w, h, bytes: w * h * 16, scene });
+  }
+
+  /** 下载或上传两份 DNG 之前核对成片和条带的显卡限额，超限抛错以便调用方退回服务器。 */
+  checkPairLimits(cfg: PairSourceConfig): void {
+    validatePairLimits(this.device.limits, cfg);
+  }
+
+  /** 半格一对的两份 DNG → 逐份按窗口拆包到两张半宽传感器条带纹理（总显存 ≤ 单张），顺序上传不叠加临时缓冲。 */
+  async addPairRaw(key: string, cfg: PairSourceConfig, dng1: ArrayBuffer, dng2: ArrayBuffer): Promise<void> {
+    this.putSource(await loadPairRaw(this.device.limits, (lay, dng) => this.binRaw(lay, dng), key, cfg, dng1, dng2));
   }
 
   /** 相机 JPG（浏览器按 EXIF 方向解码）→ rgba8 纹理。 */
@@ -350,15 +401,21 @@ export class Engine {
     this.putSource({ key, kind: 'jpg', tex, w: bitmap.width, h: bitmap.height, bytes: bitmap.width * bitmap.height * 4, scene: null });
   }
 
+  private destroySource(src: Source): void {
+    src.tex.destroy();
+    src.tex2?.destroy();
+  }
+
   private putSource(src: Source): void {
-    this.sources.get(src.key)?.tex.destroy();
+    const prev = this.sources.get(src.key);
+    if (prev) this.destroySource(prev);
     this.sources.delete(src.key);
     this.sources.set(src.key, src);
     let total = 0;
     for (const s of this.sources.values()) total += s.bytes;
     for (const [k, s] of this.sources) {
       if (total <= MAX_SOURCE_BYTES || s === src || s === this.current) continue;
-      s.tex.destroy();
+      this.destroySource(s);
       this.sources.delete(k);
       total -= s.bytes;
     }
@@ -374,8 +431,8 @@ export class Engine {
     const buf = this.device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.device.queue.writeBuffer(buf, 0, data);
     this.bakes.set(key, { meta, buf });
-    // 配方卡片会一次装进几十张表：舞台正在用的那张不能被挤掉（挤掉了下一帧的颜色就画不出来）
-    this.trim(this.bakes, 64, (b) => b.buf.destroy(), this.look.recipe);
+    // 配方卡片会一次装进几十张表：舞台正在用的那张（半格一对为两张）不能被挤掉
+    this.trim(this.bakes, 64, (b) => b.buf.destroy(), this.look.recipe, this.look.recipe2 ?? null);
   }
 
   addLut(key: string, meta: LutMeta, data: ArrayBuffer): void {
@@ -407,10 +464,10 @@ export class Engine {
     }
   }
 
-  private trim<T>(map: Map<string, T>, max: number, drop: (v: T) => void, keep: string | null = null): void {
+  private trim<T>(map: Map<string, T>, max: number, drop: (v: T) => void, keep: string | null = null, keep2: string | null = null): void {
     for (const [k, v] of map) {
       if (map.size <= max) break;
-      if (k === keep) continue;
+      if (k === keep || k === keep2) continue;
       drop(v);
       map.delete(k);
     }
@@ -478,6 +535,7 @@ export class Engine {
 
   setLook(look: Partial<Look>): void {
     Object.assign(this.look, look);
+    if ('recipe' in look && !('recipe2' in look)) this.look.recipe2 = null;
     this.dirtyColor = true;
     this.dirtyGeo = true;
     this.schedule();
@@ -583,6 +641,26 @@ export class Engine {
   }
 
   private encodeColor(enc: GPUCommandEncoder, src: Source, look: Look = this.look, target: GPUTexture | null = this.colorTex): boolean {
+    if (src.kind === 'pair-raw') {
+      return encodePairColor(
+        {
+          device: this.device,
+          pipeline: this.pairColorPipe,
+          uniform: this.uniform,
+          pairUniform: this.pairUniform,
+          toneBuf: this.toneBuf,
+          dummyLut: this.dummyLut,
+          dummyLut8: this.dummyLut8,
+          bakes: this.bakes,
+          lutState: (lk) => this.lutState(src, lk),
+          writeMainUniform: (bake1, lut, mode) => this.writeUniform(src, bake1, lut, mode, look),
+        },
+        enc,
+        src,
+        look,
+        target!,
+      );
+    }
     const { mode, lut } = this.lutState(src, look);
     const needsBake = mode === 0 || mode === 1;
     const bake = look.recipe ? this.bakes.get(look.recipe) ?? null : null;
@@ -886,7 +964,12 @@ export class Engine {
     this.thumbColor = this.scratch(this.thumbColor, src.w, src.h);
     this.thumbFinal = this.scratch(this.thumbFinal, size.w, size.h);
     const enc = d.createCommandEncoder();
-    if (!this.encodeColor(enc, src, { ...this.look, ...opts.look }, this.thumbColor)) return null;
+    const mergedLook: Look = {
+      ...this.look,
+      ...opts.look,
+      ...('recipe' in opts.look && !('recipe2' in opts.look) ? { recipe2: null } : {}),
+    };
+    if (!this.encodeColor(enc, src, mergedLook, this.thumbColor)) return null;
     this.encodeGeo(enc, src, size.w, size.h, this.thumbColor, this.thumbFinal, opts.geometry);
     const aspect = opts.aspect ?? size.w / size.h;
     const cw = Math.max(1, Math.round(aspect >= 1 ? maxEdge : maxEdge * aspect));
@@ -990,7 +1073,11 @@ export class Engine {
     this.hdr.destroy();
     this.thumbColor?.destroy();
     this.thumbFinal?.destroy();
-    for (const s of this.sources.values()) s.tex.destroy();
+    this.colorTex?.destroy();
+    this.finalTex?.destroy();
+    this.dummyRaw?.destroy();
+    this.pairUniform.destroy();
+    for (const s of this.sources.values()) this.destroySource(s);
     for (const b of this.bakes.values()) b.buf.destroy();
     for (const l of this.luts.values()) l.tex.destroy();
     this.sources.clear();
