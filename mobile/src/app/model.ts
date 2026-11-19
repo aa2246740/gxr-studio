@@ -2,12 +2,18 @@
 
 import type { RawLayout, Scene } from '../../../frontend/src/index';
 import type { CropState, GeometryState } from '../lib/crop';
-import type { PhotoMeta } from '../lib/exif';
+import { copyrightFromTiff, mergeCopyright, type PhotoMeta } from '../lib/exif';
 import type { FrameMetaResult, FrameSpec, StampSpec } from '../lib/frame_spec';
 import type { GapMinutes, Order } from '../lib/group';
 import type { CurveMap } from '../lib/export_request';
 import type { Frame } from '../lib/photo_size';
-import type { Choice } from '../lib/recipes';
+import {
+  datKeyOf,
+  NO_DAT_CAMERA_RECIPE_KEY,
+  type CameraRecipeCache,
+  type CameraRecipeResult,
+  type Choice,
+} from '../lib/recipes';
 import type { Book } from './book';
 import { lookCache } from './looks';
 import type { LutBook } from './lut_book';
@@ -88,6 +94,8 @@ export interface Photo {
   rev: number;
   /** 选中的配方。和调整一样是这张照片这次的编辑状态；换片、重新选同一张都留着。 */
   choice: Choice | null;
+  /** 显式关闭拍摄配方采用（如套用了仅含 LUT 的剪贴板，对应桌面 sidecar recipe: null）。 */
+  recipeOff?: boolean;
   /**
    * 选中的配方的旋钮档位（桌面 `recipe.levels`）：只有一项，键是 `choice.id`；只记用户给过的档位，没给的取配方默认。
    */
@@ -101,10 +109,22 @@ export interface Photo {
   lut: string | null;
   /** 配方卡与 LUT 卡的小图，按烘焙/LUT 令牌的键记，只对当时的版本有效。 */
   looks: Map<string, { version: number; bitmap: ImageBitmap }>;
+  /** DNG 文件头里的 Exif Copyright (0x8298)，只在 JPG 没有 Copyright 时按需补读。 */
+  dngCopyright?: string | null;
+  /** 已补读过 DNG 头部 Copyright 的照片版本。 */
+  dngCopyrightRead?: number | null;
+  /** 拍摄配方标签在当前相机配方文件下的解析结果缓存；不写进 choice。 */
+  cameraRecipe?: CameraRecipeCache | null;
 }
 
 /** stale：读的时候照片被重新选过，结果作废。 */
 export type FullRead = { ok: true; bytes: ArrayBuffer } | { ok: false; gone: boolean; stale: boolean };
+
+/** 读文件时文件已经不在或读不了（用户删了、移走了、权限变了）。 */
+export function isGone(err: unknown): boolean {
+  const name = err instanceof DOMException ? err.name : err instanceof Error ? err.name : '';
+  return name === 'NotFoundError' || name === 'NotReadableError';
+}
 
 /**
  * 点得开：缩略图好了，并且文件还读得了，或者这个版本的完整源还在显卡里。
@@ -132,6 +152,13 @@ export function releaseBitmaps(photo: Photo): void {
 /** 放掉配方卡的小图（换版本、清空时）。 */
 export function releaseLooks(photo: Photo): void {
   lookCache.forget(photo);
+}
+
+/** 清掉这张照片的拍摄配方缓存和 DNG 头部补读标记（重选文件或识别为半格双联时调用）。 */
+export function clearCameraRecipe(photo: Photo): void {
+  photo.dngCopyright = null;
+  photo.dngCopyrightRead = null;
+  photo.cameraRecipe = null;
 }
 
 export function photoMs(photo: Photo): number {
@@ -191,4 +218,149 @@ export interface AppApi {
   showCalib(): void;
   /** 打开导出面板（05a）。`ids` 按网格的顺序导出；点了「存到相册」时调 `onStart`。 */
   exportPhotos(ids: string[], onStart?: () => void): void;
+}
+
+type HeadReader = (file: File) => Promise<ArrayBuffer | null>;
+export type CameraRecipeResolver = (
+  tag: string,
+  dat: ArrayBuffer | null,
+  library: ArrayBuffer | null,
+) => Promise<CameraRecipeResult>;
+
+export interface EnsureCameraRecipeOptions {
+  /** 为 true 时即使未加载 DAT 也检查 `GXR1 ` 标签，供导出附注提示「请先导入拍摄时使用的相机配方文件。」。 */
+  checkMissingDat?: boolean;
+  resolve?: CameraRecipeResolver;
+}
+
+let dngHeadReader: HeadReader | null = null;
+const cameraRecipeListeners = new Set<(photoId: string) => void>();
+const cameraRecipePending = new WeakMap<Photo, { key: string; promise: Promise<void> }>();
+const cameraRecipeMemo = new WeakMap<CameraRecipeResolver, Map<string, Promise<CameraRecipeResult>>>();
+
+async function defaultCameraRecipeResolver(
+  tag: string,
+  dat: ArrayBuffer | null,
+  library: ArrayBuffer | null,
+): Promise<CameraRecipeResult> {
+  const { cameraRecipe } = await import('../core/api');
+  return cameraRecipe(tag, dat, library);
+}
+
+function resolveCameraRecipeMemo(
+  resolver: CameraRecipeResolver,
+  key: string,
+  copyright: string,
+  dat: Book['dat'],
+): Promise<CameraRecipeResult> {
+  let byKey = cameraRecipeMemo.get(resolver);
+  if (!byKey) {
+    byKey = new Map();
+    cameraRecipeMemo.set(resolver, byKey);
+  }
+  const memoKey = `${key}\0${copyright}`;
+  const hit = byKey.get(memoKey);
+  if (hit) return hit;
+  const datCopy = dat ? dat.read.bytes.slice(0) : null;
+  const libCopy = dat?.read.library ? dat.read.library.slice(0) : null;
+  const pending = resolver(copyright, datCopy, libCopy).catch((err) => {
+    if (byKey?.get(memoKey) === pending) byKey.delete(memoKey);
+    throw err;
+  });
+  if (byKey.size >= 256) byKey.clear();
+  byKey.set(memoKey, pending);
+  return pending;
+}
+
+/** 注册 Worker 端 DNG 头部读取器（主线程不调 File.arrayBuffer）。 */
+export function registerCameraRecipeReader(reader: HeadReader): void {
+  dngHeadReader = reader;
+}
+
+/** 某张照片的拍摄配方解析落地时通知编辑页刷新。 */
+export function onCameraRecipe(fn: (photoId: string) => void): () => void {
+  cameraRecipeListeners.add(fn);
+  return () => cameraRecipeListeners.delete(fn);
+}
+
+function cameraRecipeKey(dat: Book['dat'], checkMissingDat = false): string | null {
+  if (dat) return datKeyOf(dat);
+  return checkMissingDat ? NO_DAT_CAMERA_RECIPE_KEY : null;
+}
+
+/** 这张照片在当前相机配方文件下是否还需要解析拍摄配方标签。 */
+export function needsCameraRecipe(photo: Photo, dat: Book['dat'], options?: { checkMissingDat?: boolean }): boolean {
+  if (!photo.dng || photo.diptych || photo.choice !== null || photo.recipeOff) return false;
+  const key = cameraRecipeKey(dat, options?.checkMissingDat);
+  if (!key) return false;
+  const cache = photo.cameraRecipe;
+  return !cache || cache.datKey !== key || cache.version !== photo.version;
+}
+
+/** 按桌面优先级（JPG 优先、DNG 兜底）读取 Exif Copyright，并在核心 Worker 里按 `(datKey, tag)` 记忆化解析 `GXR1` 标签。 */
+export function ensureCameraRecipe(photo: Photo, book: Book, options?: EnsureCameraRecipeOptions): Promise<void> {
+  const dat = book.dat;
+  const checkMissingDat = Boolean(options?.checkMissingDat);
+  if (!needsCameraRecipe(photo, dat, { checkMissingDat })) return Promise.resolve();
+  const key = cameraRecipeKey(dat, checkMissingDat);
+  if (!key) return Promise.resolve();
+  const version = photo.version;
+  const inflightKey = `${version}:${key}`;
+  const existing = cameraRecipePending.get(photo);
+  if (existing && existing.key === inflightKey) return existing.promise;
+
+  const resolver = options?.resolve ?? defaultCameraRecipeResolver;
+  const promise = (async () => {
+    let copyright: string | null;
+    if (photo.jpgMeta?.copyright != null) {
+      copyright = photo.jpgMeta.copyright;
+    } else {
+      let dngCopy: string | null = null;
+      if (photo.dngMeta !== null) {
+        dngCopy = photo.dngMeta.copyright ?? null;
+      } else if (photo.dngCopyrightRead === version) {
+        dngCopy = photo.dngCopyright ?? null;
+      } else if (photo.dng && dngHeadReader) {
+        const head = await dngHeadReader(photo.dng).catch(() => null);
+        if (photo.version !== version) return;
+        // 读 DNG 头部失败：不当成“没有标签”缓存，留给下一次请求重试。
+        if (!head) return;
+        dngCopy = copyrightFromTiff(new Uint8Array(head));
+        photo.dngCopyright = dngCopy;
+        photo.dngCopyrightRead = version;
+      }
+      copyright = mergeCopyright(photo.jpgMeta?.copyright, dngCopy);
+    }
+    if (photo.version !== version || cameraRecipeKey(book.dat, checkMissingDat) !== key) return;
+    let result: CameraRecipeResult;
+    if (copyright === null || !copyright.startsWith('GXR1 ')) {
+      result = { status: 'none' };
+    } else {
+      try {
+        result = await resolveCameraRecipeMemo(resolver, key, copyright, dat);
+      } catch {
+        // Worker 或传输临时出错时不缓存成 none，留给下一次请求重试。
+        return;
+      }
+    }
+    if (photo.version !== version || cameraRecipeKey(book.dat, checkMissingDat) !== key) return;
+    photo.cameraRecipe = { datKey: key, copyright, version, result };
+    for (const fn of [...cameraRecipeListeners]) fn(photo.id);
+  })()
+    .catch(() => undefined)
+    .finally(() => {
+      if (cameraRecipePending.get(photo)?.key === inflightKey) cameraRecipePending.delete(photo);
+    });
+
+  cameraRecipePending.set(photo, { key: inflightKey, promise });
+  return promise;
+}
+
+export async function ensureCameraRecipes(
+  photos: readonly Photo[],
+  book: Book,
+  options?: EnsureCameraRecipeOptions,
+): Promise<void> {
+  if (!book.dat && !options?.checkMissingDat) return;
+  await Promise.all(photos.map((photo) => ensureCameraRecipe(photo, book, options)));
 }

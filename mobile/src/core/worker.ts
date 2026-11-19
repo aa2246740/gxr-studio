@@ -2,6 +2,7 @@
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
 import init, {
+  camdata_camera_recipe,
   camdata_entries,
   camdata_parse,
   color_bake,
@@ -74,6 +75,7 @@ import { rgbaToRgb, PREVIEW_FACTOR } from './hdr_grid';
 import type {
   BakeArgs,
   CalibCheckArgs,
+  CameraRecipeArgs,
   CoreOp,
   CoreReply,
   CoreRequest,
@@ -169,6 +171,19 @@ function dat(id: number, buffer: ArrayBuffer, library: ArrayBuffer | null): void
 function resolve(id: number, args: ResolveArgs): void {
   const text = color_resolve(new Uint8Array(args.dat), new TextEncoder().encode(args.recipe), libraryView(args.library));
   ok(id, text);
+}
+
+/** Exif Copyright 拍摄标签 → 拍摄配方选择或桌面同款错误 JSON。 */
+function cameraRecipe(id: number, args: CameraRecipeArgs): void {
+  const datView = args.dat && args.dat.byteLength > 0 ? new Uint8Array(args.dat) : undefined;
+  let payload: string;
+  try {
+    payload = camdata_camera_recipe(args.tag, datView, libraryView(args.library));
+  } catch (err) {
+    const info = coreError(err);
+    payload = JSON.stringify({ error: { code: info.code ?? 'camera_recipe_error', message: info.message } });
+  }
+  ok(id, payload);
 }
 
 /** 校准包对这个单元、这个 ISO 的 model_for 检查（gxr-cli color-calib-check --dir 的同一段代码）。 */
@@ -632,6 +647,7 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'calib-restore') await calibRestore(id);
   else if (op === 'bake' && args) bake(id, args);
   else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
+  else if (op === 'camera-recipe' && req.cameraRecipe) cameraRecipe(id, req.cameraRecipe);
   else if (op === 'calib-check' && req.check) calibCheck(id, req.check);
   else if (op === 'frame-meta' && req.frameMeta) await frameMeta(id, req.frameMeta);
   else if (op === 'frame-layout' && req.frameLayout) await frameLayoutOp(id, req.frameLayout);

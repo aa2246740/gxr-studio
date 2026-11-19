@@ -2,7 +2,7 @@
 
 use wasm_bindgen::prelude::{JsValue, wasm_bindgen};
 
-use gxr_camdata::{ENTRY_BYTES, entries_from_dat, menu_json, parse_json};
+use gxr_camdata::{ENTRY_BYTES, camera_recipe_json, entries_from_dat, menu_json, parse_json};
 use gxr_raw::error_json;
 
 fn rejected(err: gxr_raw::CoreError) -> JsValue {
@@ -45,6 +45,21 @@ pub fn camdata_menu(
     let text = match dat_bytes.as_deref() {
         Some(raw) => menu_json(Some((raw, library_bytes.as_deref()))),
         None => menu_json(None),
+    }
+    .map_err(rejected)?;
+    Ok(format!("{text}\n"))
+}
+
+/// Resolve an EXIF Copyright `GXR1` tag against the loaded camera data (`recorded_recipe`).
+#[wasm_bindgen]
+pub fn camdata_camera_recipe(
+    tag_text: &str,
+    dat_bytes: Option<Vec<u8>>,
+    library_bytes: Option<Vec<u8>>,
+) -> Result<String, JsValue> {
+    let text = match dat_bytes.as_deref() {
+        Some(raw) => camera_recipe_json(tag_text, Some((raw, library_bytes.as_deref()))),
+        None => camera_recipe_json(tag_text, None),
     }
     .map_err(rejected)?;
     Ok(format!("{text}\n"))

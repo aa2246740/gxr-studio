@@ -17,10 +17,10 @@ import init, {
   type InitOutput,
 } from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
-import { mapInkError } from '../lib/export_request';
+import { mapInkError, shouldDecodeCameraJpg, shouldRetryWithCameraJpg } from '../lib/export_request';
 import { momentFromIso } from '../lib/frame_spec';
 import { shotSize, jpegSize, dngSize } from '../lib/photo_size';
-import { LUT_ERRORS } from '../lib/lut';
+import { isDisplaySpace, LUT_ERRORS } from '../lib/lut';
 import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJob } from './export_protocol';
 
 let ready: Promise<InitOutput> | null = null;
@@ -117,6 +117,16 @@ function memory(id: number, stage: ExportMemory['stage'], js: number): void {
 /** DNG 读不出全尺寸数据时，桌面改用内嵌预览（serve._raw_rgb）。只有这几种错误才去解预览再试一次。 */
 const NEEDS_PREVIEW = new Set(['raw_unreadable', 'no_jpg_source', 'raw_decode']);
 
+function isLogLutSpace(spaceText: string): boolean {
+  if (!spaceText) return false;
+  try {
+    const parsed = JSON.parse(spaceText) as { input_space?: unknown };
+    return typeof parsed.input_space === 'string' && parsed.input_space !== '' && !isDisplaySpace(parsed.input_space);
+  } catch {
+    return false;
+  }
+}
+
 async function headSlice(file: File | null): Promise<Uint8Array | null> {
   if (!file) return null;
   try {
@@ -160,10 +170,26 @@ async function runJob(job: ExportJob): Promise<void> {
     cubeBytes = new Uint8Array(lutEntry.cube);
     spaceText = lutEntry.space || '{}';
   }
-  // 5. 相机 JPG 只在要用时解码（原样导出、编辑过的相机 JPG）。
-  let jpg: { data: Uint8Array; width: number; height: number } | null = null;
-  if (jpgBytes && (req.needsJpg || plan.original)) jpg = await decodeJpeg(jpgBytes);
   const calibBlob = setup.calibBlob ? new Uint8Array(setup.calibBlob) : EMPTY;
+  // 5. 相机 JPG 在原样/JPG 路径，或缺少校准/相机数据可能走 camera-jpg-fallback 时预先解码；
+  //    部分校准包缺机身或 DNG 损坏触发回退时，下方 catch 也会按需解码再重试一次。
+  const isLogLut = Boolean(lutId && isLogLutSpace(spaceText));
+  const isLocalRecipe = (req.side as { recipe?: { kind?: unknown } }).recipe?.kind === 'local';
+  let jpg: { data: Uint8Array; width: number; height: number } | null = null;
+  if (
+    jpgBytes &&
+    shouldDecodeCameraJpg({
+      hasJpg: true,
+      needsJpg: req.needsJpg,
+      planOriginal: Boolean(plan.original),
+      isLogLut,
+      isLocalRecipe,
+      hasCalib: calibBlob.length > 0,
+      hasDat: dat.length > 0,
+    })
+  ) {
+    jpg = await decodeJpeg(jpgBytes);
+  }
   const fontIndex = setup.fontIndex ?? '';
   const fontPack = setup.fontPack ? new Uint8Array(setup.fontPack) : EMPTY;
   const logoIndex = setup.logoIndex ?? '';
@@ -185,15 +211,29 @@ async function runJob(job: ExportJob): Promise<void> {
     made = prepare(null);
   } catch (err) {
     const fail = coreFail(err);
-    const at = fail.kind === 'core' && NEEDS_PREVIEW.has(fail.code) && dngBytes ? (JSON.parse(export_meta_preview(dngBytes)) as { offset: number; length: number } | null) : null;
-    if (!at || !dngBytes) throw fail;
-    let preview: { data: Uint8Array; width: number; height: number } | null = null;
-    try {
-      preview = await decodeJpeg(dngBytes.subarray(at.offset, at.offset + at.length));
-    } catch {
-      throw fail;
+    if (
+      jpgBytes &&
+      shouldRetryWithCameraJpg({
+        hasJpg: true,
+        alreadyDecodedJpg: jpg !== null,
+        failKind: fail.kind,
+        failCode: fail.code,
+        failMessage: fail.message,
+      })
+    ) {
+      jpg = await decodeJpeg(jpgBytes);
+      made = prepare(null);
+    } else {
+      const at = fail.kind === 'core' && NEEDS_PREVIEW.has(fail.code) && dngBytes ? (JSON.parse(export_meta_preview(dngBytes)) as { offset: number; length: number } | null) : null;
+      if (!at || !dngBytes) throw fail;
+      let preview: { data: Uint8Array; width: number; height: number } | null = null;
+      try {
+        preview = await decodeJpeg(dngBytes.subarray(at.offset, at.offset + at.length));
+      } catch {
+        throw fail;
+      }
+      made = prepare(preview);
     }
-    made = prepare(preview);
   }
   // WASM 有了自己的那份：解码的像素和用不到的源文件马上放掉，只留 complete 写 EXIF 要的那份源文件。
   jpg = null;

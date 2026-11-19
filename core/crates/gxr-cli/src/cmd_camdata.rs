@@ -4,8 +4,8 @@ use std::io::Read;
 use std::path::Path;
 
 use gxr_camdata::{
-    ENTRY_BYTES, MAX_DAT_BYTES, MAX_LIBRARY_BYTES, NAMES, SLOTS, check_json_depth,
-    entries_from_dat, knob_table_json, menu_json, parse_json, parse_recipe_tag,
+    ENTRY_BYTES, MAX_DAT_BYTES, MAX_LIBRARY_BYTES, NAMES, SLOTS, camera_recipe_json,
+    check_json_depth, entries_from_dat, knob_table_json, menu_json, parse_json, parse_recipe_tag,
     parse_recipe_tag_bytes, recipe_tag_to_json,
 };
 use gxr_raw::{CoreError, Json};
@@ -165,6 +165,23 @@ pub fn run(command: &str, args: &[String]) -> Result<Output, Failure> {
                 text: recipe_tag_to_json(parsed.as_ref()).render(),
                 ok: true,
             })
+        }
+        "camdata-camera-recipe" => {
+            let tag_text = if let Some(hex) = opt_option(args, "--tag-hex")? {
+                let bytes = decode_hex(hex)?;
+                String::from_utf8(bytes).unwrap_or_default()
+            } else {
+                common::option(args, "--tag")?.to_string()
+            };
+            let text = match opt_option(args, "--dat")? {
+                Some(dat_path) => {
+                    let raw = read_bounded(dat_path, MAX_DAT_BYTES)?;
+                    let library = read_optional_library(args)?;
+                    camera_recipe_json(&tag_text, Some((&raw, library.as_deref())))?
+                }
+                None => camera_recipe_json(&tag_text, None)?,
+            };
+            Ok(Output { text, ok: true })
         }
         _ => Err(Failure::Usage(format!("unknown command {command:?}"))),
     }

@@ -1,6 +1,7 @@
 // 编辑器里的「调整」页：十个基础调整滑块、双指/长按重置、拖动中状态和 rev 记录。
 
 import type { Adjust } from '../../../frontend/src/index';
+import { curveJson } from '../lib/export_request';
 import { button, el } from './dom';
 import { zeroKnobs, type Knobs, type Photo } from './model';
 
@@ -43,6 +44,7 @@ export interface AdjustHost {
   enterDrag(): void;
   leaveDrag(): void;
   dragging(): boolean;
+  refreshCurves?(): void;
 }
 
 export class AdjustView {
@@ -108,12 +110,16 @@ export class AdjustView {
     reset.addEventListener('click', () => {
       const photo = this.host.photo();
       if (!photo) return;
-      // 全都已经是 0：没有修改，不加 rev（不然撤销套用时会当成套用之后又改过）。
-      if (Object.values(photo.knobs).every((value) => value === 0)) return;
+      // 滑块全是 0 且没有曲线：没有修改，不加 rev（不然撤销套用时会当成套用之后又改过）。
+      const knobsZero = Object.values(photo.knobs).every((value) => value === 0);
+      const hasCurve = curveJson(photo.curve) !== null;
+      if (knobsZero && !hasCurve) return;
       photo.knobs = zeroKnobs();
+      photo.curve = null;
       photo.rev += 1;
       this.showKnob();
       this.host.push();
+      this.host.refreshCurves?.();
     });
     hint.append(reset);
     panel.append(hist, chips, big, hint);

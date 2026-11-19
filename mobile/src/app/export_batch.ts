@@ -66,6 +66,7 @@ export interface BatchItem {
   dng: File | null;
   jpg: File | null;
   req: ExportRequest;
+  cameraRecipeNote?: string;
 }
 
 /** `saved`：已经交给共享面板（点了「好」）。 */

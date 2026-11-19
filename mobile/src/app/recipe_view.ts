@@ -5,13 +5,14 @@ import type { Engine, Geometry } from '../../../frontend/src/index';
 import { crossed, uncalibratedReason, unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
-import { cardTag, choices, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, shelf, shelves, type Card, type Control, type Shelf, type Shelves } from '../lib/recipes';
+import { adoptedSelectionOf, CAMERA_RECIPE_LEVELS_UNKNOWN, cameraRecipeErrorOf, cardTag, choices, DEFAULT_CARD, effective, formatCameraRecipeEditorError, KNOB_NAMES, levelText, namesOnly, nearestIndex, recipeUnitOf, shelf, shelves } from '../lib/recipes';
+import type { AdoptedSelection, CameraRecipeError, Card, Control, Shelf, Shelves } from '../lib/recipes';
 import { recipeSwitch } from '../lib/recipe_memory';
 import type { UnitState } from './book';
 import { button, el, icon } from './dom';
 import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
-import type { AppApi, Photo } from './model';
+import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, type AppApi, type Photo } from './model';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const WARN = 'M12 4l9 16H3zM12 10v4M12 17h.01';
@@ -32,8 +33,6 @@ const ADJUST = {
 /** 桌面 lut.js 的那句；手机上没有本机配方，只用前半句。 */
 const MINE_EMPTY = '电脑上还没有我的配方。';
 const NEUTRAL_LABEL = '中性转换';
-/** 没选配方时桌面的 selection 是这个单元的原厂 04（`{ unit, slot: 4, levels: {} }`）。 */
-const DEFAULT_CARD = 'builtin:4';
 const PREDICTED_LABEL = '电脑预测';
 
 export interface StageHooks {
@@ -66,6 +65,8 @@ interface Scene {
   state: UnitState;
   list: Shelves | null;
   generation: number | null;
+  adopted: AdoptedSelection | null;
+  camError: CameraRecipeError | null;
 }
 
 export class RecipeView {
@@ -85,6 +86,7 @@ export class RecipeView {
   /** 已经打开的 06d 提示。解析晚到时 `refresh` 改这几句，读成功就关掉。 */
   private askLeads: HTMLElement | null = null;
   private readonly off: () => void;
+  private readonly offCam: () => void;
 
   constructor(
     private readonly api: AppApi,
@@ -94,6 +96,10 @@ export class RecipeView {
   ) {
     this.strip.dataset.recipes = '1';
     this.off = api.book().onChange(() => this.refresh());
+    this.offCam = onCameraRecipe((id) => {
+      if (id === this.photo.id) this.refresh();
+    });
+    void ensureCameraRecipe(this.photo, api.book());
     this.build();
   }
 
@@ -108,6 +114,7 @@ export class RecipeView {
   destroy(): void {
     this.token += 1;
     this.off();
+    this.offCam();
     this.closeAsk();
   }
 
@@ -135,10 +142,12 @@ export class RecipeView {
 
   private scene(): Scene {
     const book = this.api.book();
+    const dat = book.dat;
+    const adopted = adoptedSelectionOf(this.photo, dat);
+    const camError = cameraRecipeErrorOf(this.photo, dat);
     const meta = mergeMeta(this.photo.jpgMeta, this.photo.dngMeta);
     const photoUnit = unitOfLens(meta.lens);
-    const unit = photoUnit ?? 'jlaunch';
-    const dat = book.dat;
+    const unit = recipeUnitOf(this.photo.choice, adopted, photoUnit);
     return {
       raw: this.photo.dng !== null,
       gpu: this.engine !== null,
@@ -149,6 +158,8 @@ export class RecipeView {
       state: book.unitState(unit),
       list: dat ? shelves(dat.listing, unit) : null,
       generation: dat?.generation ?? null,
+      adopted,
+      camError,
     };
   }
 
@@ -158,13 +169,14 @@ export class RecipeView {
   }
 
   /**
-   * 这张卡在这张照片上会用的档位（桌面 recipeTarget）：选中的配方用它自己的档位；没选配方时默认的原厂 04 档位为空；
-   * 别的卡用 memory 里上次切走时记下的。undefined 就是全用配方自己的默认。
+   * 这张卡在这张照片上会用的档位（桌面 recipeTarget）：显式选中的配方用自己的档位；未显式选中但采用了拍摄配方时用拍摄微调；
+   * 都没命中时默认的原厂 04 档位为空；别的卡用 memory 里上次切走时记下的。
    */
-  private levelsOf(card: Card): Record<string, number> | undefined {
+  private levelsOf(card: Card, scene: Scene): Record<string, number> | undefined {
     const choice = this.photo.choice;
     if (choice?.id === card.id) return this.photo.levels.get(card.id);
-    if (!choice && card.id === DEFAULT_CARD) return undefined;
+    if (!choice && scene.adopted?.choice.id === card.id) return scene.adopted.levels;
+    if (!choice && !scene.adopted && card.id === DEFAULT_CARD) return undefined;
     return this.photo.memory.get(card.id);
   }
 
@@ -174,11 +186,22 @@ export class RecipeView {
     return shelf(scene.list, 'all').find((card) => card.id === choice.id) ?? null;
   }
 
-  /** 没选配方时桌面用这个单元的原厂 04（电脑模拟）。 */
+  private adoptedCard(scene: Scene): Card | null {
+    const adopted = scene.adopted;
+    if (!adopted || !scene.list || adopted.choice.unit !== scene.unit) return null;
+    return shelf(scene.list, 'all').find((card) => card.id === adopted.choice.id) ?? null;
+  }
+
+  /** 卡片条上亮起勾选的卡（对齐桌面 recipes.js:103：显式选中或采用的拍摄配方亮起，未打标回退不亮）。 */
+  private activeCard(scene: Scene): Card | null {
+    return this.chosen(scene) ?? this.adoptedCard(scene);
+  }
+
+  /** 标题、旋钮与舞台用的配方：显式选中 > 拍摄配方采用 > 原厂 04 兜底。 */
   private target(scene: Scene): Card | null {
-    const picked = this.chosen(scene);
-    if (picked) return picked;
-    return scene.list?.builtin.find((card) => card.slot === 4) ?? null;
+    const active = this.activeCard(scene);
+    if (active) return active;
+    return scene.list?.builtin.find((card) => card.id === DEFAULT_CARD) ?? null;
   }
 
   private build(): void {
@@ -190,6 +213,7 @@ export class RecipeView {
   refresh(): void {
     if (!this.strip.isConnected && this.slots.length) return;
     const token = ++this.token;
+    void ensureCameraRecipe(this.photo, this.api.book());
     const scene = this.scene();
     this.buildStrip(scene);
     this.buildPanel(scene);
@@ -201,7 +225,7 @@ export class RecipeView {
   private buildStrip(scene: Scene): void {
     const cards = this.cardsOf(scene);
     const locked = scene.raw && !scene.dat;
-    const picked = this.chosen(scene);
+    const picked = this.activeCard(scene);
     this.strip.dataset.state = !scene.raw ? 'jpg-only' : locked ? 'no-recipe-file' : scene.state.state === 'ready' ? 'calibrated' : 'uncalibrated';
     const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
     if (isEmpty) {
@@ -297,7 +321,7 @@ export class RecipeView {
         bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = text = NEUTRAL_LABEL;
       } else {
-        const key = this.api.book().bakeKey(card, scene.unit, scene.iso, this.levelsOf(card));
+        const key = this.api.book().bakeKey(card, scene.unit, scene.iso, this.levelsOf(card, scene));
         const look = key ? lookCache.get(this.photo, key) : null;
         if (look) {
           bitmap = look;
@@ -362,6 +386,18 @@ export class RecipeView {
     row.append(right);
     head.append(row);
     this.panel.append(head);
+    if (scene.camError) {
+      const box = el('div', 'bn');
+      box.dataset.cameraRecipeError = scene.camError.code;
+      const mark = el('span', 'warn');
+      mark.append(icon(WARN));
+      box.append(mark, el('div', 'tx', formatCameraRecipeEditorError(scene.camError.message)));
+      this.panel.append(box);
+    } else if (scene.adopted?.levelsUnknown) {
+      const note = el('p', 'pad faint small', CAMERA_RECIPE_LEVELS_UNKNOWN);
+      note.dataset.cameraRecipeNote = 'levels-unknown';
+      this.panel.append(note);
+    }
     this.panel.append(this.statusBlock(scene, off));
     if (book.datNote) this.panel.append(el('p', 'pad faint small', book.datNote));
     // 设计稿上只有已校准（03a）才有分组和旋钮；没校准（06c）的面板留给导入的说明。
@@ -449,7 +485,7 @@ export class RecipeView {
 
   private knobRow(scene: Scene, card: Card, control: Control): HTMLElement {
     const levels = choices(control, scene.generation);
-    const current = effective(control, this.levelsOf(card));
+    const current = effective(control, this.levelsOf(card, scene));
     const row = el('div', 'krow');
     row.dataset.knob = control.name;
     const value = el('span', 'val num', levelText(control, current));
@@ -485,25 +521,29 @@ export class RecipeView {
   /** 松手：记下这个配方的这一档，选上它，重新 resolve + 烘焙（照片在新表做好之前留着上一张）。 */
   private setLevel(card: Card, name: string, level: number): void {
     const scene = this.scene();
-    // 只记用户动过的旋钮（桌面 recipes.js 的 ensureRecipe(view).levels[name] = …）：没动过的取这个配方的默认，
-    // 导出时交给 sidecar 的 levels 才和桌面写的一样（UI-M3）。memory 不动；没选配方时 ensureRecipe 从空档位开始。
-    const next: Record<string, number> = this.photo.choice?.id === card.id ? { ...(this.photo.levels.get(card.id) ?? {}) } : {};
+    // 显式选中或采用拍摄配方后动旋钮，保留该配方已有档位；未命中时从空档位开始（对齐桌面 ensureRecipe）。
+    const isAdopted = !this.photo.choice && scene.adopted?.choice.id === card.id;
+    const base = this.photo.choice?.id === card.id ? (this.photo.levels.get(card.id) ?? {}) : isAdopted && scene.adopted ? scene.adopted.levels : {};
+    const next: Record<string, number> = { ...base };
     // 这一档现在的有效值（没存的就是配方自己的默认，比如强度 100）已经是它：没有修改，不加 rev、不重烘。
     const control = card.controls.find((c) => c.name === name);
-    if (this.photo.choice?.id === card.id && control && effective(control, next) === level) return;
+    if ((this.photo.choice?.id === card.id || isAdopted) && control && effective(control, next) === level) return;
     next[name] = level;
     this.photo.levels = new Map([[card.id, next]]);
     this.photo.rev += 1;
     if (this.photo.choice?.id !== card.id) {
       this.photo.choice = { id: card.id, unit: scene.unit };
+      this.photo.recipeOff = false;
+      this.panel.querySelector('[data-camera-recipe-note],[data-camera-recipe-error]')?.remove();
       for (const slot of this.slots) {
         slot.node.classList.remove('on');
         slot.thumb.querySelector('.ckk')?.remove();
         if (slot.card.id === card.id) this.mark(slot.node, slot.thumb);
       }
     }
-    this.applyLook(scene);
-    void this.renderCards(scene, this.token);
+    const nextScene = this.scene();
+    this.applyLook(nextScene);
+    void this.renderCards(nextScene, this.token);
   }
 
   /** 点一张卡：记进这张照片的编辑状态，照片换成它（烘焙表没好之前留着上一张）。 */
@@ -517,21 +557,29 @@ export class RecipeView {
     if (!card.controls.length) return;
     // 桌面 switchRecipe：切走的那个记进 memory，新配方取回上次的档位；已经是它就什么都不改。
     const choice = this.photo.choice;
-    const currentId = choice?.id ?? DEFAULT_CARD;
+    const adopted = scene.adopted;
+    const currentId = choice?.id ?? adopted?.choice.id ?? DEFAULT_CARD;
     const currentCard = scene.list ? shelf(scene.list, 'all').find((item) => item.id === currentId) ?? null : null;
-    const switched = recipeSwitch(this.photo.memory, { id: currentId, card: currentCard, levels: choice ? this.photo.levels.get(currentId) : undefined, chosen: choice !== null }, card);
+    const currentLevels = choice ? this.photo.levels.get(currentId) : adopted ? adopted.levels : undefined;
+    const switched = recipeSwitch(
+      this.photo.memory,
+      { id: currentId, card: currentCard, levels: currentLevels, chosen: choice !== null || adopted !== null },
+      card,
+    );
     if (switched.same) return;
     this.photo.memory = switched.memory;
     this.photo.levels = new Map([[card.id, switched.levels]]);
     this.photo.choice = { id: card.id, unit: scene.unit };
+    this.photo.recipeOff = false;
     this.photo.rev += 1;
     for (const slot of this.slots) {
       slot.node.classList.remove('on');
       slot.thumb.querySelector('.ckk')?.remove();
       if (slot.card.id === card.id) this.mark(slot.node, slot.thumb);
     }
-    this.buildPanel(scene);
-    this.applyLook(scene);
+    const nextScene = this.scene();
+    this.buildPanel(nextScene);
+    this.applyLook(nextScene);
   }
 
   /** 舞台上的配方。校准好了用这张卡的烘焙表；否则中性转换。 */
@@ -539,13 +587,13 @@ export class RecipeView {
     if (!scene.raw || !this.engine || this.hooks.mode() !== 'raw') return;
     const target = this.target(scene);
     const book = this.api.book();
-    const ready = scene.dat && scene.state.state === 'ready' && target !== null;
+    const ready = scene.dat && scene.state.state === 'ready' && target !== null && !needsCameraRecipe(this.photo, book.dat);
     if (!target || !ready) {
       this.wanted = NEUTRAL_BAKE_KEY;
       this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
       return;
     }
-    const levels = this.levelsOf(target);
+    const levels = this.levelsOf(target, scene);
     const key = book.bakeKey(target, scene.unit, scene.iso, levels);
     if (key && book.ready(key)) {
       this.wanted = key;
@@ -581,8 +629,8 @@ export class RecipeView {
   private async renderCards(scene: Scene, token: number): Promise<void> {
     const engine = this.engine;
     const source = this.rawKey;
-    if (!engine || !source || !scene.raw || !scene.dat || !scene.list || scene.state.state !== 'ready') return;
     const book = this.api.book();
+    if (!engine || !source || !scene.raw || !scene.dat || !scene.list || scene.state.state !== 'ready' || needsCameraRecipe(this.photo, book.dat)) return;
     const photo = this.photo;
     const version = photo.version;
     const session = this.api.session();
@@ -596,9 +644,9 @@ export class RecipeView {
     for (const card of order) {
       if (seen.has(card.id) || !card.controls.length) continue;
       seen.add(card.id);
-      const known = book.bakeKey(card, scene.unit, scene.iso, this.levelsOf(card));
+      const known = book.bakeKey(card, scene.unit, scene.iso, this.levelsOf(card, scene));
       if (known && lookCache.get(photo, known)) continue;
-      const bake = book.bake(card, scene.unit, scene.iso, this.levelsOf(card));
+      const bake = book.bake(card, scene.unit, scene.iso, this.levelsOf(card, scene));
       bake.catch(() => undefined);
       jobs.push({ card, bake });
     }
@@ -623,7 +671,7 @@ export class RecipeView {
       let gpu = book.gpuKey(key);
       if (!gpu) {
         try {
-          await book.bake(job.card, scene.unit, scene.iso, this.levelsOf(job.card));
+          await book.bake(job.card, scene.unit, scene.iso, this.levelsOf(job.card, scene));
         } catch {
           continue;
         }
