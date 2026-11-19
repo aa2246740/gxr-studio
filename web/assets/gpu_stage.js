@@ -112,6 +112,20 @@ const DISPLAY_SPACES = ['srgb', 'rec709', 'gamma24'];
 export function decide(ed, info, stage, recipe, lutSpace) {
   if (!ed || !ed.v2 || !info || !info.enabled) return null;
   if (stage !== 'final' && stage !== 'uncropped') return null;
+  const pair = info.pair;
+  if (pair) {
+    const s0 = pair.sources && pair.sources[0];
+    const s1 = pair.sources && pair.sources[1];
+    if (!(s0 && s1 && s0.raw && s1.raw)) return null;
+    if (ed.lut) {
+      if (!lutSpace) return null;
+      if (!DISPLAY_SPACES.includes(lutSpace)) {
+        return s0.scene && s1.scene ? { base: 'pair-raw', recipe: undefined, lut: ed.lut } : null;
+      }
+      return { base: 'pair-raw', recipe: recipe ?? null, lut: ed.lut };
+    }
+    return { base: 'pair-raw', recipe: recipe ?? null, lut: null };
+  }
   const raw = info.raw;
   const jpg = info.jpg;
   const hasDng = info.raw_reason !== 'no_raw';
@@ -134,6 +148,7 @@ export function decide(ed, info, stage, recipe, lutSpace) {
 // ---- 资源 ---------------------------------------------------------------------
 
 function sourceKey(id, info, base) {
+  if (base === 'pair-raw') return `pair:${id}:${info.pair.sources[0].raw.url}|${info.pair.sources[1].raw.url}`;
   return base === 'raw' ? `raw:${id}:${info.raw.url}` : `jpg:${id}:${info.jpg.url}`;
 }
 
@@ -141,7 +156,26 @@ function ensureSource(id, info, base) {
   const key = sourceKey(id, info, base);
   if (engine.hasSource(key)) return null;
   return once(key, async (current) => {
-    if (base === 'raw') {
+    if (base === 'pair-raw') {
+      const [s0, s1] = info.pair.sources;
+      const [r0, r1] = await Promise.all([binary(s0.raw.url), binary(s1.raw.url)]);
+      if (current()) {
+        await engine.addPairRaw(
+          key,
+          {
+            first_half: info.pair.first_half,
+            orientation: info.pair.orientation,
+            window: info.pair.window,
+            sources: [
+              { layout: s0.raw, scene: s0.scene },
+              { layout: s1.raw, scene: s1.scene },
+            ],
+          },
+          r0.data,
+          r1.data,
+        );
+      }
+    } else if (base === 'raw') {
       const { data } = await binary(info.raw.url);
       if (current()) await engine.addRaw(key, info.raw, data, info.scene);
     } else {
@@ -156,15 +190,16 @@ function ensureSource(id, info, base) {
 }
 
 // 链接里带相机数据版本：换了相机数据就是另一份表
-function bakeUrl(id, recipe) {
+function bakeUrl(id, recipe, half = null) {
   const dv = encodeURIComponent(String(state.camdata?.dataVersion ?? ''));
-  return `/api/photos/${id}/bake?dv=${dv}${recipe ? `&recipe=${encodeURIComponent(JSON.stringify(recipe))}` : ''}`;
+  const hq = half === null || half === undefined ? '' : `&half=${half}`;
+  return `/api/photos/${id}/bake?dv=${dv}${hq}${recipe ? `&recipe=${encodeURIComponent(JSON.stringify(recipe))}` : ''}`;
 }
 
 const bakeMeta = new Map(); // 请求链接 → 描述（键、标签、是否已标定）
 
-function ensureBake(id, recipe) {
-  const url = bakeUrl(id, recipe);
+function ensureBake(id, recipe, half = null) {
+  const url = bakeUrl(id, recipe, half);
   const meta = bakeMeta.get(url);
   if (meta && engine.hasBake(meta.key)) return null;
   return once(url, async (current) => {
@@ -192,6 +227,7 @@ function ensureLut(cubeId) {
 
 // 颜色层（半分辨率 RAW 或相机 JPG）的宽高，和这张照片全尺寸（已转正）的宽高
 function layerSize(info, base) {
+  if (base === 'pair-raw') return { w: info.pair.layer[0], h: info.pair.layer[1], fw: info.pair.full[0], fh: info.pair.full[1] };
   if (base === 'raw') return { w: info.raw.layer[0], h: info.raw.layer[1], fw: info.raw.full[0], fh: info.raw.full[1] };
   return null;
 }
@@ -251,13 +287,18 @@ export function route(view, ctx, rerun) {
   const plan = decide(ed, info, ctx.stage, ctx.recipe, lutSpace);
   if (!plan) return 'server';
   const loads = [];
+  const isPair = plan.base === 'pair-raw';
   const sKey = sourceKey(id, info, plan.base);
   if (failed.has(sKey)) return 'server';
-  const needBake = plan.base === 'raw' && plan.recipe !== undefined;
-  const bUrl = needBake ? bakeUrl(id, plan.recipe) : null;
-  if (bUrl && failed.has(bUrl)) return 'server';
+  const needBake = (plan.base === 'raw' || isPair) && plan.recipe !== undefined;
+  const bUrl = needBake ? bakeUrl(id, plan.recipe, isPair ? 0 : null) : null;
+  const bUrl2 = needBake && isPair ? bakeUrl(id, plan.recipe, 1) : null;
+  if ((bUrl && failed.has(bUrl)) || (bUrl2 && failed.has(bUrl2))) return 'server';
   loads.push(ensureSource(id, info, plan.base));
-  if (needBake) loads.push(ensureBake(id, plan.recipe));
+  if (needBake) {
+    loads.push(ensureBake(id, plan.recipe, isPair ? 0 : null));
+    if (isPair) loads.push(ensureBake(id, plan.recipe, 1));
+  }
   if (plan.lut) loads.push(ensureLut(plan.lut));
   const live = loads.filter(Boolean);
   if (live.length) {
@@ -273,8 +314,10 @@ export function route(view, ctx, rerun) {
   if (box === 'server') return 'server';
   engine.show(sKey);
   const bake = bUrl ? bakeMeta.get(bUrl) : null;
+  const bake2 = bUrl2 ? bakeMeta.get(bUrl2) : null;
   engine.setLook({
     recipe: bake ? bake.key : null,
+    ...(isPair ? { recipe2: bake2 ? bake2.key : null } : {}),
     lut: plan.lut ? lutMeta.get(plan.lut).key : null,
     lutStrength: 1,
     adjust: ctx.adjust,
@@ -293,12 +336,18 @@ export function route(view, ctx, rerun) {
     ed.calibrated = null;
   } else {
     ed.label = 'prediction';
-    ed.calibrated = plan.lut ? false : bake ? !!bake.calibrated : null;
+    ed.calibrated = plan.lut
+      ? false
+      : isPair
+        ? (bake && bake2 ? !!(bake.calibrated && bake2.calibrated) : null)
+        : bake
+          ? !!bake.calibrated
+          : null;
   }
   view.gpuActive = ctx.stage;
   view.gpuFull = full(info, plan.base, layer, g);
   // 导出时（已裁切）照片的像素：边框和时间戳的版面按它算（stage_finish.js），浏览器自己画，不请服务器
-  const grow = plan.base === 'raw' ? info.raw.full[0] / info.raw.layer[0] : 1;
+  const grow = isPair ? info.pair.full[0] / info.pair.layer[0] : plan.base === 'raw' ? info.raw.full[0] / info.raw.layer[0] : 1;
   const exact = expands(g) && ctx.stage === 'final' ? fullBox(id, exportFrame(info, plan.base, layer), g, ctx.crop || null, rerun) : null;
   view.gpuExport = exportSize(engine.finalSize(), grow, g, exact, view.gpuFull, expands(g) ? engine.canvasSize() : null);
   // 精确的导出框到了：成片按导出的宽高比显示（半分辨率的成片比例和导出差一点，边框里的洞是导出的比例）。框到之前仍是成片自己的比例。
@@ -306,7 +355,18 @@ export function route(view, ctx, rerun) {
   engine.setDisplayAspect(view.gpuAspect);
   // Backdrops must follow the look actually installed in the engine. A pending
   // recipe table can leave the old photo visible while the edit draft is new.
-  view.gpuFinishKey=JSON.stringify([generation,sKey,bake?.key,plan.lut?lutMeta.get(plan.lut).key:null,ctx.adjust,ctx.curve,g,ctx.stage==='final'?box.box:null,view.gpuAspect]);
+  view.gpuFinishKey = JSON.stringify([
+    generation,
+    sKey,
+    bake?.key,
+    ...(isPair ? [bake2?.key] : []),
+    plan.lut ? lutMeta.get(plan.lut).key : null,
+    ctx.adjust,
+    ctx.curve,
+    g,
+    ctx.stage === 'final' ? box.box : null,
+    view.gpuAspect,
+  ]);
   ed.error = null;
   ed.busy = false;
   prefetch(view);
@@ -315,6 +375,7 @@ export function route(view, ctx, rerun) {
 
 // 导出时的画面（转正后、纠正之前）的像素：RAW 是全尺寸，相机 JPG 就是它自己
 function exportFrame(info, base, layer) {
+  if (base === 'pair-raw') return { w: info.pair.full[0], h: info.pair.full[1] };
   return base === 'raw' ? { w: info.raw.full[0], h: info.raw.full[1] } : layer;
 }
 
@@ -347,7 +408,7 @@ function boxFor(view, id, layer, ctx, rerun) {
 // 全尺寸（已转正、按 90° 旋转交换宽高）：裁剪页显示的像素数要和导出一致
 function full(info, base, layer, g) {
   const swap = (g.rotate90 || 0) % 2 === 1;
-  const size = base === 'raw' ? layerSize(info, base) : { fw: layer.w, fh: layer.h };
+  const size = base === 'raw' || base === 'pair-raw' ? layerSize(info, base) : { fw: layer.w, fh: layer.h };
   if (expands(g) && warpApi) return warpCanvas(warpApi, g, size.fw, size.fh); // 透视 / 畸变扩大画布：按全尺寸算（和导出同一个 _expanded_bounds）
   return swap ? { w: size.fh, h: size.fw } : { w: size.fw, h: size.fh };
 }
@@ -355,7 +416,8 @@ function full(info, base, layer, g) {
 // 左右相邻的照片先把源图传上显卡，换照片时只需换绑定
 // 每张照片在每一代只预取一次（不在每次滑块输入时重发请求）；相邻照片的 rev 变了才重取它的配方表
 function prefetch(view) {
-  const here = `${view.photo.id}@${generation}`;
+  const gen = generation;
+  const here = `${view.photo.id}@${gen}`;
   if (lastPrefetch === here) return;
   lastPrefetch = here;
   const list = state.photos || [];
@@ -364,20 +426,32 @@ function prefetch(view) {
   for (let d = -PREFETCH; d <= PREFETCH; d++) {
     const p = list[at + d];
     if (!d || !p) continue;
-    const tag = `${p.id}:${p.sidecar_rev || 0}@${generation}`;
+    const tag = `${p.id}:${p.sidecar_rev || 0}@${gen}`;
     if (prefetched.has(tag)) continue;
     prefetched.add(tag);
     photoInfo(p.id).then((info) => {
-      if (!engine || !info.enabled) return;
-      // 编辑过（有配方或 LUT）的照片多半用 RAW；没编辑过、有相机 JPG 的用 JPG
-      const base = info.raw && ((p.sidecar_rev || 0) > 0 || !info.jpg) ? 'raw' : info.jpg ? 'jpg' : null;
+      if (gen !== generation || !engine || !info.enabled) return;
+      // 半格一对默认走两张 RAW 合成；单张编辑过（有配方或 LUT）多半用 RAW；没编辑过、有相机 JPG 的用 JPG
+      const base = info.pair && info.pair.sources?.[0]?.raw && info.pair.sources?.[1]?.raw
+        ? 'pair-raw'
+        : info.raw && ((p.sidecar_rev || 0) > 0 || !info.jpg)
+          ? 'raw'
+          : info.jpg
+            ? 'jpg'
+            : null;
       if (base) ensureSource(p.id, info, base)?.catch(() => {});
       // 配方表：服务器第一次烘焙一个条目要 0.1–0.2 秒，先替下一张做掉
-      if (base === 'raw') {
+      if (base === 'raw' || base === 'pair-raw') {
         api(`/api/photos/${p.id}/edit`).then((edit) => {
+          if (gen !== generation || !engine) return;
           const r = edit && edit.recipe;
           const body = r ? { kind: r.kind || 'builtin', ...(r.id ? { id: r.id } : {}), unit: r.unit, slot: r.slot, levels: r.levels || {} } : null;
-          ensureBake(p.id, body)?.catch(() => {});
+          if (base === 'pair-raw') {
+            ensureBake(p.id, body, 0)?.catch(() => {});
+            ensureBake(p.id, body, 1)?.catch(() => {});
+          } else {
+            ensureBake(p.id, body)?.catch(() => {});
+          }
         }).catch(() => {});
       }
     }).catch(() => {});
@@ -449,11 +523,17 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
   if (!engine) return 'wait';
   if (ed.lut && !lutMeta.has(ed.lut)) return failed.has(`lut:${ed.lut}`) ? null : 'wait';
   const plan = decide(ed, info, 'final', recipe, ed.lut ? (lutMeta.get(ed.lut).table8 ? 'srgb' : 'log') : null);
-  if (!plan || plan.base !== 'raw' || plan.recipe === undefined) return null;
-  const sKey = sourceKey(id, info, 'raw');
-  const url = bakeUrl(id, plan.recipe);
-  if (failed.has(sKey) || failed.has(url)) return null;
-  const loads = [ensureSource(id, info, 'raw'), ensureBake(id, plan.recipe)].filter(Boolean);
+  if (!plan || (plan.base !== 'raw' && plan.base !== 'pair-raw') || plan.recipe === undefined) return null;
+  const isPair = plan.base === 'pair-raw';
+  const sKey = sourceKey(id, info, plan.base);
+  const url = bakeUrl(id, plan.recipe, isPair ? 0 : null);
+  const url2 = isPair ? bakeUrl(id, plan.recipe, 1) : null;
+  if (failed.has(sKey) || failed.has(url) || (url2 && failed.has(url2))) return null;
+  const loads = [
+    ensureSource(id, info, plan.base),
+    ensureBake(id, plan.recipe, isPair ? 0 : null),
+    ...(isPair ? [ensureBake(id, plan.recipe, 1)] : []),
+  ].filter(Boolean);
   if (loads.length) {
     try {
       await Promise.all(loads);
@@ -462,7 +542,19 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
     }
   }
   const meta = bakeMeta.get(url);
-  if (gen !== generation || view.ed !== ed || view.disposed || !engine || disabled || !flagOn() || !meta || !engine.hasBake(meta.key) || !engine.hasSource(sKey)) return 'wait';
+  const meta2 = url2 ? bakeMeta.get(url2) : null;
+  if (
+    gen !== generation
+    || view.ed !== ed
+    || view.disposed
+    || !engine
+    || disabled
+    || !flagOn()
+    || !meta
+    || !engine.hasBake(meta.key)
+    || (isPair && (!meta2 || !engine.hasBake(meta2.key)))
+    || !engine.hasSource(sKey)
+  ) return 'wait';
   if (!still()) return 'wait';
   const g = normalGeometry(ctx.geometry);
   const box = boxFor(view, id, engine.sourceSize(sKey), ctx, () => {});
@@ -471,7 +563,14 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
   if (!still()) return 'wait';
   const out = await engine.thumb({
     source: sKey,
-    look: { recipe: meta.key, lut: plan.lut ? lutMeta.get(plan.lut).key : null, lutStrength: 1, adjust: ctx.adjust, curve: ctx.curve },
+    look: {
+      recipe: meta.key,
+      ...(isPair ? { recipe2: meta2.key } : {}),
+      lut: plan.lut ? lutMeta.get(plan.lut).key : null,
+      lutStrength: 1,
+      adjust: ctx.adjust,
+      curve: ctx.curve,
+    },
     geometry: { ...g, box: box.box },
     aspect: view.gpuAspect || null,
     maxEdge: edge,
