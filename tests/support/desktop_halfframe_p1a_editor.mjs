@@ -345,6 +345,30 @@ try {
     return { untouched, dirty, rebuiltOnShow: !!card && card !== oldCard };
   });
 
+  // 3d2) Focus inside the recipe pane: the rebuild waits until focus leaves the pane (not on an internal move).
+  out.steps.recipeFocusGuard = await page.evaluate(async () => {
+    const [v, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/state.js')]);
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    const view = v.currentView();
+    const content = view.panes.recipe.content;
+    const fields = [...content.querySelectorAll('select, input, button')].filter((el) => !el.disabled);
+    if (fields.length < 2) return { field: false, count: fields.length };
+    const [field, other] = fields;
+    const before = document.querySelector('.lcard');
+    field.focus();
+    st.emit('camdata-ready-changed');
+    await new Promise((r) => setTimeout(r, 30));
+    const waited = document.querySelector('.lcard') === before;
+    other.focus(); // a move inside the pane must keep waiting
+    await new Promise((r) => setTimeout(r, 50));
+    const waitedAfterMove = document.querySelector('.lcard') === before && document.activeElement === other;
+    other.blur();
+    await new Promise((r) => setTimeout(r, 50));
+    const after = document.querySelector('.lcard');
+    return { field: true, waited, waitedAfterMove, rebuiltAfterBlur: !!after && after !== before };
+  });
+
   // 3e) A change in progress on another tab (e.g. stamp text) must not have its pane rebuilt when it ends.
   out.steps.stampTabGuard = await page.evaluate(async () => {
     const [v, pv, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/preview.js'), import('/assets/state.js')]);

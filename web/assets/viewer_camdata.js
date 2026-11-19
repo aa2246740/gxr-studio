@@ -24,13 +24,17 @@ on('camdata-ready-changed', () => {
   }
   const el = pane.content;
   if (el && el.contains(document.activeElement)) {
-    const later = () => {
-      if (currentView() !== v) return;
-      if (v.tab !== 'recipe') pane.dirty = true;
-      else if (v.pending) v.panesStale = true;
-      else refreshPanes();
+    const onOut = (e) => {
+      if (el.contains(e.relatedTarget)) return; // 焦点只是在配方面板里移动：继续等
+      el.removeEventListener('focusout', onOut);
+      setTimeout(() => {
+        if (currentView() !== v || pane.content !== el) return; // 换了照片，或面板已经重建过
+        if (v.tab !== 'recipe') pane.dirty = true;
+        else if (v.pending) v.panesStale = true;
+        else refreshPanes();
+      }, 0);
     };
-    el.addEventListener('focusout', () => setTimeout(later, 0), { once: true });
+    el.addEventListener('focusout', onOut);
     return;
   }
   refreshPanes();

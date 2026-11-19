@@ -185,6 +185,9 @@ def test_desktop_editor_halfframe_pair(
         assert guard == want, f"camera-data redraw broke a change in progress (W01): {guard}"
         other = ui["steps"]["otherTabGuard"]
         assert other == {"untouched": True, "dirty": True, "rebuiltOnShow": True}, f"camera-data redraw touched another tab: {other}"
+        rfocus = ui["steps"]["recipeFocusGuard"]
+        want_rfocus = {"field": True, "waited": True, "waitedAfterMove": True, "rebuiltAfterBlur": True}
+        assert rfocus == want_rfocus, f"recipe-pane focus deferral failed: {rfocus}"
         stamp = ui["steps"]["stampTabGuard"]
         assert stamp == {"same": True, "dirty": True}, f"camera-data redraw rebuilt the stamp pane after a change: {stamp}"
         focus = ui["steps"]["focusGuard"]
