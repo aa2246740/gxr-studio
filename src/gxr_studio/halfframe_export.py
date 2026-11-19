@@ -206,12 +206,18 @@ def _write_export_file(
     long_edge: int | None,
     fmt: str,
     labels: dict[str, str],
-    hdr_refused: bool,
+    track: Any | None = None,
 ) -> ExportResult:
+    from .finish.hdr_export import finish as finish_hdr
     from .finish.serve import _fit
 
     fitted = _fit(rgb, long_edge)
     payload = write_rgb_with_exif(fitted, source_path, note, quality=quality, fmt=fmt)
+    hdr_info: dict[str, Any] = {}
+    if track is not None:
+        payload, hdr_info = finish_hdr(payload, track, fmt, fitted)
+    if hdr_info.get("hdr") is True:
+        tag += "_hdr"
     try:
         path, fd = claim_path(dest, stem, ext, tag)
     except OSError as exc:
@@ -227,27 +233,23 @@ def _write_export_file(
     with Image.open(path) as saved:
         width, height = saved.size
     kind = labels.get("label") or labels.get("kind") or "original"
-    ident = labels.get("id") or ("camera-jpg" if kind == "original" else "recipe-prediction")
-    text = labels.get("text") or "原图"
-    calibrated = True if labels.get("calibrated") == "1" else False if labels.get("calibrated") == "0" else None
+    binding_keys = ("record_sha256", "entry_sha256", "binding_sha256", "selection_id", "quality_state", "assessed_entry")
+    binding = {k: labels[k] for k in binding_keys} if labels.get("selection_id") else None
+    cal_raw = labels.get("calibrated")
     return ExportResult(
         path=path,
         width=width,
         height=height,
         bytes=path.stat().st_size,
-        render=ident,
-        render_label=text,
+        render=labels.get("id") or ("camera-jpg" if kind == "original" else "recipe-prediction"),
+        render_label=labels.get("text") or "原图",
         format=fmt,
         render_kind=kind,
-        calibrated=calibrated,
+        calibrated=True if cal_raw == "1" else False if cal_raw == "0" else None,
         detail=labels.get("detail") or "",
-        hdr=False if hdr_refused else None,
-        hdr_reason="halfframe_pair" if hdr_refused else None,
-        recipe_binding={
-            k: labels[k] for k in ("record_sha256", "entry_sha256", "binding_sha256", "selection_id", "quality_state", "assessed_entry")
-        }
-        if labels.get("selection_id")
-        else None,
+        hdr=hdr_info.get("hdr") if track is not None else None,
+        hdr_reason=hdr_info.get("reason"),
+        recipe_binding=binding,
     )
 
 
@@ -269,6 +271,7 @@ def export_pair_finish(
 ) -> list[tuple[str, str, ExportResult]]:
     """半格一对导出（singles = 2 张单格，both = 双联 + 2 张单格），返回 [(shot_id, role, ExportResult), ...]。"""
     from .finish.compose import finish_array, resolved_frame, resolved_stamp
+    from .finish.hdr_export import HdrTrack
     from .finish.serve import _meta, _source_path, load_defaults
     from .finish.spec import factory_frame, factory_stamp
 
@@ -285,6 +288,15 @@ def export_pair_finish(
         raise ExportError("raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。", detail) from exc
     s1, s2 = pair_half_shots(shot)
     ext = FORMATS[fmt][1]
+    dip_track: HdrTrack | None = None
+    track1: HdrTrack | None = None
+    track2: HdrTrack | None = None
+    if hdr:
+        ori, first_half = pair_orientation_and_half(shot)
+        dip_track = HdrTrack.for_shot(lib, shot)
+        if fmt == "jpeg":
+            dip_track.begin(parts.diptych)
+        track1, track2 = dip_track.split_pair(first_half=first_half, orientation=ori)
     single_edit = EditState(adjust=edit.adjust, curve=edit.curve)
     single1, single2 = (
         finish_array(
@@ -298,8 +310,9 @@ def export_pair_finish(
             taken=None,
             file_time=None,
             from_raw=parts.from_raw,
+            track=tr,
         )[0]
-        for arr in (parts.single1, parts.single2)
+        for arr, tr in ((parts.single1, track1), (parts.single2, track2))
     )
     outputs: list[tuple[str, str, ExportResult]] = []
     if mode == "both":
@@ -328,6 +341,7 @@ def export_pair_finish(
             file_time=file_time,
             from_raw=parts.from_raw,
             crop_preset=preset if isinstance(preset, str) else None,
+            track=dip_track,
             logos=render.logos.info_map() if use_custom else None,
             logo_images=render.logos.image_map(frame.logo) if use_custom else None,
         )
@@ -349,13 +363,13 @@ def export_pair_finish(
                     long_edge=long_edge,
                     fmt=fmt,
                     labels=parts.labels,
-                    hdr_refused=hdr,
+                    track=dip_track,
                 ),
             )
         )
-    for role, half_shot, half_rgb, half_labels in (
-        ("first", s1, single1, parts.first_labels),
-        ("second", s2, single2, parts.second_labels),
+    for role, half_shot, half_rgb, half_labels, half_track in (
+        ("first", s1, single1, parts.first_labels, track1),
+        ("second", s2, single2, parts.second_labels, track2),
     ):
         half_note = half_labels.get("description") or half_labels.get("text") or "原图"
         half_tag = half_labels.get("tag") or ""
@@ -375,7 +389,7 @@ def export_pair_finish(
                     long_edge=long_edge,
                     fmt=fmt,
                     labels=half_labels,
-                    hdr_refused=hdr,
+                    track=half_track,
                 ),
             )
         )

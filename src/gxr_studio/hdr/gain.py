@@ -99,8 +99,8 @@ class GainResult:
     stats: dict[str, Any] = field(default_factory=dict)
 
 
-def raw_luma(dng: Dng) -> RawLuma:
-    """白平衡后的 RAW 亮度（码值 ÷ 4095，与研究代码 `Dng.half_res` 同口径）和过曝掩码，都已按 DNG 方向转正。"""
+def _sensor_luma(dng: Dng) -> tuple[np.ndarray, np.ndarray, capture.Capture]:
+    """传感器坐标系下的半分辨率白平衡 RAW 亮度、过曝掩码与拍摄元数据（总是释放 `dng`）。"""
     try:
         try:
             metadata = capture.from_dng(dng.data)
@@ -113,7 +113,59 @@ def raw_luma(dng: Dng) -> RawLuma:
     finally:
         dng.release()
     y = np.maximum((codes / np.float32(CODE_MAX)) @ RAW_WEIGHTS, 1e-6).astype(np.float32)
-    return RawLuma(np.ascontiguousarray(orient_array(y, dng.orientation)), np.ascontiguousarray(orient_array(clip, dng.orientation)), metadata)
+    return y, clip, metadata
+
+
+def raw_luma(dng: Dng) -> RawLuma:
+    """白平衡后的 RAW 亮度（码值 ÷ 4095，与研究代码 `Dng.half_res` 同口径）和过曝掩码，都已按 DNG 方向转正。"""
+    ori = dng.orientation
+    y, clip, metadata = _sensor_luma(dng)
+    return RawLuma(np.ascontiguousarray(orient_array(y, ori)), np.ascontiguousarray(orient_array(clip, ori)), metadata)
+
+
+def pair_raw_luma(
+    dng1: Dng,
+    dng2: Dng,
+    *,
+    first_half: str,
+    orientation: int,
+    first_jpeg: bytes | None = None,
+    second_jpeg: bytes | None = None,
+) -> RawLuma:
+    """从半格一对的两张 DNG 合成半分辨率双联 RAW 亮度（中缝标为 NaN，再按共享方向转正）。"""
+    from .. import halfframe_compose as hfc
+
+    try:
+        y1, c1, meta1 = _sensor_luma(dng1)
+    except BaseException:
+        dng2.release()
+        raise
+    y2, c2, meta2 = _sensor_luma(dng2)
+    if first_jpeg is not None:
+        check_capture(first_jpeg, RawLuma(y1, c1, meta1))
+    if second_jpeg is not None:
+        check_capture(second_jpeg, RawLuma(y2, c2, meta2))
+    if y1.shape != y2.shape:
+        raise HdrUnsupported("not_aligned", "半格一对两张 RAW 尺寸不一致")
+    geo = hfc.proxy_geometry(y1.shape[1])
+    x0, x1 = geo.strip_x0, geo.strip_x0 + geo.half_w
+    y = hfc.compose_strips(
+        y1[:, x0:x1],
+        y2[:, x0:x1],
+        first_half=first_half,
+        seam_w=geo.seam_w,
+        orientation=orientation,
+        seam_value=np.nan,
+    )
+    clip = hfc.compose_strips(
+        c1[:, x0:x1],
+        c2[:, x0:x1],
+        first_half=first_half,
+        seam_w=geo.seam_w,
+        orientation=orientation,
+        seam_value=False,
+    )
+    return RawLuma(y, clip, meta2)
 
 
 def check_capture(jpeg: bytes, raw: RawLuma) -> None:
@@ -213,18 +265,26 @@ def _tiles_moved(a: np.ndarray, b: np.ndarray) -> int:
     return moved
 
 
-def _tiles_unverified(sdr_y: np.ndarray, raw_y: np.ndarray) -> int:
+def _tiles_unverified(sdr_y: np.ndarray, raw_y: np.ndarray, photo: np.ndarray | None = None) -> int:
     """先拟合共同亮度范围，再在可见纹理上直接核对局部相关，避免把高光截断差异算作错位。"""
     x, y = np.log2(np.maximum(raw_y, 1e-6)), np.log2(np.maximum(sdr_y, 1e-5))
+    fit_mask = (sdr_y > 0.003) & (sdr_y < 0.97)
+    if photo is not None:
+        fit_mask = fit_mask & photo
     try:
-        cx, cy = fit_curve(x, y, (sdr_y > 0.003) & (sdr_y < 0.97))
+        cx, cy = fit_curve(x, y, fit_mask)
     except HdrUnsupported:
         return 1
     a = _hp(sdr_y)
-    b = _hp(np.exp2(np.interp(x, cx, cy)))
+    mapped = np.exp2(np.interp(x, cx, cy))
+    if photo is not None:
+        mapped = np.where(photo, mapped, sdr_y)
+    b = _hp(mapped)
     h, w = a.shape
     unverified, verified = 0, 0
     visible = (sdr_y > 0.01) & (sdr_y < 0.95)
+    if photo is not None:
+        visible = visible & photo
     for i in range(TILES):
         for j in range(TILES):
             box = (slice(i * h // TILES, (i + 1) * h // TILES), slice(j * w // TILES, (j + 1) * w // TILES))
@@ -239,14 +299,24 @@ def _tiles_unverified(sdr_y: np.ndarray, raw_y: np.ndarray) -> int:
     return unverified if verified else max(unverified, 1)
 
 
-def _local_residual(sdr_y: np.ndarray, raw_y: np.ndarray) -> bool:
+def _local_residual(sdr_y: np.ndarray, raw_y: np.ndarray, photo: np.ndarray | None = None) -> bool:
     """局部亮度关系的残差必须落在观测误差内；连续区域不能被整块背景的高相关掩盖。"""
+    if photo is not None:
+        comp_labels, comp_count = ndimage.label(photo)
+        if comp_count > 1:
+            for idx, slc in enumerate(ndimage.find_objects(comp_labels), start=1):
+                if slc is not None and _local_residual(sdr_y[slc], raw_y[slc], comp_labels[slc] == idx):
+                    return True
+            return False
     factor = math.ceil(max(sdr_y.shape) / RESIDUAL_EDGE)
     sdr, raw = block_mean(sdr_y, factor), block_mean(raw_y, factor)
     a = ndimage.gaussian_filter(np.log2(np.maximum(sdr, 1e-5)), 0.5).astype(np.float64)
     b = ndimage.gaussian_filter(np.log2(np.maximum(raw, 1e-6)), 0.5).astype(np.float64)
     # 截断边缘的混合像素无法拟合局部亮度关系，仍由上面的结构相关检查核对。
-    mask = ndimage.minimum_filter(((sdr > 0.01) & (sdr < 0.95)).astype(np.float64), 3)
+    valid = (sdr > 0.01) & (sdr < 0.95)
+    if photo is not None:
+        valid = valid & (block_mean(photo.astype(np.float32), factor) > 0.999)
+    mask = ndimage.minimum_filter(valid.astype(np.float64), 3)
     for size, support in RESIDUAL_WINDOWS:
 
         def mean(value: np.ndarray) -> np.ndarray:
@@ -270,20 +340,16 @@ def _local_residual(sdr_y: np.ndarray, raw_y: np.ndarray) -> bool:
     return False
 
 
-def align(sdr_y: np.ndarray, raw_y: np.ndarray) -> Alignment:
-    """把 RAW 亮度（已转到 SDR 的方向）对齐到 SDR 的增益图网格。"""
-    a = _norm(_hp(sdr_y))
-
+def _search_global(a: np.ndarray, work: np.ndarray) -> tuple[float, float, int, int]:
     def corr_at(s: float, dy: int, dx: int) -> float:
-        return float(np.mean(a * _norm(_hp(warp(raw_y, a.shape, s, dy, dx)))))
+        return float(np.mean(a * _norm(_hp(warp(work, a.shape, s, dy, dx)))))
 
     best: tuple[float, float, int, int] | None = None
     for s in SCALES:
-        dy, dx = _phase_shift(a, _norm(_hp(warp(raw_y, a.shape, s, 0, 0))))
+        dy, dx = _phase_shift(a, _norm(_hp(warp(work, a.shape, s, 0, 0))))
         corr = corr_at(s, dy, dx)
         if s == 1.0 and dy == 0 and dx == 0 and corr > 0.6:
-            best = (corr, s, dy, dx)
-            break  # 已经对齐得很好，不再试缩放
+            return corr, s, dy, dx  # 已经对齐得很好，不再试缩放
         # 相位相关的峰偶尔差一格：在 ±1 格里直接比相关系数
         phase_y, phase_x = dy, dx
         for cand in ((corr_at(s, phase_y + i, phase_x + j), s, phase_y + i, phase_x + j) for i in (-1, 0, 1) for j in (-1, 0, 1) if i or j):
@@ -292,12 +358,57 @@ def align(sdr_y: np.ndarray, raw_y: np.ndarray) -> Alignment:
         if best is None or corr > best[0]:
             best = (corr, s, dy, dx)
     assert best is not None  # nosec B101  SCALES 不是空的
-    corr, s, dy, dx = best
-    registered = warp(raw_y, a.shape, s, dy, dx)
+    return best
+
+
+def _parts_alignment(sdr_y: np.ndarray, raw_y: np.ndarray) -> tuple[float, float] | None:
+    """对由 NaN 分隔的多个区域（如半格两半）独立核对相关系数与平移比例，任一半错配均不可被另一半掩盖。"""
+    comp_labels, comp_count = ndimage.label(np.isfinite(raw_y))
+    if comp_count <= 1:
+        return None
+    rh, rw = raw_y.shape
+    sh, sw = sdr_y.shape
+    min_corr = float("inf")
+    max_shift = 0.0
+    checked = 0
+    for slc in ndimage.find_objects(comp_labels):
+        if slc is None:
+            continue
+        ry, rx = slc
+        sy0, sy1 = round(ry.start * sh / rh), round(ry.stop * sh / rh)
+        sx0, sx1 = round(rx.start * sw / rw), round(rx.stop * sw / rw)
+        if sy1 - sy0 < 2 or sx1 - sx0 < 2:
+            continue
+        part_sdr = sdr_y[sy0:sy1, sx0:sx1]
+        part_raw = raw_y[ry, rx]
+        part_work = np.where(np.isfinite(part_raw), part_raw, np.float32(1e-4)).astype(np.float32)
+        p_corr, _p_s, p_dy, p_dx = _search_global(_norm(_hp(part_sdr)), part_work)
+        if not math.isfinite(p_corr):
+            p_corr = 0.0
+        min_corr = min(min_corr, p_corr)
+        max_shift = max(max_shift, max(abs(p_dy) / part_sdr.shape[0], abs(p_dx) / part_sdr.shape[1]))
+        checked += 1
+    return (min_corr, max_shift) if checked else None
+
+
+def align(sdr_y: np.ndarray, raw_y: np.ndarray) -> Alignment:
+    """把 RAW 亮度（已转到 SDR 的方向）对齐到 SDR 的增益图网格。`raw_y` 里的 NaN 表示非照片区域（如半格中缝）。"""
+    a = _norm(_hp(sdr_y))
+    has_nan = not bool(np.isfinite(raw_y).all())
+    work = np.where(np.isfinite(raw_y), raw_y, np.float32(1e-4)).astype(np.float32) if has_nan else raw_y
+    corr, s, dy, dx = _search_global(a, work)
+    registered = warp(work, a.shape, s, dy, dx)
+    photo = warp(np.isfinite(raw_y).astype(np.float32), a.shape, s, dy, dx) > 0.99 if has_nan else None
     ha, hb = _hp(sdr_y), _hp(registered)
     moved = _tiles_moved(ha, hb)
-    unverified = _tiles_unverified(sdr_y, registered) + int(_local_residual(sdr_y, registered))
-    return Alignment(s, dy, dx, corr, moved, max(abs(dy) / a.shape[0], abs(dx) / a.shape[1]), unverified)
+    unverified = _tiles_unverified(sdr_y, registered, photo) + int(_local_residual(sdr_y, registered, photo))
+    shift_frac = max(abs(dy) / a.shape[0], abs(dx) / a.shape[1])
+    if has_nan:
+        parts = _parts_alignment(sdr_y, raw_y)
+        if parts is not None:
+            corr = min(corr, parts[0])
+            shift_frac = max(shift_frac, parts[1])
+    return Alignment(s, dy, dx, corr, moved, shift_frac, unverified)
 
 
 def check_alignment(al: Alignment) -> None:
@@ -312,10 +423,19 @@ def check_alignment(al: Alignment) -> None:
 
 
 def register(raw: RawLuma, shape: tuple[int, int], al: Alignment, grid: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
-    """按对齐结果把 RAW 亮度和过曝掩码重采样到 `shape`（`grid` 是对齐时用的网格，平移按比例换算）。"""
+    """按对齐结果把 RAW 亮度和过曝掩码重采样到 `shape`（`grid` 是对齐时用的网格，平移按比例换算）。保留 NaN 非照片掩码。"""
     ky, kx = shape[0] / grid[0], shape[1] / grid[1]
-    y = np.maximum(warp(raw.y, shape, al.scale, al.dy * ky, al.dx * kx), 1e-6)
-    clip = warp(raw.clip.astype(np.float32), shape, al.scale, al.dy * ky, al.dx * kx) > 0.01
+    if np.isfinite(raw.y).all():
+        y = np.maximum(warp(raw.y, shape, al.scale, al.dy * ky, al.dx * kx), 1e-6)
+        clip = warp(raw.clip.astype(np.float32), shape, al.scale, al.dy * ky, al.dx * kx) > 0.01
+        return y, clip
+    valid = np.isfinite(raw.y)
+    filled = np.where(valid, raw.y, np.float32(0.0)).astype(np.float32)
+    w = warp(valid.astype(np.float32), shape, al.scale, al.dy * ky, al.dx * kx)
+    y_num = warp(filled, shape, al.scale, al.dy * ky, al.dx * kx)
+    photo = w > 0.5
+    y = np.where(photo & (w > 1e-6), np.maximum(y_num / np.maximum(w, 1e-6), 1e-6), np.nan).astype(np.float32)
+    clip = (warp(np.where(valid, raw.clip, False).astype(np.float32), shape, al.scale, al.dy * ky, al.dx * kx) > 0.01) & photo
     return y, clip
 
 
