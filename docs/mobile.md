@@ -694,3 +694,18 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 
 - **拍摄配方采用（`gxr-camdata::camera_recipe` + `mobile/src/lib/exif.ts` / `recipes.ts` / `app/model.ts` / `recipe_view.ts` / `export_ui.ts` / `paste_*.ts`）**：手机端对未显式选择配方（`photo.choice === null` 且 `photo.recipeOff` 为假）的 RAW / RAW+JPG 照片按桌面优先级（JPG 优先、`is not None` 语义，缺失时再回退 DNG，保留尾随空格）读取 EXIF Copyright（`0x8298`），仅在打开编辑器、复制或导出时按需经核心 Worker 专用 `camera-recipe` 请求（`camdata_camera_recipe`）按 `(datKey, tag)` 记忆化解析 `GXR1` 标签，网格加载期间不额外读 DNG 头或调 WASM；Worker 临时失败不缓存为 `none`，留待下次重试。采用结果只缓存在 `photo.cameraRecipe`，**不写进 `photo.choice`**，因此未编辑过的照片在网格上不亮铅笔角标；但在配方页标题/标签/卡片条、舞台预测、导出 `auto` 以及复制调整中都按采用的配方与微调生效（与桌面 `editor_edit`、`recipes.js`、`paste_core.js` 一致）。显式选择始终覆盖采用；套用仅含 LUT 的剪贴板会把 `photo.recipeOff` 置为真以关闭采用，撤销时还原；只有 JPG 与半格双联照片不采用；标签微调未知时提示「微调未知，电脑预测使用配方默认值」；解析出错时编辑器显示桌面完整文案（`${message} 照片调整仍可保存，暂不生成拍摄配方预测。`）并回退到 `builtin:4`；未导入相机配方文件或导入错代配方文件时导出仍按原规则保留相机 JPG，并在导出完成栏逐张附上「请先导入拍摄时使用的相机配方文件。」说明。
 - **「全部重置」（`mobile/src/app/adjust_view.ts`）**：点「全部重置」同时把调整滑块与四条曲线（`photo.curve = null`）归零，且只在滑块或曲线确有修改时加一次 `rev` 并通过 `host.refreshCurves()` 刷新曲线面板与网格角标。
+
+## 手机编辑页单带布局（`phone-editor-band`）
+
+手机编辑页（`mobile/src/app/editor.ts`、`editor_band.ts`、`editor_bar.ts`、`editor_hist.ts`、`stage_zoom.ts`、`more_sheet.ts`、`curves_sheet.ts`、`stamp_band.ts`、`recipe_band.ts`、`shell.css`）把顶部栏与底栏之间全部让给照片舞台，避免旧版常驻双段面板把竖拍照片压到屏幕 11%–13%：
+
+- **全黑无边舞台（`.stage`）**：纯黑背景（`#000`）、零内边距，竖拍与横拍照片均按有效区域充满；舞台上不叠加常驻状态胶囊（`.lbl` 移入带内顶栏），直方图改为舞台右上角可开关浮窗（`.hist-float`，默认关闭、不推挤舞台）。
+- **固定 128 pt 单带（`.band`）**：高度锁定 `128px`（顶栏 24px 或微调 44px + 内容区），无论在「配方 / LUT」「调整」「裁剪」「边框」「时间戳」之间切换还是拖动滑块，`.stage` 与照片矩形位移为 0 px（收起时 `.band` 为 0 px，舞台多出 128 pt）。
+- **四工具底栏 + 主操作（`.toolbar`，`56px + --safe-bottom`）**：左侧为「配方 · 调整 · 裁剪 · 更多」四个 44 pt 触控目标（已编辑项亮小圆点），右侧为独立蓝色「存到相册」按钮（U1 合并点与「更多 → 导出选项」各保持单行调用）。
+- **单带内容与「更多」抽屉**：
+  - **配方 / LUT**：带首纵向「配方 | LUT」切换键；配方卡点击切换，再点已选卡在 128 pt 带内进入旋钮微调（带「‹ 配方」返回），筛选按钮打开筛选弹层，状态胶囊点开状态/校准说明；LUT 在顶栏提供「导入 LUT」「色彩空间」与带内卡条。
+  - **调整**：横滑 10 项参数片 +「全部重置」+「曲线 ›」+ 直方图开关按钮 + 单根全宽滑块（双按归零）。
+  - **裁剪**：单带含 8 档比例片、横竖对调、参考线按钮与拉直标尺，尺寸与角度读数位于带顶栏。
+  - **更多（`.more-sheet`）**：集中承载「曲线」（打开底部 `.curves-sheet` 抽屉，拖动不导致舞台回流）、「边框」（128 pt 边框带 + 点选款式/设置进入配色、线条与标志子页）、「时间戳」（128 pt 带内开关与「详细设置」抽屉）、「复制调整」、「导出选项」与「校准与配方文件」。
+- **舞台手势与跨片记忆**：轻点照片空白收起/展开 128 pt 单带并跨片记忆（默认打开在「配方」）；双指捏合缩放到 4× 并支持单指拖移（放大期间单指拖移不翻片），双击还原 1×；长按看原图（中性转换 + 调整归零，放手恢复，拖拽或捏合时取消）。
+- **验收测试**：`tests/test_mobile_editor_band_browser.py`（`tests/support/mobile_editor_band_browser.mjs`）在 `390×844` 与 `440×956`（含 PWA 安全区与 0 安全区）验证照片占比、0 px 切换与拖动位移、全部 13 条功能可达路径、跨片记忆、缩放/双按/长按行为及 24 张截图。

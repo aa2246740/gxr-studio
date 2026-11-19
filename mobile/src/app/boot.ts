@@ -150,20 +150,20 @@ class App implements AppApi {
       await this.editor?.settled;
       if (shot === 'drag') this.editor?.forceDrag();
       if (recipeShot) {
-        this.view.querySelector<HTMLButtonElement>('.tabs button')?.click();
+        this.view.querySelector<HTMLButtonElement>('.toolbar [data-tool="recipe"]')?.click();
         await new Promise((done) => setTimeout(done, 1500));
         if (shot === 'recipe') this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
         await new Promise((done) => setTimeout(done, 800));
       }
       if (cropShot) {
         this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
-        this.view.querySelector<HTMLButtonElement>('.tabs button[data-tab="2"]')?.click();
+        this.view.querySelector<HTMLButtonElement>('.toolbar [data-tool="crop"]')?.click();
         await new Promise((done) => setTimeout(done, 400));
         this.view.querySelector<HTMLButtonElement>('.crop-panel .chips button[data-preset="xpan-65-24"]')?.click();
         for (let i = 0; i < 60 && first?.crop?.preset !== 'xpan-65-24'; i++) await new Promise((done) => setTimeout(done, 100));
         await new Promise((done) => setTimeout(done, 800));
         if (shot === 'crop-editor') {
-          this.view.querySelector<HTMLButtonElement>('.tabs button[data-tab="0"]')?.click();
+          this.view.querySelector<HTMLButtonElement>('.toolbar [data-tool="recipe"]')?.click();
           await new Promise((done) => setTimeout(done, 1200));
         }
       }

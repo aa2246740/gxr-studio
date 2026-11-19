@@ -8,10 +8,9 @@ async function waitFor(pred: () => boolean, timeoutMs = 6000): Promise<void> {
 }
 
 export async function frameShot(shot: string, shell: HTMLElement, view: HTMLElement): Promise<void> {
-  const frameTab = [...view.querySelectorAll<HTMLButtonElement>('.tabs button')].find(
-    (btn) => btn.textContent?.trim() === '边框',
-  );
-  frameTab?.click();
+  view.querySelector<HTMLButtonElement>('.toolbar [data-tool="more"]')?.click();
+  await waitFor(() => Boolean(shell.querySelector('.more-sheet [data-more="frame"]')));
+  shell.querySelector<HTMLButtonElement>('.more-sheet [data-more="frame"]')?.click();
   await waitFor(() => view.querySelectorAll('.panel.frame .rc .th.fr canvas').length >= 13);
 
   if (shot === 'frame' || shot === 'frame-more' || shot === 'frame-stamp' || shot === 'frame-logo') {
@@ -21,14 +20,22 @@ export async function frameShot(shot: string, shell: HTMLElement, view: HTMLElem
   }
 
   if (shot === 'frame-more') {
+    view.querySelector<HTMLButtonElement>('.band-frame-hd [data-act="frame-opts"]')?.click();
+    await waitFor(() => Boolean(view.querySelector('.panel.frame [data-act="frame-more"]')));
     view.querySelector<HTMLButtonElement>('.panel.frame [data-act="frame-more"]')?.click();
     await waitFor(() => Boolean(shell.querySelector('.ms.frame-more-sheet')));
   } else if (shot === 'frame-stamp') {
-    const sw = view.querySelector<HTMLInputElement>('.panel.frame .stamp-row input.switch');
+    view.querySelector<HTMLButtonElement>('.toolbar [data-tool="more"]')?.click();
+    await waitFor(() => Boolean(shell.querySelector('.more-sheet [data-more="stamp"]')));
+    shell.querySelector<HTMLButtonElement>('.more-sheet [data-more="stamp"]')?.click();
+    await waitFor(() => Boolean(view.querySelector('.stamp-band input.switch')));
+    const sw = view.querySelector<HTMLInputElement>('.stamp-band input.switch');
     if (sw && !sw.checked) sw.click();
-    view.querySelector<HTMLButtonElement>('.panel.frame [data-act="open-stamp"]')?.click();
+    view.querySelector<HTMLButtonElement>('.stamp-band [data-act="stamp-sheet"]')?.click();
     await waitFor(() => Boolean(shell.querySelector('.ms.stamp-sheet')));
   } else if (shot === 'frame-logo') {
+    view.querySelector<HTMLButtonElement>('.band-frame-hd [data-act="frame-opts"]')?.click();
+    await waitFor(() => Boolean(view.querySelector('.panel.frame [data-act="frame-logo"]')));
     view.querySelector<HTMLButtonElement>('.panel.frame [data-act="frame-logo"]')?.click();
     await waitFor(() => Boolean(shell.querySelector('.ms.logo-sheet')));
   }

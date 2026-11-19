@@ -24,7 +24,7 @@
 
 /* 舞台叠加层与有框居中 */
 .stage .pv[data-decor="1"] {
-  inset: 8px;
+  inset: 0;
   margin: auto;
   display: block;
 }
@@ -49,7 +49,7 @@
   z-index: 3;
 }
 
-/* 03f 边框标签页 */
+/* 128pt 单带里的边框视图 */
 .panel.frame .row {
   display: flex;
   align-items: center;
@@ -61,11 +61,6 @@
 .panel.frame .small {
   font-size: 13px;
   line-height: 18px;
-}
-.panel.frame .strip.inpanel {
-  height: auto;
-  border-top: 0;
-  padding: 2px 16px 6px;
 }
 .rc .th.fr {
   position: relative;
@@ -79,14 +74,22 @@
   object-fit: contain;
   display: block;
 }
-.panel.frame .fctl-row {
-  min-height: 44px;
-  margin-top: 2px;
+.panel.frame .fcontrols {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
-.panel.frame .fctl-lab {
-  font-size: 13px;
-  margin-right: 6px;
-  flex: none;
+.panel.frame .fctl-row {
+  height: 48px;
+  padding: 0 12px;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.panel.frame .fctl-row::-webkit-scrollbar {
+  display: none;
 }
 .swc {
   width: 44px;
@@ -97,8 +100,8 @@
 }
 .swc i {
   display: block;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
 }
@@ -107,46 +110,17 @@
 }
 .panel.frame .row .seg.push {
   margin-left: auto;
-  width: 136px;
+  min-width: 136px;
   flex: none;
 }
 .panel.frame .seg button {
-  min-height: 36px;
-  font-size: 14px;
+  min-height: 44px;
+  min-width: 44px;
+  font-size: 13px;
 }
 .panel.frame .chips {
-  padding: 4px 16px 6px;
-}
-.panel.frame .chip.push {
-  margin-left: auto;
-}
-.panel.frame .stamp-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 50px;
-  padding: 2px 16px;
-}
-.panel.frame .stamp-open {
-  flex: 1;
-  min-width: 0;
-  min-height: 44px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-.panel.frame .stamp-open b {
-  display: block;
-  font: 500 15px/20px var(--font-ui);
-}
-.panel.frame .stamp-open small {
-  display: block;
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  height: 54px;
+  padding: 0 12px;
 }
 
 /* 底部工作表（更多选项、时间戳、标志） */

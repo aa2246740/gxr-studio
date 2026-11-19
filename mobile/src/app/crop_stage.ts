@@ -59,6 +59,7 @@ export interface CropStageHost {
   swipe(id: string, dir: -1 | 1): void;
   onCommitted(photo: Photo, changed: boolean): void;
   restLabelText(): string;
+  resetZoom?(): void;
 }
 
 export class CropStage {
@@ -154,6 +155,10 @@ export class CropStage {
     return this.cropPanel.panelEl();
   }
 
+  panelHeadEl(): HTMLElement | null {
+    return this.cropPanel?.headEl() ?? null;
+  }
+
   attachTabButton(btn: HTMLButtonElement): void {
     this.cropTabBtn = btn;
     this.paintTabDot();
@@ -172,6 +177,7 @@ export class CropStage {
     this.draftAngle = null;
     this.straightenBaseRect = null;
     if (this.host.active()) {
+      this.host.resetZoom?.();
       if (this.cropOverlay) this.cropOverlay.hidden = false;
       this.cropPanel?.sync();
       this.renderOverlay();
@@ -428,113 +434,73 @@ export class CropStage {
         }
         return;
       }
-
-      if (primary !== -1) return;
-      cropActive = false;
-      primary = event.pointerId;
-      startX = event.clientX;
-      startY = event.clientY;
-      moved = false;
-      held = false;
-      timer = window.setTimeout(() => {
-        timer = 0;
-        if (moved || !this.host.photo()) return;
-        held = true;
-        this.host.setHolding(true, this.host.caption());
-      }, 450);
     });
 
     stage.addEventListener('pointermove', (event) => {
-      if (cropActive) {
-        if (!pointers.has(event.pointerId) || !this.host.photo()) return;
-        const pt = norm(event.clientX, event.clientY);
-        pointers.set(event.pointerId, pt);
-        if (event.pointerId === primary && Math.hypot(event.clientX - startX, event.clientY - startY) > 4) {
-          moved = true;
-          if (timer) {
-            window.clearTimeout(timer);
-            timer = 0;
-          }
-        }
-        const canvas = this.photoCanvas();
-        const angle = this.liveStraighten();
-        if (this.gesture.mode === 'pinch' && pointers.size >= 2) {
-          const [p1, p2] = [...pointers.values()];
-          this.draftRect = this.gesture.pinch(p1, p2, canvas, angle);
-          this.renderOverlay();
-        } else if (this.gesture.mode === 'move' || this.gesture.mode === 'resize') {
-          this.draftRect = this.gesture.move(pt, canvas, angle);
-          this.renderOverlay();
-        }
-        return;
-      }
-
-      if (event.pointerId !== primary) return;
-      if (Math.hypot(event.clientX - startX, event.clientY - startY) > 12) moved = true;
-    });
-
-    const endPointer = (event: PointerEvent) => {
-      if (cropActive) {
-        if (!pointers.has(event.pointerId)) return;
-        pointers.delete(event.pointerId);
-        if (stage.hasPointerCapture?.(event.pointerId)) {
-          try {
-            stage.releasePointerCapture(event.pointerId);
-          } catch {
-            /* ignore */
-          }
-        }
-        if (pointers.size === 0 && timer) {
+      if (!cropActive) return;
+      if (!pointers.has(event.pointerId) || !this.host.photo()) return;
+      const pt = norm(event.clientX, event.clientY);
+      pointers.set(event.pointerId, pt);
+      if (event.pointerId === primary && Math.hypot(event.clientX - startX, event.clientY - startY) > 4) {
+        moved = true;
+        if (timer) {
           window.clearTimeout(timer);
           timer = 0;
         }
-        if (held && pointers.size === 0) {
-          held = false;
-          this.host.setHolding(false);
+      }
+      const canvas = this.photoCanvas();
+      const angle = this.liveStraighten();
+      if (this.gesture.mode === 'pinch' && pointers.size >= 2) {
+        const [p1, p2] = [...pointers.values()];
+        this.draftRect = this.gesture.pinch(p1, p2, canvas, angle);
+        this.renderOverlay();
+      } else if (this.gesture.mode === 'move' || this.gesture.mode === 'resize') {
+        this.draftRect = this.gesture.move(pt, canvas, angle);
+        this.renderOverlay();
+      }
+    });
+
+    const endPointer = (event: PointerEvent) => {
+      if (!cropActive) return;
+      if (!pointers.has(event.pointerId)) return;
+      pointers.delete(event.pointerId);
+      if (stage.hasPointerCapture?.(event.pointerId)) {
+        try {
+          stage.releasePointerCapture(event.pointerId);
+        } catch {
+          /* ignore */
         }
-        if (this.gesture.mode === 'pinch' && pointers.size < 2) {
-          const next = this.gesture.end();
-          if (pointers.size === 0) {
-            cropActive = false;
-            primary = -1;
-          }
-          if (event.type === 'pointerup' && next && moved) void this.commitCrop(next);
-          else {
-            this.draftRect = null;
-            this.renderOverlay();
-          }
-          return;
-        }
+      }
+      if (pointers.size === 0 && timer) {
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+      if (held && pointers.size === 0) {
+        held = false;
+        this.host.setHolding(false);
+      }
+      if (this.gesture.mode === 'pinch' && pointers.size < 2) {
+        const next = this.gesture.end();
         if (pointers.size === 0) {
           cropActive = false;
           primary = -1;
-          const next = this.gesture.end();
-          if (event.type === 'pointerup' && next && moved) void this.commitCrop(next);
-          else {
-            this.draftRect = null;
-            this.renderOverlay();
-          }
+        }
+        if (event.type === 'pointerup' && next && moved) void this.commitCrop(next);
+        else {
+          this.draftRect = null;
+          this.renderOverlay();
         }
         return;
       }
-
-      if (event.pointerId !== primary) return;
-      primary = -1;
-      window.clearTimeout(timer);
-      timer = 0;
-      const dx = event.clientX - startX;
-      const dy = event.clientY - startY;
-      // 松手的位置也算移动：页面忙的时候 pointermove 可能晚到，按住计时先到了，横着滑出去仍然算换片。
-      if (Math.hypot(dx, dy) > 12) moved = true;
-      const swiped = event.type === 'pointerup' && moved && Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy);
-      if (held) {
-        held = false;
-        this.host.setHolding(false);
-        if (!swiped) return;
-      }
-      const photo = this.host.photo();
-      if (swiped && photo && !this.host.active()) {
-        this.host.swipe(photo.id, dx < 0 ? 1 : -1);
+      if (pointers.size === 0) {
+        cropActive = false;
+        primary = -1;
+        const next = this.gesture.end();
+        if (event.type === 'pointerup' && next && moved) void this.commitCrop(next);
+        else {
+          this.draftRect = null;
+          this.renderOverlay();
+        }
       }
     };
 
