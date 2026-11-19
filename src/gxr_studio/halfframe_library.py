@@ -207,7 +207,7 @@ def _match_second_candidate(
             continue
         if not is_first_like_fn(cand):
             continue
-        dec = hfp.evaluate_candidate(
+        dec, stable = hfp.evaluate_candidate_checked(
             abspath(cand["relpath"]),
             abspath(sec_item["relpath"]),
             orientation_a=sec_ori,
@@ -217,6 +217,8 @@ def _match_second_candidate(
         )
         if dec is not None:
             matches.append((str(a_sha), dec))
+        elif not stable:
+            continue  # 读文件出错：不记成“不是一对”，下次（重启、回填、再读）重试
         elif rejected_out is not None:
             rejected_out.add((str(a_sha), sec_sha))
         elif pair_store is not None:
@@ -267,8 +269,14 @@ def _compute_missing_for_shot(
     abspath: Callable[[str], Path],
     *,
     coalesce: bool,
+    use_memo: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """在 `lib.lock` 外为单张 4288×2848 照片补算缺失的 `first_like` 与相邻配对；已配对时走一次 `files_sha` 索引短路。"""
+    """在 `lib.lock` 外为单张 4288×2848 照片补算缺失的 `first_like` 与相邻配对；已配对时走一次 `files_sha` 索引短路。
+
+    `use_memo`（只给单张读取）：本次运行里已经查过 ±1 邻居、没配上的照片不再按名字查一遍
+    （`shots.name` 没有索引，大图库里每次要扫表）。导入和补全走 `ensure_pair_for_shot`，不看也不写这份记录；
+    重建索引时清空。读文件出错的候选不会被记成“不是一对”，下次启动的回填会再试。
+    """
     all_files = shot.get("all_files") or shot.get("files") or {}
     jpg = all_files.get("jpg")
     if not isinstance(jpg, dict) or not jpg.get("relpath") or not jpg.get("sha256"):
@@ -294,6 +302,10 @@ def _compute_missing_for_shot(
         prev_names = hfp.neighbor_names(shot.get("name"), -1)
         if not prev_names:
             return {}
+        if use_memo:
+            if pair_store.neighbors_checked(sha):
+                return {}
+            pair_store.mark_neighbors_checked(sha)
         prev_list = [c for c in _fetch_target_jpg_by_names(db, lock, prev_names) if c["number"] == num - 1]
         if not prev_list:
             return {}
@@ -320,6 +332,10 @@ def _compute_missing_for_shot(
     next_names = hfp.neighbor_names(shot.get("name"), 1)
     if not next_names:
         return {}
+    if use_memo:
+        if pair_store.neighbors_checked(sha):
+            return {}
+        pair_store.mark_neighbors_checked(sha)
     next_list = [
         c
         for c in _fetch_target_jpg_by_names(db, lock, next_names)
@@ -361,7 +377,7 @@ def attach_pairs_to_shots(
         return shots
     prefetched: dict[str, dict[str, Any]] = {}
     if allow_decode and len(shots) == 1:
-        prefetched = _compute_missing_for_shot(shots[0], db, lock, verdict_store, pair_store, abspath, coalesce=True)
+        prefetched = _compute_missing_for_shot(shots[0], db, lock, verdict_store, pair_store, abspath, coalesce=True, use_memo=True)
 
     needed_shas: set[str] = set()
     page_by_sha: dict[str, dict[Any, Any]] = {}
@@ -548,6 +564,7 @@ def rebuild_pairs_from_db(
     abspath: Callable[[str], Path],
 ) -> None:
     """从刚重建好的索引取出候选 JPG，在 `lib.lock` 外重建配对缓存。"""
+    pair_store.forget_neighbors_checked()
     rebuild_pairs(_fetch_target_jpg_candidates(db, lock), verdict_store, pair_store, abspath)
 
 

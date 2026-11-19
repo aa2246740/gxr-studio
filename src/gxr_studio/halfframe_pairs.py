@@ -199,6 +199,49 @@ def decide_pair(
     return None
 
 
+def evaluate_candidate_checked(
+    a_path: str | os.PathLike[str],
+    b_path: str | os.PathLike[str],
+    *,
+    orientation_a: int,
+    orientation_b: int,
+    a_first_like: bool = True,
+    adjacent: bool = True,
+) -> tuple[PairDecision | None, bool]:
+    """同 `evaluate_candidate`，另返回结论是否稳定（两张都读到了内容）。
+
+    读文件出错（`decode_draft_luma` 返回 `(False, None)`）时结论不稳定：不能把它记成永久的“不是一对”，下次再试。
+    """
+    if not adjacent or not a_first_like or orientation_a != orientation_b or orientation_b not in VALID_ORIENTATIONS:
+        return None, True
+    ok_b, b_luma = hf.decode_draft_luma(b_path)
+    if not ok_b:
+        return None, False
+    if b_luma is None:
+        return None, True
+    seam = hf.seam_kind_luma(b_luma)
+    if seam != hf.SEAM_G250:
+        return None, True
+    ok_a, a_luma = hf.decode_draft_luma(a_path)
+    if not ok_a:
+        return None, False
+    if a_luma is None:
+        return None, True
+    metrics = fingerprint_metrics(a_luma, b_luma)
+    if metrics is None:
+        return None, True
+    decision = decide_pair(
+        metrics[0],
+        metrics[1],
+        orientation=orientation_b,
+        same_orientation=True,
+        a_first_like=True,
+        b_seam_kind=seam,
+        adjacent=True,
+    )
+    return decision, True
+
+
 def evaluate_candidate(
     a_path: str | os.PathLike[str],
     b_path: str | os.PathLike[str],
@@ -209,29 +252,9 @@ def evaluate_candidate(
     adjacent: bool = True,
 ) -> PairDecision | None:
     """对候选 `(A, B)` 解码 1/8 灰度并执行 g250 黑缝校验与指纹匹配。"""
-    if not adjacent or not a_first_like or orientation_a != orientation_b or orientation_b not in VALID_ORIENTATIONS:
-        return None
-    ok_b, b_luma = hf.decode_draft_luma(b_path)
-    if not ok_b or b_luma is None:
-        return None
-    seam = hf.seam_kind_luma(b_luma)
-    if seam != hf.SEAM_G250:
-        return None
-    ok_a, a_luma = hf.decode_draft_luma(a_path)
-    if not ok_a or a_luma is None:
-        return None
-    metrics = fingerprint_metrics(a_luma, b_luma)
-    if metrics is None:
-        return None
-    return decide_pair(
-        metrics[0],
-        metrics[1],
-        orientation=orientation_b,
-        same_orientation=True,
-        a_first_like=True,
-        b_seam_kind=seam,
-        adjacent=True,
-    )
+    return evaluate_candidate_checked(
+        a_path, b_path, orientation_a=orientation_a, orientation_b=orientation_b, a_first_like=a_first_like, adjacent=adjacent
+    )[0]
 
 
 def _normalize_pair_entry(key: str, raw: Any) -> dict[str, Any] | None:
@@ -294,6 +317,20 @@ class PairStore(hf.CoalescedStore):
         self._pairs: dict[str, dict[str, Any]] = {}
         self._by_first: dict[str, str] = {}
         self._rejected: set[tuple[str, str]] = set()
+        # 只在内存里：本次运行中单张读取已经查过 ±1 邻居、没配上的 JPG SHA（不落盘；导入走自己的路径，不看它）
+        self._neighbors_checked: set[str] = set()
+
+    def neighbors_checked(self, sha: str) -> bool:
+        with self._lock:
+            return sha in self._neighbors_checked
+
+    def mark_neighbors_checked(self, sha: str) -> None:
+        with self._lock:
+            self._neighbors_checked.add(sha)
+
+    def forget_neighbors_checked(self) -> None:
+        with self._lock:
+            self._neighbors_checked.clear()
 
     def _rebuild_reverse_locked(self) -> None:
         self._by_first = {rec["first_sha"]: sec_sha for sec_sha, rec in self._pairs.items()}

@@ -139,7 +139,13 @@ try {
 
   const isStageRender = (r) => r.status === 200 && !String(r.q || '').includes('max_edge=');
 
+  // 相机数据状态先到，再打开照片：app.js 先画页面、后补相机数据，第一次状态不触发重画；
+  // 面板若先于状态画出，配方卡会一直灰着（与半格无关的启动竞态，单独处理）。这里只测半格放行。
+  const waitCamdata = async () =>
+    page.waitForFunction(() => import('/assets/camdata.js').then((cd) => cd.camdataReady()), null, { timeout: 60000 });
+
   const openPhoto = async () => {
+    await waitCamdata();
     await page.goto(`${m.base}/#/photo/${m.p2}`);
     await page.waitForFunction(
       (pid) =>
@@ -266,12 +272,18 @@ try {
 
   // 4) Reload -> check stage, recipe state, and edited thumbnail
   out.renders.length = 0;
-  await page.reload();
-  await page.waitForSelector('.top, .grid, .empty, .edit-panel', { timeout: 30000 });
+  await page.goto(`${m.base}/`);
+  await page.waitForSelector('.top, .grid, .empty', { timeout: 30000 });
   await openPhoto();
   await page.evaluate(() => import('/assets/viewer.js').then((v) => v.openViewerTab('recipe')));
-  await page.waitForFunction(() => document.querySelectorAll('.lcard').length > 0, null, { timeout: 30000 });
-  await sleep(800);
+  await page.waitForFunction(
+    () => {
+      const cards = [...document.querySelectorAll('.lcard')];
+      return cards.length > 0 && cards.every((c) => !c.disabled && c.getAttribute('aria-disabled') !== 'true');
+    },
+    null,
+    { timeout: 30000 },
+  );
   out.steps.afterReload = {
     edit: (await api(`/api/photos/${m.p2}/edit`)).body,
     panel: await panelState(),
