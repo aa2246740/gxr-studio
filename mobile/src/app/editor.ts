@@ -283,6 +283,7 @@ export class EditorView {
         enterDrag: () => this.enterDrag(),
         leaveDrag: () => this.leaveDrag(),
         dragging: () => this.dragging,
+        refreshCurves: () => this.curves?.refresh(),
       },
       this.histEl(),
     );
@@ -674,7 +675,7 @@ export class EditorView {
       return;
     }
     photo.checked = version;
-    photo.dngMeta = described.meta;
+    photo.dngMeta = described.meta.copyright === undefined && photo.dngMeta?.copyright !== undefined ? { ...described.meta, copyright: photo.dngMeta.copyright } : described.meta;
     if (!this.engine) {
       this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
       this.adjust?.setDisabled(true);

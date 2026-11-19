@@ -317,6 +317,7 @@ function exposeEdits(api: AppApi): void {
       stem: photo.stem,
       rev: photo.rev,
       choice: photo.choice,
+      recipeOff: Boolean(photo.recipeOff),
       levels: Object.fromEntries(photo.levels),
       memory: Object.fromEntries(photo.memory),
       lut: photo.lut,

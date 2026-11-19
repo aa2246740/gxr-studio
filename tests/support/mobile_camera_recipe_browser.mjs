@@ -116,8 +116,13 @@ async function runMain(page) {
   await waitStageRecipeReady(page);
   const adoptedHeading = (await page.locator('.panel.recipe .rname').textContent())?.trim() ?? '';
   const adoptedTag = (await page.locator('.panel.recipe .neutral-tag').textContent())?.trim() ?? '';
-  const adoptedOnName = (await page.locator('.strip[data-recipes] .rc.on .nm').textContent().catch(() => ''))?.trim() ?? '';
-  const adoptedOnCard = (await page.locator('.strip[data-recipes] .rc.on').getAttribute('data-card').catch(() => null)) ?? null;
+  const { adoptedOnName, adoptedOnCard } = await page.evaluate(() => {
+    const on = document.querySelector('.strip[data-recipes] .rc.on');
+    return {
+      adoptedOnName: on?.querySelector('.nm')?.textContent?.trim() ?? '',
+      adoptedOnCard: on?.getAttribute('data-card') ?? null,
+    };
+  });
   const adoptedStageKey = await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-recipe-key') || '');
   const adoptedState = await editStateOf(page, manifest.file1);
   const adoptedSide = await page.evaluate(async (s) => (await window.__gxrRequest(s))?.side ?? null, manifest.file1);
@@ -145,6 +150,9 @@ async function runMain(page) {
   await backToGrid(page);
   const badgeAfterOpen = await page.locator(`${cellOf(manifest.file1)} .edt`).count();
   out.steps.adopted.badgeAfterOpen = badgeAfterOpen;
+  if (adoptedHeading !== 'Teal Orange' || !out.steps.adopted.sideHasRecipe) {
+    return false;
+  }
 
   // 3. Export auto on untouched adopted file1.
   await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
@@ -306,11 +314,17 @@ async function runMain(page) {
     afterSecondRev: afterSecondReset?.rev ?? null,
     badgeAfterReset,
   };
+  return true;
 }
 
 async function runWrongGen(page) {
+  await page.addInitScript(fakeShare);
   await page.goto(url);
   await settle(page);
+  await page.evaluate((binding) => {
+    window.__devExport ??= {};
+    window.__devExport.binding = binding;
+  }, manifest.binding);
   await pickAll(page, { pack: manifest.pack, count: 1 }, manifest.wrongGenFiles);
   await page.waitForFunction(
     () => window.__gxrBook?.dat?.read?.entries?.length === 13248 && !window.__gxrBook.datBusy,
@@ -324,25 +338,108 @@ async function runWrongGen(page) {
   const heading = (await page.locator('.panel.recipe .rname').textContent())?.trim() ?? '';
   const panelText = (await page.locator('.panel.recipe').innerText()).trim();
   const errorCode = await page.locator('.panel.recipe [data-camera-recipe-error]').getAttribute('data-camera-recipe-error').catch(() => null);
+  const errorText = (await page.locator('.panel.recipe [data-camera-recipe-error] .tx').textContent().catch(() => ''))?.trim() ?? '';
   const state = await editStateOf(page, manifest.file1);
+  await backToGrid(page);
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await waitPhase(page, ['running', 'ready']);
+  await waitPhase(page, ['ready']);
+  const exportCounts = () =>
+    page.evaluate(() => {
+      const b = window.__devExport.flow.current();
+      return { done: b ? b.staged.length : 0, failed: b ? b.failures.size : 0 };
+    });
+  const counts = await exportCounts();
+  const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
   out.steps.wrongGen = {
     heading,
     hasMissingCatalogMessage: panelText.includes('请先导入拍摄时使用的相机配方文件。'),
+    hasFullEditorMessage: errorText.includes('请先导入拍摄时使用的相机配方文件。 照片调整仍可保存，暂不生成拍摄配方预测。'),
     errorCode,
     choice: state?.choice ?? null,
+    exportDone: counts.done,
+    exportFailed: counts.failed,
+    exportHasNote: exportNoteText.includes('请先导入拍摄时使用的相机配方文件。'),
   };
+}
+
+async function runMissingDat(page) {
+  await page.addInitScript(fakeShare);
+  await page.goto(url);
+  await settle(page);
+  await page.evaluate((binding) => {
+    window.__devExport ??= {};
+    window.__devExport.binding = binding;
+  }, manifest.binding);
+  await pickAll(page, { pack: manifest.pack, count: 1 }, manifest.missingDatFiles);
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await waitPhase(page, ['running', 'ready']);
+  await waitPhase(page, ['ready']);
+  const counts = await page.evaluate(() => {
+    const b = window.__devExport.flow.current();
+    return { done: b ? b.staged.length : 0, failed: b ? b.failures.size : 0 };
+  });
+  const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
+  out.steps.missingDat = {
+    exportDone: counts.done,
+    exportFailed: counts.failed,
+    exportHasNote: exportNoteText.includes('请先导入拍摄时使用的相机配方文件。'),
+  };
+}
+
+async function runRawOnlyOpenBeforeDat(page) {
+  await page.addInitScript(fakeShare);
+  await page.goto(url);
+  await settle(page);
+  await page.evaluate((binding) => {
+    window.__devExport ??= {};
+    window.__devExport.binding = binding;
+  }, manifest.binding);
+  await pickAll(page, { pack: manifest.pack, count: 1 }, [manifest.rawOnlyDng]);
+  // Open editor BEFORE importing camera data so describeDng runs first.
+  await openPhoto(page, manifest.file1);
+  await backToGrid(page);
+  // Import g250 camera data on the grid, then reopen the RAW-only photo.
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.datFiles);
+  await page.waitForFunction(
+    () => window.__gxrBook?.dat?.read?.entries?.length === 13248 && !window.__gxrBook.datBusy,
+    null,
+    { timeout: 120_000 },
+  );
+  await openPhoto(page, manifest.file1);
+  await page.locator('.tabs button[data-tab="0"]').click();
+  await page.waitForSelector('.panel.recipe .rname');
+  await waitStageRecipeReady(page);
+  const heading = (await page.locator('.panel.recipe .rname').textContent())?.trim() ?? '';
+  const sideRecipe = await page.evaluate(async (s) => {
+    const req = await window.__gxrRequest(s);
+    return req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null;
+  }, manifest.file1);
+  out.steps.rawOnlyBeforeDat = { heading, sideRecipe };
 }
 
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
-  await runMain(page);
+  const adoptedOk = await runMain(page);
   await page.close();
 
-  const page2 = await browser.newPage({ viewport: { width: 390, height: 844 } });
-  page2.on('pageerror', (error) => out.pageErrors.push(error.message));
-  await runWrongGen(page2);
-  await page2.close();
+  if (adoptedOk) {
+    const page2 = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    page2.on('pageerror', (error) => out.pageErrors.push(error.message));
+    await runWrongGen(page2);
+    await page2.close();
+
+    const page3 = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    page3.on('pageerror', (error) => out.pageErrors.push(error.message));
+    await runMissingDat(page3);
+    await page3.close();
+
+    const page4 = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    page4.on('pageerror', (error) => out.pageErrors.push(error.message));
+    await runRawOnlyOpenBeforeDat(page4);
+    await page4.close();
+  }
 } catch (err) {
   out.error = line(err);
 } finally {

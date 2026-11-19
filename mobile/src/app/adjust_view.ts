@@ -44,6 +44,7 @@ export interface AdjustHost {
   enterDrag(): void;
   leaveDrag(): void;
   dragging(): boolean;
+  refreshCurves?(): void;
 }
 
 export class AdjustView {
@@ -118,7 +119,7 @@ export class AdjustView {
       photo.rev += 1;
       this.showKnob();
       this.host.push();
-      this.panel.closest('.sheet')?.querySelector<HTMLButtonElement>('.curve-panel .curve-btn.on')?.click();
+      this.host.refreshCurves?.();
     });
     hint.append(reset);
     panel.append(hist, chips, big, hint);

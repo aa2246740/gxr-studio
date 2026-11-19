@@ -241,10 +241,28 @@ export interface Choice {
 
 /** 没选配方、也没有拍摄标签时桌面的默认选择：原厂标准（slot 4）。 */
 export const DEFAULT_CARD = 'builtin:4';
-/** `resolveRecipe` 走 `camdata_camera_recipe` 时的前缀（不改 `core/api.ts`）。 */
-export const CAMERA_RECIPE_PREFIX = '@camera-recipe:';
+/** 未加载相机配方文件时（如导出补查拍摄标签报错）的缓存键。 */
+export const NO_DAT_CAMERA_RECIPE_KEY = 'dat:none';
 /** 桌面 `recipes.js:168`：拍摄标签未记录微调时的说明。 */
 export const CAMERA_RECIPE_LEVELS_UNKNOWN = '微调未知，电脑预测使用配方默认值';
+/** 桌面 `api/render_routes.py:100`：编辑器里跟在拍摄配方报错后面的固定说明。 */
+export const CAMERA_RECIPE_EDITOR_SUFFIX = '照片调整仍可保存，暂不生成拍摄配方预测。';
+
+export function formatCameraRecipeEditorError(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) return CAMERA_RECIPE_EDITOR_SUFFIX;
+  if (trimmed.includes(CAMERA_RECIPE_EDITOR_SUFFIX)) return trimmed;
+  return `${trimmed} ${CAMERA_RECIPE_EDITOR_SUFFIX}`;
+}
+
+/** 选配方单元的统一顺序：显式选中 → 已采用的拍摄配方 → 镜头名 → 默认 jlaunch。 */
+export function recipeUnitOf(
+  choice: Choice | null | undefined,
+  adopted: AdoptedSelection | null | undefined,
+  photoUnit: Unit | null | undefined,
+): Unit {
+  return choice?.unit ?? adopted?.choice.unit ?? photoUnit ?? 'jlaunch';
+}
 
 export interface CameraRecipeSelection {
   kind: CardKind;
@@ -281,6 +299,7 @@ interface AdoptablePhoto {
   dng: File | null;
   diptych?: boolean;
   choice: Choice | null;
+  recipeOff?: boolean;
   levels: Map<string, Record<string, number>>;
   cameraRecipe?: CameraRecipeCache | null;
 }
@@ -308,23 +327,9 @@ export function findAdoptedCard(listing: Listing, recipe: { kind: string; unit: 
   return shelf(shelves(listing, recipe.unit), 'all').find((card) => card.id === id) ?? null;
 }
 
-export function encodeCameraRecipePayload(json: string): string {
-  const bytes = new TextEncoder().encode(json);
-  let hex = '';
-  for (let i = 0; i < bytes.length; i += 1) hex += bytes[i].toString(16).padStart(2, '0');
-  return hex;
-}
-
-export function decodeCameraRecipePayload(raw: Uint8Array | string): CameraRecipeResult {
-  const bytes =
-    typeof raw === 'string'
-      ? (() => {
-          const out = new Uint8Array(raw.length >> 1);
-          for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(raw.slice(i * 2, i * 2 + 2), 16);
-          return out;
-        })()
-      : raw;
-  const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
+/** 解析核心 Worker `camera-recipe` 返回的结构化 JSON。 */
+export function parseCameraRecipeResult(json: string): CameraRecipeResult {
+  const parsed = JSON.parse(json) as {
     recipe?: CameraRecipeSelection | null;
     levels_unknown?: boolean;
     error?: CameraRecipeError;
@@ -336,9 +341,12 @@ export function decodeCameraRecipePayload(raw: Uint8Array | string): CameraRecip
   return { status: 'ok', recipe: parsed.recipe, levelsUnknown: Boolean(parsed.levels_unknown) };
 }
 
-/** 未显式选配方的 RAW 照片若匹配当前相机配方文件，返回采用的拍摄配方；显式选择、无 DNG、半格双联均返回 null。 */
-export function adoptedSelectionOf(photo: Pick<AdoptablePhoto, 'dng' | 'diptych' | 'choice' | 'cameraRecipe'>, dat: object | null | undefined): AdoptedSelection | null {
-  if (!photo.dng || photo.diptych || photo.choice !== null) return null;
+/** 未显式选配方且未关闭采用的 RAW 照片若匹配当前相机配方文件，返回采用的拍摄配方；显式选择、关闭采用、无 DNG、半格双联均返回 null。 */
+export function adoptedSelectionOf(
+  photo: Pick<AdoptablePhoto, 'dng' | 'diptych' | 'choice' | 'recipeOff' | 'cameraRecipe'>,
+  dat: object | null | undefined,
+): AdoptedSelection | null {
+  if (!photo.dng || photo.diptych || photo.choice !== null || photo.recipeOff) return null;
   const key = datKeyOf(dat);
   if (!key) return null;
   const cache = photo.cameraRecipe;
@@ -351,10 +359,13 @@ export function adoptedSelectionOf(photo: Pick<AdoptablePhoto, 'dng' | 'diptych'
   };
 }
 
-/** 未显式选配方的 RAW 照片在当前相机配方文件下解析拍摄标签出错时，返回桌面同款错误码与文案。 */
-export function cameraRecipeErrorOf(photo: Pick<AdoptablePhoto, 'dng' | 'diptych' | 'choice' | 'cameraRecipe'>, dat: object | null | undefined): CameraRecipeError | null {
-  if (!photo.dng || photo.diptych || photo.choice !== null) return null;
-  const key = datKeyOf(dat);
+/** 未显式选配方且未关闭采用的 RAW 照片解析拍摄标签出错时（含未导入 DAT），返回桌面同款错误码与文案。 */
+export function cameraRecipeErrorOf(
+  photo: Pick<AdoptablePhoto, 'dng' | 'diptych' | 'choice' | 'recipeOff' | 'cameraRecipe'>,
+  dat: object | null | undefined,
+): CameraRecipeError | null {
+  if (!photo.dng || photo.diptych || photo.choice !== null || photo.recipeOff) return null;
+  const key = dat ? datKeyOf(dat) : NO_DAT_CAMERA_RECIPE_KEY;
   if (!key) return null;
   const cache = photo.cameraRecipe;
   if (!cache || cache.datKey !== key || cache.result.status !== 'error') return null;
@@ -362,7 +373,7 @@ export function cameraRecipeErrorOf(photo: Pick<AdoptablePhoto, 'dng' | 'diptych
 }
 
 /**
- * 给导出与复制调整的只读视图：没有显式 `choice` 时把已采用的拍摄配方叠上去，不改原照片对象。
+ * 给导出与复制调整的只读视图：没有显式 `choice` 且未关闭采用时把已采用的拍摄配方叠上去，不改原照片对象。
  * 原照片的 `choice` 仍保持 null，网格的铅笔角标因此不会亮起。
  */
 export function photoWithAdopted<T extends AdoptablePhoto>(photo: T, dat: object | null | undefined): T {

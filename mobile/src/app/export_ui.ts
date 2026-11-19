@@ -11,7 +11,7 @@ import { formatClock, formatDay } from '../lib/group';
 import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrFrameLine, hdrMixLine, hdrResultText } from '../lib/hdr_text';
 import { isDisplaySpace } from '../lib/lut';
 import { loadExportHdr, saveExportHdr } from '../lib/prefs';
-import { adoptedSelectionOf, photoWithAdopted, shelf, shelves, type Card } from '../lib/recipes';
+import { adoptedSelectionOf, cameraRecipeErrorOf, photoWithAdopted, recipeUnitOf, shelf, shelves, type Card } from '../lib/recipes';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeText, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
 import { button, el } from './dom';
@@ -97,7 +97,7 @@ export function cardsFor(book: Book, photo: Photo): Card[] {
   const dat = book.dat;
   if (!dat) return [];
   const adopted = adoptedSelectionOf(photo, dat);
-  const unit = (photo.choice ?? adopted?.choice)?.unit ?? unitOfLens(mergeMeta(photo.jpgMeta, photo.dngMeta).lens) ?? 'jlaunch';
+  const unit = recipeUnitOf(photo.choice, adopted, unitOfLens(mergeMeta(photo.jpgMeta, photo.dngMeta).lens));
   return shelf(shelves(dat.listing, unit), 'all');
 }
 
@@ -309,7 +309,7 @@ export class ExportFlow {
         const [, fonts] = await Promise.all([
           logoStore.ensureLoaded(),
           fontKeys.length ? ensureFontPack(fontKeys) : Promise.resolve({ fontIndex: '', fontPack: null }),
-          ensureCameraRecipe(photo, this.app.book()),
+          ensureCameraRecipe(photo, this.app.book(), { checkMissingDat: true }),
         ]);
         if (seq !== this.sizeSeq || !sheet.isConnected) return;
         const lutBook = this.app.lutBook?.();
@@ -344,7 +344,7 @@ export class ExportFlow {
     } else {
       const warmFonts = [...new Set(photos.flatMap((p) => fontsNeeded(p.border, p.stamp)))];
       void logoStore.ensureLoaded();
-      void ensureCameraRecipes(photos, this.app.book());
+      void ensureCameraRecipes(photos, this.app.book(), { checkMissingDat: true });
       if (warmFonts.length) void ensureFontPack(warmFonts).catch(() => undefined);
     }
   }
@@ -380,20 +380,20 @@ export class ExportFlow {
     const hooks = dev();
     const binding = hooks?.binding;
     const book = this.app.book();
+    const dat = book.dat;
     const lutBook = this.app.lutBook?.();
-    const snapshots = photos.map((photo) => {
-      const reqPhoto = requestPhoto(photo, lutBook, book);
-      const cards = cardsFor(book, photo);
-      return {
-        id: photo.id,
-        stem: photo.stem,
-        version: photo.version,
-        dng: photo.dng,
-        jpg: photo.jpg,
-        reqPhoto,
-        cards,
-      };
-    });
+    const snapshots = photos.map((photo) => ({
+      id: photo.id,
+      stem: photo.stem,
+      version: photo.version,
+      dng: photo.dng,
+      jpg: photo.jpg,
+      explicitChoice: photo.choice !== null,
+      recipeOff: Boolean(photo.recipeOff),
+      reqPhoto: requestPhoto(photo, lutBook, book),
+      cards: cardsFor(book, photo),
+      note: cameraRecipeErrorOf(photo, dat)?.message,
+    }));
     const items: BatchItem[] = snapshots.map((s) => ({
       id: s.id,
       stem: s.stem,
@@ -401,12 +401,13 @@ export class ExportFlow {
       dng: s.dng,
       jpg: s.jpg,
       req: buildRequest(s.reqPhoto, s.cards, options, __GXR_BUILD__, binding),
+      ...(s.note ? { cameraRecipeNote: s.note } : {}),
     }));
     const cubeIds = [...new Set(snapshots.map((s) => s.reqPhoto.lut).filter((id): id is string => Boolean(id)))];
     const fontKeys = [...new Set(snapshots.flatMap((s) => fontsNeeded(s.reqPhoto.border, s.reqPhoto.stamp)))];
     const logoIds = [...new Set(snapshots.map((s) => usedLogoId(s.reqPhoto.border)).filter((id): id is string => id !== null))];
     const pack = calibPack(book.pack?.files ?? null);
-    const datCopy = book.dat ? book.dat.read.bytes.slice(0) : null;
+    const datCopy = dat ? dat.read.bytes.slice(0) : null;
     const host: BatchHost = {
       run: (item, index) => this.run(item, index),
       stop: () => this.core.stop(),
@@ -429,23 +430,26 @@ export class ExportFlow {
     this.savedCount = 0;
     const batch = new ExportBatch(items, host, options.hdr ? STAGE_CAP_HDR_BYTES : STAGE_CAP_BYTES);
     this.batch = batch;
-    const syncFonts = cachedFontPack(fontKeys);
-    const logosReady = !logoIds.length || logoStore.loaded();
-    const needAdopt = Boolean(book.dat) && photos.some((p) => needsCameraRecipe(p, book.dat));
-    if (!needAdopt && (!cubeIds.length || !lutBook) && syncFonts && logosReady) {
+    const begin = (luts: Parameters<ExportCore['begin']>[0]['luts'], f: BatchFonts): void => {
       const packedLogos = logoStore.packLogos(logoIds);
-      fonts = syncFonts;
+      fonts = f;
       this.core.begin({
         dat: datCopy,
         calibIndex: pack.calibIndex,
         calibBlob: pack.calibBlob,
-        luts: {},
-        fontIndex: syncFonts.fontIndex,
-        fontPack: syncFonts.fontPack,
+        luts,
+        fontIndex: f.fontIndex,
+        fontPack: f.fontPack,
         logoIndex: packedLogos.logoIndex,
         logoBlob: packedLogos.logoBlob,
       });
       batch.start();
+    };
+    const syncFonts = cachedFontPack(fontKeys);
+    const logosReady = !logoIds.length || logoStore.loaded();
+    const needAdopt = photos.some((p) => needsCameraRecipe(p, dat, { checkMissingDat: true }));
+    if (!needAdopt && (!cubeIds.length || !lutBook) && syncFonts && logosReady) {
+      begin({}, syncFonts);
       return;
     }
     this.paint();
@@ -454,31 +458,33 @@ export class ExportFlow {
       ? ensureFontPack(fontKeys).catch(() => ({ fontIndex: '', fontPack: null }))
       : Promise.resolve({ fontIndex: '', fontPack: null });
     const logoTask = logoIds.length && !logoStore.loaded() ? logoStore.ensureLoaded().catch(() => []) : Promise.resolve([]);
-    const adoptTask = needAdopt ? ensureCameraRecipes(photos, book) : Promise.resolve();
+    const adoptTask = needAdopt ? ensureCameraRecipes(photos, book, { checkMissingDat: true }) : Promise.resolve();
     void Promise.all([lutTask, fontTask, logoTask, adoptTask]).then(([luts, fonts0]) => {
       if (this.batch !== batch || batch.phase !== 'running') return;
       if (needAdopt || logoIds.length) {
         photos.forEach((photo, idx) => {
-          const reqPhoto = requestPhoto(photo, lutBook, book);
-          const cards = cardsFor(book, photo);
-          snapshots[idx].reqPhoto = reqPhoto;
-          snapshots[idx].cards = cards;
-          items[idx].req = buildRequest(reqPhoto, cards, options, __GXR_BUILD__, binding);
+          const snap = snapshots[idx];
+          let changed = false;
+          const logoId = logoIds.length ? usedLogoId(snap.reqPhoto.border) : null;
+          if (logoId) {
+            snap.reqPhoto.logoInfo = logoStore.info(logoId);
+            changed = true;
+          }
+          if (needAdopt && !snap.explicitChoice && !snap.recipeOff) {
+            const adopted = adoptedSelectionOf(photo, dat);
+            if (adopted) {
+              snap.reqPhoto.choice = { ...adopted.choice };
+              snap.reqPhoto.levels = new Map([[adopted.choice.id, { ...adopted.levels }]]);
+              if (dat) snap.cards = shelf(shelves(dat.listing, recipeUnitOf(null, adopted, unitOfLens(snap.reqPhoto.lens))), 'all');
+              changed = true;
+            }
+            const note = cameraRecipeErrorOf(photo, dat)?.message;
+            if (note) items[idx].cameraRecipeNote = note;
+          }
+          if (changed) items[idx].req = buildRequest(snap.reqPhoto, snap.cards, options, __GXR_BUILD__, binding);
         });
       }
-      const packedLogos = logoStore.packLogos(logoIds);
-      fonts = fonts0;
-      this.core.begin({
-        dat: datCopy,
-        calibIndex: pack.calibIndex,
-        calibBlob: pack.calibBlob,
-        luts,
-        fontIndex: fonts0.fontIndex,
-        fontPack: fonts0.fontPack,
-        logoIndex: packedLogos.logoIndex,
-        logoBlob: packedLogos.logoBlob,
-      });
-      batch.start();
+      begin(luts, fonts0);
     });
   }
 
@@ -634,6 +640,7 @@ export class ExportFlow {
     else main = `做好 ${ok} 张，${failed.length} 张没做成`;
     tx.append(el('b', '', main));
     this.paintHdr(tx, batch);
+    this.paintCameraNotes(tx, batch);
     if (failed.length) {
       const why = el('ul', 'why');
       for (const f of failed) why.append(el('li', '', `${f.stem}：${f.message}`));
@@ -681,6 +688,19 @@ export class ExportFlow {
       for (const note of notes) list.append(el('li', '', note));
       tx.append(list);
     }
+  }
+
+  private paintCameraNotes(tx: HTMLElement, batch: ExportBatch): void {
+    const notes: string[] = [];
+    for (const s of batch.staged) {
+      const item = batch.item(s.id);
+      if (item?.cameraRecipeNote) notes.push(`${item.stem}：${item.cameraRecipeNote}`);
+    }
+    if (!notes.length) return;
+    const list = el('ul', 'why camnotes');
+    list.dataset.state = 'camera-recipe-notes';
+    for (const note of notes) list.append(el('li', '', note));
+    tx.append(list);
   }
 
   /** 05c 的「存到相册」。分几批时写第几批；点下去在这次点击里同步调用 navigator.share。 */
@@ -755,6 +775,7 @@ export class ExportFlow {
     const tx = el('div', 'tx');
     tx.append(el('b', '', `好了：${n} 张`), el('small', '', '选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。'));
     this.paintHdr(tx, batch);
+    this.paintCameraNotes(tx, batch);
     const done = button('fbtn fill-ctl', '好');
     done.dataset.act = 'done';
     done.addEventListener('click', () => this.finishShare(batch));

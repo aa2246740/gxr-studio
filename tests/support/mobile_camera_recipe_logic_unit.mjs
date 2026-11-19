@@ -21,8 +21,7 @@ const {
   adoptedSelectionOf,
   cameraRecipeErrorOf,
   datKeyOf,
-  decodeCameraRecipePayload,
-  encodeCameraRecipePayload,
+  parseCameraRecipeResult,
   photoWithAdopted,
 } = await import('../../mobile/src/lib/recipes.ts');
 const { copyFrom, groupsPresent } = await import('../../mobile/src/lib/paste.ts');
@@ -127,7 +126,7 @@ function makePhoto(overrides = {}) {
   };
 }
 
-test('EXIF Copyright 0x8298 preserves 69-char trailing spaces, merges DNG-first, and omits copyright key when absent', () => {
+test('EXIF Copyright 0x8298 preserves 69-char trailing spaces, merges JPG-first, and omits copyright key when absent', () => {
   const padded = 'GXR1 abcdef012345 28 03 01 02000000000000000000'.padEnd(69, ' ');
   assert.equal(padded.length, 69);
   const tiff = makeTiff([[0x8298, padded]]);
@@ -142,36 +141,39 @@ test('EXIF Copyright 0x8298 preserves 69-char trailing spaces, merges DNG-first,
   assert.deepEqual(photoMetaFromTiff(noCopyTiff), { lens: 'GR LENS A12 28mm', iso: null });
   assert.equal(copyrightFromTiff(noCopyTiff), null);
 
-  // DNG takes priority over JPG; falls back to JPG when DNG has none.
-  assert.equal(mergeCopyright('dng-tag', 'jpg-tag'), 'dng-tag');
-  assert.equal(mergeCopyright(null, 'jpg-tag'), 'jpg-tag');
-  assert.equal(mergeCopyright('', 'jpg-tag'), 'jpg-tag');
+  // JPG takes priority over DNG (Python is-not-None semantics); falls back to DNG only when JPG is null/undefined.
+  assert.equal(mergeCopyright('jpg-tag', 'dng-tag'), 'jpg-tag');
+  assert.equal(mergeCopyright('', 'dng-tag'), '');
+  assert.equal(mergeCopyright(null, 'dng-tag'), 'dng-tag');
   assert.equal(mergeCopyright(null, null), null);
 });
 
-test('decodeCameraRecipePayload round-trips ok, none, and structured error payloads', () => {
-  const okHex = encodeCameraRecipePayload(
-    JSON.stringify({
+test('parseCameraRecipeResult handles ok, none, and structured error JSON payloads', () => {
+  assert.deepEqual(
+    parseCameraRecipeResult(
+      JSON.stringify({
+        recipe: { kind: 'looks', unit: 'jlaunch', slot: 1, id: 'look-1', levels: { saturation: 2 } },
+        levels_unknown: true,
+      }),
+    ),
+    {
+      status: 'ok',
       recipe: { kind: 'looks', unit: 'jlaunch', slot: 1, id: 'look-1', levels: { saturation: 2 } },
-      levels_unknown: true,
-    }),
+      levelsUnknown: true,
+    },
   );
-  assert.deepEqual(decodeCameraRecipePayload(okHex), {
-    status: 'ok',
-    recipe: { kind: 'looks', unit: 'jlaunch', slot: 1, id: 'look-1', levels: { saturation: 2 } },
-    levelsUnknown: true,
-  });
 
-  const noneHex = encodeCameraRecipePayload(JSON.stringify({ recipe: null }));
-  assert.deepEqual(decodeCameraRecipePayload(noneHex), { status: 'none' });
+  assert.deepEqual(parseCameraRecipeResult(JSON.stringify({ recipe: null })), { status: 'none' });
 
-  const errHex = encodeCameraRecipePayload(
-    JSON.stringify({ error: { code: 'camera_recipe_catalog_missing', message: '请先导入拍摄时使用的相机配方文件。' } }),
+  assert.deepEqual(
+    parseCameraRecipeResult(
+      JSON.stringify({ error: { code: 'camera_recipe_catalog_missing', message: '请先导入拍摄时使用的相机配方文件。' } }),
+    ),
+    {
+      status: 'error',
+      error: { code: 'camera_recipe_catalog_missing', message: '请先导入拍摄时使用的相机配方文件。' },
+    },
   );
-  assert.deepEqual(decodeCameraRecipePayload(errHex), {
-    status: 'error',
-    error: { code: 'camera_recipe_catalog_missing', message: '请先导入拍摄时使用的相机配方文件。' },
-  });
 });
 
 test('adoptedSelectionOf and photoWithAdopted match desktop rules without mutating photo.choice or grid badge', () => {

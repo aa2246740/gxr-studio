@@ -10,6 +10,7 @@ import type { LutPatchFields, LutSnapshotRow } from '../lib/idb';
 import type { RgbaPixels } from '../lib/logo_key';
 import type { LutRecord } from '../lib/lut';
 import type { Frame } from '../lib/photo_size';
+import { parseCameraRecipeResult, type CameraRecipeResult } from '../lib/recipes';
 import type { ZipFail } from '../lib/zip';
 
 import { Pool } from './pool';
@@ -51,12 +52,14 @@ function isScene(value: unknown): value is Scene {
   return Array.isArray(row.A) && Array.isArray(row.b);
 }
 
-function metaOf(value: unknown): PhotoMeta {
+export function metaOf(value: unknown): PhotoMeta {
   const row = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
-  return {
+  const meta: PhotoMeta = {
     lens: typeof row.lens === 'string' ? row.lens : null,
     iso: typeof row.iso === 'number' && Number.isFinite(row.iso) ? row.iso : null,
   };
+  if (typeof row.copyright === 'string') meta.copyright = row.copyright;
+  return meta;
 }
 
 /** 解析一份 DNG。`bytes` 仍归调用方；Worker 拿到的是拷贝。 */
@@ -145,6 +148,17 @@ export async function resolveRecipe(dat: ArrayBuffer, recipe: string, library?: 
   const { json } = await workers().request('resolve', null, transfer, null, { resolve: { dat, recipe, library: library ?? null } });
   const data = JSON.parse(json) as { entry: string; entry_sha256: string; levels: Record<string, number> };
   return { entry: fromHex(data.entry), entrySha256: data.entry_sha256, levels: data.levels };
+}
+
+/** `camdata_camera_recipe`：在 Worker 里按当前 DAT / GXRFX.BIN 解析 Exif Copyright 拍摄标签。 */
+export async function cameraRecipe(tag: string, dat: ArrayBuffer | null, library?: ArrayBuffer | null): Promise<CameraRecipeResult> {
+  const transfer: Transferable[] = [];
+  if (dat) transfer.push(dat);
+  if (library) transfer.push(library);
+  const { json } = await workers().request('camera-recipe', null, transfer, null, {
+    cameraRecipe: { tag, dat: dat ?? null, library: library ?? null },
+  });
+  return parseCameraRecipeResult(json);
 }
 
 export interface CalibPick {

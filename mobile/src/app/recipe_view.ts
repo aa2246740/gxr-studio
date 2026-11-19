@@ -5,7 +5,7 @@ import type { Engine, Geometry } from '../../../frontend/src/index';
 import { crossed, uncalibratedReason, unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
-import { adoptedSelectionOf, CAMERA_RECIPE_LEVELS_UNKNOWN, cameraRecipeErrorOf, cardTag, choices, DEFAULT_CARD, effective, KNOB_NAMES, levelText, namesOnly, nearestIndex, shelf, shelves } from '../lib/recipes';
+import { adoptedSelectionOf, CAMERA_RECIPE_LEVELS_UNKNOWN, cameraRecipeErrorOf, cardTag, choices, DEFAULT_CARD, effective, formatCameraRecipeEditorError, KNOB_NAMES, levelText, namesOnly, nearestIndex, recipeUnitOf, shelf, shelves } from '../lib/recipes';
 import type { AdoptedSelection, CameraRecipeError, Card, Control, Shelf, Shelves } from '../lib/recipes';
 import { recipeSwitch } from '../lib/recipe_memory';
 import type { UnitState } from './book';
@@ -147,7 +147,7 @@ export class RecipeView {
     const camError = cameraRecipeErrorOf(this.photo, dat);
     const meta = mergeMeta(this.photo.jpgMeta, this.photo.dngMeta);
     const photoUnit = unitOfLens(meta.lens);
-    const unit = photoUnit ?? adopted?.choice.unit ?? 'jlaunch';
+    const unit = recipeUnitOf(this.photo.choice, adopted, photoUnit);
     return {
       raw: this.photo.dng !== null,
       gpu: this.engine !== null,
@@ -391,7 +391,7 @@ export class RecipeView {
       box.dataset.cameraRecipeError = scene.camError.code;
       const mark = el('span', 'warn');
       mark.append(icon(WARN));
-      box.append(mark, el('div', 'tx', scene.camError.message));
+      box.append(mark, el('div', 'tx', formatCameraRecipeEditorError(scene.camError.message)));
       this.panel.append(box);
     } else if (scene.adopted?.levelsUnknown) {
       const note = el('p', 'pad faint small', CAMERA_RECIPE_LEVELS_UNKNOWN);
@@ -533,6 +533,7 @@ export class RecipeView {
     this.photo.rev += 1;
     if (this.photo.choice?.id !== card.id) {
       this.photo.choice = { id: card.id, unit: scene.unit };
+      this.photo.recipeOff = false;
       this.panel.querySelector('[data-camera-recipe-note],[data-camera-recipe-error]')?.remove();
       for (const slot of this.slots) {
         slot.node.classList.remove('on');
@@ -569,6 +570,7 @@ export class RecipeView {
     this.photo.memory = switched.memory;
     this.photo.levels = new Map([[card.id, switched.levels]]);
     this.photo.choice = { id: card.id, unit: scene.unit };
+    this.photo.recipeOff = false;
     this.photo.rev += 1;
     for (const slot of this.slots) {
       slot.node.classList.remove('on');

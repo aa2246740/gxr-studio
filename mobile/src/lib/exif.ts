@@ -306,10 +306,10 @@ export function copyrightFromJpeg(bytes: Uint8Array): string | null {
   }
 }
 
-/** 相机配方标签优先级：DNG 优先，DNG 没有再回退同拍 JPG（对齐桌面 ingest.py）。 */
-export function mergeCopyright(dng: string | null | undefined, jpg: string | null | undefined): string | null {
-  if (dng != null && dng !== '') return dng;
-  if (jpg != null && jpg !== '') return jpg;
+/** 相机配方标签优先级：JPG 优先，JPG 没有（null/undefined）再回退同拍 DNG（对齐桌面 importer.py:598 / store.py:709）。 */
+export function mergeCopyright(jpg: string | null | undefined, dng: string | null | undefined): string | null {
+  if (jpg != null) return jpg;
+  if (dng != null) return dng;
   return null;
 }
 

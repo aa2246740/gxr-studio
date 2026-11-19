@@ -181,6 +181,10 @@ export class CurvesView {
     return this.panel;
   }
 
+  refresh(): void {
+    if (!this.closed && !this.drag) this.draw();
+  }
+
   destroy(): void {
     if (this.closed) return;
     this.cancelFrame();

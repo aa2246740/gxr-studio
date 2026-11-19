@@ -86,6 +86,9 @@ def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None
         "jpgOnly": jpg_only.stem,
         "files": [str(dng1), str(jpg1), str(dng2), str(jpg2), str(jpg_only), str(dat250), str(fx250)],
         "wrongGenFiles": [str(dng1), str(jpg1), str(wrong_dat)],
+        "missingDatFiles": [str(dng1), str(jpg1)],
+        "rawOnlyDng": str(dng1),
+        "datFiles": [str(dat250), str(fx250)],
         "outDir": str(out_dir),
         "out": str(report_path),
     }
@@ -129,12 +132,28 @@ def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None
         f"explicit choice must persist as builtin:4, got {wins['persistedChoice']!r}",
     )
 
-    # Bullet 4: wrong-generation DAT shows desktop missing-catalog message and falls back to default.
+    # Bullet 4 + P3-1 + P3-2: wrong-generation DAT shows full desktop message, falls back to default, and export note warns.
     wrong = report["steps"]["wrongGen"]
     check(wrong["hasMissingCatalogMessage"] is True, "wrong-gen DAT must show '请先导入拍摄时使用的相机配方文件。'")
+    check(
+        wrong["hasFullEditorMessage"] is True,
+        "wrong-gen DAT editor error box must include desktop suffix '照片调整仍可保存，暂不生成拍摄配方预测。'",
+    )
     check(wrong["errorCode"] == "camera_recipe_catalog_missing", f"expected camera_recipe_catalog_missing, got {wrong['errorCode']!r}")
     check(wrong["heading"] == "原厂标准", f"wrong-gen DAT must fall back to default '原厂标准', got {wrong['heading']!r}")
     check(wrong["choice"] is None, "wrong-gen fallback must not store photo.choice")
+    check(wrong["exportDone"] == 1 and wrong["exportFailed"] == 0, "wrong-gen DAT export must still succeed as camera JPG")
+    check(wrong["exportHasNote"] is True, "wrong-gen DAT export must show per-photo note '请先导入拍摄时使用的相机配方文件。'")
+
+    # P3-1: missing camera data on export still exports camera JPG and shows per-photo note.
+    missing = report["steps"]["missingDat"]
+    check(missing["exportDone"] == 1 and missing["exportFailed"] == 0, "missing-DAT export must succeed as camera JPG")
+    check(missing["exportHasNote"] is True, "missing-DAT export must show per-photo note '请先导入拍摄时使用的相机配方文件。'")
+
+    # P1-1: RAW-only photo opened before importing DAT must keep tag and adopt after DAT import.
+    raw_only = report["steps"]["rawOnlyBeforeDat"]
+    check(raw_only["heading"] == "Teal Orange", f"RAW-only open-before-DAT expected 'Teal Orange', got {raw_only['heading']!r}")
+    check(raw_only["sideRecipe"] == "record:6", f"RAW-only open-before-DAT auto export expected 'record:6', got {raw_only['sideRecipe']!r}")
 
     # Bullet 5: diptych (file 2) and JPG-only do not adopt.
     no_adopt = report["steps"]["noAdopt"]

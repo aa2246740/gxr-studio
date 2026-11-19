@@ -8,7 +8,7 @@ import { photoWithAdopted, shelf, shelves } from '../lib/recipes';
 import { NOT_SET, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
 import { button, el, icon } from './dom';
-import { photoMs, type AppApi, type Knobs, type Photo } from './model';
+import { ensureCameraRecipe, needsCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
 import './paste.css';
 
@@ -124,7 +124,7 @@ function overlay(host: HTMLElement, node: HTMLElement, onScrim: () => void): Ove
 export function openCopySheet(host: HTMLElement, api: AppApi, photo: Photo, onCopied: () => void): void {
   closePasteSheets(host);
   const chosen = new Set<GroupId>(chosenGroups());
-  const present = new Set(groupsPresent(photoWithAdopted(photo, api.book().dat)));
+  let present = new Set(groupsPresent(photoWithAdopted(photo, api.book().dat)));
   const sheet = el('div', 'ms paste-sheet');
   sheet.dataset.state = 'copy-options';
   const head = el('div', 'hd');
@@ -147,12 +147,18 @@ export function openCopySheet(host: HTMLElement, api: AppApi, photo: Photo, onCo
     go.textContent = `复制 ${chosen.size} 项`;
     go.disabled = chosen.size === 0;
   };
+  let recipeSmall: HTMLElement | null = null;
+  let recipeHint = '';
   for (const [id, name, hint] of PASTE_GROUPS) {
     const row = button('optrow', '');
     row.dataset.group = id;
     const text = el('div', 'tx');
     const small = el('small', '', hint);
     if (!present.has(id)) small.append(el('i', '', NOT_SET));
+    if (id === 'recipe') {
+      recipeSmall = small;
+      recipeHint = hint;
+    }
     text.append(el('b', '', name), small);
     row.append(el('span', 'cc'), text);
     row.addEventListener('click', () => {
@@ -165,7 +171,15 @@ export function openCopySheet(host: HTMLElement, api: AppApi, photo: Photo, onCo
   sheet.append(el('div', 'grab'), head, el('p', 'lead', '套用时只改勾选的项目，别的保持不变。勾选会记住，下次还是这几项。'), rows, note, go);
   const view = overlay(host, sheet, () => view.close());
   cancel.addEventListener('click', () => view.close());
-  go.addEventListener('click', () => {
+  const ready = needsCameraRecipe(photo, api.book().dat)
+    ? ensureCameraRecipe(photo, api.book()).then(() => {
+        if (!sheet.isConnected || !recipeSmall) return;
+        present = new Set(groupsPresent(photoWithAdopted(photo, api.book().dat)));
+        recipeSmall.replaceChildren(document.createTextNode(recipeHint));
+        if (!present.has('recipe')) recipeSmall.append(el('i', '', NOT_SET));
+      })
+    : null;
+  const finishCopy = () => {
     const ids = PASTE_GROUPS.map((g) => g[0]).filter((id) => chosen.has(id));
     rememberGroups(ids);
     const result = pasteState.copy(api, photo, ids);
@@ -177,6 +191,15 @@ export function openCopySheet(host: HTMLElement, api: AppApi, photo: Photo, onCo
     }
     view.close();
     openWhereSheet(host, api, photo, result.line, onCopied);
+  };
+  go.addEventListener('click', () => {
+    if (ready && needsCameraRecipe(photo, api.book().dat)) {
+      void ready.then(() => {
+        if (sheet.isConnected) finishCopy();
+      });
+      return;
+    }
+    finishCopy();
   });
   paint();
 }
