@@ -20,6 +20,7 @@ from gxr_studio.app import create_app
 from gxr_studio.cards.discovery import find_cards
 from gxr_studio.cards.importer import ImportOptions, run_import
 from gxr_studio.library.store import Library
+from support import samples
 from test_halfframe_p0 import (
     WEB,
     _clear_desktop_cache,
@@ -36,6 +37,7 @@ pytestmark = pytest.mark.browser_serial
 DRIVER = Path(__file__).resolve().parent / "support" / "desktop_halfframe_p1b_ui.mjs"
 NON_HF_BASELINE = Path(__file__).resolve().parent / "support" / "non_halfframe_gallery_baseline.json"
 NON_HF_EDITOR_BASELINE = Path(__file__).resolve().parent / "support" / "non_halfframe_editor_baseline.json"
+NON_HF_EDITOR_A12_50_BASELINE = Path(__file__).resolve().parent / "support" / "non_halfframe_editor_a12_50_baseline.json"
 
 
 def _run_driver(settings: Any, manifest: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
@@ -167,6 +169,7 @@ def test_desktop_halfframe_p1b_ui_card250(
     assert flt["exportBtn"] == "导出选中的 1 对半格", flt
     assert flt["pasteBtn"] == "粘贴调整到 1 对半格", flt
     assert flt["hasUndoBtn"] is True, flt
+    assert flt["toastPos"] is not None and flt["toastPos"]["aboveSelbar"] is True, flt["toastPos"]
     assert flt["afterUndo"]["restoredCount"] == 8 and flt["afterUndo"]["hasXpan"] is True, flt["afterUndo"]
 
     # 2. Selection + batch export while filtered -> only visible pair (no hidden XPan)
@@ -198,11 +201,17 @@ def test_desktop_halfframe_p1b_ui_card250(
     assert vb["firstView"]["cardDisabled"] is True and vb["firstView"]["selectDisabled"] is True, vb
     m1 = vb["firstView"]["stripMask"]
     assert m1["present"] is True and m1["insidePv"] is True and m1["smallerThanPv"] is True, m1
+    n1 = vb["firstView"]["roNote"]
+    assert n1["present"] is True and n1["text"] == "只看这一张；调整对整张双联生效。", n1
+    assert n1["inPanelOrViewbar"] is True and n1["overlapsStage"] is False, n1
     assert vb["secondStripMask"]["present"] is True and vb["secondStripMask"]["insidePv"] is True, vb["secondStripMask"]
+    n2 = vb["secondRoNote"]
+    assert n2["present"] is True and n2["text"] == "只看这一张；调整对整张双联生效。", n2
     assert vb["putsDuringSingleViews"] == 0, vb
     assert vb["diffFirstSecond"] > 3.0, vb
     assert vb["backToDiptych"]["pressed"] == "双联" and vb["backToDiptych"]["cardDisabled"] is False, vb
     assert vb["backToDiptych"]["stripMask"]["present"] is False, vb["backToDiptych"]["stripMask"]
+    assert vb["backToDiptych"]["roNote"]["present"] is False, vb["backToDiptych"]["roNote"]
     assert ed["nav"]["landedOnFirst"] is False, ed["nav"]
 
     # 4. Export dialog (incl. P3-3 title follows scope)
@@ -291,6 +300,59 @@ def test_desktop_halfframe_p1b_jpgonly_photo1_and_half_first_crop(
     assert got_start == 1100, f"expected camera-JPG strip start 1100, got {got_start} from {rect}"
 
 
+def test_desktop_halfframe_p1b_framed_pair_single_views(
+    settings: Any,
+    lib: Library,
+    volumes: Path,
+    tmp_path: Path,
+) -> None:
+    """N1 + UX: 带白色边框和时间戳的半格一对，单张视图不画边框/时间戳且遮罩对齐照片 1 px 内，双联仍带边框。"""
+    _clear_desktop_cache()
+    pairs = _sorted_pairs(_field_folder("card250"))
+    # Stage pair 1 (shots 1 + 2, RAW+JPG)
+    _stage_volume_pairs(volumes, pairs[:2])
+    _setup_g250_calibrated_home(settings)
+    (settings.home_dir / "flags.json").write_text(json.dumps({"gpu_preview": False}), encoding="utf-8")
+
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+    by_idx = _index_shots_by_jpg_sha(lib, pairs[:2])
+    p2_id = by_idx[2]["shot_id"]
+    lib.close()
+
+    ss_dir = os.environ.get("GXR_P1B_SCREENSHOT_DIR")
+    screenshots = {"framedFirst": str(Path(ss_dir) / "framed-first.png")} if ss_dir else {}
+    ui = _run_driver(
+        settings,
+        {
+            "mode": "framed_pair",
+            "pairSecondId": p2_id,
+            "screenshots": screenshots,
+        },
+        tmp_path,
+    )
+    assert "error" not in ui, ui
+    assert ui["pageErrors"] == [], ui["pageErrors"]
+    fp = ui["steps"]["framedPair"]
+
+    dip = fp["diptych"]
+    assert dip["framed"] is True and dip["hasDeco"] is True and dip["pvBiggerThanImg"] is True, dip
+    assert dip["stripMaskCount"] == 0 and dip["roNote"]["present"] is False, dip
+
+    for key in ("first", "second"):
+        sv = fp[key]
+        assert sv["framed"] is False and sv["hasDeco"] is False, (key, sv)
+        assert sv["pvMatchesImg"] is True, (key, sv)
+        assert sv["stripMaskCount"] == 1 and sv["maskAlign"] is not None, (key, sv)
+        assert sv["maskAlign"]["maxErrPx"] <= 1.0, (key, sv["maskAlign"])
+        note = sv["roNote"]
+        assert note["present"] is True and note["text"] == "只看这一张；调整对整张双联生效。", (key, note)
+        assert note["inPanelOrViewbar"] is True and note["overlapsStage"] is False, (key, note)
+
+    back = fp["backToDiptych"]
+    assert back["framed"] is True and back["hasDeco"] is True and back["pvBiggerThanImg"] is True, back
+    assert back["stripMaskCount"] == 0 and back["roNote"]["present"] is False, back
+
+
 def test_non_halfframe_gallery_dom_unchanged(
     settings: Any,
     lib: Library,
@@ -318,10 +380,42 @@ def test_non_halfframe_gallery_dom_unchanged(
 def test_non_halfframe_editor_dom_unchanged(
     settings: Any,
     lib: Library,
+    volumes: Path,
+    tmp_path: Path,
+) -> None:
+    """P2-3 + N3: 真实 a12-50 非半格图库的编辑页 DOM 与 ee33a95 基线逐字段一致。"""
+    folder = samples.a12_50_samples()
+    if not folder.is_dir():
+        samples.missing("captures/a12-50 样本不在本机")
+    dcim = volumes / "A12_50_CARD" / "DCIM" / "100RICOH"
+    dcim.mkdir(parents=True)
+    for src in sorted(folder.iterdir()):
+        if src.is_file() and src.suffix.upper() in {".DNG", ".JPG", ".JPEG"}:
+            shutil.copy2(src, dcim / src.name)
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+    lib.close()
+
+    ui = _run_driver(settings, {"mode": "editor_snapshot"}, tmp_path)
+    assert "error" not in ui, ui
+    assert ui["pageErrors"] == [], ui["pageErrors"]
+    snap = ui["steps"]["editorSnapshot"]
+
+    if os.environ.get("GXR_UPDATE_NON_HF_A12_50_BASELINE") == "1":
+        NON_HF_EDITOR_A12_50_BASELINE.write_text(json.dumps(snap, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    assert NON_HF_EDITOR_A12_50_BASELINE.is_file(), f"baseline missing: {NON_HF_EDITOR_A12_50_BASELINE}"
+    expected = json.loads(NON_HF_EDITOR_A12_50_BASELINE.read_text(encoding="utf-8"))
+    got_s = json.dumps(snap, ensure_ascii=False)
+    exp_s = json.dumps(expected, ensure_ascii=False)
+    assert snap == expected, f"non-halfframe a12-50 editor DOM changed!\nGOT: {got_s}\nEXP: {exp_s}"
+
+
+def test_non_halfframe_editor_dom_unchanged_synthetic(
+    settings: Any,
+    lib: Library,
     card: Any,
     tmp_path: Path,
 ) -> None:
-    """P2-3: 不含半格照片的编辑页 DOM 与 ee33a95 基线逐字段一致。"""
+    """P2-3: 合成非半格图库的编辑页 DOM 与 ee33a95 基线逐字段一致（无真实样本时也能运行）。"""
     run_import(lib, find_cards((card.root.parent,))[0], ImportOptions(min_free_bytes=0))
     lib.close()
 

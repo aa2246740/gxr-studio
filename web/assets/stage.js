@@ -27,8 +27,9 @@ function paintPairStripMask(view, pv, media, mode) {
   const mw = media?.naturalWidth || media?.width || view.photo?.width || 4288;
   const mh = media?.naturalHeight || media?.height || view.photo?.height || 2848;
   const p1 = view.pairView === 'first' ? partnerOf(view.photo, state.photos, state.partners) : null;
-  const raw = view.pairView === 'first' ? !!(p1 ? p1.has_raw : view.photo?.has_raw) : !!(view.photo?.has_raw ?? true);
-  const r = halfFirstCropRect(mw, mh, { raw, orientation: view.photo?.orientation });
+  const target = view.pairView === 'first' ? (p1 || view.photo) : view.photo;
+  const raw = !!(target ? target.has_raw : true);
+  const r = halfFirstCropRect(mw, mh, { raw, orientation: target?.orientation });
   const mask = old || h('div', { class: 'pair-strip-mask', 'aria-hidden': 'true' });
   Object.assign(mask.style, {
     left: pct(r.x),
@@ -41,14 +42,14 @@ function paintPairStripMask(view, pv, media, mode) {
 
 // 边框和时间戳（stage_finish.js）：显卡画布按「整张成片放得下」的大小放，再把边框和日期戳叠上去
 function decorGpu(view, pv, cv, fit) {
-  refreshFrameSource(view);
+  if (!isSinglePairView(view)) refreshFrameSource(view);
   if (!fit) clearDecor(pv, cv);
   else applyDecor(view, pv, cv, fit.deco, parseFloat(cv.style.width), parseFloat(cv.style.height));
 }
 
 // 服务器出的图是没有边框的照片：边框和日期戳同样叠上去。没有装饰时恢复成图自己的大小。
 function decorImage(view, pv, img, mode, maxW, maxH, natural) {
-  if(mode==='final') refreshFrameSource(view,{media:img});
+  if (mode === 'final' && !isSinglePairView(view)) refreshFrameSource(view, { media: img });
   const fit = fitImage(view, mode, img, maxW, maxH, natural);
   if (fit) {
     Object.assign(img.style, { maxWidth: 'none', maxHeight: 'none', width: `${fit.cssW}px`, height: `${fit.cssH}px` });

@@ -122,8 +122,10 @@ async function runEditorSnapshot(page) {
   await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photo/${firstId}`, { waitUntil: 'domcontentloaded' });
   await waitFor(() => page.evaluate(() => {
     const img = document.querySelector('.stage-area .pv-img');
+    const gpu = document.querySelector('.stage-area .pv-gpu');
+    const stageReady = (!!img && img.complete && img.naturalWidth > 0) || (!!gpu && gpu.width > 0);
     const thumbs = [...document.querySelectorAll('.filmstrip .fthumb img')];
-    return !!img && img.complete && img.naturalWidth > 0 && thumbs.length > 0 && thumbs.every((t) => t.complete && t.naturalWidth > 0);
+    return stageReady && thumbs.length > 0 && thumbs.every((t) => t.complete && t.naturalWidth > 0);
   }), 45000, 'editor non-halfframe loaded');
   await sleep(300);
 
@@ -131,7 +133,7 @@ async function runEditorSnapshot(page) {
     const norm = (html) => (html || '')
       .replace(/\/api\/photos\/[0-9a-f]{8,}/g, '/api/photos/<ID>')
       .replace(/data-id="[0-9a-f]{8,}"/g, 'data-id="<ID>"')
-      .replace(/R\d{7}(?:_[0-9a-f]+)?(?:\.[A-Za-z0-9]+)?/g, '<NAME>')
+      .replace(/R\d{4,}(?:_[0-9a-f]+)?(?:\.[A-Za-z0-9]+)?/g, '<NAME>')
       .replace(/\d{4}[-年/.]\d{1,2}[-月/.]\d{1,2}日?/g, '<DATE>')
       .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, '<TIME>')
       .replace(/class="ready"/g, 'class="ready"');
@@ -366,6 +368,10 @@ async function runCard250(page) {
     const { state } = await import('/assets/state.js');
     const pasteBtn = [...document.querySelectorAll('#selbar button')].find((b) => b.textContent.includes('粘贴'));
     const toastEl = document.querySelector('#toast-root');
+    const toastCard = document.querySelector('#toast-root .toast');
+    const selbar = document.querySelector('#selbar');
+    const tr = toastCard?.getBoundingClientRect();
+    const sr = selbar && !selbar.hidden ? selbar.getBoundingClientRect() : null;
     return {
       filteredCount: document.querySelectorAll('.grid .cell').length,
       libTitle: document.querySelector('.libbar .t')?.textContent?.trim() || '',
@@ -377,6 +383,9 @@ async function runCard250(page) {
       pasteBtn: pasteBtn?.textContent?.trim() || '',
       toastText: toastEl?.textContent?.trim().replace(/\s+/g, ' ') || '',
       hasUndoBtn: [...document.querySelectorAll('#toast-root button')].some((b) => b.textContent.trim() === '恢复选择'),
+      toastPos: tr && sr
+        ? { toastBottom: Math.round(tr.bottom), selbarTop: Math.round(sr.top), aboveSelbar: tr.bottom <= sr.top - 4 }
+        : null,
     };
   }, m.xpanId);
 
@@ -548,6 +557,22 @@ async function runCard250(page) {
     };
   });
 
+  const readRoNote = () => page.evaluate(() => {
+    const el = document.querySelector('.pair-ro-note');
+    if (!el || el.hidden) return { present: false };
+    const r = el.getBoundingClientRect();
+    const st = document.querySelector('.stage-area')?.getBoundingClientRect();
+    const panel = document.querySelector('.panel');
+    const viewbar = document.querySelector('.viewbar');
+    const overlapsStage = !!st && r.right > st.left && r.left < st.right && r.bottom > st.top && r.top < st.bottom;
+    return {
+      present: r.width > 0 && r.height > 0,
+      text: el.textContent?.trim() || '',
+      inPanelOrViewbar: !!(panel?.contains(el) || viewbar?.contains(el)),
+      overlapsStage,
+    };
+  });
+
   const dipSample = await sampleStageHash();
   const putsBeforeView = out.requests.puts.length;
   const rendersBeforeFirst = out.requests.renders.length;
@@ -565,6 +590,7 @@ async function runCard250(page) {
     };
   });
   firstView.stripMask = await readStripMask();
+  firstView.roNote = await readRoNote();
   if (m.screenshots?.viewFirst) await maskedScreenshot(page, m.screenshots.viewFirst);
   const firstSample = await sampleStageHash();
   await page.evaluate(() => { const c = document.querySelector('.lcard'); if (c) c.click(); });
@@ -575,6 +601,7 @@ async function runCard250(page) {
   await waitFor(() => out.requests.renders.slice(rendersBeforeSecond).some((r) => r.view === 'second' && r.status === 200), 45000, 'view=second render');
   await sleep(400);
   const secondStripMask = await readStripMask();
+  const secondRoNote = await readRoNote();
   const secondSample = await sampleStageHash();
   const putsDuringSingleViews = out.requests.puts.length - putsBeforeView;
 
@@ -588,6 +615,7 @@ async function runCard250(page) {
     };
   });
   backToDiptych.stripMask = await readStripMask();
+  backToDiptych.roNote = await readRoNote();
 
   // Step ←/→ across visible items and verify we never land on any pairFirstId
   const visitedIds = [];
@@ -610,6 +638,7 @@ async function runCard250(page) {
     viewbar: {
       firstView,
       secondStripMask,
+      secondRoNote,
       backToDiptych,
       putsDuringSingleViews,
       dipSample: dipSample ? { w: dipSample.w, h: dipSample.h, sum: dipSample.sum } : null,
@@ -775,12 +804,146 @@ async function runCard250(page) {
   };
 }
 
+async function runFramedPair(page) {
+  const renders = [];
+  page.on('response', (res) => {
+    const u = new URL(res.url());
+    if (u.pathname.endsWith('/render')) {
+      renders.push({ status: res.status(), view: u.searchParams.get('view') || null });
+    }
+  });
+
+  await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photos`, { waitUntil: 'domcontentloaded' });
+  await waitFor(() => page.evaluate(() => document.querySelectorAll('.grid .cell').length > 0), 30000, 'framed_pair gallery');
+
+  const putRes = await page.evaluate(async (id) => {
+    const cur = await (await fetch(`/api/photos/${id}/edit`)).json();
+    const r = await fetch(`/api/photos/${id}/edit`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rev: cur.rev,
+        frame: { style: 'gallery' },
+        stamp: { enabled: true },
+      }),
+    });
+    return { status: r.status, body: await r.json() };
+  }, m.pairSecondId);
+  if (putRes.status !== 200) throw new Error(`PUT /edit failed: ${putRes.status}`);
+
+  const inspectStage = () => page.evaluate(async () => {
+    const { halfFirstCropRect, partnerOf } = await import('/assets/halfframe.js');
+    const { currentView } = await import('/assets/viewer.js');
+    const { state } = await import('/assets/state.js');
+    const v = currentView();
+    const pv = document.querySelector('.stage-area .pv');
+    const img = pv?.querySelector('.pv-img');
+    const deco = pv?.querySelector('.pv-deco');
+    const mask = pv?.querySelector('.pair-strip-mask');
+    const note = document.querySelector('.pair-ro-note');
+    const st = document.querySelector('.stage-area')?.getBoundingClientRect();
+    const pr = pv?.getBoundingClientRect();
+    const ir = img?.getBoundingClientRect();
+    const mr = mask?.getBoundingClientRect();
+    const nr = note && !note.hidden ? note.getBoundingClientRect() : null;
+    let maskAlign = null;
+    if (mr && ir && img && img.naturalWidth > 0) {
+      const p1 = v?.pairView === 'first' ? partnerOf(v.photo, state.photos, state.partners) : null;
+      const target = v?.pairView === 'first' ? (p1 || v.photo) : v?.photo;
+      const raw = !!(target ? target.has_raw : true);
+      const ratio = halfFirstCropRect(img.naturalWidth, img.naturalHeight, { raw, orientation: target?.orientation });
+      const expLeft = ir.left + ratio.x * ir.width;
+      const expTop = ir.top + ratio.y * ir.height;
+      const expRight = expLeft + ratio.w * ir.width;
+      const expBottom = expTop + ratio.h * ir.height;
+      const maxErrPx = Math.max(
+        Math.abs(mr.left - expLeft),
+        Math.abs(mr.top - expTop),
+        Math.abs(mr.right - expRight),
+        Math.abs(mr.bottom - expBottom),
+      );
+      maskAlign = {
+        present: true,
+        maxErrPx: Number(maxErrPx.toFixed(3)),
+        maskRect: [mr.left, mr.top, mr.width, mr.height].map((x) => Number(x.toFixed(2))),
+        expRect: [expLeft, expTop, expRight - expLeft, expBottom - expTop].map((x) => Number(x.toFixed(2))),
+      };
+    }
+    const pvImgDiff = pr && ir
+      ? Math.max(Math.abs(pr.left - ir.left), Math.abs(pr.top - ir.top), Math.abs(pr.right - ir.right), Math.abs(pr.bottom - ir.bottom))
+      : null;
+    return {
+      framed: !!pv?.classList.contains('framed'),
+      hasDeco: !!deco && deco.width > 0 && deco.height > 0,
+      pvBiggerThanImg: !!(pr && ir && (pr.width > ir.width + 10 || pr.height > ir.height + 10)),
+      pvMatchesImg: pvImgDiff !== null && pvImgDiff <= 1.0,
+      pvImgDiff: pvImgDiff !== null ? Number(pvImgDiff.toFixed(2)) : null,
+      pvBg: pv ? getComputedStyle(pv).backgroundColor : null,
+      stripMaskCount: document.querySelectorAll('.pair-strip-mask').length,
+      maskAlign,
+      roNote: nr
+        ? {
+            present: nr.width > 0 && nr.height > 0,
+            text: note.textContent?.trim() || '',
+            inPanelOrViewbar: !!(document.querySelector('.panel')?.contains(note) || document.querySelector('.viewbar')?.contains(note)),
+            overlapsStage: !!st && nr.right > st.left && nr.left < st.right && nr.bottom > st.top && nr.top < st.bottom,
+          }
+        : { present: false },
+    };
+  });
+
+  await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photo/${m.pairSecondId}`, { waitUntil: 'domcontentloaded' });
+  await waitFor(() => page.evaluate(() => {
+    const pv = document.querySelector('.stage-area .pv');
+    const img = pv?.querySelector('.pv-img');
+    const deco = pv?.querySelector('.pv-deco');
+    return !!pv?.classList.contains('framed') && !!img && img.complete && img.naturalWidth > 0 && !!deco && deco.width > 0;
+  }), 60000, 'framed diptych loaded');
+  await sleep(400);
+  const diptych = await inspectStage();
+
+  const r1 = renders.length;
+  await page.click('.viewbar [aria-label="半格视图"] button:nth-child(2)');
+  await waitFor(() => renders.slice(r1).some((r) => r.view === 'first' && r.status === 200), 45000, 'framed view=first render');
+  await waitFor(() => page.evaluate(() => {
+    const img = document.querySelector('.stage-area .pv-img');
+    return !!img && img.complete && img.naturalWidth > 0 && !!document.querySelector('.pair-strip-mask');
+  }), 15000, 'framed view=first painted');
+  await sleep(400);
+  const first = await inspectStage();
+  if (m.screenshots?.framedFirst) await maskedScreenshot(page, m.screenshots.framedFirst);
+
+  const r2 = renders.length;
+  await page.click('.viewbar [aria-label="半格视图"] button:nth-child(3)');
+  await waitFor(() => renders.slice(r2).some((r) => r.view === 'second' && r.status === 200), 45000, 'framed view=second render');
+  await waitFor(() => page.evaluate(() => {
+    const img = document.querySelector('.stage-area .pv-img');
+    return !!img && img.complete && img.naturalWidth > 0 && !!document.querySelector('.pair-strip-mask');
+  }), 15000, 'framed view=second painted');
+  await sleep(400);
+  const second = await inspectStage();
+
+  const r3 = renders.length;
+  await page.click('.viewbar [aria-label="半格视图"] button:nth-child(1)');
+  await waitFor(() => renders.slice(r3).some((r) => !r.view && r.status === 200), 45000, 'framed back to diptych render');
+  await waitFor(() => page.evaluate(() => {
+    const pv = document.querySelector('.stage-area .pv');
+    const deco = pv?.querySelector('.pv-deco');
+    return !!pv?.classList.contains('framed') && !!deco && deco.width > 0;
+  }), 15000, 'framed diptych restored');
+  await sleep(300);
+  const backToDiptych = await inspectStage();
+
+  out.steps.framedPair = { diptych, first, second, backToDiptych };
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on('pageerror', (e) => out.pageErrors.push(line(e)));
   if (m.mode === 'snapshot') await runSnapshot(page);
   else if (m.mode === 'editor_snapshot') await runEditorSnapshot(page);
   else if (m.mode === 'jpgonly_p1') await runJpgOnlyP1(page);
+  else if (m.mode === 'framed_pair') await runFramedPair(page);
   else await runCard250(page);
 } catch (e) {
   out.error = line(e);

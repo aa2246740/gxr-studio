@@ -219,6 +219,13 @@ export function applyPairReadonly(v) {
     v.panelEl.classList.toggle('pair-readonly', ro);
     if (ro) v.panelEl.dataset.readonly = '1';
     else delete v.panelEl.dataset.readonly;
+    const body = v.panelEl.querySelector('.panel-body');
+    const oldNote = v.panelEl.querySelector('.pair-ro-note');
+    if (ro && body) {
+      if (!oldNote) body.prepend(h('p', { class: 'pair-ro-note', role: 'status' }, '只看这一张；调整对整张双联生效。'));
+    } else if (oldNote) {
+      oldNote.remove();
+    }
     const roots = [...v.panelEl.querySelectorAll('[role="tabpanel"]:not(#tp-info)')];
     if (v.panelFoot) roots.push(v.panelFoot);
     for (const r of roots) {

@@ -69,7 +69,7 @@
   background: #0d0d0d;
 }
 
-.panel.pair-readonly .panel-body,
+.panel.pair-readonly .panel-body > [role="tabpanel"]:not(#tp-info),
 .panel.pair-readonly .panel-foot {
   opacity: 0.62;
 }
@@ -80,6 +80,21 @@
 
 .panel.pair-readonly .panel-foot button {
   pointer-events: none;
+}
+
+.pair-ro-note {
+  margin: 8px var(--sp-4) 2px;
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-1);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+}
+
+body:has(#selbar:not([hidden])) .toast-root {
+  bottom: 80px;
 }
 
 .hf-note {

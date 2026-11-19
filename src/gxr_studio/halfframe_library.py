@@ -131,7 +131,7 @@ def _fetch_target_jpg_candidates(db: sqlite3.Connection, lock: Any) -> list[dict
 
 
 def _fetch_target_jpg_by_names(db: sqlite3.Connection, lock: Any, names: list[str]) -> list[dict[str, Any]]:
-    """按相邻文件名（含导入冲突改名后缀 `_<sha8>`）查 4288×2848 候选 JPG，避免全表扫描。"""
+    """按相邻文件名（含导入冲突改名后缀 `_<sha8>`）只取匹配的 4288×2848 候选 JPG（仅回传少量邻居行，不把整库搬到 Python 侧）。"""
     if not names:
         return []
     marks = ",".join("?" * len(names))
