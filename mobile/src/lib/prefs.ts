@@ -30,11 +30,16 @@ export function saveGap(gap: GapMinutes): void {
   store()?.setItem(GAP_KEY, String(gap));
 }
 
-// 导出的 HDR 开关：记住上次的选择，第一次默认关（和桌面 prefs.export_hdr 一样）。
+// 导出的 HDR 开关：记住上次的选择，第一次默认开（有 RAW 时生效）；已保存的关继续保留。
 const HDR_KEY = 'gxr.mobile.export_hdr';
+const SIZE_KEY = 'gxr.mobile.export_size';
+const QUALITY_KEY = 'gxr.mobile.export_quality';
+
+export type ExportSizePref = 'original' | 'large' | 'medium' | 'small';
+export type ExportQualityPref = 'high' | 'medium' | 'low';
 
 export function loadExportHdr(): boolean {
-  return store()?.getItem(HDR_KEY) === '1';
+  return store()?.getItem(HDR_KEY) !== '0';
 }
 
 const hdrWatchers = new Set<() => void>();
@@ -51,4 +56,30 @@ export function saveExportHdr(on: boolean): void {
     /* 存不下（隐私模式、满了）就只管这一次。 */
   }
   for (const fn of hdrWatchers) fn();
+}
+
+export function loadExportSize(): ExportSizePref {
+  const value = store()?.getItem(SIZE_KEY);
+  return value === 'original' || value === 'large' || value === 'medium' || value === 'small' ? value : 'original';
+}
+
+export function saveExportSize(size: ExportSizePref): void {
+  try {
+    store()?.setItem(SIZE_KEY, size);
+  } catch {
+    /* 存不下就只管这一次。 */
+  }
+}
+
+export function loadExportQuality(): ExportQualityPref {
+  const value = store()?.getItem(QUALITY_KEY);
+  return value === 'high' || value === 'medium' || value === 'low' ? value : 'high';
+}
+
+export function saveExportQuality(quality: ExportQualityPref): void {
+  try {
+    store()?.setItem(QUALITY_KEY, quality);
+  } catch {
+    /* 存不下就只管这一次。 */
+  }
 }

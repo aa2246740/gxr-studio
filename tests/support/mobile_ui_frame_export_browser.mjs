@@ -37,7 +37,8 @@ async function openEditorFrameTab(page, stem) {
 }
 
 async function assertPortrait(page) {
-  await page.getByRole('button', { name: '导出这张', exact: true }).click();
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.locator('.ms [data-act="more-export-options"]').click();
   await page.waitForSelector('.ms.export');
   await page.waitForFunction(
     () => {
@@ -150,25 +151,31 @@ async function runBatch(page, { stems, size = '原始尺寸', quality = '高', h
   const callsBefore = await page.evaluate(() => window.__shareLog.calls.length);
   let hdrFrameBefore = null;
   let hdrFrame = null;
-  const sheet = await exportFromGrid(page, stems, size, quality, async () => {
-    const readFrame = () =>
-      page.evaluate(() => {
-        const node = document.querySelector('.ms.export [data-state="hdr-frame"]');
-        if (!node) return null;
-        return { visible: !node.hidden && getComputedStyle(node).display !== 'none', text: node.textContent?.trim() ?? '' };
-      });
-    hdrFrameBefore = await readFrame();
-    if (hdr) {
-      await page.locator('.ms.export input.switch').click();
-      hdrFrame = await readFrame();
-    }
-  });
+  const sheet = await exportFromGrid(
+    page,
+    stems,
+    size,
+    quality,
+    async () => {
+      const readFrame = () =>
+        page.evaluate(() => {
+          const node = document.querySelector('.ms.export [data-state="hdr-frame"]');
+          if (!node) return null;
+          return { visible: !node.hidden && getComputedStyle(node).display !== 'none', text: node.textContent?.trim() ?? '' };
+        });
+      hdrFrameBefore = await readFrame();
+      if (hdr) {
+        await page.locator('.ms.export input.switch').click();
+        hdrFrame = await readFrame();
+      }
+    },
+    { hdr: false },
+  );
   await waitPhase(page, ['ready']);
   const facts = await frameBatchFacts(page);
   const ready = await page.locator('.pdock').innerText();
   const shared = await shareAll(page);
   const files = outDir && fileTag ? await sharedFiles(page, outDir, fileTag, callsBefore) : [];
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 15_000 });
   await page.evaluate(() => {
     window.__devExport.canvasReportPrefix = null;
@@ -195,7 +202,8 @@ export async function parity({ newPage, manifest, out }) {
     await page.locator('.panel.frame .stamp-row input.switch').click();
     await page.waitForFunction(() => Boolean(document.querySelector('.stage .pv.framed[data-decor="1"]')));
 
-    await page.getByRole('button', { name: '导出这张', exact: true }).click();
+    await page.locator('.editor .nav [data-act="editor-more"]').click();
+    await page.locator('.ms [data-act="more-export-options"]').click();
     await page.waitForSelector('.ms.export');
     await page.waitForFunction(
       () => {
@@ -510,7 +518,7 @@ export async function parity({ newPage, manifest, out }) {
       window.__devExport.canvasReportPrefix = null;
       window.__devExport.inkTrapAt = 0;
     });
-    await exportFromGrid(page, [s.a, s.c], '小', '低');
+    await exportFromGrid(page, [s.a, s.c], '小', '低', null, { hdr: false });
     await waitPhase(page, ['ready']);
     const inkTrapSnap = await page.evaluate(() => {
       const batch = window.__devExport.flow.current();
@@ -534,7 +542,6 @@ export async function parity({ newPage, manifest, out }) {
       };
     });
     await shareAll(page);
-    await page.locator('.pdock [data-act="done"]').click();
     await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 15_000 });
     out.steps.inkTrap = { first: inkTrapSnap, retry: inkTrapRetry };
   } finally {

@@ -122,11 +122,10 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
 
     loaded = steps["loaded"]
     assert loaded["photos"] == len(times) and set(loaded["revs"]) == {0}
-    assert [h["cnt"] for h in loaded["heads"]] == [f"{len(g)} 张" for g in expect["3"]]
-    assert {h["go"] for h in loaded["heads"]} == {"套用到这一组"}
+    assert [h["cnt"] for h in loaded["heads"]] == [f"{len(g)} 张" for g in expect["3"] if len(g) > 1]
+    assert {h.get("go") for h in loaded["heads"]} == {None}
 
-    assert steps["hint"]["line"] == "先打开一张照片，点「复制调整」。"
-    assert steps["hint"]["idle"] == len(expect["3"])
+    assert steps["hint"]["goButtons"] == 0
 
     src = steps["source"]
     assert src["on"] == "builtin:2" and src["after"]["choice"]["id"] == "builtin:2"
@@ -174,7 +173,7 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
     assert target == {"on": "builtin:2", "exposure": "+0.7", "contrast": "+12", "barAfterBack": 1}
 
     gap = steps["gap"]
-    assert [h["cnt"] for h in gap["gap1"]] == [f"{len(g)} 张" for g in expect["1"]]
+    assert [h["cnt"] for h in gap["gap1"]] == [f"{len(g)} 张" for g in expect["1"] if len(g) > 1]
     assert gap["confirm"]["title"] == f"套用到这一组的 {len(group1) - 1} 张？"
 
     pick = steps["pick"]
@@ -205,7 +204,7 @@ def test_mobile_ui_group_copy_apply_pick_and_undo(tmp_path: Path) -> None:
 
     cleared = steps["cleared"]
     assert "已复制：配方 / 风格、调整" in cleared["copiedBar"] and f"来自 {source} · 点组标题上的「套用到这一组」" in cleared["copiedBar"]
-    assert cleared["bars"] == 0 and cleared["idle"] == len(expect["1"])
+    assert cleared["bars"] == 0 and cleared["goButtons"] == 0
 
     # Sol r1 P2：只套用配方之后，零值的「全部重置」、点两下已经是 0 的滑块、松开没动的滑块都不加 rev，撤销照样还原。
     noop = steps["noop"]

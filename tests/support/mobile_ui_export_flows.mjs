@@ -36,12 +36,13 @@ export async function flows({ newPage, manifest, out }) {
   const page = await newPage('record');
   const all = manifest.files;
 
-  // 1. 编辑器里「导出这张」：一张的面板写成品尺寸（Worker 里从文件头算），没有相机配方文件时有桌面那句说明。
+  // 1. 编辑器里「存到相册」为一键导出；单张面板经「⋯ → 导出选项」打开，写成品尺寸与缺配方文件说明。
   await pickAll(page, { count: manifest.stems.length }, all);
   await page.locator(cellOf(manifest.stems[0])).evaluate((node) => node.click());
   await page.waitForSelector('.editor');
   const editorButton = await page.locator('.editor .actbar [data-act="export"]').innerText();
-  await page.locator('.editor .actbar [data-act="export"]').click();
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]').click();
   await page.waitForSelector('.ms.export');
   await page.waitForFunction(() => /像素/.test(document.querySelector('.ms.export .size')?.textContent ?? ''), null, { timeout: 60_000 });
   const sizeOriginal = await page.locator('.ms.export .size').innerText();
@@ -72,16 +73,16 @@ export async function flows({ newPage, manifest, out }) {
       });
       observer.observe(document.querySelector('.app'), { childList: true, subtree: true, characterData: true });
     });
-  await exportFromGrid(page, manifest.stems.slice(0, 5), '原始尺寸', '高', armStop);
+  await exportFromGrid(page, manifest.stems.slice(0, 5), '原始尺寸', '高', armStop, { hdr: false });
   await page.waitForFunction(() => window.__devExport.flow.current()?.phase !== 'running', null, { timeout: 300_000 });
   const stopped = await flowOf(page);
   // 一张新的导出照常能做。
   await page.waitForTimeout(300);
-  await exportFromGrid(page, manifest.stems.slice(0, 1));
+  await exportFromGrid(page, manifest.stems.slice(0, 1), '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['ready'], 300_000);
   out.steps.stop = { stopped, after: await flowOf(page) };
   await shareAll(page);
-  await page.locator('.pdock [data-act="done"]').click();
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   // 3. Worker 陷阱：三张里第 2 张在 prepare 之后模拟陷阱。内存那句、Worker 重建、第 3 张做好。
   await page.evaluate(() => {
@@ -89,7 +90,7 @@ export async function flows({ newPage, manifest, out }) {
     window.__devExport.core.stop();
     window.__devExport.trapAt = 1;
   });
-  await exportFromGrid(page, manifest.stems.slice(0, 3));
+  await exportFromGrid(page, manifest.stems.slice(0, 3), '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['ready'], 300_000);
   out.steps.trap = await flowOf(page);
   await page.evaluate(() => {
@@ -100,7 +101,7 @@ export async function flows({ newPage, manifest, out }) {
   await waitPhase(page, ['ready'], 300_000);
   out.steps.trapRetry = await flowOf(page);
   await shareAll(page);
-  await page.locator('.pdock [data-act="done"]').click();
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   // 4. 批次进行中滚网格：记下 rAF 的间隔（SwiftShader，只记不断言帧率）；然后清空：批次停下，没有晚到的文件。
   const before = await page.evaluate(() => window.__shareLog.calls.length);

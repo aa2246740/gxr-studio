@@ -91,6 +91,32 @@ h1, h2, p { margin: 0; }
 .nb.bold { font-weight: 600; }
 .nav .prog { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; }
 .nav .prog i { display: block; height: 100%; background: var(--accent-text); width: 0; }
+.nav-r { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.hdr-wrap { display: inline-flex; align-items: center; min-height: 44px; padding: 0 2px; }
+.hdr-toggle {
+  min-width: 44px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 12px/1 var(--font-num);
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  background: var(--surface-control);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.hdr-toggle.on {
+  background: var(--accent-weak);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px rgba(106, 166, 255, 0.55);
+}
+.hdr-toggle:disabled {
+  opacity: 0.42;
+  color: var(--text-3);
+  pointer-events: none;
+}
 
 .btn {
   display: inline-flex;
@@ -138,6 +164,10 @@ h1, h2, p { margin: 0; }
 .calib .hd { display: flex; align-items: center; gap: 8px; }
 .calib .hd b { font: 600 16px/22px var(--font-ui); }
 .calib .btn { margin-top: 12px; }
+.start .calib[data-calib="ready"] { padding: 11px 14px; cursor: pointer; }
+.start .calib[data-calib="ready"] > p:not([data-state="calib-error"]),
+.start .calib[data-calib="ready"] > .units,
+.start .calib[data-calib="ready"] > .acts { display: none; }
 .start .cta { margin-top: auto; }
 .help { display: flex; justify-content: center; }
 
@@ -399,7 +429,11 @@ svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
 .calib p.bad { margin-top: 10px; color: var(--danger-text); }
 .calib-sheet .card { margin-top: 12px; }
 .calib-sheet .hd, .ask-sheet .hd { display: flex; align-items: center; justify-content: space-between; }
+.ms .card + .card { margin-top: 10px; }
+.ms .card .seg { margin-top: 8px; }
 .note.datline { padding: 6px 2px 0; }
+.screen > .note.datline { padding: 8px 16px 4px; flex: none; }
+.note.datline[hidden] { display: none; }
 .rc .th { position: relative; }
 .rc .ckk { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); display: grid; place-items: center; }
 .rc .ckk .ico { width: 15px; height: 15px; stroke: #fff; stroke-width: 2.5; }

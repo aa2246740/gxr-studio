@@ -49,11 +49,14 @@ try {
   }, null, { timeout: 60_000 });
   out.groups = await page.locator('[data-kind="group"]').count();
   out.orderBefore = await ids(page);
-  await page.getByRole('button', { name: '从晚到早' }).click();
+  await page.locator('.nav .nb.plain').click();
+  await page.locator('.ms [data-order="newest"]').click();
   await page.waitForFunction((before) => {
     const now = [...document.querySelectorAll('.cell')].map((node) => node.dataset.id || '');
     return now.length === before.length && now.join() !== before.join();
   }, out.orderBefore);
+  await page.locator('.scrim').click().catch(() => undefined);
+  await page.waitForFunction(() => !document.querySelector('.ms'));
   out.orderAfter = await ids(page);
   await page.locator('.cell').first().evaluate((node) => node.click());
   try {
@@ -98,15 +101,15 @@ try {
   await page.waitForTimeout(600);
   out.held = await page.locator('.lbl').innerText();
   await page.mouse.up();
-  const beforeSwipe = await page.locator('.nav b').innerText();
+  const beforeSwipe = (await page.locator('.editor').getAttribute('data-photo')) ?? '';
   await page.mouse.move(sx, sy);
   await page.mouse.down();
   await page.mouse.move(sx - 140, sy, { steps: 8 });
   await page.mouse.up();
-  await page.waitForFunction((prev) => document.querySelector('.nav b')?.textContent !== prev, beforeSwipe).catch(async (err) => {
+  await page.waitForFunction((prev) => document.querySelector('.editor')?.dataset.photo !== prev, beforeSwipe).catch(async (err) => {
     throw new Error(`${err.message}\nerrors=${JSON.stringify(out.pageErrors)}\n${(await page.locator('body').innerText()).slice(0, 600)}`);
   });
-  out.swipe = [beforeSwipe, await page.locator('.nav b').innerText()];
+  out.swipe = [beforeSwipe, (await page.locator('.editor').getAttribute('data-photo')) ?? ''];
   out.perfAfterSwipe = await page.evaluate(() => {
     const p = document.querySelector('.perf');
     return p ? { text: p.textContent ?? '', perf: p.dataset.perf ?? null, kind: p.dataset.kind ?? null } : null;

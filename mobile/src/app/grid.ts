@@ -92,26 +92,10 @@ export class GridView {
     prog.append(el('i'));
     nav.append(more, titleBox, choose, prog);
 
-    const order = el('div', 'order');
-    const seg = el('div', 'seg');
-    seg.setAttribute('role', 'group');
-    seg.setAttribute('aria-label', '排序');
-    for (const [value, label] of [
-      ['oldest', '从早到晚'],
-      ['newest', '从晚到早'],
-    ] as const) {
-      const item = button('', label);
-      item.dataset.order = value;
-      if (this.api.order() === value) item.classList.add('on');
-      item.addEventListener('click', () => this.api.setOrder(value));
-      seg.append(item);
-    }
-    order.append(seg);
     // 相机配方文件的一行：选了几个用哪个，或者读不了。
     this.datLine = el('p', 'note datline');
     this.datLine.dataset.state = 'dat-note';
     this.datLine.hidden = true;
-    order.append(this.datLine);
 
     this.scroller = el('div', 'gscroll');
     this.inner = el('div', 'inner');
@@ -133,7 +117,7 @@ export class GridView {
 
     this.bar = el('div', 'dock');
     this.bar.hidden = true;
-    screen.append(nav, order, this.scroller, this.bar);
+    screen.append(nav, this.datLine, this.scroller, this.bar);
     this.host.append(screen);
   }
 
@@ -147,7 +131,8 @@ export class GridView {
     );
     const width = this.scroller.clientWidth || 390;
     const cellH = Math.max(48, (width / 3) * (2 / 3) + 2);
-    this.rows = layoutRows(groups, cellH);
+    // 单张自成一组不另占一行组标题。
+    this.rows = layoutRows(groups, cellH).filter((row) => !(row.kind === 'group' && row.ids.length <= 1));
     this.groupRows.clear();
     for (const group of groups) this.groupRows.set(`group:${group.ids[0] ?? group.startMs}`, group);
     this.subtitle(photos, groups.length);
@@ -211,7 +196,7 @@ export class GridView {
       480,
     );
     const slice = this.rows.slice(range.start, range.end);
-    const sig = `${range.start}:${slice.map((row) => row.key).join('|')}:${this.selecting ? 's' : ''}`;
+    const sig = `${range.start}:${slice.map((row) => row.key).join('|')}:${this.selecting ? 's' : ''}:${pasteState.clip ? 'c' : ''}`;
     const total = this.rows.reduce((sum, row) => sum + row.height, 0);
     this.inner.style.height = `${total}px`;
     if (sig !== this.sig) {
@@ -338,20 +323,13 @@ export class GridView {
     this.paintTitle();
   }
 
-  /** 组标题：时间范围、张数和「套用到这一组」；选择时是「已选 x/y」和「选这一组 / 取消这一组」。 */
+  /** 组标题：时间范围、张数；有剪贴板时显示「套用到这一组」，选择时显示「已选 x/y」和「选这一组 / 取消这一组」。 */
   private groupHead(row: VRow): HTMLElement {
     const head = el('div', 'gh');
     head.dataset.kind = 'group';
     head.dataset.row = row.key;
     const group = this.groupRows.get(row.key);
     head.append(el('span', 'rng', group?.rangeLabel ?? row.label), el('span', 'cnt', ''));
-    const go = button('go', '');
-    go.addEventListener('click', () => {
-      if (!group) return;
-      if (this.selecting) this.toggleGroup(group);
-      else this.applyGroup(group);
-    });
-    head.append(go);
     this.paintHead(head);
     return head;
   }
@@ -359,8 +337,22 @@ export class GridView {
   private paintHead(head: HTMLElement): void {
     const group = this.groupRows.get(head.dataset.row ?? '');
     const cnt = head.querySelector('.cnt');
-    const go = head.querySelector<HTMLButtonElement>('.go');
-    if (!group || !cnt || !go) return;
+    if (!group || !cnt) return;
+    let go = head.querySelector<HTMLButtonElement>('.go');
+    const needGo = this.selecting || !!pasteState.clip;
+    if (!needGo) {
+      go?.remove();
+      cnt.textContent = `${group.ids.length} 张`;
+      return;
+    }
+    if (!go) {
+      go = button('go', '');
+      go.addEventListener('click', () => {
+        if (this.selecting) this.toggleGroup(group);
+        else this.applyGroup(group);
+      });
+      head.append(go);
+    }
     const picked = group.ids.filter((id) => this.selected.has(id)).length;
     if (this.selecting) {
       cnt.textContent = picked ? `已选 ${picked}/${group.ids.length}` : `${group.ids.length} 张`;
@@ -371,11 +363,11 @@ export class GridView {
     }
     cnt.textContent = `${group.ids.length} 张`;
     go.dataset.act = 'apply-group';
-    // 复制过才是蓝色；没复制时点它说一句怎么复制。刚套用过的那一组是灰的（04e），还能再点。
+    // 刚套用过的那一组是灰的（04e），还能再点。
     const bar = pasteState.bar;
     const from = pasteState.clip?.from.id;
     const done = bar?.kind === 'applied' && group.ids.some((id) => bar.ids.has(id)) && group.ids.every((id) => id === from || bar.ids.has(id));
-    go.className = pasteState.clip && !done ? 'go' : 'go idle';
+    go.className = !done ? 'go' : 'go idle';
     go.replaceChildren(...(done ? [] : [icon(PASTE_ICON.copy)]), el('span', '', '套用到这一组'));
   }
 
@@ -591,10 +583,25 @@ export class GridView {
     }
     const counts = GAPS.map((gap) => `${gap} 分钟 ${groupCount(times, gap)} 组`).join(' · ');
     card.append(seg, el('p', 'faint', `现在是 ${groupCount(times, this.api.gap())} 组；${counts}`));
-    sheet.append(el('div', 'grab'), row, card);
+    const sortCard = el('div', 'card');
+    sortCard.append(el('b', '', '排序'));
+    const sortSeg = el('div', 'seg');
+    for (const [value, label] of [
+      ['oldest', '从早到晚'],
+      ['newest', '从晚到早'],
+    ] as const) {
+      const item = button(value === this.api.order() ? 'on' : '', label);
+      item.dataset.order = value;
+      item.addEventListener('click', () => {
+        this.api.setOrder(value);
+        this.closeSheet();
+      });
+      sortSeg.append(item);
+    }
+    sortCard.append(sortSeg);
+    sheet.append(el('div', 'grab'), row, sortCard, card);
     const rows: Array<[string, string, () => void]> = [
       ['添加照片', '再从存储卡里选几张', () => this.api.addPhotos()],
-      ['胶片柜', '下一步做', () => undefined],
       ['校准数据', calibDetail(this.api), () => this.api.showCalib()],
       ['怎么把卡插到 iPhone', this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT 和 GXRFX.BIN', () => this.api.showHelp()],
     ];
@@ -603,7 +610,6 @@ export class GridView {
       const text = el('div');
       text.append(el('b', '', title), el('small', '', detail));
       line.append(text);
-      line.disabled = title === '胶片柜';
       line.addEventListener('click', () => {
         this.closeSheet();
         run();

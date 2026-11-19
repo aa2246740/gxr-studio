@@ -36,21 +36,26 @@ export async function parity({ newPage, manifest, out }) {
   for (const [stem, plan] of Object.entries(manifest.plans)) edits.push(await edit(page, stem, plan));
   out.steps.edits = edits;
 
-  // 原始尺寸 / 高：第一次默认关，打开它；混着一张只有 JPG 的，提示开了才看得见。
+  // 原始尺寸 / 高：U1 首次默认开 HDR；先关掉确认混杂提示隐藏，再重新打开并记住。
   const full = {};
   full.sheet = await exportFromGrid(page, manifest.order, '原始尺寸', '高', async () => {
     full.before = await hdrRow(page);
+    await page.locator('.ms.export input.switch').click();
+    full.afterOff = await hdrRow(page);
     await page.locator('.ms.export input.switch').click();
     full.after = await hdrRow(page);
     full.stored = await page.evaluate(() => localStorage.getItem('gxr.mobile.export_hdr'));
   });
   full.running = await runningText(page);
-  full.ready = await waitPhase(page, ['ready']);
+  await waitPhase(page, ['ready']);
+  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+    await page.locator('.pdock [data-act="toggle-details"]').click();
+  }
+  full.ready = await page.locator('.pdock').innerText();
   full.facts = await batchFacts(page);
   full.cap = await page.evaluate(() => window.__devExport.flow.current().cap);
   full.shared = await shareAll(page);
   full.files = await sharedFiles(page, manifest.outDir, 'full-');
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   out.steps.full = full;
 
@@ -62,11 +67,14 @@ export async function parity({ newPage, manifest, out }) {
     small.row = await hdrRow(page);
   });
   small.running = await runningText(page);
-  small.ready = await waitPhase(page, ['ready']);
+  await waitPhase(page, ['ready']);
+  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+    await page.locator('.pdock [data-act="toggle-details"]').click();
+  }
+  small.ready = await page.locator('.pdock').innerText();
   small.facts = await batchFacts(page);
   small.shared = await shareAll(page);
   small.files = await sharedFiles(page, manifest.outDir, 'small-', calls);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   out.steps.small = small;
 

@@ -4,17 +4,17 @@ import type { Engine } from '../../../frontend/src/index';
 import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { createHdrPreview } from './hdr_hookup';
-import { formatClock } from '../lib/group';
 import { histPoint, histShape } from '../lib/hist';
 import { AdjustView, toAdjust } from './adjust_view';
 import { CropStage, DEFAULT_GEOMETRY } from './crop_stage';
-import { button, el, icon, ICON } from './dom';
+import { button, el, icon } from './dom';
 import { mountCurves, previewCurve, type CurvesView } from './curves_view';
+import { startQuickExport } from './export_ui';
 import { LutView } from './lut_view';
-import { isGone, photoMs, zeroKnobs, type AppApi, type Photo } from './model';
+import { isGone, zeroKnobs, type AppApi, type Photo } from './model';
 import { lookCache } from './looks';
 import { pasteState } from './paste_state';
-import { openCopySheet, PASTE_ICON } from './paste_ui';
+import { mountEditorNav, openCopySheet, PASTE_ICON, type EditorNavHandle } from './paste_ui';
 import { RecipeView } from './recipe_view';
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
@@ -75,6 +75,7 @@ export class EditorView {
   settled: Promise<void> = Promise.resolve();
   private sharpening: Promise<void> = Promise.resolve();
   private offPaste: (() => void) | null = null;
+  private navCtrl: EditorNavHandle | null = null;
   private readonly hdr = createHdrPreview({
     photo: () => this.photo,
     api: () => this.api,
@@ -127,6 +128,8 @@ export class EditorView {
     lookCache.setOpen(null);
     this.offPaste?.();
     this.offPaste = null;
+    this.navCtrl?.destroy();
+    this.navCtrl = null;
     this.dragging = false;
     this.holding = false;
     this.cropStage?.destroy();
@@ -218,13 +221,9 @@ export class EditorView {
     const photos = this.api.photos();
     const screen = el('section', 'screen editor');
     screen.dataset.photo = photo.stem;
-    const nav = el('header', 'nav');
-    const back = button('nb', '照片');
-    back.prepend(icon(ICON.back));
-    back.addEventListener('click', () => this.api.back());
-    const title = el('div', 't');
-    title.append(el('b', '', photo.stem), el('small', '', `${index + 1} / ${photos.length} · ${formatClock(photoMs(photo))}`));
-    nav.append(back, title, button('nb plain', '…'));
+    this.navCtrl?.destroy();
+    this.navCtrl = mountEditorNav(this.shell, this.api, photo, index, photos.length);
+    const nav = this.navCtrl.el;
 
     const stage = el('div', 'stage');
     const pv = el('div', 'pv');
@@ -363,9 +362,11 @@ export class EditorView {
     copy.addEventListener('click', () => {
       if (this.photo) openCopySheet(this.shell, this.api, this.photo, () => undefined);
     });
-    const save = button('btn primary', '导出这张');
+    const save = button('btn primary', '存到相册');
     save.dataset.act = 'export';
-    save.addEventListener('click', () => this.api.exportPhotos([photo.id]));
+    save.addEventListener('click', () => {
+      if (!startQuickExport(this.shell, [photo.id])) this.api.exportPhotos([photo.id]);
+    });
     const acts = el('div', 'actbar');
     acts.append(copy, save);
     sheet.append(tabs, ...panels, acts);
@@ -386,6 +387,7 @@ export class EditorView {
     this.recipeKey = key;
     this.lookCaption = label;
     if (this.tab !== 2) this.setLabel(label);
+    this.navCtrl?.refresh();
     this.push();
     this.luts?.recipeUpdated();
   }

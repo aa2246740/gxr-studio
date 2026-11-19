@@ -106,6 +106,8 @@ export interface BatchHost {
    * 这张的文件读不了就抛 `FileUnreadable`：不去算它，按 `read` 结算。
    */
   peakEstimate?: (item: BatchItem) => Promise<number> | number;
+  /** 队列里之前已完成、尚未交出去的文件占用的字节数（纳入待存上限与整页预算）。没有就当 0。 */
+  baseStagedBytes?: () => number;
 }
 
 /** 开始算之前就知道这张的文件读不了（卡拔了、文件删了或变了）。Worker 里整个读文件时也会是 `read`，所以不必去算它。 */
@@ -367,13 +369,14 @@ export class ExportBatch {
     }
     const capFits = this.fitCap();
     const size = result.file.byteLength;
-    if (!capFits || this.stagedBytes + size > this.cap) {
-      if (!this.staged.length) {
+    const retained = this.retainedBytes();
+    if (!capFits || retained + size > this.cap) {
+      if (!this.staged.length && this.baseBytes() === 0) {
         // 一张就超过上限：按内存不够算（不能因为手里没别的文件就越过上限，Sol r1 P2-05）。
         this.fail(item, 'trap', 'staged_cap', '');
         return;
       }
-      // 留着会超过上限（或上限要降到已待存的以下）：这份结果放掉，这张排回队首，先停在「做好了」那一栏。交出去、点「好」以后再做它。
+      // 留着会超过上限（或上限要降到已待存的以下）：这份结果放掉，这张排回队首，先停在「做好了」那一栏。交出去以后再做它。
       this.states.set(item.id, 'wait');
       this.queue.unshift(item.id);
       this.hold();
@@ -392,14 +395,23 @@ export class ExportBatch {
     this.host.changed();
   }
 
+  private baseBytes(): number {
+    return Math.max(0, this.host.baseStagedBytes?.() ?? 0);
+  }
+
+  private retainedBytes(): number {
+    return this.stagedBytes + this.baseBytes();
+  }
+
   /**
    * 同一阶段的峰值加上待存上限超过整页预算时，把上限降下来。只降不升，而且任何时候都不低于已待存的字节：
    * 预算要的上限比已待存的还低时返回 false，调用方先停在 held，交出去以后 release() 再降到位。
    */
   private fitCap(): boolean {
+    const retained = this.retainedBytes();
     const fitted = stageCapFor(this.host.memoryPeak?.() ?? 0, this.requestedCap);
-    if (fitted < this.cap) this.cap = Math.max(fitted, this.stagedBytes);
-    return fitted >= this.stagedBytes;
+    if (fitted < this.cap) this.cap = Math.max(fitted, retained);
+    return fitted >= retained;
   }
 
   /**
@@ -420,7 +432,8 @@ export class ExportBatch {
     }
     const bound = Math.max(this.host.memoryPeak?.() ?? 0, Number.isFinite(estimate) ? estimate : PAGE_BUDGET_BYTES);
     this.estimates.set(item.id, bound);
-    return this.stagedBytes === 0 || bound + this.stagedBytes <= PAGE_BUDGET_BYTES ? 'run' : 'hold';
+    const retained = this.retainedBytes();
+    return retained === 0 || bound + retained <= PAGE_BUDGET_BYTES ? 'run' : 'hold';
   }
 
   /** 停在「做好了」那一栏，等用户交出去（「存到相册」）、点「好」以后接着做。 */

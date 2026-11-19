@@ -111,7 +111,12 @@ try {
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
   await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
   await snap(page, '01-calibrated');
-  step('calibration', { refused, card: await page.locator('.calib').innerText() });
+  await page.locator('.start .calib[data-calib="ready"]').click();
+  await page.waitForSelector('.calib-sheet .calib[data-calib="ready"]', { timeout: 10_000 });
+  const calibCardText = await page.locator('.calib-sheet .calib').innerText();
+  await page.locator('.calib-sheet button', { hasText: '完成' }).click();
+  await page.waitForFunction(() => !document.querySelector('.calib-sheet'));
+  step('calibration', { refused, card: calibCardText });
 
   // 02 → 03，没有相机配方文件（06d）。
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.pairs);
