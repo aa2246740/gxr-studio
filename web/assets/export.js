@@ -16,8 +16,8 @@ import { exportSizePreview } from './output_size.js';
 import { exportDestination } from './export_destination.js';
 import {
   HALFFRAME_MODES,
-  HDR_NO_PAIR,
   PAIR_EXPORT_NOTE,
+  isPairFirst,
   isPairSecond,
   partnerOf,
   selectionStats,
@@ -40,10 +40,12 @@ export const QUALITIES = [
 // 按日期导出时不知道当天有没有 RAW，开关照常可用，没有 RAW 的那几张照常导出、结果里说明。
 // 开关的勾选记在应用数据里，下次导出沿用；第一次默认关。
 export const HDR_NO_RAW = 'HDR 需要 RAW 文件';
+// 半格一对：看第 2 张上的配对标志（两张都有 RAW 才是 true），不看第 1 张自己的文件。
 export function hdrAvailable(ids, photos, scope) {
   if (scope === 'date') return true;
   return (ids || []).some((id) => {
     const p = photos.find((q) => q.id === id);
+    if (p && isPairFirst(p)) return false;
     return !p || p.has_raw;
   });
 }
@@ -77,13 +79,18 @@ function hdrPossible(photo) {
 
 export const NAME_SUFFIX_NOTE = '重名时自动加 -2、-3，不会盖掉已有的文件。';
 
-function pairExportNameText(pair, partner, mode) {
+// 半格一对的文件名，和后端 halfframe_export 一致：做成 HDR 的那个文件在最后加 _hdr。
+function pairExportNameText(pair, partner, mode, hdr) {
   const stem = (p, fb) => (p && p.name ? p.name.replace(/\.[^.]+$/, '') : fb);
   const s2 = stem(pair, '第 2 张原名');
   const s1 = stem(partner, '第 1 张原名');
-  if (mode === 'singles') return `${s1}_gxr_half.jpg · ${s2}_gxr_half.jpg`;
-  if (mode === 'both') return `${s2}_gxr.jpg · ${s1}_gxr_half.jpg · ${s2}_gxr_half.jpg`;
-  return `${s2}_gxr.jpg`;
+  const names = (tag) => {
+    if (mode === 'singles') return `${s1}_gxr_half${tag}.jpg · ${s2}_gxr_half${tag}.jpg`;
+    if (mode === 'both') return `${s2}_gxr${tag}.jpg · ${s1}_gxr_half${tag}.jpg · ${s2}_gxr_half${tag}.jpg`;
+    return `${s2}_gxr${tag}.jpg`;
+  };
+  if (!hdr || !hdrPossible(pair)) return names('');
+  return `${names('_hdr')}（做不成 HDR 时是 ${names('')}）`;
 }
 
 // 对话框里「文件名」一行。单张写具体的名字；开了 HDR、照片有 RAW 时，括号里写做不成 HDR 时的名字。
@@ -150,7 +157,6 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     return false;
   };
   const hasPairsAny = scopeHasPairs('ids') || (!!date && scopeHasPairs('date'));
-  const allPairs = (sc) => sc === 'ids' && stats.items > 0 && stats.pairs === stats.items;
 
   const scopes = [];
   if (ids && ids.length) scopes.push({ key: 'ids', label, count: stats.items || ids.length });
@@ -205,7 +211,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   const single = ids && ids.length === 1 ? photos.find((p) => p.id === ids[0]) : null;
   const paintName = () => {
     if (scope === 'ids' && singlePair) {
-      nameText.textContent = pairExportNameText(singlePair, singlePairPartner, halfframe);
+      nameText.textContent = pairExportNameText(singlePair, singlePairPartner, halfframe, hdr);
       return;
     }
     nameText.textContent = exportNameText({ single: scope === 'ids' ? single : null, hdr, camdata: camdataReady() });
@@ -213,14 +219,13 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
 
   const hdrField = h('div', { class: 'ctl' });
   function hdrRow() {
-    const onlyPairs = allPairs(scope);
-    const ok = !onlyPairs && hdrAvailable(ids, photos, scope);
+    const ok = hdrAvailable(ids, photos, scope);
     hdr = ok && remembered;
     // 不能把 null 交给 replaceChildren：它会变成页面上的文字「null」（U3）
     const sw = toggle('HDR', hdr, (on) => { if (ok) rememberHdr(on); }, { disabled: !ok });
     // 行标题已经写了 HDR：开关自己的文字只留给读屏，看得见的位置写它是什么
     if (sw.firstChild && sw.firstChild.classList) sw.firstChild.classList.add('sr-only');
-    sw.append(h('span', { class: 'small dim' }, ok ? '带增益图的 JPG，支持 HDR 的屏幕上高光更亮' : (onlyPairs ? HDR_NO_PAIR : HDR_NO_RAW)));
+    sw.append(h('span', { class: 'small dim' }, ok ? '带增益图的 JPG，支持 HDR 的屏幕上高光更亮' : HDR_NO_RAW));
     const nodes = [sw];
     hdrField.replaceChildren(...nodes);
     paintName();
@@ -393,10 +398,13 @@ function copyPath(path) {
 
 function singleResult(r) {
   if (Array.isArray(r.files) && r.files.length > 1) {
+    // 半格一对导出多个文件时，哪个没做成 HDR 就把原因写出来（同样的原因只写一次）
+    const hdrNotes = [...new Set([r, ...r.files].filter((f) => f.hdr === false && f.hdr_note).map((f) => f.hdr_note))];
     return h('div', {},
       h('p', { class: 'res-main' }, `已导出 ${r.files.length} 个文件`),
       ...r.files.map((f) => h('p', { class: 'small num path' }, `${f.path}（${f.width} × ${f.height} · ${fmtBytes(f.bytes)}）`)),
       r.warning ? h('p', { class: 'small warn-text' }, r.warning) : null,
+      ...hdrNotes.map((note) => h('p', { class: 'small dim' }, note)),
       h('div', { class: 'res-acts' }, revealButton(r.export_id) || copyPathButton(r.path)));
   }
   return h('div', {},

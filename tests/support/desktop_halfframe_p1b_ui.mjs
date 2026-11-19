@@ -165,7 +165,7 @@ async function runEditorSnapshot(page) {
       // R3-1: the pair read-only note and dimming never reach ordinary photos
       roNoteCount: document.querySelectorAll('.pair-ro-note').length,
       readonly: !!document.querySelector('.panel')?.classList.contains('pair-readonly'),
-      recipePanelOpacity: getComputedStyle(document.querySelector('#tp-recipe') || document.body).opacity,
+      recipePanelOpacity: (() => { const tp = document.querySelector('#tp-recipe'); return tp ? getComputedStyle(tp).opacity : null; })(),
     };
   });
 }
@@ -232,6 +232,23 @@ async function runJpgOnlyP1(page) {
   await sleep(400);
   const secondReqs = out.requests.renders.slice(r1).filter((r) => r.view === 'second');
 
+  // Export dialog on this pair: photo 1 has no RAW, so HDR stays unavailable with the RAW reason
+  await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photo/${m.pairSecondId}`, { waitUntil: 'domcontentloaded' });
+  await waitFor(() => page.evaluate(() => {
+    const img = document.querySelector('.stage-area .pv-img');
+    return !!img && img.complete && img.naturalWidth > 0;
+  }), 45000, 'jpgonly pair reloaded');
+  await page.click('#btn-export-top');
+  await waitFor(() => page.evaluate(() => !!document.querySelector('.dialog .export-form')), 15000, 'jpgonly pair export dialog');
+  await sleep(250);
+  const exportHdr = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.dialog .row.form')].find((r) => r.querySelector('.lab')?.textContent?.trim() === 'HDR');
+    const input = row?.querySelector('input[type="checkbox"]');
+    return { disabled: input ? input.disabled : null, text: row?.querySelector('.ctl')?.textContent?.trim() || '' };
+  });
+  await page.click('.dialog .dh button');
+  await sleep(200);
+
   // JPG-only half_first crop preset 「取半格」 -> camera-JPG column 1100
   await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photo/${m.jpgHalfFirstId}`, { waitUntil: 'domcontentloaded' });
   await waitFor(() => page.evaluate(() => {
@@ -256,6 +273,7 @@ async function runJpgOnlyP1(page) {
     firstCenter,
     firstMask,
     secondReqs,
+    exportHdr,
     jpgHalfFirstCrop: cropBody,
   };
 }
@@ -688,11 +706,23 @@ async function runCard250(page) {
       sizeText: rows['成品'] || '',
       hdrDisabled: hdrInput ? hdrInput.disabled : null,
       hdrText: rows['HDR'] || '',
+      nameText: rows['文件名'] || '',
       footnote: note && !note.hidden ? note.textContent.trim() : '',
     };
   });
 
   const exportDefault = await readExportDialog();
+  // P1c: a pair whose halves both have RAW offers HDR; the file name gains _hdr while it is on
+  const clickHdr = () => page.evaluate(() => {
+    const row = [...document.querySelectorAll('.dialog .row.form')].find((r) => r.querySelector('.lab')?.textContent?.trim() === 'HDR');
+    row?.querySelector('input[type="checkbox"]')?.click();
+  });
+  await clickHdr();
+  await sleep(250);
+  const exportHdrOn = await readExportDialog();
+  await clickHdr();
+  await sleep(250);
+  const exportHdrOff = await readExportDialog();
   // P3-3: switch 范围 to <date> 的全部 -> title must update to 导出; switch back -> 导出 1 项（半格一对）
   await page.evaluate(() => {
     const scopeRow = [...document.querySelectorAll('.dialog .row.form')].find((r) => r.querySelector('.lab')?.textContent?.trim() === '范围');
@@ -762,6 +792,8 @@ async function runCard250(page) {
 
   out.steps.exportDialog = {
     exportDefault,
+    exportHdrOn,
+    exportHdrOff,
     exportScopeDateTitle,
     exportScopeBackTitle,
     exportSingles,

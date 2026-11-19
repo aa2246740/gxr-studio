@@ -221,7 +221,12 @@ def test_desktop_halfframe_p1b_ui_card250(
     assert ex["exportScopeBackTitle"] == "导出 1 项（半格一对）", ex
     assert ex["exportDefault"]["hasHfRow"] is True and ex["exportDefault"]["pressedMode"] == "双联一张", ex["exportDefault"]
     assert "1 个文件" in ex["exportDefault"]["sizeText"], ex["exportDefault"]
-    assert ex["exportDefault"]["hdrDisabled"] is True and "半格一对暂时做不了 HDR" in ex["exportDefault"]["hdrText"], ex["exportDefault"]
+    # P1c: both halves have RAW, so the pair offers HDR (off by default) and names the _hdr file while it is on
+    assert ex["exportDefault"]["hdrDisabled"] is False and "HDR 需要 RAW 文件" not in ex["exportDefault"]["hdrText"], ex["exportDefault"]
+    assert "_hdr" not in ex["exportDefault"]["nameText"], ex["exportDefault"]
+    assert "_gxr_hdr.jpg" in ex["exportHdrOn"]["nameText"], ex["exportHdrOn"]
+    assert "做不成 HDR 时是" in ex["exportHdrOn"]["nameText"], ex["exportHdrOn"]
+    assert "_hdr" not in ex["exportHdrOff"]["nameText"], ex["exportHdrOff"]
     assert "2 个文件" in ex["exportSingles"]["sizeText"] and "2088" in ex["exportSingles"]["sizeText"], ex["exportSingles"]
     assert "3 个文件" in ex["exportBoth"]["sizeText"], ex["exportBoth"]
     assert ex["singlesExportReqs"] and ex["singlesExportReqs"][0]["status"] == 200 and ex["singlesExportReqs"][0]["fileCount"] == 2, ex
@@ -294,6 +299,7 @@ def test_desktop_halfframe_p1b_jpgonly_photo1_and_half_first_crop(
     # Diptych has dark black vertical seam in the center; single camera JPG does not
     assert abs(j["firstCenter"]["centerMean"] - j["dipCenter"]["centerMean"]) > 5.0, j
     assert j["secondReqs"] and all(r["status"] == 200 for r in j["secondReqs"]), j["secondReqs"]
+    assert j["exportHdr"]["disabled"] is True and "HDR 需要 RAW 文件" in j["exportHdr"]["text"], j["exportHdr"]
 
     rect = j["jpgHalfFirstCrop"]["rect"]
     got_start = round(float(rect[1]) * hf_h) if hf_h > hf_w else round(float(rect[0]) * hf_w)
