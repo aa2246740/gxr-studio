@@ -12,6 +12,7 @@ import { moveRect, resizeRect } from './geom.js';
 import { gpuCanvas } from './gpu_stage.js';
 import { fitPhoto, fitImage, applyDecor, clearDecor } from './stage_finish.js';
 import { refreshFrameSource } from './finish_source.js';
+import { isSinglePairView } from './halfframe.js';
 
 const pct = (v) => `${(v * 100).toFixed(4)}%`;
 
@@ -41,6 +42,7 @@ function decorImage(view, pv, img, mode, maxW, maxH, natural) {
 
 export function stageMode(view) {
   if (view.showOriginal) return 'orig';
+  if (isSinglePairView(view)) return 'final';
   return view.tab === 'crop' ? 'uncropped' : 'final';
 }
 

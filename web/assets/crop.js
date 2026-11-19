@@ -6,6 +6,7 @@ import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
 import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, cropTilt } from './geom.js';
+import { HALF_CROP_ITEM, halfFirstCropRect, isHalfFirstCropRect } from './halfframe.js';
 
 // 比例分组。id 是后端 crop.py 的 PRESETS 的键；同一个 id 可以出现在两组里（例如 4:3 既是常用，也是小红书的竖图 3:4）。
 // orient：默认方向（'landscape' / 'portrait'）；没写就跟着照片的方向。
@@ -33,6 +34,11 @@ export const PRESET_GROUPS = [
     ],
   },
 ];
+
+function presetGroupsFor(view) {
+  if (!view.photo?.half_first) return PRESET_GROUPS;
+  return PRESET_GROUPS.map((grp, i) => (i === 0 ? { ...grp, items: [...grp.items, HALF_CROP_ITEM] } : grp));
+}
 
 // 能横竖切换的比例（原始、自由、1:1 不分横竖）
 const ORIENTABLE = new Set(['3:2', '4:3', '16:9', '4:5', '1.91:1', 'xpan-65-24']);
@@ -107,6 +113,10 @@ function landscapeRatio(id) {
 
 // 当前选中的是哪一项（同一个 id 可能在两组里，view.presetItem 记住点的是哪一个）
 export function presetFor(view) {
+  if (view.photo?.half_first && view.crop?.preset === 'free') {
+    const canvas = view.canvas || fullCanvas(view);
+    if (canvas && isHalfFirstCropRect(view.crop.rect, canvas.w, canvas.h)) return HALF_CROP_ITEM;
+  }
   if (view.presetItem && view.presetItem.id === view.crop.preset) return view.presetItem;
   const first = PRESET_GROUPS.flatMap((g) => g.items).find((x) => x.id === view.crop.preset);
   return first || { id: view.crop.preset, label: view.crop.preset };
@@ -215,6 +225,22 @@ function showNow(view, item, orientation) {
 
 // 选一个比例（保存时 rect 为 null，让后端算出居中的最大框）
 export async function applyPreset(view, item) {
+  if (item.id === 'halfframe') {
+    const full = fullCanvas(view) || view.canvas || { w: view.photo?.width || 4288, h: view.photo?.height || 2848 };
+    const rect = halfFirstCropRect(full.w, full.h);
+    const orientation = full.h > full.w ? 'portrait' : 'landscape';
+    beginChange(view);
+    view.presetItem = HALF_CROP_ITEM;
+    view.zoom = 100;
+    view.crop.preset = 'free';
+    view.crop.rect = rect;
+    if (view.ed && view.ed.v2) view.crop.orientation = orientation;
+    view.onRectDrag?.();
+    view.redrawSide?.();
+    await saveCrop(view, cropBody(view, { preset: 'free', rect: rectArray(rect) }, orientation));
+    endChange(view);
+    return;
+  }
   beginChange(view);
   view.presetItem = item;
   view.zoom = 100;
@@ -285,7 +311,7 @@ export function pixelsText(view) {
 
 // ---- 辅助线的 SVG（框里面）-------------------------------------------------------
 
-const NS = (() => { const t = document.createElement('template'); t.innerHTML = '<svg></svg>'; return t.content.firstElementChild.namespaceURI; })();
+const NS = typeof document === 'undefined' ? '' : (() => { const t = document.createElement('template'); t.innerHTML = '<svg></svg>'; return t.content.firstElementChild.namespaceURI; })();
 const PHI = (1 + Math.sqrt(5)) / 2;
 const GOLD_SMALL = 1 - 1 / PHI;
 const GOLD_BIG = 1 / PHI;
@@ -442,13 +468,14 @@ function openGuideMenu(view, anchor) {
 
 function openPresetMenu(view, anchor) {
   const cur = presetFor(view);
-  const groups = PRESET_GROUPS.map((grp) => ({
+  const avail = presetGroupsFor(view);
+  const groups = avail.map((grp) => ({
     title: grp.title,
     items: grp.items.map((x) => ({ id: `${x.id}|${x.label}`, label: x.label, on: cur.label === x.label })),
   }));
   openMenu(anchor, groups, (key) => {
     const [id, label] = key.split('|');
-    const item = PRESET_GROUPS.flatMap((g) => g.items).find((x) => x.id === id && x.label === label);
+    const item = avail.flatMap((g) => g.items).find((x) => x.id === id && x.label === label);
     if (item) applyPreset(view, item);
   });
 }
@@ -505,6 +532,8 @@ export function openMenu(anchor, groups, onPick) {
   if (sel && typeof sel.focus === 'function') sel.focus();
 }
 
-document.addEventListener('pointerdown', (e) => {
-  if (menuEl && !menuEl.contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenus();
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('pointerdown', (e) => {
+    if (menuEl && !menuEl.contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenus();
+  });
+}

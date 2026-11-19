@@ -6,6 +6,7 @@ import { flushPhotos } from './saves.js';
 import { cropRatio, OUTPUT_RATIOS } from './finish_layout.js';
 import { makeDeco } from './stage_finish.js';
 import { photoSize } from './output_photo_size.js';
+import { pairExportSizeText } from './halfframe.js';
 
 export function ratioText(ratio) {
   if (!ratio) return '';
@@ -48,7 +49,7 @@ export function frameSizeLine(view) {
   return line;
 }
 
-export function exportSizePreview({ ids, getScope, getSize }) {
+export function exportSizePreview({ ids, getScope, getSize, getHalfframe = null, singlePair = null }) {
   const line = h('span', { class: 'small dim num export-size', role: 'status', 'aria-live': 'polite' });
   let data = null;
   let pending = false;
@@ -62,15 +63,22 @@ export function exportSizePreview({ ids, getScope, getSize }) {
       pending = error = false;
       generation++;
     }
-    if (getScope() !== 'ids' || ids?.length !== 1) {
+    const pairTarget = getScope() === 'ids' ? singlePair : null;
+    if (!pairTarget && (getScope() !== 'ids' || ids?.length !== 1)) {
       line.textContent = '每张照片按各自比例导出，成品尺寸可能不同。';
       return;
     }
-    line.textContent = data ? sizeText(data.sizes[getSize()], data.ratio) : error ? '无法读取成品尺寸。请关闭后重试。' : '正在计算成品尺寸…';
+    const targetId = pairTarget ? pairTarget.id : ids[0];
+    if (pairTarget) {
+      const mode = getHalfframe ? getHalfframe() : 'diptych';
+      line.textContent = pairExportSizeText(pairTarget, data?.sizes?.[getSize()] || null, getSize(), mode);
+    } else {
+      line.textContent = data ? sizeText(data.sizes[getSize()], data.ratio) : error ? '无法读取成品尺寸。请关闭后重试。' : '正在计算成品尺寸…';
+    }
     if (data || pending || error) return;
     pending = true;
     const mine = generation;
-    flushPhotos(ids).then(() => api(`/api/photos/${ids[0]}/output-size`, { method: 'POST', body: {} })).then((value) => {
+    flushPhotos([targetId]).then(() => api(`/api/photos/${targetId}/output-size`, { method: 'POST', body: {} })).then((value) => {
       if (mine !== generation) return;
       data = value;
       paint();

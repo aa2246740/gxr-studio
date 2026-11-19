@@ -4,8 +4,7 @@
 
 import { api } from './api.js';
 import { state, on } from './state.js';
-import { h, button, icon, toast, fmtClock, fmtDate, toastError, modKey } from './dom.js';
-import { pairTag } from './gallery.js';
+import { h, button, icon, toast, fmtDate, toastError } from './dom.js';
 import { openExportDialog } from './export.js';
 import { recipePanel } from './recipes.js';
 import { adjustPanel } from './adjust.js';
@@ -16,15 +15,19 @@ import { stampPanel } from './stamp_panel.js';
 import { infoPanel } from './info_panel.js';
 import { paintStage, paintBox } from './stage.js';
 import {
-  ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, redoChange, syncUndo, beginChange, endChange,
-  persist, reloadEdit, applyRetried, stageLabels, refreshCaps, resetCropRemote, adjustBody,
+  ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, redoChange, beginChange, endChange,
+  persist, reloadEdit, applyRetried, refreshCaps, resetCropRemote, adjustBody,
   saveStatus, retrySaves, discardFailed,
 } from './preview.js';
 import { fetchAllPhotos } from './photos.js';
 import { delayed, busyButton, SHOW_AFTER_MS } from './busy.js';
 import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
 import { createHistogram } from './histogram.js';
-import { editorCopyPaste } from './paste_edits.js';
+import { isPairSecond, isSinglePairView, partnerOf } from './halfframe.js';
+import {
+  applyPairReadonly, clearTitlebar, paintLabels, paintTabMods, renderFilmstrip, renderTitlebar,
+  renderViewbar, syncViewbar, viewerPhotoList,
+} from './viewer_chrome.js';
 const zeroAdj = () => ({ exposure_ev: 0, contrast: 0, highlight: 0, shadow: 0, black_point: 0, warm: 0, tint: 0, saturation: 0, vibrance: 0, vignette: 0 });
 
 // [id, 名称, 快捷键, 图标]。「导出」不再是标签，改成对话框（⌘E）；第六个是「信息」（I）
@@ -41,7 +44,6 @@ export const TABS = [
 export const BACKGROUNDS = [['dark', '深灰', '#2a2a2a'], ['mid', '18% 灰', '#767676'], ['black', '黑', '#000000']];
 const BG_KEY = 'gxr-studio.stage-bg';
 const PANEL_KEY = 'gxr-studio.panel-collapsed';
-const FILM_WINDOW = 40; // 胶片条只放当前照片前后各 40 张，几千张照片也不卡
 
 let view = null;
 let resizeObs = null;
@@ -52,6 +54,10 @@ function pref(key, dflt) {
 function setPref(key, value) {
   try { localStorage.setItem(key, value); } catch { /* 隐私模式写不进去就算了 */ }
 }
+
+on('camdata-ready', () => {
+  if (view && view.ed) refreshPanes();
+});
 
 // ---- 键盘 -------------------------------------------------------------------
 
@@ -93,7 +99,7 @@ export function viewerKeys() {
         return true;
       }
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        if (view.tab !== 'crop' || isSliderFocus()) return false;
+        if (view.tab !== 'crop' || isSliderFocus() || isSinglePairView(view)) return false;
         nudgeStraighten(view, e.key === 'ArrowUp' ? 0.5 : -0.5);
         return true;
       }
@@ -104,6 +110,7 @@ export function viewerKeys() {
         return true;
       }
       if (view.tab === 'crop' && e.key === '[') {
+        if (isSinglePairView(view)) return false;
         rotate90(view);
         return true;
       }
@@ -122,12 +129,12 @@ export function viewerKeys() {
       return false;
     },
     undo() {
-      if (switching()) return false;
+      if (switching() || isSinglePairView(view)) return false;
       undoChange(view);
       return true;
     },
     redo() {
-      if (switching()) return false;
+      if (switching() || isSinglePairView(view)) return false;
       redoChange(view);
       return true;
     },
@@ -148,23 +155,23 @@ function setShowOriginal(on) {
   if (!view || view.showOriginal === on) return;
   view.showOriginal = on;
   if (!on) view.pinOriginal = false;
-  syncViewbar();
+  syncViewbar(view);
   paintStage(view);
-  paintLabels(view);
+  paintLabels(view, view);
 }
 
 function setSplit(on) {
   if (!view) return;
   view.split = on;
-  syncViewbar();
+  syncViewbar(view);
   paintStage(view);
-  paintLabels(view);
+  paintLabels(view, view);
 }
 
 function setZoom(on) {
   if (!view) return;
   view.zoom100 = on;
-  syncViewbar();
+  syncViewbar(view);
   paintStage(view);
 }
 
@@ -173,7 +180,7 @@ function setBackground(id) {
   view.bg = id;
   setPref(BG_KEY, id);
   view.stageCol.dataset.bg = id;
-  syncViewbar();
+  syncViewbar(view);
 }
 
 function setCollapsed(on) {
@@ -184,9 +191,21 @@ function setCollapsed(on) {
   view.panelEl.setAttribute('aria-hidden', on ? 'true' : 'false');
   if (on) view.panelEl.setAttribute('inert', '');
   else view.panelEl.removeAttribute('inert');
-  syncViewbar();
+  syncViewbar(view);
   // 面板收起/展开后画面的可用宽度变了：等过渡结束再按新尺寸排一次（ResizeObserver 也会跟上）
   setTimeout(() => { if (view) paintStage(view); }, 180);
+}
+
+function setPairView(mode) {
+  if (!view || !isPairSecond(view.photo)) return;
+  const next = mode === 'first' || mode === 'second' ? mode : 'diptych';
+  if ((view.pairView || 'diptych') === next) return;
+  view.pairView = next;
+  syncViewbar(view);
+  applyPairReadonly(view);
+  paintLabels(view, view);
+  paintStage(view);
+  if (view.ed) schedulePreview(view, { full: true });
 }
 
 // ---- 标签 -------------------------------------------------------------------
@@ -204,7 +223,7 @@ export function setTab(tab) {
   if (view.ed && (tab === 'crop' || wasCrop)) schedulePreview(view, { full: true });
   showTab();
   paintStage(view);
-  paintLabels(view);
+  paintLabels(view, view);
 }
 
 function tabButton(id, label, key, ico) {
@@ -243,7 +262,8 @@ function showTab() {
     p.el.hidden = !on;
     if (on && (!p.built || p.dirty)) buildPane(id);
   }
-  paintTabMods(view);
+  paintTabMods(view, TABS);
+  applyPairReadonly(view);
 }
 
 function buildPane(id) {
@@ -253,6 +273,7 @@ function buildPane(id) {
   p.el.replaceChildren(content);
   p.built = true;
   p.dirty = false;
+  applyPairReadonly(view);
 }
 
 // 编辑记录变了：当前标签有 sync() 的只改值，没有的重建；其它已经建过的标签标记为「下次显示时重建」
@@ -268,7 +289,8 @@ function refreshPanes() {
     if (view.ed && p.content && typeof p.content.sync === 'function' && p.content.dataset.ready === '1') p.content.sync();
     else buildPane(id);
   }
-  paintTabMods(view);
+  paintTabMods(view, TABS);
+  applyPairReadonly(view);
 }
 
 function panelFor(tab) {
@@ -317,30 +339,7 @@ function finishCrop() {
   setTab(view.lastTab && view.lastTab !== 'crop' ? view.lastTab : 'recipe');
 }
 
-// 标签上的小蓝点：这一类有改动
-function paintTabMods(v) {
-  if (!v || !v.tabBtns) return;
-  const ed = v.ed;
-  const adj = ed ? Object.values(ed.adj || {}).some((x) => Number(x) !== 0) || !!ed.curve : false;
-  const g = ed && ed.v2 ? ed.geometry || {} : {};
-  const crop = !!(v.crop && v.crop.rect && (v.crop.rect.w < 0.999 || v.crop.rect.h < 0.999)) || !!(g.straighten || g.vertical || g.horizontal || g.distortion || g.rotate || g.flip);
-  const mods = {
-    recipe: !!(ed && (ed.recipe || ed.lut)),
-    adjust: adj,
-    crop,
-    frame: !!(ed && ed.frame && ed.frame.style !== 'none'),
-    stamp: !!(ed && ed.stamp && ed.stamp.enabled),
-    info: false,
-  };
-  for (const [id] of TABS) {
-    const dot = v.tabBtns[id].querySelector('.mod');
-    if (dot) dot.hidden = !mods[id];
-  }
-}
-
-// ---- 画面上的小标签（电脑预测 / 未校准 / 近似 / 原图）。普通结果不写「成片」 -------------
-
-// 服务器出图时画面顶上一条细进度条（不挡画面、不挡操作）；150ms 内出完就不显示（busy.js 的分档）
+// // 服务器出图时画面顶上一条细进度条（不挡画面、不挡操作）；150ms 内出完就不显示（busy.js 的分档）
 function paintProgress(v) {
   // 编辑记录还在读、或服务器在出图
   const busy = v.ed ? !!v.ed.busy : !v.edError;
@@ -351,120 +350,6 @@ function paintProgress(v) {
   v.progTimer?.cancel();
   v.progTimer = null;
   v.progressEl.classList.remove('on');
-}
-
-function paintLabels(v) {
-  if (!view || v !== view || !v.labelsEl) return;
-  const items = [];
-  if (v.showOriginal) items.push(h('span', { class: 'tag' }, '原图'));
-  else if (v.split) items.push(h('span', { class: 'tag' }, '左：原图'), h('span', { class: 'tag' }, '右：编辑后'));
-  for (const l of v.showOriginal ? [] : stageLabels(v)) {
-    items.push(h('span', { class: `tag ${l.kind === 'warn' ? 'warn' : ''}`, title: l.title || null }, l.text));
-  }
-  v.labelsEl.replaceChildren(...items);
-}
-
-// ---- 顶栏（编辑版）：返回、撤销、照片名和拍摄时间 ------------------------------------
-
-function renderTitlebar(v) {
-  const bar = document.getElementById('titlebar');
-  const slot = document.getElementById('tb-edit');
-  if (bar) bar.dataset.mode = 'viewer';
-  if (!slot) return;
-  const p = v.photo;
-  const undo = button('', { kind: 'icon', ico: 'undo-2', title: `撤销（${modKey()}Z）`, onclick: () => undoChange(v) });
-  const redo = button('', { kind: 'icon', ico: 'redo-2', title: `重做（${modKey() === '⌘' ? '⇧⌘Z' : 'Ctrl+Shift+Z'}）`, onclick: () => redoChange(v) });
-  v.undoBtn = undo;
-  v.redoBtn = redo; // 只用鼠标也能重做（B2）
-  syncUndo(v);
-  slot.replaceChildren(...[
-    button('照片', { kind: 'ghost', ico: 'chevron-left', title: '回到图库（Esc）', onclick: () => { location.hash = '#/photos'; } }),
-    h('span', { class: 'sep-v' }),
-    undo,
-    redo,
-    ...editorCopyPaste(v),
-    h('div', { class: 'tb-title' },
-      h('span', { class: 'name' }, p.name),
-      h('span', { class: 'meta' }, `${fmtDate(p.date)} ${fmtClock(p.captured_at)}`),
-      pairTag(p),
-      p.date_source === 'mtime' ? h('span', { class: 'tag warn', title: '没有拍摄时间，使用文件修改日期' }, '使用文件修改日期') : null),
-  ].filter(Boolean));
-}
-
-function clearTitlebar() {
-  const bar = document.getElementById('titlebar');
-  const slot = document.getElementById('tb-edit');
-  if (bar && bar.dataset.mode === 'viewer') bar.dataset.mode = 'library';
-  if (slot) slot.replaceChildren();
-}
-
-// ---- 视图工具栏：背景、原图、左右对比 | 上一张 n/N 下一张 | 适合/100%、收起面板 ----------------
-
-function renderViewbar(v) {
-  const bgs = BACKGROUNDS.map(([id, name, hex]) => {
-    const b = h('button', { type: 'button', class: 'swatch', title: `背景：${name}`, 'aria-label': `背景：${name}`, 'aria-pressed': 'false', onclick: () => setBackground(id) }, h('i', {}));
-    b.firstChild.style.background = hex;
-    b.dataset.bg = id;
-    return b;
-  });
-  const orig = button('', { kind: 'icon', ico: 'eye', title: '原图（\\，按住空格临时看）', onclick: () => { v.pinOriginal = !v.showOriginal; setShowOriginal(!v.showOriginal); } });
-  const split = button('', { kind: 'icon', ico: 'columns-2', title: '左右对比（Y）', onclick: () => setSplit(!v.split) });
-  const prev = button('', { kind: 'icon', ico: 'chevron-left', title: '上一张（←）', onclick: () => step(-1) });
-  const next = button('', { kind: 'icon', ico: 'chevron-right', title: '下一张（→）', onclick: () => step(1) });
-  const counter = h('span', { class: 'info num', 'aria-live': 'off' });
-  const zoom = h('div', { class: 'seg', role: 'group', 'aria-label': '缩放' },
-    h('button', { type: 'button', 'aria-pressed': 'true', title: '适合（Z）', onclick: () => setZoom(false) }, '适合'),
-    h('button', { type: 'button', 'aria-pressed': 'false', title: '100%（Z）', onclick: () => setZoom(true) }, '100%'));
-  const panelBtn = button('', { kind: 'icon', ico: 'panel-right', title: '显示 / 隐藏右侧面板', onclick: () => setCollapsed(!v.collapsed) });
-  v.vb = { bgs, orig, split, prev, next, counter, zoom, panelBtn };
-  v.viewbar.replaceChildren(...bgs, h('span', { class: 'sep-v' }), orig, split, h('span', { class: 'grow' }), prev, counter, next, h('span', { class: 'grow' }), zoom, panelBtn);
-  syncViewbar();
-}
-
-function syncViewbar() {
-  const v = view;
-  if (!v || !v.vb) return;
-  const { bgs, orig, split, prev, next, counter, zoom, panelBtn } = v.vb;
-  for (const b of bgs) b.setAttribute('aria-pressed', String(b.dataset.bg === v.bg));
-  orig.setAttribute('aria-pressed', String(!!v.showOriginal));
-  split.setAttribute('aria-pressed', String(!!v.split));
-  const pos = state.photos.findIndex((p) => p.id === v.photo.id);
-  const disable = (b, off) => (off ? b.setAttribute('aria-disabled', 'true') : b.removeAttribute('aria-disabled'));
-  disable(prev, pos <= 0);
-  disable(next, pos < 0 || pos >= state.photos.length - 1);
-  counter.textContent = pos >= 0 ? `${pos + 1} / ${state.photos.length}` : '';
-  const [fit, full] = zoom.children;
-  fit.setAttribute('aria-pressed', String(!v.zoom100));
-  full.setAttribute('aria-pressed', String(!!v.zoom100));
-  panelBtn.setAttribute('aria-pressed', String(!v.collapsed));
-}
-
-// ---- 胶片条（只在画面下方） -------------------------------------------------------
-
-function renderFilmstrip(v) {
-  const list = state.photos;
-  const pos = list.findIndex((p) => p.id === v.photo.id);
-  if (pos < 0 || list.length < 2) {
-    v.film.replaceChildren();
-    v.stageCol.classList.add('nofilm');
-    return;
-  }
-  v.stageCol.classList.remove('nofilm');
-  const from = Math.max(0, pos - FILM_WINDOW);
-  const to = Math.min(list.length, pos + FILM_WINDOW + 1);
-  const items = list.slice(from, to).map((p) => {
-    const img = h('img', { alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
-    img.addEventListener('load', () => img.classList.add('ready'));
-    img.src = p.thumb_url;
-    const cur = p.id === v.photo.id;
-    return h('button', {
-      type: 'button', class: 'fthumb', title: p.name, 'aria-label': p.name, 'aria-current': cur ? 'true' : null,
-      onclick: () => { if (!cur) location.hash = `#/photo/${p.id}`; },
-    }, img, p.hdr === 'ready' ? h('span', { class: 'b' }, h('span', { class: 'badge hdr', title: '图库里已生成 HDR 版本' }, 'HDR')) : null);
-  });
-  v.film.replaceChildren(...items);
-  const current = v.film.querySelector('[aria-current="true"]');
-  if (current && current.scrollIntoView) current.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
 
 // ---- 面板底栏：保存状态（安静显示，不弹提示）+ 复原 -----------------------------------------
@@ -500,7 +385,7 @@ on('save-retried', (e) => {
   // 这一步结束时 endChange 再刷新（W01）。每个开始都有结束：保存后 endChange，没改值的按下由滑块的 onCancel 结束（X01）
   if (v.pending) {
     v.panesStale = true;
-    paintTabMods(v);
+    paintTabMods(v, TABS);
     return;
   }
   refreshPanes();
@@ -516,6 +401,7 @@ function renderPanelFoot(v) {
     h('span', { class: 'grow' }),
     resetBtn,
   );
+  applyPairReadonly(v);
 }
 
 // 复原：配方、调整、曲线、几何、边框、时间戳、裁剪全部回到原图。能用撤销找回来。
@@ -524,7 +410,7 @@ function renderPanelFoot(v) {
 async function resetAll() {
   const v = view;
   const ed = v && v.ed;
-  if (!ed) return;
+  if (!ed || isSinglePairView(v)) return;
   beginChange(v);
   ed.recipe = null;
   ed.lut = null;
@@ -567,11 +453,28 @@ async function resetAll() {
 // 从要去的那张算起：上一张还在加载时连按方向键，不会每次都从屏幕上那张重算、把后面的按键吃掉（B1）
 function step(d) {
   if (!view) return;
-  const list = state.photos;
+  const list = viewerPhotoList();
   let i = list.findIndex((p) => p.id === (targetId() || view.photo.id));
   if (i < 0) i = list.findIndex((p) => p.id === view.photo.id);
   const next = list[i + d];
   if (next) location.hash = `#/photo/${next.id}`;
+}
+
+async function ensurePartner(v) {
+  if (!isPairSecond(v.photo)) return;
+  if (partnerOf(v.photo, state.photos, state.partners)) return;
+  const pid = v.photo.pair && v.photo.pair.partner_id;
+  if (!pid) return;
+  try {
+    const p1 = await api(`/api/photos/${pid}`);
+    if (!p1 || !p1.id) return;
+    state.partners.set(p1.id, p1);
+    if (view !== v) return;
+    renderTitlebar(v);
+    refreshPanes();
+  } catch {
+    // 读不到另一半不影响主画面
+  }
 }
 
 // 胶片条和上一张/下一张要完整的列表。图库只取了第一页就被打开（照片多于 500 张）时，
@@ -586,7 +489,11 @@ async function ensurePhotos(id, isCurrent) {
   state.photosComplete = true;
   if (view && view.photo.id === id) {
     renderFilmstrip(view);
-    syncViewbar();
+    syncViewbar(view);
+    if (isPairSecond(view.photo)) {
+      renderTitlebar(view);
+      refreshPanes();
+    }
   }
 }
 
@@ -668,7 +575,7 @@ export async function renderViewer(root, id, isCurrent = () => true) {
 
   view = {
     photo, tab, lastTab: 'recipe', stage: tab === 'crop' ? 'uncropped' : 'final', showOriginal: false, pinOriginal: false,
-    split: false, zoom100: false, bg, collapsed: false,
+    split: false, zoom100: false, bg, collapsed: false, pairView: 'diptych',
     ...parts, statusEl: null,
     undo: [], redo: [], pending: null, saveQ: null, ed: null, edPromise: null,
     crop: null, canvas: null, zoom: 100, presetItem: null, presetPortrait: false,
@@ -681,8 +588,8 @@ export async function renderViewer(root, id, isCurrent = () => true) {
     if (view !== v) return;
     paintProgress(v);
     paintStage(v);
-    paintLabels(v);
-    paintTabMods(v);
+    paintLabels(v, view);
+    paintTabMods(v, TABS);
   };
   v.redrawSide = () => {
     if (view === v) refreshPanes();
@@ -692,7 +599,9 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   };
 
   renderTitlebar(v);
-  renderViewbar(v);
+  renderViewbar(v, {
+    backgrounds: BACKGROUNDS, setBackground, setShowOriginal, setSplit, setZoom, setCollapsed, setPairView, step,
+  });
   renderFilmstrip(v);
   renderPanelFoot(v);
   if (collapsed) setCollapsed(true);
@@ -701,6 +610,7 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   paintProgress(v);
 
   if (cached) refreshPhoto(v);
+  ensurePartner(v);
 
   // 两个请求都等完再画（Promise.all 会在第一个失败时就返回，另一个回来后界面不会重画，留下骨架）
   const [cropRes, edRes] = await Promise.allSettled([loadCrop(v), ensureEdit(v)]);
@@ -715,7 +625,7 @@ export async function renderViewer(root, id, isCurrent = () => true) {
 
   refreshPanes();
   paintStage(v);
-  paintLabels(v);
+  paintLabels(v, view);
   schedulePreview(v, { full: true });
   // 编辑记录读不出来：进度条收起（读到了就交给出图的 onChange，中间不闪一下）
   if (!v.ed) paintProgress(v);
@@ -758,6 +668,7 @@ async function refreshPhoto(v) {
     if (view !== v) return;
     v.photo = photo;
     renderTitlebar(v);
+    ensurePartner(v);
   } catch {
     // 读不到不影响已经打开的页面
   }
@@ -776,7 +687,7 @@ export async function refreshViewerPhoto() {
   if (view !== v) return;
   await refreshCaps(v);
   if (v.ed) await reloadEdit(v);
-  paintLabels(v);
+  paintLabels(v, view);
 }
 
 // ⌘E 在大图里：打开这一张的导出对话框（导出前先等这张照片的修改写完）
@@ -784,9 +695,10 @@ export function openViewerTab(tab) {
   if (!view) return;
   if (tab === 'export') {
     const v = view;
+    const pair = isPairSecond(v.photo);
     // 导出前等哪些照片的保存由导出对话框按选的范围决定（这一张 / 这一天的全部，F02）
     openExportDialog({
-      ids: [v.photo.id], label: '这一张', photos: [v.photo],
+      ids: [v.photo.id], label: pair ? '这一对' : '这一张', photos: [v.photo],
       date: v.photo.date || null, dayLabel: v.photo.date ? `${fmtDate(v.photo.date)} 的全部` : null,
     });
     return;

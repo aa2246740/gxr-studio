@@ -5,6 +5,7 @@ import { state, emit } from './state.js';
 import { h, button, toast, toastError, setFraction } from './dom.js';
 import { flushPhotos } from './saves.js';
 import { clipboard, copyKeys, pasteKeys, pasteMessage, postPaste, postUndo, undoMessage, newBatchId, groupName } from './paste_core.js';
+import { dedupePairIds } from './halfframe.js';
 
 export const CHUNK = 10; // 每次请求粘贴几张：进度按这个走，一次请求也不会拖太久
 let running = false;
@@ -49,7 +50,8 @@ export async function pasteToSelection() {
     return true;
   }
   if (running) return true;
-  const ids = [...state.selection].filter((id) => id !== clip.from.id);
+  const targets = dedupePairIds([...state.selection], state.photos, state.partners);
+  const ids = targets.filter((id) => id !== clip.from.id);
   if (!ids.length) {
     toast(state.selection.size ? '选中的只有复制来源这一张。请再选几张要粘贴的照片。' : '先选择要粘贴的照片：点照片左上角的圈，或按住 ⇧ 连续选择。', 'info');
     return true;

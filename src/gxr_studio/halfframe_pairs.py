@@ -42,6 +42,12 @@ CORR_PASS = 0.99
 MAD_OTHER_MIN = 8.0
 
 _TRAILING_DIGITS = re.compile(r"(\d+)$")
+_CONFLICT_SUFFIX = re.compile(r"_[0-9a-f]{6,}$")
+
+
+def _strip_conflict_suffix(stem: str) -> str:
+    stripped = _CONFLICT_SUFFIX.sub("", stem)
+    return stripped if stripped != stem and _TRAILING_DIGITS.search(stripped) else stem
 
 
 @dataclass(frozen=True)
@@ -53,10 +59,10 @@ class PairDecision:
 
 
 def extract_number(name: str | None) -> int | None:
-    """提取文件名（去扩展名后）末尾的连续数字编号。"""
+    """提取文件名（去扩展名和导入冲突后缀后）末尾的连续数字编号。"""
     if not name:
         return None
-    m = _TRAILING_DIGITS.search(Path(name).stem)
+    m = _TRAILING_DIGITS.search(_strip_conflict_suffix(Path(name).stem))
     return int(m.group(1)) if m else None
 
 
@@ -64,7 +70,7 @@ def neighbor_names(name: str | None, delta: int) -> list[str]:
     """按照片自身的前缀和补零宽度生成 ±1 邻居的文件名干（最多两个，去重保序）。"""
     if not name:
         return []
-    stem = Path(name).stem
+    stem = _strip_conflict_suffix(Path(name).stem)
     m = _TRAILING_DIGITS.search(stem)
     if not m:
         return []

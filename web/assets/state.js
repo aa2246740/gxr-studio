@@ -16,8 +16,10 @@ export const state = {
   viewerTab: 'crop', // 大图右侧记住的标签
   dates: [], // /api/dates
   galleryDate: null, // 图库当前筛选的日期，null = 全部
-  photos: [], // 当前筛选下的照片（大图左右切换用）
-  selection: new Set(), // 选中的照片 id
+  galleryFilter: null, // 图库类型筛选：null = 全部，'halfframe' = 半格
+  photos: [], // 当前筛选下的原始照片列表
+  partners: new Map(), // 跨页或单张打开时按需拉取的配对伙伴 id -> shot
+  selection: new Set(), // 选中的照片 id（半格一对同时包含第 1、2 张）
   camdata: null, // 相机数据状态：{ ready, state, message, generation }（见 camdata.js）
   catalog: null, // /api/recipes：3 个单元 × 8 个底子、每个底子的旋钮和档位
 };

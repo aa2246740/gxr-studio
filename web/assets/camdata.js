@@ -37,6 +37,8 @@ export function applyCamdataStatus(s) {
   if (prev?.dataVersion != null && dataVersion != null && prev.dataVersion !== dataVersion) {
     state.catalog = null;
     emit('camdata-changed');
+  } else if ((!prev || !prev.ready) && ready) {
+    emit('camdata-ready');
   }
   return state.camdata;
 }

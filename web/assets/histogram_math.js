@@ -48,14 +48,17 @@ export function pixelRegion(width, height, region) {
   return [x0, y0, x1, y1];
 }
 
-// 数一遍 RGBA 字节（canvas 的 ImageData 或测试数据）。rect 是像素矩形，stride 是取样间隔。
-export function countRGBA(rgba, width, height, { rect = null, stride = null } = {}) {
+// 数一遍 RGBA 字节（canvas 的 ImageData 或测试数据）。rect 是像素矩形，stride 是取样间隔，exclude 是要跳过的像素矩形。
+export function countRGBA(rgba, width, height, { rect = null, stride = null, exclude = null } = {}) {
   const [x0, y0, x1, y1] = rect || [0, 0, width, height];
+  const [ex0, ey0, ex1, ey1] = exclude || [-1, -1, -1, -1];
   const step = stride || sampleStride(x1 - x0, y1 - y0);
   const out = new Uint32Array(COUNT_SIZE);
   let samples = 0;
   for (let y = y0; y < y1; y += step) {
+    const inExY = !!exclude && y >= ey0 && y < ey1;
     for (let x = x0; x < x1; x += step) {
+      if (inExY && x >= ex0 && x < ex1) continue;
       const i = (y * width + x) * 4;
       const r = rgba[i];
       const g = rgba[i + 1];
@@ -99,10 +102,21 @@ export function summarize({ counts, samples, stride = 1, rect = null }, source =
 }
 
 // 在 RGBA 数据上标出溢出：蓝、红、其余全透明。给服务器出图的退路画叠加层用（显卡路径在着色器里做同样的判断）。
-export function markClipping(rgba, out, { shadow = true, highlight = true } = {}) {
+export function markClipping(rgba, out, { shadow = true, highlight = true, width = 0, exclude = null } = {}) {
+  const hasEx = !!(exclude && width > 0);
+  const [ex0, ey0, ex1, ey1] = exclude || [-1, -1, -1, -1];
   let crushed = 0;
   let blown = 0;
   for (let i = 0; i < rgba.length; i += 4) {
+    if (hasEx) {
+      const px = i >> 2;
+      const y = Math.floor(px / width);
+      const x = px - y * width;
+      if (x >= ex0 && x < ex1 && y >= ey0 && y < ey1) {
+        out[i + 3] = 0;
+        continue;
+      }
+    }
     const r = rgba[i];
     const g = rgba[i + 1];
     const b = rgba[i + 2];
