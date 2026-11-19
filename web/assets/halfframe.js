@@ -16,7 +16,6 @@ export const HALFFRAME_MODES = [
   ['both', '都要'],
 ];
 
-export const HDR_NO_PAIR = '半格一对暂时做不了 HDR';
 export const PAIR_EXPORT_NOTE = '双联和相机拼的一样：第 1 张在左（竖拿时在上），中间黑缝 112 像素。';
 export const HALF_CROP_ITEM = { id: 'halfframe', label: '取半格' };
 
