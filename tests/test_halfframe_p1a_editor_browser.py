@@ -181,7 +181,14 @@ def test_desktop_editor_halfframe_pair(
         assert race["cards"] > 0 and race["earlyDisabled"] > 0, f"startup race not reproduced: {race}"
         assert race["enabledAfterStatus"] is True, f"recipe cards stayed disabled after the camera-data status arrived: {race}"
         guard = ui["steps"]["midDragGuard"]
-        assert guard == {"kept": True, "deferred": True, "flushed": True}, f"camera-data redraw broke a change in progress (W01): {guard}"
+        want = {"kept": True, "deferred": True, "flushed": True, "rebuilt": True}
+        assert guard == want, f"camera-data redraw broke a change in progress (W01): {guard}"
+        other = ui["steps"]["otherTabGuard"]
+        assert other == {"untouched": True, "dirty": True, "rebuiltOnShow": True}, f"camera-data redraw touched another tab: {other}"
+        stamp = ui["steps"]["stampTabGuard"]
+        assert stamp == {"same": True, "dirty": True}, f"camera-data redraw rebuilt the stamp pane after a change: {stamp}"
+        focus = ui["steps"]["focusGuard"]
+        assert focus == {"rebuiltOnShow": True}, f"recipe pane stayed stale after focus elsewhere: {focus}"
         assert ui["pageErrors"] == [], ui["pageErrors"]
         assert ui["cameraJpgReqs"] == [], ui["cameraJpgReqs"]
         assert ui["steps"]["settings"]["gpu_preview"] is gpu

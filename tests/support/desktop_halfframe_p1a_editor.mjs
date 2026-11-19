@@ -272,7 +272,7 @@ try {
 
   // 3b) Startup race: the viewer's panel is drawn before the first camera-data status arrives.
   // Delay /api/camdata/status so the recipe cards are drawn disabled; they must come alive once
-  // the status lands (app.js redraws the side panel on 'camdata-ready-changed').
+  // the status lands (viewer_camdata.js rebuilds the recipe pane on 'camdata-ready-changed').
   await page.route('**/api/camdata/status', async (route) => {
     await sleep(8000);
     // A poll still waiting here when the route is removed must not crash the driver.
@@ -324,7 +324,62 @@ try {
     const kept = !!before && before.isConnected && document.querySelector('.lcard') === before;
     const deferred = view.panesStale === true;
     pv.endChange(view);
-    return { kept, deferred, flushed: view.panesStale === false };
+    const after = document.querySelector('.lcard');
+    return { kept, deferred, flushed: view.panesStale === false, rebuilt: !!after && after !== before };
+  });
+
+  // 3d) On another tab the event must not touch the open pane; the recipe pane is rebuilt when shown again.
+  out.steps.otherTabGuard = await page.evaluate(async () => {
+    const [v, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/state.js')]);
+    const view = v.currentView();
+    const oldCard = document.querySelector('.lcard');
+    v.openViewerTab('adjust');
+    await new Promise((r) => setTimeout(r, 50));
+    const slider = document.querySelector('input[type=range]');
+    st.emit('camdata-ready-changed');
+    const untouched = !!slider && slider.isConnected;
+    const dirty = view.panes.recipe.dirty === true;
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    const card = document.querySelector('.lcard');
+    return { untouched, dirty, rebuiltOnShow: !!card && card !== oldCard };
+  });
+
+  // 3e) A change in progress on another tab (e.g. stamp text) must not have its pane rebuilt when it ends.
+  out.steps.stampTabGuard = await page.evaluate(async () => {
+    const [v, pv, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/preview.js'), import('/assets/state.js')]);
+    const view = v.currentView();
+    v.openViewerTab('stamp');
+    await new Promise((r) => setTimeout(r, 50));
+    const node = view.panes.stamp.content;
+    pv.beginChange(view);
+    st.emit('camdata-ready-changed');
+    pv.endChange(view);
+    await new Promise((r) => setTimeout(r, 50));
+    const same = !!node && view.panes.stamp.content === node && node.isConnected;
+    const dirty = view.panes.recipe.dirty === true;
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    return { same, dirty };
+  });
+
+  // 3f) Focus in a text field outside the recipe pane (e.g. a settings dialog) must not leave the recipe pane stale.
+  out.steps.focusGuard = await page.evaluate(async () => {
+    const [v, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/state.js')]);
+    const oldCard = document.querySelector('.lcard');
+    v.openViewerTab('adjust');
+    await new Promise((r) => setTimeout(r, 50));
+    const field = document.createElement('input');
+    field.type = 'text';
+    document.body.append(field);
+    field.focus();
+    st.emit('camdata-ready-changed');
+    field.blur();
+    field.remove();
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    const card = document.querySelector('.lcard');
+    return { rebuiltOnShow: !!card && card !== oldCard };
   });
 
   // 4) Reload -> check stage, recipe state, and edited thumbnail
