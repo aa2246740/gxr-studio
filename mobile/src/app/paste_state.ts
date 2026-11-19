@@ -8,7 +8,7 @@ import { formatClock } from '../lib/group';
 import { isDisplaySpace } from '../lib/lut';
 import { curveJson } from '../lib/export_request';
 import { copyFrom, pasteBatch, PasteUndo, undoBatch, type Clip, type Env, type Target } from '../lib/paste';
-import { shelf, shelves } from '../lib/recipes';
+import { photoWithAdopted, shelf, shelves } from '../lib/recipes';
 import { copyMessage, groupName, pasteMessage, undoMessage, type GroupId, type Outcome } from '../lib/paste_text';
 import type { AppApi, Photo } from './model';
 
@@ -192,7 +192,7 @@ export class PasteState {
   /** 复制：勾选的、这张确实设置过的组进剪贴板。什么都没有就不动剪贴板。返回要说的那句。 */
   copy(api: AppApi, photo: Photo, groups: readonly GroupId[]): { ok: boolean; line: string } {
     this.sync(api);
-    const result = copyFrom(photo, photo.stem, groups);
+    const result = copyFrom(photoWithAdopted(photo, api.book().dat), photo.stem, groups);
     if (result.clip) {
       this.clip = result.clip;
       this.setBar(null);
@@ -306,15 +306,18 @@ function exposeEdits(api: AppApi): void {
   w.__gxrRequest = async (stem) => {
     const photo = api.photos().find((item) => item.stem === stem);
     if (!photo) return null;
+    const { ensureCameraRecipe } = await import('./model');
+    await ensureCameraRecipe(photo, api.book());
     const { requestPhoto, cardsFor } = await import('./export_ui');
     const { buildRequest } = await import('../lib/export_request');
-    return buildRequest(requestPhoto(photo, api.lutBook()), cardsFor(api.book(), photo), { size: 'original', quality: 'high' }, 'dev');
+    return buildRequest(requestPhoto(photo, api.lutBook(), api.book()), cardsFor(api.book(), photo), { size: 'original', quality: 'high' }, 'dev');
   };
   w.__gxrEdits = () =>
     api.photos().map((photo) => ({
       stem: photo.stem,
       rev: photo.rev,
       choice: photo.choice,
+      recipeOff: Boolean(photo.recipeOff),
       levels: Object.fromEntries(photo.levels),
       memory: Object.fromEntries(photo.memory),
       lut: photo.lut,

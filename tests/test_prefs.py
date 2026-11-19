@@ -24,8 +24,9 @@ def client(settings):
 
 def test_missing_directory_stays_missing_until_a_choice_is_saved(settings):
     missing = settings.home_dir / "not-created"
-    assert load_prefs(missing) == {"onboarding_dismissed": False, "export_hdr": False}
-    assert update_prefs(missing, [], {}) == {"onboarding_dismissed": False, "export_hdr": False}
+    default = {"onboarding_dismissed": False, "export_hdr": False, "export_halfframe": "diptych"}
+    assert load_prefs(missing) == default
+    assert update_prefs(missing, [], {}) == default
     assert not missing.exists()
 
 
@@ -85,23 +86,30 @@ def _assert_owner_permissions(path, tmp_path):
 
 
 def test_prefs_default_off_then_remember_each_choice(client, settings, tmp_path):
-    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False}
+    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False, "export_halfframe": "diptych"}
     assert not (settings.home_dir / "prefs.json").exists()
 
     skipped = client.put("/api/prefs", json={"onboarding_dismissed": True})
     assert skipped.status_code == 200
-    assert skipped.json() == {"onboarding_dismissed": True, "export_hdr": False}
+    assert skipped.json() == {"onboarding_dismissed": True, "export_hdr": False, "export_halfframe": "diptych"}
     saved = json.loads((settings.home_dir / "prefs.json").read_text(encoding="utf-8"))
     assert saved["schema"] == "gxr-studio/prefs/1"
     assert saved["onboarding_dismissed"] is True and saved["export_hdr"] is False
+    assert saved["export_halfframe"] == "diptych"
     _assert_owner_permissions(settings.home_dir / "prefs.json", tmp_path)
     assert not any(".tmp" in path.name for path in settings.home_dir.iterdir())
 
     turned_on = client.put("/api/prefs", json={"export_hdr": True})
-    assert turned_on.json() == {"onboarding_dismissed": True, "export_hdr": True}
+    assert turned_on.json() == {"onboarding_dismissed": True, "export_hdr": True, "export_halfframe": "diptych"}
     turned_off = client.put("/api/prefs", json={"export_hdr": False})
-    assert turned_off.json() == {"onboarding_dismissed": True, "export_hdr": False}
+    assert turned_off.json() == {"onboarding_dismissed": True, "export_hdr": False, "export_halfframe": "diptych"}
     assert client.get("/api/prefs").json()["export_hdr"] is False
+
+    for mode in ("singles", "both", "diptych"):
+        updated = client.put("/api/prefs", json={"export_halfframe": mode})
+        assert updated.status_code == 200
+        assert updated.json()["export_halfframe"] == mode
+        assert client.get("/api/prefs").json()["export_halfframe"] == mode
 
     empty = client.put("/api/prefs", json={})
     assert empty.status_code == 200
@@ -110,17 +118,23 @@ def test_prefs_default_off_then_remember_each_choice(client, settings, tmp_path)
     assert bad.status_code == 422
     assert bad.json()["message"] == "请求无效。请刷新页面后重试。"
     assert client.get("/api/prefs").json()["export_hdr"] is False
+    bad_hf = client.put("/api/prefs", json={"export_halfframe": "invalid"})
+    assert bad_hf.status_code == 422
+    assert client.get("/api/prefs").json()["export_halfframe"] == "diptych"
 
 
 def test_unreadable_prefs_use_defaults_for_the_bad_fields(client, settings):
     settings.home_dir.mkdir(parents=True, exist_ok=True)
     path = settings.home_dir / "prefs.json"
     path.write_text("{", encoding="utf-8")
-    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False}
-    path.write_text(json.dumps({"onboarding_dismissed": 1, "export_hdr": True, "schema": "nope"}), encoding="utf-8")
-    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": True}
+    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False, "export_halfframe": "diptych"}
+    path.write_text(
+        json.dumps({"onboarding_dismissed": 1, "export_hdr": True, "export_halfframe": "nope", "schema": "nope"}),
+        encoding="utf-8",
+    )
+    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": True, "export_halfframe": "diptych"}
     path.write_text("[]", encoding="utf-8")
-    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False}
+    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False, "export_halfframe": "diptych"}
 
 
 def test_prefs_replace_a_symlink_instead_of_following_it(client, settings):
@@ -130,10 +144,10 @@ def test_prefs_replace_a_symlink_instead_of_following_it(client, settings):
     outside.write_text(original, encoding="utf-8")
     link = settings.home_dir / "prefs.json"
     link.symlink_to(outside)
-    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False}
+    assert client.get("/api/prefs").json() == {"onboarding_dismissed": False, "export_hdr": False, "export_halfframe": "diptych"}
     saved = client.put("/api/prefs", json={"export_hdr": True})
     assert saved.status_code == 200
-    assert saved.json() == {"onboarding_dismissed": False, "export_hdr": True}
+    assert saved.json() == {"onboarding_dismissed": False, "export_hdr": True, "export_halfframe": "diptych"}
     assert outside.read_text(encoding="utf-8") == original
     assert link.is_file() and not link.is_symlink()
     assert json.loads(link.read_text(encoding="utf-8"))["export_hdr"] is True

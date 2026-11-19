@@ -771,13 +771,17 @@ def test_mobile_browser_xpan_4288x1584_import_preview_and_export_parity(tmp_path
         assert jpg_prev["xpan6524Badge"] == [4288, 1583]
         assert jpg_prev["restoredBadge"] == [4288, 1584]
 
+        from gxr_studio.render.camera_recipe import photo_edit
+
         facts = report["steps"]["export"]["facts"]["facts"]
         for stem, shot in ((x_dng.stem, shot_pair), (x_jpg_only.stem, shot_jpg)):
             fact = facts[stem]
             assert (fact["width"], fact["height"]) == (4288, 1584)
             side = desk.sidecar(shot, {"knobs": {}})
-            same_redacted(parse_edit(fact["side"]).to_json(), parse_edit(side).to_json(), "xpan phone side equals desktop")
-            same_redacted(_blocks(fact["side"]), _blocks(side), "xpan phone side blocks equal desktop")
+            edit = photo_edit(side, shot, desk.render.recipe_menu())
+            same_redacted(parse_edit(fact["side"]).to_json(), edit.to_json(), "xpan phone side equals desktop")
+            want_side = {**side, "recipe": edit.recipe.to_json()} if edit.recipe is not None else side
+            same_redacted(_blocks(fact["side"]), _blocks(want_side), "xpan phone side blocks equal desktop")
             res = desk.export(shot, side, 95, None)
             assert (res.width, res.height) == (4288, 1584)
             phone_out = out_dir / f"xpan-{res.path.name}"

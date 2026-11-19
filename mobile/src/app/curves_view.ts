@@ -173,6 +173,7 @@ export class CurvesView {
     this.svg.addEventListener('pointermove', this.onMove);
     this.svg.addEventListener('pointerup', this.onUp);
     this.svg.addEventListener('pointercancel', this.onCancel);
+    this.svg.addEventListener('lostpointercapture', this.onLost);
     this.svg.addEventListener('dblclick', this.onDouble);
     this.draw();
   }
@@ -181,24 +182,26 @@ export class CurvesView {
     return this.panel;
   }
 
+  /** 切走曲线、换照片或拆掉视图时，没有 pointerup 也要把草稿退回。 */
+  cancelDrag(): void {
+    if (this.closed || !this.drag) return;
+    this.finish(true);
+  }
+
+  refresh(): void {
+    if (!this.closed && !this.drag) this.draw();
+  }
+
   destroy(): void {
     if (this.closed) return;
-    this.cancelFrame();
-    const photo = this.dragPhoto;
-    const pointerId = this.drag?.pointerId ?? null;
-    const was = this.drag !== null;
-    if (photo && this.drag && this.owns(photo)) photo.curve = this.committed;
-    this.drag = null;
-    this.working = null;
-    this.dragPhoto = null;
+    this.cancelDrag();
     this.closed = true;
     this.svg.removeEventListener('pointerdown', this.onDown);
     this.svg.removeEventListener('pointermove', this.onMove);
     this.svg.removeEventListener('pointerup', this.onUp);
     this.svg.removeEventListener('pointercancel', this.onCancel);
+    this.svg.removeEventListener('lostpointercapture', this.onLost);
     this.svg.removeEventListener('dblclick', this.onDouble);
-    if (pointerId !== null) this.releaseCapture(pointerId);
-    if (was && this.host.dragging()) this.host.leaveDrag();
   }
 
   private owns(photo: Photo): boolean {
@@ -273,7 +276,12 @@ export class CurvesView {
 
   private onCancel = (e: PointerEvent): void => {
     if (!this.drag || e.pointerId !== this.drag.pointerId) return;
-    this.finish(true);
+    this.cancelDrag();
+  };
+
+  private onLost = (e: PointerEvent): void => {
+    if (!this.drag || e.pointerId !== this.drag.pointerId) return;
+    this.cancelDrag();
   };
 
   private onDouble = (e: MouseEvent): void => {

@@ -16,7 +16,7 @@ import { ExportFlow } from './export_ui';
 import { GridView } from './grid';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
-import { openable, photoMs, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
+import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { DEFAULT_FRAME, DEFAULT_STAMP } from '../lib/frame_spec';
 import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
@@ -86,6 +86,10 @@ class App implements AppApi {
 
   async start(engine: Engine | null): Promise<void> {
     this.engine = engine;
+    registerCameraRecipeReader(async (file) => {
+      const reply = await this.reader.read(new File([file.slice(0, 262144)], file.name));
+      return reply.ok ? reply.bytes : null;
+    });
     this.recipeBook.attach(engine);
     this.lutGpuQueue.attach(() => this.engine);
     // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
@@ -557,6 +561,7 @@ class App implements AppApi {
       photo.version += 1;
       photo.gone = false;
       photo.frameMeta = null;
+      clearCameraRecipe(photo);
       photo.neutral?.bitmap.close();
       photo.neutral = null;
       releaseLooks(photo);
@@ -617,6 +622,7 @@ class App implements AppApi {
       photo.diptych = true;
       photo.dng = null;
       photo.dngMeta = null;
+      clearCameraRecipe(photo);
     }
     let captureMs = reply.captureMs;
     let frame = reply.frame;

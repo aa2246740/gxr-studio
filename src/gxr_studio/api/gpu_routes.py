@@ -109,8 +109,10 @@ def gpu_info(shot_id: str, request: Request) -> dict[str, Any]:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     files = shot["files"]
-    if not flag_enabled(c.settings, "gpu_preview"):
-        return {"enabled": False}  # 开关关着：不读 DNG、不预热
+    from ..halfframe_pairs import has_pair_raw
+
+    if not flag_enabled(c.settings, "gpu_preview") or has_pair_raw(shot):
+        return {"enabled": False}  # 开关关着，或半格一对（显卡还不会合成两张 RAW，P1b）：走服务器
     out: dict[str, Any] = {
         "enabled": True,
         "unit": c.render.photo_unit(shot),

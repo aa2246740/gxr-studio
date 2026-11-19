@@ -119,6 +119,7 @@ def _raw_rgb(
     render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, *, full: bool, neutral: bool = False
 ) -> tuple[np.ndarray, dict[str, str]]:
     """full 为真时按传感器全尺寸解码。没有全尺寸 CFA 时退回内嵌的最大预览，并在 detail 里写明。neutral 为真时不规划配方，一定是中性转换。"""
+    from ..halfframe_pairs import has_pair_raw
     from ..raw import NEUTRAL, open_dng, render_full, render_half
 
     if not full and not neutral:
@@ -136,6 +137,10 @@ def _raw_rgb(
             "cache": "hit" if out.cache_hit else "miss",
             "calibrated": "1" if out.plan.calibrated else "0",
         }
+    if has_pair_raw(shot):
+        from ..halfframe_compose import render_pair_rgb
+
+        return render_pair_rgb(render, lib, shot, edit, full=full, neutral=neutral)
     path = lib.abspath(shot["files"]["dng"]["relpath"])
     try:
         dng = open_dng(path)
@@ -199,17 +204,20 @@ def color_image(
     base: str = "auto",
     full: bool = False,
 ) -> tuple[np.ndarray, bool, dict[str, str]]:
-    """选底图。配方用 RAW；没配方有 JPG 就用相机 JPG；只有 RAW 用 04 标准。"""
+    """选底图。配方用 RAW；没配方有 JPG 就用相机 JPG；只有 RAW 用 04 标准；半格一对默认从两张 RAW 合成。"""
     if edit.lut is not None:
         from ..lut.photo import color_image as lut_image
 
         return lut_image(render, lib, shot, edit, max_edge=max_edge, quality=quality, base=base, full=full)
+    from ..halfframe_pairs import has_pair_raw
+
     files = shot["files"]
     has_jpg = "jpg" in files
-    has_dng = "dng" in files
+    pair_raw = has_pair_raw(shot)
+    has_dng = ("dng" in files) or pair_raw
     mode = base
     if mode == "auto":
-        if edit.recipe is not None:
+        if edit.recipe is not None or pair_raw:
             mode = "recipe"
         elif has_jpg:
             mode = "camera-jpg"
@@ -343,13 +351,20 @@ def _plan(
     render: RenderService, lib: Library, shot: dict[str, Any], edit: EditState, side: dict[str, Any], *, stage: str, base: str
 ) -> tuple[Path | None, Any, Any, EditState]:
     """(成片就是相机 JPG 时它的路径, 边框, 日期戳, 要用的编辑)。没有看得见的编辑、有相机 JPG、底图是自动或相机 JPG，成片就是那张 JPG。"""
+    from ..halfframe_pairs import has_pair_raw
+
     frame_default, stamp_default = load_defaults(render.home)
     bare = stage == "original"
     frame = factory_frame() if bare else resolved_frame(edit.frame, frame_default)
     stamp = factory_stamp() if bare else resolved_stamp(edit.stamp, stamp_default)
     bare_edit = EditState() if bare else edit
     untouched = bare or not has_visible_edit(bare_edit, {} if bare else side, frame, stamp)
-    original = _source_path(lib, shot) if untouched and "jpg" in shot["files"] and base in ("auto", "camera-jpg") else None
+    pair_raw = has_pair_raw(shot)
+    original = (
+        _source_path(lib, shot)
+        if untouched and "jpg" in shot["files"] and (base == "camera-jpg" or (base == "auto" and (bare or not pair_raw)))
+        else None
+    )
     return original, frame, stamp, bare_edit
 
 
@@ -489,15 +504,17 @@ def export_finish(
     import os
 
     from ..export import FORMATS, ExportError, ExportOptions, ExportResult, check_destination, claim_path, write_rgb_with_exif
+    from ..halfframe_pairs import has_pair_raw, is_pair_second
 
     ExportOptions(long_edge, quality, fmt).validate()
     files = shot["files"]
+    pair_hdr_refused = hdr and is_pair_second(shot)
     track = (
         HdrTrack(
             lib.abspath(files["dng"]["relpath"]) if "dng" in files else None,
             jpeg=lib.abspath(files["jpg"]["relpath"]) if "jpg" in files else None,
         )
-        if hdr
+        if hdr and not pair_hdr_refused
         else None
     )
     # 没有编辑的相机 JPG（不做 HDR、不缩长边）：和以前一样先只读字节，目标目录检查通过之后再解码，
@@ -511,6 +528,10 @@ def export_finish(
             labels = _original_labels(shot, None)
         else:
             rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage="final", max_edge=None, quality=quality, base=base, track=track)
+    except EditError as exc:
+        if exc.code == "lut_needs_raw" and is_pair_second(shot) and not has_pair_raw(shot):
+            raise NoRaw(exc.message) from exc
+        raise
     except RawDecodeError as exc:
         detail = f"没有全尺寸传感器数据，也没有更小的预览。{exc}"
         if "jpg" in shot["files"]:
@@ -532,7 +553,7 @@ def export_finish(
     # 只在最后写文件时编码一次：长边直接在数组上缩，HDR 增益也在这份数组上拟合
     rgb = _fit(rgb, long_edge)
     ext = FORMATS[fmt][1]
-    hdr_info: dict[str, Any] = {}
+    hdr_info: dict[str, Any] = {"hdr": False, "reason": "halfframe_pair"} if pair_hdr_refused else {}
     payload = write_rgb_with_exif(rgb, _source_path(lib, shot), note, quality=quality, fmt=fmt)
     if track is not None:
         payload, hdr_info = finish_hdr(payload, track, fmt, rgb)
@@ -564,7 +585,7 @@ def export_finish(
         render_kind=kind,
         calibrated=calibrated,
         detail=labels.get("detail") or "",
-        hdr=hdr_info.get("hdr") if track is not None else None,
+        hdr=hdr_info.get("hdr") if (track is not None or pair_hdr_refused) else None,
         hdr_reason=hdr_info.get("reason"),
         recipe_binding={
             k: labels[k] for k in ("record_sha256", "entry_sha256", "binding_sha256", "selection_id", "quality_state", "assessed_entry")

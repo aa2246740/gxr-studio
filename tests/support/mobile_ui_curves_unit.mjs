@@ -398,6 +398,27 @@ test('two-pointer drag ignores other pointers', () => {
   assert.deepEqual(h.photo.curve.master[1], [128, 160]);
 });
 
+test('cancelDrag and lostpointercapture restore the committed curve without a rev', () => {
+  const h = harness({ master: [[0, 0], [80, 40], [255, 255]] });
+  h.down(80, 40);
+  h.move(80, 12);
+  assert.equal(h.photo.curve.master[1][1], 12);
+  h.view.cancelDrag();
+  assert.deepEqual(h.photo.curve, { master: [[0, 0], [80, 40], [255, 255]] });
+  assert.equal(h.photo.rev, 0);
+  assert.equal(h.dragging, false);
+
+  h.down(80, 40);
+  h.move(80, 18);
+  h.svg.dispatch('lostpointercapture', { pointerId: 9 });
+  assert.equal(h.photo.curve.master[1][1], 18);
+  assert.equal(h.dragging, true);
+  h.svg.dispatch('lostpointercapture', { pointerId: 1 });
+  assert.deepEqual(h.photo.curve.master[1], [80, 40]);
+  assert.equal(h.photo.rev, 0);
+  assert.equal(h.dragging, false);
+});
+
 test('grab offset keeps a touched point from jumping on initial move or 1 px drag', () => {
   const h = harness({ master: [[0, 0], [128, 120], [255, 255]] });
   h.svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 203, height: 203 });

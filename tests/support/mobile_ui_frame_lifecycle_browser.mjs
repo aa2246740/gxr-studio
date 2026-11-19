@@ -78,6 +78,12 @@ try {
       if (!cond) fail(msg);
     };
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 等到条件成立（最多 ms）：负载高时异步保存会慢，固定的 100–150 ms 不够
+    const until = async (pred, ms = 5000) => {
+      const end = Date.now() + ms;
+      while (!pred() && Date.now() < end) await sleep(50);
+      return pred();
+    };
 
     async function makeTestBitmap(w = 160, h = 120) {
       const cv = document.createElement('canvas');
@@ -311,13 +317,17 @@ try {
       const countBeforeAbort = logoStore.list().length;
       const storeRevBeforeAbort = logoStore.revision();
 
+      let addAborted = false;
       IDBObjectStore.prototype.put = function () {
+        addAborted = true;
         this.transaction.abort();
         throw new DOMException('Aborted write', 'AbortError');
       };
       try {
         saveBtn.click();
-        await sleep(150);
+        // 等这次写入真的被中止、按钮恢复，再检查状态
+        await until(() => addAborted && !saveBtn.disabled);
+        assert(addAborted, 'add must reach the IDB write');
         // Must preserve state & re-enable saveBtn!
         assert(logoStore.list().length === countBeforeAbort, 'failed add must not add logo in memory');
         assert(logoStore.revision() === storeRevBeforeAbort, 'failed add must not bump store revision');
@@ -340,13 +350,16 @@ try {
       const renameInput = shell.querySelector('.ms.logo-sheet .logo-row-acts input.txtbox');
       renameInput.value = 'ShouldRollback';
       const renameSaveBtn = [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '保存');
+      let renameAborted = false;
       IDBObjectStore.prototype.put = function () {
+        renameAborted = true;
         this.transaction.abort();
         throw new DOMException('Aborted rename', 'AbortError');
       };
       try {
         renameSaveBtn.click();
-        await sleep(100);
+        await until(() => renameAborted && !renameSaveBtn.disabled);
+        assert(renameAborted, 'rename must reach the IDB write');
         assert(logoStore.info(seededId)?.name === 'SeedLogo', 'failed rename must keep original name');
       } finally {
         IDBObjectStore.prototype.put = origPut;
@@ -354,20 +367,23 @@ try {
       // Verify controls NOT stuck busy after error: try real rename now -> succeeds!
       renameInput.value = 'RecoveredName';
       renameSaveBtn.click();
-      await sleep(100);
+      await until(() => logoStore.info(seededId)?.name === 'RecoveredName');
       assert(logoStore.info(seededId)?.name === 'RecoveredName', 'busy lock must reset after failed rename');
 
       // Failed delete
       shell.querySelector('.ms.logo-sheet .logo-row button[aria-label*="更多操作"]').click();
       [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button')].find((b) => b.textContent === '删除').click();
       const delConfirmBtn = [...shell.querySelectorAll('.ms.logo-sheet .logo-row-acts button.danger')].find((b) => b.textContent === '删除');
+      let deleteAborted = false;
       IDBObjectStore.prototype.delete = function () {
+        deleteAborted = true;
         this.transaction.abort();
         throw new DOMException('Aborted delete', 'AbortError');
       };
       try {
         delConfirmBtn.click();
-        await sleep(100);
+        await until(() => deleteAborted && !delConfirmBtn.disabled);
+        assert(deleteAborted, 'delete must reach the IDB delete');
         assert(Boolean(logoStore.info(seededId)), 'failed delete must preserve logo in store');
         assert(photo.border.logo === seededId, 'failed delete must not reset photo.border.logo to ricoh');
         assert(photo.rev === revBaseline, 'failed delete must not bump photo.rev');
@@ -376,7 +392,7 @@ try {
       }
       // Clean up seeded logo for real
       delConfirmBtn.click();
-      await sleep(100);
+      await until(() => !logoStore.info(seededId));
       assert(!logoStore.info(seededId), 'subsequent delete after error must work cleanly');
       cancelHostSheets(shell);
 

@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 
 pub mod bounds;
+pub mod camera_recipe;
+pub mod catalog_names;
 pub mod crc32;
 pub mod datcodec;
 pub mod datcodec_looks;
@@ -13,6 +15,12 @@ pub mod knob_table;
 pub mod r5;
 pub mod recipe_tags;
 
+pub use camera_recipe::{CameraRecipe, camera_recipe_json, recorded_recipe};
+pub use catalog_names::{
+    BASE_NAMES, CAMERA_UNITS, CATALOG_GENERATIONS, CatalogTarget, G176_DESCRIPTORS, UNIT_BITS,
+    UNIT_LABELS, camera_unit, catalog_generation, recipe_name, resolve_catalog_position,
+    resolve_descriptors, unit_bit, unit_label,
+};
 pub use datcodec::{
     Dat, ENTRY_BYTES, FullRecipe, Look, MAX_DAT_BYTES, Module, NAMES, SLOTS, UserEntry,
     entries_from_dat, parse, peek_generation,
@@ -22,7 +30,10 @@ pub use knob_table::{
     MenuData, embedded_menu, menu_to_json, read as read_knob_table, resolve_menu,
 };
 pub use r5::{LIBRARY_NAME, MAX_LIBRARY_BYTES};
-pub use recipe_tags::{RecipeTag, parse_recipe_tag, parse_recipe_tag_bytes, recipe_tag_to_json};
+pub use recipe_tags::{
+    RecipeTag, decoded_levels, knob_default, parse_recipe_tag, parse_recipe_tag_bytes,
+    recipe_tag_to_json,
+};
 
 use gxr_raw::sha256::sha256_hex;
 use gxr_raw::{CoreError, Json};

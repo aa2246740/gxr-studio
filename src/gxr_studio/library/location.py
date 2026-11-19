@@ -32,6 +32,7 @@ STUDIO_PATHS = (
     ".studio/thumbs",
     ".studio/hdr",
     ".studio/halfframe-v1.json",
+    ".studio/halfframe-pairs-v1.json",
     ".studio/staging",
     ".studio/tmp",
 )

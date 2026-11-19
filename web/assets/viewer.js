@@ -256,7 +256,7 @@ function buildPane(id) {
 }
 
 // 编辑记录变了：当前标签有 sync() 的只改值，没有的重建；其它已经建过的标签标记为「下次显示时重建」
-function refreshPanes() {
+export function refreshPanes() {
   if (!view) return;
   for (const [id] of TABS) {
     const p = view.panes[id];
@@ -318,7 +318,7 @@ function finishCrop() {
 }
 
 // 标签上的小蓝点：这一类有改动
-function paintTabMods(v) {
+export function paintTabMods(v) {
   if (!v || !v.tabBtns) return;
   const ed = v.ed;
   const adj = ed ? Object.values(ed.adj || {}).some((x) => Number(x) !== 0) || !!ed.curve : false;

@@ -37,6 +37,9 @@ export function applyCamdataStatus(s) {
   if (prev?.dataVersion != null && dataVersion != null && prev.dataVersion !== dataVersion) {
     state.catalog = null;
     emit('camdata-changed');
+  } else if ((prev?.ready === true) !== ready) {
+    // 页面先画、状态后到（第一次读到状态，或就绪与否变了）：已经画好的配方面板要按新状态重画，否则配方卡一直灰着
+    emit('camdata-ready-changed');
   }
   return state.camdata;
 }

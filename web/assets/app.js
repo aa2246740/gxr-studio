@@ -11,6 +11,7 @@ import { pasteToSelection } from './paste_batch.js';
 import { openExportDialog } from './export.js';
 import { showHelp, showSettings } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
+import './viewer_camdata.js'; // 相机数据就绪状态变了时重画配方面板（W01 推迟）
 import { renderLutPage } from './lut.js';
 import { renderCamera } from './camera_page.js';
 import { createRouter } from './router.js';

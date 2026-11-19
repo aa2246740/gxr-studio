@@ -31,13 +31,19 @@ HALFFRAME_FILE = "halfframe-v1.json"
 HALFFRAME_REL = f".studio/{HALFFRAME_FILE}"
 FLUSH_INTERVAL = 1.0
 
+SEAM_G250 = "g250"
+SEAM_LEGACY48 = "legacy48"
+
 # 全分辨率下的双联黑缝列范围（含端点）：g250 为 112 px，早期测试固件 legacy48 为 48 px。
-SEAMS: tuple[tuple[int, int], ...] = (
-    (2088, 2199),
-    (2120, 2167),
+SEAM_SPECS: tuple[tuple[str, int, int], ...] = (
+    (SEAM_G250, 2088, 2199),
+    (SEAM_LEGACY48, 2120, 2167),
 )
+SEAMS: tuple[tuple[int, int], ...] = tuple((x0, x1) for _, x0, x1 in SEAM_SPECS)
 # 只取完全落在黑缝内的 1/8 列；外侧紧邻的 1 列对应全分辨率下两边各 8 列。
-_SEAM_COLS: tuple[tuple[int, int], ...] = tuple(((x0 + SCALE - 1) // SCALE, (x1 - (SCALE - 1)) // SCALE) for x0, x1 in SEAMS)
+_SEAM_SPEC_COLS: tuple[tuple[str, int, int], ...] = tuple(
+    (kind, (x0 + SCALE - 1) // SCALE, (x1 - (SCALE - 1)) // SCALE) for kind, x0, x1 in SEAM_SPECS
+)
 
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[str, bool] = {}
@@ -61,11 +67,32 @@ def _file_sha256(path: Path) -> str | None:
         return None
 
 
-def is_diptych_luma(luma: np.ndarray) -> bool:
-    """检查 1/8 尺度灰度图（未按 EXIF 转正，约 536×356）是否落在已知双联黑缝规则上。"""
+def write_json_atomic(path: Path, doc: dict[str, Any], check_write: Callable[[], None] | None = None) -> None:
+    """原子落盘 `.studio/*.json`；只建 `.studio` 这一层，图库根不在了就让保存失败。"""
+    if check_write is not None:
+        check_write()
+    path.parent.mkdir(exist_ok=True)
+    tmp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    payload = json.dumps(doc, ensure_ascii=False, sort_keys=True)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def seam_kind_luma(luma: np.ndarray) -> str | None:
+    """检查 1/8 尺度灰度图（未按 EXIF 转正，536×356）命中的黑缝类型：g250 / legacy48 / None。"""
     if luma.shape != (DRAFT_HEIGHT, DRAFT_WIDTH):
-        return False
-    for c0, c1 in _SEAM_COLS:
+        return None
+    for kind, c0, c1 in _SEAM_SPEC_COLS:
         if c0 <= 0 or c1 + 1 >= DRAFT_WIDTH:
             continue
         if (
@@ -73,17 +100,22 @@ def is_diptych_luma(luma: np.ndarray) -> bool:
             and int(luma[:, c0 - 1].max()) > LUMA_THRESHOLD
             and int(luma[:, c1 + 1].max()) > LUMA_THRESHOLD
         ):
-            return True
-    return False
+            return kind
+    return None
 
 
-def detect_diptych(jpg_path: str | os.PathLike[str]) -> bool | None:
-    """无全局缓存地检查一份 JPEG 是否为半格双联；文件不可读返回 None，其它情况返回 bool。"""
+def is_diptych_luma(luma: np.ndarray) -> bool:
+    """检查 1/8 尺度灰度图（未按 EXIF 转正，约 536×356）是否落在已知双联黑缝规则上。"""
+    return seam_kind_luma(luma) is not None
+
+
+def decode_draft_luma(jpg_path: str | os.PathLike[str]) -> tuple[bool, np.ndarray | None]:
+    """按 1/8 尺度解码 4288×2848 JPEG 灰度图：返回 `(可读, luma 或 None)`。"""
     path = Path(jpg_path)
     try:
         with Image.open(path) as im:
             if im.format not in ("JPEG", "MPO") or im.size != (FULL_WIDTH, FULL_HEIGHT):
-                return False
+                return True, None
             im.draft("L", (DRAFT_WIDTH, DRAFT_HEIGHT))
             im.load()
             gray: Image.Image = im
@@ -93,8 +125,18 @@ def detect_diptych(jpg_path: str | os.PathLike[str]) -> bool | None:
                 gray = gray.convert("L")
             luma = np.asarray(gray, dtype=np.uint8)
     except OSError:
-        return None
+        return False, None
     except (ValueError, SyntaxError):
+        return True, None
+    return True, luma
+
+
+def detect_diptych(jpg_path: str | os.PathLike[str]) -> bool | None:
+    """无全局缓存地检查一份 JPEG 是否为半格双联；文件不可读返回 None，其它情况返回 bool。"""
+    ok, luma = decode_draft_luma(jpg_path)
+    if not ok:
+        return None
+    if luma is None:
         return False
     return is_diptych_luma(luma)
 
@@ -115,8 +157,8 @@ def is_diptych(jpg_path: str | os.PathLike[str], *, sha256: str | None = None) -
     return result
 
 
-class VerdictStore:
-    """图库级半格双联判定缓存（`.studio/halfframe-v1.json`）及其无上限内存镜像。"""
+class CoalescedStore:
+    """图库级 JSON 缓存基类：无上限内存镜像、合并落盘、版本号只读保护、请求路径静默保存。"""
 
     def __init__(
         self,
@@ -124,13 +166,14 @@ class VerdictStore:
         check_write: Callable[[], None] | None = None,
         *,
         flush_interval: float = FLUSH_INTERVAL,
+        save_error_event: str = "halfframe_save_failed",
     ) -> None:
         self.path = Path(path)
         self._check_write = check_write
         self._flush_interval = flush_interval
+        self._save_error_event = save_error_event
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
-        self._verdicts: dict[str, bool] = {}
         self._dirty = False
         self._readonly = False
         self._save_warned = False
@@ -139,87 +182,24 @@ class VerdictStore:
         self._last_flush: float | None = None
         self._timer: threading.Timer | None = None
 
-    def load(self) -> None:
-        loaded: dict[str, bool] = {}
-        future_version: int | None = None
-        try:
-            raw = self.path.read_text(encoding="utf-8")
-            data = json.loads(raw)
-        except (OSError, ValueError):
-            data = None
-        if isinstance(data, dict):
-            ver = data.get("version")
-            if isinstance(ver, int) and not isinstance(ver, bool) and ver > HALFFRAME_VERSION:
-                future_version = ver
-            elif ver == HALFFRAME_VERSION and isinstance(data.get("verdicts"), dict):
-                for k, v in data["verdicts"].items():
-                    if isinstance(k, str) and isinstance(v, bool):
-                        loaded[k] = v
-        with self._lock:
-            timer = self._timer
-            self._timer = None
-            self._closed = False
-            self._verdicts = loaded
-            self._dirty = False
-            self._last_flush = None
-            self._readonly = future_version is not None
-            self._save_warned = False
-            already_future = self._future_warned
-            if future_version is not None:
-                self._future_warned = True
-        if timer is not None:
-            timer.cancel()
-        if future_version is not None and not already_future:
-            log.event(logging.WARNING, "halfframe_future_version", version=future_version, supported=HALFFRAME_VERSION)
+    def _serialize_locked(self) -> tuple[dict[str, Any], Any]:
+        raise NotImplementedError
 
-    def get(self, sha: str | None) -> bool | None:
-        if not sha:
-            return None
-        with self._lock:
-            return self._verdicts.get(sha)
+    def _unchanged_locked(self, snapshot: Any) -> bool:
+        raise NotImplementedError
 
-    def has(self, sha: str | None) -> bool:
-        if not sha:
-            return False
-        with self._lock:
-            return sha in self._verdicts
-
-    def diptych_shas(self) -> set[str]:
-        with self._lock:
-            return {sha for sha, flag in self._verdicts.items() if flag}
-
-    def put(self, sha: str, value: bool, *, save: bool = True, coalesce: bool = False, strict: bool = False) -> None:
-        with self._lock:
-            changed = self._verdicts.get(sha) is not value
-            self._verdicts[sha] = value
-            if changed:
-                self._dirty = True
-            writable = not self._readonly
-            dirty = self._dirty
-        if not writable:
-            return
-        if coalesce:
-            if dirty:
-                self._flush_coalesced(strict=strict)
-        elif save and changed:
-            self._flush(strict=strict)
-
-    def put_many(self, items: dict[str, bool], *, replace: bool = False, save: bool = True, strict: bool = False) -> None:
-        with self._lock:
-            if replace:
-                changed = self._verdicts != items
-                self._verdicts = dict(items)
-            else:
-                changed = False
-                for sha, value in items.items():
-                    if self._verdicts.get(sha) is not value:
-                        changed = True
-                    self._verdicts[sha] = value
-            if changed:
-                self._dirty = True
-            writable = not self._readonly
-        if writable and save and (changed or (replace and not self.path.exists())):
-            self._flush(strict=strict)
+    def _finish_load_locked(self, future_version: int | None) -> tuple[threading.Timer | None, bool]:
+        timer = self._timer
+        self._timer = None
+        self._closed = False
+        self._dirty = False
+        self._last_flush = None
+        self._readonly = future_version is not None
+        self._save_warned = False
+        already_future = self._future_warned
+        if future_version is not None:
+            self._future_warned = True
+        return timer, already_future
 
     def _timer_cb(self) -> None:
         with self._lock:
@@ -280,7 +260,7 @@ class VerdictStore:
             self._save_quietly()
 
     def flush_quietly(self) -> None:
-        """Always write the current verdicts (even when nothing is dirty), logging instead of raising."""
+        """Always write the current state (even when nothing is dirty), logging instead of raising."""
         self._save_quietly()
 
     def _save_quietly(self) -> None:
@@ -294,37 +274,114 @@ class VerdictStore:
                 already = self._save_warned
                 self._save_warned = True
             if not already:
-                log.event(logging.WARNING, "halfframe_save_failed", error=type(exc).__name__)
+                log.event(logging.WARNING, self._save_error_event, error=type(exc).__name__)
 
     def save(self) -> None:
         with self._save_lock:
             with self._lock:
                 if self._readonly:
                     return
-                snapshot = dict(self._verdicts)
-            if self._check_write is not None:
-                self._check_write()
-            # 只建 .studio 这一层：库目录不在了就让保存失败，不替调用方重建整个库目录。
-            self.path.parent.mkdir(exist_ok=True)
-            tmp = self.path.parent / f".{self.path.name}.{uuid.uuid4().hex}.tmp"
-            payload = json.dumps({"version": HALFFRAME_VERSION, "verdicts": snapshot}, ensure_ascii=False, sort_keys=True)
-            try:
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp, self.path)
-            except BaseException:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                raise
+                doc, snapshot = self._serialize_locked()
+            write_json_atomic(self.path, doc, check_write=self._check_write)
             with self._lock:
-                if self._verdicts == snapshot:
+                if self._unchanged_locked(snapshot):
                     self._dirty = False
                 self._last_flush = time.monotonic()
                 self._save_warned = False
+
+
+class VerdictStore(CoalescedStore):
+    """图库级半格双联判定缓存（`.studio/halfframe-v1.json`）及其无上限内存镜像。"""
+
+    def __init__(
+        self,
+        path: Path,
+        check_write: Callable[[], None] | None = None,
+        *,
+        flush_interval: float = FLUSH_INTERVAL,
+    ) -> None:
+        super().__init__(path, check_write=check_write, flush_interval=flush_interval, save_error_event="halfframe_save_failed")
+        self._verdicts: dict[str, bool] = {}
+
+    def _serialize_locked(self) -> tuple[dict[str, Any], Any]:
+        snapshot = dict(self._verdicts)
+        return {"version": HALFFRAME_VERSION, "verdicts": snapshot}, snapshot
+
+    def _unchanged_locked(self, snapshot: Any) -> bool:
+        return bool(self._verdicts == snapshot)
+
+    def load(self) -> None:
+        loaded: dict[str, bool] = {}
+        future_version: int | None = None
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            ver = data.get("version")
+            if isinstance(ver, int) and not isinstance(ver, bool) and ver > HALFFRAME_VERSION:
+                future_version = ver
+            elif ver == HALFFRAME_VERSION and isinstance(data.get("verdicts"), dict):
+                for k, v in data["verdicts"].items():
+                    if isinstance(k, str) and isinstance(v, bool):
+                        loaded[k] = v
+        with self._lock:
+            self._verdicts = loaded
+            timer, already_future = self._finish_load_locked(future_version)
+        if timer is not None:
+            timer.cancel()
+        if future_version is not None and not already_future:
+            log.event(logging.WARNING, "halfframe_future_version", version=future_version, supported=HALFFRAME_VERSION)
+
+    def get(self, sha: str | None) -> bool | None:
+        if not sha:
+            return None
+        with self._lock:
+            return self._verdicts.get(sha)
+
+    def has(self, sha: str | None) -> bool:
+        if not sha:
+            return False
+        with self._lock:
+            return sha in self._verdicts
+
+    def diptych_shas(self) -> set[str]:
+        with self._lock:
+            return {sha for sha, flag in self._verdicts.items() if flag}
+
+    def put(self, sha: str, value: bool, *, save: bool = True, coalesce: bool = False, strict: bool = False) -> None:
+        with self._lock:
+            changed = self._verdicts.get(sha) is not value
+            self._verdicts[sha] = value
+            if changed:
+                self._dirty = True
+            writable = not self._readonly
+            dirty = self._dirty
+        if not writable:
+            return
+        if coalesce:
+            if dirty:
+                self._flush_coalesced(strict=strict)
+        elif save and changed:
+            self._flush(strict=strict)
+
+    def put_many(self, items: dict[str, bool], *, replace: bool = False, save: bool = True, strict: bool = False) -> None:
+        with self._lock:
+            if replace:
+                changed = self._verdicts != items
+                self._verdicts = dict(items)
+            else:
+                changed = False
+                for sha, value in items.items():
+                    if self._verdicts.get(sha) is not value:
+                        changed = True
+                    self._verdicts[sha] = value
+            if changed:
+                self._dirty = True
+            writable = not self._readonly
+        if writable and save and (changed or (replace and not self.path.exists())):
+            self._flush(strict=strict)
 
 
 @dataclass
@@ -357,8 +414,9 @@ def run_backfill(
     cancel: threading.Event,
     *,
     batch_size: int = 32,
+    pair_todo: list[dict[str, Any]] | None = None,
 ) -> HalfframeProgress:
-    """在 `lib.lock` 外批量检测旧图库还没落盘的 4288×2848 JPG，分批写回 `.studio/halfframe-v1.json`。"""
+    """在 `lib.lock` 外批量检测旧图库还没落盘的 4288×2848 JPG 与 g250 配对，分批写回 `.studio/halfframe*-v1.json`。"""
     started = time.monotonic()
     unreadable = 0
     log.event(logging.INFO, "halfframe_backfill_started", total=progress.total)
@@ -378,6 +436,10 @@ def run_backfill(
                 batch.clear()
         if batch:
             lib.record_halfframe_batch(batch)
+        if not cancel.is_set() and pair_todo:
+            from . import halfframe_library as hfl
+
+            hfl.backfill_pairs(lib, pair_todo, progress, cancel, batch_size=batch_size)
     except Exception as exc:
         progress.finish("failed")
         log.event(
