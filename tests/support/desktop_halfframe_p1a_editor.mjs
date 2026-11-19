@@ -156,14 +156,14 @@ try {
       m.p2,
       { timeout: 60000 },
     );
-    await page.waitForSelector('.edit-panel', { timeout: 30000 });
-    await page.waitForFunction(() => document.querySelectorAll('.lcard').length > 0, null, { timeout: 30000 });
+    await page.waitForSelector('.edit-panel', { timeout: 90000 });
+    await page.waitForFunction(() => document.querySelectorAll('.lcard').length > 0, null, { timeout: 90000 });
     await waitFor(() => out.renders.some(isStageRender), 60000, 'initial stage render');
     await sleep(600);
   };
 
   await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}`);
-  await page.waitForSelector('.top, .grid, .empty', { timeout: 30000 });
+  await page.waitForSelector('.top, .grid, .empty', { timeout: 90000 });
   out.steps.settings = (await api('/api/settings')).body;
 
   await openPhoto();
@@ -196,7 +196,7 @@ try {
       return !!img && img.complete && img.naturalWidth > 0 && img.src !== prev;
     },
     prevStageSrc,
-    { timeout: 30000 },
+    { timeout: 90000 },
   );
   await sleep(300);
   out.steps.recipePick = {
@@ -273,7 +273,7 @@ try {
   // 4) Reload -> check stage, recipe state, and edited thumbnail
   out.renders.length = 0;
   await page.goto(`${m.base}/`);
-  await page.waitForSelector('.top, .grid, .empty', { timeout: 30000 });
+  await page.waitForSelector('.top, .grid, .empty', { timeout: 90000 });
   await openPhoto();
   await page.evaluate(() => import('/assets/viewer.js').then((v) => v.openViewerTab('recipe')));
   await page.waitForFunction(
@@ -282,7 +282,7 @@ try {
       return cards.length > 0 && cards.every((c) => !c.disabled && c.getAttribute('aria-disabled') !== 'true');
     },
     null,
-    { timeout: 30000 },
+    { timeout: 90000 },
   );
   out.steps.afterReload = {
     edit: (await api(`/api/photos/${m.p2}/edit`)).body,

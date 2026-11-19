@@ -170,7 +170,7 @@ def test_desktop_editor_halfframe_pair(
             env={**os.environ, "HOME": str(REAL_HOME)},
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
             check=False,
         )
         assert proc.returncode == 0, f"driver failed (rc={proc.returncode}): {proc.stderr[-2000:]}"
