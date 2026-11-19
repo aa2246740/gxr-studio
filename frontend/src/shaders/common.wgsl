@@ -44,6 +44,7 @@ fn applyTable(v: vec3f) -> vec3f {
 }
 
 // render/chain.py _chroma_chunk + quantize
+// 注意：pair_color.wgsl 的 recipeChain2 在构建时由此函数生成，仅重命名 rec[ -> rec2[ 与 p.bake -> pp.bake。
 fn recipeChain(codesIn: vec3f, gains: vec3f, useTable: bool) -> vec3f {
   let raw = codesIn * gains;
   let norm = raw / 4095.0;

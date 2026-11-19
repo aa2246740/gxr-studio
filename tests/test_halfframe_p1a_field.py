@@ -656,7 +656,21 @@ def test_pair_editor_gates_paste_and_local_recipe(
         assert isinstance(unit, str) and unit, rinfo
 
         gpu0 = client.get(f"/api/photos/{sid2}/gpu")
-        assert gpu0.status_code == 200 and gpu0.json() == {"enabled": False}, gpu0.text
+        g = gpu0.json()
+        assert gpu0.status_code == 200 and g["enabled"] is True and g["raw"] is None, gpu0.text
+        pair = g["pair"]
+        geo = hfc.proxy_geometry(pair["window"]["width"])
+        assert pair["first_half"] == by_idx[2]["pair"]["first_half"] and pair["orientation"] == by_idx[2]["orientation"]
+        assert pair["window"] == {
+            "width": geo.width,
+            "height": pair["window"]["height"],
+            "half_w": geo.half_w,
+            "strip_x0": geo.strip_x0,
+            "seam_x0": geo.seam_x0,
+            "seam_w": geo.seam_w,
+            "right_x0": geo.right_x0,
+        }
+        assert [s["half"] for s in pair["sources"]] == [0, 1] and all(f"raw?half={s['half']}&" in s["raw"]["url"] for s in pair["sources"])
 
         up = client.post(
             "/api/lut/upload",

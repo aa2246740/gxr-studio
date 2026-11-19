@@ -31,6 +31,8 @@ from ..flags import flag_enabled
 from ..gpu.box import final_box
 from ..gpu.source import RawSource, describe
 from ..gpu.tables import bake_bytes, lut_bytes
+from ..halfframe_compose import PairGeometry, half_edit_for, pair_half_shots, pair_orientation_and_half, proxy_geometry
+from ..halfframe_pairs import has_pair_raw
 from ..library.media import FdResponse, MediaRefused, open_media, read_all
 from ..lut.errors import LutError
 from ..raw import open_dng
@@ -55,22 +57,25 @@ TABLE_CACHE = 2
 UNAVAILABLE_FILE = "这张照片的文件不在图库里，或者已被替换成链接。请重新导入这张照片。"
 
 
-def _open(c: Any, shot: dict[str, Any], kind: str) -> int:
+def _open_relpath(c: Any, relpath: str) -> int:
     try:
-        return open_media(c.lib, shot["files"][kind]["relpath"])
+        return open_media(c.lib, relpath)
     except MediaRefused as exc:
         raise ApiError(409, "photo_file_unavailable", UNAVAILABLE_FILE, {"detail": str(exc)}) from exc
     except FileNotFoundError as exc:
         raise ApiError(404, "photo_file_missing", "找不到这张照片的文件。请重新导入。") from exc
 
 
+def _open(c: Any, shot: dict[str, Any], kind: str) -> int:
+    return _open_relpath(c, shot["files"][kind]["relpath"])
+
+
 def _version(sha: str) -> str:
     return sha[:16]
 
 
-def _raw_source(c: Any, shot: dict[str, Any]) -> RawSource:
+def _raw_source_meta(c: Any, meta: dict[str, Any]) -> RawSource:
     """DNG 的布局按 SHA-256 缓存：同一个文件只解析一次 TIFF。"""
-    meta = shot["files"]["dng"]
     sha = str(meta["sha256"])
     with _layouts_lock:
         hit = _layouts.get(sha)
@@ -104,15 +109,123 @@ def _raw_source(c: Any, shot: dict[str, Any]) -> RawSource:
     return src
 
 
+def _raw_source(c: Any, shot: dict[str, Any]) -> RawSource:
+    return _raw_source_meta(c, shot["files"]["dng"])
+
+
+def _pair_window_layout(layout: dict[str, Any], geo: PairGeometry) -> dict[str, Any]:
+    """按 Python 算好的代理几何切出单半条带窗口（传感器坐标，不转正，保留偶数偏移后的 2×2 CFA 相位）。"""
+    y0, x0, ch, _cw = layout["crop"]
+    h2 = ch // 2
+    return {
+        **layout,
+        "crop": [y0, x0 + 2 * geo.strip_x0, 2 * h2, 2 * geo.half_w],
+        "orientation": 1,
+        "layer": [geo.half_w, h2],
+        "full": [2 * geo.half_w, 2 * h2],
+    }
+
+
+def _pair_half_shot(shot: dict[str, Any], half: int) -> dict[str, Any]:
+    if half not in (0, 1) or not has_pair_raw(shot):
+        raise ApiError(422, "bad_half", "请求无效。请刷新页面后重试。")
+    s1, s2 = pair_half_shots(shot)
+    return s1 if half == 0 else s2
+
+
+def _pair_unavailable(unit: str | None, reason: str, render_available: bool) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "unit": unit,
+        "raw": None,
+        "raw_reason": reason,
+        "jpg": None,
+        "scene": None,
+        "render_available": render_available,
+        "pair": None,
+    }
+
+
+def _pair_gpu_info(c: Any, shot_id: str, shot: dict[str, Any]) -> dict[str, Any]:
+    unit = c.render.photo_unit(shot)
+    try:
+        s1, s2 = pair_half_shots(shot)
+        ori, first_half = pair_orientation_and_half(shot)
+    except ValueError as exc:
+        return _pair_unavailable(unit, f"pair_invalid:{exc}", False)
+    u1, u2 = c.render.photo_unit(s1), c.render.photo_unit(s2)
+    render_available = c.render.available(u1 or "jlaunch") and c.render.available(u2 or "jlaunch")
+    c.render.warm_preview_bakes(s1)
+    c.render.warm_preview_bakes(s2)
+    src1 = _raw_source_meta(c, s1["files"]["dng"])
+    src2 = _raw_source_meta(c, s2["files"]["dng"])
+    if src1.layout is None or src2.layout is None:
+        reason = src1.reason if src1.layout is None else src2.reason
+        return _pair_unavailable(unit, reason or "pair_raw_unavailable", render_available)
+    ch1, cw1 = int(src1.layout["crop"][2]), int(src1.layout["crop"][3])
+    ch2, cw2 = int(src2.layout["crop"][2]), int(src2.layout["crop"][3])
+    h2, w2 = ch1 // 2, cw1 // 2
+    if (h2, w2) != (ch2 // 2, cw2 // 2):
+        return _pair_unavailable(unit, "pair_size_mismatch", render_available)
+    try:
+        geo = proxy_geometry(w2)
+    except ValueError:
+        return _pair_unavailable(unit, "pair_geometry_invalid", render_available)
+    swap = ori >= 5
+    layer = [h2, w2] if swap else [w2, h2]
+    full = [2 * h2, 2 * w2] if swap else [2 * w2, 2 * h2]
+    sources = []
+    for idx, half_shot, src, layout, half_unit in ((0, s1, src1, src1.layout, u1), (1, s2, src2, src2.layout, u2)):
+        dng_meta = half_shot["files"]["dng"]
+        win = _pair_window_layout(layout, geo)
+        sources.append(
+            {
+                "half": idx,
+                "unit": half_unit,
+                "raw": {**win, "url": f"/api/photos/{shot_id}/raw?half={idx}&v={_version(str(dng_meta['sha256']))}"},
+                "raw_reason": src.reason,
+                "scene": src.scene,
+            }
+        )
+    files = shot["files"]
+    jpg = {"url": f"/api/photos/{shot_id}/camera-jpg?v={_version(str(files['jpg'].get('sha256') or ''))}"} if "jpg" in files else None
+    return {
+        "enabled": True,
+        "unit": unit,
+        "raw": None,
+        "raw_reason": None,
+        "jpg": jpg,
+        "scene": None,
+        "render_available": render_available,
+        "pair": {
+            "first_half": first_half,
+            "orientation": ori,
+            "layer": layer,
+            "full": full,
+            "window": {
+                "width": geo.width,
+                "height": h2,
+                "half_w": geo.half_w,
+                "strip_x0": geo.strip_x0,
+                "seam_x0": geo.seam_x0,
+                "seam_w": geo.seam_w,
+                "right_x0": geo.right_x0,
+            },
+            "sources": sources,
+        },
+    }
+
+
 @router.get("/api/photos/{shot_id}/gpu", response_model=None)
 def gpu_info(shot_id: str, request: Request) -> dict[str, Any]:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
     files = shot["files"]
-    from ..halfframe_pairs import has_pair_raw
 
-    if not flag_enabled(c.settings, "gpu_preview") or has_pair_raw(shot):
-        return {"enabled": False}  # 开关关着，或半格一对（显卡还不会合成两张 RAW，P1b）：走服务器
+    if not flag_enabled(c.settings, "gpu_preview"):
+        return {"enabled": False}
+    if has_pair_raw(shot):
+        return _pair_gpu_info(c, shot_id, shot)
     out: dict[str, Any] = {
         "enabled": True,
         "unit": c.render.photo_unit(shot),
@@ -135,12 +248,16 @@ def gpu_info(shot_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.get("/api/photos/{shot_id}/raw", response_model=None)
-def gpu_raw(shot_id: str, request: Request) -> Any:
+def gpu_raw(shot_id: str, request: Request, half: int | None = None) -> Any:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    if "dng" not in shot["files"]:
-        raise ApiError(404, "no_raw", "这张照片没有 RAW 文件。")
-    fd = _open(c, shot, "dng")
+    if half is not None:
+        target = _pair_half_shot(shot, half)
+        fd = _open_relpath(c, target["files"]["dng"]["relpath"])
+    else:
+        if "dng" not in shot["files"]:
+            raise ApiError(404, "no_raw", "这张照片没有 RAW 文件。")
+        fd = _open(c, shot, "dng")
     return FdResponse(
         fd, media_type="application/octet-stream", headers={"Cache-Control": LONG_CACHE}, range_header=request.headers.get("range")
     )
@@ -157,11 +274,15 @@ def gpu_camera_jpg(shot_id: str, request: Request) -> Any:
 
 
 @router.get("/api/photos/{shot_id}/bake", response_model=None)
-def gpu_bake(shot_id: str, request: Request, recipe: str | None = None) -> Response:
+def gpu_bake(shot_id: str, request: Request, recipe: str | None = None, half: int | None = None) -> Response:
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
-    if "dng" not in shot["files"]:
-        raise ApiError(409, "no_raw", "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。")
+    if half is not None:
+        target = _pair_half_shot(shot, half)
+    else:
+        if "dng" not in shot["files"]:
+            raise ApiError(409, "no_raw", "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。")
+        target = shot
     try:
         sel = parse_recipe(json.loads(recipe)) if recipe else None
     except (ValueError, TypeError) as exc:
@@ -169,7 +290,8 @@ def gpu_bake(shot_id: str, request: Request, recipe: str | None = None) -> Respo
     except EditError as exc:
         raise _edit_error(exc) from exc
     try:
-        plan = c.render.plan(shot, EditState(recipe=sel))
+        edit_state = half_edit_for(c.render, target, EditState(recipe=sel)) if half is not None else EditState(recipe=sel)
+        plan = c.render.plan(target, edit_state)
         bake = c.render.preview_bake(plan)
     except RenderUnavailable as exc:
         raise _unavailable(c, exc) from exc
@@ -292,6 +414,12 @@ def _pixel_budget(c: Any, shot: dict[str, Any]) -> int:
         layout = _raw_source(c, shot).layout
         if layout is not None:
             budget = max(budget, layout["full"][0] * layout["full"][1])
+    elif has_pair_raw(shot):
+        s1, s2 = pair_half_shots(shot)
+        for half_shot in (s1, s2):
+            layout = _raw_source_meta(c, half_shot["files"]["dng"]).layout
+            if layout is not None:
+                budget = max(budget, layout["full"][0] * layout["full"][1])
     return budget
 
 
