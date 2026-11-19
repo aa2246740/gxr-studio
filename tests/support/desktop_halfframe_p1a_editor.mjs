@@ -90,12 +90,23 @@ try {
       try { body = await res.json(); } catch { /* ignore */ }
       out.gpuResponses.push({ status: res.status(), body });
     }
-    if (req.method() === 'POST' && p === `/api/photos/${m.p2}/export`) {
-      let body = null;
-      try { body = await res.json(); } catch { /* ignore */ }
-      out.exports.push({ status: res.status(), body });
-    }
   });
+  await page.route(
+    (u) => u.pathname === `/api/photos/${m.p2}/export`,
+    async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      try {
+        const res = await route.fetch({ timeout: 90000 });
+        let body = null;
+        try { body = await res.json(); } catch { /* ignore */ }
+        out.exports.push({ status: res.status(), body });
+        await route.fulfill({ response: res });
+      } catch (err) {
+        out.exports.push({ status: 0, body: null, error: line(err) });
+        await route.abort().catch(() => {});
+      }
+    },
+  );
 
   const api = (path, opts) =>
     page.evaluate(

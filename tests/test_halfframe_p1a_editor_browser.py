@@ -259,6 +259,7 @@ def test_desktop_editor_halfframe_pair(
         assert ex_step["clicked"] is True and len(ex_step["results"]) >= 1, ex_step
         ex_res = ex_step["results"][0]
         assert ex_res["status"] == 200, ex_res
+        assert isinstance(ex_res["body"], dict) and ex_res["body"].get("path"), ex_res
         exported_path = Path(ex_res["body"]["path"])
         assert exported_path.is_file(), ex_res
         _assert_composite_changed(untouched_composite, _load_rgb(exported_path), "default UI export")
