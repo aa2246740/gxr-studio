@@ -3479,6 +3479,22 @@
               ],
               "title": "Recipe"
             }
+          },
+          {
+            "in": "query",
+            "name": "half",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Half"
+            }
           }
         ],
         "responses": {
@@ -4165,6 +4181,22 @@
             "schema": {
               "title": "Shot Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "half",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Half"
             }
           }
         ],
