@@ -489,6 +489,8 @@ def test_non_pair_second_exports_byte_identical_to_base_1e8e9ac(
     pairs249 = _sorted_pairs(_field_folder("card249"))
     selected = [
         ("card250_1", pairs250[0]),
+        ("card250_3", pairs250[2]),
+        ("card250_5", pairs250[4]),
         ("card250_7", pairs250[6]),
         ("card250_11_xpan", pairs250[10]),
         ("card249_5_ordinary", pairs249[4]),
@@ -501,24 +503,30 @@ def test_non_pair_second_exports_byte_identical_to_base_1e8e9ac(
     assert len(by_sha) == len(selected)
     lib.close()
 
+    icc_bytes = expmod.srgb_icc()
     icc_path = tmp_path / "srgb.icc"
-    icc_path.write_bytes(expmod.srgb_icc())
+    icc_path.write_bytes(icc_bytes)
     head_exports: dict[str, bytes] = {}
     shot_ids: dict[str, str] = {}
 
-    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
-        for label, (_dng, jpg_path) in selected:
-            sha = hashlib.sha256(jpg_path.read_bytes()).hexdigest()
-            sid = by_sha[sha]["shot_id"]
-            shot_ids[label] = sid
-            exp_dir = tmp_path / f"head_{label}"
-            exp_dir.mkdir()
-            resp = client.post(
-                f"/api/photos/{sid}/export",
-                json={"size": "original", "quality_tier": "high", "dest_dir": str(exp_dir)},
-            )
-            assert resp.status_code == 200, f"{label}: {resp.text}"
-            head_exports[label] = Path(resp.json()["path"]).read_bytes()
+    orig_icc = expmod._ICC
+    expmod._ICC = icc_bytes
+    try:
+        with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
+            for label, (_dng, jpg_path) in selected:
+                sha = hashlib.sha256(jpg_path.read_bytes()).hexdigest()
+                sid = by_sha[sha]["shot_id"]
+                shot_ids[label] = sid
+                exp_dir = tmp_path / f"head_{label}"
+                exp_dir.mkdir()
+                resp = client.post(
+                    f"/api/photos/{sid}/export",
+                    json={"size": "original", "quality_tier": "high", "dest_dir": str(exp_dir)},
+                )
+                assert resp.status_code == 200, f"{label}: {resp.text}"
+                head_exports[label] = Path(resp.json()["path"]).read_bytes()
+    finally:
+        expmod._ICC = orig_icc
 
     has_base = subprocess.run(["git", "cat-file", "-e", f"{BASE_COMMIT}^{{commit}}"], cwd=REPO, check=False, capture_output=True)
     assert has_base.returncode == 0, f"git commit {BASE_COMMIT} must be reachable"
@@ -609,3 +617,105 @@ print(json.dumps(paths))
     for label, _ in selected:
         base_bytes = Path(base_paths[label]).read_bytes()
         assert head_exports[label] == base_bytes, f"{label} exported bytes diverged from {BASE_COMMIT}"
+
+
+# --------------------------------------------------------------------------- r1 修复：编辑门禁、粘贴配方+Log LUT、本机配方
+
+
+def test_pair_editor_gates_paste_and_local_recipe(
+    settings: Any,
+    lib: Library,
+    volumes: Path,
+) -> None:
+    from gxr_studio.render import edits as render_edits
+    from gxr_studio.render.params import RecipeSel
+
+    _clear_desktop_cache()
+    pairs = _sorted_pairs(_field_folder("card250"))
+    staged = [pairs[0], pairs[1], pairs[6]]  # pair (1,2) + 普通 RAW+JPG 第 7 张（作粘贴源）
+    _stage_volume_pairs(volumes, staged)
+    _setup_g250_calibrated_home(settings)
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+    by_idx = _index_shots_by_jpg_sha(lib, staged)
+    sid2 = by_idx[2]["shot_id"]
+    sid_src = by_idx[3]["shot_id"]
+    assert by_idx[2].get("pair", {}).get("role") == "second"
+    lib.close()
+
+    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
+        # 1) API 门禁：capabilities / edit.render / gpu / PUT Log LUT
+        caps = client.get(f"/api/photos/{sid2}/capabilities")
+        assert caps.status_code == 200, caps.text
+        assert caps.json() == {"raw": True, "recipe": "full", "reason": ""}, caps.text
+
+        ed0 = client.get(f"/api/photos/{sid2}/edit")
+        assert ed0.status_code == 200, ed0.text
+        rinfo = ed0.json()["render"]
+        assert rinfo["available"] is True and rinfo.get("prediction") is True and rinfo.get("reason") is None, rinfo
+        unit = rinfo["unit"]
+        assert isinstance(unit, str) and unit, rinfo
+
+        gpu0 = client.get(f"/api/photos/{sid2}/gpu")
+        assert gpu0.status_code == 200 and gpu0.json() == {"enabled": False}, gpu0.text
+
+        up = client.post(
+            "/api/lut/upload",
+            content=cube_bytes(lambda x: np.clip(x * np.array([1.15, 0.85, 0.72]) + 0.04, 0.0, 1.0), size=9),
+            headers={"X-GXR-Filename": "pair-log.cube"},
+        )
+        assert up.status_code == 200, up.text
+        log_lut = up.json()["cube_id"]
+        assert client.patch(f"/api/luts/{log_lut}", json={"input_space": "llog"}).status_code == 200
+
+        put_lut = client.put(f"/api/photos/{sid2}/edit", json={"lut": log_lut})
+        assert put_lut.status_code == 200, put_lut.text
+        assert client.put(f"/api/photos/{sid2}/edit", json={"lut": None}).status_code == 200
+
+        # 2) 未改合成基准图
+        r_base = client.get(f"/api/photos/{sid2}/render?stage=final")
+        assert r_base.status_code == 200, r_base.text
+        with Image.open(io.BytesIO(r_base.content)) as im:
+            ha0, core0, hb0 = _seam_core(np.asarray(im.convert("RGB")))
+        assert int(core0.max()) <= 3
+
+        # 3) 从普通 RAW+JPG 源粘贴 配方 + Log LUT 到半格一对，两半均应用且画面改变
+        cat = client.get("/api/recipes").json()
+        unit_cat = next(u for u in cat["units"] if u["id"] == unit)
+        target_slot = next(r["slot"] for r in unit_cat["recipes"] if r["slot"] != rinfo.get("slot"))
+        src_recipe = {"kind": "builtin", "unit": unit, "slot": target_slot, "levels": {}}
+        assert client.put(f"/api/photos/{sid_src}/edit", json={"recipe": src_recipe, "lut": log_lut}).status_code == 200
+
+        pasted = client.post(
+            "/api/edits/paste",
+            json={"groups": ["recipe"], "source_id": sid_src, "targets": [{"id": sid2}]},
+        )
+        assert pasted.status_code == 200, pasted.text
+        p_body = pasted.json()
+        assert p_body["counts"]["applied"] == 1 and p_body["results"][0]["skipped"] == [], p_body
+
+        r_after = client.get(f"/api/photos/{sid2}/render?stage=final")
+        assert r_after.status_code == 200, r_after.text
+        with Image.open(io.BytesIO(r_after.content)) as im:
+            ha1, core1, hb1 = _seam_core(np.asarray(im.convert("RGB")))
+        assert int(core1.max()) <= 3
+        assert float(np.abs(ha1.astype(np.float32) - ha0.astype(np.float32)).mean()) > 2.0
+        assert float(np.abs(hb1.astype(np.float32) - hb0.astype(np.float32)).mean()) > 2.0
+
+        # 4) 完整本机配方校验接受半格一对（不因缺独立 DNG 报 local_recipe_needs_pair）
+        local_sel = {"kind": "local", "unit": unit, "slot": 1, "id": "a" * 64, "levels": {}}
+        r_local = client.put(f"/api/photos/{sid2}/edit", json={"recipe": local_sel})
+        assert r_local.json().get("error") != "local_recipe_needs_pair", r_local.text
+
+        class _StubRecipes:
+            def resolve(self, sel: Any, *, photo_unit: str | None, iso: int) -> object:
+                return object()
+
+        ctx = client.app.state.ctx
+        shot2 = ctx.lib.get_shot(sid2)
+        assert shot2 is not None
+        render_edits.validate_recipe(
+            RecipeSel(kind="local", unit=unit, slot=1, id="a" * 64),
+            shot2,
+            ctx.render.menu,
+            _StubRecipes(),  # type: ignore[arg-type]
+        )

@@ -131,14 +131,6 @@ def decode_draft_luma(jpg_path: str | os.PathLike[str]) -> tuple[bool, np.ndarra
     return True, luma
 
 
-def seam_kind_of(jpg_path: str | os.PathLike[str]) -> str | None:
-    """识别一份 4288×2848 JPEG 的双联黑缝类型：g250 / legacy48 / None。"""
-    ok, luma = decode_draft_luma(jpg_path)
-    if not ok or luma is None:
-        return None
-    return seam_kind_luma(luma)
-
-
 def detect_diptych(jpg_path: str | os.PathLike[str]) -> bool | None:
     """无全局缓存地检查一份 JPEG 是否为半格双联；文件不可读返回 None，其它情况返回 bool。"""
     ok, luma = decode_draft_luma(jpg_path)

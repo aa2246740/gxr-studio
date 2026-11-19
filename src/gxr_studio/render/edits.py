@@ -75,7 +75,10 @@ def validate_recipe(sel: RecipeSel, shot: dict[Any, Any], menu: Menu, recipes: R
     if sel.kind != "local":
         menu.request_for(sel)
         return
-    if not {"dng", "jpg"} <= set(shot.get("files", {})):
+    from ..halfframe_pairs import has_pair_raw
+
+    files = set(shot.get("files", {}))
+    if not ({"dng", "jpg"} <= files or ("jpg" in files and has_pair_raw(shot))):
         raise EditError("local_recipe_needs_pair", "完整本机配方需要RAW+JPG照片。")
     if recipes is None:
         raise EditError("local_recipe_unavailable", "完整配方仓库不可用。")

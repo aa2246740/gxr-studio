@@ -257,7 +257,7 @@ def _render_one_dng_strip(
         dng.release()
 
 
-def _labels_from_renderers(r1: Renderer, r2: Renderer, *, neutral: bool) -> dict[str, str]:
+def _labels_from_renderer(r: Renderer, *, neutral: bool) -> dict[str, str]:
     if neutral:
         note = NEUTRAL.description or f"GXR Studio {NEUTRAL.id}: white-balanced linear sensor data to sRGB, no recipe applied"
         return {
@@ -272,6 +272,26 @@ def _labels_from_renderers(r1: Renderer, r2: Renderer, *, neutral: bool) -> dict
             "cache": "miss",
             "calibrated": "0",
         }
+    ident = "recipe-prediction" if r.calibrated else "recipe-prediction-uncalibrated"
+    note = r.description or r.label
+    return {
+        "kind": "prediction",
+        "label": "prediction",
+        "text": r.label,
+        "id": ident,
+        "tag": r.filename_tag,
+        "description": note,
+        "detail": "",
+        "key": "",
+        "cache": "miss",
+        "calibrated": "1" if r.calibrated else "0",
+        **(r.recipe_binding or {}),
+    }
+
+
+def _labels_from_renderers(r1: Renderer, r2: Renderer, *, neutral: bool) -> dict[str, str]:
+    if neutral:
+        return _labels_from_renderer(NEUTRAL, neutral=True)
     calibrated = bool(r1.calibrated and r2.calibrated)
     ident = "recipe-prediction" if calibrated else "recipe-prediction-uncalibrated"
     label = r2.label if calibrated else (r1.label if not r1.calibrated else r2.label)
@@ -300,8 +320,8 @@ def render_pair_strips(
     full: bool,
     neutral: bool = False,
     precise: bool = False,
-) -> tuple[np.ndarray, np.ndarray, int, str, int, dict[str, str]]:
-    """渲染半格一对的两张半格条带（传感器坐标系），同时返回接缝宽度、方向和标注。"""
+) -> tuple[np.ndarray, np.ndarray, int, str, int, dict[str, str], dict[str, str], dict[str, str]]:
+    """渲染半格一对的两张半格条带（传感器坐标系），同时返回接缝宽度、方向和双联/各半标注。"""
     ori, first_half = pair_orientation_and_half(shot)
     s1, s2 = pair_half_shots(shot)
     if neutral:
@@ -316,7 +336,9 @@ def render_pair_strips(
     if strip1.shape != strip2.shape or geo1.seam_w != geo2.seam_w:
         raise RawDecodeError("半格一对的两张 RAW 尺寸不一致")
     labels = _labels_from_renderers(r1, r2, neutral=neutral)
-    return strip1, strip2, geo1.seam_w, first_half, ori, labels
+    first_labels = _labels_from_renderer(r1, neutral=neutral)
+    second_labels = _labels_from_renderer(r2, neutral=neutral)
+    return strip1, strip2, geo1.seam_w, first_half, ori, labels, first_labels, second_labels
 
 
 def render_pair_rgb(
@@ -330,7 +352,9 @@ def render_pair_rgb(
     precise: bool = False,
 ) -> tuple[np.ndarray, dict[str, str]]:
     """合成半格一对双联 RGB（已按共享方向转正）。"""
-    strip1, strip2, seam_w, first_half, ori, labels = render_pair_strips(render, lib, shot, edit, full=full, neutral=neutral, precise=precise)
+    strip1, strip2, seam_w, first_half, ori, labels, _l1, _l2 = render_pair_strips(
+        render, lib, shot, edit, full=full, neutral=neutral, precise=precise
+    )
     rgb = compose_strips(strip1, strip2, first_half=first_half, seam_w=seam_w, orientation=ori)
     return rgb, labels
 
@@ -586,115 +610,3 @@ def pair_lut_base(
         raise LutError(422, exc.code, exc.message) from exc
     rgb = compose_strips(rgb_halves[0], rgb_halves[1], first_half=first_half, seam_w=seam_w, orientation=ori)
     return rgb.astype(float), xyz, mode
-
-
-def _camera_jpg_parts(lib: Any, shot: dict[Any, Any], detail: str = "") -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, dict[str, str]]:
-    from .finish.compose import load_jpeg
-
-    ori, first_half = pair_orientation_and_half(shot)
-    s1, s2 = pair_half_shots(shot)
-    single1, single2 = camera_jpg_singles(
-        lib.abspath(s1["files"]["jpg"]["relpath"]),
-        lib.abspath(s2["files"]["jpg"]["relpath"]),
-        first_half=first_half,
-        orientation=ori,
-    )
-    diptych = load_jpeg(lib.abspath(shot["files"]["jpg"]["relpath"]), None)
-    labels = {
-        "kind": "original",
-        "label": "original",
-        "text": "原图",
-        "id": "camera-jpg",
-        "tag": "",
-        "description": "原图",
-        "detail": detail,
-        "calibrated": "0",
-        "cache": "miss",
-        "key": "",
-    }
-    return diptych, single1, single2, False, labels
-
-
-def render_pair_export_parts(
-    render: Any,
-    lib: Any,
-    shot: dict[Any, Any],
-    edit: EditState,
-    *,
-    base: str = "auto",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, dict[str, str]]:
-    """一次去马赛克同时产出双联与两张单格底图（均已转正）：(diptych, single1, single2, from_raw, labels)。"""
-    from .lut.errors import LutError
-    from .lut.photo import _apply as lut_apply
-    from .lut.scene import SceneError
-    from .lut.spaces import DISPLAY
-    from .render.params import Adjust
-    from .render.service import RenderUnavailable
-
-    if edit.lut is not None:
-        try:
-            target, item = render.luts.target(edit.lut)
-            if target.input_space in DISPLAY:
-                stripped = replace(edit, lut=None, adjust=Adjust(), curve=None)
-                try:
-                    dip, s1_rgb, s2_rgb, _fr, _lbl = render_pair_export_parts(render, lib, shot, stripped, base=base)
-                except RenderUnavailable:
-                    if edit.recipe is not None:
-                        raise
-                    dip, s1_rgb, s2_rgb, _fr, _lbl = render_pair_export_parts(render, lib, shot, EditState(), base="neutral")
-                dip = lut_apply(target, dip)
-                s1_rgb = lut_apply(target, s1_rgb)
-                s2_rgb = lut_apply(target, s2_rgb)
-            else:
-                strip1, strip2, seam_w, first_half, ori = render_pair_lut_scene_strips(lib, shot, target, lut_apply, full=True)
-                dip = compose_strips(strip1, strip2, first_half=first_half, seam_w=seam_w, orientation=ori)
-                s1_rgb = orient_half(strip1, ori)
-                s2_rgb = orient_half(strip2, ori)
-        except LutError as exc:
-            raise EditError(exc.code, exc.message) from exc
-        except SceneError as exc:
-            raise EditError(exc.code, "无法换算输入色彩空间。请检查 RAW 文件。") from exc
-        return (
-            dip,
-            s1_rgb,
-            s2_rgb,
-            False,
-            {
-                "kind": "prediction",
-                "label": "prediction",
-                "text": "电脑预测",
-                "id": "lut-prediction",
-                "tag": "",
-                "description": f"GXR Studio computer prediction: LUT {edit.lut}, {item['input_space']} to {item['output_space']}",
-                "detail": "",
-                "key": "",
-                "cache": "miss",
-                "calibrated": "0",
-            },
-        )
-    if base == "camera-jpg":
-        return _camera_jpg_parts(lib, shot)
-    if base == "neutral":
-        strip1, strip2, seam_w, first_half, ori, labels = render_pair_strips(render, lib, shot, EditState(), full=True, neutral=True)
-        return (
-            compose_strips(strip1, strip2, first_half=first_half, seam_w=seam_w, orientation=ori),
-            orient_half(strip1, ori),
-            orient_half(strip2, ori),
-            False,
-            labels,
-        )
-    try:
-        strip1, strip2, seam_w, first_half, ori, labels = render_pair_strips(render, lib, shot, edit, full=True, neutral=False)
-    except (RenderUnavailable, RawDecodeError) as exc:
-        if edit.recipe is not None and edit.recipe.kind == "local":
-            raise
-        if "jpg" not in shot.get("files", {}):
-            raise
-        return _camera_jpg_parts(lib, shot, detail=f"没有全尺寸传感器数据。已改用相机 JPG。{exc}")
-    return (
-        compose_strips(strip1, strip2, first_half=first_half, seam_w=seam_w, orientation=ori),
-        orient_half(strip1, ori),
-        orient_half(strip2, ori),
-        True,
-        labels,
-    )

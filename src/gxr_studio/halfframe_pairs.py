@@ -60,6 +60,24 @@ def extract_number(name: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def neighbor_names(name: str | None, delta: int) -> list[str]:
+    """按照片自身的前缀和补零宽度生成 ±1 邻居的文件名干（最多两个，去重保序）。"""
+    if not name:
+        return []
+    stem = Path(name).stem
+    m = _TRAILING_DIGITS.search(stem)
+    if not m:
+        return []
+    digits = m.group(1)
+    target = int(digits) + delta
+    if target < 0:
+        return []
+    prefix = stem[: m.start(1)]
+    padded = f"{prefix}{target:0{len(digits)}d}"
+    plain = f"{prefix}{target}"
+    return [padded] if padded == plain else [padded, plain]
+
+
 def g250_first_half_for_orientation(orientation: int) -> str:
     """g250 方向规则：EXIF 1/6 → 第 1 张在传感器左半，3/8 → 在传感器右半。"""
     if orientation in (1, 6):
@@ -283,15 +301,23 @@ class PairStore(hf.CoalescedStore):
     def _serialize_locked(self) -> tuple[dict[str, Any], Any]:
         fl_snap = dict(self._first_like)
         p_snap = {k: dict(v) for k, v in self._pairs.items()}
-        return {"version": PAIRS_VERSION, "first_like": fl_snap, "pairs": p_snap}, (fl_snap, p_snap)
+        rej_snap = frozenset(self._rejected)
+        rej_map: dict[str, list[str]] = {}
+        for first_sha, sec_sha in sorted(rej_snap):
+            rej_map.setdefault(sec_sha, []).append(first_sha)
+        payload: dict[str, Any] = {"version": PAIRS_VERSION, "first_like": fl_snap, "pairs": p_snap}
+        if rej_map:
+            payload["rejected"] = rej_map
+        return payload, (fl_snap, p_snap, rej_snap)
 
     def _unchanged_locked(self, snapshot: Any) -> bool:
-        fl_snap, p_snap = snapshot
-        return bool(self._first_like == fl_snap and self._pairs == p_snap)
+        fl_snap, p_snap, rej_snap = snapshot
+        return bool(self._first_like == fl_snap and self._pairs == p_snap and self._rejected == rej_snap)
 
     def load(self) -> None:
         loaded_fl: dict[str, bool] = {}
         loaded_pairs: dict[str, dict[str, Any]] = {}
+        loaded_rejected: set[tuple[str, str]] = set()
         future_version: int | None = None
         try:
             raw = self.path.read_text(encoding="utf-8")
@@ -315,11 +341,18 @@ class PairStore(hf.CoalescedStore):
                             norm = _normalize_pair_entry(k, v)
                             if norm is not None:
                                 loaded_pairs[k] = norm
+                raw_rejected = data.get("rejected")
+                if isinstance(raw_rejected, dict):
+                    for sec_sha, firsts in raw_rejected.items():
+                        if isinstance(sec_sha, str) and sec_sha and isinstance(firsts, list):
+                            for first_sha in firsts:
+                                if isinstance(first_sha, str) and first_sha:
+                                    loaded_rejected.add((first_sha, sec_sha))
         with self._lock:
             self._first_like = loaded_fl
             self._pairs = loaded_pairs
             self._rebuild_reverse_locked()
-            self._rejected.clear()
+            self._rejected = loaded_rejected
             timer, already_future = self._finish_load_locked(future_version)
         if timer is not None:
             timer.cancel()
@@ -367,9 +400,32 @@ class PairStore(hf.CoalescedStore):
         with self._lock:
             return (first_sha, second_sha) in self._rejected
 
-    def mark_rejected(self, first_sha: str, second_sha: str) -> None:
+    def mark_rejected(
+        self,
+        first_sha: str,
+        second_sha: str,
+        *,
+        save: bool = False,
+        coalesce: bool = False,
+        strict: bool = False,
+    ) -> None:
+        if not first_sha or not second_sha:
+            return
+        pair = (first_sha, second_sha)
         with self._lock:
-            self._rejected.add((first_sha, second_sha))
+            changed = pair not in self._rejected
+            if changed:
+                self._rejected.add(pair)
+                self._dirty = True
+            writable = not self._readonly
+            dirty = self._dirty
+        if not writable:
+            return
+        if coalesce:
+            if dirty:
+                self._flush_coalesced(strict=strict)
+        elif save and changed:
+            self._flush(strict=strict)
 
     def put_first_like(self, sha: str, value: bool, *, save: bool = True, coalesce: bool = False, strict: bool = False) -> None:
         with self._lock:
@@ -393,10 +449,11 @@ class PairStore(hf.CoalescedStore):
         if norm is None:
             return
         with self._lock:
-            changed = self._pairs.get(sec_sha) != norm
+            key = (norm["first_sha"], sec_sha)
+            changed = self._pairs.get(sec_sha) != norm or key in self._rejected
             self._pairs[sec_sha] = norm
             self._rebuild_reverse_locked()
-            self._rejected.discard((norm["first_sha"], sec_sha))
+            self._rejected.discard(key)
             if changed:
                 self._dirty = True
             writable = not self._readonly
@@ -414,6 +471,7 @@ class PairStore(hf.CoalescedStore):
         first_like: dict[str, bool],
         pairs: dict[str, dict[str, Any]],
         *,
+        rejected: set[tuple[str, str]] | None = None,
         replace: bool = False,
         save: bool = True,
         strict: bool = False,
@@ -423,11 +481,17 @@ class PairStore(hf.CoalescedStore):
             norm = _normalize_pair_entry(k, v)
             if norm is not None:
                 norm_pairs[k] = norm
+        clean_rejected = {
+            (str(f), str(s))
+            for f, s in (rejected or ())
+            if isinstance(f, str) and f and isinstance(s, str) and s and (s not in norm_pairs or norm_pairs[s]["first_sha"] != f)
+        }
         with self._lock:
             if replace:
-                changed = self._first_like != first_like or self._pairs != norm_pairs
+                changed = self._first_like != first_like or self._pairs != norm_pairs or self._rejected != clean_rejected
                 self._first_like = dict(first_like)
                 self._pairs = norm_pairs
+                self._rejected = set(clean_rejected)
             else:
                 changed = False
                 for sha, flag in first_like.items():
@@ -435,10 +499,15 @@ class PairStore(hf.CoalescedStore):
                         changed = True
                     self._first_like[sha] = flag
                 for sec_sha, rec in norm_pairs.items():
-                    if self._pairs.get(sec_sha) != rec:
+                    key = (rec["first_sha"], sec_sha)
+                    if self._pairs.get(sec_sha) != rec or key in self._rejected:
                         changed = True
                     self._pairs[sec_sha] = rec
-                    self._rejected.discard((rec["first_sha"], sec_sha))
+                    self._rejected.discard(key)
+                for key in clean_rejected:
+                    if key not in self._rejected:
+                        changed = True
+                        self._rejected.add(key)
             self._rebuild_reverse_locked()
             if changed:
                 self._dirty = True

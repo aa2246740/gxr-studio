@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import struct
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +28,17 @@ from conftest import PORT
 from gxr_studio import app as appmod
 from gxr_studio import halfframe as hf
 from gxr_studio import halfframe_compose as hfc
+from gxr_studio import halfframe_export as hfe
+from gxr_studio import halfframe_library as hfl
 from gxr_studio import halfframe_pairs as hfp
 from gxr_studio.app import create_app
 from gxr_studio.cards.discovery import find_cards
 from gxr_studio.cards.importer import ImportOptions, run_import
 from gxr_studio.library import location as lib_loc
 from gxr_studio.library.store import Library
+from gxr_studio.raw import Renderer
+from gxr_studio.render.params import EditState, RecipeSel
+from test_lut import cube_bytes
 
 # --------------------------------------------------------------------------- 合成 JPEG / MPO 辅助
 
@@ -277,7 +284,14 @@ def test_decide_pair_decision_table_vectors() -> None:
         assert hfp.decide_pair((0.5, 25.0), (0.999, 0.0), orientation=bad_ori) is None
 
 
+def _seam_kind_file(path: Path) -> str | None:
+    ok, luma = hf.decode_draft_luma(path)
+    assert ok and luma is not None
+    return hf.seam_kind_luma(luma)
+
+
 def test_synthetic_mpo_and_jpeg_detection_normal_flat_and_black_stripe_rejection(tmp_path: Path) -> None:
+    assert not hasattr(hf, "seam_kind_of")
     s1 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=1)
     s2 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=4)
     s_other = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=9)
@@ -286,7 +300,7 @@ def test_synthetic_mpo_and_jpeg_detection_normal_flat_and_black_stripe_rejection
     first_left = _make_g250_first_mpo(tmp_path / "f1.jpg", s1, exif_orientation=1)
     dip_left = _make_g250_diptych_jpg(tmp_path / "d1.jpg", s1, s2, exif_orientation=1)
     assert hfp.detect_first_like(first_left) is True
-    assert hf.seam_kind_of(dip_left) == hf.SEAM_G250
+    assert _seam_kind_file(dip_left) == hf.SEAM_G250
     res_l = hfp.evaluate_candidate(first_left, dip_left, orientation_a=1, orientation_b=1, a_first_like=True)
     assert res_l is not None and res_l.first_half == "left" and res_l.flat is False
 
@@ -308,12 +322,12 @@ def test_synthetic_mpo_and_jpeg_detection_normal_flat_and_black_stripe_rejection
 
     # 3) 真场景中恰好中央有黑条（过黑缝形状检查），但像素指纹不匹配第 1 张 → 拒绝
     black_stripe_scene = _make_g250_diptych_jpg(tmp_path / "scene_black_stripe.jpg", s_other, s2, exif_orientation=1)
-    assert hf.seam_kind_of(black_stripe_scene) == hf.SEAM_G250
+    assert _seam_kind_file(black_stripe_scene) == hf.SEAM_G250
     assert hfp.evaluate_candidate(first_left, black_stripe_scene, orientation_a=1, orientation_b=1, a_first_like=True) is None
 
     # 4) legacy 48px 双联接缝 → 拒绝配对
     legacy_dip = _make_g250_diptych_jpg(tmp_path / "legacy48.jpg", s1, s2, exif_orientation=1, seam_range=(2120, 2167))
-    assert hf.seam_kind_of(legacy_dip) == hf.SEAM_LEGACY48
+    assert _seam_kind_file(legacy_dip) == hf.SEAM_LEGACY48
     assert hfp.evaluate_candidate(first_left, legacy_dip, orientation_a=1, orientation_b=1, a_first_like=True) is None
 
 
@@ -427,3 +441,322 @@ def test_pair_store_readonly_studio_returns_200_and_rebuild_survives(
 
     for rec_log in caplog.records:
         assert str(settings.library_dir) not in rec_log.message
+
+
+# --------------------------------------------------------------------------- 4. Fix round 1 合成回归（P2-1 / P2-2 / P3-2 / P3-3 / P3-6）
+
+
+def test_pair_with_jpeg_only_photo1_exports_camera_jpg_and_rejects_raw_edits_with_409(
+    settings: Any,
+    lib: Library,
+    volumes: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2-1：photo 1 只有 JPG 的配对在 singles/both 切相机 JPG；需 RAW 的编辑返回 409 no_raw，批量导出不标 failed。"""
+    s1 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=11)
+    s2 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=12)
+    dcim = volumes / "CARD" / "DCIM" / "100RICOH"
+    dcim.mkdir(parents=True, exist_ok=True)
+    _make_g250_first_mpo(dcim / "R0002001.JPG", s1, exif_orientation=1)
+    p2 = _make_g250_diptych_jpg(dcim / "R0002002.JPG", s1, s2, exif_orientation=1)
+    sha2 = hashlib.sha256(p2.read_bytes()).hexdigest()
+
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+    by_sha = {s["files"]["jpg"]["sha256"]: s for s in lib.list_shots()}
+    sid2 = by_sha[sha2]["shot_id"]
+    shot2 = lib.get_shot(sid2)
+    assert shot2 is not None and hfp.is_pair_second(shot2) and not hfp.has_pair_raw(shot2)
+    lib.close()
+
+    # 让 render.renderer 在错误尝试走 RAW 时返回哑渲染器（否则 52cd005 在无相机数据时会被 RenderUnavailable 掩盖）
+    dummy_renderer = Renderer("recipe-prediction", "配方", "_gxr", True, lambda codes: np.zeros((*codes.shape[:2], 3), np.uint8))
+
+    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
+        render_svc = client.app.state.ctx.render  # type: ignore[union-attr]
+        monkeypatch.setattr(render_svc, "renderer", lambda *_a, **_kw: dummy_renderer)
+
+        up_disp = client.post(
+            "/api/lut/upload",
+            content=cube_bytes(lambda x: np.clip(x * 0.9 + 0.05, 0, 1), size=9),
+            headers={"X-GXR-Filename": "disp.cube"},
+        )
+        assert up_disp.status_code == 200
+        disp_lut = up_disp.json()["cube_id"]
+        client.patch(f"/api/luts/{disp_lut}", json={"input_space": "srgb"})
+
+        up_log = client.post(
+            "/api/lut/upload",
+            content=cube_bytes(lambda x: np.clip(x * 0.8 + 0.1, 0, 1), size=9),
+            headers={"X-GXR-Filename": "log.cube"},
+        )
+        assert up_log.status_code == 200
+        log_lut = up_log.json()["cube_id"]
+        client.patch(f"/api/luts/{log_lut}", json={"input_space": "llog"})
+
+        # 1) 未编辑：diptych / singles / both 都走相机 JPG 成功导出
+        for mode, expect_files in (("diptych", None), ("singles", 2), ("both", 3)):
+            out_dir = tmp_path / f"exp_{mode}"
+            res = client.post(f"/api/photos/{sid2}/export", json={"halfframe": mode, "dest_dir": str(out_dir)})
+            assert res.status_code == 200, (mode, res.text)
+            body = res.json()
+            if expect_files is None:
+                assert body.get("files") is None
+            else:
+                assert len(body["files"]) == expect_files
+                for entry in body["files"]:
+                    assert Path(entry["path"]).is_file()
+                    if entry["role"] in ("first", "second"):
+                        assert (entry["width"], entry["height"]) == (hfc.FULL_HALF_W, hfc.FULL_HEIGHT)
+
+        # 2) Display LUT 在 singles / both 上照常切相机 JPG 后套用
+        assert client.put(f"/api/photos/{sid2}/edit", json={"lut": disp_lut}).status_code == 200
+        res_disp = client.post(f"/api/photos/{sid2}/export", json={"halfframe": "singles", "dest_dir": str(tmp_path / "exp_disp")})
+        assert res_disp.status_code == 200 and len(res_disp.json()["files"]) == 2
+        assert client.delete(f"/api/photos/{sid2}/edit").status_code == 200
+
+        # 3) 批量导出（singles / both）：永远不标 failed
+        for mode in ("singles", "both"):
+            job = client.post(
+                "/api/export",
+                json={"ids": [sid2], "halfframe": mode, "dest_dir": str(tmp_path / f"batch_{mode}")},
+            ).json()
+            for _ in range(100):
+                st = client.get(f"/api/jobs/{job['id']}").json()
+                if st["progress"]["state"] != "running":
+                    break
+                time.sleep(0.05)
+            assert st["progress"]["state"] == "done"
+            assert all("error" not in item for item in st["progress"]["results"]), st["progress"]["results"]
+
+        # 4) 显式需要 RAW 的编辑（配方或 Log LUT）→ 409 no_raw，绝非 500
+        lib_live = client.app.state.ctx.lib  # type: ignore[union-attr]
+        shot_live = lib_live.get_shot(sid2)
+        assert shot_live is not None
+        sc_path = lib_live.sidecar_path_for(shot_live)
+        base_side = json.loads(sc_path.read_text(encoding="utf-8"))
+
+        sc_path.write_text(json.dumps({**base_side, "recipe": {"unit": "qlaunch", "slot": 2}}), encoding="utf-8")
+        for mode in ("diptych", "singles", "both"):
+            r_rec = client.post(f"/api/photos/{sid2}/export", json={"halfframe": mode, "dest_dir": str(tmp_path / f"rec_{mode}")})
+            assert r_rec.status_code == 409 and r_rec.json()["error"] == "no_raw", (mode, r_rec.status_code, r_rec.text)
+
+        sc_path.write_text(json.dumps({**base_side, "lut": log_lut}), encoding="utf-8")
+        for mode in ("diptych", "singles", "both"):
+            r_log = client.post(f"/api/photos/{sid2}/export", json={"halfframe": mode, "dest_dir": str(tmp_path / f"log_{mode}")})
+            assert r_log.status_code == 409 and r_log.json()["error"] == "no_raw", (mode, r_log.status_code, r_log.text)
+
+        # 批量导出遇到需 RAW 的编辑时也记 no_raw，不记 failed
+        job_nr = client.post("/api/export", json={"ids": [sid2], "halfframe": "singles", "dest_dir": str(tmp_path / "batch_nr")}).json()
+        for _ in range(100):
+            st_nr = client.get(f"/api/jobs/{job_nr['id']}").json()
+            if st_nr["progress"]["state"] != "running":
+                break
+            time.sleep(0.05)
+        assert st_nr["progress"]["results"][0]["error"] == "no_raw"
+
+
+def test_pair_neighbor_names_and_single_shot_read_avoids_full_scan(lib: Library, volumes: Path) -> None:
+    """P2-2：已存配对读单张只走一次 files_sha 索引短路；未配对只查 ±1 邻居名，不扫全表。"""
+    assert hfp.neighbor_names("R0010002", -1) == ["R0010001", "R10001"]
+    assert hfp.neighbor_names("R0010002", 1) == ["R0010003", "R10003"]
+    assert hfp.neighbor_names("R1000", -1) == ["R0999", "R999"]
+    assert hfp.neighbor_names("R999", 1) == ["R1000"]
+    assert hfp.neighbor_names("R0000", -1) == []
+    assert hfp.neighbor_names("plain", -1) == []
+
+    s1 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=21)
+    s2 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=22)
+    s3 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=23)
+    dcim = volumes / "CARD" / "DCIM" / "100RICOH"
+    dcim.mkdir(parents=True, exist_ok=True)
+    _make_g250_first_mpo(dcim / "R0003001.JPG", s1, exif_orientation=1)
+    p2 = _make_g250_diptych_jpg(dcim / "R0003002.JPG", s1, s2, exif_orientation=1)
+    p_unpaired = _make_g250_diptych_jpg(dcim / "R0003010.JPG", s2, s3, exif_orientation=1)
+    sha2 = hashlib.sha256(p2.read_bytes()).hexdigest()
+    sha_u = hashlib.sha256(p_unpaired.read_bytes()).hexdigest()
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+
+    by_sha = {s["files"]["jpg"]["sha256"]: s for s in lib.list_shots()}
+    sid2 = by_sha[sha2]["shot_id"]
+    sid_u = by_sha[sha_u]["shot_id"]
+
+    qlog = lib.trace_queries()
+    got2 = lib.get_shot(sid2)
+    assert got2 is not None and got2["pair"]["role"] == "second"
+    assert not any("s.width = 4288" in q for q in qlog), qlog
+    assert not any("s.name IN" in q for q in qlog), qlog
+    assert sum("f.sha256 IN" in q for q in qlog) == 1, qlog
+
+    qlog.clear()
+    got_u = lib.get_shot(sid_u)
+    assert got_u is not None and got_u["diptych"] is True and "pair" not in got_u
+    assert not any("s.width = 4288" in q for q in qlog), qlog
+    assert any("s.name IN" in q for q in qlog), qlog
+
+
+def test_pair_singles_metadata_matches_each_half_rendered_recipe(
+    settings: Any,
+    lib: Library,
+    volumes: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P3-2：每张单格的导出元数据（render_label / recipe_binding / 文件名后缀 / EXIF 说明）准确对应各自实际渲染的配方。"""
+    s1 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=31)
+    s2 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=32)
+    dcim = volumes / "CARD" / "DCIM" / "100RICOH"
+    dcim.mkdir(parents=True, exist_ok=True)
+    _make_g250_first_mpo(dcim / "R0004001.JPG", s1, exif_orientation=1)
+    p2 = _make_g250_diptych_jpg(dcim / "R0004002.JPG", s1, s2, exif_orientation=1)
+    sha2 = hashlib.sha256(p2.read_bytes()).hexdigest()
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+
+    by_sha = {s["files"]["jpg"]["sha256"]: s for s in lib.list_shots()}
+    shot2 = lib.get_shot(by_sha[sha2]["shot_id"])
+    assert shot2 is not None
+    # 给两半挂上虚拟 DNG 路径以便进入 RAW 单格导出分支，条带渲染用 stub
+    for key in ("first", "second"):
+        src = shot2["pair_sources"][key]
+        src["all_files"]["dng"] = {"kind": "dng", "relpath": src["all_files"]["jpg"]["relpath"], "sha256": key * 16}
+
+    def _mk_renderer(label: str, tag: str, desc: str, sel: str) -> Renderer:
+        return Renderer(
+            "recipe-prediction",
+            label,
+            tag,
+            True,
+            lambda codes: np.zeros((*codes.shape[:2], 3), np.uint8),
+            description=desc,
+            recipe_binding={
+                "record_sha256": "a" * 64,
+                "entry_sha256": "b" * 64,
+                "binding_sha256": "c" * 64,
+                "selection_id": sel,
+                "quality_state": "passed",
+                "assessed_entry": True,
+            },
+        )
+
+    r_first = _mk_renderer("配方一", "_r1", "GXR Studio recipe-first", "builtin:1")
+    r_second = _mk_renderer("配方二", "_r2", "GXR Studio recipe-second", "builtin:2")
+    r_explicit = _mk_renderer("配方五", "_r5", "GXR Studio recipe-explicit-5", "builtin:5")
+
+    class _StubRender:
+        home = settings.home_dir
+
+        def recipe_menu(self) -> Any:
+            return None
+
+        def renderer(self, half_shot: dict[str, Any], edit: EditState, *, precise: bool = False) -> Renderer:
+            if edit.recipe is not None and edit.recipe.slot == 5:
+                return r_explicit
+            return r_first if half_shot["shot_id"] == shot2["pair_sources"]["first"]["shot_id"] else r_second
+
+    geo = hfc.full_geometry()
+    monkeypatch.setattr(hfc, "_render_one_dng_strip", lambda _p, _r, *, full: (np.full((64, 48, 3), 120, np.uint8), geo))
+
+    # 1) 未显式改配方：两张单格分别带上各自拍摄配方元数据
+    out_auto = hfe.export_pair_finish(
+        _StubRender(),
+        lib,
+        shot2,
+        EditState(),
+        {},
+        tmp_path / "p3_2_auto",
+        [],
+        quality=90,
+        long_edge=None,
+        fmt="jpeg",
+        mode="both",
+    )
+    by_role = {role: res for _sid, role, res in out_auto}
+    assert by_role["first"].render_label == "配方一"
+    assert by_role["first"].recipe_binding["selection_id"] == "builtin:1"
+    assert by_role["first"].path.name.endswith("_r1_half.jpg")
+    assert by_role["second"].render_label == "配方二"
+    assert by_role["second"].recipe_binding["selection_id"] == "builtin:2"
+    assert by_role["second"].path.name.endswith("_r2_half.jpg")
+    with Image.open(by_role["first"].path) as im1, Image.open(by_role["second"].path) as im2:
+        assert "recipe-first" in str(im1.getexif().get(270, ""))
+        assert "recipe-second" in str(im2.getexif().get(270, ""))
+
+    # 2) 显式改配方（slot 5）：两张单格都带上第 2 张选中的配方元数据
+    out_exp = hfe.export_pair_finish(
+        _StubRender(),
+        lib,
+        shot2,
+        EditState(recipe=RecipeSel("qlaunch", 5)),
+        {},
+        tmp_path / "p3_2_explicit",
+        [],
+        quality=90,
+        long_edge=None,
+        fmt="jpeg",
+        mode="singles",
+    )
+    by_role_e = {role: res for _sid, role, res in out_exp}
+    for role in ("first", "second"):
+        assert by_role_e[role].render_label == "配方五"
+        assert by_role_e[role].recipe_binding["selection_id"] == "builtin:5"
+        assert by_role_e[role].path.name.endswith("_r5_half.jpg")
+        with Image.open(by_role_e[role].path) as im:
+            assert "recipe-explicit-5" in str(im.getexif().get(270, ""))
+
+
+def test_rejected_pair_candidates_persisted_across_restart_and_version_guard(settings: Any, lib: Library, volumes: Path) -> None:
+    """P3-3：已检验但未配对的候选以纯 SHA 持久化，重启图库后回填不重复跑；未来版本守卫保持有效。"""
+    s1 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=41)
+    s_other = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=42)
+    s2 = _textured_half(hfc.FULL_HEIGHT, hfc.FULL_HALF_W, seed=43)
+    dcim = volumes / "CARD" / "DCIM" / "100RICOH"
+    dcim.mkdir(parents=True, exist_ok=True)
+    p1 = _make_g250_first_mpo(dcim / "R0005001.JPG", s1, exif_orientation=1)
+    p2 = _make_g250_diptych_jpg(dcim / "R0005002.JPG", s_other, s2, exif_orientation=1)
+    sha1 = hashlib.sha256(p1.read_bytes()).hexdigest()
+    sha2 = hashlib.sha256(p2.read_bytes()).hexdigest()
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+
+    pairs_path = lib.abspath(hfp.PAIRS_REL)
+    pairs_path.unlink(missing_ok=True)
+    lib.close()
+
+    lib2 = Library(settings.library_dir)
+    lib2.open()
+    try:
+        todo = lib2.halfframe_pair_pending()
+        assert len(todo) >= 1
+        hfl.backfill_pairs(lib2, todo, hf.HalfframeProgress(total=len(todo)), threading.Event())
+        stored = json.loads(pairs_path.read_text(encoding="utf-8"))
+        assert stored["rejected"] == {sha2: [sha1]}
+        assert "R0005001" not in pairs_path.read_text(encoding="utf-8")
+        assert lib2.halfframe_pair_pending() == []
+    finally:
+        lib2.close()
+
+    # 重启图库后待回填队列必须为空
+    lib3 = Library(settings.library_dir)
+    lib3.open()
+    try:
+        assert lib3._pairs.is_rejected(sha1, sha2) is True
+        assert lib3.halfframe_pair_pending() == []
+    finally:
+        lib3.close()
+
+    # 未来版本守卫：version=99 不被 mark_rejected 或 put_batch 覆盖
+    future_raw = json.dumps({"version": 99, "first_like": {}, "pairs": {}, "rejected": {sha2: [sha1]}})
+    pairs_path.write_text(future_raw, encoding="utf-8")
+    guarded = hfp.PairStore(pairs_path)
+    guarded.load()
+    guarded.mark_rejected("a" * 64, "b" * 64, save=True)
+    guarded.put_batch({}, {}, rejected={("a" * 64, "b" * 64)}, save=True)
+    assert pairs_path.read_text(encoding="utf-8") == future_raw
+
+
+def test_routes_and_finish_serve_line_budget() -> None:
+    """P3-6：api/routes.py 与 finish/serve.py 各自不超过 720 行。"""
+    src_root = Path(__file__).resolve().parents[1] / "src" / "gxr_studio"
+    routes_lines = len((src_root / "api" / "routes.py").read_text(encoding="utf-8").splitlines())
+    serve_lines = len((src_root / "finish" / "serve.py").read_text(encoding="utf-8").splitlines())
+    assert routes_lines <= 720, f"api/routes.py is {routes_lines} lines (> 720)"
+    assert serve_lines <= 720, f"finish/serve.py is {serve_lines} lines (> 720)"

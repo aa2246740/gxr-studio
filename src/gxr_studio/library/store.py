@@ -442,8 +442,13 @@ class Library:
     def record_halfframe_batch(self, items: dict[str, bool]) -> None:
         self._halfframe.put_many(items, save=True, strict=True)
 
-    def record_halfframe_pairs_batch(self, first_like: dict[str, bool], pairs: dict[str, dict[str, Any]]) -> None:
-        self._pairs.put_batch(first_like, pairs, save=True, strict=True)
+    def record_halfframe_pairs_batch(
+        self,
+        first_like: dict[str, bool],
+        pairs: dict[str, dict[str, Any]],
+        rejected: set[tuple[str, str]] | None = None,
+    ) -> None:
+        self._pairs.put_batch(first_like, pairs, rejected=rejected, save=True, strict=True)
 
     def list_shots(self, date: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[Any, Any]]:
         sql, args = "SELECT * FROM shots", []

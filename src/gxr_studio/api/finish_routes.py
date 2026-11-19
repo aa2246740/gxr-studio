@@ -38,8 +38,9 @@ class FinishDefaults(BaseModel):
 
 def _capabilities(c: Any, shot: dict[str, Any]) -> dict[str, Any]:
     from ..finish.approx import ENABLED
+    from ..halfframe_pairs import has_pair_raw
 
-    raw = "dng" in shot["files"]
+    raw = "dng" in shot["files"] or has_pair_raw(shot)
     if not raw and shot.get("recipe_tag"):
         return {"raw": False, "recipe": "none", "reason": "拍摄配方预测需要 RAW 文件；当前显示相机 JPG"}
     unit = c.render.photo_unit(shot) or "jlaunch"

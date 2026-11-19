@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .. import __version__
 from .. import crop as cropmod
+from .. import halfframe_export as hf_export
 from ..cards import coverage, importer
 from ..cards.coverage import Identity
 from ..cards.discovery import find_cards
@@ -23,13 +24,14 @@ from ..crop import Crop, CropError
 from ..export import ExportError, ExportOptions, RevealError, check_destination, reveal_export
 from ..flags import flag_enabled
 from ..folder_picker import FolderPickerError, choose_export_folder
+from ..halfframe_export import ExportFileItem, ExportRecipeBinding
 from ..hdr import derived as hdr_derived
 from ..library import edits, thumbs
 from ..library import sidecar as sc
 from ..render import edits as render_edits
 from ..render.camera_recipe import recipe_tag_payload
 from ..render.params import EditError, EditState
-from ..render.service import RenderUnavailable
+from ..render.service import NoRaw, RenderUnavailable
 from .errors import ApiError
 
 router = APIRouter()
@@ -83,36 +85,6 @@ class ExportRequest(BaseModel):
     precise: bool = False  # recipe 时用逐像素精确链（很慢），默认用烘焙表
     hdr: bool = False  # 带增益图的 HDR JPEG（按成片重新算）；做不了的照片照常导出，结果里 hdr=false 并给出 hdr_note
     halfframe: Literal["diptych", "singles", "both"] | None = None  # 半格一对导出方式；不传则沿用偏好（默认 diptych）
-
-
-class ExportRecipeBinding(BaseModel):
-    record_sha256: str
-    entry_sha256: str
-    binding_sha256: str
-    selection_id: str
-    quality_state: Literal["passed", "rejected", "needs_evidence", "historical_exception", "unattached"]
-    assessed_entry: bool
-
-
-class ExportFileItem(BaseModel):
-    """半格一对多文件导出（singles / both）时的单个输出文件条目。"""
-
-    id: str
-    role: Literal["diptych", "first", "second"]
-    path: str
-    width: int
-    height: int
-    bytes: int
-    format: str
-    render: str
-    render_label: Literal["prediction", "approx", "original"]
-    render_text: str
-    prediction: bool
-    calibrated: bool | None = None
-    detail: str | None = None
-    hdr: bool | None = None
-    hdr_note: str | None = None
-    recipe_binding: ExportRecipeBinding | None = None
 
 
 class ExportFile(BaseModel):
@@ -290,40 +262,8 @@ def _needs_finish_export(edit: EditState) -> bool:
     return any(getattr(edit.adjust, name) for name in ("black_point", "saturation", "vibrance", "vignette"))
 
 
-def _halfframe_mode(c: Any, req: ExportRequest) -> str:
-    if req.halfframe is not None:
-        return req.halfframe
-    from .. import privacy
-    from ..prefs import load_prefs
-
-    prefs = load_prefs(c.settings.home_dir, privacy.forbidden_for(c.settings, _forbidden_roots(c)))
-    return str(prefs.get("export_halfframe") or "diptych")
-
-
-def _export_result_dict(shot_id: str, res: Any, *, warning: str | None = None, role: str | None = None) -> dict[Any, Any]:
-    return {
-        "id": shot_id,
-        **({"role": role} if role is not None else {}),
-        "path": str(res.path),
-        "width": res.width,
-        "height": res.height,
-        "bytes": res.bytes,
-        "format": res.format,
-        "render": res.render,
-        "render_label": res.render_kind,
-        "render_text": res.render_label,
-        "prediction": res.render_kind == "prediction",
-        "calibrated": res.calibrated,
-        **({"recipe_binding": res.recipe_binding} if res.recipe_binding is not None else {}),
-        **({"detail": res.detail} if res.detail else {}),
-        **({"warning": warning} if warning else {}),
-        **({"hdr": res.hdr} if res.hdr is not None else {}),
-        **({"hdr_note": HDR_NOTES.get(res.hdr_reason or "", HDR_UNSUPPORTED)} if res.hdr is False else {}),
-    }
-
-
 def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, Any]:
-    from ..halfframe_pairs import has_pair_raw, is_pair_second
+    from ..halfframe_pairs import has_pair_raw
 
     dest = Path(req.dest_dir).expanduser() if req.dest_dir else c.settings.export_dir
     if not dest.is_absolute():
@@ -342,30 +282,27 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
         has_raw = ("dng" in shot["files"]) or has_pair_raw(shot)
         if want == "recipe" and not has_raw and edit.recipe is None:
             raise ApiError(409, "no_raw", "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。")
-        from ..finish.serve import export_finish, export_pair_finish
+        from ..finish.serve import export_finish
 
         side, _problem = c.lib.read_sidecar_or_default(shot)
-        hf_mode = _halfframe_mode(c, req) if is_pair_second(shot) else "diptych"
-        if is_pair_second(shot) and hf_mode in ("singles", "both"):
-            entries = export_pair_finish(
-                c.render,
-                c.lib,
-                shot,
-                edit,
-                side,
-                dest,
-                _forbidden_roots(c),
-                quality=opts.quality,
-                long_edge=opts.long_edge,
-                fmt=opts.fmt,
-                base=want,
-                hdr=req.hdr,
-                mode=hf_mode,
-            )
-            items = [_export_result_dict(sid, r, role=role) for sid, role, r in entries]
-            primary = _export_result_dict(shot["shot_id"], entries[0][2], warning=warning)
-            primary["files"] = items
-            return primary
+        forbidden = _forbidden_roots(c)
+        pair_item = hf_export.maybe_export_pair(
+            c,
+            shot,
+            edit,
+            side,
+            dest,
+            forbidden,
+            opts,
+            want=want,
+            hdr=req.hdr,
+            req_halfframe=req.halfframe,
+            warning=warning,
+            hdr_notes=HDR_NOTES,
+            hdr_unsupported=HDR_UNSUPPORTED,
+        )
+        if pair_item is not None:
+            return pair_item
         res = export_finish(
             c.render,
             c.lib,
@@ -373,7 +310,7 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
             edit,
             side,
             dest,
-            _forbidden_roots(c),
+            forbidden,
             quality=opts.quality,
             long_edge=opts.long_edge,
             fmt=opts.fmt,
@@ -385,21 +322,11 @@ def _export_one(c: Any, shot: dict[Any, Any], req: ExportRequest) -> dict[Any, A
         raise ApiError(409 if exc.code in ("no_jpg_source", "raw_unreadable") else 422, exc.code, exc.message, extra) from exc
     except RenderUnavailable as exc:
         raise ApiError(409, exc.code, exc.message, {"status": c.render.status()}) from exc
+    except NoRaw as exc:
+        raise ApiError(409, "no_raw", str(exc) or "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。") from exc
     except EditError as exc:
         raise ApiError(422, exc.code, exc.message) from exc
-    return _export_result_dict(shot["shot_id"], res, warning=warning)
-
-
-def _remember_export(c: Any, export_id: str, item: dict[Any, Any]) -> dict[Any, Any]:
-    files = item.get("files")
-    if isinstance(files, list) and files:
-        for entry in files:
-            p = Path(entry["path"])
-            c.exports.note(export_id, p.parent, p)
-    else:
-        path = Path(item["path"])
-        c.exports.note(export_id, path.parent, path)
-    return {**item, "export_id": export_id}
+    return hf_export.export_result_dict(shot["shot_id"], res, hdr_notes=HDR_NOTES, hdr_unsupported=HDR_UNSUPPORTED, warning=warning)
 
 
 # ---- 页面与基础 -------------------------------------------------------------
@@ -700,7 +627,7 @@ def export_photo(shot_id: str, body: ExportRequest, request: Request) -> Any:
     item = _export_one(c, _shot_or_404(c, shot_id), body)
     path = Path(item["path"])
     eid = c.exports.note_new(path.parent, path)
-    return _remember_export(c, eid, item) if item.get("files") else {**item, "export_id": eid}
+    return hf_export.remember_export(c.exports, eid, item) if item.get("files") else {**item, "export_id": eid}
 
 
 @router.post("/api/export", status_code=202, response_model=None)
@@ -719,15 +646,7 @@ def export_batch(body: BatchExportRequest, request: Request) -> Any:
         shots = c.lib.list_shots(body.date, limit=100000)
     else:
         raise ApiError(422, "nothing_to_export", "请求无效。请刷新页面后重试。", {"detail": "要给出照片或日期"})
-    paired_first = {
-        str(p["partner_id"])
-        for s in shots
-        for p in (s.get("pair"),)
-        if isinstance(p, dict) and p.get("role") == "second" and p.get("partner_id")
-    }
-    pair_count = len(paired_first)
-    if paired_first:
-        shots = [s for s in shots if s["shot_id"] not in paired_first]
+    shots, pair_count = hf_export.dedupe_batch_pairs(shots)
 
     class Progress:
         def __init__(self) -> None:
@@ -755,7 +674,7 @@ def export_batch(body: BatchExportRequest, request: Request) -> Any:
                 return
             try:
                 shot = c.lib.resolve_diptych(shot)
-                item = _remember_export(c, job.id, _export_one(c, shot, body))
+                item = hf_export.remember_export(c.exports, job.id, _export_one(c, shot, body))
             except ApiError as exc:
                 item = {"id": shot["shot_id"], "error": exc.code, "message": exc.message}
                 if exc.extra.get("detail"):

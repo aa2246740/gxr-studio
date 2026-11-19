@@ -130,6 +130,35 @@ def _fetch_target_jpg_candidates(db: sqlite3.Connection, lock: Any) -> list[dict
         return _query_target_jpg_rows(db)
 
 
+def _fetch_target_jpg_by_names(db: sqlite3.Connection, lock: Any, names: list[str]) -> list[dict[str, Any]]:
+    """按相邻文件名（最多两个 `WHERE s.name IN (?, ?)`）查 4288×2848 候选 JPG，避免全表扫描。"""
+    if not names:
+        return []
+    marks = ",".join("?" * len(names))
+    with lock:
+        rows = db.execute(
+            f"""SELECT s.shot_id, s.name, s.orientation, s.width, s.height, f.relpath, f.sha256
+                FROM shots s
+                JOIN files f ON f.shot_id = s.shot_id
+                WHERE f.kind = 'jpg' AND s.name IN ({marks})""",  # nosec B608
+            names,
+        ).fetchall()
+    return [
+        {
+            "shot_id": r["shot_id"],
+            "name": r["name"],
+            "number": hfp.extract_number(r["name"]),
+            "orientation": int(r["orientation"] or 1),
+            "width": r["width"],
+            "height": r["height"],
+            "relpath": r["relpath"],
+            "sha256": r["sha256"],
+        }
+        for r in rows
+        if r["sha256"] and hf.is_target_dims(r["width"], r["height"])
+    ]
+
+
 def _index_by_number(items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
     by_num: dict[int, list[dict[str, Any]]] = {}
     for item in items:
@@ -163,6 +192,8 @@ def _match_second_candidate(
     abspath: Callable[[str], Path],
     *,
     pair_store: hfp.PairStore | None = None,
+    rejected_out: set[tuple[str, str]] | None = None,
+    coalesce: bool = True,
 ) -> dict[str, Any] | None:
     """在编号为 `N-1` 的候选中找出唯一通过 g250 1/8 指纹的第 1 张。"""
     sec_sha = str(sec_item["sha256"])
@@ -186,8 +217,10 @@ def _match_second_candidate(
         )
         if dec is not None:
             matches.append((str(a_sha), dec))
+        elif rejected_out is not None:
+            rejected_out.add((str(a_sha), sec_sha))
         elif pair_store is not None:
-            pair_store.mark_rejected(str(a_sha), sec_sha)
+            pair_store.mark_rejected(str(a_sha), sec_sha, save=not coalesce, coalesce=coalesce, strict=False)
     if len(matches) == 1:
         return hfp.make_pair_record(matches[0][0], sec_sha, matches[0][1])
     return None
@@ -218,6 +251,7 @@ def _try_pair_for_second(
         lambda c: bool(_ensure_first_like(str(c["relpath"]), str(c["sha256"]), pair_store, abspath, coalesce=coalesce)),
         abspath,
         pair_store=pair_store,
+        coalesce=coalesce,
     )
     if rec is not None:
         pair_store.put_pair(rec, save=not coalesce, coalesce=coalesce, strict=False)
@@ -233,14 +267,14 @@ def _compute_missing_for_shot(
     abspath: Callable[[str], Path],
     *,
     coalesce: bool,
-) -> None:
-    """在 `lib.lock` 外为单张 4288×2848 照片补算缺失的 `first_like` 与相邻配对。"""
+) -> dict[str, dict[str, Any]]:
+    """在 `lib.lock` 外为单张 4288×2848 照片补算缺失的 `first_like` 与相邻配对；已配对时走一次 `files_sha` 索引短路。"""
     all_files = shot.get("all_files") or shot.get("files") or {}
     jpg = all_files.get("jpg")
     if not isinstance(jpg, dict) or not jpg.get("relpath") or not jpg.get("sha256"):
-        return
+        return {}
     if not hf.is_target_dims(shot.get("width"), shot.get("height")):
-        return
+        return {}
     sha = str(jpg["sha256"])
     ori = int(shot.get("orientation") or 1)
     num = hfp.extract_number(shot.get("name"))
@@ -250,8 +284,19 @@ def _compute_missing_for_shot(
         if not pair_store.has_first_like(sha):
             pair_store.put_first_like(sha, False, save=not coalesce, coalesce=coalesce, strict=False)
         if num is None or ori not in hfp.VALID_ORIENTATIONS:
-            return
-        by_num = _index_by_number(_fetch_target_jpg_candidates(db, lock))
+            return {}
+        existing = pair_store.pair_for_second(sha)
+        if existing is not None:
+            prefetched = _fetch_shots_by_jpg_shas(db, lock, {existing["first_sha"]})
+            first = prefetched.get(existing["first_sha"])
+            if first is not None and int(first.get("orientation") or 1) == ori:
+                return prefetched
+        prev_names = hfp.neighbor_names(shot.get("name"), -1)
+        if not prev_names:
+            return {}
+        prev_list = [c for c in _fetch_target_jpg_by_names(db, lock, prev_names) if c["number"] == num - 1]
+        if not prev_list:
+            return {}
         sec_item = {
             "shot_id": shot["shot_id"],
             "name": shot["name"],
@@ -260,18 +305,28 @@ def _compute_missing_for_shot(
             "relpath": jpg["relpath"],
             "sha256": sha,
         }
-        _try_pair_for_second(sec_item, by_num, pair_store, abspath, coalesce=coalesce)
-        return
+        _try_pair_for_second(sec_item, {num - 1: prev_list}, pair_store, abspath, coalesce=coalesce)
+        return {}
 
     fl = _ensure_first_like(str(jpg["relpath"]), sha, pair_store, abspath, coalesce=coalesce)
     if not fl or num is None or ori not in hfp.VALID_ORIENTATIONS:
-        return
-    if pair_store.pair_for_first(sha) is not None:
-        return
-    candidates = _fetch_target_jpg_candidates(db, lock)
-    next_list = [c for c in candidates if c["number"] == num + 1 and int(c["orientation"] or 1) == ori and c["sha256"] != sha]
+        return {}
+    existing = pair_store.pair_for_first(sha)
+    if existing is not None:
+        prefetched = _fetch_shots_by_jpg_shas(db, lock, {existing["second_sha"]})
+        second = prefetched.get(existing["second_sha"])
+        if second is not None and int(second.get("orientation") or 1) == ori:
+            return prefetched
+    next_names = hfp.neighbor_names(shot.get("name"), 1)
+    if not next_names:
+        return {}
+    next_list = [
+        c
+        for c in _fetch_target_jpg_by_names(db, lock, next_names)
+        if c["number"] == num + 1 and int(c["orientation"] or 1) == ori and c["sha256"] != sha
+    ]
     if not next_list:
-        return
+        return {}
     self_entry = {
         "shot_id": shot["shot_id"],
         "name": shot["name"],
@@ -285,6 +340,7 @@ def _compute_missing_for_shot(
         if verdict_store.get(sec["sha256"]) is False:
             continue
         _try_pair_for_second(sec, by_num, pair_store, abspath, coalesce=coalesce)
+    return {}
 
 
 def attach_pairs_to_shots(
@@ -303,8 +359,9 @@ def attach_pairs_to_shots(
     """
     if not shots:
         return shots
+    prefetched: dict[str, dict[str, Any]] = {}
     if allow_decode and len(shots) == 1:
-        _compute_missing_for_shot(shots[0], db, lock, verdict_store, pair_store, abspath, coalesce=True)
+        prefetched = _compute_missing_for_shot(shots[0], db, lock, verdict_store, pair_store, abspath, coalesce=True)
 
     needed_shas: set[str] = set()
     page_by_sha: dict[str, dict[Any, Any]] = {}
@@ -331,9 +388,9 @@ def attach_pairs_to_shots(
                 matched.append((s, "first", rec))
                 needed_shas.add(rec["second_sha"])
 
-    partners_by_sha: dict[str, dict[str, Any]] = {}
+    partners_by_sha: dict[str, dict[str, Any]] = dict(prefetched)
     if needed_shas:
-        missing = needed_shas - set(page_by_sha)
+        missing = needed_shas - set(page_by_sha) - set(partners_by_sha)
         for sha in needed_shas & set(page_by_sha):
             partners_by_sha[sha] = _source_summary(page_by_sha[sha])
         if missing:
@@ -438,6 +495,7 @@ def rebuild_pairs(
     by_num = _index_by_number(valid)
     fl_updates: dict[str, bool] = {}
     pair_updates: dict[str, dict[str, Any]] = {}
+    rejected_updates: set[tuple[str, str]] = set()
 
     for item in valid:
         sha = str(item["sha256"])
@@ -467,11 +525,18 @@ def rebuild_pairs(
         ):
             pair_updates[sec_sha] = stored
             continue
-        rec = _match_second_candidate(item, prev_list, lambda c: fl_updates.get(str(c["sha256"])) is True, abspath)
+        rec = _match_second_candidate(
+            item,
+            prev_list,
+            lambda c: fl_updates.get(str(c["sha256"])) is True,
+            abspath,
+            pair_store=pair_store,
+            rejected_out=rejected_updates,
+        )
         if rec is not None:
             pair_updates[sec_sha] = rec
 
-    pair_store.put_batch(fl_updates, pair_updates, save=False)
+    pair_store.put_batch(fl_updates, pair_updates, rejected=rejected_updates, save=False)
     pair_store.flush_quietly()
 
 
@@ -503,7 +568,13 @@ def pending_pairs(db: sqlite3.Connection, verdict_store: hf.VerdictStore, pair_s
             ori = item["orientation"]
             if num is not None and ori in hfp.VALID_ORIENTATIONS:
                 prev_list = by_num.get(int(num) - 1) or []
-                needs_pair = any(int(c["orientation"]) == ori and pair_store.get_first_like(c["sha256"]) is not False for c in prev_list)
+                needs_pair = any(
+                    c["sha256"] != sha
+                    and int(c["orientation"]) == ori
+                    and pair_store.get_first_like(c["sha256"]) is not False
+                    and not pair_store.is_rejected(str(c["sha256"]), sha)
+                    for c in prev_list
+                )
         if needs_fl or needs_pair:
             seen.add(sha)
             todo.append(item)
@@ -521,6 +592,7 @@ def backfill_pairs(
     """在 `lib.lock` 外分批补算 `first_like` 与 g250 配对，按 `strict=True` 写回 `.studio/halfframe-pairs-v1.json`。"""
     fl_batch: dict[str, bool] = {}
     pair_batch: dict[str, dict[str, Any]] = {}
+    rejected_batch: set[tuple[str, str]] = set()
 
     for item in todo:
         if cancel.is_set():
@@ -556,11 +628,19 @@ def backfill_pairs(
         if lib._halfframe.get(sec_sha) is not True or lib._pairs.pair_for_second(sec_sha) is not None:
             continue
         prev_list = by_num.get(int(sec_num) - 1) or []
-        rec = _match_second_candidate(item, prev_list, lambda c: lib._pairs.get_first_like(c["sha256"]) is True, lib.abspath)
+        rec = _match_second_candidate(
+            item,
+            prev_list,
+            lambda c: lib._pairs.get_first_like(c["sha256"]) is True,
+            lib.abspath,
+            pair_store=lib._pairs,
+            rejected_out=rejected_batch,
+        )
         if rec is not None:
             pair_batch[sec_sha] = rec
-            if len(pair_batch) >= batch_size:
-                lib.record_halfframe_pairs_batch({}, pair_batch)
-                pair_batch.clear()
-    if pair_batch:
-        lib.record_halfframe_pairs_batch({}, pair_batch)
+        if len(pair_batch) + len(rejected_batch) >= batch_size:
+            lib.record_halfframe_pairs_batch({}, pair_batch, rejected_batch)
+            pair_batch.clear()
+            rejected_batch.clear()
+    if pair_batch or rejected_batch:
+        lib.record_halfframe_pairs_batch({}, pair_batch, rejected_batch)

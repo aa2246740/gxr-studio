@@ -504,7 +504,7 @@ def export_finish(
     import os
 
     from ..export import FORMATS, ExportError, ExportOptions, ExportResult, check_destination, claim_path, write_rgb_with_exif
-    from ..halfframe_pairs import is_pair_second
+    from ..halfframe_pairs import has_pair_raw, is_pair_second
 
     ExportOptions(long_edge, quality, fmt).validate()
     files = shot["files"]
@@ -528,6 +528,10 @@ def export_finish(
             labels = _original_labels(shot, None)
         else:
             rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage="final", max_edge=None, quality=quality, base=base, track=track)
+    except EditError as exc:
+        if exc.code == "lut_needs_raw" and is_pair_second(shot) and not has_pair_raw(shot):
+            raise NoRaw(exc.message) from exc
+        raise
     except RawDecodeError as exc:
         detail = f"没有全尺寸传感器数据，也没有更小的预览。{exc}"
         if "jpg" in shot["files"]:
@@ -589,191 +593,6 @@ def export_finish(
         if labels.get("selection_id")
         else None,
     )
-
-
-def _write_export_file(
-    rgb: np.ndarray,
-    *,
-    source_path: Path,
-    dest: Path,
-    stem: str,
-    ext: str,
-    tag: str,
-    note: str,
-    quality: int,
-    long_edge: int | None,
-    fmt: str,
-    labels: dict[str, str],
-    hdr_refused: bool,
-) -> Any:
-    import os
-
-    from ..export import ExportError, ExportResult, claim_path, write_rgb_with_exif
-
-    fitted = _fit(rgb, long_edge)
-    payload = write_rgb_with_exif(fitted, source_path, note, quality=quality, fmt=fmt)
-    try:
-        path, fd = claim_path(dest, stem, ext, tag)
-    except OSError as exc:
-        raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-    with Image.open(path) as saved:
-        width, height = saved.size
-    kind = labels.get("label") or labels.get("kind") or "original"
-    ident = labels.get("id") or ("camera-jpg" if kind == "original" else "recipe-prediction")
-    text = labels.get("text") or "原图"
-    calibrated = True if labels.get("calibrated") == "1" else False if labels.get("calibrated") == "0" else None
-    return ExportResult(
-        path=path,
-        width=width,
-        height=height,
-        bytes=path.stat().st_size,
-        render=ident,
-        render_label=text,
-        format=fmt,
-        render_kind=kind,
-        calibrated=calibrated,
-        detail=labels.get("detail") or "",
-        hdr=False if hdr_refused else None,
-        hdr_reason="halfframe_pair" if hdr_refused else None,
-        recipe_binding={
-            k: labels[k] for k in ("record_sha256", "entry_sha256", "binding_sha256", "selection_id", "quality_state", "assessed_entry")
-        }
-        if labels.get("selection_id")
-        else None,
-    )
-
-
-def export_pair_finish(
-    render: RenderService,
-    lib: Library,
-    shot: dict[str, Any],
-    edit: EditState,
-    side: dict[str, Any],
-    dest_dir: Path,
-    forbidden: list[Path],
-    *,
-    quality: int,
-    long_edge: int | None,
-    fmt: str,
-    base: str = "auto",
-    hdr: bool = False,
-    mode: str = "singles",
-) -> list[tuple[str, str, Any]]:
-    """半格一对导出（singles = 2 张单格，both = 双联 + 2 张单格），返回 [(shot_id, role, ExportResult), ...]。"""
-    from ..export import FORMATS, ExportError, ExportOptions, check_destination
-    from ..halfframe_compose import pair_half_shots, render_pair_export_parts
-
-    ExportOptions(long_edge, quality, fmt).validate()
-    dest = check_destination(dest_dir, [*forbidden, lib.root])
-    try:
-        dest.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise ExportError("dest_unwritable", "无法导出到这个位置。请换一个文件夹。", exc.strerror or "") from exc
-    try:
-        diptych_base, single1, single2, from_raw, labels = render_pair_export_parts(render, lib, shot, edit, base=base)
-    except RawDecodeError as exc:
-        detail = f"没有全尺寸传感器数据，也没有更小的预览。{exc}"
-        raise ExportError("raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。", detail) from exc
-    s1, s2 = pair_half_shots(shot)
-    note = labels.get("description") or labels.get("text") or "原图"
-    tag = labels.get("tag") or ""
-    ext = FORMATS[fmt][1]
-    single_edit = EditState(adjust=edit.adjust, curve=edit.curve)
-    single1, single2 = (
-        finish_array(
-            arr,
-            single_edit,
-            stage="final",
-            frame=factory_frame(),
-            stamp=factory_stamp(),
-            crop_rect=None,
-            meta={},
-            taken=None,
-            file_time=None,
-            from_raw=from_raw,
-        )[0]
-        for arr in (single1, single2)
-    )
-    outputs: list[tuple[str, str, Any]] = []
-    if mode == "both":
-        frame_default, stamp_default = load_defaults(render.home)
-        frame = resolved_frame(edit.frame, frame_default)
-        stamp = resolved_stamp(edit.stamp, stamp_default)
-        meta, taken, file_time = _meta(shot, lib)
-        crop_raw = side.get("crop") if isinstance(side.get("crop"), dict) else {}
-        raw_rect = crop_raw.get("rect") if isinstance(crop_raw, dict) else None
-        crop_rect = (
-            (float(raw_rect[0]), float(raw_rect[1]), float(raw_rect[2]), float(raw_rect[3]))
-            if isinstance(raw_rect, list) and len(raw_rect) == 4
-            else None
-        )
-        preset = crop_raw.get("preset") if isinstance(crop_raw, dict) else None
-        use_custom = frame.style != "none" and frame.logo not in ("", "ricoh", "none")
-        dip_rgb, _ = finish_array(
-            diptych_base,
-            edit,
-            stage="final",
-            frame=frame,
-            stamp=stamp,
-            crop_rect=crop_rect,
-            meta=meta,
-            taken=taken,
-            file_time=file_time,
-            from_raw=from_raw,
-            crop_preset=preset if isinstance(preset, str) else None,
-            logos=render.logos.info_map() if use_custom else None,
-            logo_images=render.logos.image_map(frame.logo) if use_custom else None,
-        )
-        outputs.append(
-            (
-                str(shot["shot_id"]),
-                "diptych",
-                _write_export_file(
-                    dip_rgb,
-                    source_path=_source_path(lib, shot),
-                    dest=dest,
-                    stem=str(shot["name"]),
-                    ext=ext,
-                    tag=tag,
-                    note=note,
-                    quality=quality,
-                    long_edge=long_edge,
-                    fmt=fmt,
-                    labels=labels,
-                    hdr_refused=hdr,
-                ),
-            )
-        )
-    for role, half_shot, half_rgb in (("first", s1, single1), ("second", s2, single2)):
-        outputs.append(
-            (
-                str(half_shot["shot_id"]),
-                role,
-                _write_export_file(
-                    half_rgb,
-                    source_path=_source_path(lib, half_shot),
-                    dest=dest,
-                    stem=str(half_shot["name"]),
-                    ext=ext,
-                    tag=f"{tag}_half",
-                    note=note,
-                    quality=quality,
-                    long_edge=long_edge,
-                    fmt=fmt,
-                    labels=labels,
-                    hdr_refused=hdr,
-                ),
-            )
-        )
-    return outputs
 
 
 def edited_jpeg(render: RenderService, lib: Library, shot: dict[str, Any], max_edge: int) -> bytes | None:

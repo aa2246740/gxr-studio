@@ -14,6 +14,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ..crop import Crop, CropError
+from ..halfframe_pairs import has_pair_raw
 from ..library import sidecar as sc
 from ..library.edits import RevisionConflict
 from ..lut.errors import LutError
@@ -108,7 +109,8 @@ def _payload(
 
 def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     svc = c.render
-    if "dng" not in shot["files"]:
+    pair_raw = has_pair_raw(shot)
+    if "dng" not in shot["files"] and not pair_raw:
         if shot.get("recipe_tag"):
             return {"available": True, "reason": "no_raw", "recipe": "none", "message": "拍摄配方预测需要 RAW 文件；当前显示相机 JPG"}
         from ..finish.approx import ENABLED
@@ -121,7 +123,13 @@ def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any
             "message": "" if approx else "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。",
         }
     try:
-        plan = svc.plan(shot, edit)
+        if pair_raw:
+            from ..halfframe_compose import combined_plan, pair_plans
+
+            p1, p2, *_ = pair_plans(svc, shot, edit)
+            plan = combined_plan(p1, p2)
+        else:
+            plan = svc.plan(shot, edit)
     except RenderUnavailable as exc:
         return {"available": False, "reason": exc.code, "message": exc.message, "status": svc.status()}
     except EditError as exc:
@@ -300,7 +308,7 @@ def put_edit(shot_id: str, body: EditRequest, request: Request) -> Any:
                 target, _item = c.render.luts.target(changes["lut"])
             except LutError as exc:
                 raise ApiError(exc.status, exc.code, exc.message, exc.extra) from exc
-            if target.input_space not in DISPLAY and "dng" not in shot["files"]:
+            if target.input_space not in DISPLAY and "dng" not in shot["files"] and not has_pair_raw(shot):
                 raise EditError("lut_needs_raw", "这个 LUT 需要 RAW 文件")
         _edit, side = render_edits.write(c.lib, shot, changes, c.render.recipe_menu(), expected_rev=body.expected_rev, recipes=c.render.recipes)
     except EditError as exc:
