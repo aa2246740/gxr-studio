@@ -162,10 +162,17 @@ class HdrProgress:
 
 
 def _stale_single_status(lib: Library, shot: dict[str, Any]) -> bool:
-    """回填完成前若命中旧单图 `-v2.json`，允许补算一次双联以确认是否为可做 HDR 的半格对。"""
+    """命中单图 `-v2.json` 时，仅对尺寸符合双联且双联判定未知或为真、尚无 `-pair-v1` 结果的照片放行一次补算。"""
+    from .. import halfframe as hf
     from ..halfframe_pairs import is_pair_second
 
     if is_pair_second(shot) or shot.get("diptych"):
+        return False
+    if not hf.is_target_dims(shot.get("width"), shot.get("height")):
+        return False
+    jpg = (shot.get("files") or {}).get("jpg")
+    jpg_sha = str(jpg["sha256"]) if isinstance(jpg, dict) and jpg.get("sha256") else None
+    if lib._halfframe.get(jpg_sha) is False:
         return False
     sid = str(shot["shot_id"])
     return not hdr_path(lib, sid, pair=True).is_file() and not status_path(lib, sid, pair=True).is_file()

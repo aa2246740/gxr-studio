@@ -540,3 +540,55 @@ def test_wrong_half_dng_with_dark_first_half_and_skipped_first_jpeg_refused() ->
 def test_dead_halfframe_pair_hdr_note_removed() -> None:
     """P3-2：已废弃的 halfframe_pair 文案应从 HDR_NOTES 删除。"""
     assert "halfframe_pair" not in HDR_NOTES
+
+
+def test_pending_skips_resolve_diptych_for_non_target_and_known_non_diptych_unsupported_singles(
+    lib: Library,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P3-4：单图 `-v2.json` unsupported 的非 4288×2848 普通 3:2 照片，以及已判定非双联的 4288×2848 单图，pending() 不调用 resolve_diptych。"""
+    from gxr_studio import halfframe as hf
+
+    def _make_single(tag: str, w: int, h: int, sha: str) -> dict[str, Any]:
+        sid = f"33{tag}" * 16
+        rel_j = f"2026/2026-10-{tag}/S0001.JPG"
+        rel_d = f"2026/2026-10-{tag}/S0001.DNG"
+        stale = derived.status_path(lib, sid)
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text(json.dumps({"status": derived.UNSUPPORTED, "reason": "not_aligned", "version": derived.VERSION}), encoding="utf-8")
+        files = {
+            "jpg": {"kind": "jpg", "relpath": rel_j, "sha256": sha},
+            "dng": {"kind": "dng", "relpath": rel_d, "sha256": f"d{sha}"},
+        }
+        return {
+            "shot_id": sid,
+            "name": f"S{tag}",
+            "width": w,
+            "height": h,
+            "diptych": False,
+            "has_raw": 1,
+            "files": files,
+            "all_files": dict(files),
+        }
+
+    ordinary_3_2 = _make_single("a1", SYNTH_W, SYNTH_H, "sha_ord_3_2")
+    known_single_4288 = _make_single("a2", hf.FULL_WIDTH, hf.FULL_HEIGHT, "sha_known_single")
+    unknown_4288 = _make_single("a3", hf.FULL_WIDTH, hf.FULL_HEIGHT, "sha_unknown_4288")
+    lib._halfframe.put("sha_known_single", False, save=False)
+
+    resolved_ids: list[str] = []
+    real_resolve = lib.resolve_diptych
+
+    def spy_resolve(shot: dict[Any, Any]) -> dict[Any, Any]:
+        resolved_ids.append(str(shot["shot_id"]))
+        return real_resolve(shot)
+
+    monkeypatch.setattr(lib, "resolve_diptych", spy_resolve)
+
+    # 非 4288×2848 普通 3:2 照片与已判定非双联的 4288×2848 照片均不触发 resolve_diptych
+    assert derived.pending(lib, [ordinary_3_2, known_single_4288]) == []
+    assert resolved_ids == []
+
+    # 双联判定未知的 4288×2848 照片仍允许补算一次以发现旧 `-v2.json` 掩盖的半格对
+    assert derived.pending(lib, [unknown_4288]) == []
+    assert resolved_ids == [unknown_4288["shot_id"]]
