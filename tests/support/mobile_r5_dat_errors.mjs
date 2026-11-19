@@ -32,7 +32,7 @@ try {
     }, null, { timeout: 120_000 });
     await page.locator('.cell').first().evaluate((node) => node.click());
     await page.waitForFunction(() => Boolean(document.querySelector('.editor .lbl')?.textContent), null, { timeout: 120_000 });
-    await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+    await page.locator('.editor .toolbar [data-tool="recipe"]').click();
     await page.waitForSelector('.editor .strip[data-recipes] .rc');
     await picker.setInputFiles({ name: 'GXRFX.BIN', mimeType: 'application/octet-stream', buffer: Buffer.alloc(64) });
     await page.waitForFunction(() => Boolean(window.__gxrBook && !window.__gxrBook.datBusy && window.__gxrBook.datError), null, { timeout: 60_000 });
@@ -73,7 +73,7 @@ try {
         const view = new RecipeView(api, null, photo(), hooks);
         const host = document.createElement('div');
         host.className = 'app';
-        host.append(view.stripEl(), view.panelEl());
+        host.append(view.headEl(), view.panelEl());
         document.body.append(host);
         return { view, host, notify: () => listeners.forEach((fn) => fn()) };
       }

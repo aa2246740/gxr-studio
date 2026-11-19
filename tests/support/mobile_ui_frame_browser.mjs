@@ -91,7 +91,26 @@ try {
   await page.waitForTimeout(600);
 
   // 3. 切到「边框」页，等待 13 张缩略卡画完
-  await page.getByRole('tab', { name: '边框', exact: true }).click();
+  const openFrame = async () => {
+    await page.locator('.editor .toolbar [data-tool="more"]').click();
+    await page.locator('.more-sheet [data-more="frame"]').click();
+    await page.waitForSelector('.panel.frame');
+  };
+  const openFrameOpts = async () => {
+    const back = page.locator('.panel.frame [data-act="frame-back"]');
+    if (!(await back.isVisible())) {
+      await page.locator('.editor .band-frame-hd [data-act="frame-opts"]').click();
+      await page.waitForSelector('.panel.frame [data-act="frame-back"]');
+    }
+  };
+  const closeFrameOpts = async () => {
+    const back = page.locator('.panel.frame [data-act="frame-back"]');
+    if (await back.isVisible()) {
+      await back.click();
+      await page.waitForSelector('.panel.frame .strip:not([hidden])');
+    }
+  };
+  await openFrame();
   await page.waitForFunction(
     () => {
       const cards = document.querySelectorAll('.panel.frame .rc .th.fr canvas');
@@ -118,6 +137,7 @@ try {
 
   // 4. 点选「白边」检查颜色（3 色）与粗细（细/中/粗）
   await page.locator('.panel.frame .rc[data-style="gallery"]').click();
+  await openFrameOpts();
   await page.waitForSelector('.panel.frame .swc[data-color="cream"]');
   out.galleryControls = await page.evaluate(() => ({
     colors: [...document.querySelectorAll('.panel.frame .swc')].map((el) => el.dataset.color),
@@ -125,19 +145,24 @@ try {
   }));
 
   // 5. 点选「幻灯片」仅显示米白/黑 2 色
+  await closeFrameOpts();
   await page.locator('.panel.frame .rc[data-style="slide_mount"]').click();
+  await openFrameOpts();
   await page.waitForFunction(() => document.querySelectorAll('.panel.frame .swc').length === 2);
   out.slideColors = await page.locator('.panel.frame .swc').evaluateAll((els) => els.map((e) => e.dataset.color));
 
   // 6. 点选「徕卡水印」-> 舞台出现 .pv[data-decor="1"].framed 与非空 .pv-deco 画布
+  await closeFrameOpts();
   await page.locator('.panel.frame .rc[data-style="leica"]').click();
   await page.waitForFunction(() => Boolean(document.querySelector('.stage .pv.framed[data-decor="1"] .pv-deco')));
   await page.waitForTimeout(300);
   out.decorActive = await page.evaluate(() => Boolean(document.querySelector('.stage .pv.framed[data-decor="1"]')));
   out.decoPixels = await canvasAlphaSum(page, '.stage .pv .pv-deco');
-  out.leicaChips = await page.locator('.panel.frame .chips .chip').evaluateAll((els) => els.map((e) => e.textContent?.trim() ?? ''));
+  await openFrameOpts();
+  out.leicaChips = await page.locator('.panel.frame .chips .chip[data-act^="frame-"]').evaluateAll((els) => els.map((e) => e.textContent?.trim() ?? ''));
 
   // 7. 模糊背景也能画出非空叠加画布
+  await closeFrameOpts();
   await page.locator('.panel.frame .rc[data-style="blur_fill"]').click();
   await page.waitForTimeout(350);
   out.blurPixels = await canvasAlphaSum(page, '.stage .pv .pv-deco');
@@ -145,6 +170,7 @@ try {
   // 切回「徕卡水印」做「更多选项」与 CJK 拒收测试
   await page.locator('.panel.frame .rc[data-style="leica"]').click();
   await page.waitForTimeout(200);
+  await openFrameOpts();
   await page.locator('.panel.frame [data-act="frame-more"]').click();
   await page.waitForSelector('.ms.frame-more-sheet');
   const frameTextInput = page.locator('.ms.frame-more-sheet input.txtbox');
@@ -202,19 +228,24 @@ try {
   await page.locator('.ms.logo-sheet .hd button:has-text("完成")').click();
 
   // 9. 切回「无」边框：舞台恢复干净；开「时间戳」独立画到照片上
+  await closeFrameOpts();
   await page.locator('.panel.frame .rc[data-style="none"]').click();
   await page.waitForFunction(() => !document.querySelector('.stage .pv[data-decor="1"]'));
   out.noneCleared = await page.evaluate(
     () => !document.querySelector('.stage .pv')?.dataset.decor && !document.querySelector('.stage .pv .pv-deco'),
   );
 
-  await page.locator('.panel.frame .stamp-row input.switch').click();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="stamp"]').click();
+  await page.locator('.stamp-band input.switch').click();
   await page.waitForFunction(() => Boolean(document.querySelector('.stage .pv[data-decor="1"] .pv-deco')));
   await page.waitForTimeout(200);
   out.stampPixelsOnly = await canvasAlphaSum(page, '.stage .pv .pv-deco');
 
   // 10. 切到「拍立得」打开时间戳面板验证「印记落点」与文字 CJK 拒收
+  await openFrame();
   await page.locator('.panel.frame .rc[data-style="instant"]').click();
+  await openFrameOpts();
   await page.locator('.panel.frame [data-act="open-stamp"]').click();
   await page.waitForSelector('.ms.stamp-sheet');
   out.instantHasPlacement = await page.locator('.ms.stamp-sheet .seg[aria-label="印记落点"]').count().then((n) => n === 1);

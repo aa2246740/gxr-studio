@@ -40,8 +40,8 @@ export async function flows({ newPage, manifest, out }) {
   await pickAll(page, { count: manifest.stems.length }, all);
   await page.locator(cellOf(manifest.stems[0])).evaluate((node) => node.click());
   await page.waitForSelector('.editor');
-  const editorButton = await page.locator('.editor .actbar [data-act="export"]').innerText();
-  await page.locator('.editor .actbar [data-act="export"]').click();
+  const editorButton = await page.locator('.editor .toolbar [data-act="export"]').innerText();
+  await page.locator('.editor .toolbar [data-act="export"]').click();
   await page.waitForSelector('.ms.export');
   await page.waitForFunction(() => /像素/.test(document.querySelector('.ms.export .size')?.textContent ?? ''), null, { timeout: 60_000 });
   const sizeOriginal = await page.locator('.ms.export .size').innerText();

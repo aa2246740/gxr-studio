@@ -75,7 +75,7 @@ async function editStateOf(page, stem) {
 
 async function waitRecipeName(page, expectedName) {
   await page.waitForFunction(
-    (want) => document.querySelector('.panel.recipe .rname')?.textContent?.trim() === want,
+    (want) => document.querySelector('.editor .recipe-head .rname')?.textContent?.trim() === want,
     expectedName,
     { timeout: 60_000 },
   );
@@ -111,11 +111,11 @@ async function runMain(page) {
 
   // 2. Open card250 #1 -> 配方 tab should adopt Teal Orange, render it on stage, without storing photo.choice.
   await openPhoto(page, manifest.file1);
-  await page.locator('.tabs button[data-tab="0"]').click();
-  await page.waitForSelector('.panel.recipe .rname');
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+  await page.waitForSelector('.editor .recipe-head .rname');
   await waitStageRecipeReady(page);
-  const adoptedHeading = (await page.locator('.panel.recipe .rname').textContent())?.trim() ?? '';
-  const adoptedTag = (await page.locator('.panel.recipe .neutral-tag').textContent())?.trim() ?? '';
+  const adoptedHeading = (await page.locator('.editor .recipe-head .rname').textContent())?.trim() ?? '';
+  const adoptedTag = (await page.locator('.editor .recipe-head .neutral-tag').textContent())?.trim() ?? '';
   const { adoptedOnName, adoptedOnCard } = await page.evaluate(() => {
     const on = document.querySelector('.strip[data-recipes] .rc.on');
     return {
@@ -128,7 +128,8 @@ async function runMain(page) {
   const adoptedSide = await page.evaluate(async (s) => (await window.__gxrRequest(s))?.side ?? null, manifest.file1);
 
   // Check copy sheet on untouched adopted photo: 'recipe' should NOT be marked as "这张没有设置".
-  await page.locator('.actbar [data-act="copy"]').click();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="copy"]').click();
   await page.waitForSelector('.paste-sheet[data-state="copy-options"]');
   const recipeCopyRowText = (await page.locator('.paste-sheet .optrow[data-group="recipe"]').innerText()).trim();
   await page.locator('.paste-sheet .hd .nb').click();
@@ -168,7 +169,7 @@ async function runMain(page) {
   // 4. Open file1, switch away and back to Teal Orange so Teal Orange is explicitly chosen (photo.choice !== null),
   // then export again -> must match auto byte-for-byte.
   await openPhoto(page, manifest.file1);
-  await page.locator('.tabs button[data-tab="0"]').click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await page.waitForSelector('.strip[data-recipes] .rc');
   const stdFirst = page.locator('.strip[data-recipes] .rc[data-card="builtin:4"]');
   await stdFirst.scrollIntoViewIfNeeded();
@@ -219,7 +220,7 @@ async function runMain(page) {
 
   // 5. Choose 原厂标准 (builtin:4) -> persists and wins across back + reopen.
   await openPhoto(page, manifest.file1);
-  await page.locator('.tabs button[data-tab="0"]').click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   const stdCard = page.locator('.strip[data-recipes] .rc[data-card="builtin:4"]');
   await stdCard.scrollIntoViewIfNeeded();
   await stdCard.click();
@@ -236,9 +237,9 @@ async function runMain(page) {
   await backToGrid(page);
   const badgeAfterExplicit = await page.locator(`${cellOf(manifest.file1)} .edt`).count();
   await openPhoto(page, manifest.file1);
-  await page.locator('.tabs button[data-tab="0"]').click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await page.waitForTimeout(300);
-  const persistedHeading = (await page.locator('.panel.recipe .rname').textContent())?.trim() ?? '';
+  const persistedHeading = (await page.locator('.editor .recipe-head .rname').textContent())?.trim() ?? '';
   const persistedState = await editStateOf(page, manifest.file1);
   await backToGrid(page);
   out.steps.explicitWins = {
@@ -251,15 +252,21 @@ async function runMain(page) {
 
   // 6. Diptych (file2) and JPG-only photo do NOT adopt.
   await openPhoto(page, manifest.diptych);
-  await page.locator('.tabs button[data-tab="0"]').click();
-  const diptychPanelText = (await page.locator('.panel.recipe').innerText()).trim();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+  await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+  await page.waitForSelector('.recipe-info-sheet');
+  const diptychPanelText = (await page.locator('.recipe-info-sheet').innerText()).trim();
+  await page.locator('.recipe-info-sheet [data-act="close"]').click();
   const diptychState = await editStateOf(page, manifest.diptych);
   const diptychSide = await page.evaluate(async (s) => (await window.__gxrRequest(s))?.side ?? null, manifest.diptych);
   await backToGrid(page);
 
   await openPhoto(page, manifest.jpgOnly);
-  await page.locator('.tabs button[data-tab="0"]').click();
-  const jpgPanelText = (await page.locator('.panel.recipe').innerText()).trim();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+  await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+  await page.waitForSelector('.recipe-info-sheet');
+  const jpgPanelText = (await page.locator('.recipe-info-sheet').innerText()).trim();
+  await page.locator('.recipe-info-sheet [data-act="close"]').click();
   const jpgState = await editStateOf(page, manifest.jpgOnly);
   const jpgSide = await page.evaluate(async (s) => (await window.__gxrRequest(s))?.side ?? null, manifest.jpgOnly);
   out.steps.noAdopt = {
@@ -273,27 +280,29 @@ async function runMain(page) {
 
   // 7. Acceptance #3 (Reset in browser) on jpgOnly (starts clean, no badge).
   // Set exposure + curve point -> badge appears -> press 全部重置 -> both cleared, rev += 1, badge clears -> press again -> no-op.
-  await page.locator('.tabs button[data-tab="1"]').click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   await page.locator('.panel.adjust input[type="range"]').evaluate((input) => {
     input.value = '1.2';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  await page.locator('.tabs button[data-tab="5"]').click();
-  await page.waitForSelector('.curve-panel svg.curve');
-  const box = await page.locator('.curve-panel svg.curve').boundingBox();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="curves"]').click();
+  await page.waitForSelector('.curves-sheet svg.curve');
+  const box = await page.locator('.curves-sheet svg.curve').boundingBox();
   if (!box) throw new Error('curve svg has no bounding box');
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.3);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.25);
   await page.mouse.up();
   await page.waitForTimeout(200);
+  await page.locator('.curves-sheet [data-act="close"]').click();
   const beforeReset = await editStateOf(page, manifest.jpgOnly);
   await backToGrid(page);
   const badgeBeforeReset = await page.locator(`${cellOf(manifest.jpgOnly)} .edt`).count();
 
   await openPhoto(page, manifest.jpgOnly);
-  await page.locator('.tabs button[data-tab="1"]').click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   await page.getByRole('button', { name: '全部重置', exact: true }).click();
   await page.waitForTimeout(150);
   const afterFirstReset = await editStateOf(page, manifest.jpgOnly);
@@ -332,13 +341,16 @@ async function runWrongGen(page) {
     { timeout: 120_000 },
   );
   await openPhoto(page, manifest.file1);
-  await page.locator('.tabs button[data-tab="0"]').click();
-  await page.waitForSelector('.panel.recipe .rname');
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+  await page.waitForSelector('.editor .recipe-head .rname');
   await page.waitForTimeout(400);
-  const heading = (await page.locator('.panel.recipe .rname').textContent())?.trim() ?? '';
-  const panelText = (await page.locator('.panel.recipe').innerText()).trim();
-  const errorCode = await page.locator('.panel.recipe [data-camera-recipe-error]').getAttribute('data-camera-recipe-error').catch(() => null);
-  const errorText = (await page.locator('.panel.recipe [data-camera-recipe-error] .tx').textContent().catch(() => ''))?.trim() ?? '';
+  const heading = (await page.locator('.editor .recipe-head .rname').textContent())?.trim() ?? '';
+  const errorCode = await page.locator('.editor .recipe-head [data-camera-recipe-error]').getAttribute('data-camera-recipe-error').catch(() => null);
+  await page.locator('.editor .recipe-head [data-camera-recipe-error]').click();
+  await page.waitForSelector('.recipe-info-sheet');
+  const panelText = (await page.locator('.recipe-info-sheet').innerText()).trim();
+  const errorText = (await page.locator('.recipe-info-sheet [data-camera-recipe-error] .tx').textContent().catch(() => ''))?.trim() ?? '';
+  await page.locator('.recipe-info-sheet [data-act="close"]').click();
   const state = await editStateOf(page, manifest.file1);
   await backToGrid(page);
   await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
@@ -552,10 +564,10 @@ async function runRawOnlyOpenBeforeDat(page) {
     { timeout: 120_000 },
   );
   await openPhoto(page, manifest.file1);
-  await page.locator('.tabs button[data-tab="0"]').click();
-  await page.waitForSelector('.panel.recipe .rname');
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+  await page.waitForSelector('.editor .recipe-head .rname');
   await waitStageRecipeReady(page);
-  const heading = (await page.locator('.panel.recipe .rname').textContent())?.trim() ?? '';
+  const heading = (await page.locator('.editor .recipe-head .rname').textContent())?.trim() ?? '';
   const sideRecipe = await page.evaluate(async (s) => {
     const req = await window.__gxrRequest(s);
     return req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null;

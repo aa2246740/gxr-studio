@@ -48,8 +48,7 @@ async function back(page) {
 
 /** 调整页的一根滑块：设值，发 input 和 change（松手），和手指拖完一样。 */
 async function setKnob(page, key, value) {
-  const tab = page.locator('.tabs button', { hasText: '调整' });
-  await tab.click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   await page.locator(`.chips .chip[data-key="${key}"]`).click();
   await page.locator('.panel.adjust input[type="range"]').evaluate((input, v) => {
     input.value = String(v);
@@ -59,9 +58,9 @@ async function setKnob(page, key, value) {
 }
 
 async function knobShown(page, key) {
-  await page.locator('.tabs button', { hasText: '调整' }).click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   await page.locator(`.chips .chip[data-key="${key}"]`).click();
-  return page.locator('.panel.adjust .val').innerText();
+  return page.locator('.editor .band-adjust-hd .val').innerText();
 }
 
 /** 带着编辑的照片右下角的铅笔（04e），按格子的照片 id。 */
@@ -76,7 +75,8 @@ async function heads(page) {
 }
 
 async function copyDefaults(page) {
-  await page.locator('[data-act="copy"]').click();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="copy"]').click();
   await page.waitForSelector('[data-state="copy-options"]');
   const sheet = await text(page, '[data-state="copy-options"]');
   const button = await text(page, '[data-state="copy-options"] .btn.primary');
@@ -223,7 +223,8 @@ try {
   const target2 = manifest.picks[1];
   const zeroBefore = await editOf(page, target2);
   await openPhoto(page, src);
-  await page.locator('[data-act="copy"]').click();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="copy"]').click();
   await page.waitForSelector('[data-state="copy-options"]');
   await page.locator('[data-state="copy-options"] .optrow[data-group="adjust"]').click();
   const recipeOnly = await text(page, '[data-state="copy-options"] .btn.primary');
@@ -239,8 +240,8 @@ try {
   const noopApplied = await appliedBar(page);
   const pasted = await editOf(page, target2);
   await openPhoto(page, target2);
-  await page.locator('.tabs button', { hasText: '调整' }).click();
-  await page.locator('.hint-row .fbtn', { hasText: '全部重置' }).click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+  await page.locator('.panel.adjust [data-act="adjust-reset"]').click();
   await page.locator('.panel.adjust input[type="range"]').evaluate((input) => {
     input.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));

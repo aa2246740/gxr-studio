@@ -102,9 +102,9 @@ try {
       await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, s1, { timeout: 120_000 });
       await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
       const p1Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
-      await page.locator('.tabs button[data-tab="0"]').click();
+      await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForSelector('.panel.recipe');
-      const p1RecipeText = await page.locator('.panel.recipe').innerText();
+      const p1RecipeText = await page.locator('.editor .band').innerText();
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
 
@@ -115,9 +115,12 @@ try {
       await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
       const p2Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
       await page.locator('.stage .pv').screenshot({ path: manifest.stagePng });
-      await page.locator('.tabs button[data-tab="0"]').click();
+      await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForSelector('.panel.recipe');
-      const p2RecipeText = await page.locator('.panel.recipe').innerText();
+      await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+      await page.waitForSelector('.recipe-info-sheet');
+      const p2RecipeText = await page.locator('.recipe-info-sheet').innerText();
+      await page.locator('.recipe-info-sheet [data-act="close"]').click();
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
 

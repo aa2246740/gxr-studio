@@ -63,6 +63,7 @@ try {
     const screen = await page.locator('.app').getAttribute('data-screen');
     throw new Error(`${err instanceof Error ? err.message : err}\nscreen=${screen}\n${notes.join('\n')}\n${text.slice(0, 500)}`);
   }
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   const slider = page.locator('input[data-key="exposure_ev"]');
   await slider.scrollIntoViewIfNeeded();
   const box = await slider.boundingBox();
@@ -84,7 +85,7 @@ try {
       const b = el.getBoundingClientRect();
       return { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height };
     };
-    return { perf: r(document.querySelector('.perf')), lbl: r(document.querySelector('.stage .lbl')) };
+    return { perf: r(document.querySelector('.perf')), lbl: r(document.querySelector('.editor .lbl')) };
   });
   out.perfRect = rects.perf;
   out.lblRect = rects.lbl;

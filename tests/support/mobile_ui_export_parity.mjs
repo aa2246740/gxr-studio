@@ -42,9 +42,13 @@ async function waitCards(page) {
   );
 }
 
-/** 调整页的一个滑块：点它的标签，设值，发 input（和用户拖动一样只走 input）。返回滑块上实际的值。 */
+/** 调整页的一个滑块：点底栏「调整」、点参数片、设值、发 input（和用户拖动一样只走 input）。返回滑块上实际的值。 */
 async function setKnob(page, key, value) {
-  await page.locator(`.editor .chips .chip[data-key="${key}"]`).click();
+  if (!(await page.locator('.editor .panel.adjust:not([hidden])').count())) {
+    await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+    await page.waitForSelector('.editor .panel.adjust:not([hidden])');
+  }
+  await page.locator(`.editor .panel.adjust .chips .chip[data-key="${key}"]`).click();
   return page.locator('.editor .panel.adjust input[type="range"]').evaluate((input, v) => {
     input.value = String(v);
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -72,8 +76,11 @@ export async function edit(page, stem, plan) {
     const look = page.locator('.editor .strip[data-recipes] .rc[data-card^="look:"]:not(.lockd)').first();
     const id = await look.getAttribute('data-card');
     await pickCard(page, id);
+    await page.locator(`.editor .strip[data-recipes] .rc[data-card="${id}"]`).click();
+    await page.waitForSelector('.editor .recipe-fine:not([hidden])');
     const row = page.locator(`.editor .knobs[data-card="${id}"] .krow:not([data-knob="amount"])`).first();
     const knob = await row.getAttribute('data-knob');
+    await page.locator(`.editor .recipe-fine .knob-chips .chip[data-knob-chip="${knob}"]`).click();
     await row.locator('input').evaluate((input) => {
       input.value = String(Math.min(Number(input.max), Number(input.value) + 2));
       input.dispatchEvent(new Event('input', { bubbles: true }));

@@ -181,11 +181,19 @@ async function placePoint(page, session) {
   return point ? placed.after : null;
 }
 
+async function openCurves(page) {
+  const sheet = page.locator('.curves-sheet');
+  if ((await sheet.count()) && (await sheet.isVisible())) return;
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="curves"]').click();
+  await page.waitForSelector('.curves-sheet svg.curve');
+}
+
 async function runViewport(page, session, viewport) {
   const label = `${viewport.width}x${viewport.height}`;
   await page.setViewportSize(viewport);
   await frame(page);
-  await page.getByRole('tab', { name: '曲线', exact: true }).click();
+  await openCurves(page);
   await page.locator('.editor .curve-btn[data-channel="master"]').click();
   await page.waitForSelector('.editor svg.curve[data-channel="master"]');
   const pressed = await page.locator('.editor .curve-btn[data-channel="master"]').getAttribute('aria-pressed');
@@ -288,11 +296,11 @@ async function dragAttr(page) {
   return page.evaluate(() => document.querySelector('.app')?.getAttribute('data-drag') ?? '');
 }
 
-/** 拖到一半切走「曲线」，再在别处松手。草稿必须丢掉，之后滑块仍能进入 03d。 */
+/** 拖到一半关掉「曲线」工作表，再在别处松手。草稿必须丢掉，之后滑块仍能进入 03d。 */
 async function runInterrupted(page, session) {
   await page.setViewportSize(VIEWPORTS[0]);
   await frame(page);
-  await page.getByRole('tab', { name: '曲线', exact: true }).click();
+  await openCurves(page);
   await page.locator('.editor .curve-btn[data-channel="master"]').click();
   await resetCurve(page);
   await page.locator('.editor svg.curve').scrollIntoViewIfNeeded();
@@ -305,13 +313,16 @@ async function runInterrupted(page, session) {
   await frame(page);
   const midDrag = await readCurve(page);
   check(mid(midDrag.points) != null, 'interrupt: drag did not leave the identity line');
-  await page.getByRole('tab', { name: '调整', exact: true }).evaluate((node) => node.click());
+  await page.locator('.curves-sheet [data-act="close"]').evaluate((node) => node.click());
   await touch(session, 'touchEnd', 24, 80);
   await frame(page);
-  const after = await readCurve(page);
   const drag = await dragAttr(page);
+  await openCurves(page);
+  const after = await readCurve(page);
+  await page.locator('.curves-sheet [data-act="close"]').click();
   check(after.points.length === 2, `interrupt: curve kept ${after.points.length} points after leaving the tab`);
   check(drag === '0', `interrupt: data-drag is ${JSON.stringify(drag)} after release`);
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   const slider = page.locator('input[data-key="exposure_ev"]');
   await slider.scrollIntoViewIfNeeded();
   const box = await slider.boundingBox();

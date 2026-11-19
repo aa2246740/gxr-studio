@@ -372,7 +372,7 @@ def test_mobile_ui_export_flows(tmp_path: Path) -> None:
     steps = report["steps"]
 
     single = steps["single"]
-    check(single["editorButton"] == "导出这张", "editor button without 下一步做")
+    check(single["editorButton"] == "存到相册", "editor button without 下一步做")
     check("导出 0 张" in single["selectBar"] and "导出 0 张 · 下一步做" not in single["selectBar"], "selection bar export without 下一步做")
     check(" × " in single["sizeOriginal"] and single["sizeOriginal"].endswith("像素") or "像素 · " in single["sizeOriginal"], "size line")
     check(single["sizeSmall"].startswith("1600 × ") or " × 1600 像素" in single["sizeSmall"], "small tier is 1600 on the long edge")
