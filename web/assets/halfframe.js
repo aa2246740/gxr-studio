@@ -3,7 +3,8 @@
 
 const FULL_WIDTH = 4288;
 const FULL_HEIGHT = 2848;
-const HALF_X0 = 1100;
+const HALF_X0_JPG = 1100;
+const HALF_X0_RAW = 1099;
 const HALF_W = 2088;
 const SEAM_X0 = 2088;
 const SEAM_X1 = 2200; // 不含，宽 112 像素（2088..2199）
@@ -85,11 +86,16 @@ function shotById(photos, partners) {
   return map;
 }
 
-// 图库折叠：配对的第 1 张收起，每对只显示第 2 张（按第 2 张的拍摄时间排）。
-// 跨页拆开时，如果第 1 张在本页、第 2 张在 partners 里，把第 2 张补进来并按第 2 张拍摄时间排序。
-export function foldPhotos(photos, { partners = new Map(), halfframeOnly = false } = {}) {
+function matchesDate(p, activeDate) {
+  return activeDate == null || p.date === activeDate;
+}
+
+// 图库折叠：配对的第 1 张收起，每对只显示第 2 张（按第 2 张的拍摄日期与时间排）。
+// 跨页拆开时，如果第 1 张在本页、第 2 张在 partners 里，只有第 2 张也属于当前日期筛选（或全部照片）才补进来。
+export function foldPhotos(photos, { partners = new Map(), halfframeOnly = false, activeDate = null } = {}) {
   const list = photos || [];
   const byId = shotById(list, partners);
+  const inList = new Set(list.filter((x) => x && x.id).map((x) => x.id));
   const seen = new Set();
   const out = [];
   let promoted = false;
@@ -99,7 +105,7 @@ export function foldPhotos(photos, { partners = new Map(), halfframeOnly = false
     if (isPairFirst(p)) {
       const pid = p.pair.partner_id;
       const p2 = pid ? byId.get(pid) : null;
-      if (p2 && !seen.has(p2.id) && !list.some((x) => x && x.id === p2.id)) {
+      if (p2 && matchesDate(p2, activeDate) && !seen.has(p2.id) && !inList.has(p2.id)) {
         seen.add(p2.id);
         out.push({ p: p2, idx: i });
         promoted = true;
@@ -122,13 +128,17 @@ export function foldPhotos(photos, { partners = new Map(), halfframeOnly = false
   return halfframeOnly ? items.filter((p) => isPairSecond(p)) : items;
 }
 
-export function pairCount(photos, { partners = new Map() } = {}) {
+export function pairCount(photos, { partners = new Map(), activeDate = null } = {}) {
   const list = photos || [];
   const byId = shotById(list, partners);
   const seconds = new Set();
   for (const p of list) {
-    if (isPairSecond(p)) seconds.add(p.id);
-    else if (isPairFirst(p) && p.pair.partner_id && byId.has(p.pair.partner_id)) seconds.add(p.pair.partner_id);
+    if (isPairSecond(p) && matchesDate(p, activeDate)) {
+      seconds.add(p.id);
+    } else if (isPairFirst(p) && p.pair.partner_id) {
+      const p2 = byId.get(p.pair.partner_id);
+      if (p2 && matchesDate(p2, activeDate)) seconds.add(p2.id);
+    }
   }
   return seconds.size;
 }
@@ -194,6 +204,16 @@ export function selectionStats(ids, photos = [], partners = new Map()) {
   return { targets, items: targets.length, pairs };
 }
 
+// 统一的选区量词：纯半格用「N 对半格」，混合用「N 项」，纯普通用「N 张」。
+export function selectionNoun(stats) {
+  if (typeof stats === 'number') return `${stats} 张`;
+  const items = Number(stats?.items || 0);
+  const pairs = Number(stats?.pairs || 0);
+  if (pairs > 0 && items === pairs) return `${pairs} 对半格`;
+  if (pairs > 0) return `${items} 项`;
+  return `${items} 张`;
+}
+
 export function isUntouchedPairRecipe(view) {
   return !!(view && isPairSecond(view.photo) && view.ed && (view.ed.recipeFromCamera || !view.ed.recipe));
 }
@@ -209,16 +229,27 @@ export function shortRecipeLabel(tag) {
   return [tag.unit_label || tag.unit, pos].filter(Boolean).join(' ') || '未标记';
 }
 
-export function halfFirstCropRect(w, h) {
-  const ratioX = HALF_X0 / FULL_WIDTH;
+export function usesRawRenderBase(photo, ed = null) {
+  if (!photo || !photo.has_raw) return false;
+  if (ed && ed.label === 'camera-jpg') return false;
+  if (ed && (ed.label === 'prediction' || ed.label === 'neutral')) return true;
+  if (photo.has_jpg === false) return true;
+  return !!(ed && ed.recipe);
+}
+
+export function halfFirstCropRect(w, h, { raw = false, orientation = 1 } = {}) {
+  const x0Sensor = raw ? HALF_X0_RAW : HALF_X0_JPG;
+  const ori = Number(orientation || 1);
+  const x0 = ori === 3 || ori === 8 ? FULL_WIDTH - x0Sensor - HALF_W : x0Sensor;
+  const ratioX = x0 / FULL_WIDTH;
   const ratioW = HALF_W / FULL_WIDTH;
   if ((h || 0) > (w || 0)) return { x: 0, y: ratioX, w: 1, h: ratioW };
   return { x: ratioX, y: 0, w: ratioW, h: 1 };
 }
 
-export function isHalfFirstCropRect(rect, w, h) {
+export function isHalfFirstCropRect(rect, w, h, opts = {}) {
   if (!rect) return false;
-  const exp = halfFirstCropRect(w, h);
+  const exp = halfFirstCropRect(w, h, opts);
   const eps = 0.004;
   return (
     Math.abs(rect.x - exp.x) <= eps
@@ -284,4 +315,99 @@ export function halfframeBatchModeWord(mode) {
   if (mode === 'singles') return '按两张单格导出';
   if (mode === 'both') return '按双联和单格导出';
   return '按双联导出';
+}
+
+export function batchExportHeadline(progress, photos = [], halfframe = 'diptych') {
+  const results = Array.isArray(progress?.results) ? progress.results : [];
+  const ok = results.filter((r) => !r.error);
+  if (!ok.length) return '已导出 0 张';
+  const fileTotal = ok.reduce((n, r) => n + (Array.isArray(r.files) && r.files.length ? r.files.length : 1), 0);
+  const declaredPairs = Number(progress?.pairs || 0);
+  if (declaredPairs <= 0) return `已导出 ${ok.length} 张`;
+  const byId = shotById(photos, null);
+  let okPairs = 0;
+  let knownOk = 0;
+  for (const r of ok) {
+    if (Array.isArray(r.files) && r.files.length > 1) {
+      okPairs += 1;
+      knownOk += 1;
+      continue;
+    }
+    const p = r.id ? byId.get(r.id) : null;
+    if (p) {
+      knownOk += 1;
+      if (isPairSecond(p)) okPairs += 1;
+    }
+  }
+  let badPairs = 0;
+  for (const r of results) {
+    if (!r.error) continue;
+    const p = r.id ? byId.get(r.id) : null;
+    if (p && isPairSecond(p)) badPairs += 1;
+  }
+  const exportedPairs = knownOk === ok.length
+    ? okPairs
+    : Math.max(0, Math.min(declaredPairs - badPairs, ok.length));
+  return exportedPairs > 0
+    ? `导出 ${fileTotal} 张，其中 ${exportedPairs} 对半格${halfframeBatchModeWord(halfframe)}`
+    : `已导出 ${ok.length} 张`;
+}
+
+// 增量同步按日期分组的网格：保留已有且仍在可见列表里的 .cell 节点（不重新解码缩略图），
+// 只移除被折进半格对的第 1 张并按顺序插入新增节点。
+export function patchDayGrid(wrap, vis, { h, createCell, syncCell, fmtDate, countOn, unit }) {
+  const groups = [];
+  const byDate = new Map();
+  const desiredIds = new Set();
+  for (const p of vis) {
+    desiredIds.add(p.id);
+    const dateKey = String(p.date);
+    let g = byDate.get(dateKey);
+    if (!g) {
+      g = { dateKey, date: p.date, items: [] };
+      byDate.set(dateKey, g);
+      groups.push(g);
+    }
+    g.items.push(p);
+  }
+  const existingGroups = new Map();
+  const existingCells = new Map();
+  for (const child of [...wrap.children]) {
+    if (!child.classList.contains('day') || !byDate.has(child.dataset.date)) {
+      child.remove();
+      continue;
+    }
+    existingGroups.set(child.dataset.date, child);
+    const cellsEl = child.lastElementChild;
+    if (!cellsEl) continue;
+    for (const el of [...cellsEl.children]) {
+      const id = el.dataset?.id;
+      if (!id || !desiredIds.has(id)) el.remove();
+      else existingCells.set(id, el);
+    }
+  }
+  for (let gi = 0; gi < groups.length; gi += 1) {
+    const g = groups[gi];
+    let group = existingGroups.get(g.dateKey);
+    const countLabel = `${countOn(g.date)} ${unit}`;
+    if (!group) {
+      const hid = `day-${g.date || 'unknown'}`;
+      group = h('div', { class: 'day', role: 'group', 'aria-labelledby': hid },
+        h('h3', { class: 'num', id: hid }, g.date ? fmtDate(g.date) : '未知日期', h('span', {}, countLabel)),
+        h('div', { class: 'cells' }));
+      group.dataset.date = g.dateKey;
+    } else {
+      const span = group.querySelector('h3 > span');
+      if (span && span.textContent !== countLabel) span.textContent = countLabel;
+    }
+    if (wrap.children[gi] !== group) wrap.insertBefore(group, wrap.children[gi] || null);
+    const cellsEl = group.lastElementChild;
+    for (let ci = 0; ci < g.items.length; ci += 1) {
+      const p = g.items[ci];
+      let el = existingCells.get(p.id);
+      if (el) syncCell?.(el, p);
+      else el = createCell(p);
+      if (cellsEl.children[ci] !== el) cellsEl.insertBefore(el, cellsEl.children[ci] || null);
+    }
+  }
 }

@@ -103,4 +103,158 @@ const hmath = await load('histogram_math.js');
   assert.equal(res.crushed, 0, `expected 0 crushed pixels when seam excluded, got ${res.crushed}`);
 }
 
+// 4. P3-6: Midnight-crossing pair is always grouped by photo 2's date
+{
+  const p1 = { id: 'm1', name: 'M1', captured_at: '2026-11-01T23:59:58', date: '2026-11-01', half_first: true, pair: { role: 'first', partner_id: 'm2' } };
+  const p2 = { id: 'm2', name: 'M2', captured_at: '2026-11-02T00:00:05', date: '2026-11-02', diptych: true, pair: { role: 'second', partner_id: 'm1' } };
+  const partners = new Map([['m2', p2], ['m1', p1]]);
+
+  // Viewing day D (2026-11-01): photo 1 is folded away and photo 2 (day D+1) must NOT be promoted into day D
+  const day1 = hf.foldPhotos([p1], { partners, activeDate: '2026-11-01' });
+  assert.deepEqual(day1.map((x) => x.id), [], 'midnight pair must not appear in photo 1 date view');
+  assert.equal(hf.pairCount([p1], { partners, activeDate: '2026-11-01' }), 0);
+
+  // Viewing day D+1 (2026-11-02): photo 2 appears and counts as 1 pair
+  const day2 = hf.foldPhotos([p2], { partners, activeDate: '2026-11-02' });
+  assert.deepEqual(day2.map((x) => x.id), ['m2']);
+  assert.equal(hf.pairCount([p2], { partners, activeDate: '2026-11-02' }), 1);
+
+  // Viewing ALL: photo 2 is kept with date 2026-11-02
+  const all = hf.foldPhotos([p2, p1], { partners, activeDate: null });
+  assert.deepEqual(all.map((x) => [x.id, x.date]), [['m2', '2026-11-02']]);
+}
+
+// 5. P3-4: 「取半格」 uses DNG column 1099 on RAW render base and 1100 on camera-JPG base (oriented)
+{
+  assert.equal(typeof hf.usesRawRenderBase, 'function');
+  assert.equal(hf.usesRawRenderBase({ has_raw: true, has_jpg: true }, { label: 'prediction', recipe: { slot: 1 } }), true);
+  assert.equal(hf.usesRawRenderBase({ has_raw: true, has_jpg: true }, { label: 'camera-jpg', recipe: null }), false);
+  assert.equal(hf.usesRawRenderBase({ has_raw: false, has_jpg: true }, { label: 'camera-jpg', recipe: null }), false);
+  assert.equal(hf.usesRawRenderBase({ has_raw: true, has_jpg: false }, { label: 'neutral', recipe: null }), true);
+
+  const rawOri1 = hf.halfFirstCropRect(4288, 2848, { raw: true, orientation: 1 });
+  assert.equal(Math.round(rawOri1.x * 4288), 1099);
+  assert.equal(Math.round(rawOri1.w * 4288), 2088);
+
+  const jpgOri1 = hf.halfFirstCropRect(4288, 2848, { raw: false, orientation: 1 });
+  assert.equal(Math.round(jpgOri1.x * 4288), 1100);
+  assert.equal(Math.round(jpgOri1.w * 4288), 2088);
+
+  const rawOri6 = hf.halfFirstCropRect(2848, 4288, { raw: true, orientation: 6 });
+  assert.equal(Math.round(rawOri6.y * 4288), 1099);
+  assert.equal(Math.round(rawOri6.h * 4288), 2088);
+
+  const rawOri8 = hf.halfFirstCropRect(2848, 4288, { raw: true, orientation: 8 });
+  assert.equal(Math.round(rawOri8.y * 4288), 1101);
+  assert.equal(Math.round(rawOri8.h * 4288), 2088);
+
+  const jpgOri8 = hf.halfFirstCropRect(2848, 4288, { raw: false, orientation: 8 });
+  assert.equal(Math.round(jpgOri8.y * 4288), 1100);
+  assert.equal(Math.round(jpgOri8.h * 4288), 2088);
+}
+
+// 6. P3-5: selectionNoun unit consistency
+{
+  assert.equal(typeof hf.selectionNoun, 'function');
+  assert.equal(hf.selectionNoun({ items: 1, pairs: 1 }), '1 对半格');
+  assert.equal(hf.selectionNoun({ items: 3, pairs: 3 }), '3 对半格');
+  assert.equal(hf.selectionNoun({ items: 2, pairs: 1 }), '2 项');
+  assert.equal(hf.selectionNoun({ items: 2, pairs: 0 }), '2 张');
+}
+
+// 7. P3-2: batch export summary never claims pairs were exported when all items fail
+{
+  assert.equal(typeof hf.batchExportHeadline, 'function');
+  const pairPhoto = { id: 'p2', diptych: true, pair: { role: 'second', partner_id: 'p1' } };
+  const xpanPhoto = { id: 'x1' };
+
+  const allFail = hf.batchExportHeadline(
+    { pairs: 1, results: [{ id: 'p2', error: 'dest_unwritable' }, { id: 'x1', error: 'dest_unwritable' }] },
+    [pairPhoto, xpanPhoto],
+    'diptych',
+  );
+  assert.equal(allFail, '已导出 0 张');
+
+  const pairFailedOnly = hf.batchExportHeadline(
+    { pairs: 1, results: [{ id: 'p2', error: 'dest_unwritable' }, { id: 'x1', path: '/tmp/x1.jpg' }] },
+    [pairPhoto, xpanPhoto],
+    'diptych',
+  );
+  assert.equal(pairFailedOnly, '已导出 1 张');
+
+  const pairOk = hf.batchExportHeadline(
+    { pairs: 1, results: [{ id: 'p2', path: '/tmp/p2.jpg' }, { id: 'x1', path: '/tmp/x1.jpg' }] },
+    [pairPhoto, xpanPhoto],
+    'diptych',
+  );
+  assert.equal(pairOk, '导出 2 张，其中 1 对半格按双联导出');
+}
+
+// 8. P3-6: patchDayGrid reuses surviving cell elements without recreating them
+{
+  const makeEl = (tag, cls = '') => {
+    const el = {
+      tag,
+      className: cls,
+      dataset: {},
+      children: [],
+      textContent: '',
+      parent: null,
+      classList: { contains: (c) => el.className.split(/\s+/).includes(c) },
+      get lastElementChild() { return el.children[el.children.length - 1] || null; },
+      append(...nodes) { for (const n of nodes) el.insertBefore(n, null); },
+      insertBefore(node, ref) {
+        if (node.parent) node.remove();
+        node.parent = el;
+        const idx = ref ? el.children.indexOf(ref) : -1;
+        if (idx >= 0) el.children.splice(idx, 0, node);
+        else el.children.push(node);
+      },
+      remove() {
+        if (!el.parent) return;
+        const i = el.parent.children.indexOf(el);
+        if (i >= 0) el.parent.children.splice(i, 1);
+        el.parent = null;
+      },
+      querySelector(sel) {
+        if (sel === 'h3 > span') return el.children.find((c) => c.tag === 'h3')?.children.find((c) => c.tag === 'span') || null;
+        return null;
+      },
+    };
+    return el;
+  };
+  const hStub = (tag, attrs = {}, ...kids) => {
+    const el = makeEl(tag, attrs.class || '');
+    for (const k of kids) {
+      if (typeof k === 'string') el.textContent += k;
+      else if (k) el.append(k);
+    }
+    return el;
+  };
+  const wrap = makeEl('div', 'grid');
+  const created = [];
+  const createCell = (p) => {
+    const c = makeEl('div', 'cell');
+    c.dataset.id = p.id;
+    created.push(p.id);
+    return c;
+  };
+  const a = { id: 'a', date: '2026-11-18' };
+  const p1 = { id: 'p1', date: '2026-11-18' };
+  const p2 = { id: 'p2', date: '2026-11-18' };
+  const b = { id: 'b', date: '2026-11-18' };
+  const opts = { h: hStub, createCell, syncCell: () => {}, fmtDate: (d) => d, countOn: () => 2, unit: '张' };
+
+  hf.patchDayGrid(wrap, [a, p1], opts);
+  const cellA = wrap.children[0].lastElementChild.children[0];
+  assert.deepEqual(created, ['a', 'p1']);
+
+  // Page 2 brings p2 (folding out p1) and b: cellA must be reused by identity, p1 removed, p2 & b added
+  hf.patchDayGrid(wrap, [a, p2, b], opts);
+  const cells = wrap.children[0].lastElementChild.children;
+  assert.deepEqual(cells.map((c) => c.dataset.id), ['a', 'p2', 'b']);
+  assert.equal(cells[0], cellA, 'surviving cell node must be reused without recreation');
+  assert.deepEqual(created, ['a', 'p1', 'p2', 'b']);
+}
+
 console.log('OK');

@@ -339,7 +339,7 @@ function finishCrop() {
   setTab(view.lastTab && view.lastTab !== 'crop' ? view.lastTab : 'recipe');
 }
 
-// // 服务器出图时画面顶上一条细进度条（不挡画面、不挡操作）；150ms 内出完就不显示（busy.js 的分档）
+// 服务器出图时画面顶上一条细进度条（不挡画面、不挡操作）；150ms 内出完就不显示（busy.js 的分档）
 function paintProgress(v) {
   // 编辑记录还在读、或服务器在出图
   const busy = v.ed ? !!v.ed.busy : !v.edError;

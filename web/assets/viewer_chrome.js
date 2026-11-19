@@ -13,7 +13,7 @@ const FILM_WINDOW = 40;
 const PAIR_VIEWS = [['diptych', '双联'], ['first', '第 1 张'], ['second', '第 2 张']];
 
 export function viewerPhotoList() {
-  return foldPhotos(state.photos, { partners: state.partners });
+  return foldPhotos(state.photos, { partners: state.partners, activeDate: state.galleryDate });
 }
 
 export function paintTabMods(v, tabs) {
@@ -105,7 +105,7 @@ export function renderViewbar(v, actions) {
     b.dataset.bg = id;
     return b;
   });
-  const orig = button('', { kind: 'icon', ico: 'eye', title: '原图（\\\\，按住空格临时看）', onclick: () => { v.pinOriginal = !v.showOriginal; actions.setShowOriginal(!v.showOriginal); } });
+  const orig = button('', { kind: 'icon', ico: 'eye', title: '原图（\\，按住空格临时看）', onclick: () => { v.pinOriginal = !v.showOriginal; actions.setShowOriginal(!v.showOriginal); } });
   const split = button('', { kind: 'icon', ico: 'columns-2', title: '左右对比（Y）', onclick: () => actions.setSplit(!v.split) });
   const pairSeg = isPairSecond(v.photo)
     ? h('div', { class: 'seg', role: 'group', 'aria-label': '半格视图' },
@@ -176,7 +176,7 @@ export function renderFilmstrip(v) {
     const badges = [];
     if (pair) badges.push(h('span', { class: 'badge hf', title: '半格一对' }, icon('columns-2'), '半格'));
     if (p.hdr === 'ready') badges.push(h('span', { class: 'badge hdr', title: '图库里已生成 HDR 版本' }, 'HDR'));
-    const btn = h('button', {
+    return h('button', {
       type: 'button',
       class: pair ? 'fthumb pair' : 'fthumb',
       title: pair ? '半格一对' : p.name,
@@ -184,8 +184,6 @@ export function renderFilmstrip(v) {
       'aria-current': cur ? 'true' : null,
       onclick: () => { if (!cur) location.hash = `#/photo/${p.id}`; },
     }, img, badges.length ? h('span', { class: 'b' }, ...badges) : null);
-    btn.dataset.id = p.id;
-    return btn;
   });
   v.film.replaceChildren(...items);
   const current = v.film.querySelector('[aria-current="true"]');

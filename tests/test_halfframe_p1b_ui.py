@@ -112,8 +112,73 @@ def test_render_pair_single_views_on_real_card250(
         assert client.get(f"/api/photos/{xpan}/render?stage=final&view=first").status_code == 422
 
 
+def test_import_time_pairing_after_name_conflict(
+    lib: Library,
+    volumes: Path,
+) -> None:
+    """P3-1：同文件名冲突改名（_{sha8}）的半格一对在导入当下立即配对，不必等下次启动回填。"""
+    pairs = _sorted_pairs(_field_folder("card250"))
+    # 第一次导入第 1 对（R...1, R...2）
+    _stage_volume_pairs(volumes, pairs[:2])
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+
+    # 模拟相机计数重置：把第 2 对真实文件放到另一张卡（CARD2）并改名成与第 1 对相同的卡上文件名，触发导入冲突后缀 _{sha8}
+    dcim2 = volumes / "CARD2" / "DCIM" / "100RICOH"
+    dcim2.mkdir(parents=True, exist_ok=True)
+    for (dst_dng, dst_jpg), (src_dng, src_jpg) in zip(pairs[:2], pairs[2:4], strict=True):
+        shutil.copy2(src_jpg, dcim2 / dst_jpg.name)
+        shutil.copy2(src_dng, dcim2 / dst_dng.name)
+
+    card2 = next(c for c in find_cards((volumes,)) if c.root.name == "CARD2")
+    run_import(lib, card2, ImportOptions(min_free_bytes=0))
+
+    # 不做任何回填或重启，直接读取刚导入后的照片列表：改名后的两张必须已成对
+    shots = lib.list_shots(limit=20)
+    by_idx = _index_shots_by_jpg_sha(lib, pairs[:4])
+    renamed_p1 = next(s for s in shots if s["shot_id"] == by_idx[3]["shot_id"])
+    renamed_p2 = next(s for s in shots if s["shot_id"] == by_idx[4]["shot_id"])
+    assert "_" in renamed_p1["name"] and "_" in renamed_p2["name"], (renamed_p1["name"], renamed_p2["name"])
+    assert renamed_p1.get("pair") and renamed_p1["pair"]["role"] == "first", renamed_p1
+    assert renamed_p2.get("pair") and renamed_p2["pair"]["role"] == "second", renamed_p2
+    assert renamed_p1["pair"]["partner_id"] == renamed_p2["shot_id"]
+    assert renamed_p2["pair"]["partner_id"] == renamed_p1["shot_id"]
+
+
+def test_render_jpeg_only_photo1_single_views(
+    settings: Any,
+    lib: Library,
+    volumes: Path,
+) -> None:
+    """P2-2：第 1 张只有 JPG、第 2 张 RAW+JPG 成对时，view=first 返回第 1 张相机 JPG（200，无黑缝，非 409），view=second 不变。"""
+    _clear_desktop_cache()
+    pairs = _sorted_pairs(_field_folder("card250"))
+    # 第 1 张只放 JPG（去掉 DNG），第 2 张放 RAW+JPG
+    dcim = volumes / "CARD" / "DCIM" / "100RICOH"
+    dcim.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(pairs[0][1], dcim / pairs[0][1].name)
+    shutil.copy2(pairs[1][0], dcim / pairs[1][0].name)
+    shutil.copy2(pairs[1][1], dcim / pairs[1][1].name)
+    _setup_g250_calibrated_home(settings)
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+    by_idx = _index_shots_by_jpg_sha(lib, [pairs[0], pairs[1]])
+    p2 = by_idx[2]["shot_id"]
+    lib.close()
+
+    with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
+        r1 = client.post(f"/api/photos/{p2}/render?stage=final&size=preview&view=first", json={})
+        assert r1.status_code == 200, f"expected 200 for JPEG-only photo 1, got {r1.status_code}: {r1.text}"
+        with Image.open(io.BytesIO(r1.content)) as im_1:
+            img1 = np.asarray(im_1.convert("RGB"))
+        _, c1_core, _ = _seam_core(img1)
+        assert float(c1_core.mean()) > 5.0, "view=first should render photo 1 camera JPG, not diptych seam"
+
+        r2 = client.post(f"/api/photos/{p2}/render?stage=final&size=preview&view=second", json={})
+        assert r2.status_code == 200, r2.text
+        assert r2.headers.get("x-gxr-label") == "prediction", r2.headers
+
+
 def test_halfframe_js_helpers() -> None:
-    """Node 单元测试：折叠、跨页补齐、选区展开与去重、角标、取半格裁切、直方图排除黑缝。"""
+    """Node 单元测试：折叠、跨页补齐、跨午夜、选区展开与去重、角标、取半格裁切、直方图排除黑缝、批量结果与措辞。"""
     assert shutil.which("node") is not None, "node is required"
     proc = subprocess.run(
         ["node", str(UNIT_JS), str(WEB / "assets")],

@@ -194,10 +194,13 @@ def _prepare_render_target(
         except ValueError as exc:
             raise ApiError(422, "bad_view", "找不到配对照片的源文件。") from exc
         half = s1 if view == "first" else s2
+        edit, _side = _read_edit(c, shot, inherit_recipe=False)
+        merged = _merge(edit, body)
         if "dng" in half["files"]:
             half = {**half, "files": {k: v for k, v in half["files"].items() if k != "jpg"}}
-        edit, _side = _read_edit(c, shot, inherit_recipe=False)
-        edit = half_edit_for(c.render, half, _merge(edit, body))
+            edit = half_edit_for(c.render, half, merged)
+        else:
+            edit = replace(merged, recipe=None)
         return half, replace(edit, geometry=None, frame=None, stamp=None), {}, stage or "final"
 
     inherit = stage != "original" and not (body is not None and "recipe" in body.model_fields_set)

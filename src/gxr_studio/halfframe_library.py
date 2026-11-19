@@ -131,17 +131,23 @@ def _fetch_target_jpg_candidates(db: sqlite3.Connection, lock: Any) -> list[dict
 
 
 def _fetch_target_jpg_by_names(db: sqlite3.Connection, lock: Any, names: list[str]) -> list[dict[str, Any]]:
-    """按相邻文件名（最多两个 `WHERE s.name IN (?, ?)`）查 4288×2848 候选 JPG，避免全表扫描。"""
+    """按相邻文件名（含导入冲突改名后缀 `_<sha8>`）查 4288×2848 候选 JPG，避免全表扫描。"""
     if not names:
         return []
     marks = ",".join("?" * len(names))
+    like_clauses = ["s.name LIKE ? ESCAPE '\\'"] * len(names)
+    params: list[str] = [*names]
+    for name in names:
+        esc = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params.append(f"{esc}\\_%")
+    where = f"s.name IN ({marks}) OR " + " OR ".join(like_clauses)
     with lock:
         rows = db.execute(
             f"""SELECT s.shot_id, s.name, s.orientation, s.width, s.height, f.relpath, f.sha256
                 FROM shots s
                 JOIN files f ON f.shot_id = s.shot_id
-                WHERE f.kind = 'jpg' AND s.name IN ({marks})""",  # nosec B608
-            names,
+                WHERE f.kind = 'jpg' AND ({where})""",  # nosec B608
+            params,
         ).fetchall()
     return [
         {

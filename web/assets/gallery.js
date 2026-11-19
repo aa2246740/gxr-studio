@@ -13,7 +13,7 @@ import { fetchAllPhotos } from './photos.js';
 import { delayed } from './busy.js';
 import {
   expandSelectionIds, foldPhotos, halfframeBadge, isPairSecond, isPhotoSelected,
-  missingPartnerIds, pairCount, selectionStats, togglePairSelection,
+  missingPartnerIds, pairCount, pairMemberIds, patchDayGrid, selectionNoun, selectionStats, togglePairSelection,
 } from './halfframe.js';
 
 const ALL = null;
@@ -103,7 +103,17 @@ function visiblePhotos() {
   return foldPhotos(state.photos, {
     partners: state.partners,
     halfframeOnly: state.galleryFilter === 'halfframe',
+    activeDate: state.galleryDate,
   });
+}
+
+function visibleSelectionSet() {
+  const kept = new Set();
+  for (const p of visiblePhotos()) {
+    if (!isPhotoSelected(state.selection, p)) continue;
+    for (const id of pairMemberIds(p)) kept.add(id);
+  }
+  return kept;
 }
 
 function findKnownPhoto(id) {
@@ -111,7 +121,7 @@ function findKnownPhoto(id) {
 }
 
 function currentSelectionStats() {
-  return selectionStats(state.selection, state.photos, state.partners);
+  return selectionStats(visibleSelectionSet(), state.photos, state.partners);
 }
 
 // 后台刷新（导入完成、重建索引后）：网格已经有照片时不放骨架，读完整列表再一次换上；列表没变就什么都不动，缩略图不闪
@@ -147,7 +157,6 @@ function sideItem(label, count, date, numeric = false) {
           setGalleryFilter(null);
           return;
         }
-        state.galleryFilter = null;
         changeDate(date);
       },
     },
@@ -157,26 +166,57 @@ function sideItem(label, count, date, numeric = false) {
   return btn;
 }
 
-function setGalleryFilter(filter) {
-  if (state.galleryFilter === filter) return;
+function setGalleryFilter(filter, restore = null) {
+  if (!restore && state.galleryFilter === filter) return;
   if (filter === 'halfframe' && state.galleryDate !== ALL) {
+    const prevFilter = state.galleryFilter;
     state.galleryFilter = 'halfframe';
-    changeDate(ALL, null, { keepFilter: true });
+    changeDate(ALL, null, { keepFilter: true, prevFilter });
     return;
   }
+  const saved = { filter: state.galleryFilter, ids: [...state.selection], anchor: anchorId, focus: focusId };
   state.galleryFilter = filter;
   focusId = null;
+  if (restore) {
+    anchorId = restore.anchor;
+    const expanded = expandSelectionIds(restore.ids, state.photos, state.partners);
+    setSelection(new Set([...expanded].filter((id) => state.photos.some((p) => p.id === id) || state.partners.has(id))));
+  } else if (state.selection.size) {
+    const kept = visibleSelectionSet();
+    const dropped = saved.ids.filter((id) => !kept.has(id));
+    if (dropped.length) {
+      const droppedStats = selectionStats(dropped, state.photos, state.partners);
+      if (anchorId && !kept.has(anchorId)) anchorId = null;
+      setSelection(kept);
+      undoFilterToast?.();
+      undoFilterToast = toast(`切换筛选，已清除 ${selectionNoun(droppedStats)}选择`, 'info', {
+        timeout: 0,
+        action: { label: '恢复选择', run: () => setGalleryFilter(saved.filter, saved) },
+      });
+    }
+  }
   renderDates();
   renderLibbar();
   renderGrid();
   updateCount();
+  if (restore) {
+    const vis = visiblePhotos();
+    if (vis.length) moveFocus(vis.some((p) => p.id === restore.focus) ? restore.focus : vis[0].id);
+  }
 }
 
-async function changeDate(date, restore = null, { keepFilter = false } = {}) {
-  const saved = { date: state.galleryDate, ids: [...state.selection], anchor: anchorId, focus: focusId };
+async function changeDate(date, restore = null, { keepFilter = false, prevFilter = undefined } = {}) {
+  const saved = {
+    date: state.galleryDate,
+    filter: prevFilter !== undefined ? prevFilter : state.galleryFilter,
+    ids: [...state.selection],
+    anchor: anchorId,
+    focus: focusId,
+  };
   const savedStats = selectionStats(saved.ids, state.photos, state.partners);
   state.galleryDate = date;
-  if (!keepFilter) state.galleryFilter = null;
+  if (restore) state.galleryFilter = restore.filter ?? null;
+  else if (!keepFilter) state.galleryFilter = null;
   focusId = null;
   state.photos = [];
   state.photosComplete = false;
@@ -185,7 +225,8 @@ async function changeDate(date, restore = null, { keepFilter = false } = {}) {
   for (const b of document.querySelectorAll('#dates .it')) b.setAttribute('aria-pressed', 'false');
   if (saved.ids.length) {
     undoFilterToast?.();
-    undoFilterToast = toast(`切换日期，已清除 ${savedStats.items || saved.ids.length} 张选择`, 'info', {
+    const droppedText = savedStats.items ? selectionNoun(savedStats) : `${saved.ids.length} 张`;
+    undoFilterToast = toast(`切换日期，已清除 ${droppedText}选择`, 'info', {
       timeout: 0,
       action: { label: '恢复选择', run: () => changeDate(saved.date, saved) },
     });
@@ -251,8 +292,8 @@ function syncLibraryPairs() {
 
 function libCountText() {
   if (!state.photos || !state.photos.length) return '';
-  const pairs = pairCount(state.photos, { partners: state.partners });
-  if (state.galleryFilter === 'halfframe') return `${pairs} 对半格`;
+  const pairs = pairCount(state.photos, { partners: state.partners, activeDate: state.galleryDate });
+  if (state.galleryFilter === 'halfframe') return `· ${pairs} 对`;
   return pairs > 0 ? `${state.photos.length} 张 · ${pairs} 对半格` : `${state.photos.length} 张`;
 }
 
@@ -305,7 +346,7 @@ async function hydratePartners(photos, isCurrent) {
   }
   if (added) {
     syncLibraryPairs();
-    renderGrid();
+    renderGrid({ incremental: true });
     updateCount();
   }
 }
@@ -337,9 +378,11 @@ async function loadPhotos({ quiet = false } = {}) {
         state.photosComplete = done;
         syncLibraryPairs();
         const delta = sofar.slice(shown);
-        if (first || state.galleryFilter === 'halfframe' || delta.some((p) => p.pair)) {
+        if (first) {
           first = false;
           renderGrid();
+        } else if (state.galleryFilter === 'halfframe' || delta.some((p) => p.pair)) {
+          renderGrid({ incremental: true });
         } else {
           appendCells(delta);
         }
@@ -370,7 +413,8 @@ async function loadPhotos({ quiet = false } = {}) {
     return;
   }
   const rest = photos.slice(shown);
-  if (first || state.galleryFilter === 'halfframe' || rest.some((p) => p.pair)) renderGrid();
+  if (first) renderGrid();
+  else if (rest.length && (state.galleryFilter === 'halfframe' || rest.some((p) => p.pair))) renderGrid({ incremental: true });
   else if (rest.length) appendCells(rest);
   wrap?.setAttribute('aria-busy', 'false');
   updateCount();
@@ -386,12 +430,13 @@ export function sameIds(a, b) {
 
 function updateCount() {
   const el = document.getElementById('lib-count');
-  if (el) el.textContent = state.photos.length ? libCountText() : '0 张';
+  if (el) el.textContent = state.photos.length ? libCountText() : (state.galleryFilter === 'halfframe' ? '· 0 对' : '0 张');
   updateGalleryExport();
 }
 
 export function galleryExportLabel(date, count, selected) {
-  if (selected) return `导出选中的 ${selected} 张`;
+  const n = typeof selected === 'object' && selected ? Number(selected.items || 0) : Number(selected || 0);
+  if (n) return `导出选中的 ${selectionNoun(selected)}`;
   if (date !== ALL) return count === null ? '导出这一天…' : `导出 ${fmtDate(date)} 的 ${count} 张`;
   return '导出';
 }
@@ -407,13 +452,19 @@ export function updateGalleryExport(active = true) {
   const btn = document.getElementById('btn-export-top');
   if (!btn) return;
   const stats = currentSelectionStats();
-  const label = active ? galleryExportLabel(state.galleryDate, galleryExportCount(), stats.items) : '导出';
+  const label = active ? galleryExportLabel(state.galleryDate, galleryExportCount(), stats) : '导出';
   const span = btn.querySelector('span');
   if (span) span.textContent = label;
   btn.title = `${label}（${modKey()}E）`;
 }
 
-function renderGrid() {
+function syncCell(el, p) {
+  el.setAttribute('aria-selected', String(isPhotoSelected(state.selection, p)));
+  el.classList.toggle('focus', p.id === focusId);
+  el.tabIndex = p.id === focusId ? 0 : -1;
+}
+
+function renderGrid({ incremental = false } = {}) {
   const wrap = document.getElementById('grid-wrap');
   if (!wrap) return;
   wrap.setAttribute('aria-busy', 'false');
@@ -429,8 +480,13 @@ function renderGrid() {
   if (!focusId || !vis.some((p) => p.id === focusId)) focusId = vis[0].id;
   // 选了某一天：顶上的标题已经写了这个日期，分组标题只留给读屏，不再重复一遍
   wrap.classList.toggle('single-day', state.galleryDate !== ALL);
-  wrap.replaceChildren();
-  appendCells(vis);
+  if (incremental) {
+    const unit = state.galleryFilter === 'halfframe' ? '对' : '张';
+    patchDayGrid(wrap, vis, { h, createCell: cell, syncCell, fmtDate, countOn, unit });
+  } else {
+    wrap.replaceChildren();
+    appendCells(vis);
+  }
   renderSelBar();
 }
 
@@ -657,24 +713,17 @@ function emptyLibrary() {
   );
 }
 
-function selectedPhotos() {
-  const out = [];
+function selectedPhotos(ids = state.selection) {
   const seen = new Set();
-  for (const id of state.selection) {
-    const p = findKnownPhoto(id);
-    if (p && !seen.has(p.id)) {
-      seen.add(p.id);
-      out.push(p);
-    }
-  }
-  return out;
+  return [...ids].map(findKnownPhoto).filter((p) => p && !seen.has(p.id) && (seen.add(p.id), true));
 }
 
 export function exportSelection() {
-  const stats = currentSelectionStats();
+  const visIds = visibleSelectionSet();
+  const stats = selectionStats(visIds, state.photos, state.partners);
   if (!stats.items) return false;
-  const label = stats.pairs > 0 && stats.items === 1 ? '选中的 1 项（半格一对）' : `选中的 ${stats.items} 张`;
-  openExportDialog({ ids: [...state.selection], label, photos: selectedPhotos() });
+  const label = stats.pairs > 0 && stats.items === 1 ? '选中的 1 项（半格一对）' : `选中的 ${selectionNoun(stats)}`;
+  openExportDialog({ ids: [...visIds], label, photos: selectedPhotos(visIds) });
   return true;
 }
 
@@ -683,20 +732,16 @@ function renderSelBar() {
   const bar = document.getElementById('selbar');
   if (!bar) return;
   const stats = currentSelectionStats();
-  const n = stats.items;
-  bar.hidden = !n;
-  if (!n) {
-    bar.replaceChildren();
-    return;
-  }
+  if (!stats.items) { bar.hidden = true; bar.replaceChildren(); return; }
+  bar.hidden = false;
   const countText = stats.pairs > 0
     ? (stats.items === stats.pairs ? `已选 ${stats.pairs} 对半格` : `已选 ${stats.items} 项（含 ${stats.pairs} 对半格）`)
-    : `已选 ${n} 张`;
+    : `已选 ${stats.items} 张`;
   bar.replaceChildren(
     h('span', { class: 't', role: 'status' }, countText),
     h('button', { class: 'btn ghost', type: 'button', title: `全选（${modKey()}A）`, onclick: selectAll }, '全选'),
     h('button', { class: 'btn ghost', type: 'button', title: '取消选择（Esc）', onclick: clearSelection }, '取消选择'),
-    pasteSelectionButton(n),
+    pasteSelectionButton(stats),
     h('button', { class: 'btn primary', type: 'button', title: `导出（${modKey()}E）`, onclick: exportSelection }, '导出…'),
   );
 }

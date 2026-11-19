@@ -21,7 +21,7 @@ import {
   isPairSecond,
   partnerOf,
   selectionStats,
-  halfframeBatchModeWord,
+  batchExportHeadline,
 } from './halfframe.js';
 
 export const SIZES = [
@@ -137,7 +137,7 @@ function normalizedHalfframeMode(raw) {
 
 // photos：已知的照片对象（有 has_raw / has_jpg 字段）；ids 是要导出的；date 是"这一天的全部"
 // beforeSubmit：提交前要做的事（等草稿保存完）；onCancel：取消（关对话框）；onStarted：批量任务已经交给后台
-export function exportForm({ ids, label, photos = [], date = null, dayLabel = null, beforeSubmit = null, onCancel = null, onStarted = null }) {
+export function exportForm({ ids, label, photos = [], date = null, dayLabel = null, beforeSubmit = null, onCancel = null, onStarted = null, onScopeChange = null }) {
   const stats = selectionStats(ids || [], photos, state.partners);
   const singlePair = findSinglePair(ids, photos);
   const singlePairPartner = singlePair ? partnerOf(singlePair, photos.length ? photos : state.photos, state.partners) : null;
@@ -257,6 +257,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   );
 
   function refresh() {
+    onScopeChange?.(scope);
     const showHf = scopeHasPairs(scope);
     if (hfRow) hfRow.hidden = !showHf;
     if (hfNote) hfNote.hidden = !showHf;
@@ -453,9 +454,7 @@ async function followBatch(job, out, photos = [], halfframe = 'diptych') {
   const p = cur.progress;
   const ok = p.results.filter((r) => !r.error);
   const bad = p.results.filter((r) => r.error);
-  const pairTotal = Number(p.pairs || 0);
-  const fileTotal = ok.reduce((n, r) => n + (Array.isArray(r.files) && r.files.length ? r.files.length : 1), 0);
-  const parts = [pairTotal > 0 ? `导出 ${fileTotal} 张，其中 ${pairTotal} 对半格${halfframeBatchModeWord(halfframe)}` : `已导出 ${ok.length} 张`];
+  const parts = [batchExportHeadline(p, photos, halfframe)];
   const warned = ok.filter((r) => r.warning).length;
   if (warned) parts.push('无法读取编辑记录，已按原图显示');
   const noHdr = ok.filter((r) => r.hdr === false).length;
@@ -491,14 +490,20 @@ export function barrierFor({ scope, ids, date }) {
 export function openExportDialog({ ids, label, date = null, dayLabel = null, photos = null, beforeSubmit = null }) {
   const known = photos || state.photos.slice();
   const singlePair = findSinglePair(ids, known);
+  const titleFor = (sc) => (sc === 'ids' && singlePair ? '导出 1 项（半格一对）' : '导出');
   let close = null;
+  let form = null;
   // 选中的照片里有刚才在大图里改过、还没写完（或没写进去）的：先等它们，失败就停
-  const form = exportForm({
+  form = exportForm({
     ids, label, photos: known, date, dayLabel,
     beforeSubmit: beforeSubmit || barrierFor,
     onCancel: () => close && close(),
+    onScopeChange: (sc) => {
+      const h2 = form?.closest?.('.dialog')?.querySelector('.dh h2');
+      if (h2) h2.textContent = titleFor(sc);
+    },
   });
-  const title = singlePair ? '导出 1 项（半格一对）' : '导出';
-  close = openModal(title, form, { wide: false, onClose: () => form.closedWhileBusy?.() });
+  const initialScope = ids && ids.length ? 'ids' : 'date';
+  close = openModal(titleFor(initialScope), form, { wide: false, onClose: () => form.closedWhileBusy?.() });
   return close;
 }

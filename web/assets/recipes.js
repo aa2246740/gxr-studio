@@ -72,13 +72,11 @@ export function recipePanel(view) {
 
   // COPY 3.3：近似只给一个小标签，后面一行说清楚为什么。只有 JPG 时面板里写一行「配方需要 RAW 文件」，下面一行小字，按钮置灰；点了只闪一下这一行
   let noticeEl = null;
-  if (view.photo.diptych) {
-    if (!view.photo.pair) {
-      noticeEl = h('div', { class: 'notice grey' },
-        h('div', { class: 'strong' }, '这张双联没配上第 1 张，只能在相机 JPG 上调。'),
-      );
-      nodes.push(noticeEl);
-    }
+  if (view.photo.diptych && !view.photo.pair) {
+    noticeEl = h('div', { class: 'notice grey' },
+      h('div', { class: 'strong' }, '这张双联没配上第 1 张，只能在相机 JPG 上调。'),
+    );
+    nodes.push(noticeEl);
   } else if (state3 === 'approx') {
     nodes.push(h('div', { class: 'row-tags' }, h('span', { class: 'chip warn' }, '近似'), h('span', { class: 'small dim' }, APPROX_NOTE)));
   } else if (!hasRaw) {
@@ -163,17 +161,20 @@ export function recipePanel(view) {
 
   // 当前配方的名字，名字下面一行安静的「未校准」（原因在提示气泡里）。只在选了配方、又没套 LUT 时才有意义：
   // 配方的颜色是电脑预测，没有校准的照片上预测可能有偏差；LUT 的颜色不经过相机的校准，不用提醒
+  const showPairHint = pair && !!hasRaw;
   let updateQualityNote = () => {};
   if (untouchedPair) {
     const p1 = partnerOf(view.photo, state.photos, state.partners);
     const r1 = shortRecipeLabel(p1?.recipe_tag);
     const r2 = shortRecipeLabel(view.photo.recipe_tag);
-    nodes.splice(1, 0,
+    const header = [
       h('div', { class: 'cur-look' },
         h('div', { class: 'small' },
           h('span', { class: 'dim' }, '拍摄时：'),
           `第 1 张 ${r1} · 第 2 张 ${r2}`)),
-      pairHintEl());
+    ];
+    if (showPairHint) header.push(pairHintEl());
+    nodes.splice(1, 0, ...header);
   } else if (ed.recipe) {
     const now = chosen.find((c) => c.pressed);
     const name = now ? now.name : info && (info.name || slotName(sel.unit, sel.slot));
@@ -197,9 +198,9 @@ export function recipePanel(view) {
       warn ? h('div', { class: 'small dim calib-note', title: uncalibratedReason(view, photoUnit) }, '未校准：颜色可能有些偏差') : null,
       ed.recipeFromCamera && view.photo.recipe_tag?.levels === null ? h('div', { class: 'small dim' }, '微调未知，电脑预测使用配方默认值') : null,
       exposureNote ? h('div', { class: 'small dim' }, exposureNote) : null)];
-    if (pair) header.push(pairHintEl());
+    if (showPairHint) header.push(pairHintEl());
     nodes.splice(1, 0, ...header);
-  } else if (pair) {
+  } else if (showPairHint) {
     nodes.splice(1, 0, pairHintEl());
   }
 
@@ -273,7 +274,6 @@ function applyComputer(view, r) {
   beginChange(view);
   ed.memory = memory;
   ed.recipe = next;
-  ed.recipeFromCamera = false;
   persist(view, { recipe: recipeBody(view, { memory: true }) }).then(() => endChange(view));
   schedulePreview(view, { full: true });
   view.redrawSide?.();
@@ -363,7 +363,6 @@ function switchRecipe(view, target) {
   beginChange(view);
   ed.memory = t.memory;
   ed.recipe = t.next;
-  ed.recipeFromCamera = false;
   persist(view, { recipe: recipeBody(view, { memory: true }) }).then(() => endChange(view));
   schedulePreview(view, { full: true });
   view.redrawSide?.();

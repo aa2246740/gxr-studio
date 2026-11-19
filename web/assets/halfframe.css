@@ -25,7 +25,7 @@
   background: rgba(0, 0, 0, 0.6);
 }
 
-.fthumb .b {
+.fthumb.pair .b {
   position: absolute;
   left: 3px;
   right: auto;
@@ -35,9 +35,18 @@
   pointer-events: none;
 }
 
-.fthumb .badge.hf {
+.fthumb.pair .badge.hf {
   font-size: 9px;
   padding: 1px 4px;
+}
+
+.pair-strip-mask {
+  position: absolute;
+  pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(10, 10, 10, 0.56);
+  outline: 1px solid rgba(255, 255, 255, 0.38);
+  outline-offset: -1px;
+  z-index: 2;
 }
 
 .pair-hint {

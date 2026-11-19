@@ -6,7 +6,11 @@ import { h, icon } from './dom.js';
 import { beginChange, endChange, saveCrop, geometryOf, validRect } from './preview.js';
 import { slider } from './controls.js';
 import { maxRectFor, zoomRect, pixelSize, centeredMaxRect, landscapePair, fitInto, fitStraightened, cropTilt } from './geom.js';
-import { HALF_CROP_ITEM, halfFirstCropRect, isHalfFirstCropRect } from './halfframe.js';
+import { HALF_CROP_ITEM, halfFirstCropRect, isHalfFirstCropRect, usesRawRenderBase } from './halfframe.js';
+
+function halfCropOpts(view) {
+  return { raw: usesRawRenderBase(view.photo, view.ed), orientation: view.photo?.orientation };
+}
 
 // 比例分组。id 是后端 crop.py 的 PRESETS 的键；同一个 id 可以出现在两组里（例如 4:3 既是常用，也是小红书的竖图 3:4）。
 // orient：默认方向（'landscape' / 'portrait'）；没写就跟着照片的方向。
@@ -115,7 +119,7 @@ function landscapeRatio(id) {
 export function presetFor(view) {
   if (view.photo?.half_first && view.crop?.preset === 'free') {
     const canvas = view.canvas || fullCanvas(view);
-    if (canvas && isHalfFirstCropRect(view.crop.rect, canvas.w, canvas.h)) return HALF_CROP_ITEM;
+    if (canvas && isHalfFirstCropRect(view.crop.rect, canvas.w, canvas.h, halfCropOpts(view))) return HALF_CROP_ITEM;
   }
   if (view.presetItem && view.presetItem.id === view.crop.preset) return view.presetItem;
   const first = PRESET_GROUPS.flatMap((g) => g.items).find((x) => x.id === view.crop.preset);
@@ -227,7 +231,7 @@ function showNow(view, item, orientation) {
 export async function applyPreset(view, item) {
   if (item.id === 'halfframe') {
     const full = fullCanvas(view) || view.canvas || { w: view.photo?.width || 4288, h: view.photo?.height || 2848 };
-    const rect = halfFirstCropRect(full.w, full.h);
+    const rect = halfFirstCropRect(full.w, full.h, halfCropOpts(view));
     const orientation = full.h > full.w ? 'portrait' : 'landscape';
     beginChange(view);
     view.presetItem = HALF_CROP_ITEM;

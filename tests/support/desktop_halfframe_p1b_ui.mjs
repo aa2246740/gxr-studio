@@ -115,6 +115,145 @@ async function runSnapshot(page) {
   out.steps.snapshot = { gallery, exportRows };
 }
 
+async function runEditorSnapshot(page) {
+  await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photos`, { waitUntil: 'domcontentloaded' });
+  await waitFor(() => page.evaluate(() => document.querySelectorAll('.grid .cell').length > 0), 30000, 'gallery cells');
+  const firstId = await page.evaluate(() => document.querySelector('.grid .cell')?.dataset?.id || '');
+  await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photo/${firstId}`, { waitUntil: 'domcontentloaded' });
+  await waitFor(() => page.evaluate(() => {
+    const img = document.querySelector('.stage-area .pv-img');
+    const thumbs = [...document.querySelectorAll('.filmstrip .fthumb img')];
+    return !!img && img.complete && img.naturalWidth > 0 && thumbs.length > 0 && thumbs.every((t) => t.complete && t.naturalWidth > 0);
+  }), 45000, 'editor non-halfframe loaded');
+  await sleep(300);
+
+  out.steps.editorSnapshot = await page.evaluate(() => {
+    const norm = (html) => (html || '')
+      .replace(/\/api\/photos\/[0-9a-f]{8,}/g, '/api/photos/<ID>')
+      .replace(/data-id="[0-9a-f]{8,}"/g, 'data-id="<ID>"')
+      .replace(/R\d{7}(?:_[0-9a-f]+)?(?:\.[A-Za-z0-9]+)?/g, '<NAME>')
+      .replace(/\d{4}[-年/.]\d{1,2}[-月/.]\d{1,2}日?/g, '<DATE>')
+      .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, '<TIME>')
+      .replace(/class="ready"/g, 'class="ready"');
+
+    // Measure computed .fthumb .b position on a temporary non-pair filmstrip button
+    const film = document.querySelector('.filmstrip');
+    let fthumbBadgePos = null;
+    if (film) {
+      const probe = document.createElement('button');
+      probe.type = 'button';
+      probe.className = 'fthumb';
+      const b = document.createElement('span');
+      b.className = 'b';
+      probe.append(b);
+      film.append(probe);
+      const cs = getComputedStyle(b);
+      fthumbBadgePos = { left: cs.left, bottom: cs.bottom };
+      probe.remove();
+    }
+
+    return {
+      titlebar: norm(document.querySelector('#tb-edit')?.innerHTML || ''),
+      viewbar: norm(document.querySelector('.viewbar')?.innerHTML || ''),
+      filmstrip: norm(film?.innerHTML || ''),
+      fthumbBadgePos,
+      tooltabs: norm(document.querySelector('.tooltabs')?.innerHTML || ''),
+      panelFoot: norm(document.querySelector('.panel-foot')?.innerHTML || ''),
+      stripMaskCount: document.querySelectorAll('.pair-strip-mask').length,
+    };
+  });
+}
+
+async function runJpgOnlyP1(page) {
+  page.on('response', async (res) => {
+    const u = new URL(res.url());
+    if (u.pathname.endsWith('/render')) {
+      out.requests.renders.push({
+        method: res.request().method(),
+        status: res.status(),
+        view: u.searchParams.get('view') || null,
+        stage: u.searchParams.get('stage') || null,
+        label: res.headers()['x-gxr-label'] || null,
+      });
+    }
+  });
+
+  const sampleCenter = () => page.evaluate(() => {
+    const img = document.querySelector('.stage-area .pv-img');
+    if (!img || !img.naturalWidth) return null;
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 42;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, 64, 42);
+    const d = ctx.getImageData(30, 6, 4, 30).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i + 1] + d[i + 2]) / 3;
+    return { w: img.naturalWidth, h: img.naturalHeight, centerMean: sum / (d.length / 4) };
+  });
+
+  await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photo/${m.pairSecondId}`, { waitUntil: 'domcontentloaded' });
+  await waitFor(() => page.evaluate(() => {
+    const img = document.querySelector('.stage-area .pv-img');
+    return !!img && img.complete && img.naturalWidth > 0 && !!document.querySelector('.viewbar [aria-label="半格视图"]');
+  }), 45000, 'jpgonly pair loaded');
+  await sleep(300);
+
+  const initial = await page.evaluate(() => ({
+    pairHint: document.querySelector('.pair-hint')?.textContent?.trim() || '',
+    noticeText: document.querySelector('.edit-panel .notice')?.textContent?.trim().replace(/\s+/g, ' ') || '',
+    stripMaskCount: document.querySelectorAll('.pair-strip-mask').length,
+  }));
+  const dipCenter = await sampleCenter();
+
+  const r0 = out.requests.renders.length;
+  await page.click('.viewbar [aria-label="半格视图"] button:nth-child(2)');
+  await waitFor(() => out.requests.renders.slice(r0).some((r) => r.view === 'first'), 30000, 'jpgonly view=first');
+  await sleep(500);
+  const firstReqs = out.requests.renders.slice(r0).filter((r) => r.view === 'first');
+  const firstCenter = await sampleCenter();
+  const firstMask = await page.evaluate(() => {
+    const el = document.querySelector('.pair-strip-mask');
+    const lcard = document.querySelector('.lcard');
+    return {
+      hasMask: !!el,
+      cardDisabled: lcard ? (lcard.disabled || lcard.getAttribute('aria-disabled') === 'true') : null,
+    };
+  });
+
+  const r1 = out.requests.renders.length;
+  await page.click('.viewbar [aria-label="半格视图"] button:nth-child(3)');
+  await waitFor(() => out.requests.renders.slice(r1).some((r) => r.view === 'second'), 30000, 'jpgonly view=second');
+  await sleep(400);
+  const secondReqs = out.requests.renders.slice(r1).filter((r) => r.view === 'second');
+
+  // JPG-only half_first crop preset 「取半格」 -> camera-JPG column 1100
+  await page.goto(`${m.base}/?token=${encodeURIComponent(m.token)}#/photo/${m.jpgHalfFirstId}`, { waitUntil: 'domcontentloaded' });
+  await waitFor(() => page.evaluate(() => {
+    const img = document.querySelector('.stage-area .pv-img');
+    return !!img && img.complete && img.naturalWidth > 0;
+  }), 45000, 'jpgonly half_first loaded');
+  await page.click('#tab-crop');
+  await waitFor(() => page.evaluate(() => !!document.querySelector('button.select[aria-label="比例"]')), 20000, 'jpgonly ratio btn');
+  await page.click('button.select[aria-label="比例"]');
+  await waitFor(() => page.evaluate(() => [...document.querySelectorAll('.menu .mi')].some((b) => b.textContent.trim() === '取半格')), 15000, 'jpgonly 取半格');
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.menu .mi')].find((b) => b.textContent.trim() === '取半格');
+    if (btn) btn.click();
+  });
+  await sleep(600);
+  const cropBody = await page.evaluate(async (id) => (await fetch(`/api/photos/${id}/crop`)).json(), m.jpgHalfFirstId);
+
+  out.steps.jpgOnlyP1 = {
+    initial,
+    dipCenter,
+    firstReqs,
+    firstCenter,
+    firstMask,
+    secondReqs,
+    jpgHalfFirstCrop: cropBody,
+  };
+}
+
 async function runCard250(page) {
   page.on('response', async (res) => {
     const u = new URL(res.url());
@@ -149,6 +288,7 @@ async function runCard250(page) {
       out.requests.batchExports.push({
         status: res.status(),
         sentCount: sent?.ids?.length || 0,
+        sentIds: sent?.ids || [],
         halfframe: sent?.halfframe || null,
         jobId: body?.id || null,
       });
@@ -200,25 +340,47 @@ async function runCard250(page) {
 
   if (m.screenshots?.gallery) await maskedScreenshot(page, m.screenshots.gallery);
 
-  // Filter click -> 3 pairs, then back to 全部照片
+  // P2-1 + P3-5: Select pair + XPan -> switch to 半格 filter -> hidden XPan pruned with undo toast, wording unified
+  const pairTick = `.grid .cell[data-id="${m.primaryPairSecondId}"] .ck`;
+  const xpanTick = `.grid .cell[data-id="${m.xpanId}"] .ck`;
+  await page.click(pairTick);
+  await page.click(xpanTick);
+  await sleep(200);
+  const mixedSel = await page.evaluate(async () => {
+    const { state } = await import('/assets/state.js');
+    const pasteBtn = [...document.querySelectorAll('#selbar button')].find((b) => b.textContent.includes('粘贴'));
+    return {
+      selSize: state.selection.size,
+      selbarCount: document.querySelector('#selbar .t')?.textContent?.trim() || '',
+      exportBtn: document.querySelector('#btn-export-top span')?.textContent?.trim() || '',
+      pasteBtn: pasteBtn?.textContent?.trim() || '',
+    };
+  });
+
   await page.evaluate(() => {
     const btn = [...document.querySelectorAll('.sidebar .it')].find((b) => b.textContent.includes('半格'));
     if (btn) btn.click();
   });
   await sleep(250);
-  const filteredCount = await page.evaluate(() => document.querySelectorAll('.grid .cell').length);
-  await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.sidebar .it')].find((b) => b.textContent.includes('全部照片'));
-    if (btn) btn.click();
-  });
-  await sleep(250);
-  const restoredCount = await page.evaluate(() => document.querySelectorAll('.grid .cell').length);
-  out.steps.filter = { filteredCount, restoredCount };
+  const filteredState = await page.evaluate(async (xpanId) => {
+    const { state } = await import('/assets/state.js');
+    const pasteBtn = [...document.querySelectorAll('#selbar button')].find((b) => b.textContent.includes('粘贴'));
+    const toastEl = document.querySelector('#toast-root');
+    return {
+      filteredCount: document.querySelectorAll('.grid .cell').length,
+      libTitle: document.querySelector('.libbar .t')?.textContent?.trim() || '',
+      libCount: document.querySelector('#lib-count')?.textContent?.trim() || '',
+      selSize: state.selection.size,
+      hasHiddenXpan: state.selection.has(xpanId),
+      selbarCount: document.querySelector('#selbar .t')?.textContent?.trim() || '',
+      exportBtn: document.querySelector('#btn-export-top span')?.textContent?.trim() || '',
+      pasteBtn: pasteBtn?.textContent?.trim() || '',
+      toastText: toastEl?.textContent?.trim().replace(/\s+/g, ' ') || '',
+      hasUndoBtn: [...document.querySelectorAll('#toast-root button')].some((b) => b.textContent.trim() === '恢复选择'),
+    };
+  }, m.xpanId);
 
-  // 2. Selection + batch export of 1 pair cell
-  const pairTick = `.grid .cell[data-id="${m.primaryPairSecondId}"] .ck`;
-  await page.click(pairTick);
-  await sleep(200);
+  // Batch export while filtered: must only export the visible pair (2 IDs -> 1 diptych), never hidden XPan
   await page.click('#btn-export-top');
   await waitFor(() => page.evaluate(() => !!document.querySelector('.dialog .export-form')), 15000, 'batch export dialog');
   const selExportDialog = await page.evaluate(() => {
@@ -240,8 +402,37 @@ async function runCard250(page) {
   const batchResultText = await page.evaluate(() => document.querySelector('.dialog .export-result .res-main')?.textContent?.trim() || '');
   await page.click('.dialog .dh button');
   await sleep(200);
+
+  // Click undo toast 恢复选择 -> returns to 全部照片 with pair + XPan restored
+  await page.evaluate(() => {
+    const b = [...document.querySelectorAll('#toast-root button')].find((el) => el.textContent.trim() === '恢复选择');
+    if (b) b.click();
+  });
+  await sleep(250);
+  const afterUndo = await page.evaluate(async (xpanId) => {
+    const { state } = await import('/assets/state.js');
+    return {
+      restoredCount: document.querySelectorAll('.grid .cell').length,
+      selSize: state.selection.size,
+      hasXpan: state.selection.has(xpanId),
+    };
+  }, m.xpanId);
+  if (afterUndo.restoredCount < 8) {
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.sidebar .it')].find((b) => b.textContent.includes('全部照片'));
+      if (btn) btn.click();
+    });
+    await sleep(250);
+  }
   await page.keyboard.press('Escape');
   await sleep(200);
+
+  out.steps.filter = {
+    mixedSel,
+    ...filteredState,
+    restoredCount: afterUndo.restoredCount,
+    afterUndo,
+  };
   out.steps.selectionBatchExport = {
     dialog: selExportDialog,
     batchReqs: out.requests.batchExports.slice(batchIdx0),
@@ -275,8 +466,12 @@ async function runCard250(page) {
     const pairHint = document.querySelector('.pair-hint')?.textContent?.trim().replace(/\s+/g, ' ') || '';
     const viewSeg = document.querySelector('.viewbar [aria-label="半格视图"]');
     const viewButtons = viewSeg ? [...viewSeg.querySelectorAll('button')].map((b) => ({ text: b.textContent.trim(), pressed: b.getAttribute('aria-pressed') === 'true' })) : [];
-    const filmstripIds = [...document.querySelectorAll('.filmstrip .fthumb')].map((b) => b.dataset.id);
+    const filmstripIds = [...document.querySelectorAll('.filmstrip .fthumb')].map((b) => {
+      const src = b.querySelector('img')?.getAttribute('src') || '';
+      return src.match(/\/api\/photos\/([^/?]+)/)?.[1] || '';
+    });
     const histShadowLit = document.querySelector('.hist-head .hist-clip[data-side="shadow"]')?.dataset.lit === 'true';
+    const stripMaskCount = document.querySelectorAll('.pair-strip-mask').length;
     return {
       titleName: name,
       hasBothNames: meta.includes(p1Name) && meta.includes(p2Name),
@@ -291,6 +486,7 @@ async function runCard250(page) {
       filmstripCount: filmstripIds.length,
       filmstripHasFirst: filmstripIds.some((id) => pairFirstIds.includes(id)),
       histShadowLit,
+      stripMaskCount,
     };
   }, { p1Name: m.primaryPairFirstName, p2Name: m.primaryPairSecondName, pairFirstIds: m.pairFirstIds });
 
@@ -335,6 +531,23 @@ async function runCard250(page) {
     return { w: img.naturalWidth, h: img.naturalHeight, sum, samples };
   });
 
+  const readStripMask = () => page.evaluate(() => {
+    const el = document.querySelector('.pair-strip-mask');
+    const pv = document.querySelector('.pv');
+    if (!el || !pv) return { present: false };
+    const r = el.getBoundingClientRect();
+    const pr = pv.getBoundingClientRect();
+    return {
+      present: true,
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      pvW: Math.round(pr.width),
+      pvH: Math.round(pr.height),
+      insidePv: r.left >= pr.left - 2 && r.right <= pr.right + 2 && r.top >= pr.top - 2 && r.bottom <= pr.bottom + 2,
+      smallerThanPv: r.width < pr.width - 4 || r.height < pr.height - 4,
+    };
+  });
+
   const dipSample = await sampleStageHash();
   const putsBeforeView = out.requests.puts.length;
   const rendersBeforeFirst = out.requests.renders.length;
@@ -351,6 +564,8 @@ async function runCard250(page) {
       panelReadonly: !!document.querySelector('.panel.pair-readonly, .panel-body.readonly, [data-readonly="1"]'),
     };
   });
+  firstView.stripMask = await readStripMask();
+  if (m.screenshots?.viewFirst) await maskedScreenshot(page, m.screenshots.viewFirst);
   const firstSample = await sampleStageHash();
   await page.evaluate(() => { const c = document.querySelector('.lcard'); if (c) c.click(); });
   await sleep(300);
@@ -359,6 +574,7 @@ async function runCard250(page) {
   await page.click('.viewbar [aria-label="半格视图"] button:nth-child(3)');
   await waitFor(() => out.requests.renders.slice(rendersBeforeSecond).some((r) => r.view === 'second' && r.status === 200), 45000, 'view=second render');
   await sleep(400);
+  const secondStripMask = await readStripMask();
   const secondSample = await sampleStageHash();
   const putsDuringSingleViews = out.requests.puts.length - putsBeforeView;
 
@@ -371,6 +587,7 @@ async function runCard250(page) {
       cardDisabled: lcard ? (lcard.disabled || lcard.getAttribute('aria-disabled') === 'true') : null,
     };
   });
+  backToDiptych.stripMask = await readStripMask();
 
   // Step ←/→ across visible items and verify we never land on any pairFirstId
   const visitedIds = [];
@@ -392,6 +609,7 @@ async function runCard250(page) {
     infoTab,
     viewbar: {
       firstView,
+      secondStripMask,
       backToDiptych,
       putsDuringSingleViews,
       dipSample: dipSample ? { w: dipSample.w, h: dipSample.h, sum: dipSample.sum } : null,
@@ -442,6 +660,22 @@ async function runCard250(page) {
   });
 
   const exportDefault = await readExportDialog();
+  // P3-3: switch 范围 to <date> 的全部 -> title must update to 导出; switch back -> 导出 1 项（半格一对）
+  await page.evaluate(() => {
+    const scopeRow = [...document.querySelectorAll('.dialog .row.form')].find((r) => r.querySelector('.lab')?.textContent?.trim() === '范围');
+    const btns = scopeRow ? [...scopeRow.querySelectorAll('button')] : [];
+    if (btns[1]) btns[1].click();
+  });
+  await sleep(200);
+  const exportScopeDateTitle = await page.evaluate(() => document.querySelector('.dialog .dh h2')?.textContent?.trim() || '');
+  await page.evaluate(() => {
+    const scopeRow = [...document.querySelectorAll('.dialog .row.form')].find((r) => r.querySelector('.lab')?.textContent?.trim() === '范围');
+    const btns = scopeRow ? [...scopeRow.querySelectorAll('button')] : [];
+    if (btns[0]) btns[0].click();
+  });
+  await sleep(200);
+  const exportScopeBackTitle = await page.evaluate(() => document.querySelector('.dialog .dh h2')?.textContent?.trim() || '');
+
   await page.evaluate(() => {
     const btn = [...document.querySelectorAll('.dialog .row.form button')].find((b) => b.textContent.trim() === '两张单格');
     if (btn) btn.click();
@@ -495,6 +729,8 @@ async function runCard250(page) {
 
   out.steps.exportDialog = {
     exportDefault,
+    exportScopeDateTitle,
+    exportScopeBackTitle,
     exportSingles,
     exportBoth,
     singlesExportReqs: out.requests.exports.slice(expIdx0),
@@ -518,11 +754,23 @@ async function runCard250(page) {
   });
   await sleep(800);
   const cropState = await api(`/api/photos/${m.halfFirstId}/crop`);
-  const ratioBtnText = await page.evaluate(() => document.querySelector('button.select[aria-label="比例"]')?.textContent?.trim() || '');
+  const halfMeta = await page.evaluate(async () => {
+    const { currentView } = await import('/assets/viewer.js');
+    const v = currentView();
+    return {
+      ratioBtnText: document.querySelector('button.select[aria-label="比例"]')?.textContent?.trim() || '',
+      orientation: v?.photo?.orientation ?? 1,
+      hasRaw: !!v?.photo?.has_raw,
+      edLabel: v?.ed?.label || null,
+    };
+  });
   out.steps.cropHalfFirst = {
     xpanHasHalfCrop,
-    cropPressed: ratioBtnText === '取半格',
-    ratioBtnText,
+    cropPressed: halfMeta.ratioBtnText === '取半格',
+    ratioBtnText: halfMeta.ratioBtnText,
+    orientation: halfMeta.orientation,
+    hasRaw: halfMeta.hasRaw,
+    edLabel: halfMeta.edLabel,
     crop: cropState.body,
   };
 }
@@ -531,6 +779,8 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on('pageerror', (e) => out.pageErrors.push(line(e)));
   if (m.mode === 'snapshot') await runSnapshot(page);
+  else if (m.mode === 'editor_snapshot') await runEditorSnapshot(page);
+  else if (m.mode === 'jpgonly_p1') await runJpgOnlyP1(page);
   else await runCard250(page);
 } catch (e) {
   out.error = line(e);
