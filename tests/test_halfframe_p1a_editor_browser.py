@@ -180,6 +180,8 @@ def test_desktop_editor_halfframe_pair(
         race = ui["steps"]["startupRace"]
         assert race["cards"] > 0 and race["earlyDisabled"] > 0, f"startup race not reproduced: {race}"
         assert race["enabledAfterStatus"] is True, f"recipe cards stayed disabled after the camera-data status arrived: {race}"
+        guard = ui["steps"]["midDragGuard"]
+        assert guard == {"kept": True, "deferred": True, "flushed": True}, f"camera-data redraw broke a change in progress (W01): {guard}"
         assert ui["pageErrors"] == [], ui["pageErrors"]
         assert ui["cameraJpgReqs"] == [], ui["cameraJpgReqs"]
         assert ui["steps"]["settings"]["gpu_preview"] is gpu

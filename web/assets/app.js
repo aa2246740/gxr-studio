@@ -11,6 +11,7 @@ import { pasteToSelection } from './paste_batch.js';
 import { openExportDialog } from './export.js';
 import { showHelp, showSettings } from './onboarding.js';
 import { loadCamdata } from './camdata.js';
+import './viewer_camdata.js'; // 相机数据就绪状态变了时重画配方面板（W01 推迟）
 import { renderLutPage } from './lut.js';
 import { renderCamera } from './camera_page.js';
 import { createRouter } from './router.js';
@@ -139,7 +140,6 @@ async function boot() {
     emit('library-changed'); // 图库重新取照片列表（没有 JPG 的缩略图地址变了）
     refreshViewerPhoto();
   });
-  on('camdata-ready-changed', () => currentView()?.redrawSide?.());
   // 页面先出来，存储卡和相机数据的状态随后补上（不再等它们才画图库）
   const first = route();
   await loadLatestJob();

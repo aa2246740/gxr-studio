@@ -312,6 +312,21 @@ try {
   await page.unroute('**/api/camdata/status');
   out.steps.startupRace = { cards: raceEarly.cards, earlyDisabled: raceEarly.disabled, enabledAfterStatus: raceEnabled };
 
+  // 3c) W01: a readiness change that arrives mid-drag must not rebuild the panel under the finger.
+  // Start a change on the recipe tab (as a slider press does), fire the event, and check the cards are the
+  // same nodes and the refresh is deferred; endChange then runs it.
+  out.steps.midDragGuard = await page.evaluate(async () => {
+    const [v, pv, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/preview.js'), import('/assets/state.js')]);
+    const view = v.currentView();
+    const before = document.querySelector('.lcard');
+    pv.beginChange(view);
+    st.emit('camdata-ready-changed');
+    const kept = !!before && before.isConnected && document.querySelector('.lcard') === before;
+    const deferred = view.panesStale === true;
+    pv.endChange(view);
+    return { kept, deferred, flushed: view.panesStale === false };
+  });
+
   // 4) Reload -> check stage, recipe state, and edited thumbnail
   out.renders.length = 0;
   await page.goto(`${m.base}/`);
