@@ -152,7 +152,8 @@ def test_frontend_refreshes_the_selection_and_names_unexported_photos():
     assert "pruneSelection" in gallery and "state.selection.delete" in gallery
     assert gallery.index("await pruneSelection()") < gallery.index("loadAll();", gallery.index("library-changed"))
     export = (WEB / "assets/export.js").read_text(encoding="utf-8")
-    assert "followBatch(job, result, photos)" in export and "导出失败。请重试。" in export
+    # P1b-ui 给 followBatch 加了半格导出方式参数
+    assert "followBatch(job, result, photos" in export and "导出失败。请重试。" in export
     assert "errorBody" in export
 
 

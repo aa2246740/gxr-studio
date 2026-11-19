@@ -113,6 +113,7 @@ def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: P
         "finish_frame_new.js",
         "finish_background.js",
         "finish_texture.js",
+        "halfframe.js",
     ):
         (tmp_path / name).write_text((WEB / name).read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "finish_source.js").write_text("export function baseFor() { throw new Error('清除装饰不应读取照片'); }\n")
@@ -136,6 +137,7 @@ def test_clear_decor_removes_the_frame_layout_from_the_reused_canvas(tmp_path: P
 def test_adjust_redraw_reuses_frame_decoration_until_its_inputs_change(tmp_path, kind):
     shutil.copyfile(WEB / "stage_finish.js", tmp_path / "stage_finish.js")
     shutil.copyfile(WEB / "logo_catalog.js", tmp_path / "logo_catalog.js")
+    shutil.copyfile(WEB / "halfframe.js", tmp_path / "halfframe.js")
     (tmp_path / "package.json").write_text('{"type":"module"}\n')
     (tmp_path / "finish_layout.js").write_text(
         "export const frameLayout=()=>{},stampLayout=()=>{},stampText=()=>{},momentOf=()=>{},needsCjk=()=>{};"

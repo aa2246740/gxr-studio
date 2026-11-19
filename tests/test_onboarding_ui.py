@@ -89,6 +89,7 @@ def _run_scene(tmp_path: Path) -> dict:
         "busy.js",
         "gpu_pref.js",
         "poll.js",
+        "halfframe.js",
     )
     for name in (*names, "my_recipes.js"):
         shutil.copy(ASSETS / name, folder / name)
@@ -125,7 +126,7 @@ def _run_scene(tmp_path: Path) -> dict:
         encoding="utf-8",
     )
     (folder / "state.js").write_text(
-        "export const state = globalThis.uiState;\nexport function emit() {}\nexport function on() {}\n",
+        "export const state = globalThis.uiState;\nexport const bus = new EventTarget();\nexport function emit() {}\nexport function on() {}\n",
         encoding="utf-8",
     )
     (folder / "camdata.js").write_text(
