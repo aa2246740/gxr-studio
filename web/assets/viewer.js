@@ -17,7 +17,7 @@ import { paintStage, paintBox } from './stage.js';
 import {
   ensureEdit, loadCrop, schedulePreview, disposeEdit, undoChange, redoChange, beginChange, endChange,
   persist, reloadEdit, applyRetried, refreshCaps, resetCropRemote, adjustBody,
-  saveStatus, retrySaves, discardFailed, dropStageUrl,
+  saveStatus, retrySaves, discardFailed,
 } from './preview.js';
 import { fetchAllPhotos } from './photos.js';
 import { delayed, busyButton, SHOW_AFTER_MS } from './busy.js';
@@ -197,8 +197,9 @@ function setPairView(mode) {
   if (!view || !isPairSecond(view.photo)) return;
   const next = mode === 'first' || mode === 'second' ? mode : 'diptych';
   if ((view.pairView || 'diptych') === next) return;
-  // 双联在显卡上画时，服务器那层图还是更早某个单张视图的：不丢掉，新视图会先闪出另一半。丢掉后先显示占位，等新图到
-  if (view.ed && view.gpuActive && next !== 'diptych') dropStageUrl(view.ed, 'final');
+  // 单张视图只走服务器出图：先放下显卡画面，免得下面这次重画把条带遮罩贴到双联的画布上。
+  // 显卡画双联时服务器那层图已经丢掉了（preview.js schedulePreview），所以这里会先显示占位
+  if (next !== 'diptych') view.gpuActive = null;
   view.pairView = next;
   syncViewbar(view);
   applyPairReadonly(view);

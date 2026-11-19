@@ -580,7 +580,35 @@ try {
       await sleep(25);
     }
     out.steps.pairViewStale = { leftover: !!leftover, showedLeftover: seen.includes(leftover), reachedFirst, samples: seen.length };
+
+    // 6b) 第 2 张 → 双联 (GPU), then the diptych falls back to the server (GPU switched off here):
+    // the stage must not show the leftover 第 2 张 image under 双联 while the server diptych loads
+    await pick(3);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'second' && !s.busy && s.imgReady && !!s.finalUrl && s.imgSrc === s.finalUrl;
+    }, 90000, 'second view render (fallback case)');
+    const leftover2 = (await viewState()).finalUrl;
     await pick(1);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'diptych' && s.gpuActive === 'final' && !s.busy;
+    }, 90000, 'diptych on the GPU (fallback case)');
+    await page.evaluate(() => import('/assets/gpu_pref.js').then((g) => g.setGpuPreference(false)));
+    const seen2 = [];
+    let reachedServer = false;
+    const t1 = Date.now();
+    while (Date.now() - t1 < 90000) {
+      const s = await viewState();
+      seen2.push(s.imgSrc);
+      if (s.pv === 'diptych' && s.gpuActive === null && !s.busy && s.imgReady && s.imgSrc && s.imgSrc === s.finalUrl && s.imgSrc !== leftover2) {
+        reachedServer = true;
+        break;
+      }
+      await sleep(25);
+    }
+    await page.evaluate(() => import('/assets/gpu_pref.js').then((g) => g.setGpuPreference(true)));
+    out.steps.pairFallbackStale = { leftover: !!leftover2, showedLeftover: seen2.includes(leftover2), reachedServer, samples: seen2.length };
   }
 
   await page.close();

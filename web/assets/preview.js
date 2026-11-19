@@ -17,7 +17,7 @@ import { rememberRecipe } from './my_recipes.js';
 export { CURVE_MAX, curveBody } from './curves.js';
 import { cropShape, HISTORY_GROUPS, ownedGroups, restoreCropLocal, snapshot, staleCropForRedo, syncUndo, withOwned } from './undo_entries.js';
 export { syncUndo }; // 撤销 / 重做按钮的置灰在 undo_entries.js
-import { isSinglePairView, isUntouchedPairRecipe } from './halfframe.js';
+import { isPairSecond, isSinglePairView, isUntouchedPairRecipe } from './halfframe.js';
 import { loadCatalog, recipeBody } from './preview_recipe.js';
 export {
   BASE_NAMES, slotName, recipeLabel, KNOB_NAMES, unitForPhoto, loadCatalog,
@@ -452,11 +452,6 @@ function setUrl(ed, stage, url) {
   ed.urls[stage] = url;
 }
 
-// 丢掉服务器出的这一层图（半格一对：双联在显卡上画时，留下的是更早某个单张视图的图）
-export function dropStageUrl(ed, stage) {
-  setUrl(ed, stage, null);
-}
-
 export function decodeLabel(raw) {
   if (!raw) return null;
   try {
@@ -483,6 +478,9 @@ export function schedulePreview(view, { full = false, stage = null } = {}) {
     ed.ctl?.abort();
     if (way === 'gpu') {
       ed.busy = false;
+      // 半格一对：显卡接手画双联后，服务器那层图（多半是之前某个单张视图的）已经不是屏幕上的画面。
+      // 丢掉它：之后退回服务器（选了还没算好的 LUT、关掉显卡）或切到单张时，先显示占位，不会闪出另一半
+      if (isPairSecond(view.photo)) setUrl(ed, 'final', null);
       view.onChange?.();
     }
     return;

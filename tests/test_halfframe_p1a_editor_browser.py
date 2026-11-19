@@ -283,6 +283,8 @@ def test_desktop_editor_halfframe_pair(
         if gpu:
             pv = ui["steps"]["pairViewStale"]
             assert pv["leftover"] and pv["reachedFirst"] and not pv["showedLeftover"], pv
+            fb = ui["steps"]["pairFallbackStale"]
+            assert fb["leftover"] and fb["reachedServer"] and not fb["showedLeftover"], fb
     finally:
         server.should_exit = True
         thread.join(timeout=20)
