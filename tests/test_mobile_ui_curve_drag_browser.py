@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -34,6 +35,11 @@ def _port() -> int:
         if port not in FORBIDDEN_PORTS:
             return port
     pytest.fail("no free port")
+
+
+def _redacted_tail(text: str) -> str:
+    cleaned = re.sub(r"/(?:Volumes|Users|private|var/folders|tmp)/\S+", "[path]", text)
+    return cleaned[-240:].strip()
 
 
 def _stop(proc: subprocess.Popen[str] | None) -> None:
@@ -106,7 +112,10 @@ def test_curve_point_follows_the_finger(tmp_path: Path) -> None:
     finally:
         _stop(vite)
     line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
-    report: dict[str, Any] = json.loads(line) if line.startswith("{") else {"ok": False, "failures": ["driver produced no JSON"]}
+    if line.startswith("{"):
+        report: dict[str, Any] = json.loads(line)
+    else:
+        report = {"ok": False, "failures": [f"driver produced no JSON rc={result.returncode} {_redacted_tail(result.stderr)}".strip()]}
     assert result.returncode == 0, report.get("failures")
     assert report["ok"], report.get("failures")
     assert report["pointerTypes"] == ["touch"]

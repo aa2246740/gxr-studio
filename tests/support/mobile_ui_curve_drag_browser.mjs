@@ -231,6 +231,10 @@ async function runViewport(page, session, viewport) {
   const offsets = [];
   for (const sample of moves(held)) {
     const point = mid(sample.points);
+    if (!point) {
+      check(false, `${label} offset: missing point while tracking`);
+      break;
+    }
     const screenY = sample.box.top + ((255 - point.y) / 255) * sample.box.height;
     const offset = sample.pointer.y - screenY;
     offsets.push(num(offset));
@@ -280,7 +284,55 @@ async function runViewport(page, session, viewport) {
   runs.push(summary);
 }
 
-const out = { ok: false, pointerTypes: [], failures, runs };
+async function dragAttr(page) {
+  return page.evaluate(() => document.querySelector('.app')?.getAttribute('data-drag') ?? '');
+}
+
+/** 拖到一半切走「曲线」，再在别处松手。草稿必须丢掉，之后滑块仍能进入 03d。 */
+async function runInterrupted(page, session) {
+  await page.setViewportSize(VIEWPORTS[0]);
+  await frame(page);
+  await page.getByRole('tab', { name: '曲线', exact: true }).click();
+  await page.locator('.editor .curve-btn[data-channel="master"]').click();
+  await resetCurve(page);
+  await page.locator('.editor svg.curve').scrollIntoViewIfNeeded();
+  await frame(page);
+  const laid = await readCurve(page);
+  const at = screenOf(laid.box, 128, 140);
+  await touch(session, 'touchStart', at.x, at.y);
+  await frame(page);
+  await touch(session, 'touchMove', at.x, at.y + 48);
+  await frame(page);
+  const midDrag = await readCurve(page);
+  check(mid(midDrag.points) != null, 'interrupt: drag did not leave the identity line');
+  await page.getByRole('tab', { name: '调整', exact: true }).evaluate((node) => node.click());
+  await touch(session, 'touchEnd', 24, 80);
+  await frame(page);
+  const after = await readCurve(page);
+  const drag = await dragAttr(page);
+  check(after.points.length === 2, `interrupt: curve kept ${after.points.length} points after leaving the tab`);
+  check(drag === '0', `interrupt: data-drag is ${JSON.stringify(drag)} after release`);
+  const slider = page.locator('input[data-key="exposure_ev"]');
+  await slider.scrollIntoViewIfNeeded();
+  const box = await slider.boundingBox();
+  check(box != null && box.width > 0, 'interrupt: exposure slider has no box');
+  let sliderDrag = '';
+  if (box && box.width > 0) {
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await touch(session, 'touchStart', x, y);
+    await frame(page);
+    sliderDrag = await dragAttr(page);
+    check(sliderDrag === '1', `interrupt: slider drag left data-drag ${JSON.stringify(sliderDrag)}`);
+    await touch(session, 'touchEnd', x, y);
+    await frame(page);
+    const released = await dragAttr(page);
+    check(released === '0', `interrupt: slider release left data-drag ${JSON.stringify(released)}`);
+  }
+  return { points: after.points.length, drag, sliderDrag };
+}
+
+const out = { ok: false, pointerTypes: [], failures, runs, interrupt: null };
 let exitCode = 1;
 try {
   const context = await browser.newContext({ viewport: VIEWPORTS[0], deviceScaleFactor: 2, hasTouch: true });
@@ -342,6 +394,7 @@ try {
   }, null, { timeout: 180_000 });
   const session = await context.newCDPSession(page);
   for (const viewport of VIEWPORTS) await runViewport(page, session, viewport);
+  out.interrupt = await runInterrupted(page, session);
   for (const kind of await page.evaluate(() => window.__curvePointers || [])) pointerTypes.add(kind);
   check(pageErrors.length === 0, `page errors: ${pageErrors.join(' | ') || '0'}`);
   check(pointerTypes.has('touch'), `pointer type was ${[...pointerTypes].join(',') || 'missing'}`);

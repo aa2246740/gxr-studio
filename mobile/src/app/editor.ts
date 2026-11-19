@@ -336,6 +336,7 @@ export class EditorView {
       tab.addEventListener('click', () => {
         if (this.tab === tabIndex) return;
         const prevTab = this.tab;
+        if (prevTab === 5) this.curves?.cancelDrag();
         for (const item of tabs.children) item.classList.remove('on');
         tab.classList.add('on');
         this.tab = tabIndex;
