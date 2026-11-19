@@ -134,6 +134,8 @@ def complete_existing(
         except Exception:
             pass  # nosec B110  补全失败留给这次导入的结果，不在这里吞掉照片
     lib.replace_shot(existing["shot_id"], rec, imp._seen_rows(card, cfiles, all_shas), run.seen2_rows(cfiles))
+    if jpg_rec is not None:
+        lib.ensure_halfframe_pair(rec.shot_id)
     lib.log(imp._log_shot("completed", card, shot, staged, opts, rec, records, imported, run))
     progress.add(completed_shots=1)
     return True

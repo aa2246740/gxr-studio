@@ -60,10 +60,12 @@ export function recipePanel(view) {
   // COPY 3.3：近似只给一个小标签，后面一行说清楚为什么。只有 JPG 时面板里写一行「配方需要 RAW 文件」，下面一行小字，按钮置灰；点了只闪一下这一行
   let noticeEl = null;
   if (view.photo.diptych) {
-    noticeEl = h('div', { class: 'notice grey' },
-      h('div', { class: 'strong' }, '这张是半格双联，配方效果要等配对功能。'),
-    );
-    nodes.push(noticeEl);
+    if (!view.photo.pair) {
+      noticeEl = h('div', { class: 'notice grey' },
+        h('div', { class: 'strong' }, '这张双联没配上第 1 张，只能在相机 JPG 上调。'),
+      );
+      nodes.push(noticeEl);
+    }
   } else if (state3 === 'approx') {
     nodes.push(h('div', { class: 'row-tags' }, h('span', { class: 'chip warn' }, '近似'), h('span', { class: 'small dim' }, APPROX_NOTE)));
   } else if (!hasRaw) {

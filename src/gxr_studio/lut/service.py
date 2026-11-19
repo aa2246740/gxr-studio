@@ -177,6 +177,12 @@ class LutService:
         """(基准 sRGB 0..255 的 (h,w,3) 浮点, 场景 XYZ 或 None, 模式说明)。"""
         if shot is None:
             return self._chart(), None, "chart"
+        from ..halfframe_pairs import has_pair_raw
+
+        if has_pair_raw(shot):
+            from ..halfframe_compose import pair_lut_base
+
+            return pair_lut_base(self.render, self.lib, shot, max_edge, self._colour_of)
         if "dng" in shot["files"]:
             dng_rec = shot["files"]["dng"]
             try:

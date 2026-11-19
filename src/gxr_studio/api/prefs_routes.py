@@ -9,7 +9,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from .. import privacy
-from ..prefs import load_prefs, update_prefs
+from ..prefs import HALFFRAME_MODES, load_prefs, update_prefs
 from .errors import ApiError
 from .routes import _forbidden_roots, ctx
 
@@ -19,6 +19,7 @@ router = APIRouter()
 class PrefsUpdate(BaseModel):
     onboarding_dismissed: bool | None = None
     export_hdr: bool | None = None
+    export_halfframe: str | None = None
 
 
 def _forbidden(c: Any) -> list[Path]:
@@ -26,16 +27,21 @@ def _forbidden(c: Any) -> list[Path]:
 
 
 @router.get("/api/prefs", response_model=None)
-def get_prefs(request: Request) -> dict[str, bool]:
+def get_prefs(request: Request) -> dict[str, Any]:
     c = ctx(request)
     return load_prefs(c.settings.home_dir, _forbidden(c))
 
 
 @router.put("/api/prefs", response_model=None)
-def put_prefs(body: PrefsUpdate, request: Request) -> dict[str, bool]:
+def put_prefs(body: PrefsUpdate, request: Request) -> dict[str, Any]:
     raw = body.model_dump(exclude_unset=True)
-    changes: dict[str, bool] = {}
+    changes: dict[str, Any] = {}
     for key, value in raw.items():
+        if key == "export_halfframe":
+            if not isinstance(value, str) or value not in HALFFRAME_MODES:
+                raise ApiError(422, "bad_prefs", "请求无效。请刷新页面后重试。", {"detail": str(key)})
+            changes[key] = value
+            continue
         if not isinstance(value, bool):
             raise ApiError(422, "bad_prefs", "请求无效。请刷新页面后重试。", {"detail": str(key)})
         changes[key] = value

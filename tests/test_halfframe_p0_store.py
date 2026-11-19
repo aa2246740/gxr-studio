@@ -132,14 +132,14 @@ def test_verdict_store_persistence_unbounded_rebuild_and_raw_count(
     assert halfframe.HALFFRAME_REL in lib_loc.STUDIO_PATHS
 
     pairs = _sorted_pairs(_field_folder("card250"))
-    selected = [pairs[0], pairs[1], pairs[10]]  # 单格(has_raw) + 双联(exclude from raw_count) + XPan(has_raw)
+    selected = [pairs[6], pairs[1], pairs[10]]  # 单格(has_raw) + 未配对双联(exclude from raw_count) + XPan(has_raw)
     _stage_volume_pairs(volumes, selected)
     run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
 
     verdict_path = lib.abspath(halfframe.HALFFRAME_REL)
     assert verdict_path.is_file()
     stored = json.loads(verdict_path.read_text(encoding="utf-8"))
-    sha_p0 = hashlib.sha256(pairs[0][1].read_bytes()).hexdigest()
+    sha_p0 = hashlib.sha256(pairs[6][1].read_bytes()).hexdigest()
     sha_p1 = hashlib.sha256(pairs[1][1].read_bytes()).hexdigest()
     assert stored["version"] == 1
     assert stored["verdicts"][sha_p0] is False
@@ -320,9 +320,9 @@ def test_startup_halfframe_backfill_populates_verdicts_and_dates(
 ) -> None:
     _clear_desktop_cache()
     pairs = _sorted_pairs(_field_folder("card250"))
-    _stage_volume_pairs(volumes, [pairs[0], pairs[1]])
+    _stage_volume_pairs(volumes, [pairs[1], pairs[6]])
     run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
-    sha1 = hashlib.sha256(pairs[0][1].read_bytes()).hexdigest()
+    sha1 = hashlib.sha256(pairs[6][1].read_bytes()).hexdigest()
     sha2 = hashlib.sha256(pairs[1][1].read_bytes()).hexdigest()
 
     verdict_path = lib.abspath(halfframe.HALFFRAME_REL)
@@ -409,12 +409,12 @@ def test_r2_readonly_save_failure_returns_200_logs_no_paths_and_backfill_raises(
 ) -> None:
     _clear_desktop_cache()
     pairs = _sorted_pairs(_field_folder("card250"))
-    _stage_volume_pairs(volumes, [pairs[0], pairs[1]])
+    _stage_volume_pairs(volumes, [pairs[1], pairs[6]])
     _setup_g250_calibrated_home(settings)
     run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
 
     shots = sorted(lib.list_shots(), key=lambda r: r["name"])
-    s1, s2 = shots[0], shots[1]
+    s2, s1 = shots[0], shots[1]
     _reset_verdict_state(lib)
     monkeypatch.setattr(appmod, "start_halfframe_job", lambda _ctx: None)
     _capture_studio_logs(caplog, monkeypatch, logging.INFO)

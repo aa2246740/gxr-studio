@@ -30,6 +30,22 @@
             "title": "Format",
             "type": "string"
           },
+          "halfframe": {
+            "anyOf": [
+              {
+                "enum": [
+                  "diptych",
+                  "singles",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Halfframe"
+          },
           "hdr": {
             "default": false,
             "title": "Hdr",
@@ -333,6 +349,20 @@
             ],
             "title": "Export Id"
           },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExportFileItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
+          },
           "format": {
             "title": "Format",
             "type": "string"
@@ -433,6 +463,134 @@
         "title": "ExportFile",
         "type": "object"
       },
+      "ExportFileItem": {
+        "description": "半格一对多文件导出（singles / both）时的单个输出文件条目。",
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "calibrated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibrated"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "hdr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hdr"
+          },
+          "hdr_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hdr Note"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "prediction": {
+            "title": "Prediction",
+            "type": "boolean"
+          },
+          "recipe_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportRecipeBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "render": {
+            "title": "Render",
+            "type": "string"
+          },
+          "render_label": {
+            "enum": [
+              "prediction",
+              "approx",
+              "original"
+            ],
+            "title": "Render Label",
+            "type": "string"
+          },
+          "render_text": {
+            "title": "Render Text",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "diptych",
+              "first",
+              "second"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "path",
+          "width",
+          "height",
+          "bytes",
+          "format",
+          "render",
+          "render_label",
+          "render_text",
+          "prediction"
+        ],
+        "title": "ExportFileItem",
+        "type": "object"
+      },
       "ExportPackRequest": {
         "properties": {
           "dest_dir": {
@@ -512,6 +670,22 @@
             "default": "jpeg",
             "title": "Format",
             "type": "string"
+          },
+          "halfframe": {
+            "anyOf": [
+              {
+                "enum": [
+                  "diptych",
+                  "singles",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Halfframe"
           },
           "hdr": {
             "default": false,
@@ -1042,6 +1216,17 @@
       },
       "PrefsUpdate": {
         "properties": {
+          "export_halfframe": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Halfframe"
+          },
           "export_hdr": {
             "anyOf": [
               {

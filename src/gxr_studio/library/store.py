@@ -30,6 +30,8 @@ from typing import Any, Iterable, cast
 
 from .. import audit, osplat
 from .. import halfframe as hf
+from .. import halfframe_library as hfl
+from .. import halfframe_pairs as hfp
 from .. import meta as metamod
 from ..camdata.recipe_tags import RECIPE_TAG_VERSION, RecipeTag, parse_recipe_tag
 from . import sidecar as sc
@@ -135,6 +137,8 @@ class Library:
         self.index_path = self.studio / "index.sqlite"
         self.halfframe_path = self.studio / hf.HALFFRAME_FILE
         self._halfframe = hf.VerdictStore(self.halfframe_path, check_write=lambda: self.check_write(hf.HALFFRAME_REL))
+        self.halfframe_pairs_path = self.studio / hfp.PAIRS_FILE
+        self._pairs = hfp.PairStore(self.halfframe_pairs_path, check_write=lambda: self.check_write(hfp.PAIRS_REL))
         self.lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self.query_log: list[str] | None = None
@@ -150,6 +154,7 @@ class Library:
         self.tmp_dir.mkdir(exist_ok=True)
         self._connect()
         self._halfframe.load()
+        self._pairs.load()
         return self
 
     def _connect(self) -> None:
@@ -172,6 +177,7 @@ class Library:
 
     def close(self) -> None:
         self._halfframe.close()
+        self._pairs.close()
         with self.lock:
             if self._db is not None:
                 self._db.close()
@@ -366,7 +372,8 @@ class Library:
                             ORDER BY s.captured_at DESC, s.name, s.shot_id LIMIT 1), g.any_id) AS cover_id
                    FROM grouped g ORDER BY (g.d='unknown'), g.d DESC"""
             ).fetchall()
-            sub = hf.diptych_raw_counts(self.db, self._halfframe.diptych_shas())
+            unpaired_shas = self._halfframe.diptych_shas() - hfl.paired_raw_second_shas(self.db, self._pairs)
+            sub = hf.diptych_raw_counts(self.db, unpaired_shas)
         return [
             {
                 "date": r["d"],
@@ -411,20 +418,32 @@ class Library:
             if d["recipe_tag"] is None or d["recipe_tag"].get("version") != RECIPE_TAG_VERSION:
                 d["recipe_tag"] = parse_recipe_tag(d["copyright"])
             out.append(d)
-        return out
+        return hfl.attach_pairs_to_shots(out, self.db, self.lock, self._halfframe, self._pairs, self.abspath, allow_decode=can_decode)
 
     def resolve_diptych(self, shot: dict[Any, Any]) -> dict[Any, Any]:
-        return hf.resolve_shot(shot, self._halfframe, self.abspath)
+        return hfl.resolve_shot_pair(shot, self.db, self.lock, self._halfframe, self._pairs, self.abspath)
 
     def ensure_halfframe_verdict(self, relpath: str, sha256: str | None, dims: tuple[int | None, int | None]) -> bool:
         return hf.ensure_verdict(relpath, sha256, dims, self._halfframe, self.abspath)
+
+    def ensure_halfframe_pair(self, shot_id: str) -> None:
+        shot = self.get_shot(shot_id, resolve=False)
+        if shot is not None:
+            hfl.ensure_pair_for_shot(shot, self.db, self.lock, self._halfframe, self._pairs, self.abspath)
 
     def halfframe_pending(self) -> list[tuple[str, str]]:
         with self.lock:
             return hf.pending_verdicts(self.db, self._halfframe)
 
+    def halfframe_pair_pending(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return hfl.pending_pairs(self.db, self._halfframe, self._pairs)
+
     def record_halfframe_batch(self, items: dict[str, bool]) -> None:
         self._halfframe.put_many(items, save=True, strict=True)
+
+    def record_halfframe_pairs_batch(self, first_like: dict[str, bool], pairs: dict[str, dict[str, Any]]) -> None:
+        self._pairs.put_batch(first_like, pairs, save=True, strict=True)
 
     def list_shots(self, date: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[Any, Any]]:
         sql, args = "SELECT * FROM shots", []
@@ -655,6 +674,7 @@ class Library:
             self.add_seen2(rows2)
             report.seen_restored = len(rows) + len(rows2)
         hf.rebuild_verdicts(rebuilt_jpgs, self._halfframe, self.abspath)
+        hfl.rebuild_pairs_from_db(self.db, self.lock, self._halfframe, self._pairs, self.abspath)
         return report
 
     def _rebuild_group(

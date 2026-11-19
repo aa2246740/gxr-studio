@@ -705,6 +705,8 @@ def _import_shot(lib: Any, card: Any, shot: CardShot, opts: Any, progress: Any, 
             pass  # nosec B110  缩略图是缓存，之后按需再生成
     seen = _seen_rows(card, cfiles, all_shas)
     lib.commit_shot(rec, seen, run.seen2_rows(cfiles))
+    if jpg_rec is not None:
+        lib.ensure_halfframe_pair(rec.shot_id)
     lib.log(_log_shot("imported", card, shot, staged, opts, rec, records, imported_info, run))
     progress.add(imported_shots=1)
 
