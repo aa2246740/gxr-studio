@@ -340,12 +340,7 @@ def _local_residual(sdr_y: np.ndarray, raw_y: np.ndarray, photo: np.ndarray | No
     return False
 
 
-def align(sdr_y: np.ndarray, raw_y: np.ndarray) -> Alignment:
-    """把 RAW 亮度（已转到 SDR 的方向）对齐到 SDR 的增益图网格。`raw_y` 里的 NaN 表示非照片区域（如半格中缝）。"""
-    a = _norm(_hp(sdr_y))
-    has_nan = not bool(np.isfinite(raw_y).all())
-    work = np.where(np.isfinite(raw_y), raw_y, np.float32(1e-4)).astype(np.float32) if has_nan else raw_y
-
+def _search_global(a: np.ndarray, work: np.ndarray) -> tuple[float, float, int, int]:
     def corr_at(s: float, dy: int, dx: int) -> float:
         return float(np.mean(a * _norm(_hp(warp(work, a.shape, s, dy, dx)))))
 
@@ -354,8 +349,7 @@ def align(sdr_y: np.ndarray, raw_y: np.ndarray) -> Alignment:
         dy, dx = _phase_shift(a, _norm(_hp(warp(work, a.shape, s, 0, 0))))
         corr = corr_at(s, dy, dx)
         if s == 1.0 and dy == 0 and dx == 0 and corr > 0.6:
-            best = (corr, s, dy, dx)
-            break  # 已经对齐得很好，不再试缩放
+            return corr, s, dy, dx  # 已经对齐得很好，不再试缩放
         # 相位相关的峰偶尔差一格：在 ±1 格里直接比相关系数
         phase_y, phase_x = dy, dx
         for cand in ((corr_at(s, phase_y + i, phase_x + j), s, phase_y + i, phase_x + j) for i in (-1, 0, 1) for j in (-1, 0, 1) if i or j):
@@ -364,13 +358,57 @@ def align(sdr_y: np.ndarray, raw_y: np.ndarray) -> Alignment:
         if best is None or corr > best[0]:
             best = (corr, s, dy, dx)
     assert best is not None  # nosec B101  SCALES 不是空的
-    corr, s, dy, dx = best
+    return best
+
+
+def _parts_alignment(sdr_y: np.ndarray, raw_y: np.ndarray) -> tuple[float, float] | None:
+    """对由 NaN 分隔的多个区域（如半格两半）独立核对相关系数与平移比例，任一半错配均不可被另一半掩盖。"""
+    comp_labels, comp_count = ndimage.label(np.isfinite(raw_y))
+    if comp_count <= 1:
+        return None
+    rh, rw = raw_y.shape
+    sh, sw = sdr_y.shape
+    min_corr = float("inf")
+    max_shift = 0.0
+    checked = 0
+    for slc in ndimage.find_objects(comp_labels):
+        if slc is None:
+            continue
+        ry, rx = slc
+        sy0, sy1 = round(ry.start * sh / rh), round(ry.stop * sh / rh)
+        sx0, sx1 = round(rx.start * sw / rw), round(rx.stop * sw / rw)
+        if sy1 - sy0 < 2 or sx1 - sx0 < 2:
+            continue
+        part_sdr = sdr_y[sy0:sy1, sx0:sx1]
+        part_raw = raw_y[ry, rx]
+        part_work = np.where(np.isfinite(part_raw), part_raw, np.float32(1e-4)).astype(np.float32)
+        p_corr, _p_s, p_dy, p_dx = _search_global(_norm(_hp(part_sdr)), part_work)
+        if not math.isfinite(p_corr):
+            p_corr = 0.0
+        min_corr = min(min_corr, p_corr)
+        max_shift = max(max_shift, max(abs(p_dy) / part_sdr.shape[0], abs(p_dx) / part_sdr.shape[1]))
+        checked += 1
+    return (min_corr, max_shift) if checked else None
+
+
+def align(sdr_y: np.ndarray, raw_y: np.ndarray) -> Alignment:
+    """把 RAW 亮度（已转到 SDR 的方向）对齐到 SDR 的增益图网格。`raw_y` 里的 NaN 表示非照片区域（如半格中缝）。"""
+    a = _norm(_hp(sdr_y))
+    has_nan = not bool(np.isfinite(raw_y).all())
+    work = np.where(np.isfinite(raw_y), raw_y, np.float32(1e-4)).astype(np.float32) if has_nan else raw_y
+    corr, s, dy, dx = _search_global(a, work)
     registered = warp(work, a.shape, s, dy, dx)
     photo = warp(np.isfinite(raw_y).astype(np.float32), a.shape, s, dy, dx) > 0.99 if has_nan else None
     ha, hb = _hp(sdr_y), _hp(registered)
     moved = _tiles_moved(ha, hb)
     unverified = _tiles_unverified(sdr_y, registered, photo) + int(_local_residual(sdr_y, registered, photo))
-    return Alignment(s, dy, dx, corr, moved, max(abs(dy) / a.shape[0], abs(dx) / a.shape[1]), unverified)
+    shift_frac = max(abs(dy) / a.shape[0], abs(dx) / a.shape[1])
+    if has_nan:
+        parts = _parts_alignment(sdr_y, raw_y)
+        if parts is not None:
+            corr = min(corr, parts[0])
+            shift_frac = max(shift_frac, parts[1])
+    return Alignment(s, dy, dx, corr, moved, shift_frac, unverified)
 
 
 def check_alignment(al: Alignment) -> None:

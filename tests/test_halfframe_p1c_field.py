@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 import hdr_support as hs
@@ -81,7 +82,7 @@ def test_field_card250_all_three_pairs_derived_hdr(
         assert hdr_derived.status_of(lib, shot2) == hdr_derived.READY
 
         cam_dip = card250_pairs[i2 - 1][1].read_bytes()
-        hdr_bytes = hdr_derived.hdr_path(lib, shot2["shot_id"]).read_bytes()
+        hdr_bytes = hdr_derived.hdr_path(lib, shot2["shot_id"], pair=True).read_bytes()
         checked = hs.check_file(cam_dip, hdr_bytes)
         assert checked["ok"], f"pair ({i1},{i2}) container failed: {checked['fail']}"
 
@@ -459,3 +460,61 @@ print(json.dumps({"derived": derived_out, "export": export_out}))
         b_hdr, b_ep = base_res["export"][label]
         assert head_exports[label][0] == b_hdr, f"{label} export hdr flag diverged"
         assert head_exports[label][1] == Path(b_ep).read_bytes(), f"{label} export HDR bytes diverged from {BASE_COMMIT}"
+
+
+# --------------------------------------------------------------------------- Fix round 1：P2-1 与 P3-1 实拍回归
+
+
+def test_field_stale_v2_unsupported_does_not_block_card250_pair(
+    settings: Any,
+    lib: Library,
+    volumes: Path,
+) -> None:
+    """P2-1：card250 半格对预先存在旧版 `-v2.json` unsupported 记录时，仍进入 pending 并可生成 ready 衍生 HDR。"""
+    _clear_desktop_cache()
+    card250_pairs = _sorted_pairs(_field_folder("card250"))
+    _stage_volume_pairs(volumes, card250_pairs[:2])
+    _setup_g250_calibrated_home(settings)
+    run_import(lib, find_cards((volumes,))[0], ImportOptions(min_free_bytes=0))
+    by_idx = _index_shots_by_jpg_sha(lib, card250_pairs[:2])
+    sid2 = by_idx[2]["shot_id"]
+    shot2 = lib.get_shot(sid2)
+    assert shot2 is not None and shot2.get("pair") is not None
+
+    # 预写旧版 `-v2.json`（模拟 P0 之前对双联写下的 unsupported/not_aligned）
+    stale = hdr_derived.status_path(lib, sid2)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(
+        json.dumps({"status": hdr_derived.UNSUPPORTED, "reason": "not_aligned", "version": hdr_derived.VERSION}),
+        encoding="utf-8",
+    )
+
+    assert hdr_derived.status_of(lib, shot2) == hdr_derived.PENDING
+    pending_ids = {s["shot_id"] for s in hdr_derived.pending(lib, lib.list_shots(limit=100))}
+    assert sid2 in pending_ids
+    assert hdr_derived.generate(lib, shot2) == hdr_derived.READY
+    assert hdr_derived.status_of(lib, shot2) == hdr_derived.READY
+    assert hdr_derived.hdr_path(lib, sid2, pair=True).is_file()
+    assert not hdr_derived.hdr_path(lib, sid2).exists()
+
+
+def test_field_card250_photo5_wrong_dng_refused_without_first_jpeg() -> None:
+    """P3-1：card250 第 3 对 (5, 6) 把第 5 张换成另一对的 DNG 且跳过第 1 张 JPG 拍摄核对时，必须按 not_aligned 拒绝。"""
+    card250_pairs = _sorted_pairs(_field_folder("card250"))
+    dng1_other, _jpg1 = card250_pairs[0]
+    dng3_other, _jpg3 = card250_pairs[2]
+    dng6, jpg6 = card250_pairs[5]
+    cam_dip = jpg6.read_bytes()
+    ori = g.jpeg_orientation(cam_dip)
+
+    for wrong_dng in (dng1_other, dng3_other):
+        raw = g.pair_raw_luma(
+            open_dng(wrong_dng),
+            open_dng(dng6),
+            first_half="left",
+            orientation=ori,
+            first_jpeg=None,
+        )
+        with pytest.raises(g.HdrUnsupported) as err:
+            g.hdr_from_camera_jpeg(cam_dip, raw)
+        assert err.value.reason == "not_aligned"

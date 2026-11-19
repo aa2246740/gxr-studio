@@ -1,7 +1,9 @@
 """导入后在后台给 RAW+JPG 的照片生成 HDR 版本，作为派生文件放在图库的 `.studio/hdr/` 里。
 
-    <图库>/.studio/hdr/<shot_id 前两位>/<shot_id>-v<版本>.jpg     HDR JPG（主图 = 相机 JPG 原样，加增益图）
-    <图库>/.studio/hdr/<shot_id 前两位>/<shot_id>-v<版本>.json    做不了时的原因（对不齐、RAW 读不出来…）
+    <图库>/.studio/hdr/<shot_id 前两位>/<shot_id>-v<版本>.jpg         单图 HDR JPG（主图 = 相机 JPG 原样，加增益图）
+    <图库>/.studio/hdr/<shot_id 前两位>/<shot_id>-v<版本>.json        单图做不了时的原因（对不齐、RAW 读不出来…）
+    <图库>/.studio/hdr/<shot_id 前两位>/<shot_id>-pair-v<版本>.jpg    半格一对第 2 张的 HDR JPG
+    <图库>/.studio/hdr/<shot_id 前两位>/<shot_id>-pair-v<版本>.json   半格一对第 2 张做不了时的原因
 
 和缩略图同一种约定：按内容哈希（shot_id）命名、只是缓存、删掉会重新生成。不放在日期文件夹里：那里的每个 JPG
 重建索引时都会被当成一张照片。原 JPG 和 DNG 只以 `rb` 读，不改名、不改时间。
@@ -30,6 +32,7 @@ from .container import ContainerError
 from .gain import HdrUnsupported, Params, RawLuma, hdr_from_camera_jpeg, pair_raw_luma, raw_luma
 
 VERSION = 2  # 重新核对旧缓存的拍摄信息和局部对应关系
+PAIR_VERSION = 1  # 半格一对使用独立键，忽略 P0 前旧版写下的单图 `-v2.json`
 DIR = ".studio/hdr"
 PURPOSE = "hdr"
 
@@ -39,16 +42,17 @@ PENDING = "pending"
 NONE = "none"
 
 
-def _rel(shot_id: str, ext: str) -> str:
-    return f"{shot_id[:2]}/{shot_id}-v{VERSION}{ext}"
+def _rel(shot_id: str, ext: str, *, pair: bool = False) -> str:
+    suffix = f"pair-v{PAIR_VERSION}" if pair else f"v{VERSION}"
+    return f"{shot_id[:2]}/{shot_id}-{suffix}{ext}"
 
 
-def hdr_path(lib: Library, shot_id: str) -> Path:
-    return lib.abspath(DIR) / _rel(shot_id, ".jpg")
+def hdr_path(lib: Library, shot_id: str, *, pair: bool = False) -> Path:
+    return lib.abspath(DIR) / _rel(shot_id, ".jpg", pair=pair)
 
 
-def status_path(lib: Library, shot_id: str) -> Path:
-    return lib.abspath(DIR) / _rel(shot_id, ".json")
+def status_path(lib: Library, shot_id: str, *, pair: bool = False) -> Path:
+    return lib.abspath(DIR) / _rel(shot_id, ".json", pair=pair)
 
 
 def eligible(shot: dict[str, Any]) -> bool:
@@ -64,12 +68,15 @@ def eligible(shot: dict[str, Any]) -> bool:
 
 def status_of(lib: Library, shot: dict[str, Any]) -> str:
     """ready / unsupported / pending（有 RAW+JPG，还没做）/ none（没有 RAW 或没有 JPG）。"""
+    from ..halfframe_pairs import is_pair_second
+
     if not eligible(shot):
         return NONE
     sid = str(shot["shot_id"])
-    if hdr_path(lib, sid).is_file():
+    pair = is_pair_second(shot)
+    if hdr_path(lib, sid, pair=pair).is_file():
         return READY
-    if status_path(lib, sid).is_file():
+    if status_path(lib, sid, pair=pair).is_file():
         return UNSUPPORTED
     return PENDING
 
@@ -79,9 +86,9 @@ def _open_dir(lib: Library) -> privacy.PrivateDir:
     return privacy.PrivateDir(lib.abspath(DIR), PURPOSE, lib.card_roots)
 
 
-def _store(lib: Library, shot_id: str, ext: str, data: bytes) -> None:
+def _store(lib: Library, shot_id: str, ext: str, data: bytes, *, pair: bool = False) -> None:
     with _open_dir(lib) as d:
-        d.replace_file(_rel(shot_id, ext), data)
+        d.replace_file(_rel(shot_id, ext, pair=pair), data)
 
 
 def _load_raw(lib: Library, shot: dict[str, Any]) -> RawLuma:
@@ -107,7 +114,10 @@ def _load_raw(lib: Library, shot: dict[str, Any]) -> RawLuma:
 
 def generate(lib: Library, shot: dict[str, Any], params: Params | None = None) -> str:
     """给一张照片生成 HDR 版本，返回状态。做不了的（对不齐、RAW 读不出来）记一个原因文件，下次不再试。"""
+    from ..halfframe_pairs import is_pair_second
+
     sid = str(shot["shot_id"])
+    pair = is_pair_second(shot)
     files = shot["files"]
     try:
         jpeg = lib.abspath(files["jpg"]["relpath"]).read_bytes()
@@ -115,13 +125,15 @@ def generate(lib: Library, shot: dict[str, Any], params: Params | None = None) -
         out, stats = hdr_from_camera_jpeg(jpeg, raw, params)
     except (HdrUnsupported, RawDecodeError, ContainerError) as exc:
         reason = exc.reason if isinstance(exc, HdrUnsupported) else ("raw_unreadable" if isinstance(exc, RawDecodeError) else "jpeg_unreadable")
-        status = {"status": UNSUPPORTED, "reason": reason, "version": VERSION}
+        status: dict[str, Any] = {"status": UNSUPPORTED, "reason": reason, "version": PAIR_VERSION if pair else VERSION}
+        if pair:
+            status["pair"] = True
         if isinstance(exc, HdrUnsupported) and exc.reason == "capture_mismatch":
             status["detail"] = exc.detail
-        _store(lib, sid, ".json", json.dumps(status, ensure_ascii=False).encode())
+        _store(lib, sid, ".json", json.dumps(status, ensure_ascii=False).encode(), pair=pair)
         log.event(logging.INFO, "hdr_unsupported", shot_id=sid, reason=reason)
         return UNSUPPORTED
-    _store(lib, sid, ".jpg", out)
+    _store(lib, sid, ".jpg", out, pair=pair)
     log.event(logging.INFO, "hdr_ready", shot_id=sid, gain_max_stops=stats.get("gain_max_stops"), bytes=len(out))
     return READY
 
@@ -149,10 +161,21 @@ class HdrProgress:
             self.state = state
 
 
+def _stale_single_status(lib: Library, shot: dict[str, Any]) -> bool:
+    """回填完成前若命中旧单图 `-v2.json`，允许补算一次双联以确认是否为可做 HDR 的半格对。"""
+    from ..halfframe_pairs import is_pair_second
+
+    if is_pair_second(shot) or shot.get("diptych"):
+        return False
+    sid = str(shot["shot_id"])
+    return not hdr_path(lib, sid, pair=True).is_file() and not status_path(lib, sid, pair=True).is_file()
+
+
 def pending(lib: Library, shots: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for s in shots:
-        if status_of(lib, s) != PENDING:
+        st = status_of(lib, s)
+        if st != PENDING and not (st == UNSUPPORTED and _stale_single_status(lib, s)):
             continue
         resolved = lib.resolve_diptych(s)
         if status_of(lib, resolved) == PENDING:

@@ -243,9 +243,11 @@ def test_pre_backfill_multi_row_no_decode_and_render_export_batch_hdr_lut(
     calls.clear()
     prog = hdr_derived.run_pending(lib, hdr_derived.HdrProgress(), threading.Event())
     assert prog.state == "done" and prog.done == 2 and prog.ready == 2
-    assert hdr_derived.status_of(lib, s2) == hdr_derived.READY
-    assert hdr_derived.hdr_path(lib, s2["shot_id"]).is_file()
-    assert not hdr_derived.status_path(lib, s2["shot_id"]).exists()
+    s2_resolved = lib.get_shot(s2["shot_id"])
+    assert s2_resolved is not None
+    assert hdr_derived.status_of(lib, s2_resolved) == hdr_derived.READY
+    assert hdr_derived.hdr_path(lib, s2["shot_id"], pair=True).is_file()
+    assert not hdr_derived.status_path(lib, s2["shot_id"], pair=True).exists()
 
     # 3. LUT pick_photos(ids=None)（回填前）不会挑选双联做 RAW LUT 拟合
     _reset_verdict_state(lib)

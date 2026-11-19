@@ -225,7 +225,7 @@ def test_derived_hdr_accepts_pair_with_pair_raw_and_refuses_jpeg_only_photo1(lib
     assert derived.status_of(lib, shot_ok) == derived.PENDING
     assert derived.generate(lib, shot_ok) == derived.READY
     assert derived.status_of(lib, shot_ok) == derived.READY
-    hdr_bytes = derived.hdr_path(lib, shot_ok["shot_id"]).read_bytes()
+    hdr_bytes = derived.hdr_path(lib, shot_ok["shot_id"], pair=True).read_bytes()
     checked = hs.check_file(jpg2, hdr_bytes)
     assert checked["ok"], checked["fail"]
     assert checked["meta"]["GainMapMax"] >= 1.0
@@ -331,9 +331,9 @@ def test_corrupted_half_dng_luma_falls_back_to_sdr_without_gainmap(
     )
     # 1) 衍生 HDR -> unsupported (not_aligned)，绝不写 .jpg
     assert derived.generate(lib, shot2) == derived.UNSUPPORTED
-    assert not derived.hdr_path(lib, shot2["shot_id"]).exists()
-    reason = json.loads(derived.status_path(lib, shot2["shot_id"]).read_text(encoding="utf-8"))
-    assert reason["status"] == derived.UNSUPPORTED and reason["reason"] == "not_aligned"
+    assert not derived.hdr_path(lib, shot2["shot_id"], pair=True).exists()
+    reason = json.loads(derived.status_path(lib, shot2["shot_id"], pair=True).read_text(encoding="utf-8"))
+    assert reason["status"] == derived.UNSUPPORTED and reason["reason"] == "not_aligned" and reason.get("pair") is True
 
     # 2) 导出 HDR (diptych / singles / both) -> 全部回退 SDR，带原因，无增益图，字节与 hdr=False 一致
     render = RenderService(settings.home_dir, lib)
@@ -468,3 +468,75 @@ def test_export_pair_both_hdr_with_diptych_frame_keeps_singles_unframed_and_vali
     assert tr.dng is None
     tr.begin(np.zeros((32, 32, 3), np.uint8))
     assert tr.problem == "no_raw"
+
+
+def test_stale_v2_unsupported_does_not_block_pair_and_pair_unsupported_is_respected(lib: Library) -> None:
+    """P2-1：旧版本写下的单图 `-v2.json` 不阻塞半格对生成衍生 HDR，而半格对自己的 `unsupported` 仍生效。"""
+    assert derived.VERSION == 2
+    shot_ok, _j1, jpg2 = _stage_pair_shot(lib, tag="s1", orientation=1, first_half="left", first_has_dng=True)
+    sid_ok = shot_ok["shot_id"]
+    stale = derived.status_path(lib, sid_ok)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(json.dumps({"status": derived.UNSUPPORTED, "reason": "not_aligned", "version": derived.VERSION}), encoding="utf-8")
+
+    # 忽略旧单图 `-v2.json`：状态为 pending，generate 产出 pair 独立文件并变 ready
+    assert derived.status_of(lib, shot_ok) == derived.PENDING
+    assert derived.generate(lib, shot_ok) == derived.READY
+    assert derived.status_of(lib, shot_ok) == derived.READY
+    pair_hdr = derived.hdr_path(lib, sid_ok, pair=True)
+    assert pair_hdr.is_file()
+    assert not derived.hdr_path(lib, sid_ok).exists()
+    checked = hs.check_file(jpg2, pair_hdr.read_bytes())
+    assert checked["ok"], checked["fail"]
+
+    # 半格对自身的 unsupported 状态（`-pair-v1.json`）仍被尊重
+    wrong = np.roll(hs.scene(SYNTH_H, SYNTH_W, seed=99), 120, axis=1)
+    shot_bad, _jb1, _jb2 = _stage_pair_shot(lib, tag="s2", orientation=1, first_half="left", dng1_rgb=wrong, full_camera_jpg=True)
+    sid_bad = shot_bad["shot_id"]
+    assert derived.generate(lib, shot_bad) == derived.UNSUPPORTED
+    assert derived.status_of(lib, shot_bad) == derived.UNSUPPORTED
+    assert derived.status_path(lib, sid_bad, pair=True).is_file()
+    assert not derived.status_path(lib, sid_bad).exists()
+    assert derived.pending(lib, [shot_bad]) == []
+
+
+def test_wrong_half_dng_with_dark_first_half_and_skipped_first_jpeg_refused() -> None:
+    """P3-1：即使跳过第 1 张 JPG 拍摄核对、且第 1 半格低反差、第 2 半格高纹理，换错第 1 半 DNG 也必须报 not_aligned。"""
+    from scipy import ndimage
+
+    geo = hfc.proxy_geometry(SYNTH_W)
+    x0, x1 = geo.strip_x0, geo.strip_x0 + geo.half_w
+
+    def _low_contrast(seed: int) -> np.ndarray:
+        tex = ndimage.gaussian_filter(np.random.default_rng(seed).random((SYNTH_H, geo.half_w)), 6.0)
+        tex = (tex - float(tex.min())) / max(float(tex.max() - tex.min()), 1e-6) - 0.5
+        y = np.clip(0.20 + 0.03 * tex, 0.12, 0.28)
+        return np.repeat(y[..., None], 3, axis=2).astype(np.float64)
+
+    # 第 1 半低反差（高通标准差低于 TILE_TEXTURE 且亮度残差低于 0.125 档）、第 2 半高纹理：
+    # 整图对齐会被第 2 半拉过门槛，唯有逐半独立核对相关系数/位移才能拦住错配 DNG。
+    s1 = _low_contrast(301)
+    s1_wrong = _low_contrast(409)
+    s2 = hs.scene(SYNTH_H, geo.half_w, seed=302)
+    rgb1_wrong = np.empty((SYNTH_H, SYNTH_W, 3), dtype=np.float64)
+    rgb2 = np.empty((SYNTH_H, SYNTH_W, 3), dtype=np.float64)
+    for dst, strip in ((rgb1_wrong, s1_wrong), (rgb2, s2)):
+        dst[:, x0:x1] = strip
+        dst[:, :x0] = strip[:, :1]
+        dst[:, x1:] = strip[:, -1:]
+    dip = np.zeros((SYNTH_H, SYNTH_W, 3), dtype=np.float64)
+    dip[:, : geo.half_w] = s1
+    dip[:, geo.right_x0 :] = s2
+    jpg2 = _camera_jpeg(dip, orientation=1)
+    dng1_wrong = _synth_dng(rgb1_wrong, orientation=1)
+    dng2 = _synth_dng(rgb2, orientation=1)
+
+    raw = g.pair_raw_luma(open_dng(dng1_wrong), open_dng(dng2), first_half="left", orientation=1, first_jpeg=None)
+    with pytest.raises(g.HdrUnsupported) as err:
+        g.hdr_from_camera_jpeg(jpg2, raw)
+    assert err.value.reason == "not_aligned"
+
+
+def test_dead_halfframe_pair_hdr_note_removed() -> None:
+    """P3-2：已废弃的 halfframe_pair 文案应从 HDR_NOTES 删除。"""
+    assert "halfframe_pair" not in HDR_NOTES
