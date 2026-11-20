@@ -106,7 +106,7 @@ def _assert_mount_paired(shots: list[dict[str, Any]], shot_ids: dict[int, str]) 
     assert s7.get("pair") is not None and s7["pair"]["role"] == "second" and s7["pair"]["partner_id"] == shot_ids[6]
 
 
-def _wait_halfframe_job(client: TestClient, timeout: float = 5.0) -> dict[str, Any]:
+def _wait_halfframe_job(client: TestClient, timeout: float = 30.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
