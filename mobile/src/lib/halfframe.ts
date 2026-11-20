@@ -17,10 +17,13 @@ export const SEAMS: readonly [number, number][] = [
   [2120, 2167],
 ];
 
-const SEAM_SLICES: readonly [number, number][] = SEAMS.map(([x0, x1]) => [
-  Math.floor((x0 + SCALE - 1) / SCALE),
-  Math.floor((x1 - (SCALE - 1)) / SCALE),
-]);
+const SEAM_G250 = 'g250';
+const SEAM_LEGACY48 = 'legacy48';
+
+const SEAM_SLICES: readonly [string, number, number][] = [
+  [SEAM_G250, Math.floor((SEAMS[0][0] + SCALE - 1) / SCALE), Math.floor((SEAMS[0][1] - (SCALE - 1)) / SCALE)],
+  [SEAM_LEGACY48, Math.floor((SEAMS[1][0] + SCALE - 1) / SCALE), Math.floor((SEAMS[1][1] - (SCALE - 1)) / SCALE)],
+];
 
 function sliceMaxLuma(
   rgba: Uint8Array | Uint8ClampedArray,
@@ -90,7 +93,7 @@ export function isDiptychRgba(
   const wantW = resolvedAxis === 'row' ? DRAFT_HEIGHT : DRAFT_WIDTH;
   const wantH = resolvedAxis === 'row' ? DRAFT_WIDTH : DRAFT_HEIGHT;
   if (width !== wantW || height !== wantH || rgba.length < width * height * 4) return false;
-  for (const [c0, c1] of SEAM_SLICES) {
+  for (const [kind, c0, c1] of SEAM_SLICES) {
     if (c0 <= 0 || c1 + 1 >= DRAFT_WIDTH) continue;
     let seamBlack = true;
     for (let c = c0; c <= c1; c += 1) {
@@ -100,11 +103,15 @@ export function isDiptychRgba(
       }
     }
     if (!seamBlack) continue;
-    if (
-      sliceMaxLuma(rgba, width, height, c0 - 1, resolvedAxis) > LUMA_THRESHOLD &&
-      sliceMaxLuma(rgba, width, height, c1 + 1, resolvedAxis) > LUMA_THRESHOLD
-    ) {
-      return true;
+    const leftEdge = sliceMaxLuma(rgba, width, height, c0 - 1, resolvedAxis) > LUMA_THRESHOLD;
+    const rightEdge = sliceMaxLuma(rgba, width, height, c1 + 1, resolvedAxis) > LUMA_THRESHOLD;
+    if (leftEdge && rightEdge) return true;
+    if (kind === SEAM_G250 && (leftEdge || rightEdge)) {
+      const start = leftEdge ? c1 + 1 : 0;
+      const end = leftEdge ? DRAFT_WIDTH : c0;
+      for (let c = start; c < end; c += 1) {
+        if (sliceMaxLuma(rgba, width, height, c, resolvedAxis) > LUMA_THRESHOLD) return true;
+      }
     }
   }
   return false;

@@ -95,12 +95,17 @@ def seam_kind_luma(luma: np.ndarray) -> str | None:
     for kind, c0, c1 in _SEAM_SPEC_COLS:
         if c0 <= 0 or c1 + 1 >= DRAFT_WIDTH:
             continue
-        if (
-            int(luma[:, c0 : c1 + 1].max()) <= LUMA_THRESHOLD
-            and int(luma[:, c0 - 1].max()) > LUMA_THRESHOLD
-            and int(luma[:, c1 + 1].max()) > LUMA_THRESHOLD
-        ):
+        if int(luma[:, c0 : c1 + 1].max()) > LUMA_THRESHOLD:
+            continue
+        left_edge = int(luma[:, c0 - 1].max()) > LUMA_THRESHOLD
+        right_edge = int(luma[:, c1 + 1].max()) > LUMA_THRESHOLD
+        if left_edge and right_edge:
             return kind
+        # g250 宽黑缝（112 px）紧挨暗景时，暗侧邻列可低于阈值；要求另一侧紧邻有画面且暗侧半幅并非全黑。
+        if kind == SEAM_G250 and (left_edge or right_edge):
+            dark_half = luma[:, c1 + 1 :] if left_edge else luma[:, :c0]
+            if int(dark_half.max()) > LUMA_THRESHOLD:
+                return kind
     return None
 
 

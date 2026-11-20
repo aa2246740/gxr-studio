@@ -110,3 +110,44 @@ test('isDiptychRgba detects g250 and legacy48 seams in landscape and portrait an
   const portraitUniform = makeRgba(DRAFT_HEIGHT, DRAFT_WIDTH);
   assert.equal(isDiptychRgba(portraitUniform, DRAFT_HEIGHT, DRAFT_WIDTH, 'row'), false);
 });
+
+test('isDiptychRgba accepts g250 seam adjoining a dark scene on one side while rejecting legacy48 and dark negatives', () => {
+  // MOUNT boundary analogue: dark curtain right of g250 seam (2088..2239 black), dim detail on right half
+  const darkRight = makeRgba(DRAFT_WIDTH, DRAFT_HEIGHT, 140);
+  blackCols(darkRight, DRAFT_WIDTH, DRAFT_HEIGHT, 2088, 2239);
+  for (let y = 0; y < DRAFT_HEIGHT; y += 1) {
+    for (let x = Math.floor(2240 / 8); x < DRAFT_WIDTH; x += 1) {
+      const off = (y * DRAFT_WIDTH + x) * 4;
+      darkRight[off] = 40;
+      darkRight[off + 1] = 40;
+      darkRight[off + 2] = 40;
+    }
+  }
+  assert.equal(isDiptychRgba(darkRight, DRAFT_WIDTH, DRAFT_HEIGHT, 'col'), true);
+
+  // Symmetric dark scene left of g250 seam in portrait orientation
+  const darkLeftPortrait = makeRgba(DRAFT_HEIGHT, DRAFT_WIDTH, 140);
+  blackRows(darkLeftPortrait, DRAFT_HEIGHT, 2040, 2199);
+  for (let y = 0; y < Math.floor(2040 / 8); y += 1) {
+    for (let x = 0; x < DRAFT_HEIGHT; x += 1) {
+      const off = (y * DRAFT_HEIGHT + x) * 4;
+      darkLeftPortrait[off] = 40;
+      darkLeftPortrait[off + 1] = 40;
+      darkLeftPortrait[off + 2] = 40;
+    }
+  }
+  assert.equal(isDiptychRgba(darkLeftPortrait, DRAFT_HEIGHT, DRAFT_WIDTH, 'row'), true);
+
+  // legacy48 keeps its strict two-sided rule
+  const legacyDarkRight = makeRgba(DRAFT_WIDTH, DRAFT_HEIGHT, 140);
+  blackCols(legacyDarkRight, DRAFT_WIDTH, DRAFT_HEIGHT, 2120, 2207);
+  assert.equal(isDiptychRgba(legacyDarkRight, DRAFT_WIDTH, DRAFT_HEIGHT, 'col'), false);
+
+  // Dark negative controls: all-black and half-black must remain false
+  const allBlack = makeRgba(DRAFT_WIDTH, DRAFT_HEIGHT, 0);
+  assert.equal(isDiptychRgba(allBlack, DRAFT_WIDTH, DRAFT_HEIGHT, 'col'), false);
+
+  const halfBlackRight = makeRgba(DRAFT_WIDTH, DRAFT_HEIGHT, 140);
+  blackCols(halfBlackRight, DRAFT_WIDTH, DRAFT_HEIGHT, 2088, 4287);
+  assert.equal(isDiptychRgba(halfBlackRight, DRAFT_WIDTH, DRAFT_HEIGHT, 'col'), false);
+});

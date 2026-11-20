@@ -90,6 +90,16 @@ class Profile:
         return KV3_BLOCK_SHA256 if self.looks else KV2_BLOCK_SHA256
 
 
+_R6_LIB_23 = "b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34"
+_R6_LIB_KUBIK = "1a4810446475633e55771df28d5080ed28769a8850ef68cbde41be75acbad1d2"
+
+
+def _r6(generation: int, *libs: str) -> Profile:
+    return Profile(
+        generation, 98304, True, max_engine=98304, mount_knobs_from_50mm=True, library_generation=178, library_sha256=libs, xdata=True
+    )
+
+
 PROFILES = {
     127: Profile(127, 65536, False),
     129: Profile(129, 98304, True),
@@ -109,19 +119,9 @@ PROFILES = {
     181: Profile(181, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
     182: Profile(182, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
     185: Profile(185, 98304, True, max_engine=81920, mount_knobs_from_50mm=True, library_generation=178),
-    250: Profile(
-        250,
-        98304,
-        True,
-        max_engine=98304,
-        mount_knobs_from_50mm=True,
-        library_generation=178,
-        library_sha256=(
-            "b16465e77931be7f7bd570b3e6105556ac8a0e5f0c2f98c27f0467c56483bb34",
-            "1a4810446475633e55771df28d5080ed28769a8850ef68cbde41be75acbad1d2",
-        ),
-        xdata=True,
-    ),
+    250: _r6(250, _R6_LIB_23, _R6_LIB_KUBIK),
+    253: _r6(253, _R6_LIB_KUBIK),
+    256: _r6(256, _R6_LIB_KUBIK),
 }
 
 
