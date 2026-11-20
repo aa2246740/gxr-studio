@@ -611,6 +611,7 @@ class RenderService:
             }
             if plan.selection_id
             else None,
+            entry_sha256=plan.entry_sha256,
         )
 
     # ---- 缩略图 / 默认外观 --------------------------------------------------

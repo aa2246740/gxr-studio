@@ -688,7 +688,13 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 
 ## 半格双联
 
-手机端在读取相机 JPG 缩略图时由 `mobile/src/lib/halfframe.ts`（与桌面 `src/gxr_studio/halfframe.py` 同规则：1/8 尺度 `536×356` 或竖拍转正后 `356×536` 下根据解码后 `ImageBitmap` 的实际宽高选定按列或按行检查 `2088–2199` 与 `2120–2167` 已知黑缝、亮部阈值 ≤ 12 且两侧非黑）识别半格双联，并在 `mobile/src/app/boot.ts` 的 `readPhoto` 单一关口把该张 `Photo` 的 `diptych` 设为 `true`、清掉 `dng` 与 `dngMeta`。此后网格（`JPG` 角标）、编辑器、导出、HDR 预览与 LUT 均按只有 JPG 处理，不再加载该张的 DNG；「配方」页（`mobile/src/app/recipe_view.ts`）显示「这张是半格双联，配方效果要等配对功能。」。
+手机端在读取相机 JPG 缩略图时由 `mobile/src/lib/halfframe.ts`（与桌面 `src/gxr_studio/halfframe.py` 同规则：1/8 尺度 `536×356` 或竖拍转正后 `356×536` 下根据解码后 `ImageBitmap` 的实际宽高选定按列或按行检查 `2088–2199` 与 `2120–2167` 已知黑缝、亮部阈值 ≤ 12；g250 黑缝一般两侧都非黑，也允许一侧紧挨暗景，此时另一侧须非黑、暗的那半至少 5% 像素亮于阈值；48 像素旧缝仍要求两侧非黑）识别半格双联，并在 `mobile/src/app/boot.ts` 的 `readPhoto` 单一关口把该张 `Photo` 的 `diptych` 设为 `true`、清掉 `dng` 与 `dngMeta`。此后网格（`JPG` 角标）、编辑器、导出、HDR 预览与 LUT 均按只有 JPG 处理，不再加载该张的 DNG；「配方」页（`mobile/src/app/recipe_view.ts`）显示「这张是半格双联，配方效果要等配对功能。」。
+
+- **半格导出模式与相机 JPG 单格切分（`phone-halfframe-export`）**：仅当选中照片包含半格双联时，「导出选项」与图库多选导出面板（`mobile/src/app/export_options.ts`）在「品质」行后显示「半格」行，提供 `双联一张`（`diptych`）、`两张单格`（`singles`）、`都要`（`both`）三档及桌面同款说明「双联和相机拼的一样：第 1 张在左（竖拿时在上），中间黑缝 112 像素。」；选择记住在 `localStorage['gxr.mobile.export_halfframe']`（默认 `diptych`），编辑器单点「存到相册」复用该偏好，批次、队列与就绪条按真实文件数统计（`singles` 每张双联计 2 文件、`both` 计 3 文件），跨批次失败重试按具体失败条目 id（`onlyIds`）只重做失败的单个文件、不重做同一双联里已成功的文件。导出单格时（`mobile/src/core/export_worker.ts`、`mobile/src/app/export_request_prep.ts`、`mobile/src/app/export_ui.ts`），仅应用 `adjust`、`curve` 与显示空间 `lut`（关闭裁剪、拉直、边框、时间戳、配方与 HDR），文件名与像素来源对齐桌面 `halfframe_export.py`：
+  - **库里有配对第 1 张原片**（同桌面 `halfframe_pairs` 规则：连续编号 `-1`、非双联、EXIF 方向一致且在 `{1, 3, 6, 8}`、MPF 预览为 first-like）：第 1 格直接取第 1 张相机 JPG 转正后的中间条带（`1100..3187`，横拍 `2088×2848`、竖拍 `2848×2088`），保留第 1 张原 EXIF（含拍摄配方 Copyright 与拍摄时间），输出 `<photo1>_gxr_half.jpg`；第 2 格取双联右/下半并保留第 2 张 EXIF，输出 `<photo2>_gxr_half.jpg`；不套 LUT 时两张单格与桌面 `export_pair_finish` 逐字节一致，套显示空间 LUT 时按 LUT 对拍的常规容差一致（Gate A 为 0）。
+  - **库里没有第 1 张原片**：第 1 格切双联左/上半，保留双联其余 EXIF 但移除 EXIF Copyright（`0x8298`）以避免把第 2 张的配方错标给第 1 格，输出 `<photo2>_1_gxr_half.jpg`；第 2 格仍输出 `<photo2>_gxr_half.jpg`。
+- **g258 拍摄配方标签（`mobile/src/app/paste_ui.ts`、`mobile/src/lib/halfframe.ts`）**：半格双联永不把第 2 张的配方当作整张双联的配方展示；编辑器顶栏与「照片信息 → 当前配方」统一显示 `半格双联`；「照片信息」内新增「拍摄配方」行，展示来自双联自身 EXIF Copyright（`0x8298`）的「第 2 格：…」，并与单格导出共用 `findFirstHalfNeighbor`（连续编号 `-1`、EXIF 方向一致且在 `{1, 3, 6, 8}`、MPF 预览为 first-like）在库里有配对第 1 张时补显「第 1 格：…」，单张导入双联或方向不匹配时不显示第 1 格。
+- **验收测试**：`tests/test_mobile_halfframe_export_unit.py` 与 `tests/test_mobile_halfframe_export_browser.py`（覆盖普通/双联面板显隐、三档记忆与一键导出、跨批按单文件重试、含 `#` 文件名、g258 顶栏与照片信息含/不含第 1 张及方向不匹配、缺第 1 张剥离 Copyright、以及与桌面 `export_pair_finish` 在 ori 1/3/6/8、adjust、curve、display-space LUT、vignette、border/crop 隔离上的对拍：不套 LUT 时逐字节，LUT 按常规容差）。
 
 ## 拍摄配方采用与全部重置
 

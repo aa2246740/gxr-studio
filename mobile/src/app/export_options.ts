@@ -5,16 +5,20 @@ import type { ExportCore } from '../core/export_api';
 import { buildRequest, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
 import { fontsNeeded } from '../lib/fonts';
 import { formatClock, formatDay } from '../lib/group';
+import { HALFFRAME_MODES, PAIR_EXPORT_NOTE, pairExportSizeText } from '../lib/halfframe';
 import { HDR_LINE, HDR_NO_RAW, hdrAvailable, hdrFrameLine, hdrMixLine } from '../lib/hdr_text';
 import { isDisplaySpace } from '../lib/lut';
 import {
+  loadExportHalfframe,
   loadExportHdr,
   loadExportQuality,
   loadExportSize,
+  saveExportHalfframe,
   saveExportHdr,
   saveExportQuality,
   saveExportSize,
   watchExportHdr,
+  type ExportHalfframePref,
 } from '../lib/prefs';
 import type { Card } from '../lib/recipes';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, sizeText } from '../lib/share_plan';
@@ -75,7 +79,7 @@ export interface ExportOptionsHost {
   cardsFor(book: Book, photo: Photo): Card[];
   requestPhoto(photo: Photo, lutBook?: LutBook, book?: Book): RequestPhoto;
   isBatchClosed(): boolean;
-  onStart(photos: Photo[], options: { size: SizeTier; quality: QualityTier; hdr: boolean }): void;
+  onStart(photos: Photo[], options: { size: SizeTier; quality: QualityTier; hdr: boolean; halfframe?: ExportHalfframePref }): void;
   onClose(): void;
 }
 
@@ -84,7 +88,7 @@ export interface OpenedExportSheet {
   cleanup: () => void;
 }
 
-/** 打开「导出选项」或「导出 N 张」底部面板；更改尺寸 / 品质 / HDR 即刻记住，供单点「存到相册」复用。 */
+/** 打开「导出选项」或「导出 N 张」底部面板；更改尺寸 / 品质 / 半格 / HDR 即刻记住，供单点「存到相册」复用。 */
 export function mountExportSheet(
   host: ExportOptionsHost,
   photos: Photo[],
@@ -92,6 +96,8 @@ export function mountExportSheet(
 ): OpenedExportSheet {
   let size: SizeTier = loadExportSize();
   let quality: QualityTier = loadExportQuality();
+  const hasDiptych = photos.some((p) => Boolean(p.diptych));
+  let halfframe: ExportHalfframePref = loadExportHalfframe();
   const n = photos.length;
   let active = true;
 
@@ -112,8 +118,14 @@ export function mountExportSheet(
   let sized: { sizes: Record<string, [number, number]>; ratio: [number, number] | null } | null = null;
   const paintSize = () => {
     if (n !== 1) return;
+    if (photos[0].diptych) {
+      const dip = sized ? (sized.sizes[size] ?? sized.sizes.original) : null;
+      if (dip || photos[0].frame) sizeLine.textContent = pairExportSizeText(photos[0].frame, dip, size, halfframe);
+      return;
+    }
     if (sized) sizeLine.textContent = sizeText(sized.sizes[size] ?? sized.sizes.original, sized.ratio);
   };
+  paintSize();
   sizeRow.append(
     sizeLab,
     seg(SIZES, size, (v) => {
@@ -133,6 +145,23 @@ export function mountExportSheet(
       saveExportQuality(v);
     }),
   );
+
+  let hfRow: HTMLElement | null = null;
+  if (hasDiptych) {
+    hfRow = el('div', 'frow');
+    hfRow.dataset.role = 'halfframe-row';
+    const hfLab = el('div', 'lab');
+    hfLab.append(el('b', '', '半格'));
+    hfRow.append(
+      hfLab,
+      seg(HALFFRAME_MODES, halfframe, (v) => {
+        halfframe = v;
+        saveExportHalfframe(v);
+        paintSize();
+      }),
+      el('p', 'hf-note', PAIR_EXPORT_NOTE),
+    );
+  }
 
   const canHdr = hdrAvailable(photos);
   let hdrOn = canHdr && loadExportHdr();
@@ -189,7 +218,9 @@ export function mountExportSheet(
 
   const form = el('div');
   form.style.marginTop = '10px';
-  form.append(sizeRow, qualityRow, hdrRow);
+  form.append(sizeRow, qualityRow);
+  if (hfRow) form.append(hfRow);
+  form.append(hdrRow);
   if (!host.book().dat) {
     const guide = el('p', 'guide', NO_DAT_GUIDE);
     guide.dataset.state = 'no-dat-guide';
@@ -201,7 +232,7 @@ export function mountExportSheet(
   go.addEventListener('click', () => {
     host.onClose();
     opts.onStart?.();
-    host.onStart(photos, { size, quality, hdr: hdrOn });
+    host.onStart(photos, { size, quality, hdr: hdrOn, halfframe: hasDiptych ? halfframe : 'diptych' });
   });
   const foot = el('p', 'foot', '「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。');
   sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
