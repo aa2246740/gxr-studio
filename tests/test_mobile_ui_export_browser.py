@@ -275,7 +275,10 @@ def test_mobile_ui_export_files_match_desktop(tmp_path: Path, pinned_icc: bytes)
         full = steps["full"]
         check("导出 6 张" in full["sheet"]["text"], "sheet title")
         check("每张照片按各自比例导出，成品尺寸可能不同。" in full["sheet"]["text"], "several photos: the desktop size line")
-        check("在系统面板里点「存储 6 张图像」" in full["sheet"]["text"], "the reworded footnote")
+        check(
+            "「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。" in full["sheet"]["text"],
+            "the approved r1 footnote",
+        )
         check(full["sheet"]["hdrDisabled"] is False, "HDR switch enabled with RAW selected; explicitly turned off for SDR parity")
         check("6 张做好了 · 存进相册" in full["ready"], "ready bar main line")
         check(

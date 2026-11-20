@@ -70,6 +70,7 @@
 .pdock .ready-meta small { font-size: 12px; line-height: 16px; color: var(--text-2); }
 .pdock .ready-pos { color: var(--text-1); }
 .pdock .ready-carry { color: var(--accent-text); margin-top: 2px; }
+.pdock .running-ready { margin-top: 8px; min-height: 44px; font-size: 14px; }
 .pdock .ready-details { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-subtle); }
 .pdock .ready-details[hidden] { display: none; }
 .pdock .bar { height: 4px; margin-top: 10px; border-radius: 999px; background: var(--gray-700); overflow: hidden; }

@@ -71,12 +71,24 @@ export function collectReadyNotes(entries: readonly ReadyEntry[]): {
   return { hdrLine: line, hdrNotes: notes, camNotes };
 }
 
+/** 失败 / 已停止条主标题文案；队列里还有待导出照片时追加「另排 N 张」。 */
+export function readyBarSummary(phase: Phase, ok: number, failureCount: number, savedCount: number, queuedCount = 0): string {
+  const made = ok > 0 || savedCount > 0;
+  let main: string;
+  if (phase === 'stopped') main = ok ? `已停止。做好的 ${ok} 张还没存，点「存进相册」。` : '已停止。';
+  else if (!made) main = `${failureCount} 张都没做成`;
+  else if (!ok) main = `${failureCount} 张没做成`;
+  else main = `做好 ${ok} 张，${failureCount} 张没做成`;
+  return queuedCount > 0 ? `${main}（另排 ${queuedCount} 张）` : main;
+}
+
 export interface ReadyBarRender {
   dock: HTMLElement;
   phase: Phase;
   entries: readonly ReadyEntry[];
   failures: readonly Failure[];
   savedCount: number;
+  queuedCount?: number;
   chunk: number;
   totalChunks: number;
   detailsOpen: boolean;
@@ -194,11 +206,7 @@ export function paintReadyBar(opts: ReadyBarRender): void {
   const ic = el('span', `ic ${failures.length ? 'warn' : 'ok'}`);
   ic.append(exportIco(failures.length ? EXPORT_ICON.alert : EXPORT_ICON.check));
   const made = ok > 0 || savedCount > 0;
-  let main: string;
-  if (phase === 'stopped') main = ok ? `已停止。做好的 ${ok} 张还没存，点「存进相册」。` : '已停止。';
-  else if (!made) main = `${failures.length} 张都没做成`;
-  else if (!ok) main = `${failures.length} 张没做成`;
-  else main = `做好 ${ok} 张，${failures.length} 张没做成`;
+  const main = readyBarSummary(phase, ok, failures.length, savedCount, opts.queuedCount ?? 0);
   tx.append(el('b', '', main));
   if (ok > 1) {
     const posLine = readyPositionsSummary(positions);

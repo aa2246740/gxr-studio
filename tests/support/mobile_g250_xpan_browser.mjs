@@ -111,7 +111,7 @@ try {
   }
   out.steps.previews = previews;
 
-  const sheet = await exportFromGrid(page, manifest.stems, '原始尺寸', '高');
+  const sheet = await exportFromGrid(page, manifest.stems, '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   const ready = await waitPhase(page, ['ready']);
   const facts = await batchFacts(page);

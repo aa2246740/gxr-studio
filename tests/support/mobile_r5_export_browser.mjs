@@ -83,7 +83,7 @@ try {
   );
   await page.getByRole('button', { name: '照片', exact: true }).click();
   await page.waitForSelector('[data-screen="grid"]');
-  const sheet = await exportFromGrid(page, [manifest.stem]);
+  const sheet = await exportFromGrid(page, [manifest.stem], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   const ready = await waitPhase(page, ['ready']);
   const facts = await batchFacts(page);

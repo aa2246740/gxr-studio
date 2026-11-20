@@ -108,3 +108,272 @@ test('export_batch: baseStagedBytes counts carryover bytes toward stage cap', as
   assert.equal(batch.phase, 'ready');
   assert.equal(batch.staged.length, 1);
 });
+
+test('export_options: footnote matches manager-approved copy', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../../mobile/src/app/export_options.ts', import.meta.url), 'utf8');
+  const want = '「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。';
+  assert.ok(src.includes(want), `export_options.ts must contain exact approved footnote: ${want}`);
+});
+
+test('export_ready: failure bar summary shows queued count while photos are queued', async () => {
+  const ready = await import('../../mobile/src/app/export_ready.ts');
+  assert.equal(typeof ready.readyBarSummary, 'function', 'readyBarSummary exported');
+  assert.equal(ready.readyBarSummary('ready', 0, 1, 0, 2), '1 张都没做成（另排 2 张）');
+  assert.equal(ready.readyBarSummary('ready', 1, 1, 0, 1), '做好 1 张，1 张没做成（另排 1 张）');
+  assert.equal(ready.readyBarSummary('ready', 0, 1, 1, 0), '1 张没做成');
+  assert.equal(ready.readyBarSummary('stopped', 1, 0, 0, 0), '已停止。做好的 1 张还没存，点「存进相册」。');
+});
+
+test('export_queue: double tap deduplicates running, queued, and ready-unsaved photos', async () => {
+  const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  const opts = { size: 'original', quality: 'high', hdr: true };
+  const p1 = { id: 'p1', stem: 'P1' };
+  const p2 = { id: 'p2', stem: 'P2' };
+  const p3 = { id: 'p3', stem: 'P3' };
+
+  let resolveRun;
+  const host = {
+    run: () => new Promise((r) => { resolveRun = r; }),
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const batch = new ExportBatch([{ id: 'p1', stem: 'P1', version: 1, dng: null, jpg: null, req: {} }], host);
+  queue.beginBatch([p1], opts);
+  batch.start();
+  await Promise.resolve();
+  assert.equal(batch.phase, 'running');
+
+  // Second tap on running p1 is ignored
+  assert.deepEqual(queue.filterQuickPhotos([p1], batch), []);
+
+  // Queue p2 while p1 is running; tapping p2 again is also ignored
+  const action = queue.enqueueOrPrepareStart([p2], opts, batch, () => []);
+  assert.equal(action, 'queued');
+  assert.deepEqual(queue.filterQuickPhotos([p2], batch), []);
+  assert.equal(queue.queuedCount(), 1);
+
+  // Finish p1 -> p1 is ready-and-unsaved; tapping p1 again is ignored
+  resolveRun({ ok: true, file: new ArrayBuffer(16), result: { file_name: 'P1_gxr.jpg' }, shot: {}, ms: 1 });
+  await batch.settled();
+  assert.equal(batch.phase, 'ready');
+  assert.deepEqual(queue.filterQuickPhotos([p1], batch), []);
+
+  // Carryover p3 (ready-and-unsaved) is also blocked
+  queue.carryover.push({ id: 'p3', stem: 'P3', file: new File([new Uint8Array(8)], 'P3_gxr.jpg'), position: 3, hdrRequested: true });
+  assert.deepEqual(queue.filterQuickPhotos([p3], batch), []);
+
+  // Once p1 is marked shared in a chunk, it is no longer blocked
+  queue.markChunkShared(['p1']);
+  assert.deepEqual(queue.filterQuickPhotos([p1], batch), [p1]);
+});
+
+test('export_queue: (a) fail mid-queue starts next queued photo and preserves failure for retry', async () => {
+  const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  const opts = { size: 'original', quality: 'high', hdr: true };
+  const p3 = { id: 'p3', stem: 'P3' };
+  const p4 = { id: 'p4', stem: 'P4' };
+
+  const makeEntries = (b) => b.staged.map((s) => ({ id: s.id, stem: s.id.toUpperCase(), file: s.file, position: null, hdrRequested: true }));
+
+  let resolveP3;
+  const host1 = {
+    run: () => new Promise((r) => { resolveP3 = r; }),
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const batch1 = new ExportBatch([{ id: 'p3', stem: 'P3', version: 1, dng: null, jpg: null, req: {} }], host1);
+  queue.beginBatch([p3], opts);
+  batch1.start();
+  await Promise.resolve();
+
+  // Queue p4 while p3 is running
+  assert.equal(queue.enqueueOrPrepareStart([p4], opts, batch1, makeEntries), 'queued');
+  assert.equal(queue.queuedCount(), 1);
+
+  // p3 fails mid-queue
+  resolveP3({ ok: false, kind: 'trap', code: 'trap', message: '' });
+  await batch1.settled();
+  assert.equal(batch1.phase, 'ready');
+  assert.equal(batch1.failures.size, 1);
+
+  // Queue MUST advance even though batch1 ended with failures, and preserve p3's failure
+  const next = queue.takeNextQueued(batch1, makeEntries);
+  assert.ok(next, 'next queued job must start after a failed batch');
+  assert.deepEqual(next.photos.map((p) => p.id), ['p4']);
+  assert.equal(queue.queuedCount(), 0);
+  assert.equal(queue.carriedFailures.size, 1);
+  assert.ok(queue.carriedFailures.has('p3'));
+
+  // Run p4 to completion
+  const host2 = {
+    run: async (item) => ({ ok: true, file: new ArrayBuffer(24), result: { file_name: `${item.stem}_gxr.jpg` }, shot: {}, ms: 1 }),
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const batch2 = new ExportBatch([{ id: 'p4', stem: 'P4', version: 1, dng: null, jpg: null, req: {} }], host2);
+  batch2.start();
+  await batch2.settled();
+  assert.equal(batch2.phase, 'ready');
+
+  // Both p4's ready file AND p3's failure/retry survive
+  const failures = queue.allFailures(batch2);
+  assert.deepEqual(failures.map((f) => f.id), ['p3']);
+  const retryJobs = queue.takeCarriedRetryJobs();
+  assert.equal(retryJobs.length, 1);
+  assert.deepEqual(retryJobs[0].photos.map((p) => p.id), ['p3']);
+});
+
+test('export_queue: (b) dismiss, stop, and clear empty pendingQueue with no stale ghost job', async () => {
+  const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  const opts = { size: 'original', quality: 'high', hdr: false };
+  const p3 = { id: 'p3', stem: 'P3' };
+  const p4 = { id: 'p4', stem: 'P4' };
+  const p5 = { id: 'p5', stem: 'P5' };
+  const makeEntries = (b) => b.staged.map((s) => ({ id: s.id, stem: s.id, file: s.file, position: null, hdrRequested: false }));
+
+  // Case 1: dismiss clears pendingQueue so a later export does not run a ghost job
+  let resolveRun;
+  const host = {
+    run: () => new Promise((r) => { resolveRun = r; }),
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const batch = new ExportBatch([{ id: 'p3', stem: 'P3', version: 1, dng: null, jpg: null, req: {} }], host);
+  queue.beginBatch([p3], opts);
+  batch.start();
+  await Promise.resolve();
+  queue.enqueueOrPrepareStart([p4], opts, batch, makeEntries);
+  assert.equal(queue.queuedCount(), 1);
+
+  queue.dismiss();
+  batch.cancel();
+  assert.equal(queue.queuedCount(), 0);
+  assert.equal(queue.carryover.length, 0);
+  assert.equal(queue.carriedFailures.size, 0);
+
+  // Subsequent export of p5 must not pick up stale p4
+  const batch5 = new ExportBatch(
+    [{ id: 'p5', stem: 'P5', version: 1, dng: null, jpg: null, req: {} }],
+    { ...host, run: async () => ({ ok: true, file: new ArrayBuffer(12), result: { file_name: 'P5_gxr.jpg' }, shot: {}, ms: 1 }) },
+  );
+  queue.beginBatch([p5], opts);
+  batch5.start();
+  await batch5.settled();
+  assert.equal(queue.takeNextQueued(batch5, makeEntries), null);
+
+  // Case 2: stop empties pendingQueue while keeping carryover
+  queue.carryover.push({ id: 'p5', stem: 'P5', file: new File([new Uint8Array(12)], 'P5_gxr.jpg'), position: 5, hdrRequested: false });
+  queue.pendingQueue.push({ photos: [p4], options: opts });
+  queue.stop();
+  assert.equal(queue.queuedCount(), 0);
+  assert.equal(queue.carryover.length, 1);
+
+  // Case 3: clear empties everything
+  queue.pendingQueue.push({ photos: [p4], options: opts });
+  queue.clear();
+  assert.equal(queue.queuedCount(), 0);
+  assert.equal(queue.carryover.length, 0);
+  assert.equal(queue.carriedFailures.size, 0);
+});
+
+test('export_queue: (c) partly failed batch followed by share, and new export between chunks never re-offers shared chunk', async () => {
+  const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  const opts = { size: 'original', quality: 'high', hdr: false };
+  const pA = { id: 'a', stem: 'A' };
+  const pB = { id: 'b', stem: 'B' };
+  const pC = { id: 'c', stem: 'C' };
+  const pD = { id: 'd', stem: 'D' };
+  const makeEntries = (b) => b.staged.map((s) => ({ id: s.id, stem: s.id.toUpperCase(), file: s.file, position: null, hdrRequested: false }));
+
+  const host = {
+    run: async (item) =>
+      item.id === 'a'
+        ? { ok: false, kind: 'trap', code: 'trap', message: '' }
+        : { ok: true, file: new ArrayBuffer(20), result: { file_name: `${item.stem}_gxr.jpg` }, shot: {}, ms: 1 },
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const batch = new ExportBatch(
+    [
+      { id: 'a', stem: 'A', version: 1, dng: null, jpg: null, req: {} },
+      { id: 'b', stem: 'B', version: 1, dng: null, jpg: null, req: {} },
+      { id: 'c', stem: 'C', version: 1, dng: null, jpg: null, req: {} },
+    ],
+    host,
+  );
+  queue.beginBatch([pA, pB, pC], opts);
+  batch.start();
+  await batch.settled();
+  assert.equal(batch.phase, 'ready');
+  assert.equal(batch.failures.size, 1);
+  assert.equal(batch.staged.length, 2);
+
+  // User shares chunk 0 containing 'b', then starts a new export for 'd' BEFORE sharing chunk 1 ('c')
+  queue.markChunkShared(['b']);
+  const action = queue.enqueueOrPrepareStart([pD], opts, batch, makeEntries);
+  assert.equal(action, 'launch');
+  batch.cancel();
+
+  // Only 'c' was carried over — already-shared 'b' is NEVER copied into carryover!
+  assert.deepEqual(queue.carryover.map((e) => e.id), ['c']);
+  // Failure 'a' is preserved and retryable!
+  assert.deepEqual([...queue.carriedFailures.keys()], ['a']);
+  assert.equal(queue.savedCount(null), 1);
+
+  // Now share all ready files after 'd' finishes -> 'a' failure still survives for retry
+  const batchD = new ExportBatch([{ id: 'd', stem: 'D', version: 1, dng: null, jpg: null, req: {} }], host);
+  batchD.start();
+  await batchD.settled();
+  queue.finishShare(['c', 'd']);
+  batchD.release();
+  assert.equal(queue.carryover.length, 0);
+  assert.equal(queue.allFailures(batchD).length, 1);
+  assert.equal(queue.allFailures(batchD)[0].id, 'a');
+  assert.ok(queue.savedCount(batchD) >= 3);
+});
+
+test('export_queue: saving carryover while another photo runs consumes only shared entries', async () => {
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  queue.carryover.push(
+    { id: 'p3', stem: 'P3', file: new File([new Uint8Array(10)], 'P3_gxr.jpg'), position: 3, hdrRequested: true },
+    { id: 'p4', stem: 'P4', file: new File([new Uint8Array(10)], 'P4_gxr.jpg'), position: 4, hdrRequested: true },
+  );
+  queue.consumeCarryover(['p3']);
+  assert.deepEqual(queue.carryover.map((e) => e.id), ['p4']);
+  assert.equal(queue.savedCount(null), 1);
+});

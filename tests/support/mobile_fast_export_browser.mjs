@@ -234,16 +234,33 @@ async function runDetailedAcceptances() {
   // 2) Grid calm-down checks (with 1-photo solo group included)
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.gridFiles);
   await waitGridReady(page, manifest.gridCount);
+  const soloRowInfo = await page.evaluate((soloId) => {
+    const cell = document.querySelector(`.cell[data-id="${soloId}"]`);
+    const row = cell?.closest('.cells');
+    const prev = row?.previousElementSibling;
+    const cellRect = cell?.getBoundingClientRect();
+    const prevRect = prev?.getBoundingClientRect();
+    return {
+      hasSoloSep: Boolean(row?.classList.contains('solo-sep')),
+      gapPx: cellRect && prevRect ? Math.round(cellRect.top - prevRect.bottom) : 0,
+    };
+  }, manifest.soloStem.toLowerCase());
   const gridBeforeCopy = {
     applyGroupButtons: await page.locator('.gh .go').count(),
     topSortButtons: await page.locator('.order [data-order]').count(),
     singleGroupHeadCount: await page.locator(`.gh[data-row="group:${manifest.soloStem.toLowerCase()}"]`).count(),
     groupHeadCount: await page.locator('.gh[data-row]').count(),
+    soloRowInfo,
   };
 
-  // Open grid ⋯ menu: sort is inside, 胶片柜 is gone
+  // Open grid ⋯ menu: sort is inside, 胶片柜 is gone, and 「完成」 sits on the same line as 「更多」
   await visibleTap(page, page.locator('.nav .nb.plain'), 'grid more');
   await page.waitForSelector('.ms');
+  const gridMenuHeaderSameLine = await page.evaluate(() => {
+    const h2 = document.querySelector('.ms > .hd h2')?.getBoundingClientRect();
+    const done = document.querySelector('.ms > .hd .nb')?.getBoundingClientRect();
+    return Boolean(h2 && done && Math.abs(h2.y - done.y) < 16);
+  });
   const gridMenuText = await page.locator('.ms').innerText();
   const hasSortInMenu = gridMenuText.includes('从早到晚') && gridMenuText.includes('从晚到早');
   const hasFilmCabinet = gridMenuText.includes('胶片柜');
@@ -259,12 +276,13 @@ async function runDetailedAcceptances() {
   out.steps.grid = {
     startCollapsed,
     gridBeforeCopy,
+    gridMenuHeaderSameLine,
     hasSortInMenu,
     hasFilmCabinet,
     sortReversed: firstIdBeforeSort !== firstIdAfterSort,
   };
 
-  // 3) Ready bar queue: open photo 3 (1-based index 3), export, swipe to photo 4, export -> both listed, both save
+  // 3) Ready bar queue + running-bar save-ready observation: open photo 3, export, swipe to photo 4, export -> both listed, both save
   const pos3Cell = page.locator('.cell').nth(2);
   const pos3Id = await pos3Cell.getAttribute('data-id');
   const pos4Id = await page.locator('.cell').nth(3).getAttribute('data-id');
@@ -294,9 +312,29 @@ async function runDetailedAcceptances() {
   await page.waitForFunction((want) => document.querySelector('.editor')?.dataset.photo?.toLowerCase() === want, pos4Id, { timeout: 60_000 });
   await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
 
+  // Observe whether the running bar offers direct 「存进相册」 for finished photo 3 while photo 4 exports
+  await page.evaluate(() => {
+    window.__runningShareSeen = { seen: false, text: '' };
+    const check = () => {
+      const dock = document.querySelector('.pdock[data-phase="running"]');
+      const btn = dock?.querySelector('[data-act="share-ready"]');
+      if (btn) {
+        window.__runningShareSeen.seen = true;
+        window.__runningShareSeen.text = btn.textContent?.trim() ?? '';
+      }
+    };
+    const obs = new MutationObserver(check);
+    obs.observe(document.querySelector('.app'), { childList: true, subtree: true, attributes: true });
+    window.__runningShareObs = obs;
+  });
+
   // Start export on photo 4 -> must NOT discard photo 3!
   await visibleTap(page, page.locator('.editor .actbar [data-act="export"]'), 'export photo 4');
   await page.waitForFunction(() => document.querySelector('.pdock')?.dataset.phase === 'ready', null, { timeout: 300_000 });
+  const runningShareSeen = await page.evaluate(() => {
+    window.__runningShareObs?.disconnect();
+    return window.__runningShareSeen;
+  });
   const readyAfterPhoto4 = (await page.locator('.pdock').innerText()).trim();
   const shareBeforePair = await page.evaluate(() => window.__shareLog.calls.length);
   await visibleTap(page, page.locator('.pdock [data-act="share"]'), 'share photo 3 + 4');
@@ -312,6 +350,7 @@ async function runDetailedAcceptances() {
     navHasFilename,
     navSubMatchesPos,
     readyHasPos3: readyAfterPhoto3.includes('第 3 张做好了 · 存进相册'),
+    runningShareSeen,
     readyHasPairCount: readyAfterPhoto4.includes('2 张做好了 · 存进相册'),
     readyNamesBoth: readyAfterPhoto4.includes('第 3 张') && readyAfterPhoto4.includes('第 4 张'),
     sharedTotal: pairShare.totalFiles,
@@ -319,7 +358,33 @@ async function runDetailedAcceptances() {
     hasPhoto4: pairShare.names.some((n) => n.includes(pos4Id)),
   };
 
-  // 4) Working ⋯: check all 5 entries open their sheets
+  // 3b) Double tap on 「存到相册」 -> 1 export, 1 share call with 1 file (no duplicate!)
+  const exportBtnPhoto4 = page.locator('.editor .actbar [data-act="export"]');
+  const shareBeforeDouble = await page.evaluate(() => window.__shareLog.calls.length);
+  await visibleTap(page, exportBtnPhoto4, 'double tap 1');
+  await exportBtnPhoto4.click();
+  await page.waitForFunction(() => document.querySelector('.pdock')?.dataset.phase === 'ready', null, { timeout: 300_000 });
+  // Tapping again while ready-and-unsaved must also do nothing new
+  await exportBtnPhoto4.click();
+  await page.waitForTimeout(150);
+  const doubleTapReadyText = (await page.locator('.pdock [data-act="share"]').innerText()).trim();
+  await visibleTap(page, page.locator('.pdock [data-act="share"]'), 'share after double tap');
+  await page.waitForFunction((k) => window.__shareLog.calls.length > k, shareBeforeDouble, { timeout: 30_000 });
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
+  const doubleTapShare = await page.evaluate((from) => {
+    const calls = window.__shareLog.calls.slice(from);
+    return {
+      callCount: calls.length,
+      totalFiles: calls.reduce((sum, c) => sum + c.count, 0),
+    };
+  }, shareBeforeDouble);
+  out.steps.doubleTap = {
+    readyText: doubleTapReadyText,
+    callCount: doubleTapShare.callCount,
+    totalFiles: doubleTapShare.totalFiles,
+  };
+
+  // 4) Working ⋯: before copying hides 粘贴 & 套用到这一组; after copying shows all 5 entries
   // Open photo 1 (RAW) for ⋯ menu
   await visibleTap(page, page.getByRole('button', { name: '照片', exact: true }), 'back to grid');
   await page.waitForSelector('[data-screen="grid"]');
@@ -332,7 +397,7 @@ async function runDetailedAcceptances() {
   };
 
   await openEditorMore();
-  const moreEntries = await page.locator('.ms[data-state="editor-more"] .lrow b').allInnerTexts();
+  const moreEntriesBeforeCopy = await page.locator('.ms[data-state="editor-more"] .lrow b').allInnerTexts();
   // 4a) 照片信息
   await visibleTap(page, page.locator('.ms[data-state="editor-more"] [data-act="more-photo-info"]'), 'more 照片信息');
   await page.waitForSelector('.ms[data-state="photo-info"]');
@@ -340,16 +405,17 @@ async function runDetailedAcceptances() {
   const photoInfoHasStem = infoText.toLowerCase().includes(manifest.rawStems[0].toLowerCase());
   await visibleTap(page, page.locator('.ms[data-state="photo-info"] .nb', { hasText: '完成' }), 'close photo info');
 
-  // 4b) 导出选项 (change size to medium + quality to low to verify persistence across reload later)
+  // 4b) 导出选项 (verify manager-approved footnote; change size to medium + quality to low to verify persistence)
   await openEditorMore();
   await visibleTap(page, page.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]'), 'more 导出选项');
   await page.waitForSelector('.ms.export[data-state="export-sheet"]');
   const exportOptionsTitle = (await page.locator('.ms.export h2').innerText()).trim();
+  const exportOptionsFoot = (await page.locator('.ms.export .foot').innerText()).trim();
   await visibleTap(page, page.locator('.ms.export .frow').nth(0).locator('.seg button', { hasText: '中' }), 'size medium');
   await visibleTap(page, page.locator('.ms.export .frow').nth(1).locator('.seg button', { hasText: '低' }), 'quality low');
   await visibleTap(page, page.locator('.ms.export .row .nb'), 'close export options');
 
-  // 4c) 复制调整 -> copy an edit so 粘贴 & 套用到这一组 both open confirm sheet
+  // 4c) 复制调整 -> copy an edit so 粘贴 & 套用到这一组 appear and open confirm sheet
   const cardToCopy = page.locator('.editor .strip[data-recipes] .rc:not(.on):not(.lockd)').first();
   await visibleTap(page, cardToCopy, 'pick recipe before copy');
   await openEditorMore();
@@ -367,8 +433,9 @@ async function runDetailedAcceptances() {
   await visibleTap(page, page.locator(`.cell[data-id="${manifest.rawStems[1].toLowerCase()}"]`), 'open raw 2');
   await waitEditorReady(page);
 
-  // 4d) 粘贴
+  // 4d) 粘贴 (after copying, all 5 entries are present)
   await openEditorMore();
+  const moreEntriesAfterCopy = await page.locator('.ms[data-state="editor-more"] .lrow b').allInnerTexts();
   await visibleTap(page, page.locator('.ms[data-state="editor-more"] [data-act="more-paste"]'), 'more 粘贴');
   await page.waitForSelector('[data-state="confirm"]');
   const pasteConfirmTitle = (await page.locator('[data-state="confirm"] h2').innerText()).trim();
@@ -382,20 +449,30 @@ async function runDetailedAcceptances() {
   await visibleTap(page, page.locator('[data-state="confirm"] .btn', { hasText: '取消' }), 'cancel group confirm');
 
   out.steps.more = {
-    moreEntries,
+    moreEntriesBeforeCopy,
+    moreEntriesAfterCopy,
     photoInfoHasStem,
     exportOptionsTitle,
+    exportOptionsFoot,
     copySheetOpened,
     applyGroupAfterCopy,
     pasteConfirmTitle,
     groupConfirmTitle,
   };
 
-  // 5) HDR top bar: first-run on -> turn off -> reload -> still off; JPG-only & P0-diptych disabled with reason
+  // 5) HDR top bar: first-run on (filled accent) -> turn off -> reload -> still off; JPG-only & P0-diptych disabled with reason
   const hdrBtn = page.locator('.editor .nav [data-act="hdr-toggle"]');
   const hdrInitial = await hdrBtn.getAttribute('aria-checked');
+  const hdrStyleOn = await hdrBtn.evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { bg: s.backgroundColor, color: s.color };
+  });
   await visibleTap(page, hdrBtn, 'toggle HDR off');
   const hdrAfterOff = await hdrBtn.getAttribute('aria-checked');
+  const hdrStyleOff = await hdrBtn.evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { bg: s.backgroundColor, color: s.color };
+  });
 
   // Reload page to verify saved OFF + saved size/quality survive reload
   await page.reload();
@@ -434,7 +511,9 @@ async function runDetailedAcceptances() {
 
   out.steps.hdr = {
     hdrInitial,
+    hdrStyleOn,
     hdrAfterOff,
+    hdrStyleOff,
     hdrAfterReload,
     persistedPrefs,
     jpgHdrDisabled,

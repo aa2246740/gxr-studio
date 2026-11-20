@@ -112,36 +112,61 @@ def test_mobile_fast_export_acceptance(tmp_path: Path) -> None:
         check(tap["navMatchesPickedRecipe"] is True, "editor top bar shows picked recipe name")
         check(tap["keepHdrResult"]["count"] == 1 and tap["keepHdrResult"]["active"] is True, "share called with user activation")
 
-    # Acceptance 2: Ready bar queue (photo 3 + swipe + photo 4 -> both listed and both save)
+    # Acceptance 2: Ready bar queue (photo 3 + swipe + photo 4 -> both listed and both save) + running bar share-ready
     q = steps["readyQueue"]
     check(q["navHasFilename"] is False, "editor top bar hides filename")
     check(q["navSubMatchesPos"] is True, "editor top bar shows position 3 / 6")
     check(q["readyHasPos3"] is True, "ready bar names photo 3")
+    check(
+        q["runningShareSeen"]["seen"] is True and "存进相册" in q["runningShareSeen"]["text"],
+        "running bar offers direct 存进相册 for already-finished carryover",
+    )
     check(q["readyHasPairCount"] is True, "ready bar counts 2 photos")
     check(q["readyNamesBoth"] is True, "ready bar names both photo 3 and photo 4")
     check(q["sharedTotal"] == 2 and q["hasPhoto3"] and q["hasPhoto4"], "both photo 3 and photo 4 are saved without loss")
 
-    # Acceptance 3: HDR top bar
+    # Acceptance 2b: Double tap on 存到相册 produces 1 export and 1 share with 1 file
+    dt = steps["doubleTap"]
+    check(dt["callCount"] == 1 and dt["totalFiles"] == 1, "double tap exports once and shares 1 file")
+    check("第 4 张做好了 · 存进相册" in dt["readyText"], "double tap ready bar stays single photo")
+
+    # Acceptance 3: HDR top bar (including filled accent contrast on vs off)
     hdr = steps["hdr"]
     check(hdr["hdrInitial"] == "true", "first-run RAW photo starts with HDR on")
+    check(
+        hdr["hdrStyleOn"]["bg"] == "rgb(42, 100, 204)" and hdr["hdrStyleOn"]["color"] == "rgb(255, 255, 255)",
+        "HDR on state uses filled accent background with white text",
+    )
     check(hdr["hdrAfterOff"] == "false", "toggling HDR off updates switch")
+    check(hdr["hdrStyleOff"]["bg"] != hdr["hdrStyleOn"]["bg"], "HDR off state has distinct background")
     check(hdr["hdrAfterReload"] == "false", "saved HDR off survives reload")
     check(hdr["persistedPrefs"] == {"size": "medium", "quality": "low", "hdr": "0"}, "size, quality, and HDR persist across reload")
     check(hdr["jpgHdrDisabled"] is True and hdr["jpgHdrReason"] == "HDR 需要 RAW 文件", "JPG-only HDR disabled with reason")
     check(hdr["jpgHdrToast"] == "HDR 需要 RAW 文件", "tapping disabled HDR shows reason text")
     check(hdr["diptychHdrDisabled"] is True and hdr["diptychHdrReason"] == "HDR 需要 RAW 文件", "P0-diptych HDR disabled with reason")
 
-    # Acceptance 4: Working ⋯
+    # Acceptance 4: Working ⋯ (hides paste/apply before copying, shows all 5 after copying, approved footnote)
     more = steps["more"]
-    check(more["moreEntries"] == ["复制调整", "粘贴", "套用到这一组", "导出选项", "照片信息"], "⋯ has all 5 entries in order")
+    check(
+        more["moreEntriesBeforeCopy"] == ["复制调整", "导出选项", "照片信息"],
+        "⋯ hides 粘贴 and 套用到这一组 before copying",
+    )
+    check(
+        more["moreEntriesAfterCopy"] == ["复制调整", "粘贴", "套用到这一组", "导出选项", "照片信息"],
+        "⋯ has all 5 entries in order after copying",
+    )
     check(more["photoInfoHasStem"] is True, "照片信息 shows filename")
     check(more["exportOptionsTitle"] == "导出选项", "导出选项 sheet opens with correct title")
+    check(
+        more["exportOptionsFoot"] == "「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。",
+        "导出选项 footnote matches manager-approved copy",
+    )
     check(more["copySheetOpened"] is True, "复制调整 opens copy sheet")
     check(more["applyGroupAfterCopy"] > 0, "套用到这一组 appears on grid after copying")
     check(more["pasteConfirmTitle"] == "套用到这张？", "粘贴 opens confirm sheet")
     check("套用到这一组的" in more["groupConfirmTitle"], "套用到这一组 opens confirm sheet")
 
-    # Acceptance 5: Grid & start screen calm-down
+    # Acceptance 5: Grid & start screen calm-down (+ solo separation + grid ⋯ header alignment)
     grid = steps["grid"]
     check(grid["startCollapsed"]["height"] <= 68, "start screen calib collapses to one line")
     check(
@@ -152,5 +177,10 @@ def test_mobile_fast_export_acceptance(tmp_path: Path) -> None:
     check(grid["gridBeforeCopy"]["applyGroupButtons"] == 0, "no 套用到这一组 before copying")
     check(grid["gridBeforeCopy"]["topSortButtons"] == 0, "sort removed from top of grid")
     check(grid["gridBeforeCopy"]["singleGroupHeadCount"] == 0, "single-photo group has no separate title")
+    check(
+        grid["gridBeforeCopy"]["soloRowInfo"]["hasSoloSep"] is True and grid["gridBeforeCopy"]["soloRowInfo"]["gapPx"] >= 10,
+        "headerless solo photo has visible separation from group above",
+    )
+    check(grid["gridMenuHeaderSameLine"] is True, "grid ⋯ sheet keeps 完成 on the same line as 更多")
     check(grid["hasSortInMenu"] is True and grid["sortReversed"] is True, "sort works inside grid ⋯ menu")
     check(grid["hasFilmCabinet"] is False, "胶片柜 removed from grid menu")

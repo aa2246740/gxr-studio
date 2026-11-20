@@ -5,7 +5,7 @@
 import { ExportCore, calibPack, type RunResult } from '../core/export_api';
 import { unitOfLens } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
-import { buildRequest, usedLogoId, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
+import { buildRequest, usedLogoId, type RequestPhoto } from '../lib/export_request';
 import { fontsNeeded, type FontKey } from '../lib/fonts';
 import { HDR_PROGRESS, hdrAvailable } from '../lib/hdr_text';
 import { loadExportHdr, loadExportQuality, loadExportSize } from '../lib/prefs';
@@ -17,11 +17,13 @@ import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type
 import { estimatePeak, type BatchFonts } from './export_budget';
 import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
+import { ExportQueueState, type ExportOptions } from './export_queue';
 import {
   EXPORT_ICON,
   exportIco,
   paintReadyBar,
   readyPositionsSummary,
+  readyShareLabel,
   type ReadyEntry,
 } from './export_ready';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
@@ -110,17 +112,6 @@ export function requestPhoto(photo: Photo, lutBook?: LutBook, book?: Book): Requ
   };
 }
 
-interface ExportOptions {
-  size: SizeTier;
-  quality: QualityTier;
-  hdr: boolean;
-}
-
-interface QueuedJob {
-  photos: Photo[];
-  options: ExportOptions;
-}
-
 type View = 'progress' | 'noshare';
 
 const flowByShell = new WeakMap<HTMLElement, ExportFlow>();
@@ -150,10 +141,8 @@ export class ExportFlow {
   private chunks: number[][] = [];
   private chunkEntryCount = 0;
   private wake: { release(): Promise<void> } | null = null;
-  /** 前一批已做好、还没存进相册的成片：再次导出时保留在这里，和后续成片一并显示与保存。 */
-  private carryover: ReadyEntry[] = [];
-  /** 当前批次还在跑时新发起的导出请求，排在这里顺序执行。 */
-  private pendingQueue: QueuedJob[] = [];
+  /** 队列、待存成片与失败保留状态机（供双击去重、失败后续跑、分批不重发与运行中保存共用）。 */
+  private readonly queue = new ExportQueueState<Photo>();
   /** 下载兜底的对象 URL 全记在这里，重画、交出、清空、新的一批和批次结束时统一撤销（Sol r1 P2-03）。 */
   private readonly urls = new Set<string>();
 
@@ -184,22 +173,26 @@ export class ExportFlow {
     return this.openSheet(ids, { title: '导出选项', onStart });
   }
 
-  /** 编辑器单点「存到相册」：直接按记住的选项开始导出，不先弹导出选项表。 */
+  /** 编辑器单点「存到相册」：直接按记住的选项开始导出，不先弹导出选项表；已在导出/排队/待存中的照片不重复发起。 */
   startQuick(ids: string[], onStart?: () => void): boolean {
-    const photos = this.orderedPhotos(ids);
-    if (!photos.length) return false;
+    const ordered = this.orderedPhotos(ids);
+    if (!ordered.length) return false;
     this.closeSheet();
+    const photos = this.queue.filterQuickPhotos(ordered, this.batch);
+    if (!photos.length) {
+      this.paint();
+      return true;
+    }
     onStart?.();
     const hdr = hdrAvailable(photos) && loadExportHdr();
     this.start(photos, { size: loadExportSize(), quality: loadExportQuality(), hdr });
     return true;
   }
 
-  /** 清空照片：这一批和排队任务全部停下，待存成片全丢，晚到的结果不会再到共享这一步。 */
+  /** 清空照片：这一批和排队任务全部停下，待存成片与失败全丢，晚到的结果不会再到共享这一步。 */
   clear(): void {
     this.closeSheet();
-    this.pendingQueue = [];
-    this.carryover = [];
+    this.queue.clear();
     this.detailsOpen = false;
     this.chunks = [];
     this.chunk = 0;
@@ -260,8 +253,11 @@ export class ExportFlow {
     return index >= 0 ? index + 1 : null;
   }
 
-  private carryoverBytes(): number {
-    return this.carryover.reduce((sum, item) => sum + item.file.size, 0);
+  private carryoverEntries(): ReadyEntry[] {
+    return this.queue.carryover.map((entry) => ({
+      ...entry,
+      position: this.positionOf(entry.id) ?? entry.position,
+    }));
   }
 
   private batchEntries(batch: ExportBatch): ReadyEntry[] {
@@ -280,33 +276,22 @@ export class ExportFlow {
   }
 
   private allReadyEntries(batch: ExportBatch | null): ReadyEntry[] {
-    const carried = this.carryover.map((entry) => ({
-      ...entry,
-      position: this.positionOf(entry.id) ?? entry.position,
-    }));
+    const carried = this.carryoverEntries();
     const current = batch && batch.phase !== 'closed' ? this.batchEntries(batch) : [];
     return [...carried, ...current];
   }
 
-  /** 把已完成、未存进相册的成片收进 carryover，防止被新导出丢掉。 */
-  private preserveBatch(batch: ExportBatch): void {
-    for (const entry of this.batchEntries(batch)) this.carryover.push(entry);
-    batch.staged = [];
-    batch.stagedBytes = 0;
-  }
-
-  /** 开始或排队一批导出：不丢掉之前做好但还没存进相册的成片。 */
+  /** 开始或排队一批导出：保留未共享的成片与失败记录，不丢结果。 */
   private start(photos: Photo[], options: ExportOptions): void {
     this.revokeUrls();
     this.view = 'progress';
     const current = this.batch;
-    if (current && (current.phase === 'running' || current.phase === 'held')) {
-      this.pendingQueue.push({ photos, options });
+    const action = this.queue.enqueueOrPrepareStart(photos, options, current, (b) => this.batchEntries(b as ExportBatch));
+    if (action === 'queued') {
       this.paint();
       return;
     }
     if (current && current.phase !== 'closed') {
-      this.preserveBatch(current);
       // 取消旧批次前清空引用，避免旧批次的 changed 回调误清刚建的 dock。
       this.batch = null;
       current.cancel();
@@ -361,7 +346,7 @@ export class ExportFlow {
       changed: () => this.paint(),
       memoryPeak: () => this.core.marks.total,
       peakEstimate: (item) => estimatePeak(this.core, item, options.size, fonts),
-      baseStagedBytes: () => this.carryoverBytes(),
+      baseStagedBytes: () => this.queue.carryoverBytes(),
     };
     let fonts: BatchFonts = { fontIndex: '', fontPack: null };
     this.view = 'progress';
@@ -472,19 +457,18 @@ export class ExportFlow {
   /** 独立浮在底栏上方的导出进度 / 就绪条，按批次与暂存队列状态重画。 */
   private paint(): void {
     const batch = this.batch;
-    // 当前批次顺利做完且还有排队的导出任务：保留刚做好的成片，自动跑下一项。
-    if (batch && batch.phase === 'ready' && !batch.failures.size && this.pendingQueue.length) {
-      const next = this.pendingQueue.shift();
-      if (next) {
-        this.preserveBatch(batch);
+    // 当前批次进入任意非运行、非 held 状态（含失败后 ready / closed / stopped）且还有排队任务：保留未共享成片与失败，自动跑下一项。
+    const next = this.queue.takeNextQueued(batch, (b) => this.batchEntries(b as ExportBatch));
+    if (next) {
+      if (batch && batch.phase !== 'closed') {
         this.batch = null;
         batch.cancel();
-        this.launch(next.photos, next.options);
-        return;
       }
+      this.launch(next.photos, next.options);
+      return;
     }
     const batchLive = Boolean(batch && batch.phase !== 'closed');
-    if (!batchLive && !this.carryover.length) {
+    if (!batchLive && !this.queue.carryover.length && !this.queue.carriedFailures.size) {
       this.removeDock();
       return;
     }
@@ -519,27 +503,22 @@ export class ExportFlow {
       this.chunk = 0;
       this.chunkEntryCount = entries.length;
     }
-    const failures = batch && batch.phase !== 'closed' ? [...batch.failures.values()] : [];
+    const failures = this.queue.allFailures(batch);
     const showThumbs = batch && batch.phase !== 'closed' && (failures.length > 0 || batch.phase === 'stopped');
     paintReadyBar({
       dock,
       phase,
       entries,
       failures,
-      savedCount: batch?.savedCount() ?? 0,
+      savedCount: this.queue.savedCount(batch),
+      queuedCount: this.queue.queuedCount(),
       chunk: this.chunk,
       totalChunks: this.chunks.length,
       detailsOpen: this.detailsOpen,
       noShare: this.view === 'noshare',
       thumbs: showThumbs ? this.thumbs(batch) : null,
       onShare: () => this.share(batch, this.chunkEntries(entries)),
-      onRetry: () => {
-        if (!batch) return;
-        this.chunks = [];
-        this.chunk = 0;
-        this.chunkEntryCount = 0;
-        batch.retry();
-      },
+      onRetry: () => this.retry(batch),
       onToggleDetails: () => {
         this.detailsOpen = !this.detailsOpen;
         this.paint();
@@ -550,10 +529,37 @@ export class ExportFlow {
     });
   }
 
+  private retry(batch: ExportBatch | null): void {
+    this.chunks = [];
+    this.chunk = 0;
+    this.chunkEntryCount = 0;
+    const carriedJobs = this.queue.takeCarriedRetryJobs((p) => this.app.photo(p.id) ?? p);
+    if (batch && batch.phase !== 'closed' && batch.failures.size > 0) {
+      for (const job of carriedJobs) this.queue.pendingQueue.push(job);
+      batch.retry();
+      return;
+    }
+    const first = carriedJobs.shift();
+    if (!first) return;
+    for (const job of carriedJobs) this.queue.pendingQueue.push(job);
+    if (batch && (batch.phase === 'running' || batch.phase === 'held')) {
+      this.queue.pendingQueue.unshift(first);
+      this.paint();
+      return;
+    }
+    if (batch && batch.phase !== 'closed') {
+      this.queue.preserveBatch(batch, this.batchEntries(batch));
+      this.batch = null;
+      batch.cancel();
+    }
+    this.queue.beginBatch(first.photos, first.options);
+    this.launch(first.photos, first.options);
+  }
+
   private paintMemory(batch: ExportBatch): void {
     const marks = this.core.marks;
     const mib = (v: number) => Math.round((v / 1048576) * 10) / 10;
-    const stagedHigh = Math.max(batch.stagedHigh, batch.stagedBytes + this.carryoverBytes());
+    const stagedHigh = Math.max(batch.stagedHigh, batch.stagedBytes + this.queue.carryoverBytes());
     const data = { wasm: marks.wasm, js: marks.js, staged: stagedHigh, workers: marks.workers, times: batch.times };
     this.shell.dataset.exportMem = JSON.stringify(data);
     if (this.perf && !this.perf.hidden) {
@@ -594,16 +600,17 @@ export class ExportFlow {
     const { done, total, current } = batch.progress();
     const top = el('div', 'top');
     const tx = el('div', 'tx');
-    const queued = this.pendingQueue.reduce((sum, job) => sum + job.photos.length, 0);
+    const queued = this.queue.queuedCount();
     const title = queued ? `正在导出 ${current} / ${total}（另排 ${queued} 张）` : `正在导出 ${current} / ${total}`;
     tx.append(el('b', 'num', title), el('small', '', batch.hdr ? HDR_PROGRESS : '可以接着看照片。'));
-    if (this.carryover.length) {
-      const summary = readyPositionsSummary(this.carryover.map((e) => this.positionOf(e.id) ?? e.position));
-      tx.append(el('small', 'ready-carry', `已做好待存：${summary || `${this.carryover.length} 张`}`));
+    const carried = this.carryoverEntries();
+    if (carried.length > 1) {
+      const summary = readyPositionsSummary(carried.map((e) => e.position));
+      if (summary) tx.append(el('small', 'ready-carry', `已做好待存：${summary}`));
     }
     const stop = button('fbtn fill-ctl', '停止');
     stop.addEventListener('click', () => {
-      this.pendingQueue = [];
+      this.queue.stop();
       batch.stop();
     });
     top.append(el('span', 'spin'), tx, stop);
@@ -612,11 +619,78 @@ export class ExportFlow {
     fill.style.width = `${total ? (done / total) * 100 : 0}%`;
     bar.append(fill);
     dock.append(top, bar, this.thumbs(batch));
+    if (carried.length) {
+      const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
+      const carryChunks = shareChunks(
+        carried.map((e) => e.file.size),
+        limit,
+        SHARE_MAX_BYTES,
+      );
+      const picked = (carryChunks[0] ?? []).map((i) => carried[i]).filter((e): e is ReadyEntry => !!e);
+      const label = readyShareLabel(
+        carried.map((e) => e.position),
+        0,
+        carryChunks.length,
+      );
+      const saveReady = button('btn primary block running-ready', '');
+      saveReady.dataset.act = 'share-ready';
+      saveReady.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(label));
+      saveReady.addEventListener('click', () => this.shareCarryover(picked));
+      dock.append(saveReady);
+      if (this.view === 'noshare') {
+        const links = el('div', 'links');
+        links.dataset.state = 'no-share';
+        for (const entry of picked) {
+          const a = el('a', '', entry.file.name);
+          const url = URL.createObjectURL(entry.file);
+          this.urls.add(url);
+          a.href = url;
+          a.download = entry.file.name;
+          links.append(a);
+        }
+        const closeLinks = button('btn block', '关闭');
+        closeLinks.addEventListener('click', () => {
+          this.view = 'progress';
+          this.queue.consumeCarryover(picked.map((e) => e.id));
+          this.paint();
+        });
+        links.append(closeLinks);
+        dock.append(links);
+      }
+    }
   }
 
   private chunkEntries(entries: readonly ReadyEntry[]): ReadyEntry[] {
     const pick = this.chunks[this.chunk] ?? [];
     return pick.map((i) => entries[i]).filter((e): e is ReadyEntry => !!e);
+  }
+
+  /** 运行中直接保存已做好待存的 carryover：同步在点击里调用 navigator.share，绝不在前面 await。 */
+  private shareCarryover(picked: ReadyEntry[]): void {
+    const files = picked.map((e) => e.file);
+    const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
+    const can = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files });
+    if (!can) {
+      this.view = 'noshare';
+      this.paint();
+      return;
+    }
+    const session = this.app.session();
+    const ids = picked.map((e) => e.id);
+    nav.share({ files }).then(
+      () => {
+        if (this.app.session() !== session) return;
+        this.view = 'progress';
+        this.queue.consumeCarryover(ids);
+        this.chunks = [];
+        this.chunk = 0;
+        this.chunkEntryCount = 0;
+        this.paint();
+      },
+      () => {
+        // 取消共享面板：保留 carryover，仍在栏上。
+      },
+    );
   }
 
   /** 必须在点击里同步调用，前面不能有 await：共享面板要这次点击的用户激活。 */
@@ -629,16 +703,18 @@ export class ExportFlow {
       this.paint();
       return;
     }
+    const ids = picked.map((e) => e.id);
     nav.share({ files }).then(
       () => {
         if (this.batch !== batch) return;
         if (this.chunk + 1 < this.chunks.length) {
+          this.queue.markChunkShared(ids);
           this.chunk += 1;
           this.paint();
           return;
         }
         // 最后一批交出后自动收起，不再多点一次「好」。
-        this.finishShare(batch);
+        this.finishShare(batch, ids);
       },
       () => {
         // 关掉了面板（AbortError）或别的失败：留在就绪条，文件还在。
@@ -646,14 +722,14 @@ export class ExportFlow {
     );
   }
 
-  private finishShare(batch: ExportBatch | null): void {
+  private finishShare(batch: ExportBatch | null, finalIds: readonly string[] = []): void {
     this.revokeUrls();
     this.view = 'progress';
     this.detailsOpen = false;
     this.chunks = [];
     this.chunk = 0;
     this.chunkEntryCount = 0;
-    this.carryover = [];
+    this.queue.finishShare(finalIds);
     if (batch && batch.phase !== 'closed') {
       batch.release();
     }
@@ -667,8 +743,9 @@ export class ExportFlow {
     this.chunks = [];
     this.chunk = 0;
     this.chunkEntryCount = 0;
-    this.carryover = [];
+    this.queue.dismiss();
     if (batch && batch.phase !== 'closed') {
+      this.batch = null;
       batch.cancel();
     }
     this.paint();

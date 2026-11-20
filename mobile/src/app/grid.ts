@@ -32,6 +32,8 @@ export class GridView {
   private picking = false;
   /** 组标题那一行的键 → 这一组（套用到这一组、选这一组用）。 */
   private readonly groupRows = new Map<string, TimeGroup>();
+  /** 紧跟在上一组照片后的单张独立组行键（无组标题，留出分隔间距和细线）。 */
+  private readonly soloRows = new Set<string>();
   private pasteBarEl: HTMLElement | null = null;
   private offPaste: (() => void) | null = null;
 
@@ -131,8 +133,21 @@ export class GridView {
     );
     const width = this.scroller.clientWidth || 390;
     const cellH = Math.max(48, (width / 3) * (2 / 3) + 2);
-    // 单张自成一组不另占一行组标题。
-    this.rows = layoutRows(groups, cellH).filter((row) => !(row.kind === 'group' && row.ids.length <= 1));
+    // 单张自成一组不另占一行组标题；紧跟在上一组照片后时加分隔间距和细线，避免看起来像上一组。
+    const soloIds = new Set(groups.filter((g) => g.ids.length <= 1).map((g) => g.ids[0]));
+    const kept: VRow[] = [];
+    this.soloRows.clear();
+    for (const row of layoutRows(groups, cellH)) {
+      if (row.kind === 'group' && row.ids.length <= 1) continue;
+      const prev = kept[kept.length - 1];
+      if (row.kind === 'cells' && row.ids.length === 1 && soloIds.has(row.ids[0]) && prev?.kind === 'cells') {
+        this.soloRows.add(row.key);
+        kept.push({ ...row, height: row.height + 14 });
+      } else {
+        kept.push(row);
+      }
+    }
+    this.rows = kept;
     this.groupRows.clear();
     for (const group of groups) this.groupRows.set(`group:${group.ids[0] ?? group.startMs}`, group);
     this.subtitle(photos, groups.length);
@@ -213,7 +228,7 @@ export class GridView {
   private renderRow(row: VRow): HTMLElement {
     if (row.kind === 'day') return el('div', 'day', row.label);
     if (row.kind === 'group') return this.groupHead(row);
-    const cells = el('div', 'cells');
+    const cells = el('div', this.soloRows.has(row.key) ? 'cells solo-sep' : 'cells');
     cells.style.height = `${row.height}px`;
     for (const id of row.ids) {
       const photo = this.api.photo(id);

@@ -430,7 +430,6 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
 
   const clip = pasteState.clip;
   const group = groupsNow(api).find((item) => item.ids.includes(photo.id));
-  const pasteDetail = clip ? `来自 ${clip.from.stem} · ${groupsText(clip.groups)}` : NOTHING_COPIED;
   const groupDetail = group ? `${group.rangeLabel} · ${group.ids.length} 张` : '当前照片所在分组';
 
   const entries: Array<[string, string, string, () => void]> = [
@@ -440,58 +439,64 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
       '选要复制的项目，套用到别的照片',
       () => openCopySheet(host, api, photo, () => undefined),
     ],
-    [
-      'more-paste',
-      '粘贴',
-      pasteDetail,
-      () => {
-        const current = pasteState.clip;
-        if (!current) {
-          showToast(host, NOTHING_COPIED);
-          return;
-        }
-        const targets = pasteState.targets(api, [photo.id]);
-        if (!targets.length) {
-          showToast(host, ONLY_SOURCE);
-          return;
-        }
-        openConfirm(host, api, {
-          title: '套用到这张？',
-          body: `这张会换成 ${current.from.stem} 的${groupsAnd(current.groups)}。别的设置不变。`,
-          targets,
-          range: rangeOf(targets),
-          afterApply: () => undefined,
-          leaveFirst: false,
-        });
-      },
-    ],
-    [
-      'more-apply-group',
-      '套用到这一组',
-      groupDetail,
-      () => {
-        const current = pasteState.clip;
-        if (!current) {
-          showToast(host, NOTHING_COPIED);
-          return;
-        }
-        const nowGroup = groupsNow(api).find((item) => item.ids.includes(photo.id));
-        const ids = nowGroup?.ids ?? [photo.id];
-        const targets = pasteState.targets(api, ids);
-        if (!targets.length) {
-          showToast(host, ONLY_SOURCE);
-          return;
-        }
-        openConfirm(host, api, {
-          title: `套用到这一组的 ${targets.length} 张？`,
-          body: groupBody(nowGroup?.rangeLabel ?? '', targets.length, ids.includes(current.from.id), current.from.stem),
-          targets,
-          range: nowGroup?.rangeLabel ?? rangeOf(targets),
-          afterApply: () => undefined,
-          leaveFirst: true,
-        });
-      },
-    ],
+  ];
+  if (clip) {
+    entries.push(
+      [
+        'more-paste',
+        '粘贴',
+        `来自 ${clip.from.stem} · ${groupsText(clip.groups)}`,
+        () => {
+          const current = pasteState.clip;
+          if (!current) {
+            showToast(host, NOTHING_COPIED);
+            return;
+          }
+          const targets = pasteState.targets(api, [photo.id]);
+          if (!targets.length) {
+            showToast(host, ONLY_SOURCE);
+            return;
+          }
+          openConfirm(host, api, {
+            title: '套用到这张？',
+            body: `这张会换成 ${current.from.stem} 的${groupsAnd(current.groups)}。别的设置不变。`,
+            targets,
+            range: rangeOf(targets),
+            afterApply: () => undefined,
+            leaveFirst: false,
+          });
+        },
+      ],
+      [
+        'more-apply-group',
+        '套用到这一组',
+        groupDetail,
+        () => {
+          const current = pasteState.clip;
+          if (!current) {
+            showToast(host, NOTHING_COPIED);
+            return;
+          }
+          const nowGroup = groupsNow(api).find((item) => item.ids.includes(photo.id));
+          const ids = nowGroup?.ids ?? [photo.id];
+          const targets = pasteState.targets(api, ids);
+          if (!targets.length) {
+            showToast(host, ONLY_SOURCE);
+            return;
+          }
+          openConfirm(host, api, {
+            title: `套用到这一组的 ${targets.length} 张？`,
+            body: groupBody(nowGroup?.rangeLabel ?? '', targets.length, ids.includes(current.from.id), current.from.stem),
+            targets,
+            range: nowGroup?.rangeLabel ?? rangeOf(targets),
+            afterApply: () => undefined,
+            leaveFirst: true,
+          });
+        },
+      ],
+    );
+  }
+  entries.push(
     [
       'more-export-options',
       '导出选项',
@@ -506,7 +511,7 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
       '文件名、拍摄时间与镜头',
       () => openPhotoInfoSheet(host, api, photo),
     ],
-  ];
+  );
 
   sheet.append(el('div', 'grab'), head);
   for (const [act, label, detail, run] of entries) {
@@ -587,7 +592,7 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
     syncHdr();
   };
   const offHdr = watchExportHdr(syncHdr);
-  const offBook = api.book().onChange(refresh);
+  const offBook = api.book().onChange(() => refresh());
   const offCam = onCameraRecipe((id) => {
     if (id === photo.id) refresh();
   });

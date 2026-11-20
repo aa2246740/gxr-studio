@@ -203,7 +203,7 @@ export function mountExportSheet(
     opts.onStart?.();
     host.onStart(photos, { size, quality, hdr: hdrOn });
   });
-  const foot = el('p', 'foot', `做好后再点一次「存到相册」，在系统面板里点「${n === 1 ? '存储图像' : `存储 ${n} 张图像`}」。`);
+  const foot = el('p', 'foot', '「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。');
   sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
   host.shell.append(scrim, sheet);
 
