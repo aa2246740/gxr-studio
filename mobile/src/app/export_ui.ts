@@ -3,34 +3,29 @@
 // 系统共享面板关闭后自动收起就绪条，不再留一层「好」。
 
 import { ExportCore, calibPack, type RunResult } from '../core/export_api';
-import { unitOfLens } from '../lib/calib';
-import { mergeMeta } from '../lib/exif';
-import { buildRequest, usedLogoId, type RequestPhoto } from '../lib/export_request';
+import { buildRequest, usedLogoId } from '../lib/export_request';
 import { fontsNeeded, type FontKey } from '../lib/fonts';
-import { HDR_PROGRESS, hdrAvailable } from '../lib/hdr_text';
+import { hdrAvailable } from '../lib/hdr_text';
 import { loadExportHdr, loadExportQuality, loadExportSize } from '../lib/prefs';
-import { adoptedSelectionOf, cameraRecipeErrorOf, photoWithAdopted, recipeUnitOf, shelf, shelves, type Card } from '../lib/recipes';
+import { cameraRecipeErrorOf } from '../lib/recipes';
 import { shareChunks, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
-import { button, el } from './dom';
+import { el } from './dom';
 import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem } from './export_batch';
 import { estimatePeak, type BatchFonts } from './export_budget';
 import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
 import { ExportQueueState, type ExportOptions } from './export_queue';
-import {
-  EXPORT_ICON,
-  exportIco,
-  paintReadyBar,
-  readyPositionsSummary,
-  readyShareLabel,
-  type ReadyEntry,
-} from './export_ready';
+import { paintReadyBar, paintRunningSlot, stateAnnouncement, type ReadyEntry } from './export_ready';
+import { applyAdoptedAndLogos, buildExportThumbs, cardsFor, requestPhoto } from './export_request_prep';
+import { ExportDetailsSheet } from './export_sheet';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
 import type { LutBook } from './lut_book';
 import { ensureCameraRecipes, needsCameraRecipe, type Photo } from './model';
 import './export.css';
+
+export { cardsFor, requestPhoto };
 
 declare const __GXR_BUILD__: string;
 
@@ -67,51 +62,6 @@ function dev(): DevExport | null {
   return hook;
 }
 
-export function cardsFor(book: Book, photo: Photo): Card[] {
-  const dat = book.dat;
-  if (!dat) return [];
-  const adopted = adoptedSelectionOf(photo, dat);
-  const unit = recipeUnitOf(photo.choice, adopted, unitOfLens(mergeMeta(photo.jpgMeta, photo.dngMeta).lens));
-  return shelf(shelves(dat.listing, unit), 'all');
-}
-
-export function requestPhoto(photo: Photo, lutBook?: LutBook, book?: Book): RequestPhoto {
-  const view = book ? photoWithAdopted(photo, book.dat) : photo;
-  const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
-  const source = photo.jpg ?? photo.dng;
-  const lutRecord = photo.lut ? lutBook?.get(photo.lut) : undefined;
-  const border = photo.border ? { ...photo.border } : null;
-  const stamp = photo.stamp ? { ...photo.stamp } : null;
-  const logoId = usedLogoId(border);
-  return {
-    stem: photo.stem,
-    dngName: photo.dng?.name ?? null,
-    jpgName: photo.jpg?.name ?? null,
-    lens: meta.lens,
-    iso: meta.iso,
-    choice: view.choice ? { ...view.choice } : null,
-    levels: new Map([...view.levels].map(([k, v]) => [k, { ...v }])),
-    memory: new Map([...photo.memory].map(([k, v]) => [k, { ...v }])),
-    lut: photo.lut,
-    lutInputSpace: lutRecord?.input_space ?? null,
-    knobs: { ...photo.knobs },
-    curve: photo.curve ?? null,
-    frame: photo.frame ? { ...photo.frame } : null,
-    geometry: photo.geometry ? { ...photo.geometry } : undefined,
-    crop: photo.crop
-      ? {
-          preset: photo.crop.preset,
-          rect: [photo.crop.rect[0], photo.crop.rect[1], photo.crop.rect[2], photo.crop.rect[3]],
-          angle_deg: photo.crop.angle_deg,
-        }
-      : null,
-    border,
-    stamp,
-    logoInfo: logoId ? logoStore.info(logoId) : null,
-    sourceModified: source?.lastModified ?? photo.lastModified,
-  };
-}
-
 type View = 'progress' | 'noshare';
 
 const flowByShell = new WeakMap<HTMLElement, ExportFlow>();
@@ -130,11 +80,20 @@ export function startQuickExport(shell: HTMLElement, ids: string[], onStart?: ()
   return flow.startQuick(ids, onStart);
 }
 
+/** 切屏、换照片或展开/收起单带时同步导出条挂载位（单带顶 44pt 槽 vs 收起态/网格态贴底 40pt 条）。 */
+export function syncExportDock(shell: HTMLElement): void {
+  flowByShell.get(shell)?.syncHost();
+}
+
 export class ExportFlow {
   readonly core = new ExportCore();
   private batch: ExportBatch | null = null;
   private dock: HTMLElement | null = null;
+  private slotBand: HTMLElement | null = null;
   private sheet: OpenedExportSheet | null = null;
+  private readonly detailsSheet: ExportDetailsSheet;
+  private liveRegion: HTMLElement | null = null;
+  private lastAnnouncedKey = '';
   private view: View = 'progress';
   private detailsOpen = false;
   private chunk = 0;
@@ -152,6 +111,7 @@ export class ExportFlow {
     private readonly perf: HTMLElement | null,
   ) {
     flowByShell.set(shell, this);
+    this.detailsSheet = new ExportDetailsSheet(shell);
     const hooks = dev();
     if (hooks) {
       hooks.flow = this;
@@ -192,14 +152,25 @@ export class ExportFlow {
   /** 清空照片：这一批和排队任务全部停下，待存成片与失败全丢，晚到的结果不会再到共享这一步。 */
   clear(): void {
     this.closeSheet();
+    this.detailsSheet.close(false);
     this.queue.clear();
     this.detailsOpen = false;
+    this.lastAnnouncedKey = '';
     this.chunks = [];
     this.chunk = 0;
     this.chunkEntryCount = 0;
     this.batch?.cancel();
     this.batch = null;
     this.removeDock();
+  }
+
+  /** 供编辑器/启动器在切屏、换图或展开/收起单带后重挂导出条。 */
+  syncHost(): void {
+    if (!this.dock) {
+      this.clearSlotFlag();
+      return;
+    }
+    this.mountDock();
   }
 
   /** 现在还没撤销的对象 URL 有几个（开发服务器的测试读）。 */
@@ -387,27 +358,7 @@ export class ExportFlow {
     void Promise.all([lutTask, fontTask, logoTask, adoptTask]).then(([luts, fonts0]) => {
       if (this.batch !== batch || batch.phase !== 'running') return;
       if (needAdopt || logoIds.length) {
-        photos.forEach((photo, idx) => {
-          const snap = snapshots[idx];
-          let changed = false;
-          const logoId = logoIds.length ? usedLogoId(snap.reqPhoto.border) : null;
-          if (logoId) {
-            snap.reqPhoto.logoInfo = logoStore.info(logoId);
-            changed = true;
-          }
-          if (needAdopt && !snap.explicitChoice && !snap.recipeOff) {
-            const adopted = adoptedSelectionOf(photo, dat);
-            if (adopted) {
-              snap.reqPhoto.choice = { ...adopted.choice };
-              snap.reqPhoto.levels = new Map([[adopted.choice.id, { ...adopted.levels }]]);
-              if (dat) snap.cards = shelf(shelves(dat.listing, recipeUnitOf(null, adopted, unitOfLens(snap.reqPhoto.lens))), 'all');
-              changed = true;
-            }
-            const note = cameraRecipeErrorOf(photo, dat)?.message;
-            if (note) items[idx].cameraRecipeNote = note;
-          }
-          if (changed) items[idx].req = buildRequest(snap.reqPhoto, snap.cards, options, __GXR_BUILD__, binding);
-        });
+        applyAdoptedAndLogos(photos, snapshots, items, dat, needAdopt, logoIds.length > 0, options, __GXR_BUILD__, binding);
       }
       begin(luts, fonts0);
     });
@@ -447,14 +398,70 @@ export class ExportFlow {
     }
   }
 
+  private clearSlotFlag(): void {
+    if (this.slotBand) {
+      this.slotBand.removeAttribute('data-export-slot');
+      this.slotBand = null;
+    }
+  }
+
+  private mountDock(): void {
+    const dock = this.dock;
+    if (!dock) return;
+    const editorOpen = this.shell.dataset.screen === 'editor';
+    const slot = editorOpen
+      ? this.shell.querySelector<HTMLElement>('.editor .band[data-collapsed="0"] .band-export-slot')
+      : null;
+    if (slot) {
+      const band = slot.closest<HTMLElement>('.band');
+      if (this.slotBand && this.slotBand !== band) this.clearSlotFlag();
+      if (dock.parentElement !== slot) slot.append(dock);
+      dock.dataset.dockMode = 'slot';
+      if (band) {
+        band.dataset.exportSlot = '1';
+        this.slotBand = band;
+      }
+      return;
+    }
+    this.clearSlotFlag();
+    const perf = this.shell.querySelector('.perf');
+    if (dock.parentElement !== this.shell) this.shell.insertBefore(dock, perf);
+    dock.dataset.dockMode = 'flush';
+  }
+
+  private ensureLiveRegion(): HTMLElement {
+    if (!this.liveRegion || !this.liveRegion.isConnected) {
+      const region = el('div', 'sr-only');
+      region.setAttribute('aria-live', 'polite');
+      region.setAttribute('aria-atomic', 'true');
+      region.dataset.role = 'export-announcer';
+      this.shell.append(region);
+      this.liveRegion = region;
+    }
+    return this.liveRegion;
+  }
+
+  private announce(text: string | null, key: string): void {
+    if (!text || key === this.lastAnnouncedKey) return;
+    this.lastAnnouncedKey = key;
+    const region = this.ensureLiveRegion();
+    region.textContent = '';
+    region.textContent = text;
+  }
+
   private removeDock(): void {
     this.revokeUrls();
+    this.detailsSheet.close(false);
+    this.detailsOpen = false;
+    this.lastAnnouncedKey = '';
+    if (this.liveRegion) this.liveRegion.textContent = '';
+    this.clearSlotFlag();
     this.dock?.remove();
     this.dock = null;
     this.shell.removeAttribute('data-export');
   }
 
-  /** 独立浮在底栏上方的导出进度 / 就绪条，按批次与暂存队列状态重画。 */
+  /** 44pt 顶槽 / 40pt 贴底导出条与「详情」底部工作表重画。 */
   private paint(): void {
     const batch = this.batch;
     // 当前批次进入任意非运行、非 held 状态（含失败后 ready / closed / stopped）且还有排队任务：保留未共享成片与失败，自动跑下一项。
@@ -474,11 +481,13 @@ export class ExportFlow {
     }
     if (!this.dock) {
       this.dock = el('div', 'pdock');
-      const perf = this.shell.querySelector('.perf');
-      this.shell.insertBefore(this.dock, perf);
+      this.dock.setAttribute('role', 'region');
+      this.dock.setAttribute('aria-label', '导出状态');
     }
+    this.ensureLiveRegion();
+    this.mountDock();
     const dock = this.dock;
-    // 重画会丢掉旧的下载链接：它们的 URL 先撤销，需要的话 paintReadyBar 再建。
+    // 重画会丢掉旧的下载链接：它们的 URL 先撤销，需要的话导出详情表再建。
     this.revokeUrls();
     dock.className = 'pdock';
     dock.replaceChildren();
@@ -486,13 +495,86 @@ export class ExportFlow {
     this.shell.dataset.export = phase;
     dock.dataset.phase = phase;
     if (batch) this.paintMemory(batch);
+
+    const toggleDetails = () => {
+      this.detailsOpen = !this.detailsOpen;
+      if (!this.detailsOpen && this.view === 'noshare') this.view = 'progress';
+      this.paint();
+    };
+    const closeDetails = () => {
+      if (!this.detailsOpen && this.view !== 'noshare') return;
+      this.detailsOpen = false;
+      if (this.view === 'noshare') {
+        this.view = 'progress';
+        this.revokeUrls();
+      }
+      this.paint();
+    };
+
     if (batch && batch.phase === 'running') {
       this.chunks = [];
       this.chunk = 0;
       this.chunkEntryCount = 0;
-      this.paintRunning(dock, batch);
+      const { done, total, current } = batch.progress();
+      const carried = this.carryoverEntries();
+      const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
+      const carryChunks = carried.length
+        ? shareChunks(
+            carried.map((e) => e.file.size),
+            limit,
+            SHARE_MAX_BYTES,
+          )
+        : [];
+      const picked = (carryChunks[0] ?? []).map((i) => carried[i]).filter((e): e is ReadyEntry => !!e);
+      const stopNow = () => {
+        this.queue.stop();
+        batch.stop();
+      };
+      paintRunningSlot({
+        dock,
+        done,
+        total,
+        current,
+        hdr: batch.hdr,
+        queued: this.queue.queuedCount(),
+        carried,
+        carryChunk: 0,
+        carryTotalChunks: carryChunks.length,
+        detailsOpen: this.detailsOpen,
+        onShareCarryover: () => this.shareCarryover(picked),
+        onStop: stopNow,
+        onToggleDetails: toggleDetails,
+      });
+      if (this.detailsOpen) {
+        this.detailsSheet.render({
+          phase,
+          running: { done, total, current, hdr: batch.hdr, queued: this.queue.queuedCount() },
+          entries: carried,
+          failures: this.queue.allFailures(batch),
+          failurePosition: (id) => this.positionOf(id),
+          chunk: 0,
+          totalChunks: carryChunks.length,
+          noShare: this.view === 'noshare',
+          thumbs: this.thumbs(batch),
+          onShare: () => this.shareCarryover(picked),
+          onStop: stopNow,
+          onRetry: () => this.retry(batch),
+          onClearFailures: () => this.clearFailures(batch),
+          onFinishNoShare: () => {
+            this.view = 'progress';
+            this.detailsOpen = false;
+            this.queue.consumeCarryover(picked.map((e) => e.id));
+            this.paint();
+          },
+          onClose: closeDetails,
+          trackUrl: (url) => this.urls.add(url),
+        });
+      } else {
+        this.detailsSheet.close(false);
+      }
       return;
     }
+
     const entries = this.allReadyEntries(batch);
     if ((!this.chunks.length || this.chunkEntryCount !== entries.length) && entries.length) {
       const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
@@ -505,32 +587,53 @@ export class ExportFlow {
       this.chunkEntryCount = entries.length;
     }
     const failures = this.queue.allFailures(batch);
-    const showThumbs = batch && batch.phase !== 'closed' && (failures.length > 0 || batch.phase === 'stopped');
+    const ann = stateAnnouncement(phase, entries, failures, (id) => this.positionOf(id));
+    if (ann) this.announce(ann.text, ann.key);
+
+    const onShare = () => this.share(batch, this.chunkEntries(entries));
     paintReadyBar({
       dock,
       phase,
       entries,
       failures,
-      savedCount: this.queue.savedCount(batch),
-      queuedCount: this.queue.queuedCount(),
+      failurePosition: (id) => this.positionOf(id),
       chunk: this.chunk,
       totalChunks: this.chunks.length,
       detailsOpen: this.detailsOpen,
-      noShare: this.view === 'noshare',
-      thumbs: showThumbs ? this.thumbs(batch) : null,
-      onShare: () => this.share(batch, this.chunkEntries(entries)),
+      onShare,
       onRetry: () => this.retry(batch),
-      onToggleDetails: () => {
-        this.detailsOpen = !this.detailsOpen;
-        this.paint();
-      },
+      onToggleDetails: toggleDetails,
       onDismiss: () => this.dismiss(batch),
-      onFinishNoShare: () => this.finishShare(batch),
-      trackUrl: (url) => this.urls.add(url),
     });
+
+    const showSheet = this.detailsOpen || (this.view === 'noshare' && entries.length > 0);
+    if (showSheet) {
+      const showThumbs = batch && batch.phase !== 'closed' && (failures.length > 0 || batch.phase === 'stopped');
+      this.detailsSheet.render({
+        phase,
+        running: null,
+        entries,
+        failures,
+        failurePosition: (id) => this.positionOf(id),
+        chunk: this.chunk,
+        totalChunks: this.chunks.length,
+        noShare: this.view === 'noshare',
+        thumbs: showThumbs ? this.thumbs(batch) : null,
+        onShare,
+        onStop: () => undefined,
+        onRetry: () => this.retry(batch),
+        onClearFailures: () => this.clearFailures(batch),
+        onFinishNoShare: () => this.finishShare(batch),
+        onClose: closeDetails,
+        trackUrl: (url) => this.urls.add(url),
+      });
+    } else {
+      this.detailsSheet.close(false);
+    }
   }
 
   private retry(batch: ExportBatch | null): void {
+    this.detailsOpen = false;
     this.chunks = [];
     this.chunk = 0;
     this.chunkEntryCount = 0;
@@ -557,6 +660,18 @@ export class ExportFlow {
     this.launch(first.photos, first.options);
   }
 
+  private clearFailures(batch: ExportBatch | null): void {
+    const entries = this.allReadyEntries(batch);
+    if (!entries.length && (!batch || batch.phase !== 'running')) {
+      this.dismiss(batch);
+      return;
+    }
+    this.queue.carriedFailures.clear();
+    if (batch && batch.phase !== 'closed') batch.failures.clear();
+    this.detailsOpen = false;
+    this.paint();
+  }
+
   private paintMemory(batch: ExportBatch): void {
     const marks = this.core.marks;
     const mib = (v: number) => Math.round((v / 1048576) * 10) / 10;
@@ -570,95 +685,7 @@ export class ExportFlow {
   }
 
   private thumbs(batch: ExportBatch): HTMLElement {
-    const row = el('div', 'pthumbs');
-    const { done } = batch.progress();
-    const start = Math.max(0, Math.min(done - 2, batch.items.length - 6));
-    for (const item of batch.items.slice(start, start + 6)) {
-      const state = batch.states.get(item.id) ?? 'wait';
-      const t = el('div', `t ${state}`);
-      t.dataset.id = item.id;
-      const bitmap = this.app.photo(item.id)?.bitmap;
-      if (bitmap) {
-        const canvas = document.createElement('canvas');
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
-        t.append(canvas);
-      }
-      if (state === 'run') t.append(el('span', 'spin'));
-      else if (state === 'ok' || state === 'saved' || state === 'fail') {
-        if (state === 'saved') t.classList.add('ok');
-        const st = el('span', 'st');
-        st.append(exportIco(state === 'fail' ? EXPORT_ICON.x : EXPORT_ICON.check));
-        t.append(st);
-      }
-      row.append(t);
-    }
-    return row;
-  }
-
-  private paintRunning(dock: HTMLElement, batch: ExportBatch): void {
-    const { done, total, current } = batch.progress();
-    const top = el('div', 'top');
-    const tx = el('div', 'tx');
-    const queued = this.queue.queuedCount();
-    const title = queued ? `正在导出 ${current} / ${total}（另排 ${queued} 张）` : `正在导出 ${current} / ${total}`;
-    tx.append(el('b', 'num', title), el('small', '', batch.hdr ? HDR_PROGRESS : '可以接着看照片。'));
-    const carried = this.carryoverEntries();
-    if (carried.length > 1) {
-      const summary = readyPositionsSummary(carried.map((e) => e.position));
-      if (summary) tx.append(el('small', 'ready-carry', `已做好待存：${summary}`));
-    }
-    const stop = button('fbtn fill-ctl', '停止');
-    stop.addEventListener('click', () => {
-      this.queue.stop();
-      batch.stop();
-    });
-    top.append(el('span', 'spin'), tx, stop);
-    const bar = el('div', 'bar');
-    const fill = el('i');
-    fill.style.width = `${total ? (done / total) * 100 : 0}%`;
-    bar.append(fill);
-    dock.append(top, bar, this.thumbs(batch));
-    if (carried.length) {
-      const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
-      const carryChunks = shareChunks(
-        carried.map((e) => e.file.size),
-        limit,
-        SHARE_MAX_BYTES,
-      );
-      const picked = (carryChunks[0] ?? []).map((i) => carried[i]).filter((e): e is ReadyEntry => !!e);
-      const label = readyShareLabel(
-        carried.map((e) => e.position),
-        0,
-        carryChunks.length,
-      );
-      const saveReady = button('btn primary block running-ready', '');
-      saveReady.dataset.act = 'share-ready';
-      saveReady.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(label));
-      saveReady.addEventListener('click', () => this.shareCarryover(picked));
-      dock.append(saveReady);
-      if (this.view === 'noshare') {
-        const links = el('div', 'links');
-        links.dataset.state = 'no-share';
-        for (const entry of picked) {
-          const a = el('a', '', entry.file.name);
-          const url = URL.createObjectURL(entry.file);
-          this.urls.add(url);
-          a.href = url;
-          a.download = entry.file.name;
-          links.append(a);
-        }
-        const closeLinks = button('btn block', '关闭');
-        closeLinks.addEventListener('click', () => {
-          this.view = 'progress';
-          this.queue.consumeCarryover(picked.map((e) => e.id));
-          this.paint();
-        });
-        links.append(closeLinks);
-        dock.append(links);
-      }
-    }
+    return buildExportThumbs(batch, (id) => this.app.photo(id));
   }
 
   private chunkEntries(entries: readonly ReadyEntry[]): ReadyEntry[] {
@@ -673,6 +700,7 @@ export class ExportFlow {
     const can = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files });
     if (!can) {
       this.view = 'noshare';
+      this.detailsOpen = true;
       this.paint();
       return;
     }
@@ -682,6 +710,7 @@ export class ExportFlow {
       () => {
         if (this.app.session() !== session) return;
         this.view = 'progress';
+        this.detailsOpen = false;
         this.queue.consumeCarryover(ids);
         this.chunks = [];
         this.chunk = 0;
@@ -701,6 +730,7 @@ export class ExportFlow {
     const can = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files });
     if (!can) {
       this.view = 'noshare';
+      this.detailsOpen = true;
       this.paint();
       return;
     }

@@ -165,7 +165,7 @@ try {
   await page.waitForTimeout(300);
   await snap(page, '03a');
   const bandText = await page.locator('.editor .band').innerText();
-  await page.locator('.editor .recipe-head [data-act="recipe-filter"]').click();
+  await page.locator('.editor .band [data-act="recipe-filter"]').click();
   await page.waitForSelector('.filter-sheet');
   const filterText = await page.locator('.filter-sheet').innerText();
   await page.locator('.filter-sheet [data-act="close"]').click();

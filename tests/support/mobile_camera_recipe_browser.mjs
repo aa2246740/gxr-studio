@@ -361,7 +361,10 @@ async function runWrongGen(page) {
   if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
     await page.locator('.pdock [data-act="toggle-details"]').click();
   }
-  const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
+  const exportNoteText = (await page.locator('.export-sheet [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
+  if (await page.locator('.export-sheet [data-act="close-details"]').count()) {
+    await page.locator('.export-sheet [data-act="close-details"]').click();
+  }
   await shareAll(page);
   const files = await sharedFiles(page, manifest.outDir, 'wrong-gen-');
   const fileCount = files.reduce((n, row) => n + row.files.length, 0);
@@ -397,7 +400,10 @@ async function runMissingDat(page) {
   if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
     await page.locator('.pdock [data-act="toggle-details"]').click();
   }
-  const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
+  const exportNoteText = (await page.locator('.export-sheet [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
+  if (await page.locator('.export-sheet [data-act="close-details"]').count()) {
+    await page.locator('.export-sheet [data-act="close-details"]').click();
+  }
   await shareAll(page);
   const files = await sharedFiles(page, manifest.outDir, 'missing-dat-');
   const fileCount = files.reduce((n, row) => n + row.files.length, 0);

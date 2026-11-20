@@ -1,4 +1,4 @@
-/* UI-M3 + U1：导出选项面板（05a）与独立浮在底栏上方的导出进度 / 就绪条。 */
+/* UI-M3 + U1 + phone-ready-slot：导出选项面板（05a）、44pt 单带顶槽 / 40pt 贴底单行导出条与 240pt 详情底部工作表。 */
 
 .ms.export .row { display: flex; align-items: center; }
 .ms.export .row h2 { flex: 1; }
@@ -24,66 +24,340 @@
 .ms.export .go { margin-top: 14px; gap: 8px; }
 .ms.export .foot { font-size: 12px; line-height: 16px; margin-top: 8px; text-align: center; color: var(--text-3); }
 
+/* 44pt 顶槽与 40pt 贴底单行导出条 */
 .pdock {
   flex: none;
   position: relative;
   z-index: 12;
-  background: var(--surface-overlay);
-  border: 1px solid var(--line);
-  padding: 10px 12px;
-  border-radius: 16px;
-  box-shadow: var(--shadow-dialog);
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-panel);
+  border-bottom: 0.5px solid var(--line);
 }
-.app[data-screen="editor"] > .pdock {
+.pdock[data-dock-mode="flush"] {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: calc(64px + var(--safe-bottom));
+  left: 0;
+  right: 0;
+  height: 40px;
+  border-top: 0.5px solid var(--line);
+  border-bottom: 0;
+  background: rgba(24, 24, 27, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  overflow: visible;
 }
-.app[data-screen="grid"] > .pdock {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: calc(12px + var(--safe-bottom));
+.app[data-screen="editor"] > .pdock[data-dock-mode="flush"] {
+  bottom: calc(56px + var(--safe-bottom));
 }
-.app[data-screen="grid"]:has(.dock:not([hidden])) > .pdock,
-.app[data-screen="grid"]:has(.pastebar) > .pdock {
-  bottom: calc(74px + var(--safe-bottom));
+.app[data-screen="grid"] > .pdock[data-dock-mode="flush"],
+.app[data-screen="start"] > .pdock[data-dock-mode="flush"] {
+  bottom: var(--safe-bottom);
 }
-.pdock.ready-compact {
-  padding: 3px 4px;
-  border-radius: 14px;
+.app[data-screen="grid"]:has(.dock:not([hidden])) > .pdock[data-dock-mode="flush"],
+.app[data-screen="grid"]:has(.pastebar) > .pdock[data-dock-mode="flush"] {
+  bottom: calc(73px + var(--safe-bottom));
 }
 
-.pdock .top { display: flex; align-items: center; gap: 10px; }
-.pdock .tx { flex: 1; min-width: 0; }
-.pdock .tx b { display: block; font: 500 15px/20px var(--font-ui); }
-.pdock .tx small { display: block; font-size: 12px; line-height: 16px; color: var(--text-2); }
-.pdock .why { margin: 2px 0 0; padding: 0; list-style: none; max-height: 96px; overflow: auto; }
-.pdock .why li { font-size: 12px; line-height: 16px; color: var(--text-2); }
-.pdock .ic { display: grid; place-items: center; width: 28px; flex: none; }
-.pdock .ic.ok { color: var(--ok-text); }
-.pdock .ic.warn { color: var(--warn-text); }
-.pdock .fbtn.fill-acc { background: var(--accent); color: #fff; min-height: 44px; font-size: 14px; padding: 0 14px; gap: 6px; }
-.pdock .fbtn.fill-ctl { background: var(--surface-control); color: var(--text-1); box-shadow: inset 0 0 0 1px var(--line); }
-.pdock .btn.block { margin-top: 10px; gap: 8px; }
-.pdock .ready-row { display: flex; align-items: center; gap: 6px; }
-.pdock .ready-row .ready-go { margin-top: 0; height: 44px; min-height: 44px; padding: 0 12px; border-radius: 10px; font-size: 14px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-.pdock .ready-row .ready-more { flex: none; height: 44px; min-height: 44px; padding: 0 12px; border-radius: 10px; font-size: 13px; white-space: nowrap; }
-.pdock .ready-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 4px; padding: 0 2px; }
-.pdock .ready-meta:last-child { margin-bottom: 0; }
-.pdock .ready-meta small { font-size: 12px; line-height: 16px; color: var(--text-2); }
-.pdock .ready-pos { color: var(--text-1); }
-.pdock .ready-carry { color: var(--accent-text); margin-top: 2px; }
-.pdock .running-ready { margin-top: 8px; min-height: 44px; font-size: 14px; }
-.pdock .ready-details { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-subtle); }
-.pdock .ready-details[hidden] { display: none; }
-.pdock .bar { height: 4px; margin-top: 10px; border-radius: 999px; background: var(--gray-700); overflow: hidden; }
-.pdock .bar i { display: block; height: 100%; border-radius: 999px; background: var(--accent-text); transition: width 0.2s; }
-.pdock .spin { width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid rgba(106, 166, 255, 0.25); border-top-color: var(--accent-text); flex: none; animation: gxr-spin 0.9s linear infinite; }
+/* 44pt 命中盒 + 36pt（贴底态 32pt）视觉胶囊 */
+.pdock .es-btn {
+  flex: none;
+  height: 44px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.pdock .es-btn.es-main {
+  flex: 1;
+  min-width: 0;
+}
+.pdock .es-btn.es-stop-pill {
+  min-width: 56px;
+}
+.pdock .es-btn.es-run-pill {
+  min-width: 88px;
+}
+.pdock .es-btn.es-detail-side {
+  min-width: 68px;
+}
+.pdock .es-btn.es-retry-side {
+  min-width: 54px;
+}
+.pdock .es-btn.es-icon {
+  width: 44px;
+  min-width: 44px;
+}
+.pdock .es-btn:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+  border-radius: 10px;
+}
+.pdock .es-pill {
+  height: 36px;
+  width: 100%;
+  padding: 0 12px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font: 600 14px/1 var(--font-ui);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pdock[data-dock-mode="flush"] .es-pill {
+  height: 32px;
+}
+.pdock .es-side .es-pill {
+  font-weight: 500;
+  font-size: 13px;
+}
+.pdock .es-retry-side .es-pill {
+  font-weight: 600;
+  color: var(--accent-text);
+}
+.pdock .es-icon .es-pill {
+  width: 36px;
+  padding: 0;
+  color: var(--text-2);
+}
+.pdock[data-dock-mode="flush"] .es-icon .es-pill {
+  width: 32px;
+}
+.pdock .es-pill.es-blue {
+  background: #256aeb;
+  color: #fff;
+}
+.pdock .es-pill.es-dark {
+  background: #2a2a2f;
+  color: var(--text-1);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+}
+.pdock .es-pill.es-danger {
+  background: #30161a;
+  color: #ff9a94;
+  box-shadow: inset 0 0 0 0.5px rgba(255, 110, 100, 0.38);
+}
+.pdock .es-pill.es-fail-outline {
+  background: #2a2a2f;
+  color: #ff9a94;
+  box-shadow: inset 0 0 0 1px rgba(255, 110, 100, 0.55);
+}
+.pdock .es-ico {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.pdock .es-txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.pdock .es-warn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn-text);
+  flex: none;
+}
+.pdock .es-spin,
+.ms.export-sheet .es-spin,
+.pthumbs .t .spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(106, 166, 255, 0.28);
+  border-top-color: var(--accent-text);
+  flex: none;
+  animation: gxr-spin 0.9s linear infinite;
+}
 @keyframes gxr-spin { to { transform: rotate(360deg); } }
-.pthumbs { display: flex; gap: 4px; margin-top: 10px; }
-.pthumbs .t { position: relative; flex: 1; height: 44px; border-radius: 5px; overflow: hidden; background: var(--gray-800); max-width: 72px; }
+
+/* 「详情」模态底部工作表（锚定在 56pt 底栏上方，最高 240pt，0px 不动照片） */
+.scrim.export-details-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  z-index: 22;
+}
+.ms.export-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--safe-bottom);
+  z-index: 23;
+  max-height: 240px;
+  overflow: hidden;
+  border-radius: 16px 16px 0 0;
+  padding: 8px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface-overlay);
+  border-top: 0.5px solid var(--line);
+  box-shadow: var(--shadow-dialog);
+}
+.app[data-screen="editor"] > .ms.export-sheet {
+  bottom: calc(56px + var(--safe-bottom));
+}
+.app[data-screen="grid"]:has(.dock:not([hidden])) > .ms.export-sheet,
+.app[data-screen="grid"]:has(.pastebar) > .ms.export-sheet {
+  bottom: calc(73px + var(--safe-bottom));
+}
+.ms.export-sheet .es-sheet-hd {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+}
+.ms.export-sheet .es-sheet-hd h2 {
+  font: 600 15px/20px var(--font-ui);
+  margin: 0;
+}
+.ms.export-sheet .es-sheet-close {
+  min-width: 44px;
+  min-height: 36px;
+  padding: 0 8px;
+  color: var(--accent-text);
+  font: 500 14px/1 var(--font-ui);
+}
+.ms.export-sheet .es-sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ms.export-sheet .es-sheet-foot {
+  flex: none;
+  padding-top: 2px;
+}
+.ms.export-sheet .es-sheet-foot[hidden] {
+  display: none;
+}
+.ms.export-sheet .es-sheet-cta {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 10px;
+  background: #256aeb;
+  color: #fff;
+  font: 600 14px/1 var(--font-ui);
+  gap: 6px;
+}
+.ms.export-sheet .es-sheet-cta .ico {
+  width: 16px;
+  height: 16px;
+}
+.ms.export-sheet .fbtn.fill-ctl {
+  background: var(--surface-control);
+  color: var(--text-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.ms.export-sheet .es-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ms.export-sheet .es-run-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ms.export-sheet .es-run-tx {
+  flex: 1;
+  min-width: 0;
+}
+.ms.export-sheet .es-run-tx b {
+  display: block;
+  font: 500 14px/18px var(--font-ui);
+}
+.ms.export-sheet .es-run-tx small {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+.ms.export-sheet .es-sheet-stop {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.ms.export-sheet .bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--gray-700);
+  overflow: hidden;
+}
+.ms.export-sheet .bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent-text);
+  transition: width 0.2s;
+}
+.ms.export-sheet .ready-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.ms.export-sheet .ready-meta small {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+.ms.export-sheet .ready-pos {
+  color: var(--text-1);
+}
+.ms.export-sheet .why {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ms.export-sheet .why li {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+.ms.export-sheet .es-fail-acts {
+  display: flex;
+  gap: 8px;
+}
+.ms.export-sheet .es-fail-acts .fbtn {
+  min-height: 40px;
+  font-size: 13px;
+  padding: 0 14px;
+}
+.ms.export-sheet .links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ms.export-sheet .links a {
+  color: var(--accent-text);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.pthumbs { display: flex; gap: 4px; }
+.pthumbs .t { position: relative; flex: 1; height: 40px; border-radius: 5px; overflow: hidden; background: var(--gray-800); max-width: 68px; }
 .pthumbs .t canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .pthumbs .t.wait canvas { filter: brightness(0.45) saturate(0.5); }
 .pthumbs .t.fail canvas { filter: brightness(0.4); }
@@ -91,7 +365,4 @@
 .pthumbs .t .st .ico { width: 11px; height: 11px; stroke-width: 2.6; }
 .pthumbs .t.ok .st { background: var(--ok-text); color: #0d1f14; }
 .pthumbs .t.fail .st { background: var(--danger-text); color: #2a0d0b; }
-.pthumbs .t .spin { position: absolute; right: 3px; bottom: 3px; width: 16px; height: 16px; border-width: 2px; background: rgba(0, 0, 0, 0.55); }
-.pdock .links { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-.pdock .links a { color: var(--accent-text); font-size: 14px; line-height: 20px; }
-.pdock .tx small.hdrline { margin-top: 2px; }
+.pthumbs .t .spin { position: absolute; right: 3px; bottom: 3px; background: rgba(0, 0, 0, 0.55); }

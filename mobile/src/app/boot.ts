@@ -12,7 +12,7 @@ import { Book } from './book';
 import { lookCache } from './looks';
 import { showCalibSheet } from './calib_ui';
 import { EditorView } from './editor';
-import { ExportFlow } from './export_ui';
+import { ExportFlow, syncExportDock } from './export_ui';
 import { GridView } from './grid';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
@@ -465,6 +465,7 @@ class App implements AppApi {
     this.shell.dataset.screen = 'start';
     this.grid = null;
     renderStart(this.view, this);
+    syncExportDock(this.shell);
   }
 
   private showGrid(remount: boolean): void {
@@ -476,6 +477,7 @@ class App implements AppApi {
       this.grid.show();
     } else this.grid.refresh();
     this.screen = 'grid';
+    syncExportDock(this.shell);
   }
 
   private resetPerf(): void {

@@ -28,27 +28,20 @@ import {
   bitmapId,
   buildKnobRow,
   centerStripCard,
+  makeRecipeFilterTile,
   makeRecipeLutSwitch,
   openAskDatSheet,
   openJpgInfoSheet,
   openRecipeFilterSheet,
   openRecipeStatusSheet,
-  shelfShortLabel,
+  shelfCount,
   type AskSheetHandle,
 } from './recipe_band';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const GEOMETRY: Geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
 const ADJUST = {
-  exposure_ev: 0,
-  wb: { warm: 0, tint: 0 },
-  contrast: 0,
-  highlight: 0,
-  shadow: 0,
-  black_point: 0,
-  saturation: 0,
-  vibrance: 0,
-  vignette: 0,
+  exposure_ev: 0, wb: { warm: 0, tint: 0 }, contrast: 0, highlight: 0, shadow: 0, black_point: 0, saturation: 0, vibrance: 0, vignette: 0,
 };
 const MINE_EMPTY = '电脑上还没有我的配方。';
 const NEUTRAL_LABEL = '中性转换';
@@ -68,8 +61,8 @@ export interface StageHooks {
   openLut?(): void;
   /** 当前照片是否选中了 LUT（控制「LUT」键蓝点）。 */
   lutActive?(): boolean;
-  /** 进入或退出微调子页时通知编辑器切换 44px/24px 顶栏高度。 */
-  onFineTuneChange?(open: boolean): void;
+  /** 配方微调拖动时的数值胶囊。 */
+  onScrub?(text: string | null): void;
   /** 配方改动后刷新底栏圆点。 */
   onEditedChanged?(): void;
 }
@@ -106,6 +99,8 @@ export class RecipeView {
   private lastScrolledCardId: string | null = null;
   private scrollRaf = 0;
   private readonly head = el('div', 'recipe-head band-recipe-hd');
+  private readonly stripWrap = el('div', 'recipe-strip-wrap');
+  private readonly filterPin = el('div', 'recipe-filter-pin');
   private readonly strip = el('div', 'strip');
   private readonly fineBox = el('div', 'recipe-fine');
   private readonly datErrBar = button('dat-err', '');
@@ -131,6 +126,8 @@ export class RecipeView {
     this.hooks = hooks;
     this.strip.dataset.recipes = '1';
     this.panel.dataset.panel = 'recipe';
+    this.filterPin.hidden = true;
+    this.stripWrap.append(this.filterPin, this.strip);
     this.fineBox.hidden = true;
     this.datErrBar.hidden = true;
     this.datErrBar.addEventListener('click', () => {
@@ -138,7 +135,7 @@ export class RecipeView {
       if (scene.dat) this.openStatusSheet(scene);
       else this.ask();
     });
-    this.panel.append(this.strip, this.fineBox, this.datErrBar);
+    this.panel.append(this.stripWrap, this.fineBox, this.datErrBar);
     this.off = api.book().onChange(() => this.refresh());
     this.offCam = onCameraRecipe((id) => {
       if (id === this.photo.id) this.refresh();
@@ -168,7 +165,6 @@ export class RecipeView {
     this.fineTune = false;
     const scene = this.scene();
     this.syncSubView(scene);
-    this.hooks.onFineTuneChange?.(false);
   }
 
   syncLutDot(): void {
@@ -299,11 +295,8 @@ export class RecipeView {
   private syncSubView(scene: Scene): void {
     const target = this.target(scene);
     const canFine = Boolean(scene.raw && scene.dat && scene.state.state === 'ready' && target && target.controls.length);
-    if (this.fineTune && !canFine) {
-      this.fineTune = false;
-      this.hooks.onFineTuneChange?.(false);
-    }
-    this.strip.hidden = this.fineTune;
+    if (this.fineTune && !canFine) this.fineTune = false;
+    this.stripWrap.hidden = this.fineTune;
     this.fineBox.hidden = !this.fineTune;
     const datError = this.api.book().datError;
     if (datError && scene.raw) {
@@ -313,8 +306,30 @@ export class RecipeView {
       this.datErrBar.hidden = true;
       this.datErrBar.textContent = '';
     }
+    this.syncFilterPin(scene);
     this.buildHead(scene);
     this.buildFineBox(scene);
+  }
+
+  private syncFilterPin(scene: Scene): void {
+    this.filterPin.replaceChildren();
+    if (!scene.raw || !scene.dat || !scene.list) {
+      this.filterPin.hidden = true;
+      return;
+    }
+    this.filterPin.hidden = false;
+    const list = scene.list;
+    const tile = makeRecipeFilterTile(this.which, shelfCount(list, this.which), () => {
+      const shell = this.shellEl();
+      if (!shell) return;
+      openRecipeFilterSheet(shell, list, this.which, (which) => {
+        this.which = which;
+        const next = this.scene();
+        this.buildStrip(next);
+        this.syncSubView(next);
+      });
+    });
+    this.filterPin.append(tile);
   }
 
   private makeModeSwitch(): HTMLElement {
@@ -521,22 +536,6 @@ export class RecipeView {
       warnBtn.addEventListener('click', () => this.openStatusSheet(scene));
       this.head.append(warnBtn);
     }
-
-    if (scene.list) {
-      const filterBtn = button('band-act filter-btn', `${shelfShortLabel(this.which)} ▾`);
-      filterBtn.dataset.act = 'recipe-filter';
-      filterBtn.addEventListener('click', () => {
-        const shell = this.shellEl();
-        if (!shell || !scene.list) return;
-        openRecipeFilterSheet(shell, scene.list, this.which, (which) => {
-          this.which = which;
-          const next = this.scene();
-          this.buildStrip(next);
-          this.buildHead(next);
-        });
-      });
-      this.head.append(filterBtn);
-    }
   }
 
   private openStatusSheet(scene: Scene): void {
@@ -591,7 +590,13 @@ export class RecipeView {
     box.dataset.card = card.id;
     const saved = this.levelsOf(card, scene);
     for (const control of controls) {
-      const row = buildKnobRow(control, scene.generation, saved, (level) => this.setLevel(card, control.name, level));
+      const row = buildKnobRow(
+        control,
+        scene.generation,
+        saved,
+        (level) => this.setLevel(card, control.name, level),
+        (text) => this.hooks.onScrub?.(text),
+      );
       row.hidden = control.name !== this.activeKnob;
       box.append(row);
     }
@@ -651,7 +656,6 @@ export class RecipeView {
         this.fineTune = true;
         this.activeKnob = this.orderedControls(card)[0]?.name ?? '';
         this.syncSubView(scene);
-        this.hooks.onFineTuneChange?.(true);
       }
       return;
     }

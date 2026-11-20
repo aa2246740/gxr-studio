@@ -429,3 +429,58 @@ test('export_ready: photo positions are listed in grid order (r2 P3)', async () 
   const { readyPositionsSummary } = await import('../../mobile/src/app/export_ready.ts');
   assert.equal(readyPositionsSummary([1, 6, 5]), '第 1 张、第 5 张、第 6 张');
 });
+
+test('export_ready: phone-ready-slot labels and VoiceOver announcements', async () => {
+  const ready = await import('../../mobile/src/app/export_ready.ts');
+  assert.equal(ready.readyShareAriaLabel([3], 0, 1), '第 3 张做好了，存进相册，打开系统分享');
+  assert.equal(ready.readyShareAriaLabel([3, 4], 1, 2), '2 张做好了，存进相册，打开系统分享，第 2 批，共 2 批');
+  assert.equal(ready.runningBarLabel(1, 1, false, 0), '正在导出');
+  assert.equal(ready.runningBarLabel(1, 1, true, 0), '正在导出 · HDR');
+  assert.equal(ready.runningBarLabel(2, 5, true, 1), '正在导出 2 / 5 · HDR（另排 1 张）');
+  assert.equal(ready.totalFailureLabel([{ id: 'p3', stem: 'P3', kind: 'trap', message: '' }], () => 3), '第 3 张没做成');
+  assert.equal(ready.totalFailureLabel([{ id: 'p3', stem: 'P3', kind: 'trap', message: '' }], () => null), '1 张没做成');
+  assert.equal(
+    ready.totalFailureLabel(
+      [
+        { id: 'p1', stem: 'P1', kind: 'trap', message: '' },
+        { id: 'p2', stem: 'P2', kind: 'read', message: '' },
+      ],
+      () => 1,
+    ),
+    '2 张没做成',
+  );
+
+  const file = new File([new Uint8Array(8)], 'P3_gxr.jpg');
+  const e3 = { id: 'p3', stem: 'P3', file, position: 3, hdrRequested: false };
+  const f2 = { id: 'p2', stem: 'P2', kind: 'trap', message: 'err' };
+  // Running never announces per tick
+  assert.equal(ready.stateAnnouncement('running', [e3], [], () => 3), null);
+  assert.deepEqual(ready.stateAnnouncement('ready', [e3], [], () => 3), {
+    key: 'ready:p3',
+    text: '第 3 张做好了，可存进相册',
+  });
+  assert.deepEqual(ready.stateAnnouncement('ready', [e3], [f2], () => 2), {
+    key: 'partial:1:p2',
+    text: '做好 1 张，1 张没做成',
+  });
+  assert.deepEqual(ready.stateAnnouncement('ready', [], [f2], () => 2), {
+    key: 'fail:p2',
+    text: '第 2 张没做成',
+  });
+  assert.deepEqual(ready.stateAnnouncement('stopped', [e3], [], () => 3), {
+    key: 'stopped:1',
+    text: '导出已停止，做好的 1 张还没存',
+  });
+});
+
+test('drag_guard: guards accidental taps for 250ms after control drag end', async () => {
+  const { markControlDragEnd, isDragTapGuarded, resetDragGuard } = await import('../../mobile/src/app/drag_guard.ts');
+  resetDragGuard();
+  assert.equal(isDragTapGuarded(1000), false);
+  markControlDragEnd(1000);
+  assert.equal(isDragTapGuarded(1000), true);
+  assert.equal(isDragTapGuarded(1249), true);
+  assert.equal(isDragTapGuarded(1250), false);
+  resetDragGuard();
+  assert.equal(isDragTapGuarded(1050), false);
+});

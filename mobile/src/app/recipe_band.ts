@@ -12,6 +12,7 @@ import {
 } from '../lib/recipes';
 import type { AdoptedSelection, CameraRecipeError, Control, Shelf, Shelves } from '../lib/recipes';
 import type { Book, UnitState } from './book';
+import { markControlDragEnd } from './drag_guard';
 import { button, el, icon } from './dom';
 import { registerSheet } from './sheet_lifecycle';
 
@@ -69,6 +70,26 @@ export function shelfShortLabel(which: Shelf): string {
   if (which === 'looks') return 'Looks';
   if (which === 'mine') return '我的';
   return '全部';
+}
+
+export function shelfCount(list: Shelves, which: Shelf): number {
+  if (which === 'builtin') return list.builtin.length;
+  if (which === 'looks') return list.looks.length;
+  if (which === 'mine') return list.users.length;
+  return list.builtin.length + list.looks.length + list.users.length;
+}
+
+/** 固定在配方横条左侧的 52×56pt 筛选卡（导出条占住顶槽时也随时可达）。 */
+export function makeRecipeFilterTile(which: Shelf, count: number, onClick: () => void): HTMLButtonElement {
+  const tile = button('rc filter-tile', '');
+  tile.dataset.act = 'recipe-filter';
+  tile.dataset.shelf = which;
+  tile.setAttribute('aria-label', `筛选配方：${shelfShortLabel(which)} ${count}`);
+  const box = el('div', 'th filter-th');
+  box.append(el('span', 'flt-top', shelfShortLabel(which)), el('span', 'flt-cnt num', `▾ ${count}`));
+  tile.append(box, el('span', 'nm', '筛选'));
+  tile.addEventListener('click', onClick);
+  return tile;
 }
 
 export function openRecipeFilterSheet(
@@ -324,9 +345,11 @@ export function buildKnobRow(
   generation: number | null,
   savedLevels: Record<string, number> | undefined,
   onLevel: (level: number) => void,
+  onScrub?: (text: string | null) => void,
 ): HTMLElement {
   const levels = choices(control, generation);
   const current = effective(control, savedLevels);
+  const label = KNOB_NAMES[control.name] ?? control.label;
   const row = el('div', 'krow');
   row.dataset.knob = control.name;
   const value = el('span', 'val num', levelText(control, current));
@@ -336,25 +359,43 @@ export function buildKnobRow(
   input.max = String(Math.max(0, levels.length - 1));
   input.step = '1';
   input.value = String(nearestIndex(levels, current));
-  input.setAttribute('aria-label', KNOB_NAMES[control.name] ?? control.label);
+  input.setAttribute('aria-label', label);
   const paint = () => {
     const level = levels[Number(input.value)] ?? control.default;
-    value.textContent = levelText(control, level);
+    const text = levelText(control, level);
+    value.textContent = text;
     const span = Math.max(1, levels.length - 1);
     const zero = nearestIndex(levels, control.name === 'amount' ? levels[0] : 0);
     const at = Number(input.value);
     input.style.setProperty('--a', `${(Math.min(at, zero) / span) * 100}%`);
     input.style.setProperty('--b', `${(Math.max(at, zero) / span) * 100}%`);
+    return text;
   };
   paint();
-  input.addEventListener('input', paint);
+  let dragging = false;
+  input.addEventListener('pointerdown', () => {
+    dragging = true;
+    onScrub?.(`${label} ${value.textContent ?? ''}`);
+  });
+  input.addEventListener('input', () => {
+    const text = paint();
+    if (dragging) onScrub?.(`${label} ${text}`);
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    markControlDragEnd();
+    onScrub?.(null);
+  };
+  input.addEventListener('pointerup', end);
+  input.addEventListener('pointercancel', end);
   input.addEventListener('change', () => {
     const level = levels[Number(input.value)];
     if (level !== undefined) onLevel(level);
   });
   const track = el('div', 'slider');
   track.append(input);
-  row.append(el('span', 'lab', KNOB_NAMES[control.name] ?? control.label), track, value);
+  row.append(el('span', 'lab', label), track, value);
   return row;
 }
 

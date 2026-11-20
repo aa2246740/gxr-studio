@@ -23,6 +23,7 @@ import {
   type Orientation,
 } from '../lib/crop';
 import { button, el, icon } from './dom';
+import { markControlDragEnd } from './drag_guard';
 import type { Photo } from './model';
 import { registerSheet } from './sheet_lifecycle';
 
@@ -44,6 +45,7 @@ export interface CropPanelHooks {
   endStraighten(): void;
   cancelStraighten(): void;
   resetStraighten(): void;
+  onScrub?: (text: string | null) => void;
   onExportSize?: (photo: Photo, width: number, height: number) => void;
 }
 
@@ -196,6 +198,7 @@ export class CropPanel {
         /* ignore */
       }
       this.hooks.beginStraighten();
+      this.hooks.onScrub?.(fmtDeg(startAngle));
     });
 
     this.ruler.addEventListener('pointermove', (ev) => {
@@ -206,11 +209,14 @@ export class CropPanel {
       const next = clamp(Math.round(raw * 10) / 10, -MAX_ANGLE, MAX_ANGLE);
       this.paintAngle(next);
       this.hooks.previewStraighten(next);
+      this.hooks.onScrub?.(fmtDeg(next));
     });
 
     const finish = (ev: PointerEvent) => {
       if (ev.pointerId !== activeId) return;
       activeId = -1;
+      markControlDragEnd();
+      this.hooks.onScrub?.(null);
       if (this.ruler.hasPointerCapture?.(ev.pointerId)) {
         try {
           this.ruler.releasePointerCapture(ev.pointerId);

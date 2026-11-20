@@ -225,12 +225,13 @@ async function readReadyBar(page) {
     const dock = document.querySelector('.pdock');
     const bar = document.querySelector('.editor .toolbar');
     const btn = document.querySelector('.editor .toolbar [data-act="export"]');
-    const details = document.querySelector('.pdock .ready-details');
+    const details = document.querySelector('.export-sheet') ?? document.querySelector('.pdock .ready-details');
     if (!dock || !bar || !btn) return null;
     const dr = dock.getBoundingClientRect();
     const br = bar.getBoundingClientRect();
     const er = btn.getBoundingClientRect();
     const detailsRect = details && !details.hidden ? details.getBoundingClientRect() : null;
+    const detailsClears = !detailsRect || (detailsRect.bottom <= br.top + 0.5 && detailsRect.bottom <= er.top + 0.5);
     return {
       phase: dock.dataset.phase ?? '',
       compact: dock.classList.contains('ready-compact'),
@@ -238,7 +239,7 @@ async function readReadyBar(page) {
       top: Math.round(dr.top * 10) / 10,
       bottom: Math.round(dr.bottom * 10) / 10,
       toolbarTop: Math.round(br.top * 10) / 10,
-      clearsToolbar: dr.bottom <= br.top + 0.5 && dr.bottom <= er.top + 0.5,
+      clearsToolbar: dr.bottom <= br.top + 0.5 && dr.bottom <= er.top + 0.5 && detailsClears,
       detailsVisible: Boolean(detailsRect && detailsRect.height > 0),
     };
   });
@@ -388,7 +389,7 @@ async function runPhotoRectChecks(page, session, vp) {
   } else {
     check(false, `${vp.label}: ready bar missing toggle-details button for RAW+HDR export`);
   }
-  await clickVisible(page, '.pdock [data-act="share"]', `${vp.label} share ready bar`);
+  await clickVisible(page, '.export-sheet [data-act="share"]', `${vp.label} share ready bar`);
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 15_000 });
 
   // 点照片收起带子，测竖图 ≥ 69%
@@ -1119,7 +1120,7 @@ async function runScreenshots(page, session, dir) {
       await frame(page, 3);
     }
     await snap(page, dir, `${vp.label}-02-recipe-ready-expanded`);
-    await clickVisible(page, '.pdock [data-act="share"]', 'snap ready bar share dismiss');
+    await clickVisible(page, '.export-sheet [data-act="share"], .pdock [data-act="share"]', 'snap ready bar share dismiss');
     await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 15_000 });
 
     // 3. 调整

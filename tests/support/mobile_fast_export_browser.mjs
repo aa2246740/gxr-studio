@@ -384,10 +384,10 @@ async function runDetailedAcceptances() {
   if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
     await visibleTap(page, page.locator('.pdock [data-act="toggle-details"]'), 'expand pair ready details');
   }
-  const readyAfterPhoto4Expanded = (await page.locator('.pdock').innerText()).trim();
+  const readyAfterPhoto4Expanded = (await page.locator('.export-sheet').innerText()).trim();
   const readyGeomPairExpanded = await readReadyGeom();
   const shareBeforePair = await page.evaluate(() => window.__shareLog.calls.length);
-  await visibleTap(page, page.locator('.pdock [data-act="share"]'), 'share photo 3 + 4');
+  await visibleTap(page, page.locator('.export-sheet [data-act="share"]'), 'share photo 3 + 4');
   await page.waitForFunction((k) => window.__shareLog.calls.length > k, shareBeforePair, { timeout: 30_000 });
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   const pairShare = await page.evaluate((from) => {
