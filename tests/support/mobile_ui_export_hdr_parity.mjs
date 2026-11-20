@@ -18,10 +18,37 @@ async function hdrRow(page) {
   };
 }
 
-/** 一批跑着的时候 05b 的两行字。 */
+/** 一批跑着的时候 05b 的进度文案（展开「详情」读取 HDR 耗时提示后再收起）。 */
 async function runningText(page) {
   await page.waitForFunction(() => document.querySelector('.pdock')?.dataset.phase === 'running', null, { timeout: 60_000 });
-  return page.locator('.pdock .top .tx').innerText();
+  const dockText = await page.locator('.pdock').innerText();
+  const toggle = page.locator('.pdock [data-act="toggle-details"]');
+  let sheetText = '';
+  if (await toggle.count()) {
+    await toggle.click();
+    await page.waitForSelector('.ms.export-sheet', { timeout: 5_000 });
+    sheetText = await page.locator('.ms.export-sheet').innerText();
+    const close = page.locator('.ms.export-sheet [data-act="close-details"]');
+    if (await close.count()) {
+      await close.click();
+      await page.waitForFunction(() => !document.querySelector('.ms.export-sheet'), null, { timeout: 5_000 });
+    }
+  }
+  return `${dockText}\n${sheetText}`.trim();
+}
+
+/** 就绪态展开「详情」读取 HDR 摘要与逐张附注，再收起供 shareAll 直接点就绪条。 */
+async function readyDetailsText(page) {
+  const dockText = await page.locator('.pdock').innerText();
+  let sheetText = '';
+  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+    await page.locator('.pdock [data-act="toggle-details"]').click();
+    await page.waitForSelector('.ms.export-sheet', { timeout: 5_000 });
+    sheetText = await page.locator('.ms.export-sheet').innerText();
+    await page.locator('.ms.export-sheet [data-act="close-details"]').click();
+    await page.waitForFunction(() => !document.querySelector('.ms.export-sheet'), null, { timeout: 5_000 });
+  }
+  return `${dockText}\n${sheetText}`.trim();
 }
 
 export async function parity({ newPage, manifest, out }) {
@@ -48,10 +75,7 @@ export async function parity({ newPage, manifest, out }) {
   });
   full.running = await runningText(page);
   await waitPhase(page, ['ready']);
-  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
-    await page.locator('.pdock [data-act="toggle-details"]').click();
-  }
-  full.ready = await page.locator('.pdock').innerText();
+  full.ready = await readyDetailsText(page);
   full.facts = await batchFacts(page);
   full.cap = await page.evaluate(() => window.__devExport.flow.current().cap);
   full.shared = await shareAll(page);
@@ -68,10 +92,7 @@ export async function parity({ newPage, manifest, out }) {
   });
   small.running = await runningText(page);
   await waitPhase(page, ['ready']);
-  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
-    await page.locator('.pdock [data-act="toggle-details"]').click();
-  }
-  small.ready = await page.locator('.pdock').innerText();
+  small.ready = await readyDetailsText(page);
   small.facts = await batchFacts(page);
   small.shared = await shareAll(page);
   small.files = await sharedFiles(page, manifest.outDir, 'small-', calls);

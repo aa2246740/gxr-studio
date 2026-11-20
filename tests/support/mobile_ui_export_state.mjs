@@ -169,9 +169,9 @@ export async function state({ newPage, out }) {
     await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
     await page.locator('#state-shell [data-act="share"]').click();
     const firstPaint = await dockOf(page);
-    await page.locator('#state-shell [data-act="share"]').click();
+    await page.evaluate(() => window.__state.current.flow.paint());
     const secondPaint = await dockOf(page);
-    await page.locator('#state-shell .links button').click();
+    await page.locator('#state-shell .export-sheet .links button').click();
     await page.evaluate(() => window.__state.current.flow.clear());
     const afterDoneClear = await dockOf(page);
     await page.evaluate(() => window.__state.flow({ 0: [1024] }, 1));
@@ -332,19 +332,21 @@ export async function state({ newPage, out }) {
       page.evaluate(() => {
         const { flow, shell, calls } = window.__state.warm;
         const b = flow.current();
+        const text = `${shell.querySelector('.pdock')?.textContent ?? ''}\n${shell.querySelector('.export-sheet')?.textContent ?? ''}`;
         return {
           phase: b?.phase ?? null,
           kinds: b ? [...b.failures.values()].map((f) => f.kind) : [],
           staged: b?.staged.length ?? 0,
           alive: flow.core.alive(),
           calls: { ...calls },
-          retry: shell.querySelectorAll('[data-act="retry"]').length,
-          memoryLine: (shell.querySelector('.pdock')?.textContent ?? '').includes(window.__state.TEXT.memory),
+          retry: shell.querySelectorAll('.pdock [data-act="retry"]').length,
+          memoryLine: text.includes(window.__state.TEXT.memory),
           sheet: shell.querySelector('.ms.export') !== null,
         };
       });
+    await page.locator('#state-shell .pdock [data-act="toggle-details"]').click();
     const after = await warmState();
-    await page.locator('#state-shell [data-act="retry"]').click();
+    await page.locator('#state-shell .export-sheet [data-act="retry"]').click();
     await page.waitForFunction(() => window.__state.warm.flow.current()?.phase === 'ready', null, { timeout: 60_000 });
     const retried = await warmState();
     await page.evaluate(() => window.__state.warm.flow.clear());

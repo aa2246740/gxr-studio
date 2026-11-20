@@ -3,6 +3,7 @@
 import type { Adjust } from '../../../frontend/src/index';
 import { curveJson } from '../lib/export_request';
 import { button, el, icon } from './dom';
+import { markControlDragEnd } from './drag_guard';
 import { zeroKnobs, type Knobs, type Photo } from './model';
 
 const HIST_ICON = 'M4 19V11M9 19V6M14 19V13M19 19V8M3 19h18';
@@ -50,6 +51,7 @@ export interface AdjustHost {
   openCurves?(): void;
   toggleHist?(): boolean;
   histVisible?(): boolean;
+  onScrub?(text: string | null): void;
   onEditedChanged?(): void;
 }
 
@@ -173,6 +175,10 @@ export class AdjustView {
     this.showKnob();
     this.syncHistBtn();
 
+    const scrubText = (value: number): string => {
+      const spec = SLIDERS.find((item) => item.key === this.key);
+      return `${spec?.label ?? ''} ${formatKnob(this.key, value)}`.trim();
+    };
     this.input.addEventListener('input', () => {
       const photo = this.host.photo();
       if (!photo || !this.input) return;
@@ -181,11 +187,14 @@ export class AdjustView {
       photo.knobs[this.key] = value;
       this.paintSlider();
       this.paintChipDots();
+      this.host.onScrub?.(scrubText(value));
       this.host.push();
       this.host.onEditedChanged?.();
     });
     // 松手（change）才算落定的修改，编辑状态的版本加一（撤销套用时据此判断改没改过）。
     this.input.addEventListener('change', () => {
+      markControlDragEnd();
+      if (!this.host.dragging()) this.host.onScrub?.(null);
       const photo = this.host.photo();
       if (!photo) return;
       const value = photo.knobs[this.key];
@@ -194,10 +203,23 @@ export class AdjustView {
       photo.rev += 1;
       this.host.onEditedChanged?.();
     });
-    this.input.addEventListener('pointerdown', () => this.host.enterDrag());
+    this.input.addEventListener('blur', () => {
+      if (!this.host.dragging()) this.host.onScrub?.(null);
+    });
     const end = () => {
+      window.removeEventListener('pointerup', end, true);
+      window.removeEventListener('pointercancel', end, true);
+      markControlDragEnd();
+      this.host.onScrub?.(null);
       if (this.host.dragging()) this.host.leaveDrag();
     };
+    this.input.addEventListener('pointerdown', () => {
+      this.host.enterDrag();
+      const photo = this.host.photo();
+      if (photo) this.host.onScrub?.(scrubText(photo.knobs[this.key]));
+      window.addEventListener('pointerup', end, true);
+      window.addEventListener('pointercancel', end, true);
+    });
     this.input.addEventListener('pointerup', end);
     this.input.addEventListener('pointercancel', end);
     this.input.addEventListener('dblclick', () => {

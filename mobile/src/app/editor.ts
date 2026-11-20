@@ -13,7 +13,7 @@ import { EditorBand, positionFloatHist } from './editor_band';
 import { EditorBar, type BandTool, type BarTool } from './editor_bar';
 import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, type HistWidget } from './editor_hist';
 import { EditorMedia, type MediaMode } from './editor_media';
-import { openExportOptions, startQuickExport } from './export_ui';
+import { openExportOptions, startQuickExport, syncExportDock } from './export_ui';
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
 import { FrameView } from './frame_view';
@@ -25,6 +25,7 @@ import { openMoreSheet } from './more_sheet';
 import { pasteState } from './paste_state';
 import { mountEditorNav, type EditorNavHandle } from './paste_ui';
 import { RecipeView } from './recipe_view';
+import { ScrubPill } from './scrub_pill';
 import { cancelHostSheets } from './sheet_lifecycle';
 import { StageDecorController } from './stage_finish';
 import { StageZoom } from './stage_zoom';
@@ -52,6 +53,7 @@ export class EditorView {
   private histMisses = 0;
   private histOpen = false;
   private histWidget: HistWidget | null = null;
+  private scrubPill: ScrubPill | null = null;
   private stageLabel: HTMLElement | null = null;
   private stage: HTMLElement | null = null;
   private pv: HTMLElement | null = null;
@@ -214,6 +216,8 @@ export class EditorView {
     this.screen = null;
     this.stage = null;
     this.pv = null;
+    this.scrubPill?.destroy();
+    this.scrubPill = null;
     this.decor?.destroy();
     this.decor = null;
     releaseFinishDrawResources();
@@ -226,6 +230,7 @@ export class EditorView {
     this.histWidget = null;
     this.still = this.gpuCanvas = null;
     this.engine?.detach();
+    syncExportDock(this.shell);
   }
 
   private build(photo: Photo, index: number): void {
@@ -250,6 +255,12 @@ export class EditorView {
     this.stageZoom?.destroy();
     this.stageZoom = null;
     this.cropStage?.destroy();
+    this.scrubPill?.destroy();
+    this.scrubPill = new ScrubPill(this.shell);
+    const onScrub = (text: string | null) => {
+      if (text) this.scrubPill?.show(text);
+      else this.scrubPill?.release();
+    };
 
     this.cropStage = new CropStage(this.shell, this.api, this.engine, {
       photo: () => this.photo,
@@ -269,6 +280,7 @@ export class EditorView {
       requestHist: () => this.requestHist(),
       swipe: (id, dir) => this.api.swipe(id, dir),
       resetZoom: () => this.stageZoom?.reset(),
+      onScrub,
       onCommitted: (target, changed) => {
         if (changed && this.photo === target) {
           if (this.mode === 'raw') {
@@ -312,7 +324,7 @@ export class EditorView {
     const histWidget = createHistWidget();
     histWidget.root.hidden = true;
     this.histWidget = histWidget;
-    stage.append(pv, histWidget.root);
+    stage.append(pv, histWidget.root, this.scrubPill.el());
 
     if (typeof ResizeObserver === 'function') {
       this.pvObserver = new ResizeObserver(() => {
@@ -349,7 +361,7 @@ export class EditorView {
       geometry: cropGeo,
       openLut: () => this.setRecipeSub('lut'),
       lutActive: () => this.photo?.lut !== null,
-      onFineTuneChange: () => this.syncCompactHead(),
+      onScrub,
       onEditedChanged: () => this.updateEditedDots(),
     });
     this.luts = new LutView(this.shell, this.api, this.engine, photo, {
@@ -375,6 +387,7 @@ export class EditorView {
       openCurves: () => this.openCurves(),
       toggleHist: () => this.toggleHist(),
       histVisible: () => this.histOpen,
+      onScrub,
       onEditedChanged: () => this.updateEditedDots(),
     });
     const cropPanelEl = this.cropStage.createPanel();
@@ -408,7 +421,6 @@ export class EditorView {
       backdrop: () => this.decor?.backdropCanvas() ?? null,
       backdropKey: () => this.decor?.backdrop()?.key ?? '',
       isAlive: viewAlive,
-      onOptionsChange: () => this.syncCompactHead(),
       onChange: () => {
         void this.decor?.sync();
         this.hdr.invalidate();
@@ -467,12 +479,12 @@ export class EditorView {
     if (cropBtn) this.cropStage.attachTabButton(cropBtn);
 
     band.setTool('recipe');
-    this.syncCompactHead();
     bar.setActive('recipe', band.isCollapsed());
     this.updateEditedDots();
 
     screen.append(nav, stage, band.el(), bar.el());
     this.host.append(screen);
+    syncExportDock(this.shell);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
     this.cropStage.paintTabDot();
     this.cropStage.paintStill(photo.bitmap);
@@ -496,6 +508,7 @@ export class EditorView {
     }
     if (this.band?.isCollapsed()) {
       this.band.setCollapsed(false);
+      syncExportDock(this.shell);
     } else if (tool === 'recipe' && this.activeTool === 'recipe') {
       if (this.recipeSub === 'lut') {
         this.setRecipeSub('recipe');
@@ -513,6 +526,7 @@ export class EditorView {
     const prev = this.activeTool;
     if (expand && this.band?.isCollapsed()) {
       this.band.setCollapsed(false);
+      syncExportDock(this.shell);
     }
     this.activeTool = tool;
     if (tool === 'crop') {
@@ -538,7 +552,6 @@ export class EditorView {
       this.adjust?.refresh();
     }
     this.band?.setTool(tool);
-    this.syncCompactHead();
     this.bar?.setActive(tool, Boolean(this.band?.isCollapsed()));
     if (prev === 'crop' || tool === 'crop') {
       void this.decor?.sync();
@@ -559,26 +572,13 @@ export class EditorView {
       this.luts.headEl().hidden = sub !== 'lut';
       if (sub === 'lut') this.luts.tabOpened();
     }
-    this.syncCompactHead();
-  }
-
-  private syncCompactHead(): void {
-    if (!this.band) return;
-    let compact = false;
-    if (this.activeTool === 'adjust' || this.activeTool === 'crop' || this.activeTool === 'stamp') {
-      compact = true;
-    } else if (this.activeTool === 'recipe') {
-      compact = this.recipeSub === 'recipe' && Boolean(this.recipes?.isFineTuning());
-    } else if (this.activeTool === 'frame') {
-      compact = Boolean(this.frames?.isOptionsOpen());
-    }
-    this.band.setCompactHead(compact);
   }
 
   private toggleBandCollapsed(): void {
     if (!this.band) return;
     const collapsed = this.band.toggleCollapsed();
     this.bar?.setActive(this.activeTool, collapsed);
+    syncExportDock(this.shell);
     this.fitStageCanvas();
     this.syncFloatHistPos();
     const token = this.token;

@@ -2,7 +2,7 @@
 // 状态照设计稿：06c 没校准（中性转换，可以选）、06d 没有相机配方文件（卡片置灰）、06e 只有 JPG。
 
 import type { Engine, Geometry } from '../../../frontend/src/index';
-import { crossed, unitOfLens, type Unit } from '../lib/calib';
+import { unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import {
@@ -28,12 +28,15 @@ import {
   bitmapId,
   buildKnobRow,
   centerStripCard,
+  makeRecipeFilterTile,
   makeRecipeLutSwitch,
+  makeRecipeStatusTile,
   openAskDatSheet,
   openJpgInfoSheet,
   openRecipeFilterSheet,
   openRecipeStatusSheet,
-  shelfShortLabel,
+  recipeStatusSpec,
+  shelfCount,
   type AskSheetHandle,
 } from './recipe_band';
 
@@ -68,8 +71,8 @@ export interface StageHooks {
   openLut?(): void;
   /** 当前照片是否选中了 LUT（控制「LUT」键蓝点）。 */
   lutActive?(): boolean;
-  /** 进入或退出微调子页时通知编辑器切换 44px/24px 顶栏高度。 */
-  onFineTuneChange?(open: boolean): void;
+  /** 配方微调拖动时的数值胶囊。 */
+  onScrub?(text: string | null): void;
   /** 配方改动后刷新底栏圆点。 */
   onEditedChanged?(): void;
 }
@@ -106,6 +109,8 @@ export class RecipeView {
   private lastScrolledCardId: string | null = null;
   private scrollRaf = 0;
   private readonly head = el('div', 'recipe-head band-recipe-hd');
+  private readonly stripWrap = el('div', 'recipe-strip-wrap');
+  private readonly filterPin = el('div', 'recipe-filter-pin');
   private readonly strip = el('div', 'strip');
   private readonly fineBox = el('div', 'recipe-fine');
   private readonly datErrBar = button('dat-err', '');
@@ -131,6 +136,8 @@ export class RecipeView {
     this.hooks = hooks;
     this.strip.dataset.recipes = '1';
     this.panel.dataset.panel = 'recipe';
+    this.filterPin.hidden = true;
+    this.stripWrap.append(this.filterPin, this.strip);
     this.fineBox.hidden = true;
     this.datErrBar.hidden = true;
     this.datErrBar.addEventListener('click', () => {
@@ -138,7 +145,7 @@ export class RecipeView {
       if (scene.dat) this.openStatusSheet(scene);
       else this.ask();
     });
-    this.panel.append(this.strip, this.fineBox, this.datErrBar);
+    this.panel.append(this.stripWrap, this.fineBox, this.datErrBar);
     this.off = api.book().onChange(() => this.refresh());
     this.offCam = onCameraRecipe((id) => {
       if (id === this.photo.id) this.refresh();
@@ -168,7 +175,6 @@ export class RecipeView {
     this.fineTune = false;
     const scene = this.scene();
     this.syncSubView(scene);
-    this.hooks.onFineTuneChange?.(false);
   }
 
   syncLutDot(): void {
@@ -299,11 +305,8 @@ export class RecipeView {
   private syncSubView(scene: Scene): void {
     const target = this.target(scene);
     const canFine = Boolean(scene.raw && scene.dat && scene.state.state === 'ready' && target && target.controls.length);
-    if (this.fineTune && !canFine) {
-      this.fineTune = false;
-      this.hooks.onFineTuneChange?.(false);
-    }
-    this.strip.hidden = this.fineTune;
+    if (this.fineTune && !canFine) this.fineTune = false;
+    this.stripWrap.hidden = this.fineTune;
     this.fineBox.hidden = !this.fineTune;
     const datError = this.api.book().datError;
     if (datError && scene.raw) {
@@ -313,8 +316,44 @@ export class RecipeView {
       this.datErrBar.hidden = true;
       this.datErrBar.textContent = '';
     }
+    this.syncFilterPin(scene);
     this.buildHead(scene);
     this.buildFineBox(scene);
+  }
+
+  private syncFilterPin(scene: Scene): void {
+    this.filterPin.replaceChildren();
+    if (scene.raw && scene.dat && scene.list) {
+      const list = scene.list;
+      this.filterPin.append(
+        makeRecipeFilterTile(this.which, shelfCount(list, this.which), () => {
+          const shell = this.shellEl();
+          if (!shell) return;
+          openRecipeFilterSheet(shell, list, this.which, (which) => {
+            this.which = which;
+            const next = this.scene();
+            this.buildStrip(next);
+            this.syncSubView(next);
+          });
+        }),
+      );
+    }
+    const statusSpec = recipeStatusSpec(scene, Boolean(this.photo.diptych), Boolean(this.api.book().datError));
+    if (statusSpec) {
+      this.filterPin.append(
+        makeRecipeStatusTile(statusSpec, () => {
+          if (statusSpec.action === 'jpg-info') {
+            const shell = this.shellEl();
+            if (shell) openJpgInfoSheet(shell, Boolean(this.photo.diptych));
+          } else if (statusSpec.action === 'ask-dat') {
+            this.ask();
+          } else {
+            this.openStatusSheet(scene);
+          }
+        }),
+      );
+    }
+    this.filterPin.hidden = this.filterPin.childElementCount === 0;
   }
 
   private makeModeSwitch(): HTMLElement {
@@ -469,74 +508,16 @@ export class RecipeView {
   private buildHead(scene: Scene): void {
     this.head.replaceChildren();
     if (!scene.raw) {
-      const pill = button('band-act warn', this.photo.diptych ? '半格双联' : '配方需要 RAW');
-      pill.dataset.act = 'recipe-status';
-      pill.addEventListener('click', () => {
-        const shell = this.shellEl();
-        if (shell) openJpgInfoSheet(shell, Boolean(this.photo.diptych));
-      });
-      this.head.append(pill);
+      this.head.append(el('span', 'rname dim', this.photo.diptych ? '半格双联' : '相机 JPG'));
       return;
     }
-    const book = this.api.book();
     if (!scene.dat) {
-      const pill = button('band-act warn', '选配方文件');
-      pill.dataset.act = 'recipe-status';
-      pill.addEventListener('click', () => this.ask());
-      this.head.append(pill);
+      this.head.append(el('span', 'rname dim', '未选配方文件'));
       return;
     }
     const target = this.target(scene);
-    const nameEl = el('b', 'rname', target?.name ?? '');
-    this.head.append(nameEl);
+    this.head.append(el('b', 'rname', target?.name ?? ''));
     if (target) this.head.append(el('span', 'tag neutral-tag', cardTag(target)));
-
-    if (this.fineTune) return;
-
-    const calibrated = scene.state.state === 'ready';
-    const off = calibrated && crossed(scene.photoUnit, scene.unit, scene.iso);
-
-    if (scene.camError) {
-      const errBtn = button('band-act warn', '拍摄配方');
-      errBtn.dataset.cameraRecipeError = scene.camError.code;
-      errBtn.dataset.act = 'recipe-status';
-      errBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(errBtn);
-    } else if (scene.adopted?.levelsUnknown) {
-      const noteBtn = button('band-act dim', '档位未标');
-      noteBtn.dataset.cameraRecipeNote = 'levels-unknown';
-      noteBtn.dataset.act = 'recipe-status';
-      noteBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(noteBtn);
-    } else if (!calibrated) {
-      const calBtn = button('band-act warn', '未校准');
-      calBtn.dataset.state = 'no-calibration';
-      calBtn.dataset.act = 'recipe-status';
-      calBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(calBtn);
-    } else if (off || book.datError) {
-      const warnBtn = button('band-act warn', '未校准');
-      warnBtn.dataset.state = 'uncalibrated';
-      warnBtn.dataset.act = 'recipe-status';
-      warnBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(warnBtn);
-    }
-
-    if (scene.list) {
-      const filterBtn = button('band-act filter-btn', `${shelfShortLabel(this.which)} ▾`);
-      filterBtn.dataset.act = 'recipe-filter';
-      filterBtn.addEventListener('click', () => {
-        const shell = this.shellEl();
-        if (!shell || !scene.list) return;
-        openRecipeFilterSheet(shell, scene.list, this.which, (which) => {
-          this.which = which;
-          const next = this.scene();
-          this.buildStrip(next);
-          this.buildHead(next);
-        });
-      });
-      this.head.append(filterBtn);
-    }
   }
 
   private openStatusSheet(scene: Scene): void {
@@ -591,7 +572,13 @@ export class RecipeView {
     box.dataset.card = card.id;
     const saved = this.levelsOf(card, scene);
     for (const control of controls) {
-      const row = buildKnobRow(control, scene.generation, saved, (level) => this.setLevel(card, control.name, level));
+      const row = buildKnobRow(
+        control,
+        scene.generation,
+        saved,
+        (level) => this.setLevel(card, control.name, level),
+        (text) => this.hooks.onScrub?.(text),
+      );
       row.hidden = control.name !== this.activeKnob;
       box.append(row);
     }
@@ -651,7 +638,6 @@ export class RecipeView {
         this.fineTune = true;
         this.activeKnob = this.orderedControls(card)[0]?.name ?? '';
         this.syncSubView(scene);
-        this.hooks.onFineTuneChange?.(true);
       }
       return;
     }

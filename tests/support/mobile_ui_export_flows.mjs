@@ -8,6 +8,9 @@ const flowOf = (page) =>
   page.evaluate(() => {
     const f = window.__devExport.flow;
     const b = f.current();
+    const dockEl = document.querySelector('.pdock');
+    const sheetEl = document.querySelector('.export-sheet');
+    const parts = [dockEl?.innerText, sheetEl?.innerText].filter(Boolean);
     return {
       phase: b ? b.phase : null,
       staged: b ? b.staged.length : 0,
@@ -15,7 +18,7 @@ const flowOf = (page) =>
       failures: b ? [...b.failures.values()].map((x) => ({ stem: x.stem, kind: x.kind, message: x.message })) : [],
       alive: window.__devExport.core.alive(),
       workers: window.__devExport.core.marks.workers,
-      dock: document.querySelector('.pdock')?.innerText ?? null,
+      dock: parts.length ? parts.join('\n') : null,
       shared: window.__shareLog?.calls?.length ?? 0,
     };
   });
@@ -75,7 +78,13 @@ export async function flows({ newPage, manifest, out }) {
     });
   await exportFromGrid(page, manifest.stems.slice(0, 5), '原始尺寸', '高', armStop, { hdr: false });
   await page.waitForFunction(() => window.__devExport.flow.current()?.phase !== 'running', null, { timeout: 300_000 });
+  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+    await page.locator('.pdock [data-act="toggle-details"]').click();
+  }
   const stopped = await flowOf(page);
+  if (await page.locator('.export-sheet [data-act="close-details"]').count()) {
+    await page.locator('.export-sheet [data-act="close-details"]').click();
+  }
   // 一张新的导出照常能做。
   await page.waitForTimeout(300);
   await exportFromGrid(page, manifest.stems.slice(0, 1), '原始尺寸', '高', null, { hdr: false });
@@ -92,12 +101,13 @@ export async function flows({ newPage, manifest, out }) {
   });
   await exportFromGrid(page, manifest.stems.slice(0, 3), '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['ready'], 300_000);
+  await page.locator('.pdock [data-act="toggle-details"]').click();
   out.steps.trap = await flowOf(page);
   await page.evaluate(() => {
     window.__devExport.trapAt = undefined;
   });
   // 重试这张：成功，三张都做好。
-  await page.locator('.pdock [data-act="retry"]').click();
+  await page.locator('.export-sheet [data-act="retry"]').click();
   await waitPhase(page, ['ready'], 300_000);
   out.steps.trapRetry = await flowOf(page);
   await shareAll(page);
@@ -136,12 +146,15 @@ export async function flows({ newPage, manifest, out }) {
   await exportFromGrid(page, [manifest.firstStem, manifest.victimStem]);
   await waitPhase(page, ['ready'], 300_000);
   await closeCardDialog(page);
+  await page.locator('.pdock [data-act="toggle-details"]').click();
   const failed = await flowOf(page);
+  await page.locator('.export-sheet [data-act="close-details"]').click();
   copyFileSync(manifest.victimSource, manifest.victim);
   await page.locator('input.filepick:not(.calibpick)').setInputFiles([manifest.victim]);
   await page.waitForTimeout(500);
   await closeCardDialog(page);
-  await page.locator('.pdock [data-act="retry"]').click();
+  await page.locator('.pdock [data-act="toggle-details"]').click();
+  await page.locator('.export-sheet [data-act="retry"]').click();
   await waitPhase(page, ['ready'], 300_000);
   const retried = await flowOf(page);
   const calls = await page.evaluate(() => window.__shareLog.calls.length);
@@ -156,7 +169,7 @@ export async function flows({ newPage, manifest, out }) {
   await exportFromGrid(bare, [manifest.firstStem]);
   await waitPhase(bare, ['ready'], 300_000);
   await bare.locator('.pdock [data-act="share"]').click();
-  await bare.waitForSelector('.pdock .links[data-state="no-share"]');
-  out.steps.noShare = { text: await bare.locator('.pdock .links').innerText(), links: await bare.locator('.pdock a[download]').count() };
+  await bare.waitForSelector('.export-sheet .links[data-state="no-share"]');
+  out.steps.noShare = { text: await bare.locator('.export-sheet .links').innerText(), links: await bare.locator('.export-sheet a[download]').count() };
   await bare.close();
 }

@@ -105,7 +105,7 @@ try {
       await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForSelector('.panel.recipe');
       let p1RecipeText = await page.locator('.editor .band').innerText();
-      const p1StatusBtn = page.locator('.editor .recipe-head [data-act="recipe-status"]');
+      const p1StatusBtn = page.locator('.editor .panel.recipe [data-act="recipe-status"]');
       if (await p1StatusBtn.isVisible().catch(() => false)) {
         await p1StatusBtn.click();
         await page.waitForSelector('.recipe-info-sheet', { timeout: 10_000 });
@@ -125,7 +125,7 @@ try {
       await page.locator('.stage .pv').screenshot({ path: manifest.stagePng });
       await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForSelector('.panel.recipe');
-      await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+      await page.locator('.editor .panel.recipe [data-act="recipe-status"]').click();
       await page.waitForSelector('.recipe-info-sheet');
       const p2RecipeText = await page.locator('.recipe-info-sheet').innerText();
       await page.locator('.recipe-info-sheet [data-act="close"]').click();

@@ -39,7 +39,7 @@ export async function lutShot(shot: string, api: AppApi, shell: HTMLElement): Pr
     await new Promise((done) => setTimeout(done, 600));
   }
   if (shot === 'lut-space') {
-    shell.querySelector<HTMLButtonElement>('.band-lut-hd [data-act="lut-space"]')?.click();
+    shell.querySelector<HTMLButtonElement>('.panel.lut [data-act="lut-space"]')?.click();
     await new Promise((done) => setTimeout(done, 300));
   }
 }

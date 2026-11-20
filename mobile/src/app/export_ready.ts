@@ -1,6 +1,7 @@
-// 就绪条与导出状态栏（独立浮在底栏上方）：单张/多张文案、第 N 张列表、折叠逐张附注，不改编辑器按钮本身。
+// 44pt 顶槽导出条（与收起态 / 网格态 40pt 贴底条共用）：全部 5 种单行态渲染、VoiceOver 文案、250ms 拖动防误触。
 
 import { hdrResultText, type HdrRow } from '../lib/hdr_text';
+import { isDragTapGuarded } from './drag_guard';
 import { button, el } from './dom';
 import type { Failure, Phase } from './export_batch';
 
@@ -37,13 +38,44 @@ export interface ReadyEntry {
   cameraRecipeNote?: string;
 }
 
-/** 独立就绪条主按钮文案：单张「第 N 张做好了 · 存进相册」，多张「N 张做好了 · 存进相册」，多批时追加批号。 */
+/** 主按钮文案：单张「第 N 张做好了 · 存进相册」，多张「K 张做好了 · 存进相册」，多批时追加批号。 */
 export function readyShareLabel(positions: ReadonlyArray<number | null>, chunk: number, totalChunks: number): string {
   const n = positions.length;
   const only = n === 1 ? positions[0] : null;
   const base = n === 1 && typeof only === 'number' && only > 0 ? `第 ${only} 张做好了 · 存进相册` : `${n} 张做好了 · 存进相册`;
   if (totalChunks <= 1) return base;
   return `${base}（第 ${chunk + 1} 批，共 ${totalChunks} 批）`;
+}
+
+/** 供 VoiceOver 区分「存进相册」（打开系统分享）与底栏「存到相册」（开始导出）。 */
+export function readyShareAriaLabel(positions: ReadonlyArray<number | null>, chunk: number, totalChunks: number): string {
+  const n = positions.length;
+  const only = n === 1 ? positions[0] : null;
+  const base =
+    n === 1 && typeof only === 'number' && only > 0
+      ? `第 ${only} 张做好了，存进相册，打开系统分享`
+      : `${n} 张做好了，存进相册，打开系统分享`;
+  if (totalChunks <= 1) return base;
+  return `${base}，第 ${chunk + 1} 批，共 ${totalChunks} 批`;
+}
+
+/** 运行中（0 张已做好）主胶囊文案。 */
+export function runningBarLabel(current: number, total: number, hdr: boolean, queued: number): string {
+  const base = total > 1 ? `正在导出 ${current} / ${total}` : '正在导出';
+  const withHdr = hdr ? `${base} · HDR` : base;
+  return queued > 0 ? `${withHdr}（另排 ${queued} 张）` : withHdr;
+}
+
+/** 全部失败（0 张已做好）主胶囊文案。 */
+export function totalFailureLabel(
+  failures: readonly Failure[],
+  positionOf: (id: string) => number | null,
+): string {
+  if (failures.length === 1) {
+    const pos = positionOf(failures[0].id);
+    if (typeof pos === 'number' && pos > 0) return `第 ${pos} 张没做成`;
+  }
+  return `${failures.length} 张没做成`;
 }
 
 /** 多张就绪时列出具体照片位置（「第 3 张、第 4 张」或「第 1、2、3、4 张等 6 张」）。 */
@@ -71,7 +103,7 @@ export function collectReadyNotes(entries: readonly ReadyEntry[]): {
   return { hdrLine: line, hdrNotes: notes, camNotes };
 }
 
-/** 失败 / 已停止条主标题文案；队列里还有待导出照片时追加「另排 N 张」。 */
+/** 失败 / 已停止汇总文案（供详情与单元测试使用）；队列里有待导出照片时追加「另排 N 张」。 */
 export function readyBarSummary(phase: Phase, ok: number, failureCount: number, savedCount: number, queuedCount = 0): string {
   const made = ok > 0 || savedCount > 0;
   let main: string;
@@ -82,173 +114,227 @@ export function readyBarSummary(phase: Phase, ok: number, failureCount: number, 
   return queuedCount > 0 ? `${main}（另排 ${queuedCount} 张）` : main;
 }
 
+/** VoiceOver 状态切换播报（仅在就绪 / 失败 / 停止状态转换时返回，运行中进度跳动返回 null）。 */
+export function stateAnnouncement(
+  phase: Phase,
+  entries: readonly ReadyEntry[],
+  failures: readonly Failure[],
+  positionOf: (id: string) => number | null,
+): { key: string; text: string } | null {
+  if (phase === 'running') return null;
+  const ok = entries.length;
+  if (phase === 'stopped') {
+    return {
+      key: `stopped:${ok}`,
+      text: ok > 0 ? `导出已停止，做好的 ${ok} 张还没存` : '导出已停止',
+    };
+  }
+  if (ok > 0 && !failures.length) {
+    const only = ok === 1 ? entries[0].position : null;
+    const text =
+      ok === 1 && typeof only === 'number' && only > 0
+        ? `第 ${only} 张做好了，可存进相册`
+        : `${ok} 张做好了，可存进相册`;
+    return { key: `ready:${entries.map((e) => e.id).join(',')}`, text };
+  }
+  if (ok > 0 && failures.length > 0) {
+    return {
+      key: `partial:${ok}:${failures.map((f) => f.id).join(',')}`,
+      text: `做好 ${ok} 张，${failures.length} 张没做成`,
+    };
+  }
+  if (failures.length > 0) {
+    return {
+      key: `fail:${failures.map((f) => f.id).join(',')}`,
+      text: totalFailureLabel(failures, positionOf),
+    };
+  }
+  return null;
+}
+
+export interface RunningBarRender {
+  dock: HTMLElement;
+  done: number;
+  total: number;
+  current: number;
+  hdr: boolean;
+  queued: number;
+  carried: readonly ReadyEntry[];
+  carryChunk: number;
+  carryTotalChunks: number;
+  detailsOpen: boolean;
+  onShareCarryover: () => void;
+  onStop: () => void;
+  onToggleDetails: () => void;
+}
+
 export interface ReadyBarRender {
   dock: HTMLElement;
   phase: Phase;
   entries: readonly ReadyEntry[];
   failures: readonly Failure[];
-  savedCount: number;
-  queuedCount?: number;
+  failurePosition: (id: string) => number | null;
   chunk: number;
   totalChunks: number;
   detailsOpen: boolean;
-  noShare: boolean;
-  thumbs: HTMLElement | null;
   onShare: () => void;
   onRetry: () => void;
   onToggleDetails: () => void;
   onDismiss: () => void;
-  onFinishNoShare: () => void;
-  trackUrl: (url: string) => void;
 }
 
-function renderDetailsDrawer(
-  dock: HTMLElement,
-  hdrNotes: readonly string[],
-  camNotes: readonly string[],
-  open: boolean,
-  posLine = '',
-  hdrLine = '',
-): void {
-  if (!posLine && !hdrLine && !hdrNotes.length && !camNotes.length) return;
-  const drawer = el('div', 'ready-details');
-  drawer.dataset.state = 'ready-details';
-  drawer.hidden = !open;
-  if (posLine || hdrLine) {
-    const meta = el('div', 'ready-meta');
-    if (posLine) {
-      const who = el('small', 'ready-pos', posLine);
-      who.dataset.state = 'ready-positions';
-      meta.append(who);
-    }
-    if (hdrLine) {
-      const hl = el('small', 'hdrline', hdrLine);
-      hl.dataset.state = 'hdr-line';
-      meta.append(hl);
-    }
-    drawer.append(meta);
-  }
-  if (hdrNotes.length) {
-    const list = el('ul', 'why hdrnotes');
-    for (const note of hdrNotes) list.append(el('li', '', note));
-    drawer.append(list);
-  }
-  if (camNotes.length) {
-    const list = el('ul', 'why camnotes');
-    list.dataset.state = 'camera-recipe-notes';
-    for (const note of camNotes) list.append(el('li', '', note));
-    drawer.append(list);
-  }
-  dock.append(drawer);
+function guardedClick(btn: HTMLButtonElement, fn: () => void): void {
+  btn.addEventListener('click', () => {
+    if (isDragTapGuarded()) return;
+    fn();
+  });
 }
 
-function renderNoShareLinks(
-  dock: HTMLElement,
-  entries: readonly ReadyEntry[],
-  trackUrl: (url: string) => void,
-  onDone: () => void,
-): void {
-  const box = el('div', 'links');
-  box.dataset.state = 'no-share';
-  box.append(el('p', 'dim', NO_SHARE));
-  for (const entry of entries) {
-    const a = el('a', '', entry.file.name);
-    const url = URL.createObjectURL(entry.file);
-    trackUrl(url);
-    a.href = url;
-    a.download = entry.file.name;
-    box.append(a);
-  }
-  const done = button('btn lg block', '关闭');
-  done.addEventListener('click', onDone);
-  box.append(done);
-  dock.append(box);
+function pillButton(btnCls: string, pillCls: string, act: string, onClick: () => void): {
+  btn: HTMLButtonElement;
+  pill: HTMLElement;
+} {
+  const btn = button(`es-btn ${btnCls}`, '');
+  btn.dataset.act = act;
+  const pill = el('span', `es-pill ${pillCls}`);
+  btn.append(pill);
+  guardedClick(btn, onClick);
+  return { btn, pill };
 }
 
-/** 渲染就绪条 / 失败条 / 已停止条（无「好」确认屏）。 */
-export function paintReadyBar(opts: ReadyBarRender): void {
-  const { dock, phase, entries, failures, savedCount, chunk, totalChunks, detailsOpen, noShare } = opts;
-  const ok = entries.length;
-  const positions = entries.map((e) => e.position);
-  const { hdrLine, hdrNotes, camNotes } = collectReadyNotes(entries);
-  const noteCount = hdrNotes.length + camNotes.length;
-  const shareText = ok ? readyShareLabel(positions, chunk, totalChunks) : '';
+/** 渲染运行态单行条：0 张完成显示「正在导出 + 停止」，已有完成显示「蓝色存进相册 + 导出中」。 */
+export function paintRunningSlot(opts: RunningBarRender): void {
+  const { dock, carried, detailsOpen } = opts;
+  dock.dataset.visualState = carried.length ? 'running-ready' : 'running';
 
-  const makeShareBtn = (block: boolean): HTMLButtonElement => {
-    const btn = button(block ? 'btn primary lg block ready-go' : 'fbtn fill-acc ready-go', '');
-    btn.dataset.act = 'share';
-    btn.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(shareText));
-    btn.addEventListener('click', opts.onShare);
-    return btn;
-  };
+  if (carried.length) {
+    const positions = carried.map((e) => e.position);
+    const label = readyShareLabel(positions, opts.carryChunk, opts.carryTotalChunks);
+    const main = pillButton('es-main', 'es-blue', 'share-ready', opts.onShareCarryover);
+    main.btn.setAttribute('aria-label', readyShareAriaLabel(positions, opts.carryChunk, opts.carryTotalChunks));
+    main.pill.append(exportIco(EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
 
-  const makeDetailsBtn = (count: number): HTMLButtonElement => {
-    const label = detailsOpen ? '收起' : count > 0 ? `详情 (${count})` : '详情';
-    const btn = button('fbtn fill-ctl ready-more', label);
-    btn.dataset.act = 'toggle-details';
-    btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
-    btn.addEventListener('click', opts.onToggleDetails);
-    return btn;
-  };
-
-  // 纯就绪态（无失败、非停止）：折叠时单行 <= 52pt 浮在底栏上方，详情（第 N 张列表、HDR 摘要、逐张附注）收入可展开抽屉。
-  if (ok > 0 && !failures.length && phase !== 'stopped') {
-    const posLine = entries.length > 1 ? readyPositionsSummary(positions) : '';
-    const hasDetails = Boolean(posLine || hdrLine || noteCount > 0);
-    dock.classList.toggle('ready-compact', !detailsOpen && !noShare);
-    const row = el('div', 'ready-row');
-    row.append(makeShareBtn(true));
-    if (hasDetails) row.append(makeDetailsBtn(noteCount));
-    dock.append(row);
-    renderDetailsDrawer(dock, hdrNotes, camNotes, detailsOpen, posLine, hdrLine);
-    if (noShare) renderNoShareLinks(dock, entries, opts.trackUrl, opts.onFinishNoShare);
+    const side = pillButton('es-side es-run-pill', 'es-dark', 'toggle-details', opts.onToggleDetails);
+    side.btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
+    side.pill.append(el('span', 'es-spin'), el('span', 'es-txt', '导出中'));
+    dock.append(main.btn, side.btn);
     return;
   }
 
-  // 有失败或已停止：保留失败详情、重试与保存已做好文件。
-  const top = el('div', 'top');
-  const tx = el('div', 'tx');
-  const ic = el('span', `ic ${failures.length ? 'warn' : 'ok'}`);
-  ic.append(exportIco(failures.length ? EXPORT_ICON.alert : EXPORT_ICON.check));
-  const made = ok > 0 || savedCount > 0;
-  const main = readyBarSummary(phase, ok, failures.length, savedCount, opts.queuedCount ?? 0);
-  tx.append(el('b', '', main));
-  if (ok > 1) {
-    const posLine = readyPositionsSummary(positions);
-    if (posLine) {
-      const who = el('small', 'ready-pos', posLine);
-      who.dataset.state = 'ready-positions';
-      tx.append(who);
+  const label = runningBarLabel(opts.current, opts.total, opts.hdr, opts.queued);
+  const main = pillButton('es-main', 'es-dark', 'toggle-details', opts.onToggleDetails);
+  main.btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
+  main.pill.append(el('span', 'es-spin'), el('span', 'es-txt num', label));
+
+  const stop = pillButton('es-side es-stop-pill', 'es-dark', 'stop', opts.onStop);
+  stop.pill.append(el('span', 'es-txt', '停止'));
+  dock.append(main.btn, stop.btn);
+}
+
+/** 渲染就绪 / 部分失败 / 全部失败 / 已停止单行条（永远 <= 44pt；详情由独立底部工作表承担）。 */
+export function paintReadyBar(opts: ReadyBarRender): void {
+  const { dock, phase, entries, failures, chunk, totalChunks, detailsOpen } = opts;
+  const ok = entries.length;
+  const positions = entries.map((e) => e.position);
+  const { hdrNotes, camNotes } = collectReadyNotes(entries);
+  const noteCount = hdrNotes.length + camNotes.length;
+
+  // 有已做好成片（纯就绪 / 部分失败 / 已停止且有成片）：左侧蓝色直达「存进相册」，右侧「详情」或红框「M 张失败」。
+  if (ok > 0) {
+    const label = readyShareLabel(positions, chunk, totalChunks);
+    const main = pillButton('es-main', 'es-blue', 'share', opts.onShare);
+    main.btn.setAttribute('aria-label', readyShareAriaLabel(positions, chunk, totalChunks));
+    main.pill.append(exportIco(EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
+
+    if (failures.length > 0) {
+      dock.dataset.visualState = 'partial-fail';
+      const side = pillButton('es-side es-fail-side', 'es-fail-outline', 'toggle-details', opts.onToggleDetails);
+      side.btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
+      side.pill.append(el('span', 'es-txt num', `${failures.length} 张失败`));
+      dock.append(main.btn, side.btn);
+      return;
     }
+
+    dock.dataset.visualState = phase === 'stopped' ? 'stopped-ready' : 'ready';
+    const side = pillButton('es-side es-detail-side', 'es-dark', 'toggle-details', opts.onToggleDetails);
+    side.btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
+    if (noteCount > 0) {
+      side.pill.append(el('i', 'es-warn-dot'), el('span', 'es-txt num', `详情 (${noteCount})`));
+    } else {
+      side.pill.append(el('span', 'es-txt', '详情'));
+    }
+    dock.append(main.btn, side.btn);
+    return;
   }
-  if (hdrLine) {
-    const hl = el('small', 'hdrline', hdrLine);
-    hl.dataset.state = 'hdr-line';
-    tx.append(hl);
+
+  // 0 张已做好（全部失败或已停止）：左侧红底（或暗底）条可点开详情，右侧「重试」+「×」。
+  const hasFail = failures.length > 0;
+  dock.dataset.visualState = hasFail ? 'total-fail' : 'stopped';
+  const main = pillButton('es-main', hasFail ? 'es-danger' : 'es-dark', 'toggle-details', opts.onToggleDetails);
+  main.btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
+  if (hasFail) {
+    main.pill.append(
+      exportIco(EXPORT_ICON.alert, 'es-ico es-alert-ico'),
+      el('span', 'es-txt', totalFailureLabel(failures, opts.failurePosition)),
+    );
+  } else {
+    main.pill.append(el('span', 'es-txt', '已停止'));
   }
-  if (failures.length) {
-    const why = el('ul', 'why');
-    for (const f of failures) why.append(el('li', '', `${f.stem}：${f.message}`));
-    tx.append(why);
+  dock.append(main.btn);
+
+  if (hasFail) {
+    const retry = pillButton('es-side es-retry-side', 'es-dark', 'retry', opts.onRetry);
+    retry.pill.append(el('span', 'es-txt', '重试'));
+    dock.append(retry.btn);
   }
-  top.append(ic, tx);
-  if (failures.length) {
-    const label = !made ? '重试' : failures.length === 1 ? '重试这张' : `重试这 ${failures.length} 张`;
-    const retry = button('fbtn fill-ctl', label);
-    retry.dataset.act = 'retry';
-    retry.addEventListener('click', opts.onRetry);
-    top.append(retry);
+
+  const close = pillButton('es-icon', 'es-dark', 'dismiss', opts.onDismiss);
+  close.btn.setAttribute('aria-label', '关闭');
+  close.pill.append(exportIco(EXPORT_ICON.x, 'es-ico'));
+  dock.append(close.btn);
+}
+
+/** 挂载导出条到展开单带的 44pt 顶槽，或收起态/网格态的 40pt 贴底槽；返回当前占据的 .band（若在顶槽）。 */
+export function mountExportDock(
+  shell: HTMLElement,
+  dock: HTMLElement,
+  prevBand: HTMLElement | null,
+): HTMLElement | null {
+  const editorOpen = shell.dataset.screen === 'editor';
+  const slot = editorOpen
+    ? shell.querySelector<HTMLElement>('.editor .band[data-collapsed="0"] .band-export-slot')
+    : null;
+  if (slot) {
+    const band = slot.closest<HTMLElement>('.band');
+    if (prevBand && prevBand !== band) prevBand.removeAttribute('data-export-slot');
+    if (dock.parentElement !== slot) slot.append(dock);
+    dock.dataset.dockMode = 'slot';
+    if (band) {
+      band.dataset.exportSlot = '1';
+      return band;
+    }
+    return null;
   }
-  if (!ok) {
-    const close = button('fbtn fill-ctl', '关闭');
-    close.dataset.act = 'dismiss';
-    close.addEventListener('click', opts.onDismiss);
-    top.append(close);
+  prevBand?.removeAttribute('data-export-slot');
+  const perf = shell.querySelector('.perf');
+  if (dock.parentElement !== shell) shell.insertBefore(dock, perf);
+  dock.dataset.dockMode = 'flush';
+  return null;
+}
+
+/** 更新导出内存与耗时观测数据到壳属性及性能条。 */
+export function paintExportMemory(
+  shell: HTMLElement,
+  perf: HTMLElement | null,
+  marks: { wasm: number; js: number; workers: number },
+  stagedHigh: number,
+  times: readonly number[],
+): void {
+  const mib = (v: number) => Math.round((v / 1048576) * 10) / 10;
+  const data = { wasm: marks.wasm, js: marks.js, staged: stagedHigh, workers: marks.workers, times };
+  shell.dataset.exportMem = JSON.stringify(data);
+  if (perf && !perf.hidden) {
+    const avg = times.length ? `${Math.round(times.reduce((a, b) => a + b, 0) / times.length)} ms` : '—';
+    perf.textContent = `导出 WASM ${mib(marks.wasm)} MiB · JS ${mib(marks.js)} MiB · 待存 ${mib(stagedHigh)} MiB · 每张 ${avg}`;
   }
-  if (noteCount > 0) top.append(makeDetailsBtn(noteCount));
-  dock.append(top);
-  renderDetailsDrawer(dock, hdrNotes, camNotes, detailsOpen);
-  if (opts.thumbs) dock.append(opts.thumbs);
-  if (ok > 0) dock.append(makeShareBtn(true));
-  if (noShare && ok > 0) renderNoShareLinks(dock, entries, opts.trackUrl, opts.onFinishNoShare);
 }

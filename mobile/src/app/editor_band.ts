@@ -1,5 +1,6 @@
 // 固定 128pt 单带容器与浮窗直方图定位：记住收起状态；舞台状态标签放在单带顶部，不盖在照片上。
 
+import { markControlDragEnd } from './drag_guard';
 import { el } from './dom';
 import type { BandTool } from './editor_bar';
 
@@ -23,6 +24,8 @@ export function saveBandCollapsed(collapsed: boolean): void {
 
 export class EditorBand {
   private readonly root: HTMLElement;
+  private readonly top: HTMLElement;
+  private readonly exportSlot: HTMLElement;
   private readonly head: HTMLElement;
   private readonly labelSlot: HTMLElement;
   private readonly rightSlot: HTMLElement;
@@ -38,13 +41,61 @@ export class EditorBand {
     this.root.dataset.tool = this.activeTool;
     this.root.dataset.collapsed = this.collapsed ? '1' : '0';
 
+    this.top = el('div', 'band-top');
+    this.exportSlot = el('div', 'band-export-slot');
     this.head = el('div', 'band-hd');
     this.labelSlot = el('div', 'lbl');
     this.rightSlot = el('div', 'band-hd-right');
     this.head.append(this.labelSlot, this.rightSlot);
+    // 导出槽在 DOM 顺序上位于工具控件之前，便于 VoiceOver 先读导出状态。
+    this.top.append(this.exportSlot, this.head);
 
     this.body = el('div', 'band-body');
-    this.root.append(this.head, this.body);
+    let dragActive = false;
+    let startX = 0;
+    let startY = 0;
+    let moved = false;
+    const onMove = (ev: PointerEvent) => {
+      if (!dragActive || moved) return;
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) >= 6) moved = true;
+    };
+    const endBodyDrag = () => {
+      if (!dragActive) return;
+      const shouldGuard = moved;
+      dragActive = false;
+      moved = false;
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', endBodyDrag, true);
+      window.removeEventListener('pointercancel', endBodyDrag, true);
+      if (shouldGuard) markControlDragEnd();
+    };
+    this.body.addEventListener(
+      'pointerdown',
+      (ev) => {
+        const target = ev.target instanceof HTMLElement ? ev.target : null;
+        dragActive = true;
+        startX = ev.clientX;
+        startY = ev.clientY;
+        moved = Boolean(target && (target.matches('input[type="range"]') || target.closest('.ruler')));
+        window.addEventListener('pointermove', onMove, true);
+        window.addEventListener('pointerup', endBodyDrag, true);
+        window.addEventListener('pointercancel', endBodyDrag, true);
+      },
+      true,
+    );
+    this.body.addEventListener(
+      'scroll',
+      (ev) => {
+        const target = ev.target;
+        if (target instanceof HTMLElement && (target.classList.contains('strip') || target.classList.contains('chips'))) {
+          moved = true;
+          markControlDragEnd();
+        }
+      },
+      true,
+    );
+
+    this.root.append(this.top, this.body);
   }
 
   el(): HTMLElement {
@@ -83,10 +134,6 @@ export class EditorBand {
     for (const [id, ctrl] of this.heads) {
       ctrl.hidden = id !== tool;
     }
-  }
-
-  setCompactHead(compact: boolean): void {
-    this.root.dataset.compactHd = compact ? '1' : '0';
   }
 
   setCollapsed(collapsed: boolean): void {

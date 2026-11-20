@@ -64,6 +64,7 @@ export class EditorBar {
 
     this.saveBtn = button('btn primary save-btn', '存到相册');
     this.saveBtn.dataset.act = 'export';
+    this.saveBtn.setAttribute('aria-label', '导出当前照片并存到相册');
     this.saveBtn.addEventListener('click', () => hooks.onExport());
 
     this.root.append(toolsWrap, this.saveBtn);

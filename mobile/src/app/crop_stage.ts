@@ -60,6 +60,7 @@ export interface CropStageHost {
   onCommitted(photo: Photo, changed: boolean): void;
   restLabelText(): string;
   resetZoom?(): void;
+  onScrub?(text: string | null): void;
 }
 
 export class CropStage {
@@ -144,6 +145,7 @@ export class CropStage {
       endStraighten: () => this.onEndStraighten(),
       cancelStraighten: () => this.onCancelStraighten(),
       resetStraighten: () => void this.commitStraighten(0),
+      onScrub: (text) => this.host.onScrub?.(text),
       onExportSize: (target, w, h) => {
         if (this.destroyed || this.host.photo() !== target) return;
         this.exportSize = { photo: target, version: target.version, rev: target.rev, w, h };

@@ -545,19 +545,25 @@ export async function parity({ newPage, manifest, out }) {
     });
     await exportFromGrid(page, [s.a, s.c], '小', '低', null, { hdr: false });
     await waitPhase(page, ['ready']);
+    if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+      await page.locator('.pdock [data-act="toggle-details"]').click();
+      await page.waitForSelector('.ms.export-sheet', { timeout: 5_000 });
+    }
     const inkTrapSnap = await page.evaluate(() => {
       const batch = window.__devExport.flow.current();
+      const dockText = document.querySelector('.pdock')?.innerText ?? '';
+      const sheetText = document.querySelector('.ms.export-sheet')?.innerText ?? '';
       return {
         staged: batch.staged.length,
         failures: [...batch.failures.values()].map((f) => ({ kind: f.kind, message: f.message })),
-        dock: document.querySelector('.pdock')?.innerText ?? '',
+        dock: `${dockText}\n${sheetText}`.trim(),
         workers: window.__devExport.core.marks.workers,
       };
     });
     await page.evaluate(() => {
       window.__devExport.inkTrapAt = null;
     });
-    await page.locator('.pdock [data-act="retry"]').click();
+    await page.locator('.ms.export-sheet [data-act="retry"], .pdock [data-act="retry"]').first().click();
     await waitPhase(page, ['ready']);
     const inkTrapRetry = await page.evaluate(() => {
       const batch = window.__devExport.flow.current();
