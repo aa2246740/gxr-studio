@@ -3,7 +3,7 @@
 import { button, el, icon } from './dom';
 
 export type BarTool = 'recipe' | 'adjust' | 'crop' | 'more';
-export type BandTool = 'recipe' | 'adjust' | 'crop' | 'frame' | 'stamp';
+export type BandTool = 'recipe' | 'adjust' | 'crop' | 'more' | 'frame' | 'stamp';
 
 export interface EditedFlags {
   recipe: boolean;
@@ -79,7 +79,8 @@ export class EditorBar {
   }
 
   setActive(activeBand: BandTool, collapsed: boolean): void {
-    const activeBar: BarTool = activeBand === 'frame' || activeBand === 'stamp' ? 'more' : activeBand;
+    const activeBar: BarTool =
+      activeBand === 'frame' || activeBand === 'stamp' || activeBand === 'more' ? 'more' : activeBand;
     this.root.dataset.collapsed = collapsed ? '1' : '0';
     for (const [id, btn] of this.buttons) {
       const on = !collapsed && id === activeBar;

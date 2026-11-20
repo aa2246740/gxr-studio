@@ -419,8 +419,10 @@ export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo)
 /** 编辑器顶栏 ⋯ 菜单：复制调整、粘贴、套用到这一组、导出选项、照片信息，全部复用既有面板。 */
 export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo): void {
   closePasteSheets(host);
-  const sheet = el('div', 'ms paste-sheet');
+  const isIpad = Boolean(host.dataset.layout?.startsWith('ipad'));
+  const sheet = el('div', isIpad ? 'ms paste-sheet popover' : 'ms paste-sheet');
   sheet.dataset.state = 'editor-more';
+  if (isIpad) sheet.dataset.popover = '1';
   const head = el('div', 'hd');
   head.append(el('h2', '', '更多'));
   const done = button('nb', '完成');
@@ -513,7 +515,7 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
     ],
   );
 
-  sheet.append(el('div', 'grab'), head);
+  sheet.append(isIpad ? el('i', 'arrow up') : el('div', 'grab'), head);
   for (const [act, label, detail, run] of entries) {
     const line = button('lrow', '');
     line.dataset.act = act;
@@ -538,8 +540,9 @@ export interface EditorNavHandle {
 /** 编辑器顶栏：返回「照片」、中间配方名 +「第几张 / 共几张」（不含文件名，长按看原图时第二行切为「原图」）、右侧 HDR 开关与可用 ⋯。 */
 export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, index: number, total: number): EditorNavHandle {
   const nav = el('header', 'nav');
-  const back = button('nb', '照片');
-  back.prepend(icon(ICON.back));
+  const back = button('nb nav-back', '');
+  back.setAttribute('aria-label', '照片');
+  back.append(icon(ICON.back), el('span', 'nav-back-lab', '照片'));
   back.addEventListener('click', () => api.back());
 
   const title = el('div', 't');

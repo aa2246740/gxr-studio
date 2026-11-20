@@ -114,6 +114,10 @@ export class EditorBand {
     return this.collapsed;
   }
 
+  mountHistArea(node: HTMLElement): void {
+    this.root.insertBefore(node, this.body);
+  }
+
   register(tool: BandTool, panel: HTMLElement, headRight?: HTMLElement): void {
     panel.hidden = tool !== this.activeTool;
     this.panels.set(tool, panel);

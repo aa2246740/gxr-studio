@@ -19,6 +19,7 @@ const CORNER_ORDER: readonly StampCorner[] = ['br', 'bl', 'tr', 'tl'];
 export interface StampBandHooks {
   isAlive(): boolean;
   onChange(): void;
+  onBack?: () => void;
 }
 
 export class StampBandView {
@@ -36,6 +37,12 @@ export class StampBandView {
     this.hooks = hooks;
     this.root = el('div', 'band-tool stamp-band');
     this.root.dataset.panel = 'stamp';
+
+    const subHd = el('div', 'ipad-sub-hd');
+    const subBack = button('ipad-sub-back', '‹ 更多');
+    subBack.dataset.act = 'more-back';
+    subBack.addEventListener('click', () => this.hooks.onBack?.());
+    subHd.append(subBack, el('b', 'ipad-sub-title', '时间戳'));
 
     const row1 = el('div', 'band-row pad between');
     const left = document.createElement('label');
@@ -60,7 +67,7 @@ export class StampBandView {
     row1.append(left, detail);
 
     this.row2 = el('div', 'chips stamp-quick');
-    this.root.append(row1, this.row2);
+    this.root.append(subHd, row1, this.row2);
     this.refresh();
   }
 

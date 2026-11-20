@@ -60,6 +60,8 @@ export class AdjustView {
   private input: HTMLInputElement | null = null;
   private valueEl: HTMLElement | null = null;
   private labelEl: HTMLElement | null = null;
+  private ipadLabEl: HTMLElement | null = null;
+  private ipadValEl: HTMLElement | null = null;
   private histBtn: HTMLButtonElement | null = null;
   private chipsEl: HTMLElement | null = null;
   private committed = 0;
@@ -105,8 +107,26 @@ export class AdjustView {
     this.input = null;
     this.valueEl = null;
     this.labelEl = null;
+    this.ipadLabEl = null;
+    this.ipadValEl = null;
     this.histBtn = null;
     this.chipsEl = null;
+  }
+
+  private resetAll(): void {
+    const photo = this.host.photo();
+    if (!photo) return;
+    // 滑块全是 0 且没有曲线：没有修改，不加 rev（不然撤销套用时会当成套用之后又改过）。
+    const knobsZero = Object.values(photo.knobs).every((value) => value === 0);
+    const hasCurve = curveJson(photo.curve) !== null;
+    if (knobsZero && !hasCurve) return;
+    photo.knobs = zeroKnobs();
+    photo.curve = null;
+    photo.rev += 1;
+    this.showKnob();
+    this.host.push();
+    this.host.refreshCurves?.();
+    this.host.onEditedChanged?.();
   }
 
   private adjustPanel(): HTMLElement {
@@ -129,24 +149,10 @@ export class AdjustView {
 
     const reset = button('chip reset-chip', '全部重置');
     reset.dataset.act = 'adjust-reset';
-    reset.addEventListener('click', () => {
-      const photo = this.host.photo();
-      if (!photo) return;
-      // 滑块全是 0 且没有曲线：没有修改，不加 rev（不然撤销套用时会当成套用之后又改过）。
-      const knobsZero = Object.values(photo.knobs).every((value) => value === 0);
-      const hasCurve = curveJson(photo.curve) !== null;
-      if (knobsZero && !hasCurve) return;
-      photo.knobs = zeroKnobs();
-      photo.curve = null;
-      photo.rev += 1;
-      this.showKnob();
-      this.host.push();
-      this.host.refreshCurves?.();
-      this.host.onEditedChanged?.();
-    });
+    reset.addEventListener('click', () => this.resetAll());
     chips.append(reset);
 
-    const curves = button('chip curves-chip', '曲线 ›');
+    const curves = button('chip curves-chip deeper', '曲线 ›');
     curves.dataset.act = 'open-curves';
     curves.addEventListener('click', () => this.host.openCurves?.());
     chips.append(curves);
@@ -164,14 +170,24 @@ export class AdjustView {
     row.append(chips, this.histBtn);
 
     const big = el('div', 'big');
+    const l1 = el('div', 'adj-l1');
+    this.ipadLabEl = el('b', '', '曝光');
+    this.ipadValEl = el('span', 'val num', '0.0');
+    l1.append(this.ipadLabEl, this.ipadValEl);
     this.input = document.createElement('input');
     this.input.type = 'range';
     this.input.dataset.key = 'exposure_ev';
     const slider = el('div', 'slider');
     slider.append(this.input);
-    big.append(slider);
+    big.append(l1, slider);
 
-    panel.append(row, big);
+    const hintRow = el('div', 'hint-row adj-hint');
+    const hintReset = button('fbtn', '全部重置');
+    hintReset.dataset.act = 'adjust-reset';
+    hintReset.addEventListener('click', () => this.resetAll());
+    hintRow.append(el('span', 'faint', '点两下圆点回到 0'), hintReset);
+
+    panel.append(row, big, hintRow);
     this.showKnob();
     this.syncHistBtn();
 
@@ -249,6 +265,7 @@ export class AdjustView {
     const photo = this.host.photo();
     if (!spec || !this.input || !this.labelEl || !photo) return;
     this.labelEl.textContent = spec.label;
+    if (this.ipadLabEl) this.ipadLabEl.textContent = spec.label;
     this.input.min = String(spec.min);
     this.input.max = String(spec.max);
     this.input.step = String(spec.step);
@@ -264,7 +281,9 @@ export class AdjustView {
     const photo = this.host.photo();
     if (!spec || !this.input || !this.valueEl || !photo) return;
     const value = photo.knobs[this.key];
-    this.valueEl.textContent = formatKnob(this.key, value);
+    const text = formatKnob(this.key, value);
+    this.valueEl.textContent = text;
+    if (this.ipadValEl) this.ipadValEl.textContent = text;
     const span = spec.max - spec.min || 1;
     const pct = ((value - spec.min) / span) * 100;
     const zero = ((0 - spec.min) / span) * 100;
