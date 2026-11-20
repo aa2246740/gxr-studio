@@ -78,13 +78,18 @@ export function totalFailureLabel(
   return `${failures.length} 张没做成`;
 }
 
-/** 多张就绪时列出具体照片位置（「第 3 张、第 4 张」或「第 1、2、3、4 张等 6 张」）。 */
+/** 多张就绪时列出具体照片位置（「第 3 张、第 4 张」或「第 1、2、3、4 张等 6 张」）；单张双联出多文件时注明文件数。 */
 export function readyPositionsSummary(positions: ReadonlyArray<number | null>): string {
   const nums = positions.filter((p): p is number => typeof p === 'number' && p > 0).sort((a, b) => a - b);
   if (!nums.length) return '';
-  if (nums.length === 1) return `第 ${nums[0]} 张`;
-  if (nums.length <= 4) return nums.map((p) => `第 ${p} 张`).join('、');
-  return `第 ${nums.slice(0, 4).join('、')} 张等 ${positions.length} 张`;
+  const unique = [...new Set(nums)];
+  const multiFile = positions.length > unique.length;
+  if (unique.length === 1) return multiFile ? `第 ${unique[0]} 张（${positions.length} 个文件）` : `第 ${unique[0]} 张`;
+  if (unique.length <= 4) {
+    const listed = unique.map((p) => `第 ${p} 张`).join('、');
+    return multiFile ? `${listed}（共 ${positions.length} 个文件）` : listed;
+  }
+  return `第 ${unique.slice(0, 4).join('、')} 张等 ${positions.length} ${multiFile ? '个文件' : '张'}`;
 }
 
 /** 汇总已做好条目的 HDR 摘要行与逐张附注（HDR 降级说明、缺失相机配方文件说明）。 */

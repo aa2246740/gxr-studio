@@ -7,6 +7,7 @@
 .ms.export .frow .lab { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .ms.export .frow .lab b { font: 600 15px/20px var(--font-ui); flex: none; }
 .ms.export .frow .lab span { font-size: 13px; color: var(--text-2); text-align: right; }
+.ms.export .hf-note { margin: 8px 0 0; font-size: 12px; line-height: 17px; color: var(--text-2); }
 .ms.export .hdrrow { display: flex; align-items: center; gap: 8px; }
 .ms.export .hdrrow .tx { flex: 1; min-width: 0; }
 .ms.export .hdrrow .tx b { display: block; font: 600 15px/20px var(--font-ui); }

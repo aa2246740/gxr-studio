@@ -34,9 +34,11 @@ export function saveGap(gap: GapMinutes): void {
 const HDR_KEY = 'gxr.mobile.export_hdr';
 const SIZE_KEY = 'gxr.mobile.export_size';
 const QUALITY_KEY = 'gxr.mobile.export_quality';
+const HALFFRAME_KEY = 'gxr.mobile.export_halfframe';
 
 export type ExportSizePref = 'original' | 'large' | 'medium' | 'small';
 export type ExportQualityPref = 'high' | 'medium' | 'low';
+export type ExportHalfframePref = 'diptych' | 'singles' | 'both';
 
 export function loadExportHdr(): boolean {
   return store()?.getItem(HDR_KEY) !== '0';
@@ -79,6 +81,19 @@ export function loadExportQuality(): ExportQualityPref {
 export function saveExportQuality(quality: ExportQualityPref): void {
   try {
     store()?.setItem(QUALITY_KEY, quality);
+  } catch {
+    /* 存不下就只管这一次。 */
+  }
+}
+
+export function loadExportHalfframe(): ExportHalfframePref {
+  const value = store()?.getItem(HALFFRAME_KEY);
+  return value === 'singles' || value === 'both' ? value : 'diptych';
+}
+
+export function saveExportHalfframe(mode: ExportHalfframePref): void {
+  try {
+    store()?.setItem(HALFFRAME_KEY, mode === 'singles' || mode === 'both' ? mode : 'diptych');
   } catch {
     /* 存不下就只管这一次。 */
   }
