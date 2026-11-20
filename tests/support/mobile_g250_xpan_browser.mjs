@@ -89,7 +89,7 @@ try {
     const layerSize = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
     const originalFinalSize = await page.evaluate(() => window.__gxrEngine?.finalSize?.() ?? null);
 
-    await page.locator('.tabs button[data-tab="2"]').click();
+    await page.locator('.editor .toolbar [data-tool="crop"]').click();
     await page.waitForSelector('.crop-panel');
     const originalBadge = await waitCropBadge(page, [4288, 1584]);
 
@@ -111,7 +111,7 @@ try {
   }
   out.steps.previews = previews;
 
-  const sheet = await exportFromGrid(page, manifest.stems, '原始尺寸', '高');
+  const sheet = await exportFromGrid(page, manifest.stems, '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   const ready = await waitPhase(page, ['ready']);
   const facts = await batchFacts(page);

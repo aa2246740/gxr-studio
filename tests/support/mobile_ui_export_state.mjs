@@ -93,18 +93,17 @@ export async function state({ newPage, out }) {
   await page.evaluate(SETUP);
   const steps = out.steps;
   try {
-    // P2-01：两张，第一张读不了。先存成功的那张、在 05e 点「好」：06f 还在，能重试；重试成功后才结束。
+    // P2-01：两张，第一张读不了。先存成功的那张（无尾部「好」，分享后立刻交出）：失败项还在、能重试；重试并分享后自动结束。
     await page.evaluate(() => window.__state.flow({ 0: ['read', 10], 1: [10] }, 2));
     await page.locator('#state-shell [data-act="share"]').click();
-    await page.locator('#state-shell [data-act="done"]').click();
+    await page.waitForFunction(() => window.__state.current.batch.staged.length === 0);
     const afterDone = await dockOf(page);
     await page.locator('#state-shell [data-act="retry"]').click();
     await page.waitForFunction(() => window.__state.current.batch.phase === 'ready');
     const afterRetry = await dockOf(page);
     await page.locator('#state-shell [data-act="share"]').click();
-    const savedDock = await page.locator('#state-shell .pdock').innerText();
-    await page.locator('#state-shell [data-act="done"]').click();
-    steps.retryKept = { afterDone, afterRetry, savedDock, end: await dockOf(page) };
+    await page.waitForFunction(() => !document.querySelector('#state-shell .pdock'));
+    steps.retryKept = { afterDone, afterRetry, savedDock: '', end: await dockOf(page) };
   } catch (err) {
     steps.retryKept = { error: String(err?.message ?? err).split('\n')[0].slice(0, 200) };
     await page.evaluate(() => window.__state.current?.flow?.clear?.()).catch(() => undefined);

@@ -42,9 +42,13 @@ async function waitCards(page) {
   );
 }
 
-/** 调整页的一个滑块：点它的标签，设值，发 input（和用户拖动一样只走 input）。返回滑块上实际的值。 */
+/** 调整页的一个滑块：点底栏「调整」、点参数片、设值、发 input（和用户拖动一样只走 input）。返回滑块上实际的值。 */
 async function setKnob(page, key, value) {
-  await page.locator(`.editor .chips .chip[data-key="${key}"]`).click();
+  if (!(await page.locator('.editor .panel.adjust:not([hidden])').count())) {
+    await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+    await page.waitForSelector('.editor .panel.adjust:not([hidden])');
+  }
+  await page.locator(`.editor .panel.adjust .chips .chip[data-key="${key}"]`).click();
   return page.locator('.editor .panel.adjust input[type="range"]').evaluate((input, v) => {
     input.value = String(v);
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -72,8 +76,11 @@ export async function edit(page, stem, plan) {
     const look = page.locator('.editor .strip[data-recipes] .rc[data-card^="look:"]:not(.lockd)').first();
     const id = await look.getAttribute('data-card');
     await pickCard(page, id);
+    await page.locator(`.editor .strip[data-recipes] .rc[data-card="${id}"]`).click();
+    await page.waitForSelector('.editor .recipe-fine:not([hidden])');
     const row = page.locator(`.editor .knobs[data-card="${id}"] .krow:not([data-knob="amount"])`).first();
     const knob = await row.getAttribute('data-knob');
+    await page.locator(`.editor .recipe-fine .knob-chips .chip[data-knob-chip="${knob}"]`).click();
     await row.locator('input').evaluate((input) => {
       input.value = String(Math.min(Number(input.max), Number(input.value) + 2));
       input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -87,7 +94,7 @@ export async function edit(page, stem, plan) {
 }
 
 /** 选择模式里点这几张，点「导出 N 张」，在面板里选尺寸和品质，点「存到相册」。返回面板上的字。 */
-export async function exportFromGrid(page, stems, size = '原始尺寸', quality = '高', beforeGo = null) {
+export async function exportFromGrid(page, stems, size = '原始尺寸', quality = '高', beforeGo = null, opts = {}) {
   await page.locator('.nav .nb.bold').click();
   for (const stem of stems) await page.locator(cellOf(stem)).evaluate((node) => node.click());
   await page.locator('.dock [data-act="export"]').click();
@@ -95,8 +102,13 @@ export async function exportFromGrid(page, stems, size = '原始尺寸', quality
   const sheet = page.locator('.ms.export');
   await sheet.locator('.frow').nth(0).locator('.seg button', { hasText: size }).click();
   await sheet.locator('.frow').nth(1).locator('.seg button', { hasText: quality }).click();
+  const sw = sheet.locator('input.switch');
+  const hdrDisabled = await sw.isDisabled();
+  if (typeof opts.hdr === 'boolean' && !hdrDisabled) {
+    const checked = await sw.isChecked();
+    if (checked !== opts.hdr) await sw.click();
+  }
   const text = await sheet.innerText();
-  const hdrDisabled = await sheet.locator('input.switch').isDisabled();
   if (beforeGo) await beforeGo();
   await sheet.locator('.go').click();
   return { text, hdrDisabled };
@@ -107,7 +119,7 @@ export async function waitPhase(page, phases, timeout = 600_000) {
   return page.locator('.pdock').innerText();
 }
 
-/** 点 05c 的「存到相册」（几批就点几次），收下假共享面板拿到的文件。 */
+/** 点就绪条的「存进相册」（几批就点几次），收下假共享面板拿到的文件；最后一批分享完就绪条自动消失。 */
 export async function shareAll(page) {
   const labels = [];
   for (let n = 0; n < 10; n += 1) {
@@ -118,7 +130,7 @@ export async function shareAll(page) {
     await btn.click();
     await page.waitForFunction((k) => window.__shareLog.calls.length > k, before, { timeout: 30_000 });
     await page.waitForTimeout(100);
-    if (await page.locator('.pdock [data-act="done"]').count()) break;
+    if (!(await page.locator('.pdock [data-act="share"]').count())) break;
   }
   const saved = (await page.locator('.pdock').count()) ? await page.locator('.pdock').innerText() : '';
   return { labels, saved };
@@ -170,27 +182,27 @@ export async function parity({ newPage, manifest, out }) {
   for (const [stem, plan] of Object.entries(manifest.plans)) edits.push(await edit(page, stem, plan));
   out.steps.edits = edits;
 
-  // 六张，原始尺寸 / 高。分批上限设成 4（只在开发服务器里）：两批。
+  // 六张，原始尺寸 / 高（SDR 对拍：显式关闭默认开启的 HDR）。分批上限设成 4（只在开发服务器里）：两批。
   const order = manifest.order;
-  const sheet = await exportFromGrid(page, order);
+  const sheet = await exportFromGrid(page, order, '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   const ready = await waitPhase(page, ['ready']);
   const facts = await batchFacts(page);
   const shared = await shareAll(page);
   const files = await sharedFiles(page, manifest.outDir, 'full-');
   const canShare = await page.evaluate(() => window.__shareLog.canShare);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   out.steps.full = { sheet, ready, facts, shared, files, canShare };
 
   // A 和 C 再导一次：小 / 低。先关掉上一批还闲着的 Worker（只在开发服务器里），小尺寸的内存单独量。
   await page.evaluate(() => window.__devExport.core.stop());
   const calls = await page.evaluate(() => window.__shareLog.calls.length);
-  const small = await exportFromGrid(page, manifest.smallOrder, '小', '低');
+  const small = await exportFromGrid(page, manifest.smallOrder, '小', '低', null, { hdr: false });
   await waitPhase(page, ['ready']);
   const smallFacts = await batchFacts(page);
   const smallShared = await shareAll(page);
   const smallFiles = await sharedFiles(page, manifest.outDir, 'small-', calls);
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   out.steps.small = { sheet: small, facts: smallFacts, shared: smallShared, files: smallFiles };
   await page.close();
 }

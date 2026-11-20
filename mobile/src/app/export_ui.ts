@@ -1,64 +1,38 @@
-// 导出进相册：导出面板（05a）→ 点「存到相册」面板收起，进度贴在底部、不挡操作（05b）→ 做好了（05c）或有失败（06f）
-// → 再点一次「存到相册」打开系统共享面板（05d）→ 面板关了（05e）。Safari 只认刚发生的那次点击，批量做完那次点击
-// 已经失效，所以做好后不自动打开共享面板（DESIGN-MOBILE §5）。
+// 导出进相册：编辑器单点「存到相册」按记住的选项立即开始导出（不先弹选项表）；「导出选项」从 ⋯ 或 U2「更多」打开。
+// 做好后在底栏上方弹出独立就绪条（「第 N 张做好了 · 存进相册」/「N 张做好了 · 存进相册」）；再次导出不丢未存成片（队列 + 暂存）。
+// 系统共享面板关闭后自动收起就绪条，不再留一层「好」。
 
 import { ExportCore, calibPack, type RunResult } from '../core/export_api';
 import { unitOfLens } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
-import { buildRequest, usedLogoId, type QualityTier, type RequestPhoto, type SizeTier } from '../lib/export_request';
+import { buildRequest, usedLogoId, type RequestPhoto } from '../lib/export_request';
 import { fontsNeeded, type FontKey } from '../lib/fonts';
-import { formatClock, formatDay } from '../lib/group';
-import { HDR_LINE, HDR_NO_RAW, HDR_PROGRESS, hdrAvailable, hdrFrameLine, hdrMixLine, hdrResultText } from '../lib/hdr_text';
-import { isDisplaySpace } from '../lib/lut';
-import { loadExportHdr, saveExportHdr } from '../lib/prefs';
+import { HDR_PROGRESS, hdrAvailable } from '../lib/hdr_text';
+import { loadExportHdr, loadExportQuality, loadExportSize } from '../lib/prefs';
 import { adoptedSelectionOf, cameraRecipeErrorOf, photoWithAdopted, recipeUnitOf, shelf, shelves, type Card } from '../lib/recipes';
-import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, shareChunks, shareLabel, sizeText, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
+import { shareChunks, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
 import { button, el } from './dom';
-import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem, type Staged } from './export_batch';
+import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem } from './export_batch';
 import { estimatePeak, type BatchFonts } from './export_budget';
+import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
+import { ExportQueueState, type ExportOptions } from './export_queue';
+import {
+  EXPORT_ICON,
+  exportIco,
+  paintReadyBar,
+  readyPositionsSummary,
+  readyShareLabel,
+  type ReadyEntry,
+} from './export_ready';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
 import type { LutBook } from './lut_book';
-import { ensureCameraRecipe, ensureCameraRecipes, needsCameraRecipe, photoMs, type Photo } from './model';
+import { ensureCameraRecipes, needsCameraRecipe, type Photo } from './model';
 import './export.css';
 
 declare const __GXR_BUILD__: string;
-
-const SIZES: Array<[SizeTier, string]> = [
-  ['original', '原始尺寸'],
-  ['large', '大'],
-  ['medium', '中'],
-  ['small', '小'],
-];
-const QUALITIES: Array<[QualityTier, string]> = [
-  ['high', '高'],
-  ['medium', '中'],
-  ['low', '低'],
-];
-const NO_DAT_GUIDE = '未导入相机配方文件时，导出不会带上相机配方效果：有相机 JPG 的照片导出相机 JPG；只有 RAW、又套用了配方的照片可能导不出。';
-const NO_SHARE = '这个浏览器打不开系统的共享面板。';
-
-const NS = 'http://www.w3.org/2000/svg';
-const PATH = {
-  export: 'M12 15V3M7.5 7.5 12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7',
-  check: 'M5 12.5l4.5 4.5L19 7',
-  info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
-  x: 'M6 6l12 12M18 6 6 18',
-  alert: 'M12 4 2.5 20h19L12 4zM12 10v4.5M12 17.5h.01',
-};
-
-function ico(d: string, cls = ''): SVGSVGElement {
-  const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('class', `ico ${cls}`.trim());
-  svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS(NS, 'path');
-  path.setAttribute('d', d);
-  svg.append(path);
-  return svg;
-}
 
 /** 导出这边要的 App 接口。 */
 export interface ExportApp {
@@ -138,46 +112,37 @@ export function requestPhoto(photo: Photo, lutBook?: LutBook, book?: Book): Requ
   };
 }
 
-function timeRange(photos: Photo[]): string {
-  if (!photos.length) return 'JPG';
-  const times = photos.map((p) => photoMs(p));
-  const lo = Math.min(...times);
-  const hi = Math.max(...times);
-  const a = formatClock(lo);
-  const b = formatClock(hi);
-  // 跨了天就带上日期，免得「18:51–11:46」看起来像倒着的。
-  if (formatDay(lo) !== formatDay(hi)) return `${formatDay(lo)} ${a} – ${formatDay(hi)} ${b} · JPG`;
-  return `${a === b ? a : `${a}–${b}`} · JPG`;
+type View = 'progress' | 'noshare';
+
+const flowByShell = new WeakMap<HTMLElement, ExportFlow>();
+
+/** 打开「导出选项」面板：供编辑器 ⋯ 与 U2「更多」调用，不改 boot.ts / model.ts 接口。 */
+export function openExportOptions(shell: HTMLElement, ids: string[], onStart?: () => void): boolean {
+  const flow = flowByShell.get(shell);
+  if (!flow) return false;
+  return flow.openOptions(ids, onStart);
 }
 
-function seg<T extends string>(items: Array<[T, string]>, value: T, pick: (v: T) => void): HTMLElement {
-  const box = el('div', 'seg');
-  box.setAttribute('role', 'group');
-  for (const [v, label] of items) {
-    const item = button(v === value ? 'on' : '', label);
-    item.dataset.value = v;
-    item.addEventListener('click', () => {
-      for (const node of box.children) node.classList.toggle('on', node === item);
-      pick(v);
-    });
-    box.append(item);
-  }
-  return box;
+/** 用记住的尺寸、品质与 HDR 立即开始导出：供编辑器单点「存到相册」调用。 */
+export function startQuickExport(shell: HTMLElement, ids: string[], onStart?: () => void): boolean {
+  const flow = flowByShell.get(shell);
+  if (!flow) return false;
+  return flow.startQuick(ids, onStart);
 }
-
-type View = 'progress' | 'saved' | 'noshare';
 
 export class ExportFlow {
   readonly core = new ExportCore();
   private batch: ExportBatch | null = null;
   private dock: HTMLElement | null = null;
-  private sheet: HTMLElement[] = [];
+  private sheet: OpenedExportSheet | null = null;
   private view: View = 'progress';
+  private detailsOpen = false;
   private chunk = 0;
   private chunks: number[][] = [];
-  private savedCount = 0;
+  private chunkEntryCount = 0;
   private wake: { release(): Promise<void> } | null = null;
-  private sizeSeq = 0;
+  /** 队列、待存成片与失败保留状态机（供双击去重、失败后续跑、分批不重发与运行中保存共用）。 */
+  private readonly queue = new ExportQueueState<Photo>();
   /** 下载兜底的对象 URL 全记在这里，重画、交出、清空、新的一批和批次结束时统一撤销（Sol r1 P2-03）。 */
   private readonly urls = new Set<string>();
 
@@ -186,6 +151,7 @@ export class ExportFlow {
     private readonly app: ExportApp,
     private readonly perf: HTMLElement | null,
   ) {
+    flowByShell.set(shell, this);
     const hooks = dev();
     if (hooks) {
       hooks.flow = this;
@@ -197,162 +163,40 @@ export class ExportFlow {
     return this.batch;
   }
 
-  /** 05a：「导出 N 张」（选择栏）和「导出这张」（编辑器）都打开它。`ids` 已经按网格的顺序排好。 */
+  /** 图库多选栏「导出 N 张」：打开多选导出面板。`ids` 按网格顺序排好。 */
   open(ids: string[], onStart?: () => void): void {
-    const photos = ids.map((id) => this.app.photo(id)).filter((p): p is Photo => !!p);
-    if (!photos.length) return;
-    this.closeSheet();
-    let size: SizeTier = 'original';
-    let quality: QualityTier = 'high';
-    const n = photos.length;
-    const scrim = el('div', 'scrim');
-    scrim.addEventListener('click', () => this.closeSheet());
-    const sheet = el('div', 'ms export');
-    sheet.dataset.state = 'export-sheet';
-    const head = el('div', 'row');
-    const cancel = button('nb', '取消');
-    cancel.addEventListener('click', () => this.closeSheet());
-    head.append(el('h2', '', `导出 ${n} 张`), cancel);
-    const sizeLine = el('span', 'num size', n === 1 ? SIZE_PENDING : MANY_SIZES);
-    const sizeRow = el('div', 'frow');
-    const sizeLab = el('div', 'lab');
-    sizeLab.append(el('b', '', '尺寸'), sizeLine);
-    let sized: { sizes: Record<string, [number, number]>; ratio: [number, number] | null } | null = null;
-    const paintSize = () => {
-      if (n !== 1) return;
-      if (sized) sizeLine.textContent = sizeText(sized.sizes[size] ?? sized.sizes.original, sized.ratio);
-    };
-    sizeRow.append(
-      sizeLab,
-      seg(SIZES, size, (v) => {
-        size = v;
-        paintSize();
-      }),
-    );
-    const qualityRow = el('div', 'frow');
-    const qualityLab = el('div', 'lab');
-    qualityLab.append(el('b', '', '品质'));
-    qualityRow.append(
-      qualityLab,
-      seg(QUALITIES, quality, (v) => {
-        quality = v;
-      }),
-    );
-    // HDR（05a）：选中的照片一张 RAW 都没有时停用，写桌面的「HDR 需要 RAW 文件」，也不改记住的选择（桌面 hdrAvailable）。
-    // 开关记在 localStorage，第一次默认关。开着、又有只有 JPG 的照片时，下面一行说这几张存普通版本。
-    const canHdr = hdrAvailable(photos);
-    let hdrOn = canHdr && loadExportHdr();
-    const hdrRow = el('div', 'frow');
-    const hdr = el('div', 'hdrrow');
-    const hdrText = el('div', 'tx');
-    hdrText.append(el('b', '', 'HDR'), el('small', '', canHdr ? HDR_LINE : HDR_NO_RAW));
-    const sw = document.createElement('input');
-    sw.type = 'checkbox';
-    sw.className = 'switch';
-    sw.disabled = !canHdr;
-    sw.checked = hdrOn;
-    sw.setAttribute('role', 'switch');
-    sw.setAttribute('aria-label', 'HDR');
-    hdr.append(hdrText, sw);
-    hdrRow.append(hdr);
-    const mix = hdrMixLine(photos);
-    const mixBox = mix ? el('div', 'bn grey hdrmix') : null;
-    if (mixBox && mix) {
-      mixBox.dataset.state = 'hdr-mix';
-      const ic = el('span', 'dim');
-      ic.append(ico(PATH.info, 'md'));
-      mixBox.append(ic, el('div', 'tx dim', mix));
-      mixBox.hidden = !hdrOn;
-      hdrRow.append(mixBox);
-    }
-    const frameWarn = hdrFrameLine(photos);
-    const frameBox = frameWarn ? el('div', 'bn grey hdrmix') : null;
-    if (frameBox && frameWarn) {
-      frameBox.dataset.state = 'hdr-frame';
-      const ic = el('span', 'dim');
-      ic.append(ico(PATH.alert, 'md'));
-      frameBox.append(ic, el('div', 'tx dim', frameWarn));
-      frameBox.hidden = !hdrOn;
-      hdrRow.append(frameBox);
-    }
-    sw.addEventListener('change', () => {
-      if (!canHdr) return;
-      hdrOn = sw.checked;
-      saveExportHdr(hdrOn);
-      if (mixBox) mixBox.hidden = !hdrOn;
-      if (frameBox) frameBox.hidden = !hdrOn;
-    });
-    const form = el('div');
-    form.style.marginTop = '10px';
-    form.append(sizeRow, qualityRow, hdrRow);
-    if (!this.app.book().dat) {
-      const guide = el('p', 'guide', NO_DAT_GUIDE);
-      guide.dataset.state = 'no-dat-guide';
-      form.append(guide);
-    }
-    const go = button('btn primary lg block go', '');
-    go.append(ico(PATH.export, 'md'), document.createTextNode('存到相册'));
-    go.addEventListener('click', () => {
-      this.closeSheet();
-      onStart?.();
-      this.start(photos, { size, quality, hdr: hdrOn });
-    });
-    const foot = el('p', 'foot', `做好后再点一次「存到相册」，在系统面板里点「${n === 1 ? '存储图像' : `存储 ${n} 张图像`}」。`);
-    sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
-    this.shell.append(scrim, sheet);
-    this.sheet = [scrim, sheet];
-    if (n === 1) {
-      const photo = photos[0];
-      const seq = ++this.sizeSeq;
-      void (async () => {
-        const fontKeys = fontsNeeded(photo.border, photo.stamp);
-        const [, fonts] = await Promise.all([
-          logoStore.ensureLoaded(),
-          fontKeys.length ? ensureFontPack(fontKeys) : Promise.resolve({ fontIndex: '', fontPack: null }),
-          ensureCameraRecipe(photo, this.app.book(), { checkMissingDat: true }),
-        ]);
-        if (seq !== this.sizeSeq || !sheet.isConnected) return;
-        const lutBook = this.app.lutBook?.();
-        const book = this.app.book();
-        const reqPhoto = requestPhoto(photo, lutBook, book);
-        const req = buildRequest(reqPhoto, cardsFor(book, photo), { size: 'original', quality: 'high' }, __GXR_BUILD__);
-        const isLogLut = Boolean(reqPhoto.lutInputSpace && !isDisplaySpace(reqPhoto.lutInputSpace));
-        const isLocalRecipe = (req.side.recipe as { kind?: unknown } | undefined)?.kind === 'local';
-        const useJpg = photo.jpg !== null && !isLogLut && (!req.side.recipe || photo.dng === null || (!isLocalRecipe && !book.pack));
-        const reply = await this.core.sizes({
-          dng: photo.dng,
-          jpg: photo.jpg,
-          side: req.side,
-          layout: req.layout,
-          useJpg,
-          stem: photo.stem,
-          mtimeMs: req.mtimeMs,
-          tzOffsetMin: req.tzOffsetMin,
-          fontIndex: fonts.fontIndex,
-          fontPack: fonts.fontPack,
-        });
-        if (!this.batch || this.batch.phase === 'closed') this.core.release();
-        if (seq !== this.sizeSeq || !sheet.isConnected) return;
-        if (!reply.ok || !reply.json) {
-          sizeLine.textContent = SIZE_FAILED;
-          return;
-        }
-        sized = JSON.parse(reply.json) as typeof sized;
-        paintSize();
-      })().catch(() => {
-        if (seq === this.sizeSeq && sheet.isConnected) sizeLine.textContent = SIZE_FAILED;
-      });
-    } else {
-      const warmFonts = [...new Set(photos.flatMap((p) => fontsNeeded(p.border, p.stamp)))];
-      void logoStore.ensureLoaded();
-      void ensureCameraRecipes(photos, this.app.book(), { checkMissingDat: true });
-      if (warmFonts.length) void ensureFontPack(warmFonts).catch(() => undefined);
-    }
+    this.openSheet(ids, { onStart });
   }
 
-  /** 清空照片：这一批停下，文件全丢，晚到的结果不会再到共享这一步。 */
+  /** 编辑器「⋯ → 导出选项」与 U2「更多」：打开「导出选项」面板。 */
+  openOptions(ids: string[], onStart?: () => void): boolean {
+    return this.openSheet(ids, { title: '导出选项', onStart });
+  }
+
+  /** 编辑器单点「存到相册」：直接按记住的选项开始导出，不先弹导出选项表；已在导出/排队/待存中的照片不重复发起。 */
+  startQuick(ids: string[], onStart?: () => void): boolean {
+    const ordered = this.orderedPhotos(ids);
+    if (!ordered.length) return false;
+    this.closeSheet();
+    const photos = this.queue.filterQuickPhotos(ordered, this.batch);
+    if (!photos.length) {
+      this.paint();
+      return true;
+    }
+    onStart?.();
+    const hdr = hdrAvailable(photos) && loadExportHdr();
+    this.start(photos, { size: loadExportSize(), quality: loadExportQuality(), hdr });
+    return true;
+  }
+
+  /** 清空照片：这一批和排队任务全部停下，待存成片与失败全丢，晚到的结果不会再到共享这一步。 */
   clear(): void {
     this.closeSheet();
+    this.queue.clear();
+    this.detailsOpen = false;
+    this.chunks = [];
+    this.chunk = 0;
+    this.chunkEntryCount = 0;
     this.batch?.cancel();
     this.batch = null;
     this.removeDock();
@@ -363,20 +207,99 @@ export class ExportFlow {
     return this.urls.size;
   }
 
+  private orderedPhotos(ids: string[]): Photo[] {
+    const want = new Set(ids);
+    const ordered = this.app.photos().filter((p) => want.has(p.id));
+    if (ordered.length) return ordered;
+    return ids.map((id) => this.app.photo(id)).filter((p): p is Photo => !!p);
+  }
+
+  private openSheet(ids: string[], opts: { title?: string; onStart?: () => void }): boolean {
+    const photos = this.orderedPhotos(ids);
+    if (!photos.length) return false;
+    this.closeSheet();
+    this.sheet = mountExportSheet(
+      {
+        shell: this.shell,
+        core: this.core,
+        book: () => this.app.book(),
+        lutBook: () => this.app.lutBook?.(),
+        cardsFor,
+        requestPhoto,
+        isBatchClosed: () => !this.batch || this.batch.phase === 'closed',
+        onStart: (picked, options) => this.start(picked, options),
+        onClose: () => this.closeSheet(),
+      },
+      photos,
+      opts,
+    );
+    return true;
+  }
+
   private revokeUrls(): void {
     for (const url of this.urls) URL.revokeObjectURL(url);
     this.urls.clear();
   }
 
   private closeSheet(): void {
-    this.sizeSeq += 1;
-    for (const node of this.sheet) node.remove();
-    this.sheet = [];
+    if (!this.sheet) return;
+    this.sheet.cleanup();
+    for (const node of this.sheet.nodes) node.remove();
+    this.sheet = null;
   }
 
-  /** 点「存到相册」：把这几张、它们的文件句柄、版本和请求定下来。新的一批会放掉上一批还没交出去的文件。 */
-  private start(photos: Photo[], options: { size: SizeTier; quality: QualityTier; hdr: boolean }): void {
-    this.batch?.cancel();
+  private positionOf(id: string): number | null {
+    const index = this.app.photos().findIndex((p) => p.id === id);
+    return index >= 0 ? index + 1 : null;
+  }
+
+  private carryoverEntries(): ReadyEntry[] {
+    return this.queue.carryover.map((entry) => ({
+      ...entry,
+      position: this.positionOf(entry.id) ?? entry.position,
+    }));
+  }
+
+  private batchEntries(batch: ExportBatch): ReadyEntry[] {
+    return batch.staged.map((s) => {
+      const item = batch.item(s.id);
+      return {
+        id: s.id,
+        stem: item?.stem ?? s.id,
+        file: s.file,
+        position: this.positionOf(s.id),
+        hdrRequested: Boolean(item?.req.hdr),
+        result: batch.results.get(s.id),
+        ...(item?.cameraRecipeNote ? { cameraRecipeNote: item.cameraRecipeNote } : {}),
+      };
+    });
+  }
+
+  private allReadyEntries(batch: ExportBatch | null): ReadyEntry[] {
+    const carried = this.carryoverEntries();
+    const current = batch && batch.phase !== 'closed' ? this.batchEntries(batch) : [];
+    return this.queue.readyEntries(carried, current);
+  }
+
+  /** 开始或排队一批导出：保留未共享的成片与失败记录，不丢结果。 */
+  private start(photos: Photo[], options: ExportOptions): void {
+    this.revokeUrls();
+    this.view = 'progress';
+    const current = this.batch;
+    const action = this.queue.enqueueOrPrepareStart(photos, options, current, (b) => this.batchEntries(b as ExportBatch));
+    if (action === 'queued') {
+      this.paint();
+      return;
+    }
+    if (current && current.phase !== 'closed') {
+      // 取消旧批次前清空引用，避免旧批次的 changed 回调误清刚建的 dock。
+      this.batch = null;
+      current.cancel();
+    }
+    this.launch(photos, options);
+  }
+
+  private launch(photos: Photo[], options: ExportOptions): void {
     this.revokeUrls();
     const hooks = dev();
     const binding = hooks?.binding;
@@ -423,12 +346,13 @@ export class ExportFlow {
       changed: () => this.paint(),
       memoryPeak: () => this.core.marks.total,
       peakEstimate: (item) => estimatePeak(this.core, item, options.size, fonts),
+      baseStagedBytes: () => this.queue.carryoverBytes(),
     };
     let fonts: BatchFonts = { fontIndex: '', fontPack: null };
     this.view = 'progress';
     this.chunk = 0;
     this.chunks = [];
-    this.savedCount = 0;
+    this.chunkEntryCount = 0;
     const batch = new ExportBatch(items, host, options.hdr ? STAGE_CAP_HDR_BYTES : STAGE_CAP_BYTES);
     this.batch = batch;
     const begin = (luts: Parameters<ExportCore['begin']>[0]['luts'], f: BatchFonts): void => {
@@ -530,11 +454,22 @@ export class ExportFlow {
     this.shell.removeAttribute('data-export');
   }
 
-  /** 贴底的那一栏，按批次的状态画。 */
+  /** 独立浮在底栏上方的导出进度 / 就绪条，按批次与暂存队列状态重画。 */
   private paint(): void {
     const batch = this.batch;
-    if (!batch || batch.phase === 'closed') {
-      if (batch === this.batch) this.removeDock();
+    // 当前批次进入任意非运行、非 held 状态（含失败后 ready / closed / stopped）且还有排队任务：保留未共享成片与失败，自动跑下一项。
+    const next = this.queue.takeNextQueued(batch, (b) => this.batchEntries(b as ExportBatch));
+    if (next) {
+      if (batch && batch.phase !== 'closed') {
+        this.batch = null;
+        batch.cancel();
+      }
+      this.launch(next.photos, next.options);
+      return;
+    }
+    const batchLive = Boolean(batch && batch.phase !== 'closed');
+    if (!batchLive && !this.queue.carryover.length && !this.queue.carriedFailures.size) {
+      this.removeDock();
       return;
     }
     if (!this.dock) {
@@ -543,41 +478,94 @@ export class ExportFlow {
       this.shell.insertBefore(this.dock, perf);
     }
     const dock = this.dock;
-    // 重画会丢掉旧的下载链接：它们的 URL 先撤销，需要的话 paintLinks 再建。
+    // 重画会丢掉旧的下载链接：它们的 URL 先撤销，需要的话 paintReadyBar 再建。
     this.revokeUrls();
+    dock.className = 'pdock';
     dock.replaceChildren();
-    this.shell.dataset.export = batch.phase;
-    dock.dataset.phase = batch.phase;
-    this.paintMemory(batch);
-    if (batch.phase === 'running') {
+    const phase = batch && batch.phase !== 'closed' ? batch.phase : 'ready';
+    this.shell.dataset.export = phase;
+    dock.dataset.phase = phase;
+    if (batch) this.paintMemory(batch);
+    if (batch && batch.phase === 'running') {
       this.chunks = [];
+      this.chunk = 0;
+      this.chunkEntryCount = 0;
       this.paintRunning(dock, batch);
       return;
     }
-    if (this.view === 'saved') {
-      this.paintSaved(dock, batch);
-      return;
-    }
-    if (!this.chunks.length && batch.staged.length) {
+    const entries = this.allReadyEntries(batch);
+    if ((!this.chunks.length || this.chunkEntryCount !== entries.length) && entries.length) {
       const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
       this.chunks = shareChunks(
-        batch.staged.map((s) => s.file.size),
+        entries.map((e) => e.file.size),
         limit,
         SHARE_MAX_BYTES,
       );
       this.chunk = 0;
+      this.chunkEntryCount = entries.length;
     }
-    this.paintReady(dock, batch);
+    const failures = this.queue.allFailures(batch);
+    const showThumbs = batch && batch.phase !== 'closed' && (failures.length > 0 || batch.phase === 'stopped');
+    paintReadyBar({
+      dock,
+      phase,
+      entries,
+      failures,
+      savedCount: this.queue.savedCount(batch),
+      queuedCount: this.queue.queuedCount(),
+      chunk: this.chunk,
+      totalChunks: this.chunks.length,
+      detailsOpen: this.detailsOpen,
+      noShare: this.view === 'noshare',
+      thumbs: showThumbs ? this.thumbs(batch) : null,
+      onShare: () => this.share(batch, this.chunkEntries(entries)),
+      onRetry: () => this.retry(batch),
+      onToggleDetails: () => {
+        this.detailsOpen = !this.detailsOpen;
+        this.paint();
+      },
+      onDismiss: () => this.dismiss(batch),
+      onFinishNoShare: () => this.finishShare(batch),
+      trackUrl: (url) => this.urls.add(url),
+    });
+  }
+
+  private retry(batch: ExportBatch | null): void {
+    this.chunks = [];
+    this.chunk = 0;
+    this.chunkEntryCount = 0;
+    const carriedJobs = this.queue.takeCarriedRetryJobs((p) => this.app.photo(p.id) ?? p);
+    if (batch && batch.phase !== 'closed' && batch.failures.size > 0) {
+      for (const job of carriedJobs) this.queue.pendingQueue.push(job);
+      batch.retry();
+      return;
+    }
+    const first = carriedJobs.shift();
+    if (!first) return;
+    for (const job of carriedJobs) this.queue.pendingQueue.push(job);
+    if (batch && (batch.phase === 'running' || batch.phase === 'held')) {
+      this.queue.pendingQueue.unshift(first);
+      this.paint();
+      return;
+    }
+    if (batch && batch.phase !== 'closed') {
+      this.queue.preserveBatch(batch, this.batchEntries(batch));
+      this.batch = null;
+      batch.cancel();
+    }
+    this.queue.beginBatch(first.photos, first.options);
+    this.launch(first.photos, first.options);
   }
 
   private paintMemory(batch: ExportBatch): void {
     const marks = this.core.marks;
     const mib = (v: number) => Math.round((v / 1048576) * 10) / 10;
-    const data = { wasm: marks.wasm, js: marks.js, staged: batch.stagedHigh, workers: marks.workers, times: batch.times };
+    const stagedHigh = Math.max(batch.stagedHigh, batch.stagedBytes + this.queue.carryoverBytes());
+    const data = { wasm: marks.wasm, js: marks.js, staged: stagedHigh, workers: marks.workers, times: batch.times };
     this.shell.dataset.exportMem = JSON.stringify(data);
     if (this.perf && !this.perf.hidden) {
       const avg = batch.times.length ? `${Math.round(batch.times.reduce((a, b) => a + b, 0) / batch.times.length)} ms` : '—';
-      this.perf.textContent = `导出 WASM ${mib(marks.wasm)} MiB · JS ${mib(marks.js)} MiB · 待存 ${mib(batch.stagedHigh)} MiB · 每张 ${avg}`;
+      this.perf.textContent = `导出 WASM ${mib(marks.wasm)} MiB · JS ${mib(marks.js)} MiB · 待存 ${mib(stagedHigh)} MiB · 每张 ${avg}`;
     }
   }
 
@@ -601,7 +589,7 @@ export class ExportFlow {
       else if (state === 'ok' || state === 'saved' || state === 'fail') {
         if (state === 'saved') t.classList.add('ok');
         const st = el('span', 'st');
-        st.append(ico(state === 'fail' ? PATH.x : PATH.check));
+        st.append(exportIco(state === 'fail' ? EXPORT_ICON.x : EXPORT_ICON.check));
         t.append(st);
       }
       row.append(t);
@@ -613,117 +601,74 @@ export class ExportFlow {
     const { done, total, current } = batch.progress();
     const top = el('div', 'top');
     const tx = el('div', 'tx');
-    tx.append(el('b', 'num', `正在导出 ${current} / ${total}`), el('small', '', batch.hdr ? HDR_PROGRESS : '可以接着看照片。'));
+    const queued = this.queue.queuedCount();
+    const title = queued ? `正在导出 ${current} / ${total}（另排 ${queued} 张）` : `正在导出 ${current} / ${total}`;
+    tx.append(el('b', 'num', title), el('small', '', batch.hdr ? HDR_PROGRESS : '可以接着看照片。'));
+    const carried = this.carryoverEntries();
+    if (carried.length > 1) {
+      const summary = readyPositionsSummary(carried.map((e) => e.position));
+      if (summary) tx.append(el('small', 'ready-carry', `已做好待存：${summary}`));
+    }
     const stop = button('fbtn fill-ctl', '停止');
-    stop.addEventListener('click', () => batch.stop());
+    stop.addEventListener('click', () => {
+      this.queue.stop();
+      batch.stop();
+    });
     top.append(el('span', 'spin'), tx, stop);
     const bar = el('div', 'bar');
     const fill = el('i');
     fill.style.width = `${total ? (done / total) * 100 : 0}%`;
     bar.append(fill);
     dock.append(top, bar, this.thumbs(batch));
-  }
-
-  private paintReady(dock: HTMLElement, batch: ExportBatch): void {
-    const ok = batch.staged.length;
-    const failed = [...batch.failures.values()];
-    const top = el('div', 'top');
-    const tx = el('div', 'tx');
-    const icon = el('span', `ic ${failed.length ? 'warn' : 'ok'}`);
-    icon.append(ico(failed.length ? PATH.alert : PATH.check));
-    let main: string;
-    // 只数还没交出去的文件和还剩的失败（交出去的不再算待存，Sol r1 P2-01）。
-    const made = ok > 0 || batch.savedCount() > 0;
-    if (batch.phase === 'stopped') main = `已停止。做好的 ${ok} 张还没存，点「存到相册」。`;
-    else if (!failed.length) main = `${ok} 张已做好`;
-    else if (!made) main = `${failed.length} 张都没做成`;
-    else if (!ok) main = `${failed.length} 张没做成`;
-    else main = `做好 ${ok} 张，${failed.length} 张没做成`;
-    tx.append(el('b', '', main));
-    this.paintHdr(tx, batch);
-    this.paintCameraNotes(tx, batch);
-    if (failed.length) {
-      const why = el('ul', 'why');
-      for (const f of failed) why.append(el('li', '', `${f.stem}：${f.message}`));
-      tx.append(why);
-    }
-    top.append(icon, tx);
-    if (failed.length) {
-      const label = !made ? '重试' : failed.length === 1 ? '重试这张' : `重试这 ${failed.length} 张`;
-      const retry = button('fbtn fill-ctl', label);
-      retry.dataset.act = 'retry';
-      retry.addEventListener('click', () => {
-        this.chunks = [];
-        batch.retry();
-      });
-      top.append(retry);
-    }
-    const share = ok ? this.shareButton(batch, failed.length > 0 || batch.phase === 'stopped') : null;
-    if (share && !failed.length && batch.phase !== 'stopped') top.append(share);
-    dock.append(top);
-    if (failed.length || batch.phase === 'stopped') dock.append(this.thumbs(batch));
-    if (share && (failed.length || batch.phase === 'stopped')) dock.append(share);
-    if (!ok && !failed.length) {
-      const close = button('btn lg block', '好');
-      close.addEventListener('click', () => batch.release());
-      dock.append(close);
-    }
-    if (this.view === 'noshare') this.paintLinks(dock, batch);
-  }
-
-  /**
-   * 开了 HDR 的一批：05c / 05e 的那一行（「4 张 HDR · 1 张只有 JPG，存普通版本」），按还没交出去的文件数；别的原因没做成
-   * HDR 的逐张写桌面的说明（hdr_note）。做没做成 HDR 看核心的结果。
-   */
-  private paintHdr(tx: HTMLElement, batch: ExportBatch): void {
-    if (!batch.hdr || !batch.staged.length) return;
-    const rows = batch.staged.map((s) => ({ stem: batch.item(s.id)?.stem ?? '', result: batch.results.get(s.id) }));
-    const { line, notes } = hdrResultText(rows);
-    if (line) {
-      const small = el('small', 'hdrline', line);
-      small.dataset.state = 'hdr-line';
-      tx.append(small);
-    }
-    if (notes.length) {
-      const list = el('ul', 'why hdrnotes');
-      for (const note of notes) list.append(el('li', '', note));
-      tx.append(list);
+    if (carried.length) {
+      const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
+      const carryChunks = shareChunks(
+        carried.map((e) => e.file.size),
+        limit,
+        SHARE_MAX_BYTES,
+      );
+      const picked = (carryChunks[0] ?? []).map((i) => carried[i]).filter((e): e is ReadyEntry => !!e);
+      const label = readyShareLabel(
+        carried.map((e) => e.position),
+        0,
+        carryChunks.length,
+      );
+      const saveReady = button('btn primary block running-ready', '');
+      saveReady.dataset.act = 'share-ready';
+      saveReady.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(label));
+      saveReady.addEventListener('click', () => this.shareCarryover(picked));
+      dock.append(saveReady);
+      if (this.view === 'noshare') {
+        const links = el('div', 'links');
+        links.dataset.state = 'no-share';
+        for (const entry of picked) {
+          const a = el('a', '', entry.file.name);
+          const url = URL.createObjectURL(entry.file);
+          this.urls.add(url);
+          a.href = url;
+          a.download = entry.file.name;
+          links.append(a);
+        }
+        const closeLinks = button('btn block', '关闭');
+        closeLinks.addEventListener('click', () => {
+          this.view = 'progress';
+          this.queue.consumeCarryover(picked.map((e) => e.id));
+          this.paint();
+        });
+        links.append(closeLinks);
+        dock.append(links);
+      }
     }
   }
 
-  private paintCameraNotes(tx: HTMLElement, batch: ExportBatch): void {
-    const notes: string[] = [];
-    for (const s of batch.staged) {
-      const item = batch.item(s.id);
-      if (item?.cameraRecipeNote) notes.push(`${item.stem}：${item.cameraRecipeNote}`);
-    }
-    if (!notes.length) return;
-    const list = el('ul', 'why camnotes');
-    list.dataset.state = 'camera-recipe-notes';
-    for (const note of notes) list.append(el('li', '', note));
-    tx.append(list);
-  }
-
-  /** 05c 的「存到相册」。分几批时写第几批；点下去在这次点击里同步调用 navigator.share。 */
-  private shareButton(batch: ExportBatch, block: boolean): HTMLButtonElement {
-    const files = this.chunkFiles(batch);
-    const base = block ? `存 ${batch.staged.length} 张到相册` : '存到相册';
-    const label = shareLabel(this.chunk, this.chunks.length, base);
-    const btn = button(block ? 'btn primary lg block' : 'fbtn fill-acc', '');
-    btn.dataset.act = 'share';
-    btn.append(ico(PATH.export, 'md'), document.createTextNode(label));
-    btn.addEventListener('click', () => this.share(batch, files));
-    return btn;
-  }
-
-  private chunkFiles(batch: ExportBatch): Staged[] {
+  private chunkEntries(entries: readonly ReadyEntry[]): ReadyEntry[] {
     const pick = this.chunks[this.chunk] ?? [];
-    return pick.map((i) => batch.staged[i]).filter((s): s is Staged => !!s);
+    return pick.map((i) => entries[i]).filter((e): e is ReadyEntry => !!e);
   }
 
-  /** 必须在点击里同步调用，前面不能有 await：共享面板要这次点击的用户激活。 */
-  private share(batch: ExportBatch, staged: Staged[]): void {
-    const files = staged.map((s) => s.file);
+  /** 运行中直接保存已做好待存的 carryover：同步在点击里调用 navigator.share，绝不在前面 await。 */
+  private shareCarryover(picked: ReadyEntry[]): void {
+    const files = picked.map((e) => e.file);
     const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
     const can = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files });
     if (!can) {
@@ -731,66 +676,79 @@ export class ExportFlow {
       this.paint();
       return;
     }
+    const session = this.app.session();
+    const ids = picked.map((e) => e.id);
     nav.share({ files }).then(
       () => {
-        if (this.batch !== batch) return;
-        this.savedCount += files.length;
-        if (this.chunk + 1 < this.chunks.length) {
-          this.chunk += 1;
-          this.paint();
-          return;
-        }
-        this.view = 'saved';
+        if (this.app.session() !== session) return;
+        this.view = 'progress';
+        this.queue.consumeCarryover(ids);
+        this.chunks = [];
+        this.chunk = 0;
+        this.chunkEntryCount = 0;
         this.paint();
       },
       () => {
-        // 关掉了面板（AbortError）或别的失败：留在 05c，文件还在。
+        // 取消共享面板：保留 carryover，仍在栏上。
       },
     );
   }
 
-  private paintLinks(dock: HTMLElement, batch: ExportBatch): void {
-    const box = el('div', 'links');
-    box.dataset.state = 'no-share';
-    box.append(el('p', 'dim', NO_SHARE));
-    for (const s of batch.staged) {
-      const a = el('a', '', s.file.name);
-      const url = URL.createObjectURL(s.file);
-      this.urls.add(url);
-      a.href = url;
-      a.download = s.file.name;
-      box.append(a);
+  /** 必须在点击里同步调用，前面不能有 await：共享面板要这次点击的用户激活。 */
+  private share(batch: ExportBatch | null, picked: ReadyEntry[]): void {
+    const files = picked.map((e) => e.file);
+    const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
+    const can = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files });
+    if (!can) {
+      this.view = 'noshare';
+      this.paint();
+      return;
     }
-    const done = button('btn lg block', '好');
-    done.addEventListener('click', () => this.finishShare(batch));
-    box.append(done);
-    dock.append(box);
+    const ids = picked.map((e) => e.id);
+    nav.share({ files }).then(
+      () => {
+        if (this.batch !== batch) return;
+        if (this.chunk + 1 < this.chunks.length) {
+          this.queue.markChunkShared(ids);
+          this.chunk += 1;
+          this.paint();
+          return;
+        }
+        // 最后一批交出后自动收起，不再多点一次「好」。
+        this.finishShare(batch);
+      },
+      () => {
+        // 关掉了面板（AbortError）或别的失败：留在就绪条，文件还在。
+      },
+    );
   }
 
-  /** 05e：只知道面板在某个操作后关了，不知道是不是点了「存储图像」，所以不说「已存到相册」（机主决定 2）。 */
-  private paintSaved(dock: HTMLElement, batch: ExportBatch): void {
-    const n = this.savedCount;
-    const top = el('div', 'top');
-    const icon = el('span', 'ic ok');
-    icon.append(ico(PATH.check));
-    const tx = el('div', 'tx');
-    tx.append(el('b', '', `好了：${n} 张`), el('small', '', '选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。'));
-    this.paintHdr(tx, batch);
-    this.paintCameraNotes(tx, batch);
-    const done = button('fbtn fill-ctl', '好');
-    done.dataset.act = 'done';
-    done.addEventListener('click', () => this.finishShare(batch));
-    top.append(icon, tx, done);
-    dock.append(top);
-  }
-
-  private finishShare(batch: ExportBatch): void {
+  private finishShare(batch: ExportBatch | null): void {
     this.revokeUrls();
     this.view = 'progress';
-    this.savedCount = 0;
+    this.detailsOpen = false;
     this.chunks = [];
     this.chunk = 0;
-    batch.release();
+    this.chunkEntryCount = 0;
+    this.queue.finishShare();
+    if (batch && batch.phase !== 'closed') {
+      batch.release();
+    }
+    this.paint();
+  }
+
+  private dismiss(batch: ExportBatch | null): void {
+    this.revokeUrls();
+    this.view = 'progress';
+    this.detailsOpen = false;
+    this.chunks = [];
+    this.chunk = 0;
+    this.chunkEntryCount = 0;
+    this.queue.dismiss();
+    if (batch && batch.phase !== 'closed') {
+      this.batch = null;
+      batch.cancel();
+    }
     this.paint();
   }
 }

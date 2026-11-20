@@ -61,6 +61,6 @@ export async function exportShot(name: string, ids: string[], flow: ExportFlow, 
   }
   if (shot === 'export-saved') {
     shell.querySelector<HTMLButtonElement>('.pdock [data-act="share"]')?.click();
-    await until(() => !!shell.querySelector('.pdock [data-act="done"]'), 10_000);
+    await until(() => !shell.querySelector('.pdock'), 10_000);
   }
 }

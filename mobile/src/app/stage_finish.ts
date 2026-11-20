@@ -62,8 +62,8 @@ export interface StageFit {
 /** 按舞台可用矩形计算整张成片（照片 + 边框）的展示缩放与像素盒子。 */
 export function fitDecoInStage(stage: HTMLElement, deco: Deco): StageFit | null {
   const rect = stage.getBoundingClientRect();
-  const maxW = Math.max(0, rect.width - 16);
-  const maxH = Math.max(0, rect.height - 16);
+  const maxW = Math.max(0, rect.width);
+  const maxH = Math.max(0, rect.height);
   if (maxW <= 0 || maxH <= 0 || deco.width <= 0 || deco.height <= 0) return null;
   const s = Math.min(maxW / deco.width, maxH / deco.height);
   const cssW = deco.ew * s;
@@ -220,6 +220,7 @@ export interface StageDecorHost {
   isAlive?: () => boolean;
   onMeta?: () => void;
   onBackdrop?: () => void;
+  onDecorClear?: () => void;
   onToast?: (msg: string) => void;
 }
 
@@ -338,6 +339,7 @@ export class StageDecorController {
     if ((photo.border.style === 'none' && !photo.stamp.enabled) || this.host.cropTab?.()) {
       this.lastDeco = null;
       clearDecor(pv, media);
+      this.host.onDecorClear?.();
       return;
     }
 
@@ -363,6 +365,7 @@ export class StageDecorController {
     if (!deco || !media) {
       this.lastDeco = null;
       clearDecor(pv, media);
+      this.host.onDecorClear?.();
       return;
     }
     this.lastDeco = deco;

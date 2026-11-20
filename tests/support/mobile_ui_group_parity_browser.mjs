@@ -35,8 +35,14 @@ async function back(page) {
 }
 
 async function pick(page, id) {
-  await page.locator('.tabs button', { hasText: '配方' }).click();
-  await page.locator(`.editor .strip[data-recipes] .rc[data-card="${id}"]`).click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+  const backBtn = page.locator('.panel.recipe [data-act="recipe-back"]');
+  if (await backBtn.isVisible()) await backBtn.click();
+  const card = page.locator(`.editor .strip[data-recipes] .rc[data-card="${id}"]`);
+  await card.scrollIntoViewIfNeeded();
+  const alreadyOn = await card.evaluate((n) => n.classList.contains('on'));
+  await card.click();
+  if (!alreadyOn) await card.click();
   await page.waitForSelector(`.panel.recipe .knobs[data-card="${id}"] .krow`, { timeout: 60_000 });
   out.actions.push({ pick: id });
 }
@@ -44,6 +50,8 @@ async function pick(page, id) {
 /** 这张卡的第 `nth` 个旋钮挪到另一档（和现在不同的档），发 input 和 change（松手）。返回旋钮名和档位。 */
 async function knob(page, id, nth) {
   const name = await page.locator(`.panel.recipe .knobs[data-card="${id}"] .krow`).nth(nth).getAttribute('data-knob');
+  const chip = page.locator(`.panel.recipe .knob-chips .chip[data-knob-chip="${name}"]`);
+  if (await chip.count()) await chip.click();
   await page.locator(`.panel.recipe .knobs[data-card="${id}"] .krow[data-knob="${name}"] input`).evaluate((input) => {
     const max = Number(input.max);
     const now = Number(input.value);
@@ -57,7 +65,7 @@ async function knob(page, id, nth) {
 }
 
 async function setAdjust(page, key, value) {
-  await page.locator('.tabs button', { hasText: '调整' }).click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   await page.locator(`.chips .chip[data-key="${key}"]`).click();
   await page.locator('.panel.adjust input[type="range"]').evaluate((input, v) => {
     input.value = String(v);
@@ -83,7 +91,7 @@ async function undo(page) {
 }
 
 async function setCropTab(page, { preset, orient, angleDeg } = {}) {
-  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.locator('.editor .toolbar [data-tool="crop"]').click();
   await page.waitForSelector('.crop-panel');
   const stem = await page.locator('.editor').getAttribute('data-photo');
   if (typeof angleDeg === 'number' && angleDeg !== 0) {
@@ -115,13 +123,21 @@ async function setCropTab(page, { preset, orient, angleDeg } = {}) {
     );
   }
   if (orient) {
-    await page.locator(`.crop-panel .seg button[data-orient="${orient}"]`).click();
-    await page.waitForTimeout(250);
+    const flipBtn = page.locator('.crop-panel [data-act="crop-flip"]');
+    if ((await flipBtn.isEnabled()) && (await flipBtn.getAttribute('data-orient')) !== orient) {
+      await flipBtn.click();
+      await page.waitForFunction(
+        (wantOn) => document.querySelector('.crop-panel [data-act="crop-flip"]')?.dataset.orient === wantOn,
+        orient,
+        { timeout: 30_000 },
+      );
+    }
   }
 }
 
 async function copyGroups(page, wantGroups) {
-  await page.locator('[data-act="copy"]').click();
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.locator('.ms[data-state="editor-more"] [data-act="more-copy"]').click();
   await page.waitForSelector('[data-state="copy-options"]');
   const optionRows = await page.locator('[data-state="copy-options"] .optrow').evaluateAll((nodes) =>
     nodes.map((node) => ({
@@ -144,11 +160,13 @@ async function copyGroups(page, wantGroups) {
 }
 
 async function setFrameAndStamp(page) {
-  await page.locator('.tabs button', { hasText: '边框' }).click();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="frame"]').click();
   await page.waitForSelector('.panel.frame');
   const card = page.locator('.panel.frame .rc[data-style="leica"]');
   await card.scrollIntoViewIfNeeded();
   await card.click();
+  await page.locator('.editor .band-frame-hd [data-act="frame-opts"]').click();
   await page.locator('.panel.frame .swc[data-color="cream"]').click();
 
   await page.locator('.panel.frame [data-act="open-stamp"]').click();
@@ -250,11 +268,14 @@ try {
     await setAdjust(page, 'exposure_ev', 0.7);
     await setAdjust(page, 'contrast', 12);
     if (manifest.lut) {
-      await page.locator('.tabs button[data-tab="lut"]').click();
+      await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+      const backBtn = page.locator('.panel.recipe [data-act="recipe-back"]');
+      if (await backBtn.isVisible()) await backBtn.click();
+      await page.locator('.editor .panel.recipe .mode-switch [data-mode="lut"]').click();
       await page.locator(`.panel.lut .rc[data-lut="${manifest.lut.cubeId}"]`).click();
       await page.waitForFunction(
         ({ stem, cubeId }) =>
-          Boolean(document.querySelector('.tabs button[data-tab="lut"].dot')) &&
+          Boolean(document.querySelector('.panel.lut .mode-switch [data-mode="lut"].dot')) &&
           window.__gxrEdits().find((row) => row.stem === stem)?.lut === cubeId,
         { stem: source, cubeId: manifest.lut.cubeId },
         { timeout: 60_000 },
@@ -263,7 +284,8 @@ try {
     out.steps.source = { edit: (await edits(page)).find((row) => row.stem === source), side: (await sides(page, [source]))[source] };
 
     // 复制（默认的两组）→ 先不套用 → 网格里选三张目标 → 套用调整。
-    await page.locator('[data-act="copy"]').click();
+    await page.locator('.editor .nav [data-act="editor-more"]').click();
+    await page.locator('.ms[data-state="editor-more"] [data-act="more-copy"]').click();
     await page.waitForSelector('[data-state="copy-options"]');
     await page.locator('[data-state="copy-options"] .btn.primary').click();
     await page.waitForSelector('[data-state="copied-where"]');

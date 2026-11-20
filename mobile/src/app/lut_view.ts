@@ -1,10 +1,9 @@
-// 编辑器里的 LUT 页签（设计稿 03g）：卡片条（不用 LUT + 已导入的 LUT）、输入色彩空间行、说明文字、导入按钮。
+// 编辑器 128pt 单带里的 LUT 子视图：带首「配方 | LUT」切换 + 不用 LUT + 已导入 LUT 卡，顶栏放色彩空间、状态提示与导入 LUT。
 // 后台按单队列调用短命 Worker（lut_table）生成卡片小图与主舞台 3D LUT 纹理；拖动或导出时暂停后台小图。
 
 import type { Engine, Geometry } from '../../../frontend/src/index';
 import {
   LUT_ERRORS,
-  LUT_FOOTNOTE,
   SOURCE_TAGS,
   computeInputChoice,
   isDisplaySpace,
@@ -18,10 +17,10 @@ import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
 import { closeLutSheets, openLutActionSheet, openLutSpaceSheet } from './lut_sheet';
 import type { AppApi, Photo } from './model';
+import { makeRecipeLutSwitch } from './recipe_band';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const PLUS = 'M12 5v14M5 12h14';
-const CHEVRON = 'M9 6l6 6-6 6';
 const GEOMETRY: Geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
 const ADJUST = {
   exposure_ev: 0,
@@ -43,8 +42,10 @@ export interface LutStageHooks {
   stageLut(token: string | null, label: string | null): void;
   dragging(): boolean;
   lutTab(): boolean;
-  /** 通知编辑器 LUT 选中状态变了（更新 LUT tab 蓝点指示）。 */
+  /** 通知编辑器 LUT 选中状态变了（更新蓝点指示）。 */
   lutChanged(): void;
+  /** 点带首「配方」切回配方子视图。 */
+  openRecipe?(): void;
 }
 
 interface Slot {
@@ -59,14 +60,18 @@ export class LutView {
   private token = 0;
   private thumbToken = 0;
   private sourceKey: string | null = null;
+  private readonly shell: HTMLElement;
+  private readonly api: AppApi;
+  private readonly engine: Engine | null;
+  private readonly photo: Photo;
+  private readonly hooks: LutStageHooks;
+  private readonly head = el('div', 'band-lut-hd');
   private readonly panel = el('div', 'panel lut');
-  private readonly strip = el('div', 'strip inpanel');
-  private readonly missingBanner = el('div', 'bn lut-missing');
-  private readonly spaceRow = button('lrow pad', '');
-  private readonly spaceSmall = el('small', '', '');
-  private readonly foot = el('p', 'pad faint small lut-foot', LUT_FOOTNOTE);
-  private readonly statusEl = el('p', 'pad small lut-status', '');
-  private readonly addRow = el('div', 'pad lut-add-row');
+  private readonly strip = el('div', 'strip');
+  private readonly statusEl = el('span', 'lut-status-pill', '');
+  private readonly spaceBtn = button('band-act lut-space-btn', '色彩空间');
+  private readonly addBtn = button('band-act lut-import-btn', '导入 LUT');
+  private modeSwitchEl: HTMLElement | null = null;
   private stripKeys: string[] = [];
   private slots: Slot[] = [];
   private statusMsg = '';
@@ -76,40 +81,35 @@ export class LutView {
   private readonly off: () => void;
 
   constructor(
-    private readonly shell: HTMLElement,
-    private readonly api: AppApi,
-    private readonly engine: Engine | null,
-    private readonly photo: Photo,
-    private readonly hooks: LutStageHooks,
+    shell: HTMLElement,
+    api: AppApi,
+    engine: Engine | null,
+    photo: Photo,
+    hooks: LutStageHooks,
   ) {
+    this.shell = shell;
+    this.api = api;
+    this.engine = engine;
+    this.photo = photo;
+    this.hooks = hooks;
     this.panel.dataset.panel = 'lut';
     this.strip.dataset.luts = '1';
 
-    this.missingBanner.dataset.state = 'lut-deleted';
-    const missTx = el('div', 'tx');
-    missTx.append(el('b', '', LUT_ERRORS.cube_not_found), el('div', 'dim small', '已选的 LUT 不在本地库里；点「不用 LUT」或重新导入后再导出。'));
-    this.missingBanner.append(missTx);
+    this.statusEl.dataset.state = 'lut-status';
+    this.statusEl.hidden = true;
 
-    this.spaceRow.dataset.act = 'lut-space';
-    const spaceTx = el('div', 'grow');
-    spaceTx.append(el('b', '', '输入色彩空间'), this.spaceSmall);
-    const arrow = el('span', 'lut-chev');
-    arrow.append(icon(CHEVRON));
-    this.spaceRow.append(spaceTx, arrow);
-    this.spaceRow.addEventListener('click', () => {
+    this.spaceBtn.dataset.act = 'lut-space';
+    this.spaceBtn.addEventListener('click', () => {
       const rec = this.photo.lut ? this.api.lutBook().get(this.photo.lut) : undefined;
       if (rec) this.openSpaceFor(rec, false);
     });
 
-    this.statusEl.dataset.state = 'lut-status';
+    this.addBtn.dataset.act = 'lut-import';
+    this.addBtn.prepend(icon(PLUS));
+    this.addBtn.addEventListener('click', () => this.api.pickLut());
 
-    const add = button('btn block', '导入 LUT（.cube 文件）');
-    add.dataset.act = 'lut-import';
-    add.prepend(icon(PLUS));
-    add.addEventListener('click', () => this.api.pickLut());
-    this.addRow.append(add);
-
-    this.panel.append(this.strip, this.spaceRow, this.foot, this.addRow);
+    this.head.append(this.statusEl, this.spaceBtn, this.addBtn);
+    this.panel.append(this.strip);
 
     this.seenNotice = api.lutBook().lastNotice().seq;
     this.off = api.lutBook().onChange(() => {
@@ -121,6 +121,10 @@ export class LutView {
       this.refresh();
     });
     this.build();
+  }
+
+  headEl(): HTMLElement {
+    return this.head;
   }
 
   panelEl(): HTMLElement {
@@ -139,13 +143,11 @@ export class LutView {
     this.build();
   }
 
-  /** 源图已经上传显卡：立即把当前选中的 LUT 推上舞台，并在需要时生成缩略图。 */
   start(sourceKey: string): void {
     this.sourceKey = sourceKey;
     this.refresh();
   }
 
-  /** 配方变了（主舞台或配方小图）：刷新卡片小图。 */
   recipeUpdated(): void {
     if (this.hooks.lutTab()) {
       void this.renderCards(++this.thumbToken);
@@ -158,7 +160,6 @@ export class LutView {
     }
   }
 
-  /** 确保当前选中的 LUT 在 3 槽 GPU 缓存里（比如被后台缩略图挤掉后重新建回来）。 */
   ensureActive(): void {
     void this.applyStageLut();
   }
@@ -183,18 +184,21 @@ export class LutView {
     return true;
   }
 
-  private spaceLine(record: LutRecord | undefined): { text: string; warn: boolean } {
-    if (!record) return { text: '未选用 LUT', warn: false };
+  private spaceButtonLabel(record: LutRecord | undefined): { text: string; warn: boolean } {
+    if (!record) return { text: '色彩空间', warn: false };
     const choice = computeInputChoice(record);
-    if (!record.input_space) return { text: LUT_ERRORS.lut_space_required, warn: true };
-    const srcTag = SOURCE_TAGS[choice.default_input_source === 'required' ? 'manual' : choice.default_input_source];
-    const extras: string[] = [];
-    if (record.output_gamut) extras.push(record.output_gamut === 'rec2020' ? 'Rec.2020' : record.output_gamut.toUpperCase());
-    if (record.input_range === 'legal' || record.output_range === 'legal') extras.push('法律范围');
-    return {
-      text: `${spaceShortLabel(record.input_space)} · ${srcTag}${extras.length ? ` · ${extras.join(' · ')}` : ''}`,
-      warn: false,
-    };
+    if (!record.input_space) return { text: '选色彩空间', warn: true };
+    const tag = choice.default_input_source === 'required' ? '' : SOURCE_TAGS[choice.default_input_source];
+    const base = spaceShortLabel(record.input_space);
+    return { text: tag ? `${base} · ${tag}` : base, warn: false };
+  }
+
+  private makeModeSwitch(): HTMLElement {
+    const sw = makeRecipeLutSwitch('lut', this.photo.lut !== null, (mode) => {
+      if (mode === 'recipe') this.hooks.openRecipe?.();
+    });
+    this.modeSwitchEl = sw;
+    return sw;
   }
 
   private build(): void {
@@ -211,7 +215,8 @@ export class LutView {
       this.slots.length === 1 + list.length;
 
     if (sameStrip) {
-      // 卡片键序列没变时原地更新类名与文字，避免异步 refresh() 拆卸正在点击或滚动中的 .rc 元素。
+      const lutModeBtn = this.modeSwitchEl?.querySelector('[data-mode="lut"]');
+      if (lutModeBtn) lutModeBtn.classList.toggle('dot', selectedId !== null);
       this.syncMark(this.slots[0].node, this.slots[0].thumb, selectedId === null);
       for (let i = 0; i < list.length; i += 1) {
         const record = list[i];
@@ -226,11 +231,10 @@ export class LutView {
       }
     } else {
       const scrollLeft = this.strip.scrollLeft;
-      this.strip.replaceChildren();
+      this.strip.replaceChildren(this.makeModeSwitch());
       this.slots = [];
       this.stripKeys = nextKeys;
 
-      // 第一张卡：不用 LUT
       const noneBtn = button(selectedId === null ? 'rc on' : 'rc', '');
       noneBtn.dataset.lut = 'none';
       const noneThumb = el('div', 'th lut-none');
@@ -248,7 +252,6 @@ export class LutView {
       this.strip.append(noneBtn);
       this.slots.push({ record: null, node: noneBtn, thumb: noneThumb, nameEl: noneName, sub: noneSub });
 
-      // 若照片选过已被删除的 LUT：明显标出「LUT 已删除」提示卡片（导出也按桌面语义拒绝）。
       if (deleted) {
         const delCard = button('rc on lockd', '');
         delCard.dataset.lut = 'deleted';
@@ -280,26 +283,21 @@ export class LutView {
         this.strip.append(card);
         this.slots.push({ record, node: card, thumb, nameEl, sub });
       }
+      if (!list.length && !deleted) {
+        this.strip.append(el('p', 'lut-foot', 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。'));
+      }
       if (scrollLeft > 0) this.strip.scrollLeft = scrollLeft;
     }
 
-    if (deleted && !this.missingBanner.isConnected) {
-      this.panel.insertBefore(this.missingBanner, this.spaceRow);
-    } else if (!deleted && this.missingBanner.isConnected) {
-      this.missingBanner.remove();
-    }
+    const sp = this.spaceButtonLabel(selectedRec);
+    this.spaceBtn.textContent = sp.text;
+    this.spaceBtn.classList.toggle('warn', sp.warn);
+    this.spaceBtn.disabled = !selectedRec;
 
-    const sp = this.spaceLine(selectedRec);
-    this.spaceSmall.className = sp.warn ? 'warn' : '';
-    this.spaceSmall.textContent = sp.text;
-    this.spaceRow.disabled = !selectedRec;
-
-    if (this.statusMsg) {
-      this.statusEl.textContent = this.statusMsg;
-      if (!this.statusEl.isConnected) this.panel.insertBefore(this.statusEl, this.addRow);
-    } else if (this.statusEl.isConnected) {
-      this.statusEl.remove();
-    }
+    const statusText = this.statusMsg || (deleted ? LUT_ERRORS.cube_not_found : '');
+    this.statusEl.textContent = statusText;
+    this.statusEl.hidden = !statusText;
+    this.panel.dataset.lutDeleted = deleted ? '1' : '0';
 
     this.paintThumbs();
   }
@@ -461,7 +459,6 @@ export class LutView {
       return;
     }
     if (!this.engine || mode === 'still') {
-      // 无 GPU 时保留牌标签提示已选 LUT。
       this.stageReadyToken = null;
       this.hooks.stageLut(null, record.name);
       return;
@@ -475,7 +472,6 @@ export class LutView {
       this.hooks.stageLut(renderToken, record.name);
       return;
     }
-    // 没好之前保持上一帧，不把照片置空。
     const res = await gpu.ensure(record);
     if (token !== this.token || this.stageWanted !== renderToken || !this.panel.isConnected) return;
     if (!res.ok) {
@@ -543,7 +539,6 @@ export class LutView {
       this.paintThumbs();
     }
 
-    // 如果后台生成小图超过 3 槽、把舞台当前用的 LUT 挤出显卡缓存了，马上给舞台补回来。
     if (alive() && this.stageReadyToken && !gpu.has(this.stageReadyToken)) {
       await this.applyStageLut();
     }

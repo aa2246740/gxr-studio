@@ -114,13 +114,14 @@ def test_mobile_ui_export_hdr_files_match_desktop(tmp_path: Path, pinned_icc: by
         steps = report["steps"]
         full, small = steps["full"], steps["small"]
 
-        # 05a: off by default, enabled with RAW selected, the design line; the mix line only when on.
-        before, after = full["before"], full["after"]
-        check(before["disabled"] is False and before["checked"] is False, "HDR switch enabled, off by default")
+        # 05a: U1 defaults HDR on for RAW; toggling off hides the mix line, toggling back on shows and saves it.
+        before, after_off, after = full["before"], full["afterOff"], full["after"]
+        check(before["disabled"] is False and before["checked"] is True, "HDR switch enabled, on by default (U1)")
         check(before["role"] == "switch", "HDR switch announces itself as a switch")
         check("在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。" in before["text"], "05a HDR line")
         check("这项下一步做" not in full["sheet"]["text"], "no 下一步做 label on the HDR row")
-        check(before["mix"] is not None and before["mix"]["visible"] is False, "mix line hidden while HDR is off")
+        check(before["mix"] is not None and before["mix"]["visible"] is True, "mix line visible while HDR is on")
+        check(after_off["checked"] is False and after_off["mix"]["visible"] is False, "mix line hidden while HDR is off")
         check(after["checked"] is True and after["mix"]["visible"] is True, "mix line shown once HDR is on")
         check(after["mix"]["text"] == "HDR 需要 RAW 文件：1 张只有 JPG，会存普通版本。", "05a mix line wording")
         check(full["stored"] == "1", "choice remembered in gxr.mobile.export_hdr")
@@ -151,15 +152,13 @@ def test_mobile_ui_export_hdr_files_match_desktop(tmp_path: Path, pinned_icc: by
                 key = f"{tag}{'hdr' if res.hdr else 'sdr/' + str(res.hdr_reason)}"
                 table[key] = table.get(key, 0) + 1
                 outcomes.append((stem, bool(res.hdr), res.hdr_reason))
-            # 05b / 05c / 05e: the wording follows the desktop outcome of the same photos.
+            # 05b / ready bar: the wording follows the desktop outcome of the same photos; no trailing 「好」.
             line, notes = _hdr_text(outcomes)
             check("生成 HDR 版本要多等几秒。可以接着看照片。" in step["running"], "05b HDR line")
-            check("5 张已做好" in step["ready"], "05c main line")
-            check(line in step["ready"].splitlines(), "05c HDR line from the desktop outcomes")
-            check(all(n in step["ready"].splitlines() for n in notes), "05c per-photo HDR notes (desktop HDR_NOTES)")
-            check(line in step["shared"]["saved"].splitlines(), "05e HDR line")
-            check("好了：5 张" in step["shared"]["saved"] and "已存到相册" not in step["shared"]["saved"], "05e main line")
-            check("选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。" in step["shared"]["saved"], "05e share-done line (HDR)")
+            check("5 张做好了 · 存进相册" in step["ready"], "ready bar main line")
+            check(line in step["ready"].splitlines(), "ready bar HDR line from the desktop outcomes")
+            check(all(n in step["ready"].splitlines() for n in notes), "ready bar expanded per-photo HDR notes (desktop HDR_NOTES)")
+            check(step["shared"]["saved"] == "", "ready bar auto-dismisses after final share (no trailing 好)")
             check(all(c["active"] is True for c in step["files"]), "share() called inside the tap")
         check(sum(table.values()) == 10, "five full-size and five small HDR exports compared")
         check(table.get("full-sdr/no_raw") == 1 and table.get("small-sdr/no_raw") == 1, "the JPG-only photo is no_raw at both sizes")

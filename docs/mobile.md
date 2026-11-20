@@ -694,3 +694,26 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
 
 - **拍摄配方采用（`gxr-camdata::camera_recipe` + `mobile/src/lib/exif.ts` / `recipes.ts` / `app/model.ts` / `recipe_view.ts` / `export_ui.ts` / `paste_*.ts`）**：手机端对未显式选择配方（`photo.choice === null` 且 `photo.recipeOff` 为假）的 RAW / RAW+JPG 照片按桌面优先级（JPG 优先、`is not None` 语义，缺失时再回退 DNG，保留尾随空格）读取 EXIF Copyright（`0x8298`），仅在打开编辑器、复制或导出时按需经核心 Worker 专用 `camera-recipe` 请求（`camdata_camera_recipe`）按 `(datKey, tag)` 记忆化解析 `GXR1` 标签，网格加载期间不额外读 DNG 头或调 WASM；Worker 临时失败不缓存为 `none`，留待下次重试。采用结果只缓存在 `photo.cameraRecipe`，**不写进 `photo.choice`**，因此未编辑过的照片在网格上不亮铅笔角标；但在配方页标题/标签/卡片条、舞台预测、导出 `auto` 以及复制调整中都按采用的配方与微调生效（与桌面 `editor_edit`、`recipes.js`、`paste_core.js` 一致）。显式选择始终覆盖采用；套用仅含 LUT 的剪贴板会把 `photo.recipeOff` 置为真以关闭采用，撤销时还原；只有 JPG 与半格双联照片不采用；标签微调未知时提示「微调未知，电脑预测使用配方默认值」；解析出错时编辑器显示桌面完整文案（`${message} 照片调整仍可保存，暂不生成拍摄配方预测。`）并回退到 `builtin:4`；未导入相机配方文件或导入错代配方文件时导出仍按原规则保留相机 JPG，并在导出完成栏逐张附上「请先导入拍摄时使用的相机配方文件。」说明。
 - **「全部重置」（`mobile/src/app/adjust_view.ts`）**：点「全部重置」同时把调整滑块与四条曲线（`photo.curve = null`）归零，且只在滑块或曲线确有修改时加一次 `rev` 并通过 `host.refreshCurves()` 刷新曲线面板与网格角标。
+
+## 一键存到相册、顶栏 HDR 与就绪条（`phone-fast-export`）
+
+- **一键「存到相册」与「导出选项」（`mobile/src/app/export_ui.ts`、`export_options.ts`、`lib/prefs.ts`）**：编辑器底栏蓝色按钮「存到相册」点击后调用 `startQuickExport(shell, [photo.id])`，直接按记住的尺寸（`gxr.mobile.export_size`）、品质（`gxr.mobile.export_quality`）和 HDR（`gxr.mobile.export_hdr`）开始导出，不先弹选项面板；原导出面板改为「导出选项」，由编辑器顶栏 `⋯` 以及底栏「更多」调用 `openExportOptions(shell, [photo.id])` 打开，调整尺寸/品质/HDR 立即持久化，供后续一键导出复用。导出核心字节不变。
+- **独立就绪条与排队（`mobile/src/app/export_ready.ts`、`export_queue.ts`、`export_ui.ts`、`export_batch.ts`、`export.css`）**：导出的进度条与就绪条（`.pdock`）独立浮在底栏（`56px + --safe-bottom`）上方、覆盖在单带（`.band`）之上，**绝不改变照片舞台矩形，也不遮挡底栏或「存到相册」**。纯就绪态折叠时保持单行、高度不超过 52 pt，直接露出「第 N 张做好了 · 存进相册」或「N 张做好了 · 存进相册」与「详情」按钮；展开详情时才展示多张照片位置列表、HDR 摘要与逐张附注（`[data-state="ready-details"]`）。已有未保存结果时再发起导出不会丢弃旧结果，而是通过 `ExportQueueState`（`carryover` / `pendingQueue` / `carriedFailures`）顺序执行并计入阶段内存上限（`baseStagedBytes`）；对正在导出、已排队或待存中的同一张照片连点「存到相册」不重复发起；批次失败后继续推进排队并保留失败与重试，且已共享过的分批在切到新导出时绝不重复提供；停止/关闭/清空均清空排队任务；另一张仍在导出时进度条直接提供「存进相册」保存已做好成片；最后一批系统共享完成后就绪条自动消失，不再保留尾部「好」按钮。
+- **编辑器顶栏与可用 `⋯`（`mobile/src/app/paste_ui.ts`、`editor.ts`、`shell.css`）**：左侧「照片」返回，中间显示编辑器当前配方名与「第几张 / 共几张」（不再显示文件名；长按照片对比原图期间，副标题即时切换为「原图」，松手恢复「第几张 / 共几张」，单带收起时同样可见），右侧为常驻可见的实心强调色 `HDR` 开关与 `⋯` 菜单。有 RAW 的照片首次默认开启 HDR（`loadExportHdr()` 默认 `true`，保留已有用户的 `'0'`/`'1'` 选择），预览与导出同源跟随；只有 JPG 与半格双联照片禁用该开关，点击外层热区轻提示「HDR 需要 RAW 文件」。`⋯` 未复制调整前提供「复制调整」「导出选项」「照片信息」，复制后按序增加「粘贴」「套用到这一组」（文件名保留在「照片信息」内），全部复用既有面板。
+- **网格与起始页收敛（`mobile/src/app/grid.ts`、`start.ts`、`shell.css`）**：排序移入网格 `⋯` 菜单（顶栏「更多」与「完成」同行对齐），去掉顶部独立排序条；移除长期禁用的「胶片柜 · 下一步做」；单张自成一组时不另占组标题行，紧跟在上一组照片后时留出 14 px 间距与细分隔线；「套用到这一组」仅在剪贴板有内容时出现在组标题行；起始页在校准数据已导入时把镜头清单与「替换 / 删除」折叠为一行，点击打开完整校准面板。
+- **测试**：`tests/test_mobile_fast_export_unit.py`（纯函数与排队上限单测）与 `tests/test_mobile_fast_export_browser.py`（真实 `card250` + `g250` 在 390×844 与 430×932 的点击数、就绪条高度与排队、顶栏 HDR、`⋯` 全部五项、网格与起始页验收）。
+
+## 手机编辑页单带布局（`phone-editor-band`）
+
+手机编辑页（`mobile/src/app/editor.ts`、`editor_band.ts`、`editor_bar.ts`、`editor_hist.ts`、`stage_zoom.ts`、`more_sheet.ts`、`curves_sheet.ts`、`stamp_band.ts`、`recipe_band.ts`、`shell.css`）把顶部栏与底栏之间全部让给照片舞台，避免旧版常驻双段面板把竖拍照片压到屏幕 11%–13%：
+
+- **全黑无边舞台（`.stage`）**：纯黑背景（`#000`）、零内边距，竖拍与横拍照片均按有效区域充满；舞台上不叠加常驻状态胶囊（`.lbl` 移入带内顶栏，收起时隐藏），直方图改为舞台内可开关浮窗（`.hist-float`，默认关闭、不推挤舞台；有上下黑边时放在黑边内，否则放在右下角）。
+- **固定 128 pt 单带（`.band`）**：高度锁定 `128px`（常规顶栏 44px，微调或紧凑子页 24px + 内容区），无论在「配方 / LUT」「调整」「裁剪」「边框」「时间戳」之间切换、拖动滑块，还是弹出/展开就绪条（`.pdock`），`.stage` 与照片矩形位移为 0 px（收起时 `.band` 为 0 px，舞台多出 128 pt）。
+- **四工具底栏 + 主操作（`.toolbar`，`56px + --safe-bottom`）**：左侧为「配方 · 调整 · 裁剪 · 更多」四个 44 pt 触控目标（已编辑项亮小圆点），右侧为独立蓝色「存到相册」按钮（一键调用 `startQuickExport`）。
+- **单带内容与两处菜单**：
+  - **配方 / LUT**：带首纵向「配方 | LUT」切换键；配方卡点击切换，再点已选卡在 128 pt 带内进入旋钮微调（带「‹ 配方」返回），筛选按钮打开筛选弹层，状态胶囊点开状态/校准说明；LUT 在顶栏提供「导入 LUT」「色彩空间」与带内卡条。
+  - **调整**：横滑 10 项参数片 +「全部重置」+「曲线 ›」+ 直方图开关按钮 + 单根全宽滑块（双按归零）。
+  - **裁剪**：单带含 8 档比例片、横竖对调、参考线按钮与拉直标尺，尺寸与角度读数位于带顶栏。
+  - **底栏「更多」（`.more-sheet`）**：与顶栏 `⋯` 各自保持独立，承载「边框」（128 pt 边框带 + 点选款式/设置进入配色、线条与标志子页）、「时间戳」（128 pt 带内开关与「详细设置」抽屉）、「曲线」（打开底部 `.curves-sheet` 抽屉，拖动不导致舞台回流）、「导出选项」（调用 `openExportOptions`）与「校准与配方文件」五项；剪贴板与照片信息集中在顶栏 `⋯`。
+- **舞台手势与跨片记忆**：轻点照片空白收起/展开 128 pt 单带并跨片记忆（默认打开在「配方」）；双指捏合缩放到 5× 并支持单指拖移（放大期间单指拖移不翻片），双击还原 1×；长按看原图（中性转换 + 调整归零，顶栏副标题显示「原图」，放手恢复，拖拽或捏合时取消）。
+- **验收测试**：`tests/test_mobile_editor_band_browser.py`（`tests/support/mobile_editor_band_browser.mjs`）在 `390×844` 与 `440×956`（含 PWA 安全区与 0 安全区）验证照片占比、0 px 切换/拖动/就绪条位移、全部工具与双菜单可达路径、跨片记忆、缩放/双按/长按（含收起态顶栏「原图」）行为及联合截图。

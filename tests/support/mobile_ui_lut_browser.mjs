@@ -93,6 +93,11 @@ async function longPress(page, selector) {
   });
 }
 
+async function openLut(page) {
+  await page.locator('.editor .mode-switch [data-mode="lut"]').first().click();
+  await page.waitForSelector('.panel.lut:not([hidden])');
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
@@ -119,7 +124,7 @@ try {
     { timeout: 120_000 },
   );
 
-  // 2. 打开 Pair A → 切到 LUT 页签 → 导入 4 个合成 LUT + 1 个非 .cube 忽略文件 → 重复导入检查
+  // 2. 打开 Pair A → 切到 LUT 子视图 → 导入 4 个合成 LUT + 1 个非 .cube 忽略文件 → 重复导入检查
   const { a, b, c, d, jpgOnly } = manifest.stems;
   const ids = {
     disp33: manifest.luts.disp33.cubeId,
@@ -129,7 +134,7 @@ try {
   };
 
   await openPhoto(page, a);
-  await page.locator('.tabs button[data-tab="lut"]').click();
+  await openLut(page);
   await page.waitForSelector('.panel.lut .lut-foot');
   const footnote = await page.locator('.panel.lut .lut-foot').innerText();
 
@@ -145,15 +150,15 @@ try {
     Object.values(ids),
     { timeout: 120_000 },
   );
-  const importStatus = await page.locator('.panel.lut [data-state="lut-status"]').innerText();
+  const importStatus = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
 
   await page.locator('input.lutpick').setInputFiles([manifest.luts.disp33.path]);
   await page.waitForFunction(
-    () => document.querySelector('.panel.lut [data-state="lut-status"]')?.textContent === '已经导入过',
+    () => document.querySelector('.editor .band-lut-hd [data-state="lut-status"]')?.textContent === '已经导入过',
     null,
     { timeout: 30_000 },
   );
-  const dupStatus = await page.locator('.panel.lut [data-state="lut-status"]').innerText();
+  const dupStatus = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
 
   // 3. 未声明的 LUT 显示「请选择色彩空间」，点开空间选择器核对分组/12个空间后手选 sRGB
   const undeclaredCard = page.locator(`.panel.lut .rc[data-lut="${ids.undeclared}"]`);
@@ -176,7 +181,7 @@ try {
     ids.undeclared,
     { timeout: 15_000 },
   );
-  const spaceRowAfterPick = await page.locator('.panel.lut [data-act="lut-space"] small').innerText();
+  const spaceRowAfterPick = await page.locator('.editor .band-lut-hd [data-act="lut-space"]').innerText();
 
   // 4. 连续切换 3 张 Display LUT，核对短命 table Worker 每次销毁、引擎槽 <= 3，最后停在 disp33
   const switchStats = [];
@@ -186,8 +191,8 @@ try {
     await card.click();
     switchStats.push({ id, stats: await waitLutReady(page, id) });
   }
-  const pairAPill = await page.locator('.stage .lbl').innerText();
-  const pairADot = await page.locator('.tabs button[data-tab="lut"].dot').count();
+  const pairAPill = await page.locator('.editor .lbl').innerText();
+  const pairADot = await page.locator('.panel.lut .mode-switch [data-mode="lut"].dot').count();
   await backToGrid(page);
 
   out.steps.importAndSpaces = {
@@ -218,39 +223,39 @@ try {
     null,
     { timeout: 60_000 },
   );
-  await page.locator('.tabs button[data-tab="lut"]').click();
+  await openLut(page);
   await page.locator(`.panel.lut .rc[data-lut="${ids.shaper}"]`).click();
   await waitLutReady(page, ids.shaper);
-  const pairBPill = await page.locator('.stage .lbl').innerText();
+  const pairBPill = await page.locator('.editor .lbl').innerText();
   await backToGrid(page);
 
   // 6. Pair C: Apple Log LUT
   await openPhoto(page, c);
-  await page.locator('.tabs button[data-tab="lut"]').click();
+  await openLut(page);
   await page.locator(`.panel.lut .rc[data-lut="${ids.applelog}"]`).click();
   await waitLutReady(page, ids.applelog);
-  const pairCPill = await page.locator('.stage .lbl').innerText();
+  const pairCPill = await page.locator('.editor .lbl').innerText();
   await backToGrid(page);
 
   // 7. JPG-only: 先点 Log LUT（拒绝并给桌面提示），再点 Display LUT undeclared->sRGB（允许）
   await openPhoto(page, jpgOnly);
-  await page.locator('.tabs button[data-tab="lut"]').click();
+  await openLut(page);
   const logCard = page.locator(`.panel.lut .rc[data-lut="${ids.applelog}"]`);
   const jpgLogLocked = await logCard.evaluate((node) => node.classList.contains('lockd'));
   const jpgLogSub = await logCard.locator('.sub').innerText();
   await logCard.click();
-  await page.waitForSelector('.panel.lut [data-state="lut-status"]', { timeout: 10_000 });
-  const jpgLogRefused = await page.locator('.panel.lut [data-state="lut-status"]').innerText();
+  await page.waitForSelector('.editor .band-lut-hd [data-state="lut-status"]:not([hidden])', { timeout: 10_000 });
+  const jpgLogRefused = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
   const jpgSelectedAfterLog = await page.evaluate((stem) => window.__gxrEdits().find((r) => r.stem === stem)?.lut ?? null, jpgOnly);
 
   await page.locator(`.panel.lut .rc[data-lut="${ids.undeclared}"]`).click();
   await waitLutReady(page, ids.undeclared);
-  const jpgDispDot = await page.locator('.tabs button[data-tab="lut"].dot').count();
+  const jpgDispDot = await page.locator('.panel.lut .mode-switch [data-mode="lut"].dot').count();
   await backToGrid(page);
 
   // 8. Pair D: Apple Log LUT（之后开 HDR 导出）
   await openPhoto(page, d);
-  await page.locator('.tabs button[data-tab="lut"]').click();
+  await openLut(page);
   await page.locator(`.panel.lut .rc[data-lut="${ids.applelog}"]`).click();
   await waitLutReady(page, ids.applelog);
   await backToGrid(page);
@@ -271,44 +276,38 @@ try {
   const sdrOrder = [a, b, c, jpgOnly];
   const hdrOrder = [d];
 
-  await exportFromGrid(page, sdrOrder, '原始尺寸', '高');
+  await exportFromGrid(page, sdrOrder, '原始尺寸', '高', null, { hdr: false });
   const sdrFullReady = await waitPhase(page, ['ready']);
   const sdrFullFacts = await batchFacts(page);
   await shareAll(page);
   const sdrFullFiles = await sharedFiles(page, manifest.outDir, 'full-');
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   await page.evaluate(() => window.__devExport.core.stop());
   let callIndex = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, sdrOrder, '小', '低');
+  await exportFromGrid(page, sdrOrder, '小', '低', null, { hdr: false });
   const sdrSmallReady = await waitPhase(page, ['ready']);
   const sdrSmallFacts = await batchFacts(page);
   await shareAll(page);
   const sdrSmallFiles = await sharedFiles(page, manifest.outDir, 'small-', callIndex);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   await page.evaluate(() => window.__devExport.core.stop());
   callIndex = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, hdrOrder, '原始尺寸', '高', async () => {
-    await page.locator('.ms.export input.switch').click();
-  });
+  await exportFromGrid(page, hdrOrder, '原始尺寸', '高', null, { hdr: true });
   const hdrFullReady = await waitPhase(page, ['ready']);
   const hdrFullFacts = await batchFacts(page);
   await shareAll(page);
   const hdrFullFiles = await sharedFiles(page, manifest.outDir, 'hdr-full-', callIndex);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   await page.evaluate(() => window.__devExport.core.stop());
   callIndex = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, hdrOrder, '小', '低');
+  await exportFromGrid(page, hdrOrder, '小', '低', null, { hdr: true });
   const hdrSmallReady = await waitPhase(page, ['ready']);
   const hdrSmallFacts = await batchFacts(page);
   await shareAll(page);
   const hdrSmallFiles = await sharedFiles(page, manifest.outDir, 'hdr-small-', callIndex);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   out.steps.exports = {
@@ -320,7 +319,7 @@ try {
 
   // 10. 长按重命名与删除使用中的 LUT → 「LUT 已删除」卡片 + 导出按桌面文案拒绝
   await openPhoto(page, a);
-  await page.locator('.tabs button[data-tab="lut"]').click();
+  await openLut(page);
 
   await longPress(page, `.panel.lut .rc[data-lut="${ids.shaper}"]`);
   await page.locator('[data-state="lut-actions"] [data-act="lut-rename"]').click();
@@ -344,11 +343,9 @@ try {
     { timeout: 15_000 },
   );
   const deletedCardText = await page.locator('.panel.lut .rc[data-lut="deleted"]').innerText();
-  const deletedBannerText = await page.locator('.panel.lut [data-state="lut-deleted"]').innerText();
+  const deletedBannerText = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
 
-  await page.locator('.actbar [data-act="export"]').click();
-  await page.waitForSelector('.ms.export');
-  await page.locator('.ms.export .go').click();
+  await page.locator('.editor .toolbar [data-act="export"]').click();
   const deletedExportReady = await waitPhase(page, ['ready']);
   const deletedFailures = await page.evaluate(() => {
     const b = window.__devExport.flow.current();
@@ -368,20 +365,20 @@ try {
 
   // 11. post-r1 回归：P3-01 非 UTF-8 .cube 中文提示、P1-01 保留 output_space、P2-03 删除事务中止恢复、P2-04 清空销毁 GPU LUT
   // 关闭导出 dock 并仍在 Pair A LUT 页签继续
-  const doneBtn = page.locator('.pdock [data-act="done"]');
-  if (await doneBtn.count()) {
-    await doneBtn.click();
+  const dismissBtn = page.locator('.pdock [data-act="dismiss"], .pdock [data-act="done"]');
+  if (await dismissBtn.count()) {
+    await dismissBtn.first().click();
     await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   }
 
   // P3-01：非 UTF-8 .cube 报桌面 LUT_ERRORS.cube_unreadable（不透出底层 UTF-8/Rust 文案）
   await page.locator('input.lutpick').setInputFiles([manifest.badUtf8File]);
   await page.waitForFunction(
-    () => document.querySelector('.panel.lut [data-state="lut-status"]')?.textContent?.includes('无法读取 LUT。请改用 .cube 文件。'),
+    () => document.querySelector('.editor .band-lut-hd [data-state="lut-status"]')?.textContent?.includes('无法读取 LUT。请改用 .cube 文件。'),
     null,
     { timeout: 15_000 },
   );
-  const badUtf8Status = await page.locator('.panel.lut [data-state="lut-status"]').innerText();
+  const badUtf8Status = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
 
   // P1-01：导入 # Input: sRGB + # Output: Rec.709，改输入范围等参数后 output_space 仍保留 rec709；UI 也显示输出色彩空间行
   const rec709Id = manifest.rec709Out.cubeId;
@@ -391,7 +388,7 @@ try {
   await recCard.scrollIntoViewIfNeeded();
   await recCard.click();
   await waitLutReady(page, rec709Id);
-  await page.locator('.panel.lut [data-act="lut-space"]').click();
+  await page.locator('.editor .band-lut-hd [data-act="lut-space"]').click();
   await page.waitForSelector('.lut-space-sheet[data-state="lut-space"]', { timeout: 10_000 });
   const outputSpaceChoices = await page.evaluate(() =>
     [...document.querySelectorAll('.lut-adv-row[data-field="output_space"] button')].map((b) => ({

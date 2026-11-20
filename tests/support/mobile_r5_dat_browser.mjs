@@ -92,7 +92,7 @@ try {
   }, null, { timeout: 120_000 });
   await page.locator('.cell').first().evaluate((node) => node.click());
   await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent, null, { timeout: 120_000 });
-  await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await page.waitForSelector('.ask-sheet[data-state="no-recipe-file"]');
   const lead = page.locator('.ask-sheet p.lead').first();
   out.sheet = {

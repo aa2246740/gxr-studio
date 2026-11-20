@@ -24,7 +24,8 @@ async function openEditorFrameTab(page, stem) {
     stem,
     { timeout: 120_000 },
   );
-  await page.getByRole('tab', { name: '边框', exact: true }).click();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="frame"]').click();
   await page.waitForFunction(
     () => {
       const cards = document.querySelectorAll('.panel.frame .rc .th.fr canvas');
@@ -36,8 +37,23 @@ async function openEditorFrameTab(page, stem) {
   );
 }
 
+async function openFrameOpts(page) {
+  const back = page.locator('.panel.frame [data-act="frame-back"]');
+  if (!(await back.isVisible())) {
+    await page.locator('.editor .band-frame-hd [data-act="frame-opts"]').click();
+    await page.waitForSelector('.panel.frame [data-act="frame-back"]');
+  }
+}
+
+async function toggleStamp(page) {
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="stamp"]').click();
+  await page.locator('.stamp-band input.switch').click();
+}
+
 async function assertPortrait(page) {
-  await page.getByRole('button', { name: '导出这张', exact: true }).click();
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.locator('.ms [data-act="more-export-options"]').click();
   await page.waitForSelector('.ms.export');
   await page.waitForFunction(
     () => {
@@ -60,6 +76,11 @@ async function backToGrid(page) {
 }
 
 async function pickFrameStyle(page, style) {
+  const back = page.locator('.panel.frame [data-act="frame-back"]');
+  if (await back.isVisible()) {
+    await back.click();
+    await page.waitForSelector('.panel.frame .strip:not([hidden])');
+  }
   const card = page.locator(`.panel.frame .rc[data-style="${style}"]`);
   await card.scrollIntoViewIfNeeded();
   await card.click();
@@ -150,25 +171,31 @@ async function runBatch(page, { stems, size = '原始尺寸', quality = '高', h
   const callsBefore = await page.evaluate(() => window.__shareLog.calls.length);
   let hdrFrameBefore = null;
   let hdrFrame = null;
-  const sheet = await exportFromGrid(page, stems, size, quality, async () => {
-    const readFrame = () =>
-      page.evaluate(() => {
-        const node = document.querySelector('.ms.export [data-state="hdr-frame"]');
-        if (!node) return null;
-        return { visible: !node.hidden && getComputedStyle(node).display !== 'none', text: node.textContent?.trim() ?? '' };
-      });
-    hdrFrameBefore = await readFrame();
-    if (hdr) {
-      await page.locator('.ms.export input.switch').click();
-      hdrFrame = await readFrame();
-    }
-  });
+  const sheet = await exportFromGrid(
+    page,
+    stems,
+    size,
+    quality,
+    async () => {
+      const readFrame = () =>
+        page.evaluate(() => {
+          const node = document.querySelector('.ms.export [data-state="hdr-frame"]');
+          if (!node) return null;
+          return { visible: !node.hidden && getComputedStyle(node).display !== 'none', text: node.textContent?.trim() ?? '' };
+        });
+      hdrFrameBefore = await readFrame();
+      if (hdr) {
+        await page.locator('.ms.export input.switch').click();
+        hdrFrame = await readFrame();
+      }
+    },
+    { hdr: false },
+  );
   await waitPhase(page, ['ready']);
   const facts = await frameBatchFacts(page);
   const ready = await page.locator('.pdock').innerText();
   const shared = await shareAll(page);
   const files = outDir && fileTag ? await sharedFiles(page, outDir, fileTag, callsBefore) : [];
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 15_000 });
   await page.evaluate(() => {
     window.__devExport.canvasReportPrefix = null;
@@ -192,10 +219,11 @@ export async function parity({ newPage, manifest, out }) {
     // Pair A：白边 + 默认时间戳；同时核对单张带边框尺寸行（05a export_output_sizes）
     await openEditorFrameTab(page, s.a);
     await pickFrameStyle(page, 'gallery');
-    await page.locator('.panel.frame .stamp-row input.switch').click();
+    await toggleStamp(page);
     await page.waitForFunction(() => Boolean(document.querySelector('.stage .pv.framed[data-decor="1"]')));
 
-    await page.getByRole('button', { name: '导出这张', exact: true }).click();
+    await page.locator('.editor .nav [data-act="editor-more"]').click();
+    await page.locator('.ms [data-act="more-export-options"]').click();
     await page.waitForSelector('.ms.export');
     await page.waitForFunction(
       () => {
@@ -226,6 +254,7 @@ export async function parity({ newPage, manifest, out }) {
     // Pair B：blur_fill。关掉参数和标志，使这张没有文字、也没有内置徽标，走 exact 的逐字节成片。
     await openEditorFrameTab(page, s.b);
     await pickFrameStyle(page, 'blur_fill');
+    await openFrameOpts(page);
     await page.locator('.panel.frame [data-act="frame-params"]').click();
     await page.waitForFunction(
       () => !document.querySelector('.panel.frame [data-act="frame-params"]')?.classList.contains('on'),
@@ -240,8 +269,8 @@ export async function parity({ newPage, manifest, out }) {
     // Pair C：instant + 时间戳落在拍立得边框上
     await openEditorFrameTab(page, s.c);
     await pickFrameStyle(page, 'instant');
-    await page.locator('.panel.frame .stamp-row input.switch').click();
-    await page.locator('.panel.frame [data-act="open-stamp"]').click();
+    await toggleStamp(page);
+    await page.locator('.stamp-band [data-act="stamp-sheet"]').click();
     await page.waitForSelector('.ms.stamp-sheet');
     await page.locator('.ms.stamp-sheet .seg[aria-label="印记落点"] button:has-text("拍立得边框上")').click();
     await page.locator('.ms.stamp-sheet .hd button:has-text("完成")').click();
@@ -251,6 +280,7 @@ export async function parity({ newPage, manifest, out }) {
     // Pair D：leica + 内置 GXR 标志 + 参数 + 日期
     await openEditorFrameTab(page, s.d);
     await pickFrameStyle(page, 'leica');
+    await openFrameOpts(page);
     const leicaOn = await page.evaluate(() => ({
       logo: document.querySelector('.panel.frame [data-act="frame-logo"]')?.classList.contains('on') ?? false,
       params: document.querySelector('.panel.frame [data-act="frame-params"]')?.classList.contains('on') ?? false,
@@ -267,6 +297,7 @@ export async function parity({ newPage, manifest, out }) {
     // Pair F：上传合成自定义标志 + exhibition_label
     await openEditorFrameTab(page, s.f);
     await pickFrameStyle(page, 'exhibition_label');
+    await openFrameOpts(page);
     await page.locator('.panel.frame [data-act="frame-logo"]').click();
     await page.waitForSelector('.ms.logo-sheet[data-state="logo"]');
     await page.locator('.ms.logo-sheet [data-logo-action="upload"]').click();
@@ -287,20 +318,20 @@ export async function parity({ newPage, manifest, out }) {
     // JPG-only：darkroom + 默认时间戳
     await openEditorFrameTab(page, s.jpgOnly);
     await pickFrameStyle(page, 'darkroom');
-    await page.locator('.panel.frame .stamp-row input.switch').click();
+    await toggleStamp(page);
     await backToGrid(page);
 
     // 竖图：白边 + 时间戳，以及拍立得边框上的时间戳。导出前尺寸行必须是高大于宽。
     await openEditorFrameTab(page, s.pFrame);
     await pickFrameStyle(page, 'gallery');
-    await page.locator('.panel.frame .stamp-row input.switch').click();
+    await toggleStamp(page);
     await page.waitForFunction(() => Boolean(document.querySelector('.stage .pv.framed[data-decor="1"]')));
     await assertPortrait(page);
     await backToGrid(page);
     await openEditorFrameTab(page, s.pInstant);
     await pickFrameStyle(page, 'instant');
-    await page.locator('.panel.frame .stamp-row input.switch').click();
-    await page.locator('.panel.frame [data-act="open-stamp"]').click();
+    await toggleStamp(page);
+    await page.locator('.stamp-band [data-act="stamp-sheet"]').click();
     await page.waitForSelector('.ms.stamp-sheet');
     await page.locator('.ms.stamp-sheet .seg[aria-label="印记落点"] button:has-text("拍立得边框上")').click();
     await page.locator('.ms.stamp-sheet .hd button:has-text("完成")').click();
@@ -371,16 +402,17 @@ export async function parity({ newPage, manifest, out }) {
 
     // 4. 全尺寸 blur_fill（标志 + 参数 + 默认时间戳）：SDR 与 HDR 内存高水位。
     await openEditorFrameTab(page, s.b);
+    await openFrameOpts(page);
     await page.locator('.panel.frame [data-act="frame-params"]').click();
     await page.waitForFunction(() =>
       document.querySelector('.panel.frame [data-act="frame-params"]')?.classList.contains('on'),
     );
-    await page.locator('.panel.frame .stamp-row input.switch').click();
     await page.locator('.panel.frame [data-act="frame-logo"]').click();
     await page.waitForSelector('.ms.logo-sheet[data-state="logo"]');
     await page.locator('.ms.logo-sheet [data-logo="ricoh"]').click();
     await page.locator('.ms.logo-sheet .hd button:has-text("完成")').click();
     await page.waitForFunction(() => !document.querySelector('.ms.logo-sheet'));
+    await toggleStamp(page);
     await backToGrid(page);
 
     const memSdr = await runBatch(page, {
@@ -441,8 +473,8 @@ export async function parity({ newPage, manifest, out }) {
 
     // 5. 时间戳文字输入中文：显示提示行且不落入存储 / sidecar
     await openEditorFrameTab(page, s.e);
-    await page.locator('.panel.frame .stamp-row input.switch').click();
-    await page.locator('.panel.frame [data-act="open-stamp"]').click();
+    await toggleStamp(page);
+    await page.locator('.stamp-band [data-act="stamp-sheet"]').click();
     await page.waitForSelector('.ms.stamp-sheet');
     await page.locator('.ms.stamp-sheet .seg[aria-label="内容"] button:has-text("日期和文字")').click();
     const stampInput = page.locator('.ms.stamp-sheet input.txtbox');
@@ -472,6 +504,7 @@ export async function parity({ newPage, manifest, out }) {
     // 6. 删除正在使用的自定义标志：显示回退提示，导出改用 GXR 标志（在 leica 上绘制 GXR mark）
     await openEditorFrameTab(page, s.f);
     await pickFrameStyle(page, 'leica');
+    await openFrameOpts(page);
     await page.locator('.panel.frame [data-act="frame-logo"]').click();
     await page.waitForSelector('.ms.logo-sheet[data-state="logo"]');
     await page.locator('.ms.logo-sheet .logo-row button[aria-label*="更多操作"]').first().click();
@@ -510,7 +543,7 @@ export async function parity({ newPage, manifest, out }) {
       window.__devExport.canvasReportPrefix = null;
       window.__devExport.inkTrapAt = 0;
     });
-    await exportFromGrid(page, [s.a, s.c], '小', '低');
+    await exportFromGrid(page, [s.a, s.c], '小', '低', null, { hdr: false });
     await waitPhase(page, ['ready']);
     const inkTrapSnap = await page.evaluate(() => {
       const batch = window.__devExport.flow.current();
@@ -534,7 +567,6 @@ export async function parity({ newPage, manifest, out }) {
       };
     });
     await shareAll(page);
-    await page.locator('.pdock [data-act="done"]').click();
     await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 15_000 });
     out.steps.inkTrap = { first: inkTrapSnap, retry: inkTrapRetry };
   } finally {

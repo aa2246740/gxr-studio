@@ -1122,9 +1122,12 @@ try {
             fv.destroy();
           } else {
             editor.open(p1);
-            const frameTabBtn = [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框');
-            assert(frameTabBtn, 'S2 EditorView missing 边框 tab');
-            frameTabBtn.click();
+            const moreBtn = view.querySelector('.toolbar [data-tool="more"]');
+            assert(moreBtn, 'S2 EditorView missing 更多 tool');
+            moreBtn.click();
+            const frameItem = shell.querySelector('.more-sheet [data-more="frame"]');
+            assert(frameItem, 'S2 EditorView missing 边框 item');
+            frameItem.click();
             const openBtn = kind === 'frame'
               ? view.querySelector('.panel.frame [data-act="frame-more"]')
               : view.querySelector('.panel.frame [data-act="open-stamp"]');
@@ -1205,7 +1208,8 @@ try {
             fv.panelEl().querySelector('[data-act="frame-logo"]').click();
           } else {
             editor.open(p1);
-            [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框').click();
+            view.querySelector('.toolbar [data-tool="more"]').click();
+            shell.querySelector('.more-sheet [data-more="frame"]').click();
             view.querySelector('.panel.frame [data-act="frame-logo"]').click();
           }
           await sleep(30);
@@ -1399,9 +1403,12 @@ try {
 
           try {
             editor.open(p1);
-            const frameTab = [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框');
-            assert(frameTab, `S3 ${phase}/${exit}: missing 边框 tab`);
-            frameTab.click();
+            const moreBtn = view.querySelector('.toolbar [data-tool="more"]');
+            assert(moreBtn, `S3 ${phase}/${exit}: missing 更多 tool`);
+            moreBtn.click();
+            const frameItem = shell.querySelector('.more-sheet [data-more="frame"]');
+            assert(frameItem, `S3 ${phase}/${exit}: missing 边框 item`);
+            frameItem.click();
             const logoChip = view.querySelector('.panel.frame [data-act="frame-logo"]');
             assert(logoChip, `S3 ${phase}/${exit}: missing 标志 chip`);
             logoChip.click();
@@ -1714,7 +1721,8 @@ try {
 
         try {
           editor.open(p1);
-          [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框').click();
+          view.querySelector('.toolbar [data-tool="more"]').click();
+          shell.querySelector('.more-sheet [data-more="frame"]').click();
           view.querySelector('.panel.frame [data-act="frame-logo"]').click();
           await until(
             () => shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"]`),
@@ -1835,7 +1843,8 @@ try {
 
         try {
           editor.open(p1);
-          [...view.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框').click();
+          view.querySelector('.toolbar [data-tool="more"]').click();
+          shell.querySelector('.more-sheet [data-more="frame"]').click();
           view.querySelector('.panel.frame [data-act="frame-logo"]').click();
           await until(() => shell.querySelector(`.ms.logo-sheet [data-logo-row="${logoId}"]`), 'rename row missing');
 
@@ -2012,12 +2021,12 @@ try {
           await sleep(25);
         }
         assert(Boolean(host.querySelector('.stage .pv.framed[data-decor="1"] .pv-deco')), 'framed stage must render initially');
-        const cropTab = [...host.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '裁剪');
-        const frameTab = [...host.querySelectorAll('.tabs [role="tab"]')].find((b) => b.textContent === '边框');
+        const cropTab = host.querySelector('.toolbar [data-tool="crop"]');
         cropTab.click();
         assert(!host.querySelector('.stage .pv.framed'), 'Crop tab must clear .pv.framed so crop overlay aligns');
         assert(!host.querySelector('.stage .pv .pv-deco'), 'Crop tab must clear .pv-deco');
-        frameTab.click();
+        host.querySelector('.toolbar [data-tool="more"]').click();
+        shell.querySelector('.more-sheet [data-more="frame"]').click();
         for (let i = 0; i < 60; i += 1) {
           if (host.querySelector('.stage .pv.framed[data-decor="1"] .pv-deco')) break;
           await sleep(25);

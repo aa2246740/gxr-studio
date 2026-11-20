@@ -48,8 +48,7 @@ async function back(page) {
 
 /** 调整页的一根滑块：设值，发 input 和 change（松手），和手指拖完一样。 */
 async function setKnob(page, key, value) {
-  const tab = page.locator('.tabs button', { hasText: '调整' });
-  await tab.click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   await page.locator(`.chips .chip[data-key="${key}"]`).click();
   await page.locator('.panel.adjust input[type="range"]').evaluate((input, v) => {
     input.value = String(v);
@@ -59,9 +58,9 @@ async function setKnob(page, key, value) {
 }
 
 async function knobShown(page, key) {
-  await page.locator('.tabs button', { hasText: '调整' }).click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
   await page.locator(`.chips .chip[data-key="${key}"]`).click();
-  return page.locator('.panel.adjust .val').innerText();
+  return page.locator('.editor .band-adjust-hd .val').innerText();
 }
 
 /** 带着编辑的照片右下角的铅笔（04e），按格子的照片 id。 */
@@ -76,7 +75,8 @@ async function heads(page) {
 }
 
 async function copyDefaults(page) {
-  await page.locator('[data-act="copy"]').click();
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.locator('.ms[data-state="editor-more"] [data-act="more-copy"]').click();
   await page.waitForSelector('[data-state="copy-options"]');
   const sheet = await text(page, '[data-state="copy-options"]');
   const button = await text(page, '[data-state="copy-options"] .btn.primary');
@@ -119,10 +119,8 @@ try {
   const start = await edits(page);
   step('loaded', { photos: start.length, revs: start.map((row) => row.rev), heads: await heads(page) });
 
-  // 没复制就点「套用到这一组」：一句怎么复制。
-  await page.locator('.gh .go').first().click();
-  await page.waitForSelector('.pastebar[data-state="info"]');
-  step('hint', { line: await text(page, '.pastebar[data-state="info"]'), idle: await page.locator('.gh .go.idle').count() });
+  // 没复制时组标题不显示「套用到这一组」按钮，单张组不显示组标题。
+  step('hint', { goButtons: await page.locator('.gh .go').count() });
 
   // 来源：选配方、动曝光和对比度。
   const src = manifest.source;
@@ -162,7 +160,8 @@ try {
   // 分组间隔改成 1 分钟：组标题的张数跟着变，「套用到这一组」给的是新的张数。
   await page.locator('.nav .nb.plain').click();
   await page.locator('.ms .seg button', { hasText: '1 分钟' }).click();
-  await page.waitForFunction((n) => document.querySelectorAll('.gh[data-row]').length === n, manifest.expect['1'].length, { timeout: 10_000 });
+  const multiCount1 = manifest.expect['1'].filter((g) => g.length > 1).length;
+  await page.waitForFunction((n) => document.querySelectorAll('.gh[data-row]').length === n, multiCount1, { timeout: 10_000 });
   const gap1 = await heads(page);
   await page.locator(`.gh[data-row="group:${manifest.sourceGroupFirst1}"] .go`).click();
   const gap1Confirm = await confirmText(page);
@@ -212,18 +211,19 @@ try {
     p2: await editOf(page, p2),
   });
 
-  // 清除剪贴板：底栏收起，组标题回到灰的。
+  // 清除剪贴板：底栏收起，组标题上的「套用到这一组」按钮隐藏。
   await page.waitForSelector('.pastebar[data-state="copied"]', { timeout: 10_000 });
   const copiedBar = await text(page, '.pastebar[data-state="copied"]');
   await page.locator('[data-act="clear-clip"]').click();
-  step('cleared', { copiedBar, bars: await page.locator('.pastebar').count(), idle: await page.locator('.gh .go.idle').count() });
+  step('cleared', { copiedBar, bars: await page.locator('.pastebar').count(), goButtons: await page.locator('.gh .go').count() });
 
   // Sol r1 P2：只套用配方（目标的调整本来全是 0），再点「全部重置」、点两下已经是 0 的滑块、松开没动的滑块：都不是修改，
   // rev 不变，撤销照样还原。
   const target2 = manifest.picks[1];
   const zeroBefore = await editOf(page, target2);
   await openPhoto(page, src);
-  await page.locator('[data-act="copy"]').click();
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.locator('.ms[data-state="editor-more"] [data-act="more-copy"]').click();
   await page.waitForSelector('[data-state="copy-options"]');
   await page.locator('[data-state="copy-options"] .optrow[data-group="adjust"]').click();
   const recipeOnly = await text(page, '[data-state="copy-options"] .btn.primary');
@@ -239,8 +239,8 @@ try {
   const noopApplied = await appliedBar(page);
   const pasted = await editOf(page, target2);
   await openPhoto(page, target2);
-  await page.locator('.tabs button', { hasText: '调整' }).click();
-  await page.locator('.hint-row .fbtn', { hasText: '全部重置' }).click();
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+  await page.locator('.panel.adjust [data-act="adjust-reset"]').click();
   await page.locator('.panel.adjust input[type="range"]').evaluate((input) => {
     input.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));

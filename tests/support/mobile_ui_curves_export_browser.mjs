@@ -10,7 +10,7 @@ async function backToGrid(page) {
 async function pointer(page, type, x, y) {
   await page.evaluate(
     ({ type, x, y }) => {
-      const svg = document.querySelector('.editor svg.curve');
+      const svg = document.querySelector('.curves-sheet svg.curve');
       const box = svg.getBoundingClientRect();
       if (!(box.width > 0) || !(box.height > 0)) throw new Error('curve surface has no box');
       svg.dispatchEvent(
@@ -55,11 +55,12 @@ async function editCurve(page, stem, kind) {
     await backToGrid(page);
     return readCurve(page, stem);
   }
-  await page.getByRole('tab', { name: '曲线', exact: true }).click();
-  await page.waitForSelector('.editor .panel.curve-panel svg.curve');
-  await page.locator('.editor svg.curve').scrollIntoViewIfNeeded();
+  await page.locator('.editor .toolbar [data-tool="more"]').click();
+  await page.locator('.more-sheet [data-more="curves"]').click();
+  await page.waitForSelector('.curves-sheet .panel.curve-panel svg.curve');
+  await page.locator('.curves-sheet svg.curve').scrollIntoViewIfNeeded();
   const channel = async (key) => {
-    await page.locator(`.editor .curve-btn[data-channel="${key}"]`).click();
+    await page.locator(`.curves-sheet .curve-btn[data-channel="${key}"]`).click();
   };
   if (kind === 's-curve') {
     await tap(page, 64, 32);
@@ -83,6 +84,7 @@ async function editCurve(page, stem, kind) {
     throw new Error('unknown curve edit');
   }
   const curve = await readCurve(page, stem);
+  await page.locator('.curves-sheet [data-act="close"]').click();
   await backToGrid(page);
   return curve;
 }
@@ -106,7 +108,7 @@ export async function parity({ newPage, manifest, out }) {
   }
   out.steps.edited = edited;
   const order = manifest.jobs.map((job) => job.stem);
-  const sheet = await exportFromGrid(page, order);
+  const sheet = await exportFromGrid(page, order, '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   const ready = await waitPhase(page, ['ready']);
   const facts = await batchFacts(page);
