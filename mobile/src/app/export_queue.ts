@@ -2,6 +2,7 @@
 // 覆盖：双击去重、批次结束后自动推进排队、失败保留与重试、已共享分批不重复提供、运行中保存已做好成片。
 
 import type { QualityTier, SizeTier } from '../lib/export_request';
+import { halfframeFileCount, normalizedHalfframeMode, type HalfframeMode } from '../lib/halfframe';
 import type { Failure, ItemState, Phase } from './export_batch';
 import type { ReadyEntry } from './export_ready';
 
@@ -9,14 +10,15 @@ export interface ExportOptions {
   size: SizeTier;
   quality: QualityTier;
   hdr: boolean;
+  halfframe?: HalfframeMode;
 }
 
-export interface QueuedJob<TPhoto extends { id: string }> {
+export interface QueuedJob<TPhoto extends { id: string; diptych?: boolean }> {
   photos: TPhoto[];
   options: ExportOptions;
 }
 
-export interface CarriedFailure<TPhoto extends { id: string }> {
+export interface CarriedFailure<TPhoto extends { id: string; diptych?: boolean }> {
   failure: Failure;
   photo: TPhoto;
   options: ExportOptions;
@@ -30,11 +32,17 @@ export interface ActiveBatchView {
   savedCount(): number;
 }
 
-function optionsKey(o: ExportOptions): string {
-  return `${o.size}|${o.quality}|${o.hdr ? '1' : '0'}`;
+/** 拆出单格后的批次条目 id（`<photoId>#half:1`）还原为原照片 id；普通照片原样返回。 */
+export function basePhotoId(entryId: string): string {
+  const sep = entryId.indexOf('#');
+  return sep >= 0 ? entryId.slice(0, sep) : entryId;
 }
 
-export class ExportQueueState<TPhoto extends { id: string }> {
+function optionsKey(o: ExportOptions): string {
+  return `${o.size}|${o.quality}|${o.hdr ? '1' : '0'}|${normalizedHalfframeMode(o.halfframe)}`;
+}
+
+export class ExportQueueState<TPhoto extends { id: string; diptych?: boolean }> {
   /** 前一批已完成、还没存进相册的成片（绝不含已经共享过的分批）。 */
   carryover: ReadyEntry[] = [];
   /** 当前批次在跑（或停在待存上限）时排队的导出任务。 */
@@ -49,7 +57,7 @@ export class ExportQueueState<TPhoto extends { id: string }> {
   private carriedSaved = 0;
 
   queuedCount(): number {
-    return this.pendingQueue.reduce((sum, job) => sum + job.photos.length, 0);
+    return this.pendingQueue.reduce((sum, job) => sum + halfframeFileCount(job.photos, job.options.halfframe), 0);
   }
 
   carryoverBytes(): number {
@@ -63,16 +71,18 @@ export class ExportQueueState<TPhoto extends { id: string }> {
 
   /** 判断某张照片是否正在导出、已排队，或已做好但还没存进相册。 */
   isQuickBlocked(id: string, batch: ActiveBatchView | null): boolean {
-    if (!this.sharedIds.has(id) && this.carryover.some((entry) => entry.id === id)) return true;
+    if (this.carryover.some((entry) => !this.sharedIds.has(entry.id) && basePhotoId(entry.id) === id)) return true;
     for (const job of this.pendingQueue) {
       if (job.photos.some((p) => p.id === id)) return true;
     }
     if (batch && batch.phase !== 'closed') {
-      const state = batch.states.get(id);
       // 只有批次还在跑（或停在待存上限）时，没做完的照片才算「正在导出」；停止以后可以重新点「存到相册」
       const live = batch.phase === 'running' || batch.phase === 'held';
-      if (live && (state === 'wait' || state === 'run')) return true;
-      if (state === 'ok' && !this.sharedIds.has(id)) return true;
+      for (const [entryId, state] of batch.states) {
+        if (basePhotoId(entryId) !== id) continue;
+        if (live && (state === 'wait' || state === 'run')) return true;
+        if (state === 'ok' && !this.sharedIds.has(entryId)) return true;
+      }
     }
     return false;
   }
@@ -96,11 +106,18 @@ export class ExportQueueState<TPhoto extends { id: string }> {
     return out;
   }
 
+  private clearCarriedFailuresFor(photos: readonly TPhoto[]): void {
+    const photoIds = new Set(photos.map((p) => p.id));
+    for (const entryId of [...this.carriedFailures.keys()]) {
+      if (photoIds.has(basePhotoId(entryId))) this.carriedFailures.delete(entryId);
+    }
+  }
+
   beginBatch(photos: readonly TPhoto[], options: ExportOptions): void {
     this.sharedIds.clear();
     this.currentOptions = { ...options };
     this.currentPhotos = new Map(photos.map((p) => [p.id, p]));
-    for (const photo of photos) this.carriedFailures.delete(photo.id);
+    this.clearCarriedFailuresFor(photos);
   }
 
   /** 把旧批次里「尚未共享」的成片与全部失败保留下来；已经共享过的分批绝不拷回 carryover。 */
@@ -128,7 +145,7 @@ export class ExportQueueState<TPhoto extends { id: string }> {
 
     if (this.currentOptions) {
       for (const [id, failure] of batch.failures) {
-        const photo = this.currentPhotos.get(id);
+        const photo = this.currentPhotos.get(basePhotoId(id));
         if (photo) {
           this.carriedFailures.set(id, {
             failure,
@@ -148,7 +165,7 @@ export class ExportQueueState<TPhoto extends { id: string }> {
     batch: ActiveBatchView | null,
     batchEntries: (b: ActiveBatchView) => ReadyEntry[],
   ): 'queued' | 'launch' {
-    for (const photo of photos) this.carriedFailures.delete(photo.id);
+    this.clearCarriedFailuresFor(photos);
     if (batch && (batch.phase === 'running' || batch.phase === 'held')) {
       this.pendingQueue.push({ photos, options: { ...options } });
       return 'queued';
@@ -218,18 +235,22 @@ export class ExportQueueState<TPhoto extends { id: string }> {
   /** 取出全部保留的失败项，按导出选项分组成可立即启动或入队的重试任务。 */
   takeCarriedRetryJobs(resolvePhoto?: (photo: TPhoto) => TPhoto): QueuedJob<TPhoto>[] {
     if (!this.carriedFailures.size) return [];
-    const grouped = new Map<string, QueuedJob<TPhoto>>();
+    const grouped = new Map<string, { job: QueuedJob<TPhoto>; seen: Set<string> }>();
     for (const item of this.carriedFailures.values()) {
       const key = optionsKey(item.options);
-      let job = grouped.get(key);
-      if (!job) {
-        job = { photos: [], options: { ...item.options } };
-        grouped.set(key, job);
+      let bucket = grouped.get(key);
+      if (!bucket) {
+        bucket = { job: { photos: [], options: { ...item.options } }, seen: new Set() };
+        grouped.set(key, bucket);
       }
-      job.photos.push(resolvePhoto ? resolvePhoto(item.photo) : item.photo);
+      const photo = resolvePhoto ? resolvePhoto(item.photo) : item.photo;
+      if (!bucket.seen.has(photo.id)) {
+        bucket.seen.add(photo.id);
+        bucket.job.photos.push(photo);
+      }
     }
     this.carriedFailures.clear();
-    return [...grouped.values()];
+    return [...grouped.values()].map((b) => b.job);
   }
 
   /** 点「停止」：清空排队任务（不留幽灵任务），但保留已做好成片与已有失败。 */

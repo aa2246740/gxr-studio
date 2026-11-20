@@ -4,6 +4,7 @@
 import type { RunResult } from '../core/export_api';
 import type { FailKind } from '../core/export_protocol';
 import type { ExportRequest } from '../lib/export_request';
+import type { HalfframeRole } from '../lib/halfframe';
 
 /** 做好、还没交出去的文件最多占这么多字节。下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。 */
 export const STAGE_CAP_BYTES = 384 * 1024 * 1024;
@@ -61,12 +62,20 @@ export const TEXT = {
 
 export interface BatchItem {
   id: string;
+  /** 一张双联拆出多文件（两张单格 / 都要）时指向原照片 id；普通导出与 id 相同。 */
+  photoId?: string;
+  /** 半格单格角色；未设时走原有整图导出路径。 */
+  halfframeRole?: HalfframeRole;
   stem: string;
   version: number;
   dng: File | null;
   jpg: File | null;
   req: ExportRequest;
   cameraRecipeNote?: string;
+}
+
+export function batchPhotoId(item: Pick<BatchItem, 'id' | 'photoId'>): string {
+  return item.photoId ?? item.id;
 }
 
 /** `saved`：已经交给共享面板（点了「好」）。 */
@@ -228,10 +237,10 @@ export class ExportBatch {
     if (!failed.length) return;
     for (const id of failed) {
       const item = this.item(id);
-      const now = this.host.photo(id);
+      const now = item ? this.host.photo(batchPhotoId(item)) : this.host.photo(id);
       if (item && now && now.version !== item.version) {
         item.version = now.version;
-        item.dng = now.dng;
+        item.dng = item.halfframeRole ? null : now.dng;
         item.jpg = now.jpg;
       }
       this.failures.delete(id);
@@ -356,14 +365,15 @@ export class ExportBatch {
   }
 
   private commit(item: BatchItem, result: RunResult): void {
-    const now = this.host.photo(item.id);
+    const pid = batchPhotoId(item);
+    const now = this.host.photo(pid);
     if (!now || now.version !== item.version) {
       // 做的时候这张被去掉或重新选过：这份结果作废，算失败，重试时用新的 File。
       this.fail(item, 'stale', 'stale', '');
       return;
     }
     if (!result.ok) {
-      if (result.kind === 'read') this.host.markGone(item.id, item.version);
+      if (result.kind === 'read') this.host.markGone(pid, item.version);
       this.fail(item, result.kind, result.code, result.message);
       return;
     }

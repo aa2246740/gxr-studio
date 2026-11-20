@@ -3,10 +3,10 @@
 // 系统共享面板关闭后自动收起就绪条，不再留一层「好」。
 
 import { ExportCore, calibPack, type RunResult } from '../core/export_api';
-import { buildRequest, usedLogoId } from '../lib/export_request';
+import { usedLogoId } from '../lib/export_request';
 import { fontsNeeded, type FontKey } from '../lib/fonts';
 import { hdrAvailable } from '../lib/hdr_text';
-import { loadExportHdr, loadExportQuality, loadExportSize } from '../lib/prefs';
+import { loadExportHalfframe, loadExportHdr, loadExportQuality, loadExportSize } from '../lib/prefs';
 import { cameraRecipeErrorOf } from '../lib/recipes';
 import { shareChunks, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
@@ -15,7 +15,7 @@ import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type
 import { estimatePeak, type BatchFonts } from './export_budget';
 import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
-import { ExportQueueState, type ExportOptions } from './export_queue';
+import { basePhotoId, ExportQueueState, type ExportOptions } from './export_queue';
 import {
   mountExportDock,
   paintExportMemory,
@@ -24,7 +24,7 @@ import {
   stateAnnouncement,
   type ReadyEntry,
 } from './export_ready';
-import { applyAdoptedAndLogos, buildExportThumbs, cardsFor, requestPhoto } from './export_request_prep';
+import { applyAdoptedAndLogos, buildBatchItems, buildExportThumbs, cardsFor, requestPhoto } from './export_request_prep';
 import { ExportDetailsSheet } from './export_sheet';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
@@ -152,7 +152,8 @@ export class ExportFlow {
     }
     onStart?.();
     const hdr = hdrAvailable(photos) && loadExportHdr();
-    this.start(photos, { size: loadExportSize(), quality: loadExportQuality(), hdr });
+    const halfframe = photos.some((p) => Boolean(p.diptych)) ? loadExportHalfframe() : 'diptych';
+    this.start(photos, { size: loadExportSize(), quality: loadExportQuality(), hdr, halfframe });
     return true;
   }
 
@@ -227,7 +228,8 @@ export class ExportFlow {
   }
 
   private positionOf(id: string): number | null {
-    const index = this.app.photos().findIndex((p) => p.id === id);
+    const base = basePhotoId(id);
+    const index = this.app.photos().findIndex((p) => p.id === base);
     return index >= 0 ? index + 1 : null;
   }
 
@@ -288,6 +290,7 @@ export class ExportFlow {
       id: photo.id,
       stem: photo.stem,
       version: photo.version,
+      diptych: Boolean(photo.diptych),
       dng: photo.dng,
       jpg: photo.jpg,
       explicitChoice: photo.choice !== null,
@@ -296,15 +299,7 @@ export class ExportFlow {
       cards: cardsFor(book, photo),
       note: cameraRecipeErrorOf(photo, dat)?.message,
     }));
-    const items: BatchItem[] = snapshots.map((s) => ({
-      id: s.id,
-      stem: s.stem,
-      version: s.version,
-      dng: s.dng,
-      jpg: s.jpg,
-      req: buildRequest(s.reqPhoto, s.cards, options, __GXR_BUILD__, binding),
-      ...(s.note ? { cameraRecipeNote: s.note } : {}),
-    }));
+    const items = buildBatchItems(snapshots, options, __GXR_BUILD__, binding);
     const cubeIds = [...new Set(snapshots.map((s) => s.reqPhoto.lut).filter((id): id is string => Boolean(id)))];
     const fontKeys = [...new Set(snapshots.flatMap((s) => fontsNeeded(s.reqPhoto.border, s.reqPhoto.stamp)))];
     const logoIds = [...new Set(snapshots.map((s) => usedLogoId(s.reqPhoto.border)).filter((id): id is string => id !== null))];
@@ -381,6 +376,7 @@ export class ExportFlow {
       dng: item.dng,
       jpg: item.jpg,
       req: item.req,
+      ...(item.halfframeRole ? { halfframeRole: item.halfframeRole } : {}),
       ...(trap ? { devTrap: true } : {}),
       ...(inkTrap ? { devInkTrap: true } : {}),
       ...(canvasReport ? { devCanvasReport: canvasReport } : {}),

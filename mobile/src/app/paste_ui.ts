@@ -2,10 +2,11 @@
 // 字都是设计稿和桌面 paste_core.js 的原话；逻辑在 lib/paste.ts 和 paste_state.ts。
 
 import { unitOfLens } from '../lib/calib';
-import { mergeMeta } from '../lib/exif';
+import { copyrightFromJpeg, mergeCopyright, mergeMeta } from '../lib/exif';
 import { formatClock, formatDay, groupByGap } from '../lib/group';
 import { presetLabel, rectFromArray } from '../lib/crop';
 import { FRAME_NAMES } from '../lib/frame_spec';
+import { formatShootingRecipeTag, isFirstLikeBlob, neighborNames } from '../lib/halfframe';
 import { HDR_NO_RAW } from '../lib/hdr_text';
 import { loadExportHdr, saveExportHdr, watchExportHdr } from '../lib/prefs';
 import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUnitOf, shelf, shelves } from '../lib/recipes';
@@ -352,8 +353,37 @@ export function pasteBar(api: AppApi, onChange: () => void): HTMLElement | null 
   return dock;
 }
 
+const jpegCopyrightCache = new WeakMap<File, Promise<string | null>>();
+const firstLikeCache = new WeakMap<File, Promise<boolean>>();
+
+async function photoCopyright(photo: Photo): Promise<string | null> {
+  const known = mergeCopyright(photo.jpgMeta?.copyright, photo.dngMeta?.copyright);
+  if (known !== null) return known;
+  if (!photo.jpg) return null;
+  let pending = jpegCopyrightCache.get(photo.jpg);
+  if (!pending) {
+    pending = photo.jpg
+      .slice(0, 128 << 10)
+      .arrayBuffer()
+      .then((buf) => copyrightFromJpeg(new Uint8Array(buf)))
+      .catch(() => null);
+    jpegCopyrightCache.set(photo.jpg, pending);
+  }
+  return pending;
+}
+
+function cachedFirstLike(file: File): Promise<boolean> {
+  let pending = firstLikeCache.get(file);
+  if (!pending) {
+    pending = isFirstLikeBlob(file).catch(() => false);
+    firstLikeCache.set(file, pending);
+  }
+  return pending;
+}
+
 /** 当前照片生效的配方名（用于编辑器顶栏与照片信息；绝不返回文件名）。 */
 export function currentRecipeLabel(api: AppApi, photo: Photo): string {
+  if (photo.diptych) return '半格双联';
   if (!photo.dng) return '相机 JPG';
   if (photo.recipeOff) return '中性转换';
   const dat = api.book().dat;
@@ -374,7 +404,7 @@ export function currentRecipeLabel(api: AppApi, photo: Photo): string {
   return '中性转换';
 }
 
-/** 照片信息底部面板：保留文件名、拍摄时间、格式、当前配方、尺寸、镜头和 ISO。 */
+/** 照片信息底部面板：保留文件名、拍摄时间、格式、当前配方、尺寸、镜头和 ISO；半格双联补每格拍摄配方。 */
 export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo): void {
   closePasteSheets(host);
   const sheet = el('div', 'ms paste-sheet');
@@ -402,18 +432,60 @@ export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo)
     ['格式', format],
     ['当前配方', currentRecipeLabel(api, photo)],
   ];
-  if (photo.frame) rows.push(['尺寸', `${photo.frame.width} × ${photo.frame.height}`]);
-  if (meta.lens) rows.push(['镜头', meta.lens]);
-  if (meta.iso != null) rows.push(['ISO', `ISO ${meta.iso}`]);
+  const tailRows: Array<[string, string]> = [];
+  if (photo.frame) tailRows.push(['尺寸', `${photo.frame.width} × ${photo.frame.height}`]);
+  if (meta.lens) tailRows.push(['镜头', meta.lens]);
+  if (meta.iso != null) tailRows.push(['ISO', `ISO ${meta.iso}`]);
 
-  sheet.append(el('div', 'grab'), head);
-  for (const [label, value] of rows) {
+  const appendRow = (label: string, value: string): void => {
     const line = el('div', 'lrow');
     const text = el('div');
     text.append(el('b', '', label), el('small', 'num', value));
     line.append(text);
     sheet.append(line);
+  };
+
+  sheet.append(el('div', 'grab'), head);
+  for (const [label, value] of rows) appendRow(label, value);
+
+  if (photo.diptych) {
+    const line = el('div', 'lrow');
+    line.dataset.role = 'halfframe-recipes';
+    const text = el('div');
+    const secondKnown = mergeCopyright(photo.jpgMeta?.copyright, photo.dngMeta?.copyright);
+    const secondEl = el('small', 'num', `第 2 格：${formatShootingRecipeTag(secondKnown)}`);
+    secondEl.dataset.half = 'second';
+    text.append(el('b', '', '拍摄配方'), secondEl);
+    line.append(text);
+    sheet.append(line);
+
+    const prevNames = new Set(neighborNames(photo.stem, -1).map((s) => s.toLowerCase()));
+    const prev = api.photos().find((p) => p.id !== photo.id && !p.diptych && p.jpg !== null && prevNames.has(p.stem.toLowerCase()));
+    void (async () => {
+      if (secondKnown === null && photo.jpg) {
+        const secondTag = await photoCopyright(photo);
+        if (sheet.isConnected) secondEl.textContent = `第 2 格：${formatShootingRecipeTag(secondTag)}`;
+      }
+      if (!prev || !prev.jpg) {
+        if (sheet.isConnected) line.dataset.firstChecked = 'absent';
+        return;
+      }
+      const isFirst = await cachedFirstLike(prev.jpg);
+      if (!sheet.isConnected) return;
+      if (!isFirst) {
+        line.dataset.firstChecked = 'absent';
+        return;
+      }
+      const firstTag = await photoCopyright(prev);
+      if (!sheet.isConnected) return;
+      const firstEl = el('small', 'num', `第 1 格：${formatShootingRecipeTag(firstTag)}`);
+      firstEl.dataset.half = 'first';
+      text.insertBefore(firstEl, secondEl);
+      line.dataset.firstChecked = 'ready';
+    })();
   }
+
+  for (const [label, value] of tailRows) appendRow(label, value);
 }
 
 /** 编辑器顶栏 ⋯ 菜单：复制调整、粘贴、套用到这一组、导出选项、照片信息，全部复用既有面板。 */

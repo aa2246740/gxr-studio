@@ -230,3 +230,394 @@ export async function isDiptychBlob(blob: Blob, frame?: Frame | null): Promise<b
     bm?.close();
   }
 }
+
+// ---------- 半格导出模式、单格切分、连续编号第 1 张判定与 g258 拍摄配方标签 ----------
+
+export const HALF_WIDTH = 2088;
+export const SEAM_X0 = 2088;
+export const SEAM_X1 = 2199;
+export const RIGHT_X0 = 2200;
+
+export type HalfframeMode = 'diptych' | 'singles' | 'both';
+export type HalfframeRole = 'first' | 'second';
+
+/** 桌面 web/assets/halfframe.js 的导出选项文案。 */
+export const HALFFRAME_MODES: Array<[HalfframeMode, string]> = [
+  ['diptych', '双联一张'],
+  ['singles', '两张单格'],
+  ['both', '都要'],
+];
+
+/** 桌面 web/assets/halfframe.js 的 PAIR_EXPORT_NOTE。 */
+export const PAIR_EXPORT_NOTE = '双联和相机拼的一样：第 1 张在左（竖拿时在上），中间黑缝 112 像素。';
+
+const SIZE_EDGES: Record<string, number | null> = {
+  original: null,
+  large: 3000,
+  medium: 2048,
+  small: 1600,
+};
+
+export function normalizedHalfframeMode(raw: unknown): HalfframeMode {
+  return raw === 'singles' || raw === 'both' ? raw : 'diptych';
+}
+
+function fitEdge(w: number, h: number, edge: number | null): [number, number] {
+  if (!edge || Math.max(w, h) <= edge) return [w, h];
+  const k = edge / Math.max(w, h);
+  return [Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k))];
+}
+
+/** 桌面 web/assets/halfframe.js 的 singleHalfSize。 */
+export function singleHalfSize(frame: { width: number; height: number } | null | undefined, sizeKey = 'original'): [number, number] {
+  const portrait = frame && frame.width && frame.height ? frame.height > frame.width : false;
+  const base: [number, number] = portrait ? [FULL_HEIGHT, HALF_WIDTH] : [HALF_WIDTH, FULL_HEIGHT];
+  return fitEdge(base[0], base[1], SIZE_EDGES[sizeKey] ?? null);
+}
+
+/** 桌面 web/assets/halfframe.js 的 pairExportSizeText。 */
+export function pairExportSizeText(
+  frame: { width: number; height: number } | null | undefined,
+  diptychSize: [number, number] | null | undefined,
+  sizeKey: string,
+  mode: HalfframeMode,
+): string {
+  const dip =
+    diptychSize ??
+    (frame && frame.width && frame.height
+      ? fitEdge(frame.width, frame.height, SIZE_EDGES[sizeKey] ?? null)
+      : fitEdge(FULL_WIDTH, FULL_HEIGHT, SIZE_EDGES[sizeKey] ?? null));
+  const single = singleHalfSize(frame, sizeKey);
+  if (mode === 'singles') return `${single[0]} × ${single[1]} 像素 · 2 个文件`;
+  if (mode === 'both') return `${dip[0]} × ${dip[1]} + ${single[0]} × ${single[1]} 像素 · 3 个文件`;
+  return `${dip[0]} × ${dip[1]} 像素 · 1 个文件`;
+}
+
+/** 一批照片按指定半格导出模式会产出几个文件。 */
+export function halfframeFileCount(photos: ReadonlyArray<{ diptych?: boolean }>, mode: HalfframeMode | undefined): number {
+  const m = normalizedHalfframeMode(mode);
+  const perDiptych = m === 'both' ? 3 : m === 'singles' ? 2 : 1;
+  let total = 0;
+  for (const photo of photos) total += photo.diptych ? perDiptych : 1;
+  return total;
+}
+
+/**
+ * 从已按 EXIF Orientation 转正的双联 RGB 切出第 1 格或第 2 格（排除 112px 黑缝）。
+ * g250 规则（ori 1/6 → 传感器左半为第 1 格，ori 3/8 → 传感器右半为第 1 格）转正后等价于：
+ * - 横向 4288×2848：第 1 格为左列 0..2087，第 2 格为右列 2200..4287，产出 2088×2848；
+ * - 竖向 2848×4288：第 1 格为上行 0..2087，第 2 格为下行 2200..4287，产出 2848×2088。
+ */
+export function sliceDiptychHalfRgb(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+  role: HalfframeRole,
+): { data: Uint8Array; width: number; height: number } {
+  if (width === FULL_WIDTH && height === FULL_HEIGHT) {
+    const outW = HALF_WIDTH;
+    const outH = FULL_HEIGHT;
+    const x0 = role === 'first' ? 0 : RIGHT_X0;
+    const out = new Uint8Array(outW * outH * 3);
+    const rowBytes = outW * 3;
+    const srcStride = width * 3;
+    const xByte = x0 * 3;
+    for (let y = 0; y < outH; y += 1) {
+      const srcOff = y * srcStride + xByte;
+      out.set(rgb.subarray(srcOff, srcOff + rowBytes), y * rowBytes);
+    }
+    return { data: out, width: outW, height: outH };
+  }
+  if (width === FULL_HEIGHT && height === FULL_WIDTH) {
+    const outW = FULL_HEIGHT;
+    const outH = HALF_WIDTH;
+    const y0 = role === 'first' ? 0 : RIGHT_X0;
+    const rowBytes = outW * 3;
+    const start = y0 * rowBytes;
+    const end = start + outH * rowBytes;
+    return { data: rgb.slice(start, end), width: outW, height: outH };
+  }
+  throw new Error(`unexpected diptych RGB dimensions: ${width}x${height}`);
+}
+
+// --- 连续编号相邻第 1 张（与桌面 halfframe_pairs.py 同规则） ---
+
+const MPF_WIDTH = 640;
+const MPF_HEIGHT = 424;
+const MPF_LEFT_MAX = 163;
+const MPF_RIGHT_MIN = 476;
+const TRAILING_DIGITS = /(\d+)$/;
+const CONFLICT_SUFFIX = /_[0-9a-f]{6,}$/;
+
+function stripConflictSuffix(stem: string): string {
+  const stripped = stem.replace(CONFLICT_SUFFIX, '');
+  return stripped !== stem && TRAILING_DIGITS.test(stripped) ? stripped : stem;
+}
+
+/** 桌面 halfframe_pairs.neighbor_names：生成 ±delta 邻居文件名干（最多两个，去重保序）。 */
+export function neighborNames(name: string | null | undefined, delta: number): string[] {
+  if (!name) return [];
+  const base = name.replace(/\.[^./\\]+$/, '');
+  const stem = stripConflictSuffix(base);
+  const m = TRAILING_DIGITS.exec(stem);
+  if (!m) return [];
+  const digits = m[1];
+  const target = Number.parseInt(digits, 10) + delta;
+  if (!Number.isFinite(target) || target < 0) return [];
+  const prefix = stem.slice(0, m.index);
+  const padded = `${prefix}${String(target).padStart(digits.length, '0')}`;
+  const plain = `${prefix}${target}`;
+  return padded === plain ? [padded] : [padded, plain];
+}
+
+/** 纯函数检查 MPF 640×424 预览 RGBA 是否符合 g250 第 1 张（两侧 0..163、476..639 全黑 ≤12，中间有内容）。 */
+export function isFirstLikeRgba(rgba: Uint8Array | Uint8ClampedArray, width: number, height: number): boolean {
+  if (width !== MPF_WIDTH || height !== MPF_HEIGHT || rgba.length < width * height * 4) return false;
+  let midLit = false;
+  for (let y = 0; y < height; y += 1) {
+    const rowOff = y * width;
+    for (let x = 0; x <= MPF_LEFT_MAX; x += 1) {
+      const off = (rowOff + x) * 4;
+      if (Math.round(0.299 * rgba[off] + 0.587 * rgba[off + 1] + 0.114 * rgba[off + 2]) > LUMA_THRESHOLD) return false;
+    }
+    for (let x = MPF_RIGHT_MIN; x < width; x += 1) {
+      const off = (rowOff + x) * 4;
+      if (Math.round(0.299 * rgba[off] + 0.587 * rgba[off + 1] + 0.114 * rgba[off + 2]) > LUMA_THRESHOLD) return false;
+    }
+    if (!midLit) {
+      for (let x = MPF_LEFT_MAX + 1; x < MPF_RIGHT_MIN; x += 1) {
+        const off = (rowOff + x) * 4;
+        if (Math.round(0.299 * rgba[off] + 0.587 * rgba[off + 1] + 0.114 * rgba[off + 2]) > LUMA_THRESHOLD) {
+          midLit = true;
+          break;
+        }
+      }
+    }
+  }
+  return midLit;
+}
+
+function readU16(bytes: Uint8Array, off: number, le: boolean): number | null {
+  if (off < 0 || off + 2 > bytes.length) return null;
+  return le ? bytes[off] + (bytes[off + 1] << 8) : (bytes[off] << 8) + bytes[off + 1];
+}
+
+function readU32(bytes: Uint8Array, off: number, le: boolean): number | null {
+  if (off < 0 || off + 4 > bytes.length) return null;
+  return le
+    ? (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0
+    : ((bytes[off] << 24) | (bytes[off + 1] << 16) | (bytes[off + 2] << 8) | bytes[off + 3]) >>> 0;
+}
+
+/** 解析 JPEG 头部 APP2 MPF 段，找出第 2 帧（640×424 预览）在文件中的字节范围。 */
+export function extractMpfSecondRange(head: Uint8Array): { offset: number; size: number } | null {
+  if (head.length < 4 || head[0] !== 0xff || head[1] !== 0xd8) return null;
+  let pos = 2;
+  while (pos + 4 <= head.length) {
+    if (head[pos] !== 0xff) return null;
+    while (pos < head.length && head[pos] === 0xff) pos += 1;
+    if (pos >= head.length) return null;
+    const marker = head[pos++];
+    if (marker === 0xda || marker === 0xd9) break;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    const segLen = readU16(head, pos, false);
+    if (segLen === null || segLen < 2 || pos + segLen > head.length) break;
+    const payloadStart = pos + 2;
+    const payloadEnd = pos + segLen;
+    if (
+      marker === 0xe2 &&
+      payloadEnd - payloadStart >= 16 &&
+      head[payloadStart] === 0x4d &&
+      head[payloadStart + 1] === 0x50 &&
+      head[payloadStart + 2] === 0x46 &&
+      head[payloadStart + 3] === 0x00
+    ) {
+      const mpfBase = payloadStart + 4;
+      const le = head[mpfBase] === 0x49 && head[mpfBase + 1] === 0x49;
+      const be = head[mpfBase] === 0x4d && head[mpfBase + 1] === 0x4d;
+      if (!le && !be) return null;
+      if (readU16(head, mpfBase + 2, le) !== 42) return null;
+      const ifdOff = readU32(head, mpfBase + 4, le);
+      if (ifdOff === null) return null;
+      const ifdPos = mpfBase + ifdOff;
+      const count = readU16(head, ifdPos, le);
+      if (count === null) return null;
+      for (let i = 0; i < count; i += 1) {
+        const entryPos = ifdPos + 2 + i * 12;
+        if (entryPos + 12 > payloadEnd) break;
+        const tag = readU16(head, entryPos, le);
+        const bytesCount = readU32(head, entryPos + 4, le);
+        const valOff = readU32(head, entryPos + 8, le);
+        if (tag === 0xb002 && bytesCount !== null && bytesCount >= 32 && valOff !== null) {
+          const entry1 = mpfBase + valOff + 16;
+          if (entry1 + 16 > payloadEnd) return null;
+          const size = readU32(head, entry1 + 4, le);
+          const dataOff = readU32(head, entry1 + 8, le);
+          if (size !== null && dataOff !== null && size > 0 && dataOff > 0) {
+            return { offset: mpfBase + dataOff, size };
+          }
+        }
+      }
+    }
+    pos = payloadEnd;
+  }
+  return null;
+}
+
+/** 浏览器侧判定相机 JPG Blob 是否为 g250 第 1 张（4288×2848 且 MPF 640×424 预览两侧全黑）。 */
+export async function isFirstLikeBlob(blob: Blob): Promise<boolean> {
+  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') return false;
+  const head = await readRange(blob, 0, PREFIX);
+  if (!head) return false;
+  const frame = jpegFrame(head);
+  if (!frame || !unrotatedDimsMatch(frame).ok) return false;
+  const range = extractMpfSecondRange(head);
+  if (!range || range.offset + range.size > blob.size) return false;
+  const slice = blob.slice(range.offset, range.offset + range.size, 'image/jpeg');
+  let bm: ImageBitmap | null = null;
+  try {
+    bm = await createImageBitmap(slice, { imageOrientation: 'none', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+    if (bm.width !== MPF_WIDTH || bm.height !== MPF_HEIGHT) return false;
+    const canvas = new OffscreenCanvas(MPF_WIDTH, MPF_HEIGHT);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    ctx.drawImage(bm, 0, 0, MPF_WIDTH, MPF_HEIGHT);
+    const rgba = ctx.getImageData(0, 0, MPF_WIDTH, MPF_HEIGHT).data;
+    return isFirstLikeRgba(rgba, MPF_WIDTH, MPF_HEIGHT);
+  } catch {
+    return false;
+  } finally {
+    bm?.close();
+  }
+}
+
+// --- EXIF Copyright GXR1 拍摄配方标签解析与展示（与桌面 recipe_tags.py / catalog_names.py / info_panel.js 同规则） ---
+
+const GXR1_TAG_RE = /^GXR1 ([0-9a-fA-F]{10}) (28|50|MT) (0[1-9]|[1-9][0-9])(?: ([0-9A-I-]{10}))?$/;
+const MAX_TAG_BYTES = 47;
+const COPYRIGHT_FIELD_CHARS = 69;
+const TAG_ALPHABET = '0123456789ABCDEFGHI';
+const TAG_KNOB_ORDER = ['amount', 'contrast', 'highlight', 'shadow', 'fade', 'saturation', 'warmth', 'tint', 'split', 'filter'] as const;
+const TAG_KNOB_LABELS: Record<string, string> = {
+  amount: '强度',
+  contrast: '对比度',
+  highlight: '高光',
+  shadow: '阴影',
+  fade: '褪色',
+  saturation: '饱和度',
+  warmth: '色温',
+  tint: '色调',
+  split: '分离色调',
+  filter: '黑白滤镜',
+};
+const TAG_UNIT_LABELS: Record<string, string> = { '28': '28mm', '50': '50mm', MT: 'MOUNT' };
+const TAG_UNIT_BITS: Record<string, number> = { '50': 1, '28': 2, MT: 4 };
+const TAG_BASE_NAMES = ['GRPos', 'GRNeg', 'HC BW', 'Std', 'K64', 'P160', 'K25', 'Gold'];
+const G176_DESCRIPTORS: ReadonlyArray<readonly [string, number]> = [
+  ['Acros', 1], ['Acros', 2], ['Acros', 4], ['ARRI 709', 7], ['M9 STD', 1], ['M9 STD', 2], ['M9 STD', 4],
+  ['instax mini', 7], ['HNCS HiCon', 1], ['HNCS HiCon', 2], ['HNCS HiCon', 4], ['HNCS LowSat', 3], ['HNCS LowSat', 4],
+  ['Tri-X 400', 7], ['Ektachrm 100', 1], ['Ektachrm 100', 2], ['Ektachrm 100', 4], ['Provia 100F', 3], ['Provia 100F', 4],
+  ['Portra 800', 3], ['Portra 800', 4], ['Vision3 500T', 1], ['Vision3 500T', 4], ['F-CC', 5], ['F-CC', 2],
+  ['F-CN', 3], ['F-CN', 4], ['Leica F1', 7], ['Teal Orange', 7],
+];
+const G178_RECORDS = [
+  'F-CC', 'F-CN', 'Provia100F', 'M9 STD', 'L-Classic', 'L-Contemp', 'Leica F1', 'K64', 'K25',
+  'Portra160', 'Gold200', 'Ektachrm100', 'HNCS HiCon', 'HNCS LowSat', 'Teal Orange',
+  'Y2K Plady', 'Agfa LeBox', 'Acros', 'Tri-X 400',
+];
+const KUBIK_RECORDS = ['K-0815', 'K-PACIFIC', 'K-KINO'];
+const G178_DESCRIPTORS: ReadonlyArray<readonly [string, number]> = G178_RECORDS.flatMap((name) => [
+  [name, 1] as const,
+  [name, 2] as const,
+  [name, 4] as const,
+]);
+const KUBIK_DESCRIPTORS: ReadonlyArray<readonly [string, number]> = [
+  ...G178_DESCRIPTORS,
+  ...KUBIK_RECORDS.flatMap((name) => [
+    [name, 1] as const,
+    [name, 2] as const,
+    [name, 4] as const,
+  ]),
+];
+const CATALOG_DESCRIPTORS: Record<string, ReadonlyArray<readonly [string, number]>> = {
+  d25d2f0a68: G176_DESCRIPTORS,
+  '6a3a5a3c02': G178_DESCRIPTORS,
+  '6adf847602': G178_DESCRIPTORS,
+  '0ccc86c19b': KUBIK_DESCRIPTORS,
+};
+
+function catalogRecipeName(identity: string, unit: string, position: number): string | null {
+  const descriptors = CATALOG_DESCRIPTORS[identity];
+  const unitBit = TAG_UNIT_BITS[unit];
+  if (!descriptors || !unitBit || position < 1) return null;
+  if (position <= 4) return TAG_BASE_NAMES[position - 1] ?? null;
+  const effect = position - 4;
+  if (effect >= 1 && effect <= descriptors.length) {
+    const [name, mask] = descriptors[effect - 1];
+    if (mask & unitBit) return name;
+  }
+  if (position <= 8) return TAG_BASE_NAMES[position - 1] ?? null;
+  return null;
+}
+
+export interface ParsedRecipeTag {
+  catalogIdentity: string;
+  unit: string;
+  unitLabel: string;
+  position: number;
+  name: string | null;
+  knobCode: string | null;
+  levels: Record<string, number | null> | null;
+}
+
+/** 解析 EXIF Copyright 的 GXR1 标签（不依赖 DAT）。 */
+export function parseRecipeTag(value: string | null | undefined): ParsedRecipeTag | null {
+  if (typeof value !== 'string' || value.length > COPYRIGHT_FIELD_CHARS + 1) return null;
+  for (let i = 0; i < value.length; i += 1) {
+    if (value.charCodeAt(i) > 127) return null;
+  }
+  let text = value.endsWith('\0') ? value.slice(0, -1) : value;
+  if (text.length === COPYRIGHT_FIELD_CHARS) text = text.replace(/ +$/, '');
+  if (text.length >= MAX_TAG_BYTES) return null;
+  const m = GXR1_TAG_RE.exec(text);
+  if (!m) return null;
+  const catalogIdentity = m[1].toLowerCase();
+  const unit = m[2];
+  const position = Number.parseInt(m[3], 10);
+  const knobCode = m[4] ?? null;
+  let levels: Record<string, number | null> | null = null;
+  if (knobCode !== null) {
+    levels = {};
+    for (let i = 0; i < TAG_KNOB_ORDER.length; i += 1) {
+      const name = TAG_KNOB_ORDER[i];
+      const ch = knobCode[i];
+      const idx = ch === '-' ? -1 : TAG_ALPHABET.indexOf(ch);
+      levels[name] = idx < 0 || name === 'amount' ? null : idx - 9;
+    }
+  }
+  return {
+    catalogIdentity,
+    unit,
+    unitLabel: TAG_UNIT_LABELS[unit] ?? unit,
+    position,
+    name: catalogRecipeName(catalogIdentity, unit, position),
+    knobCode,
+    levels,
+  };
+}
+
+/** 照桌面 web/assets/info_panel.js 的 shootingRecipeRows 格式化单格拍摄配方说明。 */
+export function formatShootingRecipeTag(copyright: string | null | undefined): string {
+  const tag = parseRecipeTag(copyright);
+  if (!tag) return '未标记';
+  const pos = String(tag.position).padStart(2, '0');
+  const base = tag.name ? `${tag.name}（${tag.unitLabel} · ${pos}）` : `GXR1 ${tag.catalogIdentity} ${tag.unit} ${pos}`;
+  if (tag.levels === null) return `${base} · 微调未知`;
+  const changes: string[] = [];
+  for (const key of TAG_KNOB_ORDER) {
+    const val = tag.levels[key];
+    if (val === null || val === undefined || val === 0) continue;
+    changes.push(`${TAG_KNOB_LABELS[key] ?? key} ${val > 0 ? `+${val}` : String(val)}`);
+  }
+  return changes.length ? `${base} · ${changes.join(' · ')}` : base;
+}
