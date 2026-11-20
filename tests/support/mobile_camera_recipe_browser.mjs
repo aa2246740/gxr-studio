@@ -249,7 +249,7 @@ async function runMain(page) {
   // 6. Diptych (file2) and JPG-only photo do NOT adopt.
   await openPhoto(page, manifest.diptych);
   await page.locator('.editor .toolbar [data-tool="recipe"]').click();
-  await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+  await page.locator('.editor .panel.recipe [data-act="recipe-status"]').click();
   await page.waitForSelector('.recipe-info-sheet');
   const diptychPanelText = (await page.locator('.recipe-info-sheet').innerText()).trim();
   await page.locator('.recipe-info-sheet [data-act="close"]').click();
@@ -259,7 +259,7 @@ async function runMain(page) {
 
   await openPhoto(page, manifest.jpgOnly);
   await page.locator('.editor .toolbar [data-tool="recipe"]').click();
-  await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+  await page.locator('.editor .panel.recipe [data-act="recipe-status"]').click();
   await page.waitForSelector('.recipe-info-sheet');
   const jpgPanelText = (await page.locator('.recipe-info-sheet').innerText()).trim();
   await page.locator('.recipe-info-sheet [data-act="close"]').click();
@@ -341,8 +341,8 @@ async function runWrongGen(page) {
   await page.waitForSelector('.editor .recipe-head .rname');
   await page.waitForTimeout(400);
   const heading = (await page.locator('.editor .recipe-head .rname').textContent())?.trim() ?? '';
-  const errorCode = await page.locator('.editor .recipe-head [data-camera-recipe-error]').getAttribute('data-camera-recipe-error').catch(() => null);
-  await page.locator('.editor .recipe-head [data-camera-recipe-error]').click();
+  const errorCode = await page.locator('.editor .panel.recipe [data-camera-recipe-error]').getAttribute('data-camera-recipe-error').catch(() => null);
+  await page.locator('.editor .panel.recipe [data-camera-recipe-error]').click();
   await page.waitForSelector('.recipe-info-sheet');
   const panelText = (await page.locator('.recipe-info-sheet').innerText()).trim();
   const errorText = (await page.locator('.recipe-info-sheet [data-camera-recipe-error] .tx').textContent().catch(() => ''))?.trim() ?? '';

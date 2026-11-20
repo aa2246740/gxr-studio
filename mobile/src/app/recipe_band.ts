@@ -92,6 +92,58 @@ export function makeRecipeFilterTile(which: Shelf, count: number, onClick: () =>
   return tile;
 }
 
+export interface RecipeStatusSpec {
+  label: string;
+  tone: 'warn' | 'dim';
+  stateAttr?: 'no-calibration' | 'uncalibrated';
+  cameraRecipeError?: string;
+  cameraRecipeNote?: 'levels-unknown';
+  action: 'jpg-info' | 'ask-dat' | 'status-sheet';
+}
+
+export function recipeStatusSpec(
+  scene: RecipeStatusScene & { raw: boolean; dat: boolean },
+  diptych: boolean,
+  hasDatError: boolean,
+): RecipeStatusSpec | null {
+  if (!scene.raw) {
+    return { label: diptych ? '半格双联' : '配方需要 RAW', tone: 'warn', action: 'jpg-info' };
+  }
+  if (!scene.dat) {
+    return { label: '选配方文件', tone: 'warn', action: 'ask-dat' };
+  }
+  const calibrated = scene.state.state === 'ready';
+  const off = calibrated && crossed(scene.photoUnit, scene.unit, scene.iso);
+  if (scene.camError) {
+    return { label: '拍摄配方', tone: 'warn', cameraRecipeError: scene.camError.code, action: 'status-sheet' };
+  }
+  if (scene.adopted?.levelsUnknown) {
+    return { label: '档位未标', tone: 'dim', cameraRecipeNote: 'levels-unknown', action: 'status-sheet' };
+  }
+  if (!calibrated) {
+    return { label: '未校准', tone: 'warn', stateAttr: 'no-calibration', action: 'status-sheet' };
+  }
+  if (off || hasDatError) {
+    return { label: '未校准', tone: 'warn', stateAttr: 'uncalibrated', action: 'status-sheet' };
+  }
+  return null;
+}
+
+/** 固定在配方横条左侧的 52×70pt 状态瓷砖（导出条占住顶槽时也随时可达）。 */
+export function makeRecipeStatusTile(spec: RecipeStatusSpec, onClick: () => void): HTMLButtonElement {
+  const tile = button(`rc filter-tile status-tile ${spec.tone}`, '');
+  tile.dataset.act = 'recipe-status';
+  if (spec.stateAttr) tile.dataset.state = spec.stateAttr;
+  if (spec.cameraRecipeError) tile.dataset.cameraRecipeError = spec.cameraRecipeError;
+  if (spec.cameraRecipeNote) tile.dataset.cameraRecipeNote = spec.cameraRecipeNote;
+  tile.setAttribute('aria-label', `配方状态：${spec.label}`);
+  const box = el('div', 'th filter-th');
+  box.append(icon(WARN), el('span', 'status-lab', spec.label));
+  tile.append(box);
+  tile.addEventListener('click', onClick);
+  return tile;
+}
+
 export function openRecipeFilterSheet(
   shell: HTMLElement,
   list: Shelves,
@@ -379,7 +431,8 @@ export function buildKnobRow(
   });
   input.addEventListener('input', () => {
     const text = paint();
-    if (dragging) onScrub?.(`${label} ${text}`);
+    onScrub?.(`${label} ${text}`);
+    if (!dragging) onScrub?.(null);
   });
   const end = () => {
     if (!dragging) return;
@@ -389,7 +442,11 @@ export function buildKnobRow(
   };
   input.addEventListener('pointerup', end);
   input.addEventListener('pointercancel', end);
+  input.addEventListener('blur', () => {
+    if (!dragging) onScrub?.(null);
+  });
   input.addEventListener('change', () => {
+    if (!dragging) onScrub?.(null);
     const level = levels[Number(input.value)];
     if (level !== undefined) onLevel(level);
   });

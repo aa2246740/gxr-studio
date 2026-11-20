@@ -256,7 +256,12 @@ export class CropPanel {
       const next = clamp(Math.round((this.hooks.liveStraighten() + delta) * 10) / 10, -MAX_ANGLE, MAX_ANGLE);
       this.paintAngle(next);
       this.hooks.previewStraighten(next);
+      this.hooks.onScrub?.(fmtDeg(next));
+      this.hooks.onScrub?.(null);
       this.hooks.endStraighten();
+    });
+    this.ruler.addEventListener('blur', () => {
+      if (activeId === -1) this.hooks.onScrub?.(null);
     });
   }
 

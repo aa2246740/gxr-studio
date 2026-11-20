@@ -82,6 +82,23 @@ def test_mobile_ready_slot_acceptance(tmp_path: Path) -> None:
             im = ImageOps.exif_transpose(im)
             return im.width / im.height
 
+    jpg_only = tmp_path / "R9990099.JPG"
+    shutil.copyfile(jpg_p1, jpg_only)
+
+    lut_lines = [
+        'TITLE "Warm Check"',
+        "# Input: sRGB",
+        "LUT_3D_SIZE 5",
+        "DOMAIN_MIN 0.0 0.0 0.0",
+        "DOMAIN_MAX 1.0 1.0 1.0",
+    ]
+    for b in range(5):
+        for g in range(5):
+            for r in range(5):
+                lut_lines.append(f"{min(1.0, (r / 4.0) * 1.05):.6f} {g / 4.0:.6f} {(b / 4.0) * 0.92:.6f}")
+    lut_path = tmp_path / "warm_check.cube"
+    lut_path.write_text("\n".join(lut_lines) + "\n", encoding="utf-8")
+
     screenshots_dir = os.environ.get("GXR_READY_SLOT_SCREENSHOTS", "")
     manifest: dict[str, Any] = {
         "files": [
@@ -91,13 +108,16 @@ def test_mobile_ready_slot_acceptance(tmp_path: Path) -> None:
             str(jpg_l1),
             str(dng_p2),
             str(jpg_p2),
+            str(jpg_only),
             str(dat250),
             str(fx250),
         ],
         "pack": str(pack_zip),
+        "lutPath": str(lut_path),
         "portrait1Stem": dng_p1.stem,
         "landscapeStem": dng_l1.stem,
         "portrait2Stem": dng_p2.stem,
+        "jpgOnlyStem": jpg_only.stem,
         "portraitAspect": _aspect(jpg_p1),
         "landscapeAspect": _aspect(jpg_l1),
         "screenshotsDir": screenshots_dir,

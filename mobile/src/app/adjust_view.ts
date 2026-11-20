@@ -194,6 +194,7 @@ export class AdjustView {
     // 松手（change）才算落定的修改，编辑状态的版本加一（撤销套用时据此判断改没改过）。
     this.input.addEventListener('change', () => {
       markControlDragEnd();
+      if (!this.host.dragging()) this.host.onScrub?.(null);
       const photo = this.host.photo();
       if (!photo) return;
       const value = photo.knobs[this.key];
@@ -201,6 +202,9 @@ export class AdjustView {
       this.committed = value;
       photo.rev += 1;
       this.host.onEditedChanged?.();
+    });
+    this.input.addEventListener('blur', () => {
+      if (!this.host.dragging()) this.host.onScrub?.(null);
     });
     const end = () => {
       window.removeEventListener('pointerup', end, true);

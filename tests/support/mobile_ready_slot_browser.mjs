@@ -1,18 +1,26 @@
 // 手机导出条固定顶槽（U5 phone-ready-slot）真实浏览器验收脚本：
 // - 双视口（390×844 / 440×956）实拍照片（card250 + g250）；
-// - 全部 7 种导出态（运行中 / 运行+已做好 / 单张就绪 / 两张就绪 / 部分失败 / 全部失败 / 详情打开）下：
+// - 全部 6 种活动导出条态（运行中 / 运行+已做好 / 单张就绪 / 两张就绪 / 部分失败 / 全部失败）+ 详情打开态下：
 //   照片 0px 不移位、.pdock <= 44pt、工具控制层 84pt 全可达且 elementFromPoint 绝不被 .pdock 遮挡、命中高度 >= 44pt；
-// - 拖动调参/旋转/配方微调时浮出 28pt 数值胶囊（.band 上方 12pt，松手 400ms 后淡出）；
-// - 详情工作表（modal dialog、<= 240pt、遮罩点关、Escape 关闭、焦点围栏、直达同步 navigator.share）；
-// - VoiceOver 区域/DOM 顺序/polite 播报（仅状态切换、不逐 tick）/ 存进相册 vs 存到相册 aria-label 区分；
-// - 250ms 拖动防误触；
-// - 收起单带贴底 40pt（390 重叠 <= 2pt，440 重叠 0pt，横图 0pt）与网格页贴底；
+// - P2-1：活动导出态下 LUT「导入 LUT」「色彩空间」「状态提示」与配方状态瓷砖全可达；
+// - P2-2：详情工作表在运行中连续重画保焦，Escape / 遮罩 / 收起关闭后还焦给重建后的 .pdock [data-act="toggle-details"]；
+// - P3-1：拖动及键盘操作调参/拉直后 28pt 数值胶囊按时淡出；
+// - P3-4：已保存部分成片后仅剩失败时，详情汇总为「1 张没做成」；
+// - VoiceOver 区域/DOM 顺序/polite 播报 / 存进相册 vs 存到相册 aria-label 区分 / 250ms 防误触 / 收起贴底 / 网格贴底；
 // - 可选脱敏实拍截图（GXR_READY_SLOT_SCREENSHOTS）。
 // stdout 只有一行脱敏 JSON。
 
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  auditDeckHitTests,
+  auditRecipeStatusInState,
+  verifyDetailsFocusLifecycle,
+  verifyKeyboardScrubFadeout,
+  verifyLutDeckActions,
+  verifySavedFailureSummary,
+} from './mobile_ready_slot_checks.mjs';
 
 const [runtime, base, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -38,6 +46,7 @@ const STEM_ALIAS = new Map([
   [manifest.portrait1Stem, 'portrait1'],
   [manifest.landscapeStem, 'landscape'],
   [manifest.portrait2Stem, 'portrait2'],
+  [manifest.jpgOnlyStem, 'jpgOnly'],
 ]);
 
 function redact(text) {
@@ -278,91 +287,6 @@ async function tapStageCenter(page, session) {
   await frame(page, 3);
 }
 
-/** 在当前导出态下逐工具做 elementFromPoint 命中测试（调整/配方/裁剪/时间戳），确认控制层 0 遮挡且命中高 >= 44pt。 */
-async function auditDeckHitTests(page, tag, checkHeights = false) {
-  const result = {};
-
-  const probeVisible = async (selector, containerSelector) =>
-    page.evaluate(
-      ({ sel, contSel }) => {
-        const cont = document.querySelector(contSel);
-        const cr = cont ? cont.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight };
-        const nodes = [...document.querySelectorAll(sel)];
-        let tested = 0;
-        const bad = [];
-        let minH = 999;
-        for (const el of nodes) {
-          const r = el.getBoundingClientRect();
-          if (r.width <= 0 || r.height <= 0) continue;
-          const cx = r.left + r.width / 2;
-          const cy = r.top + r.height / 2;
-          if (cx < cr.left + 2 || cx > cr.right - 2 || cy < 0 || cy > window.innerHeight) continue;
-          tested += 1;
-          minH = Math.min(minH, r.height);
-          const hit = document.elementFromPoint(cx, cy);
-          const ok = Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el)) && !hit.closest('.pdock'));
-          if (!ok) bad.push({ tag: el.tagName, cls: el.className, hitCls: hit?.className ?? 'null' });
-        }
-        return { tested, bad, minH: tested ? Math.round(minH * 10) / 10 : 0 };
-      },
-      { sel: selector, contSel: containerSelector },
-    );
-
-  // 1) Adjust
-  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
-  await frame(page, 2);
-  const adjSlider = await probeVisible('.editor .panel.adjust input[type="range"]', '.editor .band-body');
-  const adjChips = await probeVisible('.editor .panel.adjust .chips .chip', '.editor .panel.adjust .chips');
-  check(adjSlider.tested >= 1 && adjSlider.bad.length === 0, `${tag} adjust slider hit blocked: ${JSON.stringify(adjSlider)}`);
-  check(adjChips.tested >= 4 && adjChips.bad.length === 0, `${tag} adjust chips hit blocked: ${JSON.stringify(adjChips)}`);
-  if (checkHeights) {
-    check(adjSlider.minH >= 43.5, `${tag} adjust slider hit height ${adjSlider.minH} < 44`);
-    check(adjChips.minH >= 43.5, `${tag} adjust chip hit height ${adjChips.minH} < 44`);
-  }
-  result.adjust = { slider: adjSlider, chips: adjChips };
-
-  // 2) Recipe (cards + pinned filter tile)
-  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
-  await frame(page, 2);
-  const recFilter = await probeVisible('.editor .panel.recipe .recipe-filter-pin [data-act="recipe-filter"]', '.editor .band-body');
-  const recCards = await probeVisible('.editor .panel.recipe .strip .rc', '.editor .panel.recipe .strip');
-  check(recFilter.tested === 1 && recFilter.bad.length === 0, `${tag} recipe filter tile blocked: ${JSON.stringify(recFilter)}`);
-  check(recCards.tested >= 3 && recCards.bad.length === 0, `${tag} recipe cards blocked: ${JSON.stringify(recCards)}`);
-  if (checkHeights) {
-    check(recFilter.minH >= 43.5, `${tag} recipe filter tile height ${recFilter.minH} < 44`);
-    check(recCards.minH >= 43.5, `${tag} recipe card height ${recCards.minH} < 44`);
-  }
-  result.recipe = { filter: recFilter, cards: recCards };
-
-  // 3) Crop (dial + ratio chips)
-  await page.locator('.editor .toolbar [data-tool="crop"]').click();
-  await frame(page, 2);
-  const cropRuler = await probeVisible('.editor .panel.crop-panel .ruler', '.editor .band-body');
-  const cropChips = await probeVisible('.editor .panel.crop-panel .chips .chip', '.editor .panel.crop-panel .chips');
-  check(cropRuler.tested === 1 && cropRuler.bad.length === 0, `${tag} crop ruler blocked: ${JSON.stringify(cropRuler)}`);
-  check(cropChips.tested >= 3 && cropChips.bad.length === 0, `${tag} crop ratio chips blocked: ${JSON.stringify(cropChips)}`);
-  if (checkHeights) {
-    check(cropRuler.minH >= 43.5, `${tag} crop ruler height ${cropRuler.minH} < 44`);
-    check(cropChips.minH >= 43.5, `${tag} crop chip height ${cropChips.minH} < 44`);
-  }
-  result.crop = { ruler: cropRuler, chips: cropChips };
-
-  // 4) Stamp (switch + detail button)
-  await page.locator('.editor .toolbar [data-tool="more"]').click();
-  await frame(page, 2);
-  await page.locator('.more-sheet [data-more="stamp"]').click();
-  await frame(page, 2);
-  const stampBtns = await probeVisible('.editor .stamp-band .stamp-toggle-hit, .editor .stamp-band [data-act="stamp-sheet"]', '.editor .band-body');
-  check(stampBtns.tested >= 2 && stampBtns.bad.length === 0, `${tag} stamp controls blocked: ${JSON.stringify(stampBtns)}`);
-  if (checkHeights) check(stampBtns.minH >= 43.5, `${tag} stamp control height ${stampBtns.minH} < 44`);
-  result.stamp = stampBtns;
-
-  // Back to adjust for clean baseline
-  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
-  await frame(page, 2);
-  return result;
-}
-
 async function runViewport(page, session, vp, shotDir) {
   await page.setViewportSize({ width: vp.width, height: vp.height });
   await setSafeArea(page, vp.safeTop, vp.safeBottom);
@@ -461,7 +385,29 @@ async function runViewport(page, session, vp, shotDir) {
   check(voRunning.annCountWhileRunning === 0, `${vp.label} announced during running: count=${voRunning.annCountWhileRunning}`);
 
   await snap(page, shotDir, `${vp.label}-01-adjust-running`);
-  vpMetrics.states.running = { photoShift: r1(rectDiff(idle, mRun)), dockH: mRun?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:running`, true) };
+  vpMetrics.states.running = { photoShift: r1(rectDiff(idle, mRun)), dockH: mRun?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:running`, check, frame, true) };
+  await verifyLutDeckActions(page, manifest.lutPath, `${vp.label}:running`, check, frame);
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+  await frame(page, 2);
+  await page.locator('.editor .panel.recipe [data-mode="lut"]').click();
+  await frame(page, 2);
+  await snap(page, shotDir, `${vp.label}-12-lut-running`);
+  await page.locator('.editor .panel.lut [data-mode="recipe"]').click();
+  await frame(page, 2);
+  await verifyDetailsFocusLifecycle(page, `${vp.label}:running`, check, frame);
+  await verifyKeyboardScrubFadeout(page, `${vp.label}:running`, check, frame);
+  await auditRecipeStatusInState(
+    page,
+    manifest.jpgOnlyStem,
+    manifest.portrait1Stem,
+    `${vp.label}:running`,
+    openEditorPhoto,
+    check,
+    frame,
+    () => snap(page, shotDir, `${vp.label}-13-recipe-status-running`),
+  );
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+  await frame(page, 2);
 
   // === Live 28pt Scrub Pill during active export (Adjust + Crop + Recipe-fine) ===
   const sliderBox = await page.locator('.editor .panel.adjust input[type="range"]').boundingBox();
@@ -540,7 +486,8 @@ async function runViewport(page, session, vp, shotDir) {
   check(voReady1.annLog.length === 1 && voReady1.annLog[0].includes('做好了'), `${vp.label} ready announcer wrong: ${JSON.stringify(voReady1.annLog)}`);
 
   await snap(page, shotDir, `${vp.label}-02-adjust-ready`);
-  vpMetrics.states.ready1 = { photoShift: r1(rectDiff(idle, mReady1)), dockH: mReady1?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:ready1`) };
+  vpMetrics.states.ready1 = { photoShift: r1(rectDiff(idle, mReady1)), dockH: mReady1?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:ready1`, check, frame) };
+  await auditRecipeStatusInState(page, manifest.jpgOnlyStem, manifest.portrait1Stem, `${vp.label}:ready1`, openEditorPhoto, check, frame);
 
   // Crop & Stamp ready screenshots at 390/440
   await page.locator('.editor .toolbar [data-tool="crop"]').click();
@@ -570,13 +517,14 @@ async function runViewport(page, session, vp, shotDir) {
     await page.waitForTimeout(80);
     const shareGuarded = await page.evaluate(() => window.__shareLog.calls.length);
     check(shareGuarded === shareBeforeGuard, `${vp.label} 250ms drag guard failed: share fired immediately`);
-    await page.locator('.editor .panel.adjust button', { hasText: '全部重置' }).first().click().catch(() => {});
   }
   // Wait > 250ms and verify export bar responds normally again
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(350);
   await page.locator('.pdock [data-act="toggle-details"]').click();
   await page.waitForSelector('.export-sheet', { timeout: 5_000 });
   await page.locator('.export-sheet [data-act="close-details"]').click();
+  await frame(page, 2);
+  await page.locator('.editor .panel.adjust button', { hasText: '全部重置' }).first().click().catch(() => {});
   await frame(page, 2);
 
   // === STATE 2: Running + some finished (switch to portrait2, export with hold) ===
@@ -594,7 +542,8 @@ async function runViewport(page, session, vp, shotDir) {
     `${vp.label} running-ready missing direct share-ready button`,
   );
   await snap(page, shotDir, `${vp.label}-03-recipe-running-ready`);
-  vpMetrics.states.runningReady = { dockH: mRunReady?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:running-ready`) };
+  vpMetrics.states.runningReady = { dockH: mRunReady?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:running-ready`, check, frame) };
+  await auditRecipeStatusInState(page, manifest.jpgOnlyStem, manifest.portrait2Stem, `${vp.label}:running-ready`, openEditorPhoto, check, frame);
 
   // Release -> STATE 4: Two ready
   await setHold(page, false);
@@ -606,9 +555,10 @@ async function runViewport(page, session, vp, shotDir) {
   await frame(page, 3);
   const mReady2 = await measurePhoto(page, manifest.portraitAspect);
   check((mReady2?.dockH ?? 99) <= 44.5, `${vp.label} ready2 pdock height ${mReady2?.dockH} > 44`);
-  vpMetrics.states.ready2 = { dockH: mReady2?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:ready2`) };
+  vpMetrics.states.ready2 = { dockH: mReady2?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:ready2`, check, frame) };
+  await auditRecipeStatusInState(page, manifest.jpgOnlyStem, manifest.portrait2Stem, `${vp.label}:ready2`, openEditorPhoto, check, frame);
 
-  // === STATE 7: Details Modal Sheet (role=dialog, <= 240pt, 0px shift, focus trap, Escape, scrim, direct sync share) ===
+  // === Details Modal Sheet (role=dialog, <= 240pt, 0px shift, focus trap, Escape, scrim, direct sync share) ===
   const beforeSheet = await measurePhoto(page, manifest.portraitAspect);
   await page.locator('.pdock [data-act="toggle-details"]').click();
   await page.waitForSelector('.export-sheet');
@@ -704,7 +654,8 @@ async function runViewport(page, session, vp, shotDir) {
   const mPartial = await measurePhoto(page, manifest.landscapeAspect);
   check((mPartial?.dockH ?? 99) <= 44.5, `${vp.label} partial-fail dockH=${mPartial?.dockH} > 44`);
   await snap(page, shotDir, `${vp.label}-07-partial-fail`);
-  vpMetrics.states.partialFail = { dockH: mPartial?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:partial-fail`) };
+  vpMetrics.states.partialFail = { dockH: mPartial?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:partial-fail`, check, frame) };
+  await auditRecipeStatusInState(page, manifest.jpgOnlyStem, manifest.landscapeStem, `${vp.label}:partial-fail`, openEditorPhoto, check, frame);
 
   // Share the 2 ready files via details sheet bottom CTA (sync user activation!) -> drops to STATE 6: Total Failure (0 ready, 1 fail)
   await page.locator('.pdock [data-act="toggle-details"]').click();
@@ -721,7 +672,9 @@ async function runViewport(page, session, vp, shotDir) {
   const mTotal = await measurePhoto(page, manifest.landscapeAspect);
   check((mTotal?.dockH ?? 99) <= 44.5, `${vp.label} total-fail dockH=${mTotal?.dockH} > 44`);
   await snap(page, shotDir, `${vp.label}-08-total-fail`);
-  vpMetrics.states.totalFail = { dockH: mTotal?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:total-fail`) };
+  vpMetrics.states.totalFail = { dockH: mTotal?.dockH, hit: await auditDeckHitTests(page, `${vp.label}:total-fail`, check, frame) };
+  await auditRecipeStatusInState(page, manifest.jpgOnlyStem, manifest.landscapeStem, `${vp.label}:total-fail`, openEditorPhoto, check, frame);
+  await verifySavedFailureSummary(page, `${vp.label}:total-fail`, check, frame);
 
   // Dismiss total failure cleanly via × button
   await page.locator('.pdock [data-act="dismiss"]').click();
@@ -742,37 +695,61 @@ try {
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
   await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.files);
-  await page.waitForFunction(() => document.querySelectorAll('.cell').length >= 3, null, { timeout: 120_000 });
   await page.waitForFunction(
-    () => window.__gxrBook?.dat?.read?.entries?.length === 13248 && !window.__gxrBook.datBusy,
+    () => {
+      const sub = document.querySelector('.nav small')?.textContent ?? '';
+      return (
+        !sub.includes('正在读取') &&
+        document.querySelectorAll('.cell').length >= 4 &&
+        window.__gxrBook?.dat?.read?.entries?.length === 13248 &&
+        !window.__gxrBook.datBusy
+      );
+    },
     null,
     { timeout: 120_000 },
   );
-  await installRunGate(page);
-  await installAnnouncerLog(page);
+  await frame(page, 3);
+  try {
+    // Pre-import one synthetic sRGB LUT and apply it on portrait1 so [data-act="lut-space"] is enabled during active export
+    await openEditorPhoto(page, manifest.portrait1Stem);
+    await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+    await frame(page, 2);
+    await page.locator('.editor .panel.recipe [data-mode="lut"]').click();
+    await frame(page, 2);
+    await page.locator('input.lutpick').setInputFiles([manifest.lutPath]);
+    await page.waitForFunction(() => (window.__gxrLutBook?.list?.()?.length ?? 0) >= 1, null, { timeout: 30_000 });
+    await page.locator('.editor .panel.lut .rc[data-lut]:not([data-lut="none"])').first().click();
+    await frame(page, 3);
+    await page.locator('.editor .panel.lut [data-mode="recipe"]').click();
+    await frame(page, 2);
+    await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+    await frame(page, 2);
 
-  const shotDir = manifest.screenshotsDir || '';
-  if (shotDir) mkdirSync(shotDir, { recursive: true });
+    await installRunGate(page);
+    await installAnnouncerLog(page);
 
-  for (const vp of VIEWPORTS) {
-    try {
+    const shotDir = manifest.screenshotsDir || '';
+    if (shotDir) mkdirSync(shotDir, { recursive: true });
+
+    for (const vp of VIEWPORTS) {
       await runViewport(page, session, vp, shotDir);
-    } catch (err) {
-      const diag = await page
-        .evaluate(() => ({
-          screen: document.querySelector('.app')?.getAttribute('data-screen'),
-          photo: document.querySelector('.screen.editor')?.getAttribute('data-photo'),
-          dockPhase: document.querySelector('.pdock')?.dataset.phase ?? null,
-          dockVisual: document.querySelector('.pdock')?.dataset.visualState ?? null,
-          dockMode: document.querySelector('.pdock')?.dataset.dockMode ?? null,
-          dockText: document.querySelector('.pdock')?.textContent?.trim() ?? null,
-          shareCalls: window.__shareLog?.calls?.length ?? null,
-          exportPhase: window.__devExport?.flow?.current()?.phase ?? null,
-        }))
-        .catch(() => null);
-      failures.push(`${vp.label} threw: ${redact(err?.message ?? err)} diag=${redact(JSON.stringify(diag))}`);
-      break;
     }
+  } catch (err) {
+    const diag = await page
+      .evaluate(() => ({
+        screen: document.querySelector('.app')?.getAttribute('data-screen'),
+        settled: document.querySelector('.app')?.getAttribute('data-settled'),
+        photo: document.querySelector('.screen.editor')?.getAttribute('data-photo'),
+        cellCount: document.querySelectorAll('.cell').length,
+        dockPhase: document.querySelector('.pdock')?.dataset.phase ?? null,
+        dockVisual: document.querySelector('.pdock')?.dataset.visualState ?? null,
+        dockMode: document.querySelector('.pdock')?.dataset.dockMode ?? null,
+        dockText: document.querySelector('.pdock')?.textContent?.trim() ?? null,
+        shareCalls: window.__shareLog?.calls?.length ?? null,
+        exportPhase: window.__devExport?.flow?.current()?.phase ?? null,
+      }))
+      .catch(() => null);
+    failures.push(`threw: ${redact(err?.message ?? err)} diag=${redact(JSON.stringify(diag))} pageErrors=${redact(JSON.stringify(pageErrors))}`);
   }
   check(pageErrors.length === 0, `pageErrors: ${JSON.stringify(pageErrors)}`);
   await context.close();

@@ -484,3 +484,38 @@ test('drag_guard: guards accidental taps for 250ms after control drag end', asyn
   resetDragGuard();
   assert.equal(isDragTapGuarded(1050), false);
 });
+
+test('recipe_band: recipeStatusSpec covers all 6 status deck tiles and returns null when clear', async () => {
+  const { recipeStatusSpec } = await import('../../mobile/src/app/recipe_band.ts');
+  const base = {
+    raw: true,
+    dat: true,
+    photoUnit: 'jlaunch',
+    unit: 'jlaunch',
+    iso: 200,
+    state: { state: 'ready' },
+    adopted: null,
+    camError: null,
+  };
+  assert.equal(recipeStatusSpec(base, false, false), null);
+  assert.equal(recipeStatusSpec({ ...base, raw: false }, true, false)?.label, '半格双联');
+  assert.equal(recipeStatusSpec({ ...base, raw: false }, false, false)?.label, '配方需要 RAW');
+  assert.equal(recipeStatusSpec({ ...base, dat: false }, false, false)?.label, '选配方文件');
+  assert.equal(recipeStatusSpec({ ...base, camError: { code: 'missing_slot' } }, false, false)?.label, '拍摄配方');
+  assert.equal(recipeStatusSpec({ ...base, adopted: { levelsUnknown: true } }, false, false)?.label, '档位未标');
+  assert.equal(recipeStatusSpec({ ...base, state: { state: 'none' } }, false, false)?.stateAttr, 'no-calibration');
+  assert.equal(recipeStatusSpec(base, false, true)?.stateAttr, 'uncalibrated');
+});
+
+test('export_ready & export_sheet: P3-4 savedCount distinguishes 1 张没做成 vs 1 张都没做成', async () => {
+  const { readyBarSummary } = await import('../../mobile/src/app/export_ready.ts');
+  assert.equal(readyBarSummary('ready', 0, 1, 0, 0), '1 张都没做成');
+  assert.equal(readyBarSummary('ready', 0, 1, 2, 0), '1 张没做成');
+  assert.equal(readyBarSummary('ready', 0, 2, 1, 0), '2 张没做成');
+  const { readFileSync } = await import('node:fs');
+  const sheetSrc = readFileSync(new URL('../../mobile/src/app/export_sheet.ts', import.meta.url), 'utf8');
+  assert.ok(sheetSrc.includes('readyBarSummary(data.phase, entries.length, failures.length, data.savedCount'));
+  assert.ok(sheetSrc.includes('readyBarSummary(data.phase, entries.length, 0, data.savedCount'));
+  const uiSrc = readFileSync(new URL('../../mobile/src/app/export_ui.ts', import.meta.url), 'utf8');
+  assert.ok(uiSrc.includes('savedCount: this.queue.savedCount(batch)'));
+});

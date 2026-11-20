@@ -293,3 +293,48 @@ export function paintReadyBar(opts: ReadyBarRender): void {
   close.pill.append(exportIco(EXPORT_ICON.x, 'es-ico'));
   dock.append(close.btn);
 }
+
+/** 挂载导出条到展开单带的 44pt 顶槽，或收起态/网格态的 40pt 贴底槽；返回当前占据的 .band（若在顶槽）。 */
+export function mountExportDock(
+  shell: HTMLElement,
+  dock: HTMLElement,
+  prevBand: HTMLElement | null,
+): HTMLElement | null {
+  const editorOpen = shell.dataset.screen === 'editor';
+  const slot = editorOpen
+    ? shell.querySelector<HTMLElement>('.editor .band[data-collapsed="0"] .band-export-slot')
+    : null;
+  if (slot) {
+    const band = slot.closest<HTMLElement>('.band');
+    if (prevBand && prevBand !== band) prevBand.removeAttribute('data-export-slot');
+    if (dock.parentElement !== slot) slot.append(dock);
+    dock.dataset.dockMode = 'slot';
+    if (band) {
+      band.dataset.exportSlot = '1';
+      return band;
+    }
+    return null;
+  }
+  prevBand?.removeAttribute('data-export-slot');
+  const perf = shell.querySelector('.perf');
+  if (dock.parentElement !== shell) shell.insertBefore(dock, perf);
+  dock.dataset.dockMode = 'flush';
+  return null;
+}
+
+/** 更新导出内存与耗时观测数据到壳属性及性能条。 */
+export function paintExportMemory(
+  shell: HTMLElement,
+  perf: HTMLElement | null,
+  marks: { wasm: number; js: number; workers: number },
+  stagedHigh: number,
+  times: readonly number[],
+): void {
+  const mib = (v: number) => Math.round((v / 1048576) * 10) / 10;
+  const data = { wasm: marks.wasm, js: marks.js, staged: stagedHigh, workers: marks.workers, times };
+  shell.dataset.exportMem = JSON.stringify(data);
+  if (perf && !perf.hidden) {
+    const avg = times.length ? `${Math.round(times.reduce((a, b) => a + b, 0) / times.length)} ms` : '—';
+    perf.textContent = `导出 WASM ${mib(marks.wasm)} MiB · JS ${mib(marks.js)} MiB · 待存 ${mib(stagedHigh)} MiB · 每张 ${avg}`;
+  }
+}

@@ -66,11 +66,15 @@ export class LutView {
   private readonly photo: Photo;
   private readonly hooks: LutStageHooks;
   private readonly head = el('div', 'band-lut-hd');
+  private readonly headTitle = el('b', 'lut-hd-name', 'LUT');
   private readonly panel = el('div', 'panel lut');
+  private readonly stripWrap = el('div', 'lut-strip-wrap');
+  private readonly pin = el('div', 'lut-pin');
   private readonly strip = el('div', 'strip');
-  private readonly statusEl = el('span', 'lut-status-pill', '');
-  private readonly spaceBtn = button('band-act lut-space-btn', '色彩空间');
-  private readonly addBtn = button('band-act lut-import-btn', '导入 LUT');
+  private readonly statusEl = el('div', 'lut-err', '');
+  private readonly spaceBtn = button('rc filter-tile lut-space-tile', '');
+  private readonly spaceTxt = el('span', 'lut-space-txt', '色彩空间');
+  private readonly addBtn = button('rc filter-tile lut-import-tile', '');
   private modeSwitchEl: HTMLElement | null = null;
   private stripKeys: string[] = [];
   private slots: Slot[] = [];
@@ -98,18 +102,27 @@ export class LutView {
     this.statusEl.dataset.state = 'lut-status';
     this.statusEl.hidden = true;
 
+    this.addBtn.dataset.act = 'lut-import';
+    this.addBtn.setAttribute('aria-label', '导入 LUT');
+    const addTh = el('div', 'th filter-th');
+    addTh.append(icon(PLUS));
+    this.addBtn.append(addTh, el('span', 'nm', '导入 LUT'));
+    this.addBtn.addEventListener('click', () => this.api.pickLut());
+
     this.spaceBtn.dataset.act = 'lut-space';
+    this.spaceBtn.setAttribute('aria-label', '色彩空间');
+    const spaceTh = el('div', 'th filter-th');
+    spaceTh.append(this.spaceTxt);
+    this.spaceBtn.append(spaceTh);
     this.spaceBtn.addEventListener('click', () => {
       const rec = this.photo.lut ? this.api.lutBook().get(this.photo.lut) : undefined;
       if (rec) this.openSpaceFor(rec, false);
     });
 
-    this.addBtn.dataset.act = 'lut-import';
-    this.addBtn.prepend(icon(PLUS));
-    this.addBtn.addEventListener('click', () => this.api.pickLut());
-
-    this.head.append(this.statusEl, this.spaceBtn, this.addBtn);
-    this.panel.append(this.strip);
+    this.head.append(this.headTitle);
+    this.pin.append(this.addBtn, this.spaceBtn);
+    this.stripWrap.append(this.pin, this.strip);
+    this.panel.append(this.stripWrap, this.statusEl);
 
     this.seenNotice = api.lutBook().lastNotice().seq;
     this.off = api.lutBook().onChange(() => {
@@ -290,9 +303,11 @@ export class LutView {
     }
 
     const sp = this.spaceButtonLabel(selectedRec);
-    this.spaceBtn.textContent = sp.text;
+    this.spaceTxt.textContent = sp.text;
     this.spaceBtn.classList.toggle('warn', sp.warn);
     this.spaceBtn.disabled = !selectedRec;
+    this.spaceBtn.setAttribute('aria-label', selectedRec ? `色彩空间：${sp.text}` : '色彩空间');
+    this.headTitle.textContent = selectedRec ? selectedRec.name : deleted ? 'LUT 已删除' : 'LUT';
 
     const statusText = this.statusMsg || (deleted ? LUT_ERRORS.cube_not_found : '');
     this.statusEl.textContent = statusText;

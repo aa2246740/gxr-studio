@@ -150,15 +150,15 @@ try {
     Object.values(ids),
     { timeout: 120_000 },
   );
-  const importStatus = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
+  const importStatus = await page.locator('.editor .panel.lut [data-state="lut-status"]').innerText();
 
   await page.locator('input.lutpick').setInputFiles([manifest.luts.disp33.path]);
   await page.waitForFunction(
-    () => document.querySelector('.editor .band-lut-hd [data-state="lut-status"]')?.textContent === '已经导入过',
+    () => document.querySelector('.editor .panel.lut [data-state="lut-status"]')?.textContent === '已经导入过',
     null,
     { timeout: 30_000 },
   );
-  const dupStatus = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
+  const dupStatus = await page.locator('.editor .panel.lut [data-state="lut-status"]').innerText();
 
   // 3. 未声明的 LUT 显示「请选择色彩空间」，点开空间选择器核对分组/12个空间后手选 sRGB
   const undeclaredCard = page.locator(`.panel.lut .rc[data-lut="${ids.undeclared}"]`);
@@ -181,7 +181,7 @@ try {
     ids.undeclared,
     { timeout: 15_000 },
   );
-  const spaceRowAfterPick = await page.locator('.editor .band-lut-hd [data-act="lut-space"]').innerText();
+  const spaceRowAfterPick = await page.locator('.editor .panel.lut [data-act="lut-space"]').innerText();
 
   // 4. 连续切换 3 张 Display LUT，核对短命 table Worker 每次销毁、引擎槽 <= 3，最后停在 disp33
   const switchStats = [];
@@ -244,8 +244,8 @@ try {
   const jpgLogLocked = await logCard.evaluate((node) => node.classList.contains('lockd'));
   const jpgLogSub = await logCard.locator('.sub').innerText();
   await logCard.click();
-  await page.waitForSelector('.editor .band-lut-hd [data-state="lut-status"]:not([hidden])', { timeout: 10_000 });
-  const jpgLogRefused = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
+  await page.waitForSelector('.editor .panel.lut [data-state="lut-status"]:not([hidden])', { timeout: 10_000 });
+  const jpgLogRefused = await page.locator('.editor .panel.lut [data-state="lut-status"]').innerText();
   const jpgSelectedAfterLog = await page.evaluate((stem) => window.__gxrEdits().find((r) => r.stem === stem)?.lut ?? null, jpgOnly);
 
   await page.locator(`.panel.lut .rc[data-lut="${ids.undeclared}"]`).click();
@@ -343,7 +343,7 @@ try {
     { timeout: 15_000 },
   );
   const deletedCardText = await page.locator('.panel.lut .rc[data-lut="deleted"]').innerText();
-  const deletedBannerText = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
+  const deletedBannerText = await page.locator('.editor .panel.lut [data-state="lut-status"]').innerText();
 
   await page.locator('.editor .toolbar [data-act="export"]').click();
   const deletedExportReady = await waitPhase(page, ['ready']);
@@ -374,11 +374,11 @@ try {
   // P3-01：非 UTF-8 .cube 报桌面 LUT_ERRORS.cube_unreadable（不透出底层 UTF-8/Rust 文案）
   await page.locator('input.lutpick').setInputFiles([manifest.badUtf8File]);
   await page.waitForFunction(
-    () => document.querySelector('.editor .band-lut-hd [data-state="lut-status"]')?.textContent?.includes('无法读取 LUT。请改用 .cube 文件。'),
+    () => document.querySelector('.editor .panel.lut [data-state="lut-status"]')?.textContent?.includes('无法读取 LUT。请改用 .cube 文件。'),
     null,
     { timeout: 15_000 },
   );
-  const badUtf8Status = await page.locator('.editor .band-lut-hd [data-state="lut-status"]').innerText();
+  const badUtf8Status = await page.locator('.editor .panel.lut [data-state="lut-status"]').innerText();
 
   // P1-01：导入 # Input: sRGB + # Output: Rec.709，改输入范围等参数后 output_space 仍保留 rec709；UI 也显示输出色彩空间行
   const rec709Id = manifest.rec709Out.cubeId;
@@ -388,7 +388,7 @@ try {
   await recCard.scrollIntoViewIfNeeded();
   await recCard.click();
   await waitLutReady(page, rec709Id);
-  await page.locator('.editor .band-lut-hd [data-act="lut-space"]').click();
+  await page.locator('.editor .panel.lut [data-act="lut-space"]').click();
   await page.waitForSelector('.lut-space-sheet[data-state="lut-space"]', { timeout: 10_000 });
   const outputSpaceChoices = await page.evaluate(() =>
     [...document.querySelectorAll('.lut-adv-row[data-field="output_space"] button')].map((b) => ({

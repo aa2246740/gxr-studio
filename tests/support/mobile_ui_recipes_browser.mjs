@@ -306,8 +306,8 @@ try {
   await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'uncalibrated', null, { timeout: 60_000 });
   await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await snap(page, '06c');
-  const noCalTag = await page.locator('.editor .recipe-head [data-state="no-calibration"]').innerText();
-  await page.locator('.editor .recipe-head [data-state="no-calibration"]').click();
+  const noCalTag = await page.locator('.editor .panel.recipe [data-state="no-calibration"]').innerText();
+  await page.locator('.editor .panel.recipe [data-state="no-calibration"]').click();
   await page.waitForSelector('.recipe-info-sheet [data-state="no-calibration"]');
   const noCalBanner = await page.locator('.recipe-info-sheet [data-state="no-calibration"]').innerText();
   await page.locator('.recipe-info-sheet [data-act="close"]').click();
@@ -329,7 +329,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'jpg-only', null, { timeout: 60_000 });
   await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await snap(page, '06e');
-  await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+  await page.locator('.editor .panel.recipe [data-act="recipe-status"]').click();
   await page.waitForSelector('.recipe-info-sheet');
   const jpgPanel = await page.locator('.recipe-info-sheet').innerText();
   await page.locator('.recipe-info-sheet [data-act="close"]').click();

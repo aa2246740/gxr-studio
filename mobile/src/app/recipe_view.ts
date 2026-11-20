@@ -2,7 +2,7 @@
 // 状态照设计稿：06c 没校准（中性转换，可以选）、06d 没有相机配方文件（卡片置灰）、06e 只有 JPG。
 
 import type { Engine, Geometry } from '../../../frontend/src/index';
-import { crossed, unitOfLens, type Unit } from '../lib/calib';
+import { unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import {
@@ -30,10 +30,12 @@ import {
   centerStripCard,
   makeRecipeFilterTile,
   makeRecipeLutSwitch,
+  makeRecipeStatusTile,
   openAskDatSheet,
   openJpgInfoSheet,
   openRecipeFilterSheet,
   openRecipeStatusSheet,
+  recipeStatusSpec,
   shelfCount,
   type AskSheetHandle,
 } from './recipe_band';
@@ -41,7 +43,15 @@ import {
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const GEOMETRY: Geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
 const ADJUST = {
-  exposure_ev: 0, wb: { warm: 0, tint: 0 }, contrast: 0, highlight: 0, shadow: 0, black_point: 0, saturation: 0, vibrance: 0, vignette: 0,
+  exposure_ev: 0,
+  wb: { warm: 0, tint: 0 },
+  contrast: 0,
+  highlight: 0,
+  shadow: 0,
+  black_point: 0,
+  saturation: 0,
+  vibrance: 0,
+  vignette: 0,
 };
 const MINE_EMPTY = '电脑上还没有我的配方。';
 const NEUTRAL_LABEL = '中性转换';
@@ -313,23 +323,37 @@ export class RecipeView {
 
   private syncFilterPin(scene: Scene): void {
     this.filterPin.replaceChildren();
-    if (!scene.raw || !scene.dat || !scene.list) {
-      this.filterPin.hidden = true;
-      return;
+    if (scene.raw && scene.dat && scene.list) {
+      const list = scene.list;
+      this.filterPin.append(
+        makeRecipeFilterTile(this.which, shelfCount(list, this.which), () => {
+          const shell = this.shellEl();
+          if (!shell) return;
+          openRecipeFilterSheet(shell, list, this.which, (which) => {
+            this.which = which;
+            const next = this.scene();
+            this.buildStrip(next);
+            this.syncSubView(next);
+          });
+        }),
+      );
     }
-    this.filterPin.hidden = false;
-    const list = scene.list;
-    const tile = makeRecipeFilterTile(this.which, shelfCount(list, this.which), () => {
-      const shell = this.shellEl();
-      if (!shell) return;
-      openRecipeFilterSheet(shell, list, this.which, (which) => {
-        this.which = which;
-        const next = this.scene();
-        this.buildStrip(next);
-        this.syncSubView(next);
-      });
-    });
-    this.filterPin.append(tile);
+    const statusSpec = recipeStatusSpec(scene, Boolean(this.photo.diptych), Boolean(this.api.book().datError));
+    if (statusSpec) {
+      this.filterPin.append(
+        makeRecipeStatusTile(statusSpec, () => {
+          if (statusSpec.action === 'jpg-info') {
+            const shell = this.shellEl();
+            if (shell) openJpgInfoSheet(shell, Boolean(this.photo.diptych));
+          } else if (statusSpec.action === 'ask-dat') {
+            this.ask();
+          } else {
+            this.openStatusSheet(scene);
+          }
+        }),
+      );
+    }
+    this.filterPin.hidden = this.filterPin.childElementCount === 0;
   }
 
   private makeModeSwitch(): HTMLElement {
@@ -484,58 +508,16 @@ export class RecipeView {
   private buildHead(scene: Scene): void {
     this.head.replaceChildren();
     if (!scene.raw) {
-      const pill = button('band-act warn', this.photo.diptych ? '半格双联' : '配方需要 RAW');
-      pill.dataset.act = 'recipe-status';
-      pill.addEventListener('click', () => {
-        const shell = this.shellEl();
-        if (shell) openJpgInfoSheet(shell, Boolean(this.photo.diptych));
-      });
-      this.head.append(pill);
+      this.head.append(el('span', 'rname dim', this.photo.diptych ? '半格双联' : '相机 JPG'));
       return;
     }
-    const book = this.api.book();
     if (!scene.dat) {
-      const pill = button('band-act warn', '选配方文件');
-      pill.dataset.act = 'recipe-status';
-      pill.addEventListener('click', () => this.ask());
-      this.head.append(pill);
+      this.head.append(el('span', 'rname dim', '未选配方文件'));
       return;
     }
     const target = this.target(scene);
-    const nameEl = el('b', 'rname', target?.name ?? '');
-    this.head.append(nameEl);
+    this.head.append(el('b', 'rname', target?.name ?? ''));
     if (target) this.head.append(el('span', 'tag neutral-tag', cardTag(target)));
-
-    if (this.fineTune) return;
-
-    const calibrated = scene.state.state === 'ready';
-    const off = calibrated && crossed(scene.photoUnit, scene.unit, scene.iso);
-
-    if (scene.camError) {
-      const errBtn = button('band-act warn', '拍摄配方');
-      errBtn.dataset.cameraRecipeError = scene.camError.code;
-      errBtn.dataset.act = 'recipe-status';
-      errBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(errBtn);
-    } else if (scene.adopted?.levelsUnknown) {
-      const noteBtn = button('band-act dim', '档位未标');
-      noteBtn.dataset.cameraRecipeNote = 'levels-unknown';
-      noteBtn.dataset.act = 'recipe-status';
-      noteBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(noteBtn);
-    } else if (!calibrated) {
-      const calBtn = button('band-act warn', '未校准');
-      calBtn.dataset.state = 'no-calibration';
-      calBtn.dataset.act = 'recipe-status';
-      calBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(calBtn);
-    } else if (off || book.datError) {
-      const warnBtn = button('band-act warn', '未校准');
-      warnBtn.dataset.state = 'uncalibrated';
-      warnBtn.dataset.act = 'recipe-status';
-      warnBtn.addEventListener('click', () => this.openStatusSheet(scene));
-      this.head.append(warnBtn);
-    }
   }
 
   private openStatusSheet(scene: Scene): void {

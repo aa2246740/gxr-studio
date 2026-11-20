@@ -27,6 +27,7 @@ export interface ExportSheetData {
   } | null;
   entries: readonly ReadyEntry[];
   failures: readonly Failure[];
+  savedCount: number;
   failurePosition: (id: string) => number | null;
   chunk: number;
   totalChunks: number;
@@ -37,7 +38,7 @@ export interface ExportSheetData {
   onRetry: () => void;
   onClearFailures: () => void;
   onFinishNoShare: () => void;
-  onClose: () => void;
+  onClose: (restoreFocus: boolean) => void;
   trackUrl: (url: string) => void;
 }
 
@@ -50,7 +51,7 @@ export class ExportDetailsSheet {
   private foot: HTMLElement | null = null;
   private unregister: (() => void) | null = null;
   private onKey: ((ev: KeyboardEvent) => void) | null = null;
-  private onCloseCb: (() => void) | null = null;
+  private onCloseCb: ((restoreFocus: boolean) => void) | null = null;
   private returnFocus: HTMLElement | null = null;
 
   constructor(private readonly shell: HTMLElement) {}
@@ -59,7 +60,7 @@ export class ExportDetailsSheet {
     return this.sheet !== null && this.sheet.isConnected;
   }
 
-  /** 打开或原地更新「详情」工作表（进度刷新时不抢焦点）。 */
+  /** 打开或原地更新「详情」工作表（进度刷新时保留焦点在工作表内同一控件）。 */
   render(data: ExportSheetData): void {
     this.onCloseCb = data.onClose;
     const freshlyOpened = !this.isOpen();
@@ -77,17 +78,17 @@ export class ExportDetailsSheet {
       hd.append(el('h2', '', '导出队列'));
       const closeBtn = button('nb es-sheet-close', '收起');
       closeBtn.dataset.act = 'close-details';
-      closeBtn.addEventListener('click', () => this.requestClose());
+      closeBtn.addEventListener('click', () => this.requestClose(true));
       hd.append(closeBtn);
 
       const body = el('div', 'es-sheet-body');
       const foot = el('div', 'es-sheet-foot');
       sheet.append(hd, body, foot);
 
-      scrim.addEventListener('click', () => this.requestClose());
+      scrim.addEventListener('click', () => this.requestClose(true));
       this.onKey = (ev: KeyboardEvent) => this.handleKeydown(ev);
       document.addEventListener('keydown', this.onKey);
-      this.unregister = registerSheet(this.shell, () => this.requestClose());
+      this.unregister = registerSheet(this.shell, () => this.requestClose(false));
 
       this.scrim = scrim;
       this.sheet = sheet;
@@ -97,6 +98,11 @@ export class ExportDetailsSheet {
     }
 
     if (!this.body || !this.foot || !this.sheet) return;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusedInRebuilt = Boolean(!freshlyOpened && active && (this.body.contains(active) || this.foot.contains(active)));
+    const savedAct = focusedInRebuilt ? (active?.dataset.act ?? null) : null;
+    const savedDownload = focusedInRebuilt && active instanceof HTMLAnchorElement ? active.download : null;
+
     this.body.replaceChildren();
     this.foot.replaceChildren();
 
@@ -131,7 +137,7 @@ export class ExportDetailsSheet {
       if (posLine || hdrLine) {
         const meta = el('div', 'ready-meta');
         if (posLine) {
-          const who = el('small', 'ready-pos', entries.length > 1 ? `已做好：${posLine}` : `已做好：${posLine}`);
+          const who = el('small', 'ready-pos', `已做好：${posLine}`);
           who.dataset.state = 'ready-positions';
           meta.append(who);
         }
@@ -164,7 +170,9 @@ export class ExportDetailsSheet {
     // 4) 失败项与 重试 / 清除（或已停止提示）
     if (failures.length) {
       const sec = el('div', 'es-sec es-sec-fail');
-      sec.append(el('p', 'dim small es-summary', readyBarSummary(data.phase, entries.length, failures.length, 0, running?.queued ?? 0)));
+      sec.append(
+        el('p', 'dim small es-summary', readyBarSummary(data.phase, entries.length, failures.length, data.savedCount, running?.queued ?? 0)),
+      );
       const list = el('ul', 'why failnotes');
       list.dataset.state = 'failure-notes';
       for (const f of failures) {
@@ -184,7 +192,7 @@ export class ExportDetailsSheet {
       this.body.append(sec);
     } else if (data.phase === 'stopped') {
       const sec = el('div', 'es-sec');
-      sec.append(el('p', 'dim small es-summary', readyBarSummary(data.phase, entries.length, 0, 0, running?.queued ?? 0)));
+      sec.append(el('p', 'dim small es-summary', readyBarSummary(data.phase, entries.length, 0, data.savedCount, running?.queued ?? 0)));
       this.body.append(sec);
     }
 
@@ -202,6 +210,7 @@ export class ExportDetailsSheet {
         box.append(a);
       }
       const done = button('btn block', '关闭');
+      done.dataset.act = 'finish-no-share';
       done.addEventListener('click', data.onFinishNoShare);
       box.append(done);
       this.body.append(box);
@@ -225,6 +234,19 @@ export class ExportDetailsSheet {
     if (freshlyOpened) {
       const first = this.sheet.querySelector<HTMLElement>(FOCUSABLE) ?? this.sheet;
       first.focus({ preventScroll: true });
+    } else if (focusedInRebuilt && !this.sheet.contains(document.activeElement)) {
+      let next: HTMLElement | null = null;
+      if (savedAct) {
+        next = this.sheet.querySelector<HTMLElement>(`[data-act="${savedAct}"]:not([disabled])`);
+        if (!next && (savedAct === 'share' || savedAct === 'share-ready')) {
+          next = this.sheet.querySelector<HTMLElement>(
+            '[data-act="share"]:not([disabled]), [data-act="share-ready"]:not([disabled])',
+          );
+        }
+      } else if (savedDownload) {
+        next = [...this.sheet.querySelectorAll<HTMLAnchorElement>('a[download]')].find((a) => a.download === savedDownload) ?? null;
+      }
+      (next ?? this.sheet.querySelector<HTMLElement>(FOCUSABLE) ?? this.sheet).focus({ preventScroll: true });
     }
   }
 
@@ -249,10 +271,10 @@ export class ExportDetailsSheet {
     this.returnFocus = null;
   }
 
-  private requestClose(): void {
+  private requestClose(restoreFocus = true): void {
     const cb = this.onCloseCb;
-    this.close(true);
-    cb?.();
+    this.close(false);
+    cb?.(restoreFocus);
   }
 
   private handleKeydown(ev: KeyboardEvent): void {

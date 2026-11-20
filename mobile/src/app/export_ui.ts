@@ -16,7 +16,14 @@ import { estimatePeak, type BatchFonts } from './export_budget';
 import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
 import { ExportQueueState, type ExportOptions } from './export_queue';
-import { paintReadyBar, paintRunningSlot, stateAnnouncement, type ReadyEntry } from './export_ready';
+import {
+  mountExportDock,
+  paintExportMemory,
+  paintReadyBar,
+  paintRunningSlot,
+  stateAnnouncement,
+  type ReadyEntry,
+} from './export_ready';
 import { applyAdoptedAndLogos, buildExportThumbs, cardsFor, requestPhoto } from './export_request_prep';
 import { ExportDetailsSheet } from './export_sheet';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
@@ -406,27 +413,8 @@ export class ExportFlow {
   }
 
   private mountDock(): void {
-    const dock = this.dock;
-    if (!dock) return;
-    const editorOpen = this.shell.dataset.screen === 'editor';
-    const slot = editorOpen
-      ? this.shell.querySelector<HTMLElement>('.editor .band[data-collapsed="0"] .band-export-slot')
-      : null;
-    if (slot) {
-      const band = slot.closest<HTMLElement>('.band');
-      if (this.slotBand && this.slotBand !== band) this.clearSlotFlag();
-      if (dock.parentElement !== slot) slot.append(dock);
-      dock.dataset.dockMode = 'slot';
-      if (band) {
-        band.dataset.exportSlot = '1';
-        this.slotBand = band;
-      }
-      return;
-    }
-    this.clearSlotFlag();
-    const perf = this.shell.querySelector('.perf');
-    if (dock.parentElement !== this.shell) this.shell.insertBefore(dock, perf);
-    dock.dataset.dockMode = 'flush';
+    if (!this.dock) return;
+    this.slotBand = mountExportDock(this.shell, this.dock, this.slotBand);
   }
 
   private ensureLiveRegion(): HTMLElement {
@@ -487,6 +475,8 @@ export class ExportFlow {
     this.ensureLiveRegion();
     this.mountDock();
     const dock = this.dock;
+    const activeEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dockFocusAct = !this.detailsOpen && activeEl && dock.contains(activeEl) ? (activeEl.dataset.act ?? null) : null;
     // 重画会丢掉旧的下载链接：它们的 URL 先撤销，需要的话导出详情表再建。
     this.revokeUrls();
     dock.className = 'pdock';
@@ -496,12 +486,24 @@ export class ExportFlow {
     dock.dataset.phase = phase;
     if (batch) this.paintMemory(batch);
 
+    const restoreDockOpener = () => {
+      const opener =
+        this.dock?.querySelector<HTMLElement>('[data-act="toggle-details"]') ??
+        this.dock?.querySelector<HTMLElement>('button');
+      opener?.focus({ preventScroll: true });
+    };
+    const restoreDockFocus = () => {
+      if (!dockFocusAct || this.detailsOpen || dock.contains(document.activeElement)) return;
+      dock.querySelector<HTMLElement>(`[data-act="${dockFocusAct}"]`)?.focus({ preventScroll: true });
+    };
     const toggleDetails = () => {
+      const wasOpen = this.detailsOpen;
       this.detailsOpen = !this.detailsOpen;
       if (!this.detailsOpen && this.view === 'noshare') this.view = 'progress';
       this.paint();
+      if (wasOpen && !this.detailsOpen) restoreDockOpener();
     };
-    const closeDetails = () => {
+    const closeDetails = (restoreFocus = true) => {
       if (!this.detailsOpen && this.view !== 'noshare') return;
       this.detailsOpen = false;
       if (this.view === 'noshare') {
@@ -509,6 +511,7 @@ export class ExportFlow {
         this.revokeUrls();
       }
       this.paint();
+      if (restoreFocus) restoreDockOpener();
     };
 
     if (batch && batch.phase === 'running') {
@@ -551,6 +554,7 @@ export class ExportFlow {
           running: { done, total, current, hdr: batch.hdr, queued: this.queue.queuedCount() },
           entries: carried,
           failures: this.queue.allFailures(batch),
+          savedCount: this.queue.savedCount(batch),
           failurePosition: (id) => this.positionOf(id),
           chunk: 0,
           totalChunks: carryChunks.length,
@@ -571,6 +575,7 @@ export class ExportFlow {
         });
       } else {
         this.detailsSheet.close(false);
+        restoreDockFocus();
       }
       return;
     }
@@ -614,6 +619,7 @@ export class ExportFlow {
         running: null,
         entries,
         failures,
+        savedCount: this.queue.savedCount(batch),
         failurePosition: (id) => this.positionOf(id),
         chunk: this.chunk,
         totalChunks: this.chunks.length,
@@ -629,6 +635,7 @@ export class ExportFlow {
       });
     } else {
       this.detailsSheet.close(false);
+      restoreDockFocus();
     }
   }
 
@@ -673,15 +680,8 @@ export class ExportFlow {
   }
 
   private paintMemory(batch: ExportBatch): void {
-    const marks = this.core.marks;
-    const mib = (v: number) => Math.round((v / 1048576) * 10) / 10;
     const stagedHigh = Math.max(batch.stagedHigh, batch.stagedBytes + this.queue.carryoverBytes());
-    const data = { wasm: marks.wasm, js: marks.js, staged: stagedHigh, workers: marks.workers, times: batch.times };
-    this.shell.dataset.exportMem = JSON.stringify(data);
-    if (this.perf && !this.perf.hidden) {
-      const avg = batch.times.length ? `${Math.round(batch.times.reduce((a, b) => a + b, 0) / batch.times.length)} ms` : '—';
-      this.perf.textContent = `导出 WASM ${mib(marks.wasm)} MiB · JS ${mib(marks.js)} MiB · 待存 ${mib(stagedHigh)} MiB · 每张 ${avg}`;
-    }
+    paintExportMemory(this.shell, this.perf, this.core.marks, stagedHigh, batch.times);
   }
 
   private thumbs(batch: ExportBatch): HTMLElement {
